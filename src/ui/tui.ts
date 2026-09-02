@@ -103,7 +103,9 @@ export class SimpleTUI {
 				break;
 			case "tool_done": {
 				const elapsed = m.ts ? Date.now() - m.ts : 0;
-				process.stdout.write(`\n${C.ok}  ✓ ${toolStartLine(m.name, {} as never)}${C.reset}`);
+				process.stdout.write(
+					`\n${C.ok}  ✓ ${toolStartLine(m.name, {} as never)}${C.reset}`,
+				);
 				const style = {
 					ok: (s: string) => `${C.ok}${s}${C.reset}`,
 					err: (s: string) => `${C.err}${s}${C.reset}`,

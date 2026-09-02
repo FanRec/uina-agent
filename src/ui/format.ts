@@ -34,7 +34,8 @@ export function toolResultLines(
 	elapsedMs: number,
 	s: ToolResultStyle,
 ): string[] {
-	const t = elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(1)}s` : `${elapsedMs}ms`;
+	const t =
+		elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(1)}s` : `${elapsedMs}ms`;
 
 	let obj: Record<string, unknown> | null = null;
 	try {
@@ -59,7 +60,10 @@ export function toolResultLines(
 		}
 		// 其他结构化返回（非 stdout/error 形状）：键值摘要一行
 		if (!hasErr && !("stdout" in obj) && !("stderr" in obj)) {
-			const keys = Object.keys(obj).slice(0, 3).map((k) => `${k}: ${short(obj[k])}`).join(", ");
+			const keys = Object.keys(obj)
+				.slice(0, 3)
+				.map((k) => `${k}: ${short(obj[k])}`)
+				.join(", ");
 			lines.push(s.dim(`↳ ${keys}`));
 		}
 		return lines.length > 0 ? lines : [s.dim(`↳ ${t}`)];

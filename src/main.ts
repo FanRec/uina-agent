@@ -91,7 +91,7 @@ async function main(): Promise<void> {
 		onTurnEnd: (n) => {
 			render({ type: "turn_end", n });
 			if (oneshot !== undefined && !oneshotDone) {
-				 oneshotDone = true;
+				oneshotDone = true;
 				setTimeout(() => {
 					saveSession(subject);
 					process.exit(0);
