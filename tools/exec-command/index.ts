@@ -49,7 +49,10 @@ function resolveShell(): {
 	const pwsh = join(progFiles, "PowerShell", "7", "pwsh.exe");
 	if (existsSync(pwsh)) {
 		// pwsh 7 默认输出 UTF-8，无需前缀
-		return { shell: pwsh, args: (c) => ["-NoProfile", "-NonInteractive", "-Command", c] };
+		return {
+			shell: pwsh,
+			args: (c) => ["-NoProfile", "-NonInteractive", "-Command", c],
+		};
 	}
 	const sysRoot = process.env.SystemRoot ?? "C:\\Windows";
 	const powershell = join(
@@ -65,11 +68,15 @@ function resolveShell(): {
 		//  - runtime 错误（管道模式下）天然 UTF-8，无需处理；
 		//  - 注意：不能覆写 [Console]::SetError（实测会丢掉整个错误流）；
 		//    parse 错误在脚本执行前产生、干不过编码前缀（模型重试时靠行号自纠，接受）。
-		const prefix =
-			"[Console]::OutputEncoding=[Text.Encoding]::UTF8; ";
+		const prefix = "[Console]::OutputEncoding=[Text.Encoding]::UTF8; ";
 		return {
 			shell: powershell,
-			args: (c) => ["-NoProfile", "-NonInteractive", "-Command", `${prefix}${c}`],
+			args: (c) => [
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				`${prefix}${c}`,
+			],
 		};
 	}
 	// 兜底：cmd（引号剥离规则最差，但机器上总存在）
@@ -201,14 +208,17 @@ const execCommand: Tool = {
 		function: {
 			name: "exec_command",
 			description:
-				"执行一条系统命令并返回其输出（stdout、stderr、退出码）。可用于查询系统信息、"
-				+ "读写文件、运行脚本、管理进程等。当前平台为 Windows，命令走 PowerShell，"
-				+ "请使用 PowerShell 语法（Get-ChildItem / Set-Location / Get-Content 等），"
-				+ "勿写 bash/POSIX 语法。命令可长可复合（; 分隔）；若退出码非 0，error 字段会说明。",
+				"执行一条系统命令并返回其输出（stdout、stderr、退出码）。可用于查询系统信息、" +
+				"读写文件、运行脚本、管理进程等。当前平台为 Windows，命令走 PowerShell，" +
+				"请使用 PowerShell 语法（Get-ChildItem / Set-Location / Get-Content 等），" +
+				"勿写 bash/POSIX 语法。命令可长可复合（; 分隔）；若退出码非 0，error 字段会说明。",
 			parameters: {
 				type: "object",
 				properties: {
-					command: { type: "string", description: "要执行的命令（PowerShell 语法）" },
+					command: {
+						type: "string",
+						description: "要执行的命令（PowerShell 语法）",
+					},
 				},
 				required: ["command"],
 			},
