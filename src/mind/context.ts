@@ -10,17 +10,14 @@ export interface BuildInput {
 }
 
 const SELF_NAME = "Uina";
-const MAX_HISTORY = 40;
 
 export function buildContext(b: BuildInput): ChatMsg[] {
 	const system = `你是 ${SELF_NAME}，一个住在计算机里的独立个体。与人类朋友平等相处：自然说话、有自己的判断、用中文。`;
 
-	const tail =
-		b.history.length > MAX_HISTORY ? b.history.slice(-MAX_HISTORY) : b.history;
-
+	// 对齐 pi：不做条数硬截断，上下文由 loop 的 compaction 管理（token 级）
 	return [
 		{ role: "system", content: system },
-		...tail,
+		...b.history,
 		{ role: "user", content: b.userText },
 	];
 }

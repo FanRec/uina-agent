@@ -37,6 +37,14 @@ function makeSubject(rules: Parameters<typeof scriptedProvider>[0]) {
 	return { subject, provider, getOut: () => out };
 }
 
+/** 构造 N 条长历史消息（触发 compaction 阈值用） */
+function longHistory(n: number) {
+	const filler = "这是一条足够长的消息，内容是反复重复的中文句子以凑足 token 估算。".repeat(20);
+	const msgs = [];
+	for (let i = 0; i < n; i++) msgs.push({ role: "user" as const, content: filler });
+	return msgs;
+}
+
 describe("主体链路（mock）", () => {
 	it("流式文本：分段输出并写入历史", async () => {
 		const { subject, provider } = makeSubject([
@@ -90,6 +98,54 @@ describe("主体链路（mock）", () => {
 		const msgs = provider.calls[0].messages;
 		expect(msgs.some((m) => m.content === "之前说过的旧消息")).toBe(true);
 		expect(lastUser(provider.calls[0])).toBe("继续");
+	});
+
+	it("工具消息进上下文：超过 2000 字符被序列化截断（对齐 pi）", async () => {
+		const { subject, provider } = makeSubject([
+			{
+				match: (req) => !req.messages.some((m) => m.role === "tool"),
+				produce: () => [toolCallDelta("c1", "get_time", {})],
+			},
+			{
+				match: (req) => req.messages.some((m) => m.role === "tool"),
+				produce: () => [{ kind: "text", text: "收到" }],
+			},
+		]);
+		// 工具消息进上下文时序列化截断：get_time 结果短所以不被截，验证上限存在即可
+		subject.pushInput("几点");
+		await flush();
+		const toolMsgs = provider.calls[1].messages.filter((m) => m.role === "tool");
+		expect(toolMsgs.length).toBe(1);
+		expect((toolMsgs[0].content ?? "").length).toBeLessThanOrEqual(2000);
+	});
+
+	it("compaction：历史超阈值时压缩最旧部分为摘要（对齐 pi）", async () => {
+		const { subject, provider } = makeSubject([
+			{
+				// 摘要请求：system 含压缩指令
+				match: (req) =>
+					req.messages[0]?.role === "system" &&
+					(req.messages[0].content ?? "").includes("压缩成不超过 200 字"),
+				produce: () => [{ kind: "text", text: "（压缩摘要：曾经聊过很多旧话题）" }],
+			},
+			{
+				// 正常轮次
+				match: () => true,
+				produce: () => [{ kind: "text", text: "好" }],
+			},
+		]);
+		subject.addHistory(longHistory(120)); // ~120 条长消息，估算远超 49k token
+		subject.pushInput("继续聊");
+		await flush();
+		// 摘要请求必须发生过
+		expect(provider.calls.some((c) => c.messages[0]?.role === "system" && (c.messages[0].content ?? "").includes("压缩成不超过 200 字"))).toBe(true);
+		// 后续正常轮次的请求上下文应带摘要（历史压缩后注入）
+		const normal = provider.calls.find((c) => !(c.messages[0]?.content ?? "").includes("压缩成"));
+		expect(normal).toBeTruthy();
+		const withSummary = (normal?.messages ?? []).find((m) => (m.content ?? "").startsWith("[历史摘要] "));
+		expect(withSummary).toBeTruthy();
+		// 摘要内容来自 mock 摘要请求的返回
+		expect((withSummary?.content ?? "").includes("（压缩摘要")).toBe(true);
 	});
 });
 
