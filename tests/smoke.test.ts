@@ -313,4 +313,100 @@ describe("中断（interrupt）", () => {
 		expect(toolMsg).toBeTruthy();
 		expect(safeParse(toolMsg!.content).cancelled).toBe(true);
 	});
+
+	it("一轮多个工具调用：全部回注且 id 与 assistant.tool_calls 配对完整", async () => {
+		const tools = new ToolBroker();
+		tools.register(getTimeTool);
+		tools.register(runShellTool);
+		const provider = scriptedProvider([
+			{
+				match: (req) => !req.messages.some((m) => m.role === "tool"),
+				// 一轮产两个工具调用（并行工具）：get_time + run_shell
+				produce: () => [
+					toolCallDelta("c1", "get_time", {}),
+					toolCallDelta("c2", "run_shell", { command: "echo multi-tool" }),
+				],
+			},
+			{ match: () => true, produce: () => [{ kind: "text", text: "都查好了" }] },
+		]);
+		const subject = new Subject(provider, tools, { onToken: () => {} });
+		subject.pushInput("一起查");
+		await flush();
+		// 第二轮请求：assistant.tool_calls 两个 + tool 消息两个，一一配对
+		const second = provider.calls[1];
+		expect(second).toBeTruthy();
+		const asst = second.messages.find(
+			(m) => m.role === "assistant" && "tool_calls" in m,
+		);
+		const toolMsgs = second.messages.filter((m) => m.role === "tool");
+		expect(asst && "tool_calls" in asst ? asst.tool_calls?.length : 0).toBe(2);
+		expect(toolMsgs.length).toBe(2);
+		const asstIds = new Set(
+			(asst && "tool_calls" in asst ? asst.tool_calls ?? [] : []).map((t) =>
+				(t as { id: string }).id,
+			),
+		);
+		for (const tm of toolMsgs) {
+			expect(asstIds.has((tm as { tool_call_id: string }).tool_call_id)).toBe(true);
+		}
+	});
+
+	it("中断发生在工具链中间：未执行工具补占位，配对仍完整（防后续请求 400）", async () => {
+		const hangTool: Tool = {
+			def: {
+				type: "function",
+				function: {
+					name: "hang",
+					description: "挂起（测试用）",
+					parameters: { type: "object", properties: {} },
+				},
+			},
+			async run(_args, signal) {
+				return new Promise((res) => {
+					signal?.addEventListener("abort", () =>
+						res(JSON.stringify({ cancelled: true })),
+				);
+				});
+			},
+		};
+		const tools = new ToolBroker();
+		tools.register(hangTool);
+		tools.register(getTimeTool);
+		const provider = scriptedProvider([
+			{
+				match: (req) => !req.messages.some((m) => m.role === "tool"),
+				// 一轮产两个：hang（将中断）+ get_time（未执行将补占位）
+				produce: () => [
+					toolCallDelta("h1", "hang", {}),
+					toolCallDelta("g1", "get_time", {}),
+				],
+			},
+			{ match: () => true, produce: () => [{ kind: "text", text: "不应到达" }] },
+		]);
+		const subject = new Subject(provider, tools, { onToken: () => {} });
+		subject.pushInput("开工");
+		await flush();
+		subject.interrupt(); // 在 hang 挂起时中断
+		await flush();
+		const snapshot = subject.historySnapshot();
+		const toolMsgs = snapshot.filter((m) => m.role === "tool");
+		const asst = snapshot.find(
+			(m) => m.role === "assistant" && "tool_calls" in m,
+		);
+		const asstIds = new Set(
+			(asst && "tool_calls" in asst ? asst.tool_calls ?? [] : []).map((t) =>
+				(t as { id: string }).id,
+			),
+		);
+		// 配对完整：assistant 2 个 tool_calls 各有一条 tool 结果
+		expect(toolMsgs.length).toBe(2);
+		for (const tm of toolMsgs) {
+			expect(asstIds.has((tm as { tool_call_id: string }).tool_call_id)).toBe(true);
+		}
+		// g1 是占位（未执行），h1 是 cancelled 结果
+		const g1 = toolMsgs.find((m) => (m as { tool_call_id: string }).tool_call_id === "g1");
+		expect((g1?.content ?? "").includes("已中断")).toBe(true);
+		// 中断后没进下一轮 LLM
+		expect(provider.calls.length).toBe(1);
+	});
 });

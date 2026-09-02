@@ -283,7 +283,16 @@ export class Subject {
 				tool_calls: toolCalls,
 			});
 			for (const tc of toolCalls) {
-				if (this.interrupted) break;
+				if (this.interrupted) {
+					// 配对完整性：中断时未执行的工具补占位 tool 消息——
+					// assistant.tool_calls 已整体入史，缺对应 tool 结果是协议违规（再请求会 HTTP 400）
+					this.history.push({
+						role: "tool",
+						tool_call_id: tc.id,
+						content: "（已中断，未执行）",
+					});
+					continue;
+				}
 				this.hooks.onToolStart?.(tc.name, tc.args);
 				const result = await this.tools.run(
 					tc.name,
