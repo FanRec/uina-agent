@@ -137,7 +137,7 @@ export class Subject {
 	/** 把输入作为一条 user 消息交付给决策循环 */
 	private async decideBatch(text: string): Promise<void> {
 		this.history.push({ role: "user", content: text });
-		await this.decide(text);
+		await this.decide();
 	}
 
 	/** 清空排队输入，合并成一条 user 消息（空则返回空串） */
@@ -232,7 +232,7 @@ export class Subject {
 	/** 决策循环：模型流式产出 → 若要工具则执行并回注 → 继续，直到模型完成。
 	 *  无轮次上限（对齐 pi）：每次工具结果都回注后进入下一 round。
 	 *  中断：interrupt() 置 flag + abort 信号——工具中止、不再进下一轮 LLM。 */
-	private async decide(text: string): Promise<void> {
+	private async decide(): Promise<void> {
 		await this.maybeCompact();
 
 		for (;;) {
@@ -242,7 +242,6 @@ export class Subject {
 			}
 
 			const msgs = buildContext({
-				userText: text,
 				history: this.history,
 			});
 

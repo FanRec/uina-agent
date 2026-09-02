@@ -63,8 +63,10 @@ describe("主体链路（mock）", () => {
 		]);
 		subject.pushInput("嗨");
 		await flush();
-		// 该轮请求应包含用户输入（进入历史）
-		expect(lastUser(provider.calls[0])).toBe("嗨");
+		// 该轮输入已在 decideBatch 中写入 history，首轮上下文只能出现一次
+		expect(
+			provider.calls[0].messages.filter((m) => m.content === "嗨").length,
+		).toBe(1);
 	});
 
 	it("工具闭环：get_time 执行后结果回注给模型", async () => {
@@ -84,6 +86,10 @@ describe("主体链路（mock）", () => {
 		const second = provider.calls[1];
 		expect(second.messages.some((m) => m.role === "tool")).toBe(true);
 		expect(second.messages.filter((m) => m.role === "tool").length).toBe(1);
+		// 工具结果后的下一轮也只能保留一条原始用户输入
+		expect(
+			second.messages.filter((m) => m.content === "现在几点").length,
+		).toBe(1);
 	});
 
 	it("会话续聊：addHistory 后 historySnapshot 带回注入的消息", async () => {
