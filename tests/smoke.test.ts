@@ -169,7 +169,9 @@ describe("主体链路（mock）", () => {
 
 describe("shell 工具", () => {
 	it("真实执行命令并返回输出", async () => {
-		const result = safeParse(await runShellTool.run({ command: "echo uina-smoke-ok" }));
+		const result = safeParse(
+			await runShellTool.run({ command: "echo uina-smoke-ok" }),
+		);
 		expect(result.stdout).toContain("uina-smoke-ok");
 	});
 

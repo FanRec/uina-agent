@@ -48,7 +48,10 @@ describe("工具自动发现（loader）", () => {
 		expect(result.loaded).toBe(3);
 		expect(result.failed.length).toBe(1);
 		expect(result.failed[0].file).toBe("bad.ts");
-		const names = reg.defs().map((t) => t.function.name).sort();
+		const names = reg
+			.defs()
+			.map((t) => t.function.name)
+			.sort();
 		expect(names).toEqual(["tool_a", "tool_b1", "tool_b2", "tool_c"]);
 	});
 

@@ -75,10 +75,7 @@ export async function loadTools(
 	return result;
 }
 
-async function registerExport(
-	reg: ToolBroker,
-	exp: unknown,
-): Promise<void> {
+async function registerExport(reg: ToolBroker, exp: unknown): Promise<void> {
 	if (Array.isArray(exp)) {
 		for (const t of exp) reg.register(t as Tool);
 		return;
