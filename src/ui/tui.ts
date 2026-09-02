@@ -16,6 +16,7 @@ import { sanitizeTerminalText, toolStartLine, toolResultLines } from "./format.j
 /** 渲染层消息（主体 hooks → UI 的消息形状） */
 export type OutMsg =
 	| { type: "text"; text: string }
+	| { type: "thinking"; text: string }
 	| { type: "turn_start"; n: number; text: string }
 	| { type: "turn_end"; n: number }
 	| { type: "error"; text: string }
@@ -109,6 +110,9 @@ export class SimpleTUI {
 			case "text":
 				// 流式片段原样输出（错误走 error 类型有色渲染，不再用文本嗅探）
 				process.stdout.write(sanitizeTerminalText(m.text));
+				break;
+			case "thinking":
+				process.stdout.write(`${C.dim}${sanitizeTerminalText(m.text)}${C.reset}`);
 				break;
 			case "turn_start": {
 				// Keep readline active so input can be queued while the model streams.

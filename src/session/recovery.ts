@@ -257,6 +257,8 @@ function isChatMsg(value: unknown): value is ChatMsg {
 	}
 	if (message.role === "tool") return typeof message.tool_call_id === "string";
 	if (message.role !== "assistant") return true;
+	if (message.thinking !== undefined && typeof message.thinking !== "string") return false;
+	if (message.thinkingSignature !== undefined && typeof message.thinkingSignature !== "string") return false;
 	if (message.tool_calls === undefined) return true;
 	return (
 		Array.isArray(message.tool_calls) &&

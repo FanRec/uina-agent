@@ -6,6 +6,9 @@
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { ThinkingLevel } from "../core/types.js";
+
+export type ProviderKind = "openai-compatible" | "anthropic" | "gemini";
 
 export interface ProviderConfig {
 	baseUrl: string;
@@ -13,10 +16,14 @@ export interface ProviderConfig {
 	model: string;
 	contextWindow?: number;
 	maxRetries?: number;
+	type?: ProviderKind;
+	thinkingFormat?: "openai" | "deepseek" | "qwen";
+	thinkingLevels?: ThinkingLevel[];
 }
 
 export interface UinaConfig {
 	default: string;
+	thinkingLevel?: ThinkingLevel;
 	providers: Record<string, ProviderConfig>;
 }
 
@@ -62,9 +69,13 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 			throw new Error(`配置 ${path} 的 provider ${name} 必须是对象`);
 		}
 		const provider = value as Record<string, unknown>;
-		if (typeof provider.baseUrl !== "string" || !provider.baseUrl.trim()) {
-			throw new Error(`配置 ${path} 的 provider ${name} 缺少 baseUrl`);
-		}
+			const providerType = (provider.type as ProviderKind | undefined) ?? "openai-compatible";
+			if (provider.baseUrl !== undefined && (typeof provider.baseUrl !== "string" || !provider.baseUrl.trim())) {
+				throw new Error(`配置 ${path} 的 provider ${name} 的 baseUrl 无效`);
+			}
+			if (providerType === "openai-compatible" && provider.baseUrl === undefined) {
+				throw new Error(`配置 ${path} 的 provider ${name} 缺少 baseUrl`);
+			}
 		if (typeof provider.model !== "string" || !provider.model.trim()) {
 			throw new Error(`配置 ${path} 的 provider ${name} 缺少 model`);
 		}
@@ -81,20 +92,41 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 				(typeof provider.maxRetries !== "number" || !Number.isSafeInteger(provider.maxRetries) || provider.maxRetries < 0)) {
 				throw new Error(`配置 ${path} 的 provider ${name} 的 maxRetries 无效`);
 			}
+			if (provider.type !== undefined && provider.type !== "openai-compatible" && provider.type !== "anthropic" && provider.type !== "gemini") {
+				throw new Error(`配置 ${path} 的 provider ${name} 的 type 无效`);
+			}
+			if (provider.thinkingFormat !== undefined && !["openai", "deepseek", "qwen"].includes(provider.thinkingFormat as string)) {
+				throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingFormat 无效`);
+			}
+			if (provider.thinkingLevels !== undefined && (!Array.isArray(provider.thinkingLevels) || provider.thinkingLevels.some((level) => !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(level as string)))) {
+				throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingLevels 无效`);
+			}
 		providers[name] = {
-			baseUrl: provider.baseUrl,
-			apiKey: provider.apiKey ?? "",
+				apiKey: provider.apiKey ?? "",
 			model: provider.model,
 				...(provider.contextWindow === undefined
 					? {}
 					: { contextWindow: provider.contextWindow }),
 				...(provider.maxRetries === undefined ? {} : { maxRetries: provider.maxRetries }),
+				baseUrl: typeof provider.baseUrl === "string" ? provider.baseUrl : defaultBaseUrl(providerType),
+				type: providerType,
+				...(provider.thinkingFormat === undefined ? {} : { thinkingFormat: provider.thinkingFormat as ProviderConfig["thinkingFormat"] }),
+				...(provider.thinkingLevels === undefined ? {} : { thinkingLevels: provider.thinkingLevels as ThinkingLevel[] }),
 		};
 	}
 	if (!providers[raw.default]) {
 		throw new Error(`配置 ${path} 缺少 default 对应的 provider: ${raw.default}`);
 	}
-	return { default: raw.default, providers };
+	if (raw.thinkingLevel !== undefined && !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(raw.thinkingLevel as string)) {
+		throw new Error(`配置 ${path} 的 thinkingLevel 无效`);
+	}
+	return { default: raw.default, thinkingLevel: raw.thinkingLevel as ThinkingLevel | undefined, providers };
+}
+
+function defaultBaseUrl(type: ProviderKind): string {
+	if (type === "anthropic") return "https://api.anthropic.com/v1";
+	if (type === "gemini") return "https://generativelanguage.googleapis.com/v1beta";
+	throw new Error("openai-compatible provider 必须配置 baseUrl");
 }
 
 export function activeProvider(

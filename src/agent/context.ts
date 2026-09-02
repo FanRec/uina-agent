@@ -3,6 +3,7 @@ import type { ChatMsg, ToolDef } from "../core/types.js";
 export interface BuildInput {
 	history: ChatMsg[];
 	systemPrompt?: string;
+	includeThinking?: boolean;
 }
 
 const DEFAULT_SYSTEM_PROMPT =
@@ -18,6 +19,8 @@ export function buildContext(b: BuildInput): ChatMsg[] {
 		...b.history.map((message) =>
 			message.role === "tool"
 				? { ...message, content: projectToolResult(message.content) }
+				: message.role === "assistant"
+					? b.includeThinking ? message : { ...message, thinking: undefined, thinkingSignature: undefined }
 				: message,
 		),
 	];
@@ -44,10 +47,12 @@ function projectToolResult(value: string): string {
 export function estimateRequestTokens(
 	messages: readonly ChatMsg[],
 	tools: readonly ToolDef[] = [],
+	includeThinking = false,
 ): number {
 	let chars = 0;
 	for (const message of messages) {
 		chars += message.content.length + 16;
+		if (includeThinking && message.role === "assistant" && message.thinking) chars += message.thinking.length + 16;
 		if (message.role === "assistant" && message.tool_calls) {
 			chars += JSON.stringify(message.tool_calls).length;
 		}
@@ -58,7 +63,7 @@ export function estimateRequestTokens(
 
 export function formatForSummary(message: ChatMsg): string {
 	if (message.role === "assistant" && message.tool_calls) {
-		return `tool_calls=${JSON.stringify(message.tool_calls)} ${message.content}`;
+		return `thinking=${message.thinking ?? ""} tool_calls=${JSON.stringify(message.tool_calls)} ${message.content}`;
 	}
 	return message.content;
 }

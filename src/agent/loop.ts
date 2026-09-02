@@ -3,6 +3,7 @@ import type {
 	CompletedToolCall,
 	DeliveryMode,
 	ModelProvider,
+	ThinkingLevel,
 	ToolResultStatus,
 } from "../core/types.js";
 import type { SessionStore } from "../session/types.js";
@@ -13,6 +14,7 @@ import type { PreparedToolCall, ToolBroker } from "../tools/broker.js";
 
 export interface LoopHooks {
 	onToken: (text: string) => void;
+	onThinking?: (text: string) => void;
 	onTurnStart?: (n: number, text: string) => void;
 	onTurnEnd?: (n: number) => void;
 	onToolStart?: (name: string, args: unknown, callId?: string) => void;
@@ -31,6 +33,7 @@ export interface SubjectOptions {
 	store?: SessionStore;
 	compaction?: Partial<CompactionSettings>;
 	systemPrompt?: string;
+	thinkingLevel?: ThinkingLevel;
 	steerQueueMode?: import("../core/types.js").QueueMode;
 	followUpQueueMode?: import("../core/types.js").QueueMode;
 }
@@ -52,6 +55,7 @@ export class Subject {
 	private idleWaiters: Array<() => void> = [];
 	private resumingQueue = false;
 	private readonly queueModes: Record<"steer" | "followUp", import("../core/types.js").QueueMode>;
+	private readonly thinkingLevel: ThinkingLevel;
 
 	constructor(
 		private readonly provider: ModelProvider,
@@ -70,6 +74,7 @@ export class Subject {
 			steer: options.steerQueueMode ?? "one-at-a-time",
 			followUp: options.followUpQueueMode ?? "one-at-a-time",
 		};
+		this.thinkingLevel = options.thinkingLevel ?? "off";
 	}
 
 	pushInput(text: string, options: QueueInputOptions = {}): Promise<void> {
@@ -141,6 +146,10 @@ export class Subject {
 
 	private startRun(text: string): Promise<void> {
 		if (this.busy) return Promise.reject(new Error("已有活动轮次"));
+		if (this.provider.thinkingLevels && !this.provider.thinkingLevels.includes(this.thinkingLevel)) {
+			this.reportError(new Error(`provider ${this.provider.name} 不支持 thinking level: ${this.thinkingLevel}`));
+			return Promise.resolve();
+		}
 		this.busy = true;
 		this.interrupted = false;
 		this.abort = new AbortController();
@@ -206,15 +215,22 @@ export class Subject {
 				nextUser = undefined;
 			}
 
-			const requestMessages = buildContext({ history: this.history, systemPrompt: this.systemPrompt });
+			const requestMessages = buildContext({ history: this.history, systemPrompt: this.systemPrompt, includeThinking: this.provider.includeThinking });
 			const toolCalls: CompletedToolCall[] = [];
 			let reply = "";
+			let thinking = "";
+			let thinkingSignature: string | undefined;
 			let finishReason: string | null = null;
 			try {
 				await this.provider.stream(
-					{ messages: requestMessages, tools: this.tools.defs() },
+					{ messages: requestMessages, tools: this.tools.defs(), thinkingLevel: this.thinkingLevel },
 					(delta) => {
-						if (delta.kind === "text") {
+						if (delta.kind === "thinking") {
+							thinking += delta.text;
+							try { this.hooks.onThinking?.(delta.text); } catch (error) { this.reportError(error); }
+						} else if (delta.kind === "thinking_signature") {
+							thinkingSignature = delta.signature;
+						} else if (delta.kind === "text") {
 							reply += delta.text;
 							this.hooks.onToken(delta.text);
 						} else if (delta.kind === "tool_call") {
@@ -233,17 +249,17 @@ export class Subject {
 				);
 			} catch (error) {
 				if (this.interrupted || this.currentSignal().aborted) {
-					await this.emitInterrupted(reply);
+					await this.emitInterrupted(reply, thinking, thinkingSignature);
 					return;
 				}
 				if (reply.trim()) {
-					await this.appendMessage({ role: "assistant", content: reply, status: "error" });
+						await this.appendMessage({ role: "assistant", content: reply, thinking: thinking || undefined, thinkingSignature, status: "error" });
 				}
 				throw error;
 			}
 
 			if (this.interrupted || this.currentSignal().aborted) {
-				await this.emitInterrupted(reply);
+				await this.emitInterrupted(reply, thinking, thinkingSignature);
 				return;
 			}
 			if (
@@ -260,10 +276,12 @@ export class Subject {
 			}
 			if (toolCalls.length === 0) {
 				if (reply.trim()) {
-					await this.appendMessage({
-						role: "assistant",
-						content: reply,
-						status: finishReason === "length" ? "length" : "complete",
+						await this.appendMessage({
+							role: "assistant",
+							content: reply,
+							thinking: thinking || undefined,
+							thinkingSignature,
+							status: finishReason === "length" ? "length" : "complete",
 					});
 				}
 				const steer = this.queues.peekMany("steer", this.queueModes.steer);
@@ -284,8 +302,10 @@ export class Subject {
 
 			const assistant: ChatMsg = {
 				role: "assistant",
-				content: reply,
-				tool_calls: toolCalls,
+					content: reply,
+					thinking: thinking || undefined,
+					thinkingSignature,
+					tool_calls: toolCalls,
 				status: finishReason === "length" ? "length" : "complete",
 			};
 			await this.appendMessage(assistant);
@@ -299,7 +319,7 @@ export class Subject {
 				});
 			}
 			if (this.interrupted || this.currentSignal().aborted) {
-				await this.emitInterrupted();
+					await this.emitInterrupted("", thinking, thinkingSignature);
 				return;
 			}
 			const steer = this.queues.peekMany("steer", this.queueModes.steer);
@@ -382,6 +402,7 @@ export class Subject {
 			this.tools.defs(),
 			this.compaction,
 			this.abort?.signal,
+			this.provider.includeThinking,
 		);
 		if (!result) return;
 		const replacement: ChatMsg[] = [
@@ -420,9 +441,9 @@ export class Subject {
 		return this.abort.signal;
 	}
 
-	private async emitInterrupted(partial = ""): Promise<void> {
-		if (partial.trim()) {
-			await this.appendMessage({ role: "assistant", content: partial, status: "aborted" });
+	private async emitInterrupted(partial = "", thinking = "", thinkingSignature?: string): Promise<void> {
+		if (partial.trim() || thinking.trim() || thinkingSignature) {
+			await this.appendMessage({ role: "assistant", content: partial, thinking: thinking || undefined, thinkingSignature, status: "aborted" });
 		}
 		await this.appendMessage({ role: "assistant", content: "[已中断]", status: "aborted" });
 		await this.storeEvent("turn_aborted", { turnId: this.turnSeq });

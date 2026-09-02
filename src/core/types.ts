@@ -4,6 +4,7 @@ export type Role = "system" | "user" | "assistant" | "tool";
 
 export type DeliveryMode = "direct" | "steer" | "followUp";
 export type QueueMode = "all" | "one-at-a-time";
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ToolExecutionMode = "parallel" | "sequential";
 export type AssistantStatus = "complete" | "length" | "aborted" | "error";
 export type ToolResultStatus =
@@ -15,6 +16,8 @@ export type ToolResultStatus =
 
 /** 模型流式输出中的一个增量片段（按到达顺序回调）。 */
 export type StreamDelta =
+	| { kind: "thinking"; text: string }
+	| { kind: "thinking_signature"; signature: string }
 	| { kind: "text"; text: string }
 	| {
 			kind: "tool_call";
@@ -45,6 +48,8 @@ export type ChatMsg =
 	| {
 			role: "assistant";
 			content: string;
+			thinking?: string;
+			thinkingSignature?: string;
 			tool_calls?: CompletedToolCall[];
 			status?: AssistantStatus;
 		}
@@ -58,12 +63,15 @@ export type ChatMsg =
 export interface ModelRequest {
 	messages: ChatMsg[];
 	tools?: ToolDef[];
+	thinkingLevel?: ThinkingLevel;
 }
 
 export interface ModelProvider {
 	readonly name: string;
 	/** Provider context limit in tokens when known. */
 	readonly contextWindow?: number;
+	readonly thinkingLevels?: readonly ThinkingLevel[];
+	readonly includeThinking?: boolean;
 	/**
 	 * 流式对话：逐段回调 onDelta。
 	 * 协议错误、异常断流和不完整响应必须抛错；主动中断通过 signal 传播。

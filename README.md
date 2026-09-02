@@ -1,6 +1,6 @@
 # Uina v0
 
-一个运行在本机终端中的最小 Agent。当前版本使用 TypeScript、Node.js 和 OpenAI Chat Completions SSE 协议。
+一个运行在本机终端中的最小 Agent。当前版本使用 TypeScript、Node.js 和流式 provider 适配器。
 
 ## 运行
 
@@ -27,8 +27,10 @@ UINA_ONESHOT_MSG="你好" pnpm start
 ```json
 {
   "default": "deepseek",
+  "thinkingLevel": "off",
   "providers": {
     "deepseek": {
+      "type": "openai-compatible",
       "baseUrl": "https://api.deepseek.com/v1",
       "apiKey": "sk-...",
       "model": "deepseek-chat",
@@ -40,12 +42,14 @@ UINA_ONESHOT_MSG="你好" pnpm start
 
 `apiKey` 可由 `UINA_API_KEY_DEEPSEEK` 覆盖。配置会在启动时进行结构校验。
 
+`type` 可选为 `openai-compatible`、`anthropic` 或 `gemini`，省略时使用 `openai-compatible`。Anthropic 和 Gemini 可以省略 `baseUrl`，使用各自官方 endpoint。思考等级支持 `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`；TTY 默认显示思考流，非 TTY 可通过 `UINA_SHOW_THINKING=1` 显示。
+
 ## 目录
 
 ```text
 src/
   agent/    前台循环、上下文、compaction、steer/followUp 队列
-  ai/       配置、OpenAI wire 转换、SSE 协议解析
+  ai/       配置、provider 适配、wire 转换和 SSE 协议解析
   core/     跨层类型
   session/  JSONL 追加日志、恢复和损坏尾行修复
   tools/    工具注册、schema 校验、自动加载
@@ -89,6 +93,6 @@ stdout/stderr 各自限制展示为 50 KB 或 2000 行，并保留尾部；超�
 
 ## 当前边界
 
-当前已验证：本地 OpenAI 兼容 SSE 端点、流式文本、tool call 闭环、并行工具、参数校验、JSONL 恢复、compaction、shell 输出截断和取消。
+当前已验证：本地 OpenAI 兼容 SSE 端点、思考流转换、流式文本、tool call 闭环、并行工具、参数校验、JSONL 恢复、compaction、shell 输出截断和取消。Anthropic、Gemini 和真实 provider 仍需在对应环境单独验证。
 
 真实 DeepSeek、Ollama、真实终端 IME 和跨平台 shell 仍需在对应环境单独验证。长期记忆、语音、视觉、动态能力筛选、后台 Job、RPC 和权限审批不属于 v0。

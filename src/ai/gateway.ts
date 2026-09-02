@@ -1,6 +1,7 @@
 import type {
 	ModelProvider,
 	ModelRequest,
+	ThinkingLevel,
 } from "../core/types.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
 
@@ -10,6 +11,8 @@ export interface ProviderConf {
 	model: string;
 	contextWindow?: number;
 	maxRetries?: number;
+	thinkingFormat?: "openai" | "deepseek" | "qwen";
+	thinkingLevels?: readonly ThinkingLevel[];
 }
 
 export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
@@ -17,6 +20,8 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 	return {
 		name: conf.model,
 		contextWindow: conf.contextWindow,
+		thinkingLevels: conf.thinkingLevels ?? ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+		includeThinking: conf.thinkingFormat === "deepseek",
 		async stream(req, onDelta, signal): Promise<void> {
 			const response = await fetchWithRetry(endpoint, {
 				maxRetries: conf.maxRetries ?? 2,
@@ -31,9 +36,10 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 				},
 				body: JSON.stringify({
 					model: conf.model,
-					messages: toWireMessages(req.messages),
+					messages: toWireMessages(req.messages, conf.thinkingFormat),
 					tools: req.tools?.length ? req.tools : undefined,
 					stream: true,
+					...thinkingRequest(req.thinkingLevel, conf.thinkingFormat),
 				}),
 				},
 			});
@@ -77,6 +83,12 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 					const choice = chunk.choices?.[0];
 					if (!choice) return;
 					const delta = choice.delta ?? {};
+					if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
+						onDelta({ kind: "thinking", text: delta.reasoning_content });
+					}
+					if (typeof delta.thinking === "string" && delta.thinking.length > 0) {
+						onDelta({ kind: "thinking", text: delta.thinking });
+					}
 					if (typeof delta.content === "string" && delta.content.length > 0) {
 						onDelta({ kind: "text", text: delta.content });
 					}
@@ -195,8 +207,10 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 
 interface OpenAIChunk {
 	choices?: Array<{
-		delta?: {
-			content?: string | null;
+			delta?: {
+				content?: string | null;
+				reasoning_content?: string | null;
+				thinking?: string | null;
 			tool_calls?: Array<{
 				index?: number;
 				id?: string;
@@ -207,13 +221,20 @@ interface OpenAIChunk {
 	}>;
 }
 
-export function toWireMessages(messages: ModelRequest["messages"]): unknown[] {
+function thinkingRequest(level: ThinkingLevel | undefined, format = "openai"): Record<string, unknown> {
+	if (!level || level === "off") return {};
+	if (format === "deepseek") return {};
+	if (format === "qwen") return { enable_thinking: true };
+	return { reasoning_effort: level === "xhigh" || level === "max" ? "high" : level };
+}
+
+export function toWireMessages(messages: ModelRequest["messages"], thinkingFormat?: ProviderConf["thinkingFormat"]): unknown[] {
 	return messages.map((message) => {
 		if (message.role === "assistant") {
 			return {
 				role: "assistant",
 				content: message.content,
-				...(message.tool_calls?.length
+					...(message.tool_calls?.length
 					? {
 							tool_calls: message.tool_calls.map((call) => ({
 								id: call.id,
@@ -227,7 +248,8 @@ export function toWireMessages(messages: ModelRequest["messages"]): unknown[] {
 								},
 							})),
 						}
-					: {}),
+						: {}),
+				...(message.thinking && thinkingFormat === "deepseek" ? { reasoning_content: message.thinking } : {}),
 			};
 		}
 		return message.role === "tool"

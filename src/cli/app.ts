@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { loadConfig, activeProvider } from "../ai/config.js";
-import { createOpenAIProvider } from "../ai/gateway.js";
+import { createProvider } from "../ai/providers.js";
 import { execCommandDirect } from "../../tools/exec-command/index.js";
 import { ToolBroker } from "../tools/broker.js";
 import { loadTools } from "../tools/loader.js";
@@ -23,7 +23,8 @@ const RESET = "\x1b[0m";
 export async function runApp(): Promise<void> {
 	mkdirSync(DATA_DIR, { recursive: true });
 	const cfg = loadConfig();
-	const provider = createOpenAIProvider(activeProvider(cfg));
+	const active = activeProvider(cfg);
+	const provider = createProvider(active.name, active);
 	const tools = new ToolBroker();
 	const loaded = await loadTools(TOOLS_DIR, tools);
 	for (const failure of loaded.failed) {
@@ -41,7 +42,9 @@ export async function runApp(): Promise<void> {
 	const oneshot = process.env.UINA_ONESHOT_MSG;
 
 	const renderStdio = (message: OutMsg): void => {
-		switch (message.type) {
+		 switch (message.type) {
+			case "thinking":
+				break;
 			case "text":
 				process.stdout.write(sanitizeTerminalText(message.text));
 				break;
@@ -89,6 +92,7 @@ export async function runApp(): Promise<void> {
 		tools,
 		{
 			onToken: (text) => render({ type: "text", text }),
+			onThinking: (text) => { if (tui || process.env.UINA_SHOW_THINKING === "1") render({ type: "thinking", text }); },
 			onTurnStart: (n, text) => render({ type: "turn_start", n, text }),
 			onTurnEnd: (n) => render({ type: "turn_end", n }),
 			onToolStart: (name, args, callId) => {
@@ -104,7 +108,7 @@ export async function runApp(): Promise<void> {
 			onNotice: (text) => render({ type: "notice", text }),
 			onQueueChanged: (items) => render({ type: "queue", items }),
 		},
-		{ store },
+		{ store, thinkingLevel: cfg.thinkingLevel },
 	);
 
 	subject.addHistory(snapshot.messages);
