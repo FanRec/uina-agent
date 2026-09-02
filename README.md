@@ -43,7 +43,7 @@ src/
   main.ts   入口：终端输入 + 组装
 tools/               ← 工具目录（pi 同款自动发现：顶层 .ts 或子目录 index.ts）
   get-time/          默认导出 Tool（get_time）
-  run-shell/         默认导出 Tool（run_shell）
+  exec-command/     默认导出 Tool（exec_command）
 ```
 
 数据落在 `data/`（gitignore）：`session.json`（会话历史）。长期记忆已移除（见"刻意删除"）。
@@ -61,7 +61,7 @@ tools/               ← 工具目录（pi 同款自动发现：顶层 .ts 或�
 - 流式输出（token 逐段，非整块）
 - 工具闭环：模型提议 → 确定性执行 → 结果回注再决策（协议层 wire 转换有单测）
 - 工具状态反馈：调用中 `⏳ [工具] xxx 参数` → 完成 `✓ name` + 结果折叠区首屏（stdout 摘要几行、error 红字/取消黄字、耗时；对齐 pi 展示形态）
-- `run_shell`：执行任意 shell 命令（全盘；无超时/无白名单——对齐 pi，且系副作用工具，模型提议、放行决策留给未来授权层；输出截断 50KB/2000 行，超限留临时文件指针）
+- `exec_command`：执行一条系统命令（PowerShell）（全盘；无超时/无白名单——对齐 pi，且系副作用工具，模型提议、放行决策留给未来授权层；输出截断 50KB/2000 行，超限留临时文件指针）
 - `get_time`：同步快工具（无副作用，工具闭环的测试锚点）
 - 工具自动发现：`tools/` 目录扫描加载（loader，对齐 pi 的 extensions 机制；三种导出形态 + 坏模块隔离有单测）
 - 会话续聊：`--continue` 恢复上次对话历史（吸收 Nott 的会话持久化，最小版）
