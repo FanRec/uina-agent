@@ -13,6 +13,7 @@ import { ToolBroker } from "./tools/broker.js";
 import { loadTools } from "./tools/loader.js";
 import { Subject } from "./mind/loop.js";
 import { SimpleTUI, type OutMsg } from "./ui/tui.js";
+import { toolStartLine, toolResultLines } from "./ui/format.js";
 
 const DATA_DIR = join(process.cwd(), "data");
 const SESSION_FILE = join(DATA_DIR, "session.json");
@@ -48,11 +49,22 @@ async function main(): Promise<void> {
 				process.stdout.write("\n");
 				break;
 			case "tool_start":
-				process.stdout.write(`\n  [工具] ${m.name}`);
+				process.stdout.write(`\n  ⏳ ${toolStartLine(m.name, m.args)}`);
 				break;
-			case "tool_done":
-				process.stdout.write(" ✓");
+			case "tool_done": {
+				const elapsed = m.ts ? Date.now() - m.ts : 0;
+				process.stdout.write(`\n  ✓ ${m.name}`);
+				const plain = {
+					ok: (s: string) => s,
+					err: (s: string) => s,
+					warn: (s: string) => s,
+					dim: (s: string) => s,
+				};
+				for (const line of toolResultLines(m.result, elapsed, plain)) {
+					process.stdout.write(`\n    ${line}`);
+				}
 				break;
+			}
 			case "error":
 				process.stdout.write(`[错误] ${m.text}\n`);
 				break;
@@ -72,21 +84,26 @@ async function main(): Promise<void> {
 	let oneshotDone = false;
 
 	// 主体 → 渲染层：hooks 直连（单一输出端，不需要广播中间层）
+	let lastToolTs = 0;
 	const subject = new Subject(provider, tools, {
 		onToken: (text) => render({ type: "text", text }),
 		onTurnStart: (n, text) => render({ type: "turn_start", n, text }),
 		onTurnEnd: (n) => {
 			render({ type: "turn_end", n });
 			if (oneshot !== undefined && !oneshotDone) {
-				oneshotDone = true;
+				 oneshotDone = true;
 				setTimeout(() => {
 					saveSession(subject);
 					process.exit(0);
 				}, 1500);
 			}
 		},
-		onToolStart: (name, args) => render({ type: "tool_start", name, args }),
-		onToolDone: (name, result) => render({ type: "tool_done", name, result }),
+		onToolStart: (name, args) => {
+			lastToolTs = Date.now();
+			render({ type: "tool_start", name, args, ts: lastToolTs });
+		},
+		onToolDone: (name, result) =>
+			render({ type: "tool_done", name, result, ts: lastToolTs }),
 		onError: (msg) => render({ type: "error", text: msg }),
 	});
 

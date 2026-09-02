@@ -8,6 +8,7 @@
  * 颜色约定：用户=青、Uina=绿、工具=灰（进行中）/绿色✓（完成）、错误=红。
  */
 import { createInterface } from "node:readline/promises";
+import { toolStartLine, toolResultLines } from "./format.js";
 
 /** 渲染层消息（主体 hooks → UI 的消息形状） */
 export type OutMsg =
@@ -15,8 +16,8 @@ export type OutMsg =
 	| { type: "turn_start"; n: number; text: string }
 	| { type: "turn_end"; n: number }
 	| { type: "error"; text: string }
-	| { type: "tool_start"; name: string; args: unknown }
-	| { type: "tool_done"; name: string; result: string };
+	| { type: "tool_start"; name: string; args: unknown; ts: number }
+	| { type: "tool_done"; name: string; result: string; ts: number };
 
 const C = {
 	line: "\x1b[2K", // 清整行
@@ -25,6 +26,8 @@ const C = {
 	tool: "\x1b[90m",
 	ok: "\x1b[32m",
 	err: "\x1b[31m",
+	warn: "\x1b[33m",
+	dim: "\x1b[90m",
 	reset: "\x1b[0m",
 };
 
@@ -94,11 +97,24 @@ export class SimpleTUI {
 				}
 				break;
 			case "tool_start":
-				process.stdout.write(`\n${C.tool}  ⏳ [工具] ${m.name}${C.reset}`);
+				process.stdout.write(
+					`\n${C.tool}  ⏳ ${toolStartLine(m.name, m.args)}${C.reset}`,
+				);
 				break;
-			case "tool_done":
-				process.stdout.write(` ${C.ok}✓${C.reset}`);
+			case "tool_done": {
+				const elapsed = m.ts ? Date.now() - m.ts : 0;
+				process.stdout.write(`\n${C.ok}  ✓ ${toolStartLine(m.name, {} as never)}${C.reset}`);
+				const style = {
+					ok: (s: string) => `${C.ok}${s}${C.reset}`,
+					err: (s: string) => `${C.err}${s}${C.reset}`,
+					warn: (s: string) => `${C.warn}${s}${C.reset}`,
+					dim: (s: string) => `${C.dim}${s}${C.reset}`,
+				};
+				for (const line of toolResultLines(m.result, elapsed, style)) {
+					process.stdout.write(`\n  ${line}`);
+				}
 				break;
+			}
 			case "error":
 				process.stdout.write(`${C.err}${m.text}${C.reset}\n`);
 				break;
