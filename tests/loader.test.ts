@@ -45,7 +45,7 @@ describe("工具自动发现（loader）", () => {
 
 		const reg = new ToolBroker();
 		const result = await loadTools(d, reg);
-		expect(result.loaded).toBe(3);
+		expect(result.loaded).toBe(4);
 		expect(result.failed.length).toBe(1);
 		expect(result.failed[0].file).toBe("bad.ts");
 		const names = reg

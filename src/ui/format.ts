@@ -45,13 +45,19 @@ export function toolResultLines(
 	}
 
 	if (obj && typeof obj === "object") {
-		if (obj.cancelled) return [s.warn(`⚠ 已取消（${t}）`)];
+		if (obj.cancelled || obj.status === "cancelled") return [s.warn(`⚠ 已取消（${t}）`)];
+		if (obj.status === "unknown") return [s.warn(`⚠ 结果未知（${t}）`)];
+		if (obj.status === "not_started") return [s.warn(`⚠ 未执行（${t}）`)];
 		const errText = typeof obj.error === "string" ? obj.error : "";
 		const hasErr = errText !== "";
 		const lines: string[] = [];
 		if (hasErr) lines.push(s.err(`✗ ${errText.slice(0, 120)}（${t}）`));
-		if (typeof obj.stderr === "string" && obj.stderr.trim() && hasErr) {
-			lines.push(...indentLines(obj.stderr, s.err));
+		if (typeof obj.stderr === "string" && obj.stderr.trim()) {
+			if (hasErr) lines.push(...indentLines(obj.stderr, s.err));
+			else {
+				lines.push(s.warn("stderr"));
+				lines.push(...indentLines(obj.stderr, s.warn));
+			}
 		}
 		if (typeof obj.stdout === "string" && obj.stdout.trim()) {
 			if (hasErr) lines.push(s.err("── stdout ──"));

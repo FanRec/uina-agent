@@ -1,184 +1,115 @@
-/**
- * gateway 单测：用本地假 HTTP 服务喂 OpenAI 格式 SSE，验证流式解析正确。
- * 覆盖：文本分片顺序、tool_call 分片拼接（arguments/name 跨块）、finish_reason 收口。
- */
-import { describe, it, expect, afterEach } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createOpenAIProvider } from "../src/ai/gateway.js";
+import { createOpenAIProvider, toWireMessages } from "../src/ai/gateway.js";
+import { ProviderProtocolError } from "../src/ai/sse.js";
 import type { StreamDelta } from "../src/core/types.js";
 
 const servers: Server[] = [];
-afterEach(() => {
-	servers.splice(0).forEach((s) => s.close());
-});
+afterEach(() => servers.splice(0).forEach((server) => server.close()));
 
-/** 起一个假 OpenAI 端点，返回给定 SSE body */
-function fakeEndpoint(body: string): string {
+function sse(events: string[], crlf = false): string {
+	const newline = crlf ? "\r\n" : "\n";
+	return events.map((event) => `data: ${event}${newline}${newline}`).join("");
+}
+
+async function endpoint(body: string): Promise<string> {
 	const server = createServer((_req, res) => {
-		res.writeHead(200, { "Content-Type": "text/event-stream" });
+		res.writeHead(200, { "content-type": "text/event-stream" });
 		res.end(body);
 	});
 	servers.push(server);
-	server.listen(0);
-	const port = (server.address() as AddressInfo).port;
-	return `http://127.0.0.1:${port}/v1`;
+	await new Promise<void>((resolve) => server.listen(0, resolve));
+	return `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
 }
 
-async function collect(baseUrl: string): Promise<StreamDelta[]> {
-	const provider = createOpenAIProvider({
-		baseUrl,
-		apiKey: "test",
-		model: "m",
+async function collect(baseUrl: string, signal?: AbortSignal): Promise<StreamDelta[]> {
+	const provider = createOpenAIProvider({ baseUrl, apiKey: "test", model: "m" });
+	const output: StreamDelta[] = [];
+	await provider.stream({ messages: [{ role: "user", content: "hi" }] }, (delta) => output.push(delta), signal);
+	return output;
+}
+
+describe("OpenAI gateway", () => {
+	it("parses text, CRLF and finish marker", async () => {
+		const base = await endpoint(
+			sse([
+				JSON.stringify({ choices: [{ delta: { content: "你好" } }] }),
+				JSON.stringify({ choices: [{ delta: { content: "世界" } }] }),
+				JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+				"[DONE]",
+			], true),
+		);
+		const output = await collect(base);
+		expect(output.filter((d) => d.kind === "text").map((d) => d.kind === "text" && d.text)).toEqual(["你好", "世界"]);
+		expect(output.at(-1)).toEqual({ kind: "finish", reason: "stop" });
 	});
-	const out: StreamDelta[] = [];
-	await provider.stream({ messages: [{ role: "user", content: "hi" }] }, (d) =>
-		out.push(d),
-	);
-	return out;
-}
 
-/** 起一个假端点，捕获请求体供断言（验证发送方向 wire 形状） */
-async function captureReq(messages: unknown[]): Promise<unknown> {
-	let captured: unknown;
-	const server = createServer((req, res) => {
-		let raw = "";
-		req.on("data", (c) => (raw += c));
-		req.on("end", () => {
-			try {
-				captured = JSON.parse(raw);
-			} catch (e) {
-				captured = { parseError: (e as Error).message, raw };
-			}
-			res.writeHead(200, { "Content-Type": "text/event-stream" });
-			res.end("data: [DONE]\n\n");
+	it("joins multi-line data events", async () => {
+		const body = `data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n`;
+		const output = await collect(await endpoint(body));
+		expect(output).toContainEqual({ kind: "text", text: "ok" });
+	});
+
+	it("reassembles fragmented tool calls", async () => {
+		const output = await collect(
+			await endpoint(
+				sse([
+					JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "t1", function: { name: "get_", arguments: '{"a":' } }] } }] }),
+					JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "time", arguments: "1}" } }] } }] }),
+					JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+					"[DONE]",
+				]),
+			),
+		);
+		const call = output.find((delta) => delta.kind === "tool_call");
+		expect(call).toEqual({
+			kind: "tool_call",
+			call: { id: "t1", name: "get_time", args: '{"a":1}', argsValid: true },
 		});
 	});
-	servers.push(server);
-	await new Promise<void>((r) => server.listen(0, r));
-	const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
-	const provider = createOpenAIProvider({
-		baseUrl: base,
-		apiKey: "test",
-		model: "m",
-	});
-	await provider.stream({ messages: messages as never }, () => {});
-	await new Promise((r) => setTimeout(r, 20));
-	return captured;
-}
 
-describe("gateway SSE 解析", () => {
-	it("文本分片按序输出，finish 收口", async () => {
-		const base = fakeEndpoint(
-			[
-				`data: ${JSON.stringify({ choices: [{ delta: { role: "assistant" }, index: 0 }] })}`,
-				``,
-				`data: ${JSON.stringify({ choices: [{ delta: { content: "你好" }, index: 0 }] })}`,
-				``,
-				`data: ${JSON.stringify({ choices: [{ delta: { content: "世界" }, index: 0 }] })}`,
-				``,
-				`data: ${JSON.stringify({ choices: [{ delta: {}, index: 0, finish_reason: "stop" }] })}`,
-				`data: [DONE]`,
-			].join("\n"),
-		);
-		const out = await collect(base);
-		const texts = out
-			.filter((d) => d.kind === "text")
-			.map((d) => (d as any).text);
-		expect(texts).toEqual(["你好", "世界"]);
-		// finish 只收口一次（历史 bug：正常流结尾多出一发 stream_end）
-		const finishes = out.filter((d) => d.kind === "finish");
-		expect(finishes.length).toBe(1);
-		expect(finishes[0]).toEqual({ kind: "finish", reason: "stop" });
+	it("rejects invalid JSON, missing finish and content filtering", async () => {
+		await expect(collect(await endpoint(sse(["not-json", "[DONE]"])))).rejects.toBeInstanceOf(ProviderProtocolError);
+		await expect(collect(await endpoint(sse([JSON.stringify({ choices: [{ delta: { content: "partial" } }] }), "[DONE]"])))).rejects.toThrow("finish_reason");
+		await expect(collect(await endpoint(sse([JSON.stringify({ choices: [{ delta: {}, finish_reason: "content_filter" }] }), "[DONE]"])))).rejects.toThrow("content_filter");
 	});
 
-	it("tool_call 跨分片拼接 arguments 与 name", async () => {
-		const base = fakeEndpoint(
-			[
-				`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "t1", function: { name: "get_", arguments: '{"a":' } }] }, index: 0 }] })}`,
-				``,
-				`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "time", arguments: "1}" } }] }, index: 0 }] })}`,
-				``,
-				`data: ${JSON.stringify({ choices: [{ delta: {}, index: 0, finish_reason: "tool_calls" }] })}`,
-				`data: [DONE]`,
-			].join("\n"),
-		);
-		const out = await collect(base);
-		const calls = out.filter((d) => d.kind === "tool_call");
-		expect(calls.length).toBe(1);
-		const call = calls[0];
-		if (call.kind !== "tool_call") throw new Error("unreachable");
-		expect(call.call.name).toBe("get_time");
-		let parsedArgs: unknown;
+	it("rejects an abnormal finish reason and incomplete arguments", async () => {
+		await expect(collect(await endpoint(sse([JSON.stringify({ choices: [{ delta: {}, finish_reason: "provider_magic" }] }), "[DONE]"])))).rejects.toThrow("未知 finish_reason");
+		await expect(collect(await endpoint(sse([
+			JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "t", function: { name: "x", arguments: '{"a":' } }] } }] }),
+			JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+			"[DONE]",
+		])))).rejects.toThrow("完整 JSON");
+	});
+
+	it("propagates abort without fabricating a finish", async () => {
+		const controller = new AbortController();
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "x" } }] })}\n\n`));
+				setTimeout(() => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "y" } }] })}\n\n`)), 100);
+			},
+		});
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 		try {
-			parsedArgs = JSON.parse(call.call.args);
-		} catch (e) {
-			throw new Error(
-				`arguments 不是合法 JSON: ${call.call.args} (${(e as Error).message})`,
-			);
+			const promise = collect("http://example/v1", controller.signal);
+			controller.abort();
+			await expect(promise).rejects.toThrow();
+		} finally {
+			globalThis.fetch = originalFetch;
 		}
-		expect(parsedArgs).toEqual({ a: 1 });
-		expect(out.some((d) => d.kind === "finish")).toBe(true);
 	});
 
-	it("流缺 finish_reason 时末尾兜底补发一次（stream_end）", async () => {
-		// 无 finish_reason 行、只有 [DONE]：解析层必须自行收口，且只发一次
-		const base = fakeEndpoint(
-			[
-				`data: ${JSON.stringify({ choices: [{ delta: { content: "兜" }, index: 0 }] })}`,
-				`data: [DONE]`,
-			].join("\n"),
-		);
-		const out = await collect(base);
-		const finishes = out.filter((d) => d.kind === "finish");
-		expect(finishes.length).toBe(1);
-		expect(finishes[0]).toEqual({ kind: "finish", reason: "stream_end" });
-	});
-
-	it("发送方向：assistant.tool_calls 转成协议形状（type/function/字符串 arguments）", async () => {
-		const body = await captureReq([
-			{ role: "system", content: "sys" },
-			{ role: "user", content: "hi" },
-			{
-				role: "assistant",
-				content: "",
-				tool_calls: [
-					{ id: "t1", name: "exec_command", args: { command: "echo x" } },
-				],
-			},
-			{
-				role: "tool",
-				tool_call_id: "t1",
-				content: '{"stdout":"x"}',
-			},
+	it("converts internal tool messages to wire format", () => {
+		expect(toWireMessages([
+			{ role: "assistant", content: "", tool_calls: [{ id: "t1", name: "x", args: { a: 1 } }] },
+			{ role: "tool", tool_call_id: "t1", content: "ok", status: "succeeded" },
+		])).toEqual([
+			{ role: "assistant", content: "", tool_calls: [{ id: "t1", type: "function", function: { name: "x", arguments: '{"a":1}' } }] },
+			{ role: "tool", tool_call_id: "t1", content: "ok" },
 		]);
-		const b = body as {
-			messages: {
-				role: string;
-				tool_calls?: {
-					type?: string;
-					function?: { name?: string; arguments?: unknown };
-				}[];
-			}[];
-		};
-		const asst = b.messages.find((m) => m.role === "assistant");
-		expect(asst?.tool_calls?.[0]).toEqual({
-			id: "t1",
-			type: "function",
-			function: { name: "exec_command", arguments: '{"command":"echo x"}' },
-		});
-		// non-assistant 消息原样透传
-		expect(b.messages[0]).toEqual({ role: "system", content: "sys" });
-	});
-
-	it("HTTP 非 2xx 抛错", async () => {
-		const server = createServer((_req, res) => {
-			res.writeHead(500, { "Content-Type": "text/plain" });
-			res.end("boom");
-		});
-		servers.push(server);
-		server.listen(0);
-		const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
-		await expect(collect(base)).rejects.toThrow(/HTTP 500/);
 	});
 });

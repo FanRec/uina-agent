@@ -1,34 +1,58 @@
-/** 跨层共享的公共类型：对话消息与模型协议形状。 */
+/** 跨层共享的公共类型：会话消息与模型协议形状。 */
 
 export type Role = "system" | "user" | "assistant" | "tool";
 
-/** 模型流式输出中的一个增量片段（按到达顺序回调） */
+export type DeliveryMode = "direct" | "steer" | "followUp";
+export type ToolExecutionMode = "parallel" | "sequential";
+export type AssistantStatus = "complete" | "length" | "aborted" | "error";
+export type ToolResultStatus =
+	| "succeeded"
+	| "failed"
+	| "cancelled"
+	| "unknown"
+	| "not_started";
+
+/** 模型流式输出中的一个增量片段（按到达顺序回调）。 */
 export type StreamDelta =
 	| { kind: "text"; text: string }
-	| { kind: "tool_call"; call: { id: string; name: string; args: string } }
+	| {
+			kind: "tool_call";
+			call: { id: string; name: string; args: string; argsValid?: boolean };
+		}
 	| { kind: "finish"; reason: string };
 
-/** 发给模型的工具声明（OpenAI function calling 形状） */
+/** 发给模型的工具声明（OpenAI function calling 形状）。 */
 export interface ToolDef {
 	type: "function";
 	function: {
 		name: string;
 		description: string;
-		parameters: unknown; // JSON Schema 子集
+		parameters: Record<string, unknown>;
 	};
 }
 
-/** 一条完整工具调用（解析后的产物，用于回注消息） */
+/** 一条完整工具调用（解析后的产物，用于回注消息）。 */
 export interface CompletedToolCall {
 	id: string;
 	name: string;
 	args: unknown;
+	argsValid?: boolean;
 }
 
 export type ChatMsg =
 	| { role: "system" | "user"; content: string }
-	| { role: "assistant"; content: string; tool_calls?: CompletedToolCall[] }
-	| { role: "tool"; tool_call_id: string; content: string };
+	| {
+			role: "assistant";
+			content: string;
+			tool_calls?: CompletedToolCall[];
+			status?: AssistantStatus;
+		}
+	| {
+			role: "tool";
+			tool_call_id: string;
+			content: string;
+			status?: ToolResultStatus;
+		};
 
 export interface ModelRequest {
 	messages: ChatMsg[];
@@ -37,10 +61,11 @@ export interface ModelRequest {
 
 export interface ModelProvider {
 	readonly name: string;
+	/** Provider context limit in tokens when known. */
+	readonly contextWindow?: number;
 	/**
 	 * 流式对话：逐段回调 onDelta。
-	 * 若 delta 解析失败应抛错中断——调用方据此降级。
-	 * signal 可选：主动中断时 abort 底层请求（调用方负责区分"用户中断"与"意外错误"）。
+	 * 协议错误、异常断流和不完整响应必须抛错；主动中断通过 signal 传播。
 	 */
 	stream(
 		req: ModelRequest,

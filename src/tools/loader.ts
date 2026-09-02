@@ -1,49 +1,40 @@
-/**
- * 工具扫描器（对齐 pi 的扩展自动发现）：
- * 扫描目录下的顶层 .ts 文件与子目录 index.ts，动态 import 后自动注册。
- * 每个工具模块必须 default 导出：
- *  - Tool 对象（get_time 形态）
- *  - Tool[]（一批工具）
- *  - (registry) => void 注册函数（pi 的 registerTool 形态，可组合工厂）
- * 单个模块失败（import 错误/注册冲突）只报告不阻塞——一个坏工具不拖垮整个。
- */
 import { readdirSync, statSync } from "node:fs";
-import { join, extname, basename } from "node:path";
+import { basename, extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Dirent } from "node:fs";
-import type { Tool } from "./broker.js";
-import type { ToolBroker } from "./broker.js";
+import { ToolBroker, type Tool } from "./broker.js";
 
 export interface LoadResult {
 	loaded: number;
 	failed: { file: string; error: string }[];
 }
 
-/** 收集待加载的工具模块路径：顶层 .ts + 子目录 index.ts（pi 的两种发现形态） */
+/** Find top-level .ts files and immediate subdirectory index.ts modules. */
 function collectModules(dir: string): string[] {
 	let entries: Dirent<string>[];
 	try {
 		entries = readdirSync(dir, { withFileTypes: true });
-	} catch {
-		return []; // 目录不存在 = 没有工具，不报错
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw new Error(`工具目录读取失败 ${dir}: ${safeError(error)}`);
 	}
-	const mods: string[] = [];
-	for (const e of entries) {
-		const p = join(dir, e.name);
-		if (e.isFile() && extname(e.name) === ".ts") {
-			mods.push(p);
-		} else if (e.isDirectory()) {
-			const idx = join(p, "index.ts");
-			if (isFile(idx)) mods.push(idx);
+
+	const modules: string[] = [];
+	for (const entry of entries) {
+		const path = join(dir, entry.name);
+		if (entry.isFile() && extname(entry.name) === ".ts") {
+			modules.push(path);
+		} else if (entry.isDirectory()) {
+			const index = join(path, "index.ts");
+			if (isFile(index)) modules.push(index);
 		}
 	}
-	return mods;
+	return modules.sort();
 }
 
-/** 文件是否存在（index.ts 约定检测用） */
-function isFile(p: string): boolean {
+function isFile(path: string): boolean {
 	try {
-		return statSync(p).isFile();
+		return statSync(path).isFile();
 	} catch {
 		return false;
 	}
@@ -60,29 +51,46 @@ export async function loadTools(
 				default?: unknown;
 			};
 			if (mod.default === undefined) {
-				result.failed.push({
-					file: basename(file),
-					error: "模块未 default 导出工具（需 Tool / Tool数组 / 注册函数）",
-				});
-				continue;
+				throw new Error("模块未 default 导出工具（需 Tool / Tool数组 / 注册函数）");
 			}
-			await registerExport(registry, mod.default);
-			result.loaded++;
-		} catch (e) {
-			result.failed.push({ file: basename(file), error: (e as Error).message });
+
+			// Register into a temporary broker so a failed module cannot partially load.
+			const staged = new ToolBroker();
+			await registerExport(staged, mod.default);
+			const registeredNames = staged.names();
+			const registered = registeredNames
+				.map((name) => staged.get(name))
+				.filter((tool): tool is Tool => tool !== undefined);
+			const committed: string[] = [];
+			try {
+				for (const tool of registered) {
+					registry.register(tool);
+					committed.push(tool.def.function.name);
+				}
+			} catch (error) {
+				for (const name of committed) registry.remove(name);
+				throw error;
+			}
+			result.loaded += registered.length;
+		} catch (error) {
+			result.failed.push({ file: basename(file), error: safeError(error) });
 		}
 	}
 	return result;
 }
 
-async function registerExport(reg: ToolBroker, exp: unknown): Promise<void> {
-	if (Array.isArray(exp)) {
-		for (const t of exp) reg.register(t as Tool);
+async function registerExport(registry: ToolBroker, value: unknown): Promise<void> {
+	if (Array.isArray(value)) {
+		for (const tool of value) registry.register(tool as Tool);
 		return;
 	}
-	if (typeof exp === "function") {
-		await (exp as (r: ToolBroker) => void | Promise<void>)(reg);
+	if (typeof value === "function") {
+		await (value as (r: ToolBroker) => void | Promise<void>)(registry);
 		return;
 	}
-	reg.register(exp as Tool);
+	registry.register(value as Tool);
+}
+
+function safeError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }

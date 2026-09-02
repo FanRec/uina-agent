@@ -1,31 +1,20 @@
-# Nott 参考对照（Uina v0）
+# Nott 参考
 
-> 来源：E:/AI_Project_Learn/Nott/nott-csharp（2026-09-02 通读 16 个 cs 文件）
-> 定位：C#/.NET 8 + OpenAI 官方 SDK + Spectre.Console 的最小 agent 切片——"会话级终端助手"，无记忆、无长任务、无多通道。
+Nott 是会话级终端助手。Uina 从中借鉴了两个适合当前切片的实现点：工具执行状态反馈，以及会话消息持久化。
 
-## 结构（四层）
+## 已吸收
 
-```
-CLI（Program/Application：REPL + 一次性提问 + AgentState 驱动渲染）
- → AgentSession（guid + ChatMessageStorage，byte 序列化续聊）
-  → AgentLoop（流式循环 + finish reason 分发 + 状态机事件）
-   → AgentToolStorage（反射装载 [NottChatTool] 特性方法 → schema 自动推导）
-```
+- `LoopHooks` 将 tool start、tool done、error、notice 和 queue 状态交给 UI；UI 不参与状态转移。
+- Uina 使用 JSONL 追加日志保存消息和工具生命周期，并在启动时恢复未知工具结果。
+- shell 继续采用 stdout/stderr 分流、UTF-8 解码、进程树取消和结构化结果。
 
-## 对 Uina 值得吸收的点
+## 不照搬
 
-1. **状态反馈渲染**（最值得抄）：AgentState（Action/ReplyingStreaming/ToolCalling/LoopFinished）+ onAgentStateChanged 事件 → CLI 清行/换 spinner/打绿勾。Uina TUI 缺工作状态可见性——"思考中/工具调用:xxx/回复中"。
-2. **会话序列化续聊**：完整消息序列（assistant tool_calls 与 tool 结果对应关系）往返序列化，--session 恢复。这是愿景#3 长记忆的第一级台阶（不可变 event log 的雏形）。
-3. **exec-command 细节**：stdout/stderr 分捕 + exitCode + UTF8 + 取消时 Kill(processTree)；空命令返回文本而非抛错。我们 shell.ts 已有额外优势：baseDir 沙箱 + 15s 超时 + 输出截断。
+- 不使用反射生成工具 schema，工具保持显式 JSON Schema 并由 Ajv 校验。
+- 不把错误 finish reason 当作正常回复。
+- 不使用整体 JSON 快照保存会话。
+- 不在当前 v0 引入 Nott 未提供真实证据的长期记忆或后台任务。
 
-## 不借鉴（缺陷）
+## 当前限制
 
-- FinishReason.Length/ContentFilter → throw，整轮崩溃（违背 f9 错误回注自愈原则）
-- 无上下文截断，历史全量入 context（长会话必膨胀）
-- System prompt 硬编码在 Application.Run()（与 Uina 同病，待"提示词配置化"一并解决）
-- 反射生成 schema 牺牲可观察性/可审计性（TS 下保持显式 schema）
-
-## 对 Uina 的落地清单
-
-- [ ] TUI 加状态反馈渲染（立即，小活）
-- [ ] 会话续聊（成长清单：不可变 event log + 投影的第一级）
+Uina 的 readline 输入区是单行编辑器，尚未具备 Pi/Nott 级组件式 TUI。真实 provider、真实终端键盘行为和复杂会话操作需要单独验证。

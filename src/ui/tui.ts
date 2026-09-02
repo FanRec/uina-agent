@@ -3,11 +3,14 @@
  *
  * 布局：对话流式打印在屏幕上，输入行固定在下（readline 管理）。
  * 输入走 readline——保留中文 IME 输入能力（rawMode 手写会毁掉 IME）。
- * 流式输出期间暂停读行（rl.pause），输出结束恢复（rl.resume + prompt 重绘）。
+ * 流式输出期间保持读行，普通输入进入 steer 队列，Alt+Enter 进入 follow-up 队列。
  *
  * 颜色约定：用户=青、Uina=绿、工具=灰（进行中）/绿色✓（完成）、错误=红。
  */
 import { createInterface } from "node:readline/promises";
+import { emitKeypressEvents } from "node:readline";
+import type { ToolResultStatus } from "../core/types.js";
+import type { QueuedMessage } from "../agent/queue.js";
 import { toolStartLine, toolResultLines } from "./format.js";
 
 /** 渲染层消息（主体 hooks → UI 的消息形状） */
@@ -17,8 +20,16 @@ export type OutMsg =
 	| { type: "turn_end"; n: number }
 	| { type: "error"; text: string }
 	| { type: "notice"; text: string }
-	| { type: "tool_start"; name: string; args: unknown; ts: number }
-	| { type: "tool_done"; name: string; result: string; ts: number };
+	| { type: "tool_start"; name: string; args: unknown; callId?: string }
+	| {
+		type: "tool_done";
+		name: string;
+		result: string;
+		status?: ToolResultStatus;
+		callId?: string;
+		ts?: number;
+	}
+	| { type: "queue"; items: readonly QueuedMessage[] };
 
 const C = {
 	line: "\x1b[2K", // 清整行
@@ -39,9 +50,14 @@ export interface TUIOptions {
 export class SimpleTUI {
 	private readonly rl: ReturnType<typeof createInterface>;
 	private closed = false;
+	private followUpNext = false;
 
 	constructor(opts: TUIOptions = {}) {
 		this.rl = createInterface({ input: process.stdin, output: process.stdout });
+		emitKeypressEvents(process.stdin);
+		process.stdin.on("keypress", (_value, key) => {
+			if (key?.name === "return" && key.meta) this.followUpNext = true;
+		});
 		this.rl.setPrompt(opts.prompt ?? "\x1b[36m你 > \x1b[0m");
 		this.rl.prompt();
 		this.rl.on("close", () => {
@@ -49,8 +65,12 @@ export class SimpleTUI {
 		});
 	}
 
-	onLine(cb: (line: string) => void): void {
-		this.rl.on("line", (line: string) => cb(line));
+	onLine(cb: (line: string, mode: "steer" | "followUp") => void): void {
+		this.rl.on("line", (line: string) => {
+			const mode = this.followUpNext ? "followUp" : "steer";
+			this.followUpNext = false;
+			cb(line, mode);
+		});
 	}
 
 	/** 输入行状态下按 Ctrl+C（readline 拦截的 SIGINT）——转给上层统一处理 */
@@ -76,6 +96,14 @@ export class SimpleTUI {
 		this.rl.close();
 	}
 
+	/** Replace the current input line with queued text after an interruption. */
+	replaceInput(text: string): void {
+		if (this.closed) return;
+		this.rl.write(null, { ctrl: true, name: "u" });
+		// readline is single-line; preserve order without feeding newline as Enter.
+		this.rl.write(text.replace(/\r?\n/g, "  "));
+	}
+
 	render(m: OutMsg): void {
 		switch (m.type) {
 			case "text":
@@ -83,8 +111,7 @@ export class SimpleTUI {
 				process.stdout.write(m.text);
 				break;
 			case "turn_start": {
-				// 清掉输入行，输出用户消息并起头 Uina 的回复
-				if (!this.closed) this.rl.pause();
+				// Keep readline active so input can be queued while the model streams.
 				process.stdout.write(`\r${C.line}`);
 				if (m.text) process.stdout.write(`${C.user}你 > ${m.text}${C.reset}\n`);
 				process.stdout.write(`${C.me}Uina > ${C.reset}`);
@@ -93,7 +120,6 @@ export class SimpleTUI {
 			case "turn_end":
 				process.stdout.write("\n");
 				if (!this.closed) {
-					this.rl.resume();
 					this.rl.prompt();
 				}
 				break;
@@ -105,7 +131,7 @@ export class SimpleTUI {
 			case "tool_done": {
 				const elapsed = m.ts ? Date.now() - m.ts : 0;
 				process.stdout.write(
-					`\n${C.ok}  ✓ ${toolStartLine(m.name, {} as never)}${C.reset}`,
+					`\n${m.status === "succeeded" ? C.ok : C.warn}  ${m.status === "succeeded" ? "✓" : "!"} ${m.name}${C.reset}`,
 				);
 				const style = {
 					ok: (s: string) => `${C.ok}${s}${C.reset}`,
@@ -123,6 +149,11 @@ export class SimpleTUI {
 				break;
 			case "error":
 				process.stdout.write(`${C.err}${m.text}${C.reset}\n`);
+				break;
+			case "queue":
+				if (m.items.length > 0 && !this.closed) {
+					process.stdout.write(`\n${C.dim}排队消息：${m.items.map((item) => item.text).join(" | ")}${C.reset}\n`);
+				}
 				break;
 			default:
 				break; // 未知消息类型：忽略

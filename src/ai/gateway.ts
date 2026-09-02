@@ -1,39 +1,28 @@
-/**
- * 模型网关：OpenAI Chat Completions 协议客户端。
- * 兼容任何 OpenAI 风格端点（DeepSeek / OpenAI / 通义 / 本地 Ollama）。
- * 流式解析逐 chunk 回调，不做缓冲——这是对话快路径的地基。
- *
- * 职责边界：内核消息（解析后的对象结构）→ wire 协议形状在这里转换。
- * 例：assistant.tool_calls 内核存 {id,name,args}，协议要求
- * {id,type:"function",function:{name,arguments:JSON字符串}}——不能把内核对象直接发出去。
- */
 import type {
 	ModelProvider,
 	ModelRequest,
-	StreamDelta,
 } from "../core/types.js";
+import { parseSSE, ProviderProtocolError } from "./sse.js";
 
-interface ProviderConf {
+export interface ProviderConf {
 	baseUrl: string;
 	apiKey: string;
 	model: string;
+	contextWindow?: number;
 }
 
 export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 	const endpoint = `${conf.baseUrl.replace(/\/$/, "")}/chat/completions`;
-
 	return {
 		name: conf.model,
-		async stream(
-			req: ModelRequest,
-			onDelta: (d: StreamDelta) => void,
-			signal?: AbortSignal,
-		): Promise<void> {
-			const resp = await fetch(endpoint, {
+		contextWindow: conf.contextWindow,
+		async stream(req, onDelta, signal): Promise<void> {
+			const response = await fetch(endpoint, {
 				method: "POST",
 				signal,
 				headers: {
 					"Content-Type": "application/json",
+					Accept: "text/event-stream",
 					Authorization: `Bearer ${conf.apiKey}`,
 				},
 				body: JSON.stringify({
@@ -44,134 +33,168 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 				}),
 			});
 
-			if (!resp.ok) {
-				const body = await resp.text().catch(() => "");
+			if (!response.ok) {
+				const body = await response.text().catch(() => "");
 				throw new Error(
-					`模型请求失败 HTTP ${resp.status}: ${body.slice(0, 300)}`,
+					`模型请求失败 HTTP ${response.status}: ${body.slice(0, 300)}`,
 				);
 			}
-			if (!resp.body) throw new Error("模型响应无 body");
+			if (!response.body) throw new ProviderProtocolError("模型响应无 body");
 
-			await parseSSE(resp.body, onDelta);
+			let finished = false;
+			let doneMarker = false;
+			const pending = new Map<number, { id: string; name: string; args: string }>();
+
+			await parseSSE(
+				response.body,
+				(data, index) => {
+					if (data === "[DONE]") {
+						doneMarker = true;
+						if (!finished) {
+							throw new ProviderProtocolError(
+								"模型流在 finish_reason 前结束",
+								index,
+							);
+						}
+						return;
+					}
+					if (finished) return;
+					let chunk: OpenAIChunk;
+					try {
+						chunk = JSON.parse(data) as OpenAIChunk;
+					} catch (error) {
+						throw new ProviderProtocolError(
+							`SSE 第 ${index + 1} 个事件不是合法 JSON: ${String(error)}`,
+							index,
+						);
+					}
+
+					const choice = chunk.choices?.[0];
+					if (!choice) return;
+					const delta = choice.delta ?? {};
+					if (typeof delta.content === "string" && delta.content.length > 0) {
+						onDelta({ kind: "text", text: delta.content });
+					}
+
+					for (const raw of delta.tool_calls ?? []) {
+						const indexValue = raw.index ?? 0;
+						const current = pending.get(indexValue) ?? {
+							id: "",
+							name: "",
+							args: "",
+						};
+						if (raw.id) current.id = raw.id;
+						if (raw.function?.name) current.name += raw.function.name;
+						if (raw.function?.arguments) current.args += raw.function.arguments;
+						pending.set(indexValue, current);
+					}
+
+					if (typeof choice.finish_reason === "string" && choice.finish_reason) {
+						for (const [toolIndex, call] of [...pending.entries()].sort(
+							([a], [b]) => a - b,
+						)) {
+							if (!call.id || !call.name) {
+								throw new ProviderProtocolError(
+									`tool call ${toolIndex} 缺少 id 或 name`,
+									index,
+								);
+							}
+							const argsValid = isJsonObject(call.args || "{}");
+							if (!argsValid && choice.finish_reason !== "length") {
+								throw new ProviderProtocolError(
+									`tool call ${call.name} 参数不是完整 JSON`,
+									index,
+								);
+							}
+							onDelta({
+								kind: "tool_call",
+								call: { ...call, args: call.args || "{}", argsValid },
+							});
+						}
+						pending.clear();
+						if (choice.finish_reason === "content_filter") {
+							throw new Error("模型因 content_filter 终止回复");
+						}
+						if (
+							choice.finish_reason !== "stop" &&
+							choice.finish_reason !== "tool_calls" &&
+							choice.finish_reason !== "length"
+						) {
+							throw new ProviderProtocolError(
+								`未知 finish_reason: ${choice.finish_reason}`,
+								index,
+							);
+						}
+						finished = true;
+						onDelta({ kind: "finish", reason: choice.finish_reason });
+					}
+				},
+				signal,
+			);
+
+			if (!finished || !doneMarker) {
+				throw new ProviderProtocolError(
+					!finished
+						? "模型流结束时缺少 finish_reason"
+						: "模型流结束时缺少 [DONE]",
+				);
+			}
 		},
 	};
 }
 
-/**
- * 内核消息 → wire 协议形状。
- * 唯一需要转换的是 assistant 消息的 tool_calls：内核存解析后的对象
- * {id,name,args(对象)}，OpenAI 协议要求 {id,type:"function",function:{name,arguments(JSON字符串)}}。
- */
-function toWireMessages(msgs: ModelRequest["messages"]): unknown[] {
-	return msgs.map((m) => {
-		if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
+interface OpenAIChunk {
+	choices?: Array<{
+		delta?: {
+			content?: string | null;
+			tool_calls?: Array<{
+				index?: number;
+				id?: string;
+				function?: { name?: string; arguments?: string };
+			}>;
+		};
+		finish_reason?: string | null;
+	}>;
+}
+
+export function toWireMessages(messages: ModelRequest["messages"]): unknown[] {
+	return messages.map((message) => {
+		if (message.role === "assistant") {
 			return {
-				role: m.role,
-				content: m.content,
-				tool_calls: m.tool_calls.map((tc) => ({
-					id: tc.id,
-					type: "function",
-					function: {
-						name: tc.name,
-						arguments:
-							typeof tc.args === "string"
-								? tc.args
-								: JSON.stringify(tc.args ?? {}),
-					},
-				})),
+				role: "assistant",
+				content: message.content,
+				...(message.tool_calls?.length
+					? {
+							tool_calls: message.tool_calls.map((call) => ({
+								id: call.id,
+								type: "function",
+								function: {
+									name: call.name,
+									arguments:
+										typeof call.args === "string"
+											? call.args
+											: JSON.stringify(call.args ?? {}),
+								},
+							})),
+						}
+					: {}),
 			};
 		}
-		return m;
+		return message.role === "tool"
+			? {
+					role: "tool",
+					tool_call_id: message.tool_call_id,
+					content: message.content,
+				}
+			: message;
 	});
 }
 
-/**
- * OpenAI SSE 流解析。
- * tool_call 的 arguments 可能分片到达，按 index 累积拼接，finish 时整段吐出。
- * finish 只发一次：流内收到 finish_reason 即收口；流异常结束（缺 finish_reason）
- * 才由末尾兜底补发——不会双发（历史 bug：正常流结尾多出一发 stream_end）。
- */
-async function parseSSE(
-	body: ReadableStream<Uint8Array>,
-	onDelta: (d: StreamDelta) => void,
-): Promise<void> {
-	const reader = body.getReader();
-	const decoder = new TextDecoder();
-	const pending = new Map<number, { id: string; name: string; args: string }>();
-	let buffer = "";
-	let finished = false;
-
-	const feed = (line: string): void => {
-		if (finished) return; // 已收口：忽略后续行（防重复 finish）
-		if (!line.startsWith("data:")) return;
-		const payload = line.slice(5).trim();
-		if (!payload || payload === "[DONE]") return;
-
-		let chunk: {
-			choices?: {
-				delta?: { content?: string; tool_calls?: unknown[] };
-				finish_reason?: string;
-			}[];
-		};
-		try {
-			chunk = JSON.parse(payload);
-		} catch {
-			return; // 容忍脏行，不影响已解析内容
-		}
-		const delta = chunk.choices?.[0]?.delta;
-		if (!delta) return;
-
-		if (typeof delta.content === "string" && delta.content.length > 0) {
-			onDelta({ kind: "text", text: delta.content });
-		}
-		if (Array.isArray(delta.tool_calls)) {
-			for (const raw of delta.tool_calls) {
-				const tc = raw as {
-					index?: number;
-					id?: string;
-					function?: { name?: string; arguments?: string };
-				};
-				const idx = tc.index ?? 0;
-				const fn = tc.function ?? {};
-				const cur = pending.get(idx) ?? { id: "", name: "", args: "" };
-				if (tc.id) cur.id = tc.id;
-				if (typeof fn.name === "string" && fn.name) cur.name += fn.name;
-				if (typeof fn.arguments === "string" && fn.arguments)
-					cur.args += fn.arguments;
-				pending.set(idx, cur);
-			}
-		}
-		const reason = chunk.choices?.[0]?.finish_reason;
-		if (reason) {
-			// 把滞留的 tool_call 收口发出，再报 finish（置 finished，末尾兜底不再补发）
-			for (const [idx, c] of pending) {
-				if (c.id) {
-					pending.delete(idx);
-					onDelta({ kind: "tool_call", call: c });
-				}
-			}
-			finished = true;
-			onDelta({ kind: "finish", reason });
-		}
-	};
-
-	while (true) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		buffer += decoder.decode(value, { stream: true });
-		let nl: number;
-		while ((nl = buffer.indexOf("\n")) >= 0) {
-			const line = buffer.slice(0, nl);
-			buffer = buffer.slice(nl + 1);
-			if (line.trim()) feed(line.trim());
-		}
-	}
-	if (buffer.trim()) feed(buffer.trim());
-	// 流异常中断/缺 finish_reason 时的兜底：只在此前未收口时补发滞留的 tool_call 与 finish
-	if (!finished) {
-		for (const c of pending.values()) {
-			if (c.id) onDelta({ kind: "tool_call", call: c });
-		}
-		onDelta({ kind: "finish", reason: "stream_end" });
+function isJsonObject(text: string): boolean {
+	try {
+		const value = JSON.parse(text);
+		return !!value && typeof value === "object" && !Array.isArray(value);
+	} catch {
+		return false;
 	}
 }
