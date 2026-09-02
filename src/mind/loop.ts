@@ -110,6 +110,7 @@ export class Subject {
 			await this.decideBatch(text);
 			if (!this.interrupted) {
 				for (;;) {
+					if (this.interrupted) break; // 中断在 drain 批次中到达：不再消费剩余排队
 					const queuedText = this.takePending();
 					if (!queuedText) break;
 					await this.decideBatch(queuedText);

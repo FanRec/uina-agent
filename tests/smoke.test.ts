@@ -408,6 +408,54 @@ describe("流式阶段中断", () => {
 		).toBe(true);
 		expect(snap.some((m) => m.content === "[已中断]")).toBe(true);
 	});
+
+	it("drain 排队批次中中断：只 emit 一次已中断，排队输入不丢（下轮仍消费）", async () => {
+		const tokens: string[] = [];
+		let streamCall = 0;
+		let subject: Subject;
+		const provider: ModelProvider = {
+			name: "interrupt-during-drain",
+			async stream(_req, onDelta, _signal) {
+				streamCall++;
+				if (streamCall === 2) {
+					// 第二轮（drain 消费排队）：吐出首个 delta 时立即中断 → fetch 被切断
+					onDelta({ kind: "text", text: "早" });
+					subject.interrupt();
+					throw new DOMException("aborted", "AbortError");
+				}
+				onDelta({ kind: "text", text: "流式回复" });
+				if (streamCall === 1) {
+					// 第一轮流式期间塞入两条排队输入（busy → pending）
+					subject.pushInput("排队B");
+					subject.pushInput("排队C");
+				}
+				onDelta({ kind: "finish", reason: "stop" });
+			},
+		};
+		subject = new Subject(provider, new ToolBroker(), {
+			onToken: (t) => tokens.push(t),
+		});
+		subject.pushInput("第一轮");
+		await flush();
+		expect(subject.isBusy()).toBe(false);
+		// 中断只 emit 一次；中断批次无回复产出入史
+		expect(tokens.filter((t) => t.includes("[已中断]"))).toHaveLength(1);
+		let snap = subject.historySnapshot();
+		// 排队批次已合并成单条 user 入史（decideBatch 先入史再决策），但被中断：
+		//  - 无 assistant 回复（"早"未入史）
+		//  - 未拆成多条反复消费（合并单条存在即可）
+		expect(snap.some((m) => m.content === "排队B\n排队C")).toBe(true);
+		expect(snap.some((m) => (m.content ?? "") === "早")).toBe(false);
+		// 下轮新输入到达：排队批次由模型补齐回复（不吞输入）
+		subject.pushInput("新消息");
+		await flush();
+		snap = subject.historySnapshot();
+		const batchIdx = snap.findIndex((m) => m.content === "排队B\n排队C");
+		const hasLaterReply = snap
+			.slice(batchIdx + 1)
+			.some((m) => m.role === "assistant" && (m.content ?? "") !== "[已中断]");
+		expect(hasLaterReply).toBe(true);
+	});
 });
 describe("中断（interrupt）", () => {
 	it("工具执行中强制中止：不再进下一轮 LLM，历史含已取消回注与占位", async () => {
