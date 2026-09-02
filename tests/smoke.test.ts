@@ -330,19 +330,19 @@ describe("shell 工具", () => {
 	});
 });
 
-	describe("流式阶段中断", () => {
-		it("LLM 请求被 abort：不算错误（无 onError、无错误入史），含已中断占位", async () => {
-			const errs: string[] = [];
-			const provider: ModelProvider = {
-				name: "hang-stream",
-				async stream(_req, _onDelta, signal) {
-					// 挂起请求，直到收到 abort 才抛 AbortError（模拟 fetch 被 signal 切断）
-					await new Promise((_, reject) => {
-						signal?.addEventListener(
-							"abort",
-							() => reject(new DOMException("aborted", "AbortError")),
-							{ once: true },
-						);
+describe("流式阶段中断", () => {
+	it("LLM 请求被 abort：不算错误（无 onError、无错误入史），含已中断占位", async () => {
+		const errs: string[] = [];
+		const provider: ModelProvider = {
+			name: "hang-stream",
+			async stream(_req, _onDelta, signal) {
+				// 挂起请求，直到收到 abort 才抛 AbortError（模拟 fetch 被 signal 切断）
+				await new Promise((_, reject) => {
+					signal?.addEventListener(
+						"abort",
+						() => reject(new DOMException("aborted", "AbortError")),
+						{ once: true },
+					);
 				});
 			},
 		};
@@ -359,9 +359,9 @@ describe("shell 工具", () => {
 		expect(errs).toEqual([]); // 中断不是错误
 		const snap = subject.historySnapshot();
 		expect(snap.some((m) => m.content === "[已中断]")).toBe(true);
-		expect(
-			snap.some((m) => (m.content ?? "").includes("上轮处理出错")),
-		).toBe(false);
+		expect(snap.some((m) => (m.content ?? "").includes("上轮处理出错"))).toBe(
+			false,
+		);
 	});
 
 	it("压缩请求期间中断：历史不被破坏（不丢内容、不插半截摘要）", async () => {
@@ -379,7 +379,10 @@ describe("shell 工具", () => {
 					});
 					return;
 				}
-				_onDelta({ kind: "tool_call", call: { id: "x", name: "get_time", args: "{}" } });
+				_onDelta({
+					kind: "tool_call",
+					call: { id: "x", name: "get_time", args: "{}" },
+				});
 				_onDelta({ kind: "finish", reason: "stop" });
 			},
 		};
@@ -397,12 +400,12 @@ describe("shell 工具", () => {
 		// 历史未被压缩截断：
 		//  - 无半截摘要占位（中断的压缩不落盘）
 		//  - 最旧消息仍在（历史没被 splice 掉）
-		expect(
-			snap.some((m) => (m.content ?? "").startsWith("[历史摘要]")),
-		).toBe(false);
-		expect(snap.some((m) => (m.content ?? "").includes("凑足 token 估算"))).toBe(
-			true,
+		expect(snap.some((m) => (m.content ?? "").startsWith("[历史摘要]"))).toBe(
+			false,
 		);
+		expect(
+			snap.some((m) => (m.content ?? "").includes("凑足 token 估算")),
+		).toBe(true);
 		expect(snap.some((m) => m.content === "[已中断]")).toBe(true);
 	});
 });

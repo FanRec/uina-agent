@@ -180,12 +180,9 @@ export class Subject {
 		const oldest = this.history.slice(0, keepFrom);
 		// 迭代上下文（对齐 pi）：旧摘要总是放在转录开头——超长截断只丢更早的细节，不丢摘要
 		const priorSummary = oldest.find(
-			(m) =>
-				m.role === "user" && (m.content ?? "").startsWith("[历史摘要]"),
+			(m) => m.role === "user" && (m.content ?? "").startsWith("[历史摘要]"),
 		);
-		const rest = oldest.filter(
-			(m: ChatMsg): boolean => m !== priorSummary,
-		);
+		const rest = oldest.filter((m: ChatMsg): boolean => m !== priorSummary);
 		const transcript =
 			(priorSummary ? `[user] ${priorSummary.content}\n` : "") +
 			rest
@@ -309,8 +306,7 @@ export class Subject {
 					if (finishReason === "length") {
 						this.history.push({
 							role: "user",
-							content:
-								"（系统提示）上轮回复因输出长度限制被截断，请继续完成。",
+							content: "（系统提示）上轮回复因输出长度限制被截断，请继续完成。",
 						});
 					}
 				}
@@ -378,11 +374,11 @@ export class Subject {
 
 /** 单条历史消息 → 压缩 transcript 行（tool_calls 也带上，摘要才能保留工具意图） */
 function formatForSummary(m: ChatMsg): string {
-		if ("tool_calls" in m && m.tool_calls) {
-			return `tool_calls=${JSON.stringify(m.tool_calls)} ${m.content ?? ""}`;
-		}
-		return m.content ?? "";
+	if ("tool_calls" in m && m.tool_calls) {
+		return `tool_calls=${JSON.stringify(m.tool_calls)} ${m.content ?? ""}`;
 	}
+	return m.content ?? "";
+}
 
 /** 工具消息的序列化截断：保留前 2000 字符，超出部分换成标记（对齐 pi） */
 function truncateForContext(s: string): string {

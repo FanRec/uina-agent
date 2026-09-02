@@ -123,9 +123,9 @@ async function main(): Promise<void> {
 				const orphans = findOrphanToolCalls(saved.messages as never);
 				if (orphans.length > 0) {
 					process.stderr.write(
-						`[会话校验] 历史损坏：${orphans.length} 个工具调用没有对应结果`
-							+ "（可能来自旧版本中断 bug）。已跳过恢复，从新会话开始。\n"
-							+ "如需检查现场，查看 data/session.json。\n",
+						`[会话校验] 历史损坏：${orphans.length} 个工具调用没有对应结果` +
+							"（可能来自旧版本中断 bug）。已跳过恢复，从新会话开始。\n" +
+							"如需检查现场，查看 data/session.json。\n",
 					);
 					process.stdout.write("（检测到历史损坏，未恢复，从空开始）\n\n");
 				} else {

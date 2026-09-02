@@ -51,8 +51,8 @@ export function activeProvider(
 	const prov = cfg.providers[cfg.default];
 	if (!prov.apiKey) {
 		throw new Error(
-			`provider "${cfg.default}" 缺少 apiKey`
-				+ `（请在 ${configPath()} 填写，或用环境变量 UINA_API_KEY_${cfg.default.toUpperCase()} 提供）`,
+			`provider "${cfg.default}" 缺少 apiKey` +
+				`（请在 ${configPath()} 填写，或用环境变量 UINA_API_KEY_${cfg.default.toUpperCase()} 提供）`,
 		);
 	}
 	return { name: cfg.default, ...prov };
