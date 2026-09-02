@@ -327,7 +327,10 @@ describe("中断（interrupt）", () => {
 					toolCallDelta("c2", "run_shell", { command: "echo multi-tool" }),
 				],
 			},
-			{ match: () => true, produce: () => [{ kind: "text", text: "都查好了" }] },
+			{
+				match: () => true,
+				produce: () => [{ kind: "text", text: "都查好了" }],
+			},
 		]);
 		const subject = new Subject(provider, tools, { onToken: () => {} });
 		subject.pushInput("一起查");
@@ -342,12 +345,14 @@ describe("中断（interrupt）", () => {
 		expect(asst && "tool_calls" in asst ? asst.tool_calls?.length : 0).toBe(2);
 		expect(toolMsgs.length).toBe(2);
 		const asstIds = new Set(
-			(asst && "tool_calls" in asst ? asst.tool_calls ?? [] : []).map((t) =>
-				(t as { id: string }).id,
+			(asst && "tool_calls" in asst ? (asst.tool_calls ?? []) : []).map(
+				(t) => (t as { id: string }).id,
 			),
 		);
 		for (const tm of toolMsgs) {
-			expect(asstIds.has((tm as { tool_call_id: string }).tool_call_id)).toBe(true);
+			expect(asstIds.has((tm as { tool_call_id: string }).tool_call_id)).toBe(
+				true,
+			);
 		}
 	});
 
@@ -365,7 +370,7 @@ describe("中断（interrupt）", () => {
 				return new Promise((res) => {
 					signal?.addEventListener("abort", () =>
 						res(JSON.stringify({ cancelled: true })),
-				);
+					);
 				});
 			},
 		};
@@ -381,7 +386,10 @@ describe("中断（interrupt）", () => {
 					toolCallDelta("g1", "get_time", {}),
 				],
 			},
-			{ match: () => true, produce: () => [{ kind: "text", text: "不应到达" }] },
+			{
+				match: () => true,
+				produce: () => [{ kind: "text", text: "不应到达" }],
+			},
 		]);
 		const subject = new Subject(provider, tools, { onToken: () => {} });
 		subject.pushInput("开工");
@@ -394,17 +402,21 @@ describe("中断（interrupt）", () => {
 			(m) => m.role === "assistant" && "tool_calls" in m,
 		);
 		const asstIds = new Set(
-			(asst && "tool_calls" in asst ? asst.tool_calls ?? [] : []).map((t) =>
-				(t as { id: string }).id,
+			(asst && "tool_calls" in asst ? (asst.tool_calls ?? []) : []).map(
+				(t) => (t as { id: string }).id,
 			),
 		);
 		// 配对完整：assistant 2 个 tool_calls 各有一条 tool 结果
 		expect(toolMsgs.length).toBe(2);
 		for (const tm of toolMsgs) {
-			expect(asstIds.has((tm as { tool_call_id: string }).tool_call_id)).toBe(true);
+			expect(asstIds.has((tm as { tool_call_id: string }).tool_call_id)).toBe(
+				true,
+			);
 		}
 		// g1 是占位（未执行），h1 是 cancelled 结果
-		const g1 = toolMsgs.find((m) => (m as { tool_call_id: string }).tool_call_id === "g1");
+		const g1 = toolMsgs.find(
+			(m) => (m as { tool_call_id: string }).tool_call_id === "g1",
+		);
 		expect((g1?.content ?? "").includes("已中断")).toBe(true);
 		// 中断后没进下一轮 LLM
 		expect(provider.calls.length).toBe(1);
