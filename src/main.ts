@@ -8,10 +8,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, activeProvider } from "./ai/config.js";
 import { createOpenAIProvider } from "./ai/gateway.js";
-import { runShellDirect } from "../tools/run-shell/index.js";
+import { execCommandDirect } from "../tools/exec-command/index.js";
 import { ToolBroker } from "./tools/broker.js";
 import { loadTools } from "./tools/loader.js";
-import { Subject } from "./mind/loop.js";
+import { Subject, findOrphanToolCalls } from "./mind/loop.js";
 import { SimpleTUI, type OutMsg } from "./ui/tui.js";
 import { toolStartLine, toolResultLines } from "./ui/format.js";
 
@@ -65,6 +65,9 @@ async function main(): Promise<void> {
 				}
 				break;
 			}
+			case "notice":
+				process.stdout.write(`\n⚠ ${m.text}\n`);
+				break;
 			case "error":
 				process.stdout.write(`[错误] ${m.text}\n`);
 				break;
@@ -105,6 +108,7 @@ async function main(): Promise<void> {
 		onToolDone: (name, result) =>
 			render({ type: "tool_done", name, result, ts: lastToolTs }),
 		onError: (msg) => render({ type: "error", text: msg }),
+		onNotice: (msg) => render({ type: "notice", text: msg }),
 	});
 
 	// 会话续聊：--continue 恢复上次对话历史
@@ -114,10 +118,21 @@ async function main(): Promise<void> {
 				messages: unknown[];
 			};
 			if (Array.isArray(saved.messages) && saved.messages.length > 0) {
-				subject.addHistory(saved.messages as never);
-				process.stdout.write(
-					`（已恢复上次会话：${saved.messages.length} 条历史消息）\n\n`,
-				);
+				// 历史校验（暴露而非兜底）：发现配对破损不自动补占位，显式报错并拒绝恢复
+				const orphans = findOrphanToolCalls(saved.messages as never);
+				if (orphans.length > 0) {
+					process.stderr.write(
+						`[会话校验] 历史损坏：${orphans.length} 个工具调用没有对应结果`
+							+ "（可能来自旧版本中断 bug）。已跳过恢复，从新会话开始。\n"
+							+ "如需检查现场，查看 data/session.json。\n",
+					);
+					process.stdout.write("（检测到历史损坏，未恢复，从空开始）\n\n");
+				} else {
+					subject.addHistory(saved.messages as never);
+					process.stdout.write(
+						`（已恢复上次会话：${saved.messages.length} 条历史消息）\n\n`,
+					);
+				}
 			} else {
 				process.stdout.write("（没有可恢复的会话，从空开始）\n\n");
 			}
@@ -171,7 +186,7 @@ async function main(): Promise<void> {
 	// ! 命令：强制终端工具执行——直接跑 shell，不经模型（对齐 pi 的 ! 命令）。
 	// 执行期间暂停读行（防输入与输出交错），结束恢复；结果不进 LLM 上下文。
 	//
-	const runShellCommand = async (input: string): Promise<void> => {
+	const execCommand = async (input: string): Promise<void> => {
 		const command = input.slice(1).trim();
 		if (!command) return;
 		execRunning = true;
@@ -179,7 +194,7 @@ async function main(): Promise<void> {
 		tui?.pauseInput();
 		try {
 			process.stdout.write(`${CLEAR_LINE}`); // 清掉输入行（对齐 turn_start 渲染）
-			const r = await runShellDirect(command, execAbort.signal);
+			const r = await execCommandDirect(command, execAbort.signal);
 			if (r.cancelled) {
 				process.stdout.write(`${ERR}[命令已中断]${RESET}\n`);
 				return;
@@ -220,7 +235,7 @@ async function main(): Promise<void> {
 				return;
 			}
 			if (text.startsWith("!")) {
-				void runShellCommand(text);
+				void execCommand(text);
 				return;
 			}
 			subject.pushInput(text);

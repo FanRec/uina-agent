@@ -126,7 +126,7 @@ describe("gateway SSE 解析", () => {
 				role: "assistant",
 				content: "",
 				tool_calls: [
-					{ id: "t1", name: "run_shell", args: { command: "echo x" } },
+					{ id: "t1", name: "exec_command", args: { command: "echo x" } },
 				],
 			},
 			{
@@ -148,7 +148,7 @@ describe("gateway SSE 解析", () => {
 		expect(asst?.tool_calls?.[0]).toEqual({
 			id: "t1",
 			type: "function",
-			function: { name: "run_shell", arguments: '{"command":"echo x"}' },
+			function: { name: "exec_command", arguments: '{"command":"echo x"}' },
 		});
 		// non-assistant 消息原样透传
 		expect(b.messages[0]).toEqual({ role: "system", content: "sys" });

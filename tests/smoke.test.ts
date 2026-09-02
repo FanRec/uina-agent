@@ -6,8 +6,8 @@ import { describe, it, expect } from "vitest";
 import { ToolBroker } from "../src/tools/broker.js";
 import type { Tool } from "../src/tools/broker.js";
 import getTimeTool from "../tools/get-time/index.js";
-import runShellTool, { runShellDirect } from "../tools/run-shell/index.js";
-import { Subject } from "../src/mind/loop.js";
+import execCommandTool, { execCommandDirect } from "../tools/exec-command/index.js";
+import { Subject, findOrphanToolCalls } from "../src/mind/loop.js";
 import {
 	scriptedProvider,
 	toolCallDelta,
@@ -236,20 +236,20 @@ describe("主体链路（mock）", () => {
 describe("shell 工具", () => {
 	it("真实执行命令并返回输出", async () => {
 		const result = safeParse(
-			await runShellTool.run({ command: "echo uina-smoke-ok" }),
+			await execCommandTool.run({ command: "echo uina-smoke-ok" }),
 		);
 		expect(result.stdout).toContain("uina-smoke-ok");
 	});
 
 	it("命令失败时返回结构化错误而非抛出", async () => {
-		const result = safeParse(await runShellTool.run({ command: "exit 3" }));
+		const result = safeParse(await execCommandTool.run({ command: "exit 3" }));
 		// exec 非零退出会抛，实现应把错误包进结构化结果返回
 		expect(result.error ?? result.stderr).toBeTruthy();
 	});
 
 	it("可取消：abort 后杀进程树并返回 cancelled（强制 stop 的根基）", async () => {
 		const ac = new AbortController();
-		const p = runShellDirect('node -e "setTimeout(()=>{}, 60000)"', ac.signal);
+		const p = execCommandDirect('node -e "setTimeout(()=>{}, 60000)"', ac.signal);
 		await flush();
 		ac.abort();
 		const r = await p;
@@ -317,14 +317,14 @@ describe("中断（interrupt）", () => {
 	it("一轮多个工具调用：全部回注且 id 与 assistant.tool_calls 配对完整", async () => {
 		const tools = new ToolBroker();
 		tools.register(getTimeTool);
-		tools.register(runShellTool);
+		tools.register(execCommandTool);
 		const provider = scriptedProvider([
 			{
 				match: (req) => !req.messages.some((m) => m.role === "tool"),
-				// 一轮产两个工具调用（并行工具）：get_time + run_shell
+				// 一轮产两个工具调用（并行工具）：get_time + exec_command
 				produce: () => [
 					toolCallDelta("c1", "get_time", {}),
-					toolCallDelta("c2", "run_shell", { command: "echo multi-tool" }),
+					toolCallDelta("c2", "exec_command", { command: "echo multi-tool" }),
 				],
 			},
 			{
@@ -332,9 +332,9 @@ describe("中断（interrupt）", () => {
 				produce: () => [{ kind: "text", text: "都查好了" }],
 			},
 		]);
-		const subject = new Subject(provider, tools, { onToken: () => {} });
-		subject.pushInput("一起查");
-		await flush();
+		const subj = new Subject(provider, tools, { onToken: () => {} });
+		subj.pushInput("一起查");
+		await awaitIdle(subj);
 		// 第二轮请求：assistant.tool_calls 两个 + tool 消息两个，一一配对
 		const second = provider.calls[1];
 		expect(second).toBeTruthy();
@@ -401,24 +401,85 @@ describe("中断（interrupt）", () => {
 		const asst = snapshot.find(
 			(m) => m.role === "assistant" && "tool_calls" in m,
 		);
-		const asstIds = new Set(
-			(asst && "tool_calls" in asst ? (asst.tool_calls ?? []) : []).map(
-				(t) => (t as { id: string }).id,
-			),
-		);
-		// 配对完整：assistant 2 个 tool_calls 各有一条 tool 结果
-		expect(toolMsgs.length).toBe(2);
+		// 源头消除：中断后未执行的工具从 assistant.tool_calls 移除，不伪造结果——
+		// 只剩 h1（已执行且 cancelled）；tool 消息 1 条，与剩余声明一一配对
+		expect(toolMsgs.length).toBe(1);
+		const asstTcs =
+			asst && "tool_calls" in asst ? (asst.tool_calls ?? []) : [];
+		expect(asstTcs).toHaveLength(1);
+		expect((asstTcs[0] as { id: string }).id).toBe("h1");
 		for (const tm of toolMsgs) {
-			expect(asstIds.has((tm as { tool_call_id: string }).tool_call_id)).toBe(
-				true,
-			);
+			expect(
+				(asstTcs as { id: string }[]).some(
+					(t) => t.id === (tm as { tool_call_id: string }).tool_call_id,
+				),
+			).toBe(true);
 		}
-		// g1 是占位（未执行），h1 是 cancelled 结果
-		const g1 = toolMsgs.find(
-			(m) => (m as { tool_call_id: string }).tool_call_id === "g1",
+		expect((toolMsgs[0] as { tool_call_id: string }).tool_call_id).toBe("h1");
+		expect(safeParse((toolMsgs[0] as { content: string }).content).cancelled).toBe(
+			true,
 		);
-		expect((g1?.content ?? "").includes("已中断")).toBe(true);
 		// 中断后没进下一轮 LLM
 		expect(provider.calls.length).toBe(1);
 	});
+
+	it("finish_reason=length：截断回复显式告警 + 历史回注提示（不静默）", async () => {
+		const provider = scriptedProvider([
+			{
+				match: () => true,
+				produce: () => [
+					{ kind: "text", text: "这段回复被截断了，只说了一半" },
+					{ kind: "finish", reason: "length" },
+				],
+			},
+		]);
+		const notices: string[] = [];
+		const subject = new Subject(provider, new ToolBroker(), {
+			onToken: () => {},
+			onNotice: (m) => notices.push(m),
+		});
+		subject.pushInput("hi");
+		await flush();
+		// 显式告警（人可见，不吞信号）
+		expect(notices.length).toBe(1);
+		// 半截回复入史（模型知道自己说了什么）+ 附提示让模型下轮继续完成
+		const snapshot = subject.historySnapshot();
+		expect(snapshot.some((m) => (m.content ?? "").includes("只说了一半"))).toBe(
+			true,
+		);
+		const lastUser = [...snapshot].reverse().find((m) => m.role === "user");
+		expect((lastUser?.content ?? "").includes("被截断")).toBe(true);
+	});
+
+	describe("会话历史校验", () => {
+		it("findOrphanToolCalls：检测未配对的工具调用", () => {
+			const msgs = [
+				{ role: "user", content: "hi" },
+				{
+					role: "assistant",
+					content: "",
+					tool_calls: [
+						{ id: "c1", name: "t", args: {} },
+						{ id: "c2", name: "t", args: {} },
+					],
+				},
+				{ role: "tool", tool_call_id: "c1", content: "ok" },
+			];
+			expect(findOrphanToolCalls(msgs as never)).toEqual(["c2"]);
+			const intact = [
+				...msgs,
+				{ role: "tool", tool_call_id: "c2", content: "ok" },
+			];
+			expect(findOrphanToolCalls(intact as never)).toEqual([]);
+		});
+	});
 });
+
+/** 等主体空闲（工具链较慢时 flush 一次不够，轮询到忙结束或超时） */
+async function awaitIdle(subject: Subject, timeoutMs = 4000): Promise<void> {
+	const t0 = Date.now();
+	while (subject.isBusy()) {
+		if (Date.now() - t0 > timeoutMs) throw new Error("等待主体空闲超时");
+		await flush();
+	}
+}

@@ -28,6 +28,8 @@ export interface LoopHooks {
 	onToolDone?: (name: string, result: string) => void;
 	/** 轮处理出错（provider/协议层异常）——渲染层结构化显示 */
 	onError?: (msg: string) => void;
+	/** 状态信号（非错误，如输出被截断）——渲染层黄色提示 */
+	onNotice?: (msg: string) => void;
 }
 
 /** 模型上下文窗口（deepseek-chat 64K tokens）；估算超过 window-reserve 即触发压缩 */
@@ -246,6 +248,7 @@ export class Subject {
 
 			const toolCalls: CompletedToolCall[] = [];
 			let reply = "";
+			let finishReason: string | null = null;
 
 			await this.provider.stream(
 				{ messages: msgs, tools: this.tools.defs() },
@@ -267,6 +270,8 @@ export class Subject {
 								args: {},
 							});
 						}
+					} else if (d.kind === "finish" && !finishReason) {
+						finishReason = d.reason;
 					}
 				},
 			);
@@ -274,6 +279,20 @@ export class Subject {
 			if (toolCalls.length === 0) {
 				if (reply.trim())
 					this.history.push({ role: "assistant", content: reply });
+				// 截断信号（finish_reason=length）：回复不完整。暴露而非静默——
+				// 半截回复照旧入史（模型需要知道自己说了什么），另附一条提示让模型
+				// 下一轮继续完成；同时 onNotice 走黄色告警给用户看见（不吞信号）。
+				if (finishReason === "length") {
+					this.hooks.onNotice?.(
+						"本轮回复被输出长度限制截断，模型将收到提示继续完成",
+					);
+					if (reply.trim()) {
+						this.history.push({
+							role: "user",
+							content: "（系统提示）上轮回复因输出长度限制被截断，请继续完成。",
+						});
+					}
+				}
 				return;
 			}
 
@@ -282,16 +301,10 @@ export class Subject {
 				content: reply,
 				tool_calls: toolCalls,
 			});
+			const executedIds = new Set<string>();
 			for (const tc of toolCalls) {
 				if (this.interrupted) {
-					// 配对完整性：中断时未执行的工具补占位 tool 消息——
-					// assistant.tool_calls 已整体入史，缺对应 tool 结果是协议违规（再请求会 HTTP 400）
-					this.history.push({
-						role: "tool",
-						tool_call_id: tc.id,
-						content: "（已中断，未执行）",
-					});
-					continue;
+					break; // 中断：未执行的工具不再执行
 				}
 				this.hooks.onToolStart?.(tc.name, tc.args);
 				const result = await this.tools.run(
@@ -306,9 +319,28 @@ export class Subject {
 					tool_call_id: tc.id,
 					content: truncateForContext(result),
 				});
+				executedIds.add(tc.id);
 			}
 
 			if (this.interrupted) {
+				// 源头消除（替换旧占位方案）：assistant.tool_calls 已整体入史，未执行的工具
+				// 实际没跑——直接从该消息移除它们，让"声明=实际执行"自然配对完整。
+				// 不伪造"（已中断，未执行）"假结果给模型（假信息会掩盖真实历史损坏）。
+				const asstIndex = this.history.length - 1 - executedIds.size;
+				const asst = this.history[asstIndex];
+				if (
+					asst &&
+					asst.role === "assistant" &&
+					"tool_calls" in asst &&
+					asst.tool_calls
+				) {
+					const kept = asst.tool_calls.filter((t) => executedIds.has(t.id));
+					if (kept.length === 0 && !(asst.content ?? "").trim()) {
+						this.history.splice(asstIndex, 1); // 一个都没执行且无正文 → 删整条
+					} else {
+						asst.tool_calls = kept;
+					}
+				}
 				this.emitInterrupted();
 				return; // 中断后不再进下一轮 LLM
 			}
@@ -327,4 +359,21 @@ export class Subject {
 function truncateForContext(s: string): string {
 	if (s.length <= SERIALIZE_CAP) return s;
 	return `${s.slice(0, SERIALIZE_CAP)}…[截断: 完整内容 ${s.length} 字符]`;
+}
+
+/**
+ * 会话历史校验：找出"assistant 声明了 tool_calls 但无对应 tool 结果"的孤儿 id（配对破损）。
+ * 由 main 在 --continue 恢复时调用——发现破损显式报错（暴露而非兜底），不自动补占位。
+ */
+export function findOrphanToolCalls(msgs: readonly ChatMsg[]): string[] {
+	const declared = new Set<string>();
+	for (const m of msgs) {
+		if (m.role === "assistant" && "tool_calls" in m && m.tool_calls) {
+			for (const t of m.tool_calls) declared.add(t.id);
+		}
+	}
+	for (const m of msgs) {
+		if (m.role === "tool") declared.delete(m.tool_call_id);
+	}
+	return [...declared];
 }

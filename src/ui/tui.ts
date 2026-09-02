@@ -16,6 +16,7 @@ export type OutMsg =
 	| { type: "turn_start"; n: number; text: string }
 	| { type: "turn_end"; n: number }
 	| { type: "error"; text: string }
+	| { type: "notice"; text: string }
 	| { type: "tool_start"; name: string; args: unknown; ts: number }
 	| { type: "tool_done"; name: string; result: string; ts: number };
 
@@ -117,6 +118,9 @@ export class SimpleTUI {
 				}
 				break;
 			}
+			case "notice":
+				process.stdout.write(`\n${C.warn}⚠ ${m.text}${C.reset}\n`);
+				break;
 			case "error":
 				process.stdout.write(`${C.err}${m.text}${C.reset}\n`);
 				break;
