@@ -37,21 +37,33 @@ apiKey 也可用环境变量 `UINA_API_KEY_DEEPSEEK` 覆盖，避免写盘。
 ```
 src/
   ai/       模型网关（OpenAI SSE 流式）、配置   ← 外部模型边界
-  tools/    工具代理 + 内置工具（shell 等）
+  tools/    工具代理（broker） + 自动发现（loader）
   mind/     上下文组装 + 前台循环（主体）        ← 决策与表达
   ui/       简易 TUI（流式渲染 + 工具状态反馈）
   main.ts   入口：终端输入 + 组装
+tools/               ← 工具目录（pi 同款自动发现：顶层 .ts 或子目录 index.ts）
+  get-time/          默认导出 Tool（get_time）
+  run-shell/         默认导出 Tool（run_shell）
 ```
 
 数据落在 `data/`（gitignore）：`session.json`（会话历史）。长期记忆已移除（见"刻意删除"）。
+
+## 添加新工具（3 步）
+
+1. 在 `tools/` 下新建一个文件或子目录（`tools/你的工具/index.ts`）
+2. 默认导出 `Tool` 对象：`{ def: { type: "function", function: { name, description, parameters } }, run: async (args) => string }`——参数描述写在内联 JSON Schema 里（`properties.command.description`），对齐 pi 的显式声明风格；也可默认导出 `Tool[]` 或注册函数 `(registry) => void`（pi registerTool 形态）
+3. 重启即自动发现注册（启动日志显示工具数）；无需改 main.ts
+
+引擎只有两个约束：工具 `name` 全局唯一（重名报错）；`run` 必须返回字符串（返回给模型的结构化结果）。
 
 ## 当前切片验证范围
 
 - 流式输出（token 逐段，非整块）
 - 工具闭环：模型提议 → 确定性执行 → 结果回注再决策（协议层 wire 转换有单测）
 - 工具状态反馈：调用中 `[工具] xxx` → 完成 `✓`（吸收 Nott 的状态可见性）
-- `run_shell`：执行任意 shell 命令（全盘可访问；超时/截断护栏；无白名单、无目录限定——副作用工具，模型提议、放行决策留给未来授权层）
+- `run_shell`：执行任意 shell 命令（全盘；无超时/无白名单——对齐 pi，且系副作用工具，模型提议、放行决策留给未来授权层；输出截断 50KB/2000 行，超限留临时文件指针）
 - `get_time`：同步快工具（无副作用，工具闭环的测试锚点）
+- 工具自动发现：`tools/` 目录扫描加载（loader，对齐 pi 的 extensions 机制；三种导出形态 + 坏模块隔离有单测）
 - 会话续聊：`--continue` 恢复上次对话历史（吸收 Nott 的会话持久化，最小版）
 - 输出期间输入排队，轮末批量注入
 

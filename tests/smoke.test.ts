@@ -4,8 +4,8 @@
  */
 import { describe, it, expect } from "vitest";
 import { ToolBroker } from "../src/tools/broker.js";
-import { getTimeTool } from "../src/tools/builtin.js";
-import { shellTool } from "../src/tools/shell.js";
+import getTimeTool from "../tools/get-time/index.js";
+import runShellTool from "../tools/run-shell/index.js";
 import { Subject } from "../src/mind/loop.js";
 import {
 	scriptedProvider,
@@ -28,7 +28,7 @@ function safeParse(s: string): Record<string, unknown> {
 
 function makeSubject(rules: Parameters<typeof scriptedProvider>[0]) {
 	const tools = new ToolBroker();
-	tools.register(getTimeTool());
+	tools.register(getTimeTool);
 	const provider = scriptedProvider(rules);
 	let out = "";
 	const subject = new Subject(provider, tools, {
@@ -39,9 +39,13 @@ function makeSubject(rules: Parameters<typeof scriptedProvider>[0]) {
 
 /** 构造 N 条长历史消息（触发 compaction 阈值用） */
 function longHistory(n: number) {
-	const filler = "这是一条足够长的消息，内容是反复重复的中文句子以凑足 token 估算。".repeat(20);
+	const filler =
+		"这是一条足够长的消息，内容是反复重复的中文句子以凑足 token 估算。".repeat(
+			20,
+		);
 	const msgs = [];
-	for (let i = 0; i < n; i++) msgs.push({ role: "user" as const, content: filler });
+	for (let i = 0; i < n; i++)
+		msgs.push({ role: "user" as const, content: filler });
 	return msgs;
 }
 
@@ -114,7 +118,9 @@ describe("主体链路（mock）", () => {
 		// 工具消息进上下文时序列化截断：get_time 结果短所以不被截，验证上限存在即可
 		subject.pushInput("几点");
 		await flush();
-		const toolMsgs = provider.calls[1].messages.filter((m) => m.role === "tool");
+		const toolMsgs = provider.calls[1].messages.filter(
+			(m) => m.role === "tool",
+		);
 		expect(toolMsgs.length).toBe(1);
 		expect((toolMsgs[0].content ?? "").length).toBeLessThanOrEqual(2000);
 	});
@@ -126,7 +132,9 @@ describe("主体链路（mock）", () => {
 				match: (req) =>
 					req.messages[0]?.role === "system" &&
 					(req.messages[0].content ?? "").includes("压缩成不超过 200 字"),
-				produce: () => [{ kind: "text", text: "（压缩摘要：曾经聊过很多旧话题）" }],
+				produce: () => [
+					{ kind: "text", text: "（压缩摘要：曾经聊过很多旧话题）" },
+				],
 			},
 			{
 				// 正常轮次
@@ -138,11 +146,21 @@ describe("主体链路（mock）", () => {
 		subject.pushInput("继续聊");
 		await flush();
 		// 摘要请求必须发生过
-		expect(provider.calls.some((c) => c.messages[0]?.role === "system" && (c.messages[0].content ?? "").includes("压缩成不超过 200 字"))).toBe(true);
+		expect(
+			provider.calls.some(
+				(c) =>
+					c.messages[0]?.role === "system" &&
+					(c.messages[0].content ?? "").includes("压缩成不超过 200 字"),
+			),
+		).toBe(true);
 		// 后续正常轮次的请求上下文应带摘要（历史压缩后注入）
-		const normal = provider.calls.find((c) => !(c.messages[0]?.content ?? "").includes("压缩成"));
+		const normal = provider.calls.find(
+			(c) => !(c.messages[0]?.content ?? "").includes("压缩成"),
+		);
 		expect(normal).toBeTruthy();
-		const withSummary = (normal?.messages ?? []).find((m) => (m.content ?? "").startsWith("[历史摘要] "));
+		const withSummary = (normal?.messages ?? []).find((m) =>
+			(m.content ?? "").startsWith("[历史摘要] "),
+		);
 		expect(withSummary).toBeTruthy();
 		// 摘要内容来自 mock 摘要请求的返回
 		expect((withSummary?.content ?? "").includes("（压缩摘要")).toBe(true);
@@ -151,14 +169,12 @@ describe("主体链路（mock）", () => {
 
 describe("shell 工具", () => {
 	it("真实执行命令并返回输出", async () => {
-		const tool = shellTool({ cwd: process.cwd() });
-		const result = safeParse(await tool.run({ command: "echo uina-smoke-ok" }));
+		const result = safeParse(await runShellTool.run({ command: "echo uina-smoke-ok" }));
 		expect(result.stdout).toContain("uina-smoke-ok");
 	});
 
 	it("命令失败时返回结构化错误而非抛出", async () => {
-		const tool = shellTool({ cwd: process.cwd() });
-		const result = safeParse(await tool.run({ command: "exit 3" }));
+		const result = safeParse(await runShellTool.run({ command: "exit 3" }));
 		// exec 非零退出会抛，实现应把错误包进结构化结果返回
 		expect(result.error ?? result.stderr).toBeTruthy();
 	});
