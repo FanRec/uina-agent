@@ -24,11 +24,13 @@ export function shouldCompact(
 	systemPrompt: string,
 	tools: readonly ToolDef[],
 	settings: CompactionSettings,
+	includeThinking = false,
 ): boolean {
 	return (
 		estimateRequestTokens(
 			buildContext({ history: [...history], systemPrompt }),
 			tools,
+			includeThinking,
 		) >
 		settings.contextWindow - settings.reserveTokens
 	);
@@ -62,8 +64,9 @@ export async function compactHistory(
 	tools: readonly ToolDef[],
 	settings: CompactionSettings,
 	signal?: AbortSignal,
+	includeThinking = false,
 ): Promise<CompactionResult | null> {
-	if (!shouldCompact(history, systemPrompt, tools, settings)) return null;
+	if (!shouldCompact(history, systemPrompt, tools, settings, includeThinking)) return null;
 	const keepFrom = findKeepFrom(history, settings.keepRecentTokens);
 	if (keepFrom <= 0) return null;
 
@@ -110,6 +113,7 @@ export async function compactHistory(
 		tokensBefore: estimateRequestTokens(
 			buildContext({ history: [...history], systemPrompt }),
 			tools,
+			includeThinking,
 		),
 	};
 }
