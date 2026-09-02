@@ -227,9 +227,7 @@ describe("主体链路（mock）", () => {
 		await flush();
 		const second = provider.calls.find((c) => lastUser(c) === "继续");
 		expect(
-			second?.messages.some((m) =>
-				(m.content ?? "").includes("上轮处理出错"),
-			),
+			second?.messages.some((m) => (m.content ?? "").includes("上轮处理出错")),
 		).toBe(true);
 	});
 });

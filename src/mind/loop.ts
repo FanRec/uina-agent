@@ -115,7 +115,10 @@ export class Subject {
 	/** 清空排队输入，合并成一条 user 消息（空则返回空串） */
 	private takePending(): string {
 		const queued = this.pending.splice(0);
-		return queued.map((q) => q.trim()).filter(Boolean).join("\n");
+		return queued
+			.map((q) => q.trim())
+			.filter(Boolean)
+			.join("\n");
 	}
 
 	/**
