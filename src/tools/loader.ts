@@ -1,5 +1,5 @@
 import { readdirSync, statSync } from "node:fs";
-import { basename, extname, join } from "node:path";
+import { extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Dirent } from "node:fs";
 import { ToolBroker, type Tool } from "./broker.js";
@@ -10,7 +10,7 @@ export interface LoadResult {
 }
 
 /** Find top-level .ts files and immediate subdirectory index.ts modules. */
-function collectModules(dir: string): string[] {
+function collectModules(dir: string, extension: ".ts" | ".js"): string[] {
 	let entries: Dirent<string>[];
 	try {
 		entries = readdirSync(dir, { withFileTypes: true });
@@ -22,10 +22,10 @@ function collectModules(dir: string): string[] {
 	const modules: string[] = [];
 	for (const entry of entries) {
 		const path = join(dir, entry.name);
-		if (entry.isFile() && extname(entry.name) === ".ts") {
+		if (entry.isFile() && extname(entry.name) === extension) {
 			modules.push(path);
 		} else if (entry.isDirectory()) {
-			const index = join(path, "index.ts");
+			const index = join(path, `index${extension}`);
 			if (isFile(index)) modules.push(index);
 		}
 	}
@@ -45,7 +45,8 @@ export async function loadTools(
 	registry: ToolBroker,
 ): Promise<LoadResult> {
 	const result: LoadResult = { loaded: 0, failed: [] };
-	for (const file of collectModules(dir)) {
+	const extension = dir.endsWith(`${join("dist", "tools")}`) ? ".js" : ".ts";
+	for (const file of collectModules(dir, extension)) {
 		try {
 			const mod = (await import(pathToFileURL(file).href)) as {
 				default?: unknown;
@@ -73,7 +74,7 @@ export async function loadTools(
 			}
 			result.loaded += registered.length;
 		} catch (error) {
-			result.failed.push({ file: basename(file), error: safeError(error) });
+			result.failed.push({ file: file.slice(dir.length + 1), error: safeError(error) });
 		}
 	}
 	return result;

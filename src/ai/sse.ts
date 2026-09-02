@@ -53,9 +53,16 @@ export async function parseSSE(
 			if (done) break;
 			buffer += decoder.decode(value, { stream: true });
 			let newline: number;
-			while ((newline = buffer.indexOf("\n")) >= 0) {
+			while (true) {
+				const lf = buffer.indexOf("\n");
+				const cr = buffer.indexOf("\r");
+				newline = lf < 0 ? cr : cr < 0 ? lf : Math.min(lf, cr);
+				if (newline < 0) break;
+				const isCr = buffer[newline] === "\r";
+				if (isCr && newline === buffer.length - 1) break;
 				consumeLine(buffer.slice(0, newline));
 				buffer = buffer.slice(newline + 1);
+				if (isCr && buffer.startsWith("\n")) buffer = buffer.slice(1);
 			}
 		}
 		buffer += decoder.decode();

@@ -5,6 +5,10 @@
 
 export type Style = (s: string) => string;
 
+export function sanitizeTerminalText(value: string): string {
+	return value.replace(/[\u001b\u009b][[\]()#;?]*(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "");
+}
+
 export interface ToolResultStyle {
 	ok: Style;
 	err: Style;
@@ -34,6 +38,7 @@ export function toolResultLines(
 	elapsedMs: number,
 	s: ToolResultStyle,
 ): string[] {
+	result = sanitizeTerminalText(result);
 	const t =
 		elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(1)}s` : `${elapsedMs}ms`;
 

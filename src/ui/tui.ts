@@ -11,7 +11,7 @@ import { createInterface } from "node:readline/promises";
 import { emitKeypressEvents } from "node:readline";
 import type { ToolResultStatus } from "../core/types.js";
 import type { QueuedMessage } from "../agent/queue.js";
-import { toolStartLine, toolResultLines } from "./format.js";
+import { sanitizeTerminalText, toolStartLine, toolResultLines } from "./format.js";
 
 /** 渲染层消息（主体 hooks → UI 的消息形状） */
 export type OutMsg =
@@ -108,12 +108,12 @@ export class SimpleTUI {
 		switch (m.type) {
 			case "text":
 				// 流式片段原样输出（错误走 error 类型有色渲染，不再用文本嗅探）
-				process.stdout.write(m.text);
+				process.stdout.write(sanitizeTerminalText(m.text));
 				break;
 			case "turn_start": {
 				// Keep readline active so input can be queued while the model streams.
 				process.stdout.write(`\r${C.line}`);
-				if (m.text) process.stdout.write(`${C.user}你 > ${m.text}${C.reset}\n`);
+				if (m.text) process.stdout.write(`${C.user}你 > ${sanitizeTerminalText(m.text)}${C.reset}\n`);
 				process.stdout.write(`${C.me}Uina > ${C.reset}`);
 				break;
 			}
@@ -148,11 +148,11 @@ export class SimpleTUI {
 				process.stdout.write(`\n${C.warn}⚠ ${m.text}${C.reset}\n`);
 				break;
 			case "error":
-				process.stdout.write(`${C.err}${m.text}${C.reset}\n`);
+				process.stdout.write(`${C.err}${sanitizeTerminalText(m.text)}${C.reset}\n`);
 				break;
 			case "queue":
 				if (m.items.length > 0 && !this.closed) {
-					process.stdout.write(`\n${C.dim}排队消息：${m.items.map((item) => item.text).join(" | ")}${C.reset}\n`);
+					process.stdout.write(`\n${C.dim}排队消息：${sanitizeTerminalText(m.items.map((item) => item.text).join(" | "))}${C.reset}\n`);
 				}
 				break;
 			default:

@@ -3,6 +3,7 @@
 export type Role = "system" | "user" | "assistant" | "tool";
 
 export type DeliveryMode = "direct" | "steer" | "followUp";
+export type QueueMode = "all" | "one-at-a-time";
 export type ToolExecutionMode = "parallel" | "sequential";
 export type AssistantStatus = "complete" | "length" | "aborted" | "error";
 export type ToolResultStatus =

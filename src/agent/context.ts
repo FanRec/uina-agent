@@ -15,11 +15,32 @@ export function defaultSystemPrompt(): string {
 export function buildContext(b: BuildInput): ChatMsg[] {
 	return [
 		{ role: "system", content: b.systemPrompt ?? DEFAULT_SYSTEM_PROMPT },
-		...b.history,
+		...b.history.map((message) =>
+			message.role === "tool"
+				? { ...message, content: projectToolResult(message.content) }
+				: message,
+		),
 	];
 }
 
-/** Conservative token estimate used before a provider request. */
+function projectToolResult(value: string): string {
+	const limit = 2000;
+	if (value.length <= limit) return value;
+	try {
+		const parsed = JSON.parse(value) as Record<string, unknown>;
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			const projected = { ...parsed };
+			for (const key of ["stdout", "stderr", "result"]) {
+				if (typeof projected[key] === "string") projected[key] = projected[key].slice(0, 500);
+			}
+			const json = JSON.stringify(projected);
+			if (json.length <= limit) return `${json}…[tool result truncated]`;
+		}
+	} catch { /* retain a plain text prefix */ }
+	return `${value.slice(0, limit)}…[tool result truncated]`;
+}
+
+/** Approximate token estimate used before a provider request. */
 export function estimateRequestTokens(
 	messages: readonly ChatMsg[],
 	tools: readonly ToolDef[] = [],

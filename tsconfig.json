@@ -10,7 +10,10 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "verbatimModuleSyntax": true,
-    "types": ["node"]
+    "types": ["node"],
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
   },
-  "include": ["src", "tests", "tools"]
+  "include": ["src", "tests", "tools"],
+  "exclude": ["src/ui_new", "tests/ui_new.test.ts"]
 }

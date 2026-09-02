@@ -29,15 +29,17 @@ export async function execCommandDirect(
 		code: null,
 		cancelled: signal?.aborted ?? false,
 	};
+	let collectorError: unknown;
 	try {
 		processResult = await executeShellProcess(command, signal, {
-			onStdout: (chunk) => stdout.push(chunk),
-			onStderr: (chunk) => stderr.push(chunk),
+			onStdout: (chunk) => { try { stdout.push(chunk); } catch (error) { collectorError ??= error; } },
+			onStderr: (chunk) => { try { stderr.push(chunk); } catch (error) { collectorError ??= error; } },
 		});
 	} finally {
 		stdout.finish();
 		stderr.finish();
 	}
+	if (collectorError) throw collectorError;
 	const stdoutMeta = stdout.snapshot();
 	const stderrMeta = stderr.snapshot();
 	return {

@@ -107,12 +107,17 @@ export class ToolBroker {
 		try {
 			const result = await prepared.tool.run(prepared.args, signal);
 			if (typeof result !== "string") throw new Error("工具必须返回字符串");
-			return { result, status: signal?.aborted ? "cancelled" : "succeeded" };
+			return {
+				result: signal?.aborted
+					? JSON.stringify({ error: "工具已返回，但取消时无法确认副作用状态", status: "unknown", result })
+					: result,
+				status: signal?.aborted ? "unknown" : "succeeded",
+			};
 		} catch (error) {
 			if (signal?.aborted) {
 				return {
-					result: JSON.stringify({ error: "工具调用已取消", status: "cancelled" }),
-					status: "cancelled",
+					result: JSON.stringify({ error: "工具已启动，但取消时结果未知", status: "unknown" }),
+					status: "unknown",
 				};
 			}
 			return {

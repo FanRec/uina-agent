@@ -12,6 +12,7 @@ export interface ProviderConfig {
 	apiKey: string;
 	model: string;
 	contextWindow?: number;
+	maxRetries?: number;
 }
 
 export interface UinaConfig {
@@ -72,17 +73,22 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 		}
 		if (
 			provider.contextWindow !== undefined &&
-			(typeof provider.contextWindow !== "number" || provider.contextWindow <= 0)
-		) {
-			throw new Error(`配置 ${path} 的 provider ${name} 的 contextWindow 无效`);
-		}
+			(typeof provider.contextWindow !== "number" || !Number.isFinite(provider.contextWindow) || provider.contextWindow <= 0)
+			) {
+				throw new Error(`配置 ${path} 的 provider ${name} 的 contextWindow 无效`);
+			}
+			if (provider.maxRetries !== undefined &&
+				(typeof provider.maxRetries !== "number" || !Number.isSafeInteger(provider.maxRetries) || provider.maxRetries < 0)) {
+				throw new Error(`配置 ${path} 的 provider ${name} 的 maxRetries 无效`);
+			}
 		providers[name] = {
 			baseUrl: provider.baseUrl,
 			apiKey: provider.apiKey ?? "",
 			model: provider.model,
-			...(provider.contextWindow === undefined
-				? {}
-				: { contextWindow: provider.contextWindow }),
+				...(provider.contextWindow === undefined
+					? {}
+					: { contextWindow: provider.contextWindow }),
+				...(provider.maxRetries === undefined ? {} : { maxRetries: provider.maxRetries }),
 		};
 	}
 	if (!providers[raw.default]) {

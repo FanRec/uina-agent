@@ -1,5 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { loadConfig, activeProvider } from "../ai/config.js";
 import { createOpenAIProvider } from "../ai/gateway.js";
@@ -9,11 +11,11 @@ import { loadTools } from "../tools/loader.js";
 import { Subject } from "../agent/loop.js";
 import { openJsonlSession } from "../session/jsonl-store.js";
 import { SimpleTUI, type OutMsg } from "../ui/tui.js";
-import { toolStartLine, toolResultLines } from "../ui/format.js";
+import { sanitizeTerminalText, toolStartLine, toolResultLines } from "../ui/format.js";
 
 const DATA_DIR = join(process.cwd(), "data");
 const SESSION_FILE = join(DATA_DIR, "session.jsonl");
-const TOOLS_DIR = join(process.cwd(), "tools");
+const TOOLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../tools");
 const CLEAR_LINE = "\r\x1b[2K";
 const ERR = "\x1b[31m";
 const RESET = "\x1b[0m";
@@ -41,7 +43,7 @@ export async function runApp(): Promise<void> {
 	const renderStdio = (message: OutMsg): void => {
 		switch (message.type) {
 			case "text":
-				process.stdout.write(message.text);
+				process.stdout.write(sanitizeTerminalText(message.text));
 				break;
 			case "turn_start":
 				process.stdout.write(`\n${message.text ? `你 > ${message.text}\n` : ""}Uina > `);
@@ -111,9 +113,9 @@ export async function runApp(): Promise<void> {
 		process.stdout.write(`（已恢复 JSONL 会话：${snapshot.messages.length} 条消息）\n\n`);
 	}
 
-	const restoreQueueToEditor = (): void => {
+	const restoreQueueToEditor = async (): Promise<void> => {
 		if (!tui) return;
-		const queued = subject.takeQueuedForEditor();
+		const queued = await subject.takeQueuedForEditor();
 		if (queued.length > 0) tui.replaceInput(queued.map((item) => item.text).join("\n\n"));
 	};
 
@@ -133,7 +135,7 @@ export async function runApp(): Promise<void> {
 	const handleInterrupt = (): void => {
 		if (subject.isBusy()) {
 			subject.interrupt();
-			void subject.waitForIdle().then(restoreQueueToEditor);
+			void subject.waitForIdle().then(restoreQueueToEditor).catch((error) => process.stderr.write(`[队列恢复失败] ${String(error)}\n`));
 			return;
 		}
 		if (execRunning) {

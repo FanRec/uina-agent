@@ -171,6 +171,7 @@ export class MemorySessionStore implements SessionStore {
 
 async function readSnapshot(path: string): Promise<SessionSnapshot> {
 	let text = await readFile(path, "utf8");
+	const needsFinalNewline = text.length > 0 && !text.endsWith("\n");
 	let lines = text.split("\n");
 	if (lines.at(-1) === "") lines.pop();
 	if (lines.length === 0) throw new SessionFormatError("session 缺少 header");
@@ -178,6 +179,7 @@ async function readSnapshot(path: string): Promise<SessionSnapshot> {
 	const header = parseHeader(lines[0], path);
 	const records: SessionRecord[] = [];
 	let lastSeq = 0;
+	let repairedTail = false;
 	for (let i = 1; i < lines.length; i++) {
 		const line = lines[i];
 		if (!line) throw new SessionFormatError(`${path}:${i + 1} 存在空记录`);
@@ -188,6 +190,7 @@ async function readSnapshot(path: string): Promise<SessionSnapshot> {
 			if (i === lines.length - 1 && isTornTail(line, error)) {
 				const validPrefix = `${lines.slice(0, i).join("\n")}\n`;
 				await repairTornTail(path, validPrefix);
+				repairedTail = true;
 				break;
 			}
 			throw new SessionFormatError(
@@ -203,6 +206,7 @@ async function readSnapshot(path: string): Promise<SessionSnapshot> {
 		lastSeq = value.seq;
 		records.push(value);
 	}
+	if (needsFinalNewline && !repairedTail) await appendFinalNewline(path, text);
 
 	const recovered = recoverRecords(records);
 	return {
@@ -211,6 +215,15 @@ async function readSnapshot(path: string): Promise<SessionSnapshot> {
 		queued: recovered.queued,
 		lastSeq,
 	};
+}
+
+async function appendFinalNewline(path: string, content: string): Promise<void> {
+	const temp = `${path}.${process.pid}.${Date.now()}.newline.tmp`;
+	await writeFile(temp, `${content}\n`, "utf8");
+	await rename(temp, path).catch(async (error) => {
+		await unlink(temp).catch(() => undefined);
+		throw error;
+	});
 }
 
 function parseHeader(value: string | undefined, path: string): SessionHeader {

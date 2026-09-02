@@ -49,7 +49,7 @@ export function recoverRecords(records: SessionRecord[]): RecoveredState {
 					status: finished ? "unknown" : status,
 				});
 			const recoveredStatus =
-				finished && !finished.result && finished.status !== "not_started"
+				finished && finished.result === undefined && finished.status !== "not_started"
 					? "unknown"
 					: status;
 			messages.push({
@@ -137,6 +137,10 @@ function applyEvent(
 		) {
 			throw new SessionFormatError("queue_enqueued 数据不完整");
 		}
+		if (queued.has(data.id)) throw new SessionFormatError(`重复队列 id: ${data.id}`);
+		if (!Number.isSafeInteger(data.order) || data.order <= 0) {
+			throw new SessionFormatError("queue_enqueued order 无效");
+		}
 		queued.set(data.id, {
 			id: data.id,
 			order: data.order,
@@ -146,7 +150,7 @@ function applyEvent(
 		return;
 	}
 	if (record.event === "queue_consumed" || record.event === "queue_restored") {
-		if (typeof data.id !== "string") {
+		if (typeof data.id !== "string" || !queued.has(data.id)) {
 			throw new SessionFormatError(`${record.event} 缺少 id`);
 		}
 		queued.delete(data.id);
@@ -156,30 +160,32 @@ function applyEvent(
 		if (typeof data.callId !== "string") {
 			throw new SessionFormatError("tool_started 缺少 callId");
 		}
-		if (!pendingCalls.some((call) => call.callId === data.callId)) {
+		const pending = pendingCalls.find((call) => call.callId === data.callId);
+		if (!pending) {
 			throw new SessionFormatError(`tool_started 没有对应调用: ${data.callId}`);
 		}
-		const pending = pendingCalls.find((call) => call.callId === data.callId);
-		if (pending) pending.started = true;
+		if (pending.started) throw new SessionFormatError(`tool_started 重复: ${data.callId}`);
+		pending.started = true;
 		return;
 	}
 	if (record.event === "tool_finished") {
 		if (typeof data.callId !== "string") {
 			throw new SessionFormatError("tool_finished 缺少 callId");
 		}
-		if (!pendingCalls.some((call) => call.callId === data.callId)) {
+		const pending = pendingCalls.find((call) => call.callId === data.callId);
+		if (!pending) {
 			throw new SessionFormatError(`tool_finished 没有对应调用: ${data.callId}`);
 		}
+		if (finishedEvents.has(data.callId)) throw new SessionFormatError(`tool_finished 重复: ${data.callId}`);
 		const status = data.status;
+		if (status !== "not_started" && !pending.started) {
+			throw new SessionFormatError(`工具未启动即完成: ${data.callId}`);
+		}
+		if (status !== "succeeded" && status !== "failed" && status !== "cancelled" && status !== "unknown" && status !== "not_started") {
+			throw new SessionFormatError(`tool_finished status 无效: ${data.callId}`);
+		}
 		finishedEvents.set(data.callId, {
-			status:
-				status === "succeeded" ||
-				status === "failed" ||
-				status === "cancelled" ||
-				status === "unknown" ||
-				status === "not_started"
-					? status
-					: "unknown",
+			status,
 			result: typeof data.result === "string" ? data.result : undefined,
 		});
 		return;

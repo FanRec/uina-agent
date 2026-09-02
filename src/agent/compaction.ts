@@ -5,14 +5,12 @@ export interface CompactionSettings {
 	contextWindow: number;
 	reserveTokens: number;
 	keepRecentTokens: number;
-	inputCapChars: number;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	contextWindow: 64 * 1024,
 	reserveTokens: 16_384,
 	keepRecentTokens: 20_000,
-	inputCapChars: 30_000,
 };
 
 export interface CompactionResult {
@@ -78,7 +76,7 @@ export async function compactHistory(
 	const transcript = (
 		(priorSummary ? `[user] ${priorSummary.content}\n` : "") +
 		rest.map((message) => `[${message.role}] ${formatForSummary(message)}`).join("\n")
-	).slice(-settings.inputCapChars);
+	);
 
 	let summary = "";
 	await provider.stream(
@@ -104,7 +102,7 @@ export async function compactHistory(
 		signal,
 	);
 
-	const final = summary.trim().slice(0, 300);
+	const final = summary.trim();
 	if (!final) throw new Error("compaction 返回空摘要");
 	return {
 		summary: final,

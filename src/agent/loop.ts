@@ -31,6 +31,8 @@ export interface SubjectOptions {
 	store?: SessionStore;
 	compaction?: Partial<CompactionSettings>;
 	systemPrompt?: string;
+	steerQueueMode?: import("../core/types.js").QueueMode;
+	followUpQueueMode?: import("../core/types.js").QueueMode;
 }
 
 export interface QueueInputOptions {
@@ -48,6 +50,8 @@ export class Subject {
 	private readonly compaction: CompactionSettings;
 	private readonly store?: SessionStore;
 	private idleWaiters: Array<() => void> = [];
+	private resumingQueue = false;
+	private readonly queueModes: Record<"steer" | "followUp", import("../core/types.js").QueueMode>;
 
 	constructor(
 		private readonly provider: ModelProvider,
@@ -62,30 +66,34 @@ export class Subject {
 			contextWindow: provider.contextWindow ?? DEFAULT_COMPACTION_SETTINGS.contextWindow,
 			...options.compaction,
 		};
+		this.queueModes = {
+			steer: options.steerQueueMode ?? "one-at-a-time",
+			followUp: options.followUpQueueMode ?? "one-at-a-time",
+		};
 	}
 
-	pushInput(text: string, options: QueueInputOptions = {}): void {
+	pushInput(text: string, options: QueueInputOptions = {}): Promise<void> {
 		const normalized = text.trim();
-		if (!normalized) return;
+		if (!normalized) return Promise.resolve();
 		const mode = options.mode ?? (this.busy ? "steer" : "direct");
 		if (mode === "direct" && !this.busy && this.queues.size === 0) {
-			void this.runTurn(normalized);
-			return;
+			return this.startRun(normalized);
 		}
 		const queued = this.queues.enqueue(normalized, mode === "direct" ? "followUp" : mode);
-		void this.storeEvent("queue_enqueued", queued as unknown as Record<string, unknown>);
 		this.notifyQueueChanged();
-		if (!this.busy && mode === "direct") void this.resumeQueued();
+		const persisted = this.storeEvent("queue_enqueued", eventData(queued));
+		if (!this.busy && mode === "direct") return persisted.then(() => this.resumeQueued());
+		return persisted;
 	}
 
 	/** Queue an input for the next model request while the current run is active. */
-	steer(text: string): void {
-		this.pushInput(text, { mode: "steer" });
+	steer(text: string): Promise<void> {
+		return this.pushInput(text, { mode: "steer" });
 	}
 
 	/** Queue an input until the current run has otherwise completed. */
-	followUp(text: string): void {
-		this.pushInput(text, { mode: "followUp" });
+	followUp(text: string): Promise<void> {
+		return this.pushInput(text, { mode: "followUp" });
 	}
 
 	interrupt(): void {
@@ -121,20 +129,28 @@ export class Subject {
 	}
 
 	/** Removes queued inputs and returns them in original arrival order for UI editing. */
-	takeQueuedForEditor(): QueuedMessage[] {
-		const items = this.queues.takeAll();
-		for (const item of items) void this.storeEvent("queue_restored", eventData(item));
+	async takeQueuedForEditor(): Promise<QueuedMessage[]> {
+		const items = this.queues.all();
+		for (const item of items) {
+			await this.storeEvent("queue_restored", eventData(item));
+			this.queues.remove(item.id);
+		}
 		this.notifyQueueChanged();
 		return items;
 	}
 
-	private async runTurn(text: string): Promise<void> {
+	private startRun(text: string): Promise<void> {
+		if (this.busy) return Promise.reject(new Error("已有活动轮次"));
 		this.busy = true;
 		this.interrupted = false;
 		this.abort = new AbortController();
 		const turn = ++this.turnSeq;
-		this.hooks.onTurnStart?.(turn, text);
+		return this.runTurn(text, turn);
+	}
+
+	private async runTurn(text: string, turn: number): Promise<void> {
 		try {
+			this.hooks.onTurnStart?.(turn, text);
 			await this.appendMessage({ role: "user", content: text });
 			await this.decide();
 		} catch (error) {
@@ -143,36 +159,49 @@ export class Subject {
 				this.hooks.onNotice?.("本轮已中断，排队消息已保留在输入框待恢复。");
 			} else {
 				const message = safeError(error);
-				await this.appendMessage({ role: "user", content: `（系统提示）上轮处理出错：${message}` });
 				await this.storeEvent("turn_failed", { turnId: turn, error: message });
-				this.hooks.onError?.(message);
+				this.reportError(message);
 			}
 		} finally {
 			this.abort = null;
 			this.busy = false;
-			this.hooks.onTurnEnd?.(turn);
+			try { this.hooks.onTurnEnd?.(turn); } catch (error) {
+				try { this.hooks.onError?.(safeError(error)); } catch { /* hooks cannot own lifecycle */ }
+			}
+			if (!this.interrupted && this.queues.size > 0) {
+				try { await this.resumeQueued(); } catch (error) { this.reportError(error); }
+			}
 			for (const resolve of this.idleWaiters.splice(0)) resolve();
 		}
 	}
 
 	private async resumeQueued(): Promise<void> {
-		if (this.busy) return;
-		const all = this.queues.takeAll();
-		this.notifyQueueChanged();
-		if (all.length === 0) return;
-		for (const item of all) await this.storeEvent("queue_consumed", eventData(item));
-		await this.runTurn(all.map((item) => item.text).join("\n"));
+		if (this.busy || this.resumingQueue) return;
+		const item = this.queues.peek("steer") ?? this.queues.peek("followUp");
+		if (!item) return;
+		this.resumingQueue = true;
+		try {
+			await this.consumeQueueItem(item);
+			this.resumingQueue = false;
+			await this.startRun(item.text);
+		} finally {
+			this.resumingQueue = false;
+		}
 	}
 
 	private async decide(): Promise<void> {
 		await this.maybeCompact();
 		let nextUser: ChatMsg | undefined;
+		let nextUsers: ChatMsg[] = [];
 		for (;;) {
 			if (this.interrupted) {
 				await this.emitInterrupted();
 				return;
 			}
-			if (nextUser) {
+			if (nextUsers.length > 0) {
+				for (const message of nextUsers) await this.appendMessage(message);
+				nextUsers = [];
+			} else if (nextUser) {
 				await this.appendMessage(nextUser);
 				nextUser = undefined;
 			}
@@ -223,6 +252,9 @@ export class Subject {
 			) {
 				throw new Error(`模型返回未知或缺失 finish reason: ${finishReason ?? "none"}`);
 			}
+			if (finishReason === "tool_calls" && toolCalls.length === 0) {
+				throw new Error("模型声明了 tool_calls，但没有返回工具调用");
+			}
 			if (finishReason === "length") {
 				this.hooks.onNotice?.("本轮回复达到输出长度上限。");
 			}
@@ -234,16 +266,16 @@ export class Subject {
 						status: finishReason === "length" ? "length" : "complete",
 					});
 				}
-				const steer = this.queues.takeSteer();
-				if (steer) {
-					await this.consumeQueueItem(steer);
-					nextUser = { role: "user", content: steer.text };
+				const steer = this.queues.peekMany("steer", this.queueModes.steer);
+				if (steer.length > 0) {
+					for (const item of steer) await this.consumeQueueItem(item);
+					nextUsers = steer.map((item) => ({ role: "user", content: item.text }));
 					continue;
 				}
-				const followUp = this.queues.takeFollowUp();
-				if (followUp) {
-					await this.consumeQueueItem(followUp);
-					nextUser = { role: "user", content: followUp.text };
+				const followUp = this.queues.peekMany("followUp", this.queueModes.followUp);
+				if (followUp.length > 0) {
+					for (const item of followUp) await this.consumeQueueItem(item);
+					nextUsers = followUp.map((item) => ({ role: "user", content: item.text }));
 					continue;
 				}
 				this.notifyQueueChanged();
@@ -262,7 +294,7 @@ export class Subject {
 				await this.appendMessage({
 					role: "tool",
 					tool_call_id: result.callId,
-					content: truncateToolContext(result.result),
+					content: result.result,
 					status: result.status,
 				});
 			}
@@ -270,10 +302,10 @@ export class Subject {
 				await this.emitInterrupted();
 				return;
 			}
-			const steer = this.queues.takeSteer();
-			if (steer) {
-				await this.consumeQueueItem(steer);
-				nextUser = { role: "user", content: steer.text };
+			const steer = this.queues.peekMany("steer", this.queueModes.steer);
+			if (steer.length > 0) {
+				for (const item of steer) await this.consumeQueueItem(item);
+				nextUsers = steer.map((item) => ({ role: "user", content: item.text }));
 			}
 		}
 	}
@@ -367,6 +399,7 @@ export class Subject {
 
 	private async consumeQueueItem(item: QueuedMessage): Promise<void> {
 		await this.storeEvent("queue_consumed", eventData(item));
+		this.queues.remove(item.id);
 		this.notifyQueueChanged();
 	}
 
@@ -375,7 +408,11 @@ export class Subject {
 	}
 
 	private notifyQueueChanged(): void {
-		this.hooks.onQueueChanged?.(this.queues.all());
+		try { this.hooks.onQueueChanged?.(this.queues.all()); } catch (error) { this.reportError(error); }
+	}
+
+	private reportError(error: unknown): void {
+		try { this.hooks.onError?.(safeError(error)); } catch { /* reporting cannot alter runtime state */ }
 	}
 
 	private currentSignal(): AbortSignal {
@@ -391,18 +428,6 @@ export class Subject {
 		await this.storeEvent("turn_aborted", { turnId: this.turnSeq });
 		this.hooks.onToken("\n[已中断] 当前对话已停止。\n");
 	}
-}
-
-export function findOrphanToolCalls(messages: readonly ChatMsg[]): string[] {
-	const pending = new Set<string>();
-	const results = new Set<string>();
-	for (const message of messages) {
-		if (message.role === "assistant" && message.tool_calls) {
-			for (const call of message.tool_calls) pending.add(call.id);
-		}
-		if (message.role === "tool") results.add(message.tool_call_id);
-	}
-	return [...pending].filter((id) => !results.has(id));
 }
 
 function parseToolArgs(text: string): { value: unknown; valid: boolean } {
@@ -427,10 +452,4 @@ function safeError(error: unknown): string {
 
 function eventData(value: object): Record<string, unknown> {
 	return { ...value };
-}
-
-function truncateToolContext(value: string): string {
-	const maxChars = 2000;
-	if (value.length <= maxChars) return value;
-	return `${value.slice(0, maxChars)}…[工具结果已截断，完整结果见 session 事件记录]`;
 }

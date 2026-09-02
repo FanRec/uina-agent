@@ -148,7 +148,7 @@ describe("Subject", () => {
 		subject.interrupt();
 		await idle(subject);
 		expect(subject.queuedSnapshot().map((item) => item.text)).toEqual(["steer", "follow"]);
-		const editorItems = subject.takeQueuedForEditor();
+		const editorItems = await subject.takeQueuedForEditor();
 		expect(editorItems.map((item) => item.text)).toEqual(["steer", "follow"]);
 		release?.();
 
@@ -209,7 +209,7 @@ describe("Subject", () => {
 		await idle(failedSubject);
 		const failedHistory = failedSubject.historySnapshot();
 		expect(failedHistory.some((message) => message.content === "old history")).toBe(true);
-		expect(failedHistory.some((message) => (message.content ?? "").includes("上轮处理出错"))).toBe(true);
+		expect(failedHistory.some((message) => (message.content ?? "").includes("上轮处理出错"))).toBe(false);
 	});
 });
 

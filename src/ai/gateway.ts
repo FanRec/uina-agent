@@ -9,6 +9,7 @@ export interface ProviderConf {
 	apiKey: string;
 	model: string;
 	contextWindow?: number;
+	maxRetries?: number;
 }
 
 export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
@@ -17,7 +18,10 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 		name: conf.model,
 		contextWindow: conf.contextWindow,
 		async stream(req, onDelta, signal): Promise<void> {
-			const response = await fetch(endpoint, {
+			const response = await fetchWithRetry(endpoint, {
+				maxRetries: conf.maxRetries ?? 2,
+				signal,
+				request: {
 				method: "POST",
 				signal,
 				headers: {
@@ -31,6 +35,7 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 					tools: req.tools?.length ? req.tools : undefined,
 					stream: true,
 				}),
+				},
 			});
 
 			if (!response.ok) {
@@ -141,6 +146,51 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 			}
 		},
 	};
+}
+
+async function fetchWithRetry(
+	url: string,
+	options: { request: RequestInit; signal?: AbortSignal; maxRetries: number },
+): Promise<Response> {
+	let attempt = 0;
+	while (true) {
+		try {
+			const response = await fetch(url, { ...options.request, signal: options.signal });
+			if (response.ok || !isRetryableStatus(response.status) || attempt >= options.maxRetries) return response;
+			await response.body?.cancel();
+			const delay = retryAfter(response.headers.get("retry-after")) ?? 250 * 2 ** attempt;
+			await abortableDelay(Math.min(delay, 60_000), options.signal);
+		} catch (error) {
+			if (options.signal?.aborted || attempt >= options.maxRetries || !isNetworkError(error)) throw error;
+			await abortableDelay(Math.min(250 * 2 ** attempt, 60_000), options.signal);
+		}
+		attempt++;
+	}
+}
+
+function isRetryableStatus(status: number): boolean {
+	return status === 408 || status === 409 || status === 429 || status >= 500;
+}
+
+function isNetworkError(error: unknown): boolean {
+	return error instanceof TypeError || (error instanceof Error && error.name === "FetchError");
+}
+
+function retryAfter(value: string | null): number | undefined {
+	if (!value) return undefined;
+	const seconds = Number(value);
+	if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+	const timestamp = Date.parse(value);
+	return Number.isFinite(timestamp) ? Math.max(0, timestamp - Date.now()) : undefined;
+}
+
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(resolve, ms);
+		const abort = (): void => { clearTimeout(timer); reject(signal?.reason ?? new DOMException("Aborted", "AbortError")); };
+		signal?.addEventListener("abort", abort, { once: true });
+	});
 }
 
 interface OpenAIChunk {
