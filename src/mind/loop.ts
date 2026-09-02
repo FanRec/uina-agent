@@ -13,7 +13,6 @@ import type {
 	CompletedToolCall,
 	ModelProvider,
 } from "../core/types.js";
-import type { MemoryPort } from "../memory/port.js";
 import type { ToolBroker } from "../tools/broker.js";
 import { buildContext } from "./context.js";
 
@@ -28,7 +27,6 @@ export interface LoopHooks {
 }
 
 const MAX_TOOL_ROUNDS = 3;
-const SELF_NAME = "Uina";
 
 export class Subject {
 	private busy = false;
@@ -39,7 +37,6 @@ export class Subject {
 
 	constructor(
 		private readonly provider: ModelProvider,
-		private readonly memory: MemoryPort,
 		private readonly tools: ToolBroker,
 		private readonly hooks: LoopHooks,
 	) {}
@@ -95,13 +92,8 @@ export class Subject {
 	/** 决策循环：模型流式产出 → 若要工具则执行并回注 → 继续，直到模型完成。 */
 	private async decide(text: string): Promise<void> {
 		for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-			const recalled = this.memory
-				.recall(`${SELF_NAME} ${text}`, 5)
-				.map((m) => m.text);
 			const msgs = buildContext({
-				selfName: SELF_NAME,
 				userText: text,
-				recalled,
 				history: this.history,
 			});
 
@@ -155,14 +147,5 @@ export class Subject {
 			// 工具结果已回注，进入下一 round 由模型基于结果继续
 		}
 		this.hooks.onToken("\n[达到工具循环上限，本轮终止]\n");
-	}
-
-	/** 自检：当前规模（测试/调试用） */
-	stats(): { turns: number; historyLen: number; pending: number } {
-		return {
-			turns: this.turnSeq,
-			historyLen: this.history.length,
-			pending: this.pending.length,
-		};
 	}
 }

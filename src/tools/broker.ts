@@ -23,10 +23,7 @@ export class ToolBroker {
 		return [...this.tools.values()].map((t) => t.def);
 	}
 
-	async run(
-		name: string,
-		args: Record<string, unknown>,
-	): Promise<string> {
+	async run(name: string, args: Record<string, unknown>): Promise<string> {
 		const t = this.tools.get(name);
 		if (!t) return JSON.stringify({ error: `未知工具 ${name}` });
 		try {

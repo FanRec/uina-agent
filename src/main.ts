@@ -7,9 +7,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, activeProvider } from "./ai/config.js";
 import { createOpenAIProvider } from "./ai/gateway.js";
-import { createFileMemory } from "./memory/port.js";
 import { ToolBroker } from "./tools/broker.js";
-import { getTimeTool, rememberTool, recallTool, forgetTool } from "./tools/builtin.js";
+import { getTimeTool } from "./tools/builtin.js";
 import { shellTool } from "./tools/shell.js";
 import { Subject } from "./mind/loop.js";
 import { SimpleTUI, type OutMsg } from "./ui/tui.js";
@@ -21,15 +20,9 @@ mkdirSync(DATA_DIR, { recursive: true });
 const cfg = loadConfig();
 const provider = createOpenAIProvider(activeProvider(cfg));
 
-const memory = createFileMemory(DATA_DIR);
-memory.load();
-
 const tools = new ToolBroker();
 tools.register(getTimeTool());
 tools.register(shellTool({ baseDir: process.cwd() }));
-tools.register(rememberTool(memory));
-tools.register(recallTool(memory));
-tools.register(forgetTool(memory));
 
 // 渲染层：真 TTY 用交互 TUI；非 TTY（管道/一次性模式）退化为纯 stdio 流式打印
 const renderStdio = (m: OutMsg): void => {
@@ -68,7 +61,7 @@ const oneshot = process.env.UINA_ONESHOT_MSG;
 let oneshotDone = false;
 
 // 主体 → 渲染层：hooks 直连（单一输出端，不需要广播中间层）
-const subject = new Subject(provider, memory, tools, {
+const subject = new Subject(provider, tools, {
 	onToken: (text) => render({ type: "text", text }),
 	onTurnStart: (n, text) => render({ type: "turn_start", n, text }),
 	onTurnEnd: (n) => {

@@ -57,7 +57,11 @@ async function captureReq(messages: unknown[]): Promise<unknown> {
 	servers.push(server);
 	await new Promise<void>((r) => server.listen(0, r));
 	const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
-	const provider = createOpenAIProvider({ baseUrl: base, apiKey: "test", model: "m" });
+	const provider = createOpenAIProvider({
+		baseUrl: base,
+		apiKey: "test",
+		model: "m",
+	});
 	await provider.stream({ messages: messages as never }, () => {});
 	await new Promise((r) => setTimeout(r, 20));
 	return captured;
@@ -121,18 +125,23 @@ describe("gateway SSE 解析", () => {
 			{
 				role: "assistant",
 				content: "",
-				tool_calls: [{ id: "t1", name: "run_shell", args: { command: "echo x" } }],
+				tool_calls: [
+					{ id: "t1", name: "run_shell", args: { command: "echo x" } },
+				],
 			},
 			{
 				role: "tool",
 				tool_call_id: "t1",
-				content: "{\"stdout\":\"x\"}",
+				content: '{"stdout":"x"}',
 			},
 		]);
 		const b = body as {
 			messages: {
 				role: string;
-				tool_calls?: { type?: string; function?: { name?: string; arguments?: unknown } }[];
+				tool_calls?: {
+					type?: string;
+					function?: { name?: string; arguments?: unknown };
+				}[];
 			}[];
 		};
 		const asst = b.messages.find((m) => m.role === "assistant");

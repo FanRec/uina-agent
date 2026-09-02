@@ -37,14 +37,13 @@ apiKey 也可用环境变量 `UINA_API_KEY_DEEPSEEK` 覆盖，避免写盘。
 ```
 src/
   ai/       模型网关（OpenAI SSE 流式）、配置   ← 外部模型边界
-  memory/   记忆端口（write/recall/correction，文件后端）
   tools/    工具代理 + 内置工具（shell 等）
   mind/     上下文组装 + 前台循环（主体）        ← 决策与表达
   ui/       简易 TUI（流式渲染 + 工具状态反馈）
   main.ts   入口：终端输入 + 组装
 ```
 
-数据落在 `data/`（gitignore）：`memory.json`（长期记忆）、`session.json`（会话历史）。
+数据落在 `data/`（gitignore）：`session.json`（会话历史）。长期记忆已移除（见"刻意删除"）。
 
 ## 当前切片验证范围
 
@@ -52,13 +51,15 @@ src/
 - 工具闭环：模型提议 → 确定性执行 → 结果回注再决策（协议层 wire 转换有单测）
 - 工具状态反馈：调用中 `[工具] xxx` → 完成 `✓`（吸收 Nott 的状态可见性）
 - `run_shell`：沙箱内执行命令（baseDir 限定、超时、截断；无白名单，属副作用工具）
-- `remember`/`recall`/`forget`：记忆 write/read/correction，跨进程持久（重启仍在）
+- `get_time`：同步快工具（无副作用，工具闭环的测试锚点）
 - 会话续聊：`--continue` 恢复上次对话历史（吸收 Nott 的会话持久化，最小版）
 - 输出期间输入排队，轮末批量注入
 
 ## 刻意删除（2026-09-02 reality-pass，详见 DESIGN.md）
 
-事件总线、运行时状态、输出广播代理、后台 Job 演示（`think_for`）、记忆 kind 维度——无真实消费者/演示性机制一律删，主体只剩 hooks 直连的最小环。
+事件总线、运行时状态、输出广播代理、后台 Job 演示（`think_for`）、记忆 kind 维度、**整个长期记忆模块（工具对 + 后端 + 自动 recall 注入）**——无真实消费者/演示性机制一律删，主体只剩 hooks 直连的最小环。
+
+> 记忆决策（空纪 2026-09-02 定）：目前先不考虑愿景，从最小 agent 出发，"少即是多"；最小切片的"记忆"= 会话续聊（session.json）。愿景#3 长期记忆待到有真实需求时再迭代回来（届时后端可直接接向量化）。
 
 ## 未实现（长大路径，见 DESIGN.md）
 

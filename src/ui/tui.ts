@@ -80,9 +80,7 @@ export class SimpleTUI {
 				}
 				break;
 			case "tool_start":
-				process.stdout.write(
-					`\n${C.tool}  ⏳ [工具] ${m.name}${C.reset}`,
-				);
+				process.stdout.write(`\n${C.tool}  ⏳ [工具] ${m.name}${C.reset}`);
 				break;
 			case "tool_done":
 				process.stdout.write(` ${C.ok}✓${C.reset}`);

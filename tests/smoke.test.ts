@@ -1,12 +1,8 @@
 /**
- * 冒烟测试：用可编程 mock 验证主体链路（流式、工具闭环、shell、记忆跨会话）。
+ * 冒烟测试：用可编程 mock 验证主体链路（流式、工具闭环、shell）。
  * 说明：mock 只证明本仓库代码链路正确，不证明真实模型集成效果——那属于真模型冒烟。
  */
 import { describe, it, expect } from "vitest";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createFileMemory } from "../src/memory/port.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import { getTimeTool } from "../src/tools/builtin.js";
 import { shellTool } from "../src/tools/shell.js";
@@ -31,16 +27,14 @@ function safeParse(s: string): Record<string, unknown> {
 }
 
 function makeSubject(rules: Parameters<typeof scriptedProvider>[0]) {
-	const memory = createFileMemory(mkdtempSync(join(tmpdir(), "uina-test-")));
-	memory.load();
 	const tools = new ToolBroker();
 	tools.register(getTimeTool());
 	const provider = scriptedProvider(rules);
 	let out = "";
-	const subject = new Subject(provider, memory, tools, {
+	const subject = new Subject(provider, tools, {
 		onToken: (t) => (out += t),
 	});
-	return { subject, provider, memory, getOut: () => out };
+	return { subject, provider, getOut: () => out };
 }
 
 describe("主体链路（mock）", () => {
@@ -78,6 +72,25 @@ describe("主体链路（mock）", () => {
 		expect(second.messages.some((m) => m.role === "tool")).toBe(true);
 		expect(second.messages.filter((m) => m.role === "tool").length).toBe(1);
 	});
+
+	it("会话续聊：addHistory 后 historySnapshot 带回注入的消息", async () => {
+		const { subject, provider } = makeSubject([
+			{
+				match: () => true,
+				produce: () => [{ kind: "text", text: "记得" }],
+			},
+		]);
+		subject.addHistory([
+			{ role: "user", content: "之前说过的旧消息" },
+			{ role: "assistant", content: "旧回复" },
+		]);
+		subject.pushInput("继续");
+		await flush();
+		// 首轮请求应包含旧历史 + 新输入
+		const msgs = provider.calls[0].messages;
+		expect(msgs.some((m) => m.content === "之前说过的旧消息")).toBe(true);
+		expect(lastUser(provider.calls[0])).toBe("继续");
+	});
 });
 
 describe("shell 工具", () => {
@@ -92,31 +105,5 @@ describe("shell 工具", () => {
 		const result = safeParse(await tool.run({ command: "exit 3" }));
 		// exec 非零退出会抛，实现应把错误包进结构化结果返回
 		expect(result.error ?? result.stderr).toBeTruthy();
-	});
-});
-
-describe("记忆跨会话（重启仍在）", () => {
-	it("remember 写入后重建实例仍能 recall", () => {
-		const dir = mkdtempSync(join(tmpdir(), "uina-mem-"));
-		const m1 = createFileMemory(dir);
-		m1.load();
-		m1.remember("用户叫张三");
-
-		// 模拟重启：新的实例，同一目录
-		const m2 = createFileMemory(dir);
-		m2.load();
-		const hits = m2.recall("张三", 5);
-		expect(hits.length).toBe(1);
-		expect(hits[0].text).toContain("张三");
-	});
-
-	it("archive 后不再被 recall", () => {
-		const dir = mkdtempSync(join(tmpdir(), "uina-mem-"));
-		const m = createFileMemory(dir);
-		m.load();
-		const item = m.remember("旧习惯：喝咖啡");
-		expect(m.recall("咖啡", 5).length).toBe(1);
-		m.archive(item.id);
-		expect(m.recall("咖啡", 5).length).toBe(0);
 	});
 });
