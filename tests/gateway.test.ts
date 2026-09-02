@@ -38,6 +38,31 @@ async function collect(baseUrl: string): Promise<StreamDelta[]> {
 	return out;
 }
 
+/** 起一个假端点，捕获请求体供断言（验证发送方向 wire 形状） */
+async function captureReq(messages: unknown[]): Promise<unknown> {
+	let captured: unknown;
+	const server = createServer((req, res) => {
+		let raw = "";
+		req.on("data", (c) => (raw += c));
+		req.on("end", () => {
+			try {
+				captured = JSON.parse(raw);
+			} catch (e) {
+				captured = { parseError: (e as Error).message, raw };
+			}
+			res.writeHead(200, { "Content-Type": "text/event-stream" });
+			res.end("data: [DONE]\n\n");
+		});
+	});
+	servers.push(server);
+	await new Promise<void>((r) => server.listen(0, r));
+	const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+	const provider = createOpenAIProvider({ baseUrl: base, apiKey: "test", model: "m" });
+	await provider.stream({ messages: messages as never }, () => {});
+	await new Promise((r) => setTimeout(r, 20));
+	return captured;
+}
+
 describe("gateway SSE 解析", () => {
 	it("文本分片按序输出，finish 收口", async () => {
 		const base = fakeEndpoint(
@@ -87,6 +112,37 @@ describe("gateway SSE 解析", () => {
 		}
 		expect(parsedArgs).toEqual({ a: 1 });
 		expect(out.some((d) => d.kind === "finish")).toBe(true);
+	});
+
+	it("发送方向：assistant.tool_calls 转成协议形状（type/function/字符串 arguments）", async () => {
+		const body = await captureReq([
+			{ role: "system", content: "sys" },
+			{ role: "user", content: "hi" },
+			{
+				role: "assistant",
+				content: "",
+				tool_calls: [{ id: "t1", name: "run_shell", args: { command: "echo x" } }],
+			},
+			{
+				role: "tool",
+				tool_call_id: "t1",
+				content: "{\"stdout\":\"x\"}",
+			},
+		]);
+		const b = body as {
+			messages: {
+				role: string;
+				tool_calls?: { type?: string; function?: { name?: string; arguments?: unknown } }[];
+			}[];
+		};
+		const asst = b.messages.find((m) => m.role === "assistant");
+		expect(asst?.tool_calls?.[0]).toEqual({
+			id: "t1",
+			type: "function",
+			function: { name: "run_shell", arguments: '{"command":"echo x"}' },
+		});
+		// non-assistant 消息原样透传
+		expect(b.messages[0]).toEqual({ role: "system", content: "sys" });
 	});
 
 	it("HTTP 非 2xx 抛错", async () => {

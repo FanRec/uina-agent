@@ -6,8 +6,6 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Bus } from "../src/core/bus.js";
-import { RuntimeStore } from "../src/core/store.js";
 import { createFileMemory } from "../src/memory/port.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import { getTimeTool } from "../src/tools/builtin.js";
@@ -33,23 +31,21 @@ function safeParse(s: string): Record<string, unknown> {
 }
 
 function makeSubject(rules: Parameters<typeof scriptedProvider>[0]) {
-	const bus = new Bus();
-	const store = new RuntimeStore();
 	const memory = createFileMemory(mkdtempSync(join(tmpdir(), "uina-test-")));
 	memory.load();
 	const tools = new ToolBroker();
 	tools.register(getTimeTool());
 	const provider = scriptedProvider(rules);
 	let out = "";
-	const subject = new Subject(bus, store, provider, memory, tools, {
+	const subject = new Subject(provider, memory, tools, {
 		onToken: (t) => (out += t),
 	});
-	return { bus, subject, provider, memory, getOut: () => out };
+	return { subject, provider, memory, getOut: () => out };
 }
 
 describe("主体链路（mock）", () => {
 	it("流式文本：分段输出并写入历史", async () => {
-		const { bus, provider } = makeSubject([
+		const { subject, provider } = makeSubject([
 			{
 				match: () => true,
 				produce: () => [
@@ -58,14 +54,14 @@ describe("主体链路（mock）", () => {
 				],
 			},
 		]);
-		bus.emit({ type: "user_input", text: "嗨", from: "test" });
+		subject.pushInput("嗨");
 		await flush();
 		// 该轮请求应包含用户输入（进入历史）
 		expect(lastUser(provider.calls[0])).toBe("嗨");
 	});
 
 	it("工具闭环：get_time 执行后结果回注给模型", async () => {
-		const { bus, provider } = makeSubject([
+		const { subject, provider } = makeSubject([
 			{
 				match: (req) => !req.messages.some((m) => m.role === "tool"),
 				produce: () => [toolCallDelta("c1", "get_time", {})],
@@ -75,7 +71,7 @@ describe("主体链路（mock）", () => {
 				produce: () => [{ kind: "text", text: "查好了" }],
 			},
 		]);
-		bus.emit({ type: "user_input", text: "现在几点", from: "test" });
+		subject.pushInput("现在几点");
 		await flush();
 		// 第二轮消息里应含 role:tool 的回注
 		const second = provider.calls[1];
@@ -87,20 +83,13 @@ describe("主体链路（mock）", () => {
 describe("shell 工具", () => {
 	it("真实执行命令并返回输出", async () => {
 		const tool = shellTool({ baseDir: process.cwd(), maxOutput: 500 });
-		const result = safeParse(
-			await tool.run(
-				{ command: "echo uina-smoke-ok" },
-				{ onJobDone: () => {} },
-			),
-		);
+		const result = safeParse(await tool.run({ command: "echo uina-smoke-ok" }));
 		expect(result.stdout).toContain("uina-smoke-ok");
 	});
 
 	it("命令失败时返回结构化错误而非抛出", async () => {
 		const tool = shellTool({ baseDir: process.cwd() });
-		const result = safeParse(
-			await tool.run({ command: "exit 3" }, { onJobDone: () => {} }),
-		);
+		const result = safeParse(await tool.run({ command: "exit 3" }));
 		// exec 非零退出会抛，实现应把错误包进结构化结果返回
 		expect(result.error ?? result.stderr).toBeTruthy();
 	});
@@ -111,7 +100,7 @@ describe("记忆跨会话（重启仍在）", () => {
 		const dir = mkdtempSync(join(tmpdir(), "uina-mem-"));
 		const m1 = createFileMemory(dir);
 		m1.load();
-		m1.remember("用户叫张三", "fact");
+		m1.remember("用户叫张三");
 
 		// 模拟重启：新的实例，同一目录
 		const m2 = createFileMemory(dir);
@@ -125,7 +114,7 @@ describe("记忆跨会话（重启仍在）", () => {
 		const dir = mkdtempSync(join(tmpdir(), "uina-mem-"));
 		const m = createFileMemory(dir);
 		m.load();
-		const item = m.remember("旧习惯：喝咖啡", "fact");
+		const item = m.remember("旧习惯：喝咖啡");
 		expect(m.recall("咖啡", 5).length).toBe(1);
 		m.archive(item.id);
 		expect(m.recall("咖啡", 5).length).toBe(0);

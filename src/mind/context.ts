@@ -9,7 +9,6 @@ export interface BuildInput {
 	userText: string;
 	recalled: string[];
 	history: ChatMsg[];
-	extra?: string;
 }
 
 const MAX_HISTORY = 12;
@@ -27,12 +26,10 @@ export function buildContext(b: BuildInput): ChatMsg[] {
 
 	const tail =
 		b.history.length > MAX_HISTORY ? b.history.slice(-MAX_HISTORY) : b.history;
-	const userContent =
-		(b.extra ? `【内部事件】${b.extra}\n\n` : "") + b.userText;
 
 	return [
 		{ role: "system", content: systemParts.join("\n\n") },
 		...tail,
-		{ role: "user", content: userContent },
+		{ role: "user", content: b.userText },
 	];
 }

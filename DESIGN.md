@@ -164,3 +164,26 @@
 ---
 
 *证据账本（随开发更新）*：本文件 claims 全部待切片跑通后逐条升级为 Tested behavior。
+
+---
+
+## 8. Reality-pass 修正记录（2026-09-02，空纪指令：吸收 Nott + 删非必须）
+
+**删除（无真实消费者/演示性机制，reality-first：不跑起来的不留）**：
+
+| 部件 | 删除理由 |
+| --- | --- |
+| bus/mailbox（core/bus.ts） | 实际流通只有 user_input 转发；turn_start/end 事件发射后无订阅者=死音。输入源（TUI/oneshot）直连 pushInput 更短。将来多通道真实出现时再以通道边界形态回归（f11） |
+| runtime store（core/store.ts） | sessionId/startedAt 无消费者；nextTurnId 与 loop.turnSeq 双计数（且返回值未用） |
+| output broker（core/output.ts） | 单一消费者（TUI 独占）的广播=炫耀物；hooks 直连即可。将来多端（语音/SSE）真实出现时再抽 |
+| Job 演示（think_for + isJob + job_done + internal-event 唤醒） | 最小 agent 用同步工具已够，无真实需求。f8“等长任务”待真实后台需求（如长语音生成）出现时以最小形态回归 |
+| 记忆 kind 维度（self/history）与 all() | 无写入路径=死设计；记忆端口只剩 fact 单一形态 |
+
+**吸收（Nott 两亮点）**：
+
+1. 工具状态可见性：hooks 增加 onToolStart/onToolDone，UI 显示“⏳ [工具] xx → ✓”（仿 Nott AgentState 的事件驱动渲染）
+2. 会话续聊：`pnpm start -- --continue` 从 data/session.json 恢复对话历史（仿 Nott --session，最小版）
+
+**收获的 bug（真模型第一次工具回路抓出）**：gateway 缺 wire 协议转换——内核存解析后的 tool_calls {id,name,args(对象)}，协议要求 {id,type:"function",function:{name,arguments:JSON字符串}}。mock 测试绕过 gateway 导致发送方向从未被测到 → 现在补了发送方向单测（captureReq）。教训：**协议边界必须有双向测试**。
+
+**删除标准的首次执行**：§5 删除标准“切片跑通后某部件未在真实场景使用则删”——已执行（bus/store/broker/Job 全部无真实场景）。

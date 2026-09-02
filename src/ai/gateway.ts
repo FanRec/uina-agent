@@ -2,6 +2,10 @@
  * 模型网关：OpenAI Chat Completions 协议客户端。
  * 兼容任何 OpenAI 风格端点（DeepSeek / OpenAI / 通义 / 本地 Ollama）。
  * 流式解析逐 chunk 回调，不做缓冲——这是对话快路径的地基。
+ *
+ * 职责边界：内核消息（解析后的对象结构）→ wire 协议形状在这里转换。
+ * 例：assistant.tool_calls 内核存 {id,name,args}，协议要求
+ * {id,type:"function",function:{name,arguments:JSON字符串}}——不能把内核对象直接发出去。
  */
 import type {
 	ModelProvider,
@@ -32,7 +36,7 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 				},
 				body: JSON.stringify({
 					model: conf.model,
-					messages: req.messages,
+					messages: toWireMessages(req.messages),
 					tools: req.tools?.length ? req.tools : undefined,
 					stream: true,
 					stream_options: { include_usage: true },
@@ -50,6 +54,34 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 			await parseSSE(resp.body, onDelta);
 		},
 	};
+}
+
+/**
+ * 内核消息 → wire 协议形状。
+ * 唯一需要转换的是 assistant 消息的 tool_calls：内核存解析后的对象
+ * {id,name,args(对象)}，OpenAI 协议要求 {id,type:"function",function:{name,arguments(JSON字符串)}}。
+ */
+function toWireMessages(msgs: ModelRequest["messages"]): unknown[] {
+	return msgs.map((m) => {
+		if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
+			return {
+				role: m.role,
+				content: m.content,
+				tool_calls: m.tool_calls.map((tc) => ({
+					id: tc.id,
+					type: "function",
+					function: {
+						name: tc.name,
+						arguments:
+							typeof tc.args === "string"
+								? tc.args
+								: JSON.stringify(tc.args ?? {}),
+					},
+				})),
+			};
+		}
+		return m;
+	});
 }
 
 /**
