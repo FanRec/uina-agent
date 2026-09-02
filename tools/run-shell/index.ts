@@ -2,23 +2,130 @@
  * run_shell 工具：执行 shell 命令——"活在计算机里"的基础。
  * 被 src/tools/loader.ts 自动发现并注册。
  *
+ * 两个入口同一实现：
+ *  - default Tool：给模型的 JSON 封装（结构化结果，含截断/临时指针）
+ *  - runShellDirect：直接执行（! 命令用，原样输出 stdout/stderr）
+ *
  * 限制条件对齐 pi：
- *  - 无命令超时（pi 的 bash 无超时，挂死靠用户打断）
+ *  - 无命令超时（pi 的 bash 无超时，挂死靠用户打断）——打断走 signal：abort → 杀进程树
  *  - 输出截断 50KB / 2000 行，先到为准，保尾；截断时标记 + 完整输出写临时文件给路径
  *  - 无命令白名单；权限模型 = 运行进程的用户账户权限（pi 同款信任模型）
  */
-import { exec } from "node:child_process";
+import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import type { Tool } from "../../src/tools/broker.js";
-
-const execAsync = promisify(exec);
 
 /** pi 内建工具输出上限：50KB 与 2000 行，先到为准 */
 const MAX_BYTES = 50 * 1024;
 const MAX_LINES = 2000;
+/** 收集期间的滚动缓冲上限（对齐原 maxBuffer 1MB）；超限丢最旧保留尾部 */
+const BUF_CAP = 1024 * 1024;
+
+export interface ShellResult {
+	stdout: string;
+	stderr: string;
+	code: number | null;
+	cancelled: boolean;
+}
+
+/**
+ * 直接执行命令（spawn，不经过 shell 字符串拼接执行）。
+ * signal.abort 时杀整个进程树（Windows: taskkill /T；POSIX: 进程组 SIGKILL）。
+ */
+export async function runShellDirect(
+	command: string,
+	signal?: AbortSignal,
+): Promise<ShellResult> {
+	return new Promise((resolve) => {
+		const isWin = process.platform === "win32";
+		const child = spawn(
+			isWin ? "cmd.exe" : "/bin/sh",
+			isWin ? ["/d", "/s", "/c", command] : ["-c", command],
+			{
+				cwd: process.cwd(),
+				windowsHide: true,
+				// POSIX 下独立进程组：取消时可 kill(-pid) 杀整组；Windows 忽略 detached
+				detached: !isWin,
+			},
+		);
+
+		let stdout = "";
+		let stderr = "";
+		let outCapped = false;
+		let errCapped = false;
+
+		child.stdout?.on("data", (d: Buffer) => {
+			if (outCapped) return;
+			stdout += d.toString();
+			if (stdout.length > BUF_CAP) {
+				stdout = stdout.slice(-BUF_CAP);
+				outCapped = true;
+			}
+		});
+		child.stderr?.on("data", (d: Buffer) => {
+			if (errCapped) return;
+			stderr += d.toString();
+			if (stderr.length > BUF_CAP) {
+				stderr = stderr.slice(-BUF_CAP);
+				errCapped = true;
+			}
+		});
+
+		const kill = (): void => {
+			if (child.pid !== undefined) killTree(child.pid);
+		};
+		if (signal) {
+			if (signal.aborted) kill();
+			else signal.addEventListener("abort", kill, { once: true });
+		}
+
+		child.on("error", (e) => {
+			signal?.removeEventListener("abort", kill);
+			resolve({
+				stdout: "",
+				stderr: `spawn 失败: ${e.message}`,
+				code: null,
+				cancelled: signal?.aborted ?? false,
+			});
+		});
+		child.on("close", (code) => {
+			signal?.removeEventListener("abort", kill);
+			resolve({
+				stdout,
+				stderr,
+				code,
+				cancelled: signal?.aborted ?? false,
+			});
+		});
+	});
+}
+
+/** 杀进程树：Windows 用 taskkill /T(树) /F(强杀)；POSIX 用进程组 SIGKILL */
+function killTree(pid: number): void {
+	if (process.platform === "win32") {
+		try {
+			void spawn(
+				"taskkill",
+				["/pid", String(pid), "/t", "/f"],
+				{ windowsHide: true, stdio: "ignore" },
+			);
+		} catch {
+			// 忽略：taskkill 失败由 close 事件自然收口
+		}
+	} else {
+		try {
+			process.kill(-pid, "SIGKILL");
+		} catch {
+			try {
+				process.kill(pid, "SIGKILL");
+			} catch {
+				// 进程已退出
+			}
+		}
+	}
+}
 
 const runShell: Tool = {
 	def: {
@@ -36,33 +143,24 @@ const runShell: Tool = {
 			},
 		},
 	},
-	async run(args) {
+	async run(args, signal) {
 		const command = String(args.command ?? "").trim();
 		if (!command) return JSON.stringify({ error: "command 为空" });
-		try {
-			const { stdout, stderr } = await execAsync(command, {
-				cwd: process.cwd(),
-				maxBuffer: 1024 * 1024,
-				windowsHide: true,
-			});
-			return JSON.stringify({
-				stdout: truncateTail(stdout),
-				stderr: (stderr || "").slice(0, 2000),
-			});
-		} catch (e) {
-			const err = e as { message?: string; stdout?: string; stderr?: string };
-			return JSON.stringify({
-				error: (err.message ?? "").slice(0, 300),
-				stdout: truncateTail(err.stdout ?? ""),
-				stderr: (err.stderr ?? "").slice(0, 2000),
-			});
-		}
+		const r = await runShellDirect(command, signal);
+		const body: Record<string, unknown> = {
+			stdout: truncateTail(r.stdout),
+			stderr: r.stderr.slice(0, 2000),
+		};
+		if (r.cancelled) body.cancelled = true;
+		else if (r.code !== 0) body.error = `退出码 ${r.code}`;
+		return JSON.stringify(body);
 	},
 };
 
 /**
  * 对齐 pi 的 truncateTail：保留最后 N 行且不超过 M 字节（先到为准）。
  * 被截断时输出标记 + 完整输出写临时文件、给模型路径（可自行读取）。
+ * （完整输出在 spawn 收集期已按 BUF_CAP 滚动保留尾部，这里只做展示级裁剪）
  */
 function truncateTail(output: string): string {
 	const totalBytes = Buffer.byteLength(output);

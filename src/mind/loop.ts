@@ -45,6 +45,10 @@ export class Subject {
 	private history: ChatMsg[] = [];
 	private turnSeq = 0;
 	private stopped = false;
+	/** 本轮是否已被 interrupt() 标记中断（工具中止后不再进下一轮 LLM） */
+	private interrupted = false;
+	/** 当前轮的工具取消信号（interrupt() → abort() → 正在执行的工具被杀） */
+	private abort: AbortController | null = null;
 
 	constructor(
 		private readonly provider: ModelProvider,
@@ -60,6 +64,23 @@ export class Subject {
 			return;
 		}
 		void this.runTurn(text);
+	}
+
+	/**
+	 * 强制中断当前轮（接口契约，对齐 pi 的 app.interrupt）：
+	 * 中止正在执行的工具（kill 进程树）+ 停止后续决策。
+	 * 流式输出阶段的中断要等当前段落流完才生效（不切模型连接，只停工具与循环）。
+	 * 空闲时调用无效果。
+	 */
+	interrupt(): void {
+		if (!this.busy) return;
+		this.interrupted = true;
+		this.abort?.abort();
+	}
+
+	/** 是否有轮在跑（渲染层据此决定 Ctrl+C 语义：中断 vs 退出） */
+	isBusy(): boolean {
+		return this.busy;
 	}
 
 	/** 恢复历史（会话续聊：--continue 时从会话文件注入起点）。 */
@@ -78,6 +99,8 @@ export class Subject {
 
 	private async runTurn(text: string): Promise<void> {
 		this.busy = true;
+		this.interrupted = false;
+		this.abort = new AbortController();
 		const n = ++this.turnSeq;
 		this.hooks.onTurnStart?.(n, text);
 
@@ -86,10 +109,12 @@ export class Subject {
 			// 修复时序竞态：批量段运行中再次到达的消息也必须被轮末刷新消费，
 			// 否则滞留在 pending 里等下一次轮才处理（"最后一条补充消息被吞"）。
 			await this.decideBatch(text);
-			for (;;) {
-				const queuedText = this.takePending();
-				if (!queuedText) break;
-				await this.decideBatch(queuedText);
+			if (!this.interrupted) {
+				for (;;) {
+					const queuedText = this.takePending();
+					if (!queuedText) break;
+					await this.decideBatch(queuedText);
+				}
 			}
 		} catch (e) {
 			// 错误成环：结构化错误进入历史（模型下轮可见、可自我纠正）+ 通知渲染层。
@@ -101,6 +126,7 @@ export class Subject {
 			});
 			this.hooks.onError?.(msg);
 		} finally {
+			this.abort = null;
 			this.busy = false;
 			this.hooks.onTurnEnd?.(n);
 		}
@@ -202,11 +228,17 @@ export class Subject {
 	}
 
 	/** 决策循环：模型流式产出 → 若要工具则执行并回注 → 继续，直到模型完成。
-	 *  无轮次上限（对齐 pi）：每次工具结果都回注后进入下一 round。 */
+	 *  无轮次上限（对齐 pi）：每次工具结果都回注后进入下一 round。
+	 *  中断：interrupt() 置 flag + abort 信号——工具中止、不再进下一轮 LLM。 */
 	private async decide(text: string): Promise<void> {
 		await this.maybeCompact();
 
 		for (;;) {
+			if (this.interrupted) {
+				this.emitInterrupted();
+				return;
+			}
+
 			const msgs = buildContext({
 				userText: text,
 				history: this.history,
@@ -229,7 +261,11 @@ export class Subject {
 								args: JSON.parse(d.call.args || "{}"),
 							});
 						} catch {
-							toolCalls.push({ id: d.call.id, name: d.call.name, args: {} });
+							toolCalls.push({
+								id: d.call.id,
+								name: d.call.name,
+								args: {},
+							});
 						}
 					}
 				},
@@ -247,10 +283,12 @@ export class Subject {
 				tool_calls: toolCalls,
 			});
 			for (const tc of toolCalls) {
+				if (this.interrupted) break;
 				this.hooks.onToolStart?.(tc.name, tc.args);
 				const result = await this.tools.run(
 					tc.name,
 					(tc.args ?? {}) as Record<string, unknown>,
+					this.abort?.signal,
 				);
 				this.hooks.onToolDone?.(tc.name, result);
 				// 序列化层截断（对齐 pi：进上下文/会话的工具结果 ≤2000 字符 + 标记）
@@ -260,8 +298,19 @@ export class Subject {
 					content: truncateForContext(result),
 				});
 			}
+
+			if (this.interrupted) {
+				this.emitInterrupted();
+				return; // 中断后不再进下一轮 LLM
+			}
 			// 工具结果已回注，进入下一 round 由模型基于结果继续
 		}
+	}
+
+	/** 中断收口：标记 + 一条历史占位 + 渲染层提示 */
+	private emitInterrupted(): void {
+		this.history.push({ role: "assistant", content: "[已中断]" });
+		this.hooks.onToken("\n[已中断] 当前对话已停止。\n");
 	}
 }
 

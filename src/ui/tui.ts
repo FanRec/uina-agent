@@ -49,6 +49,24 @@ export class SimpleTUI {
 		this.rl.on("line", (line: string) => cb(line));
 	}
 
+	/** 输入行状态下按 Ctrl+C（readline 拦截的 SIGINT）——转给上层统一处理 */
+	onSIGINT(cb: () => void): void {
+		this.rl.on("SIGINT", () => cb());
+	}
+
+	/** 暂停读行（! 命令执行期间用，防止用户输入与命令输出交错） */
+	pauseInput(): void {
+		if (!this.closed) this.rl.pause();
+	}
+
+	/** 恢复读行并重绘提示符 */
+	resumeInput(): void {
+		if (!this.closed) {
+			this.rl.resume();
+			this.rl.prompt();
+		}
+	}
+
 	close(): void {
 		this.closed = true;
 		this.rl.close();

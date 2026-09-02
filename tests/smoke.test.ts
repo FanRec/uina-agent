@@ -4,8 +4,9 @@
  */
 import { describe, it, expect } from "vitest";
 import { ToolBroker } from "../src/tools/broker.js";
+import type { Tool } from "../src/tools/broker.js";
 import getTimeTool from "../tools/get-time/index.js";
-import runShellTool from "../tools/run-shell/index.js";
+import runShellTool, { runShellDirect } from "../tools/run-shell/index.js";
 import { Subject } from "../src/mind/loop.js";
 import {
 	scriptedProvider,
@@ -233,16 +234,83 @@ describe("主体链路（mock）", () => {
 });
 
 describe("shell 工具", () => {
-	it("真实执行命令并返回输出", async () => {
-		const result = safeParse(
-			await runShellTool.run({ command: "echo uina-smoke-ok" }),
-		);
-		expect(result.stdout).toContain("uina-smoke-ok");
-	});
+it("真实执行命令并返回输出", async () => {
+const result = safeParse(
+await runShellTool.run({ command: "echo uina-smoke-ok" }),
+);
+expect(result.stdout).toContain("uina-smoke-ok");
+});
 
-	it("命令失败时返回结构化错误而非抛出", async () => {
-		const result = safeParse(await runShellTool.run({ command: "exit 3" }));
-		// exec 非零退出会抛，实现应把错误包进结构化结果返回
-		expect(result.error ?? result.stderr).toBeTruthy();
-	});
+it("命令失败时返回结构化错误而非抛出", async () => {
+const result = safeParse(await runShellTool.run({ command: "exit 3" }));
+// exec 非零退出会抛，实现应把错误包进结构化结果返回
+expect(result.error ?? result.stderr).toBeTruthy();
+});
+
+it("可取消：abort 后杀进程树并返回 cancelled（强制 stop 的根基）", async () => {
+const ac = new AbortController();
+const p = runShellDirect(
+"node -e \"setTimeout(()=>{}, 60000)\"",
+ac.signal,
+);
+await flush();
+ac.abort();
+const r = await p;
+expect(r.cancelled).toBe(true);
+expect(r.code).not.toBe(0);
+});
+});
+
+describe("中断（interrupt）", () => {
+it("工具执行中强制中止：不再进下一轮 LLM，历史含已取消回注与占位", async () => {
+// 挂起工具：只有收到 abort signal 才返回"已取消"，否则永不 resolve
+const hangTool: Tool = {
+def: {
+type: "function",
+function: {
+name: "hang",
+description: "挂起（测试用）",
+parameters: { type: "object", properties: {} },
+},
+},
+async run(_args, signal) {
+return new Promise((res) => {
+signal?.addEventListener("abort", () =>
+res(JSON.stringify({ cancelled: true })),
+);
+});
+},
+};
+const tools = new ToolBroker();
+tools.register(hangTool);
+const provider = scriptedProvider([
+{
+// 第一轮：产出 hang 工具调用
+match: (req) => !req.messages.some((m) => m.role === "tool"),
+produce: () => [toolCallDelta("h1", "hang", {})],
+},
+{ match: () => true, produce: () => [{ kind: "text", text: "不应到达" }] },
+]);
+let turns = 0;
+const errs: string[] = [];
+const subject = new Subject(provider, tools, {
+onToken: () => {},
+onTurnEnd: () => turns++,
+onError: (m) => errs.push(m),
+});
+subject.pushInput("开始");
+await flush(); // 工具挂起中
+expect(subject.isBusy()).toBe(true);
+subject.interrupt(); // 强制中止
+await flush();
+expect(subject.isBusy()).toBe(false);
+expect(turns).toBe(1);
+expect(provider.calls.length).toBe(1); // 中断后不再问模型
+expect(errs).toEqual([]); // 中断不是错误路径
+const snapshot = subject.historySnapshot();
+expect(snapshot.some((m) => m.content === "[已中断]")).toBe(true);
+const toolMsg = snapshot.find((m) => m.role === "tool");
+expect(toolMsg).toBeTruthy();
+expect(safeParse(toolMsg!.content).cancelled).toBe(true);
+});
 });

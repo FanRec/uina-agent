@@ -8,6 +8,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, activeProvider } from "./ai/config.js";
 import { createOpenAIProvider } from "./ai/gateway.js";
+import { runShellDirect } from "../tools/run-shell/index.js";
 import { ToolBroker } from "./tools/broker.js";
 import { loadTools } from "./tools/loader.js";
 import { Subject } from "./mind/loop.js";
@@ -17,6 +18,11 @@ const DATA_DIR = join(process.cwd(), "data");
 const SESSION_FILE = join(DATA_DIR, "session.json");
 const TOOLS_DIR = join(process.cwd(), "tools");
 mkdirSync(DATA_DIR, { recursive: true });
+
+// ! 命令渲染用的本地样式（对齐 tui.ts 的 C 颜色约定：line 清行 / err 红 / reset）
+const CLEAR_LINE = "\r\x1b[2K";
+const ERR = "\x1b[31m";
+const RESET = "\x1b[0m";
 
 async function main(): Promise<void> {
 	const cfg = loadConfig();
@@ -124,6 +130,61 @@ async function main(): Promise<void> {
 	};
 	process.on("beforeExit", () => saveSession(subject));
 
+	// 前台 ! 命令的执行状态：执行中按 Ctrl+C 杀命令而不是退出进程
+	let execAbort: AbortController | null = null;
+	let execRunning = false;
+
+	//
+	// Ctrl+C 统一处理（幂等）：有轮在跑 → 中断；有 ! 命令在跑 → 杀命令；空闲 → 保存会话退出
+	//
+	const handleInterrupt = (): void => {
+		if (subject.isBusy()) {
+			subject.interrupt();
+			return;
+		}
+		if (execRunning) {
+			execAbort?.abort();
+			return;
+		}
+		saveSession(subject);
+		process.exit(0);
+	};
+
+	//
+	// ! 命令：强制终端工具执行——直接跑 shell，不经模型（对齐 pi 的 ! 命令）。
+	// 执行期间暂停读行（防输入与输出交错），结束恢复；结果不进 LLM 上下文。
+	//
+	const runShellCommand = async (input: string): Promise<void> => {
+		const command = input.slice(1).trim();
+		if (!command) return;
+		execRunning = true;
+	execAbort = new AbortController();
+		tui?.pauseInput();
+		try {
+			process.stdout.write(`${CLEAR_LINE}`); // 清掉输入行（对齐 turn_start 渲染）
+			const r = await runShellDirect(command, execAbort.signal);
+			if (r.cancelled) {
+				process.stdout.write(`${ERR}[命令已中断]${RESET}\n`);
+				return;
+			}
+			if (r.stdout) {
+				process.stdout.write(
+					r.stdout.endsWith("\n") ? r.stdout : `${r.stdout}\n`,
+				);
+			}
+			if (r.stderr && (!r.stdout || r.code !== 0)) {
+				process.stdout.write(`${ERR}[stderr]${RESET}\n${r.stderr}\n`);
+			}
+			if (r.code !== 0 && !r.cancelled) {
+				process.stdout.write(`${ERR}[退出码 ${r.code}]${RESET}\n`);
+			}
+		} finally {
+			execRunning = false;
+			execAbort = null;
+			tui?.resumeInput();
+		}
+	};
+
 	process.stdout.write(
 		`Uina 就绪（模型：${provider.name}，工具：${loaded.loaded} 个）— /quit 退出\n\n`,
 	);
@@ -137,9 +198,21 @@ async function main(): Promise<void> {
 				tui?.close();
 				process.exit(0);
 			}
+			if (text === "/stop") {
+				subject.interrupt();
+				return;
+			}
+			if (text.startsWith("!")) {
+				void runShellCommand(text);
+				return;
+			}
 			subject.pushInput(text);
 		});
+		// 输入行状态下按 Ctrl+C：readline 拦截的信号转给统一处理
+		tui.onSIGINT(() => handleInterrupt());
 	}
+	// 非输入状态（流式输出 / ! 命令执行中）的 Ctrl+C 走进程级 SIGINT
+	process.on("SIGINT", handleInterrupt);
 
 	if (oneshot !== undefined) {
 		setTimeout(() => subject.pushInput(oneshot), 300);
