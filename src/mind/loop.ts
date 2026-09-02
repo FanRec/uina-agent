@@ -26,6 +26,8 @@ export interface LoopHooks {
 	onToolStart?: (name: string, args: unknown) => void;
 	/** 工具执行完成 */
 	onToolDone?: (name: string, result: string) => void;
+	/** 轮处理出错（provider/协议层异常）——渲染层结构化显示 */
+	onError?: (msg: string) => void;
 }
 
 /** 模型上下文窗口（deepseek-chat 64K tokens）；估算超过 window-reserve 即触发压缩 */
@@ -80,22 +82,40 @@ export class Subject {
 		this.hooks.onTurnStart?.(n, text);
 
 		try {
-			this.history.push({ role: "user", content: text });
-			await this.decide(text);
-
-			// 轮末刷新排队：输出期间到达的输入合并为一条，按序再入一轮
-			const queued = this.pending.splice(0);
-			const queuedText = queued
-				.map((q) => q.trim())
-				.filter(Boolean)
-				.join("\n");
-			if (queuedText) await this.decide(queuedText);
+			// 本轮 + drain 循环：输出期间到达的排队输入持续消费直到为空。
+			// 修复时序竞态：批量段运行中再次到达的消息也必须被轮末刷新消费，
+			// 否则滞留在 pending 里等下一次轮才处理（"最后一条补充消息被吞"）。
+			await this.decideBatch(text);
+			for (;;) {
+				const queuedText = this.takePending();
+				if (!queuedText) break;
+				await this.decideBatch(queuedText);
+			}
 		} catch (e) {
-			this.hooks.onToken(`\n[内部错误] ${(e as Error).message}\n`);
+			// 错误成环：结构化错误进入历史（模型下轮可见、可自我纠正）+ 通知渲染层。
+			// 剩余排队输入保留在 pending，下次 pushInput 开轮时会被 drain 消费。
+			const msg = (e as Error).message;
+			this.history.push({
+				role: "user",
+				content: `（系统提示）上轮处理出错：${msg}`,
+			});
+			this.hooks.onError?.(msg);
 		} finally {
 			this.busy = false;
 			this.hooks.onTurnEnd?.(n);
 		}
+	}
+
+	/** 把输入作为一条 user 消息交付给决策循环 */
+	private async decideBatch(text: string): Promise<void> {
+		this.history.push({ role: "user", content: text });
+		await this.decide(text);
+	}
+
+	/** 清空排队输入，合并成一条 user 消息（空则返回空串） */
+	private takePending(): string {
+		const queued = this.pending.splice(0);
+		return queued.map((q) => q.trim()).filter(Boolean).join("\n");
 	}
 
 	/**
@@ -160,13 +180,20 @@ export class Subject {
 		});
 	}
 
-	/** 极简 token 估算：中文约 1 字符≈1 token，英文约 4 字符≈1 token；带每条消息固定开销。保守上浮防超限。 */
+	/** 极简 token 估算：中文约 1 字符≈1 token，英文约 4 字符≈1 token；带每条消息固定开销。
+	 *  含 assistant.tool_calls 的 JSON 序列化长度（wire 上会真实膨胀，不算会低估触发偏晚）。
+	 *  保守上浮防超限。 */
 	private estimateTokens(msgs: ChatMsg[]): number {
 		let sum = 0;
 		for (const m of msgs) {
 			const content = (m.content ?? "").length;
-			// 中文为主场景：content*0.8；英文 4 字符 1 token → 0.4；取 0.7 居中并上浮 20%
+			// 中文为主场景：content*0.7 居中上浮；每条固定开销 4
 			sum += Math.ceil(content * 0.7) + 4;
+			if ("tool_calls" in m && m.tool_calls) {
+				for (const tc of m.tool_calls) {
+					sum += Math.ceil(JSON.stringify(tc.args ?? {}).length * 0.7) + 2;
+				}
+			}
 		}
 		return sum;
 	}

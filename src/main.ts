@@ -81,6 +81,7 @@ async function main(): Promise<void> {
 		},
 		onToolStart: (name, args) => render({ type: "tool_start", name, args }),
 		onToolDone: (name, result) => render({ type: "tool_done", name, result }),
+		onError: (msg) => render({ type: "error", text: msg }),
 	});
 
 	// 会话续聊：--continue 恢复上次对话历史

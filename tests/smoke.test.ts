@@ -165,6 +165,73 @@ describe("主体链路（mock）", () => {
 		// 摘要内容来自 mock 摘要请求的返回
 		expect((withSummary?.content ?? "").includes("（压缩摘要")).toBe(true);
 	});
+
+	it("轮末 drain：输出期间连续到达的输入全部被消费并合并（修复滞留 bug）", async () => {
+		const { subject, provider } = makeSubject([
+			{
+				match: (req) => lastUser(req) === "A",
+				// 在 decide(A) 进行中同步推入 B、C（busy 窗口）——必须被 drain 消费
+				produce: () => {
+					subject.pushInput("B");
+					subject.pushInput("C");
+					return [
+						{ kind: "text", text: "甲" },
+						{ kind: "text", text: "乙" },
+					];
+				},
+			},
+			{
+				match: (req) => lastUser(req) === "B\nC",
+				// 批量决定期间再推入 D——修复前的滞留场景
+				produce: () => {
+					subject.pushInput("D");
+					return [{ kind: "text", text: "批" }];
+				},
+			},
+			{
+				match: () => true,
+				produce: () => [{ kind: "text", text: "终" }],
+			},
+		]);
+		subject.pushInput("A");
+		await flush();
+		// A 轮期间来的 B+C 合并为一条批；批决定期间来的 D 也被消费
+		const users = provider.calls.map((c) => lastUser(c));
+		expect(users).toEqual(["A", "B\nC", "D"]);
+	});
+
+	it("轮处理出错：错误进历史（下轮可见）+ onError 通知", async () => {
+		const errs: string[] = [];
+		const tools = new ToolBroker();
+		tools.register(getTimeTool);
+		const provider = scriptedProvider([
+			{
+				match: (req) => lastUser(req) === "坏轮",
+				produce: () => {
+					throw new Error("boom-ne");
+				},
+			},
+			{ match: () => true, produce: () => [{ kind: "text", text: "好了" }] },
+		]);
+		let out = "";
+		const subject = new Subject(provider, tools, {
+			onToken: (t) => (out += t),
+			onError: (m) => errs.push(m),
+		});
+		subject.pushInput("坏轮");
+		await flush();
+		expect(errs.length).toBe(1);
+		expect(errs[0]).toContain("boom-ne");
+		// 下一轮：错误已进历史（模型上下文可见）
+		subject.pushInput("继续");
+		await flush();
+		const second = provider.calls.find((c) => lastUser(c) === "继续");
+		expect(
+			second?.messages.some((m) =>
+				(m.content ?? "").includes("上轮处理出错"),
+			),
+		).toBe(true);
+	});
 });
 
 describe("shell 工具", () => {

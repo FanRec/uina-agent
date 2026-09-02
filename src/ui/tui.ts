@@ -57,12 +57,8 @@ export class SimpleTUI {
 	render(m: OutMsg): void {
 		switch (m.type) {
 			case "text":
-				// 流式片段：错误着色，其余原样（保证流式不被破坏）
-				process.stdout.write(
-					m.text.includes("[内部错误]")
-						? `${C.err}${m.text}${C.reset}`
-						: m.text,
-				);
+				// 流式片段原样输出（错误走 error 类型有色渲染，不再用文本嗅探）
+				process.stdout.write(m.text);
 				break;
 			case "turn_start": {
 				// 清掉输入行，输出用户消息并起头 Uina 的回复

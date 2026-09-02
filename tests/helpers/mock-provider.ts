@@ -44,12 +44,6 @@ export function lastUser(req: ModelRequest): string {
 	return typeof u?.content === "string" ? u.content : "";
 }
 
-/** 是否最后一条是某工具的结果 */
-export function lastToolName(req: ModelRequest): string | null {
-	const t = [...req.messages].reverse().find((m) => m.role === "tool");
-	return t && "tool_call_id" in t ? String(t.tool_call_id) : null;
-}
-
 /** 构造一个工具调用 delta */
 export function toolCallDelta(
 	id: string,

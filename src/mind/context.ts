@@ -1,6 +1,6 @@
 /**
  * 上下文构建：把「身份 + 会话历史 + 当前输入」组装成发给模型的 messages。
- * 历史截断到 MAX_HISTORY，防长会话把 context 撑爆（12-factor f3 的公敌）。
+ * 历史不在此截断（对齐 pi）——上下文体积由 loop 的 compaction 按 token 阈值管理。
  */
 import type { ChatMsg } from "../core/types.js";
 
