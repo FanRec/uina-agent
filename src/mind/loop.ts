@@ -7,7 +7,8 @@
  * 限制条件对齐 pi（2026-09-02 空纪指令）：
  *  - 无工具轮/调用上限（pi 无此限制；模型产出 tool_calls 即继续，防失控靠模型本身）
  *  - 历史不硬截断条数（pi 无）；上下文用 compaction 管理：token 估算超阈值时，
- *    把最旧一段让模型压缩成摘要保留（pi 参数：reserve 16k / keepRecent 20k）
+ *    保留最近 keepRecent，更旧的让模型压缩成摘要保留，摘要作为迭代上下文参与下次压缩
+ *    （pi 参数：reserve 16k / keepRecent 20k）
  *  - 工具消息进入上下文/会话时截断到 2000 字符（对齐 pi 的序列化层截断）
  */
 import type {
@@ -40,16 +41,17 @@ const RESERVE_TOKENS = 16384;
 const KEEP_RECENT_TOKENS = 20000;
 /** 工具消息进入上下文时的序列化截断（pi compaction 文档：2000 字符 + 标记） */
 const SERIALIZE_CAP = 2000;
+/** 压缩请求的输入上限（字符）：超出部分（最旧的细节）直接丢弃不总结，摘要聚焦近期 */
+const COMPACT_INPUT_CAP = 30000;
 
 export class Subject {
 	private busy = false;
 	private readonly pending: string[] = [];
 	private history: ChatMsg[] = [];
 	private turnSeq = 0;
-	private stopped = false;
 	/** 本轮是否已被 interrupt() 标记中断（工具中止后不再进下一轮 LLM） */
 	private interrupted = false;
-	/** 当前轮的工具取消信号（interrupt() → abort() → 正在执行的工具被杀） */
+	/** 当前轮的工具取消信号（interrupt() → abort() → 正在执行的工具/LLM 请求被杀） */
 	private abort: AbortController | null = null;
 
 	constructor(
@@ -60,7 +62,7 @@ export class Subject {
 
 	/** 接收输入：空闲立即开轮，busy 排队待轮末批量注入。 */
 	pushInput(text: string): void {
-		if (this.stopped || !text.trim()) return;
+		if (!text.trim()) return;
 		if (this.busy) {
 			this.pending.push(text);
 			return;
@@ -70,8 +72,7 @@ export class Subject {
 
 	/**
 	 * 强制中断当前轮（接口契约，对齐 pi 的 app.interrupt）：
-	 * 中止正在执行的工具（kill 进程树）+ 停止后续决策。
-	 * 流式输出阶段的中断要等当前段落流完才生效（不切模型连接，只停工具与循环）。
+	 * 中止正在执行的工具（kill 进程树）+ 切断进行中的 LLM 请求 + 停止后续决策。
 	 * 空闲时调用无效果。
 	 */
 	interrupt(): void {
@@ -95,10 +96,6 @@ export class Subject {
 		return [...this.history];
 	}
 
-	stop(): void {
-		this.stopped = true;
-	}
-
 	private async runTurn(text: string): Promise<void> {
 		this.busy = true;
 		this.interrupted = false;
@@ -119,14 +116,19 @@ export class Subject {
 				}
 			}
 		} catch (e) {
-			// 错误成环：结构化错误进入历史（模型下轮可见、可自我纠正）+ 通知渲染层。
-			// 剩余排队输入保留在 pending，下次 pushInput 开轮时会被 drain 消费。
-			const msg = (e as Error).message;
-			this.history.push({
-				role: "user",
-				content: `（系统提示）上轮处理出错：${msg}`,
-			});
-			this.hooks.onError?.(msg);
+			if (this.interrupted) {
+				// 主动中断导致 LLM 请求被 abort：不是错误，走中断收口
+				this.emitInterrupted();
+			} else {
+				// 错误成环：结构化错误进入历史（模型下轮可见、可自我纠正）+ 通知渲染层。
+				// 剩余排队输入保留在 pending，下次 pushInput 开轮时会被 drain 消费。
+				const msg = (e as Error).message;
+				this.history.push({
+					role: "user",
+					content: `（系统提示）上轮处理出错：${msg}`,
+				});
+				this.hooks.onError?.(msg);
+			}
 		} finally {
 			this.abort = null;
 			this.busy = false;
@@ -150,25 +152,18 @@ export class Subject {
 	}
 
 	/**
-	 * Compaction（对齐 pi）：
+	 * Compaction（对齐 pi 的迭代上下文）：
 	 * 估算上下文 token，超 CONTEXT_WINDOW - RESERVE 时，从最新往前保留
 	 * KEEP_RECENT_TOKENS，更旧的压缩成一条 "[历史摘要] xxx" user 消息。
-	 * 历史里已有摘要则不再压（摘要作为下次压缩的迭代上下文，对齐 pi 的
-	 * "passing the previous summary as iterative context"）。
+	 * 迭代性：上次压缩产生的旧摘要也在被压的范围内，会连同其后更早的内容一起
+	 * 重新总结——摘要始终是最新压缩时刻的完整快照，不会一次压缩后就永久失效。
+	 * 压缩请求是只读的：只有成功/失败后才动历史（失败丢弃旧内容留占位；
+	 * 期间被用户中断则什么都不动）。
 	 */
 	private async maybeCompact(): Promise<void> {
 		if (this.estimateTokens(this.history) <= CONTEXT_WINDOW - RESERVE_TOKENS) {
 			return;
 		}
-		const head = this.history[0];
-		if (
-			head &&
-			head.role === "user" &&
-			(head.content ?? "").startsWith("[历史摘要]")
-		) {
-			return;
-		}
-
 		// 找 cut point：从最新往回累计到 KEEP_RECENT_TOKENS，前面的压缩
 		let keepFrom = 0;
 		let acc = 0;
@@ -179,10 +174,24 @@ export class Subject {
 				break;
 			}
 		}
-		const oldest = this.history.splice(0, keepFrom);
-		const transcript = oldest
-			.map((m) => `[${m.role}] ${m.content ?? ""}`)
-			.join("\n");
+		// 无可压缩内容（单条消息已占满保留量）→ 不压缩，让超限自然发生
+		if (keepFrom === 0) return;
+
+		const oldest = this.history.slice(0, keepFrom);
+		// 迭代上下文（对齐 pi）：旧摘要总是放在转录开头——超长截断只丢更早的细节，不丢摘要
+		const priorSummary = oldest.find(
+			(m) =>
+				m.role === "user" && (m.content ?? "").startsWith("[历史摘要]"),
+		);
+		const rest = oldest.filter(
+			(m: ChatMsg): boolean => m !== priorSummary,
+		);
+		const transcript =
+			(priorSummary ? `[user] ${priorSummary.content}\n` : "") +
+			rest
+				.map((m) => `[${m.role}] ${formatForSummary(m)}`)
+				.join("\n")
+				.slice(-COMPACT_INPUT_CAP); // 超长的最旧部分直接丢弃，摘要聚焦近期
 
 		let summary = "";
 		try {
@@ -200,29 +209,38 @@ export class Subject {
 				(d) => {
 					if (d.kind === "text") summary += d.text;
 				},
+				this.abort?.signal,
 			);
 		} catch {
+			if (this.interrupted) return; // 压缩期间被中断：历史保持不动
 			// 压缩失败不阻断：直接丢最旧部分 + 留一句占位
+			this.history.splice(0, keepFrom);
+			this.history.unshift({
+				role: "user",
+				content: "[历史摘要] （压缩失败，已丢弃最旧对话）",
+			});
+			return;
 		}
 		const final = summary.trim().slice(0, 300);
+		this.history.splice(0, keepFrom);
 		this.history.unshift({
 			role: "user",
 			content: `[历史摘要] ${final || "（压缩失败，已丢弃最旧对话）"}`,
 		});
 	}
 
-	/** 极简 token 估算：中文约 1 字符≈1 token，英文约 4 字符≈1 token；带每条消息固定开销。
-	 *  含 assistant.tool_calls 的 JSON 序列化长度（wire 上会真实膨胀，不算会低估触发偏晚）。
-	 *  保守上浮防超限。 */
+	/**
+	 * 极简保守估算：按 1 字符 ≈ 1 token（中文 1 字≈1 token；英文实际约 4 字符/token，
+	 * 按 1:1 估是高估——宁可早压不可爆窗），每条消息带固定开销。
+	 * 含 assistant.tool_calls 的 JSON 序列化长度（wire 上会真实膨胀）。
+	 */
 	private estimateTokens(msgs: ChatMsg[]): number {
 		let sum = 0;
 		for (const m of msgs) {
-			const content = (m.content ?? "").length;
-			// 中文为主场景：content*0.7 居中上浮；每条固定开销 4
-			sum += Math.ceil(content * 0.7) + 4;
+			sum += Math.ceil((m.content ?? "").length) + 4;
 			if ("tool_calls" in m && m.tool_calls) {
 				for (const tc of m.tool_calls) {
-					sum += Math.ceil(JSON.stringify(tc.args ?? {}).length * 0.7) + 2;
+					sum += Math.ceil(JSON.stringify(tc.args ?? {}).length) + 2;
 				}
 			}
 		}
@@ -231,7 +249,7 @@ export class Subject {
 
 	/** 决策循环：模型流式产出 → 若要工具则执行并回注 → 继续，直到模型完成。
 	 *  无轮次上限（对齐 pi）：每次工具结果都回注后进入下一 round。
-	 *  中断：interrupt() 置 flag + abort 信号——工具中止、不再进下一轮 LLM。 */
+	 *  中断：interrupt() 置 flag + abort 信号——正在执行的工具/LLM 请求被中止、不再进下一轮。 */
 	private async decide(): Promise<void> {
 		await this.maybeCompact();
 
@@ -273,22 +291,26 @@ export class Subject {
 						finishReason = d.reason;
 					}
 				},
+				this.abort?.signal,
 			);
 
+			// 截断信号（finish_reason=length）统一告警（混合轮也提示，不静默吞信号）
+			if (finishReason === "length" && reply.trim()) {
+				this.hooks.onNotice?.(
+					"本轮回复被输出长度限制截断，模型将收到提示继续完成",
+				);
+			}
+
 			if (toolCalls.length === 0) {
-				if (reply.trim())
+				if (reply.trim()) {
 					this.history.push({ role: "assistant", content: reply });
-				// 截断信号（finish_reason=length）：回复不完整。暴露而非静默——
-				// 半截回复照旧入史（模型需要知道自己说了什么），另附一条提示让模型
-				// 下一轮继续完成；同时 onNotice 走黄色告警给用户看见（不吞信号）。
-				if (finishReason === "length") {
-					this.hooks.onNotice?.(
-						"本轮回复被输出长度限制截断，模型将收到提示继续完成",
-					);
-					if (reply.trim()) {
+					// 半截回复照旧入史（模型需要知道自己说了什么），另附一条提示让模型
+					// 下一轮继续完成。混合轮（有工具）不附加：工具结果回注后模型自己会继续。
+					if (finishReason === "length") {
 						this.history.push({
 							role: "user",
-							content: "（系统提示）上轮回复因输出长度限制被截断，请继续完成。",
+							content:
+								"（系统提示）上轮回复因输出长度限制被截断，请继续完成。",
 						});
 					}
 				}
@@ -353,6 +375,14 @@ export class Subject {
 		this.hooks.onToken("\n[已中断] 当前对话已停止。\n");
 	}
 }
+
+/** 单条历史消息 → 压缩 transcript 行（tool_calls 也带上，摘要才能保留工具意图） */
+function formatForSummary(m: ChatMsg): string {
+		if ("tool_calls" in m && m.tool_calls) {
+			return `tool_calls=${JSON.stringify(m.tool_calls)} ${m.content ?? ""}`;
+		}
+		return m.content ?? "";
+	}
 
 /** 工具消息的序列化截断：保留前 2000 字符，超出部分换成标记（对齐 pi） */
 function truncateForContext(s: string): string {

@@ -27,9 +27,11 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 		async stream(
 			req: ModelRequest,
 			onDelta: (d: StreamDelta) => void,
+			signal?: AbortSignal,
 		): Promise<void> {
 			const resp = await fetch(endpoint, {
 				method: "POST",
+				signal,
 				headers: {
 					"Content-Type": "application/json",
 					Authorization: `Bearer ${conf.apiKey}`,
@@ -39,7 +41,6 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 					messages: toWireMessages(req.messages),
 					tools: req.tools?.length ? req.tools : undefined,
 					stream: true,
-					stream_options: { include_usage: true },
 				}),
 			});
 
@@ -87,6 +88,8 @@ function toWireMessages(msgs: ModelRequest["messages"]): unknown[] {
 /**
  * OpenAI SSE 流解析。
  * tool_call 的 arguments 可能分片到达，按 index 累积拼接，finish 时整段吐出。
+ * finish 只发一次：流内收到 finish_reason 即收口；流异常结束（缺 finish_reason）
+ * 才由末尾兜底补发——不会双发（历史 bug：正常流结尾多出一发 stream_end）。
  */
 async function parseSSE(
 	body: ReadableStream<Uint8Array>,
@@ -96,8 +99,10 @@ async function parseSSE(
 	const decoder = new TextDecoder();
 	const pending = new Map<number, { id: string; name: string; args: string }>();
 	let buffer = "";
+	let finished = false;
 
 	const feed = (line: string): void => {
+		if (finished) return; // 已收口：忽略后续行（防重复 finish）
 		if (!line.startsWith("data:")) return;
 		const payload = line.slice(5).trim();
 		if (!payload || payload === "[DONE]") return;
@@ -138,13 +143,14 @@ async function parseSSE(
 		}
 		const reason = chunk.choices?.[0]?.finish_reason;
 		if (reason) {
-			// 把滞留的 tool_call 收口发出，再报 finish
+			// 把滞留的 tool_call 收口发出，再报 finish（置 finished，末尾兜底不再补发）
 			for (const [idx, c] of pending) {
 				if (c.id) {
 					pending.delete(idx);
 					onDelta({ kind: "tool_call", call: c });
 				}
 			}
+			finished = true;
 			onDelta({ kind: "finish", reason });
 		}
 	};
@@ -161,9 +167,11 @@ async function parseSSE(
 		}
 	}
 	if (buffer.trim()) feed(buffer.trim());
-	// 流异常中断时的兜底：滞留的 tool_call 仍要发出
-	for (const c of pending.values()) {
-		if (c.id) onDelta({ kind: "tool_call", call: c });
+	// 流异常中断/缺 finish_reason 时的兜底：只在此前未收口时补发滞留的 tool_call 与 finish
+	if (!finished) {
+		for (const c of pending.values()) {
+			if (c.id) onDelta({ kind: "tool_call", call: c });
+		}
+		onDelta({ kind: "finish", reason: "stream_end" });
 	}
-	onDelta({ kind: "finish", reason: "stream_end" });
 }

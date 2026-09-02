@@ -86,7 +86,10 @@ describe("gateway SSE 解析", () => {
 			.filter((d) => d.kind === "text")
 			.map((d) => (d as any).text);
 		expect(texts).toEqual(["你好", "世界"]);
-		expect(out.some((d) => d.kind === "finish")).toBe(true);
+		// finish 只收口一次（历史 bug：正常流结尾多出一发 stream_end）
+		const finishes = out.filter((d) => d.kind === "finish");
+		expect(finishes.length).toBe(1);
+		expect(finishes[0]).toEqual({ kind: "finish", reason: "stop" });
 	});
 
 	it("tool_call 跨分片拼接 arguments 与 name", async () => {
@@ -116,6 +119,20 @@ describe("gateway SSE 解析", () => {
 		}
 		expect(parsedArgs).toEqual({ a: 1 });
 		expect(out.some((d) => d.kind === "finish")).toBe(true);
+	});
+
+	it("流缺 finish_reason 时末尾兜底补发一次（stream_end）", async () => {
+		// 无 finish_reason 行、只有 [DONE]：解析层必须自行收口，且只发一次
+		const base = fakeEndpoint(
+			[
+				`data: ${JSON.stringify({ choices: [{ delta: { content: "兜" }, index: 0 }] })}`,
+				`data: [DONE]`,
+			].join("\n"),
+		);
+		const out = await collect(base);
+		const finishes = out.filter((d) => d.kind === "finish");
+		expect(finishes.length).toBe(1);
+		expect(finishes[0]).toEqual({ kind: "finish", reason: "stream_end" });
 	});
 
 	it("发送方向：assistant.tool_calls 转成协议形状（type/function/字符串 arguments）", async () => {

@@ -6,6 +6,7 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { loadConfig, activeProvider } from "./ai/config.js";
 import { createOpenAIProvider } from "./ai/gateway.js";
 import { execCommandDirect } from "../tools/exec-command/index.js";
@@ -189,6 +190,13 @@ async function main(): Promise<void> {
 	const execCommand = async (input: string): Promise<void> => {
 		const command = input.slice(1).trim();
 		if (!command) return;
+		if (subject.isBusy()) {
+			// 模型轮进行中执行 ! 命令：输出会与流式回复交错（且 Ctrl+C 语义混乱）——拒绝并提示
+			process.stdout.write(
+				`[!] 模型正在处理中，请等本轮结束后再执行（输出会与回复交错）\n`,
+			);
+			return;
+		}
 		execRunning = true;
 		execAbort = new AbortController();
 		tui?.pauseInput();
@@ -221,30 +229,41 @@ async function main(): Promise<void> {
 		`Uina 就绪（模型：${provider.name}，工具：${loaded.loaded} 个）— /quit 退出\n\n`,
 	);
 
-	if (process.stdout.isTTY && process.stdin.isTTY) {
+	// 命令行输入统一处理（TTY 与管道共用）：/quit 退出、/stop 中断、! 强制终端、其余进主体
+	const onUserLine = (raw: string): void => {
+		const text = raw.trim();
+		if (!text) return;
+		if (text === "/quit") {
+			saveSession(subject);
+			tui?.close();
+			process.exit(0);
+		}
+		if (text === "/stop") {
+			subject.interrupt();
+			return;
+		}
+		if (text.startsWith("!")) {
+			void execCommand(text);
+			return;
+		}
+		subject.pushInput(text);
+	};
+
+	const isTTY = process.stdout.isTTY && process.stdin.isTTY;
+	if (isTTY) {
 		tui = new SimpleTUI();
-		tui.onLine((line) => {
-			const text = line.trim();
-			if (text === "/quit") {
-				saveSession(subject);
-				tui?.close();
-				process.exit(0);
-			}
-			if (text === "/stop") {
-				subject.interrupt();
-				return;
-			}
-			if (text.startsWith("!")) {
-				void execCommand(text);
-				return;
-			}
-			subject.pushInput(text);
-		});
-		// 输入行状态下按 Ctrl+C：readline 拦截的信号转给统一处理
+		tui.onLine(onUserLine);
+		// TTY：readline 终端模式拦截 Ctrl+C（发射到 rl 的 SIGINT 事件），只走这一条路径。
+		// 不再注册进程级 SIGINT——双注册会双触发 handleInterrupt（历史冗余）。
 		tui.onSIGINT(() => handleInterrupt());
+	} else {
+		// 管道输入（echo "..." | pnpm start）：无界面 readline，行到位即喂主体，不再静默吞输入。
+		// EOF 后剩余轮跑完、事件循环排空，beforeExit 落盘退出。
+		const rl = createInterface({ input: process.stdin });
+		rl.on("line", onUserLine);
+		// 非 TTY：无 readline 拦截，进程级 SIGINT 兜底（中断/杀命令/退出）
+		process.on("SIGINT", handleInterrupt);
 	}
-	// 非输入状态（流式输出 / ! 命令执行中）的 Ctrl+C 走进程级 SIGINT
-	process.on("SIGINT", handleInterrupt);
 
 	if (oneshot !== undefined) {
 		setTimeout(() => subject.pushInput(oneshot), 300);

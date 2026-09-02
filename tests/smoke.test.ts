@@ -6,8 +6,12 @@ import { describe, it, expect } from "vitest";
 import { ToolBroker } from "../src/tools/broker.js";
 import type { Tool } from "../src/tools/broker.js";
 import getTimeTool from "../tools/get-time/index.js";
-import execCommandTool, { execCommandDirect } from "../tools/exec-command/index.js";
+import execCommandTool, {
+	execCommandDirect,
+	createByteDecoder,
+} from "../tools/exec-command/index.js";
 import { Subject, findOrphanToolCalls } from "../src/mind/loop.js";
+import type { ModelProvider } from "../src/core/types.js";
 import {
 	scriptedProvider,
 	toolCallDelta,
@@ -87,9 +91,9 @@ describe("主体链路（mock）", () => {
 		expect(second.messages.some((m) => m.role === "tool")).toBe(true);
 		expect(second.messages.filter((m) => m.role === "tool").length).toBe(1);
 		// 工具结果后的下一轮也只能保留一条原始用户输入
-		expect(
-			second.messages.filter((m) => m.content === "现在几点").length,
-		).toBe(1);
+		expect(second.messages.filter((m) => m.content === "现在几点").length).toBe(
+			1,
+		);
 	});
 
 	it("会话续聊：addHistory 后 historySnapshot 带回注入的消息", async () => {
@@ -173,6 +177,48 @@ describe("主体链路（mock）", () => {
 		expect((withSummary?.content ?? "").includes("（压缩摘要")).toBe(true);
 	});
 
+	it("compaction 迭代：再次超阈值仍会压缩，且旧摘要纳入重新总结（修复单次化 bug）", async () => {
+		const { subject, provider } = makeSubject([
+			{
+				// 摘要请求（压缩指令 system）
+				match: (req) =>
+					req.messages[0]?.role === "system" &&
+					(req.messages[0].content ?? "").includes("压缩成不超过 200 字"),
+				produce: () => [
+					{ kind: "text", text: "（压缩摘要：依旧聊过很多旧话题）" },
+				],
+			},
+			{
+				match: () => true,
+				produce: () => [{ kind: "text", text: "好" }],
+			},
+		]);
+		subject.addHistory(longHistory(120)); // 第一次超阈值 → 压缩
+		subject.pushInput("继续聊");
+		await flush();
+		expect(
+			provider.calls.filter(
+				(c) =>
+					c.messages[0]?.role === "system" &&
+					(c.messages[0].content ?? "").includes("压缩成不超过 200 字"),
+			),
+		).toHaveLength(1);
+		// 再塞 60 条旧历史（含已有摘要）→ 第二次超阈值必须再次压缩（而非跳过）
+		subject.addHistory(longHistory(60));
+		subject.pushInput("再聊");
+		await flush();
+		const summaryCalls = provider.calls.filter(
+			(c) =>
+				c.messages[0]?.role === "system" &&
+				(c.messages[0].content ?? "").includes("压缩成不超过 200 字"),
+		);
+		expect(summaryCalls.length).toBe(2);
+		// 第二次压缩的转录里包含旧摘要（迭代上下文，对齐 pi）
+		expect(
+			(summaryCalls[1].messages[1].content ?? "").includes("[历史摘要]"),
+		).toBe(true);
+	});
+
 	it("轮末 drain：输出期间连续到达的输入全部被消费并合并（修复滞留 bug）", async () => {
 		const { subject, provider } = makeSubject([
 			{
@@ -247,6 +293,23 @@ describe("shell 工具", () => {
 		expect(result.stdout).toContain("uina-smoke-ok");
 	});
 
+	it("解码器：跨 chunk 边界的多字节字符正确拼回（历史乱码 bug 回归）", () => {
+		const dec = createByteDecoder();
+		const bytes = Buffer.from("中文测试", "utf8");
+		const cut = 4; // 恰好在第二个字中间切开（历史 bug：整块回退 latin1 变乱码）
+		const a = dec.push(bytes.subarray(0, cut));
+		const b = dec.push(bytes.subarray(cut));
+		expect(a + b + dec.flush()).toBe("中文测试");
+	});
+
+	it("解码器：非法 UTF-8 chunk 回退 latin1 不产生替换符", () => {
+		const dec = createByteDecoder();
+		dec.push(Buffer.from([0xe4, 0xb8, 0xad])); // 合法"中"（忽略输出）
+		const bad = dec.push(Buffer.from([0xff, 0xfe])); // 非法字节
+		const latin = Buffer.from([0xff, 0xfe]).toString("latin1");
+		expect(bad).toBe(latin);
+	});
+
 	it("命令失败时返回结构化错误而非抛出", async () => {
 		const result = safeParse(await execCommandTool.run({ command: "exit 3" }));
 		// exec 非零退出会抛，实现应把错误包进结构化结果返回
@@ -255,7 +318,10 @@ describe("shell 工具", () => {
 
 	it("可取消：abort 后杀进程树并返回 cancelled（强制 stop 的根基）", async () => {
 		const ac = new AbortController();
-		const p = execCommandDirect('node -e "setTimeout(()=>{}, 60000)"', ac.signal);
+		const p = execCommandDirect(
+			'node -e "setTimeout(()=>{}, 60000)"',
+			ac.signal,
+		);
 		await flush();
 		ac.abort();
 		const r = await p;
@@ -264,6 +330,82 @@ describe("shell 工具", () => {
 	});
 });
 
+	describe("流式阶段中断", () => {
+		it("LLM 请求被 abort：不算错误（无 onError、无错误入史），含已中断占位", async () => {
+			const errs: string[] = [];
+			const provider: ModelProvider = {
+				name: "hang-stream",
+				async stream(_req, _onDelta, signal) {
+					// 挂起请求，直到收到 abort 才抛 AbortError（模拟 fetch 被 signal 切断）
+					await new Promise((_, reject) => {
+						signal?.addEventListener(
+							"abort",
+							() => reject(new DOMException("aborted", "AbortError")),
+							{ once: true },
+						);
+				});
+			},
+		};
+		const subject = new Subject(provider, new ToolBroker(), {
+			onToken: () => {},
+			onError: (m) => errs.push(m),
+		});
+		subject.pushInput("嗨");
+		await flush();
+		expect(subject.isBusy()).toBe(true);
+		subject.interrupt(); // 流式输出阶段中断 → abort 请求
+		await flush();
+		expect(subject.isBusy()).toBe(false);
+		expect(errs).toEqual([]); // 中断不是错误
+		const snap = subject.historySnapshot();
+		expect(snap.some((m) => m.content === "[已中断]")).toBe(true);
+		expect(
+			snap.some((m) => (m.content ?? "").includes("上轮处理出错")),
+		).toBe(false);
+	});
+
+	it("压缩请求期间中断：历史不被破坏（不丢内容、不插半截摘要）", async () => {
+		const provider: ModelProvider = {
+			name: "hang-compact",
+			async stream(req, _onDelta, signal) {
+				const isCompact = (req.messages[0]?.content ?? "").includes("压缩成");
+				if (isCompact) {
+					await new Promise((_, reject) => {
+						signal?.addEventListener(
+							"abort",
+							() => reject(new DOMException("aborted", "AbortError")),
+							{ once: true },
+						);
+					});
+					return;
+				}
+				_onDelta({ kind: "tool_call", call: { id: "x", name: "get_time", args: "{}" } });
+				_onDelta({ kind: "finish", reason: "stop" });
+			},
+		};
+		const tools = new ToolBroker();
+		tools.register(getTimeTool);
+		const subject = new Subject(provider, tools, { onToken: () => {} });
+		subject.addHistory(longHistory(120));
+		subject.pushInput("触发压缩");
+		await flush();
+		expect(subject.isBusy()).toBe(true); // 压缩请求挂起中
+		subject.interrupt();
+		await flush();
+		expect(subject.isBusy()).toBe(false);
+		const snap = subject.historySnapshot();
+		// 历史未被压缩截断：
+		//  - 无半截摘要占位（中断的压缩不落盘）
+		//  - 最旧消息仍在（历史没被 splice 掉）
+		expect(
+			snap.some((m) => (m.content ?? "").startsWith("[历史摘要]")),
+		).toBe(false);
+		expect(snap.some((m) => (m.content ?? "").includes("凑足 token 估算"))).toBe(
+			true,
+		);
+		expect(snap.some((m) => m.content === "[已中断]")).toBe(true);
+	});
+});
 describe("中断（interrupt）", () => {
 	it("工具执行中强制中止：不再进下一轮 LLM，历史含已取消回注与占位", async () => {
 		// 挂起工具：只有收到 abort signal 才返回"已取消"，否则永不 resolve
@@ -410,8 +552,7 @@ describe("中断（interrupt）", () => {
 		// 源头消除：中断后未执行的工具从 assistant.tool_calls 移除，不伪造结果——
 		// 只剩 h1（已执行且 cancelled）；tool 消息 1 条，与剩余声明一一配对
 		expect(toolMsgs.length).toBe(1);
-		const asstTcs =
-			asst && "tool_calls" in asst ? (asst.tool_calls ?? []) : [];
+		const asstTcs = asst && "tool_calls" in asst ? (asst.tool_calls ?? []) : [];
 		expect(asstTcs).toHaveLength(1);
 		expect((asstTcs[0] as { id: string }).id).toBe("h1");
 		for (const tm of toolMsgs) {
@@ -422,9 +563,9 @@ describe("中断（interrupt）", () => {
 			).toBe(true);
 		}
 		expect((toolMsgs[0] as { tool_call_id: string }).tool_call_id).toBe("h1");
-		expect(safeParse((toolMsgs[0] as { content: string }).content).cancelled).toBe(
-			true,
-		);
+		expect(
+			safeParse((toolMsgs[0] as { content: string }).content).cancelled,
+		).toBe(true);
 		// 中断后没进下一轮 LLM
 		expect(provider.calls.length).toBe(1);
 	});

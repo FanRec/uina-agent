@@ -12,7 +12,13 @@
  *  - 无命令白名单；权限模型 = 运行进程的用户账户权限（pi 同款信任模型）
  */
 import { spawn } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	readdirSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Tool } from "../../src/tools/broker.js";
@@ -36,7 +42,7 @@ export interface ShellResult {
  * powershell 用 -Command 直接收整段命令，特殊字符安全传递。
  * 编码：spawn 的 stdout 是字节流，Windows 默认代码页下中文易乱码——
  * powershell 5.1 用前缀强制本进程输出 UTF-8；py 类程序用 PYTHONIOENCODING；
- * 解码侧再启发式兜底（UTF-8 严格解码失败 → latin1，不产生 U+FFFD 替换符）。
+ * 解码侧由 createByteDecoder（stream 模式）处理，跨 chunk 边界不乱码。
  */
 function resolveShell(): {
 	shell: string;
@@ -83,13 +89,35 @@ function resolveShell(): {
 	return { shell: "cmd.exe", args: (c) => ["/d", "/s", "/c", c] };
 }
 
-/** 字节 → 文本：UTF-8 严格解码优先，失败回退 latin1（不吞字节、不产生替换符） */
-function decodeBuffer(buf: Buffer): string {
-	try {
-		return new TextDecoder("utf-8", { fatal: true }).decode(buf);
-	} catch {
-		return buf.toString("latin1");
-	}
+/**
+ * 字节流解码器（UTF-8 优先，跨 chunk 边界安全）。
+ * 持有一个 stream 模式 TextDecoder：多字节字符被 chunk 边界切开也能正确拼回
+ * （历史 bug：逐 chunk 独立严格解码，边界字符抛错后整块回退 latin1，中文乱码）。
+ * 某 chunk 含非法 UTF-8（如程序输出 GBK）时该 chunk 回退 latin1，decoder 重建。
+ * 进程被强杀导致的尾部半字符在 flush 时丢弃。
+ */
+export function createByteDecoder(): {
+	push(buf: Buffer): string;
+	flush(): string;
+} {
+	let decoder = new TextDecoder("utf-8", { fatal: true });
+	return {
+		push(buf: Buffer): string {
+			try {
+				return decoder.decode(buf, { stream: true });
+			} catch {
+				decoder = new TextDecoder("utf-8", { fatal: true });
+				return buf.toString("latin1");
+			}
+		},
+		flush(): string {
+			try {
+				return decoder.decode();
+			} catch {
+				return ""; // 残留半字符（强杀场景）：丢弃
+			}
+		},
+	};
 }
 
 /**
@@ -114,10 +142,12 @@ export async function execCommandDirect(
 		let stderr = "";
 		let outCapped = false;
 		let errCapped = false;
+		const outDec = createByteDecoder();
+		const errDec = createByteDecoder();
 
 		child.stdout?.on("data", (d: Buffer) => {
 			if (outCapped) return;
-			stdout += decodeBuffer(d);
+			stdout += outDec.push(d);
 			if (stdout.length > BUF_CAP) {
 				stdout = stdout.slice(-BUF_CAP);
 				outCapped = true;
@@ -125,7 +155,7 @@ export async function execCommandDirect(
 		});
 		child.stderr?.on("data", (d: Buffer) => {
 			if (errCapped) return;
-			stderr += decodeBuffer(d);
+			stderr += errDec.push(d);
 			if (stderr.length > BUF_CAP) {
 				stderr = stderr.slice(-BUF_CAP);
 				errCapped = true;
@@ -169,6 +199,11 @@ export async function execCommandDirect(
 		): void {
 			if (settled) return;
 			settled = true;
+			// 解码器收尾：尾部残留补全（正常流无残留，flush 幂等）
+			if (!cancelled && !spawnError) {
+				stdout += outDec.flush();
+				stderr += errDec.flush();
+			}
 			if (spawnError) {
 				resolve({ stdout: "", stderr: spawnError, code, cancelled });
 			} else {
@@ -229,14 +264,39 @@ const execCommand: Tool = {
 		if (!command) return JSON.stringify({ error: "command 为空" });
 		const r = await execCommandDirect(command, signal);
 		const body: Record<string, unknown> = {
+			// stdout/stderr 对称截断：超限保尾 + 截断标记（stderr 不再静默截掉）
 			stdout: truncateTail(r.stdout),
-			stderr: r.stderr.slice(0, 2000),
+			stderr: truncateTail(r.stderr),
 		};
 		if (r.cancelled) body.cancelled = true;
 		else if (r.code !== 0) body.error = `退出码 ${r.code}`;
 		return JSON.stringify(body);
 	},
 };
+
+/**
+ * 清理超过 24h 的旧截断临时文件（Windows tmp 目录不自动清理，写前顺带清一次）。
+ * 只删 uina-exec- 前缀文件；清理失败不影响主流程。
+ */
+function cleanOldTempFiles(): void {
+	try {
+		const dir = tmpdir();
+		const cutoff = Date.now() - 24 * 3600 * 1000;
+		for (const name of readdirSync(dir)) {
+			if (!name.startsWith("uina-exec-") || !name.endsWith(".out.txt")) {
+				continue;
+			}
+			const p = join(dir, name);
+			try {
+				if (statSync(p).mtimeMs < cutoff) unlinkSync(p);
+			} catch {
+				// 单个文件删除失败忽略
+			}
+		}
+	} catch {
+		// 清理失败不影响主流程
+	}
+}
 
 /**
  * 对齐 pi 的 truncateTail：保留最后 N 行且不超过 M 字节（先到为准）。
@@ -262,6 +322,7 @@ function truncateTail(output: string): string {
 
 	let pointer = "";
 	try {
+		cleanOldTempFiles();
 		const file = join(
 			tmpdir(),
 			`uina-exec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.out.txt`,

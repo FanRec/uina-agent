@@ -40,6 +40,11 @@ export interface ModelProvider {
 	/**
 	 * 流式对话：逐段回调 onDelta。
 	 * 若 delta 解析失败应抛错中断——调用方据此降级。
+	 * signal 可选：主动中断时 abort 底层请求（调用方负责区分"用户中断"与"意外错误"）。
 	 */
-	stream(req: ModelRequest, onDelta: (d: StreamDelta) => void): Promise<void>;
+	stream(
+		req: ModelRequest,
+		onDelta: (d: StreamDelta) => void,
+		signal?: AbortSignal,
+	): Promise<void>;
 }
