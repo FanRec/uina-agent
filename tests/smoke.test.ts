@@ -95,13 +95,13 @@ describe("主体链路（mock）", () => {
 
 describe("shell 工具", () => {
 	it("真实执行命令并返回输出", async () => {
-		const tool = shellTool({ baseDir: process.cwd(), maxOutput: 500 });
+		const tool = shellTool({ cwd: process.cwd() });
 		const result = safeParse(await tool.run({ command: "echo uina-smoke-ok" }));
 		expect(result.stdout).toContain("uina-smoke-ok");
 	});
 
 	it("命令失败时返回结构化错误而非抛出", async () => {
-		const tool = shellTool({ baseDir: process.cwd() });
+		const tool = shellTool({ cwd: process.cwd() });
 		const result = safeParse(await tool.run({ command: "exit 3" }));
 		// exec 非零退出会抛，实现应把错误包进结构化结果返回
 		expect(result.error ?? result.stderr).toBeTruthy();

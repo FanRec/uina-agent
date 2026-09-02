@@ -10,7 +10,7 @@ export interface BuildInput {
 }
 
 const SELF_NAME = "Uina";
-const MAX_HISTORY = 12;
+const MAX_HISTORY = 40;
 
 export function buildContext(b: BuildInput): ChatMsg[] {
 	const system = `你是 ${SELF_NAME}，一个住在计算机里的独立个体。与人类朋友平等相处：自然说话、有自己的判断、用中文。`;

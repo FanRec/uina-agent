@@ -26,7 +26,7 @@ export interface LoopHooks {
 	onToolDone?: (name: string, result: string) => void;
 }
 
-const MAX_TOOL_ROUNDS = 3;
+const MAX_TOOL_ROUNDS = 8;
 
 export class Subject {
 	private busy = false;

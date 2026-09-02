@@ -22,7 +22,7 @@ const provider = createOpenAIProvider(activeProvider(cfg));
 
 const tools = new ToolBroker();
 tools.register(getTimeTool());
-tools.register(shellTool({ baseDir: process.cwd() }));
+tools.register(shellTool({ cwd: process.cwd() }));
 
 // 渲染层：真 TTY 用交互 TUI；非 TTY（管道/一次性模式）退化为纯 stdio 流式打印
 const renderStdio = (m: OutMsg): void => {
@@ -103,7 +103,10 @@ const saveSession = (): void => {
 		writeFileSync(
 			SESSION_FILE,
 			JSON.stringify(
-				{ savedAt: new Date().toISOString(), messages: subject.historySnapshot() },
+				{
+					savedAt: new Date().toISOString(),
+					messages: subject.historySnapshot(),
+				},
 				null,
 				2,
 			),
