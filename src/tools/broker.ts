@@ -10,10 +10,7 @@ export interface Tool {
 	 * 执行工具。signal 用于取消（中断/stop）：核心把正在执行的工具
 	 * 与调用方的轮状态挂钩——收到 abort 应立即停止并返回结构化"已取消"结果。
 	 */
-	run(
-		args: Record<string, unknown>,
-		signal?: AbortSignal,
-	): Promise<string>;
+	run(args: Record<string, unknown>, signal?: AbortSignal): Promise<string>;
 }
 
 export class ToolBroker {

@@ -106,11 +106,10 @@ export async function runShellDirect(
 function killTree(pid: number): void {
 	if (process.platform === "win32") {
 		try {
-			void spawn(
-				"taskkill",
-				["/pid", String(pid), "/t", "/f"],
-				{ windowsHide: true, stdio: "ignore" },
-			);
+			void spawn("taskkill", ["/pid", String(pid), "/t", "/f"], {
+				windowsHide: true,
+				stdio: "ignore",
+			});
 		} catch {
 			// 忽略：taskkill 失败由 close 事件自然收口
 		}

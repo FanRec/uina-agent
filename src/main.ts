@@ -158,7 +158,7 @@ async function main(): Promise<void> {
 		const command = input.slice(1).trim();
 		if (!command) return;
 		execRunning = true;
-	execAbort = new AbortController();
+		execAbort = new AbortController();
 		tui?.pauseInput();
 		try {
 			process.stdout.write(`${CLEAR_LINE}`); // 清掉输入行（对齐 turn_start 渲染）
