@@ -40,6 +40,7 @@ export type EntryRenderer<T = unknown> = (
 export interface LocalCommand {
 	name: string;
 	description: string;
+	argumentHint?: string;
 	tag?: string;
 	hasArgs?: boolean;
 	handler?: (args: string) => void | Promise<void>;

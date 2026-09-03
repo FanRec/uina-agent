@@ -89,7 +89,7 @@ export class InteractiveTUI {
 				this.host.setBusy(true);
 				this.host.transcript.startTurn(m.n, m.text);
 				this.host.trajectoryProjection.onTurnStart(m.n, m.text);
-				this.host.activityLine.update("streaming", "正在思考与生成回复...");
+				this.host.activityLine.start("thinking", "正在思考与生成回复...");
 				this.host.requestRender();
 				break;
 
@@ -136,7 +136,8 @@ export class InteractiveTUI {
 				if (m.usage) {
 					this.host.setUsage(m.usage.usedTokens, m.usage.contextWindow);
 				}
-				this.host.activityLine.finish("本轮已完成");
+				const elapsed = this.host.getLastElapsedMs();
+				this.host.activityLine.finish("本轮已完成", elapsed > 0 ? elapsed : undefined);
 				this.host.requestRender();
 				break;
 

@@ -257,8 +257,20 @@ export class TranscriptContainer implements Component {
 	}
 
 	private formatAssistantMarkdown(md: string, width: number): string[] {
-		const formatted = formatFullMarkdown(md, width);
-		return formatted.map((l) => (l ? `  ${l}` : ""));
+		if (!md) return [];
+		const lines = formatFullMarkdown(md, Math.max(10, width - 4));
+		const formatted: string[] = [];
+		let isFirst = true;
+		for (const line of lines) {
+			if (isFirst && line.trim()) {
+				formatted.push(`  ${C.green}${C.bold}● ${C.reset}${line}`);
+				isFirst = false;
+			} else {
+				formatted.push(line ? `    ${line}` : "");
+			}
+		}
+		formatted.push("");
+		return formatted;
 	}
 
 	render(width: number): string[] {

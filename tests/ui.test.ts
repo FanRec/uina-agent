@@ -26,6 +26,7 @@ import { SubagentDashboard } from "../src/ui/components/overlays/subagent-dashbo
 import { TrajectoryProjection } from "../src/ui/adapters/agent-events.js";
 import { TrajectoryScene } from "../src/ui/components/overlays/trajectory-scene.js";
 import { createInteractiveUI } from "../src/ui/tui.js";
+import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
 
 describe("UI Core: Utils", () => {
 	it("正确计算包含中文与 ANSI 样式的可见字符宽度", () => {
@@ -778,5 +779,85 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
 			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
 		}
+	});
+
+	it("支持 / 命令与 @ 文件输入联想浮层与 Tab 补全", () => {
+		let stdinCallback: ((data: string) => void) | undefined;
+		const mockStdout = {
+			columns: 80,
+			rows: 24,
+			isTTY: true,
+			write: vi.fn(),
+			on: vi.fn(),
+			removeListener: vi.fn(),
+		};
+		const mockStdin = {
+			isTTY: true,
+			setRawMode: vi.fn(),
+			resume: vi.fn(),
+			pause: vi.fn(),
+			setEncoding: vi.fn(),
+			on: vi.fn((event: string, cb: (data: string) => void) => {
+				if (event === "data") stdinCallback = cb;
+			}),
+			removeListener: vi.fn(),
+		};
+
+		const origStdout = process.stdout;
+		const origStdin = process.stdin;
+		Object.defineProperty(process, "stdout", { value: mockStdout, configurable: true });
+		Object.defineProperty(process, "stdin", { value: mockStdin, configurable: true });
+
+		try {
+			const tui = createInteractiveUI({
+				modelName: "test-model",
+				toolCount: 2,
+				cwd: process.cwd(),
+			});
+
+			// 1. 输入 / 触发斜杠命令联想
+			stdinCallback!("/");
+			stdinCallback!("m");
+			stdinCallback!("o");
+			stdinCallback!("d");
+
+			// 验证输入框文本为 /mod
+			expect(tui.host.inputLine.getText()).toBe("/mod");
+
+			// 按 Tab 自动补全为 /model
+			stdinCallback!("\t");
+			expect(tui.host.inputLine.getText()).toBe("/model ");
+
+			// 清空输入框
+			tui.host.inputLine.clear();
+
+			// 2. 输入 @ 触发文件路径联想
+			stdinCallback!("@");
+			stdinCallback!("p");
+			stdinCallback!("a");
+			stdinCallback!("c");
+			stdinCallback!("k");
+
+			expect(tui.host.inputLine.getText()).toBe("@pack");
+
+			// 按 Tab 自动补全
+			stdinCallback!("\t");
+			expect(tui.host.inputLine.getText()).toContain("@package.json");
+
+			tui.close();
+		} finally {
+			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
+			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+		}
+	});
+
+	it("助手回复展示带有实心绿点 ● 前缀与优化的视觉呼吸层次", () => {
+		const transcript = new TranscriptContainer();
+		transcript.startTurn(1, "1+1等于几？");
+		transcript.appendToken("等于 2。");
+		transcript.finishTurn();
+
+		const rendered = transcript.render(80);
+		expect(rendered.some((l: string) => l.includes("●") && l.includes("等于 2。"))).toBe(true);
 	});
 });

@@ -77,9 +77,15 @@ export class ActivityLineComponent implements Component {
 		this.tokenCount += count;
 	}
 
-	finish(summary = "本轮已完成"): void {
+	finish(summary = "本轮已完成", elapsedOverride?: number): void {
 		this.phase = "done";
-		this.elapsedMs = Date.now() - this.startTime;
+		if (elapsedOverride !== undefined && elapsedOverride > 0) {
+			this.elapsedMs = elapsedOverride;
+		} else if (this.startTime > 0) {
+			this.elapsedMs = Math.max(0, Date.now() - this.startTime);
+		} else {
+			this.elapsedMs = 0;
+		}
 		this.message = summary;
 	}
 
@@ -99,8 +105,8 @@ export class ActivityLineComponent implements Component {
 	getHeaderString(maxWidth = 60): string {
 		if (this.phase === "idle") return "";
 		const now = Date.now();
-		const currentElapsed = this.phase === "done" ? this.elapsedMs : now - this.startTime;
-		const seconds = (currentElapsed / 1000).toFixed(1);
+		const currentElapsed = this.phase === "done" ? this.elapsedMs : (this.startTime > 0 ? now - this.startTime : 0);
+		const seconds = (Math.max(0, currentElapsed) / 1000).toFixed(1);
 
 		if (this.phase === "done") {
 			const prefix = `${C.green}✓${C.reset}`;

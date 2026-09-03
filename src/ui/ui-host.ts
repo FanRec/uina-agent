@@ -24,6 +24,12 @@ import { TaskDashboard } from "./components/overlays/task-dashboard.js";
 import { SubagentDashboard } from "./components/overlays/subagent-dashboard.js";
 import { SubagentDetailScene } from "./components/overlays/subagent-detail-scene.js";
 import { TrajectoryScene } from "./components/overlays/trajectory-scene.js";
+import {
+	formatSuggestionCardLines,
+	getFileCandidates,
+	type CommandItem,
+	type FileItem,
+} from "./components/editor/suggestions.js";
 import { ExtensionRegistry } from "./extensions/registry.js";
 import { createExtensionUIContext, type UIHostContextPort } from "./extensions/context.js";
 import type { ExtensionUIContext } from "./extensions/types.js";
@@ -85,6 +91,15 @@ export class UIHost implements UIHostContextPort {
 	private renderScheduled = false;
 	private animTimer: NodeJS.Timeout | null = null;
 	private scrollOffset = 0;
+
+	private activeSuggestions: {
+		type: "command" | "file";
+		query: string;
+		start: number;
+		end: number;
+		items: (CommandItem | FileItem)[];
+		selectedIndex: number;
+	} | null = null;
 
 	private rawInputListeners = new Set<(data: string) => void>();
 	private jobsRegistry?: JobRegistry;
@@ -226,9 +241,16 @@ export class UIHost implements UIHostContextPort {
 			this.streamTokenCount = 0;
 			this.startAnimation();
 		} else {
+			if (this.turnStartTime > 0) {
+				this.lastElapsedMs = Math.max(1, Date.now() - this.turnStartTime);
+			}
 			this.stopAnimation();
 		}
 		this.requestRender();
+	}
+
+	getLastElapsedMs(): number {
+		return this.lastElapsedMs;
 	}
 
 	isBusy(): boolean {
@@ -278,6 +300,71 @@ export class UIHost implements UIHostContextPort {
 
 	getScrollOffset(): number {
 		return this.scrollOffset;
+	}
+
+	executeCommand(name: string, args: string): void {
+		const cmd = this.registry.getCommand(name.toLowerCase());
+		if (cmd?.handler) {
+			void cmd.handler(args);
+		} else {
+			this.transcript.addNotice(`未知命令: /${name}。输入 /help 或 /commands 查看帮助。`);
+			this.requestRender();
+		}
+	}
+
+	private updateSuggestions(): void {
+		const detection = this.inputLine.detectSuggestionQuery();
+		if (!detection) {
+			this.activeSuggestions = null;
+			return;
+		}
+
+		if (detection.type === "command") {
+			const query = detection.query.toLowerCase();
+			const commands = this.registry.listCommands();
+			const filtered = commands.filter(
+				(c) => c.name.toLowerCase().includes(query) || c.description.toLowerCase().includes(query),
+			);
+			if (filtered.length > 0) {
+				const prevSelected =
+					this.activeSuggestions?.type === "command"
+						? (this.activeSuggestions.items[this.activeSuggestions.selectedIndex] as CommandItem)?.name
+						: undefined;
+				let newIndex = 0;
+				if (prevSelected) {
+					const found = filtered.findIndex((c) => c.name === prevSelected);
+					if (found >= 0) newIndex = found;
+				}
+				this.activeSuggestions = {
+					type: "command",
+					query: detection.query,
+					start: detection.start,
+					end: detection.end,
+					items: filtered.map((c) => ({
+						name: c.name,
+						description: c.description,
+						hasArgs: Boolean(c.hasArgs),
+					})),
+					selectedIndex: newIndex,
+				};
+			} else {
+				this.activeSuggestions = null;
+			}
+		} else if (detection.type === "file") {
+			const candidates = getFileCandidates(this.cwd, detection.query, 40);
+			if (candidates.length > 0) {
+				this.activeSuggestions = {
+					type: "file",
+					query: detection.query,
+					start: detection.start,
+					end: detection.end,
+					items: candidates,
+					selectedIndex: 0,
+				};
+			} else {
+				this.activeSuggestions = null;
+			}
+		}
 	}
 
 	// =========================================================================
@@ -496,11 +583,25 @@ export class UIHost implements UIHostContextPort {
 		const belowLines = this.widgetSlots.render("belowEditor", innerW).map((l) => `${margin}${l}`);
 		const belowH = belowLines.length;
 
-		// 4. 渲染 OverlayAbove 浮层（叠加于输入框正上方）
+		// 4. 渲染 OverlayAbove 浮层（叠加于输入框正上方）与 SuggestionCard 联想卡片
 		const aboveEditorWidgets = this.widgetSlots.render("aboveEditor", innerW);
 		const maxAboveH = Math.max(0, height - inputH - belowH - 1);
 		const overlayLines = this.overlayStack.renderAbove(innerW, maxAboveH);
-		const aboveLines = [...aboveEditorWidgets, ...overlayLines].slice(0, maxAboveH).map((l) => `${margin}${l}`);
+
+		let suggestionLines: string[] = [];
+		if (this.activeSuggestions && this.activeSuggestions.items.length > 0 && !this.overlayStack.hasVisible) {
+			suggestionLines = formatSuggestionCardLines({
+				type: this.activeSuggestions.type,
+				title: this.activeSuggestions.type === "command" ? "命令" : "文件",
+				query: this.activeSuggestions.query,
+				columns: innerW,
+				selectedIndex: this.activeSuggestions.selectedIndex,
+				items: this.activeSuggestions.items,
+				maxVisible: 5,
+			});
+		}
+
+		const aboveLines = [...aboveEditorWidgets, ...overlayLines, ...suggestionLines].slice(0, maxAboveH).map((l) => `${margin}${l}`);
 		const aboveH = aboveLines.length;
 
 		// 5. 计算转录区可用高度
@@ -633,6 +734,68 @@ export class UIHost implements UIHostContextPort {
 			}
 		}
 
+		// 3.5 联想卡片键鼠交互（/ 命令或 @ 文件导航与自动补全）
+		if (this.activeSuggestions && this.activeSuggestions.items.length > 0) {
+			if (matchesKey(data, Key.up)) {
+				this.activeSuggestions.selectedIndex = Math.max(0, this.activeSuggestions.selectedIndex - 1);
+				this.requestRender();
+				return;
+			}
+			if (matchesKey(data, Key.down)) {
+				this.activeSuggestions.selectedIndex = Math.min(
+					this.activeSuggestions.items.length - 1,
+					this.activeSuggestions.selectedIndex + 1,
+				);
+				this.requestRender();
+				return;
+			}
+			if (matchesKey(data, Key.escape)) {
+				this.activeSuggestions = null;
+				this.requestRender();
+				return;
+			}
+			if (matchesKey(data, Key.enter) || matchesKey(data, Key.tab)) {
+				const selected = this.activeSuggestions.items[this.activeSuggestions.selectedIndex];
+				if (selected) {
+					if (this.activeSuggestions.type === "command") {
+						const cmd = selected as CommandItem;
+						if (cmd.hasArgs) {
+							this.inputLine.setText(`/${cmd.name} `);
+							this.activeSuggestions = null;
+							this.requestRender();
+							return;
+						} else {
+							this.inputLine.clear();
+							this.activeSuggestions = null;
+							this.executeCommand(cmd.name, "");
+							this.requestRender();
+							return;
+						}
+					} else {
+						const file = selected as FileItem;
+						const isDir = file.kind === "directory";
+						const escapedPath = /\s/.test(file.path) ? `"${file.path}"` : file.path;
+						const replacement = isDir ? `@${escapedPath}` : `@${escapedPath} `;
+
+						this.inputLine.replaceRange(
+							this.activeSuggestions.start,
+							this.activeSuggestions.end,
+							replacement,
+						);
+
+						if (isDir) {
+							// 选中目录时无缝深入下级目录，保持浮层并立即重新索引
+							this.updateSuggestions();
+						} else {
+							this.activeSuggestions = null;
+						}
+						this.requestRender();
+						return;
+					}
+				}
+			}
+		}
+
 		// 4. 输入框未输入时敲 '?' 直接唤起帮助
 		if (data === "?" && !this.inputLine.getText().trim() && !this.overlayStack.hasVisible) {
 			this.openHelpMenu();
@@ -708,12 +871,14 @@ export class UIHost implements UIHostContextPort {
 		const focused = this.focusManager.getFocused();
 		if (focused && focused.handleInput) {
 			focused.handleInput(data);
+			this.updateSuggestions();
 			this.requestRender();
 		}
 	}
 
 	private handleUserSubmit(text: string): void {
 		this.scrollOffset = 0;
+		this.activeSuggestions = null;
 		this.inputLine.clear();
 
 		// 斜杠命令分发
@@ -721,12 +886,8 @@ export class UIHost implements UIHostContextPort {
 			const parts = text.slice(1).trim().split(/\s+/);
 			const cmdName = parts[0]!.toLowerCase();
 			const args = parts.slice(1).join(" ");
-
-			const cmd = this.registry.getCommand(cmdName);
-			if (cmd?.handler) {
-				void cmd.handler(args);
-				return;
-			}
+			this.executeCommand(cmdName, args);
+			return;
 		}
 
 		// !cmd 直通执行分发
@@ -744,35 +905,60 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	private registerDefaultCommands(): void {
-		const reg = (name: string, description: string, handler: (args: string) => void) => {
-			this.registry.registerCommand({ name, description, handler });
+		const reg = (
+			name: string,
+			description: string,
+			handler: (args: string) => void,
+			hasArgs = false,
+			argumentHint?: string,
+		) => {
+			this.registry.registerCommand({ name, description, handler, hasArgs, argumentHint });
 		};
 
 		reg("help", "查看所有可用命令与快捷键", () => this.openHelpMenu());
-		reg("model", "打开模型切换浮层 (或带参直接切换)", (args) => {
+		reg("commands", "列出所有可用斜杠命令与使用方式 (对齐 Pi)", () => this.openHelpMenu());
+		reg("model", "打开模型切换浮层 (或直接指定模型名)", (args) => {
 			if (args) this.setModel(args.trim());
 			else this.openModelPicker();
-		});
-		reg("effort", "调整模型思考强度 (Reasoning Effort)", (args) => {
+		}, true, "<provider/model>");
+		reg("effort", "调整模型思考强度 (off / low / medium / high / max)", (args) => {
 			if (args) this.setReasoningEffort(args.trim());
 			else this.openEffortSlider();
-		});
-		reg("subagents", "多子智能体看板与详情审查", () => this.openSubagentDashboard());
-		reg("agents", "多子智能体看板与详情审查", () => this.openSubagentDashboard());
-		reg("tasks", "后台作业与进程管理看板", () => this.openTaskDashboard());
-		reg("jobs", "后台作业与进程管理看板", () => this.openTaskDashboard());
-		reg("trajectory", "全屏事件时序与性能热点剖析", () => this.openTrajectoryScene());
+		}, true, "<level>");
+		reg("thinking", "设置或调整模型思考档位 (对齐 Pi 规范)", (args) => {
+			if (args) this.setReasoningEffort(args.trim());
+			else this.openEffortSlider();
+		}, true, "<level>");
+		reg("subagents", "多子智能体并行看板与审查 (Alt+A)", () => this.openSubagentDashboard());
+		reg("agents", "多子智能体并行看板与审查", () => this.openSubagentDashboard());
+		reg("tasks", "后台任务与持续进程看板 (Alt+J)", () => this.openTaskDashboard());
+		reg("jobs", "后台任务与持续进程看板", () => this.openTaskDashboard());
+		reg("trajectory", "全屏审计轨迹与性能时序图 (Alt+T)", () => this.openTrajectoryScene());
 		reg("traj", "全屏审计轨迹看板", () => this.openTrajectoryScene());
 		reg("compact", "压缩当前会话历史并释放上下文 (∴)", (args) => {
 			void this.onCompactRequest?.(args);
-		});
-		reg("think", "展开或折叠深度思考过程", () => {
+		}, true, "[instruction]");
+		reg("think", "展开或折叠深度思考过程 (Ctrl+O / Alt+O)", () => {
 			this.transcript.toggleThinking();
 			this.requestRender();
 		});
 		reg("clear", "清空当前会话屏幕与历史", () => {
 			this.transcript.clear();
 			this.requestRender();
+		});
+		reg("session", "查看会话用量、上下文窗口与工作目录", () => {
+			const pct = this.contextWindow > 0 ? Math.round((this.usedTokens / this.contextWindow) * 100) : 0;
+			this.transcript.addNotice(`会话信息: 模型=${this.modelName} · Token=${this.usedTokens}/${this.contextWindow} (${pct}%) · 思考=${this.reasoningEffort} · CWD=${this.cwd}`);
+			this.requestRender();
+		});
+		reg("hotkeys", "查看控制台全局快捷键", () => this.openHelpMenu());
+		reg("quit", "退出当前会话并退出控制台", () => {
+			this.stop();
+			process.exit(0);
+		});
+		reg("exit", "退出当前会话并退出控制台", () => {
+			this.stop();
+			process.exit(0);
 		});
 	}
 }
