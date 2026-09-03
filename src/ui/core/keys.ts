@@ -39,13 +39,12 @@ export function matchesKey(data: string, keyId: string): boolean {
 				data === "\x1b[27;2;13~" ||
 				data === "\x1b[13;2~" ||
 				data === "\x1b\r" ||
-				data === "\x1b\n" ||
-				data === "\n" // 终端 Raw 模式下普通回车为 \r，Shift+Enter / Ctrl+J 发送 \n
+				data === "\x1b\n"
 			) {
 				return true;
 			}
-			// Windows Terminal / ConPTY 底层修饰键补偿：如果收到 \r 且物理 Shift 处于按下状态
-			if ((data === "\r" || data === "\r\n") && isShiftPressed()) {
+			// Windows Terminal / ConPTY 底层修饰键补偿：如果收到回车字符且物理 Shift 处于按下状态
+			if ((data === "\r" || data === "\n" || data === "\r\n") && isShiftPressed()) {
 				return true;
 			}
 			return false;
@@ -57,9 +56,11 @@ export function matchesKey(data: string, keyId: string): boolean {
 			}
 			return (
 				data === "\r" ||
+				data === "\n" ||
 				data === "\r\n" ||
 				data === "\x1b[13u" ||
-				data === "\x1b[13:1u"
+				data === "\x1b[13:1u" ||
+				data === "\x1bOM"
 			);
 		case "backspace":
 			return data === "\x7f" || data === "\x08";

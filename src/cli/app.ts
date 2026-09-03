@@ -350,6 +350,9 @@ export async function runApp(): Promise<void> {
 		});
 		tui.onLine(onUserLine);
 		tui.onSIGINT(handleInterrupt);
+		if (snapshot.messages.length > 0) {
+			tui.loadHistory(snapshot.messages);
+		}
 	}
  else {
 		nonTTY = createInterface({ input: process.stdin });

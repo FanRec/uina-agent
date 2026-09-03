@@ -79,6 +79,10 @@ export class InteractiveTUI {
 		this.host.replaceInput(text);
 	}
 
+	loadHistory(messages: readonly import("../core/types.js").ChatMsg[]): void {
+		this.host.loadHistory(messages);
+	}
+
 	render(m: OutMsg): void {
 		switch (m.type) {
 			case "turn_start":

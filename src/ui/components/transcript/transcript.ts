@@ -140,6 +140,65 @@ export class TranscriptContainer implements Component {
 		return this.historyTurns;
 	}
 
+	loadHistory(messages: readonly import("../../../core/types.js").ChatMsg[]): void {
+		let current: TurnRecord | null = null;
+		let turnN = 0;
+
+		for (const msg of messages) {
+			if (msg.role === "user") {
+				if (msg.content.startsWith("[历史摘要]")) {
+					this.compactions.push({
+						id: Date.now(),
+						summary: msg.content.slice(6).trim(),
+						turnsCount: turnN,
+						tokensSaved: 0,
+						collapsed: true,
+						timestamp: Date.now(),
+					});
+					continue;
+				}
+				if (current) {
+					this.historyTurns.push(current);
+				}
+				turnN++;
+				current = {
+					n: turnN,
+					userText: msg.content,
+					assistantMarkdown: "",
+					thinkingText: undefined,
+					tools: [],
+				};
+			} else if (msg.role === "assistant") {
+				if (!current) {
+					turnN++;
+					current = {
+						n: turnN,
+						userText: "",
+						assistantMarkdown: "",
+						tools: [],
+					};
+				}
+				if (msg.thinking) {
+					current.thinkingText = (current.thinkingText ? current.thinkingText + "\n" : "") + msg.thinking;
+				}
+				if (msg.content) {
+					current.assistantMarkdown += msg.content;
+				}
+			} else if (msg.role === "tool") {
+				if (current) {
+					current.tools.push({
+						name: "tool",
+						result: msg.content,
+						elapsedMs: 0,
+					});
+				}
+			}
+		}
+		if (current) {
+			this.historyTurns.push(current);
+		}
+	}
+
 	clear(): void {
 		this.historyTurns.length = 0;
 		this.currentTurn = null;

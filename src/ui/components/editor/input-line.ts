@@ -361,12 +361,11 @@ export class InputLine implements Component, Focusable {
 			}
 		}
 
-		// 5. Shift+Enter / Alt+Enter / Ctrl+J 原生换行（在当前光标处插入 \n 并下移一行）
+		// 5. Shift+Enter / Alt+Enter 原生换行（在当前光标处插入 \n 并下移一行）
 		if (
 			matchesKey(data, Key.shiftEnter) ||
 			matchesKey(data, Key.shift("enter")) ||
-			matchesKey(data, Key.alt("enter")) ||
-			data === "\x0a"
+			matchesKey(data, Key.alt("enter"))
 		) {
 			this.text = this.text.slice(0, this.cursorIndex) + "\n" + this.text.slice(this.cursorIndex);
 			this.cursorIndex += 1;

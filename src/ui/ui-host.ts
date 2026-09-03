@@ -131,6 +131,11 @@ export class UIHost implements UIHostContextPort {
 		this.headerContainer.addChild(this.banner);
 
 		this.inputLine = new InputLine();
+		this.inputLine.onSubmit = (text) => this.handleUserSubmit(text);
+		this.inputLine.onInterrupt = () => this.onInterrupt?.();
+		this.inputLine.onEscape = () => {
+			if (this.overlayStack.hasVisible) this.overlayStack.hideTopOverlay();
+		};
 		this.inputLine.setCwd(this.cwd);
 		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow);
 		this.inputLine.setReasoningEffort(this.reasoningEffort);
@@ -242,6 +247,11 @@ export class UIHost implements UIHostContextPort {
 
 	replaceInput(text: string): void {
 		this.inputLine.setText(text);
+		this.requestRender();
+	}
+
+	loadHistory(messages: readonly import("../core/types.js").ChatMsg[]): void {
+		this.transcript.loadHistory(messages);
 		this.requestRender();
 	}
 
@@ -601,14 +611,6 @@ export class UIHost implements UIHostContextPort {
 		const focused = this.focusManager.getFocused();
 		if (focused && focused.handleInput) {
 			focused.handleInput(data);
-
-			// 输入提交事件判定（由 InputLine 触发）
-			if ((focused as unknown) === this.inputLine && matchesKey(data, Key.enter)) {
-				const text = this.inputLine.getExpandedText().trim();
-				if (text) {
-					this.handleUserSubmit(text);
-				}
-			}
 			this.requestRender();
 		}
 	}

@@ -597,4 +597,120 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
 		}
 	});
+
+	it("正确捕获终端输入并在按下 Enter 时提交用户行", () => {
+		let stdinCallback: ((data: string) => void) | undefined;
+		const mockStdout = {
+			columns: 80,
+			rows: 24,
+			isTTY: true,
+			write: vi.fn(),
+			on: vi.fn(),
+			removeListener: vi.fn(),
+		};
+		const mockStdin = {
+			isTTY: true,
+			setRawMode: vi.fn(),
+			resume: vi.fn(),
+			pause: vi.fn(),
+			setEncoding: vi.fn(),
+			on: vi.fn((event: string, cb: (data: string) => void) => {
+				if (event === "data") stdinCallback = cb;
+			}),
+			removeListener: vi.fn(),
+		};
+
+		const origStdout = process.stdout;
+		const origStdin = process.stdin;
+		Object.defineProperty(process, "stdout", { value: mockStdout, configurable: true });
+		Object.defineProperty(process, "stdin", { value: mockStdin, configurable: true });
+
+		try {
+			const tui = createInteractiveUI({
+				modelName: "test-model",
+				toolCount: 2,
+			});
+
+			const submittedLines: string[] = [];
+			tui.onLine((line) => {
+				submittedLines.push(line);
+			});
+
+			// 1. 模拟输入 "2222" 并按回车 (\r)
+			expect(stdinCallback).toBeDefined();
+			stdinCallback!("2");
+			stdinCallback!("2");
+			stdinCallback!("2");
+			stdinCallback!("2");
+			stdinCallback!("\r");
+
+			expect(submittedLines).toEqual(["2222"]);
+
+			// 2. 模拟输入 "3333" 并按回车 (\n)
+			stdinCallback!("3");
+			stdinCallback!("3");
+			stdinCallback!("3");
+			stdinCallback!("3");
+			stdinCallback!("\n");
+
+			expect(submittedLines).toEqual(["2222", "3333"]);
+
+			tui.close();
+		} finally {
+			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
+			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+		}
+	});
+
+	it("启动时正确恢复历史会话消息 (loadHistory) 到转录流中", () => {
+		const mockStdout = {
+			columns: 80,
+			rows: 24,
+			isTTY: true,
+			write: vi.fn(),
+			on: vi.fn(),
+			removeListener: vi.fn(),
+		};
+		const mockStdin = {
+			isTTY: true,
+			setRawMode: vi.fn(),
+			resume: vi.fn(),
+			pause: vi.fn(),
+			setEncoding: vi.fn(),
+			on: vi.fn(),
+			removeListener: vi.fn(),
+		};
+
+		const origStdout = process.stdout;
+		const origStdin = process.stdin;
+		Object.defineProperty(process, "stdout", { value: mockStdout, configurable: true });
+		Object.defineProperty(process, "stdin", { value: mockStdin, configurable: true });
+
+		try {
+			const tui = createInteractiveUI({
+				modelName: "test-model",
+				toolCount: 2,
+			});
+
+			tui.loadHistory([
+				{ role: "user", content: "之前问的问题" },
+				{ role: "assistant", content: "之前回答的答案", thinking: "思考过程" },
+			]);
+
+			const history = tui.host.transcript.getHistory();
+			expect(history.length).toBe(1);
+			expect(history[0]?.userText).toBe("之前问的问题");
+			expect(history[0]?.assistantMarkdown).toBe("之前回答的答案");
+			expect(history[0]?.thinkingText).toBe("思考过程");
+
+			const rendered = tui.host.transcript.render(80);
+			expect(rendered.some((l) => l.includes("之前问的问题"))).toBe(true);
+			expect(rendered.some((l) => l.includes("之前回答的答案"))).toBe(true);
+
+			tui.close();
+		} finally {
+			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
+			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+		}
+	});
 });
