@@ -7,6 +7,7 @@ export type QueueMode = "all" | "one-at-a-time";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ToolExecutionMode = "parallel" | "sequential";
 export type AssistantStatus = "complete" | "length" | "aborted" | "error";
+export type FinishReason = "stop" | "tool_calls" | "length";
 export type ToolResultStatus =
 	| "succeeded"
 	| "failed"
@@ -37,9 +38,9 @@ export type StreamDelta =
 	| { kind: "usage"; usage: Usage }
 	| {
 			kind: "tool_call";
-			call: { id: string; name: string; args: string; argsValid?: boolean };
+			call: { id: string; name: string; args: string; argsValid?: boolean; thinkingSignature?: string };
 		}
-	| { kind: "finish"; reason: string };
+	| { kind: "finish"; reason: FinishReason };
 
 /** 发给模型的工具声明（OpenAI function calling 形状）。 */
 export interface ToolDef {
@@ -57,6 +58,8 @@ export interface CompletedToolCall {
 	name: string;
 	args: unknown;
 	argsValid?: boolean;
+	/** Provider-native reasoning signature associated with this tool call, when supplied. */
+	thinkingSignature?: string;
 }
 
 export type ChatMsg =

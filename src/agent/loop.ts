@@ -1,6 +1,7 @@
 import type {
 	ChatMsg,
 	CompletedToolCall,
+	FinishReason,
 	DeliveryMode,
 	ModelProvider,
 	ThinkingLevel,
@@ -434,7 +435,7 @@ export class Subject {
 			let thinking = "";
 			let thinkingSignature: string | undefined;
 			let usage: Usage | undefined;
-			let finishReason: string | null = null;
+			let finishReason: FinishReason | null = null;
 			this.lastReportedUsage = null;
 
 			const streamId = `stream-${this.turnSeq}-${++this.streamSeq}`;
@@ -470,6 +471,7 @@ export class Subject {
 						providerHooks: this.runtimeHooks.provider,
 					},
 					(delta) => {
+						if (finishReason && delta.kind !== "usage") throw new Error("模型 finish 后仍返回输出事件");
 						if (delta.kind === "thinking") {
 							thinking += delta.text;
 							if (!hasEmittedThinkingStart) {
@@ -512,6 +514,7 @@ export class Subject {
 								name: delta.call.name,
 								args: parsedArgs.value,
 								argsValid: delta.call.argsValid !== false && parsedArgs.valid,
+								...(delta.call.thinkingSignature ? { thinkingSignature: delta.call.thinkingSignature } : {}),
 							});
 						} else if (!finishReason) {
 							finishReason = delta.reason;
@@ -526,8 +529,16 @@ export class Subject {
 					await this.emitInterrupted(reply, thinking, thinkingSignature);
 					return;
 				}
-				if (reply.trim()) {
-					await this.appendMessage({ role: "assistant", content: reply, thinking: thinking || undefined, thinkingSignature, status: "error" });
+				if (reply.trim() || thinking.trim() || thinkingSignature || toolCalls.length > 0) {
+					await this.appendMessage({
+						role: "assistant",
+						content: reply,
+						thinking: thinking || undefined,
+						thinkingSignature,
+						...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+						status: "error",
+						usage,
+					});
 				}
 				throw error;
 			}
@@ -537,10 +548,7 @@ export class Subject {
 				await this.emitInterrupted(reply, thinking, thinkingSignature);
 				return;
 			}
-			if (
-				!finishReason ||
-				!['stop', 'tool_calls', 'length'].includes(finishReason)
-			) {
+			if (!finishReason) {
 				closeOutput("interrupted", "error");
 				throw new Error(`模型返回未知或缺失 finish reason: ${finishReason ?? "none"}`);
 			}
@@ -552,15 +560,24 @@ export class Subject {
 			if (finishReason === "length") {
 				this.hooks.onNotice?.("本轮回复达到输出长度上限。");
 			}
-			if (toolCalls.length === 0) {
-				if (reply.trim()) {
-						await this.appendMessage({
-							role: "assistant",
-							content: reply,
-							thinking: thinking || undefined,
-							thinkingSignature,
+			if (finishReason !== "tool_calls") {
+				if (reply.trim() || toolCalls.length > 0) {
+					await this.appendMessage({
+						role: "assistant",
+						content: reply,
+						thinking: thinking || undefined,
+						thinkingSignature,
+						...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
 						status: finishReason === "length" ? "length" : "complete", usage,
 					});
+					for (const call of toolCalls) {
+						await this.appendMessage({
+							role: "tool",
+							tool_call_id: call.id,
+							content: JSON.stringify({ error: "工具调用未执行（模型没有以 tool_calls 终止）", status: "not_started" }),
+							status: "not_started",
+						});
+					}
 				}
 				const steer = this.queues.peekMany("steer", this.queueModes.steer);
 				if (steer.length > 0) {

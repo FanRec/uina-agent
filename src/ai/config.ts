@@ -17,6 +17,8 @@ export interface ProviderConfig {
 	modelContextWindow?: number;
 	maxContextWindow?: number;
 	maxRetries?: number;
+	/** Gemini models that explicitly require function-call ids on the wire. Unknown stays omitted. */
+	geminiToolCallIds?: boolean;
 	type?: ProviderKind;
 	thinkingFormat?: "openai" | "deepseek" | "qwen";
 	thinkingLevels?: readonly ThinkingLevel[];
@@ -99,6 +101,9 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 				(typeof provider.maxRetries !== "number" || !Number.isSafeInteger(provider.maxRetries) || provider.maxRetries < 0)) {
 				throw new Error(`配置 ${path} 的 provider ${name} 的 maxRetries 无效`);
 			}
+			if (provider.geminiToolCallIds !== undefined && typeof provider.geminiToolCallIds !== "boolean") {
+				throw new Error(`配置 ${path} 的 provider ${name} 的 geminiToolCallIds 无效`);
+			}
 			if (provider.type !== undefined && provider.type !== "openai-compatible" && provider.type !== "anthropic" && provider.type !== "gemini") {
 				throw new Error(`配置 ${path} 的 provider ${name} 的 type 无效`);
 			}
@@ -114,6 +119,7 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 				...(provider.modelContextWindow === undefined ? {} : { modelContextWindow: provider.modelContextWindow as number }),
 				...(provider.maxContextWindow === undefined ? {} : { maxContextWindow: provider.maxContextWindow as number }),
 				...(provider.maxRetries === undefined ? {} : { maxRetries: provider.maxRetries }),
+				...(provider.geminiToolCallIds === undefined ? {} : { geminiToolCallIds: provider.geminiToolCallIds as boolean }),
 				baseUrl: typeof provider.baseUrl === "string" ? provider.baseUrl : defaultBaseUrl(providerType),
 				type: providerType,
 				...(provider.thinkingFormat === undefined ? {} : { thinkingFormat: provider.thinkingFormat as ProviderConfig["thinkingFormat"] }),

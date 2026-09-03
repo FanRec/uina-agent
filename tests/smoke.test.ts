@@ -177,6 +177,24 @@ describe("Subject", () => {
 		expect(subject.historySnapshot().find((message) => message.role === "tool")?.status).toBe("not_started");
 	});
 
+	it("does not execute tool calls when the provider ended on length", async () => {
+		const broker = new ToolBroker();
+		let executed = false;
+		broker.register(makeTool("length_tool", async () => {
+			executed = true;
+			return "should not run";
+		}));
+		const provider = scriptedProvider([
+			{ match: () => true, produce: () => [{ kind: "tool_call", call: { id: "length-1", name: "length_tool", args: "{}" } }, { kind: "finish", reason: "length" }] },
+		]);
+		const subject = new Subject(provider, broker, { onToken: () => {} });
+		subject.pushInput("length");
+		await idle(subject);
+		expect(executed).toBe(false);
+		expect(subject.historySnapshot().find((message) => message.role === "assistant")?.status).toBe("length");
+		expect(subject.historySnapshot().find((message) => message.role === "tool")?.status).toBe("not_started");
+	});
+
 	it("compacts with provider-sized limits and keeps old history on failure", async () => {
 		const broker = new ToolBroker();
 		const provider = scriptedProvider([

@@ -52,6 +52,22 @@ describe("OpenAI gateway", () => {
 		expect(output).toContainEqual({ kind: "text", text: "ok" });
 	});
 
+	it("merges usage chunks without fabricating an empty usage receipt", async () => {
+		const output = await collect(await endpoint(sse([
+			JSON.stringify({ usage: { prompt_tokens: 10, prompt_tokens_details: { cached_tokens: 2 } } }),
+			JSON.stringify({ usage: { completion_tokens: 3, completion_tokens_details: { reasoning_tokens: 1 } } }),
+			JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+			"[DONE]",
+		])));
+		expect(output.filter((delta) => delta.kind === "usage").at(-1)).toEqual({ kind: "usage", usage: { input: 8, output: 3, cacheRead: 2, cacheWrite: 0, reasoning: 1, totalTokens: 13 } });
+		const empty = await collect(await endpoint(sse([
+			JSON.stringify({ usage: {} }),
+			JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+			"[DONE]",
+		])));
+		expect(empty.some((delta) => delta.kind === "usage")).toBe(false);
+	});
+
 	it("reassembles fragmented tool calls", async () => {
 		const output = await collect(
 			await endpoint(
@@ -78,6 +94,11 @@ describe("OpenAI gateway", () => {
 
 	it("rejects an abnormal finish reason and incomplete arguments", async () => {
 		await expect(collect(await endpoint(sse([JSON.stringify({ choices: [{ delta: {}, finish_reason: "provider_magic" }] }), "[DONE]"])))).rejects.toThrow("未知 finish_reason");
+		await expect(collect(await endpoint(sse([
+			JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "t", function: { name: "x", arguments: "{}" } }] } }] }),
+			JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+			"[DONE]",
+		])))).rejects.toThrow("仍有未完成 tool call");
 		await expect(collect(await endpoint(sse([
 			JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "t", function: { name: "x", arguments: '{"a":' } }] } }] }),
 			JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),

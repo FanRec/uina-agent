@@ -19,7 +19,8 @@
 | 项目本地扩展 | 已实现 | `.uina/extensions/*.ts|js`、`activate(pi)`、dispose/reload、旧 ctx 失效、资源归属清理 |
 | 扩展 UI 契约 | 已实现 | `ctx.ui` 与注册 API 分离；CustomMessage 进模型上下文，CustomEntry 仅持久化/转录 |
 | 图片和多模态 | 未实现 | v0 只有文本输入 |
-| provider 重试 | 部分实现 | OpenAI-compatible 有可取消指数重试；Anthropic/Gemini 仍待统一网络层 |
+| provider 重试 | 已实现 | OpenAI-compatible、Anthropic、Gemini 共用可取消指数重试；真实服务端策略仍需凭据 smoke |
+| Anthropic/Gemini 协议闭环 | 已实现 localhost | 严格终止原因、usage 合并、工具名称回放、拒绝/未知错误与 CLI 纵切已有 fixture；真实服务端仍未验证 |
 | 审批/权限策略 | 未实现 | 采用当前账户权限的可信工作区模型 |
 | 后台 Job | 已实现 | `src/extensions/jobs` 提供 JobRegistry、输出游标、取消和完成通知 |
 

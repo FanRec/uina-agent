@@ -96,6 +96,8 @@
 - 静态代码风险：Gemini tool result 用 `tool_call_id` 作为 `functionResponse.name`，而内部 tool message不保存函数名；任意非 `STOP` finish reason 都映射为 `length`。Anthropic 任意非 `tool_use`/`max_tokens` stop reason 都映射为 `stop`。这些会把协议异常或安全终止压扁成正常/截断状态。
 - Anthropic usage 的 start/delta 片段各自归一化后覆盖，未累计；再叠加 Subject 的 stale usage，会使前端 usage 不能当作可信事实。
 
+后续实现补充（2026-09-04）：上述是审查基线事实。Provider 工作包已补齐 Anthropic/Gemini localhost SSE fixture 与真实 CLI 纵切：文本、thinking/signature、工具回注、usage 合并、未知/拒绝终止、断流、HTTP 错误和取消均有覆盖；模型目录刷新失败会向 CLI 报告且不会保留未标记的旧动态模型；真实 Anthropic/Gemini 服务端仍未验证。
+
 ### 5.6 Job、Subagent 与慢路径
 
 - JobRegistry 是纯进程内 Map；崩溃后不会恢复 accepted/running，也不会伪装为 `unknown`。后续对照 DSH `LocalJobRegistry` 后校正：这正是第一阶段 process-local Jobs 的成熟边界，而非必须立即补 JobStore 的缺陷；只有 producer 可跨宿主继续或可远端对账时，才需要持久化/reconcile。

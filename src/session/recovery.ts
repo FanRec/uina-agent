@@ -335,7 +335,8 @@ function isChatMsg(value: unknown): value is ChatMsg {
 			return (
 				typeof toolCall.id === "string" &&
 				typeof toolCall.name === "string" &&
-				"args" in toolCall
+				"args" in toolCall &&
+				(toolCall.thinkingSignature === undefined || typeof toolCall.thinkingSignature === "string")
 			);
 		})
 	);

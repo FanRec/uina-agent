@@ -33,7 +33,9 @@ export function scriptedProvider(
 						},
 					];
 			for (const d of deltas) onDelta(d);
-			onDelta({ kind: "finish", reason: "stop" });
+			if (!deltas.some((delta) => delta.kind === "finish")) {
+				onDelta({ kind: "finish", reason: deltas.some((delta) => delta.kind === "tool_call") ? "tool_calls" : "stop" });
+			}
 		},
 	};
 }

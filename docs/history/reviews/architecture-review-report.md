@@ -333,7 +333,7 @@ UI projection 失败必须可见，但不能改变已经发生的模型/工具�
 
 ### P1：Provider 闭环不足
 
-#### P1-10 Anthropic/Gemini 将未知协议状态压扁
+#### P1-10 Anthropic/Gemini 将未知协议状态压扁（已修复）
 
 静态实现显示：
 
@@ -342,9 +342,9 @@ UI projection 失败必须可见，但不能改变已经发生的模型/工具�
 - Gemini tool result 用 tool call id 作为 `functionResponse.name`，内部 tool message 又没有保存函数名。
 - Anthropic start/delta usage 分别归一化并覆盖，没有累计完整请求 usage。
 
-这违反“协议异常不得静默吞错”。在真实 fixture 或 Provider smoke 完成前，Anthropic/Gemini 只能标为 implementation/unverified。
+这违反“协议异常不得静默吞错”。现已完成 adapter 收紧：终止原因使用有限规范化集合，拒绝/安全/未知状态显式抛错；Anthropic usage 按字段合并；Gemini tool result 从历史 function call 推导名称；三种 Provider 都使用可取消的既有网络重试路径。localhost SSE 与真实 CLI 纵切已验证，真实 Anthropic/Gemini 服务端仍保持 unverified。
 
-优先考虑复用成熟 Provider SDK。最值得实验的是只替换 Provider/Model 层为 `@earendil-works/pi-ai` 或官方 SDK，保留 Uina 自己的 Subject、连续主体和扩展模型。不要把 Pi coding-agent 一起搬进来。
+曾考虑复用成熟 Provider SDK，但当前 handwritten adapter 已能保留原始协议事实并通过 fixture；如未来 SDK 实验不能减少协议代码或削弱错误可见性，就不引入依赖。不要把 Pi coding-agent 一起搬进来。
 
 ### P2：质量、UI 和可运维性问题
 

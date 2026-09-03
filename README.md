@@ -47,6 +47,8 @@ UINA_ONESHOT_MSG="你好" pnpm start
 
 `modelContextWindow` 是模型真实物理上限，必须显式声明；`maxContextWindow` 是可选的用户限制，最终有效上限取两者较小值。旧 `contextWindow` 已移除。`type` 可选为 `openai-compatible`、`anthropic` 或 `gemini`，省略时使用 `openai-compatible`。Anthropic 和 Gemini 可以省略 `baseUrl`，使用各自官方 endpoint。思考等级支持 `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，但可用档位必须由 `thinkingLevels`、可信模型目录或 Provider 明确提供；Uina 不再根据模型名称猜测。能力未知时只使用 `off`，界面显示未知而不是虚构默认值。TTY 默认显示思考流，非 TTY 可通过 `UINA_SHOW_THINKING=1` 显示。
 
+Gemini 若某个已确认的模型要求在 function call/function response 中携带调用 ID，可显式设置 `geminiToolCallIds: true`；省略时不猜测模型能力，也不会自动添加协议字段。
+
 ## 目录
 
 ```text

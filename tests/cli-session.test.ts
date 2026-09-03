@@ -177,3 +177,141 @@ describe("CLI session recovery", () => {
 		expect(stdout).toContain("RUNTIME_SCOPE_OK");
 	});
 });
+
+describe("CLI provider protocol closure", () => {
+	it("completes an Anthropic text/tool loop through the real entry point", async () => {
+		const root = await mkdtemp(join(tmpdir(), "uina-cli-anthropic-"));
+		roots.push(root);
+		const home = join(root, "home");
+		const cwd = join(root, "work");
+		await mkdir(join(home, ".uina"), { recursive: true });
+		await mkdir(cwd, { recursive: true });
+		let chatRequests = 0;
+		const server = createServer((request, response) => {
+			if (request.url === "/v1/models") {
+				response.writeHead(200, { "content-type": "application/json" });
+				response.end('{"data":[{"id":"anthropic-local"}]}');
+				return;
+			}
+			if (request.url !== "/v1/messages") {
+				response.writeHead(404).end();
+				return;
+			}
+			chatRequests++;
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			const events = chatRequests === 1
+				? [
+						{ type: "message_start", message: { usage: { input_tokens: 4 } } },
+						{ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "cli-call", name: "get_time" } },
+						{ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{}" } },
+						{ type: "content_block_stop", index: 0 },
+						{ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 1 } },
+						{ type: "message_stop" },
+					]
+				: [
+						{ type: "message_start", message: { usage: { input_tokens: 7 } } },
+						{ type: "content_block_start", index: 0, content_block: { type: "text", text: "ANTHROPIC_CLI_OK" } },
+						{ type: "content_block_stop", index: 0 },
+						{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } },
+						{ type: "message_stop" },
+					];
+			response.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
+		});
+		servers.push(server);
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("测试 Provider 地址不可用");
+		await writeFile(join(home, ".uina", "auth.json"), JSON.stringify({
+			default: "anthropic",
+			thinkingLevel: "off",
+			providers: {
+				anthropic: {
+					type: "anthropic",
+					baseUrl: `http://127.0.0.1:${address.port}/v1`,
+					apiKey: "local-test",
+					model: "anthropic-local",
+					modelContextWindow: 4096,
+					thinkingLevels: ["off"],
+				},
+			},
+		}), "utf8");
+		const child = spawn(process.execPath, [join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"), join(process.cwd(), "src", "main.ts")], {
+			cwd,
+			env: { ...process.env, UINA_HOME: home, UINA_ONESHOT_MSG: "调用时间工具" },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let stdout = "";
+		let stderr = "";
+		child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+		child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+		const exitCode = await new Promise<number | null>((resolve) => child.on("close", resolve));
+		expect(exitCode, stderr).toBe(0);
+		expect(chatRequests).toBe(2);
+		expect(stdout).toContain("ANTHROPIC_CLI_OK");
+	});
+
+	it("completes a Gemini text/tool loop through the real entry point", async () => {
+		const root = await mkdtemp(join(tmpdir(), "uina-cli-gemini-"));
+		roots.push(root);
+		const home = join(root, "home");
+		const cwd = join(root, "work");
+		await mkdir(join(home, ".uina"), { recursive: true });
+		await mkdir(cwd, { recursive: true });
+		let chatRequests = 0;
+		const server = createServer((request, response) => {
+			if (request.url?.startsWith("/v1beta/models?") || request.url === "/v1beta/models") {
+				response.writeHead(200, { "content-type": "application/json" });
+				response.end('{"models":[{"baseModelId":"gemini-local","inputTokenLimit":4096,"supportedGenerationMethods":["generateContent"]}]}');
+				return;
+			}
+			if (!request.url?.startsWith("/v1beta/models/gemini-local:streamGenerateContent")) {
+				response.writeHead(404).end();
+				return;
+			}
+			chatRequests++;
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			const events = chatRequests === 1
+				? [
+						{ candidates: [{ content: { parts: [{ functionCall: { id: "gemini-cli-call", name: "get_time", args: {} } }] } }] },
+						{ candidates: [{ finishReason: "STOP" }] },
+					]
+				: [
+						{ candidates: [{ content: { parts: [{ text: "GEMINI_CLI_OK" }] } }] },
+						{ candidates: [{ finishReason: "STOP" }] },
+					];
+			response.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
+		});
+		servers.push(server);
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("测试 Provider 地址不可用");
+		await writeFile(join(home, ".uina", "auth.json"), JSON.stringify({
+			default: "gemini",
+			thinkingLevel: "off",
+			providers: {
+				gemini: {
+					type: "gemini",
+					baseUrl: `http://127.0.0.1:${address.port}/v1beta`,
+					apiKey: "local-test",
+					model: "gemini-local",
+					modelContextWindow: 4096,
+					thinkingLevels: ["off"],
+					geminiToolCallIds: true,
+				},
+			},
+		}), "utf8");
+		const child = spawn(process.execPath, [join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"), join(process.cwd(), "src", "main.ts")], {
+			cwd,
+			env: { ...process.env, UINA_HOME: home, UINA_ONESHOT_MSG: "调用时间工具" },
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let stdout = "";
+		let stderr = "";
+		child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+		child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+		const exitCode = await new Promise<number | null>((resolve) => child.on("close", resolve));
+		expect(exitCode, stderr).toBe(0);
+		expect(chatRequests).toBe(2);
+		expect(stdout).toContain("GEMINI_CLI_OK");
+	});
+});

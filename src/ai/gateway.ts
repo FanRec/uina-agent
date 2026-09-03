@@ -2,6 +2,7 @@ import type {
 	ModelProvider,
 	ModelRequest,
 	ThinkingLevel,
+	Usage,
 } from "../core/types.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
 import { configuredThinkingLevels } from "./config.js";
@@ -77,6 +78,7 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 
 			let finished = false;
 			let doneMarker = false;
+			let usageState: Partial<Usage> = {};
 			const pending = new Map<number, { id: string; name: string; args: string }>();
 
 			await parseSSE(
@@ -104,7 +106,13 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 					}
 
 					const choice = chunk.choices?.[0];
-					if (chunk.usage) onDelta({ kind: "usage", usage: normalizeUsage(chunk.usage) });
+					if (chunk.usage) {
+						const usage = mergeOpenAIUsage(usageState, chunk.usage, index, conf.model);
+						if (usage) {
+							usageState = usage;
+							onDelta({ kind: "usage", usage: usageSnapshot(usageState) });
+						}
+					}
 					if (!choice) return;
 					const delta = choice.delta ?? {};
 					if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
@@ -131,6 +139,19 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 					}
 
 					if (typeof choice.finish_reason === "string" && choice.finish_reason) {
+						if (choice.finish_reason === "content_filter") {
+							throw new ProviderProtocolError(`模型 ${conf.model} 因 content_filter 终止回复`, index);
+						}
+						if (
+							choice.finish_reason !== "stop" &&
+							choice.finish_reason !== "tool_calls" &&
+							choice.finish_reason !== "length"
+						) {
+							throw new ProviderProtocolError(`模型 ${conf.model} 未知 finish_reason: ${choice.finish_reason}`, index);
+						}
+						if (choice.finish_reason === "stop" && pending.size > 0) {
+							throw new ProviderProtocolError(`模型 ${conf.model} 返回 stop，但仍有未完成 tool call`, index);
+						}
 						for (const [toolIndex, call] of [...pending.entries()].sort(
 							([a], [b]) => a - b,
 						)) {
@@ -153,19 +174,6 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 							});
 						}
 						pending.clear();
-						if (choice.finish_reason === "content_filter") {
-							throw new Error("模型因 content_filter 终止回复");
-						}
-						if (
-							choice.finish_reason !== "stop" &&
-							choice.finish_reason !== "tool_calls" &&
-							choice.finish_reason !== "length"
-						) {
-							throw new ProviderProtocolError(
-								`未知 finish_reason: ${choice.finish_reason}`,
-								index,
-							);
-						}
 						finished = true;
 						onDelta({ kind: "finish", reason: choice.finish_reason });
 					}
@@ -246,11 +254,37 @@ interface OpenAIChunk {
 	}>;
 }
 
-function normalizeUsage(raw: NonNullable<OpenAIChunk["usage"]>): import("../core/types.js").Usage {
-	const cacheRead = raw.prompt_tokens_details?.cached_tokens ?? 0;
-	const input = Math.max(0, (raw.prompt_tokens ?? 0) - cacheRead);
-	const output = raw.completion_tokens ?? 0;
-	return { input, output, cacheRead, cacheWrite: 0, reasoning: raw.completion_tokens_details?.reasoning_tokens ?? 0, totalTokens: raw.total_tokens ?? input + output + cacheRead };
+function mergeOpenAIUsage(state: Partial<Usage>, raw: NonNullable<OpenAIChunk["usage"]>, index: number, provider: string): Partial<Usage> | undefined {
+	const values = [raw.prompt_tokens, raw.completion_tokens, raw.total_tokens, raw.prompt_tokens_details?.cached_tokens, raw.completion_tokens_details?.reasoning_tokens];
+	if (!values.some((value) => value !== undefined && value !== null)) return undefined;
+	const count = (value: number | undefined, field: string): number | undefined => {
+		if (value === undefined || value === null) return undefined;
+		if (!Number.isSafeInteger(value) || value < 0) throw new ProviderProtocolError(`模型 ${provider} usage ${field} 不是非负整数`, index);
+		return value;
+	};
+	const next: Partial<Usage> = { ...state };
+	const cacheRead = count(raw.prompt_tokens_details?.cached_tokens, "cached_tokens");
+	const prompt = count(raw.prompt_tokens, "prompt_tokens");
+	const output = count(raw.completion_tokens, "completion_tokens");
+	const reasoning = count(raw.completion_tokens_details?.reasoning_tokens, "reasoning_tokens");
+	if (cacheRead !== undefined) next.cacheRead = cacheRead;
+	if (prompt !== undefined) next.input = Math.max(0, prompt - (cacheRead ?? next.cacheRead ?? 0));
+	if (output !== undefined) next.output = output;
+	if (reasoning !== undefined) next.reasoning = reasoning;
+	const total = count(raw.total_tokens, "total_tokens");
+	next.totalTokens = total ?? (next.input ?? 0) + (next.output ?? 0) + (next.cacheRead ?? 0) + (next.cacheWrite ?? 0);
+	return next;
+}
+
+function usageSnapshot(state: Partial<Usage>): Usage {
+	return {
+		input: state.input ?? 0,
+		output: state.output ?? 0,
+		cacheRead: state.cacheRead ?? 0,
+		cacheWrite: state.cacheWrite ?? 0,
+		reasoning: state.reasoning ?? 0,
+		totalTokens: state.totalTokens ?? (state.input ?? 0) + (state.output ?? 0) + (state.cacheRead ?? 0) + (state.cacheWrite ?? 0),
+	};
 }
 
 function thinkingRequest(level: ThinkingLevel | undefined, format = "openai"): Record<string, unknown> {

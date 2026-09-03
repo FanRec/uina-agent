@@ -33,7 +33,9 @@ export async function runApp(): Promise<void> {
 	const jobs = new JobRegistry();
 	const modelRegistry = new ModelRegistry(cfg);
 	modelRegistry.register(provider.name, provider);
-	void modelRegistry.refreshModels();
+	void modelRegistry.refreshModels().catch((error: unknown) => {
+		process.stderr.write(`[模型目录刷新失败] ${error instanceof Error ? error.message : String(error)}\n`);
+	});
 
 	const { store, snapshot } = await openJsonlSession(SESSION_FILE);
 	let tui: InteractiveTUI | null = null;

@@ -59,10 +59,14 @@
 
 `modelContextWindow` 必须来自显式配置或可信 Provider/catalog 数据；未知上限保持未知并禁用自动 compaction。thinking 档位也必须显式声明，Uina 不根据模型名称猜测。Provider usage 缺失时 UI 显示估算，不复用上一次请求的 usage。
 
+Provider adapter 只向 Agent 发出规范化的 `stop`、`tool_calls` 或 `length`。Anthropic 的 `message_start`/content block/`message_delta`/`message_stop` 和 Gemini 的 candidate `finishReason` 都必须形成完整终止；未知、拒绝、安全拦截、非法工具参数和不支持的终止原因会作为可见错误抛出，不会伪装为正常结束。`length` 即使带有工具调用也只保留 assistant 事实，不执行副作用；只有 `tool_calls` 才进入 ToolBroker。usage 在单次 Provider 请求内按字段合并，跨请求不复用。Gemini tool result 的函数名从历史 assistant tool call 推导；`geminiToolCallIds` 只有显式配置为 `true` 才写入 wire。
+
+模型目录刷新会逐个 Provider 收集错误并向 CLI 报告；刷新失败时不会把失败伪装成空目录，也不会保留未标记的旧动态模型。
+
 ## 已验证与未验证
 
-当前已通过 `pnpm typecheck`、`pnpm test`、`pnpm build`；测试覆盖本地 OpenAI-compatible SSE、真实 CLI one-shot、工具回注、SessionEntry 恢复、ActivationScope teardown 和 runtime tool activation。
+当前已通过 `pnpm typecheck`、`pnpm test`、`pnpm build`；测试覆盖本地 OpenAI-compatible、Anthropic、Gemini SSE，三种 Provider 的真实 CLI one-shot 工具回注、SessionEntry 恢复、ActivationScope teardown 和 runtime tool activation。
 
-以下仍未验证或未实现：真实 DeepSeek/Ollama/Anthropic/Gemini、真实 TTY IME、跨平台 shell、跨重启 Job/Subagent 对账、长期记忆、语音、视觉、感知和分布式运行时。
+以下仍未验证或未实现：真实 DeepSeek/Ollama/Anthropic/Gemini 服务端（当前仅 localhost 协议与 CLI fixture）、真实 TTY IME、跨平台 shell、跨重启 Job/Subagent 对账、长期记忆、语音、视觉、感知和分布式运行时。
 
 Job/Subagent 当前是进程内 builtin capability；ActivationScope 只保证其注册与关闭归属，不承诺崩溃后恢复。
