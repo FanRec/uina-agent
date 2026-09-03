@@ -1,12 +1,13 @@
-import type { ModelProvider, ModelRequest, ThinkingLevel } from "../core/types.js";
+import type { ModelProvider, ModelRequest, ThinkingLevel, Usage } from "../core/types.js";
 import { resolveOfficialThinkingLevels, type ProviderConfig, type ProviderKind } from "./config.js";
 import { createOpenAIProvider } from "./gateway.js";
 import { fetchWithRetry } from "./gateway.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
+import { effectiveContextWindow } from "./config.js";
 
 export function createProvider(name: string, conf: ProviderConfig): ModelProvider {
 	const kind: ProviderKind = conf.type ?? "openai-compatible";
-	if (kind === "openai-compatible") return createOpenAIProvider({ ...conf, model: conf.model });
+	if (kind === "openai-compatible") return createOpenAIProvider({ ...conf, model: conf.model, modelContextWindow: effectiveContextWindow(conf) });
 	if (kind === "anthropic") return createAnthropicProvider(name, conf);
 	return createGeminiProvider(name, conf);
 }
@@ -18,7 +19,7 @@ function levels(conf: ProviderConfig): readonly ThinkingLevel[] {
 function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvider {
 	return {
 		name: conf.model,
-		contextWindow: conf.contextWindow,
+		contextWindow: effectiveContextWindow(conf),
 		thinkingLevels: levels(conf),
 		includeThinking: true,
 		async stream(req, emit, signal) {
@@ -77,6 +78,8 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 						const call = calls.get(event.index ?? 0); if (call) call.args += delta.partial_json ?? "";
 					}
 				}
+				if (event.type === "message_start" && event.message?.usage) emit({ kind: "usage", usage: anthropicUsage(event.message.usage) });
+				if (event.type === "message_delta" && event.usage) emit({ kind: "usage", usage: anthropicUsage(event.usage) });
 				if (event.type === "content_block_start" && event.content_block?.type === "tool_use") calls.set(event.index ?? 0, { id: event.content_block.id ?? "", name: event.content_block.name ?? "", args: "" });
 				if (event.type === "content_block_stop" && calls.has(event.index ?? 0)) {
 					const call = calls.get(event.index ?? 0)!;
@@ -94,7 +97,7 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider {
 	return {
 		name: conf.model,
-		contextWindow: conf.contextWindow,
+		contextWindow: effectiveContextWindow(conf),
 		thinkingLevels: levels(conf),
 		async stream(req, emit, signal) {
 			let headers: Record<string, string> = {
@@ -129,6 +132,7 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 					else if (part.text) emit({ kind: "text", text: part.text });
 					if (part.functionCall) emit({ kind: "tool_call", call: { id: part.functionCall.id ?? part.functionCall.name, name: part.functionCall.name, args: JSON.stringify(part.functionCall.args ?? {}), argsValid: true } });
 				}
+				if (chunk.usageMetadata) emit({ kind: "usage", usage: geminiUsage(chunk.usageMetadata) });
 				if (chunk.candidates?.[0]?.finishReason) { finished = true; emit({ kind: "finish", reason: chunk.candidates[0].finishReason === "STOP" ? "stop" : "length" }); }
 			}, signal);
 			if (!finished) throw new ProviderProtocolError("Gemini 流缺少 finishReason");
@@ -178,8 +182,10 @@ function geminiRequest(req: ModelRequest): Record<string, unknown> {
 function thinkingBudget(level: ThinkingLevel): number { return { minimal: 1024, low: 2048, medium: 4096, high: 8192, xhigh: 16384, max: 32768, off: 0 }[level]; }
 function isJsonObject(value: string): boolean { try { const parsed = JSON.parse(value); return !!parsed && typeof parsed === "object" && !Array.isArray(parsed); } catch { return false; } }
 
-interface AnthropicEvent { type?: string; index?: number; delta?: { type?: string; thinking?: string; text?: string; partial_json?: string; signature?: string; stop_reason?: string | null }; content_block?: { type?: string; id?: string; name?: string }; }
-interface GeminiChunk { candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ thought?: boolean; text?: string; functionCall?: { id?: string; name: string; args?: Record<string, unknown> } }> } }> }
+function anthropicUsage(raw: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; output_tokens_details?: { thinking_tokens?: number } }): Usage { const cacheRead = raw.cache_read_input_tokens ?? 0; const cacheWrite = raw.cache_creation_input_tokens ?? 0; const input = raw.input_tokens ?? 0; const output = raw.output_tokens ?? 0; return { input, output, cacheRead, cacheWrite, reasoning: raw.output_tokens_details?.thinking_tokens ?? 0, totalTokens: input + output + cacheRead + cacheWrite }; }
+function geminiUsage(raw: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number; cachedContentTokenCount?: number; totalTokenCount?: number }): Usage { const cacheRead = raw.cachedContentTokenCount ?? 0; const input = Math.max(0, (raw.promptTokenCount ?? 0) - cacheRead); const output = (raw.candidatesTokenCount ?? 0) + (raw.thoughtsTokenCount ?? 0); return { input, output, cacheRead, cacheWrite: 0, reasoning: raw.thoughtsTokenCount ?? 0, totalTokens: raw.totalTokenCount ?? input + output + cacheRead }; }
+interface AnthropicEvent { type?: string; index?: number; delta?: { type?: string; thinking?: string; text?: string; partial_json?: string; signature?: string; stop_reason?: string | null }; content_block?: { type?: string; id?: string; name?: string }; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number; output_tokens_details?: { thinking_tokens?: number } }; message?: { usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } }; }
+interface GeminiChunk { usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number; cachedContentTokenCount?: number; totalTokenCount?: number }; candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ thought?: boolean; text?: string; functionCall?: { id?: string; name: string; args?: Record<string, unknown> } }> } }> }
 
 export class ModelRegistry {
 	private instances = new Map<string, ModelProvider>();

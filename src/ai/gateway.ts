@@ -5,12 +5,14 @@ import type {
 } from "../core/types.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
 import { resolveOfficialThinkingLevels } from "./config.js";
+import { effectiveContextWindow } from "./config.js";
 
 export interface ProviderConf {
 	baseUrl: string;
 	apiKey: string;
 	model: string;
-	contextWindow?: number;
+	modelContextWindow: number;
+	maxContextWindow?: number;
 	maxRetries?: number;
 	thinkingFormat?: "openai" | "deepseek" | "qwen";
 	thinkingLevels?: readonly ThinkingLevel[];
@@ -20,7 +22,7 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 	const endpoint = `${conf.baseUrl.replace(/\/$/, "")}/chat/completions`;
 	return {
 		name: conf.model,
-		contextWindow: conf.contextWindow,
+		contextWindow: effectiveContextWindow(conf),
 		thinkingLevels: resolveOfficialThinkingLevels(conf),
 		includeThinking: conf.thinkingFormat === "deepseek",
 		async stream(req, onDelta, signal): Promise<void> {
@@ -34,6 +36,7 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 				messages: toWireMessages(req.messages, conf.thinkingFormat),
 				tools: req.tools?.length ? req.tools : undefined,
 				stream: true,
+				stream_options: { include_usage: true },
 				...thinkingRequest(req.thinkingLevel, conf.thinkingFormat),
 			};
 
@@ -98,6 +101,7 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 					}
 
 					const choice = chunk.choices?.[0];
+					if (chunk.usage) onDelta({ kind: "usage", usage: normalizeUsage(chunk.usage) });
 					if (!choice) return;
 					const delta = choice.delta ?? {};
 					if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
@@ -223,6 +227,7 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 interface OpenAIChunk {
+	usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number }; completion_tokens_details?: { reasoning_tokens?: number } };
 	choices?: Array<{
 			delta?: {
 				content?: string | null;
@@ -236,6 +241,13 @@ interface OpenAIChunk {
 		};
 		finish_reason?: string | null;
 	}>;
+}
+
+function normalizeUsage(raw: NonNullable<OpenAIChunk["usage"]>): import("../core/types.js").Usage {
+	const cacheRead = raw.prompt_tokens_details?.cached_tokens ?? 0;
+	const input = Math.max(0, (raw.prompt_tokens ?? 0) - cacheRead);
+	const output = raw.completion_tokens ?? 0;
+	return { input, output, cacheRead, cacheWrite: 0, reasoning: raw.completion_tokens_details?.reasoning_tokens ?? 0, totalTokens: raw.total_tokens ?? input + output + cacheRead };
 }
 
 function thinkingRequest(level: ThinkingLevel | undefined, format = "openai"): Record<string, unknown> {

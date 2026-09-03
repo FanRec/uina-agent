@@ -165,20 +165,22 @@ export class TranscriptContainer implements Component {
 		return this.historyTurns;
 	}
 
-	loadHistory(messages: readonly import("../../../core/types.js").ChatMsg[]): void {
-		let current: TurnRecord | null = null;
+	loadHistory(history: readonly any[]): void {
 		let turnN = 0;
+		let current: TurnRecord | null = null;
+		let pendingToolCalls: Array<{ id?: string; name: string }> = [];
 
-		for (const msg of messages) {
+		for (const msg of history) {
 			if (msg.role === "user") {
-				if (msg.content.startsWith("[历史摘要]")) {
+				if (msg.meta?.type === "compaction") {
 					const record: CompactionRecord = {
 						id: Date.now(),
-						summary: msg.content.slice(6).trim(),
+						summary: msg.content,
 						turnsCount: turnN,
-						tokensSaved: 0,
+						tokensSaved: Math.max(0, (msg.meta.originalTokens ?? 0) - (msg.meta.compactedTokens ?? 0)),
 						collapsed: true,
 						timestamp: Date.now(),
+						afterTurnN: turnN,
 					};
 					this.compactions.push(record);
 					this.timeline.push({ kind: "compaction", record });
@@ -189,6 +191,7 @@ export class TranscriptContainer implements Component {
 					this.timeline.push({ kind: "turn", turn: current });
 				}
 				turnN++;
+				pendingToolCalls = [];
 				current = {
 					n: turnN,
 					userText: msg.content,
@@ -212,12 +215,36 @@ export class TranscriptContainer implements Component {
 				if (msg.content) {
 					current.assistantMarkdown += msg.content;
 				}
+				if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
+					pendingToolCalls = msg.tool_calls.map((tc: any) => ({
+						id: tc.id,
+						name: tc.name || "tool",
+					}));
+				}
 			} else if (msg.role === "tool") {
 				if (current) {
+					let toolName = "tool";
+					if (msg.tool_call_id) {
+						const match = pendingToolCalls.find((tc) => tc.id === msg.tool_call_id);
+						if (match) toolName = match.name;
+					} else if (pendingToolCalls.length > 0) {
+						toolName = pendingToolCalls.shift()!.name;
+					}
+
+					let elapsedMs = 0;
+					try {
+						const parsed = JSON.parse(msg.content);
+						if (parsed && typeof parsed.elapsedMs === "number") {
+							elapsedMs = parsed.elapsedMs;
+						}
+					} catch {
+						// 忽略解析错误
+					}
+
 					current.tools.push({
-						name: "tool",
+						name: toolName,
 						result: msg.content,
-						elapsedMs: 0,
+						elapsedMs,
 					});
 				}
 			}
@@ -253,7 +280,6 @@ export class TranscriptContainer implements Component {
 	toggleAllThinking(collapsed?: boolean): void {
 		const all = [...this.historyTurns];
 		if (this.currentTurn) all.push(this.currentTurn);
-		// 如果任一处于展开状态，则目标为折叠 (true)；若全折叠，则目标为展开 (false)
 		const anyExpanded = all.some((t) => t.thinkingText && t.thinkingCollapsed === false);
 		const targetState = collapsed ?? anyExpanded;
 		for (const t of all) {
@@ -273,17 +299,17 @@ export class TranscriptContainer implements Component {
 
 	private formatUserLine(text: string, width: number): string[] {
 		const lines: string[] = [""];
-		const prefix = `  ${C.cyan}${C.bold}你 >${C.reset} `;
-		const leadW = visibleWidth(prefix);
+		const prefix = `  ${C.yellow}${C.bold}❯${C.reset} ${C.bold}`;
+		const leadW = visibleWidth("  ❯ ");
 		const contentBudget = Math.max(10, width - leadW - 4);
 		const wrapped = wrapTextWithAnsi(text, contentBudget);
 		if (wrapped.length === 0) {
-			lines.push(prefix);
+			lines.push(`${prefix}${C.reset}`);
 		} else {
-			lines.push(`${prefix}${wrapped[0]}`);
+			lines.push(`${prefix}${wrapped[0]}${C.reset}`);
 			const indent = " ".repeat(leadW);
 			for (let i = 1; i < wrapped.length; i++) {
-				lines.push(`${indent}${wrapped[i]}`);
+				lines.push(`${indent}${C.bold}${wrapped[i]}${C.reset}`);
 			}
 		}
 		lines.push("");
@@ -292,15 +318,34 @@ export class TranscriptContainer implements Component {
 
 	private formatAssistantMarkdown(md: string, width: number): string[] {
 		if (!md) return [];
-		const lines = formatFullMarkdown(md, Math.max(10, width - 4));
+		// 扣除 4 列悬挂缩进空间（"  ● " / "    "）
+		const contentBudget = Math.max(20, width - 6);
+		const rawLines = formatFullMarkdown(md, contentBudget);
 		const formatted: string[] = [];
-		let isFirst = true;
-		for (const line of lines) {
-			if (isFirst && line.trim()) {
-				formatted.push(`  ${C.green}${C.bold}● ${C.reset}${line}`);
-				isFirst = false;
-			} else {
-				formatted.push(line ? `    ${line}` : "");
+		let isFirstParagraph = true;
+
+		for (const rawLine of rawLines) {
+			if (!rawLine.trim()) {
+				formatted.push("");
+				continue;
+			}
+
+			// 如果是代码块边框或内联几何线，保持原样
+			if (rawLine.startsWith("  ┌") || rawLine.startsWith("  │") || rawLine.startsWith("  └")) {
+				formatted.push(rawLine);
+				continue;
+			}
+
+			// 对段落行进行严格 word-wrap，确保任何行都不超出终端口宽顶格到第 0 列
+			const wrapped = wrapTextWithAnsi(rawLine.trim(), contentBudget);
+			for (let i = 0; i < wrapped.length; i++) {
+				const piece = wrapped[i]!;
+				if (isFirstParagraph && i === 0) {
+					formatted.push(`  ${C.green}${C.bold}● ${C.reset}${piece}`);
+					isFirstParagraph = false;
+				} else {
+					formatted.push(`    ${piece}`);
+				}
 			}
 		}
 		formatted.push("");

@@ -14,7 +14,8 @@ export interface ProviderConfig {
 	baseUrl: string;
 	apiKey: string;
 	model: string;
-	contextWindow?: number;
+	modelContextWindow?: number;
+	maxContextWindow?: number;
 	maxRetries?: number;
 	type?: ProviderKind;
 	thinkingFormat?: "openai" | "deepseek" | "qwen";
@@ -43,13 +44,13 @@ export function resolveOfficialThinkingLevels(conf: ProviderConfig): readonly Th
 	}
 
 	// OpenAI-compatible & others
-	if (model.includes("deepseek-reasoner") || model.includes("r1")) {
-		return ["off", "high"];
+	if (model.includes("deepseek")) {
+		return ["off", "high", "max"];
 	}
 	if (model.startsWith("o1") || model.startsWith("o3") || model.startsWith("o4")) {
 		return ["off", "low", "medium", "high"];
 	}
-	if (model.includes("deepseek") || model.includes("gpt-4") || model.includes("chat")) {
+	if (model.includes("gpt-4") || model.includes("chat")) {
 		return ["off"];
 	}
 
@@ -60,6 +61,11 @@ export interface UinaConfig {
 	default: string;
 	thinkingLevel?: ThinkingLevel;
 	providers: Record<string, ProviderConfig>;
+}
+
+export function effectiveContextWindow(conf: ProviderConfig): number {
+	if (!conf.modelContextWindow) throw new Error(`模型 ${conf.model} 缺少 modelContextWindow；Uina 不会猜测真实上下文上限`);
+	return Math.min(conf.modelContextWindow, conf.maxContextWindow ?? conf.modelContextWindow);
 }
 
 /** 配置目录：UINA_HOME 环境变量可覆盖（测试用），默认 ~/.uina */
@@ -117,12 +123,9 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 		if (provider.apiKey !== undefined && typeof provider.apiKey !== "string") {
 			throw new Error(`配置 ${path} 的 provider ${name} 的 apiKey 必须是字符串`);
 		}
-		if (
-			provider.contextWindow !== undefined &&
-			(typeof provider.contextWindow !== "number" || !Number.isFinite(provider.contextWindow) || provider.contextWindow <= 0)
-			) {
-				throw new Error(`配置 ${path} 的 provider ${name} 的 contextWindow 无效`);
-			}
+		if (provider.contextWindow !== undefined) throw new Error(`配置 ${path} 的 provider ${name} 使用了已移除的 contextWindow；请改为 modelContextWindow 和可选 maxContextWindow`);
+		if (provider.modelContextWindow !== undefined && (!Number.isSafeInteger(provider.modelContextWindow) || provider.modelContextWindow <= 0)) throw new Error(`配置 ${path} 的 provider ${name} 的 modelContextWindow 无效`);
+		if (provider.maxContextWindow !== undefined && (!Number.isSafeInteger(provider.maxContextWindow) || (provider.maxContextWindow as number) <= 0)) throw new Error(`配置 ${path} 的 provider ${name} 的 maxContextWindow 无效`);
 			if (provider.maxRetries !== undefined &&
 				(typeof provider.maxRetries !== "number" || !Number.isSafeInteger(provider.maxRetries) || provider.maxRetries < 0)) {
 				throw new Error(`配置 ${path} 的 provider ${name} 的 maxRetries 无效`);
@@ -139,9 +142,8 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 		providers[name] = {
 				apiKey: provider.apiKey ?? "",
 			model: provider.model,
-				...(provider.contextWindow === undefined
-					? {}
-					: { contextWindow: provider.contextWindow }),
+				...(provider.modelContextWindow === undefined ? {} : { modelContextWindow: provider.modelContextWindow as number }),
+				...(provider.maxContextWindow === undefined ? {} : { maxContextWindow: provider.maxContextWindow as number }),
 				...(provider.maxRetries === undefined ? {} : { maxRetries: provider.maxRetries }),
 				baseUrl: typeof provider.baseUrl === "string" ? provider.baseUrl : defaultBaseUrl(providerType),
 				type: providerType,

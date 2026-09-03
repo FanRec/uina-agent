@@ -24,7 +24,7 @@ async function endpoint(body: string): Promise<string> {
 }
 
 async function collect(baseUrl: string, signal?: AbortSignal): Promise<StreamDelta[]> {
-	const provider = createOpenAIProvider({ baseUrl, apiKey: "test", model: "m" });
+	const provider = createOpenAIProvider({ baseUrl, apiKey: "test", model: "m", modelContextWindow: 4096 });
 	const output: StreamDelta[] = [];
 	await provider.stream({ messages: [{ role: "user", content: "hi" }] }, (delta) => output.push(delta), signal);
 	return output;

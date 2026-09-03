@@ -5,10 +5,11 @@ import type {
 	ModelProvider,
 	ThinkingLevel,
 	ToolResultStatus,
+	Usage,
 } from "../core/types.js";
 import type { SessionStore } from "../session/types.js";
 import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings } from "./compaction.js";
-import { buildContext, defaultSystemPrompt } from "./context.js";
+import { buildContext, defaultSystemPrompt, estimateContextTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import type { PreparedToolCall, ToolBroker } from "../tools/broker.js";
 
@@ -16,7 +17,7 @@ export interface LoopHooks {
 	onToken: (text: string) => void;
 	onThinking?: (text: string) => void;
 	onTurnStart?: (n: number, text: string) => void;
-	onTurnEnd?: (n: number, usage?: { usedTokens: number; contextWindow: number }) => void;
+	onTurnEnd?: (n: number, usage?: { usedTokens: number; contextWindow: number; actual: boolean }) => void;
 	onToolStart?: (name: string, args: unknown, callId?: string) => void;
 	onToolDone?: (
 		name: string,
@@ -119,11 +120,7 @@ export class Subject {
 	}
 
 	getUsedTokens(): number {
-		return this.history.reduce((acc, m) => {
-			const textLen = m.content ? m.content.length : 0;
-			const thinkLen = "thinking" in m && typeof m.thinking === "string" ? m.thinking.length : 0;
-			return acc + Math.ceil((textLen + thinkLen + 16) / 4);
-		}, 0);
+		return estimateContextTokens(this.history).tokens;
 	}
 
 	async setModel(provider: ModelProvider): Promise<void> {
@@ -322,9 +319,11 @@ export class Subject {
 			this.runtimeInputs = [];
 			this.busy = false;
 			try {
+				const estimate = estimateContextTokens(this.history);
 				const usage = {
-					usedTokens: this.getUsedTokens(),
+					usedTokens: estimate.tokens,
 					contextWindow: this.getContextWindow(),
+					actual: estimate.actual,
 				};
 				this.hooks.onTurnEnd?.(turn, usage);
 				await this.extensionHost?.emit({ type: "turn_end", turnNumber: turn });
@@ -387,6 +386,7 @@ export class Subject {
 			let reply = "";
 			let thinking = "";
 			let thinkingSignature: string | undefined;
+			let usage: Usage | undefined;
 			let finishReason: string | null = null;
 
 			const streamId = `stream-${this.turnSeq}-${Date.now()}`;
@@ -436,6 +436,8 @@ export class Subject {
 								text: delta.text,
 							});
 							this.hooks.onToken(delta.text);
+						} else if (delta.kind === "usage") {
+							usage = delta.usage;
 						} else if (delta.kind === "tool_call") {
 							const parsedArgs = parseToolArgs(delta.call.args);
 							toolCalls.push({
@@ -509,7 +511,7 @@ export class Subject {
 							content: reply,
 							thinking: thinking || undefined,
 							thinkingSignature,
-							status: finishReason === "length" ? "length" : "complete",
+						status: finishReason === "length" ? "length" : "complete", usage,
 					});
 				}
 				const steer = this.queues.peekMany("steer", this.queueModes.steer);
@@ -536,7 +538,7 @@ export class Subject {
 					thinking: thinking || undefined,
 					thinkingSignature,
 					tool_calls: toolCalls,
-				status: finishReason === "length" ? "length" : "complete",
+				status: finishReason === "length" ? "length" : "complete", usage,
 			};
 			await this.appendMessage(assistant);
 			const results = await this.executeToolCalls(toolCalls);
@@ -751,9 +753,10 @@ export class Subject {
 		if (partial.trim() || thinking.trim() || thinkingSignature) {
 			await this.appendMessage({ role: "assistant", content: partial, thinking: thinking || undefined, thinkingSignature, status: "aborted" });
 		}
-		await this.appendMessage({ role: "assistant", content: "[已中断]", status: "aborted" });
+		const notice = `已打断 · 接下来想让 ${this.provider.name} 做什么？`;
+		await this.appendMessage({ role: "assistant", content: notice, status: "aborted" });
 		await this.storeEvent("turn_aborted", { turnId: this.turnSeq });
-		this.hooks.onToken("\n[已中断] 当前对话已停止。\n");
+		this.hooks.onToken(`\n${notice}\n`);
 	}
 }
 

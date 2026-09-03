@@ -590,7 +590,7 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 			tui.render({ type: "tool_start", name: "list_dir", args: {} });
 			tui.render({ type: "tool_done", name: "list_dir", result: "dir output", elapsedMs: 50 });
 
-			tui.render({ type: "turn_end", n: 1, usage: { usedTokens: 2048, contextWindow: 65536 } });
+			tui.render({ type: "turn_end", n: 1, usage: { usedTokens: 2048, contextWindow: 65536, actual: false } });
 			expect(tui.host.isBusy()).toBe(false);
 
 			tui.close();
@@ -861,5 +861,69 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 
 		const rendered = transcript.render(80);
 		expect(rendered.some((l: string) => l.includes("●") && l.includes("等于 2。"))).toBe(true);
+	});
+
+	it("用户输入展示为金色 ❯ 标记且助手段落折行采用 4 格悬挂缩进", () => {
+		const transcript = new TranscriptContainer();
+		transcript.startTurn(1, "你好世界");
+		// 输入超过行宽的长文本测试自动折行
+		transcript.appendToken("这是一段非常长的助手回答内容用于测试悬挂缩进功能确保换行后不会顶格到最左边而是严格保持四空格缩进对齐首行正文。");
+		transcript.finishTurn();
+
+		const rendered = transcript.render(40);
+		// 校验用户前缀
+		expect(rendered.some((l: string) => l.includes("❯") && l.includes("你好世界"))).toBe(true);
+
+		// 校验助手首行带 ● 且后续折行行以 4 格空格对齐
+		const assistantLines = rendered.filter((l: string) => l.includes("这是一段") || l.includes("悬挂缩进") || l.includes("四空格"));
+		expect(assistantLines.length).toBeGreaterThan(1);
+		expect(assistantLines[0]).toContain("●");
+		expect(assistantLines[1]!.startsWith("    ")).toBe(true);
+	});
+});
+
+describe("UI Core: Mouse Selection & Wheel", () => {
+	it("MouseSelectionTracker 正确解析滚轮事件并返回滚动增量", async () => {
+		const { MouseSelectionTracker } = await import("../src/ui/core/mouse-selection.js");
+		const tracker = new MouseSelectionTracker();
+
+		// 滚轮向上：btn=64
+		const up = tracker.handleInput("\x1b[<64;10;5M", ["line1", "line2"]);
+		expect(up.handled).toBe(true);
+		expect(up.wheelDelta).toBe(-3);
+
+		// 滚轮向下：btn=65
+		const down = tracker.handleInput("\x1b[<65;10;5M", ["line1", "line2"]);
+		expect(down.handled).toBe(true);
+		expect(down.wheelDelta).toBe(3);
+	});
+
+	it("MouseSelectionTracker 拖拽划选并松开时自动触发复制回调并提取纯文本", async () => {
+		const { MouseSelectionTracker } = await import("../src/ui/core/mouse-selection.js");
+		const tracker = new MouseSelectionTracker();
+
+		const screenRows = [
+			"Hello World Beautiful Day",
+			"Second Line Text",
+		];
+
+		let copiedText = "";
+		const onCopy = (text: string) => {
+			copiedText = text;
+		};
+
+		// 鼠标左键在 (6, 0) 按下 (1-based: col 7, row 1) -> "World"
+		const press = tracker.handleInput("\x1b[<0;7;1M", screenRows, onCopy);
+		expect(press.handled).toBe(true);
+
+		// 拖拽到 (11, 0) (1-based: col 12, row 1)
+		const drag = tracker.handleInput("\x1b[<32;12;1M", screenRows, onCopy);
+		expect(drag.handled).toBe(true);
+
+		// 鼠标左键释放
+		const release = tracker.handleInput("\x1b[<0;12;1m", screenRows, onCopy);
+		expect(release.handled).toBe(true);
+
+		expect(copiedText).toBe("World");
 	});
 });

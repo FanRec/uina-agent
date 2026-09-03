@@ -98,6 +98,7 @@ export class InputLine implements Component, Focusable {
 	private modelName = "deepseek-chat";
 	private usedTokens = 0;
 	private contextWindow = 65536;
+	private contextActual = false;
 
 	// 事件回调
 	public onSubmit?: (text: string) => void;
@@ -117,10 +118,11 @@ export class InputLine implements Component, Focusable {
 		this.topStatusHeader = header;
 	}
 
-	setContextStats(modelName: string, usedTokens: number, contextWindow: number): void {
+	setContextStats(modelName: string, usedTokens: number, contextWindow: number, actual = false): void {
 		this.modelName = modelName;
 		this.usedTokens = usedTokens;
 		if (contextWindow > 0) this.contextWindow = contextWindow;
+		this.contextActual = actual;
 	}
 
 	private reasoningEffort: "off" | "low" | "medium" | "high" | "max" = "medium";
@@ -777,7 +779,7 @@ export class InputLine implements Component, Focusable {
 		let bottomLine = "";
 		const pct = Math.min(100, Math.max(0, (this.usedTokens / this.contextWindow) * 100));
 		const pctStr = `${pct.toFixed(1)}%`;
-		const readout = `${formatTokens(this.usedTokens)}/${formatTokens(this.contextWindow)} (${pctStr})`;
+		const readout = `${this.contextActual ? "实际" : "估算"} ${formatTokens(this.usedTokens)}/${formatTokens(this.contextWindow)} (${pctStr})`;
 		
 		const effortLabels: Record<string, string> = {
 			off: `${C.gray}思考:关${C.reset}`,

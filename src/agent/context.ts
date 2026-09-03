@@ -1,5 +1,7 @@
 import type { ChatMsg, ToolDef } from "../core/types.js";
 
+export interface ContextEstimate { tokens: number; actual: boolean; }
+
 export interface BuildInput {
 	history: ChatMsg[];
 	systemPrompt?: string;
@@ -56,6 +58,18 @@ export function estimateRequestTokens(
 	}
 	chars += JSON.stringify(tools).length;
 	return Math.ceil(chars / 4);
+}
+
+/** Pi-style: the latest persisted provider usage anchors the immutable prefix; newer content is estimated. */
+export function estimateContextTokens(messages: readonly ChatMsg[]): ContextEstimate {
+	let anchor = -1;
+	let tokens = 0;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message.role === "assistant" && message.usage?.totalTokens && message.usage.totalTokens > 0) { anchor = i; tokens = message.usage.totalTokens; break; }
+	}
+	const trailing = messages.slice(anchor + 1);
+	return { tokens: tokens + estimateRequestTokens(trailing), actual: anchor >= 0 && trailing.length === 0 };
 }
 
 export function formatForSummary(message: ChatMsg): string {

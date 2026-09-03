@@ -422,6 +422,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			baseUrl: `http://127.0.0.1:${port}`,
 			apiKey: "test-key",
 			model: "mock-llm",
+			modelContextWindow: 4096,
 		});
 
 		let textOut = "";

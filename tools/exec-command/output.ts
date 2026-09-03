@@ -160,6 +160,20 @@ export function createByteDecoder(): { push(buf: Buffer): string; flush(): strin
 			}
 			const bytes = pending.slice(offset, offset + width);
 			if (!isValidUtf8Sequence(bytes)) {
+				// Windows 下尝试按 GBK / CP936 解码双字节
+				if (process.platform === "win32" && offset + 1 < pending.length) {
+					try {
+						const gbkDecoder = new TextDecoder("gbk");
+						const gbkStr = gbkDecoder.decode(new Uint8Array([first, pending[offset + 1]!]));
+						if (gbkStr && !gbkStr.includes("\ufffd")) {
+							output += gbkStr;
+							offset += 2;
+							continue;
+						}
+					} catch {
+						// 降级使用单字节字符码
+					}
+				}
 				output += String.fromCharCode(first);
 				offset++;
 				continue;

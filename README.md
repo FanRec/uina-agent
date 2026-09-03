@@ -34,7 +34,8 @@ UINA_ONESHOT_MSG="你好" pnpm start
       "baseUrl": "https://api.deepseek.com/v1",
       "apiKey": "sk-...",
       "model": "deepseek-chat",
-      "contextWindow": 65536
+      "modelContextWindow": 65536,
+      "maxContextWindow": 48000
     }
   }
 }
@@ -42,7 +43,7 @@ UINA_ONESHOT_MSG="你好" pnpm start
 
 `apiKey` 可由 `UINA_API_KEY_DEEPSEEK` 覆盖。配置会在启动时进行结构校验。
 
-`type` 可选为 `openai-compatible`、`anthropic` 或 `gemini`，省略时使用 `openai-compatible`。Anthropic 和 Gemini 可以省略 `baseUrl`，使用各自官方 endpoint。思考等级支持 `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`；TTY 默认显示思考流，非 TTY 可通过 `UINA_SHOW_THINKING=1` 显示。
+`modelContextWindow` 是模型真实物理上限，必须显式声明；`maxContextWindow` 是可选的用户限制，最终有效上限取两者较小值。旧 `contextWindow` 已移除。`type` 可选为 `openai-compatible`、`anthropic` 或 `gemini`，省略时使用 `openai-compatible`。Anthropic 和 Gemini 可以省略 `baseUrl`，使用各自官方 endpoint。思考等级支持 `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`；TTY 默认显示思考流，非 TTY 可通过 `UINA_SHOW_THINKING=1` 显示。
 
 ## 目录
 

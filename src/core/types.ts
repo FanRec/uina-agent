@@ -14,11 +14,21 @@ export type ToolResultStatus =
 	| "unknown"
 	| "not_started";
 
+export interface Usage {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	reasoning: number;
+	totalTokens: number;
+}
+
 /** 模型流式输出中的一个增量片段（按到达顺序回调）。 */
 export type StreamDelta =
 	| { kind: "thinking"; text: string }
 	| { kind: "thinking_signature"; signature: string }
 	| { kind: "text"; text: string }
+	| { kind: "usage"; usage: Usage }
 	| {
 			kind: "tool_call";
 			call: { id: string; name: string; args: string; argsValid?: boolean };
@@ -52,6 +62,7 @@ export type ChatMsg =
 			thinkingSignature?: string;
 			tool_calls?: CompletedToolCall[];
 			status?: AssistantStatus;
+			usage?: Usage;
 		}
 	| {
 			role: "tool";

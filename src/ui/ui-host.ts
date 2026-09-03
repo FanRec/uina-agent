@@ -4,6 +4,7 @@
  * 调度原子全帧差量渲染与键盘输入分发。
  */
 
+import { exec } from "node:child_process";
 import { Container } from "./core/container.js";
 import { FocusManager } from "./core/focus.js";
 import { OverlayStack } from "./core/overlay.js";
@@ -11,9 +12,10 @@ import { WidgetSlots } from "./core/slots.js";
 import { ProcessTerminal } from "./core/terminal.js";
 import { MainScreenRenderer } from "./core/renderer.js";
 import { Key, matchesKey } from "./core/keys.js";
+import { MouseSelectionTracker } from "./core/mouse-selection.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ThinkingLevel } from "../core/types.js";
-import { C } from "./core/utils.js";
+import { C, visibleWidth } from "./core/utils.js";
 import { InputLine } from "./components/editor/input-line.js";
 import { BannerComponent } from "./components/primitives/banner.js";
 import { TranscriptContainer } from "./components/transcript/transcript.js";
@@ -96,6 +98,37 @@ export class UIHost implements UIHostContextPort {
 
 	private activeModalId: string | null = null;
 	private activeModalHandle: OverlayHandle | null = null;
+
+	private mouseTracker = new MouseSelectionTracker();
+	private lastRenderedRows: string[] = [];
+	private exitPending = false;
+	private exitTimer: NodeJS.Timeout | null = null;
+	private copyToastText = "";
+	private copyToastTimer: NodeJS.Timeout | null = null;
+
+	showCopyToast(text: string): void {
+		this.copyToastText = text;
+		this.requestRender();
+		if (this.copyToastTimer) clearTimeout(this.copyToastTimer);
+		this.copyToastTimer = setTimeout(() => {
+			this.copyToastText = "";
+			this.requestRender();
+		}, 2000);
+	}
+
+	private onCopyOnSelect = (text: string): void => {
+		const b64 = Buffer.from(text, "utf-8").toString("base64");
+		process.stdout.write(`\x1b]52;c;${b64}\x07`);
+		if (process.platform === "win32") {
+			const child = exec(
+				'powershell.exe -NoProfile -NonInteractive -Command "$Input | Set-Clipboard"',
+				() => {},
+			);
+			child.stdin?.write(text);
+			child.stdin?.end();
+		}
+		this.showCopyToast(`已复制 ${text.length} 字符`);
+	};
 
 	// 事件回调
 	onUserLine?: (text: string, mode: "steer" | "followUp" | "direct") => void;
@@ -255,10 +288,10 @@ export class UIHost implements UIHostContextPort {
 		this.streamTokenCount += count;
 	}
 
-	setUsage(used: number, contextWindow?: number): void {
+	setUsage(used: number, contextWindow?: number, actual = false): void {
 		this.usedTokens = used;
 		if (contextWindow) this.contextWindow = contextWindow;
-		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow);
+		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, actual);
 		this.requestRender();
 	}
 
@@ -563,9 +596,26 @@ export class UIHost implements UIHostContextPort {
 			}
 		}
 
-		// 8. 组装整屏行数组（严格锁定撑满 height 行，输入框吸底，中间保留 1 行呼吸空行）
+		// 8. 组装整屏行数组（严格锁定撑满 height 行，输入框吸底，中间保留 1 行呼吸空行，右侧渲染轻量 Toast 提示）
+		let toastStr = "";
+		if (this.exitPending) {
+			toastStr = `${C.gray}再次按 Ctrl+C 退出${C.reset}`;
+		} else if (this.copyToastText) {
+			toastStr = `${C.iceBlue}${this.copyToastText}${C.reset}`;
+		}
+
 		const gapCount = Math.max(0, height - visibleTranscript.length - aboveH - inputH - belowH);
-		const gapLines = new Array(gapCount).fill("");
+		const gapLines: string[] = [];
+		for (let g = 0; g < gapCount; g++) {
+			if (g === gapCount - 1 && toastStr) {
+				const toastW = visibleWidth(toastStr);
+				const pad = Math.max(0, innerW - toastW - 1);
+				gapLines.push(`${margin}${" ".repeat(pad)}${toastStr}`);
+			} else {
+				gapLines.push("");
+			}
+		}
+
 		const fullScreenRows: string[] = [
 			...visibleTranscript,
 			...gapLines,
@@ -574,8 +624,10 @@ export class UIHost implements UIHostContextPort {
 			...belowLines,
 		];
 
-		// 9. 提交差量渲染
-		this.renderer.renderFrame(fullScreenRows);
+		// 9. 保存当前完整帧供鼠标选区提取，注入划词反色高亮并提交渲染
+		this.lastRenderedRows = fullScreenRows;
+		const finalRows = this.mouseTracker.applyHighlight(fullScreenRows);
+		this.renderer.renderFrame(finalRows);
 	}
 
 	private getPageMargin(width: number): string {
@@ -615,6 +667,28 @@ export class UIHost implements UIHostContextPort {
 			} catch (error) { this.notify(`终端输入监听器失败: ${String(error)}`, "error"); }
 		}
 
+		// 1.5 鼠标 SGR 协议拦截（滚轮视口滚动与划词选区跟踪）
+		if (data.startsWith("\x1b[<")) {
+			const res = this.mouseTracker.handleInput(
+				data,
+				this.lastRenderedRows,
+				this.onCopyOnSelect,
+			);
+			if (res.handled) {
+				if (res.wheelDelta !== undefined) {
+					if (res.wheelDelta < 0) {
+						this.scrollUp(Math.abs(res.wheelDelta));
+					} else {
+						this.scrollDown(res.wheelDelta);
+					}
+				}
+				if (res.needRender) {
+					this.renderCurrentFrame();
+				}
+				return;
+			}
+		}
+
 		// 2. 全局快捷键拦截
 		if (data === "\x1b[Z" || matchesKey(data, Key.shiftTab)) {
 			// Shift+Tab：就地循环切换思考强度
@@ -623,14 +697,53 @@ export class UIHost implements UIHostContextPort {
 		}
 
 		if (matchesKey(data, Key.ctrl("c"))) {
-			if (this.inputLine.hasSelection()) {
-				this.inputLine.copySelection();
-				this.notify("已复制到剪贴板", "info");
-				this.requestRender();
+			// 1. 如果处于工作态（模型生成、工具执行中），直接触发平滑打断，绝不触发退出
+			if (this.busy) {
+				this.exitPending = false;
+				if (this.exitTimer) {
+					clearTimeout(this.exitTimer);
+					this.exitTimer = null;
+				}
+				this.onInterrupt?.();
 				return;
 			}
-			this.onInterrupt?.();
+
+			// 2. 如果输入框内部处于 Ctrl+A 选区态，优先复制
+			if (this.inputLine.hasSelection()) {
+				this.inputLine.copySelection();
+				this.showCopyToast("已复制到剪贴板");
+				return;
+			}
+
+			// 3. 空闲态下的双击退出机制（对齐 dsh-TUI）
+			if (this.exitPending) {
+				this.exitPending = false;
+				if (this.exitTimer) {
+					clearTimeout(this.exitTimer);
+					this.exitTimer = null;
+				}
+				this.onInterrupt?.(); // 真正关闭退出
+				return;
+			}
+
+			this.exitPending = true;
+			this.requestRender();
+			if (this.exitTimer) clearTimeout(this.exitTimer);
+			this.exitTimer = setTimeout(() => {
+				this.exitPending = false;
+				this.requestRender();
+			}, 3000);
 			return;
+		}
+
+		// 用户按了除 Ctrl+C 外的其他键，取消退出待确认态
+		if (this.exitPending && !data.startsWith("\x1b[<")) {
+			this.exitPending = false;
+			if (this.exitTimer) {
+				clearTimeout(this.exitTimer);
+				this.exitTimer = null;
+			}
+			this.requestRender();
 		}
 
 		if (matchesKey(data, Key.alt("a")) || matchesKey(data, Key.alt("A"))) {

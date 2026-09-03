@@ -289,6 +289,10 @@ function isChatMsg(value: unknown): value is ChatMsg {
 	if (message.role !== "assistant") return true;
 	if (message.thinking !== undefined && typeof message.thinking !== "string") return false;
 	if (message.thinkingSignature !== undefined && typeof message.thinkingSignature !== "string") return false;
+	if (message.usage !== undefined) {
+		if (!message.usage || typeof message.usage !== "object") return false;
+		for (const key of ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"]) if (typeof (message.usage as Record<string, unknown>)[key] !== "number") return false;
+	}
 	if (message.tool_calls === undefined) return true;
 	return (
 		Array.isArray(message.tool_calls) &&

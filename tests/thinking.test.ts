@@ -71,7 +71,7 @@ describe("OpenAI-compatible thinking", () => {
 		await new Promise<void>((resolve) => server.listen(0, resolve));
 		const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
 		const events: string[] = [];
-		await createOpenAIProvider({ baseUrl, apiKey: "x", model: "m" }).stream(
+		await createOpenAIProvider({ baseUrl, apiKey: "x", model: "m", modelContextWindow: 4096 }).stream(
 			{ messages: [{ role: "user", content: "hi" }], thinkingLevel: "high" },
 			delta => { if (delta.kind === "thinking") events.push(delta.text); },
 		);
@@ -80,7 +80,7 @@ describe("OpenAI-compatible thinking", () => {
 	});
 
 	it("creates the configured Anthropic and Gemini adapter kinds", () => {
-		const base = { baseUrl: "https://example.test", apiKey: "x", model: "m" };
+		const base = { baseUrl: "https://example.test", apiKey: "x", model: "m", modelContextWindow: 4096 };
 		expect(createProvider("a", { ...base, type: "anthropic" }).thinkingLevels).toContain("high");
 		expect(createProvider("g", { ...base, type: "gemini" }).thinkingLevels).toContain("high");
 	});

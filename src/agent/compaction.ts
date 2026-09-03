@@ -1,5 +1,5 @@
 import type { ChatMsg, ModelProvider, ToolDef } from "../core/types.js";
-import { buildContext, estimateRequestTokens, formatForSummary } from "./context.js";
+import { buildContext, estimateContextTokens, estimateRequestTokens, formatForSummary } from "./context.js";
 
 export interface CompactionSettings {
 	contextWindow: number;
@@ -28,11 +28,7 @@ export function shouldCompact(
 ): boolean {
 	if (settings.contextWindow === 0) return true;
 	return (
-		estimateRequestTokens(
-			buildContext({ history: [...history], systemPrompt }),
-			tools,
-			includeThinking,
-		) >
+		estimateContextTokens(buildContext({ history: [...history], systemPrompt })).tokens + estimateRequestTokens([], tools, includeThinking) >
 		settings.contextWindow - settings.reserveTokens
 	);
 }
@@ -113,10 +109,6 @@ export async function compactHistory(
 	return {
 		summary: final,
 		retainedTail: history.slice(keepFrom).map((message) => structuredClone(message)),
-		tokensBefore: estimateRequestTokens(
-			buildContext({ history: [...history], systemPrompt }),
-			tools,
-			includeThinking,
-		),
+		tokensBefore: estimateContextTokens(buildContext({ history: [...history], systemPrompt })).tokens + estimateRequestTokens([], tools, includeThinking),
 	};
 }

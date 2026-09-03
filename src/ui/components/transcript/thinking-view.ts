@@ -22,17 +22,16 @@ export function formatThinkingLines(
 	}
 
 	const lines: string[] = [];
-	const toggleHint = `${C.gray}[Ctrl+O ${collapsed ? "展开" : "收起"} · Alt+O 全量]${C.reset}`;
 
 	if (collapsed) {
 		const clean = thinkingText.replace(/[\r\n]+/g, " ").trim();
-		const maxSnippetLen = Math.max(15, width - 36);
-		const snippet = clean.length > maxSnippetLen ? `${clean.slice(0, maxSnippetLen)}...` : clean;
-		const title = `${C.dim}▶ 思考过程: ${snippet} ${toggleHint}${C.reset}`;
-		lines.push(truncateToWidth(`  ${title}`, width));
+		const maxSnippetLen = Math.max(15, width - 42);
+		const snippet = clean.length > maxSnippetLen ? `${clean.slice(0, maxSnippetLen)}…` : clean;
+		const line = `  ${C.cyan}⚓ ${C.bold}思考${C.reset} ${C.dim}${snippet} (ctrl+o 展开 · alt+o 全量)${C.reset}`;
+		lines.push(truncateToWidth(line, width));
 	} else {
-		const title = `${C.dim}▼ 思考过程 ${toggleHint}:${C.reset}`;
-		lines.push(truncateToWidth(`  ${title}`, width));
+		const title = `  ${C.cyan}⚓ ${C.bold}思考${C.reset} ${C.dim}(ctrl+o 收起 · alt+o 全量):${C.reset}`;
+		lines.push(truncateToWidth(title, width));
 
 		const wrapped = wrapTextWithAnsi(thinkingText.trim(), Math.max(20, width - 6));
 		for (const line of wrapped) {
