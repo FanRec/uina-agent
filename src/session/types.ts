@@ -77,6 +77,25 @@ export type SessionRecord =
 	| SessionCompactionRecord
 	| SessionEventRecord;
 
+/** Ordered durable session content. Operational events are replayed into state,
+ * while these entries retain their original journal order for model and UI projections. */
+export type SessionEntry =
+	| { kind: "message"; message: ChatMsg }
+	| {
+			kind: "custom_message";
+			customType: string;
+			content: string;
+			display?: boolean;
+			details?: unknown;
+	  }
+	| { kind: "custom_entry"; customType: string; data?: unknown }
+	| {
+			kind: "compaction";
+			summary: string;
+			retainedTail: ChatMsg[];
+			tokensBefore: number;
+	  };
+
 export interface QueuedInput {
 	id: string;
 	order: number;
@@ -88,9 +107,7 @@ export interface QueuedInput {
 
 export interface SessionSnapshot {
 	header: SessionHeader;
-	messages: ChatMsg[];
-	customMessages: Array<{ customType: string; content: string; display?: boolean; details?: unknown }>;
-	customEntries: Array<{ customType: string; data?: unknown }>;
+	entries: SessionEntry[];
 	queued: QueuedInput[];
 	lastSeq: number;
 }

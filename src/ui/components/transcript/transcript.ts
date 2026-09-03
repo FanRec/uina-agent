@@ -5,6 +5,8 @@
  */
 
 import type { Component } from "../../core/types.js";
+import type { ChatMsg } from "../../../core/types.js";
+import type { SessionEntry } from "../../../session/types.js";
 import { C, wrapTextWithAnsi } from "../../core/utils.js";
 import { formatThinkingLines } from "./thinking-view.js";
 import { formatToolCardLines } from "./tool-view.js";
@@ -36,7 +38,6 @@ export interface TurnRecord {
 	thinkingCollapsed?: boolean;
 	tools: ToolRecord[];
 	diffs?: DiffRecord[];
-	customMessages?: CustomMessage[];
 }
 
 export interface ThinkingLineLocation {
@@ -71,11 +72,6 @@ export class TranscriptContainer implements Component {
 	getHoveredThinkingTurn(): number | null {
 		return this.hoveredThinkingTurnN;
 	}
-
-	private compactions: CompactionRecord[] = [];
-	private customEntries: CustomEntry[] = [];
-	private standaloneCustomMessages: CustomMessage[] = [];
-	private systemNotices: string[] = [];
 
 	private messageRenderer: (type: string) => MessageRenderer | undefined = () => undefined;
 	private entryRenderer: (type: string) => EntryRenderer | undefined = () => undefined;
@@ -142,34 +138,25 @@ export class TranscriptContainer implements Component {
 	}
 
 	addCompaction(record: CompactionRecord): void {
-		this.compactions.push(record);
 		this.timeline.push({ kind: "compaction", record });
 	}
 
 	addCustomMessage(msg: CustomMessage): void {
-		if (this.currentTurn) {
-			if (!this.currentTurn.customMessages) this.currentTurn.customMessages = [];
-			this.currentTurn.customMessages.push(msg);
-		} else {
-			this.standaloneCustomMessages.push(msg);
-			this.timeline.push({ kind: "customMessage", message: msg });
-		}
+		if (msg.display === false) return;
+		this.timeline.push({ kind: "customMessage", message: msg });
 	}
 
 	addCustomEntry(entry: CustomEntry): void {
-		this.customEntries.push(entry);
 		this.timeline.push({ kind: "customEntry", entry });
 	}
 
 	addNotice(text: string): void {
 		const formatted = `  ${C.blue}ℹ ${text}${C.reset}`;
-		this.systemNotices.push(formatted);
 		this.timeline.push({ kind: "notice", text: formatted });
 	}
 
 	addError(text: string): void {
 		const formatted = `  ${C.red}✗ [错误] ${text}${C.reset}`;
-		this.systemNotices.push(formatted);
 		this.timeline.push({ kind: "notice", text: formatted });
 	}
 
@@ -185,104 +172,105 @@ export class TranscriptContainer implements Component {
 		return this.historyTurns;
 	}
 
-	loadHistory(history: readonly any[]): void {
+	loadHistory(history: readonly ChatMsg[]): void {
+		this.loadSession(history.map((message) => ({ kind: "message", message })));
+	}
+
+	/** Restores the display projection from the same ordered entries used to
+	 * build provider history. Operational events never become transcript rows. */
+	loadSession(entries: readonly SessionEntry[]): void {
 		let turnN = 0;
 		let current: TurnRecord | null = null;
-		let pendingToolCalls: Array<{ id?: string; name: string }> = [];
+		let pendingToolCalls: Array<{ id: string; name: string }> = [];
+		const commit = (): void => {
+			if (!current) return;
+			this.historyTurns.push(current);
+			this.timeline.push({ kind: "turn", turn: current });
+			current = null;
+		};
+		const createTurn = (userText = ""): TurnRecord => {
+			turnN++;
+			return { n: turnN, userText, assistantMarkdown: "", tools: [] };
+		};
 
-		for (const msg of history) {
-			if (msg.role === "user") {
-				if (msg.meta?.type === "compaction") {
-					const record: CompactionRecord = {
-						id: Date.now(),
-						summary: msg.content,
+		for (const entry of entries) {
+			if (entry.kind === "custom_message") {
+				if (entry.display === false) continue;
+				commit();
+				this.timeline.push({
+					kind: "customMessage",
+					message: {
+						customType: entry.customType,
+						content: entry.content,
+						...(entry.details === undefined ? {} : { details: entry.details }),
+					},
+				});
+				continue;
+			}
+			if (entry.kind === "custom_entry") {
+				commit();
+				this.timeline.push({
+					kind: "customEntry",
+					entry: {
+						customType: entry.customType,
+						...(entry.data === undefined ? {} : { data: entry.data }),
+					},
+				});
+				continue;
+			}
+			if (entry.kind === "compaction") {
+				commit();
+				this.timeline.push({
+					kind: "compaction",
+					record: {
+						summary: entry.summary,
 						turnsCount: turnN,
-						tokensSaved: Math.max(0, (msg.meta.originalTokens ?? 0) - (msg.meta.compactedTokens ?? 0)),
+						tokensSaved: entry.tokensBefore,
 						collapsed: true,
-						timestamp: Date.now(),
-						afterTurnN: turnN,
-					};
-					this.compactions.push(record);
-					this.timeline.push({ kind: "compaction", record });
-					continue;
-				}
-				if (current) {
-					this.historyTurns.push(current);
-					this.timeline.push({ kind: "turn", turn: current });
-				}
-				turnN++;
+					},
+				});
+				continue;
+			}
+
+			const msg = entry.message;
+			if (msg.role === "user") {
+				commit();
 				pendingToolCalls = [];
-				current = {
-					n: turnN,
-					userText: msg.content,
-					assistantMarkdown: "",
-					thinkingText: undefined,
-					tools: [],
-				};
+				current = createTurn(msg.content);
 			} else if (msg.role === "assistant") {
-				if (!current) {
-					turnN++;
-					current = {
-						n: turnN,
-						userText: "",
-						assistantMarkdown: "",
-						tools: [],
-					};
-				}
+				current ??= createTurn();
 				if (msg.thinking) {
 					current.thinkingText = (current.thinkingText ? current.thinkingText + "\n" : "") + msg.thinking;
 				}
 				if (msg.content) {
 					current.assistantMarkdown += msg.content;
 				}
-				if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
-					pendingToolCalls = msg.tool_calls.map((tc: any) => ({
-						id: tc.id,
-						name: tc.name || "tool",
+				if (msg.tool_calls) {
+					pendingToolCalls = msg.tool_calls.map((call) => ({
+						id: call.id,
+						name: call.name || "tool",
 					}));
 				}
 			} else if (msg.role === "tool") {
-				if (current) {
-					let toolName = "tool";
-					if (msg.tool_call_id) {
-						const match = pendingToolCalls.find((tc) => tc.id === msg.tool_call_id);
-						if (match) toolName = match.name;
-					} else if (pendingToolCalls.length > 0) {
-						toolName = pendingToolCalls.shift()!.name;
-					}
-
-					let elapsedMs = 0;
-					try {
-						const parsed = JSON.parse(msg.content);
-						if (parsed && typeof parsed.elapsedMs === "number") {
-							elapsedMs = parsed.elapsedMs;
-						}
-					} catch {
-						// 忽略解析错误
-					}
-
-					current.tools.push({
-						name: toolName,
-						result: msg.content,
-						elapsedMs,
-					});
+				current ??= createTurn();
+				const toolName = pendingToolCalls.find((call) => call.id === msg.tool_call_id)?.name ?? "tool";
+				let elapsedMs = 0;
+				try {
+					const parsed = JSON.parse(msg.content) as { elapsedMs?: unknown };
+					if (typeof parsed?.elapsedMs === "number") elapsedMs = parsed.elapsedMs;
+				} catch {
+					// Plain-text tool results have no elapsed metadata.
 				}
+				current.tools.push({ name: toolName, result: msg.content, elapsedMs });
 			}
 		}
-		if (current) {
-			this.historyTurns.push(current);
-			this.timeline.push({ kind: "turn", turn: current });
-		}
+		commit();
 	}
 
 	clear(): void {
 		this.timeline.length = 0;
 		this.historyTurns.length = 0;
 		this.currentTurn = null;
-		this.compactions.length = 0;
-		this.customEntries.length = 0;
-		this.standaloneCustomMessages.length = 0;
-		this.systemNotices.length = 0;
 	}
 
 	toggleThinking(targetOrN?: number | TurnRecord, width = 80): { toggled: boolean; lineDelta: number } {
@@ -426,7 +414,7 @@ export class TranscriptContainer implements Component {
 		out: string[],
 		showThinking = true,
 	): void {
-		out.push(...this.formatUserLine(turn.userText, width));
+		if (turn.userText) out.push(...this.formatUserLine(turn.userText, width));
 
 		if (turn.thinkingText && showThinking) {
 			const isHovered = this.hoveredThinkingTurnN === turn.n;
@@ -447,18 +435,6 @@ export class TranscriptContainer implements Component {
 			}
 		}
 
-		if (turn.customMessages) {
-			for (const msg of turn.customMessages) {
-				const comp = new CustomMessageComponent(msg, this.messageRenderer(msg.customType));
-				out.push(...comp.render(width));
-			}
-		}
-
-		// 跟随本轮之后的压缩卡片
-		const comps = this.compactions.filter((c) => c.afterTurnN === turn.n);
-		for (const comp of comps) {
-			out.push("", ...formatCompactionCardLines(comp, width), "");
-		}
 	}
 
 	getTimelineTurns(): Array<{ n: number; userText: string }> {

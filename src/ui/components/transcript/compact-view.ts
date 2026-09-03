@@ -10,13 +10,10 @@
 import { C, visibleWidth, truncateToWidth, wrapTextWithAnsi, getContentBoxWidth } from "../../core/utils.js";
 
 export interface CompactionRecord {
-	id: number;
 	summary: string;
 	turnsCount: number;
 	tokensSaved: number;
 	collapsed: boolean;
-	timestamp: number;
-	afterTurnN?: number;
 }
 
 /**

@@ -229,9 +229,7 @@ async function readSnapshot(path: string): Promise<SessionSnapshot> {
 	const recovered = recoverRecords(records);
 	return {
 		header,
-		messages: recovered.messages,
-		customMessages: recovered.customMessages,
-		customEntries: recovered.customEntries,
+		entries: recovered.entries,
 		queued: recovered.queued,
 		lastSeq,
 	};

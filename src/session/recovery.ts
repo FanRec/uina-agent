@@ -1,6 +1,7 @@
 import type { ChatMsg, ToolResultStatus } from "../core/types.js";
 import type {
 	QueuedInput,
+	SessionEntry,
 	SessionEventRecord,
 	SessionRecord,
 } from "./types.js";
@@ -19,17 +20,13 @@ interface PendingCall {
 }
 
 export interface RecoveredState {
-	messages: ChatMsg[];
-	customMessages: Array<{ customType: string; content: string; display?: boolean; details?: unknown }>;
-	customEntries: Array<{ customType: string; data?: unknown }>;
+	entries: SessionEntry[];
 	queued: QueuedInput[];
 }
 
 /** Replays records and inserts explicit results for calls interrupted by a crash. */
 export function recoverRecords(records: SessionRecord[]): RecoveredState {
-	const messages: ChatMsg[] = [];
-	const customMessages: RecoveredState["customMessages"] = [];
-	const customEntries: RecoveredState["customEntries"] = [];
+	const entries: SessionEntry[] = [];
 	const queued = new Map<string, QueuedInput>();
 	const finishedEvents = new Map<string, { status: ToolResultStatus; result?: string }>();
 	const resultIds = new Set<string>();
@@ -56,11 +53,14 @@ export function recoverRecords(records: SessionRecord[]): RecoveredState {
 				finished && finished.result === undefined && finished.status !== "not_started"
 					? "unknown"
 					: status;
-			messages.push({
-				role: "tool",
-				tool_call_id: call.callId,
-				status: recoveredStatus,
-				content,
+			entries.push({
+				kind: "message",
+				message: {
+					role: "tool",
+					tool_call_id: call.callId,
+					status: recoveredStatus,
+					content,
+				},
 			});
 			resultIds.add(call.callId);
 		}
@@ -69,11 +69,21 @@ export function recoverRecords(records: SessionRecord[]): RecoveredState {
 
 	for (const record of records) {
 		if (record.kind === "custom_message") {
-			customMessages.push({ customType: record.customType, content: record.content, ...(record.display === undefined ? {} : { display: record.display }), ...(record.details === undefined ? {} : { details: record.details }) });
+			entries.push({
+				kind: "custom_message",
+				customType: record.customType,
+				content: record.content,
+				...(record.display === undefined ? {} : { display: record.display }),
+				...(record.details === undefined ? {} : { details: record.details }),
+			});
 			continue;
 		}
 		if (record.kind === "custom_entry") {
-			customEntries.push({ customType: record.customType, ...(record.data === undefined ? {} : { data: record.data }) });
+			entries.push({
+				kind: "custom_entry",
+				customType: record.customType,
+				...(record.data === undefined ? {} : { data: record.data }),
+			});
 			continue;
 		}
 		if (record.kind === "message") {
@@ -87,7 +97,7 @@ export function recoverRecords(records: SessionRecord[]): RecoveredState {
 					ids.add(call.id);
 					declaredIds.add(call.id);
 				}
-				messages.push(record.message);
+				entries.push({ kind: "message", message: record.message });
 				pendingCalls = record.message.tool_calls.map((call) => ({
 					callId: call.id,
 					name: call.name,
@@ -109,17 +119,18 @@ export function recoverRecords(records: SessionRecord[]): RecoveredState {
 				}
 				resultIds.add(call.callId);
 			}
-			messages.push(record.message);
+			entries.push({ kind: "message", message: record.message });
 			continue;
 		}
 
 		if (record.kind === "compaction") {
 			closePending();
-			messages.length = 0;
-			messages.push(
-				{ role: "user", content: `[历史摘要] ${record.summary}` },
-				...record.retainedTail,
-			);
+			entries.push({
+				kind: "compaction",
+				summary: record.summary,
+				retainedTail: structuredClone(record.retainedTail),
+				tokensBefore: record.tokensBefore,
+			});
 			continue;
 		}
 
@@ -128,11 +139,33 @@ export function recoverRecords(records: SessionRecord[]): RecoveredState {
 
 	closePending();
 	return {
-		messages,
-		customMessages,
-		customEntries,
+		entries,
 		queued: [...queued.values()].sort((a, b) => a.order - b.order),
 	};
+}
+
+/** Projects the ordered journal into the effective provider history. A
+ * compaction replaces only model-visible history; the journal itself remains intact. */
+export function projectModelHistory(entries: readonly SessionEntry[]): ChatMsg[] {
+	const messages: ChatMsg[] = [];
+	for (const entry of entries) {
+		if (entry.kind === "message") {
+			messages.push(structuredClone(entry.message));
+			continue;
+		}
+		if (entry.kind === "custom_message") {
+			messages.push({ role: "user", content: entry.content });
+			continue;
+		}
+		if (entry.kind === "compaction") {
+			messages.length = 0;
+			messages.push(
+				{ role: "user", content: `[历史摘要] ${entry.summary}` },
+				...structuredClone(entry.retainedTail),
+			);
+		}
+	}
+	return messages;
 }
 
 function applyEvent(

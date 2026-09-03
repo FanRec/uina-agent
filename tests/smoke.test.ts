@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ToolBroker, type Tool } from "../src/tools/broker.js";
 import { Subject } from "../src/agent/loop.js";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
-import { SessionFormatError } from "../src/session/recovery.js";
+import { projectModelHistory, SessionFormatError } from "../src/session/recovery.js";
 import type { ModelRequest, ModelProvider, StreamDelta } from "../src/core/types.js";
 import execCommandTool, { createByteDecoder, execCommandDirect } from "../tools/exec-command/index.js";
 import getTimeTool from "../tools/get-time/index.js";
@@ -224,7 +224,7 @@ describe("JSONL session", () => {
 		await store.appendEvent("tool_started", { callId: "call-1", name: "x", args: {} });
 		await store.close();
 		const reopened = await openJsonlSession(path);
-		const tool = reopened.snapshot.messages.find((message) => message.role === "tool");
+		const tool = projectModelHistory(reopened.snapshot.entries).find((message) => message.role === "tool");
 		expect(tool && tool.status).toBe("unknown");
 		await reopened.store.close();
 		const lines = readFileSync(path, "utf8").trim().split("\n");
@@ -238,8 +238,61 @@ describe("JSONL session", () => {
 		await completed.store.appendEvent("tool_finished", { callId: "call-2", name: "x", status: "succeeded", result: "ok" });
 		await completed.store.close();
 		const completedOpen = await openJsonlSession(completedPath);
-		expect(completedOpen.snapshot.messages.find((message) => message.role === "tool")?.status).toBe("succeeded");
+		expect(projectModelHistory(completedOpen.snapshot.entries).find((message) => message.role === "tool")?.status).toBe("succeeded");
 		await completedOpen.store.close();
+	});
+
+	it("preserves one ordered entry stream and projects custom messages in place", async () => {
+		const root = mkdtempSync(join(tmpdir(), "uina-session-order-"));
+		tempDirs.push(root);
+		const path = join(root, "session.jsonl");
+		const opened = await openJsonlSession(path);
+		await opened.store.appendMessage({ role: "user", content: "A" });
+		await opened.store.appendCustomMessage({ customType: "probe", content: "C" });
+		await opened.store.appendMessage({ role: "assistant", content: "B" });
+		await opened.store.appendCustomEntry({ customType: "ui-only", data: { value: "D" } });
+		await opened.store.close();
+
+		const reopened = await openJsonlSession(path);
+		expect(reopened.snapshot.entries.map((entry) => entry.kind)).toEqual([
+			"message",
+			"custom_message",
+			"message",
+			"custom_entry",
+		]);
+		expect(projectModelHistory(reopened.snapshot.entries).map((message) => message.content)).toEqual(["A", "C", "B"]);
+		await reopened.store.close();
+	});
+
+	it("uses the latest compaction as the model-history boundary without rewriting journal order", async () => {
+		const root = mkdtempSync(join(tmpdir(), "uina-session-compact-"));
+		tempDirs.push(root);
+		const path = join(root, "session.jsonl");
+		const opened = await openJsonlSession(path);
+		await opened.store.appendMessage({ role: "user", content: "old" });
+		await opened.store.appendCustomMessage({ customType: "old-custom", content: "old-custom" });
+		await opened.store.appendMessage({ role: "assistant", content: "tail" });
+		await opened.store.appendCompaction("summary", [{ role: "assistant", content: "tail" }], 100);
+		await opened.store.appendCustomMessage({ customType: "new-custom", content: "new-custom" });
+		await opened.store.appendMessage({ role: "assistant", content: "after" });
+		await opened.store.close();
+
+		const reopened = await openJsonlSession(path);
+		expect(reopened.snapshot.entries.map((entry) => entry.kind)).toEqual([
+			"message",
+			"custom_message",
+			"message",
+			"compaction",
+			"custom_message",
+			"message",
+		]);
+		expect(projectModelHistory(reopened.snapshot.entries).map((message) => message.content)).toEqual([
+			"[历史摘要] summary",
+			"tail",
+			"new-custom",
+			"after",
+		]);
+		await reopened.store.close();
 	});
 
 	it("repairs only a torn final line and rejects an invalid middle line", async () => {
@@ -250,7 +303,7 @@ describe("JSONL session", () => {
 		const message = JSON.stringify({ kind: "message", id: "m", seq: 1, timestamp: new Date().toISOString(), message: { role: "user", content: "ok" } });
 		writeFileSync(path, `${header}\n${message}\n{"kind":"message"`);
 		const opened = await openJsonlSession(path);
-		expect(opened.snapshot.messages).toHaveLength(1);
+		expect(opened.snapshot.entries).toHaveLength(1);
 		await opened.store.close();
 
 		writeFileSync(path, `${header}\nnot-json\n${message}\n`);

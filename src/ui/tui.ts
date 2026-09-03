@@ -7,6 +7,7 @@ import { UIHost, type UIHostOptions } from "./ui-host.js";
 import type { ToolResultStatus } from "../core/types.js";
 import type { QueuedMessage } from "../agent/queue.js";
 import type { ExtensionUIContext } from "./extensions/types.js";
+import type { SessionEntry } from "../session/types.js";
 
 /** 渲染层消息契约（主体 hooks → UI 消息） */
 export type OutMsg =
@@ -87,6 +88,10 @@ export class InteractiveTUI {
 
 	loadHistory(messages: readonly import("../core/types.js").ChatMsg[]): void {
 		this.host.loadHistory(messages);
+	}
+
+	loadSession(entries: readonly SessionEntry[]): void {
+		this.host.loadSession(entries);
 	}
 
 	render(m: OutMsg): void {

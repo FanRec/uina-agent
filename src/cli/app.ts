@@ -10,6 +10,7 @@ import { ToolBroker } from "../tools/broker.js";
 import { loadTools, loadToolsFromPaths } from "../tools/loader.js";
 import { Subject } from "../agent/loop.js";
 import { openJsonlSession } from "../session/jsonl-store.js";
+import { projectModelHistory } from "../session/recovery.js";
 import { createInteractiveUI, type InteractiveTUI, type OutMsg } from "../ui/tui.js";
 import { sanitizeTerminalText, toolStartLine, toolResultLines } from "../ui/format.js";
 import { JobRegistry } from "../extensions/jobs/registry.js";
@@ -144,12 +145,10 @@ export async function runApp(): Promise<void> {
 	extensionHost.on("session_compact", (e) => {
 		if (tui) {
 			tui.host.addCompaction({
-				id: Date.now(),
 				summary: e.summary,
 				turnsCount: e.retainedTailCount,
 				tokensSaved: e.tokensBefore,
 				collapsed: true,
-				timestamp: Date.now(),
 			});
 		} else {
 			process.stdout.write(`\n[会话压缩] ${e.summary}\n`);
@@ -187,11 +186,11 @@ export async function runApp(): Promise<void> {
 		}).catch((error) => render({ type: "error", text: `后台任务通知失败：${String(error)}` }));
 	});
 
-	subject.addHistory(snapshot.messages);
-	for (const message of snapshot.customMessages) subject.restoreCustomMessage(message);
+	const restoredHistory = projectModelHistory(snapshot.entries);
+	subject.addHistory(restoredHistory);
 	subject.seedQueue(snapshot.queued);
-	if (snapshot.messages.length > 0) {
-		process.stdout.write(`（已恢复 JSONL 会话：${snapshot.messages.length} 条消息）\n\n`);
+	if (restoredHistory.length > 0) {
+		process.stdout.write(`（已恢复 JSONL 会话：${restoredHistory.length} 条消息）\n\n`);
 	}
 
 	const restoreQueueToEditor = async (): Promise<void> => {
@@ -294,10 +293,10 @@ export async function runApp(): Promise<void> {
 		tui.onLine(onUserLine);
 		tui.onSIGINT(handleInterrupt);
 		tui.host.setUsage(subject.getUsedTokens(), subject.getContextWindow());
-		if (snapshot.messages.length > 0) {
-			tui.loadHistory(snapshot.messages);
+		if (snapshot.entries.length > 0) {
+			tui.loadSession(snapshot.entries);
 			let sys = 0, pr = 0, ast = 0, th = 0, tl = 0;
-			for (const m of snapshot.messages) {
+			for (const m of restoredHistory) {
 				const len = Math.ceil(m.content.length / 3);
 				if (m.role === "system") sys += len;
 				else if (m.role === "user") pr += len;
@@ -315,8 +314,6 @@ export async function runApp(): Promise<void> {
 				tl,
 			});
 		}
-		for (const message of snapshot.customMessages) tui.host.transcript.addCustomMessage(message);
-		for (const entry of snapshot.customEntries) tui.host.transcript.addCustomEntry(entry);
 	} else {
 		nonTTY = createInterface({ input: process.stdin });
 		nonTTY.on("line", (line) => onUserLine(line, "followUp"));

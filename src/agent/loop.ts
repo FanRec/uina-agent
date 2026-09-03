@@ -741,10 +741,6 @@ export class Subject {
 		await this.store?.appendCustomEntry(entry);
 	}
 
-	restoreCustomMessage(message: { content: string }): void {
-		this.history.push({ role: "user", content: message.content });
-	}
-
 	private async consumeQueueItem(item: QueuedMessage): Promise<void> {
 		await this.storeEvent("queue_consumed", eventData(item));
 		this.queues.remove(item.id);

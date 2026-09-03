@@ -15,6 +15,7 @@ import { Key, matchesKey } from "./core/keys.js";
 import { MouseSelectionTracker, type InteractiveTarget, type SelectableRegion } from "./core/mouse-selection.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ThinkingLevel } from "../core/types.js";
+import type { SessionEntry } from "../session/types.js";
 import { C, visibleWidth, truncateToWidth } from "./core/utils.js";
 import { InputLine } from "./components/editor/input-line.js";
 import { BannerComponent } from "./components/primitives/banner.js";
@@ -412,6 +413,11 @@ export class UIHost implements UIHostContextPort {
 
 	loadHistory(messages: readonly import("../core/types.js").ChatMsg[]): void {
 		this.transcript.loadHistory(messages);
+		this.requestRender();
+	}
+
+	loadSession(entries: readonly SessionEntry[]): void {
+		this.transcript.loadSession(entries);
 		this.requestRender();
 	}
 

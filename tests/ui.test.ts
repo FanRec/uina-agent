@@ -198,6 +198,24 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 		expect(compCustom.render(80)).toEqual(['Custom Entry: {"runId":123}']);
 	});
 
+	it("从单一 session entry 流按原顺序恢复消息、扩展内容和压缩记录", () => {
+		const transcript = new TranscriptContainer();
+		transcript.loadSession([
+			{ kind: "message", message: { role: "user", content: "ORDER_A" } },
+			{ kind: "custom_message", customType: "probe", content: "ORDER_C" },
+			{ kind: "message", message: { role: "assistant", content: "ORDER_B" } },
+			{ kind: "custom_message", customType: "hidden", content: "MUST_NOT_RENDER", display: false },
+			{ kind: "custom_entry", customType: "probe-entry", data: { text: "ORDER_D" } },
+			{ kind: "compaction", summary: "ORDER_SUMMARY", retainedTail: [], tokensBefore: 42 },
+		]);
+
+		const rendered = stripAnsi(transcript.render(80).join("\n"));
+		const positions = ["ORDER_A", "ORDER_C", "ORDER_B", "ORDER_D", "ORDER_SUMMARY"].map((text) => rendered.indexOf(text));
+		expect(positions.every((position) => position >= 0)).toBe(true);
+		expect(positions).toEqual([...positions].sort((a, b) => a - b));
+		expect(rendered).not.toContain("MUST_NOT_RENDER");
+	});
+
 	it("createExtensionUIContext 调度宿主接口", () => {
 		const hostPort = {
 			notify: vi.fn(),
@@ -471,12 +489,10 @@ describe("UI Components & Visual Rendering", () => {
 		const { formatCompactionCardLines } = await import("../src/ui/components/transcript/compact-view.js");
 
 		const record = {
-			id: 1,
 			summary: "1. 讨论系统架构\n2. 落地输入联想与差异卡片\n3. 优化文件发现机制",
 			turnsCount: 3,
 			tokensSaved: 18500,
 			collapsed: true,
-			timestamp: Date.now(),
 		};
 
 		const collapsedLines = formatCompactionCardLines(record, 70);
