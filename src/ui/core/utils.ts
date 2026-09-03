@@ -9,12 +9,13 @@ export const ANSI_REGEX =
 
 /** 颜色常数定义（RGB / 16色） */
 export const C = {
+	// 基础控制
 	reset: "\x1b[0m",
 	bold: "\x1b[1m",
 	dim: "\x1b[2m",
 	italic: "\x1b[3m",
 	underline: "\x1b[4m",
-	// 基础颜色
+	// 基础 16 色
 	black: "\x1b[30m",
 	red: "\x1b[31m",
 	green: "\x1b[32m",
@@ -24,11 +25,36 @@ export const C = {
 	cyan: "\x1b[36m",
 	white: "\x1b[37m",
 	gray: "\x1b[90m",
-	// dsh 标志性配色（TrueColor）
-	iceBlue: "\x1b[38;2;125;190;255m",
-	brandBlue: "\x1b[38;2;75;111;255m",
+	// dsh-TUI Gentle Mist Blue (雾蓝) 工业级调色板 (TrueColor RGB)
+	text: "\x1b[38;2;232;230;224m", // #E8E6E0 温暖奶白（正文）
+	inverseText: "\x1b[38;2;34;38;46m", // #22262E 深灰炭黑
+	claude: "\x1b[38;2;125;161;222m", // #7DA1DE 品牌雾蓝
+	promptBorder: "\x1b[38;2;85;96;111m", // #55606F 静止输入框柔和边框
+	promptBorderShimmer: "\x1b[38;2;125;161;222m", // #7DA1DE 输入框高亮/焦点
+	inactive: "\x1b[38;2;141;149;166m", // #8D95A6 雾灰蓝（次级/弱化文本，绝不黑屏）
+	inactiveShimmer: "\x1b[38;2;170;178;194m", // #AAB2C2 略浅灰蓝
+	subtle: "\x1b[38;2;94;102;115m", // #5E6673 适度弱化的边框/刻度蓝灰
+	suggestion: "\x1b[38;2;171;194;236m", // #ABC2EC 冰蓝选区/高亮提示
+	success: "\x1b[38;2;130;184;157m", // #82B89D 柔和浅绿
+	error: "\x1b[38;2;218;138;147m", // #DA8A93 柔和粉红
+	warning: "\x1b[38;2;216;178;112m", // #D8B270 柔和暖琥珀
+	briefLabelYou: "\x1b[38;2;255;223;128m", // #FFDF80 用户输入提示暖金
+	briefLabelClaude: "\x1b[38;2;125;161;222m", // #7DA1DE 助手标签雾蓝
+	// 工具圆点指示色
+	toolDotExec: "\x1b[38;2;127;174;153m", // #7FAE99 鼠尾草绿
+	toolDotRead: "\x1b[38;2;130;184;199m", // #82B8C7 青蓝
+	toolDotWrite: "\x1b[38;2;179;160;212m", // #B3A0D4 浅紫
+	toolDotWeb: "\x1b[38;2;125;161;222m", // #7DA1DE 雾蓝
+	toolDotTask: "\x1b[38;2;209;148;174m", // #D194AE 玫瑰粉
+	// 容器与卡片背景色 (TrueColor Background)
+	toolCardBackground: "\x1b[48;2;36;43;58m", // #242B3A 卡片底色
+	toolCardBackgroundDim: "\x1b[48;2;28;35;48m", // #1C2330 深层卡片底色
+	selectionBg: "\x1b[48;2;59;74;102m", // #3B4A66 选区高亮色
+	// 经典兼容器
+	iceBlue: "\x1b[38;2;171;194;236m", // 映射到 suggestion 冰蓝
+	brandBlue: "\x1b[38;2;125;161;222m", // 映射到 claude 雾蓝
 	glowWhite: "\x1b[38;2;255;255;255m",
-	darkBg: "\x1b[48;2;30;34;42m",
+	darkBg: "\x1b[48;2;36;43;58m",
 };
 
 /** 剥离所有 ANSI 转义控制码 */

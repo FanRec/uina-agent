@@ -17,7 +17,18 @@ export interface LoopHooks {
 	onToken: (text: string) => void;
 	onThinking?: (text: string) => void;
 	onTurnStart?: (n: number, text: string) => void;
-	onTurnEnd?: (n: number, usage?: { usedTokens: number; contextWindow: number; actual: boolean }) => void;
+	onTurnEnd?: (
+		n: number,
+		usage?: {
+			usedTokens: number;
+			contextWindow: number;
+			actual: boolean;
+			cacheRead?: number;
+			cacheWrite?: number;
+			inputTokens?: number;
+			outputTokens?: number;
+		},
+	) => void;
 	onToolStart?: (name: string, args: unknown, callId?: string) => void;
 	onToolDone?: (
 		name: string,
@@ -79,6 +90,7 @@ export class Subject {
 	private preferredThinkingLevel: ThinkingLevel;
 	private readonly extensionHost?: import("../extensions/host.js").ExtensionHost;
 	private runtimeInputs: AgentInput[] = [];
+	private lastReportedUsage: Usage | null = null;
 
 	constructor(
 		provider: ModelProvider,
@@ -320,10 +332,16 @@ export class Subject {
 			this.busy = false;
 			try {
 				const estimate = estimateContextTokens(this.history);
+				const last = this.lastReportedUsage;
+				const used = last ? (last.input + last.output) : estimate.tokens;
 				const usage = {
-					usedTokens: estimate.tokens,
+					usedTokens: used,
 					contextWindow: this.getContextWindow(),
-					actual: estimate.actual,
+					actual: Boolean(last) || estimate.actual,
+					cacheRead: last?.cacheRead,
+					cacheWrite: last?.cacheWrite,
+					inputTokens: last?.input,
+					outputTokens: last?.output,
 				};
 				this.hooks.onTurnEnd?.(turn, usage);
 				await this.extensionHost?.emit({ type: "turn_end", turnNumber: turn });
@@ -438,6 +456,7 @@ export class Subject {
 							this.hooks.onToken(delta.text);
 						} else if (delta.kind === "usage") {
 							usage = delta.usage;
+							this.lastReportedUsage = delta.usage;
 						} else if (delta.kind === "tool_call") {
 							const parsedArgs = parseToolArgs(delta.call.args);
 							toolCalls.push({

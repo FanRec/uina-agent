@@ -4,7 +4,7 @@
  * 调度原子全帧差量渲染与键盘输入分发。
  */
 
-import { exec } from "node:child_process";
+import { spawn } from "node:child_process";
 import { Container } from "./core/container.js";
 import { FocusManager } from "./core/focus.js";
 import { OverlayStack } from "./core/overlay.js";
@@ -12,7 +12,7 @@ import { WidgetSlots } from "./core/slots.js";
 import { ProcessTerminal } from "./core/terminal.js";
 import { MainScreenRenderer } from "./core/renderer.js";
 import { Key, matchesKey } from "./core/keys.js";
-import { MouseSelectionTracker, type InteractiveTarget } from "./core/mouse-selection.js";
+import { MouseSelectionTracker, type InteractiveTarget, type SelectableRegion } from "./core/mouse-selection.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ThinkingLevel } from "../core/types.js";
 import { C, visibleWidth, truncateToWidth } from "./core/utils.js";
@@ -20,7 +20,7 @@ import { InputLine } from "./components/editor/input-line.js";
 import { BannerComponent } from "./components/primitives/banner.js";
 import { TranscriptContainer } from "./components/transcript/transcript.js";
 import { ActivityLineComponent } from "./components/widgets/activity-line.js";
-import { ContextBarComponent, type ContextSegments } from "./components/widgets/context-bar.js";
+import { ContextBarComponent, formatCacheHitRate, type ContextSegments } from "./components/widgets/context-bar.js";
 import { TimelineRailComponent } from "./components/widgets/timeline-rail.js";
 import { HelpMenu } from "./components/overlays/help-menu.js";
 import {
@@ -135,16 +135,37 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	private onCopyOnSelect = (text: string): void => {
+		// 1. OSC 52 终端原生协议（对齐 dsh-TUI: setClipboard(text) 首选通道）
+		// 终端模拟器（Windows Terminal、iTerm2 等）直接在前端写入宿主剪贴板，0 子进程消耗
 		const b64 = Buffer.from(text, "utf-8").toString("base64");
 		process.stdout.write(`\x1b]52;c;${b64}\x07`);
-		if (process.platform === "win32") {
-			const child = exec(
-				'powershell.exe -NoProfile -NonInteractive -Command "$Input | Set-Clipboard"',
-				() => {},
-			);
-			child.stdin?.write(text);
-			child.stdin?.end();
+
+		// 2. 本地 Native 兜底（对标 dsh-TUI copyNative: 非 SSH 环境下的轻量安全兜底）
+		if (process.platform === "win32" && !process.env["SSH_CONNECTION"]) {
+			try {
+				// 使用 Windows 原生 clip.exe，前置切换 chcp 65001 保证 UTF-8 中文不乱码
+				// 启动耗时不到 5ms，比启动整个 powershell.exe 轻量十倍以上
+				const child = spawn("cmd.exe", ["/c", "chcp 65001 >nul && clip"], {
+					stdio: ["pipe", "ignore", "ignore"],
+					windowsHide: true,
+				});
+				child.on("error", () => {});
+				child.stdin.end(Buffer.from(text, "utf-8"));
+				child.unref();
+			} catch {
+				// 静默失败，已有 OSC 52 保证
+			}
+		} else if (process.platform === "darwin" && !process.env["SSH_CONNECTION"]) {
+			try {
+				const child = spawn("pbcopy", [], {
+					stdio: ["pipe", "ignore", "ignore"],
+				});
+				child.on("error", () => {});
+				child.stdin.end(Buffer.from(text, "utf-8"));
+				child.unref();
+			} catch {}
 		}
+
 		this.showCopyToast(`已复制 ${text.length} 字符`);
 	};
 
@@ -237,6 +258,15 @@ export class UIHost implements UIHostContextPort {
 			if (!this.running) return;
 			this.renderCurrentFrame();
 		});
+	}
+
+	/**
+	 * Public input bridge for embedders and tests. Interactive terminals enter
+	 * through ProcessTerminal, while headless callers can feed the same raw
+	 * key protocol without reaching into the private dispatcher.
+	 */
+	handleInput(data: string): void {
+		this.handleTerminalInput(data);
 	}
 
 	setModel(model: string): void {
@@ -603,10 +633,12 @@ export class UIHost implements UIHostContextPort {
 
 		// 1. 同步状态行与输入框指标
 		const statusHeader = this.activityLine.getHeaderString(Math.min(60, innerW - 20));
+		const cacheRate = formatCacheHitRate(this.cacheReadTokens, this.inputTokensCount, this.cacheWriteTokens);
 		this.inputLine.setStatusHeader(statusHeader);
 		this.inputLine.setCwd(this.cwd);
 		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow);
 		this.inputLine.setReasoningEffort(this.reasoningEffort);
+		this.inputLine.setCacheRate(cacheRate);
 
 		const now = Date.now();
 		const elapsed = this.busy ? Math.max(1, now - this.turnStartTime) : this.lastElapsedMs;
@@ -617,7 +649,9 @@ export class UIHost implements UIHostContextPort {
 			: this.lastTps;
 		this.inputLine.setSpeedStats(currentTps, elapsed, this.busy);
 
-		// 2. 渲染底部输入框（圆角全屏宽封闭盒，对标图二）
+		// 2. 渲染底部输入框。给最右侧保留一列安全空间，避免终端在
+		// 最后一列自动换行时吞掉 dsh-tui 风格的 `╮`/`╯` 闭合角。
+		const inputWidth = Math.max(2, innerW - 1);
 		const rawInput = this.inputLine.render(innerW);
 		const inputLines = rawInput.map((l) => `${margin}${l}`);
 		const inputH = inputLines.length;
@@ -634,7 +668,7 @@ export class UIHost implements UIHostContextPort {
 			cacheWrite: this.cacheWriteTokens,
 			segments: this.contextSegments,
 		});
-		const contextBarLines = this.contextBar.render(innerW).map((l) => `${margin}${l}`);
+		const contextBarLines = this.contextBar.render(inputWidth).map((l) => `${margin}${l}`);
 		const belowLines = [
 			...contextBarLines,
 			...this.widgetSlots.render("belowEditor", innerW).map((l) => `${margin}${l}`),
@@ -708,31 +742,7 @@ export class UIHost implements UIHostContextPort {
 			}
 		}
 
-		this.timelineRail.updateTurns(timelineTurns, activeTurnN);
-		const { railGlyphs, previewCard } = this.timelineRail.renderRailRows(visibleTranscript.length);
-
-		for (let r = 0; r < visibleTranscript.length; r++) {
-			const baseLine = visibleTranscript[r] ?? "";
-			const pad = Math.max(0, transcriptContentW - visibleWidth(baseLine));
-			visibleTranscript[r] = `${baseLine}${" ".repeat(pad)}${railGlyphs[r] ?? "  "}`;
-		}
-
-		if (previewCard) {
-			for (let i = 0; i < previewCard.lines.length; i++) {
-				const targetRow = previewCard.topRow + i;
-				if (targetRow < visibleTranscript.length) {
-					const cardLine = previewCard.lines[i]!;
-					const cardW = visibleWidth(cardLine);
-					const cardStartCol = Math.max(0, innerW - 2 - cardW - 1);
-					const baseLine = visibleTranscript[targetRow]!;
-					const contentWithoutRail = truncateToWidth(baseLine, transcriptContentW, " ");
-					const overlaid = overlayCard(contentWithoutRail, cardLine, cardStartCol, transcriptContentW);
-					visibleTranscript[targetRow] = `${overlaid}${railGlyphs[targetRow] ?? "  "}`;
-				}
-			}
-		}
-
-		// 8. 组装整屏行数组
+		// 8. 组装整屏行数组（转录区 + 填充空白 + 提示条）
 		let toastStr = "";
 		if (this.exitPending) {
 			toastStr = `${C.gray}再次按 Ctrl+C 退出${C.reset}`;
@@ -745,16 +755,44 @@ export class UIHost implements UIHostContextPort {
 		for (let g = 0; g < gapCount; g++) {
 			if (g === gapCount - 1 && toastStr) {
 				const toastW = visibleWidth(toastStr);
-				const pad = Math.max(0, innerW - toastW - 1);
+				const pad = Math.max(0, transcriptContentW - toastW - 1);
 				gapLines.push(`${margin}${" ".repeat(pad)}${toastStr}`);
 			} else {
 				gapLines.push("");
 			}
 		}
 
+		// 整个对话区域高度（从屏幕顶部到输入框顶部的全部可用垂直空间）
+		const chatAreaH = visibleTranscript.length + gapLines.length;
+		const allChatRows = [...visibleTranscript, ...gapLines];
+		const atBottom = this.scrollOffset === 0;
+
+		this.timelineRail.updateTurns(timelineTurns, activeTurnN);
+		const { railGlyphs, previewCard } = this.timelineRail.renderRailRows(chatAreaH, atBottom);
+
+		for (let r = 0; r < chatAreaH; r++) {
+			const baseLine = allChatRows[r] ?? "";
+			const pad = Math.max(0, transcriptContentW - visibleWidth(baseLine));
+			allChatRows[r] = `${baseLine}${" ".repeat(pad)}${railGlyphs[r] ?? "  "}`;
+		}
+
+		if (previewCard) {
+			for (let i = 0; i < previewCard.lines.length; i++) {
+				const targetRow = previewCard.topRow + i;
+				if (targetRow < chatAreaH) {
+					const cardLine = previewCard.lines[i]!;
+					const cardW = visibleWidth(cardLine);
+					const cardStartCol = Math.max(0, innerW - 2 - cardW - 1);
+					const baseLine = allChatRows[targetRow]!;
+					const contentWithoutRail = truncateToWidth(baseLine, transcriptContentW, " ");
+					const overlaid = overlayCard(contentWithoutRail, cardLine, cardStartCol, transcriptContentW);
+					allChatRows[targetRow] = `${overlaid}${railGlyphs[targetRow] ?? "  "}`;
+				}
+			}
+		}
+
 		const fullScreenRows: string[] = [
-			...visibleTranscript,
-			...gapLines,
+			...allChatRows,
 			...aboveLines,
 			...inputLines,
 			...belowLines,
@@ -770,64 +808,112 @@ export class UIHost implements UIHostContextPort {
 			if (absLine >= scrollStart && absLine < scrollStart + visibleTranscript.length) {
 				const screenRow = absLine - scrollStart;
 				interactiveTargets.push({
-					id: `thinking-${loc.turnN}`,
+					// absLine 让同编号的历史轮次与当前轮次也拥有不同目标。
+					id: `thinking-${loc.turnN}-${absLine}`,
 					row: screenRow,
 					colStart: 0,
-					colEnd: Math.min(50, innerW - 4),
+					// 思考标题可能很长；整行都应可点击，但把右侧
+					// TimelineRail 的两列留给导航轨，避免热区重叠。
+					colEnd: Math.max(0, transcriptContentW - 1),
 					onClick: () => {
-						this.transcript.toggleThinking(loc.turnN);
+						const res = this.transcript.toggleThinking(loc.turn, transcriptContentW);
+						if (res.toggled) {
+							this.scrollOffset = Math.max(0, this.scrollOffset + res.lineDelta);
+						}
 						this.requestRender();
 					},
 				});
 			}
 		}
 
-		// (2) 注册 TimelineRail 导航轨交互
-		if (visibleTranscript.length >= 3 && timelineTurns.length > 0) {
+		// (2) 注册 TimelineRail 导航轨交互（垂直居中对齐）
+		const railGeo = this.timelineRail.getGeometry(chatAreaH, atBottom);
+		if (railGeo && timelineTurns.length > 0) {
 			interactiveTargets.push({
 				id: "rail-up",
-				row: 0,
+				row: railGeo.upRow,
 				colStart: innerW - 2,
 				colEnd: innerW,
 				onClick: () => this.scrollTurnUp(),
 			});
 			interactiveTargets.push({
 				id: "rail-down",
-				row: visibleTranscript.length - 1,
+				row: railGeo.downRow,
 				colStart: innerW - 2,
 				colEnd: innerW,
 				onClick: () => this.scrollTurnDown(),
 			});
-			for (let r = 1; r < visibleTranscript.length - 1; r++) {
-				const tick = this.timelineRail.getClickTarget(r, visibleTranscript.length);
-				if (tick && tick.type === "tick" && tick.turnN !== undefined) {
+			for (let k = 0; k < railGeo.shown; k++) {
+				const screenRow = railGeo.tickTop + k;
+				const turn = timelineTurns[railGeo.windowStart + k];
+				if (turn) {
 					interactiveTargets.push({
-						id: `rail-tick-${tick.turnN}`,
-						row: r,
+						id: `rail-tick-${turn.n}`,
+						row: screenRow,
 						colStart: innerW - 2,
 						colEnd: innerW,
-						onClick: () => this.scrollToTurn(tick.turnN!),
+						onClick: () => this.scrollToTurn(turn.n),
 					});
 				}
 			}
 		}
 
-		// (3) 注册右下角上下文状态条 Hover 展开交互（图二）
-		if (belowH > 0) {
-			const ctxBarScreenRow = visibleTranscript.length + gapLines.length + aboveH + inputH;
-			interactiveTargets.push({
-				id: "context-usage",
-				row: ctxBarScreenRow,
-				colStart: Math.max(0, innerW - 24),
-				colEnd: innerW,
-				onClick: () => {
-					this.contextBar.setHovered(!this.contextBar.getHovered());
-					this.requestRender();
-				},
-			});
+		const inputStartRow = allChatRows.length + aboveH;
+
+		// (3) 注册输入框底边框上下文进度区域 Hover 展开交互（图一 + 需求3）
+		const inputBottomBorderRow = inputStartRow + inputH - 1;
+		const progressHotspotW = Math.max(1, this.inputLine.getProgressHotspotWidth?.() ?? 35);
+		interactiveTargets.push({
+			id: "context-progress",
+			row: inputBottomBorderRow,
+			colStart: 0,
+			colEnd: Math.max(0, Math.min(inputWidth - 1, progressHotspotW - 1)),
+		});
+
+		// (4) 注册输入框点击交互，点击聚焦或定位光标
+		if (inputH >= 3) {
+			for (let r = 1; r < inputH - 1; r++) {
+				interactiveTargets.push({
+					id: `input-content-row-${r}`,
+					row: inputStartRow + r,
+					colStart: 0,
+					colEnd: inputWidth - 1,
+					onClick: (col?: number) => {
+						this.focusManager.setFocus(this.inputLine);
+						if (typeof col === "number" && typeof (this.inputLine as any).setCursorByClick === "function") {
+							// 减去 dsh-tui 风格的 `› ` 提示符（共 2 列）
+							(this.inputLine as any).setCursorByClick(Math.max(0, col - 2));
+						}
+						this.requestRender();
+					},
+				});
+			}
 		}
 
 		this.mouseTracker.setTargets(interactiveTargets);
+
+		// 8.6. 注册独立划选区域（转录历史区与输入框内容行相互隔离，禁止越界污染）
+		const selectableRegions: SelectableRegion[] = [
+			{
+				id: "transcript",
+				startRow: 0,
+				endRow: Math.max(0, visibleTranscript.length - 1),
+				colStart: 0,
+				colEnd: Math.max(0, innerW - 2),
+			},
+		];
+
+		if (inputH >= 3) {
+			selectableRegions.push({
+				id: "input",
+				startRow: inputStartRow + 1,
+				endRow: inputStartRow + inputH - 2,
+				colStart: 2, // 排除 `› ` 提示符
+				colEnd: Math.max(2, inputWidth - 1),
+			});
+		}
+
+		this.mouseTracker.setSelectableRegions(selectableRegions);
 
 		// 9. 保存当前完整帧供鼠标选区提取，注入划词反色高亮并提交渲染
 		this.lastRenderedRows = fullScreenRows;
@@ -840,8 +926,7 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	private handleResize(): void {
-		if (!this.running) return;
-		this.renderCurrentFrame();
+		this.requestRender();
 	}
 
 	private startAnimation(): void {
@@ -879,19 +964,34 @@ export class UIHost implements UIHostContextPort {
 			);
 			if (res.handled) {
 				if (res.hoverTargetId !== undefined) {
-					const isCtxHovered = res.hoverTargetId === "context-usage";
-					const wasCtxHovered = this.contextBar.getHovered();
-					if (isCtxHovered !== wasCtxHovered) {
-						this.contextBar.setHovered(isCtxHovered);
+					const hoveredThinkingTurn = res.hoverTargetId?.startsWith("thinking-")
+						? parseInt(res.hoverTargetId.replace("thinking-", ""), 10)
+						: null;
+					if (this.transcript.setHoveredThinkingTurn(hoveredThinkingTurn)) {
+						this.requestRender();
+					}
+
+					const isCtxProgressHovered = res.hoverTargetId === "context-progress";
+					if (this.contextBar.setHovered(isCtxProgressHovered)) {
 						this.requestRender();
 					}
 
 					if (res.hoverTargetId?.startsWith("rail-tick-")) {
 						const turnN = parseInt(res.hoverTargetId.replace("rail-tick-", ""), 10);
 						this.timelineRail.setHoverTurnN(turnN);
+						const target = this.mouseTracker.getTarget(res.hoverTargetId);
+						if (target) {
+							this.timelineRail.setHover(target.row);
+						}
+						this.requestRender();
+					} else if (res.hoverTargetId === "rail-up" || res.hoverTargetId === "rail-down") {
+						const target = this.mouseTracker.getTarget(res.hoverTargetId);
+						if (target) {
+							this.timelineRail.setHover(target.row);
+						}
 						this.requestRender();
 					} else {
-						if (this.timelineRail.getHoverRow() !== null) {
+						if (this.timelineRail.getHoverRow() !== null || this.timelineRail.getHoverTurnN() !== null) {
 							this.timelineRail.setHoverTurnN(null);
 							this.timelineRail.setHover(null);
 							this.requestRender();
@@ -938,7 +1038,20 @@ export class UIHost implements UIHostContextPort {
 				return;
 			}
 
-			// 3. 空闲态下的双击退出机制（对齐 dsh-TUI）
+			// 3. 如果聊天输入框中有内容，按 Ctrl+C 直接清空内容（完全对齐 dsh-TUI 规范），本次不计入退出意图
+			if (this.inputLine.hasText()) {
+				this.inputLine.clear();
+				this.activeSuggestions = null;
+				this.exitPending = false;
+				if (this.exitTimer) {
+					clearTimeout(this.exitTimer);
+					this.exitTimer = null;
+				}
+				this.requestRender();
+				return;
+			}
+
+			// 4. 输入框为空且空闲态下的双击退出机制（对齐 dsh-TUI）
 			if (this.exitPending) {
 				this.exitPending = false;
 				if (this.exitTimer) {

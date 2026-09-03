@@ -21,7 +21,7 @@ export interface InteractiveTarget {
 	colStart: number;
 	colEnd: number;
 	type?: string;
-	onClick?: () => void;
+	onClick?: (col?: number) => void;
 }
 
 export interface MouseEventResult {
@@ -30,6 +30,42 @@ export interface MouseEventResult {
 	needRender?: boolean;
 	hoverTargetId?: string | null;
 	clickedTargetId?: string;
+}
+
+/**
+ * 提取单行终端文本的真实内容列宽：
+ * 1. 兼容旧版输入框边框行（│ ... │），保留完整宽度；新版 dsh-tui
+ *    输入行没有左右竖边，由 input 区域的专用几何处理；
+ * 2. 若整行宽度达到终端屏幕列宽（>= 30 列），剥离最右侧 2 列导航轨（TimelineRail）；
+ * 3. 对去除导航轨后的文本执行 trimEnd()，剔除右侧全部留白空格；
+ * 4. 返回实际文本内容的精确可视列宽，防止划词高亮越界渲染整屏实心蓝块。
+ */
+export function getLineContentWidth(cleanLine: string): number {
+	const fullLen = visibleWidth(cleanLine);
+	const trimmed = cleanLine.trimEnd();
+	if (trimmed.startsWith("│") && trimmed.endsWith("│")) {
+		return fullLen;
+	}
+	if (fullLen < 30) {
+		return visibleWidth(trimmed);
+	}
+	let col = 0;
+	let contentWithoutRail = "";
+	for (const char of cleanLine) {
+		const w = charWidth(char);
+		if (col + w > fullLen - 2) break;
+		contentWithoutRail += char;
+		col += w;
+	}
+	return visibleWidth(contentWithoutRail.trimEnd());
+}
+
+export interface SelectableRegion {
+	id: "transcript" | "input";
+	startRow: number;
+	endRow: number;
+	colStart: number;
+	colEnd: number;
 }
 
 export class MouseSelectionTracker {
@@ -42,8 +78,39 @@ export class MouseSelectionTracker {
 	private targets: InteractiveTarget[] = [];
 	private currentHoverTargetId: string | null = null;
 
+	private regions: SelectableRegion[] = [
+		{
+			id: "transcript",
+			startRow: 0,
+			endRow: Infinity,
+			colStart: 0,
+			colEnd: Infinity,
+		},
+	];
+	private activeRegion: SelectableRegion | null = null;
+
+	setSelectableRegions(regions: readonly SelectableRegion[]): void {
+		this.regions = [...regions];
+	}
+
+	setSelectableRowRange(min: number, max: number): void {
+		this.regions = [
+			{
+				id: "transcript",
+				startRow: Math.max(0, min),
+				endRow: Math.max(0, max),
+				colStart: 0,
+				colEnd: Infinity,
+			},
+		];
+	}
+
 	setTargets(targets: readonly InteractiveTarget[]): void {
 		this.targets = [...targets];
+	}
+
+	getTarget(id: string): InteractiveTarget | undefined {
+		return this.targets.find((t) => t.id === id);
 	}
 
 	clearTargets(): void {
@@ -64,6 +131,7 @@ export class MouseSelectionTracker {
 		this.focus = null;
 		this.isDragging = false;
 		this.mouseDownPos = null;
+		this.activeRegion = null;
 	}
 
 	/**
@@ -92,17 +160,37 @@ export class MouseSelectionTracker {
 
 		// 2. 左键按下（btn 0, action 'M'）
 		if (btn === 0 && action === "M") {
-			this.anchor = { col, row };
-			this.focus = { col, row };
 			this.mouseDownPos = { col, row };
 			this.mouseDownTime = Date.now();
-			this.isDragging = true;
-			return { handled: true, needRender: true };
+			// 查找落点落在哪个合法划选区域内（转录区或输入框内容行）
+			const matched = this.regions.find(
+				(r) => row >= r.startRow && row <= r.endRow && col >= r.colStart && col <= r.colEnd,
+			);
+			if (matched) {
+				this.activeRegion = matched;
+				this.anchor = { col, row };
+				this.focus = { col, row };
+				this.isDragging = true;
+				return { handled: true, needRender: true };
+			}
+			this.activeRegion = null;
+			this.anchor = null;
+			this.focus = null;
+			this.isDragging = false;
+			return { handled: true };
 		}
 
 		// 3. 左键拖拽（btn 32, action 'M' 且已处于拖拽态）
-		if ((btn === 32 || btn === 0) && action === "M" && this.isDragging) {
-			this.focus = { col, row };
+		if ((btn === 32 || btn === 0) && action === "M" && this.isDragging && this.activeRegion) {
+			const clampedRow = Math.max(
+				this.activeRegion.startRow,
+				Math.min(row, this.activeRegion.endRow),
+			);
+			const clampedCol = Math.max(
+				this.activeRegion.colStart,
+				Math.min(col, this.activeRegion.colEnd),
+			);
+			this.focus = { col: clampedCol, row: clampedRow };
 			return { handled: true, needRender: true };
 		}
 
@@ -139,7 +227,7 @@ export class MouseSelectionTracker {
 				);
 				this.clear();
 				if (target) {
-					target.onClick?.();
+					target.onClick?.(col);
 					return { handled: true, clickedTargetId: target.id, needRender: true };
 				}
 				return { handled: true, needRender: true };
@@ -160,39 +248,56 @@ export class MouseSelectionTracker {
 	}
 
 	/**
-	 * 从全屏帧中提取选中文字，严格执行 noSelect 隔离：
-	 * 1. 剥离 ●、❯、✦ 图标；
-	 * 2. 剥离输入框外边框 │、╭、╰；
-	 * 3. 剥离右侧导航轨。
+	 * 从屏幕帧缓冲中提取选区内的纯文本：
+	 * 1. 严格基于当前活动区域 activeRegion（转录区或输入框）隔离提取；
+	 * 2. 剥离 ●、❯、✦ 图标；
+ * 3. 兼容剥离旧版输入框外边框 │；
+	 * 4. 彻底排除非可选区域的任何残留内容。
 	 */
 	extractSelectedText(rows: readonly string[]): string {
-		if (!this.anchor || !this.focus) return "";
+		if (!this.anchor || !this.focus || !this.activeRegion) return "";
 
 		const [start, end] = this.getNormalizedSpan();
 		const extractedLines: string[] = [];
 
 		for (let r = start.row; r <= end.row && r < rows.length; r++) {
-			if (r < 0) continue;
+			if (r < this.activeRegion.startRow || r > this.activeRegion.endRow || r < 0) continue;
 			const rawLine = rows[r] ?? "";
 			const cleanLine = stripAnsi(rawLine);
-			const lineLen = visibleWidth(cleanLine);
+			let contentLen = getLineContentWidth(cleanLine);
 
-			let rowStartCol = r === start.row ? start.col : 0;
-			let rowEndCol = r === end.row ? end.col : lineLen;
-
-			// 若行尾包含时间线导航轨（最右 2 列），排除导航轨
-			if (lineLen >= 30) {
-				rowEndCol = Math.min(rowEndCol, lineLen - 2);
+			if (this.activeRegion.id === "input") {
+				const trimmed = cleanLine.trimEnd();
+				const fullW = visibleWidth(trimmed);
+				// 输入框行排除末尾的边框 │
+				contentLen = trimmed.endsWith("│") ? Math.max(this.activeRegion.colStart, fullW - 1) : fullW;
 			}
 
-			// 若行包含输入框边框 │，排除第 0 列与最右列
-			if (cleanLine.startsWith("│") && cleanLine.endsWith("│")) {
+			if (contentLen === 0) {
+				if (r > start.row && r < end.row) {
+					extractedLines.push("");
+				}
+				continue;
+			}
+
+			let rowStartCol = r === start.row ? Math.max(this.activeRegion.colStart, Math.min(start.col, contentLen)) : this.activeRegion.colStart;
+			let rowEndCol = r === end.row ? Math.min(end.col, contentLen) : contentLen;
+
+			const trimmedContent = cleanLine.trimEnd();
+			// 若行包含输入框边框 │，排除边框字符
+			if (trimmedContent.startsWith("│")) {
 				rowStartCol = Math.max(rowStartCol, 1);
-				rowEndCol = Math.min(rowEndCol, lineLen - 1);
+				if (trimmedContent.endsWith("│")) {
+					rowEndCol = Math.min(rowEndCol, contentLen - 1);
+				}
 			}
 
 			const minCol = Math.max(0, Math.min(rowStartCol, rowEndCol));
 			const maxCol = Math.max(0, Math.max(rowStartCol, rowEndCol));
+
+			if (minCol >= maxCol) {
+				continue;
+			}
 
 			let curWidth = 0;
 			let lineSlice = "";
@@ -205,8 +310,14 @@ export class MouseSelectionTracker {
 				if (curWidth >= maxCol) break;
 			}
 
-			// noSelect 智能清洗：剥离行首的标记符号
+			// noSelect 智能清洗：剥离输入框边框 │ 与行首标记
 			let trimmed = lineSlice.trimEnd();
+			if (trimmed.startsWith("│")) {
+				trimmed = trimmed.replace(/^│+\s*/, "");
+			}
+			if (trimmed.endsWith("│")) {
+				trimmed = trimmed.replace(/\s*│+$/, "");
+			}
 			if (trimmed.startsWith("● ")) {
 				trimmed = trimmed.slice(2);
 			} else if (trimmed.startsWith("❯ ")) {
@@ -224,10 +335,10 @@ export class MouseSelectionTracker {
 	}
 
 	/**
-	 * 将选区高亮渲染叠加入全屏帧（使用 \x1b[7m 反色样式）
+	 * 将选区高亮渲染叠加入全屏帧（使用 dsh-TUI 雾蓝选区背景色 #3B4A66）
 	 */
 	applyHighlight(rows: readonly string[]): string[] {
-		if (!this.hasSelection() || !this.anchor || !this.focus) {
+		if (!this.hasSelection() || !this.anchor || !this.focus || !this.activeRegion) {
 			return [...rows];
 		}
 
@@ -236,14 +347,40 @@ export class MouseSelectionTracker {
 
 		for (let r = 0; r < rows.length; r++) {
 			const line = rows[r]!;
-			if (r < start.row || r > end.row) {
+			if (
+				r < start.row ||
+				r > end.row ||
+				r < this.activeRegion.startRow ||
+				r > this.activeRegion.endRow
+			) {
 				result.push(line);
 				continue;
 			}
 
-			const rowStartCol = r === start.row ? start.col : 0;
 			const clean = stripAnsi(line);
-			const rowEndCol = r === end.row ? end.col : visibleWidth(clean);
+			let contentLen = getLineContentWidth(clean);
+
+			if (this.activeRegion.id === "input") {
+				const trimmed = clean.trimEnd();
+				const fullW = visibleWidth(trimmed);
+				contentLen = trimmed.endsWith("│") ? Math.max(this.activeRegion.colStart, fullW - 1) : fullW;
+			}
+
+			if (contentLen === 0) {
+				result.push(line);
+				continue;
+			}
+
+			let rowStartCol = r === start.row ? Math.max(this.activeRegion.colStart, Math.min(start.col, contentLen)) : this.activeRegion.colStart;
+			let rowEndCol = r === end.row ? Math.min(end.col, contentLen) : contentLen;
+
+			const trimmedContent = clean.trimEnd();
+			if (trimmedContent.startsWith("│")) {
+				rowStartCol = Math.max(rowStartCol, 1);
+				if (trimmedContent.endsWith("│")) {
+					rowEndCol = Math.min(rowEndCol, contentLen - 1);
+				}
+			}
 
 			const minCol = Math.max(0, Math.min(rowStartCol, rowEndCol));
 			const maxCol = Math.max(0, Math.max(rowStartCol, rowEndCol));
@@ -269,6 +406,13 @@ export class MouseSelectionTracker {
 			const ansi = extractAnsiCode(line, i);
 			if (ansi) {
 				out += ansi.code;
+				// 如果在选区内遇到了样式重置或背景变动，立即重新附加雾蓝背景，杜绝选区断层或转为黑底
+				if (
+					inHighlight &&
+					(ansi.code === "\x1b[0m" || ansi.code.includes("49m") || ansi.code.includes("48;"))
+				) {
+					out += "\x1b[48;2;59;74;102m";
+				}
 				i += ansi.length;
 				continue;
 			}
@@ -278,12 +422,12 @@ export class MouseSelectionTracker {
 
 			if (curWidth >= startCol && curWidth < endCol) {
 				if (!inHighlight) {
-					out += "\x1b[7m"; // 启用反色高亮
+					out += "\x1b[48;2;59;74;102m"; // dsh-TUI selectionBg: #3B4A66 雾蓝选区底色
 					inHighlight = true;
 				}
 			} else {
 				if (inHighlight) {
-					out += "\x1b[27m"; // 退出反色高亮
+					out += "\x1b[49m"; // 退出背景色
 					inHighlight = false;
 				}
 			}
@@ -294,7 +438,7 @@ export class MouseSelectionTracker {
 		}
 
 		if (inHighlight) {
-			out += "\x1b[27m";
+			out += "\x1b[49m";
 		}
 		return out;
 	}

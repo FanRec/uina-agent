@@ -17,9 +17,15 @@ import { exec } from "node:child_process";
 import { CURSOR_MARKER, type Component, type Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
 import { C, charWidth, visibleWidth, truncateToWidth } from "../../core/utils.js";
+import { formatTokensCompact } from "../widgets/context-bar.js";
 
 const PASTE_MARKER_REGEX = /\[已粘贴 #(\d+) (\+\d+行|\d+字)\]/g;
 const MAX_VISIBLE_LINES = 5;
+const MIN_RIGHT_BORDER_RUN = 4;
+// dsh-tui/src/cc/figures.ts: POINTER = '\u276f' (❯).
+const DSH_PROMPT_POINTER = "❯";
+// dsh-tui/src/trajectory/effortIgnition.ts: HUES_DARK[0] (130,185,255).
+const DSH_PROMPT_POINTER_COLOR = "\x1b[38;2;130;185;255m";
 
 export interface MarkerSpan {
 	id: number;
@@ -89,6 +95,12 @@ export class InputLine implements Component, Focusable {
 
 	// 外部状态注入
 	private topStatusHeader = "";
+	private modelName = "deepseek-chat";
+	private reasoningEffort = "medium";
+	private usedTokens = 0;
+	private contextWindow = 64 * 1024;
+	private cacheRate?: string;
+	private progressHotspotWidth = 35; // 进度条热区列宽，供鼠标 Hover 检测
 
 	// 事件回调
 	public onSubmit?: (text: string) => void;
@@ -105,9 +117,27 @@ export class InputLine implements Component, Focusable {
 		this.topStatusHeader = header;
 	}
 
-	setContextStats(_modelName: string, _usedTokens: number, _contextWindow: number, _actual = false): void {}
+	setContextStats(modelName: string, usedTokens: number, contextWindow: number, _actual = false): void {
+		if (modelName) this.modelName = modelName;
+		this.usedTokens = usedTokens;
+		if (contextWindow > 0) this.contextWindow = contextWindow;
+	}
 
-	setReasoningEffort(_effort: string): void {}
+	setReasoningEffort(effort: string): void {
+		if (effort) this.reasoningEffort = effort;
+	}
+
+	setCacheRate(rate?: string): void {
+		this.cacheRate = rate;
+	}
+
+	getProgressHotspotWidth(): number {
+		return this.progressHotspotWidth;
+	}
+
+	hasText(): boolean {
+		return this.text.length > 0;
+	}
 
 	/** 检查光标当前是否紧邻某个粘贴标记 */
 	hasChipAtCursor(): boolean {
@@ -541,16 +571,34 @@ export class InputLine implements Component, Focusable {
 		return this.getText();
 	}
 
+	setCursorByClick(clickCol: number): void {
+		let curW = 0;
+		let idx = 0;
+		for (let i = 0; i < this.text.length; i++) {
+			const ch = this.text[i]!;
+			const w = charWidth(ch);
+			if (curW + w / 2 >= clickCol) break;
+			curW += w;
+			idx++;
+		}
+		this.cursorIndex = Math.max(0, Math.min(idx, this.text.length));
+	}
+
 	invalidate(): void {}
 
 	/**
 	 * 渲染为拥有精细几何列宽、视口滚动与舒适高度的现代圆角容器盒
 	 */
 	render(width: number): string[] {
-		const boxWidth = width;
-		const borderCol = C.gray;
-		const innerWidth = Math.max(10, boxWidth - 2); // 两侧紧贴边框 "│" 与 "│"
-		const contentColLimit = innerWidth - 2; // 提示符 "› " 占 2 列宽
+		// 不把闭合角放在终端最后一列：部分终端在写入最后一列后
+		// 会立即自动换行，导致右侧 `╮`/`╯` 看起来像没有闭合。
+		const boxWidth = Math.max(2, width - 1);
+		const borderCol = C.promptBorder;
+		// dsh-tui 的输入框只有顶/底两条圆角横线；中间内容行横跨
+		// 整个盒宽，不绘制贯穿内容区的左右 `│`。
+		const innerWidth = Math.max(1, boxWidth);
+		const promptPrefixWidth = 2; // dsh-tui 的 `❯ ` 提示符；续行使用同宽空格
+		const contentColLimit = Math.max(1, innerWidth - promptPrefixWidth);
 
 		// ─────────────────────────────────────────────────────────────
 		// 1. 中间多行自然排版引擎（按 \n 切分逻辑行，严格计算每个视觉行）
@@ -691,8 +739,9 @@ export class InputLine implements Component, Focusable {
 
 		const visibleRows = visualRows.slice(this.scrollOffset, this.scrollOffset + MAX_VISIBLE_LINES);
 
-		// 默认保持至少 2 行舒适高度
-		while (visibleRows.length < 2) {
+		// 空输入保持 dsh-tui 的单行内容高度，让 `❯` 正好落在上下
+		// 圆角边框的垂直中位；真实多行输入仍由 MAX_VISIBLE_LINES 限制。
+		if (visibleRows.length === 0) {
 			visibleRows.push({ content: "", hasCursor: false });
 		}
 
@@ -701,7 +750,7 @@ export class InputLine implements Component, Focusable {
 		// ─────────────────────────────────────────────────────────────
 		let topLabel = this.topStatusHeader;
 		if (this.scrollOffset > 0) {
-			topLabel = `${C.yellow}↑ +${this.scrollOffset}行${C.reset} ${topLabel}`;
+			topLabel = `${C.warning}↑ +${this.scrollOffset}行${C.reset} ${topLabel}`;
 		}
 
 		let topLine = "";
@@ -710,23 +759,23 @@ export class InputLine implements Component, Focusable {
 			const safeHeader = truncateToWidth(topLabel, maxHeaderW);
 			const baseW = 3 + visibleWidth(safeHeader) + 1 + 1;
 			const rightLen = Math.max(1, boxWidth - baseW);
-			topLine = `${borderCol}╭─ ${C.reset}${safeHeader} ${borderCol}${"─".repeat(rightLen)}╮${C.reset}`;
+			topLine = `${borderCol}╭─ ${C.text}${safeHeader} ${borderCol}${"─".repeat(rightLen)}╮${C.reset}`;
 		} else {
 			const fillLen = Math.max(1, boxWidth - 2);
 			topLine = `${borderCol}╭${"─".repeat(fillLen)}╮${C.reset}`;
 		}
 
 		// ─────────────────────────────────────────────────────────────
-		// 4. 中间可见行组装（紧贴左边框 │ 紧跟 › 提示符，对标图二）
+		// 4. 中间可见行组装：保留图一的 `› ` 输入提示，同时让每个续行
+		// 与它严格对齐。这里不画左右连续竖边，和 dsh-tui 图二/图三一致。
 		// ─────────────────────────────────────────────────────────────
 		const middleLines: string[] = [];
 		for (let r = 0; r < visibleRows.length; r++) {
 			const vRow = visibleRows[r]!;
-			const isFirstGlobalRow = this.scrollOffset === 0 && r === 0;
-			const glyphColor = "\x1b[38;2;120;170;255m\x1b[1m"; // 电光蓝 › (对标图二)
-			const prefix = isFirstGlobalRow ? `${glyphColor}› ${C.reset}` : "  ";
-			const prefixW = 2;
-
+			const isFirstVisibleRow = this.scrollOffset === 0 && r === 0;
+			const prefix = isFirstVisibleRow
+				? `${C.bold}${DSH_PROMPT_POINTER_COLOR}${DSH_PROMPT_POINTER} ${C.reset}`
+				: "  ";
 			let contentStr = vRow.content;
 			if (this.isAllSelected) {
 				contentStr = `\x1b[7m${contentStr}\x1b[27m`;
@@ -737,17 +786,119 @@ export class InputLine implements Component, Focusable {
 				contentStr = truncateToWidth(contentStr, contentColLimit, "");
 			}
 			const finalW = visibleWidth(contentStr);
-			const padLen = Math.max(0, innerWidth - prefixW - finalW);
+			const padLen = Math.max(0, innerWidth - promptPrefixWidth - finalW);
 
-			const lineStr = `${borderCol}│${C.reset}${prefix}${contentStr}${" ".repeat(padLen)}${borderCol}│${C.reset}`;
+			const lineStr = `${prefix}${contentStr}${" ".repeat(padLen)}`;
 			middleLines.push(lineStr);
 		}
 
 		// ─────────────────────────────────────────────────────────────
-		// 5. 底边框（对标图二纯净闭合圆角）：╰────────────────────────╯
+		// 5. 底边框（图一的信息密度 + dsh-TUI 配色）：
+		//    ╰─ [████░░░░] 0/65.5k (0.0%) ── 缓存 99.1% ── deepseek-chat · 思考:中 ─╯
 		// ─────────────────────────────────────────────────────────────
-		const fillLen = Math.max(1, boxWidth - 2);
-		const bottomLine = `${borderCol}╰${"─".repeat(fillLen)}╯${C.reset}`;
+		const pct = Math.min(100, Math.max(0, (this.usedTokens / this.contextWindow) * 100));
+		const pctStr = `${pct.toFixed(1)}%`;
+		const usedText = formatTokensCompact(this.usedTokens);
+		const totalText = formatTokensCompact(this.contextWindow);
+		const fullReadout = `${usedText}/${totalText} (${pctStr})`;
+		const compactReadout = `${usedText}/${totalText}`;
+
+		const effortLabels: Record<string, string> = {
+			off: `${C.inactive}思考:关${C.reset}`,
+			none: `${C.inactive}思考:关${C.reset}`,
+			minimal: `${C.inactive}思考:低${C.reset}`,
+			low: `${C.inactive}思考:低${C.reset}`,
+			medium: `${C.claude}思考:中${C.reset}`,
+			high: `${C.suggestion}思考:高${C.reset}`,
+			xhigh: `${C.suggestion}思考:极高${C.reset}`,
+			max: `${C.suggestion}思考:极高${C.reset}`,
+		};
+		const effortBadge = effortLabels[this.reasoningEffort] ?? `${C.cyan}思考:${this.reasoningEffort}${C.reset}`;
+		const identityBadge = `${C.inactive}${this.modelName}${C.reset} ${C.subtle}·${C.reset} ${effortBadge}`;
+		const remainingDown = maxScroll - this.scrollOffset;
+		const identityWithScroll = remainingDown > 0
+			? `${C.warning}↓ +${remainingDown}行${C.reset} ${identityBadge}`
+			: identityBadge;
+
+		// 缓存命中率徽章
+		const cacheText = this.cacheRate ?? "-";
+		const cacheBadge = `${C.inactive}缓存 ${C.suggestion}${cacheText}${C.reset}`;
+
+		const barColor = pct >= 90 ? C.error : pct >= 80 ? C.warning : C.claude;
+		const composeBottomLine = (
+			barWidth: number,
+			readout: string,
+			includeCache: boolean,
+			identity: string,
+		): { line: string; progressHotspotWidth: number } | undefined => {
+			const filledCols = Math.min(barWidth, Math.max(0, Math.round((pct / 100) * barWidth)));
+			const emptyCols = barWidth - filledCols;
+			const filledBar = `${barColor}${"█".repeat(filledCols)}${C.reset}`;
+			const emptyBar = `${C.subtle}${"░".repeat(emptyCols)}${C.reset}`;
+			const left = `${borderCol}╰─ [${filledBar}${emptyBar}${borderCol}] ${C.inactive}${readout}${C.reset}`;
+			const separator = `${borderCol}─${C.reset}`;
+			// Cache stays in the left metric cluster. The model + effort cluster
+			// is laid out from the right edge, so the flexible border run sits
+			// between the two clusters rather than after the model name.
+			let leftBody = left;
+			if (includeCache) {
+				leftBody += ` ${separator} ${cacheBadge}`;
+			}
+			const suffix = `${borderCol}╯`;
+			const rightTail = `${borderCol}${"─".repeat(MIN_RIGHT_BORDER_RUN)}${suffix}`;
+			if (identity) {
+				// One flexible dsh-style rule separates the left metrics from the
+				// right-aligned model/effort cluster. Keep the spaces outside the
+				// rule so it reads as one continuous line, not `─ ─`.
+				const identityPrefix = (fillerLen: number): string =>
+					` ${borderCol}${"─".repeat(fillerLen)}${C.reset} `;
+				const fillerLen =
+					boxWidth -
+					visibleWidth(leftBody) -
+					2 -
+					visibleWidth(identity) -
+					visibleWidth(rightTail);
+				if (fillerLen < MIN_RIGHT_BORDER_RUN) return undefined;
+				return {
+					line: `${leftBody}${identityPrefix(fillerLen)}${identity}${rightTail}`,
+					progressHotspotWidth: visibleWidth(left),
+				};
+			}
+
+			const fillerLen = boxWidth - visibleWidth(leftBody) - visibleWidth(suffix);
+			if (fillerLen < 1) return undefined;
+			return {
+				line: `${leftBody}${borderCol}${"─".repeat(fillerLen)}${suffix}`,
+				progressHotspotWidth: visibleWidth(left),
+			};
+		};
+
+		// 逐级退化：优先保留上下文读数与缓存命中率，再在窄屏上收起
+		// 模型/思考徽章，最后把读数压缩为百分比。每一个候选都重新
+		// 计算进度条宽度，因此不会出现底边超出输入框的情况。
+		const candidates: Array<{ readout: string; cache: boolean; identity: string }> = [
+			{ readout: fullReadout, cache: true, identity: identityWithScroll },
+			{ readout: fullReadout, cache: true, identity: identityBadge },
+			{ readout: fullReadout, cache: true, identity: "" },
+			{ readout: compactReadout, cache: true, identity: identityBadge },
+			{ readout: compactReadout, cache: true, identity: "" },
+			{ readout: pctStr, cache: true, identity: identityBadge },
+			{ readout: pctStr, cache: true, identity: "" },
+			{ readout: pctStr, cache: false, identity: "" },
+			{ readout: "", cache: false, identity: "" },
+		];
+
+		let bottomResult: { line: string; progressHotspotWidth: number } | undefined;
+		for (const candidate of candidates) {
+			for (let barWidth = Math.min(24, Math.max(4, boxWidth)); barWidth >= 1; barWidth--) {
+				bottomResult = composeBottomLine(barWidth, candidate.readout, candidate.cache, candidate.identity);
+				if (bottomResult) break;
+			}
+			if (bottomResult) break;
+		}
+
+		const bottomLine = bottomResult?.line ?? `${borderCol}╰${borderCol}${"─".repeat(Math.max(0, boxWidth - 2))}${borderCol}╯`;
+		this.progressHotspotWidth = bottomResult?.progressHotspotWidth ?? Math.max(1, boxWidth - 1);
 
 		return [
 			topLine,

@@ -376,13 +376,19 @@ describe("UI Components & Visual Rendering", () => {
 	it("InputLine 经典圆角盒与状态行渲染", () => {
 		const box = new InputLine();
 		box.setStatusHeader("⠋ 思考中");
+		box.setContextStats("deepseek-chat", 1000, 65536);
+		box.setCacheRate("85.0%");
 		const lines = box.render(80);
-		expect(lines.length).toBe(4);
+		expect(lines.length).toBe(3);
 		expect(lines[0]).toContain("╭");
 		expect(lines[0]).toContain("思考中");
-		expect(lines[1]).toContain("│");
-		expect(lines[1]).toContain("›");
-		expect(lines[3]).toContain("╰");
+		expect(lines[1]).not.toContain("│");
+		expect(lines[1]).toContain("❯");
+		expect(lines[2]).toContain("╰");
+		expect(stripAnsi(lines[0]!)).toMatch(/╮$/);
+		expect(stripAnsi(lines[2]!)).toMatch(/╯$/);
+		expect(lines[2]).toContain("deepseek-chat");
+		expect(stripAnsi(lines[2]!)).toContain("缓存 85.0%");
 	});
 
 	it("ActivityLine 流光动画与状态文本", () => {
@@ -392,17 +398,49 @@ describe("UI Components & Visual Rendering", () => {
 		expect(stripAnsi(str)).toContain("流式生成中");
 	});
 
-	it("ContextBar 上下文利用率柱状图与 Hover 展开", () => {
+	it("当前流式思考立即可见，并注册鼠标展开目标", () => {
+		const transcript = new TranscriptContainer();
+		transcript.startTurn(1, "正在处理的问题");
+		transcript.appendThinking("这是尚未进入工具阶段的实时思考内容");
+
+		expect(transcript.render(60).join("\n")).toContain("实时思考内容");
+		expect(transcript.getThinkingLineIndices(60).map(({ turnN, lineIndex }) => ({ turnN, lineIndex })))
+			.toEqual([{ turnN: 1, lineIndex: 3 }]);
+	});
+
+	it("鼠标折叠当前 thinking 时按轮次对象定位，不会误切同编号的历史轮次", () => {
+		const transcript = new TranscriptContainer();
+		transcript.loadHistory([
+			{ role: "user", content: "旧问题" },
+			{ role: "assistant", content: "", thinking: "旧思考" },
+		]);
+		transcript.startTurn(1, "当前问题"); // 模拟重载历史后新 Subject 从 1 重新计数
+		transcript.appendThinking("当前思考");
+
+		const locations = transcript.getThinkingLineIndices(60);
+		const current = locations.find((location) => location.turn === transcript.getCurrentTurn());
+		expect(current).toBeDefined();
+		transcript.toggleThinking(current!.turn, 60);
+
+		expect(transcript.getCurrentTurn()?.thinkingCollapsed).toBe(false);
+		expect(transcript.getHistory()[0]?.thinkingCollapsed).not.toBe(false);
+	});
+
+	it("ContextBar 上下文隐藏信息行与 Hover 展开", () => {
 		const bar = new ContextBarComponent();
-		bar.update({ usedTokens: 32000, contextWindow: 64000, modelName: "deepseek-v4-flash" });
-		const lines = bar.render(80);
-		expect(lines[0]).toContain("ctx");
-		expect(lines[0]).toContain("50.0%");
-		expect(lines[0]).toContain("deepseek-v4-flash");
+		bar.update({ usedTokens: 32000, contextWindow: 64000, cwd: "E:\\Uina\\Uina" });
+		const normalLines = bar.render(80);
+		// 未 hover 时渲染 1 行空白占位行（防抖）
+		expect(normalLines.length).toBe(1);
+		expect(normalLines[0]).toBe("");
+
+		// hover 时在该行内展开隐藏信息（目录 + 50.0% + 详细占用）
 		bar.setHovered(true);
 		const expandedLines = bar.render(80);
-		expect(expandedLines.length).toBe(2);
-		expect(expandedLines[1]).toContain("free");
+		expect(expandedLines.length).toBe(1);
+		expect(expandedLines[0]).toContain("50.0%");
+		expect(expandedLines[0]).toContain("剩余");
+		expect(expandedLines[0]).toContain("E:\\Uina\\Uina");
 	});
 
 	it("Git Unified Diff 逐行差异计算与卡片渲染", async () => {
@@ -867,23 +905,22 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 		expect(rendered.some((l: string) => l.includes("●") && l.includes("等于 2。"))).toBe(true);
 	});
 
-	it("用户输入展示为金色 ❯ 标记且助手段落折行采用 2 格缩进对齐首行正文（无多余前导空格）", () => {
+	it("用户输入展示为金色 ❯ 标记且助手段落折行采用零边距左对齐（无多余前导空格）", () => {
 		const transcript = new TranscriptContainer();
 		transcript.startTurn(1, "你好世界");
 		// 输入超过行宽的长文本测试自动折行
-		transcript.appendToken("这是一段非常长的助手回答内容用于测试悬挂缩进功能确保换行后不会顶格到最左边而是严格对齐首行正文。");
+		transcript.appendToken("这是一段非常长的助手回答内容用于测试换行功能确保换行后严格左对齐杜绝多余空格污染复制。");
 		transcript.finishTurn();
 
-		const rendered = transcript.render(40);
+		const rendered = transcript.render(30);
 		// 校验用户前缀
 		expect(rendered.some((l: string) => l.includes("❯") && l.includes("你好世界"))).toBe(true);
 
-		// 校验助手首行带 ● 且后续折行行以 2 格空格对齐正文
-		const assistantLines = rendered.filter((l: string) => l.includes("这是一段") || l.includes("悬挂缩进"));
+		// 校验助手首行带 ● 且后续折行严格零边距左对齐（不包含多余前导空格）
+		const assistantLines = rendered.filter((l: string) => l.includes("这是一段") || l.includes("用于测试换行"));
 		expect(assistantLines.length).toBeGreaterThan(1);
 		expect(assistantLines[0]).toContain("●");
-		expect(assistantLines[1]!.startsWith("  ")).toBe(true);
-		expect(assistantLines[1]!.startsWith("    ")).toBe(false);
+		expect(assistantLines[1]!.startsWith("  ")).toBe(false);
 	});
 });
 
@@ -957,6 +994,112 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		expect(copied2).toContain("输入框文字");
 	});
 
+	it("划选包含右侧导航轨的行时精准截断至文本终点，绝不高亮右侧大片空白或导航轨刻度（图一）", async () => {
+		const { MouseSelectionTracker, getLineContentWidth } = await import("../src/ui/core/mouse-selection.js");
+		const tracker = new MouseSelectionTracker();
+
+		// 模拟终端第 0 行：实际正文占 20 列，中间补 60 个空格，最右 2 列为导航轨刻度 ─
+		const text = "这是一段很短的正文回答"; // 22 可见列宽
+		const pad = " ".repeat(56);
+		const rail = " ─";
+		const fullRow = `${text}${pad}${rail}`; // 总宽 80 列
+
+		expect(getLineContentWidth(fullRow)).toBe(22);
+
+		const screenRows = [fullRow, "第二行正常内容" + " ".repeat(64) + " ─"];
+		// 划选整行范围：从第 0 列到第 79 列
+		tracker.handleInput("\x1b[<0;1;1M", screenRows);
+		tracker.handleInput("\x1b[<32;80;1M", screenRows);
+
+		const highlighted = tracker.applyHighlight(screenRows);
+		// 校验：高亮背景色仅包裹正文，高亮标签在正文末尾退出，右侧空格与导航轨 ─ 均无反色
+		expect(highlighted[0]).toContain("\x1b[48;2;59;74;102m");
+		expect(highlighted[0]).toContain("\x1b[49m");
+		// 导航轨刻度 ─ 与填充空格必须未被选区背景包含
+		expect(highlighted[0]!.endsWith(" ─")).toBe(true);
+		expect(highlighted[0]!.includes("这是一段很短的正文回答\x1b[49m")).toBe(true);
+	});
+
+	it("划选行严格被 minSelectableRow 与 maxSelectableRow 限制，绝不向下污染输入框底边框与状态栏（图二）", async () => {
+		const { MouseSelectionTracker } = await import("../src/ui/core/mouse-selection.js");
+		const tracker = new MouseSelectionTracker();
+
+		const screenRows = [
+			"第一行转录流正文",
+			"第二行转录流正文",
+			"╭── 输入框顶框 ──╮",
+			"│ sssssssssss... │",
+			"╰── 输入框底框 ──╯",
+			"deepseek-v4-flash · medium · 缓存 -",
+		];
+
+		// 限制选区仅在第 0-1 行（即转录流可视区域）有效
+		tracker.setSelectableRowRange(0, 1);
+
+		// 1. 如果在输入框（第 3 行，1-indexed: 4）试图划选拖拽
+		tracker.handleInput("\x1b[<0;5;4M", screenRows);
+		// 不应启动划选
+		expect(tracker.hasSelection()).toBe(false);
+
+		// 拖拽到状态栏（第 5 行，1-indexed: 6）
+		tracker.handleInput("\x1b[<32;20;6M", screenRows);
+		expect(tracker.hasSelection()).toBe(false);
+
+		// 2. 如果在第 0 行开始划选并一路拖拽到状态栏（第 5 行）
+		tracker.handleInput("\x1b[<0;1;1M", screenRows);
+		tracker.handleInput("\x1b[<32;20;6M", screenRows);
+		expect(tracker.hasSelection()).toBe(true);
+
+		const highlighted = tracker.applyHighlight(screenRows);
+		// 第 0 行与第 1 行正常高亮
+		expect(highlighted[0]).toContain("\x1b[48;2;59;74;102m");
+		expect(highlighted[1]).toContain("\x1b[48;2;59;74;102m");
+		// 第 2、3、4、5 行（输入框边框与状态栏）绝对不受任何高亮污染！
+		expect(highlighted[2]).not.toContain("\x1b[48;2;59;74;102m");
+		expect(highlighted[3]).not.toContain("\x1b[48;2;59;74;102m");
+		expect(highlighted[4]).not.toContain("\x1b[48;2;59;74;102m");
+		expect(highlighted[5]).not.toContain("\x1b[48;2;59;74;102m");
+	});
+
+	it("支持在聊天栏（输入框）中自由拖拽划选并自动复制文本，且选区严密隔离外边框与底部状态条", async () => {
+		const { MouseSelectionTracker } = await import("../src/ui/core/mouse-selection.js");
+		const tracker = new MouseSelectionTracker();
+
+		const screenRows = [
+			"第一行转录流正文",
+			"╭── 输入框顶框 ──╮",
+			"│ sssssssssssssssss │",
+			"╰── 输入框底框 ──╯",
+			"deepseek-v4-flash · medium · 缓存 -",
+		];
+
+		// 注册独立区域：转录流（第 0 行）与输入框内容区（第 2 行）
+		tracker.setSelectableRegions([
+			{ id: "transcript", startRow: 0, endRow: 0, colStart: 0, colEnd: 50 },
+			{ id: "input", startRow: 2, endRow: 2, colStart: 2, colEnd: 18 },
+		]);
+
+		let copiedText = "";
+		// 在输入框第 2 行（1-indexed: 3），从 col 2（1-indexed: 3）拖拽划选到 col 10（1-indexed: 11）
+		tracker.handleInput("\x1b[<0;3;3M", screenRows, (t) => { copiedText = t; });
+		tracker.handleInput("\x1b[<32;11;3M", screenRows);
+
+		expect(tracker.hasSelection()).toBe(true);
+
+		const highlighted = tracker.applyHighlight(screenRows);
+		// 第 2 行输入框内容被高亮包裹
+		expect(highlighted[2]).toContain("\x1b[48;2;59;74;102m");
+		// 边框行与状态栏绝不受污染
+		expect(highlighted[1]).not.toContain("\x1b[48;2;59;74;102m");
+		expect(highlighted[3]).not.toContain("\x1b[48;2;59;74;102m");
+		expect(highlighted[4]).not.toContain("\x1b[48;2;59;74;102m");
+
+		// 释放鼠标，触发复制
+		tracker.handleInput("\x1b[<0;11;3m", screenRows, (t) => { copiedText = t; });
+		expect(copiedText).toBe("ssssssss");
+		expect(copiedText).not.toContain("│");
+	});
+
 	it("TimelineRail 导航轨刻度与 Hover 气泡卡片生成", async () => {
 		const { TimelineRailComponent } = await import("../src/ui/components/widgets/timeline-rail.js");
 		const rail = new TimelineRailComponent();
@@ -965,14 +1108,16 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			{ n: 2, userText: "第二轮长问题" },
 		], 1);
 
+		const geo = rail.getGeometry(10)!;
+		expect(geo).toBeDefined();
 		const { railGlyphs } = rail.renderRailRows(10);
 		expect(railGlyphs.length).toBe(10);
-		expect(railGlyphs[0]).toContain("▲");
-		expect(railGlyphs[9]).toContain("▼");
+		expect(railGlyphs[geo.upRow]).toContain("▴");
+		expect(railGlyphs[geo.downRow]).toContain("▾");
 		expect(railGlyphs.some((g) => g.includes("━━"))).toBe(true);
 
-		// 设置 hover
-		rail.setHover(1);
+		// 设置 hover 到第一个刻度所在行
+		rail.setHover(geo.tickTop);
 		const hovered = rail.renderRailRows(10);
 		expect(hovered.previewCard).toBeDefined();
 		expect(hovered.previewCard?.lines[1]).toContain("第一轮");
@@ -985,5 +1130,64 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		expect(rate).toBe("90.0%");
 
 		expect(formatCacheHitRate(0, 1000, 0)).toBeUndefined();
+	});
+
+	it("Ctrl+C 在输入框有内容时清空内容而不触发退出流程", async () => {
+		const origStdout = process.stdout;
+		const origStdin = process.stdin;
+		try {
+			const fakeStdout = {
+				columns: 100,
+				rows: 30,
+				write: () => true,
+				on: () => fakeStdout,
+				removeListener: () => fakeStdout,
+			} as unknown as NodeJS.WriteStream;
+
+			const fakeStdin = {
+				isTTY: true,
+				setRawMode: () => fakeStdin,
+				resume: () => fakeStdin,
+				pause: () => fakeStdin,
+				on: () => fakeStdin,
+				removeListener: () => fakeStdin,
+			} as unknown as NodeJS.ReadStream;
+
+			Object.defineProperty(process, "stdout", { value: fakeStdout, configurable: true });
+			Object.defineProperty(process, "stdin", { value: fakeStdin, configurable: true });
+
+			const tui = createInteractiveUI({
+				modelName: "deepseek-chat",
+				cwd: "e:/Uina/test",
+			});
+
+			let interruptCalled = false;
+			tui.host.onInterrupt = () => {
+				interruptCalled = true;
+			};
+
+			// 输入文字
+			tui.host.handleInput("hello world");
+			expect(tui.host.inputLine.getText()).toBe("hello world");
+
+			// 按 Ctrl+C：应清空输入框内容，不应退出也不应触发退出确认
+			tui.host.handleInput("\x03"); // Ctrl+C
+			expect(tui.host.inputLine.getText()).toBe("");
+			expect(interruptCalled).toBe(false);
+			expect((tui.host as any).exitPending).toBe(false);
+
+			// 输入框已清空后，再次按 Ctrl+C：应触发退出确认 (exitPending = true)
+			tui.host.handleInput("\x03");
+			expect((tui.host as any).exitPending).toBe(true);
+
+			// 3秒内再次按 Ctrl+C：真正退出
+			tui.host.handleInput("\x03");
+			expect(interruptCalled).toBe(true);
+
+			tui.close();
+		} finally {
+			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
+			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+		}
 	});
 });

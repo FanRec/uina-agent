@@ -5,7 +5,7 @@
  */
 
 import type { Component } from "../../core/types.js";
-import { C, wrapTextWithAnsi, visibleWidth } from "../../core/utils.js";
+import { C, wrapTextWithAnsi } from "../../core/utils.js";
 import { formatThinkingLines } from "./thinking-view.js";
 import { formatToolCardLines } from "./tool-view.js";
 import { formatFullMarkdown } from "./stream-markdown.js";
@@ -39,6 +39,13 @@ export interface TurnRecord {
 	customMessages?: CustomMessage[];
 }
 
+export interface ThinkingLineLocation {
+	turnN: number;
+	lineIndex: number;
+	/** 精确指向该 thinking 所属的轮次，不能只依赖可能重复的 turnN。 */
+	turn: TurnRecord;
+}
+
 export type TimelineItem =
 	| { kind: "turn"; turn: TurnRecord }
 	| { kind: "notice"; text: string }
@@ -51,6 +58,19 @@ export class TranscriptContainer implements Component {
 	private readonly historyTurns: TurnRecord[] = [];
 	private currentTurn: TurnRecord | null = null;
 	private thinkingCommitted = false;
+	private hoveredThinkingTurnN: number | null = null;
+
+	setHoveredThinkingTurn(turnN: number | null): boolean {
+		if (this.hoveredThinkingTurnN !== turnN) {
+			this.hoveredThinkingTurnN = turnN;
+			return true;
+		}
+		return false;
+	}
+
+	getHoveredThinkingTurn(): number | null {
+		return this.hoveredThinkingTurnN;
+	}
 
 	private compactions: CompactionRecord[] = [];
 	private customEntries: CustomEntry[] = [];
@@ -265,16 +285,22 @@ export class TranscriptContainer implements Component {
 		this.systemNotices.length = 0;
 	}
 
-	toggleThinking(turnN?: number): boolean {
-		const target = turnN !== undefined
-			? this.historyTurns.find((t) => t.n === turnN) || (this.currentTurn?.n === turnN ? this.currentTurn : null)
-			: (this.currentTurn?.thinkingText ? this.currentTurn : this.historyTurns.slice().reverse().find((t) => t.thinkingText));
+	toggleThinking(targetOrN?: number | TurnRecord, width = 80): { toggled: boolean; lineDelta: number } {
+		const target =
+			targetOrN !== undefined && typeof targetOrN === "object"
+				? targetOrN
+				: targetOrN !== undefined
+					? this.historyTurns.find((t) => t.n === targetOrN) || (this.currentTurn?.n === targetOrN ? this.currentTurn : null)
+					: (this.currentTurn?.thinkingText ? this.currentTurn : this.historyTurns.slice().reverse().find((t) => t.thinkingText));
 
 		if (target && target.thinkingText) {
-			target.thinkingCollapsed = !(target.thinkingCollapsed ?? true);
-			return true;
+			const wasCollapsed = target.thinkingCollapsed ?? true;
+			const beforeCount = formatThinkingLines(target.thinkingText, wasCollapsed, width).length;
+			target.thinkingCollapsed = !wasCollapsed;
+			const afterCount = formatThinkingLines(target.thinkingText, !wasCollapsed, width).length;
+			return { toggled: true, lineDelta: afterCount - beforeCount };
 		}
-		return false;
+		return { toggled: false, lineDelta: 0 };
 	}
 
 	toggleAllThinking(collapsed?: boolean): void {
@@ -299,17 +325,17 @@ export class TranscriptContainer implements Component {
 
 	private formatUserLine(text: string, width: number): string[] {
 		const lines: string[] = [""];
-		const prefix = `${C.yellow}${C.bold}❯${C.reset} ${C.bold}`;
-		const leadW = visibleWidth("❯ ");
+		const prefix = `${C.bold}${C.briefLabelYou}❯ ${C.reset}`;
+		const leadW = 2; // "❯ " 占 2 列
 		const contentBudget = Math.max(10, width - leadW - 2);
 		const wrapped = wrapTextWithAnsi(text, contentBudget);
 		if (wrapped.length === 0) {
-			lines.push(`${prefix}${C.reset}`);
+			lines.push(`${prefix}`);
 		} else {
-			lines.push(`${prefix}${wrapped[0]}${C.reset}`);
+			lines.push(`${prefix}${C.bold}${C.briefLabelYou}${wrapped[0]}${C.reset}`);
 			const indent = "  ";
 			for (let i = 1; i < wrapped.length; i++) {
-				lines.push(`${indent}${C.bold}${wrapped[i]}${C.reset}`);
+				lines.push(`${indent}${C.bold}${C.briefLabelYou}${wrapped[i]}${C.reset}`);
 			}
 		}
 		lines.push("");
@@ -318,8 +344,7 @@ export class TranscriptContainer implements Component {
 
 	private formatAssistantMarkdown(md: string, width: number): string[] {
 		if (!md) return [];
-		// 扣除 2 列悬挂缩进空间（"● " / "  "）
-		const contentBudget = Math.max(20, width - 4);
+		const contentBudget = Math.max(20, width - 2);
 		const rawLines = formatFullMarkdown(md, contentBudget);
 		const formatted: string[] = [];
 		let isFirstParagraph = true;
@@ -330,7 +355,7 @@ export class TranscriptContainer implements Component {
 				continue;
 			}
 
-			// 如果是代码块边框或内联几何线，去除前导空格保持顶格
+			// 如果是代码块边框或内联几何线，保持顶格
 			if (
 				rawLine.startsWith("┌") || rawLine.startsWith("│") || rawLine.startsWith("└") ||
 				rawLine.startsWith("  ┌") || rawLine.startsWith("  │") || rawLine.startsWith("  └")
@@ -344,10 +369,11 @@ export class TranscriptContainer implements Component {
 			for (let i = 0; i < wrapped.length; i++) {
 				const piece = wrapped[i]!;
 				if (isFirstParagraph && i === 0) {
-					formatted.push(`${C.green}${C.bold}● ${C.reset}${piece}`);
+					formatted.push(`${C.bold}${C.text}● ${C.reset}${piece}`);
 					isFirstParagraph = false;
 				} else {
-					formatted.push(`  ${piece}`);
+					// 严格零边距左对齐，去除前导 "  " 多余空格，杜绝复制污染
+					formatted.push(piece);
 				}
 			}
 		}
@@ -385,7 +411,10 @@ export class TranscriptContainer implements Component {
 
 		// 当前正在生成的活动轮次
 		if (this.currentTurn) {
-			this.renderTurn(this.currentTurn, width, lines, this.thinkingCommitted);
+			// thinking 是当前轮次的实时输出，第一段内容到达时就应当
+			// 显示；thinkingCommitted 只记录它是否已经进入工具阶段，
+			// 不能拿来阻塞流式思考的可见性。
+			this.renderTurn(this.currentTurn, width, lines, true);
 		}
 
 		return lines;
@@ -400,7 +429,8 @@ export class TranscriptContainer implements Component {
 		out.push(...this.formatUserLine(turn.userText, width));
 
 		if (turn.thinkingText && showThinking) {
-			out.push(...formatThinkingLines(turn.thinkingText, turn.thinkingCollapsed ?? true, width));
+			const isHovered = this.hoveredThinkingTurnN === turn.n;
+			out.push(...formatThinkingLines(turn.thinkingText, turn.thinkingCollapsed ?? true, width, isHovered));
 		}
 
 		if (turn.assistantMarkdown) {
@@ -472,8 +502,8 @@ export class TranscriptContainer implements Component {
 	/**
 	 * 获取所有思考折叠行在完整行序列中的索引位置
 	 */
-	getThinkingLineIndices(width: number): Array<{ turnN: number; lineIndex: number }> {
-		const result: Array<{ turnN: number; lineIndex: number }> = [];
+	getThinkingLineIndices(width: number): ThinkingLineLocation[] {
+		const result: ThinkingLineLocation[] = [];
 		let currentLine = 0;
 
 		for (const item of this.timeline) {
@@ -481,7 +511,7 @@ export class TranscriptContainer implements Component {
 				const turn = item.turn;
 				const userLines = this.formatUserLine(turn.userText, width);
 				if (turn.thinkingText) {
-					result.push({ turnN: turn.n, lineIndex: currentLine + userLines.length });
+					result.push({ turnN: turn.n, lineIndex: currentLine + userLines.length, turn });
 				}
 				const turnLines: string[] = [];
 				this.renderTurn(turn, width, turnLines);
@@ -493,9 +523,9 @@ export class TranscriptContainer implements Component {
 			}
 		}
 
-		if (this.currentTurn && this.currentTurn.thinkingText && this.thinkingCommitted) {
+		if (this.currentTurn && this.currentTurn.thinkingText) {
 			const userLines = this.formatUserLine(this.currentTurn.userText, width);
-			result.push({ turnN: this.currentTurn.n, lineIndex: currentLine + userLines.length });
+			result.push({ turnN: this.currentTurn.n, lineIndex: currentLine + userLines.length, turn: this.currentTurn });
 		}
 
 		return result;

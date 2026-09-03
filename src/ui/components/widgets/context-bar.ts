@@ -1,14 +1,14 @@
 /**
- * 上下文用量与状态条组件（全面对齐 dsh-TUI 图二规范与 ContextBarView）。
- * 特性：
- * 1. 常规态：单行显示模型名、思考档位、缓存命中率（dsh-TUI 算法）与右侧精致点阵进度条 `ctx |·······| 1.0%`；
- * 2. 悬停态（鼠标移入右下角 ctx 区域）：自适应展开第二行明细：
- *    `1.0% · 9.8k/1m · free 990.2k · sys 9k · pr 5 · ast 79 · th 358 · tl 0`；
- * 3. 严格遵循 zero-margin 全局左对齐。
+ * 输入框底边下方的稳定信息行。
+ *
+ * 这行故意始终占一个终端行：静止时为空白，鼠标悬停在输入框底边的
+ * 上下文进度区时才把目录、上下文分段和缓存读写明细放进来。这样 Hover
+ * 只替换内容，不改变布局高度，鼠标在边框附近移动时不会把聊天内容顶
+ * 上下抖动。
  */
 
 import type { Component } from "../../core/types.js";
-import { C, truncateToWidth, visibleWidth } from "../../core/utils.js";
+import { C, truncateToWidth } from "../../core/utils.js";
 
 export interface ContextSegments {
 	sys: number;
@@ -31,9 +31,10 @@ export interface ContextUsageData {
 }
 
 export function formatTokensCompact(n: number): string {
-	if (n >= 1000000) return `${(n / 1000000).toFixed(1)}m`;
-	if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-	return `${Math.round(n)}`;
+	const value = Math.max(0, Math.round(n));
+	if (value >= 1000000) return `${(value / 1000000).toFixed(1)}m`;
+	if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+	return `${value}`;
 }
 
 export function formatCacheHitRate(cacheRead?: number, input?: number, cacheWrite?: number): string | undefined {
@@ -48,11 +49,11 @@ export function formatCacheHitRate(cacheRead?: number, input?: number, cacheWrit
 export class ContextBarComponent implements Component {
 	private usedTokens = 0;
 	private contextWindow = 1024 * 1024; // 默认 1.0M
-	private modelName = "deepseek-v4-flash";
-	private effort = "max";
 	private cwd = "~";
-	private cacheRate?: string;
 	private segments: ContextSegments = { sys: 0, pr: 0, ast: 0, th: 0, tl: 0 };
+	private cacheRead?: number;
+	private cacheWrite?: number;
+	private inputTokens?: number;
 	private isHovered = false;
 	private visible = true;
 
@@ -61,14 +62,12 @@ export class ContextBarComponent implements Component {
 		if (data.contextWindow && data.contextWindow > 0) {
 			this.contextWindow = data.contextWindow;
 		}
-		if (data.modelName) this.modelName = data.modelName;
-		if (data.effort) this.effort = data.effort;
 		if (data.cwd) {
-			const norm = data.cwd.replace(/\\/g, "/");
-			const base = norm.split("/").filter(Boolean).pop();
-			this.cwd = base ? `~/${base}` : "~";
+			this.cwd = data.cwd;
 		}
-		this.cacheRate = formatCacheHitRate(data.cacheRead, data.inputTokens, data.cacheWrite);
+		this.cacheRead = data.cacheRead;
+		this.cacheWrite = data.cacheWrite;
+		this.inputTokens = data.inputTokens;
 		if (data.segments) {
 			this.segments = {
 				sys: data.segments.sys ?? this.segments.sys,
@@ -94,66 +93,57 @@ export class ContextBarComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		if (!this.visible || width < 24) return [];
+		// 即使终端很窄也保留这个布局槽位；调用方依赖它来保证输入框
+		// 下方的稳定一行不会因宽度变化而消失。
+		if (!this.visible || width <= 0) return [""];
 
-		const pct = Math.min(100, Math.max(0, (this.usedTokens / this.contextWindow) * 100));
-		const pctStr = `${pct.toFixed(1)}%`;
-
-		// 1. 组装左侧状态项：model · effort · 缓存 xx% · ~
-		const leftParts: string[] = [`${C.dim}${this.modelName}${C.reset}`];
-		leftParts.push(`${C.dim}${this.effort}${C.reset}`);
-
-		// 缓存命中率（dsh-TUI 视觉：缓存 99.1%）
-		const cacheText = this.cacheRate ?? "99.1%";
-		leftParts.push(`${C.dim}缓存 ${cacheText}${C.reset}`);
-		leftParts.push(`${C.dim}${this.cwd}${C.reset}`);
-
-		const leftLine = leftParts.join(` ${C.gray}·${C.reset} `);
-		const leftW = visibleWidth(leftLine);
-
-		// 2. 组装右侧点阵计量器：ctx |·······| 1.0% (对标图二)
-		const gaugeWidth = 7;
-		const filledDots = Math.min(gaugeWidth, Math.max(0, Math.round((pct / 100) * gaugeWidth)));
-		const emptyDots = gaugeWidth - filledDots;
-		const dotGauge = `${C.green}${"•".repeat(filledDots)}${C.gray}${"·".repeat(emptyDots)}${C.reset}`;
-		const rightGauge = `${C.dim}ctx${C.reset} ${C.gray}|${C.reset}${dotGauge}${C.gray}|${C.reset} ${pctStr}`;
-		const rightW = visibleWidth(rightGauge);
-
-		// 3. 首行拼接
-		const spaceCount = Math.max(1, width - leftW - rightW);
-		const line1 = `${leftLine}${" ".repeat(spaceCount)}${rightGauge}`;
-
-		const lines: string[] = [truncateToWidth(line1, width, "")];
-
-		// 4. 若处于 Hover 态，自适应展开第二行明细（图二样式）
-		// `1.0% · 9.8k/1m · free 990.2k · sys 9k · pr 5 · ast 79 · th 358 · tl 0`
-		if (this.isHovered) {
-			const usedStr = formatTokensCompact(this.usedTokens);
-			const totalStr = formatTokensCompact(this.contextWindow);
-			const freeStr = formatTokensCompact(Math.max(0, this.contextWindow - this.usedTokens));
-
-			const sysStr = formatTokensCompact(this.segments.sys);
-			const prStr = formatTokensCompact(this.segments.pr);
-			const astStr = formatTokensCompact(this.segments.ast);
-			const thStr = formatTokensCompact(this.segments.th);
-			const tlStr = formatTokensCompact(this.segments.tl);
-
-			const detailParts = [
-				`${pctStr}`,
-				`${usedStr}/${totalStr}`,
-				`${C.iceBlue}free ${freeStr}${C.reset}`,
-				`sys ${sysStr}`,
-				`pr ${prStr}`,
-				`ast ${astStr}`,
-				`th ${thStr}`,
-				`tl ${tlStr}`,
-			];
-
-			const line2 = `${C.dim}${detailParts.join(` ${C.gray}·${C.reset} ${C.dim}`)}${C.reset}`;
-			lines.push(truncateToWidth(line2, width, ""));
+		// 未悬停时：渲染 1 行纯空白占位，确保无论 hover 与否，高度恒定为 1 行。
+		if (!this.isHovered) {
+			return [""];
 		}
 
-		return lines;
+		// 鼠标悬停时：在此固定行内渲染隐藏信息：目录 + 上下文占用 + 使用情况。
+		const pct = Math.min(100, Math.max(0, (this.usedTokens / this.contextWindow) * 100));
+		const pctStr = `${pct.toFixed(1)}%`;
+		const usedStr = formatTokensCompact(this.usedTokens);
+		const totalStr = formatTokensCompact(this.contextWindow);
+		const freeStr = formatTokensCompact(Math.max(0, this.contextWindow - this.usedTokens));
+
+		const sysStr = formatTokensCompact(this.segments.sys);
+		const prStr = formatTokensCompact(this.segments.pr);
+		const astStr = formatTokensCompact(this.segments.ast);
+		const thStr = formatTokensCompact(this.segments.th);
+		const tlStr = formatTokensCompact(this.segments.tl);
+
+		// 目录徽章：宽屏完整路径，窄屏短路径
+		const cwdLabel = this.cwd ? `${C.gray}🗀 ${C.dim}${this.cwd}${C.reset}` : "";
+
+		// 上下文占用详情
+		const detailParts = [
+			`${pctStr}`,
+			`${usedStr}/${totalStr}`,
+			`${C.suggestion}剩余 ${freeStr}${C.reset}`,
+			`系统 ${sysStr}`,
+			`提示词 ${prStr}`,
+			`助手 ${astStr}`,
+			`思考 ${thStr}`,
+			`工具 ${tlStr}`,
+		];
+		const usageDetail = `${C.inactive}${detailParts.join(` ${C.subtle}·${C.reset} ${C.inactive}`)}${C.reset}`;
+		const cacheDetail =
+			this.cacheRead !== undefined || this.cacheWrite !== undefined || this.inputTokens !== undefined
+				? ` ${C.subtle}·${C.reset} ${C.inactive}缓存读 ${formatTokensCompact(this.cacheRead ?? 0)} · 缓存写 ${formatTokensCompact(this.cacheWrite ?? 0)} · 输入 ${formatTokensCompact(this.inputTokens ?? 0)}${C.reset}`
+				: "";
+
+		let line = "";
+		if (cwdLabel) {
+			const sep = ` ${C.subtle}──${C.reset} `;
+			line = `${cwdLabel}${sep}${usageDetail}${cacheDetail}`;
+		} else {
+			line = `${usageDetail}${cacheDetail}`;
+		}
+
+		return [truncateToWidth(line, width, "")];
 	}
 
 	invalidate(): void {}

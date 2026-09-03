@@ -23,29 +23,29 @@ export function formatThinkingLines(
 	}
 
 	const lines: string[] = [];
-	const iconColor = isHovered ? `${C.bold}${C.glowWhite}` : C.cyan;
+	const iconColor = isHovered ? `${C.bold}${C.text}` : C.claude;
 	const icon = `${iconColor}✦${C.reset}`;
-	const titleText = isHovered ? `${C.bold}${C.glowWhite}思考${C.reset}` : `${C.bold}${C.iceBlue}思考${C.reset}`;
+	const titleText = isHovered ? `${C.bold}${C.text}思考${C.reset}` : `${C.bold}${C.claude}思考${C.reset}`;
 
 	if (collapsed) {
 		const clean = thinkingText.replace(/[\r\n]+/g, " ").trim();
 		const maxSnippetLen = Math.max(10, width - 36);
 		const snippet = clean.length > maxSnippetLen ? `${clean.slice(0, maxSnippetLen)}…` : clean;
 		const hint = isHovered
-			? `${C.iceBlue}(点击 / ctrl+o 展开)${C.reset}`
-			: `${C.dim}(ctrl+o 展开 · alt+o 全量)${C.reset}`;
-		const line = `${icon} ${titleText} ${C.dim}${snippet}${C.reset} ${hint}`;
+			? `${C.suggestion}(点击 / ctrl+o 展开)${C.reset}`
+			: `${C.subtle}(ctrl+o 展开 · alt+o 全量)${C.reset}`;
+		const line = `${icon} ${titleText} ${C.inactive}${snippet}${C.reset} ${hint}`;
 		lines.push(truncateToWidth(line, width, ""));
 	} else {
 		const hint = isHovered
-			? `${C.iceBlue}(点击 / ctrl+o 收起)${C.reset}`
-			: `${C.dim}(ctrl+o 收起 · alt+o 全量)${C.reset}`;
+			? `${C.suggestion}(点击 / ctrl+o 收起)${C.reset}`
+			: `${C.subtle}(ctrl+o 收起 · alt+o 全量)${C.reset}`;
 		const title = `${icon} ${titleText} ${hint}:`;
 		lines.push(truncateToWidth(title, width, ""));
 
 		const wrapped = wrapTextWithAnsi(thinkingText.trim(), Math.max(20, width - 4));
 		for (const line of wrapped) {
-			lines.push(`${C.gray}│${C.reset} ${C.dim}${line}${C.reset}`);
+			lines.push(`${C.subtle}│${C.reset} ${C.inactive}${C.italic}${line}${C.reset}`);
 		}
 	}
 	lines.push(""); // 与后续助手正文保持一空行的垂直节奏

@@ -308,11 +308,11 @@ export async function runApp(): Promise<void> {
 				} else if (m.role === "tool") tl += len;
 			}
 			tui.host.setDetailedSegments({
-				sys: Math.max(sys, 9000),
-				pr: Math.max(pr, 5),
-				ast: Math.max(ast, 79),
-				th: Math.max(th, 358),
-				tl: Math.max(tl, 0),
+				sys,
+				pr,
+				ast,
+				th,
+				tl,
 			});
 		}
 		for (const message of snapshot.customMessages) tui.host.transcript.addCustomMessage(message);

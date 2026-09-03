@@ -13,7 +13,19 @@ export type OutMsg =
 	| { type: "text"; text: string }
 	| { type: "thinking"; text: string }
 	| { type: "turn_start"; n: number; text: string }
-	| { type: "turn_end"; n: number; usage?: { usedTokens: number; contextWindow: number; actual?: boolean } }
+	| {
+		type: "turn_end";
+		n: number;
+		usage?: {
+			usedTokens: number;
+			contextWindow: number;
+			actual?: boolean;
+			cacheRead?: number;
+			cacheWrite?: number;
+			inputTokens?: number;
+			outputTokens?: number;
+		};
+	}
 	| { type: "error"; text: string }
 	| { type: "notice"; text: string }
 	| { type: "tool_start"; name: string; args: unknown; callId?: string }
@@ -126,9 +138,18 @@ export class InteractiveTUI {
 			case "turn_end":
 				this.host.setBusy(false);
 				this.host.transcript.finishTurn();
-				this.host.trajectoryProjection.onTurnEnd(m.n, m.usage);
 				if (m.usage) {
-					this.host.setUsage(m.usage.usedTokens, m.usage.contextWindow, m.usage.actual ?? true);
+					this.host.setUsage(
+						m.usage.usedTokens,
+						m.usage.contextWindow,
+						m.usage.actual ?? true,
+						{
+							input: m.usage.inputTokens,
+							output: m.usage.outputTokens,
+							cacheRead: m.usage.cacheRead,
+							cacheWrite: m.usage.cacheWrite,
+						},
+					);
 				}
 				const elapsed = this.host.getLastElapsedMs();
 				this.host.activityLine.finish("本轮已完成", elapsed > 0 ? elapsed : undefined, this.host.getStreamTokenCount());

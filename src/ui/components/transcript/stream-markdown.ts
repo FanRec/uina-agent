@@ -38,68 +38,68 @@ export class StreamMarkdownFormatter {
 		const trimmed = cleanRaw.trim();
 		const boxWidth = getContentBoxWidth(this.width, 6);
 
-		// 1. 处理代码块围栏 ```（全封闭细线盒子）
+		// 1. 处理代码块围栏 ```
 		if (trimmed.startsWith("```")) {
 			if (!this.inCodeBlock) {
 				this.inCodeBlock = true;
 				this.codeBlockLang = trimmed.slice(3).trim() || "code";
 				const headerTag = `┌── ${this.codeBlockLang} `;
 				const fillLen = Math.max(1, boxWidth - visibleWidth(headerTag) - 1);
-				return `  ${C.gray}┌── ${C.cyan}${this.codeBlockLang}${C.gray} ${"─".repeat(fillLen)}┐${C.reset}`;
+				return `${C.promptBorder}┌── ${C.claude}${this.codeBlockLang}${C.promptBorder} ${"─".repeat(fillLen)}┐${C.reset}`;
 			}
 			this.inCodeBlock = false;
 			this.codeBlockLang = "";
 			const fillLen = Math.max(1, boxWidth - 2);
-			return `  ${C.gray}└${"─".repeat(fillLen)}┘${C.reset}`;
+			return `${C.promptBorder}└${"─".repeat(fillLen)}┘${C.reset}`;
 		}
 
-		// 2. 如果当前处于代码块内部（全封闭左右边框，宽度严格等于 boxWidth，并应用语法高亮）
+		// 2. 如果当前处于代码块内部
 		if (this.inCodeBlock) {
 			const innerWidth = boxWidth - 4; // 减去两端 "│ " (2) 与 " │" (2)
 			const highlighted = highlightCode(cleanRaw, this.codeBlockLang);
 			const truncatedCode = truncateToWidth(highlighted, innerWidth, "");
 			const padLen = Math.max(0, innerWidth - visibleWidth(truncatedCode));
-			return `  ${C.gray}│${C.reset} ${truncatedCode}${" ".repeat(padLen)} ${C.gray}│${C.reset}`;
+			return `${C.promptBorder}│${C.reset} ${truncatedCode}${" ".repeat(padLen)} ${C.promptBorder}│${C.reset}`;
 		}
 
-		// 3. 标题格式化（消除生硬的 # 号，转化为层次分明的现代标记）
+		// 3. 标题格式化（对标 dsh-TUI: H1 mist blue + 下划线，H2 suggestion 冰蓝，H3 text 粗体）
 		if (trimmed.startsWith("### ")) {
 			const text = trimmed.slice(4);
-			return `  ${C.bold}${C.cyan}▸ ${text}${C.reset}`;
+			return `${C.bold}${C.text}${text}${C.reset}`;
 		}
 		if (trimmed.startsWith("## ")) {
 			const text = trimmed.slice(3);
-			return `  ${C.bold}${C.iceBlue}● ${text}${C.reset}`;
+			return `${C.bold}${C.suggestion}● ${text}${C.reset}`;
 		}
 		if (trimmed.startsWith("# ")) {
 			const text = trimmed.slice(2);
-			return `${C.bold}${C.glowWhite}■ ${text}${C.reset}`;
+			return `${C.bold}${C.underline}${C.claude}■ ${text}${C.reset}`;
 		}
 
-		// 4. 引用块 (> )：转化为现代粗竖线侧栏
+		// 4. 引用块 (> )：对标 dsh-TUI ▎ 侧栏
 		if (trimmed.startsWith("> ")) {
 			const text = trimmed.slice(2);
-			return `  ${C.iceBlue}▎${C.reset} ${C.dim}${this.formatInline(text)}${C.reset}`;
+			return `${C.suggestion}▎${C.reset} ${C.inactive}${C.italic}${this.formatInline(text)}${C.reset}`;
 		}
 
-		// 5. 无序列表 (- / * )
+		// 5. 无序列表 (- / * )：零边距左对齐，• 采用 suggestion 冰蓝
 		if (/^[-*]\s/.test(trimmed)) {
 			const text = trimmed.slice(2);
-			return `  ${C.iceBlue}•${C.reset} ${this.formatInline(text)}`;
+			return `${C.suggestion}•${C.reset} ${this.formatInline(text)}`;
 		}
 
 		// 6. 有序列表 (1. / 2. )
 		if (/^\d+\.\s/.test(trimmed)) {
 			const match = trimmed.match(/^(\d+\.)\s+(.*)$/);
 			if (match) {
-				return `  ${C.cyan}${match[1]}${C.reset} ${this.formatInline(match[2]!)}`;
+				return `${C.claude}${match[1]}${C.reset} ${this.formatInline(match[2]!)}`;
 			}
 		}
 
 		// 7. 分隔线 (--- 或 ***)
 		if (/^[-*_]{3,}$/.test(trimmed)) {
-			const barW = getContentBoxWidth(this.width, 6);
-			return `  ${C.gray}${"─".repeat(barW)}${C.reset}`;
+			const barW = getContentBoxWidth(this.width, 4);
+			return `${C.subtle}${"─".repeat(barW)}${C.reset}`;
 		}
 
 		// 普通行应用行内格式化
