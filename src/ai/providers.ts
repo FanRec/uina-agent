@@ -22,19 +22,46 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 		includeThinking: true,
 		async stream(req, emit, signal) {
 			const level = req.thinkingLevel ?? "off";
-			const body: Record<string, unknown> = {
+			let body: Record<string, unknown> = {
 				model: conf.model,
 				max_tokens: 8192,
-			messages: anthropicMessages(req),
-				tools: req.tools?.map((tool) => ({ name: tool.function.name, description: tool.function.description, input_schema: tool.function.parameters })),
+				messages: anthropicMessages(req),
+				tools: req.tools?.map((tool) => ({
+					name: tool.function.name,
+					description: tool.function.description,
+					input_schema: tool.function.parameters,
+				})),
 				stream: true,
 			};
 			if (level !== "off") body.thinking = { type: "enabled", budget_tokens: thinkingBudget(level) };
+
+			let headers: Record<string, string> = {
+				"content-type": "application/json",
+				"x-api-key": conf.apiKey,
+				"anthropic-version": "2023-06-01",
+				accept: "text/event-stream",
+			};
+
+			if (req.extensionHost) {
+				headers = await req.extensionHost.emitBeforeProviderHeaders(conf.model, headers);
+				body = (await req.extensionHost.emitBeforeProviderRequest(conf.model, body)) as Record<string, unknown>;
+			}
+
 			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/messages`, {
-				method: "POST", signal,
-				headers: { "content-type": "application/json", "x-api-key": conf.apiKey, "anthropic-version": "2023-06-01", accept: "text/event-stream" },
+				method: "POST",
+				signal,
+				headers,
 				body: JSON.stringify(body),
 			});
+
+			if (req.extensionHost) {
+				const respHeaders: Record<string, string> = {};
+				response.headers.forEach((v, k) => {
+					respHeaders[k] = v;
+				});
+				await req.extensionHost.emitAfterProviderResponse(conf.model, response.status, respHeaders);
+			}
+
 			if (!response.ok) throw new Error(`Anthropic ${name} 请求失败 HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
 			if (!response.body) throw new ProviderProtocolError("Anthropic 响应无 body");
 			let finished = false;
@@ -72,9 +99,32 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 		contextWindow: conf.contextWindow,
 		thinkingLevels: levels(conf),
 		async stream(req, emit, signal) {
+			let headers: Record<string, string> = {
+				"content-type": "application/json",
+				accept: "text/event-stream",
+			};
+			let bodyPayload = geminiRequest(req);
+
+			if (req.extensionHost) {
+				headers = await req.extensionHost.emitBeforeProviderHeaders(conf.model, headers);
+				bodyPayload = (await req.extensionHost.emitBeforeProviderRequest(conf.model, bodyPayload)) as Record<string, unknown>;
+			}
+
 			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(conf.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(conf.apiKey)}`, {
-				method: "POST", signal, headers: { "content-type": "application/json", accept: "text/event-stream" }, body: JSON.stringify(geminiRequest(req)),
+				method: "POST",
+				signal,
+				headers,
+				body: JSON.stringify(bodyPayload),
 			});
+
+			if (req.extensionHost) {
+				const respHeaders: Record<string, string> = {};
+				response.headers.forEach((v, k) => {
+					respHeaders[k] = v;
+				});
+				await req.extensionHost.emitAfterProviderResponse(conf.model, response.status, respHeaders);
+			}
+
 			if (!response.ok) throw new Error(`Gemini ${name} 请求失败 HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
 			if (!response.body) throw new ProviderProtocolError("Gemini 响应无 body");
 			let finished = false;
@@ -109,3 +159,85 @@ function isJsonObject(value: string): boolean { try { const parsed = JSON.parse(
 
 interface AnthropicEvent { type?: string; index?: number; delta?: { type?: string; thinking?: string; text?: string; partial_json?: string; signature?: string; stop_reason?: string | null }; content_block?: { type?: string; id?: string; name?: string }; }
 interface GeminiChunk { candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ thought?: boolean; text?: string; functionCall?: { id?: string; name: string; args?: Record<string, unknown> } }> } }> }
+
+export class ModelRegistry {
+	private instances = new Map<string, ModelProvider>();
+	private config?: import("./config.js").UinaConfig;
+
+	constructor(config?: import("./config.js").UinaConfig) {
+		this.config = config;
+	}
+
+	resolve(modelOrProviderName: string): ModelProvider {
+		if (this.instances.has(modelOrProviderName)) {
+			return this.instances.get(modelOrProviderName)!;
+		}
+
+		// 1. 尝试从已配置的 auth.json 中获取
+		if (this.config?.providers[modelOrProviderName]) {
+			const conf = this.config.providers[modelOrProviderName];
+			const provider = createProvider(modelOrProviderName, conf);
+			this.instances.set(modelOrProviderName, provider);
+			return provider;
+		}
+
+		// 2. 尝试解析厂商/模型格式
+		const normalized = modelOrProviderName.toLowerCase();
+		let conf: ProviderConfig | null = null;
+
+		if (normalized.includes("deepseek")) {
+			const apiKey = process.env.DEEPSEEK_API_KEY || process.env.UINA_API_KEY_DEEPSEEK || "";
+			if (!apiKey) throw new Error(`缺少 DeepSeek API Key (请设置环境变量 DEEPSEEK_API_KEY)`);
+			conf = {
+				baseUrl: "https://api.deepseek.com",
+				apiKey,
+				model: modelOrProviderName.replace(/^deepseek\//i, ""),
+				thinkingFormat: "deepseek",
+				contextWindow: 65536,
+				thinkingLevels: ["off", "minimal", "low", "medium", "high", "max"],
+			};
+		} else if (normalized.includes("claude") || normalized.includes("anthropic")) {
+			const apiKey = process.env.ANTHROPIC_API_KEY || process.env.UINA_API_KEY_ANTHROPIC || "";
+			if (!apiKey) throw new Error(`缺少 Anthropic API Key (请设置环境变量 ANTHROPIC_API_KEY)`);
+			conf = {
+				baseUrl: "https://api.anthropic.com/v1",
+				apiKey,
+				model: modelOrProviderName.replace(/^anthropic\//i, ""),
+				type: "anthropic",
+				contextWindow: 200000,
+				thinkingLevels: ["off", "low", "medium", "high", "max"],
+			};
+		} else if (normalized.includes("gpt") || normalized.includes("openai") || normalized.includes("o1") || normalized.includes("o3")) {
+			const apiKey = process.env.OPENAI_API_KEY || process.env.UINA_API_KEY_OPENAI || "";
+			if (!apiKey) throw new Error(`缺少 OpenAI API Key (请设置环境变量 OPENAI_API_KEY)`);
+			conf = {
+				baseUrl: "https://api.openai.com/v1",
+				apiKey,
+				model: modelOrProviderName.replace(/^openai\//i, ""),
+				contextWindow: 128000,
+				thinkingLevels: normalized.includes("o1") || normalized.includes("o3") ? ["off", "low", "medium", "high"] : ["off"],
+			};
+		} else if (normalized.includes("ollama")) {
+			const baseUrl = process.env.OLLAMA_BASE_URL || "http://localhost:11434/v1";
+			conf = {
+				baseUrl,
+				apiKey: "ollama",
+				model: modelOrProviderName.replace(/^ollama\//i, ""),
+				contextWindow: 32768,
+				thinkingLevels: ["off"],
+			};
+		}
+
+		if (conf) {
+			const provider = createProvider(modelOrProviderName, conf);
+			this.instances.set(modelOrProviderName, provider);
+			return provider;
+		}
+
+		throw new Error(`无法识别的模型或提供商: ${modelOrProviderName}，且未在 auth.json 中配置`);
+	}
+
+	register(name: string, provider: ModelProvider): void {
+		this.instances.set(name, provider);
+	}
+}

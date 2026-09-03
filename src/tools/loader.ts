@@ -80,6 +80,44 @@ export async function loadTools(
 	return result;
 }
 
+export async function loadToolsFromPaths(
+	paths: string[],
+	registry: ToolBroker,
+): Promise<LoadResult> {
+	const result: LoadResult = { loaded: 0, failed: [] };
+	for (const file of paths) {
+		try {
+			const mod = (await import(pathToFileURL(file).href)) as {
+				default?: unknown;
+			};
+			if (mod.default === undefined) {
+				throw new Error("模块未 default 导出工具（需 Tool / Tool数组 / 注册函数）");
+			}
+
+			const staged = new ToolBroker();
+			await registerExport(staged, mod.default);
+			const registeredNames = staged.names();
+			const registered = registeredNames
+				.map((name) => staged.get(name))
+				.filter((tool): tool is Tool => tool !== undefined);
+			const committed: string[] = [];
+			try {
+				for (const tool of registered) {
+					registry.register(tool);
+					committed.push(tool.def.function.name);
+				}
+			} catch (error) {
+				for (const name of committed) registry.remove(name);
+				throw error;
+			}
+			result.loaded += registered.length;
+		} catch (error) {
+			result.failed.push({ file, error: safeError(error) });
+		}
+	}
+	return result;
+}
+
 async function registerExport(registry: ToolBroker, value: unknown): Promise<void> {
 	if (Array.isArray(value)) {
 		for (const tool of value) registry.register(tool as Tool);

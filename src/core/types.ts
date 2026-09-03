@@ -64,6 +64,7 @@ export interface ModelRequest {
 	messages: ChatMsg[];
 	tools?: ToolDef[];
 	thinkingLevel?: ThinkingLevel;
+	extensionHost?: import("../extensions/host.js").ExtensionHost;
 }
 
 export interface ModelProvider {

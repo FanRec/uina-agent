@@ -23,26 +23,42 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 		thinkingLevels: conf.thinkingLevels ?? ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
 		includeThinking: conf.thinkingFormat === "deepseek",
 		async stream(req, onDelta, signal): Promise<void> {
+			let headers: Record<string, string> = {
+				"Content-Type": "application/json",
+				Accept: "text/event-stream",
+				Authorization: `Bearer ${conf.apiKey}`,
+			};
+			let bodyPayload: unknown = {
+				model: conf.model,
+				messages: toWireMessages(req.messages, conf.thinkingFormat),
+				tools: req.tools?.length ? req.tools : undefined,
+				stream: true,
+				...thinkingRequest(req.thinkingLevel, conf.thinkingFormat),
+			};
+
+			if (req.extensionHost) {
+				headers = await req.extensionHost.emitBeforeProviderHeaders(conf.model, headers);
+				bodyPayload = await req.extensionHost.emitBeforeProviderRequest(conf.model, bodyPayload);
+			}
+
 			const response = await fetchWithRetry(endpoint, {
 				maxRetries: conf.maxRetries ?? 2,
 				signal,
 				request: {
-				method: "POST",
-				signal,
-				headers: {
-					"Content-Type": "application/json",
-					Accept: "text/event-stream",
-					Authorization: `Bearer ${conf.apiKey}`,
-				},
-				body: JSON.stringify({
-					model: conf.model,
-					messages: toWireMessages(req.messages, conf.thinkingFormat),
-					tools: req.tools?.length ? req.tools : undefined,
-					stream: true,
-					...thinkingRequest(req.thinkingLevel, conf.thinkingFormat),
-				}),
+					method: "POST",
+					signal,
+					headers,
+					body: JSON.stringify(bodyPayload),
 				},
 			});
+
+			if (req.extensionHost) {
+				const respHeaders: Record<string, string> = {};
+				response.headers.forEach((v, k) => {
+					respHeaders[k] = v;
+				});
+				await req.extensionHost.emitAfterProviderResponse(conf.model, response.status, respHeaders);
+			}
 
 			if (!response.ok) {
 				const body = await response.text().catch(() => "");

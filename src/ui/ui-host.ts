@@ -39,6 +39,9 @@ export interface UIHostOptions {
 	toolCount?: number;
 	jobs?: JobRegistry;
 	subagents?: SubagentRegistry;
+	onModelChange?: (model: string) => void | Promise<void>;
+	onEffortChange?: (effort: "off" | "low" | "medium" | "high" | "max") => void;
+	onCompactRequest?: (instruction?: string) => void | Promise<void>;
 }
 
 export class UIHost implements UIHostContextPort {
@@ -86,6 +89,8 @@ export class UIHost implements UIHostContextPort {
 	private jobsRegistry?: JobRegistry;
 	private subagentsRegistry?: SubagentRegistry;
 
+	private readonly options: UIHostOptions;
+
 	// 事件回调
 	onUserLine?: (text: string, mode: "steer" | "followUp" | "direct") => void;
 	onInterrupt?: () => void;
@@ -93,6 +98,8 @@ export class UIHost implements UIHostContextPort {
 	onCompactRequest?: (instruction?: string) => void | Promise<void>;
 
 	constructor(options: UIHostOptions = {}) {
+		this.options = options;
+		this.onCompactRequest = options.onCompactRequest;
 		this.cwd = options.cwd ?? process.cwd();
 		if (options.modelName) this.modelName = options.modelName;
 		this.jobsRegistry = options.jobs;
@@ -175,6 +182,7 @@ export class UIHost implements UIHostContextPort {
 		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow);
 		this.banner.setOptions({ modelName: this.modelName, cwd: this.cwd });
 		this.requestRender();
+		void this.options.onModelChange?.(model);
 	}
 
 	setReasoningEffort(effort: "off" | "low" | "medium" | "high" | "max" | string): void {
@@ -185,6 +193,12 @@ export class UIHost implements UIHostContextPort {
 			this.reasoningEffort = "medium";
 		}
 		this.inputLine.setReasoningEffort(this.reasoningEffort);
+		this.requestRender();
+		this.options.onEffortChange?.(this.reasoningEffort);
+	}
+
+	addCompaction(record: import("./components/transcript/compact-view.js").CompactionRecord): void {
+		this.transcript.addCompaction(record);
 		this.requestRender();
 	}
 

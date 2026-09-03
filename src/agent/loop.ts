@@ -36,6 +36,16 @@ export interface SubjectOptions {
 	thinkingLevel?: ThinkingLevel;
 	steerQueueMode?: import("../core/types.js").QueueMode;
 	followUpQueueMode?: import("../core/types.js").QueueMode;
+	extensionHost?: import("../extensions/host.js").ExtensionHost;
+}
+
+export function clampThinkingLevel(
+	requested: ThinkingLevel,
+	available?: readonly ThinkingLevel[],
+): ThinkingLevel {
+	if (!available || available.length === 0) return "off";
+	if (available.includes(requested)) return requested;
+	return "off";
 }
 
 export interface QueueInputOptions {
@@ -63,15 +73,19 @@ export class Subject {
 	private idleWaiters: Array<() => void> = [];
 	private resumingQueue = false;
 	private readonly queueModes: Record<"steer" | "followUp", import("../core/types.js").QueueMode>;
-	private readonly thinkingLevel: ThinkingLevel;
+	private provider: ModelProvider;
+	private thinkingLevel: ThinkingLevel;
+	private preferredThinkingLevel: ThinkingLevel;
+	private readonly extensionHost?: import("../extensions/host.js").ExtensionHost;
 	private runtimeInputs: AgentInput[] = [];
 
 	constructor(
-		private readonly provider: ModelProvider,
+		provider: ModelProvider,
 		private readonly tools: ToolBroker,
 		private readonly hooks: LoopHooks,
 		options: SubjectOptions = {},
 	) {
+		this.provider = provider;
 		this.store = options.store;
 		this.systemPrompt = options.systemPrompt ?? defaultSystemPrompt();
 		this.compaction = {
@@ -83,7 +97,96 @@ export class Subject {
 			steer: options.steerQueueMode ?? "one-at-a-time",
 			followUp: options.followUpQueueMode ?? "one-at-a-time",
 		};
+		this.preferredThinkingLevel = options.thinkingLevel ?? "off";
 		this.thinkingLevel = options.thinkingLevel ?? "off";
+		this.extensionHost = options.extensionHost;
+	}
+
+	getModel(): ModelProvider {
+		return this.provider;
+	}
+
+	getThinkingLevel(): ThinkingLevel {
+		return this.thinkingLevel;
+	}
+
+	getPreferredThinkingLevel(): ThinkingLevel {
+		return this.preferredThinkingLevel;
+	}
+
+	async setModel(provider: ModelProvider): Promise<void> {
+		const prev = this.provider.name;
+		this.provider = provider;
+		this.compaction.contextWindow = provider.contextWindow ?? DEFAULT_COMPACTION_SETTINGS.contextWindow;
+		const prevLevel = this.thinkingLevel;
+		this.thinkingLevel = clampThinkingLevel(this.preferredThinkingLevel, provider.thinkingLevels);
+
+		await this.extensionHost?.emit({
+			type: "model_select",
+			model: provider.name,
+			provider,
+			previousModel: prev,
+		});
+
+		if (this.thinkingLevel !== prevLevel) {
+			await this.extensionHost?.emit({
+				type: "thinking_level_select",
+				level: this.thinkingLevel,
+				previousLevel: prevLevel,
+			});
+		}
+	}
+
+	setThinkingLevel(level: ThinkingLevel): void {
+		this.preferredThinkingLevel = level;
+		const prev = this.thinkingLevel;
+		this.thinkingLevel = clampThinkingLevel(level, this.provider.thinkingLevels);
+
+		void this.extensionHost?.emit({
+			type: "thinking_level_select",
+			level: this.thinkingLevel,
+			previousLevel: prev,
+		});
+	}
+
+	async compact(instruction?: string): Promise<void> {
+		if (this.busy) throw new Error("Agent 正在运行中，无法手动压缩会话");
+		const tokensBefore = Math.ceil(this.history.reduce((acc, m) => acc + m.content.length + 16, 0) / 4);
+		const cancelled = await this.extensionHost?.emitSessionBeforeCompact(tokensBefore);
+		if (cancelled) return;
+
+		try {
+			const result = await compactHistory(
+				this.history,
+				this.provider,
+				this.systemPrompt,
+				this.tools.defs(),
+				{ ...this.compaction, contextWindow: 0, reserveTokens: 0, keepRecentTokens: 0 },
+				this.abort?.signal,
+				this.provider.includeThinking,
+				instruction,
+			);
+			if (!result) return;
+			const replacement: ChatMsg[] = [
+				{ role: "user", content: `[历史摘要] ${result.summary}` },
+				...result.retainedTail,
+			];
+			await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);
+			this.history = replacement;
+
+			void this.extensionHost?.emit({
+				type: "session_compact",
+				summary: result.summary,
+				tokensBefore: result.tokensBefore,
+				retainedTailCount: result.retainedTail.length,
+			});
+		} catch (err) {
+			void this.extensionHost?.emit({
+				type: "session_compact_failed",
+				error: (err as Error).message,
+			});
+			throw err;
+		}
 	}
 
 	pushInput(text: string, options: QueueInputOptions = {}): Promise<void> {
@@ -166,7 +269,7 @@ export class Subject {
 		return items;
 	}
 
-	private startRun(text?: string, runtimeInputs: AgentInput[] = []): Promise<void> {
+	private async startRun(text?: string, runtimeInputs: AgentInput[] = []): Promise<void> {
 		if (this.busy) return Promise.reject(new Error("已有活动轮次"));
 		if (this.provider.thinkingLevels && !this.provider.thinkingLevels.includes(this.thinkingLevel)) {
 			this.reportError(new Error(`provider ${this.provider.name} 不支持 thinking level: ${this.thinkingLevel}`));
@@ -176,33 +279,47 @@ export class Subject {
 		this.interrupted = false;
 		this.abort = new AbortController();
 		const turn = ++this.turnSeq;
+
+		await this.extensionHost?.emitBeforeAgentStart(text ?? "", this.systemPrompt);
+		await this.extensionHost?.emit({ type: "agent_start", turnSeq: turn });
+
 		return this.runTurn(text, turn, runtimeInputs);
 	}
 
 	private async runTurn(text: string | undefined, turn: number, runtimeInputs: AgentInput[] = []): Promise<void> {
+		let success = false;
+		let runError: string | undefined;
 		try {
 			this.hooks.onTurnStart?.(turn, text ?? "");
+			await this.extensionHost?.emit({ type: "turn_start", turnNumber: turn, userText: text ?? "" });
 			if (text !== undefined) await this.appendMessage({ role: "user", content: text });
 			this.runtimeInputs = runtimeInputs;
 			await this.decide();
+			success = true;
 		} catch (error) {
+			runError = safeError(error);
 			if (this.interrupted || this.currentSignal().aborted) {
 				await this.emitInterrupted();
 				this.hooks.onNotice?.("本轮已中断，排队消息已保留在输入框待恢复。");
 			} else {
-				const message = safeError(error);
-				await this.storeEvent("turn_failed", { turnId: turn, error: message });
-				this.reportError(message);
+				await this.storeEvent("turn_failed", { turnId: turn, error: runError });
+				this.reportError(runError);
 			}
 		} finally {
 			this.abort = null;
 			this.runtimeInputs = [];
 			this.busy = false;
-			try { this.hooks.onTurnEnd?.(turn); } catch (error) {
+			try {
+				this.hooks.onTurnEnd?.(turn);
+				await this.extensionHost?.emit({ type: "turn_end", turnNumber: turn });
+			} catch (error) {
 				try { this.hooks.onError?.(safeError(error)); } catch { /* hooks cannot own lifecycle */ }
 			}
+			await this.extensionHost?.emit({ type: "agent_end", turnSeq: turn, success, error: runError });
 			if (!this.interrupted && this.queues.size > 0) {
 				try { await this.resumeQueued(); } catch (error) { this.reportError(error); }
+			} else if (this.queues.size === 0) {
+				await this.extensionHost?.emit({ type: "agent_settled", turnSeq: turn });
 			}
 			for (const resolve of this.idleWaiters.splice(0)) resolve();
 		}
@@ -239,23 +356,68 @@ export class Subject {
 				nextUser = undefined;
 			}
 
-			const requestMessages = buildContext({ history: this.history, systemPrompt: this.systemPrompt, includeThinking: this.provider.includeThinking, runtimeInputs: this.runtimeInputs });
+			let requestMessages = buildContext({
+				history: this.history,
+				systemPrompt: this.systemPrompt,
+				includeThinking: this.provider.includeThinking,
+				runtimeInputs: this.runtimeInputs,
+			});
+			if (this.extensionHost) {
+				requestMessages = await this.extensionHost.emitContext(requestMessages);
+			}
+
 			const toolCalls: CompletedToolCall[] = [];
 			let reply = "";
 			let thinking = "";
 			let thinkingSignature: string | undefined;
 			let finishReason: string | null = null;
+
+			const streamId = `stream-${this.turnSeq}-${Date.now()}`;
+			let textOffset = 0;
+			let thinkingOffset = 0;
+			let hasEmittedContentStart = false;
+			let hasEmittedThinkingStart = false;
+
 			try {
 				await this.provider.stream(
-					{ messages: requestMessages, tools: this.tools.defs(), thinkingLevel: this.thinkingLevel },
+					{
+						messages: requestMessages,
+						tools: this.tools.defs(),
+						thinkingLevel: this.thinkingLevel,
+						extensionHost: this.extensionHost,
+					},
 					(delta) => {
 						if (delta.kind === "thinking") {
 							thinking += delta.text;
+							if (!hasEmittedThinkingStart) {
+								hasEmittedThinkingStart = true;
+								void this.extensionHost?.emit({ type: "output_start", streamId, channel: "thinking" });
+							}
+							thinkingOffset += delta.text.length;
+							void this.extensionHost?.emit({
+								type: "output_update",
+								streamId,
+								offset: thinkingOffset,
+								channel: "thinking",
+								text: delta.text,
+							});
 							try { this.hooks.onThinking?.(delta.text); } catch (error) { this.reportError(error); }
 						} else if (delta.kind === "thinking_signature") {
 							thinkingSignature = delta.signature;
 						} else if (delta.kind === "text") {
 							reply += delta.text;
+							if (!hasEmittedContentStart) {
+								hasEmittedContentStart = true;
+								void this.extensionHost?.emit({ type: "output_start", streamId, channel: "content" });
+							}
+							textOffset += delta.text.length;
+							void this.extensionHost?.emit({
+								type: "output_update",
+								streamId,
+								offset: textOffset,
+								channel: "content",
+								text: delta.text,
+							});
 							this.hooks.onToken(delta.text);
 						} else if (delta.kind === "tool_call") {
 							const parsedArgs = parseToolArgs(delta.call.args);
@@ -271,18 +433,43 @@ export class Subject {
 					},
 					this.currentSignal(),
 				);
+
+				if (hasEmittedThinkingStart) {
+					void this.extensionHost?.emit({ type: "output_end", streamId, channel: "thinking" });
+				}
+				if (hasEmittedContentStart) {
+					void this.extensionHost?.emit({ type: "output_end", streamId, channel: "content" });
+				}
 			} catch (error) {
+				if (hasEmittedContentStart) {
+					void this.extensionHost?.emit({
+						type: "output_interrupted",
+						streamId,
+						channel: "content",
+						reason: "error",
+						spokenUntil: textOffset,
+					});
+				}
 				if (this.interrupted || this.currentSignal().aborted) {
 					await this.emitInterrupted(reply, thinking, thinkingSignature);
 					return;
 				}
 				if (reply.trim()) {
-						await this.appendMessage({ role: "assistant", content: reply, thinking: thinking || undefined, thinkingSignature, status: "error" });
+					await this.appendMessage({ role: "assistant", content: reply, thinking: thinking || undefined, thinkingSignature, status: "error" });
 				}
 				throw error;
 			}
 
 			if (this.interrupted || this.currentSignal().aborted) {
+				if (hasEmittedContentStart) {
+					void this.extensionHost?.emit({
+						type: "output_interrupted",
+						streamId,
+						channel: "content",
+						reason: "cancelled",
+						spokenUntil: textOffset,
+					});
+				}
 				await this.emitInterrupted(reply, thinking, thinkingSignature);
 				return;
 			}
@@ -393,6 +580,30 @@ export class Subject {
 			});
 			return { callId: call.id, result, status: "not_started" };
 		}
+
+		const callArgs = (call.args && typeof call.args === "object" ? call.args : {}) as Record<string, unknown>;
+		if (this.extensionHost) {
+			const blocked = await this.extensionHost.emitToolCall({
+				type: "tool_call",
+				toolName: call.name,
+				args: callArgs,
+				callId: call.id,
+			});
+			if (blocked?.block) {
+				const reason = blocked.reason || "操作已被扩展或安全策略拦截";
+				const blockedResult = `[blocked] 工具执行已被拦截: ${reason}`;
+				this.hooks.onNotice?.(blockedResult);
+				this.hooks.onToolDone?.(call.name, blockedResult, "failed", call.id);
+				await this.storeEvent("tool_finished", {
+					callId: call.id,
+					name: call.name,
+					status: "failed",
+					result: blockedResult,
+				});
+				return { callId: call.id, result: blockedResult, status: "failed" };
+			}
+		}
+
 		if (prepared.error) {
 			const outcome = await this.tools.execute(prepared, this.currentSignal());
 			await this.storeEvent("tool_finished", {
@@ -411,33 +622,69 @@ export class Subject {
 			args: call.args,
 		});
 		const outcome = await this.tools.execute(prepared, this.currentSignal());
+
+		let outcomeResult = outcome.result;
+		let outcomeStatus: ToolResultStatus = outcome.status;
+		if (this.extensionHost) {
+			const transformed = await this.extensionHost.emitToolResult({
+				type: "tool_result",
+				toolName: call.name,
+				args: callArgs,
+				result: outcomeResult,
+				isError: outcomeStatus !== "succeeded",
+				callId: call.id,
+			});
+			if (transformed) {
+				if (transformed.result !== undefined) outcomeResult = transformed.result;
+				if (transformed.isError !== undefined) outcomeStatus = transformed.isError ? "failed" : "succeeded";
+			}
+		}
+
 		await this.storeEvent("tool_finished", {
 			callId: call.id,
 			name: call.name,
-			status: outcome.status,
-			result: outcome.result,
+			status: outcomeStatus,
+			result: outcomeResult,
 		});
-		this.hooks.onToolDone?.(call.name, outcome.result, outcome.status, call.id);
-		return { callId: call.id, result: outcome.result, status: outcome.status };
+		this.hooks.onToolDone?.(call.name, outcomeResult, outcomeStatus, call.id);
+		return { callId: call.id, result: outcomeResult, status: outcomeStatus };
 	}
 
 	private async maybeCompact(): Promise<void> {
-		const result = await compactHistory(
-			this.history,
-			this.provider,
-			this.systemPrompt,
-			this.tools.defs(),
-			this.compaction,
-			this.abort?.signal,
-			this.provider.includeThinking,
-		);
-		if (!result) return;
-		const replacement: ChatMsg[] = [
-			{ role: "user", content: `[历史摘要] ${result.summary}` },
-			...result.retainedTail,
-		];
-		await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);
-		this.history = replacement;
+		const tokensBefore = Math.ceil(this.history.reduce((acc, m) => acc + m.content.length + 16, 0) / 4);
+		const cancelled = await this.extensionHost?.emitSessionBeforeCompact(tokensBefore);
+		if (cancelled) return;
+
+		try {
+			const result = await compactHistory(
+				this.history,
+				this.provider,
+				this.systemPrompt,
+				this.tools.defs(),
+				this.compaction,
+				this.abort?.signal,
+				this.provider.includeThinking,
+			);
+			if (!result) return;
+			const replacement: ChatMsg[] = [
+				{ role: "user", content: `[历史摘要] ${result.summary}` },
+				...result.retainedTail,
+			];
+			await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);
+			this.history = replacement;
+
+			void this.extensionHost?.emit({
+				type: "session_compact",
+				summary: result.summary,
+				tokensBefore: result.tokensBefore,
+				retainedTailCount: result.retainedTail.length,
+			});
+		} catch (err) {
+			void this.extensionHost?.emit({
+				type: "session_compact_failed",
+				error: (err as Error).message,
+			});
+		}
 	}
 
 	private async appendMessage(message: ChatMsg): Promise<void> {

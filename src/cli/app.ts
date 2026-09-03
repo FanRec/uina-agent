@@ -4,10 +4,10 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { loadConfig, activeProvider } from "../ai/config.js";
-import { createProvider } from "../ai/providers.js";
+import { createProvider, ModelRegistry } from "../ai/providers.js";
 import { execCommandDirect } from "../../tools/exec-command/index.js";
 import { ToolBroker } from "../tools/broker.js";
-import { loadTools } from "../tools/loader.js";
+import { loadTools, loadToolsFromPaths } from "../tools/loader.js";
 import { Subject } from "../agent/loop.js";
 import { openJsonlSession } from "../session/jsonl-store.js";
 import { createInteractiveUI, type InteractiveTUI, type OutMsg } from "../ui/tui.js";
@@ -18,6 +18,8 @@ import { createExecCommandTool } from "../../tools/exec-command/index.js";
 import { DefaultAgentFactory } from "../agent/runtime.js";
 import { SubagentRegistry } from "../extensions/subagents/registry.js";
 import { createSubagentTools } from "../extensions/subagents/tools.js";
+import { ExtensionHost } from "../extensions/host.js";
+import type { ThinkingLevel } from "../core/types.js";
 
 const DATA_DIR = join(process.cwd(), "data");
 const SESSION_FILE = join(DATA_DIR, "session.jsonl");
@@ -33,6 +35,10 @@ export async function runApp(): Promise<void> {
 	const provider = createProvider(active.name, active);
 	const tools = new ToolBroker();
 	const jobs = new JobRegistry();
+	const extensionHost = new ExtensionHost();
+	const modelRegistry = new ModelRegistry(cfg);
+	modelRegistry.register(provider.name, provider);
+
 	const loaded = await loadTools(TOOLS_DIR, tools);
 	tools.remove("exec_command");
 	const ordinaryTools = new ToolBroker();
@@ -41,6 +47,12 @@ export async function runApp(): Promise<void> {
 	for (const tool of createJobTools(jobs, "root")) tools.register(tool);
 	for (const failure of loaded.failed) {
 		process.stderr.write(`[工具加载失败] ${failure.file}: ${failure.error}\n`);
+	}
+
+	const discovered = await extensionHost.emitResourcesDiscover(process.cwd(), "startup");
+	if (discovered.toolPaths && discovered.toolPaths.length > 0) {
+		await loadToolsFromPaths(discovered.toolPaths, ordinaryTools);
+		await loadToolsFromPaths(discovered.toolPaths, tools);
 	}
 
 	const { store, snapshot } = await openJsonlSession(SESSION_FILE);
@@ -120,8 +132,23 @@ export async function runApp(): Promise<void> {
 			onNotice: (text) => render({ type: "notice", text }),
 			onQueueChanged: (items) => render({ type: "queue", items }),
 		},
-		{ store, thinkingLevel: cfg.thinkingLevel },
+		{ store, thinkingLevel: cfg.thinkingLevel, extensionHost },
 	);
+
+	extensionHost.on("session_compact", (e) => {
+		if (tui) {
+			tui.host.addCompaction({
+				id: Date.now(),
+				summary: e.summary,
+				turnsCount: e.retainedTailCount,
+				tokensSaved: e.tokensBefore,
+				collapsed: true,
+				timestamp: Date.now(),
+			});
+		} else {
+			process.stdout.write(`\n[会话压缩] ${e.summary}\n`);
+		}
+	});
 	const subagents = new SubagentRegistry({
 		factory: new DefaultAgentFactory(),
 		provider,
@@ -231,6 +258,43 @@ export async function runApp(): Promise<void> {
 			handleInterrupt();
 			return;
 		}
+		if (text.startsWith("/model")) {
+			const target = text.slice(6).trim();
+			if (!target) {
+				render({ type: "notice", text: `当前模型: ${subject.getModel().name}` });
+				return;
+			}
+			try {
+				const newProv = modelRegistry.resolve(target);
+				void subject.setModel(newProv).then(() => {
+					tui?.host.setModel(newProv.name);
+					render({ type: "notice", text: `已切换至模型: ${newProv.name}` });
+				}).catch((err) => {
+					render({ type: "error", text: `切换模型失败: ${(err as Error).message}` });
+				});
+			} catch (err) {
+				render({ type: "error", text: `切换模型失败: ${(err as Error).message}` });
+			}
+			return;
+		}
+		if (text.startsWith("/effort")) {
+			const level = text.slice(7).trim() as ThinkingLevel;
+			if (!level) {
+				render({ type: "notice", text: `当前思考等级: ${subject.getThinkingLevel()} (偏好: ${subject.getPreferredThinkingLevel()})` });
+				return;
+			}
+			subject.setThinkingLevel(level);
+			tui?.host.setReasoningEffort(subject.getThinkingLevel());
+			render({ type: "notice", text: `思考等级已设置为: ${subject.getThinkingLevel()}` });
+			return;
+		}
+		if (text.startsWith("/compact")) {
+			const instruction = text.slice(8).trim() || undefined;
+			subject.compact(instruction).catch((err) => {
+				render({ type: "error", text: `压缩失败: ${(err as Error).message}` });
+			});
+			return;
+		}
 		if (text.startsWith("!")) {
 			if (subject.isBusy()) {
 				process.stdout.write("[!] 模型正在处理中，请等待本轮结束后再执行\n");
@@ -263,10 +327,31 @@ export async function runApp(): Promise<void> {
 			jobs,
 			subagents,
 			onDirectCommand: runDirectCommand,
+			onModelChange: async (modelId) => {
+				try {
+					const newProv = modelRegistry.resolve(modelId);
+					await subject.setModel(newProv);
+					render({ type: "notice", text: `已成功切换模型至: ${newProv.name}` });
+				} catch (err) {
+					render({ type: "error", text: `切换模型失败: ${(err as Error).message}` });
+				}
+			},
+			onEffortChange: (effort) => {
+				subject.setThinkingLevel(effort);
+				render({ type: "notice", text: `思考等级已设置为: ${subject.getThinkingLevel()}` });
+			},
+			onCompactRequest: async (instruction) => {
+				try {
+					await subject.compact(instruction);
+				} catch (err) {
+					render({ type: "error", text: `压缩失败: ${(err as Error).message}` });
+				}
+			},
 		});
 		tui.onLine(onUserLine);
 		tui.onSIGINT(handleInterrupt);
-	} else {
+	}
+ else {
 		nonTTY = createInterface({ input: process.stdin });
 		nonTTY.on("line", (line) => onUserLine(line, "followUp"));
 		nonTTY.on("close", () => {

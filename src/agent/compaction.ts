@@ -26,6 +26,7 @@ export function shouldCompact(
 	settings: CompactionSettings,
 	includeThinking = false,
 ): boolean {
+	if (settings.contextWindow === 0) return true;
 	return (
 		estimateRequestTokens(
 			buildContext({ history: [...history], systemPrompt }),
@@ -65,6 +66,7 @@ export async function compactHistory(
 	settings: CompactionSettings,
 	signal?: AbortSignal,
 	includeThinking = false,
+	instruction?: string,
 ): Promise<CompactionResult | null> {
 	if (!shouldCompact(history, systemPrompt, tools, settings, includeThinking)) return null;
 	const keepFrom = findKeepFrom(history, settings.keepRecentTokens);
@@ -88,6 +90,7 @@ export async function compactHistory(
 				{
 					role: "system",
 					content:
+						instruction ??
 						"你是 Uina。把以下历史对话压缩成不超过 200 字的中文摘要：只保留关键事实、用户偏好、未完成事项。不要寒暄。",
 				},
 				{ role: "user", content: transcript },

@@ -55,6 +55,10 @@ export class ToolBroker {
 		this.tools.delete(name);
 	}
 
+	has(name: string): boolean {
+		return this.tools.has(name);
+	}
+
 	names(): string[] {
 		return [...this.tools.keys()];
 	}
