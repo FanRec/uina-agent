@@ -50,10 +50,9 @@ describe("thinking pipeline", () => {
 	it("rejects an unsupported configured level before provider execution", async () => {
 		let called = false;
 		const provider: ModelProvider = { name: "limited", thinkingLevels: ["off"], async stream() { called = true; } };
-		const subject = new Subject(provider, new ToolBroker(), { onToken: () => {}, onError: () => {} }, { thinkingLevel: "high" });
-		await subject.pushInput("问题");
+		expect(() => new Subject(provider, new ToolBroker(), { onToken: () => {}, onError: () => {} }, { thinkingLevel: "high" }))
+			.toThrow("未声明支持 thinking level");
 		expect(called).toBe(false);
-		expect(subject.isBusy()).toBe(false);
 	});
 });
 
@@ -81,7 +80,7 @@ describe("OpenAI-compatible thinking", () => {
 
 	it("creates the configured Anthropic and Gemini adapter kinds", () => {
 		const base = { baseUrl: "https://example.test", apiKey: "x", model: "m", modelContextWindow: 4096 };
-		expect(createProvider("a", { ...base, type: "anthropic" }).thinkingLevels).toContain("high");
-		expect(createProvider("g", { ...base, type: "gemini" }).thinkingLevels).toContain("high");
+		expect(createProvider("a", { ...base, type: "anthropic", thinkingLevels: ["off", "high"] }).thinkingLevels).toEqual(["off", "high"]);
+		expect(createProvider("g", { ...base, type: "gemini" }).thinkingLevels).toBeUndefined();
 	});
 });

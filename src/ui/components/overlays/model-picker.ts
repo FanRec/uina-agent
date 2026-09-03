@@ -20,49 +20,10 @@ export interface ModelGroup {
 	models: ModelItem[];
 }
 
-export const DEFAULT_MODEL_GROUPS: ModelGroup[] = [
-	{
-		id: "deepseek",
-		name: "DeepSeek",
-		description: "DeepSeek 官方平台",
-		models: [
-			{ id: "deepseek-chat", name: "deepseek-chat", description: "通用极速模型 (DeepSeek-V3)", provider: "deepseek" },
-			{ id: "deepseek-reasoner", name: "deepseek-reasoner", description: "长推理思考模型 (DeepSeek-R1)", provider: "deepseek" },
-		],
-	},
-	{
-		id: "anthropic",
-		name: "Anthropic",
-		description: "Claude 尖端推理模型",
-		models: [
-			{ id: "claude-3-7-sonnet", name: "claude-3-7-sonnet", description: "混合推理与编码旗舰", provider: "anthropic" },
-			{ id: "claude-3-5-haiku", name: "claude-3-5-haiku", description: "轻量极速端到端响应", provider: "anthropic" },
-		],
-	},
-	{
-		id: "openai",
-		name: "OpenAI",
-		description: "GPT 与 O 系列推理模型",
-		models: [
-			{ id: "gpt-4o", name: "gpt-4o", description: "多模态全能旗舰模型", provider: "openai" },
-			{ id: "o3-mini", name: "o3-mini", description: "高性价比深度思考模型", provider: "openai" },
-		],
-	},
-	{
-		id: "ollama",
-		name: "Ollama",
-		description: "本地私有化离线部署模型",
-		models: [
-			{ id: "qwen2.5-coder:32b", name: "qwen2.5-coder:32b", description: "通义千问本地代码特化版", provider: "ollama" },
-			{ id: "deepseek-r1:14b", name: "deepseek-r1:14b", description: "本地蒸馏深度思考模型", provider: "ollama" },
-		],
-	},
-];
-
 export class ModelPicker implements Component, Focusable {
 	focused = true;
 	private groups: ModelGroup[];
-	private currentModelId: string;
+	private currentModelId?: string;
 	private level: "groups" | "models" = "groups";
 	private selectedGroupIndex = 0;
 	private selectedModelIndex = 0;
@@ -71,7 +32,7 @@ export class ModelPicker implements Component, Focusable {
 	onClose?: () => void;
 	onRequestRender?: () => void;
 
-	constructor(currentModelId = "deepseek-chat", groups = DEFAULT_MODEL_GROUPS) {
+	constructor(currentModelId?: string, groups: ModelGroup[] = []) {
 		this.groups = groups;
 		this.currentModelId = currentModelId;
 
@@ -109,12 +70,11 @@ export class ModelPicker implements Component, Focusable {
 
 	confirm(): { action: "drilled" } | { action: "picked"; modelId: string } | null {
 		if (this.level === "groups") {
-			this.level = "models";
 			const group = this.groups[this.selectedGroupIndex];
-			if (group) {
-				const mIdx = group.models.findIndex((m) => m.id === this.currentModelId);
-				this.selectedModelIndex = mIdx >= 0 ? mIdx : 0;
-			}
+			if (!group) return null;
+			this.level = "models";
+			const mIdx = group.models.findIndex((m) => m.id === this.currentModelId);
+			this.selectedModelIndex = mIdx >= 0 ? mIdx : 0;
 			return { action: "drilled" };
 		}
 
@@ -170,18 +130,21 @@ export class ModelPicker implements Component, Focusable {
 		const innerW = boxWidth - 4;
 		const borderCol = C.gray;
 
-		const currentGroup = this.groups[this.selectedGroupIndex] ?? this.groups[0]!;
+		const currentGroup = this.groups[this.selectedGroupIndex] ?? this.groups[0];
 
 		const titleTag =
 			this.level === "groups"
 				? `─ 切换模型服务商 (Providers) `
-				: `─ 选择模型 (${currentGroup.name}) `;
+				: `─ 选择模型 (${currentGroup?.name ?? "未知"}) `;
 		const topFillLen = Math.max(1, boxWidth - 2 - visibleWidth(titleTag));
 		const topLine = `  ${borderCol}╭${titleTag}${"─".repeat(topFillLen)}╮${C.reset}`;
 
 		const output: string[] = [topLine];
 
-		if (this.level === "groups") {
+		if (this.groups.length === 0) {
+			const empty = `${C.dim}没有来自配置、Provider 或可信目录的可选模型${C.reset}`;
+			output.push(`  ${borderCol}│${C.reset} ${empty}${" ".repeat(Math.max(0, innerW - visibleWidth(empty)))} ${borderCol}│${C.reset}`);
+		} else if (this.level === "groups") {
 			for (let i = 0; i < this.groups.length; i++) {
 				const grp = this.groups[i]!;
 				const isSelected = i === this.selectedGroupIndex;
@@ -198,7 +161,7 @@ export class ModelPicker implements Component, Focusable {
 				output.push(`  ${borderCol}│${C.reset} ${content}${" ".repeat(padLen)} ${borderCol}│${C.reset}`);
 			}
 		} else {
-			for (let i = 0; i < currentGroup.models.length; i++) {
+			for (let i = 0; i < (currentGroup?.models.length ?? 0); i++) {
 				const model = currentGroup.models[i]!;
 				const isSelected = i === this.selectedModelIndex;
 				const isCurrent = model.id === this.currentModelId;
@@ -215,8 +178,9 @@ export class ModelPicker implements Component, Focusable {
 			}
 		}
 
-		const bottomHint =
-			this.level === "groups"
+		const bottomHint = this.groups.length === 0
+			? `Esc 关闭`
+			: this.level === "groups"
 				? `↑↓ 移动 · Enter 展开 · Esc 关闭`
 				: `↑↓ 移动 · Enter 确认切换 · Esc 返回`;
 		const botFillLen = Math.max(1, boxWidth - 2 - visibleWidth(bottomHint) - 2);

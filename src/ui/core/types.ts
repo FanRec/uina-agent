@@ -94,7 +94,7 @@ export type UinaUIMsg =
 	| { type: "text"; text: string }
 	| { type: "thinking"; text: string }
 	| { type: "turn_start"; n: number; text: string }
-	| { type: "turn_end"; n: number; usage?: { usedTokens: number; contextWindow: number } }
+	| { type: "turn_end"; n: number; usage?: { usedTokens: number; contextWindow?: number } }
 	| { type: "tool_start"; name: string; args: unknown; ts?: number; callId?: string }
 	| { type: "tool_done"; name: string; result: string; ts?: number; elapsedMs?: number; callId?: string }
 	| { type: "notice"; text: string }

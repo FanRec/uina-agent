@@ -277,7 +277,7 @@ export async function runApp(): Promise<void> {
 
 	const isTTY = process.stdout.isTTY && process.stdin.isTTY;
 	if (!isTTY) {
-		process.stdout.write(`Uina 就绪（模型：${provider.name}，工具：${loaded.loaded} 个）— /quit 退出\n\n`);
+		process.stdout.write(`Uina 就绪（模型：${provider.name}）— /quit 退出\n\n`);
 	}
 	process.on("SIGINT", handleInterrupt);
 
@@ -285,34 +285,27 @@ export async function runApp(): Promise<void> {
 		tui = createInteractiveUI({
 			modelName: provider.name,
 			thinkingLevels: provider.thinkingLevels,
-			toolCount: loaded.loaded,
+			thinkingLevel: subject.getThinkingLevel(),
 			cwd: process.cwd(),
 			registry: extensionHost.registry,
 		});
 		extensionHost.attachUI(tui.ctxUI);
 		tui.onLine(onUserLine);
 		tui.onSIGINT(handleInterrupt);
+		tui.onThinkingLevelCycle(() => {
+			if (!subject.getModel().thinkingLevels?.length) {
+				tui?.host.transcript.addNotice("当前 Provider 未提供 thinking 能力元数据；无法循环档位。");
+				tui?.host.requestRender();
+				return;
+			}
+			const level = subject.cycleThinkingLevel();
+			tui?.host.setReasoningEffort(level);
+			tui?.host.transcript.addNotice(`思考等级已设置为: ${level}`);
+			tui?.host.requestRender();
+		});
 		tui.host.setUsage(subject.getUsedTokens(), subject.getContextWindow());
 		if (snapshot.entries.length > 0) {
 			tui.loadSession(snapshot.entries);
-			let sys = 0, pr = 0, ast = 0, th = 0, tl = 0;
-			for (const m of restoredHistory) {
-				const len = Math.ceil(m.content.length / 3);
-				if (m.role === "system") sys += len;
-				else if (m.role === "user") pr += len;
-				else if (m.role === "assistant") {
-					ast += len;
-					if (m.thinking) th += Math.ceil(m.thinking.length / 3);
-					if (m.tool_calls) tl += Math.ceil(JSON.stringify(m.tool_calls).length / 3);
-				} else if (m.role === "tool") tl += len;
-			}
-			tui.host.setDetailedSegments({
-				sys,
-				pr,
-				ast,
-				th,
-				tl,
-			});
 		}
 	} else {
 		nonTTY = createInterface({ input: process.stdin });

@@ -21,7 +21,7 @@ import { InputLine } from "./components/editor/input-line.js";
 import { BannerComponent } from "./components/primitives/banner.js";
 import { TranscriptContainer } from "./components/transcript/transcript.js";
 import { ActivityLineComponent } from "./components/widgets/activity-line.js";
-import { ContextBarComponent, formatCacheHitRate, type ContextSegments } from "./components/widgets/context-bar.js";
+import { ContextBarComponent, formatCacheHitRate } from "./components/widgets/context-bar.js";
 import { TimelineRailComponent } from "./components/widgets/timeline-rail.js";
 import { HelpMenu } from "./components/overlays/help-menu.js";
 import {
@@ -50,7 +50,7 @@ export interface UIHostOptions {
 	cwd?: string;
 	modelName?: string;
 	thinkingLevels?: readonly ThinkingLevel[];
-	toolCount?: number;
+	thinkingLevel?: ThinkingLevel;
 	registry?: ExtensionRegistry;
 }
 
@@ -80,13 +80,13 @@ export class UIHost implements UIHostContextPort {
 	readonly trajectoryProjection: TrajectoryProjection;
 
 	// 业务参数
-	private modelName = "deepseek-chat";
+	private modelName?: string;
 	private usedTokens = 0;
-	private contextWindow = 65536;
-	private reasoningEffort: ThinkingLevel = "medium";
-	private thinkingLevels: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+	private contextWindow?: number;
+	private usageActual = false;
+	private reasoningEffort?: ThinkingLevel;
+	private thinkingLevels: readonly ThinkingLevel[] = ["off"];
 	private cwd: string;
-	private contextSegments: ContextSegments = { sys: 9000, pr: 5, ast: 79, th: 358, tl: 0 };
 	private cacheReadTokens?: number;
 	private inputTokensCount?: number;
 	private cacheWriteTokens?: number;
@@ -173,11 +173,16 @@ export class UIHost implements UIHostContextPort {
 	// 事件回调
 	onUserLine?: (text: string, mode: "steer" | "followUp" | "direct") => void;
 	onInterrupt?: () => void;
+	onThinkingLevelCycle?: () => void;
 
 	constructor(options: UIHostOptions = {}) {
 		this.cwd = options.cwd ?? process.cwd();
-		if (options.modelName) this.modelName = options.modelName;
-		if (options.thinkingLevels?.length) this.thinkingLevels = [...options.thinkingLevels];
+		this.modelName = options.modelName;
+		this.thinkingLevels = options.thinkingLevels?.length ? [...options.thinkingLevels] : ["off"];
+		this.reasoningEffort = options.thinkingLevel;
+		if (this.reasoningEffort && !this.thinkingLevels.includes(this.reasoningEffort)) {
+			throw new Error(`当前 Provider 不支持思考等级: ${this.reasoningEffort}`);
+		}
 
 		this.terminal = options.terminal ?? new ProcessTerminal();
 		this.renderer = new MainScreenRenderer(this.terminal);
@@ -203,7 +208,6 @@ export class UIHost implements UIHostContextPort {
 
 		this.banner = new BannerComponent({
 			modelName: this.modelName,
-			toolCount: options.toolCount ?? 6,
 			cwd: this.cwd,
 		});
 		this.headerContainer.addChild(this.banner);
@@ -215,7 +219,7 @@ export class UIHost implements UIHostContextPort {
 			if (this.overlayStack.hasVisible) this.overlayStack.hideTopOverlay();
 		};
 		this.inputLine.setCwd(this.cwd);
-		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow);
+		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual);
 		this.inputLine.setReasoningEffort(this.reasoningEffort);
 		this.editorContainer.addChild(this.inputLine);
 
@@ -277,9 +281,8 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	setThinkingLevels(levels: readonly ThinkingLevel[]): void {
-		this.thinkingLevels = levels.length ? [...levels] : ["off"];
-		if (!this.thinkingLevels.includes(this.reasoningEffort)) this.reasoningEffort = "off";
+	setThinkingLevels(levels?: readonly ThinkingLevel[]): void {
+		this.thinkingLevels = levels?.length ? [...levels] : ["off"];
 	}
 
 	setReasoningEffort(effort: ThinkingLevel | string): void {
@@ -295,17 +298,8 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	getReasoningEffort(): ThinkingLevel {
+	getReasoningEffort(): ThinkingLevel | undefined {
 		return this.reasoningEffort;
-	}
-
-	cycleReasoningEffort(): void {
-		const tiers = this.thinkingLevels;
-		if (!tiers || tiers.length === 0) return;
-		const idx = tiers.indexOf(this.reasoningEffort);
-		const next = tiers[(idx + 1) % tiers.length]!;
-		this.setReasoningEffort(next);
-		this.transcript.addNotice(`思考等级已设置为: ${next}`);
 	}
 
 	getStreamTokenCount(): number {
@@ -346,40 +340,29 @@ export class UIHost implements UIHostContextPort {
 		details?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number },
 	): void {
 		this.usedTokens = used;
-		if (contextWindow) this.contextWindow = contextWindow;
-		if (details) {
-			this.cacheReadTokens = details.cacheRead;
-			this.inputTokensCount = details.input;
-			this.cacheWriteTokens = details.cacheWrite;
-		}
+		this.contextWindow = contextWindow && contextWindow > 0 ? contextWindow : undefined;
+		this.usageActual = actual;
+		this.cacheReadTokens = details?.cacheRead;
+		this.inputTokensCount = details?.input;
+		this.cacheWriteTokens = details?.cacheWrite;
 		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, actual);
 		this.contextBar.update({
 			usedTokens: this.usedTokens,
 			contextWindow: this.contextWindow,
-			modelName: this.modelName,
-			effort: this.reasoningEffort,
+			actual: this.usageActual,
 			cwd: this.cwd,
 			cacheRead: this.cacheReadTokens,
 			inputTokens: this.inputTokensCount,
 			cacheWrite: this.cacheWriteTokens,
-			segments: this.contextSegments,
 		});
 		this.requestRender();
 	}
 
-	setDetailedSegments(segments: Partial<ContextSegments>): void {
-		this.contextSegments = { ...this.contextSegments, ...segments };
-		this.contextBar.update({
-			usedTokens: this.usedTokens,
-			contextWindow: this.contextWindow,
-			modelName: this.modelName,
-			effort: this.reasoningEffort,
-			cwd: this.cwd,
-			cacheRead: this.cacheReadTokens,
-			inputTokens: this.inputTokensCount,
-			cacheWrite: this.cacheWriteTokens,
-			segments: this.contextSegments,
-		});
+	markUsageEstimated(): void {
+		this.usageActual = false;
+		this.cacheReadTokens = undefined;
+		this.inputTokensCount = undefined;
+		this.cacheWriteTokens = undefined;
 		this.requestRender();
 	}
 
@@ -642,7 +625,7 @@ export class UIHost implements UIHostContextPort {
 		const cacheRate = formatCacheHitRate(this.cacheReadTokens, this.inputTokensCount, this.cacheWriteTokens);
 		this.inputLine.setStatusHeader(statusHeader);
 		this.inputLine.setCwd(this.cwd);
-		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow);
+		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual);
 		this.inputLine.setReasoningEffort(this.reasoningEffort);
 		this.inputLine.setCacheRate(cacheRate);
 
@@ -666,13 +649,11 @@ export class UIHost implements UIHostContextPort {
 		this.contextBar.update({
 			usedTokens: this.usedTokens,
 			contextWindow: this.contextWindow,
-			modelName: this.modelName,
-			effort: this.reasoningEffort,
+			actual: this.usageActual,
 			cwd: this.cwd,
 			cacheRead: this.cacheReadTokens,
 			inputTokens: this.inputTokensCount,
 			cacheWrite: this.cacheWriteTokens,
-			segments: this.contextSegments,
 		});
 		const contextBarLines = this.contextBar.render(inputWidth).map((l) => `${margin}${l}`);
 		const belowLines = [
@@ -1020,8 +1001,7 @@ export class UIHost implements UIHostContextPort {
 
 		// 2. 全局快捷键拦截
 		if (data === "\x1b[Z" || matchesKey(data, Key.shiftTab)) {
-			// Shift+Tab：就地循环切换思考强度
-			this.cycleReasoningEffort();
+			this.onThinkingLevelCycle?.();
 			return;
 		}
 

@@ -103,7 +103,7 @@ export class TrajectoryProjection implements TrajectoryEventSource {
 		}
 	}
 
-	onTurnEnd(n: number, usage?: { usedTokens: number; contextWindow: number }): void {
+	onTurnEnd(n: number, usage?: { usedTokens: number; contextWindow?: number }): void {
 		const now = Date.now();
 		const elapsed = Math.max(1, now - this.turnStartTime);
 

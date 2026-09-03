@@ -2,13 +2,12 @@ import type { ChatMsg, ModelProvider, ToolDef } from "../core/types.js";
 import { buildContext, estimateContextTokens, estimateRequestTokens, formatForSummary } from "./context.js";
 
 export interface CompactionSettings {
-	contextWindow: number;
+	contextWindow?: number;
 	reserveTokens: number;
 	keepRecentTokens: number;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
-	contextWindow: 64 * 1024,
 	reserveTokens: 16_384,
 	keepRecentTokens: 20_000,
 };
@@ -26,6 +25,7 @@ export function shouldCompact(
 	settings: CompactionSettings,
 	includeThinking = false,
 ): boolean {
+	if (settings.contextWindow === undefined) return false;
 	if (settings.contextWindow === 0) return true;
 	return (
 		estimateContextTokens(buildContext({ history: [...history], systemPrompt })).tokens + estimateRequestTokens([], tools, includeThinking) >

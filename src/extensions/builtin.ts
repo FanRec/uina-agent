@@ -50,8 +50,10 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 				const model = services.subject.getModel();
 				const used = services.subject.getUsedTokens();
 				const window = services.subject.getContextWindow();
-				const pct = window > 0 ? Math.round((used / window) * 100) : 0;
-				pi.ui.notify(`会话信息: 模型=${model.name} · Token=${used}/${window} (${pct}%) · 思考=${services.subject.getThinkingLevel()}`);
+				const context = window === undefined
+					? `约 ${used}/上限未知`
+					: `约 ${used}/${window} (${Math.round((used / window) * 100)}%)`;
+				pi.ui.notify(`会话信息: 模型=${model.name} · Token=${context} · 思考=${services.subject.getThinkingLevel()}`);
 			},
 		});
 
@@ -98,7 +100,9 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			const provider = services.models.resolve(arg);
 			await services.subject.setModel(provider);
 			host()?.setModel(provider.name);
-			host()?.setThinkingLevels(provider.thinkingLevels ?? ["off"]);
+			host()?.setThinkingLevels(provider.thinkingLevels);
+			host()?.setReasoningEffort(services.subject.getThinkingLevel());
+			host()?.setUsage(services.subject.getUsedTokens(), services.subject.getContextWindow());
 			pi.ui.notify(`已切换至模型: ${provider.name}`);
 		};
 
@@ -109,13 +113,17 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			argumentHint: "<level>",
 			handler: (arg) => {
 				if (!arg) {
+					const declaredLevels = services.subject.getModel().thinkingLevels;
+					if (!declaredLevels?.length) {
+						pi.ui.notify("当前 Provider 未提供 thinking 能力元数据；Uina 不会猜测可用档位。", "warning");
+						return;
+					}
 					const h = host();
 					if (h) {
 						h.toggleModal("effort", (close) => {
-							const levels = services.subject.getModel().thinkingLevels ?? ["off"];
 							const slider = new EffortSlider(
 								services.subject.getThinkingLevel(),
-								DEFAULT_EFFORT_TIERS.filter((tier) => levels.includes(tier.id)),
+								DEFAULT_EFFORT_TIERS.filter((tier) => declaredLevels.includes(tier.id)),
 							);
 							const handle = pi.ui.showOverlay(slider);
 							slider.onChange = (level) => {
@@ -135,10 +143,9 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 						});
 						return;
 					}
-					const levels = services.subject.getModel().thinkingLevels ?? ["off"];
 					const slider = new EffortSlider(
 						services.subject.getThinkingLevel(),
-						DEFAULT_EFFORT_TIERS.filter((tier) => levels.includes(tier.id)),
+						DEFAULT_EFFORT_TIERS.filter((tier) => declaredLevels.includes(tier.id)),
 					);
 					const handle = pi.ui.showOverlay(slider);
 					slider.onChange = (level) => {
@@ -149,8 +156,9 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 					return;
 				}
 				const level = arg as import("../core/types.js").ThinkingLevel;
-				if (!services.subject.getModel().thinkingLevels?.includes(level)) {
-					throw new Error(`当前 Provider 不支持思考等级: ${arg}`);
+				const levels = services.subject.getModel().thinkingLevels;
+				if (!levels?.includes(level)) {
+					throw new Error(levels ? `当前 Provider 不支持思考等级: ${arg}` : "当前 Provider 未声明 thinking 能力");
 				}
 				services.subject.setThinkingLevel(level);
 				host()?.setReasoningEffort(level);

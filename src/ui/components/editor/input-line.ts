@@ -95,10 +95,11 @@ export class InputLine implements Component, Focusable {
 
 	// 外部状态注入
 	private topStatusHeader = "";
-	private modelName = "deepseek-chat";
-	private reasoningEffort = "medium";
+	private modelName?: string;
+	private reasoningEffort?: string;
 	private usedTokens = 0;
-	private contextWindow = 64 * 1024;
+	private contextWindow?: number;
+	private usageActual = false;
 	private cacheRate?: string;
 	private progressHotspotWidth = 35; // 进度条热区列宽，供鼠标 Hover 检测
 
@@ -117,14 +118,15 @@ export class InputLine implements Component, Focusable {
 		this.topStatusHeader = header;
 	}
 
-	setContextStats(modelName: string, usedTokens: number, contextWindow: number, _actual = false): void {
-		if (modelName) this.modelName = modelName;
+	setContextStats(modelName: string | undefined, usedTokens: number, contextWindow?: number, actual = false): void {
+		this.modelName = modelName || undefined;
 		this.usedTokens = usedTokens;
-		if (contextWindow > 0) this.contextWindow = contextWindow;
+		this.contextWindow = contextWindow && contextWindow > 0 ? contextWindow : undefined;
+		this.usageActual = actual;
 	}
 
-	setReasoningEffort(effort: string): void {
-		if (effort) this.reasoningEffort = effort;
+	setReasoningEffort(effort?: string): void {
+		this.reasoningEffort = effort || undefined;
 	}
 
 	setCacheRate(rate?: string): void {
@@ -793,15 +795,18 @@ export class InputLine implements Component, Focusable {
 		}
 
 		// ─────────────────────────────────────────────────────────────
-		// 5. 底边框（图一的信息密度 + dsh-TUI 配色）：
-		//    ╰─ [████░░░░] 0/65.5k (0.0%) ── 缓存 99.1% ── deepseek-chat · 思考:中 ─╯
+		// 5. 底边框：只展示宿主提供的事实。未知的上下文上限使用
+		//    明确占位，不把空进度条伪装成 0%。
 		// ─────────────────────────────────────────────────────────────
-		const pct = Math.min(100, Math.max(0, (this.usedTokens / this.contextWindow) * 100));
-		const pctStr = `${pct.toFixed(1)}%`;
+		const pct = this.contextWindow === undefined
+			? undefined
+			: Math.min(100, Math.max(0, (this.usedTokens / this.contextWindow) * 100));
+		const pctStr = pct === undefined ? "上限未知" : `${pct.toFixed(1)}%`;
 		const usedText = formatTokensCompact(this.usedTokens);
-		const totalText = formatTokensCompact(this.contextWindow);
-		const fullReadout = `${usedText}/${totalText} (${pctStr})`;
-		const compactReadout = `${usedText}/${totalText}`;
+		const measuredUsed = `${this.usageActual ? "" : "~"}${usedText}`;
+		const totalText = this.contextWindow === undefined ? "未知" : formatTokensCompact(this.contextWindow);
+		const fullReadout = `${measuredUsed}/${totalText}${pct === undefined ? "" : ` (${pctStr})`}`;
+		const compactReadout = `${measuredUsed}/${totalText}`;
 
 		const effortLabels: Record<string, string> = {
 			off: `${C.inactive}思考:关${C.reset}`,
@@ -813,28 +818,33 @@ export class InputLine implements Component, Focusable {
 			xhigh: `${C.suggestion}思考:极高${C.reset}`,
 			max: `${C.suggestion}思考:极高${C.reset}`,
 		};
-		const effortBadge = effortLabels[this.reasoningEffort] ?? `${C.cyan}思考:${this.reasoningEffort}${C.reset}`;
-		const identityBadge = `${C.inactive}${this.modelName}${C.reset} ${C.subtle}·${C.reset} ${effortBadge}`;
+		const effortBadge = this.reasoningEffort
+			? (effortLabels[this.reasoningEffort] ?? `${C.cyan}思考:${this.reasoningEffort}${C.reset}`)
+			: `${C.inactive}思考:未知${C.reset}`;
+		const identityBadge = `${C.inactive}${this.modelName ?? "模型未知"}${C.reset} ${C.subtle}·${C.reset} ${effortBadge}`;
 		const remainingDown = maxScroll - this.scrollOffset;
 		const identityWithScroll = remainingDown > 0
 			? `${C.warning}↓ +${remainingDown}行${C.reset} ${identityBadge}`
 			: identityBadge;
 
 		// 缓存命中率徽章
-		const cacheText = this.cacheRate ?? "-";
-		const cacheBadge = `${C.inactive}缓存 ${C.suggestion}${cacheText}${C.reset}`;
+		const cacheBadge = this.cacheRate
+			? `${C.inactive}缓存 ${C.suggestion}${this.cacheRate}${C.reset}`
+			: "";
 
-		const barColor = pct >= 90 ? C.error : pct >= 80 ? C.warning : C.claude;
+		const barColor = pct === undefined ? C.subtle : pct >= 90 ? C.error : pct >= 80 ? C.warning : C.claude;
 		const composeBottomLine = (
 			barWidth: number,
 			readout: string,
 			includeCache: boolean,
 			identity: string,
 		): { line: string; progressHotspotWidth: number } | undefined => {
-			const filledCols = Math.min(barWidth, Math.max(0, Math.round((pct / 100) * barWidth)));
+			const filledCols = pct === undefined ? 0 : Math.min(barWidth, Math.max(0, Math.round((pct / 100) * barWidth)));
 			const emptyCols = barWidth - filledCols;
-			const filledBar = `${barColor}${"█".repeat(filledCols)}${C.reset}`;
-			const emptyBar = `${C.subtle}${"░".repeat(emptyCols)}${C.reset}`;
+			const filledBar = pct === undefined
+				? `${C.subtle}${"?".repeat(barWidth)}${C.reset}`
+				: `${barColor}${"█".repeat(filledCols)}${C.reset}`;
+			const emptyBar = pct === undefined ? "" : `${C.subtle}${"░".repeat(emptyCols)}${C.reset}`;
 			const left = `${borderCol}╰─ [${filledBar}${emptyBar}${borderCol}] ${C.inactive}${readout}${C.reset}`;
 			const separator = `${borderCol}─${C.reset}`;
 			// Cache stays in the left metric cluster. The model + effort cluster
@@ -876,14 +886,15 @@ export class InputLine implements Component, Focusable {
 		// 逐级退化：优先保留上下文读数与缓存命中率，再在窄屏上收起
 		// 模型/思考徽章，最后把读数压缩为百分比。每一个候选都重新
 		// 计算进度条宽度，因此不会出现底边超出输入框的情况。
+		const hasCacheFact = cacheBadge.length > 0;
 		const candidates: Array<{ readout: string; cache: boolean; identity: string }> = [
-			{ readout: fullReadout, cache: true, identity: identityWithScroll },
-			{ readout: fullReadout, cache: true, identity: identityBadge },
-			{ readout: fullReadout, cache: true, identity: "" },
-			{ readout: compactReadout, cache: true, identity: identityBadge },
-			{ readout: compactReadout, cache: true, identity: "" },
-			{ readout: pctStr, cache: true, identity: identityBadge },
-			{ readout: pctStr, cache: true, identity: "" },
+			{ readout: fullReadout, cache: hasCacheFact, identity: identityWithScroll },
+			{ readout: fullReadout, cache: hasCacheFact, identity: identityBadge },
+			{ readout: fullReadout, cache: hasCacheFact, identity: "" },
+			{ readout: compactReadout, cache: hasCacheFact, identity: identityBadge },
+			{ readout: compactReadout, cache: hasCacheFact, identity: "" },
+			{ readout: pctStr, cache: hasCacheFact, identity: identityBadge },
+			{ readout: pctStr, cache: hasCacheFact, identity: "" },
 			{ readout: pctStr, cache: false, identity: "" },
 			{ readout: "", cache: false, identity: "" },
 		];

@@ -109,7 +109,6 @@ function renderBigfontUina(): string[] {
 
 export interface BannerOptions {
 	modelName?: string;
-	toolCount?: number;
 	cwd?: string;
 }
 
@@ -122,8 +121,7 @@ export function getStartupBanner(
 	const banner: string[] = [];
 
 	const uinaLines = renderBigfontUina();
-	const model = options?.modelName ?? "deepseek-chat";
-	const tools = options?.toolCount ?? 6;
+	const model = options?.modelName ?? "模型未知";
 
 	// 宽度 >= 85 列时并排展示 40 列像素鲸鱼与右侧信息；小于 85 列时展示紧凑极客横幅
 	if (width >= 85) {
@@ -131,14 +129,14 @@ export function getStartupBanner(
 		const availRight = Math.max(10, width - 43); // 40鲸鱼 + 3空格间距
 
 		const info1 = truncateToWidth(
-			`${C.bold}${C.white}Uina${C.reset} · ${C.iceBlue}Autonomous Agent Core${C.reset}`,
+			`${C.bold}${C.white}Uina${C.reset} · ${C.iceBlue}Extensible Agent Runtime${C.reset}`,
 			availRight,
 			"",
 		);
 		const info2 = truncateToWidth(
-			availRight >= 36
-				? `${C.gray}模型: ${C.green}${model}${C.gray}  工具: ${C.green}${tools}${C.gray} 个已就绪${C.reset}`
-				: `${C.gray}${model} · ${tools} tools${C.reset}`,
+			availRight >= 24
+				? `${C.gray}模型: ${C.green}${model}${C.reset}`
+				: `${C.gray}${model}${C.reset}`,
 			availRight,
 			"",
 		);
@@ -177,7 +175,7 @@ export function getStartupBanner(
 		}
 
 		// 鲸鱼腹部正下方（40 列居中）标语
-		const tagline = "✦ Autonomous Runtime · Latency < 1.8s ✦";
+		const tagline = "✦ Local · Open · Extensible ✦";
 		const tagWidth = visibleWidth(tagline);
 		const leadPad = Math.max(0, Math.floor((38 - tagWidth) / 2));
 		const centeredTagline = `${" ".repeat(leadPad)}${C.iceBlue}${C.dim}${tagline}${C.reset}`;
@@ -197,13 +195,13 @@ export function getStartupBanner(
 		}
 
 		const info1 = width >= 34
-			? `${C.bold}${C.white}Uina${C.reset} · ${C.iceBlue}Autonomous Agent Core${C.reset}`
+			? `${C.bold}${C.white}Uina${C.reset} · ${C.iceBlue}Extensible Agent Runtime${C.reset}`
 			: `${C.bold}${C.white}Uina Agent Core${C.reset}`;
 		const pad1 = Math.max(0, Math.floor((width - visibleWidth(info1)) / 2));
 		banner.push(`${" ".repeat(pad1)}${truncateToWidth(info1, width, "")}`);
 
 		const info2 = width >= 34
-			? `${C.gray}${model} · ${tools} tools ready${C.reset}`
+			? `${C.gray}模型: ${model}${C.reset}`
 			: `${C.gray}${model}${C.reset}`;
 		const pad2 = Math.max(0, Math.floor((width - visibleWidth(info2)) / 2));
 		banner.push(`${" ".repeat(pad2)}${truncateToWidth(info2, width, "")}`);
@@ -217,9 +215,7 @@ export function getStartupBanner(
 		const padCwd = Math.max(0, Math.floor((width - visibleWidth(infoCwd)) / 2));
 		banner.push(`${" ".repeat(padCwd)}${truncateToWidth(infoCwd, width, "")}`);
 
-		const tagline = width >= 42
-			? `${C.iceBlue}${C.dim}✦ Autonomous Runtime · Latency < 1.8s ✦${C.reset}`
-			: `${C.iceBlue}${C.dim}✦ Latency < 1.8s ✦${C.reset}`;
+		const tagline = `${C.iceBlue}${C.dim}✦ Local · Open · Extensible ✦${C.reset}`;
 		const padTag = Math.max(0, Math.floor((width - visibleWidth(tagline)) / 2));
 		banner.push(`${" ".repeat(padTag)}${truncateToWidth(tagline, width, "")}`);
 	}

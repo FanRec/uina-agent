@@ -10,24 +10,14 @@
 import type { Component } from "../../core/types.js";
 import { C, truncateToWidth } from "../../core/utils.js";
 
-export interface ContextSegments {
-	sys: number;
-	pr: number;
-	ast: number;
-	th: number;
-	tl: number;
-}
-
 export interface ContextUsageData {
 	usedTokens: number;
 	contextWindow?: number;
-	modelName?: string;
-	effort?: string;
+	actual?: boolean;
 	cwd?: string;
 	cacheRead?: number;
 	cacheWrite?: number;
 	inputTokens?: number;
-	segments?: Partial<ContextSegments>;
 }
 
 export function formatTokensCompact(n: number): string {
@@ -48,9 +38,9 @@ export function formatCacheHitRate(cacheRead?: number, input?: number, cacheWrit
 
 export class ContextBarComponent implements Component {
 	private usedTokens = 0;
-	private contextWindow = 1024 * 1024; // 默认 1.0M
-	private cwd = "~";
-	private segments: ContextSegments = { sys: 0, pr: 0, ast: 0, th: 0, tl: 0 };
+	private contextWindow?: number;
+	private actual = false;
+	private cwd = "";
 	private cacheRead?: number;
 	private cacheWrite?: number;
 	private inputTokens?: number;
@@ -59,24 +49,12 @@ export class ContextBarComponent implements Component {
 
 	update(data: ContextUsageData): void {
 		this.usedTokens = data.usedTokens;
-		if (data.contextWindow && data.contextWindow > 0) {
-			this.contextWindow = data.contextWindow;
-		}
-		if (data.cwd) {
-			this.cwd = data.cwd;
-		}
+		this.contextWindow = data.contextWindow && data.contextWindow > 0 ? data.contextWindow : undefined;
+		this.actual = data.actual === true;
+		this.cwd = data.cwd ?? "";
 		this.cacheRead = data.cacheRead;
 		this.cacheWrite = data.cacheWrite;
 		this.inputTokens = data.inputTokens;
-		if (data.segments) {
-			this.segments = {
-				sys: data.segments.sys ?? this.segments.sys,
-				pr: data.segments.pr ?? this.segments.pr,
-				ast: data.segments.ast ?? this.segments.ast,
-				th: data.segments.th ?? this.segments.th,
-				tl: data.segments.tl ?? this.segments.tl,
-			};
-		}
 		this.visible = true;
 	}
 
@@ -103,32 +81,20 @@ export class ContextBarComponent implements Component {
 		}
 
 		// 鼠标悬停时：在此固定行内渲染隐藏信息：目录 + 上下文占用 + 使用情况。
-		const pct = Math.min(100, Math.max(0, (this.usedTokens / this.contextWindow) * 100));
-		const pctStr = `${pct.toFixed(1)}%`;
 		const usedStr = formatTokensCompact(this.usedTokens);
-		const totalStr = formatTokensCompact(this.contextWindow);
-		const freeStr = formatTokensCompact(Math.max(0, this.contextWindow - this.usedTokens));
-
-		const sysStr = formatTokensCompact(this.segments.sys);
-		const prStr = formatTokensCompact(this.segments.pr);
-		const astStr = formatTokensCompact(this.segments.ast);
-		const thStr = formatTokensCompact(this.segments.th);
-		const tlStr = formatTokensCompact(this.segments.tl);
+		const usedLabel = `${this.actual ? "" : "约 "}${usedStr}`;
 
 		// 目录徽章：宽屏完整路径，窄屏短路径
 		const cwdLabel = this.cwd ? `${C.gray}🗀 ${C.dim}${this.cwd}${C.reset}` : "";
 
 		// 上下文占用详情
-		const detailParts = [
-			`${pctStr}`,
-			`${usedStr}/${totalStr}`,
-			`${C.suggestion}剩余 ${freeStr}${C.reset}`,
-			`系统 ${sysStr}`,
-			`提示词 ${prStr}`,
-			`助手 ${astStr}`,
-			`思考 ${thStr}`,
-			`工具 ${tlStr}`,
-		];
+		const detailParts = this.contextWindow === undefined
+			? [`上下文上限未知`, `已用 ${usedLabel}`]
+			: [
+					`${Math.min(100, Math.max(0, (this.usedTokens / this.contextWindow) * 100)).toFixed(1)}%`,
+					`${usedLabel}/${formatTokensCompact(this.contextWindow)}`,
+					`${C.suggestion}剩余 ${formatTokensCompact(Math.max(0, this.contextWindow - this.usedTokens))}${C.reset}`,
+				];
 		const usageDetail = `${C.inactive}${detailParts.join(` ${C.subtle}·${C.reset} ${C.inactive}`)}${C.reset}`;
 		const cacheDetail =
 			this.cacheRead !== undefined || this.cacheWrite !== undefined || this.inputTokens !== undefined

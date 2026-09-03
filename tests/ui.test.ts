@@ -26,7 +26,10 @@ import { SubagentDashboard } from "../src/ui/components/overlays/subagent-dashbo
 import { TrajectoryProjection } from "../src/ui/adapters/agent-events.js";
 import { TrajectoryScene } from "../src/ui/components/overlays/trajectory-scene.js";
 import { createInteractiveUI } from "../src/ui/tui.js";
+import { UIHost } from "../src/ui/ui-host.js";
 import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
+import { ModelPicker } from "../src/ui/components/overlays/model-picker.js";
+import { getStartupBanner } from "../src/ui/components/primitives/banner.js";
 
 describe("UI Core: Utils", () => {
 	it("正确计算包含中文与 ANSI 样式的可见字符宽度", () => {
@@ -409,6 +412,17 @@ describe("UI Components & Visual Rendering", () => {
 		expect(stripAnsi(lines[2]!)).toContain("缓存 85.0%");
 	});
 
+	it("InputLine 对未知模型能力显示未知而不是默认模型和上下文数值", () => {
+		const box = new InputLine();
+		box.setContextStats(undefined, 0, undefined, false);
+		const line = stripAnsi(box.render(80)[2]!);
+		expect(line).toContain("模型未知");
+		expect(line).toContain("思考:未知");
+		expect(line).toContain("~0/未知");
+		expect(line).not.toContain("deepseek");
+		expect(line).not.toContain("65.5k");
+	});
+
 	it("ActivityLine 流光动画与状态文本", () => {
 		const act = new ActivityLineComponent();
 		act.update("streaming", "流式生成中");
@@ -459,6 +473,37 @@ describe("UI Components & Visual Rendering", () => {
 		expect(expandedLines[0]).toContain("50.0%");
 		expect(expandedLines[0]).toContain("剩余");
 		expect(expandedLines[0]).toContain("E:\\Uina\\Uina");
+	});
+
+	it("ContextBar 不会把未知上限显示成默认 1M", () => {
+		const bar = new ContextBarComponent();
+		bar.update({ usedTokens: 1234, contextWindow: undefined, actual: false, cwd: "E:\\Uina\\Uina" });
+		bar.setHovered(true);
+		const line = stripAnsi(bar.render(100)[0]!);
+		expect(line).toContain("上下文上限未知");
+		expect(line).toContain("已用 约 1.2k");
+		expect(line).not.toContain("1.0m");
+	});
+
+	it("模型选择器和 Banner 在没有真实数据时保持空或明确未知", () => {
+		const picker = stripAnsi(new ModelPicker().render(80).join("\n"));
+		expect(picker).toContain("没有来自配置、Provider 或可信目录的可选模型");
+		expect(picker).not.toContain("deepseek-chat");
+		expect(picker).not.toContain("gpt-4o");
+
+		const banner = stripAnsi(getStartupBanner(undefined, 60).join("\n"));
+		expect(banner).toContain("模型未知");
+		expect(banner).not.toContain("Latency <");
+		expect(banner).not.toContain("tools ready");
+	});
+
+	it("Shift+Tab 只请求 runtime 切换 thinking，不直接改写 UI 权威状态", () => {
+		const host = new UIHost({ modelName: "model", thinkingLevels: ["off", "high"], thinkingLevel: "off" });
+		const requested = vi.fn();
+		host.onThinkingLevelCycle = requested;
+		host.handleInput("\x1b[Z");
+		expect(requested).toHaveBeenCalledOnce();
+		expect(host.getReasoningEffort()).toBe("off");
 	});
 
 	it("Git Unified Diff 逐行差异计算与卡片渲染", async () => {
@@ -634,7 +679,6 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 		try {
 			const tui = createInteractiveUI({
 				modelName: "deepseek-chat",
-				toolCount: 8,
 				cwd: "e:/Uina/test",
 			});
 			tui.host.registry.registerCommand({ name: "model", description: "切换模型", hasArgs: true });
@@ -688,7 +732,6 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 		try {
 			const tui = createInteractiveUI({
 				modelName: "test-model",
-				toolCount: 2,
 			});
 
 			const submittedLines: string[] = [];
@@ -749,7 +792,6 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 		try {
 			const tui = createInteractiveUI({
 				modelName: "test-model",
-				toolCount: 2,
 			});
 
 			tui.loadHistory([
@@ -804,7 +846,6 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 		try {
 			const tui = createInteractiveUI({
 				modelName: "test-model",
-				toolCount: 2,
 			});
 
 			expect(tui.host.getScrollOffset()).toBe(0);
@@ -870,7 +911,6 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 		try {
 			const tui = createInteractiveUI({
 				modelName: "test-model",
-				toolCount: 2,
 				cwd: process.cwd(),
 			});
 			tui.host.registry.registerCommand({ name: "model", description: "切换模型", hasArgs: true });

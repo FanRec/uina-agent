@@ -19,7 +19,7 @@ export type OutMsg =
 		n: number;
 		usage?: {
 			usedTokens: number;
-			contextWindow: number;
+			contextWindow?: number;
 			actual?: boolean;
 			cacheRead?: number;
 			cacheWrite?: number;
@@ -50,6 +50,7 @@ export class InteractiveTUI {
 	readonly host: UIHost;
 	private lineCallback?: (line: string, mode: "steer" | "followUp") => void;
 	private sigintCallback?: () => void;
+	private thinkingLevelCycleCallback?: () => void;
 	private toolCallMap = new Map<string, { startedAt: number; name: string }>();
 
 	constructor(options: InteractiveTUIOptions = {}) {
@@ -62,6 +63,9 @@ export class InteractiveTUI {
 
 		this.host.onInterrupt = () => {
 			this.sigintCallback?.();
+		};
+		this.host.onThinkingLevelCycle = () => {
+			this.thinkingLevelCycleCallback?.();
 		};
 
 	}
@@ -82,6 +86,10 @@ export class InteractiveTUI {
 		this.sigintCallback = cb;
 	}
 
+	onThinkingLevelCycle(cb: () => void): void {
+		this.thinkingLevelCycleCallback = cb;
+	}
+
 	replaceInput(text: string): void {
 		this.host.replaceInput(text);
 	}
@@ -97,6 +105,7 @@ export class InteractiveTUI {
 	render(m: OutMsg): void {
 		switch (m.type) {
 			case "turn_start":
+				this.host.markUsageEstimated();
 				this.host.setBusy(true);
 				this.host.transcript.startTurn(m.n, m.text);
 				this.host.trajectoryProjection.onTurnStart(m.n, m.text);

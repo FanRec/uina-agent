@@ -65,7 +65,7 @@ export interface TurnStartEvent {
 export interface TurnEndEvent {
 	type: "turn_end";
 	turnNumber: number;
-	usage?: { usedTokens: number; contextWindow: number };
+	usage?: { usedTokens: number; contextWindow?: number };
 }
 
 // 3. 上下文变换事件

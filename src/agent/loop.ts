@@ -21,7 +21,7 @@ export interface LoopHooks {
 		n: number,
 		usage?: {
 			usedTokens: number;
-			contextWindow: number;
+			contextWindow?: number;
 			actual: boolean;
 			cacheRead?: number;
 			cacheWrite?: number;
@@ -103,7 +103,7 @@ export class Subject {
 		this.systemPrompt = options.systemPrompt ?? defaultSystemPrompt();
 		this.compaction = {
 			...DEFAULT_COMPACTION_SETTINGS,
-			contextWindow: provider.contextWindow ?? DEFAULT_COMPACTION_SETTINGS.contextWindow,
+			contextWindow: provider.contextWindow,
 			...options.compaction,
 		};
 		this.queueModes = {
@@ -111,7 +111,10 @@ export class Subject {
 			followUp: options.followUpQueueMode ?? "one-at-a-time",
 		};
 		this.preferredThinkingLevel = options.thinkingLevel ?? "off";
-		this.thinkingLevel = options.thinkingLevel ?? "off";
+		if (this.preferredThinkingLevel !== "off" && !provider.thinkingLevels?.includes(this.preferredThinkingLevel)) {
+			throw new Error(`provider ${provider.name} 未声明支持 thinking level: ${this.preferredThinkingLevel}`);
+		}
+		this.thinkingLevel = this.preferredThinkingLevel;
 		this.extensionHost = options.extensionHost;
 	}
 
@@ -127,7 +130,7 @@ export class Subject {
 		return this.preferredThinkingLevel;
 	}
 
-	getContextWindow(): number {
+	getContextWindow(): number | undefined {
 		return this.compaction.contextWindow;
 	}
 
@@ -138,7 +141,7 @@ export class Subject {
 	async setModel(provider: ModelProvider): Promise<void> {
 		const prev = this.provider.name;
 		this.provider = provider;
-		this.compaction.contextWindow = provider.contextWindow ?? DEFAULT_COMPACTION_SETTINGS.contextWindow;
+		this.compaction.contextWindow = provider.contextWindow;
 		const prevLevel = this.thinkingLevel;
 		this.thinkingLevel = clampThinkingLevel(this.preferredThinkingLevel, provider.thinkingLevels);
 
@@ -168,6 +171,14 @@ export class Subject {
 			level: this.thinkingLevel,
 			previousLevel: prev,
 		});
+	}
+
+	cycleThinkingLevel(): ThinkingLevel {
+		const levels: readonly ThinkingLevel[] = this.provider.thinkingLevels?.length ? this.provider.thinkingLevels : ["off"];
+		const current = levels.indexOf(this.thinkingLevel);
+		const next = levels[(current + 1) % levels.length] ?? "off";
+		this.setThinkingLevel(next);
+		return this.thinkingLevel;
 	}
 
 	async compact(instruction?: string): Promise<void> {
@@ -333,7 +344,7 @@ export class Subject {
 			try {
 				const estimate = estimateContextTokens(this.history);
 				const last = this.lastReportedUsage;
-				const used = last ? (last.input + last.output) : estimate.tokens;
+				const used = last ? last.totalTokens : estimate.tokens;
 				const usage = {
 					usedTokens: used,
 					contextWindow: this.getContextWindow(),
@@ -406,6 +417,7 @@ export class Subject {
 			let thinkingSignature: string | undefined;
 			let usage: Usage | undefined;
 			let finishReason: string | null = null;
+			this.lastReportedUsage = null;
 
 			const streamId = `stream-${this.turnSeq}-${Date.now()}`;
 			let textOffset = 0;

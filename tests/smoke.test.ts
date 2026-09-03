@@ -211,6 +211,44 @@ describe("Subject", () => {
 		expect(failedHistory.some((message) => message.content === "old history")).toBe(true);
 		expect(failedHistory.some((message) => (message.content ?? "").includes("上轮处理出错"))).toBe(false);
 	});
+
+	it("scopes actual usage to one provider request and does not reuse it on the next turn", async () => {
+		let request = 0;
+		const reports: Array<{ usedTokens: number; actual: boolean; cacheRead?: number }> = [];
+		const provider: ModelProvider = {
+			name: "usage-scope",
+			contextWindow: 100_000,
+			thinkingLevels: ["off"],
+			async stream(_req, emit) {
+				request++;
+				emit({ kind: "text", text: `reply-${request}` });
+				if (request === 1) {
+					emit({ kind: "usage", usage: { input: 10, output: 5, cacheRead: 7, cacheWrite: 0, reasoning: 0, totalTokens: 22 } });
+				}
+				emit({ kind: "finish", reason: "stop" });
+			},
+		};
+		const subject = new Subject(provider, new ToolBroker(), {
+			onToken: () => {},
+			onTurnEnd: (_turn, usage) => {
+				if (usage) reports.push(usage);
+			},
+		});
+		await subject.pushInput("one");
+		await subject.pushInput("two");
+		expect(reports[0]).toMatchObject({ usedTokens: 22, actual: true, cacheRead: 7 });
+		expect(reports[1]?.actual).toBe(false);
+		expect(reports[1]?.cacheRead).toBeUndefined();
+	});
+
+	it("keeps an unknown provider context window unknown and disables automatic compaction", async () => {
+		const provider = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] }]);
+		const subject = new Subject(provider, new ToolBroker(), { onToken: () => {} });
+		subject.addHistory([{ role: "user", content: "x".repeat(300_000) }]);
+		await subject.pushInput("next");
+		expect(subject.getContextWindow()).toBeUndefined();
+		expect(provider.calls).toHaveLength(1);
+	});
 });
 
 describe("JSONL session", () => {

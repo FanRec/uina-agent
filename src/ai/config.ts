@@ -22,39 +22,8 @@ export interface ProviderConfig {
 	thinkingLevels?: readonly ThinkingLevel[];
 }
 
-export function resolveOfficialThinkingLevels(conf: ProviderConfig): readonly ThinkingLevel[] {
-	if (conf.thinkingLevels && conf.thinkingLevels.length > 0) {
-		return conf.thinkingLevels;
-	}
-	const model = (conf.model || "").toLowerCase();
-	const kind = conf.type ?? "openai-compatible";
-
-	if (kind === "anthropic") {
-		if (model.includes("3-5") || model.includes("3.5") || model.includes("haiku") || model.includes("opus")) {
-			return ["off"];
-		}
-		return ["off", "minimal", "low", "medium", "high", "max"];
-	}
-
-	if (kind === "gemini") {
-		if (model.includes("flash-lite") || model.includes("pro-vision")) {
-			return ["off"];
-		}
-		return ["off", "low", "medium", "high", "max"];
-	}
-
-	// OpenAI-compatible & others
-	if (model.includes("deepseek")) {
-		return ["off", "high", "max"];
-	}
-	if (model.startsWith("o1") || model.startsWith("o3") || model.startsWith("o4")) {
-		return ["off", "low", "medium", "high"];
-	}
-	if (model.includes("gpt-4") || model.includes("chat")) {
-		return ["off"];
-	}
-
-	return ["off"];
+export function configuredThinkingLevels(conf: ProviderConfig): readonly ThinkingLevel[] | undefined {
+	return conf.thinkingLevels?.length ? conf.thinkingLevels : undefined;
 }
 
 export interface UinaConfig {

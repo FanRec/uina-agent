@@ -4,7 +4,7 @@ import type {
 	ThinkingLevel,
 } from "../core/types.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
-import { resolveOfficialThinkingLevels } from "./config.js";
+import { configuredThinkingLevels } from "./config.js";
 import { effectiveContextWindow } from "./config.js";
 
 export interface ProviderConf {
@@ -23,7 +23,7 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 	return {
 		name: conf.model,
 		contextWindow: effectiveContextWindow(conf),
-		thinkingLevels: resolveOfficialThinkingLevels(conf),
+		thinkingLevels: configuredThinkingLevels(conf),
 		includeThinking: conf.thinkingFormat === "deepseek",
 		async refreshModels() {
 			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, { headers: { Authorization: `Bearer ${conf.apiKey}` } });
