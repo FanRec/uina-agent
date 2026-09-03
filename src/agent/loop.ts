@@ -82,7 +82,8 @@ export class Subject {
 	private readonly systemPrompt: string;
 	private readonly compaction: CompactionSettings;
 	private readonly store?: SessionStore;
-	private idleWaiters: Array<() => void> = [];
+	private activeRun?: Promise<void>;
+	private settleActiveRun?: () => void;
 	private resumingQueue = false;
 	private readonly queueModes: Record<"steer" | "followUp", import("../core/types.js").QueueMode>;
 	private provider: ModelProvider;
@@ -91,6 +92,7 @@ export class Subject {
 	private readonly extensionHost?: import("../extensions/host.js").ExtensionHost;
 	private runtimeInputs: AgentInput[] = [];
 	private lastReportedUsage: Usage | null = null;
+	private streamSeq = 0;
 
 	constructor(
 		provider: ModelProvider,
@@ -182,7 +184,7 @@ export class Subject {
 	}
 
 	async compact(instruction?: string): Promise<void> {
-		if (this.busy) throw new Error("Agent 正在运行中，无法手动压缩会话");
+		if (this.isBusy()) throw new Error("Agent 正在运行中，无法手动压缩会话");
 		const tokensBefore = Math.ceil(this.history.reduce((acc, m) => acc + m.content.length + 16, 0) / 4);
 		const cancelled = await this.extensionHost?.emitSessionBeforeCompact(tokensBefore);
 		if (cancelled) return;
@@ -224,20 +226,20 @@ export class Subject {
 	pushInput(text: string, options: QueueInputOptions = {}): Promise<void> {
 		const normalized = text.trim();
 		if (!normalized) return Promise.resolve();
-		const mode = options.mode ?? (this.busy ? "steer" : "direct");
-		if (mode === "direct" && !this.busy && this.queues.size === 0) {
+		const mode = options.mode ?? (this.isBusy() ? "steer" : "direct");
+		if (mode === "direct" && !this.isBusy() && this.queues.size === 0) {
 			return this.startRun(normalized);
 		}
 		const queued = this.queues.enqueue(normalized, mode === "direct" ? "followUp" : mode);
 		this.notifyQueueChanged();
 		const persisted = this.storeEvent("queue_enqueued", eventData(queued));
-		if (!this.busy && mode === "direct") return persisted.then(() => this.resumeQueued());
+		if (!this.isBusy() && mode === "direct") return persisted.then(() => this.resumeQueued());
 		return persisted;
 	}
 
 	accept(input: AgentInput): Promise<void> {
 		if (!input.id || !input.text?.trim()) return Promise.reject(new Error("AgentInput 必须包含 id 和 text"));
-		if (!this.busy && this.queues.size === 0) {
+		if (!this.isBusy() && this.queues.size === 0) {
 			return input.source.kind === "runtime"
 				? this.startRun(undefined, [input])
 				: this.startRun(input.text.trim());
@@ -265,12 +267,11 @@ export class Subject {
 	}
 
 	isBusy(): boolean {
-		return this.busy;
+		return this.activeRun !== undefined;
 	}
 
 	waitForIdle(): Promise<void> {
-		if (!this.busy) return Promise.resolve();
-		return new Promise((resolve) => this.idleWaiters.push(resolve));
+		return this.activeRun ?? Promise.resolve();
 	}
 
 	addHistory(messages: ChatMsg[]): void {
@@ -303,19 +304,35 @@ export class Subject {
 
 	private async startRun(text?: string, runtimeInputs: AgentInput[] = []): Promise<void> {
 		if (this.busy) return Promise.reject(new Error("已有活动轮次"));
-		if (this.provider.thinkingLevels && !this.provider.thinkingLevels.includes(this.thinkingLevel)) {
-			this.reportError(new Error(`provider ${this.provider.name} 不支持 thinking level: ${this.thinkingLevel}`));
-			return Promise.resolve();
+		const isRootRun = this.activeRun === undefined;
+		if (isRootRun) {
+			this.activeRun = new Promise<void>((resolve) => {
+				this.settleActiveRun = resolve;
+			});
 		}
-		this.busy = true;
-		this.interrupted = false;
-		this.abort = new AbortController();
-		const turn = ++this.turnSeq;
 
-		const prepared = await this.extensionHost?.emitBeforeAgentStart(text ?? "", this.systemPrompt);
-		await this.extensionHost?.emit({ type: "agent_start", turnSeq: turn });
+		try {
+			if (this.provider.thinkingLevels && !this.provider.thinkingLevels.includes(this.thinkingLevel)) {
+				this.reportError(new Error(`provider ${this.provider.name} 不支持 thinking level: ${this.thinkingLevel}`));
+				return;
+			}
+			this.busy = true;
+			this.interrupted = false;
+			this.abort = new AbortController();
+			const turn = ++this.turnSeq;
 
-		return this.runTurn(text, turn, runtimeInputs, this.provider, prepared?.systemPrompt ?? this.systemPrompt, prepared?.messages ?? []);
+			const prepared = await this.extensionHost?.emitBeforeAgentStart(text ?? "", this.systemPrompt);
+			await this.extensionHost?.emit({ type: "agent_start", turnSeq: turn });
+
+			await this.runTurn(text, turn, runtimeInputs, this.provider, prepared?.systemPrompt ?? this.systemPrompt, prepared?.messages ?? []);
+		} catch (error) {
+			this.abort = null;
+			this.busy = false;
+			this.runtimeInputs = [];
+			this.reportError(error);
+		} finally {
+			if (isRootRun) this.completeActiveRun();
+		}
 	}
 
 	private async runTurn(text: string | undefined, turn: number, runtimeInputs: AgentInput[] = [], provider = this.provider, systemPrompt = this.systemPrompt, beforeMessages: ChatMsg[] = []): Promise<void> {
@@ -365,7 +382,6 @@ export class Subject {
 			} else if (this.queues.size === 0) {
 				await this.extensionHost?.emit({ type: "agent_settled", turnSeq: turn });
 			}
-			for (const resolve of this.idleWaiters.splice(0)) resolve();
 			await this.extensionHost?.flush();
 		}
 	}
@@ -419,11 +435,29 @@ export class Subject {
 			let finishReason: string | null = null;
 			this.lastReportedUsage = null;
 
-			const streamId = `stream-${this.turnSeq}-${Date.now()}`;
+			const streamId = `stream-${this.turnSeq}-${++this.streamSeq}`;
 			let textOffset = 0;
 			let thinkingOffset = 0;
 			let hasEmittedContentStart = false;
 			let hasEmittedThinkingStart = false;
+			const closeOutput = (outcome: "end" | "interrupted", reason?: "cancelled" | "error"): void => {
+				if (hasEmittedThinkingStart) {
+					this.extensionHost?.emitObserved(
+						outcome === "end"
+							? { type: "output_end", streamId, channel: "thinking" }
+							: { type: "output_interrupted", streamId, channel: "thinking", reason: reason! },
+					);
+					hasEmittedThinkingStart = false;
+				}
+				if (hasEmittedContentStart) {
+					this.extensionHost?.emitObserved(
+						outcome === "end"
+							? { type: "output_end", streamId, channel: "content" }
+							: { type: "output_interrupted", streamId, channel: "content", reason: reason!, spokenUntil: textOffset },
+					);
+					hasEmittedContentStart = false;
+				}
+			};
 
 			try {
 				await provider.stream(
@@ -484,22 +518,8 @@ export class Subject {
 					this.currentSignal(),
 				);
 
-				if (hasEmittedThinkingStart) {
-					this.extensionHost?.emitObserved({ type: "output_end", streamId, channel: "thinking" });
-				}
-				if (hasEmittedContentStart) {
-					this.extensionHost?.emitObserved({ type: "output_end", streamId, channel: "content" });
-				}
 			} catch (error) {
-				if (hasEmittedContentStart) {
-					this.extensionHost?.emitObserved({
-						type: "output_interrupted",
-						streamId,
-						channel: "content",
-						reason: "error",
-						spokenUntil: textOffset,
-					});
-				}
+				closeOutput("interrupted", this.interrupted || this.currentSignal().aborted ? "cancelled" : "error");
 				if (this.interrupted || this.currentSignal().aborted) {
 					await this.emitInterrupted(reply, thinking, thinkingSignature);
 					return;
@@ -511,15 +531,7 @@ export class Subject {
 			}
 
 			if (this.interrupted || this.currentSignal().aborted) {
-				if (hasEmittedContentStart) {
-					this.extensionHost?.emitObserved({
-						type: "output_interrupted",
-						streamId,
-						channel: "content",
-						reason: "cancelled",
-						spokenUntil: textOffset,
-					});
-				}
+				closeOutput("interrupted", "cancelled");
 				await this.emitInterrupted(reply, thinking, thinkingSignature);
 				return;
 			}
@@ -527,11 +539,14 @@ export class Subject {
 				!finishReason ||
 				!['stop', 'tool_calls', 'length'].includes(finishReason)
 			) {
+				closeOutput("interrupted", "error");
 				throw new Error(`模型返回未知或缺失 finish reason: ${finishReason ?? "none"}`);
 			}
 			if (finishReason === "tool_calls" && toolCalls.length === 0) {
+				closeOutput("interrupted", "error");
 				throw new Error("模型声明了 tool_calls，但没有返回工具调用");
 			}
+			closeOutput("end");
 			if (finishReason === "length") {
 				this.hooks.onNotice?.("本轮回复达到输出长度上限。");
 			}
@@ -769,6 +784,13 @@ export class Subject {
 
 	private reportError(error: unknown): void {
 		try { this.hooks.onError?.(safeError(error)); } catch { /* reporting cannot alter runtime state */ }
+	}
+
+	private completeActiveRun(): void {
+		const settle = this.settleActiveRun;
+		this.settleActiveRun = undefined;
+		this.activeRun = undefined;
+		settle?.();
 	}
 
 	private currentSignal(): AbortSignal {

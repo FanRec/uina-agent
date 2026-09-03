@@ -341,6 +341,49 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		]);
 	});
 
+	it("keeps one active run through agent_end handlers and queues input received during settlement", async () => {
+		const host = new ExtensionHost();
+		let releaseFirstEnd!: () => void;
+		const firstEndReached = new Promise<void>((resolve) => { releaseFirstEnd = resolve; });
+		let continueFirstEnd!: () => void;
+		const firstEndGate = new Promise<void>((resolve) => { continueFirstEnd = resolve; });
+		let ends = 0;
+		host.on("agent_end", async () => {
+			ends++;
+			if (ends === 1) {
+				releaseFirstEnd();
+				await firstEndGate;
+			}
+		});
+
+		const users: string[] = [];
+		const provider: ModelProvider = {
+			name: "settlement-probe",
+			async stream(request, emit) {
+				const user = [...request.messages].reverse().find((message) => message.role === "user");
+				users.push(user?.content ?? "");
+				emit({ kind: "text", text: "ok" });
+				emit({ kind: "finish", reason: "stop" });
+			},
+		};
+		const subject = new Subject(provider, new ToolBroker(), { onToken: () => {} }, { extensionHost: host });
+		const firstRun = subject.pushInput("first");
+		await firstEndReached;
+
+		let idleResolved = false;
+		const idle = subject.waitForIdle().then(() => { idleResolved = true; });
+		await subject.pushInput("second");
+		await Promise.resolve();
+		expect(subject.isBusy()).toBe(true);
+		expect(idleResolved).toBe(false);
+
+		continueFirstEnd();
+		await firstRun;
+		await idle;
+		expect(users).toEqual(["first", "second"]);
+		expect(subject.isBusy()).toBe(false);
+	});
+
 	it("emits normalized output stream events (output_start, update, end)", async () => {
 		const host = new ExtensionHost();
 		const outputDeltas: Array<{ offset: number; text: string; channel: string }> = [];
@@ -378,6 +421,79 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		expect(outputDeltas).toEqual([
 			{ offset: 1, text: "哈", channel: "content" },
 			{ offset: 2, text: "喽", channel: "content" },
+		]);
+	});
+
+	it("closes every opened output channel exactly once on success, error, and cancellation", async () => {
+		const collect = async (provider: ModelProvider, interruptAfterStart = false): Promise<string[]> => {
+			const host = new ExtensionHost();
+			const events: string[] = [];
+			for (const type of ["output_start", "output_update", "output_end", "output_interrupted"] as const) {
+				host.on(type, (event) => {
+					events.push(`${event.type}:${event.channel}${event.type === "output_interrupted" ? `:${event.reason}` : ""}`);
+				});
+			}
+			const subject = new Subject(provider, new ToolBroker(), { onToken: () => {} }, { extensionHost: host });
+			const run = subject.pushInput("probe");
+			if (interruptAfterStart) {
+				await new Promise<void>((resolve) => setTimeout(resolve, 0));
+				subject.interrupt();
+			}
+			await run;
+			await subject.waitForIdle();
+			return events;
+		};
+
+		const normal = await collect(mockProvider([
+			{ kind: "thinking", text: "plan" },
+			{ kind: "text", text: "answer" },
+			{ kind: "finish", reason: "stop" },
+		]));
+		expect(normal).toEqual([
+			"output_start:thinking",
+			"output_update:thinking",
+			"output_start:content",
+			"output_update:content",
+			"output_end:thinking",
+			"output_end:content",
+		]);
+
+		const thinkingError = await collect({
+			name: "thinking-error",
+			async stream(_request, emit) {
+				emit({ kind: "thinking", text: "partial" });
+				throw new Error("network lost");
+			},
+		});
+		expect(thinkingError).toEqual([
+			"output_start:thinking",
+			"output_update:thinking",
+			"output_interrupted:thinking:error",
+		]);
+
+		const malformedFinish = await collect({
+			name: "missing-finish",
+			async stream(_request, emit) {
+				emit({ kind: "text", text: "partial" });
+			},
+		});
+		expect(malformedFinish).toEqual([
+			"output_start:content",
+			"output_update:content",
+			"output_interrupted:content:error",
+		]);
+
+		const contentCancelled = await collect({
+			name: "content-cancel",
+			async stream(_request, emit, signal) {
+				emit({ kind: "text", text: "partial" });
+				await new Promise<void>((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }));
+			},
+		}, true);
+		expect(contentCancelled).toEqual([
+			"output_start:content",
+			"output_update:content",
+			"output_interrupted:content:cancelled",
 		]);
 	});
 
