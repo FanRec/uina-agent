@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExtensionRunner } from "../src/extensions/runner.js";
-import { ToolBroker } from "../src/tools/broker.js";
+import { ToolBroker, type Tool } from "../src/tools/broker.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -45,5 +45,42 @@ describe("project extension runner", () => {
 		const runner = new ExtensionRunner({ cwd: root, tools: new ToolBroker(), onError });
 		await runner.load();
 		expect(onError).toHaveBeenCalledWith(expect.stringContaining("broken extension"));
+	});
+
+	it("attributes handler failures and awaits async teardown for project and builtin scopes", async () => {
+		const root = await mkdtemp(join(tmpdir(), "uina-ext-"));
+		roots.push(root);
+		const directory = join(root, ".uina", "extensions");
+		await mkdir(directory, { recursive: true });
+		await writeFile(join(directory, "async.js"), `export default function(pi) {
+ pi.on('agent_start', () => { throw new Error('owned handler failure'); });
+ return async () => { await Promise.resolve(); globalThis.__uinaAsyncDisposed = true; };
+}`, "utf8");
+
+		const onError = vi.fn();
+		const tools = new ToolBroker();
+		const runner = new ExtensionRunner({ cwd: root, tools, onError });
+		await runner.load();
+		await runner.emit({ type: "agent_start", turnSeq: 1 });
+		expect(onError).toHaveBeenCalledWith(expect.stringContaining("project:.uina/extensions/async.js:agent_start"));
+
+		const builtinTool: Tool = {
+			def: {
+				type: "function",
+				function: { name: "builtin_scope_tool", description: "scope test", parameters: { type: "object", properties: {} } },
+			},
+			run: async () => "ok",
+		};
+		let builtinDisposed = false;
+		await runner.activateBuiltin("scope-test", (pi) => {
+			pi.registerTool(builtinTool);
+			return async () => { await Promise.resolve(); builtinDisposed = true; };
+		});
+		expect(tools.has("builtin_scope_tool")).toBe(true);
+
+		await runner.dispose();
+		expect((globalThis as Record<string, unknown>).__uinaAsyncDisposed).toBe(true);
+		expect(builtinDisposed).toBe(true);
+		expect(tools.has("builtin_scope_tool")).toBe(false);
 	});
 });

@@ -260,12 +260,12 @@ export class ExtensionHost {
 		return () => this.errorListeners.delete(listener);
 	}
 
-	private emitError(event: string, err: unknown): void {
+	protected emitError(event: string, err: unknown, extensionName?: string): void {
 		const message = err instanceof Error ? err.message : String(err);
 		const stack = err instanceof Error ? err.stack : undefined;
 		for (const listener of this.errorListeners) {
 			try {
-				listener({ event, error: message, stack });
+				listener({ ...(extensionName === undefined ? {} : { extensionName }), event, error: message, stack });
 			} catch {
 				// 避免错误监听器本身发生次生异常
 			}

@@ -45,8 +45,6 @@ export async function runApp(): Promise<void> {
 	tools.remove("exec_command");
 	const ordinaryTools = new ToolBroker();
 	tools.copyTo(ordinaryTools);
-	tools.register(createExecCommandTool(jobs, "root"));
-	for (const tool of createJobTools(jobs, "root")) tools.register(tool);
 	for (const failure of loaded.failed) {
 		process.stderr.write(`[工具加载失败] ${failure.file}: ${failure.error}\n`);
 	}
@@ -174,17 +172,6 @@ export async function runApp(): Promise<void> {
 			});
 		},
 	});
-	for (const tool of createSubagentTools(subagents, "root")) tools.register(tool);
-	jobs.onResolved((job) => {
-		if (shuttingDown) return;
-		void subject.accept({
-			id: `job-notice-${job.id}`,
-			mode: "followUp",
-			source: { kind: "runtime", type: "job-notice", ref: job.id },
-			text: `后台任务 ${job.id} 已${job.status === "completed" ? "完成" : job.status === "killed" ? "被取消" : "结束"}。任务：${job.label}。来源：${job.source.extension}${job.source.operation ? `/${job.source.operation}` : ""}。请使用 job_output 读取结果。`,
-			data: { status: job.status, label: job.label, source: job.source },
-		}).catch((error) => render({ type: "error", text: `后台任务通知失败：${String(error)}` }));
-	});
 
 	const restoredHistory = projectModelHistory(snapshot.entries);
 	subject.addHistory(restoredHistory);
@@ -207,8 +194,6 @@ export async function runApp(): Promise<void> {
 		await subject.waitForIdle();
 		await extensionHost.dispose();
 		await execTail;
-		await subagents.close();
-		await jobs.close();
 		await subject.waitForIdle();
 		tui?.close();
 		nonTTY?.close();
@@ -315,6 +300,26 @@ export async function runApp(): Promise<void> {
 		});
 	}
 
+	await extensionHost.activateBuiltin("runtime-tools", (pi) => {
+		pi.registerTool(createExecCommandTool(jobs, "root"));
+		for (const tool of createJobTools(jobs, "root")) pi.registerTool(tool);
+		for (const tool of createSubagentTools(subagents, "root")) pi.registerTool(tool);
+		const unsubscribe = jobs.onResolved((job) => {
+			if (shuttingDown) return;
+			void subject.accept({
+				id: `job-notice-${job.id}`,
+				mode: "followUp",
+				source: { kind: "runtime", type: "job-notice", ref: job.id },
+				text: `后台任务 ${job.id} 已${job.status === "completed" ? "完成" : job.status === "killed" ? "被取消" : "结束"}。任务：${job.label}。来源：${job.source.extension}${job.source.operation ? `/${job.source.operation}` : ""}。请使用 job_output 读取结果。`,
+				data: { status: job.status, label: job.label, source: job.source },
+			}).catch((error) => render({ type: "error", text: `后台任务通知失败：${String(error)}` }));
+		});
+		return async () => {
+			unsubscribe();
+			await subagents.close();
+			await jobs.close();
+		};
+	});
 	await extensionHost.activateBuiltin("commands", activateBuiltinCommands({ subject, models: modelRegistry, jobs, subagents, host: tui?.host, reload: async () => { await subject.waitForIdle(); await extensionHost.reload(); render({ type: "notice", text: "项目扩展已重新加载。" }); }, shutdown: async () => shutdown() }));
 	await extensionHost.load();
 	const discovered = await extensionHost.emitResourcesDiscover(process.cwd(), "startup");

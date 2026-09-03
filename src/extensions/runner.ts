@@ -24,21 +24,50 @@ export interface ExtensionAPI {
 	appendEntry(entry: CustomEntry): Promise<void>;
 }
 
-export type ExtensionModule = { default?: (pi: ExtensionAPI) => void | (() => void) | Promise<void | (() => void)> };
+export type ExtensionTeardown = () => void | Promise<void>;
+export type ExtensionActivation = (pi: ExtensionAPI) => void | ExtensionTeardown | Promise<void | ExtensionTeardown>;
+export type ExtensionModule = { default?: ExtensionActivation };
 
 export interface ExtensionRunnerOptions {
 	cwd: string;
 	tools: ToolBroker;
 	onError?: (text: string) => void;
-	onProvider?: (name: string, provider: ModelProvider) => (() => void) | void;
+	onProvider?: (name: string, provider: ModelProvider) => ExtensionTeardown | void;
 	onCustomMessage?: (message: CustomMessage) => Promise<void>;
 	onCustomEntry?: (entry: CustomEntry) => Promise<void>;
 }
 
-interface ActiveExtension { id: string; path: string; active: boolean; cleanup: Array<() => void>; dispose?: () => void; }
+/** One activation owns every registration it creates. This is the small part
+ * of Pi's extension loader/runner lifecycle that Uina needs today. */
+class ActivationScope {
+	active = true;
+	private readonly cleanup: ExtensionTeardown[] = [];
+	private dispose?: ExtensionTeardown;
+
+	constructor(readonly id: string, readonly path: string) {}
+
+	own(teardown: ExtensionTeardown): void {
+		this.cleanup.push(teardown);
+	}
+
+	setDispose(dispose: ExtensionTeardown): void {
+		this.dispose = dispose;
+	}
+
+	async deactivate(report: (event: string, error: unknown) => void): Promise<void> {
+		if (!this.active) return;
+		this.active = false;
+		if (this.dispose) {
+			try { await this.dispose(); } catch (error) { report("dispose", error); }
+		}
+		for (const cleanup of this.cleanup.splice(0).reverse()) {
+			try { await cleanup(); } catch (error) { report("cleanup", error); }
+		}
+	}
+}
 
 export class ExtensionRunner extends ExtensionHost {
-	private readonly extensions = new Map<string, ActiveExtension>();
+	private readonly extensions = new Map<string, ActivationScope>();
 	private ui: ExtensionUIContext;
 	readonly registry = new ExtensionRegistry();
 
@@ -64,13 +93,13 @@ export class ExtensionRunner extends ExtensionHost {
 		}
 	}
 
-	/** Core-owned extensions are activated once and are intentionally excluded from project reload. */
-	async activateBuiltin(id: string, activate: (pi: ExtensionAPI) => void | (() => void) | Promise<void | (() => void)>): Promise<void> {
-		const extension: ActiveExtension = { id: `builtin:${id}`, path: `builtin:${id}`, active: true, cleanup: [] };
-		if (this.extensions.has(extension.id)) throw new Error(`内置扩展重复加载: ${id}`);
-		this.extensions.set(extension.id, extension);
-		try { const dispose = await activate(this.apiFor(extension)); if (typeof dispose === "function") extension.dispose = dispose; }
-		catch (error) { this.deactivate(extension); this.emitOwnedError(extension.id, "activate", error); }
+	/** Core-owned capabilities use the same scope and teardown path as project extensions. */
+	async activateBuiltin(id: string, activate: ExtensionActivation): Promise<void> {
+		try {
+			await this.activateScope(`builtin:${id}`, `builtin:${id}`, activate);
+		} catch (error) {
+			this.emitOwnedError(`builtin:${id}`, "activate", error);
+		}
 	}
 
 	async reload(): Promise<void> {
@@ -79,12 +108,12 @@ export class ExtensionRunner extends ExtensionHost {
 	}
 
 	async disposeProjects(): Promise<void> {
-		for (const extension of [...this.extensions.values()].filter((entry) => entry.id.startsWith("project:")).reverse()) this.deactivate(extension);
+		for (const extension of [...this.extensions.values()].filter((entry) => entry.id.startsWith("project:")).reverse()) await this.deactivate(extension);
 		await this.flush();
 	}
 
 	async dispose(): Promise<void> {
-		for (const extension of [...this.extensions.values()].reverse()) this.deactivate(extension);
+		for (const extension of [...this.extensions.values()].reverse()) await this.deactivate(extension);
 		await this.flush();
 	}
 
@@ -94,37 +123,49 @@ export class ExtensionRunner extends ExtensionHost {
 
 	private async activate(file: string): Promise<void> {
 		const id = `project:${file.slice(this.options.cwd.length + 1).replace(/\\/g, "/")}`;
-		if (this.extensions.has(id)) throw new Error(`扩展重复加载: ${id}`);
-		const extension: ActiveExtension = { id, path: file, active: true, cleanup: [] };
-		this.extensions.set(id, extension);
 		try {
 			const module = await import(`${pathToFileURL(file).href}?uinaReload=${Date.now()}`) as ExtensionModule;
 			if (typeof module.default !== "function") throw new Error("扩展必须默认导出 activate(pi)");
-			const dispose = await module.default(this.apiFor(extension));
-			if (typeof dispose === "function") extension.dispose = dispose;
+			await this.activateScope(id, file, module.default);
 		} catch (error) {
-			this.deactivate(extension);
-			this.emitOwnedError(extension.id, "activate", error);
+			this.emitOwnedError(id, "activate", error);
 		}
 	}
 
-	private deactivate(extension: ActiveExtension): void {
-		if (!extension.active) return;
-		extension.active = false;
-		try { extension.dispose?.(); } catch (error) { this.emitOwnedError(extension.id, "dispose", error); }
-		for (const cleanup of extension.cleanup.splice(0).reverse()) {
-			try { cleanup(); } catch (error) { this.emitOwnedError(extension.id, "cleanup", error); }
+	private async activateScope(id: string, path: string, activate: ExtensionActivation): Promise<void> {
+		if (this.extensions.has(id)) throw new Error(`扩展重复加载: ${id}`);
+		const scope = new ActivationScope(id, path);
+		this.extensions.set(id, scope);
+		try {
+			const dispose = await activate(this.apiFor(scope));
+			if (typeof dispose === "function") scope.setDispose(dispose);
+		} catch (error) {
+			await this.deactivate(scope);
+			throw error;
 		}
-		this.extensions.delete(extension.id);
 	}
 
-	private apiFor(extension: ActiveExtension): ExtensionAPI {
-		const assertActive = () => { if (!extension.active) throw new Error(`扩展上下文已失效: ${extension.id}`); };
-		const own = (dispose: () => void): void => { extension.cleanup.push(dispose); };
-		const ui = ownedUI(dynamicUI(() => this.ui), extension.id, assertActive, own);
+	private async deactivate(scope: ActivationScope): Promise<void> {
+		await scope.deactivate((event, error) => this.emitOwnedError(scope.id, event, error));
+		this.extensions.delete(scope.id);
+	}
+
+	private apiFor(scope: ActivationScope): ExtensionAPI {
+		const assertActive = () => { if (!scope.active) throw new Error(`扩展上下文已失效: ${scope.id}`); };
+		const own = (dispose: ExtensionTeardown): void => { scope.own(dispose); };
+		const ui = ownedUI(dynamicUI(() => this.ui), scope.id, assertActive, own);
 		return {
-			id: extension.id, path: extension.path, ui,
-			on: (type, handler) => { assertActive(); const wrapped: ExtensionEventHandler = (event) => handler(event as never); const dispose = super.on(type, wrapped as never); own(dispose); return dispose; },
+			id: scope.id, path: scope.path, ui,
+			on: (type, handler) => {
+				assertActive();
+				const wrapped: ExtensionEventHandler = async (event) => {
+					try { return await handler(event as never); }
+					catch (error) { this.emitOwnedError(scope.id, type, error); return undefined; }
+				};
+				const dispose = super.on(type, wrapped as never);
+				own(dispose);
+				return dispose;
+			},
 			registerTool: (tool) => { assertActive(); this.options.tools.register(tool); own(() => this.options.tools.remove(tool.def.function.name)); },
 			registerCommand: (command) => { assertActive(); own(this.registry.registerCommand(command)); },
 			registerMessageRenderer: (type, renderer) => { assertActive(); own(this.registry.registerMessageRenderer(type, renderer)); },
@@ -136,8 +177,7 @@ export class ExtensionRunner extends ExtensionHost {
 	}
 
 	private emitOwnedError(extensionName: string, event: string, error: unknown): void {
-		const message = error instanceof Error ? error.message : String(error);
-		this.options.onError?.(`[extension_error:${extensionName}:${event}] ${message}`);
+		this.emitError(event, error, extensionName);
 	}
 }
 
@@ -149,7 +189,7 @@ function dynamicUI(get: () => ExtensionUIContext): ExtensionUIContext {
 	};
 }
 
-function ownedUI(base: ExtensionUIContext, id: string, assertActive: () => void, own: (dispose: () => void) => void): ExtensionUIContext {
+function ownedUI(base: ExtensionUIContext, id: string, assertActive: () => void, own: (dispose: ExtensionTeardown) => void): ExtensionUIContext {
 	const key = (value: string) => `${id}:${value}`;
 	return {
 		select: (...args) => { assertActive(); return base.select(...args); }, confirm: (...args) => { assertActive(); return base.confirm(...args); }, input: (...args) => { assertActive(); return base.input(...args); }, notify: (...args) => { assertActive(); base.notify(...args); },
