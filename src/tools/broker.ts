@@ -67,6 +67,11 @@ export class ToolBroker {
 		return [...this.tools.values()].map(({ tool }) => tool.def);
 	}
 
+	/** Copy the currently registered tool implementations into another broker. */
+	copyTo(target: ToolBroker): void {
+		for (const { tool } of this.tools.values()) target.register(tool);
+	}
+
 	prepare(name: string, args: Record<string, unknown>): PreparedToolCall {
 		const entry = this.tools.get(name);
 		if (!entry) return { name, args, error: `未知工具 ${name}` };

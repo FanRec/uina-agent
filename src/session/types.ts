@@ -58,6 +58,8 @@ export interface QueuedInput {
 	order: number;
 	mode: Exclude<DeliveryMode, "direct">;
 	text: string;
+	source?: { kind: "user" | "runtime" | "agent"; type: string; ref?: string };
+	data?: unknown;
 }
 
 export interface SessionSnapshot {

@@ -12,6 +12,12 @@ import { Subject } from "../agent/loop.js";
 import { openJsonlSession } from "../session/jsonl-store.js";
 import { SimpleTUI, type OutMsg } from "../ui/tui.js";
 import { sanitizeTerminalText, toolStartLine, toolResultLines } from "../ui/format.js";
+import { JobRegistry } from "../extensions/jobs/registry.js";
+import { createJobTools } from "../extensions/jobs/tools.js";
+import { createExecCommandTool } from "../../tools/exec-command/index.js";
+import { DefaultAgentFactory } from "../agent/runtime.js";
+import { SubagentRegistry } from "../extensions/subagents/registry.js";
+import { createSubagentTools } from "../extensions/subagents/tools.js";
 
 const DATA_DIR = join(process.cwd(), "data");
 const SESSION_FILE = join(DATA_DIR, "session.jsonl");
@@ -26,7 +32,13 @@ export async function runApp(): Promise<void> {
 	const active = activeProvider(cfg);
 	const provider = createProvider(active.name, active);
 	const tools = new ToolBroker();
+	const jobs = new JobRegistry();
 	const loaded = await loadTools(TOOLS_DIR, tools);
+	tools.remove("exec_command");
+	const ordinaryTools = new ToolBroker();
+	tools.copyTo(ordinaryTools);
+	tools.register(createExecCommandTool(jobs, "root"));
+	for (const tool of createJobTools(jobs, "root")) tools.register(tool);
 	for (const failure of loaded.failed) {
 		process.stderr.write(`[工具加载失败] ${failure.file}: ${failure.error}\n`);
 	}
@@ -110,6 +122,37 @@ export async function runApp(): Promise<void> {
 		},
 		{ store, thinkingLevel: cfg.thinkingLevel },
 	);
+	const subagents = new SubagentRegistry({
+		factory: new DefaultAgentFactory(),
+		provider,
+		thinkingLevel: cfg.thinkingLevel,
+		createTools: () => {
+			const childTools = new ToolBroker();
+			ordinaryTools.copyTo(childTools);
+			return childTools;
+		},
+		notify: async (text, data) => {
+			if (shuttingDown) return;
+			await subject.accept({
+				id: `subagent-notice-${String(data.id)}`,
+				mode: "followUp",
+				source: { kind: "runtime", type: "subagent-notice", ref: String(data.id) },
+				text,
+				data,
+			});
+		},
+	});
+	for (const tool of createSubagentTools(subagents, "root")) tools.register(tool);
+	jobs.onResolved((job) => {
+		if (shuttingDown) return;
+		void subject.accept({
+			id: `job-notice-${job.id}`,
+			mode: "followUp",
+			source: { kind: "runtime", type: "job-notice", ref: job.id },
+			text: `后台任务 ${job.id} 已${job.status === "completed" ? "完成" : job.status === "killed" ? "被取消" : "结束"}。任务：${job.label}。来源：${job.source.extension}${job.source.operation ? `/${job.source.operation}` : ""}。请使用 job_output 读取结果。`,
+			data: { status: job.status, label: job.label, source: job.source },
+		}).catch((error) => render({ type: "error", text: `后台任务通知失败：${String(error)}` }));
+	});
 
 	subject.addHistory(snapshot.messages);
 	subject.seedQueue(snapshot.queued);
@@ -130,6 +173,9 @@ export async function runApp(): Promise<void> {
 		if (execRunning) execAbort?.abort();
 		await subject.waitForIdle();
 		await execTail;
+		await subagents.close();
+		await jobs.close();
+		await subject.waitForIdle();
 		tui?.close();
 		nonTTY?.close();
 		await store.close();

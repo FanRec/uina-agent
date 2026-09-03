@@ -146,6 +146,8 @@ function applyEvent(
 			order: data.order,
 			mode: data.mode,
 			text: data.text,
+			...(isInputSource(data.source) ? { source: data.source } : {}),
+			...(data.data !== undefined ? { data: data.data } : {}),
 		});
 		return;
 	}
@@ -193,6 +195,12 @@ function applyEvent(
 	if (record.event === "turn_failed" || record.event === "turn_aborted") {
 		return;
 	}
+}
+
+function isInputSource(value: unknown): value is QueuedInput["source"] {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const source = value as Record<string, unknown>;
+	return (source.kind === "user" || source.kind === "runtime" || source.kind === "agent") && typeof source.type === "string";
 }
 
 export function isRecord(value: unknown): value is SessionRecord {

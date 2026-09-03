@@ -4,6 +4,7 @@ export interface BuildInput {
 	history: ChatMsg[];
 	systemPrompt?: string;
 	includeThinking?: boolean;
+	runtimeInputs?: readonly { source: { kind: string; type: string; ref?: string }; text?: string; data?: unknown }[];
 }
 
 const DEFAULT_SYSTEM_PROMPT =
@@ -14,6 +15,12 @@ export function defaultSystemPrompt(): string {
 }
 
 export function buildContext(b: BuildInput): ChatMsg[] {
+	const runtime = b.runtimeInputs?.length
+		? [{
+			role: "system" as const,
+			content: `<runtime_events>\n${b.runtimeInputs.map(formatRuntimeInput).join("\n")}\n</runtime_events>`,
+		}]
+		: [];
 	return [
 		{ role: "system", content: b.systemPrompt ?? DEFAULT_SYSTEM_PROMPT },
 		...b.history.map((message) =>
@@ -23,7 +30,14 @@ export function buildContext(b: BuildInput): ChatMsg[] {
 					? b.includeThinking ? message : { ...message, thinking: undefined, thinkingSignature: undefined }
 				: message,
 		),
+		...runtime,
 	];
+}
+
+function formatRuntimeInput(input: { source: { kind: string; type: string; ref?: string }; text?: string; data?: unknown }): string {
+	const source = `${input.source.kind}/${input.source.type}${input.source.ref ? `:${input.source.ref}` : ""}`;
+	const data = input.data === undefined ? "" : ` data=${JSON.stringify(input.data)}`;
+	return `[${source}] ${input.text ?? ""}${data}`;
 }
 
 function projectToolResult(value: string): string {

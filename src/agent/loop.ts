@@ -42,6 +42,14 @@ export interface QueueInputOptions {
 	mode?: DeliveryMode;
 }
 
+export interface AgentInput {
+	id: string;
+	mode: "steer" | "followUp";
+	source: { kind: "user" | "runtime" | "agent"; type: string; ref?: string };
+	text?: string;
+	data?: unknown;
+}
+
 export class Subject {
 	private busy = false;
 	private history: ChatMsg[] = [];
@@ -56,6 +64,7 @@ export class Subject {
 	private resumingQueue = false;
 	private readonly queueModes: Record<"steer" | "followUp", import("../core/types.js").QueueMode>;
 	private readonly thinkingLevel: ThinkingLevel;
+	private runtimeInputs: AgentInput[] = [];
 
 	constructor(
 		private readonly provider: ModelProvider,
@@ -89,6 +98,19 @@ export class Subject {
 		const persisted = this.storeEvent("queue_enqueued", eventData(queued));
 		if (!this.busy && mode === "direct") return persisted.then(() => this.resumeQueued());
 		return persisted;
+	}
+
+	accept(input: AgentInput): Promise<void> {
+		if (!input.id || !input.text?.trim()) return Promise.reject(new Error("AgentInput 必须包含 id 和 text"));
+		if (!this.busy && this.queues.size === 0) {
+			return input.source.kind === "runtime"
+				? this.startRun(undefined, [input])
+				: this.startRun(input.text.trim());
+		}
+		const queued = this.queues.enqueue(input.text.trim(), input.mode, { source: input.source, data: input.data });
+		return this.storeEvent("queue_enqueued", { ...eventData(queued), source: input.source, data: input.data }).then(() => {
+			this.notifyQueueChanged();
+		});
 	}
 
 	/** Queue an input for the next model request while the current run is active. */
@@ -144,7 +166,7 @@ export class Subject {
 		return items;
 	}
 
-	private startRun(text: string): Promise<void> {
+	private startRun(text?: string, runtimeInputs: AgentInput[] = []): Promise<void> {
 		if (this.busy) return Promise.reject(new Error("已有活动轮次"));
 		if (this.provider.thinkingLevels && !this.provider.thinkingLevels.includes(this.thinkingLevel)) {
 			this.reportError(new Error(`provider ${this.provider.name} 不支持 thinking level: ${this.thinkingLevel}`));
@@ -154,13 +176,14 @@ export class Subject {
 		this.interrupted = false;
 		this.abort = new AbortController();
 		const turn = ++this.turnSeq;
-		return this.runTurn(text, turn);
+		return this.runTurn(text, turn, runtimeInputs);
 	}
 
-	private async runTurn(text: string, turn: number): Promise<void> {
+	private async runTurn(text: string | undefined, turn: number, runtimeInputs: AgentInput[] = []): Promise<void> {
 		try {
-			this.hooks.onTurnStart?.(turn, text);
-			await this.appendMessage({ role: "user", content: text });
+			this.hooks.onTurnStart?.(turn, text ?? "");
+			if (text !== undefined) await this.appendMessage({ role: "user", content: text });
+			this.runtimeInputs = runtimeInputs;
 			await this.decide();
 		} catch (error) {
 			if (this.interrupted || this.currentSignal().aborted) {
@@ -173,6 +196,7 @@ export class Subject {
 			}
 		} finally {
 			this.abort = null;
+			this.runtimeInputs = [];
 			this.busy = false;
 			try { this.hooks.onTurnEnd?.(turn); } catch (error) {
 				try { this.hooks.onError?.(safeError(error)); } catch { /* hooks cannot own lifecycle */ }
@@ -192,7 +216,7 @@ export class Subject {
 		try {
 			await this.consumeQueueItem(item);
 			this.resumingQueue = false;
-			await this.startRun(item.text);
+			await this.startRun(item.source?.kind === "runtime" ? undefined : item.text, item.source?.kind === "runtime" ? [{ id: item.id, mode: item.mode, source: item.source, text: item.text, data: item.data }] : []);
 		} finally {
 			this.resumingQueue = false;
 		}
@@ -215,7 +239,7 @@ export class Subject {
 				nextUser = undefined;
 			}
 
-			const requestMessages = buildContext({ history: this.history, systemPrompt: this.systemPrompt, includeThinking: this.provider.includeThinking });
+			const requestMessages = buildContext({ history: this.history, systemPrompt: this.systemPrompt, includeThinking: this.provider.includeThinking, runtimeInputs: this.runtimeInputs });
 			const toolCalls: CompletedToolCall[] = [];
 			let reply = "";
 			let thinking = "";
@@ -287,13 +311,15 @@ export class Subject {
 				const steer = this.queues.peekMany("steer", this.queueModes.steer);
 				if (steer.length > 0) {
 					for (const item of steer) await this.consumeQueueItem(item);
-					nextUsers = steer.map((item) => ({ role: "user", content: item.text }));
+					nextUsers = steer.filter((item) => item.source?.kind !== "runtime").map((item) => ({ role: "user", content: item.text }));
+					this.runtimeInputs.push(...steer.filter((item) => item.source?.kind === "runtime").map((item) => ({ id: item.id, mode: item.mode, source: item.source!, text: item.text, data: item.data })));
 					continue;
 				}
 				const followUp = this.queues.peekMany("followUp", this.queueModes.followUp);
 				if (followUp.length > 0) {
 					for (const item of followUp) await this.consumeQueueItem(item);
-					nextUsers = followUp.map((item) => ({ role: "user", content: item.text }));
+					nextUsers = followUp.filter((item) => item.source?.kind !== "runtime").map((item) => ({ role: "user", content: item.text }));
+					this.runtimeInputs.push(...followUp.filter((item) => item.source?.kind === "runtime").map((item) => ({ id: item.id, mode: item.mode, source: item.source!, text: item.text, data: item.data })));
 					continue;
 				}
 				this.notifyQueueChanged();
@@ -325,7 +351,8 @@ export class Subject {
 			const steer = this.queues.peekMany("steer", this.queueModes.steer);
 			if (steer.length > 0) {
 				for (const item of steer) await this.consumeQueueItem(item);
-				nextUsers = steer.map((item) => ({ role: "user", content: item.text }));
+				nextUsers = steer.filter((item) => item.source?.kind !== "runtime").map((item) => ({ role: "user", content: item.text }));
+				this.runtimeInputs.push(...steer.filter((item) => item.source?.kind === "runtime").map((item) => ({ id: item.id, mode: item.mode, source: item.source!, text: item.text, data: item.data })));
 			}
 		}
 	}
