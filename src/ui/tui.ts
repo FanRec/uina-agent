@@ -116,6 +116,7 @@ export class InteractiveTUI {
 			case "text":
 				this.host.transcript.appendToken(m.text);
 				this.host.incrementTokens(1);
+				this.host.activityLine.addTokens(1);
 				this.host.activityLine.update("streaming", "正在输出回复...");
 				this.host.requestRender();
 				break;
@@ -130,6 +131,7 @@ export class InteractiveTUI {
 				const callId = m.callId ?? `tool-${m.name}-${Date.now()}`;
 				this.toolCallMap.set(callId, { startedAt: Date.now(), name: m.name });
 				this.host.transcript.commitThinking();
+				this.host.transcript.startTool(m.name, m.args, callId);
 				this.host.trajectoryProjection.onToolStart(m.name, m.args, callId);
 				this.host.activityLine.update("tool", `正在执行工具: ${m.name}`);
 				this.host.requestRender();
@@ -142,7 +144,7 @@ export class InteractiveTUI {
 				if (m.callId) this.toolCallMap.delete(m.callId);
 
 				const isError = m.status === "failed";
-				this.host.transcript.addToolDone(m.name, m.result, elapsed);
+				this.host.transcript.addToolDone(m.name, m.result, elapsed, isError, m.callId);
 				this.host.trajectoryProjection.onToolDone(m.callId ?? "", m.name, m.result, elapsed, isError);
 				this.host.activityLine.update("streaming", `工具 ${m.name} 执行完毕，继续生成...`);
 				this.host.requestRender();

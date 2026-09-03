@@ -15,8 +15,24 @@ export function formatToolCardLines(
 	result: string,
 	elapsedMs: number,
 	width = 80,
+	status: "running" | "completed" | "failed" = "completed",
+	args?: unknown,
 ): string[] {
 	const maxW = Math.max(20, width);
+
+	if (status === "running") {
+		let argStr = "";
+		try {
+			argStr = JSON.stringify(args ?? {});
+		} catch {
+			argStr = String(args);
+		}
+		if (argStr === "{}") argStr = "";
+		const shortArg = argStr.length > 40 ? `${argStr.slice(0, 37)}…` : argStr;
+		const line = `${C.yellow}⏳ ${C.bold}${name}${C.reset}${shortArg ? ` ${C.dim}${shortArg}${C.reset}` : ""} · ${C.yellow}执行中...${C.reset}`;
+		return [truncateToWidth(`  ${line}`, maxW, "…"), ""];
+	}
+
 	const t = elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(1)}s` : `${elapsedMs}ms`;
 
 	let obj: Record<string, unknown> | null = null;
@@ -40,7 +56,7 @@ export function formatToolCardLines(
 		if (errText) {
 			lines.push(`${C.red}✗ ${C.bold}${name}${C.reset} · ${C.dim}${t}${C.reset}`);
 			lines.push(`  ${C.dim}└${C.red}${truncateToWidth(errText, maxW - 4, "…")}${C.reset}`);
-			lines.push(`   ${C.dim}ctrl+t 看完整轨迹${C.reset}`);
+			lines.push(`   ${C.dim}Alt+T 查看轨迹${C.reset}`);
 			lines.push("");
 			return lines;
 		}

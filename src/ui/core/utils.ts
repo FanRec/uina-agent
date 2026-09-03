@@ -2,6 +2,8 @@
  * 终端字符与 ANSI 控制码工具函数（移植自 pi-tui utils 并做零外部依赖纯净实现）。
  */
 
+import { spawn } from "node:child_process";
+
 // ANSI Escape Code 正则（覆盖 CSI, OSC, APC 序列，包含以 \x07 或 \x1b\\ 结尾的 APC 序列如 CURSOR_MARKER）
 export const ANSI_REGEX =
 	// eslint-disable-next-line no-control-regex
@@ -137,6 +139,9 @@ export function truncateToWidth(
 	if (totalWidth <= maxWidth) return text;
 
 	const ellipsisW = visibleWidth(ellipsis);
+	if (maxWidth < ellipsisW) {
+		return maxWidth >= 1 ? ".".repeat(maxWidth) : "";
+	}
 	const targetWidth = Math.max(0, maxWidth - ellipsisW);
 
 	let curWidth = 0;
@@ -163,6 +168,40 @@ export function truncateToWidth(
 	}
 
 	return `${result}${C.reset}${ellipsis}`;
+}
+
+/**
+ * 统一跨平台剪贴板复制服务：
+ * 1. 首选终端原生 OSC 52 转义协议（零子进程、跨 SSH 宿主直达）；
+ * 2. 本地系统原生工具轻量兜底（Windows clip.exe 确保 UTF-8，macOS pbcopy）。
+ */
+export function copyToClipboardUnified(text: string): void {
+	if (!text) return;
+	const b64 = Buffer.from(text, "utf-8").toString("base64");
+	try {
+		process.stdout.write(`\x1b]52;c;${b64}\x07`);
+	} catch {}
+
+	if (process.platform === "win32" && !process.env["SSH_CONNECTION"]) {
+		try {
+			const child = spawn("cmd.exe", ["/c", "chcp 65001 >nul && clip"], {
+				stdio: ["pipe", "ignore", "ignore"],
+				windowsHide: true,
+			});
+			child.on("error", () => {});
+			child.stdin.end(Buffer.from(text, "utf-8"));
+			child.unref();
+		} catch {}
+	} else if (process.platform === "darwin" && !process.env["SSH_CONNECTION"]) {
+		try {
+			const child = spawn("pbcopy", [], {
+				stdio: ["pipe", "ignore", "ignore"],
+			});
+			child.on("error", () => {});
+			child.stdin.end(Buffer.from(text, "utf-8"));
+			child.unref();
+		} catch {}
+	}
 }
 
 /**

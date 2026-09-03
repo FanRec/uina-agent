@@ -8,12 +8,12 @@ import { C, visibleWidth, truncateToWidth } from "../../core/utils.js";
 type Rgb = readonly [number, number, number];
 
 const PALETTE: Record<string, Rgb | undefined> = {
-	D: [20, 38, 96], // 深蓝轮廓
-	B: [78, 111, 255], // DeepSeek 蓝身体
-	L: [190, 225, 255], // 浅蓝腹部
-	W: [255, 255, 255], // 亮白嘴部
-	H: [204, 51, 153], // 粉心
-	Z: [128, 128, 128], // 灰色
+	D: [26, 45, 78], // Uina 雾青深轮廓
+	B: [74, 138, 212], // Uina 雾蓝身体 (Mist Blue)
+	L: [180, 215, 245], // Uina 冰蓝腹部 (Ice Blue)
+	W: [240, 248, 255], // 柔白嘴部
+	H: [140, 180, 240], // 雾蓝心
+	Z: [110, 125, 145], // 雾灰
 };
 
 const fg = (rgb: Rgb): string => `\x1b[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
@@ -150,11 +150,11 @@ export function getStartupBanner(
 
 		let rawInfo3 = "";
 		if (availRight >= 56) {
-			rawInfo3 = `${C.dim}支持自然语言对话 | /stop 中断 | !cmd 终端执行 | /quit 退出${C.reset}`;
+			rawInfo3 = `${C.dim}自然语言交互 | Esc 中断 | ? 帮助菜单 | /quit 退出${C.reset}`;
 		} else if (availRight >= 38) {
-			rawInfo3 = `${C.dim}/stop 中断 | !cmd 执行 | /quit 退出${C.reset}`;
+			rawInfo3 = `${C.dim}Esc 中断 | ? 帮助 | /quit 退出${C.reset}`;
 		} else if (availRight >= 20) {
-			rawInfo3 = `${C.dim}/stop 中断 | /quit 退出${C.reset}`;
+			rawInfo3 = `${C.dim}? 帮助 | /quit 退出${C.reset}`;
 		}
 		const info3 = truncateToWidth(rawInfo3, availRight, "");
 

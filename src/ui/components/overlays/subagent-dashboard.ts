@@ -104,8 +104,15 @@ export class SubagentDashboard implements Component, Focusable {
 			this.selectedIndex = Math.max(0, agents.length - 1);
 		}
 
-		// 2. 渲染各智能体卡片
-		for (let i = 0; i < agents.length; i++) {
+		// 2. 渲染各智能体卡片（带滑动视口，最多显示 4 个）
+		const maxVisible = 4;
+		const windowStart = Math.max(
+			0,
+			Math.min(this.selectedIndex - Math.floor(maxVisible / 2), Math.max(0, agents.length - maxVisible)),
+		);
+		const windowEnd = Math.min(agents.length, windowStart + maxVisible);
+
+		for (let i = windowStart; i < windowEnd; i++) {
 			const a = agents[i]!;
 			const isSelected = i === this.selectedIndex;
 			const pointer = isSelected ? `${C.bold}${C.cyan}❯${C.reset}` : " ";
@@ -126,7 +133,7 @@ export class SubagentDashboard implements Component, Focusable {
 				output.push(`  ${borderCol}│${C.reset} ${line2}${" ".repeat(Math.max(0, innerW - visibleWidth(line2)))} ${borderCol}│${C.reset}`);
 			}
 
-			if (i < agents.length - 1) {
+			if (i < windowEnd - 1) {
 				output.push(`  ${borderCol}├${"─".repeat(boxWidth - 2)}┤${C.reset}`);
 			}
 		}

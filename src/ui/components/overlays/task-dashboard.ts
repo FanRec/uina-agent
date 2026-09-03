@@ -141,9 +141,15 @@ export class TaskDashboard implements Component, Focusable {
 			}
 		} else {
 			// 上下双分屏模式
-			// 上部：任务列表（固定 4 行）
-			const maxListRows = Math.min(4, tasks.length);
-			for (let i = 0; i < maxListRows; i++) {
+			// 上部：任务列表（带动态滑动视口，上限 4 行）
+			const maxListRows = 4;
+			const windowStart = Math.max(
+				0,
+				Math.min(this.selectedIndex - Math.floor(maxListRows / 2), Math.max(0, tasks.length - maxListRows)),
+			);
+			const windowEnd = Math.min(tasks.length, windowStart + maxListRows);
+
+			for (let i = windowStart; i < windowEnd; i++) {
 				const t = tasks[i]!;
 				const isSelected = i === this.selectedIndex;
 				const pointer = isSelected ? `${C.bold}${C.cyan}❯${C.reset}` : " ";
@@ -157,7 +163,8 @@ export class TaskDashboard implements Component, Focusable {
 			}
 
 			// 分割线
-			const splitTag = `─ 实时输出 (Tail) ─`;
+			const scrollHint = tasks.length > maxListRows ? ` (${this.selectedIndex + 1}/${tasks.length}) ` : "";
+			const splitTag = `─ 实时输出 (Tail)${scrollHint}─`;
 			const splitFill = Math.max(1, boxWidth - 2 - visibleWidth(splitTag));
 			output.push(`  ${borderCol}├${splitTag}${"─".repeat(splitFill)}┤${C.reset}`);
 

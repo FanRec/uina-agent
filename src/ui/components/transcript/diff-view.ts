@@ -126,7 +126,7 @@ export function formatUnifiedDiffCardLines(
 
 	// 3. 超出折叠提示行
 	if (isFolded && hiddenCount > 0) {
-		const hintText = `${C.gray}... (还有 ${hiddenCount} 行变更 · 敲 /diff 或 Ctrl+O 展开)${C.reset}`;
+		const hintText = `${C.gray}... (还有 ${hiddenCount} 行变更 · 按 Ctrl+O 展开)${C.reset}`;
 		const hintW = visibleWidth(hintText);
 		const pad = Math.max(0, innerW - hintW);
 		output.push(`  ${C.gray}│${C.reset} ${hintText}${" ".repeat(pad)} ${C.gray}│${C.reset}`);

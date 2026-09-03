@@ -233,9 +233,12 @@ export class TrajectoryScene implements Component, Focusable {
 
 		if (this.viewMode === "timeline") {
 			// 3. 波形带
-			const [wave1, wave2] = projectWaveBand(nodes as TrajectoryNode[], innerW, this.cursorIndex);
-			output.push(`  ${borderCol}│${C.reset} ${wave1} ${borderCol}│${C.reset}`);
-			output.push(`  ${borderCol}│${C.reset} ${wave2} ${borderCol}│${C.reset}`);
+			const waveWidth = Math.max(10, innerW - 2);
+			const [wave1, wave2] = projectWaveBand(nodes as TrajectoryNode[], waveWidth, this.cursorIndex);
+			const pad1 = Math.max(0, innerW - 2 - visibleWidth(wave1));
+			const pad2 = Math.max(0, innerW - 2 - visibleWidth(wave2));
+			output.push(`  ${borderCol}│${C.reset} ${wave1}${" ".repeat(pad1)} ${borderCol}│${C.reset}`);
+			output.push(`  ${borderCol}│${C.reset} ${wave2}${" ".repeat(pad2)} ${borderCol}│${C.reset}`);
 			output.push(`  ${borderCol}├${"─".repeat(boxWidth - 2)}┤${C.reset}`);
 
 			// 4. 当前选中节点的检查器

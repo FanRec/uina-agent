@@ -3,44 +3,60 @@ import type { ModelRegistry } from "../ai/providers.js";
 import type { JobRegistry } from "./jobs/registry.js";
 import type { SubagentRegistry } from "./subagents/registry.js";
 import type { ExtensionAPI } from "./runner.js";
-import type { UIHost } from "../ui/ui-host.js";
-import { ModelPicker, type ModelGroup } from "../ui/components/overlays/model-picker.js";
-import { EffortSlider, DEFAULT_EFFORT_TIERS } from "../ui/components/overlays/effort-slider.js";
-import { TaskDashboard } from "../ui/components/overlays/task-dashboard.js";
-import { SubagentDashboard } from "../ui/components/overlays/subagent-dashboard.js";
-import { SubagentDetailScene } from "../ui/components/overlays/subagent-detail-scene.js";
-import { TrajectoryScene } from "../ui/components/overlays/trajectory-scene.js";
-import { createJobAdapter } from "../ui/adapters/jobs.js";
-import { createSubagentAdapter } from "../ui/adapters/subagents.js";
+import type { ThinkingLevel } from "../core/types.js";
 
-export interface BuiltinServices { subject: Subject; models: ModelRegistry; jobs: JobRegistry; subagents: SubagentRegistry; host?: UIHost; reload(): Promise<void>; shutdown(): Promise<void>; }
+export interface BuiltinUIModelGroup {
+	id: string;
+	name: string;
+	description: string;
+	models: Array<{ id: string; name: string; description: string; provider: string }>;
+}
+
+export interface BuiltinUI {
+	openHelpMenu(): void;
+	toggleThinking(): void;
+	clear(): void;
+	openModelPicker(currentModel: string, groups: BuiltinUIModelGroup[], onPick: (name: string) => Promise<void> | void): void;
+	openEffortSlider(currentLevel: ThinkingLevel, declaredLevels: ThinkingLevel[], onChange: (level: ThinkingLevel) => void): void;
+	openTasks(): void;
+	openSubagents(): void;
+	openTrajectory(): void;
+	setModel?(name: string): void;
+	setThinkingLevels?(levels?: readonly ThinkingLevel[]): void;
+	setReasoningEffort?(level?: ThinkingLevel): void;
+	setUsage?(used: number, window?: number): void;
+}
+
+export interface BuiltinServices {
+	subject: Subject;
+	models: ModelRegistry;
+	jobs: JobRegistry;
+	subagents: SubagentRegistry;
+	ui?: BuiltinUI;
+	reload(): Promise<void>;
+	shutdown(): Promise<void>;
+}
 
 export function activateBuiltinCommands(services: BuiltinServices): (pi: ExtensionAPI) => void {
 	return (pi) => {
-		const host = () => services.host;
+		const ui = services.ui;
 
 		pi.registerCommand({
 			name: "help",
 			description: "查看所有可用命令与快捷键",
-			handler: () => host()?.openHelpMenu(),
+			handler: () => ui?.openHelpMenu(),
 		});
 
 		pi.registerCommand({
 			name: "think",
 			description: "展开或折叠深度思考过程",
-			handler: () => {
-				host()?.transcript.toggleThinking();
-				host()?.requestRender();
-			},
+			handler: () => ui?.toggleThinking(),
 		});
 
 		pi.registerCommand({
 			name: "clear",
 			description: "清空当前屏幕转录流",
-			handler: () => {
-				host()?.transcript.clear();
-				host()?.requestRender();
-			},
+			handler: () => ui?.clear(),
 		});
 
 		pi.registerCommand({
@@ -64,32 +80,9 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			argumentHint: "<provider>",
 			handler: async (arg) => {
 				if (!arg) {
-					const h = host();
-					if (h) {
-						h.toggleModal("model", (close) => {
-							const picker = new ModelPicker(services.subject.getModel().name, modelGroups(services.models));
-							const handle = pi.ui.showOverlay(picker);
-							picker.onPick = (name) => {
-								void selectModel(name);
-								handle.hide();
-							};
-							picker.onClose = () => {
-								handle.hide();
-							};
-							picker.onRequestRender = () => h.requestRender();
-							const origHide = handle.hide.bind(handle);
-							handle.hide = () => {
-								close();
-								origHide();
-							};
-							return handle;
-						});
-						return;
+					if (ui) {
+						ui.openModelPicker(services.subject.getModel().name, modelGroups(services.models), (name) => selectModel(name));
 					}
-					const picker = new ModelPicker(services.subject.getModel().name, modelGroups(services.models));
-					const handle = pi.ui.showOverlay(picker);
-					picker.onPick = (name) => { void selectModel(name); handle.hide(); };
-					picker.onClose = () => handle.hide();
 					return;
 				}
 				await selectModel(arg);
@@ -99,10 +92,10 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 		const selectModel = async (arg: string): Promise<void> => {
 			const provider = services.models.resolve(arg);
 			await services.subject.setModel(provider);
-			host()?.setModel(provider.name);
-			host()?.setThinkingLevels(provider.thinkingLevels);
-			host()?.setReasoningEffort(services.subject.getThinkingLevel());
-			host()?.setUsage(services.subject.getUsedTokens(), services.subject.getContextWindow());
+			ui?.setModel?.(provider.name);
+			ui?.setThinkingLevels?.(provider.thinkingLevels);
+			ui?.setReasoningEffort?.(services.subject.getThinkingLevel());
+			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow());
 			pi.ui.notify(`已切换至模型: ${provider.name}`);
 		};
 
@@ -112,56 +105,26 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			hasArgs: true,
 			argumentHint: "<level>",
 			handler: (arg) => {
+				const declaredLevels = services.subject.getModel().thinkingLevels;
 				if (!arg) {
-					const declaredLevels = services.subject.getModel().thinkingLevels;
 					if (!declaredLevels?.length) {
 						pi.ui.notify("当前 Provider 未提供 thinking 能力元数据；Uina 不会猜测可用档位。", "warning");
 						return;
 					}
-					const h = host();
-					if (h) {
-						h.toggleModal("effort", (close) => {
-							const slider = new EffortSlider(
-								services.subject.getThinkingLevel(),
-								DEFAULT_EFFORT_TIERS.filter((tier) => declaredLevels.includes(tier.id)),
-							);
-							const handle = pi.ui.showOverlay(slider);
-							slider.onChange = (level) => {
-								services.subject.setThinkingLevel(level);
-								h.setReasoningEffort(level);
-							};
-							slider.onClose = () => {
-								handle.hide();
-							};
-							slider.onRequestRender = () => h.requestRender();
-							const origHide = handle.hide.bind(handle);
-							handle.hide = () => {
-								close();
-								origHide();
-							};
-							return handle;
+					if (ui) {
+						ui.openEffortSlider(services.subject.getThinkingLevel(), declaredLevels as ThinkingLevel[], (level) => {
+							services.subject.setThinkingLevel(level);
+							ui.setReasoningEffort?.(level);
 						});
-						return;
 					}
-					const slider = new EffortSlider(
-						services.subject.getThinkingLevel(),
-						DEFAULT_EFFORT_TIERS.filter((tier) => declaredLevels.includes(tier.id)),
-					);
-					const handle = pi.ui.showOverlay(slider);
-					slider.onChange = (level) => {
-						services.subject.setThinkingLevel(level);
-						host()?.setReasoningEffort(level);
-					};
-					slider.onClose = () => handle.hide();
 					return;
 				}
-				const level = arg as import("../core/types.js").ThinkingLevel;
-				const levels = services.subject.getModel().thinkingLevels;
-				if (!levels?.includes(level)) {
-					throw new Error(levels ? `当前 Provider 不支持思考等级: ${arg}` : "当前 Provider 未声明 thinking 能力");
+				const level = arg as ThinkingLevel;
+				if (!declaredLevels?.includes(level)) {
+					throw new Error(declaredLevels ? `当前 Provider 不支持思考等级: ${arg}` : "当前 Provider 未声明 thinking 能力");
 				}
 				services.subject.setThinkingLevel(level);
-				host()?.setReasoningEffort(level);
+				ui?.setReasoningEffort?.(level);
 			},
 		});
 
@@ -176,36 +139,19 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 		pi.registerCommand({
 			name: "tasks",
 			description: "后台任务与进程看板 (Alt+J)",
-			handler: () => showTasks(pi, services.jobs, host()),
+			handler: () => ui?.openTasks(),
 		});
 
 		pi.registerCommand({
 			name: "subagents",
 			description: "多子智能体并行看板 (Alt+A)",
-			handler: () => showSubagents(pi, services.subagents, host()),
+			handler: () => ui?.openSubagents(),
 		});
 
 		pi.registerCommand({
 			name: "trajectory",
 			description: "全屏审计轨迹时序看板 (Alt+T)",
-			handler: () => {
-				const h = host();
-				if (h) {
-					h.toggleModal("trajectory", (close) => {
-						const scene = new TrajectoryScene(h.trajectoryProjection);
-						const handle = pi.ui.showOverlay(scene);
-						scene.onClose = () => {
-							handle.hide();
-						};
-						const origHide = handle.hide.bind(handle);
-						handle.hide = () => {
-							close();
-							origHide();
-						};
-						return handle;
-					});
-				}
-			},
+			handler: () => ui?.openTrajectory(),
 		});
 
 		pi.registerCommand({
@@ -222,72 +168,11 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 	};
 }
 
-function showTasks(pi: ExtensionAPI, jobs: JobRegistry, host?: UIHost): void {
-	if (host) {
-		host.toggleModal("tasks", (close) => {
-			const view = new TaskDashboard(createJobAdapter(jobs));
-			const handle = pi.ui.showOverlay(view);
-			view.onClose = () => {
-				handle.hide();
-			};
-			const origHide = handle.hide.bind(handle);
-			handle.hide = () => {
-				close();
-				origHide();
-			};
-			return handle;
-		});
-	} else {
-		const view = new TaskDashboard(createJobAdapter(jobs));
-		const handle = pi.ui.showOverlay(view);
-		view.onClose = () => handle.hide();
-	}
-}
-
-function showSubagents(pi: ExtensionAPI, subagents: SubagentRegistry, host?: UIHost): void {
-	if (host) {
-		host.toggleModal("subagents", (close) => {
-			const view = new SubagentDashboard(createSubagentAdapter(subagents));
-			const handle = pi.ui.showOverlay(view);
-			view.onClose = () => {
-				handle.hide();
-			};
-			view.onDrilldown = (agent) => {
-				handle.hide();
-				const detail = new SubagentDetailScene(agent, createSubagentAdapter(subagents));
-				const next = pi.ui.showOverlay(detail);
-				const origNextHide = next.hide.bind(next);
-				next.hide = () => {
-					close();
-					origNextHide();
-				};
-				detail.onClose = () => next.hide();
-			};
-			const origHide = handle.hide.bind(handle);
-			handle.hide = () => {
-				close();
-				origHide();
-			};
-			return handle;
-		});
-	} else {
-		const view = new SubagentDashboard(createSubagentAdapter(subagents));
-		const handle = pi.ui.showOverlay(view);
-		view.onClose = () => handle.hide();
-		view.onDrilldown = (agent) => {
-			handle.hide();
-			const detail = new SubagentDetailScene(agent, createSubagentAdapter(subagents));
-			const next = pi.ui.showOverlay(detail);
-			detail.onClose = () => next.hide();
-		};
-	}
-}
-
-function modelGroups(models: ModelRegistry): ModelGroup[] {
+function modelGroups(models: ModelRegistry): BuiltinUIModelGroup[] {
 	return models.choices().map((choice) => ({
 		id: choice.id,
-		name: choice.id,
-		description: "已配置或已注册 Provider",
+		name: choice.name,
+		description: choice.id,
 		models: [{ id: choice.id, name: choice.name, description: choice.id, provider: choice.id }],
 	}));
 }

@@ -7,7 +7,7 @@
 import type { Component } from "../../core/types.js";
 import type { ChatMsg } from "../../../core/types.js";
 import type { SessionEntry } from "../../../session/types.js";
-import { C, wrapTextWithAnsi } from "../../core/utils.js";
+import { C, wrapTextWithAnsi, stripAnsi } from "../../core/utils.js";
 import { formatThinkingLines } from "./thinking-view.js";
 import { formatToolCardLines } from "./tool-view.js";
 import { formatFullMarkdown } from "./stream-markdown.js";
@@ -30,14 +30,66 @@ export interface DiffRecord {
 	collapsed?: boolean;
 }
 
+export type TurnItem =
+	| { kind: "thinking"; text: string; collapsed?: boolean }
+	| { kind: "text"; text: string }
+	| {
+			kind: "tool";
+			name: string;
+			args?: unknown;
+			result?: string;
+			status: "running" | "completed" | "failed";
+			elapsedMs?: number;
+			callId?: string;
+	  }
+	| {
+			kind: "diff";
+			oldText: string;
+			newText: string;
+			filename: string;
+			collapsed?: boolean;
+	  };
+
 export interface TurnRecord {
 	n: number;
 	userText: string;
-	assistantMarkdown: string;
-	thinkingText?: string;
+	items: TurnItem[];
 	thinkingCollapsed?: boolean;
-	tools: ToolRecord[];
-	diffs?: DiffRecord[];
+	readonly assistantMarkdown: string;
+	readonly thinkingText?: string;
+	readonly tools: ToolRecord[];
+	readonly diffs?: DiffRecord[];
+}
+
+export function createTurnRecord(n: number, userText = ""): TurnRecord {
+	const items: TurnItem[] = [];
+	return {
+		n,
+		userText,
+		items,
+		get assistantMarkdown(): string {
+			return items
+				.filter((it): it is Extract<TurnItem, { kind: "text" }> => it.kind === "text")
+				.map((it) => it.text)
+				.join("");
+		},
+		get thinkingText(): string | undefined {
+			const texts = items
+				.filter((it): it is Extract<TurnItem, { kind: "thinking" }> => it.kind === "thinking")
+				.map((it) => it.text);
+			return texts.length > 0 ? texts.join("\n") : undefined;
+		},
+		get tools(): ToolRecord[] {
+			return items
+				.filter((it): it is Extract<TurnItem, { kind: "tool" }> => it.kind === "tool")
+				.map((t) => ({ name: t.name, result: t.result ?? "", elapsedMs: t.elapsedMs ?? 0 }));
+		},
+		get diffs(): DiffRecord[] {
+			return items
+				.filter((it): it is Extract<TurnItem, { kind: "diff" }> => it.kind === "diff")
+				.map((d) => ({ oldText: d.oldText, newText: d.newText, filename: d.filename, collapsed: d.collapsed }));
+		},
+	};
 }
 
 export interface ThinkingLineLocation {
@@ -95,24 +147,27 @@ export class TranscriptContainer implements Component {
 		if (this.currentTurn) {
 			this.commitCurrentTurn();
 		}
-		this.currentTurn = {
-			n,
-			userText,
-			assistantMarkdown: "",
-			tools: [],
-		};
+		this.currentTurn = createTurnRecord(n, userText);
 		this.thinkingCommitted = false;
 	}
 
 	appendToken(token: string): void {
-		if (this.currentTurn) {
-			this.currentTurn.assistantMarkdown += token;
+		if (!this.currentTurn) return;
+		const last = this.currentTurn.items.at(-1);
+		if (last && last.kind === "text") {
+			last.text += token;
+		} else {
+			this.currentTurn.items.push({ kind: "text", text: token });
 		}
 	}
 
 	appendThinking(text: string): void {
-		if (this.currentTurn) {
-			this.currentTurn.thinkingText = (this.currentTurn.thinkingText ?? "") + text;
+		if (!this.currentTurn) return;
+		const last = this.currentTurn.items.at(-1);
+		if (last && last.kind === "thinking") {
+			last.text += text;
+		} else {
+			this.currentTurn.items.push({ kind: "thinking", text });
 		}
 	}
 
@@ -124,17 +179,62 @@ export class TranscriptContainer implements Component {
 		return this.thinkingCommitted;
 	}
 
-	addToolDone(name: string, result: string, elapsedMs = 0): void {
-		if (this.currentTurn) {
-			this.currentTurn.tools.push({ name, result, elapsedMs });
+	startTool(name: string, args?: unknown, callId?: string): void {
+		if (!this.currentTurn) {
+			this.startTurn(this.historyTurns.length + 1, "");
+		}
+		this.currentTurn?.items.push({
+			kind: "tool",
+			name,
+			args,
+			status: "running",
+			callId,
+		});
+	}
+
+	addToolDone(name: string, result: string, elapsedMs = 0, isError = false, callId?: string): void {
+		if (!this.currentTurn) {
+			this.startTurn(this.historyTurns.length + 1, "");
+		}
+		if (!this.currentTurn) return;
+
+		let runningTool: Extract<TurnItem, { kind: "tool" }> | undefined;
+		if (callId) {
+			runningTool = this.currentTurn.items.find(
+				(it): it is Extract<TurnItem, { kind: "tool" }> => it.kind === "tool" && it.callId === callId,
+			);
+		}
+		if (!runningTool) {
+			runningTool = this.currentTurn.items
+				.slice()
+				.reverse()
+				.find(
+					(it): it is Extract<TurnItem, { kind: "tool" }> =>
+						it.kind === "tool" && it.status === "running" && it.name === name,
+				);
+		}
+
+		if (runningTool) {
+			runningTool.status = isError ? "failed" : "completed";
+			runningTool.result = result;
+			runningTool.elapsedMs = elapsedMs;
+		} else {
+			this.currentTurn.items.push({
+				kind: "tool",
+				name,
+				result,
+				elapsedMs,
+				status: isError ? "failed" : "completed",
+				callId,
+			});
 		}
 	}
 
 	addDiff(oldText: string, newText: string, filename: string, collapsed = true): void {
-		if (this.currentTurn) {
-			if (!this.currentTurn.diffs) this.currentTurn.diffs = [];
-			this.currentTurn.diffs.push({ oldText, newText, filename, collapsed });
+		if (!this.currentTurn) {
+			this.startTurn(this.historyTurns.length + 1, "");
 		}
+		this.currentTurn?.items.push({ oldText, newText, filename, collapsed, kind: "diff" });
 	}
 
 	addCompaction(record: CompactionRecord): void {
@@ -190,7 +290,7 @@ export class TranscriptContainer implements Component {
 		};
 		const createTurn = (userText = ""): TurnRecord => {
 			turnN++;
-			return { n: turnN, userText, assistantMarkdown: "", tools: [] };
+			return createTurnRecord(turnN, userText);
 		};
 
 		for (const entry of entries) {
@@ -240,10 +340,10 @@ export class TranscriptContainer implements Component {
 			} else if (msg.role === "assistant") {
 				current ??= createTurn();
 				if (msg.thinking) {
-					current.thinkingText = (current.thinkingText ? current.thinkingText + "\n" : "") + msg.thinking;
+					current.items.push({ kind: "thinking", text: msg.thinking });
 				}
 				if (msg.content) {
-					current.assistantMarkdown += msg.content;
+					current.items.push({ kind: "text", text: msg.content });
 				}
 				if (msg.tool_calls) {
 					pendingToolCalls = msg.tool_calls.map((call) => ({
@@ -261,7 +361,14 @@ export class TranscriptContainer implements Component {
 				} catch {
 					// Plain-text tool results have no elapsed metadata.
 				}
-				current.tools.push({ name: toolName, result: msg.content, elapsedMs });
+				current.items.push({
+					kind: "tool",
+					name: toolName,
+					result: msg.content,
+					elapsedMs,
+					status: "completed",
+					callId: msg.tool_call_id,
+				});
 			}
 		}
 		commit();
@@ -285,6 +392,11 @@ export class TranscriptContainer implements Component {
 			const wasCollapsed = target.thinkingCollapsed ?? true;
 			const beforeCount = formatThinkingLines(target.thinkingText, wasCollapsed, width).length;
 			target.thinkingCollapsed = !wasCollapsed;
+			for (const it of target.items) {
+				if (it.kind === "thinking") {
+					it.collapsed = !wasCollapsed;
+				}
+			}
 			const afterCount = formatThinkingLines(target.thinkingText, !wasCollapsed, width).length;
 			return { toggled: true, lineDelta: afterCount - beforeCount };
 		}
@@ -299,6 +411,11 @@ export class TranscriptContainer implements Component {
 		for (const t of all) {
 			if (t.thinkingText) {
 				t.thinkingCollapsed = targetState;
+				for (const it of t.items) {
+					if (it.kind === "thinking") {
+						it.collapsed = targetState;
+					}
+				}
 			}
 		}
 	}
@@ -330,12 +447,12 @@ export class TranscriptContainer implements Component {
 		return lines;
 	}
 
-	private formatAssistantMarkdown(md: string, width: number): string[] {
+	private formatAssistantMarkdown(md: string, width: number, isFirstParagraph = true): string[] {
 		if (!md) return [];
 		const contentBudget = Math.max(20, width - 2);
 		const rawLines = formatFullMarkdown(md, contentBudget);
 		const formatted: string[] = [];
-		let isFirstParagraph = true;
+		let isFirst = isFirstParagraph;
 
 		for (const rawLine of rawLines) {
 			if (!rawLine.trim()) {
@@ -343,10 +460,11 @@ export class TranscriptContainer implements Component {
 				continue;
 			}
 
-			// 如果是代码块边框或内联几何线，保持顶格
+			// 剥离 ANSI 转义码后再判断是否为代码块或制表符边框
+			const clean = stripAnsi(rawLine).trimStart();
 			if (
-				rawLine.startsWith("┌") || rawLine.startsWith("│") || rawLine.startsWith("└") ||
-				rawLine.startsWith("  ┌") || rawLine.startsWith("  │") || rawLine.startsWith("  └")
+				clean.startsWith("┌") || clean.startsWith("│") || clean.startsWith("└") ||
+				clean.startsWith("├") || clean.startsWith("┼") || clean.startsWith("┴") || clean.startsWith("┬")
 			) {
 				formatted.push(rawLine.trimStart());
 				continue;
@@ -356,11 +474,10 @@ export class TranscriptContainer implements Component {
 			const wrapped = wrapTextWithAnsi(rawLine.trim(), contentBudget);
 			for (let i = 0; i < wrapped.length; i++) {
 				const piece = wrapped[i]!;
-				if (isFirstParagraph && i === 0) {
+				if (isFirst && i === 0) {
 					formatted.push(`${C.bold}${C.text}● ${C.reset}${piece}`);
-					isFirstParagraph = false;
+					isFirst = false;
 				} else {
-					// 严格零边距左对齐，去除前导 "  " 多余空格，杜绝复制污染
 					formatted.push(piece);
 				}
 			}
@@ -399,9 +516,6 @@ export class TranscriptContainer implements Component {
 
 		// 当前正在生成的活动轮次
 		if (this.currentTurn) {
-			// thinking 是当前轮次的实时输出，第一段内容到达时就应当
-			// 显示；thinkingCommitted 只记录它是否已经进入工具阶段，
-			// 不能拿来阻塞流式思考的可见性。
 			this.renderTurn(this.currentTurn, width, lines, true);
 		}
 
@@ -416,25 +530,24 @@ export class TranscriptContainer implements Component {
 	): void {
 		if (turn.userText) out.push(...this.formatUserLine(turn.userText, width));
 
-		if (turn.thinkingText && showThinking) {
-			const isHovered = this.hoveredThinkingTurnN === turn.n;
-			out.push(...formatThinkingLines(turn.thinkingText, turn.thinkingCollapsed ?? true, width, isHovered));
-		}
+		let hasRenderedText = false;
 
-		if (turn.assistantMarkdown) {
-			out.push(...this.formatAssistantMarkdown(turn.assistantMarkdown, width));
-		}
-
-		for (const tool of turn.tools) {
-			out.push(...formatToolCardLines(tool.name, tool.result, tool.elapsedMs, width));
-		}
-
-		if (turn.diffs) {
-			for (const d of turn.diffs) {
-				out.push(...formatUnifiedDiffCardLines(d.oldText, d.newText, d.filename, d.collapsed ?? true, width));
+		for (const item of turn.items) {
+			if (item.kind === "thinking") {
+				if (showThinking) {
+					const isHovered = this.hoveredThinkingTurnN === turn.n;
+					const collapsed = item.collapsed ?? turn.thinkingCollapsed ?? true;
+					out.push(...formatThinkingLines(item.text, collapsed, width, isHovered));
+				}
+			} else if (item.kind === "text") {
+				out.push(...this.formatAssistantMarkdown(item.text, width, !hasRenderedText));
+				hasRenderedText = true;
+			} else if (item.kind === "tool") {
+				out.push(...formatToolCardLines(item.name, item.result ?? "", item.elapsedMs ?? 0, width, item.status, item.args));
+			} else if (item.kind === "diff") {
+				out.push(...formatUnifiedDiffCardLines(item.oldText, item.newText, item.filename, item.collapsed ?? true, width));
 			}
 		}
-
 	}
 
 	getTimelineTurns(): Array<{ n: number; userText: string }> {
@@ -465,6 +578,12 @@ export class TranscriptContainer implements Component {
 				lineCount += 1;
 			} else if (item.kind === "compaction") {
 				lineCount += formatCompactionCardLines(item.record, width).length;
+			} else if (item.kind === "customMessage") {
+				const comp = new CustomMessageComponent(item.message, this.messageRenderer(item.message.customType));
+				lineCount += comp.render(width).length;
+			} else if (item.kind === "customEntry") {
+				const comp = new CustomEntryComponent(item.entry, this.entryRenderer(item.entry.customType));
+				lineCount += comp.render(width).length;
 			}
 		}
 
@@ -486,8 +605,22 @@ export class TranscriptContainer implements Component {
 			if (item.kind === "turn") {
 				const turn = item.turn;
 				const userLines = this.formatUserLine(turn.userText, width);
-				if (turn.thinkingText) {
-					result.push({ turnN: turn.n, lineIndex: currentLine + userLines.length, turn });
+				let turnOffset = userLines.length;
+				let hasText = false;
+				for (const it of turn.items) {
+					if (it.kind === "thinking") {
+						result.push({ turnN: turn.n, lineIndex: currentLine + turnOffset, turn });
+						const isHovered = this.hoveredThinkingTurnN === turn.n;
+						const collapsed = it.collapsed ?? turn.thinkingCollapsed ?? true;
+						turnOffset += formatThinkingLines(it.text, collapsed, width, isHovered).length;
+					} else if (it.kind === "text") {
+						turnOffset += this.formatAssistantMarkdown(it.text, width, !hasText).length;
+						hasText = true;
+					} else if (it.kind === "tool") {
+						turnOffset += formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args).length;
+					} else if (it.kind === "diff") {
+						turnOffset += formatUnifiedDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
+					}
 				}
 				const turnLines: string[] = [];
 				this.renderTurn(turn, width, turnLines);
@@ -496,12 +629,35 @@ export class TranscriptContainer implements Component {
 				currentLine += 1;
 			} else if (item.kind === "compaction") {
 				currentLine += formatCompactionCardLines(item.record, width).length;
+			} else if (item.kind === "customMessage") {
+				const comp = new CustomMessageComponent(item.message, this.messageRenderer(item.message.customType));
+				currentLine += comp.render(width).length;
+			} else if (item.kind === "customEntry") {
+				const comp = new CustomEntryComponent(item.entry, this.entryRenderer(item.entry.customType));
+				currentLine += comp.render(width).length;
 			}
 		}
 
-		if (this.currentTurn && this.currentTurn.thinkingText) {
-			const userLines = this.formatUserLine(this.currentTurn.userText, width);
-			result.push({ turnN: this.currentTurn.n, lineIndex: currentLine + userLines.length, turn: this.currentTurn });
+		if (this.currentTurn) {
+			const turn = this.currentTurn;
+			const userLines = this.formatUserLine(turn.userText, width);
+			let turnOffset = userLines.length;
+			let hasText = false;
+			for (const it of turn.items) {
+				if (it.kind === "thinking") {
+					result.push({ turnN: turn.n, lineIndex: currentLine + turnOffset, turn });
+					const isHovered = this.hoveredThinkingTurnN === turn.n;
+					const collapsed = it.collapsed ?? turn.thinkingCollapsed ?? true;
+					turnOffset += formatThinkingLines(it.text, collapsed, width, isHovered).length;
+				} else if (it.kind === "text") {
+					turnOffset += this.formatAssistantMarkdown(it.text, width, !hasText).length;
+					hasText = true;
+				} else if (it.kind === "tool") {
+					turnOffset += formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args).length;
+				} else if (it.kind === "diff") {
+					turnOffset += formatUnifiedDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
+				}
+			}
 		}
 
 		return result;

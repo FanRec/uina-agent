@@ -18,9 +18,9 @@ import { ExtensionRegistry } from "../src/ui/extensions/registry.js";
 import { createExtensionUIContext } from "../src/ui/extensions/context.js";
 import { CustomMessageComponent } from "../src/ui/components/transcript/custom-message.js";
 import { CustomEntryComponent } from "../src/ui/components/transcript/custom-entry.js";
-import { JobRegistry, type JobOutcome } from "../src/extensions/jobs/registry.js";
+import { JobRegistry, type JobOutcome, type JobSnapshot } from "../src/extensions/jobs/registry.js";
 import { createJobAdapter } from "../src/ui/adapters/jobs.js";
-import { TaskDashboard } from "../src/ui/components/overlays/task-dashboard.js";
+import { TaskDashboard, type JobPort } from "../src/ui/components/overlays/task-dashboard.js";
 import { createSubagentAdapter } from "../src/ui/adapters/subagents.js";
 import { SubagentDashboard } from "../src/ui/components/overlays/subagent-dashboard.js";
 import { TrajectoryProjection } from "../src/ui/adapters/agent-events.js";
@@ -29,6 +29,7 @@ import { createInteractiveUI } from "../src/ui/tui.js";
 import { UIHost } from "../src/ui/ui-host.js";
 import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
 import { ModelPicker } from "../src/ui/components/overlays/model-picker.js";
+import { EffortSlider } from "../src/ui/components/overlays/effort-slider.js";
 import { getStartupBanner } from "../src/ui/components/primitives/banner.js";
 
 describe("UI Core: Utils", () => {
@@ -1245,5 +1246,117 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
 			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
 		}
+	});
+
+	describe("UI Architecture & Component Integrity Fixes", () => {
+		it("truncateToWidth 当 maxWidth 小于省略号长度时安全降级不超宽", () => {
+			expect(visibleWidth(truncateToWidth("hello", 1, "..."))).toBeLessThanOrEqual(1);
+			expect(visibleWidth(truncateToWidth("hello", 0, "..."))).toBe(0);
+			expect(visibleWidth(truncateToWidth("hello", 2, "..."))).toBeLessThanOrEqual(2);
+		});
+
+		it("EffortSlider 在只有少量或单个档位时安全初始化不发生越界崩溃", () => {
+			const slider1 = new EffortSlider("high", [{ id: "high", name: "High", description: "Deep" }]);
+			expect(slider1.getCurrentTier().id).toBe("high");
+			expect(slider1.navigateRight().id).toBe("high");
+			expect(slider1.navigateLeft().id).toBe("high");
+
+			const slider2 = new EffortSlider("unknown", [{ id: "low", name: "Low", description: "Fast" }]);
+			expect(slider2.getCurrentTier().id).toBe("low");
+		});
+
+		it("TranscriptContainer 严格保证思考、文本、运行中工具与完成工具的时间序节点流", () => {
+			const transcript = new TranscriptContainer();
+			transcript.startTurn(1, "用户输入");
+			transcript.appendThinking("开始推理");
+			transcript.appendToken("第一段文本回复");
+			transcript.startTool("bash", { command: "ls" }, "call-1");
+
+			let lines = transcript.render(80).join("\n");
+			expect(lines).toContain("开始推理");
+			expect(lines).toContain("第一段文本回复");
+			expect(lines).toContain("bash");
+			expect(lines).toContain("执行中...");
+
+			transcript.addToolDone("bash", "file1.txt\nfile2.txt", 120, false, "call-1");
+			transcript.appendToken("工具完成后的后续回复");
+
+			lines = transcript.render(80).join("\n");
+			expect(lines).toContain("file1.txt");
+			expect(lines).toContain("工具完成后的后续回复");
+
+			const idx1 = lines.indexOf("第一段文本回复");
+			const idxTool = lines.indexOf("file1.txt");
+			const idx2 = lines.indexOf("工具完成后的后续回复");
+			expect(idx1).toBeLessThan(idxTool);
+			expect(idxTool).toBeLessThan(idx2);
+		});
+
+		it("TranscriptContainer 遇到带 ANSI 样式的代码块边框时不误判为嵌套框", () => {
+			const transcript = new TranscriptContainer();
+			transcript.startTurn(1, "写个函数");
+			transcript.appendToken("```ts\n\x1b[36mconst a = 1;\x1b[0m\n```");
+			const rendered = transcript.render(80).join("\n");
+			expect(rendered).toContain("const a = 1;");
+		});
+
+		it("TaskDashboard 当任务数量超过4个时使用滑动视口平滑滚动", () => {
+			const mockJobs: JobSnapshot[] = [];
+			for (let i = 0; i < 8; i++) {
+				mockJobs.push({
+					id: `job-${i}`,
+					label: `Task ${i}`,
+					status: "running" as const,
+					ownerId: "root",
+					source: { extension: "test" },
+					startedAt: Date.now() - 1000,
+				});
+			}
+			const port: JobPort = {
+				list: () => mockJobs,
+				read: () => ({
+					output: [],
+					text: "",
+					cursor: 0,
+					outputLost: false,
+					finished: false,
+					truncated: false,
+					job: mockJobs[0]!,
+				}),
+				cancel: () => true,
+			};
+			const dash = new TaskDashboard(port);
+			let rendered = dash.render(80).join("\n");
+			expect(rendered).toContain("Task 0");
+			expect(rendered).toContain("(1/8)");
+
+			for (let i = 0; i < 6; i++) {
+				dash.handleInput("\x1b[B");
+			}
+			rendered = dash.render(80).join("\n");
+			expect(rendered).toContain("Task 6");
+			expect(rendered).toContain("(7/8)");
+		});
+
+		it("InputLine Ctrl+A 仅标记全选状态，不篡改系统剪贴板", () => {
+			const box = new InputLine();
+			box.handleInput("重要数据文本");
+			expect(box.hasSelection()).toBe(false);
+
+			box.handleInput("\x01");
+			expect(box.hasSelection()).toBe(true);
+			expect(box.getText()).toBe("重要数据文本");
+
+			box.handleInput("x");
+			expect(box.getText()).toBe("x");
+			expect(box.hasSelection()).toBe(false);
+		});
+
+		it("Banner 启动徽标鲸鱼图案采用 Uina 雾蓝主题色", () => {
+			const banner = getStartupBanner({ modelName: "uina-model", cwd: process.cwd() }, 100);
+			const text = banner.join("\n");
+			expect(text).toContain("Local · Open · Extensible");
+			expect(text).toContain("38;2;74;138;212m");
+		});
 	});
 });

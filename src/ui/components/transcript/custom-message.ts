@@ -57,12 +57,16 @@ export class CustomMessageComponent extends Container {
 		const self = this;
 		this.addChild({
 			render(w: number): string[] {
+				const boxW = Math.max(24, Math.min(w, 80));
+				const innerW = boxW - 6;
 				const tag = `[${self.message.customType}]`;
 				const borderCol = C.blue;
-				const header = `  ${borderCol}╭─ ${C.bold}${tag}${C.reset}${borderCol} ${"─".repeat(Math.max(2, w - visibleWidth(tag) - 8))}╮${C.reset}`;
-				const text = truncateToWidth(self.message.content, Math.max(10, w - 8));
-				const body = `  ${borderCol}│${C.reset}  ${text}`;
-				const footer = `  ${borderCol}╰${"─".repeat(Math.max(4, w - 6))}╯${C.reset}`;
+				const topFill = Math.max(2, boxW - visibleWidth(tag) - 8);
+				const header = `  ${borderCol}╭─ ${C.bold}${tag}${C.reset}${borderCol} ${"─".repeat(topFill)}╮${C.reset}`;
+				const text = truncateToWidth(self.message.content, innerW);
+				const pad = Math.max(0, innerW - visibleWidth(text));
+				const body = `  ${borderCol}│${C.reset}  ${text}${" ".repeat(pad)}  ${borderCol}│${C.reset}`;
+				const footer = `  ${borderCol}╰${"─".repeat(Math.max(4, boxW - 4))}╯${C.reset}`;
 				return [header, body, footer];
 			},
 			invalidate: () => {},

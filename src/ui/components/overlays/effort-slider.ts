@@ -48,12 +48,11 @@ export class EffortSlider implements Component, Focusable {
 	onRequestRender?: () => void;
 
 	constructor(activeTierId = "medium", tiers = DEFAULT_EFFORT_TIERS) {
-		this.tiers = tiers;
+		this.tiers = tiers.length > 0 ? tiers : DEFAULT_EFFORT_TIERS;
 		this.activeTierId = normalizeEffortId(activeTierId);
 		const found = this.tiers.findIndex((t) => t.id === this.activeTierId);
-		if (found >= 0) {
-			this.focusIndex = found;
-		}
+		this.focusIndex = Math.max(0, Math.min(found >= 0 ? found : 0, this.tiers.length - 1));
+		this.activeTierId = this.tiers[this.focusIndex]!.id;
 	}
 
 	navigateLeft(): EffortTier {
@@ -80,7 +79,7 @@ export class EffortSlider implements Component, Focusable {
 	}
 
 	getCurrentTier(): EffortTier {
-		return this.tiers[this.focusIndex]!;
+		return this.tiers[this.focusIndex] ?? this.tiers[0] ?? { id: "medium", name: "Medium", description: "" };
 	}
 
 	getActiveTierId(): ThinkingLevel {

@@ -24,6 +24,13 @@ import { ActivityLineComponent } from "./components/widgets/activity-line.js";
 import { ContextBarComponent, formatCacheHitRate } from "./components/widgets/context-bar.js";
 import { TimelineRailComponent } from "./components/widgets/timeline-rail.js";
 import { HelpMenu } from "./components/overlays/help-menu.js";
+import { ModelPicker, type ModelGroup } from "./components/overlays/model-picker.js";
+import { EffortSlider, DEFAULT_EFFORT_TIERS, type EffortTier } from "./components/overlays/effort-slider.js";
+import { TaskDashboard, type JobPort } from "./components/overlays/task-dashboard.js";
+import { SubagentDashboard } from "./components/overlays/subagent-dashboard.js";
+import { SubagentDetailScene } from "./components/overlays/subagent-detail-scene.js";
+import { TrajectoryScene } from "./components/overlays/trajectory-scene.js";
+import type { SubagentPort } from "./adapters/subagents.js";
 import {
 	formatSuggestionCardLines,
 	getFileCandidates,
@@ -52,6 +59,8 @@ export interface UIHostOptions {
 	thinkingLevels?: readonly ThinkingLevel[];
 	thinkingLevel?: ThinkingLevel;
 	registry?: ExtensionRegistry;
+	jobPort?: JobPort;
+	subagentPort?: SubagentPort;
 }
 
 export class UIHost implements UIHostContextPort {
@@ -175,7 +184,20 @@ export class UIHost implements UIHostContextPort {
 	onInterrupt?: () => void;
 	onThinkingLevelCycle?: () => void;
 
+	private jobPort?: JobPort;
+	private subagentPort?: SubagentPort;
+
+	setJobPort(port: JobPort): void {
+		this.jobPort = port;
+	}
+
+	setSubagentPort(port: SubagentPort): void {
+		this.subagentPort = port;
+	}
+
 	constructor(options: UIHostOptions = {}) {
+		this.jobPort = options.jobPort;
+		this.subagentPort = options.subagentPort;
 		this.cwd = options.cwd ?? process.cwd();
 		this.modelName = options.modelName;
 		this.thinkingLevels = options.thinkingLevels?.length ? [...options.thinkingLevels] : ["off"];
@@ -603,6 +625,108 @@ export class UIHost implements UIHostContextPort {
 				handle?.hide();
 			};
 			handle = this.overlayStack.showOverlay(menu, undefined, () => close());
+			return handle;
+		});
+	}
+
+	openModelPicker(currentModel?: string, groups: ModelGroup[] = [], onPick?: (name: string) => Promise<void> | void): void {
+		this.toggleModal("model", (close) => {
+			const picker = new ModelPicker(currentModel ?? this.modelName, groups);
+			let handle: OverlayHandle | null = null;
+			picker.onPick = (name) => {
+				if (onPick) void onPick(name);
+				close();
+				handle?.hide();
+			};
+			picker.onClose = () => {
+				close();
+				handle?.hide();
+			};
+			picker.onRequestRender = () => this.requestRender();
+			handle = this.overlayStack.showOverlay(picker, undefined, () => close());
+			return handle;
+		});
+	}
+
+	openEffortSlider(
+		currentLevel?: ThinkingLevel,
+		tiers?: EffortTier[],
+		onChange?: (level: ThinkingLevel) => void,
+	): void {
+		this.toggleModal("effort", (close) => {
+			const declaredTiers = tiers ?? DEFAULT_EFFORT_TIERS.filter((t) => this.thinkingLevels.includes(t.id));
+			const slider = new EffortSlider(currentLevel ?? this.reasoningEffort ?? "off", declaredTiers);
+			let handle: OverlayHandle | null = null;
+			slider.onChange = (level) => {
+				this.setReasoningEffort(level);
+				onChange?.(level);
+			};
+			slider.onClose = () => {
+				close();
+				handle?.hide();
+			};
+			slider.onRequestRender = () => this.requestRender();
+			handle = this.overlayStack.showOverlay(slider, undefined, () => close());
+			return handle;
+		});
+	}
+
+	openTasks(): void {
+		if (!this.jobPort) return;
+		this.toggleModal("tasks", (close) => {
+			const view = new TaskDashboard(this.jobPort!);
+			let handle: OverlayHandle | null = null;
+			view.onClose = () => {
+				close();
+				handle?.hide();
+			};
+			view.onRequestRender = () => this.requestRender();
+			handle = this.overlayStack.showOverlay(view, undefined, () => close());
+			return handle;
+		});
+	}
+
+	openSubagents(): void {
+		if (!this.subagentPort) return;
+		this.toggleModal("subagents", (close) => {
+			const view = new SubagentDashboard(this.subagentPort!);
+			let handle: OverlayHandle | null = null;
+			let detailHandle: OverlayHandle | null = null;
+
+			view.onClose = () => {
+				close();
+				handle?.hide();
+			};
+			view.onDrilldown = (agent) => {
+				handle?.hide();
+				const detail = new SubagentDetailScene(agent, this.subagentPort!);
+				detailHandle = this.overlayStack.showOverlay(detail, undefined, () => close());
+				detail.onClose = () => {
+					detailHandle?.hide();
+					detailHandle = null;
+					close();
+				};
+				detail.onRequestRender = () => this.requestRender();
+			};
+			view.onRequestRender = () => this.requestRender();
+
+			handle = this.overlayStack.showOverlay(view, undefined, () => {
+				if (!detailHandle) close();
+			});
+			return handle;
+		});
+	}
+
+	openTrajectory(): void {
+		this.toggleModal("trajectory", (close) => {
+			const scene = new TrajectoryScene(this.trajectoryProjection);
+			let handle: OverlayHandle | null = null;
+			scene.onClose = () => {
+				close();
+				handle?.hide();
+			};
+			scene.onRequestRender = () => this.requestRender();
+			handle = this.overlayStack.showOverlay(scene, undefined, () => close());
 			return handle;
 		});
 	}
@@ -1069,17 +1193,17 @@ export class UIHost implements UIHostContextPort {
 		}
 
 		if (matchesKey(data, Key.alt("a")) || matchesKey(data, Key.alt("A"))) {
-			this.executeCommand("subagents", "");
+			this.openSubagents();
 			return;
 		}
 
 		if (matchesKey(data, Key.alt("j")) || matchesKey(data, Key.alt("J"))) {
-			this.executeCommand("tasks", "");
+			this.openTasks();
 			return;
 		}
 
 		if (matchesKey(data, Key.alt("t")) || matchesKey(data, Key.alt("T"))) {
-			this.executeCommand("trajectory", "");
+			this.openTrajectory();
 			return;
 		}
 
@@ -1179,7 +1303,7 @@ export class UIHost implements UIHostContextPort {
 
 		// 4. 输入框未输入时敲 '?' 直接唤起帮助
 		if (data === "?" && !this.inputLine.getText().trim() && !this.overlayStack.hasVisible) {
-			this.executeCommand("help", "");
+			this.openHelpMenu();
 			return;
 		}
 

@@ -17,6 +17,8 @@ import { ExtensionRunner } from "../extensions/runner.js";
 import { CommandRouter } from "../extensions/commands.js";
 import { activateBuiltinCommands } from "../extensions/builtin.js";
 import { activateRuntimeTools, createChildTools } from "../extensions/runtime-tools/index.js";
+import { createJobAdapter } from "../ui/adapters/jobs.js";
+import { createSubagentAdapter } from "../ui/adapters/subagents.js";
 
 const DATA_DIR = join(process.cwd(), "data");
 const SESSION_FILE = join(DATA_DIR, "session.jsonl");
@@ -257,6 +259,8 @@ export async function runApp(): Promise<void> {
 			thinkingLevel: subject.getThinkingLevel(),
 			cwd: process.cwd(),
 			registry: extensionHost.registry,
+			jobPort: createJobAdapter(jobs),
+			subagentPort: createSubagentAdapter(subagents),
 		});
 		extensionHost.attachUI(tui.ctxUI);
 		tui.onLine(onUserLine);
@@ -298,7 +302,44 @@ export async function runApp(): Promise<void> {
 			}).catch((error) => render({ type: "error", text: `后台任务通知失败：${String(error)}` }));
 		},
 	}));
-	await extensionHost.activateBuiltin("commands", activateBuiltinCommands({ subject, models: modelRegistry, jobs, subagents, host: tui?.host, reload: async () => { await subject.waitForIdle(); await extensionHost.reload(); render({ type: "notice", text: "项目扩展已重新加载。" }); }, shutdown: async () => shutdown() }));
+	const builtinUI = tui ? {
+		openHelpMenu: () => tui!.host.openHelpMenu(),
+		toggleThinking: () => {
+			tui!.host.transcript.toggleThinking();
+			tui!.host.requestRender();
+		},
+		clear: () => {
+			tui!.host.transcript.clear();
+			tui!.host.requestRender();
+		},
+		openModelPicker: (current: string, groups: any, onPick: any) => {
+			tui!.host.openModelPicker(current, groups, onPick);
+		},
+		openEffortSlider: (current: any, tiers: any, onChange: any) => {
+			tui!.host.openEffortSlider(current, tiers, onChange);
+		},
+		openTasks: () => tui!.host.openTasks(),
+		openSubagents: () => tui!.host.openSubagents(),
+		openTrajectory: () => tui!.host.openTrajectory(),
+		setModel: (name: string) => tui!.host.setModel(name),
+		setThinkingLevels: (levels?: readonly any[]) => tui!.host.setThinkingLevels(levels),
+		setReasoningEffort: (level?: any) => tui!.host.setReasoningEffort(level),
+		setUsage: (used: number, window?: number) => tui!.host.setUsage(used, window),
+	} : undefined;
+
+	await extensionHost.activateBuiltin("commands", activateBuiltinCommands({
+		subject,
+		models: modelRegistry,
+		jobs,
+		subagents,
+		ui: builtinUI,
+		reload: async () => {
+			await subject.waitForIdle();
+			await extensionHost.reload();
+			render({ type: "notice", text: "项目扩展已重新加载。" });
+		},
+		shutdown: async () => shutdown(),
+	}));
 	await extensionHost.load();
 	if (oneshot !== undefined) {
 		subject.pushInput(oneshot, { mode: "direct" });

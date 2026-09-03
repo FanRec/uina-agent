@@ -384,7 +384,7 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 			if (isSelected) {
 				namePart = `${C.iceBlue}${C.bold}${cmd.name}${C.reset}${" ".repeat(padAfter)}`;
 			} else if (parts) {
-				namePart = `${C.dim}${parts.before}${C.reset}${parts.match}${C.dim}${parts.after}${" ".repeat(padAfter)}${C.reset}`;
+				namePart = `${C.dim}${parts.before}${C.cyan}${C.bold}${parts.match}${C.reset}${C.dim}${parts.after}${" ".repeat(padAfter)}${C.reset}`;
 			} else {
 				namePart = `${C.dim}${cmd.name}${" ".repeat(padAfter)}${C.reset}`;
 			}
@@ -416,7 +416,7 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 			if (isSelected) {
 				pathPart = `${C.iceBlue}${C.bold}${file.path}${C.reset}${" ".repeat(padAfter)}`;
 			} else if (parts) {
-				pathPart = `${C.dim}${parts.before}${C.reset}${parts.match}${C.dim}${parts.after}${" ".repeat(padAfter)}${C.reset}`;
+				pathPart = `${C.dim}${parts.before}${C.cyan}${C.bold}${parts.match}${C.reset}${C.dim}${parts.after}${" ".repeat(padAfter)}${C.reset}`;
 			} else {
 				pathPart = `${C.dim}${file.path}${" ".repeat(padAfter)}${C.reset}`;
 			}

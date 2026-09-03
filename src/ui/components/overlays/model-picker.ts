@@ -72,6 +72,11 @@ export class ModelPicker implements Component, Focusable {
 		if (this.level === "groups") {
 			const group = this.groups[this.selectedGroupIndex];
 			if (!group) return null;
+			if (group.models.length === 1) {
+				const model = group.models[0]!;
+				this.currentModelId = model.id;
+				return { action: "picked", modelId: model.id };
+			}
 			this.level = "models";
 			const mIdx = group.models.findIndex((m) => m.id === this.currentModelId);
 			this.selectedModelIndex = mIdx >= 0 ? mIdx : 0;

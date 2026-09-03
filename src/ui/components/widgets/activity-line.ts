@@ -37,17 +37,26 @@ export function sweep(text: string, timeMs: number, base: Rgb = ICE_RGB, highlig
 
 	let out = "";
 	let col = 0;
+	let lastColor = "";
 
 	for (const char of text) {
 		const w = charWidth(char);
 		const highlighted = col >= glimmerStart && col + w <= glimmerStart + 8;
 		const opacity = highlighted ? (Math.sin(timeMs / (stepMs * 2)) + 1) / 2 : 0;
 		const rgb = highlighted ? interpolateColor(base, highlight, opacity) : base;
+		const colorKey = `${rgb.r};${rgb.g};${rgb.b}`;
 
-		out += `\x1b[38;2;${rgb.r};${rgb.g};${rgb.b}m\x1b[1m${char}\x1b[0m`;
+		if (colorKey !== lastColor) {
+			out += `\x1b[38;2;${colorKey}m\x1b[1m`;
+			lastColor = colorKey;
+		}
+		out += char;
 		col += w;
 	}
 
+	if (lastColor) {
+		out += "\x1b[0m";
+	}
 	return out;
 }
 

@@ -13,10 +13,9 @@
  * 5. 全列宽绝对几何锁定，顶边框、内容行、底边框像素级垂直。
  */
 
-import { exec } from "node:child_process";
 import { CURSOR_MARKER, type Component, type Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
-import { C, charWidth, visibleWidth, truncateToWidth } from "../../core/utils.js";
+import { C, charWidth, visibleWidth, truncateToWidth, copyToClipboardUnified } from "../../core/utils.js";
 import { formatTokensCompact } from "../widgets/context-bar.js";
 
 const PASTE_MARKER_REGEX = /\[已粘贴 #(\d+) (\+\d+行|\d+字)\]/g;
@@ -55,22 +54,6 @@ function sanitizeText(str: string): string {
 		.replace(/\r\n/g, "\n")
 		.replace(/\r/g, "\n")
 		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
-}
-
-/** 将文本写入系统剪贴板（OSC 52 + Windows 降级兜底） */
-function copyToClipboard(text: string): void {
-	if (!text) return;
-	const b64 = Buffer.from(text, "utf-8").toString("base64");
-	process.stdout.write(`\x1b]52;c;${b64}\x07`);
-
-	if (process.platform === "win32") {
-		const child = exec(
-			'powershell.exe -NoProfile -NonInteractive -Command "$Input | Set-Clipboard"',
-			() => {},
-		);
-		child.stdin?.write(text);
-		child.stdin?.end();
-	}
 }
 
 export class InputLine implements Component, Focusable {
@@ -153,7 +136,7 @@ export class InputLine implements Component, Focusable {
 
 	copySelection(): void {
 		if (this.hasSelection()) {
-			copyToClipboard(this.getText());
+			copyToClipboardUnified(this.getText());
 		}
 	}
 
@@ -335,12 +318,10 @@ export class InputLine implements Component, Focusable {
 			return;
 		}
 
-		// 4. Ctrl+A：全选框内内容，并将所有粘贴展开后的完整内容直接写入系统剪贴板
+		// 4. Ctrl+A：仅全选框内内容，严禁私自覆写用户系统剪贴板
 		if (matchesKey(data, Key.ctrl("a"))) {
 			if (this.text.length > 0) {
 				this.isAllSelected = true;
-				const fullExpanded = this.getText();
-				copyToClipboard(fullExpanded);
 			}
 			return;
 		}
