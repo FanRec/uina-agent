@@ -21,7 +21,7 @@ import { InputLine } from "./components/editor/input-line.js";
 import { BannerComponent } from "./components/primitives/banner.js";
 import { TranscriptContainer } from "./components/transcript/transcript.js";
 import { ActivityLineComponent } from "./components/widgets/activity-line.js";
-import { ContextBarComponent, formatCacheHitRate } from "./components/widgets/context-bar.js";
+import { ContextBarComponent, formatCacheHitRate, type ContextSegments } from "./components/widgets/context-bar.js";
 import { TimelineRailComponent } from "./components/widgets/timeline-rail.js";
 import { HelpMenu } from "./components/overlays/help-menu.js";
 import { ModelPicker, type ModelGroup } from "./components/overlays/model-picker.js";
@@ -99,6 +99,7 @@ export class UIHost implements UIHostContextPort {
 	private cacheReadTokens?: number;
 	private inputTokensCount?: number;
 	private cacheWriteTokens?: number;
+	private contextSegments?: ContextSegments;
 
 	// 运行与动画状态
 	private running = false;
@@ -298,7 +299,7 @@ export class UIHost implements UIHostContextPort {
 
 	setModel(model: string): void {
 		this.modelName = model;
-		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow);
+		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual, this.contextSegments);
 		this.banner.setOptions({ modelName: this.modelName, cwd: this.cwd });
 		this.requestRender();
 	}
@@ -359,7 +360,7 @@ export class UIHost implements UIHostContextPort {
 		used: number,
 		contextWindow?: number,
 		actual = false,
-		details?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number },
+		details?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; segments?: ContextSegments },
 	): void {
 		this.usedTokens = used;
 		this.contextWindow = contextWindow && contextWindow > 0 ? contextWindow : undefined;
@@ -367,15 +368,18 @@ export class UIHost implements UIHostContextPort {
 		this.cacheReadTokens = details?.cacheRead;
 		this.inputTokensCount = details?.input;
 		this.cacheWriteTokens = details?.cacheWrite;
-		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, actual);
+		if (details?.segments) {
+			this.contextSegments = details.segments;
+		}
+		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, actual, this.contextSegments);
 		this.contextBar.update({
 			usedTokens: this.usedTokens,
 			contextWindow: this.contextWindow,
-			actual: this.usageActual,
 			cwd: this.cwd,
 			cacheRead: this.cacheReadTokens,
 			inputTokens: this.inputTokensCount,
 			cacheWrite: this.cacheWriteTokens,
+			segments: this.contextSegments,
 		});
 		this.requestRender();
 	}
@@ -749,7 +753,7 @@ export class UIHost implements UIHostContextPort {
 		const cacheRate = formatCacheHitRate(this.cacheReadTokens, this.inputTokensCount, this.cacheWriteTokens);
 		this.inputLine.setStatusHeader(statusHeader);
 		this.inputLine.setCwd(this.cwd);
-		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual);
+		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual, this.contextSegments);
 		this.inputLine.setReasoningEffort(this.reasoningEffort);
 		this.inputLine.setCacheRate(cacheRate);
 
@@ -773,11 +777,11 @@ export class UIHost implements UIHostContextPort {
 		this.contextBar.update({
 			usedTokens: this.usedTokens,
 			contextWindow: this.contextWindow,
-			actual: this.usageActual,
 			cwd: this.cwd,
 			cacheRead: this.cacheReadTokens,
 			inputTokens: this.inputTokensCount,
 			cacheWrite: this.cacheWriteTokens,
+			segments: this.contextSegments,
 		});
 		const contextBarLines = this.contextBar.render(inputWidth).map((l) => `${margin}${l}`);
 		const belowLines = [

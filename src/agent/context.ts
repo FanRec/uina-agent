@@ -1,4 +1,4 @@
-import type { ChatMsg, ToolDef } from "../core/types.js";
+import type { ChatMsg, ContextSegments, ToolDef } from "../core/types.js";
 
 export interface ContextEstimate { tokens: number; actual: boolean; }
 
@@ -77,4 +77,72 @@ export function formatForSummary(message: ChatMsg): string {
 		return `thinking=${message.thinking ?? ""} tool_calls=${JSON.stringify(message.tool_calls)} ${message.content}`;
 	}
 	return message.content;
+}
+
+/**
+ * 严格基于当前上下文消息历史与工具定义计算多段 Token 分布（系统、提示词、助手回复、思考链、工具）。
+ * 若提供 totalScaleTokens（如服务端返回的精确真实总 Token 数），则按比例精确映射。
+ */
+export function calculateContextSegments(
+	messages: readonly ChatMsg[],
+	tools: readonly ToolDef[] = [],
+	totalScaleTokens?: number,
+): ContextSegments {
+	let systemChars = 0;
+	let promptChars = 0;
+	let assistantChars = 0;
+	let thinkingChars = 0;
+	let toolChars = 0;
+
+	for (const message of messages) {
+		const baseChars = message.content ? message.content.length + 16 : 16;
+		if (message.role === "system") {
+			systemChars += baseChars;
+		} else if (message.role === "user") {
+			promptChars += baseChars;
+		} else if (message.role === "assistant") {
+			assistantChars += baseChars;
+			if (message.thinking) {
+				thinkingChars += message.thinking.length + 16;
+			}
+			if (message.tool_calls) {
+				toolChars += JSON.stringify(message.tool_calls).length;
+			}
+		} else if (message.role === "tool") {
+			toolChars += baseChars;
+		}
+	}
+
+	if (tools.length > 0) {
+		toolChars += JSON.stringify(tools).length;
+	}
+
+	const totalChars = systemChars + promptChars + assistantChars + thinkingChars + toolChars;
+	if (totalChars <= 0) {
+		return { system: 0, prompt: 0, assistant: 0, thinking: 0, tools: 0 };
+	}
+
+	if (totalScaleTokens !== undefined && totalScaleTokens > 0) {
+		const scale = totalScaleTokens / totalChars;
+		const sys = Math.round(systemChars * scale);
+		const pr = Math.round(promptChars * scale);
+		const ast = Math.round(assistantChars * scale);
+		const th = Math.round(thinkingChars * scale);
+		const tl = Math.max(0, totalScaleTokens - sys - pr - ast - th);
+		return {
+			system: sys,
+			prompt: pr,
+			assistant: ast,
+			thinking: th,
+			tools: tl,
+		};
+	}
+
+	return {
+		system: Math.ceil(systemChars / 4),
+		prompt: Math.ceil(promptChars / 4),
+		assistant: Math.ceil(assistantChars / 4),
+		thinking: Math.ceil(thinkingChars / 4),
+		tools: Math.ceil(toolChars / 4),
+	};
 }

@@ -4,7 +4,7 @@
  */
 
 import { UIHost, type UIHostOptions } from "./ui-host.js";
-import type { ToolResultStatus } from "../core/types.js";
+import type { ContextSegments, ToolResultStatus } from "../core/types.js";
 import type { QueuedMessage } from "../agent/queue.js";
 import type { ExtensionUIContext } from "./extensions/types.js";
 import type { SessionEntry } from "../session/types.js";
@@ -25,6 +25,7 @@ export type OutMsg =
 			cacheWrite?: number;
 			inputTokens?: number;
 			outputTokens?: number;
+			segments?: ContextSegments;
 		};
 	}
 	| { type: "error"; text: string }
@@ -164,6 +165,7 @@ export class InteractiveTUI {
 							output: m.usage.outputTokens,
 							cacheRead: m.usage.cacheRead,
 							cacheWrite: m.usage.cacheWrite,
+							segments: m.usage.segments,
 						},
 					);
 				}

@@ -1,6 +1,7 @@
 import type {
 	ChatMsg,
 	CompletedToolCall,
+	ContextSegments,
 	FinishReason,
 	DeliveryMode,
 	ModelProvider,
@@ -10,7 +11,7 @@ import type {
 } from "../core/types.js";
 import type { SessionStore } from "../session/types.js";
 import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings } from "./compaction.js";
-import { buildContext, defaultSystemPrompt, estimateContextTokens } from "./context.js";
+import { buildContext, calculateContextSegments, defaultSystemPrompt, estimateContextTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import type { PreparedToolCall, ToolBroker } from "../tools/broker.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
@@ -31,6 +32,7 @@ export interface LoopHooks {
 			cacheWrite?: number;
 			inputTokens?: number;
 			outputTokens?: number;
+			segments?: ContextSegments;
 		},
 	) => void;
 	onToolStart?: (name: string, args: unknown, callId?: string) => void;
@@ -142,6 +144,12 @@ export class Subject {
 
 	getUsedTokens(): number {
 		return estimateContextTokens(this.history).tokens;
+	}
+
+	getContextSegments(): ContextSegments {
+		const context = buildContext({ history: this.history, systemPrompt: this.systemPrompt });
+		const used = this.lastReportedUsage?.totalTokens ?? estimateContextTokens(this.history).tokens;
+		return calculateContextSegments(context, this.tools.defs(), used);
 	}
 
 	async setModel(provider: ModelProvider): Promise<void> {
@@ -367,6 +375,7 @@ export class Subject {
 				const estimate = estimateContextTokens(this.history);
 				const last = this.lastReportedUsage;
 				const used = last ? last.totalTokens : estimate.tokens;
+				const segments = this.getContextSegments();
 				const usage = {
 					usedTokens: used,
 					contextWindow: this.getContextWindow(),
@@ -375,9 +384,14 @@ export class Subject {
 					cacheWrite: last?.cacheWrite,
 					inputTokens: last?.input,
 					outputTokens: last?.output,
+					segments,
 				};
 				this.hooks.onTurnEnd?.(turn, usage);
-				await this.runtimeHooks.events.emit({ type: "turn_end", turnNumber: turn });
+				await this.runtimeHooks.events.emit({
+					type: "turn_end",
+					turnNumber: turn,
+					usage: { usedTokens: used, contextWindow: this.getContextWindow(), segments },
+				});
 			} catch (error) {
 				try { this.hooks.onError?.(safeError(error)); } catch { /* hooks cannot own lifecycle */ }
 			}

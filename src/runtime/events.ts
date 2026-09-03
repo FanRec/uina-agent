@@ -1,4 +1,4 @@
-import type { ChatMsg, ModelProvider, ThinkingLevel } from "../core/types.js";
+import type { ChatMsg, ContextSegments, ModelProvider, ThinkingLevel } from "../core/types.js";
 
 export type DeepReadonly<T> = T extends (...args: never[]) => unknown
 	? T
@@ -18,7 +18,7 @@ export interface AgentStartEvent { readonly type: "agent_start"; readonly turnSe
 export interface AgentEndEvent { readonly type: "agent_end"; readonly turnSeq: number; readonly success: boolean; readonly error?: string; }
 export interface AgentSettledEvent { readonly type: "agent_settled"; readonly turnSeq: number; }
 export interface TurnStartEvent { readonly type: "turn_start"; readonly turnNumber: number; readonly userText: string; }
-export interface TurnEndEvent { readonly type: "turn_end"; readonly turnNumber: number; readonly usage?: { readonly usedTokens: number; readonly contextWindow?: number }; }
+export interface TurnEndEvent { readonly type: "turn_end"; readonly turnNumber: number; readonly usage?: { readonly usedTokens: number; readonly contextWindow?: number; readonly segments?: ContextSegments }; }
 
 export interface ContextEvent { readonly type: "context"; readonly messages: readonly DeepReadonly<ChatMsg>[]; }
 export interface ToolCallEvent { readonly type: "tool_call"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly callId: string; }

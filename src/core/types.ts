@@ -24,6 +24,14 @@ export interface Usage {
 	totalTokens: number;
 }
 
+export interface ContextSegments {
+	system: number;
+	prompt: number;
+	assistant: number;
+	thinking: number;
+	tools: number;
+}
+
 export interface DiscoveredModel {
 	id: string;
 	contextWindow?: number;

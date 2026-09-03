@@ -11,9 +11,10 @@ import { OverlayStack } from "../src/ui/core/overlay.js";
 import { WidgetSlots } from "../src/ui/core/slots.js";
 import { CURSOR_MARKER } from "../src/ui/core/types.js";
 import { StreamMarkdownFormatter } from "../src/ui/components/transcript/stream-markdown.js";
-import { ContextBarComponent } from "../src/ui/components/widgets/context-bar.js";
-import { ActivityLineComponent } from "../src/ui/components/widgets/activity-line.js";
-import { InputLine } from "../src/ui/components/editor/input-line.js";
+import { ContextBarComponent, allocateBarColumns, renderSegmentedBar } from "../src/ui/components/widgets/context-bar.js";
+import { ActivityLineComponent, formatTpsGauge, formatTpsSparkline } from "../src/ui/components/widgets/activity-line.js";
+import { InputLine, segmentWithMarkers, snapCursorToMarkerBoundary } from "../src/ui/components/editor/input-line.js";
+import { calculateContextSegments } from "../src/agent/context.js";
 import { ExtensionRegistry } from "../src/ui/extensions/registry.js";
 import { createExtensionUIContext } from "../src/ui/extensions/context.js";
 import { CustomMessageComponent } from "../src/ui/components/transcript/custom-message.js";
@@ -467,22 +468,21 @@ describe("UI Components & Visual Rendering", () => {
 		expect(normalLines.length).toBe(1);
 		expect(normalLines[0]).toBe("");
 
-		// hover 时在该行内展开隐藏信息（目录 + 50.0% + 详细占用）
+		// hover 时在该行内展开隐藏信息（目录 + 剩余空间，且绝不重复显示百分比）
 		bar.setHovered(true);
 		const expandedLines = bar.render(80);
 		expect(expandedLines.length).toBe(1);
-		expect(expandedLines[0]).toContain("50.0%");
+		expect(expandedLines[0]).not.toContain("50.0%");
 		expect(expandedLines[0]).toContain("剩余");
 		expect(expandedLines[0]).toContain("E:\\Uina\\Uina");
 	});
 
 	it("ContextBar 不会把未知上限显示成默认 1M", () => {
 		const bar = new ContextBarComponent();
-		bar.update({ usedTokens: 1234, contextWindow: undefined, actual: false, cwd: "E:\\Uina\\Uina" });
+		bar.update({ usedTokens: 1234, contextWindow: undefined, cwd: "E:\\Uina\\Uina" });
 		bar.setHovered(true);
 		const line = stripAnsi(bar.render(100)[0]!);
 		expect(line).toContain("上下文上限未知");
-		expect(line).toContain("已用 约 1.2k");
 		expect(line).not.toContain("1.0m");
 	});
 
@@ -1357,6 +1357,172 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			const text = banner.join("\n");
 			expect(text).toContain("Local · Open · Extensible");
 			expect(text).toContain("38;2;74;138;212m");
+		});
+
+		it("segmentWithMarkers 将粘贴标记合并为单一原子片段且正常分词", () => {
+			const text = "前缀 [已粘贴 #1 +10行] 后缀";
+			const validIds = new Set([1]);
+			const segments = segmentWithMarkers(text, validIds);
+
+			const chipSeg = segments.find((s) => s.segment === "[已粘贴 #1 +10行]");
+			expect(chipSeg).toBeDefined();
+			expect(chipSeg?.index).toBe(3);
+
+			// 验证标记内部字符不会被拆分成单独字形
+			expect(segments.some((s) => s.segment === "已" && s.index > 3 && s.index < 18)).toBe(false);
+
+			// snapCursorToMarkerBoundary 验证：落在标记中间的光标吸附到边缘
+			expect(snapCursorToMarkerBoundary(5, text, validIds)).toBe(3); // 靠近 start
+			expect(snapCursorToMarkerBoundary(15, text, validIds)).toBe(16); // 靠近 end (3 + 13)
+			expect(snapCursorToMarkerBoundary(1, text, validIds)).toBe(1); // 标记外不受影响
+		});
+
+		it("InputLine 退格与方向键原子化操作粘贴标记", () => {
+			const box = new InputLine();
+			box.insertText("func main() {\n\tprintln(1)\n}\n");
+			const textWithChip = box.getRawText();
+			expect(textWithChip).toContain("[已粘贴 #1 +4行]");
+
+			// 光标在标记末尾，按退格原子删除整块标记
+			box.handleInput("\x7f");
+			expect(box.getRawText()).toBe("");
+
+			// 重新插入，测试移到标记前按 Delete 原子删除
+			box.insertText("func main() {\n\tprintln(1)\n}\n");
+			expect(box.getRawText()).toContain("[已粘贴 #2 +4行]");
+			box.handleInput("\x1b[D"); // 左移：整块跳至 start (0)
+			expect(box.hasChipAtCursor()).toBe(true);
+			box.handleInput("\x1b[3~"); // Delete
+			expect(box.getRawText()).toBe("");
+		});
+
+		it("allocateBarColumns 最大余数算法精确分配各段宽度", () => {
+			const values = [100, 200, 300, 400, 0, 1000]; // 最后一项为 free
+			const width = 20;
+			const allocated = allocateBarColumns(values, width);
+
+			expect(allocated.length).toBe(values.length);
+			expect(allocated.reduce((a, b) => a + b, 0)).toBe(width);
+			// 0 tokens 的段分配 0 列
+			expect(allocated[4]).toBe(0);
+			// 非 0 的段至少分配 1 列
+			expect(allocated[0]).toBeGreaterThanOrEqual(1);
+			expect(allocated[1]).toBeGreaterThanOrEqual(1);
+			expect(allocated[2]).toBeGreaterThanOrEqual(1);
+			expect(allocated[3]).toBeGreaterThanOrEqual(1);
+			expect(allocated[5]).toBeGreaterThanOrEqual(1);
+		});
+
+		it("renderSegmentedBar 渲染带有多段色彩规范的进度条", () => {
+			const segments = {
+				system: 1000,
+				prompt: 2000,
+				assistant: 3000,
+				thinking: 1500,
+				tools: 500,
+			};
+			const bar = renderSegmentedBar(segments, 8000, 16000, 20);
+			// 包含各分段色彩 ANSI 码
+			expect(bar).toContain("38;2;70;95;145m"); // system
+			expect(bar).toContain("38;2;90;125;190m"); // prompt
+			expect(bar).toContain("38;2;74;138;212m"); // assistant
+			expect(bar).toContain("38;2;155;114;207m"); // thinking
+			expect(bar).toContain("38;2;46;184;138m"); // tools
+			expect(bar).toContain("░"); // 空闲空间
+
+			// 无 segments 时平滑降级
+			const fallbackBar = renderSegmentedBar(undefined, 8000, 16000, 10);
+			expect(fallbackBar).toContain("█");
+			expect(fallbackBar).toContain("░");
+		});
+
+		it("formatTpsGauge 正确映射 1/8 字符精度与高低速颜色", () => {
+			const fastGauge = formatTpsGauge(65, 60, 8);
+			expect(fastGauge).toContain("32m"); // C.green (≥50)
+			expect(fastGauge).toContain("▕");
+			expect(fastGauge).toContain("▏");
+
+			const medGauge = formatTpsGauge(35, 60, 8);
+			expect(medGauge).toContain("33m"); // C.yellow (≥20)
+
+			const slowGauge = formatTpsGauge(10, 60, 8);
+			expect(slowGauge).toContain("31m"); // C.red (<20)
+		});
+
+		it("formatTpsSparkline 正确将多段采样归一化为火花线字符", () => {
+			const samples = [10, 25, 40, 60, 80];
+			const spark = formatTpsSparkline(samples);
+			expect(spark.length).toBe(5);
+			expect(spark[0]).toBe(" ");
+			expect(spark[spark.length - 1]).toBe("█");
+		});
+
+		it("ActivityLineComponent 在完成时输出耗时、Token数与火花线趋势图", () => {
+			const act = new ActivityLineComponent();
+			act.start("streaming", "正在生成回复...");
+			act.addTokens(50);
+			act.finish("生成结束", 1000, 50);
+
+			const header = act.getHeaderString(100);
+			expect(header).toContain("生成结束");
+			expect(header).toContain("耗时 1.0s");
+			expect(header).toContain("50 tokens");
+			expect(header).toContain("tps");
+		});
+
+		it("calculateContextSegments 从消息历史与工具定义中计算多段分布并支持比例对齐", () => {
+			const messages = [
+				{ role: "system" as const, content: "系统提示词设定" },
+				{ role: "user" as const, content: "请写一段代码" },
+				{ role: "assistant" as const, content: "代码如下：", thinking: "先思考算法" },
+				{ role: "tool" as const, content: "tool output result", tool_call_id: "c1" },
+			];
+			const tools = [
+				{ type: "function" as const, function: { name: "test_tool", description: "test", parameters: {} } },
+			];
+			const rawSegments = calculateContextSegments(messages, tools);
+			expect(rawSegments.system).toBeGreaterThan(0);
+			expect(rawSegments.prompt).toBeGreaterThan(0);
+			expect(rawSegments.assistant).toBeGreaterThan(0);
+			expect(rawSegments.thinking).toBeGreaterThan(0);
+			expect(rawSegments.tools).toBeGreaterThan(0);
+
+			// 验证传入 totalScaleTokens 时的精确归一化
+			const scaled = calculateContextSegments(messages, tools, 1000);
+			const sum = scaled.system + scaled.prompt + scaled.assistant + scaled.thinking + scaled.tools;
+			expect(sum).toBe(1000);
+		});
+
+		it("ContextBar 展开时展示剩余容量、各分段分布与缓存明细且无冗余百分比", () => {
+			const bar = new ContextBarComponent();
+			bar.update({
+				usedTokens: 9500,
+				contextWindow: 124000,
+				cwd: "E:\\Uina\\Uina",
+				cacheRead: 8800,
+				cacheWrite: 0,
+				inputTokens: 192,
+				segments: {
+					system: 1200,
+					prompt: 3400,
+					assistant: 2100,
+					thinking: 1800,
+					tools: 1000,
+				},
+			});
+			bar.setHovered(true);
+			const line = bar.render(120)[0]!;
+			expect(line).toContain("剩余 114.5k");
+			expect(line).toContain("系统 1.2k");
+			expect(line).toContain("提示 3.4k");
+			expect(line).toContain("助手 2.1k");
+			expect(line).toContain("思考 1.8k");
+			expect(line).toContain("工具 1.0k");
+			expect(line).toContain("缓存读 8.8k");
+			expect(line).toContain("输入 192");
+			// 彻底去除底边框已有的冗余重复数据
+			expect(line).not.toContain("7.7%");
+			expect(line).not.toContain("9.5k/124.0k");
 		});
 	});
 });

@@ -276,7 +276,9 @@ export async function runApp(): Promise<void> {
 			tui?.host.transcript.addNotice(`思考等级已设置为: ${level}`);
 			tui?.host.requestRender();
 		});
-		tui.host.setUsage(subject.getUsedTokens(), subject.getContextWindow());
+		tui.host.setUsage(subject.getUsedTokens(), subject.getContextWindow(), false, {
+			segments: subject.getContextSegments(),
+		});
 		if (snapshot.entries.length > 0) {
 			tui.loadSession(snapshot.entries);
 		}
