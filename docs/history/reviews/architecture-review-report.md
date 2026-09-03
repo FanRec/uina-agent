@@ -810,7 +810,7 @@ Uina 未来作为开放主体，至少应能回答：
 
 ## 附录 B：本次生成文件
 
-- `docs/architecture-review-notes.md`：审查过程中的临时证据账本。
-- `docs/architecture-review-report.md`：本正式报告。
+- `docs/history/reviews/architecture-review-notes.md`：审查过程中的临时证据账本。
+- `docs/history/reviews/architecture-review-report.md`：本正式报告。
 
 本次没有修改 Uina 运行代码，也没有修改 Pi。所有 smoke/probe 临时脚本均已删除。

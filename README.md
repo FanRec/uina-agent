@@ -2,6 +2,8 @@
 
 一个运行在本机终端中的最小 Agent。当前版本使用 TypeScript、Node.js 和流式 provider 适配器。
 
+当前运行时边界、已验证行为与未验证项见 [docs/current-runtime.md](docs/current-runtime.md)；提案、参考和历史审查见 [docs/README.md](docs/README.md)。
+
 ## 运行
 
 ```bash
