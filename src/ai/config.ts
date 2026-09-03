@@ -124,7 +124,7 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 			throw new Error(`配置 ${path} 的 provider ${name} 的 apiKey 必须是字符串`);
 		}
 		if (provider.contextWindow !== undefined) throw new Error(`配置 ${path} 的 provider ${name} 使用了已移除的 contextWindow；请改为 modelContextWindow 和可选 maxContextWindow`);
-		if (provider.modelContextWindow !== undefined && (!Number.isSafeInteger(provider.modelContextWindow) || provider.modelContextWindow <= 0)) throw new Error(`配置 ${path} 的 provider ${name} 的 modelContextWindow 无效`);
+		if (provider.modelContextWindow !== undefined && (typeof provider.modelContextWindow !== "number" || !Number.isSafeInteger(provider.modelContextWindow) || provider.modelContextWindow <= 0)) throw new Error(`配置 ${path} 的 provider ${name} 的 modelContextWindow 无效`);
 		if (provider.maxContextWindow !== undefined && (!Number.isSafeInteger(provider.maxContextWindow) || (provider.maxContextWindow as number) <= 0)) throw new Error(`配置 ${path} 的 provider ${name} 的 maxContextWindow 无效`);
 			if (provider.maxRetries !== undefined &&
 				(typeof provider.maxRetries !== "number" || !Number.isSafeInteger(provider.maxRetries) || provider.maxRetries < 0)) {

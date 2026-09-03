@@ -25,6 +25,12 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 		contextWindow: effectiveContextWindow(conf),
 		thinkingLevels: resolveOfficialThinkingLevels(conf),
 		includeThinking: conf.thinkingFormat === "deepseek",
+		async refreshModels() {
+			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, { headers: { Authorization: `Bearer ${conf.apiKey}` } });
+			if (!response.ok) throw new Error(`模型目录请求失败 HTTP ${response.status}`);
+			const payload = await response.json() as { data?: Array<{ id?: string }> };
+			return (payload.data ?? []).flatMap((model) => typeof model.id === "string" ? [{ id: model.id }] : []);
+		},
 		async stream(req, onDelta, signal): Promise<void> {
 			let headers: Record<string, string> = {
 				"Content-Type": "application/json",

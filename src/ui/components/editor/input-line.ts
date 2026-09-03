@@ -16,7 +16,7 @@
 import { exec } from "node:child_process";
 import { CURSOR_MARKER, type Component, type Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
-import { C, charWidth, visibleWidth, truncateToWidth, getContentBoxWidth } from "../../core/utils.js";
+import { C, charWidth, visibleWidth, truncateToWidth } from "../../core/utils.js";
 
 const PASTE_MARKER_REGEX = /\[已粘贴 #(\d+) (\+\d+行|\d+字)\]/g;
 const MAX_VISIBLE_LINES = 5;
@@ -41,12 +41,6 @@ export function findMarkers(text: string): MarkerSpan[] {
 		});
 	}
 	return list;
-}
-
-function formatTokens(n: number): string {
-	if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
-	if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-	return `${n}`;
 }
 
 /** 清洗输入文本，彻底抹除所有 \r 与非法控制字符 */
@@ -95,22 +89,15 @@ export class InputLine implements Component, Focusable {
 
 	// 外部状态注入
 	private topStatusHeader = "";
-	private modelName = "deepseek-chat";
-	private usedTokens = 0;
-	private contextWindow = 65536;
-	private contextActual = false;
 
 	// 事件回调
 	public onSubmit?: (text: string) => void;
 	public onInterrupt?: () => void;
 	public onEscape?: () => void;
-	private cwd = "";
 
 	constructor() {}
 
-	setCwd(cwd: string): void {
-		this.cwd = cwd;
-	}
+	setCwd(_cwd: string): void {}
 
 	setSpeedStats(_tps: number, _elapsedMs: number, _isStreaming: boolean): void {}
 
@@ -118,24 +105,9 @@ export class InputLine implements Component, Focusable {
 		this.topStatusHeader = header;
 	}
 
-	setContextStats(modelName: string, usedTokens: number, contextWindow: number, actual = false): void {
-		this.modelName = modelName;
-		this.usedTokens = usedTokens;
-		if (contextWindow > 0) this.contextWindow = contextWindow;
-		this.contextActual = actual;
-	}
+	setContextStats(_modelName: string, _usedTokens: number, _contextWindow: number, _actual = false): void {}
 
-	private reasoningEffort: "off" | "low" | "medium" | "high" | "max" = "medium";
-
-	setReasoningEffort(effort: "off" | "low" | "medium" | "high" | "max" | "none" | string): void {
-		const lower = effort.toLowerCase().trim();
-		if (lower === "none" || lower === "off") this.reasoningEffort = "off";
-		else if (lower === "low") this.reasoningEffort = "low";
-		else if (lower === "medium") this.reasoningEffort = "medium";
-		else if (lower === "high") this.reasoningEffort = "high";
-		else if (lower === "max") this.reasoningEffort = "max";
-		else this.reasoningEffort = "medium";
-	}
+	setReasoningEffort(_effort: string): void {}
 
 	/** 检查光标当前是否紧邻某个粘贴标记 */
 	hasChipAtCursor(): boolean {
@@ -575,10 +547,10 @@ export class InputLine implements Component, Focusable {
 	 * 渲染为拥有精细几何列宽、视口滚动与舒适高度的现代圆角容器盒
 	 */
 	render(width: number): string[] {
-		const boxWidth = getContentBoxWidth(width, 4);
+		const boxWidth = width;
 		const borderCol = C.gray;
-		const innerWidth = boxWidth - 4; // 减去两端 "│ " 与 " │"
-		const contentColLimit = innerWidth - 2; // 提示符/缩进占 2 列宽
+		const innerWidth = Math.max(10, boxWidth - 2); // 两侧紧贴边框 "│" 与 "│"
+		const contentColLimit = innerWidth - 2; // 提示符 "› " 占 2 列宽
 
 		// ─────────────────────────────────────────────────────────────
 		// 1. 中间多行自然排版引擎（按 \n 切分逻辑行，严格计算每个视觉行）
@@ -745,15 +717,14 @@ export class InputLine implements Component, Focusable {
 		}
 
 		// ─────────────────────────────────────────────────────────────
-		// 4. 中间可见行组装（严格锁定宽度为 boxWidth）
+		// 4. 中间可见行组装（紧贴左边框 │ 紧跟 › 提示符，对标图二）
 		// ─────────────────────────────────────────────────────────────
 		const middleLines: string[] = [];
 		for (let r = 0; r < visibleRows.length; r++) {
 			const vRow = visibleRows[r]!;
 			const isFirstGlobalRow = this.scrollOffset === 0 && r === 0;
-			const isTopTier = this.reasoningEffort === "max";
-			const glyphColor = isTopTier ? "\x1b[38;2;130;185;255m\x1b[1m" : C.cyan;
-			const prefix = isFirstGlobalRow ? `${glyphColor}❯ ${C.reset}` : "  ";
+			const glyphColor = "\x1b[38;2;120;170;255m\x1b[1m"; // 电光蓝 › (对标图二)
+			const prefix = isFirstGlobalRow ? `${glyphColor}› ${C.reset}` : "  ";
 			const prefixW = 2;
 
 			let contentStr = vRow.content;
@@ -768,102 +739,15 @@ export class InputLine implements Component, Focusable {
 			const finalW = visibleWidth(contentStr);
 			const padLen = Math.max(0, innerWidth - prefixW - finalW);
 
-			const lineStr = `${borderCol}│ ${C.reset}${prefix}${contentStr}${" ".repeat(padLen)}${borderCol} │${C.reset}`;
+			const lineStr = `${borderCol}│${C.reset}${prefix}${contentStr}${" ".repeat(padLen)}${borderCol}│${C.reset}`;
 			middleLines.push(lineStr);
 		}
 
 		// ─────────────────────────────────────────────────────────────
-		// 5. 底边框（带滚动提示 ↓ +N行 与蓝白图形化上下文进度条）：
-		//    ╰─ [████░░░░] 14.2k/65.5k (21.7%) ── deepseek-chat ─╯
+		// 5. 底边框（对标图二纯净闭合圆角）：╰────────────────────────╯
 		// ─────────────────────────────────────────────────────────────
-		let bottomLine = "";
-		const pct = Math.min(100, Math.max(0, (this.usedTokens / this.contextWindow) * 100));
-		const pctStr = `${pct.toFixed(1)}%`;
-		const readout = `${this.contextActual ? "实际" : "估算"} ${formatTokens(this.usedTokens)}/${formatTokens(this.contextWindow)} (${pctStr})`;
-		
-		const effortLabels: Record<string, string> = {
-			off: `${C.gray}思考:关${C.reset}`,
-			none: `${C.gray}思考:关${C.reset}`,
-			minimal: `${C.dim}思考:极低${C.reset}`,
-			low: `${C.dim}思考:低${C.reset}`,
-			medium: `${C.cyan}思考:中${C.reset}`,
-			high: `${C.bold}${C.glowWhite}思考:高${C.reset}`,
-			xhigh: `${C.bold}${C.iceBlue}思考:超高${C.reset}`,
-			max: `${C.bold}\x1b[38;2;130;185;255m思考:极高${C.reset}`,
-		};
-		const effortBadge = effortLabels[this.reasoningEffort] ?? `${C.cyan}思考:${this.reasoningEffort}${C.reset}`;
-		let rightBadge = `${this.modelName} ${C.gray}·${C.reset} ${effortBadge}`;
-		const remainingDown = maxScroll - this.scrollOffset;
-		if (remainingDown > 0) {
-			rightBadge = `${C.yellow}↓ +${remainingDown}行${C.gray} · ${rightBadge}`;
-		}
-
-		// 1. 目录常驻徽章（支持宽屏完整路径、中屏目录名；采用低饱和字符图标 🗀 与暗色路径，绝不刺眼）
-		let cwdBadge = "";
-		if (this.cwd) {
-			const normPath = this.cwd.replace(/\\/g, "/");
-			const baseName = normPath.split("/").filter(Boolean).pop() || this.cwd;
-			const targetCwd = boxWidth >= 96 ? this.cwd : baseName;
-			cwdBadge = `${C.gray}🗀 ${C.dim}${targetCwd}${C.reset}`;
-		}
-
-		const readoutPart = `${borderCol}] ${C.dim}${readout}${C.reset}`;
-		const rightPart = ` ${C.gray}${rightBadge}${borderCol} ─╯${C.reset}`;
-
-		// 判断可容纳的徽章
-		const baseNeeded = 4 + 4 + visibleWidth(readoutPart) + visibleWidth(rightPart) + 6;
-		const spaceForBadges = boxWidth - baseNeeded;
-
-		const cwdW = cwdBadge ? visibleWidth(cwdBadge) + 3 : 0;
-		const showCwd = Boolean(cwdBadge) && spaceForBadges >= cwdW;
-
-		const reservedW =
-			4 +
-			2 +
-			visibleWidth(readoutPart) +
-			visibleWidth(rightPart) +
-			(showCwd ? visibleWidth(cwdBadge) + 3 : 0);
-		const barWidth = Math.max(4, Math.min(24, boxWidth - reservedW));
-
-		const filledCols = Math.min(barWidth, Math.max(0, Math.round((pct / 100) * barWidth)));
-		const emptyCols = barWidth - filledCols;
-
-		let barColor = C.iceBlue;
-		if (pct >= 90) barColor = C.red;
-		else if (pct >= 80) barColor = C.yellow;
-
-		const filledBar = `${barColor}${"█".repeat(filledCols)}${C.reset}`;
-		const emptyBar = `${C.gray}${"░".repeat(emptyCols)}${C.reset}`;
-
-		const leftPart = `${borderCol}╰─ [${C.reset}${filledBar}${emptyBar}${readoutPart} `;
-
-		// 组装中间各徽章与边框连线
-		const activeBadges: Array<{ text: string; width: number }> = [];
-		if (showCwd) {
-			activeBadges.push({ text: cwdBadge, width: visibleWidth(cwdBadge) });
-		}
-
-		if (activeBadges.length > 0) {
-			const badgesTotalW = activeBadges.reduce((acc, b) => acc + b.width + 2, 0);
-			const remainingLineW = Math.max(
-				activeBadges.length + 1,
-				boxWidth - visibleWidth(leftPart) - visibleWidth(rightPart) - badgesTotalW,
-			);
-			const segmentLen = Math.max(1, Math.floor(remainingLineW / (activeBadges.length + 1)));
-
-			let middle = "";
-			for (const badge of activeBadges) {
-				middle += `${borderCol}${"─".repeat(segmentLen)} ${badge.text} `;
-			}
-			const finalFillerLen = Math.max(
-				1,
-				boxWidth - visibleWidth(leftPart) - visibleWidth(middle) - visibleWidth(rightPart),
-			);
-			bottomLine = `${leftPart}${middle}${borderCol}${"─".repeat(finalFillerLen)}${rightPart}`;
-		} else {
-			const fillerLen = Math.max(1, boxWidth - visibleWidth(leftPart) - visibleWidth(rightPart));
-			bottomLine = `${leftPart}${borderCol}${"─".repeat(fillerLen)}${rightPart}`;
-		}
+		const fillLen = Math.max(1, boxWidth - 2);
+		const bottomLine = `${borderCol}╰${"─".repeat(fillLen)}╯${C.reset}`;
 
 		return [
 			topLine,

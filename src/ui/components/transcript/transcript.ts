@@ -299,15 +299,15 @@ export class TranscriptContainer implements Component {
 
 	private formatUserLine(text: string, width: number): string[] {
 		const lines: string[] = [""];
-		const prefix = `  ${C.yellow}${C.bold}❯${C.reset} ${C.bold}`;
-		const leadW = visibleWidth("  ❯ ");
-		const contentBudget = Math.max(10, width - leadW - 4);
+		const prefix = `${C.yellow}${C.bold}❯${C.reset} ${C.bold}`;
+		const leadW = visibleWidth("❯ ");
+		const contentBudget = Math.max(10, width - leadW - 2);
 		const wrapped = wrapTextWithAnsi(text, contentBudget);
 		if (wrapped.length === 0) {
 			lines.push(`${prefix}${C.reset}`);
 		} else {
 			lines.push(`${prefix}${wrapped[0]}${C.reset}`);
-			const indent = " ".repeat(leadW);
+			const indent = "  ";
 			for (let i = 1; i < wrapped.length; i++) {
 				lines.push(`${indent}${C.bold}${wrapped[i]}${C.reset}`);
 			}
@@ -318,8 +318,8 @@ export class TranscriptContainer implements Component {
 
 	private formatAssistantMarkdown(md: string, width: number): string[] {
 		if (!md) return [];
-		// 扣除 4 列悬挂缩进空间（"  ● " / "    "）
-		const contentBudget = Math.max(20, width - 6);
+		// 扣除 2 列悬挂缩进空间（"● " / "  "）
+		const contentBudget = Math.max(20, width - 4);
 		const rawLines = formatFullMarkdown(md, contentBudget);
 		const formatted: string[] = [];
 		let isFirstParagraph = true;
@@ -330,21 +330,24 @@ export class TranscriptContainer implements Component {
 				continue;
 			}
 
-			// 如果是代码块边框或内联几何线，保持原样
-			if (rawLine.startsWith("  ┌") || rawLine.startsWith("  │") || rawLine.startsWith("  └")) {
-				formatted.push(rawLine);
+			// 如果是代码块边框或内联几何线，去除前导空格保持顶格
+			if (
+				rawLine.startsWith("┌") || rawLine.startsWith("│") || rawLine.startsWith("└") ||
+				rawLine.startsWith("  ┌") || rawLine.startsWith("  │") || rawLine.startsWith("  └")
+			) {
+				formatted.push(rawLine.trimStart());
 				continue;
 			}
 
-			// 对段落行进行严格 word-wrap，确保任何行都不超出终端口宽顶格到第 0 列
+			// 对段落行进行严格 word-wrap
 			const wrapped = wrapTextWithAnsi(rawLine.trim(), contentBudget);
 			for (let i = 0; i < wrapped.length; i++) {
 				const piece = wrapped[i]!;
 				if (isFirstParagraph && i === 0) {
-					formatted.push(`  ${C.green}${C.bold}● ${C.reset}${piece}`);
+					formatted.push(`${C.green}${C.bold}● ${C.reset}${piece}`);
 					isFirstParagraph = false;
 				} else {
-					formatted.push(`    ${piece}`);
+					formatted.push(`  ${piece}`);
 				}
 			}
 		}
@@ -426,6 +429,76 @@ export class TranscriptContainer implements Component {
 		for (const comp of comps) {
 			out.push("", ...formatCompactionCardLines(comp, width), "");
 		}
+	}
+
+	getTimelineTurns(): Array<{ n: number; userText: string }> {
+		const result: Array<{ n: number; userText: string }> = [];
+		for (const t of this.historyTurns) {
+			result.push({ n: t.n, userText: t.userText });
+		}
+		if (this.currentTurn) {
+			result.push({ n: this.currentTurn.n, userText: this.currentTurn.userText });
+		}
+		return result;
+	}
+
+	/**
+	 * 获取每一轮次在转录完整行序列中的起始行号映射表
+	 */
+	getTurnStartLines(width: number): Map<number, number> {
+		const map = new Map<number, number>();
+		let lineCount = 0;
+
+		for (const item of this.timeline) {
+			if (item.kind === "turn") {
+				map.set(item.turn.n, lineCount);
+				const turnLines: string[] = [];
+				this.renderTurn(item.turn, width, turnLines);
+				lineCount += turnLines.length;
+			} else if (item.kind === "notice") {
+				lineCount += 1;
+			} else if (item.kind === "compaction") {
+				lineCount += formatCompactionCardLines(item.record, width).length;
+			}
+		}
+
+		if (this.currentTurn) {
+			map.set(this.currentTurn.n, lineCount);
+		}
+
+		return map;
+	}
+
+	/**
+	 * 获取所有思考折叠行在完整行序列中的索引位置
+	 */
+	getThinkingLineIndices(width: number): Array<{ turnN: number; lineIndex: number }> {
+		const result: Array<{ turnN: number; lineIndex: number }> = [];
+		let currentLine = 0;
+
+		for (const item of this.timeline) {
+			if (item.kind === "turn") {
+				const turn = item.turn;
+				const userLines = this.formatUserLine(turn.userText, width);
+				if (turn.thinkingText) {
+					result.push({ turnN: turn.n, lineIndex: currentLine + userLines.length });
+				}
+				const turnLines: string[] = [];
+				this.renderTurn(turn, width, turnLines);
+				currentLine += turnLines.length;
+			} else if (item.kind === "notice") {
+				currentLine += 1;
+			} else if (item.kind === "compaction") {
+				currentLine += formatCompactionCardLines(item.record, width).length;
+			}
+		}
+
+		if (this.currentTurn && this.currentTurn.thinkingText && this.thinkingCommitted) {
+			const userLines = this.formatUserLine(this.currentTurn.userText, width);
+			result.push({ turnN: this.currentTurn.n, lineIndex: currentLine + userLines.length });
+		}
+
+		return result;
 	}
 
 	invalidate(): void {}

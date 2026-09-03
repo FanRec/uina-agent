@@ -376,14 +376,13 @@ describe("UI Components & Visual Rendering", () => {
 	it("InputLine 经典圆角盒与状态行渲染", () => {
 		const box = new InputLine();
 		box.setStatusHeader("⠋ 思考中");
-		box.setContextStats("deepseek-chat", 14200, 65536);
 		const lines = box.render(80);
 		expect(lines.length).toBe(4);
 		expect(lines[0]).toContain("╭");
 		expect(lines[0]).toContain("思考中");
 		expect(lines[1]).toContain("│");
+		expect(lines[1]).toContain("›");
 		expect(lines[3]).toContain("╰");
-		expect(lines[3]).toContain("deepseek-chat");
 	});
 
 	it("ActivityLine 流光动画与状态文本", () => {
@@ -393,12 +392,17 @@ describe("UI Components & Visual Rendering", () => {
 		expect(stripAnsi(str)).toContain("流式生成中");
 	});
 
-	it("ContextBar 上下文利用率柱状图", () => {
+	it("ContextBar 上下文利用率柱状图与 Hover 展开", () => {
 		const bar = new ContextBarComponent();
-		bar.update(32000, 64000);
+		bar.update({ usedTokens: 32000, contextWindow: 64000, modelName: "deepseek-v4-flash" });
 		const lines = bar.render(80);
 		expect(lines[0]).toContain("ctx");
 		expect(lines[0]).toContain("50.0%");
+		expect(lines[0]).toContain("deepseek-v4-flash");
+		bar.setHovered(true);
+		const expandedLines = bar.render(80);
+		expect(expandedLines.length).toBe(2);
+		expect(expandedLines[1]).toContain("free");
 	});
 
 	it("Git Unified Diff 逐行差异计算与卡片渲染", async () => {
@@ -863,22 +867,23 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 		expect(rendered.some((l: string) => l.includes("●") && l.includes("等于 2。"))).toBe(true);
 	});
 
-	it("用户输入展示为金色 ❯ 标记且助手段落折行采用 4 格悬挂缩进", () => {
+	it("用户输入展示为金色 ❯ 标记且助手段落折行采用 2 格缩进对齐首行正文（无多余前导空格）", () => {
 		const transcript = new TranscriptContainer();
 		transcript.startTurn(1, "你好世界");
 		// 输入超过行宽的长文本测试自动折行
-		transcript.appendToken("这是一段非常长的助手回答内容用于测试悬挂缩进功能确保换行后不会顶格到最左边而是严格保持四空格缩进对齐首行正文。");
+		transcript.appendToken("这是一段非常长的助手回答内容用于测试悬挂缩进功能确保换行后不会顶格到最左边而是严格对齐首行正文。");
 		transcript.finishTurn();
 
 		const rendered = transcript.render(40);
 		// 校验用户前缀
 		expect(rendered.some((l: string) => l.includes("❯") && l.includes("你好世界"))).toBe(true);
 
-		// 校验助手首行带 ● 且后续折行行以 4 格空格对齐
-		const assistantLines = rendered.filter((l: string) => l.includes("这是一段") || l.includes("悬挂缩进") || l.includes("四空格"));
+		// 校验助手首行带 ● 且后续折行行以 2 格空格对齐正文
+		const assistantLines = rendered.filter((l: string) => l.includes("这是一段") || l.includes("悬挂缩进"));
 		expect(assistantLines.length).toBeGreaterThan(1);
 		expect(assistantLines[0]).toContain("●");
-		expect(assistantLines[1]!.startsWith("    ")).toBe(true);
+		expect(assistantLines[1]!.startsWith("  ")).toBe(true);
+		expect(assistantLines[1]!.startsWith("    ")).toBe(false);
 	});
 });
 
@@ -925,5 +930,60 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		expect(release.handled).toBe(true);
 
 		expect(copiedText).toBe("World");
+	});
+
+	it("MouseSelectionTracker noSelect 保护：智能剥离 ● 符号与输入框外框 │", async () => {
+		const { MouseSelectionTracker } = await import("../src/ui/core/mouse-selection.js");
+		const tracker = new MouseSelectionTracker();
+
+		const screenRows = [
+			"● 这是回答内容",
+			"│› 输入框文字      │",
+		];
+
+		// 1. 划选包含 ● 的行，提取时剥离 ●
+		let copied1 = "";
+		tracker.handleInput("\x1b[<0;1;1M", screenRows, (t) => { copied1 = t; });
+		tracker.handleInput("\x1b[<32;14;1M", screenRows);
+		tracker.handleInput("\x1b[<0;14;1m", screenRows, (t) => { copied1 = t; });
+		expect(copied1).toBe("这是回答内容");
+
+		// 2. 划选输入框，提取时隔离外框 │
+		let copied2 = "";
+		tracker.handleInput("\x1b[<0;1;2M", screenRows, (t) => { copied2 = t; });
+		tracker.handleInput("\x1b[<32;20;2M", screenRows);
+		tracker.handleInput("\x1b[<0;20;2m", screenRows, (t) => { copied2 = t; });
+		expect(copied2).not.toContain("│");
+		expect(copied2).toContain("输入框文字");
+	});
+
+	it("TimelineRail 导航轨刻度与 Hover 气泡卡片生成", async () => {
+		const { TimelineRailComponent } = await import("../src/ui/components/widgets/timeline-rail.js");
+		const rail = new TimelineRailComponent();
+		rail.updateTurns([
+			{ n: 1, userText: "第一轮用户问题" },
+			{ n: 2, userText: "第二轮长问题" },
+		], 1);
+
+		const { railGlyphs } = rail.renderRailRows(10);
+		expect(railGlyphs.length).toBe(10);
+		expect(railGlyphs[0]).toContain("▲");
+		expect(railGlyphs[9]).toContain("▼");
+		expect(railGlyphs.some((g) => g.includes("━━"))).toBe(true);
+
+		// 设置 hover
+		rail.setHover(1);
+		const hovered = rail.renderRailRows(10);
+		expect(hovered.previewCard).toBeDefined();
+		expect(hovered.previewCard?.lines[1]).toContain("第一轮");
+	});
+
+	it("formatCacheHitRate 算法符合 dsh-TUI 规范", async () => {
+		const { formatCacheHitRate } = await import("../src/ui/components/widgets/context-bar.js");
+		// 1000 input, 9000 cacheRead, 0 cacheWrite -> total 10000, hit 90.0%
+		const rate = formatCacheHitRate(9000, 1000, 0);
+		expect(rate).toBe("90.0%");
+
+		expect(formatCacheHitRate(0, 1000, 0)).toBeUndefined();
 	});
 });

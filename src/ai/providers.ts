@@ -22,6 +22,12 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 		contextWindow: effectiveContextWindow(conf),
 		thinkingLevels: levels(conf),
 		includeThinking: true,
+		async refreshModels() {
+			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, { headers: { "x-api-key": conf.apiKey, "anthropic-version": "2023-06-01" } });
+			if (!response.ok) throw new Error(`Anthropic 模型目录请求失败 HTTP ${response.status}`);
+			const payload = await response.json() as { data?: Array<{ id?: string }> };
+			return (payload.data ?? []).flatMap((model) => typeof model.id === "string" ? [{ id: model.id }] : []);
+		},
 		async stream(req, emit, signal) {
 			const level = req.thinkingLevel ?? "off";
 			const thinking = level === "off" ? undefined : thinkingBudget(level);
@@ -99,6 +105,15 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 		name: conf.model,
 		contextWindow: effectiveContextWindow(conf),
 		thinkingLevels: levels(conf),
+		async refreshModels() {
+			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models?key=${encodeURIComponent(conf.apiKey)}`);
+			if (!response.ok) throw new Error(`Gemini 模型目录请求失败 HTTP ${response.status}`);
+			const payload = await response.json() as { models?: Array<{ name?: string; baseModelId?: string; inputTokenLimit?: number; thinking?: boolean; supportedGenerationMethods?: string[] }> };
+			return (payload.models ?? []).flatMap((model) => {
+				if (!model.supportedGenerationMethods?.includes("generateContent") || !model.baseModelId || !Number.isSafeInteger(model.inputTokenLimit) || model.inputTokenLimit! <= 0) return [];
+				return [{ id: model.baseModelId, contextWindow: model.inputTokenLimit, thinkingLevels: model.thinking ? levels(conf) : ["off"] }];
+			});
+		},
 		async stream(req, emit, signal) {
 			let headers: Record<string, string> = {
 				"content-type": "application/json",
@@ -189,6 +204,7 @@ interface GeminiChunk { usageMetadata?: { promptTokenCount?: number; candidatesT
 
 export class ModelRegistry {
 	private instances = new Map<string, ModelProvider>();
+	private discovered = new Map<string, import("../core/types.js").DiscoveredModel[]>();
 	private config?: import("./config.js").UinaConfig;
 
 	constructor(config?: import("./config.js").UinaConfig) {
@@ -207,6 +223,18 @@ export class ModelRegistry {
 			this.instances.set(modelOrProviderName, provider);
 			return provider;
 		}
+		const slash = modelOrProviderName.indexOf("/");
+		if (slash > 0) {
+			const providerId = modelOrProviderName.slice(0, slash);
+			const modelId = modelOrProviderName.slice(slash + 1);
+			const base = this.config?.providers[providerId];
+			const discovered = this.discovered.get(providerId)?.find((model) => model.id === modelId);
+			if (base && discovered?.contextWindow) {
+				const provider = createProvider(providerId, { ...base, model: modelId, modelContextWindow: discovered.contextWindow, maxContextWindow: base.maxContextWindow, ...(discovered.thinkingLevels ? { thinkingLevels: [...discovered.thinkingLevels] } : {}) });
+				this.instances.set(modelOrProviderName, provider);
+				return provider;
+			}
+		}
 
 		throw new Error(`未配置或未注册的模型/Provider: ${modelOrProviderName}`);
 	}
@@ -220,6 +248,18 @@ export class ModelRegistry {
 	choices(): Array<{ id: string; name: string }> {
 		const configured = Object.entries(this.config?.providers ?? {}).map(([id, value]) => ({ id, name: value.model }));
 		const registered = [...this.instances.entries()].map(([id, provider]) => ({ id, name: provider.name }));
-		return [...configured, ...registered.filter((candidate) => !configured.some((item) => item.id === candidate.id))];
+		const dynamic = [...this.discovered.entries()].flatMap(([provider, models]) => models.filter((model) => model.contextWindow).map((model) => ({ id: `${provider}/${model.id}`, name: model.id })));
+		return [...configured, ...registered.filter((candidate) => !configured.some((item) => item.id === candidate.id)), ...dynamic];
+	}
+
+	async refreshModels(): Promise<void> {
+		for (const [id, conf] of Object.entries(this.config?.providers ?? {})) {
+			try {
+				const provider = this.instances.get(id) ?? createProvider(id, conf);
+				if (provider.refreshModels) this.discovered.set(id, [...await provider.refreshModels()]);
+			} catch {
+				// Discovery is optional; an existing explicitly configured model remains usable.
+			}
+		}
 	}
 }

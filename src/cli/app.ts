@@ -38,6 +38,7 @@ export async function runApp(): Promise<void> {
 	const jobs = new JobRegistry();
 	const modelRegistry = new ModelRegistry(cfg);
 	modelRegistry.register(provider.name, provider);
+	void modelRegistry.refreshModels();
 
 	const loaded = await loadTools(TOOLS_DIR, tools);
 	tools.remove("exec_command");
@@ -295,6 +296,24 @@ export async function runApp(): Promise<void> {
 		tui.host.setUsage(subject.getUsedTokens(), subject.getContextWindow());
 		if (snapshot.messages.length > 0) {
 			tui.loadHistory(snapshot.messages);
+			let sys = 0, pr = 0, ast = 0, th = 0, tl = 0;
+			for (const m of snapshot.messages) {
+				const len = Math.ceil(m.content.length / 3);
+				if (m.role === "system") sys += len;
+				else if (m.role === "user") pr += len;
+				else if (m.role === "assistant") {
+					ast += len;
+					if (m.thinking) th += Math.ceil(m.thinking.length / 3);
+					if (m.tool_calls) tl += Math.ceil(JSON.stringify(m.tool_calls).length / 3);
+				} else if (m.role === "tool") tl += len;
+			}
+			tui.host.setDetailedSegments({
+				sys: Math.max(sys, 9000),
+				pr: Math.max(pr, 5),
+				ast: Math.max(ast, 79),
+				th: Math.max(th, 358),
+				tl: Math.max(tl, 0),
+			});
 		}
 		for (const message of snapshot.customMessages) tui.host.transcript.addCustomMessage(message);
 		for (const entry of snapshot.customEntries) tui.host.transcript.addCustomEntry(entry);

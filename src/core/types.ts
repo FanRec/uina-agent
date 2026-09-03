@@ -23,6 +23,12 @@ export interface Usage {
 	totalTokens: number;
 }
 
+export interface DiscoveredModel {
+	id: string;
+	contextWindow?: number;
+	thinkingLevels?: readonly ThinkingLevel[];
+}
+
 /** 模型流式输出中的一个增量片段（按到达顺序回调）。 */
 export type StreamDelta =
 	| { kind: "thinking"; text: string }
@@ -84,6 +90,9 @@ export interface ModelProvider {
 	readonly contextWindow?: number;
 	readonly thinkingLevels?: readonly ThinkingLevel[];
 	readonly includeThinking?: boolean;
+	/** Dynamic providers may refresh their current model catalog. Entries without
+	 * a contextWindow are discovery-only and must not become selectable. */
+	refreshModels?(): Promise<readonly DiscoveredModel[]>;
 	/**
 	 * 流式对话：逐段回调 onDelta。
 	 * 协议错误、异常断流和不完整响应必须抛错；主动中断通过 signal 传播。

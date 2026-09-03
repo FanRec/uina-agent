@@ -48,8 +48,8 @@ export class ProcessTerminal {
 				process.stdout.on("resize", this.onResizeHandler);
 			}
 
-			// 开启备用屏（DEC 1049）、清屏、括号粘贴模式、键盘扩展、SGR 鼠标跟踪（滚轮与选区）
-			process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?2004h\x1b[>1u\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+			// 开启备用屏（DEC 1049）、清屏、括号粘贴模式、键盘扩展、SGR 鼠标跟踪（滚轮、选区与 Hover 悬停）
+			process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?2004h\x1b[>1u\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
 		}
 	}
 
@@ -60,7 +60,7 @@ export class ProcessTerminal {
 
 		if (this.isTTY) {
 			// 退出鼠标跟踪、退出备用屏（DEC 1049 恢复主屏历史）、关闭括号粘贴模式
-			process.stdout.write("\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?1049l\x1b[?2004l\x1b[<u\x1b[?25h");
+			process.stdout.write("\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1049l\x1b[?2004l\x1b[<u\x1b[?25h");
 			this.showCursor();
 
 			process.stdin.removeListener("data", this.handleStdinData);

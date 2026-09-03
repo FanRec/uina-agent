@@ -12,14 +12,16 @@ import { WidgetSlots } from "./core/slots.js";
 import { ProcessTerminal } from "./core/terminal.js";
 import { MainScreenRenderer } from "./core/renderer.js";
 import { Key, matchesKey } from "./core/keys.js";
-import { MouseSelectionTracker } from "./core/mouse-selection.js";
+import { MouseSelectionTracker, type InteractiveTarget } from "./core/mouse-selection.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ThinkingLevel } from "../core/types.js";
-import { C, visibleWidth } from "./core/utils.js";
+import { C, visibleWidth, truncateToWidth } from "./core/utils.js";
 import { InputLine } from "./components/editor/input-line.js";
 import { BannerComponent } from "./components/primitives/banner.js";
 import { TranscriptContainer } from "./components/transcript/transcript.js";
 import { ActivityLineComponent } from "./components/widgets/activity-line.js";
+import { ContextBarComponent, type ContextSegments } from "./components/widgets/context-bar.js";
+import { TimelineRailComponent } from "./components/widgets/timeline-rail.js";
 import { HelpMenu } from "./components/overlays/help-menu.js";
 import {
 	formatSuggestionCardLines,
@@ -31,6 +33,16 @@ import { ExtensionRegistry } from "./extensions/registry.js";
 import { createExtensionUIContext, type UIHostContextPort } from "./extensions/context.js";
 import type { ExtensionUIContext } from "./extensions/types.js";
 import { TrajectoryProjection } from "./adapters/agent-events.js";
+
+function overlayCard(baseLine: string, cardLine: string, startCol: number, width: number): string {
+	const leftPart = truncateToWidth(baseLine, startCol, " ");
+	const leftW = visibleWidth(leftPart);
+	const padL = Math.max(0, startCol - leftW);
+	const rightPart = `${leftPart}${" ".repeat(padL)}${cardLine}`;
+	const curW = visibleWidth(rightPart);
+	const padR = Math.max(0, width - curW);
+	return `${rightPart}${" ".repeat(padR)}`;
+}
 
 export interface UIHostOptions {
 	terminal?: ProcessTerminal;
@@ -60,6 +72,8 @@ export class UIHost implements UIHostContextPort {
 	readonly banner: BannerComponent;
 	readonly inputLine: InputLine;
 	readonly activityLine: ActivityLineComponent;
+	readonly contextBar: ContextBarComponent;
+	readonly timelineRail: TimelineRailComponent;
 
 	// 状态投影
 	readonly trajectoryProjection: TrajectoryProjection;
@@ -71,6 +85,10 @@ export class UIHost implements UIHostContextPort {
 	private reasoningEffort: ThinkingLevel = "medium";
 	private thinkingLevels: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 	private cwd: string;
+	private contextSegments: ContextSegments = { sys: 9000, pr: 5, ast: 79, th: 358, tl: 0 };
+	private cacheReadTokens?: number;
+	private inputTokensCount?: number;
+	private cacheWriteTokens?: number;
 
 	// 运行与动画状态
 	private running = false;
@@ -180,6 +198,8 @@ export class UIHost implements UIHostContextPort {
 		this.editorContainer.addChild(this.inputLine);
 
 		this.activityLine = new ActivityLineComponent();
+		this.contextBar = new ContextBarComponent();
+		this.timelineRail = new TimelineRailComponent();
 
 		this.rootContainer.addChild(this.headerContainer);
 		this.rootContainer.addChild(this.transcript);
@@ -288,11 +308,71 @@ export class UIHost implements UIHostContextPort {
 		this.streamTokenCount += count;
 	}
 
-	setUsage(used: number, contextWindow?: number, actual = false): void {
+	setUsage(
+		used: number,
+		contextWindow?: number,
+		actual = false,
+		details?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number },
+	): void {
 		this.usedTokens = used;
 		if (contextWindow) this.contextWindow = contextWindow;
+		if (details) {
+			this.cacheReadTokens = details.cacheRead;
+			this.inputTokensCount = details.input;
+			this.cacheWriteTokens = details.cacheWrite;
+		}
 		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, actual);
+		this.contextBar.update({
+			usedTokens: this.usedTokens,
+			contextWindow: this.contextWindow,
+			modelName: this.modelName,
+			effort: this.reasoningEffort,
+			cwd: this.cwd,
+			cacheRead: this.cacheReadTokens,
+			inputTokens: this.inputTokensCount,
+			cacheWrite: this.cacheWriteTokens,
+			segments: this.contextSegments,
+		});
 		this.requestRender();
+	}
+
+	setDetailedSegments(segments: Partial<ContextSegments>): void {
+		this.contextSegments = { ...this.contextSegments, ...segments };
+		this.contextBar.update({
+			usedTokens: this.usedTokens,
+			contextWindow: this.contextWindow,
+			modelName: this.modelName,
+			effort: this.reasoningEffort,
+			cwd: this.cwd,
+			cacheRead: this.cacheReadTokens,
+			inputTokens: this.inputTokensCount,
+			cacheWrite: this.cacheWriteTokens,
+			segments: this.contextSegments,
+		});
+		this.requestRender();
+	}
+
+	scrollToTurn(turnN: number): void {
+		const transcriptContentW = Math.max(20, this.terminal.columns - 2);
+		const turnStartMap = this.transcript.getTurnStartLines(transcriptContentW);
+		const lineOffset = turnStartMap.get(turnN);
+		if (lineOffset !== undefined) {
+			const bannerLines = this.headerContainer.render(transcriptContentW);
+			const totalPerm = bannerLines.length + this.transcript.render(transcriptContentW).length;
+			const transcriptH = Math.max(1, this.terminal.rows - 8);
+			const maxScroll = Math.max(0, totalPerm - transcriptH);
+			const targetScroll = totalPerm - (bannerLines.length + lineOffset) - transcriptH;
+			this.scrollOffset = Math.max(0, Math.min(maxScroll, targetScroll));
+			this.requestRender();
+		}
+	}
+
+	scrollTurnUp(): void {
+		this.scrollUp(5);
+	}
+
+	scrollTurnDown(): void {
+		this.scrollDown(5);
 	}
 
 	replaceInput(text: string): void {
@@ -519,7 +599,7 @@ export class UIHost implements UIHostContextPort {
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
 		const margin = this.getPageMargin(width);
-		const innerW = width - margin.length;
+		const innerW = width;
 
 		// 1. 同步状态行与输入框指标
 		const statusHeader = this.activityLine.getHeaderString(Math.min(60, innerW - 20));
@@ -537,16 +617,31 @@ export class UIHost implements UIHostContextPort {
 			: this.lastTps;
 		this.inputLine.setSpeedStats(currentTps, elapsed, this.busy);
 
-		// 2. 渲染底部输入框
+		// 2. 渲染底部输入框（圆角全屏宽封闭盒，对标图二）
 		const rawInput = this.inputLine.render(innerW);
 		const inputLines = rawInput.map((l) => `${margin}${l}`);
 		const inputH = inputLines.length;
 
-		// 3. 渲染 belowEditor 小部件
-		const belowLines = this.widgetSlots.render("belowEditor", innerW).map((l) => `${margin}${l}`);
+		// 3. 渲染 ContextBar 与 belowEditor 小部件（对标图二单行与 hover 展开）
+		this.contextBar.update({
+			usedTokens: this.usedTokens,
+			contextWindow: this.contextWindow,
+			modelName: this.modelName,
+			effort: this.reasoningEffort,
+			cwd: this.cwd,
+			cacheRead: this.cacheReadTokens,
+			inputTokens: this.inputTokensCount,
+			cacheWrite: this.cacheWriteTokens,
+			segments: this.contextSegments,
+		});
+		const contextBarLines = this.contextBar.render(innerW).map((l) => `${margin}${l}`);
+		const belowLines = [
+			...contextBarLines,
+			...this.widgetSlots.render("belowEditor", innerW).map((l) => `${margin}${l}`),
+		];
 		const belowH = belowLines.length;
 
-		// 4. 渲染 OverlayAbove 浮层（叠加于输入框正上方）与 SuggestionCard 联想卡片
+		// 4. 渲染 OverlayAbove 浮层与 SuggestionCard
 		const aboveEditorWidgets = this.widgetSlots.render("aboveEditor", innerW);
 		const maxAboveH = Math.max(0, height - inputH - belowH - 1);
 		const overlayLines = this.overlayStack.renderAbove(innerW, maxAboveH);
@@ -571,24 +666,27 @@ export class UIHost implements UIHostContextPort {
 		const breathingGap = 1;
 		const transcriptH = Math.max(0, height - inputH - belowH - aboveH - breathingGap);
 
-		// 6. 渲染永久历史行
-		const bannerLines = this.headerContainer.render(innerW).map((l) => (l ? `${margin}${l}` : ""));
-		const transcriptLines = this.transcript.render(innerW).map((l) => (l ? `${margin}${l}` : ""));
+		// 6. 渲染永久历史行（为右侧 TimelineRail 预留 2 列）
+		const transcriptContentW = Math.max(20, innerW - 2);
+		const bannerLines = this.headerContainer.render(transcriptContentW).map((l) => (l ? `${margin}${l}` : ""));
+		const transcriptLines = this.transcript.render(transcriptContentW).map((l) => (l ? `${margin}${l}` : ""));
 		const permanentLines = [...bannerLines, ...transcriptLines];
 		const totalPerm = permanentLines.length;
 
 		// 7. 滚动视口处理
 		let visibleTranscript: string[] = [];
+		let scrollStart = 0;
 		if (totalPerm <= transcriptH) {
 			const padCount = transcriptH - totalPerm;
 			visibleTranscript = [...permanentLines, ...new Array(padCount).fill("")];
 			this.scrollOffset = 0;
+			scrollStart = 0;
 		} else {
 			const maxScroll = totalPerm - transcriptH;
 			const effScroll = Math.max(0, Math.min(this.scrollOffset, maxScroll));
 			this.scrollOffset = effScroll;
-			const start = totalPerm - transcriptH - effScroll;
-			visibleTranscript = permanentLines.slice(start, start + transcriptH);
+			scrollStart = totalPerm - transcriptH - effScroll;
+			visibleTranscript = permanentLines.slice(scrollStart, scrollStart + transcriptH);
 
 			if (effScroll > 0) {
 				const percent = maxScroll > 0 ? Math.round(((maxScroll - effScroll) / maxScroll) * 100) : 100;
@@ -596,7 +694,45 @@ export class UIHost implements UIHostContextPort {
 			}
 		}
 
-		// 8. 组装整屏行数组（严格锁定撑满 height 行，输入框吸底，中间保留 1 行呼吸空行，右侧渲染轻量 Toast 提示）
+		// 7.5. 右侧时间线导航轨（TimelineRail，对标图一）合成
+		const timelineTurns = this.transcript.getTimelineTurns();
+		const turnStartMap = this.transcript.getTurnStartLines(transcriptContentW);
+		const bannerCount = bannerLines.length;
+
+		let activeTurnN: number | null = null;
+		for (const [turnN, lineOffset] of turnStartMap.entries()) {
+			const absLine = bannerCount + lineOffset;
+			if (absLine >= scrollStart && absLine < scrollStart + transcriptH) {
+				activeTurnN = turnN;
+				break;
+			}
+		}
+
+		this.timelineRail.updateTurns(timelineTurns, activeTurnN);
+		const { railGlyphs, previewCard } = this.timelineRail.renderRailRows(visibleTranscript.length);
+
+		for (let r = 0; r < visibleTranscript.length; r++) {
+			const baseLine = visibleTranscript[r] ?? "";
+			const pad = Math.max(0, transcriptContentW - visibleWidth(baseLine));
+			visibleTranscript[r] = `${baseLine}${" ".repeat(pad)}${railGlyphs[r] ?? "  "}`;
+		}
+
+		if (previewCard) {
+			for (let i = 0; i < previewCard.lines.length; i++) {
+				const targetRow = previewCard.topRow + i;
+				if (targetRow < visibleTranscript.length) {
+					const cardLine = previewCard.lines[i]!;
+					const cardW = visibleWidth(cardLine);
+					const cardStartCol = Math.max(0, innerW - 2 - cardW - 1);
+					const baseLine = visibleTranscript[targetRow]!;
+					const contentWithoutRail = truncateToWidth(baseLine, transcriptContentW, " ");
+					const overlaid = overlayCard(contentWithoutRail, cardLine, cardStartCol, transcriptContentW);
+					visibleTranscript[targetRow] = `${overlaid}${railGlyphs[targetRow] ?? "  "}`;
+				}
+			}
+		}
+
+		// 8. 组装整屏行数组
 		let toastStr = "";
 		if (this.exitPending) {
 			toastStr = `${C.gray}再次按 Ctrl+C 退出${C.reset}`;
@@ -624,15 +760,82 @@ export class UIHost implements UIHostContextPort {
 			...belowLines,
 		];
 
+		// 8.5. 注册全屏鼠标交互热区（Click Targets 与 Hover 探测）
+		const interactiveTargets: InteractiveTarget[] = [];
+
+		// (1) 注册思考折叠行交互
+		const thinkingLocs = this.transcript.getThinkingLineIndices(transcriptContentW);
+		for (const loc of thinkingLocs) {
+			const absLine = bannerCount + loc.lineIndex;
+			if (absLine >= scrollStart && absLine < scrollStart + visibleTranscript.length) {
+				const screenRow = absLine - scrollStart;
+				interactiveTargets.push({
+					id: `thinking-${loc.turnN}`,
+					row: screenRow,
+					colStart: 0,
+					colEnd: Math.min(50, innerW - 4),
+					onClick: () => {
+						this.transcript.toggleThinking(loc.turnN);
+						this.requestRender();
+					},
+				});
+			}
+		}
+
+		// (2) 注册 TimelineRail 导航轨交互
+		if (visibleTranscript.length >= 3 && timelineTurns.length > 0) {
+			interactiveTargets.push({
+				id: "rail-up",
+				row: 0,
+				colStart: innerW - 2,
+				colEnd: innerW,
+				onClick: () => this.scrollTurnUp(),
+			});
+			interactiveTargets.push({
+				id: "rail-down",
+				row: visibleTranscript.length - 1,
+				colStart: innerW - 2,
+				colEnd: innerW,
+				onClick: () => this.scrollTurnDown(),
+			});
+			for (let r = 1; r < visibleTranscript.length - 1; r++) {
+				const tick = this.timelineRail.getClickTarget(r, visibleTranscript.length);
+				if (tick && tick.type === "tick" && tick.turnN !== undefined) {
+					interactiveTargets.push({
+						id: `rail-tick-${tick.turnN}`,
+						row: r,
+						colStart: innerW - 2,
+						colEnd: innerW,
+						onClick: () => this.scrollToTurn(tick.turnN!),
+					});
+				}
+			}
+		}
+
+		// (3) 注册右下角上下文状态条 Hover 展开交互（图二）
+		if (belowH > 0) {
+			const ctxBarScreenRow = visibleTranscript.length + gapLines.length + aboveH + inputH;
+			interactiveTargets.push({
+				id: "context-usage",
+				row: ctxBarScreenRow,
+				colStart: Math.max(0, innerW - 24),
+				colEnd: innerW,
+				onClick: () => {
+					this.contextBar.setHovered(!this.contextBar.getHovered());
+					this.requestRender();
+				},
+			});
+		}
+
+		this.mouseTracker.setTargets(interactiveTargets);
+
 		// 9. 保存当前完整帧供鼠标选区提取，注入划词反色高亮并提交渲染
 		this.lastRenderedRows = fullScreenRows;
 		const finalRows = this.mouseTracker.applyHighlight(fullScreenRows);
 		this.renderer.renderFrame(finalRows);
 	}
 
-	private getPageMargin(width: number): string {
-		if (width >= 120) return "  ";
-		if (width >= 80) return " ";
+	private getPageMargin(_width: number): string {
 		return "";
 	}
 
@@ -667,7 +870,7 @@ export class UIHost implements UIHostContextPort {
 			} catch (error) { this.notify(`终端输入监听器失败: ${String(error)}`, "error"); }
 		}
 
-		// 1.5 鼠标 SGR 协议拦截（滚轮视口滚动与划词选区跟踪）
+		// 1.5 鼠标 SGR 协议拦截（滚轮视口滚动、划词选区与交互热区）
 		if (data.startsWith("\x1b[<")) {
 			const res = this.mouseTracker.handleInput(
 				data,
@@ -675,6 +878,26 @@ export class UIHost implements UIHostContextPort {
 				this.onCopyOnSelect,
 			);
 			if (res.handled) {
+				if (res.hoverTargetId !== undefined) {
+					const isCtxHovered = res.hoverTargetId === "context-usage";
+					const wasCtxHovered = this.contextBar.getHovered();
+					if (isCtxHovered !== wasCtxHovered) {
+						this.contextBar.setHovered(isCtxHovered);
+						this.requestRender();
+					}
+
+					if (res.hoverTargetId?.startsWith("rail-tick-")) {
+						const turnN = parseInt(res.hoverTargetId.replace("rail-tick-", ""), 10);
+						this.timelineRail.setHoverTurnN(turnN);
+						this.requestRender();
+					} else {
+						if (this.timelineRail.getHoverRow() !== null) {
+							this.timelineRail.setHoverTurnN(null);
+							this.timelineRail.setHover(null);
+							this.requestRender();
+						}
+					}
+				}
 				if (res.wheelDelta !== undefined) {
 					if (res.wheelDelta < 0) {
 						this.scrollUp(Math.abs(res.wheelDelta));
