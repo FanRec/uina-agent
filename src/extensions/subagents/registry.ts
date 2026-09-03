@@ -54,27 +54,27 @@ export class SubagentRegistry {
 
 	async send(id: string, ownerId: string, text: string): Promise<void> {
 		const record = this.expect(id, ownerId);
-		if (record.status === "settled" || record.status === "failed" || record.status === "interrupted") throw new Error(`子代理 ${id} 已结算`);
-		record.status = "running";
-		await record.handle.send({ id: `subagent-input-${randomUUID()}`, mode: record.handle.subject.isBusy() ? "steer" : "followUp", source: { kind: "agent", type: "subagent-send", ref: id }, text });
-		const finalStatus = readStatus(record);
-		if (finalStatus === "settled" || finalStatus === "interrupted") {
-			throw new Error(`子代理 ${id} 在消息处理期间被中断`);
-		}
+		if (record.status !== "waiting" && record.status !== "running") throw new Error(`子代理 ${id} 已结算`);
+		if (!text.trim()) throw new Error("子代理消息不能为空");
+		await this.run(record, text, "subagent-input", true);
 	}
 
 	async interrupt(id: string, ownerId: string): Promise<"interruption-requested" | "already-finished"> {
 		const record = this.expect(id, ownerId);
-		if (record.status === "settled" || record.status === "failed" || record.status === "interrupted") return "already-finished";
+		if (record.settling) {
+			await record.settling;
+			return "already-finished";
+		}
+		if (record.status === "settled") return "already-finished";
 		record.status = "interrupted";
 		await record.handle.interrupt("子代理被请求中断");
-		await this.settle(record, "interrupted");
+		await this.release(record, "interrupted");
 		return "interruption-requested";
 	}
 
 	async close(): Promise<void> {
 		this.accepting = false;
-		await Promise.all([...this.records.values()].filter((record) => !isSettled(record.status)).map((record) => this.interrupt(record.id, record.ownerId)));
+		await Promise.all([...this.records.values()].filter((record) => record.status !== "settled").map((record) => this.interrupt(record.id, record.ownerId)));
 	}
 
 	private makeRecord(id: string, request: SubagentStartOptions): SubagentRecord {
@@ -88,7 +88,7 @@ export class SubagentRegistry {
 			onThinking: (text: string) => add("thinking", text),
 			onToolStart: (name: string, args: unknown) => add("tool_start", `${name} ${JSON.stringify(args)}`),
 			onToolDone: (name: string, result: string) => add("tool_done", `${name}: ${result}`),
-			onError: (error: string) => { record.error = error; record.detail = error; record.status = "failed"; },
+			onError: (error: string) => { record.error = error; record.detail = error; },
 			onTurnStart: () => { if (record.status !== "interrupted") record.status = "running"; },
 			onTurnEnd: () => { if (record.status === "running") record.status = "waiting"; },
 		};
@@ -98,32 +98,49 @@ export class SubagentRegistry {
 	}
 
 	private async begin(record: SubagentRecord, prompt: string): Promise<void> {
+		await this.run(record, prompt, "subagent-start", false);
+	}
+
+	private async run(record: SubagentRecord, text: string, inputType: "subagent-start" | "subagent-input", propagateFailure: boolean): Promise<void> {
 		try {
 			record.status = "running";
 			record.busy = true;
-			await record.handle.send({ id: `subagent-start-${record.id}`, mode: "followUp", source: { kind: "agent", type: "subagent-start", ref: record.id }, text: prompt });
+			await record.handle.send({ id: `${inputType}-${record.id}-${randomUUID()}`, mode: record.handle.subject.isBusy() ? "steer" : "followUp", source: { kind: "agent", type: inputType, ref: record.id }, text });
 			record.busy = false;
-			if (record.error) await this.settle(record, "failed");
+			if (record.error) await this.release(record, "failed");
 			else if (record.status === "running") record.status = "waiting";
 		} catch (error) {
 			record.busy = false;
-			record.error = errorMessage(error);
-			record.detail = record.error;
-			await this.settle(record, "failed");
+			record.error ??= errorMessage(error);
+			record.detail ??= record.error;
+			await this.release(record, "failed");
+			if (propagateFailure) throw error;
 		}
 	}
 
-	private async settle(record: SubagentRecord, status: "interrupted" | "failed" = "failed"): Promise<void> {
-		if (record.status === "settled") return;
-		record.status = status;
-		record.finishedAt = Date.now();
-		record.outputCursor = record.outputs.at(-1)?.cursor ?? 0;
-		await this.notify(record);
-		record.status = "settled";
-	}
-
-	private async notify(record: SubagentRecord): Promise<void> {
-		try { await this.options.notify?.(`子代理 ${record.id} 已${record.status === "failed" ? "失败" : "中断"}。任务：${record.label}。请使用 subagent_status 或 subagent_output 读取详情。`, { id: record.id, status: record.status, label: record.label }); } catch { /* notice delivery must not change child state */ }
+	private async release(record: SubagentRecord, terminalStatus: "interrupted" | "failed"): Promise<void> {
+		if (record.settling) return record.settling;
+		record.settling = (async () => {
+			record.status = terminalStatus;
+			record.terminalStatus = terminalStatus;
+			try {
+				await record.handle.dispose();
+			} catch (error) {
+				record.terminalStatus = "failed";
+				record.error = `释放失败：${errorMessage(error)}`;
+				record.detail = record.error;
+			}
+			record.status = "settled";
+			record.finishedAt = Date.now();
+			record.outputCursor = record.outputs.at(-1)?.cursor ?? 0;
+			try {
+				await this.options.notify?.(`子代理 ${record.id} 已${record.terminalStatus === "failed" ? "失败" : "中断"}。任务：${record.label}。请使用 subagent_status 或 subagent_output 读取详情。`, { id: record.id, status: record.terminalStatus, label: record.label });
+			} catch (error) {
+				const noticeError = `通知投递失败：${errorMessage(error)}`;
+				record.detail = record.detail ? `${record.detail}；${noticeError}` : noticeError;
+			}
+		})();
+		return record.settling;
 	}
 
 	private expect(id: string, ownerId: string): SubagentRecord {
@@ -133,10 +150,8 @@ export class SubagentRegistry {
 	}
 
 	private snapshot(record: SubagentRecord): SubagentSnapshot {
-		return { id: record.id, ownerId: record.ownerId, ...(record.parentId ? { parentId: record.parentId } : {}), label: record.label, status: record.status, detail: record.detail, createdAt: record.createdAt, finishedAt: record.finishedAt, outputCursor: record.outputs.at(-1)?.cursor ?? 0, busy: record.handle.subject.isBusy() };
+		return { id: record.id, ownerId: record.ownerId, ...(record.parentId ? { parentId: record.parentId } : {}), label: record.label, status: record.status, ...(record.terminalStatus ? { terminalStatus: record.terminalStatus } : {}), detail: record.detail, createdAt: record.createdAt, finishedAt: record.finishedAt, outputCursor: record.outputs.at(-1)?.cursor ?? 0, busy: record.handle.subject.isBusy() };
 	}
 }
 
-function isSettled(status: SubagentRecord["status"]): boolean { return status === "settled" || status === "failed" || status === "interrupted"; }
-function readStatus(record: SubagentRecord): SubagentRecord["status"] { return record.status; }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }

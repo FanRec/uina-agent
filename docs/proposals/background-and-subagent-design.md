@@ -175,7 +175,7 @@ interface JobSpec {
   label: string;
   ownerId: string;
   outputLimitBytes?: number;
-  start(context: { id: string; signal: AbortSignal }): JobHooks | Promise<JobHooks>;
+  start(context: { id: string; signal: AbortSignal }): JobHooks;
 }
 
 interface JobHooks {
@@ -199,13 +199,13 @@ Producer 负责真实工作和资源释放，Jobs Extension 负责 Job ID、状�
 
 ```text
 校验 owner 和 Job 配置
-  -> 分配 Job ID，先安装 running 记录
-  -> 调用 producer.start(context)
-  -> 保存 JobHooks，并监听 done
+  -> 分配 Job ID，创建仅供 producer 使用的 context
+  -> producer.start(context) 同步返回 JobHooks
+  -> 安装可查询的 running 记录，并监听 done
   -> 返回 Job ID
 ```
 
-`running` 表示工作已被 Registry 接受，不保证外部副作用已经开始。如果 `start()` 明确在副作用开始前失败，记录为 `failed`；如果启动是否已经产生副作用无法确认，记录为 `unknown`。已经返回给调用者的 Job ID 不会因为 producer 启动失败而消失。producer 必须保证 `done` 在资源释放后完成，且取消和结算只会使记录进入一次终态。
+`running` 表示工作已被 Registry 接受，不保证外部副作用已经开始。`start()` 是同步准备边界：它抛错时没有已接受 Job，也没有可返回的 ID；它返回后 Job 一定已有 cancel/done handle，因此关闭和取消不会等待一个永远悬挂的启动 Promise。producer 必须保证 `done` 在资源释放后完成，且取消和结算只会使记录进入一次终态。外部副作用的结果不确定时，producer 以 `unknown` 结算，不能伪造成功。
 
 第一阶段使用进程内 Registry，沿用 DSH 的轻量边界。正常关闭时，宿主请求取消并等待 producer；如果进程被强制终止或崩溃，进程内记录会消失，下一次启动不能知道外部任务发生了什么，也不能声称它是 `unknown`。当前 `unknown` 只由运行中的 producer 明确报告结果不确定时产生；可恢复的 `unknown` 需要未来增加持久化 Registry 和重启对账。
 
@@ -384,7 +384,7 @@ settled
   = child 已显式关闭或发生不可恢复终止，且其资源已经释放
 ```
 
-空闲不等于 settled。Continuable child 可以长期处于 `waiting` 并继续接收消息；只有 `close`、父级销毁或不可恢复错误完成资源释放后，才进入 `settled`。Subagent Extension 可以保存这个投影状态，但不得再维护一套与 AgentHandle 相互竞争的执行状态机。
+空闲不等于 settled。Continuable child 可以长期处于 `waiting` 并继续接收消息；只有 `close`、父级销毁或不可恢复错误完成资源释放后，才进入 `settled`。若由失败或中断导致释放，快照以 `terminalStatus: failed | interrupted` 保留该事实，不能只留下无原因的 `settled`。通知投递失败也记录在快照诊断中，不会改写 child 的终态。Subagent Extension 可以保存这个投影状态，但不得再维护一套与 AgentHandle 相互竞争的执行状态机。
 
 ## 子代理消息与结算
 
@@ -533,7 +533,7 @@ Subagent Extension
 
 可以直接借鉴 DSH 的行为不变量和默认策略，但不机械复制其 package、scope、Session Controller 或第二套 Agent 状态机。`maxConcurrentJobsPerOwner = 10`、`job_output` 默认等待 30 秒、最大等待 600 秒仍是 Jobs Extension 的可配置运行策略；它们不进入核心，也不构成工具轮次、模型调用次数或子代理深度限制。没有 DSH 对应依据的审批、沙箱、白名单、隐式超时和自动截断不加入本设计。
 
-Job 创建顺序是 Uina 相对 DSH 的一个有意实现调整：先安装可查询的运行记录，再启动 producer。这样能让“已返回 ID 但启动失败”成为可解释的 Job 终态；它不改变 DSH 对外可见的 `start/read/wait/kill` 语义，也不要求复制 DSH 的 scope 框架。
+Job 创建遵循 DSH 的同步 producer 准备边界：只有取得 cancel/done handle 后才发布可查询记录。这样无需给启动阶段另建一套不可靠的 Job 状态，也不要求复制 DSH 的 scope 框架。
 
 ## 实现顺序
 

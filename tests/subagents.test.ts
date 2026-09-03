@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DefaultAgentFactory } from "../src/agent/runtime.js";
+import { DefaultAgentFactory, type AgentFactory } from "../src/agent/runtime.js";
 import type { ModelProvider } from "../src/core/types.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import { SubagentRegistry } from "../src/extensions/subagents/registry.js";
@@ -20,9 +20,9 @@ function providerFor(reply: (prompt: string) => string | Promise<string>): Model
 	};
 }
 
-function make(provider: ModelProvider, notify?: (text: string, data: Record<string, unknown>) => Promise<void>): SubagentRegistry {
+function make(provider: ModelProvider, notify?: (text: string, data: Record<string, unknown>) => Promise<void>, factory: AgentFactory = new DefaultAgentFactory()): SubagentRegistry {
 	return new SubagentRegistry({
-		factory: new DefaultAgentFactory(),
+		factory,
 		provider,
 		createTools: () => new ToolBroker(),
 		notify,
@@ -49,6 +49,15 @@ describe("SubagentRegistry", () => {
 	});
 
 	it("enforces ownership and reports interruption only after the child settles", async () => {
+		let disposed = false;
+		const factory: AgentFactory = {
+			create(options) {
+				const handle = new DefaultAgentFactory().create(options);
+				const dispose = handle.dispose.bind(handle);
+				handle.dispose = async () => { disposed = true; await dispose(); };
+				return handle;
+			},
+		};
 		const registry = make({
 			name: "blocking-child",
 			thinkingLevels: ["off"],
@@ -57,13 +66,14 @@ describe("SubagentRegistry", () => {
 					signal?.addEventListener("abort", () => resolve(), { once: true });
 				});
 			},
-		});
+		}, undefined, factory);
 		const started = registry.start({ ownerId: "root", label: "等待", prompt: "工作" });
 		expect(() => registry.get(started.id, "other")).toThrow();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		const interrupt = registry.interrupt(started.id, "root");
 		expect(await interrupt).toBe("interruption-requested");
-		expect(registry.get(started.id, "root").status).toBe("settled");
+		expect(registry.get(started.id, "root")).toMatchObject({ status: "settled", terminalStatus: "interrupted", finishedAt: expect.any(Number) });
+		expect(disposed).toBe(true);
 		expect(await registry.interrupt(started.id, "root")).toBe("already-finished");
 	});
 
@@ -71,7 +81,7 @@ describe("SubagentRegistry", () => {
 		const failing = make({ name: "failing-child", thinkingLevels: ["off"], async stream() { throw new Error("provider down"); } });
 		const started = failing.start({ ownerId: "root", label: "失败", prompt: "开始" });
 		await new Promise((resolve) => setTimeout(resolve, 10));
-		expect(failing.get(started.id, "root")).toMatchObject({ status: "settled", detail: "provider down", finishedAt: expect.any(Number) });
+		expect(failing.get(started.id, "root")).toMatchObject({ status: "settled", terminalStatus: "failed", detail: "provider down", finishedAt: expect.any(Number) });
 		await expect(failing.send(started.id, "root", "晚到的消息")).rejects.toThrow("已结算");
 		await failing.close();
 	});
@@ -83,6 +93,20 @@ describe("SubagentRegistry", () => {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(notices).toEqual([]);
 		expect(registry.get(started.id, "root").status).toBe("waiting");
+		await registry.close();
+	});
+
+	it("records notice delivery failure without replacing the child terminal fact", async () => {
+		const registry = make({ name: "failing-child", thinkingLevels: ["off"], async stream() { throw new Error("provider down"); } }, async () => {
+			throw new Error("parent unavailable");
+		});
+		const started = registry.start({ ownerId: "root", label: "失败", prompt: "开始" });
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(registry.get(started.id, "root")).toMatchObject({
+			status: "settled",
+			terminalStatus: "failed",
+			detail: "provider down；通知投递失败：parent unavailable",
+		});
 		await registry.close();
 	});
 });

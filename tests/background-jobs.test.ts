@@ -21,6 +21,17 @@ function make(): { jobs: JobRegistry; broker: ToolBroker } {
 }
 
 describe("background jobs", () => {
+	it("publishes a job only after its producer handle is available", () => {
+		const { jobs } = make();
+		expect(() => jobs.start({
+			label: "broken startup",
+			ownerId: "root",
+			source: { extension: "test" },
+			start: () => { throw new Error("producer unavailable"); },
+		})).toThrow("后台任务启动失败：producer unavailable");
+		expect(jobs.list("root")).toEqual([]);
+	});
+
 	it("returns a job id immediately and exposes live output and source", async () => {
 		const { jobs, broker } = make();
 		const started = JSON.parse(await broker.run("exec_command", {

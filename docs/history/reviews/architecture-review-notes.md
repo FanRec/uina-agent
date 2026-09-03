@@ -98,12 +98,12 @@
 
 ### 5.6 Job、Subagent 与慢路径
 
-- JobRegistry 是纯进程内 Map；`start()` 在任何 durable record 之前启动 producer。崩溃后无法恢复 accepted/running，也无法转为 unknown。这与“能 outlive turn 的 Job 先持久化”不符。
-- JobRegistry 默认硬编码 `maxActivePerOwner=10`，直接违背项目文档及用户要求的“无真实资源证据不加并发上限”。
+- JobRegistry 是纯进程内 Map；崩溃后不会恢复 accepted/running，也不会伪装为 `unknown`。后续对照 DSH `LocalJobRegistry` 后校正：这正是第一阶段 process-local Jobs 的成熟边界，而非必须立即补 JobStore 的缺陷；只有 producer 可跨宿主继续或可远端对账时，才需要持久化/reconcile。
+- JobRegistry 的 `maxActivePerOwner=10` 是可配置的 Jobs Extension 准入策略。后续核对确认 DSH `LocalJobRegistry` 也采用相同默认值；它不进入 Core，也不构成工具轮次或子代理深度限制，因此不应以“无依据”要求删除。
 - `close()` 会无限等待 producer 进入终态；缺少 operator reconcile/force-close 接缝。注意：不应因此草率添加任意 timeout，应该让 producer/host 提供显式 unknown/reconcile。
 - SubagentRegistry 与 Jobs 是第二套不同状态机；child 使用 MemorySessionStore，重启丢失；输出数组无界增长。
-- Subagent 终态语义错误：失败/中断先写入对应状态，`settle()` 通知后又统一改成 `settled`，最终快照丢失 outcome；正常完成一轮只进入 `waiting`，没有成功完成/通知语义。
-- Subagent `close()` interrupt 但从不调用 `AgentHandle.dispose()`，child store/资源没有真正释放。
+- Subagent 的旧终态问题已修复：失败/中断释放后以 `terminalStatus` 保留 outcome，`settled` 只表示资源已释放；可继续 child 一轮完成进入 `waiting` 是其产品语义，不应误判为缺少“成功完成”。
+- Subagent `close()` 现在会 interrupt 并 await `AgentHandle.dispose()`；通知投递失败记录为 snapshot detail，不静默吞掉。
 - child 固定使用启动时 Provider；root 后续切模型不会影响 child，也没有显式 per-child 模型选择。
 - 空闲时 runtime notice 直接触发 run，却没有 durable queue/event record；与进程内 Job 叠加后，完成通知可能在崩溃时永久消失。
 

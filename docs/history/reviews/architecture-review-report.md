@@ -1,5 +1,7 @@
 # Uina 对照 Pi 的全方位代码与架构审查
 
+> 校正说明（2026-09-04）：本报告最初仅以 Pi 和 Uina 当时实现为参照。随后对照 `E:\Uina\ThirdParty\deepseek-harness` 的 `LocalJobRegistry` 后，Jobs 的两项结论已校正：进程内 Job 不需要在第一阶段引入持久化恢复；每 owner 默认 10 个 active Job 是 DSH 同样采用、属于 Jobs Extension 的可配置准入策略，不是 Core 限制。下文相关建议已据此更新；其余历史观察仍以报告基线 commit 为准。
+
 审查日期：2026-09-03  
 Uina 基线：`ac24825b591c94dc76eec5a6b0141bf92f3e39a9`  
 Pi 参考基线：`e266507b606b9552fa277252644054afd4384b11`  
@@ -16,7 +18,7 @@ Uina **有一个方向正确、已经跑通的最小 Agent 纵向切片，但目
 - Core/Agent 已经直接认识 ExtensionHost，Provider 请求也携带 ExtensionHost，依赖方向开始倒置。
 - UI 不再只是展示层。它拥有模型、thinking、usage、上下文分段、产品快捷键和 trajectory 等业务状态，其中部分是硬编码或重复状态。
 - 模型能力事实存在明显违规：上下文默认值、thinking 名称猜测、默认模型目录、stale usage 都可能把未知或旧数据展示为事实。
-- Jobs/Subagents 目前是有用的实验性实现，不是可靠的异步运行时：没有持久化 admission、没有重启对账，subagent 的终态和释放语义还有结构性错误。
+- Jobs/Subagents 是进程内 builtin capability：不承诺崩溃后的恢复或对账；这一点与 DSH LocalJobRegistry 的第一阶段边界一致。子代理的终态保留和释放语义已在后续收紧。
 - 文档已严重漂移。多个文档同时把已经存在的能力写成“非目标”或“未实现”，也把未接通的事件写成已设计完成。
 
 因此建议不是继续补功能，也不是全仓重写，而是进行一次**收缩式重构**：先删除假事实和未闭环承诺，再恢复单一事实源、单一生命周期和内置/外置同构的扩展接缝。
@@ -295,41 +297,39 @@ UI projection 失败必须可见，但不能改变已经发生的模型/工具�
 
 ### P1：异步工作不是可靠闭环
 
-#### P1-7 Job 在 durable admission 前启动
+#### P1-7 Job 生命周期边界（已校正）
 
-JobRegistry 只写进内存 Map，随即调用 producer。外部副作用可能已经发生，但崩溃后没有任何 accepted/running 记录，重启也无法标为 unknown。
+审查时 JobRegistry 是纯进程内实现，崩溃后没有 accepted/running 记录。最初将此视作必须立即持久化的缺陷；在对照 DSH `LocalJobRegistry` 后，这一判断需要收回：DSH 的成熟默认实现同样只在内存维护记录，并在正常 owner/service teardown 时取消、等待 producer。
 
-若 Jobs 作为正式能力保留，最小状态必须是：
+当前正确的第一阶段边界是：Job producer 同步返回 `cancel/done` handle 后才发布 `running` 记录；正常关闭取消并等待 producer；崩溃后的记录消失，不推断任何终态。`unknown` 仍由运行中的 producer 用于真实不可确认的外部结果。
 
-```text
-accepted -> running -> succeeded | failed | cancelled | unknown
-```
+只有 producer 能在 Uina 宿主退出后继续工作、且拥有按外部 ID 查询/取消/对账能力时，才需要 `accepted -> running -> completed | failed | cancelled | unknown` 的持久化记录与重启 reconcile。它应属于 Jobs Extension 的第二阶段，而不是 Agent Core 或当前进程内纵切的前置条件。
 
-并且 accepted 必须先持久化，再开始外部副作用。若暂时不做持久化，应把 Jobs 明确标为 experimental/process-local，不能在总体能力表中写“已实现”而不注明边界。
+#### P1-8 Job 准入上限归属（已校正）
 
-#### P1-8 Job 存在无证据的并发上限
+`maxActivePerOwner` 默认是 10。后续核对确认 DSH `LocalJobRegistry` 也使用相同的 per-owner active Job 默认值，且将其定义为本地 Jobs provider 的配置，而不是 Agent Loop 的全局限制。
 
-`maxActivePerOwner` 默认是 10。项目文档却明确写“不增加并发上限”。当前没有负载证据或资源模型支持这个常数。
+因此不建议删除该默认值。应保持它在 Jobs Extension 内可配置、按 owner 计数，并避免扩展成工具轮次、模型调用次数、子代理深度或 Core 的通用并发限制。
 
-建议删除默认上限。未来若某个 producer 需要容量控制，让 producer/provider 声明资源约束，或由显式配置启用；不要把任意数字塞进通用 Registry。
+#### P1-9 Subagent 生命周期语义（部分已落实）
 
-#### P1-9 Subagent 是独立状态机，且终态语义错误
-
-当前问题：
+审查时的问题：
 
 - child 使用 MemorySessionStore，重启丢失。
 - 输出数组无界增长。
 - 失败/中断先写对应状态，通知后统一改成 `settled`，最终 outcome 丢失。
-- 正常一轮结束只进入 `waiting`，没有成功完成语义。
+- 将 continuable child 正常一轮后的 `waiting` 误判为缺少成功完成语义。
 - close 只 interrupt，不调用 `AgentHandle.dispose()`。
 - child 固定使用启动时 Provider，root 切模型后不会同步，也没有显式 child 模型选择。
 
-应先决定 Subagent 的真实产品语义：
+后续校正与落实：`MemorySessionStore` 的重启丢失是当前 process-local child 的明确边界，不是必须立即持久化的缺陷；`waiting` 是可继续 child 的正确状态。`terminalStatus` 现在保留失败/中断事实，`settled` 仅表示 handle 已释放，且 close 会 await dispose。仍待产品决定的是 child 的输出保留边界和显式 per-child model policy。
+
+长期演进仍应保持以下区分：
 
 - 若它是长期可继续主体：状态应是 `idle/running/failed/disposed`，每次 send 有独立 run receipt。
 - 若它是一次性后台任务：应复用 Job 生命周期，而不是再造 registry。
 
-现在的 `settled` 同时承担“通知已发送”和“执行终态”，属于重复状态，应删除。
+通知投递失败现在写入 child snapshot 的诊断字段，不改写终态；不需要再以通知状态建立第二套 lifecycle。
 
 ### P1：Provider 闭环不足
 
@@ -573,7 +573,7 @@ input accepted
 
 ### 9.3 容量与背压
 
-当前不应发明新的工具轮次、subagent 深度或并发限制。应先删除 Job 的默认 10 上限。
+当前不应发明新的工具轮次、subagent 深度或 Core 并发限制。Jobs 的默认 10 保持为该扩展的可配置 per-owner 准入策略，与 DSH 对齐；是否调整应由实际 producer 资源与运行证据决定。
 
 可以保留已有 shell 输出 50KB/2000 行展示边界，因为它有明确目的：保护 UI/模型上下文，同时保留完整输出路径。需要继续观察的真实资源指标是：
 
@@ -621,11 +621,11 @@ input accepted
 - resources discovery 要么完整接通并归属 activation，要么暂时删除未用字段。
 - Agent/ModelRequest 移除对 ExtensionHost 的直接依赖，改用注入 callbacks。
 
-### 阶段 3：决定 Jobs/Subagents 的去留
+### 阶段 3：收紧进程内 Jobs/Subagents 生命周期
 
-Jobs：增加最小 JobStore，先持久化 accepted，再 start；重启 running -> unknown，提供 inspect/cancel/reconcile。
+Jobs：保持 process-local Registry；只在 producer 已返回 cancel/done handle 后发布 Job，正常关闭取消并等待结算。仅当引入可跨宿主继续、可查询的外部 producer 时，再增加 extension-owned JobStore 和 reconcile。
 
-Subagent：先明确是长期 child 还是 one-shot task。长期 child 复用通用 Agent runtime 和 store；one-shot 复用 Job。删除当前覆盖 outcome 的 `settled` 状态，close 必须 dispose handle。
+Subagent：明确 continuable child 使用通用 Agent runtime；one-shot 未来复用 Job。释放后的快照保留 `terminalStatus`，close 必须 dispose handle。（该项已落实。）
 
 如果本阶段不准备实现可靠语义，应把 Jobs/Subagents 从默认 builtin 中移到 experimental extension，而不是继续围绕不稳定状态做更多 UI。
 
@@ -663,7 +663,7 @@ Subagent：先明确是长期 child 还是 one-shot task。长期 child 复用�
 3. session entries 恢复保持严格顺序。
 4. 未知 context/thinking/usage 不显示具体值。
 5. builtin 与 project extension 使用同一 activation/dispose 路径。
-6. Job admission 在副作用前持久化，或明确从默认能力移除。
+6. 进程内 Job 只在取得 cancel/done handle 后发布；正常关闭可取消并等待结算。
 
 ### 比较指标
 
@@ -722,8 +722,8 @@ Subagent：先明确是长期 child 还是 one-shot task。长期 child 复用�
 
 ### 层 5：恢复和压力
 
-- 强杀发生在 tool/job accepted、running、result-before-commit 三个时点。
-- Job 重启对账为 unknown，不推断成功。
+- 强杀发生在 tool/job accepted、running、result-before-commit 三个时点；进程内 Job 的记录消失，不伪造重启后的终态。
+- 若未来接入可跨宿主继续的外部 producer，再验证 Job 重启对账为 unknown，不推断成功。
 - 多个 Job 完成通知顺序。
 - 长时间 child 输出的内存边界。
 - mailbox 持续输入、Provider 慢响应和 UI 慢 listener。
@@ -747,7 +747,7 @@ Uina 未来作为开放主体，至少应能回答：
 1. 用户输入，模型回复；网络中断时显示部分输出和明确错误。
 2. 工具成功/失败/取消/unknown 都能恢复并继续对话。
 3. extension reload 后能力原子替换，错误可定位到文件。
-4. background work 先返回 ID，重启后能说明真实状态或 unknown。
+4. 进程内 background work 先返回 ID，正常关闭时可取消并结算；跨宿主 external producer 才要求重启后说明真实状态或 unknown。
 5. child agent 可继续时保持独立上下文；被释放后不可再调用。
 6. Provider metadata 未知时 UI 明确显示未知。
 7. 未来 memory 必须验证 write/recall/use/correction，而不是仅有存储。
@@ -760,10 +760,10 @@ Uina 未来作为开放主体，至少应能回答：
 | UI context segments | 伪造 token 组成 | 不能从 Provider/tokenizer 得到，显示 unknown |
 | thinking 名称猜测 | 把猜测当能力 | 无 catalog/显式配置，删除猜测 |
 | trajectory audit | 不完整事件造成假审计 | 未改为权威事件投影，改名或移除 |
-| Jobs builtin | 崩溃丢失外部副作用 | 无 durable admission，对外标 experimental 或禁用默认 |
-| SubagentRegistry | 第二状态机、终态丢失、资源泄漏 | 未明确长期/一次性语义，先移出默认 |
+| Jobs builtin | 进程崩溃后记录消失 | 保持 process-local 边界；仅跨宿主 producer 再引入 extension-owned durable admission/reconcile |
+| SubagentRegistry | 终态丢失、资源泄漏 | 保留 terminalStatus，release 必须 dispose handle（已落实） |
 | resources_discover promptPaths | 审查时 API 存在但无消费 | 已删除该未闭环 API |
-| 默认并发 10 | 无证据限制开放性 | 无测量与明确资源 owner，删除 |
+| 默认并发 10 | 误扩展为 Core 限制 | 保持 DSH 对齐的 per-owner Jobs Extension 配置，不外溢为通用限制 |
 | 多份状态文档 | 持续漂移 | 不能自动或人工稳定维护，归档为 proposal |
 
 ## 十五、最终决策

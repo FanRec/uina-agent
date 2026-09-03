@@ -55,7 +55,12 @@ export interface JobSpec {
 	label: string;
 	ownerId: string;
 	source: JobSource;
-	start(context: JobContext): JobHandle | Promise<JobHandle>;
+	/**
+	 * Prepare and start the producer synchronously. Once this returns, the
+	 * registry can publish an accepted job whose handle is always available for
+	 * cancellation and teardown. Long-running work belongs in `done`.
+	 */
+	start(context: JobContext): JobHandle;
 }
 
 export interface JobRead {
@@ -130,27 +135,25 @@ export class JobRegistry {
 			outputLines: 0,
 			waiters: new Set(),
 		};
-		this.jobs.set(id, job);
-		this.notifyChanged(job);
 		const context: JobContext = {
 			id,
 			signal: controller.signal,
 			update: (update) => this.update(job, update),
 			observe: (chunk) => this.observe(job, chunk),
 		};
-		void Promise.resolve(spec.start(context)).then(
-			(handle) => {
-				job.handle = handle;
-				if (controller.signal.aborted) this.requestCancel(job, "任务在启动期间被取消");
-				void handle.done.then(
-					(outcome) => this.settle(job, outcome),
-					(error: unknown) => this.settle(job, { status: "failed", detail: errorMessage(error) }),
-				);
-			},
-			(error: unknown) => this.settle(job, {
-				status: controller.signal.aborted ? "unknown" : "failed",
-				detail: controller.signal.aborted ? "任务启动已取消，外部状态未知" : errorMessage(error),
-			}),
+		let handle: JobHandle;
+		try {
+			handle = spec.start(context);
+		} catch (error) {
+			throw new Error(`后台任务启动失败：${errorMessage(error)}`);
+		}
+		if (!isJobHandle(handle)) throw new Error("后台任务启动失败：producer 未返回有效的 JobHandle");
+		job.handle = handle;
+		this.jobs.set(id, job);
+		this.notifyChanged(job);
+		void handle.done.then(
+			(outcome) => this.settle(job, outcome),
+			(error: unknown) => this.settle(job, { status: "failed", detail: errorMessage(error) }),
 		);
 		return id;
 	}
@@ -326,4 +329,11 @@ function countLines(text: string): number {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function isJobHandle(value: unknown): value is JobHandle {
+	return !!value
+		&& typeof value === "object"
+		&& typeof (value as JobHandle).cancel === "function"
+		&& typeof (value as JobHandle).done?.then === "function";
 }

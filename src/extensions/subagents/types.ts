@@ -14,6 +14,8 @@ export interface SubagentSnapshot {
 	parentId?: string;
 	label: string;
 	status: SubagentStatus;
+	/** The factual reason a released child settled, when it did not finish by normal release. */
+	terminalStatus?: "failed" | "interrupted";
 	detail?: string;
 	createdAt: number;
 	finishedAt?: number;
@@ -44,4 +46,5 @@ export interface SubagentRecord extends SubagentSnapshot {
 	handle: AgentHandle;
 	outputs: SubagentOutput[];
 	error?: string;
+	settling?: Promise<void>;
 }
