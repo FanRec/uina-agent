@@ -5,29 +5,34 @@
 import type { Component, Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
 import { C, visibleWidth } from "../../core/utils.js";
+import type { ThinkingLevel } from "../../../core/types.js";
 
-export type EffortTierId = "off" | "low" | "medium" | "high" | "max" | "none";
+export type EffortTierId = ThinkingLevel | "none";
 
 export interface EffortTier {
-	id: "off" | "low" | "medium" | "high" | "max";
+	id: ThinkingLevel;
 	name: string;
 	description: string;
 }
 
 export const DEFAULT_EFFORT_TIERS: EffortTier[] = [
 	{ id: "off", name: "Off", description: "关闭额外思考，快速直出回复 (No extra thinking)" },
+	{ id: "minimal", name: "Minimal", description: "最小思考预算" },
 	{ id: "low", name: "Low", description: "轻量快速推理，适合简单任务与日常问答 (Faster responses)" },
 	{ id: "medium", name: "Medium", description: "兼顾推理深度与响应速度，推荐日常使用 (Balanced speed & depth)" },
 	{ id: "high", name: "High", description: "深度系统分析，全面权衡边界与代码严谨性 (Deep thinking)" },
+	{ id: "xhigh", name: "XHigh", description: "更高的思考预算" },
 	{ id: "max", name: "Max", description: "极限推演，探索最复杂架构与疑难难题 (Maximum reasoning effort)" },
 ];
 
-export function normalizeEffortId(id: string): "off" | "low" | "medium" | "high" | "max" {
+export function normalizeEffortId(id: string): ThinkingLevel {
 	const lower = id.toLowerCase().trim();
 	if (lower === "none" || lower === "off" || lower === "0") return "off";
+	if (lower === "minimal") return "minimal";
 	if (lower === "low" || lower === "1") return "low";
 	if (lower === "medium" || lower === "med" || lower === "2") return "medium";
 	if (lower === "high" || lower === "3") return "high";
+	if (lower === "xhigh") return "xhigh";
 	if (lower === "max" || lower === "maximum" || lower === "4") return "max";
 	return "medium";
 }
@@ -35,10 +40,10 @@ export function normalizeEffortId(id: string): "off" | "low" | "medium" | "high"
 export class EffortSlider implements Component, Focusable {
 	focused = true;
 	private tiers: EffortTier[];
-	private activeTierId: "off" | "low" | "medium" | "high" | "max";
+	private activeTierId: ThinkingLevel;
 	private focusIndex = 2; // 默认 Medium
 
-	onChange?: (tierId: "off" | "low" | "medium" | "high" | "max") => void;
+	onChange?: (tierId: ThinkingLevel) => void;
 	onClose?: () => void;
 	onRequestRender?: () => void;
 
@@ -78,7 +83,7 @@ export class EffortSlider implements Component, Focusable {
 		return this.tiers[this.focusIndex]!;
 	}
 
-	getActiveTierId(): "off" | "low" | "medium" | "high" | "max" {
+	getActiveTierId(): ThinkingLevel {
 		return this.activeTierId;
 	}
 

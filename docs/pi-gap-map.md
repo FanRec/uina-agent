@@ -13,12 +13,13 @@
 | 工具取消 | 已实现 | AbortSignal，shell 终止进程树 |
 | shell 输出 | 已实现 | stdout/stderr 独立尾部截断，超限保存完整临时文件 |
 | compaction | 已实现 | provider contextWindow、reserve、keepRecent 可配置 |
-| JSONL session | 最小实现 | header、追加 record、重放、torn tail 修复、unknown recovery |
+| JSONL session | v2 最小实现 | header、追加 record、custom_message/custom_entry、重放、torn tail 修复、unknown recovery |
 | 完整 Pi JSONL v4 | 未实现 | 暂不包含分支、fork、lane、operation ledger、搜索 |
 | TUI 组件系统 | 已实现并接入 CLI | 采用自包含 Pi 契约架构（Component、Container、FocusManager、OverlayStack），接入真实 CLI 入口 |
-| 扩展 UI 契约 | 已实现 | 提供 ExtensionUIContext (ctx.ui)、CustomMessage (进上下文) 与 CustomEntry (不进上下文) 协议 |
+| 项目本地扩展 | 已实现 | `.uina/extensions/*.ts|js`、`activate(pi)`、dispose/reload、旧 ctx 失效、资源归属清理 |
+| 扩展 UI 契约 | 已实现 | `ctx.ui` 与注册 API 分离；CustomMessage 进模型上下文，CustomEntry 仅持久化/转录 |
 | 图片和多模态 | 未实现 | v0 只有文本输入 |
-| provider 重试 | 未实现 | 失败直接回注并通知，不自动重试 |
+| provider 重试 | 部分实现 | OpenAI-compatible 有可取消指数重试；Anthropic/Gemini 仍待统一网络层 |
 | 审批/权限策略 | 未实现 | 采用当前账户权限的可信工作区模型 |
 | 后台 Job | 已实现 | `src/extensions/jobs` 提供 JobRegistry、输出游标、取消和完成通知 |
 

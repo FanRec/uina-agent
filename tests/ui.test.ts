@@ -579,6 +579,7 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 				toolCount: 8,
 				cwd: "e:/Uina/test",
 			});
+			tui.host.registry.registerCommand({ name: "model", description: "切换模型", hasArgs: true });
 
 			expect(tui.host.isBusy()).toBe(false);
 
@@ -814,6 +815,7 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 				toolCount: 2,
 				cwd: process.cwd(),
 			});
+			tui.host.registry.registerCommand({ name: "model", description: "切换模型", hasArgs: true });
 
 			// 1. 输入 / 触发斜杠命令联想
 			stdinCallback!("/");

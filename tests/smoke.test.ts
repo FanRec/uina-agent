@@ -246,7 +246,7 @@ describe("JSONL session", () => {
 		const root = mkdtempSync(join(tmpdir(), "uina-session-"));
 		tempDirs.push(root);
 		const path = join(root, "session.jsonl");
-		const header = JSON.stringify({ kind: "header", version: 1, id: "x", cwd: root, createdAt: new Date().toISOString() });
+		const header = JSON.stringify({ kind: "header", version: 2, id: "x", cwd: root, createdAt: new Date().toISOString() });
 		const message = JSON.stringify({ kind: "message", id: "m", seq: 1, timestamp: new Date().toISOString(), message: { role: "user", content: "ok" } });
 		writeFileSync(path, `${header}\n${message}\n{"kind":"message"`);
 		const opened = await openJsonlSession(path);

@@ -20,12 +20,16 @@ interface PendingCall {
 
 export interface RecoveredState {
 	messages: ChatMsg[];
+	customMessages: Array<{ customType: string; content: string; display?: boolean; details?: unknown }>;
+	customEntries: Array<{ customType: string; data?: unknown }>;
 	queued: QueuedInput[];
 }
 
 /** Replays records and inserts explicit results for calls interrupted by a crash. */
 export function recoverRecords(records: SessionRecord[]): RecoveredState {
 	const messages: ChatMsg[] = [];
+	const customMessages: RecoveredState["customMessages"] = [];
+	const customEntries: RecoveredState["customEntries"] = [];
 	const queued = new Map<string, QueuedInput>();
 	const finishedEvents = new Map<string, { status: ToolResultStatus; result?: string }>();
 	const resultIds = new Set<string>();
@@ -64,6 +68,14 @@ export function recoverRecords(records: SessionRecord[]): RecoveredState {
 	};
 
 	for (const record of records) {
+		if (record.kind === "custom_message") {
+			customMessages.push({ customType: record.customType, content: record.content, ...(record.display === undefined ? {} : { display: record.display }), ...(record.details === undefined ? {} : { details: record.details }) });
+			continue;
+		}
+		if (record.kind === "custom_entry") {
+			customEntries.push({ customType: record.customType, ...(record.data === undefined ? {} : { data: record.data }) });
+			continue;
+		}
 		if (record.kind === "message") {
 			if (record.message.role === "assistant" && record.message.tool_calls?.length) {
 				closePending();
@@ -117,6 +129,8 @@ export function recoverRecords(records: SessionRecord[]): RecoveredState {
 	closePending();
 	return {
 		messages,
+		customMessages,
+		customEntries,
 		queued: [...queued.values()].sort((a, b) => a.order - b.order),
 	};
 }
@@ -217,6 +231,8 @@ export function isRecord(value: unknown): value is SessionRecord {
 	}
 	if (
 		record.kind !== "message" &&
+		record.kind !== "custom_message" &&
+		record.kind !== "custom_entry" &&
 		record.kind !== "compaction" &&
 		record.kind !== "event"
 	) {
@@ -224,6 +240,12 @@ export function isRecord(value: unknown): value is SessionRecord {
 	}
 	if (record.kind === "message") {
 		return isChatMsg(record.message);
+	}
+	if (record.kind === "custom_message") {
+		return typeof record.customType === "string" && record.customType.length > 0 && typeof record.content === "string" && (record.display === undefined || typeof record.display === "boolean");
+	}
+	if (record.kind === "custom_entry") {
+		return typeof record.customType === "string" && record.customType.length > 0;
 	}
 	if (record.kind === "compaction") {
 		return (

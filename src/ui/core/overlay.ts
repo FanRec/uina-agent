@@ -161,10 +161,17 @@ export class OverlayStack {
 		const lines: string[] = [];
 		for (const entry of this.stack) {
 			if (entry.hidden) continue;
-			const entryLines = entry.component.render(width);
-			for (const line of entryLines) {
-				lines.push(line);
+			if (!hasGeometry(entry.options)) {
+				lines.push(...entry.component.render(width));
+				continue;
 			}
+			const margin = normalizeMargin(entry.options?.margin);
+			const available = Math.max(1, width - margin.left - margin.right);
+			const overlayWidth = Math.max(1, Math.min(available, Math.max(resolveSize(entry.options?.minWidth, available) ?? 1, resolveSize(entry.options?.width, available) ?? available)));
+			const maxEntryHeight = Math.max(1, Math.min(maxHeight || Number.MAX_SAFE_INTEGER, resolveSize(entry.options?.maxHeight, maxHeight || Number.MAX_SAFE_INTEGER) ?? Number.MAX_SAFE_INTEGER));
+			const rendered = entry.component.render(overlayWidth).slice(0, maxEntryHeight);
+			const start = overlayStart(entry.options?.anchor ?? "above-editor", width, overlayWidth, margin) + (entry.options?.offsetX ?? 0);
+			for (const line of rendered) lines.push(compositeTuiLine("", line, Math.max(0, start), overlayWidth, width));
 		}
 
 		if (maxHeight > 0 && lines.length > maxHeight) {
@@ -172,4 +179,26 @@ export class OverlayStack {
 		}
 		return lines;
 	}
+}
+
+function hasGeometry(options: OverlayOptions | undefined): boolean {
+	return !!options && (options.width !== undefined || options.minWidth !== undefined || options.maxHeight !== undefined || options.anchor !== undefined || options.offsetX !== undefined || options.offsetY !== undefined || options.margin !== undefined);
+}
+
+function resolveSize(value: number | `${number}%` | undefined, available: number): number | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value === "number") return Math.floor(value);
+	const percent = Number.parseFloat(value);
+	return Number.isFinite(percent) ? Math.floor(available * percent / 100) : undefined;
+}
+
+function normalizeMargin(value: import("./types.js").OverlayMargin | number | undefined): Required<import("./types.js").OverlayMargin> {
+	if (typeof value === "number") return { top: value, right: value, bottom: value, left: value };
+	return { top: value?.top ?? 0, right: value?.right ?? 0, bottom: value?.bottom ?? 0, left: value?.left ?? 0 };
+}
+
+function overlayStart(anchor: NonNullable<OverlayOptions["anchor"]>, width: number, overlayWidth: number, margin: Required<import("./types.js").OverlayMargin>): number {
+	if (anchor === "top-right" || anchor === "bottom-right") return width - margin.right - overlayWidth;
+	if (anchor === "center" || anchor === "top-center" || anchor === "bottom-center" || anchor === "above-editor") return Math.floor((width - overlayWidth) / 2);
+	return margin.left;
 }

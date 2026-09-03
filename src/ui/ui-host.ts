@@ -12,18 +12,13 @@ import { ProcessTerminal } from "./core/terminal.js";
 import { MainScreenRenderer } from "./core/renderer.js";
 import { Key, matchesKey } from "./core/keys.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
+import type { ThinkingLevel } from "../core/types.js";
 import { C } from "./core/utils.js";
 import { InputLine } from "./components/editor/input-line.js";
 import { BannerComponent } from "./components/primitives/banner.js";
 import { TranscriptContainer } from "./components/transcript/transcript.js";
 import { ActivityLineComponent } from "./components/widgets/activity-line.js";
-import { ModelPicker } from "./components/overlays/model-picker.js";
-import { EffortSlider } from "./components/overlays/effort-slider.js";
 import { HelpMenu } from "./components/overlays/help-menu.js";
-import { TaskDashboard } from "./components/overlays/task-dashboard.js";
-import { SubagentDashboard } from "./components/overlays/subagent-dashboard.js";
-import { SubagentDetailScene } from "./components/overlays/subagent-detail-scene.js";
-import { TrajectoryScene } from "./components/overlays/trajectory-scene.js";
 import {
 	formatSuggestionCardLines,
 	getFileCandidates,
@@ -33,22 +28,15 @@ import {
 import { ExtensionRegistry } from "./extensions/registry.js";
 import { createExtensionUIContext, type UIHostContextPort } from "./extensions/context.js";
 import type { ExtensionUIContext } from "./extensions/types.js";
-import { createJobAdapter } from "./adapters/jobs.js";
-import { createSubagentAdapter } from "./adapters/subagents.js";
 import { TrajectoryProjection } from "./adapters/agent-events.js";
-import type { JobRegistry } from "../extensions/jobs/registry.js";
-import type { SubagentRegistry } from "../extensions/subagents/registry.js";
 
 export interface UIHostOptions {
 	terminal?: ProcessTerminal;
 	cwd?: string;
 	modelName?: string;
+	thinkingLevels?: readonly ThinkingLevel[];
 	toolCount?: number;
-	jobs?: JobRegistry;
-	subagents?: SubagentRegistry;
-	onModelChange?: (model: string) => void | Promise<void>;
-	onEffortChange?: (effort: "off" | "low" | "medium" | "high" | "max") => void;
-	onCompactRequest?: (instruction?: string) => void | Promise<void>;
+	registry?: ExtensionRegistry;
 }
 
 export class UIHost implements UIHostContextPort {
@@ -78,7 +66,8 @@ export class UIHost implements UIHostContextPort {
 	private modelName = "deepseek-chat";
 	private usedTokens = 0;
 	private contextWindow = 65536;
-	private reasoningEffort: "off" | "low" | "medium" | "high" | "max" = "medium";
+	private reasoningEffort: ThinkingLevel = "medium";
+	private thinkingLevels: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 	private cwd: string;
 
 	// 运行与动画状态
@@ -102,24 +91,17 @@ export class UIHost implements UIHostContextPort {
 	} | null = null;
 
 	private rawInputListeners = new Set<(data: string) => void>();
-	private jobsRegistry?: JobRegistry;
-	private subagentsRegistry?: SubagentRegistry;
+	private readonly statuses = new Map<string, string>();
 
-	private readonly options: UIHostOptions;
 
 	// 事件回调
 	onUserLine?: (text: string, mode: "steer" | "followUp" | "direct") => void;
 	onInterrupt?: () => void;
-	onDirectCommand?: (command: string) => void | Promise<void>;
-	onCompactRequest?: (instruction?: string) => void | Promise<void>;
 
 	constructor(options: UIHostOptions = {}) {
-		this.options = options;
-		this.onCompactRequest = options.onCompactRequest;
 		this.cwd = options.cwd ?? process.cwd();
 		if (options.modelName) this.modelName = options.modelName;
-		this.jobsRegistry = options.jobs;
-		this.subagentsRegistry = options.subagents;
+		if (options.thinkingLevels?.length) this.thinkingLevels = [...options.thinkingLevels];
 
 		this.terminal = options.terminal ?? new ProcessTerminal();
 		this.renderer = new MainScreenRenderer(this.terminal);
@@ -127,7 +109,7 @@ export class UIHost implements UIHostContextPort {
 
 		this.overlayStack = new OverlayStack(this.focusManager, () => this.requestRender());
 		this.widgetSlots = new WidgetSlots(() => this.requestRender());
-		this.registry = new ExtensionRegistry();
+		this.registry = options.registry ?? new ExtensionRegistry();
 		this.ctxUI = createExtensionUIContext(this);
 
 		this.trajectoryProjection = new TrajectoryProjection();
@@ -136,6 +118,10 @@ export class UIHost implements UIHostContextPort {
 		this.rootContainer = new Container();
 		this.headerContainer = new Container();
 		this.transcript = new TranscriptContainer();
+		this.transcript.setRendererResolver({
+			message: (type) => this.registry.getMessageRenderer(type),
+			entry: (type) => this.registry.getEntryRenderer(type),
+		});
 		this.editorContainer = new Container();
 		this.footerContainer = new Container();
 
@@ -165,7 +151,6 @@ export class UIHost implements UIHostContextPort {
 		this.rootContainer.addChild(this.footerContainer);
 
 		this.focusManager.setFocus(this.inputLine);
-		this.registerDefaultCommands();
 	}
 
 	start(): void {
@@ -203,19 +188,19 @@ export class UIHost implements UIHostContextPort {
 		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow);
 		this.banner.setOptions({ modelName: this.modelName, cwd: this.cwd });
 		this.requestRender();
-		void this.options.onModelChange?.(model);
 	}
 
-	setReasoningEffort(effort: "off" | "low" | "medium" | "high" | "max" | string): void {
-		const lower = effort.toLowerCase().trim();
-		if (lower === "off" || lower === "low" || lower === "medium" || lower === "high" || lower === "max") {
-			this.reasoningEffort = lower;
-		} else {
-			this.reasoningEffort = "medium";
-		}
+	setThinkingLevels(levels: readonly ThinkingLevel[]): void {
+		this.thinkingLevels = levels.length ? [...levels] : ["off"];
+		if (!this.thinkingLevels.includes(this.reasoningEffort)) this.reasoningEffort = "off";
+	}
+
+	setReasoningEffort(effort: ThinkingLevel | string): void {
+		const lower = effort.toLowerCase().trim() as ThinkingLevel;
+		if (!this.thinkingLevels.includes(lower)) throw new Error(`当前 Provider 不支持思考等级: ${effort}`);
+		this.reasoningEffort = lower;
 		this.inputLine.setReasoningEffort(this.reasoningEffort);
 		this.requestRender();
-		this.options.onEffortChange?.(this.reasoningEffort);
 	}
 
 	addCompaction(record: import("./components/transcript/compact-view.js").CompactionRecord): void {
@@ -223,12 +208,12 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	getReasoningEffort(): "off" | "low" | "medium" | "high" | "max" {
+	getReasoningEffort(): ThinkingLevel {
 		return this.reasoningEffort;
 	}
 
 	cycleReasoningEffort(): void {
-		const tiers: ("off" | "low" | "medium" | "high" | "max")[] = ["off", "low", "medium", "high", "max"];
+		const tiers = this.thinkingLevels;
 		const idx = tiers.indexOf(this.reasoningEffort);
 		const next = tiers[(idx + 1) % tiers.length]!;
 		this.setReasoningEffort(next);
@@ -303,13 +288,7 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	executeCommand(name: string, args: string): void {
-		const cmd = this.registry.getCommand(name.toLowerCase());
-		if (cmd?.handler) {
-			void cmd.handler(args);
-		} else {
-			this.transcript.addNotice(`未知命令: /${name}。输入 /help 或 /commands 查看帮助。`);
-			this.requestRender();
-		}
+		this.onUserLine?.(`/${name}${args ? ` ${args}` : ""}`, this.busy ? "followUp" : "direct");
 	}
 
 	private updateSuggestions(): void {
@@ -381,11 +360,11 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	setStatus(key: string, text: string | undefined): void {
-		if (text) {
-			this.activityLine.update(key as any, text);
-		} else {
-			this.activityLine.reset();
-		}
+		if (text) this.statuses.set(key, text);
+		else this.statuses.delete(key);
+		const visible = [...this.statuses.values()].at(-1);
+		if (visible) this.activityLine.update("streaming", visible);
+		else this.activityLine.reset();
 		this.requestRender();
 	}
 
@@ -449,37 +428,6 @@ export class UIHost implements UIHostContextPort {
 		return () => this.rawInputListeners.delete(handler);
 	}
 
-	// =========================================================================
-	// 覆盖层快捷弹出
-	// =========================================================================
-
-	openModelPicker(): void {
-		const picker = new ModelPicker(this.modelName);
-		let handle: OverlayHandle | null = null;
-		picker.onPick = (modelId) => {
-			this.setModel(modelId);
-			handle?.hide();
-		};
-		picker.onClose = () => {
-			handle?.hide();
-		};
-		picker.onRequestRender = () => this.requestRender();
-		handle = this.overlayStack.showOverlay(picker);
-	}
-
-	openEffortSlider(): void {
-		const slider = new EffortSlider(this.reasoningEffort);
-		let handle: OverlayHandle | null = null;
-		slider.onChange = (tierId) => {
-			this.setReasoningEffort(tierId);
-		};
-		slider.onClose = () => {
-			handle?.hide();
-		};
-		slider.onRequestRender = () => this.requestRender();
-		handle = this.overlayStack.showOverlay(slider);
-	}
-
 	openHelpMenu(): void {
 		const menu = new HelpMenu(this.registry.listCommands());
 		let handle: OverlayHandle | null = null;
@@ -489,62 +437,6 @@ export class UIHost implements UIHostContextPort {
 		handle = this.overlayStack.showOverlay(menu);
 	}
 
-	openTaskDashboard(): void {
-		if (!this.jobsRegistry) {
-			this.notify("后台作业服务尚未就绪", "warning");
-			return;
-		}
-		const port = createJobAdapter(this.jobsRegistry);
-		const dashboard = new TaskDashboard(port);
-		let handle: OverlayHandle | null = null;
-		dashboard.onClose = () => {
-			handle?.hide();
-		};
-		dashboard.onRequestRender = () => this.requestRender();
-		handle = this.overlayStack.showOverlay(dashboard);
-	}
-
-	openSubagentDashboard(): void {
-		if (!this.subagentsRegistry) {
-			this.notify("子代理服务尚未就绪", "warning");
-			return;
-		}
-		const port = createSubagentAdapter(this.subagentsRegistry);
-		const dashboard = new SubagentDashboard(port);
-		let handle: OverlayHandle | null = null;
-		dashboard.onClose = () => {
-			handle?.hide();
-		};
-		dashboard.onDrilldown = (subagent) => {
-			handle?.hide();
-			this.openSubagentDetail(subagent);
-		};
-		dashboard.onRequestRender = () => this.requestRender();
-		handle = this.overlayStack.showOverlay(dashboard);
-	}
-
-	openSubagentDetail(subagent: Parameters<SubagentDetailScene["setSubagent"]>[0]): void {
-		if (!this.subagentsRegistry) return;
-		const port = createSubagentAdapter(this.subagentsRegistry);
-		const detail = new SubagentDetailScene(subagent, port);
-		let handle: OverlayHandle | null = null;
-		detail.onClose = () => {
-			handle?.hide();
-			this.openSubagentDashboard();
-		};
-		detail.onRequestRender = () => this.requestRender();
-		handle = this.overlayStack.showOverlay(detail);
-	}
-
-	openTrajectoryScene(): void {
-		const scene = new TrajectoryScene(this.trajectoryProjection);
-		let handle: OverlayHandle | null = null;
-		scene.onClose = () => {
-			handle?.hide();
-		};
-		scene.onRequestRender = () => this.requestRender();
-		handle = this.overlayStack.showOverlay(scene);
-	}
 
 	// =========================================================================
 	// 渲染管道与帧合成（Bottom-Pinned Frame Engine）
@@ -679,13 +571,13 @@ export class UIHost implements UIHostContextPort {
 		for (const listener of this.rawInputListeners) {
 			try {
 				listener(data);
-			} catch {}
+			} catch (error) { this.notify(`终端输入监听器失败: ${String(error)}`, "error"); }
 		}
 
 		// 2. 全局快捷键拦截
 		if (data === "\x1b[Z") {
 			// Shift+Tab：循环切换思考强度
-			this.cycleReasoningEffort();
+			this.executeCommand("effort", "");
 			return;
 		}
 
@@ -695,17 +587,17 @@ export class UIHost implements UIHostContextPort {
 		}
 
 		if (matchesKey(data, Key.alt("a")) || matchesKey(data, Key.alt("A"))) {
-			this.openSubagentDashboard();
+			this.executeCommand("subagents", "");
 			return;
 		}
 
 		if (matchesKey(data, Key.alt("j")) || matchesKey(data, Key.alt("J"))) {
-			this.openTaskDashboard();
+			this.executeCommand("tasks", "");
 			return;
 		}
 
 		if (matchesKey(data, Key.alt("t")) || matchesKey(data, Key.alt("T"))) {
-			this.openTrajectoryScene();
+			this.executeCommand("trajectory", "");
 			return;
 		}
 
@@ -798,7 +690,7 @@ export class UIHost implements UIHostContextPort {
 
 		// 4. 输入框未输入时敲 '?' 直接唤起帮助
 		if (data === "?" && !this.inputLine.getText().trim() && !this.overlayStack.hasVisible) {
-			this.openHelpMenu();
+			this.executeCommand("help", "");
 			return;
 		}
 
@@ -881,84 +773,7 @@ export class UIHost implements UIHostContextPort {
 		this.activeSuggestions = null;
 		this.inputLine.clear();
 
-		// 斜杠命令分发
-		if (text.startsWith("/")) {
-			const parts = text.slice(1).trim().split(/\s+/);
-			const cmdName = parts[0]!.toLowerCase();
-			const args = parts.slice(1).join(" ");
-			this.executeCommand(cmdName, args);
-			return;
-		}
-
-		// !cmd 直通执行分发
-		if (text.startsWith("!")) {
-			const cmdText = text.slice(1).trim();
-			if (cmdText) {
-				void this.onDirectCommand?.(cmdText);
-				return;
-			}
-		}
-
-		// 普通对话提交
 		const mode = this.busy ? "followUp" : "direct";
 		this.onUserLine?.(text, mode);
-	}
-
-	private registerDefaultCommands(): void {
-		const reg = (
-			name: string,
-			description: string,
-			handler: (args: string) => void,
-			hasArgs = false,
-			argumentHint?: string,
-		) => {
-			this.registry.registerCommand({ name, description, handler, hasArgs, argumentHint });
-		};
-
-		reg("help", "查看所有可用命令与快捷键", () => this.openHelpMenu());
-		reg("commands", "列出所有可用斜杠命令与使用方式 (对齐 Pi)", () => this.openHelpMenu());
-		reg("model", "打开模型切换浮层 (或直接指定模型名)", (args) => {
-			if (args) this.setModel(args.trim());
-			else this.openModelPicker();
-		}, true, "<provider/model>");
-		reg("effort", "调整模型思考强度 (off / low / medium / high / max)", (args) => {
-			if (args) this.setReasoningEffort(args.trim());
-			else this.openEffortSlider();
-		}, true, "<level>");
-		reg("thinking", "设置或调整模型思考档位 (对齐 Pi 规范)", (args) => {
-			if (args) this.setReasoningEffort(args.trim());
-			else this.openEffortSlider();
-		}, true, "<level>");
-		reg("subagents", "多子智能体并行看板与审查 (Alt+A)", () => this.openSubagentDashboard());
-		reg("agents", "多子智能体并行看板与审查", () => this.openSubagentDashboard());
-		reg("tasks", "后台任务与持续进程看板 (Alt+J)", () => this.openTaskDashboard());
-		reg("jobs", "后台任务与持续进程看板", () => this.openTaskDashboard());
-		reg("trajectory", "全屏审计轨迹与性能时序图 (Alt+T)", () => this.openTrajectoryScene());
-		reg("traj", "全屏审计轨迹看板", () => this.openTrajectoryScene());
-		reg("compact", "压缩当前会话历史并释放上下文 (∴)", (args) => {
-			void this.onCompactRequest?.(args);
-		}, true, "[instruction]");
-		reg("think", "展开或折叠深度思考过程 (Ctrl+O / Alt+O)", () => {
-			this.transcript.toggleThinking();
-			this.requestRender();
-		});
-		reg("clear", "清空当前会话屏幕与历史", () => {
-			this.transcript.clear();
-			this.requestRender();
-		});
-		reg("session", "查看会话用量、上下文窗口与工作目录", () => {
-			const pct = this.contextWindow > 0 ? Math.round((this.usedTokens / this.contextWindow) * 100) : 0;
-			this.transcript.addNotice(`会话信息: 模型=${this.modelName} · Token=${this.usedTokens}/${this.contextWindow} (${pct}%) · 思考=${this.reasoningEffort} · CWD=${this.cwd}`);
-			this.requestRender();
-		});
-		reg("hotkeys", "查看控制台全局快捷键", () => this.openHelpMenu());
-		reg("quit", "退出当前会话并退出控制台", () => {
-			this.stop();
-			process.exit(0);
-		});
-		reg("exit", "退出当前会话并退出控制台", () => {
-			this.stop();
-			process.exit(0);
-		});
 	}
 }

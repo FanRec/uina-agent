@@ -236,6 +236,7 @@ export type ExtensionEventHandler<T extends ExtensionEvent = ExtensionEvent> = (
 export class ExtensionHost {
 	private handlers = new Map<string, Set<ExtensionEventHandler<any>>>();
 	private errorListeners = new Set<ExtensionErrorListener>();
+	private observedTail: Promise<void> = Promise.resolve();
 
 	/** 注册事件监听器 */
 	on<T extends ExtensionEvent["type"]>(
@@ -289,6 +290,15 @@ export class ExtensionHost {
 				this.emitError(event.type, err);
 			}
 		}
+	}
+
+	/** Queue observational events so stream consumers always observe start → update → end. */
+	emitObserved(event: ExtensionEvent): void {
+		this.observedTail = this.observedTail.then(() => this.emit(event)).catch((error) => this.emitError(event.type, error));
+	}
+
+	async flush(): Promise<void> {
+		await this.observedTail;
 	}
 
 	/** 触发工具调用前拦截（支持 block 短路） */

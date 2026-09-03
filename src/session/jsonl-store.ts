@@ -26,7 +26,7 @@ export async function openJsonlSession(path: string): Promise<{
 	if (!(await pathExists(path))) {
 		const header: SessionHeader = {
 			kind: "header",
-			version: 1,
+			version: 2,
 			id: randomUUID(),
 			cwd: process.cwd(),
 			createdAt: new Date().toISOString(),
@@ -66,6 +66,14 @@ export class JsonlSessionStore implements SessionStore {
 			timestamp: new Date().toISOString(),
 			message,
 		});
+	}
+
+	appendCustomMessage(message: { customType: string; content: string; display?: boolean; details?: unknown }): Promise<void> {
+		return this.append({ kind: "custom_message", id: randomUUID(), seq: ++this.nextSeq, timestamp: new Date().toISOString(), ...structuredClone(message) });
+	}
+
+	appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void> {
+		return this.append({ kind: "custom_entry", id: randomUUID(), seq: ++this.nextSeq, timestamp: new Date().toISOString(), ...structuredClone(entry) });
 	}
 
 	appendCompaction(
@@ -129,6 +137,16 @@ export class MemorySessionStore implements SessionStore {
 			timestamp: new Date().toISOString(),
 			message: structuredClone(message),
 		});
+		return Promise.resolve();
+	}
+
+	appendCustomMessage(message: { customType: string; content: string; display?: boolean; details?: unknown }): Promise<void> {
+		this.records.push({ kind: "custom_message", id: randomUUID(), seq: this.records.length + 1, timestamp: new Date().toISOString(), ...structuredClone(message) });
+		return Promise.resolve();
+	}
+
+	appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void> {
+		this.records.push({ kind: "custom_entry", id: randomUUID(), seq: this.records.length + 1, timestamp: new Date().toISOString(), ...structuredClone(entry) });
 		return Promise.resolve();
 	}
 
@@ -212,6 +230,8 @@ async function readSnapshot(path: string): Promise<SessionSnapshot> {
 	return {
 		header,
 		messages: recovered.messages,
+		customMessages: recovered.customMessages,
+		customEntries: recovered.customEntries,
 		queued: recovered.queued,
 		lastSeq,
 	};
@@ -236,7 +256,7 @@ function parseHeader(value: string | undefined, path: string): SessionHeader {
 	const header = parsed as Partial<SessionHeader>;
 	if (
 		header.kind !== "header" ||
-		header.version !== 1 ||
+		header.version !== 2 ||
 		typeof header.id !== "string" ||
 		typeof header.cwd !== "string" ||
 		typeof header.createdAt !== "string"

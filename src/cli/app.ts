@@ -18,8 +18,9 @@ import { createExecCommandTool } from "../../tools/exec-command/index.js";
 import { DefaultAgentFactory } from "../agent/runtime.js";
 import { SubagentRegistry } from "../extensions/subagents/registry.js";
 import { createSubagentTools } from "../extensions/subagents/tools.js";
-import { ExtensionHost } from "../extensions/host.js";
-import type { ThinkingLevel } from "../core/types.js";
+import { ExtensionRunner } from "../extensions/runner.js";
+import { CommandRouter } from "../extensions/commands.js";
+import { activateBuiltinCommands } from "../extensions/builtin.js";
 
 const DATA_DIR = join(process.cwd(), "data");
 const SESSION_FILE = join(DATA_DIR, "session.jsonl");
@@ -35,7 +36,6 @@ export async function runApp(): Promise<void> {
 	const provider = createProvider(active.name, active);
 	const tools = new ToolBroker();
 	const jobs = new JobRegistry();
-	const extensionHost = new ExtensionHost();
 	const modelRegistry = new ModelRegistry(cfg);
 	modelRegistry.register(provider.name, provider);
 
@@ -47,12 +47,6 @@ export async function runApp(): Promise<void> {
 	for (const tool of createJobTools(jobs, "root")) tools.register(tool);
 	for (const failure of loaded.failed) {
 		process.stderr.write(`[工具加载失败] ${failure.file}: ${failure.error}\n`);
-	}
-
-	const discovered = await extensionHost.emitResourcesDiscover(process.cwd(), "startup");
-	if (discovered.toolPaths && discovered.toolPaths.length > 0) {
-		await loadToolsFromPaths(discovered.toolPaths, ordinaryTools);
-		await loadToolsFromPaths(discovered.toolPaths, tools);
 	}
 
 	const { store, snapshot } = await openJsonlSession(SESSION_FILE);
@@ -111,7 +105,17 @@ export async function runApp(): Promise<void> {
 		else renderStdio(message);
 	};
 
-	const subject = new Subject(
+	let subject: Subject;
+	const extensionHost = new ExtensionRunner({
+		cwd: process.cwd(),
+		tools,
+		onError: (text) => render({ type: "error", text }),
+		onProvider: (name, registered) => modelRegistry.register(name, registered),
+		onCustomMessage: async (message) => { await subject.appendCustomMessage(message); tui?.host.transcript.addCustomMessage(message); tui?.host.requestRender(); },
+		onCustomEntry: async (entry) => { await subject.appendCustomEntry(entry); tui?.host.transcript.addCustomEntry(entry); tui?.host.requestRender(); },
+	});
+
+	subject = new Subject(
 		provider,
 		tools,
 		{
@@ -134,6 +138,7 @@ export async function runApp(): Promise<void> {
 		},
 		{ store, thinkingLevel: cfg.thinkingLevel, extensionHost },
 	);
+	const commands = new CommandRouter(extensionHost.registry, (text) => render({ type: "error", text }));
 
 	extensionHost.on("session_compact", (e) => {
 		if (tui) {
@@ -182,6 +187,7 @@ export async function runApp(): Promise<void> {
 	});
 
 	subject.addHistory(snapshot.messages);
+	for (const message of snapshot.customMessages) subject.restoreCustomMessage(message);
 	subject.seedQueue(snapshot.queued);
 	if (snapshot.messages.length > 0) {
 		process.stdout.write(`（已恢复 JSONL 会话：${snapshot.messages.length} 条消息）\n\n`);
@@ -199,6 +205,7 @@ export async function runApp(): Promise<void> {
 		if (cancelCurrent && subject.isBusy()) subject.interrupt();
 		if (execRunning) execAbort?.abort();
 		await subject.waitForIdle();
+		await extensionHost.dispose();
 		await execTail;
 		await subagents.close();
 		await jobs.close();
@@ -250,51 +257,11 @@ export async function runApp(): Promise<void> {
 	const onUserLine = (raw: string, mode: "steer" | "followUp" = "followUp"): void => {
 		const text = raw.trim();
 		if (!text || shuttingDown) return;
-		if (text === "/quit") {
-			void shutdown();
-			return;
-		}
 		if (text === "/stop") {
 			handleInterrupt();
 			return;
 		}
-		if (text.startsWith("/model")) {
-			const target = text.slice(6).trim();
-			if (!target) {
-				render({ type: "notice", text: `当前模型: ${subject.getModel().name}` });
-				return;
-			}
-			try {
-				const newProv = modelRegistry.resolve(target);
-				void subject.setModel(newProv).then(() => {
-					tui?.host.setModel(newProv.name);
-					render({ type: "notice", text: `已切换至模型: ${newProv.name}` });
-				}).catch((err) => {
-					render({ type: "error", text: `切换模型失败: ${(err as Error).message}` });
-				});
-			} catch (err) {
-				render({ type: "error", text: `切换模型失败: ${(err as Error).message}` });
-			}
-			return;
-		}
-		if (text.startsWith("/effort")) {
-			const level = text.slice(7).trim() as ThinkingLevel;
-			if (!level) {
-				render({ type: "notice", text: `当前思考等级: ${subject.getThinkingLevel()} (偏好: ${subject.getPreferredThinkingLevel()})` });
-				return;
-			}
-			subject.setThinkingLevel(level);
-			tui?.host.setReasoningEffort(subject.getThinkingLevel());
-			render({ type: "notice", text: `思考等级已设置为: ${subject.getThinkingLevel()}` });
-			return;
-		}
-		if (text.startsWith("/compact")) {
-			const instruction = text.slice(8).trim() || undefined;
-			subject.compact(instruction).catch((err) => {
-				render({ type: "error", text: `压缩失败: ${(err as Error).message}` });
-			});
-			return;
-		}
+		if (text.startsWith("/")) { void commands.dispatch(text); return; }
 		if (text.startsWith("!")) {
 			if (subject.isBusy()) {
 				process.stdout.write("[!] 模型正在处理中，请等待本轮结束后再执行\n");
@@ -312,47 +279,22 @@ export async function runApp(): Promise<void> {
 	if (!isTTY) {
 		process.stdout.write(`Uina 就绪（模型：${provider.name}，工具：${loaded.loaded} 个）— /quit 退出\n\n`);
 	}
-	if (oneshot !== undefined) {
-		// One-shot mode has no input stream to own.
-		subject.pushInput(oneshot, { mode: "direct" });
-		await subject.waitForIdle();
-		await shutdown(false);
-		return;
-	}
 	if (isTTY) {
 		tui = createInteractiveUI({
 			modelName: provider.name,
+			thinkingLevels: provider.thinkingLevels,
 			toolCount: loaded.loaded,
 			cwd: process.cwd(),
-			jobs,
-			subagents,
-			onDirectCommand: runDirectCommand,
-			onModelChange: async (modelId) => {
-				try {
-					const newProv = modelRegistry.resolve(modelId);
-					await subject.setModel(newProv);
-					render({ type: "notice", text: `已成功切换模型至: ${newProv.name}` });
-				} catch (err) {
-					render({ type: "error", text: `切换模型失败: ${(err as Error).message}` });
-				}
-			},
-			onEffortChange: (effort) => {
-				subject.setThinkingLevel(effort);
-				render({ type: "notice", text: `思考等级已设置为: ${subject.getThinkingLevel()}` });
-			},
-			onCompactRequest: async (instruction) => {
-				try {
-					await subject.compact(instruction);
-				} catch (err) {
-					render({ type: "error", text: `压缩失败: ${(err as Error).message}` });
-				}
-			},
+			registry: extensionHost.registry,
 		});
+		extensionHost.attachUI(tui.ctxUI);
 		tui.onLine(onUserLine);
 		tui.onSIGINT(handleInterrupt);
 		if (snapshot.messages.length > 0) {
 			tui.loadHistory(snapshot.messages);
 		}
+		for (const message of snapshot.customMessages) tui.host.transcript.addCustomMessage(message);
+		for (const entry of snapshot.customEntries) tui.host.transcript.addCustomEntry(entry);
 	}
  else {
 		nonTTY = createInterface({ input: process.stdin });
@@ -361,6 +303,19 @@ export async function runApp(): Promise<void> {
 			void shutdown(false);
 		});
 		process.on("SIGINT", handleInterrupt);
+	}
+
+	await extensionHost.activateBuiltin("commands", activateBuiltinCommands({ subject, models: modelRegistry, jobs, subagents, host: tui?.host, reload: async () => { await subject.waitForIdle(); await extensionHost.reload(); render({ type: "notice", text: "项目扩展已重新加载。" }); }, shutdown: async () => shutdown() }));
+	await extensionHost.load();
+	const discovered = await extensionHost.emitResourcesDiscover(process.cwd(), "startup");
+	if (discovered.toolPaths?.length) {
+		await loadToolsFromPaths(discovered.toolPaths, ordinaryTools);
+		await loadToolsFromPaths(discovered.toolPaths, tools);
+	}
+	if (oneshot !== undefined) {
+		subject.pushInput(oneshot, { mode: "direct" });
+		await subject.waitForIdle();
+		await shutdown(false);
 	}
 
 }

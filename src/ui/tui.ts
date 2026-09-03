@@ -51,12 +51,6 @@ export class InteractiveTUI {
 			this.sigintCallback?.();
 		};
 
-		if (options.onDirectCommand) {
-			this.host.onDirectCommand = options.onDirectCommand;
-		}
-		if (options.onCompactRequest) {
-			this.host.onCompactRequest = options.onCompactRequest;
-		}
 	}
 
 	get ctxUI(): ExtensionUIContext {

@@ -1,6 +1,7 @@
 import type { ModelProvider, ModelRequest, ThinkingLevel } from "../core/types.js";
 import type { ProviderConfig, ProviderKind } from "./config.js";
 import { createOpenAIProvider } from "./gateway.js";
+import { fetchWithRetry } from "./gateway.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
 
 export function createProvider(name: string, conf: ProviderConfig): ModelProvider {
@@ -22,9 +23,11 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 		includeThinking: true,
 		async stream(req, emit, signal) {
 			const level = req.thinkingLevel ?? "off";
+			const thinking = level === "off" ? undefined : thinkingBudget(level);
 			let body: Record<string, unknown> = {
 				model: conf.model,
-				max_tokens: 8192,
+				max_tokens: Math.max(8192, (thinking ?? 0) + 1024),
+				system: anthropicSystem(req),
 				messages: anthropicMessages(req),
 				tools: req.tools?.map((tool) => ({
 					name: tool.function.name,
@@ -33,7 +36,7 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 				})),
 				stream: true,
 			};
-			if (level !== "off") body.thinking = { type: "enabled", budget_tokens: thinkingBudget(level) };
+			if (thinking) body.thinking = { type: "enabled", budget_tokens: thinking };
 
 			let headers: Record<string, string> = {
 				"content-type": "application/json",
@@ -47,12 +50,7 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 				body = (await req.extensionHost.emitBeforeProviderRequest(conf.model, body)) as Record<string, unknown>;
 			}
 
-			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/messages`, {
-				method: "POST",
-				signal,
-				headers,
-				body: JSON.stringify(body),
-			});
+			const response = await fetchWithRetry(`${conf.baseUrl.replace(/\/$/, "")}/messages`, { maxRetries: conf.maxRetries ?? 2, signal, request: { method: "POST", signal, headers, body: JSON.stringify(body) } });
 
 			if (req.extensionHost) {
 				const respHeaders: Record<string, string> = {};
@@ -110,12 +108,7 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 				bodyPayload = (await req.extensionHost.emitBeforeProviderRequest(conf.model, bodyPayload)) as Record<string, unknown>;
 			}
 
-			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(conf.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(conf.apiKey)}`, {
-				method: "POST",
-				signal,
-				headers,
-				body: JSON.stringify(bodyPayload),
-			});
+			const response = await fetchWithRetry(`${conf.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(conf.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(conf.apiKey)}`, { maxRetries: conf.maxRetries ?? 2, signal, request: { method: "POST", signal, headers, body: JSON.stringify(bodyPayload) } });
 
 			if (req.extensionHost) {
 				const respHeaders: Record<string, string> = {};
@@ -143,15 +136,43 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 	};
 }
 
+function anthropicSystem(req: ModelRequest): string | undefined {
+	const text = req.messages.filter((message) => message.role === "system").map((message) => message.content).filter(Boolean).join("\n\n");
+	return text || undefined;
+}
+
 function anthropicMessages(req: ModelRequest): unknown[] {
 	return req.messages.filter((message) => message.role !== "system").map((message) => {
-		if (message.role !== "assistant" || !message.thinking) return { role: message.role === "assistant" ? "assistant" : "user", content: message.content };
-		return { role: "assistant", content: [{ type: "thinking", thinking: message.thinking, signature: message.thinkingSignature ?? "" }, ...(message.content ? [{ type: "text", text: message.content }] : [])] };
+		if (message.role === "tool") return { role: "user", content: [{ type: "tool_result", tool_use_id: message.tool_call_id, content: message.content, is_error: message.status && message.status !== "succeeded" }] };
+		if (message.role === "assistant") {
+			const content: unknown[] = [];
+			if (message.thinking) content.push({ type: "thinking", thinking: message.thinking, signature: message.thinkingSignature ?? "" });
+			if (message.content) content.push({ type: "text", text: message.content });
+			for (const call of message.tool_calls ?? []) content.push({ type: "tool_use", id: call.id, name: call.name, input: call.args });
+			return { role: "assistant", content: content.length ? content : "" };
+		}
+		return { role: "user", content: message.content };
 	});
 }
 
 function geminiRequest(req: ModelRequest): Record<string, unknown> {
-	return { contents: req.messages.filter((message) => message.role !== "system").map((message) => ({ role: message.role === "assistant" ? "model" : "user", parts: [{ text: message.content }] })), systemInstruction: { parts: [{ text: req.messages.find((message) => message.role === "system")?.content ?? "" }] }, generationConfig: req.thinkingLevel && req.thinkingLevel !== "off" ? { thinkingConfig: { includeThoughts: true } } : undefined };
+	const system = req.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
+	const contents = req.messages.filter((message) => message.role !== "system").map((message) => {
+		if (message.role === "tool") return { role: "user", parts: [{ functionResponse: { name: message.tool_call_id, response: { content: message.content, status: message.status ?? "succeeded" } } }] };
+		if (message.role === "assistant") {
+			const parts: unknown[] = [];
+			if (message.content) parts.push({ text: message.content });
+			for (const call of message.tool_calls ?? []) parts.push({ functionCall: { id: call.id, name: call.name, args: call.args } });
+			return { role: "model", parts: parts.length ? parts : [{ text: "" }] };
+		}
+		return { role: "user", parts: [{ text: message.content }] };
+	});
+	return {
+		contents,
+		...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+		...(req.tools?.length ? { tools: [{ functionDeclarations: req.tools.map((tool) => ({ name: tool.function.name, description: tool.function.description, parameters: tool.function.parameters })) }] } : {}),
+		...(req.thinkingLevel && req.thinkingLevel !== "off" ? { generationConfig: { thinkingConfig: { includeThoughts: true } } } : {}),
+	};
 }
 
 function thinkingBudget(level: ThinkingLevel): number { return { minimal: 1024, low: 2048, medium: 4096, high: 8192, xhigh: 16384, max: 32768, off: 0 }[level]; }
@@ -181,63 +202,18 @@ export class ModelRegistry {
 			return provider;
 		}
 
-		// 2. 尝试解析厂商/模型格式
-		const normalized = modelOrProviderName.toLowerCase();
-		let conf: ProviderConfig | null = null;
-
-		if (normalized.includes("deepseek")) {
-			const apiKey = process.env.DEEPSEEK_API_KEY || process.env.UINA_API_KEY_DEEPSEEK || "";
-			if (!apiKey) throw new Error(`缺少 DeepSeek API Key (请设置环境变量 DEEPSEEK_API_KEY)`);
-			conf = {
-				baseUrl: "https://api.deepseek.com",
-				apiKey,
-				model: modelOrProviderName.replace(/^deepseek\//i, ""),
-				thinkingFormat: "deepseek",
-				contextWindow: 65536,
-				thinkingLevels: ["off", "minimal", "low", "medium", "high", "max"],
-			};
-		} else if (normalized.includes("claude") || normalized.includes("anthropic")) {
-			const apiKey = process.env.ANTHROPIC_API_KEY || process.env.UINA_API_KEY_ANTHROPIC || "";
-			if (!apiKey) throw new Error(`缺少 Anthropic API Key (请设置环境变量 ANTHROPIC_API_KEY)`);
-			conf = {
-				baseUrl: "https://api.anthropic.com/v1",
-				apiKey,
-				model: modelOrProviderName.replace(/^anthropic\//i, ""),
-				type: "anthropic",
-				contextWindow: 200000,
-				thinkingLevels: ["off", "low", "medium", "high", "max"],
-			};
-		} else if (normalized.includes("gpt") || normalized.includes("openai") || normalized.includes("o1") || normalized.includes("o3")) {
-			const apiKey = process.env.OPENAI_API_KEY || process.env.UINA_API_KEY_OPENAI || "";
-			if (!apiKey) throw new Error(`缺少 OpenAI API Key (请设置环境变量 OPENAI_API_KEY)`);
-			conf = {
-				baseUrl: "https://api.openai.com/v1",
-				apiKey,
-				model: modelOrProviderName.replace(/^openai\//i, ""),
-				contextWindow: 128000,
-				thinkingLevels: normalized.includes("o1") || normalized.includes("o3") ? ["off", "low", "medium", "high"] : ["off"],
-			};
-		} else if (normalized.includes("ollama")) {
-			const baseUrl = process.env.OLLAMA_BASE_URL || "http://localhost:11434/v1";
-			conf = {
-				baseUrl,
-				apiKey: "ollama",
-				model: modelOrProviderName.replace(/^ollama\//i, ""),
-				contextWindow: 32768,
-				thinkingLevels: ["off"],
-			};
-		}
-
-		if (conf) {
-			const provider = createProvider(modelOrProviderName, conf);
-			this.instances.set(modelOrProviderName, provider);
-			return provider;
-		}
-
-		throw new Error(`无法识别的模型或提供商: ${modelOrProviderName}，且未在 auth.json 中配置`);
+		throw new Error(`未配置或未注册的模型/Provider: ${modelOrProviderName}`);
 	}
 
-	register(name: string, provider: ModelProvider): void {
+	register(name: string, provider: ModelProvider): () => void {
+		if (this.instances.has(name)) throw new Error(`Provider 已注册: ${name}`);
 		this.instances.set(name, provider);
+		return () => { if (this.instances.get(name) === provider) this.instances.delete(name); };
+	}
+
+	choices(): Array<{ id: string; name: string }> {
+		const configured = Object.entries(this.config?.providers ?? {}).map(([id, value]) => ({ id, name: value.model }));
+		const registered = [...this.instances.entries()].map(([id, provider]) => ({ id, name: provider.name }));
+		return [...configured, ...registered.filter((candidate) => !configured.some((item) => item.id === candidate.id))];
 	}
 }

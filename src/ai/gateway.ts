@@ -176,7 +176,7 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 	};
 }
 
-async function fetchWithRetry(
+export async function fetchWithRetry(
 	url: string,
 	options: { request: RequestInit; signal?: AbortSignal; maxRetries: number },
 ): Promise<Response> {

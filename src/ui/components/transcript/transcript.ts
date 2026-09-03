@@ -46,17 +46,25 @@ export class TranscriptContainer implements Component {
 
 	private compactions: CompactionRecord[] = [];
 	private customEntries: CustomEntry[] = [];
+	private standaloneCustomMessages: CustomMessage[] = [];
 	private systemNotices: string[] = [];
 
-	private messageRenderers = new Map<string, MessageRenderer>();
-	private entryRenderers = new Map<string, EntryRenderer>();
+	private messageRenderer: (type: string) => MessageRenderer | undefined = () => undefined;
+	private entryRenderer: (type: string) => EntryRenderer | undefined = () => undefined;
 
 	setMessageRenderer(type: string, renderer: MessageRenderer): void {
-		this.messageRenderers.set(type, renderer);
+		const previous = this.messageRenderer;
+		this.messageRenderer = (candidate) => candidate === type ? renderer : previous(candidate);
 	}
 
 	setEntryRenderer(type: string, renderer: EntryRenderer): void {
-		this.entryRenderers.set(type, renderer);
+		const previous = this.entryRenderer;
+		this.entryRenderer = (candidate) => candidate === type ? renderer : previous(candidate);
+	}
+
+	setRendererResolver(resolve: { message(type: string): MessageRenderer | undefined; entry(type: string): EntryRenderer | undefined }): void {
+		this.messageRenderer = resolve.message;
+		this.entryRenderer = resolve.entry;
 	}
 
 	startTurn(n: number, userText: string): void {
@@ -113,7 +121,7 @@ export class TranscriptContainer implements Component {
 		if (this.currentTurn) {
 			if (!this.currentTurn.customMessages) this.currentTurn.customMessages = [];
 			this.currentTurn.customMessages.push(msg);
-		}
+		} else this.standaloneCustomMessages.push(msg);
 	}
 
 	addCustomEntry(entry: CustomEntry): void {
@@ -204,6 +212,7 @@ export class TranscriptContainer implements Component {
 		this.currentTurn = null;
 		this.compactions.length = 0;
 		this.customEntries.length = 0;
+		this.standaloneCustomMessages.length = 0;
 		this.systemNotices.length = 0;
 	}
 
@@ -297,9 +306,14 @@ export class TranscriptContainer implements Component {
 			this.renderTurn(this.currentTurn, width, lines, this.thinkingCommitted);
 		}
 
+		for (const message of this.standaloneCustomMessages) {
+			const comp = new CustomMessageComponent(message, this.messageRenderer(message.customType));
+			lines.push(...comp.render(width));
+		}
+
 		// 5. 独立的全局 CustomEntries
 		for (const entry of this.customEntries) {
-			const comp = new CustomEntryComponent(entry, this.entryRenderers.get(entry.customType));
+			const comp = new CustomEntryComponent(entry, this.entryRenderer(entry.customType));
 			lines.push(...comp.render(width));
 		}
 
@@ -334,7 +348,7 @@ export class TranscriptContainer implements Component {
 
 		if (turn.customMessages) {
 			for (const msg of turn.customMessages) {
-				const comp = new CustomMessageComponent(msg, this.messageRenderers.get(msg.customType));
+				const comp = new CustomMessageComponent(msg, this.messageRenderer(msg.customType));
 				out.push(...comp.render(width));
 			}
 		}

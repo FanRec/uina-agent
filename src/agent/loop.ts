@@ -280,13 +280,13 @@ export class Subject {
 		this.abort = new AbortController();
 		const turn = ++this.turnSeq;
 
-		await this.extensionHost?.emitBeforeAgentStart(text ?? "", this.systemPrompt);
+		const prepared = await this.extensionHost?.emitBeforeAgentStart(text ?? "", this.systemPrompt);
 		await this.extensionHost?.emit({ type: "agent_start", turnSeq: turn });
 
-		return this.runTurn(text, turn, runtimeInputs);
+		return this.runTurn(text, turn, runtimeInputs, this.provider, prepared?.systemPrompt ?? this.systemPrompt, prepared?.messages ?? []);
 	}
 
-	private async runTurn(text: string | undefined, turn: number, runtimeInputs: AgentInput[] = []): Promise<void> {
+	private async runTurn(text: string | undefined, turn: number, runtimeInputs: AgentInput[] = [], provider = this.provider, systemPrompt = this.systemPrompt, beforeMessages: ChatMsg[] = []): Promise<void> {
 		let success = false;
 		let runError: string | undefined;
 		try {
@@ -294,7 +294,7 @@ export class Subject {
 			await this.extensionHost?.emit({ type: "turn_start", turnNumber: turn, userText: text ?? "" });
 			if (text !== undefined) await this.appendMessage({ role: "user", content: text });
 			this.runtimeInputs = runtimeInputs;
-			await this.decide();
+			await this.decide(provider, systemPrompt, beforeMessages);
 			success = true;
 		} catch (error) {
 			runError = safeError(error);
@@ -322,6 +322,7 @@ export class Subject {
 				await this.extensionHost?.emit({ type: "agent_settled", turnSeq: turn });
 			}
 			for (const resolve of this.idleWaiters.splice(0)) resolve();
+			await this.extensionHost?.flush();
 		}
 	}
 
@@ -339,8 +340,8 @@ export class Subject {
 		}
 	}
 
-	private async decide(): Promise<void> {
-		await this.maybeCompact();
+	private async decide(provider = this.provider, systemPrompt = this.systemPrompt, beforeMessages: ChatMsg[] = []): Promise<void> {
+		await this.maybeCompact(provider, systemPrompt);
 		let nextUser: ChatMsg | undefined;
 		let nextUsers: ChatMsg[] = [];
 		for (;;) {
@@ -356,12 +357,12 @@ export class Subject {
 				nextUser = undefined;
 			}
 
-			let requestMessages = buildContext({
+			let requestMessages = [...buildContext({
 				history: this.history,
-				systemPrompt: this.systemPrompt,
-				includeThinking: this.provider.includeThinking,
+				systemPrompt,
+				includeThinking: provider.includeThinking,
 				runtimeInputs: this.runtimeInputs,
-			});
+			}), ...beforeMessages];
 			if (this.extensionHost) {
 				requestMessages = await this.extensionHost.emitContext(requestMessages);
 			}
@@ -379,11 +380,11 @@ export class Subject {
 			let hasEmittedThinkingStart = false;
 
 			try {
-				await this.provider.stream(
+				await provider.stream(
 					{
 						messages: requestMessages,
 						tools: this.tools.defs(),
-						thinkingLevel: this.thinkingLevel,
+						thinkingLevel: clampThinkingLevel(this.thinkingLevel, provider.thinkingLevels),
 						extensionHost: this.extensionHost,
 					},
 					(delta) => {
@@ -391,10 +392,10 @@ export class Subject {
 							thinking += delta.text;
 							if (!hasEmittedThinkingStart) {
 								hasEmittedThinkingStart = true;
-								void this.extensionHost?.emit({ type: "output_start", streamId, channel: "thinking" });
+								this.extensionHost?.emitObserved({ type: "output_start", streamId, channel: "thinking" });
 							}
 							thinkingOffset += delta.text.length;
-							void this.extensionHost?.emit({
+							this.extensionHost?.emitObserved({
 								type: "output_update",
 								streamId,
 								offset: thinkingOffset,
@@ -408,10 +409,10 @@ export class Subject {
 							reply += delta.text;
 							if (!hasEmittedContentStart) {
 								hasEmittedContentStart = true;
-								void this.extensionHost?.emit({ type: "output_start", streamId, channel: "content" });
+								this.extensionHost?.emitObserved({ type: "output_start", streamId, channel: "content" });
 							}
 							textOffset += delta.text.length;
-							void this.extensionHost?.emit({
+							this.extensionHost?.emitObserved({
 								type: "output_update",
 								streamId,
 								offset: textOffset,
@@ -435,14 +436,14 @@ export class Subject {
 				);
 
 				if (hasEmittedThinkingStart) {
-					void this.extensionHost?.emit({ type: "output_end", streamId, channel: "thinking" });
+					this.extensionHost?.emitObserved({ type: "output_end", streamId, channel: "thinking" });
 				}
 				if (hasEmittedContentStart) {
-					void this.extensionHost?.emit({ type: "output_end", streamId, channel: "content" });
+					this.extensionHost?.emitObserved({ type: "output_end", streamId, channel: "content" });
 				}
 			} catch (error) {
 				if (hasEmittedContentStart) {
-					void this.extensionHost?.emit({
+					this.extensionHost?.emitObserved({
 						type: "output_interrupted",
 						streamId,
 						channel: "content",
@@ -462,7 +463,7 @@ export class Subject {
 
 			if (this.interrupted || this.currentSignal().aborted) {
 				if (hasEmittedContentStart) {
-					void this.extensionHost?.emit({
+					this.extensionHost?.emitObserved({
 						type: "output_interrupted",
 						streamId,
 						channel: "content",
@@ -650,7 +651,7 @@ export class Subject {
 		return { callId: call.id, result: outcomeResult, status: outcomeStatus };
 	}
 
-	private async maybeCompact(): Promise<void> {
+	private async maybeCompact(provider = this.provider, systemPrompt = this.systemPrompt): Promise<void> {
 		const tokensBefore = Math.ceil(this.history.reduce((acc, m) => acc + m.content.length + 16, 0) / 4);
 		const cancelled = await this.extensionHost?.emitSessionBeforeCompact(tokensBefore);
 		if (cancelled) return;
@@ -658,12 +659,12 @@ export class Subject {
 		try {
 			const result = await compactHistory(
 				this.history,
-				this.provider,
-				this.systemPrompt,
+				provider,
+				systemPrompt,
 				this.tools.defs(),
 				this.compaction,
 				this.abort?.signal,
-				this.provider.includeThinking,
+				provider.includeThinking,
 			);
 			if (!result) return;
 			const replacement: ChatMsg[] = [
@@ -673,23 +674,38 @@ export class Subject {
 			await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);
 			this.history = replacement;
 
-			void this.extensionHost?.emit({
+			await this.extensionHost?.emit({
 				type: "session_compact",
 				summary: result.summary,
 				tokensBefore: result.tokensBefore,
 				retainedTailCount: result.retainedTail.length,
 			});
 		} catch (err) {
-			void this.extensionHost?.emit({
+			await this.extensionHost?.emit({
 				type: "session_compact_failed",
 				error: (err as Error).message,
 			});
+			throw err;
 		}
 	}
 
 	private async appendMessage(message: ChatMsg): Promise<void> {
 		await this.store?.appendMessage(message);
 		this.history.push(message);
+	}
+
+	/** Adds trusted extension content to both v2 persistence and the next provider context. */
+	async appendCustomMessage(message: { customType: string; content: string; display?: boolean; details?: unknown }): Promise<void> {
+		await this.store?.appendCustomMessage(message);
+		this.history.push({ role: "user", content: message.content });
+	}
+
+	async appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void> {
+		await this.store?.appendCustomEntry(entry);
+	}
+
+	restoreCustomMessage(message: { content: string }): void {
+		this.history.push({ role: "user", content: message.content });
 	}
 
 	private async consumeQueueItem(item: QueuedMessage): Promise<void> {

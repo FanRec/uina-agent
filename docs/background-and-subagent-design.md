@@ -14,7 +14,7 @@
 - shell 同步工具加载，以及 `src/extensions/jobs` 中的进程内 `JobRegistry`、后台 shell producer 和 `job_*` 工具。
 - `src/extensions/subagents` 中的 `SubagentRegistry`、`subagent_*` 工具和首版可持续 child runtime。
 
-当前没有完整的 `ExtensionHost`；已有最小 `AgentFactory`/`AgentHandle`，以及位于 `src/extensions/` 下的 Jobs 和 Subagent 能力模块。它们不是核心业务分支。本文中设计、实现和验收分开记录，文档本身不能替代运行证据。
+当前已有 `ExtensionHost` 事件总线与项目本地 `ExtensionRunner`：后者加载 `.uina/extensions`、管理 dispose/reload 和扩展资源归属。Jobs/Subagent 仍是内置运行时能力，尚未完全迁为通过该 Runner 激活的内置扩展。本文中设计、实现和验收分开记录，文档本身不能替代运行证据。
 
 ## 目标与非目标
 

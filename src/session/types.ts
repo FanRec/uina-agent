@@ -6,10 +6,32 @@ import type {
 
 export interface SessionHeader {
 	kind: "header";
-	version: 1;
+	version: 2;
 	id: string;
 	cwd: string;
 	createdAt: string;
+}
+
+/** Extension-authored model-visible content. */
+export interface SessionCustomMessageRecord {
+	kind: "custom_message";
+	id: string;
+	seq: number;
+	timestamp: string;
+	customType: string;
+	content: string;
+	display?: boolean;
+	details?: unknown;
+}
+
+/** Extension-authored transcript/session content which must never reach a provider. */
+export interface SessionCustomEntryRecord {
+	kind: "custom_entry";
+	id: string;
+	seq: number;
+	timestamp: string;
+	customType: string;
+	data?: unknown;
 }
 
 export interface SessionMessageRecord {
@@ -50,6 +72,8 @@ export interface SessionEventRecord {
 
 export type SessionRecord =
 	| SessionMessageRecord
+	| SessionCustomMessageRecord
+	| SessionCustomEntryRecord
 	| SessionCompactionRecord
 	| SessionEventRecord;
 
@@ -65,6 +89,8 @@ export interface QueuedInput {
 export interface SessionSnapshot {
 	header: SessionHeader;
 	messages: ChatMsg[];
+	customMessages: Array<{ customType: string; content: string; display?: boolean; details?: unknown }>;
+	customEntries: Array<{ customType: string; data?: unknown }>;
 	queued: QueuedInput[];
 	lastSeq: number;
 }
@@ -72,6 +98,8 @@ export interface SessionSnapshot {
 export interface SessionStore {
 	readonly path: string;
 	appendMessage(message: ChatMsg): Promise<void>;
+	appendCustomMessage(message: { customType: string; content: string; display?: boolean; details?: unknown }): Promise<void>;
+	appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void>;
 	appendCompaction(
 		summary: string,
 		retainedTail: ChatMsg[],
