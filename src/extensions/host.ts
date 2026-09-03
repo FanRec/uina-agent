@@ -171,19 +171,7 @@ export interface OutputInterruptedEvent {
 	spokenUntil?: number;
 }
 
-// 8. 资源发现事件
-export interface ResourcesDiscoverEvent {
-	type: "resources_discover";
-	cwd: string;
-	reason: "startup" | "reload";
-}
-
-export interface ResourcesDiscoverResult {
-	toolPaths?: string[];
-	promptPaths?: string[];
-}
-
-// 9. Provider 协议层网络拦截
+// 8. Provider 协议层网络拦截
 export interface BeforeProviderHeadersEvent {
 	type: "before_provider_headers";
 	provider: string;
@@ -224,7 +212,6 @@ export type ExtensionEvent =
 	| OutputUpdateEvent
 	| OutputEndEvent
 	| OutputInterruptedEvent
-	| ResourcesDiscoverEvent
 	| BeforeProviderHeadersEvent
 	| BeforeProviderRequestEvent
 	| AfterProviderResponseEvent;
@@ -431,41 +418,6 @@ export class ExtensionHost {
 			}
 		}
 		return false;
-	}
-
-	/** 触发资源发现聚合 */
-	async emitResourcesDiscover(
-		cwd: string,
-		reason: "startup" | "reload",
-	): Promise<ResourcesDiscoverResult> {
-		const set = this.handlers.get("resources_discover");
-		if (!set || set.size === 0) return {};
-
-		const toolPaths: string[] = [];
-		const promptPaths: string[] = [];
-
-		for (const handler of set) {
-			try {
-				const res = (await handler({
-					type: "resources_discover",
-					cwd,
-					reason,
-				})) as ResourcesDiscoverResult | undefined;
-				if (res?.toolPaths) {
-					toolPaths.push(...res.toolPaths);
-				}
-				if (res?.promptPaths) {
-					promptPaths.push(...res.promptPaths);
-				}
-			} catch (err) {
-				this.emitError("resources_discover", err);
-			}
-		}
-
-		return {
-			toolPaths: toolPaths.length > 0 ? toolPaths : undefined,
-			promptPaths: promptPaths.length > 0 ? promptPaths : undefined,
-		};
 	}
 
 	/** 触发 Provider 请求 Headers 修改 */

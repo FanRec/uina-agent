@@ -1,31 +1,25 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
 import { loadConfig, activeProvider } from "../ai/config.js";
 import { createProvider, ModelRegistry } from "../ai/providers.js";
-import { execCommandDirect } from "../../tools/exec-command/index.js";
+import { execCommandDirect } from "../extensions/runtime-tools/exec-command/index.js";
 import { ToolBroker } from "../tools/broker.js";
-import { loadTools, loadToolsFromPaths } from "../tools/loader.js";
 import { Subject } from "../agent/loop.js";
 import { openJsonlSession } from "../session/jsonl-store.js";
 import { projectModelHistory } from "../session/recovery.js";
 import { createInteractiveUI, type InteractiveTUI, type OutMsg } from "../ui/tui.js";
 import { sanitizeTerminalText, toolStartLine, toolResultLines } from "../ui/format.js";
 import { JobRegistry } from "../extensions/jobs/registry.js";
-import { createJobTools } from "../extensions/jobs/tools.js";
-import { createExecCommandTool } from "../../tools/exec-command/index.js";
 import { DefaultAgentFactory } from "../agent/runtime.js";
 import { SubagentRegistry } from "../extensions/subagents/registry.js";
-import { createSubagentTools } from "../extensions/subagents/tools.js";
 import { ExtensionRunner } from "../extensions/runner.js";
 import { CommandRouter } from "../extensions/commands.js";
 import { activateBuiltinCommands } from "../extensions/builtin.js";
+import { activateRuntimeTools, createChildTools } from "../extensions/runtime-tools/index.js";
 
 const DATA_DIR = join(process.cwd(), "data");
 const SESSION_FILE = join(DATA_DIR, "session.jsonl");
-const TOOLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../tools");
 const CLEAR_LINE = "\r\x1b[2K";
 const ERR = "\x1b[31m";
 const RESET = "\x1b[0m";
@@ -40,14 +34,6 @@ export async function runApp(): Promise<void> {
 	const modelRegistry = new ModelRegistry(cfg);
 	modelRegistry.register(provider.name, provider);
 	void modelRegistry.refreshModels();
-
-	const loaded = await loadTools(TOOLS_DIR, tools);
-	tools.remove("exec_command");
-	const ordinaryTools = new ToolBroker();
-	tools.copyTo(ordinaryTools);
-	for (const failure of loaded.failed) {
-		process.stderr.write(`[工具加载失败] ${failure.file}: ${failure.error}\n`);
-	}
 
 	const { store, snapshot } = await openJsonlSession(SESSION_FILE);
 	let tui: InteractiveTUI | null = null;
@@ -156,11 +142,7 @@ export async function runApp(): Promise<void> {
 		factory: new DefaultAgentFactory(),
 		provider,
 		thinkingLevel: cfg.thinkingLevel,
-		createTools: () => {
-			const childTools = new ToolBroker();
-			ordinaryTools.copyTo(childTools);
-			return childTools;
-		},
+		createTools: createChildTools,
 		notify: async (text, data) => {
 			if (shuttingDown) return;
 			await subject.accept({
@@ -300,11 +282,10 @@ export async function runApp(): Promise<void> {
 		});
 	}
 
-	await extensionHost.activateBuiltin("runtime-tools", (pi) => {
-		pi.registerTool(createExecCommandTool(jobs, "root"));
-		for (const tool of createJobTools(jobs, "root")) pi.registerTool(tool);
-		for (const tool of createSubagentTools(subagents, "root")) pi.registerTool(tool);
-		const unsubscribe = jobs.onResolved((job) => {
+	await extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools({
+		jobs,
+		subagents,
+		onJobResolved: (job) => {
 			if (shuttingDown) return;
 			void subject.accept({
 				id: `job-notice-${job.id}`,
@@ -313,20 +294,10 @@ export async function runApp(): Promise<void> {
 				text: `后台任务 ${job.id} 已${job.status === "completed" ? "完成" : job.status === "killed" ? "被取消" : "结束"}。任务：${job.label}。来源：${job.source.extension}${job.source.operation ? `/${job.source.operation}` : ""}。请使用 job_output 读取结果。`,
 				data: { status: job.status, label: job.label, source: job.source },
 			}).catch((error) => render({ type: "error", text: `后台任务通知失败：${String(error)}` }));
-		});
-		return async () => {
-			unsubscribe();
-			await subagents.close();
-			await jobs.close();
-		};
-	});
+		},
+	}));
 	await extensionHost.activateBuiltin("commands", activateBuiltinCommands({ subject, models: modelRegistry, jobs, subagents, host: tui?.host, reload: async () => { await subject.waitForIdle(); await extensionHost.reload(); render({ type: "notice", text: "项目扩展已重新加载。" }); }, shutdown: async () => shutdown() }));
 	await extensionHost.load();
-	const discovered = await extensionHost.emitResourcesDiscover(process.cwd(), "startup");
-	if (discovered.toolPaths?.length) {
-		await loadToolsFromPaths(discovered.toolPaths, ordinaryTools);
-		await loadToolsFromPaths(discovered.toolPaths, tools);
-	}
 	if (oneshot !== undefined) {
 		subject.pushInput(oneshot, { mode: "direct" });
 		await subject.waitForIdle();

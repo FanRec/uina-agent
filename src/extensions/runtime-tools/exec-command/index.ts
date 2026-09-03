@@ -1,6 +1,6 @@
-import type { Tool } from "../../src/tools/broker.js";
-import type { ToolResultStatus } from "../../src/core/types.js";
-import type { JobContext, JobHandle, JobOutcome } from "../../src/extensions/jobs/registry.js";
+import type { Tool } from "../../../tools/broker.js";
+import type { ToolResultStatus } from "../../../core/types.js";
+import type { JobContext, JobHandle, JobOutcome } from "../../jobs/registry.js";
 import { executeShellProcess, type ProcessResult } from "./process.js";
 import {
 	MAX_OUTPUT_BYTES,
@@ -108,7 +108,7 @@ export function startBackgroundCommand(command: string, context: JobContext): Jo
 }
 
 export function createExecCommandTool(
-	jobs?: import("../../src/extensions/jobs/registry.js").JobRegistry,
+	jobs?: import("../../jobs/registry.js").JobRegistry,
 	ownerId = "root",
 ): Tool {
 	return {

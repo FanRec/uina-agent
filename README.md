@@ -53,13 +53,11 @@ src/
   ai/       配置、provider 适配、wire 转换和 SSE 协议解析
   core/     跨层类型
   session/  JSONL 追加日志、恢复和损坏尾行修复
-  tools/    工具注册、schema 校验、自动加载
+  tools/    工具注册、schema 校验和执行
+  extensions/runtime-tools/  内置工具实现，由 builtin activation 注册
   ui/       终端渲染
   cli/      入口组装和退出生命周期
   main.ts   程序入口
-tools/
-  exec-command/  PowerShell/sh/cmd 命令执行和输出收集
-  get-time/      当前时间
 ```
 
 ## 会话
@@ -84,7 +82,7 @@ readline 输入区是单行编辑器，恢复多个队列消息时使用空格�
 
 ## 工具
 
-在 `tools/` 顶层放置 `.ts` 文件，或创建包含 `index.ts` 的子目录。模块可以 default 导出单个 `Tool`、`Tool[]` 或注册函数。
+所有工具都由 ActivationScope 注册。内置工具位于 `src/extensions/runtime-tools/`，通过 `builtin:runtime-tools` 激活；项目扩展位于 `.uina/extensions/`，在 `activate(pi)` 中调用 `pi.registerTool()`。Uina 不再扫描 `tools/` 目录或从资源事件动态加载工具文件。
 
 工具声明包含 OpenAI function schema。启动时编译 schema，调用前使用 Ajv 校验参数。工具名必须全局唯一，工具执行必须返回字符串。
 

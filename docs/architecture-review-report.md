@@ -243,7 +243,7 @@ JSONL 本来是单一有序日志，但恢复结果被拆成 `messages`、`custo
 
 #### P1-1 Builtin 与项目扩展没有共享同一生命周期
 
-只有内置 commands 经 `activateBuiltin()`。Jobs、Subagents、job/subagent tools、普通 `tools/` loader 都在 CLI 手工创建或加载。
+审查时只有内置 commands 经 `activateBuiltin()`。后续 Jobs、Subagents、job/subagent tools 已迁入 `builtin:runtime-tools` activation scope，普通 `tools/` loader 已删除。
 
 直接后果：
 
@@ -263,7 +263,7 @@ JSONL 本来是单一有序日志，但恢复结果被拆成 `messages`、`custo
 - 文档描述 `message_start/update/end`，当前 ExtensionHost 没有对应运行路径。
 - 文档描述 tool execution 三阶段，当前只暴露 tool_call/tool_result。
 - 文档描述 session start/shutdown，当前 host 类型未实现。
-- `resources_discover.promptPaths` 会收集但不消费。
+- 审查时 `resources_discover.promptPaths` 会收集但不消费；后续该未闭环 API 已删除。
 - reload 不重新执行 resources discovery。
 - discovered tools 不属于 activation cleanup。
 
@@ -762,7 +762,7 @@ Uina 未来作为开放主体，至少应能回答：
 | trajectory audit | 不完整事件造成假审计 | 未改为权威事件投影，改名或移除 |
 | Jobs builtin | 崩溃丢失外部副作用 | 无 durable admission，对外标 experimental 或禁用默认 |
 | SubagentRegistry | 第二状态机、终态丢失、资源泄漏 | 未明确长期/一次性语义，先移出默认 |
-| resources_discover promptPaths | API 存在但无消费 | 当前无真实 prompt loader，删除字段 |
+| resources_discover promptPaths | 审查时 API 存在但无消费 | 已删除该未闭环 API |
 | 默认并发 10 | 无证据限制开放性 | 无测量与明确资源 owner，删除 |
 | 多份状态文档 | 持续漂移 | 不能自动或人工稳定维护，归档为 proposal |
 

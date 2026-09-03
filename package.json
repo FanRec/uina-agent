@@ -11,7 +11,7 @@
     "start": "tsx src/main.ts",
     "start:dist": "node dist/src/main.js",
     "dev": "tsx watch src/main.ts",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

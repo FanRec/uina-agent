@@ -1,8 +1,8 @@
 /**
  * get_time 工具：同步快工具（无副作用、确定性——工具闭环路径的测试锚点）。
- * 被 src/tools/loader.ts 自动发现并注册（pi 同款：extensions 目录 index.ts 约定）。
+ * 由 builtin:runtime-tools activation 显式注册。
  */
-import type { Tool } from "../../src/tools/broker.js";
+import type { Tool } from "../../../tools/broker.js";
 
 const getTime: Tool = {
 	def: {

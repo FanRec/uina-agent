@@ -7,8 +7,8 @@ import { Subject } from "../src/agent/loop.js";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { projectModelHistory, SessionFormatError } from "../src/session/recovery.js";
 import type { ModelRequest, ModelProvider, StreamDelta } from "../src/core/types.js";
-import execCommandTool, { createByteDecoder, execCommandDirect } from "../tools/exec-command/index.js";
-import getTimeTool from "../tools/get-time/index.js";
+import execCommandTool, { createByteDecoder, execCommandDirect } from "../src/extensions/runtime-tools/exec-command/index.js";
+import getTimeTool from "../src/extensions/runtime-tools/get-time/index.js";
 import { scriptedProvider, toolCallDelta, lastUser } from "./helpers/mock-provider.js";
 
 const tempDirs: string[] = [];

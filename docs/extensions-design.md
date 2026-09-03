@@ -249,7 +249,6 @@ type SpeechRecord = {
 
 | 事件 | 时机 | 用途 |
 | --- | --- | --- |
-| `resources_discover` | 加载或刷新扩展资源时 | 发现工具、提示、命令、模型能力或其他可按需加载资源。 |
 | `session_start` | 主 Session 创建或恢复后 | 初始化扩展并读取必要的主主体状态；子代理内部执行上下文由子代理扩展自行管理。 |
 | `session_before_compact` | 压缩开始前 | 调整摘要输入，保留事实、决定、偏好和未完成事项。 |
 | `session_compact` | 压缩成功后 | 发布新摘要并更新扩展索引。 |

@@ -29,7 +29,8 @@
 | `ai/gateway.ts` | HTTP 请求、OpenAI wire 消息、provider finish reason | 业务历史 |
 | `ai/sse.ts` | 标准 SSE framing | OpenAI 业务字段解释 |
 | `tools/broker.ts` | 注册、Ajv schema 编译、参数验证、执行 | 终端渲染 |
-| `tools/loader.ts` | 发现和事务加载工具模块 | 工具业务逻辑 |
+| `extensions/runner.ts` | activation scope、项目/内置能力注册、异步释放和来源诊断 | 工具业务逻辑、Agent 决策 |
+| `extensions/runtime-tools/` | 内置 shell、时间、Job/Subagent 工具实现 | 项目扩展发现 |
 | `session/jsonl-store.ts` | 追加、同步 flush、原子创建、尾行修复 | 模型上下文决策 |
 | `session/recovery.ts` | JSONL record 验证、历史重放、未知工具结果恢复 | 文件写入 |
 | `ui/` | 文本、工具状态、队列显示 | 状态转移 |

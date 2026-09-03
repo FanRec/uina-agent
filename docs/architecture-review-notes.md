@@ -79,9 +79,9 @@
 
 - 正面：`ExtensionAPI` 已提供 hook、tool、command、provider、message renderer、entry renderer、UI primitive、自定义消息/条目；本地扩展默认直接加载，没有审批/沙箱。
 - 缺口：package 是 private 且无 `exports`/extension SDK 入口，本地 TypeScript 扩展没有稳定可导入的公共类型面；目前更像“内部 API 对象”，还不是可演进的扩展平台。
-- 内置与外置不对称：只有 commands 通过 `activateBuiltin()`；Jobs/Subagents 和 job/subagent tools 在 CLI 手工注册，普通 `tools/` 又走另一套 loader。
-- root 有两个 ToolBroker。`registerTool()` 只进入 root broker；subagent 从 `ordinaryTools` 建立工具集，因此拿不到项目扩展直接注册的工具。child 默认甚至拿不到 `exec_command`，只有初次复制的普通工具。这是未声明的能力限制，而非统一扩展策略。
-- `resources_discover` 的 `promptPaths` 收集后完全未消费；reload 不重新执行资源发现；发现的 tool path 不归 activation cleanup 所有，未来重载会遇到残留/重名。这条 API 未闭环。
+- 审查时内置与外置不对称：只有 commands 通过 `activateBuiltin()`；Jobs/Subagents 和 job/subagent tools 在 CLI 手工注册，普通 `tools/` 又走另一套 loader。后续已迁为 `builtin:runtime-tools` scope。
+- 审查时 root 有两个 ToolBroker。`registerTool()` 只进入 root broker；subagent 从 `ordinaryTools` 建立工具集，因此拿不到项目扩展直接注册的工具。后续已删除目录扫描和 `ordinaryTools` 快照；child 使用显式的 runtime capability factory。
+- 审查时 `resources_discover` 的 `promptPaths` 收集后完全未消费；后续已删除该未闭环 API，不再保留动态工具加载旁路。
 - `input` 事件已经定义但没有任何 emit 调用；文档承诺的 `message_start/update/end`、`tool_execution_start/update/end`、`session_start/shutdown` 多数未进入当前 ExtensionHost 类型或运行路径。
 - 没有 tool renderer 注册接缝、快捷键注册接缝；UI 中 Alt+A/J/T 等产品快捷键硬编码到 `UIHost`。
 - handler 存储时没有 extension owner 元数据，运行时错误通常只能显示 `extensionName=unknown`；对“可定位”不足。dispose 只允许同步函数，不足以可靠释放未来传感器、连接或后台任务。

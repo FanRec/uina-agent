@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ToolBroker } from "../src/tools/broker.js";
 import { JobRegistry } from "../src/extensions/jobs/registry.js";
 import { createJobTools } from "../src/extensions/jobs/tools.js";
-import { createExecCommandTool } from "../tools/exec-command/index.js";
+import { createExecCommandTool } from "../src/extensions/runtime-tools/exec-command/index.js";
 import { Subject } from "../src/agent/loop.js";
 import { scriptedProvider, lastUser } from "./helpers/mock-provider.js";
 

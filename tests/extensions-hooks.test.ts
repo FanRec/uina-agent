@@ -560,46 +560,4 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		expect(afterResponseStatus).toBe(200);
 	});
 
-	it("discovers external resources via resources_discover and registers tools dynamically", async () => {
-		const host = new ExtensionHost();
-		const testToolFile = "tests/fixtures/discovered-tool.js";
-		const fs = await import("node:fs");
-		const path = await import("node:path");
-
-		fs.mkdirSync("tests/fixtures", { recursive: true });
-		fs.writeFileSync(
-			testToolFile,
-			`export default {
-				def: {
-					type: "function",
-					function: {
-						name: "dynamically_discovered_tool",
-						description: "由扩展动态发现加载的工具",
-						parameters: { type: "object", properties: {} },
-					},
-				},
-				async run() { return "discovered_ok"; },
-			};`,
-		);
-
-		host.on("resources_discover", () => {
-			return {
-				toolPaths: [path.resolve(testToolFile)],
-			};
-		});
-
-		const discovered = await host.emitResourcesDiscover(process.cwd(), "startup");
-		expect(discovered.toolPaths?.length).toBe(1);
-
-		const { loadToolsFromPaths } = await import("../src/tools/loader.js");
-		const broker = new ToolBroker();
-		const result = await loadToolsFromPaths(discovered.toolPaths!, broker);
-
-		expect(result.loaded).toBe(1);
-		expect(broker.has("dynamically_discovered_tool")).toBe(true);
-
-		// 清理临时文件
-		fs.unlinkSync(testToolFile);
-		fs.rmdirSync("tests/fixtures");
-	});
 });
