@@ -12,6 +12,7 @@ import { ProcessTerminal } from "./core/terminal.js";
 import { MainScreenRenderer } from "./core/renderer.js";
 import { Key, matchesKey } from "./core/keys.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
+import { C } from "./core/utils.js";
 import { InputLine } from "./components/editor/input-line.js";
 import { BannerComponent } from "./components/primitives/banner.js";
 import { TranscriptContainer } from "./components/transcript/transcript.js";
@@ -255,6 +256,30 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
+	scrollUp(lines = 3): void {
+		this.scrollOffset += lines;
+		this.requestRender();
+	}
+
+	scrollDown(lines = 3): void {
+		this.scrollOffset = Math.max(0, this.scrollOffset - lines);
+		this.requestRender();
+	}
+
+	scrollToTop(): void {
+		this.scrollOffset = 999999;
+		this.requestRender();
+	}
+
+	scrollToBottom(): void {
+		this.scrollOffset = 0;
+		this.requestRender();
+	}
+
+	getScrollOffset(): number {
+		return this.scrollOffset;
+	}
+
 	// =========================================================================
 	// UIHostContextPort 实现
 	// =========================================================================
@@ -492,11 +517,18 @@ export class UIHost implements UIHostContextPort {
 		if (totalPerm <= transcriptH) {
 			const padCount = transcriptH - totalPerm;
 			visibleTranscript = [...permanentLines, ...new Array(padCount).fill("")];
+			this.scrollOffset = 0;
 		} else {
 			const maxScroll = totalPerm - transcriptH;
 			const effScroll = Math.max(0, Math.min(this.scrollOffset, maxScroll));
+			this.scrollOffset = effScroll;
 			const start = totalPerm - transcriptH - effScroll;
 			visibleTranscript = permanentLines.slice(start, start + transcriptH);
+
+			if (effScroll > 0) {
+				const percent = maxScroll > 0 ? Math.round(((maxScroll - effScroll) / maxScroll) * 100) : 100;
+				this.inputLine.setStatusHeader(`${C.yellow}[📜 视口 ${percent}% (PageDn到底)]${C.reset} ${statusHeader}`);
+			}
 		}
 
 		// 8. 组装整屏行数组（严格锁定撑满 height 行，输入框吸底）
@@ -607,6 +639,71 @@ export class UIHost implements UIHostContextPort {
 			return;
 		}
 
+		// 4.1 终端鼠标滚轮支持（SGR \x1b[< 与 X10 模式）
+		if (data.includes("\x1b[<")) {
+			const sgrMatches = [...data.matchAll(/\x1b\[<(\d+);(\d+);(\d+)[Mm]/g)];
+			if (sgrMatches.length > 0) {
+				let delta = 0;
+				for (const m of sgrMatches) {
+					const code = parseInt(m[1]!, 10);
+					if ((code & 64) === 64) {
+						if ((code & 1) === 0) delta += 3;
+						else delta -= 3;
+					}
+				}
+				if (delta > 0) {
+					this.scrollUp(delta);
+					return;
+				} else if (delta < 0) {
+					this.scrollDown(-delta);
+					return;
+				}
+			}
+		}
+		if (data.startsWith("\x1b[M") && data.length >= 6) {
+			let offset = 0;
+			let delta = 0;
+			while (offset + 6 <= data.length && data.slice(offset, offset + 3) === "\x1b[M") {
+				const btn = data.charCodeAt(offset + 3) - 32;
+				if (btn === 64) delta += 3;
+				else if (btn === 65) delta -= 3;
+				offset += 6;
+			}
+			if (delta > 0) {
+				this.scrollUp(delta);
+				return;
+			} else if (delta < 0) {
+				this.scrollDown(-delta);
+				return;
+			}
+		}
+
+		// 4.2 键盘视口滚动支持（PageUp / PageDown / Shift+Up/Down / Ctrl+Up/Down / Alt+Up/Down / Home / End）
+		if (matchesKey(data, Key.pageup) || data === "\x1b[5~") {
+			this.scrollUp(Math.max(1, Math.floor(this.terminal.rows / 2)));
+			return;
+		}
+		if (matchesKey(data, Key.pagedown) || data === "\x1b[6~") {
+			this.scrollDown(Math.max(1, Math.floor(this.terminal.rows / 2)));
+			return;
+		}
+		if (data === "\x1b[1;2A" || data === "\x1b[1;5A" || data === "\x1b[1;3A") {
+			this.scrollUp(3);
+			return;
+		}
+		if (data === "\x1b[1;2B" || data === "\x1b[1;5B" || data === "\x1b[1;3B") {
+			this.scrollDown(3);
+			return;
+		}
+		if (data === "\x1b[5;2~" || data === "\x1b[1;5H" || data === "\x1b[1;2H") {
+			this.scrollToTop();
+			return;
+		}
+		if (data === "\x1b[6;2~" || data === "\x1b[1;5F" || data === "\x1b[1;2F") {
+			this.scrollToBottom();
+			return;
+		}
+
 		// 5. 焦点组件输入处理
 		const focused = this.focusManager.getFocused();
 		if (focused && focused.handleInput) {
@@ -616,6 +713,7 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	private handleUserSubmit(text: string): void {
+		this.scrollOffset = 0;
 		this.inputLine.clear();
 
 		// 斜杠命令分发

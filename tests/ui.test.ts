@@ -713,4 +713,70 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
 		}
 	});
+
+	it("支持鼠标滚轮与键盘 (PageUp/PageDown) 视口滚动", () => {
+		let stdinCallback: ((data: string) => void) | undefined;
+		const mockStdout = {
+			columns: 80,
+			rows: 24,
+			isTTY: true,
+			write: vi.fn(),
+			on: vi.fn(),
+			removeListener: vi.fn(),
+		};
+		const mockStdin = {
+			isTTY: true,
+			setRawMode: vi.fn(),
+			resume: vi.fn(),
+			pause: vi.fn(),
+			setEncoding: vi.fn(),
+			on: vi.fn((event: string, cb: (data: string) => void) => {
+				if (event === "data") stdinCallback = cb;
+			}),
+			removeListener: vi.fn(),
+		};
+
+		const origStdout = process.stdout;
+		const origStdin = process.stdin;
+		Object.defineProperty(process, "stdout", { value: mockStdout, configurable: true });
+		Object.defineProperty(process, "stdin", { value: mockStdin, configurable: true });
+
+		try {
+			const tui = createInteractiveUI({
+				modelName: "test-model",
+				toolCount: 2,
+			});
+
+			expect(tui.host.getScrollOffset()).toBe(0);
+
+			// 1. 模拟按下 PageUp (\x1b[5~)
+			stdinCallback!("\x1b[5~");
+			expect(tui.host.getScrollOffset()).toBeGreaterThan(0);
+
+			// 2. 模拟按下 PageDown (\x1b[6~)
+			stdinCallback!("\x1b[6~");
+			expect(tui.host.getScrollOffset()).toBe(0);
+
+			// 3. 模拟 SGR 鼠标滚轮向上滚动 (\x1b[<64;20;10M)
+			stdinCallback!("\x1b[<64;20;10M");
+			expect(tui.host.getScrollOffset()).toBe(3);
+
+			// 4. 模拟 SGR 鼠标滚轮向下滚动 (\x1b[<65;20;10M)
+			stdinCallback!("\x1b[<65;20;10M");
+			expect(tui.host.getScrollOffset()).toBe(0);
+
+			// 5. 模拟滚上去后发送新消息，视口自动归位
+			stdinCallback!("\x1b[<64;20;10M");
+			expect(tui.host.getScrollOffset()).toBe(3);
+			stdinCallback!("h");
+			stdinCallback!("i");
+			stdinCallback!("\r");
+			expect(tui.host.getScrollOffset()).toBe(0);
+
+			tui.close();
+		} finally {
+			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
+			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+		}
+	});
 });
