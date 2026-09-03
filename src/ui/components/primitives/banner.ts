@@ -119,14 +119,14 @@ export function getStartupBanner(
 	terminalWidth = 80,
 ): string[] {
 	const width = Math.max(24, terminalWidth);
-	const banner: string[] = [""]; // 顶部空行留白
+	const banner: string[] = [];
 
 	const uinaLines = renderBigfontUina();
 	const model = options?.modelName ?? "deepseek-chat";
 	const tools = options?.toolCount ?? 6;
 
-	// 宽度 >= 72 列时并排展示 40 列像素鲸鱼与右侧信息；小于 72 列时展示窄屏极客横幅
-	if (width >= 72) {
+	// 宽度 >= 85 列时并排展示 40 列像素鲸鱼与右侧信息；小于 85 列时展示紧凑极客横幅
+	if (width >= 85) {
 		const whaleLines = renderWhaleLines();
 		const availRight = Math.max(10, width - 43); // 40鲸鱼 + 3空格间距
 

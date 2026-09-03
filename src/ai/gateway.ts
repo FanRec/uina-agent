@@ -4,6 +4,7 @@ import type {
 	ThinkingLevel,
 } from "../core/types.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
+import { resolveOfficialThinkingLevels } from "./config.js";
 
 export interface ProviderConf {
 	baseUrl: string;
@@ -20,7 +21,7 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 	return {
 		name: conf.model,
 		contextWindow: conf.contextWindow,
-		thinkingLevels: conf.thinkingLevels ?? ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+		thinkingLevels: resolveOfficialThinkingLevels(conf),
 		includeThinking: conf.thinkingFormat === "deepseek",
 		async stream(req, onDelta, signal): Promise<void> {
 			let headers: Record<string, string> = {

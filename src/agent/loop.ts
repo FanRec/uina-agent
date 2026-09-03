@@ -16,7 +16,7 @@ export interface LoopHooks {
 	onToken: (text: string) => void;
 	onThinking?: (text: string) => void;
 	onTurnStart?: (n: number, text: string) => void;
-	onTurnEnd?: (n: number) => void;
+	onTurnEnd?: (n: number, usage?: { usedTokens: number; contextWindow: number }) => void;
 	onToolStart?: (name: string, args: unknown, callId?: string) => void;
 	onToolDone?: (
 		name: string,
@@ -112,6 +112,18 @@ export class Subject {
 
 	getPreferredThinkingLevel(): ThinkingLevel {
 		return this.preferredThinkingLevel;
+	}
+
+	getContextWindow(): number {
+		return this.compaction.contextWindow;
+	}
+
+	getUsedTokens(): number {
+		return this.history.reduce((acc, m) => {
+			const textLen = m.content ? m.content.length : 0;
+			const thinkLen = "thinking" in m && typeof m.thinking === "string" ? m.thinking.length : 0;
+			return acc + Math.ceil((textLen + thinkLen + 16) / 4);
+		}, 0);
 	}
 
 	async setModel(provider: ModelProvider): Promise<void> {
@@ -310,7 +322,11 @@ export class Subject {
 			this.runtimeInputs = [];
 			this.busy = false;
 			try {
-				this.hooks.onTurnEnd?.(turn);
+				const usage = {
+					usedTokens: this.getUsedTokens(),
+					contextWindow: this.getContextWindow(),
+				};
+				this.hooks.onTurnEnd?.(turn, usage);
 				await this.extensionHost?.emit({ type: "turn_end", turnNumber: turn });
 			} catch (error) {
 				try { this.hooks.onError?.(safeError(error)); } catch { /* hooks cannot own lifecycle */ }

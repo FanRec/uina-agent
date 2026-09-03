@@ -142,29 +142,53 @@ export function matchesKey(data: string, keyId: string): boolean {
 			return (
 				data === "\x1bo" ||
 				data === "\x1bO" ||
+				data === "\x1b\x1bo" ||
+				data === "\x1b\x1bO" ||
 				data === "\x1b[111;3u" ||
-				data === "\x1b[79;3u"
+				data === "\x1b[79;3u" ||
+				data === "\x1b[27;3;111~" ||
+				data === "\x1b[27;3;79~" ||
+				data === "\x1b[1;3o" ||
+				data === "\x1b[1;3O"
 			);
 		case "alt+a":
 			return (
 				data === "\x1ba" ||
 				data === "\x1bA" ||
+				data === "\x1b\x1ba" ||
+				data === "\x1b\x1bA" ||
 				data === "\x1b[97;3u" ||
-				data === "\x1b[65;3u"
+				data === "\x1b[65;3u" ||
+				data === "\x1b[27;3;97~" ||
+				data === "\x1b[27;3;65~" ||
+				data === "\x1b[1;3a" ||
+				data === "\x1b[1;3A"
 			);
 		case "alt+j":
 			return (
 				data === "\x1bj" ||
 				data === "\x1bJ" ||
+				data === "\x1b\x1bj" ||
+				data === "\x1b\x1bJ" ||
 				data === "\x1b[106;3u" ||
-				data === "\x1b[74;3u"
+				data === "\x1b[74;3u" ||
+				data === "\x1b[27;3;106~" ||
+				data === "\x1b[27;3;74~" ||
+				data === "\x1b[1;3j" ||
+				data === "\x1b[1;3J"
 			);
 		case "alt+t":
 			return (
 				data === "\x1bt" ||
 				data === "\x1bT" ||
+				data === "\x1b\x1bt" ||
+				data === "\x1b\x1bT" ||
 				data === "\x1b[116;3u" ||
-				data === "\x1b[84;3u"
+				data === "\x1b[84;3u" ||
+				data === "\x1b[27;3;116~" ||
+				data === "\x1b[27;3;84~" ||
+				data === "\x1b[1;3t" ||
+				data === "\x1b[1;3T"
 			);
 		default:
 			return data === keyId;

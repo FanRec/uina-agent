@@ -122,7 +122,7 @@ export async function runApp(): Promise<void> {
 			onToken: (text) => render({ type: "text", text }),
 			onThinking: (text) => { if (tui || process.env.UINA_SHOW_THINKING === "1") render({ type: "thinking", text }); },
 			onTurnStart: (n, text) => render({ type: "turn_start", n, text }),
-			onTurnEnd: (n) => render({ type: "turn_end", n }),
+			onTurnEnd: (n, usage) => render({ type: "turn_end", n, usage }),
 			onToolStart: (name, args, callId) => {
 				if (callId) toolStartedAt.set(callId, Date.now());
 				render({ type: "tool_start", name, args, callId });
@@ -217,7 +217,7 @@ export async function runApp(): Promise<void> {
 	};
 
 	const handleInterrupt = (): void => {
-		if (subject.isBusy()) {
+		if (subject.isBusy() || (tui && tui.host.isBusy())) {
 			subject.interrupt();
 			void subject.waitForIdle().then(restoreQueueToEditor).catch((error) => process.stderr.write(`[队列恢复失败] ${String(error)}\n`));
 			return;
@@ -279,6 +279,8 @@ export async function runApp(): Promise<void> {
 	if (!isTTY) {
 		process.stdout.write(`Uina 就绪（模型：${provider.name}，工具：${loaded.loaded} 个）— /quit 退出\n\n`);
 	}
+	process.on("SIGINT", handleInterrupt);
+
 	if (isTTY) {
 		tui = createInteractiveUI({
 			modelName: provider.name,
@@ -290,19 +292,18 @@ export async function runApp(): Promise<void> {
 		extensionHost.attachUI(tui.ctxUI);
 		tui.onLine(onUserLine);
 		tui.onSIGINT(handleInterrupt);
+		tui.host.setUsage(subject.getUsedTokens(), subject.getContextWindow());
 		if (snapshot.messages.length > 0) {
 			tui.loadHistory(snapshot.messages);
 		}
 		for (const message of snapshot.customMessages) tui.host.transcript.addCustomMessage(message);
 		for (const entry of snapshot.customEntries) tui.host.transcript.addCustomEntry(entry);
-	}
- else {
+	} else {
 		nonTTY = createInterface({ input: process.stdin });
 		nonTTY.on("line", (line) => onUserLine(line, "followUp"));
 		nonTTY.on("close", () => {
 			void shutdown(false);
 		});
-		process.on("SIGINT", handleInterrupt);
 	}
 
 	await extensionHost.activateBuiltin("commands", activateBuiltinCommands({ subject, models: modelRegistry, jobs, subagents, host: tui?.host, reload: async () => { await subject.waitForIdle(); await extensionHost.reload(); render({ type: "notice", text: "项目扩展已重新加载。" }); }, shutdown: async () => shutdown() }));

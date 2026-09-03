@@ -48,19 +48,19 @@ export class ProcessTerminal {
 				process.stdout.on("resize", this.onResizeHandler);
 			}
 
-			// 开启备用屏（DEC 1049）、清屏、括号粘贴模式、键盘扩展与 SGR 鼠标跟踪
-			process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?2004h\x1b[>1u\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+			// 开启备用屏（DEC 1049）、清屏、括号粘贴模式、键盘扩展（保留终端原生划词选择）
+			process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?2004h\x1b[>1u");
 		}
 	}
 
-	/** 恢复终端：关闭原始模式、光标显示、退出备用屏与鼠标跟踪 */
+	/** 恢复终端：关闭原始模式、光标显示、退出备用屏 */
 	stop(): void {
 		if (!this.running) return;
 		this.running = false;
 
 		if (this.isTTY) {
-			// 退出备用屏（DEC 1049 恢复主屏历史）、关闭括号粘贴模式与鼠标跟踪
-			process.stdout.write("\x1b[?1049l\x1b[?2004l\x1b[<u\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?25h");
+			// 退出备用屏（DEC 1049 恢复主屏历史）、关闭括号粘贴模式
+			process.stdout.write("\x1b[?1049l\x1b[?2004l\x1b[<u\x1b[?25h");
 			this.showCursor();
 
 			process.stdin.removeListener("data", this.handleStdinData);
@@ -127,10 +127,10 @@ export class ProcessTerminal {
 	}
 }
 
-// 确保在任何异常退出时彻底恢复终端光标与鼠标跟踪
+// 确保在任何异常退出时彻底恢复终端光标与主屏
 process.on("exit", () => {
 	try {
-		process.stdout.write("\x1b[?1049l\x1b[?2004l\x1b[<u\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?25h");
+		process.stdout.write("\x1b[?1049l\x1b[?2004l\x1b[<u\x1b[?25h");
 	} catch {}
 });
 

@@ -32,35 +32,44 @@ export function formatToolCardLines(
 		if (obj.cancelled) {
 			bodyLines.push(`${C.yellow}⚠ 操作已取消${C.reset}`);
 		} else {
-			const errText = typeof obj.error === "string" ? obj.error : "";
+			const errText = typeof obj.error === "string" ? obj.error.replace(/\r/g, "").trim() : "";
 			if (errText) {
 				isError = true;
 				bodyLines.push(`${C.red}✗ 错误: ${errText.slice(0, 100)}${C.reset}`);
 			}
 			if (typeof obj.stderr === "string" && obj.stderr.trim()) {
-				for (const l of obj.stderr.trim().split("\n").slice(0, 4)) {
+				const lines = obj.stderr.split(/\r?\n/).map((s) => s.replace(/\r/g, "").trimEnd()).filter(Boolean);
+				for (const l of lines.slice(0, 4)) {
 					bodyLines.push(`${C.red}  ${l.slice(0, 120)}${C.reset}`);
 				}
 			}
 			if (typeof obj.stdout === "string" && obj.stdout.trim()) {
-				for (const l of obj.stdout.trim().split("\n").slice(0, 6)) {
+				const lines = obj.stdout.split(/\r?\n/).map((s) => s.replace(/\r/g, "").trimEnd()).filter(Boolean);
+				for (const l of lines.slice(0, 6)) {
 					bodyLines.push(`${C.gray}  ${l.slice(0, 120)}${C.reset}`);
 				}
 			}
-			if (!errText && !("stdout" in obj) && !("stderr" in obj)) {
+			if (bodyLines.length === 0 && !errText && !("stdout" in obj) && !("stderr" in obj)) {
 				const keys = Object.keys(obj)
 					.slice(0, 3)
-					.map((k) => `${k}: ${String(obj![k]).slice(0, 30)}`)
+					.map((k) => `${k}: ${String(obj![k]).replace(/\r/g, "").slice(0, 30)}`)
 					.join(", ");
-				bodyLines.push(`${C.dim}  ${keys}${C.reset}`);
+				if (keys) bodyLines.push(`${C.dim}  ${keys}${C.reset}`);
+			}
+			if (bodyLines.length === 0) {
+				bodyLines.push(`${C.dim}  (执行完成，无输出)${C.reset}`);
 			}
 		}
 	} else {
-		const raw = String(result).trim();
+		const raw = String(result).replace(/\r/g, "").trim();
 		if (raw) {
-			for (const l of raw.split("\n").slice(0, 6)) {
+			const lines = raw.split(/\r?\n/).map((s) => s.trimEnd()).filter(Boolean);
+			for (const l of lines.slice(0, 6)) {
 				bodyLines.push(`${C.gray}  ${l.slice(0, 120)}${C.reset}`);
 			}
+		}
+		if (bodyLines.length === 0) {
+			bodyLines.push(`${C.dim}  (执行完成，无输出)${C.reset}`);
 		}
 	}
 
@@ -68,19 +77,19 @@ export function formatToolCardLines(
 	// 1. 卡片顶边框：┌─ ✓ [工具] ${name} ────────────────────────┐
 	// ─────────────────────────────────────────────────────────────
 	const statusIcon = isError ? `${C.red}✗${C.reset}` : `${C.green}✓${C.reset}`;
-	const headerTag = `┌─ ${statusIcon} ${C.iceBlue}[工具] ${name}${C.reset} `;
-	const topTagW = visibleWidth(headerTag);
+	const topTag = `  ${C.gray}┌─ ${statusIcon} ${C.iceBlue}[工具] ${name}${C.reset} `;
+	const topTagW = visibleWidth(topTag);
 	const topFillLen = Math.max(1, cardWidth - topTagW - 1);
-	const topLine = `  ${C.gray}${headerTag}${"─".repeat(topFillLen)}┐${C.reset}`;
+	const topLine = `${topTag}${C.gray}${"─".repeat(topFillLen)}┐${C.reset}`;
 
 	const output: string[] = [topLine];
 
 	// ─────────────────────────────────────────────────────────────
 	// 2. 卡片内部内容行：│  ...                                 │
 	// ─────────────────────────────────────────────────────────────
-	const innerW = cardWidth - 4;
+	const innerW = cardWidth - 6; // 左右各空 1 格加边框与前导 2 格空格
 	for (const rawLine of bodyLines) {
-		const cleanLine = rawLine.replace(/\r$/, "");
+		const cleanLine = rawLine.replace(/\r/g, "");
 		const truncated = truncateToWidth(cleanLine, innerW, "");
 		const lineW = visibleWidth(truncated);
 		const pad = Math.max(0, innerW - lineW);
@@ -92,7 +101,7 @@ export function formatToolCardLines(
 	// ─────────────────────────────────────────────────────────────
 	const badge = `${t}`;
 	const badgeW = visibleWidth(badge);
-	const botFillLen = Math.max(1, cardWidth - badgeW - 5);
+	const botFillLen = Math.max(1, cardWidth - badgeW - 7);
 	const botLine = `  ${C.gray}└${"─".repeat(botFillLen)} ${badge} ─┘${C.reset}`;
 	output.push(botLine);
 

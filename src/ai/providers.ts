@@ -1,5 +1,5 @@
 import type { ModelProvider, ModelRequest, ThinkingLevel } from "../core/types.js";
-import type { ProviderConfig, ProviderKind } from "./config.js";
+import { resolveOfficialThinkingLevels, type ProviderConfig, type ProviderKind } from "./config.js";
 import { createOpenAIProvider } from "./gateway.js";
 import { fetchWithRetry } from "./gateway.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
@@ -12,7 +12,7 @@ export function createProvider(name: string, conf: ProviderConfig): ModelProvide
 }
 
 function levels(conf: ProviderConfig): readonly ThinkingLevel[] {
-	return conf.thinkingLevels ?? ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+	return resolveOfficialThinkingLevels(conf);
 }
 
 function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvider {

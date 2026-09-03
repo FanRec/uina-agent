@@ -39,7 +39,15 @@ export interface TurnRecord {
 	customMessages?: CustomMessage[];
 }
 
+export type TimelineItem =
+	| { kind: "turn"; turn: TurnRecord }
+	| { kind: "notice"; text: string }
+	| { kind: "compaction"; record: CompactionRecord }
+	| { kind: "customMessage"; message: CustomMessage }
+	| { kind: "customEntry"; entry: CustomEntry };
+
 export class TranscriptContainer implements Component {
+	private readonly timeline: TimelineItem[] = [];
 	private readonly historyTurns: TurnRecord[] = [];
 	private currentTurn: TurnRecord | null = null;
 	private thinkingCommitted = false;
@@ -115,25 +123,34 @@ export class TranscriptContainer implements Component {
 
 	addCompaction(record: CompactionRecord): void {
 		this.compactions.push(record);
+		this.timeline.push({ kind: "compaction", record });
 	}
 
 	addCustomMessage(msg: CustomMessage): void {
 		if (this.currentTurn) {
 			if (!this.currentTurn.customMessages) this.currentTurn.customMessages = [];
 			this.currentTurn.customMessages.push(msg);
-		} else this.standaloneCustomMessages.push(msg);
+		} else {
+			this.standaloneCustomMessages.push(msg);
+			this.timeline.push({ kind: "customMessage", message: msg });
+		}
 	}
 
 	addCustomEntry(entry: CustomEntry): void {
 		this.customEntries.push(entry);
+		this.timeline.push({ kind: "customEntry", entry });
 	}
 
 	addNotice(text: string): void {
-		this.systemNotices.push(`  ${C.blue}ℹ ${text}${C.reset}`);
+		const formatted = `  ${C.blue}ℹ ${text}${C.reset}`;
+		this.systemNotices.push(formatted);
+		this.timeline.push({ kind: "notice", text: formatted });
 	}
 
 	addError(text: string): void {
-		this.systemNotices.push(`  ${C.red}✗ [错误] ${text}${C.reset}`);
+		const formatted = `  ${C.red}✗ [错误] ${text}${C.reset}`;
+		this.systemNotices.push(formatted);
+		this.timeline.push({ kind: "notice", text: formatted });
 	}
 
 	finishTurn(): void {
@@ -155,18 +172,21 @@ export class TranscriptContainer implements Component {
 		for (const msg of messages) {
 			if (msg.role === "user") {
 				if (msg.content.startsWith("[历史摘要]")) {
-					this.compactions.push({
+					const record: CompactionRecord = {
 						id: Date.now(),
 						summary: msg.content.slice(6).trim(),
 						turnsCount: turnN,
 						tokensSaved: 0,
 						collapsed: true,
 						timestamp: Date.now(),
-					});
+					};
+					this.compactions.push(record);
+					this.timeline.push({ kind: "compaction", record });
 					continue;
 				}
 				if (current) {
 					this.historyTurns.push(current);
+					this.timeline.push({ kind: "turn", turn: current });
 				}
 				turnN++;
 				current = {
@@ -204,10 +224,12 @@ export class TranscriptContainer implements Component {
 		}
 		if (current) {
 			this.historyTurns.push(current);
+			this.timeline.push({ kind: "turn", turn: current });
 		}
 	}
 
 	clear(): void {
+		this.timeline.length = 0;
 		this.historyTurns.length = 0;
 		this.currentTurn = null;
 		this.compactions.length = 0;
@@ -231,7 +253,9 @@ export class TranscriptContainer implements Component {
 	toggleAllThinking(collapsed?: boolean): void {
 		const all = [...this.historyTurns];
 		if (this.currentTurn) all.push(this.currentTurn);
-		const targetState = collapsed ?? !all.some((t) => !(t.thinkingCollapsed ?? true));
+		// 如果任一处于展开状态，则目标为折叠 (true)；若全折叠，则目标为展开 (false)
+		const anyExpanded = all.some((t) => t.thinkingText && t.thinkingCollapsed === false);
+		const targetState = collapsed ?? anyExpanded;
 		for (const t of all) {
 			if (t.thinkingText) {
 				t.thinkingCollapsed = targetState;
@@ -242,6 +266,7 @@ export class TranscriptContainer implements Component {
 	private commitCurrentTurn(): void {
 		if (this.currentTurn) {
 			this.historyTurns.push(this.currentTurn);
+			this.timeline.push({ kind: "turn", turn: this.currentTurn });
 			this.currentTurn = null;
 		}
 	}
@@ -285,36 +310,34 @@ export class TranscriptContainer implements Component {
 	render(width: number): string[] {
 		const lines: string[] = [];
 
-		// 1. 系统通知
-		for (const notice of this.systemNotices) {
-			lines.push(notice);
+		// 按真实时间线严格线性渲染已结算历史
+		for (const item of this.timeline) {
+			switch (item.kind) {
+				case "notice":
+					lines.push(item.text);
+					break;
+				case "compaction":
+					lines.push(...formatCompactionCardLines(item.record, width));
+					break;
+				case "turn":
+					this.renderTurn(item.turn, width, lines);
+					break;
+				case "customMessage": {
+					const comp = new CustomMessageComponent(item.message, this.messageRenderer(item.message.customType));
+					lines.push(...comp.render(width));
+					break;
+				}
+				case "customEntry": {
+					const comp = new CustomEntryComponent(item.entry, this.entryRenderer(item.entry.customType));
+					lines.push(...comp.render(width));
+					break;
+				}
+			}
 		}
 
-		// 2. 会话初始压缩记录
-		const initialComps = this.compactions.filter((c) => !c.afterTurnN || c.afterTurnN === 0);
-		for (const comp of initialComps) {
-			lines.push(...formatCompactionCardLines(comp, width));
-		}
-
-		// 3. 历史轮次
-		for (const turn of this.historyTurns) {
-			this.renderTurn(turn, width, lines);
-		}
-
-		// 4. 当前进行中的轮次
+		// 当前正在生成的活动轮次
 		if (this.currentTurn) {
 			this.renderTurn(this.currentTurn, width, lines, this.thinkingCommitted);
-		}
-
-		for (const message of this.standaloneCustomMessages) {
-			const comp = new CustomMessageComponent(message, this.messageRenderer(message.customType));
-			lines.push(...comp.render(width));
-		}
-
-		// 5. 独立的全局 CustomEntries
-		for (const entry of this.customEntries) {
-			const comp = new CustomEntryComponent(entry, this.entryRenderer(entry.customType));
-			lines.push(...comp.render(width));
 		}
 
 		return lines;

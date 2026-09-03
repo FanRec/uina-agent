@@ -131,7 +131,7 @@ export class InteractiveTUI {
 					this.host.setUsage(m.usage.usedTokens, m.usage.contextWindow);
 				}
 				const elapsed = this.host.getLastElapsedMs();
-				this.host.activityLine.finish("本轮已完成", elapsed > 0 ? elapsed : undefined);
+				this.host.activityLine.finish("本轮已完成", elapsed > 0 ? elapsed : undefined, this.host.getStreamTokenCount());
 				this.host.requestRender();
 				break;
 

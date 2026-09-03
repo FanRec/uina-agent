@@ -77,8 +77,11 @@ export class ActivityLineComponent implements Component {
 		this.tokenCount += count;
 	}
 
-	finish(summary = "本轮已完成", elapsedOverride?: number): void {
+	finish(summary = "本轮已完成", elapsedOverride?: number, tokensOverride?: number): void {
 		this.phase = "done";
+		if (tokensOverride !== undefined && tokensOverride > 0) {
+			this.tokenCount = tokensOverride;
+		}
 		if (elapsedOverride !== undefined && elapsedOverride > 0) {
 			this.elapsedMs = elapsedOverride;
 		} else if (this.startTime > 0) {

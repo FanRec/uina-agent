@@ -94,6 +94,9 @@ export class UIHost implements UIHostContextPort {
 	private readonly statuses = new Map<string, string>();
 
 
+	private activeModalId: string | null = null;
+	private activeModalHandle: OverlayHandle | null = null;
+
 	// 事件回调
 	onUserLine?: (text: string, mode: "steer" | "followUp" | "direct") => void;
 	onInterrupt?: () => void;
@@ -214,9 +217,15 @@ export class UIHost implements UIHostContextPort {
 
 	cycleReasoningEffort(): void {
 		const tiers = this.thinkingLevels;
+		if (!tiers || tiers.length === 0) return;
 		const idx = tiers.indexOf(this.reasoningEffort);
 		const next = tiers[(idx + 1) % tiers.length]!;
 		this.setReasoningEffort(next);
+		this.transcript.addNotice(`思考等级已设置为: ${next}`);
+	}
+
+	getStreamTokenCount(): number {
+		return this.streamTokenCount;
 	}
 
 	setBusy(busy: boolean): void {
@@ -428,13 +437,42 @@ export class UIHost implements UIHostContextPort {
 		return () => this.rawInputListeners.delete(handler);
 	}
 
+	toggleModal(id: string, opener: (close: () => void) => OverlayHandle): void {
+		if (this.activeModalId === id) {
+			this.closeModal();
+			return;
+		}
+		this.closeModal();
+		this.activeModalId = id;
+		const handle = opener(() => {
+			if (this.activeModalId === id) {
+				this.activeModalId = null;
+				this.activeModalHandle = null;
+			}
+		});
+		this.activeModalHandle = handle;
+	}
+
+	closeModal(): void {
+		if (this.activeModalHandle) {
+			const h = this.activeModalHandle;
+			this.activeModalId = null;
+			this.activeModalHandle = null;
+			h.hide();
+		}
+	}
+
 	openHelpMenu(): void {
-		const menu = new HelpMenu(this.registry.listCommands());
-		let handle: OverlayHandle | null = null;
-		menu.onClose = () => {
-			handle?.hide();
-		};
-		handle = this.overlayStack.showOverlay(menu);
+		this.toggleModal("help", (close) => {
+			const menu = new HelpMenu(this.registry.listCommands());
+			let handle: OverlayHandle | null = null;
+			menu.onClose = () => {
+				close();
+				handle?.hide();
+			};
+			handle = this.overlayStack.showOverlay(menu, undefined, () => close());
+			return handle;
+		});
 	}
 
 
@@ -496,8 +534,9 @@ export class UIHost implements UIHostContextPort {
 		const aboveLines = [...aboveEditorWidgets, ...overlayLines, ...suggestionLines].slice(0, maxAboveH).map((l) => `${margin}${l}`);
 		const aboveH = aboveLines.length;
 
-		// 5. 计算转录区可用高度
-		const transcriptH = Math.max(0, height - inputH - belowH - aboveH);
+		// 5. 计算转录区可用高度与固定 1 行呼吸空间
+		const breathingGap = 1;
+		const transcriptH = Math.max(0, height - inputH - belowH - aboveH - breathingGap);
 
 		// 6. 渲染永久历史行
 		const bannerLines = this.headerContainer.render(innerW).map((l) => (l ? `${margin}${l}` : ""));
@@ -524,9 +563,12 @@ export class UIHost implements UIHostContextPort {
 			}
 		}
 
-		// 8. 组装整屏行数组（严格锁定撑满 height 行，输入框吸底）
+		// 8. 组装整屏行数组（严格锁定撑满 height 行，输入框吸底，中间保留 1 行呼吸空行）
+		const gapCount = Math.max(0, height - visibleTranscript.length - aboveH - inputH - belowH);
+		const gapLines = new Array(gapCount).fill("");
 		const fullScreenRows: string[] = [
 			...visibleTranscript,
+			...gapLines,
 			...aboveLines,
 			...inputLines,
 			...belowLines,
@@ -544,7 +586,6 @@ export class UIHost implements UIHostContextPort {
 
 	private handleResize(): void {
 		if (!this.running) return;
-		this.scrollOffset = 0;
 		this.renderCurrentFrame();
 	}
 
@@ -575,13 +616,19 @@ export class UIHost implements UIHostContextPort {
 		}
 
 		// 2. 全局快捷键拦截
-		if (data === "\x1b[Z") {
-			// Shift+Tab：循环切换思考强度
-			this.executeCommand("effort", "");
+		if (data === "\x1b[Z" || matchesKey(data, Key.shiftTab)) {
+			// Shift+Tab：就地循环切换思考强度
+			this.cycleReasoningEffort();
 			return;
 		}
 
 		if (matchesKey(data, Key.ctrl("c"))) {
+			if (this.inputLine.hasSelection()) {
+				this.inputLine.copySelection();
+				this.notify("已复制到剪贴板", "info");
+				this.requestRender();
+				return;
+			}
 			this.onInterrupt?.();
 			return;
 		}
@@ -602,6 +649,12 @@ export class UIHost implements UIHostContextPort {
 		}
 
 		if (matchesKey(data, Key.ctrl("o")) || matchesKey(data, Key.ctrl("O"))) {
+			// 优先展开光标处的粘贴标记
+			if (this.inputLine.hasChipAtCursor()) {
+				this.inputLine.handleInput(data);
+				this.requestRender();
+				return;
+			}
 			this.transcript.toggleThinking();
 			this.requestRender();
 			return;
@@ -621,6 +674,7 @@ export class UIHost implements UIHostContextPort {
 				return;
 			}
 			if (matchesKey(data, Key.escape)) {
+				this.closeModal();
 				this.overlayStack.hideTopOverlay();
 				return;
 			}

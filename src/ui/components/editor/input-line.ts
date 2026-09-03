@@ -141,6 +141,16 @@ export class InputLine implements Component, Focusable {
 		return markers.some((m) => m.end === this.cursorIndex || m.start === this.cursorIndex);
 	}
 
+	hasSelection(): boolean {
+		return this.isAllSelected && this.text.length > 0;
+	}
+
+	copySelection(): void {
+		if (this.hasSelection()) {
+			copyToClipboard(this.getText());
+		}
+	}
+
 	/** 展开所有行内粘贴标记为原始文本 */
 	private expandMarkers(content: string): string {
 		return content.replace(PASTE_MARKER_REGEX, (_, idStr) => {
@@ -331,6 +341,10 @@ export class InputLine implements Component, Focusable {
 
 		// 全选状态下的任何常规操作拦截
 		if (this.isAllSelected) {
+			if (matchesKey(data, Key.ctrl("c"))) {
+				this.copySelection();
+				return;
+			}
 			if (matchesKey(data, Key.backspace) || matchesKey(data, Key.delete) || matchesKey(data, Key.ctrl("u"))) {
 				this.clear();
 				return;
@@ -768,9 +782,11 @@ export class InputLine implements Component, Focusable {
 		const effortLabels: Record<string, string> = {
 			off: `${C.gray}思考:关${C.reset}`,
 			none: `${C.gray}思考:关${C.reset}`,
+			minimal: `${C.dim}思考:极低${C.reset}`,
 			low: `${C.dim}思考:低${C.reset}`,
 			medium: `${C.cyan}思考:中${C.reset}`,
 			high: `${C.bold}${C.glowWhite}思考:高${C.reset}`,
+			xhigh: `${C.bold}${C.iceBlue}思考:超高${C.reset}`,
 			max: `${C.bold}\x1b[38;2;130;185;255m思考:极高${C.reset}`,
 		};
 		const effortBadge = effortLabels[this.reasoningEffort] ?? `${C.cyan}思考:${this.reasoningEffort}${C.reset}`;
