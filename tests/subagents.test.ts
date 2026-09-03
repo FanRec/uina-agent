@@ -72,7 +72,7 @@ describe("SubagentRegistry", () => {
 		const started = failing.start({ ownerId: "root", label: "失败", prompt: "开始" });
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(failing.get(started.id, "root")).toMatchObject({ status: "settled", detail: "provider down", finishedAt: expect.any(Number) });
-		expect(failing.send(started.id, "root", "晚到的消息")).rejects.toThrow("已结算");
+		await expect(failing.send(started.id, "root", "晚到的消息")).rejects.toThrow("已结算");
 		await failing.close();
 	});
 

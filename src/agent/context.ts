@@ -25,7 +25,7 @@ export function buildContext(b: BuildInput): ChatMsg[] {
 		{ role: "system", content: b.systemPrompt ?? DEFAULT_SYSTEM_PROMPT },
 		...b.history.map((message) =>
 			message.role === "tool"
-				? { ...message, content: projectToolResult(message.content) }
+				? message
 				: message.role === "assistant"
 					? b.includeThinking ? message : { ...message, thinking: undefined, thinkingSignature: undefined }
 				: message,
@@ -38,23 +38,6 @@ function formatRuntimeInput(input: { source: { kind: string; type: string; ref?:
 	const source = `${input.source.kind}/${input.source.type}${input.source.ref ? `:${input.source.ref}` : ""}`;
 	const data = input.data === undefined ? "" : ` data=${JSON.stringify(input.data)}`;
 	return `[${source}] ${input.text ?? ""}${data}`;
-}
-
-function projectToolResult(value: string): string {
-	const limit = 2000;
-	if (value.length <= limit) return value;
-	try {
-		const parsed = JSON.parse(value) as Record<string, unknown>;
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			const projected = { ...parsed };
-			for (const key of ["stdout", "stderr", "result"]) {
-				if (typeof projected[key] === "string") projected[key] = projected[key].slice(0, 500);
-			}
-			const json = JSON.stringify(projected);
-			if (json.length <= limit) return `${json}…[tool result truncated]`;
-		}
-	} catch { /* retain a plain text prefix */ }
-	return `${value.slice(0, limit)}…[tool result truncated]`;
 }
 
 /** Approximate token estimate used before a provider request. */

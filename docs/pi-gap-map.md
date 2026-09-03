@@ -15,12 +15,12 @@
 | compaction | 已实现 | provider contextWindow、reserve、keepRecent 可配置 |
 | JSONL session | 最小实现 | header、追加 record、重放、torn tail 修复、unknown recovery |
 | 完整 Pi JSONL v4 | 未实现 | 暂不包含分支、fork、lane、operation ledger、搜索 |
-| TUI 组件系统 | 未实现 | 当前使用 readline 单行编辑器 |
-| 自定义扩展事件 | 未实现 | 当前只动态加载工具，不提供通用 hook bus |
+| TUI 组件系统 | 已实现并接入 CLI | 采用自包含 Pi 契约架构（Component、Container、FocusManager、OverlayStack），接入真实 CLI 入口 |
+| 扩展 UI 契约 | 已实现 | 提供 ExtensionUIContext (ctx.ui)、CustomMessage (进上下文) 与 CustomEntry (不进上下文) 协议 |
 | 图片和多模态 | 未实现 | v0 只有文本输入 |
 | provider 重试 | 未实现 | 失败直接回注并通知，不自动重试 |
 | 审批/权限策略 | 未实现 | 采用当前账户权限的可信工作区模型 |
-| 后台 Job | 未实现 | 当前工具均在前台 turn 内完成 |
+| 后台 Job | 已实现 | `src/extensions/jobs` 提供 JobRegistry、输出游标、取消和完成通知 |
 
 ## 参考原则
 

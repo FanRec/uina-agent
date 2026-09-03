@@ -84,7 +84,7 @@ describe("Subject", () => {
 		expect(store.records.some((record) => record.kind === "event" && record.event === "tool_started")).toBe(true);
 	});
 
-	it("limits large tool results in model context without changing the lifecycle result", async () => {
+	it("preserves tool results already bounded by the tool output contract", async () => {
 		const broker = new ToolBroker();
 		broker.register(makeTool("large", async () => "x".repeat(5000)));
 		const provider = scriptedProvider([
@@ -95,7 +95,7 @@ describe("Subject", () => {
 		subject.pushInput("large");
 		await idle(subject);
 		const tool = provider.calls[1].messages.find((message) => message.role === "tool");
-		expect(tool && tool.content.length).toBeLessThan(2100);
+		expect(tool?.content).toBe("x".repeat(5000));
 	});
 
 	it("runs independent tools in parallel and returns results in call order", async () => {

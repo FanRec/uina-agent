@@ -1,6 +1,6 @@
 # Uina TUI 架构与开发设计文档 (proposal)
 
-> 本文是候选设计，不代表当前运行时已经实现。当前真实 CLI 仍使用 `src/ui/tui.ts` 的 readline；`src/ui_new` 是未接入的实验实现与测试场景。
+> 本文档设计已在 `src/ui/` 中全面落地并正式接入真实 CLI 入口（`src/cli/app.ts`）。
 
 > **目标**：打造一个具备商业级 Claude Code / DeepSeek Harness 视觉质感，同时具备工业级底层性能、零重型框架依赖、完美兼容中文输入法（IME）的自主 Agent 终端交互前端。  
 > **核心战术**：**“以 dsh-TUI 为面子（视觉排版/交互形态），以 pi 为里子（模块化架构/差量渲染引擎）”**。

@@ -1,24 +1,19 @@
 /**
- * 简易 TUI：终端对话界面。
- *
- * 布局：对话流式打印在屏幕上，输入行固定在下（readline 管理）。
- * 输入走 readline——保留中文 IME 输入能力（rawMode 手写会毁掉 IME）。
- * 流式输出期间保持读行，普通输入进入 steer 队列，Alt+Enter 进入 follow-up 队列。
- *
- * 颜色约定：用户=青、Uina=绿、工具=灰（进行中）/绿色✓（完成）、错误=红。
+ * 交互式终端 TUI 门面与统一入口（createInteractiveUI）。
+ * 对齐 Pi 的交互体验，向内调度 UIHost，向外提供清晰的事件流与生命周期接口。
  */
-import { createInterface } from "node:readline/promises";
-import { emitKeypressEvents } from "node:readline";
+
+import { UIHost, type UIHostOptions } from "./ui-host.js";
 import type { ToolResultStatus } from "../core/types.js";
 import type { QueuedMessage } from "../agent/queue.js";
-import { sanitizeTerminalText, toolStartLine, toolResultLines } from "./format.js";
+import type { ExtensionUIContext } from "./extensions/types.js";
 
-/** 渲染层消息（主体 hooks → UI 的消息形状） */
+/** 渲染层消息契约（主体 hooks → UI 消息） */
 export type OutMsg =
 	| { type: "text"; text: string }
 	| { type: "thinking"; text: string }
 	| { type: "turn_start"; n: number; text: string }
-	| { type: "turn_end"; n: number }
+	| { type: "turn_end"; n: number; usage?: { usedTokens: number; contextWindow: number } }
 	| { type: "error"; text: string }
 	| { type: "notice"; text: string }
 	| { type: "tool_start"; name: string; args: unknown; callId?: string }
@@ -29,138 +24,150 @@ export type OutMsg =
 		status?: ToolResultStatus;
 		callId?: string;
 		ts?: number;
+		elapsedMs?: number;
 	}
 	| { type: "queue"; items: readonly QueuedMessage[] };
 
-const C = {
-	line: "\x1b[2K", // 清整行
-	user: "\x1b[36m",
-	me: "\x1b[32m",
-	tool: "\x1b[90m",
-	ok: "\x1b[32m",
-	err: "\x1b[31m",
-	warn: "\x1b[33m",
-	dim: "\x1b[90m",
-	reset: "\x1b[0m",
-};
-
-export interface TUIOptions {
-	prompt?: string;
+export interface InteractiveTUIOptions extends UIHostOptions {
+	onDirectCommand?: (cmd: string) => void | Promise<void>;
+	onCompactRequest?: (instruction?: string) => void | Promise<void>;
 }
 
-export class SimpleTUI {
-	private readonly rl: ReturnType<typeof createInterface>;
-	private closed = false;
-	private followUpNext = false;
+export class InteractiveTUI {
+	readonly host: UIHost;
+	private lineCallback?: (line: string, mode: "steer" | "followUp") => void;
+	private sigintCallback?: () => void;
+	private toolCallMap = new Map<string, { startedAt: number; name: string }>();
 
-	constructor(opts: TUIOptions = {}) {
-		this.rl = createInterface({ input: process.stdin, output: process.stdout });
-		emitKeypressEvents(process.stdin);
-		process.stdin.on("keypress", (_value, key) => {
-			if (key?.name === "return" && key.meta) this.followUpNext = true;
-		});
-		this.rl.setPrompt(opts.prompt ?? "\x1b[36m你 > \x1b[0m");
-		this.rl.prompt();
-		this.rl.on("close", () => {
-			this.closed = true;
-		});
-	}
+	constructor(options: InteractiveTUIOptions = {}) {
+		this.host = new UIHost(options);
 
-	onLine(cb: (line: string, mode: "steer" | "followUp") => void): void {
-		this.rl.on("line", (line: string) => {
-			const mode = this.followUpNext ? "followUp" : "steer";
-			this.followUpNext = false;
-			cb(line, mode);
-		});
-	}
+		this.host.onUserLine = (line, mode) => {
+			const m = mode === "direct" ? "steer" : mode;
+			this.lineCallback?.(line, m);
+		};
 
-	/** 输入行状态下按 Ctrl+C（readline 拦截的 SIGINT）——转给上层统一处理 */
-	onSIGINT(cb: () => void): void {
-		this.rl.on("SIGINT", () => cb());
-	}
+		this.host.onInterrupt = () => {
+			this.sigintCallback?.();
+		};
 
-	/** 暂停读行（! 命令执行期间用，防止用户输入与命令输出交错） */
-	pauseInput(): void {
-		if (!this.closed) this.rl.pause();
-	}
-
-	/** 恢复读行并重绘提示符 */
-	resumeInput(): void {
-		if (!this.closed) {
-			this.rl.resume();
-			this.rl.prompt();
+		if (options.onDirectCommand) {
+			this.host.onDirectCommand = options.onDirectCommand;
+		}
+		if (options.onCompactRequest) {
+			this.host.onCompactRequest = options.onCompactRequest;
 		}
 	}
 
-	close(): void {
-		this.closed = true;
-		this.rl.close();
+	get ctxUI(): ExtensionUIContext {
+		return this.host.ctxUI;
 	}
 
-	/** Replace the current input line with queued text after an interruption. */
+	start(): void {
+		this.host.start();
+	}
+
+	onLine(cb: (line: string, mode: "steer" | "followUp") => void): void {
+		this.lineCallback = cb;
+	}
+
+	onSIGINT(cb: () => void): void {
+		this.sigintCallback = cb;
+	}
+
 	replaceInput(text: string): void {
-		if (this.closed) return;
-		this.rl.write(null, { ctrl: true, name: "u" });
-		// readline is single-line; preserve order without feeding newline as Enter.
-		this.rl.write(text.replace(/\r?\n/g, "  "));
+		this.host.replaceInput(text);
 	}
 
 	render(m: OutMsg): void {
 		switch (m.type) {
+			case "turn_start":
+				this.host.setBusy(true);
+				this.host.transcript.startTurn(m.n, m.text);
+				this.host.trajectoryProjection.onTurnStart(m.n, m.text);
+				this.host.activityLine.update("streaming", "正在思考与生成回复...");
+				this.host.requestRender();
+				break;
+
 			case "text":
-				// 流式片段原样输出（错误走 error 类型有色渲染，不再用文本嗅探）
-				process.stdout.write(sanitizeTerminalText(m.text));
+				this.host.transcript.appendToken(m.text);
+				this.host.incrementTokens(1);
+				this.host.activityLine.update("streaming", "正在输出回复...");
+				this.host.requestRender();
 				break;
+
 			case "thinking":
-				process.stdout.write(`${C.dim}${sanitizeTerminalText(m.text)}${C.reset}`);
+				this.host.transcript.appendThinking(m.text);
+				this.host.activityLine.update("thinking", "正在深度推理 (Thinking)...");
+				this.host.requestRender();
 				break;
-			case "turn_start": {
-				// Keep readline active so input can be queued while the model streams.
-				process.stdout.write(`\r${C.line}`);
-				if (m.text) process.stdout.write(`${C.user}你 > ${sanitizeTerminalText(m.text)}${C.reset}\n`);
-				process.stdout.write(`${C.me}Uina > ${C.reset}`);
+
+			case "tool_start": {
+				const callId = m.callId ?? `tool-${m.name}-${Date.now()}`;
+				this.toolCallMap.set(callId, { startedAt: Date.now(), name: m.name });
+				this.host.transcript.commitThinking();
+				this.host.trajectoryProjection.onToolStart(m.name, m.args, callId);
+				this.host.activityLine.update("tool", `正在执行工具: ${m.name}`);
+				this.host.requestRender();
 				break;
 			}
-			case "turn_end":
-				process.stdout.write("\n");
-				if (!this.closed) {
-					this.rl.prompt();
-				}
-				break;
-			case "tool_start":
-				process.stdout.write(
-					`\n${C.tool}  ⏳ ${toolStartLine(m.name, m.args)}${C.reset}`,
-				);
-				break;
+
 			case "tool_done": {
-				const elapsed = m.ts ? Date.now() - m.ts : 0;
-				process.stdout.write(
-					`\n${m.status === "succeeded" ? C.ok : C.warn}  ${m.status === "succeeded" ? "✓" : "!"} ${m.name}${C.reset}`,
-				);
-				const style = {
-					ok: (s: string) => `${C.ok}${s}${C.reset}`,
-					err: (s: string) => `${C.err}${s}${C.reset}`,
-					warn: (s: string) => `${C.warn}${s}${C.reset}`,
-					dim: (s: string) => `${C.dim}${s}${C.reset}`,
-				};
-				for (const line of toolResultLines(m.result, elapsed, style)) {
-					process.stdout.write(`\n  ${line}`);
-				}
+				const record = m.callId ? this.toolCallMap.get(m.callId) : undefined;
+				const elapsed = m.elapsedMs ?? (m.ts ? Date.now() - m.ts : record ? Date.now() - record.startedAt : 0);
+				if (m.callId) this.toolCallMap.delete(m.callId);
+
+				const isError = m.status === "failed";
+				this.host.transcript.addToolDone(m.name, m.result, elapsed);
+				this.host.trajectoryProjection.onToolDone(m.callId ?? "", m.name, m.result, elapsed, isError);
+				this.host.activityLine.update("streaming", `工具 ${m.name} 执行完毕，继续生成...`);
+				this.host.requestRender();
 				break;
 			}
+
+			case "turn_end":
+				this.host.setBusy(false);
+				this.host.transcript.finishTurn();
+				this.host.trajectoryProjection.onTurnEnd(m.n, m.usage);
+				if (m.usage) {
+					this.host.setUsage(m.usage.usedTokens, m.usage.contextWindow);
+				}
+				this.host.activityLine.finish("本轮已完成");
+				this.host.requestRender();
+				break;
+
 			case "notice":
-				process.stdout.write(`\n${C.warn}⚠ ${m.text}${C.reset}\n`);
+				this.host.transcript.addNotice(m.text);
+				this.host.requestRender();
 				break;
+
 			case "error":
-				process.stdout.write(`${C.err}${sanitizeTerminalText(m.text)}${C.reset}\n`);
+				this.host.setBusy(false);
+				this.host.transcript.addError(m.text);
+				this.host.trajectoryProjection.onError(m.text);
+				this.host.activityLine.reset();
+				this.host.requestRender();
 				break;
+
 			case "queue":
-				if (m.items.length > 0 && !this.closed) {
-					process.stdout.write(`\n${C.dim}排队消息：${sanitizeTerminalText(m.items.map((item) => item.text).join(" | "))}${C.reset}\n`);
+				if (m.items.length > 0) {
+					const queueText = m.items.map((i) => i.text).join(" | ");
+					this.host.transcript.addNotice(`排队消息: ${queueText}`);
+					this.host.requestRender();
 				}
 				break;
-			default:
-				break; // 未知消息类型：忽略
 		}
 	}
+
+	close(): void {
+		this.host.stop();
+	}
 }
+
+export function createInteractiveUI(options: InteractiveTUIOptions = {}): InteractiveTUI {
+	const tui = new InteractiveTUI(options);
+	tui.start();
+	return tui;
+}
+
+export { InteractiveTUI as SimpleTUI };

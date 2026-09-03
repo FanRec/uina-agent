@@ -10,7 +10,7 @@ import { ToolBroker } from "../tools/broker.js";
 import { loadTools } from "../tools/loader.js";
 import { Subject } from "../agent/loop.js";
 import { openJsonlSession } from "../session/jsonl-store.js";
-import { SimpleTUI, type OutMsg } from "../ui/tui.js";
+import { createInteractiveUI, type InteractiveTUI, type OutMsg } from "../ui/tui.js";
 import { sanitizeTerminalText, toolStartLine, toolResultLines } from "../ui/format.js";
 import { JobRegistry } from "../extensions/jobs/registry.js";
 import { createJobTools } from "../extensions/jobs/tools.js";
@@ -44,7 +44,7 @@ export async function runApp(): Promise<void> {
 	}
 
 	const { store, snapshot } = await openJsonlSession(SESSION_FILE);
-	let tui: SimpleTUI | null = null;
+	let tui: InteractiveTUI | null = null;
 	let nonTTY: ReturnType<typeof createInterface> | null = null;
 	let shuttingDown = false;
 	const toolStartedAt = new Map<string, number>();
@@ -244,8 +244,10 @@ export async function runApp(): Promise<void> {
 		subject.pushInput(text, { mode: subject.isBusy() ? mode : "direct" });
 	};
 
-	process.stdout.write(`Uina 就绪（模型：${provider.name}，工具：${loaded.loaded} 个）— /quit 退出\n\n`);
 	const isTTY = process.stdout.isTTY && process.stdin.isTTY;
+	if (!isTTY) {
+		process.stdout.write(`Uina 就绪（模型：${provider.name}，工具：${loaded.loaded} 个）— /quit 退出\n\n`);
+	}
 	if (oneshot !== undefined) {
 		// One-shot mode has no input stream to own.
 		subject.pushInput(oneshot, { mode: "direct" });
@@ -254,7 +256,14 @@ export async function runApp(): Promise<void> {
 		return;
 	}
 	if (isTTY) {
-		tui = new SimpleTUI();
+		tui = createInteractiveUI({
+			modelName: provider.name,
+			toolCount: loaded.loaded,
+			cwd: process.cwd(),
+			jobs,
+			subagents,
+			onDirectCommand: runDirectCommand,
+		});
 		tui.onLine(onUserLine);
 		tui.onSIGINT(handleInterrupt);
 	} else {

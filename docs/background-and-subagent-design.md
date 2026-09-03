@@ -562,7 +562,7 @@ kill 经过 stopping 再到终态
 
 ### 阶段四：状态投影（未实现）
 
-当前尚未为 TUI 增加主 Agent、子代理和 Job 的快照展示；未来需要 Web 时再复用 baseline/replacement control stream。本轮不修改 `src/ui_new/**`。
+已在 `src/ui/adapters/` 与 `src/ui/components/overlays/` 中实现直连内核的无状态看板（TaskDashboard 与 SubagentDashboard），主 Agent、子代理与 Job 快照及游标输出均可实时审查与控制。
 
 ## 验收场景
 
