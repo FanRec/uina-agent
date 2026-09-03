@@ -9,6 +9,8 @@ import type { Tool, ToolBroker } from "../tools/broker.js";
 import type { ExtensionUIContext, CustomEntry, CustomMessage, EntryRenderer, LocalCommand, MessageRenderer } from "../ui/extensions/types.js";
 import { ExtensionRegistry } from "../ui/extensions/registry.js";
 import { ExtensionHost, type ExtensionEvent, type ExtensionEventHandler } from "./host.js";
+import { createRuntimeHooks } from "./runtime-hooks.js";
+import type { RuntimeHooks } from "../runtime/hooks.js";
 
 export interface ExtensionAPI {
 	readonly id: string;
@@ -121,6 +123,11 @@ export class ExtensionRunner extends ExtensionHost {
 		return [...this.extensions.values()].map(({ id, path, active }) => ({ id, path, active }));
 	}
 
+	/** Produces a dispatch view over this one Host; it never creates another owner. */
+	runtimeHooks(scope?: readonly string[]): RuntimeHooks {
+		return createRuntimeHooks(this, scope);
+	}
+
 	private async activate(file: string): Promise<void> {
 		const id = `project:${file.slice(this.options.cwd.length + 1).replace(/\\/g, "/")}`;
 		try {
@@ -162,7 +169,7 @@ export class ExtensionRunner extends ExtensionHost {
 					try { return await handler(event as never); }
 					catch (error) { this.emitOwnedError(scope.id, type, error); return undefined; }
 				};
-				const dispose = super.on(type, wrapped as never);
+				const dispose = super.onScoped(scope.id, type, wrapped as never);
 				own(dispose);
 				return dispose;
 			},

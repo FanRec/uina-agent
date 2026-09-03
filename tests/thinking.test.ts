@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { Subject } from "../src/agent/loop.js";
 import { createOpenAIProvider } from "../src/ai/gateway.js";
 import { createProvider } from "../src/ai/providers.js";
+import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import type { ModelProvider } from "../src/core/types.js";
 
@@ -71,7 +72,7 @@ describe("OpenAI-compatible thinking", () => {
 		const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
 		const events: string[] = [];
 		await createOpenAIProvider({ baseUrl, apiKey: "x", model: "m", modelContextWindow: 4096 }).stream(
-			{ messages: [{ role: "user", content: "hi" }], thinkingLevel: "high" },
+			{ messages: [{ role: "user", content: "hi" }], thinkingLevel: "high", providerHooks: NO_RUNTIME_HOOKS.provider },
 			delta => { if (delta.kind === "thinking") events.push(delta.text); },
 		);
 		expect(events).toEqual(["思考"]);

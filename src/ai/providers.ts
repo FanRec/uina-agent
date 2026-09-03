@@ -4,6 +4,7 @@ import { createOpenAIProvider } from "./gateway.js";
 import { fetchWithRetry } from "./gateway.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
 import { effectiveContextWindow } from "./config.js";
+import { copyValue, readonlySnapshot } from "../runtime/guard.js";
 
 export function createProvider(name: string, conf: ProviderConfig): ModelProvider {
 	const kind: ProviderKind = conf.type ?? "openai-compatible";
@@ -52,20 +53,16 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 				accept: "text/event-stream",
 			};
 
-			if (req.extensionHost) {
-				headers = await req.extensionHost.emitBeforeProviderHeaders(conf.model, headers);
-				body = (await req.extensionHost.emitBeforeProviderRequest(conf.model, body)) as Record<string, unknown>;
-			}
+			headers = copyValue(await req.providerHooks.transformHeaders(conf.model, readonlySnapshot(headers)));
+			body = copyValue(await req.providerHooks.transformPayload(conf.model, readonlySnapshot(body))) as Record<string, unknown>;
 
 			const response = await fetchWithRetry(`${conf.baseUrl.replace(/\/$/, "")}/messages`, { maxRetries: conf.maxRetries ?? 2, signal, request: { method: "POST", signal, headers, body: JSON.stringify(body) } });
 
-			if (req.extensionHost) {
-				const respHeaders: Record<string, string> = {};
-				response.headers.forEach((v, k) => {
-					respHeaders[k] = v;
-				});
-				await req.extensionHost.emitAfterProviderResponse(conf.model, response.status, respHeaders);
-			}
+			const respHeaders: Record<string, string> = {};
+			response.headers.forEach((v, k) => {
+				respHeaders[k] = v;
+			});
+			await req.providerHooks.observeResponse(readonlySnapshot({ provider: conf.model, status: response.status, headers: respHeaders }));
 
 			if (!response.ok) throw new Error(`Anthropic ${name} 请求失败 HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
 			if (!response.body) throw new ProviderProtocolError("Anthropic 响应无 body");
@@ -121,20 +118,16 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 			};
 			let bodyPayload = geminiRequest(req);
 
-			if (req.extensionHost) {
-				headers = await req.extensionHost.emitBeforeProviderHeaders(conf.model, headers);
-				bodyPayload = (await req.extensionHost.emitBeforeProviderRequest(conf.model, bodyPayload)) as Record<string, unknown>;
-			}
+			headers = copyValue(await req.providerHooks.transformHeaders(conf.model, readonlySnapshot(headers)));
+			bodyPayload = copyValue(await req.providerHooks.transformPayload(conf.model, readonlySnapshot(bodyPayload))) as Record<string, unknown>;
 
 			const response = await fetchWithRetry(`${conf.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(conf.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(conf.apiKey)}`, { maxRetries: conf.maxRetries ?? 2, signal, request: { method: "POST", signal, headers, body: JSON.stringify(bodyPayload) } });
 
-			if (req.extensionHost) {
-				const respHeaders: Record<string, string> = {};
-				response.headers.forEach((v, k) => {
-					respHeaders[k] = v;
-				});
-				await req.extensionHost.emitAfterProviderResponse(conf.model, response.status, respHeaders);
-			}
+			const respHeaders: Record<string, string> = {};
+			response.headers.forEach((v, k) => {
+				respHeaders[k] = v;
+			});
+			await req.providerHooks.observeResponse(readonlySnapshot({ provider: conf.model, status: response.status, headers: respHeaders }));
 
 			if (!response.ok) throw new Error(`Gemini ${name} 请求失败 HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
 			if (!response.body) throw new ProviderProtocolError("Gemini 响应无 body");

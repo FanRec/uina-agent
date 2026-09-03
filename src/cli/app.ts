@@ -122,7 +122,7 @@ export async function runApp(): Promise<void> {
 			onNotice: (text) => render({ type: "notice", text }),
 			onQueueChanged: (items) => render({ type: "queue", items }),
 		},
-		{ store, thinkingLevel: cfg.thinkingLevel, extensionHost },
+		{ store, thinkingLevel: cfg.thinkingLevel, runtimeHooks: extensionHost.runtimeHooks() },
 	);
 	const commands = new CommandRouter(extensionHost.registry, (text) => render({ type: "error", text }));
 

@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { createOpenAIProvider, toWireMessages } from "../src/ai/gateway.js";
 import { ProviderProtocolError } from "../src/ai/sse.js";
 import type { StreamDelta } from "../src/core/types.js";
+import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 
 const servers: Server[] = [];
 afterEach(() => servers.splice(0).forEach((server) => server.close()));
@@ -26,7 +27,7 @@ async function endpoint(body: string): Promise<string> {
 async function collect(baseUrl: string, signal?: AbortSignal): Promise<StreamDelta[]> {
 	const provider = createOpenAIProvider({ baseUrl, apiKey: "test", model: "m", modelContextWindow: 4096 });
 	const output: StreamDelta[] = [];
-	await provider.stream({ messages: [{ role: "user", content: "hi" }] }, (delta) => output.push(delta), signal);
+	await provider.stream({ messages: [{ role: "user", content: "hi" }], providerHooks: NO_RUNTIME_HOOKS.provider }, (delta) => output.push(delta), signal);
 	return output;
 }
 

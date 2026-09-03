@@ -1,15 +1,46 @@
 /**
  * Uina 扩展事件宿主（ExtensionHost）。
  *
- * 作为核心事件总线与生命周期中枢，负责：
+ * 作为扩展层的事件分发与生命周期中枢，负责：
  * 1. 统一管理扩展 Handler 注册与派发；
  * 2. 异步执行监听器并提供异常安全隔离（单个扩展异常不阻塞核心运行）；
  * 3. 支持拦截式事件（tool_call、session_before_compact 等）的快速短路判定；
  * 4. 支持链式变换（context、tool_result、before_provider_request 等）。
  */
 
-import type { ChatMsg, ThinkingLevel } from "../core/types.js";
-import type { ModelProvider } from "../core/types.js";
+import type { ChatMsg } from "../core/types.js";
+import type {
+	DeepReadonly,
+	OutputEvent,
+	RuntimeEvent,
+	ToolCallEvent,
+	ToolResultEvent,
+} from "../runtime/events.js";
+
+export type {
+	AfterProviderResponseEvent,
+	AgentEndEvent,
+	AgentSettledEvent,
+	AgentStartEvent,
+	BeforeAgentStartEvent,
+	BeforeProviderHeadersEvent,
+	BeforeProviderRequestEvent,
+	ContextEvent,
+	ModelSelectEvent,
+	OutputEndEvent,
+	OutputInterruptedEvent,
+	OutputStartEvent,
+	OutputUpdateEvent,
+	RuntimeEvent,
+	SessionBeforeCompactEvent,
+	SessionCompactEvent,
+	SessionCompactFailedEvent,
+	ThinkingLevelSelectEvent,
+	ToolCallEvent,
+	ToolResultEvent,
+	TurnEndEvent,
+	TurnStartEvent,
+} from "../runtime/events.js";
 
 export interface ExtensionError {
 	extensionName?: string;
@@ -22,206 +53,53 @@ export type ExtensionErrorListener = (err: ExtensionError) => void;
 
 // 1. 输入与 Prompt 事件
 export interface InputEvent {
-	type: "input";
-	text: string;
-	source: { kind: "user" | "runtime" | "agent"; type: string; ref?: string };
-}
-
-export interface BeforeAgentStartEvent {
-	type: "before_agent_start";
-	prompt: string;
-	systemPrompt: string;
+	readonly type: "input";
+	readonly text: string;
+	readonly source: Readonly<{ kind: "user" | "runtime" | "agent"; type: string; ref?: string }>;
 }
 
 export interface BeforeAgentStartResult {
-	message?: ChatMsg;
-	systemPrompt?: string;
-}
-
-// 2. Agent 任务与回合生命周期
-export interface AgentStartEvent {
-	type: "agent_start";
-	turnSeq: number;
-}
-
-export interface AgentEndEvent {
-	type: "agent_end";
-	turnSeq: number;
-	success: boolean;
-	error?: string;
-}
-
-export interface AgentSettledEvent {
-	type: "agent_settled";
-	turnSeq: number;
-}
-
-export interface TurnStartEvent {
-	type: "turn_start";
-	turnNumber: number;
-	userText: string;
-}
-
-export interface TurnEndEvent {
-	type: "turn_end";
-	turnNumber: number;
-	usage?: { usedTokens: number; contextWindow?: number };
-}
-
-// 3. 上下文变换事件
-export interface ContextEvent {
-	type: "context";
-	messages: ChatMsg[];
+	readonly message?: ChatMsg;
+	readonly systemPrompt?: string;
 }
 
 export interface ContextEventResult {
-	messages: ChatMsg[];
-}
-
-// 4. 工具调用与结果拦截
-export interface ToolCallEvent {
-	type: "tool_call";
-	toolName: string;
-	args: Record<string, unknown>;
-	callId: string;
+	readonly messages: readonly ChatMsg[];
 }
 
 export interface ToolCallResult {
-	block?: boolean;
-	reason?: string;
-}
-
-export interface ToolResultEvent {
-	type: "tool_result";
-	toolName: string;
-	args: Record<string, unknown>;
-	result: string;
-	isError: boolean;
-	callId: string;
+	readonly block?: boolean;
+	readonly reason?: string;
 }
 
 export interface ToolResultEventResult {
-	result?: string;
-	isError?: boolean;
-	details?: unknown;
-}
-
-// 5. 模型与思考深度
-export interface ModelSelectEvent {
-	type: "model_select";
-	model: string;
-	provider: ModelProvider;
-	previousModel?: string;
-}
-
-export interface ThinkingLevelSelectEvent {
-	type: "thinking_level_select";
-	level: ThinkingLevel;
-	previousLevel?: ThinkingLevel;
-}
-
-// 6. 会话压缩事件
-export interface SessionBeforeCompactEvent {
-	type: "session_before_compact";
-	tokensBefore: number;
+	readonly result?: string;
+	readonly isError?: boolean;
+	readonly details?: unknown;
 }
 
 export interface SessionBeforeCompactResult {
-	cancel?: boolean;
+	readonly cancel?: boolean;
 }
 
-export interface SessionCompactEvent {
-	type: "session_compact";
-	summary: string;
-	tokensBefore: number;
-	retainedTailCount: number;
+export interface BeforeProviderHeadersResult {
+	readonly headers?: Record<string, string>;
 }
-
-export interface SessionCompactFailedEvent {
-	type: "session_compact_failed";
-	error: string;
-}
-
-// 7. 规范化输出流事件（语音输出 / 外部端）
-export interface OutputStartEvent {
-	type: "output_start";
-	streamId: string;
-	channel: "content" | "thinking" | "tool";
-}
-
-export interface OutputUpdateEvent {
-	type: "output_update";
-	streamId: string;
-	offset: number;
-	channel: "content" | "thinking" | "tool";
-	text: string;
-}
-
-export interface OutputEndEvent {
-	type: "output_end";
-	streamId: string;
-	channel: "content" | "thinking" | "tool";
-}
-
-export interface OutputInterruptedEvent {
-	type: "output_interrupted";
-	streamId: string;
-	channel: "content" | "thinking" | "tool";
-	reason: "external" | "self" | "cancelled" | "error";
-	spokenUntil?: number;
-}
-
-// 8. Provider 协议层网络拦截
-export interface BeforeProviderHeadersEvent {
-	type: "before_provider_headers";
-	provider: string;
-	headers: Record<string, string>;
-}
-
-export interface BeforeProviderRequestEvent {
-	type: "before_provider_request";
-	provider: string;
-	payload: unknown;
-}
-
-export interface AfterProviderResponseEvent {
-	type: "after_provider_response";
-	provider: string;
-	status: number;
-	headers: Record<string, string>;
-}
-
-// 全部事件联合类型
-export type ExtensionEvent =
-	| InputEvent
-	| BeforeAgentStartEvent
-	| AgentStartEvent
-	| AgentEndEvent
-	| AgentSettledEvent
-	| TurnStartEvent
-	| TurnEndEvent
-	| ContextEvent
-	| ToolCallEvent
-	| ToolResultEvent
-	| ModelSelectEvent
-	| ThinkingLevelSelectEvent
-	| SessionBeforeCompactEvent
-	| SessionCompactEvent
-	| SessionCompactFailedEvent
-	| OutputStartEvent
-	| OutputUpdateEvent
-	| OutputEndEvent
-	| OutputInterruptedEvent
-	| BeforeProviderHeadersEvent
-	| BeforeProviderRequestEvent
-	| AfterProviderResponseEvent;
+export type ExtensionEvent = InputEvent | RuntimeEvent;
 
 export type ExtensionEventHandler<T extends ExtensionEvent = ExtensionEvent> = (
-	event: T,
+	event: DeepReadonly<T>,
 ) => Promise<unknown> | unknown;
 
+interface RegisteredHandler {
+	readonly handler: ExtensionEventHandler;
+	readonly scopeId?: string;
+}
+
+export type RuntimeScopeFilter = readonly string[] | undefined;
+
 export class ExtensionHost {
-	private handlers = new Map<string, Set<ExtensionEventHandler<any>>>();
+	private handlers = new Map<string, Set<RegisteredHandler>>();
 	private errorListeners = new Set<ExtensionErrorListener>();
 	private observedTail: Promise<void> = Promise.resolve();
 
@@ -230,14 +108,23 @@ export class ExtensionHost {
 		eventType: T,
 		handler: ExtensionEventHandler<Extract<ExtensionEvent, { type: T }>>,
 	): () => void {
+		return this.onScoped(undefined, eventType, handler);
+	}
+
+	protected onScoped<T extends ExtensionEvent["type"]>(
+		scopeId: string | undefined,
+		eventType: T,
+		handler: ExtensionEventHandler<Extract<ExtensionEvent, { type: T }>>,
+	): () => void {
 		let set = this.handlers.get(eventType);
 		if (!set) {
 			set = new Set();
 			this.handlers.set(eventType, set);
 		}
-		set.add(handler);
+		const entry: RegisteredHandler = { handler: handler as ExtensionEventHandler, ...(scopeId === undefined ? {} : { scopeId }) };
+		set.add(entry);
 		return () => {
-			set?.delete(handler);
+			set?.delete(entry);
 		};
 	}
 
@@ -260,19 +147,18 @@ export class ExtensionHost {
 	}
 
 	/** 检查某事件是否有监听器 */
-	hasHandlers(eventType: string): boolean {
-		const set = this.handlers.get(eventType);
-		return !!set && set.size > 0;
+	hasHandlers(eventType: string, scope?: RuntimeScopeFilter): boolean {
+		return this.handlersFor(eventType, scope).length > 0;
 	}
 
 	/** 广播通用无返回值事件（安全隔离异常） */
-	async emit(event: ExtensionEvent): Promise<void> {
-		const set = this.handlers.get(event.type);
-		if (!set || set.size === 0) return;
+	async emit(event: ExtensionEvent, scope?: RuntimeScopeFilter): Promise<void> {
+		const handlers = this.handlersFor(event.type, scope);
+		if (handlers.length === 0) return;
 
-		for (const handler of set) {
+		for (const handler of handlers) {
 			try {
-				await handler(event);
+				await handler(readonlySnapshot(event));
 			} catch (err) {
 				this.emitError(event.type, err);
 			}
@@ -280,8 +166,8 @@ export class ExtensionHost {
 	}
 
 	/** Queue observational events so stream consumers always observe start → update → end. */
-	emitObserved(event: ExtensionEvent): void {
-		this.observedTail = this.observedTail.then(() => this.emit(event)).catch((error) => this.emitError(event.type, error));
+	emitObserved(event: OutputEvent, scope?: RuntimeScopeFilter): void {
+		this.observedTail = this.observedTail.then(() => this.emit(event, scope)).catch((error) => this.emitError(event.type, error));
 	}
 
 	async flush(): Promise<void> {
@@ -289,13 +175,13 @@ export class ExtensionHost {
 	}
 
 	/** 触发工具调用前拦截（支持 block 短路） */
-	async emitToolCall(event: ToolCallEvent): Promise<ToolCallResult | undefined> {
-		const set = this.handlers.get("tool_call");
-		if (!set || set.size === 0) return undefined;
+	async emitToolCall(event: ToolCallEvent, scope?: RuntimeScopeFilter): Promise<ToolCallResult | undefined> {
+		const handlers = this.handlersFor("tool_call", scope);
+		if (handlers.length === 0) return undefined;
 
-		for (const handler of set) {
+		for (const handler of handlers) {
 			try {
-				const res = (await handler(event)) as ToolCallResult | undefined;
+				const res = (await handler(readonlySnapshot(event))) as ToolCallResult | undefined;
 				if (res?.block) {
 					return res; // 立即短路，跳过后续拦截器
 				}
@@ -307,16 +193,16 @@ export class ExtensionHost {
 	}
 
 	/** 触发工具结果改写/审计（链式传递） */
-	async emitToolResult(event: ToolResultEvent): Promise<ToolResultEventResult | undefined> {
-		const set = this.handlers.get("tool_result");
-		if (!set || set.size === 0) return undefined;
+	async emitToolResult(event: ToolResultEvent, scope?: RuntimeScopeFilter): Promise<ToolResultEventResult | undefined> {
+		const handlers = this.handlersFor("tool_result", scope);
+		if (handlers.length === 0) return undefined;
 
 		const current = { ...event };
 		let modified = false;
 
-		for (const handler of set) {
+		for (const handler of handlers) {
 			try {
-				const res = (await handler(current)) as ToolResultEventResult | undefined;
+				const res = (await handler(readonlySnapshot(current))) as ToolResultEventResult | undefined;
 				if (res) {
 					if (res.result !== undefined) {
 						current.result = res.result;
@@ -336,19 +222,19 @@ export class ExtensionHost {
 	}
 
 	/** 触发上下文消息变换 */
-	async emitContext(messages: ChatMsg[]): Promise<ChatMsg[]> {
-		const set = this.handlers.get("context");
-		if (!set || set.size === 0) return messages;
+	async emitContext(messages: readonly ChatMsg[], scope?: RuntimeScopeFilter): Promise<ChatMsg[]> {
+		const handlers = this.handlersFor("context", scope);
+		if (handlers.length === 0) return [...messages];
 
 		let currentMessages = [...messages];
-		for (const handler of set) {
+		for (const handler of handlers) {
 			try {
-				const res = (await handler({
+				const res = (await handler(readonlySnapshot({
 					type: "context",
 					messages: currentMessages,
-				})) as ContextEventResult | undefined;
+				}))) as ContextEventResult | undefined;
 				if (res?.messages) {
-					currentMessages = res.messages;
+					currentMessages = [...structuredClone(res.messages)];
 				}
 			} catch (err) {
 				this.emitError("context", err);
@@ -361,24 +247,25 @@ export class ExtensionHost {
 	async emitBeforeAgentStart(
 		prompt: string,
 		systemPrompt: string,
+		scope?: RuntimeScopeFilter,
 	): Promise<{ messages?: ChatMsg[]; systemPrompt?: string } | undefined> {
-		const set = this.handlers.get("before_agent_start");
-		if (!set || set.size === 0) return undefined;
+		const handlers = this.handlersFor("before_agent_start", scope);
+		if (handlers.length === 0) return undefined;
 
 		const messages: ChatMsg[] = [];
 		let currentPrompt = systemPrompt;
 		let modified = false;
 
-		for (const handler of set) {
+		for (const handler of handlers) {
 			try {
-				const res = (await handler({
+				const res = (await handler(readonlySnapshot({
 					type: "before_agent_start",
 					prompt,
 					systemPrompt: currentPrompt,
-				})) as BeforeAgentStartResult | undefined;
+				}))) as BeforeAgentStartResult | undefined;
 				if (res) {
 					if (res.message) {
-						messages.push(res.message);
+						messages.push(structuredClone(res.message));
 						modified = true;
 					}
 					if (res.systemPrompt !== undefined) {
@@ -400,16 +287,16 @@ export class ExtensionHost {
 	}
 
 	/** 触发压缩前检查（支持取消压缩） */
-	async emitSessionBeforeCompact(tokensBefore: number): Promise<boolean> {
-		const set = this.handlers.get("session_before_compact");
-		if (!set || set.size === 0) return false;
+	async emitSessionBeforeCompact(tokensBefore: number, scope?: RuntimeScopeFilter): Promise<boolean> {
+		const handlers = this.handlersFor("session_before_compact", scope);
+		if (handlers.length === 0) return false;
 
-		for (const handler of set) {
+		for (const handler of handlers) {
 			try {
-				const res = (await handler({
+				const res = (await handler(readonlySnapshot({
 					type: "session_before_compact",
 					tokensBefore,
-				})) as SessionBeforeCompactResult | undefined;
+				}))) as SessionBeforeCompactResult | undefined;
 				if (res?.cancel) {
 					return true; // 请求取消压缩
 				}
@@ -423,69 +310,98 @@ export class ExtensionHost {
 	/** 触发 Provider 请求 Headers 修改 */
 	async emitBeforeProviderHeaders(
 		provider: string,
-		headers: Record<string, string>,
+		headers: Readonly<Record<string, string>>,
+		scope?: RuntimeScopeFilter,
 	): Promise<Record<string, string>> {
-		const set = this.handlers.get("before_provider_headers");
-		if (!set || set.size === 0) return headers;
+		const handlers = this.handlersFor("before_provider_headers", scope);
+		if (handlers.length === 0) return { ...headers };
 
-		const current = { ...headers };
-		for (const handler of set) {
+		let current = { ...headers };
+		for (const handler of handlers) {
 			try {
-				await handler({
+				const res = (await handler(readonlySnapshot({
 					type: "before_provider_headers",
 					provider,
 					headers: current,
-				});
+				}))) as BeforeProviderHeadersResult | undefined;
+				if (res?.headers) current = structuredClone(res.headers);
 			} catch (err) {
 				this.emitError("before_provider_headers", err);
 			}
 		}
-		return current;
+		return structuredClone(current);
 	}
 
 	/** 触发 Provider 请求 Payload 修改 */
-	async emitBeforeProviderRequest(provider: string, payload: unknown): Promise<unknown> {
-		const set = this.handlers.get("before_provider_request");
-		if (!set || set.size === 0) return payload;
+	async emitBeforeProviderRequest(provider: string, payload: DeepReadonly<unknown>, scope?: RuntimeScopeFilter): Promise<unknown> {
+		const handlers = this.handlersFor("before_provider_request", scope);
+		if (handlers.length === 0) return payload;
 
 		let current = payload;
-		for (const handler of set) {
+		for (const handler of handlers) {
 			try {
-				const res = await handler({
+				const res = await handler(readonlySnapshot({
 					type: "before_provider_request",
 					provider,
 					payload: current,
-				});
+				}));
 				if (res !== undefined) {
-					current = res;
+					current = clone(res);
 				}
 			} catch (err) {
 				this.emitError("before_provider_request", err);
 			}
 		}
-		return current;
+		return clone(current);
 	}
 
 	/** 触发 Provider 响应审计 */
 	async emitAfterProviderResponse(
 		provider: string,
-		status: number,
-		headers: Record<string, string>,
+		status: number, headers: Readonly<Record<string, string>>,
+		scope?: RuntimeScopeFilter,
 	): Promise<void> {
-		const set = this.handlers.get("after_provider_response");
-		if (!set || set.size === 0) return;
+		const handlers = this.handlersFor("after_provider_response", scope);
+		if (handlers.length === 0) return;
 
-		for (const handler of set) {
+		for (const handler of handlers) {
 			try {
-				await handler({
+				await handler(readonlySnapshot({
 					type: "after_provider_response",
 					provider,
 					status,
 					headers,
-				});
+				}));
 			} catch (err) {
 				this.emitError("after_provider_response", err);
 			}
 		}
 	}
+
+	private handlersFor(eventType: string, scope?: RuntimeScopeFilter): ExtensionEventHandler[] {
+		const set = this.handlers.get(eventType);
+		if (!set) return [];
+		if (scope === undefined) return [...set].map((entry) => entry.handler);
+		const visible = new Set(scope);
+		return [...set].filter((entry) => entry.scopeId === undefined || visible.has(entry.scopeId)).map((entry) => entry.handler);
+	}
+}
+
+function readonlySnapshot<T>(value: T): DeepReadonly<T> {
+	return deepFreeze(clone(value)) as DeepReadonly<T>;
+}
+
+function clone<T>(value: T): T {
+	try { return structuredClone(value); }
+	catch {
+		if (Array.isArray(value)) return value.map(clone) as T;
+		if (value && typeof value === "object") return { ...(value as Record<string, unknown>) } as T;
+		return value;
+	}
+}
+
+function deepFreeze<T>(value: T): T {
+	if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+	for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+	return Object.freeze(value);
 }

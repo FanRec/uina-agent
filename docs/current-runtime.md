@@ -25,6 +25,7 @@
 | `ai/` | 配置、Provider adapter、SSE/wire、模型事实 | Agent 历史和 UI 状态 |
 | `session/` | 有序 SessionEntry、JSONL append/recovery、未完成工具 unknown | Provider 决策和 UI 规则 |
 | `tools/broker.ts` | 工具 schema、校验和执行 | 工具发现或扩展加载 |
+| `runtime/` | 只读 RuntimeHooks 合同与 no-op 实现 | handler、scope、扩展状态或 UI |
 | `extensions/runner.ts` | ActivationScope、项目/builtin 注册、来源诊断、异步 teardown | Agent 决策和工具业务实现 |
 | `extensions/runtime-tools/` | 内置 shell、时间、Job/Subagent 工具实现 | 项目扩展发现 |
 | `ui/` | 展示、输入、焦点、组件组合 | 模型能力事实、Agent 状态转移 |
@@ -51,6 +52,8 @@
 - 项目扩展从 `.uina/extensions/*.ts|js` 加载，在 `activate(pi)` 中调用 `pi.registerTool()`、`pi.registerCommand()`、`pi.registerProvider()`、renderer 或 hook 注册 API。
 
 没有 `tools/` 目录扫描、loader 或动态 tool-path 旁路。ActivationScope 失效时，其注册会逆序释放；handler 报错带 extension source。
+
+`Subject` 和 Provider adapter 只依赖必填 `RuntimeHooks` / `ProviderHooks`，不认识 `ExtensionHost`。CLI 将现有 Host 适配为 root view；无扩展 Agent 使用同一个 no-op view。所有 runtime hook 输入是冻结快照，变换必须显式返回新值；`ExtensionRunner.runtimeHooks(scopeIds?)` 只过滤同一 Host 的 handler 可见性，不创建第二个 Host、错误通道或 activation 状态。
 
 ## 模型事实
 

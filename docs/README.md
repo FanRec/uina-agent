@@ -12,6 +12,7 @@
 ## 提案
 
 - [扩展系统设计](proposals/extensions-design.md)
+- [RuntimeHooks：纠正 ExtensionHost 依赖方向](proposals/runtime-hooks-design.md)
 - [后台任务与子代理设计](proposals/background-and-subagent-design.md)
 - [TUI 设计](proposals/tui-design.md)
 

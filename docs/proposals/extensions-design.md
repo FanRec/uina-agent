@@ -33,8 +33,9 @@ Uina 的主运行时不是常规的多 Session Agent 工作台，而是一个持
 - 主历史保存用户输入、Uina 输出、工具调用、工具结果和必要的思考内容。
 - 运行事实保存输出中断、后台结果、感知状态等需要在后续决策中使用的事实；它们通过 `context` 按需投影，不自动伪造成普通 user 消息。
 - 扩展私有状态由扩展自己管理，不因扩展存在就进入主 Session。
+- Runtime hook 输入是只读快照；变换必须显式返回新值，不能依赖原地修改共享对象。
 
-后台任务和子代理都是扩展能力。内核只提供运行一个 Agent 所需的 `Subject`、SessionStore、ModelProvider、ToolBroker、ExtensionHost 以及创建和管理 Agent 实例所需的最小原语；内核不认识 `Job`、`Subagent`、`Background` 或父子关系。
+后台任务和子代理都是扩展能力。内核只提供运行一个 Agent 所需的 `Subject`、SessionStore、ModelProvider、ToolBroker、RuntimeHooks 以及创建和管理 Agent 实例所需的最小原语；`ExtensionHost` 是扩展层对 RuntimeHooks 的实现来源，不进入 Agent/Provider。内核不认识 `Job`、`Subagent`、`Background` 或父子关系。
 
 一次性后台工作由后台任务扩展管理。长期子代理由子代理扩展创建一个内部隔离的 Agent 执行上下文，以保存独立上下文、接收后续消息和支持恢复，但它不是用户可切换的平级 Session。
 

@@ -15,7 +15,7 @@ Uina **有一个方向正确、已经跑通的最小 Agent 纵向切片，但目
 
 - 前台 Agent 主链路保持了相当好的克制：输入、模型流、工具调用、结果回注、取消和 JSONL 基本闭环已经成立。
 - 最近加入的扩展、后台任务、子代理和复杂 TUI 没有围绕一个统一 host lifecycle 收拢，形成了多个并列状态岛。
-- Core/Agent 已经直接认识 ExtensionHost，Provider 请求也携带 ExtensionHost，依赖方向开始倒置。
+- 审查时 Core/Agent 直接认识 ExtensionHost，Provider 请求也携带 ExtensionHost，依赖方向倒置；后续已由必填 RuntimeHooks/ProviderHooks 与单一 Host scope view 收敛。
 - UI 不再只是展示层。它拥有模型、thinking、usage、上下文分段、产品快捷键和 trajectory 等业务状态，其中部分是硬编码或重复状态。
 - 模型能力事实存在明显违规：上下文默认值、thinking 名称猜测、默认模型目录、stale usage 都可能把未知或旧数据展示为事实。
 - Jobs/Subagents 是进程内 builtin capability：不承诺崩溃后的恢复或对账；这一点与 DSH LocalJobRegistry 的第一阶段边界一致。子代理的终态保留和释放语义已在后续收紧。

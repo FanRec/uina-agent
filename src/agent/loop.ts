@@ -12,6 +12,9 @@ import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings } 
 import { buildContext, defaultSystemPrompt, estimateContextTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import type { PreparedToolCall, ToolBroker } from "../tools/broker.js";
+import type { RuntimeHooks } from "../runtime/hooks.js";
+import { NO_RUNTIME_HOOKS } from "../runtime/noop.js";
+import { guardRuntimeHooks } from "../runtime/guard.js";
 
 export interface LoopHooks {
 	onToken: (text: string) => void;
@@ -48,7 +51,7 @@ export interface SubjectOptions {
 	thinkingLevel?: ThinkingLevel;
 	steerQueueMode?: import("../core/types.js").QueueMode;
 	followUpQueueMode?: import("../core/types.js").QueueMode;
-	extensionHost?: import("../extensions/host.js").ExtensionHost;
+	runtimeHooks?: RuntimeHooks;
 }
 
 export function clampThinkingLevel(
@@ -89,7 +92,7 @@ export class Subject {
 	private provider: ModelProvider;
 	private thinkingLevel: ThinkingLevel;
 	private preferredThinkingLevel: ThinkingLevel;
-	private readonly extensionHost?: import("../extensions/host.js").ExtensionHost;
+	private readonly runtimeHooks: RuntimeHooks;
 	private runtimeInputs: AgentInput[] = [];
 	private lastReportedUsage: Usage | null = null;
 	private streamSeq = 0;
@@ -117,7 +120,7 @@ export class Subject {
 			throw new Error(`provider ${provider.name} 未声明支持 thinking level: ${this.preferredThinkingLevel}`);
 		}
 		this.thinkingLevel = this.preferredThinkingLevel;
-		this.extensionHost = options.extensionHost;
+		this.runtimeHooks = guardRuntimeHooks(options.runtimeHooks ?? NO_RUNTIME_HOOKS);
 	}
 
 	getModel(): ModelProvider {
@@ -147,7 +150,7 @@ export class Subject {
 		const prevLevel = this.thinkingLevel;
 		this.thinkingLevel = clampThinkingLevel(this.preferredThinkingLevel, provider.thinkingLevels);
 
-		await this.extensionHost?.emit({
+		await this.runtimeHooks.events.emit({
 			type: "model_select",
 			model: provider.name,
 			provider,
@@ -155,7 +158,7 @@ export class Subject {
 		});
 
 		if (this.thinkingLevel !== prevLevel) {
-			await this.extensionHost?.emit({
+			await this.runtimeHooks.events.emit({
 				type: "thinking_level_select",
 				level: this.thinkingLevel,
 				previousLevel: prevLevel,
@@ -168,7 +171,7 @@ export class Subject {
 		const prev = this.thinkingLevel;
 		this.thinkingLevel = clampThinkingLevel(level, this.provider.thinkingLevels);
 
-		void this.extensionHost?.emit({
+		void this.runtimeHooks.events.emit({
 			type: "thinking_level_select",
 			level: this.thinkingLevel,
 			previousLevel: prev,
@@ -186,8 +189,8 @@ export class Subject {
 	async compact(instruction?: string): Promise<void> {
 		if (this.isBusy()) throw new Error("Agent 正在运行中，无法手动压缩会话");
 		const tokensBefore = Math.ceil(this.history.reduce((acc, m) => acc + m.content.length + 16, 0) / 4);
-		const cancelled = await this.extensionHost?.emitSessionBeforeCompact(tokensBefore);
-		if (cancelled) return;
+		const compactDecision = await this.runtimeHooks.turn.beforeCompact({ tokensBefore });
+		if (compactDecision.cancel) return;
 
 		try {
 			const result = await compactHistory(
@@ -196,6 +199,7 @@ export class Subject {
 				this.systemPrompt,
 				this.tools.defs(),
 				{ ...this.compaction, contextWindow: 0, reserveTokens: 0, keepRecentTokens: 0 },
+				this.runtimeHooks.provider,
 				this.abort?.signal,
 				this.provider.includeThinking,
 				instruction,
@@ -208,14 +212,14 @@ export class Subject {
 			await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);
 			this.history = replacement;
 
-			void this.extensionHost?.emit({
+			void this.runtimeHooks.events.emit({
 				type: "session_compact",
 				summary: result.summary,
 				tokensBefore: result.tokensBefore,
 				retainedTailCount: result.retainedTail.length,
 			});
 		} catch (err) {
-			void this.extensionHost?.emit({
+			void this.runtimeHooks.events.emit({
 				type: "session_compact_failed",
 				error: (err as Error).message,
 			});
@@ -321,10 +325,10 @@ export class Subject {
 			this.abort = new AbortController();
 			const turn = ++this.turnSeq;
 
-			const prepared = await this.extensionHost?.emitBeforeAgentStart(text ?? "", this.systemPrompt);
-			await this.extensionHost?.emit({ type: "agent_start", turnSeq: turn });
+			const prepared = await this.runtimeHooks.turn.prepare({ prompt: text ?? "", systemPrompt: this.systemPrompt });
+			await this.runtimeHooks.events.emit({ type: "agent_start", turnSeq: turn });
 
-			await this.runTurn(text, turn, runtimeInputs, this.provider, prepared?.systemPrompt ?? this.systemPrompt, prepared?.messages ?? []);
+			await this.runTurn(text, turn, runtimeInputs, this.provider, prepared.systemPrompt ?? this.systemPrompt, prepared.messages ? [...prepared.messages] : []);
 		} catch (error) {
 			this.abort = null;
 			this.busy = false;
@@ -340,7 +344,7 @@ export class Subject {
 		let runError: string | undefined;
 		try {
 			this.hooks.onTurnStart?.(turn, text ?? "");
-			await this.extensionHost?.emit({ type: "turn_start", turnNumber: turn, userText: text ?? "" });
+			await this.runtimeHooks.events.emit({ type: "turn_start", turnNumber: turn, userText: text ?? "" });
 			if (text !== undefined) await this.appendMessage({ role: "user", content: text });
 			this.runtimeInputs = runtimeInputs;
 			await this.decide(provider, systemPrompt, beforeMessages);
@@ -372,17 +376,17 @@ export class Subject {
 					outputTokens: last?.output,
 				};
 				this.hooks.onTurnEnd?.(turn, usage);
-				await this.extensionHost?.emit({ type: "turn_end", turnNumber: turn });
+				await this.runtimeHooks.events.emit({ type: "turn_end", turnNumber: turn });
 			} catch (error) {
 				try { this.hooks.onError?.(safeError(error)); } catch { /* hooks cannot own lifecycle */ }
 			}
-			await this.extensionHost?.emit({ type: "agent_end", turnSeq: turn, success, error: runError });
+			await this.runtimeHooks.events.emit({ type: "agent_end", turnSeq: turn, success, error: runError });
 			if (!this.interrupted && this.queues.size > 0) {
 				try { await this.resumeQueued(); } catch (error) { this.reportError(error); }
 			} else if (this.queues.size === 0) {
-				await this.extensionHost?.emit({ type: "agent_settled", turnSeq: turn });
+				await this.runtimeHooks.events.emit({ type: "agent_settled", turnSeq: turn });
 			}
-			await this.extensionHost?.flush();
+			await this.runtimeHooks.events.flush();
 		}
 	}
 
@@ -423,9 +427,7 @@ export class Subject {
 				includeThinking: provider.includeThinking,
 				runtimeInputs: this.runtimeInputs,
 			}), ...beforeMessages];
-			if (this.extensionHost) {
-				requestMessages = await this.extensionHost.emitContext(requestMessages);
-			}
+			requestMessages = await this.runtimeHooks.turn.transformContext(requestMessages);
 
 			const toolCalls: CompletedToolCall[] = [];
 			let reply = "";
@@ -442,7 +444,7 @@ export class Subject {
 			let hasEmittedThinkingStart = false;
 			const closeOutput = (outcome: "end" | "interrupted", reason?: "cancelled" | "error"): void => {
 				if (hasEmittedThinkingStart) {
-					this.extensionHost?.emitObserved(
+					this.runtimeHooks.events.observe(
 						outcome === "end"
 							? { type: "output_end", streamId, channel: "thinking" }
 							: { type: "output_interrupted", streamId, channel: "thinking", reason: reason! },
@@ -450,7 +452,7 @@ export class Subject {
 					hasEmittedThinkingStart = false;
 				}
 				if (hasEmittedContentStart) {
-					this.extensionHost?.emitObserved(
+					this.runtimeHooks.events.observe(
 						outcome === "end"
 							? { type: "output_end", streamId, channel: "content" }
 							: { type: "output_interrupted", streamId, channel: "content", reason: reason!, spokenUntil: textOffset },
@@ -465,17 +467,17 @@ export class Subject {
 						messages: requestMessages,
 						tools: this.tools.defs(),
 						thinkingLevel: clampThinkingLevel(this.thinkingLevel, provider.thinkingLevels),
-						extensionHost: this.extensionHost,
+						providerHooks: this.runtimeHooks.provider,
 					},
 					(delta) => {
 						if (delta.kind === "thinking") {
 							thinking += delta.text;
 							if (!hasEmittedThinkingStart) {
 								hasEmittedThinkingStart = true;
-								this.extensionHost?.emitObserved({ type: "output_start", streamId, channel: "thinking" });
+								this.runtimeHooks.events.observe({ type: "output_start", streamId, channel: "thinking" });
 							}
 							thinkingOffset += delta.text.length;
-							this.extensionHost?.emitObserved({
+							this.runtimeHooks.events.observe({
 								type: "output_update",
 								streamId,
 								offset: thinkingOffset,
@@ -489,10 +491,10 @@ export class Subject {
 							reply += delta.text;
 							if (!hasEmittedContentStart) {
 								hasEmittedContentStart = true;
-								this.extensionHost?.emitObserved({ type: "output_start", streamId, channel: "content" });
+								this.runtimeHooks.events.observe({ type: "output_start", streamId, channel: "content" });
 							}
 							textOffset += delta.text.length;
-							this.extensionHost?.emitObserved({
+							this.runtimeHooks.events.observe({
 								type: "output_update",
 								streamId,
 								offset: textOffset,
@@ -647,14 +649,8 @@ export class Subject {
 		}
 
 		const callArgs = (call.args && typeof call.args === "object" ? call.args : {}) as Record<string, unknown>;
-		if (this.extensionHost) {
-			const blocked = await this.extensionHost.emitToolCall({
-				type: "tool_call",
-				toolName: call.name,
-				args: callArgs,
-				callId: call.id,
-			});
-			if (blocked?.block) {
+		const blocked = await this.runtimeHooks.tools.beforeCall({ callId: call.id, name: call.name, args: callArgs });
+		if (blocked.block) {
 				const reason = blocked.reason || "操作已被扩展或安全策略拦截";
 				const blockedResult = `[blocked] 工具执行已被拦截: ${reason}`;
 				this.hooks.onNotice?.(blockedResult);
@@ -666,7 +662,6 @@ export class Subject {
 					result: blockedResult,
 				});
 				return { callId: call.id, result: blockedResult, status: "failed" };
-			}
 		}
 
 		if (prepared.error) {
@@ -690,20 +685,9 @@ export class Subject {
 
 		let outcomeResult = outcome.result;
 		let outcomeStatus: ToolResultStatus = outcome.status;
-		if (this.extensionHost) {
-			const transformed = await this.extensionHost.emitToolResult({
-				type: "tool_result",
-				toolName: call.name,
-				args: callArgs,
-				result: outcomeResult,
-				isError: outcomeStatus !== "succeeded",
-				callId: call.id,
-			});
-			if (transformed) {
-				if (transformed.result !== undefined) outcomeResult = transformed.result;
-				if (transformed.isError !== undefined) outcomeStatus = transformed.isError ? "failed" : "succeeded";
-			}
-		}
+		const transformed = await this.runtimeHooks.tools.transformResult({ callId: call.id, name: call.name, args: callArgs, result: outcomeResult, status: outcomeStatus });
+		if (transformed.result !== undefined) outcomeResult = transformed.result;
+		if (transformed.status !== undefined) outcomeStatus = transformed.status;
 
 		await this.storeEvent("tool_finished", {
 			callId: call.id,
@@ -717,8 +701,8 @@ export class Subject {
 
 	private async maybeCompact(provider = this.provider, systemPrompt = this.systemPrompt): Promise<void> {
 		const tokensBefore = Math.ceil(this.history.reduce((acc, m) => acc + m.content.length + 16, 0) / 4);
-		const cancelled = await this.extensionHost?.emitSessionBeforeCompact(tokensBefore);
-		if (cancelled) return;
+		const compactDecision = await this.runtimeHooks.turn.beforeCompact({ tokensBefore });
+		if (compactDecision.cancel) return;
 
 		try {
 			const result = await compactHistory(
@@ -727,8 +711,10 @@ export class Subject {
 				systemPrompt,
 				this.tools.defs(),
 				this.compaction,
+				this.runtimeHooks.provider,
 				this.abort?.signal,
 				provider.includeThinking,
+				undefined,
 			);
 			if (!result) return;
 			const replacement: ChatMsg[] = [
@@ -738,14 +724,14 @@ export class Subject {
 			await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);
 			this.history = replacement;
 
-			await this.extensionHost?.emit({
+			await this.runtimeHooks.events.emit({
 				type: "session_compact",
 				summary: result.summary,
 				tokensBefore: result.tokensBefore,
 				retainedTailCount: result.retainedTail.length,
 			});
 		} catch (err) {
-			await this.extensionHost?.emit({
+			await this.runtimeHooks.events.emit({
 				type: "session_compact_failed",
 				error: (err as Error).message,
 			});

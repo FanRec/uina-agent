@@ -81,7 +81,8 @@ export interface ModelRequest {
 	messages: ChatMsg[];
 	tools?: ToolDef[];
 	thinkingLevel?: ThinkingLevel;
-	extensionHost?: import("../extensions/host.js").ExtensionHost;
+	/** Request-scoped transport middleware. It is always present, including when no extensions are active. */
+	providerHooks: import("../runtime/hooks.js").ProviderHooks;
 }
 
 export interface ModelProvider {

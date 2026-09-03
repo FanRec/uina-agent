@@ -70,7 +70,7 @@
 ### 5.3 微内核与依赖方向
 
 - Uina 源码约 12,695 行（不含测试），其中 UI 约 8,002 行；“大”主要在 UI，不等于 core 大，但 `ui-host.ts`（约 1,139 行）已成为第二个业务协调器。
-- `core/types.ts` 反向引用 `extensions/host.ts`（`ModelRequest.extensionHost`）；`agent/loop.ts` 直接认识完整 ExtensionHost；Provider adapter 也通过 ModelRequest 调扩展 hook。低层 Agent/Provider 因而不能脱离项目扩展运行，依赖方向与 Pi 的“低层 Agent 仅接收注入回调、coding-agent 层绑定 ExtensionRunner”相反。
+- 审查时，`core/types.ts` 反向引用 `extensions/host.ts`（`ModelRequest.extensionHost`），`agent/loop.ts` 直接认识完整 ExtensionHost，Provider adapter 也通过 ModelRequest 调扩展 hook。后续已改为必填 `RuntimeHooks`/`ProviderHooks`：Host 通过无状态 view 适配，低层不再 import extensions；scope view 仍共享同一个 Host owner。
 - `extensions/commands.ts` 依赖 UI registry，`extensions/builtin.ts` 直接依赖 `UIHost` 和具体 overlay。扩展运行时、产品功能和 TUI 组装混在同一层。
 - 当前至少有 ToolBroker、ExtensionRegistry、JobRegistry、SubagentRegistry 四套注册/状态容器。它们不是天然错误，但没有一个 host lifecycle 对它们统一拥有、刷新、卸载和持久化。
 - `src/cli/app.ts` 手工创建并连线 Provider、两个 ToolBroker、Jobs、Subagents、ExtensionRunner、commands 和 UI，322 行已经承担 feature policy；新能力需要继续修改该文件。

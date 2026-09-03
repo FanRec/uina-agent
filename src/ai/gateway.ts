@@ -6,6 +6,7 @@ import type {
 import { parseSSE, ProviderProtocolError } from "./sse.js";
 import { configuredThinkingLevels } from "./config.js";
 import { effectiveContextWindow } from "./config.js";
+import { copyValue, readonlySnapshot } from "../runtime/guard.js";
 
 export interface ProviderConf {
 	baseUrl: string;
@@ -46,10 +47,8 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 				...thinkingRequest(req.thinkingLevel, conf.thinkingFormat),
 			};
 
-			if (req.extensionHost) {
-				headers = await req.extensionHost.emitBeforeProviderHeaders(conf.model, headers);
-				bodyPayload = await req.extensionHost.emitBeforeProviderRequest(conf.model, bodyPayload);
-			}
+			headers = copyValue(await req.providerHooks.transformHeaders(conf.model, readonlySnapshot(headers)));
+			bodyPayload = copyValue(await req.providerHooks.transformPayload(conf.model, readonlySnapshot(bodyPayload)));
 
 			const response = await fetchWithRetry(endpoint, {
 				maxRetries: conf.maxRetries ?? 2,
@@ -62,13 +61,11 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 				},
 			});
 
-			if (req.extensionHost) {
-				const respHeaders: Record<string, string> = {};
-				response.headers.forEach((v, k) => {
-					respHeaders[k] = v;
-				});
-				await req.extensionHost.emitAfterProviderResponse(conf.model, response.status, respHeaders);
-			}
+			const respHeaders: Record<string, string> = {};
+			response.headers.forEach((v, k) => {
+				respHeaders[k] = v;
+			});
+			await req.providerHooks.observeResponse(readonlySnapshot({ provider: conf.model, status: response.status, headers: respHeaders }));
 
 			if (!response.ok) {
 				const body = await response.text().catch(() => "");

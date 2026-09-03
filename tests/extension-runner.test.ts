@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExtensionRunner } from "../src/extensions/runner.js";
 import { ToolBroker, type Tool } from "../src/tools/broker.js";
+import { DefaultAgentFactory } from "../src/agent/runtime.js";
+import type { ModelProvider } from "../src/core/types.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -82,5 +84,43 @@ describe("project extension runner", () => {
 		expect((globalThis as Record<string, unknown>).__uinaAsyncDisposed).toBe(true);
 		expect(builtinDisposed).toBe(true);
 		expect(tools.has("builtin_scope_tool")).toBe(false);
+	});
+
+	it("creates scope-filtered runtime hook views over the same Host", async () => {
+		const root = await mkdtemp(join(tmpdir(), "uina-ext-"));
+		roots.push(root);
+		const runner = new ExtensionRunner({ cwd: root, tools: new ToolBroker() });
+		const seen: string[] = [];
+		await runner.activateBuiltin("one", (pi) => { pi.on("agent_start", () => { seen.push("one"); }); });
+		await runner.activateBuiltin("two", (pi) => { pi.on("agent_start", () => { seen.push("two"); }); });
+
+		await runner.runtimeHooks(["builtin:one"]).events.emit({ type: "agent_start", turnSeq: 1 });
+		expect(seen).toEqual(["one"]);
+		await runner.runtimeHooks().events.emit({ type: "agent_start", turnSeq: 2 });
+		expect(seen).toEqual(["one", "one", "two"]);
+		await runner.dispose();
+	});
+
+	it("keeps child Agents on no-op runtime hooks unless a scope is explicitly injected", async () => {
+		const root = await mkdtemp(join(tmpdir(), "uina-ext-"));
+		roots.push(root);
+		const runner = new ExtensionRunner({ cwd: root, tools: new ToolBroker() });
+		await runner.activateBuiltin("root-context", (pi) => {
+			pi.on("context", (event) => ({ messages: [...event.messages, { role: "user", content: "root-only" }] }));
+		});
+		let received = "";
+		const provider: ModelProvider = {
+			name: "child",
+			async stream(request, emit) {
+				received = request.messages.map((message) => message.content).join("\n");
+				emit({ kind: "finish", reason: "stop" });
+			},
+		};
+		const child = new DefaultAgentFactory().create({ provider, tools: new ToolBroker() });
+		await child.send({ id: "child-input", mode: "followUp", source: { kind: "agent", type: "test" }, text: "child" });
+		await child.waitForIdle();
+		expect(received).not.toContain("root-only");
+		await child.dispose();
+		await runner.dispose();
 	});
 });

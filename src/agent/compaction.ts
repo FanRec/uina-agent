@@ -1,4 +1,5 @@
 import type { ChatMsg, ModelProvider, ToolDef } from "../core/types.js";
+import type { ProviderHooks } from "../runtime/hooks.js";
 import { buildContext, estimateContextTokens, estimateRequestTokens, formatForSummary } from "./context.js";
 
 export interface CompactionSettings {
@@ -60,6 +61,7 @@ export async function compactHistory(
 	systemPrompt: string,
 	tools: readonly ToolDef[],
 	settings: CompactionSettings,
+	providerHooks: ProviderHooks,
 	signal?: AbortSignal,
 	includeThinking = false,
 	instruction?: string,
@@ -91,6 +93,7 @@ export async function compactHistory(
 				},
 				{ role: "user", content: transcript },
 			],
+			providerHooks,
 		},
 		(delta) => {
 			if (delta.kind === "text") summary += delta.text;

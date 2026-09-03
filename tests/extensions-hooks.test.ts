@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { ExtensionHost } from "../src/extensions/host.js";
+import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
+import type { RuntimeHooks } from "../src/runtime/hooks.js";
+import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { Subject } from "../src/agent/loop.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import type { ModelProvider, ModelRequest, StreamDelta } from "../src/core/types.js";
@@ -89,7 +92,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 				onToken: () => {},
 				onNotice: (msg) => notices.push(msg),
 			},
-			{ extensionHost: host },
+			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
 		await subject.pushInput("请运行危险工具");
@@ -146,7 +149,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			provider,
 			tools,
 			{ onToken: () => {} },
-			{ extensionHost: host },
+			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
 		await subject.pushInput("算一下");
@@ -179,7 +182,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			prov1,
 			new ToolBroker(),
 			{ onToken: () => {} },
-			{ extensionHost: host },
+			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
 		expect(subject.getModel().name).toBe("mock-model");
@@ -211,7 +214,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			thinkingModel,
 			new ToolBroker(),
 			{ onToken: () => {} },
-			{ extensionHost: host },
+			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
 		// 1. 设置思考深度为 high
@@ -255,7 +258,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			provider,
 			new ToolBroker(),
 			{ onToken: () => {} },
-			{ extensionHost: host },
+			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
 		subject.addHistory([
@@ -301,13 +304,67 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			provider,
 			new ToolBroker(),
 			{ onToken: () => {} },
-			{ extensionHost: host },
+			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
 		await subject.pushInput("你好");
 		await subject.waitForIdle();
 
 		expect(receivedMessages.some((m) => m.content?.includes("阳光明媚"))).toBe(true);
+	});
+
+	it("passes frozen snapshots to transform handlers and accepts explicit replacements only", async () => {
+		const host = new ExtensionHost();
+		let frozen = false;
+		host.on("context", (event) => {
+			frozen = Object.isFrozen(event) && Object.isFrozen(event.messages) && Object.isFrozen(event.messages[0]!);
+			return { messages: [...event.messages, { role: "user", content: "replacement" }] };
+		});
+		const hooks = createRuntimeHooks(host);
+		const transformed = await hooks.turn.transformContext([{ role: "user", content: "original" }]);
+		expect(frozen).toBe(true);
+		expect(transformed.map((message) => message.content)).toEqual(["original", "replacement"]);
+	});
+
+	it("guards every RuntimeHooks implementation at the Subject boundary", async () => {
+		let inputFrozen = false;
+		let returned: Array<{ role: "user"; content: string }> | undefined;
+		let contextReturned!: () => void;
+		const contextReady = new Promise<void>((resolve) => { contextReturned = resolve; });
+		let releaseProvider!: () => void;
+		const providerGate = new Promise<void>((resolve) => { releaseProvider = resolve; });
+		const runtimeHooks: RuntimeHooks = {
+			...NO_RUNTIME_HOOKS,
+			turn: {
+				...NO_RUNTIME_HOOKS.turn,
+				transformContext: async (messages) => {
+					inputFrozen = Object.isFrozen(messages) && Object.isFrozen(messages[0]!);
+					returned = [{ role: "user", content: "replacement" }];
+					setTimeout(() => {
+						returned?.push({ role: "user", content: "late mutation" });
+						contextReturned();
+					}, 0);
+					return returned;
+				},
+			},
+		};
+		let received = "";
+		const provider: ModelProvider = {
+			name: "guard-probe",
+			async stream(request, emit) {
+				await providerGate;
+				received = request.messages.map((message) => message.content).join("\n");
+				emit({ kind: "finish", reason: "stop" });
+			},
+		};
+		const subject = new Subject(provider, new ToolBroker(), { onToken: () => {} }, { runtimeHooks });
+		const run = subject.pushInput("original");
+		await contextReady;
+		releaseProvider();
+		await run;
+		await subject.waitForIdle();
+		expect(inputFrozen).toBe(true);
+		expect(received).toBe("replacement");
 	});
 
 	it("emits agent_start, turn_start, turn_end, agent_end, agent_settled", async () => {
@@ -325,7 +382,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			mockProvider(),
 			new ToolBroker(),
 			{ onToken: () => {} },
-			{ extensionHost: host },
+			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
 		await subject.pushInput("测试生命周期");
@@ -366,7 +423,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 				emit({ kind: "finish", reason: "stop" });
 			},
 		};
-		const subject = new Subject(provider, new ToolBroker(), { onToken: () => {} }, { extensionHost: host });
+		const subject = new Subject(provider, new ToolBroker(), { onToken: () => {} }, { runtimeHooks: createRuntimeHooks(host) });
 		const firstRun = subject.pushInput("first");
 		await firstEndReached;
 
@@ -410,7 +467,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			provider,
 			new ToolBroker(),
 			{ onToken: () => {} },
-			{ extensionHost: host },
+			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
 		await subject.pushInput("打个招呼");
@@ -433,7 +490,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 					events.push(`${event.type}:${event.channel}${event.type === "output_interrupted" ? `:${event.reason}` : ""}`);
 				});
 			}
-			const subject = new Subject(provider, new ToolBroker(), { onToken: () => {} }, { extensionHost: host });
+			const subject = new Subject(provider, new ToolBroker(), { onToken: () => {} }, { runtimeHooks: createRuntimeHooks(host) });
 			const run = subject.pushInput("probe");
 			if (interruptAfterStart) {
 				await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -500,13 +557,9 @@ describe("ExtensionHost & Hooks Architecture", () => {
 	it("intercepts HTTP requests at provider network level (before_provider_headers, before_provider_request, after_provider_response)", async () => {
 		const host = new ExtensionHost();
 
-		host.on("before_provider_headers", (e) => {
-			e.headers["X-Custom-Tenant"] = "tenant-123";
-		});
+		host.on("before_provider_headers", (e) => ({ headers: { ...e.headers, "X-Custom-Tenant": "tenant-123" } }));
 		host.on("before_provider_request", (e) => {
-			const payload = e.payload as Record<string, unknown>;
-			payload.custom_tag = "injected";
-			return payload;
+			return { ...(e.payload as Record<string, unknown>), custom_tag: "injected" };
 		});
 
 		let afterResponseStatus = 0;
@@ -545,7 +598,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		await provider.stream(
 			{
 				messages: [{ role: "user", content: "hello" }],
-				extensionHost: host,
+				providerHooks: createRuntimeHooks(host).provider,
 			},
 			(delta) => {
 				if (delta.kind === "text") textOut += delta.text;

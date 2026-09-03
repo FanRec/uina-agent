@@ -5,6 +5,7 @@ import type { SessionStore } from "../session/types.js";
 import { Subject, type AgentInput, type LoopHooks } from "./loop.js";
 import type { ToolBroker } from "../tools/broker.js";
 import type { ModelProvider } from "../core/types.js";
+import type { RuntimeHooks } from "../runtime/hooks.js";
 
 export type AgentStatus = "running" | "idle" | "disposed";
 
@@ -23,6 +24,7 @@ export interface AgentCreateOptions {
 	store?: SessionStore;
 	systemPrompt?: string;
 	thinkingLevel?: ThinkingLevel;
+	runtimeHooks?: RuntimeHooks;
 }
 
 export interface AgentHandle {
@@ -66,6 +68,7 @@ class RuntimeAgent implements AgentHandle {
 			store: this.store,
 			systemPrompt: options.systemPrompt,
 			thinkingLevel: options.thinkingLevel,
+			runtimeHooks: options.runtimeHooks,
 		});
 	}
 
