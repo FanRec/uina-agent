@@ -547,6 +547,54 @@ export class UIHost implements UIHostContextPort {
 		return this.scrollOffset;
 	}
 
+	/**
+	 * 在执行可能改变历史行数的操作（展开/收起思考、展开/收起工具卡片、全局折叠）时，
+	 * 精确保持当前屏幕上正在查看的内容（或用户交互的目标锚点）在视口中的屏幕行位置绝对不变。
+	 */
+	preserveScrollAnchor(action: () => void, targetAbsLine?: number): void {
+		const width = this.terminal.columns;
+		const height = this.terminal.rows;
+		const innerW = width;
+		const safeW = Math.max(20, innerW - 1);
+		const transcriptContentW = Math.max(18, safeW - 2);
+		const bannerCount = this.headerContainer.render(transcriptContentW).length;
+		const oldTotalPerm = bannerCount + this.transcript.render(transcriptContentW).length;
+
+		const rawInput = this.inputLine.render(innerW);
+		const inputH = rawInput.length;
+		const belowH =
+			this.contextBar.render(Math.max(2, innerW - 1)).length +
+			this.widgetSlots.render("belowEditor", innerW).length;
+		const breathingGap = 1;
+		const transcriptH = Math.max(0, height - inputH - belowH - breathingGap);
+		const maxOldScroll = Math.max(0, oldTotalPerm - transcriptH);
+		const effOldScroll = Math.max(0, Math.min(this.scrollOffset, maxOldScroll));
+		const oldScrollStart = oldTotalPerm <= transcriptH ? 0 : oldTotalPerm - transcriptH - effOldScroll;
+
+		// 确定锚点行在原全量内容中的绝对行索引及在视口中的屏幕行偏移
+		const anchorLine =
+			typeof targetAbsLine === "number" &&
+			targetAbsLine >= oldScrollStart &&
+			targetAbsLine < oldScrollStart + transcriptH
+				? targetAbsLine
+				: oldScrollStart;
+		const screenOffset = anchorLine - oldScrollStart;
+
+		action();
+
+		const newTotalPerm = bannerCount + this.transcript.render(transcriptContentW).length;
+		const newMaxScroll = Math.max(0, newTotalPerm - transcriptH);
+
+		if (newTotalPerm <= transcriptH) {
+			this.scrollOffset = 0;
+			return;
+		}
+
+		// 保持锚点行留在原屏幕行偏移位置
+		const targetScrollStart = Math.max(0, Math.min(newMaxScroll, anchorLine - screenOffset));
+		this.scrollOffset = Math.max(0, Math.min(newMaxScroll, newTotalPerm - transcriptH - targetScrollStart));
+	}
+
 	executeCommand(name: string, args: string): void {
 		this.onUserLine?.(`/${name}${args ? ` ${args}` : ""}`, this.busy ? "followUp" : "direct");
 	}
@@ -1043,28 +1091,51 @@ export class UIHost implements UIHostContextPort {
 		// 8.5. 注册全屏鼠标交互热区（Click Targets 与 Hover 探测）
 		const interactiveTargets: InteractiveTarget[] = [];
 
-		// (1) 注册思考折叠行交互
+		// (1) 注册思考折叠行交互（按思考块全域行注册）
 		const thinkingLocs = this.transcript.getThinkingLineIndices(transcriptContentW);
 		for (const loc of thinkingLocs) {
-			const absLine = bannerCount + loc.lineIndex;
-			if (absLine >= scrollStart && absLine < scrollStart + visibleTranscript.length) {
-				const screenRow = absLine - scrollStart;
-				interactiveTargets.push({
-					// absLine 让同编号的历史轮次与当前轮次也拥有不同目标。
-					id: `thinking-${loc.turnN}-${absLine}`,
-					row: screenRow,
-					colStart: 0,
-					// 思考标题可能很长；整行都应可点击，但把右侧
-					// TimelineRail 的两列留给导航轨，避免热区重叠。
-					colEnd: Math.max(0, transcriptContentW - 1),
-					onClick: () => {
-						const res = this.transcript.toggleThinking(loc.turn, transcriptContentW);
-						if (res.toggled) {
-							this.scrollOffset = Math.max(0, this.scrollOffset + res.lineDelta);
-						}
-						this.requestRender();
-					},
-				});
+			const thinkingRows = Math.max(1, loc.lineCount ?? 1);
+			for (let r = 0; r < thinkingRows; r++) {
+				const absLine = bannerCount + loc.lineIndex + r;
+				if (absLine >= scrollStart && absLine < scrollStart + visibleTranscript.length) {
+					const screenRow = absLine - scrollStart;
+					interactiveTargets.push({
+						id: `thinking:${loc.turnN}:${absLine}`,
+						row: screenRow,
+						colStart: 0,
+						colEnd: Math.max(0, transcriptContentW - 1),
+						onClick: () => {
+							this.preserveScrollAnchor(() => {
+								this.transcript.toggleThinking(loc.turn, transcriptContentW);
+							}, bannerCount + loc.lineIndex);
+							this.requestRender();
+						},
+					});
+				}
+			}
+		}
+
+		// (1.5) 注册工具卡片折叠交互（Tool Cards：按整张卡片块全域注册）
+		const toolLocs = this.transcript.getToolLineIndices(transcriptContentW);
+		for (const loc of toolLocs) {
+			const cardContentRows = Math.max(1, loc.lineCount - 1);
+			for (let r = 0; r < cardContentRows; r++) {
+				const absLine = bannerCount + loc.lineIndex + r;
+				if (absLine >= scrollStart && absLine < scrollStart + visibleTranscript.length) {
+					const screenRow = absLine - scrollStart;
+					interactiveTargets.push({
+						id: `tool:${loc.callId}:${absLine}`,
+						row: screenRow,
+						colStart: 0,
+						colEnd: Math.max(0, transcriptContentW - 1),
+						onClick: () => {
+							this.preserveScrollAnchor(() => {
+								this.transcript.toggleTool(loc.item, transcriptContentW);
+							}, bannerCount + loc.lineIndex);
+							this.requestRender();
+						},
+					});
+				}
 			}
 		}
 
@@ -1240,10 +1311,24 @@ export class UIHost implements UIHostContextPort {
 				}
 
 				if (res.hoverTargetId !== undefined) {
-					const hoveredThinkingTurn = res.hoverTargetId?.startsWith("thinking-")
-						? parseInt(res.hoverTargetId.replace("thinking-", ""), 10)
-						: null;
+					const hoveredThinkingTurn = res.hoverTargetId?.startsWith("thinking:")
+						? parseInt(res.hoverTargetId.split(":")[1] ?? "", 10)
+						: res.hoverTargetId?.startsWith("thinking-")
+							? parseInt(res.hoverTargetId.replace("thinking-", ""), 10)
+							: null;
 					if (this.transcript.setHoveredThinkingTurn(hoveredThinkingTurn)) {
+						this.requestRender();
+					}
+
+					let hoveredToolId: string | null = null;
+					if (res.hoverTargetId?.startsWith("tool:")) {
+						const parts = res.hoverTargetId.split(":");
+						hoveredToolId = parts[1] ?? null;
+					} else if (res.hoverTargetId?.startsWith("tool-")) {
+						const parts = res.hoverTargetId.split("-");
+						hoveredToolId = parts.slice(1, -1).join("-");
+					}
+					if (this.transcript.setHoveredToolId(hoveredToolId)) {
 						this.requestRender();
 					}
 
@@ -1393,16 +1478,44 @@ export class UIHost implements UIHostContextPort {
 				this.requestRender();
 				return;
 			}
-			const result = this.transcript.toggleThinking();
-			if (!result.toggled) {
-				this.transcript.toggleCompaction();
+			const safeW = Math.max(20, this.terminal.columns - 1);
+			const transcriptContentW = Math.max(18, safeW - 2);
+			const bannerCount = this.headerContainer.render(transcriptContentW).length;
+
+			// 如果当前焦点或悬停在工具卡片上，单卡展开优先
+			const hoveredToolId = this.transcript.getHoveredToolId();
+			if (hoveredToolId) {
+				const toolLoc = this.transcript.getToolLineIndices(transcriptContentW).find((l) => l.callId === hoveredToolId);
+				const targetAbsLine = toolLoc ? bannerCount + toolLoc.lineIndex : undefined;
+				this.preserveScrollAnchor(() => {
+					this.transcript.toggleTool(hoveredToolId, transcriptContentW);
+				}, targetAbsLine);
+				this.requestRender();
+				return;
 			}
+
+			const thinkingLocs = this.transcript.getThinkingLineIndices(transcriptContentW);
+			const targetThinkingLoc = thinkingLocs.length > 0 ? thinkingLocs[thinkingLocs.length - 1] : undefined;
+			const targetAbsLine = targetThinkingLoc ? bannerCount + targetThinkingLoc.lineIndex : undefined;
+
+			this.preserveScrollAnchor(() => {
+				const result = this.transcript.toggleThinking(undefined, transcriptContentW);
+				if (!result.toggled) {
+					const toolRes = this.transcript.toggleTool(undefined, transcriptContentW);
+					if (!toolRes.toggled) {
+						this.transcript.toggleCompaction();
+					}
+				}
+			}, targetAbsLine);
 			this.requestRender();
 			return;
 		}
 
 		if (matchesKey(data, Key.alt("o")) || matchesKey(data, Key.alt("O"))) {
-			this.transcript.toggleAllThinking();
+			this.preserveScrollAnchor(() => {
+				this.transcript.toggleAllThinking();
+				this.transcript.toggleAllTools();
+			});
 			this.requestRender();
 			return;
 		}

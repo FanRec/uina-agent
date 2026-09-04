@@ -1,14 +1,312 @@
 /**
- * 工具调用状态与结果卡片组件（全面对齐 dsh-TUI 极简树状折线风格，零边距左对齐）。
- * 特性：
- * 1. 运行中显示轻量单行呼吸状态：“• ⏳ [工具名] [参数] · 执行中...”；
- * 2. 完成后以轻量树状折线展开：“• [工具名] · [耗时]”+“  └exitCode: 0”+“   stdout: ...”；
- * 3. 失败时清晰标红并引导快捷键查看轨迹；
- * 4. 彻底消除前导多余空格，完全左对齐。
+ * 工具调用状态与结果卡片组件（完美对齐 dsh-TUI / Claude Code 工具呈现规范）。
+ *
+ * 核心特性：
+ * 1. 运行中生命感：
+ *    - 600ms 同步心跳呼吸实心大圆点 ●（BLACK_CIRCLE）；
+ *    - 1 秒挂钟实时累加秒表（· 1s, · 2s）；
+ *    - 终端多行脚本命令首行折叠 + (… +N lines) 保护；
+ * 2. 状态机与几何突变：
+ *    - 运行中：呼吸闪烁 ●；
+ *    - 已结算（完成）：静止小圆点 •（BULLET），被赋予工具类别语义色；
+ *    - 异常/失败：几何形状突变为红色乘号 ✗（MULTIPLICATION_X），高亮错误与 Exit code；
+ * 3. 悬挂层级与极简折叠：
+ *    - 首行采用 ⎿ (GUTTER_FIRST: ' ⎿ ') 悬挂折角，后续行采用 3 空格延续 (GUTTER_REST: '   ')；
+ *    - 正常退出隐去 exitCode: 0 噪点，非零或异常时显式标红；
+ *    - 文本类输出 3 行预算折叠，Diff 代码变更 8 行预算折叠，单行溢出直显不折叠；
+ *    - 最新失败单例追加 '⎿ Alt+T 查看轨迹'；
+ * 4. 五维工具分类色彩语义学（Category Colors）：
+ *    - write: 暖金 (Warm Gold) —— 写/修改文件
+ *    - exec: 雾青 (Mist Cyan) —— 执行命令行
+ *    - read: 沉静蓝 (Brand Blue) —— 查看/搜索文件
+ *    - web: 天蓝/薄荷绿 (Web Teal) —— 网络请求/浏览器
+ *    - task: 紫罗兰 (Violet) —— 子代理/后台任务
+ * 5. 交互与双模展开：
+ *    - 支持单卡折叠/展开与全局 Ctrl+O 展开；
+ *    - 鼠标悬停感知：卡片底色微亮、折叠角标 ▾/▴ 浮现、折叠提示文字由暗淡升格为明亮。
  */
 
-import { C, truncateToWidth } from "../../core/utils.js";
+import { C, truncateToWidth, visibleWidth } from "../../core/utils.js";
+import { formatDiffCardLines } from "./diff-view.js";
 
+export type ToolCategory = "write" | "exec" | "read" | "web" | "task" | "default";
+
+export const CATEGORY_BY_TOOL: Record<string, ToolCategory> = {
+	// write / mutate (Warm Gold / Amber)
+	write: "write",
+	edit: "write",
+	write_to_file: "write",
+	replace_file_content: "write",
+	str_replace_editor: "write",
+	multiedit: "write",
+	notebookedit: "write",
+	apply_patch: "write",
+
+	// exec (Mist Cyan)
+	exec_command: "exec",
+	execute_command: "exec",
+	exec: "exec",
+	run_command: "exec",
+	bash: "exec",
+	powershell: "exec",
+	pwsh: "exec",
+	sh: "exec",
+	shell: "exec",
+	terminal: "exec",
+	cmd: "exec",
+	command: "exec",
+
+	// read (Brand Blue)
+	read: "read",
+	view_file: "read",
+	read_file: "read",
+	grep: "read",
+	grep_search: "read",
+	glob: "read",
+	search: "read",
+	find_by_name: "read",
+	list_dir: "read",
+	dir_list: "read",
+
+	// web (Teal / Sky Blue)
+	search_web: "web",
+	web_search: "web",
+	read_url_content: "web",
+	web_fetch: "web",
+	browser: "web",
+	fetch: "web",
+
+	// task (Violet / Purple)
+	invoke_subagent: "task",
+	manage_subagents: "task",
+	subagent: "task",
+	manage_task: "task",
+	schedule: "task",
+	define_subagent: "task",
+	job: "task",
+	workflow: "task",
+};
+
+export function getToolCategory(toolName: string): ToolCategory {
+	return CATEGORY_BY_TOOL[toolName.toLowerCase()] ?? "default";
+}
+
+/** 工具名称在各类别下的品牌主题色 */
+export function getToolCategoryColor(category: ToolCategory): string {
+	switch (category) {
+		case "write":
+			return C.toolDotWrite || "\x1b[38;2;216;178;112m"; // Warm Gold
+		case "exec":
+			return C.toolDotExec || "\x1b[38;2;127;174;153m"; // Mist Cyan
+		case "read":
+			return C.toolDotRead || "\x1b[38;2;130;184;199m"; // Mist Blue
+		case "web":
+			return C.toolDotWeb || "\x1b[38;2;125;161;222m"; // Sky/Teal
+		case "task":
+			return C.toolDotTask || "\x1b[38;2;209;148;174m"; // Violet
+		default:
+			return C.iceBlue || "\x1b[38;2;171;194;236m";
+	}
+}
+
+/** 格式化工具显示名称（对齐 Claude Code 大驼峰规范） */
+export function displayName(rawName: string): string {
+	const KNOWN: Record<string, string> = {
+		bash: "Bash",
+		powershell: "PowerShell",
+		pwsh: "PowerShell",
+		exec_command: "Exec",
+		execute_command: "Exec",
+		exec: "Exec",
+		run_command: "RunCommand",
+		read: "Read",
+		read_file: "Read",
+		view_file: "ViewFile",
+		glob: "Glob",
+		grep: "Grep",
+		grep_search: "Grep",
+		write: "Write",
+		write_to_file: "Write",
+		edit: "Edit",
+		replace_file_content: "Edit",
+		str_replace_editor: "Edit",
+		multiedit: "MultiEdit",
+		subagent: "Task",
+		invoke_subagent: "Subagent",
+		manage_subagents: "Subagents",
+		manage_task: "ManageTask",
+		search_web: "WebSearch",
+		read_url_content: "ReadUrl",
+		schedule: "Schedule",
+	};
+	const mapped = KNOWN[rawName.toLowerCase()];
+	if (mapped) return mapped;
+	if (rawName.length === 0) return rawName;
+	return rawName[0]!.toUpperCase() + rawName.slice(1);
+}
+
+/** 时间格式化（<1s 显示 ms，>=1s 显示 1 位小数秒） */
+export function formatDuration(ms: number): string {
+	if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`;
+	const s = ms / 1000;
+	if (s < 60) return `${s.toFixed(1)}s`;
+	const m = Math.floor(s / 60);
+	const remS = Math.round(s % 60);
+	return `${m}m ${remS}s`;
+}
+
+/** 折叠行数预算（CC 规范：文本 3 行，Diff 8 行） */
+export const TEXT_BODY_MAX_LINES = 3;
+export const DIFF_BODY_MAX_LINES = 8;
+export const SPLIT_DIFF_MIN_COLS = 110;
+
+export const GUTTER_FIRST = " ⎿ ";
+export const GUTTER_REST = "   ";
+
+export const BLACK_CIRCLE = "●";
+export const BULLET = "•";
+export const MULTIPLICATION_X = "✗";
+
+export interface ToolCardRenderOptions {
+	isExpanded?: boolean;
+	isHovered?: boolean;
+	isNewestFailure?: boolean;
+	startedAt?: number;
+	now?: number;
+	diffLayout?: "auto" | "split" | "unified";
+	verbose?: boolean;
+}
+
+/** 解析多行命令标题并折叠为首行 */
+export function foldTerminalCommand(cmd: string): { first: string; hidden: number } | undefined {
+	const normalized = cmd.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+	const firstNl = normalized.indexOf("\n");
+	if (firstNl === -1) return undefined;
+	const lines = normalized.split("\n").filter((l) => l.trim().length > 0);
+	if (lines.length <= 1) return undefined;
+	return {
+		first: lines[0]!.trim(),
+		hidden: lines.length - 1,
+	};
+}
+
+/** 提取参数中的主要指令或文件路径 */
+export function extractSummaryArgs(_name: string, args: unknown): { summary: string; isMultiLine: boolean; full: string } {
+	if (!args) return { summary: "", isMultiLine: false, full: "" };
+	let parsedArgs = args;
+	if (typeof args === "string") {
+		const trimmed = args.trim();
+		if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+			try {
+				parsedArgs = JSON.parse(trimmed);
+			} catch {}
+		}
+	}
+
+	let raw = "";
+	if (typeof parsedArgs === "object" && parsedArgs !== null) {
+		const rec = parsedArgs as Record<string, unknown>;
+		if (typeof rec.CommandLine === "string") raw = rec.CommandLine;
+		else if (typeof rec.command === "string") raw = rec.command;
+		else if (typeof rec.cmd === "string") raw = rec.cmd;
+		else if (typeof rec.path === "string") raw = rec.path;
+		else if (typeof rec.file_path === "string") raw = rec.file_path;
+		else if (typeof rec.TargetFile === "string") raw = rec.TargetFile;
+		else if (typeof rec.AbsolutePath === "string") raw = rec.AbsolutePath;
+		else if (typeof rec.query === "string") raw = rec.query;
+		else if (typeof rec.Query === "string") raw = rec.Query;
+		else if (typeof rec.pattern === "string") raw = rec.pattern;
+		else if (typeof rec.Pattern === "string") raw = rec.Pattern;
+		else if (typeof rec.prompt === "string") raw = rec.prompt;
+		else if (typeof rec.Prompt === "string") raw = rec.Prompt;
+		else {
+			try {
+				raw = JSON.stringify(parsedArgs);
+				if (raw === "{}") raw = "";
+			} catch {
+				raw = String(parsedArgs);
+			}
+		}
+	} else {
+		raw = String(parsedArgs);
+	}
+
+	const full = raw.trim();
+	const isMultiLine = full.includes("\n");
+	return { summary: full, isMultiLine, full };
+}
+
+/** 提取结果中的文件 Diff 信息（若存在） */
+function extractDiff(args: unknown, resultObj: Record<string, unknown> | null): { oldText: string; newText: string; filename: string } | null {
+	// 1. 如果结果对象直接包含了 diff 字段
+	if (resultObj) {
+		if (typeof resultObj.oldText === "string" && typeof resultObj.newText === "string") {
+			const filename = typeof resultObj.filename === "string" ? resultObj.filename : (resultObj.path as string) || "file";
+			return { oldText: resultObj.oldText, newText: resultObj.newText, filename };
+		}
+	}
+	// 2. 如果参数里有 replace_file_content / edit 特征
+	if (args && typeof args === "object") {
+		const rec = args as Record<string, unknown>;
+		if (typeof rec.TargetContent === "string" && typeof rec.ReplacementContent === "string") {
+			const filename = String(rec.TargetFile || rec.path || "file");
+			return { oldText: rec.TargetContent, newText: rec.ReplacementContent, filename };
+		}
+	}
+	return null;
+}
+
+/**
+ * 为终端文本行应用整行卡片背景色（完美对齐 dsh-TUI 悬停高亮与微卡片设计）。
+ *
+ * 核心设计：
+ * 1. 自动根据终端可视列宽计算并填充行尾空格（Padding to targetWidth），确保背景铺满整张卡片横向宽度；
+ * 2. 拦截并重写行内的 ANSI Reset 控制码（\x1b[0m / \x1b[m），立即重新注入背景色转义序列，
+ *    彻底根治“ANSI reset 导致背景断裂成前缀小色块”的终端渲染顽疾；
+ * 3. 尊重终端双字节全角字符（CJK）与 Emoji 宽度，绝不产生对齐错位。
+ */
+export function applyCardBackground(line: string, bg: string, width: number): string {
+	if (!bg) return line;
+	const curW = visibleWidth(line);
+	const effLine = curW > width ? truncateToWidth(line, width, "…") : line;
+	const effW = curW > width ? visibleWidth(effLine) : curW;
+	const padLen = Math.max(0, width - effW);
+	const padding = " ".repeat(padLen);
+
+	const patched = effLine
+		.replace(/\x1b\[0?m/g, `\x1b[0m${bg}`)
+		.replace(/\x1b\[49m/g, bg);
+
+	return `${bg}${patched}${padding}${C.reset}`;
+}
+
+function finishCard(lines: string[], isHovered: boolean, width: number): string[] {
+	const flattenedLines: string[] = [];
+	for (const line of lines) {
+		if (line.includes("\n")) {
+			for (const sub of line.split("\n")) {
+				flattenedLines.push(sub);
+			}
+		} else {
+			flattenedLines.push(line);
+		}
+	}
+
+	const out: string[] = [];
+	for (const line of flattenedLines) {
+		if (isHovered) {
+			out.push(applyCardBackground(line, C.toolCardBackground, width));
+		} else {
+			out.push(truncateToWidth(line, width, "…"));
+		}
+	}
+	out.push("");
+	return out;
+}
+
+/**
+ * 格式化渲染单张工具卡片的所有行
+ */
 export function formatToolCardLines(
 	name: string,
 	result: string,
@@ -16,110 +314,224 @@ export function formatToolCardLines(
 	width = 80,
 	status: "running" | "completed" | "failed" = "completed",
 	args?: unknown,
+	options: ToolCardRenderOptions = {},
 ): string[] {
-	const maxW = Math.max(20, width);
+	const maxW = Math.max(24, width);
+	const category = getToolCategory(name);
+	const catColor = getToolCategoryColor(category);
+	const toolDisplayName = displayName(name);
+	const isExpanded = Boolean(options.isExpanded || options.verbose);
+	const isHovered = Boolean(options.isHovered);
+	const now = options.now ?? Date.now();
+	const isRunning = status === "running";
+	const isError = status === "failed";
 
-	if (status === "running") {
-		let argStr = "";
-		try {
-			argStr = JSON.stringify(args ?? {});
-		} catch {
-			argStr = String(args);
-		}
-		if (argStr === "{}") argStr = "";
-		const shortArg = argStr.length > 40 ? `${argStr.slice(0, 37)}…` : argStr;
-		const line = `${C.yellow}⏳ ${C.bold}${name}${C.reset}${shortArg ? ` ${C.dim}${shortArg}${C.reset}` : ""} · ${C.yellow}执行中...${C.reset}`;
-		return [truncateToWidth(`  ${line}`, maxW, "…"), ""];
+	// 1. 呼吸灯与指示图标 (ToolUseLoader)
+	let iconStr = "";
+	if (isError) {
+		iconStr = `${C.red}${MULTIPLICATION_X}${C.reset} `;
+	} else if (isRunning) {
+		const isBlinkVisible = Math.floor(now / 600) % 2 === 0;
+		const char = isBlinkVisible ? BLACK_CIRCLE : " ";
+		iconStr = `${C.dim}${char}${C.reset} `;
+	} else {
+		iconStr = `${catColor}${BULLET}${C.reset} `;
 	}
 
-	const t = elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(1)}s` : `${elapsedMs}ms`;
+	// 2. 标题行参数解析与多行折叠
+	const { summary: argSummary, isMultiLine: argIsMultiLine } = extractSummaryArgs(name, args);
+	let displayArg = argSummary;
+	let argFoldHint = "";
 
+	if (argIsMultiLine) {
+		const folded = foldTerminalCommand(argSummary);
+		if (folded) {
+			displayArg = folded.first;
+			argFoldHint = isExpanded
+				? ` ${C.dim}… +${folded.hidden} lines${C.reset}`
+				: ` ${C.dim}… +${folded.hidden} lines (ctrl+o to expand)${C.reset}`;
+		}
+	}
+
+	// 单行内最大参数长度限制（防止巨型参数撑爆终端 wrap 计算）
+	const HEADER_ARGS_BUDGET = 120;
+	if (displayArg.length > HEADER_ARGS_BUDGET) {
+		displayArg = `${displayArg.slice(0, HEADER_ARGS_BUDGET - 1)}…`;
+	}
+
+	// 3. 耗时字符串与秒表
+	let elapsedText = "";
+	if (isRunning) {
+		const runMs = options.startedAt ? Math.max(0, now - options.startedAt) : elapsedMs;
+		elapsedText = ` · ${formatDuration(runMs)}`;
+	} else if (elapsedMs > 0) {
+		elapsedText = ` · ${formatDuration(elapsedMs)}`;
+	}
+
+	const elapsedColor = isHovered ? C.text : C.dim;
+	const hoverIndicator = isHovered ? (isExpanded ? ` ${C.dim}▴${C.reset}` : ` ${C.dim}▾${C.reset}`) : "";
+
+	// 组装标题行：● Name(args) · 1.2s ▾
+	let titleContent = "";
+	if (displayArg) {
+		const isCmd = category === "exec";
+		const parenOpen = isCmd ? "(" : " ";
+		const parenClose = isCmd ? ")" : "";
+		titleContent = `${C.bold}${catColor}${toolDisplayName}${C.reset}${C.dim}${parenOpen}${C.reset}${displayArg}${argFoldHint}${C.dim}${parenClose}${C.reset}`;
+	} else {
+		titleContent = `${C.bold}${catColor}${toolDisplayName}${C.reset}`;
+	}
+
+	const headerSuffix = `${elapsedColor}${elapsedText}${C.reset}${hoverIndicator}`;
+	const headerLine = `${iconStr}${titleContent}${headerSuffix}`;
+
+	// 4. 解析结果体 (Body lines)
 	let obj: Record<string, unknown> | null = null;
 	try {
-		obj = JSON.parse(result) as Record<string, unknown>;
+		obj = typeof result === "string" ? (JSON.parse(result) as Record<string, unknown>) : (result as Record<string, unknown>);
 	} catch {
 		obj = null;
 	}
 
-	const lines: string[] = [];
+	const cardLines: string[] = [headerLine];
+
+	// 5. 运行中且暂无输出时：显示呼吸占位
+	if (isRunning && (!result || result.trim() === "")) {
+		const runMs = options.startedAt ? Math.max(0, now - options.startedAt) : elapsedMs;
+		const runLine = `${C.dim}${GUTTER_FIRST}Running… (${formatDuration(runMs)})${C.reset}`;
+		cardLines.push(runLine);
+		return finishCard(cardLines, isHovered, maxW);
+	}
+
+	// 6. 检查是否为 Diff 视图
+	const diffInfo = extractDiff(args, obj);
+	if (diffInfo) {
+		const diffLines = formatDiffCardLines(
+			diffInfo.oldText,
+			diffInfo.newText,
+			diffInfo.filename,
+			!isExpanded,
+			maxW - 4,
+		);
+		for (const dl of diffLines) {
+			cardLines.push(`   ${dl}`);
+		}
+		if (options.isNewestFailure) {
+			cardLines.push(`   ${C.subtle}⎿ Alt+T 查看轨迹${C.reset}`);
+		}
+		return finishCard(cardLines, isHovered, maxW);
+	}
+
+	// 7. 处理执行失败或取消状态
+	if (obj && obj.cancelled) {
+		cardLines.push(`${C.yellow}${GUTTER_FIRST}⚠ 操作已取消${C.reset}`);
+		return finishCard(cardLines, isHovered, maxW);
+	}
+
+	const rawError = isError
+		? (obj && typeof obj.error === "string" ? obj.error : String(result || "执行遇到错误"))
+		: (obj && typeof obj.error === "string" ? obj.error : "");
+
+	if (rawError) {
+		const errClean = rawError.replace(/\r/g, "").trim();
+		const errLines = errClean.split("\n").map((l) => l.trimEnd()).filter(Boolean);
+		for (let i = 0; i < errLines.length; i++) {
+			const gutter = i === 0 ? GUTTER_FIRST : GUTTER_REST;
+			cardLines.push(`${C.red}${gutter}${errLines[i]!}${C.reset}`);
+		}
+		if (options.isNewestFailure) {
+			cardLines.push(`   ${C.subtle}⎿ Alt+T 查看轨迹${C.reset}`);
+		}
+		return finishCard(cardLines, isHovered, maxW);
+	}
+
+	// 8. 正常输出体提取与格式化
+	const bodyLines: string[] = [];
 
 	if (obj && typeof obj === "object") {
-		if (obj.cancelled) {
-			lines.push(`${C.yellow}⚠ ${name}${C.reset} · ${C.dim}${t}${C.reset}`);
-			lines.push(`  ${C.dim}└${C.yellow}操作已取消${C.reset}`);
-			lines.push("");
-			return lines;
+		// 非零退出码标红
+		const exitCode = typeof obj.code === "number" ? obj.code : typeof obj.exitCode === "number" ? obj.exitCode : 0;
+		if (exitCode !== 0) {
+			bodyLines.push(`${C.red}Exit code ${exitCode}${C.reset}`);
 		}
-
-		const errText = typeof obj.error === "string" ? obj.error.replace(/\r/g, "").trim() : "";
-		if (errText) {
-			lines.push(`${C.red}✗ ${C.bold}${name}${C.reset} · ${C.dim}${t}${C.reset}`);
-			lines.push(`  ${C.dim}└${C.red}${truncateToWidth(errText, maxW - 4, "…")}${C.reset}`);
-			lines.push(`   ${C.dim}Alt+T 查看轨迹${C.reset}`);
-			lines.push("");
-			return lines;
+		if (obj.signal) {
+			bodyLines.push(`${C.red}Killed by signal ${String(obj.signal)}${C.reset}`);
 		}
-
-		// 正常执行完成，树状展示
-		lines.push(`${C.iceBlue}• ${C.bold}${name}${C.reset} · ${C.dim}${t}${C.reset}`);
-		const exitCode = typeof obj.code === "number" ? obj.code : 0;
-		lines.push(`  ${C.dim}└exitCode: ${exitCode}${C.reset}`);
 
 		const stdout = typeof obj.stdout === "string" ? obj.stdout.replace(/\r/g, "").trim() : "";
 		const stderr = typeof obj.stderr === "string" ? obj.stderr.replace(/\r/g, "").trim() : "";
+		const output = typeof obj.output === "string" ? obj.output.replace(/\r/g, "").trim() : "";
 
 		if (stdout) {
-			const outLines = stdout.split("\n").map((s) => s.trimEnd()).filter(Boolean);
-			if (outLines.length > 0) {
-				lines.push(`   ${C.dim}stdout:${C.reset} ${truncateToWidth(outLines[0]!, maxW - 12, "…")}`);
-				for (const extra of outLines.slice(1, 6)) {
-					lines.push(`           ${truncateToWidth(extra, maxW - 12, "…")}`);
-				}
-				if (outLines.length > 6) {
-					lines.push(`           ${C.dim}… +${outLines.length - 6} lines${C.reset}`);
-				}
-			}
+			bodyLines.push(...stdout.split("\n").map((s) => s.trimEnd()));
+		} else if (output) {
+			bodyLines.push(...output.split("\n").map((s) => s.trimEnd()));
 		}
 
 		if (stderr) {
-			const errLines = stderr.split("\n").map((s) => s.trimEnd()).filter(Boolean);
-			if (errLines.length > 0) {
-				lines.push(`   ${C.red}stderr:${C.reset} ${truncateToWidth(errLines[0]!, maxW - 12, "…")}`);
-				for (const extra of errLines.slice(1, 4)) {
-					lines.push(`           ${C.red}${truncateToWidth(extra, maxW - 12, "…")}${C.reset}`);
-				}
+			const errs = stderr.split("\n").map((s) => s.trimEnd());
+			for (const errLine of errs) {
+				bodyLines.push(`${C.red}${errLine}${C.reset}`);
 			}
 		}
 
-		if (!stdout && !stderr) {
-			const keys = Object.keys(obj)
-				.filter((k) => k !== "code" && k !== "elapsedMs" && k !== "status")
-				.slice(0, 3)
-				.map((k) => `${k}: ${String(obj![k]).replace(/\r/g, "").slice(0, 30)}`)
-				.join(", ");
-			if (keys) {
-				lines.push(`   ${C.dim}${truncateToWidth(keys, maxW - 4, "…")}${C.reset}`);
-			} else {
-				lines.push(`   ${C.dim}(执行完成，无输出)${C.reset}`);
+		if (!stdout && !output && !stderr && exitCode === 0) {
+			const customKeys = Object.keys(obj).filter(
+				(k) => k !== "code" && k !== "exitCode" && k !== "elapsedMs" && k !== "status" && k !== "cancelled",
+			);
+			if (customKeys.length > 0) {
+				const summary = customKeys
+					.slice(0, 3)
+					.map((k) => `${k}: ${String(obj![k]).slice(0, 40)}`)
+					.join(", ");
+				bodyLines.push(`${C.dim}${summary}${C.reset}`);
 			}
 		}
 	} else {
-		lines.push(`${C.iceBlue}• ${C.bold}${name}${C.reset} · ${C.dim}${t}${C.reset}`);
-		const raw = String(result).replace(/\r/g, "").trim();
-		if (raw) {
-			const rawLines = raw.split("\n").map((s) => s.trimEnd()).filter(Boolean);
-			lines.push(`  ${C.dim}└${C.reset}${truncateToWidth(rawLines[0]!, maxW - 4, "…")}`);
-			for (const extra of rawLines.slice(1, 6)) {
-				lines.push(`   ${truncateToWidth(extra, maxW - 4, "…")}`);
-			}
-			if (rawLines.length > 6) {
-				lines.push(`   ${C.dim}… +${rawLines.length - 6} lines${C.reset}`);
-			}
-		} else {
-			lines.push(`  ${C.dim}└(执行完成，无输出)${C.reset}`);
+		const rawStr = String(result ?? "").replace(/\r/g, "").trim();
+		if (rawStr) {
+			bodyLines.push(...rawStr.split("\n").map((s) => s.trimEnd()));
 		}
 	}
 
-	lines.push("");
-	return lines;
+	// 9. 行数预算裁剪 (3 行预算，溢出 1 行直显)
+	const budget = TEXT_BODY_MAX_LINES;
+	let visibleLines: string[] = [];
+	let hiddenCount = 0;
+
+	if (isExpanded || bodyLines.length <= budget) {
+		visibleLines = bodyLines;
+	} else if (bodyLines.length - budget === 1) {
+		// 单行溢出容差直接显示（dsh-TUI / CC 经典交互规范）
+		visibleLines = bodyLines;
+	} else {
+		visibleLines = bodyLines.slice(0, budget);
+		hiddenCount = bodyLines.length - budget;
+	}
+
+	// 10. 挂载 ⎿ 悬挂缩进输出
+	if (visibleLines.length === 0) {
+		cardLines.push(`${C.dim}${GUTTER_FIRST}(执行完成，无输出)${C.reset}`);
+	} else {
+		for (let i = 0; i < visibleLines.length; i++) {
+			const gutter = i === 0 ? GUTTER_FIRST : GUTTER_REST;
+			const text = visibleLines[i]!;
+			const full = `${C.dim}${gutter}${C.reset}${text}`;
+			cardLines.push(full);
+		}
+
+		if (hiddenCount > 0) {
+			const hintColor = isHovered ? C.text : C.dim;
+			const hint = `${C.dim}${GUTTER_REST}${C.reset}${hintColor}… +${hiddenCount} lines (ctrl+o to expand)${C.reset}`;
+			cardLines.push(hint);
+		}
+	}
+
+	// 11. 最新失败单例轨迹指针
+	if (options.isNewestFailure) {
+		cardLines.push(`   ${C.subtle}⎿ Alt+T 查看轨迹${C.reset}`);
+	}
+
+	return finishCard(cardLines, isHovered, maxW);
 }
+

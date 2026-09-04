@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
+	C,
 	visibleWidth,
 	truncateToWidth,
 	wrapTextWithAnsi,
@@ -38,6 +39,21 @@ import { TrajectoryScene } from "../src/ui/components/overlays/trajectory-scene.
 import { createInteractiveUI, InteractiveTUI } from "../src/ui/tui.js";
 import { UIHost } from "../src/ui/ui-host.js";
 import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
+import {
+	formatToolCardLines,
+	getToolCategory,
+	getToolCategoryColor,
+	displayName,
+	foldTerminalCommand,
+	formatDuration,
+	applyCardBackground,
+	extractSummaryArgs,
+	BLACK_CIRCLE,
+	BULLET,
+	MULTIPLICATION_X,
+	GUTTER_FIRST,
+	GUTTER_REST,
+} from "../src/ui/components/transcript/tool-view.js";
 import { ModelPicker } from "../src/ui/components/overlays/model-picker.js";
 import { EffortSlider } from "../src/ui/components/overlays/effort-slider.js";
 import { getStartupBanner } from "../src/ui/components/primitives/banner.js";
@@ -1343,8 +1359,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			let lines = transcript.render(80).join("\n");
 			expect(lines).toContain("开始推理");
 			expect(lines).toContain("第一段文本回复");
-			expect(lines).toContain("bash");
-			expect(lines).toContain("执行中...");
+			expect(lines).toContain("Bash");
+			expect(lines).toContain("Running…");
 
 			transcript.addToolDone("bash", "file1.txt\nfile2.txt", 120, false, "call-1");
 			transcript.appendToken("工具完成后的后续回复");
@@ -1990,6 +2006,457 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			capturedComponent.handleInput("\r");
 			const result = await promise;
 			expect(result).toBe("Hello");
+		});
+
+		describe("dsh-TUI Tool Use Parity & Lifecycle", () => {
+			it("正确映射工具五维语义类别与主题色彩", () => {
+				expect(getToolCategory("replace_file_content")).toBe("write");
+				expect(getToolCategory("write_to_file")).toBe("write");
+				expect(getToolCategory("run_command")).toBe("exec");
+				expect(getToolCategory("bash")).toBe("exec");
+				expect(getToolCategory("view_file")).toBe("read");
+				expect(getToolCategory("grep_search")).toBe("read");
+				expect(getToolCategory("search_web")).toBe("web");
+				expect(getToolCategory("invoke_subagent")).toBe("task");
+				expect(getToolCategory("unknown_tool")).toBe("default");
+
+				expect(getToolCategoryColor("write")).toBeDefined();
+				expect(getToolCategoryColor("exec")).toBeDefined();
+				expect(getToolCategoryColor("read")).toBeDefined();
+				expect(getToolCategoryColor("web")).toBeDefined();
+				expect(getToolCategoryColor("task")).toBeDefined();
+			});
+
+			it("displayName 规范化大驼峰工具名称", () => {
+				expect(displayName("bash")).toBe("Bash");
+				expect(displayName("run_command")).toBe("RunCommand");
+				expect(displayName("exec_command")).toBe("Exec");
+				expect(displayName("execute_command")).toBe("Exec");
+				expect(displayName("exec")).toBe("Exec");
+				expect(displayName("replace_file_content")).toBe("Edit");
+				expect(displayName("write_to_file")).toBe("Write");
+				expect(displayName("view_file")).toBe("ViewFile");
+				expect(displayName("search_web")).toBe("WebSearch");
+			});
+
+			it("getToolCategory 正确识别 exec 命令别名", () => {
+				expect(getToolCategory("exec_command")).toBe("exec");
+				expect(getToolCategory("execute_command")).toBe("exec");
+				expect(getToolCategory("exec")).toBe("exec");
+				expect(getToolCategory("run_command")).toBe("exec");
+			});
+
+			it("extractSummaryArgs 兼容 JSON 字符串与多样化参数对象", () => {
+				expect(extractSummaryArgs("exec_command", JSON.stringify({ command: "Get-Date" })).summary).toBe("Get-Date");
+				expect(extractSummaryArgs("exec", { cmd: "dir" }).summary).toBe("dir");
+				expect(extractSummaryArgs("view", { file_path: "src/tui.ts" }).summary).toBe("src/tui.ts");
+				expect(extractSummaryArgs("task", { prompt: "run check" }).summary).toBe("run check");
+			});
+
+			it("applyCardBackground 铺满整行宽度并阻止 ANSI Reset 色块断裂", () => {
+				const line = `${C.toolDotExec}•${C.reset} ${C.bold}Exec${C.reset}(echo 1)`;
+				const bg = C.toolCardBackground; // \x1b[48;2;36;43;58m
+				const result = applyCardBackground(line, bg, 40);
+
+				// 1. 起始注入背景
+				expect(result.startsWith(bg)).toBe(true);
+				// 2. 结束安全重置
+				expect(result.endsWith(C.reset)).toBe(true);
+				// 3. 所有 reset 序列后均重新注入了 bg，绝不产生中断
+				expect(result).toContain(`${C.reset}${bg}`);
+				// 4. 行尾自动对齐补足到 40 可视列
+				expect(visibleWidth(result)).toBe(40);
+			});
+
+			it("悬停高亮 (isHovered) 为整张卡片提供连贯背景色与角标指示", () => {
+				const lines = formatToolCardLines(
+					"exec_command",
+					JSON.stringify({ code: 0, stdout: "ok" }),
+					100,
+					60,
+					"completed",
+					{ command: "Get-Process" },
+					{ isHovered: true },
+				);
+				expect(lines[0]).toContain(C.toolCardBackground);
+				expect(lines[0]).toContain("▾"); // 悬停折叠角标
+				expect(stripAnsi(lines[0]!)).toContain("Exec(Get-Process)");
+				// 所有非空卡片行均被完整铺底
+				for (let i = 0; i < lines.length - 1; i++) {
+					expect(visibleWidth(lines[i]!)).toBe(60);
+					expect(lines[i]!).toContain(C.toolCardBackground);
+				}
+				// 卡片末尾空行作为边距留白，绝不带底色
+				expect(lines[lines.length - 1]).toBe("");
+			});
+
+			it("formatDuration 精确处理毫秒与秒数", () => {
+				expect(formatDuration(0)).toBe("0ms");
+				expect(formatDuration(350)).toBe("350ms");
+				expect(formatDuration(1200)).toBe("1.2s");
+				expect(formatDuration(65000)).toBe("1m 5s");
+			});
+
+			it("foldTerminalCommand 正确折叠多行脚本命令", () => {
+				expect(foldTerminalCommand("single line cmd")).toBeUndefined();
+				const multi = foldTerminalCommand("echo hello\npnpm test\ngit status");
+				expect(multi).toBeDefined();
+				expect(multi?.first).toBe("echo hello");
+				expect(multi?.hidden).toBe(2);
+			});
+
+			it("运行态 (Running)：600ms 呼吸圆点与实时秒表累加", () => {
+				// now=2400 为偶数周期 (2400/600=4)，显示实心圆
+				const linesEven = formatToolCardLines("bash", "", 0, 80, "running", { command: "ls" }, {
+					startedAt: 1200,
+					now: 2400, // runMs = 1200ms -> 1.2s
+				});
+				const renderedEven = linesEven.join("\n");
+				expect(renderedEven).toContain(BLACK_CIRCLE);
+				expect(stripAnsi(renderedEven)).toContain("Bash(ls)");
+				expect(renderedEven).toContain("· 1.2s");
+				expect(renderedEven).toContain("Running… (1.2s)");
+
+				// now=1800 为奇数周期 (1800/600=3)，闪烁隐藏
+				const linesOdd = formatToolCardLines("bash", "", 0, 80, "running", { command: "ls" }, {
+					startedAt: 1000,
+					now: 1800,
+				});
+				const renderedOdd = linesOdd.join("\n");
+				expect(renderedOdd).not.toContain(BLACK_CIRCLE);
+			});
+
+			it("已结算态 (Completed)：小圆点 • 与 ⎿ 悬挂缩进，隐去 exitCode: 0", () => {
+				const lines = formatToolCardLines(
+					"run_command",
+					JSON.stringify({ code: 0, stdout: "line 1\nline 2" }),
+					240,
+					80,
+					"completed",
+					{ CommandLine: "pnpm test" },
+				);
+				const rendered = lines.join("\n");
+				expect(rendered).toContain(BULLET);
+				expect(stripAnsi(rendered)).toContain("RunCommand(pnpm test)");
+				expect(rendered).toContain("· 240ms");
+				expect(rendered).toContain(GUTTER_FIRST);
+				expect(rendered).toContain(GUTTER_REST);
+				expect(rendered).toContain("line 1");
+				expect(rendered).toContain("line 2");
+				expect(rendered).not.toContain("exitCode: 0");
+				expect(rendered).not.toContain("Exit code 0");
+			});
+
+			it("失败态 (Failed)：红色 ✗ 与 Exit code 标红，单例轨迹指针", () => {
+				const linesFailure = formatToolCardLines(
+					"bash",
+					JSON.stringify({ code: 1, error: "Command not found" }),
+					50,
+					80,
+					"failed",
+					{ command: "fake-cmd" },
+					{ isNewestFailure: true },
+				);
+				const rendered = linesFailure.join("\n");
+				expect(rendered).toContain(MULTIPLICATION_X);
+				expect(rendered).toContain("Command not found");
+				expect(rendered).toContain("Alt+T 查看轨迹");
+
+				// 非最新失败不追加轨迹指针
+				const linesOldFailure = formatToolCardLines(
+					"bash",
+					JSON.stringify({ code: 1, error: "Command not found" }),
+					50,
+					80,
+					"failed",
+					{ command: "fake-cmd" },
+					{ isNewestFailure: false },
+				);
+				expect(linesOldFailure.join("\n")).not.toContain("Alt+T 查看轨迹");
+			});
+
+			it("行数预算与折叠截断（3行预算，1行容差直显，Ctrl+O 展开）", () => {
+				// 4 行（溢出 1 行）：容差直接完整显示
+				const fourLines = formatToolCardLines(
+					"run_command",
+					JSON.stringify({ stdout: "a\nb\nc\nd" }),
+					100,
+					80,
+					"completed",
+				);
+				expect(fourLines.join("\n")).toContain("d");
+				expect(fourLines.join("\n")).not.toContain("lines (ctrl+o to expand)");
+
+				// 5 行：折叠保留 3 行 + 折叠提示
+				const fiveLines = formatToolCardLines(
+					"run_command",
+					JSON.stringify({ stdout: "a\nb\nc\nd\ne" }),
+					100,
+					80,
+					"completed",
+					undefined,
+					{ isExpanded: false },
+				);
+				const strippedLines = fiveLines.map(stripAnsi);
+				expect(strippedLines.some((l) => l.includes("a"))).toBe(true);
+				expect(strippedLines.some((l) => l.includes("b"))).toBe(true);
+				expect(strippedLines.some((l) => l.includes("c"))).toBe(true);
+				// d 和 e 应该被折叠进 +2 lines
+				expect(strippedLines.some((l) => l.endsWith("   d"))).toBe(false);
+				expect(strippedLines.some((l) => l.endsWith("   e"))).toBe(false);
+				expect(strippedLines.some((l) => l.includes("… +2 lines (ctrl+o to expand)"))).toBe(true);
+
+				// isExpanded: true：展开全部
+				const expanded = formatToolCardLines(
+					"run_command",
+					JSON.stringify({ stdout: "a\nb\nc\nd\ne" }),
+					100,
+					80,
+					"completed",
+					undefined,
+					{ isExpanded: true },
+				);
+				const strippedExpanded = expanded.map(stripAnsi);
+				expect(strippedExpanded.some((l) => l.endsWith("   d"))).toBe(true);
+				expect(strippedExpanded.some((l) => l.endsWith("   e"))).toBe(true);
+				expect(strippedExpanded.some((l) => l.includes("(ctrl+o to expand)"))).toBe(false);
+			});
+
+			it("内嵌 Diff 视图与双模折叠", () => {
+				const lines = formatToolCardLines(
+					"replace_file_content",
+					JSON.stringify({ success: true }),
+					80,
+					120, // 宽屏
+					"completed",
+					{
+						TargetFile: "src/index.ts",
+						TargetContent: "const a = 1;",
+						ReplacementContent: "const a = 2;",
+					},
+					{ isExpanded: false },
+				);
+				const clean = stripAnsi(lines.join("\n"));
+				expect(clean).toContain("Edit");
+				expect(clean).toContain("src/index.ts");
+				expect(clean).toContain("const a = 1;");
+				expect(clean).toContain("const a = 2;");
+			});
+
+			it("TranscriptContainer 工具单卡与全局展开交互控制", () => {
+				const transcript = new TranscriptContainer();
+				transcript.startTurn(1, "执行批处理");
+				transcript.startTool("bash", { command: "test1" }, "call-1");
+				transcript.addToolDone("bash", JSON.stringify({ stdout: "1\n2\n3\n4\n5" }), 100, false, "call-1");
+				transcript.startTool("bash", { command: "test2" }, "call-2");
+				transcript.addToolDone("bash", JSON.stringify({ stdout: "a\nb\nc\nd\ne" }), 100, false, "call-2");
+
+				// 默认折叠
+				let locs = transcript.getToolLineIndices(80);
+				expect(locs.length).toBe(2);
+				expect(locs[0]!.isExpanded).toBe(false);
+				expect(locs[1]!.isExpanded).toBe(false);
+
+				// 单卡切换展开
+				const res = transcript.toggleTool("call-1");
+				expect(res.toggled).toBe(true);
+				locs = transcript.getToolLineIndices(80);
+				expect(locs[0]!.isExpanded).toBe(true);
+				expect(locs[1]!.isExpanded).toBe(false);
+
+				// 全局展开
+				transcript.toggleAllTools(false);
+				locs = transcript.getToolLineIndices(80);
+				expect(locs[0]!.isExpanded).toBe(true);
+				expect(locs[1]!.isExpanded).toBe(true);
+
+				// 悬停检测
+				expect(transcript.setHoveredToolId("call-1")).toBe(true);
+				expect(transcript.getHoveredToolId()).toBe("call-1");
+				expect(transcript.setHoveredToolId("call-1")).toBe(false); // 同一状态不触发重流
+			});
+
+			it("UIHost 将多行工具卡片的每一行正文注册为交互热区，支持点击卡片任意行切换折叠且悬停任意行触发整卡高亮", () => {
+				const origStdout = process.stdout;
+				const origStdin = process.stdin;
+				try {
+					const fakeStdout = {
+						columns: 100,
+						rows: 30,
+						write: () => true,
+						on: () => fakeStdout,
+						removeListener: () => fakeStdout,
+					} as unknown as NodeJS.WriteStream;
+
+					const fakeStdin = {
+						isTTY: true,
+						setRawMode: () => fakeStdin,
+						resume: () => fakeStdin,
+						pause: () => fakeStdin,
+						on: () => fakeStdin,
+						removeListener: () => fakeStdin,
+					} as unknown as NodeJS.ReadStream;
+
+					Object.defineProperty(process, "stdout", { value: fakeStdout, configurable: true });
+					Object.defineProperty(process, "stdin", { value: fakeStdin, configurable: true });
+
+					const host = new UIHost({
+						modelName: "deepseek-chat",
+						cwd: "e:/Uina/test",
+					});
+					host.start();
+
+					// 开启一轮对话并添加一个多行输出的工具调用
+					host.transcript.startTurn(1, "运行测试脚本");
+					host.transcript.startTool("bash", { command: "npm test" }, "call-test-123");
+					host.transcript.addToolDone(
+						"bash",
+						JSON.stringify({ stdout: "line 1\nline 2\nline 3\nline 4" }),
+						150,
+						false,
+						"call-test-123",
+					);
+
+					// 触发首帧渲染以构建交互目标
+					(host as any).renderCurrentFrame();
+
+					const targets: any[] = (host as any).mouseTracker.targets;
+					const toolTargets = targets.filter((t) => t.id.startsWith("tool:call-test-123:"));
+
+					// 卡片包含首行标题 + 3行正文 + 1行折叠提示，共 5 行内容行，必须每一行都被注册为交互目标
+					expect(toolTargets.length).toBeGreaterThanOrEqual(4);
+
+					// 1. 悬停在工具卡片正文第 2 行（非首行标题行）
+					const bodyTarget = toolTargets[1]!;
+					const hoverSeq = `\x1b[<35;10;${bodyTarget.row + 1}M`; // SGR 移动悬停（1-indexed）
+					host.handleInput(hoverSeq);
+
+					// 验证 transcript 成功捕获 hoveredToolId
+					expect(host.transcript.getHoveredToolId()).toBe("call-test-123");
+
+					// 2. 验证悬停时，整张卡片的行均包含 C.toolCardBackground 高亮底色
+					(host as any).renderCurrentFrame();
+					const screenLines: string[] = (host as any).lastRenderedRows;
+					const hoveredHeaderLine = screenLines[toolTargets[0]!.row]!;
+					const hoveredBodyLine = screenLines[bodyTarget.row]!;
+					expect(hoveredHeaderLine).toContain(C.toolCardBackground);
+					expect(hoveredBodyLine).toContain(C.toolCardBackground);
+
+					// 3. 在工具卡片正文行（第 2 行）点击鼠标左键并松开（非首行）
+					const clickDownSeq = `\x1b[<0;10;${bodyTarget.row + 1}M`;
+					const clickUpSeq = `\x1b[<0;10;${bodyTarget.row + 1}m`;
+					host.handleInput(clickDownSeq);
+					host.handleInput(clickUpSeq);
+
+					// 验证工具卡片被成功切换为展开状态（isExpanded = true）
+					const locs = host.transcript.getToolLineIndices(100);
+					expect(locs.find((l) => l.callId === "call-test-123")?.isExpanded).toBe(true);
+
+					host.stop();
+				} finally {
+					Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
+					Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+				}
+			});
+
+			it("展开与收起思考内容时保持画面原位置绝对稳定（锚点固定，鼠标点击与 Ctrl+O 均不跳屏）", () => {
+				const origStdout = process.stdout;
+				const origStdin = process.stdin;
+				try {
+					const fakeStdout = {
+						columns: 80,
+						rows: 24,
+						write: () => true,
+						on: () => fakeStdout,
+						removeListener: () => fakeStdout,
+					} as unknown as NodeJS.WriteStream;
+
+					const fakeStdin = {
+						isTTY: true,
+						setRawMode: () => fakeStdin,
+						resume: () => fakeStdin,
+						pause: () => fakeStdin,
+						on: () => fakeStdin,
+						removeListener: () => fakeStdin,
+					} as unknown as NodeJS.ReadStream;
+
+					Object.defineProperty(process, "stdout", { value: fakeStdout, configurable: true });
+					Object.defineProperty(process, "stdin", { value: fakeStdin, configurable: true });
+
+					const host = new UIHost({
+						modelName: "deepseek-chat",
+						cwd: "e:/Uina/test",
+					});
+					host.start();
+
+					// 填充若干轮次历史记录，使总行数超出视口高度
+					for (let t = 1; t <= 5; t++) {
+						host.transcript.startTurn(t, `这是历史提问 ${t}`);
+						host.transcript.appendToken(`历史回复第 1 行\n历史回复第 2 行\n历史回复第 3 行`);
+						host.transcript.finishTurn();
+					}
+
+					// 当前轮次：包含 40 行深度思考
+					host.transcript.startTurn(6, "请详细分析");
+					host.transcript.appendThinking("开始分析思考。\n" + Array.from({ length: 40 }, (_, i) => `思考推导步骤 ${i + 1}`).join("\n"));
+					host.transcript.appendToken("这是最终结论。");
+					host.transcript.finishTurn();
+
+					// 初始渲染
+					(host as any).renderCurrentFrame();
+					const initTargets: any[] = (host as any).mouseTracker.targets;
+					const thinkingTargetBefore = initTargets.find((t) => t.id.startsWith("thinking:"));
+					expect(thinkingTargetBefore).toBeDefined();
+					const initThinkingRow = thinkingTargetBefore!.row;
+
+					// 1. 模拟鼠标点击展开思考内容
+					const clickDown = `\x1b[<0;10;${initThinkingRow + 1}M`;
+					const clickUp = `\x1b[<0;10;${initThinkingRow + 1}m`;
+					host.handleInput(clickDown);
+					host.handleInput(clickUp);
+					(host as any).renderCurrentFrame();
+
+					// 校验：展开后，思考块标题行必须严格锁定在同一个屏幕行（画面绝对不跳动）
+					const expandedTargets: any[] = (host as any).mouseTracker.targets;
+					const thinkingTargetExpanded = expandedTargets.find((t) => t.id.startsWith("thinking:"));
+					expect(thinkingTargetExpanded?.row).toBe(initThinkingRow);
+
+					// 2. 模拟鼠标点击收起思考内容
+					host.handleInput(clickDown);
+					host.handleInput(clickUp);
+					(host as any).renderCurrentFrame();
+
+					// 校验：收起后，思考块标题行仍然位于该屏幕行，且位于底部时视口偏移准确归零
+					const collapsedTargets: any[] = (host as any).mouseTracker.targets;
+					const thinkingTargetCollapsed = collapsedTargets.find((t) => t.id.startsWith("thinking:"));
+					expect(thinkingTargetCollapsed?.row).toBe(initThinkingRow);
+					expect(host.getScrollOffset()).toBe(0);
+
+					// 3. 模拟快捷键 Ctrl+O 展开思考内容
+					host.handleInput("\x0f"); // Ctrl+O
+					(host as any).renderCurrentFrame();
+
+					// 校验：Ctrl+O 展开后，思考块标题行依然锁定在原屏幕行（绝不产生向上飞出屏幕顶部的跳跃）
+					const ctrlOExpandedTargets: any[] = (host as any).mouseTracker.targets;
+					const thinkingTargetCtrlO = ctrlOExpandedTargets.find((t) => t.id.startsWith("thinking:"));
+					expect(thinkingTargetCtrlO?.row).toBe(initThinkingRow);
+
+					// 4. 模拟快捷键 Ctrl+O 收起思考内容
+					host.handleInput("\x0f"); // Ctrl+O
+					(host as any).renderCurrentFrame();
+
+					// 校验：Ctrl+O 收起后，依然留在原屏幕行，视口偏移归零（绝不跳跃回顶部 Banner）
+					const ctrlOCollapsedTargets: any[] = (host as any).mouseTracker.targets;
+					const thinkingTargetCtrlOCol = ctrlOCollapsedTargets.find((t) => t.id.startsWith("thinking:"));
+					expect(thinkingTargetCtrlOCol?.row).toBe(initThinkingRow);
+					expect(host.getScrollOffset()).toBe(0);
+
+					host.stop();
+				} finally {
+					Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
+					Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+				}
+			});
 		});
 	});
 });

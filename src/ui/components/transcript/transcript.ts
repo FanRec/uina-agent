@@ -41,7 +41,9 @@ export type TurnItem =
 			result?: string;
 			status: "running" | "completed" | "failed";
 			elapsedMs?: number;
+			startedAt?: number;
 			callId?: string;
+			collapsed?: boolean;
 	  }
 	| {
 			kind: "diff";
@@ -96,8 +98,19 @@ export function createTurnRecord(n: number, userText = ""): TurnRecord {
 export interface ThinkingLineLocation {
 	turnN: number;
 	lineIndex: number;
+	lineCount?: number;
 	/** 精确指向该 thinking 所属的轮次，不能只依赖可能重复的 turnN。 */
 	turn: TurnRecord;
+}
+
+export interface ToolLineLocation {
+	callId: string;
+	lineIndex: number;
+	lineCount: number;
+	name: string;
+	isExpanded: boolean;
+	turn: TurnRecord;
+	item: Extract<TurnItem, { kind: "tool" }>;
 }
 
 export type TimelineItem =
@@ -110,9 +123,12 @@ export type TimelineItem =
 interface SettledCache {
 	width: number;
 	hoveredThinkingTurnN: number | null;
+	hoveredToolId: string | null;
+	expandedToolIdsKey: string;
 	lines: string[];
 	turnStartMap: Map<number, number>;
 	thinkingLocations: ThinkingLineLocation[];
+	toolLocations: ToolLineLocation[];
 }
 
 export class TranscriptContainer implements Component {
@@ -122,6 +138,8 @@ export class TranscriptContainer implements Component {
 	private currentTurn: TurnRecord | null = null;
 	private thinkingCommitted = false;
 	private hoveredThinkingTurnN: number | null = null;
+	private hoveredToolId: string | null = null;
+	private readonly expandedToolIds = new Set<string>();
 	private settledCache: SettledCache | null = null;
 
 	invalidate(): void {
@@ -139,6 +157,134 @@ export class TranscriptContainer implements Component {
 
 	getHoveredThinkingTurn(): number | null {
 		return this.hoveredThinkingTurnN;
+	}
+
+	setHoveredToolId(toolId: string | null): boolean {
+		if (this.hoveredToolId !== toolId) {
+			this.hoveredToolId = toolId;
+			this.invalidate();
+			return true;
+		}
+		return false;
+	}
+
+	getHoveredToolId(): string | null {
+		return this.hoveredToolId;
+	}
+
+	hasRunningTools(): boolean {
+		if (this.currentTurn?.items.some((it) => it.kind === "tool" && it.status === "running")) {
+			return true;
+		}
+		for (const t of this.historyTurns) {
+			if (t.items.some((it) => it.kind === "tool" && it.status === "running")) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	getLatestFailedTool(): Extract<TurnItem, { kind: "tool" }> | null {
+		if (this.currentTurn) {
+			for (let i = this.currentTurn.items.length - 1; i >= 0; i--) {
+				const it = this.currentTurn.items[i]!;
+				if (it.kind === "tool" && it.status === "failed") return it;
+			}
+		}
+		for (let t = this.historyTurns.length - 1; t >= 0; t--) {
+			const turn = this.historyTurns[t]!;
+			for (let i = turn.items.length - 1; i >= 0; i--) {
+				const it = turn.items[i]!;
+				if (it.kind === "tool" && it.status === "failed") return it;
+			}
+		}
+		return null;
+	}
+
+	toggleTool(targetOrId?: string | Extract<TurnItem, { kind: "tool" }>, width = 80): { toggled: boolean; lineDelta: number } {
+		const allTurns = [...this.historyTurns];
+		if (this.currentTurn) allTurns.push(this.currentTurn);
+
+		let targetItem: Extract<TurnItem, { kind: "tool" }> | undefined;
+		if (typeof targetOrId === "object") {
+			targetItem = targetOrId;
+		} else if (typeof targetOrId === "string") {
+			for (const t of allTurns) {
+				const found = t.items.find(
+					(it): it is Extract<TurnItem, { kind: "tool" }> => it.kind === "tool" && (it.callId === targetOrId || it.name === targetOrId),
+				);
+				if (found) {
+					targetItem = found;
+					break;
+				}
+			}
+		} else {
+			for (let i = allTurns.length - 1; i >= 0; i--) {
+				const found = allTurns[i]!.items.slice().reverse().find(
+					(it): it is Extract<TurnItem, { kind: "tool" }> => it.kind === "tool",
+				);
+				if (found) {
+					targetItem = found;
+					break;
+				}
+			}
+		}
+
+		if (targetItem) {
+			const callId = targetItem.callId || `tool-${targetItem.name}`;
+			const wasExpanded = targetItem.collapsed === false || this.expandedToolIds.has(callId);
+			const beforeCount = formatToolCardLines(targetItem.name, targetItem.result ?? "", targetItem.elapsedMs ?? 0, width, targetItem.status, targetItem.args, {
+				isExpanded: wasExpanded,
+				startedAt: targetItem.startedAt,
+			}).length;
+
+			targetItem.collapsed = wasExpanded;
+			if (wasExpanded) {
+				this.expandedToolIds.delete(callId);
+			} else {
+				this.expandedToolIds.add(callId);
+			}
+			this.invalidate();
+
+			const afterCount = formatToolCardLines(targetItem.name, targetItem.result ?? "", targetItem.elapsedMs ?? 0, width, targetItem.status, targetItem.args, {
+				isExpanded: !wasExpanded,
+				startedAt: targetItem.startedAt,
+			}).length;
+
+			return { toggled: true, lineDelta: afterCount - beforeCount };
+		}
+
+		return { toggled: false, lineDelta: 0 };
+	}
+
+	toggleAllTools(collapsed?: boolean): void {
+		const allTurns = [...this.historyTurns];
+		if (this.currentTurn) allTurns.push(this.currentTurn);
+
+		const allToolItems: Array<Extract<TurnItem, { kind: "tool" }>> = [];
+		for (const t of allTurns) {
+			for (const it of t.items) {
+				if (it.kind === "tool") allToolItems.push(it);
+			}
+		}
+
+		if (allToolItems.length === 0) return;
+
+		const anyExpanded = allToolItems.some(
+			(it) => it.collapsed === false || (it.callId && this.expandedToolIds.has(it.callId)),
+		);
+		const targetExpanded = collapsed !== undefined ? !collapsed : !anyExpanded;
+
+		for (const it of allToolItems) {
+			it.collapsed = !targetExpanded;
+			const id = it.callId || `tool-${it.name}`;
+			if (targetExpanded) {
+				this.expandedToolIds.add(id);
+			} else {
+				this.expandedToolIds.delete(id);
+			}
+		}
+		this.invalidate();
 	}
 
 	private messageRenderer: (type: string) => MessageRenderer | undefined = () => undefined;
@@ -209,11 +355,13 @@ export class TranscriptContainer implements Component {
 			name,
 			args,
 			status: "running",
+			startedAt: Date.now(),
 			callId,
 		});
+		this.invalidate();
 	}
 
-	addToolDone(name: string, result: string, elapsedMs = 0, isError = false, callId?: string): void {
+	addToolDone(name: string, result: string, elapsedMs = 0, isError = false, callId?: string, args?: unknown): void {
 		if (!this.currentTurn) {
 			this.startTurn(this.historyTurns.length + 1, "");
 		}
@@ -239,16 +387,21 @@ export class TranscriptContainer implements Component {
 			runningTool.status = isError ? "failed" : "completed";
 			runningTool.result = result;
 			runningTool.elapsedMs = elapsedMs;
+			if (args !== undefined && runningTool.args === undefined) {
+				runningTool.args = args;
+			}
 		} else {
 			this.currentTurn.items.push({
 				kind: "tool",
 				name,
+				args,
 				result,
 				elapsedMs,
 				status: isError ? "failed" : "completed",
 				callId,
 			});
 		}
+		this.invalidate();
 	}
 
 	addDiff(oldText: string, newText: string, filename: string, collapsed = true): void {
@@ -307,7 +460,7 @@ export class TranscriptContainer implements Component {
 	loadSession(entries: readonly SessionEntry[]): void {
 		let turnN = 0;
 		let current: TurnRecord | null = null;
-		let pendingToolCalls: Array<{ id: string; name: string }> = [];
+		let pendingToolCalls: Array<{ id: string; name: string; args?: unknown }> = [];
 		const commit = (): void => {
 			if (!current) return;
 			this.historyTurns.push(current);
@@ -378,11 +531,14 @@ export class TranscriptContainer implements Component {
 					pendingToolCalls = msg.tool_calls.map((call) => ({
 						id: call.id,
 						name: call.name || "tool",
+						args: call.args,
 					}));
 				}
 			} else if (msg.role === "tool") {
 				current ??= createTurn();
-				const toolName = pendingToolCalls.find((call) => call.id === msg.tool_call_id)?.name ?? "tool";
+				const pending = pendingToolCalls.find((call) => call.id === msg.tool_call_id);
+				const toolName = pending?.name ?? "tool";
+				const toolArgs = pending?.args;
 				let elapsedMs = 0;
 				try {
 					const parsed = JSON.parse(msg.content) as { elapsedMs?: unknown };
@@ -393,6 +549,7 @@ export class TranscriptContainer implements Component {
 				current.items.push({
 					kind: "tool",
 					name: toolName,
+					args: toolArgs,
 					result: msg.content,
 					elapsedMs,
 					status: "completed",
@@ -536,10 +693,13 @@ export class TranscriptContainer implements Component {
 	}
 
 	private getSettledCache(width: number): SettledCache {
+		const expandedKey = Array.from(this.expandedToolIds).sort().join(",");
 		if (
 			this.settledCache &&
 			this.settledCache.width === width &&
-			this.settledCache.hoveredThinkingTurnN === this.hoveredThinkingTurnN
+			this.settledCache.hoveredThinkingTurnN === this.hoveredThinkingTurnN &&
+			this.settledCache.hoveredToolId === this.hoveredToolId &&
+			this.settledCache.expandedToolIdsKey === expandedKey
 		) {
 			return this.settledCache;
 		}
@@ -547,6 +707,8 @@ export class TranscriptContainer implements Component {
 		const lines: string[] = [];
 		const turnStartMap = new Map<number, number>();
 		const thinkingLocations: ThinkingLineLocation[] = [];
+		const toolLocations: ToolLineLocation[] = [];
+		const latestFailed = this.getLatestFailedTool();
 
 		for (const item of this.timeline) {
 			switch (item.kind) {
@@ -560,22 +722,42 @@ export class TranscriptContainer implements Component {
 					turnStartMap.set(item.turn.n, lines.length);
 					const turn = item.turn;
 					const turnStartLine = lines.length;
-					this.renderTurn(turn, width, lines, true, false);
+					this.renderTurn(turn, width, lines, true, false, latestFailed);
 
 					const userLines = this.formatUserLine(turn.userText, width);
 					let turnOffset = userLines.length;
 					let hasText = false;
 					for (const it of turn.items) {
 						if (it.kind === "thinking") {
-							thinkingLocations.push({ turnN: turn.n, lineIndex: turnStartLine + turnOffset, turn });
 							const isHovered = this.hoveredThinkingTurnN === turn.n;
 							const collapsed = it.collapsed ?? turn.thinkingCollapsed ?? true;
-							turnOffset += formatThinkingLines(it.text, collapsed, width, isHovered).length;
+							const count = formatThinkingLines(it.text, collapsed, width, isHovered).length;
+							thinkingLocations.push({ turnN: turn.n, lineIndex: turnStartLine + turnOffset, lineCount: count, turn });
+							turnOffset += count;
 						} else if (it.kind === "text") {
 							turnOffset += this.formatAssistantMarkdown(it.text, width, !hasText).length;
 							hasText = true;
 						} else if (it.kind === "tool") {
-							turnOffset += formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args).length;
+							const toolId = it.callId || `tool-${it.name}`;
+							const isExpanded = it.collapsed === false || this.expandedToolIds.has(toolId);
+							const isHovered = this.hoveredToolId === toolId;
+							const isNewestFailure = it === latestFailed;
+							const cardLines = formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args, {
+								isExpanded,
+								isHovered,
+								isNewestFailure,
+								startedAt: it.startedAt,
+							});
+							toolLocations.push({
+								callId: toolId,
+								lineIndex: turnStartLine + turnOffset,
+								lineCount: cardLines.length,
+								name: it.name,
+								isExpanded,
+								turn,
+								item: it,
+							});
+							turnOffset += cardLines.length;
 						} else if (it.kind === "diff") {
 							turnOffset += formatDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
 						}
@@ -598,9 +780,12 @@ export class TranscriptContainer implements Component {
 		this.settledCache = {
 			width,
 			hoveredThinkingTurnN: this.hoveredThinkingTurnN,
+			hoveredToolId: this.hoveredToolId,
+			expandedToolIdsKey: expandedKey,
 			lines,
 			turnStartMap,
 			thinkingLocations,
+			toolLocations,
 		};
 		return this.settledCache;
 	}
@@ -621,10 +806,12 @@ export class TranscriptContainer implements Component {
 		out: string[],
 		showThinking = true,
 		isCurrent = false,
+		latestFailed?: Extract<TurnItem, { kind: "tool" }> | null,
 	): void {
 		if (turn.userText) out.push(...this.formatUserLine(turn.userText, width));
 
 		let hasRenderedText = false;
+		const activeFailed = latestFailed !== undefined ? latestFailed : this.getLatestFailedTool();
 
 		for (const item of turn.items) {
 			if (item.kind === "thinking") {
@@ -640,7 +827,16 @@ export class TranscriptContainer implements Component {
 				out.push(...this.formatAssistantMarkdown(textToRender, width, !hasRenderedText));
 				hasRenderedText = true;
 			} else if (item.kind === "tool") {
-				out.push(...formatToolCardLines(item.name, item.result ?? "", item.elapsedMs ?? 0, width, item.status, item.args));
+				const toolId = item.callId || `tool-${item.name}`;
+				const isExpanded = item.collapsed === false || this.expandedToolIds.has(toolId);
+				const isHovered = this.hoveredToolId === toolId;
+				const isNewestFailure = item === activeFailed;
+				out.push(...formatToolCardLines(item.name, item.result ?? "", item.elapsedMs ?? 0, width, item.status, item.args, {
+					isExpanded,
+					isHovered,
+					isNewestFailure,
+					startedAt: item.startedAt,
+				}));
 			} else if (item.kind === "diff") {
 				out.push(...formatDiffCardLines(item.oldText, item.newText, item.filename, item.collapsed ?? true, width));
 			}
@@ -684,9 +880,55 @@ export class TranscriptContainer implements Component {
 		const userLines = this.formatUserLine(turn.userText, width);
 		let turnOffset = userLines.length;
 		let hasText = false;
+		const latestFailed = this.getLatestFailedTool();
+
 		for (const it of turn.items) {
 			if (it.kind === "thinking") {
-				result.push({ turnN: turn.n, lineIndex: currentLine + turnOffset, turn });
+				const isHovered = this.hoveredThinkingTurnN === turn.n;
+				const collapsed = it.collapsed ?? turn.thinkingCollapsed ?? true;
+				const count = formatThinkingLines(it.text, collapsed, width, isHovered).length;
+				result.push({ turnN: turn.n, lineIndex: currentLine + turnOffset, lineCount: count, turn });
+				turnOffset += count;
+			} else if (it.kind === "text") {
+				turnOffset += this.formatAssistantMarkdown(it.text, width, !hasText).length;
+				hasText = true;
+			} else if (it.kind === "tool") {
+				const toolId = it.callId || `tool-${it.name}`;
+				const isExpanded = it.collapsed === false || this.expandedToolIds.has(toolId);
+				const isHovered = this.hoveredToolId === toolId;
+				const isNewestFailure = it === latestFailed;
+				turnOffset += formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args, {
+					isExpanded,
+					isHovered,
+					isNewestFailure,
+					startedAt: it.startedAt,
+				}).length;
+			} else if (it.kind === "diff") {
+				turnOffset += formatDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
+			}
+		}
+
+		return result;
+	}
+
+	/**
+	 * 获取所有工具卡片行在完整行序列中的索引位置与元数据
+	 */
+	getToolLineIndices(width: number): ToolLineLocation[] {
+		const cached = this.getSettledCache(width);
+		if (!this.currentTurn) {
+			return cached.toolLocations.slice();
+		}
+		const result = cached.toolLocations.slice();
+		const currentLine = cached.lines.length;
+		const turn = this.currentTurn;
+		const userLines = this.formatUserLine(turn.userText, width);
+		let turnOffset = userLines.length;
+		let hasText = false;
+		const latestFailed = this.getLatestFailedTool();
+
+		for (const it of turn.items) {
+			if (it.kind === "thinking") {
 				const isHovered = this.hoveredThinkingTurnN === turn.n;
 				const collapsed = it.collapsed ?? turn.thinkingCollapsed ?? true;
 				turnOffset += formatThinkingLines(it.text, collapsed, width, isHovered).length;
@@ -694,7 +936,26 @@ export class TranscriptContainer implements Component {
 				turnOffset += this.formatAssistantMarkdown(it.text, width, !hasText).length;
 				hasText = true;
 			} else if (it.kind === "tool") {
-				turnOffset += formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args).length;
+				const toolId = it.callId || `tool-${it.name}`;
+				const isExpanded = it.collapsed === false || this.expandedToolIds.has(toolId);
+				const isHovered = this.hoveredToolId === toolId;
+				const isNewestFailure = it === latestFailed;
+				const cardLines = formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args, {
+					isExpanded,
+					isHovered,
+					isNewestFailure,
+					startedAt: it.startedAt,
+				});
+				result.push({
+					callId: toolId,
+					lineIndex: currentLine + turnOffset,
+					lineCount: cardLines.length,
+					name: it.name,
+					isExpanded,
+					turn,
+					item: it,
+				});
+				turnOffset += cardLines.length;
 			} else if (it.kind === "diff") {
 				turnOffset += formatDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
 			}

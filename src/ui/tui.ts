@@ -52,8 +52,31 @@ export class InteractiveTUI {
 	private lineCallback?: (line: string, mode: "steer" | "followUp") => void;
 	private sigintCallback?: () => void;
 	private thinkingLevelCycleCallback?: () => void;
-	private toolCallMap = new Map<string, { startedAt: number; name: string }>();
+	private toolCallMap = new Map<string, { startedAt: number; name: string; args?: unknown }>();
 	private currentThinkingId?: string;
+	private toolAnimationTimer?: NodeJS.Timeout;
+
+	private syncToolAnimationTimer(): void {
+		const hasRunning = this.toolCallMap.size > 0 || this.host.transcript.hasRunningTools();
+		if (hasRunning && !this.toolAnimationTimer) {
+			this.toolAnimationTimer = setInterval(() => {
+				if (this.toolCallMap.size === 0 && !this.host.transcript.hasRunningTools()) {
+					this.stopToolAnimationTimer();
+					return;
+				}
+				this.host.requestRender();
+			}, 300);
+		} else if (!hasRunning && this.toolAnimationTimer) {
+			this.stopToolAnimationTimer();
+		}
+	}
+
+	private stopToolAnimationTimer(): void {
+		if (this.toolAnimationTimer) {
+			clearInterval(this.toolAnimationTimer);
+			this.toolAnimationTimer = undefined;
+		}
+	}
 
 	constructor(options: InteractiveTUIOptions = {}) {
 		this.host = new UIHost(options);
@@ -146,12 +169,13 @@ export class InteractiveTUI {
 					this.currentThinkingId = undefined;
 				}
 				const callId = m.callId ?? `tool-${m.name}-${Date.now()}`;
-				this.toolCallMap.set(callId, { startedAt: Date.now(), name: m.name });
+				this.toolCallMap.set(callId, { startedAt: Date.now(), name: m.name, args: m.args });
 				this.host.transcript.smoothReveal.snapToLatest();
 				this.host.transcript.commitThinking();
 				this.host.transcript.startTool(m.name, m.args, callId);
 				this.host.trajectoryProjection.onToolStart(m.name, m.args, callId);
 				this.host.activityLine.update("tool", `正在执行工具: ${m.name}`);
+				this.syncToolAnimationTimer();
 				this.host.requestRender();
 				break;
 			}
@@ -162,9 +186,10 @@ export class InteractiveTUI {
 				if (m.callId) this.toolCallMap.delete(m.callId);
 
 				const isError = m.status === "failed";
-				this.host.transcript.addToolDone(m.name, m.result, elapsed, isError, m.callId);
+				this.host.transcript.addToolDone(m.name, m.result, elapsed, isError, m.callId, record?.args);
 				this.host.trajectoryProjection.onToolDone(m.callId ?? "", m.name, m.result, elapsed, isError);
 				this.host.activityLine.update("streaming", `工具 ${m.name} 执行完毕，继续生成...`);
+				this.syncToolAnimationTimer();
 				this.host.requestRender();
 				break;
 			}
@@ -174,6 +199,7 @@ export class InteractiveTUI {
 					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
 				}
+				this.stopToolAnimationTimer();
 				this.host.setBusy(false);
 				this.host.transcript.finishTurn();
 				this.host.trajectoryProjection.onTurnEnd(m.n, m.usage);
@@ -206,6 +232,7 @@ export class InteractiveTUI {
 					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
 				}
+				this.stopToolAnimationTimer();
 				this.host.setBusy(false);
 				this.host.transcript.addError(m.text);
 				this.host.trajectoryProjection.onError(m.text);
@@ -224,6 +251,7 @@ export class InteractiveTUI {
 	}
 
 	close(): void {
+		this.stopToolAnimationTimer();
 		this.host.stop();
 	}
 }
