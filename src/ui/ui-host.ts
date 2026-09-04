@@ -259,6 +259,7 @@ export class UIHost implements UIHostContextPort {
 
 	cancelTurn(source: "escape" | "ctrl+c" = "escape"): void {
 		if (this.busy) {
+			this.cancelPending = true;
 			this.transcript.interruptTurn(this.modelName);
 			this.activityLine.update("idle", "已打断当前轮次");
 			try {
@@ -271,7 +272,6 @@ export class UIHost implements UIHostContextPort {
 			} catch {
 				// ignore
 			}
-			this.setBusy(false);
 			this.requestRender();
 		}
 	}

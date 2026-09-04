@@ -2582,11 +2582,16 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					deliveredText = text;
 				};
 
-				// 1. 工作态下按 Esc -> 触发 cancelTurn，调用 onInterrupt(false)，busy 恢复为 false
+				// 1. 工作态下按 Esc -> 触发 cancelTurn，调用 onInterrupt(false)，cancelPending = true，busy 保持直到事件下发
 				host.setBusy(true);
 				host.handleInput("\x1b"); // Esc
 				expect(interruptedCalls).toEqual([false]);
+				expect((host as any).cancelPending).toBe(true);
+				expect(host.isBusy()).toBe(true);
+				// 模拟收到终端终止事件，解除 busy 与 cancelPending
+				host.setBusy(false);
 				expect(host.isBusy()).toBe(false);
+				expect((host as any).cancelPending).toBe(false);
 
 				// 2. 空闲态下单按 Esc -> 清空输入框内容
 				host.handleInput("some draft text");
@@ -2594,27 +2599,51 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				host.handleInput("\x1b"); // Esc
 				expect((host as any).inputLine.getText()).toBe("");
 
-				// 3. 工作态下第 1 次按 Ctrl+C -> cancelTurn, cancelPending = true
+				// 3. 工作态下第 1 次按 Ctrl+C -> cancelTurn, cancelPending = true, busy 仍为 true
 				interruptedCalls = [];
 				host.setBusy(true);
 				host.handleInput("\x03"); // Ctrl+C
 				expect(interruptedCalls).toEqual([false]);
-				expect(host.isBusy()).toBe(false);
-
-				// 重新置为 busy 模拟底层仍在收敛或死锁，此时 cancelPending 仍为 true
-				(host as any).busy = true;
-				(host as any).cancelPending = true;
+				expect(host.isBusy()).toBe(true);
+				expect((host as any).cancelPending).toBe(true);
 
 				// 4. 工作态且 cancelPending 时第 2 次按 Ctrl+C -> 触发强制退出 onInterrupt(true)
 				host.handleInput("\x03"); // Ctrl+C
 				expect(interruptedCalls).toEqual([false, true]);
+				host.setBusy(false);
 
 				// 5. 工作态下按 Ctrl+Enter -> 触发 cancelTurn 且调用 onInterruptAndDeliver
 				host.setBusy(true);
 				host.handleInput("New Priority Task");
 				host.handleInput("\x1b[13;5u"); // Ctrl+Enter
 				expect(deliveredText).toBe("New Priority Task");
-				expect(host.isBusy()).toBe(false);
+				host.setBusy(false);
+			});
+
+			it("UIHost: 工作态下按 Esc 时优先打断当前轮次，输入框未发送的草稿完好保留", () => {
+				const host = new UIHost({
+					modelName: "TestModel",
+					terminal: {
+						columns: 80,
+						rows: 24,
+						start: () => {},
+						stop: () => {},
+						write: () => {},
+						onResize: () => {},
+					} as any,
+				});
+
+				host.setBusy(true);
+				host.handleInput("我的临时未发送草稿");
+				expect((host as any).inputLine.getText()).toBe("我的临时未发送草稿");
+
+				// 触发 Esc
+				host.handleInput("\x1b");
+
+				// 当前轮次打断中，但草稿完好保留，绝不被清空
+				expect(host.isBusy()).toBe(true);
+				expect((host as any).cancelPending).toBe(true);
+				expect((host as any).inputLine.getText()).toBe("我的临时未发送草稿");
 			});
 
 			it("InteractiveTUI: 接收到 turn_aborted 事件时自动调用 interruptTurn 并重置状态", () => {
@@ -2670,6 +2699,32 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				const rendered = tui.host.activityLine.render(80).join("\n");
 				expect(rendered).toContain("已打断当前轮次");
 				expect(rendered).not.toContain("本轮已完成");
+			});
+
+			it("InteractiveTUI: 排队消息回填与草稿按时间顺序拼接，并置光标于末尾 (对齐 Pi restoreQueuedMessagesToEditor)", () => {
+				const tui = createInteractiveUI({ modelName: "TestModel" });
+				tui.render({ type: "turn_start", n: 1, text: "运行长任务" });
+
+				// 用户输入半截未发送的临时草稿
+				tui.host.handleInput("未发送的临时草稿");
+				expect(tui.host.inputLine.getText()).toBe("未发送的临时草稿");
+
+				// 模拟队列中有 2 条排队消息
+				const queuedItems = [
+					{ id: "q1", text: "排队任务一" },
+					{ id: "q2", text: "排队任务二" },
+				];
+
+				// 执行回填逻辑
+				const currentDraft = tui.host.inputLine.getText();
+				const combined = [...queuedItems.map((it) => it.text), currentDraft].filter((t) => t.trim()).join("\n\n");
+				tui.replaceInput(combined);
+
+				// 校验回填文本与时间顺序
+				const expected = "排队任务一\n\n排队任务二\n\n未发送的临时草稿";
+				expect(tui.host.inputLine.getText()).toBe(expected);
+				// 校验光标置于最后
+				expect(tui.host.inputLine.getCursorIndex()).toBe(expected.length);
 			});
 		});
 	});

@@ -169,10 +169,16 @@ export async function runApp(): Promise<void> {
 		process.stdout.write(`（已恢复 JSONL 会话：${restoredHistory.length} 条消息）\n\n`);
 	}
 
-	const restoreQueueToEditor = async (): Promise<void> => {
-		if (!tui) return;
-		const queued = await subject.takeQueuedForEditor();
-		if (queued.length > 0) tui.replaceInput(queued.map((item) => item.text).join("\n\n"));
+	const restoreQueueToEditor = async (): Promise<number> => {
+		if (!tui) return 0;
+		const items = await subject.takeQueuedForEditor();
+		if (items.length === 0) return 0;
+		const currentDraft = tui.host.inputLine.getText();
+		const combined = [...items.map((item) => item.text), currentDraft].filter((t) => t.trim()).join("\n\n");
+		tui.replaceInput(combined);
+		tui.host.transcript.addNotice(`已打断当前轮次，已将 ${items.length} 条排队消息退回输入栏`);
+		tui.host.requestRender();
+		return items.length;
 	};
 
 	const shutdown = async (cancelCurrent = true): Promise<void> => {
@@ -213,9 +219,18 @@ export async function runApp(): Promise<void> {
 				});
 				return;
 			}
-			// 无排队消息或通过 Ctrl+C 打断：中断当前轮次并恢复排队消息至输入框
+
+			if (source === "ctrl+c") {
+				// 按 Ctrl+C 打断：对标 Pi，立即同步回填所有排队消息 + 当前输入框草稿至输入框，并触发打断
+				void restoreQueueToEditor().catch((error) => {
+					process.stderr.write(`[队列恢复失败] ${String(error)}\n`);
+				});
+				subject.interrupt();
+				return;
+			}
+
+			// source === "escape" 且无排队消息：仅打断当前轮次，输入框草稿完好保留
 			subject.interrupt();
-			void subject.waitForIdle().then(restoreQueueToEditor).catch((error) => process.stderr.write(`[队列恢复失败] ${String(error)}\n`));
 		}
 		if (execRunning) {
 			execAbort?.abort();
