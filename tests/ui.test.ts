@@ -1978,6 +1978,24 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			tui.close();
 		});
 
+		it("UIHost: 思考等级变化通过 notify() 呈现于对话框右侧上方，且在重复切换时平滑更新", () => {
+			const tui = new InteractiveTUI();
+			const host = tui.host;
+			const initialTranscriptLen = host.transcript.render(80).length;
+
+			// 模拟切换思考等级
+			host.notify("思考等级: high", "info", 2000);
+			expect(host.transcript.render(80).length).toBe(initialTranscriptLen);
+			expect(host.getNotificationToast()).toEqual({ message: "思考等级: high", type: "info" });
+
+			// 再次快速切换
+			host.notify("思考等级: max", "info", 2000);
+			expect(host.transcript.render(80).length).toBe(initialTranscriptLen);
+			expect(host.getNotificationToast()).toEqual({ message: "思考等级: max", type: "info" });
+
+			tui.close();
+		});
+
 		it("UIHost: 会话压缩卡片全域鼠标交互（热区注册、悬停高亮与点击折叠切换）", () => {
 			const tui = new InteractiveTUI();
 			const host = tui.host;
@@ -2030,6 +2048,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			const mockNotify = vi.fn();
 			const mockClear = vi.fn();
 			const mockAddCompaction = vi.fn();
+			const mockSetEffort = vi.fn();
 
 			const handlers = new Map<string, Function>();
 			const mockPi: any = {
@@ -2051,6 +2070,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				subagents: {},
 				ui: {
 					addCompaction: mockAddCompaction,
+					setReasoningEffort: mockSetEffort,
 				},
 				reload: vi.fn(),
 				shutdown: vi.fn(),
@@ -2087,6 +2107,13 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(failedHandler).toBeDefined();
 			failedHandler!({ type: "session_compact_failed", error: "Token limit" });
 			expect(mockNotify).toHaveBeenCalledWith("会话压缩失败", "warning", 3000);
+
+			// 4. 触发 thinking_level_select 驱动 Toast 与底栏状态联动
+			const thinkingHandler = handlers.get("thinking_level_select");
+			expect(thinkingHandler).toBeDefined();
+			thinkingHandler!({ type: "thinking_level_select", level: "high" });
+			expect(mockSetEffort).toHaveBeenCalledWith("high");
+			expect(mockNotify).toHaveBeenCalledWith("思考等级: high", "info", 2000);
 		});
 
 		it("ExtensionUIContext: select 支持滚动窗口限制与超长截断", async () => {

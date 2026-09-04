@@ -157,7 +157,6 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 					if (ui) {
 						ui.openEffortSlider(services.subject.getThinkingLevel(), declaredLevels as ThinkingLevel[], (level) => {
 							services.subject.setThinkingLevel(level);
-							ui.setReasoningEffort?.(level);
 						});
 					}
 					return;
@@ -167,8 +166,12 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 					throw new Error(declaredLevels ? `当前 Provider 不支持思考等级: ${arg}` : "当前 Provider 未声明 thinking 能力");
 				}
 				services.subject.setThinkingLevel(level);
-				ui?.setReasoningEffort?.(level);
 			},
+		});
+
+		pi.on("thinking_level_select", (e) => {
+			ui?.setReasoningEffort?.(e.level);
+			pi.ui.notify(`思考等级: ${e.level}`, "info", 2000);
 		});
 
 		pi.registerCommand({

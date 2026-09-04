@@ -268,16 +268,14 @@ export async function runApp(): Promise<void> {
 		if (!tui) return;
 		const last = await subject.takeLastQueuedForEditor();
 		if (!last) {
-			tui.host.transcript.addNotice("排队队列为空，无待办可撤回");
-			tui.host.requestRender();
+			tui.host.notify("排队队列为空，无待办可撤回", "warning", 2000);
 			return;
 		}
 		const currentDraft = tui.host.inputLine.getText();
 		const combined = currentDraft.trim() ? `${last.text}\n\n${currentDraft}` : last.text;
 		tui.replaceInput(combined);
 		const remaining = subject.queuedSnapshot().length;
-		tui.host.transcript.addNotice(`已从队列撤回 1 条消息至输入栏${remaining > 0 ? `（剩余排队：${remaining} 条）` : ""}`);
-		tui.host.requestRender();
+		tui.host.notify(`已从队列撤回 1 条消息至输入栏${remaining > 0 ? `（剩余排队：${remaining} 条）` : ""}`, "info", 2000);
 	};
 
 	const runDirectCommand = async (input: string): Promise<void> => {
@@ -354,14 +352,10 @@ export async function runApp(): Promise<void> {
 		});
 		tui.onThinkingLevelCycle(() => {
 			if (!subject.getModel().thinkingLevels?.length) {
-				tui?.host.transcript.addNotice("当前 Provider 未提供 thinking 能力元数据；无法循环档位。");
-				tui?.host.requestRender();
+				tui?.host.notify("当前 Provider 未提供 thinking 能力元数据；无法循环档位。", "warning", 2500);
 				return;
 			}
-			const level = subject.cycleThinkingLevel();
-			tui?.host.setReasoningEffort(level);
-			tui?.host.transcript.addNotice(`思考等级已设置为: ${level}`);
-			tui?.host.requestRender();
+			subject.cycleThinkingLevel();
 		});
 		tui.host.setUsage(subject.getUsedTokens(), subject.getContextWindow(), false, {
 			segments: subject.getContextSegments(),
