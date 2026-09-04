@@ -19,6 +19,52 @@ export interface CompactionResult {
 	tokensBefore: number;
 }
 
+export interface PrepareNextTurnContext {
+	turnNumber: number;
+	history: readonly ChatMsg[];
+	provider: ModelProvider;
+	systemPrompt: string;
+	tools: readonly ToolDef[];
+	compaction: CompactionSettings;
+	providerHooks: ProviderHooks;
+	signal?: AbortSignal;
+}
+
+export interface PrepareNextTurnResult {
+	history?: ChatMsg[];
+	systemPrompt?: string;
+	compaction?: CompactionResult;
+}
+
+export async function defaultPrepareNextTurn(
+	ctx: PrepareNextTurnContext,
+	beforeCompact?: (input: { tokensBefore: number }) => Promise<{ cancel?: boolean }>,
+): Promise<PrepareNextTurnResult | null> {
+	const tokensBefore = Math.ceil(ctx.history.reduce((acc, m) => acc + m.content.length + 16, 0) / 4);
+	if (beforeCompact) {
+		const decision = await beforeCompact({ tokensBefore });
+		if (decision.cancel) return null;
+	}
+	const result = await compactHistory(
+		ctx.history,
+		ctx.provider,
+		ctx.systemPrompt,
+		ctx.tools,
+		ctx.compaction,
+		ctx.providerHooks,
+		ctx.signal,
+		ctx.provider.includeThinking,
+	);
+	if (!result) return null;
+	return {
+		history: [
+			{ role: "user", content: `[历史摘要] ${result.summary}` },
+			...result.retainedTail,
+		],
+		compaction: result,
+	};
+}
+
 export function shouldCompact(
 	history: readonly ChatMsg[],
 	systemPrompt: string,

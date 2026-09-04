@@ -30,6 +30,7 @@ export type OutMsg =
 	}
 	| { type: "error"; text: string }
 	| { type: "notice"; text: string }
+	| { type: "turn_aborted"; n: number }
 	| { type: "tool_start"; name: string; args: unknown; callId?: string }
 	| {
 		type: "tool_done";
@@ -282,19 +283,19 @@ export class InteractiveTUI {
 				this.host.requestRender();
 				break;
 
-			case "notice":
-				if (m.text.includes("已打断 · 接下来想让")) {
-					if (this.currentThinkingId) {
-						this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
-						this.currentThinkingId = undefined;
-					}
-					this.stopToolAnimationTimer();
-					this.host.transcript.interruptTurn(this.host.modelName);
-					this.host.setBusy(false);
-					this.host.activityLine.finish("已打断当前轮次");
-					this.host.requestRender();
-					break;
+			case "turn_aborted":
+				if (this.currentThinkingId) {
+					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
+					this.currentThinkingId = undefined;
 				}
+				this.stopToolAnimationTimer();
+				this.host.transcript.interruptTurn(this.host.modelName);
+				this.host.setBusy(false);
+				this.host.activityLine.finish("已打断当前轮次");
+				this.host.requestRender();
+				break;
+
+			case "notice":
 				this.host.transcript.addNotice(m.text);
 				this.host.requestRender();
 				break;

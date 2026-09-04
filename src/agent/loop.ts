@@ -10,7 +10,7 @@ import type {
 	Usage,
 } from "../core/types.js";
 import type { SessionStore } from "../session/types.js";
-import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings } from "./compaction.js";
+import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, defaultPrepareNextTurn, type PrepareNextTurnContext, type PrepareNextTurnResult } from "./compaction.js";
 import { buildContext, calculateContextSegments, defaultSystemPrompt, estimateContextTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import type { PreparedToolCall, ToolBroker } from "../tools/broker.js";
@@ -35,6 +35,7 @@ export interface LoopHooks {
 			segments?: ContextSegments;
 		},
 	) => void;
+	onTurnAborted?: (turn: number) => void;
 	onToolStart?: (name: string, args: unknown, callId?: string) => void;
 	onToolDone?: (
 		name: string,
@@ -43,13 +44,13 @@ export interface LoopHooks {
 		callId?: string,
 	) => void;
 	onError?: (msg: string) => void;
-	onNotice?: (msg: string) => void;
 	onQueueChanged?: (items: readonly QueuedMessage[]) => void;
 }
 
 export interface SubjectOptions {
 	store?: SessionStore;
 	compaction?: Partial<CompactionSettings>;
+	prepareNextTurn?: (ctx: PrepareNextTurnContext) => Promise<PrepareNextTurnResult | null>;
 	systemPrompt?: string;
 	thinkingLevel?: ThinkingLevel;
 	steerQueueMode?: import("../core/types.js").QueueMode;
@@ -96,6 +97,7 @@ export class Subject {
 	private thinkingLevel: ThinkingLevel;
 	private preferredThinkingLevel: ThinkingLevel;
 	private readonly runtimeHooks: RuntimeHooks;
+	private readonly prepareNextTurnSeam: (ctx: PrepareNextTurnContext) => Promise<PrepareNextTurnResult | null>;
 	private runtimeInputs: AgentInput[] = [];
 	private lastReportedUsage: Usage | null = null;
 	private streamSeq = 0;
@@ -114,6 +116,7 @@ export class Subject {
 			contextWindow: provider.contextWindow,
 			...options.compaction,
 		};
+		this.prepareNextTurnSeam = options.prepareNextTurn ?? ((ctx) => defaultPrepareNextTurn(ctx, (input) => this.runtimeHooks.turn.beforeCompact(input)));
 		this.queueModes = {
 			steer: options.steerQueueMode ?? "one-at-a-time",
 			followUp: options.followUpQueueMode ?? "one-at-a-time",
@@ -366,7 +369,6 @@ export class Subject {
 			runError = safeError(error);
 			if (this.interrupted || this.currentSignal().aborted) {
 				await this.emitInterrupted();
-				this.hooks.onNotice?.("本轮已中断，排队消息已保留在输入框待恢复。");
 			} else {
 				await this.storeEvent("turn_failed", { turnId: turn, error: runError });
 				this.reportError(runError);
@@ -424,7 +426,7 @@ export class Subject {
 	}
 
 	private async decide(provider = this.provider, systemPrompt = this.systemPrompt, beforeMessages: ChatMsg[] = []): Promise<void> {
-		await this.maybeCompact(provider, systemPrompt);
+		await this.prepareTurn(provider, systemPrompt);
 		let nextUser: ChatMsg | undefined;
 		let nextUsers: ChatMsg[] = [];
 		for (;;) {
@@ -574,9 +576,6 @@ export class Subject {
 				throw new Error("模型声明了 tool_calls，但没有返回工具调用");
 			}
 			closeOutput("end");
-			if (finishReason === "length") {
-				this.hooks.onNotice?.("本轮回复达到输出长度上限。");
-			}
 			if (finishReason !== "tool_calls") {
 				if (reply.trim() || toolCalls.length > 0) {
 					await this.appendMessage({
@@ -687,7 +686,6 @@ export class Subject {
 		if (blocked.block) {
 				const reason = blocked.reason || "操作已被扩展或安全策略拦截";
 				const blockedResult = `[blocked] 工具执行已被拦截: ${reason}`;
-				this.hooks.onNotice?.(blockedResult);
 				this.hooks.onToolDone?.(call.name, blockedResult, "failed", call.id);
 				await this.storeEvent("tool_finished", {
 					callId: call.id,
@@ -733,37 +731,36 @@ export class Subject {
 		return { callId: call.id, result: outcomeResult, status: outcomeStatus };
 	}
 
-	private async maybeCompact(provider = this.provider, systemPrompt = this.systemPrompt): Promise<void> {
-		const tokensBefore = Math.ceil(this.history.reduce((acc, m) => acc + m.content.length + 16, 0) / 4);
-		const compactDecision = await this.runtimeHooks.turn.beforeCompact({ tokensBefore });
-		if (compactDecision.cancel) return;
-
+	private async prepareTurn(provider = this.provider, systemPrompt = this.systemPrompt): Promise<void> {
+		if (!this.prepareNextTurnSeam) return;
 		try {
-			const result = await compactHistory(
-				this.history,
+			const prepResult = await this.prepareNextTurnSeam({
+				turnNumber: this.turnSeq,
+				history: this.history,
 				provider,
 				systemPrompt,
-				this.tools.defs(),
-				this.compaction,
-				this.runtimeHooks.provider,
-				this.abort?.signal,
-				provider.includeThinking,
-				undefined,
-			);
-			if (!result) return;
-			const replacement: ChatMsg[] = [
-				{ role: "user", content: `[历史摘要] ${result.summary}` },
-				...result.retainedTail,
-			];
-			await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);
-			this.history = replacement;
-
-			await this.runtimeHooks.events.emit({
-				type: "session_compact",
-				summary: result.summary,
-				tokensBefore: result.tokensBefore,
-				retainedTailCount: result.retainedTail.length,
+				tools: this.tools.defs(),
+				compaction: this.compaction,
+				providerHooks: this.runtimeHooks.provider,
+				signal: this.abort?.signal,
 			});
+			if (!prepResult) return;
+			if (prepResult.compaction) {
+				await this.store?.appendCompaction(
+					prepResult.compaction.summary,
+					prepResult.compaction.retainedTail,
+					prepResult.compaction.tokensBefore,
+				);
+				await this.runtimeHooks.events.emit({
+					type: "session_compact",
+					summary: prepResult.compaction.summary,
+					tokensBefore: prepResult.compaction.tokensBefore,
+					retainedTailCount: prepResult.compaction.retainedTail.length,
+				});
+			}
+			if (prepResult.history) {
+				this.history = prepResult.history;
+			}
 		} catch (err) {
 			await this.runtimeHooks.events.emit({
 				type: "session_compact_failed",
@@ -823,8 +820,7 @@ export class Subject {
 			await this.appendMessage({ role: "assistant", content: partial, thinking: thinking || undefined, thinkingSignature, status: "aborted" });
 		}
 		await this.storeEvent("turn_aborted", { turnId: this.turnSeq });
-		const notice = `已打断 · 接下来想让 ${this.provider.name} 做什么？`;
-		this.hooks.onNotice?.(notice);
+		this.hooks.onTurnAborted?.(this.turnSeq);
 	}
 }
 

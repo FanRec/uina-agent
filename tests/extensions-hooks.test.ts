@@ -84,13 +84,13 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			},
 		};
 
-		const notices: string[] = [];
+		const toolDones: Array<{ name: string; result: string; status?: string }> = [];
 		const subject = new Subject(
 			provider,
 			tools,
 			{
 				onToken: () => {},
-				onNotice: (msg) => notices.push(msg),
+				onToolDone: (name, result, status) => toolDones.push({ name, result, status }),
 			},
 			{ runtimeHooks: createRuntimeHooks(host) },
 		);
@@ -99,7 +99,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		await subject.waitForIdle();
 
 		expect(toolActuallyExecuted).toBe(false);
-		expect(notices.some((n) => n.includes("安全策略拦截高危工具"))).toBe(true);
+		expect(toolDones.some((d) => d.name === "dangerous_tool" && d.status === "failed")).toBe(true);
 		const history = subject.historySnapshot();
 		const toolResultMsg = history.find((m) => m.role === "tool");
 		expect(toolResultMsg?.content).toContain("[blocked] 工具执行已被拦截: 安全策略拦截高危工具");

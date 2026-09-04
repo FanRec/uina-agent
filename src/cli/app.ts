@@ -82,6 +82,9 @@ export async function runApp(): Promise<void> {
 			case "notice":
 				process.stdout.write(`\n⚠ ${message.text}\n`);
 				break;
+			case "turn_aborted":
+				process.stdout.write(`\n[已打断]\n`);
+				break;
 			case "error":
 				process.stdout.write(`[错误] ${message.text}\n`);
 				break;
@@ -123,7 +126,7 @@ export async function runApp(): Promise<void> {
 				render({ type: "tool_done", name, result, status, callId, ts });
 			},
 			onError: (text) => render({ type: "error", text }),
-			onNotice: (text) => render({ type: "notice", text }),
+			onTurnAborted: (n) => render({ type: "turn_aborted", n }),
 			onQueueChanged: (items) => render({ type: "queue", items }),
 		},
 		{ store, thinkingLevel: cfg.thinkingLevel, runtimeHooks: extensionHost.runtimeHooks() },
@@ -336,7 +339,7 @@ export async function runApp(): Promise<void> {
 		if (snapshot.entries.length > 0) {
 			tui.loadSession(snapshot.entries);
 		}
-	} else {
+	} else if (oneshot === undefined) {
 		nonTTY = createInterface({ input: process.stdin });
 		nonTTY.on("line", (line) => onUserLine(line, "followUp"));
 		nonTTY.on("close", () => {
