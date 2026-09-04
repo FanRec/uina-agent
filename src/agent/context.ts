@@ -1,9 +1,9 @@
-import type { ChatMsg, ContextSegments, ToolDef } from "../core/types.js";
+import type { AgentMessage, ChatMsg, ContextSegments, ToolDef } from "../core/types.js";
 
 export interface ContextEstimate { tokens: number; actual: boolean; }
 
 export interface BuildInput {
-	history: ChatMsg[];
+	history: readonly (AgentMessage | ChatMsg)[];
 	systemPrompt?: string;
 	includeThinking?: boolean;
 	runtimeInputs?: readonly { source: { kind: string; type: string; ref?: string }; text?: string; data?: unknown }[];
@@ -16,45 +16,71 @@ export function defaultSystemPrompt(): string {
 	return DEFAULT_SYSTEM_PROMPT;
 }
 
-export function buildContext(b: BuildInput): ChatMsg[] {
-	const baseSystem = b.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
-	const systemContent = b.runtimeInputs?.length
-		? `${baseSystem}\n\n<runtime_events>\n${b.runtimeInputs.map(formatRuntimeInput).join("\n")}\n</runtime_events>`
-		: baseSystem;
-
+/** Pure projection from agent history stream (including custom and compaction messages) to valid LLM messages. */
+export function convertToLlm(
+	messages: readonly (AgentMessage | ChatMsg)[],
+	options: {
+		includeThinking?: boolean;
+	} = {},
+): ChatMsg[] {
+	const intermediate: ChatMsg[] = [];
 	const toolResponses = new Set<string>();
-	for (const msg of b.history) {
+
+	for (const msg of messages) {
 		if (msg.role === "tool" && msg.tool_call_id) {
 			toolResponses.add(msg.tool_call_id);
 		}
 	}
 
-	const intermediate: ChatMsg[] = [];
-	for (const message of b.history) {
-		if (message.role === "assistant") {
-			const thinking = b.includeThinking ? message.thinking : undefined;
-			const thinkingSignature = b.includeThinking ? message.thinkingSignature : undefined;
-			const validToolCalls = message.tool_calls?.filter((call) => toolResponses.has(call.id));
-			const tool_calls = validToolCalls && validToolCalls.length > 0 ? validToolCalls : undefined;
-			const content = typeof message.content === "string" ? message.content : "";
-			const hasContent = content.trim().length > 0;
-			const hasToolCalls = Boolean(tool_calls && tool_calls.length > 0);
-			const hasThinking = Boolean(thinking && thinking.trim().length > 0);
+	for (const msg of messages) {
+		switch (msg.role) {
+			case "system":
+				intermediate.push({ role: "system", content: msg.content });
+				break;
+			case "custom":
+				intermediate.push({ role: "user", content: msg.content });
+				break;
+			case "compactionSummary":
+				intermediate.push({ role: "user", content: `[历史摘要] ${msg.summary}` });
+				break;
+			case "user":
+				intermediate.push({ role: "user", content: msg.content });
+				break;
+			case "assistant": {
+				const thinking = options.includeThinking ? msg.thinking : undefined;
+				const thinkingSignature = options.includeThinking ? msg.thinkingSignature : undefined;
+				const validToolCalls = msg.tool_calls?.filter((call) => toolResponses.has(call.id));
+				const tool_calls = validToolCalls && validToolCalls.length > 0 ? validToolCalls : undefined;
+				const content = typeof msg.content === "string" ? msg.content : "";
+				const hasContent = content.trim().length > 0;
+				const hasToolCalls = Boolean(tool_calls && tool_calls.length > 0);
+				const hasThinking = Boolean(thinking && thinking.trim().length > 0);
 
-			if (!hasContent && !hasToolCalls && !hasThinking) {
-				continue;
+				// Drop empty / cancelled assistant frames without text, thinking, or tool calls
+				if (!hasContent && !hasToolCalls && !hasThinking) {
+					continue;
+				}
+
+				intermediate.push({
+					role: "assistant",
+					content,
+					thinking,
+					thinkingSignature,
+					tool_calls,
+					status: msg.status,
+					usage: msg.usage,
+				});
+				break;
 			}
-
-			intermediate.push({
-				...message,
-				content,
-				thinking,
-				thinkingSignature,
-				tool_calls,
-			});
-			continue;
+			case "tool":
+				intermediate.push({
+					role: "tool",
+					tool_call_id: msg.tool_call_id,
+					content: msg.content,
+					status: msg.status,
+				});
+				break;
 		}
-		intermediate.push(message);
 	}
 
 	const validToolCallIds = new Set<string>();
@@ -74,6 +100,19 @@ export function buildContext(b: BuildInput): ChatMsg[] {
 		cleaned.push(message);
 	}
 
+	return cleaned;
+}
+
+export function buildContext(b: BuildInput): ChatMsg[] {
+	const baseSystem = b.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+	const systemContent = b.runtimeInputs?.length
+		? `${baseSystem}\n\n<runtime_events>\n${b.runtimeInputs.map(formatRuntimeInput).join("\n")}\n</runtime_events>`
+		: baseSystem;
+
+	const cleaned = convertToLlm(b.history, {
+		includeThinking: b.includeThinking,
+	});
+
 	return [
 		{ role: "system", content: systemContent },
 		...cleaned,
@@ -88,16 +127,22 @@ function formatRuntimeInput(input: { source: { kind: string; type: string; ref?:
 
 /** Approximate token estimate used before a provider request. */
 export function estimateRequestTokens(
-	messages: readonly ChatMsg[],
+	messages: readonly (AgentMessage | ChatMsg)[],
 	tools: readonly ToolDef[] = [],
 	includeThinking = false,
 ): number {
 	let chars = 0;
 	for (const message of messages) {
-		chars += message.content.length + 16;
-		if (includeThinking && message.role === "assistant" && message.thinking) chars += message.thinking.length + 16;
-		if (message.role === "assistant" && message.tool_calls) {
-			chars += JSON.stringify(message.tool_calls).length;
+		if (message.role === "custom") {
+			chars += message.content.length + 16;
+		} else if (message.role === "compactionSummary") {
+			chars += message.summary.length + 32;
+		} else {
+			chars += message.content.length + 16;
+			if (includeThinking && message.role === "assistant" && message.thinking) chars += message.thinking.length + 16;
+			if (message.role === "assistant" && message.tool_calls) {
+				chars += JSON.stringify(message.tool_calls).length;
+			}
 		}
 	}
 	chars += JSON.stringify(tools).length;
@@ -105,7 +150,7 @@ export function estimateRequestTokens(
 }
 
 /** Pi-style: the latest persisted provider usage anchors the immutable prefix; newer content is estimated. */
-export function estimateContextTokens(messages: readonly ChatMsg[]): ContextEstimate {
+export function estimateContextTokens(messages: readonly (AgentMessage | ChatMsg)[]): ContextEstimate {
 	let anchor = -1;
 	let tokens = 0;
 	for (let i = messages.length - 1; i >= 0; i--) {
@@ -116,9 +161,12 @@ export function estimateContextTokens(messages: readonly ChatMsg[]): ContextEsti
 	return { tokens: tokens + estimateRequestTokens(trailing), actual: anchor >= 0 && trailing.length === 0 };
 }
 
-export function formatForSummary(message: ChatMsg): string {
+export function formatForSummary(message: AgentMessage | ChatMsg): string {
 	if (message.role === "assistant" && message.tool_calls) {
 		return `thinking=${message.thinking ?? ""} tool_calls=${JSON.stringify(message.tool_calls)} ${message.content}`;
+	}
+	if (message.role === "compactionSummary") {
+		return `[历史摘要] ${message.summary}`;
 	}
 	return message.content;
 }
@@ -128,7 +176,7 @@ export function formatForSummary(message: ChatMsg): string {
  * 若提供 totalScaleTokens（如服务端返回的精确真实总 Token 数），则按比例精确映射。
  */
 export function calculateContextSegments(
-	messages: readonly ChatMsg[],
+	messages: readonly (AgentMessage | ChatMsg)[],
 	tools: readonly ToolDef[] = [],
 	totalScaleTokens?: number,
 ): ContextSegments {
@@ -139,6 +187,14 @@ export function calculateContextSegments(
 	let toolChars = 0;
 
 	for (const message of messages) {
+		if (message.role === "custom") {
+			promptChars += message.content ? message.content.length + 16 : 16;
+			continue;
+		}
+		if (message.role === "compactionSummary") {
+			promptChars += message.summary ? message.summary.length + 32 : 32;
+			continue;
+		}
 		const baseChars = message.content ? message.content.length + 16 : 16;
 		if (message.role === "system") {
 			systemChars += baseChars;

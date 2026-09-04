@@ -171,4 +171,58 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 		const roles = gemini.contents.map((c) => c.role);
 		expect(roles).toEqual(["user", "model", "user"]);
 	});
+
+	it("convertToLlm cleanly projects custom and compactionSummary AgentMessages into LLM user turns", async () => {
+		const { convertToLlm } = await import("../src/agent/context.js");
+		const agentMessages: import("../src/core/types.js").AgentMessage[] = [
+			{ role: "compactionSummary", summary: "compacted memory", content: "[历史摘要] compacted memory" },
+			{ role: "custom", customType: "probe", content: "injected probe context" },
+			{ role: "user", content: "user query" },
+			{ role: "assistant", content: "assistant answer" },
+		];
+
+		const llmMessages = convertToLlm(agentMessages);
+		expect(llmMessages.map((m) => m.role)).toEqual(["user", "user", "user", "assistant"]);
+		expect(llmMessages[0]?.content).toBe("[历史摘要] compacted memory");
+		expect(llmMessages[1]?.content).toBe("injected probe context");
+		expect(llmMessages[2]?.content).toBe("user query");
+		expect(llmMessages[3]?.content).toBe("assistant answer");
+	});
+
+	it("Subject stores custom message as role 'custom' in historySnapshot but projects cleanly to LLM", async () => {
+		const { Subject } = await import("../src/agent/loop.js");
+		const { ToolBroker } = await import("../src/tools/broker.js");
+		const recordedRequests: ModelRequest[] = [];
+		const mockProvider: import("../src/core/types.js").ModelProvider = {
+			name: "mock",
+			stream: async (req, onDelta) => {
+				recordedRequests.push(req);
+				onDelta({ kind: "text", text: "acknowledged" });
+				onDelta({ kind: "finish", reason: "stop" });
+			},
+		};
+
+		const subject = new Subject(mockProvider, new ToolBroker(), { onToken: () => {} });
+		await subject.appendCustomMessage({
+			customType: "test-probe",
+			content: "PROBE_DATA_123",
+		});
+
+		// 1. Single-track fact: subject.historySnapshot() retains role: 'custom'
+		const history = subject.historySnapshot();
+		expect(history).toHaveLength(1);
+		expect(history[0]?.role).toBe("custom");
+		expect((history[0] as any).customType).toBe("test-probe");
+
+		// 2. Next turn: pure projection converts it for LLM request
+		await subject.pushInput("next question");
+		await subject.waitForIdle();
+
+		expect(recordedRequests.length).toBeGreaterThan(0);
+		const lastReq = recordedRequests[0]!;
+		const userTexts = lastReq.messages.filter((m) => m.role === "user").map((m) => m.content);
+		expect(userTexts).toContain("PROBE_DATA_123");
+		expect(userTexts).toContain("next question");
+	});
 });
+

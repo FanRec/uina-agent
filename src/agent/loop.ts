@@ -1,4 +1,5 @@
 import type {
+	AgentMessage,
 	ChatMsg,
 	CompletedToolCall,
 	ContextSegments,
@@ -11,7 +12,7 @@ import type {
 } from "../core/types.js";
 import type { SessionStore } from "../session/types.js";
 import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, defaultPrepareNextTurn, type PrepareNextTurnContext, type PrepareNextTurnResult } from "./compaction.js";
-import { buildContext, calculateContextSegments, defaultSystemPrompt, estimateContextTokens } from "./context.js";
+import { buildContext, calculateContextSegments, convertToLlm, defaultSystemPrompt, estimateContextTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import type { PreparedToolCall, ToolBroker } from "../tools/broker.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
@@ -81,7 +82,7 @@ export interface AgentInput {
 
 export class Subject {
 	private busy = false;
-	private history: ChatMsg[] = [];
+	private history: AgentMessage[] = [];
 	private turnSeq = 0;
 	private interrupted = false;
 	private abort: AbortController | null = null;
@@ -217,8 +218,8 @@ export class Subject {
 				instruction,
 			);
 			if (!result) return;
-			const replacement: ChatMsg[] = [
-				{ role: "user", content: `[历史摘要] ${result.summary}` },
+			const replacement: AgentMessage[] = [
+				{ role: "user", content: `[历史摘要] ${result.summary}`, timestamp: new Date().toISOString() },
 				...result.retainedTail,
 			];
 			await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);
@@ -294,8 +295,8 @@ export class Subject {
 		return this.activeRun ?? Promise.resolve();
 	}
 
-	addHistory(messages: ChatMsg[]): void {
-		this.history.push(...structuredClone(messages));
+	addHistory(messages: readonly (AgentMessage | ChatMsg)[]): void {
+		this.history.push(...messages.map((m) => structuredClone(m as AgentMessage)));
 	}
 
 	seedQueue(items: readonly QueuedMessage[]): void {
@@ -303,7 +304,7 @@ export class Subject {
 		this.notifyQueueChanged();
 	}
 
-	historySnapshot(): ChatMsg[] {
+	historySnapshot(): AgentMessage[] {
 		return structuredClone(this.history);
 	}
 
@@ -355,13 +356,13 @@ export class Subject {
 		}
 	}
 
-	private async runTurn(text: string | undefined, turn: number, runtimeInputs: AgentInput[] = [], provider = this.provider, systemPrompt = this.systemPrompt, beforeMessages: ChatMsg[] = []): Promise<void> {
+	private async runTurn(text: string | undefined, turn: number, runtimeInputs: AgentInput[] = [], provider = this.provider, systemPrompt = this.systemPrompt, beforeMessages: readonly (AgentMessage | ChatMsg)[] = []): Promise<void> {
 		let success = false;
 		let runError: string | undefined;
 		try {
 			this.hooks.onTurnStart?.(turn, text ?? "");
 			await this.runtimeHooks.events.emit({ type: "turn_start", turnNumber: turn, userText: text ?? "" });
-			if (text !== undefined) await this.appendMessage({ role: "user", content: text });
+			if (text !== undefined) await this.appendMessage({ role: "user", content: text, timestamp: new Date().toISOString() });
 			this.runtimeInputs = runtimeInputs;
 			await this.decide(provider, systemPrompt, beforeMessages);
 			success = true;
@@ -400,6 +401,8 @@ export class Subject {
 				});
 			} catch (error) {
 				try { this.hooks.onError?.(safeError(error)); } catch { /* hooks cannot own lifecycle */ }
+			} finally {
+				this.lastReportedUsage = null;
 			}
 			await this.runtimeHooks.events.emit({ type: "agent_end", turnSeq: turn, success, error: runError });
 			if (!this.interrupted && this.queues.size > 0) {
@@ -413,22 +416,37 @@ export class Subject {
 
 	private async resumeQueued(): Promise<void> {
 		if (this.busy || this.resumingQueue) return;
-		const item = this.queues.peek("steer") ?? this.queues.peek("followUp");
-		if (!item) return;
 		this.resumingQueue = true;
 		try {
-			await this.consumeQueueItem(item);
-			this.resumingQueue = false;
-			await this.startRun(item.source?.kind === "runtime" ? undefined : item.text, item.source?.kind === "runtime" ? [{ id: item.id, mode: item.mode, source: item.source, text: item.text, data: item.data }] : []);
+			await this.drainQueuesIntoRun();
 		} finally {
 			this.resumingQueue = false;
 		}
 	}
 
-	private async decide(provider = this.provider, systemPrompt = this.systemPrompt, beforeMessages: ChatMsg[] = []): Promise<void> {
+	private async drainQueuesIntoRun(): Promise<void> {
+		if (this.busy) return;
+		const steer = this.queues.peekMany("steer", this.queueModes.steer);
+		if (steer.length > 0) {
+			const item = steer[0];
+			await this.consumeQueueItem(item);
+			this.resumingQueue = false;
+			await this.startRun(item.source?.kind === "runtime" ? undefined : item.text, item.source?.kind === "runtime" ? [{ id: item.id, mode: item.mode, source: item.source, text: item.text, data: item.data }] : []);
+			return;
+		}
+		const followUp = this.queues.peekMany("followUp", this.queueModes.followUp);
+		if (followUp.length > 0) {
+			const item = followUp[0];
+			await this.consumeQueueItem(item);
+			this.resumingQueue = false;
+			await this.startRun(item.source?.kind === "runtime" ? undefined : item.text, item.source?.kind === "runtime" ? [{ id: item.id, mode: item.mode, source: item.source, text: item.text, data: item.data }] : []);
+		}
+	}
+
+	private async decide(provider = this.provider, systemPrompt = this.systemPrompt, beforeMessages: readonly (AgentMessage | ChatMsg)[] = []): Promise<void> {
 		await this.prepareTurn(provider, systemPrompt);
-		let nextUser: ChatMsg | undefined;
-		let nextUsers: ChatMsg[] = [];
+		let nextUser: AgentMessage | undefined;
+		let nextUsers: AgentMessage[] = [];
 		for (;;) {
 			if (this.interrupted) {
 				await this.emitInterrupted();
@@ -447,7 +465,7 @@ export class Subject {
 				systemPrompt,
 				includeThinking: provider.includeThinking,
 				runtimeInputs: this.runtimeInputs,
-			}), ...beforeMessages];
+			}), ...convertToLlm(beforeMessages)];
 			requestMessages = await this.runtimeHooks.turn.transformContext(requestMessages);
 
 			const toolCalls: CompletedToolCall[] = [];
@@ -613,13 +631,15 @@ export class Subject {
 				return;
 			}
 
-			const assistant: ChatMsg = {
+			const assistant: AgentMessage = {
 				role: "assistant",
-					content: reply,
-					thinking: thinking || undefined,
-					thinkingSignature,
-					tool_calls: toolCalls,
-				status: finishReason === "length" ? "length" : "complete", usage,
+				content: reply,
+				thinking: thinking || undefined,
+				thinkingSignature,
+				tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+				status: finishReason === "length" ? "length" : "complete",
+				usage,
+				timestamp: new Date().toISOString(),
 			};
 			await this.appendMessage(assistant);
 			const results = await this.executeToolCalls(toolCalls);
@@ -629,6 +649,7 @@ export class Subject {
 					tool_call_id: result.callId,
 					content: result.result,
 					status: result.status,
+					timestamp: new Date().toISOString(),
 				});
 			}
 			if (this.interrupted || this.currentSignal().aborted) {
@@ -759,7 +780,7 @@ export class Subject {
 				});
 			}
 			if (prepResult.history) {
-				this.history = prepResult.history;
+				this.history = prepResult.history as AgentMessage[];
 			}
 		} catch (err) {
 			await this.runtimeHooks.events.emit({
@@ -770,7 +791,7 @@ export class Subject {
 		}
 	}
 
-	private async appendMessage(message: ChatMsg): Promise<void> {
+	private async appendMessage(message: AgentMessage): Promise<void> {
 		await this.store?.appendMessage(message);
 		this.history.push(message);
 	}
@@ -778,7 +799,14 @@ export class Subject {
 	/** Adds trusted extension content to both v2 persistence and the next provider context. */
 	async appendCustomMessage(message: { customType: string; content: string; display?: boolean; details?: unknown }): Promise<void> {
 		await this.store?.appendCustomMessage(message);
-		this.history.push({ role: "user", content: message.content });
+		this.history.push({
+			role: "custom",
+			customType: message.customType,
+			content: message.content,
+			display: message.display,
+			details: message.details,
+			timestamp: new Date().toISOString(),
+		});
 	}
 
 	async appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void> {
@@ -817,7 +845,14 @@ export class Subject {
 
 	private async emitInterrupted(partial = "", thinking = "", thinkingSignature?: string): Promise<void> {
 		if (partial.trim() || thinking.trim() || thinkingSignature) {
-			await this.appendMessage({ role: "assistant", content: partial, thinking: thinking || undefined, thinkingSignature, status: "aborted" });
+			await this.appendMessage({
+				role: "assistant",
+				content: partial,
+				thinking: thinking || undefined,
+				thinkingSignature,
+				status: "aborted",
+				timestamp: new Date().toISOString(),
+			});
 		}
 		await this.storeEvent("turn_aborted", { turnId: this.turnSeq });
 		this.hooks.onTurnAborted?.(this.turnSeq);

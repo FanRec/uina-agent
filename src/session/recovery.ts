@@ -1,4 +1,5 @@
-import type { ChatMsg, ToolResultStatus } from "../core/types.js";
+import type { AgentMessage, ChatMsg, ToolResultStatus } from "../core/types.js";
+import { convertToLlm } from "../agent/context.js";
 import type {
 	QueuedInput,
 	SessionEntry,
@@ -144,28 +145,44 @@ export function recoverRecords(records: SessionRecord[]): RecoveredState {
 	};
 }
 
-/** Projects the ordered journal into the effective provider history. A
- * compaction replaces only model-visible history; the journal itself remains intact. */
-export function projectModelHistory(entries: readonly SessionEntry[]): ChatMsg[] {
-	const messages: ChatMsg[] = [];
+/** Projects the ordered journal into the effective AgentMessage history, preserving custom and compaction messages. */
+export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMessage[] {
+	const messages: AgentMessage[] = [];
 	for (const entry of entries) {
 		if (entry.kind === "message") {
-			messages.push(structuredClone(entry.message));
+			messages.push(structuredClone(entry.message as AgentMessage));
 			continue;
 		}
 		if (entry.kind === "custom_message") {
-			messages.push({ role: "user", content: entry.content });
+			messages.push({
+				role: "custom",
+				customType: entry.customType,
+				content: entry.content,
+				display: entry.display,
+				details: entry.details,
+			});
 			continue;
 		}
 		if (entry.kind === "compaction") {
 			messages.length = 0;
 			messages.push(
-				{ role: "user", content: `[历史摘要] ${entry.summary}` },
-				...structuredClone(entry.retainedTail),
+				{
+					role: "compactionSummary",
+					summary: entry.summary,
+					content: `[历史摘要] ${entry.summary}`,
+					tokensBefore: entry.tokensBefore,
+				},
+				...(entry.retainedTail as AgentMessage[]).map((m) => structuredClone(m)),
 			);
 		}
 	}
 	return messages;
+}
+
+/** Projects the ordered journal into the effective provider history. A
+ * compaction replaces only model-visible history; the journal itself remains intact. */
+export function projectModelHistory(entries: readonly SessionEntry[]): ChatMsg[] {
+	return convertToLlm(projectAgentHistory(entries));
 }
 
 function applyEvent(

@@ -32,7 +32,7 @@ export interface SubagentRead {
 
 export interface SubagentTranscript {
 	subagent: SubagentSnapshot;
-	messages: import("../../core/types.js").ChatMsg[];
+	messages: import("../../core/types.js").AgentMessage[];
 }
 
 export interface SubagentStartOptions {

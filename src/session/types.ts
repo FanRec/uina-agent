@@ -1,4 +1,5 @@
 import type {
+	AgentMessage,
 	ChatMsg,
 	DeliveryMode,
 	ToolResultStatus,
@@ -39,7 +40,7 @@ export interface SessionMessageRecord {
 	id: string;
 	seq: number;
 	timestamp: string;
-	message: ChatMsg;
+	message: AgentMessage | ChatMsg;
 }
 
 export interface SessionCompactionRecord {
@@ -48,7 +49,7 @@ export interface SessionCompactionRecord {
 	seq: number;
 	timestamp: string;
 	summary: string;
-	retainedTail: ChatMsg[];
+	retainedTail: (AgentMessage | ChatMsg)[];
 	tokensBefore: number;
 }
 
@@ -80,7 +81,7 @@ export type SessionRecord =
 /** Ordered durable session content. Operational events are replayed into state,
  * while these entries retain their original journal order for model and UI projections. */
 export type SessionEntry =
-	| { kind: "message"; message: ChatMsg }
+	| { kind: "message"; message: AgentMessage | ChatMsg }
 	| {
 			kind: "custom_message";
 			customType: string;
@@ -92,7 +93,7 @@ export type SessionEntry =
 	| {
 			kind: "compaction";
 			summary: string;
-			retainedTail: ChatMsg[];
+			retainedTail: (AgentMessage | ChatMsg)[];
 			tokensBefore: number;
 	  };
 
@@ -114,12 +115,12 @@ export interface SessionSnapshot {
 
 export interface SessionStore {
 	readonly path: string;
-	appendMessage(message: ChatMsg): Promise<void>;
+	appendMessage(message: AgentMessage | ChatMsg): Promise<void>;
 	appendCustomMessage(message: { customType: string; content: string; display?: boolean; details?: unknown }): Promise<void>;
 	appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void>;
 	appendCompaction(
 		summary: string,
-		retainedTail: ChatMsg[],
+		retainedTail: (AgentMessage | ChatMsg)[],
 		tokensBefore: number,
 	): Promise<void>;
 	appendEvent(

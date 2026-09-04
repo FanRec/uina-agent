@@ -1,4 +1,4 @@
-import type { ChatMsg, ModelProvider, ToolDef } from "../core/types.js";
+import type { AgentMessage, ChatMsg, ModelProvider, ToolDef } from "../core/types.js";
 import type { ProviderHooks } from "../runtime/hooks.js";
 import { buildContext, estimateContextTokens, estimateRequestTokens, formatForSummary } from "./context.js";
 
@@ -15,13 +15,13 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 
 export interface CompactionResult {
 	summary: string;
-	retainedTail: ChatMsg[];
+	retainedTail: (AgentMessage | ChatMsg)[];
 	tokensBefore: number;
 }
 
 export interface PrepareNextTurnContext {
 	turnNumber: number;
-	history: readonly ChatMsg[];
+	history: readonly (AgentMessage | ChatMsg)[];
 	provider: ModelProvider;
 	systemPrompt: string;
 	tools: readonly ToolDef[];
@@ -31,7 +31,7 @@ export interface PrepareNextTurnContext {
 }
 
 export interface PrepareNextTurnResult {
-	history?: ChatMsg[];
+	history?: (AgentMessage | ChatMsg)[];
 	systemPrompt?: string;
 	compaction?: CompactionResult;
 }
@@ -40,7 +40,12 @@ export async function defaultPrepareNextTurn(
 	ctx: PrepareNextTurnContext,
 	beforeCompact?: (input: { tokensBefore: number }) => Promise<{ cancel?: boolean }>,
 ): Promise<PrepareNextTurnResult | null> {
-	const tokensBefore = Math.ceil(ctx.history.reduce((acc, m) => acc + m.content.length + 16, 0) / 4);
+	const tokensBefore = Math.ceil(
+		ctx.history.reduce((acc, m) => {
+			const len = m.role === "compactionSummary" ? m.summary.length : (m.content?.length ?? 0);
+			return acc + len + 16;
+		}, 0) / 4,
+	);
 	if (beforeCompact) {
 		const decision = await beforeCompact({ tokensBefore });
 		if (decision.cancel) return null;
@@ -66,7 +71,7 @@ export async function defaultPrepareNextTurn(
 }
 
 export function shouldCompact(
-	history: readonly ChatMsg[],
+	history: readonly (AgentMessage | ChatMsg)[],
 	systemPrompt: string,
 	tools: readonly ToolDef[],
 	settings: CompactionSettings,
@@ -81,14 +86,15 @@ export function shouldCompact(
 }
 
 export function findKeepFrom(
-	history: readonly ChatMsg[],
+	history: readonly (AgentMessage | ChatMsg)[],
 	keepRecentTokens: number,
 ): number {
 	let chars = 0;
 	let keepFrom = 0;
 	for (let i = history.length - 1; i >= 0; i--) {
 		const message = history[i];
-		chars += message.content.length + 16;
+		const len = message.role === "compactionSummary" ? message.summary.length : (message.content?.length ?? 0);
+		chars += len + 16;
 		if (message.role === "assistant" && message.tool_calls) {
 			chars += JSON.stringify(message.tool_calls).length;
 		}
@@ -102,7 +108,7 @@ export function findKeepFrom(
 }
 
 export async function compactHistory(
-	history: readonly ChatMsg[],
+	history: readonly (AgentMessage | ChatMsg)[],
 	provider: ModelProvider,
 	systemPrompt: string,
 	tools: readonly ToolDef[],
@@ -119,11 +125,12 @@ export async function compactHistory(
 	const oldest = history.slice(0, keepFrom);
 	const priorSummary = oldest.find(
 		(message) =>
-			message.role === "user" && message.content.startsWith("[历史摘要]"),
+			(message.role === "user" && message.content.startsWith("[历史摘要]")) ||
+			message.role === "compactionSummary",
 	);
 	const rest = oldest.filter((message) => message !== priorSummary);
 	const transcript = (
-		(priorSummary ? `[user] ${priorSummary.content}\n` : "") +
+		(priorSummary ? `[user] ${formatForSummary(priorSummary)}\n` : "") +
 		rest.map((message) => `[${message.role}] ${formatForSummary(message)}`).join("\n")
 	);
 

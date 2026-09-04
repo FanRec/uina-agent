@@ -70,6 +70,112 @@ export interface CompletedToolCall {
 	thinkingSignature?: string;
 }
 
+export interface TextContent {
+	type: "text";
+	text: string;
+}
+
+export interface ThinkingContent {
+	type: "thinking";
+	thinking: string;
+	signature?: string;
+}
+
+export interface ToolCallContent {
+	type: "toolCall";
+	id: string;
+	name: string;
+	args: Record<string, unknown> | unknown;
+	argsValid?: boolean;
+	thinkingSignature?: string;
+}
+
+export interface ToolResultContent {
+	type: "toolResult";
+	callId: string;
+	name?: string;
+	result: string;
+	status?: ToolResultStatus;
+}
+
+export interface CustomContent {
+	type: "custom";
+	customType: string;
+	content: string;
+	display?: boolean;
+	details?: unknown;
+}
+
+export type ContentBlock =
+	| TextContent
+	| ThinkingContent
+	| ToolCallContent
+	| ToolResultContent
+	| CustomContent;
+
+export interface SystemAgentMessage {
+	id?: string;
+	role: "system";
+	content: string;
+	timestamp?: string;
+}
+
+export interface UserAgentMessage {
+	id?: string;
+	role: "user";
+	content: string;
+	timestamp?: string;
+}
+
+export interface AssistantAgentMessage {
+	id?: string;
+	role: "assistant";
+	content: string;
+	thinking?: string;
+	thinkingSignature?: string;
+	tool_calls?: CompletedToolCall[];
+	status?: AssistantStatus;
+	usage?: Usage;
+	timestamp?: string;
+}
+
+export interface ToolAgentMessage {
+	id?: string;
+	role: "tool";
+	tool_call_id: string;
+	name?: string;
+	content: string;
+	status?: ToolResultStatus;
+	timestamp?: string;
+}
+
+export interface CustomAgentMessage {
+	id?: string;
+	role: "custom";
+	customType: string;
+	content: string;
+	display?: boolean;
+	details?: unknown;
+	timestamp?: string;
+}
+
+export interface CompactionSummaryAgentMessage {
+	id?: string;
+	role: "compactionSummary";
+	summary: string;
+	content: string;
+	tokensBefore?: number;
+	timestamp?: string;
+}
+
+export type AgentMessage =
+	| SystemAgentMessage
+	| UserAgentMessage
+	| AssistantAgentMessage
+	| ToolAgentMessage
+	| CustomAgentMessage
+	| CompactionSummaryAgentMessage;
+
 export type ChatMsg =
 	| { role: "system" | "user"; content: string }
 	| {

@@ -7,7 +7,7 @@ import { execCommandDirect } from "../extensions/runtime-tools/exec-command/inde
 import { ToolBroker } from "../tools/broker.js";
 import { Subject } from "../agent/loop.js";
 import { openJsonlSession } from "../session/jsonl-store.js";
-import { projectModelHistory } from "../session/recovery.js";
+import { projectAgentHistory } from "../session/recovery.js";
 import { createInteractiveUI, type InteractiveTUI, type OutMsg } from "../ui/tui.js";
 import { sanitizeTerminalText, toolStartLine, toolResultLines } from "../ui/format.js";
 import { JobRegistry } from "../extensions/jobs/registry.js";
@@ -162,7 +162,7 @@ export async function runApp(): Promise<void> {
 		},
 	});
 
-	const restoredHistory = projectModelHistory(snapshot.entries);
+	const restoredHistory = projectAgentHistory(snapshot.entries);
 	subject.addHistory(restoredHistory);
 	subject.seedQueue(snapshot.queued);
 	if (restoredHistory.length > 0) {

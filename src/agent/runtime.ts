@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ChatMsg, ThinkingLevel } from "../core/types.js";
+import type { AgentMessage, ThinkingLevel } from "../core/types.js";
 import { MemorySessionStore } from "../session/jsonl-store.js";
 import type { SessionStore } from "../session/types.js";
 import { Subject, type AgentInput, type LoopHooks } from "./loop.js";
@@ -34,7 +34,7 @@ export interface AgentHandle {
 	interrupt(reason?: string): Promise<void>;
 	waitForIdle(): Promise<void>;
 	snapshot(): AgentSnapshot;
-	history(): ChatMsg[];
+	history(): AgentMessage[];
 	dispose(): Promise<void>;
 }
 
@@ -96,7 +96,7 @@ class RuntimeAgent implements AgentHandle {
 		return { id: this.id, status: this.disposed ? "disposed" : this.status, busy: this.subject.isBusy(), turn: this.turn };
 	}
 
-	history(): ChatMsg[] {
+	history(): AgentMessage[] {
 		return this.subject.historySnapshot();
 	}
 
