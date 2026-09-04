@@ -2617,13 +2617,13 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(host.isBusy()).toBe(false);
 			});
 
-			it("InteractiveTUI: 流式接收到打断 notice 时自动调用 interruptTurn 并重置状态", () => {
+			it("InteractiveTUI: 接收到 turn_aborted 事件时自动调用 interruptTurn 并重置状态", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
 				tui.render({ type: "turn_start", n: 1, text: "做某事" });
 				expect(tui.host.isBusy()).toBe(true);
 
-				// 模拟流式收到模型中断标志
-				tui.render({ type: "text", text: "\n已打断 · 接下来想让 TestModel 做什么？\n" });
+				// 模拟收到内核发出的结构化 turn_aborted 事件
+				tui.render({ type: "turn_aborted", n: 1 });
 
 				// 此时 busy 状态自动解除，且 transcript 正确记录 interrupt 行
 				expect(tui.host.isBusy()).toBe(false);

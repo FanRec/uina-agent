@@ -182,18 +182,6 @@ export class InteractiveTUI {
 				break;
 
 			case "text":
-				if (m.text.includes("已打断 · 接下来想让")) {
-					if (this.currentThinkingId) {
-						this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
-						this.currentThinkingId = undefined;
-					}
-					this.stopToolAnimationTimer();
-					this.host.transcript.interruptTurn(this.host.modelName);
-					this.host.setBusy(false);
-					this.host.activityLine.update("idle", "已打断当前轮次");
-					this.host.requestRender();
-					break;
-				}
 				if (this.currentThinkingId) {
 					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
