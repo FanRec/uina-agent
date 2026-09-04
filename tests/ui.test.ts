@@ -24,6 +24,7 @@ import {
 	formatDiffCardLines,
 } from "../src/ui/components/transcript/diff-view.js";
 import { ActivityLineComponent, formatTpsGauge, formatTpsSparkline } from "../src/ui/components/widgets/activity-line.js";
+import { PendingQueueComponent } from "../src/ui/components/widgets/pending-queue.js";
 import { InputLine, segmentWithMarkers, snapCursorToMarkerBoundary } from "../src/ui/components/editor/input-line.js";
 import { calculateContextSegments } from "../src/agent/context.js";
 import { ExtensionRegistry } from "../src/ui/extensions/registry.js";
@@ -2847,6 +2848,132 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				tui.host.handleInput("\x1ba");
 				expect(openSubagentsSpy).toHaveBeenCalledTimes(1);
 			});
+
+			describe("PendingQueueComponent & Queue UX", () => {
+				it("队列为空时 render 返回空数组（0 行，杜绝空白占用与抖动）", () => {
+					const queueComp = new PendingQueueComponent();
+					expect(queueComp.render(80)).toEqual([]);
+					expect(queueComp.getItems()).toEqual([]);
+				});
+
+				it("单条 Steer 消息渲染：包含 ◆ （Steer） 标题、文本内容与底部操作 Affordance", () => {
+					const queueComp = new PendingQueueComponent();
+					queueComp.setItems([
+						{
+							id: "steer-1",
+							text: "查看 package.json 中的 vitest 配置",
+							mode: "steer",
+							order: 1,
+						},
+					]);
+
+					const lines = queueComp.render(80);
+					expect(lines.length).toBe(3); // 标题 + 1 条待办 + 底部操作提示
+					const raw = lines.map((l) => stripAnsi(l));
+					expect(raw[0]).toContain("◆ (Steer) · 下一步送达");
+					expect(raw[1]).toContain("↳ 查看 package.json 中的 vitest 配置");
+					expect(raw[2]).toContain("↳ Alt+↑ 撤回 · Esc 打断并发送 · Ctrl+Enter 插队");
+				});
+
+				it("多条 Follow-up 消息渲染：包含 ◇ (Follow-up) 标题及数量标记", () => {
+					const queueComp = new PendingQueueComponent();
+					queueComp.setItems([
+						{
+							id: "f-1",
+							text: "运行 npm run test:coverage",
+							mode: "followUp",
+							order: 1,
+						},
+						{
+							id: "f-2",
+							text: "编译并检查 dist 输出产物",
+							mode: "followUp",
+							order: 2,
+						},
+					]);
+
+					const lines = queueComp.render(80);
+					expect(lines.length).toBe(4); // 标题 + 2 条待办 + 底部提示
+					const raw = lines.map((l) => stripAnsi(l));
+					expect(raw[0]).toContain("◇ (Follow-up) · 本轮结束后送达 (2 条待办)");
+					expect(raw[1]).toContain("↳ 运行 npm run test:coverage");
+					expect(raw[2]).toContain("↳ 编译并检查 dist 输出产物");
+					expect(raw[3]).toContain("↳ Alt+↑ 撤回 · Esc 打断并发送 · Ctrl+Enter 插队");
+				});
+
+				it("Steer + Follow-up 组合渲染，且多余条目折叠（Budget Clamping 机制）", () => {
+					const queueComp = new PendingQueueComponent();
+					queueComp.setItems([
+						{ id: "s-1", text: "紧急插队检查", mode: "steer", order: 1 },
+						{ id: "f-1", text: "待办 1", mode: "followUp", order: 2 },
+						{ id: "f-2", text: "待办 2", mode: "followUp", order: 3 },
+						{ id: "f-3", text: "待办 3", mode: "followUp", order: 4 },
+						{ id: "f-4", text: "待办 4", mode: "followUp", order: 5 },
+					]);
+
+					const lines = queueComp.render(80);
+					const raw = lines.map((l) => stripAnsi(l));
+					expect(raw.some((l) => l.includes("◆ (Steer) · 下一步送达"))).toBe(true);
+					expect(raw.some((l) => l.includes("◇ (Follow-up) · 本轮结束后送达 (4 条待办)"))).toBe(true);
+					expect(raw.some((l) => l.includes("↳ 紧急插队检查"))).toBe(true);
+					expect(raw.some((l) => l.includes("↳ 待办 1"))).toBe(true);
+					expect(raw.some((l) => l.includes("↳ 待办 2"))).toBe(true);
+					expect(raw.some((l) => l.includes("↳ ...另有 2 条待办已排队"))).toBe(true);
+					expect(raw[raw.length - 1]).toContain("↳ Alt+↑ 撤回 · Esc 打断并发送 · Ctrl+Enter 插队");
+				});
+
+				it("多行换行被压平为单行，超长文本安全截断", () => {
+					const queueComp = new PendingQueueComponent();
+					queueComp.setItems([
+						{
+							id: "long-1",
+							text: "第一行内容\n第二行内容\r\n第三行内容" + "很长的文字".repeat(20),
+							mode: "steer",
+							order: 1,
+						},
+					]);
+
+					const lines = queueComp.render(50);
+					const raw = lines.map((l) => stripAnsi(l));
+					expect(raw[1]).not.toContain("\n");
+					expect(raw[1]).toContain("第一行内容 第二行内容 第三行内容");
+					// 每一行渲染宽度绝不超过 50
+					for (const line of lines) {
+						expect(visibleWidth(line)).toBeLessThanOrEqual(50);
+					}
+				});
+
+				it("InteractiveTUI: 接收 queue 消息时不污染 transcript 历史，而是挂载到 UIHost 悬浮区", () => {
+					const tui = createInteractiveUI({ modelName: "TestModel" });
+					const historyBefore = tui.host.transcript.getHistory().length;
+
+					tui.render({
+						type: "queue",
+						items: [
+							{ id: "q-1", text: "排队消息1", mode: "steer", order: 1 },
+						],
+					});
+
+					// transcript 历史中绝对不新增 notice，杜绝历史日志被反复刷屏污染
+					expect(tui.host.transcript.getHistory().length).toBe(historyBefore);
+
+					// UIHost 的 pendingQueue 组件状态已更新
+					(tui.host as any).renderCurrentFrame();
+					const screenLines: string[] = (tui.host as any).lastRenderedRows;
+					const frameText = screenLines.map((l: string) => stripAnsi(l)).join("\n");
+					expect(frameText).toContain("◆ (Steer) · 下一步送达");
+					expect(frameText).toContain("↳ 排队消息1");
+
+					// 队列清空时，悬浮区清空，不留残影
+					tui.render({ type: "queue", items: [] });
+					(tui.host as any).renderCurrentFrame();
+					const clearedLines: string[] = (tui.host as any).lastRenderedRows;
+					const clearedFrameText = clearedLines.map((l: string) => stripAnsi(l)).join("\n");
+					expect(clearedFrameText).not.toContain("◆ (Steer)");
+					expect(clearedFrameText).not.toContain("↳ 排队消息1");
+				});
+			});
 		});
 	});
 });
+

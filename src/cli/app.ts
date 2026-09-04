@@ -381,6 +381,7 @@ export async function runApp(): Promise<void> {
 		if (snapshot.entries.length > 0) {
 			tui.loadSession(snapshot.entries);
 		}
+		tui.setPendingQueue(subject.queuedSnapshot());
 	} else if (oneshot === undefined) {
 		nonTTY = createInterface({ input: process.stdin });
 		nonTTY.on("line", (line) => onUserLine(line, "followUp"));

@@ -22,6 +22,8 @@ import { BannerComponent } from "./components/primitives/banner.js";
 import { TranscriptContainer } from "./components/transcript/transcript.js";
 import { ActivityLineComponent } from "./components/widgets/activity-line.js";
 import { ContextBarComponent, formatCacheHitRate, type ContextSegments } from "./components/widgets/context-bar.js";
+import { PendingQueueComponent } from "./components/widgets/pending-queue.js";
+import type { QueuedMessage } from "../agent/queue.js";
 import { TimelineRailComponent } from "./components/widgets/timeline-rail.js";
 import { ScrollbarGutterComponent } from "./components/widgets/scrollbar-gutter.js";
 import { HelpMenu } from "./components/overlays/help-menu.js";
@@ -256,6 +258,13 @@ export class UIHost implements UIHostContextPort {
 
 	setSubagentPort(port: SubagentPort): void {
 		this.subagentPort = port;
+	}
+
+	private pendingQueue = new PendingQueueComponent();
+
+	setPendingQueue(items: readonly QueuedMessage[]): void {
+		this.pendingQueue.setItems(items);
+		this.requestRender();
 	}
 
 	cancelTurn(source: "escape" | "ctrl+c" = "escape"): void {
@@ -1002,7 +1011,15 @@ export class UIHost implements UIHostContextPort {
 			});
 		}
 
-		const aboveLines = [...aboveEditorWidgets, ...overlayLines, ...suggestionLines].slice(0, maxAboveH).map((l) => `${margin}${l}`);
+		// 待办队列视窗：在没有全屏/菜单浮层与联想建议卡片时，静默悬浮在输入框正上方
+		const pendingLines =
+			(!this.activeSuggestions || this.activeSuggestions.items.length === 0) && !this.overlayStack.hasVisible
+				? this.pendingQueue.render(innerW)
+				: [];
+
+		const aboveLines = [...aboveEditorWidgets, ...overlayLines, ...suggestionLines, ...pendingLines]
+			.slice(0, maxAboveH)
+			.map((l) => `${margin}${l}`);
 		const aboveH = aboveLines.length;
 
 		// 5. 计算转录区可用高度与固定 1 行呼吸空间

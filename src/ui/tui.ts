@@ -176,6 +176,10 @@ export class InteractiveTUI {
 		this.host.loadSession(entries);
 	}
 
+	setPendingQueue(items: readonly QueuedMessage[]): void {
+		this.host.setPendingQueue(items);
+	}
+
 	render(m: OutMsg): void {
 		switch (m.type) {
 			case "turn_start":
@@ -309,11 +313,7 @@ export class InteractiveTUI {
 				break;
 
 			case "queue":
-				if (m.items.length > 0) {
-					const queueText = m.items.map((i) => i.text).join(" | ");
-					this.host.transcript.addNotice(`排队消息: ${queueText}`);
-					this.host.requestRender();
-				}
+				this.host.setPendingQueue(m.items);
 				break;
 		}
 	}
