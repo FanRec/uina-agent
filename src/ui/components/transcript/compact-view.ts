@@ -1,13 +1,14 @@
 /**
- * 会话压缩摘要卡片组件（复刻 dsh-TUI ∴ 会话压缩视觉与交互规范）。
+ * 会话压缩摘要卡片组件（对齐 dsh-TUI ∴ 会话压缩视觉与全域交互规范）。
  * 特性：
- * 1. 经典 ∴ 符号标识，支持折叠摘要预览与展开完整上下文总结；
- * 2. 细线圆角全封闭几何盒子，像素级对齐；
+ * 1. 经典通透双分割线 ─── 会话已压缩 ─── 夹心排版，融入微光雾蓝调色板；
+ * 2. 经典 ∴ 符号标识，折叠态紧凑单行预览，展开态结构化舒展；
  * 3. 统计展示归档轮次与释放的 Token 数量；
- * 4. 支持 /compact 指令与快捷键实时展开/收起。
+ * 4. 支持鼠标 Hover 高亮底色与全域点击展开/收起；
+ * 5. 支持 /compact 指令与快捷键实时展开/收起。
  */
 
-import { C, visibleWidth, truncateToWidth, wrapTextWithAnsi, getContentBoxWidth } from "../../core/utils.js";
+import { C, visibleWidth, truncateToWidth, wrapTextWithAnsi } from "../../core/utils.js";
 
 export interface CompactionRecord {
 	summary: string;
@@ -16,66 +17,116 @@ export interface CompactionRecord {
 	collapsed: boolean;
 }
 
+function applyCardBackground(line: string, bg: string, width: number): string {
+	const curW = visibleWidth(line);
+	const effLine = curW > width ? truncateToWidth(line, width, "…") : line;
+	const effW = curW > width ? visibleWidth(effLine) : curW;
+	const padLen = Math.max(0, width - effW);
+	const padding = " ".repeat(padLen);
+
+	const patched = effLine
+		.replace(/\x1b\[0?m/g, `\x1b[0m${bg}`)
+		.replace(/\x1b\[49m/g, bg);
+
+	return `${bg}${patched}${padding}${C.reset}`;
+}
+
 /**
  * 格式化渲染会话压缩卡片行
  */
 export function formatCompactionCardLines(
 	record: CompactionRecord,
 	width = 80,
+	isHovered = false,
 ): string[] {
-	const boxWidth = getContentBoxWidth(width - 4);
-	const innerW = boxWidth - 4; // 减去两端 "│ " 与 " │"
-	const borderCol = C.gray;
-
+	const boxW = Math.max(20, width);
 	const tokenSavedStr =
 		record.tokensSaved >= 1000
 			? `${(record.tokensSaved / 1000).toFixed(1)}k`
 			: `${record.tokensSaved}`;
 
 	if (record.collapsed) {
-		// 1. 折叠态：紧凑 3 行圆角盒子
-		// 顶边：╭─ ∴ 会话已压缩 · 归档 N 轮对话 ────────────────────╮
-		const titleTag = `─ ∴ 会话已压缩 · 归档 ${record.turnsCount} 轮对话 `;
-		const topFillLen = Math.max(1, boxWidth - 2 - visibleWidth(titleTag));
-		const topLine = `  ${borderCol}╭${titleTag}${"─".repeat(topFillLen)}╮${C.reset}`;
+		// 1. 顶部分割线：─── 会话已压缩 ─────────────────────────────
+		const leftDashes = "───";
+		const title = " 会话已压缩 ";
+		const leftW = visibleWidth(leftDashes);
+		const titleW = visibleWidth(title);
+		const rightDashCount = Math.max(3, boxW - leftW - titleW);
+		const topLine = `${C.subtle}${leftDashes}${C.inactive}${title}${C.subtle}${"─".repeat(rightDashCount)}${C.reset}`;
 
-		// 中间摘要预览行
+		// 2. 中间折叠行：  ∴ 摘要已折叠 · <preview> (ctrl+o / 点击展开)
+		const symbolCol = isHovered ? C.suggestion : C.inactive;
+		const symbol = `${symbolCol}∴${C.reset}`;
+		const label = `${C.inactive}摘要已折叠 · ${C.reset}`;
+		const hint = isHovered
+			? `${C.suggestion}(点击 / ctrl+o 展开)${C.reset}`
+			: `${C.inactive}(ctrl+o / 点击展开)${C.reset}`;
+
 		const flat = record.summary.replace(/\s+/g, " ").trim();
-		const previewBudget = Math.max(10, innerW - 8); // 减去 "摘要: "
-		const previewText = truncateToWidth(flat, previewBudget, "…");
-		const bodyText = `${C.cyan}摘要:${C.reset} ${C.dim}${previewText}${C.reset}`;
-		const padLen = Math.max(0, innerW - visibleWidth(bodyText));
-		const middleLine = `  ${borderCol}│${C.reset} ${bodyText}${" ".repeat(padLen)} ${borderCol}│${C.reset}`;
+		const prefixW = 2 + 1 + 1 + visibleWidth("摘要已折叠 · ");
+		const hintW = visibleWidth(hint) + 1;
+		const budget = Math.max(8, boxW - prefixW - hintW);
+		const preview = truncateToWidth(flat, budget, "…");
+		const previewCol = isHovered ? C.text : C.inactiveShimmer;
+		const rawLine = `  ${symbol} ${label}${previewCol}${preview}${C.reset} ${hint}`;
 
-		// 底边：╰────────────────────── 释放 ~18.5k tokens · Ctrl+O ──╯
-		const statsBadge = `${C.green}释放 ~${tokenSavedStr} tokens${C.reset} · ${C.dim}Ctrl+O 展开${C.reset}`;
-		const badgeW = visibleWidth(statsBadge);
-		// 1 (╰) + botFillLen + 1 ( ) + badgeW + 1 ( ) + 2 (──) + 1 (╯) = botFillLen + badgeW + 6
-		const botFillLen = Math.max(1, boxWidth - badgeW - 6);
-		const botLine = `  ${borderCol}╰${"─".repeat(botFillLen)} ${statsBadge}${borderCol} ──╯${C.reset}`;
+		let middleLine: string;
+		if (isHovered) {
+			middleLine = applyCardBackground(rawLine, C.toolCardBackground, boxW);
+		} else {
+			const padLen = Math.max(0, boxW - visibleWidth(rawLine));
+			middleLine = `${rawLine}${" ".repeat(padLen)}`;
+		}
+
+		// 3. 底部分割线：────────────────────────────────────────
+		const botLine = `${C.subtle}${"─".repeat(boxW)}${C.reset}`;
 
 		return [topLine, middleLine, botLine];
 	}
 
-	// 2. 展开态：展示完整摘要
-	const titleTag = `─ ∴ 会话已压缩 · 完整摘要 (已归档 ${record.turnsCount} 轮) `;
-	const topFillLen = Math.max(1, boxWidth - 2 - visibleWidth(titleTag));
-	const topLine = `  ${borderCol}╭${titleTag}${"─".repeat(topFillLen)}╮${C.reset}`;
+	// 展开态：展示完整摘要与统计
+	const leftDashes = "───";
+	let title = ` 会话已压缩 · 完整摘要 (已归档 ${record.turnsCount} 轮) `;
+	if (visibleWidth(leftDashes) + visibleWidth(title) + 3 > boxW) {
+		title = ` 会话已压缩 · 完整摘要 `;
+	}
+	if (visibleWidth(leftDashes) + visibleWidth(title) + 3 > boxW) {
+		title = ` 会话已压缩 `;
+	}
+	if (visibleWidth(leftDashes) + visibleWidth(title) + 3 > boxW) {
+		title = "";
+	}
+	const leftW = visibleWidth(leftDashes);
+	const titleW = visibleWidth(title);
+	const rightDashCount = Math.max(3, boxW - leftW - titleW);
+	const topLine = `${C.subtle}${leftDashes}${C.inactive}${title}${C.subtle}${"─".repeat(rightDashCount)}${C.reset}`;
 
 	const output: string[] = [topLine];
 
-	// 正文自动折行
-	const summaryLines = wrapTextWithAnsi(record.summary, innerW);
+	// 正文自动折行与缩进
+	const innerW = Math.max(10, boxW - 4);
+	const summaryLines = wrapTextWithAnsi(record.summary.trim(), innerW);
 	for (const line of summaryLines) {
-		const padLen = Math.max(0, innerW - visibleWidth(line));
-		output.push(`  ${borderCol}│${C.reset} ${C.dim}${line}${C.reset}${" ".repeat(padLen)} ${borderCol}│${C.reset}`);
+		const lineContent = `  ${line}`;
+		const effContent = visibleWidth(lineContent) > boxW ? truncateToWidth(lineContent, boxW, "…") : lineContent;
+		const padLen = Math.max(0, boxW - visibleWidth(effContent));
+		output.push(`${C.text}${effContent}${" ".repeat(padLen)}${C.reset}`);
 	}
 
-	// 底边
-	const statsBadge = `${C.green}已节省 ~${tokenSavedStr} tokens${C.reset} · ${C.dim}Ctrl+O 收起${C.reset}`;
-	const badgeW = visibleWidth(statsBadge);
-	const botFillLen = Math.max(1, boxWidth - badgeW - 6);
-	const botLine = `  ${borderCol}╰${"─".repeat(botFillLen)} ${statsBadge}${borderCol} ──╯${C.reset}`;
+	// 底部统计与展开提示行
+	const arrowCol = isHovered ? C.suggestion : C.claude;
+	const arrow = `${arrowCol}↳${C.reset}`;
+	const stats = `${C.success}释放 ~${tokenSavedStr} tokens${C.reset} · ${C.inactive}保留最近 ${record.turnsCount} 轮对话${C.reset}`;
+	const hint = isHovered
+		? `${C.suggestion}(点击 / ctrl+o 收起)${C.reset}`
+		: `${C.inactive}(ctrl+o / 点击收起)${C.reset}`;
+	const footerRaw = `  ${arrow} ${stats} · ${hint}`;
+	const effFooter = visibleWidth(footerRaw) > boxW ? truncateToWidth(footerRaw, boxW, "…") : footerRaw;
+	const footerPad = Math.max(0, boxW - visibleWidth(effFooter));
+	output.push(`${effFooter}${" ".repeat(footerPad)}`);
+
+	// 底部分割线
+	const botLine = `${C.subtle}${"─".repeat(boxW)}${C.reset}`;
 	output.push(botLine);
 
 	return output;

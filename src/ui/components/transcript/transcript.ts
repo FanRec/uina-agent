@@ -117,6 +117,13 @@ export interface ToolLineLocation {
 	item: Extract<TurnItem, { kind: "tool" }>;
 }
 
+export interface CompactionLineLocation {
+	index: number;
+	lineIndex: number;
+	lineCount: number;
+	record: CompactionRecord;
+}
+
 export type TimelineItem =
 	| { kind: "turn"; turn: TurnRecord }
 	| { kind: "notice"; text: string }
@@ -128,11 +135,13 @@ interface SettledCache {
 	width: number;
 	hoveredThinkingTurnN: number | null;
 	hoveredToolId: string | null;
+	hoveredCompactionIndex: number | null;
 	expandedToolIdsKey: string;
 	lines: string[];
 	turnStartMap: Map<number, number>;
 	thinkingLocations: ThinkingLineLocation[];
 	toolLocations: ToolLineLocation[];
+	compactionLocations: CompactionLineLocation[];
 }
 
 export class TranscriptContainer implements Component {
@@ -143,6 +152,7 @@ export class TranscriptContainer implements Component {
 	private thinkingCommitted = false;
 	private hoveredThinkingTurnN: number | null = null;
 	private hoveredToolId: string | null = null;
+	private hoveredCompactionIndex: number | null = null;
 	private readonly expandedToolIds = new Set<string>();
 	private settledCache: SettledCache | null = null;
 
@@ -174,6 +184,19 @@ export class TranscriptContainer implements Component {
 
 	getHoveredToolId(): string | null {
 		return this.hoveredToolId;
+	}
+
+	setHoveredCompaction(index: number | null): boolean {
+		if (this.hoveredCompactionIndex !== index) {
+			this.hoveredCompactionIndex = index;
+			this.invalidate();
+			return true;
+		}
+		return false;
+	}
+
+	getHoveredCompaction(): number | null {
+		return this.hoveredCompactionIndex;
 	}
 
 	hasRunningTools(): boolean {
@@ -753,6 +776,7 @@ export class TranscriptContainer implements Component {
 			this.settledCache.width === width &&
 			this.settledCache.hoveredThinkingTurnN === this.hoveredThinkingTurnN &&
 			this.settledCache.hoveredToolId === this.hoveredToolId &&
+			this.settledCache.hoveredCompactionIndex === this.hoveredCompactionIndex &&
 			this.settledCache.expandedToolIdsKey === expandedKey
 		) {
 			return this.settledCache;
@@ -762,16 +786,28 @@ export class TranscriptContainer implements Component {
 		const turnStartMap = new Map<number, number>();
 		const thinkingLocations: ThinkingLineLocation[] = [];
 		const toolLocations: ToolLineLocation[] = [];
+		const compactionLocations: CompactionLineLocation[] = [];
 		const latestFailed = this.getLatestFailedTool();
 
+		let compactionIndex = 0;
 		for (const item of this.timeline) {
 			switch (item.kind) {
 				case "notice":
 					lines.push(item.text);
 					break;
-				case "compaction":
-					lines.push(...formatCompactionCardLines(item.record, width));
+				case "compaction": {
+					const isHovered = this.hoveredCompactionIndex === compactionIndex;
+					const cardLines = formatCompactionCardLines(item.record, width, isHovered);
+					compactionLocations.push({
+						index: compactionIndex,
+						lineIndex: lines.length,
+						lineCount: cardLines.length,
+						record: item.record,
+					});
+					lines.push(...cardLines);
+					compactionIndex++;
 					break;
+				}
 				case "turn": {
 					turnStartMap.set(item.turn.n, lines.length);
 					const turn = item.turn;
@@ -837,11 +873,13 @@ export class TranscriptContainer implements Component {
 			width,
 			hoveredThinkingTurnN: this.hoveredThinkingTurnN,
 			hoveredToolId: this.hoveredToolId,
+			hoveredCompactionIndex: this.hoveredCompactionIndex,
 			expandedToolIdsKey: expandedKey,
 			lines,
 			turnStartMap,
 			thinkingLocations,
 			toolLocations,
+			compactionLocations,
 		};
 		return this.settledCache;
 	}
@@ -1024,5 +1062,13 @@ export class TranscriptContainer implements Component {
 		}
 
 		return result;
+	}
+
+	/**
+	 * 获取所有会话压缩卡片行在完整行序列中的索引位置与元数据
+	 */
+	getCompactionLineIndices(width: number): CompactionLineLocation[] {
+		const cached = this.getSettledCache(width);
+		return cached.compactionLocations.slice();
 	}
 }

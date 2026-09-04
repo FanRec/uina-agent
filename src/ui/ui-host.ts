@@ -147,6 +147,11 @@ export class UIHost implements UIHostContextPort {
 	private exitTimer: NodeJS.Timeout | null = null;
 	private copyToastText = "";
 	private copyToastTimer: NodeJS.Timeout | null = null;
+	private notificationToast: {
+		message: string;
+		type: "info" | "warning" | "error";
+		timer?: NodeJS.Timeout;
+	} | null = null;
 
 	startAutoScroll(direction: "up" | "down"): void {
 		if (this.autoScrollTimer && this.autoScrollDirection === direction) {
@@ -396,6 +401,10 @@ export class UIHost implements UIHostContextPort {
 		this.transcript.smoothReveal.setEnabled(false);
 		this.stopAutoScroll();
 		this.stopAnimation();
+		if (this.notificationToast?.timer) {
+			clearTimeout(this.notificationToast.timer);
+			this.notificationToast = null;
+		}
 		this.overlayStack.clear();
 		this.terminal.stop();
 	}
@@ -720,13 +729,34 @@ export class UIHost implements UIHostContextPort {
 	// UIHostContextPort 实现
 	// =========================================================================
 
-	notify(message: string, type: "info" | "warning" | "error" = "info"): void {
-		if (type === "error") {
-			this.transcript.addError(message);
-		} else {
-			this.transcript.addNotice(message);
+	notify(message: string, type: "info" | "warning" | "error" = "info", timeoutMs = 3000): void {
+		if (this.notificationToast?.timer) {
+			clearTimeout(this.notificationToast.timer);
 		}
+		let timer: NodeJS.Timeout | undefined;
+		if (timeoutMs > 0) {
+			timer = setTimeout(() => {
+				this.clearNotification();
+			}, timeoutMs);
+			timer.unref?.();
+		}
+		this.notificationToast = { message, type, timer };
 		this.requestRender();
+	}
+
+	clearNotification(): void {
+		if (this.notificationToast) {
+			if (this.notificationToast.timer) {
+				clearTimeout(this.notificationToast.timer);
+			}
+			this.notificationToast = null;
+			this.requestRender();
+		}
+	}
+
+	getNotificationToast(): { message: string; type: "info" | "warning" | "error" } | null {
+		if (!this.notificationToast) return null;
+		return { message: this.notificationToast.message, type: this.notificationToast.type };
 	}
 
 	setStatus(key: string, text: string | undefined): void {
@@ -1090,6 +1120,14 @@ export class UIHost implements UIHostContextPort {
 			toastStr = `${C.gray}再次按 Ctrl+C 退出${C.reset}`;
 		} else if (this.copyToastText) {
 			toastStr = `${C.iceBlue}${this.copyToastText}${C.reset}`;
+		} else if (this.notificationToast) {
+			const col =
+				this.notificationToast.type === "error"
+					? C.error
+					: this.notificationToast.type === "warning"
+						? C.warning
+						: C.inactive;
+			toastStr = `${col}${this.notificationToast.message}${C.reset}`;
 		}
 
 		const gapCount = Math.max(0, height - visibleTranscript.length - aboveH - inputH - belowH);
@@ -1201,6 +1239,30 @@ export class UIHost implements UIHostContextPort {
 						onClick: () => {
 							this.preserveScrollAnchor(() => {
 								this.transcript.toggleTool(loc.item, transcriptContentW);
+							}, bannerCount + loc.lineIndex);
+							this.requestRender();
+						},
+					});
+				}
+			}
+		}
+
+		// (1.8) 注册会话压缩卡片折叠交互（Compaction Cards：整张卡片全域点击展开/收起）
+		const compactionLocs = this.transcript.getCompactionLineIndices(transcriptContentW);
+		for (const loc of compactionLocs) {
+			const compactionRows = Math.max(1, loc.lineCount);
+			for (let r = 0; r < compactionRows; r++) {
+				const absLine = bannerCount + loc.lineIndex + r;
+				if (absLine >= scrollStart && absLine < scrollStart + visibleTranscript.length) {
+					const screenRow = absLine - scrollStart;
+					interactiveTargets.push({
+						id: `compaction:${loc.index}:${absLine}`,
+						row: screenRow,
+						colStart: 0,
+						colEnd: Math.max(0, transcriptContentW - 1),
+						onClick: () => {
+							this.preserveScrollAnchor(() => {
+								this.transcript.toggleCompaction(loc.index);
 							}, bannerCount + loc.lineIndex);
 							this.requestRender();
 						},
@@ -1402,6 +1464,16 @@ export class UIHost implements UIHostContextPort {
 						this.requestRender();
 					}
 
+					let hoveredCompactionIndex: number | null = null;
+					if (res.hoverTargetId?.startsWith("compaction:")) {
+						const parts = res.hoverTargetId.split(":");
+						const idx = parseInt(parts[1] ?? "", 10);
+						if (!Number.isNaN(idx)) hoveredCompactionIndex = idx;
+					}
+					if (this.transcript.setHoveredCompaction(hoveredCompactionIndex)) {
+						this.requestRender();
+					}
+
 					const isCtxProgressHovered = res.hoverTargetId === "context-progress";
 					if (this.contextBar.setHovered(isCtxProgressHovered)) {
 						this.requestRender();
@@ -1580,6 +1652,18 @@ export class UIHost implements UIHostContextPort {
 				const targetAbsLine = toolLoc ? bannerCount + toolLoc.lineIndex : undefined;
 				this.preserveScrollAnchor(() => {
 					this.transcript.toggleTool(hoveredToolId, transcriptContentW);
+				}, targetAbsLine);
+				this.requestRender();
+				return;
+			}
+
+			// 如果当前悬停在会话压缩卡片上，单卡展开优先
+			const hoveredCompactionIndex = this.transcript.getHoveredCompaction();
+			if (hoveredCompactionIndex !== null) {
+				const compactionLoc = this.transcript.getCompactionLineIndices(transcriptContentW).find((l) => l.index === hoveredCompactionIndex);
+				const targetAbsLine = compactionLoc ? bannerCount + compactionLoc.lineIndex : undefined;
+				this.preserveScrollAnchor(() => {
+					this.transcript.toggleCompaction(hoveredCompactionIndex);
 				}, targetAbsLine);
 				this.requestRender();
 				return;

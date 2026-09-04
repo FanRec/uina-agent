@@ -571,8 +571,9 @@ describe("UI Components & Visual Rendering", () => {
 
 		const collapsedLines = formatCompactionCardLines(record, 70);
 		expect(collapsedLines.length).toBe(3);
-		expect(collapsedLines[0]).toContain("∴ 会话已压缩 · 归档 3 轮对话");
-		expect(stripAnsi(collapsedLines[2]!)).toContain("18.5k");
+		expect(collapsedLines[0]).toContain("会话已压缩");
+		expect(stripAnsi(collapsedLines[1]!)).toContain("∴ 摘要已折叠");
+		expect(collapsedLines[1]).toContain("ctrl+o / 点击展开");
 		const cWidths = collapsedLines.map((l) => visibleWidth(l));
 		expect(cWidths.every((w) => w === cWidths[0])).toBe(true);
 
@@ -581,6 +582,8 @@ describe("UI Components & Visual Rendering", () => {
 		expect(expandedLines.length).toBeGreaterThan(3);
 		expect(expandedLines[0]).toContain("完整摘要");
 		expect(expandedLines.join("\n")).toContain("讨论系统架构");
+		expect(expandedLines.join("\n")).toContain("18.5k");
+		expect(expandedLines.join("\n")).toContain("ctrl+o / 点击收起");
 		const eWidths = expandedLines.map((l) => visibleWidth(l));
 		expect(eWidths.every((w) => w === eWidths[0])).toBe(true);
 	});
@@ -1914,14 +1917,14 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			});
 
 			const compactedLines1 = tc.render(80).join("\n");
-			expect(compactedLines1).toContain("Ctrl+O 展开");
+			expect(compactedLines1).toContain("ctrl+o / 点击展开");
 
 			// 展开压缩卡片
 			const toggled = tc.toggleCompaction();
 			expect(toggled).toBe(true);
 
 			const compactedLines2 = tc.render(80).join("\n");
-			expect(compactedLines2).toContain("Ctrl+O 收起");
+			expect(compactedLines2).toContain("ctrl+o / 点击收起");
 		});
 
 		it("InteractiveTUI 真实事件联动：轨迹收集与 Token 逼真计算", () => {
@@ -1955,6 +1958,135 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(compNode?.tokens?.total).toBe(3000);
 
 			tui.close();
+		});
+
+		it("UIHost: notify() 零高度瞬态 Toast 呈现于呼吸空隙末行，不污染 transcript 历史", () => {
+			const tui = new InteractiveTUI();
+			const host = tui.host;
+			const initialTranscriptLen = host.transcript.render(80).length;
+
+			// 发送瞬态通知
+			host.notify("正在压缩会话…", "info", 0);
+
+			// 检查未污染永久 transcript
+			expect(host.transcript.render(80).length).toBe(initialTranscriptLen);
+			expect(host.getNotificationToast()).toEqual({ message: "正在压缩会话…", type: "info" });
+
+			// 清除通知
+			host.clearNotification();
+			expect(host.getNotificationToast()).toBeNull();
+			tui.close();
+		});
+
+		it("UIHost: 会话压缩卡片全域鼠标交互（热区注册、悬停高亮与点击折叠切换）", () => {
+			const tui = new InteractiveTUI();
+			const host = tui.host;
+
+			host.addCompaction({
+				summary: "第 1 轮到第 3 轮的压缩总结",
+				turnsCount: 3,
+				tokensSaved: 12000,
+				collapsed: true,
+			});
+
+			// 获取压缩卡片位置
+			const compactionLocs = host.transcript.getCompactionLineIndices(76);
+			expect(compactionLocs.length).toBe(1);
+			expect(compactionLocs[0]!.lineCount).toBe(3);
+
+			// 模拟强制帧渲染，获取注册的鼠标热区
+			(host as any).running = true;
+			(host as any).renderCurrentFrame();
+			const targets = (host as any).mouseTracker.targets as Array<{ id: string; onClick?: () => void }>;
+			const compactionTargets = targets.filter((t) => t.id.startsWith("compaction:0:"));
+			expect(compactionTargets.length).toBe(3); // 顶部分割线、中间折叠行、底部分割线全部注册
+
+			// 悬停测试
+			expect(host.transcript.getHoveredCompaction()).toBeNull();
+			host.transcript.setHoveredCompaction(0);
+			expect(host.transcript.getHoveredCompaction()).toBe(0);
+			const hoveredRender = host.transcript.render(76).join("\n");
+			expect(hoveredRender).toContain("点击 / ctrl+o 展开");
+
+			// 点击任意行切换折叠态
+			compactionTargets[1]!.onClick!();
+			expect(compactionLocs[0]!.record.collapsed).toBe(false);
+			const expandedRender = host.transcript.render(76).join("\n");
+			expect(expandedRender).toContain("完整摘要");
+			expect(expandedRender).toContain("第 1 轮到第 3 轮的压缩总结");
+
+			// 再次点击收起
+			(host as any).renderCurrentFrame();
+			const newTargets = (host as any).mouseTracker.targets as Array<{ id: string; onClick?: () => void }>;
+			const newCompactionTarget = newTargets.find((t) => t.id.startsWith("compaction:0:"));
+			newCompactionTarget!.onClick!();
+			expect(compactionLocs[0]!.record.collapsed).toBe(true);
+
+			tui.close();
+		});
+
+		it("Builtin Commands: 监听 session 压缩生命周期并驱动 Toast 与 UIHost", async () => {
+			const { activateBuiltinCommands } = await import("../src/extensions/builtin.js");
+			const mockNotify = vi.fn();
+			const mockClear = vi.fn();
+			const mockAddCompaction = vi.fn();
+
+			const handlers = new Map<string, Function>();
+			const mockPi: any = {
+				registerCommand: vi.fn(),
+				on: vi.fn((event: string, handler: Function) => {
+					handlers.set(event, handler);
+					return () => handlers.delete(event);
+				}),
+				ui: {
+					notify: mockNotify,
+					clearNotification: mockClear,
+				},
+			};
+
+			const mockServices: any = {
+				subject: { compact: vi.fn() },
+				models: { choices: () => [] },
+				jobs: {},
+				subagents: {},
+				ui: {
+					addCompaction: mockAddCompaction,
+				},
+				reload: vi.fn(),
+				shutdown: vi.fn(),
+			};
+
+			const activate = activateBuiltinCommands(mockServices);
+			activate(mockPi);
+
+			// 1. 触发 session_before_compact
+			const beforeHandler = handlers.get("session_before_compact");
+			expect(beforeHandler).toBeDefined();
+			beforeHandler!({ type: "session_before_compact", tokensBefore: 15000 });
+			expect(mockNotify).toHaveBeenCalledWith("正在压缩会话…", "info", 0);
+
+			// 2. 触发 session_compact
+			const compactHandler = handlers.get("session_compact");
+			expect(compactHandler).toBeDefined();
+			compactHandler!({
+				type: "session_compact",
+				summary: "完成测试总结",
+				tokensBefore: 15000,
+				retainedTailCount: 2,
+			});
+			expect(mockNotify).toHaveBeenCalledWith("会话已压缩", "info", 2500);
+			expect(mockAddCompaction).toHaveBeenCalledWith({
+				summary: "完成测试总结",
+				turnsCount: 2,
+				tokensSaved: 15000,
+				collapsed: true,
+			});
+
+			// 3. 触发 session_compact_failed
+			const failedHandler = handlers.get("session_compact_failed");
+			expect(failedHandler).toBeDefined();
+			failedHandler!({ type: "session_compact_failed", error: "Token limit" });
+			expect(mockNotify).toHaveBeenCalledWith("会话压缩失败", "warning", 3000);
 		});
 
 		it("ExtensionUIContext: select 支持滚动窗口限制与超长截断", async () => {

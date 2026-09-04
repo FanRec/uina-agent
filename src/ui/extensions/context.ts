@@ -10,7 +10,8 @@ import { C, visibleWidth, truncateToWidth, getPrevGraphemeIndex, getNextGrapheme
 import type { ExtensionUIContext } from "./types.js";
 
 export interface UIHostContextPort {
-	notify(message: string, type?: "info" | "warning" | "error"): void;
+	notify(message: string, type?: "info" | "warning" | "error", timeoutMs?: number): void;
+	clearNotification?(): void;
 	setStatus(key: string, text: string | undefined): void;
 	setWorkingMessage(message?: string): void;
 	setWorkingVisible(visible: boolean): void;
@@ -292,8 +293,16 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 			});
 		},
 
-		notify(message: string, type: "info" | "warning" | "error" = "info"): void {
-			host.notify(message, type);
+		notify(message: string, type: "info" | "warning" | "error" = "info", timeoutMs?: number): void {
+			if (timeoutMs !== undefined) {
+				host.notify(message, type, timeoutMs);
+			} else {
+				host.notify(message, type);
+			}
+		},
+
+		clearNotification(): void {
+			host.clearNotification?.();
 		},
 
 		setStatus(key: string, text: string | undefined): void {

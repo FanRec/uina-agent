@@ -29,6 +29,12 @@ export interface BuiltinUI {
 	setGutterMode?(mode: "scrollbar" | "timeline"): void;
 	getScrollbarThumbStyle?(): "slim" | "block" | "wide";
 	setScrollbarThumbStyle?(style: "slim" | "block" | "wide"): void;
+	addCompaction?(record: {
+		summary: string;
+		turnsCount: number;
+		tokensSaved: number;
+		collapsed: boolean;
+	}): void;
 }
 
 export interface BuiltinServices {
@@ -171,6 +177,28 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			hasArgs: true,
 			argumentHint: "[instruction]",
 			handler: (arg) => services.subject.compact(arg || undefined),
+		});
+
+		pi.on("session_before_compact", () => {
+			pi.ui.notify("正在压缩会话…", "info", 0);
+		});
+
+		pi.on("session_compact", (e) => {
+			pi.ui.notify("会话已压缩", "info", 2500);
+			if (ui?.addCompaction) {
+				ui.addCompaction({
+					summary: e.summary,
+					turnsCount: e.retainedTailCount,
+					tokensSaved: e.tokensBefore,
+					collapsed: true,
+				});
+			} else {
+				process.stdout.write(`\n[会话压缩] ${e.summary}\n`);
+			}
+		});
+
+		pi.on("session_compact_failed", () => {
+			pi.ui.notify("会话压缩失败", "warning", 3000);
 		});
 
 		pi.registerCommand({

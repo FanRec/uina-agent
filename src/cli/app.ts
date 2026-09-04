@@ -133,18 +133,6 @@ export async function runApp(): Promise<void> {
 	);
 	const commands = new CommandRouter(extensionHost.registry, (text) => render({ type: "error", text }));
 
-	extensionHost.on("session_compact", (e) => {
-		if (tui) {
-			tui.host.addCompaction({
-				summary: e.summary,
-				turnsCount: e.retainedTailCount,
-				tokensSaved: e.tokensBefore,
-				collapsed: true,
-			});
-		} else {
-			process.stdout.write(`\n[会话压缩] ${e.summary}\n`);
-		}
-	});
 	const subagents = new SubagentRegistry({
 		factory: new DefaultAgentFactory(),
 		provider,
@@ -431,6 +419,7 @@ export async function runApp(): Promise<void> {
 		setGutterMode: (mode: "scrollbar" | "timeline") => tui!.host.setGutterMode(mode),
 		getScrollbarThumbStyle: () => tui!.host.getScrollbarThumbStyle(),
 		setScrollbarThumbStyle: (style: any) => tui!.host.setScrollbarThumbStyle(style),
+		addCompaction: (r: any) => tui!.host.addCompaction(r),
 	} : undefined;
 
 	await extensionHost.activateBuiltin("commands", activateBuiltinCommands({

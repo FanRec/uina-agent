@@ -57,8 +57,11 @@ export interface ExtensionUIContext {
 	/** 显示单行文本输入对话框 */
 	input(title: string, placeholder?: string): Promise<string | undefined>;
 
-	/** 向用户发送瞬态通知 */
-	notify(message: string, type?: "info" | "warning" | "error"): void;
+	/** 向用户发送瞬态通知（悬浮于输入框右上角呼吸空隙，零高度不污染历史） */
+	notify(message: string, type?: "info" | "warning" | "error", timeoutMs?: number): void;
+
+	/** 清除当前的瞬态通知 */
+	clearNotification?(): void;
 
 	/** 设置状态栏/底栏文本（传 undefined 表示清除） */
 	setStatus(key: string, text: string | undefined): void;

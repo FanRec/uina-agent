@@ -191,6 +191,7 @@ export class ExtensionRunner extends ExtensionHost {
 function dynamicUI(get: () => ExtensionUIContext): ExtensionUIContext {
 	return {
 		select: (...args) => get().select(...args), confirm: (...args) => get().confirm(...args), input: (...args) => get().input(...args), notify: (...args) => get().notify(...args),
+		clearNotification: () => get().clearNotification?.(),
 		setStatus: (...args) => get().setStatus(...args), setWorkingMessage: (...args) => get().setWorkingMessage(...args), setWorkingVisible: (...args) => get().setWorkingVisible(...args), setWidget: (...args) => get().setWidget(...args),
 		setHeader: (...args) => get().setHeader(...args), setFooter: (...args) => get().setFooter(...args), showOverlay: (...args) => get().showOverlay(...args), pasteToEditor: (...args) => get().pasteToEditor(...args), setEditorText: (...args) => get().setEditorText(...args), getEditorText: () => get().getEditorText(), onTerminalInput: (...args) => get().onTerminalInput(...args),
 	};
@@ -200,6 +201,7 @@ function ownedUI(base: ExtensionUIContext, id: string, assertActive: () => void,
 	const key = (value: string) => `${id}:${value}`;
 	return {
 		select: (...args) => { assertActive(); return base.select(...args); }, confirm: (...args) => { assertActive(); return base.confirm(...args); }, input: (...args) => { assertActive(); return base.input(...args); }, notify: (...args) => { assertActive(); base.notify(...args); },
+		clearNotification: () => { assertActive(); base.clearNotification?.(); },
 		setStatus: (name, text) => { assertActive(); base.setStatus(key(name), text); own(() => base.setStatus(key(name), undefined)); },
 		setWorkingMessage: (message) => { assertActive(); base.setWorkingMessage(message); }, setWorkingVisible: (visible) => { assertActive(); base.setWorkingVisible(visible); },
 		setWidget: (name, component, options) => { assertActive(); base.setWidget(key(name), component, options); own(() => base.setWidget(key(name), undefined)); },
@@ -213,7 +215,7 @@ function ownedUI(base: ExtensionUIContext, id: string, assertActive: () => void,
 export function createPrintUI(write: (message: string, type?: "info" | "warning" | "error") => void): ExtensionUIContext {
 	return {
 		select: async () => undefined, confirm: async () => false, input: async () => undefined,
-		notify: write, setStatus: () => {}, setWorkingMessage: () => {}, setWorkingVisible: () => {}, setWidget: () => {}, setHeader: () => {}, setFooter: () => {},
+		notify: write, clearNotification: () => {}, setStatus: () => {}, setWorkingMessage: () => {}, setWorkingVisible: () => {}, setWidget: () => {}, setHeader: () => {}, setFooter: () => {},
 		showOverlay: () => ({ hide() {}, setHidden() {}, isHidden: () => true, focus() {}, unfocus() {}, isFocused: () => false }),
 		pasteToEditor: () => {}, setEditorText: () => {}, getEditorText: () => "", onTerminalInput: () => () => {},
 	};
