@@ -1354,6 +1354,62 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(slider2.getCurrentTier().id).toBe("low");
 		});
 
+		it("EffortSlider 支持传入 ThinkingLevel[] 纯字符串数组并安全切换与触发 onChange", () => {
+			const changedLevels: string[] = [];
+			const slider = new EffortSlider("off", ["off", "high", "max"]);
+			slider.onChange = (level) => changedLevels.push(level);
+
+			expect(slider.getCurrentTier().id).toBe("off");
+			expect(slider.getCurrentTier().name).toBe("Off");
+
+			slider.handleInput("\x1b[C"); // Key.right
+			expect(slider.getCurrentTier().id).toBe("high");
+			expect(slider.getCurrentTier().name).toBe("High");
+			expect(changedLevels).toEqual(["high"]);
+
+			slider.handleInput("\x1b[C"); // Key.right
+			expect(slider.getCurrentTier().id).toBe("max");
+			expect(slider.getCurrentTier().name).toBe("Max");
+			expect(changedLevels).toEqual(["high", "max"]);
+
+			slider.handleInput("\x1b[D"); // Key.left
+			expect(slider.getCurrentTier().id).toBe("high");
+			expect(changedLevels).toEqual(["high", "max", "high"]);
+		});
+
+		it("UIHost: openEffortSlider 传入 ThinkingLevel[] 字符串并在按右箭头时不发生 toLowerCase 崩溃", () => {
+			const host = new UIHost({
+				modelName: "deepseek-test",
+				thinkingLevels: ["off", "high", "max"],
+				thinkingLevel: "off",
+				terminal: {
+					columns: 80,
+					rows: 24,
+					start: () => {},
+					stop: () => {},
+					write: () => {},
+					onResize: () => {},
+				} as any,
+			});
+
+			let changed: string = "";
+			// 模拟 builtin.ts 中执行 /effort 打开滑块传入 declaredLevels 字符串数组
+			host.openEffortSlider("off", ["off", "high", "max"] as any, (level) => {
+				changed = level;
+			});
+
+			// 按右箭头切换档位，验证绝不抛出 TypeError: Cannot read properties of undefined (reading 'toLowerCase')
+			expect(() => {
+				host.handleInput("\x1b[C"); // Key.right
+			}).not.toThrow();
+
+			expect(changed).toBe("high");
+			expect(host.getReasoningEffort()).toBe("high");
+
+			// 验证 setReasoningEffort 传入 undefined/空值安全守卫
+			expect(() => host.setReasoningEffort(undefined as any)).not.toThrow();
+		});
+
 		it("TranscriptContainer 严格保证思考、文本、运行中工具与完成工具的时间序节点流", () => {
 			const transcript = new TranscriptContainer();
 			transcript.startTurn(1, "用户输入");
@@ -1892,6 +1948,93 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			// 按 q 键关闭
 			menu.handleInput("q");
 			expect(closed).toBe(true);
+		});
+
+		it("HelpMenu 严防超长描述撑破边框，所有渲染行宽度严格一致且包含核心快捷键", () => {
+			const longCommand = {
+				name: "extremely_long_command_name_that_should_not_break_the_ui",
+				description: "这是一个极其漫长并且没有任何换行的超长命令描述，用来测试排版引擎的截断与边界防护能力，绝对不能破坏右侧边框！".repeat(3),
+			};
+			const menu = new HelpMenu([longCommand]);
+
+			for (const width of [60, 75, 80, 100]) {
+				const lines = menu.render(width);
+				expect(lines.length).toBeGreaterThan(5);
+				const widths = lines.map((l) => visibleWidth(l));
+				const expectedW = widths[0]!;
+				// 每一行宽度必须绝对严格相等，绝无溢出或锯齿
+				expect(widths.every((w) => w === expectedW)).toBe(true);
+			}
+
+			const defaultMenu = new HelpMenu();
+			const rendered = defaultMenu.render(80).join("\n");
+			// 验证收录核心交互快捷键与默认斜杠指令
+			expect(rendered).toContain("Alt+↑ / Alt+Q");
+			expect(rendered).toContain("Ctrl+Enter");
+			expect(rendered).toContain("Shift+Tab");
+			expect(rendered).toContain("Ctrl+O");
+			expect(rendered).toContain("/model");
+			expect(rendered).toContain("/effort");
+			expect(rendered).toContain("/compact");
+		});
+
+		it("HelpMenu: 按 '?' 优先触发 onConvertToInput，未提供则回退至 onClose", () => {
+			const menu = new HelpMenu();
+			let convertedText = "";
+			let closed = false;
+
+			menu.onConvertToInput = (t) => { convertedText = t; };
+			menu.onClose = () => { closed = true; };
+
+			menu.handleInput("?");
+			expect(convertedText).toBe("?");
+			expect(closed).toBe(false);
+
+			const menu2 = new HelpMenu();
+			let closed2 = false;
+			menu2.onClose = () => { closed2 = true; };
+			menu2.handleInput("?");
+			expect(closed2).toBe(true);
+		});
+
+		it("UIHost: 严格空行按 '?' 唤起帮助看板，有前置空格时不拦截，看板打开时再按 '?' 转换为输入", () => {
+			const host = new UIHost({
+				modelName: "Uina",
+				terminal: {
+					columns: 80,
+					rows: 24,
+					start: () => {},
+					stop: () => {},
+					write: () => {},
+					onResize: () => {},
+				} as any,
+			});
+
+			// 1. 空行按 '?' -> 唤起 HelpMenu 浮层
+			expect((host as any).inputLine.getText()).toBe("");
+			host.handleInput("?");
+			expect((host as any).activeModalId).toBe("help");
+
+			// 2. 帮助浮层处于打开状态时，再次按 '?' -> 转换为普通输入，关闭浮层，输入框内容变为 '?'
+			host.handleInput("?");
+			expect((host as any).activeModalId).toBeNull();
+			expect((host as any).inputLine.getText()).toBe("?");
+
+			// 3. 清空输入框，输入前置空格再敲 '?' -> 不唤起帮助看板，作为普通字符追加
+			(host as any).inputLine.clear();
+			host.handleInput(" ");
+			expect((host as any).inputLine.getText()).toBe(" ");
+			host.handleInput("?");
+			expect((host as any).activeModalId).toBeNull();
+			expect((host as any).inputLine.getText()).toBe(" ?");
+
+			// 4. 清空输入框，唤起帮助看板后按 Esc / q -> 正常收起看板，输入框仍为空
+			(host as any).inputLine.clear();
+			host.handleInput("?");
+			expect((host as any).activeModalId).toBe("help");
+			host.handleInput("\x1b"); // Esc
+			expect((host as any).activeModalId).toBeNull();
+			expect((host as any).inputLine.getText()).toBe("");
 		});
 
 		it("TranscriptContainer 使用已结算行缓存并支持 toggleCompaction", () => {

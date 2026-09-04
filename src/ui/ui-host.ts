@@ -439,9 +439,16 @@ export class UIHost implements UIHostContextPort {
 		this.thinkingLevels = levels?.length ? [...levels] : ["off"];
 	}
 
-	setReasoningEffort(effort: ThinkingLevel | string): void {
+	setReasoningEffort(effort?: ThinkingLevel | string): void {
+		if (!effort) return;
 		const lower = effort.toLowerCase().trim() as ThinkingLevel;
-		if (!this.thinkingLevels.includes(lower)) throw new Error(`当前 Provider 不支持思考等级: ${effort}`);
+		if (!this.thinkingLevels.includes(lower)) {
+			if (DEFAULT_EFFORT_TIERS.some((t) => t.id === lower)) {
+				this.thinkingLevels = [...this.thinkingLevels, lower];
+			} else {
+				throw new Error(`当前 Provider 不支持思考等级: ${effort}`);
+			}
+		}
 		this.reasoningEffort = lower;
 		this.inputLine.setReasoningEffort(this.reasoningEffort);
 		this.requestRender();
@@ -861,6 +868,12 @@ export class UIHost implements UIHostContextPort {
 				close();
 				handle?.hide();
 			};
+			menu.onConvertToInput = (text) => {
+				close();
+				handle?.hide();
+				this.inputLine.setText(text);
+				this.requestRender();
+			};
 			handle = this.overlayStack.showOverlay(menu, undefined, () => close());
 			return handle;
 		});
@@ -887,12 +900,19 @@ export class UIHost implements UIHostContextPort {
 
 	openEffortSlider(
 		currentLevel?: ThinkingLevel,
-		tiers?: EffortTier[],
+		tiers?: readonly (EffortTier | ThinkingLevel)[],
 		onChange?: (level: ThinkingLevel) => void,
 	): void {
 		this.toggleModal("effort", (close) => {
-			const declaredTiers = tiers ?? DEFAULT_EFFORT_TIERS.filter((t) => this.thinkingLevels.includes(t.id));
+			const declaredTiers = (tiers && tiers.length > 0)
+				? tiers
+				: DEFAULT_EFFORT_TIERS.filter((t) => this.thinkingLevels.includes(t.id));
 			const slider = new EffortSlider(currentLevel ?? this.reasoningEffort ?? "off", declaredTiers);
+			// 确保 UIHost 内部的 thinkingLevels 与当前 slider 的候选档位保持一致，防止 setReasoningEffort 误判拦截
+			const validLevels = (slider as any).tiers.map((t: EffortTier) => t.id);
+			if (validLevels.length > 0) {
+				this.thinkingLevels = validLevels;
+			}
 			let handle: OverlayHandle | null = null;
 			slider.onChange = (level) => {
 				this.setReasoningEffort(level);
@@ -1268,6 +1288,23 @@ export class UIHost implements UIHostContextPort {
 						},
 					});
 				}
+			}
+		}
+
+		// (1.9) 注册帮助浮层全域点击收起交互
+		if (this.activeModalId === "help" && aboveH > 0) {
+			const aboveStartRow = allChatRows.length;
+			for (let r = 0; r < aboveH; r++) {
+				interactiveTargets.push({
+					id: `help-overlay-row-${r}`,
+					row: aboveStartRow + r,
+					colStart: 0,
+					colEnd: Math.max(0, width - 1),
+					onClick: () => {
+						this.closeModal();
+						this.requestRender();
+					},
+				});
 			}
 		}
 
@@ -1789,8 +1826,8 @@ export class UIHost implements UIHostContextPort {
 			}
 		}
 
-		// 4. 输入框未输入时敲 '?' 直接唤起帮助
-		if (data === "?" && !this.inputLine.getText().trim() && !this.overlayStack.hasVisible) {
+		// 4. 输入框严格未输入任何字符时敲 '?' 唤起帮助；若前面有空格则作为普通字符输入
+		if (data === "?" && this.inputLine.getText() === "" && !this.overlayStack.hasVisible) {
 			this.openHelpMenu();
 			return;
 		}

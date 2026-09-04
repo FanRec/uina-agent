@@ -279,6 +279,34 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		expect(compactCalled).toBe(true);
 	});
 
+	it("在未达到压缩阈值或刚聊一句时，绝不触发 session_before_compact", async () => {
+		const host = new ExtensionHost();
+		let beforeCalled = false;
+		host.on("session_before_compact", () => {
+			beforeCalled = true;
+		});
+
+		const provider: ModelProvider = {
+			name: "mock",
+			contextWindow: 128000,
+			async stream(_req, onDelta) {
+				onDelta({ kind: "text", text: "正常回复" });
+				onDelta({ kind: "finish", reason: "stop" });
+			},
+		};
+
+		const subject = new Subject(
+			provider,
+			new ToolBroker(),
+			{ onToken: () => {} },
+			{ runtimeHooks: createRuntimeHooks(host) },
+		);
+
+		// 发送单条消息（一问一答）
+		await subject.pushInput("你好呀");
+		expect(beforeCalled).toBe(false);
+	});
+
 	it("transforms context before sending request to provider", async () => {
 		const host = new ExtensionHost();
 		host.on("context", (e) => {

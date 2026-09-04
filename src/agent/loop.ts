@@ -11,7 +11,7 @@ import type {
 	Usage,
 } from "../core/types.js";
 import type { SessionStore } from "../session/types.js";
-import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, defaultPrepareNextTurn, type PrepareNextTurnContext, type PrepareNextTurnResult } from "./compaction.js";
+import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, defaultPrepareNextTurn, findKeepFrom, type PrepareNextTurnContext, type PrepareNextTurnResult } from "./compaction.js";
 import { buildContext, calculateContextSegments, convertToLlm, defaultSystemPrompt, estimateContextTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import type { PreparedToolCall, ToolBroker } from "../tools/broker.js";
@@ -201,9 +201,23 @@ export class Subject {
 
 	async compact(instruction?: string): Promise<void> {
 		if (this.isBusy()) throw new Error("Agent 正在运行中，无法手动压缩会话");
+		const keepFrom = findKeepFrom(this.history, 0);
+		if (keepFrom <= 0) {
+			void this.runtimeHooks.events.emit({
+				type: "session_compact_failed",
+				error: "当前会话消息过短，无需压缩",
+			});
+			return;
+		}
 		const tokensBefore = Math.ceil(this.history.reduce((acc, m) => acc + m.content.length + 16, 0) / 4);
 		const compactDecision = await this.runtimeHooks.turn.beforeCompact({ tokensBefore });
-		if (compactDecision.cancel) return;
+		if (compactDecision.cancel) {
+			void this.runtimeHooks.events.emit({
+				type: "session_compact_failed",
+				error: "会话压缩已被扩展取消",
+			});
+			return;
+		}
 
 		try {
 			const result = await compactHistory(
@@ -217,7 +231,13 @@ export class Subject {
 				this.provider.includeThinking,
 				instruction,
 			);
-			if (!result) return;
+			if (!result) {
+				void this.runtimeHooks.events.emit({
+					type: "session_compact_failed",
+					error: "当前会话消息过短，无需压缩",
+				});
+				return;
+			}
 			const replacement: AgentMessage[] = [
 				{ role: "user", content: `[历史摘要] ${result.summary}`, timestamp: new Date().toISOString() },
 				...result.retainedTail,

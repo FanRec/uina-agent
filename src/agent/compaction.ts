@@ -40,6 +40,12 @@ export async function defaultPrepareNextTurn(
 	ctx: PrepareNextTurnContext,
 	beforeCompact?: (input: { tokensBefore: number }) => Promise<{ cancel?: boolean }>,
 ): Promise<PrepareNextTurnResult | null> {
+	if (!shouldCompact(ctx.history, ctx.systemPrompt, ctx.tools, ctx.compaction, ctx.provider.includeThinking)) {
+		return null;
+	}
+	const keepFrom = findKeepFrom(ctx.history, ctx.compaction.keepRecentTokens);
+	if (keepFrom <= 0) return null;
+
 	const tokensBefore = Math.ceil(
 		ctx.history.reduce((acc, m) => {
 			const len = m.role === "compactionSummary" ? m.summary.length : (m.content?.length ?? 0);

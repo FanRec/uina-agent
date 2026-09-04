@@ -4,7 +4,7 @@
 
 import type { Component, Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
-import { C, visibleWidth } from "../../core/utils.js";
+import { C, visibleWidth, truncateToWidth } from "../../core/utils.js";
 import type { ThinkingLevel } from "../../../core/types.js";
 
 export type EffortTierId = ThinkingLevel | "none";
@@ -37,34 +37,51 @@ export function normalizeEffortId(id: string): ThinkingLevel {
 	return "medium";
 }
 
+export function toEffortTier(item: EffortTier | ThinkingLevel | string): EffortTier {
+	if (typeof item === "string") {
+		const norm = normalizeEffortId(item);
+		const found = DEFAULT_EFFORT_TIERS.find((t) => t.id === norm || t.id === item);
+		if (found) return found;
+		const name = item.charAt(0).toUpperCase() + item.slice(1);
+		return { id: norm, name, description: "" };
+	}
+	return item;
+}
+
 export class EffortSlider implements Component, Focusable {
 	focused = true;
 	private tiers: EffortTier[];
 	private activeTierId: ThinkingLevel;
-	private focusIndex = 2; // 默认 Medium
+	private focusIndex = 0;
 
 	onChange?: (tierId: ThinkingLevel) => void;
 	onClose?: () => void;
 	onRequestRender?: () => void;
 
-	constructor(activeTierId = "medium", tiers = DEFAULT_EFFORT_TIERS) {
-		this.tiers = tiers.length > 0 ? tiers : DEFAULT_EFFORT_TIERS;
+	constructor(
+		activeTierId: ThinkingLevel | string = "medium",
+		tiers: readonly (EffortTier | ThinkingLevel | string)[] = DEFAULT_EFFORT_TIERS,
+	) {
+		const resolvedTiers = (tiers.length > 0 ? tiers : DEFAULT_EFFORT_TIERS).map(toEffortTier);
+		this.tiers = resolvedTiers.length > 0 ? resolvedTiers : DEFAULT_EFFORT_TIERS;
 		this.activeTierId = normalizeEffortId(activeTierId);
 		const found = this.tiers.findIndex((t) => t.id === this.activeTierId);
 		this.focusIndex = Math.max(0, Math.min(found >= 0 ? found : 0, this.tiers.length - 1));
-		this.activeTierId = this.tiers[this.focusIndex]!.id;
+		this.activeTierId = this.tiers[this.focusIndex]?.id ?? "off";
 	}
 
 	navigateLeft(): EffortTier {
+		if (this.tiers.length === 0) return { id: "off", name: "Off", description: "" };
 		this.focusIndex = (this.focusIndex - 1 + this.tiers.length) % this.tiers.length;
-		this.activeTierId = this.tiers[this.focusIndex]!.id;
+		this.activeTierId = this.tiers[this.focusIndex]?.id ?? "off";
 		this.onChange?.(this.activeTierId);
 		return this.getCurrentTier();
 	}
 
 	navigateRight(): EffortTier {
+		if (this.tiers.length === 0) return { id: "off", name: "Off", description: "" };
 		this.focusIndex = (this.focusIndex + 1) % this.tiers.length;
-		this.activeTierId = this.tiers[this.focusIndex]!.id;
+		this.activeTierId = this.tiers[this.focusIndex]?.id ?? "off";
 		this.onChange?.(this.activeTierId);
 		return this.getCurrentTier();
 	}
@@ -72,14 +89,14 @@ export class EffortSlider implements Component, Focusable {
 	setFocusIndex(index: number): EffortTier {
 		if (index >= 0 && index < this.tiers.length) {
 			this.focusIndex = index;
-			this.activeTierId = this.tiers[this.focusIndex]!.id;
+			this.activeTierId = this.tiers[this.focusIndex]?.id ?? "off";
 			this.onChange?.(this.activeTierId);
 		}
 		return this.getCurrentTier();
 	}
 
 	getCurrentTier(): EffortTier {
-		return this.tiers[this.focusIndex] ?? this.tiers[0] ?? { id: "medium", name: "Medium", description: "" };
+		return this.tiers[this.focusIndex] ?? this.tiers[0] ?? { id: "off", name: "Off", description: "" };
 	}
 
 	getActiveTierId(): ThinkingLevel {
@@ -107,39 +124,42 @@ export class EffortSlider implements Component, Focusable {
 	formatLines(terminalWidth = 80): string[] {
 		const boxWidth = Math.max(56, Math.min(terminalWidth - 6, 76));
 		const innerW = boxWidth - 4;
-		const borderCol = C.gray;
+		const borderCol = C.subtle;
 
 		const titleTag = `─ 推理强度 (Reasoning effort) `;
 		const topFillLen = Math.max(1, boxWidth - 2 - visibleWidth(titleTag));
-		const topLine = `  ${borderCol}╭${titleTag}${"─".repeat(topFillLen)}╮${C.reset}`;
+		const topLine = `  ${borderCol}╭${C.inactive}${titleTag}${borderCol}${"─".repeat(topFillLen)}╮${C.reset}`;
 
 		const segments: string[] = [];
 		for (let i = 0; i < this.tiers.length; i++) {
 			const tier = this.tiers[i]!;
 			const isFocused = i === this.focusIndex;
 			const isCurrent = tier.id === this.activeTierId;
-			const checkmark = isCurrent ? `${C.cyan}✓${C.reset}` : "";
+			const checkmark = isCurrent ? `${C.suggestion}✓${C.reset}` : "";
 
 			if (isFocused) {
 				const label = ` ${tier.name}${isCurrent ? "✓" : ""} `;
 				segments.push(`\x1b[7m\x1b[1m${label}\x1b[0m`);
 			} else {
-				segments.push(`${C.dim}${tier.name}${checkmark}${C.reset}`);
+				segments.push(`${C.inactive}${tier.name}${checkmark}${C.reset}`);
 			}
 		}
 
 		const sliderBar = segments.join(` ${borderCol}──${C.reset} `);
-		const sliderPad = Math.max(0, innerW - visibleWidth(sliderBar));
-		const sliderLine = `  ${borderCol}│${C.reset} ${sliderBar}${" ".repeat(sliderPad)} ${borderCol}│${C.reset}`;
+		const sliderEffective = visibleWidth(sliderBar) > innerW ? truncateToWidth(sliderBar, innerW) : sliderBar;
+		const sliderPad = Math.max(0, innerW - visibleWidth(sliderEffective));
+		const sliderLine = `  ${borderCol}│${C.reset} ${sliderEffective}${" ".repeat(sliderPad)} ${borderCol}│${C.reset}`;
 
 		const current = this.getCurrentTier();
-		const descText = `${C.dim}${current.description}${C.reset}`;
-		const descPad = Math.max(0, innerW - visibleWidth(descText));
-		const descLine = `  ${borderCol}│${C.reset} ${descText}${" ".repeat(descPad)} ${borderCol}│${C.reset}`;
+		const descRaw = current.description ? `${C.text}${current.description}${C.reset}` : `${C.inactive}当前档位: ${current.name}${C.reset}`;
+		const descEffective = visibleWidth(descRaw) > innerW ? truncateToWidth(descRaw, innerW, "…") : descRaw;
+		const descPad = Math.max(0, innerW - visibleWidth(descEffective));
+		const descLine = `  ${borderCol}│${C.reset} ${descEffective}${" ".repeat(descPad)} ${borderCol}│${C.reset}`;
 
-		const hintText = `${C.dim}\x1b[3m${C.bold}←/→${C.reset}${C.dim}\x1b[3m 调整 · ${C.bold}Enter/Esc${C.reset}${C.dim}\x1b[3m 完成${C.reset}`;
-		const hintPad = Math.max(0, innerW - visibleWidth(hintText));
-		const hintLine = `  ${borderCol}│${C.reset} ${hintText}${" ".repeat(hintPad)} ${borderCol}│${C.reset}`;
+		const hintText = `${C.inactive}\x1b[3m${C.suggestion}←/→${C.inactive} 调整 · ${C.suggestion}Enter/Esc${C.inactive} 完成${C.reset}`;
+		const hintEffective = visibleWidth(hintText) > innerW ? truncateToWidth(hintText, innerW, "…") : hintText;
+		const hintPad = Math.max(0, innerW - visibleWidth(hintEffective));
+		const hintLine = `  ${borderCol}│${C.reset} ${hintEffective}${" ".repeat(hintPad)} ${borderCol}│${C.reset}`;
 
 		const botLine = `  ${borderCol}╰${"─".repeat(boxWidth - 2)}╯${C.reset}`;
 
