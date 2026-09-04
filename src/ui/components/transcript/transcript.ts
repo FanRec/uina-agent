@@ -51,6 +51,10 @@ export type TurnItem =
 			newText: string;
 			filename: string;
 			collapsed?: boolean;
+	  }
+	| {
+			kind: "interrupt";
+			text: string;
 	  };
 
 export interface TurnRecord {
@@ -363,6 +367,23 @@ export class TranscriptContainer implements Component {
 
 	addToolDone(name: string, result: string, elapsedMs = 0, isError = false, callId?: string, args?: unknown): void {
 		if (!this.currentTurn) {
+			const lastTurn = this.historyTurns[this.historyTurns.length - 1];
+			if (lastTurn) {
+				const existingTool = lastTurn.items.find(
+					(it): it is Extract<TurnItem, { kind: "tool" }> =>
+						it.kind === "tool" && ((callId && it.callId === callId) || it.name === name),
+				);
+				if (existingTool) {
+					// 该工具属于已结算/打断的上一轮，严禁开辟新轮次或生成重复工具卡
+					if (existingTool.status === "running") {
+						existingTool.status = isError ? "failed" : "completed";
+						existingTool.result = result;
+						existingTool.elapsedMs = elapsedMs;
+					}
+					this.invalidate();
+					return;
+				}
+			}
 			this.startTurn(this.historyTurns.length + 1, "");
 		}
 		if (!this.currentTurn) return;
@@ -384,8 +405,10 @@ export class TranscriptContainer implements Component {
 		}
 
 		if (runningTool) {
-			runningTool.status = isError ? "failed" : "completed";
-			runningTool.result = result;
+			if (runningTool.status !== "failed" || runningTool.result !== "已由用户打断") {
+				runningTool.status = isError ? "failed" : "completed";
+				runningTool.result = result;
+			}
 			runningTool.elapsedMs = elapsedMs;
 			if (args !== undefined && runningTool.args === undefined) {
 				runningTool.args = args;
@@ -441,6 +464,33 @@ export class TranscriptContainer implements Component {
 
 	finishTurn(): void {
 		this.commitCurrentTurn();
+	}
+
+	interruptTurn(modelName?: string): void {
+		this.smoothReveal.snapToLatest();
+		this.commitThinking();
+		const name = modelName || "Uina";
+		const notice = `已打断 · 接下来想让 ${name} 做什么？`;
+		if (this.currentTurn) {
+			if (this.currentTurn.items.some((it) => it.kind === "interrupt")) {
+				return;
+			}
+			for (const item of this.currentTurn.items) {
+				if (item.kind === "tool" && item.status === "running") {
+					item.status = "failed";
+					item.result = "已由用户打断";
+				}
+			}
+			this.currentTurn.items.push({ kind: "interrupt", text: notice });
+			this.finishTurn();
+		} else {
+			const lastTurn = this.historyTurns[this.historyTurns.length - 1];
+			if (lastTurn && lastTurn.items.some((it) => it.kind === "interrupt")) {
+				return;
+			}
+			this.timeline.push({ kind: "notice", text: `  \x1b[2m${notice}\x1b[0m` });
+			this.invalidate();
+		}
 	}
 
 	getCurrentTurn(): TurnRecord | null {
@@ -525,7 +575,11 @@ export class TranscriptContainer implements Component {
 					current.items.push({ kind: "thinking", text: msg.thinking });
 				}
 				if (msg.content) {
-					current.items.push({ kind: "text", text: msg.content });
+					if (msg.status === "aborted" && msg.content.includes("已打断")) {
+						current.items.push({ kind: "interrupt", text: msg.content.trim() });
+					} else {
+						current.items.push({ kind: "text", text: msg.content });
+					}
 				}
 				if (msg.tool_calls) {
 					pendingToolCalls = msg.tool_calls.map((call) => ({
@@ -760,6 +814,8 @@ export class TranscriptContainer implements Component {
 							turnOffset += cardLines.length;
 						} else if (it.kind === "diff") {
 							turnOffset += formatDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
+						} else if (it.kind === "interrupt") {
+							turnOffset += 1;
 						}
 					}
 					break;
@@ -839,6 +895,8 @@ export class TranscriptContainer implements Component {
 				}));
 			} else if (item.kind === "diff") {
 				out.push(...formatDiffCardLines(item.oldText, item.newText, item.filename, item.collapsed ?? true, width));
+			} else if (item.kind === "interrupt") {
+				out.push(`  \x1b[2m${item.text}\x1b[0m`);
 			}
 		}
 	}
@@ -905,6 +963,8 @@ export class TranscriptContainer implements Component {
 				}).length;
 			} else if (it.kind === "diff") {
 				turnOffset += formatDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
+			} else if (it.kind === "interrupt") {
+				turnOffset += 1;
 			}
 		}
 
@@ -958,6 +1018,8 @@ export class TranscriptContainer implements Component {
 				turnOffset += cardLines.length;
 			} else if (it.kind === "diff") {
 				turnOffset += formatDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
+			} else if (it.kind === "interrupt") {
+				turnOffset += 1;
 			}
 		}
 

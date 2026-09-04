@@ -94,7 +94,7 @@ export class UIHost implements UIHostContextPort {
 	readonly trajectoryProjection: TrajectoryProjection;
 
 	// 业务参数
-	private modelName?: string;
+	modelName?: string;
 	private usedTokens = 0;
 	private contextWindow?: number;
 	private usageActual = false;
@@ -239,9 +239,13 @@ export class UIHost implements UIHostContextPort {
 
 	// 事件回调
 	onUserLine?: (text: string, mode: "steer" | "followUp" | "direct") => void;
-	onInterrupt?: () => void;
+	onInterrupt?: (force?: boolean) => void;
+	onCancel?: (source?: "escape" | "ctrl+c") => void;
+	onExit?: () => void;
+	onInterruptAndDeliver?: (text: string) => void;
 	onThinkingLevelCycle?: () => void;
 
+	private cancelPending = false;
 	private jobPort?: JobPort;
 	private subagentPort?: SubagentPort;
 
@@ -251,6 +255,25 @@ export class UIHost implements UIHostContextPort {
 
 	setSubagentPort(port: SubagentPort): void {
 		this.subagentPort = port;
+	}
+
+	cancelTurn(source: "escape" | "ctrl+c" = "escape"): void {
+		if (this.busy) {
+			this.transcript.interruptTurn(this.modelName);
+			this.activityLine.update("idle", "已打断当前轮次");
+			try {
+				this.onCancel?.(source);
+			} catch {
+				// ignore
+			}
+			try {
+				this.onInterrupt?.(false);
+			} catch {
+				// ignore
+			}
+			this.setBusy(false);
+			this.requestRender();
+		}
 	}
 
 	constructor(options: UIHostOptions = {}) {
@@ -295,9 +318,36 @@ export class UIHost implements UIHostContextPort {
 
 		this.inputLine = new InputLine();
 		this.inputLine.onSubmit = (text) => this.handleUserSubmit(text);
-		this.inputLine.onInterrupt = () => this.onInterrupt?.();
+		this.inputLine.onSubmitMode = (text, mode) => this.handleUserSubmitMode(text, mode);
+		this.inputLine.onInterrupt = () => {
+			if (this.busy) {
+				this.cancelTurn("ctrl+c");
+			} else {
+				try {
+					this.onExit?.();
+				} catch {
+					// ignore
+				}
+				try {
+					this.onInterrupt?.(true);
+				} catch {
+					// ignore
+				}
+			}
+		};
 		this.inputLine.onEscape = () => {
-			if (this.overlayStack.hasVisible) this.overlayStack.hideTopOverlay();
+			if (this.overlayStack.hasVisible) {
+				this.overlayStack.hideTopOverlay();
+			} else if (this.activeSuggestions) {
+				this.activeSuggestions = null;
+			} else if (this.busy) {
+				this.cancelTurn();
+			} else if (this.inputLine.hasSelection()) {
+				this.inputLine.clearSelection();
+			} else if (this.inputLine.hasText()) {
+				this.inputLine.clear();
+			}
+			this.requestRender();
 		};
 		this.inputLine.setCwd(this.cwd);
 		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual);
@@ -416,11 +466,13 @@ export class UIHost implements UIHostContextPort {
 
 	setBusy(busy: boolean): void {
 		this.busy = busy;
+		this.inputLine.setBusy(busy);
 		if (busy) {
 			this.turnStartTime = Date.now();
 			this.streamTokenCount = 0;
 			this.startAnimation();
 		} else {
+			this.cancelPending = false;
 			if (this.turnStartTime > 0) {
 				this.lastElapsedMs = Math.max(1, Date.now() - this.turnStartTime);
 			}
@@ -1394,45 +1446,61 @@ export class UIHost implements UIHostContextPort {
 		}
 
 		if (matchesKey(data, Key.ctrl("c"))) {
-			// 1. 如果处于工作态（模型生成、工具执行中），直接触发平滑打断，绝不触发退出
+			// 1. 如果处于工作态（模型生成、工具执行中）
 			if (this.busy) {
+				if (this.cancelPending) {
+					// 正在中断收敛中或底层卡死，用户再次按下 Ctrl+C 意图强制退出应用（对齐 dsh-TUI Chat.tsx onExit()）
+					this.cancelPending = false;
+					try {
+						this.onExit?.();
+					} catch {
+						// ignore
+					}
+					try {
+						this.onInterrupt?.(true);
+					} catch {
+						// ignore
+					}
+					return;
+				}
+				this.cancelPending = true;
 				this.exitPending = false;
 				if (this.exitTimer) {
 					clearTimeout(this.exitTimer);
 					this.exitTimer = null;
 				}
-				this.onInterrupt?.();
+				this.cancelTurn("ctrl+c");
 				return;
 			}
 
-			// 2. 如果输入框内部处于 Ctrl+A 选区态，优先复制
+			// 2. 空闲态下，第 1 次按 Ctrl+C：若输入框有选区先清选区；若有草稿先清草稿；都为空则提示“再次按 Ctrl+C 退出”
 			if (this.inputLine.hasSelection()) {
-				this.inputLine.copySelection();
-				this.showCopyToast("已复制到剪贴板");
+				this.inputLine.clearSelection();
+				this.requestRender();
 				return;
 			}
-
-			// 3. 如果聊天输入框中有内容，按 Ctrl+C 直接清空内容（完全对齐 dsh-TUI 规范），本次不计入退出意图
 			if (this.inputLine.hasText()) {
 				this.inputLine.clear();
-				this.activeSuggestions = null;
-				this.exitPending = false;
-				if (this.exitTimer) {
-					clearTimeout(this.exitTimer);
-					this.exitTimer = null;
-				}
 				this.requestRender();
 				return;
 			}
 
-			// 4. 输入框为空且空闲态下的双击退出机制（对齐 dsh-TUI）
+			// 3. 空闲态且输入框为空：第 1 次提示，第 2 次在 2 秒内按下才真正触发退出
 			if (this.exitPending) {
-				this.exitPending = false;
 				if (this.exitTimer) {
 					clearTimeout(this.exitTimer);
 					this.exitTimer = null;
 				}
-				this.onInterrupt?.(); // 真正关闭退出
+				try {
+					this.onExit?.();
+				} catch {
+					// ignore
+				}
+				try {
+					this.onInterrupt?.(true); // 真正关闭退出
+				} catch {
+					// ignore
+				}
 				return;
 			}
 
@@ -1596,6 +1664,24 @@ export class UIHost implements UIHostContextPort {
 			}
 		}
 
+		// 3.6 Esc 阶梯处理（无浮层/菜单时）：工作态打断当前轮；空闲态取消选区或清空草稿（对齐 dsh-TUI）
+		if (matchesKey(data, Key.escape)) {
+			if (this.busy) {
+				this.cancelTurn("escape");
+				return;
+			}
+			if (this.inputLine.hasSelection()) {
+				this.inputLine.clearSelection();
+				this.requestRender();
+				return;
+			}
+			if (this.inputLine.hasText()) {
+				this.inputLine.clear();
+				this.requestRender();
+				return;
+			}
+		}
+
 		// 4. 输入框未输入时敲 '?' 直接唤起帮助
 		if (data === "?" && !this.inputLine.getText().trim() && !this.overlayStack.hasVisible) {
 			this.openHelpMenu();
@@ -1677,11 +1763,25 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	private handleUserSubmit(text: string): void {
+		const mode = this.busy ? "steer" : "direct";
+		this.handleUserSubmitMode(text, mode);
+	}
+
+	private handleUserSubmitMode(text: string, mode: "direct" | "steer" | "followUp" | "interrupt"): void {
 		this.scrollOffset = 0;
 		this.activeSuggestions = null;
 		this.inputLine.clear();
 
-		const mode = this.busy ? "followUp" : "direct";
+		if (mode === "interrupt") {
+			if (this.busy) {
+				this.cancelTurn();
+				this.onInterruptAndDeliver?.(text);
+			} else {
+				this.onUserLine?.(text, "direct");
+			}
+			return;
+		}
+
 		this.onUserLine?.(text, mode);
 	}
 }

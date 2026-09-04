@@ -201,7 +201,7 @@ export async function fetchWithRetry(
 		try {
 			const response = await fetch(url, { ...options.request, signal: options.signal });
 			if (response.ok || !isRetryableStatus(response.status) || attempt >= options.maxRetries) return response;
-			await response.body?.cancel();
+			await response.body?.cancel().catch(() => undefined);
 			const delay = retryAfter(response.headers.get("retry-after")) ?? 250 * 2 ** attempt;
 			await abortableDelay(Math.min(delay, 60_000), options.signal);
 		} catch (error) {
@@ -295,14 +295,24 @@ function thinkingRequest(level: ThinkingLevel | undefined, format = "openai"): R
 }
 
 export function toWireMessages(messages: ModelRequest["messages"], thinkingFormat?: ProviderConf["thinkingFormat"]): unknown[] {
-	return messages.map((message) => {
+	const wire: unknown[] = [];
+	for (const message of messages) {
 		if (message.role === "assistant") {
-			return {
+			const hasToolCalls = Boolean(message.tool_calls && message.tool_calls.length > 0);
+			const hasThinking = Boolean(message.thinking && thinkingFormat === "deepseek");
+			const content = typeof message.content === "string" ? message.content : "";
+			const hasContent = content.trim().length > 0;
+
+			if (!hasContent && !hasToolCalls && !hasThinking) {
+				continue;
+			}
+
+			wire.push({
 				role: "assistant",
-				content: message.content,
-					...(message.tool_calls?.length
+				content: message.content ?? "",
+				...(hasToolCalls
 					? {
-							tool_calls: message.tool_calls.map((call) => ({
+							tool_calls: message.tool_calls!.map((call) => ({
 								id: call.id,
 								type: "function",
 								function: {
@@ -314,18 +324,22 @@ export function toWireMessages(messages: ModelRequest["messages"], thinkingForma
 								},
 							})),
 						}
-						: {}),
-				...(message.thinking && thinkingFormat === "deepseek" ? { reasoning_content: message.thinking } : {}),
-			};
+					: {}),
+				...(hasThinking ? { reasoning_content: message.thinking } : {}),
+			});
+			continue;
 		}
-		return message.role === "tool"
-			? {
-					role: "tool",
-					tool_call_id: message.tool_call_id,
-					content: message.content,
-				}
-			: message;
-	});
+		if (message.role === "tool") {
+			wire.push({
+				role: "tool",
+				tool_call_id: message.tool_call_id,
+				content: message.content,
+			});
+			continue;
+		}
+		wire.push(message);
+	}
+	return wire;
 }
 
 function isJsonObject(text: string): boolean {

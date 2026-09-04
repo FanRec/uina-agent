@@ -51,6 +51,10 @@ export class InteractiveTUI {
 	readonly host: UIHost;
 	private lineCallback?: (line: string, mode: "steer" | "followUp") => void;
 	private sigintCallback?: () => void;
+	private cancelCallback?: (source?: "escape" | "ctrl+c") => void;
+	private exitCallback?: () => void;
+	private forceExitCallback?: () => void;
+	private interruptAndDeliverCallback?: (text: string) => void;
 	private thinkingLevelCycleCallback?: () => void;
 	private toolCallMap = new Map<string, { startedAt: number; name: string; args?: unknown }>();
 	private currentThinkingId?: string;
@@ -86,9 +90,30 @@ export class InteractiveTUI {
 			this.lineCallback?.(line, m);
 		};
 
-		this.host.onInterrupt = () => {
-			this.sigintCallback?.();
+		this.host.onCancel = (source) => {
+			this.cancelCallback?.(source);
 		};
+
+		this.host.onExit = () => {
+			this.exitCallback?.();
+		};
+
+		this.host.onInterrupt = (force) => {
+			if (force) {
+				if (!this.exitCallback) {
+					this.forceExitCallback?.();
+				}
+			} else {
+				if (!this.cancelCallback) {
+					this.sigintCallback?.();
+				}
+			}
+		};
+
+		this.host.onInterruptAndDeliver = (text) => {
+			this.interruptAndDeliverCallback?.(text);
+		};
+
 		this.host.onThinkingLevelCycle = () => {
 			this.thinkingLevelCycleCallback?.();
 		};
@@ -109,6 +134,22 @@ export class InteractiveTUI {
 
 	onSIGINT(cb: () => void): void {
 		this.sigintCallback = cb;
+	}
+
+	onCancel(cb: (source?: "escape" | "ctrl+c") => void): void {
+		this.cancelCallback = cb;
+	}
+
+	onExit(cb: () => void): void {
+		this.exitCallback = cb;
+	}
+
+	onForceExit(cb: () => void): void {
+		this.forceExitCallback = cb;
+	}
+
+	onInterruptAndDeliver(cb: (text: string) => void): void {
+		this.interruptAndDeliverCallback = cb;
 	}
 
 	onThinkingLevelCycle(cb: () => void): void {
@@ -140,6 +181,18 @@ export class InteractiveTUI {
 				break;
 
 			case "text":
+				if (m.text.includes("已打断 · 接下来想让")) {
+					if (this.currentThinkingId) {
+						this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
+						this.currentThinkingId = undefined;
+					}
+					this.stopToolAnimationTimer();
+					this.host.transcript.interruptTurn(this.host.modelName);
+					this.host.setBusy(false);
+					this.host.activityLine.update("idle", "已打断当前轮次");
+					this.host.requestRender();
+					break;
+				}
 				if (this.currentThinkingId) {
 					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
@@ -218,11 +271,30 @@ export class InteractiveTUI {
 					);
 				}
 				const elapsed = this.host.getLastElapsedMs();
-				this.host.activityLine.finish("本轮已完成", elapsed > 0 ? elapsed : undefined, this.host.getStreamTokenCount());
+				const history = this.host.transcript.getHistory();
+				const lastTurn = history[history.length - 1];
+				const isInterrupted = lastTurn?.items.some((it) => it.kind === "interrupt");
+				if (isInterrupted) {
+					this.host.activityLine.finish("已打断当前轮次", elapsed > 0 ? elapsed : undefined, this.host.getStreamTokenCount());
+				} else {
+					this.host.activityLine.finish("本轮已完成", elapsed > 0 ? elapsed : undefined, this.host.getStreamTokenCount());
+				}
 				this.host.requestRender();
 				break;
 
 			case "notice":
+				if (m.text.includes("已打断 · 接下来想让")) {
+					if (this.currentThinkingId) {
+						this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
+						this.currentThinkingId = undefined;
+					}
+					this.stopToolAnimationTimer();
+					this.host.transcript.interruptTurn(this.host.modelName);
+					this.host.setBusy(false);
+					this.host.activityLine.finish("已打断当前轮次");
+					this.host.requestRender();
+					break;
+				}
 				this.host.transcript.addNotice(m.text);
 				this.host.requestRender();
 				break;

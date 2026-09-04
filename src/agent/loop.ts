@@ -276,7 +276,11 @@ export class Subject {
 	interrupt(): void {
 		if (!this.busy) return;
 		this.interrupted = true;
-		this.abort?.abort();
+		try {
+			this.abort?.abort();
+		} catch {
+			// ignore synchronous abort errors
+		}
 	}
 
 	isBusy(): boolean {
@@ -543,13 +547,12 @@ export class Subject {
 					await this.emitInterrupted(reply, thinking, thinkingSignature);
 					return;
 				}
-				if (reply.trim() || thinking.trim() || thinkingSignature || toolCalls.length > 0) {
+				if (reply.trim() || thinking.trim() || thinkingSignature) {
 					await this.appendMessage({
 						role: "assistant",
 						content: reply,
 						thinking: thinking || undefined,
 						thinkingSignature,
-						...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
 						status: "error",
 						usage,
 					});
@@ -630,7 +633,7 @@ export class Subject {
 				});
 			}
 			if (this.interrupted || this.currentSignal().aborted) {
-					await this.emitInterrupted("", thinking, thinkingSignature);
+				await this.emitInterrupted("", "", undefined);
 				return;
 			}
 			const steer = this.queues.peekMany("steer", this.queueModes.steer);
@@ -819,10 +822,9 @@ export class Subject {
 		if (partial.trim() || thinking.trim() || thinkingSignature) {
 			await this.appendMessage({ role: "assistant", content: partial, thinking: thinking || undefined, thinkingSignature, status: "aborted" });
 		}
-		const notice = `已打断 · 接下来想让 ${this.provider.name} 做什么？`;
-		await this.appendMessage({ role: "assistant", content: notice, status: "aborted" });
 		await this.storeEvent("turn_aborted", { turnId: this.turnSeq });
-		this.hooks.onToken(`\n${notice}\n`);
+		const notice = `已打断 · 接下来想让 ${this.provider.name} 做什么？`;
+		this.hooks.onNotice?.(notice);
 	}
 }
 

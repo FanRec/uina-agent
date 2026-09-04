@@ -172,13 +172,23 @@ export class InputLine implements Component, Focusable {
 	private tps = 0;
 	private elapsedMs = 0;
 	private isStreaming = false;
+	private isBusy = false;
 
 	// 事件回调
 	public onSubmit?: (text: string) => void;
+	public onSubmitMode?: (text: string, mode: "direct" | "steer" | "followUp" | "interrupt") => void;
 	public onInterrupt?: () => void;
 	public onEscape?: () => void;
 
 	constructor() {}
+
+	setBusy(busy: boolean): void {
+		this.isBusy = busy;
+	}
+
+	getBusy(): boolean {
+		return this.isBusy;
+	}
 
 	setCwd(cwd: string): void {
 		this.cwd = cwd;
@@ -246,6 +256,10 @@ export class InputLine implements Component, Focusable {
 		if (this.hasSelection()) {
 			copyToClipboardUnified(this.getText());
 		}
+	}
+
+	clearSelection(): void {
+		this.isAllSelected = false;
 	}
 
 	/** 展开所有行内粘贴标记为原始文本 */
@@ -481,13 +495,51 @@ export class InputLine implements Component, Focusable {
 			return;
 		}
 
+		// 5.1 Ctrl+Enter 即时打断并投递（对齐 dsh-TUI interruptAndDeliver）
+		if (matchesKey(data, Key.ctrlEnter) || matchesKey(data, Key.ctrl("enter"))) {
+			const submission = this.getText();
+			if (submission.trim()) {
+				this.addHistory(submission);
+				const toSubmit = submission;
+				this.clear();
+				if (this.onSubmitMode) {
+					this.onSubmitMode(toSubmit, "interrupt");
+				} else {
+					this.onSubmit?.(toSubmit);
+				}
+			}
+			return;
+		}
+
+		// 5.2 工作态下 Tab 键：排队投递（follow-up），当前轮结束后按序处理
+		if (matchesKey(data, Key.tab) && (this.isStreaming || this.isBusy)) {
+			const submission = this.getText();
+			if (submission.trim()) {
+				this.addHistory(submission);
+				const toSubmit = submission;
+				this.clear();
+				if (this.onSubmitMode) {
+					this.onSubmitMode(toSubmit, "followUp");
+				} else {
+					this.onSubmit?.(toSubmit);
+				}
+			}
+			return;
+		}
+
+		// 5.3 普通 Enter：工作态为 steer（引导），空闲态为 direct 提交
 		if (matchesKey(data, Key.enter)) {
 			const submission = this.getText();
 			if (submission.trim()) {
 				this.addHistory(submission);
 				const toSubmit = submission;
 				this.clear();
-				this.onSubmit?.(toSubmit);
+				if (this.onSubmitMode) {
+					const mode = (this.isStreaming || this.isBusy) ? "steer" : "direct";
+					this.onSubmitMode(toSubmit, mode);
+				} else {
+					this.onSubmit?.(toSubmit);
+				}
 			}
 			return;
 		}

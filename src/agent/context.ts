@@ -17,22 +17,66 @@ export function defaultSystemPrompt(): string {
 }
 
 export function buildContext(b: BuildInput): ChatMsg[] {
-	const runtime = b.runtimeInputs?.length
-		? [{
-			role: "system" as const,
-			content: `<runtime_events>\n${b.runtimeInputs.map(formatRuntimeInput).join("\n")}\n</runtime_events>`,
-		}]
-		: [];
+	const baseSystem = b.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+	const systemContent = b.runtimeInputs?.length
+		? `${baseSystem}\n\n<runtime_events>\n${b.runtimeInputs.map(formatRuntimeInput).join("\n")}\n</runtime_events>`
+		: baseSystem;
+
+	const toolResponses = new Set<string>();
+	for (const msg of b.history) {
+		if (msg.role === "tool" && msg.tool_call_id) {
+			toolResponses.add(msg.tool_call_id);
+		}
+	}
+
+	const intermediate: ChatMsg[] = [];
+	for (const message of b.history) {
+		if (message.role === "assistant") {
+			const thinking = b.includeThinking ? message.thinking : undefined;
+			const thinkingSignature = b.includeThinking ? message.thinkingSignature : undefined;
+			const validToolCalls = message.tool_calls?.filter((call) => toolResponses.has(call.id));
+			const tool_calls = validToolCalls && validToolCalls.length > 0 ? validToolCalls : undefined;
+			const content = typeof message.content === "string" ? message.content : "";
+			const hasContent = content.trim().length > 0;
+			const hasToolCalls = Boolean(tool_calls && tool_calls.length > 0);
+			const hasThinking = Boolean(thinking && thinking.trim().length > 0);
+
+			if (!hasContent && !hasToolCalls && !hasThinking) {
+				continue;
+			}
+
+			intermediate.push({
+				...message,
+				content,
+				thinking,
+				thinkingSignature,
+				tool_calls,
+			});
+			continue;
+		}
+		intermediate.push(message);
+	}
+
+	const validToolCallIds = new Set<string>();
+	for (const msg of intermediate) {
+		if (msg.role === "assistant" && msg.tool_calls) {
+			for (const call of msg.tool_calls) {
+				validToolCallIds.add(call.id);
+			}
+		}
+	}
+
+	const cleaned: ChatMsg[] = [];
+	for (const message of intermediate) {
+		if (message.role === "tool" && message.tool_call_id && !validToolCallIds.has(message.tool_call_id)) {
+			continue;
+		}
+		cleaned.push(message);
+	}
+
 	return [
-		{ role: "system", content: b.systemPrompt ?? DEFAULT_SYSTEM_PROMPT },
-		...b.history.map((message) =>
-			message.role === "tool"
-				? message
-				: message.role === "assistant"
-					? b.includeThinking ? message : { ...message, thinking: undefined, thinkingSignature: undefined }
-				: message,
-		),
-		...runtime,
+		{ role: "system", content: systemContent },
+		...cleaned,
 	];
 }
 

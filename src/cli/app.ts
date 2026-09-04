@@ -187,17 +187,67 @@ export async function runApp(): Promise<void> {
 		process.exitCode = 0;
 	};
 
-	const handleInterrupt = (): void => {
-		if (subject.isBusy() || (tui && tui.host.isBusy())) {
+	let interruptSeq = 0;
+
+	const handleCancel = (source: "escape" | "ctrl+c" = "escape"): void => {
+		if (subject.isBusy()) {
+			const queued = subject.queuedSnapshot();
+			if (source === "escape" && queued.length > 0) {
+				// 按 Esc 打断且有排队消息：完全对齐 dsh-TUI Chat.tsx，立即打断当前轮次并执行排队消息（interruptAndDeliver）
+				const count = queued.length;
+				const token = ++interruptSeq;
+				subject.interrupt();
+				void subject.waitForIdle().then(async () => {
+					if (interruptSeq !== token) return;
+					const items = await subject.takeQueuedForEditor();
+					for (const item of items) {
+						onUserLine(item.text, "direct");
+					}
+					tui?.host.transcript.addNotice(`已打断当前回合，${count} 条消息立即处理`);
+					tui?.host.requestRender();
+				}).catch((error) => {
+					process.stderr.write(`[打断投递失败] ${String(error)}\n`);
+				});
+				return;
+			}
+			// 无排队消息或通过 Ctrl+C 打断：中断当前轮次并恢复排队消息至输入框
 			subject.interrupt();
 			void subject.waitForIdle().then(restoreQueueToEditor).catch((error) => process.stderr.write(`[队列恢复失败] ${String(error)}\n`));
-			return;
 		}
 		if (execRunning) {
 			execAbort?.abort();
+		}
+	};
+
+	const handleExit = (): void => {
+		void shutdown(false);
+	};
+
+	const handleInterrupt = (force = false): void => {
+		if (force) {
+			handleExit();
 			return;
 		}
-		void shutdown(false);
+		if (subject.isBusy() || (tui && tui.host.isBusy())) {
+			handleCancel("ctrl+c");
+			return;
+		}
+		handleExit();
+	};
+
+	const handleInterruptAndDeliver = (text: string): void => {
+		const trimmed = text.trim();
+		if (!trimmed) return;
+		const token = ++interruptSeq;
+		if (subject.isBusy() || (tui && tui.host.isBusy())) {
+			subject.interrupt();
+		}
+		void subject.waitForIdle().then(async () => {
+			if (interruptSeq !== token) return;
+			onUserLine(trimmed, "direct");
+		}).catch((error) => {
+			process.stderr.write(`[打断投递失败] ${String(error)}\n`);
+		});
 	};
 
 	const runDirectCommand = async (input: string): Promise<void> => {
@@ -225,7 +275,7 @@ export async function runApp(): Promise<void> {
 		}
 	};
 
-	const onUserLine = (raw: string, mode: "steer" | "followUp" = "followUp"): void => {
+	const onUserLine = (raw: string, mode: "steer" | "followUp" | "direct" = "followUp"): void => {
 		const text = raw.trim();
 		if (!text || shuttingDown) return;
 		if (text === "/stop") {
@@ -243,7 +293,7 @@ export async function runApp(): Promise<void> {
 			});
 			return;
 		}
-		subject.pushInput(text, { mode: subject.isBusy() ? mode : "direct" });
+		subject.pushInput(text, { mode: subject.isBusy() ? (mode === "direct" ? "steer" : mode) : "direct" });
 	};
 
 	const isTTY = process.stdout.isTTY && process.stdin.isTTY;
@@ -264,7 +314,11 @@ export async function runApp(): Promise<void> {
 		});
 		extensionHost.attachUI(tui.ctxUI);
 		tui.onLine(onUserLine);
-		tui.onSIGINT(handleInterrupt);
+		tui.onCancel(handleCancel);
+		tui.onExit(handleExit);
+		tui.onSIGINT(() => handleInterrupt(false));
+		tui.onForceExit(() => handleInterrupt(true));
+		tui.onInterruptAndDeliver(handleInterruptAndDeliver);
 		tui.onThinkingLevelCycle(() => {
 			if (!subject.getModel().thinkingLevels?.length) {
 				tui?.host.transcript.addNotice("当前 Provider 未提供 thinking 能力元数据；无法循环档位。");

@@ -20,7 +20,7 @@ export async function parseSSE(
 	let dataLines: string[] = [];
 	let eventIndex = 0;
 	const cancelReader = (): void => {
-		void reader.cancel(signal?.reason);
+		reader.cancel(signal?.reason).catch(() => undefined);
 	};
 	if (signal) signal.addEventListener("abort", cancelReader, { once: true });
 

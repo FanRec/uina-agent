@@ -11,6 +11,7 @@ import { FocusManager } from "../src/ui/core/focus.js";
 import { OverlayStack } from "../src/ui/core/overlay.js";
 import { WidgetSlots } from "../src/ui/core/slots.js";
 import { CURSOR_MARKER } from "../src/ui/core/types.js";
+import { Key, matchesKey } from "../src/ui/core/keys.js";
 import { StreamMarkdownFormatter } from "../src/ui/components/transcript/stream-markdown.js";
 import { ContextBarComponent, allocateBarColumns, renderSegmentedBar } from "../src/ui/components/widgets/context-bar.js";
 import { ScrollbarGutterComponent } from "../src/ui/components/widgets/scrollbar-gutter.js";
@@ -2456,6 +2457,219 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
 					Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
 				}
+			});
+		});
+
+		describe("Interrupt (打断) 交互规范与行为对齐 (dsh-TUI Parity)", () => {
+			it("matchesKey: 正确识别 Ctrl+Enter 的各类终端序列，且不与普通回车混淆", () => {
+				expect(matchesKey("\x1b[13;5u", Key.ctrlEnter)).toBe(true);
+				expect(matchesKey("\x1b[13;1;5u", Key.ctrlEnter)).toBe(true);
+				expect(matchesKey("\x1b[27;5;13~", Key.ctrlEnter)).toBe(true);
+
+				// 普通回车不能被误判为 Ctrl+Enter
+				expect(matchesKey("\r", Key.ctrlEnter)).toBe(false);
+				expect(matchesKey("\n", Key.ctrlEnter)).toBe(false);
+				expect(matchesKey("\x1b[13u", Key.ctrlEnter)).toBe(false);
+
+				// Ctrl+Enter 序列不能被误判为普通 Enter
+				expect(matchesKey("\x1b[13;5u", Key.enter)).toBe(false);
+				expect(matchesKey("\x1b[27;5;13~", Key.enter)).toBe(false);
+			});
+
+			it("InputLine: 空闲态与工作态下的三种投递模式 (direct, steer, followUp, interrupt)", () => {
+				const input = new InputLine();
+				let submittedText = "";
+				let submittedMode = "";
+				input.onSubmitMode = (text, mode) => {
+					submittedText = text;
+					submittedMode = mode;
+				};
+
+				// 1. 空闲态下普通 Enter -> direct
+				input.handleInput("Hello");
+				input.handleInput("\r");
+				expect(submittedText).toBe("Hello");
+				expect(submittedMode).toBe("direct");
+				expect(input.getText()).toBe("");
+
+				// 2. 空闲态下 Ctrl+Enter -> interrupt
+				input.handleInput("Immediate");
+				input.handleInput("\x1b[13;5u");
+				expect(submittedText).toBe("Immediate");
+				expect(submittedMode).toBe("interrupt");
+				expect(input.getText()).toBe("");
+
+				// 3. 工作态下普通 Enter -> steer (引导当前运行轮次)
+				input.setBusy(true);
+				input.handleInput("Guide");
+				input.handleInput("\r");
+				expect(submittedText).toBe("Guide");
+				expect(submittedMode).toBe("steer");
+				expect(input.getText()).toBe("");
+
+				// 4. 工作态下 Tab 键 -> followUp (排队等当前轮结束)
+				input.handleInput("Later");
+				input.handleInput("\t");
+				expect(submittedText).toBe("Later");
+				expect(submittedMode).toBe("followUp");
+				expect(input.getText()).toBe("");
+
+				// 5. 工作态下 Ctrl+Enter -> interrupt (立即打断并投递)
+				input.handleInput("Stop and Do This");
+				input.handleInput("\x1b[13;5u");
+				expect(submittedText).toBe("Stop and Do This");
+				expect(submittedMode).toBe("interrupt");
+				expect(input.getText()).toBe("");
+			});
+
+			it("TranscriptContainer: interruptTurn 会封顶思考、把运行中工具标为 failed，并插入暗调打断行", () => {
+				const transcript = new TranscriptContainer();
+				transcript.startTurn(1, "用户任务");
+				transcript.appendThinking("正在推理中...");
+				transcript.startTool("bash", { command: "sleep 10" }, "call-1");
+
+				// 触发打断
+				transcript.interruptTurn("DeepSeek");
+
+				// 校验思考已封顶且当前轮已结束
+				expect(transcript.getCurrentTurn()).toBeNull();
+				const history = transcript.getHistory();
+				expect(history.length).toBe(1);
+				const turn = history[0]!;
+
+				// 工具状态必须为 failed，且包含已由用户打断
+				const toolItem = turn.items.find((it) => it.kind === "tool") as any;
+				expect(toolItem).toBeDefined();
+				expect(toolItem.status).toBe("failed");
+				expect(toolItem.result).toBe("已由用户打断");
+
+				// 存在 interrupt 行
+				const interruptItem = turn.items.find((it) => it.kind === "interrupt") as any;
+				expect(interruptItem).toBeDefined();
+				expect(interruptItem.text).toBe("已打断 · 接下来想让 DeepSeek 做什么？");
+
+				// 渲染测试：暗淡样式
+				const lines = transcript.render(80);
+				const joined = lines.join("\n");
+				expect(joined).toContain("已打断 · 接下来想让 DeepSeek 做什么？");
+				expect(joined).toContain("\x1b[2m");
+
+				// 幂等性测试：重复调用不会产生重复的打断行
+				transcript.interruptTurn("DeepSeek");
+				expect(turn.items.filter((it) => it.kind === "interrupt").length).toBe(1);
+			});
+
+			it("UIHost: Esc 阶梯与 Ctrl+C 二次强制退出机制", () => {
+				let interruptedCalls: boolean[] = [];
+				let deliveredText = "";
+
+				const host = new UIHost({
+					modelName: "Uina",
+					terminal: {
+						columns: 80,
+						rows: 24,
+						start: () => {},
+						stop: () => {},
+						write: () => {},
+						onResize: () => {},
+					} as any,
+				});
+
+				host.onInterrupt = (force) => {
+					interruptedCalls.push(force ?? false);
+				};
+				host.onInterruptAndDeliver = (text) => {
+					deliveredText = text;
+				};
+
+				// 1. 工作态下按 Esc -> 触发 cancelTurn，调用 onInterrupt(false)，busy 恢复为 false
+				host.setBusy(true);
+				host.handleInput("\x1b"); // Esc
+				expect(interruptedCalls).toEqual([false]);
+				expect(host.isBusy()).toBe(false);
+
+				// 2. 空闲态下单按 Esc -> 清空输入框内容
+				host.handleInput("some draft text");
+				expect((host as any).inputLine.getText()).toBe("some draft text");
+				host.handleInput("\x1b"); // Esc
+				expect((host as any).inputLine.getText()).toBe("");
+
+				// 3. 工作态下第 1 次按 Ctrl+C -> cancelTurn, cancelPending = true
+				interruptedCalls = [];
+				host.setBusy(true);
+				host.handleInput("\x03"); // Ctrl+C
+				expect(interruptedCalls).toEqual([false]);
+				expect(host.isBusy()).toBe(false);
+
+				// 重新置为 busy 模拟底层仍在收敛或死锁，此时 cancelPending 仍为 true
+				(host as any).busy = true;
+				(host as any).cancelPending = true;
+
+				// 4. 工作态且 cancelPending 时第 2 次按 Ctrl+C -> 触发强制退出 onInterrupt(true)
+				host.handleInput("\x03"); // Ctrl+C
+				expect(interruptedCalls).toEqual([false, true]);
+
+				// 5. 工作态下按 Ctrl+Enter -> 触发 cancelTurn 且调用 onInterruptAndDeliver
+				host.setBusy(true);
+				host.handleInput("New Priority Task");
+				host.handleInput("\x1b[13;5u"); // Ctrl+Enter
+				expect(deliveredText).toBe("New Priority Task");
+				expect(host.isBusy()).toBe(false);
+			});
+
+			it("InteractiveTUI: 流式接收到打断 notice 时自动调用 interruptTurn 并重置状态", () => {
+				const tui = createInteractiveUI({ modelName: "TestModel" });
+				tui.render({ type: "turn_start", n: 1, text: "做某事" });
+				expect(tui.host.isBusy()).toBe(true);
+
+				// 模拟流式收到模型中断标志
+				tui.render({ type: "text", text: "\n已打断 · 接下来想让 TestModel 做什么？\n" });
+
+				// 此时 busy 状态自动解除，且 transcript 正确记录 interrupt 行
+				expect(tui.host.isBusy()).toBe(false);
+				const history = tui.host.transcript.getHistory();
+				expect(history.length).toBe(1);
+				expect(history[0]!.items.some((it) => it.kind === "interrupt")).toBe(true);
+			});
+
+			it("TranscriptContainer: 打断后迟到的工具结算绝不重复开辟新轮次或生成重复工具卡 (图一防御)", () => {
+				const transcript = new TranscriptContainer();
+				transcript.startTurn(1, "执行长任务");
+				transcript.startTool("bash", { command: "sleep 10" }, "call-123");
+
+				// 用户按 Esc 打断
+				transcript.interruptTurn("TestModel");
+
+				// 校验当前轮已被封顶提交，工具状态为 failed
+				expect(transcript.getCurrentTurn()).toBeNull();
+				const history = transcript.getHistory();
+				expect(history.length).toBe(1);
+				expect(history[0]!.items.filter((it) => it.kind === "tool").length).toBe(1);
+
+				// 此时底层子进程退出，迟到收到 addToolDone
+				transcript.addToolDone("bash", "{\"error\":\"工具已返回，但取消时无法确认副作用状态\"}", 200, false, "call-123");
+
+				// 必须严密保持为 1 轮，且绝不产生重复卡片
+				expect(transcript.getCurrentTurn()).toBeNull();
+				expect(transcript.getHistory().length).toBe(1);
+				expect(history[0]!.items.filter((it) => it.kind === "tool").length).toBe(1);
+				const tool = history[0]!.items.find((it) => it.kind === "tool") as any;
+				expect(tool.status).toBe("failed");
+				expect(tool.result).toBe("已由用户打断");
+			});
+
+			it("InteractiveTUI: 打断的轮次在结算时 activityLine 展示 '已打断当前轮次' 而非 '本轮已完成'", () => {
+				const tui = createInteractiveUI({ modelName: "TestModel" });
+				tui.render({ type: "turn_start", n: 1, text: "做任务" });
+				tui.host.cancelTurn("escape");
+
+				// 收到后端的 turn_end
+				tui.render({ type: "turn_end", n: 1 });
+
+				// 校验 activityLine 总结状态为“已打断当前轮次”
+				const rendered = tui.host.activityLine.render(80).join("\n");
+				expect(rendered).toContain("已打断当前轮次");
+				expect(rendered).not.toContain("本轮已完成");
 			});
 		});
 	});

@@ -268,21 +268,64 @@ function anthropicSystem(req: ModelRequest): string | undefined {
 	return text || undefined;
 }
 
-function anthropicMessages(req: ModelRequest): unknown[] {
-	return req.messages.filter((message) => message.role !== "system").map((message) => {
-		if (message.role === "tool") return { role: "user", content: [{ type: "tool_result", tool_use_id: message.tool_call_id, content: message.content, is_error: message.status && message.status !== "succeeded" }] };
-		if (message.role === "assistant") {
-			const content: unknown[] = [];
-			if (message.thinking) content.push({ type: "thinking", thinking: message.thinking, signature: message.thinkingSignature ?? "" });
-			if (message.content) content.push({ type: "text", text: message.content });
-			for (const call of message.tool_calls ?? []) content.push({ type: "tool_use", id: call.id, name: call.name, input: call.args });
-			return { role: "assistant", content: content.length ? content : "" };
+export function anthropicMessages(req: ModelRequest): unknown[] {
+	const out: Array<{ role: "user" | "assistant"; content: unknown }> = [];
+
+	for (const message of req.messages) {
+		if (message.role === "system") continue;
+
+		if (message.role === "tool") {
+			const toolBlock = {
+				type: "tool_result",
+				tool_use_id: message.tool_call_id,
+				content: message.content,
+				is_error: message.status && message.status !== "succeeded",
+			};
+			const previous = out.at(-1);
+			if (previous && previous.role === "user" && Array.isArray(previous.content)) {
+				previous.content.push(toolBlock);
+			} else {
+				out.push({ role: "user", content: [toolBlock] });
+			}
+			continue;
 		}
-		return { role: "user", content: message.content };
-	});
+
+		if (message.role === "assistant") {
+			const blocks: unknown[] = [];
+			if (message.thinking) blocks.push({ type: "thinking", thinking: message.thinking, signature: message.thinkingSignature ?? "" });
+			if (message.content) blocks.push({ type: "text", text: message.content });
+			for (const call of message.tool_calls ?? []) blocks.push({ type: "tool_use", id: call.id, name: call.name, input: call.args });
+
+			if (blocks.length === 0) continue;
+
+			const previous = out.at(-1);
+			if (previous && previous.role === "assistant" && Array.isArray(previous.content)) {
+				previous.content.push(...blocks);
+			} else {
+				out.push({ role: "assistant", content: blocks });
+			}
+			continue;
+		}
+
+		if (message.role === "user") {
+			const previous = out.at(-1);
+			if (previous && previous.role === "user") {
+				if (typeof previous.content === "string") {
+					previous.content = `${previous.content}\n\n${message.content}`;
+				} else if (Array.isArray(previous.content)) {
+					previous.content.push({ type: "text", text: message.content });
+				}
+			} else {
+				out.push({ role: "user", content: message.content });
+			}
+			continue;
+		}
+	}
+
+	return out;
 }
 
-function geminiRequest(req: ModelRequest, includeToolCallIds: boolean): Record<string, unknown> {
+export function geminiRequest(req: ModelRequest, includeToolCallIds: boolean): Record<string, unknown> {
 	const system = req.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
 	const toolNames = new Map<string, string>();
 	for (const message of req.messages) {
@@ -309,10 +352,21 @@ function geminiRequest(req: ModelRequest, includeToolCallIds: boolean): Record<s
 			const parts: unknown[] = [];
 			if (message.content) parts.push({ text: message.content });
 			for (const call of message.tool_calls ?? []) parts.push({ functionCall: { ...(includeToolCallIds ? { id: call.id } : {}), name: call.name, args: call.args, ...(call.thinkingSignature ? { thoughtSignature: call.thinkingSignature } : {}) } });
-			contents.push({ role: "model", parts: parts.length ? parts : [{ text: "" }] });
+			if (parts.length === 0) continue;
+			const previous = contents.at(-1);
+			if (previous?.role === "model") {
+				previous.parts.push(...parts);
+			} else {
+				contents.push({ role: "model", parts });
+			}
 			continue;
 		}
-		contents.push({ role: "user", parts: [{ text: message.content }] });
+		const previous = contents.at(-1);
+		if (previous?.role === "user" && !previous.parts.some((part) => isRecord(part) && "functionResponse" in part)) {
+			previous.parts.push({ text: message.content });
+		} else {
+			contents.push({ role: "user", parts: [{ text: message.content }] });
+		}
 	}
 	return {
 		contents,

@@ -55,6 +55,17 @@ export function isShiftPressed(): boolean {
 	}
 }
 
+/** 检查操作系统物理 Control / Command 键当前是否正被按住 */
+export function isCtrlPressed(): boolean {
+	const h = loadHelper();
+	if (!h) return false;
+	try {
+		return h.isModifierPressed("control") === true || h.isModifierPressed("command") === true;
+	} catch {
+		return false;
+	}
+}
+
 /** 激活控制台 VT 输入（在终端启动时调用） */
 export function initConsoleMode(): void {
 	loadHelper();

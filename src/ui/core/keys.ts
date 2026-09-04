@@ -5,6 +5,7 @@
 export const Key = {
 	enter: "enter",
 	shiftEnter: "shift+enter",
+	ctrlEnter: "ctrl+enter",
 	backspace: "backspace",
 	tab: "tab",
 	shiftTab: "shift+tab",
@@ -24,13 +25,28 @@ export const Key = {
 	shift: (c: string) => `shift+${c.toLowerCase()}`,
 };
 
-import { isShiftPressed } from "./native-modifiers.js";
+import { isShiftPressed, isCtrlPressed } from "./native-modifiers.js";
 
 /**
  * 检查输入的 raw 数据是否匹配目标键位定义
  */
 export function matchesKey(data: string, keyId: string): boolean {
 	switch (keyId) {
+		case "ctrl+enter":
+		case "ctrl+return":
+			if (
+				data === "\x1b[13;5u" ||
+				data === "\x1b[13;1;5u" ||
+				data === "\x1b[27;5;13~" ||
+				data === "\x1b[13;5~"
+			) {
+				return true;
+			}
+			if ((data === "\r" || data === "\n" || data === "\r\n") && isCtrlPressed()) {
+				return true;
+			}
+			return false;
+
 		case "shift+enter":
 		case "shift+return":
 			if (
@@ -50,8 +66,8 @@ export function matchesKey(data: string, keyId: string): boolean {
 			return false;
 
 		case "enter":
-			// 如果物理 Shift 键正被按住，严禁作为普通 Enter 提交！
-			if (isShiftPressed()) {
+			// 如果物理 Shift 或 Ctrl 键正被按住，严禁作为普通 Enter 提交！
+			if (isShiftPressed() || isCtrlPressed()) {
 				return false;
 			}
 			return (
