@@ -101,9 +101,7 @@ export class InteractiveTUI {
 
 		this.host.onInterrupt = (force) => {
 			if (force) {
-				if (!this.exitCallback) {
-					this.forceExitCallback?.();
-				}
+				this.forceExitCallback?.();
 			} else {
 				if (!this.cancelCallback) {
 					this.sigintCallback?.();

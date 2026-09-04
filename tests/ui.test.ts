@@ -2726,6 +2726,94 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				// 校验光标置于最后
 				expect(tui.host.inputLine.getCursorIndex()).toBe(expected.length);
 			});
+
+			it("InteractiveTUI: 工作态下第 1 次按 Ctrl+C 触发 onCancel('ctrl+c')，第 2 次触发 onForceExit (对齐 dsh-TUI 防卡死强制退出)", () => {
+				const tui = createInteractiveUI({ modelName: "TestModel" });
+				tui.render({ type: "turn_start", n: 1, text: "长耗时操作" });
+
+				let cancelSource: string | undefined;
+				let forceExited = false;
+				tui.onCancel((source) => {
+					cancelSource = source;
+				});
+				tui.onForceExit(() => {
+					forceExited = true;
+				});
+
+				// 第 1 次 Ctrl+C：打断当前轮次
+				tui.host.handleInput("\x03");
+				expect(cancelSource).toBe("ctrl+c");
+				expect(forceExited).toBe(false);
+
+				// 第 2 次 Ctrl+C（处于 cancelPending 阶段）：立即触发防卡死强制退出
+				tui.host.handleInput("\x03");
+				expect(forceExited).toBe(true);
+			});
+
+			it("InteractiveTUI: 空闲态下 Ctrl+C 优先清空输入栏草稿，草稿为空时两连击退出", () => {
+				const tui = createInteractiveUI({ modelName: "TestModel" });
+				let forceExited = false;
+				tui.onForceExit(() => {
+					forceExited = true;
+				});
+
+				// 输入草稿
+				tui.host.handleInput("草稿文本");
+				expect(tui.host.inputLine.getText()).toBe("草稿文本");
+
+				// 第 1 次 Ctrl+C：清空草稿
+				tui.host.handleInput("\x03");
+				expect(tui.host.inputLine.getText()).toBe("");
+				expect(forceExited).toBe(false);
+
+				// 草稿为空时第 1 次 Ctrl+C：激活 exitPending
+				tui.host.handleInput("\x03");
+				expect(forceExited).toBe(false);
+
+				// 2 秒内第 2 次 Ctrl+C：触发退出
+				tui.host.handleInput("\x03");
+				expect(forceExited).toBe(true);
+			});
+
+			it("InteractiveTUI: 工作态下按 Esc 触发 onCancel('escape') 并保留输入栏未发送草稿", () => {
+				const tui = createInteractiveUI({ modelName: "TestModel" });
+				tui.render({ type: "turn_start", n: 1, text: "正在执行任务" });
+
+				let cancelSource: string | undefined;
+				tui.onCancel((source) => {
+					cancelSource = source;
+				});
+
+				tui.host.handleInput("临时未发送的输入");
+				expect(tui.host.inputLine.getText()).toBe("临时未发送的输入");
+
+				// 按 Esc 打断
+				tui.host.handleInput("\x1b");
+				expect(cancelSource).toBe("escape");
+				// 草稿保留
+				expect(tui.host.inputLine.getText()).toBe("临时未发送的输入");
+			});
+
+			it("InteractiveTUI: 工作态下 Ctrl+Enter 触发 onInterruptAndDeliver 且不触发 onCancel", () => {
+				const tui = createInteractiveUI({ modelName: "TestModel" });
+				tui.render({ type: "turn_start", n: 1, text: "执行中" });
+
+				let deliveredText: string | undefined;
+				let cancelCalled = false;
+				tui.onCancel(() => {
+					cancelCalled = true;
+				});
+				tui.onInterruptAndDeliver((text) => {
+					deliveredText = text;
+				});
+
+				tui.host.handleInput("紧急插队任务");
+				// 按 Ctrl+Enter (CSI 格式 \x1b[13;5u)
+				tui.host.handleInput("\x1b[13;5u");
+
+				expect(deliveredText).toBe("紧急插队任务");
+				expect(cancelCalled).toBe(false);
+			});
 		});
 	});
 });

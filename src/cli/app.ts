@@ -181,9 +181,15 @@ export async function runApp(): Promise<void> {
 		return items.length;
 	};
 
-	const shutdown = async (cancelCurrent = true): Promise<void> => {
+	const shutdown = async (cancelCurrent = true, force = false): Promise<void> => {
 		if (shuttingDown) return;
 		shuttingDown = true;
+		if (force) {
+			tui?.close();
+			nonTTY?.close();
+			process.exit(0);
+			return;
+		}
 		if (cancelCurrent && subject.isBusy()) subject.interrupt();
 		if (execRunning) execAbort?.abort();
 		await subject.waitForIdle();
@@ -198,25 +204,36 @@ export async function runApp(): Promise<void> {
 
 	let interruptSeq = 0;
 
+	const deliverQueuedNow = (extraText?: string): void => {
+		const token = ++interruptSeq;
+		if (subject.isBusy() || (tui && tui.host.isBusy())) {
+			subject.interrupt();
+		}
+		if (execRunning) {
+			execAbort?.abort();
+		}
+		void subject.waitForIdle().then(async () => {
+			if (interruptSeq !== token) return;
+			const items = await subject.takeQueuedForEditor();
+			const allTexts = [...items.map((it) => it.text), ...(extraText ? [extraText] : [])].filter((t) => t.trim());
+			if (allTexts.length === 0) return;
+			onUserLine(allTexts[0], "direct");
+			for (let i = 1; i < allTexts.length; i++) {
+				onUserLine(allTexts[i], "followUp");
+			}
+			tui?.host.transcript.addNotice(`已打断当前回合，${allTexts.length} 条消息立即处理`);
+			tui?.host.requestRender();
+		}).catch((error) => {
+			process.stderr.write(`[打断投递失败] ${String(error)}\n`);
+		});
+	};
+
 	const handleCancel = (source: "escape" | "ctrl+c" = "escape"): void => {
 		if (subject.isBusy()) {
 			const queued = subject.queuedSnapshot();
 			if (source === "escape" && queued.length > 0) {
-				// 按 Esc 打断且有排队消息：完全对齐 dsh-TUI Chat.tsx，立即打断当前轮次并执行排队消息（interruptAndDeliver）
-				const count = queued.length;
-				const token = ++interruptSeq;
-				subject.interrupt();
-				void subject.waitForIdle().then(async () => {
-					if (interruptSeq !== token) return;
-					const items = await subject.takeQueuedForEditor();
-					for (const item of items) {
-						onUserLine(item.text, "direct");
-					}
-					tui?.host.transcript.addNotice(`已打断当前回合，${count} 条消息立即处理`);
-					tui?.host.requestRender();
-				}).catch((error) => {
-					process.stderr.write(`[打断投递失败] ${String(error)}\n`);
-				});
+				// 按 Esc 打断且有排队消息：完全对齐 dsh-TUI Chat.tsx，立即打断当前轮次并按序投递排队消息
+				deliverQueuedNow();
 				return;
 			}
 
@@ -237,35 +254,26 @@ export async function runApp(): Promise<void> {
 		}
 	};
 
-	const handleExit = (): void => {
-		void shutdown(false);
+	const handleExit = (force = false): void => {
+		void shutdown(false, force);
 	};
 
 	const handleInterrupt = (force = false): void => {
 		if (force) {
-			handleExit();
+			handleExit(true);
 			return;
 		}
 		if (subject.isBusy() || (tui && tui.host.isBusy())) {
 			handleCancel("ctrl+c");
 			return;
 		}
-		handleExit();
+		handleExit(false);
 	};
 
 	const handleInterruptAndDeliver = (text: string): void => {
 		const trimmed = text.trim();
 		if (!trimmed) return;
-		const token = ++interruptSeq;
-		if (subject.isBusy() || (tui && tui.host.isBusy())) {
-			subject.interrupt();
-		}
-		void subject.waitForIdle().then(async () => {
-			if (interruptSeq !== token) return;
-			onUserLine(trimmed, "direct");
-		}).catch((error) => {
-			process.stderr.write(`[打断投递失败] ${String(error)}\n`);
-		});
+		deliverQueuedNow(trimmed);
 	};
 
 	const runDirectCommand = async (input: string): Promise<void> => {

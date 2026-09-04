@@ -1774,7 +1774,10 @@ export class UIHost implements UIHostContextPort {
 
 		if (mode === "interrupt") {
 			if (this.busy) {
-				this.cancelTurn();
+				this.cancelPending = true;
+				this.transcript.interruptTurn(this.modelName);
+				this.activityLine.update("idle", "已打断当前轮次");
+				this.requestRender();
 				this.onInterruptAndDeliver?.(text);
 			} else {
 				this.onUserLine?.(text, "direct");
