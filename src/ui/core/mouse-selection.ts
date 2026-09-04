@@ -12,7 +12,8 @@ import { stripAnsi, visibleWidth, charWidth, extractAnsiCode } from "./utils.js"
 
 export interface Point {
 	col: number; // 0-indexed 列坐标
-	row: number; // 0-indexed 行坐标
+	row: number; // 0-indexed 屏幕行坐标
+	contentRow?: number; // 全局内容行坐标（仅当在 transcript 区域时有效）
 }
 
 export interface InteractiveTarget {
@@ -30,6 +31,7 @@ export interface MouseEventResult {
 	needRender?: boolean;
 	hoverTargetId?: string | null;
 	clickedTargetId?: string;
+	dragEdge?: "top" | "bottom" | null; // 拖拽触碰的边界方向
 }
 
 /**
@@ -88,6 +90,25 @@ export class MouseSelectionTracker {
 		},
 	];
 	private activeRegion: SelectableRegion | null = null;
+	private currentScrollStart = 0;
+
+	setScrollContext(scrollStart: number, _chatAreaH?: number): void {
+		this.currentScrollStart = scrollStart;
+	}
+
+	updateFocusContent(contentRow: number, screenRow: number, col?: number): void {
+		if (!this.isDragging || !this.activeRegion || this.activeRegion.id !== "transcript") return;
+		const currentCol = col ?? (this.focus ? this.focus.col : 0);
+		const clampedCol = Math.max(
+			this.activeRegion.colStart,
+			Math.min(currentCol, this.activeRegion.colEnd),
+		);
+		const clampedRow = Math.max(
+			this.activeRegion.startRow,
+			Math.min(screenRow, this.activeRegion.endRow),
+		);
+		this.focus = { col: clampedCol, row: clampedRow, contentRow };
+	}
 
 	setSelectableRegions(regions: readonly SelectableRegion[]): void {
 		this.regions = [...regions];
@@ -123,6 +144,9 @@ export class MouseSelectionTracker {
 
 	hasSelection(): boolean {
 		if (!this.anchor || !this.focus) return false;
+		if (this.anchor.contentRow !== undefined && this.focus.contentRow !== undefined) {
+			return this.anchor.contentRow !== this.focus.contentRow || Math.abs(this.anchor.col - this.focus.col) > 1;
+		}
 		return this.anchor.row !== this.focus.row || Math.abs(this.anchor.col - this.focus.col) > 1;
 	}
 
@@ -141,6 +165,7 @@ export class MouseSelectionTracker {
 		data: string,
 		rows: readonly string[],
 		onCopy?: (text: string) => void,
+		permanentLines?: readonly string[],
 	): MouseEventResult {
 		const match = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
 		if (!match) return { handled: false };
@@ -168,8 +193,11 @@ export class MouseSelectionTracker {
 			);
 			if (matched) {
 				this.activeRegion = matched;
-				this.anchor = { col, row };
-				this.focus = { col, row };
+				const contentRow = matched.id === "transcript"
+					? this.currentScrollStart + (row - matched.startRow)
+					: undefined;
+				this.anchor = { col, row, contentRow };
+				this.focus = { col, row, contentRow };
 				this.isDragging = true;
 				return { handled: true, needRender: true };
 			}
@@ -190,8 +218,21 @@ export class MouseSelectionTracker {
 				this.activeRegion.colStart,
 				Math.min(col, this.activeRegion.colEnd),
 			);
-			this.focus = { col: clampedCol, row: clampedRow };
-			return { handled: true, needRender: true };
+			const contentRow = this.activeRegion.id === "transcript"
+				? this.currentScrollStart + (clampedRow - this.activeRegion.startRow)
+				: undefined;
+			this.focus = { col: clampedCol, row: clampedRow, contentRow };
+
+			let dragEdge: "top" | "bottom" | null = null;
+			if (this.activeRegion.id === "transcript") {
+				if (row <= this.activeRegion.startRow + 1) {
+					dragEdge = "top";
+				} else if (row >= this.activeRegion.endRow - 1) {
+					dragEdge = "bottom";
+				}
+			}
+
+			return { handled: true, needRender: true, dragEdge };
 		}
 
 		// 4. 移动悬停（Hover 探测：btn 35 或无按键移动）
@@ -217,7 +258,10 @@ export class MouseSelectionTracker {
 				Date.now() - this.mouseDownTime < 350 &&
 				!this.hasSelection();
 
-			this.focus = { col, row };
+			const contentRow = this.activeRegion?.id === "transcript"
+				? this.currentScrollStart + (Math.max(this.activeRegion.startRow, Math.min(row, this.activeRegion.endRow)) - this.activeRegion.startRow)
+				: undefined;
+			this.focus = { col, row, contentRow };
 			this.isDragging = false;
 
 			// 如果判定为点击（Click）动作，检查是否命中交互热区
@@ -233,9 +277,9 @@ export class MouseSelectionTracker {
 				return { handled: true, needRender: true };
 			}
 
-			// 如果判定为拖拽选择（Drag Selection），提取纯文本并触发复制
+			// 如果判定为拖拽选择（Drag Selection），优先从全量永久内容提取，支持跨屏无损拷贝
 			if (this.hasSelection() && onCopy) {
-				const selectedText = this.extractSelectedText(rows);
+				const selectedText = (permanentLines ? this.extractSelectedContentText(permanentLines) : "") || this.extractSelectedText(rows);
 				if (selectedText && selectedText.trim()) {
 					onCopy(selectedText);
 				}
@@ -251,7 +295,7 @@ export class MouseSelectionTracker {
 	 * 从屏幕帧缓冲中提取选区内的纯文本：
 	 * 1. 严格基于当前活动区域 activeRegion（转录区或输入框）隔离提取；
 	 * 2. 剥离 ●、❯、✦ 图标；
- * 3. 兼容剥离旧版输入框外边框 │；
+	 * 3. 兼容剥离旧版输入框外边框 │；
 	 * 4. 彻底排除非可选区域的任何残留内容。
 	 */
 	extractSelectedText(rows: readonly string[]): string {
@@ -335,13 +379,163 @@ export class MouseSelectionTracker {
 	}
 
 	/**
+	 * 从全量永久内容缓冲中完整提取选区内的纯文本（支持无损跨屏提取）
+	 */
+	extractSelectedContentText(permanentLines: readonly string[]): string {
+		if (
+			!this.anchor ||
+			!this.focus ||
+			!this.activeRegion ||
+			this.activeRegion.id !== "transcript" ||
+			this.anchor.contentRow === undefined ||
+			this.focus.contentRow === undefined
+		) {
+			return "";
+		}
+
+		const isForward =
+			this.anchor.contentRow < this.focus.contentRow ||
+			(this.anchor.contentRow === this.focus.contentRow && this.anchor.col <= this.focus.col);
+		const start = isForward ? this.anchor : this.focus;
+		const end = isForward ? this.focus : this.anchor;
+		const minContent = Math.max(0, start.contentRow!);
+		const maxContent = Math.min(permanentLines.length - 1, end.contentRow!);
+
+		const extractedLines: string[] = [];
+
+		for (let c = minContent; c <= maxContent && c < permanentLines.length; c++) {
+			const rawLine = permanentLines[c] ?? "";
+			const cleanLine = stripAnsi(rawLine);
+			const contentLen = visibleWidth(cleanLine.trimEnd());
+
+			if (contentLen === 0) {
+				if (c > minContent && c < maxContent) {
+					extractedLines.push("");
+				}
+				continue;
+			}
+
+			let rowStartCol = this.activeRegion.colStart;
+			let rowEndCol = contentLen;
+
+			if (minContent === maxContent) {
+				rowStartCol = Math.max(this.activeRegion.colStart, Math.min(start.col, contentLen));
+				rowEndCol = Math.min(end.col, contentLen);
+			} else if (c === minContent) {
+				rowStartCol = Math.max(this.activeRegion.colStart, Math.min(start.col, contentLen));
+				rowEndCol = contentLen;
+			} else if (c === maxContent) {
+				rowStartCol = this.activeRegion.colStart;
+				rowEndCol = Math.min(end.col, contentLen);
+			}
+
+			const minCol = Math.max(0, Math.min(rowStartCol, rowEndCol));
+			const maxCol = Math.max(0, Math.max(rowStartCol, rowEndCol));
+
+			if (minCol >= maxCol) {
+				continue;
+			}
+
+			let curWidth = 0;
+			let lineSlice = "";
+			for (const char of cleanLine) {
+				const w = charWidth(char);
+				if (curWidth >= minCol && curWidth < maxCol) {
+					lineSlice += char;
+				}
+				curWidth += w;
+				if (curWidth >= maxCol) break;
+			}
+
+			let trimmed = lineSlice.trimEnd();
+			if (trimmed.startsWith("● ")) {
+				trimmed = trimmed.slice(2);
+			} else if (trimmed.startsWith("❯ ")) {
+				trimmed = trimmed.slice(2);
+			} else if (trimmed.startsWith("✦ ")) {
+				trimmed = trimmed.slice(2);
+			} else if (trimmed.startsWith("• ")) {
+				trimmed = trimmed.slice(2);
+			}
+
+			extractedLines.push(trimmed);
+		}
+
+		return extractedLines.join("\n");
+	}
+
+	/**
 	 * 将选区高亮渲染叠加入全屏帧（使用 dsh-TUI 雾蓝选区背景色 #3B4A66）
 	 */
-	applyHighlight(rows: readonly string[]): string[] {
+	applyHighlight(rows: readonly string[], scrollStart?: number): string[] {
 		if (!this.hasSelection() || !this.anchor || !this.focus || !this.activeRegion) {
 			return [...rows];
 		}
 
+		// 如果处于 transcript 区域且具备全局内容行号，基于 contentRow 进行精确跨屏高亮
+		if (
+			this.activeRegion.id === "transcript" &&
+			this.anchor.contentRow !== undefined &&
+			this.focus.contentRow !== undefined &&
+			scrollStart !== undefined
+		) {
+			const isForward =
+				this.anchor.contentRow < this.focus.contentRow ||
+				(this.anchor.contentRow === this.focus.contentRow && this.anchor.col <= this.focus.col);
+			const start = isForward ? this.anchor : this.focus;
+			const end = isForward ? this.focus : this.anchor;
+			const minContent = start.contentRow!;
+			const maxContent = end.contentRow!;
+
+			const result: string[] = [];
+			for (let r = 0; r < rows.length; r++) {
+				const line = rows[r]!;
+				if (r < this.activeRegion.startRow || r > this.activeRegion.endRow) {
+					result.push(line);
+					continue;
+				}
+
+				const contentRow = scrollStart + (r - this.activeRegion.startRow);
+				if (contentRow < minContent || contentRow > maxContent) {
+					result.push(line);
+					continue;
+				}
+
+				const clean = stripAnsi(line);
+				const contentLen = getLineContentWidth(clean);
+				if (contentLen === 0) {
+					result.push(line);
+					continue;
+				}
+
+				let rowStartCol = this.activeRegion.colStart;
+				let rowEndCol = contentLen;
+
+				if (minContent === maxContent) {
+					rowStartCol = Math.max(this.activeRegion.colStart, Math.min(start.col, contentLen));
+					rowEndCol = Math.min(end.col, contentLen);
+				} else if (contentRow === minContent) {
+					rowStartCol = Math.max(this.activeRegion.colStart, Math.min(start.col, contentLen));
+					rowEndCol = contentLen;
+				} else if (contentRow === maxContent) {
+					rowStartCol = this.activeRegion.colStart;
+					rowEndCol = Math.min(end.col, contentLen);
+				}
+
+				const minCol = Math.max(0, Math.min(rowStartCol, rowEndCol));
+				const maxCol = Math.max(0, Math.max(rowStartCol, rowEndCol));
+
+				if (minCol >= maxCol) {
+					result.push(line);
+					continue;
+				}
+
+				result.push(this.highlightLineSegment(line, minCol, maxCol));
+			}
+			return result;
+		}
+
+		// 否则回退为基于屏幕行号的高亮（如输入框划选）
 		const [start, end] = this.getNormalizedSpan();
 		const result: string[] = [];
 
@@ -446,6 +640,12 @@ export class MouseSelectionTracker {
 	private getNormalizedSpan(): [Point, Point] {
 		const a = this.anchor!;
 		const f = this.focus!;
+		if (a.contentRow !== undefined && f.contentRow !== undefined) {
+			if (a.contentRow < f.contentRow || (a.contentRow === f.contentRow && a.col <= f.col)) {
+				return [a, f];
+			}
+			return [f, a];
+		}
 		if (a.row < f.row || (a.row === f.row && a.col <= f.col)) {
 			return [a, f];
 		}

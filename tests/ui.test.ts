@@ -1166,6 +1166,64 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		expect(copiedText).not.toContain("│");
 	});
 
+	it("拖拽划选到上下边界时触发 dragEdge 信号，支持跨屏无损选区与文本复制", async () => {
+		const { MouseSelectionTracker } = await import("../src/ui/core/mouse-selection.js");
+		const tracker = new MouseSelectionTracker();
+
+		tracker.setSelectableRegions([
+			{ id: "transcript", startRow: 0, endRow: 10, colStart: 0, colEnd: 60 },
+			{ id: "input", startRow: 12, endRow: 14, colStart: 0, colEnd: 60 },
+		]);
+
+		const permanentLines = Array.from({ length: 30 }, (_, i) => `这是第 ${i} 行长长长长长的转录历史正文内容`);
+		const screenRows = permanentLines.slice(10, 21);
+
+		tracker.setScrollContext(10, 11);
+
+		// 1. 在第 5 行（对应 contentRow 15）按下鼠标左键
+		// col 5 (1-indexed: 6), row 5 (1-indexed: 6)
+		const pressRes = tracker.handleInput("\x1b[<0;6;6M", screenRows, undefined, permanentLines);
+		expect(pressRes.handled).toBe(true);
+
+		// 2. 向上拖拽到第 1 行（边界区域 <= startRow + 1）
+		const dragTopRes = tracker.handleInput("\x1b[<32;6;2M", screenRows, undefined, permanentLines);
+		expect(dragTopRes.handled).toBe(true);
+		expect(dragTopRes.dragEdge).toBe("top");
+
+		// 3. 拖拽到中间第 5 行（安全非边缘区）
+		const dragMidRes = tracker.handleInput("\x1b[<32;6;6M", screenRows, undefined, permanentLines);
+		expect(dragMidRes.handled).toBe(true);
+		expect(dragMidRes.dragEdge).toBeNull();
+
+		// 4. 向下拖拽到第 10 行（边界区域 >= endRow - 1）
+		const dragBottomRes = tracker.handleInput("\x1b[<32;6;11M", screenRows, undefined, permanentLines);
+		expect(dragBottomRes.handled).toBe(true);
+		expect(dragBottomRes.dragEdge).toBe("bottom");
+
+		// 5. 模拟自动滚动向上滚到顶部（scrollStart 从 10 滚动到 0）
+		tracker.setScrollContext(0, 11);
+		tracker.updateFocusContent(0, 0, 0);
+
+		// 此时 Anchor 在 contentRow 15，Focus 在 contentRow 0
+		// 验证当前屏幕帧基于 contentRow 的高亮是否生效
+		const currentScreenRows = permanentLines.slice(0, 11);
+		const highlighted = tracker.applyHighlight(currentScreenRows, 0);
+		// 第 0 行到第 10 行都在选区内（0 到 15）
+		expect(highlighted[0]).toContain("\x1b[48;2;59;74;102m");
+		expect(highlighted[5]).toContain("\x1b[48;2;59;74;102m");
+		expect(highlighted[10]).toContain("\x1b[48;2;59;74;102m");
+
+		// 6. 松开鼠标左键，验证跨越了多页（0 到 15 行，共 16 行）的全量文本提取与复制
+		let copiedText = "";
+		const releaseRes = tracker.handleInput("\x1b[<0;1;1m", currentScreenRows, (t) => { copiedText = t; }, permanentLines);
+		expect(releaseRes.handled).toBe(true);
+		expect(copiedText).toContain("这是第 0 行长长长长长的转录历史正文内容");
+		// 起始点击在 col 5，向上选中到第 0 行时，终点行第 15 行精准截断至 anchor col
+		expect(copiedText).toContain("这是第");
+		const copiedLineCount = copiedText.split("\n").length;
+		expect(copiedLineCount).toBe(16);
+	});
+
 	it("TimelineRail 导航轨刻度与 Hover 气泡卡片生成", async () => {
 		const { TimelineRailComponent } = await import("../src/ui/components/widgets/timeline-rail.js");
 		const rail = new TimelineRailComponent();
@@ -1589,6 +1647,31 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(host.getGutterMode()).toBe("scrollbar");
 			host.toggleGutterMode();
 			expect(host.getGutterMode()).toBe("timeline");
+		});
+
+		it("UIHost 自动滚屏定时器驱动与平稳停止", () => {
+			const host = new UIHost();
+			// 默认 lastMaxScroll 为 0，此时 startAutoScroll 不会无故起动计时器
+			host.startAutoScroll("up");
+			// 手动设置最大可滚动范围
+			(host as any).lastMaxScroll = 50;
+			(host as any).lastChatAreaH = 20;
+			(host as any).lastScrollStart = 30;
+
+			host.startAutoScroll("up");
+			expect((host as any).autoScrollTimer).not.toBeNull();
+			expect((host as any).autoScrollDirection).toBe("up");
+
+			// 停止自动滚屏
+			host.stopAutoScroll();
+			expect((host as any).autoScrollTimer).toBeNull();
+			expect((host as any).autoScrollDirection).toBeNull();
+
+			// 键盘输入应当立刻打断自动滚屏
+			host.startAutoScroll("up");
+			expect((host as any).autoScrollTimer).not.toBeNull();
+			(host as any).handleTerminalInput("a");
+			expect((host as any).autoScrollTimer).toBeNull();
 		});
 
 		it("ScrollbarGutterComponent 非滑块轨道保持纯净空格，绝无杂乱竖线 │", () => {

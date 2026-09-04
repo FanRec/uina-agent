@@ -135,10 +135,60 @@ export class UIHost implements UIHostContextPort {
 
 	private mouseTracker = new MouseSelectionTracker();
 	private lastRenderedRows: string[] = [];
+	private lastPermanentLines: string[] = [];
+	private lastScrollStart = 0;
+	private lastChatAreaH = 0;
+	private lastMaxScroll = 0;
+	private autoScrollTimer: NodeJS.Timeout | null = null;
+	private autoScrollDirection: "up" | "down" | null = null;
 	private exitPending = false;
 	private exitTimer: NodeJS.Timeout | null = null;
 	private copyToastText = "";
 	private copyToastTimer: NodeJS.Timeout | null = null;
+
+	startAutoScroll(direction: "up" | "down"): void {
+		if (this.autoScrollTimer && this.autoScrollDirection === direction) {
+			return;
+		}
+		this.stopAutoScroll();
+		if (direction === "up" && this.scrollOffset >= this.lastMaxScroll) {
+			return;
+		}
+		if (direction === "down" && this.scrollOffset <= 0) {
+			return;
+		}
+		this.autoScrollDirection = direction;
+		this.autoScrollTimer = setInterval(() => {
+			if (direction === "up") {
+				if (this.scrollOffset >= this.lastMaxScroll) {
+					this.stopAutoScroll();
+					return;
+				}
+				this.scrollOffset = Math.min(this.lastMaxScroll, this.scrollOffset + 1);
+				const newScrollStart = Math.max(0, this.lastScrollStart - 1);
+				this.mouseTracker.updateFocusContent(newScrollStart, 0);
+				this.renderCurrentFrame();
+			} else {
+				if (this.scrollOffset <= 0) {
+					this.stopAutoScroll();
+					return;
+				}
+				this.scrollOffset = Math.max(0, this.scrollOffset - 1);
+				const bottomRow = Math.max(0, this.lastChatAreaH - 1);
+				const newScrollStart = Math.min(this.lastMaxScroll, this.lastScrollStart + 1);
+				this.mouseTracker.updateFocusContent(newScrollStart + bottomRow, bottomRow);
+				this.renderCurrentFrame();
+			}
+		}, 60);
+	}
+
+	stopAutoScroll(): void {
+		if (this.autoScrollTimer) {
+			clearInterval(this.autoScrollTimer);
+			this.autoScrollTimer = null;
+		}
+		this.autoScrollDirection = null;
+	}
 
 	showCopyToast(text: string): void {
 		this.copyToastText = text;
@@ -182,7 +232,9 @@ export class UIHost implements UIHostContextPort {
 			} catch {}
 		}
 
-		this.showCopyToast(`已复制 ${text.length} 字符`);
+		const lineCount = text.split("\n").length;
+		const toast = lineCount > 1 ? `已复制 ${lineCount} 行 (${text.length} 字符)` : `已复制 ${text.length} 字符`;
+		this.showCopyToast(toast);
 	};
 
 	// 事件回调
@@ -282,6 +334,7 @@ export class UIHost implements UIHostContextPort {
 		if (!this.running) return;
 		this.running = false;
 		this.transcript.smoothReveal.setEnabled(false);
+		this.stopAutoScroll();
 		this.stopAnimation();
 		this.overlayStack.clear();
 		this.terminal.stop();
@@ -937,6 +990,12 @@ export class UIHost implements UIHostContextPort {
 		const allChatRows = [...visibleTranscript, ...gapLines];
 		const atBottom = this.scrollOffset === 0;
 
+		this.lastPermanentLines = permanentLines;
+		this.lastScrollStart = scrollStart;
+		this.lastChatAreaH = chatAreaH;
+		this.lastMaxScroll = maxScroll;
+		this.mouseTracker.setScrollContext(scrollStart, chatAreaH);
+
 		let railGlyphs: string[] = [];
 		let previewCard: { topRow: number; lines: string[] } | undefined;
 
@@ -1119,7 +1178,7 @@ export class UIHost implements UIHostContextPort {
 
 		// 9. 保存当前完整帧供鼠标选区提取，注入划词反色高亮并提交渲染
 		this.lastRenderedRows = fullScreenRows;
-		const finalRows = this.mouseTracker.applyHighlight(fullScreenRows);
+		const finalRows = this.mouseTracker.applyHighlight(fullScreenRows, scrollStart);
 		this.renderer.renderFrame(finalRows);
 	}
 
@@ -1128,6 +1187,7 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	private handleResize(): void {
+		this.stopAutoScroll();
 		this.requestRender();
 	}
 
@@ -1159,12 +1219,25 @@ export class UIHost implements UIHostContextPort {
 
 		// 1.5 鼠标 SGR 协议拦截（滚轮视口滚动、划词选区与交互热区）
 		if (data.startsWith("\x1b[<")) {
+			const isRelease = data.endsWith("m");
 			const res = this.mouseTracker.handleInput(
 				data,
 				this.lastRenderedRows,
 				this.onCopyOnSelect,
+				this.lastPermanentLines,
 			);
+			if (isRelease) {
+				this.stopAutoScroll();
+			}
 			if (res.handled) {
+				if (res.dragEdge === "top") {
+					this.startAutoScroll("up");
+				} else if (res.dragEdge === "bottom") {
+					this.startAutoScroll("down");
+				} else if (res.dragEdge === null && this.autoScrollTimer) {
+					this.stopAutoScroll();
+				}
+
 				if (res.hoverTargetId !== undefined) {
 					const hoveredThinkingTurn = res.hoverTargetId?.startsWith("thinking-")
 						? parseInt(res.hoverTargetId.replace("thinking-", ""), 10)
@@ -1227,7 +1300,8 @@ export class UIHost implements UIHostContextPort {
 			}
 		}
 
-		// 2. 全局快捷键拦截
+		// 2. 全局快捷键拦截（非鼠标交互立即停止自动滚屏）
+		this.stopAutoScroll();
 		if (data === "\x1b[Z" || matchesKey(data, Key.shiftTab)) {
 			this.onThinkingLevelCycle?.();
 			return;
