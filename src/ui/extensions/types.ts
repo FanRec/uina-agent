@@ -96,4 +96,10 @@ export interface ExtensionUIContext {
 
 	/** 监听终端原生键盘输入（返回取消监听函数） */
 	onTerminalInput(handler: (data: string) => void): () => void;
+
+	/** 获取右侧导航轨模式 (scrollbar / timeline) */
+	getGutterMode?(): "scrollbar" | "timeline";
+
+	/** 设置右侧导航轨模式 */
+	setGutterMode?(mode: "scrollbar" | "timeline"): void;
 }

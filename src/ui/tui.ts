@@ -131,6 +131,7 @@ export class InteractiveTUI {
 			case "tool_start": {
 				const callId = m.callId ?? `tool-${m.name}-${Date.now()}`;
 				this.toolCallMap.set(callId, { startedAt: Date.now(), name: m.name });
+				this.host.transcript.smoothReveal.snapToLatest();
 				this.host.transcript.commitThinking();
 				this.host.transcript.startTool(m.name, m.args, callId);
 				this.host.trajectoryProjection.onToolStart(m.name, m.args, callId);

@@ -327,6 +327,10 @@ export async function runApp(): Promise<void> {
 		setThinkingLevels: (levels?: readonly any[]) => tui!.host.setThinkingLevels(levels),
 		setReasoningEffort: (level?: any) => tui!.host.setReasoningEffort(level),
 		setUsage: (used: number, window?: number) => tui!.host.setUsage(used, window),
+		getGutterMode: () => tui!.host.getGutterMode(),
+		setGutterMode: (mode: "scrollbar" | "timeline") => tui!.host.setGutterMode(mode),
+		getScrollbarThumbStyle: () => tui!.host.getScrollbarThumbStyle(),
+		setScrollbarThumbStyle: (style: any) => tui!.host.setScrollbarThumbStyle(style),
 	} : undefined;
 
 	await extensionHost.activateBuiltin("commands", activateBuiltinCommands({

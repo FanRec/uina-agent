@@ -11,8 +11,9 @@ import { C, wrapTextWithAnsi, stripAnsi } from "../../core/utils.js";
 import { formatThinkingLines } from "./thinking-view.js";
 import { formatToolCardLines } from "./tool-view.js";
 import { formatFullMarkdown } from "./stream-markdown.js";
-import { formatUnifiedDiffCardLines } from "./diff-view.js";
+import { formatDiffCardLines } from "./diff-view.js";
 import { formatCompactionCardLines, type CompactionRecord } from "./compact-view.js";
+import { SmoothRevealController } from "./smooth-reveal.js";
 import { CustomMessageComponent } from "./custom-message.js";
 import { CustomEntryComponent } from "./custom-entry.js";
 import type { CustomMessage, CustomEntry, MessageRenderer, EntryRenderer } from "../../extensions/types.js";
@@ -107,6 +108,7 @@ export type TimelineItem =
 	| { kind: "customEntry"; entry: CustomEntry };
 
 export class TranscriptContainer implements Component {
+	readonly smoothReveal = new SmoothRevealController();
 	private readonly timeline: TimelineItem[] = [];
 	private readonly historyTurns: TurnRecord[] = [];
 	private currentTurn: TurnRecord | null = null;
@@ -156,8 +158,10 @@ export class TranscriptContainer implements Component {
 		const last = this.currentTurn.items.at(-1);
 		if (last && last.kind === "text") {
 			last.text += token;
+			this.smoothReveal.feed(`turn-${this.currentTurn.n}-text`, last.text);
 		} else {
 			this.currentTurn.items.push({ kind: "text", text: token });
+			this.smoothReveal.feed(`turn-${this.currentTurn.n}-text`, token);
 		}
 	}
 
@@ -294,6 +298,7 @@ export class TranscriptContainer implements Component {
 		};
 
 		for (const entry of entries) {
+			if ((entry as any).kind === "event") continue;
 			if (entry.kind === "custom_message") {
 				if (entry.display === false) continue;
 				commit();
@@ -332,7 +337,9 @@ export class TranscriptContainer implements Component {
 				continue;
 			}
 
+			if ((entry as { kind: string }).kind !== "message") continue;
 			const msg = entry.message;
+			if (!msg) continue;
 			if (msg.role === "user") {
 				commit();
 				pendingToolCalls = [];
@@ -422,6 +429,7 @@ export class TranscriptContainer implements Component {
 
 	private commitCurrentTurn(): void {
 		if (this.currentTurn) {
+			this.smoothReveal.snapToLatest(`turn-${this.currentTurn.n}-text`);
 			this.historyTurns.push(this.currentTurn);
 			this.timeline.push({ kind: "turn", turn: this.currentTurn });
 			this.currentTurn = null;
@@ -516,7 +524,7 @@ export class TranscriptContainer implements Component {
 
 		// 当前正在生成的活动轮次
 		if (this.currentTurn) {
-			this.renderTurn(this.currentTurn, width, lines, true);
+			this.renderTurn(this.currentTurn, width, lines, true, true);
 		}
 
 		return lines;
@@ -527,6 +535,7 @@ export class TranscriptContainer implements Component {
 		width: number,
 		out: string[],
 		showThinking = true,
+		isCurrent = false,
 	): void {
 		if (turn.userText) out.push(...this.formatUserLine(turn.userText, width));
 
@@ -540,12 +549,15 @@ export class TranscriptContainer implements Component {
 					out.push(...formatThinkingLines(item.text, collapsed, width, isHovered));
 				}
 			} else if (item.kind === "text") {
-				out.push(...this.formatAssistantMarkdown(item.text, width, !hasRenderedText));
+				const textToRender = isCurrent
+					? this.smoothReveal.getRevealedText(`turn-${turn.n}-text`, item.text, true)
+					: item.text;
+				out.push(...this.formatAssistantMarkdown(textToRender, width, !hasRenderedText));
 				hasRenderedText = true;
 			} else if (item.kind === "tool") {
 				out.push(...formatToolCardLines(item.name, item.result ?? "", item.elapsedMs ?? 0, width, item.status, item.args));
 			} else if (item.kind === "diff") {
-				out.push(...formatUnifiedDiffCardLines(item.oldText, item.newText, item.filename, item.collapsed ?? true, width));
+				out.push(...formatDiffCardLines(item.oldText, item.newText, item.filename, item.collapsed ?? true, width));
 			}
 		}
 	}
@@ -619,7 +631,7 @@ export class TranscriptContainer implements Component {
 					} else if (it.kind === "tool") {
 						turnOffset += formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args).length;
 					} else if (it.kind === "diff") {
-						turnOffset += formatUnifiedDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
+						turnOffset += formatDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
 					}
 				}
 				const turnLines: string[] = [];
@@ -655,7 +667,7 @@ export class TranscriptContainer implements Component {
 				} else if (it.kind === "tool") {
 					turnOffset += formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args).length;
 				} else if (it.kind === "diff") {
-					turnOffset += formatUnifiedDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
+					turnOffset += formatDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
 				}
 			}
 		}

@@ -22,6 +22,8 @@ export interface UIHostContextPort {
 	getEditorText(): string;
 	onTerminalInput(handler: (data: string) => void): () => void;
 	requestRender(): void;
+	getGutterMode?(): "scrollbar" | "timeline";
+	setGutterMode?(mode: "scrollbar" | "timeline"): void;
 }
 
 export function createExtensionUIContext(host: UIHostContextPort): ExtensionUIContext {
@@ -224,6 +226,14 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 
 		onTerminalInput(handler: (data: string) => void): () => void {
 			return host.onTerminalInput(handler);
+		},
+
+		getGutterMode(): "scrollbar" | "timeline" {
+			return host.getGutterMode?.() ?? "scrollbar";
+		},
+
+		setGutterMode(mode: "scrollbar" | "timeline"): void {
+			host.setGutterMode?.(mode);
 		},
 	};
 }

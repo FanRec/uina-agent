@@ -12,6 +12,15 @@ import { WidgetSlots } from "../src/ui/core/slots.js";
 import { CURSOR_MARKER } from "../src/ui/core/types.js";
 import { StreamMarkdownFormatter } from "../src/ui/components/transcript/stream-markdown.js";
 import { ContextBarComponent, allocateBarColumns, renderSegmentedBar } from "../src/ui/components/widgets/context-bar.js";
+import { ScrollbarGutterComponent } from "../src/ui/components/widgets/scrollbar-gutter.js";
+import { TimelineRailComponent } from "../src/ui/components/widgets/timeline-rail.js";
+import { SmoothRevealController, revealStep, safeSliceEnd } from "../src/ui/components/transcript/smooth-reveal.js";
+import {
+	computeWordDiff,
+	alignSplitDiff,
+	formatSplitDiffCardLines,
+	formatDiffCardLines,
+} from "../src/ui/components/transcript/diff-view.js";
 import { ActivityLineComponent, formatTpsGauge, formatTpsSparkline } from "../src/ui/components/widgets/activity-line.js";
 import { InputLine, segmentWithMarkers, snapCursorToMarkerBoundary } from "../src/ui/components/editor/input-line.js";
 import { calculateContextSegments } from "../src/agent/context.js";
@@ -1523,6 +1532,193 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			// 彻底去除底边框已有的冗余重复数据
 			expect(line).not.toContain("7.7%");
 			expect(line).not.toContain("9.5k/124.0k");
+		});
+	});
+
+	describe("Phase 2: Scrollbar Gutter, Smooth Reveal, and Split Diff", () => {
+		it("ScrollbarGutterComponent 正确映射比例几何与滑块高度", () => {
+			const gutter = new ScrollbarGutterComponent();
+			// viewport: 20, content: 100, scrollTop: 0 (顶部)
+			const geoTop = gutter.computeGeometry(20, 100, 0);
+			expect(geoTop).not.toBeNull();
+			// thumbH = round(20*20 / 100) = 4
+			expect(geoTop!.thumbH).toBe(4);
+			expect(geoTop!.thumbTop).toBe(0);
+			expect(geoTop!.thumbBottom).toBe(4);
+			expect(geoTop!.maxScroll).toBe(80);
+
+			// scrollTop 滚到底部 (80)
+			const geoBottom = gutter.computeGeometry(20, 100, 80);
+			expect(geoBottom!.thumbBottom).toBe(20);
+			expect(geoBottom!.thumbTop).toBe(16); // 20 - 4
+
+			// 点击行映射回 scrollTop
+			expect(gutter.mapRowToScrollTop(0, geoTop!)).toBe(0);
+			expect(gutter.mapRowToScrollTop(16, geoTop!)).toBe(80);
+		});
+
+		it("ScrollbarGutterComponent 渲染纤细雅致滑块与悬停位置气泡片", () => {
+			const gutter = new ScrollbarGutterComponent();
+			expect(gutter.getThumbStyle()).toBe("slim");
+			const res = gutter.renderGutterRows(20, 100, 40);
+			expect(res.gutterGlyphs.length).toBe(20);
+			// 默认 thumb 字符为纤细右半方块 ▐，闲置色为 C.subtle
+			const thumbRows = res.gutterGlyphs.filter((g) => g.includes("▐"));
+			expect(thumbRows.length).toBe(4);
+			expect(thumbRows.some((g) => g.includes("\x1b[38;2;94;102;115m"))).toBe(true);
+
+			// 支持切换为 wide 宽幅模式
+			gutter.setThumbStyle("wide");
+			const wideRes = gutter.renderGutterRows(20, 100, 40);
+			expect(wideRes.gutterGlyphs.filter((g) => g.includes("██")).length).toBe(4);
+
+			// 悬停时生成位置卡片气泡并点亮 claude 色
+			gutter.setThumbStyle("slim");
+			gutter.setHover(10);
+			const hoveredRes = gutter.renderGutterRows(20, 100, 40);
+			expect(hoveredRes.hoverChip).toBeDefined();
+			expect(hoveredRes.hoverChip!.lines[0]).toContain("%");
+			expect(hoveredRes.hoverChip!.lines[0]).toContain("/100");
+			expect(hoveredRes.gutterGlyphs[10]).toContain("\x1b[38;2;125;161;222m"); // C.claude
+		});
+
+		it("UIHost 默认使用 timeline 模式，并支持与 scrollbar 相互切换", () => {
+			const host = new UIHost();
+			expect(host.getGutterMode()).toBe("timeline");
+			host.setGutterMode("scrollbar");
+			expect(host.getGutterMode()).toBe("scrollbar");
+			host.toggleGutterMode();
+			expect(host.getGutterMode()).toBe("timeline");
+		});
+
+		it("ScrollbarGutterComponent 非滑块轨道保持纯净空格，绝无杂乱竖线 │", () => {
+			const gutter = new ScrollbarGutterComponent();
+			gutter.setHover(5);
+			const res = gutter.renderGutterRows(20, 100, 40);
+			// 确保没有任何行包含 │
+			for (const g of res.gutterGlyphs) {
+				expect(g.includes("│")).toBe(false);
+			}
+		});
+
+		it("TimelineRailComponent 严格使用 TrueColor，无纯黑或 dim 字符，正确呈现 ▴ / ▾ 与刻度线", () => {
+			const rail = new TimelineRailComponent();
+			rail.updateTurns([
+				{ n: 1, userText: "问题一" },
+				{ n: 2, userText: "问题二" },
+			], 2);
+			const res = rail.renderRailRows(20, true, true, false);
+			// 包含顶底小三角 ▴ / ▾
+			expect(res.railGlyphs.some((g) => g.includes("▴"))).toBe(true);
+			expect(res.railGlyphs.some((g) => g.includes("▾"))).toBe(true);
+			// 包含活跃粗刻度 ━━ 与闲置刻度 ─
+			expect(res.railGlyphs.some((g) => g.includes("━━"))).toBe(true);
+			expect(res.railGlyphs.some((g) => g.includes("─"))).toBe(true);
+			// 严格绝不出现 C.dim (\x1b[2m) 或 C.gray (\x1b[90m)，防止在深色终端黑屏不可见
+			for (const g of res.railGlyphs) {
+				expect(g.includes("\x1b[2m")).toBe(false);
+				expect(g.includes("\x1b[90m")).toBe(false);
+			}
+		});
+
+		it("TimelineRailComponent 限制最大刻度密度至 24 行并保持垂直居中空隙与 subtle 柔和灰蓝", () => {
+			const rail = new TimelineRailComponent();
+			const turns = Array.from({ length: 50 }, (_, i) => ({ n: i + 1, userText: `用户轮次 ${i + 1}` }));
+			rail.updateTurns(turns, 50);
+
+			// 模拟高屏终端高度 46 行
+			const geo = rail.getGeometry(46, true);
+			expect(geo).not.toBeNull();
+			// 刻度总数限制在 24 行，绝不全屏撑满 44 行造成视觉压抑
+			expect(geo!.shown).toBe(24);
+			// 整体居中悬浮：blockTop = (46 - (24 + 2)) / 2 = 10，顶底各有 10 行留白
+			expect(geo!.upRow).toBe(10);
+			expect(geo!.tickTop).toBe(11);
+			expect(geo!.downRow).toBe(35);
+
+			const res = rail.renderRailRows(46, true, true, false);
+			// 闲置刻度严格使用 C.subtle (\x1b[38;2;94;102;115m)
+			expect(res.railGlyphs.some((g) => g.includes("\x1b[38;2;94;102;115m ─"))).toBe(true);
+			// 活跃刻度使用 C.bold + C.text
+			expect(res.railGlyphs.some((g) => g.includes("━━"))).toBe(true);
+			// 顶底空隙应为纯空白占位
+			expect(res.railGlyphs[0]).toBe("  ");
+			expect(res.railGlyphs[9]).toBe("  ");
+			expect(res.railGlyphs[36]).toBe("  ");
+			expect(res.railGlyphs[45]).toBe("  ");
+		});
+
+		it("SmoothReveal revealStep 算法严格按照指数级追赶", () => {
+			expect(revealStep(0)).toBe(3); // MIN_STEP
+			expect(revealStep(8)).toBe(3); // ceil(8/8) = 1, min = 3
+			expect(revealStep(32)).toBe(4); // ceil(32/8) = 4
+			expect(revealStep(80)).toBe(10); // ceil(80/8) = 10
+			expect(revealStep(800)).toBe(100);
+		});
+
+		it("SmoothReveal safeSliceEnd 正确保护 UTF-16 代理对不被撕裂", () => {
+			const text = "你好👋世界";
+			// 👋 的 unicode 范围是代理对 (high surrogate + low surrogate)
+			// '你好'.length = 2, '👋'.length = 2 ('你好👋'.length = 4)
+			// 如果尝试切在第 3 个 code unit (在代理对中间)
+			const safe = safeSliceEnd(text, 3);
+			// 代理对高位在 index 2，低位在 index 3，safeSliceEnd 应包含整对 (4)
+			expect(safe).toBe(4);
+			expect(text.slice(0, safe)).toBe("你好👋");
+		});
+
+		it("SmoothRevealController 流式渐进揭示与 snapToLatest 快进", () => {
+			const controller = new SmoothRevealController({ enabled: true });
+			const key = "test-turn";
+			const fullText = "这是一段很长的大模型回复文本，用于测试流式平滑揭示效果。";
+
+			controller.feed(key, fullText);
+			const step1 = controller.getRevealedText(key, fullText, true);
+			expect(step1.length).toBeLessThan(fullText.length);
+			expect(step1.length).toBeGreaterThan(0);
+
+			// 快进
+			controller.snapToLatest(key);
+			const finalStep = controller.getRevealedText(key, fullText, true);
+			expect(finalStep).toBe(fullText);
+			expect(controller.isSettled(key)).toBe(true);
+		});
+
+		it("computeWordDiff 正确提取公共缩进并高亮变更词段", () => {
+			const oldLine = "  const foo = 123;";
+			const newLine = "  const foo = 456;";
+			const diff = computeWordDiff(oldLine, newLine);
+			expect(diff.oldFormatted).toContain("  "); // 保留前导空格
+			expect(diff.oldFormatted).toContain("123");
+			expect(diff.newFormatted).toContain("456");
+		});
+
+		it("alignSplitDiff 将增删块配对为并排双栏行数组", () => {
+			const oldText = "line1\nline2_old\nline3";
+			const newText = "line1\nline2_new\nline3";
+			const { rows, addCount, delCount } = alignSplitDiff(oldText, newText);
+			expect(addCount).toBe(1);
+			expect(delCount).toBe(1);
+			expect(rows.length).toBe(3);
+			expect(rows[0]!.kind).toBe("same");
+			expect(rows[1]!.kind).toBe("change");
+			expect(rows[1]!.oldLine).toBe("line2_old");
+			expect(rows[1]!.newLine).toBe("line2_new");
+			expect(rows[2]!.kind).toBe("same");
+		});
+
+		it("formatSplitDiffCardLines 在 >=80 宽时生成对称双栏并排视图，<80 宽时自动降级", () => {
+			const oldText = "function test() {\n  return 1;\n}";
+			const newText = "function test() {\n  return 2;\n}";
+			// 宽屏 (100 列)：双栏视图
+			const splitLines = formatSplitDiffCardLines(oldText, newText, "test.ts", false, 100);
+			expect(splitLines.some((l) => l.includes("split diff"))).toBe(true);
+			expect(splitLines.some((l) => l.includes("│"))).toBe(true);
+
+			// 窄屏 (60 列)：自动降级为 unified diff
+			const narrowLines = formatDiffCardLines(oldText, newText, "test.ts", false, 60);
+			expect(narrowLines.some((l) => l.includes("(diff)"))).toBe(true);
+			expect(narrowLines.some((l) => l.includes("(split diff)"))).toBe(false);
 		});
 	});
 });

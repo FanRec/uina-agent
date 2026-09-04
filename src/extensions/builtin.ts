@@ -25,6 +25,10 @@ export interface BuiltinUI {
 	setThinkingLevels?(levels?: readonly ThinkingLevel[]): void;
 	setReasoningEffort?(level?: ThinkingLevel): void;
 	setUsage?(used: number, window?: number): void;
+	getGutterMode?(): "scrollbar" | "timeline";
+	setGutterMode?(mode: "scrollbar" | "timeline"): void;
+	getScrollbarThumbStyle?(): "slim" | "block" | "wide";
+	setScrollbarThumbStyle?(style: "slim" | "block" | "wide"): void;
 }
 
 export interface BuiltinServices {
@@ -57,6 +61,39 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			name: "clear",
 			description: "清空当前屏幕转录流",
 			handler: () => ui?.clear(),
+		});
+
+		pi.registerCommand({
+			name: "gutter",
+			description: "切换右侧导航轨模式与滑块样式 (scrollbar|timeline [slim|block|wide])",
+			hasArgs: true,
+			argumentHint: "[scrollbar|timeline] [slim|block|wide]",
+			handler: (arg) => {
+				if (!ui) return;
+				const parts = arg?.trim().toLowerCase().split(/\s+/) ?? [];
+				const first = parts[0];
+				const second = parts[1];
+
+				if (first === "slim" || first === "block" || first === "wide") {
+					ui.setGutterMode?.("scrollbar");
+					ui.setScrollbarThumbStyle?.(first);
+					pi.ui.notify(`已切换滚动条滑块样式为: ${first === "slim" ? "纤细优雅 ( ▐)" : first === "block" ? "单列方块 ( █)" : "双列宽方块 (██)"}`);
+					return;
+				}
+
+				if (first === "scrollbar" || first === "timeline") {
+					ui.setGutterMode?.(first);
+					if (first === "scrollbar" && (second === "slim" || second === "block" || second === "wide")) {
+						ui.setScrollbarThumbStyle?.(second);
+					}
+					pi.ui.notify(`已切换右侧导航轨为: ${first === "scrollbar" ? "视口比例滚动条 (Scrollbar)" : "时间线轮次轨 (Timeline)"}${second ? ` [${second}]` : ""}`);
+				} else {
+					const current = ui.getGutterMode?.() ?? "scrollbar";
+					const next = current === "scrollbar" ? "timeline" : "scrollbar";
+					ui.setGutterMode?.(next);
+					pi.ui.notify(`已切换右侧导航轨为: ${next === "scrollbar" ? "视口比例滚动条 (Scrollbar)" : "时间线轮次轨 (Timeline)"}`);
+				}
+			},
 		});
 
 		pi.registerCommand({

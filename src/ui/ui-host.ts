@@ -23,6 +23,7 @@ import { TranscriptContainer } from "./components/transcript/transcript.js";
 import { ActivityLineComponent } from "./components/widgets/activity-line.js";
 import { ContextBarComponent, formatCacheHitRate, type ContextSegments } from "./components/widgets/context-bar.js";
 import { TimelineRailComponent } from "./components/widgets/timeline-rail.js";
+import { ScrollbarGutterComponent } from "./components/widgets/scrollbar-gutter.js";
 import { HelpMenu } from "./components/overlays/help-menu.js";
 import { ModelPicker, type ModelGroup } from "./components/overlays/model-picker.js";
 import { EffortSlider, DEFAULT_EFFORT_TIERS, type EffortTier } from "./components/overlays/effort-slider.js";
@@ -84,6 +85,10 @@ export class UIHost implements UIHostContextPort {
 	readonly activityLine: ActivityLineComponent;
 	readonly contextBar: ContextBarComponent;
 	readonly timelineRail: TimelineRailComponent;
+	readonly scrollbarGutter: ScrollbarGutterComponent;
+	private gutterMode: "timeline" | "scrollbar" = "timeline";
+	private upTurnN: number | null = null;
+	private downTurnN: number | null = null;
 
 	// 状态投影
 	readonly trajectoryProjection: TrajectoryProjection;
@@ -222,6 +227,7 @@ export class UIHost implements UIHostContextPort {
 		this.rootContainer = new Container();
 		this.headerContainer = new Container();
 		this.transcript = new TranscriptContainer();
+		this.transcript.smoothReveal.setOnTick(() => this.requestRender());
 		this.transcript.setRendererResolver({
 			message: (type) => this.registry.getMessageRenderer(type),
 			entry: (type) => this.registry.getEntryRenderer(type),
@@ -249,6 +255,7 @@ export class UIHost implements UIHostContextPort {
 		this.activityLine = new ActivityLineComponent();
 		this.contextBar = new ContextBarComponent();
 		this.timelineRail = new TimelineRailComponent();
+		this.scrollbarGutter = new ScrollbarGutterComponent();
 
 		this.rootContainer.addChild(this.headerContainer);
 		this.rootContainer.addChild(this.transcript);
@@ -261,6 +268,7 @@ export class UIHost implements UIHostContextPort {
 	start(): void {
 		if (this.running) return;
 		this.running = true;
+		this.transcript.smoothReveal.setEnabled(true);
 
 		this.terminal.start(
 			(data) => this.handleTerminalInput(data),
@@ -273,6 +281,7 @@ export class UIHost implements UIHostContextPort {
 	stop(): void {
 		if (!this.running) return;
 		this.running = false;
+		this.transcript.smoothReveal.setEnabled(false);
 		this.stopAnimation();
 		this.overlayStack.clear();
 		this.terminal.stop();
@@ -327,6 +336,28 @@ export class UIHost implements UIHostContextPort {
 
 	getStreamTokenCount(): number {
 		return this.streamTokenCount;
+	}
+
+	setGutterMode(mode: "timeline" | "scrollbar"): void {
+		this.gutterMode = mode;
+		this.requestRender();
+	}
+
+	getGutterMode(): "timeline" | "scrollbar" {
+		return this.gutterMode;
+	}
+
+	toggleGutterMode(): void {
+		this.setGutterMode(this.gutterMode === "timeline" ? "scrollbar" : "timeline");
+	}
+
+	getScrollbarThumbStyle(): import("./components/widgets/scrollbar-gutter.js").ScrollbarThumbStyle {
+		return this.scrollbarGutter.getThumbStyle();
+	}
+
+	setScrollbarThumbStyle(style: import("./components/widgets/scrollbar-gutter.js").ScrollbarThumbStyle): void {
+		this.scrollbarGutter.setThumbStyle(style);
+		this.requestRender();
 	}
 
 	setBusy(busy: boolean): void {
@@ -408,11 +439,19 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	scrollTurnUp(): void {
-		this.scrollUp(5);
+		if (this.upTurnN !== null) {
+			this.scrollToTurn(this.upTurnN);
+		} else {
+			this.scrollUp(5);
+		}
 	}
 
 	scrollTurnDown(): void {
-		this.scrollDown(5);
+		if (this.downTurnN !== null) {
+			this.scrollToTurn(this.downTurnN);
+		} else {
+			this.scrollDown(5);
+		}
 	}
 
 	replaceInput(text: string): void {
@@ -815,14 +854,16 @@ export class UIHost implements UIHostContextPort {
 		const breathingGap = 1;
 		const transcriptH = Math.max(0, height - inputH - belowH - aboveH - breathingGap);
 
-		// 6. 渲染永久历史行（为右侧 TimelineRail 预留 2 列）
-		const transcriptContentW = Math.max(20, innerW - 2);
+		// 6. 渲染永久历史行（对齐输入框宽度，为右侧 2 列导航轨留出空间并规避终端边界裁剪）
+		const safeW = Math.max(20, innerW - 1);
+		const transcriptContentW = Math.max(18, safeW - 2);
 		const bannerLines = this.headerContainer.render(transcriptContentW).map((l) => (l ? `${margin}${l}` : ""));
 		const transcriptLines = this.transcript.render(transcriptContentW).map((l) => (l ? `${margin}${l}` : ""));
 		const permanentLines = [...bannerLines, ...transcriptLines];
 		const totalPerm = permanentLines.length;
 
 		// 7. 滚动视口处理
+		const maxScroll = Math.max(0, totalPerm - transcriptH);
 		let visibleTranscript: string[] = [];
 		let scrollStart = 0;
 		if (totalPerm <= transcriptH) {
@@ -831,7 +872,6 @@ export class UIHost implements UIHostContextPort {
 			this.scrollOffset = 0;
 			scrollStart = 0;
 		} else {
-			const maxScroll = totalPerm - transcriptH;
 			const effScroll = Math.max(0, Math.min(this.scrollOffset, maxScroll));
 			this.scrollOffset = effScroll;
 			scrollStart = totalPerm - transcriptH - effScroll;
@@ -849,13 +889,28 @@ export class UIHost implements UIHostContextPort {
 		const bannerCount = bannerLines.length;
 
 		let activeTurnN: number | null = null;
+		let upTurnN: number | null = null;
+		let downTurnN: number | null = null;
+
 		for (const [turnN, lineOffset] of turnStartMap.entries()) {
 			const absLine = bannerCount + lineOffset;
-			if (absLine >= scrollStart && absLine < scrollStart + transcriptH) {
+			if (absLine <= scrollStart) {
 				activeTurnN = turnN;
-				break;
+			}
+			if (absLine < scrollStart) {
+				upTurnN = turnN;
+			}
+			if (absLine > scrollStart && absLine <= maxScroll && downTurnN === null) {
+				downTurnN = turnN;
 			}
 		}
+
+		if (activeTurnN === null && timelineTurns.length > 0) {
+			activeTurnN = timelineTurns[0]!.n;
+		}
+
+		this.upTurnN = upTurnN;
+		this.downTurnN = downTurnN;
 
 		// 8. 组装整屏行数组（转录区 + 填充空白 + 提示条）
 		let toastStr = "";
@@ -882,11 +937,23 @@ export class UIHost implements UIHostContextPort {
 		const allChatRows = [...visibleTranscript, ...gapLines];
 		const atBottom = this.scrollOffset === 0;
 
-		this.timelineRail.updateTurns(timelineTurns, activeTurnN);
-		const { railGlyphs, previewCard } = this.timelineRail.renderRailRows(chatAreaH, atBottom);
+		let railGlyphs: string[] = [];
+		let previewCard: { topRow: number; lines: string[] } | undefined;
+
+		if (this.gutterMode === "scrollbar") {
+			const scrollRes = this.scrollbarGutter.renderGutterRows(chatAreaH, totalPerm, scrollStart);
+			railGlyphs = scrollRes.gutterGlyphs;
+			previewCard = scrollRes.hoverChip;
+		} else {
+			this.timelineRail.updateTurns(timelineTurns, activeTurnN);
+			const tlRes = this.timelineRail.renderRailRows(chatAreaH, atBottom, upTurnN !== null, downTurnN !== null);
+			railGlyphs = tlRes.railGlyphs;
+			previewCard = tlRes.previewCard;
+		}
 
 		for (let r = 0; r < chatAreaH; r++) {
-			const baseLine = allChatRows[r] ?? "";
+			const rawLine = allChatRows[r] ?? "";
+			const baseLine = truncateToWidth(rawLine, transcriptContentW, " ");
 			const pad = Math.max(0, transcriptContentW - visibleWidth(baseLine));
 			allChatRows[r] = `${baseLine}${" ".repeat(pad)}${railGlyphs[r] ?? "  "}`;
 		}
@@ -897,7 +964,7 @@ export class UIHost implements UIHostContextPort {
 				if (targetRow < chatAreaH) {
 					const cardLine = previewCard.lines[i]!;
 					const cardW = visibleWidth(cardLine);
-					const cardStartCol = Math.max(0, innerW - 2 - cardW - 1);
+					const cardStartCol = Math.max(0, transcriptContentW - cardW - 1);
 					const baseLine = allChatRows[targetRow]!;
 					const contentWithoutRail = truncateToWidth(baseLine, transcriptContentW, " ");
 					const overlaid = overlayCard(contentWithoutRail, cardLine, cardStartCol, transcriptContentW);
@@ -941,34 +1008,54 @@ export class UIHost implements UIHostContextPort {
 			}
 		}
 
-		// (2) 注册 TimelineRail 导航轨交互（垂直居中对齐）
-		const railGeo = this.timelineRail.getGeometry(chatAreaH, atBottom);
-		if (railGeo && timelineTurns.length > 0) {
-			interactiveTargets.push({
-				id: "rail-up",
-				row: railGeo.upRow,
-				colStart: innerW - 2,
-				colEnd: innerW,
-				onClick: () => this.scrollTurnUp(),
-			});
-			interactiveTargets.push({
-				id: "rail-down",
-				row: railGeo.downRow,
-				colStart: innerW - 2,
-				colEnd: innerW,
-				onClick: () => this.scrollTurnDown(),
-			});
-			for (let k = 0; k < railGeo.shown; k++) {
-				const screenRow = railGeo.tickTop + k;
-				const turn = timelineTurns[railGeo.windowStart + k];
-				if (turn) {
-					interactiveTargets.push({
-						id: `rail-tick-${turn.n}`,
-						row: screenRow,
-						colStart: innerW - 2,
-						colEnd: innerW,
-						onClick: () => this.scrollToTurn(turn.n),
-					});
+		// (2) 注册右侧 Gutter 交互（ScrollbarGutter 或 TimelineRail）
+		if (this.gutterMode === "scrollbar") {
+			for (let r = 0; r < chatAreaH; r++) {
+				interactiveTargets.push({
+					id: `scrollbar-row-${r}`,
+					row: r,
+					colStart: safeW - 2,
+					colEnd: safeW,
+					onClick: () => {
+						const currentGeo = this.scrollbarGutter.computeGeometry(chatAreaH, totalPerm, scrollStart);
+						if (currentGeo) {
+							const targetContentTop = this.scrollbarGutter.mapRowToScrollTop(r, currentGeo);
+							const targetOffset = Math.max(0, maxScroll - targetContentTop);
+							this.scrollOffset = targetOffset;
+							this.requestRender();
+						}
+					},
+				});
+			}
+		} else {
+			const railGeo = this.timelineRail.getGeometry(chatAreaH, atBottom);
+			if (railGeo && timelineTurns.length > 0) {
+				interactiveTargets.push({
+					id: "rail-up",
+					row: railGeo.upRow,
+					colStart: safeW - 2,
+					colEnd: safeW,
+					onClick: () => this.scrollTurnUp(),
+				});
+				interactiveTargets.push({
+					id: "rail-down",
+					row: railGeo.downRow,
+					colStart: safeW - 2,
+					colEnd: safeW,
+					onClick: () => this.scrollTurnDown(),
+				});
+				for (let k = 0; k < railGeo.shown; k++) {
+					const screenRow = railGeo.tickTop + k;
+					const turn = timelineTurns[railGeo.windowStart + k];
+					if (turn) {
+						interactiveTargets.push({
+							id: `rail-tick-${turn.n}`,
+							row: screenRow,
+							colStart: safeW - 2,
+							colEnd: safeW,
+							onClick: () => this.scrollToTurn(turn.n),
+						});
+					}
 				}
 			}
 		}
@@ -1014,7 +1101,7 @@ export class UIHost implements UIHostContextPort {
 				startRow: 0,
 				endRow: Math.max(0, visibleTranscript.length - 1),
 				colStart: 0,
-				colEnd: Math.max(0, innerW - 2),
+				colEnd: Math.max(0, safeW - 2),
 			},
 		];
 
@@ -1105,10 +1192,23 @@ export class UIHost implements UIHostContextPort {
 							this.timelineRail.setHover(target.row);
 						}
 						this.requestRender();
+					} else if (res.hoverTargetId?.startsWith("scrollbar-row-")) {
+						const row = parseInt(res.hoverTargetId.replace("scrollbar-row-", ""), 10);
+						if (this.scrollbarGutter.setHover(row)) {
+							this.requestRender();
+						}
 					} else {
+						let needReq = false;
 						if (this.timelineRail.getHoverRow() !== null || this.timelineRail.getHoverTurnN() !== null) {
 							this.timelineRail.setHoverTurnN(null);
 							this.timelineRail.setHover(null);
+							needReq = true;
+						}
+						if (this.scrollbarGutter.getHoverRow() !== null) {
+							this.scrollbarGutter.clearHover();
+							needReq = true;
+						}
+						if (needReq) {
 							this.requestRender();
 						}
 					}

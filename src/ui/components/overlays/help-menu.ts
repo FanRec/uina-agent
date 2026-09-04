@@ -83,6 +83,7 @@ export class HelpMenu implements Component, Focusable {
 					["/trajectory, /traj", "全屏事件时序与性能热点剖析"],
 					["/compact", "会话压缩与释放上下文"],
 					["/diff", "展开/折叠差异对比"],
+					["/gutter", "切换滚动条与轮次轨 (scrollbar/timeline)"],
 					["/clear", "清屏并重置当前历史"],
 					["/quit, /exit", "退出终端助手"],
 				];
