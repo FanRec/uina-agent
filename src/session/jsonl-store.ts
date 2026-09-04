@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { access, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import type { ChatMsg } from "../core/types.js";
+import type { AgentMessage, ChatMsg } from "../core/types.js";
 import {
 	isRecord,
 	recoverRecords,
@@ -58,7 +58,7 @@ export class JsonlSessionStore implements SessionStore {
 		private nextSeq: number,
 	) {}
 
-	appendMessage(message: ChatMsg): Promise<void> {
+	appendMessage(message: AgentMessage | ChatMsg): Promise<void> {
 		return this.append({
 			kind: "message",
 			id: randomUUID(),
@@ -78,7 +78,7 @@ export class JsonlSessionStore implements SessionStore {
 
 	appendCompaction(
 		summary: string,
-		retainedTail: ChatMsg[],
+		retainedTail: (AgentMessage | ChatMsg)[],
 		tokensBefore: number,
 	): Promise<void> {
 		const record: SessionCompactionRecord = {
@@ -129,7 +129,7 @@ export class MemorySessionStore implements SessionStore {
 	readonly path = ":memory:";
 	readonly records: SessionRecord[] = [];
 
-	appendMessage(message: ChatMsg): Promise<void> {
+	appendMessage(message: AgentMessage | ChatMsg): Promise<void> {
 		this.records.push({
 			kind: "message",
 			id: randomUUID(),
@@ -152,7 +152,7 @@ export class MemorySessionStore implements SessionStore {
 
 	appendCompaction(
 		summary: string,
-		retainedTail: ChatMsg[],
+		retainedTail: (AgentMessage | ChatMsg)[],
 		tokensBefore: number,
 	): Promise<void> {
 		this.records.push({
