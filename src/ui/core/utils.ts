@@ -217,13 +217,14 @@ export function wrapTextWithAnsi(text: string, maxWidth: number): string[] {
 
 	for (const rawLine of lines) {
 		if (visibleWidth(rawLine) <= maxWidth) {
-			output.push(`${currentStyle}${rawLine}`);
+			const lineToPush = currentStyle ? `${currentStyle}${rawLine}` : rawLine;
+			output.push(currentStyle && !lineToPush.endsWith(C.reset) ? `${lineToPush}${C.reset}` : lineToPush);
 			// 扫描这行有没有产生新的 style
 			const matches = rawLine.match(/\x1b\[[0-9;]*m/g);
 			if (matches) {
 				for (const m of matches) {
 					if (m === "\x1b[0m") currentStyle = "";
-					else currentStyle += m;
+					else currentStyle = m;
 				}
 			}
 			continue;
@@ -238,12 +239,12 @@ export function wrapTextWithAnsi(text: string, maxWidth: number): string[] {
 			if (ansi) {
 				curLine += ansi.code;
 				if (ansi.code === "\x1b[0m") currentStyle = "";
-				else if (ansi.code.endsWith("m")) currentStyle += ansi.code;
+				else if (ansi.code.endsWith("m")) currentStyle = ansi.code;
 				i += ansi.length;
 				continue;
 			}
 
-			const char = rawLine[i];
+			const char = rawLine[i]!;
 			const w = charWidth(char);
 
 			if (curWidth + w > maxWidth) {
@@ -258,7 +259,7 @@ export function wrapTextWithAnsi(text: string, maxWidth: number): string[] {
 		}
 
 		if (curLine) {
-			output.push(curLine);
+			output.push(currentStyle && !curLine.endsWith(C.reset) ? `${curLine}${C.reset}` : curLine);
 		}
 	}
 
@@ -285,4 +286,35 @@ export function getContentBoxWidth(innerW: number, slack = 4): number {
 	if (innerW < 130) return Math.max(56, innerW - slack);
 	if (innerW < 170) return Math.max(80, innerW - Math.max(slack, 8));
 	return Math.max(100, innerW - Math.max(slack, 12));
+}
+
+export const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+export function getPrevGraphemeIndex(text: string, cursorIndex: number): number {
+	if (cursorIndex <= 0) return 0;
+	const segments = Array.from(graphemeSegmenter.segment(text));
+	let prevIndex = 0;
+	for (const seg of segments) {
+		if (seg.index < cursorIndex) {
+			prevIndex = seg.index;
+		} else {
+			break;
+		}
+	}
+	return prevIndex;
+}
+
+export function getNextGraphemeIndex(text: string, cursorIndex: number): number {
+	if (cursorIndex >= text.length) return text.length;
+	const segments = Array.from(graphemeSegmenter.segment(text));
+	for (const seg of segments) {
+		if (seg.index > cursorIndex) {
+			return seg.index;
+		}
+		const end = seg.index + seg.segment.length;
+		if (end > cursorIndex) {
+			return end;
+		}
+	}
+	return text.length;
 }

@@ -25,7 +25,17 @@ export class HelpMenu implements Component, Focusable {
 	}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.escape) || data) {
+		// 忽略终端鼠标报告序列 (SGR 模式 \x1b[<... 或 X10 \x1b[M...)
+		if (data.startsWith("\x1b[<") || data.startsWith("\x1b[M")) {
+			return;
+		}
+		if (
+			matchesKey(data, Key.escape) ||
+			matchesKey(data, Key.enter) ||
+			data === "q" ||
+			data === "Q" ||
+			(!data.startsWith("\x1b") && data.length > 0)
+		) {
 			this.onClose?.();
 		}
 	}
@@ -82,7 +92,6 @@ export class HelpMenu implements Component, Focusable {
 					["/tasks, /jobs", "后台作业与进程管理看板"],
 					["/trajectory, /traj", "全屏事件时序与性能热点剖析"],
 					["/compact", "会话压缩与释放上下文"],
-					["/diff", "展开/折叠差异对比"],
 					["/gutter", "切换滚动条与轮次轨 (scrollbar/timeline)"],
 					["/clear", "清屏并重置当前历史"],
 					["/quit, /exit", "退出终端助手"],
@@ -127,7 +136,7 @@ export class HelpMenu implements Component, Focusable {
 		}
 
 		output.push(`  ${borderCol}├${"─".repeat(boxWidth - 2)}┤${C.reset}`);
-		const hintText = `${C.dim}按 Esc 或键入任意字符即刻收起抽屉${C.reset}`;
+		const hintText = `${C.dim}按 Esc、Enter 或 q 即刻收起抽屉${C.reset}`;
 		const hintPad = Math.max(0, innerW - visibleWidth(hintText));
 		output.push(`  ${borderCol}│${C.reset} ${hintText}${" ".repeat(hintPad)} ${borderCol}│${C.reset}`);
 

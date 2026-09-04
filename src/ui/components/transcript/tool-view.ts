@@ -7,7 +7,6 @@
  * 4. 彻底消除前导多余空格，完全左对齐。
  */
 
-import type { Component } from "../../core/types.js";
 import { C, truncateToWidth } from "../../core/utils.js";
 
 export function formatToolCardLines(
@@ -123,40 +122,4 @@ export function formatToolCardLines(
 
 	lines.push("");
 	return lines;
-}
-
-export class ActiveToolComponent implements Component {
-	private name = "";
-	private args: unknown = null;
-	private active = false;
-
-	start(name: string, args: unknown): void {
-		this.name = name;
-		this.args = args;
-		this.active = true;
-	}
-
-	clear(): void {
-		this.active = false;
-		this.name = "";
-		this.args = null;
-	}
-
-	render(width: number): string[] {
-		if (!this.active) return [];
-		const maxW = Math.max(20, width);
-		let argStr = "";
-		try {
-			argStr = JSON.stringify(this.args ?? {});
-		} catch {
-			argStr = String(this.args);
-		}
-		if (argStr === "{}") argStr = "";
-		const shortArg = argStr.length > 30 ? `${argStr.slice(0, 27)}…` : argStr;
-
-		const line = `${C.yellow}⏳ ${C.bold}${this.name}${C.reset} ${C.dim}${shortArg}${C.reset} · ${C.yellow}执行中...${C.reset}`;
-		return [truncateToWidth(line, maxW, "…"), ""];
-	}
-
-	invalidate(): void {}
 }

@@ -35,12 +35,13 @@ import { createSubagentAdapter } from "../src/ui/adapters/subagents.js";
 import { SubagentDashboard } from "../src/ui/components/overlays/subagent-dashboard.js";
 import { TrajectoryProjection } from "../src/ui/adapters/agent-events.js";
 import { TrajectoryScene } from "../src/ui/components/overlays/trajectory-scene.js";
-import { createInteractiveUI } from "../src/ui/tui.js";
+import { createInteractiveUI, InteractiveTUI } from "../src/ui/tui.js";
 import { UIHost } from "../src/ui/ui-host.js";
 import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
 import { ModelPicker } from "../src/ui/components/overlays/model-picker.js";
 import { EffortSlider } from "../src/ui/components/overlays/effort-slider.js";
 import { getStartupBanner } from "../src/ui/components/primitives/banner.js";
+import { HelpMenu } from "../src/ui/components/overlays/help-menu.js";
 
 describe("UI Core: Utils", () => {
 	it("正确计算包含中文与 ANSI 样式的可见字符宽度", () => {
@@ -1802,6 +1803,193 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			const narrowLines = formatDiffCardLines(oldText, newText, "test.ts", false, 60);
 			expect(narrowLines.some((l) => l.includes("(diff)"))).toBe(true);
 			expect(narrowLines.some((l) => l.includes("(split diff)"))).toBe(false);
+		});
+
+		it("InputLine 字形簇安全退格、删除与方向键穿梭", () => {
+			const box = new InputLine();
+			box.handleInput("Hello👋🏻");
+			expect(box.getText()).toBe("Hello👋🏻");
+
+			// 退格应一次性完整删除字形簇 "👋🏻"
+			box.handleInput("\x7f");
+			expect(box.getText()).toBe("Hello");
+
+			// 测试 Delete
+			box.clear();
+			box.handleInput("👋🏻World");
+			box.handleInput("\x1b[H"); // Home
+			box.handleInput("\x1b[3~"); // Delete
+			expect(box.getText()).toBe("World");
+
+			// 测试 Left / Right 跨越完整 emoji
+			box.clear();
+			box.handleInput("A👋🏻B");
+			box.handleInput("\x1b[H"); // Home
+			box.handleInput("\x1b[C"); // Right 穿过 'A'
+			box.handleInput("\x1b[C"); // Right 应跨越整个 "👋🏻"
+			box.handleInput("X");
+			expect(box.getText()).toBe("A👋🏻XB");
+		});
+
+		it("InputLine 多行视觉行穿梭与历史记录回退", () => {
+			const box = new InputLine();
+			box.handleInput("line 1\nline 2");
+
+			// 渲染一次记录宽度
+			box.render(80);
+
+			// 当前光标位于 line 2 末尾，按 Up 应移动到 line 1，而不是触发历史
+			box.handleInput("\x1b[A"); // Up
+			expect(box.getRawText()).toBe("line 1\nline 2");
+
+			// 再次按 Up 到达顶行，由于历史为空，保持现状
+			box.handleInput("\x1b[A");
+			expect(box.getRawText()).toBe("line 1\nline 2");
+
+			// 按 Down 应移动回 line 2
+			box.handleInput("\x1b[B"); // Down
+			expect(box.getRawText()).toBe("line 1\nline 2");
+		});
+
+		it("HelpMenu 过滤鼠标报告序列并不包含虚构的 /diff 命令", () => {
+			const menu = new HelpMenu();
+			let closed = false;
+			menu.onClose = () => {
+				closed = true;
+			};
+
+			// 鼠标移动与点击事件不应关闭菜单
+			menu.handleInput("\x1b[<35;10;20M");
+			expect(closed).toBe(false);
+			menu.handleInput("\x1b[M 12");
+			expect(closed).toBe(false);
+
+			// 验证渲染中无虚构的 /diff 指令
+			const lines = menu.render(80).join("\n");
+			expect(lines).not.toContain("/diff");
+
+			// 按 q 键关闭
+			menu.handleInput("q");
+			expect(closed).toBe(true);
+		});
+
+		it("TranscriptContainer 使用已结算行缓存并支持 toggleCompaction", () => {
+			const tc = new TranscriptContainer();
+			tc.startTurn(1, "用户输入 1");
+			tc.appendToken("助手回复 1");
+			tc.finishTurn();
+
+			const lines1 = tc.render(80);
+			const lines2 = tc.render(80);
+			expect(lines1).toEqual(lines2);
+
+			const startMap1 = tc.getTurnStartLines(80);
+			const startMap2 = tc.getTurnStartLines(80);
+			expect(startMap1.get(1)).toBe(startMap2.get(1));
+
+			// 添加压缩卡片
+			tc.addCompaction({
+				summary: "会话已压缩摘要",
+				turnsCount: 1,
+				tokensSaved: 5000,
+				collapsed: true,
+			});
+
+			const compactedLines1 = tc.render(80).join("\n");
+			expect(compactedLines1).toContain("Ctrl+O 展开");
+
+			// 展开压缩卡片
+			const toggled = tc.toggleCompaction();
+			expect(toggled).toBe(true);
+
+			const compactedLines2 = tc.render(80).join("\n");
+			expect(compactedLines2).toContain("Ctrl+O 收起");
+		});
+
+		it("InteractiveTUI 真实事件联动：轨迹收集与 Token 逼真计算", () => {
+			const tui = new InteractiveTUI();
+			tui.render({ type: "turn_start", n: 1, text: "你好" });
+			tui.render({ type: "thinking", text: "正在思考哲学问题..." });
+			tui.render({ type: "text", text: "这是一段长度为 30 个字符的回复文本用于测试" });
+			tui.render({ type: "tool_start", name: "bash", args: { cmd: "ls" }, callId: "tool-1" });
+			tui.render({ type: "tool_done", name: "bash", result: "file.txt", callId: "tool-1", elapsedMs: 120 });
+			tui.render({
+				type: "turn_end",
+				n: 1,
+				usage: { usedTokens: 500, contextWindow: 128000, actual: true },
+			});
+
+			const nodes = tui.host.trajectoryProjection.list();
+			expect(nodes.some((n) => n.kind === "turn_start")).toBe(true);
+			expect(nodes.some((n) => n.kind === "thinking" && n.status === "completed")).toBe(true);
+			expect(nodes.some((n) => n.kind === "tool_call" && n.status === "completed")).toBe(true);
+			expect(nodes.some((n) => n.kind === "model_stream" && n.status === "completed")).toBe(true);
+
+			// 测试压缩时轨迹同步
+			tui.host.addCompaction({
+				summary: "历史压缩摘要",
+				turnsCount: 1,
+				tokensSaved: 3000,
+				collapsed: true,
+			});
+			const compNode = tui.host.trajectoryProjection.list().find((n) => n.kind === "compaction");
+			expect(compNode).toBeDefined();
+			expect(compNode?.tokens?.total).toBe(3000);
+
+			tui.close();
+		});
+
+		it("ExtensionUIContext: select 支持滚动窗口限制与超长截断", async () => {
+			let capturedComponent: any = null;
+			const mockHost: any = {
+				showOverlay: (comp: any) => {
+					capturedComponent = comp;
+					return { hide: () => {} };
+				},
+				requestRender: () => {},
+			};
+			const ctx = createExtensionUIContext(mockHost);
+
+			// 生成 20 个选项
+			const manyOptions = Array.from({ length: 20 }, (_, i) => `Option ${i + 1}`);
+			const promise = ctx.select("测试长列表", manyOptions);
+
+			expect(capturedComponent).toBeDefined();
+			const rendered = capturedComponent.render(80).join("\n");
+			// 最多显示 8 个选项，其余显示滚动提示
+			expect(rendered).toContain("Option 1");
+			expect(rendered).toContain("Option 8");
+			expect(rendered).not.toContain("Option 9");
+			expect(rendered).toContain("↓+12");
+
+			capturedComponent.handleInput("\x1b[B"); // Down
+			capturedComponent.handleInput("\r"); // Enter
+			const result = await promise;
+			expect(result).toBe("Option 2");
+		});
+
+		it("ExtensionUIContext: input 支持 CURSOR_MARKER 与字形簇光标移动", async () => {
+			let capturedComponent: any = null;
+			const mockHost: any = {
+				showOverlay: (comp: any) => {
+					capturedComponent = comp;
+					return { hide: () => {} };
+				},
+				requestRender: () => {},
+			};
+			const ctx = createExtensionUIContext(mockHost);
+			const promise = ctx.input("请输入内容", "占位符");
+
+			expect(capturedComponent).toBeDefined();
+			expect(capturedComponent.render(80).join("\n")).toContain(CURSOR_MARKER);
+
+			capturedComponent.handleInput("Hello👋🏻");
+			// 退格删除 emoji
+			capturedComponent.handleInput("\x7f");
+			// 提交
+			capturedComponent.handleInput("\r");
+			const result = await promise;
+			expect(result).toBe("Hello");
 		});
 	});
 });

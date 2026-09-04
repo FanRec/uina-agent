@@ -380,6 +380,7 @@ export class UIHost implements UIHostContextPort {
 
 	addCompaction(record: import("./components/transcript/compact-view.js").CompactionRecord): void {
 		this.transcript.addCompaction(record);
+		this.trajectoryProjection.onCompaction(record.summary, record.tokensSaved);
 		this.requestRender();
 	}
 
@@ -1392,7 +1393,10 @@ export class UIHost implements UIHostContextPort {
 				this.requestRender();
 				return;
 			}
-			this.transcript.toggleThinking();
+			const result = this.transcript.toggleThinking();
+			if (!result.toggled) {
+				this.transcript.toggleCompaction();
+			}
 			this.requestRender();
 			return;
 		}

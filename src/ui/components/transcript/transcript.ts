@@ -107,6 +107,14 @@ export type TimelineItem =
 	| { kind: "customMessage"; message: CustomMessage }
 	| { kind: "customEntry"; entry: CustomEntry };
 
+interface SettledCache {
+	width: number;
+	hoveredThinkingTurnN: number | null;
+	lines: string[];
+	turnStartMap: Map<number, number>;
+	thinkingLocations: ThinkingLineLocation[];
+}
+
 export class TranscriptContainer implements Component {
 	readonly smoothReveal = new SmoothRevealController();
 	private readonly timeline: TimelineItem[] = [];
@@ -114,10 +122,16 @@ export class TranscriptContainer implements Component {
 	private currentTurn: TurnRecord | null = null;
 	private thinkingCommitted = false;
 	private hoveredThinkingTurnN: number | null = null;
+	private settledCache: SettledCache | null = null;
+
+	invalidate(): void {
+		this.settledCache = null;
+	}
 
 	setHoveredThinkingTurn(turnN: number | null): boolean {
 		if (this.hoveredThinkingTurnN !== turnN) {
 			this.hoveredThinkingTurnN = turnN;
+			this.invalidate();
 			return true;
 		}
 		return false;
@@ -133,16 +147,19 @@ export class TranscriptContainer implements Component {
 	setMessageRenderer(type: string, renderer: MessageRenderer): void {
 		const previous = this.messageRenderer;
 		this.messageRenderer = (candidate) => candidate === type ? renderer : previous(candidate);
+		this.invalidate();
 	}
 
 	setEntryRenderer(type: string, renderer: EntryRenderer): void {
 		const previous = this.entryRenderer;
 		this.entryRenderer = (candidate) => candidate === type ? renderer : previous(candidate);
+		this.invalidate();
 	}
 
 	setRendererResolver(resolve: { message(type: string): MessageRenderer | undefined; entry(type: string): EntryRenderer | undefined }): void {
 		this.messageRenderer = resolve.message;
 		this.entryRenderer = resolve.entry;
+		this.invalidate();
 	}
 
 	startTurn(n: number, userText: string): void {
@@ -243,25 +260,30 @@ export class TranscriptContainer implements Component {
 
 	addCompaction(record: CompactionRecord): void {
 		this.timeline.push({ kind: "compaction", record });
+		this.invalidate();
 	}
 
 	addCustomMessage(msg: CustomMessage): void {
 		if (msg.display === false) return;
 		this.timeline.push({ kind: "customMessage", message: msg });
+		this.invalidate();
 	}
 
 	addCustomEntry(entry: CustomEntry): void {
 		this.timeline.push({ kind: "customEntry", entry });
+		this.invalidate();
 	}
 
 	addNotice(text: string): void {
 		const formatted = `  ${C.blue}ℹ ${text}${C.reset}`;
 		this.timeline.push({ kind: "notice", text: formatted });
+		this.invalidate();
 	}
 
 	addError(text: string): void {
 		const formatted = `  ${C.red}✗ [错误] ${text}${C.reset}`;
 		this.timeline.push({ kind: "notice", text: formatted });
+		this.invalidate();
 	}
 
 	finishTurn(): void {
@@ -379,12 +401,14 @@ export class TranscriptContainer implements Component {
 			}
 		}
 		commit();
+		this.invalidate();
 	}
 
 	clear(): void {
 		this.timeline.length = 0;
 		this.historyTurns.length = 0;
 		this.currentTurn = null;
+		this.invalidate();
 	}
 
 	toggleThinking(targetOrN?: number | TurnRecord, width = 80): { toggled: boolean; lineDelta: number } {
@@ -404,6 +428,7 @@ export class TranscriptContainer implements Component {
 					it.collapsed = !wasCollapsed;
 				}
 			}
+			this.invalidate();
 			const afterCount = formatThinkingLines(target.thinkingText, !wasCollapsed, width).length;
 			return { toggled: true, lineDelta: afterCount - beforeCount };
 		}
@@ -425,6 +450,21 @@ export class TranscriptContainer implements Component {
 				}
 			}
 		}
+		this.invalidate();
+	}
+
+	toggleCompaction(index?: number): boolean {
+		const compactions = this.timeline.filter(
+			(it): it is Extract<TimelineItem, { kind: "compaction" }> => it.kind === "compaction",
+		);
+		if (compactions.length === 0) return false;
+		const target = index !== undefined ? compactions[index] : compactions.at(-1);
+		if (target) {
+			target.record.collapsed = !target.record.collapsed;
+			this.invalidate();
+			return true;
+		}
+		return false;
 	}
 
 	private commitCurrentTurn(): void {
@@ -433,6 +473,7 @@ export class TranscriptContainer implements Component {
 			this.historyTurns.push(this.currentTurn);
 			this.timeline.push({ kind: "turn", turn: this.currentTurn });
 			this.currentTurn = null;
+			this.invalidate();
 		}
 	}
 
@@ -494,10 +535,19 @@ export class TranscriptContainer implements Component {
 		return formatted;
 	}
 
-	render(width: number): string[] {
-		const lines: string[] = [];
+	private getSettledCache(width: number): SettledCache {
+		if (
+			this.settledCache &&
+			this.settledCache.width === width &&
+			this.settledCache.hoveredThinkingTurnN === this.hoveredThinkingTurnN
+		) {
+			return this.settledCache;
+		}
 
-		// 按真实时间线严格线性渲染已结算历史
+		const lines: string[] = [];
+		const turnStartMap = new Map<number, number>();
+		const thinkingLocations: ThinkingLineLocation[] = [];
+
 		for (const item of this.timeline) {
 			switch (item.kind) {
 				case "notice":
@@ -506,9 +556,32 @@ export class TranscriptContainer implements Component {
 				case "compaction":
 					lines.push(...formatCompactionCardLines(item.record, width));
 					break;
-				case "turn":
-					this.renderTurn(item.turn, width, lines);
+				case "turn": {
+					turnStartMap.set(item.turn.n, lines.length);
+					const turn = item.turn;
+					const turnStartLine = lines.length;
+					this.renderTurn(turn, width, lines, true, false);
+
+					const userLines = this.formatUserLine(turn.userText, width);
+					let turnOffset = userLines.length;
+					let hasText = false;
+					for (const it of turn.items) {
+						if (it.kind === "thinking") {
+							thinkingLocations.push({ turnN: turn.n, lineIndex: turnStartLine + turnOffset, turn });
+							const isHovered = this.hoveredThinkingTurnN === turn.n;
+							const collapsed = it.collapsed ?? turn.thinkingCollapsed ?? true;
+							turnOffset += formatThinkingLines(it.text, collapsed, width, isHovered).length;
+						} else if (it.kind === "text") {
+							turnOffset += this.formatAssistantMarkdown(it.text, width, !hasText).length;
+							hasText = true;
+						} else if (it.kind === "tool") {
+							turnOffset += formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args).length;
+						} else if (it.kind === "diff") {
+							turnOffset += formatDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
+						}
+					}
 					break;
+				}
 				case "customMessage": {
 					const comp = new CustomMessageComponent(item.message, this.messageRenderer(item.message.customType));
 					lines.push(...comp.render(width));
@@ -522,11 +595,23 @@ export class TranscriptContainer implements Component {
 			}
 		}
 
-		// 当前正在生成的活动轮次
-		if (this.currentTurn) {
-			this.renderTurn(this.currentTurn, width, lines, true, true);
-		}
+		this.settledCache = {
+			width,
+			hoveredThinkingTurnN: this.hoveredThinkingTurnN,
+			lines,
+			turnStartMap,
+			thinkingLocations,
+		};
+		return this.settledCache;
+	}
 
+	render(width: number): string[] {
+		const cached = this.getSettledCache(width);
+		if (!this.currentTurn) {
+			return cached.lines.slice();
+		}
+		const lines = cached.lines.slice();
+		this.renderTurn(this.currentTurn, width, lines, true, true);
 		return lines;
 	}
 
@@ -574,106 +659,47 @@ export class TranscriptContainer implements Component {
 	}
 
 	/**
-	 * 获取每一轮次在转录完整行序列中的起始行号映射表
+	 * 获取每一轮次在转录完整行序列中的起始行号映射表（使用已结算行缓存，避免重复全量渲染）
 	 */
 	getTurnStartLines(width: number): Map<number, number> {
-		const map = new Map<number, number>();
-		let lineCount = 0;
-
-		for (const item of this.timeline) {
-			if (item.kind === "turn") {
-				map.set(item.turn.n, lineCount);
-				const turnLines: string[] = [];
-				this.renderTurn(item.turn, width, turnLines);
-				lineCount += turnLines.length;
-			} else if (item.kind === "notice") {
-				lineCount += 1;
-			} else if (item.kind === "compaction") {
-				lineCount += formatCompactionCardLines(item.record, width).length;
-			} else if (item.kind === "customMessage") {
-				const comp = new CustomMessageComponent(item.message, this.messageRenderer(item.message.customType));
-				lineCount += comp.render(width).length;
-			} else if (item.kind === "customEntry") {
-				const comp = new CustomEntryComponent(item.entry, this.entryRenderer(item.entry.customType));
-				lineCount += comp.render(width).length;
-			}
-		}
-
+		const cached = this.getSettledCache(width);
+		const map = new Map<number, number>(cached.turnStartMap);
 		if (this.currentTurn) {
-			map.set(this.currentTurn.n, lineCount);
+			map.set(this.currentTurn.n, cached.lines.length);
 		}
-
 		return map;
 	}
 
 	/**
-	 * 获取所有思考折叠行在完整行序列中的索引位置
+	 * 获取所有思考折叠行在完整行序列中的索引位置（使用已结算行缓存）
 	 */
 	getThinkingLineIndices(width: number): ThinkingLineLocation[] {
-		const result: ThinkingLineLocation[] = [];
-		let currentLine = 0;
-
-		for (const item of this.timeline) {
-			if (item.kind === "turn") {
-				const turn = item.turn;
-				const userLines = this.formatUserLine(turn.userText, width);
-				let turnOffset = userLines.length;
-				let hasText = false;
-				for (const it of turn.items) {
-					if (it.kind === "thinking") {
-						result.push({ turnN: turn.n, lineIndex: currentLine + turnOffset, turn });
-						const isHovered = this.hoveredThinkingTurnN === turn.n;
-						const collapsed = it.collapsed ?? turn.thinkingCollapsed ?? true;
-						turnOffset += formatThinkingLines(it.text, collapsed, width, isHovered).length;
-					} else if (it.kind === "text") {
-						turnOffset += this.formatAssistantMarkdown(it.text, width, !hasText).length;
-						hasText = true;
-					} else if (it.kind === "tool") {
-						turnOffset += formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args).length;
-					} else if (it.kind === "diff") {
-						turnOffset += formatDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
-					}
-				}
-				const turnLines: string[] = [];
-				this.renderTurn(turn, width, turnLines);
-				currentLine += turnLines.length;
-			} else if (item.kind === "notice") {
-				currentLine += 1;
-			} else if (item.kind === "compaction") {
-				currentLine += formatCompactionCardLines(item.record, width).length;
-			} else if (item.kind === "customMessage") {
-				const comp = new CustomMessageComponent(item.message, this.messageRenderer(item.message.customType));
-				currentLine += comp.render(width).length;
-			} else if (item.kind === "customEntry") {
-				const comp = new CustomEntryComponent(item.entry, this.entryRenderer(item.entry.customType));
-				currentLine += comp.render(width).length;
-			}
+		const cached = this.getSettledCache(width);
+		if (!this.currentTurn) {
+			return cached.thinkingLocations.slice();
 		}
-
-		if (this.currentTurn) {
-			const turn = this.currentTurn;
-			const userLines = this.formatUserLine(turn.userText, width);
-			let turnOffset = userLines.length;
-			let hasText = false;
-			for (const it of turn.items) {
-				if (it.kind === "thinking") {
-					result.push({ turnN: turn.n, lineIndex: currentLine + turnOffset, turn });
-					const isHovered = this.hoveredThinkingTurnN === turn.n;
-					const collapsed = it.collapsed ?? turn.thinkingCollapsed ?? true;
-					turnOffset += formatThinkingLines(it.text, collapsed, width, isHovered).length;
-				} else if (it.kind === "text") {
-					turnOffset += this.formatAssistantMarkdown(it.text, width, !hasText).length;
-					hasText = true;
-				} else if (it.kind === "tool") {
-					turnOffset += formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args).length;
-				} else if (it.kind === "diff") {
-					turnOffset += formatDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
-				}
+		const result = cached.thinkingLocations.slice();
+		const currentLine = cached.lines.length;
+		const turn = this.currentTurn;
+		const userLines = this.formatUserLine(turn.userText, width);
+		let turnOffset = userLines.length;
+		let hasText = false;
+		for (const it of turn.items) {
+			if (it.kind === "thinking") {
+				result.push({ turnN: turn.n, lineIndex: currentLine + turnOffset, turn });
+				const isHovered = this.hoveredThinkingTurnN === turn.n;
+				const collapsed = it.collapsed ?? turn.thinkingCollapsed ?? true;
+				turnOffset += formatThinkingLines(it.text, collapsed, width, isHovered).length;
+			} else if (it.kind === "text") {
+				turnOffset += this.formatAssistantMarkdown(it.text, width, !hasText).length;
+				hasText = true;
+			} else if (it.kind === "tool") {
+				turnOffset += formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args).length;
+			} else if (it.kind === "diff") {
+				turnOffset += formatDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
 			}
 		}
 
 		return result;
 	}
-
-	invalidate(): void {}
 }

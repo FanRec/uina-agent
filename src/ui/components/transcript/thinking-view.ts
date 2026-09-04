@@ -8,7 +8,6 @@
  * 5. 支持鼠标悬停高亮与单击展开/收起。
  */
 
-import type { Component } from "../../core/types.js";
 import { C, truncateToWidth, wrapTextWithAnsi } from "../../core/utils.js";
 
 /** 格式化对话流内部的思考链块（永久行） */
@@ -52,44 +51,4 @@ export function formatThinkingLines(
 	return lines;
 }
 
-export class ThinkingViewComponent implements Component {
-	private thinkingText = "";
-	private active = false;
-	private collapsed = true;
-	private isHovered = false;
 
-	appendThinking(text: string): void {
-		this.thinkingText += text;
-		this.active = true;
-	}
-
-	isActive(): boolean {
-		return this.active;
-	}
-
-	isCollapsed(): boolean {
-		return this.collapsed;
-	}
-
-	setCollapsed(collapsed: boolean): void {
-		this.collapsed = collapsed;
-	}
-
-	setHovered(hovered: boolean): void {
-		this.isHovered = hovered;
-	}
-
-	clear(): void {
-		this.thinkingText = "";
-		this.active = false;
-		this.collapsed = true;
-		this.isHovered = false;
-	}
-
-	render(width: number): string[] {
-		if (!this.active || !this.thinkingText.trim()) return [];
-		return formatThinkingLines(this.thinkingText, this.collapsed, width, this.isHovered);
-	}
-
-	invalidate(): void {}
-}

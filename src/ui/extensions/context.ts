@@ -4,8 +4,9 @@
  */
 
 import type { Component, Focusable, OverlayHandle, OverlayOptions, WidgetPlacement } from "../core/types.js";
+import { CURSOR_MARKER } from "../core/types.js";
 import { Key, matchesKey } from "../core/keys.js";
-import { C, visibleWidth, truncateToWidth } from "../core/utils.js";
+import { C, visibleWidth, truncateToWidth, getPrevGraphemeIndex, getNextGraphemeIndex } from "../core/utils.js";
 import type { ExtensionUIContext } from "./types.js";
 
 export interface UIHostContextPort {
@@ -31,6 +32,8 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 		select(title: string, options: string[]): Promise<string | undefined> {
 			return new Promise((resolve) => {
 				let selected = 0;
+				let scrollOffset = 0;
+				const maxVisible = 8;
 				let handle: OverlayHandle | null = null;
 
 				const comp: Component & Focusable = {
@@ -39,32 +42,59 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 						const boxW = Math.max(36, Math.min(w - 6, 60));
 						const innerW = boxW - 4;
 						const borderCol = C.gray;
-						const topTag = `─ ${title} `;
+						let topTag = `─ ${title} `;
+						if (scrollOffset > 0) {
+							topTag = `─ ${title} (↑+${scrollOffset}) `;
+						}
 						const fillTop = Math.max(1, boxW - 2 - visibleWidth(topTag));
 						const top = `  ${borderCol}╭${topTag}${"─".repeat(fillTop)}╮${C.reset}`;
 						const out = [top];
 
-						for (let i = 0; i < options.length; i++) {
-							const opt = options[i]!;
-							const isSel = i === selected;
-							const pointer = isSel ? `${C.cyan}❯${C.reset}` : " ";
-							const text = isSel ? `${C.bold}${C.white}${opt}${C.reset}` : `${C.dim}${opt}${C.reset}`;
-							const line = `${pointer} ${text}`;
-							out.push(`  ${borderCol}│${C.reset} ${line}${" ".repeat(Math.max(0, innerW - visibleWidth(line)))} ${borderCol}│${C.reset}`);
+						if (options.length === 0) {
+							const emptyMsg = `${C.dim}（暂无可用选项）${C.reset}`;
+							out.push(`  ${borderCol}│${C.reset} ${emptyMsg}${" ".repeat(Math.max(0, innerW - visibleWidth(emptyMsg)))} ${borderCol}│${C.reset}`);
+						} else {
+							const visibleOptions = options.slice(scrollOffset, scrollOffset + maxVisible);
+							for (let idx = 0; idx < visibleOptions.length; idx++) {
+								const i = scrollOffset + idx;
+								const opt = visibleOptions[idx]!;
+								const isSel = i === selected;
+								const pointer = isSel ? `${C.cyan}❯${C.reset}` : " ";
+								const maxTextW = Math.max(1, innerW - 3);
+								const safeOpt = truncateToWidth(opt, maxTextW, "…");
+								const text = isSel ? `${C.bold}${C.white}${safeOpt}${C.reset}` : `${C.dim}${safeOpt}${C.reset}`;
+								const line = `${pointer} ${text}`;
+								out.push(`  ${borderCol}│${C.reset} ${line}${" ".repeat(Math.max(0, innerW - visibleWidth(line)))} ${borderCol}│${C.reset}`);
+							}
 						}
 
-						const hint = `↑↓ 导航 · Enter 确认 · Esc 取消`;
+						const remainingDown = Math.max(0, options.length - (scrollOffset + maxVisible));
+						let hint = `↑↓ 导航 · Enter 确认 · Esc 取消`;
+						if (remainingDown > 0) {
+							hint = `↓+${remainingDown} · ${hint}`;
+						}
 						const botFill = Math.max(1, boxW - 2 - visibleWidth(hint) - 2);
 						out.push(`  ${borderCol}╰─ ${C.dim}${hint}${C.reset} ${borderCol}${"─".repeat(botFill)}╯${C.reset}`);
 						return out;
 					},
 					handleInput(data: string): void {
+						if (data.startsWith("\x1b[<") || data.startsWith("\x1b[M")) return;
 						if (matchesKey(data, Key.up)) {
-							selected = Math.max(0, selected - 1);
-							host.requestRender();
+							if (options.length > 0) {
+								selected = Math.max(0, selected - 1);
+								if (selected < scrollOffset) {
+									scrollOffset = selected;
+								}
+								host.requestRender();
+							}
 						} else if (matchesKey(data, Key.down)) {
-							selected = Math.min(options.length - 1, selected + 1);
-							host.requestRender();
+							if (options.length > 0) {
+								selected = Math.min(options.length - 1, selected + 1);
+								if (selected >= scrollOffset + maxVisible) {
+									scrollOffset = selected - maxVisible + 1;
+								}
+								host.requestRender();
+							}
 						} else if (matchesKey(data, Key.enter)) {
 							handle?.hide();
 							resolve(options[selected]);
@@ -109,6 +139,7 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 						return out;
 					},
 					handleInput(data: string): void {
+						if (data.startsWith("\x1b[<") || data.startsWith("\x1b[M")) return;
 						if (matchesKey(data, Key.left) || matchesKey(data, Key.right) || matchesKey(data, Key.tab)) {
 							yesSelected = !yesSelected;
 							host.requestRender();
@@ -136,6 +167,9 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 		input(title: string, placeholder = ""): Promise<string | undefined> {
 			return new Promise((resolve) => {
 				let text = "";
+				let cursorIndex = 0;
+				let inPaste = false;
+				let pasteBuf = "";
 				let handle: OverlayHandle | null = null;
 
 				const comp: Component & Focusable = {
@@ -149,8 +183,20 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 						const top = `  ${borderCol}╭${topTag}${"─".repeat(fillTop)}╮${C.reset}`;
 						const out = [top];
 
-						const display = text ? text : `${C.dim}${placeholder}${C.reset}`;
-						const line = `${C.cyan}❯${C.reset} ${display}`;
+						let content = "";
+						if (text.length === 0) {
+							content = `${CURSOR_MARKER}\x1b[7m \x1b[27m${C.dim}${placeholder}${C.reset}`;
+						} else {
+							const before = text.slice(0, cursorIndex);
+							const atCursor = text.slice(cursorIndex, cursorIndex + 1);
+							const after = text.slice(cursorIndex + 1);
+							const cursorChar = atCursor || " ";
+							content = `${before}${CURSOR_MARKER}\x1b[7m${cursorChar}\x1b[27m${after}`;
+						}
+
+						const maxContentW = Math.max(1, innerW - 3);
+						const safeContent = truncateToWidth(content, maxContentW, "");
+						const line = `${C.cyan}❯${C.reset} ${safeContent}`;
 						out.push(`  ${borderCol}│${C.reset} ${line}${" ".repeat(Math.max(0, innerW - visibleWidth(line)))} ${borderCol}│${C.reset}`);
 
 						const hint = `Enter 确认 · Esc 取消`;
@@ -159,17 +205,83 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 						return out;
 					},
 					handleInput(data: string): void {
+						if (data.startsWith("\x1b[<") || data.startsWith("\x1b[M")) return;
+
+						if (data.includes("\x1b[200~")) {
+							inPaste = true;
+							pasteBuf = "";
+							const idx = data.indexOf("\x1b[200~") + 6;
+							const remaining = data.slice(idx);
+							if (remaining.includes("\x1b[201~")) {
+								const endIdx = remaining.indexOf("\x1b[201~");
+								const pasted = remaining.slice(0, endIdx).replace(/[\r\n]/g, " ");
+								text = text.slice(0, cursorIndex) + pasted + text.slice(cursorIndex);
+								cursorIndex += pasted.length;
+								inPaste = false;
+								host.requestRender();
+								return;
+							}
+							pasteBuf += remaining;
+							return;
+						}
+						if (inPaste) {
+							if (data.includes("\x1b[201~")) {
+								const endIdx = data.indexOf("\x1b[201~");
+								pasteBuf += data.slice(0, endIdx);
+								const pasted = pasteBuf.replace(/[\r\n]/g, " ");
+								text = text.slice(0, cursorIndex) + pasted + text.slice(cursorIndex);
+								cursorIndex += pasted.length;
+								inPaste = false;
+								host.requestRender();
+								return;
+							}
+							pasteBuf += data;
+							return;
+						}
+
 						if (matchesKey(data, Key.enter)) {
 							handle?.hide();
 							resolve(text);
 						} else if (matchesKey(data, Key.escape)) {
 							handle?.hide();
 							resolve(undefined);
+						} else if (matchesKey(data, Key.left)) {
+							if (cursorIndex > 0) {
+								cursorIndex = getPrevGraphemeIndex(text, cursorIndex);
+								host.requestRender();
+							}
+						} else if (matchesKey(data, Key.right)) {
+							if (cursorIndex < text.length) {
+								cursorIndex = getNextGraphemeIndex(text, cursorIndex);
+								host.requestRender();
+							}
+						} else if (matchesKey(data, Key.home)) {
+							cursorIndex = 0;
+							host.requestRender();
+						} else if (matchesKey(data, Key.end)) {
+							cursorIndex = text.length;
+							host.requestRender();
 						} else if (matchesKey(data, Key.backspace)) {
-							text = text.slice(0, -1);
+							if (cursorIndex > 0) {
+								const prev = getPrevGraphemeIndex(text, cursorIndex);
+								text = text.slice(0, prev) + text.slice(cursorIndex);
+								cursorIndex = prev;
+								host.requestRender();
+							}
+						} else if (matchesKey(data, Key.delete)) {
+							if (cursorIndex < text.length) {
+								const next = getNextGraphemeIndex(text, cursorIndex);
+								text = text.slice(0, cursorIndex) + text.slice(next);
+								host.requestRender();
+							}
+						} else if (matchesKey(data, Key.ctrl("u"))) {
+							text = "";
+							cursorIndex = 0;
 							host.requestRender();
 						} else if (data && !data.startsWith("\x1b")) {
-							text += data;
+							const clean = data.replace(/[\r\n]/g, "");
+							text = text.slice(0, cursorIndex) + clean + text.slice(cursorIndex);
+							cursorIndex += clean.length;
 							host.requestRender();
 						}
 					},
@@ -196,7 +308,11 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 			host.setWorkingVisible(visible);
 		},
 
-		setWidget(key: string, component: Component | undefined, options): void {
+		setWidget(
+			key: string,
+			component: Component | undefined,
+			options?: { placement?: WidgetPlacement; priority?: number },
+		): void {
 			host.setWidget(key, component, options?.placement, options?.priority);
 		},
 

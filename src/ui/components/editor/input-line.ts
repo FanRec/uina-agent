@@ -48,7 +48,8 @@ export function findMarkers(text: string): MarkerSpan[] {
 	return list;
 }
 
-const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+import { getPrevGraphemeIndex, getNextGraphemeIndex, graphemeSegmenter } from "../../core/utils.js";
+export { getPrevGraphemeIndex, getNextGraphemeIndex };
 
 export interface TextSegment {
 	segment: string;
@@ -123,6 +124,18 @@ function sanitizeText(str: string): string {
 		.replace(/\r/g, "\n")
 		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
 }
+ 
+interface VisualRowPosition {
+	charIdx: number;
+	col: number;
+}
+
+interface VisualRow {
+	content: string;
+	hasCursor: boolean;
+	positions: VisualRowPosition[];
+	cursorCol: number;
+}
 
 export class InputLine implements Component, Focusable {
 	focused = true;
@@ -154,6 +167,11 @@ export class InputLine implements Component, Focusable {
 	private segments?: ContextSegments;
 	private cacheRate?: string;
 	private progressHotspotWidth = 35; // 进度条热区列宽，供鼠标 Hover 检测
+	private lastRenderWidth = 80;
+	private cwd = "";
+	private tps = 0;
+	private elapsedMs = 0;
+	private isStreaming = false;
 
 	// 事件回调
 	public onSubmit?: (text: string) => void;
@@ -162,9 +180,23 @@ export class InputLine implements Component, Focusable {
 
 	constructor() {}
 
-	setCwd(_cwd: string): void {}
+	setCwd(cwd: string): void {
+		this.cwd = cwd;
+	}
 
-	setSpeedStats(_tps: number, _elapsedMs: number, _isStreaming: boolean): void {}
+	getCwd(): string {
+		return this.cwd;
+	}
+
+	setSpeedStats(tps: number, elapsedMs: number, isStreaming: boolean): void {
+		this.tps = tps;
+		this.elapsedMs = elapsedMs;
+		this.isStreaming = isStreaming;
+	}
+
+	getSpeedStats(): { tps: number; elapsedMs: number; isStreaming: boolean } {
+		return { tps: this.tps, elapsedMs: this.elapsedMs, isStreaming: this.isStreaming };
+	}
 
 	setStatusHeader(header: string): void {
 		this.topStatusHeader = header;
@@ -474,7 +506,9 @@ export class InputLine implements Component, Focusable {
 				this.cursorIndex = inside.start;
 				return;
 			}
-			if (this.cursorIndex > 0) this.cursorIndex--;
+			if (this.cursorIndex > 0) {
+				this.cursorIndex = getPrevGraphemeIndex(this.text, this.cursorIndex);
+			}
 			this.cursorIndex = snapCursorToMarkerBoundary(this.cursorIndex, this.text, this.pastes);
 			return;
 		}
@@ -490,20 +524,35 @@ export class InputLine implements Component, Focusable {
 				this.cursorIndex = inside.end;
 				return;
 			}
-			if (this.cursorIndex < this.text.length) this.cursorIndex++;
+			if (this.cursorIndex < this.text.length) {
+				this.cursorIndex = getNextGraphemeIndex(this.text, this.cursorIndex);
+			}
 			this.cursorIndex = snapCursorToMarkerBoundary(this.cursorIndex, this.text, this.pastes);
 			return;
 		}
 
-		// 上下键多行行间穿梭与历史记录
+		// 上下键视觉多行行间穿梭与历史记录
 		if (matchesKey(data, Key.up)) {
-			const prevNewline = this.text.lastIndexOf("\n", this.cursorIndex - 1);
-			if (prevNewline !== -1) {
-				// 在多行文本内部向上移动一行
-				const lineStart = this.text.lastIndexOf("\n", prevNewline - 1) + 1;
-				const col = this.cursorIndex - (prevNewline + 1);
-				this.cursorIndex = snapCursorToMarkerBoundary(Math.min(prevNewline, lineStart + col), this.text, this.pastes);
-				return;
+			const width = this.lastRenderWidth || 80;
+			const visualRows = this.getVisualLayout(width);
+			const curRowIdx = visualRows.findIndex((r) => r.hasCursor);
+			if (curRowIdx > 0) {
+				const curRow = visualRows[curRowIdx]!;
+				const targetRow = visualRows[curRowIdx - 1]!;
+				const targetCol = curRow.cursorCol;
+				if (targetRow.positions.length > 0) {
+					let closest = targetRow.positions[0]!;
+					let minDist = Math.abs(closest.col - targetCol);
+					for (const pos of targetRow.positions) {
+						const dist = Math.abs(pos.col - targetCol);
+						if (dist < minDist) {
+							minDist = dist;
+							closest = pos;
+						}
+					}
+					this.cursorIndex = snapCursorToMarkerBoundary(closest.charIdx, this.text, this.pastes);
+					return;
+				}
 			}
 			// 到达顶行时触发历史记录
 			if (this.history.length === 0) return;
@@ -519,15 +568,26 @@ export class InputLine implements Component, Focusable {
 		}
 
 		if (matchesKey(data, Key.down)) {
-			const nextNewline = this.text.indexOf("\n", this.cursorIndex);
-			if (nextNewline !== -1) {
-				// 在多行文本内部向下移动一行
-				const curLineStart = this.text.lastIndexOf("\n", this.cursorIndex - 1) + 1;
-				const col = this.cursorIndex - curLineStart;
-				const nextLineEnd = this.text.indexOf("\n", nextNewline + 1);
-				const targetEnd = nextLineEnd === -1 ? this.text.length : nextLineEnd;
-				this.cursorIndex = snapCursorToMarkerBoundary(Math.min(targetEnd, nextNewline + 1 + col), this.text, this.pastes);
-				return;
+			const width = this.lastRenderWidth || 80;
+			const visualRows = this.getVisualLayout(width);
+			const curRowIdx = visualRows.findIndex((r) => r.hasCursor);
+			if (curRowIdx >= 0 && curRowIdx < visualRows.length - 1) {
+				const curRow = visualRows[curRowIdx]!;
+				const targetRow = visualRows[curRowIdx + 1]!;
+				const targetCol = curRow.cursorCol;
+				if (targetRow.positions.length > 0) {
+					let closest = targetRow.positions[0]!;
+					let minDist = Math.abs(closest.col - targetCol);
+					for (const pos of targetRow.positions) {
+						const dist = Math.abs(pos.col - targetCol);
+						if (dist < minDist) {
+							minDist = dist;
+							closest = pos;
+						}
+					}
+					this.cursorIndex = snapCursorToMarkerBoundary(closest.charIdx, this.text, this.pastes);
+					return;
+				}
 			}
 			// 到达底行时触发历史记录
 			if (this.historyIndex === -1) return;
@@ -569,8 +629,9 @@ export class InputLine implements Component, Focusable {
 				return;
 			}
 			if (this.cursorIndex > 0) {
-				this.text = this.text.slice(0, this.cursorIndex - 1) + this.text.slice(this.cursorIndex);
-				this.cursorIndex--;
+				const prev = getPrevGraphemeIndex(this.text, this.cursorIndex);
+				this.text = this.text.slice(0, prev) + this.text.slice(this.cursorIndex);
+				this.cursorIndex = prev;
 			}
 			this.cursorIndex = snapCursorToMarkerBoundary(this.cursorIndex, this.text, this.pastes);
 			return;
@@ -591,7 +652,8 @@ export class InputLine implements Component, Focusable {
 				return;
 			}
 			if (this.cursorIndex < this.text.length) {
-				this.text = this.text.slice(0, this.cursorIndex) + this.text.slice(this.cursorIndex + 1);
+				const next = getNextGraphemeIndex(this.text, this.cursorIndex);
+				this.text = this.text.slice(0, this.cursorIndex) + this.text.slice(next);
 			}
 			this.cursorIndex = snapCursorToMarkerBoundary(this.cursorIndex, this.text, this.pastes);
 			return;
@@ -666,31 +728,15 @@ export class InputLine implements Component, Focusable {
 
 	invalidate(): void {}
 
-	/**
-	 * 渲染为拥有精细几何列宽、视口滚动与舒适高度的现代圆角容器盒
-	 */
-	render(width: number): string[] {
-		// 不把闭合角放在终端最后一列：部分终端在写入最后一列后
-		// 会立即自动换行，导致右侧 `╮`/`╯` 看起来像没有闭合。
+	private getVisualLayout(width: number): VisualRow[] {
 		const boxWidth = Math.max(2, width - 1);
-		const borderCol = C.promptBorder;
-		// dsh-tui 的输入框只有顶/底两条圆角横线；中间内容行横跨
-		// 整个盒宽，不绘制贯穿内容区的左右 `│`。
 		const innerWidth = Math.max(1, boxWidth);
-		const promptPrefixWidth = 2; // dsh-tui 的 `❯ ` 提示符；续行使用同宽空格
+		const promptPrefixWidth = 2;
 		const contentColLimit = Math.max(1, innerWidth - promptPrefixWidth);
 
-		// ─────────────────────────────────────────────────────────────
-		// 1. 中间多行自然排版引擎（按 \n 切分逻辑行，严格计算每个视觉行）
-		// ─────────────────────────────────────────────────────────────
 		type LayoutAtom =
 			| { type: "char"; raw: string; display: string; width: number; charIdx: number }
 			| { type: "chip"; raw: string; display: string; width: number; startIdx: number; endIdx: number };
-
-		interface VisualRow {
-			content: string;
-			hasCursor: boolean;
-		}
 
 		const visualRows: VisualRow[] = [];
 		const logicalLines = this.text.split("\n");
@@ -735,15 +781,21 @@ export class InputLine implements Component, Focusable {
 			let curRowText = "";
 			let curRowWidth = 0;
 			let curRowHasCursor = false;
+			let curRowPositions: VisualRowPosition[] = [];
+			let curRowCursorCol = 0;
 
 			const flushVisualRow = () => {
 				visualRows.push({
 					content: curRowText,
 					hasCursor: curRowHasCursor,
+					positions: curRowPositions,
+					cursorCol: curRowCursorCol,
 				});
 				curRowText = "";
 				curRowWidth = 0;
 				curRowHasCursor = false;
+				curRowPositions = [];
+				curRowCursorCol = 0;
 			};
 
 			for (const atom of atoms) {
@@ -752,9 +804,11 @@ export class InputLine implements Component, Focusable {
 				}
 
 				if (atom.type === "char") {
+					curRowPositions.push({ charIdx: atom.charIdx, col: curRowWidth });
 					if (!cursorHandled && this.cursorIndex === atom.charIdx) {
 						cursorHandled = true;
 						curRowHasCursor = true;
+						curRowCursorCol = curRowWidth;
 						curRowText += `${CURSOR_MARKER}\x1b[7m${atom.raw}\x1b[27m`;
 					} else {
 						curRowText += atom.display;
@@ -762,14 +816,18 @@ export class InputLine implements Component, Focusable {
 					curRowWidth += atom.width;
 				} else {
 					// chip
+					curRowPositions.push({ charIdx: atom.startIdx, col: curRowWidth });
+					curRowPositions.push({ charIdx: atom.endIdx, col: curRowWidth + atom.width });
 					if (!cursorHandled && this.cursorIndex === atom.endIdx) {
 						cursorHandled = true;
 						curRowHasCursor = true;
+						curRowCursorCol = curRowWidth + atom.width;
 						curRowText += `${atom.display}${CURSOR_MARKER}\x1b[7m \x1b[27m`;
 						curRowWidth += atom.width + 1;
 					} else if (!cursorHandled && this.cursorIndex === atom.startIdx) {
 						cursorHandled = true;
 						curRowHasCursor = true;
+						curRowCursorCol = curRowWidth;
 						curRowText += `${CURSOR_MARKER}\x1b[7m \x1b[27m${atom.display}`;
 						curRowWidth += atom.width + 1;
 					} else {
@@ -781,9 +839,11 @@ export class InputLine implements Component, Focusable {
 
 			// 检查光标是否在该逻辑行的末尾（换行符前）
 			const lineEndGlobalIdx = globalCharIndex + lineStr.length;
+			curRowPositions.push({ charIdx: lineEndGlobalIdx, col: curRowWidth });
 			if (!cursorHandled && this.cursorIndex === lineEndGlobalIdx) {
 				cursorHandled = true;
 				curRowHasCursor = true;
+				curRowCursorCol = curRowWidth;
 				curRowText += `${CURSOR_MARKER}\x1b[7m \x1b[27m`;
 				curRowWidth += 1;
 			}
@@ -794,13 +854,41 @@ export class InputLine implements Component, Focusable {
 
 		if (!cursorHandled) {
 			if (visualRows.length === 0) {
-				visualRows.push({ content: `${CURSOR_MARKER}\x1b[7m \x1b[27m`, hasCursor: true });
+				visualRows.push({
+					content: `${CURSOR_MARKER}\x1b[7m \x1b[27m`,
+					hasCursor: true,
+					positions: [{ charIdx: 0, col: 0 }],
+					cursorCol: 0,
+				});
 			} else {
 				const lastRow = visualRows[visualRows.length - 1]!;
 				lastRow.content += `${CURSOR_MARKER}\x1b[7m \x1b[27m`;
 				lastRow.hasCursor = true;
+				lastRow.cursorCol = lastRow.positions.length > 0
+					? lastRow.positions[lastRow.positions.length - 1]!.col
+					: 0;
 			}
 		}
+
+		return visualRows;
+	}
+
+	/**
+	 * 渲染为拥有精细几何列宽、视口滚动与舒适高度的现代圆角容器盒
+	 */
+	render(width: number): string[] {
+		this.lastRenderWidth = width;
+		// 不把闭合角放在终端最后一列：部分终端在写入最后一列后
+		// 会立即自动换行，导致右侧 `╮`/`╯` 看起来像没有闭合。
+		const boxWidth = Math.max(2, width - 1);
+		const borderCol = C.promptBorder;
+		// dsh-tui 的输入框只有顶/底两条圆角横线；中间内容行横跨
+		// 整个盒宽，不绘制贯穿内容区的左右 `│`。
+		const innerWidth = Math.max(1, boxWidth);
+		const promptPrefixWidth = 2; // dsh-tui 的 `❯ ` 提示符；续行使用同宽空格
+		const contentColLimit = Math.max(1, innerWidth - promptPrefixWidth);
+
+		const visualRows = this.getVisualLayout(width);
 
 		// ─────────────────────────────────────────────────────────────
 		// 2. 视口滚动控制（MAX_VISIBLE_LINES = 5，保护终端绝对不溢出滚屏）
@@ -822,7 +910,7 @@ export class InputLine implements Component, Focusable {
 		// 空输入保持 dsh-tui 的单行内容高度，让 `❯` 正好落在上下
 		// 圆角边框的垂直中位；真实多行输入仍由 MAX_VISIBLE_LINES 限制。
 		if (visibleRows.length === 0) {
-			visibleRows.push({ content: "", hasCursor: false });
+			visibleRows.push({ content: "", hasCursor: false, positions: [], cursorCol: 0 });
 		}
 
 		// ─────────────────────────────────────────────────────────────

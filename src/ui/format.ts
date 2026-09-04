@@ -3,6 +3,8 @@
  * 对齐 pi 的工具展示形态：调用行 + 结果折叠区首屏（摘要几行 + 截断标记）。
  */
 
+import { truncateToWidth } from "./core/utils.js";
+
 export type Style = (s: string) => string;
 
 export function sanitizeTerminalText(value: string): string {
@@ -98,8 +100,8 @@ function indentLines(text: string, style: Style): string[] {
 	const all = text.split("\n");
 	const raw = all.slice(0, 6);
 	const out = raw.map((l) => {
-		const styled = style(l);
-		return styled.length > 204 ? `${styled.slice(0, 200)}…` : styled;
+		const safeLine = truncateToWidth(l, 200);
+		return style(safeLine);
 	});
 	if (all.length > 6) out.push(style(`… 还有 ${all.length - 6} 行未显示`));
 	return out;

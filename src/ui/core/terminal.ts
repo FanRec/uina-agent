@@ -127,10 +127,27 @@ export class ProcessTerminal {
 	}
 }
 
-// 确保在任何退出时彻底关闭鼠标跟踪、恢复终端光标与主屏
-process.on("exit", () => {
+function restoreTerminal(): void {
 	try {
 		process.stdout.write("\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1049l\x1b[?2004l\x1b[<u\x1b[?25h");
+		if (process.stdin.isTTY) {
+			try {
+				process.stdin.setRawMode(false);
+			} catch {}
+		}
 	} catch {}
+}
+
+process.on("exit", restoreTerminal);
+process.on("SIGTERM", () => {
+	restoreTerminal();
+	process.exit(143);
+});
+process.on("SIGHUP", () => {
+	restoreTerminal();
+	process.exit(129);
+});
+process.on("uncaughtExceptionMonitor", () => {
+	restoreTerminal();
 });
 

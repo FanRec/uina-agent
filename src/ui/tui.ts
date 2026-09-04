@@ -53,6 +53,7 @@ export class InteractiveTUI {
 	private sigintCallback?: () => void;
 	private thinkingLevelCycleCallback?: () => void;
 	private toolCallMap = new Map<string, { startedAt: number; name: string }>();
+	private currentThinkingId?: string;
 
 	constructor(options: InteractiveTUIOptions = {}) {
 		this.host = new UIHost(options);
@@ -106,6 +107,7 @@ export class InteractiveTUI {
 	render(m: OutMsg): void {
 		switch (m.type) {
 			case "turn_start":
+				this.currentThinkingId = undefined;
 				this.host.markUsageEstimated();
 				this.host.setBusy(true);
 				this.host.transcript.startTurn(m.n, m.text);
@@ -115,20 +117,34 @@ export class InteractiveTUI {
 				break;
 
 			case "text":
+				if (this.currentThinkingId) {
+					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
+					this.currentThinkingId = undefined;
+				}
 				this.host.transcript.appendToken(m.text);
-				this.host.incrementTokens(1);
-				this.host.activityLine.addTokens(1);
+				{
+					const estimatedTokens = Math.max(1, Math.ceil(m.text.length / 3));
+					this.host.incrementTokens(estimatedTokens);
+					this.host.activityLine.addTokens(estimatedTokens);
+				}
 				this.host.activityLine.update("streaming", "正在输出回复...");
 				this.host.requestRender();
 				break;
 
 			case "thinking":
+				if (!this.currentThinkingId) {
+					this.currentThinkingId = this.host.trajectoryProjection.onThinkingStart("深度推理");
+				}
 				this.host.transcript.appendThinking(m.text);
 				this.host.activityLine.update("thinking", "正在深度推理 (Thinking)...");
 				this.host.requestRender();
 				break;
 
 			case "tool_start": {
+				if (this.currentThinkingId) {
+					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
+					this.currentThinkingId = undefined;
+				}
 				const callId = m.callId ?? `tool-${m.name}-${Date.now()}`;
 				this.toolCallMap.set(callId, { startedAt: Date.now(), name: m.name });
 				this.host.transcript.smoothReveal.snapToLatest();
@@ -154,8 +170,13 @@ export class InteractiveTUI {
 			}
 
 			case "turn_end":
+				if (this.currentThinkingId) {
+					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
+					this.currentThinkingId = undefined;
+				}
 				this.host.setBusy(false);
 				this.host.transcript.finishTurn();
+				this.host.trajectoryProjection.onTurnEnd(m.n, m.usage);
 				if (m.usage) {
 					this.host.setUsage(
 						m.usage.usedTokens,
@@ -181,6 +202,10 @@ export class InteractiveTUI {
 				break;
 
 			case "error":
+				if (this.currentThinkingId) {
+					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
+					this.currentThinkingId = undefined;
+				}
 				this.host.setBusy(false);
 				this.host.transcript.addError(m.text);
 				this.host.trajectoryProjection.onError(m.text);
