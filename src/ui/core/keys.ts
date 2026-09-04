@@ -20,6 +20,8 @@ export const Key = {
 	delete: "delete",
 	pageup: "pageup",
 	pagedown: "pagedown",
+	altUp: "alt+up",
+	altDown: "alt+down",
 	ctrl: (c: string) => `ctrl+${c.toLowerCase()}`,
 	alt: (c: string) => `alt+${c.toLowerCase()}`,
 	shift: (c: string) => `shift+${c.toLowerCase()}`,
@@ -167,6 +169,31 @@ export function matchesKey(data: string, keyId: string): boolean {
 				data === "\x1b[1;3o" ||
 				data === "\x1b[1;3O"
 			);
+		case "alt+up":
+			return (
+				data === "\x1b[1;3A" ||
+				data === "\x1b\x1b[A" ||
+				data === "\x1b[1;3;65~" ||
+				data === "\x1bp"
+			);
+		case "alt+down":
+			return (
+				data === "\x1b[1;3B" ||
+				data === "\x1b\x1b[B" ||
+				data === "\x1b[1;3;66~" ||
+				data === "\x1bn"
+			);
+		case "alt+q":
+			return (
+				data === "\x1bq" ||
+				data === "\x1bQ" ||
+				data === "\x1b\x1bq" ||
+				data === "\x1b\x1bQ" ||
+				data === "\x1b[113;3u" ||
+				data === "\x1b[81;3u" ||
+				data === "\x1b[27;3;113~" ||
+				data === "\x1b[27;3;81~"
+			);
 		case "alt+a":
 			return (
 				data === "\x1ba" ||
@@ -177,8 +204,7 @@ export function matchesKey(data: string, keyId: string): boolean {
 				data === "\x1b[65;3u" ||
 				data === "\x1b[27;3;97~" ||
 				data === "\x1b[27;3;65~" ||
-				data === "\x1b[1;3a" ||
-				data === "\x1b[1;3A"
+				data === "\x1b[1;3a"
 			);
 		case "alt+j":
 			return (

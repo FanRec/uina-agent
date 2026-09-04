@@ -243,6 +243,7 @@ export class UIHost implements UIHostContextPort {
 	onCancel?: (source?: "escape" | "ctrl+c") => void;
 	onExit?: () => void;
 	onInterruptAndDeliver?: (text: string) => void;
+	onPullBackQueue?: () => void;
 	onThinkingLevelCycle?: () => void;
 
 	private cancelPending = false;
@@ -1522,6 +1523,11 @@ export class UIHost implements UIHostContextPort {
 				this.exitTimer = null;
 			}
 			this.requestRender();
+		}
+
+		if (matchesKey(data, Key.altUp) || matchesKey(data, Key.alt("up")) || matchesKey(data, Key.alt("q")) || matchesKey(data, Key.alt("Q"))) {
+			this.onPullBackQueue?.();
+			return;
 		}
 
 		if (matchesKey(data, Key.alt("a")) || matchesKey(data, Key.alt("A"))) {

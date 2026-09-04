@@ -323,6 +323,17 @@ export class Subject {
 		return items;
 	}
 
+	/** Removes the latest queued input and returns it for UI editing. */
+	async takeLastQueuedForEditor(): Promise<QueuedMessage | null> {
+		const items = this.queues.all();
+		if (items.length === 0) return null;
+		const last = items[items.length - 1]!;
+		await this.storeEvent("queue_restored", eventData(last));
+		this.queues.remove(last.id);
+		this.notifyQueueChanged();
+		return last;
+	}
+
 	private async startRun(text?: string, runtimeInputs: AgentInput[] = []): Promise<void> {
 		if (this.busy) return Promise.reject(new Error("已有活动轮次"));
 		const isRootRun = this.activeRun === undefined;

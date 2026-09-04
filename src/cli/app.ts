@@ -276,6 +276,22 @@ export async function runApp(): Promise<void> {
 		deliverQueuedNow(trimmed);
 	};
 
+	const handlePullBackQueue = async (): Promise<void> => {
+		if (!tui) return;
+		const last = await subject.takeLastQueuedForEditor();
+		if (!last) {
+			tui.host.transcript.addNotice("排队队列为空，无待办可撤回");
+			tui.host.requestRender();
+			return;
+		}
+		const currentDraft = tui.host.inputLine.getText();
+		const combined = currentDraft.trim() ? `${last.text}\n\n${currentDraft}` : last.text;
+		tui.replaceInput(combined);
+		const remaining = subject.queuedSnapshot().length;
+		tui.host.transcript.addNotice(`已从队列撤回 1 条消息至输入栏${remaining > 0 ? `（剩余排队：${remaining} 条）` : ""}`);
+		tui.host.requestRender();
+	};
+
 	const runDirectCommand = async (input: string): Promise<void> => {
 		const command = input.slice(1).trim();
 		if (!command || shuttingDown) return;
@@ -345,6 +361,9 @@ export async function runApp(): Promise<void> {
 		tui.onSIGINT(() => handleInterrupt(false));
 		tui.onForceExit(() => handleInterrupt(true));
 		tui.onInterruptAndDeliver(handleInterruptAndDeliver);
+		tui.onPullBackQueue(() => {
+			void handlePullBackQueue();
+		});
 		tui.onThinkingLevelCycle(() => {
 			if (!subject.getModel().thinkingLevels?.length) {
 				tui?.host.transcript.addNotice("当前 Provider 未提供 thinking 能力元数据；无法循环档位。");

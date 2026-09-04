@@ -2814,6 +2814,39 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(deliveredText).toBe("紧急插队任务");
 				expect(cancelCalled).toBe(false);
 			});
+
+			it("Key Parsing: 准确区分 Alt+Up (\\x1b[1;3A) 与 Alt+A (\\x1ba)，杜绝键位串扰", () => {
+				// \x1b[1;3A 是标准终端的 Alt+Up
+				expect(matchesKey("\x1b[1;3A", Key.altUp)).toBe(true);
+				expect(matchesKey("\x1b[1;3A", Key.alt("up"))).toBe(true);
+				expect(matchesKey("\x1b[1;3A", Key.alt("a"))).toBe(false); // 关键修复校验：绝不能误判为 Alt+A
+
+				// \x1ba 是 Alt+A
+				expect(matchesKey("\x1ba", Key.alt("a"))).toBe(true);
+				expect(matchesKey("\x1ba", Key.altUp)).toBe(false);
+
+				// Alt+Down 与 Alt+Q 识别
+				expect(matchesKey("\x1b[1;3B", Key.altDown)).toBe(true);
+				expect(matchesKey("\x1bq", Key.alt("q"))).toBe(true);
+			});
+
+			it("InteractiveTUI: 按 Alt+Up 触发 onPullBackQueue 且不误唤起多智能体看板", () => {
+				const tui = createInteractiveUI({ modelName: "TestModel" });
+				let pullBackTriggered = false;
+				tui.onPullBackQueue(() => {
+					pullBackTriggered = true;
+				});
+				const openSubagentsSpy = vi.spyOn(tui.host, "openSubagents");
+
+				// 按 Alt+Up (\x1b[1;3A)
+				tui.host.handleInput("\x1b[1;3A");
+				expect(pullBackTriggered).toBe(true);
+				expect(openSubagentsSpy).not.toHaveBeenCalled();
+
+				// 按 Alt+A (\x1ba)：正常唤起多智能体看板
+				tui.host.handleInput("\x1ba");
+				expect(openSubagentsSpy).toHaveBeenCalledTimes(1);
+			});
 		});
 	});
 });

@@ -56,6 +56,7 @@ export class InteractiveTUI {
 	private exitCallback?: () => void;
 	private forceExitCallback?: () => void;
 	private interruptAndDeliverCallback?: (text: string) => void;
+	private pullBackQueueCallback?: () => void;
 	private thinkingLevelCycleCallback?: () => void;
 	private toolCallMap = new Map<string, { startedAt: number; name: string; args?: unknown }>();
 	private currentThinkingId?: string;
@@ -113,6 +114,10 @@ export class InteractiveTUI {
 			this.interruptAndDeliverCallback?.(text);
 		};
 
+		this.host.onPullBackQueue = () => {
+			this.pullBackQueueCallback?.();
+		};
+
 		this.host.onThinkingLevelCycle = () => {
 			this.thinkingLevelCycleCallback?.();
 		};
@@ -149,6 +154,10 @@ export class InteractiveTUI {
 
 	onInterruptAndDeliver(cb: (text: string) => void): void {
 		this.interruptAndDeliverCallback = cb;
+	}
+
+	onPullBackQueue(cb: () => void): void {
+		this.pullBackQueueCallback = cb;
 	}
 
 	onThinkingLevelCycle(cb: () => void): void {

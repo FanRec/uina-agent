@@ -267,6 +267,32 @@ describe("Subject", () => {
 		expect(subject.getContextWindow()).toBeUndefined();
 		expect(provider.calls).toHaveLength(1);
 	});
+
+	it("takes queued items for editor in single LIFO pull-back order", async () => {
+		const provider = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] }]);
+		const subject = new Subject(provider, new ToolBroker(), { onToken: () => {} });
+		subject.seedQueue([
+			{ id: "q1", order: 1, text: "task 1", mode: "followUp" },
+			{ id: "q2", order: 2, text: "task 2", mode: "followUp" },
+		]);
+		expect(subject.queuedSnapshot()).toHaveLength(2);
+
+		// takeLastQueuedForEditor 取出最后入队的一条（对齐 Alt+Up pullBackLast）
+		const last = await subject.takeLastQueuedForEditor();
+		expect(last?.id).toBe("q2");
+		expect(last?.text).toBe("task 2");
+		expect(subject.queuedSnapshot()).toHaveLength(1);
+
+		// 再次取出最后一条
+		const first = await subject.takeLastQueuedForEditor();
+		expect(first?.id).toBe("q1");
+		expect(first?.text).toBe("task 1");
+		expect(subject.queuedSnapshot()).toHaveLength(0);
+
+		// 队列为空时返回 null
+		const empty = await subject.takeLastQueuedForEditor();
+		expect(empty).toBeNull();
+	});
 });
 
 describe("JSONL session", () => {
