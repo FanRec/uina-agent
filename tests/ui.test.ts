@@ -2972,6 +2972,20 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					expect(clearedFrameText).not.toContain("◆ (Steer)");
 					expect(clearedFrameText).not.toContain("↳ 排队消息1");
 				});
+
+				it("超窄终端（例如 width=35）：所有行绝对不超过 width 且不发生折行溢出", () => {
+					const queueComp = new PendingQueueComponent();
+					queueComp.setItems([
+						{ id: "s-1", text: "这是一条在极窄终端下排队的较长消息", mode: "steer", order: 1 },
+						{ id: "f-1", text: "第二条跟进任务需要保证严格适配", mode: "followUp", order: 2 },
+					]);
+
+					const lines = queueComp.render(35);
+					expect(lines.length).toBeGreaterThan(0);
+					for (const line of lines) {
+						expect(visibleWidth(line)).toBeLessThanOrEqual(35);
+					}
+				});
 			});
 		});
 	});

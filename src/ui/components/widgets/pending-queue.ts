@@ -33,12 +33,13 @@ export class PendingQueueComponent {
 		const followUpItems = this.items.filter((i) => i.mode === "followUp");
 		const lines: string[] = [];
 
-		const maxContentW = Math.max(10, width - 8);
+		const maxContentW = Math.max(4, width - 8);
 		let renderedCount = 0;
 
 		// 1. 渲染 Steer (插话)
 		if (steerItems.length > 0) {
-			lines.push(`  ${C.suggestion}◆ (Steer)${C.reset} ${C.inactive}· 下一步送达${C.reset}`);
+			const steerSuffix = steerItems.length > 1 ? ` (${steerItems.length} 条待办)` : "";
+			lines.push(`  ${C.suggestion}◆ (Steer)${C.reset} ${C.inactive}· 下一步送达${steerSuffix}${C.reset}`);
 			for (const item of steerItems) {
 				if (renderedCount >= this.maxVisible) break;
 				const cleanText = item.text.replace(/[\r\n]+/g, " ").trim();
@@ -70,6 +71,6 @@ export class PendingQueueComponent {
 		// 4. 操作指引行
 		lines.push(`  ${C.subtle}↳ Alt+↑ 撤回 · Esc 打断并发送 · Ctrl+Enter 插队${C.reset}`);
 
-		return lines;
+		return lines.map((l) => truncateToWidth(l, width));
 	}
 }
