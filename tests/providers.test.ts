@@ -57,7 +57,7 @@ describe("Anthropic provider protocol", () => {
 		expect(output.filter((d) => d.kind === "thinking_signature").map((d) => d.kind === "thinking_signature" && d.signature)).toEqual(["sig-0", "-1"]);
 		expect(output.filter((d) => d.kind === "text").map((d) => d.kind === "text" && d.text)).toEqual(["答", "案"]);
 		expect(output.at(-1)).toEqual({ kind: "finish", reason: "stop" });
-		expect(output.at(-2)).toEqual({ kind: "usage", usage: { input: 12, output: 5, cacheRead: 2, cacheWrite: 0, reasoning: 2, totalTokens: 19 } });
+		expect(output.findLast(d => d.kind === "usage")).toEqual({ kind: "usage", usage: { input: 12, output: 5, cacheRead: 2, reasoning: 2, totalTokens: 19 } });
 	});
 
 	it("reassembles tool input and maps tool_use to tool_calls", async () => {
@@ -116,7 +116,7 @@ describe("Gemini provider protocol", () => {
 		expect(output).toContainEqual({ kind: "thinking_signature", signature: "thought-sig" });
 		expect(output).toContainEqual({ kind: "tool_call", call: { id: "provider-call", name: "echo", args: '{"value":"ok"}', argsValid: true, thinkingSignature: "call-sig" } });
 		expect(output.at(-1)).toEqual({ kind: "finish", reason: "tool_calls" });
-		expect(output.findLast((d) => d.kind === "usage")).toEqual({ kind: "usage", usage: { input: 8, output: 4, cacheRead: 2, cacheWrite: 0, reasoning: 1, totalTokens: 14 } });
+		expect(output.findLast((d) => d.kind === "usage")).toEqual({ kind: "usage", usage: { input: 8, output: 4, cacheRead: 2, reasoning: 1, totalTokens: 14 } });
 	});
 
 	it("does not reuse usage from a previous request", async () => {

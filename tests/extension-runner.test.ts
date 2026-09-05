@@ -71,7 +71,7 @@ describe("project extension runner", () => {
 				type: "function",
 				function: { name: "builtin_scope_tool", description: "scope test", parameters: { type: "object", properties: {} } },
 			},
-			run: async () => "ok",
+			run: async () => ({ result: "ok", status: "succeeded" }),
 		};
 		let builtinDisposed = false;
 		await runner.activateBuiltin("scope-test", (pi) => {

@@ -9,6 +9,7 @@ import {
 	SessionFormatError,
 } from "./recovery.js";
 import type {
+	QueuedInput,
 	SessionCompactionRecord,
 	SessionEventName,
 	SessionEventRecord,
@@ -57,6 +58,10 @@ export class JsonlSessionStore implements SessionStore {
 		private readonly handle: FileHandle,
 		private nextSeq: number,
 	) {}
+
+	appendInput(input: QueuedInput): Promise<void> {
+		return this.append({ kind: "input", id: randomUUID(), seq: ++this.nextSeq, timestamp: new Date().toISOString(), input: structuredClone(input) });
+	}
 
 	appendMessage(message: AgentMessage | ChatMsg): Promise<void> {
 		return this.append({
@@ -128,6 +133,11 @@ export class JsonlSessionStore implements SessionStore {
 export class MemorySessionStore implements SessionStore {
 	readonly path = ":memory:";
 	readonly records: SessionRecord[] = [];
+
+	appendInput(input: QueuedInput): Promise<void> {
+		this.records.push({ kind: "input", id: randomUUID(), seq: this.records.length + 1, timestamp: new Date().toISOString(), input: structuredClone(input) });
+		return Promise.resolve();
+	}
 
 	appendMessage(message: AgentMessage | ChatMsg): Promise<void> {
 		this.records.push({

@@ -74,7 +74,7 @@ export interface ToolCallResult {
 
 export interface ToolResultEventResult {
 	readonly result?: string;
-	readonly isError?: boolean;
+	readonly status?: import("../core/types.js").ToolResultStatus;
 	readonly details?: unknown;
 }
 
@@ -208,8 +208,8 @@ export class ExtensionHost {
 						current.result = res.result;
 						modified = true;
 					}
-					if (res.isError !== undefined) {
-						current.isError = res.isError;
+					if (res.status !== undefined) {
+						current.status = res.status;
 						modified = true;
 					}
 				}
@@ -218,7 +218,7 @@ export class ExtensionHost {
 			}
 		}
 
-		return modified ? { result: current.result, isError: current.isError } : undefined;
+		return modified ? { result: current.result, status: current.status } : undefined;
 	}
 
 	/** 触发上下文消息变换 */

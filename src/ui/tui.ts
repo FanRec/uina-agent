@@ -238,9 +238,9 @@ export class InteractiveTUI {
 				const elapsed = m.elapsedMs ?? (m.ts ? Date.now() - m.ts : record ? Date.now() - record.startedAt : 0);
 				if (m.callId) this.toolCallMap.delete(m.callId);
 
-				const isError = m.status === "failed";
-				this.host.transcript.addToolDone(m.name, m.result, elapsed, isError, m.callId, record?.args);
-				this.host.trajectoryProjection.onToolDone(m.callId ?? "", m.name, m.result, elapsed, isError);
+				const status = m.status ?? "unknown";
+				this.host.transcript.addToolDone(m.name, m.result, elapsed, status, m.callId, record?.args);
+				this.host.trajectoryProjection.onToolDone(m.callId ?? "", m.name, m.result, elapsed, status);
 				this.host.activityLine.update("streaming", `工具 ${m.name} 执行完毕，继续生成...`);
 				this.syncToolAnimationTimer();
 				this.host.requestRender();
@@ -260,7 +260,7 @@ export class InteractiveTUI {
 					this.host.setUsage(
 						m.usage.usedTokens,
 						m.usage.contextWindow,
-						m.usage.actual ?? true,
+						m.usage.actual ?? false,
 						{
 							input: m.usage.inputTokens,
 							output: m.usage.outputTokens,

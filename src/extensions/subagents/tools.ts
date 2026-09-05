@@ -14,5 +14,5 @@ export function createSubagentTools(registry: SubagentRegistry, ownerId: string)
 }
 
 function tool(name: string, description: string, parameters: Record<string, unknown>, run: (args: Record<string, unknown>) => Promise<string>): Tool {
-	return { def: { type: "function", function: { name, description, parameters } }, run };
+	return { def: { type: "function", function: { name, description, parameters } }, run: async (args) => ({ result: await run(args), status: "succeeded" }) };
 }

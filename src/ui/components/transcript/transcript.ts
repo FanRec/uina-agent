@@ -5,7 +5,8 @@
  */
 
 import type { Component } from "../../core/types.js";
-import type { ChatMsg } from "../../../core/types.js";
+import { projectInputMessage } from "../../../session/recovery.js";
+import type { ChatMsg, ToolResultStatus } from "../../../core/types.js";
 import type { SessionEntry } from "../../../session/types.js";
 import { C, wrapTextWithAnsi, stripAnsi } from "../../core/utils.js";
 import { formatThinkingLines } from "./thinking-view.js";
@@ -39,7 +40,7 @@ export type TurnItem =
 			name: string;
 			args?: unknown;
 			result?: string;
-			status: "running" | "completed" | "failed";
+			status: "running" | ToolResultStatus;
 			elapsedMs?: number;
 			startedAt?: number;
 			callId?: string;
@@ -388,21 +389,19 @@ export class TranscriptContainer implements Component {
 		this.invalidate();
 	}
 
-	addToolDone(name: string, result: string, elapsedMs = 0, isError = false, callId?: string, args?: unknown): void {
+	addToolDone(name: string, result: string, elapsedMs = 0, status: ToolResultStatus = "unknown", callId?: string, args?: unknown): void {
 		if (!this.currentTurn) {
 			const lastTurn = this.historyTurns[this.historyTurns.length - 1];
 			if (lastTurn) {
 				const existingTool = lastTurn.items.find(
 					(it): it is Extract<TurnItem, { kind: "tool" }> =>
-						it.kind === "tool" && ((callId && it.callId === callId) || it.name === name),
+						it.kind === "tool" && (callId ? it.callId === callId : it.name === name),
 				);
 				if (existingTool) {
 					// 该工具属于已结算/打断的上一轮，严禁开辟新轮次或生成重复工具卡
-					if (existingTool.status === "running") {
-						existingTool.status = isError ? "failed" : "completed";
-						existingTool.result = result;
-						existingTool.elapsedMs = elapsedMs;
-					}
+					existingTool.status = status;
+					existingTool.result = result;
+					existingTool.elapsedMs = elapsedMs;
 					this.invalidate();
 					return;
 				}
@@ -428,10 +427,8 @@ export class TranscriptContainer implements Component {
 		}
 
 		if (runningTool) {
-			if (runningTool.status !== "failed" || runningTool.result !== "已由用户打断") {
-				runningTool.status = isError ? "failed" : "completed";
-				runningTool.result = result;
-			}
+			runningTool.status = status;
+			runningTool.result = result;
 			runningTool.elapsedMs = elapsedMs;
 			if (args !== undefined && runningTool.args === undefined) {
 				runningTool.args = args;
@@ -443,7 +440,7 @@ export class TranscriptContainer implements Component {
 				args,
 				result,
 				elapsedMs,
-				status: isError ? "failed" : "completed",
+				status: status,
 				callId,
 			});
 		}
@@ -500,8 +497,8 @@ export class TranscriptContainer implements Component {
 			}
 			for (const item of this.currentTurn.items) {
 				if (item.kind === "tool" && item.status === "running") {
-					item.status = "failed";
-					item.result = "已由用户打断";
+					item.status = "unknown";
+					item.result = "已请求中断，工具结果尚未确认";
 				}
 			}
 			this.currentTurn.items.push({ kind: "interrupt", text: notice });
@@ -585,8 +582,7 @@ export class TranscriptContainer implements Component {
 				continue;
 			}
 
-			if ((entry as { kind: string }).kind !== "message") continue;
-			const msg = entry.message;
+			const msg = entry.kind === "input" ? projectInputMessage(entry.input) : entry.kind === "message" ? entry.message : undefined;
 			if (!msg) continue;
 			if (msg.role === "user") {
 				commit();
@@ -629,7 +625,7 @@ export class TranscriptContainer implements Component {
 					args: toolArgs,
 					result: msg.content,
 					elapsedMs,
-					status: "completed",
+					status: msg.status ?? "unknown",
 					callId: msg.tool_call_id,
 				});
 			}

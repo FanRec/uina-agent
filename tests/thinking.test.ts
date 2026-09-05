@@ -71,7 +71,7 @@ describe("OpenAI-compatible thinking", () => {
 		await new Promise<void>((resolve) => server.listen(0, resolve));
 		const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
 		const events: string[] = [];
-		await createOpenAIProvider({ baseUrl, apiKey: "x", model: "m", modelContextWindow: 4096 }).stream(
+		await createOpenAIProvider({ baseUrl, apiKey: "x", model: "m", modelContextWindow: 4096, thinkingLevels: ["off", "high"] }).stream(
 			{ messages: [{ role: "user", content: "hi" }], thinkingLevel: "high", providerHooks: NO_RUNTIME_HOOKS.provider },
 			delta => { if (delta.kind === "thinking") events.push(delta.text); },
 		);

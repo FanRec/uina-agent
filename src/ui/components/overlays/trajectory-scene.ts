@@ -18,7 +18,7 @@ export type TrajectoryNodeKind =
 	| "error"
 	| "system";
 
-export type TrajectoryNodeStatus = "running" | "completed" | "failed";
+export type TrajectoryNodeStatus = "running" | "completed" | "failed" | "cancelled" | "unknown" | "not_started";
 
 export interface TrajectoryNode {
 	id: string;
@@ -247,7 +247,7 @@ export class TrajectoryScene implements Component, Focusable {
 			const timeStr = formatTime(current.startedAt);
 			const durStr = current.durationMs ? formatDuration(current.durationMs) : "";
 
-			const detailHeader = `节点 [${this.cursorIndex + 1}/${nodes.length}] ${statusIcon} ${C.bold}${current.label}${C.reset}  ${C.dim}${timeStr} ${durStr}${C.reset}`;
+			const detailHeader = `节点 [${this.cursorIndex + 1}/${nodes.length}] ${statusIcon} ${C.dim}[${current.status}]${C.reset} ${C.bold}${current.label}${C.reset}  ${C.dim}${timeStr} ${durStr}${C.reset}`;
 			output.push(`  ${borderCol}│${C.reset} ${truncateToWidth(detailHeader, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(detailHeader)))} ${borderCol}│${C.reset}`);
 
 			if (current.error) {

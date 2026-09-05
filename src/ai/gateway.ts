@@ -45,7 +45,7 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 				tools: req.tools?.length ? req.tools : undefined,
 				stream: true,
 				stream_options: { include_usage: true },
-				...thinkingRequest(req.thinkingLevel, conf.thinkingFormat),
+				...thinkingRequest(conf.thinkingLevels?.length ? req.thinkingLevel : undefined, conf.thinkingFormat),
 			};
 
 			headers = copyValue(await req.providerHooks.transformHeaders(conf.model, readonlySnapshot(headers)));
@@ -94,7 +94,7 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 						}
 						return;
 					}
-					if (finished) return;
+					if (doneMarker) throw new ProviderProtocolError("[DONE] 后出现额外事件", index);
 					let chunk: OpenAIChunk;
 					try {
 						chunk = JSON.parse(data) as OpenAIChunk;
@@ -114,6 +114,7 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 						}
 					}
 					if (!choice) return;
+					if (finished) throw new ProviderProtocolError("finish_reason 后出现额外内容", index);
 					const delta = choice.delta ?? {};
 					if (typeof delta.reasoning_content === "string" && delta.reasoning_content.length > 0) {
 						onDelta({ kind: "thinking", text: delta.reasoning_content });
@@ -268,30 +269,25 @@ function mergeOpenAIUsage(state: Partial<Usage>, raw: NonNullable<OpenAIChunk["u
 	const output = count(raw.completion_tokens, "completion_tokens");
 	const reasoning = count(raw.completion_tokens_details?.reasoning_tokens, "reasoning_tokens");
 	if (cacheRead !== undefined) next.cacheRead = cacheRead;
-	if (prompt !== undefined) next.input = Math.max(0, prompt - (cacheRead ?? next.cacheRead ?? 0));
+	const promptTotal = prompt ?? (state.input !== undefined ? state.input + (state.cacheRead ?? 0) : undefined);
+	if (promptTotal !== undefined) {
+		if ((next.cacheRead ?? 0) > promptTotal) throw new ProviderProtocolError("cached_tokens 大于 prompt_tokens", index);
+		next.input = promptTotal - (next.cacheRead ?? 0);
+	}
 	if (output !== undefined) next.output = output;
 	if (reasoning !== undefined) next.reasoning = reasoning;
 	const total = count(raw.total_tokens, "total_tokens");
-	next.totalTokens = total ?? (next.input ?? 0) + (next.output ?? 0) + (next.cacheRead ?? 0) + (next.cacheWrite ?? 0);
+	next.totalTokens = total ?? (next.input !== undefined && next.output !== undefined ? next.input + next.output + (next.cacheRead ?? 0) : undefined);
 	return next;
 }
 
-function usageSnapshot(state: Partial<Usage>): Usage {
-	return {
-		input: state.input ?? 0,
-		output: state.output ?? 0,
-		cacheRead: state.cacheRead ?? 0,
-		cacheWrite: state.cacheWrite ?? 0,
-		reasoning: state.reasoning ?? 0,
-		totalTokens: state.totalTokens ?? (state.input ?? 0) + (state.output ?? 0) + (state.cacheRead ?? 0) + (state.cacheWrite ?? 0),
-	};
-}
+function usageSnapshot(state: Partial<Usage>): Usage { return { ...state }; }
 
 function thinkingRequest(level: ThinkingLevel | undefined, format = "openai"): Record<string, unknown> {
-	if (!level || level === "off") return {};
-	if (format === "deepseek") return {};
-	if (format === "qwen") return { enable_thinking: true };
-	return { reasoning_effort: level === "xhigh" || level === "max" ? "high" : level };
+ if (!level) return {};
+ if (format === "deepseek") return { thinking: { type: level === "off" ? "disabled" : "enabled" }, ...(level === "off" ? {} : { reasoning_effort: level }) };
+ if (format === "qwen") return { enable_thinking: level !== "off" };
+ return { reasoning_effort: level === "off" ? "none" : level };
 }
 
 export function toWireMessages(messages: ModelRequest["messages"], thinkingFormat?: ProviderConf["thinkingFormat"]): unknown[] {

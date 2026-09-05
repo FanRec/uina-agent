@@ -15,7 +15,7 @@ export function createJobTools(jobs: JobRegistry, ownerId: string): Tool[] {
 					parameters: { type: "object", properties: {}, additionalProperties: false },
 				},
 			},
-			run: async () => JSON.stringify(jobs.list(ownerId)),
+			run: async () => ({ result: JSON.stringify(jobs.list(ownerId)), status: "succeeded" }),
 		},
 		{
 			def: {
@@ -39,7 +39,7 @@ export function createJobTools(jobs: JobRegistry, ownerId: string): Tool[] {
 					const requested = optionalInteger(args.timeout_ms, WAIT_DEFAULT_MS, "timeout_ms");
 					await jobs.wait(id, ownerId, Math.min(requested, WAIT_MAX_MS), cursor, signal);
 				}
-				return JSON.stringify(jobs.read(id, ownerId, cursor));
+				return { result: JSON.stringify(jobs.read(id, ownerId, cursor)), status: "succeeded" };
 			},
 		},
 		{
@@ -58,7 +58,7 @@ export function createJobTools(jobs: JobRegistry, ownerId: string): Tool[] {
 				const id = requiredString(args.job_id, "job_id");
 				const reason = typeof args.reason === "string" ? args.reason : undefined;
 				const outcome = jobs.cancel(id, ownerId, reason);
-				return JSON.stringify({ outcome, job: jobs.get(id, ownerId) });
+				return { result: JSON.stringify({ outcome, job: jobs.get(id, ownerId) }), status: "succeeded" };
 			},
 		},
 	];

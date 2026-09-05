@@ -42,7 +42,8 @@ export interface SubagentStartOptions {
 	prompt: string;
 }
 
-export interface SubagentRecord extends SubagentSnapshot {
+export interface SubagentRecord extends Omit<SubagentSnapshot, "status" | "busy"> {
+	status?: "interrupted" | "failed" | "settled";
 	handle: AgentHandle;
 	outputs: SubagentOutput[];
 	error?: string;

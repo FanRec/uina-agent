@@ -102,11 +102,12 @@ export class JobRegistry {
 	private readonly jobs = new Map<string, TrackedJob>();
 	private readonly changed = new Set<(job: JobSnapshot) => void>();
 	private readonly resolved = new Set<(job: JobSnapshot) => void>();
-	private readonly maxActivePerOwner: number;
+	private readonly maxActivePerOwner?: number;
+	private closePromise?: Promise<void>;
 	private closed = false;
 
 	constructor(options: JobsOptions = {}) {
-		this.maxActivePerOwner = options.maxActivePerOwner ?? 10;
+		this.maxActivePerOwner = options.maxActivePerOwner;
 	}
 
 	start(spec: JobSpec): string {
@@ -114,7 +115,7 @@ export class JobRegistry {
 		if (!spec.label.trim()) throw new Error("Job label 不能为空");
 		if (!spec.ownerId) throw new Error("Job ownerId 不能为空");
 		if (!spec.source.extension.trim()) throw new Error("Job source.extension 不能为空");
-		if (this.activeFor(spec.ownerId) >= this.maxActivePerOwner) {
+		if (this.maxActivePerOwner !== undefined && this.activeFor(spec.ownerId) >= this.maxActivePerOwner) {
 			throw new Error(`后台任务数量已达到上限（${this.maxActivePerOwner}）`);
 		}
 		const id = `job-${randomUUID()}`;
@@ -230,11 +231,12 @@ export class JobRegistry {
 	}
 
 	async close(): Promise<void> {
-		if (this.closed) return;
+		if (this.closePromise) return this.closePromise;
 		this.closed = true;
 		const active = [...this.jobs.values()].filter((job) => !isTerminal(job.snapshot.status));
 		for (const job of active) this.cancel(job.snapshot.id, job.snapshot.ownerId, "宿主正在关闭");
-		await Promise.all(active.map((job) => this.waitForTerminal(job)));
+		this.closePromise = Promise.all(active.map((job) => this.waitForTerminal(job))).then(() => undefined);
+		await this.closePromise;
 	}
 
 	private update(job: TrackedJob, update: { detail?: string; progress?: JobProgress }): void {
@@ -260,7 +262,7 @@ export class JobRegistry {
 	}
 
 	private requestCancel(job: TrackedJob, reason?: string): void {
-		try { job.handle?.cancel(reason); } catch (error) { this.settle(job, { status: "unknown", detail: `取消请求失败：${errorMessage(error)}` }); }
+		try { job.handle?.cancel(reason); } catch (error) { job.snapshot.detail = `取消请求失败：${errorMessage(error)}`; this.notifyChanged(job); }
 	}
 
 	private settle(job: TrackedJob, outcome: JobOutcome): void {

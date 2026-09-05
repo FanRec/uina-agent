@@ -11,6 +11,7 @@ import type {
 	Usage,
 } from "../core/types.js";
 import type { SessionStore } from "../session/types.js";
+import { projectInputMessage } from "../session/recovery.js";
 import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, defaultPrepareNextTurn, findKeepFrom, type PrepareNextTurnContext, type PrepareNextTurnResult } from "./compaction.js";
 import { buildContext, calculateContextSegments, convertToLlm, defaultSystemPrompt, estimateContextTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
@@ -65,7 +66,7 @@ export function clampThinkingLevel(
 ): ThinkingLevel {
 	if (!available || available.length === 0) return "off";
 	if (available.includes(requested)) return requested;
-	return "off";
+	return available[0]!;
 }
 
 export interface QueueInputOptions {
@@ -81,7 +82,7 @@ export interface AgentInput {
 }
 
 export class Subject {
-	private busy = false;
+	private activity: "turn" | "compact" | undefined;
 	private history: AgentMessage[] = [];
 	private turnSeq = 0;
 	private interrupted = false;
@@ -99,7 +100,6 @@ export class Subject {
 	private preferredThinkingLevel: ThinkingLevel;
 	private readonly runtimeHooks: RuntimeHooks;
 	private readonly prepareNextTurnSeam: (ctx: PrepareNextTurnContext) => Promise<PrepareNextTurnResult | null>;
-	private runtimeInputs: AgentInput[] = [];
 	private lastReportedUsage: Usage | null = null;
 	private streamSeq = 0;
 
@@ -122,7 +122,7 @@ export class Subject {
 			steer: options.steerQueueMode ?? "one-at-a-time",
 			followUp: options.followUpQueueMode ?? "one-at-a-time",
 		};
-		this.preferredThinkingLevel = options.thinkingLevel ?? "off";
+		this.preferredThinkingLevel = options.thinkingLevel ?? provider.thinkingLevels?.[0] ?? "off";
 		if (this.preferredThinkingLevel !== "off" && !provider.thinkingLevels?.includes(this.preferredThinkingLevel)) {
 			throw new Error(`provider ${provider.name} 未声明支持 thinking level: ${this.preferredThinkingLevel}`);
 		}
@@ -201,25 +201,30 @@ export class Subject {
 
 	async compact(instruction?: string): Promise<void> {
 		if (this.isBusy()) throw new Error("Agent 正在运行中，无法手动压缩会话");
-		const keepFrom = findKeepFrom(this.history, 0);
-		if (keepFrom <= 0) {
-			void this.runtimeHooks.events.emit({
-				type: "session_compact_failed",
-				error: "当前会话消息过短，无需压缩",
-			});
-			return;
-		}
-		const tokensBefore = Math.ceil(this.history.reduce((acc, m) => acc + m.content.length + 16, 0) / 4);
-		const compactDecision = await this.runtimeHooks.turn.beforeCompact({ tokensBefore });
-		if (compactDecision.cancel) {
-			void this.runtimeHooks.events.emit({
-				type: "session_compact_failed",
-				error: "会话压缩已被扩展取消",
-			});
-			return;
-		}
-
+		let completed = false;
+		this.activity = "compact";
+		this.interrupted = false;
+		this.abort = new AbortController();
+		this.activeRun = new Promise<void>(resolve => { this.settleActiveRun = resolve; });
 		try {
+			const keepFrom = findKeepFrom(this.history, 0);
+			if (keepFrom <= 0) {
+				await this.runtimeHooks.events.emit({
+					type: "session_compact_failed",
+					error: "当前会话消息过短，无需压缩",
+				});
+				return;
+			}
+			const tokensBefore = Math.ceil(this.history.reduce((acc, m) => acc + m.content.length + 16, 0) / 4);
+			const compactDecision = await this.runtimeHooks.turn.beforeCompact({ tokensBefore });
+			if (compactDecision.cancel) {
+				await this.runtimeHooks.events.emit({
+					type: "session_compact_failed",
+					error: "会话压缩已被扩展取消",
+				});
+				return;
+			}
+
 			const result = await compactHistory(
 				this.history,
 				this.provider,
@@ -232,31 +237,40 @@ export class Subject {
 				instruction,
 			);
 			if (!result) {
-				void this.runtimeHooks.events.emit({
+				await this.runtimeHooks.events.emit({
 					type: "session_compact_failed",
 					error: "当前会话消息过短，无需压缩",
 				});
 				return;
 			}
+			this.abort?.signal.throwIfAborted();
 			const replacement: AgentMessage[] = [
-				{ role: "user", content: `[历史摘要] ${result.summary}`, timestamp: new Date().toISOString() },
+				{ role: "compactionSummary", summary: result.summary, content: `[历史摘要] ${result.summary}`, tokensBefore: result.tokensBefore },
 				...result.retainedTail,
 			];
 			await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);
 			this.history = replacement;
 
-			void this.runtimeHooks.events.emit({
+			await this.runtimeHooks.events.emit({
 				type: "session_compact",
 				summary: result.summary,
 				tokensBefore: result.tokensBefore,
 				retainedTailCount: result.retainedTail.length,
 			});
+			completed = true;
 		} catch (err) {
-			void this.runtimeHooks.events.emit({
+			await this.runtimeHooks.events.emit({
 				type: "session_compact_failed",
 				error: (err as Error).message,
 			});
 			throw err;
+		} finally {
+			this.activity = undefined;
+			this.abort = null;
+			try {
+				if (completed && !this.interrupted && this.queues.size > 0) await this.resumeQueued();
+				await this.runtimeHooks.events.flush();
+			} finally { this.completeActiveRun(); }
 		}
 	}
 
@@ -276,14 +290,12 @@ export class Subject {
 
 	accept(input: AgentInput): Promise<void> {
 		if (!input.id || !input.text?.trim()) return Promise.reject(new Error("AgentInput 必须包含 id 和 text"));
-		if (!this.isBusy() && this.queues.size === 0) {
-			return input.source.kind === "runtime"
-				? this.startRun(undefined, [input])
-				: this.startRun(input.text.trim());
-		}
-		const queued = this.queues.enqueue(input.text.trim(), input.mode, { source: input.source, data: input.data });
-		return this.storeEvent("queue_enqueued", { ...eventData(queued), source: input.source, data: input.data }).then(() => {
+		if (input.source.kind !== "runtime" && !this.isBusy() && this.queues.size === 0) return this.startRun(input.text.trim());
+		const queued = { ...this.queues.create(input.text.trim(), input.mode, { source: input.source, data: input.data }), id: input.id };
+		this.queues.add(queued);
+		return this.storeEvent("queue_enqueued", { ...eventData(queued), source: input.source, data: input.data }).then(async () => {
 			this.notifyQueueChanged();
+			if (!this.isBusy()) await this.resumeQueued();
 		});
 	}
 
@@ -298,7 +310,7 @@ export class Subject {
 	}
 
 	interrupt(): void {
-		if (!this.busy) return;
+		if (!this.activity) return;
 		this.interrupted = true;
 		try {
 			this.abort?.abort();
@@ -316,6 +328,7 @@ export class Subject {
 	}
 
 	addHistory(messages: readonly (AgentMessage | ChatMsg)[]): void {
+		if (this.isBusy()) throw new Error("活动期间不能替换历史");
 		this.history.push(...messages.map((m) => structuredClone(m as AgentMessage)));
 	}
 
@@ -354,8 +367,8 @@ export class Subject {
 		return last;
 	}
 
-	private async startRun(text?: string, runtimeInputs: AgentInput[] = []): Promise<void> {
-		if (this.busy) return Promise.reject(new Error("已有活动轮次"));
+	private async startRun(text?: string, queuedInput?: QueuedMessage): Promise<void> {
+		if (this.activity) return Promise.reject(new Error("已有活动轮次"));
 		const isRootRun = this.activeRun === undefined;
 		if (isRootRun) {
 			this.activeRun = new Promise<void>((resolve) => {
@@ -368,7 +381,7 @@ export class Subject {
 				this.reportError(new Error(`provider ${this.provider.name} 不支持 thinking level: ${this.thinkingLevel}`));
 				return;
 			}
-			this.busy = true;
+			this.activity = "turn";
 			this.interrupted = false;
 			this.abort = new AbortController();
 			const turn = ++this.turnSeq;
@@ -376,25 +389,24 @@ export class Subject {
 			const prepared = await this.runtimeHooks.turn.prepare({ prompt: text ?? "", systemPrompt: this.systemPrompt });
 			await this.runtimeHooks.events.emit({ type: "agent_start", turnSeq: turn });
 
-			await this.runTurn(text, turn, runtimeInputs, this.provider, prepared.systemPrompt ?? this.systemPrompt, prepared.messages ? [...prepared.messages] : []);
+			await this.runTurn(text, turn, this.provider, prepared.systemPrompt ?? this.systemPrompt, prepared.messages ? [...prepared.messages] : [], queuedInput);
 		} catch (error) {
 			this.abort = null;
-			this.busy = false;
-			this.runtimeInputs = [];
+			this.activity = undefined;
 			this.reportError(error);
 		} finally {
 			if (isRootRun) this.completeActiveRun();
 		}
 	}
 
-	private async runTurn(text: string | undefined, turn: number, runtimeInputs: AgentInput[] = [], provider = this.provider, systemPrompt = this.systemPrompt, beforeMessages: readonly (AgentMessage | ChatMsg)[] = []): Promise<void> {
+	private async runTurn(text: string | undefined, turn: number, provider = this.provider, systemPrompt = this.systemPrompt, beforeMessages: readonly (AgentMessage | ChatMsg)[] = [], queuedInput?: QueuedMessage): Promise<void> {
 		let success = false;
 		let runError: string | undefined;
 		try {
 			this.hooks.onTurnStart?.(turn, text ?? "");
 			await this.runtimeHooks.events.emit({ type: "turn_start", turnNumber: turn, userText: text ?? "" });
-			if (text !== undefined) await this.appendMessage({ role: "user", content: text, timestamp: new Date().toISOString() });
-			this.runtimeInputs = runtimeInputs;
+			if (queuedInput) await this.consumeQueueItem(queuedInput);
+			else if (text !== undefined) await this.appendMessage({ role: "user", content: text, timestamp: new Date().toISOString() });
 			await this.decide(provider, systemPrompt, beforeMessages);
 			success = true;
 		} catch (error) {
@@ -407,17 +419,16 @@ export class Subject {
 			}
 		} finally {
 			this.abort = null;
-			this.runtimeInputs = [];
-			this.busy = false;
+			this.activity = undefined;
 			try {
 				const estimate = estimateContextTokens(this.history);
 				const last = this.lastReportedUsage;
-				const used = last ? last.totalTokens : estimate.tokens;
+				const used = last?.totalTokens ?? estimate.tokens;
 				const segments = this.getContextSegments();
 				const usage = {
 					usedTokens: used,
 					contextWindow: this.getContextWindow(),
-					actual: Boolean(last) || estimate.actual,
+					actual: last?.totalTokens !== undefined || estimate.actual,
 					cacheRead: last?.cacheRead,
 					cacheWrite: last?.cacheWrite,
 					inputTokens: last?.input,
@@ -436,7 +447,7 @@ export class Subject {
 				this.lastReportedUsage = null;
 			}
 			await this.runtimeHooks.events.emit({ type: "agent_end", turnSeq: turn, success, error: runError });
-			if (!this.interrupted && this.queues.size > 0) {
+			if (success && !this.interrupted && this.queues.size > 0) {
 				try { await this.resumeQueued(); } catch (error) { this.reportError(error); }
 			} else if (this.queues.size === 0) {
 				await this.runtimeHooks.events.emit({ type: "agent_settled", turnSeq: turn });
@@ -446,7 +457,7 @@ export class Subject {
 	}
 
 	private async resumeQueued(): Promise<void> {
-		if (this.busy || this.resumingQueue) return;
+		if (this.activity || this.resumingQueue) return;
 		this.resumingQueue = true;
 		try {
 			await this.drainQueuesIntoRun();
@@ -456,46 +467,25 @@ export class Subject {
 	}
 
 	private async drainQueuesIntoRun(): Promise<void> {
-		if (this.busy) return;
-		const steer = this.queues.peekMany("steer", this.queueModes.steer);
-		if (steer.length > 0) {
-			const item = steer[0];
-			await this.consumeQueueItem(item);
-			this.resumingQueue = false;
-			await this.startRun(item.source?.kind === "runtime" ? undefined : item.text, item.source?.kind === "runtime" ? [{ id: item.id, mode: item.mode, source: item.source, text: item.text, data: item.data }] : []);
-			return;
-		}
-		const followUp = this.queues.peekMany("followUp", this.queueModes.followUp);
-		if (followUp.length > 0) {
-			const item = followUp[0];
-			await this.consumeQueueItem(item);
-			this.resumingQueue = false;
-			await this.startRun(item.source?.kind === "runtime" ? undefined : item.text, item.source?.kind === "runtime" ? [{ id: item.id, mode: item.mode, source: item.source, text: item.text, data: item.data }] : []);
-		}
+		if (this.activity) return;
+		const item = this.queues.peek("steer") ?? this.queues.peek("followUp");
+		if (!item) return;
+		this.resumingQueue = false;
+		await this.startRun(item.source?.kind === "runtime" ? undefined : item.text, item);
 	}
 
 	private async decide(provider = this.provider, systemPrompt = this.systemPrompt, beforeMessages: readonly (AgentMessage | ChatMsg)[] = []): Promise<void> {
 		await this.prepareTurn(provider, systemPrompt);
-		let nextUser: AgentMessage | undefined;
-		let nextUsers: AgentMessage[] = [];
 		for (;;) {
 			if (this.interrupted) {
 				await this.emitInterrupted();
 				return;
-			}
-			if (nextUsers.length > 0) {
-				for (const message of nextUsers) await this.appendMessage(message);
-				nextUsers = [];
-			} else if (nextUser) {
-				await this.appendMessage(nextUser);
-				nextUser = undefined;
 			}
 
 			let requestMessages = [...buildContext({
 				history: this.history,
 				systemPrompt,
 				includeThinking: provider.includeThinking,
-				runtimeInputs: this.runtimeInputs,
 			}), ...convertToLlm(beforeMessages)];
 			requestMessages = await this.runtimeHooks.turn.transformContext(requestMessages);
 
@@ -504,6 +494,7 @@ export class Subject {
 			let thinking = "";
 			let thinkingSignature: string | undefined;
 			let usage: Usage | undefined;
+			let providerReplay: import("../core/types.js").ProviderReplay | undefined;
 			let finishReason: FinishReason | null = null;
 			this.lastReportedUsage = null;
 
@@ -541,7 +532,9 @@ export class Subject {
 					},
 					(delta) => {
 						if (finishReason && delta.kind !== "usage") throw new Error("模型 finish 后仍返回输出事件");
-						if (delta.kind === "thinking") {
+						if (delta.kind === "provider_replay") {
+							providerReplay = structuredClone(delta.replay);
+						} else if (delta.kind === "thinking") {
 							thinking += delta.text;
 							if (!hasEmittedThinkingStart) {
 								hasEmittedThinkingStart = true;
@@ -604,6 +597,7 @@ export class Subject {
 						content: reply,
 						thinking: thinking || undefined,
 						thinkingSignature,
+						providerReplay,
 						status: "error",
 						usage,
 					});
@@ -632,6 +626,7 @@ export class Subject {
 						content: reply,
 						thinking: thinking || undefined,
 						thinkingSignature,
+						providerReplay,
 						...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
 						status: finishReason === "length" ? "length" : "complete", usage,
 					});
@@ -647,15 +642,11 @@ export class Subject {
 				const steer = this.queues.peekMany("steer", this.queueModes.steer);
 				if (steer.length > 0) {
 					for (const item of steer) await this.consumeQueueItem(item);
-					nextUsers = steer.filter((item) => item.source?.kind !== "runtime").map((item) => ({ role: "user", content: item.text }));
-					this.runtimeInputs.push(...steer.filter((item) => item.source?.kind === "runtime").map((item) => ({ id: item.id, mode: item.mode, source: item.source!, text: item.text, data: item.data })));
 					continue;
 				}
 				const followUp = this.queues.peekMany("followUp", this.queueModes.followUp);
 				if (followUp.length > 0) {
 					for (const item of followUp) await this.consumeQueueItem(item);
-					nextUsers = followUp.filter((item) => item.source?.kind !== "runtime").map((item) => ({ role: "user", content: item.text }));
-					this.runtimeInputs.push(...followUp.filter((item) => item.source?.kind === "runtime").map((item) => ({ id: item.id, mode: item.mode, source: item.source!, text: item.text, data: item.data })));
 					continue;
 				}
 				this.notifyQueueChanged();
@@ -667,6 +658,7 @@ export class Subject {
 				content: reply,
 				thinking: thinking || undefined,
 				thinkingSignature,
+				providerReplay,
 				tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
 				status: finishReason === "length" ? "length" : "complete",
 				usage,
@@ -687,11 +679,10 @@ export class Subject {
 				await this.emitInterrupted("", "", undefined);
 				return;
 			}
+			if (results.some(result => result.continuation === "stop")) return;
 			const steer = this.queues.peekMany("steer", this.queueModes.steer);
 			if (steer.length > 0) {
 				for (const item of steer) await this.consumeQueueItem(item);
-				nextUsers = steer.filter((item) => item.source?.kind !== "runtime").map((item) => ({ role: "user", content: item.text }));
-				this.runtimeInputs.push(...steer.filter((item) => item.source?.kind === "runtime").map((item) => ({ id: item.id, mode: item.mode, source: item.source!, text: item.text, data: item.data })));
 			}
 		}
 	}
@@ -700,6 +691,7 @@ export class Subject {
 		callId: string;
 		result: string;
 		status: ToolResultStatus;
+		continuation?: "stop";
 	}>> {
 		const prepared: Array<{ call: CompletedToolCall; tool: PreparedToolCall }> = [];
 		for (const call of calls) {
@@ -722,6 +714,7 @@ export class Subject {
 		callId: string;
 		result: string;
 		status: ToolResultStatus;
+		continuation?: "stop";
 	}> {
 		if (this.currentSignal().aborted) {
 			const result = JSON.stringify({ error: "工具调用未启动（本轮已取消）", status: "not_started" });
@@ -736,16 +729,16 @@ export class Subject {
 		const callArgs = (call.args && typeof call.args === "object" ? call.args : {}) as Record<string, unknown>;
 		const blocked = await this.runtimeHooks.tools.beforeCall({ callId: call.id, name: call.name, args: callArgs });
 		if (blocked.block) {
-				const reason = blocked.reason || "操作已被扩展或安全策略拦截";
+				const reason = blocked.reason || "操作已被扩展阻止";
 				const blockedResult = `[blocked] 工具执行已被拦截: ${reason}`;
-				this.hooks.onToolDone?.(call.name, blockedResult, "failed", call.id);
+				this.hooks.onToolDone?.(call.name, blockedResult, "not_started", call.id);
 				await this.storeEvent("tool_finished", {
 					callId: call.id,
 					name: call.name,
-					status: "failed",
+					status: "not_started",
 					result: blockedResult,
 				});
-				return { callId: call.id, result: blockedResult, status: "failed" };
+				return { callId: call.id, result: blockedResult, status: "not_started" };
 		}
 
 		if (prepared.error) {
@@ -780,7 +773,7 @@ export class Subject {
 			result: outcomeResult,
 		});
 		this.hooks.onToolDone?.(call.name, outcomeResult, outcomeStatus, call.id);
-		return { callId: call.id, result: outcomeResult, status: outcomeStatus };
+		return { callId: call.id, result: outcomeResult, status: outcomeStatus, continuation: outcome.continuation };
 	}
 
 	private async prepareTurn(provider = this.provider, systemPrompt = this.systemPrompt): Promise<void> {
@@ -829,6 +822,7 @@ export class Subject {
 
 	/** Adds trusted extension content to both v2 persistence and the next provider context. */
 	async appendCustomMessage(message: { customType: string; content: string; display?: boolean; details?: unknown }): Promise<void> {
+		if (this.activity === "compact") throw new Error("压缩期间不能修改模型历史");
 		await this.store?.appendCustomMessage(message);
 		this.history.push({
 			role: "custom",
@@ -845,7 +839,9 @@ export class Subject {
 	}
 
 	private async consumeQueueItem(item: QueuedMessage): Promise<void> {
-		await this.storeEvent("queue_consumed", eventData(item));
+		await this.store?.appendInput(item);
+		const message = projectInputMessage(item);
+		if (message) this.history.push(message);
 		this.queues.remove(item.id);
 		this.notifyQueueChanged();
 	}

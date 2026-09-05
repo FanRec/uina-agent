@@ -15,13 +15,16 @@ export type ToolResultStatus =
 	| "unknown"
 	| "not_started";
 
+/** Opaque replay content is produced and consumed only by the matching adapter. */
+export interface ProviderReplay { format: string; blocks: unknown[]; }
+
 export interface Usage {
-	input: number;
-	output: number;
-	cacheRead: number;
-	cacheWrite: number;
-	reasoning: number;
-	totalTokens: number;
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	reasoning?: number;
+	totalTokens?: number;
 }
 
 export interface ContextSegments {
@@ -40,6 +43,7 @@ export interface DiscoveredModel {
 
 /** 模型流式输出中的一个增量片段（按到达顺序回调）。 */
 export type StreamDelta =
+	| { kind: "provider_replay"; replay: ProviderReplay }
 	| { kind: "thinking"; text: string }
 	| { kind: "thinking_signature"; signature: string }
 	| { kind: "text"; text: string }
@@ -133,6 +137,7 @@ export interface AssistantAgentMessage {
 	content: string;
 	thinking?: string;
 	thinkingSignature?: string;
+	providerReplay?: ProviderReplay;
 	tool_calls?: CompletedToolCall[];
 	status?: AssistantStatus;
 	usage?: Usage;
@@ -183,6 +188,7 @@ export type ChatMsg =
 			content: string;
 			thinking?: string;
 			thinkingSignature?: string;
+			providerReplay?: ProviderReplay;
 			tool_calls?: CompletedToolCall[];
 			status?: AssistantStatus;
 			usage?: Usage;

@@ -1,4 +1,4 @@
-import type { ChatMsg, ToolResultStatus } from "../core/types.js";
+import type { ChatMsg } from "../core/types.js";
 import type { DeepReadonly, OutputEvent, RuntimeEvent } from "../runtime/events.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
 import { ExtensionHost, type RuntimeScopeFilter } from "./host.js";
@@ -27,11 +27,11 @@ export function createRuntimeHooks(host: ExtensionHost, scope?: RuntimeScopeFilt
 			transformResult: async (input) => {
 				const result = await host.emitToolResult({
 					type: "tool_result", toolName: input.name, args: input.args, result: input.result,
-					isError: input.status !== "succeeded", callId: input.callId,
+					status: input.status, callId: input.callId,
 				}, scope);
 				return Object.freeze({
 					...(result?.result !== undefined ? { result: result.result } : {}),
-					...(result?.isError !== undefined ? { status: result.isError ? "failed" as ToolResultStatus : "succeeded" as ToolResultStatus } : {}),
+					...(result?.status !== undefined ? { status: result.status } : {}),
 				});
 			},
 		}),

@@ -7,6 +7,6 @@
     "declaration": true,
     "sourceMap": true
   },
-  "include": ["src", "tools"],
+  "include": ["examples", "src", "tools"],
   "exclude": ["tests", "node_modules", "dist", "src/ui_new"]
 }

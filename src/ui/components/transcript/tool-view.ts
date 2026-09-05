@@ -1,3 +1,4 @@
+import type { ToolResultStatus } from "../../../core/types.js";
 /**
  * 工具调用状态与结果卡片组件（完美对齐 dsh-TUI / Claude Code 工具呈现规范）。
  *
@@ -312,7 +313,7 @@ export function formatToolCardLines(
 	result: string,
 	elapsedMs: number,
 	width = 80,
-	status: "running" | "completed" | "failed" = "completed",
+	status: "running" | ToolResultStatus = "unknown",
 	args?: unknown,
 	options: ToolCardRenderOptions = {},
 ): string[] {
@@ -368,6 +369,7 @@ export function formatToolCardLines(
 		elapsedText = ` · ${formatDuration(elapsedMs)}`;
 	}
 
+	elapsedText += status === "cancelled" ? " · 已取消" : status === "unknown" ? " · 结果未知" : status === "not_started" ? " · 未执行" : "";
 	const elapsedColor = isHovered ? C.text : C.dim;
 	const hoverIndicator = isHovered ? (isExpanded ? ` ${C.dim}▴${C.reset}` : ` ${C.dim}▾${C.reset}`) : "";
 

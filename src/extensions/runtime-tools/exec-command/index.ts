@@ -128,7 +128,7 @@ export function createExecCommandTool(
 	},
 	async run(args, signal) {
 		const command = typeof args.command === "string" ? args.command.trim() : "";
-		if (!command) return JSON.stringify({ error: "command 为空", status: "failed" });
+		if (!command) return { result: "command 为空", status: "not_started" };
 		if (args.run_in_background === true) {
 			if (!jobs) throw new Error("后台任务服务未加载");
 			const id = jobs.start({
@@ -137,17 +137,15 @@ export function createExecCommandTool(
 				source: { extension: "shell", operation: "exec" },
 				start: (context) => startBackgroundCommand(command, context),
 			});
-			return JSON.stringify({ jobId: id, source: { extension: "shell", operation: "exec" }, status: "running" });
+			return { result: JSON.stringify({ jobId: id, source: { extension: "shell", operation: "exec" }, status: "running" }), status: "succeeded" };
 		}
 		const result = await execCommandDirect(command, signal);
+		const status: ToolResultStatus = result.cancelled ? "cancelled" : result.code === 0 ? "succeeded" : "failed";
 		const body: Record<string, unknown> = {
+			code: result.code,
 			stdout: result.stdout,
 			stderr: result.stderr,
-			status: result.cancelled
-				? "cancelled"
-				: result.code === 0
-					? "succeeded"
-					: "failed" satisfies ToolResultStatus,
+			status,
 			stdoutBytes: result.stdoutMeta?.totalBytes,
 			stdoutLines: result.stdoutMeta?.totalLines,
 			stderrBytes: result.stderrMeta?.totalBytes,
@@ -162,7 +160,7 @@ export function createExecCommandTool(
 			},
 		};
 		if (result.code !== 0 && !result.cancelled) body.error = `退出码 ${result.code}`;
-		return JSON.stringify(body);
+		return { result: JSON.stringify(body), status };
 	},
 };
 }

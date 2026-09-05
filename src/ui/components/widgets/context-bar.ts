@@ -37,7 +37,8 @@ export function formatTokensCompact(n: number): string {
 }
 
 export function formatCacheHitRate(cacheRead?: number, input?: number, cacheWrite?: number): string | undefined {
-	const cr = cacheRead ?? 0;
+	if (input === undefined || cacheRead === undefined) return undefined;
+	const cr = cacheRead;
 	const inp = input ?? 0;
 	const cw = cacheWrite ?? 0;
 	const total = inp + cr + cw;

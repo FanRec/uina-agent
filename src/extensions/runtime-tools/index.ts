@@ -1,5 +1,5 @@
 import type { ExtensionActivation } from "../runner.js";
-import type { JobRegistry, JobSnapshot } from "../jobs/registry.js";
+import type { JobRegistry } from "../jobs/registry.js";
 import type { SubagentRegistry } from "../subagents/registry.js";
 import { ToolBroker } from "../../tools/broker.js";
 import { createExecCommandTool } from "./exec-command/index.js";
@@ -10,7 +10,6 @@ import { createSubagentTools } from "../subagents/tools.js";
 export interface RuntimeToolsServices {
 	jobs: JobRegistry;
 	subagents: SubagentRegistry;
-	onJobResolved(job: JobSnapshot): void;
 }
 
 /** Registers Uina's built-in runtime capabilities through the same activation
@@ -21,7 +20,9 @@ export function activateRuntimeTools(services: RuntimeToolsServices): ExtensionA
 		pi.registerTool(createExecCommandTool(services.jobs, "root"));
 		for (const tool of createJobTools(services.jobs, "root")) pi.registerTool(tool);
 		for (const tool of createSubagentTools(services.subagents, "root")) pi.registerTool(tool);
-		const unsubscribe = services.jobs.onResolved(services.onJobResolved);
+		const unsubscribe = services.jobs.onResolved(job => {
+ void pi.submitInput({ id: `job-notice-${job.id}`, mode: "followUp", source: { kind: "runtime", type: "job-notice", ref: job.id }, text: `后台任务 ${job.id} 已结束，状态：${job.status}。任务：${job.label}。按需使用 job_output 读取结果；无需回复时可保持安静。`, data: { status: job.status, source: job.source } }).catch(error => pi.ui.notify(`[runtime-tools] 后台结果投递失败：${String(error)}`, "error"));
+ });
 		return async () => {
 			unsubscribe();
 			await services.subagents.close();

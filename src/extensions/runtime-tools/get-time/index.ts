@@ -13,7 +13,7 @@ const getTime: Tool = {
 			parameters: { type: "object", properties: {} },
 		},
 	},
-	run: async () => new Date().toLocaleString("zh-CN", { hour12: false }),
+	run: async () => ({ result: new Date().toLocaleString("zh-CN", { hour12: false }), status: "succeeded" }),
 };
 
 export default getTime;

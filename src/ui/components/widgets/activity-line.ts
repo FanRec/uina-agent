@@ -204,9 +204,9 @@ export class ActivityLineComponent implements Component {
 				const avgTps = Math.round(this.tokenCount / (this.elapsedMs / 1000));
 				const spark = formatTpsSparkline(this.tpsSamples.length > 0 ? this.tpsSamples : [avgTps]);
 				const sparkColor = avgTps >= 50 ? C.green : avgTps >= 20 ? C.yellow : C.red;
-				sparkStr = spark ? ` · ${sparkColor}${spark}${C.reset} ${avgTps} tps` : ` · ${avgTps} tps`;
+				sparkStr = spark ? ` · ${sparkColor}${spark}${C.reset} ~${avgTps} tps` : ` · ~${avgTps} tps`;
 			}
-			const text = `${C.gray}${this.message} · 耗时 ${seconds}s${this.tokenCount > 0 ? ` · ${this.tokenCount} tokens` : ""}${sparkStr}${C.reset}`;
+			const text = `${C.gray}${this.message} · 耗时 ${seconds}s${this.tokenCount > 0 ? ` · ~${this.tokenCount} tokens` : ""}${sparkStr}${C.reset}`;
 			return truncateToWidth(`${prefix} ${text}`, maxWidth);
 		}
 
@@ -216,7 +216,7 @@ export class ActivityLineComponent implements Component {
 		if (this.tokenCount > 0 && currentElapsed > 400) {
 			const tps = Math.round(this.tokenCount / (currentElapsed / 1000));
 			const gauge = formatTpsGauge(tps, 60, 8);
-			tpsStr = ` · ${gauge} ${tps} tps`;
+			tpsStr = ` · ${gauge} ~${tps} tps`;
 		}
 
 		const shimmerText = sweep(this.message || "正在处理...", now, ICE_RGB, FLASH_RGB, 60);

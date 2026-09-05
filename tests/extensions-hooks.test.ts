@@ -64,7 +64,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			},
 			async run() {
 				toolActuallyExecuted = true;
-				return "executed";
+				return { result: "executed", status: "succeeded" };
 			},
 		});
 
@@ -99,7 +99,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		await subject.waitForIdle();
 
 		expect(toolActuallyExecuted).toBe(false);
-		expect(toolDones.some((d) => d.name === "dangerous_tool" && d.status === "failed")).toBe(true);
+		expect(toolDones.some((d) => d.name === "dangerous_tool" && d.status === "not_started")).toBe(true);
 		const history = subject.historySnapshot();
 		const toolResultMsg = history.find((m) => m.role === "tool");
 		expect(toolResultMsg?.content).toContain("[blocked] 工具执行已被拦截: 安全策略拦截高危工具");
@@ -125,7 +125,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 				},
 			},
 			async run() {
-				return "42";
+				return { result: "42", status: "succeeded" };
 			},
 		});
 

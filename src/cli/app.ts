@@ -93,7 +93,9 @@ export async function runApp(): Promise<void> {
 		}
 	};
 
+	let hadError = false;
 	const render = (message: OutMsg): void => {
+		if (message.type === "error") hadError = true;
 		if (tui) tui.render(message);
 		else renderStdio(message);
 	};
@@ -102,6 +104,7 @@ export async function runApp(): Promise<void> {
 	const extensionHost = new ExtensionRunner({
 		cwd: process.cwd(),
 		tools,
+		onInput: input => { if (shuttingDown) return Promise.reject(new Error("宿主正在关闭")); return subject.accept(input); },
 		onError: (text) => render({ type: "error", text }),
 		onProvider: (name, registered) => modelRegistry.register(name, registered),
 		onCustomMessage: async (message) => { await subject.appendCustomMessage(message); tui?.host.transcript.addCustomMessage(message); tui?.host.requestRender(); },
@@ -187,7 +190,7 @@ export async function runApp(): Promise<void> {
 		tui?.close();
 		nonTTY?.close();
 		await store.close();
-		process.exitCode = 0;
+		process.exitCode = oneshot && hadError ? 1 : 0;
 	};
 
 	let interruptSeq = 0;
@@ -334,7 +337,7 @@ export async function runApp(): Promise<void> {
 		tui = createInteractiveUI({
 			modelName: provider.name,
 			thinkingLevels: provider.thinkingLevels,
-			thinkingLevel: subject.getThinkingLevel(),
+			thinkingLevel: provider.thinkingLevels?.length ? subject.getThinkingLevel() : undefined,
 			cwd: process.cwd(),
 			registry: extensionHost.registry,
 			jobPort: createJobAdapter(jobs),
@@ -375,16 +378,6 @@ export async function runApp(): Promise<void> {
 	await extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools({
 		jobs,
 		subagents,
-		onJobResolved: (job) => {
-			if (shuttingDown) return;
-			void subject.accept({
-				id: `job-notice-${job.id}`,
-				mode: "followUp",
-				source: { kind: "runtime", type: "job-notice", ref: job.id },
-				text: `后台任务 ${job.id} 已${job.status === "completed" ? "完成" : job.status === "killed" ? "被取消" : "结束"}。任务：${job.label}。来源：${job.source.extension}${job.source.operation ? `/${job.source.operation}` : ""}。请使用 job_output 读取结果。`,
-				data: { status: job.status, label: job.label, source: job.source },
-			}).catch((error) => render({ type: "error", text: `后台任务通知失败：${String(error)}` }));
-		},
 	}));
 	const builtinUI = tui ? {
 		openHelpMenu: () => tui!.host.openHelpMenu(),

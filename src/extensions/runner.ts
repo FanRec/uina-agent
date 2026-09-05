@@ -4,6 +4,7 @@
 import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { AgentInput } from "../agent/loop.js";
 import type { ModelProvider } from "../core/types.js";
 import type { Tool, ToolBroker } from "../tools/broker.js";
 import type { ExtensionUIContext, CustomEntry, CustomMessage, EntryRenderer, LocalCommand, MessageRenderer } from "../ui/extensions/types.js";
@@ -16,6 +17,8 @@ export interface ExtensionAPI {
 	readonly id: string;
 	readonly path: string;
 	readonly ui: ExtensionUIContext;
+	submitInput(input: AgentInput): Promise<void>;
+	reportError(error: unknown): void;
 	on<T extends ExtensionEvent["type"]>(type: T, handler: ExtensionEventHandler<Extract<ExtensionEvent, { type: T }>>): () => void;
 	registerTool(tool: Tool): void;
 	registerCommand(command: LocalCommand): void;
@@ -37,6 +40,7 @@ export interface ExtensionRunnerOptions {
 	onProvider?: (name: string, provider: ModelProvider) => ExtensionTeardown | void;
 	onCustomMessage?: (message: CustomMessage) => Promise<void>;
 	onCustomEntry?: (entry: CustomEntry) => Promise<void>;
+	onInput?: (input: AgentInput) => Promise<void>;
 }
 
 /** One activation owns every registration it creates. This is the small part
@@ -163,6 +167,13 @@ export class ExtensionRunner extends ExtensionHost {
 		const ui = ownedUI(dynamicUI(() => this.ui), scope.id, assertActive, own);
 		return {
 			id: scope.id, path: scope.path, ui,
+			reportError: error => this.emitOwnedError(scope.id, "external", error),
+			submitInput: async input => {
+				assertActive();
+				if (!this.options.onInput) throw new Error("宿主未提供输入入口");
+				try { await this.options.onInput(structuredClone(input)); }
+				catch (error) { this.emitOwnedError(scope.id, "submitInput", error); throw error; }
+			},
 			on: (type, handler) => {
 				assertActive();
 				const wrapped: ExtensionEventHandler = async (event) => {

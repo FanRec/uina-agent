@@ -59,7 +59,7 @@ describe("OpenAI gateway", () => {
 			JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
 			"[DONE]",
 		])));
-		expect(output.filter((delta) => delta.kind === "usage").at(-1)).toEqual({ kind: "usage", usage: { input: 8, output: 3, cacheRead: 2, cacheWrite: 0, reasoning: 1, totalTokens: 13 } });
+		expect(output.filter((delta) => delta.kind === "usage").at(-1)).toEqual({ kind: "usage", usage: { input: 8, output: 3, cacheRead: 2, reasoning: 1, totalTokens: 13 } });
 		const empty = await collect(await endpoint(sse([
 			JSON.stringify({ usage: {} }),
 			JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),

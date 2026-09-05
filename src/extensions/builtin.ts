@@ -137,7 +137,7 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			await services.subject.setModel(provider);
 			ui?.setModel?.(provider.name);
 			ui?.setThinkingLevels?.(provider.thinkingLevels);
-			ui?.setReasoningEffort?.(services.subject.getThinkingLevel());
+			ui?.setReasoningEffort?.(provider.thinkingLevels?.length ? services.subject.getThinkingLevel() : undefined);
 			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow());
 			pi.ui.notify(`已切换至模型: ${provider.name}`);
 		};
@@ -170,7 +170,7 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 		});
 
 		pi.on("thinking_level_select", (e) => {
-			ui?.setReasoningEffort?.(e.level);
+			ui?.setReasoningEffort?.(services.subject.getModel().thinkingLevels?.includes(e.level) ? e.level : undefined);
 			pi.ui.notify(`思考等级: ${e.level}`, "info", 2000);
 		});
 

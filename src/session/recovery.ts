@@ -69,6 +69,13 @@ export function recoverRecords(records: SessionRecord[]): RecoveredState {
 	};
 
 	for (const record of records) {
+		if (record.kind === "input") {
+			if (!queued.has(record.input.id)) throw new SessionFormatError(`input 没有对应队列项: ${record.input.id}`);
+			closePending();
+			queued.delete(record.input.id);
+			entries.push({ kind: "input", input: structuredClone(record.input) });
+			continue;
+		}
 		if (record.kind === "custom_message") {
 			entries.push({
 				kind: "custom_message",
@@ -149,6 +156,11 @@ export function recoverRecords(records: SessionRecord[]): RecoveredState {
 export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMessage[] {
 	const messages: AgentMessage[] = [];
 	for (const entry of entries) {
+		if (entry.kind === "input") {
+			const message = projectInputMessage(entry.input);
+			if (message) messages.push(message);
+			continue;
+		}
 		if (entry.kind === "message") {
 			messages.push(structuredClone(entry.message as AgentMessage));
 			continue;
@@ -183,6 +195,11 @@ export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMess
  * compaction replaces only model-visible history; the journal itself remains intact. */
 export function projectModelHistory(entries: readonly SessionEntry[]): ChatMsg[] {
 	return convertToLlm(projectAgentHistory(entries));
+}
+
+/** Runtime inputs remain identifiable session facts, not human utterances. */
+export function projectInputMessage(input: QueuedInput): AgentMessage {
+	return input.source?.kind === "runtime" ? { role: "custom", id: input.id, customType: "runtime-input", display: false, content: `[运行时事件 ${input.source.type}${input.source.ref ? ` · ${input.source.ref}` : ""}]\n${input.text}`, details: { source: input.source, data: input.data } } : { role: "user", id: input.id, content: input.text };
 }
 
 function applyEvent(
@@ -280,6 +297,7 @@ export function isRecord(value: unknown): value is SessionRecord {
 		return false;
 	}
 	if (
+		record.kind !== "input" &&
 		record.kind !== "message" &&
 		record.kind !== "custom_message" &&
 		record.kind !== "custom_entry" &&
@@ -288,8 +306,15 @@ export function isRecord(value: unknown): value is SessionRecord {
 	) {
 		return false;
 	}
+	if (record.kind === "input") {
+		if (!record.input || typeof record.input !== "object") return false;
+		const input = record.input as Record<string, unknown>;
+		return typeof input.id === "string" && input.id.length > 0 && Number.isSafeInteger(input.order) && (input.order as number) > 0
+			&& (input.mode === "steer" || input.mode === "followUp") && typeof input.text === "string"
+			&& (input.source === undefined || isInputSource(input.source));
+	}
 	if (record.kind === "message") {
-		return isChatMsg(record.message);
+		return isAgentMessage(record.message);
 	}
 	if (record.kind === "custom_message") {
 		return typeof record.customType === "string" && record.customType.length > 0 && typeof record.content === "string" && (record.display === undefined || typeof record.display === "boolean");
@@ -303,7 +328,7 @@ export function isRecord(value: unknown): value is SessionRecord {
 			typeof record.tokensBefore === "number" &&
 			Number.isFinite(record.tokensBefore) &&
 			Array.isArray(record.retainedTail) &&
-			record.retainedTail.every(isChatMsg)
+			record.retainedTail.every(isAgentMessage)
 		);
 	}
 	return (
@@ -323,9 +348,11 @@ export function isRecord(value: unknown): value is SessionRecord {
 	);
 }
 
-function isChatMsg(value: unknown): value is ChatMsg {
+function isAgentMessage(value: unknown): value is AgentMessage {
 	if (!value || typeof value !== "object") return false;
 	const message = value as Record<string, unknown>;
+	if (message.role === "custom") return typeof message.content === "string" && typeof message.customType === "string" && message.customType.length > 0 && (message.display === undefined || typeof message.display === "boolean");
+	if (message.role === "compactionSummary") return typeof message.content === "string" && typeof message.summary === "string" && (message.tokensBefore === undefined || (typeof message.tokensBefore === "number" && Number.isFinite(message.tokensBefore)));
 	if (
 		typeof message.content !== "string" ||
 		(message.role !== "system" &&
@@ -341,7 +368,7 @@ function isChatMsg(value: unknown): value is ChatMsg {
 	if (message.thinkingSignature !== undefined && typeof message.thinkingSignature !== "string") return false;
 	if (message.usage !== undefined) {
 		if (!message.usage || typeof message.usage !== "object") return false;
-		for (const key of ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"]) if (typeof (message.usage as Record<string, unknown>)[key] !== "number") return false;
+		for (const key of ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"]) if ((message.usage as Record<string, unknown>)[key] !== undefined && typeof (message.usage as Record<string, unknown>)[key] !== "number") return false;
 	}
 	if (message.tool_calls === undefined) return true;
 	return (

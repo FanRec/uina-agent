@@ -114,6 +114,6 @@ describe("background jobs", () => {
 		while (subject.isBusy()) await new Promise((resolve) => setTimeout(resolve, 1));
 		expect(subject.historySnapshot().filter((message) => message.role === "user")).toHaveLength(0);
 		expect(provider.calls[0]?.messages.some((message) => message.content.includes("job-notice"))).toBe(true);
-		expect(lastUser(provider.calls[0])).toBe("");
+		expect(lastUser(provider.calls[0])).toContain("[运行时事件 job-notice");
 	});
 });

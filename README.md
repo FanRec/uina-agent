@@ -88,7 +88,9 @@ readline 输入区是单行编辑器，恢复多个队列消息时使用空格�
 
 所有工具都由 ActivationScope 注册。内置工具位于 `src/extensions/runtime-tools/`，通过 `builtin:runtime-tools` 激活；项目扩展位于 `.uina/extensions/`，在 `activate(pi)` 中调用 `pi.registerTool()`。Uina 不再扫描 `tools/` 目录或从资源事件动态加载工具文件。
 
-工具声明包含 OpenAI function schema。启动时编译 schema，调用前使用 Ajv 校验参数。工具名必须全局唯一，工具执行必须返回字符串。
+工具声明包含 OpenAI function schema。启动时编译 schema，调用前使用 Ajv 校验参数。工具名必须全局唯一，`Tool.run` 返回 `{ result: string, status: ToolResultStatus }`。状态为 `succeeded`、`failed`、`cancelled`、`unknown` 或 `not_started`，由工具明确给出，Broker 不解析结果正文猜测成败。例如：`return { result: "done", status: "succeeded" }`。`tool_result` hook 同样使用 `status`，替代原来的 `isError`；仅修改正文时会保留原状态。
+
+S1 新增 JSONL `input` 记录，以一次提交完成队列到会话的移交。新代码仍能读取原有合法 v2 日志，但旧代码不能读取包含新 `input` 记录或 S3 部分 usage 的日志，也不能正确回放新增的 Provider 块元数据。回退时应使用升级前备份或独立会话目录；不要直接让旧代码打开已经写入新记录的会话。具体合同与验证见 [当前运行时](docs/current-runtime.md)。
 
 `exec_command` 通过 PowerShell 7、Windows PowerShell 5.1 或 `cmd.exe` 执行 Windows 命令，Unix 使用 `/bin/sh`。它不提供审批、沙箱、超时或白名单，权限等同于当前进程账户。
 
@@ -96,6 +98,6 @@ stdout/stderr 各自限制展示为 50 KB 或 2000 行，并保留尾部；超�
 
 ## 当前边界
 
-当前已验证：本地 OpenAI 兼容 SSE 端点、思考流转换、流式文本、tool call 闭环、并行工具、参数校验、JSONL 恢复、compaction、shell 输出截断和取消。Anthropic、Gemini 和真实 provider 仍需在对应环境单独验证。
+当前已通过类型检查、251 项测试和构建；localhost 覆盖 OpenAI-compatible、Anthropic、Gemini 协议。真实 DeepSeek v4 Flash 已验证思考控制、usage、取消，以及文件事件 → 后台工作 → 结果回注、用户响应与安静决定。其他真实服务和真实 TTY/IME 仍未验证。详情见 [交付记录](docs/history/reviews/2026-09-05-plan-delivery.md)。
 
 真实 DeepSeek、Ollama、真实终端 IME 和跨平台 shell 仍需在对应环境单独验证。长期记忆、语音、视觉、动态能力筛选、后台 Job、RPC 和权限审批不属于 v0。

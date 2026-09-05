@@ -71,6 +71,7 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 			let finishReason: FinishReason | undefined;
 			let usageState: UsageState = {};
 			const blocks = new Map<number, AnthropicBlock>();
+			const replayBlocks = new Map<number, Record<string, unknown>>();
 			const reportUsage = (raw: AnthropicUsageRaw | undefined, index: number): void => {
 				if (!raw) return;
 				const patch = anthropicUsagePatch(raw, name, index);
@@ -106,7 +107,10 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 						if (blocks.has(blockIndex)) throw new ProviderProtocolError(`Anthropic ${name} 重复 content block ${blockIndex}`, index);
 						const block = event.content_block;
 						if (!block?.type) throw new ProviderProtocolError(`Anthropic ${name} content block 缺少 type`, index);
-						if (block.type === "text") {
+						replayBlocks.set(blockIndex, structuredClone(block) as Record<string, unknown>);
+						if (block.type === "redacted_thinking") {
+							blocks.set(blockIndex, { kind: "redacted_thinking" });
+						} else if (block.type === "text") {
 							blocks.set(blockIndex, { kind: "text" });
 							if (block.text) emit({ kind: "text", text: block.text });
 						} else if (block.type === "thinking") {
@@ -127,6 +131,9 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 						if (!block) throw new ProviderProtocolError(`Anthropic ${name} delta 没有对应 content block ${blockIndex}`, index);
 						const delta = event.delta;
 						if (!delta?.type) throw new ProviderProtocolError(`Anthropic ${name} content delta 缺少 type`, index);
+						const replay = replayBlocks.get(blockIndex)!;
+						const field = delta.type === "text_delta" ? "text" : delta.type === "thinking_delta" ? "thinking" : delta.type === "signature_delta" ? "signature" : undefined;
+						if (field) replay[field] = String(replay[field] ?? "") + String(delta[field] ?? "");
 						if (delta.type === "text_delta" && block.kind === "text") {
 							if (delta.text) emit({ kind: "text", text: delta.text });
 						} else if (delta.type === "thinking_delta" && block.kind === "thinking") {
@@ -147,6 +154,7 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 						if (block.kind === "tool_use") {
 							const args = block.args || (block.initialArgs ? JSON.stringify(block.initialArgs) : "{}");
 							if (!isJsonObject(args)) throw new ProviderProtocolError(`Anthropic ${name} tool call ${block.name} 参数不是完整 JSON`, index);
+							replayBlocks.get(blockIndex)!.input = JSON.parse(args);
 							emit({ kind: "tool_call", call: { id: block.id, name: block.name, args, argsValid: true } });
 						}
 						blocks.delete(blockIndex);
@@ -163,6 +171,7 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 						if (!finishReason) throw new ProviderProtocolError(`Anthropic ${name} message_stop 缺少 stop_reason`, index);
 						if (blocks.size > 0) throw new ProviderProtocolError(`Anthropic ${name} message_stop 前仍有未结束 content block`, index);
 						sawMessageStop = true;
+						emit({ kind: "provider_replay", replay: { format: "anthropic", blocks: [...replayBlocks.values()] } });
 						emit({ kind: "finish", reason: finishReason });
 						break;
 					default:
@@ -190,12 +199,12 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 			return (payload.models ?? []).flatMap((model) => {
 				const contextWindow = model.inputTokenLimit;
 				if (!model.supportedGenerationMethods?.includes("generateContent") || !model.baseModelId || typeof contextWindow !== "number" || !Number.isSafeInteger(contextWindow) || contextWindow <= 0) return [];
-				return [{ id: model.baseModelId, contextWindow, thinkingLevels: model.thinking ? levels(conf) : ["off" as const] }];
+				return [{ id: model.baseModelId, contextWindow, thinkingLevels: model.thinking === false ? ["off" as const] : undefined }];
 			});
 		},
 		async stream(req, emit, signal) {
 			let headers: Record<string, string> = { "content-type": "application/json", accept: "text/event-stream" };
-			let bodyPayload = geminiRequest(req, conf.geminiToolCallIds === true);
+			let bodyPayload = geminiRequest({ ...req, thinkingLevel: thinkingLevels?.length ? req.thinkingLevel : undefined }, conf.geminiToolCallIds === true, conf.geminiThinkingFormat ?? (["gemini-3-pro-preview", "gemini-3.1-pro-preview", "gemini-3-flash-preview"].includes(conf.model) ? "level" : "budget"));
 			headers = copyValue(await req.providerHooks.transformHeaders(conf.model, readonlySnapshot(headers)));
 			bodyPayload = copyValue(await req.providerHooks.transformPayload(conf.model, readonlySnapshot(bodyPayload))) as Record<string, unknown>;
 
@@ -211,6 +220,7 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 			let usageState: UsageState = {};
 			let nextSyntheticCallId = 1;
 			const calls = new Map<string, GeminiToolCall>();
+			const replayParts: unknown[] = [];
 			const reportUsage = (raw: GeminiUsageRaw | undefined, index: number): void => {
 				if (!raw) return;
 				const patch = geminiUsagePatch(raw, name, index);
@@ -232,6 +242,7 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 				if (chunk.candidates && chunk.candidates.length > 1) throw new ProviderProtocolError(`Gemini ${name} 返回多个 candidate，Uina 只支持单一候选`, index);
 				const candidate = chunk.candidates?.[0];
 				for (const part of candidate?.content?.parts ?? []) {
+					replayParts.push(structuredClone(part));
 					if (part.thought && part.text) emit({ kind: "thinking", text: part.text });
 					else if (part.text) emit({ kind: "text", text: part.text });
 					if (part.thoughtSignature && !part.functionCall) emit({ kind: "thinking_signature", signature: part.thoughtSignature });
@@ -254,6 +265,7 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 						emit({ kind: "tool_call", call: { id: call.id, name: call.name, args: JSON.stringify(call.args), argsValid: true, ...(call.thinkingSignature ? { thinkingSignature: call.thinkingSignature } : {}) } });
 					}
 					finished = true;
+					emit({ kind: "provider_replay", replay: { format: "gemini", blocks: replayParts } });
 					emit({ kind: "finish", reason: finishReason });
 				}
 			}, signal);
@@ -291,11 +303,13 @@ export function anthropicMessages(req: ModelRequest): unknown[] {
 		}
 
 		if (message.role === "assistant") {
-			const blocks: unknown[] = [];
+			const blocks: unknown[] = message.providerReplay?.format === "anthropic" ? structuredClone(message.providerReplay.blocks) : [];
+			if (message.providerReplay?.format !== "anthropic") {
 			if (message.thinking) blocks.push({ type: "thinking", thinking: message.thinking, signature: message.thinkingSignature ?? "" });
 			if (message.content) blocks.push({ type: "text", text: message.content });
 			for (const call of message.tool_calls ?? []) blocks.push({ type: "tool_use", id: call.id, name: call.name, input: call.args });
 
+			}
 			if (blocks.length === 0) continue;
 
 			const previous = out.at(-1);
@@ -325,7 +339,7 @@ export function anthropicMessages(req: ModelRequest): unknown[] {
 	return out;
 }
 
-export function geminiRequest(req: ModelRequest, includeToolCallIds: boolean): Record<string, unknown> {
+export function geminiRequest(req: ModelRequest, includeToolCallIds: boolean, thinkingFormat: "budget" | "level" = "budget"): Record<string, unknown> {
 	const system = req.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
 	const toolNames = new Map<string, string>();
 	for (const message of req.messages) {
@@ -349,9 +363,11 @@ export function geminiRequest(req: ModelRequest, includeToolCallIds: boolean): R
 			continue;
 		}
 		if (message.role === "assistant") {
-			const parts: unknown[] = [];
+			const parts: unknown[] = message.providerReplay?.format === "gemini" ? structuredClone(message.providerReplay.blocks) : [];
+			if (message.providerReplay?.format !== "gemini") {
 			if (message.content) parts.push({ text: message.content });
-			for (const call of message.tool_calls ?? []) parts.push({ functionCall: { ...(includeToolCallIds ? { id: call.id } : {}), name: call.name, args: call.args, ...(call.thinkingSignature ? { thoughtSignature: call.thinkingSignature } : {}) } });
+			for (const call of message.tool_calls ?? []) parts.push({ functionCall: { ...(includeToolCallIds ? { id: call.id } : {}), name: call.name, args: call.args }, ...(call.thinkingSignature ? { thoughtSignature: call.thinkingSignature } : {}) });
+			}
 			if (parts.length === 0) continue;
 			const previous = contents.at(-1);
 			if (previous?.role === "model") {
@@ -372,7 +388,7 @@ export function geminiRequest(req: ModelRequest, includeToolCallIds: boolean): R
 		contents,
 		...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
 		...(req.tools?.length ? { tools: [{ functionDeclarations: req.tools.map((tool) => ({ name: tool.function.name, description: tool.function.description, parameters: tool.function.parameters })) }] } : {}),
-		...(req.thinkingLevel && req.thinkingLevel !== "off" ? { generationConfig: { thinkingConfig: { includeThoughts: true } } } : {}),
+		...(req.thinkingLevel ? { generationConfig: { thinkingConfig: { includeThoughts: req.thinkingLevel !== "off", ...(thinkingFormat === "level" ? { thinkingLevel: req.thinkingLevel } : { thinkingBudget: thinkingBudget(req.thinkingLevel) }) } } } : {}),
 	};
 }
 
@@ -402,12 +418,12 @@ type UsagePatch = Partial<UsageState>;
 function mergeUsage(state: UsageState, patch: UsagePatch): UsageState {
 	const next = { ...state };
 	for (const key of ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"] as const) if (patch[key] !== undefined) next[key] = patch[key];
-	if (patch.totalTokens === undefined) next.totalTokens = (next.input ?? 0) + (next.output ?? 0) + (next.cacheRead ?? 0) + (next.cacheWrite ?? 0);
+	if (patch.totalTokens === undefined) next.totalTokens = next.input !== undefined && next.output !== undefined ? next.input + next.output + (next.cacheRead ?? 0) + (next.cacheWrite ?? 0) : undefined;
 	return next;
 }
 
 function usageSnapshot(state: UsageState): Usage {
-	return { input: state.input ?? 0, output: state.output ?? 0, cacheRead: state.cacheRead ?? 0, cacheWrite: state.cacheWrite ?? 0, reasoning: state.reasoning ?? 0, totalTokens: state.totalTokens ?? (state.input ?? 0) + (state.output ?? 0) + (state.cacheRead ?? 0) + (state.cacheWrite ?? 0) };
+	return { ...state };
 }
 
 function count(value: unknown, provider: string, field: string, index: number): number | undefined {
@@ -456,14 +472,14 @@ function geminiUsagePatch(raw: GeminiUsageRaw, provider: string, index: number):
 	const patch: UsagePatch = {};
 	const totalTokens = count(raw.totalTokenCount, provider, "totalTokenCount", index);
 	if (prompt !== undefined) patch.input = prompt - (cacheRead ?? 0);
-	if (candidates !== undefined || thoughts !== undefined) patch.output = (candidates ?? 0) + (thoughts ?? 0);
+	if (candidates !== undefined) patch.output = candidates + (thoughts ?? 0);
 	if (cacheRead !== undefined) patch.cacheRead = cacheRead;
 	if (thoughts !== undefined) patch.reasoning = thoughts;
 	if (totalTokens !== undefined) patch.totalTokens = totalTokens;
 	return patch;
 }
 
-type AnthropicBlock = { kind: "text" } | { kind: "thinking" } | { kind: "tool_use"; id: string; name: string; args: string; initialArgs?: Record<string, unknown> };
+type AnthropicBlock = { kind: "redacted_thinking" } | { kind: "text" } | { kind: "thinking" } | { kind: "tool_use"; id: string; name: string; args: string; initialArgs?: Record<string, unknown> };
 
 interface GeminiToolCall { id: string; name: string; args: Record<string, unknown>; thinkingSignature?: string; }
 
@@ -545,7 +561,7 @@ export class ModelRegistry {
 			const base = this.config?.providers[providerId];
 			const discovered = this.discovered.get(providerId)?.find((model) => model.id === modelId);
 			if (base && discovered?.contextWindow) {
-				const provider = createProvider(providerId, { ...base, model: modelId, modelContextWindow: discovered.contextWindow, maxContextWindow: base.maxContextWindow, ...(discovered.thinkingLevels ? { thinkingLevels: [...discovered.thinkingLevels] } : {}) });
+				const provider = createProvider(providerId, { ...base, model: modelId, modelContextWindow: discovered.contextWindow, maxContextWindow: base.maxContextWindow, thinkingLevels: discovered.thinkingLevels?.filter(level => !base.thinkingLevels || base.thinkingLevels.includes(level)) });
 				this.instances.set(modelOrProviderName, provider);
 				return provider;
 			}

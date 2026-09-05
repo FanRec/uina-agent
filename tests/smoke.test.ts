@@ -26,7 +26,7 @@ async function idle(subject: Subject, timeoutMs = 5000): Promise<void> {
 	}
 }
 
-function makeTool(name: string, run: Tool["run"], executionMode?: Tool["executionMode"]): Tool {
+function makeTool(name: string, run: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<string>, executionMode?: Tool["executionMode"]): Tool {
 	return {
 		def: {
 			type: "function",
@@ -42,7 +42,7 @@ function makeTool(name: string, run: Tool["run"], executionMode?: Tool["executio
 			},
 		},
 		executionMode,
-		run,
+		run: async (args, signal) => ({ result: await run(args, signal), status: "succeeded" }),
 	};
 }
 
@@ -400,7 +400,7 @@ describe("shell output", () => {
 	it("keeps the final tail and writes complete output beyond 1 MB", async () => {
 		const quote = String.fromCharCode(34);
 		const command = `node -e ${quote}process.stdout.write(String.fromCharCode(65)+String.fromCharCode(120).repeat(1100000)+String.fromCharCode(69,78,68))${quote}`;
-		const result = JSON.parse(await execCommandTool.run({ command }));
+		const result = JSON.parse((await execCommandTool.run({ command })).result);
 		expect(result.stdout).toContain("END");
 		expect(result.truncated.stdout).toBe(true);
 		const path = result.fullOutputPath.stdout as string;

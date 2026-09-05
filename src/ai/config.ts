@@ -19,13 +19,32 @@ export interface ProviderConfig {
 	maxRetries?: number;
 	/** Gemini models that explicitly require function-call ids on the wire. Unknown stays omitted. */
 	geminiToolCallIds?: boolean;
+	geminiThinkingFormat?: "budget" | "level";
 	type?: ProviderKind;
 	thinkingFormat?: "openai" | "deepseek" | "qwen";
 	thinkingLevels?: readonly ThinkingLevel[];
 }
 
+// generateContent controls, checked against Google's thinking guide on 2026-09-05.
+const GEMINI_THINKING_LEVELS: Record<string, readonly ThinkingLevel[]> = {
+	"gemini-3-pro-preview": ["low", "high"],
+	"gemini-3.1-pro-preview": ["low", "medium", "high"],
+	"gemini-3-flash-preview": ["minimal", "low", "medium", "high"],
+	"gemini-2.5-pro": ["minimal", "low", "medium", "high", "xhigh", "max"],
+	"gemini-2.5-flash": ["off", "minimal", "low", "medium", "high", "xhigh"],
+};
+
 export function configuredThinkingLevels(conf: ProviderConfig): readonly ThinkingLevel[] | undefined {
-	return conf.thinkingLevels?.length ? conf.thinkingLevels : undefined;
+	const declared = conf.thinkingLevels;
+	if (!declared?.length) return undefined;
+	const known: readonly ThinkingLevel[] | undefined =
+		["deepseek-v4-flash", "deepseek-v4-pro"].includes(conf.model) && conf.thinkingFormat === "deepseek"
+			? ["off", "low", "high", "max"]
+			: conf.thinkingFormat === "qwen" ? ["off", "high"] : undefined;
+	const supported = known ?? (conf.type === "gemini" ? GEMINI_THINKING_LEVELS[conf.model] : undefined);
+	const encoderLevels: readonly ThinkingLevel[] | undefined = conf.type === "gemini" && conf.geminiThinkingFormat === "level" ? ["minimal", "low", "medium", "high"] : undefined;
+	const effective = declared.filter(level => (!supported || supported.includes(level)) && (!encoderLevels || encoderLevels.includes(level)));
+	return effective.length ? effective : undefined;
 }
 
 export interface UinaConfig {
@@ -113,7 +132,9 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 			if (provider.thinkingLevels !== undefined && (!Array.isArray(provider.thinkingLevels) || provider.thinkingLevels.some((level) => !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(level as string)))) {
 				throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingLevels 无效`);
 			}
+		if (provider.geminiThinkingFormat !== undefined && !["budget", "level"].includes(String(provider.geminiThinkingFormat))) throw new Error("geminiThinkingFormat 无效");
 		providers[name] = {
+			...(provider.geminiThinkingFormat === undefined ? {} : { geminiThinkingFormat: provider.geminiThinkingFormat as "budget" | "level" }),
 				apiKey: provider.apiKey ?? "",
 			model: provider.model,
 				...(provider.modelContextWindow === undefined ? {} : { modelContextWindow: provider.modelContextWindow as number }),

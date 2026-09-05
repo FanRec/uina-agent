@@ -69,6 +69,7 @@ export function convertToLlm(
 					tool_calls,
 					status: msg.status,
 					usage: msg.usage,
+					providerReplay: msg.providerReplay,
 				});
 				break;
 			}
@@ -155,7 +156,7 @@ export function estimateContextTokens(messages: readonly (AgentMessage | ChatMsg
 	let tokens = 0;
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i];
-		if (message.role === "assistant" && message.usage?.totalTokens && message.usage.totalTokens > 0) { anchor = i; tokens = message.usage.totalTokens; break; }
+		if (message.role === "assistant" && message.usage?.totalTokens !== undefined) { anchor = i; tokens = message.usage.totalTokens; break; }
 	}
 	const trailing = messages.slice(anchor + 1);
 	return { tokens: tokens + estimateRequestTokens(trailing), actual: anchor >= 0 && trailing.length === 0 };

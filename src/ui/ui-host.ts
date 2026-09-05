@@ -296,7 +296,7 @@ export class UIHost implements UIHostContextPort {
 		this.subagentPort = options.subagentPort;
 		this.cwd = options.cwd ?? process.cwd();
 		this.modelName = options.modelName;
-		this.thinkingLevels = options.thinkingLevels?.length ? [...options.thinkingLevels] : ["off"];
+		this.thinkingLevels = options.thinkingLevels ? [...options.thinkingLevels] : [];
 		this.reasoningEffort = options.thinkingLevel;
 		if (this.reasoningEffort && !this.thinkingLevels.includes(this.reasoningEffort)) {
 			throw new Error(`当前 Provider 不支持思考等级: ${this.reasoningEffort}`);
@@ -436,19 +436,14 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	setThinkingLevels(levels?: readonly ThinkingLevel[]): void {
-		this.thinkingLevels = levels?.length ? [...levels] : ["off"];
+		this.thinkingLevels = levels ? [...levels] : [];
+		if (this.reasoningEffort && !this.thinkingLevels.includes(this.reasoningEffort)) this.setReasoningEffort(undefined);
 	}
 
 	setReasoningEffort(effort?: ThinkingLevel | string): void {
-		if (!effort) return;
+		if (!effort) { this.reasoningEffort = undefined; this.inputLine.setReasoningEffort(undefined); this.requestRender(); return; }
 		const lower = effort.toLowerCase().trim() as ThinkingLevel;
-		if (!this.thinkingLevels.includes(lower)) {
-			if (DEFAULT_EFFORT_TIERS.some((t) => t.id === lower)) {
-				this.thinkingLevels = [...this.thinkingLevels, lower];
-			} else {
-				throw new Error(`当前 Provider 不支持思考等级: ${effort}`);
-			}
-		}
+		if (!this.thinkingLevels.includes(lower)) throw new Error(`当前 Provider 不支持思考等级: ${effort}`);
 		this.reasoningEffort = lower;
 		this.inputLine.setReasoningEffort(this.reasoningEffort);
 		this.requestRender();
@@ -903,16 +898,12 @@ export class UIHost implements UIHostContextPort {
 		tiers?: readonly (EffortTier | ThinkingLevel)[],
 		onChange?: (level: ThinkingLevel) => void,
 	): void {
+		if (!this.thinkingLevels.length) { this.notify("当前模型未声明思考档位", "info"); return; }
 		this.toggleModal("effort", (close) => {
 			const declaredTiers = (tiers && tiers.length > 0)
-				? tiers
+				? tiers.filter(t => this.thinkingLevels.includes(typeof t === "string" ? t : t.id))
 				: DEFAULT_EFFORT_TIERS.filter((t) => this.thinkingLevels.includes(t.id));
 			const slider = new EffortSlider(currentLevel ?? this.reasoningEffort ?? "off", declaredTiers);
-			// 确保 UIHost 内部的 thinkingLevels 与当前 slider 的候选档位保持一致，防止 setReasoningEffort 误判拦截
-			const validLevels = (slider as any).tiers.map((t: EffortTier) => t.id);
-			if (validLevels.length > 0) {
-				this.thinkingLevels = validLevels;
-			}
 			let handle: OverlayHandle | null = null;
 			slider.onChange = (level) => {
 				this.setReasoningEffort(level);

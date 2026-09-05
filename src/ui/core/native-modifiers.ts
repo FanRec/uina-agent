@@ -38,8 +38,8 @@ function loadHelper(): NativeConsoleHelper | undefined {
 			}
 			return helper;
 		}
-	} catch {
-		// Native helper unavailable, fallback gracefully
+	} catch (error) {
+		process.stderr.write(`[native helper] 无法加载 ${nativePath}: ${String(error)}\n`);
 	}
 	return undefined;
 }

@@ -10,7 +10,7 @@ export interface Tool {
 	def: ToolDef;
 	executionMode?: ToolExecutionMode;
 	/** Execute after the broker has validated the arguments. */
-	run(args: Record<string, unknown>, signal?: AbortSignal): Promise<string>;
+	run(args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolExecutionResult>;
 }
 
 export interface PreparedToolCall {
@@ -24,6 +24,8 @@ export interface PreparedToolCall {
 export interface ToolExecutionResult {
 	result: string;
 	status: ToolResultStatus;
+	/** Ends this decision after recording the result; pending inputs remain queued. */
+	continuation?: "stop";
 }
 
 interface AjvLike {
@@ -103,25 +105,22 @@ export class ToolBroker {
 		}
 		if (!prepared.tool) {
 			return {
-				result: JSON.stringify({ error: `未知工具 ${prepared.name}`, status: "failed" }),
-				status: "failed",
+				result: JSON.stringify({ error: `未知工具 ${prepared.name}`, status: "not_started" }),
+				status: "not_started",
 			};
 		}
 		if (signal?.aborted) {
 			return {
-				result: JSON.stringify({ error: "工具调用已取消", status: "cancelled" }),
-				status: "cancelled",
+				result: JSON.stringify({ error: "工具尚未启动，调用已取消", status: "not_started" }),
+				status: "not_started",
 			};
 		}
 		try {
 			const result = await prepared.tool.run(prepared.args, signal);
-			if (typeof result !== "string") throw new Error("工具必须返回字符串");
-			return {
-				result: signal?.aborted
-					? JSON.stringify({ error: "工具已返回，但取消时无法确认副作用状态", status: "unknown", result })
-					: result,
-				status: signal?.aborted ? "unknown" : "succeeded",
-			};
+			if (!result || typeof result.result !== "string" || !["succeeded", "failed", "cancelled", "unknown", "not_started"].includes(result.status)) {
+				throw new Error("工具必须返回 { result: string, status: ToolResultStatus }");
+			}
+			return result;
 		} catch (error) {
 			if (signal?.aborted) {
 				return {

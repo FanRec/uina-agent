@@ -389,7 +389,7 @@ describe("UI Adapters: Jobs & Subagents & Trajectory", () => {
 
 		// 3. 工具执行
 		const toolId = proj.onToolStart("run_command", { CommandLine: "pnpm test" });
-		proj.onToolDone(toolId, "run_command", "exit code 0", 120, false);
+		proj.onToolDone(toolId, "run_command", "exit code 0", 120, "succeeded");
 		expect(proj.list().length).toBe(3);
 
 		// 4. 热点聚合
@@ -1423,7 +1423,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(lines).toContain("Bash");
 			expect(lines).toContain("Running…");
 
-			transcript.addToolDone("bash", "file1.txt\nfile2.txt", 120, false, "call-1");
+			transcript.addToolDone("bash", "file1.txt\nfile2.txt", 120, "succeeded", "call-1");
 			transcript.appendToken("工具完成后的后续回复");
 
 			lines = transcript.render(80).join("\n");
@@ -2076,7 +2076,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			tui.render({ type: "thinking", text: "正在思考哲学问题..." });
 			tui.render({ type: "text", text: "这是一段长度为 30 个字符的回复文本用于测试" });
 			tui.render({ type: "tool_start", name: "bash", args: { cmd: "ls" }, callId: "tool-1" });
-			tui.render({ type: "tool_done", name: "bash", result: "file.txt", callId: "tool-1", elapsedMs: 120 });
+			tui.render({ type: "tool_done", name: "bash", result: "file.txt", status: "succeeded", callId: "tool-1", elapsedMs: 120 });
 			tui.render({
 				type: "turn_end",
 				n: 1,
@@ -2207,7 +2207,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			};
 
 			const mockServices: any = {
-				subject: { compact: vi.fn() },
+				subject: { compact: vi.fn(), getModel: () => ({ thinkingLevels: ["off", "high", "max"] }) },
 				models: { choices: () => [] },
 				jobs: {},
 				subagents: {},
@@ -2378,7 +2378,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					JSON.stringify({ code: 0, stdout: "ok" }),
 					100,
 					60,
-					"completed",
+					"succeeded",
 					{ command: "Get-Process" },
 					{ isHovered: true },
 				);
@@ -2436,7 +2436,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					JSON.stringify({ code: 0, stdout: "line 1\nline 2" }),
 					240,
 					80,
-					"completed",
+					"succeeded",
 					{ CommandLine: "pnpm test" },
 				);
 				const rendered = lines.join("\n");
@@ -2486,7 +2486,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					JSON.stringify({ stdout: "a\nb\nc\nd" }),
 					100,
 					80,
-					"completed",
+					"succeeded",
 				);
 				expect(fourLines.join("\n")).toContain("d");
 				expect(fourLines.join("\n")).not.toContain("lines (ctrl+o to expand)");
@@ -2497,7 +2497,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					JSON.stringify({ stdout: "a\nb\nc\nd\ne" }),
 					100,
 					80,
-					"completed",
+					"succeeded",
 					undefined,
 					{ isExpanded: false },
 				);
@@ -2516,7 +2516,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					JSON.stringify({ stdout: "a\nb\nc\nd\ne" }),
 					100,
 					80,
-					"completed",
+					"succeeded",
 					undefined,
 					{ isExpanded: true },
 				);
@@ -2532,7 +2532,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					JSON.stringify({ success: true }),
 					80,
 					120, // 宽屏
-					"completed",
+					"succeeded",
 					{
 						TargetFile: "src/index.ts",
 						TargetContent: "const a = 1;",
@@ -2551,9 +2551,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				const transcript = new TranscriptContainer();
 				transcript.startTurn(1, "执行批处理");
 				transcript.startTool("bash", { command: "test1" }, "call-1");
-				transcript.addToolDone("bash", JSON.stringify({ stdout: "1\n2\n3\n4\n5" }), 100, false, "call-1");
+				transcript.addToolDone("bash", JSON.stringify({ stdout: "1\n2\n3\n4\n5" }), 100, "succeeded", "call-1");
 				transcript.startTool("bash", { command: "test2" }, "call-2");
-				transcript.addToolDone("bash", JSON.stringify({ stdout: "a\nb\nc\nd\ne" }), 100, false, "call-2");
+				transcript.addToolDone("bash", JSON.stringify({ stdout: "a\nb\nc\nd\ne" }), 100, "succeeded", "call-2");
 
 				// 默认折叠
 				let locs = transcript.getToolLineIndices(80);
@@ -2617,7 +2617,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 						"bash",
 						JSON.stringify({ stdout: "line 1\nline 2\nline 3\nline 4" }),
 						150,
-						false,
+						"succeeded",
 						"call-test-123",
 					);
 
@@ -2825,7 +2825,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(input.getText()).toBe("");
 			});
 
-			it("TranscriptContainer: interruptTurn 会封顶思考、把运行中工具标为 failed，并插入暗调打断行", () => {
+			it("TranscriptContainer: interruptTurn 会封顶思考、把未确认的运行中工具标为 unknown，并插入暗调打断行", () => {
 				const transcript = new TranscriptContainer();
 				transcript.startTurn(1, "用户任务");
 				transcript.appendThinking("正在推理中...");
@@ -2843,8 +2843,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				// 工具状态必须为 failed，且包含已由用户打断
 				const toolItem = turn.items.find((it) => it.kind === "tool") as any;
 				expect(toolItem).toBeDefined();
-				expect(toolItem.status).toBe("failed");
-				expect(toolItem.result).toBe("已由用户打断");
+				expect(toolItem.status).toBe("unknown");
+				expect(toolItem.result).toBe("已请求中断，工具结果尚未确认");
 
 				// 存在 interrupt 行
 				const interruptItem = turn.items.find((it) => it.kind === "interrupt") as any;
@@ -2972,22 +2972,22 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				// 用户按 Esc 打断
 				transcript.interruptTurn("TestModel");
 
-				// 校验当前轮已被封顶提交，工具状态为 failed
+				// 校验当前轮已被封顶提交，工具状态为 unknown
 				expect(transcript.getCurrentTurn()).toBeNull();
 				const history = transcript.getHistory();
 				expect(history.length).toBe(1);
 				expect(history[0]!.items.filter((it) => it.kind === "tool").length).toBe(1);
 
 				// 此时底层子进程退出，迟到收到 addToolDone
-				transcript.addToolDone("bash", "{\"error\":\"工具已返回，但取消时无法确认副作用状态\"}", 200, false, "call-123");
+				transcript.addToolDone("bash", "{\"error\":\"工具已返回，但取消时无法确认副作用状态\"}", 200, "unknown", "call-123");
 
 				// 必须严密保持为 1 轮，且绝不产生重复卡片
 				expect(transcript.getCurrentTurn()).toBeNull();
 				expect(transcript.getHistory().length).toBe(1);
 				expect(history[0]!.items.filter((it) => it.kind === "tool").length).toBe(1);
 				const tool = history[0]!.items.find((it) => it.kind === "tool") as any;
-				expect(tool.status).toBe("failed");
-				expect(tool.result).toBe("已由用户打断");
+				expect(tool.status).toBe("unknown");
+				expect(tool.result).toContain("工具已返回，但取消时无法确认副作用状态");
 			});
 
 			it("InteractiveTUI: 打断的轮次在结算时 activityLine 展示 '已打断当前轮次' 而非 '本轮已完成'", () => {

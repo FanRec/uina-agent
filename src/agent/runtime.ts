@@ -43,7 +43,6 @@ export interface AgentFactory {
 }
 
 class RuntimeAgent implements AgentHandle {
-	private status: AgentStatus = "idle";
 	private disposed = false;
 	private turn = 0;
 	private readonly store: SessionStore;
@@ -56,13 +55,11 @@ class RuntimeAgent implements AgentHandle {
 			...options.hooks,
 			onToken: options.hooks?.onToken ?? (() => {}),
 			onTurnStart: (turn, text) => {
-				this.status = "running";
 				this.turn = turn;
 				options.hooks?.onTurnStart?.(turn, text);
 			},
-			onTurnEnd: (turn) => {
-				this.status = this.disposed ? "disposed" : "idle";
-				options.hooks?.onTurnEnd?.(turn);
+			onTurnEnd: (turn, usage) => {
+				options.hooks?.onTurnEnd?.(turn, usage);
 			},
 		}, {
 			store: this.store,
@@ -73,27 +70,23 @@ class RuntimeAgent implements AgentHandle {
 	}
 
 	send(input: AgentInput): Promise<void> {
-		if (this.disposed) return Promise.reject(new Error("Agent 已释放"));
-		this.status = "running";
+		if (this.disposed || this.disposePromise) return Promise.reject(new Error("Agent 已释放"));
 		return this.subject.accept(input);
 	}
 
 	interrupt(_reason?: string): Promise<void> {
 		if (this.disposed) return Promise.resolve();
 		this.subject.interrupt();
-		return this.subject.waitForIdle().then(() => {
-			if (!this.disposed) this.status = "idle";
-		});
+		return this.subject.waitForIdle();
 	}
 
 	waitForIdle(): Promise<void> {
 		return this.subject.waitForIdle().then(() => {
-			if (!this.disposed) this.status = "idle";
 		});
 	}
 
 	snapshot(): AgentSnapshot {
-		return { id: this.id, status: this.disposed ? "disposed" : this.status, busy: this.subject.isBusy(), turn: this.turn };
+		return { id: this.id, status: this.disposed ? "disposed" : this.subject.isBusy() ? "running" : "idle", busy: this.subject.isBusy(), turn: this.turn };
 	}
 
 	history(): AgentMessage[] {
@@ -102,12 +95,11 @@ class RuntimeAgent implements AgentHandle {
 
 	async dispose(): Promise<void> {
 		if (this.disposePromise) return this.disposePromise;
-		this.disposed = true;
 		this.disposePromise = (async () => {
 			this.subject.interrupt();
 			await this.subject.waitForIdle();
 			await this.store.close();
-			this.status = "disposed";
+			this.disposed = true;
 		})();
 		return this.disposePromise;
 	}

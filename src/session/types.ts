@@ -43,6 +43,15 @@ export interface SessionMessageRecord {
 	message: AgentMessage | ChatMsg;
 }
 
+/** One durable transition from a pending queue item to accepted session input. */
+export interface SessionInputRecord {
+	kind: "input";
+	id: string;
+	seq: number;
+	timestamp: string;
+	input: QueuedInput;
+}
+
 export interface SessionCompactionRecord {
 	kind: "compaction";
 	id: string;
@@ -72,6 +81,7 @@ export interface SessionEventRecord {
 }
 
 export type SessionRecord =
+	| SessionInputRecord
 	| SessionMessageRecord
 	| SessionCustomMessageRecord
 	| SessionCustomEntryRecord
@@ -81,6 +91,7 @@ export type SessionRecord =
 /** Ordered durable session content. Operational events are replayed into state,
  * while these entries retain their original journal order for model and UI projections. */
 export type SessionEntry =
+	| { kind: "input"; input: QueuedInput }
 	| { kind: "message"; message: AgentMessage | ChatMsg }
 	| {
 			kind: "custom_message";
@@ -115,6 +126,7 @@ export interface SessionSnapshot {
 
 export interface SessionStore {
 	readonly path: string;
+	appendInput(input: QueuedInput): Promise<void>;
 	appendMessage(message: AgentMessage | ChatMsg): Promise<void>;
 	appendCustomMessage(message: { customType: string; content: string; display?: boolean; details?: unknown }): Promise<void>;
 	appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void>;

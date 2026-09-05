@@ -54,7 +54,7 @@ export class SubagentRegistry {
 
 	async send(id: string, ownerId: string, text: string): Promise<void> {
 		const record = this.expect(id, ownerId);
-		if (record.status !== "waiting" && record.status !== "running") throw new Error(`子代理 ${id} 已结算`);
+		if (record.status) throw new Error(`子代理 ${id} 已结算`);
 		if (!text.trim()) throw new Error("子代理消息不能为空");
 		await this.run(record, text, "subagent-input", true);
 	}
@@ -89,11 +89,9 @@ export class SubagentRegistry {
 			onToolStart: (name: string, args: unknown) => add("tool_start", `${name} ${JSON.stringify(args)}`),
 			onToolDone: (name: string, result: string) => add("tool_done", `${name}: ${result}`),
 			onError: (error: string) => { record.error = error; record.detail = error; },
-			onTurnStart: () => { if (record.status !== "interrupted") record.status = "running"; },
-			onTurnEnd: () => { if (record.status === "running") record.status = "waiting"; },
 		};
 		const handle = this.options.factory.create({ provider: this.options.provider, tools: this.options.createTools(), hooks, thinkingLevel: this.options.thinkingLevel });
-		record = { id, ownerId: request.ownerId, parentId: request.parentId, label: request.label, status: "accepted", createdAt: Date.now(), outputCursor: 0, busy: false, handle, outputs };
+		record = { id, ownerId: request.ownerId, parentId: request.parentId, label: request.label, createdAt: Date.now(), outputCursor: 0, handle, outputs };
 		return record;
 	}
 
@@ -103,14 +101,9 @@ export class SubagentRegistry {
 
 	private async run(record: SubagentRecord, text: string, inputType: "subagent-start" | "subagent-input", propagateFailure: boolean): Promise<void> {
 		try {
-			record.status = "running";
-			record.busy = true;
 			await record.handle.send({ id: `${inputType}-${record.id}-${randomUUID()}`, mode: record.handle.subject.isBusy() ? "steer" : "followUp", source: { kind: "agent", type: inputType, ref: record.id }, text });
-			record.busy = false;
 			if (record.error) await this.release(record, "failed");
-			else if (record.status === "running") record.status = "waiting";
 		} catch (error) {
-			record.busy = false;
 			record.error ??= errorMessage(error);
 			record.detail ??= record.error;
 			await this.release(record, "failed");
@@ -150,7 +143,7 @@ export class SubagentRegistry {
 	}
 
 	private snapshot(record: SubagentRecord): SubagentSnapshot {
-		return { id: record.id, ownerId: record.ownerId, ...(record.parentId ? { parentId: record.parentId } : {}), label: record.label, status: record.status, ...(record.terminalStatus ? { terminalStatus: record.terminalStatus } : {}), detail: record.detail, createdAt: record.createdAt, finishedAt: record.finishedAt, outputCursor: record.outputs.at(-1)?.cursor ?? 0, busy: record.handle.subject.isBusy() };
+		return { id: record.id, ownerId: record.ownerId, ...(record.parentId ? { parentId: record.parentId } : {}), label: record.label, status: record.status ?? (record.handle.snapshot().busy ? "running" : "waiting"), ...(record.terminalStatus ? { terminalStatus: record.terminalStatus } : {}), detail: record.detail, createdAt: record.createdAt, finishedAt: record.finishedAt, outputCursor: record.outputs.at(-1)?.cursor ?? 0, busy: record.handle.subject.isBusy() };
 	}
 }
 

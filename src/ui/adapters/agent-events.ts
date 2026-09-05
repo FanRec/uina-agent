@@ -1,3 +1,4 @@
+import type { ToolResultStatus } from "../../core/types.js";
 /**
  * Agent 运行时事件适配器与轨迹只读投影（TrajectoryProjection）。
  * 接收 Subject 生命周期 hooks，向 Transcript 分发内容并构建真实时间线时序节点，杜绝任何假数据。
@@ -89,16 +90,16 @@ export class TrajectoryProjection implements TrajectoryEventSource {
 		return id;
 	}
 
-	onToolDone(id: string, name: string, result: string, elapsedMs = 0, isError = false): void {
+	onToolDone(id: string, name: string, result: string, elapsedMs = 0, status: ToolResultStatus = "unknown"): void {
 		const node = this.nodes.find((n) => n.id === id) ??
 			[...this.nodes].reverse().find((n) => n.kind === "tool_call" && n.label === name && n.status === "running");
 
 		if (node) {
-			node.status = isError ? "failed" : "completed";
+			node.status = status === "succeeded" ? "completed" : status;
 			node.endedAt = Date.now();
 			node.durationMs = elapsedMs || Math.max(1, node.endedAt - node.startedAt);
 			node.resultPreview = result.slice(0, 100);
-			if (isError) node.error = result;
+			if (status === "failed") node.error = result;
 			this.notify();
 		}
 	}

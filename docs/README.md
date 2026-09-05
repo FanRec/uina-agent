@@ -5,9 +5,17 @@
 | 位置 | 用途 |
 | --- | --- |
 | [current-runtime.md](current-runtime.md) | 当前运行时、稳定边界、已验证/未验证状态 |
-| [proposals/](proposals/) | 未实现或设想层设计；内容保留原样 |
+| [proposals/](proposals/) | 提案与阶段规划；以各文件状态为准 |
 | [references/](references/) | Pi、DSH、Nott 等外部实现参考 |
 | [history/](history/) | 历史审查、审计和差距记录 |
+
+## 当前阶段规划
+
+- [扩展开发指南](extensions-development.md)：当前项目/内置扩展加载、API、生命周期与可运行示例。
+
+- [底座纠偏与下一阶段规划](proposals/foundation-correction-plan.md)：S1—S4 已完成验收；长期候选仍待选择。
+- [S2—S4 交付与证据](history/reviews/2026-09-05-plan-delivery.md)：变更、真实 DeepSeek 场景、失败实验与验证边界。
+- [文件事件扩展示例](../examples/README.md)：加载、停止及重现实验。
 
 ## 提案
 
@@ -24,6 +32,7 @@
 
 ## 历史记录
 
+- [2026-09-05 方向与边界审查](history/reviews/2026-09-05-direction-review.md)
 - [架构审查报告](history/reviews/architecture-review-report.md)
 - [架构审查笔记](history/reviews/architecture-review-notes.md)
 - [Pi 差距记录](history/reviews/pi-gap-map.md)
