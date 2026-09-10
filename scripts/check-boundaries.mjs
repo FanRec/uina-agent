@@ -54,6 +54,13 @@ const rules = [
 		roots: ["src/extensions"],
 		test: (source) => importsUiImplementation(source),
 	},
+	{
+		// 这一条是 RC-1 的结构保障：宿主拥有主体生命期，因此它不能认识任何 UI。
+		// 一旦宿主 import 了 ui/，消费者分离就只是口头约定。
+		name: "host must not depend on any UI module",
+		roots: ["src/host"],
+		test: (source) => importsSegment(source, "ui"),
+	},
 ];
 
 /**
@@ -80,6 +87,11 @@ const selfTestSamples = [
 		rule: 3,
 		bad: 'import { UIHost } from "../ui/ui-host.js";',
 		good: 'import type { Component } from "../ui/core/types.js";',
+	},
+	{
+		rule: 4,
+		bad: 'import { UIHost } from "../ui/ui-host.js";',
+		good: 'import type { HostEvent } from "./events.js";',
 	},
 ];
 

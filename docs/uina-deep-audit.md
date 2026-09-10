@@ -297,6 +297,15 @@
 - **测试行为**：`pnpm typecheck`（含 4 条边界规则）、`pnpm test`（18 文件、290 用例）、`pnpm build` 均通过。其中 `provider-facts.test.ts` 新增一条用例，把「显式配置是档位唯一来源、缺失 wire 事实即报错」固化为测试行为。
 - **未验证**：`GEMINI_THINKING_LEVELS` 被删除后，Gemini 档位与预算完全由用户声明；这些数值是否与厂商当前文档一致，本次未联网核对，也无真实 Gemini 凭证。真实 Provider 的 thinking 编码响应仍未验证。
 
+#### 复检（2026-09-10：宿主/消费者分离，RC-1）
+
+- **事实**：新增 `src/host/`。`UinaHost` 拥有 provider、ToolBroker、JobRegistry、SubagentRegistry、ExtensionRunner、SessionStore 与唯一的根 Subject；对外只有输入入口（`send`/`submitText`/`pushInput`）与有序事件流（`subscribe`），消费者事实由 `snapshot()` 一次取齐。`cli/app.ts` 不再构造 Subject/ExtensionRunner/ToolBroker/JobRegistry，也不再有 `OutMsg`，退化为组合根。
+- **事实**：`OutMsg` 从 `ui/tui.ts` 移到 `host/events.ts` 并作为 `HostEvent`——它是宿主与消费者之间的契约，不再由 UI 定义。工具计时改由宿主测量，删除了 CLI 里与工具生命周期并行的 `toolStartedAt` 表。
+- **事实**：`check-boundaries.mjs` 增至 5 条规则，新增「host 不得 import 任何 ui 模块」。已用真实违规文件实测：探针 `exit=1` 并指名规则，清理后 `exit=0`。
+- **测试行为**：`tests/host-separation.test.ts` 新增 3 条反例——(1) 不创建任何 UI，注入数组消费者即跑通 文本→工具调用→结果回注；(2) 断开唯一消费者后，在**零消费者**状态下完整跑一轮并确认历史增长，随后接入的新观察者只收到它接入后的事件；(3) 会话由宿主拥有，dispose 后重开恢复历史。
+- **测试行为**：`pnpm typecheck`（含 5 条边界规则）、`pnpm test`（19 文件、293 用例）、`pnpm build` 全部通过。真实入口 one-shot（`tests/cli-session.test.ts` 的 localhost Anthropic/Gemini/oneshot）在重写组合根后仍然通过，这是本次改动最强的一条行为证据。
+- **未验证**：真实 TTY 下的 TUI 交互、真实 Provider、跨重启 Job 对账。`UIHost` 仍约 1918 行并持有 job/subagent port 与业务键位映射（RC-3），本次未处理；它现在排在正确的顺序上——TUI 已是消费者，action port 才有正确的落脚点。
+
 ## 验证结果与未验证边界
 
 - **事实**：在基线 `6b24c80` 上，本次执行 `pnpm typecheck`、`pnpm test -- --reporter=dot` 与 `pnpm build` 均成功；测试为 11 文件、224 用例。

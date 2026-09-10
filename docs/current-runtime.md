@@ -28,8 +28,17 @@
 | `runtime/` | 只读 RuntimeHooks 合同与 no-op 实现 | handler、scope、扩展状态或 UI |
 | `extensions/runner.ts` | ActivationScope、项目/builtin 注册、来源诊断、异步 teardown | Agent 决策和工具业务实现 |
 | `extensions/runtime-tools/` | 内置 shell、时间、Job/Subagent 工具实现 | 项目扩展发现 |
-| `ui/` | 展示、输入、焦点、组件组合 | 模型能力事实、Agent 状态转移 |
-| `cli/app.ts` | 依赖组装、stdio/TTY 输入适配、退出 | Agent 业务规则 |
+| `ui/` | 展示、输入、焦点、组件组合；作为宿主的一个消费者 | 模型能力事实、Agent 状态转移、主体生命期 |
+| `host/` | 主体生命期、provider/工具/Job/Subagent/扩展/会话的唯一装配、消费者事件流 | 任何 UI 类型（由边界检查强制） |
+| `cli/app.ts` | 组合根：创建宿主、接入一个消费者、进程级信号与退出码 | 主体装配与 Agent 业务规则 |
+
+## 宿主与消费者
+
+`host/` 拥有主体的生命期，对外只暴露两件事：**一个输入入口**（`send` / `submitText` / `pushInput`）与**一条有序事件流**（`subscribe`）。消费者（TUI、stdio、远程观察者或未来的 TTS）可以随时接入或断开，主体是否继续工作与它们无关；消费者渲染所需的全部事实由 `snapshot()` 一次取齐，不再伸手进 Subject。
+
+已由行为验证（`tests/host-separation.test.ts`）：不创建任何 UI 也能跑通 文本 → 工具调用 → 结果回注；**零消费者**状态下主体照常处理输入并写入会话；之后接入的新观察者只收到它接入之后的事件。`check-boundaries` 有一条规则禁止 `host/` import 任何 `ui/` 模块，因此这条边界不是口头约定。
+
+投递模式规则（忙时 direct 升级为 steer、空闲时一律 direct）归属于宿主，不再由 UI 决定。
 
 ## Agent lifecycle
 

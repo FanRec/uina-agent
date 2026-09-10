@@ -55,14 +55,15 @@ Gemini 若某个已确认的模型要求在 function call/function response 中�
 
 ```text
 src/
+  host/     宿主：主体生命期所有者，对外只有输入入口与事件流
   agent/    前台循环、上下文、compaction、steer/followUp 队列
   ai/       配置、provider 适配、wire 转换和 SSE 协议解析
   core/     跨层类型
   session/  JSONL 追加日志、恢复和损坏尾行修复
   tools/    工具注册、schema 校验和执行
-  extensions/runtime-tools/  内置工具实现，由 builtin activation 注册
-  ui/       终端渲染
-  cli/      入口组装和退出生命周期
+  extensions/  扩展契约、加载、内置能力（runtime-tools/jobs/subagents）
+  ui/       终端消费者：渲染、输入、焦点、组件组合
+  cli/      组合根：建宿主、挂一个消费者、进程信号与退出
   main.ts   程序入口
 ```
 

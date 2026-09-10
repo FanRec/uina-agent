@@ -4,44 +4,13 @@
  */
 
 import { UIHost, type UIHostOptions } from "./ui-host.js";
-import type { ContextSegments, ToolResultStatus } from "../core/types.js";
 import type { QueuedMessage } from "../agent/queue.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 import type { SessionEntry } from "../session/types.js";
 
-/** 渲染层消息契约（主体 hooks → UI 消息） */
-export type OutMsg =
-	| { type: "text"; text: string }
-	| { type: "thinking"; text: string }
-	| { type: "turn_start"; n: number; text: string }
-	| {
-		type: "turn_end";
-		n: number;
-		usage?: {
-			usedTokens: number;
-			contextWindow?: number;
-			actual?: boolean;
-			cacheRead?: number;
-			cacheWrite?: number;
-			inputTokens?: number;
-			outputTokens?: number;
-			segments?: ContextSegments;
-		};
-	}
-	| { type: "error"; text: string }
-	| { type: "notice"; text: string }
-	| { type: "turn_aborted"; n: number }
-	| { type: "tool_start"; name: string; args: unknown; callId?: string }
-	| {
-		type: "tool_done";
-		name: string;
-		result: string;
-		status?: ToolResultStatus;
-		callId?: string;
-		ts?: number;
-		elapsedMs?: number;
-	}
-	| { type: "queue"; items: readonly QueuedMessage[] };
+import type { HostEvent } from "../host/events.js";
+
+export type { HostEvent };
 
 export interface InteractiveTUIOptions extends UIHostOptions {
 	onDirectCommand?: (cmd: string) => void | Promise<void>;
@@ -180,7 +149,7 @@ export class InteractiveTUI {
 		this.host.setPendingQueue(items);
 	}
 
-	render(m: OutMsg): void {
+	render(m: HostEvent): void {
 		switch (m.type) {
 			case "turn_start":
 				this.currentThinkingId = undefined;
