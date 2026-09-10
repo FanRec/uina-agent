@@ -5,6 +5,8 @@
 import { spawn } from "node:child_process";
 
 // ANSI Escape Code 正则（覆盖 CSI, OSC, APC 序列，包含以 \x07 或 \x1b\\ 结尾的 APC 序列如 CURSOR_MARKER）
+export const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
 export const ANSI_REGEX =
 	// eslint-disable-next-line no-control-regex
 	/\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b_[^\x07\x1b]*(\x07|\x1b\\)/g;
@@ -91,7 +93,21 @@ export function isFullWidth(cp: number): boolean {
 	);
 }
 
-/** 单字符（或 grapheme）的可视列宽 */
+/** 组合记号 / 变体选择符 / ZWJ：簇内零宽修饰符。 */
+function isZeroWidthMark(cp: number): boolean {
+	return (
+		(cp >= 0x0300 && cp <= 0x036f) ||
+		(cp >= 0x1ab0 && cp <= 0x1aff) ||
+		(cp >= 0x1dc0 && cp <= 0x1dff) ||
+		(cp >= 0x20d0 && cp <= 0x20ff) ||
+		(cp >= 0xfe00 && cp <= 0xfe0f) ||
+		(cp >= 0xfe20 && cp <= 0xfe2f) ||
+		(cp >= 0xe0100 && cp <= 0xe01ef) ||
+		cp === 0x200d
+	);
+}
+
+/** 单个 code point 的可视列宽（供逐 code point 的调用方使用）。 */
 export function charWidth(char: string): number {
 	if (char === "\t") return 2;
 	const cp = char.codePointAt(0);
@@ -99,14 +115,63 @@ export function charWidth(char: string): number {
 	return isFullWidth(cp) ? 2 : 1;
 }
 
+/**
+ * 单个 grapheme 簇的可视列宽。组合字符算 1 列（不是 2 列），ZWJ 序列、
+ * 变体选择符 16 与 astral pictograph 算 2 列。
+ */
+export function graphemeWidth(segment: string): number {
+	const first = segment.codePointAt(0);
+	if (first === undefined) return 0;
+	if (first === 0x09) return 1; // tab 由调用方按 8 列制表位展开
+	if (first < 0x20 || (first >= 0x7f && first < 0xa0)) return 0;
+	if (isZeroWidthMark(first) && segment.length <= 2) return 0;
+	// Regional indicator pairs (flags) are one cluster rendered as two columns.
+	if (first >= 0x1f1e6 && first <= 0x1f1ff) return 2;
+	for (const ch of segment) {
+		const cp = ch.codePointAt(0);
+		if (cp === 0x200d || cp === 0xfe0f) return 2;
+	}
+	return isFullWidth(first) ? 2 : 1;
+}
+
+/**
+ * 以 ANSI 控制码 + grapheme 簇为单位遍历字符串。这是所有宽度计算的唯一迭代器，
+ * 保证 visibleWidth / truncateToWidth / wrapTextWithAnsi 永远不会切开一个簇。
+ * 返回 false 可提前停止。
+ */
+export function walkGraphemes(text: string, visit: (segment: string, isAnsi: boolean) => boolean | void): void {
+	if (!text) return;
+	const segments = Array.from(graphemeSegmenter.segment(text));
+	let si = 0;
+	let i = 0;
+	while (i < text.length) {
+		const ansi = extractAnsiCode(text, i);
+		if (ansi) {
+			if (visit(ansi.code, true) === false) return;
+			i += ansi.length;
+			continue;
+		}
+		while (si < segments.length && segments[si]!.index + segments[si]!.segment.length <= i) si++;
+		const seg = segments[si];
+		const piece = seg && seg.index <= i ? text.slice(i, seg.index + seg.segment.length) : text[i]!;
+		if (visit(piece, false) === false) return;
+		i += piece.length;
+	}
+}
+
+/** tab 展开到下一个 8 列制表位。 */
+function tabAdvance(currentColumn: number): number {
+	return 8 - (currentColumn % 8);
+}
+
 /** 计算包含 ANSI 控制码与多字节中文的字符串真实显示列宽 */
 export function visibleWidth(str: string): number {
 	if (!str) return 0;
-	const clean = stripAnsi(str);
 	let w = 0;
-	for (const char of clean) {
-		w += charWidth(char);
-	}
+	walkGraphemes(str, (segment, isAnsi) => {
+		if (isAnsi) return;
+		w += segment === "\t" ? tabAdvance(w) : graphemeWidth(segment);
+	});
 	return w;
 }
 
@@ -135,37 +200,26 @@ export function truncateToWidth(
 	ellipsis = "…",
 ): string {
 	if (maxWidth <= 0) return "";
-	const totalWidth = visibleWidth(text);
-	if (totalWidth <= maxWidth) return text;
+	if (visibleWidth(text) <= maxWidth) return text;
 
 	const ellipsisW = visibleWidth(ellipsis);
 	if (maxWidth < ellipsisW) {
 		return maxWidth >= 1 ? ".".repeat(maxWidth) : "";
 	}
-	const targetWidth = Math.max(0, maxWidth - ellipsisW);
+	const targetWidth = maxWidth - ellipsisW;
 
 	let curWidth = 0;
 	let result = "";
-	let i = 0;
-
-	while (i < text.length) {
-		const ansi = extractAnsiCode(text, i);
-		if (ansi) {
-			result += ansi.code;
-			i += ansi.length;
-			continue;
+	walkGraphemes(text, (segment, isAnsi) => {
+		if (isAnsi) {
+			result += segment;
+			return;
 		}
-
-		const char = text[i];
-		const w = charWidth(char);
-		if (curWidth + w > targetWidth) {
-			break;
-		}
-
-		result += char;
+		const w = segment === "\t" ? tabAdvance(curWidth) : graphemeWidth(segment);
+		if (curWidth + w > targetWidth) return false;
+		result += segment;
 		curWidth += w;
-		i++;
-	}
+	});
 
 	return `${result}${C.reset}${ellipsis}`;
 }
@@ -232,31 +286,24 @@ export function wrapTextWithAnsi(text: string, maxWidth: number): string[] {
 
 		let curLine = currentStyle;
 		let curWidth = 0;
-		let i = 0;
 
-		while (i < rawLine.length) {
-			const ansi = extractAnsiCode(rawLine, i);
-			if (ansi) {
-				curLine += ansi.code;
-				if (ansi.code === "\x1b[0m") currentStyle = "";
-				else if (ansi.code.endsWith("m")) currentStyle = ansi.code;
-				i += ansi.length;
-				continue;
+		walkGraphemes(rawLine, (segment, isAnsi) => {
+			if (isAnsi) {
+				curLine += segment;
+				if (segment === C.reset) currentStyle = "";
+				else if (segment.endsWith("m")) currentStyle = segment;
+				return;
 			}
-
-			const char = rawLine[i]!;
-			const w = charWidth(char);
-
+			const w = segment === "\t" ? tabAdvance(curWidth) : graphemeWidth(segment);
 			if (curWidth + w > maxWidth) {
 				output.push(`${curLine}${C.reset}`);
-				curLine = `${currentStyle}${char}`;
+				curLine = `${currentStyle}${segment}`;
 				curWidth = w;
 			} else {
-				curLine += char;
+				curLine += segment;
 				curWidth += w;
 			}
-			i++;
-		}
+		});
 
 		if (curLine) {
 			output.push(currentStyle && !curLine.endsWith(C.reset) ? `${curLine}${C.reset}` : curLine);
@@ -287,8 +334,6 @@ export function getContentBoxWidth(innerW: number, slack = 4): number {
 	if (innerW < 170) return Math.max(80, innerW - Math.max(slack, 8));
 	return Math.max(100, innerW - Math.max(slack, 12));
 }
-
-export const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 export function getPrevGraphemeIndex(text: string, cursorIndex: number): number {
 	if (cursorIndex <= 0) return 0;

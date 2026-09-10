@@ -45,13 +45,16 @@ export async function openJsonlSession(path: string): Promise<{
 	}
 
 	const snapshot = await readSnapshot(path);
-	const handle = await open(path, "a+");
+	// Positional writes allow rollback on Windows, where append-only handles
+	// cannot be truncated. This store serializes all writes to its handle.
+	const handle = await open(path, "r+");
 	return { store: new JsonlSessionStore(path, handle, snapshot.lastSeq), snapshot };
 }
 
 export class JsonlSessionStore implements SessionStore {
 	private tail: Promise<void> = Promise.resolve();
 	private closed = false;
+	private writeFailure?: Error;
 
 	constructor(
 		readonly path: string,
@@ -120,13 +123,38 @@ export class JsonlSessionStore implements SessionStore {
 		await this.handle.close();
 	}
 
+	/** An unsuccessful append must restore the last complete record boundary
+	 * before another append is admitted. A failed rollback requires reopening. */
 	private append(record: SessionRecord): Promise<void> {
-		this.tail = this.tail.then(async () => {
+		const result = this.tail.then(async () => {
 			if (this.closed) throw new Error("session store 已关闭");
-			await this.handle.appendFile(`${JSON.stringify(record)}\n`, "utf8");
-			await this.handle.sync();
+			if (this.writeFailure) throw this.writeFailure;
+			const data = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
+			const { size } = await this.handle.stat();
+			try {
+				let offset = 0;
+				while (offset < data.length) {
+					const { bytesWritten } = await this.handle.write(data, offset, data.length - offset, size + offset);
+					if (bytesWritten === 0) throw new Error(`会话写入未取得进展：${this.path}`);
+					offset += bytesWritten;
+				}
+				await this.handle.sync();
+			} catch (error) {
+				try {
+					await this.handle.truncate(size);
+					await this.handle.sync();
+				} catch (rollbackError) {
+					this.writeFailure = new AggregateError([error, rollbackError], `会话追加及回滚失败，请重新打开会话：${this.path}`);
+					throw this.writeFailure;
+				}
+				throw error;
+			}
 		});
-		return this.tail;
+		this.tail = result.then(
+			() => undefined,
+			() => undefined,
+		);
+		return result;
 	}
 }
 

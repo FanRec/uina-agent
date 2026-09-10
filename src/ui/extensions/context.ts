@@ -360,5 +360,9 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 		setGutterMode(mode: "scrollbar" | "timeline"): void {
 			host.setGutterMode?.(mode);
 		},
+
+		hasUI(): boolean {
+			return true;
+		},
 	};
 }

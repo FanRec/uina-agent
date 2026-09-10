@@ -138,16 +138,17 @@ function restoreTerminal(): void {
 	} catch {}
 }
 
-process.on("exit", restoreTerminal);
-process.on("SIGTERM", () => {
-	restoreTerminal();
-	process.exit(143);
-});
-process.on("SIGHUP", () => {
-	restoreTerminal();
-	process.exit(129);
-});
-process.on("uncaughtExceptionMonitor", () => {
-	restoreTerminal();
-});
+/** Restore the terminal device. Safe to call when no TUI ever started.
+ * Process signals are owned by the host (see cli/app.ts), not by this module:
+ * importing terminal.ts must not install process-global handlers. */
+export function installTerminalGuards(): () => void {
+	const onExit = (): void => restoreTerminal();
+	const onCrash = (): void => restoreTerminal();
+	process.on("exit", onExit);
+	process.on("uncaughtExceptionMonitor", onCrash);
+	return () => {
+		process.off("exit", onExit);
+		process.off("uncaughtExceptionMonitor", onCrash);
+	};
+}
 

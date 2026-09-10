@@ -276,8 +276,10 @@ function mergeOpenAIUsage(state: Partial<Usage>, raw: NonNullable<OpenAIChunk["u
 	}
 	if (output !== undefined) next.output = output;
 	if (reasoning !== undefined) next.reasoning = reasoning;
+	// Only report a total the provider actually sent. Synthesizing one would let
+	// the UI present a derived number as measured usage.
 	const total = count(raw.total_tokens, "total_tokens");
-	next.totalTokens = total ?? (next.input !== undefined && next.output !== undefined ? next.input + next.output + (next.cacheRead ?? 0) : undefined);
+	next.totalTokens = total;
 	return next;
 }
 

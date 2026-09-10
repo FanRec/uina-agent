@@ -1,5 +1,6 @@
-import { appendFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { createWriteStream, type WriteStream } from "node:fs";
+import { finished } from "node:stream/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,43 +17,76 @@ export interface OutputSnapshot {
 	fullOutputPath?: string;
 }
 
-/** Keeps a bounded UTF-8 tail and writes the complete stream after truncation starts. */
+/**
+ * Keeps a bounded UTF-8 tail and streams the complete output to a temp file once
+ * truncation starts. Mirrors Pi's OutputAccumulator: a streaming TextDecoder
+ * (no hand-rolled byte walker) and an async WriteStream (no sync I/O in the
+ * stdout/stderr callbacks). The temp file is an intentional artifact: it is the
+ * only way to read output that no longer fits the returned tail, and its path is
+ * part of the tool result.
+ */
 export class OutputCollector {
-	private readonly decoder = createByteDecoder();
+	private readonly decoder = new TextDecoder("utf-8");
 	private tail = "";
-	private prefix = "";
+	private rawChunks: Buffer[] = [];
+	private ended = false;
+	private failure?: Error;
 	private totalBytes = 0;
 	private completedLines = 0;
 	private openLine = false;
 	private fullOutputPath?: string;
+	private tempStream?: WriteStream;
+
+	constructor(private readonly onError?: (error: Error) => void) {}
 
 	push(chunk: Buffer): string {
-		const text = this.decoder.push(chunk);
-		if (!text) return "";
-		this.totalBytes += Buffer.byteLength(text, "utf8");
-		this.completedLines += countNewlines(text);
-		this.openLine = !text.endsWith("\n");
-		if (!this.fullOutputPath) {
-			this.prefix += text;
-			if (this.isTruncated()) {
-				this.createFullOutput(this.prefix);
-				this.prefix = "";
-			}
-		} else {
-			appendFileSync(this.fullOutputPath, text, "utf8");
-		}
-		this.tail += text;
-		this.tail = trimTailToBytes(this.tail, TAIL_BUFFER_BYTES);
+		if (this.failure) throw this.failure;
+		if (this.ended) throw new Error("输出收集器已结束");
+		const text = this.decoder.decode(chunk, { stream: true });
+		this.appendText(text);
+		// The artifact contains original bytes, independently of decoder buffering.
+		if (!this.tempStream && this.isTruncated()) this.openTempFile();
+		if (this.tempStream) this.tempStream.write(chunk);
+		else this.rawChunks.push(chunk);
 		return text;
 	}
 
 	finish(): void {
-		const text = this.decoder.flush();
-		if (text) this.push(Buffer.from(text, "utf8"));
-		if (!this.fullOutputPath && this.isTruncated()) {
-			this.createFullOutput(this.prefix);
-			this.prefix = "";
+		if (this.ended) return;
+		this.ended = true;
+		this.appendText(this.decoder.decode());
+		if (!this.tempStream && this.isTruncated()) this.openTempFile();
+	}
+
+	/** Close even after an asynchronous stream failure; never publish a path
+	 * as complete before the stream has finished and closed. */
+	async close(): Promise<void> {
+		this.finish();
+		const stream = this.tempStream;
+		if (stream) {
+			try {
+				const closed = finished(stream, { cleanup: true });
+				stream.end();
+				await closed;
+			} catch (error) {
+				this.fail(error as Error);
+			}
 		}
+		if (this.failure) throw this.failure;
+	}
+
+	private appendText(text: string): void {
+		if (!text) return;
+		this.totalBytes += Buffer.byteLength(text, "utf8");
+		this.completedLines += countNewlines(text);
+		this.openLine = !text.endsWith("\n");
+		this.tail = trimTailToBytes(this.tail + text, TAIL_BUFFER_BYTES);
+	}
+
+	private fail(error: Error): void {
+		if (this.failure) return;
+		this.failure = error;
+		this.onError?.(error);
 	}
 
 	snapshot(): OutputSnapshot {
@@ -81,13 +115,16 @@ export class OutputCollector {
 		return this.totalBytes === 0 ? 0 : this.completedLines + (this.openLine ? 1 : 0);
 	}
 
-	private createFullOutput(content: string): void {
-		if (this.fullOutputPath) return;
+	private openTempFile(): void {
+		if (this.tempStream) return;
 		this.fullOutputPath = join(
 			tmpdir(),
 			`uina-exec-${Date.now()}-${randomBytes(6).toString("hex")}.out.txt`,
 		);
-		writeFileSync(this.fullOutputPath, content, "utf8");
+		this.tempStream = createWriteStream(this.fullOutputPath);
+		this.tempStream.on("error", (error) => this.fail(error));
+		for (const chunk of this.rawChunks) this.tempStream.write(chunk);
+		this.rawChunks = [];
 	}
 }
 
@@ -95,7 +132,7 @@ function trimTailToBytes(value: string, maxBytes: number): string {
 	const bytes = Buffer.from(value, "utf8");
 	if (bytes.length <= maxBytes) return value;
 	let start = bytes.length - maxBytes;
-	while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
+	while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start++;
 	return bytes.subarray(start).toString("utf8");
 }
 
@@ -105,12 +142,12 @@ function truncateTail(value: string): string {
 	const kept: string[] = [];
 	for (let i = lines.length - 1; i >= 0; i--) {
 		if (kept.length >= MAX_OUTPUT_LINES) break;
-		const lineBytes = Buffer.byteLength(lines[i], "utf8") + (kept.length > 0 ? 1 : 0);
+		const lineBytes = Buffer.byteLength(lines[i]!, "utf8") + (kept.length > 0 ? 1 : 0);
 		if (bytes + lineBytes > MAX_OUTPUT_BYTES) {
-			if (kept.length === 0) kept.unshift(trimTailToBytes(lines[i], MAX_OUTPUT_BYTES));
+			if (kept.length === 0) kept.unshift(trimTailToBytes(lines[i]!, MAX_OUTPUT_BYTES));
 			break;
 		}
-		kept.unshift(lines[i]);
+		kept.unshift(lines[i]!);
 		bytes += lineBytes;
 	}
 	return kept.join("\n");
@@ -118,93 +155,6 @@ function truncateTail(value: string): string {
 
 function countNewlines(value: string): number {
 	let count = 0;
-	for (const char of value) if (char === "\n") count++;
+	for (let i = value.indexOf("\n"); i !== -1; i = value.indexOf("\n", i + 1)) count++;
 	return count;
-}
-
-/** UTF-8 decoder that preserves split code points and uses latin1 for bad chunks. */
-export function createByteDecoder(): { push(buf: Buffer): string; flush(): string } {
-	let pending: number[] = [];
-	return {
-		push(buf: Buffer): string {
-			pending.push(...buf);
-			return drain(false);
-		},
-		flush(): string {
-			return drain(true);
-		},
-	};
-
-	function drain(flush: boolean): string {
-		let output = "";
-		let offset = 0;
-		while (offset < pending.length) {
-			const first = pending[offset];
-			const width = utf8Width(first);
-			if (width === 1) {
-				output += String.fromCharCode(first);
-				offset++;
-				continue;
-			}
-			if (width === 0) {
-				output += String.fromCharCode(first);
-				offset++;
-				continue;
-			}
-			if (pending.length - offset < width) {
-				if (!flush) break;
-				for (; offset < pending.length; offset++) {
-					output += String.fromCharCode(pending[offset]);
-				}
-				break;
-			}
-			const bytes = pending.slice(offset, offset + width);
-			if (!isValidUtf8Sequence(bytes)) {
-				// Windows 下尝试按 GBK / CP936 解码双字节
-				if (process.platform === "win32" && offset + 1 < pending.length) {
-					try {
-						const gbkDecoder = new TextDecoder("gbk");
-						const gbkStr = gbkDecoder.decode(new Uint8Array([first, pending[offset + 1]!]));
-						if (gbkStr && !gbkStr.includes("\ufffd")) {
-							output += gbkStr;
-							offset += 2;
-							continue;
-						}
-					} catch {
-						// 降级使用单字节字符码
-					}
-				}
-				output += String.fromCharCode(first);
-				offset++;
-				continue;
-			}
-			output += Buffer.from(bytes).toString("utf8");
-			offset += width;
-		}
-		pending = pending.slice(offset);
-		return output;
-	}
-}
-
-function utf8Width(first: number): number {
-	if (first <= 0x7f) return 1;
-	if (first >= 0xc2 && first <= 0xdf) return 2;
-	if (first >= 0xe0 && first <= 0xef) return 3;
-	if (first >= 0xf0 && first <= 0xf4) return 4;
-	return 0;
-}
-
-function isValidUtf8Sequence(bytes: number[]): boolean {
-	const first = bytes[0];
-	if (bytes.slice(1).some((byte) => byte < 0x80 || byte > 0xbf)) return false;
-	if (bytes.length === 2) return true;
-	const second = bytes[1];
-	if (bytes.length === 3) {
-		if (first === 0xe0) return second >= 0xa0;
-		if (first === 0xed) return second <= 0x9f;
-		return true;
-	}
-	if (first === 0xf0) return second >= 0x90;
-	if (first === 0xf4) return second <= 0x8f;
-	return true;
 }

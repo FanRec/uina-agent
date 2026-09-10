@@ -418,7 +418,8 @@ type UsagePatch = Partial<UsageState>;
 function mergeUsage(state: UsageState, patch: UsagePatch): UsageState {
 	const next = { ...state };
 	for (const key of ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"] as const) if (patch[key] !== undefined) next[key] = patch[key];
-	if (patch.totalTokens === undefined) next.totalTokens = next.input !== undefined && next.output !== undefined ? next.input + next.output + (next.cacheRead ?? 0) + (next.cacheWrite ?? 0) : undefined;
+	// totalTokens stays undefined unless the provider reports it; callers must
+	// show an estimate instead of a derived number presented as measured usage.
 	return next;
 }
 

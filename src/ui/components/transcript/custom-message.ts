@@ -6,6 +6,7 @@
 
 import { Container } from "../../core/container.js";
 import { C, truncateToWidth, visibleWidth } from "../../core/utils.js";
+import { sanitizeRenderText } from "../../format.js";
 import type { CustomMessage, MessageRenderer } from "../../extensions/types.js";
 
 export class CustomMessageComponent extends Container {
@@ -63,11 +64,16 @@ export class CustomMessageComponent extends Container {
 				const borderCol = C.blue;
 				const topFill = Math.max(2, boxW - visibleWidth(tag) - 8);
 				const header = `  ${borderCol}╭─ ${C.bold}${tag}${C.reset}${borderCol} ${"─".repeat(topFill)}╮${C.reset}`;
-				const text = truncateToWidth(self.message.content, innerW);
-				const pad = Math.max(0, innerW - visibleWidth(text));
-				const body = `  ${borderCol}│${C.reset}  ${text}${" ".repeat(pad)}  ${borderCol}│${C.reset}`;
+				// Untrusted extension content: strip control sequences and split
+				// real rows (one array entry must map to one terminal row).
+				const rawLines = sanitizeRenderText(self.message.content).replace(/\r\n/g, "\n").split("\n");
+				const bodyLines = rawLines.map((line) => {
+					const text = truncateToWidth(line, innerW);
+					const pad = Math.max(0, innerW - visibleWidth(text));
+					return `  ${borderCol}│${C.reset}  ${text}${" ".repeat(pad)}  ${borderCol}│${C.reset}`;
+				});
 				const footer = `  ${borderCol}╰${"─".repeat(Math.max(4, boxW - 4))}╯${C.reset}`;
-				return [header, body, footer];
+				return [header, ...bodyLines, footer];
 			},
 			invalidate: () => {},
 		});

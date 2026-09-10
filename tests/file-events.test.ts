@@ -7,6 +7,11 @@ import { ToolBroker } from "../src/tools/broker.js";
 import { ExtensionRunner } from "../src/extensions/runner.js";
 import { openJsonlSession } from "../src/session/jsonl-store.js";
 
+// The shell tool uses the platform shell, so the fixture commands must too.
+const IS_WINDOWS = process.platform === "win32";
+const SHORT_JOB = IS_WINDOWS ? "Start-Sleep -Seconds 2; Write-Output JOB_DONE" : "sleep 2; echo JOB_DONE";
+const LONG_JOB = IS_WINDOWS ? "Start-Sleep -Seconds 60" : "sleep 60";
+
 it("ordinary file extension handles real jobs, silence, user input, failure and teardown", async () => {
 	const root = await mkdtemp(join(tmpdir(), "uina-file-event-"));
 	const file = join(root, "observed.txt"); const session = join(root, "session.jsonl");
@@ -20,7 +25,7 @@ it("ordinary file extension handles real jobs, silence, user input, failure and 
 	subject = new Subject({ name: "deterministic-fixture", async stream(req, emit) {
 		requests++; const last = req.messages.at(-1); const content = last?.content ?? "";
 		if (last?.role !== "tool" && content.includes("[运行时事件 file-changed") && /RUN|LONG|FAIL/.test(content)) {
-			const command = content.includes("LONG") ? "Start-Sleep -Seconds 60" : content.includes("FAIL") ? "exit 7" : "Start-Sleep -Seconds 2; Write-Output JOB_DONE";
+			const command = content.includes("LONG") ? LONG_JOB : content.includes("FAIL") ? "exit 7" : SHORT_JOB;
 			emit({ kind: "tool_call", call: { id: `call-${++call}`, name: "watch_exec", args: JSON.stringify({ command, run_in_background: true }) } });
 			emit({ kind: "finish", reason: "tool_calls" });
 		} else if (last?.role !== "tool" && content.includes("[运行时事件 watch-job")) {

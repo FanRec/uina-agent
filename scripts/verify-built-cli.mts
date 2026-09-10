@@ -56,9 +56,13 @@ for (const mode of ["tool-success", "truncated-provider"] as const) {
     child.stdout.on("data", c => { stdout += String(c); });
     child.stderr.on("data", c => { stderr += String(c); });
     const exitCode = await new Promise<number | null>((r, reject) => { child.on("error", reject); child.on("close", r); });
+    const successMarker = stdout.includes("COMPILED_TOOL_OK");
     assert.equal(exitCode, mode === "tool-success" ? 0 : 1);
     assert.equal(sawToolResult, mode === "tool-success");
-    console.log(JSON.stringify({ probe: "compiled-cli", mode, exitCode, requests, sawToolResult, successMarker: stdout.includes("COMPILED_TOOL_OK"), errors: (stdout + stderr).split(/\r?\n/).filter(l => /错误|失败/.test(l)) }));
+    // The marker is the observable end of the tool round-trip; printing it
+    // without asserting it would let an empty-but-successful run pass.
+    assert.equal(successMarker, mode === "tool-success");
+    console.log(JSON.stringify({ probe: "compiled-cli", mode, exitCode, requests, sawToolResult, successMarker, errors: (stdout + stderr).split(/\r?\n/).filter(l => /错误|失败/.test(l)) }));
   } finally {
     await new Promise<void>(r => server.close(() => r()));
     if (!resolve(tempRoot).startsWith(resolve(tmpdir()) + "\\uina-direction-cli-") && !resolve(tempRoot).startsWith(resolve(tmpdir()) + "/uina-direction-cli-")) throw new Error("Unexpected cleanup target");

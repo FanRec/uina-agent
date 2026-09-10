@@ -84,23 +84,25 @@ export { default } from "../../dist/examples/file-events.mjs";
 | `id` / `path` | 当前激活来源；项目扩展 ID 带 project 前缀，内置带 builtin 前缀 |
 | `registerCommand(command)` | 注册斜杠命令 |
 | `registerTool(tool)` | 注册模型工具 |
-| `registerProvider(name, provider)` | 交给宿主模型注册入口；不会自动选为当前模型 |
+| `registerProvider(name, provider)` | 交给宿主模型注册入口；不会自动选为当前模型。宿主未提供该入口时抛错，绝不静默丢弃 |
 | `on(type, handler)` | 订阅事件或注册变换 hook；返回取消订阅函数 |
 | `submitInput(input)` | 递交输入，按主体状态启动处理或排队 |
 | `sendMessage(message)` | 追加 custom 消息，参与后续模型上下文；自身不触发新一轮 |
 | `appendEntry(entry)` | 追加 custom 条目，用于持久化和展示，不进入模型上下文 |
 | `registerMessageRenderer(type, renderer)` | 注册 custom message 的展示方式 |
 | `registerEntryRenderer(type, renderer)` | 注册 custom entry 的展示方式 |
-| `ui` | 通知、组件、输入与对话框等 UI 接口 |
+| `ui` | 通知、组件、输入与对话框等 UI 接口；`ui.hasUI()` 区分真实交互 UI 与 print 兜底实现 |
 | `reportError(error)` | 报告带当前扩展来源的外部异步错误 |
 
 工具名、命令名以及同类 renderer 的 customType 在各自注册表内必须唯一；重名会报错。建议使用能力前缀。Provider 重名处理以 [ModelRegistry](../src/ai/providers.ts) 实现为准，不依赖隐式覆盖来实现切换。
 
-`sendMessage` 使用 `{ customType, content, display?, details? }`。`display:false` 只是隐藏展示，内容仍可进入模型上下文。`appendEntry` 使用 `{ customType, data? }`，不参与模型请求。这两者都不能替代 `submitInput` 的触发语义。
+`sendMessage` 使用 `{ customType, content, display?, details? }`。`display:false` 只是隐藏展示，内容仍可进入模型上下文。`appendEntry` 使用 `{ customType, data? }`，不参与模型请求。这两者都不能替代 `submitInput` 的触发语义。宿主缺少对应入口时两者都会抛错，不会静默 no-op。
+
+`ExtensionUIContext` 的成员全部必填：新增成员会同时要求 print 兜底实现、真实 UI 实现与转发层更新，因此不存在“声明了但转发不到”的成员。扩展对 `setStatus`/`setWidget`/`setHeader`/`setFooter` 的重复调用按 key 覆盖（不是追加），激活失效时统一释放。没有真实 UI 时 `hasUI()` 为 false，`select`/`input` 返回 undefined、`confirm` 返回 false——扩展应先用 `hasUI()` 分支，而不是把这些值当成用户选择。
 
 ## 5. 工具结果与取消
 
-工具参数使用 OpenAI function 形状的 JSON Schema，注册时由 Ajv 编译，调用前验证。`run(args, signal?)` 返回 `Promise<ToolExecutionResult>`：
+工具参数使用 OpenAI function 形状的 JSON Schema，注册时由 Ajv 编译，调用前验证。`run(args, signal?, context?)` 返回 `Promise<ToolExecutionResult>`：
 
 ```ts
 {
@@ -117,6 +119,8 @@ export { default } from "../../dist/examples/file-events.mjs";
 `continuation:"stop"` 表示记录工具结果后结束当前决策，不清空其他已排队输入，不撤回已生成文字，也不撤销同批已经执行的其他工具。它可以用于“无需对外表达”的明确决定，不能靠隐藏 UI 文字来伪装安静。
 
 合同详见 [Tool / ToolExecutionResult](../src/tools/broker.ts)。
+
+宿主通过第三个参数 `context.ownerId` 提供实际调用主体的身份，内置工具和项目工具共用这个接缝。子代理继承工具实现时使用自己的调用上下文；需要创建或读取主体私有任务的工具应使用该身份，而不是在注册时绑定根主体。已有仅接收 `args` / `signal` 的工具无需改动；直接调用 `tool.run()` 时可显式传入上下文。
 
 ## 6. 外部事件如何唤醒主体
 

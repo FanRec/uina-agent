@@ -6,11 +6,16 @@ import type {
 	ToolResultStatus,
 } from "../core/types.js";
 
+/** Identity of the caller, independent of the extension that registered a tool. */
+export interface ToolExecutionContext {
+	readonly ownerId: string;
+}
+
 export interface Tool {
 	def: ToolDef;
 	executionMode?: ToolExecutionMode;
 	/** Execute after the broker has validated the arguments. */
-	run(args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolExecutionResult>;
+	run(args: Record<string, unknown>, signal?: AbortSignal, context?: ToolExecutionContext): Promise<ToolExecutionResult>;
 }
 
 export interface PreparedToolCall {
@@ -40,6 +45,8 @@ const AjvConstructor = createRequire(import.meta.url)("ajv") as AjvConstructorTy
 const ajv = new AjvConstructor({ strict: true, allErrors: true });
 
 export class ToolBroker {
+	constructor(private readonly context?: ToolExecutionContext) {}
+
 	private readonly tools = new Map<
 		string,
 		{ tool: Tool; validator: ValidateFunction }
@@ -116,7 +123,7 @@ export class ToolBroker {
 			};
 		}
 		try {
-			const result = await prepared.tool.run(prepared.args, signal);
+			const result = await prepared.tool.run(prepared.args, signal, this.context);
 			if (!result || typeof result.result !== "string" || !["succeeded", "failed", "cancelled", "unknown", "not_started"].includes(result.status)) {
 				throw new Error("工具必须返回 { result: string, status: ToolResultStatus }");
 			}

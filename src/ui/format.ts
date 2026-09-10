@@ -11,6 +11,29 @@ export function sanitizeTerminalText(value: string): string {
 	return value.replace(/[\u001b\u009b][[\]()#;?]*(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "");
 }
 
+/** Drop C0 control characters (except tab/newline/CR) and Unicode format
+ * characters. Pi does the same at the tool-output boundary
+ * (coding-agent/src/utils/shell.ts sanitizeBinaryOutput). */
+export function sanitizeBinaryOutput(value: string): string {
+	let out = "";
+	for (const char of value) {
+		const code = char.codePointAt(0);
+		if (code === undefined) continue;
+		if (code === 0x09 || code === 0x0a || code === 0x0d) { out += char; continue; }
+		if (code <= 0x1f) continue;
+		if (code >= 0xfff9 && code <= 0xfffb) continue;
+		out += char;
+	}
+	return out;
+}
+
+/** Text entering a rendered surface from an untrusted source (model output,
+ * tool output, extension content): strip ANSI/OSC and control characters so a
+ * payload cannot drive the terminal. */
+export function sanitizeRenderText(value: string): string {
+	return sanitizeBinaryOutput(sanitizeTerminalText(value));
+}
+
 export interface ToolResultStyle {
 	ok: Style;
 	err: Style;

@@ -14,6 +14,5 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["examples", "src", "tests", "tools"],
-  "exclude": ["src/ui_new", "tests/ui_new.test.ts"]
+  "include": ["examples", "src", "tests", "scripts", "vitest.config.ts"]
 }

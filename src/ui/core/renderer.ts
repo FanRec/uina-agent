@@ -9,7 +9,7 @@
  */
 
 import { CURSOR_MARKER } from "./types.js";
-import { visibleWidth } from "./utils.js";
+import { truncateToWidth, visibleWidth } from "./utils.js";
 import type { ProcessTerminal } from "./terminal.js";
 
 export interface CursorPosition {
@@ -34,6 +34,9 @@ export class MainScreenRenderer {
 	renderFrame(rows: string[]): void {
 		let frame = "\x1b[H"; // 硬件光标绝对归位至视口左上角 (1, 1)
 		let cursorPos: CursorPosition | null = null;
+		// Every emitted row must fit the terminal, otherwise the terminal wraps it
+		// and the whole frame shifts (Pi: tui-main-screen.ts rendered-width check).
+		const width = Math.max(1, this.terminal.columns);
 
 		for (let r = 0; r < rows.length; r++) {
 			const line = rows[r]!;
@@ -41,13 +44,13 @@ export class MainScreenRenderer {
 			if (markerIndex !== -1) {
 				const beforeMarker = line.slice(0, markerIndex);
 				const col = visibleWidth(beforeMarker) + 1;
-				cursorPos = { row: r, col };
+				cursorPos = { row: r, col: Math.min(col, width) };
 				const cleanLine = line.replace(CURSOR_MARKER, "");
 				if (r > 0) frame += "\r\n";
-				frame += cleanLine + "\x1b[K";
+				frame += this.fitToWidth(cleanLine, width) + "\x1b[K";
 			} else {
 				if (r > 0) frame += "\r\n";
-				frame += line + "\x1b[K";
+				frame += this.fitToWidth(line, width) + "\x1b[K";
 			}
 		}
 
@@ -59,5 +62,9 @@ export class MainScreenRenderer {
 		}
 
 		this.terminal.syncWrite(frame);
+	}
+
+	private fitToWidth(line: string, width: number): string {
+		return visibleWidth(line) > width ? truncateToWidth(line, width, "") : line;
 	}
 }

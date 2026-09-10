@@ -46,6 +46,9 @@ export interface SubagentRecord extends Omit<SubagentSnapshot, "status" | "busy"
 	status?: "interrupted" | "failed" | "settled";
 	handle: AgentHandle;
 	outputs: SubagentOutput[];
+	/** Cursor that the next appended chunk will receive; lets readers detect
+	 * chunks dropped by the per-child output budget. */
+	nextCursor: number;
 	error?: string;
 	settling?: Promise<void>;
 }

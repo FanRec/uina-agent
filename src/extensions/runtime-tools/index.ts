@@ -21,8 +21,10 @@ export function activateRuntimeTools(services: RuntimeToolsServices): ExtensionA
 		for (const tool of createJobTools(services.jobs, "root")) pi.registerTool(tool);
 		for (const tool of createSubagentTools(services.subagents, "root")) pi.registerTool(tool);
 		const unsubscribe = services.jobs.onResolved(job => {
- void pi.submitInput({ id: `job-notice-${job.id}`, mode: "followUp", source: { kind: "runtime", type: "job-notice", ref: job.id }, text: `后台任务 ${job.id} 已结束，状态：${job.status}。任务：${job.label}。按需使用 job_output 读取结果；无需回复时可保持安静。`, data: { status: job.status, source: job.source } }).catch(error => pi.ui.notify(`[runtime-tools] 后台结果投递失败：${String(error)}`, "error"));
- });
+			const input = { id: `job-notice-${job.id}`, mode: "followUp" as const, source: { kind: "runtime" as const, type: "job-notice", ref: job.id }, text: `后台任务 ${job.id} 已结束，状态：${job.status}。任务：${job.label}。按需使用 job_output 读取结果；无需回复时可保持安静。`, data: { status: job.status, source: job.source } };
+			const delivery = job.ownerId === "root" ? pi.submitInput(input) : services.subagents.acceptInput(job.ownerId, input);
+			void delivery.catch(error => pi.ui.notify(`[runtime-tools] 后台结果投递失败：${String(error)}`, "error"));
+		});
 		return async () => {
 			unsubscribe();
 			await services.subagents.close();
@@ -31,10 +33,27 @@ export function activateRuntimeTools(services: RuntimeToolsServices): ExtensionA
 	};
 }
 
-/** Child agents receive the explicit shared capability set, not an implicit
- * directory scan or a copied root registry. */
-export function createChildTools(): ToolBroker {
-	const tools = new ToolBroker();
-	tools.register(getTimeTool);
+export interface ChildToolOptions {
+	/** Execution identity; inherited implementations run in this caller's context. */
+	ownerId?: string;
+	/** When present, only these tool names are inherited. */
+	include?: readonly string[];
+	/** Tool names the child must not inherit. */
+	exclude?: readonly string[];
+}
+
+/**
+ * Children inherit the parent's capability set by default. The caller decides
+ * the policy explicitly (include/exclude) instead of the runtime silently
+ * stripping capabilities, which used to leave children with get_time only.
+ */
+export function createChildTools(source: ToolBroker, options: ChildToolOptions = {}): ToolBroker {
+	const tools = new ToolBroker(options.ownerId === undefined ? undefined : { ownerId: options.ownerId });
+	for (const name of source.names()) {
+		if (options.include && !options.include.includes(name)) continue;
+		if (options.exclude?.includes(name)) continue;
+		const tool = source.get(name);
+		if (tool) tools.register(tool);
+	}
 	return tools;
 }

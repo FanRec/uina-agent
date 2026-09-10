@@ -28,6 +28,7 @@ import type { ToolResultStatus } from "../../../core/types.js";
  */
 
 import { C, truncateToWidth, visibleWidth } from "../../core/utils.js";
+import { sanitizeRenderText } from "../../format.js";
 import { formatDiffCardLines } from "./diff-view.js";
 
 export type ToolCategory = "write" | "exec" | "read" | "web" | "task" | "default";
@@ -159,7 +160,6 @@ export function formatDuration(ms: number): string {
 /** 折叠行数预算（CC 规范：文本 3 行，Diff 8 行） */
 export const TEXT_BODY_MAX_LINES = 3;
 export const DIFF_BODY_MAX_LINES = 8;
-export const SPLIT_DIFF_MIN_COLS = 110;
 
 export const GUTTER_FIRST = " ⎿ ";
 export const GUTTER_REST = "   ";
@@ -232,7 +232,7 @@ export function extractSummaryArgs(_name: string, args: unknown): { summary: str
 		raw = String(parsedArgs);
 	}
 
-	const full = raw.trim();
+	const full = sanitizeRenderText(raw).trim();
 	const isMultiLine = full.includes("\n");
 	return { summary: full, isMultiLine, full };
 }
@@ -317,6 +317,8 @@ export function formatToolCardLines(
 	args?: unknown,
 	options: ToolCardRenderOptions = {},
 ): string[] {
+	name = sanitizeRenderText(name);
+	result = sanitizeRenderText(result);
 	const maxW = Math.max(24, width);
 	const category = getToolCategory(name);
 	const catColor = getToolCategoryColor(category);
@@ -326,11 +328,16 @@ export function formatToolCardLines(
 	const now = options.now ?? Date.now();
 	const isRunning = status === "running";
 	const isError = status === "failed";
+	// ToolResultStatus has five outcomes; only "succeeded" may look like success.
+	const isUnconfirmed = status === "unknown" || status === "cancelled" || status === "not_started";
 
 	// 1. 呼吸灯与指示图标 (ToolUseLoader)
 	let iconStr = "";
 	if (isError) {
 		iconStr = `${C.red}${MULTIPLICATION_X}${C.reset} `;
+	} else if (isUnconfirmed) {
+		// Never render an unconfirmed outcome with the success bullet.
+		iconStr = `${C.warning}?${C.reset} `;
 	} else if (isRunning) {
 		const isBlinkVisible = Math.floor(now / 600) % 2 === 0;
 		const char = isBlinkVisible ? BLACK_CIRCLE : " ";
@@ -369,7 +376,8 @@ export function formatToolCardLines(
 		elapsedText = ` · ${formatDuration(elapsedMs)}`;
 	}
 
-	elapsedText += status === "cancelled" ? " · 已取消" : status === "unknown" ? " · 结果未知" : status === "not_started" ? " · 未执行" : "";
+	const statusSuffix = status === "cancelled" ? " · 已取消" : status === "unknown" ? " · 结果未知" : status === "not_started" ? " · 未执行" : "";
+	const statusColor = isError ? C.error : isUnconfirmed ? C.warning : C.dim;
 	const elapsedColor = isHovered ? C.text : C.dim;
 	const hoverIndicator = isHovered ? (isExpanded ? ` ${C.dim}▴${C.reset}` : ` ${C.dim}▾${C.reset}`) : "";
 
@@ -384,7 +392,7 @@ export function formatToolCardLines(
 		titleContent = `${C.bold}${catColor}${toolDisplayName}${C.reset}`;
 	}
 
-	const headerSuffix = `${elapsedColor}${elapsedText}${C.reset}${hoverIndicator}`;
+	const headerSuffix = `${elapsedColor}${elapsedText}${C.reset}${statusSuffix ? `${statusColor}${statusSuffix}${C.reset}` : ""}${hoverIndicator}`;
 	const headerLine = `${iconStr}${titleContent}${headerSuffix}`;
 
 	// 4. 解析结果体 (Body lines)

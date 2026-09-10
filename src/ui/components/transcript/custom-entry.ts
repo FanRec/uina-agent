@@ -6,6 +6,7 @@
 
 import { Container } from "../../core/container.js";
 import { C, truncateToWidth } from "../../core/utils.js";
+import { sanitizeRenderText } from "../../format.js";
 import type { CustomEntry, EntryRenderer } from "../../extensions/types.js";
 
 export class CustomEntryComponent extends Container {
@@ -55,7 +56,16 @@ export class CustomEntryComponent extends Container {
 		this.addChild({
 			render(w: number): string[] {
 				const tag = `[条目: ${self.entry.customType}]`;
-				const preview = self.entry.data ? JSON.stringify(self.entry.data) : "(无附带数据)";
+				// Extension data may be cyclic or contain bigints; a renderer throw
+				// would abort the whole frame, so degrade to a readable placeholder.
+				let preview = "(无附带数据)";
+				if (self.entry.data !== undefined) {
+					try {
+						preview = sanitizeRenderText(JSON.stringify(self.entry.data) ?? "null");
+					} catch {
+						preview = "[无法序列化的数据]";
+					}
+				}
 				return [
 					`  ${C.gray}◈ ${C.cyan}${tag}${C.reset} ${truncateToWidth(preview, Math.max(10, w - 20))}`,
 				];

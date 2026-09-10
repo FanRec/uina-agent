@@ -59,7 +59,9 @@ describe("OpenAI gateway", () => {
 			JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
 			"[DONE]",
 		])));
-		expect(output.filter((delta) => delta.kind === "usage").at(-1)).toEqual({ kind: "usage", usage: { input: 8, output: 3, cacheRead: 2, reasoning: 1, totalTokens: 13 } });
+		// No total_tokens on the wire: the adapter must not derive one, because a
+		// derived total would be presented as measured usage downstream.
+		expect(output.filter((delta) => delta.kind === "usage").at(-1)).toEqual({ kind: "usage", usage: { input: 8, output: 3, cacheRead: 2, reasoning: 1 } });
 		const empty = await collect(await endpoint(sse([
 			JSON.stringify({ usage: {} }),
 			JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),

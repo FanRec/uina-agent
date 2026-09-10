@@ -4,11 +4,14 @@ import { createInterface } from "node:readline/promises";
 import { loadConfig, activeProvider } from "../ai/config.js";
 import { createProvider, ModelRegistry } from "../ai/providers.js";
 import { execCommandDirect } from "../extensions/runtime-tools/exec-command/index.js";
+import { killTrackedDetachedChildren } from "../extensions/runtime-tools/exec-command/process.js";
 import { ToolBroker } from "../tools/broker.js";
 import { Subject } from "../agent/loop.js";
 import { openJsonlSession } from "../session/jsonl-store.js";
 import { projectAgentHistory } from "../session/recovery.js";
 import { createInteractiveUI, type InteractiveTUI, type OutMsg } from "../ui/tui.js";
+import { installTerminalGuards } from "../ui/core/terminal.js";
+import { combineQueuedDraft } from "./draft.js";
 import { sanitizeTerminalText, toolStartLine, toolResultLines } from "../ui/format.js";
 import { JobRegistry } from "../extensions/jobs/registry.js";
 import { DefaultAgentFactory } from "../agent/runtime.js";
@@ -31,7 +34,7 @@ export async function runApp(): Promise<void> {
 	const cfg = loadConfig();
 	const active = activeProvider(cfg);
 	const provider = createProvider(active.name, active);
-	const tools = new ToolBroker();
+	const tools = new ToolBroker({ ownerId: "root" });
 	const jobs = new JobRegistry();
 	const modelRegistry = new ModelRegistry(cfg);
 	modelRegistry.register(provider.name, provider);
@@ -106,6 +109,7 @@ export async function runApp(): Promise<void> {
 		tools,
 		onInput: input => { if (shuttingDown) return Promise.reject(new Error("宿主正在关闭")); return subject.accept(input); },
 		onError: (text) => render({ type: "error", text }),
+		onNotice: (text) => render({ type: "notice", text }),
 		onProvider: (name, registered) => modelRegistry.register(name, registered),
 		onCustomMessage: async (message) => { await subject.appendCustomMessage(message); tui?.host.transcript.addCustomMessage(message); tui?.host.requestRender(); },
 		onCustomEntry: async (entry) => { await subject.appendCustomEntry(entry); tui?.host.transcript.addCustomEntry(entry); tui?.host.requestRender(); },
@@ -138,18 +142,19 @@ export async function runApp(): Promise<void> {
 
 	const subagents = new SubagentRegistry({
 		factory: new DefaultAgentFactory(),
-		provider,
+		provider: () => subject.getModel(),
 		thinkingLevel: cfg.thinkingLevel,
-		createTools: createChildTools,
-		notify: async (text, data) => {
+		createTools: (ownerId) => createChildTools(tools, { ownerId }),
+		notify: async (text, data, ownerId) => {
 			if (shuttingDown) return;
-			await subject.accept({
+			const input = {
 				id: `subagent-notice-${String(data.id)}`,
-				mode: "followUp",
-				source: { kind: "runtime", type: "subagent-notice", ref: String(data.id) },
+				mode: "followUp" as const,
+				source: { kind: "runtime" as const, type: "subagent-notice", ref: String(data.id) },
 				text,
 				data,
-			});
+			};
+			await (ownerId === "root" ? subject.accept(input) : subagents.acceptInput(ownerId, input));
 		},
 	});
 
@@ -164,9 +169,7 @@ export async function runApp(): Promise<void> {
 		if (!tui) return 0;
 		const items = await subject.takeQueuedForEditor();
 		if (items.length === 0) return 0;
-		const currentDraft = tui.host.inputLine.getText();
-		const combined = [...items.map((item) => item.text), currentDraft].filter((t) => t.trim()).join("\n\n");
-		tui.replaceInput(combined);
+		tui.replaceInput(combineQueuedDraft(items, tui.host.inputLine.getText()));
 		tui.host.transcript.addNotice(`已打断当前轮次，已将 ${items.length} 条排队消息退回输入栏`);
 		tui.host.requestRender();
 		return items.length;
@@ -176,6 +179,7 @@ export async function runApp(): Promise<void> {
 		if (shuttingDown) return;
 		shuttingDown = true;
 		if (force) {
+			uninstallHostGuards();
 			tui?.close();
 			nonTTY?.close();
 			process.exit(0);
@@ -183,6 +187,8 @@ export async function runApp(): Promise<void> {
 		}
 		if (cancelCurrent && subject.isBusy()) subject.interrupt();
 		if (execRunning) execAbort?.abort();
+		// Detached shells outlive their parent unless we kill them explicitly.
+		killTrackedDetachedChildren();
 		await subject.waitForIdle();
 		await extensionHost.dispose();
 		await execTail;
@@ -190,6 +196,7 @@ export async function runApp(): Promise<void> {
 		tui?.close();
 		nonTTY?.close();
 		await store.close();
+		uninstallHostGuards();
 		process.exitCode = oneshot && hadError ? 1 : 0;
 	};
 
@@ -208,9 +215,15 @@ export async function runApp(): Promise<void> {
 			const items = await subject.takeQueuedForEditor();
 			const allTexts = [...items.map((it) => it.text), ...(extraText ? [extraText] : [])].filter((t) => t.trim());
 			if (allTexts.length === 0) return;
-			onUserLine(allTexts[0], "direct");
+			// Queued text was already accepted as user input: re-deliver it as
+			// plain input, never re-parse it as a slash command or shell line.
+			void subject.pushInput(allTexts[0]!, { mode: "direct" }).catch((error: unknown) => {
+				process.stderr.write(`[投递失败] ${String(error)}\n`);
+			});
 			for (let i = 1; i < allTexts.length; i++) {
-				onUserLine(allTexts[i], "followUp");
+				void subject.pushInput(allTexts[i]!, { mode: "followUp" }).catch((error: unknown) => {
+					process.stderr.write(`[投递失败] ${String(error)}\n`);
+				});
 			}
 			tui?.host.transcript.addNotice(`已打断当前回合，${allTexts.length} 条消息立即处理`);
 			tui?.host.requestRender();
@@ -261,6 +274,44 @@ export async function runApp(): Promise<void> {
 		handleExit(false);
 	};
 
+	const hostGuardCleanups: Array<() => void> = [];
+	const uninstallHostGuards = (): void => {
+		for (const cleanup of hostGuardCleanups.splice(0)) cleanup();
+	};
+	/**
+	 * Process-level ownership lives here, not in ui/core/terminal.ts:
+	 * - SIGINT keeps the ordinary interrupt/exit semantics. Node passes the
+	 *   signal name as the first listener argument, so it must never be forwarded
+	 *   into the `force` parameter.
+	 * - SIGTERM/SIGHUP run the graceful shutdown first, then exit with the
+	 *   conventional 143/129 codes (Pi: modes/print-mode.ts, modes/rpc/rpc-mode.ts).
+	 */
+	const installHostGuards = (tty: boolean): void => {
+		const signals: NodeJS.Signals[] = ["SIGTERM"];
+		if (process.platform !== "win32") signals.push("SIGHUP");
+		for (const signal of signals) {
+			const handler = (): void => {
+				void shutdown(true).finally(() => process.exit(signal === "SIGHUP" ? 129 : 143));
+			};
+			process.prependListener(signal, handler);
+			hostGuardCleanups.push(() => process.off(signal, handler));
+		}
+		const sigint = (): void => handleInterrupt(false);
+		process.on("SIGINT", sigint);
+		hostGuardCleanups.push(() => process.off("SIGINT", sigint));
+		const onStreamError = (error: NodeJS.ErrnoException): void => {
+			if (error.code === "EPIPE") return;
+			throw error;
+		};
+		process.stdout.on("error", onStreamError);
+		process.stderr.on("error", onStreamError);
+		hostGuardCleanups.push(() => {
+			process.stdout.off("error", onStreamError);
+			process.stderr.off("error", onStreamError);
+		});
+		if (tty) hostGuardCleanups.push(installTerminalGuards());
+	};
+
 	const handleInterruptAndDeliver = (text: string): void => {
 		const trimmed = text.trim();
 		if (!trimmed) return;
@@ -274,9 +325,7 @@ export async function runApp(): Promise<void> {
 			tui.host.notify("排队队列为空，无待办可撤回", "warning", 2000);
 			return;
 		}
-		const currentDraft = tui.host.inputLine.getText();
-		const combined = currentDraft.trim() ? `${last.text}\n\n${currentDraft}` : last.text;
-		tui.replaceInput(combined);
+		tui.replaceInput(combineQueuedDraft([last], tui.host.inputLine.getText()));
 		const remaining = subject.queuedSnapshot().length;
 		tui.host.notify(`已从队列撤回 1 条消息至输入栏${remaining > 0 ? `（剩余排队：${remaining} 条）` : ""}`, "info", 2000);
 	};
@@ -324,14 +373,16 @@ export async function runApp(): Promise<void> {
 			});
 			return;
 		}
-		subject.pushInput(text, { mode: subject.isBusy() ? (mode === "direct" ? "steer" : mode) : "direct" });
+		void subject.pushInput(text, { mode: subject.isBusy() ? (mode === "direct" ? "steer" : mode) : "direct" }).catch((error: unknown) => {
+			process.stderr.write(`[输入提交失败] ${String(error)}\n`);
+		});
 	};
 
 	const isTTY = process.stdout.isTTY && process.stdin.isTTY;
 	if (!isTTY) {
 		process.stdout.write(`Uina 就绪（模型：${provider.name}）— /quit 退出\n\n`);
 	}
-	process.on("SIGINT", handleInterrupt);
+	installHostGuards(isTTY);
 
 	if (isTTY) {
 		tui = createInteractiveUI({
@@ -424,7 +475,10 @@ export async function runApp(): Promise<void> {
 	}));
 	await extensionHost.load();
 	if (oneshot !== undefined) {
-		subject.pushInput(oneshot, { mode: "direct" });
+		await subject.pushInput(oneshot, { mode: "direct" }).catch((error: unknown) => {
+			process.stderr.write(`[oneshot 提交失败] ${String(error)}\n`);
+			hadError = true;
+		});
 		await subject.waitForIdle();
 		await shutdown(false);
 	}

@@ -27,6 +27,7 @@ import { ActivityLineComponent, formatTpsGauge, formatTpsSparkline } from "../sr
 import { PendingQueueComponent } from "../src/ui/components/widgets/pending-queue.js";
 import { InputLine, segmentWithMarkers, snapCursorToMarkerBoundary } from "../src/ui/components/editor/input-line.js";
 import { calculateContextSegments } from "../src/agent/context.js";
+import { combineQueuedDraft } from "../src/cli/draft.js";
 import { ExtensionRegistry } from "../src/ui/extensions/registry.js";
 import { createExtensionUIContext } from "../src/ui/extensions/context.js";
 import { CustomMessageComponent } from "../src/ui/components/transcript/custom-message.js";
@@ -157,7 +158,12 @@ describe("UI Core: Container & Focus & Overlay & Slots", () => {
 		expect(baseComp.focused).toBe(false);
 
 		const above = stack.renderAbove(80, 10);
-		expect(above).toEqual(["overlay-line-1", "overlay-line-2"]);
+		// Geometry is applied to every overlay: content is preserved and each row
+		// is padded/clamped to the terminal width.
+		expect(above).toHaveLength(2);
+		expect(above[0]!.trimEnd()).toBe("overlay-line-1");
+		expect(above[1]!.trimEnd()).toBe("overlay-line-2");
+		expect(above.every((line) => visibleWidth(line) <= 80)).toBe(true);
 
 		handle.hide();
 		expect(stack.hasVisible).toBe(false);
@@ -284,7 +290,7 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 describe("UI Adapters: Jobs & Subagents & Trajectory", () => {
 	it("createJobAdapter 无状态直连 JobRegistry，取消任务同步生效", async () => {
 		const registry = new JobRegistry();
-		const port = createJobAdapter(registry, "root");
+		const port = createJobAdapter(registry);
 
 		// 初始列表为空
 		expect(port.list()).toEqual([]);
@@ -1782,31 +1788,51 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			}
 		});
 
-		it("TimelineRailComponent 限制最大刻度密度至 24 行并保持垂直居中空隙与 subtle 柔和灰蓝", () => {
+		it("TimelineRailComponent 刻度密度随视口高度自适应，并可用 maxTicks 收紧", () => {
 			const rail = new TimelineRailComponent();
 			const turns = Array.from({ length: 50 }, (_, i) => ({ n: i + 1, userText: `用户轮次 ${i + 1}` }));
 			rail.updateTurns(turns, 50);
 
-			// 模拟高屏终端高度 46 行
+			// 46 行终端：可用刻度 = height - 6 = 40（保留顶底呼吸留白），不再有固定 24 上限
 			const geo = rail.getGeometry(46, true);
 			expect(geo).not.toBeNull();
-			// 刻度总数限制在 24 行，绝不全屏撑满 44 行造成视觉压抑
-			expect(geo!.shown).toBe(24);
-			// 整体居中悬浮：blockTop = (46 - (24 + 2)) / 2 = 10，顶底各有 10 行留白
-			expect(geo!.upRow).toBe(10);
-			expect(geo!.tickTop).toBe(11);
-			expect(geo!.downRow).toBe(35);
+			expect(geo!.shown).toBe(40);
+			expect(geo!.upRow).toBe(2);
+			expect(geo!.tickTop).toBe(3);
+			expect(geo!.downRow).toBe(43);
 
-			const res = rail.renderRailRows(46, true, true, false);
+			// 调用方可用 maxTicks 收紧到 24：blockTop = (46 - 26) / 2 = 10
+			const capped = new TimelineRailComponent({ maxTicks: 24 });
+			capped.updateTurns(turns, 50);
+			const cappedGeo = capped.getGeometry(46, true);
+			expect(cappedGeo!.shown).toBe(24);
+			expect(cappedGeo!.upRow).toBe(10);
+			expect(cappedGeo!.tickTop).toBe(11);
+			expect(cappedGeo!.downRow).toBe(35);
+
+			const res = rail.renderRailRows(46, true, true, false, 80);
 			// 闲置刻度严格使用 C.subtle (\x1b[38;2;94;102;115m)
 			expect(res.railGlyphs.some((g) => g.includes("\x1b[38;2;94;102;115m ─"))).toBe(true);
 			// 活跃刻度使用 C.bold + C.text
 			expect(res.railGlyphs.some((g) => g.includes("━━"))).toBe(true);
 			// 顶底空隙应为纯空白占位
 			expect(res.railGlyphs[0]).toBe("  ");
-			expect(res.railGlyphs[9]).toBe("  ");
-			expect(res.railGlyphs[36]).toBe("  ");
+			expect(res.railGlyphs[1]).toBe("  ");
+			expect(res.railGlyphs[44]).toBe("  ");
 			expect(res.railGlyphs[45]).toBe("  ");
+		});
+
+		it("TimelineRailComponent 预览卡宽度随内容宽度伸缩", () => {
+			const rail = new TimelineRailComponent();
+			const turns = [{ n: 1, userText: "这是一个相当长的轮次标题用于测试预览卡宽度自适应" }];
+			rail.updateTurns(turns, 1);
+			rail.setHoverTurnN(1);
+			const narrow = rail.renderRailRows(12, true, true, true, 40).previewCard;
+			const wide = rail.renderRailRows(12, true, true, true, 200).previewCard;
+			expect(narrow).toBeDefined();
+			expect(wide).toBeDefined();
+			expect(visibleWidth(narrow!.lines[1]!)).toBeLessThan(visibleWidth(wide!.lines[1]!));
+			expect(visibleWidth(wide!.lines[1]!)).toBeLessThanOrEqual(48 + 6);
 		});
 
 		it("SmoothReveal revealStep 算法严格按照指数级追赶", () => {
@@ -2502,9 +2528,10 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					{ isExpanded: false },
 				);
 				const strippedLines = fiveLines.map(stripAnsi);
-				expect(strippedLines.some((l) => l.includes("a"))).toBe(true);
-				expect(strippedLines.some((l) => l.includes("b"))).toBe(true);
-				expect(strippedLines.some((l) => l.includes("c"))).toBe(true);
+				// Assert the actual body rows, not any line that happens to contain the letter.
+				expect(strippedLines.some((l) => l.trimEnd().endsWith("a"))).toBe(true);
+				expect(strippedLines.some((l) => l.trimEnd().endsWith("b"))).toBe(true);
+				expect(strippedLines.some((l) => l.trimEnd().endsWith("c"))).toBe(true);
 				// d 和 e 应该被折叠进 +2 lines
 				expect(strippedLines.some((l) => l.endsWith("   d"))).toBe(false);
 				expect(strippedLines.some((l) => l.endsWith("   e"))).toBe(false);
@@ -3018,9 +3045,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					{ id: "q2", text: "排队任务二" },
 				];
 
-				// 执行回填逻辑
-				const currentDraft = tui.host.inputLine.getText();
-				const combined = [...queuedItems.map((it) => it.text), currentDraft].filter((t) => t.trim()).join("\n\n");
+				// 使用生产代码的拼接规则，而不是在测试里复制一份
+				const combined = combineQueuedDraft(queuedItems, tui.host.inputLine.getText());
 				tui.replaceInput(combined);
 
 				// 校验回填文本与时间顺序

@@ -66,6 +66,37 @@ export interface UIHostOptions {
 	subagentPort?: SubagentPort;
 }
 
+/** Immutable frame geometry shared by rendering, scrolling and hit zones. */
+interface FrameLayout {
+	width: number;
+	height: number;
+	margin: string;
+	innerW: number;
+	inputWidth: number;
+	inputLines: string[];
+	inputH: number;
+	belowLines: string[];
+	belowH: number;
+	maxAboveH: number;
+	overlayLines: string[];
+	suggestionLines: string[];
+	pendingLines: string[];
+	aboveLines: string[];
+	aboveH: number;
+	bannerLines: string[];
+	bannerCount: number;
+	transcriptLines: string[];
+	permanentLines: string[];
+	totalPerm: number;
+	safeW: number;
+	transcriptContentW: number;
+	transcriptH: number;
+	maxScroll: number;
+	effScroll: number;
+	scrollStart: number;
+	visibleTranscript: string[];
+}
+
 export class UIHost implements UIHostContextPort {
 	readonly terminal: ProcessTerminal;
 	readonly renderer: MainScreenRenderer;
@@ -143,6 +174,8 @@ export class UIHost implements UIHostContextPort {
 	private lastMaxScroll = 0;
 	private autoScrollTimer: NodeJS.Timeout | null = null;
 	private autoScrollDirection: "up" | "down" | null = null;
+	/** Geometry of the most recently rendered frame; reused by scroll/anchor paths. */
+	private lastLayout: FrameLayout | null = null;
 	private exitPending = false;
 	private exitTimer: NodeJS.Timeout | null = null;
 	private copyToastText = "";
@@ -551,18 +584,14 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	scrollToTurn(turnN: number): void {
-		const transcriptContentW = Math.max(20, this.terminal.columns - 2);
-		const turnStartMap = this.transcript.getTurnStartLines(transcriptContentW);
-		const lineOffset = turnStartMap.get(turnN);
-		if (lineOffset !== undefined) {
-			const bannerLines = this.headerContainer.render(transcriptContentW);
-			const totalPerm = bannerLines.length + this.transcript.render(transcriptContentW).length;
-			const transcriptH = Math.max(1, this.terminal.rows - 8);
-			const maxScroll = Math.max(0, totalPerm - transcriptH);
-			const targetScroll = totalPerm - (bannerLines.length + lineOffset) - transcriptH;
-			this.scrollOffset = Math.max(0, Math.min(maxScroll, targetScroll));
-			this.requestRender();
-		}
+		// Uses the geometry the user actually clicked on (last frame), falling
+		// back to a fresh layout when nothing has been rendered yet.
+		const layout = this.lastLayout ?? this.computeLayout();
+		const lineOffset = this.transcript.getTurnStartLines(layout.transcriptContentW).get(turnN);
+		if (lineOffset === undefined) return;
+		const targetScroll = layout.totalPerm - (layout.bannerCount + lineOffset) - layout.transcriptH;
+		this.scrollOffset = Math.max(0, Math.min(layout.maxScroll, targetScroll));
+		this.requestRender();
 	}
 
 	scrollTurnUp(): void {
@@ -625,47 +654,31 @@ export class UIHost implements UIHostContextPort {
 	 * 精确保持当前屏幕上正在查看的内容（或用户交互的目标锚点）在视口中的屏幕行位置绝对不变。
 	 */
 	preserveScrollAnchor(action: () => void, targetAbsLine?: number): void {
-		const width = this.terminal.columns;
-		const height = this.terminal.rows;
-		const innerW = width;
-		const safeW = Math.max(20, innerW - 1);
-		const transcriptContentW = Math.max(18, safeW - 2);
-		const bannerCount = this.headerContainer.render(transcriptContentW).length;
-		const oldTotalPerm = bannerCount + this.transcript.render(transcriptContentW).length;
-
-		const rawInput = this.inputLine.render(innerW);
-		const inputH = rawInput.length;
-		const belowH =
-			this.contextBar.render(Math.max(2, innerW - 1)).length +
-			this.widgetSlots.render("belowEditor", innerW).length;
-		const breathingGap = 1;
-		const transcriptH = Math.max(0, height - inputH - belowH - breathingGap);
-		const maxOldScroll = Math.max(0, oldTotalPerm - transcriptH);
-		const effOldScroll = Math.max(0, Math.min(this.scrollOffset, maxOldScroll));
-		const oldScrollStart = oldTotalPerm <= transcriptH ? 0 : oldTotalPerm - transcriptH - effOldScroll;
+		// "before" comes from the last rendered frame, so expanding a card costs
+		// one layout (the incremental one) instead of two full ones.
+		const before = this.lastLayout ?? this.computeLayout();
+		const oldScrollStart = before.scrollStart;
 
 		// 确定锚点行在原全量内容中的绝对行索引及在视口中的屏幕行偏移
 		const anchorLine =
 			typeof targetAbsLine === "number" &&
 			targetAbsLine >= oldScrollStart &&
-			targetAbsLine < oldScrollStart + transcriptH
+			targetAbsLine < oldScrollStart + before.transcriptH
 				? targetAbsLine
 				: oldScrollStart;
 		const screenOffset = anchorLine - oldScrollStart;
 
 		action();
 
-		const newTotalPerm = bannerCount + this.transcript.render(transcriptContentW).length;
-		const newMaxScroll = Math.max(0, newTotalPerm - transcriptH);
-
-		if (newTotalPerm <= transcriptH) {
+		const after = this.computeLayout();
+		if (after.totalPerm <= after.transcriptH) {
 			this.scrollOffset = 0;
 			return;
 		}
 
 		// 保持锚点行留在原屏幕行偏移位置
-		const targetScrollStart = Math.max(0, Math.min(newMaxScroll, anchorLine - screenOffset));
-		this.scrollOffset = Math.max(0, Math.min(newMaxScroll, newTotalPerm - transcriptH - targetScrollStart));
+		const targetScrollStart = Math.max(0, Math.min(after.maxScroll, anchorLine - screenOffset));
+		this.scrollOffset = Math.max(0, Math.min(after.maxScroll, after.totalPerm - after.transcriptH - targetScrollStart));
 	}
 
 	executeCommand(name: string, args: string): void {
@@ -869,7 +882,7 @@ export class UIHost implements UIHostContextPort {
 				this.inputLine.setText(text);
 				this.requestRender();
 			};
-			handle = this.overlayStack.showOverlay(menu, undefined, () => close());
+			handle = this.overlayStack.showOverlay(menu, { anchor: "center" }, () => close());
 			return handle;
 		});
 	}
@@ -888,7 +901,7 @@ export class UIHost implements UIHostContextPort {
 				handle?.hide();
 			};
 			picker.onRequestRender = () => this.requestRender();
-			handle = this.overlayStack.showOverlay(picker, undefined, () => close());
+			handle = this.overlayStack.showOverlay(picker, { anchor: "center" }, () => close());
 			return handle;
 		});
 	}
@@ -914,7 +927,7 @@ export class UIHost implements UIHostContextPort {
 				handle?.hide();
 			};
 			slider.onRequestRender = () => this.requestRender();
-			handle = this.overlayStack.showOverlay(slider, undefined, () => close());
+			handle = this.overlayStack.showOverlay(slider, { anchor: "center" }, () => close());
 			return handle;
 		});
 	}
@@ -929,7 +942,7 @@ export class UIHost implements UIHostContextPort {
 				handle?.hide();
 			};
 			view.onRequestRender = () => this.requestRender();
-			handle = this.overlayStack.showOverlay(view, undefined, () => close());
+			handle = this.overlayStack.showOverlay(view, { anchor: "center" }, () => close());
 			return handle;
 		});
 	}
@@ -948,7 +961,7 @@ export class UIHost implements UIHostContextPort {
 			view.onDrilldown = (agent) => {
 				handle?.hide();
 				const detail = new SubagentDetailScene(agent, this.subagentPort!);
-				detailHandle = this.overlayStack.showOverlay(detail, undefined, () => close());
+				detailHandle = this.overlayStack.showOverlay(detail, { anchor: "center" }, () => close());
 				detail.onClose = () => {
 					detailHandle?.hide();
 					detailHandle = null;
@@ -958,7 +971,7 @@ export class UIHost implements UIHostContextPort {
 			};
 			view.onRequestRender = () => this.requestRender();
 
-			handle = this.overlayStack.showOverlay(view, undefined, () => {
+			handle = this.overlayStack.showOverlay(view, { anchor: "center" }, () => {
 				if (!detailHandle) close();
 			});
 			return handle;
@@ -974,7 +987,7 @@ export class UIHost implements UIHostContextPort {
 				handle?.hide();
 			};
 			scene.onRequestRender = () => this.requestRender();
-			handle = this.overlayStack.showOverlay(scene, undefined, () => close());
+			handle = this.overlayStack.showOverlay(scene, { anchor: "center" }, () => close());
 			return handle;
 		});
 	}
@@ -984,23 +997,20 @@ export class UIHost implements UIHostContextPort {
 	// 渲染管道与帧合成（Bottom-Pinned Frame Engine）
 	// =========================================================================
 
-	private renderCurrentFrame(): void {
-		if (!this.running) return;
-
-		const width = this.terminal.columns;
-		const height = this.terminal.rows;
-		const margin = this.getPageMargin(width);
-		const innerW = width;
-
-		// 1. 同步状态行与输入框指标
+	/** Sync the input line's transient metrics before it is rendered. */
+	private syncInputMetrics(): void {
+		const innerW = this.terminal.columns;
 		const statusHeader = this.activityLine.getHeaderString(Math.min(60, innerW - 20));
-		const cacheRate = formatCacheHitRate(this.cacheReadTokens, this.inputTokensCount, this.cacheWriteTokens);
-		this.inputLine.setStatusHeader(statusHeader);
+		// Show the viewport percentage using the previous frame's geometry; the
+		// current frame's input height is required to compute it, so a one-frame
+		// lag is unavoidable (and previously the header never rendered at all).
+		const scrolled = this.lastMaxScroll > 0 && this.scrollOffset > 0;
+		const percent = scrolled ? Math.round(((this.lastMaxScroll - Math.min(this.scrollOffset, this.lastMaxScroll)) / this.lastMaxScroll) * 100) : 100;
+		this.inputLine.setStatusHeader(scrolled ? `${C.yellow}[📜 视口 ${percent}% (PageDn到底)]${C.reset} ${statusHeader}` : statusHeader);
 		this.inputLine.setCwd(this.cwd);
 		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual, this.contextSegments);
 		this.inputLine.setReasoningEffort(this.reasoningEffort);
-		this.inputLine.setCacheRate(cacheRate);
-
+		this.inputLine.setCacheRate(formatCacheHitRate(this.cacheReadTokens, this.inputTokensCount, this.cacheWriteTokens));
 		const now = Date.now();
 		const elapsed = this.busy ? Math.max(1, now - this.turnStartTime) : this.lastElapsedMs;
 		const currentTps = this.busy
@@ -1009,15 +1019,24 @@ export class UIHost implements UIHostContextPort {
 				: 0)
 			: this.lastTps;
 		this.inputLine.setSpeedStats(currentTps, elapsed, this.busy);
+	}
 
-		// 2. 渲染底部输入框。给最右侧保留一列安全空间，避免终端在
-		// 最后一列自动换行时吞掉 dsh-tui 风格的 `╮`/`╯` 闭合角。
+	/**
+	 * Single source of truth for frame geometry. Pure with respect to
+	 * `scrollOffset`: it reports the clamped value instead of writing it, so
+	 * rendering, scrollToTurn, preserveScrollAnchor and hit zones cannot drift.
+	 */
+	private computeLayout(): FrameLayout {
+		const width = this.terminal.columns;
+		const height = this.terminal.rows;
+		const margin = this.getPageMargin(width);
+		const innerW = width;
+
+		// The input line keeps one safety column so the terminal never wraps it.
 		const inputWidth = Math.max(2, innerW - 1);
-		const rawInput = this.inputLine.render(innerW);
-		const inputLines = rawInput.map((l) => `${margin}${l}`);
+		const inputLines = this.inputLine.render(innerW).map((l) => `${margin}${l}`);
 		const inputH = inputLines.length;
 
-		// 3. 渲染 ContextBar 与 belowEditor 小部件（对标图二单行与 hover 展开）
 		this.contextBar.update({
 			usedTokens: this.usedTokens,
 			contextWindow: this.contextWindow,
@@ -1028,13 +1047,16 @@ export class UIHost implements UIHostContextPort {
 			segments: this.contextSegments,
 		});
 		const contextBarLines = this.contextBar.render(inputWidth).map((l) => `${margin}${l}`);
+		// The footer slot is a real frame region: extensions that call setFooter()
+		// must see it, otherwise the API silently does nothing.
+		const footerLines = this.footerContainer.render(inputWidth).map((l) => `${margin}${l}`);
 		const belowLines = [
 			...contextBarLines,
 			...this.widgetSlots.render("belowEditor", innerW).map((l) => `${margin}${l}`),
+			...footerLines,
 		];
 		const belowH = belowLines.length;
 
-		// 4. 渲染 OverlayAbove 浮层与 SuggestionCard
 		const aboveEditorWidgets = this.widgetSlots.render("aboveEditor", innerW);
 		const maxAboveH = Math.max(0, height - inputH - belowH - 1);
 		const overlayLines = this.overlayStack.renderAbove(innerW, maxAboveH);
@@ -1052,68 +1074,75 @@ export class UIHost implements UIHostContextPort {
 			});
 		}
 
-		// 待办队列视窗：在没有全屏/菜单浮层与联想建议卡片时，静默悬浮在输入框正上方
 		const pendingLines =
 			(!this.activeSuggestions || this.activeSuggestions.items.length === 0) && !this.overlayStack.hasVisible
 				? this.pendingQueue.render(innerW)
 				: [];
 
-		const aboveLines = [...aboveEditorWidgets, ...overlayLines, ...suggestionLines, ...pendingLines]
-			.slice(0, maxAboveH)
-			.map((l) => `${margin}${l}`);
+		// The stack is ordered top → editor-adjacent; when the budget is exceeded
+		// keep the lines closest to the input box instead of the far ones.
+		const aboveRaw = [...aboveEditorWidgets, ...overlayLines, ...suggestionLines, ...pendingLines];
+		const aboveLines = (aboveRaw.length > maxAboveH ? aboveRaw.slice(aboveRaw.length - maxAboveH) : aboveRaw).map((l) => `${margin}${l}`);
 		const aboveH = aboveLines.length;
 
-		// 5. 计算转录区可用高度与固定 1 行呼吸空间
 		const breathingGap = 1;
 		const transcriptH = Math.max(0, height - inputH - belowH - aboveH - breathingGap);
-
-		// 6. 渲染永久历史行（对齐输入框宽度，为右侧 2 列导航轨留出空间并规避终端边界裁剪）
 		const safeW = Math.max(20, innerW - 1);
 		const transcriptContentW = Math.max(18, safeW - 2);
 		const bannerLines = this.headerContainer.render(transcriptContentW).map((l) => (l ? `${margin}${l}` : ""));
 		const transcriptLines = this.transcript.render(transcriptContentW).map((l) => (l ? `${margin}${l}` : ""));
 		const permanentLines = [...bannerLines, ...transcriptLines];
 		const totalPerm = permanentLines.length;
-
-		// 7. 滚动视口处理
 		const maxScroll = Math.max(0, totalPerm - transcriptH);
-		let visibleTranscript: string[] = [];
-		let scrollStart = 0;
-		if (totalPerm <= transcriptH) {
-			const padCount = transcriptH - totalPerm;
-			visibleTranscript = [...permanentLines, ...new Array(padCount).fill("")];
-			this.scrollOffset = 0;
-			scrollStart = 0;
-		} else {
-			const effScroll = Math.max(0, Math.min(this.scrollOffset, maxScroll));
-			this.scrollOffset = effScroll;
-			scrollStart = totalPerm - transcriptH - effScroll;
-			visibleTranscript = permanentLines.slice(scrollStart, scrollStart + transcriptH);
+		const effScroll = totalPerm <= transcriptH ? 0 : Math.max(0, Math.min(this.scrollOffset, maxScroll));
+		const scrollStart = totalPerm <= transcriptH ? 0 : totalPerm - transcriptH - effScroll;
+		const visibleTranscript = totalPerm <= transcriptH
+			? [...permanentLines, ...new Array(transcriptH - totalPerm).fill("")]
+			: permanentLines.slice(scrollStart, scrollStart + transcriptH);
 
-			if (effScroll > 0) {
-				const percent = maxScroll > 0 ? Math.round(((maxScroll - effScroll) / maxScroll) * 100) : 100;
-				this.inputLine.setStatusHeader(`${C.yellow}[📜 视口 ${percent}% (PageDn到底)]${C.reset} ${statusHeader}`);
-			}
-		}
+		return {
+			width, height, margin, innerW, inputWidth, inputLines, inputH,
+			belowLines, belowH, maxAboveH, overlayLines, suggestionLines, pendingLines,
+			aboveLines, aboveH, bannerLines, bannerCount: bannerLines.length,
+			transcriptLines, permanentLines, totalPerm, safeW, transcriptContentW,
+			transcriptH, maxScroll, effScroll, scrollStart, visibleTranscript,
+		};
+	}
+
+	private renderCurrentFrame(): void {
+		if (!this.running) return;
+		this.syncInputMetrics();
+		const layout = this.computeLayout();
+		this.lastLayout = layout;
+		this.scrollOffset = layout.effScroll;
+		const {
+			width, height, margin, inputWidth, inputLines, inputH,
+			belowLines, belowH, aboveLines, aboveH, bannerCount, transcriptContentW,
+			safeW, permanentLines, totalPerm, maxScroll, scrollStart, visibleTranscript,
+		} = layout;
 
 		// 7.5. 右侧时间线导航轨（TimelineRail，对标图一）合成
 		const timelineTurns = this.transcript.getTimelineTurns();
 		const turnStartMap = this.transcript.getTurnStartLines(transcriptContentW);
-		const bannerCount = bannerLines.length;
 
+		// Navigation semantics: ▲ targets the nearest turn above the viewport,
+		// ▼ the nearest turn below it. Comparing an absolute line against the
+		// scroll *distance* (the old code) pointed at rows already on screen.
+		const viewportTop = scrollStart;
+		const viewportBottom = scrollStart + visibleTranscript.length;
 		let activeTurnN: number | null = null;
 		let upTurnN: number | null = null;
 		let downTurnN: number | null = null;
 
 		for (const [turnN, lineOffset] of turnStartMap.entries()) {
 			const absLine = bannerCount + lineOffset;
-			if (absLine <= scrollStart) {
+			if (absLine <= viewportTop) {
 				activeTurnN = turnN;
 			}
-			if (absLine < scrollStart) {
+			if (absLine < viewportTop) {
 				upTurnN = turnN;
 			}
-			if (absLine > scrollStart && absLine <= maxScroll && downTurnN === null) {
+			if (absLine >= viewportBottom && downTurnN === null) {
 				downTurnN = turnN;
 			}
 		}
@@ -1173,7 +1202,7 @@ export class UIHost implements UIHostContextPort {
 			previewCard = scrollRes.hoverChip;
 		} else {
 			this.timelineRail.updateTurns(timelineTurns, activeTurnN);
-			const tlRes = this.timelineRail.renderRailRows(chatAreaH, atBottom, upTurnN !== null, downTurnN !== null);
+			const tlRes = this.timelineRail.renderRailRows(chatAreaH, atBottom, upTurnN !== null, downTurnN !== null, transcriptContentW);
 			railGlyphs = tlRes.railGlyphs;
 			previewCard = tlRes.previewCard;
 		}
@@ -1669,9 +1698,8 @@ export class UIHost implements UIHostContextPort {
 				this.requestRender();
 				return;
 			}
-			const safeW = Math.max(20, this.terminal.columns - 1);
-			const transcriptContentW = Math.max(18, safeW - 2);
-			const bannerCount = this.headerContainer.render(transcriptContentW).length;
+			const layout = this.lastLayout ?? this.computeLayout();
+			const { transcriptContentW, bannerCount } = layout;
 
 			// 如果当前焦点或悬停在工具卡片上，单卡展开优先
 			const hoveredToolId = this.transcript.getHoveredToolId();

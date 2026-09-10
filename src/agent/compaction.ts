@@ -94,6 +94,9 @@ export function shouldCompact(
 export function findKeepFrom(
 	history: readonly (AgentMessage | ChatMsg)[],
 	keepRecentTokens: number,
+	/** Manual compaction must make progress even when the whole history is
+	 * smaller than the retention budget; automatic compaction must not. */
+	allowShortHistoryFallback = false,
 ): number {
 	let chars = 0;
 	let keepFrom = 0;
@@ -109,6 +112,12 @@ export function findKeepFrom(
 			break;
 		}
 	}
+	if (allowShortHistoryFallback && keepFrom === 0 && history.length > 1) {
+		// Manual compaction on a history smaller than the retention budget still
+		// has to summarize something: keep only the final message so the prefix
+		// can be compacted (Pi's findCutPoint keeps the earliest valid cut point).
+		keepFrom = history.length - 1;
+	}
 	while (keepFrom > 0 && history[keepFrom].role === "tool") keepFrom--;
 	return keepFrom;
 }
@@ -123,9 +132,10 @@ export async function compactHistory(
 	signal?: AbortSignal,
 	includeThinking = false,
 	instruction?: string,
+	allowShortHistoryFallback = false,
 ): Promise<CompactionResult | null> {
 	if (!shouldCompact(history, systemPrompt, tools, settings, includeThinking)) return null;
-	const keepFrom = findKeepFrom(history, settings.keepRecentTokens);
+	const keepFrom = findKeepFrom(history, settings.keepRecentTokens, allowShortHistoryFallback);
 	if (keepFrom <= 0) return null;
 
 	const oldest = history.slice(0, keepFrom);

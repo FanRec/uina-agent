@@ -83,9 +83,17 @@ Anthropic/Gemini 的 `providerReplay` 保存 adapter 自有的有序块与签名
 
 ## 活动与文件事件扩展
 
-JobRegistry 默认没有活动 Job 数量额度；显式 maxActivePerOwner 仍可配置。取消控制失败保留 stopping 和可定位 detail，producer.done 的真实结论仍被观察；close 等待实际终态。SubagentRegistry 从 AgentHandle 派生运行/空闲状态，只维护关系、输出与释放原因。
+JobRegistry 默认没有活动 Job 数量额度；显式 maxActivePerOwner 仍可配置。取消控制失败保留 stopping 和可定位 detail，producer.done 的真实结论仍被观察；close 等待实际终态。`job_output` 的 `wait` 超过 setTimeout 上限时显式报错，不再静默截断；已结算 Job 的原始输出在总量超过预算后按最旧优先释放，读取方仍会看到 `outputLost`，首次读取也不例外。宿主 UI 按 owner 无关视图读取全部 Job（扩展启动的后台工作同样可见）。
+
+SubagentRegistry 从 AgentHandle 派生运行/空闲状态，只维护关系、输出与释放原因。子 Agent 的 provider 在创建时解析，因此切换模型对之后新建的子 Agent 生效；每个子 Agent 的输出保留在 256 KiB 预算内，超出后最旧的块被释放并通过 `outputLost` 报告。子 Agent 默认继承父级全部工具，由组装层用显式 include/exclude 策略收紧，CLI 不再硬编码禁止递归创建。继承的是工具实现，调用上下文的 `ownerId` 属于实际子代理；内置 Job 与 Subagent 工具据此确定归属，Job 完成通知回到发起它的 Subject。
 
 普通扩展通过 submitInput 进入同一 Subject 输入入口，通过 reportError 报告带扩展来源的外部失败；builtin Job 完成通知也通过这个入口递交。[文件事件示例](../examples/README.md) 验证文件观察、异步命令、即时结果快照、安静决定与卸载。停止观察后不再启动其新命令，producer 通过自身取消信号结算。
+
+## 进程生命周期与信号
+
+进程级信号由 `cli/app.ts` 安装并在 shutdown 时卸载；`ui/core/terminal.ts` 只提供终端恢复，导入它不会注册任何进程监听器。SIGINT 保持普通中断语义（Node 会把信号名作为监听器首参，因此必须包一层零参闭包，否则信号名会被当成 force 标志）；SIGTERM（以及非 Windows 的 SIGHUP）先执行完整关闭（等待活动轮次、扩展 teardown、Job 关闭、session flush、杀掉已追踪的分离子进程），再以 143/129 退出。stdout/stderr 的 EPIPE 被忽略，其余写错误继续抛出。
+
+shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计时 100ms），因此持有继承管道的分离子进程不会让工具永久挂起；子进程 PID 被登记，关闭时统一杀进程树。`exec_command` 的 `timeout`（秒）可省略；非法值直接报错，不做静默截断。
 
 ## 已验证与未验证
 
@@ -93,7 +101,7 @@ JobRegistry 默认没有活动 Job 数量额度；显式 maxActivePerOwner 仍�
 
 以下仍未验证或未实现：其余真实 Provider 服务端、真实 TTY IME、ARM native 实际加载、跨平台 shell、实际断电、长期负载、跨重启 Job/Subagent 对账、长期记忆、语音、视觉、感知和分布式运行时。
 
-2026-09-05 S1—S4 集成后，`pnpm typecheck`（含边界检查）、`pnpm test`（15 文件、251 项）、`pnpm build` 通过。临时 JSONL 验证恢复，UI 验证组件及事件，均不等于实际断电或真实 TTY 操作。
+2026-09-09 硬化与重构后，`pnpm typecheck`（含边界检查）、`pnpm test`（18 文件、281 项）、`pnpm build` 通过。临时 JSONL 验证恢复，UI 验证组件及事件，均不等于实际断电或真实 TTY 操作。
 
 编译 CLI 在隔离配置与工作目录通过 localhost 工具回注（2 次请求，退出 0）；协议失败错误可见、退出 1，Windows x64 native 资源实际加载成功。
 

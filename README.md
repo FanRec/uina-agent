@@ -76,13 +76,14 @@ src/
 
 - 空闲时输入直接开始一轮。
 - TTY 流式期间普通 Enter 进入 `steer` 队列，在下一次模型请求前送达。
-- TTY 流式期间 Alt+Enter 进入 `followUp` 队列，当前运行结束后送达。
+- TTY 流式期间 Alt+Enter（或 Tab）进入 `followUp` 队列，当前运行结束后送达；空闲时 Alt+Enter 在编辑器中换行。
+- Shift+Enter 在编辑器中换行。
 - 管道输入进入 `followUp` 队列。
 - `/stop` 或 Ctrl+C 只中断当前模型/工具。待处理消息保留并显示在输入行中，用户重新提交后才继续。
 - `/quit` 等待当前轮次、shell 命令和 session 写入完成后退出。
 - `!command` 直接使用当前账户权限执行，不进入模型上下文；多个 `!` 命令串行执行。
 
-readline 输入区是单行编辑器，恢复多个队列消息时使用空格分隔显示，顺序不变。
+TTY 输入区支持多行编辑与粘贴折叠，恢复多个队列消息时按换行分隔显示，顺序不变。
 
 ## 工具
 
@@ -98,6 +99,6 @@ stdout/stderr 各自限制展示为 50 KB 或 2000 行，并保留尾部；超�
 
 ## 当前边界
 
-当前已通过类型检查、251 项测试和构建；localhost 覆盖 OpenAI-compatible、Anthropic、Gemini 协议。真实 DeepSeek v4 Flash 已验证思考控制、usage、取消，以及文件事件 → 后台工作 → 结果回注、用户响应与安静决定。其他真实服务和真实 TTY/IME 仍未验证。详情见 [交付记录](docs/history/reviews/2026-09-05-plan-delivery.md)。
+当前已通过类型检查、281 项测试和构建；localhost 覆盖 OpenAI-compatible、Anthropic、Gemini 协议。真实 DeepSeek v4 Flash 已验证思考控制、usage、取消，以及文件事件 → 后台工作 → 结果回注、用户响应与安静决定。其他真实服务和真实 TTY/IME 仍未验证。详情见 [交付记录](docs/history/reviews/2026-09-05-plan-delivery.md)。
 
 真实 DeepSeek、Ollama、真实终端 IME 和跨平台 shell 仍需在对应环境单独验证。长期记忆、语音、视觉、动态能力筛选、后台 Job、RPC 和权限审批不属于 v0。

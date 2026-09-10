@@ -116,7 +116,9 @@ export function formatCompactionCardLines(
 	// 底部统计与展开提示行
 	const arrowCol = isHovered ? C.suggestion : C.claude;
 	const arrow = `${arrowCol}↳${C.reset}`;
-	const stats = `${C.success}释放 ~${tokenSavedStr} tokens${C.reset} · ${C.inactive}保留最近 ${record.turnsCount} 轮对话${C.reset}`;
+	// tokensSaved carries the pre-compaction context size, not a delta: label it
+	// as the measured-before value instead of claiming released tokens.
+	const stats = `${C.success}压缩前 ~${tokenSavedStr} tokens${C.reset} · ${C.inactive}保留最近 ${record.turnsCount} 轮对话${C.reset}`;
 	const hint = isHovered
 		? `${C.suggestion}(点击 / ctrl+o 收起)${C.reset}`
 		: `${C.inactive}(ctrl+o / 点击收起)${C.reset}`;

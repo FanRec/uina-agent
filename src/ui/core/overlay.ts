@@ -157,32 +157,61 @@ export class OverlayStack {
 		}
 	}
 
+	/**
+	 * Lay every visible overlay out above the editor. Geometry is applied
+	 * uniformly (defaults included), so a component can never emit a line wider
+	 * than its box, and the built-in overlays exercise the same code path as
+	 * extension overlays.
+	 *
+	 * The stack is ordered top → editor-adjacent; when the combined output
+	 * exceeds the budget the rows closest to the input box are kept.
+	 */
 	renderAbove(width: number, maxHeight: number): string[] {
+		const budget = Math.max(0, Math.floor(maxHeight));
+		if (budget === 0) return [];
 		const lines: string[] = [];
 		for (const entry of this.stack) {
 			if (entry.hidden) continue;
-			if (!hasGeometry(entry.options)) {
-				lines.push(...entry.component.render(width));
-				continue;
-			}
-			const margin = normalizeMargin(entry.options?.margin);
+			const options = entry.options;
+			const margin = normalizeMargin(options?.margin);
 			const available = Math.max(1, width - margin.left - margin.right);
-			const overlayWidth = Math.max(1, Math.min(available, Math.max(resolveSize(entry.options?.minWidth, available) ?? 1, resolveSize(entry.options?.width, available) ?? available)));
-			const maxEntryHeight = Math.max(1, Math.min(maxHeight || Number.MAX_SAFE_INTEGER, resolveSize(entry.options?.maxHeight, maxHeight || Number.MAX_SAFE_INTEGER) ?? Number.MAX_SAFE_INTEGER));
+			const overlayWidth = Math.max(
+				1,
+				Math.min(
+					available,
+					Math.max(
+						resolveSize(options?.minWidth, available) ?? 1,
+						resolveSize(options?.width, available) ?? available,
+					),
+				),
+			);
+			// An entry is capped by its own maxHeight only; the shared budget is
+			// applied to the whole stack afterwards, so the rows nearest the
+			// editor survive instead of every entry being cut to the budget.
+			const maxEntryHeight = Math.max(0, resolveSize(options?.maxHeight, budget) ?? Number.MAX_SAFE_INTEGER);
 			const rendered = entry.component.render(overlayWidth).slice(0, maxEntryHeight);
-			const start = overlayStart(entry.options?.anchor ?? "above-editor", width, overlayWidth, margin) + (entry.options?.offsetX ?? 0);
-			for (const line of rendered) lines.push(compositeTuiLine("", line, Math.max(0, start), overlayWidth, width));
+			const start =
+				overlayStart(options?.anchor ?? "above-editor", width, overlayWidth, margin) + (options?.offsetX ?? 0);
+
+			const block: string[] = [];
+			for (let i = 0; i < margin.top; i++) block.push("");
+			for (const line of rendered) block.push(compositeTuiLine("", line, Math.max(0, start), overlayWidth, width));
+			for (let i = 0; i < margin.bottom; i++) block.push("");
+			// offsetY moves the block away from the editor (positive) or trims its
+			// bottom (negative), matching the documented contract.
+			const offsetY = options?.offsetY ?? 0;
+			if (offsetY > 0) for (let i = 0; i < offsetY; i++) block.push("");
+			else if (offsetY < 0) block.splice(Math.max(0, block.length + offsetY));
+
+			lines.push(...block);
 		}
 
-		if (maxHeight > 0 && lines.length > maxHeight) {
-			return lines.slice(lines.length - maxHeight);
+		if (budget > 0 && lines.length > budget) {
+			// Keep the rows nearest the editor, never the far ones.
+			return lines.slice(lines.length - budget);
 		}
 		return lines;
 	}
-}
-
-function hasGeometry(options: OverlayOptions | undefined): boolean {
-	return !!options && (options.width !== undefined || options.minWidth !== undefined || options.maxHeight !== undefined || options.anchor !== undefined || options.offsetX !== undefined || options.offsetY !== undefined || options.margin !== undefined);
 }
 
 function resolveSize(value: number | `${number}%` | undefined, available: number): number | undefined {

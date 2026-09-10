@@ -23,6 +23,8 @@ const tools = new ToolBroker();
 const { store } = await openJsonlSession(join(root, "session.jsonl"));
 const errors: string[] = [];
 const timings: Array<Record<string, unknown>> = [];
+/** Behaviors that actually reached their assertion in this run. */
+const verified: string[] = [];
 let phase = "baseline"; let since = performance.now(); let firstText = false; let content = "";
 let subject!: Subject;
 const runner = new ExtensionRunner({ cwd: root, tools, onError: error => errors.push(error), onInput: input => {
@@ -58,21 +60,29 @@ try {
 	begin("user-during-job"); const delivery = subject.pushInput("hello"); await until(() => content.includes("hello"));
 	timings.push({ phase, event: "user-answer", atMs: Math.round(performance.now() - since) });
 	assert(performance.now() - since < 5000); assert.equal((await jobs())[0]?.status, "running"); await delivery;
+	verified.push("file-event", "user-during-job");
 	await until(() => subject.historySnapshot().some(m => m.role === "tool" && m.content.includes("S4_RESULT")));
+	verified.push("background-result");
 	await subject.waitForIdle();
 	begin("silence"); const before = timings.length; await writeFile(watched, "IGNORE");
 	await until(() => timings.slice(before).some(t => t.event === "model-request")); await subject.waitForIdle(); assert.equal(content.trim(), "");
+	verified.push("silence");
 	begin("failure"); await writeFile(watched, "请用 watch_exec 在后台执行 exit 7，观察失败通知并按需读取结果。");
 	await until(async () => (await jobs()).some(job => job.status === "failed"));
 	await until(() => subject.historySnapshot().some(m => m.role === "custom" && m.customType === "runtime-input" && m.content.includes("failed")));
+	verified.push("failure");
 	await subject.waitForIdle();
 	begin("cancel"); await writeFile(watched, "请用 watch_exec 在后台执行 Start-Sleep -Seconds 60，这是可取消的验收工作，启动后立即结束本轮。");
 	await until(async () => (await jobs()).length === 3); await subject.waitForIdle();
-	const cancelling = performance.now(); await runner.registry.getCommand("watch-stop")!.handler!("");
+	const stopHandler = runner.registry.getCommand("watch-stop")?.handler;
+	assert.ok(stopHandler, "watch-stop 命令未注册");
+	const cancelling = performance.now(); await stopHandler("");
 	const cancellationMs = Math.round(performance.now() - cancelling); assert(cancellationMs < 5000); assert.equal((await jobs())[2]?.status, "killed");
+	verified.push("cancel");
 	const afterStop = timings.length; await runner.disposeProjects(); await writeFile(watched, "new event after unload"); await new Promise(r => setTimeout(r, 150)); assert.equal(timings.length, afterStop);
+	verified.push("unload");
 	assert.deepEqual(errors, []);
-	console.log(JSON.stringify({ model: provider.name, provider: config.name, thinking: "off", timings, cancellationMs, verified: ["file-event", "background-result", "user-during-job", "silence", "failure", "cancel", "unload"] }, null, 2));
+	console.log(JSON.stringify({ model: provider.name, provider: config.name, thinking: "off", timings, cancellationMs, verified }, null, 2));
 } catch (error) {
 	console.error(JSON.stringify({ phase, timings, errors, content }, null, 2));
 	throw error;

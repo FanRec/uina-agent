@@ -1,5 +1,4 @@
-import type { AgentMessage, ChatMsg, ToolResultStatus } from "../core/types.js";
-import { convertToLlm } from "../agent/context.js";
+import type { AgentMessage, ToolResultStatus } from "../core/types.js";
 import type {
 	QueuedInput,
 	SessionEntry,
@@ -189,12 +188,6 @@ export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMess
 		}
 	}
 	return messages;
-}
-
-/** Projects the ordered journal into the effective provider history. A
- * compaction replaces only model-visible history; the journal itself remains intact. */
-export function projectModelHistory(entries: readonly SessionEntry[]): ChatMsg[] {
-	return convertToLlm(projectAgentHistory(entries));
 }
 
 /** Runtime inputs remain identifiable session facts, not human utterances. */

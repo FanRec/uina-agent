@@ -5,6 +5,7 @@
 export const Key = {
 	enter: "enter",
 	shiftEnter: "shift+enter",
+	altEnter: "alt+enter",
 	ctrlEnter: "ctrl+enter",
 	backspace: "backspace",
 	tab: "tab",
@@ -49,15 +50,30 @@ export function matchesKey(data: string, keyId: string): boolean {
 			}
 			return false;
 
+		case "alt+enter":
+		case "alt+return":
+			// Alt+Enter is the follow-up binding (Pi: app.message.followUp default).
+			if (
+				data === "\x1b\r" ||
+				data === "\x1b\n" ||
+				data === "\x1b[13;3u" ||
+				data === "\x1b[13;1;3u" ||
+				data === "\x1b[27;3;13~" ||
+				data === "\x1b[13;3~"
+			) {
+				return true;
+			}
+			return false;
+
 		case "shift+enter":
 		case "shift+return":
+			// Newline editing (Pi: tui.input.newLine default shift+enter / ctrl+j).
+			// Bare ESC+CR is Alt+Enter, handled above.
 			if (
 				data === "\x1b[13;2u" ||
 				data === "\x1b[13;2:1u" ||
 				data === "\x1b[27;2;13~" ||
-				data === "\x1b[13;2~" ||
-				data === "\x1b\r" ||
-				data === "\x1b\n"
+				data === "\x1b[13;2~"
 			) {
 				return true;
 			}

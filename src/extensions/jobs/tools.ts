@@ -2,7 +2,8 @@ import type { Tool } from "../../tools/broker.js";
 import type { JobRegistry } from "./registry.js";
 
 const WAIT_DEFAULT_MS = 30_000;
-const WAIT_MAX_MS = 600_000;
+/** setTimeout's own limit; longer waits are rejected explicitly, never clamped. */
+const WAIT_MAX_MS = 2_147_483_647;
 
 export function createJobTools(jobs: JobRegistry, ownerId: string): Tool[] {
 	return [
@@ -15,7 +16,7 @@ export function createJobTools(jobs: JobRegistry, ownerId: string): Tool[] {
 					parameters: { type: "object", properties: {}, additionalProperties: false },
 				},
 			},
-			run: async () => ({ result: JSON.stringify(jobs.list(ownerId)), status: "succeeded" }),
+			run: async (_args, _signal, context) => ({ result: JSON.stringify(jobs.list(context?.ownerId ?? ownerId)), status: "succeeded" }),
 		},
 		{
 			def: {
@@ -32,14 +33,16 @@ export function createJobTools(jobs: JobRegistry, ownerId: string): Tool[] {
 					},
 				},
 			},
-			run: async (args, signal) => {
+			run: async (args, signal, context) => {
+				const caller = context?.ownerId ?? ownerId;
 				const id = requiredString(args.job_id, "job_id");
 				const cursor = optionalInteger(args.cursor, 0, "cursor");
 				if (args.wait === true) {
 					const requested = optionalInteger(args.timeout_ms, WAIT_DEFAULT_MS, "timeout_ms");
-					await jobs.wait(id, ownerId, Math.min(requested, WAIT_MAX_MS), cursor, signal);
+					if (requested > WAIT_MAX_MS) throw new Error(`timeout_ms 超过上限 ${WAIT_MAX_MS}，请显式拆分为多次等待`);
+					await jobs.wait(id, caller, requested, cursor, signal);
 				}
-				return { result: JSON.stringify(jobs.read(id, ownerId, cursor)), status: "succeeded" };
+				return { result: JSON.stringify(jobs.read(id, caller, cursor)), status: "succeeded" };
 			},
 		},
 		{
@@ -54,11 +57,12 @@ export function createJobTools(jobs: JobRegistry, ownerId: string): Tool[] {
 					},
 				},
 			},
-			run: async (args) => {
+			run: async (args, _signal, context) => {
+				const caller = context?.ownerId ?? ownerId;
 				const id = requiredString(args.job_id, "job_id");
 				const reason = typeof args.reason === "string" ? args.reason : undefined;
-				const outcome = jobs.cancel(id, ownerId, reason);
-				return { result: JSON.stringify({ outcome, job: jobs.get(id, ownerId) }), status: "succeeded" };
+				const outcome = jobs.cancel(id, caller, reason);
+				return { result: JSON.stringify({ outcome, job: jobs.get(id, caller) }), status: "succeeded" };
 			},
 		},
 	];

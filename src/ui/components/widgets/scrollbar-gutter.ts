@@ -25,7 +25,6 @@ export const SCROLLBAR_THUMB_GLYPHS: Record<ScrollbarThumbStyle, string> = {
 };
 
 export const SCROLLBAR_THUMB = " ▐";
-export const SCROLLBAR_MIN_WIDTH = 60;
 export const SCROLLBAR_DWELL_MS = 250;
 
 export interface ScrollbarGeometry {

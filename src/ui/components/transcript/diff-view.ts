@@ -14,6 +14,7 @@
  */
 
 import { C, visibleWidth, truncateToWidth, getContentBoxWidth } from "../../core/utils.js";
+import { sanitizeRenderText } from "../../format.js";
 
 export interface DiffItem {
 	type: "add" | "del" | "same";
@@ -383,6 +384,9 @@ export function formatDiffCardLines(
 	collapsed = true,
 	width = 80,
 ): string[] {
+	oldText = sanitizeRenderText(oldText);
+	newText = sanitizeRenderText(newText);
+	filename = sanitizeRenderText(filename);
 	if (width >= 80) {
 		return formatSplitDiffCardLines(oldText, newText, filename, collapsed, width);
 	}

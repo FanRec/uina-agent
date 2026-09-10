@@ -9,6 +9,7 @@
  */
 
 import { C, truncateToWidth, wrapTextWithAnsi } from "../../core/utils.js";
+import { sanitizeRenderText } from "../../format.js";
 
 /** 格式化对话流内部的思考链块（永久行） */
 export function formatThinkingLines(
@@ -17,6 +18,7 @@ export function formatThinkingLines(
 	width = 80,
 	isHovered = false,
 ): string[] {
+	thinkingText = sanitizeRenderText(thinkingText);
 	if (!thinkingText || !thinkingText.trim()) {
 		return [];
 	}

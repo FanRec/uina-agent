@@ -1,9 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DefaultAgentFactory, type AgentFactory } from "../src/agent/runtime.js";
 import type { ModelProvider } from "../src/core/types.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import { SubagentRegistry } from "../src/extensions/subagents/registry.js";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
+import { JobRegistry } from "../src/extensions/jobs/registry.js";
+import { ExtensionRunner } from "../src/extensions/runner.js";
+import { activateRuntimeTools, createChildTools } from "../src/extensions/runtime-tools/index.js";
+import { scriptedProvider, toolCallDelta } from "./helpers/mock-provider.js";
 
 function providerFor(reply: (prompt: string) => string | Promise<string>): ModelProvider {
 	return {
@@ -23,13 +27,48 @@ function providerFor(reply: (prompt: string) => string | Promise<string>): Model
 function make(provider: ModelProvider, notify?: (text: string, data: Record<string, unknown>) => Promise<void>, factory: AgentFactory = new DefaultAgentFactory()): SubagentRegistry {
 	return new SubagentRegistry({
 		factory,
-		provider,
+		provider: () => provider,
 		createTools: () => new ToolBroker(),
 		notify,
 	});
 }
 
 describe("SubagentRegistry", () => {
+	it("inherits capabilities with child ownership and delivers job completion back to that child", async () => {
+		const root = new ToolBroker({ ownerId: "root" });
+		const children = new Map<string, ToolBroker>();
+		const jobs = new JobRegistry();
+		const rootInputs: unknown[] = [], errors: string[] = [];
+		const provider = scriptedProvider([
+			{ match: req => req.messages.some(m => m.content.includes("job-notice")), produce: () => [{ kind: "text", text: "received own job" }] },
+			{ match: req => req.messages.some(m => m.content === "grandchild"), produce: () => [{ kind: "text", text: "grandchild ready" }] },
+			{ match: req => !req.messages.some(m => m.role === "tool"), produce: () => [toolCallDelta("start-job", "exec_command", { command: process.platform === "win32" ? "Write-Output child-result" : "echo child-result", run_in_background: true })] },
+			{ match: () => true, produce: () => [{ kind: "text", text: "waiting" }] },
+		]);
+		const registry = new SubagentRegistry({
+			factory: new DefaultAgentFactory(), provider: () => provider,
+			createTools: ownerId => { const tools = createChildTools(root, { ownerId }); children.set(ownerId, tools); return tools; },
+		});
+		const runner = new ExtensionRunner({ cwd: process.cwd(), tools: root, onInput: async input => { rootInputs.push(input); }, onError: error => errors.push(error) });
+		await runner.activateBuiltin("runtime", activateRuntimeTools({ jobs, subagents: registry }));
+		try {
+			const child = registry.start({ ownerId: "root", label: "child", prompt: "start" });
+			await vi.waitFor(() => expect(registry.transcript(child.id, "root").messages.some(m => m.content.includes("received own job"))).toBe(true), { timeout: 5000 });
+			expect(jobs.list(child.id)).toHaveLength(1);
+			expect(jobs.list("root")).toEqual([]);
+			expect(rootInputs).toEqual([]);
+			expect(errors).toEqual([]);
+			const tools = children.get(child.id)!;
+			const listed = JSON.parse(await tools.run("job_list", {}));
+			expect(listed[0].ownerId).toBe(child.id);
+			const output = JSON.parse(await tools.run("job_output", { job_id: listed[0].id }));
+			expect(output.result).toContain("child-result");
+			expect(registry.transcript(child.id, "root").messages.some(m => m.role === "custom" && m.customType === "runtime-input")).toBe(true);
+			const grandchild = JSON.parse(await tools.run("subagent_start", { label: "grandchild", prompt: "grandchild" }));
+			expect(registry.list(child.id).map(c => c.id)).toEqual([grandchild.id]);
+			expect(registry.get(grandchild.id, child.id).parentId).toBe(child.id);
+		} finally { await runner.dispose(); }
+	});
 	it("starts an independent child, keeps transcript local, and reads output by cursor", async () => {
 		const registry = make(providerFor((prompt) => `答复:${prompt}`));
 		const started = registry.start({ ownerId: "root", label: "调查", prompt: "第一问" });

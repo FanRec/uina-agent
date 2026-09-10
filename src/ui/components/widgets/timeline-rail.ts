@@ -32,12 +32,24 @@ export interface TimelineRailGeometry {
 	downRow: number;
 }
 
+export interface TimelineRailOptions {
+	/** Hard cap on visible ticks; default is derived from the viewport height. */
+	maxTicks?: number;
+	/** Hard cap on the preview card's text width; default is derived from the content width. */
+	previewMaxWidth?: number;
+}
+
 export class TimelineRailComponent implements Component {
 	private turns: TimelineRailTurn[] = [];
+	private readonly options: TimelineRailOptions;
 	private activeTurnN: number | null = null;
 	private hoverTurnN: number | null = null;
 	private hoverRow: number | null = null;
 	private enabled = true;
+
+	constructor(options: TimelineRailOptions = {}) {
+		this.options = options;
+	}
 
 	updateTurns(turns: readonly TimelineRailTurn[], activeTurnN: number | null): void {
 		this.turns = [...turns];
@@ -67,11 +79,12 @@ export class TimelineRailComponent implements Component {
 	getGeometry(height: number, atBottom = true): TimelineRailGeometry | null {
 		if (height < 3 || this.turns.length === 0 || !this.enabled) return null;
 		const turnCount = this.turns.length;
-		// 舒适密度上限：对标 dsh-TUI 视觉体感（图二），将最大可见刻度数收敛在 24 行内，
-		// 并在大屏视口下保留至少 2~3 行顶部与底部的呼吸留白，避免铺满 40+ 行形成压抑的“条形码墙”。
-		const MAX_RAIL_TICKS = 24;
+		// Density follows the viewport: keep 2-3 rows of breathing space at each
+		// end, and never exceed 90% of the height. A fixed cap made tall terminals
+		// waste most of the rail; callers may still pass an explicit maxTicks.
 		const availableTicks = Math.max(1, height > 8 ? height - 6 : height - 2);
-		const maxTicks = Math.min(MAX_RAIL_TICKS, availableTicks);
+		const densityCap = Math.max(3, Math.floor(height * 0.9));
+		const maxTicks = Math.min(this.options.maxTicks ?? Number.POSITIVE_INFINITY, availableTicks, densityCap);
 		const shown = Math.min(turnCount, maxTicks);
 
 		// 对标 dsh-TUI computeRailGeometry 动态滑动窗口：
@@ -131,6 +144,8 @@ export class TimelineRailComponent implements Component {
 		atBottom = true,
 		upEnabled = true,
 		downEnabled = true,
+		/** Available content width, used to size the preview card. */
+		contentWidth = 80,
 	): { railGlyphs: string[]; previewCard?: { topRow: number; lines: string[] } } {
 		const railGlyphs: string[] = new Array(height).fill("  ");
 		const geo = this.getGeometry(height, atBottom);
@@ -179,7 +194,9 @@ export class TimelineRailComponent implements Component {
 		let previewCard: { topRow: number; lines: string[] } | undefined;
 		if (hoveredTurn && hoveredTurnRow >= 0) {
 			const rawSnippet = hoveredTurn.userText.replace(/[\r\n]+/g, " ").trim();
-			const snippet = truncateToWidth(rawSnippet || `轮次 ${hoveredTurn.n}`, 24, "…");
+			// Preview width scales with the content area instead of a fixed 24 columns.
+			const previewMax = this.options.previewMaxWidth ?? Math.max(12, Math.min(48, Math.floor(contentWidth * 0.4)));
+			const snippet = truncateToWidth(rawSnippet || `轮次 ${hoveredTurn.n}`, previewMax, "…");
 			const snippetW = visibleWidth(snippet);
 			const boxInnerW = Math.max(4, snippetW);
 			const padL = Math.floor((boxInnerW - snippetW) / 2);

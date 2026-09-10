@@ -10,6 +10,7 @@ import type { ChatMsg, ToolResultStatus } from "../../../core/types.js";
 import type { SessionEntry } from "../../../session/types.js";
 import { C, wrapTextWithAnsi, stripAnsi } from "../../core/utils.js";
 import { formatThinkingLines } from "./thinking-view.js";
+import { sanitizeRenderText } from "../../format.js";
 import { formatToolCardLines } from "./tool-view.js";
 import { formatFullMarkdown } from "./stream-markdown.js";
 import { formatDiffCardLines } from "./diff-view.js";
@@ -132,17 +133,44 @@ export type TimelineItem =
 	| { kind: "customMessage"; message: CustomMessage }
 	| { kind: "customEntry"; entry: CustomEntry };
 
-interface SettledCache {
-	width: number;
-	hoveredThinkingTurnN: number | null;
-	hoveredToolId: string | null;
-	hoveredCompactionIndex: number | null;
-	expandedToolIdsKey: string;
+/** One settled turn rendered as a self-contained block. Location indices are
+ * block-relative; the assembler rebases them onto the final line array. */
+interface TurnBlock {
+	kind: "turn";
+	turn: TurnRecord;
+	lines: string[];
+	thinking: ThinkingLineLocation[];
+	tools: ToolLineLocation[];
+}
+
+interface StaticBlock {
+	kind: "static";
+	lines: string[];
+}
+
+interface CompactionBlock {
+	kind: "compaction";
+	index: number;
+	record: CompactionRecord;
+	lines: string[];
+}
+
+type SettledBlock = TurnBlock | StaticBlock | CompactionBlock;
+
+/** Layout output collected while one turn is rendered. */
+interface LayoutSink {
+	thinking: ThinkingLineLocation[];
+	tools: ToolLineLocation[];
+}
+
+/** The single line model consumed by rendering, scrolling and mouse hit zones. */
+interface LineModel {
 	lines: string[];
 	turnStartMap: Map<number, number>;
 	thinkingLocations: ThinkingLineLocation[];
 	toolLocations: ToolLineLocation[];
 	compactionLocations: CompactionLineLocation[];
+	turnRanges: Map<number, { start: number; end: number }>;
 }
 
 export class TranscriptContainer implements Component {
@@ -155,16 +183,36 @@ export class TranscriptContainer implements Component {
 	private hoveredToolId: string | null = null;
 	private hoveredCompactionIndex: number | null = null;
 	private readonly expandedToolIds = new Set<string>();
-	private settledCache: SettledCache | null = null;
+	/** Settled timeline blocks, keyed by width + expansion state only.
+	 * Hover is applied per block at assembly time so a mouse move never
+	 * invalidates every settled turn. */
+	private settledBlocks: { width: number; blocks: SettledBlock[]; staleTurns: Set<number>; staleCompactions: Set<number> } | null = null;
+	private hoveredBlockCache = new Map<string, TurnBlock>();
 
 	invalidate(): void {
-		this.settledCache = null;
+		this.settledBlocks = null;
+		this.hoveredBlockCache.clear();
+	}
+
+	/** Rebuild only one settled turn's block; the rest of the cache stays valid. */
+	invalidateTurn(turnN: number): void {
+		if (!this.settledBlocks) return; // a full build will pick the change up
+		this.settledBlocks.staleTurns.add(turnN);
+		this.hoveredBlockCache.clear();
+	}
+
+	/** Rebuild only one compaction card. */
+	invalidateCompaction(index: number): void {
+		if (!this.settledBlocks) return;
+		this.settledBlocks.staleCompactions.add(index);
 	}
 
 	setHoveredThinkingTurn(turnN: number | null): boolean {
 		if (this.hoveredThinkingTurnN !== turnN) {
 			this.hoveredThinkingTurnN = turnN;
-			this.invalidate();
+			// Hover is applied at assembly time, so only the per-turn hover cache
+			// is dropped; settled blocks stay valid.
+			this.hoveredBlockCache.clear();
 			return true;
 		}
 		return false;
@@ -177,7 +225,7 @@ export class TranscriptContainer implements Component {
 	setHoveredToolId(toolId: string | null): boolean {
 		if (this.hoveredToolId !== toolId) {
 			this.hoveredToolId = toolId;
-			this.invalidate();
+			this.hoveredBlockCache.clear();
 			return true;
 		}
 		return false;
@@ -190,7 +238,6 @@ export class TranscriptContainer implements Component {
 	setHoveredCompaction(index: number | null): boolean {
 		if (this.hoveredCompactionIndex !== index) {
 			this.hoveredCompactionIndex = index;
-			this.invalidate();
 			return true;
 		}
 		return false;
@@ -234,8 +281,10 @@ export class TranscriptContainer implements Component {
 		if (this.currentTurn) allTurns.push(this.currentTurn);
 
 		let targetItem: Extract<TurnItem, { kind: "tool" }> | undefined;
+		let ownerTurn: TurnRecord | undefined;
 		if (typeof targetOrId === "object") {
 			targetItem = targetOrId;
+			ownerTurn = allTurns.find((t) => t.items.includes(targetOrId));
 		} else if (typeof targetOrId === "string") {
 			for (const t of allTurns) {
 				const found = t.items.find(
@@ -243,6 +292,7 @@ export class TranscriptContainer implements Component {
 				);
 				if (found) {
 					targetItem = found;
+					ownerTurn = t;
 					break;
 				}
 			}
@@ -253,6 +303,7 @@ export class TranscriptContainer implements Component {
 				);
 				if (found) {
 					targetItem = found;
+					ownerTurn = allTurns[i];
 					break;
 				}
 			}
@@ -272,7 +323,8 @@ export class TranscriptContainer implements Component {
 			} else {
 				this.expandedToolIds.add(callId);
 			}
-			this.invalidate();
+			if (ownerTurn) this.invalidateTurn(ownerTurn.n);
+			else this.invalidate();
 
 			const afterCount = formatToolCardLines(targetItem.name, targetItem.result ?? "", targetItem.elapsedMs ?? 0, width, targetItem.status, targetItem.args, {
 				isExpanded: !wasExpanded,
@@ -390,6 +442,7 @@ export class TranscriptContainer implements Component {
 	}
 
 	addToolDone(name: string, result: string, elapsedMs = 0, status: ToolResultStatus = "unknown", callId?: string, args?: unknown): void {
+		result = sanitizeRenderText(result);
 		if (!this.currentTurn) {
 			const lastTurn = this.historyTurns[this.historyTurns.length - 1];
 			if (lastTurn) {
@@ -658,7 +711,7 @@ export class TranscriptContainer implements Component {
 					it.collapsed = !wasCollapsed;
 				}
 			}
-			this.invalidate();
+			this.invalidateTurn(target.n);
 			const afterCount = formatThinkingLines(target.thinkingText, !wasCollapsed, width).length;
 			return { toggled: true, lineDelta: afterCount - beforeCount };
 		}
@@ -691,7 +744,8 @@ export class TranscriptContainer implements Component {
 		const target = index !== undefined ? compactions[index] : compactions.at(-1);
 		if (target) {
 			target.record.collapsed = !target.record.collapsed;
-			this.invalidate();
+			const targetIndex = index !== undefined ? index : compactions.length - 1;
+			this.invalidateCompaction(targetIndex);
 			return true;
 		}
 		return false;
@@ -727,6 +781,7 @@ export class TranscriptContainer implements Component {
 	}
 
 	private formatAssistantMarkdown(md: string, width: number, isFirstParagraph = true): string[] {
+		md = sanitizeRenderText(md);
 		if (!md) return [];
 		const contentBudget = Math.max(20, width - 2);
 		const rawLines = formatFullMarkdown(md, contentBudget);
@@ -765,151 +820,94 @@ export class TranscriptContainer implements Component {
 		return formatted;
 	}
 
-	private getSettledCache(width: number): SettledCache {
-		const expandedKey = Array.from(this.expandedToolIds).sort().join(",");
-		if (
-			this.settledCache &&
-			this.settledCache.width === width &&
-			this.settledCache.hoveredThinkingTurnN === this.hoveredThinkingTurnN &&
-			this.settledCache.hoveredToolId === this.hoveredToolId &&
-			this.settledCache.hoveredCompactionIndex === this.hoveredCompactionIndex &&
-			this.settledCache.expandedToolIdsKey === expandedKey
-		) {
-			return this.settledCache;
+	private buildSettledBlocks(width: number): SettledBlock[] {
+		const cache = this.settledBlocks;
+		if (cache && cache.width === width) {
+			if (cache.staleTurns.size === 0 && cache.staleCompactions.size === 0) return cache.blocks;
+			// Incremental: only the stale turn/compaction blocks are re-rendered.
+			const latestFailed = this.getLatestFailedTool();
+			cache.blocks = cache.blocks.map((block) => {
+				if (block.kind === "turn" && cache.staleTurns.has(block.turn.n)) {
+					return this.buildTurnBlock(block.turn, width, false, latestFailed);
+				}
+				if (block.kind === "compaction" && cache.staleCompactions.has(block.index)) {
+					return { ...block, lines: formatCompactionCardLines(block.record, width, false) };
+				}
+				return block;
+			});
+			cache.staleTurns.clear();
+			cache.staleCompactions.clear();
+			this.hoveredBlockCache.clear();
+			return cache.blocks;
 		}
-
-		const lines: string[] = [];
-		const turnStartMap = new Map<number, number>();
-		const thinkingLocations: ThinkingLineLocation[] = [];
-		const toolLocations: ToolLineLocation[] = [];
-		const compactionLocations: CompactionLineLocation[] = [];
+		const blocks: SettledBlock[] = [];
 		const latestFailed = this.getLatestFailedTool();
-
 		let compactionIndex = 0;
 		for (const item of this.timeline) {
 			switch (item.kind) {
 				case "notice":
-					lines.push(item.text);
+					blocks.push({ kind: "static", lines: [item.text] });
 					break;
 				case "compaction": {
-					const isHovered = this.hoveredCompactionIndex === compactionIndex;
-					const cardLines = formatCompactionCardLines(item.record, width, isHovered);
-					compactionLocations.push({
+					blocks.push({
+						kind: "compaction",
 						index: compactionIndex,
-						lineIndex: lines.length,
-						lineCount: cardLines.length,
 						record: item.record,
+						lines: formatCompactionCardLines(item.record, width, false),
 					});
-					lines.push(...cardLines);
 					compactionIndex++;
 					break;
 				}
-				case "turn": {
-					turnStartMap.set(item.turn.n, lines.length);
-					const turn = item.turn;
-					const turnStartLine = lines.length;
-					this.renderTurn(turn, width, lines, true, false, latestFailed);
-
-					const userLines = this.formatUserLine(turn.userText, width);
-					let turnOffset = userLines.length;
-					let hasText = false;
-					for (const it of turn.items) {
-						if (it.kind === "thinking") {
-							const isHovered = this.hoveredThinkingTurnN === turn.n;
-							const collapsed = it.collapsed ?? turn.thinkingCollapsed ?? true;
-							const count = formatThinkingLines(it.text, collapsed, width, isHovered).length;
-							thinkingLocations.push({ turnN: turn.n, lineIndex: turnStartLine + turnOffset, lineCount: count, turn });
-							turnOffset += count;
-						} else if (it.kind === "text") {
-							turnOffset += this.formatAssistantMarkdown(it.text, width, !hasText).length;
-							hasText = true;
-						} else if (it.kind === "tool") {
-							const toolId = it.callId || `tool-${it.name}`;
-							const isExpanded = it.collapsed === false || this.expandedToolIds.has(toolId);
-							const isHovered = this.hoveredToolId === toolId;
-							const isNewestFailure = it === latestFailed;
-							const cardLines = formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args, {
-								isExpanded,
-								isHovered,
-								isNewestFailure,
-								startedAt: it.startedAt,
-							});
-							toolLocations.push({
-								callId: toolId,
-								lineIndex: turnStartLine + turnOffset,
-								lineCount: cardLines.length,
-								name: it.name,
-								isExpanded,
-								turn,
-								item: it,
-							});
-							turnOffset += cardLines.length;
-						} else if (it.kind === "diff") {
-							turnOffset += formatDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
-						} else if (it.kind === "interrupt") {
-							turnOffset += 1;
-						}
-					}
+				case "turn":
+					blocks.push(this.buildTurnBlock(item.turn, width, false, latestFailed));
 					break;
-				}
 				case "customMessage": {
 					const comp = new CustomMessageComponent(item.message, this.messageRenderer(item.message.customType));
-					lines.push(...comp.render(width));
+					blocks.push({ kind: "static", lines: comp.render(width) });
 					break;
 				}
 				case "customEntry": {
 					const comp = new CustomEntryComponent(item.entry, this.entryRenderer(item.entry.customType));
-					lines.push(...comp.render(width));
+					blocks.push({ kind: "static", lines: comp.render(width) });
 					break;
 				}
 			}
 		}
-
-		this.settledCache = {
-			width,
-			hoveredThinkingTurnN: this.hoveredThinkingTurnN,
-			hoveredToolId: this.hoveredToolId,
-			hoveredCompactionIndex: this.hoveredCompactionIndex,
-			expandedToolIdsKey: expandedKey,
-			lines,
-			turnStartMap,
-			thinkingLocations,
-			toolLocations,
-			compactionLocations,
-		};
-		return this.settledCache;
+		this.settledBlocks = { width, blocks, staleTurns: new Set(), staleCompactions: new Set() };
+		this.hoveredBlockCache.clear();
+		return blocks;
 	}
 
-	render(width: number): string[] {
-		const cached = this.getSettledCache(width);
-		if (!this.currentTurn) {
-			return cached.lines.slice();
-		}
-		const lines = cached.lines.slice();
-		this.renderTurn(this.currentTurn, width, lines, true, true);
-		return lines;
+	/** Render one turn exactly once: lines and hit-zone metadata come from the
+	 * same pass, so streaming and settled turns can never disagree. */
+	private buildTurnBlock(turn: TurnRecord, width: number, hover: boolean, latestFailed: Extract<TurnItem, { kind: "tool" }> | null): TurnBlock {
+		const lines: string[] = [];
+		const sink: LayoutSink = { thinking: [], tools: [] };
+		this.layoutTurn(turn, width, lines, sink, { hover, latestFailed });
+		return { kind: "turn", turn, lines, thinking: sink.thinking, tools: sink.tools };
 	}
 
-	private renderTurn(
+	private layoutTurn(
 		turn: TurnRecord,
 		width: number,
 		out: string[],
-		showThinking = true,
-		isCurrent = false,
-		latestFailed?: Extract<TurnItem, { kind: "tool" }> | null,
+		sink: LayoutSink,
+		opts: { isCurrent?: boolean; hover?: boolean; latestFailed?: Extract<TurnItem, { kind: "tool" }> | null } = {},
 	): void {
+		const isCurrent = opts.isCurrent ?? false;
+		const hover = opts.hover ?? false;
+		const activeFailed = opts.latestFailed !== undefined ? opts.latestFailed : this.getLatestFailedTool();
+
 		if (turn.userText) out.push(...this.formatUserLine(turn.userText, width));
 
 		let hasRenderedText = false;
-		const activeFailed = latestFailed !== undefined ? latestFailed : this.getLatestFailedTool();
-
 		for (const item of turn.items) {
 			if (item.kind === "thinking") {
-				if (showThinking) {
-					const isHovered = this.hoveredThinkingTurnN === turn.n;
-					const collapsed = item.collapsed ?? turn.thinkingCollapsed ?? true;
-					out.push(...formatThinkingLines(item.text, collapsed, width, isHovered));
-				}
+				const isHovered = hover && this.hoveredThinkingTurnN === turn.n;
+				const collapsed = item.collapsed ?? turn.thinkingCollapsed ?? true;
+				const lines = formatThinkingLines(item.text, collapsed, width, isHovered);
+				sink.thinking.push({ turnN: turn.n, lineIndex: out.length, lineCount: lines.length, turn });
+				out.push(...lines);
 			} else if (item.kind === "text") {
 				const textToRender = isCurrent
 					? this.smoothReveal.getRevealedText(`turn-${turn.n}-text`, item.text, true)
@@ -919,20 +917,83 @@ export class TranscriptContainer implements Component {
 			} else if (item.kind === "tool") {
 				const toolId = item.callId || `tool-${item.name}`;
 				const isExpanded = item.collapsed === false || this.expandedToolIds.has(toolId);
-				const isHovered = this.hoveredToolId === toolId;
+				const isHovered = hover && this.hoveredToolId === toolId;
 				const isNewestFailure = item === activeFailed;
-				out.push(...formatToolCardLines(item.name, item.result ?? "", item.elapsedMs ?? 0, width, item.status, item.args, {
+				const lines = formatToolCardLines(item.name, item.result ?? "", item.elapsedMs ?? 0, width, item.status, item.args, {
 					isExpanded,
 					isHovered,
 					isNewestFailure,
 					startedAt: item.startedAt,
-				}));
+				});
+				sink.tools.push({ callId: toolId, lineIndex: out.length, lineCount: lines.length, name: item.name, isExpanded, turn, item });
+				out.push(...lines);
 			} else if (item.kind === "diff") {
 				out.push(...formatDiffCardLines(item.oldText, item.newText, item.filename, item.collapsed ?? true, width));
 			} else if (item.kind === "interrupt") {
 				out.push(`  \x1b[2m${item.text}\x1b[0m`);
 			}
 		}
+	}
+
+	/** Hover on settled turns rebuilds only the affected block. */
+	private turnBlockFor(base: TurnBlock, width: number): TurnBlock {
+		const hoveredThinkingHere = this.hoveredThinkingTurnN === base.turn.n;
+		const hoveredToolHere = this.hoveredToolId !== null && base.tools.some((tool) => tool.callId === this.hoveredToolId);
+		if (!hoveredThinkingHere && !hoveredToolHere) return base;
+		const key = `${width}:${base.turn.n}:${this.hoveredToolId ?? ""}:${this.hoveredThinkingTurnN ?? ""}`;
+		const cached = this.hoveredBlockCache.get(key);
+		if (cached) return cached;
+		const rebuilt = this.buildTurnBlock(base.turn, width, true, this.getLatestFailedTool());
+		this.hoveredBlockCache.clear();
+		this.hoveredBlockCache.set(key, rebuilt);
+		return rebuilt;
+	}
+
+	private assemble(blocks: readonly SettledBlock[], width: number): LineModel {
+		const lines: string[] = [];
+		const turnStartMap = new Map<number, number>();
+		const thinkingLocations: ThinkingLineLocation[] = [];
+		const toolLocations: ToolLineLocation[] = [];
+		const compactionLocations: CompactionLineLocation[] = [];
+		const turnRanges = new Map<number, { start: number; end: number }>();
+
+		for (const block of blocks) {
+			const start = lines.length;
+			if (block.kind === "turn") {
+				const rendered = this.turnBlockFor(block, width);
+				turnStartMap.set(block.turn.n, start);
+				lines.push(...rendered.lines);
+				for (const loc of rendered.thinking) thinkingLocations.push({ ...loc, lineIndex: start + loc.lineIndex });
+				for (const loc of rendered.tools) toolLocations.push({ ...loc, lineIndex: start + loc.lineIndex });
+				turnRanges.set(block.turn.n, { start, end: lines.length });
+			} else if (block.kind === "compaction") {
+				const cardLines = this.hoveredCompactionIndex === block.index ? formatCompactionCardLines(block.record, width, true) : block.lines;
+				compactionLocations.push({ index: block.index, lineIndex: start, lineCount: cardLines.length, record: block.record });
+				lines.push(...cardLines);
+			} else {
+				lines.push(...block.lines);
+			}
+		}
+		return { lines, turnStartMap, thinkingLocations, toolLocations, compactionLocations, turnRanges };
+	}
+
+	/** The single line model consumed by render, scrolling and hit zones. */
+	private ensureModel(width: number): LineModel {
+		const model = this.assemble(this.buildSettledBlocks(width), width);
+		if (this.currentTurn) {
+			const start = model.lines.length;
+			const sink: LayoutSink = { thinking: [], tools: [] };
+			this.layoutTurn(this.currentTurn, width, model.lines, sink, { isCurrent: true, hover: true });
+			model.turnStartMap.set(this.currentTurn.n, start);
+			model.thinkingLocations.push(...sink.thinking);
+			model.toolLocations.push(...sink.tools);
+			model.turnRanges.set(this.currentTurn.n, { start, end: model.lines.length });
+		}
+		return model;
+	}
+
+	render(width: number): string[] {
+		return this.ensureModel(width).lines.slice();
 	}
 
 	getTimelineTurns(): Array<{ n: number; userText: string }> {
@@ -947,124 +1008,30 @@ export class TranscriptContainer implements Component {
 	}
 
 	/**
-	 * 获取每一轮次在转录完整行序列中的起始行号映射表（使用已结算行缓存，避免重复全量渲染）
+	 * 获取每一轮次在转录完整行序列中的起始行号映射表
 	 */
 	getTurnStartLines(width: number): Map<number, number> {
-		const cached = this.getSettledCache(width);
-		const map = new Map<number, number>(cached.turnStartMap);
-		if (this.currentTurn) {
-			map.set(this.currentTurn.n, cached.lines.length);
-		}
-		return map;
+		return new Map(this.ensureModel(width).turnStartMap);
 	}
 
 	/**
-	 * 获取所有思考折叠行在完整行序列中的索引位置（使用已结算行缓存）
+	 * 获取所有思考折叠行在完整行序列中的索引位置
 	 */
 	getThinkingLineIndices(width: number): ThinkingLineLocation[] {
-		const cached = this.getSettledCache(width);
-		if (!this.currentTurn) {
-			return cached.thinkingLocations.slice();
-		}
-		const result = cached.thinkingLocations.slice();
-		const currentLine = cached.lines.length;
-		const turn = this.currentTurn;
-		const userLines = this.formatUserLine(turn.userText, width);
-		let turnOffset = userLines.length;
-		let hasText = false;
-		const latestFailed = this.getLatestFailedTool();
-
-		for (const it of turn.items) {
-			if (it.kind === "thinking") {
-				const isHovered = this.hoveredThinkingTurnN === turn.n;
-				const collapsed = it.collapsed ?? turn.thinkingCollapsed ?? true;
-				const count = formatThinkingLines(it.text, collapsed, width, isHovered).length;
-				result.push({ turnN: turn.n, lineIndex: currentLine + turnOffset, lineCount: count, turn });
-				turnOffset += count;
-			} else if (it.kind === "text") {
-				turnOffset += this.formatAssistantMarkdown(it.text, width, !hasText).length;
-				hasText = true;
-			} else if (it.kind === "tool") {
-				const toolId = it.callId || `tool-${it.name}`;
-				const isExpanded = it.collapsed === false || this.expandedToolIds.has(toolId);
-				const isHovered = this.hoveredToolId === toolId;
-				const isNewestFailure = it === latestFailed;
-				turnOffset += formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args, {
-					isExpanded,
-					isHovered,
-					isNewestFailure,
-					startedAt: it.startedAt,
-				}).length;
-			} else if (it.kind === "diff") {
-				turnOffset += formatDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
-			} else if (it.kind === "interrupt") {
-				turnOffset += 1;
-			}
-		}
-
-		return result;
+		return this.ensureModel(width).thinkingLocations.slice();
 	}
 
 	/**
 	 * 获取所有工具卡片行在完整行序列中的索引位置与元数据
 	 */
 	getToolLineIndices(width: number): ToolLineLocation[] {
-		const cached = this.getSettledCache(width);
-		if (!this.currentTurn) {
-			return cached.toolLocations.slice();
-		}
-		const result = cached.toolLocations.slice();
-		const currentLine = cached.lines.length;
-		const turn = this.currentTurn;
-		const userLines = this.formatUserLine(turn.userText, width);
-		let turnOffset = userLines.length;
-		let hasText = false;
-		const latestFailed = this.getLatestFailedTool();
-
-		for (const it of turn.items) {
-			if (it.kind === "thinking") {
-				const isHovered = this.hoveredThinkingTurnN === turn.n;
-				const collapsed = it.collapsed ?? turn.thinkingCollapsed ?? true;
-				turnOffset += formatThinkingLines(it.text, collapsed, width, isHovered).length;
-			} else if (it.kind === "text") {
-				turnOffset += this.formatAssistantMarkdown(it.text, width, !hasText).length;
-				hasText = true;
-			} else if (it.kind === "tool") {
-				const toolId = it.callId || `tool-${it.name}`;
-				const isExpanded = it.collapsed === false || this.expandedToolIds.has(toolId);
-				const isHovered = this.hoveredToolId === toolId;
-				const isNewestFailure = it === latestFailed;
-				const cardLines = formatToolCardLines(it.name, it.result ?? "", it.elapsedMs ?? 0, width, it.status, it.args, {
-					isExpanded,
-					isHovered,
-					isNewestFailure,
-					startedAt: it.startedAt,
-				});
-				result.push({
-					callId: toolId,
-					lineIndex: currentLine + turnOffset,
-					lineCount: cardLines.length,
-					name: it.name,
-					isExpanded,
-					turn,
-					item: it,
-				});
-				turnOffset += cardLines.length;
-			} else if (it.kind === "diff") {
-				turnOffset += formatDiffCardLines(it.oldText, it.newText, it.filename, it.collapsed ?? true, width).length;
-			} else if (it.kind === "interrupt") {
-				turnOffset += 1;
-			}
-		}
-
-		return result;
+		return this.ensureModel(width).toolLocations.slice();
 	}
 
 	/**
 	 * 获取所有会话压缩卡片行在完整行序列中的索引位置与元数据
 	 */
 	getCompactionLineIndices(width: number): CompactionLineLocation[] {
-		const cached = this.getSettledCache(width);
-		return cached.compactionLocations.slice();
+		return this.ensureModel(width).compactionLocations.slice();
 	}
 }

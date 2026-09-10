@@ -52,7 +52,7 @@ it("default jobs accept more than ten producers", async () => {
 
 it("sending to a busy child cannot publish waiting while its handle is busy", async () => {
 	const entered = deferred<void>(); const finish = deferred<void>();
-	const registry = new SubagentRegistry({ factory: new DefaultAgentFactory(), createTools: () => new ToolBroker(), provider: { name: "fixture", async stream(_req, emit) { entered.resolve(); await finish.promise; emit({ kind: "text", text: "done" }); emit({ kind: "finish", reason: "stop" }); } } });
+	const registry = new SubagentRegistry({ factory: new DefaultAgentFactory(), createTools: () => new ToolBroker(), provider: () => ({ name: "fixture", async stream(_req, emit) { entered.resolve(); await finish.promise; emit({ kind: "text", text: "done" }); emit({ kind: "finish", reason: "stop" }); } }) });
 	const child = registry.start({ ownerId: "root", label: "child", prompt: "first" }); await entered.promise;
 	await registry.send(child.id, "root", "second");
 	expect(registry.get(child.id, "root")).toMatchObject({ busy: true, status: "running" });

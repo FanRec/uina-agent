@@ -7,8 +7,6 @@ import { Key, matchesKey } from "../../core/keys.js";
 import { C, visibleWidth, truncateToWidth } from "../../core/utils.js";
 import type { ThinkingLevel } from "../../../core/types.js";
 
-export type EffortTierId = ThinkingLevel | "none";
-
 export interface EffortTier {
 	id: ThinkingLevel;
 	name: string;

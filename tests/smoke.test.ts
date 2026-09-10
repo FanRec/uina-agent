@@ -5,9 +5,11 @@ import { join } from "node:path";
 import { ToolBroker, type Tool } from "../src/tools/broker.js";
 import { Subject } from "../src/agent/loop.js";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
-import { projectModelHistory, SessionFormatError } from "../src/session/recovery.js";
+import { SessionFormatError } from "../src/session/recovery.js";
+import { projectModelHistory } from "../src/agent/projection.js";
 import type { ModelRequest, ModelProvider, StreamDelta } from "../src/core/types.js";
-import execCommandTool, { createByteDecoder, execCommandDirect } from "../src/extensions/runtime-tools/exec-command/index.js";
+import execCommandTool, { execCommandDirect } from "../src/extensions/runtime-tools/exec-command/index.js";
+import { OutputCollector } from "../src/extensions/runtime-tools/exec-command/output.js";
 import getTimeTool from "../src/extensions/runtime-tools/get-time/index.js";
 import { scriptedProvider, toolCallDelta, lastUser } from "./helpers/mock-provider.js";
 
@@ -408,19 +410,28 @@ describe("shell output", () => {
 		expect(readFileSync(path, "utf8").endsWith("END")).toBe(true);
 	});
 
-	it("keeps a useful suffix for a single long line", async () => {
+	it("keeps a bounded suffix for a single long line", async () => {
 		const quote = String.fromCharCode(34);
 		const result = await execCommandDirect(`node -e ${quote}process.stdout.write(String.fromCharCode(120).repeat(100000))${quote}`);
-		expect(result.stdout.length).toBeGreaterThan(0);
+		// A single 100k-char line is truncated to the byte budget, not dropped.
+		expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(50 * 1024);
+		expect(result.stdout.length).toBeGreaterThan(49 * 1024);
+		expect(/^x+$/.test(result.stdout)).toBe(true);
+		expect(result.stdoutMeta?.truncated).toBe(true);
+		expect(result.stdoutMeta?.fullOutputPath).toBeTruthy();
 	});
 
-	it("preserves split UTF-8 and deterministic invalid-byte fallback", () => {
-		const decoder = createByteDecoder();
+	it("preserves split UTF-8 across chunks and replaces invalid bytes", () => {
+		const collector = new OutputCollector();
 		const bytes = Buffer.from("中文测试", "utf8");
-		expect(decoder.push(bytes.subarray(0, 4)) + decoder.push(bytes.subarray(4)) + decoder.flush()).toBe("中文测试");
-		const invalid = createByteDecoder();
-		expect(invalid.push(Buffer.from([0xff, 0xfe]))).toBe(Buffer.from([0xff, 0xfe]).toString("latin1"));
-		const mixed = createByteDecoder();
-		expect(mixed.push(Buffer.from([0xe4])) + mixed.push(Buffer.from([0xff, 0xfe]))).toBe("äÿþ");
+		collector.push(bytes.subarray(0, 4));
+		collector.push(bytes.subarray(4));
+		collector.finish();
+		expect(collector.snapshot().content).toBe("中文测试");
+
+		const invalid = new OutputCollector();
+		invalid.push(Buffer.from([0xff, 0xfe]));
+		invalid.finish();
+		expect(invalid.snapshot().content).toBe("\uFFFD\uFFFD");
 	});
 });

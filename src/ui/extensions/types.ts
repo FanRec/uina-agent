@@ -61,7 +61,7 @@ export interface ExtensionUIContext {
 	notify(message: string, type?: "info" | "warning" | "error", timeoutMs?: number): void;
 
 	/** 清除当前的瞬态通知 */
-	clearNotification?(): void;
+	clearNotification(): void;
 
 	/** 设置状态栏/底栏文本（传 undefined 表示清除） */
 	setStatus(key: string, text: string | undefined): void;
@@ -101,8 +101,12 @@ export interface ExtensionUIContext {
 	onTerminalInput(handler: (data: string) => void): () => void;
 
 	/** 获取右侧导航轨模式 (scrollbar / timeline) */
-	getGutterMode?(): "scrollbar" | "timeline";
+	getGutterMode(): "scrollbar" | "timeline";
 
 	/** 设置右侧导航轨模式 */
-	setGutterMode?(mode: "scrollbar" | "timeline"): void;
+	setGutterMode(mode: "scrollbar" | "timeline"): void;
+
+	/** 是否存在真实交互式 UI。非 TTY 兜底实现返回 false，扩展据此分支，
+	 * 而不是把 undefined/false 当成用户的选择（Pi: ExtensionUIContext.hasUI）。 */
+	hasUI(): boolean;
 }

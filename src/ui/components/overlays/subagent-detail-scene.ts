@@ -102,15 +102,20 @@ export class SubagentDetailScene implements Component, Focusable {
 		const maxRows = Math.max(6, terminalHeight - 8);
 		let contentLines: string[] = [];
 
+		// Multi-line payloads must be split into real rows: the renderer maps one
+		// array entry to one terminal row, so an embedded \n would shift every
+		// following row (cursor, mouse hot zones, scroll offsets).
+		const flatten = (prefix: string, text: string): string[] =>
+			text.replace(/\r\n/g, "\n").split("\n").map((line) => `${prefix}${line}`);
 		if (this.activeTab === "logs") {
 			const readRes = this.subagentPort.read(this.subagent.id, this.ownerId, 0);
-			contentLines = readRes.output.map((o) => `[${o.kind}] ${o.text}`);
+			contentLines = readRes.output.flatMap((o) => flatten(`[${o.kind}] `, o.text));
 		} else {
 			const trRes = this.subagentPort.transcript(this.subagent.id, this.ownerId);
-			contentLines = trRes.messages.map((m) => {
+			contentLines = trRes.messages.flatMap((m) => {
 				const role = m.role.toUpperCase();
 				const text = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-				return `${C.bold}${role}:${C.reset} ${text}`;
+				return flatten(`${C.bold}${role}:${C.reset} `, text);
 			});
 		}
 

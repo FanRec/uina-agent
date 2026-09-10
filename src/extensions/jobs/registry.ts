@@ -97,6 +97,8 @@ interface TrackedJob {
 
 const OUTPUT_BYTES = 50 * 1024;
 const OUTPUT_LINES = 2000;
+/** Raw output kept for all settled jobs before the oldest buffers are released. */
+const SETTLED_OUTPUT_BUDGET = 4 * 1024 * 1024;
 
 export class JobRegistry {
 	private readonly jobs = new Map<string, TrackedJob>();
@@ -159,21 +161,24 @@ export class JobRegistry {
 		return id;
 	}
 
-	list(ownerId: string): JobSnapshot[] {
+	/** Omit ownerId to list every owner's jobs (host UI / diagnostics). */
+	list(ownerId?: string): JobSnapshot[] {
 		return [...this.jobs.values()]
-			.filter((job) => job.snapshot.ownerId === ownerId)
+			.filter((job) => ownerId === undefined || job.snapshot.ownerId === ownerId)
 			.map((job) => snapshotOf(job));
 	}
 
-	get(id: string, ownerId: string): JobSnapshot {
+	get(id: string, ownerId?: string): JobSnapshot {
 		return snapshotOf(this.expect(id, ownerId));
 	}
 
-	read(id: string, ownerId: string, cursor = 0): JobRead {
+	read(id: string, ownerId?: string, cursor = 0): JobRead {
 		const job = this.expect(id, ownerId);
 		if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error("cursor 无效");
 		const first = job.observations[0]?.seq ?? job.nextObservation + 1;
-		const outputLost = cursor > 0 && cursor < first - 1;
+		// Report dropped output even for a first read: a silent truncation is
+		// worse than an explicit "output was lost" flag.
+		const outputLost = cursor < first - 1;
 		const observations = job.observations.filter((item) => item.seq > cursor);
 		return {
 			cursor: job.nextObservation,
@@ -186,7 +191,7 @@ export class JobRegistry {
 		};
 	}
 
-	async wait(id: string, ownerId: string, timeoutMs: number, cursor = 0, signal?: AbortSignal): Promise<JobSnapshot> {
+	async wait(id: string, ownerId: string | undefined, timeoutMs: number, cursor = 0, signal?: AbortSignal): Promise<JobSnapshot> {
 		const job = this.expect(id, ownerId);
 		if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("等待时间无效");
 		if (isTerminal(job.snapshot.status) || job.nextObservation > cursor) return snapshotOf(job);
@@ -207,7 +212,7 @@ export class JobRegistry {
 		return snapshotOf(job);
 	}
 
-	cancel(id: string, ownerId: string, reason?: string): "cancellation-requested" | "already-finished" {
+	cancel(id: string, ownerId?: string, reason?: string): "cancellation-requested" | "already-finished" {
 		const job = this.expect(id, ownerId);
 		if (isTerminal(job.snapshot.status)) return "already-finished";
 		if (job.snapshot.status !== "stopping") {
@@ -271,10 +276,30 @@ export class JobRegistry {
 		job.snapshot.detail = outcome.detail ?? job.snapshot.detail;
 		job.snapshot.finishedAt = Date.now();
 		job.output = outcome.output;
+		this.pruneSettledObservations();
 		this.notifyWaiters(job);
 		this.notifyChanged(job);
 		for (const listener of this.resolved) {
 			try { listener(snapshotOf(job)); } catch { /* observers cannot alter settlement */ }
+		}
+	}
+
+	/** Settled jobs keep their snapshot and result, but their raw observation
+	 * buffers are released oldest-first once the total exceeds the budget.
+	 * Readers still see outputLost instead of silently missing text. */
+	private pruneSettledObservations(): void {
+		let bytes = 0;
+		const settled: TrackedJob[] = [];
+		for (const job of this.jobs.values()) {
+			if (!isTerminal(job.snapshot.status)) continue;
+			settled.push(job);
+			for (const observation of job.observations) bytes += Buffer.byteLength(observation.text, "utf8");
+		}
+		settled.sort((a, b) => (a.snapshot.finishedAt ?? 0) - (b.snapshot.finishedAt ?? 0));
+		for (const job of settled) {
+			if (bytes <= SETTLED_OUTPUT_BUDGET) break;
+			for (const observation of job.observations) bytes -= Buffer.byteLength(observation.text, "utf8");
+			job.observations.length = 0;
 		}
 	}
 
@@ -289,10 +314,10 @@ export class JobRegistry {
 		for (const waiter of [...job.waiters]) waiter();
 	}
 
-	private expect(id: string, ownerId: string): TrackedJob {
+	private expect(id: string, ownerId?: string): TrackedJob {
 		const job = this.jobs.get(id);
 		if (!job) throw new Error(`未知后台任务 ${id}`);
-		if (job.snapshot.ownerId !== ownerId) throw new Error(`后台任务 ${id} 不属于当前 owner`);
+		if (ownerId !== undefined && job.snapshot.ownerId !== ownerId) throw new Error(`后台任务 ${id} 不属于当前 owner`);
 		return job;
 	}
 

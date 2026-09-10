@@ -15,7 +15,7 @@
 
 import { CURSOR_MARKER, type Component, type Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
-import { C, charWidth, visibleWidth, truncateToWidth, copyToClipboardUnified } from "../../core/utils.js";
+import { C, visibleWidth, truncateToWidth, copyToClipboardUnified } from "../../core/utils.js";
 import { formatTokensCompact, renderSegmentedBar, type ContextSegments } from "../widgets/context-bar.js";
 
 const PASTE_MARKER_REGEX = /\[已粘贴 #(\d+) (\+\d+行|\d+字)\]/g;
@@ -48,7 +48,7 @@ export function findMarkers(text: string): MarkerSpan[] {
 	return list;
 }
 
-import { getPrevGraphemeIndex, getNextGraphemeIndex, graphemeSegmenter } from "../../core/utils.js";
+import { getPrevGraphemeIndex, getNextGraphemeIndex, graphemeSegmenter, graphemeWidth } from "../../core/utils.js";
 export { getPrevGraphemeIndex, getNextGraphemeIndex };
 
 export interface TextSegment {
@@ -101,7 +101,8 @@ export function segmentWithMarkers(
 }
 
 /**
- * 确保光标绝不会停留在粘贴标记内部（若落在内部，自动吸附到标记边界）。
+ * 确保光标绝不会停留在粘贴标记或 grapheme 簇内部：先吸附到标记边界，再吸附到簇边界
+ * （落在簇内部时吸附到簇首，光标永远指向一个完整的字素）。
  */
 export function snapCursorToMarkerBoundary(
 	cursorIndex: number,
@@ -114,7 +115,19 @@ export function snapCursorToMarkerBoundary(
 			return cursorIndex - m.start < m.end - cursorIndex ? m.start : m.end;
 		}
 	}
-	return cursorIndex;
+	return snapToGraphemeBoundary(cursorIndex, text);
+}
+
+/** 把任意字符串索引吸附到最近的 grapheme 簇边界（簇内部 → 簇首）。 */
+export function snapToGraphemeBoundary(index: number, text: string): number {
+	const clamped = Math.max(0, Math.min(index, text.length));
+	if (clamped === 0 || clamped === text.length) return clamped;
+	for (const seg of graphemeSegmenter.segment(text)) {
+		const end = seg.index + seg.segment.length;
+		if (clamped === seg.index) return clamped;
+		if (clamped > seg.index && clamped < end) return seg.index;
+	}
+	return clamped;
 }
 
 /** 清洗输入文本，彻底抹除所有 \r 与非法控制字符 */
@@ -420,6 +433,8 @@ export class InputLine implements Component, Focusable {
 		// 3. 特殊快捷键：Ctrl+C
 		if (matchesKey(data, Key.ctrl("c"))) {
 			if (this.isAllSelected) {
+				// Ctrl+A then Ctrl+C copies, as the component contract promises.
+				this.copySelection();
 				this.isAllSelected = false;
 				return;
 			}
@@ -484,11 +499,11 @@ export class InputLine implements Component, Focusable {
 			}
 		}
 
-		// 5. Shift+Enter / Alt+Enter 原生换行（在当前光标处插入 \n 并下移一行）
+		// 5. Shift+Enter 换行；空闲时的 Alt+Enter 也按换行处理（工作时它是 follow-up）
 		if (
 			matchesKey(data, Key.shiftEnter) ||
 			matchesKey(data, Key.shift("enter")) ||
-			matchesKey(data, Key.alt("enter"))
+			(matchesKey(data, Key.altEnter) && !this.isStreaming && !this.isBusy)
 		) {
 			this.text = this.text.slice(0, this.cursorIndex) + "\n" + this.text.slice(this.cursorIndex);
 			this.cursorIndex += 1;
@@ -511,8 +526,8 @@ export class InputLine implements Component, Focusable {
 			return;
 		}
 
-		// 5.2 工作态下 Tab 键：排队投递（follow-up），当前轮结束后按序处理
-		if (matchesKey(data, Key.tab) && (this.isStreaming || this.isBusy)) {
+		// 5.2 工作态下 Tab 或 Alt+Enter：排队投递（follow-up），当前轮结束后按序处理
+		if ((matchesKey(data, Key.tab) || matchesKey(data, Key.altEnter)) && (this.isStreaming || this.isBusy)) {
 			const submission = this.getText();
 			if (submission.trim()) {
 				this.addHistory(submission);
@@ -768,12 +783,12 @@ export class InputLine implements Component, Focusable {
 	setCursorByClick(clickCol: number): void {
 		let curW = 0;
 		let idx = 0;
-		for (let i = 0; i < this.text.length; i++) {
-			const ch = this.text[i]!;
-			const w = charWidth(ch);
+		// Iterate grapheme clusters so a click can never land inside a cluster.
+		for (const seg of graphemeSegmenter.segment(this.text)) {
+			const w = graphemeWidth(seg.segment);
 			if (curW + w / 2 >= clickCol) break;
 			curW += w;
-			idx++;
+			idx = seg.index + seg.segment.length;
 		}
 		this.cursorIndex = snapCursorToMarkerBoundary(Math.max(0, Math.min(idx, this.text.length)), this.text, this.pastes);
 	}
@@ -787,7 +802,7 @@ export class InputLine implements Component, Focusable {
 		const contentColLimit = Math.max(1, innerWidth - promptPrefixWidth);
 
 		type LayoutAtom =
-			| { type: "char"; raw: string; display: string; width: number; charIdx: number }
+			| { type: "char"; raw: string; display: string; width: number; charIdx: number; endIdx: number }
 			| { type: "chip"; raw: string; display: string; width: number; startIdx: number; endIdx: number };
 
 		const visualRows: VisualRow[] = [];
@@ -800,6 +815,11 @@ export class InputLine implements Component, Focusable {
 			const lineStr = logicalLines[lineIdx]!;
 			const atoms: LayoutAtom[] = [];
 			let colInLine = 0;
+
+			// Pre-segment the line once; atoms are grapheme clusters so a ZWJ emoji
+			// occupies its real width (2) instead of one atom per code point.
+			const clusters = Array.from(graphemeSegmenter.segment(lineStr));
+			let clusterCursor = 0;
 
 			while (colInLine < lineStr.length) {
 				const curGlobalIdx = globalCharIndex + colInLine;
@@ -817,16 +837,20 @@ export class InputLine implements Component, Focusable {
 					});
 					colInLine += m.tokenText.length;
 				} else {
-					const char = lineStr[colInLine]!;
-					const w = charWidth(char);
+					while (clusterCursor < clusters.length && clusters[clusterCursor]!.index + clusters[clusterCursor]!.segment.length <= colInLine) {
+						clusterCursor++;
+					}
+					const seg = clusters[clusterCursor];
+					const cluster = seg && seg.index <= colInLine ? lineStr.slice(colInLine, seg.index + seg.segment.length) : lineStr[colInLine]!;
 					atoms.push({
 						type: "char",
-						raw: char,
-						display: char,
-						width: w,
+						raw: cluster,
+						display: cluster,
+						width: graphemeWidth(cluster),
 						charIdx: curGlobalIdx,
+						endIdx: curGlobalIdx + cluster.length,
 					});
-					colInLine++;
+					colInLine += cluster.length;
 				}
 			}
 
@@ -857,7 +881,8 @@ export class InputLine implements Component, Focusable {
 
 				if (atom.type === "char") {
 					curRowPositions.push({ charIdx: atom.charIdx, col: curRowWidth });
-					if (!cursorHandled && this.cursorIndex === atom.charIdx) {
+					// A cursor inside a cluster highlights the whole cluster.
+					if (!cursorHandled && this.cursorIndex >= atom.charIdx && this.cursorIndex < atom.endIdx) {
 						cursorHandled = true;
 						curRowHasCursor = true;
 						curRowCursorCol = curRowWidth;

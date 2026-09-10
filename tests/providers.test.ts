@@ -57,7 +57,9 @@ describe("Anthropic provider protocol", () => {
 		expect(output.filter((d) => d.kind === "thinking_signature").map((d) => d.kind === "thinking_signature" && d.signature)).toEqual(["sig-0", "-1"]);
 		expect(output.filter((d) => d.kind === "text").map((d) => d.kind === "text" && d.text)).toEqual(["答", "案"]);
 		expect(output.at(-1)).toEqual({ kind: "finish", reason: "stop" });
-		expect(output.findLast(d => d.kind === "usage")).toEqual({ kind: "usage", usage: { input: 12, output: 5, cacheRead: 2, reasoning: 2, totalTokens: 19 } });
+		// Anthropic reports no authoritative total; the adapter keeps totalTokens
+		// absent so the UI shows an estimate instead of a fabricated exact number.
+		expect(output.findLast(d => d.kind === "usage")).toEqual({ kind: "usage", usage: { input: 12, output: 5, cacheRead: 2, reasoning: 2 } });
 	});
 
 	it("reassembles tool input and maps tool_use to tool_calls", async () => {

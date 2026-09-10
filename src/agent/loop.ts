@@ -207,7 +207,7 @@ export class Subject {
 		this.abort = new AbortController();
 		this.activeRun = new Promise<void>(resolve => { this.settleActiveRun = resolve; });
 		try {
-			const keepFrom = findKeepFrom(this.history, 0);
+			const keepFrom = findKeepFrom(this.history, this.compaction.keepRecentTokens, true);
 			if (keepFrom <= 0) {
 				await this.runtimeHooks.events.emit({
 					type: "session_compact_failed",
@@ -230,11 +230,12 @@ export class Subject {
 				this.provider,
 				this.systemPrompt,
 				this.tools.defs(),
-				{ ...this.compaction, contextWindow: 0, reserveTokens: 0, keepRecentTokens: 0 },
+				{ ...this.compaction, contextWindow: 0, reserveTokens: 0 },
 				this.runtimeHooks.provider,
 				this.abort?.signal,
 				this.provider.includeThinking,
 				instruction,
+				true,
 			);
 			if (!result) {
 				await this.runtimeHooks.events.emit({
@@ -565,7 +566,7 @@ export class Subject {
 								channel: "content",
 								text: delta.text,
 							});
-							this.hooks.onToken(delta.text);
+							try { this.hooks.onToken(delta.text); } catch (error) { this.reportError(error); }
 						} else if (delta.kind === "usage") {
 							usage = delta.usage;
 							this.lastReportedUsage = delta.usage;
@@ -731,7 +732,7 @@ export class Subject {
 		if (blocked.block) {
 				const reason = blocked.reason || "操作已被扩展阻止";
 				const blockedResult = `[blocked] 工具执行已被拦截: ${reason}`;
-				this.hooks.onToolDone?.(call.name, blockedResult, "not_started", call.id);
+				try { this.hooks.onToolDone?.(call.name, blockedResult, "not_started", call.id); } catch (error) { this.reportError(error); }
 				await this.storeEvent("tool_finished", {
 					callId: call.id,
 					name: call.name,
@@ -749,10 +750,10 @@ export class Subject {
 				status: outcome.status,
 				result: outcome.result,
 			});
-			this.hooks.onToolDone?.(call.name, outcome.result, outcome.status, call.id);
+			try { this.hooks.onToolDone?.(call.name, outcome.result, outcome.status, call.id); } catch (error) { this.reportError(error); }
 			return { callId: call.id, result: outcome.result, status: outcome.status };
 		}
-		this.hooks.onToolStart?.(call.name, call.args, call.id);
+		try { this.hooks.onToolStart?.(call.name, call.args, call.id); } catch (error) { this.reportError(error); }
 		await this.storeEvent("tool_started", {
 			callId: call.id,
 			name: call.name,
@@ -772,7 +773,7 @@ export class Subject {
 			status: outcomeStatus,
 			result: outcomeResult,
 		});
-		this.hooks.onToolDone?.(call.name, outcomeResult, outcomeStatus, call.id);
+		try { this.hooks.onToolDone?.(call.name, outcomeResult, outcomeStatus, call.id); } catch (error) { this.reportError(error); }
 		return { callId: call.id, result: outcomeResult, status: outcomeStatus, continuation: outcome.continuation };
 	}
 

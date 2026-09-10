@@ -37,6 +37,8 @@ export interface ExtensionRunnerOptions {
 	cwd: string;
 	tools: ToolBroker;
 	onError?: (text: string) => void;
+	/** Informational/warning notifications from the fallback UI before a real UI attaches. */
+	onNotice?: (text: string) => void;
 	onProvider?: (name: string, provider: ModelProvider) => ExtensionTeardown | void;
 	onCustomMessage?: (message: CustomMessage) => Promise<void>;
 	onCustomEntry?: (entry: CustomEntry) => Promise<void>;
@@ -48,12 +50,19 @@ export interface ExtensionRunnerOptions {
 class ActivationScope {
 	active = true;
 	private readonly cleanup: ExtensionTeardown[] = [];
+	private readonly keyed = new Map<string, ExtensionTeardown>();
 	private dispose?: ExtensionTeardown;
 
 	constructor(readonly id: string, readonly path: string) {}
 
 	own(teardown: ExtensionTeardown): void {
 		this.cleanup.push(teardown);
+	}
+
+	/** One cleanup per slot, run only when the activation is disposed.
+	 * Updating a slot must not clear the content that was just installed. */
+	ownKeyed(key: string, teardown: ExtensionTeardown): void {
+		if (!this.keyed.has(key)) this.keyed.set(key, teardown);
 	}
 
 	setDispose(dispose: ExtensionTeardown): void {
@@ -66,6 +75,10 @@ class ActivationScope {
 		if (this.dispose) {
 			try { await this.dispose(); } catch (error) { report("dispose", error); }
 		}
+		for (const teardown of this.keyed.values()) {
+			try { await teardown(); } catch (error) { report("cleanup", error); }
+		}
+		this.keyed.clear();
 		for (const cleanup of this.cleanup.splice(0).reverse()) {
 			try { await cleanup(); } catch (error) { report("cleanup", error); }
 		}
@@ -74,12 +87,16 @@ class ActivationScope {
 
 export class ExtensionRunner extends ExtensionHost {
 	private readonly extensions = new Map<string, ActivationScope>();
+	private readonly failures = new Map<string, { id: string; path: string; error: string }>();
 	private ui: ExtensionUIContext;
 	readonly registry = new ExtensionRegistry();
 
 	constructor(private readonly options: ExtensionRunnerOptions) {
 		super();
-		this.ui = createPrintUI((message, type) => options.onError?.(`[${type ?? "info"}] ${message}`));
+		this.ui = createPrintUI((message, type) => {
+			if (type === "error") options.onError?.(message);
+			else (options.onNotice ?? options.onError)?.(message);
+		});
 		this.onError((error) => options.onError?.(`[extension_error:${error.extensionName ?? "unknown"}:${error.event}] ${error.error}`));
 	}
 
@@ -104,6 +121,7 @@ export class ExtensionRunner extends ExtensionHost {
 		try {
 			await this.activateScope(`builtin:${id}`, `builtin:${id}`, activate);
 		} catch (error) {
+			this.failures.set(`builtin:${id}`, { id: `builtin:${id}`, path: `builtin:${id}`, error: errorMessage(error) });
 			this.emitOwnedError(`builtin:${id}`, "activate", error);
 		}
 	}
@@ -127,6 +145,14 @@ export class ExtensionRunner extends ExtensionHost {
 		return [...this.extensions.values()].map(({ id, path, active }) => ({ id, path, active }));
 	}
 
+	/** Active scopes plus the last failure for scopes that never activated.
+	 * Extensions that fail to load must stay observable instead of vanishing. */
+	diagnostics(): ReadonlyArray<{ id: string; path: string; status: "active" | "failed"; error?: string }> {
+		const active = [...this.extensions.values()].map(({ id, path }) => ({ id, path, status: "active" as const }));
+		const failed = [...this.failures.values()].map(({ id, path, error }) => ({ id, path, status: "failed" as const, error }));
+		return [...active, ...failed];
+	}
+
 	/** Produces a dispatch view over this one Host; it never creates another owner. */
 	runtimeHooks(scope?: readonly string[]): RuntimeHooks {
 		return createRuntimeHooks(this, scope);
@@ -138,13 +164,16 @@ export class ExtensionRunner extends ExtensionHost {
 			const module = await import(`${pathToFileURL(file).href}?uinaReload=${Date.now()}`) as ExtensionModule;
 			if (typeof module.default !== "function") throw new Error("扩展必须默认导出 activate(pi)");
 			await this.activateScope(id, file, module.default);
+			this.failures.delete(id);
 		} catch (error) {
+			this.failures.set(id, { id, path: file, error: errorMessage(error) });
 			this.emitOwnedError(id, "activate", error);
 		}
 	}
 
 	private async activateScope(id: string, path: string, activate: ExtensionActivation): Promise<void> {
 		if (this.extensions.has(id)) throw new Error(`扩展重复加载: ${id}`);
+		this.failures.delete(id);
 		const scope = new ActivationScope(id, path);
 		this.extensions.set(id, scope);
 		try {
@@ -164,7 +193,8 @@ export class ExtensionRunner extends ExtensionHost {
 	private apiFor(scope: ActivationScope): ExtensionAPI {
 		const assertActive = () => { if (!scope.active) throw new Error(`扩展上下文已失效: ${scope.id}`); };
 		const own = (dispose: ExtensionTeardown): void => { scope.own(dispose); };
-		const ui = ownedUI(dynamicUI(() => this.ui), scope.id, assertActive, own);
+		const ownKeyed = (key: string, dispose: ExtensionTeardown): void => { scope.ownKeyed(key, dispose); };
+		const ui = ownedUI(dynamicUI(() => this.ui), scope.id, assertActive, own, ownKeyed);
 		return {
 			id: scope.id, path: scope.path, ui,
 			reportError: error => this.emitOwnedError(scope.id, "external", error),
@@ -188,9 +218,24 @@ export class ExtensionRunner extends ExtensionHost {
 			registerCommand: (command) => { assertActive(); own(this.registry.registerCommand(command)); },
 			registerMessageRenderer: (type, renderer) => { assertActive(); own(this.registry.registerMessageRenderer(type, renderer)); },
 			registerEntryRenderer: (type, renderer) => { assertActive(); own(this.registry.registerEntryRenderer(type, renderer)); },
-			registerProvider: (name, provider) => { assertActive(); const dispose = this.options.onProvider?.(name, provider); if (dispose) own(dispose); },
-			sendMessage: async (message) => { assertActive(); await this.options.onCustomMessage?.(structuredClone(message)); },
-			appendEntry: async (entry) => { assertActive(); await this.options.onCustomEntry?.(structuredClone(entry)); },
+			registerProvider: (name, provider) => {
+				assertActive();
+				// A provider that lands nowhere must fail loudly, never silently
+				// (Pi: extension runner always has a model registry fallback).
+				if (!this.options.onProvider) throw new Error(`宿主未提供 Provider 注册入口，无法注册 ${name}`);
+				const dispose = this.options.onProvider(name, provider);
+				if (dispose) own(dispose);
+			},
+			sendMessage: async (message) => {
+				assertActive();
+				if (!this.options.onCustomMessage) throw new Error("宿主未提供 custom message 入口");
+				await this.options.onCustomMessage(structuredClone(message));
+			},
+			appendEntry: async (entry) => {
+				assertActive();
+				if (!this.options.onCustomEntry) throw new Error("宿主未提供 custom entry 入口");
+				await this.options.onCustomEntry(structuredClone(entry));
+			},
 		};
 	}
 
@@ -199,35 +244,88 @@ export class ExtensionRunner extends ExtensionHost {
 	}
 }
 
+/** Live view over the current UI context. Forwarding is generic (Pi: {...ui}),
+ * so adding a member to ExtensionUIContext cannot be silently dropped here. */
 function dynamicUI(get: () => ExtensionUIContext): ExtensionUIContext {
-	return {
-		select: (...args) => get().select(...args), confirm: (...args) => get().confirm(...args), input: (...args) => get().input(...args), notify: (...args) => get().notify(...args),
-		clearNotification: () => get().clearNotification?.(),
-		setStatus: (...args) => get().setStatus(...args), setWorkingMessage: (...args) => get().setWorkingMessage(...args), setWorkingVisible: (...args) => get().setWorkingVisible(...args), setWidget: (...args) => get().setWidget(...args),
-		setHeader: (...args) => get().setHeader(...args), setFooter: (...args) => get().setFooter(...args), showOverlay: (...args) => get().showOverlay(...args), pasteToEditor: (...args) => get().pasteToEditor(...args), setEditorText: (...args) => get().setEditorText(...args), getEditorText: () => get().getEditorText(), onTerminalInput: (...args) => get().onTerminalInput(...args),
-	};
+	return new Proxy({} as ExtensionUIContext, {
+		get: (_target, property) => {
+			const value = Reflect.get(get() as object, property) as unknown;
+			return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(get()) : value;
+		},
+	});
 }
 
-function ownedUI(base: ExtensionUIContext, id: string, assertActive: () => void, own: (dispose: ExtensionTeardown) => void): ExtensionUIContext {
+/** Scope-owned view: every call asserts the activation is alive, stateful UI
+ * slots are namespaced per extension and cleaned up on deactivate. */
+function ownedUI(
+	base: ExtensionUIContext,
+	id: string,
+	assertActive: () => void,
+	own: (dispose: ExtensionTeardown) => void,
+	ownKeyed: (key: string, dispose: ExtensionTeardown) => void,
+): ExtensionUIContext {
 	const key = (value: string) => `${id}:${value}`;
-	return {
-		select: (...args) => { assertActive(); return base.select(...args); }, confirm: (...args) => { assertActive(); return base.confirm(...args); }, input: (...args) => { assertActive(); return base.input(...args); }, notify: (...args) => { assertActive(); base.notify(...args); },
-		clearNotification: () => { assertActive(); base.clearNotification?.(); },
-		setStatus: (name, text) => { assertActive(); base.setStatus(key(name), text); own(() => base.setStatus(key(name), undefined)); },
-		setWorkingMessage: (message) => { assertActive(); base.setWorkingMessage(message); }, setWorkingVisible: (visible) => { assertActive(); base.setWorkingVisible(visible); },
-		setWidget: (name, component, options) => { assertActive(); base.setWidget(key(name), component, options); own(() => base.setWidget(key(name), undefined)); },
-		setHeader: (component) => { assertActive(); base.setHeader(component); own(() => base.setHeader(undefined)); }, setFooter: (component) => { assertActive(); base.setFooter(component); own(() => base.setFooter(undefined)); },
-		showOverlay: (component, options) => { assertActive(); const handle = base.showOverlay(component, options); own(() => handle.hide()); return handle; },
-		pasteToEditor: (text) => { assertActive(); base.pasteToEditor(text); }, setEditorText: (text) => { assertActive(); base.setEditorText(text); }, getEditorText: () => { assertActive(); return base.getEditorText(); },
-		onTerminalInput: (handler) => { assertActive(); const dispose = base.onTerminalInput(handler); own(dispose); return dispose; },
+	const overrides: Partial<ExtensionUIContext> = {
+		setStatus: (name, text) => {
+			assertActive();
+			const scoped = key(name);
+			base.setStatus(scoped, text);
+			ownKeyed(`status:${name}`, () => base.setStatus(scoped, undefined));
+		},
+		setWidget: (name, component, options) => {
+			assertActive();
+			const scoped = key(name);
+			base.setWidget(scoped, component, options);
+			ownKeyed(`widget:${name}`, () => base.setWidget(scoped, undefined));
+		},
+		setHeader: (component) => {
+			assertActive();
+			base.setHeader(component);
+			ownKeyed("header", () => base.setHeader(undefined));
+		},
+		setFooter: (component) => {
+			assertActive();
+			base.setFooter(component);
+			ownKeyed("footer", () => base.setFooter(undefined));
+		},
+		showOverlay: (component, options) => {
+			assertActive();
+			const handle = base.showOverlay(component, options);
+			own(() => handle.hide());
+			return handle;
+		},
+		onTerminalInput: (handler) => {
+			assertActive();
+			const dispose = base.onTerminalInput(handler);
+			own(dispose);
+			return dispose;
+		},
 	};
+	return new Proxy(base, {
+		get: (target, property) => {
+			const override = Reflect.get(overrides as object, property) as unknown;
+			if (override !== undefined) return override;
+			const value = Reflect.get(target as object, property) as unknown;
+			if (typeof value !== "function") return value;
+			return (...args: unknown[]) => {
+				assertActive();
+				return (value as (...inner: unknown[]) => unknown).apply(target, args);
+			};
+		},
+	});
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }
 
 export function createPrintUI(write: (message: string, type?: "info" | "warning" | "error") => void): ExtensionUIContext {
 	return {
 		select: async () => undefined, confirm: async () => false, input: async () => undefined,
 		notify: write, clearNotification: () => {}, setStatus: () => {}, setWorkingMessage: () => {}, setWorkingVisible: () => {}, setWidget: () => {}, setHeader: () => {}, setFooter: () => {},
+		hasUI: () => false,
 		showOverlay: () => ({ hide() {}, setHidden() {}, isHidden: () => true, focus() {}, unfocus() {}, isFocused: () => false }),
 		pasteToEditor: () => {}, setEditorText: () => {}, getEditorText: () => "", onTerminalInput: () => () => {},
+		getGutterMode: () => "scrollbar", setGutterMode: () => {},
 	};
 }
