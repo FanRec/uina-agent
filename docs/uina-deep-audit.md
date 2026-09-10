@@ -287,6 +287,16 @@
 - **事实**：本次全量测试首跑出现 1 个 `tests/ui.test.ts` 用例失败，且该文件耗时由 621ms 升至 30673ms；单文件复跑 131/131 通过（1.25s），全量复跑 289/289 通过。判定为并行满载下的时序 flake，与本次纯类型删除无关。这印证了本节 P3 发现：该文件的耦合边界是组件内部实现与时序，而非公开接缝。
 - **未验证**：`SPLIT_DIFF_MIN_COLS`（声明 110、行为 80）、`wantsKeyRelease`、`EffortTierId` 等其余未接线项未处理。其中 `SPLIT_DIFF_MIN_COLS` 属行为冲突而非死代码，删除前需先确定 80 还是 110 是产品事实。
 
+#### 复检（2026-09-10，检查点 `e082b3a` 之后：契约归位与事实修复）
+
+- **事实**：扩展契约已从 `src/ui/extensions/` 移到 `src/extensions/`（`ui-contract.ts` 接口、`renderer-registry.ts` 注册表），UIHost 的后端实现留在 `src/ui/extension-ui-context.ts`。此前 `src/extensions ↔ src/ui` 是**双向循环**；现在方向单一：`ui/core`（叶子原语）← `extensions` ← `ui`。
+- **事实**：`scripts/check-boundaries.mjs` 从 2 条规则扩到 4 条，新增「UI core 必须是叶子」与「extensions 只能依赖 ui/core」。脚本新增 `--selftest`（每条规则都有必须被拒绝的样例），并已用一个真实违规文件实测：探针 `exit=1` 且指名文件与规则，清理后 `exit=0`。
+- **事实**：移除三处写入 wire 的发明值：`providers.ts` 的 `thinkingBudget()` 数字表、Anthropic `max_tokens: Math.max(8192, thinking+1024)`、Gemini 按模型名推断 `thinkingFormat`。改由显式 `maxOutputTokens` / `geminiThinkingFormat` / `thinkingBudgets` 提供；缺失时 `assertProviderFacts()` 在 Provider 创建阶段抛错。`configuredThinkingLevels()` 不再做模型名匹配，也不再静默抹掉声明。
+- **事实**：`extensions/host.ts` 与 `runtime/guard.ts` 逐字重复的 `clone`/`deepFreeze`/`readonlySnapshot` 已去重，host 改为引用单一实现；`ui-host.ts` 重复的剪贴板实现改为调用 `core/utils.ts` 的 `copyToClipboardUnified`。
+- **事实**：删除零引用代码：`src/ui/index.ts`（整文件 52 行）、`primitives/text.ts`、`primitives/spacer.ts`、`InteractiveTUI as SimpleTUI` 别名、`core/types.ts` 的 `Role` 与整块内容联合体（`TextContent`/`ThinkingContent`/`ToolCallContent`/`ToolResultContent`/`CustomContent`/`ContentBlock`，此前全仓仅自引用）、`session/types.ts` 的 `ToolLifecycleData`。
+- **测试行为**：`pnpm typecheck`（含 4 条边界规则）、`pnpm test`（18 文件、290 用例）、`pnpm build` 均通过。其中 `provider-facts.test.ts` 新增一条用例，把「显式配置是档位唯一来源、缺失 wire 事实即报错」固化为测试行为。
+- **未验证**：`GEMINI_THINKING_LEVELS` 被删除后，Gemini 档位与预算完全由用户声明；这些数值是否与厂商当前文档一致，本次未联网核对，也无真实 Gemini 凭证。真实 Provider 的 thinking 编码响应仍未验证。
+
 ## 验证结果与未验证边界
 
 - **事实**：在基线 `6b24c80` 上，本次执行 `pnpm typecheck`、`pnpm test -- --reporter=dot` 与 `pnpm build` 均成功；测试为 11 文件、224 用例。

@@ -35,7 +35,11 @@ async function streamProvider(provider: ReturnType<typeof createProvider>, reque
 }
 
 function baseConfig(baseUrl: string, type: ProviderConfig["type"]): ProviderConfig {
-	return { baseUrl, apiKey: "local-test", model: "model", modelContextWindow: 4096, maxRetries: 0, type, thinkingLevels: ["off", "high"] };
+	const shared: ProviderConfig = { baseUrl, apiKey: "local-test", model: "model", modelContextWindow: 4096, maxRetries: 0, type, thinkingLevels: ["off", "high"] };
+	// 这些事实必须显式声明：适配器不再发明 max_tokens、wire 控制方式或 thinking 预算。
+	if (type === "anthropic") return { ...shared, maxOutputTokens: 4096, thinkingBudgets: { high: 2048 } };
+	if (type === "gemini") return { ...shared, geminiThinkingFormat: "level" };
+	return shared;
 }
 
 describe("Anthropic provider protocol", () => {

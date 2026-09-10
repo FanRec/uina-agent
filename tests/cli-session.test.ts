@@ -231,6 +231,7 @@ describe("CLI provider protocol closure", () => {
 					apiKey: "local-test",
 					model: "anthropic-local",
 					modelContextWindow: 4096,
+					maxOutputTokens: 4096,
 					thinkingLevels: ["off"],
 				},
 			},

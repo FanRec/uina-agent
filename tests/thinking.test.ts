@@ -81,7 +81,7 @@ describe("OpenAI-compatible thinking", () => {
 
 	it("creates the configured Anthropic and Gemini adapter kinds", () => {
 		const base = { baseUrl: "https://example.test", apiKey: "x", model: "m", modelContextWindow: 4096 };
-		expect(createProvider("a", { ...base, type: "anthropic", thinkingLevels: ["off", "high"] }).thinkingLevels).toEqual(["off", "high"]);
+		expect(createProvider("a", { ...base, type: "anthropic", thinkingLevels: ["off", "high"], maxOutputTokens: 4096, thinkingBudgets: { high: 2048 } }).thinkingLevels).toEqual(["off", "high"]);
 		expect(createProvider("g", { ...base, type: "gemini" }).thinkingLevels).toBeUndefined();
 	});
 });

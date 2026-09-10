@@ -28,8 +28,8 @@ import { PendingQueueComponent } from "../src/ui/components/widgets/pending-queu
 import { InputLine, segmentWithMarkers, snapCursorToMarkerBoundary } from "../src/ui/components/editor/input-line.js";
 import { calculateContextSegments } from "../src/agent/context.js";
 import { combineQueuedDraft } from "../src/cli/draft.js";
-import { ExtensionRegistry } from "../src/ui/extensions/registry.js";
-import { createExtensionUIContext } from "../src/ui/extensions/context.js";
+import { ExtensionRegistry } from "../src/extensions/renderer-registry.js";
+import { createExtensionUIContext } from "../src/ui/extension-ui-context.js";
 import { CustomMessageComponent } from "../src/ui/components/transcript/custom-message.js";
 import { CustomEntryComponent } from "../src/ui/components/transcript/custom-entry.js";
 import { JobRegistry, type JobOutcome, type JobSnapshot } from "../src/extensions/jobs/registry.js";

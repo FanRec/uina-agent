@@ -17,34 +17,71 @@ export interface ProviderConfig {
 	modelContextWindow?: number;
 	maxContextWindow?: number;
 	maxRetries?: number;
+	/** Anthropic 的 /messages 必须显式给出 max_tokens；Uina 不发明这个输出上限。 */
+	maxOutputTokens?: number;
 	/** Gemini models that explicitly require function-call ids on the wire. Unknown stays omitted. */
 	geminiToolCallIds?: boolean;
+	/** Gemini thinking 的 wire 控制方式。声明 thinkingLevels 时必须显式给出，绝不按模型名推断。 */
 	geminiThinkingFormat?: "budget" | "level";
+	/** thinking 档位 → 数值预算的显式映射（Anthropic budget_tokens / Gemini thinkingBudget）。 */
+	thinkingBudgets?: Partial<Record<ThinkingLevel, number>>;
 	type?: ProviderKind;
 	thinkingFormat?: "openai" | "deepseek" | "qwen";
 	thinkingLevels?: readonly ThinkingLevel[];
 }
 
-// generateContent controls, checked against Google's thinking guide on 2026-09-05.
-const GEMINI_THINKING_LEVELS: Record<string, readonly ThinkingLevel[]> = {
-	"gemini-3-pro-preview": ["low", "high"],
-	"gemini-3.1-pro-preview": ["low", "medium", "high"],
-	"gemini-3-flash-preview": ["minimal", "low", "medium", "high"],
-	"gemini-2.5-pro": ["minimal", "low", "medium", "high", "xhigh", "max"],
-	"gemini-2.5-flash": ["off", "minimal", "low", "medium", "high", "xhigh"],
-};
-
+/**
+ * 显式配置是 thinking 能力的唯一来源。
+ *
+ * 这里刻意不做任何模型名匹配：曾经存在一张按模型名索引的档位表，它把猜测当成事实，
+ * 又会静默收窄甚至抹掉用户显式声明的档位。未知保持未知，由 UI 显示为未知
+ * （ui-host 的「当前模型未声明思考档位」分支），而不是补造默认值。
+ */
 export function configuredThinkingLevels(conf: ProviderConfig): readonly ThinkingLevel[] | undefined {
-	const declared = conf.thinkingLevels;
-	if (!declared?.length) return undefined;
-	const known: readonly ThinkingLevel[] | undefined =
-		["deepseek-v4-flash", "deepseek-v4-pro"].includes(conf.model) && conf.thinkingFormat === "deepseek"
-			? ["off", "low", "high", "max"]
-			: conf.thinkingFormat === "qwen" ? ["off", "high"] : undefined;
-	const supported = known ?? (conf.type === "gemini" ? GEMINI_THINKING_LEVELS[conf.model] : undefined);
-	const encoderLevels: readonly ThinkingLevel[] | undefined = conf.type === "gemini" && conf.geminiThinkingFormat === "level" ? ["minimal", "low", "medium", "high"] : undefined;
-	const effective = declared.filter(level => (!supported || supported.includes(level)) && (!encoderLevels || encoderLevels.includes(level)));
-	return effective.length ? effective : undefined;
+	return conf.thinkingLevels?.length ? [...conf.thinkingLevels] : undefined;
+}
+
+const GEMINI_LEVEL_ENCODABLE: readonly ThinkingLevel[] = ["minimal", "low", "medium", "high"];
+
+/**
+ * 拒绝一切会让 Uina 把猜测写成事实的配置组合。
+ * 在真实 Provider 创建时调用，因此错误发生在启动阶段，且指名 provider 与缺失字段。
+ */
+export function assertProviderFacts(conf: ProviderConfig): void {
+	const levels = conf.thinkingLevels;
+	const kind: ProviderKind = conf.type ?? "openai-compatible";
+
+	if (kind === "anthropic" && conf.maxOutputTokens === undefined) {
+		throw new Error(
+			`provider ${conf.model} 使用 Anthropic 协议：/messages 必须显式给出 max_tokens，请在配置中提供 maxOutputTokens；Uina 不发明输出上限`,
+		);
+	}
+	if (!levels?.length) return;
+	const encodesThinking = levels.some(level => level !== "off");
+
+	if (kind === "anthropic" || (kind === "gemini" && conf.geminiThinkingFormat === "budget")) {
+		const missing = levels.filter(level => level !== "off" && conf.thinkingBudgets?.[level] === undefined);
+		if (missing.length > 0) {
+			throw new Error(
+				`provider ${conf.model} 的 thinkingBudgets 缺少档位 ${missing.join("/")}；这些数值直接写进 wire，Uina 不发明 thinking 预算`,
+			);
+		}
+	}
+
+	if (kind !== "gemini" || !encodesThinking) return;
+	if (conf.geminiThinkingFormat === undefined) {
+		throw new Error(
+			`provider ${conf.model} 声明了 thinkingLevels 但缺少 geminiThinkingFormat（"budget" 或 "level"）；Uina 不根据模型名猜测 wire 控制`,
+		);
+	}
+	if (conf.geminiThinkingFormat === "level") {
+		const unencodable = levels.filter(level => level !== "off" && !GEMINI_LEVEL_ENCODABLE.includes(level));
+		if (unencodable.length > 0) {
+			throw new Error(
+				`provider ${conf.model} 的 geminiThinkingFormat: "level" 无法编码档位 ${unencodable.join("/")}；请改用 "budget" 或修正 thinkingLevels`,
+			);
+		}
+	}
 }
 
 export interface UinaConfig {
@@ -123,6 +160,19 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 			if (provider.geminiToolCallIds !== undefined && typeof provider.geminiToolCallIds !== "boolean") {
 				throw new Error(`配置 ${path} 的 provider ${name} 的 geminiToolCallIds 无效`);
 			}
+			if (provider.maxOutputTokens !== undefined && (typeof provider.maxOutputTokens !== "number" || !Number.isSafeInteger(provider.maxOutputTokens) || provider.maxOutputTokens <= 0)) {
+				throw new Error(`配置 ${path} 的 provider ${name} 的 maxOutputTokens 无效`);
+			}
+			if (provider.thinkingBudgets !== undefined) {
+				if (typeof provider.thinkingBudgets !== "object" || provider.thinkingBudgets === null || Array.isArray(provider.thinkingBudgets)) {
+					throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingBudgets 必须是对象`);
+				}
+				for (const [level, budget] of Object.entries(provider.thinkingBudgets as Record<string, unknown>)) {
+					if (!["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(level) || typeof budget !== "number" || !Number.isSafeInteger(budget) || budget < 0) {
+						throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingBudgets.${level} 无效`);
+					}
+				}
+			}
 			if (provider.type !== undefined && provider.type !== "openai-compatible" && provider.type !== "anthropic" && provider.type !== "gemini") {
 				throw new Error(`配置 ${path} 的 provider ${name} 的 type 无效`);
 			}
@@ -141,6 +191,8 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 				...(provider.maxContextWindow === undefined ? {} : { maxContextWindow: provider.maxContextWindow as number }),
 				...(provider.maxRetries === undefined ? {} : { maxRetries: provider.maxRetries }),
 				...(provider.geminiToolCallIds === undefined ? {} : { geminiToolCallIds: provider.geminiToolCallIds as boolean }),
+				...(provider.maxOutputTokens === undefined ? {} : { maxOutputTokens: provider.maxOutputTokens as number }),
+				...(provider.thinkingBudgets === undefined ? {} : { thinkingBudgets: provider.thinkingBudgets as Partial<Record<ThinkingLevel, number>> }),
 				baseUrl: typeof provider.baseUrl === "string" ? provider.baseUrl : defaultBaseUrl(providerType),
 				type: providerType,
 				...(provider.thinkingFormat === undefined ? {} : { thinkingFormat: provider.thinkingFormat as ProviderConfig["thinkingFormat"] }),

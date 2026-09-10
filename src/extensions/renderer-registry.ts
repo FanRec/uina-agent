@@ -2,7 +2,7 @@
  * 扩展渲染器与命令注册中心（ExtensionRegistry）。
  */
 
-import type { EntryRenderer, LocalCommand, MessageRenderer } from "./types.js";
+import type { EntryRenderer, LocalCommand, MessageRenderer } from "./ui-contract.js";
 
 export class ExtensionRegistry {
 	private readonly messageRenderers = new Map<string, MessageRenderer>();

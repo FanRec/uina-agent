@@ -45,7 +45,9 @@ UINA_ONESHOT_MSG="你好" pnpm start
 
 `apiKey` 可由 `UINA_API_KEY_DEEPSEEK` 覆盖。配置会在启动时进行结构校验。
 
-`modelContextWindow` 是模型真实物理上限，必须显式声明；`maxContextWindow` 是可选的用户限制，最终有效上限取两者较小值。旧 `contextWindow` 已移除。`type` 可选为 `openai-compatible`、`anthropic` 或 `gemini`，省略时使用 `openai-compatible`。Anthropic 和 Gemini 可以省略 `baseUrl`，使用各自官方 endpoint。思考等级支持 `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，但可用档位必须由 `thinkingLevels`、可信模型目录或 Provider 明确提供；Uina 不再根据模型名称猜测。能力未知时只使用 `off`，界面显示未知而不是虚构默认值。TTY 默认显示思考流，非 TTY 可通过 `UINA_SHOW_THINKING=1` 显示。
+`modelContextWindow` 是模型真实物理上限，必须显式声明；`maxContextWindow` 是可选的用户限制，最终有效上限取两者较小值。旧 `contextWindow` 已移除。`type` 可选为 `openai-compatible`、`anthropic` 或 `gemini`，省略时使用 `openai-compatible`。Anthropic 和 Gemini 可以省略 `baseUrl`，使用各自官方 endpoint。思考等级支持 `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。可用档位只来自显式 `thinkingLevels` 或 Provider 目录：Uina 不做任何模型名称匹配，也不会静默收窄或抹掉已声明的档位；能力未知时保持未知，界面显示未知而不是虚构默认值。TTY 默认显示思考流，非 TTY 可通过 `UINA_SHOW_THINKING=1` 显示。
+
+Anthropic 协议要求 `max_tokens`，因此该 Provider 必须显式声明 `maxOutputTokens`。Gemini 在声明 `thinkingLevels` 时必须声明 `geminiThinkingFormat`（`"level"` 或 `"budget"`）；选用 `"budget"` 时还必须用 `thinkingBudgets` 给出每个档位的数值。这些值会直接写进厂商 wire，Uina 不替它们发明默认值：缺失时在 Provider 创建阶段报错并指名字段。
 
 Gemini 若某个已确认的模型要求在 function call/function response 中携带调用 ID，可显式设置 `geminiToolCallIds: true`；省略时不猜测模型能力，也不会自动添加协议字段。
 

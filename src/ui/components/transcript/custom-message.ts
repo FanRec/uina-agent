@@ -7,7 +7,7 @@
 import { Container } from "../../core/container.js";
 import { C, truncateToWidth, visibleWidth } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
-import type { CustomMessage, MessageRenderer } from "../../extensions/types.js";
+import type { CustomMessage, MessageRenderer } from "../../../extensions/ui-contract.js";
 
 export class CustomMessageComponent extends Container {
 	private expanded = false;

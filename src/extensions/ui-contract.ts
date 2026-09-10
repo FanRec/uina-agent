@@ -2,7 +2,7 @@
  * 扩展体系核心契约与渲染器类型定义（对齐 Pi ExtensionUIContext 规范）。
  */
 
-import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "../core/types.js";
+import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "../ui/core/types.js";
 
 /** 自定义消息：进入会话历史，也参与模型上下文 */
 export interface CustomMessage<T = unknown> {

@@ -1,7 +1,5 @@
 /** 跨层共享的公共类型：会话消息与模型协议形状。 */
 
-export type Role = "system" | "user" | "assistant" | "tool";
-
 export type DeliveryMode = "direct" | "steer" | "followUp";
 export type QueueMode = "all" | "one-at-a-time";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -73,49 +71,6 @@ export interface CompletedToolCall {
 	/** Provider-native reasoning signature associated with this tool call, when supplied. */
 	thinkingSignature?: string;
 }
-
-export interface TextContent {
-	type: "text";
-	text: string;
-}
-
-export interface ThinkingContent {
-	type: "thinking";
-	thinking: string;
-	signature?: string;
-}
-
-export interface ToolCallContent {
-	type: "toolCall";
-	id: string;
-	name: string;
-	args: Record<string, unknown> | unknown;
-	argsValid?: boolean;
-	thinkingSignature?: string;
-}
-
-export interface ToolResultContent {
-	type: "toolResult";
-	callId: string;
-	name?: string;
-	result: string;
-	status?: ToolResultStatus;
-}
-
-export interface CustomContent {
-	type: "custom";
-	customType: string;
-	content: string;
-	display?: boolean;
-	details?: unknown;
-}
-
-export type ContentBlock =
-	| TextContent
-	| ThinkingContent
-	| ToolCallContent
-	| ToolResultContent
-	| CustomContent;
 
 export interface SystemAgentMessage {
 	id?: string;

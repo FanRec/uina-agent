@@ -73,7 +73,7 @@ shell 非零退出码为 `failed`；后台任务成功创建表示此次工具�
 
 ## 模型事实
 
-`modelContextWindow` 必须来自显式配置或可信 Provider/catalog 数据；未知上限保持未知并禁用自动 compaction。thinking 档位依据显式声明，并与已核对的模型控制能力取交集；未知型号不根据名称猜测。UI 不补造 off，不通过 setter 或 slider 扩充可选档位。Provider usage 缺失字段保留缺失，缺少可靠总量时显示估算，不复用上一次请求的 usage；基于字符的 token/TPS 标 `~`。OpenAI-compatible finish 后继续读取 usage-only 尾，非法后续内容报错。
+`modelContextWindow` 必须来自显式配置或可信 Provider/catalog 数据；未知上限保持未知并禁用自动 compaction。thinking 档位只来自显式配置或 Provider 目录：已移除按模型名索引的档位表，声明既不会被静默收窄也不会被静默抹掉，未声明即未知。Anthropic 的 `maxOutputTokens`、Gemini 的 `geminiThinkingFormat` 与 `thinkingBudgets` 都是必须显式声明的 wire 事实，缺失时在 Provider 创建阶段报错并指名字段，绝不由代码补造。UI 不补造 off，不通过 setter 或 slider 扩充可选档位。Provider usage 缺失字段保留缺失，缺少可靠总量时显示估算，不复用上一次请求的 usage；基于字符的 token/TPS 标 `~`。OpenAI-compatible finish 后继续读取 usage-only 尾，非法后续内容报错。
 
 Provider adapter 只向 Agent 发出规范化的 `stop`、`tool_calls` 或 `length`。Anthropic 的 `message_start`/content block/`message_delta`/`message_stop` 和 Gemini 的 candidate `finishReason` 都必须形成完整终止；未知、拒绝、安全拦截、非法工具参数和不支持的终止原因会作为可见错误抛出，不会伪装为正常结束。`length` 即使带有工具调用也只保留 assistant 事实，不执行副作用；只有 `tool_calls` 才进入 ToolBroker。usage 在单次 Provider 请求内按字段合并，跨请求不复用。Gemini tool result 的函数名从历史 assistant tool call 推导；`geminiToolCallIds` 只有显式配置为 `true` 才写入 wire。
 

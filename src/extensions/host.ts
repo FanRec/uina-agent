@@ -9,6 +9,7 @@
  */
 
 import type { ChatMsg } from "../core/types.js";
+import { copyValue, readonlySnapshot } from "../runtime/guard.js";
 import type {
 	DeepReadonly,
 	OutputEvent,
@@ -346,13 +347,13 @@ export class ExtensionHost {
 					payload: current,
 				}));
 				if (res !== undefined) {
-					current = clone(res);
+					current = copyValue(res);
 				}
 			} catch (err) {
 				this.emitError("before_provider_request", err);
 			}
 		}
-		return clone(current);
+		return copyValue(current);
 	}
 
 	/** 触发 Provider 响应审计 */
@@ -385,23 +386,4 @@ export class ExtensionHost {
 		const visible = new Set(scope);
 		return [...set].filter((entry) => entry.scopeId === undefined || visible.has(entry.scopeId)).map((entry) => entry.handler);
 	}
-}
-
-function readonlySnapshot<T>(value: T): DeepReadonly<T> {
-	return deepFreeze(clone(value)) as DeepReadonly<T>;
-}
-
-function clone<T>(value: T): T {
-	try { return structuredClone(value); }
-	catch {
-		if (Array.isArray(value)) return value.map(clone) as T;
-		if (value && typeof value === "object") return { ...(value as Record<string, unknown>) } as T;
-		return value;
-	}
-}
-
-function deepFreeze<T>(value: T): T {
-	if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
-	for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
-	return Object.freeze(value);
 }

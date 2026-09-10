@@ -18,7 +18,7 @@ import { formatCompactionCardLines, type CompactionRecord } from "./compact-view
 import { SmoothRevealController } from "./smooth-reveal.js";
 import { CustomMessageComponent } from "./custom-message.js";
 import { CustomEntryComponent } from "./custom-entry.js";
-import type { CustomMessage, CustomEntry, MessageRenderer, EntryRenderer } from "../../extensions/types.js";
+import type { CustomMessage, CustomEntry, MessageRenderer, EntryRenderer } from "../../../extensions/ui-contract.js";
 
 export interface ToolRecord {
 	name: string;

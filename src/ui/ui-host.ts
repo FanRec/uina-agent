@@ -4,7 +4,6 @@
  * 调度原子全帧差量渲染与键盘输入分发。
  */
 
-import { spawn } from "node:child_process";
 import { Container } from "./core/container.js";
 import { FocusManager } from "./core/focus.js";
 import { OverlayStack } from "./core/overlay.js";
@@ -16,7 +15,7 @@ import { MouseSelectionTracker, type InteractiveTarget, type SelectableRegion } 
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ThinkingLevel } from "../core/types.js";
 import type { SessionEntry } from "../session/types.js";
-import { C, visibleWidth, truncateToWidth } from "./core/utils.js";
+import { C, copyToClipboardUnified, visibleWidth, truncateToWidth } from "./core/utils.js";
 import { InputLine } from "./components/editor/input-line.js";
 import { BannerComponent } from "./components/primitives/banner.js";
 import { TranscriptContainer } from "./components/transcript/transcript.js";
@@ -40,9 +39,9 @@ import {
 	type CommandItem,
 	type FileItem,
 } from "./components/editor/suggestions.js";
-import { ExtensionRegistry } from "./extensions/registry.js";
-import { createExtensionUIContext, type UIHostContextPort } from "./extensions/context.js";
-import type { ExtensionUIContext } from "./extensions/types.js";
+import { ExtensionRegistry } from "../extensions/renderer-registry.js";
+import { createExtensionUIContext, type UIHostContextPort } from "./extension-ui-context.js";
+import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 import { TrajectoryProjection } from "./adapters/agent-events.js";
 
 function overlayCard(baseLine: string, cardLine: string, startCol: number, width: number): string {
@@ -241,36 +240,7 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	private onCopyOnSelect = (text: string): void => {
-		// 1. OSC 52 终端原生协议（对齐 dsh-TUI: setClipboard(text) 首选通道）
-		// 终端模拟器（Windows Terminal、iTerm2 等）直接在前端写入宿主剪贴板，0 子进程消耗
-		const b64 = Buffer.from(text, "utf-8").toString("base64");
-		process.stdout.write(`\x1b]52;c;${b64}\x07`);
-
-		// 2. 本地 Native 兜底（对标 dsh-TUI copyNative: 非 SSH 环境下的轻量安全兜底）
-		if (process.platform === "win32" && !process.env["SSH_CONNECTION"]) {
-			try {
-				// 使用 Windows 原生 clip.exe，前置切换 chcp 65001 保证 UTF-8 中文不乱码
-				// 启动耗时不到 5ms，比启动整个 powershell.exe 轻量十倍以上
-				const child = spawn("cmd.exe", ["/c", "chcp 65001 >nul && clip"], {
-					stdio: ["pipe", "ignore", "ignore"],
-					windowsHide: true,
-				});
-				child.on("error", () => {});
-				child.stdin.end(Buffer.from(text, "utf-8"));
-				child.unref();
-			} catch {
-				// 静默失败，已有 OSC 52 保证
-			}
-		} else if (process.platform === "darwin" && !process.env["SSH_CONNECTION"]) {
-			try {
-				const child = spawn("pbcopy", [], {
-					stdio: ["pipe", "ignore", "ignore"],
-				});
-				child.on("error", () => {});
-				child.stdin.end(Buffer.from(text, "utf-8"));
-				child.unref();
-			} catch {}
-		}
+		copyToClipboardUnified(text);
 
 		const lineCount = text.split("\n").length;
 		const toast = lineCount > 1 ? `已复制 ${lineCount} 行 (${text.length} 字符)` : `已复制 ${text.length} 字符`;

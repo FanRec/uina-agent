@@ -6,7 +6,7 @@
 import { UIHost, type UIHostOptions } from "./ui-host.js";
 import type { ContextSegments, ToolResultStatus } from "../core/types.js";
 import type { QueuedMessage } from "../agent/queue.js";
-import type { ExtensionUIContext } from "./extensions/types.js";
+import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 import type { SessionEntry } from "../session/types.js";
 
 /** 渲染层消息契约（主体 hooks → UI 消息） */
@@ -329,5 +329,3 @@ export function createInteractiveUI(options: InteractiveTUIOptions = {}): Intera
 	tui.start();
 	return tui;
 }
-
-export { InteractiveTUI as SimpleTUI };

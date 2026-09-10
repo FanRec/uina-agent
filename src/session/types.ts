@@ -2,7 +2,6 @@ import type {
 	AgentMessage,
 	ChatMsg,
 	DeliveryMode,
-	ToolResultStatus,
 } from "../core/types.js";
 
 export interface SessionHeader {
@@ -140,13 +139,4 @@ export interface SessionStore {
 		data: Record<string, unknown>,
 	): Promise<void>;
 	close(): Promise<void>;
-}
-
-export interface ToolLifecycleData {
-	turnId: number;
-	callId: string;
-	name: string;
-	args: unknown;
-	status?: ToolResultStatus;
-	result?: string;
 }

@@ -3,11 +3,11 @@
  * 将扩展的狭窄接口调用映射到底层 UIHost 的 Container、OverlayStack、WidgetSlots 与输入层。
  */
 
-import type { Component, Focusable, OverlayHandle, OverlayOptions, WidgetPlacement } from "../core/types.js";
-import { CURSOR_MARKER } from "../core/types.js";
-import { Key, matchesKey } from "../core/keys.js";
-import { C, visibleWidth, truncateToWidth, getPrevGraphemeIndex, getNextGraphemeIndex } from "../core/utils.js";
-import type { ExtensionUIContext } from "./types.js";
+import type { Component, Focusable, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
+import { CURSOR_MARKER } from "./core/types.js";
+import { Key, matchesKey } from "./core/keys.js";
+import { C, visibleWidth, truncateToWidth, getPrevGraphemeIndex, getNextGraphemeIndex } from "./core/utils.js";
+import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 
 export interface UIHostContextPort {
 	notify(message: string, type?: "info" | "warning" | "error", timeoutMs?: number): void;

@@ -1,5 +1,5 @@
 import type { FinishReason, ModelProvider, ModelRequest, ThinkingLevel, Usage } from "../core/types.js";
-import { configuredThinkingLevels, type ProviderConfig, type ProviderKind } from "./config.js";
+import { assertProviderFacts, configuredThinkingLevels, type ProviderConfig, type ProviderKind } from "./config.js";
 import { createOpenAIProvider, fetchWithRetry } from "./gateway.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
 import { effectiveContextWindow } from "./config.js";
@@ -7,6 +7,7 @@ import { copyValue, readonlySnapshot } from "../runtime/guard.js";
 
 export function createProvider(name: string, conf: ProviderConfig): ModelProvider {
 	const kind: ProviderKind = conf.type ?? "openai-compatible";
+	assertProviderFacts(conf);
 	if (kind === "openai-compatible") {
 		return createOpenAIProvider({ ...conf, model: conf.model, modelContextWindow: effectiveContextWindow(conf) });
 	}
@@ -34,10 +35,10 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 		},
 		async stream(req, emit, signal) {
 			const level = req.thinkingLevel ?? "off";
-			const thinking = level === "off" ? undefined : thinkingBudget(level);
+			const thinking = level === "off" ? undefined : thinkingBudget(conf, level);
 			let body: Record<string, unknown> = {
 				model: conf.model,
-				max_tokens: Math.max(8192, (thinking ?? 0) + 1024),
+				max_tokens: maxOutputTokens(conf),
 				system: anthropicSystem(req),
 				messages: anthropicMessages(req),
 				tools: req.tools?.map((tool) => ({ name: tool.function.name, description: tool.function.description, input_schema: tool.function.parameters })),
@@ -204,7 +205,7 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 		},
 		async stream(req, emit, signal) {
 			let headers: Record<string, string> = { "content-type": "application/json", accept: "text/event-stream" };
-			let bodyPayload = geminiRequest({ ...req, thinkingLevel: thinkingLevels?.length ? req.thinkingLevel : undefined }, conf.geminiToolCallIds === true, conf.geminiThinkingFormat ?? (["gemini-3-pro-preview", "gemini-3.1-pro-preview", "gemini-3-flash-preview"].includes(conf.model) ? "level" : "budget"));
+			let bodyPayload = geminiRequest({ ...req, thinkingLevel: thinkingLevels?.length ? req.thinkingLevel : undefined }, conf.geminiToolCallIds === true, conf.geminiThinkingFormat, conf.thinkingBudgets);
 			headers = copyValue(await req.providerHooks.transformHeaders(conf.model, readonlySnapshot(headers)));
 			bodyPayload = copyValue(await req.providerHooks.transformPayload(conf.model, readonlySnapshot(bodyPayload))) as Record<string, unknown>;
 
@@ -339,7 +340,7 @@ export function anthropicMessages(req: ModelRequest): unknown[] {
 	return out;
 }
 
-export function geminiRequest(req: ModelRequest, includeToolCallIds: boolean, thinkingFormat: "budget" | "level" = "budget"): Record<string, unknown> {
+export function geminiRequest(req: ModelRequest, includeToolCallIds: boolean, thinkingFormat?: "budget" | "level", thinkingBudgets?: Partial<Record<ThinkingLevel, number>>): Record<string, unknown> {
 	const system = req.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
 	const toolNames = new Map<string, string>();
 	for (const message of req.messages) {
@@ -388,12 +389,46 @@ export function geminiRequest(req: ModelRequest, includeToolCallIds: boolean, th
 		contents,
 		...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
 		...(req.tools?.length ? { tools: [{ functionDeclarations: req.tools.map((tool) => ({ name: tool.function.name, description: tool.function.description, parameters: tool.function.parameters })) }] } : {}),
-		...(req.thinkingLevel ? { generationConfig: { thinkingConfig: { includeThoughts: req.thinkingLevel !== "off", ...(thinkingFormat === "level" ? { thinkingLevel: req.thinkingLevel } : { thinkingBudget: thinkingBudget(req.thinkingLevel) }) } } } : {}),
+		...(req.thinkingLevel ? { generationConfig: { thinkingConfig: geminiThinkingConfig(req.thinkingLevel, thinkingFormat, thinkingBudgets) } } : {}),
 	};
 }
 
-function thinkingBudget(level: ThinkingLevel): number {
-	return { minimal: 1024, low: 2048, medium: 4096, high: 8192, xhigh: 16384, max: 32768, off: 0 }[level];
+/** 数值预算只能来自显式配置：这些数字会直接写进厂商 wire，Uina 不发明它们。 */
+function thinkingBudget(conf: ProviderConfig, level: ThinkingLevel): number {
+	const value = conf.thinkingBudgets?.[level];
+	if (value === undefined) {
+		throw new Error(`provider ${conf.model} 的 thinkingBudgets 缺少档位 ${level}；该数值会写进 Anthropic wire，Uina 不发明 thinking 预算`);
+	}
+	return value;
+}
+
+function requireThinkingBudget(budgets: Partial<Record<ThinkingLevel, number>> | undefined, level: ThinkingLevel): number {
+	const value = budgets?.[level];
+	if (value === undefined) {
+		throw new Error(`thinkingBudgets 缺少档位 ${level}；该数值会写进 Gemini wire，Uina 不发明 thinking 预算`);
+	}
+	return value;
+}
+
+function geminiThinkingConfig(
+	level: ThinkingLevel,
+	thinkingFormat: "budget" | "level" | undefined,
+	budgets: Partial<Record<ThinkingLevel, number>> | undefined,
+): Record<string, unknown> {
+	if (level === "off") return { includeThoughts: false };
+	if (thinkingFormat === undefined) {
+		throw new Error("Gemini 声明了 thinkingLevels 却缺少 geminiThinkingFormat；Uina 不根据模型名猜测 wire 控制");
+	}
+	if (thinkingFormat === "level") return { includeThoughts: true, thinkingLevel: level };
+	return { includeThoughts: true, thinkingBudget: requireThinkingBudget(budgets, level) };
+}
+
+/** Anthropic /messages 要求 max_tokens；缺失时显式失败，而不是补一个默认值。 */
+function maxOutputTokens(conf: ProviderConfig): number {
+	if (conf.maxOutputTokens === undefined) {
+		throw new Error(`provider ${conf.model} 使用 Anthropic 协议，必须显式配置 maxOutputTokens；Uina 不发明输出上限`);
+	}
+	return conf.maxOutputTokens;
 }
 
 function isJsonObject(value: string): boolean {

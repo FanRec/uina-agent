@@ -1,4 +1,4 @@
-import type { ExtensionRegistry } from "../ui/extensions/registry.js";
+import type { ExtensionRegistry } from "./renderer-registry.js";
 
 /** One command path for terminal UI, pipe/stdin and one-shot execution. */
 export class CommandRouter {

@@ -7,7 +7,7 @@
 import { Container } from "../../core/container.js";
 import { C, truncateToWidth } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
-import type { CustomEntry, EntryRenderer } from "../../extensions/types.js";
+import type { CustomEntry, EntryRenderer } from "../../../extensions/ui-contract.js";
 
 export class CustomEntryComponent extends Container {
 	private expanded = false;
