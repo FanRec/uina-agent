@@ -262,9 +262,9 @@
 #### 已观察事实
 
 - **事实**：TypeScript 已开启 noUnusedLocals/noUnusedParameters，能清理局部变量，但不会报告未被仓库内部使用的 public export、兼容别名或失效配置字段。
-- **事实**：仓库内部没有使用 UinaUIMsg、Component.wantsKeyRelease、InteractiveTUIOptions.onDirectCommand、InteractiveTUIOptions.onCompactRequest、EffortTierId、outputLimits 或 SPLIT_DIFF_MIN_COLS；它们仍作为代码/API 存在。
+- **事实**：仓库内部没有使用 Component.wantsKeyRelease、InteractiveTUIOptions.onDirectCommand、InteractiveTUIOptions.onCompactRequest、EffortTierId、outputLimits 或 SPLIT_DIFF_MIN_COLS；它们仍作为代码/API 存在。（原本同列的 UinaUIMsg 已于 2026-09-10 删除，见本节复检。）
 - **事实**：SPLIT_DIFF_MIN_COLS 声明为 110，但 split/unified 实际分界硬编码为 80；常量没有成为单一事实来源。
-- **事实**：ui/core/types.ts 的 UinaUIMsg 与 ui/tui.ts 的 OutMsg 是两套相似但不等价的 UI 事件契约；后者承载 ToolResultStatus，前者没有。
+- **事实**：ui/core/types.ts 的 UinaUIMsg 与 ui/tui.ts 的 OutMsg 是两套相似但不等价的 UI 事件契约；后者承载 ToolResultStatus，前者没有。该重复契约已于 2026-09-10 通过删除 UinaUIMsg 消除。
 - **事实**：ui.test.ts 约 3295 行、132 个用例，许多场景通过 (host as any) 操作私有字段；它很密集，但边界主要是组件内部实现而不是公开宿主接缝。
 - **事实**：现有测试含 localhost 子进程 CLI 场景，但没有真实 Provider、终端信号、负载、collector 失败或跨重启 Job 场景。
 
@@ -272,10 +272,20 @@
 
 | 优先级 | 状态 | 发现 | 证据/影响 | 建议 |
 | --- | --- | --- | --- | --- |
-| P2 | 已确认 | UI 存在未接线 API 与重复事件契约 | 维护者无法判断哪些是稳定扩展面、哪些是历史残留；重复类型可能发生语义漂移。 | 对每个 export 做消费者审计；删除未接线兼容层，或明确纳入公开 API 并补行为测试。 |
+| P2 | 已确认 | UI 存在未接线 API 与重复事件契约 | 维护者无法判断哪些是稳定扩展面、哪些是历史残留；重复类型可能发生语义漂移。重复事件契约部分已消除（2026-09-10）。 | 对每个 export 做消费者审计；删除未接线兼容层，或明确纳入公开 API 并补行为测试。 |
 | P2 | 已确认 | Diff 布局阈值常量失效 | 110 的意图与 80 的行为冲突，宽度策略无法由单一常量调整。 | 使用一个实际生效的阈值；若 80 是产品事实就删除 110 常量。 |
 | P3 | 已确认 | 测试过度窥探 UIHost 私有实现 | 大量 any 断言会让重构成本高，却不能证明扩展/CLI 使用的公共接缝。 | 保留少量几何纯函数测试；把主要场景移到公开 InteractiveTUI/adapter 和真实入口。 |
 | P3 | 未验证 | export 级死代码与外部消费者使用情况 | 仓库是 private，当前只能证明内部未使用；没有 API 使用者清单。 | 在删 export 前确认发布/嵌入契约；否则标记 deprecated 而不是维持无主代码。 |
+
+#### 复检（2026-09-10，检查点 `1291a8b`）
+
+- **事实**：`src/ui/core/types.ts` 中的 `UinaUIMsg` 已删除（12 行，含文档注释）。删除前全仓库（含 `tests/`）除声明本身外 0 引用，`git grep` 与 `tsc --noEmit` 均可复现。
+- **事实**：该类型由 `084b8d5` 引入并作为 `ui_new/tui.ts` 的 `dispatch(msg: UinaUIMsg)` 入参；`decf552` 接入真实 CLI 后仅剩声明、再无引用。它是比 `OutMsg` 更弱的契约：无法表达 `turn_aborted`、`ToolResultStatus`、`usage.actual` 与 cache 分段，因此删除不丢失任何被消费的语义。
+- **事实**：同时移除了长期残留的空目录 `src/mind/`（0 条目、未被 git 跟踪；其 `loop.ts`/`context.ts` 早在 `39435ac` 已删除）。
+- **事实**：本节第 4 条的 `ui.test.ts` 规模已变化：当前为 2735 行、131 个用例（该处记录为约 3295 行、132 个用例，属基线读数）。
+- **测试行为**：删除后 `pnpm typecheck`（含 `check:boundaries`）、`pnpm test`（18 文件、289 用例）、`pnpm build` 均通过。测试边界不变：进程内与 localhost provider，无真实 Provider/TTY。
+- **事实**：本次全量测试首跑出现 1 个 `tests/ui.test.ts` 用例失败，且该文件耗时由 621ms 升至 30673ms；单文件复跑 131/131 通过（1.25s），全量复跑 289/289 通过。判定为并行满载下的时序 flake，与本次纯类型删除无关。这印证了本节 P3 发现：该文件的耦合边界是组件内部实现与时序，而非公开接缝。
+- **未验证**：`SPLIT_DIFF_MIN_COLS`（声明 110、行为 80）、`wantsKeyRelease`、`EffortTierId` 等其余未接线项未处理。其中 `SPLIT_DIFF_MIN_COLS` 属行为冲突而非死代码，删除前需先确定 80 还是 110 是产品事实。
 
 ## 验证结果与未验证边界
 
