@@ -304,7 +304,10 @@
 - **事实**：`check-boundaries.mjs` 增至 5 条规则，新增「host 不得 import 任何 ui 模块」。已用真实违规文件实测：探针 `exit=1` 并指名规则，清理后 `exit=0`。
 - **测试行为**：`tests/host-separation.test.ts` 新增 3 条反例——(1) 不创建任何 UI，注入数组消费者即跑通 文本→工具调用→结果回注；(2) 断开唯一消费者后，在**零消费者**状态下完整跑一轮并确认历史增长，随后接入的新观察者只收到它接入后的事件；(3) 会话由宿主拥有，dispose 后重开恢复历史。
 - **测试行为**：`pnpm typecheck`（含 5 条边界规则）、`pnpm test`（19 文件、293 用例）、`pnpm build` 全部通过。真实入口 one-shot（`tests/cli-session.test.ts` 的 localhost Anthropic/Gemini/oneshot）在重写组合根后仍然通过，这是本次改动最强的一条行为证据。
-- **未验证**：真实 TTY 下的 TUI 交互、真实 Provider、跨重启 Job 对账。`UIHost` 仍约 1918 行并持有 job/subagent port 与业务键位映射（RC-3），本次未处理；它现在排在正确的顺序上——TUI 已是消费者，action port 才有正确的落脚点。
+- **未验证**：真实 TTY 下的 TUI 交互、真实 Provider、跨重启 Job 对账。
+- **判断修正（2026-09-10，Pi 对照后）**：此前把「UIHost 越界」列为 P1 并计划抽 action port，现收回。实测 Pi `packages/coding-agent/src/modes/interactive/interactive-mode.ts` 为 6575 行，是 Uina `ui/ui-host.ts`（1923 行）的 3.4 倍——「交互文件大」本身不构成异常，用行数当证据是错的。且 RC-1 之后 UIHost 只是消费者，其内部整洁度不再影响任何外部承诺。拆分后仅剩两件事：
+  1. **触发式待办**：`ExtensionAPI` 缺 `registerShortcut`。Pi 有（`core/extensions/types.ts:1320` 与 `shortcuts: Map<KeyId, ExtensionShortcut>` :1777），因此项目扩展无法绑定按键——这是真实的开放性缺口。但当前没有需要绑键的消费者，按「未被场景使用的抽象不保留」留待第一个真实扩展出现时再做。
+  2. **已修正**：`ui/adapters/jobs.ts:2` 与 `subagents.ts:2` 原写「只读适配器」，而端口实际暴露 `cancel` / `send` / `interrupt`，已在代码里如实描述。端口由组合根注入（`cli/app.ts` → `createJobAdapter(host.jobs)`），属于依赖注入而非 UI 自造领域对象，因此原判断的「违反」程度被高估了。
 
 ## 验证结果与未验证边界
 

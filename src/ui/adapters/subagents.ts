@@ -1,6 +1,10 @@
 /**
- * 内核 SubagentRegistry 只读适配器。
- * 将 SubagentRegistry 的领域状态转译为 UI SubagentDashboard 所需的窄接口。
+ * 内核 SubagentRegistry 的 UI 端口（由组合根注入，不是 UI 自造领域对象）。
+ *
+ * - 读取（list/read/transcript）走宿主视图。
+ * - send / interrupt 是面板上的用户动作，端口只做转译；
+ *   子 Agent 状态仍由 Registry 拥有，UI 不另存一份。
+ * - ownerId 由调用方显式给出，避免 UI 自行推断归属。
  */
 
 import type { SubagentRegistry } from "../../extensions/subagents/registry.js";

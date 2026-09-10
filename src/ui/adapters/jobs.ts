@@ -1,6 +1,9 @@
 /**
- * 内核 JobRegistry 只读适配器。
- * 将 JobRegistry 的领域模型转译为 UI TaskDashboard 所需的窄接口。
+ * 内核 JobRegistry 的 UI 端口（由组合根注入，不是 UI 自造领域对象）。
+ *
+ * - 读取（list/read）走宿主视图：面板要展示包括项目扩展启动在内的全部 Job。
+ * - 取消（cancel）是面板上的用户动作，端口只把它转译为一次领域请求，
+ *   不在 UI 里另存任何任务状态。
  */
 
 import type { JobRegistry, JobSnapshot, JobRead } from "../../extensions/jobs/registry.js";
