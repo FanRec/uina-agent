@@ -5,6 +5,11 @@ import type {
 	ToolExecutionMode,
 	ToolResultStatus,
 } from "../core/types.js";
+import {
+	executeToolPipeline,
+	type ToolCallRequest,
+	type ToolPipelineOptions,
+} from "./pipeline.js";
 
 /** Identity of the caller, independent of the extension that registered a tool. */
 export interface ToolExecutionContext {
@@ -153,6 +158,13 @@ export class ToolBroker {
 		return (await this.execute(this.prepare(name, args), signal)).result;
 	}
 
+	async executePipeline(
+		call: ToolCallRequest,
+		options?: ToolPipelineOptions,
+	): Promise<ToolExecutionResult & { callId: string }> {
+		return executeToolPipeline(this, call, options);
+	}
+
 	getExecutionMode(name: string): ToolExecutionMode {
 		return this.tools.get(name)?.tool.executionMode ?? "parallel";
 	}
@@ -179,3 +191,12 @@ function validateToolDefinition(t: Tool): void {
 export function safeErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
+
+export {
+	executeToolPipeline,
+	type ToolCallRequest,
+	type ToolPipelineHooks,
+	type ToolPipelineObservers,
+	type ToolPipelineOptions,
+} from "./pipeline.js";
+

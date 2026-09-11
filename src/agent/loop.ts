@@ -728,57 +728,32 @@ export class Subject {
 		status: ToolResultStatus;
 		continuation?: "stop";
 	}> {
-		if (this.currentSignal().aborted) {
-			const result = JSON.stringify({ error: "工具调用未启动（本轮已取消）", status: "not_started" });
-			await this.storeEvent("tool_finished", {
-				callId: call.id,
-				name: call.name,
-				status: "not_started",
-			});
-			return { callId: call.id, result, status: "not_started" };
-		}
-
 		const callArgs = (call.args && typeof call.args === "object" ? call.args : {}) as Record<string, unknown>;
-		const blocked = await this.runtimeHooks.tools.beforeCall({ callId: call.id, name: call.name, args: callArgs });
-		if (blocked.block) {
-			const reason = blocked.reason || "操作已被扩展阻止";
-			const blockedResult = `[blocked] 工具执行已被拦截: ${reason}`;
-			await this.storeEvent("tool_finished", { callId: call.id, name: call.name, status: "not_started" });
-			try { this.hooks.onToolDone?.(call.name, blockedResult, "not_started", call.id); } catch (error) { this.reportError(error); }
-			return { callId: call.id, result: blockedResult, status: "not_started" };
-		}
-
-		if (prepared.error) {
-			const outcome = await this.tools.execute(prepared, this.currentSignal());
-			await this.storeEvent("tool_finished", {
-				callId: call.id,
-				name: call.name,
-				status: outcome.status,
-				});
-			try { this.hooks.onToolDone?.(call.name, outcome.result, outcome.status, call.id); } catch (error) { this.reportError(error); }
-			return { callId: call.id, result: outcome.result, status: outcome.status };
-		}
-		try { this.hooks.onToolStart?.(call.name, call.args, call.id); } catch (error) { this.reportError(error); }
-		await this.storeEvent("tool_started", {
-			callId: call.id,
-			name: call.name,
-			args: call.args,
-		});
-		const outcome = await this.tools.execute(prepared, this.currentSignal());
-
-		let outcomeResult = outcome.result;
-		let outcomeStatus: ToolResultStatus = outcome.status;
-		const transformed = await this.runtimeHooks.tools.transformResult({ callId: call.id, name: call.name, args: callArgs, result: outcomeResult, status: outcomeStatus });
-		if (transformed.result !== undefined) outcomeResult = transformed.result;
-		if (transformed.status !== undefined) outcomeStatus = transformed.status;
-
-		await this.storeEvent("tool_finished", {
-			callId: call.id,
-			name: call.name,
-			status: outcomeStatus,
-			});
-		try { this.hooks.onToolDone?.(call.name, outcomeResult, outcomeStatus, call.id); } catch (error) { this.reportError(error); }
-		return { callId: call.id, result: outcomeResult, status: outcomeStatus, continuation: outcome.continuation };
+		return this.tools.executePipeline(
+			{ callId: call.id, name: call.name, args: callArgs, prepared },
+			{
+				signal: this.currentSignal(),
+				hooks: this.runtimeHooks.tools,
+				observers: {
+					onStart: async () => {
+						try { this.hooks.onToolStart?.(call.name, call.args, call.id); } catch (error) { this.reportError(error); }
+						await this.storeEvent("tool_started", {
+							callId: call.id,
+							name: call.name,
+							args: call.args,
+						});
+					},
+					onDone: async (outcome) => {
+						await this.storeEvent("tool_finished", {
+							callId: call.id,
+							name: call.name,
+							status: outcome.status,
+						});
+						try { this.hooks.onToolDone?.(call.name, outcome.result, outcome.status, call.id); } catch (error) { this.reportError(error); }
+					},
+				},
+			},
+		);
 	}
 
 	private async prepareTurn(provider = this.provider, systemPrompt = this.systemPrompt): Promise<void> {

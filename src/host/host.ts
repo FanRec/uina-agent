@@ -217,15 +217,10 @@ export class UinaHost {
 		const cancellation = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
 		const hooks = this.extensionHost.runtimeHooks().tools;
 		const callId = "direct-" + randomUUID();
-		const run = Promise.resolve().then(async (): Promise<ToolExecutionResult> => {
-			const blocked = await hooks.beforeCall({ callId, name, args });
-			const outcome: ToolExecutionResult = blocked.block
-				? { result: blocked.reason ?? "操作已被扩展阻止", status: "not_started" }
-				: await this.tools.execute(this.tools.prepare(name, args), cancellation);
-			if (blocked.block) return outcome;
-			const transformed = await hooks.transformResult({ callId, name, args, result: outcome.result, status: outcome.status });
-			return { ...outcome, result: transformed.result ?? outcome.result, status: transformed.status ?? outcome.status };
-		});
+		const run = this.tools.executePipeline(
+			{ callId, name, args },
+			{ signal: cancellation, hooks },
+		);
 		this.directRuns.set(controller, run);
 		try { return await run; }
 		finally { this.directRuns.delete(controller); }
