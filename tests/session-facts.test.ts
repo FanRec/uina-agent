@@ -101,6 +101,51 @@ describe("S1 durable session facts", () => {
 		}
 	});
 
+	it("commits idle accept input as durable input record without short-circuiting metadata", async () => {
+		const path = await sessionPath();
+		const { store } = await openJsonlSession(path);
+		const subject = new Subject(
+			scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "acknowledged" }] }]),
+			new ToolBroker(),
+			{ onToken() {} },
+			{ store },
+		);
+		await subject.accept({
+			id: "idle-input-123",
+			mode: "followUp",
+			source: { kind: "agent", type: "subagent-start", ref: "sub-1" },
+			text: "task from child",
+			data: { trace: "abc" },
+		});
+		await subject.waitForIdle();
+		await store.close();
+
+		const rawLines = (await readFile(path, "utf8")).trim().split("\n");
+		expect(rawLines.some(l => l.includes('"queue_enqueued"') && l.includes('"idle-input-123"'))).toBe(true);
+
+		const reopened = await openJsonlSession(path);
+		await reopened.store.close();
+		const inputEntries = reopened.snapshot.entries.filter(e => e.kind === "input");
+		expect(inputEntries).toHaveLength(1);
+		expect(inputEntries[0]).toEqual({
+			kind: "input",
+			input: {
+				id: "idle-input-123",
+				order: 1,
+				mode: "followUp",
+				text: "task from child",
+				source: { kind: "agent", type: "subagent-start", ref: "sub-1" },
+				data: { trace: "abc" },
+			},
+		});
+		const history = projectAgentHistory(reopened.snapshot.entries);
+		expect(history[0]).toMatchObject({
+			role: "user",
+			id: "idle-input-123",
+			content: "task from child",
+		});
+	});
+
 	it("commits queued steer and followUp once during a normal continuation", async () => {
 		const path = await sessionPath();
 		const { store } = await openJsonlSession(path);

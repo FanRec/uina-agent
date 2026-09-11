@@ -292,8 +292,11 @@ export class Subject {
 
 	accept(input: AgentInput): Promise<void> {
 		if (!input.id || !input.text?.trim()) return Promise.reject(new Error("AgentInput 必须包含 id 和 text"));
-		if (input.source.kind !== "runtime" && !this.isBusy() && this.queues.size === 0) return this.startRun(input.text.trim());
-		const queued = { ...this.queues.create(input.text.trim(), input.mode, { source: input.source, data: input.data }), id: input.id };
+		const queued: QueuedMessage = { ...this.queues.create(input.text.trim(), input.mode, { source: input.source, data: input.data }), id: input.id };
+		if (!this.isBusy() && this.queues.size === 0) {
+			const promptText = queued.source?.kind === "runtime" ? undefined : queued.text;
+			return this.startRun(promptText, queued, { needsEnqueueEvent: true });
+		}
 		return this.storeEvent("queue_enqueued", { ...eventData(queued), source: input.source, data: input.data }).then(async () => {
 			this.queues.add(queued);
 			this.notifyQueueChanged();
@@ -373,7 +376,7 @@ export class Subject {
 		return last;
 	}
 
-	private async startRun(text?: string, queuedInput?: QueuedMessage): Promise<void> {
+	private async startRun(text?: string, queuedInput?: QueuedMessage, options: { needsEnqueueEvent?: boolean } = {}): Promise<void> {
 		if (this.activity) return Promise.reject(new Error("已有活动轮次"));
 		const isRootRun = this.activeRun === undefined;
 		if (isRootRun) {
@@ -386,6 +389,9 @@ export class Subject {
 			if (this.provider.thinkingLevels && !this.provider.thinkingLevels.includes(this.thinkingLevel)) {
 				this.reportError(new Error(`provider ${this.provider.name} 不支持 thinking level: ${this.thinkingLevel}`));
 				return;
+			}
+			if (queuedInput && options.needsEnqueueEvent) {
+				await this.storeEvent("queue_enqueued", { ...eventData(queuedInput), source: queuedInput.source, data: queuedInput.data });
 			}
 			this.activity = "turn";
 			this.interrupted = false;
