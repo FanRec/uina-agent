@@ -150,9 +150,9 @@ export class Subject {
 		return estimateContextTokens(this.history).tokens;
 	}
 
-	getContextSegments(): ContextSegments {
+	getContextSegments(usedTokens?: number): ContextSegments {
 		const context = buildContext({ history: this.history, systemPrompt: this.systemPrompt });
-		const used = this.lastReportedUsage?.totalTokens ?? estimateContextTokens(this.history).tokens;
+		const used = usedTokens ?? this.lastReportedUsage?.totalTokens ?? estimateContextTokens(this.history).tokens;
 		return calculateContextSegments(context, this.tools.defs(), used);
 	}
 
@@ -436,7 +436,7 @@ export class Subject {
 				const estimate = estimateContextTokens(this.history);
 				const last = this.lastReportedUsage;
 				const used = last?.totalTokens ?? estimate.tokens;
-				const segments = this.getContextSegments();
+				const segments = this.getContextSegments(used);
 				const usage = {
 					usedTokens: used,
 					contextWindow: this.getContextWindow(),

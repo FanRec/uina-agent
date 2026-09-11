@@ -1,6 +1,6 @@
 import type { AgentMessage, ChatMsg, ModelProvider, ToolDef } from "../core/types.js";
 import type { ProviderHooks } from "../runtime/hooks.js";
-import { buildContext, estimateContextTokens, estimateRequestTokens, formatForSummary } from "./context.js";
+import { buildContext, estimateContextTokens, formatForSummary } from "./context.js";
 
 export interface CompactionSettings {
 	contextWindow?: number;
@@ -86,7 +86,7 @@ export function shouldCompact(
 	if (settings.contextWindow === undefined) return false;
 	if (settings.contextWindow === 0) return true;
 	return (
-		estimateContextTokens(buildContext({ history: [...history], systemPrompt })).tokens + estimateRequestTokens([], tools, includeThinking) >
+		estimateContextTokens(buildContext({ history: [...history], systemPrompt }), { tools, includeThinking }).tokens >
 		settings.contextWindow - settings.reserveTokens
 	);
 }
@@ -181,6 +181,6 @@ export async function compactHistory(
 	return {
 		summary: final,
 		retainedTail: history.slice(keepFrom).map((message) => structuredClone(message)),
-		tokensBefore: estimateContextTokens(buildContext({ history: [...history], systemPrompt })).tokens + estimateRequestTokens([], tools, includeThinking),
+		tokensBefore: estimateContextTokens(buildContext({ history: [...history], systemPrompt }), { tools, includeThinking }).tokens,
 	};
 }

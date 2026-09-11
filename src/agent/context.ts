@@ -126,40 +126,90 @@ function formatRuntimeInput(input: { source: { kind: string; type: string; ref?:
 	return `[${source}] ${input.text ?? ""}${data}`;
 }
 
+/**
+ * 统计消息历史与工具定义在各分段的原始字符总数。
+ * 这是多段 Token 分布与请求级 Token 估算的单一事实来源（单遍遍历）。
+ */
+export function countContextSegmentChars(
+	messages: readonly (AgentMessage | ChatMsg)[],
+	tools: readonly ToolDef[] = [],
+): ContextSegments {
+	const seg: ContextSegments = { system: 0, prompt: 0, assistant: 0, thinking: 0, tools: 0 };
+	for (const message of messages) {
+		if (message.role === "custom") {
+			seg.prompt += message.content ? message.content.length + 16 : 16;
+			continue;
+		}
+		if (message.role === "compactionSummary") {
+			seg.prompt += message.summary ? message.summary.length + 32 : 32;
+			continue;
+		}
+		const baseChars = message.content ? message.content.length + 16 : 16;
+		switch (message.role) {
+			case "system":
+				seg.system += baseChars;
+				break;
+			case "user":
+				seg.prompt += baseChars;
+				break;
+			case "assistant":
+				seg.assistant += baseChars;
+				if (message.thinking) {
+					seg.thinking += message.thinking.length + 16;
+				}
+				if (message.tool_calls) {
+					seg.tools += JSON.stringify(message.tool_calls).length;
+				}
+				break;
+			case "tool":
+				seg.tools += baseChars;
+				break;
+		}
+	}
+
+	if (tools.length > 0) {
+		seg.tools += JSON.stringify(tools).length;
+	}
+
+	return seg;
+}
+
 /** Approximate token estimate used before a provider request. */
 export function estimateRequestTokens(
 	messages: readonly (AgentMessage | ChatMsg)[],
 	tools: readonly ToolDef[] = [],
 	includeThinking = false,
 ): number {
-	let chars = 0;
-	for (const message of messages) {
-		if (message.role === "custom") {
-			chars += message.content.length + 16;
-		} else if (message.role === "compactionSummary") {
-			chars += message.summary.length + 32;
-		} else {
-			chars += message.content.length + 16;
-			if (includeThinking && message.role === "assistant" && message.thinking) chars += message.thinking.length + 16;
-			if (message.role === "assistant" && message.tool_calls) {
-				chars += JSON.stringify(message.tool_calls).length;
-			}
-		}
-	}
-	chars += JSON.stringify(tools).length;
-	return Math.ceil(chars / 4);
+	const seg = countContextSegmentChars(messages, tools);
+	const totalChars = seg.system + seg.prompt + seg.assistant + (includeThinking ? seg.thinking : 0) + seg.tools;
+	return Math.ceil(totalChars / 4);
+}
+
+export interface EstimateContextOptions {
+	tools?: readonly ToolDef[];
+	includeThinking?: boolean;
 }
 
 /** Pi-style: the latest persisted provider usage anchors the immutable prefix; newer content is estimated. */
-export function estimateContextTokens(messages: readonly (AgentMessage | ChatMsg)[]): ContextEstimate {
+export function estimateContextTokens(
+	messages: readonly (AgentMessage | ChatMsg)[],
+	options: EstimateContextOptions = {},
+): ContextEstimate {
 	let anchor = -1;
 	let tokens = 0;
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i];
-		if (message.role === "assistant" && message.usage?.totalTokens !== undefined) { anchor = i; tokens = message.usage.totalTokens; break; }
+		if (message.role === "assistant" && message.usage?.totalTokens !== undefined) {
+			anchor = i;
+			tokens = message.usage.totalTokens;
+			break;
+		}
 	}
 	const trailing = messages.slice(anchor + 1);
-	return { tokens: tokens + estimateRequestTokens(trailing), actual: anchor >= 0 && trailing.length === 0 };
+	return {
+		tokens: tokens + estimateRequestTokens(trailing, options.tools, options.includeThinking),
+		actual: anchor >= 0 && trailing.length === 0,
+	};
 }
 
 export function formatForSummary(message: AgentMessage | ChatMsg): string {
@@ -181,54 +231,18 @@ export function calculateContextSegments(
 	tools: readonly ToolDef[] = [],
 	totalScaleTokens?: number,
 ): ContextSegments {
-	let systemChars = 0;
-	let promptChars = 0;
-	let assistantChars = 0;
-	let thinkingChars = 0;
-	let toolChars = 0;
-
-	for (const message of messages) {
-		if (message.role === "custom") {
-			promptChars += message.content ? message.content.length + 16 : 16;
-			continue;
-		}
-		if (message.role === "compactionSummary") {
-			promptChars += message.summary ? message.summary.length + 32 : 32;
-			continue;
-		}
-		const baseChars = message.content ? message.content.length + 16 : 16;
-		if (message.role === "system") {
-			systemChars += baseChars;
-		} else if (message.role === "user") {
-			promptChars += baseChars;
-		} else if (message.role === "assistant") {
-			assistantChars += baseChars;
-			if (message.thinking) {
-				thinkingChars += message.thinking.length + 16;
-			}
-			if (message.tool_calls) {
-				toolChars += JSON.stringify(message.tool_calls).length;
-			}
-		} else if (message.role === "tool") {
-			toolChars += baseChars;
-		}
-	}
-
-	if (tools.length > 0) {
-		toolChars += JSON.stringify(tools).length;
-	}
-
-	const totalChars = systemChars + promptChars + assistantChars + thinkingChars + toolChars;
+	const seg = countContextSegmentChars(messages, tools);
+	const totalChars = seg.system + seg.prompt + seg.assistant + seg.thinking + seg.tools;
 	if (totalChars <= 0) {
 		return { system: 0, prompt: 0, assistant: 0, thinking: 0, tools: 0 };
 	}
 
 	if (totalScaleTokens !== undefined && totalScaleTokens > 0) {
 		const scale = totalScaleTokens / totalChars;
-		const sys = Math.round(systemChars * scale);
-		const pr = Math.round(promptChars * scale);
-		const ast = Math.round(assistantChars * scale);
-		const th = Math.round(thinkingChars * scale);
+		const sys = Math.round(seg.system * scale);
+		const pr = Math.round(seg.prompt * scale);
+		const ast = Math.round(seg.assistant * scale);
+		const th = Math.round(seg.thinking * scale);
 		const tl = Math.max(0, totalScaleTokens - sys - pr - ast - th);
 		return {
 			system: sys,
@@ -240,10 +254,10 @@ export function calculateContextSegments(
 	}
 
 	return {
-		system: Math.ceil(systemChars / 4),
-		prompt: Math.ceil(promptChars / 4),
-		assistant: Math.ceil(assistantChars / 4),
-		thinking: Math.ceil(thinkingChars / 4),
-		tools: Math.ceil(toolChars / 4),
+		system: Math.ceil(seg.system / 4),
+		prompt: Math.ceil(seg.prompt / 4),
+		assistant: Math.ceil(seg.assistant / 4),
+		thinking: Math.ceil(seg.thinking / 4),
+		tools: Math.ceil(seg.tools / 4),
 	};
 }
