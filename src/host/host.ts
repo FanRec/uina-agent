@@ -142,7 +142,7 @@ export class UinaHost {
 			onInput: (input) => state.stopping ? Promise.reject(new Error("宿主正在关闭")) : subject.accept(input),
 			onError: (text) => emit({ type: "error", text }),
 			onNotice: (text) => emit({ type: "notice", text }),
-			onProvider: (name, registered) => { models.register(name, registered); },
+			onProvider: (name, registered) => models.register(name, registered),
 			onCustomMessage: async (message) => { await subject.appendCustomMessage(message); emit({ type: "custom_message", message }); },
 			onCustomEntry: async (entry) => { await subject.appendCustomEntry(entry); emit({ type: "custom_entry", entry }); },
 		});

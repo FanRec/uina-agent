@@ -1,4 +1,4 @@
-import type { ChatMsg, ContextSegments, ModelProvider, ThinkingLevel } from "../core/types.js";
+import type { ChatMsg, ContextSegments, ThinkingLevel } from "../core/types.js";
 
 export type DeepReadonly<T> = T extends (...args: never[]) => unknown
 	? T
@@ -23,7 +23,7 @@ export interface TurnEndEvent { readonly type: "turn_end"; readonly turnNumber: 
 export interface ContextEvent { readonly type: "context"; readonly messages: readonly DeepReadonly<ChatMsg>[]; }
 export interface ToolCallEvent { readonly type: "tool_call"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly callId: string; }
 export interface ToolResultEvent { readonly type: "tool_result"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly result: string; readonly status: import("../core/types.js").ToolResultStatus; readonly callId: string; }
-export interface ModelSelectEvent { readonly type: "model_select"; readonly model: string; readonly provider: Readonly<ModelProvider>; readonly previousModel?: string; }
+export interface ModelSelectEvent { readonly type: "model_select"; readonly model: string; readonly previousModel?: string; }
 export interface ThinkingLevelSelectEvent { readonly type: "thinking_level_select"; readonly level: ThinkingLevel; readonly previousLevel?: ThinkingLevel; }
 export interface SessionBeforeCompactEvent { readonly type: "session_before_compact"; readonly tokensBefore: number; }
 export interface SessionCompactEvent { readonly type: "session_compact"; readonly summary: string; readonly tokensBefore: number; readonly retainedTailCount: number; }

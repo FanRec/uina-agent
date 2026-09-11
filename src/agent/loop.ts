@@ -166,7 +166,6 @@ export class Subject {
 		await this.runtimeHooks.events.emit({
 			type: "model_select",
 			model: provider.name,
-			provider,
 			previousModel: prev,
 		});
 
@@ -282,19 +281,21 @@ export class Subject {
 		if (mode === "direct" && !this.isBusy() && this.queues.size === 0) {
 			return this.startRun(normalized);
 		}
-		const queued = this.queues.enqueue(normalized, mode === "direct" ? "followUp" : mode);
-		this.notifyQueueChanged();
+		const queued = this.queues.create(normalized, mode === "direct" ? "followUp" : mode);
 		const persisted = this.storeEvent("queue_enqueued", eventData(queued));
-		if (!this.isBusy() && mode === "direct") return persisted.then(() => this.resumeQueued());
-		return persisted;
+		return persisted.then(async () => {
+			this.queues.add(queued);
+			this.notifyQueueChanged();
+			if (!this.isBusy() && mode === "direct") await this.resumeQueued();
+		});
 	}
 
 	accept(input: AgentInput): Promise<void> {
 		if (!input.id || !input.text?.trim()) return Promise.reject(new Error("AgentInput 必须包含 id 和 text"));
 		if (input.source.kind !== "runtime" && !this.isBusy() && this.queues.size === 0) return this.startRun(input.text.trim());
 		const queued = { ...this.queues.create(input.text.trim(), input.mode, { source: input.source, data: input.data }), id: input.id };
-		this.queues.add(queued);
 		return this.storeEvent("queue_enqueued", { ...eventData(queued), source: input.source, data: input.data }).then(async () => {
+			this.queues.add(queued);
 			this.notifyQueueChanged();
 			if (!this.isBusy()) await this.resumeQueued();
 		});
@@ -784,7 +785,7 @@ export class Subject {
 				turnNumber: this.turnSeq,
 				history: this.history,
 				provider,
-				systemPrompt,
+					systemPrompt,
 				tools: this.tools.defs(),
 				compaction: this.compaction,
 				providerHooks: this.runtimeHooks.provider,
