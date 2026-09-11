@@ -1,4 +1,4 @@
-/** Project-local, trusted extension runtime.  It deliberately mirrors Pi's
+/** Project-local, trusted extension runtime. It deliberately mirrors Pi's
  * lifecycle model: registrations are owned by an activation and become stale
  * on reload/dispose instead of leaking into the next runtime. */
 import { readdir } from "node:fs/promises";
@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AgentInput } from "../agent/loop.js";
 import type { ModelProvider } from "../core/types.js";
-import type { Tool, ToolBroker } from "../tools/broker.js";
+import type { ToolBroker, Tool } from "../tools/broker.js";
 import type { ExtensionUIContext, CustomEntry, CustomMessage, EntryRenderer, LocalCommand, MessageRenderer } from "./ui-contract.js";
 import { ExtensionRegistry } from "./renderer-registry.js";
 import { ExtensionHost, type ExtensionEvent, type ExtensionEventHandler } from "./host.js";
@@ -110,17 +110,28 @@ export class ExtensionRunner extends ExtensionHost {
 		this.ui = ui;
 	}
 
+	private idForFile(file: string): string {
+		return `project:${file.slice(this.options.cwd.length + 1).replace(/\\/g, "/")}`;
+	}
+
+	private async listProjectFiles(): Promise<string[] | undefined> {
+		const directory = join(this.options.cwd, ".uina", "extensions");
+		try {
+			const files = await readdir(directory);
+			return files.filter((name) => /\.(?:[cm]?js|ts)$/.test(name)).sort().map((f) => resolve(directory, f));
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+			throw error;
+		}
+	}
+
 	load(): Promise<void> { return this.enqueueLifecycle(() => this.loadProjects()); }
 
 	private async loadProjects(): Promise<void> {
-		const directory = join(this.options.cwd, ".uina", "extensions");
-		let files: string[];
-		try { files = await readdir(directory); } catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-			throw error;
-		}
-		for (const file of files.filter((name) => /\.(?:[cm]?js|ts)$/.test(name)).sort()) {
-			await this.activate(resolve(directory, file));
+		const files = await this.listProjectFiles();
+		if (!files) return;
+		for (const file of files) {
+			await this.activate(file);
 		}
 	}
 
@@ -140,11 +151,52 @@ export class ExtensionRunner extends ExtensionHost {
 
 	reload(): Promise<void> {
 		return this.enqueueLifecycle(async () => {
+			const files = await this.listProjectFiles();
+			if (files === undefined) {
+				await this.deactivateScopes(true);
+				for (const id of this.failures.keys()) if (id.startsWith("project:")) this.failures.delete(id);
+				return;
+			}
+
+			// 阶段一：模块解析预检（零副作用验证文件导入与默认导出）。
+			// 若有文件语法错误或加载失败，保护现有旧扩展不被卸载并抛错。
+			const modules: Array<{ id: string; file: string; activate: ExtensionActivation }> = [];
+			const importFailures: Array<{ id: string; file: string; error: string }> = [];
+
+			for (const file of files) {
+				const id = this.idForFile(file);
+				try {
+					const module = await import(`${pathToFileURL(file).href}?uinaReload=${Date.now()}-${++this.generation}`) as ExtensionModule;
+					if (typeof module.default !== "function") throw new Error("扩展必须默认导出 activate(pi)");
+					modules.push({ id, file, activate: module.default });
+				} catch (error) {
+					importFailures.push({ id, file, error: errorMessage(error) });
+				}
+			}
+
+			if (importFailures.length > 0) {
+				for (const f of importFailures) {
+					this.failures.set(f.id, { id: f.id, path: f.file, error: f.error });
+					this.emitOwnedError(f.id, "import", new Error(f.error));
+				}
+				throw new Error("Extension reload pre-import failed: " + importFailures.map(f => `${f.id}: ${f.error}`).join("; "));
+			}
+
+			// 阶段二：卸载旧项目扩展（倒序 LIFO 执行 teardown，注销旧工具/命令/Provider/UI）
 			await this.deactivateScopes(true);
-			for (const id of this.failures.keys()) if (id.startsWith("project:")) this.failures.delete(id);
-			await this.loadProjects();
-			const failed = this.diagnostics().filter(item => item.status === "failed");
-			if (failed.length) throw new Error("Extension reload failed: " + failed.map(item => item.id + ": " + item.error).join("; "));
+			for (const id of this.failures.keys()) {
+				if (id.startsWith("project:")) this.failures.delete(id);
+			}
+
+			// 阶段三：逐个激活新扩展。单扩展激活异常自动触发其局部 deactivate 精准回收，不影响其他扩展。
+			for (const { id, file, activate } of modules) {
+				try {
+					await this.activateScope(id, file, activate);
+				} catch (error) {
+					this.failures.set(id, { id, path: file, error: errorMessage(error) });
+					this.emitOwnedError(id, "activate", error);
+				}
+			}
 		});
 	}
 
@@ -195,7 +247,7 @@ export class ExtensionRunner extends ExtensionHost {
 	}
 
 	private async activate(file: string): Promise<void> {
-		const id = `project:${file.slice(this.options.cwd.length + 1).replace(/\\/g, "/")}`;
+		const id = this.idForFile(file);
 		try {
 			const module = await import(`${pathToFileURL(file).href}?uinaReload=${Date.now()}-${++this.generation}`) as ExtensionModule;
 			if (typeof module.default !== "function") throw new Error("扩展必须默认导出 activate(pi)");
@@ -235,35 +287,54 @@ export class ExtensionRunner extends ExtensionHost {
 		const ownKeyed = (key: string, dispose: ExtensionTeardown): void => { scope.ownKeyed(key, dispose); };
 		const ui = ownedUI(dynamicUI(() => this.ui), scope.id, assertActive, own, ownKeyed);
 		return {
-			id: scope.id, path: scope.path, ui,
-			reportError: error => this.emitOwnedError(scope.id, "external", error),
-			submitInput: async input => {
+			id: scope.id,
+			path: scope.path,
+			ui,
+			reportError: (error) => this.emitOwnedError(scope.id, "external", error),
+			submitInput: async (input) => {
 				assertActive();
 				if (!this.options.onInput) throw new Error("宿主未提供输入入口");
-				try { await this.options.onInput(structuredClone(input)); }
-				catch (error) { this.emitOwnedError(scope.id, "submitInput", error); throw error; }
+				try {
+					await this.options.onInput(structuredClone(input));
+				} catch (error) {
+					this.emitOwnedError(scope.id, "submitInput", error);
+					throw error;
+				}
 			},
 			on: (type, handler) => {
 				assertActive();
 				const wrapped: ExtensionEventHandler = async (event) => {
-					try { return await handler(event as never); }
-					catch (error) { this.emitOwnedError(scope.id, type, error); return undefined; }
+					try {
+						return await handler(event as never);
+					} catch (error) {
+						this.emitOwnedError(scope.id, type, error);
+						return undefined;
+					}
 				};
 				const dispose = super.onScoped(scope.id, type, wrapped as never);
 				own(dispose);
 				return dispose;
 			},
-			registerTool: (tool) => { assertActive(); this.options.tools.register(tool); own(() => this.options.tools.remove(tool.def.function.name)); },
-			registerCommand: (command) => { assertActive(); own(this.registry.registerCommand(command)); },
-			registerMessageRenderer: (type, renderer) => { assertActive(); own(this.registry.registerMessageRenderer(type, renderer)); },
-			registerEntryRenderer: (type, renderer) => { assertActive(); own(this.registry.registerEntryRenderer(type, renderer)); },
+			registerTool: (tool) => {
+				assertActive();
+				this.options.tools.register(tool);
+				own(() => this.options.tools.remove(tool.def.function.name));
+			},
+			registerCommand: (command) => {
+				assertActive();
+				own(this.registry.registerCommand(command));
+			},
+			registerMessageRenderer: (type, renderer) => {
+				assertActive();
+				own(this.registry.registerMessageRenderer(type, renderer));
+			},
+			registerEntryRenderer: (type, renderer) => {
+				assertActive();
+				own(this.registry.registerEntryRenderer(type, renderer));
+			},
 			registerProvider: (name, provider) => {
 				assertActive();
-				// A provider that lands nowhere must fail loudly, never silently
-				// (Pi: extension runner always has a model registry fallback).
 				if (!this.options.onProvider) throw new Error(`宿主未提供 Provider 注册入口，无法注册 ${name}`);
-				// Retained model references are revoked with their activation.
-				// Bind methods to the original object (including class private fields).
 				const scoped: ModelProvider = {
 					get name() { return provider.name; },
 					get contextWindow() { return provider.contextWindow; },

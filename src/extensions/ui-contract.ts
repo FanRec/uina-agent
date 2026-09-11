@@ -3,6 +3,7 @@
  */
 
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "../ui/core/types.js";
+export type { Component, OverlayHandle, OverlayOptions, WidgetPlacement };
 
 /** 自定义消息：进入会话历史，也参与模型上下文 */
 export interface CustomMessage<T = unknown> {

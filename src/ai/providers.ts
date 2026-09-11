@@ -605,6 +605,10 @@ export class ModelRegistry {
 		throw new Error(`未配置或未注册的模型/Provider: ${modelOrProviderName}`);
 	}
 
+	has(name: string): boolean {
+		return this.instances.has(name) || Boolean(this.config?.providers[name]);
+	}
+
 	register(name: string, provider: ModelProvider): () => void {
 		if (this.instances.has(name)) throw new Error(`Provider 已注册: ${name}`);
 		this.instances.set(name, provider);
