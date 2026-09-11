@@ -1,7 +1,7 @@
 import type { ExtensionActivation } from "../runner.js";
 import type { JobRegistry } from "../jobs/registry.js";
 import type { SubagentRegistry } from "../subagents/registry.js";
-import { ToolBroker } from "../../tools/broker.js";
+import { ToolBroker, ScopedToolView, type ScopedToolOptions } from "../../tools/broker.js";
 import { createExecCommandTool } from "./exec-command/index.js";
 import getTimeTool from "./get-time/index.js";
 import { createJobTools } from "../jobs/tools.js";
@@ -33,27 +33,13 @@ export function activateRuntimeTools(services: RuntimeToolsServices): ExtensionA
 	};
 }
 
-export interface ChildToolOptions {
-	/** Execution identity; inherited implementations run in this caller's context. */
-	ownerId?: string;
-	/** When present, only these tool names are inherited. */
-	include?: readonly string[];
-	/** Tool names the child must not inherit. */
-	exclude?: readonly string[];
-}
+export type ChildToolOptions = ScopedToolOptions;
 
 /**
- * Children inherit the parent's capability set by default. The caller decides
- * the policy explicitly (include/exclude) instead of the runtime silently
- * stripping capabilities, which used to leave children with get_time only.
+ * Children inherit the parent's capability set by default via a read-only
+ * delegation view (ScopedToolView) without duplicating tool registrations or
+ * Ajv schema validators.
  */
-export function createChildTools(source: ToolBroker, options: ChildToolOptions = {}): ToolBroker {
-	const tools = new ToolBroker(options.ownerId === undefined ? undefined : { ownerId: options.ownerId });
-	for (const name of source.names()) {
-		if (options.include && !options.include.includes(name)) continue;
-		if (options.exclude?.includes(name)) continue;
-		const tool = source.get(name);
-		if (tool) tools.register(tool);
-	}
-	return tools;
+export function createChildTools(source: ToolBroker, options: ChildToolOptions = {}): ScopedToolView {
+	return source.createScopedView(options);
 }

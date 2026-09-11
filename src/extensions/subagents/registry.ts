@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { AgentFactory } from "../../agent/runtime.js";
 import type { AgentInput } from "../../agent/loop.js";
-import type { ToolBroker } from "../../tools/broker.js";
+import type { ToolView } from "../../tools/broker.js";
 import type { SubagentRead, SubagentRecord, SubagentSnapshot, SubagentStartOptions, SubagentTranscript } from "./types.js";
 
 export interface SubagentRegistryOptions {
 	factory: AgentFactory;
 	/** Resolved per child creation so a model switch affects new subagents. */
 	provider: () => Parameters<AgentFactory["create"]>[0]["provider"];
-	createTools: (ownerId: string) => ToolBroker;
+	createTools: (ownerId: string) => ToolView;
 	thinkingLevel?: Parameters<AgentFactory["create"]>[0]["thinkingLevel"];
 	notify?: (text: string, data: Record<string, unknown>, ownerId: string) => Promise<void>;
 }

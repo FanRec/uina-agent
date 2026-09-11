@@ -1,6 +1,6 @@
 import type { ToolResultStatus } from "../core/types.js";
 import type { DeepReadonly } from "../runtime/events.js";
-import type { PreparedToolCall, ToolBroker, ToolExecutionResult } from "./broker.js";
+import type { PreparedToolCall, ToolExecutionResult, ToolView } from "./broker.js";
 
 export interface ToolPipelineHooks {
 	beforeCall?(input: Readonly<{ callId: string; name: string; args: DeepReadonly<Record<string, unknown>> }>): Promise<Readonly<{ block?: boolean; reason?: string }>>;
@@ -30,7 +30,7 @@ export interface ToolPipelineOptions {
  * 编排预取消检查、扩展 beforeCall 拦截、参数准备校验、核心执行、transformResult 结果改写和生命周期观测。
  */
 export async function executeToolPipeline(
-	broker: ToolBroker,
+	broker: ToolView,
 	call: ToolCallRequest,
 	options: ToolPipelineOptions = {},
 ): Promise<ToolExecutionResult & { callId: string }> {

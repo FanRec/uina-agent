@@ -15,7 +15,7 @@ import { projectInputMessage } from "../session/recovery.js";
 import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, defaultPrepareNextTurn, findKeepFrom, type PrepareNextTurnContext, type PrepareNextTurnResult } from "./compaction.js";
 import { buildContext, calculateContextSegments, convertToLlm, defaultSystemPrompt, estimateContextTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
-import type { PreparedToolCall, ToolBroker } from "../tools/broker.js";
+import type { PreparedToolCall, ToolView } from "../tools/broker.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
 import { NO_RUNTIME_HOOKS } from "../runtime/noop.js";
 import { guardRuntimeHooks } from "../runtime/guard.js";
@@ -105,7 +105,7 @@ export class Subject {
 
 	constructor(
 		provider: ModelProvider,
-		private readonly tools: ToolBroker,
+		private readonly tools: ToolView,
 		private readonly hooks: LoopHooks,
 		options: SubjectOptions = {},
 	) {

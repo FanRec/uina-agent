@@ -3,7 +3,7 @@ import type { AgentMessage, ThinkingLevel } from "../core/types.js";
 import { MemorySessionStore } from "../session/jsonl-store.js";
 import type { SessionStore } from "../session/types.js";
 import { Subject, type AgentInput, type LoopHooks } from "./loop.js";
-import type { ToolBroker } from "../tools/broker.js";
+import type { ToolView } from "../tools/broker.js";
 import type { ModelProvider } from "../core/types.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
 
@@ -19,7 +19,7 @@ export interface AgentSnapshot {
 export interface AgentCreateOptions {
 	id?: string;
 	provider: ModelProvider;
-	tools: ToolBroker;
+	tools: ToolView;
 	hooks?: LoopHooks;
 	store?: SessionStore;
 	systemPrompt?: string;

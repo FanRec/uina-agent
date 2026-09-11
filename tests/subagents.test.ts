@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { DefaultAgentFactory, type AgentFactory } from "../src/agent/runtime.js";
 import type { ModelProvider } from "../src/core/types.js";
-import { ToolBroker } from "../src/tools/broker.js";
+import { ToolBroker, type ToolView } from "../src/tools/broker.js";
 import { SubagentRegistry } from "../src/extensions/subagents/registry.js";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import { JobRegistry } from "../src/extensions/jobs/registry.js";
@@ -36,7 +36,7 @@ function make(provider: ModelProvider, notify?: (text: string, data: Record<stri
 describe("SubagentRegistry", () => {
 	it("inherits capabilities with child ownership and delivers job completion back to that child", async () => {
 		const root = new ToolBroker({ ownerId: "root" });
-		const children = new Map<string, ToolBroker>();
+		const children = new Map<string, ToolView>();
 		const jobs = new JobRegistry();
 		const rootInputs: unknown[] = [], errors: string[] = [];
 		const provider = scriptedProvider([

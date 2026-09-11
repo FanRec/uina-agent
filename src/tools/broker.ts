@@ -49,8 +49,39 @@ type AjvConstructorType = new (options: {
 const AjvConstructor = createRequire(import.meta.url)("ajv") as AjvConstructorType;
 const ajv = new AjvConstructor({ strict: true, allErrors: true });
 
-export class ToolBroker {
+export interface ToolView {
+	names(): string[];
+	defs(): ToolDef[];
+	has(name: string): boolean;
+	getExecutionMode(name: string): ToolExecutionMode;
+	prepare(name: string, args: Record<string, unknown>): PreparedToolCall;
+	execute(prepared: PreparedToolCall, signal?: AbortSignal): Promise<ToolExecutionResult>;
+	run(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string>;
+	executePipeline(
+		call: ToolCallRequest,
+		options?: ToolPipelineOptions,
+	): Promise<ToolExecutionResult & { callId: string }>;
+}
+
+export interface ScopedToolOptions {
+	/** Execution identity; inherited implementations run in this caller's context. */
+	readonly ownerId?: string;
+	/** When present, only these tool names are inherited/visible. */
+	readonly include?: readonly string[];
+	/** Tool names the child must not inherit/visible. */
+	readonly exclude?: readonly string[];
+}
+
+export class ToolBroker implements ToolView {
 	constructor(private readonly context?: ToolExecutionContext) {}
+
+	getContext(): ToolExecutionContext | undefined {
+		return this.context;
+	}
+
+	createScopedView(options: ScopedToolOptions = {}): ScopedToolView {
+		return new ScopedToolView(this, options);
+	}
 
 	private readonly tools = new Map<
 		string,
@@ -115,39 +146,20 @@ export class ToolBroker {
 				status: "not_started",
 			};
 		}
-		if (!prepared.tool) {
+		if (!this.has(prepared.name)) {
+			return {
+				result: JSON.stringify({ error: `工具不可用: ${prepared.name} 已被卸载或不存在`, status: "not_started" }),
+				status: "not_started",
+			};
+		}
+		const tool = this.tools.get(prepared.name)?.tool ?? prepared.tool;
+		if (!tool) {
 			return {
 				result: JSON.stringify({ error: `未知工具 ${prepared.name}`, status: "not_started" }),
 				status: "not_started",
 			};
 		}
-		if (signal?.aborted) {
-			return {
-				result: JSON.stringify({ error: "工具尚未启动，调用已取消", status: "not_started" }),
-				status: "not_started",
-			};
-		}
-		try {
-			const result = await prepared.tool.run(prepared.args, signal, this.context);
-			if (!result || typeof result.result !== "string" || !["succeeded", "failed", "cancelled", "unknown", "not_started"].includes(result.status)) {
-				throw new Error("工具必须返回 { result: string, status: ToolResultStatus }");
-			}
-			return result;
-		} catch (error) {
-			if (signal?.aborted) {
-				return {
-					result: JSON.stringify({ error: "工具已启动，但取消时结果未知", status: "unknown" }),
-					status: "unknown",
-				};
-			}
-			return {
-				result: JSON.stringify({
-					error: `${prepared.name} 执行失败: ${safeErrorMessage(error)}`,
-					status: "failed",
-				}),
-				status: "failed",
-			};
-		}
+		return executeToolCore(tool, prepared.name, prepared.args, signal, this.context);
 	}
 
 	async run(
@@ -167,6 +179,148 @@ export class ToolBroker {
 
 	getExecutionMode(name: string): ToolExecutionMode {
 		return this.tools.get(name)?.tool.executionMode ?? "parallel";
+	}
+}
+
+async function executeToolCore(
+	tool: Tool,
+	name: string,
+	args: Record<string, unknown>,
+	signal?: AbortSignal,
+	context?: ToolExecutionContext,
+): Promise<ToolExecutionResult> {
+	if (signal?.aborted) {
+		return {
+			result: JSON.stringify({ error: "工具尚未启动，调用已取消", status: "not_started" }),
+			status: "not_started",
+		};
+	}
+	try {
+		const result = await tool.run(args, signal, context);
+		if (
+			!result ||
+			typeof result.result !== "string" ||
+			!["succeeded", "failed", "cancelled", "unknown", "not_started"].includes(result.status)
+		) {
+			throw new Error("工具必须返回 { result: string, status: ToolResultStatus }");
+		}
+		return result;
+	} catch (error) {
+		if (signal?.aborted) {
+			return {
+				result: JSON.stringify({ error: "工具已启动，但取消时结果未知", status: "unknown" }),
+				status: "unknown",
+			};
+		}
+		return {
+			result: JSON.stringify({
+				error: `${name} 执行失败: ${safeErrorMessage(error)}`,
+				status: "failed",
+			}),
+			status: "failed",
+		};
+	}
+}
+
+export class ScopedToolView implements ToolView {
+	readonly ownerId?: string;
+
+	constructor(
+		private readonly root: ToolBroker,
+		private readonly options: ScopedToolOptions = {},
+	) {
+		this.ownerId = options.ownerId ?? root.getContext()?.ownerId;
+	}
+
+	private isAllowed(name: string): boolean {
+		if (this.options.include && !this.options.include.includes(name)) return false;
+		if (this.options.exclude && this.options.exclude.includes(name)) return false;
+		return true;
+	}
+
+	has(name: string): boolean {
+		return this.isAllowed(name) && this.root.has(name);
+	}
+
+	names(): string[] {
+		return this.root.names().filter((name) => this.isAllowed(name));
+	}
+
+	defs(): ToolDef[] {
+		return this.names()
+			.map((name) => this.root.get(name)?.def)
+			.filter((def): def is ToolDef => def !== undefined);
+	}
+
+	getExecutionMode(name: string): ToolExecutionMode {
+		if (!this.has(name)) return "parallel";
+		return this.root.getExecutionMode(name);
+	}
+
+	prepare(name: string, args: Record<string, unknown>): PreparedToolCall {
+		if (!this.root.has(name)) {
+			return { name, args, error: `工具不可用: ${name} (在宿主中已被卸载或不存在)` };
+		}
+		if (!this.isAllowed(name)) {
+			const reason = this.options.exclude?.includes(name)
+				? "已被当前作用域策略排除"
+				: "未包含在当前作用域允许名单中";
+			return { name, args, error: `工具不可用: ${name} (${reason})` };
+		}
+		return this.root.prepare(name, args);
+	}
+
+	async execute(
+		prepared: PreparedToolCall,
+		signal?: AbortSignal,
+	): Promise<ToolExecutionResult> {
+		if (prepared.error) {
+			return {
+				result: JSON.stringify({ error: prepared.error, status: "not_started" }),
+				status: "not_started",
+			};
+		}
+		if (!this.root.has(prepared.name)) {
+			return {
+				result: JSON.stringify({ error: `工具不可用: ${prepared.name} 已被卸载或不存在`, status: "not_started" }),
+				status: "not_started",
+			};
+		}
+		if (!this.isAllowed(prepared.name)) {
+			const reason = this.options.exclude?.includes(prepared.name)
+				? "已被当前作用域策略排除"
+				: "未包含在当前作用域允许名单中";
+			return {
+				result: JSON.stringify({ error: `工具不可用: ${prepared.name} (${reason})`, status: "not_started" }),
+				status: "not_started",
+			};
+		}
+		const tool = this.root.get(prepared.name);
+		if (!tool) {
+			return {
+				result: JSON.stringify({ error: `工具不可用: ${prepared.name} 已被卸载或不存在`, status: "not_started" }),
+				status: "not_started",
+			};
+		}
+		const context: ToolExecutionContext | undefined = this.ownerId !== undefined
+			? { ownerId: this.ownerId }
+			: this.root.getContext();
+		return executeToolCore(tool, prepared.name, prepared.args, signal, context);
+	}
+
+	async run(
+		name: string,
+		args: Record<string, unknown>,
+		signal?: AbortSignal,
+	): Promise<string> {
+		return (await this.execute(this.prepare(name, args), signal)).result;
+	}
+
+	async executePipeline(
+		call: ToolCallRequest,
+		options?: ToolPipelineOptions,
+	): Promise<ToolExecutionResult & { callId: string }> {
+		return executeToolPipeline(this, call, options);
 	}
 }
 
