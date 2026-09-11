@@ -1,8 +1,15 @@
 import { randomUUID } from "node:crypto";
-import type { AgentFactory } from "../../agent/runtime.js";
+import type { AgentFactory, AgentHandle } from "../../agent/runtime.js";
 import type { AgentInput } from "../../agent/loop.js";
 import type { ToolView } from "../../tools/broker.js";
-import type { SubagentRead, SubagentRecord, SubagentSnapshot, SubagentStartOptions, SubagentTranscript } from "./types.js";
+import { TaskOutputBuffer } from "../../runtime/task-handle.js";
+import type {
+	SubagentChunk,
+	SubagentRead,
+	SubagentSnapshot,
+	SubagentStartOptions,
+	SubagentTranscript,
+} from "./types.js";
 
 export interface SubagentRegistryOptions {
 	factory: AgentFactory;
@@ -16,8 +23,24 @@ export interface SubagentRegistryOptions {
 /** Per-child output budget; the oldest chunks are released once exceeded. */
 const OUTPUT_BUDGET_BYTES = 256 * 1024;
 
+interface TrackedSubagent {
+	readonly id: string;
+	readonly ownerId: string;
+	readonly parentId?: string;
+	readonly label: string;
+	readonly createdAt: number;
+	finishedAt?: number;
+	detail?: string;
+	status?: "interrupted" | "failed" | "settled";
+	terminalStatus?: "failed" | "interrupted";
+	handle: AgentHandle;
+	readonly buffer: TaskOutputBuffer<SubagentChunk>;
+	error?: string;
+	settling?: Promise<void>;
+}
+
 export class SubagentRegistry {
-	private readonly records = new Map<string, SubagentRecord>();
+	private readonly records = new Map<string, TrackedSubagent>();
 	private accepting = true;
 
 	constructor(private readonly options: SubagentRegistryOptions) {}
@@ -33,7 +56,9 @@ export class SubagentRegistry {
 	}
 
 	list(ownerId: string): SubagentSnapshot[] {
-		return [...this.records.values()].filter((record) => record.ownerId === ownerId).map((record) => this.snapshot(record));
+		return [...this.records.values()]
+			.filter((record) => record.ownerId === ownerId)
+			.map((record) => this.snapshot(record));
 	}
 
 	get(id: string, ownerId: string): SubagentSnapshot {
@@ -42,13 +67,11 @@ export class SubagentRegistry {
 
 	read(id: string, ownerId: string, cursor = 0): SubagentRead {
 		const record = this.expect(id, ownerId);
-		if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error("cursor 无效");
-		const first = record.outputs[0]?.cursor ?? record.nextCursor;
+		const readResult = record.buffer.read(cursor);
 		return {
-			cursor: record.outputs.at(-1)?.cursor ?? 0,
-			output: record.outputs.filter((item) => item.cursor > cursor).map((item) => ({ ...item })),
-			// Report dropped output even on the first read.
-			outputLost: cursor < first - 1,
+			cursor: readResult.cursor,
+			output: readResult.chunks.map((item) => ({ ...item })),
+			outputLost: readResult.outputLost,
 			subagent: this.snapshot(record),
 		};
 	}
@@ -96,43 +119,54 @@ export class SubagentRegistry {
 
 	async close(): Promise<void> {
 		this.accepting = false;
-		await Promise.all([...this.records.values()].filter((record) => record.status !== "settled").map((record) => this.interrupt(record.id, record.ownerId)));
+		await Promise.all(
+			[...this.records.values()]
+				.filter((record) => record.status !== "settled")
+				.map((record) => this.interrupt(record.id, record.ownerId)),
+		);
 	}
 
-	private makeRecord(id: string, request: SubagentStartOptions): SubagentRecord {
-		const outputs: SubagentRecord["outputs"] = [];
-		let outputBytes = 0;
-		let nextCursor = 1;
-		let record!: SubagentRecord;
-		const add = (kind: SubagentRecord["outputs"][number]["kind"], text: string): void => {
-			if (!text) return;
-			outputs.push({ cursor: nextCursor++, kind, text });
-			record.nextCursor = nextCursor;
-			outputBytes += Buffer.byteLength(text, "utf8");
-			while (outputs.length > 0 && outputBytes > OUTPUT_BUDGET_BYTES) {
-				const dropped = outputs.shift()!;
-				outputBytes -= Buffer.byteLength(dropped.text, "utf8");
-			}
-		};
+	private makeRecord(id: string, request: SubagentStartOptions): TrackedSubagent {
+		const buffer = new TaskOutputBuffer<SubagentChunk>({ maxBytes: OUTPUT_BUDGET_BYTES });
+		let record!: TrackedSubagent;
 		const hooks = {
-			onToken: (text: string) => add("text", text),
-			onThinking: (text: string) => add("thinking", text),
-			onToolStart: (name: string, args: unknown) => add("tool_start", `${name} ${JSON.stringify(args)}`),
-			onToolDone: (name: string, result: string) => add("tool_done", `${name}: ${result}`),
+			onToken: (text: string) => { if (text) buffer.append({ kind: "text", text }); },
+			onThinking: (text: string) => { if (text) buffer.append({ kind: "thinking", text }); },
+			onToolStart: (name: string, args: unknown) => { buffer.append({ kind: "tool_start", text: `${name} ${JSON.stringify(args)}` }); },
+			onToolDone: (name: string, result: string) => { buffer.append({ kind: "tool_done", text: `${name}: ${result}` }); },
 			onError: (error: string) => { record.error = error; record.detail = error; },
 		};
-		const handle = this.options.factory.create({ id, provider: this.options.provider(), tools: this.options.createTools(id), hooks, thinkingLevel: this.options.thinkingLevel });
-		record = { id, ownerId: request.ownerId, parentId: request.parentId, label: request.label, createdAt: Date.now(), outputCursor: 0, handle, outputs, nextCursor: 1 };
+		const handle = this.options.factory.create({
+			id,
+			provider: this.options.provider(),
+			tools: this.options.createTools(id),
+			hooks,
+			thinkingLevel: this.options.thinkingLevel,
+		});
+		record = {
+			id,
+			ownerId: request.ownerId,
+			parentId: request.parentId,
+			label: request.label,
+			createdAt: Date.now(),
+			handle,
+			buffer,
+		};
 		return record;
 	}
 
-	private async begin(record: SubagentRecord, prompt: string): Promise<void> {
+	private async begin(record: TrackedSubagent, prompt: string): Promise<void> {
 		await this.run(record, prompt, "subagent-start", false);
 	}
 
-	private async run(record: SubagentRecord, text: string, inputType: "subagent-start" | "subagent-input", propagateFailure: boolean): Promise<void> {
+	private async run(record: TrackedSubagent, text: string, inputType: "subagent-start" | "subagent-input", propagateFailure: boolean): Promise<void> {
 		try {
-			await record.handle.send({ id: `${inputType}-${record.id}-${randomUUID()}`, mode: record.handle.subject.isBusy() ? "steer" : "followUp", source: { kind: "agent", type: inputType, ref: record.id }, text });
+			await record.handle.send({
+				id: `${inputType}-${record.id}-${randomUUID()}`,
+				mode: record.handle.subject.isBusy() ? "steer" : "followUp",
+				source: { kind: "agent", type: inputType, ref: record.id },
+				text,
+			});
 			if (record.error) await this.release(record, "failed");
 		} catch (error) {
 			record.error ??= errorMessage(error);
@@ -142,7 +176,7 @@ export class SubagentRegistry {
 		}
 	}
 
-	private async release(record: SubagentRecord, terminalStatus: "interrupted" | "failed"): Promise<void> {
+	private async release(record: TrackedSubagent, terminalStatus: "interrupted" | "failed"): Promise<void> {
 		if (record.settling) return record.settling;
 		record.settling = (async () => {
 			record.status = terminalStatus;
@@ -156,9 +190,12 @@ export class SubagentRegistry {
 			}
 			record.status = "settled";
 			record.finishedAt = Date.now();
-			record.outputCursor = record.outputs.at(-1)?.cursor ?? 0;
 			try {
-				await this.options.notify?.(`子代理 ${record.id} 已${record.terminalStatus === "failed" ? "失败" : "中断"}。任务：${record.label}。请使用 subagent_status 或 subagent_output 读取详情。`, { id: record.id, status: record.terminalStatus, label: record.label }, record.ownerId);
+				await this.options.notify?.(
+					`子代理 ${record.id} 已${record.terminalStatus === "failed" ? "失败" : "中断"}。任务：${record.label}。请使用 subagent_status 或 subagent_output 读取详情。`,
+					{ id: record.id, status: record.terminalStatus, label: record.label },
+					record.ownerId,
+				);
 			} catch (error) {
 				const noticeError = `通知投递失败：${errorMessage(error)}`;
 				record.detail = record.detail ? `${record.detail}；${noticeError}` : noticeError;
@@ -167,15 +204,29 @@ export class SubagentRegistry {
 		return record.settling;
 	}
 
-	private expect(id: string, ownerId: string): SubagentRecord {
+	private expect(id: string, ownerId: string): TrackedSubagent {
 		const record = this.records.get(id);
 		if (!record || record.ownerId !== ownerId) throw new Error(`无权访问子代理 ${id}`);
 		return record;
 	}
 
-	private snapshot(record: SubagentRecord): SubagentSnapshot {
-		return { id: record.id, ownerId: record.ownerId, ...(record.parentId ? { parentId: record.parentId } : {}), label: record.label, status: record.status ?? (record.handle.snapshot().busy ? "running" : "waiting"), ...(record.terminalStatus ? { terminalStatus: record.terminalStatus } : {}), detail: record.detail, createdAt: record.createdAt, finishedAt: record.finishedAt, outputCursor: record.outputs.at(-1)?.cursor ?? 0, busy: record.handle.subject.isBusy() };
+	private snapshot(record: TrackedSubagent): SubagentSnapshot {
+		return {
+			id: record.id,
+			ownerId: record.ownerId,
+			...(record.parentId ? { parentId: record.parentId } : {}),
+			label: record.label,
+			status: record.status ?? (record.handle.snapshot().busy ? "running" : "waiting"),
+			...(record.terminalStatus ? { terminalStatus: record.terminalStatus } : {}),
+			detail: record.detail,
+			createdAt: record.createdAt,
+			finishedAt: record.finishedAt,
+			outputCursor: record.buffer.currentCursor,
+			busy: record.handle.subject.isBusy(),
+		};
 	}
 }
 
-function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { TaskOutputBuffer, TaskWaiters } from "../../runtime/task-handle.js";
 
 export type JobStatus = "running" | "stopping" | "completed" | "killed" | "failed" | "unknown";
 
@@ -77,22 +78,26 @@ export interface JobsOptions {
 	maxActivePerOwner?: number;
 }
 
-interface Observation {
-	seq: number;
-	stream: "stdout" | "stderr" | "text";
-	text: string;
+export interface ObservationChunk {
+	readonly stream: "stdout" | "stderr" | "text";
+	readonly text: string;
 }
 
 interface TrackedJob {
-	snapshot: JobSnapshot;
-	controller: AbortController;
+	readonly id: string;
+	readonly ownerId: string;
+	readonly label: string;
+	readonly source: JobSource;
+	readonly startedAt: number;
+	finishedAt?: number;
+	status: JobStatus;
+	detail?: string;
+	progress?: JobProgress;
+	readonly controller: AbortController;
 	handle?: JobHandle;
-	observations: Observation[];
-	nextObservation: number;
-	outputBytes: number;
-	outputLines: number;
 	output?: JobOutput;
-	waiters: Set<() => void>;
+	readonly buffer: TaskOutputBuffer<ObservationChunk>;
+	readonly waiters: TaskWaiters;
 }
 
 const OUTPUT_BYTES = 50 * 1024;
@@ -123,20 +128,15 @@ export class JobRegistry {
 		const id = `job-${randomUUID()}`;
 		const controller = new AbortController();
 		const job: TrackedJob = {
-			snapshot: {
-				id,
-				ownerId: spec.ownerId,
-				label: spec.label,
-				source: structuredClone(spec.source),
-				status: "running",
-				startedAt: Date.now(),
-			},
+			id,
+			ownerId: spec.ownerId,
+			label: spec.label,
+			source: structuredClone(spec.source),
+			startedAt: Date.now(),
+			status: "running",
 			controller,
-			observations: [],
-			nextObservation: 0,
-			outputBytes: 0,
-			outputLines: 0,
-			waiters: new Set(),
+			buffer: new TaskOutputBuffer<ObservationChunk>({ maxBytes: OUTPUT_BYTES, maxLines: OUTPUT_LINES }),
+			waiters: new TaskWaiters(),
 		};
 		const context: JobContext = {
 			id,
@@ -164,7 +164,7 @@ export class JobRegistry {
 	/** Omit ownerId to list every owner's jobs (host UI / diagnostics). */
 	list(ownerId?: string): JobSnapshot[] {
 		return [...this.jobs.values()]
-			.filter((job) => ownerId === undefined || job.snapshot.ownerId === ownerId)
+			.filter((job) => ownerId === undefined || job.ownerId === ownerId)
 			.map((job) => snapshotOf(job));
 	}
 
@@ -174,53 +174,38 @@ export class JobRegistry {
 
 	read(id: string, ownerId?: string, cursor = 0): JobRead {
 		const job = this.expect(id, ownerId);
-		if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error("cursor 无效");
-		const first = job.observations[0]?.seq ?? job.nextObservation + 1;
-		// Report dropped output even for a first read: a silent truncation is
-		// worse than an explicit "output was lost" flag.
-		const outputLost = cursor < first - 1;
-		const observations = job.observations.filter((item) => item.seq > cursor);
+		const readResult = job.buffer.read(cursor);
 		return {
-			cursor: job.nextObservation,
-			text: observations.map(formatObservation).join(""),
-			outputLost,
+			cursor: readResult.cursor,
+			text: readResult.chunks.map(formatObservation).join(""),
+			outputLost: readResult.outputLost,
 			job: snapshotOf(job),
 			result: job.output?.result,
 			fullOutputPath: job.output?.fullOutputPath,
-			truncated: job.output?.truncated ?? outputLost,
+			truncated: job.output?.truncated ?? readResult.outputLost,
 		};
 	}
 
 	async wait(id: string, ownerId: string | undefined, timeoutMs: number, cursor = 0, signal?: AbortSignal): Promise<JobSnapshot> {
 		const job = this.expect(id, ownerId);
-		if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("等待时间无效");
-		if (isTerminal(job.snapshot.status) || job.nextObservation > cursor) return snapshotOf(job);
-		if (signal?.aborted) throw new Error("等待已取消");
-		await new Promise<void>((resolve, reject) => {
-			const timer = setTimeout(done, timeoutMs);
-			const onAbort = (): void => { cleanup(); reject(new Error("等待已取消")); };
-			const onChange = (): void => { if (isTerminal(job.snapshot.status) || job.nextObservation > cursor) done(); };
-			function cleanup(): void {
-				clearTimeout(timer);
-				job.waiters.delete(onChange);
-				signal?.removeEventListener("abort", onAbort);
-			}
-			function done(): void { cleanup(); resolve(); }
-			job.waiters.add(onChange);
-			signal?.addEventListener("abort", onAbort, { once: true });
-		});
+		await job.waiters.wait(
+			() => isTerminal(job.status) || job.buffer.currentCursor > cursor,
+			timeoutMs,
+			signal,
+		);
 		return snapshotOf(job);
 	}
 
 	cancel(id: string, ownerId?: string, reason?: string): "cancellation-requested" | "already-finished" {
 		const job = this.expect(id, ownerId);
-		if (isTerminal(job.snapshot.status)) return "already-finished";
-		if (job.snapshot.status !== "stopping") {
-			job.snapshot.status = "stopping";
-			job.snapshot.detail = reason ?? "已请求取消";
+		if (isTerminal(job.status)) return "already-finished";
+		if (job.status !== "stopping") {
+			job.status = "stopping";
+			job.detail = reason ?? "已请求取消";
 			this.notifyChanged(job);
 		}
 		job.controller.abort(reason);
+		job.waiters.notify();
 		this.requestCancel(job, reason);
 		return "cancellation-requested";
 	}
@@ -238,46 +223,43 @@ export class JobRegistry {
 	async close(): Promise<void> {
 		if (this.closePromise) return this.closePromise;
 		this.closed = true;
-		const active = [...this.jobs.values()].filter((job) => !isTerminal(job.snapshot.status));
-		for (const job of active) this.cancel(job.snapshot.id, job.snapshot.ownerId, "宿主正在关闭");
+		const active = [...this.jobs.values()].filter((job) => !isTerminal(job.status));
+		for (const job of active) this.cancel(job.id, job.ownerId, "宿主正在关闭");
 		this.closePromise = Promise.all(active.map((job) => this.waitForTerminal(job))).then(() => undefined);
 		await this.closePromise;
 	}
 
 	private update(job: TrackedJob, update: { detail?: string; progress?: JobProgress }): void {
-		if (isTerminal(job.snapshot.status)) return;
-		if (update.detail !== undefined) job.snapshot.detail = update.detail;
-		if (update.progress !== undefined) job.snapshot.progress = structuredClone(update.progress);
+		if (isTerminal(job.status)) return;
+		if (update.detail !== undefined) job.detail = update.detail;
+		if (update.progress !== undefined) job.progress = structuredClone(update.progress);
 		this.notifyChanged(job);
 	}
 
 	private observe(job: TrackedJob, chunk: { stream?: "stdout" | "stderr" | "text"; text: string }): void {
-		if (isTerminal(job.snapshot.status) || !chunk.text) return;
-		const observation: Observation = { seq: ++job.nextObservation, stream: chunk.stream ?? "text", text: chunk.text };
-		job.observations.push(observation);
-		job.outputBytes += Buffer.byteLength(observation.text, "utf8");
-		job.outputLines += countLines(observation.text);
-		while (job.observations.length > 0 && (job.outputBytes > OUTPUT_BYTES || job.outputLines > OUTPUT_LINES)) {
-			const removed = job.observations.shift()!;
-			job.outputBytes -= Buffer.byteLength(removed.text, "utf8");
-			job.outputLines -= countLines(removed.text);
-		}
-		this.notifyWaiters(job);
+		if (isTerminal(job.status) || !chunk.text) return;
+		job.buffer.append({ stream: chunk.stream ?? "text", text: chunk.text });
+		job.waiters.notify();
 		this.notifyChanged(job);
 	}
 
 	private requestCancel(job: TrackedJob, reason?: string): void {
-		try { job.handle?.cancel(reason); } catch (error) { job.snapshot.detail = `取消请求失败：${errorMessage(error)}`; this.notifyChanged(job); }
+		try {
+			job.handle?.cancel(reason);
+		} catch (error) {
+			job.detail = `取消请求失败：${errorMessage(error)}`;
+			this.notifyChanged(job);
+		}
 	}
 
 	private settle(job: TrackedJob, outcome: JobOutcome): void {
-		if (isTerminal(job.snapshot.status)) return;
-		job.snapshot.status = outcome.status;
-		job.snapshot.detail = outcome.detail ?? job.snapshot.detail;
-		job.snapshot.finishedAt = Date.now();
+		if (isTerminal(job.status)) return;
+		job.status = outcome.status;
+		job.detail = outcome.detail ?? job.detail;
+		job.finishedAt = Date.now();
 		job.output = outcome.output;
 		this.pruneSettledObservations();
-		this.notifyWaiters(job);
+		job.waiters.notify();
 		this.notifyChanged(job);
 		for (const listener of this.resolved) {
 			try { listener(snapshotOf(job)); } catch { /* observers cannot alter settlement */ }
@@ -291,15 +273,15 @@ export class JobRegistry {
 		let bytes = 0;
 		const settled: TrackedJob[] = [];
 		for (const job of this.jobs.values()) {
-			if (!isTerminal(job.snapshot.status)) continue;
+			if (!isTerminal(job.status)) continue;
 			settled.push(job);
-			for (const observation of job.observations) bytes += Buffer.byteLength(observation.text, "utf8");
+			bytes += job.buffer.bytes;
 		}
-		settled.sort((a, b) => (a.snapshot.finishedAt ?? 0) - (b.snapshot.finishedAt ?? 0));
+		settled.sort((a, b) => (a.finishedAt ?? 0) - (b.finishedAt ?? 0));
 		for (const job of settled) {
 			if (bytes <= SETTLED_OUTPUT_BUDGET) break;
-			for (const observation of job.observations) bytes -= Buffer.byteLength(observation.text, "utf8");
-			job.observations.length = 0;
+			bytes -= job.buffer.bytes;
+			job.buffer.clear();
 		}
 	}
 
@@ -310,31 +292,20 @@ export class JobRegistry {
 		}
 	}
 
-	private notifyWaiters(job: TrackedJob): void {
-		for (const waiter of [...job.waiters]) waiter();
-	}
-
 	private expect(id: string, ownerId?: string): TrackedJob {
 		const job = this.jobs.get(id);
 		if (!job) throw new Error(`未知后台任务 ${id}`);
-		if (ownerId !== undefined && job.snapshot.ownerId !== ownerId) throw new Error(`后台任务 ${id} 不属于当前 owner`);
+		if (ownerId !== undefined && job.ownerId !== ownerId) throw new Error(`后台任务 ${id} 不属于当前 owner`);
 		return job;
 	}
 
 	private activeFor(ownerId: string): number {
-		return [...this.jobs.values()].filter((job) => job.snapshot.ownerId === ownerId && !isTerminal(job.snapshot.status)).length;
+		return [...this.jobs.values()].filter((job) => job.ownerId === ownerId && !isTerminal(job.status)).length;
 	}
 
 	private waitForTerminal(job: TrackedJob): Promise<void> {
-		if (isTerminal(job.snapshot.status)) return Promise.resolve();
-		return new Promise((resolve) => {
-			const waiter = (): void => {
-				if (!isTerminal(job.snapshot.status)) return;
-				job.waiters.delete(waiter);
-				resolve();
-			};
-			job.waiters.add(waiter);
-		});
+		if (isTerminal(job.status)) return Promise.resolve();
+		return job.waiters.wait(() => isTerminal(job.status), 10_000).catch(() => {});
 	}
 }
 
@@ -343,15 +314,21 @@ function isTerminal(status: JobStatus): boolean {
 }
 
 function snapshotOf(job: TrackedJob): JobSnapshot {
-	return structuredClone(job.snapshot);
+	return {
+		id: job.id,
+		ownerId: job.ownerId,
+		label: job.label,
+		source: structuredClone(job.source),
+		status: job.status,
+		detail: job.detail,
+		progress: job.progress ? structuredClone(job.progress) : undefined,
+		startedAt: job.startedAt,
+		finishedAt: job.finishedAt,
+	};
 }
 
-function formatObservation(observation: Observation): string {
+function formatObservation(observation: ObservationChunk): string {
 	return observation.stream === "stderr" ? `[stderr] ${observation.text}` : observation.text;
-}
-
-function countLines(text: string): number {
-	return text.length === 0 ? 0 : text.split("\n").length;
 }
 
 function errorMessage(error: unknown): string {
