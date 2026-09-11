@@ -347,6 +347,10 @@ export class Subject {
 		return this.queues.all().map((item) => ({ ...item }));
 	}
 
+	queueOldestAgeMs(): number | undefined {
+		return this.queues.oldestAgeMs();
+	}
+
 	/** Removes queued inputs and returns them in original arrival order for UI editing. */
 	async takeQueuedForEditor(): Promise<QueuedMessage[]> {
 		const items = this.queues.all();
@@ -731,16 +735,11 @@ export class Subject {
 		const callArgs = (call.args && typeof call.args === "object" ? call.args : {}) as Record<string, unknown>;
 		const blocked = await this.runtimeHooks.tools.beforeCall({ callId: call.id, name: call.name, args: callArgs });
 		if (blocked.block) {
-				const reason = blocked.reason || "操作已被扩展阻止";
-				const blockedResult = `[blocked] 工具执行已被拦截: ${reason}`;
-				try { this.hooks.onToolDone?.(call.name, blockedResult, "not_started", call.id); } catch (error) { this.reportError(error); }
-				await this.storeEvent("tool_finished", {
-					callId: call.id,
-					name: call.name,
-					status: "not_started",
-					result: blockedResult,
-				});
-				return { callId: call.id, result: blockedResult, status: "not_started" };
+			const reason = blocked.reason || "操作已被扩展阻止";
+			const blockedResult = `[blocked] 工具执行已被拦截: ${reason}`;
+			await this.storeEvent("tool_finished", { callId: call.id, name: call.name, status: "not_started" });
+			try { this.hooks.onToolDone?.(call.name, blockedResult, "not_started", call.id); } catch (error) { this.reportError(error); }
+			return { callId: call.id, result: blockedResult, status: "not_started" };
 		}
 
 		if (prepared.error) {
@@ -749,8 +748,7 @@ export class Subject {
 				callId: call.id,
 				name: call.name,
 				status: outcome.status,
-				result: outcome.result,
-			});
+				});
 			try { this.hooks.onToolDone?.(call.name, outcome.result, outcome.status, call.id); } catch (error) { this.reportError(error); }
 			return { callId: call.id, result: outcome.result, status: outcome.status };
 		}
@@ -772,8 +770,7 @@ export class Subject {
 			callId: call.id,
 			name: call.name,
 			status: outcomeStatus,
-			result: outcomeResult,
-		});
+			});
 		try { this.hooks.onToolDone?.(call.name, outcomeResult, outcomeStatus, call.id); } catch (error) { this.reportError(error); }
 		return { callId: call.id, result: outcomeResult, status: outcomeStatus, continuation: outcome.continuation };
 	}

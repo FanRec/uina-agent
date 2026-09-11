@@ -70,8 +70,15 @@ export class SubagentRegistry {
 		const record = this.records.get(id);
 		if (!record) throw new Error(`未知子代理 ${id}`);
 		if (record.status) throw new Error(`子代理 ${id} 已结算`);
-		await record.handle.send(input);
-		if (record.error) await this.release(record, "failed");
+		try {
+			await record.handle.send(input);
+			if (record.error) await this.release(record, "failed");
+		} catch (error) {
+			record.error ??= errorMessage(error);
+			record.detail ??= record.error;
+			await this.release(record, "failed");
+			throw error;
+		}
 	}
 
 	async interrupt(id: string, ownerId: string): Promise<"interruption-requested" | "already-finished"> {

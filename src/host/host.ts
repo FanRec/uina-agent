@@ -1,7 +1,8 @@
 import type { ContextSegments, ModelProvider, ThinkingLevel } from "../core/types.js";
 import { activeProvider, loadConfig } from "../ai/config.js";
 import { createProvider, ModelRegistry } from "../ai/providers.js";
-import { ToolBroker } from "../tools/broker.js";
+import { ToolBroker, type ToolExecutionResult } from "../tools/broker.js";
+import { randomUUID } from "node:crypto";
 import { Subject, type AgentInput, type LoopHooks } from "../agent/loop.js";
 import type { QueuedMessage } from "../agent/queue.js";
 import { DefaultAgentFactory } from "../agent/runtime.js";
@@ -51,6 +52,8 @@ export interface HostSnapshot {
 	readonly segments: ContextSegments;
 	readonly busy: boolean;
 	readonly queue: readonly QueuedMessage[];
+	readonly queueDepth: number;
+	readonly queueOldestAgeMs?: number;
 }
 
 export interface HostStartOptions {
@@ -63,12 +66,15 @@ export interface HostStartOptions {
 export class UinaHost {
 	private readonly listeners: Set<HostEventListener>;
 	private stopPromise?: Promise<void>;
+	private readonly directRuns = new Map<AbortController, Promise<ToolExecutionResult>>();
+	private reloading = 0;
 
 	private constructor(
 		private readonly options: UinaHostOptions,
 		readonly subject: Subject,
 		private readonly store: SessionStore,
 		private readonly extensionHost: ExtensionRunner,
+		private readonly tools: ToolBroker,
 		readonly models: ModelRegistry,
 		readonly jobs: JobRegistry,
 		readonly subagents: SubagentRegistry,
@@ -181,7 +187,7 @@ export class UinaHost {
 				options.onError?.(`[模型目录刷新失败] ${error instanceof Error ? error.message : String(error)}`);
 			});
 		}
-		return new UinaHost(options, subject, store, extensionHost, models, jobs, subagents, commands, restoredEntries, listeners, state);
+		return new UinaHost(options, subject, store, extensionHost, tools, models, jobs, subagents, commands, restoredEntries, listeners, state);
 	}
 
 	subscribe(listener: HostEventListener): () => void {
@@ -197,13 +203,40 @@ export class UinaHost {
 		}
 	}
 
-	send(input: AgentInput): Promise<void> { return this.subject.accept(input); }
+	async send(input: AgentInput): Promise<void> { this.assertAccepting(); return this.subject.accept(input); }
+
+	private assertAccepting(): void {
+		if (this.state.stopping) throw new Error("宿主正在关闭");
+		if (this.reloading) throw new Error("扩展正在重载，请稍后重试");
+	}
+
+	/** Explicit user invocation: registered capability and hooks, without model history. */
+	async runToolDirect(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolExecutionResult> {
+		this.assertAccepting();
+		const controller = new AbortController();
+		const cancellation = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+		const hooks = this.extensionHost.runtimeHooks().tools;
+		const callId = "direct-" + randomUUID();
+		const run = Promise.resolve().then(async (): Promise<ToolExecutionResult> => {
+			const blocked = await hooks.beforeCall({ callId, name, args });
+			const outcome: ToolExecutionResult = blocked.block
+				? { result: blocked.reason ?? "操作已被扩展阻止", status: "not_started" }
+				: await this.tools.execute(this.tools.prepare(name, args), cancellation);
+			if (blocked.block) return outcome;
+			const transformed = await hooks.transformResult({ callId, name, args, result: outcome.result, status: outcome.status });
+			return { ...outcome, result: transformed.result ?? outcome.result, status: transformed.status ?? outcome.status };
+		});
+		this.directRuns.set(controller, run);
+		try { return await run; }
+		finally { this.directRuns.delete(controller); }
+	}
 
 	/**
 	 * 提交一行用户文本：这是**投递模式规则**的唯一归属。
 	 * 忙时 direct 升级为 steer；空闲时一律 direct，与 CLI 的既有语义一致。
 	 */
-	submitText(text: string, mode: "direct" | "steer" | "followUp" = "followUp"): Promise<void> {
+	async submitText(text: string, mode: "direct" | "steer" | "followUp" = "followUp"): Promise<void> {
+		this.assertAccepting();
 		const effective: "direct" | "steer" | "followUp" = this.subject.isBusy()
 			? (mode === "direct" ? "steer" : mode)
 			: "direct";
@@ -211,7 +244,8 @@ export class UinaHost {
 	}
 
 	/** 程序化投递：原样入队，不做“忙时升级”转换（队列移交、后台通知走这条路）。 */
-	pushInput(text: string, mode: "direct" | "steer" | "followUp"): Promise<void> {
+	async pushInput(text: string, mode: "direct" | "steer" | "followUp"): Promise<void> {
+		this.assertAccepting();
 		return this.subject.pushInput(text, { mode });
 	}
 
@@ -242,6 +276,8 @@ export class UinaHost {
 			segments: this.subject.getContextSegments(),
 			busy: this.subject.isBusy(),
 			queue: this.subject.queuedSnapshot(),
+			queueDepth: this.subject.queuedSnapshot().length,
+			queueOldestAgeMs: this.subject.queueOldestAgeMs(),
 		};
 	}
 
@@ -261,9 +297,15 @@ export class UinaHost {
 	}
 
 	async reloadExtensions(): Promise<void> {
-		await this.subject.waitForIdle();
-		await this.extensionHost.reload();
-		this.emit({ type: "notice", text: "项目扩展已重新加载。" });
+		this.assertAccepting();
+		this.reloading++;
+		try {
+			await this.subject.waitForIdle();
+			await Promise.allSettled([...this.directRuns.values()]);
+			if (this.state.stopping) throw new Error("宿主正在关闭");
+			await this.extensionHost.reload();
+			this.emit({ type: "notice", text: "项目扩展已重新加载。" });
+		} finally { this.reloading--; }
 	}
 
 	/** 关闭主体：等待活动结束、释放扩展、杀掉工具留下的分离子进程、关闭会话。 */
@@ -272,12 +314,16 @@ export class UinaHost {
 		this.state.stopping = true;
 		this.stopPromise = (async () => {
 			this.subject.interrupt();
+			for (const controller of this.directRuns.keys()) controller.abort();
+			await Promise.allSettled([...this.directRuns.values()]);
 			await this.subject.waitForIdle();
-			await this.extensionHost.dispose();
-			killTrackedDetachedChildren();
+			const errors: unknown[] = [];
+			try { await this.extensionHost.dispose(); } catch (error) { errors.push(error); }
+			try { killTrackedDetachedChildren(); } catch (error) { errors.push(error); }
 			await this.subject.waitForIdle();
-			await this.store.close();
+			try { await this.store.close(); } catch (error) { errors.push(error); }
 			this.listeners.clear();
+			if (errors.length) throw new AggregateError(errors, "宿主关闭时发生错误");
 		})();
 		return this.stopPromise;
 	}

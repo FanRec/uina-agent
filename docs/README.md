@@ -9,6 +9,10 @@
 | [references/](references/) | Pi、DSH、Nott 等外部实现参考 |
 | [history/](history/) | 历史审查、审计和差距记录 |
 
+## 当前待办
+
+- [待办与待决策事项](TODO.md)：按实际影响整理修复项，区分设计决策、待验证风险与低优先清理；保留原审查编号和历史证据边界。
+
 ## 当前阶段规划
 
 - [扩展开发指南](extensions-development.md)：当前项目/内置扩展加载、API、生命周期与可运行示例。

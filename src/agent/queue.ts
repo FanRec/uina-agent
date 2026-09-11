@@ -6,6 +6,7 @@ export type QueuedMessage = QueuedInput;
 
 export class InputQueues {
 	private order = 0;
+	private readonly enqueuedAt = new Map<string, number>();
 	private readonly steer: QueuedMessage[] = [];
 	private readonly followUp: QueuedMessage[] = [];
 
@@ -27,12 +28,13 @@ export class InputQueues {
 
 	add(item: QueuedMessage): void {
 		this.queueFor(item.mode).push({ ...item });
+		this.enqueuedAt.set(item.id, Date.now());
 	}
 
 	remove(id: string): QueuedMessage | undefined {
 		for (const queue of [this.steer, this.followUp]) {
 			const index = queue.findIndex((item) => item.id === id);
-			if (index >= 0) return queue.splice(index, 1)[0];
+			if (index >= 0) { this.enqueuedAt.delete(id); return queue.splice(index, 1)[0]; }
 		}
 		return undefined;
 	}
@@ -50,6 +52,7 @@ export class InputQueues {
 		for (const item of items) {
 			this.order = Math.max(this.order, item.order);
 			this.queueFor(item.mode).push({ ...item });
+			this.enqueuedAt.set(item.id, Date.now());
 		}
 		this.steer.sort((a, b) => a.order - b.order);
 		this.followUp.sort((a, b) => a.order - b.order);
@@ -63,11 +66,18 @@ export class InputQueues {
 		const items = this.all();
 		this.steer.length = 0;
 		this.followUp.length = 0;
+		this.enqueuedAt.clear();
 		return items;
 	}
 
 	get size(): number {
 		return this.steer.length + this.followUp.length;
+	}
+
+	oldestAgeMs(now = Date.now()): number | undefined {
+		const oldest = this.all()[0];
+		const created = oldest ? this.enqueuedAt.get(oldest.id) : undefined;
+		return created === undefined ? undefined : Math.max(0, now - created);
 	}
 
 	private queueFor(mode: Exclude<DeliveryMode, "direct">): QueuedMessage[] {

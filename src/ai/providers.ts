@@ -194,7 +194,7 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 		thinkingLevels,
 		includeThinking: Boolean(thinkingLevels?.some((level) => level !== "off")),
 		async refreshModels() {
-			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models?key=${encodeURIComponent(conf.apiKey)}`);
+			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, { headers: { "x-goog-api-key": conf.apiKey } });
 			if (!response.ok) throw new Error(`Gemini 模型目录请求失败 HTTP ${response.status}`);
 			const payload = (await response.json()) as { models?: Array<{ baseModelId?: string; inputTokenLimit?: number; thinking?: boolean; supportedGenerationMethods?: string[] }> };
 			return (payload.models ?? []).flatMap((model) => {
@@ -209,7 +209,7 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 			headers = copyValue(await req.providerHooks.transformHeaders(conf.model, readonlySnapshot(headers)));
 			bodyPayload = copyValue(await req.providerHooks.transformPayload(conf.model, readonlySnapshot(bodyPayload))) as Record<string, unknown>;
 
-			const response = await fetchWithRetry(`${conf.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(conf.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(conf.apiKey)}`, { maxRetries: conf.maxRetries ?? 2, signal, request: { method: "POST", signal, headers, body: JSON.stringify(bodyPayload) } });
+			const response = await fetchWithRetry(`${conf.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(conf.model)}:streamGenerateContent?alt=sse`, { maxRetries: conf.maxRetries ?? 2, signal, request: { method: "POST", signal, headers: { ...headers, "x-goog-api-key": conf.apiKey }, body: JSON.stringify(bodyPayload) } });
 			const respHeaders: Record<string, string> = {};
 			response.headers.forEach((value, key) => { respHeaders[key] = value; });
 			await req.providerHooks.observeResponse(readonlySnapshot({ provider: conf.model, status: response.status, headers: respHeaders }));

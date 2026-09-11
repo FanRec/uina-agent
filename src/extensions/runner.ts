@@ -39,7 +39,7 @@ export interface ExtensionRunnerOptions {
 	onError?: (text: string) => void;
 	/** Informational/warning notifications from the fallback UI before a real UI attaches. */
 	onNotice?: (text: string) => void;
-	onProvider?: (name: string, provider: ModelProvider) => ExtensionTeardown | void;
+	onProvider?: (name: string, provider: ModelProvider) => ExtensionTeardown;
 	onCustomMessage?: (message: CustomMessage) => Promise<void>;
 	onCustomEntry?: (entry: CustomEntry) => Promise<void>;
 	onInput?: (input: AgentInput) => Promise<void>;
@@ -72,20 +72,26 @@ class ActivationScope {
 	async deactivate(report: (event: string, error: unknown) => void): Promise<void> {
 		if (!this.active) return;
 		this.active = false;
+		const errors: unknown[] = [];
+		const failed = (event: string, error: unknown): void => { errors.push(error); report(event, error); };
 		if (this.dispose) {
-			try { await this.dispose(); } catch (error) { report("dispose", error); }
+			try { await this.dispose(); } catch (error) { failed("dispose", error); }
 		}
 		for (const teardown of this.keyed.values()) {
-			try { await teardown(); } catch (error) { report("cleanup", error); }
+			try { await teardown(); } catch (error) { failed("cleanup", error); }
 		}
 		this.keyed.clear();
 		for (const cleanup of this.cleanup.splice(0).reverse()) {
-			try { await cleanup(); } catch (error) { report("cleanup", error); }
+			try { await cleanup(); } catch (error) { failed("cleanup", error); }
 		}
+		if (errors.length) throw new AggregateError(errors, "Extension cleanup failed: " + this.id);
 	}
 }
 
 export class ExtensionRunner extends ExtensionHost {
+	private lifecycleTail: Promise<void> = Promise.resolve();
+	private closed = false;
+	private generation = 0;
 	private readonly extensions = new Map<string, ActivationScope>();
 	private readonly failures = new Map<string, { id: string; path: string; error: string }>();
 	private ui: ExtensionUIContext;
@@ -104,7 +110,9 @@ export class ExtensionRunner extends ExtensionHost {
 		this.ui = ui;
 	}
 
-	async load(): Promise<void> {
+	load(): Promise<void> { return this.enqueueLifecycle(() => this.loadProjects()); }
+
+	private async loadProjects(): Promise<void> {
 		const directory = join(this.options.cwd, ".uina", "extensions");
 		let files: string[];
 		try { files = await readdir(directory); } catch (error) {
@@ -117,7 +125,11 @@ export class ExtensionRunner extends ExtensionHost {
 	}
 
 	/** Core-owned capabilities use the same scope and teardown path as project extensions. */
-	async activateBuiltin(id: string, activate: ExtensionActivation): Promise<void> {
+	activateBuiltin(id: string, activate: ExtensionActivation): Promise<void> {
+		return this.enqueueLifecycle(() => this.activateBuiltinScope(id, activate));
+	}
+
+	private async activateBuiltinScope(id: string, activate: ExtensionActivation): Promise<void> {
 		try {
 			await this.activateScope(`builtin:${id}`, `builtin:${id}`, activate);
 		} catch (error) {
@@ -126,19 +138,43 @@ export class ExtensionRunner extends ExtensionHost {
 		}
 	}
 
-	async reload(): Promise<void> {
-		await this.disposeProjects();
-		await this.load();
+	reload(): Promise<void> {
+		return this.enqueueLifecycle(async () => {
+			await this.deactivateScopes(true);
+			for (const id of this.failures.keys()) if (id.startsWith("project:")) this.failures.delete(id);
+			await this.loadProjects();
+			const failed = this.diagnostics().filter(item => item.status === "failed");
+			if (failed.length) throw new Error("Extension reload failed: " + failed.map(item => item.id + ": " + item.error).join("; "));
+		});
 	}
 
-	async disposeProjects(): Promise<void> {
-		for (const extension of [...this.extensions.values()].filter((entry) => entry.id.startsWith("project:")).reverse()) await this.deactivate(extension);
-		await this.flush();
+	disposeProjects(): Promise<void> {
+		return this.enqueueLifecycle(() => this.deactivateScopes(true));
 	}
 
-	async dispose(): Promise<void> {
-		for (const extension of [...this.extensions.values()].reverse()) await this.deactivate(extension);
+	dispose(): Promise<void> {
+		if (this.closed) return this.lifecycleTail;
+		this.closed = true;
+		const result = this.lifecycleTail.then(() => this.deactivateScopes(false));
+		this.lifecycleTail = result;
+		return result;
+	}
+
+	private enqueueLifecycle(work: () => Promise<void>): Promise<void> {
+		if (this.closed) return Promise.reject(new Error("Extension host is closed"));
+		const result = this.lifecycleTail.then(work);
+		this.lifecycleTail = result.catch(() => undefined);
+		return result;
+	}
+
+	private async deactivateScopes(projectsOnly: boolean): Promise<void> {
+		const errors: unknown[] = [];
+		for (const extension of [...this.extensions.values()].reverse()) {
+			if (projectsOnly && !extension.id.startsWith("project:")) continue;
+			try { await this.deactivate(extension); } catch (error) { errors.push(error); }
+		}
 		await this.flush();
+		if (errors.length) throw new AggregateError(errors, "Extension cleanup failed");
 	}
 
 	list(): ReadonlyArray<{ id: string; path: string; active: boolean }> {
@@ -161,7 +197,7 @@ export class ExtensionRunner extends ExtensionHost {
 	private async activate(file: string): Promise<void> {
 		const id = `project:${file.slice(this.options.cwd.length + 1).replace(/\\/g, "/")}`;
 		try {
-			const module = await import(`${pathToFileURL(file).href}?uinaReload=${Date.now()}`) as ExtensionModule;
+			const module = await import(`${pathToFileURL(file).href}?uinaReload=${Date.now()}-${++this.generation}`) as ExtensionModule;
 			if (typeof module.default !== "function") throw new Error("扩展必须默认导出 activate(pi)");
 			await this.activateScope(id, file, module.default);
 			this.failures.delete(id);
@@ -186,8 +222,11 @@ export class ExtensionRunner extends ExtensionHost {
 	}
 
 	private async deactivate(scope: ActivationScope): Promise<void> {
-		await scope.deactivate((event, error) => this.emitOwnedError(scope.id, event, error));
-		this.extensions.delete(scope.id);
+		try { await scope.deactivate((event, error) => this.emitOwnedError(scope.id, event, error)); }
+		catch (error) {
+			this.failures.set(scope.id, { id: scope.id, path: scope.path, error: errorMessage(error) });
+			throw error;
+		} finally { this.extensions.delete(scope.id); }
 	}
 
 	private apiFor(scope: ActivationScope): ExtensionAPI {
@@ -223,8 +262,19 @@ export class ExtensionRunner extends ExtensionHost {
 				// A provider that lands nowhere must fail loudly, never silently
 				// (Pi: extension runner always has a model registry fallback).
 				if (!this.options.onProvider) throw new Error(`宿主未提供 Provider 注册入口，无法注册 ${name}`);
-				const dispose = this.options.onProvider(name, provider);
-				if (dispose) own(dispose);
+				// Retained model references are revoked with their activation.
+				// Bind methods to the original object (including class private fields).
+				const scoped: ModelProvider = {
+					get name() { return provider.name; },
+					get contextWindow() { return provider.contextWindow; },
+					get thinkingLevels() { return provider.thinkingLevels; },
+					get includeThinking() { return provider.includeThinking; },
+					stream: async (...args) => { assertActive(); return provider.stream(...args); },
+					...(provider.refreshModels ? { refreshModels: async () => { assertActive(); return provider.refreshModels!(); } } : {}),
+				};
+				const dispose = this.options.onProvider(name, scoped);
+				if (typeof dispose !== "function") throw new Error("Provider registration must return a disposer: " + name);
+				own(dispose);
 			},
 			sendMessage: async (message) => {
 				assertActive();

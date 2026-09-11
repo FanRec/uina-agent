@@ -1,7 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { execCommandDirect } from "../extensions/runtime-tools/exec-command/index.js";
 import type { BuiltinUI } from "../extensions/builtin.js";
 import { UinaHost } from "../host/host.js";
 import type { HostEvent } from "../host/events.js";
@@ -36,7 +35,7 @@ export async function runApp(): Promise<void> {
 	let hadError = false;
 	let unsubscribe: () => void = () => {};
 
-	// `!shell` 直通路径是消费者自己的交互能力，不属于主体。
+	// The UI owns command queueing; the host owns capability execution.
 	let execTail = Promise.resolve();
 	let execRunning = false;
 	let execAbort: AbortController | null = null;
@@ -279,14 +278,13 @@ export async function runApp(): Promise<void> {
 		execRunning = true;
 		execAbort = new AbortController();
 		try {
-			const result = await execCommandDirect(command, execAbort.signal);
-			if (result.cancelled) {
-				process.stdout.write(`${ERR}[命令已中断]${RESET}\n`);
-				return;
+			const started = Date.now();
+			const outcome = await host.runToolDirect("exec_command", { command }, execAbort.signal);
+			const plain = (value: string): string => value;
+			for (const line of toolResultLines(outcome.result, Date.now() - started, { ok: plain, err: plain, warn: plain, dim: plain })) {
+				process.stdout.write(line + "\n");
 			}
-			if (result.stdout) process.stdout.write(result.stdout.endsWith("\n") ? result.stdout : `${result.stdout}\n`);
-			if (result.stderr) process.stdout.write(`${ERR}[stderr]${RESET}\n${result.stderr}\n`);
-			if (result.code !== 0) process.stdout.write(`${ERR}[退出码 ${result.code}]${RESET}\n`);
+			if (outcome.status !== "succeeded") process.stdout.write("[" + outcome.status + "]\n");
 		} finally {
 			execRunning = false;
 			execAbort = null;
