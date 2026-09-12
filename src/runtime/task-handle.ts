@@ -27,6 +27,7 @@ export interface TaskBufferRead<TChunk> {
  */
 export class TaskOutputBuffer<TChunk extends { text: string }> {
 	private readonly items: Array<TChunk & { cursor: number }> = [];
+	private readonly waiters = new TaskWaiters();
 	private nextCursor = 1;
 	private lastCursor = 0;
 	private outputBytes = 0;
@@ -46,7 +47,16 @@ export class TaskOutputBuffer<TChunk extends { text: string }> {
 			this.outputLines += countLines(chunk.text);
 		}
 		this.evict();
+		this.waiters.notify();
 		return item;
+	}
+
+	notify(): void {
+		this.waiters.notify();
+	}
+
+	wait(condition: () => boolean, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+		return this.waiters.wait(condition, timeoutMs, signal);
 	}
 
 	private evict(): void {
@@ -170,3 +180,4 @@ export class TaskWaiters {
 		});
 	}
 }
+

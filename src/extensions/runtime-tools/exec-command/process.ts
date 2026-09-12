@@ -21,24 +21,11 @@ export interface ProcessOptions {
 /** A quiet inherited stdio handle must not hold the caller hostage forever. */
 const EXIT_STDIO_GRACE_MS = 100;
 
-/**
- * Detached children must be tracked so host shutdown can kill them
- * (Pi: utils/shell.ts trackDetachedChildPid / killTrackedDetachedChildren).
- */
-const trackedDetachedPids = new Set<number>();
-
-export function trackDetachedChildPid(pid: number): void {
-	trackedDetachedPids.add(pid);
-}
-
-export function untrackDetachedChildPid(pid: number): void {
-	trackedDetachedPids.delete(pid);
-}
-
-export function killTrackedDetachedChildren(): void {
-	for (const pid of trackedDetachedPids) killTree(pid);
-	trackedDetachedPids.clear();
-}
+import {
+	killTree,
+	trackDetachedChildPid,
+	untrackDetachedChildPid,
+} from "../../../runtime/process-tracker.js";
 
 /** Execute one command through the platform normal shell. */
 export function executeShellProcess(
@@ -205,27 +192,7 @@ function resolveShell(): { shell: string; args: (command: string) => string[] } 
 	return { shell: "cmd.exe", args: (command) => ["/d", "/s", "/c", command] };
 }
 
-/** Kill a process and its descendants (Pi: utils/shell.ts killProcessTree). */
-export function killTree(pid: number): void {
-	if (process.platform === "win32") {
-		const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
-		const killer = spawn(join(systemRoot, "System32", "taskkill.exe"), ["/F", "/T", "/PID", String(pid)], {
-			windowsHide: true,
-			stdio: "ignore",
-		});
-		killer.on("error", () => undefined);
-		return;
-	}
-	try {
-		process.kill(-pid, "SIGKILL");
-	} catch {
-		try {
-			process.kill(pid, "SIGKILL");
-		} catch {
-			// The process already exited.
-		}
-	}
-}
+
 
 function safeError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);

@@ -78,7 +78,7 @@ describe("Subject", () => {
 			{ match: (req) => !req.messages.some((message) => message.role === "tool"), produce: () => [toolCallDelta("t1", "get_time", {})] },
 			{ match: () => true, produce: () => [{ kind: "text", text: "完成" }] },
 		]);
-		const subject = new Subject(provider.model, provider.stream, broker, { onToken: () => {} }, { store });
+		const subject = new Subject(provider.model, provider.stream, broker, { store });
 		subject.pushInput("几点");
 		await idle(subject);
 		expect(provider.calls).toHaveLength(2);
@@ -93,7 +93,7 @@ describe("Subject", () => {
 			{ match: (req) => !req.messages.some((message) => message.role === "tool"), produce: () => [toolCallDelta("large-1", "large", {})] },
 			{ match: () => true, produce: () => [{ kind: "text", text: "done" }] },
 		]);
-		const subject = new Subject(provider.model, provider.stream, broker, { onToken: () => {} });
+		const subject = new Subject(provider.model, provider.stream, broker);
 		subject.pushInput("large");
 		await idle(subject);
 		const tool = provider.calls[1].messages.find((message) => message.role === "tool");
@@ -117,7 +117,7 @@ describe("Subject", () => {
 			{ match: (req) => !req.messages.some((message) => message.role === "tool"), produce: () => [toolCallDelta("1", "one", { value: "one" }), toolCallDelta("2", "two", { value: "two" })] },
 			{ match: () => true, produce: () => [{ kind: "text", text: "done" }] },
 		]);
-		const subject = new Subject(provider.model, provider.stream, broker, { onToken: () => {} });
+		const subject = new Subject(provider.model, provider.stream, broker);
 		subject.pushInput("run");
 		await idle(subject);
 		expect(maxActive).toBe(2);
@@ -145,7 +145,7 @@ describe("Subject", () => {
 			onDelta({ kind: "finish", reason: "stop" });
 		};
 		const broker = new ToolBroker();
-		const subject = new Subject(model, stream, broker, { onToken: () => {} });
+		const subject = new Subject(model, stream, broker);
 		subject.pushInput("first");
 		await wait(20);
 		subject.steer("steer");
@@ -158,7 +158,7 @@ describe("Subject", () => {
 		release?.();
 
 		const normal = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] }]);
-		const resumed = new Subject(normal.model, normal.stream, broker, { onToken: () => {} });
+		const resumed = new Subject(normal.model, normal.stream, broker);
 		resumed.pushInput(editorItems.map((item) => item.text).join("\n\n"));
 		await idle(resumed);
 		expect(lastUser(normal.calls[0])).toBe("steer\n\nfollow");
@@ -175,7 +175,7 @@ describe("Subject", () => {
 			{ match: (req) => !req.messages.some((message) => message.role === "tool"), produce: () => [{ kind: "tool_call", call: { id: "bad-1", name: "bad", args: "{\"value\":" , argsValid: false } }] },
 			{ match: () => true, produce: () => [{ kind: "text", text: "stopped" }] },
 		]);
-		const subject = new Subject(provider.model, provider.stream, broker, { onToken: () => {} });
+		const subject = new Subject(provider.model, provider.stream, broker);
 		subject.pushInput("bad args");
 		await idle(subject);
 		expect(executed).toBe(false);
@@ -192,7 +192,7 @@ describe("Subject", () => {
 		const provider = scriptedProvider([
 			{ match: () => true, produce: () => [{ kind: "tool_call", call: { id: "length-1", name: "length_tool", args: "{}" } }, { kind: "finish", reason: "length" }] },
 		]);
-		const subject = new Subject(provider.model, provider.stream, broker, { onToken: () => {} });
+		const subject = new Subject(provider.model, provider.stream, broker);
 		subject.pushInput("length");
 		await idle(subject);
 		expect(executed).toBe(false);
@@ -209,7 +209,7 @@ describe("Subject", () => {
 			},
 			{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] },
 		]);
-		const subject = new Subject(provider.model, provider.stream, broker, { onToken: () => {} }, {
+		const subject = new Subject(provider.model, provider.stream, broker, {
 			compaction: { contextWindow: 100, reserveTokens: 10, keepRecentTokens: 10 },
 		});
 		subject.addHistory(Array.from({ length: 10 }, (_, index) => ({
@@ -224,7 +224,7 @@ describe("Subject", () => {
 		const failing = scriptedProvider([
 			{ match: (req) => (req.messages[0]?.content ?? "").includes("压缩成不超过"), produce: () => { throw new Error("compact down"); } },
 		]);
-		const failedSubject = new Subject(failing.model, failing.stream, broker, { onToken: () => {} }, {
+		const failedSubject = new Subject(failing.model, failing.stream, broker, {
 			compaction: { contextWindow: 100, reserveTokens: 10, keepRecentTokens: 10 },
 		});
 		failedSubject.addHistory([{ role: "user", content: "old history" }, { role: "user", content: "x".repeat(500) }]);
@@ -253,11 +253,11 @@ describe("Subject", () => {
 			}
 			emit({ kind: "finish", reason: "stop" });
 		};
-		const subject = new Subject(model, stream, new ToolBroker(), {
-			onToken: () => {},
-			onTurnEnd: (_turn: number, usage?: { usedTokens: number; actual: boolean; cacheRead?: number }) => {
-				if (usage) reports.push(usage);
-			},
+		const subject = new Subject(model, stream, new ToolBroker());
+		subject.subscribe((event) => {
+			if (event.type === "turn_end" && event.usage) {
+				reports.push(event.usage as { usedTokens: number; actual: boolean; cacheRead?: number });
+			}
 		});
 		await subject.pushInput("one");
 		await subject.pushInput("two");
@@ -268,7 +268,7 @@ describe("Subject", () => {
 
 	it("keeps an unknown provider context window unknown and disables automatic compaction", async () => {
 		const provider = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] }]);
-		const subject = new Subject(provider.model, provider.stream, new ToolBroker(), { onToken: () => {} });
+		const subject = new Subject(provider.model, provider.stream, new ToolBroker());
 		subject.addHistory([{ role: "user", content: "x".repeat(300_000) }]);
 		await subject.pushInput("next");
 		expect(subject.getContextWindow()).toBeUndefined();
@@ -277,7 +277,7 @@ describe("Subject", () => {
 
 	it("takes queued items for editor in single LIFO pull-back order", async () => {
 		const provider = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] }]);
-		const subject = new Subject(provider.model, provider.stream, new ToolBroker(), { onToken: () => {} });
+		const subject = new Subject(provider.model, provider.stream, new ToolBroker());
 		subject.seedQueue([
 			{ id: "q1", order: 1, text: "task 1", mode: "followUp" },
 			{ id: "q2", order: 2, text: "task 2", mode: "followUp" },

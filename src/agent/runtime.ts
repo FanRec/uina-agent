@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "../core/types.js";
 import { MemorySessionStore } from "../session/jsonl-store.js";
 import type { SessionStore } from "../session/types.js";
-import { Subject, type AgentInput, type LoopHooks } from "./loop.js";
+import { Subject, type AgentInput } from "./loop.js";
 import type { ToolView } from "../tools/broker.js";
 import type { Model, ModelStreamFn } from "../core/types.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
@@ -21,7 +21,6 @@ export interface AgentCreateOptions {
 	model: Model;
 	stream: ModelStreamFn;
 	tools: ToolView;
-	hooks?: LoopHooks;
 	store?: SessionStore;
 	systemPrompt?: string;
 	thinkingLevel?: ThinkingLevel;
@@ -53,20 +52,15 @@ class RuntimeAgent implements AgentHandle {
 	constructor(readonly id: string, options: AgentCreateOptions) {
 		this.store = options.store ?? new MemorySessionStore();
 		this.subject = new Subject(options.model, options.stream, options.tools, {
-			...options.hooks,
-			onToken: options.hooks?.onToken ?? (() => {}),
-			onTurnStart: (turn, text) => {
-				this.turn = turn;
-				options.hooks?.onTurnStart?.(turn, text);
-			},
-			onTurnEnd: (turn, usage) => {
-				options.hooks?.onTurnEnd?.(turn, usage);
-			},
-		}, {
 			store: this.store,
 			systemPrompt: options.systemPrompt,
 			thinkingLevel: options.thinkingLevel,
 			runtimeHooks: options.runtimeHooks,
+		});
+		this.subject.subscribe((event) => {
+			if (event.type === "turn_start") {
+				this.turn = event.turnNumber;
+			}
 		});
 	}
 

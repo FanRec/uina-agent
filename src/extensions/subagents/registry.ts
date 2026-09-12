@@ -130,20 +130,25 @@ export class SubagentRegistry {
 	private makeRecord(id: string, request: SubagentStartOptions): TrackedSubagent {
 		const buffer = new TaskOutputBuffer<SubagentChunk>({ maxBytes: OUTPUT_BUDGET_BYTES });
 		let record!: TrackedSubagent;
-		const hooks = {
-			onToken: (text: string) => { if (text) buffer.append({ kind: "text", text }); },
-			onThinking: (text: string) => { if (text) buffer.append({ kind: "thinking", text }); },
-			onToolStart: (name: string, args: unknown) => { buffer.append({ kind: "tool_start", text: `${name} ${JSON.stringify(args)}` }); },
-			onToolDone: (name: string, result: string) => { buffer.append({ kind: "tool_done", text: `${name}: ${result}` }); },
-			onError: (error: string) => { record.error = error; record.detail = error; },
-		};
 		const handle = this.options.factory.create({
 			id,
 			model: this.options.model(),
 			stream: this.options.stream,
 			tools: this.options.createTools(id),
-			hooks,
 			thinkingLevel: this.options.thinkingLevel,
+		});
+		handle.subject.subscribe((event) => {
+			if (event.type === "output_update") {
+				if (event.channel === "content" && event.text) buffer.append({ kind: "text", text: event.text });
+				else if (event.channel === "thinking" && event.text) buffer.append({ kind: "thinking", text: event.text });
+			} else if (event.type === "tool_call") {
+				buffer.append({ kind: "tool_start", text: `${event.toolName} ${JSON.stringify(event.args)}` });
+			} else if (event.type === "tool_result") {
+				buffer.append({ kind: "tool_done", text: `${event.toolName}: ${event.result}` });
+			} else if (event.type === "error") {
+				record.error = event.text;
+				record.detail = event.text;
+			}
 		});
 		record = {
 			id,

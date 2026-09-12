@@ -39,7 +39,11 @@ it("ordinary file extension handles real jobs, silence, user input, failure and 
 			emit({ kind: "tool_call", call: { id: `call-${++call}`, name: "watch_silence", args: "{}" } }); emit({ kind: "finish", reason: "tool_calls" });
 		} else { if (content === "hello") emit({ kind: "text", text: "here" }); emit({ kind: "finish", reason: "stop" }); }
 	};
-	subject = new Subject(model, stream, broker, { onToken: (value: string) => text.push(value), onError: (error: string) => errors.push(error) }, { store, runtimeHooks: runner.runtimeHooks() });
+	subject = new Subject(model, stream, broker, { store, runtimeHooks: runner.runtimeHooks() });
+	subject.subscribe((e) => {
+		if (e.type === "output_update" && e.channel === "content") text.push(e.text);
+		else if (e.type === "error") errors.push(e.text);
+	});
 	const jobs = async () => JSON.parse(await broker.run("watch_job_list", {})) as Array<{ status: string }>;
 	try {
 		await runner.load(); expect(errors).toEqual([]); expect(broker.has("watch_exec")).toBe(true);

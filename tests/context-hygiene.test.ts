@@ -201,7 +201,7 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 			onDelta({ kind: "finish", reason: "stop" });
 		};
 
-		const subject = new Subject(model, stream, new ToolBroker(), { onToken: () => {} });
+		const subject = new Subject(model, stream, new ToolBroker());
 		await subject.appendCustomMessage({
 			customType: "test-probe",
 			content: "PROBE_DATA_123",

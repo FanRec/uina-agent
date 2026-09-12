@@ -37,12 +37,19 @@ const stream: ModelStreamFn = async (m, req, emit, signal) => {
 	timings.push({ phase, event: "model-request", atMs: Math.round(performance.now() - since) });
 	await provider.stream(m, req, emit, signal);
 };
-subject = new Subject(model, stream, tools, { onToken: (text: string) => {
-	content += text;
-	if (!firstText) { firstText = true; timings.push({ phase, event: "first-text", atMs: Math.round(performance.now() - since) }); }
-}, onToolStart: (name: string, args: unknown) => timings.push({ phase, event: "tool-start", name, args, atMs: Math.round(performance.now() - since) }), onError: (error: string) => errors.push(error) }, {
+subject = new Subject(model, stream, tools, {
 	store, thinkingLevel: "off", runtimeHooks: runner.runtimeHooks(),
 	systemPrompt: "你是 Uina。当前是隔离验收。文件事件不是人类说话。按文件所述使用 watch_exec，长工作必须 run_in_background=true。后台通知回来后用 watch_job_output 读取结果。文件只包含 IGNORE 时，只调用 watch_silence，不输出解释或文字。人类发 hello 时只回复 hello，不要等待后台工作。除需要验收的结果外不寒暄。",
+});
+subject.subscribe((e) => {
+	if (e.type === "output_update" && e.channel === "content") {
+		content += e.text;
+		if (!firstText) { firstText = true; timings.push({ phase, event: "first-text", atMs: Math.round(performance.now() - since) }); }
+	} else if (e.type === "tool_call") {
+		timings.push({ phase, event: "tool-start", name: e.toolName, args: e.args, atMs: Math.round(performance.now() - since) });
+	} else if (e.type === "error") {
+		errors.push(e.text);
+	}
 });
 async function until(predicate: () => boolean | Promise<boolean>) {
 	const deadline = performance.now() + 30000;

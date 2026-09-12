@@ -1,7 +1,7 @@
 import type {
 	AgentMessage,
 	ChatMsg,
-	DeliveryMode,
+	QueuedMessage,
 } from "../core/types.js";
 
 export interface SessionHeader {
@@ -107,14 +107,7 @@ export type SessionEntry =
 			tokensBefore: number;
 	  };
 
-export interface QueuedInput {
-	id: string;
-	order: number;
-	mode: Exclude<DeliveryMode, "direct">;
-	text: string;
-	source?: { kind: "user" | "runtime" | "agent"; type: string; ref?: string };
-	data?: unknown;
-}
+export type QueuedInput = QueuedMessage;
 
 export interface SessionSnapshot {
 	header: SessionHeader;

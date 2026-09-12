@@ -13,6 +13,15 @@ export type ToolResultStatus =
 	| "unknown"
 	| "not_started";
 
+export interface QueuedMessage {
+	id: string;
+	order: number;
+	mode: Exclude<DeliveryMode, "direct">;
+	text: string;
+	source?: { kind: "user" | "runtime" | "agent"; type: string; ref?: string };
+	data?: unknown;
+}
+
 /** Opaque replay content is produced and consumed only by the matching adapter. */
 export interface ProviderReplay { format: string; blocks: unknown[]; }
 

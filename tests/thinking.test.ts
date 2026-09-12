@@ -33,7 +33,10 @@ describe("thinking pipeline", () => {
 			{ kind: "text", text: "答案" },
 			{ kind: "finish", reason: "stop" },
 		]);
-		const subject = new Subject(pair.model, pair.stream, new ToolBroker(), { onToken: () => {}, onThinking: (text: string) => thinking.push(text) }, { thinkingLevel: "high" });
+		const subject = new Subject(pair.model, pair.stream, new ToolBroker(), { thinkingLevel: "high" });
+		subject.subscribe((e) => {
+			if (e.type === "output_update" && e.channel === "thinking") thinking.push(e.text);
+		});
 		subject.pushInput("问题");
 		await subject.waitForIdle();
 		const answer = subject.historySnapshot().find((message) => message.role === "assistant");
@@ -55,7 +58,7 @@ describe("thinking pipeline", () => {
 			thinkingSeen?.();
 			await new Promise<void>((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }));
 		};
-		const subject = new Subject(model, stream, new ToolBroker(), { onToken: () => {} }, { thinkingLevel: "high" });
+		const subject = new Subject(model, stream, new ToolBroker(), { thinkingLevel: "high" });
 		const seen = new Promise<void>((resolve) => { thinkingSeen = resolve; });
 		subject.pushInput("中断问题");
 		await seen;
@@ -74,7 +77,7 @@ describe("thinking pipeline", () => {
 			thinkingLevels: ["off"],
 		};
 		const stream: ModelStreamFn = async () => { called = true; };
-		expect(() => new Subject(model, stream, new ToolBroker(), { onToken: () => {}, onError: () => {} }, { thinkingLevel: "high" }))
+		expect(() => new Subject(model, stream, new ToolBroker(), { thinkingLevel: "high" }))
 			.toThrow("未声明支持 thinking level");
 		expect(called).toBe(false);
 	});

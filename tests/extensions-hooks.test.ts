@@ -97,16 +97,10 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		};
 
 		const toolDones: Array<{ name: string; result: string; status?: string }> = [];
-		const subject = new Subject(
-			pair.model,
-			pair.stream,
-			tools,
-			{
-				onToken: () => {},
-				onToolDone: (name, result, status) => toolDones.push({ name, result, status }),
-			},
-			{ runtimeHooks: createRuntimeHooks(host) },
-		);
+		const subject = new Subject(pair.model, pair.stream, tools, { runtimeHooks: createRuntimeHooks(host) });
+		subject.subscribe((e) => {
+			if (e.type === "tool_result") toolDones.push({ name: e.toolName, result: e.result, status: e.status });
+		});
 
 		await subject.pushInput("请运行危险工具");
 		await subject.waitForIdle();
@@ -162,7 +156,6 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			pair.model,
 			pair.stream,
 			tools,
-			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
@@ -188,7 +181,6 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			prov1.model,
 			prov1.stream,
 			new ToolBroker(),
-			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
@@ -221,7 +213,6 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			thinkingModel,
 			async () => {},
 			new ToolBroker(),
-			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
@@ -260,7 +251,6 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			pair.model,
 			pair.stream,
 			new ToolBroker(),
-			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
@@ -295,7 +285,6 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			pair.model,
 			pair.stream,
 			new ToolBroker(),
-			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
@@ -329,7 +318,6 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			pair.model,
 			pair.stream,
 			new ToolBroker(),
-			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
@@ -381,7 +369,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			received = request.messages.map((message) => message.content).join("\n");
 			emit({ kind: "finish", reason: "stop" });
 		};
-		const subject = new Subject(model, stream, new ToolBroker(), { onToken: () => {} }, { runtimeHooks });
+		const subject = new Subject(model, stream, new ToolBroker(), { runtimeHooks });
 		const run = subject.pushInput("original");
 		await contextReady;
 		releaseProvider();
@@ -407,7 +395,6 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			pair.model,
 			pair.stream,
 			new ToolBroker(),
-			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
@@ -447,7 +434,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			emit({ kind: "text", text: "ok" });
 			emit({ kind: "finish", reason: "stop" });
 		};
-		const subject = new Subject(model, stream, new ToolBroker(), { onToken: () => {} }, { runtimeHooks: createRuntimeHooks(host) });
+		const subject = new Subject(model, stream, new ToolBroker(), { runtimeHooks: createRuntimeHooks(host) });
 		const firstRun = subject.pushInput("first");
 		await firstEndReached;
 
@@ -491,7 +478,6 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			pair.model,
 			pair.stream,
 			new ToolBroker(),
-			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
@@ -515,7 +501,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 					events.push(`${event.type}:${event.channel}${event.type === "output_interrupted" ? `:${event.reason}` : ""}`);
 				});
 			}
-			const subject = new Subject(pair.model, pair.stream, new ToolBroker(), { onToken: () => {} }, { runtimeHooks: createRuntimeHooks(host) });
+			const subject = new Subject(pair.model, pair.stream, new ToolBroker(), { runtimeHooks: createRuntimeHooks(host) });
 			const run = subject.pushInput("probe");
 			if (interruptAfterStart) {
 				await new Promise<void>((resolve) => setTimeout(resolve, 0));

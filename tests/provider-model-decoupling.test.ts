@@ -118,7 +118,6 @@ describe("Pi-aligned Model and Provider Decoupling", () => {
 			registry.getModel("static-m1")!,
 			registry.stream.bind(registry),
 			new ToolBroker(),
-			{ onToken() {} },
 		);
 
 		expect(subject.getModel().id).toBe("static-m1");

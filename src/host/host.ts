@@ -1,9 +1,9 @@
+import { randomUUID } from "node:crypto";
 import type { ContextSegments, Model, ModelStreamFn, Provider, ThinkingLevel } from "../core/types.js";
 import { activeProvider, loadConfig } from "../ai/config.js";
 import { ModelRegistry } from "../ai/providers.js";
 import { ToolBroker, type ToolExecutionResult } from "../tools/broker.js";
-import { randomUUID } from "node:crypto";
-import { Subject, type AgentInput, type LoopHooks } from "../agent/loop.js";
+import { Subject, type AgentInput } from "../agent/loop.js";
 import type { QueuedMessage } from "../agent/queue.js";
 import { DefaultAgentFactory } from "../agent/runtime.js";
 import { JobRegistry } from "../extensions/jobs/registry.js";
@@ -12,7 +12,7 @@ import { ExtensionRunner } from "../extensions/runner.js";
 import { CommandRouter } from "../extensions/commands.js";
 import { activateBuiltinCommands, type BuiltinUI } from "../extensions/builtin.js";
 import { activateRuntimeTools, createChildTools } from "../extensions/runtime-tools/index.js";
-import { killTrackedDetachedChildren } from "../extensions/runtime-tools/exec-command/process.js";
+import { killTrackedDetachedChildren } from "../runtime/process-tracker.js";
 import { MemorySessionStore, openJsonlSession } from "../session/jsonl-store.js";
 import { projectAgentHistory } from "../session/recovery.js";
 import type { SessionEntry, SessionStore } from "../session/types.js";
@@ -179,29 +179,52 @@ export class UinaHost {
 			onCustomEntry: async (entry) => { await subject.appendCustomEntry(entry); emit({ type: "custom_entry", entry }); },
 		});
 
-		const hooks: LoopHooks = {
-			onToken: (text) => emit({ type: "text", text }),
-			onThinking: (text) => emit({ type: "thinking", text }),
-			onTurnStart: (n, text) => emit({ type: "turn_start", n, text }),
-			onTurnEnd: (n, usage) => emit({ type: "turn_end", n, usage }),
-			onToolStart: (name, args, callId) => {
-				if (callId) toolStartedAt.set(callId, Date.now());
-				emit({ type: "tool_start", name, args, callId });
-			},
-			onToolDone: (name, result, status, callId) => {
-				const ts = callId ? toolStartedAt.get(callId) : undefined;
-				if (callId) toolStartedAt.delete(callId);
-				emit({ type: "tool_done", name, result, status, callId, ts, elapsedMs: ts === undefined ? undefined : Date.now() - ts });
-			},
-			onError: (text) => emit({ type: "error", text }),
-			onTurnAborted: (n) => emit({ type: "turn_aborted", n }),
-			onQueueChanged: (items) => emit({ type: "queue", items }),
-		};
-
-		subject = new Subject(activeModel, streamFn, tools, hooks, {
+		subject = new Subject(activeModel, streamFn, tools, {
 			store,
 			thinkingLevel,
 			runtimeHooks: extensionHost.runtimeHooks(),
+		});
+
+		subject.subscribe((event) => {
+			switch (event.type) {
+				case "output_update":
+					if (event.channel === "content") emit({ type: "text", text: event.text });
+					else if (event.channel === "thinking") emit({ type: "thinking", text: event.text });
+					break;
+				case "turn_start":
+					emit({ type: "turn_start", n: event.turnNumber, text: event.userText });
+					break;
+				case "turn_end":
+					emit({ type: "turn_end", n: event.turnNumber, usage: event.usage });
+					break;
+				case "tool_call":
+					if (event.callId) toolStartedAt.set(event.callId, Date.now());
+					emit({ type: "tool_start", name: event.toolName, args: event.args, callId: event.callId });
+					break;
+				case "tool_result": {
+					const ts = event.callId ? toolStartedAt.get(event.callId) : undefined;
+					if (event.callId) toolStartedAt.delete(event.callId);
+					emit({
+						type: "tool_done",
+						name: event.toolName,
+						result: event.result,
+						status: event.status,
+						callId: event.callId,
+						ts,
+						elapsedMs: ts === undefined ? undefined : Date.now() - ts,
+					});
+					break;
+				}
+				case "queue":
+					emit({ type: "queue", items: event.items as QueuedMessage[] });
+					break;
+				case "turn_aborted":
+					emit({ type: "turn_aborted", n: event.turnNumber });
+					break;
+				case "error":
+					emit({ type: "error", text: event.text });
+					break;
+			}
 		});
 		const commands = new CommandRouter(extensionHost.registry, (text) => emit({ type: "error", text }));
 

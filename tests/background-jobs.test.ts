@@ -104,7 +104,7 @@ describe("background jobs", () => {
 
 	it("delivers a runtime notice without adding a user message to history", async () => {
 		const provider = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "ack" }] }]);
-		const subject = new Subject(provider.model, provider.stream, new ToolBroker(), { onToken: () => {} });
+		const subject = new Subject(provider.model, provider.stream, new ToolBroker());
 		await subject.accept({
 			id: "notice-1",
 			mode: "followUp",

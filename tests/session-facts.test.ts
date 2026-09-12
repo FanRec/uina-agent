@@ -44,7 +44,7 @@ describe("S1 durable session facts", () => {
 		const host = new ExtensionHost();
 		host.on("tool_call", () => ({ block: true, reason: "extension decision" }));
 		const p = providerFor("probe");
-		const subject = new Subject(p.model, p.stream, broker, { onToken() {} }, { store, runtimeHooks: createRuntimeHooks(host) });
+		const subject = new Subject(p.model, p.stream, broker, { store, runtimeHooks: createRuntimeHooks(host) });
 		await subject.pushInput("run");
 		await subject.waitForIdle();
 		await store.appendMessage({ role: "assistant", content: "", tool_calls: [{ id: "unfinished", name: "probe", args: {} }] });
@@ -110,7 +110,6 @@ describe("S1 durable session facts", () => {
 			p.model,
 			p.stream,
 			new ToolBroker(),
-			{ onToken() {} },
 			{ store },
 		);
 		await subject.accept({
@@ -162,7 +161,7 @@ describe("S1 durable session facts", () => {
 			if (++calls === 1) { entered(); await gate; }
 			delta({ kind: "text", text: "done" }); delta({ kind: "finish", reason: "stop" });
 		};
-		const subject = new Subject(model, stream, new ToolBroker(), { onToken() {} }, { store });
+		const subject = new Subject(model, stream, new ToolBroker(), { store });
 		const run = subject.pushInput("first");
 		await waiting;
 		await subject.steer("steer");
@@ -185,7 +184,8 @@ describe("S1 durable session facts", () => {
 		store.appendInput = async () => { attempts++; throw new Error("commit failed"); };
 		const errors: string[] = [];
 		const p1 = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "done" }] }]);
-		const subject = new Subject(p1.model, p1.stream, new ToolBroker(), { onToken() {}, onError: (error: string) => errors.push(error) }, { store });
+		const subject = new Subject(p1.model, p1.stream, new ToolBroker(), { store });
+		subject.subscribe((e) => { if (e.type === "error") errors.push(e.text); });
 		const run = subject.pushInput("first");
 		await subject.followUp("pending");
 		await run;
@@ -203,7 +203,7 @@ describe("S1 durable session facts", () => {
 		await original.store.close();
 		const resumed = await openJsonlSession(path);
 		const p2 = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "done" }] }]);
-		const subject = new Subject(p2.model, p2.stream, new ToolBroker(), { onToken() {} }, { store: resumed.store });
+		const subject = new Subject(p2.model, p2.stream, new ToolBroker(), { store: resumed.store });
 		subject.seedQueue(resumed.snapshot.queued);
 		await subject.pushInput("continue");
 		await subject.waitForIdle();
@@ -227,12 +227,12 @@ describe("S1 tool outcome propagation", () => {
 		host.on("tool_result", event => { observed.push(event.status); return { result: `[hook] ${event.result}` }; });
 		const tui = new InteractiveTUI();
 		const p3 = providerFor("probe");
-		const subject = new Subject(p3.model, p3.stream, broker, {
-			onToken() {},
-			onTurnStart: (n: number, text: string) => tui.render({ type: "turn_start", n, text }),
-			onToolStart: (name: string, args: unknown, callId?: string) => tui.render({ type: "tool_start", name, args, callId }),
-			onToolDone: (name: string, result: string, status?: ToolResultStatus, callId?: string) => tui.render({ type: "tool_done", name, result, status: status ?? "unknown", callId }),
-		}, { store, runtimeHooks: createRuntimeHooks(host) });
+		const subject = new Subject(p3.model, p3.stream, broker, { store, runtimeHooks: createRuntimeHooks(host) });
+		subject.subscribe((e) => {
+			if (e.type === "turn_start") tui.render({ type: "turn_start", n: e.turnNumber, text: e.userText });
+			else if (e.type === "tool_call") tui.render({ type: "tool_start", name: e.toolName, args: e.args, callId: e.callId });
+			else if (e.type === "tool_result") tui.render({ type: "tool_done", name: e.toolName, result: e.result, status: e.status, callId: e.callId });
+		});
 		await subject.pushInput("run");
 		await subject.waitForIdle();
 		tui.host.transcript.finishTurn();
@@ -257,7 +257,7 @@ describe("S1 tool outcome propagation", () => {
 		const seen: ToolResultStatus[] = [];
 		host.on("tool_result", event => { seen.push(event.status); });
 		const p4 = providerFor(execCommand.def.function.name, { command: "exit 7" });
-		const subject = new Subject(p4.model, p4.stream, broker, { onToken() {} }, { store, runtimeHooks: createRuntimeHooks(host) });
+		const subject = new Subject(p4.model, p4.stream, broker, { store, runtimeHooks: createRuntimeHooks(host) });
 		await subject.pushInput("run"); await subject.waitForIdle(); await store.close();
 		const records = (await readFile(path, "utf8")).trim().split("\n").map(l => JSON.parse(l));
 		expect(seen).toEqual(["failed"]);

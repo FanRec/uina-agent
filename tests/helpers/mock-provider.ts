@@ -10,7 +10,7 @@ import type {
 	Provider,
 	StreamDelta,
 } from "../../src/core/types.js";
-import { Subject, type LoopHooks, type SubjectOptions } from "../../src/agent/loop.js";
+import { Subject, type SubjectOptions } from "../../src/agent/loop.js";
 import type { ToolView } from "../../src/tools/broker.js";
 
 export interface ScriptRule {
@@ -86,14 +86,13 @@ export function scriptedProvider(
 export function createTestSubject(
 	providerOrStream: { model: Model; stream: ModelStreamFn } | ModelStreamFn,
 	tools: ToolView,
-	hooks: LoopHooks,
 	options?: SubjectOptions,
 	model?: Model,
 ): Subject {
 	if (typeof providerOrStream === "function") {
-		return new Subject(model ?? mockModel(), providerOrStream, tools, hooks, options);
+		return new Subject(model ?? mockModel(), providerOrStream, tools, options);
 	}
-	return new Subject(providerOrStream.model, providerOrStream.stream, tools, hooks, options);
+	return new Subject(providerOrStream.model, providerOrStream.stream, tools, options);
 }
 
 /** 消息文本：取最后一条 user 内容 */

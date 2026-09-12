@@ -18,37 +18,10 @@ import { buildContext, calculateContextSegments, convertToLlm, defaultSystemProm
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import type { PreparedToolCall, ToolView } from "../tools/broker.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
+import type { OutputEvent, RuntimeEvent } from "../runtime/events.js";
 import { NO_RUNTIME_HOOKS } from "../runtime/noop.js";
 import { guardRuntimeHooks } from "../runtime/guard.js";
 
-export interface LoopHooks {
-	onToken: (text: string) => void;
-	onThinking?: (text: string) => void;
-	onTurnStart?: (n: number, text: string) => void;
-	onTurnEnd?: (
-		n: number,
-		usage?: {
-			usedTokens: number;
-			contextWindow?: number;
-			actual: boolean;
-			cacheRead?: number;
-			cacheWrite?: number;
-			inputTokens?: number;
-			outputTokens?: number;
-			segments?: ContextSegments;
-		},
-	) => void;
-	onTurnAborted?: (turn: number) => void;
-	onToolStart?: (name: string, args: unknown, callId?: string) => void;
-	onToolDone?: (
-		name: string,
-		result: string,
-		status?: ToolResultStatus,
-		callId?: string,
-	) => void;
-	onError?: (msg: string) => void;
-	onQueueChanged?: (items: readonly QueuedMessage[]) => void;
-}
 
 export interface SubjectOptions {
 	store?: SessionStore;
@@ -104,12 +77,12 @@ export class Subject {
 	private readonly prepareNextTurnSeam: (ctx: PrepareNextTurnContext) => Promise<PrepareNextTurnResult | null>;
 	private lastReportedUsage: Usage | null = null;
 	private streamSeq = 0;
+	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
 
 	constructor(
 		model: Model,
 		streamFn: ModelStreamFn,
 		private readonly tools: ToolView,
-		private readonly hooks: LoopHooks,
 		options: SubjectOptions = {},
 	) {
 		this.model = model;
@@ -132,6 +105,33 @@ export class Subject {
 		}
 		this.thinkingLevel = this.preferredThinkingLevel;
 		this.runtimeHooks = guardRuntimeHooks(options.runtimeHooks ?? NO_RUNTIME_HOOKS);
+	}
+
+	subscribe(listener: (event: RuntimeEvent) => void): () => void {
+		this.listeners.add(listener);
+		return () => {
+			this.listeners.delete(listener);
+		};
+	}
+
+	private dispatch(event: RuntimeEvent): Promise<void> | void {
+		for (const listener of this.listeners) {
+			try {
+				listener(event);
+			} catch (error) {
+				if (event.type !== "error") {
+					this.reportError(error);
+				}
+			}
+		}
+		if (isOutputEvent(event)) {
+			this.runtimeHooks.events.observe(event);
+			return;
+		}
+		if (event.type === "tool_call" || event.type === "tool_result") {
+			return;
+		}
+		return this.runtimeHooks.events.emit(event);
 	}
 
 	getModel(): Model {
@@ -420,8 +420,7 @@ export class Subject {
 		let success = false;
 		let runError: string | undefined;
 		try {
-			this.hooks.onTurnStart?.(turn, text ?? "");
-			await this.runtimeHooks.events.emit({ type: "turn_start", turnNumber: turn, userText: text ?? "" });
+			await this.dispatch({ type: "turn_start", turnNumber: turn, userText: text ?? "" });
 			if (queuedInput) await this.consumeQueueItem(queuedInput);
 			else if (text !== undefined) await this.appendMessage({ role: "user", content: text, timestamp: new Date().toISOString() });
 			await this.decide(model, systemPrompt, beforeMessages);
@@ -452,22 +451,21 @@ export class Subject {
 					outputTokens: last?.output,
 					segments,
 				};
-				this.hooks.onTurnEnd?.(turn, usage);
-				await this.runtimeHooks.events.emit({
+				await this.dispatch({
 					type: "turn_end",
 					turnNumber: turn,
-					usage: { usedTokens: used, contextWindow: this.getContextWindow(), segments },
+					usage,
 				});
 			} catch (error) {
-				try { this.hooks.onError?.(safeError(error)); } catch { /* hooks cannot own lifecycle */ }
+				this.reportError(error);
 			} finally {
 				this.lastReportedUsage = null;
 			}
-			await this.runtimeHooks.events.emit({ type: "agent_end", turnSeq: turn, success, error: runError });
+			await this.dispatch({ type: "agent_end", turnSeq: turn, success, error: runError });
 			if (success && !this.interrupted && this.queues.size > 0) {
 				try { await this.resumeQueued(); } catch (error) { this.reportError(error); }
 			} else if (this.queues.size === 0) {
-				await this.runtimeHooks.events.emit({ type: "agent_settled", turnSeq: turn });
+				await this.dispatch({ type: "agent_settled", turnSeq: turn });
 			}
 			await this.runtimeHooks.events.flush();
 		}
@@ -522,7 +520,7 @@ export class Subject {
 			let hasEmittedThinkingStart = false;
 			const closeOutput = (outcome: "end" | "interrupted", reason?: "cancelled" | "error"): void => {
 				if (hasEmittedThinkingStart) {
-					this.runtimeHooks.events.observe(
+					this.dispatch(
 						outcome === "end"
 							? { type: "output_end", streamId, channel: "thinking" }
 							: { type: "output_interrupted", streamId, channel: "thinking", reason: reason! },
@@ -530,7 +528,7 @@ export class Subject {
 					hasEmittedThinkingStart = false;
 				}
 				if (hasEmittedContentStart) {
-					this.runtimeHooks.events.observe(
+					this.dispatch(
 						outcome === "end"
 							? { type: "output_end", streamId, channel: "content" }
 							: { type: "output_interrupted", streamId, channel: "content", reason: reason!, spokenUntil: textOffset },
@@ -556,34 +554,32 @@ export class Subject {
 							thinking += delta.text;
 							if (!hasEmittedThinkingStart) {
 								hasEmittedThinkingStart = true;
-								this.runtimeHooks.events.observe({ type: "output_start", streamId, channel: "thinking" });
+								this.dispatch({ type: "output_start", streamId, channel: "thinking" });
 							}
 							thinkingOffset += delta.text.length;
-							this.runtimeHooks.events.observe({
+							this.dispatch({
 								type: "output_update",
 								streamId,
 								offset: thinkingOffset,
 								channel: "thinking",
 								text: delta.text,
 							});
-							try { this.hooks.onThinking?.(delta.text); } catch (error) { this.reportError(error); }
 						} else if (delta.kind === "thinking_signature") {
 							thinkingSignature = delta.signature;
 						} else if (delta.kind === "text") {
 							reply += delta.text;
 							if (!hasEmittedContentStart) {
 								hasEmittedContentStart = true;
-								this.runtimeHooks.events.observe({ type: "output_start", streamId, channel: "content" });
+								this.dispatch({ type: "output_start", streamId, channel: "content" });
 							}
 							textOffset += delta.text.length;
-							this.runtimeHooks.events.observe({
+							this.dispatch({
 								type: "output_update",
 								streamId,
 								offset: textOffset,
 								channel: "content",
 								text: delta.text,
 							});
-							try { this.hooks.onToken(delta.text); } catch (error) { this.reportError(error); }
 						} else if (delta.kind === "usage") {
 							usage = delta.usage;
 							this.lastReportedUsage = delta.usage;
@@ -742,7 +738,12 @@ export class Subject {
 				hooks: this.runtimeHooks.tools,
 				observers: {
 					onStart: async () => {
-						try { this.hooks.onToolStart?.(call.name, call.args, call.id); } catch (error) { this.reportError(error); }
+						this.dispatch({
+							type: "tool_call",
+							toolName: call.name,
+							args: callArgs,
+							callId: call.id,
+						});
 						await this.storeEvent("tool_started", {
 							callId: call.id,
 							name: call.name,
@@ -755,7 +756,14 @@ export class Subject {
 							name: call.name,
 							status: outcome.status,
 						});
-						try { this.hooks.onToolDone?.(call.name, outcome.result, outcome.status, call.id); } catch (error) { this.reportError(error); }
+						this.dispatch({
+							type: "tool_result",
+							toolName: call.name,
+							args: callArgs,
+							result: outcome.result,
+							status: outcome.status,
+							callId: call.id,
+						});
 					},
 				},
 			},
@@ -838,11 +846,11 @@ export class Subject {
 	}
 
 	private notifyQueueChanged(): void {
-		try { this.hooks.onQueueChanged?.(this.queues.all()); } catch (error) { this.reportError(error); }
+		this.dispatch({ type: "queue", items: this.queues.all() });
 	}
 
 	private reportError(error: unknown): void {
-		try { this.hooks.onError?.(safeError(error)); } catch { /* reporting cannot alter runtime state */ }
+		this.dispatch({ type: "error", text: safeError(error) });
 	}
 
 	private completeActiveRun(): void {
@@ -869,7 +877,7 @@ export class Subject {
 			});
 		}
 		await this.storeEvent("turn_aborted", { turnId: this.turnSeq });
-		this.hooks.onTurnAborted?.(this.turnSeq);
+		this.dispatch({ type: "turn_aborted", turnNumber: this.turnSeq });
 	}
 }
 
@@ -895,4 +903,13 @@ function safeError(error: unknown): string {
 
 function eventData(value: object): Record<string, unknown> {
 	return { ...value };
+}
+
+function isOutputEvent(event: RuntimeEvent): event is OutputEvent {
+	return (
+		event.type === "output_start" ||
+		event.type === "output_update" ||
+		event.type === "output_end" ||
+		event.type === "output_interrupted"
+	);
 }

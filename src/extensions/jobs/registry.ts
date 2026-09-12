@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { TaskOutputBuffer, TaskWaiters } from "../../runtime/task-handle.js";
+import { TaskOutputBuffer } from "../../runtime/task-handle.js";
 
 export type JobStatus = "running" | "stopping" | "completed" | "killed" | "failed" | "unknown";
 
@@ -97,7 +97,6 @@ interface TrackedJob {
 	handle?: JobHandle;
 	output?: JobOutput;
 	readonly buffer: TaskOutputBuffer<ObservationChunk>;
-	readonly waiters: TaskWaiters;
 }
 
 const OUTPUT_BYTES = 50 * 1024;
@@ -136,7 +135,6 @@ export class JobRegistry {
 			status: "running",
 			controller,
 			buffer: new TaskOutputBuffer<ObservationChunk>({ maxBytes: OUTPUT_BYTES, maxLines: OUTPUT_LINES }),
-			waiters: new TaskWaiters(),
 		};
 		const context: JobContext = {
 			id,
@@ -188,7 +186,7 @@ export class JobRegistry {
 
 	async wait(id: string, ownerId: string | undefined, timeoutMs: number, cursor = 0, signal?: AbortSignal): Promise<JobSnapshot> {
 		const job = this.expect(id, ownerId);
-		await job.waiters.wait(
+		await job.buffer.wait(
 			() => isTerminal(job.status) || job.buffer.currentCursor > cursor,
 			timeoutMs,
 			signal,
@@ -205,7 +203,7 @@ export class JobRegistry {
 			this.notifyChanged(job);
 		}
 		job.controller.abort(reason);
-		job.waiters.notify();
+		job.buffer.notify();
 		this.requestCancel(job, reason);
 		return "cancellation-requested";
 	}
@@ -233,13 +231,13 @@ export class JobRegistry {
 		if (isTerminal(job.status)) return;
 		if (update.detail !== undefined) job.detail = update.detail;
 		if (update.progress !== undefined) job.progress = structuredClone(update.progress);
+		job.buffer.notify();
 		this.notifyChanged(job);
 	}
 
 	private observe(job: TrackedJob, chunk: { stream?: "stdout" | "stderr" | "text"; text: string }): void {
 		if (isTerminal(job.status) || !chunk.text) return;
 		job.buffer.append({ stream: chunk.stream ?? "text", text: chunk.text });
-		job.waiters.notify();
 		this.notifyChanged(job);
 	}
 
@@ -259,7 +257,7 @@ export class JobRegistry {
 		job.finishedAt = Date.now();
 		job.output = outcome.output;
 		this.pruneSettledObservations();
-		job.waiters.notify();
+		job.buffer.notify();
 		this.notifyChanged(job);
 		for (const listener of this.resolved) {
 			try { listener(snapshotOf(job)); } catch { /* observers cannot alter settlement */ }
@@ -305,7 +303,7 @@ export class JobRegistry {
 
 	private waitForTerminal(job: TrackedJob): Promise<void> {
 		if (isTerminal(job.status)) return Promise.resolve();
-		return job.waiters.wait(() => isTerminal(job.status), 10_000).catch(() => {});
+		return job.buffer.wait(() => isTerminal(job.status), 10_000).catch(() => {});
 	}
 }
 
