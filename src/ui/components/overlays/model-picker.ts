@@ -36,15 +36,24 @@ export class ModelPicker implements Component, Focusable {
 		this.groups = groups;
 		this.currentModelId = currentModelId;
 
-		const grpIdx = this.groups.findIndex((g) => g.models.some((m) => m.id === currentModelId));
+		const grpIdx = this.groups.findIndex((g) => g.id === currentModelId || g.models.some((m) => this.isCurrent(m)));
 		if (grpIdx >= 0) {
 			this.selectedGroupIndex = grpIdx;
-			const mIdx = this.groups[grpIdx]!.models.findIndex((m) => m.id === currentModelId);
+			const mIdx = this.groups[grpIdx]!.models.findIndex((m) => this.isCurrent(m));
 			if (mIdx >= 0) this.selectedModelIndex = mIdx;
 		}
 	}
 
+	private isCurrent(m: ModelItem): boolean {
+		return (
+			m.id === this.currentModelId ||
+			m.name === this.currentModelId ||
+			`${m.provider}/${m.id}` === this.currentModelId
+		);
+	}
+
 	navigateUp(): void {
+		if (this.groups.length === 0) return;
 		if (this.level === "groups") {
 			this.selectedGroupIndex = Math.max(0, this.selectedGroupIndex - 1);
 		} else {
@@ -53,6 +62,7 @@ export class ModelPicker implements Component, Focusable {
 	}
 
 	navigateDown(): void {
+		if (this.groups.length === 0) return;
 		if (this.level === "groups") {
 			this.selectedGroupIndex = Math.min(this.groups.length - 1, this.selectedGroupIndex + 1);
 		} else {
@@ -66,14 +76,9 @@ export class ModelPicker implements Component, Focusable {
 	confirm(): { action: "drilled" } | { action: "picked"; modelId: string } | null {
 		if (this.level === "groups") {
 			const group = this.groups[this.selectedGroupIndex];
-			if (!group) return null;
-			if (group.models.length === 1) {
-				const model = group.models[0]!;
-				this.currentModelId = model.id;
-				return { action: "picked", modelId: model.id };
-			}
+			if (!group || group.models.length === 0) return null;
 			this.level = "models";
-			const mIdx = group.models.findIndex((m) => m.id === this.currentModelId);
+			const mIdx = group.models.findIndex((m) => this.isCurrent(m));
 			this.selectedModelIndex = mIdx >= 0 ? mIdx : 0;
 			return { action: "drilled" };
 		}
@@ -148,7 +153,7 @@ export class ModelPicker implements Component, Focusable {
 			for (let i = 0; i < this.groups.length; i++) {
 				const grp = this.groups[i]!;
 				const isSelected = i === this.selectedGroupIndex;
-				const hasCurrent = grp.models.some((m) => m.id === this.currentModelId);
+				const hasCurrent = grp.id === this.currentModelId || grp.models.some((m) => this.isCurrent(m));
 				const pointer = isSelected ? `${C.bold}${C.cyan}❯${C.reset}` : " ";
 				const nameTag = isSelected
 					? `${C.bold}${C.white}[${grp.name}]${C.reset}`
@@ -164,12 +169,12 @@ export class ModelPicker implements Component, Focusable {
 			for (let i = 0; i < (currentGroup?.models.length ?? 0); i++) {
 				const model = currentGroup.models[i]!;
 				const isSelected = i === this.selectedModelIndex;
-				const isCurrent = model.id === this.currentModelId;
+				const isCurrentModel = this.isCurrent(model);
 				const pointer = isSelected ? `${C.bold}${C.cyan}❯${C.reset}` : " ";
 				const nameTag = isSelected
 					? `${C.bold}${C.white}${model.name}${C.reset}`
 					: `${C.gray}${model.name}${C.reset}`;
-				const check = isCurrent ? ` ${C.green}✓${C.reset}` : "";
+				const check = isCurrentModel ? ` ${C.green}✓${C.reset}` : "";
 				const desc = `${C.dim}${model.description}${C.reset}`;
 
 				const content = `${pointer} ${nameTag}${check}  ${desc}`;

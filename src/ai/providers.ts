@@ -730,13 +730,88 @@ export class ModelRegistry {
 		return this.registerProvider(actualProvider);
 	}
 
+	groups(): Array<{
+		id: string;
+		name: string;
+		description: string;
+		models: Array<{ id: string; name: string; description: string; provider: string }>;
+	}> {
+		const groupMap = new Map<string, {
+			id: string;
+			name: string;
+			description: string;
+			models: Map<string, { id: string; name: string; description: string; provider: string }>;
+		}>();
+
+		const ensureGroup = (providerId: string) => {
+			let group = groupMap.get(providerId);
+			if (!group) {
+				const conf = this.config?.providers[providerId];
+				const desc = conf?.baseUrl ? conf.baseUrl : (conf?.type ?? providerId);
+				group = {
+					id: providerId,
+					name: providerId,
+					description: desc,
+					models: new Map(),
+				};
+				groupMap.set(providerId, group);
+			}
+			return group;
+		};
+
+		// 1. Configured providers & default models
+		if (this.config) {
+			for (const [providerId, conf] of Object.entries(this.config.providers)) {
+				const group = ensureGroup(providerId);
+				const modelId = conf.model;
+				group.models.set(modelId, {
+					id: modelId,
+					name: modelId,
+					description: `默认配置模型 · ${conf.type ?? "openai-compatible"}`,
+					provider: providerId,
+				});
+			}
+		}
+
+		// 2. Explicitly registered models
+		for (const model of this.models.values()) {
+			const group = ensureGroup(model.providerId);
+			if (!group.models.has(model.id)) {
+				group.models.set(model.id, {
+					id: model.id,
+					name: model.name || model.id,
+					description: `${model.providerId} 注册模型`,
+					provider: model.providerId,
+				});
+			}
+		}
+
+		// 3. Dynamically discovered models
+		for (const [providerId, models] of this.discovered.entries()) {
+			const group = ensureGroup(providerId);
+			for (const m of models) {
+				if (m.contextWindow && !group.models.has(m.id)) {
+					const ctx = m.contextWindow >= 1000 ? `${Math.round(m.contextWindow / 1000)}k` : `${m.contextWindow}`;
+					group.models.set(m.id, {
+						id: `${providerId}/${m.id}`,
+						name: m.id,
+						description: `上下文 ~${ctx}`,
+						provider: providerId,
+					});
+				}
+			}
+		}
+
+		return Array.from(groupMap.values()).map((g) => ({
+			id: g.id,
+			name: g.name,
+			description: g.description,
+			models: Array.from(g.models.values()),
+		}));
+	}
+
 	choices(): Array<{ id: string; name: string }> {
-		const configured = Object.entries(this.config?.providers ?? {}).map(([id, value]) => ({ id, name: value.model }));
-		const registered = [...this.models.entries()].map(([id, model]) => ({ id, name: model.name }));
-		const dynamic = [...this.discovered.entries()].flatMap(([provider, models]) =>
-			models.filter((model) => model.contextWindow).map((model) => ({ id: `${provider}/${model.id}`, name: model.id }))
-		);
-		return [...configured, ...registered.filter((candidate) => !configured.some((item) => item.id === candidate.id)), ...dynamic];
+		return this.groups().flatMap((g) => g.models.map((m) => ({ id: m.id, name: m.name })));
 	}
 
 	async stream(

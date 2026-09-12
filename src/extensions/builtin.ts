@@ -237,10 +237,5 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 }
 
 function modelGroups(models: ModelRegistry): BuiltinUIModelGroup[] {
-	return models.choices().map((choice) => ({
-		id: choice.id,
-		name: choice.name,
-		description: choice.id,
-		models: [{ id: choice.id, name: choice.name, description: choice.id, provider: choice.id }],
-	}));
+	return models.groups();
 }

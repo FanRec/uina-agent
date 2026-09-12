@@ -541,6 +541,88 @@ describe("UI Components & Visual Rendering", () => {
 		expect(banner).not.toContain("tools ready");
 	});
 
+	it("模型选择器两级展示：第一级为服务商，Enter展开第二级模型列表，Enter选择，Esc返回", () => {
+		const groups = [
+			{
+				id: "deepseek",
+				name: "deepseek",
+				description: "https://api.deepseek.com",
+				models: [
+					{
+						id: "deepseek-v4-flash",
+						name: "deepseek-v4-flash",
+						description: "默认配置模型",
+						provider: "deepseek",
+					},
+				],
+			},
+			{
+				id: "anthropic",
+				name: "anthropic",
+				description: "api.anthropic.com",
+				models: [
+					{
+						id: "claude-3-7-sonnet",
+						name: "claude-3-7-sonnet",
+						description: "主力模型",
+						provider: "anthropic",
+					},
+					{
+						id: "claude-3-5-haiku",
+						name: "claude-3-5-haiku",
+						description: "轻量模型",
+						provider: "anthropic",
+					},
+				],
+			},
+		];
+
+		const picker = new ModelPicker("deepseek-v4-flash", groups);
+		let pickedModel = "";
+		let closed = false;
+		picker.onPick = (id) => { pickedModel = id; };
+		picker.onClose = () => { closed = true; };
+
+		// 第一级视图：展示 Provider 列表，含模型数量统计与展开提示
+		let lines = stripAnsi(picker.render(80).join("\n"));
+		expect(lines).toContain("切换模型服务商 (Providers)");
+		expect(lines).toContain("[deepseek]");
+		expect(lines).toContain("(1 个模型)");
+		expect(lines).toContain("[anthropic]");
+		expect(lines).toContain("(2 个模型)");
+		expect(lines).toContain("Enter 展开");
+
+		// Enter 展开选中的 deepseek
+		picker.handleInput("\r");
+		lines = stripAnsi(picker.render(80).join("\n"));
+		expect(lines).toContain("选择模型 (deepseek)");
+		expect(lines).toContain("deepseek-v4-flash");
+		expect(lines).toContain("Enter 确认切换 · Esc 返回");
+
+		// Esc 返回第一级
+		picker.handleInput("\x1b");
+		lines = stripAnsi(picker.render(80).join("\n"));
+		expect(lines).toContain("切换模型服务商 (Providers)");
+
+		// 向下移动选择 anthropic 并展开
+		picker.handleInput("\x1b[B"); // down arrow
+		picker.handleInput("\r");
+		lines = stripAnsi(picker.render(80).join("\n"));
+		expect(lines).toContain("选择模型 (anthropic)");
+		expect(lines).toContain("claude-3-7-sonnet");
+		expect(lines).toContain("claude-3-5-haiku");
+
+		// Enter 选择当前选中的 claude-3-7-sonnet
+		picker.handleInput("\r");
+		expect(pickedModel).toBe("claude-3-7-sonnet");
+
+		// 在第一级按 Esc 关闭选择器
+		const picker2 = new ModelPicker("deepseek-v4-flash", groups);
+		picker2.onClose = () => { closed = true; };
+		picker2.handleInput("\x1b");
+		expect(closed).toBe(true);
+	});
+
 	it("Shift+Tab 只请求 runtime 切换 thinking，不直接改写 UI 权威状态", () => {
 		const host = new UIHost({ modelName: "model", thinkingLevels: ["off", "high"], thinkingLevel: "off" });
 		const requested = vi.fn();
