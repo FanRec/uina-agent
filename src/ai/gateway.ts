@@ -6,6 +6,7 @@ import type {
 	ThinkingWireFormat,
 	Usage,
 } from "../core/types.js";
+import type { ProviderHooks } from "../runtime/hooks.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
 import { copyValue, readonlySnapshot } from "../runtime/guard.js";
 
@@ -31,12 +32,12 @@ export function createOpenAIProvider(id: string, conf: OpenAIEndpointConf): Prov
 				throw new Error(`模型 ${model.id} 的 providerId (${model.providerId}) 与端点 id (${id}) 不匹配`);
 			}
 			const thinkingFormat = model.compat?.thinkingFormat;
-			let headers: Record<string, string> = {
+			const headers: Record<string, string> = {
 				"Content-Type": "application/json",
 				Accept: "text/event-stream",
 				Authorization: `Bearer ${conf.apiKey}`,
 			};
-			let bodyPayload: unknown = {
+			const bodyPayload = {
 				model: model.id,
 				messages: toWireMessages(req.messages, thinkingFormat),
 				tools: req.tools?.length ? req.tools : undefined,
@@ -45,33 +46,15 @@ export function createOpenAIProvider(id: string, conf: OpenAIEndpointConf): Prov
 				...thinkingRequest(model.thinkingLevels?.length ? req.thinkingLevel : undefined, thinkingFormat),
 			};
 
-			headers = copyValue(await req.providerHooks.transformHeaders(model.providerId, readonlySnapshot(headers)));
-			bodyPayload = copyValue(await req.providerHooks.transformPayload(model.providerId, readonlySnapshot(bodyPayload)));
-
-			const response = await fetchWithRetry(endpoint, {
-				maxRetries: conf.maxRetries ?? 2,
+			const bodyStream = await sendModelStreamRequest({
+				url: endpoint,
+				providerId: model.providerId,
+				headers,
+				body: bodyPayload,
+				hooks: req.providerHooks,
 				signal,
-				request: {
-					method: "POST",
-					signal,
-					headers,
-					body: JSON.stringify(bodyPayload),
-				},
+				maxRetries: conf.maxRetries,
 			});
-
-			const respHeaders: Record<string, string> = {};
-			response.headers.forEach((v, k) => {
-				respHeaders[k] = v;
-			});
-			await req.providerHooks.observeResponse(readonlySnapshot({ provider: model.providerId, status: response.status, headers: respHeaders }));
-
-			if (!response.ok) {
-				const body = await response.text().catch(() => "");
-				throw new Error(
-					`模型请求失败 HTTP ${response.status}: ${body.slice(0, 300)}`,
-				);
-			}
-			if (!response.body) throw new ProviderProtocolError("模型响应无 body");
 
 			let finished = false;
 			let doneMarker = false;
@@ -79,7 +62,7 @@ export function createOpenAIProvider(id: string, conf: OpenAIEndpointConf): Prov
 			const pending = new Map<number, { id: string; name: string; args: string }>();
 
 			await parseSSE(
-				response.body,
+				bodyStream,
 				(data, index) => {
 					if (data === "[DONE]") {
 						doneMarker = true;
@@ -188,6 +171,58 @@ export function createOpenAIProvider(id: string, conf: OpenAIEndpointConf): Prov
 			}
 		},
 	};
+}
+
+export interface ModelStreamRequestOptions {
+	url: string;
+	providerId: string;
+	headers: Record<string, string>;
+	body: unknown;
+	hooks: ProviderHooks;
+	signal?: AbortSignal;
+	maxRetries?: number;
+}
+
+export async function sendModelStreamRequest(
+	options: ModelStreamRequestOptions,
+): Promise<ReadableStream<Uint8Array>> {
+	const headers = copyValue(
+		await options.hooks.transformHeaders(options.providerId, readonlySnapshot(options.headers)),
+	);
+	const bodyPayload = copyValue(
+		await options.hooks.transformPayload(options.providerId, readonlySnapshot(options.body)),
+	);
+
+	const response = await fetchWithRetry(options.url, {
+		maxRetries: options.maxRetries ?? 2,
+		signal: options.signal,
+		request: {
+			method: "POST",
+			headers,
+			body: JSON.stringify(bodyPayload),
+		},
+	});
+
+	const respHeaders = Object.fromEntries(response.headers);
+	await options.hooks.observeResponse(
+		readonlySnapshot({
+			provider: options.providerId,
+			status: response.status,
+			headers: respHeaders,
+		}),
+	);
+
+	if (!response.ok) {
+		const bodyText = await response.text().catch(() => "");
+		throw new Error(
+			`${options.providerId} 请求失败 HTTP ${response.status}: ${bodyText.slice(0, 300)}`,
+		);
+	}
+	if (!response.body) {
+		throw new ProviderProtocolError(`${options.providerId} 响应无 body`);
+	}
+
+	return response.body;
 }
 
 export async function fetchWithRetry(

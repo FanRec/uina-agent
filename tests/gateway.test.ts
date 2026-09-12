@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createOpenAIProvider, toWireMessages } from "../src/ai/gateway.js";
+import { createOpenAIProvider, sendModelStreamRequest, toWireMessages } from "../src/ai/gateway.js";
 import { ProviderProtocolError } from "../src/ai/sse.js";
 import type { Model, StreamDelta } from "../src/core/types.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
@@ -136,5 +136,86 @@ describe("OpenAI gateway", () => {
 			{ role: "assistant", content: "", tool_calls: [{ id: "t1", type: "function", function: { name: "x", arguments: '{"a":1}' } }] },
 			{ role: "tool", tool_call_id: "t1", content: "ok" },
 		]);
+	});
+
+	it("sendModelStreamRequest pipelines hooks, serializes payload, and observes response", async () => {
+		let capturedHeaders: Record<string, string> = {};
+		let capturedBody = "";
+		const server = createServer((req, res) => {
+			capturedHeaders = req.headers as Record<string, string>;
+			req.on("data", (chunk) => { capturedBody += String(chunk); });
+			req.on("end", () => {
+				res.writeHead(200, { "content-type": "text/event-stream", "x-server-meta": "ok" });
+				res.end("data: ok\n\n");
+			});
+		});
+		servers.push(server);
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const port = (server.address() as AddressInfo).port;
+
+		const events: string[] = [];
+		const stream = await sendModelStreamRequest({
+			url: `http://127.0.0.1:${port}/v1/stream`,
+			providerId: "test-prov",
+			headers: { "x-client": "uina" },
+			body: { prompt: "hello" },
+			hooks: {
+				async transformHeaders(provider, headers) {
+					events.push(`headers:${provider}`);
+					return { ...headers, "x-injected": "1" };
+				},
+				async transformPayload(provider, payload) {
+					events.push(`payload:${provider}`);
+					return { ...(payload as Record<string, unknown>), extra: true };
+				},
+				async observeResponse(res) {
+					events.push(`resp:${res.provider}:${res.status}:${res.headers["x-server-meta"]}`);
+				},
+			},
+		});
+
+		expect(stream).toBeInstanceOf(ReadableStream);
+		expect(events).toEqual(["headers:test-prov", "payload:test-prov", "resp:test-prov:200:ok"]);
+		expect(capturedHeaders["x-injected"]).toBe("1");
+		expect(JSON.parse(capturedBody)).toEqual({ prompt: "hello", extra: true });
+	});
+
+	it("sendModelStreamRequest throws formatted error with status and truncated body on non-ok HTTP", async () => {
+		const server = createServer((_req, res) => {
+			res.writeHead(502, { "content-type": "text/plain" });
+			res.end("Bad Gateway Error Details");
+		});
+		servers.push(server);
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const port = (server.address() as AddressInfo).port;
+
+		await expect(
+			sendModelStreamRequest({
+				url: `http://127.0.0.1:${port}/error`,
+				providerId: "probe-prov",
+				headers: {},
+				body: {},
+				hooks: NO_RUNTIME_HOOKS.provider,
+				maxRetries: 0,
+			}),
+		).rejects.toThrow("probe-prov 请求失败 HTTP 502: Bad Gateway Error Details");
+	});
+
+	it("sendModelStreamRequest throws ProviderProtocolError when response has no body", async () => {
+		const orig = globalThis.fetch;
+		globalThis.fetch = async () => new Response(null, { status: 200 });
+		try {
+			await expect(
+				sendModelStreamRequest({
+					url: "http://example.test",
+					providerId: "probe-prov",
+					headers: {},
+					body: {},
+					hooks: NO_RUNTIME_HOOKS.provider,
+				}),
+			).rejects.toThrow(ProviderProtocolError);
+		} finally {
+			globalThis.fetch = orig;
+		}
 	});
 });

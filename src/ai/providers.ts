@@ -17,9 +17,8 @@ import {
 	type ProviderKind,
 	type UinaConfig,
 } from "./config.js";
-import { createOpenAIProvider, fetchWithRetry } from "./gateway.js";
+import { createOpenAIProvider, sendModelStreamRequest } from "./gateway.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
-import { copyValue, readonlySnapshot } from "../runtime/guard.js";
 
 /** 创建声明式纯数据 Model 规格 */
 export function createModel(conf: ProviderConfig, providerId: string): Model {
@@ -84,7 +83,7 @@ export function createAnthropicProvider(id: string, conf: ProviderConfig): Provi
 			}
 			const level = req.thinkingLevel ?? "off";
 			const thinking = level === "off" ? undefined : (model.thinkingBudgets?.[level] ?? thinkingBudget(conf, level));
-			let body: Record<string, unknown> = {
+			const body: Record<string, unknown> = {
 				model: model.id,
 				max_tokens: model.maxOutputTokens ?? maxOutputTokens(conf),
 				system: anthropicSystem(req),
@@ -94,26 +93,22 @@ export function createAnthropicProvider(id: string, conf: ProviderConfig): Provi
 			};
 			if (thinking) body.thinking = { type: "enabled", budget_tokens: thinking };
 
-			let headers: Record<string, string> = {
+			const headers: Record<string, string> = {
 				"content-type": "application/json",
 				"x-api-key": conf.apiKey,
 				"anthropic-version": "2023-06-01",
 				accept: "text/event-stream",
 			};
-			headers = copyValue(await req.providerHooks.transformHeaders(model.providerId, readonlySnapshot(headers)));
-			body = copyValue(await req.providerHooks.transformPayload(model.providerId, readonlySnapshot(body))) as Record<string, unknown>;
 
-			const response = await fetchWithRetry(`${conf.baseUrl.replace(/\/$/, "")}/messages`, {
-				maxRetries: conf.maxRetries ?? 2,
+			const bodyStream = await sendModelStreamRequest({
+				url: `${conf.baseUrl.replace(/\/$/, "")}/messages`,
+				providerId: model.providerId,
+				headers,
+				body,
+				hooks: req.providerHooks,
 				signal,
-				request: { method: "POST", signal, headers, body: JSON.stringify(body) },
+				maxRetries: conf.maxRetries,
 			});
-			const respHeaders: Record<string, string> = {};
-			response.headers.forEach((value, key) => { respHeaders[key] = value; });
-			await req.providerHooks.observeResponse(readonlySnapshot({ provider: model.providerId, status: response.status, headers: respHeaders }));
-
-			if (!response.ok) throw new Error(`Anthropic ${id} 请求失败 HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
-			if (!response.body) throw new ProviderProtocolError("Anthropic 响应无 body");
 
 			let sawMessageStart = false;
 			let sawMessageStop = false;
@@ -129,7 +124,7 @@ export function createAnthropicProvider(id: string, conf: ProviderConfig): Provi
 				emit({ kind: "usage", usage: usageSnapshot(usageState) });
 			};
 
-			await parseSSE(response.body, (data, index) => {
+			await parseSSE(bodyStream, (data, index) => {
 				let event: AnthropicEvent;
 				try {
 					event = JSON.parse(data) as AnthropicEvent;
@@ -257,26 +252,23 @@ export function createGeminiProvider(id: string, conf: ProviderConfig): Provider
 			const geminiThinkingFormat = model.compat?.geminiThinkingFormat ?? conf.geminiThinkingFormat;
 			const thinkingBudgets = model.thinkingBudgets ?? conf.thinkingBudgets;
 
-			let headers: Record<string, string> = { "content-type": "application/json", accept: "text/event-stream" };
-			let bodyPayload = geminiRequest(
+			const headers: Record<string, string> = { "content-type": "application/json", accept: "text/event-stream" };
+			const bodyPayload = geminiRequest(
 				{ ...req, thinkingLevel: thinkingLevels?.length ? req.thinkingLevel : undefined },
 				geminiToolCallIds,
 				geminiThinkingFormat,
 				thinkingBudgets,
 			);
-			headers = copyValue(await req.providerHooks.transformHeaders(model.providerId, readonlySnapshot(headers)));
-			bodyPayload = copyValue(await req.providerHooks.transformPayload(model.providerId, readonlySnapshot(bodyPayload))) as Record<string, unknown>;
 
-			const response = await fetchWithRetry(`${conf.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(model.id)}:streamGenerateContent?alt=sse`, {
-				maxRetries: conf.maxRetries ?? 2,
+			const bodyStream = await sendModelStreamRequest({
+				url: `${conf.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(model.id)}:streamGenerateContent?alt=sse`,
+				providerId: model.providerId,
+				headers,
+				body: bodyPayload,
+				hooks: req.providerHooks,
 				signal,
-				request: { method: "POST", signal, headers, body: JSON.stringify(bodyPayload) },
+				maxRetries: conf.maxRetries,
 			});
-			const respHeaders: Record<string, string> = {};
-			response.headers.forEach((value, key) => { respHeaders[key] = value; });
-			await req.providerHooks.observeResponse(readonlySnapshot({ provider: model.providerId, status: response.status, headers: respHeaders }));
-			if (!response.ok) throw new Error(`Gemini ${id} 请求失败 HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
-			if (!response.body) throw new ProviderProtocolError("Gemini 响应无 body");
 
 			let finished = false;
 			let finishReason: FinishReason | undefined;
@@ -292,7 +284,7 @@ export function createGeminiProvider(id: string, conf: ProviderConfig): Provider
 				emit({ kind: "usage", usage: usageSnapshot(usageState) });
 			};
 
-			await parseSSE(response.body, (data, index) => {
+			await parseSSE(bodyStream, (data, index) => {
 				if (finished) throw new ProviderProtocolError(`Gemini ${id} finish 后仍收到事件`, index);
 				let chunk: GeminiChunk;
 				try {
