@@ -7,11 +7,12 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, activeProvider } from "../src/ai/config.js";
-import { createProvider } from "../src/ai/providers.js";
+import { createModel, createProvider } from "../src/ai/providers.js";
 import { Subject } from "../src/agent/loop.js";
 import { ExtensionRunner } from "../src/extensions/runner.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import { openJsonlSession } from "../src/session/jsonl-store.js";
+import type { ModelStreamFn } from "../src/core/types.js";
 
 const root = await mkdtemp(join(tmpdir(), "uina-s4-real-"));
 const watched = join(root, "observation.txt");
@@ -19,6 +20,7 @@ const previous = process.env.UINA_WATCH_FILE;
 process.env.UINA_WATCH_FILE = watched;
 const config = activeProvider(loadConfig());
 const provider = createProvider(config.name, { ...config, maxRetries: 0 });
+const model = createModel({ ...config, maxRetries: 0 }, config.name);
 const tools = new ToolBroker();
 const { store } = await openJsonlSession(join(root, "session.jsonl"));
 const errors: string[] = [];
@@ -31,13 +33,14 @@ const runner = new ExtensionRunner({ cwd: root, tools, onError: error => errors.
 	timings.push({ phase, event: input.source.type, atMs: Math.round(performance.now() - since) });
 	return subject.accept(input);
 } });
-subject = new Subject({ ...provider, async stream(req, emit, signal) {
+const stream: ModelStreamFn = async (m, req, emit, signal) => {
 	timings.push({ phase, event: "model-request", atMs: Math.round(performance.now() - since) });
-	await provider.stream(req, emit, signal);
-} }, tools, { onToken: text => {
+	await provider.stream(m, req, emit, signal);
+};
+subject = new Subject(model, stream, tools, { onToken: (text: string) => {
 	content += text;
 	if (!firstText) { firstText = true; timings.push({ phase, event: "first-text", atMs: Math.round(performance.now() - since) }); }
-}, onToolStart: (name, args) => timings.push({ phase, event: "tool-start", name, args, atMs: Math.round(performance.now() - since) }), onError: error => errors.push(error) }, {
+}, onToolStart: (name: string, args: unknown) => timings.push({ phase, event: "tool-start", name, args, atMs: Math.round(performance.now() - since) }), onError: (error: string) => errors.push(error) }, {
 	store, thinkingLevel: "off", runtimeHooks: runner.runtimeHooks(),
 	systemPrompt: "你是 Uina。当前是隔离验收。文件事件不是人类说话。按文件所述使用 watch_exec，长工作必须 run_in_background=true。后台通知回来后用 watch_job_output 读取结果。文件只包含 IGNORE 时，只调用 watch_silence，不输出解释或文字。人类发 hello 时只回复 hello，不要等待后台工作。除需要验收的结果外不寒暄。",
 });

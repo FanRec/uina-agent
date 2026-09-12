@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DefaultAgentFactory, type AgentFactory } from "../src/agent/runtime.js";
-import type { ModelProvider } from "../src/core/types.js";
+import type { Model, ModelStreamFn } from "../src/core/types.js";
 import { ToolBroker, type ToolView } from "../src/tools/broker.js";
 import { SubagentRegistry } from "../src/extensions/subagents/registry.js";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
@@ -9,25 +9,34 @@ import { ExtensionRunner } from "../src/extensions/runner.js";
 import { activateRuntimeTools, createChildTools } from "../src/extensions/runtime-tools/index.js";
 import { scriptedProvider, toolCallDelta } from "./helpers/mock-provider.js";
 
-function providerFor(reply: (prompt: string) => string | Promise<string>): ModelProvider {
-	return {
+function providerFor(reply: (prompt: string) => string | Promise<string>): { model: Model; stream: ModelStreamFn } {
+	const model: Model = {
+		id: "child-test",
 		name: "child-test",
+		providerId: "mock",
+		contextWindow: 128_000,
 		thinkingLevels: ["off"],
-		async stream(request, emit, signal) {
-			const prompt = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
-			const text = await reply(prompt);
-			if (signal?.aborted) return;
-			emit({ kind: "thinking", text: "分析 " });
-			emit({ kind: "text", text });
-			emit({ kind: "finish", reason: "stop" });
-		},
 	};
+	const stream: ModelStreamFn = async (_m, request, emit, signal) => {
+		const prompt = [...request.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+		const text = await reply(prompt);
+		if (signal?.aborted) return;
+		emit({ kind: "thinking", text: "分析 " });
+		emit({ kind: "text", text });
+		emit({ kind: "finish", reason: "stop" });
+	};
+	return { model, stream };
 }
 
-function make(provider: ModelProvider, notify?: (text: string, data: Record<string, unknown>) => Promise<void>, factory: AgentFactory = new DefaultAgentFactory()): SubagentRegistry {
+function make(
+	pair: { model: Model; stream: ModelStreamFn },
+	notify?: (text: string, data: Record<string, unknown>, ownerId: string) => Promise<void>,
+	factory: AgentFactory = new DefaultAgentFactory(),
+): SubagentRegistry {
 	return new SubagentRegistry({
 		factory,
-		provider: () => provider,
+		model: () => pair.model,
+		stream: pair.stream,
 		createTools: () => new ToolBroker(),
 		notify,
 	});
@@ -46,7 +55,9 @@ describe("SubagentRegistry", () => {
 			{ match: () => true, produce: () => [{ kind: "text", text: "waiting" }] },
 		]);
 		const registry = new SubagentRegistry({
-			factory: new DefaultAgentFactory(), provider: () => provider,
+			factory: new DefaultAgentFactory(),
+			model: () => provider.model,
+			stream: provider.stream,
 			createTools: ownerId => { const tools = createChildTools(root, { ownerId }); children.set(ownerId, tools); return tools; },
 		});
 		const runner = new ExtensionRunner({ cwd: process.cwd(), tools: root, onInput: async input => { rootInputs.push(input); }, onError: error => errors.push(error) });
@@ -98,9 +109,8 @@ describe("SubagentRegistry", () => {
 			},
 		};
 		const registry = make({
-			name: "blocking-child",
-			thinkingLevels: ["off"],
-			async stream(_request, _emit, signal) {
+			model: { id: "blocking-child", name: "blocking-child", providerId: "mock", contextWindow: 128_000, thinkingLevels: ["off"] },
+			stream: async (_m, _request, _emit, signal) => {
 				await new Promise<void>((resolve) => {
 					signal?.addEventListener("abort", () => resolve(), { once: true });
 				});
@@ -117,7 +127,10 @@ describe("SubagentRegistry", () => {
 	});
 
 	it("rejects new input after interruption admission and settles startup failures", async () => {
-		const failing = make({ name: "failing-child", thinkingLevels: ["off"], async stream() { throw new Error("provider down"); } });
+		const failing = make({
+			model: { id: "failing-child", name: "failing-child", providerId: "mock", contextWindow: 128_000, thinkingLevels: ["off"] },
+			stream: async () => { throw new Error("provider down"); },
+		});
 		const started = failing.start({ ownerId: "root", label: "失败", prompt: "开始" });
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(failing.get(started.id, "root")).toMatchObject({ status: "settled", terminalStatus: "failed", detail: "provider down", finishedAt: expect.any(Number) });
@@ -136,7 +149,10 @@ describe("SubagentRegistry", () => {
 	});
 
 	it("records notice delivery failure without replacing the child terminal fact", async () => {
-		const registry = make({ name: "failing-child", thinkingLevels: ["off"], async stream() { throw new Error("provider down"); } }, async () => {
+		const registry = make({
+			model: { id: "failing-child", name: "failing-child", providerId: "mock", contextWindow: 128_000, thinkingLevels: ["off"] },
+			stream: async () => { throw new Error("provider down"); },
+		}, async () => {
 			throw new Error("parent unavailable");
 		});
 		const started = registry.start({ ownerId: "root", label: "失败", prompt: "开始" });
@@ -156,7 +172,8 @@ describe("AgentHandle lifecycle", () => {
 		const store = new MemorySessionStore();
 		const originalClose = store.close.bind(store);
 		store.close = async () => { closed = true; await originalClose(); };
-		const handle = new DefaultAgentFactory().create({ provider: providerFor(() => "ok"), tools: new ToolBroker(), store });
+		const pair = providerFor(() => "ok");
+		const handle = new DefaultAgentFactory().create({ model: pair.model, stream: pair.stream, tools: new ToolBroker(), store });
 		await handle.send({ id: "input", mode: "followUp", source: { kind: "agent", type: "test" }, text: "开始" });
 		await handle.interrupt();
 		expect(handle.snapshot().status).toBe("idle");

@@ -171,7 +171,7 @@ handler 抛错会报告扩展来源，通常被宿主捕获并继续派发；不
 
 ## 8. Provider 与 UI
 
-Provider 实现 [ModelProvider](../src/core/types.ts)，提供 name、stream，以及已知时的 contextWindow、thinkingLevels 等元数据。stream 发出规范化增量，遵守终止、取消与错误合同；请求带有 providerHooks，网络适配器需按现有 adapter 使用这些接口。未知能力与 usage 字段保持未知，不按名字猜测；若声明某档 thinking，适配器必须真正能表达该控制。需要回放的厂商数据保留 providerReplay，由对应 adapter 解释。
+Provider 实现 [Provider](../src/core/types.ts)，提供 id、stream(model, req, onDelta, signal)，以及可选的 refreshModels。Model 则是纯数据规格（包含 id、name、providerId、contextWindow、thinkingLevels 等）。stream 发出规范化增量，遵守终止、取消与错误合同；请求带有 providerHooks，网络适配器需按现有 adapter 使用这些接口。未知能力与 usage 字段保持未知，不按名字猜测；若声明某档 thinking，适配器必须真正能表达该控制。需要回放的厂商数据保留 providerReplay，由对应 adapter 解释。
 
 注册 Provider 不等于服务已健康、已完成真实联调或已选为当前模型。类型、返回字段和具体适配过程参考 [providers](../src/ai/providers.ts) 与 [gateway](../src/ai/gateway.ts)，无需为了注册一个 Provider 改 Subject 的厂商分支。
 

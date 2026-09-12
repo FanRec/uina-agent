@@ -14,7 +14,8 @@ import type {
 export interface SubagentRegistryOptions {
 	factory: AgentFactory;
 	/** Resolved per child creation so a model switch affects new subagents. */
-	provider: () => Parameters<AgentFactory["create"]>[0]["provider"];
+	model: () => Parameters<AgentFactory["create"]>[0]["model"];
+	stream: Parameters<AgentFactory["create"]>[0]["stream"];
 	createTools: (ownerId: string) => ToolView;
 	thinkingLevel?: Parameters<AgentFactory["create"]>[0]["thinkingLevel"];
 	notify?: (text: string, data: Record<string, unknown>, ownerId: string) => Promise<void>;
@@ -138,7 +139,8 @@ export class SubagentRegistry {
 		};
 		const handle = this.options.factory.create({
 			id,
-			provider: this.options.provider(),
+			model: this.options.model(),
+			stream: this.options.stream,
 			tools: this.options.createTools(id),
 			hooks,
 			thinkingLevel: this.options.thinkingLevel,

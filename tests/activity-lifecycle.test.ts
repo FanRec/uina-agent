@@ -16,7 +16,11 @@ it("manual compaction owns activity until cancellation and disposal have finishe
 	const { store } = await openJsonlSession(path);
 	const entered = deferred<void>(); const finish = deferred<void>();
 	let signal: AbortSignal | undefined;
-	const handle = new DefaultAgentFactory().create({ store, tools: new ToolBroker(), provider: { name: "fixture", async stream(_req, emit, cancellation) { signal = cancellation; entered.resolve(); await finish.promise; emit({ kind: "text", text: "summary" }); emit({ kind: "finish", reason: "stop" }); } } });
+	const model = { id: "fixture", name: "fixture", providerId: "mock", contextWindow: 128_000 };
+	const stream = async (_m: unknown, _req: unknown, emit: (d: any) => void, cancellation?: AbortSignal) => {
+		signal = cancellation; entered.resolve(); await finish.promise; emit({ kind: "text", text: "summary" }); emit({ kind: "finish", reason: "stop" });
+	};
+	const handle = new DefaultAgentFactory().create({ store, tools: new ToolBroker(), model, stream });
 	const history = [{ role: "user" as const, content: "first" }, { role: "assistant" as const, content: "answer" }, { role: "user" as const, content: "next" }];
 	for (const message of history) await store.appendMessage(message);
 	handle.subject.addHistory(history);
@@ -52,7 +56,11 @@ it("default jobs accept more than ten producers", async () => {
 
 it("sending to a busy child cannot publish waiting while its handle is busy", async () => {
 	const entered = deferred<void>(); const finish = deferred<void>();
-	const registry = new SubagentRegistry({ factory: new DefaultAgentFactory(), createTools: () => new ToolBroker(), provider: () => ({ name: "fixture", async stream(_req, emit) { entered.resolve(); await finish.promise; emit({ kind: "text", text: "done" }); emit({ kind: "finish", reason: "stop" }); } }) });
+	const childModel = { id: "fixture", name: "fixture", providerId: "mock", contextWindow: 128_000 };
+	const childStream = async (_m: unknown, _req: unknown, emit: (d: any) => void) => {
+		entered.resolve(); await finish.promise; emit({ kind: "text", text: "done" }); emit({ kind: "finish", reason: "stop" });
+	};
+	const registry = new SubagentRegistry({ factory: new DefaultAgentFactory(), createTools: () => new ToolBroker(), model: () => childModel, stream: childStream });
 	const child = registry.start({ ownerId: "root", label: "child", prompt: "first" }); await entered.promise;
 	await registry.send(child.id, "root", "second");
 	expect(registry.get(child.id, "root")).toMatchObject({ busy: true, status: "running" });

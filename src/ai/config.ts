@@ -6,7 +6,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ThinkingLevel } from "../core/types.js";
+import type { GeminiThinkingFormat, ThinkingLevel, ThinkingWireFormat } from "../core/types.js";
 
 export type ProviderKind = "openai-compatible" | "anthropic" | "gemini";
 
@@ -22,12 +22,28 @@ export interface ProviderConfig {
 	/** Gemini models that explicitly require function-call ids on the wire. Unknown stays omitted. */
 	geminiToolCallIds?: boolean;
 	/** Gemini thinking 的 wire 控制方式。声明 thinkingLevels 时必须显式给出，绝不按模型名推断。 */
-	geminiThinkingFormat?: "budget" | "level";
+	geminiThinkingFormat?: GeminiThinkingFormat;
 	/** thinking 档位 → 数值预算的显式映射（Anthropic budget_tokens / Gemini thinkingBudget）。 */
 	thinkingBudgets?: Partial<Record<ThinkingLevel, number>>;
 	type?: ProviderKind;
-	thinkingFormat?: "openai" | "deepseek" | "qwen";
+	thinkingFormat?: ThinkingWireFormat;
 	thinkingLevels?: readonly ThinkingLevel[];
+	includeThinking?: boolean;
+}
+
+/**
+ * 依据协议与配置推导上下文投影是否携带思考历史。
+ * openai-compatible 仅 deepseek 携带；anthropic 与 gemini 声明 thinking 时携带。
+ */
+export function protocolCarriesThinking(
+	kind: ProviderKind,
+	thinkingFormat?: ThinkingWireFormat,
+	levels?: readonly ThinkingLevel[],
+): boolean {
+	if (kind === "openai-compatible") {
+		return thinkingFormat === "deepseek";
+	}
+	return Boolean(levels?.some((level) => level !== "off"));
 }
 
 /**
@@ -182,11 +198,13 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 			if (provider.thinkingLevels !== undefined && (!Array.isArray(provider.thinkingLevels) || provider.thinkingLevels.some((level) => !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(level as string)))) {
 				throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingLevels 无效`);
 			}
-		if (provider.geminiThinkingFormat !== undefined && !["budget", "level"].includes(String(provider.geminiThinkingFormat))) throw new Error("geminiThinkingFormat 无效");
-		providers[name] = {
-			...(provider.geminiThinkingFormat === undefined ? {} : { geminiThinkingFormat: provider.geminiThinkingFormat as "budget" | "level" }),
+			if (provider.geminiThinkingFormat !== undefined && !["budget", "level"].includes(String(provider.geminiThinkingFormat))) {
+				throw new Error(`配置 ${path} 的 provider ${name} 的 geminiThinkingFormat 无效`);
+			}
+			providers[name] = {
+				...(provider.geminiThinkingFormat === undefined ? {} : { geminiThinkingFormat: provider.geminiThinkingFormat as GeminiThinkingFormat }),
 				apiKey: provider.apiKey ?? "",
-			model: provider.model,
+				model: provider.model,
 				...(provider.modelContextWindow === undefined ? {} : { modelContextWindow: provider.modelContextWindow as number }),
 				...(provider.maxContextWindow === undefined ? {} : { maxContextWindow: provider.maxContextWindow as number }),
 				...(provider.maxRetries === undefined ? {} : { maxRetries: provider.maxRetries }),
@@ -195,9 +213,10 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 				...(provider.thinkingBudgets === undefined ? {} : { thinkingBudgets: provider.thinkingBudgets as Partial<Record<ThinkingLevel, number>> }),
 				baseUrl: typeof provider.baseUrl === "string" ? provider.baseUrl : defaultBaseUrl(providerType),
 				type: providerType,
-				...(provider.thinkingFormat === undefined ? {} : { thinkingFormat: provider.thinkingFormat as ProviderConfig["thinkingFormat"] }),
+				...(provider.thinkingFormat === undefined ? {} : { thinkingFormat: provider.thinkingFormat as ThinkingWireFormat }),
 				...(provider.thinkingLevels === undefined ? {} : { thinkingLevels: provider.thinkingLevels as ThinkingLevel[] }),
-		};
+				...(provider.includeThinking === undefined ? {} : { includeThinking: Boolean(provider.includeThinking) }),
+			};
 	}
 	if (!providers[raw.default]) {
 		throw new Error(`配置 ${path} 缺少 default 对应的 provider: ${raw.default}`);

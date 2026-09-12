@@ -5,7 +5,7 @@ import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AgentInput } from "../agent/loop.js";
-import type { ModelProvider } from "../core/types.js";
+import type { Provider } from "../core/types.js";
 import type { ToolBroker, Tool } from "../tools/broker.js";
 import type { ExtensionUIContext, CustomEntry, CustomMessage, EntryRenderer, LocalCommand, MessageRenderer } from "./ui-contract.js";
 import { ExtensionRegistry } from "./renderer-registry.js";
@@ -24,7 +24,7 @@ export interface ExtensionAPI {
 	registerCommand(command: LocalCommand): void;
 	registerMessageRenderer<T = unknown>(customType: string, renderer: MessageRenderer<T>): void;
 	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
-	registerProvider(name: string, provider: ModelProvider): void;
+	registerProvider(name: string, provider: Provider): void;
 	sendMessage(message: CustomMessage): Promise<void>;
 	appendEntry(entry: CustomEntry): Promise<void>;
 }
@@ -39,7 +39,7 @@ export interface ExtensionRunnerOptions {
 	onError?: (text: string) => void;
 	/** Informational/warning notifications from the fallback UI before a real UI attaches. */
 	onNotice?: (text: string) => void;
-	onProvider?: (name: string, provider: ModelProvider) => ExtensionTeardown;
+	onProvider?: (name: string, provider: Provider) => ExtensionTeardown;
 	onCustomMessage?: (message: CustomMessage) => Promise<void>;
 	onCustomEntry?: (entry: CustomEntry) => Promise<void>;
 	onInput?: (input: AgentInput) => Promise<void>;
@@ -335,11 +335,10 @@ export class ExtensionRunner extends ExtensionHost {
 			registerProvider: (name, provider) => {
 				assertActive();
 				if (!this.options.onProvider) throw new Error(`宿主未提供 Provider 注册入口，无法注册 ${name}`);
-				const scoped: ModelProvider = {
+				const scoped: Provider = {
+					id: provider.id ?? name,
 					get name() { return provider.name; },
-					get contextWindow() { return provider.contextWindow; },
-					get thinkingLevels() { return provider.thinkingLevels; },
-					get includeThinking() { return provider.includeThinking; },
+					get baseUrl() { return provider.baseUrl; },
 					stream: async (...args) => { assertActive(); return provider.stream(...args); },
 					...(provider.refreshModels ? { refreshModels: async () => { assertActive(); return provider.refreshModels!(); } } : {}),
 				};

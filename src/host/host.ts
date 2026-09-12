@@ -1,6 +1,6 @@
-import type { ContextSegments, ModelProvider, ThinkingLevel } from "../core/types.js";
+import type { ContextSegments, Model, ModelStreamFn, Provider, ThinkingLevel } from "../core/types.js";
 import { activeProvider, loadConfig } from "../ai/config.js";
-import { createProvider, ModelRegistry } from "../ai/providers.js";
+import { ModelRegistry } from "../ai/providers.js";
 import { ToolBroker, type ToolExecutionResult } from "../tools/broker.js";
 import { randomUUID } from "node:crypto";
 import { Subject, type AgentInput, type LoopHooks } from "../agent/loop.js";
@@ -35,7 +35,11 @@ export interface UinaHostOptions {
 	/** 会话 journal 路径。省略时使用内存 store（测试与嵌入场景）。 */
 	sessionPath?: string;
 	/** 注入 provider（测试与嵌入）。省略时按 ~/.uina/auth.json 创建。 */
-	provider?: ModelProvider;
+	provider?: Provider;
+	/** 注入初始活跃模型。 */
+	model?: Model;
+	/** 注入流式函数。 */
+	stream?: ModelStreamFn;
 	/** 默认 thinking 档位。 */
 	thinkingLevel?: ThinkingLevel;
 	/** 诊断出口：消费者尚未接入时也必须可见，绝不静默吞掉。 */
@@ -89,17 +93,33 @@ export class UinaHost {
 	}
 
 	static async create(options: UinaHostOptions): Promise<UinaHost> {
-		const config = options.provider === undefined ? loadConfig() : undefined;
-		const provider = options.provider ?? (() => {
-			const active = activeProvider(config!);
-			return createProvider(active.name, active);
+		const config = options.provider === undefined && options.model === undefined ? loadConfig() : undefined;
+		const models = new ModelRegistry(config);
+		if (options.provider) {
+			models.registerProvider(options.provider);
+			if ("model" in options.provider && (options.provider as { model?: Model }).model) {
+				models.registerModel((options.provider as { model: Model }).model);
+			}
+		}
+		if (options.model) {
+			models.registerModel(options.model);
+		}
+		const activeModel = options.model ?? (options.provider && "model" in options.provider ? (options.provider as { model?: Model }).model : undefined) ?? (() => {
+			if (config) {
+				const active = activeProvider(config);
+				return models.resolve(active.name);
+			}
+			if (options.provider) {
+				const candidate = models.getModel(options.provider.id);
+				if (candidate) return candidate;
+			}
+			throw new Error("必须提供 model 或有效的配置文件");
 		})();
 		const thinkingLevel = options.thinkingLevel ?? config?.thinkingLevel;
+		const streamFn: ModelStreamFn = options.stream ?? ((m, req, onDelta, signal) => models.stream(m, req, onDelta, signal));
 
 		const tools = new ToolBroker({ ownerId: "root" });
 		const jobs = new JobRegistry();
-		const models = new ModelRegistry(config);
-		models.register(provider.name, provider);
 
 		let store: SessionStore = new MemorySessionStore();
 		let restoredEntries: readonly SessionEntry[] = [];
@@ -126,7 +146,8 @@ export class UinaHost {
 		let subject!: Subject;
 		const subagents = new SubagentRegistry({
 			factory: new DefaultAgentFactory(),
-			provider: () => subject.getModel(),
+			model: () => subject.getModel(),
+			stream: streamFn,
 			thinkingLevel,
 			createTools: (ownerId) => createChildTools(tools, { ownerId }),
 			notify: async (text, data, ownerId) => {
@@ -172,7 +193,7 @@ export class UinaHost {
 			onQueueChanged: (items) => emit({ type: "queue", items }),
 		};
 
-		subject = new Subject(provider, tools, hooks, {
+		subject = new Subject(activeModel, streamFn, tools, hooks, {
 			store,
 			thinkingLevel,
 			runtimeHooks: extensionHost.runtimeHooks(),

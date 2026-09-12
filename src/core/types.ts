@@ -163,22 +163,63 @@ export interface ModelRequest {
 	providerHooks: import("../runtime/hooks.js").ProviderHooks;
 }
 
-export interface ModelProvider {
+export type ThinkingWireFormat = "openai" | "deepseek" | "qwen";
+export type GeminiThinkingFormat = "budget" | "level";
+
+export interface ModelCompat {
+	readonly thinkingFormat?: ThinkingWireFormat;
+	readonly geminiToolCallIds?: boolean;
+	readonly geminiThinkingFormat?: GeminiThinkingFormat;
+}
+
+/** 模型规格：纯数据，不携带端点、凭据与传输方法（对齐 Pi packages/ai/src/types.ts:830） */
+export interface Model {
+	/** wire 上的模型标识（请求体中的 model 字段） */
+	readonly id: string;
+	/** 显示名称 */
 	readonly name: string;
-	/** Provider context limit in tokens when known. */
+	/** 所属 Provider 的 id 字符串标签（绝非对象实例） */
+	readonly providerId: string;
+	/** 有效上下文上限（token），已知时为数字，未知为 undefined */
 	readonly contextWindow?: number;
+	readonly maxContextWindow?: number;
+	readonly modelContextWindow?: number;
+	/** 最大输出 token 数（Anthropic messages 必须显式给出） */
+	readonly maxOutputTokens?: number;
+	/** 支持的思考等级档位 */
 	readonly thinkingLevels?: readonly ThinkingLevel[];
+	/** 上下文投影是否携带历史 thinking */
 	readonly includeThinking?: boolean;
+	/** 思考档位与数值 token 的预算映射 */
+	readonly thinkingBudgets?: Partial<Record<ThinkingLevel, number>>;
+	/** 协议兼容参数 */
+	readonly compat?: ModelCompat;
+}
+
+/** 通信端点：持有 baseUrl、apiKey 与传输，不持有具体模型规格（对齐 Pi packages/ai/src/models.ts:97） */
+export interface Provider {
+	/** Provider 身份标识（配置条目名或扩展注册名） */
+	readonly id: string;
+	readonly name?: string;
+	readonly baseUrl?: string;
 	/** Dynamic providers may refresh their current model catalog. Entries without
 	 * a contextWindow are discovery-only and must not become selectable. */
 	refreshModels?(): Promise<readonly DiscoveredModel[]>;
 	/**
-	 * 流式对话：逐段回调 onDelta。
+	 * 以给定 Model 向该端点发起流式对话：逐段回调 onDelta。
 	 * 协议错误、异常断流和不完整响应必须抛错；主动中断通过 signal 传播。
 	 */
 	stream(
+		model: Model,
 		req: ModelRequest,
 		onDelta: (d: StreamDelta) => void,
 		signal?: AbortSignal,
 	): Promise<void>;
 }
+
+export type ModelStreamFn = (
+	model: Model,
+	req: ModelRequest,
+	onDelta: (d: StreamDelta) => void,
+	signal?: AbortSignal,
+) => Promise<void>;

@@ -5,7 +5,8 @@ import type {
 	ContextSegments,
 	FinishReason,
 	DeliveryMode,
-	ModelProvider,
+	Model,
+	ModelStreamFn,
 	ThinkingLevel,
 	ToolResultStatus,
 	Usage,
@@ -95,7 +96,8 @@ export class Subject {
 	private settleActiveRun?: () => void;
 	private resumingQueue = false;
 	private readonly queueModes: Record<"steer" | "followUp", import("../core/types.js").QueueMode>;
-	private provider: ModelProvider;
+	private model: Model;
+	private readonly streamFn: ModelStreamFn;
 	private thinkingLevel: ThinkingLevel;
 	private preferredThinkingLevel: ThinkingLevel;
 	private readonly runtimeHooks: RuntimeHooks;
@@ -104,17 +106,19 @@ export class Subject {
 	private streamSeq = 0;
 
 	constructor(
-		provider: ModelProvider,
+		model: Model,
+		streamFn: ModelStreamFn,
 		private readonly tools: ToolView,
 		private readonly hooks: LoopHooks,
 		options: SubjectOptions = {},
 	) {
-		this.provider = provider;
+		this.model = model;
+		this.streamFn = streamFn;
 		this.store = options.store;
 		this.systemPrompt = options.systemPrompt ?? defaultSystemPrompt();
 		this.compaction = {
 			...DEFAULT_COMPACTION_SETTINGS,
-			contextWindow: provider.contextWindow,
+			contextWindow: model.contextWindow,
 			...options.compaction,
 		};
 		this.prepareNextTurnSeam = options.prepareNextTurn ?? ((ctx) => defaultPrepareNextTurn(ctx, (input) => this.runtimeHooks.turn.beforeCompact(input)));
@@ -122,16 +126,16 @@ export class Subject {
 			steer: options.steerQueueMode ?? "one-at-a-time",
 			followUp: options.followUpQueueMode ?? "one-at-a-time",
 		};
-		this.preferredThinkingLevel = options.thinkingLevel ?? provider.thinkingLevels?.[0] ?? "off";
-		if (this.preferredThinkingLevel !== "off" && !provider.thinkingLevels?.includes(this.preferredThinkingLevel)) {
-			throw new Error(`provider ${provider.name} 未声明支持 thinking level: ${this.preferredThinkingLevel}`);
+		this.preferredThinkingLevel = options.thinkingLevel ?? model.thinkingLevels?.[0] ?? "off";
+		if (this.preferredThinkingLevel !== "off" && !model.thinkingLevels?.includes(this.preferredThinkingLevel)) {
+			throw new Error(`model ${model.name} 未声明支持 thinking level: ${this.preferredThinkingLevel}`);
 		}
 		this.thinkingLevel = this.preferredThinkingLevel;
 		this.runtimeHooks = guardRuntimeHooks(options.runtimeHooks ?? NO_RUNTIME_HOOKS);
 	}
 
-	getModel(): ModelProvider {
-		return this.provider;
+	getModel(): Model {
+		return this.model;
 	}
 
 	getThinkingLevel(): ThinkingLevel {
@@ -156,16 +160,16 @@ export class Subject {
 		return calculateContextSegments(context, this.tools.defs(), used);
 	}
 
-	async setModel(provider: ModelProvider): Promise<void> {
-		const prev = this.provider.name;
-		this.provider = provider;
-		this.compaction.contextWindow = provider.contextWindow;
+	async setModel(model: Model): Promise<void> {
+		const prev = this.model.name;
+		this.model = model;
+		this.compaction.contextWindow = model.contextWindow;
 		const prevLevel = this.thinkingLevel;
-		this.thinkingLevel = clampThinkingLevel(this.preferredThinkingLevel, provider.thinkingLevels);
+		this.thinkingLevel = clampThinkingLevel(this.preferredThinkingLevel, model.thinkingLevels);
 
 		await this.runtimeHooks.events.emit({
 			type: "model_select",
-			model: provider.name,
+			model: model.name,
 			previousModel: prev,
 		});
 
@@ -181,7 +185,7 @@ export class Subject {
 	setThinkingLevel(level: ThinkingLevel): void {
 		this.preferredThinkingLevel = level;
 		const prev = this.thinkingLevel;
-		this.thinkingLevel = clampThinkingLevel(level, this.provider.thinkingLevels);
+		this.thinkingLevel = clampThinkingLevel(level, this.model.thinkingLevels);
 
 		void this.runtimeHooks.events.emit({
 			type: "thinking_level_select",
@@ -191,7 +195,7 @@ export class Subject {
 	}
 
 	cycleThinkingLevel(): ThinkingLevel {
-		const levels: readonly ThinkingLevel[] = this.provider.thinkingLevels?.length ? this.provider.thinkingLevels : ["off"];
+		const levels: readonly ThinkingLevel[] = this.model.thinkingLevels?.length ? this.model.thinkingLevels : ["off"];
 		const current = levels.indexOf(this.thinkingLevel);
 		const next = levels[(current + 1) % levels.length] ?? "off";
 		this.setThinkingLevel(next);
@@ -226,13 +230,14 @@ export class Subject {
 
 			const result = await compactHistory(
 				this.history,
-				this.provider,
+				this.model,
+				this.streamFn,
 				this.systemPrompt,
 				this.tools.defs(),
 				{ ...this.compaction, contextWindow: 0, reserveTokens: 0 },
 				this.runtimeHooks.provider,
 				this.abort?.signal,
-				this.provider.includeThinking,
+				this.model.includeThinking,
 				instruction,
 				true,
 			);
@@ -386,8 +391,8 @@ export class Subject {
 		}
 
 		try {
-			if (this.provider.thinkingLevels && !this.provider.thinkingLevels.includes(this.thinkingLevel)) {
-				this.reportError(new Error(`provider ${this.provider.name} 不支持 thinking level: ${this.thinkingLevel}`));
+			if (this.model.thinkingLevels && !this.model.thinkingLevels.includes(this.thinkingLevel)) {
+				this.reportError(new Error(`model ${this.model.name} 不支持 thinking level: ${this.thinkingLevel}`));
 				return;
 			}
 			if (queuedInput && options.needsEnqueueEvent) {
@@ -401,7 +406,7 @@ export class Subject {
 			const prepared = await this.runtimeHooks.turn.prepare({ prompt: text ?? "", systemPrompt: this.systemPrompt });
 			await this.runtimeHooks.events.emit({ type: "agent_start", turnSeq: turn });
 
-			await this.runTurn(text, turn, this.provider, prepared.systemPrompt ?? this.systemPrompt, prepared.messages ? [...prepared.messages] : [], queuedInput);
+			await this.runTurn(text, turn, this.model, prepared.systemPrompt ?? this.systemPrompt, prepared.messages ? [...prepared.messages] : [], queuedInput);
 		} catch (error) {
 			this.abort = null;
 			this.activity = undefined;
@@ -411,7 +416,7 @@ export class Subject {
 		}
 	}
 
-	private async runTurn(text: string | undefined, turn: number, provider = this.provider, systemPrompt = this.systemPrompt, beforeMessages: readonly (AgentMessage | ChatMsg)[] = [], queuedInput?: QueuedMessage): Promise<void> {
+	private async runTurn(text: string | undefined, turn: number, model = this.model, systemPrompt = this.systemPrompt, beforeMessages: readonly (AgentMessage | ChatMsg)[] = [], queuedInput?: QueuedMessage): Promise<void> {
 		let success = false;
 		let runError: string | undefined;
 		try {
@@ -419,7 +424,7 @@ export class Subject {
 			await this.runtimeHooks.events.emit({ type: "turn_start", turnNumber: turn, userText: text ?? "" });
 			if (queuedInput) await this.consumeQueueItem(queuedInput);
 			else if (text !== undefined) await this.appendMessage({ role: "user", content: text, timestamp: new Date().toISOString() });
-			await this.decide(provider, systemPrompt, beforeMessages);
+			await this.decide(model, systemPrompt, beforeMessages);
 			success = true;
 		} catch (error) {
 			runError = safeError(error);
@@ -486,8 +491,8 @@ export class Subject {
 		await this.startRun(item.source?.kind === "runtime" ? undefined : item.text, item);
 	}
 
-	private async decide(provider = this.provider, systemPrompt = this.systemPrompt, beforeMessages: readonly (AgentMessage | ChatMsg)[] = []): Promise<void> {
-		await this.prepareTurn(provider, systemPrompt);
+	private async decide(model = this.model, systemPrompt = this.systemPrompt, beforeMessages: readonly (AgentMessage | ChatMsg)[] = []): Promise<void> {
+		await this.prepareTurn(model, systemPrompt);
 		for (;;) {
 			if (this.interrupted) {
 				await this.emitInterrupted();
@@ -497,7 +502,7 @@ export class Subject {
 			let requestMessages = [...buildContext({
 				history: this.history,
 				systemPrompt,
-				includeThinking: provider.includeThinking,
+				includeThinking: model.includeThinking,
 			}), ...convertToLlm(beforeMessages)];
 			requestMessages = await this.runtimeHooks.turn.transformContext(requestMessages);
 
@@ -535,11 +540,12 @@ export class Subject {
 			};
 
 			try {
-				await provider.stream(
+				await this.streamFn(
+					model,
 					{
 						messages: requestMessages,
 						tools: this.tools.defs(),
-						thinkingLevel: clampThinkingLevel(this.thinkingLevel, provider.thinkingLevels),
+						thinkingLevel: clampThinkingLevel(this.thinkingLevel, model.thinkingLevels),
 						providerHooks: this.runtimeHooks.provider,
 					},
 					(delta) => {
@@ -756,14 +762,15 @@ export class Subject {
 		);
 	}
 
-	private async prepareTurn(provider = this.provider, systemPrompt = this.systemPrompt): Promise<void> {
+	private async prepareTurn(model = this.model, systemPrompt = this.systemPrompt): Promise<void> {
 		if (!this.prepareNextTurnSeam) return;
 		try {
 			const prepResult = await this.prepareNextTurnSeam({
 				turnNumber: this.turnSeq,
 				history: this.history,
-				provider,
-					systemPrompt,
+				model,
+				stream: this.streamFn,
+				systemPrompt,
 				tools: this.tools.defs(),
 				compaction: this.compaction,
 				providerHooks: this.runtimeHooks.provider,

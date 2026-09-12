@@ -1,30 +1,75 @@
-import type { FinishReason, ModelProvider, ModelRequest, ThinkingLevel, Usage } from "../core/types.js";
-import { assertProviderFacts, configuredThinkingLevels, type ProviderConfig, type ProviderKind } from "./config.js";
+import type {
+	DiscoveredModel,
+	FinishReason,
+	Model,
+	ModelRequest,
+	Provider,
+	StreamDelta,
+	ThinkingLevel,
+	Usage,
+} from "../core/types.js";
+import {
+	assertProviderFacts,
+	configuredThinkingLevels,
+	effectiveContextWindow,
+	protocolCarriesThinking,
+	type ProviderConfig,
+	type ProviderKind,
+	type UinaConfig,
+} from "./config.js";
 import { createOpenAIProvider, fetchWithRetry } from "./gateway.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
-import { effectiveContextWindow } from "./config.js";
 import { copyValue, readonlySnapshot } from "../runtime/guard.js";
 
-export function createProvider(name: string, conf: ProviderConfig): ModelProvider {
+/** 创建声明式纯数据 Model 规格 */
+export function createModel(conf: ProviderConfig, providerId: string): Model {
+	const kind: ProviderKind = conf.type ?? "openai-compatible";
+	const effectiveWindow = effectiveContextWindow(conf);
+	const levels = configuredThinkingLevels(conf);
+	return {
+		id: conf.model,
+		name: conf.model,
+		providerId,
+		contextWindow: effectiveWindow,
+		maxContextWindow: conf.maxContextWindow,
+		modelContextWindow: conf.modelContextWindow,
+		maxOutputTokens: conf.maxOutputTokens,
+		thinkingLevels: levels,
+		includeThinking: conf.includeThinking ?? protocolCarriesThinking(kind, conf.thinkingFormat, levels),
+		thinkingBudgets: conf.thinkingBudgets,
+		compat: {
+			thinkingFormat: conf.thinkingFormat,
+			geminiToolCallIds: conf.geminiToolCallIds,
+			geminiThinkingFormat: conf.geminiThinkingFormat,
+		},
+	};
+}
+
+/** 创建通信端点 Provider（包含启动期事实断言） */
+export function createProvider(id: string, conf: ProviderConfig): Provider {
 	const kind: ProviderKind = conf.type ?? "openai-compatible";
 	assertProviderFacts(conf);
 	if (kind === "openai-compatible") {
-		return createOpenAIProvider({ ...conf, model: conf.model, modelContextWindow: effectiveContextWindow(conf) });
+		return createOpenAIProvider(id, conf);
 	}
-	if (kind === "anthropic") return createAnthropicProvider(name, conf);
-	return createGeminiProvider(name, conf);
+	if (kind === "anthropic") return createAnthropicProvider(id, conf);
+	return createGeminiProvider(id, conf);
+}
+
+export function createProviderAndModel(id: string, conf: ProviderConfig): { provider: Provider; model: Model } {
+	const provider = createProvider(id, conf);
+	const model = createModel(conf, id);
+	return { provider, model };
 }
 
 function levels(conf: ProviderConfig): readonly ThinkingLevel[] | undefined {
 	return configuredThinkingLevels(conf);
 }
 
-function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvider {
+export function createAnthropicProvider(id: string, conf: ProviderConfig): Provider {
 	return {
-		name: conf.model,
-		contextWindow: effectiveContextWindow(conf),
-		thinkingLevels: levels(conf),
-		includeThinking: Boolean(levels(conf)?.some((level) => level !== "off")),
+		id,
+		baseUrl: conf.baseUrl,
 		async refreshModels() {
 			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, {
 				headers: { "x-api-key": conf.apiKey, "anthropic-version": "2023-06-01" },
@@ -33,12 +78,15 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 			const payload = (await response.json()) as { data?: Array<{ id?: string }> };
 			return (payload.data ?? []).flatMap((model) => typeof model.id === "string" ? [{ id: model.id }] : []);
 		},
-		async stream(req, emit, signal) {
+		async stream(model: Model, req: ModelRequest, emit: (d: StreamDelta) => void, signal?: AbortSignal): Promise<void> {
+			if (model.providerId !== id) {
+				throw new Error(`模型 ${model.id} 的 providerId (${model.providerId}) 与端点 id (${id}) 不匹配`);
+			}
 			const level = req.thinkingLevel ?? "off";
-			const thinking = level === "off" ? undefined : thinkingBudget(conf, level);
+			const thinking = level === "off" ? undefined : (model.thinkingBudgets?.[level] ?? thinkingBudget(conf, level));
 			let body: Record<string, unknown> = {
-				model: conf.model,
-				max_tokens: maxOutputTokens(conf),
+				model: model.id,
+				max_tokens: model.maxOutputTokens ?? maxOutputTokens(conf),
 				system: anthropicSystem(req),
 				messages: anthropicMessages(req),
 				tools: req.tools?.map((tool) => ({ name: tool.function.name, description: tool.function.description, input_schema: tool.function.parameters })),
@@ -52,8 +100,8 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 				"anthropic-version": "2023-06-01",
 				accept: "text/event-stream",
 			};
-			headers = copyValue(await req.providerHooks.transformHeaders(conf.model, readonlySnapshot(headers)));
-			body = copyValue(await req.providerHooks.transformPayload(conf.model, readonlySnapshot(body))) as Record<string, unknown>;
+			headers = copyValue(await req.providerHooks.transformHeaders(model.providerId, readonlySnapshot(headers)));
+			body = copyValue(await req.providerHooks.transformPayload(model.providerId, readonlySnapshot(body))) as Record<string, unknown>;
 
 			const response = await fetchWithRetry(`${conf.baseUrl.replace(/\/$/, "")}/messages`, {
 				maxRetries: conf.maxRetries ?? 2,
@@ -62,9 +110,9 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 			});
 			const respHeaders: Record<string, string> = {};
 			response.headers.forEach((value, key) => { respHeaders[key] = value; });
-			await req.providerHooks.observeResponse(readonlySnapshot({ provider: conf.model, status: response.status, headers: respHeaders }));
+			await req.providerHooks.observeResponse(readonlySnapshot({ provider: model.providerId, status: response.status, headers: respHeaders }));
 
-			if (!response.ok) throw new Error(`Anthropic ${name} 请求失败 HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+			if (!response.ok) throw new Error(`Anthropic ${id} 请求失败 HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
 			if (!response.body) throw new ProviderProtocolError("Anthropic 响应无 body");
 
 			let sawMessageStart = false;
@@ -75,7 +123,7 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 			const replayBlocks = new Map<number, Record<string, unknown>>();
 			const reportUsage = (raw: AnthropicUsageRaw | undefined, index: number): void => {
 				if (!raw) return;
-				const patch = anthropicUsagePatch(raw, name, index);
+				const patch = anthropicUsagePatch(raw, id, index);
 				if (Object.keys(patch).length === 0) return;
 				usageState = mergeUsage(usageState, patch);
 				emit({ kind: "usage", usage: usageSnapshot(usageState) });
@@ -86,28 +134,28 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 				try {
 					event = JSON.parse(data) as AnthropicEvent;
 				} catch (error) {
-					throw new ProviderProtocolError(`Anthropic ${name} SSE ${index} JSON 无效: ${String(error)}`, index);
+					throw new ProviderProtocolError(`Anthropic ${id} SSE ${index} JSON 无效: ${String(error)}`, index);
 				}
 				if (event.type === "error") {
 					const detail = event.error?.message ?? event.error?.type ?? "未知 provider 错误";
-					throw new ProviderProtocolError(`Anthropic ${name} provider error: ${detail}`, index);
+					throw new ProviderProtocolError(`Anthropic ${id} provider error: ${detail}`, index);
 				}
-				if (sawMessageStop) throw new ProviderProtocolError(`Anthropic ${name} message_stop 后仍收到事件`, index);
+				if (sawMessageStop) throw new ProviderProtocolError(`Anthropic ${id} message_stop 后仍收到事件`, index);
 				if (event.type === "message_start") {
-					if (sawMessageStart) throw new ProviderProtocolError(`Anthropic ${name} 重复 message_start`, index);
+					if (sawMessageStart) throw new ProviderProtocolError(`Anthropic ${id} 重复 message_start`, index);
 					sawMessageStart = true;
 					reportUsage(event.message?.usage, index);
 					return;
 				}
-				if (!sawMessageStart && isAnthropicProtocolEvent(event.type)) throw new ProviderProtocolError(`Anthropic ${name} 在 message_start 前收到 ${event.type}`, index);
-				if (finishReason && event.type !== "message_stop" && event.type !== "message_delta") throw new ProviderProtocolError(`Anthropic ${name} stop_reason 后仍收到 ${event.type}`, index);
+				if (!sawMessageStart && isAnthropicProtocolEvent(event.type)) throw new ProviderProtocolError(`Anthropic ${id} 在 message_start 前收到 ${event.type}`, index);
+				if (finishReason && event.type !== "message_stop" && event.type !== "message_delta") throw new ProviderProtocolError(`Anthropic ${id} stop_reason 后仍收到 ${event.type}`, index);
 
 				switch (event.type) {
 					case "content_block_start": {
-						const blockIndex = requireEventIndex(event.index, name, index);
-						if (blocks.has(blockIndex)) throw new ProviderProtocolError(`Anthropic ${name} 重复 content block ${blockIndex}`, index);
+						const blockIndex = requireEventIndex(event.index, id, index);
+						if (blocks.has(blockIndex)) throw new ProviderProtocolError(`Anthropic ${id} 重复 content block ${blockIndex}`, index);
 						const block = event.content_block;
-						if (!block?.type) throw new ProviderProtocolError(`Anthropic ${name} content block 缺少 type`, index);
+						if (!block?.type) throw new ProviderProtocolError(`Anthropic ${id} content block 缺少 type`, index);
 						replayBlocks.set(blockIndex, structuredClone(block) as Record<string, unknown>);
 						if (block.type === "redacted_thinking") {
 							blocks.set(blockIndex, { kind: "redacted_thinking" });
@@ -119,19 +167,19 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 							if (block.thinking) emit({ kind: "thinking", text: block.thinking });
 							if (block.signature !== undefined) emit({ kind: "thinking_signature", signature: block.signature });
 						} else if (block.type === "tool_use") {
-							if (!block.id || !block.name) throw new ProviderProtocolError(`Anthropic ${name} tool_use 缺少 id 或 name`, index);
+							if (!block.id || !block.name) throw new ProviderProtocolError(`Anthropic ${id} tool_use 缺少 id 或 name`, index);
 							blocks.set(blockIndex, { kind: "tool_use", id: block.id, name: block.name, args: "", initialArgs: block.input });
 						} else {
-							throw new ProviderProtocolError(`Anthropic ${name} 不支持 content block ${block.type}`, index);
+							throw new ProviderProtocolError(`Anthropic ${id} 不支持 content block ${block.type}`, index);
 						}
 						break;
 					}
 					case "content_block_delta": {
-						const blockIndex = requireEventIndex(event.index, name, index);
+						const blockIndex = requireEventIndex(event.index, id, index);
 						const block = blocks.get(blockIndex);
-						if (!block) throw new ProviderProtocolError(`Anthropic ${name} delta 没有对应 content block ${blockIndex}`, index);
+						if (!block) throw new ProviderProtocolError(`Anthropic ${id} delta 没有对应 content block ${blockIndex}`, index);
 						const delta = event.delta;
-						if (!delta?.type) throw new ProviderProtocolError(`Anthropic ${name} content delta 缺少 type`, index);
+						if (!delta?.type) throw new ProviderProtocolError(`Anthropic ${id} content delta 缺少 type`, index);
 						const replay = replayBlocks.get(blockIndex)!;
 						const field = delta.type === "text_delta" ? "text" : delta.type === "thinking_delta" ? "thinking" : delta.type === "signature_delta" ? "signature" : undefined;
 						if (field) replay[field] = String(replay[field] ?? "") + String(delta[field] ?? "");
@@ -144,17 +192,17 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 						} else if (delta.type === "input_json_delta" && block.kind === "tool_use") {
 							block.args += delta.partial_json ?? "";
 						} else {
-							throw new ProviderProtocolError(`Anthropic ${name} content delta ${delta.type} 与 block 类型不匹配`, index);
+							throw new ProviderProtocolError(`Anthropic ${id} content delta ${delta.type} 与 block 类型不匹配`, index);
 						}
 						break;
 					}
 					case "content_block_stop": {
-						const blockIndex = requireEventIndex(event.index, name, index);
+						const blockIndex = requireEventIndex(event.index, id, index);
 						const block = blocks.get(blockIndex);
-						if (!block) throw new ProviderProtocolError(`Anthropic ${name} 重复或未知 content block stop ${blockIndex}`, index);
+						if (!block) throw new ProviderProtocolError(`Anthropic ${id} 重复或未知 content block stop ${blockIndex}`, index);
 						if (block.kind === "tool_use") {
 							const args = block.args || (block.initialArgs ? JSON.stringify(block.initialArgs) : "{}");
-							if (!isJsonObject(args)) throw new ProviderProtocolError(`Anthropic ${name} tool call ${block.name} 参数不是完整 JSON`, index);
+							if (!isJsonObject(args)) throw new ProviderProtocolError(`Anthropic ${id} tool call ${block.name} 参数不是完整 JSON`, index);
 							replayBlocks.get(blockIndex)!.input = JSON.parse(args);
 							emit({ kind: "tool_call", call: { id: block.id, name: block.name, args, argsValid: true } });
 						}
@@ -164,13 +212,13 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 					case "message_delta":
 						reportUsage(event.usage, index);
 						if (event.delta?.stop_reason) {
-							if (finishReason) throw new ProviderProtocolError(`Anthropic ${name} 重复 stop_reason`, index);
-							finishReason = mapAnthropicStopReason(event.delta.stop_reason, event.delta.stop_details, name, index);
+							if (finishReason) throw new ProviderProtocolError(`Anthropic ${id} 重复 stop_reason`, index);
+							finishReason = mapAnthropicStopReason(event.delta.stop_reason, event.delta.stop_details, id, index);
 						}
 						break;
 					case "message_stop":
-						if (!finishReason) throw new ProviderProtocolError(`Anthropic ${name} message_stop 缺少 stop_reason`, index);
-						if (blocks.size > 0) throw new ProviderProtocolError(`Anthropic ${name} message_stop 前仍有未结束 content block`, index);
+						if (!finishReason) throw new ProviderProtocolError(`Anthropic ${id} message_stop 缺少 stop_reason`, index);
+						if (blocks.size > 0) throw new ProviderProtocolError(`Anthropic ${id} message_stop 前仍有未结束 content block`, index);
 						sawMessageStop = true;
 						emit({ kind: "provider_replay", replay: { format: "anthropic", blocks: [...replayBlocks.values()] } });
 						emit({ kind: "finish", reason: finishReason });
@@ -180,19 +228,16 @@ function createAnthropicProvider(name: string, conf: ProviderConfig): ModelProvi
 				}
 			}, signal);
 
-			if (!sawMessageStart) throw new ProviderProtocolError(`Anthropic ${name} 流缺少 message_start`);
-			if (!sawMessageStop) throw new ProviderProtocolError(`Anthropic ${name} 流缺少 message_stop`);
+			if (!sawMessageStart) throw new ProviderProtocolError(`Anthropic ${id} 流缺少 message_start`);
+			if (!sawMessageStop) throw new ProviderProtocolError(`Anthropic ${id} 流缺少 message_stop`);
 		},
 	};
 }
 
-function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider {
-	const thinkingLevels = levels(conf);
+export function createGeminiProvider(id: string, conf: ProviderConfig): Provider {
 	return {
-		name: conf.model,
-		contextWindow: effectiveContextWindow(conf),
-		thinkingLevels,
-		includeThinking: Boolean(thinkingLevels?.some((level) => level !== "off")),
+		id,
+		baseUrl: conf.baseUrl,
 		async refreshModels() {
 			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, { headers: { "x-goog-api-key": conf.apiKey } });
 			if (!response.ok) throw new Error(`Gemini 模型目录请求失败 HTTP ${response.status}`);
@@ -203,17 +248,34 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 				return [{ id: model.baseModelId, contextWindow, thinkingLevels: model.thinking === false ? ["off" as const] : undefined }];
 			});
 		},
-		async stream(req, emit, signal) {
-			let headers: Record<string, string> = { "content-type": "application/json", accept: "text/event-stream" };
-			let bodyPayload = geminiRequest({ ...req, thinkingLevel: thinkingLevels?.length ? req.thinkingLevel : undefined }, conf.geminiToolCallIds === true, conf.geminiThinkingFormat, conf.thinkingBudgets);
-			headers = copyValue(await req.providerHooks.transformHeaders(conf.model, readonlySnapshot(headers)));
-			bodyPayload = copyValue(await req.providerHooks.transformPayload(conf.model, readonlySnapshot(bodyPayload))) as Record<string, unknown>;
+		async stream(model: Model, req: ModelRequest, emit: (d: StreamDelta) => void, signal?: AbortSignal): Promise<void> {
+			if (model.providerId !== id) {
+				throw new Error(`模型 ${model.id} 的 providerId (${model.providerId}) 与端点 id (${id}) 不匹配`);
+			}
+			const thinkingLevels = model.thinkingLevels ?? levels(conf);
+			const geminiToolCallIds = model.compat?.geminiToolCallIds ?? (conf.geminiToolCallIds === true);
+			const geminiThinkingFormat = model.compat?.geminiThinkingFormat ?? conf.geminiThinkingFormat;
+			const thinkingBudgets = model.thinkingBudgets ?? conf.thinkingBudgets;
 
-			const response = await fetchWithRetry(`${conf.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(conf.model)}:streamGenerateContent?alt=sse`, { maxRetries: conf.maxRetries ?? 2, signal, request: { method: "POST", signal, headers: { ...headers, "x-goog-api-key": conf.apiKey }, body: JSON.stringify(bodyPayload) } });
+			let headers: Record<string, string> = { "content-type": "application/json", accept: "text/event-stream" };
+			let bodyPayload = geminiRequest(
+				{ ...req, thinkingLevel: thinkingLevels?.length ? req.thinkingLevel : undefined },
+				geminiToolCallIds,
+				geminiThinkingFormat,
+				thinkingBudgets,
+			);
+			headers = copyValue(await req.providerHooks.transformHeaders(model.providerId, readonlySnapshot(headers)));
+			bodyPayload = copyValue(await req.providerHooks.transformPayload(model.providerId, readonlySnapshot(bodyPayload))) as Record<string, unknown>;
+
+			const response = await fetchWithRetry(`${conf.baseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(model.id)}:streamGenerateContent?alt=sse`, {
+				maxRetries: conf.maxRetries ?? 2,
+				signal,
+				request: { method: "POST", signal, headers, body: JSON.stringify(bodyPayload) },
+			});
 			const respHeaders: Record<string, string> = {};
 			response.headers.forEach((value, key) => { respHeaders[key] = value; });
-			await req.providerHooks.observeResponse(readonlySnapshot({ provider: conf.model, status: response.status, headers: respHeaders }));
-			if (!response.ok) throw new Error(`Gemini ${name} 请求失败 HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+			await req.providerHooks.observeResponse(readonlySnapshot({ provider: model.providerId, status: response.status, headers: respHeaders }));
+			if (!response.ok) throw new Error(`Gemini ${id} 请求失败 HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
 			if (!response.body) throw new ProviderProtocolError("Gemini 响应无 body");
 
 			let finished = false;
@@ -224,23 +286,23 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 			const replayParts: unknown[] = [];
 			const reportUsage = (raw: GeminiUsageRaw | undefined, index: number): void => {
 				if (!raw) return;
-				const patch = geminiUsagePatch(raw, name, index);
+				const patch = geminiUsagePatch(raw, id, index);
 				if (Object.keys(patch).length === 0) return;
 				usageState = mergeUsage(usageState, patch);
 				emit({ kind: "usage", usage: usageSnapshot(usageState) });
 			};
 
 			await parseSSE(response.body, (data, index) => {
-				if (finished) throw new ProviderProtocolError(`Gemini ${name} finish 后仍收到事件`, index);
+				if (finished) throw new ProviderProtocolError(`Gemini ${id} finish 后仍收到事件`, index);
 				let chunk: GeminiChunk;
 				try {
 					chunk = JSON.parse(data) as GeminiChunk;
 				} catch (error) {
-					throw new ProviderProtocolError(`Gemini ${name} SSE ${index} JSON 无效: ${String(error)}`, index);
+					throw new ProviderProtocolError(`Gemini ${id} SSE ${index} JSON 无效: ${String(error)}`, index);
 				}
-				if (chunk.error) throw new ProviderProtocolError(`Gemini ${name} provider error: ${chunk.error.message ?? chunk.error.status ?? "未知错误"}`, index);
+				if (chunk.error) throw new ProviderProtocolError(`Gemini ${id} provider error: ${chunk.error.message ?? chunk.error.status ?? "未知错误"}`, index);
 				reportUsage(chunk.usageMetadata, index);
-				if (chunk.candidates && chunk.candidates.length > 1) throw new ProviderProtocolError(`Gemini ${name} 返回多个 candidate，Uina 只支持单一候选`, index);
+				if (chunk.candidates && chunk.candidates.length > 1) throw new ProviderProtocolError(`Gemini ${id} 返回多个 candidate，Uina 只支持单一候选`, index);
 				const candidate = chunk.candidates?.[0];
 				for (const part of candidate?.content?.parts ?? []) {
 					replayParts.push(structuredClone(part));
@@ -249,19 +311,19 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 					if (part.thoughtSignature && !part.functionCall) emit({ kind: "thinking_signature", signature: part.thoughtSignature });
 					if (part.functionCall) {
 						const functionCall = part.functionCall;
-						if (!functionCall.name?.trim()) throw new ProviderProtocolError(`Gemini ${name} functionCall 缺少 name`, index);
-						if (functionCall.args !== undefined && !isRecord(functionCall.args)) throw new ProviderProtocolError(`Gemini ${name} functionCall ${functionCall.name} 参数不是对象`, index);
+						if (!functionCall.name?.trim()) throw new ProviderProtocolError(`Gemini ${id} functionCall 缺少 name`, index);
+						if (functionCall.args !== undefined && !isRecord(functionCall.args)) throw new ProviderProtocolError(`Gemini ${id} functionCall ${functionCall.name} 参数不是对象`, index);
 						const providerId = functionCall.id?.trim();
-						if (conf.geminiToolCallIds === true && !providerId) throw new ProviderProtocolError(`Gemini ${name} 已配置要求 tool call id，但响应缺少 id`, index);
-						const id = providerId || `gemini-call-${nextSyntheticCallId++}`;
-						const previous = calls.get(id);
-						if (previous && previous.name !== functionCall.name) throw new ProviderProtocolError(`Gemini ${name} tool call id ${id} 对应多个 name`, index);
-						calls.set(id, { id, name: functionCall.name, args: { ...(previous?.args ?? {}), ...(functionCall.args ?? {}) }, thinkingSignature: functionCall.thoughtSignature ?? part.thoughtSignature ?? previous?.thinkingSignature });
+						if (conf.geminiToolCallIds === true && !providerId) throw new ProviderProtocolError(`Gemini ${id} 已配置要求 tool call id，但响应缺少 id`, index);
+						const callId = providerId || `gemini-call-${nextSyntheticCallId++}`;
+						const previous = calls.get(callId);
+						if (previous && previous.name !== functionCall.name) throw new ProviderProtocolError(`Gemini ${id} tool call id ${callId} 对应多个 name`, index);
+						calls.set(callId, { id: callId, name: functionCall.name, args: { ...(previous?.args ?? {}), ...(functionCall.args ?? {}) }, thinkingSignature: functionCall.thoughtSignature ?? part.thoughtSignature ?? previous?.thinkingSignature });
 					}
 				}
 				if (candidate?.finishReason) {
-					if (finishReason) throw new ProviderProtocolError(`Gemini ${name} 重复 finishReason`, index);
-					finishReason = mapGeminiFinishReason(candidate.finishReason, calls.size, name, index);
+					if (finishReason) throw new ProviderProtocolError(`Gemini ${id} 重复 finishReason`, index);
+					finishReason = mapGeminiFinishReason(candidate.finishReason, calls.size, id, index);
 					for (const call of calls.values()) {
 						emit({ kind: "tool_call", call: { id: call.id, name: call.name, args: JSON.stringify(call.args), argsValid: true, ...(call.thinkingSignature ? { thinkingSignature: call.thinkingSignature } : {}) } });
 					}
@@ -271,7 +333,7 @@ function createGeminiProvider(name: string, conf: ProviderConfig): ModelProvider
 				}
 			}, signal);
 
-			if (!finished || !finishReason) throw new ProviderProtocolError(`Gemini ${name} 流缺少 finishReason`);
+			if (!finished || !finishReason) throw new ProviderProtocolError(`Gemini ${id} 流缺少 finishReason`);
 		},
 	};
 }
@@ -306,10 +368,9 @@ export function anthropicMessages(req: ModelRequest): unknown[] {
 		if (message.role === "assistant") {
 			const blocks: unknown[] = message.providerReplay?.format === "anthropic" ? structuredClone(message.providerReplay.blocks) : [];
 			if (message.providerReplay?.format !== "anthropic") {
-			if (message.thinking) blocks.push({ type: "thinking", thinking: message.thinking, signature: message.thinkingSignature ?? "" });
-			if (message.content) blocks.push({ type: "text", text: message.content });
-			for (const call of message.tool_calls ?? []) blocks.push({ type: "tool_use", id: call.id, name: call.name, input: call.args });
-
+				if (message.thinking) blocks.push({ type: "thinking", thinking: message.thinking, signature: message.thinkingSignature ?? "" });
+				if (message.content) blocks.push({ type: "text", text: message.content });
+				for (const call of message.tool_calls ?? []) blocks.push({ type: "tool_use", id: call.id, name: call.name, input: call.args });
 			}
 			if (blocks.length === 0) continue;
 
@@ -366,8 +427,8 @@ export function geminiRequest(req: ModelRequest, includeToolCallIds: boolean, th
 		if (message.role === "assistant") {
 			const parts: unknown[] = message.providerReplay?.format === "gemini" ? structuredClone(message.providerReplay.blocks) : [];
 			if (message.providerReplay?.format !== "gemini") {
-			if (message.content) parts.push({ text: message.content });
-			for (const call of message.tool_calls ?? []) parts.push({ functionCall: { ...(includeToolCallIds ? { id: call.id } : {}), name: call.name, args: call.args }, ...(call.thinkingSignature ? { thoughtSignature: call.thinkingSignature } : {}) });
+				if (message.content) parts.push({ text: message.content });
+				for (const call of message.tool_calls ?? []) parts.push({ functionCall: { ...(includeToolCallIds ? { id: call.id } : {}), name: call.name, args: call.args }, ...(call.thinkingSignature ? { thoughtSignature: call.thinkingSignature } : {}) });
 			}
 			if (parts.length === 0) continue;
 			const previous = contents.at(-1);
@@ -453,8 +514,6 @@ type UsagePatch = Partial<UsageState>;
 function mergeUsage(state: UsageState, patch: UsagePatch): UsageState {
 	const next = { ...state };
 	for (const key of ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"] as const) if (patch[key] !== undefined) next[key] = patch[key];
-	// totalTokens stays undefined unless the provider reports it; callers must
-	// show an estimate instead of a derived number presented as measured usage.
 	return next;
 }
 
@@ -576,59 +635,131 @@ interface GeminiChunk {
 }
 
 export class ModelRegistry {
-	private instances = new Map<string, ModelProvider>();
-	private discovered = new Map<string, import("../core/types.js").DiscoveredModel[]>();
-	private config?: import("./config.js").UinaConfig;
+	private providers = new Map<string, Provider>();
+	private models = new Map<string, Model>();
+	private defaultModels = new Map<string, Model>();
+	private discovered = new Map<string, DiscoveredModel[]>();
+	private config?: UinaConfig;
 
-	constructor(config?: import("./config.js").UinaConfig) { this.config = config; }
-
-	resolve(modelOrProviderName: string): ModelProvider {
-		if (this.instances.has(modelOrProviderName)) return this.instances.get(modelOrProviderName)!;
-		if (this.config?.providers[modelOrProviderName]) {
-			const conf = this.config.providers[modelOrProviderName];
-			const provider = createProvider(modelOrProviderName, conf);
-			this.instances.set(modelOrProviderName, provider);
-			return provider;
+	constructor(config?: UinaConfig) {
+		this.config = config;
+		if (config) {
+			for (const [name, conf] of Object.entries(config.providers)) {
+				const provider = createProvider(name, conf);
+				const model = createModel(conf, name);
+				this.providers.set(name, provider);
+				this.defaultModels.set(name, model);
+				this.models.set(model.id, model);
+				this.models.set(`${name}/${model.id}`, model);
+			}
 		}
+	}
+
+	getProvider(id: string): Provider | undefined {
+		return this.providers.get(id);
+	}
+
+	getModel(nameOrKey: string): Model | undefined {
+		return this.models.get(nameOrKey) ?? this.defaultModels.get(nameOrKey);
+	}
+
+	resolve(modelOrProviderName: string): Model {
+		const existing = this.getModel(modelOrProviderName);
+		if (existing) return existing;
+
 		const slash = modelOrProviderName.indexOf("/");
 		if (slash > 0) {
 			const providerId = modelOrProviderName.slice(0, slash);
 			const modelId = modelOrProviderName.slice(slash + 1);
 			const base = this.config?.providers[providerId];
 			const discovered = this.discovered.get(providerId)?.find((model) => model.id === modelId);
-			if (base && discovered?.contextWindow) {
-				const provider = createProvider(providerId, { ...base, model: modelId, modelContextWindow: discovered.contextWindow, maxContextWindow: base.maxContextWindow, thinkingLevels: discovered.thinkingLevels?.filter(level => !base.thinkingLevels || base.thinkingLevels.includes(level)) });
-				this.instances.set(modelOrProviderName, provider);
-				return provider;
+			if (discovered) {
+				if (!discovered.contextWindow) {
+					throw new Error(`动态发现的模型 ${modelOrProviderName} 缺少 contextWindow，不可选择`);
+				}
+				const kind = base?.type ?? "openai-compatible";
+				const model: Model = {
+					id: modelId,
+					name: modelId,
+					providerId,
+					contextWindow: Math.min(discovered.contextWindow, base?.maxContextWindow ?? discovered.contextWindow),
+					maxContextWindow: base?.maxContextWindow,
+					modelContextWindow: discovered.contextWindow,
+					thinkingLevels: discovered.thinkingLevels?.filter(level => !base?.thinkingLevels || base.thinkingLevels.includes(level)),
+					includeThinking: protocolCarriesThinking(kind, base?.thinkingFormat, discovered.thinkingLevels),
+					compat: {
+						thinkingFormat: base?.thinkingFormat,
+						geminiToolCallIds: base?.geminiToolCallIds,
+						geminiThinkingFormat: base?.geminiThinkingFormat,
+					},
+				};
+				this.models.set(modelOrProviderName, model);
+				return model;
 			}
 		}
 		throw new Error(`未配置或未注册的模型/Provider: ${modelOrProviderName}`);
 	}
 
 	has(name: string): boolean {
-		return this.instances.has(name) || Boolean(this.config?.providers[name]);
+		return this.models.has(name) || this.defaultModels.has(name) || this.providers.has(name) || Boolean(this.config?.providers[name]);
 	}
 
-	register(name: string, provider: ModelProvider): () => void {
-		if (this.instances.has(name)) throw new Error(`Provider 已注册: ${name}`);
-		this.instances.set(name, provider);
-		return () => { if (this.instances.get(name) === provider) this.instances.delete(name); };
+	registerProvider(provider: Provider): () => void {
+		if (this.providers.has(provider.id)) throw new Error(`Provider 已注册: ${provider.id}`);
+		this.providers.set(provider.id, provider);
+		return () => {
+			if (this.providers.get(provider.id) === provider) {
+				this.providers.delete(provider.id);
+			}
+		};
+	}
+
+	registerModel(model: Model): () => void {
+		const key = `${model.providerId}/${model.id}`;
+		this.models.set(key, model);
+		if (!this.models.has(model.id)) this.models.set(model.id, model);
+		return () => {
+			if (this.models.get(key) === model) this.models.delete(key);
+			if (this.models.get(model.id) === model) this.models.delete(model.id);
+		};
+	}
+
+	/** 注册 Provider（兼容扩展接入单参数/双参数入口） */
+	register(name: string, provider: Provider): () => void {
+		const actualProvider: Provider = provider.id === name ? provider : { ...provider, id: name };
+		return this.registerProvider(actualProvider);
 	}
 
 	choices(): Array<{ id: string; name: string }> {
 		const configured = Object.entries(this.config?.providers ?? {}).map(([id, value]) => ({ id, name: value.model }));
-		const registered = [...this.instances.entries()].map(([id, provider]) => ({ id, name: provider.name }));
-		const dynamic = [...this.discovered.entries()].flatMap(([provider, models]) => models.filter((model) => model.contextWindow).map((model) => ({ id: `${provider}/${model.id}`, name: model.id })));
+		const registered = [...this.models.entries()].map(([id, model]) => ({ id, name: model.name }));
+		const dynamic = [...this.discovered.entries()].flatMap(([provider, models]) =>
+			models.filter((model) => model.contextWindow).map((model) => ({ id: `${provider}/${model.id}`, name: model.id }))
+		);
 		return [...configured, ...registered.filter((candidate) => !configured.some((item) => item.id === candidate.id)), ...dynamic];
+	}
+
+	async stream(
+		model: Model,
+		req: ModelRequest,
+		onDelta: (d: StreamDelta) => void,
+		signal?: AbortSignal,
+	): Promise<void> {
+		const provider = this.providers.get(model.providerId);
+		if (!provider) {
+			throw new Error(`找不到模型 ${model.id} 对应的 Provider: ${model.providerId}`);
+		}
+		return provider.stream(model, req, onDelta, signal);
 	}
 
 	async refreshModels(): Promise<void> {
 		const failures: string[] = [];
-		for (const [id, conf] of Object.entries(this.config?.providers ?? {})) {
+		for (const [id, provider] of this.providers.entries()) {
 			this.discovered.delete(id);
 			try {
-				const provider = this.instances.get(id) ?? createProvider(id, conf);
-				if (provider.refreshModels) this.discovered.set(id, [...await provider.refreshModels()]);
+				if (provider.refreshModels) {
+					this.discovered.set(id, [...await provider.refreshModels()]);
+				}
 			} catch (error) {
 				failures.push(`${id}: ${error instanceof Error ? error.message : String(error)}`);
 			}

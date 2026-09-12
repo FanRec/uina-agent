@@ -1,4 +1,4 @@
-import type { AgentMessage, ChatMsg, ModelProvider, ToolDef } from "../core/types.js";
+import type { AgentMessage, ChatMsg, Model, ModelStreamFn, ToolDef } from "../core/types.js";
 import type { ProviderHooks } from "../runtime/hooks.js";
 import { buildContext, estimateContextTokens, formatForSummary } from "./context.js";
 
@@ -22,7 +22,8 @@ export interface CompactionResult {
 export interface PrepareNextTurnContext {
 	turnNumber: number;
 	history: readonly (AgentMessage | ChatMsg)[];
-	provider: ModelProvider;
+	model: Model;
+	stream: ModelStreamFn;
 	systemPrompt: string;
 	tools: readonly ToolDef[];
 	compaction: CompactionSettings;
@@ -40,7 +41,7 @@ export async function defaultPrepareNextTurn(
 	ctx: PrepareNextTurnContext,
 	beforeCompact?: (input: { tokensBefore: number }) => Promise<{ cancel?: boolean }>,
 ): Promise<PrepareNextTurnResult | null> {
-	if (!shouldCompact(ctx.history, ctx.systemPrompt, ctx.tools, ctx.compaction, ctx.provider.includeThinking)) {
+	if (!shouldCompact(ctx.history, ctx.systemPrompt, ctx.tools, ctx.compaction, ctx.model.includeThinking)) {
 		return null;
 	}
 	const keepFrom = findKeepFrom(ctx.history, ctx.compaction.keepRecentTokens);
@@ -58,13 +59,14 @@ export async function defaultPrepareNextTurn(
 	}
 	const result = await compactHistory(
 		ctx.history,
-		ctx.provider,
+		ctx.model,
+		ctx.stream,
 		ctx.systemPrompt,
 		ctx.tools,
 		ctx.compaction,
 		ctx.providerHooks,
 		ctx.signal,
-		ctx.provider.includeThinking,
+		ctx.model.includeThinking,
 	);
 	if (!result) return null;
 	return {
@@ -124,7 +126,8 @@ export function findKeepFrom(
 
 export async function compactHistory(
 	history: readonly (AgentMessage | ChatMsg)[],
-	provider: ModelProvider,
+	model: Model,
+	stream: ModelStreamFn,
 	systemPrompt: string,
 	tools: readonly ToolDef[],
 	settings: CompactionSettings,
@@ -151,7 +154,8 @@ export async function compactHistory(
 	);
 
 	let summary = "";
-	await provider.stream(
+	await stream(
+		model,
 		{
 			messages: [
 				{

@@ -3,26 +3,37 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { Subject } from "../src/agent/loop.js";
 import { createOpenAIProvider } from "../src/ai/gateway.js";
-import { createProvider } from "../src/ai/providers.js";
+import { createModel } from "../src/ai/providers.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { ToolBroker } from "../src/tools/broker.js";
-import type { ModelProvider } from "../src/core/types.js";
+import type { Model, ModelStreamFn, StreamDelta } from "../src/core/types.js";
 
 const servers: Server[] = [];
 afterEach(() => servers.splice(0).forEach((server) => server.close()));
 
-function providerFromDeltas(deltas: Parameters<ModelProvider["stream"]>[1] extends (d: infer D) => void ? D[] : never): ModelProvider {
-	return { name: "thinking-mock", thinkingLevels: ["off", "high"], async stream(_req, emit) { for (const delta of deltas) emit(delta); } };
+function providerFromDeltas(deltas: StreamDelta[]): { model: Model; stream: ModelStreamFn } {
+	const model: Model = {
+		id: "thinking-mock",
+		name: "thinking-mock",
+		providerId: "mock",
+		contextWindow: 128_000,
+		thinkingLevels: ["off", "high"],
+	};
+	const stream: ModelStreamFn = async (_m, _req, emit) => {
+		for (const delta of deltas) emit(delta);
+	};
+	return { model, stream };
 }
 
 describe("thinking pipeline", () => {
 	it("keeps thinking separate from answer and persists it in assistant history", async () => {
 		const thinking: string[] = [];
-		const subject = new Subject(providerFromDeltas([
+		const pair = providerFromDeltas([
 			{ kind: "thinking", text: "先分析" },
 			{ kind: "text", text: "答案" },
 			{ kind: "finish", reason: "stop" },
-		]), new ToolBroker(), { onToken: () => {}, onThinking: (text) => thinking.push(text) }, { thinkingLevel: "high" });
+		]);
+		const subject = new Subject(pair.model, pair.stream, new ToolBroker(), { onToken: () => {}, onThinking: (text: string) => thinking.push(text) }, { thinkingLevel: "high" });
 		subject.pushInput("问题");
 		await subject.waitForIdle();
 		const answer = subject.historySnapshot().find((message) => message.role === "assistant");
@@ -32,14 +43,19 @@ describe("thinking pipeline", () => {
 
 	it("retains thinking when cancellation happens before answer text", async () => {
 		let thinkingSeen: (() => void) | undefined;
-		const subject = new Subject({
-			name: "abort-thinking", thinkingLevels: ["off", "high"],
-			async stream(_req, emit, signal) {
-				emit({ kind: "thinking", text: "未完成分析" });
-				thinkingSeen?.();
-				await new Promise<void>((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }));
-			},
-		}, new ToolBroker(), { onToken: () => {} }, { thinkingLevel: "high" });
+		const model: Model = {
+			id: "abort-thinking",
+			name: "abort-thinking",
+			providerId: "mock",
+			contextWindow: 128_000,
+			thinkingLevels: ["off", "high"],
+		};
+		const stream: ModelStreamFn = async (_m, _req, emit, signal) => {
+			emit({ kind: "thinking", text: "未完成分析" });
+			thinkingSeen?.();
+			await new Promise<void>((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }));
+		};
+		const subject = new Subject(model, stream, new ToolBroker(), { onToken: () => {} }, { thinkingLevel: "high" });
 		const seen = new Promise<void>((resolve) => { thinkingSeen = resolve; });
 		subject.pushInput("中断问题");
 		await seen;
@@ -50,8 +66,15 @@ describe("thinking pipeline", () => {
 
 	it("rejects an unsupported configured level before provider execution", async () => {
 		let called = false;
-		const provider: ModelProvider = { name: "limited", thinkingLevels: ["off"], async stream() { called = true; } };
-		expect(() => new Subject(provider, new ToolBroker(), { onToken: () => {}, onError: () => {} }, { thinkingLevel: "high" }))
+		const model: Model = {
+			id: "limited",
+			name: "limited",
+			providerId: "mock",
+			contextWindow: 128_000,
+			thinkingLevels: ["off"],
+		};
+		const stream: ModelStreamFn = async () => { called = true; };
+		expect(() => new Subject(model, stream, new ToolBroker(), { onToken: () => {}, onError: () => {} }, { thinkingLevel: "high" }))
 			.toThrow("未声明支持 thinking level");
 		expect(called).toBe(false);
 	});
@@ -71,7 +94,16 @@ describe("OpenAI-compatible thinking", () => {
 		await new Promise<void>((resolve) => server.listen(0, resolve));
 		const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
 		const events: string[] = [];
-		await createOpenAIProvider({ baseUrl, apiKey: "x", model: "m", modelContextWindow: 4096, thinkingLevels: ["off", "high"] }).stream(
+		const provider = createOpenAIProvider("openai", { baseUrl, apiKey: "x" });
+		const model: Model = {
+			id: "m",
+			name: "m",
+			providerId: "openai",
+			contextWindow: 4096,
+			thinkingLevels: ["off", "high"],
+		};
+		await provider.stream(
+			model,
 			{ messages: [{ role: "user", content: "hi" }], thinkingLevel: "high", providerHooks: NO_RUNTIME_HOOKS.provider },
 			delta => { if (delta.kind === "thinking") events.push(delta.text); },
 		);
@@ -81,7 +113,7 @@ describe("OpenAI-compatible thinking", () => {
 
 	it("creates the configured Anthropic and Gemini adapter kinds", () => {
 		const base = { baseUrl: "https://example.test", apiKey: "x", model: "m", modelContextWindow: 4096 };
-		expect(createProvider("a", { ...base, type: "anthropic", thinkingLevels: ["off", "high"], maxOutputTokens: 4096, thinkingBudgets: { high: 2048 } }).thinkingLevels).toEqual(["off", "high"]);
-		expect(createProvider("g", { ...base, type: "gemini" }).thinkingLevels).toBeUndefined();
+		expect(createModel({ ...base, type: "anthropic", thinkingLevels: ["off", "high"], maxOutputTokens: 4096, thinkingBudgets: { high: 2048 } }, "a").thinkingLevels).toEqual(["off", "high"]);
+		expect(createModel({ ...base, type: "gemini" }, "g").thinkingLevels).toBeUndefined();
 	});
 });

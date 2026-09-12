@@ -6,6 +6,7 @@ import { ToolBroker } from "../src/tools/broker.js";
 import { executeToolPipeline } from "../src/tools/pipeline.js";
 import type { ToolResultStatus } from "../src/core/types.js";
 import { UinaHost } from "../src/host/host.js";
+import { scriptedProvider } from "./helpers/mock-provider.js";
 
 describe("Tool Execution Pipeline", () => {
 	function createTestBroker() {
@@ -287,7 +288,7 @@ export default function activate(uina) {
 				"utf8",
 			);
 
-			const host = await UinaHost.create({ cwd, provider: { name: "mock", contextWindow: 4096, async stream() {} } });
+			const host = await UinaHost.create({ cwd, provider: scriptedProvider([]) });
 			await host.start();
 
 			const res = await host.runToolDirect("host_direct_probe", { val: "test123" });

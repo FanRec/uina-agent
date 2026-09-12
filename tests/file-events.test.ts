@@ -6,6 +6,8 @@ import { Subject } from "../src/agent/loop.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import { ExtensionRunner } from "../src/extensions/runner.js";
 import { openJsonlSession } from "../src/session/jsonl-store.js";
+import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
+import { mockModel } from "./helpers/mock-provider.js";
 
 // The shell tool uses the platform shell, so the fixture commands must too.
 const IS_WINDOWS = process.platform === "win32";
@@ -22,7 +24,8 @@ it("ordinary file extension handles real jobs, silence, user input, failure and 
 	const broker = new ToolBroker(); const errors: string[] = []; const text: string[] = [];
 	let subject!: Subject; let requests = 0; let call = 0;
 	const runner = new ExtensionRunner({ cwd: root, tools: broker, onInput: input => subject.accept(input), onError: error => errors.push(error) });
-	subject = new Subject({ name: "deterministic-fixture", async stream(req, emit) {
+	const model = mockModel({ id: "deterministic-fixture", name: "deterministic-fixture" });
+	const stream: ModelStreamFn = async (_m: Model, req: ModelRequest, emit: (d: StreamDelta) => void) => {
 		requests++; const last = req.messages.at(-1); const content = last?.content ?? "";
 		if (last?.role !== "tool" && content.includes("[运行时事件 file-changed") && /RUN|LONG|FAIL/.test(content)) {
 			const command = content.includes("LONG") ? LONG_JOB : content.includes("FAIL") ? "exit 7" : SHORT_JOB;
@@ -35,7 +38,8 @@ it("ordinary file extension handles real jobs, silence, user input, failure and 
 		} else if (last?.role !== "tool" && content.includes("IGNORE")) {
 			emit({ kind: "tool_call", call: { id: `call-${++call}`, name: "watch_silence", args: "{}" } }); emit({ kind: "finish", reason: "tool_calls" });
 		} else { if (content === "hello") emit({ kind: "text", text: "here" }); emit({ kind: "finish", reason: "stop" }); }
-	} }, broker, { onToken: value => text.push(value), onError: error => errors.push(error) }, { store, runtimeHooks: runner.runtimeHooks() });
+	};
+	subject = new Subject(model, stream, broker, { onToken: (value: string) => text.push(value), onError: (error: string) => errors.push(error) }, { store, runtimeHooks: runner.runtimeHooks() });
 	const jobs = async () => JSON.parse(await broker.run("watch_job_list", {})) as Array<{ status: string }>;
 	try {
 		await runner.load(); expect(errors).toEqual([]); expect(broker.has("watch_exec")).toBe(true);

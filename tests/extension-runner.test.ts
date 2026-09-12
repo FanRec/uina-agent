@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExtensionRunner } from "../src/extensions/runner.js";
 import { ToolBroker, type Tool } from "../src/tools/broker.js";
 import { DefaultAgentFactory } from "../src/agent/runtime.js";
-import type { ModelProvider } from "../src/core/types.js";
+import type { Model, ModelStreamFn } from "../src/core/types.js";
+import { mockModel } from "./helpers/mock-provider.js";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -109,14 +110,12 @@ describe("project extension runner", () => {
 			pi.on("context", (event) => ({ messages: [...event.messages, { role: "user", content: "root-only" }] }));
 		});
 		let received = "";
-		const provider: ModelProvider = {
-			name: "child",
-			async stream(request, emit) {
-				received = request.messages.map((message) => message.content).join("\n");
-				emit({ kind: "finish", reason: "stop" });
-			},
+		const model: Model = mockModel({ id: "child", name: "child" });
+		const stream: ModelStreamFn = async (_model, request, emit) => {
+			received = request.messages.map((message) => message.content).join("\n");
+			emit({ kind: "finish", reason: "stop" });
 		};
-		const child = new DefaultAgentFactory().create({ provider, tools: new ToolBroker() });
+		const child = new DefaultAgentFactory().create({ model, stream, tools: new ToolBroker() });
 		await child.send({ id: "child-input", mode: "followUp", source: { kind: "agent", type: "test" }, text: "child" });
 		await child.waitForIdle();
 		expect(received).not.toContain("root-only");

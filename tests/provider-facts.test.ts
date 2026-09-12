@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
-import { createProvider, anthropicMessages, geminiRequest } from "../src/ai/providers.js";
+import { createModel, createProvider, anthropicMessages, geminiRequest } from "../src/ai/providers.js";
 import { configuredThinkingLevels } from "../src/ai/config.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import type { ChatMsg, StreamDelta } from "../src/core/types.js";
@@ -23,8 +23,10 @@ const request = { messages: [{ role: "user" as const, content: "test" }], provid
 
 it("retains usage-only tail and keeps missing output and total unknown", async () => {
 	const baseUrl = await endpoint([finish, { choices: [], usage: { prompt_tokens: 100 } }, "[DONE]"]);
-	const provider = createProvider("fixture", { baseUrl, apiKey: "test", model: "fixture", modelContextWindow: 4096 });
-	const deltas: StreamDelta[] = []; await provider.stream(request, delta => deltas.push(delta));
+	const conf = { baseUrl, apiKey: "test", model: "fixture", modelContextWindow: 4096 };
+	const provider = createProvider("fixture", conf);
+	const model = createModel(conf, "fixture");
+	const deltas: StreamDelta[] = []; await provider.stream(model, request, delta => deltas.push(delta));
 	const usage = deltas.find(d => d.kind === "usage");
 	expect(usage).toMatchObject({ usage: { input: 100 } });
 	if (usage?.kind !== "usage") throw new Error("missing usage");
@@ -34,15 +36,19 @@ it("retains usage-only tail and keeps missing output and total unknown", async (
 
 it("rejects content after finish instead of silently discarding it", async () => {
 	const baseUrl = await endpoint([finish, { choices: [{ delta: { content: "illegal" } }] }, "[DONE]"]);
-	const provider = createProvider("fixture", { baseUrl, apiKey: "test", model: "fixture", modelContextWindow: 4096 });
-	await expect(provider.stream(request, () => {})).rejects.toThrow("额外内容");
+	const conf = { baseUrl, apiKey: "test", model: "fixture", modelContextWindow: 4096 };
+	const provider = createProvider("fixture", conf);
+	const model = createModel(conf, "fixture");
+	await expect(provider.stream(model, request, () => {})).rejects.toThrow("额外内容");
 });
 
 it.each(["off", "high", "max"] as const)("encodes DeepSeek %s without collapsing levels", async level => {
 	let body: Record<string, unknown> = {};
 	const baseUrl = await endpoint([finish, "[DONE]"], value => { body = value; });
-	const provider = createProvider("fixture", { baseUrl, apiKey: "test", model: "deepseek-v4-flash", modelContextWindow: 4096, thinkingFormat: "deepseek", thinkingLevels: ["off", "high", "max"] });
-	await provider.stream({ ...request, thinkingLevel: level }, () => {});
+	const conf = { baseUrl, apiKey: "test", model: "deepseek-v4-flash", modelContextWindow: 4096, thinkingFormat: "deepseek" as const, thinkingLevels: ["off", "high", "max"] as const };
+	const provider = createProvider("fixture", conf);
+	const model = createModel(conf, "fixture");
+	await provider.stream(model, { ...request, thinkingLevel: level }, () => {});
 	expect(body.thinking).toEqual({ type: level === "off" ? "disabled" : "enabled" });
 	expect(body.reasoning_effort).toBe(level === "off" ? undefined : level);
 });
@@ -50,8 +56,10 @@ it.each(["off", "high", "max"] as const)("encodes DeepSeek %s without collapsing
 it("preserves ordered signed provider blocks through adapter replay", async () => {
 	const blocks = [{ type: "text", text: "before" }, { type: "thinking", thinking: "thought", signature: "signature" }, { type: "redacted_thinking", data: "opaque" }, { type: "text", text: "after" }];
 	const baseUrl = await endpoint([{ type: "message_start" }, ...blocks.flatMap((content_block, index) => [{ type: "content_block_start", index, content_block }, { type: "content_block_stop", index }]), { type: "message_delta", delta: { stop_reason: "end_turn" } }, { type: "message_stop" }]);
-	const provider = createProvider("fixture", { baseUrl, apiKey: "test", model: "fixture", modelContextWindow: 4096, type: "anthropic", maxOutputTokens: 4096 });
-	const deltas: StreamDelta[] = []; await provider.stream(request, delta => deltas.push(delta));
+	const conf = { baseUrl, apiKey: "test", model: "fixture", modelContextWindow: 4096, type: "anthropic" as const, maxOutputTokens: 4096 };
+	const provider = createProvider("fixture", conf);
+	const model = createModel(conf, "fixture");
+	const deltas: StreamDelta[] = []; await provider.stream(model, request, delta => deltas.push(delta));
 	const replay = deltas.find(d => d.kind === "provider_replay"); if (replay?.kind !== "provider_replay") throw new Error("missing replay");
 	const messages: ChatMsg[] = [{ role: "assistant", content: "beforeafter", thinking: "thought", providerReplay: JSON.parse(JSON.stringify(replay.replay)) }];
 	expect(anthropicMessages({ ...request, messages })).toEqual([{ role: "assistant", content: blocks }]);

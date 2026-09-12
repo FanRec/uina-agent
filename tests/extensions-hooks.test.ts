@@ -5,22 +5,34 @@ import type { RuntimeHooks } from "../src/runtime/hooks.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { Subject } from "../src/agent/loop.js";
 import { ToolBroker } from "../src/tools/broker.js";
-import type { ModelProvider, ModelRequest, StreamDelta } from "../src/core/types.js";
+import type { Model, ModelRequest, ModelStreamFn, StreamDelta, ThinkingLevel } from "../src/core/types.js";
+import { mockModel } from "./helpers/mock-provider.js";
 import { createOpenAIProvider } from "../src/ai/gateway.js";
 import { createServer } from "node:http";
 
-function mockProvider(deltas: StreamDelta[] = [{ kind: "text", text: "你好" }, { kind: "finish", reason: "stop" }]): ModelProvider {
+function mockPair(
+	deltas: StreamDelta[] = [{ kind: "text", text: "你好" }, { kind: "finish", reason: "stop" }],
+	name = "mock-model",
+	contextWindow = 4096,
+	thinkingLevels: readonly ThinkingLevel[] = ["off", "low", "high"],
+): { model: Model; stream: ModelStreamFn } {
+	const model: Model = {
+		id: name,
+		name,
+		providerId: name,
+		contextWindow,
+		thinkingLevels,
+	};
 	return {
-		name: "mock-model",
-		contextWindow: 4096,
-		thinkingLevels: ["off", "low", "high"],
-		async stream(_req: ModelRequest, onDelta: (d: StreamDelta) => void) {
+		model,
+		stream: async (_m: Model, _req: ModelRequest, onDelta: (d: StreamDelta) => void) => {
 			for (const delta of deltas) {
 				onDelta(delta);
 			}
 		},
 	};
 }
+const mockProvider = mockPair;
 
 describe("ExtensionHost & Hooks Architecture", () => {
 	it("isolates errors in event handlers without disrupting execution", async () => {
@@ -68,9 +80,9 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			},
 		});
 
-		const provider: ModelProvider = {
-			name: "mock",
-			async stream(req, onDelta) {
+		const pair = {
+			model: mockModel({ id: "mock", name: "mock" }),
+			stream: async (_m: Model, req: ModelRequest, onDelta: (d: StreamDelta) => void) => {
 				if (req.messages.some((m) => m.role === "tool")) {
 					onDelta({ kind: "text", text: "已获知工具被拦截" });
 					onDelta({ kind: "finish", reason: "stop" });
@@ -86,7 +98,8 @@ describe("ExtensionHost & Hooks Architecture", () => {
 
 		const toolDones: Array<{ name: string; result: string; status?: string }> = [];
 		const subject = new Subject(
-			provider,
+			pair.model,
+			pair.stream,
 			tools,
 			{
 				onToken: () => {},
@@ -129,9 +142,9 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			},
 		});
 
-		const provider: ModelProvider = {
-			name: "mock",
-			async stream(req, onDelta) {
+		const pair = {
+			model: mockModel({ id: "mock", name: "mock" }),
+			stream: async (_m: Model, req: ModelRequest, onDelta: (d: StreamDelta) => void) => {
 				if (req.messages.some((m) => m.role === "tool")) {
 					onDelta({ kind: "text", text: "完成" });
 					onDelta({ kind: "finish", reason: "stop" });
@@ -146,7 +159,8 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		};
 
 		const subject = new Subject(
-			provider,
+			pair.model,
+			pair.stream,
 			tools,
 			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
@@ -168,25 +182,18 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		});
 
 		const prov1 = mockProvider();
-		const prov2: ModelProvider = {
-			name: "deepseek-reasoner",
-			contextWindow: 65536,
-			thinkingLevels: ["off", "high"],
-			async stream(_req, onDelta) {
-				onDelta({ kind: "text", text: "切换成功" });
-				onDelta({ kind: "finish", reason: "stop" });
-			},
-		};
+		const prov2 = mockPair([{ kind: "text", text: "切换成功" }, { kind: "finish", reason: "stop" }], "deepseek-reasoner", 65536, ["off", "high"]);
 
 		const subject = new Subject(
-			prov1,
+			prov1.model,
+			prov1.stream,
 			new ToolBroker(),
 			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
 		);
 
 		expect(subject.getModel().name).toBe("mock-model");
-		await subject.setModel(prov2);
+		await subject.setModel(prov2.model);
 
 		expect(subject.getModel().name).toBe("deepseek-reasoner");
 		expect(modelSelects).toEqual(["deepseek-reasoner"]);
@@ -199,19 +206,20 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			levelEvents.push(`${e.previousLevel}->${e.level}`);
 		});
 
-		const thinkingModel: ModelProvider = {
+		const thinkingModel = mockModel({
+			id: "reasoner",
 			name: "reasoner",
 			thinkingLevels: ["off", "low", "high"],
-			async stream() {},
-		};
-		const dumbModel: ModelProvider = {
+		});
+		const dumbModel = mockModel({
+			id: "dumb-model",
 			name: "dumb-model",
 			thinkingLevels: ["off"],
-			async stream() {},
-		};
+		});
 
 		const subject = new Subject(
 			thinkingModel,
+			async () => {},
 			new ToolBroker(),
 			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
@@ -246,16 +254,11 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			compactCalled = true;
 		});
 
-		const provider: ModelProvider = {
-			name: "mock",
-			async stream(_req, onDelta) {
-				onDelta({ kind: "text", text: "历史摘要内容" });
-				onDelta({ kind: "finish", reason: "stop" });
-			},
-		};
+		const pair = mockPair([{ kind: "text", text: "历史摘要内容" }, { kind: "finish", reason: "stop" }]);
 
 		const subject = new Subject(
-			provider,
+			pair.model,
+			pair.stream,
 			new ToolBroker(),
 			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
@@ -286,17 +289,11 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			beforeCalled = true;
 		});
 
-		const provider: ModelProvider = {
-			name: "mock",
-			contextWindow: 128000,
-			async stream(_req, onDelta) {
-				onDelta({ kind: "text", text: "正常回复" });
-				onDelta({ kind: "finish", reason: "stop" });
-			},
-		};
+		const pair = mockPair([{ kind: "text", text: "正常回复" }, { kind: "finish", reason: "stop" }], "mock", 128000);
 
 		const subject = new Subject(
-			provider,
+			pair.model,
+			pair.stream,
 			new ToolBroker(),
 			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
@@ -319,9 +316,9 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		});
 
 		let receivedMessages: any[] = [];
-		const provider: ModelProvider = {
-			name: "mock",
-			async stream(req, onDelta) {
+		const pair = {
+			model: mockModel({ id: "mock", name: "mock" }),
+			stream: async (_m: Model, req: ModelRequest, onDelta: (d: StreamDelta) => void) => {
 				receivedMessages = [...req.messages];
 				onDelta({ kind: "text", text: "看到了" });
 				onDelta({ kind: "finish", reason: "stop" });
@@ -329,7 +326,8 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		};
 
 		const subject = new Subject(
-			provider,
+			pair.model,
+			pair.stream,
 			new ToolBroker(),
 			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
@@ -377,15 +375,13 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			},
 		};
 		let received = "";
-		const provider: ModelProvider = {
-			name: "guard-probe",
-			async stream(request, emit) {
-				await providerGate;
-				received = request.messages.map((message) => message.content).join("\n");
-				emit({ kind: "finish", reason: "stop" });
-			},
+		const model = mockModel({ id: "guard-probe", name: "guard-probe" });
+		const stream: ModelStreamFn = async (_m, request, emit) => {
+			await providerGate;
+			received = request.messages.map((message) => message.content).join("\n");
+			emit({ kind: "finish", reason: "stop" });
 		};
-		const subject = new Subject(provider, new ToolBroker(), { onToken: () => {} }, { runtimeHooks });
+		const subject = new Subject(model, stream, new ToolBroker(), { onToken: () => {} }, { runtimeHooks });
 		const run = subject.pushInput("original");
 		await contextReady;
 		releaseProvider();
@@ -406,8 +402,10 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		host.on("agent_end", () => sequence.push("agent_end"));
 		host.on("agent_settled", () => sequence.push("agent_settled"));
 
+		const pair = mockProvider();
 		const subject = new Subject(
-			mockProvider(),
+			pair.model,
+			pair.stream,
 			new ToolBroker(),
 			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
@@ -442,16 +440,14 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		});
 
 		const users: string[] = [];
-		const provider: ModelProvider = {
-			name: "settlement-probe",
-			async stream(request, emit) {
-				const user = [...request.messages].reverse().find((message) => message.role === "user");
-				users.push(user?.content ?? "");
-				emit({ kind: "text", text: "ok" });
-				emit({ kind: "finish", reason: "stop" });
-			},
+		const model = mockModel({ id: "settlement-probe", name: "settlement-probe" });
+		const stream: ModelStreamFn = async (_m, request, emit) => {
+			const user = [...request.messages].reverse().find((message) => message.role === "user");
+			users.push(user?.content ?? "");
+			emit({ kind: "text", text: "ok" });
+			emit({ kind: "finish", reason: "stop" });
 		};
-		const subject = new Subject(provider, new ToolBroker(), { onToken: () => {} }, { runtimeHooks: createRuntimeHooks(host) });
+		const subject = new Subject(model, stream, new ToolBroker(), { onToken: () => {} }, { runtimeHooks: createRuntimeHooks(host) });
 		const firstRun = subject.pushInput("first");
 		await firstEndReached;
 
@@ -485,14 +481,15 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			if (e.channel === "content") endSeen = true;
 		});
 
-		const provider = mockProvider([
+		const pair = mockProvider([
 			{ kind: "text", text: "哈" },
 			{ kind: "text", text: "喽" },
 			{ kind: "finish", reason: "stop" },
 		]);
 
 		const subject = new Subject(
-			provider,
+			pair.model,
+			pair.stream,
 			new ToolBroker(),
 			{ onToken: () => {} },
 			{ runtimeHooks: createRuntimeHooks(host) },
@@ -510,7 +507,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 	});
 
 	it("closes every opened output channel exactly once on success, error, and cancellation", async () => {
-		const collect = async (provider: ModelProvider, interruptAfterStart = false): Promise<string[]> => {
+		const collect = async (pair: { model: Model; stream: ModelStreamFn }, interruptAfterStart = false): Promise<string[]> => {
 			const host = new ExtensionHost();
 			const events: string[] = [];
 			for (const type of ["output_start", "output_update", "output_end", "output_interrupted"] as const) {
@@ -518,7 +515,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 					events.push(`${event.type}:${event.channel}${event.type === "output_interrupted" ? `:${event.reason}` : ""}`);
 				});
 			}
-			const subject = new Subject(provider, new ToolBroker(), { onToken: () => {} }, { runtimeHooks: createRuntimeHooks(host) });
+			const subject = new Subject(pair.model, pair.stream, new ToolBroker(), { onToken: () => {} }, { runtimeHooks: createRuntimeHooks(host) });
 			const run = subject.pushInput("probe");
 			if (interruptAfterStart) {
 				await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -544,8 +541,8 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		]);
 
 		const thinkingError = await collect({
-			name: "thinking-error",
-			async stream(_request, emit) {
+			model: mockModel({ id: "thinking-error" }),
+			stream: async (_m, _request, emit) => {
 				emit({ kind: "thinking", text: "partial" });
 				throw new Error("network lost");
 			},
@@ -557,8 +554,8 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		]);
 
 		const malformedFinish = await collect({
-			name: "missing-finish",
-			async stream(_request, emit) {
+			model: mockModel({ id: "missing-finish" }),
+			stream: async (_m, _request, emit) => {
 				emit({ kind: "text", text: "partial" });
 			},
 		});
@@ -569,8 +566,8 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		]);
 
 		const contentCancelled = await collect({
-			name: "content-cancel",
-			async stream(_request, emit, signal) {
+			model: mockModel({ id: "content-cancel" }),
+			stream: async (_m, _request, emit, signal) => {
 				emit({ kind: "text", text: "partial" });
 				await new Promise<void>((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }));
 			},
@@ -615,15 +612,21 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
 		const port = (server.address() as any).port;
 
-		const provider = createOpenAIProvider({
+		const provider = createOpenAIProvider("openai", {
 			baseUrl: `http://127.0.0.1:${port}`,
 			apiKey: "test-key",
-			model: "mock-llm",
-			modelContextWindow: 4096,
 		});
+
+		const model: Model = {
+			id: "mock-llm",
+			name: "mock-llm",
+			providerId: "openai",
+			contextWindow: 4096,
+		};
 
 		let textOut = "";
 		await provider.stream(
+			model,
 			{
 				messages: [{ role: "user", content: "hello" }],
 				providerHooks: createRuntimeHooks(host).provider,

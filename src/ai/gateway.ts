@@ -1,55 +1,52 @@
 import type {
-	ModelProvider,
+	Model,
 	ModelRequest,
+	Provider,
 	ThinkingLevel,
+	ThinkingWireFormat,
 	Usage,
 } from "../core/types.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
-import { configuredThinkingLevels } from "./config.js";
-import { effectiveContextWindow } from "./config.js";
 import { copyValue, readonlySnapshot } from "../runtime/guard.js";
 
-export interface ProviderConf {
+export interface OpenAIEndpointConf {
 	baseUrl: string;
 	apiKey: string;
-	model: string;
-	modelContextWindow: number;
-	maxContextWindow?: number;
 	maxRetries?: number;
-	thinkingFormat?: "openai" | "deepseek" | "qwen";
-	thinkingLevels?: readonly ThinkingLevel[];
 }
 
-export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
+export function createOpenAIProvider(id: string, conf: OpenAIEndpointConf): Provider {
 	const endpoint = `${conf.baseUrl.replace(/\/$/, "")}/chat/completions`;
 	return {
-		name: conf.model,
-		contextWindow: effectiveContextWindow(conf),
-		thinkingLevels: configuredThinkingLevels(conf),
-		includeThinking: conf.thinkingFormat === "deepseek",
+		id,
+		baseUrl: conf.baseUrl,
 		async refreshModels() {
 			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, { headers: { Authorization: `Bearer ${conf.apiKey}` } });
 			if (!response.ok) throw new Error(`模型目录请求失败 HTTP ${response.status}`);
 			const payload = await response.json() as { data?: Array<{ id?: string }> };
 			return (payload.data ?? []).flatMap((model) => typeof model.id === "string" ? [{ id: model.id }] : []);
 		},
-		async stream(req, onDelta, signal): Promise<void> {
+		async stream(model: Model, req, onDelta, signal): Promise<void> {
+			if (model.providerId !== id) {
+				throw new Error(`模型 ${model.id} 的 providerId (${model.providerId}) 与端点 id (${id}) 不匹配`);
+			}
+			const thinkingFormat = model.compat?.thinkingFormat;
 			let headers: Record<string, string> = {
 				"Content-Type": "application/json",
 				Accept: "text/event-stream",
 				Authorization: `Bearer ${conf.apiKey}`,
 			};
 			let bodyPayload: unknown = {
-				model: conf.model,
-				messages: toWireMessages(req.messages, conf.thinkingFormat),
+				model: model.id,
+				messages: toWireMessages(req.messages, thinkingFormat),
 				tools: req.tools?.length ? req.tools : undefined,
 				stream: true,
 				stream_options: { include_usage: true },
-				...thinkingRequest(conf.thinkingLevels?.length ? req.thinkingLevel : undefined, conf.thinkingFormat),
+				...thinkingRequest(model.thinkingLevels?.length ? req.thinkingLevel : undefined, thinkingFormat),
 			};
 
-			headers = copyValue(await req.providerHooks.transformHeaders(conf.model, readonlySnapshot(headers)));
-			bodyPayload = copyValue(await req.providerHooks.transformPayload(conf.model, readonlySnapshot(bodyPayload)));
+			headers = copyValue(await req.providerHooks.transformHeaders(model.providerId, readonlySnapshot(headers)));
+			bodyPayload = copyValue(await req.providerHooks.transformPayload(model.providerId, readonlySnapshot(bodyPayload)));
 
 			const response = await fetchWithRetry(endpoint, {
 				maxRetries: conf.maxRetries ?? 2,
@@ -66,7 +63,7 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 			response.headers.forEach((v, k) => {
 				respHeaders[k] = v;
 			});
-			await req.providerHooks.observeResponse(readonlySnapshot({ provider: conf.model, status: response.status, headers: respHeaders }));
+			await req.providerHooks.observeResponse(readonlySnapshot({ provider: model.providerId, status: response.status, headers: respHeaders }));
 
 			if (!response.ok) {
 				const body = await response.text().catch(() => "");
@@ -107,7 +104,7 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 
 					const choice = chunk.choices?.[0];
 					if (chunk.usage) {
-						const usage = mergeOpenAIUsage(usageState, chunk.usage, index, conf.model);
+						const usage = mergeOpenAIUsage(usageState, chunk.usage, index, model.id);
 						if (usage) {
 							usageState = usage;
 							onDelta({ kind: "usage", usage: usageSnapshot(usageState) });
@@ -141,17 +138,17 @@ export function createOpenAIProvider(conf: ProviderConf): ModelProvider {
 
 					if (typeof choice.finish_reason === "string" && choice.finish_reason) {
 						if (choice.finish_reason === "content_filter") {
-							throw new ProviderProtocolError(`模型 ${conf.model} 因 content_filter 终止回复`, index);
+							throw new ProviderProtocolError(`模型 ${model.id} 因 content_filter 终止回复`, index);
 						}
 						if (
 							choice.finish_reason !== "stop" &&
 							choice.finish_reason !== "tool_calls" &&
 							choice.finish_reason !== "length"
 						) {
-							throw new ProviderProtocolError(`模型 ${conf.model} 未知 finish_reason: ${choice.finish_reason}`, index);
+							throw new ProviderProtocolError(`模型 ${model.id} 未知 finish_reason: ${choice.finish_reason}`, index);
 						}
 						if (choice.finish_reason === "stop" && pending.size > 0) {
-							throw new ProviderProtocolError(`模型 ${conf.model} 返回 stop，但仍有未完成 tool call`, index);
+							throw new ProviderProtocolError(`模型 ${model.id} 返回 stop，但仍有未完成 tool call`, index);
 						}
 						for (const [toolIndex, call] of [...pending.entries()].sort(
 							([a], [b]) => a - b,
@@ -285,14 +282,14 @@ function mergeOpenAIUsage(state: Partial<Usage>, raw: NonNullable<OpenAIChunk["u
 
 function usageSnapshot(state: Partial<Usage>): Usage { return { ...state }; }
 
-function thinkingRequest(level: ThinkingLevel | undefined, format = "openai"): Record<string, unknown> {
+function thinkingRequest(level: ThinkingLevel | undefined, format: ThinkingWireFormat = "openai"): Record<string, unknown> {
  if (!level) return {};
  if (format === "deepseek") return { thinking: { type: level === "off" ? "disabled" : "enabled" }, ...(level === "off" ? {} : { reasoning_effort: level }) };
  if (format === "qwen") return { enable_thinking: level !== "off" };
  return { reasoning_effort: level === "off" ? "none" : level };
 }
 
-export function toWireMessages(messages: ModelRequest["messages"], thinkingFormat?: ProviderConf["thinkingFormat"]): unknown[] {
+export function toWireMessages(messages: ModelRequest["messages"], thinkingFormat?: ThinkingWireFormat): unknown[] {
 	const wire: unknown[] = [];
 	for (const message of messages) {
 		if (message.role === "assistant") {

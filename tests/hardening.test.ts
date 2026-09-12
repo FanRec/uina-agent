@@ -80,16 +80,20 @@ describe("hardening: job output accounting", () => {
 
 describe("hardening: subagent output budget", () => {
 	it("bounds per-child output and reports loss", async () => {
-		const provider = {
+		const model = {
+			id: "chatter",
 			name: "chatter",
-			async stream(_req: unknown, emit: (d: unknown) => void) {
-				for (let i = 0; i < 80; i++) emit({ kind: "text", text: "y".repeat(8192) });
-				emit({ kind: "finish", reason: "stop" });
-			},
+			providerId: "mock",
+			contextWindow: 128_000,
+		};
+		const stream = async (_m: unknown, _req: unknown, emit: (d: any) => void) => {
+			for (let i = 0; i < 80; i++) emit({ kind: "text", text: "y".repeat(8192) });
+			emit({ kind: "finish", reason: "stop" });
 		};
 		const registry = new SubagentRegistry({
 			factory: new DefaultAgentFactory(),
-			provider: () => provider as never,
+			model: () => model,
+			stream,
 			createTools: () => new ToolBroker(),
 		});
 		const child = registry.start({ ownerId: "root", label: "child", prompt: "talk" });

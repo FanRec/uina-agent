@@ -7,7 +7,7 @@ import { Subject } from "../src/agent/loop.js";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { SessionFormatError } from "../src/session/recovery.js";
 import { projectModelHistory } from "../src/agent/projection.js";
-import type { ModelRequest, ModelProvider, StreamDelta } from "../src/core/types.js";
+import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
 import execCommandTool, { execCommandDirect } from "../src/extensions/runtime-tools/exec-command/index.js";
 import { OutputCollector } from "../src/extensions/runtime-tools/exec-command/output.js";
 import getTimeTool from "../src/extensions/runtime-tools/get-time/index.js";
@@ -78,7 +78,7 @@ describe("Subject", () => {
 			{ match: (req) => !req.messages.some((message) => message.role === "tool"), produce: () => [toolCallDelta("t1", "get_time", {})] },
 			{ match: () => true, produce: () => [{ kind: "text", text: "完成" }] },
 		]);
-		const subject = new Subject(provider, broker, { onToken: () => {} }, { store });
+		const subject = new Subject(provider.model, provider.stream, broker, { onToken: () => {} }, { store });
 		subject.pushInput("几点");
 		await idle(subject);
 		expect(provider.calls).toHaveLength(2);
@@ -93,7 +93,7 @@ describe("Subject", () => {
 			{ match: (req) => !req.messages.some((message) => message.role === "tool"), produce: () => [toolCallDelta("large-1", "large", {})] },
 			{ match: () => true, produce: () => [{ kind: "text", text: "done" }] },
 		]);
-		const subject = new Subject(provider, broker, { onToken: () => {} });
+		const subject = new Subject(provider.model, provider.stream, broker, { onToken: () => {} });
 		subject.pushInput("large");
 		await idle(subject);
 		const tool = provider.calls[1].messages.find((message) => message.role === "tool");
@@ -117,7 +117,7 @@ describe("Subject", () => {
 			{ match: (req) => !req.messages.some((message) => message.role === "tool"), produce: () => [toolCallDelta("1", "one", { value: "one" }), toolCallDelta("2", "two", { value: "two" })] },
 			{ match: () => true, produce: () => [{ kind: "text", text: "done" }] },
 		]);
-		const subject = new Subject(provider, broker, { onToken: () => {} });
+		const subject = new Subject(provider.model, provider.stream, broker, { onToken: () => {} });
 		subject.pushInput("run");
 		await idle(subject);
 		expect(maxActive).toBe(2);
@@ -127,22 +127,25 @@ describe("Subject", () => {
 
 	it("delivers steer before followUp and preserves queue order after stop", async () => {
 		let release: (() => void) | undefined;
-		const provider: ModelProvider = {
+		const model: Model = {
+			id: "queue-test",
 			name: "queue-test",
-			async stream(req: ModelRequest, onDelta: (delta: StreamDelta) => void, signal?: AbortSignal) {
-				const input = lastUser(req);
-				if (input === "first") {
-					await new Promise<void>((resolve, reject) => {
-						release = resolve;
-						signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
-					});
-				}
-				onDelta({ kind: "text", text: input });
-				onDelta({ kind: "finish", reason: "stop" });
-			},
+			providerId: "mock",
+			contextWindow: 128_000,
+		};
+		const stream: ModelStreamFn = async (_m: Model, req: ModelRequest, onDelta: (delta: StreamDelta) => void, signal?: AbortSignal) => {
+			const input = lastUser(req);
+			if (input === "first") {
+				await new Promise<void>((resolve, reject) => {
+					release = resolve;
+					signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+				});
+			}
+			onDelta({ kind: "text", text: input });
+			onDelta({ kind: "finish", reason: "stop" });
 		};
 		const broker = new ToolBroker();
-		const subject = new Subject(provider, broker, { onToken: () => {} });
+		const subject = new Subject(model, stream, broker, { onToken: () => {} });
 		subject.pushInput("first");
 		await wait(20);
 		subject.steer("steer");
@@ -155,7 +158,7 @@ describe("Subject", () => {
 		release?.();
 
 		const normal = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] }]);
-		const resumed = new Subject(normal, broker, { onToken: () => {} });
+		const resumed = new Subject(normal.model, normal.stream, broker, { onToken: () => {} });
 		resumed.pushInput(editorItems.map((item) => item.text).join("\n\n"));
 		await idle(resumed);
 		expect(lastUser(normal.calls[0])).toBe("steer\n\nfollow");
@@ -172,7 +175,7 @@ describe("Subject", () => {
 			{ match: (req) => !req.messages.some((message) => message.role === "tool"), produce: () => [{ kind: "tool_call", call: { id: "bad-1", name: "bad", args: "{\"value\":" , argsValid: false } }] },
 			{ match: () => true, produce: () => [{ kind: "text", text: "stopped" }] },
 		]);
-		const subject = new Subject(provider, broker, { onToken: () => {} });
+		const subject = new Subject(provider.model, provider.stream, broker, { onToken: () => {} });
 		subject.pushInput("bad args");
 		await idle(subject);
 		expect(executed).toBe(false);
@@ -189,7 +192,7 @@ describe("Subject", () => {
 		const provider = scriptedProvider([
 			{ match: () => true, produce: () => [{ kind: "tool_call", call: { id: "length-1", name: "length_tool", args: "{}" } }, { kind: "finish", reason: "length" }] },
 		]);
-		const subject = new Subject(provider, broker, { onToken: () => {} });
+		const subject = new Subject(provider.model, provider.stream, broker, { onToken: () => {} });
 		subject.pushInput("length");
 		await idle(subject);
 		expect(executed).toBe(false);
@@ -206,7 +209,7 @@ describe("Subject", () => {
 			},
 			{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] },
 		]);
-		const subject = new Subject(provider, broker, { onToken: () => {} }, {
+		const subject = new Subject(provider.model, provider.stream, broker, { onToken: () => {} }, {
 			compaction: { contextWindow: 100, reserveTokens: 10, keepRecentTokens: 10 },
 		});
 		subject.addHistory(Array.from({ length: 10 }, (_, index) => ({
@@ -221,7 +224,7 @@ describe("Subject", () => {
 		const failing = scriptedProvider([
 			{ match: (req) => (req.messages[0]?.content ?? "").includes("压缩成不超过"), produce: () => { throw new Error("compact down"); } },
 		]);
-		const failedSubject = new Subject(failing, broker, { onToken: () => {} }, {
+		const failedSubject = new Subject(failing.model, failing.stream, broker, { onToken: () => {} }, {
 			compaction: { contextWindow: 100, reserveTokens: 10, keepRecentTokens: 10 },
 		});
 		failedSubject.addHistory([{ role: "user", content: "old history" }, { role: "user", content: "x".repeat(500) }]);
@@ -235,22 +238,24 @@ describe("Subject", () => {
 	it("scopes actual usage to one provider request and does not reuse it on the next turn", async () => {
 		let request = 0;
 		const reports: Array<{ usedTokens: number; actual: boolean; cacheRead?: number }> = [];
-		const provider: ModelProvider = {
+		const model: Model = {
+			id: "usage-scope",
 			name: "usage-scope",
+			providerId: "mock",
 			contextWindow: 100_000,
 			thinkingLevels: ["off"],
-			async stream(_req, emit) {
-				request++;
-				emit({ kind: "text", text: `reply-${request}` });
-				if (request === 1) {
-					emit({ kind: "usage", usage: { input: 10, output: 5, cacheRead: 7, cacheWrite: 0, reasoning: 0, totalTokens: 22 } });
-				}
-				emit({ kind: "finish", reason: "stop" });
-			},
 		};
-		const subject = new Subject(provider, new ToolBroker(), {
+		const stream: ModelStreamFn = async (_m: Model, _req: ModelRequest, emit: (delta: StreamDelta) => void) => {
+			request++;
+			emit({ kind: "text", text: `reply-${request}` });
+			if (request === 1) {
+				emit({ kind: "usage", usage: { input: 10, output: 5, cacheRead: 7, cacheWrite: 0, reasoning: 0, totalTokens: 22 } });
+			}
+			emit({ kind: "finish", reason: "stop" });
+		};
+		const subject = new Subject(model, stream, new ToolBroker(), {
 			onToken: () => {},
-			onTurnEnd: (_turn, usage) => {
+			onTurnEnd: (_turn: number, usage?: { usedTokens: number; actual: boolean; cacheRead?: number }) => {
 				if (usage) reports.push(usage);
 			},
 		});
@@ -263,7 +268,7 @@ describe("Subject", () => {
 
 	it("keeps an unknown provider context window unknown and disables automatic compaction", async () => {
 		const provider = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] }]);
-		const subject = new Subject(provider, new ToolBroker(), { onToken: () => {} });
+		const subject = new Subject(provider.model, provider.stream, new ToolBroker(), { onToken: () => {} });
 		subject.addHistory([{ role: "user", content: "x".repeat(300_000) }]);
 		await subject.pushInput("next");
 		expect(subject.getContextWindow()).toBeUndefined();
@@ -272,7 +277,7 @@ describe("Subject", () => {
 
 	it("takes queued items for editor in single LIFO pull-back order", async () => {
 		const provider = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] }]);
-		const subject = new Subject(provider, new ToolBroker(), { onToken: () => {} });
+		const subject = new Subject(provider.model, provider.stream, new ToolBroker(), { onToken: () => {} });
 		subject.seedQueue([
 			{ id: "q1", order: 1, text: "task 1", mode: "followUp" },
 			{ id: "q2", order: 2, text: "task 2", mode: "followUp" },

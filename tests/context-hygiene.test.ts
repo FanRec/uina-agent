@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { buildContext } from "../src/agent/context.js";
 import { toWireMessages } from "../src/ai/gateway.js";
 import { anthropicMessages, geminiRequest } from "../src/ai/providers.js";
-import type { ChatMsg, ModelRequest } from "../src/core/types.js";
+import type { ChatMsg, ModelRequest, ModelStreamFn } from "../src/core/types.js";
+import { mockModel } from "./helpers/mock-provider.js";
 
 describe("Context Hygiene & Protocol Sanitization", () => {
 	it("embeds runtime events into system prompt and never produces trailing system messages", () => {
@@ -193,16 +194,14 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 		const { Subject } = await import("../src/agent/loop.js");
 		const { ToolBroker } = await import("../src/tools/broker.js");
 		const recordedRequests: ModelRequest[] = [];
-		const mockProvider: import("../src/core/types.js").ModelProvider = {
-			name: "mock",
-			stream: async (req, onDelta) => {
-				recordedRequests.push(req);
-				onDelta({ kind: "text", text: "acknowledged" });
-				onDelta({ kind: "finish", reason: "stop" });
-			},
+		const model = mockModel({ id: "mock", name: "mock" });
+		const stream: ModelStreamFn = async (_m, req, onDelta) => {
+			recordedRequests.push(req);
+			onDelta({ kind: "text", text: "acknowledged" });
+			onDelta({ kind: "finish", reason: "stop" });
 		};
 
-		const subject = new Subject(mockProvider, new ToolBroker(), { onToken: () => {} });
+		const subject = new Subject(model, stream, new ToolBroker(), { onToken: () => {} });
 		await subject.appendCustomMessage({
 			customType: "test-probe",
 			content: "PROBE_DATA_123",

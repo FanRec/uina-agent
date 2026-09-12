@@ -133,13 +133,13 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 		});
 
 		const selectModel = async (arg: string): Promise<void> => {
-			const provider = services.models.resolve(arg);
-			await services.subject.setModel(provider);
-			ui?.setModel?.(provider.name);
-			ui?.setThinkingLevels?.(provider.thinkingLevels);
-			ui?.setReasoningEffort?.(provider.thinkingLevels?.length ? services.subject.getThinkingLevel() : undefined);
+			const model = services.models.resolve(arg);
+			await services.subject.setModel(model);
+			ui?.setModel?.(model.name);
+			ui?.setThinkingLevels?.(model.thinkingLevels);
+			ui?.setReasoningEffort?.(model.thinkingLevels?.length ? services.subject.getThinkingLevel() : undefined);
 			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow());
-			pi.ui.notify(`已切换至模型: ${provider.name}`);
+			pi.ui.notify(`已切换至模型: ${model.name}`);
 		};
 
 		pi.registerCommand({

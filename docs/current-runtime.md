@@ -7,7 +7,7 @@
 ```text
 输入
   -> Subject active run / steer / followUp mailbox
-  -> context projection + ModelProvider stream
+  -> context projection + Model stream
   -> text 或 tool call
   -> ToolBroker validate / execute
   -> tool result 回注

@@ -4,7 +4,7 @@ import { MemorySessionStore } from "../session/jsonl-store.js";
 import type { SessionStore } from "../session/types.js";
 import { Subject, type AgentInput, type LoopHooks } from "./loop.js";
 import type { ToolView } from "../tools/broker.js";
-import type { ModelProvider } from "../core/types.js";
+import type { Model, ModelStreamFn } from "../core/types.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
 
 export type AgentStatus = "running" | "idle" | "disposed";
@@ -18,7 +18,8 @@ export interface AgentSnapshot {
 
 export interface AgentCreateOptions {
 	id?: string;
-	provider: ModelProvider;
+	model: Model;
+	stream: ModelStreamFn;
 	tools: ToolView;
 	hooks?: LoopHooks;
 	store?: SessionStore;
@@ -51,7 +52,7 @@ class RuntimeAgent implements AgentHandle {
 
 	constructor(readonly id: string, options: AgentCreateOptions) {
 		this.store = options.store ?? new MemorySessionStore();
-		this.subject = new Subject(options.provider, options.tools, {
+		this.subject = new Subject(options.model, options.stream, options.tools, {
 			...options.hooks,
 			onToken: options.hooks?.onToken ?? (() => {}),
 			onTurnStart: (turn, text) => {
