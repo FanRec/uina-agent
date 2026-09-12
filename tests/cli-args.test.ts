@@ -98,7 +98,7 @@ describe("CLI Arguments Parser & Session Resolver", () => {
 			}
 		});
 
-		it("generates isolated global session path for external workspaces", () => {
+		it("resolves to global unified session path ~/.uina/session.jsonl for external workspaces", () => {
 			const tempHome = mkdtempSync(join(tmpdir(), "uina-test-home-"));
 			const extDir = mkdtempSync(join(tmpdir(), "uina-test-ext-project-"));
 			const prevHome = process.env.UINA_HOME;
@@ -107,9 +107,7 @@ describe("CLI Arguments Parser & Session Resolver", () => {
 				delete process.env.UINA_SESSION_PATH;
 				process.env.UINA_HOME = tempHome;
 				const resolved = resolveSessionPath({ cwd: extDir });
-				expect(resolved).toBeDefined();
-				expect(resolved!.startsWith(join(tempHome, ".uina", "sessions"))).toBe(true);
-				expect(resolved!.endsWith(".jsonl")).toBe(true);
+				expect(resolved).toBe(join(tempHome, ".uina", "session.jsonl"));
 			} finally {
 				if (prevHome !== undefined) process.env.UINA_HOME = prevHome;
 				else delete process.env.UINA_HOME;
