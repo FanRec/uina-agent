@@ -18,13 +18,13 @@ export function guardRuntimeHooks(hooks: RuntimeHooks): RuntimeHooks {
 	if (hooks === NO_RUNTIME_HOOKS) return hooks;
 	const guarded: RuntimeHooks = {
 		turn: Object.freeze({
-			prepare: async (input) => copyPrepare(await hooks.turn.prepare(readonlySnapshot(input))),
+			prepare: async (input, signal) => copyPrepare(await hooks.turn.prepare(readonlySnapshot(input), signal)),
 			transformContext: async (messages) => copyMessages(await hooks.turn.transformContext(readonlySnapshot(messages))),
 			beforeCompact: async (input) => Object.freeze({ ...(await hooks.turn.beforeCompact(readonlySnapshot(input))) }),
 		}),
 		tools: Object.freeze({
 			beforeCall: async (input) => Object.freeze({ ...(await hooks.tools.beforeCall(readonlySnapshot(input))) }),
-			transformResult: async (input) => Object.freeze({ ...(await hooks.tools.transformResult(readonlySnapshot(input))) }),
+			transformResult: async (input) => copyValue(await hooks.tools.transformResult(readonlySnapshot(input))),
 		}),
 		provider: Object.freeze({
 			transformHeaders: async (provider: string, headers: Readonly<Record<string, string>>) => clone(await hooks.provider.transformHeaders(provider, readonlySnapshot(headers))),

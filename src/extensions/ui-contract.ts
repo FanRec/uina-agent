@@ -9,6 +9,7 @@ export type { Component, OverlayHandle, OverlayOptions, WidgetPlacement };
 export interface CustomMessage<T = unknown> {
 	customType: string;
 	content: string;
+ images?: import("../core/content.js").ImageContent[];
 	display?: boolean;
 	details?: T;
 }
@@ -111,3 +112,16 @@ export interface ExtensionUIContext {
 	 * 而不是把 undefined/false 当成用户的选择（Pi: ExtensionUIContext.hasUI）。 */
 	hasUI(): boolean;
 }
+
+/** A pure view of one tool invocation; execution and persisted facts remain outside UI. */
+export interface ToolRenderData {
+ readonly name: string;
+ readonly callId?: string;
+ readonly args?: unknown;
+ readonly result?: string;
+ readonly status: 'running' | import('../core/types.js').ToolResultStatus;
+ readonly details?: unknown;
+ readonly images?: readonly import('../core/content.js').ImageContent[];
+}
+export type ToolRenderer = (tool: ToolRenderData, options: { expanded: boolean; hovered: boolean; width: number; elapsedMs: number }) => Component | undefined;
+export type MarkdownTransformer = (markdown: string, context: { role: 'user' | 'assistant'; streaming: boolean; width: number }) => string;

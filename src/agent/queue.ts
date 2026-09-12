@@ -10,13 +10,13 @@ export class InputQueues {
 	private readonly steer: QueuedMessage[] = [];
 	private readonly followUp: QueuedMessage[] = [];
 
-	enqueue(text: string, mode: Exclude<DeliveryMode, "direct">, extra: Pick<QueuedMessage, "source" | "data"> = {}): QueuedMessage {
+	enqueue(text: string, mode: Exclude<DeliveryMode, "direct">, extra: Pick<QueuedMessage, "source" | "data" | "images"> = {}): QueuedMessage {
 		const item = this.create(text, mode, extra);
 		this.add(item);
 		return item;
 	}
 
-	create(text: string, mode: Exclude<DeliveryMode, "direct">, extra: Pick<QueuedMessage, "source" | "data"> = {}): QueuedMessage {
+	create(text: string, mode: Exclude<DeliveryMode, "direct">, extra: Pick<QueuedMessage, "source" | "data" | "images"> = {}): QueuedMessage {
 		return {
 			id: randomUUID(),
 			order: ++this.order,

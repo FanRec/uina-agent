@@ -4,7 +4,7 @@ import { UinaHost } from "../host/host.js";
 import type { HostEvent } from "../host/events.js";
 import { createInteractiveUI, type InteractiveTUI } from "../ui/tui.js";
 import { installTerminalGuards } from "../ui/core/terminal.js";
-import { combineQueuedDraft } from "./draft.js";
+import { combineQueuedDraft, canEditQueuedDraft } from "./draft.js";
 import { sanitizeTerminalText, toolStartLine, toolResultLines } from "../ui/format.js";
 import { createJobAdapter } from "../ui/adapters/jobs.js";
 import { createSubagentAdapter } from "../ui/adapters/subagents.js";
@@ -78,6 +78,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				process.stdout.write(`\n  ⏳ ${toolStartLine(message.name, message.args)}`);
 				break;
 			case "tool_done": {
+    if (message.images?.length) process.stdout.write("\n  [图片: " + message.images.map(image => image.alt ?? image.mimeType).join(", ") + "]");
 				const elapsed = message.elapsedMs ?? 0;
 				const style = {
 					ok: (value: string) => value,
@@ -121,6 +122,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			cwd: process.cwd(),
 			sessionPath,
 			modelName: args.model,
+   extensionPaths: args.extensions,
 			onError: (text) => render({ type: "error", text }),
 		});
 	} catch (error) {
@@ -169,6 +171,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 
 	const restoreQueueToEditor = async (): Promise<number> => {
 		if (!tui) return 0;
+  if (!canEditQueuedDraft(host.snapshot().queue)) { tui.host.notify('队列包含图片或扩展事件，已保留；可按 Esc 继续处理', 'info'); return 0; }
 		const items = await host.takeQueuedForEditor();
 		if (items.length === 0) return 0;
 		tui.replaceInput(combineQueuedDraft(items, tui.host.inputLine.getText()));
@@ -252,20 +255,11 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		if (execRunning) execAbort?.abort();
 		void host.waitForIdle().then(async () => {
 			if (interruptSeq !== token) return;
-			const items = await host.takeQueuedForEditor();
-			const allTexts = [...items.map((it) => it.text), ...(extraText ? [extraText] : [])].filter((t) => t.trim());
-			if (allTexts.length === 0) return;
-			// Queued text was already accepted as user input: re-deliver it as
-			// plain input, never re-parse it as a slash command or shell line.
-			void host.pushInput(allTexts[0]!, "direct").catch((error: unknown) => {
-				process.stderr.write(`[投递失败] ${String(error)}\n`);
-			});
-			for (let i = 1; i < allTexts.length; i++) {
-				void host.pushInput(allTexts[i]!, "followUp").catch((error: unknown) => {
-					process.stderr.write(`[投递失败] ${String(error)}\n`);
-				});
-			}
-			tui?.host.transcript.addNotice(`已打断当前回合，${allTexts.length} 条消息立即处理`);
+   if (extraText?.trim()) await host.pushInput(extraText, 'followUp');
+   const count = host.snapshot().queue.length;
+   if (!count) return;
+   void host.resumePending().catch((error: unknown) => { process.stderr.write('[投递失败] ' + String(error) + '\n'); });
+   tui?.host.transcript.addNotice('已打断当前回合，' + count + ' 条消息立即处理');
 			tui?.host.requestRender();
 		}).catch((error) => {
 			process.stderr.write(`[打断投递失败] ${String(error)}\n`);
@@ -280,7 +274,9 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 
 	const handlePullBackQueue = async (): Promise<void> => {
 		if (!tui) return;
-		const last = await host.takeLastQueuedForEditor();
+		const candidate = host.snapshot().queue.at(-1);
+  if (candidate && !canEditQueuedDraft([candidate])) { tui.host.notify('该输入包含图片或扩展来源，已保留在队列中', 'info'); return; }
+  const last = await host.takeLastQueuedForEditor();
 		if (!last) {
 			tui.host.notify("排队队列为空，无待办可撤回", "warning", 2000);
 			return;

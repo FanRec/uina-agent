@@ -11,6 +11,7 @@ import type { GeminiThinkingFormat, ThinkingLevel, ThinkingWireFormat } from "..
 export type ProviderKind = "openai-compatible" | "anthropic" | "gemini";
 
 export interface ProviderConfig {
+ imageInput?: boolean;
 	baseUrl: string;
 	apiKey: string;
 	model: string;
@@ -64,6 +65,7 @@ const GEMINI_LEVEL_ENCODABLE: readonly ThinkingLevel[] = ["minimal", "low", "med
  * 在真实 Provider 创建时调用，因此错误发生在启动阶段，且指名 provider 与缺失字段。
  */
 export function assertProviderFacts(conf: ProviderConfig): void {
+	if (conf.imageInput !== undefined && typeof conf.imageInput !== "boolean") throw new Error("imageInput 必须是 boolean");
 	const levels = conf.thinkingLevels;
 	const kind: ProviderKind = conf.type ?? "openai-compatible";
 
@@ -195,6 +197,7 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 			if (provider.thinkingFormat !== undefined && !["openai", "deepseek", "qwen"].includes(provider.thinkingFormat as string)) {
 				throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingFormat 无效`);
 			}
+			if (provider.imageInput !== undefined && typeof provider.imageInput !== "boolean") throw new Error(`配置 ${path} 的 provider ${name} 的 imageInput 必须是 boolean`);
 			if (provider.thinkingLevels !== undefined && (!Array.isArray(provider.thinkingLevels) || provider.thinkingLevels.some((level) => !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(level as string)))) {
 				throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingLevels 无效`);
 			}
@@ -215,6 +218,7 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 				type: providerType,
 				...(provider.thinkingFormat === undefined ? {} : { thinkingFormat: provider.thinkingFormat as ThinkingWireFormat }),
 				...(provider.thinkingLevels === undefined ? {} : { thinkingLevels: provider.thinkingLevels as ThinkingLevel[] }),
+				...(provider.imageInput === undefined ? {} : { imageInput: provider.imageInput as boolean }),
 				...(provider.includeThinking === undefined ? {} : { includeThinking: Boolean(provider.includeThinking) }),
 			};
 	}

@@ -1,3 +1,6 @@
+import { validImages } from "../core/content.js";
+import type { Compactor, CompactionTrigger } from "../core/compaction.js";
+import { readonlySnapshot } from "../runtime/guard.js";
 import type {
 	AgentMessage,
 	ChatMsg,
@@ -13,7 +16,7 @@ import type {
 } from "../core/types.js";
 import type { SessionStore } from "../session/types.js";
 import { projectInputMessage } from "../session/recovery.js";
-import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, defaultPrepareNextTurn, findKeepFrom, type PrepareNextTurnContext, type PrepareNextTurnResult } from "./compaction.js";
+import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, findKeepFrom, shouldCompact } from "./compaction.js";
 import { buildContext, calculateContextSegments, convertToLlm, defaultSystemPrompt, estimateContextTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import type { PreparedToolCall, ToolView } from "../tools/broker.js";
@@ -26,7 +29,8 @@ import { guardRuntimeHooks } from "../runtime/guard.js";
 export interface SubjectOptions {
 	store?: SessionStore;
 	compaction?: Partial<CompactionSettings>;
-	prepareNextTurn?: (ctx: PrepareNextTurnContext) => Promise<PrepareNextTurnResult | null>;
+	compactor?: Compactor;
+ compactionTrigger?: CompactionTrigger;
 	systemPrompt?: string;
 	thinkingLevel?: ThinkingLevel;
 	steerQueueMode?: import("../core/types.js").QueueMode;
@@ -52,11 +56,13 @@ export interface AgentInput {
 	mode: "steer" | "followUp";
 	source: { kind: "user" | "runtime" | "agent"; type: string; ref?: string };
 	text?: string;
+ images?: import("../core/content.js").ImageContent[];
 	data?: unknown;
 }
 
 export class Subject {
 	private activity: "turn" | "compact" | undefined;
+	private compactionActive = false;
 	private history: AgentMessage[] = [];
 	private turnSeq = 0;
 	private interrupted = false;
@@ -74,7 +80,8 @@ export class Subject {
 	private thinkingLevel: ThinkingLevel;
 	private preferredThinkingLevel: ThinkingLevel;
 	private readonly runtimeHooks: RuntimeHooks;
-	private readonly prepareNextTurnSeam: (ctx: PrepareNextTurnContext) => Promise<PrepareNextTurnResult | null>;
+	private readonly compactor?: Compactor;
+	private readonly compactionTrigger?: CompactionTrigger;
 	private lastReportedUsage: Usage | null = null;
 	private streamSeq = 0;
 	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
@@ -94,7 +101,8 @@ export class Subject {
 			contextWindow: model.contextWindow,
 			...options.compaction,
 		};
-		this.prepareNextTurnSeam = options.prepareNextTurn ?? ((ctx) => defaultPrepareNextTurn(ctx, (input) => this.runtimeHooks.turn.beforeCompact(input)));
+		this.compactor = options.compactor;
+		this.compactionTrigger = options.compactionTrigger;
 		this.queueModes = {
 			steer: options.steerQueueMode ?? "one-at-a-time",
 			followUp: options.followUpQueueMode ?? "one-at-a-time",
@@ -208,60 +216,11 @@ export class Subject {
 		this.activity = "compact";
 		this.interrupted = false;
 		this.abort = new AbortController();
-		this.activeRun = new Promise<void>(resolve => { this.settleActiveRun = resolve; });
+		this.activeRun = new Promise<void>((resolve) => {
+			this.settleActiveRun = resolve;
+		});
 		try {
-			const keepFrom = findKeepFrom(this.history, this.compaction.keepRecentTokens, true);
-			if (keepFrom <= 0) {
-				await this.runtimeHooks.events.emit({
-					type: "session_compact_failed",
-					error: "当前会话消息过短，无需压缩",
-				});
-				return;
-			}
-			const tokensBefore = Math.ceil(this.history.reduce((acc, m) => acc + m.content.length + 16, 0) / 4);
-			const compactDecision = await this.runtimeHooks.turn.beforeCompact({ tokensBefore });
-			if (compactDecision.cancel) {
-				await this.runtimeHooks.events.emit({
-					type: "session_compact_failed",
-					error: "会话压缩已被扩展取消",
-				});
-				return;
-			}
-
-			const result = await compactHistory(
-				this.history,
-				this.model,
-				this.streamFn,
-				this.systemPrompt,
-				this.tools.defs(),
-				{ ...this.compaction, contextWindow: 0, reserveTokens: 0 },
-				this.runtimeHooks.provider,
-				this.abort?.signal,
-				this.model.includeThinking,
-				instruction,
-				true,
-			);
-			if (!result) {
-				await this.runtimeHooks.events.emit({
-					type: "session_compact_failed",
-					error: "当前会话消息过短，无需压缩",
-				});
-				return;
-			}
-			this.abort?.signal.throwIfAborted();
-			const replacement: AgentMessage[] = [
-				{ role: "compactionSummary", summary: result.summary, content: `[历史摘要] ${result.summary}`, tokensBefore: result.tokensBefore },
-				...result.retainedTail,
-			];
-			await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);
-			this.history = replacement;
-
-			await this.runtimeHooks.events.emit({
-				type: "session_compact",
-				summary: result.summary,
-				tokensBefore: result.tokensBefore,
-				retainedTailCount: result.retainedTail.length,
-			});
+			await this.performCompaction("manual", instruction);
 			completed = true;
 		} catch (err) {
 			await this.runtimeHooks.events.emit({
@@ -275,7 +234,9 @@ export class Subject {
 			try {
 				if (completed && !this.interrupted && this.queues.size > 0) await this.resumeQueued();
 				await this.runtimeHooks.events.flush();
-			} finally { this.completeActiveRun(); }
+			} finally {
+				this.completeActiveRun();
+			}
 		}
 	}
 
@@ -296,17 +257,27 @@ export class Subject {
 	}
 
 	accept(input: AgentInput): Promise<void> {
+		if (!validImages(input.images)) return Promise.reject(new Error("图片内容无效"));
 		if (!input.id || !input.text?.trim()) return Promise.reject(new Error("AgentInput 必须包含 id 和 text"));
-		const queued: QueuedMessage = { ...this.queues.create(input.text.trim(), input.mode, { source: input.source, data: input.data }), id: input.id };
+		const queued: QueuedMessage = {
+			...this.queues.create(input.text.trim(), input.mode, {
+				source: input.source,
+				data: input.data,
+				images: input.images,
+			}),
+			id: input.id,
+		};
 		if (!this.isBusy() && this.queues.size === 0) {
 			const promptText = queued.source?.kind === "runtime" ? undefined : queued.text;
 			return this.startRun(promptText, queued, { needsEnqueueEvent: true });
 		}
-		return this.storeEvent("queue_enqueued", { ...eventData(queued), source: input.source, data: input.data }).then(async () => {
-			this.queues.add(queued);
-			this.notifyQueueChanged();
-			if (!this.isBusy()) await this.resumeQueued();
-		});
+		return this.storeEvent("queue_enqueued", { ...eventData(queued), source: input.source, data: input.data }).then(
+			async () => {
+				this.queues.add(queued);
+				this.notifyQueueChanged();
+				if (!this.isBusy()) await this.resumeQueued();
+			},
+		);
 	}
 
 	/** Queue an input for the next model request while the current run is active. */
@@ -381,7 +352,11 @@ export class Subject {
 		return last;
 	}
 
-	private async startRun(text?: string, queuedInput?: QueuedMessage, options: { needsEnqueueEvent?: boolean } = {}): Promise<void> {
+	private async startRun(
+		text?: string,
+		queuedInput?: QueuedMessage,
+		options: { needsEnqueueEvent?: boolean } = {},
+	): Promise<void> {
 		if (this.activity) return Promise.reject(new Error("已有活动轮次"));
 		const isRootRun = this.activeRun === undefined;
 		if (isRootRun) {
@@ -396,17 +371,31 @@ export class Subject {
 				return;
 			}
 			if (queuedInput && options.needsEnqueueEvent) {
-				await this.storeEvent("queue_enqueued", { ...eventData(queuedInput), source: queuedInput.source, data: queuedInput.data });
+				await this.storeEvent("queue_enqueued", {
+					...eventData(queuedInput),
+					source: queuedInput.source,
+					data: queuedInput.data,
+				});
 			}
 			this.activity = "turn";
 			this.interrupted = false;
 			this.abort = new AbortController();
 			const turn = ++this.turnSeq;
 
-			const prepared = await this.runtimeHooks.turn.prepare({ prompt: text ?? "", systemPrompt: this.systemPrompt });
+			const prepared = await this.runtimeHooks.turn.prepare(
+				{ prompt: text ?? "", systemPrompt: this.systemPrompt },
+				this.abort.signal,
+			);
 			await this.runtimeHooks.events.emit({ type: "agent_start", turnSeq: turn });
 
-			await this.runTurn(text, turn, this.model, prepared.systemPrompt ?? this.systemPrompt, prepared.messages ? [...prepared.messages] : [], queuedInput);
+			await this.runTurn(
+				text,
+				turn,
+				this.model,
+				prepared.systemPrompt ?? this.systemPrompt,
+				prepared.messages ? [...prepared.messages] : [],
+				queuedInput,
+			);
 		} catch (error) {
 			this.abort = null;
 			this.activity = undefined;
@@ -416,13 +405,21 @@ export class Subject {
 		}
 	}
 
-	private async runTurn(text: string | undefined, turn: number, model = this.model, systemPrompt = this.systemPrompt, beforeMessages: readonly (AgentMessage | ChatMsg)[] = [], queuedInput?: QueuedMessage): Promise<void> {
+	private async runTurn(
+		text: string | undefined,
+		turn: number,
+		model = this.model,
+		systemPrompt = this.systemPrompt,
+		beforeMessages: readonly (AgentMessage | ChatMsg)[] = [],
+		queuedInput?: QueuedMessage,
+	): Promise<void> {
 		let success = false;
 		let runError: string | undefined;
 		try {
-			await this.dispatch({ type: "turn_start", turnNumber: turn, userText: text ?? "" });
+			await this.dispatch({ type: "turn_start", turnNumber: turn, userText: text ?? "", images: queuedInput?.images });
 			if (queuedInput) await this.consumeQueueItem(queuedInput);
-			else if (text !== undefined) await this.appendMessage({ role: "user", content: text, timestamp: new Date().toISOString() });
+			else if (text !== undefined)
+				await this.appendMessage({ role: "user", content: text, timestamp: new Date().toISOString() });
 			await this.decide(model, systemPrompt, beforeMessages);
 			success = true;
 		} catch (error) {
@@ -463,12 +460,22 @@ export class Subject {
 			}
 			await this.dispatch({ type: "agent_end", turnSeq: turn, success, error: runError });
 			if (success && !this.interrupted && this.queues.size > 0) {
-				try { await this.resumeQueued(); } catch (error) { this.reportError(error); }
+				try {
+					await this.resumeQueued();
+				} catch (error) {
+					this.reportError(error);
+				}
 			} else if (this.queues.size === 0) {
 				await this.dispatch({ type: "agent_settled", turnSeq: turn });
 			}
 			await this.runtimeHooks.events.flush();
 		}
+	}
+
+	/** Resume original queued records after interruption, preserving identity, source and attachments. */
+	resumePending(): Promise<void> {
+		if (this.isBusy()) throw new Error("Agent 正在运行，无法恢复队列");
+		return this.resumeQueued();
 	}
 
 	private async resumeQueued(): Promise<void> {
@@ -489,7 +496,11 @@ export class Subject {
 		await this.startRun(item.source?.kind === "runtime" ? undefined : item.text, item);
 	}
 
-	private async decide(model = this.model, systemPrompt = this.systemPrompt, beforeMessages: readonly (AgentMessage | ChatMsg)[] = []): Promise<void> {
+	private async decide(
+		model = this.model,
+		systemPrompt = this.systemPrompt,
+		beforeMessages: readonly (AgentMessage | ChatMsg)[] = [],
+	): Promise<void> {
 		await this.prepareTurn(model, systemPrompt);
 		for (;;) {
 			if (this.interrupted) {
@@ -497,11 +508,14 @@ export class Subject {
 				return;
 			}
 
-			let requestMessages = [...buildContext({
-				history: this.history,
-				systemPrompt,
-				includeThinking: model.includeThinking,
-			}), ...convertToLlm(beforeMessages)];
+			let requestMessages = [
+				...buildContext({
+					history: this.history,
+					systemPrompt,
+					includeThinking: model.includeThinking,
+				}),
+				...convertToLlm(beforeMessages),
+			];
 			requestMessages = await this.runtimeHooks.turn.transformContext(requestMessages);
 
 			const toolCalls: CompletedToolCall[] = [];
@@ -598,7 +612,6 @@ export class Subject {
 					},
 					this.currentSignal(),
 				);
-
 			} catch (error) {
 				closeOutput("interrupted", this.interrupted || this.currentSignal().aborted ? "cancelled" : "error");
 				if (this.interrupted || this.currentSignal().aborted) {
@@ -642,7 +655,8 @@ export class Subject {
 						thinkingSignature,
 						providerReplay,
 						...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
-						status: finishReason === "length" ? "length" : "complete", usage,
+						status: finishReason === "length" ? "length" : "complete",
+						usage,
 					});
 					for (const call of toolCalls) {
 						await this.appendMessage({
@@ -685,6 +699,8 @@ export class Subject {
 					role: "tool",
 					tool_call_id: result.callId,
 					content: result.result,
+					images: result.images,
+					details: result.details,
 					status: result.status,
 					timestamp: new Date().toISOString(),
 				});
@@ -693,7 +709,7 @@ export class Subject {
 				await this.emitInterrupted("", "", undefined);
 				return;
 			}
-			if (results.some(result => result.continuation === "stop")) return;
+			if (results.some((result) => result.continuation === "stop")) return;
 			const steer = this.queues.peekMany("steer", this.queueModes.steer);
 			if (steer.length > 0) {
 				for (const item of steer) await this.consumeQueueItem(item);
@@ -701,18 +717,23 @@ export class Subject {
 		}
 	}
 
-	private async executeToolCalls(calls: CompletedToolCall[]): Promise<Array<{
-		callId: string;
-		result: string;
-		status: ToolResultStatus;
-		continuation?: "stop";
-	}>> {
+	private async executeToolCalls(calls: CompletedToolCall[]): Promise<
+		Array<{
+			callId: string;
+			result: string;
+			status: ToolResultStatus;
+			continuation?: "stop";
+			images?: import("../core/content.js").ImageContent[];
+			details?: unknown;
+		}>
+	> {
 		const prepared: Array<{ call: CompletedToolCall; tool: PreparedToolCall }> = [];
 		for (const call of calls) {
 			const args = isRecord(call.args) ? call.args : {};
-			const tool = call.argsValid === false
-				? { name: call.name, args, error: "工具参数 JSON 不完整，调用未执行" }
-				: this.tools.prepare(call.name, args);
+			const tool =
+				call.argsValid === false
+					? { name: call.name, args, error: "工具参数 JSON 不完整，调用未执行" }
+					: this.tools.prepare(call.name, args);
 			prepared.push({ call, tool });
 		}
 		const sequential = prepared.some(({ call }) => this.tools.getExecutionMode(call.name) === "sequential");
@@ -724,7 +745,10 @@ export class Subject {
 		return Promise.all(prepared.map(({ call, tool }) => this.executeOne(call, tool)));
 	}
 
-	private async executeOne(call: CompletedToolCall, prepared: PreparedToolCall): Promise<{
+	private async executeOne(
+		call: CompletedToolCall,
+		prepared: PreparedToolCall,
+	): Promise<{
 		callId: string;
 		result: string;
 		status: ToolResultStatus;
@@ -761,6 +785,8 @@ export class Subject {
 							toolName: call.name,
 							args: callArgs,
 							result: outcome.result,
+							images: outcome.images,
+							details: outcome.details,
 							status: outcome.status,
 							callId: call.id,
 						});
@@ -771,42 +797,103 @@ export class Subject {
 	}
 
 	private async prepareTurn(model = this.model, systemPrompt = this.systemPrompt): Promise<void> {
-		if (!this.prepareNextTurnSeam) return;
 		try {
-			const prepResult = await this.prepareNextTurnSeam({
-				turnNumber: this.turnSeq,
+			await this.performCompaction("automatic", undefined, model, systemPrompt);
+		} catch (error) {
+			await this.runtimeHooks.events.emit({ type: "session_compact_failed", error: String(error) });
+			throw error;
+		}
+	}
+
+	private async performCompaction(
+		reason: "manual" | "automatic",
+		instruction?: string,
+		model = this.model,
+		systemPrompt = this.systemPrompt,
+	): Promise<void> {
+		const manual = reason === "manual";
+		const tokensBefore = estimateContextTokens(buildContext({ history: this.history, systemPrompt }), {
+			tools: this.tools.defs(),
+			includeThinking: model.includeThinking,
+		}).tokens;
+		const defaultDecision = shouldCompact(
+			this.history,
+			systemPrompt,
+			this.tools.defs(),
+			this.compaction,
+			model.includeThinking,
+		);
+		if (
+			!manual &&
+			!(
+				this.compactionTrigger?.(
+					readonlySnapshot({ historyLength: this.history.length, tokensBefore, model, defaultDecision }),
+				) ?? defaultDecision
+			)
+		)
+			return;
+		const keepFrom = findKeepFrom(this.history, this.compaction.keepRecentTokens, manual);
+		if (!this.history.length || (keepFrom <= 0 && !this.compactor)) {
+			if (manual)
+				await this.runtimeHooks.events.emit({ type: "session_compact_failed", error: "当前会话消息过短，无需压缩" });
+			return;
+		}
+		this.compactionActive = true;
+		try {
+			const signal = this.abort!.signal;
+			const decision = await this.runtimeHooks.turn.beforeCompact({ tokensBefore });
+			if (decision.cancel) {
+				if (manual)
+					await this.runtimeHooks.events.emit({ type: "session_compact_failed", error: "会话压缩已被扩展取消" });
+				return;
+			}
+			const request = readonlySnapshot({
+				reason,
 				history: this.history,
+				suggestedKeepFrom: keepFrom,
+				tokensBefore,
 				model,
-				stream: this.streamFn,
-				systemPrompt,
-				tools: this.tools.defs(),
-				compaction: this.compaction,
-				providerHooks: this.runtimeHooks.provider,
-				signal: this.abort?.signal,
+				instruction,
 			});
-			if (!prepResult) return;
-			if (prepResult.compaction) {
-				await this.store?.appendCompaction(
-					prepResult.compaction.summary,
-					prepResult.compaction.retainedTail,
-					prepResult.compaction.tokensBefore,
+			const proposal = await this.compactor?.(request as import("../core/compaction.js").CompactionRequest, signal);
+			signal.throwIfAborted();
+			let result: import("./compaction.js").CompactionResult | null;
+			if (proposal !== undefined) {
+				const { summary, keepFrom: cut } = proposal;
+				if (typeof summary !== "string" || !summary.trim()) throw new Error("compaction 返回空摘要");
+				if (!Number.isInteger(cut) || cut <= 0 || cut > this.history.length) throw new Error("compaction 保留位置无效");
+				if (this.history[cut]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
+				result = { summary: summary.trim(), retainedTail: structuredClone(this.history.slice(cut)), tokensBefore };
+			} else {
+				result = await compactHistory(
+					this.history,
+					model,
+					this.streamFn,
+					{ keepFrom, tokensBefore, instruction },
+					this.runtimeHooks.provider,
+					signal,
 				);
-				await this.runtimeHooks.events.emit({
-					type: "session_compact",
-					summary: prepResult.compaction.summary,
-					tokensBefore: prepResult.compaction.tokensBefore,
-					retainedTailCount: prepResult.compaction.retainedTail.length,
-				});
 			}
-			if (prepResult.history) {
-				this.history = prepResult.history as AgentMessage[];
-			}
-		} catch (err) {
+			if (!result) return;
+			signal.throwIfAborted();
+			await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);
+			this.history = [
+				{
+					role: "compactionSummary",
+					summary: result.summary,
+					content: "[历史摘要] " + result.summary,
+					tokensBefore: result.tokensBefore,
+				},
+				...result.retainedTail,
+			];
 			await this.runtimeHooks.events.emit({
-				type: "session_compact_failed",
-				error: (err as Error).message,
+				type: "session_compact",
+				summary: result.summary,
+				tokensBefore: result.tokensBefore,
+				retainedTailCount: result.retainedTail.length,
 			});
-			throw err;
+		} finally {
+			this.compactionActive = false;
 		}
 	}
 
@@ -816,13 +903,21 @@ export class Subject {
 	}
 
 	/** Adds trusted extension content to both v2 persistence and the next provider context. */
-	async appendCustomMessage(message: { customType: string; content: string; display?: boolean; details?: unknown }): Promise<void> {
-		if (this.activity === "compact") throw new Error("压缩期间不能修改模型历史");
+	async appendCustomMessage(message: {
+		customType: string;
+		content: string;
+		images?: import("../core/content.js").ImageContent[];
+		display?: boolean;
+		details?: unknown;
+	}): Promise<void> {
+		if (this.compactionActive || this.activity === "compact") throw new Error("压缩期间不能修改模型历史");
+		if (!validImages(message.images)) throw new Error("图片内容无效");
 		await this.store?.appendCustomMessage(message);
 		this.history.push({
 			role: "custom",
 			customType: message.customType,
 			content: message.content,
+			images: message.images,
 			display: message.display,
 			details: message.details,
 			timestamp: new Date().toISOString(),
@@ -841,7 +936,10 @@ export class Subject {
 		this.notifyQueueChanged();
 	}
 
-	private async storeEvent(event: Parameters<SessionStore["appendEvent"]>[0], data: Record<string, unknown>): Promise<void> {
+	private async storeEvent(
+		event: Parameters<SessionStore["appendEvent"]>[0],
+		data: Record<string, unknown>,
+	): Promise<void> {
 		await this.store?.appendEvent(event, data);
 	}
 

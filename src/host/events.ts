@@ -12,7 +12,7 @@ import type { CustomEntry, CustomMessage } from "../extensions/ui-contract.js";
 export type HostEvent =
 	| { type: "text"; text: string }
 	| { type: "thinking"; text: string }
-	| { type: "turn_start"; n: number; text: string }
+	| { type: "turn_start"; n: number; text: string; images?: readonly import("../core/content.js").ImageContent[] }
 	| {
 			type: "turn_end";
 			n: number;
@@ -35,6 +35,8 @@ export type HostEvent =
 			type: "tool_done";
 			name: string;
 			result: string;
+   images?: import("../core/content.js").ImageContent[];
+   details?: unknown;
 			status?: ToolResultStatus;
 			callId?: string;
 			/** 工具开始时刻，由宿主测量，消费者不再自行维护计时表。 */

@@ -133,14 +133,22 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 		});
 
 		const selectModel = async (arg: string): Promise<void> => {
-			const model = services.models.resolve(arg);
-			await services.subject.setModel(model);
+			await pi.models.select(arg);
+   const model = pi.models.current();
 			ui?.setModel?.(model.name);
 			ui?.setThinkingLevels?.(model.thinkingLevels);
 			ui?.setReasoningEffort?.(model.thinkingLevels?.length ? services.subject.getThinkingLevel() : undefined);
 			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow());
 			pi.ui.notify(`已切换至模型: ${model.name}`);
 		};
+
+  pi.on('model_select', () => {
+   const model = pi.models.current();
+   ui?.setModel?.(model.name);
+   ui?.setThinkingLevels?.(model.thinkingLevels);
+   ui?.setReasoningEffort?.(model.thinkingLevels?.length ? services.subject.getThinkingLevel() : undefined);
+   ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow());
+  });
 
 		pi.registerCommand({
 			name: "effort",
@@ -179,7 +187,7 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			description: "压缩会话历史释放上下文空间",
 			hasArgs: true,
 			argumentHint: "[instruction]",
-			handler: (arg) => services.subject.compact(arg || undefined),
+			handler: (arg) => pi.compact(arg || undefined),
 		});
 
 		pi.on("session_before_compact", () => {

@@ -1,3 +1,4 @@
+import { assertImageInput } from "../core/content.js";
 import type {
 	Model,
 	ModelRequest,
@@ -31,6 +32,7 @@ export function createOpenAIProvider(id: string, conf: OpenAIEndpointConf): Prov
 			if (model.providerId !== id) {
 				throw new Error(`模型 ${model.id} 的 providerId (${model.providerId}) 与端点 id (${id}) 不匹配`);
 			}
+			assertImageInput(model, req);
 			const thinkingFormat = model.compat?.thinkingFormat;
 			const headers: Record<string, string> = {
 				"Content-Type": "application/json",
@@ -326,7 +328,11 @@ function thinkingRequest(level: ThinkingLevel | undefined, format: ThinkingWireF
 
 export function toWireMessages(messages: ModelRequest["messages"], thinkingFormat?: ThinkingWireFormat): unknown[] {
 	const wire: unknown[] = [];
+ let toolImages: unknown[] = [];
+ const flushImages = () => { if (toolImages.length) { wire.push({ role: 'user', content: toolImages }); toolImages = []; } };
+ const imageParts = (images: NonNullable<ModelRequest['messages'][number]['images']>) => images.map(image => ({ type: 'image_url', image_url: { url: 'data:' + image.mimeType + ';base64,' + image.data } }));
 	for (const message of messages) {
+  if (message.role !== 'tool') flushImages();
 		if (message.role === "assistant") {
 			const hasToolCalls = Boolean(message.tool_calls && message.tool_calls.length > 0);
 			const hasThinking = Boolean(message.thinking && thinkingFormat === "deepseek");
@@ -360,6 +366,7 @@ export function toWireMessages(messages: ModelRequest["messages"], thinkingForma
 			continue;
 		}
 		if (message.role === "tool") {
+   if (message.images?.length) toolImages.push({ type: 'text', text: 'Images from tool call ' + message.tool_call_id }, ...imageParts(message.images));
 			wire.push({
 				role: "tool",
 				tool_call_id: message.tool_call_id,
@@ -367,8 +374,9 @@ export function toWireMessages(messages: ModelRequest["messages"], thinkingForma
 			});
 			continue;
 		}
-		wire.push(message);
+		wire.push({ role: message.role, content: message.images?.length ? [{ type: "text", text: message.content || "[image]" }, ...imageParts(message.images)] : message.content });
 	}
+ flushImages();
 	return wire;
 }
 

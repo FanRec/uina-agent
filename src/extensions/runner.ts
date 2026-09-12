@@ -1,13 +1,26 @@
 /** Project-local, trusted extension runtime. It deliberately mirrors Pi's
  * lifecycle model: registrations are owned by an activation and become stale
  * on reload/dispose instead of leaking into the next runtime. */
-import { readdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { randomUUID } from "node:crypto";
+import { Registrations } from "../core/registrations.js";
+import { discoverExtensions, importExtension } from "./loader.js";
+import type { Compactor, CompactionTrigger } from "../core/compaction.js";
+import type { CallOptions, ServiceHandler, ExtensionModelAccess, ExtensionModelRequest } from "./services.js";
+import { relative } from "node:path";
+
 import type { AgentInput } from "../agent/loop.js";
 import type { Provider } from "../core/types.js";
-import type { ToolBroker, Tool } from "../tools/broker.js";
-import type { ExtensionUIContext, CustomEntry, CustomMessage, EntryRenderer, LocalCommand, MessageRenderer } from "./ui-contract.js";
+import type { ToolBroker, Tool, ToolExecutionResult } from "../tools/broker.js";
+import type {
+	ExtensionUIContext,
+	CustomEntry,
+	CustomMessage,
+	EntryRenderer,
+	LocalCommand,
+	MessageRenderer,
+	ToolRenderer,
+	MarkdownTransformer,
+} from "./ui-contract.js";
 import { ExtensionRegistry } from "./renderer-registry.js";
 import { ExtensionHost, type ExtensionEvent, type ExtensionEventHandler } from "./host.js";
 import { createRuntimeHooks } from "./runtime-hooks.js";
@@ -16,15 +29,68 @@ import type { RuntimeHooks } from "../runtime/hooks.js";
 export interface ExtensionAPI {
 	readonly id: string;
 	readonly path: string;
+	readonly cwd: string;
 	readonly ui: ExtensionUIContext;
 	submitInput(input: AgentInput): Promise<void>;
 	reportError(error: unknown): void;
-	on<T extends ExtensionEvent["type"]>(type: T, handler: ExtensionEventHandler<Extract<ExtensionEvent, { type: T }>>): () => void;
-	registerTool(tool: Tool): void;
-	registerCommand(command: LocalCommand): void;
-	registerMessageRenderer<T = unknown>(customType: string, renderer: MessageRenderer<T>): void;
-	registerEntryRenderer<T = unknown>(customType: string, renderer: EntryRenderer<T>): void;
-	registerProvider(name: string, provider: Provider): void;
+	on<T extends ExtensionEvent["type"]>(
+		type: T,
+		handler: ExtensionEventHandler<Extract<ExtensionEvent, { type: T }>>,
+	): () => void;
+	registerTool(tool: Tool, options?: { replace?: boolean }): () => void;
+	callTool(
+		name: string,
+		args: Record<string, unknown>,
+		options?: CallOptions,
+	): Promise<ToolExecutionResult & { callId: string }>;
+	registerService<I, O>(name: string, handler: ServiceHandler<I, O>, options?: { replace?: boolean }): () => void;
+	callService<O = unknown>(name: string, input: unknown, options?: CallOptions): Promise<O>;
+	hasService(name: string): boolean;
+	registerContextContributor(
+		name: string,
+		contributor: (
+			input: Readonly<{ prompt: string; systemPrompt: string }>,
+			signal: AbortSignal,
+		) => readonly import("../core/types.js").ChatMsg[] | Promise<readonly import("../core/types.js").ChatMsg[]>,
+		options?: { replace?: boolean },
+	): () => void;
+	registerCompactor(
+		compactor: Compactor,
+		options?: { replace?: boolean; shouldCompact?: CompactionTrigger },
+	): () => void;
+	compact(instruction?: string): Promise<void>;
+	readonly models: {
+		current(): import("../core/types.js").Model;
+		list(): readonly import("../core/types.js").Model[];
+		resolve(name: string): import("../core/types.js").Model;
+		select(name: string): Promise<void>;
+		stream(
+			model: import("../core/types.js").Model,
+			request: ExtensionModelRequest,
+			onDelta: Parameters<import("../core/types.js").ModelStreamFn>[2],
+			signal?: AbortSignal,
+		): Promise<void>;
+	};
+	readonly signal: AbortSignal;
+	registerCommand(command: LocalCommand, options?: { replace?: boolean }): () => void;
+	registerMessageRenderer<T = unknown>(
+		customType: string,
+		renderer: MessageRenderer<T>,
+		options?: { replace?: boolean },
+	): () => void;
+	registerEntryRenderer<T = unknown>(
+		customType: string,
+		renderer: EntryRenderer<T>,
+		options?: { replace?: boolean },
+	): () => void;
+	registerToolRenderer(name: string, renderer: ToolRenderer, options?: { replace?: boolean }): () => void;
+	registerMarkdownTransformer(
+		name: string,
+		transformer: MarkdownTransformer,
+		options?: { replace?: boolean },
+	): () => void;
+	registerProvider(name: string, provider: Provider, options?: { replace?: boolean }): () => void;
+	registerModel(model: import("../core/types.js").Model, options?: { replace?: boolean }): () => void;
 	sendMessage(message: CustomMessage): Promise<void>;
 	appendEntry(entry: CustomEntry): Promise<void>;
 }
@@ -35,11 +101,15 @@ export type ExtensionModule = { default?: ExtensionActivation };
 
 export interface ExtensionRunnerOptions {
 	cwd: string;
+	extensionPaths?: readonly string[];
+	models?: ExtensionModelAccess;
+	onCompact?: (instruction?: string) => Promise<void>;
 	tools: ToolBroker;
 	onError?: (text: string) => void;
 	/** Informational/warning notifications from the fallback UI before a real UI attaches. */
 	onNotice?: (text: string) => void;
-	onProvider?: (name: string, provider: Provider) => ExtensionTeardown;
+	onProvider?: (name: string, provider: Provider, options?: { replace?: boolean }) => () => void;
+	onModel?: (model: import("../core/types.js").Model, options?: { replace?: boolean }) => () => void;
 	onCustomMessage?: (message: CustomMessage) => Promise<void>;
 	onCustomEntry?: (entry: CustomEntry) => Promise<void>;
 	onInput?: (input: AgentInput) => Promise<void>;
@@ -49,11 +119,27 @@ export interface ExtensionRunnerOptions {
  * of Pi's extension loader/runner lifecycle that Uina needs today. */
 class ActivationScope {
 	active = true;
+	readonly abort = new AbortController();
+	private readonly pending = new Set<Promise<unknown>>();
+	run<T>(work: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+		if (!this.active) return Promise.reject(new Error("扩展上下文已失效: " + this.id));
+		const combined = signal ? AbortSignal.any([signal, this.abort.signal]) : this.abort.signal;
+		const promise = Promise.resolve().then(() => work(combined));
+		this.pending.add(promise);
+		void promise.then(
+			() => this.pending.delete(promise),
+			() => this.pending.delete(promise),
+		);
+		return promise;
+	}
 	private readonly cleanup: ExtensionTeardown[] = [];
 	private readonly keyed = new Map<string, ExtensionTeardown>();
 	private dispose?: ExtensionTeardown;
 
-	constructor(readonly id: string, readonly path: string) {}
+	constructor(
+		readonly id: string,
+		readonly path: string,
+	) {}
 
 	own(teardown: ExtensionTeardown): void {
 		this.cleanup.push(teardown);
@@ -72,17 +158,34 @@ class ActivationScope {
 	async deactivate(report: (event: string, error: unknown) => void): Promise<void> {
 		if (!this.active) return;
 		this.active = false;
+		this.abort.abort(new Error("扩展已卸载: " + this.id));
 		const errors: unknown[] = [];
-		const failed = (event: string, error: unknown): void => { errors.push(error); report(event, error); };
+		const failed = (event: string, error: unknown): void => {
+			errors.push(error);
+			report(event, error);
+		};
 		if (this.dispose) {
-			try { await this.dispose(); } catch (error) { failed("dispose", error); }
+			try {
+				await this.dispose();
+			} catch (error) {
+				failed("dispose", error);
+			}
 		}
+		await Promise.allSettled([...this.pending]);
 		for (const teardown of this.keyed.values()) {
-			try { await teardown(); } catch (error) { failed("cleanup", error); }
+			try {
+				await teardown();
+			} catch (error) {
+				failed("cleanup", error);
+			}
 		}
 		this.keyed.clear();
 		for (const cleanup of this.cleanup.splice(0).reverse()) {
-			try { await cleanup(); } catch (error) { failed("cleanup", error); }
+			try {
+				await cleanup();
+			} catch (error) {
+				failed("cleanup", error);
+			}
 		}
 		if (errors.length) throw new AggregateError(errors, "Extension cleanup failed: " + this.id);
 	}
@@ -91,7 +194,9 @@ class ActivationScope {
 export class ExtensionRunner extends ExtensionHost {
 	private lifecycleTail: Promise<void> = Promise.resolve();
 	private closed = false;
-	private generation = 0;
+	private readonly services = new Registrations<ServiceHandler>();
+	private readonly compactors = new Registrations<{ run: Compactor; shouldCompact?: CompactionTrigger }>();
+	private readonly sharedUI = new Map<string, Map<string, Parameters<ExtensionUIContext["setHeader"]>[0]>>();
 	private readonly extensions = new Map<string, ActivationScope>();
 	private readonly failures = new Map<string, { id: string; path: string; error: string }>();
 	private ui: ExtensionUIContext;
@@ -103,33 +208,51 @@ export class ExtensionRunner extends ExtensionHost {
 			if (type === "error") options.onError?.(message);
 			else (options.onNotice ?? options.onError)?.(message);
 		});
-		this.onError((error) => options.onError?.(`[extension_error:${error.extensionName ?? "unknown"}:${error.event}] ${error.error}`));
+		this.onError((error) =>
+			options.onError?.(`[extension_error:${error.extensionName ?? "unknown"}:${error.event}] ${error.error}`),
+		);
 	}
 
 	attachUI(ui: ExtensionUIContext): void {
 		this.ui = ui;
-	}
-
-	private idForFile(file: string): string {
-		return `project:${file.slice(this.options.cwd.length + 1).replace(/\\/g, "/")}`;
-	}
-
-	private async listProjectFiles(): Promise<string[] | undefined> {
-		const directory = join(this.options.cwd, ".uina", "extensions");
-		try {
-			const files = await readdir(directory);
-			return files.filter((name) => /\.(?:[cm]?js|ts)$/.test(name)).sort().map((f) => resolve(directory, f));
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-			throw error;
+		for (const [slot, entries] of this.sharedUI) {
+			const current = [...entries.values()].at(-1);
+			if (slot === "header") ui.setHeader(current);
+			else ui.setFooter(current);
 		}
 	}
 
-	load(): Promise<void> { return this.enqueueLifecycle(() => this.loadProjects()); }
+	private idForFile(file: string): string {
+		return `project:${relative(this.options.cwd, file).replace(/\\/g, "/")}`;
+	}
+
+	private listProjectFiles(): Promise<string[]> {
+		return discoverExtensions(this.options.cwd, this.options.extensionPaths);
+	}
+
+	readonly compactionTrigger: CompactionTrigger = (input) => this.compactors.get("compaction")?.shouldCompact?.(input);
+	readonly compactor: Compactor = async (request, signal) => this.compactors.get("compaction")?.run(request, signal);
+
+	private setSharedUI(
+		slot: "header" | "footer",
+		owner: string,
+		component: Parameters<ExtensionUIContext["setHeader"]>[0],
+	): void {
+		const entries = this.sharedUI.get(slot) ?? new Map();
+		entries.delete(owner);
+		if (component !== undefined) entries.set(owner, component);
+		this.sharedUI.set(slot, entries);
+		const current = [...entries.values()].at(-1);
+		if (slot === "header") this.ui.setHeader(current);
+		else this.ui.setFooter(current);
+	}
+
+	load(): Promise<void> {
+		return this.enqueueLifecycle(() => this.loadProjects());
+	}
 
 	private async loadProjects(): Promise<void> {
 		const files = await this.listProjectFiles();
-		if (!files) return;
 		for (const file of files) {
 			await this.activate(file);
 		}
@@ -152,13 +275,8 @@ export class ExtensionRunner extends ExtensionHost {
 	reload(): Promise<void> {
 		return this.enqueueLifecycle(async () => {
 			const files = await this.listProjectFiles();
-			if (files === undefined) {
-				await this.deactivateScopes(true);
-				for (const id of this.failures.keys()) if (id.startsWith("project:")) this.failures.delete(id);
-				return;
-			}
 
-			// 阶段一：模块解析预检（零副作用验证文件导入与默认导出）。
+			// 阶段一：模块导入预检（执行模块顶层代码，不调用 activate）。
 			// 若有文件语法错误或加载失败，保护现有旧扩展不被卸载并抛错。
 			const modules: Array<{ id: string; file: string; activate: ExtensionActivation }> = [];
 			const importFailures: Array<{ id: string; file: string; error: string }> = [];
@@ -166,7 +284,7 @@ export class ExtensionRunner extends ExtensionHost {
 			for (const file of files) {
 				const id = this.idForFile(file);
 				try {
-					const module = await import(`${pathToFileURL(file).href}?uinaReload=${Date.now()}-${++this.generation}`) as ExtensionModule;
+					const module = await importExtension(file);
 					if (typeof module.default !== "function") throw new Error("扩展必须默认导出 activate(pi)");
 					modules.push({ id, file, activate: module.default });
 				} catch (error) {
@@ -179,7 +297,9 @@ export class ExtensionRunner extends ExtensionHost {
 					this.failures.set(f.id, { id: f.id, path: f.file, error: f.error });
 					this.emitOwnedError(f.id, "import", new Error(f.error));
 				}
-				throw new Error("Extension reload pre-import failed: " + importFailures.map(f => `${f.id}: ${f.error}`).join("; "));
+				throw new Error(
+					"Extension reload pre-import failed: " + importFailures.map((f) => `${f.id}: ${f.error}`).join("; "),
+				);
 			}
 
 			// 阶段二：卸载旧项目扩展（倒序 LIFO 执行 teardown，注销旧工具/命令/Provider/UI）
@@ -223,7 +343,11 @@ export class ExtensionRunner extends ExtensionHost {
 		const errors: unknown[] = [];
 		for (const extension of [...this.extensions.values()].reverse()) {
 			if (projectsOnly && !extension.id.startsWith("project:")) continue;
-			try { await this.deactivate(extension); } catch (error) { errors.push(error); }
+			try {
+				await this.deactivate(extension);
+			} catch (error) {
+				errors.push(error);
+			}
 		}
 		await this.flush();
 		if (errors.length) throw new AggregateError(errors, "Extension cleanup failed");
@@ -237,7 +361,12 @@ export class ExtensionRunner extends ExtensionHost {
 	 * Extensions that fail to load must stay observable instead of vanishing. */
 	diagnostics(): ReadonlyArray<{ id: string; path: string; status: "active" | "failed"; error?: string }> {
 		const active = [...this.extensions.values()].map(({ id, path }) => ({ id, path, status: "active" as const }));
-		const failed = [...this.failures.values()].map(({ id, path, error }) => ({ id, path, status: "failed" as const, error }));
+		const failed = [...this.failures.values()].map(({ id, path, error }) => ({
+			id,
+			path,
+			status: "failed" as const,
+			error,
+		}));
 		return [...active, ...failed];
 	}
 
@@ -249,7 +378,7 @@ export class ExtensionRunner extends ExtensionHost {
 	private async activate(file: string): Promise<void> {
 		const id = this.idForFile(file);
 		try {
-			const module = await import(`${pathToFileURL(file).href}?uinaReload=${Date.now()}-${++this.generation}`) as ExtensionModule;
+			const module = await importExtension(file);
 			if (typeof module.default !== "function") throw new Error("扩展必须默认导出 activate(pi)");
 			await this.activateScope(id, file, module.default);
 			this.failures.delete(id);
@@ -274,22 +403,147 @@ export class ExtensionRunner extends ExtensionHost {
 	}
 
 	private async deactivate(scope: ActivationScope): Promise<void> {
-		try { await scope.deactivate((event, error) => this.emitOwnedError(scope.id, event, error)); }
-		catch (error) {
+		try {
+			await scope.deactivate((event, error) => this.emitOwnedError(scope.id, event, error));
+		} catch (error) {
 			this.failures.set(scope.id, { id: scope.id, path: scope.path, error: errorMessage(error) });
 			throw error;
-		} finally { this.extensions.delete(scope.id); }
+		} finally {
+			this.extensions.delete(scope.id);
+		}
 	}
 
 	private apiFor(scope: ActivationScope): ExtensionAPI {
-		const assertActive = () => { if (!scope.active) throw new Error(`扩展上下文已失效: ${scope.id}`); };
-		const own = (dispose: ExtensionTeardown): void => { scope.own(dispose); };
-		const ownKeyed = (key: string, dispose: ExtensionTeardown): void => { scope.ownKeyed(key, dispose); };
-		const ui = ownedUI(dynamicUI(() => this.ui), scope.id, assertActive, own, ownKeyed);
+		const assertActive = () => {
+			if (!scope.active) throw new Error(`扩展上下文已失效: ${scope.id}`);
+		};
+		const own = (dispose: ExtensionTeardown): void => {
+			scope.own(dispose);
+		};
+		const ownKeyed = (key: string, dispose: ExtensionTeardown): void => {
+			scope.ownKeyed(key, dispose);
+		};
+		const ui = ownedUI(
+			dynamicUI(() => this.ui),
+			scope.id,
+			assertActive,
+			own,
+			ownKeyed,
+			(slot, component) => this.setSharedUI(slot, scope.id, component),
+		);
+		const ownRegistration = (dispose: () => void): (() => void) => {
+			own(dispose);
+			return dispose;
+		};
+		const modelAccess = (): ExtensionModelAccess => {
+			assertActive();
+			if (!this.options.models) throw new Error("宿主未提供模型服务");
+			return this.options.models;
+		};
 		return {
 			id: scope.id,
 			path: scope.path,
+			cwd: this.options.cwd,
 			ui,
+			signal: scope.abort.signal,
+			compact: (instruction) => {
+				assertActive();
+				if (!this.options.onCompact) throw new Error("宿主未提供压缩入口");
+				return this.options.onCompact(instruction);
+			},
+			registerContextContributor: (name, contributor, options) => {
+				assertActive();
+				return ownRegistration(
+					this.registerContextContributor(
+						name,
+						(input, cancellation) =>
+							scope.run(async (signal) => {
+								signal.throwIfAborted();
+								return await contributor(input, signal);
+							}, cancellation),
+						{ ...options, scopeId: scope.id },
+					),
+				);
+			},
+			registerCompactor: (compactor, options) => {
+				assertActive();
+				return ownRegistration(
+					this.compactors.register(
+						"compaction",
+						{
+							run: (request, signal) =>
+								scope.run(async (combined) => {
+									const proposal = await compactor(request, combined);
+									combined.throwIfAborted();
+									return proposal;
+								}, signal),
+							shouldCompact: options?.shouldCompact,
+						},
+						options,
+					),
+				);
+			},
+			models: {
+				current: () => structuredClone(modelAccess().current()),
+				list: () => structuredClone(modelAccess().list()),
+				resolve: (name) => structuredClone(modelAccess().resolve(name)),
+				select: (name) => modelAccess().select(name),
+				stream: (model, request, onDelta, signal) =>
+					scope.run(
+						(combined) =>
+							modelAccess().stream(
+								model,
+								{ ...request, providerHooks: this.runtimeHooks().provider },
+								onDelta,
+								combined,
+							),
+						signal,
+					),
+			},
+			registerService: (name, handler, options) => {
+				assertActive();
+				return ownRegistration(
+					this.services.register(
+						name,
+						(input, context) =>
+							scope.run((signal) => Promise.resolve(handler(input as never, { ...context, signal })), context.signal),
+						options,
+					),
+				);
+			},
+			hasService: (name) => {
+				assertActive();
+				return this.services.has(name);
+			},
+			callService: <O>(name: string, input: unknown, options?: CallOptions): Promise<O> =>
+				scope.run(async (signal) => {
+					signal.throwIfAborted();
+					const service = this.services.get(name);
+					if (!service) throw new Error("扩展服务不可用: " + name);
+					return structuredClone(await service(structuredClone(input), { callerId: scope.id, signal })) as O;
+				}, options?.signal),
+			callTool: (name, args, options) =>
+				scope.run(async (signal) => {
+					const callId = randomUUID();
+					const started = Date.now();
+					const record = async (phase: string, data: unknown) => {
+						await this.options.onCustomEntry?.({
+							customType: "extension.tool",
+							data: { phase, callId, name, source: scope.id, data },
+						});
+					};
+					return this.options.tools.createScopedView({ callerId: scope.id }).executePipeline(
+						{ name, args: structuredClone(args), callId },
+						{
+							signal,
+							hooks: this.runtimeHooks().tools,
+							observers: {
+								onStart: () => record("started", { args }),
+								onDone: (outcome) => record("finished", { ...outcome, elapsedMs: Date.now() - started }),
+							},
+						},
+					);
+				}, options?.signal),
 			reportError: (error) => this.emitOwnedError(scope.id, "external", error),
 			submitInput: async (input) => {
 				assertActive();
@@ -315,36 +569,92 @@ export class ExtensionRunner extends ExtensionHost {
 				own(dispose);
 				return dispose;
 			},
-			registerTool: (tool) => {
+			registerTool: (tool, options) => {
 				assertActive();
-				this.options.tools.register(tool);
-				own(() => this.options.tools.remove(tool.def.function.name));
+				return ownRegistration(
+					this.options.tools.register(
+						{
+							...tool,
+							run: (args, signal, context) => {
+								if (!scope.active) return Promise.resolve({ result: "扩展已卸载", status: "not_started" });
+								return scope.run(async (combined) => {
+									if (combined.aborted) return { result: "工具尚未启动，调用已取消", status: "not_started" };
+									try {
+										return await tool.run(args, combined, context);
+									} catch (error) {
+										if (combined.aborted) return { result: "工具已启动，取消后结果未知", status: "unknown" };
+										throw error;
+									}
+								}, signal);
+							},
+						},
+						options,
+					),
+				);
 			},
-			registerCommand: (command) => {
+			registerCommand: (command, options) => {
 				assertActive();
-				own(this.registry.registerCommand(command));
+				return ownRegistration(
+					this.registry.registerCommand(
+						{
+							...command,
+							handler: command.handler
+								? (args) => {
+										assertActive();
+										return command.handler!(args);
+									}
+								: undefined,
+						},
+						options,
+					),
+				);
 			},
-			registerMessageRenderer: (type, renderer) => {
+			registerMessageRenderer: (type, renderer, options) => {
 				assertActive();
-				own(this.registry.registerMessageRenderer(type, renderer));
+				return ownRegistration(this.registry.registerMessageRenderer(type, renderer, options));
 			},
-			registerEntryRenderer: (type, renderer) => {
+			registerEntryRenderer: (type, renderer, options) => {
 				assertActive();
-				own(this.registry.registerEntryRenderer(type, renderer));
+				return ownRegistration(this.registry.registerEntryRenderer(type, renderer, options));
 			},
-			registerProvider: (name, provider) => {
+			registerToolRenderer: (name, renderer, options) => {
+				assertActive();
+				return ownRegistration(this.registry.registerToolRenderer(name, renderer, options));
+			},
+			registerMarkdownTransformer: (name, transformer, options) => {
+				assertActive();
+				return ownRegistration(this.registry.registerMarkdownTransformer(name, transformer, options));
+			},
+			registerModel: (model, options) => {
+				assertActive();
+				if (!this.options.onModel) throw new Error("宿主未提供模型注册入口");
+				return ownRegistration(this.options.onModel(structuredClone(model), options));
+			},
+			registerProvider: (name, provider, options) => {
 				assertActive();
 				if (!this.options.onProvider) throw new Error(`宿主未提供 Provider 注册入口，无法注册 ${name}`);
 				const scoped: Provider = {
 					id: provider.id ?? name,
-					get name() { return provider.name; },
-					get baseUrl() { return provider.baseUrl; },
-					stream: async (...args) => { assertActive(); return provider.stream(...args); },
-					...(provider.refreshModels ? { refreshModels: async () => { assertActive(); return provider.refreshModels!(); } } : {}),
+					get name() {
+						return provider.name;
+					},
+					get baseUrl() {
+						return provider.baseUrl;
+					},
+					stream: (model, request, emit, signal) =>
+						scope.run((combined) => provider.stream(model, request, emit, combined), signal),
+					...(provider.refreshModels
+						? {
+								refreshModels: async () => {
+									assertActive();
+									return provider.refreshModels!();
+								},
+							}
+						: {}),
 				};
-				const dispose = this.options.onProvider(name, scoped);
+				const dispose = this.options.onProvider(name, scoped, options);
 				if (typeof dispose !== "function") throw new Error("Provider registration must return a disposer: " + name);
-				own(dispose);
+				return ownRegistration(dispose);
 			},
 			sendMessage: async (message) => {
 				assertActive();
@@ -383,6 +693,7 @@ function ownedUI(
 	assertActive: () => void,
 	own: (dispose: ExtensionTeardown) => void,
 	ownKeyed: (key: string, dispose: ExtensionTeardown) => void,
+	setShared: (slot: "header" | "footer", component: Parameters<ExtensionUIContext["setHeader"]>[0]) => void,
 ): ExtensionUIContext {
 	const key = (value: string) => `${id}:${value}`;
 	const overrides: Partial<ExtensionUIContext> = {
@@ -400,13 +711,13 @@ function ownedUI(
 		},
 		setHeader: (component) => {
 			assertActive();
-			base.setHeader(component);
-			ownKeyed("header", () => base.setHeader(undefined));
+			setShared("header", component);
+			ownKeyed("header", () => setShared("header", undefined));
 		},
 		setFooter: (component) => {
 			assertActive();
-			base.setFooter(component);
-			ownKeyed("footer", () => base.setFooter(undefined));
+			setShared("footer", component);
+			ownKeyed("footer", () => setShared("footer", undefined));
 		},
 		showOverlay: (component, options) => {
 			assertActive();
@@ -439,13 +750,35 @@ function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-export function createPrintUI(write: (message: string, type?: "info" | "warning" | "error") => void): ExtensionUIContext {
+export function createPrintUI(
+	write: (message: string, type?: "info" | "warning" | "error") => void,
+): ExtensionUIContext {
 	return {
-		select: async () => undefined, confirm: async () => false, input: async () => undefined,
-		notify: write, clearNotification: () => {}, setStatus: () => {}, setWorkingMessage: () => {}, setWorkingVisible: () => {}, setWidget: () => {}, setHeader: () => {}, setFooter: () => {},
+		select: async () => undefined,
+		confirm: async () => false,
+		input: async () => undefined,
+		notify: write,
+		clearNotification: () => {},
+		setStatus: () => {},
+		setWorkingMessage: () => {},
+		setWorkingVisible: () => {},
+		setWidget: () => {},
+		setHeader: () => {},
+		setFooter: () => {},
 		hasUI: () => false,
-		showOverlay: () => ({ hide() {}, setHidden() {}, isHidden: () => true, focus() {}, unfocus() {}, isFocused: () => false }),
-		pasteToEditor: () => {}, setEditorText: () => {}, getEditorText: () => "", onTerminalInput: () => () => {},
-		getGutterMode: () => "scrollbar", setGutterMode: () => {},
+		showOverlay: () => ({
+			hide() {},
+			setHidden() {},
+			isHidden: () => true,
+			focus() {},
+			unfocus() {},
+			isFocused: () => false,
+		}),
+		pasteToEditor: () => {},
+		setEditorText: () => {},
+		getEditorText: () => "",
+		onTerminalInput: () => () => {},
+		getGutterMode: () => "scrollbar",
+		setGutterMode: () => {},
 	};
 }

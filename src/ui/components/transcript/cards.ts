@@ -3,6 +3,7 @@
  * 集中管理思考链卡片、压缩摘要卡片、扩展自定义消息卡片与扩展自定义条目卡片。
  */
 
+import { imageNotice } from "../../../core/content.js";
 import { Container } from "../../core/container.js";
 import { C, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
@@ -207,7 +208,7 @@ export class CustomMessageComponent extends BaseCustomComponent<CustomMessage, M
 		const borderCol = C.blue;
 		const topFill = Math.max(2, boxW - visibleWidth(tag) - 8);
 		const header = `  ${borderCol}╭─ ${C.bold}${tag}${C.reset}${borderCol} ${"─".repeat(topFill)}╮${C.reset}`;
-		const rawLines = sanitizeRenderText(this.item.content).replace(/\r\n/g, "\n").split("\n");
+		const rawLines = sanitizeRenderText(this.item.content + imageNotice(this.item.images)).replace(/\r\n/g, "\n").split("\n");
 		const bodyLines = rawLines.map((line) => {
 			const text = truncateToWidth(line, innerW);
 			const pad = Math.max(0, innerW - visibleWidth(text));

@@ -1,10 +1,11 @@
+import { validImages } from "../core/content.js";
 import type { ToolResultStatus } from "../core/types.js";
 import type { DeepReadonly } from "../runtime/events.js";
 import type { PreparedToolCall, ToolExecutionResult, ToolView } from "./broker.js";
 
 export interface ToolPipelineHooks {
 	beforeCall?(input: Readonly<{ callId: string; name: string; args: DeepReadonly<Record<string, unknown>> }>): Promise<Readonly<{ block?: boolean; reason?: string }>>;
-	transformResult?(input: Readonly<{ callId: string; name: string; args: DeepReadonly<Record<string, unknown>>; result: string; status: ToolResultStatus }>): Promise<Readonly<{ result?: string; status?: ToolResultStatus }>>;
+	transformResult?(input: Readonly<{ callId: string; name: string; args: DeepReadonly<Record<string, unknown>>; result: string; status: ToolResultStatus; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>): Promise<Readonly<{ result?: string; status?: ToolResultStatus; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>>;
 }
 
 export interface ToolCallRequest {
@@ -63,7 +64,8 @@ export async function executeToolPipeline(
 	}
 
 	// 3. 参数准备与校验
-	const prepared = call.prepared ?? broker.prepare(call.name, call.args);
+	let prepared = call.prepared ?? broker.prepare(call.name, call.args);
+ if (!prepared.error && prepared.tool !== broker.prepare(call.name, call.args).tool) prepared = { ...prepared, error: "工具在执行前已替换或卸载" };
 	if (prepared.error) {
 		const outcome = await broker.execute(prepared, signal);
 		await observers?.onDone?.(outcome, call);
@@ -82,11 +84,16 @@ export async function executeToolPipeline(
 		name: call.name,
 		args: call.args as DeepReadonly<Record<string, unknown>>,
 		result: outcome.result,
+  images: outcome.images,
+  details: outcome.details,
 		status: outcome.status,
 	});
-	if (transformed?.result !== undefined || transformed?.status !== undefined) {
-		outcome = {
+	if (transformed?.result !== undefined || transformed?.status !== undefined || transformed?.images !== undefined || transformed?.details !== undefined) {
+		if (!validImages(transformed?.images)) throw new Error("tool_result hook 返回无效图片");
+  outcome = {
 			...outcome,
+   ...(transformed?.images !== undefined ? { images: structuredClone([...transformed.images]) } : {}),
+   ...(transformed?.details !== undefined ? { details: structuredClone(transformed.details) } : {}),
 			result: transformed.result ?? outcome.result,
 			status: transformed.status ?? outcome.status,
 		};

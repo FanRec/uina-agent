@@ -1,3 +1,4 @@
+import type { ImageContent } from "./content.js";
 /** 跨层共享的公共类型：会话消息与模型协议形状。 */
 
 export type DeliveryMode = "direct" | "steer" | "followUp";
@@ -18,6 +19,7 @@ export interface QueuedMessage {
 	order: number;
 	mode: Exclude<DeliveryMode, "direct">;
 	text: string;
+ images?: ImageContent[];
 	source?: { kind: "user" | "runtime" | "agent"; type: string; ref?: string };
 	data?: unknown;
 }
@@ -43,6 +45,7 @@ export interface ContextSegments {
 }
 
 export interface DiscoveredModel {
+ imageInput?: boolean;
 	id: string;
 	contextWindow?: number;
 	thinkingLevels?: readonly ThinkingLevel[];
@@ -85,6 +88,7 @@ export interface SystemAgentMessage {
 	id?: string;
 	role: "system";
 	content: string;
+ images?: ImageContent[];
 	timestamp?: string;
 }
 
@@ -92,6 +96,7 @@ export interface UserAgentMessage {
 	id?: string;
 	role: "user";
 	content: string;
+ images?: ImageContent[];
 	timestamp?: string;
 }
 
@@ -99,6 +104,7 @@ export interface AssistantAgentMessage {
 	id?: string;
 	role: "assistant";
 	content: string;
+ images?: ImageContent[];
 	thinking?: string;
 	thinkingSignature?: string;
 	providerReplay?: ProviderReplay;
@@ -109,11 +115,13 @@ export interface AssistantAgentMessage {
 }
 
 export interface ToolAgentMessage {
+ details?: unknown;
 	id?: string;
 	role: "tool";
 	tool_call_id: string;
 	name?: string;
 	content: string;
+ images?: ImageContent[];
 	status?: ToolResultStatus;
 	timestamp?: string;
 }
@@ -123,6 +131,7 @@ export interface CustomAgentMessage {
 	role: "custom";
 	customType: string;
 	content: string;
+ images?: ImageContent[];
 	display?: boolean;
 	details?: unknown;
 	timestamp?: string;
@@ -133,6 +142,7 @@ export interface CompactionSummaryAgentMessage {
 	role: "compactionSummary";
 	summary: string;
 	content: string;
+ images?: ImageContent[];
 	tokensBefore?: number;
 	timestamp?: string;
 }
@@ -146,10 +156,11 @@ export type AgentMessage =
 	| CompactionSummaryAgentMessage;
 
 export type ChatMsg =
-	| { role: "system" | "user"; content: string }
+	| { role: "system" | "user"; content: string; images?: ImageContent[] }
 	| {
 			role: "assistant";
 			content: string;
+ images?: ImageContent[];
 			thinking?: string;
 			thinkingSignature?: string;
 			providerReplay?: ProviderReplay;
@@ -160,7 +171,9 @@ export type ChatMsg =
 	| {
 			role: "tool";
 			tool_call_id: string;
+   details?: unknown;
 			content: string;
+ images?: ImageContent[];
 			status?: ToolResultStatus;
 		};
 
@@ -183,6 +196,8 @@ export interface ModelCompat {
 
 /** 模型规格：纯数据，不携带端点、凭据与传输方法（对齐 Pi packages/ai/src/types.ts:830） */
 export interface Model {
+ /** Explicit catalog/config fact. Missing means unknown. */
+ readonly imageInput?: boolean;
 	/** wire 上的模型标识（请求体中的 model 字段） */
 	readonly id: string;
 	/** 显示名称 */

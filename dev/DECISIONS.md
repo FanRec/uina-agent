@@ -35,7 +35,7 @@ PowerShell：`$env:UINA_ONESHOT_MSG="你好"; pnpm start`。
 
 - Provider 配置：默认 `~/.uina/auth.json`，配置根可由 `UINA_HOME` 指定。
 - 当前会话：`data/session.jsonl`。
-- 项目扩展：当前工作目录下 `.uina/extensions/`。
+- 项目扩展：当前工作目录下 `.uina/extensions/`，支持脚本、目录入口与 manifest；`-e/--extension` 可重复指定额外文件/目录。配置和会话路径不随扩展路径改变。
 - 构建产物：`dist/`。
 - 不把真实密钥、真实会话或生产数据放入测试 fixture、提交或共享日志。
 

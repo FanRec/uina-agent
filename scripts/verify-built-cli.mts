@@ -7,7 +7,7 @@ import {tmpdir} from "node:os";
 import {join,resolve} from "node:path";
 const reviewRoot=process.cwd();
 if(process.platform==="win32"){const helper=createRequire(import.meta.url)(join(reviewRoot,`dist/src/ui/core/native/win32-${process.arch}.node`));assert.equal(typeof helper.isModifierPressed,"function");console.log(JSON.stringify({nativeLoaded:true,platform:process.platform,arch:process.arch}));}
-for (const mode of ["tool-success", "truncated-provider"] as const) {
+for (const mode of ["tool-success", "extension-image", "truncated-provider"] as const) {
   const tempRoot = await mkdtemp(join(tmpdir(), "uina-direction-cli-"));
   const work = join(tempRoot, "work");
   const configRoot = join(tempRoot, "home");
@@ -15,6 +15,9 @@ for (const mode of ["tool-success", "truncated-provider"] as const) {
   await mkdir(join(configRoot, ".uina"), { recursive: true });
   let requests = 0;
   let sawToolResult = false;
+  let sawImage = false;
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlWQAAAAASUVORK5CYII=";
+  await writeFile(join(work, "pixel.png"), Buffer.from(png, "base64"));
   const server = createServer((req, res) => {
     if (req.url === "/v1/models") {
       res.writeHead(200, { "content-type": "application/json" });
@@ -29,13 +32,14 @@ for (const mode of ["tool-success", "truncated-provider"] as const) {
       requests++;
       const parsed = JSON.parse(body) as { messages?: Array<{ role?: string }> };
       sawToolResult ||= parsed.messages?.some(m => m.role === "tool") ?? false;
+      sawImage ||= body.includes("data:image/png;base64," + png);
       res.writeHead(200, { "content-type": "text/event-stream" });
       const deltas = mode === "truncated-provider"
         ? [{ choices: [{ delta: { content: "partial" } }] }]
         : requests === 1
-          ? [{ choices: [{ delta: { tool_calls: [{ index: 0, id: "c", function: { name: "get_time", arguments: "{}" } }] } }] }, { choices: [{ delta: {}, finish_reason: "tool_calls" }] }]
+          ? [{ choices: [{ delta: { tool_calls: [{ index: 0, id: "c", function: { name: mode === "extension-image" ? "read_image" : "get_time", arguments: mode === "extension-image" ? '{"path":"pixel.png"}' : "{}" } }] } }] }, { choices: [{ delta: {}, finish_reason: "tool_calls" }] }]
           : [{ choices: [{ delta: { content: "COMPILED_TOOL_OK" } }] }, { choices: [{ delta: {}, finish_reason: "stop" }] }];
-      res.end(deltas.map(d => `data: ${JSON.stringify(d)}\n\n`).join("") + (mode === "tool-success" ? "data: [DONE]\n\n" : ""));
+      res.end(deltas.map(d => `data: ${JSON.stringify(d)}\n\n`).join("") + (mode !== "truncated-provider" ? "data: [DONE]\n\n" : ""));
     });
   });
   try {
@@ -44,10 +48,10 @@ for (const mode of ["tool-success", "truncated-provider"] as const) {
     if (!address || typeof address === "string") throw new Error("fixture address missing");
     await writeFile(join(configRoot, ".uina/auth.json"), JSON.stringify({
       default: "review_fixture", thinkingLevel: "off", providers: {
-        review_fixture: { type: "openai-compatible", baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "local-test", model: "review-fixture", modelContextWindow: 4096, thinkingLevels: ["off"] },
+        review_fixture: { type: "openai-compatible", baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "local-test", model: "review-fixture", modelContextWindow: 4096, imageInput: true, thinkingLevels: ["off"] },
       },
     }));
-    const child = spawn(process.execPath, [join(reviewRoot, "dist/src/main.js")], {
+    const child = spawn(process.execPath, [join(reviewRoot, "dist/src/main.js"), ...(mode === "extension-image" ? ["-e", join(reviewRoot, "examples/extensions/workspace-tools")] : [])], {
       cwd: work,
       env: { ...process.env, UINA_HOME: configRoot, UINA_ONESHOT_MSG: "review fixture" },
       stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
@@ -57,12 +61,13 @@ for (const mode of ["tool-success", "truncated-provider"] as const) {
     child.stderr.on("data", c => { stderr += String(c); });
     const exitCode = await new Promise<number | null>((r, reject) => { child.on("error", reject); child.on("close", r); });
     const successMarker = stdout.includes("COMPILED_TOOL_OK");
-    assert.equal(exitCode, mode === "tool-success" ? 0 : 1);
-    assert.equal(sawToolResult, mode === "tool-success");
+    assert.equal(exitCode, mode !== "truncated-provider" ? 0 : 1);
+    assert.equal(sawToolResult, mode !== "truncated-provider");
+    assert.equal(sawImage, mode === "extension-image");
     // The marker is the observable end of the tool round-trip; printing it
     // without asserting it would let an empty-but-successful run pass.
-    assert.equal(successMarker, mode === "tool-success");
-    console.log(JSON.stringify({ probe: "compiled-cli", mode, exitCode, requests, sawToolResult, successMarker, errors: (stdout + stderr).split(/\r?\n/).filter(l => /错误|失败/.test(l)) }));
+    assert.equal(successMarker, mode !== "truncated-provider");
+    console.log(JSON.stringify({ probe: "compiled-cli", mode, exitCode, requests, sawToolResult, sawImage, successMarker, errors: (stdout + stderr).split(/\r?\n/).filter(l => /错误|失败/.test(l)) }));
   } finally {
     await new Promise<void>(r => server.close(() => r()));
     if (!resolve(tempRoot).startsWith(resolve(tmpdir()) + "\\uina-direction-cli-") && !resolve(tempRoot).startsWith(resolve(tmpdir()) + "/uina-direction-cli-")) throw new Error("Unexpected cleanup target");

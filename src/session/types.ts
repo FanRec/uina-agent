@@ -20,6 +20,7 @@ export interface SessionCustomMessageRecord {
 	timestamp: string;
 	customType: string;
 	content: string;
+ images?: import("../core/content.js").ImageContent[];
 	display?: boolean;
 	details?: unknown;
 }
@@ -96,6 +97,7 @@ export type SessionEntry =
 			kind: "custom_message";
 			customType: string;
 			content: string;
+ images?: import("../core/content.js").ImageContent[];
 			display?: boolean;
 			details?: unknown;
 	  }
@@ -120,7 +122,7 @@ export interface SessionStore {
 	readonly path: string;
 	appendInput(input: QueuedInput): Promise<void>;
 	appendMessage(message: AgentMessage | ChatMsg): Promise<void>;
-	appendCustomMessage(message: { customType: string; content: string; display?: boolean; details?: unknown }): Promise<void>;
+	appendCustomMessage(message: { customType: string; content: string; images?: import("../core/content.js").ImageContent[]; display?: boolean; details?: unknown }): Promise<void>;
 	appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void>;
 	appendCompaction(
 		summary: string,

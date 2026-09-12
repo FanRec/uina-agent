@@ -32,6 +32,7 @@ import type { HostEvent, HostEventListener } from "./events.js";
 export interface UinaHostOptions {
 	/** 组合根工作目录；项目扩展从 <cwd>/.uina/extensions 加载。 */
 	cwd: string;
+ extensionPaths?: readonly string[];
 	/** 会话 journal 路径。省略时使用内存 store（测试与嵌入场景）。 */
 	sessionPath?: string;
 	/** 注入 provider（测试与嵌入）。省略时按 ~/.uina/auth.json 创建。 */
@@ -166,12 +167,16 @@ export class UinaHost {
 		});
 
 		const extensionHost = new ExtensionRunner({
-			cwd: options.cwd,
+   cwd: options.cwd,
+   extensionPaths: options.extensionPaths,
+   onCompact: (instruction) => subject.compact(instruction),
+   models: { current: () => subject.getModel(), list: () => models.listModels(), resolve: name => models.resolve(name), select: name => subject.setModel(models.resolve(name)), stream: streamFn },
 			tools,
 			onInput: (input) => state.stopping ? Promise.reject(new Error("宿主正在关闭")) : subject.accept(input),
 			onError: (text) => emit({ type: "error", text }),
 			onNotice: (text) => emit({ type: "notice", text }),
-			onProvider: (name, registered) => models.register(name, registered),
+			onProvider: (name, registered, options) => models.register(name, registered, options),
+   onModel: (model, options) => models.registerModel(model, options),
 			onCustomMessage: async (message) => { await subject.appendCustomMessage(message); emit({ type: "custom_message", message }); },
 			onCustomEntry: async (entry) => { await subject.appendCustomEntry(entry); emit({ type: "custom_entry", entry }); },
 		});
@@ -180,6 +185,8 @@ export class UinaHost {
 			store,
 			thinkingLevel,
 			runtimeHooks: extensionHost.runtimeHooks(),
+   compactor: extensionHost.compactor,
+   compactionTrigger: extensionHost.compactionTrigger,
 		});
 
 		subject.subscribe((event) => {
@@ -189,7 +196,7 @@ export class UinaHost {
 					else if (event.channel === "thinking") emit({ type: "thinking", text: event.text });
 					break;
 				case "turn_start":
-					emit({ type: "turn_start", n: event.turnNumber, text: event.userText });
+					emit({ type: "turn_start", n: event.turnNumber, text: event.userText, images: event.images });
 					break;
 				case "turn_end":
 					emit({ type: "turn_end", n: event.turnNumber, usage: event.usage });
@@ -205,6 +212,8 @@ export class UinaHost {
 						type: "tool_done",
 						name: event.toolName,
 						result: event.result,
+      images: event.images ? [...event.images] : undefined,
+      details: event.details,
 						status: event.status,
 						callId: event.callId,
 						ts,
@@ -299,6 +308,7 @@ export class UinaHost {
 	interrupt(): void { this.subject.interrupt(); }
 	isBusy(): boolean { return this.subject.isBusy(); }
 	waitForIdle(): Promise<void> { return this.subject.waitForIdle(); }
+ resumePending(): Promise<void> { this.assertAccepting(); return this.subject.resumePending(); }
 	takeQueuedForEditor(): Promise<QueuedMessage[]> { return this.subject.takeQueuedForEditor(); }
 	takeLastQueuedForEditor(): Promise<QueuedMessage | null> { return this.subject.takeLastQueuedForEditor(); }
 	cycleThinkingLevel(): ThinkingLevel { return this.subject.cycleThinkingLevel(); }

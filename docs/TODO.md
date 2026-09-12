@@ -48,10 +48,8 @@
   - 恢复读取应保留严格因果校验；明确文件、失败位置及可操作的恢复入口，保留原件。不得自动跳过任意坏记录。原文“永久报废”撤回，实际损坏范围待验证。
   - 更正：`runtime-tools/index.ts` 的投递失败 catch 当前会通知错误，并非空 catch 吞错。
 
-- [ ] **A02 接通 Provider 注册的注销返回值**（原 S2）【代码复核】
-  - 定位：`src/host/host.ts` 的 onProvider 回调；`src/ai/providers.ts` 的 ModelRegistry.register；`src/extensions/runner.ts` 的 registerProvider。
-  - 问题：Host 丢掉 register 返回的注销闭包。Runner 已经会 own 返回的闭包，断点不在 Runner。
-  - 验收：注册 Provider 的项目扩展连续 reload 两次、卸载一次，无重复注册错误或残留注册；明确当前选中 Provider 被卸载时的行为，不静默切换模型。
+- [x] **A02 Provider 注册注销已接通**
+  - Host 返回注册 disposer；Provider/Model 支持显式替换及恢复，见 [扩展契约](extensions.md) 和 extension-composition.test.ts。卸载后找不到端点时明确失败，不静默切换模型。
 
 - [ ] **A03 接通自定义消息的实时展示并保持重放事实**（原 F2、E13、T1 部分）【原审查线索】
   - 定位：`src/host/host.ts`、`src/ui/tui.ts`、`src/cli/app.ts`、`src/session/recovery.ts`、transcript 的 addCustomMessage/loadSession。
@@ -87,9 +85,10 @@
 - [ ] **A08 压缩事实在自动、手动与重启路径一致**（原 M4、M5、E1、R9、T1 部分）【代码复核 + 原审查线索】
   - 定位：`src/agent/compaction.ts`、`src/agent/loop.ts`、`src/session/recovery.ts`、builtin 的压缩通知及 compact-view。
   - 验收：摘要使用一致的领域表示，Provider 适配时再转换成消息；保留规模与压缩前估算不丢失。手动触发不用 contextWindow=0 偷渡控制流。压缩卡区分消息条数、轮次与 token，不把保留尾部条数称为“已归档轮次”。
+  - 本次已统一自动/手动提案与提交，删除 contextWindow=0 控制旁路，并覆盖扩展摘要恢复。UI 卡片的轮次/条数标签仍待处理，故本项不整体关闭。
   - 提示词质量与长期连续性另见 B01，不借此新增完整记忆系统。
 
-- [ ] **A09 压缩失败保留历史并给出可行恢复方式**（原 M3）【代码复核】
+- [x] **A09 压缩失败保留历史并给出可行恢复方式**（原 M3）【代码复核】
   - 定位：compactHistory 的 provider.stream 与 loop 的压缩失败处理。
   - 验收：失败和取消不替换原历史，不提交半份摘要；错误可见并可重试。仅在原上下文仍可发送时允许继续；已超窗则停止当前请求并提供明确恢复入口。
   - 重试复用适用的 Provider 机制，取消不得被重试掩盖。撤回“压缩失败必须原样继续对话”的无条件要求。
@@ -107,7 +106,7 @@
 - [ ] **A12 扩展加载状态可查，加载约定明确**（原 S6、S7、D5）【代码复核】
   - 定位：`src/extensions/runner.ts` 的 load/list/diagnostics；`docs/extensions-development.md`。
   - 验收：已有诊断接入一个可查询入口，显示 active/failed 和原因；默认发现支持的后缀与目录布局和开发指南一致。对于承诺支持或显式请求加载的入口，失败应有诊断；不用为目录内每个辅助文件刷警告。
-  - 当前只发现顶层 js/mjs/cjs/ts；mts 与子目录支持需结合文档和真实扩展用法决定，不默认递归加载所有脚本。
+  - 本次已支持目录入口、manifest、mts/cts、显式 -e 和本地依赖重载；开发指南已同步。统一可查询诊断入口仍待接，不把加载成功当作全部诊断完成。
 
 ### P2：局部交互缺陷与可独立修复的不一致
 

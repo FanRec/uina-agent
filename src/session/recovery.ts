@@ -1,3 +1,4 @@
+import { validImages } from "../core/content.js";
 import type { AgentMessage, ToolResultStatus } from "../core/types.js";
 import type {
 	QueuedInput,
@@ -80,6 +81,7 @@ export function recoverRecords(records: SessionRecord[]): RecoveredState {
 				kind: "custom_message",
 				customType: record.customType,
 				content: record.content,
+    ...(record.images ? { images: record.images } : {}),
 				...(record.display === undefined ? {} : { display: record.display }),
 				...(record.details === undefined ? {} : { details: record.details }),
 			});
@@ -169,6 +171,7 @@ export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMess
 				role: "custom",
 				customType: entry.customType,
 				content: entry.content,
+    ...(entry.images ? { images: entry.images } : {}),
 				display: entry.display,
 				details: entry.details,
 			});
@@ -192,7 +195,7 @@ export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMess
 
 /** Runtime inputs remain identifiable session facts, not human utterances. */
 export function projectInputMessage(input: QueuedInput): AgentMessage {
-	return input.source?.kind === "runtime" ? { role: "custom", id: input.id, customType: "runtime-input", display: false, content: `[运行时事件 ${input.source.type}${input.source.ref ? ` · ${input.source.ref}` : ""}]\n${input.text}`, details: { source: input.source, data: input.data } } : { role: "user", id: input.id, content: input.text };
+	return input.source?.kind === "runtime" ? { role: "custom", id: input.id, customType: "runtime-input", display: false, images: input.images, content: `[运行时事件 ${input.source.type}${input.source.ref ? ` · ${input.source.ref}` : ""}]\n${input.text}`, details: { source: input.source, data: input.data } } : { role: "user", id: input.id, content: input.text, images: input.images };
 }
 
 function applyEvent(
@@ -207,7 +210,7 @@ function applyEvent(
 			typeof data.id !== "string" ||
 			typeof data.order !== "number" ||
 			(data.mode !== "steer" && data.mode !== "followUp") ||
-			typeof data.text !== "string"
+			typeof data.text !== "string" || !validImages(data.images)
 		) {
 			throw new SessionFormatError("queue_enqueued 数据不完整");
 		}
@@ -220,6 +223,7 @@ function applyEvent(
 			order: data.order,
 			mode: data.mode,
 			text: data.text,
+   ...(validImages(data.images) && data.images ? { images: data.images } : {}),
 			...(isInputSource(data.source) ? { source: data.source } : {}),
 			...(data.data !== undefined ? { data: data.data } : {}),
 		});
@@ -304,13 +308,13 @@ export function isRecord(value: unknown): value is SessionRecord {
 		const input = record.input as Record<string, unknown>;
 		return typeof input.id === "string" && input.id.length > 0 && Number.isSafeInteger(input.order) && (input.order as number) > 0
 			&& (input.mode === "steer" || input.mode === "followUp") && typeof input.text === "string"
-			&& (input.source === undefined || isInputSource(input.source));
+			&& validImages(input.images) && (input.source === undefined || isInputSource(input.source));
 	}
 	if (record.kind === "message") {
 		return isAgentMessage(record.message);
 	}
 	if (record.kind === "custom_message") {
-		return typeof record.customType === "string" && record.customType.length > 0 && typeof record.content === "string" && (record.display === undefined || typeof record.display === "boolean");
+		return validImages(record.images) && typeof record.customType === "string" && record.customType.length > 0 && typeof record.content === "string" && (record.display === undefined || typeof record.display === "boolean");
 	}
 	if (record.kind === "custom_entry") {
 		return typeof record.customType === "string" && record.customType.length > 0;
@@ -344,6 +348,7 @@ export function isRecord(value: unknown): value is SessionRecord {
 function isAgentMessage(value: unknown): value is AgentMessage {
 	if (!value || typeof value !== "object") return false;
 	const message = value as Record<string, unknown>;
+ if (!validImages(message.images)) return false;
 	if (message.role === "custom") return typeof message.content === "string" && typeof message.customType === "string" && message.customType.length > 0 && (message.display === undefined || typeof message.display === "boolean");
 	if (message.role === "compactionSummary") return typeof message.content === "string" && typeof message.summary === "string" && (message.tokensBefore === undefined || (typeof message.tokensBefore === "number" && Number.isFinite(message.tokensBefore)));
 	if (

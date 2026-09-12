@@ -1,3 +1,5 @@
+import { Registrations } from "../core/registrations.js";
+import { assertImageInput } from "../core/content.js";
 import type {
 	DiscoveredModel,
 	FinishReason,
@@ -27,6 +29,7 @@ export function createModel(conf: ProviderConfig, providerId: string): Model {
 	const levels = configuredThinkingLevels(conf);
 	return {
 		id: conf.model,
+  imageInput: conf.imageInput,
 		name: conf.model,
 		providerId,
 		contextWindow: effectiveWindow,
@@ -78,6 +81,7 @@ export function createAnthropicProvider(id: string, conf: ProviderConfig): Provi
 			return (payload.data ?? []).flatMap((model) => typeof model.id === "string" ? [{ id: model.id }] : []);
 		},
 		async stream(model: Model, req: ModelRequest, emit: (d: StreamDelta) => void, signal?: AbortSignal): Promise<void> {
+			assertImageInput(model, req);
 			if (model.providerId !== id) {
 				throw new Error(`模型 ${model.id} 的 providerId (${model.providerId}) 与端点 id (${id}) 不匹配`);
 			}
@@ -345,7 +349,7 @@ export function anthropicMessages(req: ModelRequest): unknown[] {
 			const toolBlock = {
 				type: "tool_result",
 				tool_use_id: message.tool_call_id,
-				content: message.content,
+				content: message.images?.length ? [{ type: 'text', text: message.content || '[image]' }, ...message.images.map(image => ({ type: 'image', source: { type: 'base64', media_type: image.mimeType, data: image.data } }))] : message.content,
 				is_error: message.status && message.status !== "succeeded",
 			};
 			const previous = out.at(-1);
@@ -376,6 +380,13 @@ export function anthropicMessages(req: ModelRequest): unknown[] {
 		}
 
 		if (message.role === "user") {
+   if (message.images?.length) {
+    const blocks = [{ type: 'text', text: message.content || '[image]' }, ...message.images.map(image => ({ type: 'image', source: { type: 'base64', media_type: image.mimeType, data: image.data } }))];
+    const previous = out.at(-1);
+    if (previous?.role === 'user') { previous.content = [...(Array.isArray(previous.content) ? previous.content : [{ type: 'text', text: previous.content }]), ...blocks]; }
+    else out.push({ role: 'user', content: blocks });
+    continue;
+   }
 			const previous = out.at(-1);
 			if (previous && previous.role === "user") {
 				if (typeof previous.content === "string") {
@@ -412,8 +423,8 @@ export function geminiRequest(req: ModelRequest, includeToolCallIds: boolean, th
 			const response = message.status && message.status !== "succeeded" ? { error: message.content } : { output: message.content };
 			const functionResponse = { functionResponse: { name, response, ...(includeToolCallIds ? { id: message.tool_call_id } : {}) } };
 			const previous = contents.at(-1);
-			if (previous?.role === "user" && previous.parts.some((part) => isRecord(part) && "functionResponse" in part)) previous.parts.push(functionResponse);
-			else contents.push({ role: "user", parts: [functionResponse] });
+			if (previous?.role === "user" && previous.parts.some((part) => isRecord(part) && "functionResponse" in part)) previous.parts.push(functionResponse, ...(message.images ?? []).map(image => ({ inlineData: { mimeType: image.mimeType, data: image.data } })));
+			else contents.push({ role: "user", parts: [functionResponse, ...(message.images ?? []).map(image => ({ inlineData: { mimeType: image.mimeType, data: image.data } }))] });
 			continue;
 		}
 		if (message.role === "assistant") {
@@ -433,9 +444,9 @@ export function geminiRequest(req: ModelRequest, includeToolCallIds: boolean, th
 		}
 		const previous = contents.at(-1);
 		if (previous?.role === "user" && !previous.parts.some((part) => isRecord(part) && "functionResponse" in part)) {
-			previous.parts.push({ text: message.content });
+			previous.parts.push({ text: message.content }, ...(message.images ?? []).map(image => ({ inlineData: { mimeType: image.mimeType, data: image.data } })));
 		} else {
-			contents.push({ role: "user", parts: [{ text: message.content }] });
+			contents.push({ role: "user", parts: [{ text: message.content }, ...(message.images ?? []).map(image => ({ inlineData: { mimeType: image.mimeType, data: image.data } }))] });
 		}
 	}
 	return {
@@ -627,8 +638,8 @@ interface GeminiChunk {
 }
 
 export class ModelRegistry {
-	private providers = new Map<string, Provider>();
-	private models = new Map<string, Model>();
+	private providers = new Registrations<Provider>();
+	private models = new Registrations<Model>();
 	private defaultModels = new Map<string, Model>();
 	private discovered = new Map<string, DiscoveredModel[]>();
 	private config?: UinaConfig;
@@ -639,20 +650,23 @@ export class ModelRegistry {
 			for (const [name, conf] of Object.entries(config.providers)) {
 				const provider = createProvider(name, conf);
 				const model = createModel(conf, name);
-				this.providers.set(name, provider);
+				this.providers.register(name, provider);
 				this.defaultModels.set(name, model);
-				this.models.set(model.id, model);
-				this.models.set(`${name}/${model.id}`, model);
+				this.models.register(model.id, model, { replace: true });
+				this.models.register(`${name}/${model.id}`, model);
 			}
 		}
 	}
+
+	listModels(): readonly Model[] { const effective = new Map<string, Model>(); for (const model of this.models.values()) effective.set(`${model.providerId}/${model.id}`, this.getModel(`${model.providerId}/${model.id}`) ?? model); return [...effective.values()]; }
 
 	getProvider(id: string): Provider | undefined {
 		return this.providers.get(id);
 	}
 
 	getModel(nameOrKey: string): Model | undefined {
-		return this.models.get(nameOrKey) ?? this.defaultModels.get(nameOrKey);
+		const base = this.models.get(nameOrKey) ?? this.defaultModels.get(nameOrKey);
+  return base ? this.models.get(`${base.providerId}/${base.id}`) ?? base : undefined;
 	}
 
 	resolve(modelOrProviderName: string): Model {
@@ -672,6 +686,7 @@ export class ModelRegistry {
 				const kind = base?.type ?? "openai-compatible";
 				const model: Model = {
 					id: modelId,
+     imageInput: discovered.imageInput,
 					name: modelId,
 					providerId,
 					contextWindow: Math.min(discovered.contextWindow, base?.maxContextWindow ?? discovered.contextWindow),
@@ -685,7 +700,7 @@ export class ModelRegistry {
 						geminiThinkingFormat: base?.geminiThinkingFormat,
 					},
 				};
-				this.models.set(modelOrProviderName, model);
+				this.models.register(modelOrProviderName, model);
 				return model;
 			}
 		}
@@ -696,31 +711,20 @@ export class ModelRegistry {
 		return this.models.has(name) || this.defaultModels.has(name) || this.providers.has(name) || Boolean(this.config?.providers[name]);
 	}
 
-	registerProvider(provider: Provider): () => void {
-		if (this.providers.has(provider.id)) throw new Error(`Provider 已注册: ${provider.id}`);
-		this.providers.set(provider.id, provider);
-		return () => {
-			if (this.providers.get(provider.id) === provider) {
-				this.providers.delete(provider.id);
-			}
-		};
-	}
-
-	registerModel(model: Model): () => void {
-		const key = `${model.providerId}/${model.id}`;
-		this.models.set(key, model);
-		if (!this.models.has(model.id)) this.models.set(model.id, model);
-		return () => {
-			if (this.models.get(key) === model) this.models.delete(key);
-			if (this.models.get(model.id) === model) this.models.delete(model.id);
-		};
-	}
-
-	/** 注册 Provider（兼容扩展接入单参数/双参数入口） */
-	register(name: string, provider: Provider): () => void {
-		const actualProvider: Provider = provider.id === name ? provider : { ...provider, id: name };
-		return this.registerProvider(actualProvider);
-	}
+ registerProvider(provider: Provider, options?: { replace?: boolean }): () => void {
+  return this.providers.register(provider.id, provider, options);
+ }
+ registerModel(model: Model, options?: { replace?: boolean }): () => void {
+  const key = model.providerId + '/' + model.id;
+  const remove = this.models.register(key, model, options);
+  const alias = this.models.get(model.id);
+  const removeAlias = !alias || alias.providerId === model.providerId ? this.models.register(model.id, model, { replace: true }) : undefined;
+  return () => { removeAlias?.(); remove(); };
+ }
+ register(name: string, provider: Provider, options?: { replace?: boolean }): () => void {
+  const actualProvider: Provider = provider.id === name ? provider : { ...provider, id: name };
+  return this.registerProvider(actualProvider, options);
+ }
 
 	groups(): Array<{
 		id: string;
@@ -766,7 +770,7 @@ export class ModelRegistry {
 		}
 
 		// 2. Explicitly registered models
-		for (const model of this.models.values()) {
+		for (const model of this.listModels()) {
 			const group = ensureGroup(model.providerId);
 			if (!group.models.has(model.id)) {
 				group.models.set(model.id, {
@@ -812,6 +816,7 @@ export class ModelRegistry {
 		onDelta: (d: StreamDelta) => void,
 		signal?: AbortSignal,
 	): Promise<void> {
+		assertImageInput(model, req);
 		const provider = this.providers.get(model.providerId);
 		if (!provider) {
 			throw new Error(`找不到模型 ${model.id} 对应的 Provider: ${model.providerId}`);
@@ -821,7 +826,7 @@ export class ModelRegistry {
 
 	async refreshModels(): Promise<void> {
 		const failures: string[] = [];
-		for (const [id, provider] of this.providers.entries()) {
+		for (const [id, provider] of this.providers.entriesList()) {
 			this.discovered.delete(id);
 			try {
 				if (provider.refreshModels) {

@@ -5,6 +5,7 @@
 export interface ParsedArgs {
 	/** 用户在命令行直接输入的初始任务提示词（拼接所有的 positional 参数） */
 	readonly prompt?: string;
+ readonly extensions?: readonly string[];
 	/** 是否启用批处理/打印模式（流式输出后立即退出进程，不进入交互 TUI） */
 	readonly print: boolean;
 	/** 临时覆盖当前会话使用的模型（如 openai/gpt-4o、deepseek-r1） */
@@ -26,6 +27,7 @@ export const UINA_VERSION = "0.1.0";
  */
 export function parseArgs(argv: readonly string[]): ParsedArgs {
 	const positionals: string[] = [];
+ const extensions: string[] = [];
 	let print = false;
 	let model: string | undefined;
 	let noSession = false;
@@ -56,7 +58,15 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 			continue;
 		}
 
-		if (arg === "--no-session") {
+		if (arg === '-e' || arg === '--extension') {
+   const entry = argv[++i];
+   if (!entry || entry.startsWith('-')) throw new Error('--extension 需要文件或目录路径');
+   extensions.push(entry); continue;
+  }
+  if (arg.startsWith('--extension=') || arg.startsWith('-e=')) {
+   const entry = arg.slice(arg.indexOf('=') + 1); if (!entry) throw new Error('--extension 需要路径'); extensions.push(entry); continue;
+  }
+  if (arg === "--no-session") {
 			noSession = true;
 			continue;
 		}
@@ -83,6 +93,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 
 	return {
 		prompt: prompt || undefined,
+  ...(extensions.length ? { extensions } : {}),
 		print,
 		model: model?.trim() || undefined,
 		noSession,
@@ -110,6 +121,7 @@ export function formatHelp(): string {
 		"选项:",
 		"  -p, --print                   批处理模式（Print Mode）：流式打印回答后立即退出进程。",
 		"  -m, --model <provider/model>  临时覆盖本次会话使用的模型（例如 openai/gpt-4o、deepseek-r1）。",
+		"  -e, --extension <path>        加载扩展文件或目录；可重复。",
 		"  --no-session                  纯内存临时模式（不加载历史、不写盘、不留痕迹）。",
 		"  -v, --version                 显示当前版本号并退出。",
 		"  -h, --help                    显示命令行帮助信息并退出。",

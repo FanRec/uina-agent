@@ -8,6 +8,7 @@
  * 4. 支持链式变换（context、tool_result、before_provider_request 等）。
  */
 
+import { Registrations } from "../core/registrations.js";
 import type { ChatMsg } from "../core/types.js";
 import { copyValue, readonlySnapshot } from "../runtime/guard.js";
 import type {
@@ -80,6 +81,7 @@ export interface ToolResultEventResult {
 	readonly result?: string;
 	readonly status?: import("../core/types.js").ToolResultStatus;
 	readonly details?: unknown;
+ readonly images?: readonly import("../core/content.js").ImageContent[];
 }
 
 export interface SessionBeforeCompactResult {
@@ -103,7 +105,9 @@ interface RegisteredHandler {
 export type RuntimeScopeFilter = readonly string[] | undefined;
 
 export class ExtensionHost {
-	private handlers = new Map<string, Set<RegisteredHandler>>();
+	private readonly contextContributors = new Registrations<{ scopeId?: string; run: (input: Readonly<{ prompt: string; systemPrompt: string }>, signal?: AbortSignal) => Promise<readonly ChatMsg[]> }>();
+ registerContextContributor(name: string, contributor: (input: Readonly<{ prompt: string; systemPrompt: string }>, signal?: AbortSignal) => Promise<readonly ChatMsg[]>, options?: { replace?: boolean; scopeId?: string }): () => void { return this.contextContributors.register(name, { run: contributor, scopeId: options?.scopeId }, options); }
+ private handlers = new Map<string, Set<RegisteredHandler>>();
 	private errorListeners = new Set<ExtensionErrorListener>();
 	private observedTail: Promise<void> = Promise.resolve();
 
@@ -212,7 +216,9 @@ export class ExtensionHost {
 						current.result = res.result;
 						modified = true;
 					}
-					if (res.status !== undefined) {
+					if (res.details !== undefined) { current.details = copyValue(res.details); modified = true; }
+     if (res.images !== undefined) { current.images = copyValue(res.images); modified = true; }
+     if (res.status !== undefined) {
 						current.status = res.status;
 						modified = true;
 					}
@@ -222,7 +228,7 @@ export class ExtensionHost {
 			}
 		}
 
-		return modified ? { result: current.result, status: current.status } : undefined;
+		return modified ? { result: current.result, status: current.status, details: current.details, images: current.images } : undefined;
 	}
 
 	/** 触发上下文消息变换 */
@@ -252,10 +258,9 @@ export class ExtensionHost {
 		prompt: string,
 		systemPrompt: string,
 		scope?: RuntimeScopeFilter,
+  signal?: AbortSignal,
 	): Promise<{ messages?: ChatMsg[]; systemPrompt?: string } | undefined> {
 		const handlers = this.handlersFor("before_agent_start", scope);
-		if (handlers.length === 0) return undefined;
-
 		const messages: ChatMsg[] = [];
 		let currentPrompt = systemPrompt;
 		let modified = false;
@@ -282,6 +287,14 @@ export class ExtensionHost {
 			}
 		}
 
+  {
+   for (const contributor of this.contextContributors.values()) {
+    if (scope && (!contributor.scopeId || !scope.includes(contributor.scopeId))) continue;
+    const additions = await contributor.run(readonlySnapshot({ prompt, systemPrompt: currentPrompt }), signal);
+    messages.push(...structuredClone(additions));
+    if (additions.length) modified = true;
+   }
+  }
 		return modified
 			? {
 					messages: messages.length > 0 ? messages : undefined,

@@ -19,65 +19,6 @@ export interface CompactionResult {
 	tokensBefore: number;
 }
 
-export interface PrepareNextTurnContext {
-	turnNumber: number;
-	history: readonly (AgentMessage | ChatMsg)[];
-	model: Model;
-	stream: ModelStreamFn;
-	systemPrompt: string;
-	tools: readonly ToolDef[];
-	compaction: CompactionSettings;
-	providerHooks: ProviderHooks;
-	signal?: AbortSignal;
-}
-
-export interface PrepareNextTurnResult {
-	history?: (AgentMessage | ChatMsg)[];
-	systemPrompt?: string;
-	compaction?: CompactionResult;
-}
-
-export async function defaultPrepareNextTurn(
-	ctx: PrepareNextTurnContext,
-	beforeCompact?: (input: { tokensBefore: number }) => Promise<{ cancel?: boolean }>,
-): Promise<PrepareNextTurnResult | null> {
-	if (!shouldCompact(ctx.history, ctx.systemPrompt, ctx.tools, ctx.compaction, ctx.model.includeThinking)) {
-		return null;
-	}
-	const keepFrom = findKeepFrom(ctx.history, ctx.compaction.keepRecentTokens);
-	if (keepFrom <= 0) return null;
-
-	const tokensBefore = Math.ceil(
-		ctx.history.reduce((acc, m) => {
-			const len = m.role === "compactionSummary" ? m.summary.length : (m.content?.length ?? 0);
-			return acc + len + 16;
-		}, 0) / 4,
-	);
-	if (beforeCompact) {
-		const decision = await beforeCompact({ tokensBefore });
-		if (decision.cancel) return null;
-	}
-	const result = await compactHistory(
-		ctx.history,
-		ctx.model,
-		ctx.stream,
-		ctx.systemPrompt,
-		ctx.tools,
-		ctx.compaction,
-		ctx.providerHooks,
-		ctx.signal,
-		ctx.model.includeThinking,
-	);
-	if (!result) return null;
-	return {
-		history: [
-			{ role: "user", content: `[历史摘要] ${result.summary}` },
-			...result.retainedTail,
-		],
-		compaction: result,
-	};
-}
-
 export function shouldCompact(
 	history: readonly (AgentMessage | ChatMsg)[],
 	systemPrompt: string,
@@ -86,7 +27,6 @@ export function shouldCompact(
 	includeThinking = false,
 ): boolean {
 	if (settings.contextWindow === undefined) return false;
-	if (settings.contextWindow === 0) return true;
 	return (
 		estimateContextTokens(buildContext({ history: [...history], systemPrompt }), { tools, includeThinking }).tokens >
 		settings.contextWindow - settings.reserveTokens
@@ -128,32 +68,25 @@ export async function compactHistory(
 	history: readonly (AgentMessage | ChatMsg)[],
 	model: Model,
 	stream: ModelStreamFn,
-	systemPrompt: string,
-	tools: readonly ToolDef[],
-	settings: CompactionSettings,
+	preparation: { keepFrom: number; tokensBefore: number; instruction?: string },
 	providerHooks: ProviderHooks,
 	signal?: AbortSignal,
-	includeThinking = false,
-	instruction?: string,
-	allowShortHistoryFallback = false,
 ): Promise<CompactionResult | null> {
-	if (!shouldCompact(history, systemPrompt, tools, settings, includeThinking)) return null;
-	const keepFrom = findKeepFrom(history, settings.keepRecentTokens, allowShortHistoryFallback);
+	const { keepFrom, tokensBefore, instruction } = preparation;
 	if (keepFrom <= 0) return null;
 
 	const oldest = history.slice(0, keepFrom);
 	const priorSummary = oldest.find(
 		(message) =>
-			(message.role === "user" && message.content.startsWith("[历史摘要]")) ||
-			message.role === "compactionSummary",
+			(message.role === "user" && message.content.startsWith("[历史摘要]")) || message.role === "compactionSummary",
 	);
 	const rest = oldest.filter((message) => message !== priorSummary);
-	const transcript = (
+	const transcript =
 		(priorSummary ? `[user] ${formatForSummary(priorSummary)}\n` : "") +
-		rest.map((message) => `[${message.role}] ${formatForSummary(message)}`).join("\n")
-	);
+		rest.map((message) => `[${message.role}] ${formatForSummary(message)}`).join("\n");
 
 	let summary = "";
+	let finished = false;
 	await stream(
 		model,
 		{
@@ -169,6 +102,8 @@ export async function compactHistory(
 			providerHooks,
 		},
 		(delta) => {
+			if (finished && delta.kind !== "usage") throw new Error("compaction finish 后仍有内容");
+			if (delta.kind === "finish") finished = true;
 			if (delta.kind === "text") summary += delta.text;
 			if (delta.kind === "tool_call") {
 				throw new Error("compaction provider 返回了工具调用");
@@ -180,11 +115,13 @@ export async function compactHistory(
 		signal,
 	);
 
+	signal?.throwIfAborted();
+	if (!finished) throw new Error("compaction 缺少终止事件");
 	const final = summary.trim();
 	if (!final) throw new Error("compaction 返回空摘要");
 	return {
 		summary: final,
 		retainedTail: history.slice(keepFrom).map((message) => structuredClone(message)),
-		tokensBefore: estimateContextTokens(buildContext({ history: [...history], systemPrompt }), { tools, includeThinking }).tokens,
+		tokensBefore,
 	};
 }

@@ -10,8 +10,8 @@ import { ExtensionHost, type RuntimeScopeFilter } from "./host.js";
 export function createRuntimeHooks(host: ExtensionHost, scope?: RuntimeScopeFilter): RuntimeHooks {
 	const hooks: RuntimeHooks = {
 		turn: Object.freeze({
-			prepare: async (input) => {
-				const prepared = await host.emitBeforeAgentStart(input.prompt, input.systemPrompt, scope);
+			prepare: async (input, signal) => {
+				const prepared = await host.emitBeforeAgentStart(input.prompt, input.systemPrompt, scope, signal);
 				return Object.freeze({
 					...(prepared?.messages ? { messages: structuredClone(prepared.messages) } : {}),
 					...(prepared?.systemPrompt !== undefined ? { systemPrompt: prepared.systemPrompt } : {}),
@@ -27,11 +27,13 @@ export function createRuntimeHooks(host: ExtensionHost, scope?: RuntimeScopeFilt
 			transformResult: async (input) => {
 				const result = await host.emitToolResult({
 					type: "tool_result", toolName: input.name, args: input.args, result: input.result,
-					status: input.status, callId: input.callId,
+					status: input.status, callId: input.callId, images: input.images, details: input.details,
 				}, scope);
 				return Object.freeze({
 					...(result?.result !== undefined ? { result: result.result } : {}),
 					...(result?.status !== undefined ? { status: result.status } : {}),
+     ...(result?.images !== undefined ? { images: result.images } : {}),
+     ...(result?.details !== undefined ? { details: result.details } : {}),
 				});
 			},
 		}),

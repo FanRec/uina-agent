@@ -153,6 +153,7 @@ export class UIHost implements UIHostContextPort {
 
 	// 运行与动画状态
 	private running = false;
+ private stopRegistryUpdates?: () => void;
 	private busy = false;
 	private turnStartTime = 0;
 	private streamTokenCount = 0;
@@ -337,7 +338,10 @@ export class UIHost implements UIHostContextPort {
 		this.transcript.setRendererResolver({
 			message: (type) => this.registry.getMessageRenderer(type),
 			entry: (type) => this.registry.getEntryRenderer(type),
+   tool: (name) => this.registry.getToolRenderer(name),
+   markdown: (text, context) => this.registry.transformMarkdown(text, context),
 		});
+		this.connectRegistry();
 		this.editorContainer = new Container();
 		this.footerContainer = new Container();
 
@@ -398,7 +402,13 @@ export class UIHost implements UIHostContextPort {
 		this.focusManager.setFocus(this.inputLine);
 	}
 
+ private connectRegistry(): void {
+  this.stopRegistryUpdates ??= this.registry.onChange(() => { this.transcript.invalidate(); this.requestRender(); });
+  this.transcript.invalidate();
+ }
+
 	start(): void {
+  this.connectRegistry();
 		if (this.running) return;
 		this.running = true;
 		this.transcript.smoothReveal.setEnabled(true);
@@ -412,6 +422,8 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	stop(): void {
+  this.stopRegistryUpdates?.();
+  this.stopRegistryUpdates = undefined;
 		if (!this.running) return;
 		this.running = false;
 		this.transcript.smoothReveal.setEnabled(false);

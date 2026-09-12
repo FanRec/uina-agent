@@ -1,3 +1,4 @@
+import { imageNotice } from "../../../core/content.js";
 /**
  * 会话转录区容器（TranscriptContainer）。
  * 集中管理用户轮次、思考流、助手 Markdown 回复、工具调用、差异比对、压缩卡片与扩展自定义消息。
@@ -21,7 +22,7 @@ import {
 	CustomEntryComponent,
 } from "./cards.js";
 import { SmoothRevealController } from "./smooth-reveal.js";
-import type { CustomMessage, CustomEntry, MessageRenderer, EntryRenderer } from "../../../extensions/ui-contract.js";
+import type { CustomMessage, CustomEntry, MessageRenderer, EntryRenderer, ToolRenderer, MarkdownTransformer } from "../../../extensions/ui-contract.js";
 
 export interface ToolRecord {
 	name: string;
@@ -44,6 +45,8 @@ export type TurnItem =
 			name: string;
 			args?: unknown;
 			result?: string;
+   images?: import("../../../core/content.js").ImageContent[];
+   details?: unknown;
 			status: "running" | ToolResultStatus;
 			elapsedMs?: number;
 			startedAt?: number;
@@ -65,6 +68,7 @@ export type TurnItem =
 export interface TurnRecord {
 	n: number;
 	userText: string;
+ userImages?: readonly import("../../../core/content.js").ImageContent[];
 	items: TurnItem[];
 	thinkingCollapsed?: boolean;
 	readonly assistantMarkdown: string;
@@ -314,7 +318,7 @@ export class TranscriptContainer implements Component {
 		if (targetItem) {
 			const callId = targetItem.callId || `tool-${targetItem.name}`;
 			const wasExpanded = targetItem.collapsed === false || this.expandedToolIds.has(callId);
-			const beforeCount = formatToolCardLines(targetItem.name, targetItem.result ?? "", targetItem.elapsedMs ?? 0, width, targetItem.status, targetItem.args, {
+			const beforeCount = this.renderTool(targetItem, width, {
 				isExpanded: wasExpanded,
 				startedAt: targetItem.startedAt,
 			}).length;
@@ -328,7 +332,7 @@ export class TranscriptContainer implements Component {
 			if (ownerTurn) this.invalidateTurn(ownerTurn.n);
 			else this.invalidate();
 
-			const afterCount = formatToolCardLines(targetItem.name, targetItem.result ?? "", targetItem.elapsedMs ?? 0, width, targetItem.status, targetItem.args, {
+			const afterCount = this.renderTool(targetItem, width, {
 				isExpanded: !wasExpanded,
 				startedAt: targetItem.startedAt,
 			}).length;
@@ -369,20 +373,41 @@ export class TranscriptContainer implements Component {
 		this.invalidate();
 	}
 
-	private messageRenderer: (type: string) => MessageRenderer | undefined = () => undefined;
+	private toolRenderer: (name: string) => ToolRenderer | undefined = () => undefined;
+ private markdownTransformer: MarkdownTransformer = text => text;
+ private renderTool(item: Extract<TurnItem, { kind: 'tool' }>, width: number, options: import('./tool-view.js').ToolCardRenderOptions): string[] {
+  let failure: string | undefined;
+  try {
+   const component = this.toolRenderer(item.name)?.(structuredClone(item), { width, expanded: options.isExpanded ?? false, hovered: options.isHovered ?? false, elapsedMs: item.elapsedMs ?? 0 });
+   if (component) return component.render(width);
+  } catch (error) { failure = '[tool renderer ' + item.name + ': ' + String(error) + ']'; }
+  const text = item.result ?? '';
+  const lines = formatToolCardLines(item.name, text, item.elapsedMs ?? 0, width, item.status, item.args, options);
+  if (item.images?.length) lines.push('  [图片 ' + item.images.map(image => image.mimeType).join(', ') + '；终端显示元数据]');
+  if (failure) lines.push(failure);
+  return lines;
+ }
+ private transformMarkdown(text: string, role: 'user' | 'assistant', width: number, streaming: boolean): string {
+  try { return this.markdownTransformer(text, { role, width, streaming }); }
+  catch (error) { return text + '\n[markdown renderer: ' + String(error) + ']'; }
+ }
+ private messageRenderer: (type: string) => MessageRenderer | undefined = () => undefined;
 	private entryRenderer: (type: string) => EntryRenderer | undefined = () => undefined;
 
-	setRendererResolver(resolve: { message(type: string): MessageRenderer | undefined; entry(type: string): EntryRenderer | undefined }): void {
+	setRendererResolver(resolve: { message(type: string): MessageRenderer | undefined; entry(type: string): EntryRenderer | undefined; tool?(name: string): ToolRenderer | undefined; markdown?: MarkdownTransformer }): void {
 		this.messageRenderer = resolve.message;
 		this.entryRenderer = resolve.entry;
+  this.toolRenderer = resolve.tool ?? (() => undefined);
+  this.markdownTransformer = resolve.markdown ?? (text => text);
 		this.invalidate();
 	}
 
-	startTurn(n: number, userText: string): void {
+	startTurn(n: number, userText: string, images?: readonly import("../../../core/content.js").ImageContent[]): void {
 		if (this.currentTurn) {
 			this.commitCurrentTurn();
 		}
 		this.currentTurn = createTurnRecord(n, userText);
+  this.currentTurn.userImages = images;
 	}
 
 	appendToken(token: string): void {
@@ -424,7 +449,7 @@ export class TranscriptContainer implements Component {
 		this.invalidate();
 	}
 
-	addToolDone(name: string, result: string, elapsedMs = 0, status: ToolResultStatus = "unknown", callId?: string, args?: unknown): void {
+	addToolDone(name: string, result: string, elapsedMs = 0, status: ToolResultStatus = "unknown", callId?: string, args?: unknown, attachments?: { images?: import("../../../core/content.js").ImageContent[]; details?: unknown }): void {
 		result = sanitizeRenderText(result);
 		if (!this.currentTurn) {
 			const lastTurn = this.historyTurns[this.historyTurns.length - 1];
@@ -435,7 +460,8 @@ export class TranscriptContainer implements Component {
 				);
 				if (existingTool) {
 					// 该工具属于已结算/打断的上一轮，严禁开辟新轮次或生成重复工具卡
-					existingTool.status = status;
+					Object.assign(existingTool, attachments);
+     existingTool.status = status;
 					existingTool.result = result;
 					existingTool.elapsedMs = elapsedMs;
 					this.invalidate();
@@ -463,7 +489,8 @@ export class TranscriptContainer implements Component {
 		}
 
 		if (runningTool) {
-			runningTool.status = status;
+			Object.assign(runningTool, attachments);
+   runningTool.status = status;
 			runningTool.result = result;
 			runningTool.elapsedMs = elapsedMs;
 			if (args !== undefined && runningTool.args === undefined) {
@@ -475,6 +502,7 @@ export class TranscriptContainer implements Component {
 				name,
 				args,
 				result,
+    ...attachments,
 				elapsedMs,
 				status: status,
 				callId,
@@ -617,6 +645,7 @@ export class TranscriptContainer implements Component {
 				commit();
 				pendingToolCalls = [];
 				current = createTurn(msg.content);
+    current.userImages = msg.images;
 			} else if (msg.role === "assistant") {
 				current ??= createTurn();
 				if (msg.thinking) {
@@ -653,6 +682,8 @@ export class TranscriptContainer implements Component {
 					name: toolName,
 					args: toolArgs,
 					result: msg.content,
+     images: msg.images,
+     details: msg.details,
 					elapsedMs,
 					status: msg.status ?? "unknown",
 					callId: msg.tool_call_id,
@@ -738,6 +769,7 @@ export class TranscriptContainer implements Component {
 	}
 
 	private formatUserLine(text: string, width: number): string[] {
+  text = this.transformMarkdown(text, "user", width, false);
 		const lines: string[] = [""];
 		const prefix = `${C.bold}${C.briefLabelYou}❯ ${C.reset}`;
 		const leadW = 2; // "❯ " 占 2 列
@@ -756,7 +788,8 @@ export class TranscriptContainer implements Component {
 		return lines;
 	}
 
-	private formatAssistantMarkdown(md: string, width: number, isFirstParagraph = true): string[] {
+	private formatAssistantMarkdown(md: string, width: number, isFirstParagraph = true, streaming = false): string[] {
+  md = this.transformMarkdown(md, "assistant", width, streaming);
 		md = sanitizeRenderText(md);
 		if (!md) return [];
 		const contentBudget = Math.max(20, width - 2);
@@ -874,7 +907,7 @@ export class TranscriptContainer implements Component {
 		const hover = opts.hover ?? false;
 		const activeFailed = opts.latestFailed !== undefined ? opts.latestFailed : this.getLatestFailedTool();
 
-		if (turn.userText) out.push(...this.formatUserLine(turn.userText, width));
+		if (turn.userText || turn.userImages?.length) out.push(...this.formatUserLine(turn.userText + imageNotice(turn.userImages), width));
 
 		let hasRenderedText = false;
 		for (const item of turn.items) {
@@ -888,14 +921,14 @@ export class TranscriptContainer implements Component {
 				const textToRender = isCurrent
 					? this.smoothReveal.getRevealedText(`turn-${turn.n}-text`, item.text, true)
 					: item.text;
-				out.push(...this.formatAssistantMarkdown(textToRender, width, !hasRenderedText));
+				out.push(...this.formatAssistantMarkdown(textToRender, width, !hasRenderedText, isCurrent));
 				hasRenderedText = true;
 			} else if (item.kind === "tool") {
 				const toolId = item.callId || `tool-${item.name}`;
 				const isExpanded = item.collapsed === false || this.expandedToolIds.has(toolId);
 				const isHovered = hover && this.hoveredToolId === toolId;
 				const isNewestFailure = item === activeFailed;
-				const lines = formatToolCardLines(item.name, item.result ?? "", item.elapsedMs ?? 0, width, item.status, item.args, {
+				const lines = this.renderTool(item, width, {
 					isExpanded,
 					isHovered,
 					isNewestFailure,

@@ -76,7 +76,7 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
-	appendCustomMessage(message: { customType: string; content: string; display?: boolean; details?: unknown }): Promise<void> {
+	appendCustomMessage(message: { customType: string; content: string; images?: import("../core/content.js").ImageContent[]; display?: boolean; details?: unknown }): Promise<void> {
 		return this.append({ kind: "custom_message", id: randomUUID(), seq: ++this.nextSeq, timestamp: new Date().toISOString(), ...structuredClone(message) });
 	}
 
@@ -178,7 +178,7 @@ export class MemorySessionStore implements SessionStore {
 		return Promise.resolve();
 	}
 
-	appendCustomMessage(message: { customType: string; content: string; display?: boolean; details?: unknown }): Promise<void> {
+	appendCustomMessage(message: { customType: string; content: string; images?: import("../core/content.js").ImageContent[]; display?: boolean; details?: unknown }): Promise<void> {
 		this.records.push({ kind: "custom_message", id: randomUUID(), seq: this.records.length + 1, timestamp: new Date().toISOString(), ...structuredClone(message) });
 		return Promise.resolve();
 	}

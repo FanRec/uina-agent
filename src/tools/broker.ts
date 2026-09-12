@@ -1,3 +1,5 @@
+import { validImages } from "../core/content.js";
+import { Registrations } from "../core/registrations.js";
 import { createRequire } from "node:module";
 import type { ValidateFunction } from "ajv";
 import type {
@@ -14,6 +16,7 @@ import {
 /** Identity of the caller, independent of the extension that registered a tool. */
 export interface ToolExecutionContext {
 	readonly ownerId: string;
+ readonly callerId?: string;
 }
 
 export interface Tool {
@@ -32,6 +35,8 @@ export interface PreparedToolCall {
 }
 
 export interface ToolExecutionResult {
+ images?: import("../core/content.js").ImageContent[];
+ details?: unknown;
 	result: string;
 	status: ToolResultStatus;
 	/** Ends this decision after recording the result; pending inputs remain queued. */
@@ -66,6 +71,7 @@ export interface ToolView {
 export interface ScopedToolOptions {
 	/** Execution identity; inherited implementations run in this caller's context. */
 	readonly ownerId?: string;
+ readonly callerId?: string;
 	/** When present, only these tool names are inherited/visible. */
 	readonly include?: readonly string[];
 	/** Tool names the child must not inherit/visible. */
@@ -83,17 +89,16 @@ export class ToolBroker implements ToolView {
 		return new ScopedToolView(this, options);
 	}
 
-	private readonly tools = new Map<
-		string,
+	private readonly tools = new Registrations<
 		{ tool: Tool; validator: ValidateFunction }
 	>();
 
-	register(t: Tool): void {
+	register(t: Tool, options: { replace?: boolean } = {}): () => void {
 		validateToolDefinition(t);
 		const name = t.def.function.name;
-		if (this.tools.has(name)) throw new Error(`工具重名: ${name}`);
+		if (this.tools.has(name) && !options.replace) throw new Error(`工具重名: ${name}`);
 		const validator = ajv.compile(t.def.function.parameters);
-		this.tools.set(name, { tool: t, validator });
+		return this.tools.register(name, { tool: t, validator }, options);
 	}
 
 	remove(name: string): void {
@@ -147,7 +152,7 @@ export class ToolBroker implements ToolView {
 			};
 		}
 		const tool = this.tools.get(prepared.name)?.tool;
-		if (!tool) {
+		if (!tool || tool !== prepared.tool) {
 			return {
 				result: JSON.stringify({ error: `工具不可用: ${prepared.name} 已被卸载或不存在`, status: "not_started" }),
 				status: "not_started",
@@ -194,6 +199,7 @@ async function executeToolCore(
 		if (
 			!result ||
 			typeof result.result !== "string" ||
+   !validImages(result.images) ||
 			!["succeeded", "failed", "cancelled", "unknown", "not_started"].includes(result.status)
 		) {
 			throw new Error("工具必须返回 { result: string, status: ToolResultStatus }");
@@ -291,7 +297,7 @@ export class ScopedToolView implements ToolView {
 			};
 		}
 		const context: ToolExecutionContext | undefined = this.ownerId !== undefined
-			? { ownerId: this.ownerId }
+			? { ownerId: this.ownerId, callerId: this.options.callerId }
 			: this.root.getContext();
 		return executeToolCore(tool, prepared.name, prepared.args, signal, context);
 	}

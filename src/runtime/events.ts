@@ -17,7 +17,7 @@ export interface BeforeAgentStartEvent {
 export interface AgentStartEvent { readonly type: "agent_start"; readonly turnSeq: number; }
 export interface AgentEndEvent { readonly type: "agent_end"; readonly turnSeq: number; readonly success: boolean; readonly error?: string; }
 export interface AgentSettledEvent { readonly type: "agent_settled"; readonly turnSeq: number; }
-export interface TurnStartEvent { readonly type: "turn_start"; readonly turnNumber: number; readonly userText: string; }
+export interface TurnStartEvent { readonly type: "turn_start"; readonly turnNumber: number; readonly userText: string; readonly images?: readonly import("../core/content.js").ImageContent[]; }
 export interface TurnEndEvent {
 	readonly type: "turn_end";
 	readonly turnNumber: number;
@@ -35,7 +35,7 @@ export interface TurnEndEvent {
 
 export interface ContextEvent { readonly type: "context"; readonly messages: readonly DeepReadonly<ChatMsg>[]; }
 export interface ToolCallEvent { readonly type: "tool_call"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly callId: string; }
-export interface ToolResultEvent { readonly type: "tool_result"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly result: string; readonly status: import("../core/types.js").ToolResultStatus; readonly callId: string; }
+export interface ToolResultEvent { readonly type: "tool_result"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly result: string; readonly images?: readonly import("../core/content.js").ImageContent[]; readonly details?: unknown; readonly status: import("../core/types.js").ToolResultStatus; readonly callId: string; }
 export interface ModelSelectEvent { readonly type: "model_select"; readonly model: string; readonly previousModel?: string; }
 export interface ThinkingLevelSelectEvent { readonly type: "thinking_level_select"; readonly level: ThinkingLevel; readonly previousLevel?: ThinkingLevel; }
 export interface SessionBeforeCompactEvent { readonly type: "session_before_compact"; readonly tokensBefore: number; }

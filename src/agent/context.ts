@@ -1,3 +1,4 @@
+import { imageNotice } from "../core/content.js";
 import type { AgentMessage, ChatMsg, ContextSegments, ToolDef } from "../core/types.js";
 
 export interface ContextEstimate { tokens: number; actual: boolean; }
@@ -35,16 +36,16 @@ export function convertToLlm(
 	for (const msg of messages) {
 		switch (msg.role) {
 			case "system":
-				intermediate.push({ role: "system", content: msg.content });
+				intermediate.push({ role: "system", content: msg.content, images: msg.images });
 				break;
 			case "custom":
-				intermediate.push({ role: "user", content: msg.content });
+				intermediate.push({ role: "user", content: msg.content, images: msg.images });
 				break;
 			case "compactionSummary":
 				intermediate.push({ role: "user", content: `[历史摘要] ${msg.summary}` });
 				break;
 			case "user":
-				intermediate.push({ role: "user", content: msg.content });
+				intermediate.push({ role: "user", content: msg.content, images: msg.images });
 				break;
 			case "assistant": {
 				const thinking = options.includeThinking ? msg.thinking : undefined;
@@ -78,6 +79,8 @@ export function convertToLlm(
 					role: "tool",
 					tool_call_id: msg.tool_call_id,
 					content: msg.content,
+     images: msg.images,
+     details: msg.details,
 					status: msg.status,
 				});
 				break;
@@ -219,7 +222,7 @@ export function formatForSummary(message: AgentMessage | ChatMsg): string {
 	if (message.role === "compactionSummary") {
 		return `[历史摘要] ${message.summary}`;
 	}
-	return message.content;
+	return message.content + imageNotice(message.images);
 }
 
 /**

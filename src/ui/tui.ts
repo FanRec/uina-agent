@@ -155,7 +155,7 @@ export class InteractiveTUI {
 				this.currentThinkingId = undefined;
 				this.host.markUsageEstimated();
 				this.host.setBusy(true);
-				this.host.transcript.startTurn(m.n, m.text);
+				this.host.transcript.startTurn(m.n, m.text, m.images);
 				this.host.trajectoryProjection.onTurnStart(m.n, m.text);
 				this.host.activityLine.start("thinking", "正在思考与生成回复...");
 				this.host.requestRender();
@@ -208,7 +208,7 @@ export class InteractiveTUI {
 				if (m.callId) this.toolCallMap.delete(m.callId);
 
 				const status = m.status ?? "unknown";
-				this.host.transcript.addToolDone(m.name, m.result, elapsed, status, m.callId, record?.args);
+				this.host.transcript.addToolDone(m.name, m.result, elapsed, status, m.callId, record?.args, { images: m.images, details: m.details });
 				this.host.trajectoryProjection.onToolDone(m.callId ?? "", m.name, m.result, elapsed, status);
 				this.host.activityLine.update("streaming", `工具 ${m.name} 执行完毕，继续生成...`);
 				this.syncToolAnimationTimer();

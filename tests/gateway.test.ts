@@ -111,11 +111,13 @@ describe("OpenAI gateway", () => {
 
 	it("propagates abort without fabricating a finish", async () => {
 		const controller = new AbortController();
+		let timer: ReturnType<typeof setTimeout> | undefined;
 		const body = new ReadableStream<Uint8Array>({
 			start(controller) {
 				controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "x" } }] })}\n\n`));
-				setTimeout(() => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "y" } }] })}\n\n`)), 100);
+				timer = setTimeout(() => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "y" } }] })}\n\n`)), 100);
 			},
+   cancel() { clearTimeout(timer); },
 		});
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
@@ -124,6 +126,7 @@ describe("OpenAI gateway", () => {
 			controller.abort();
 			await expect(promise).rejects.toThrow();
 		} finally {
+			clearTimeout(timer);
 			globalThis.fetch = originalFetch;
 		}
 	});
