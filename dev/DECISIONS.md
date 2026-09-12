@@ -62,3 +62,7 @@ PowerShell：`$env:UINA_ONESHOT_MSG="你好"; pnpm start`。
 ## 修改启动链路前
 
 必须说明现有入口为何不足、新入口如何覆盖 TTY/stdio/无 UI、配置与会话所有权、语义兼容性以及是否改变用户数据位置。
+
+## 文件与图片能力（2026-09-13）
+
+文件/图片工具默认由 builtin:workspace-tools 注册，业务实现属于 Extension，Host 可用 workspaceTools: false 关闭此装配；项目扩展可通过公开 replace 契约替换工具。图片能力未知允许尝试，明确 false 才拒绝；请求成功不自动更改模型能力事实。

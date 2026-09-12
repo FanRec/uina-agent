@@ -28,8 +28,7 @@ export function assertImageInput(model: Model, request: ModelRequest): void {
 		if (!validImages(message.images)) throw new Error("图片内容无效");
 		if (!message.images?.length) continue;
 		if (message.role !== "user" && message.role !== "tool") throw new Error("图片仅支持 user/tool 输入");
-		if (model.imageInput !== true)
-			throw new Error("模型 " + model.name + (model.imageInput === false ? " 不支持图片输入" : " 未声明图片输入能力"));
+		if (model.imageInput === false) throw new Error("模型 " + model.name + " 不支持图片输入");
 	}
 }
 export function imageNotice(images?: readonly ImageContent[]): string {

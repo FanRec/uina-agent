@@ -39,8 +39,9 @@ pnpm exec tsx scripts/verify-file-events.mts
 
 ## 可组合扩展示例
 
-- `pnpm start -e examples/extensions/workspace-tools`：文件读写、图片读取、工具自定义展示。
-- 再加 `-e examples/extensions/skills`：发现 `.uina/skills/*.md` 或子目录 `SKILL.md`，通过服务与文件工具组合。
+文件读写、图片读取与文件展示已转为默认内置 [workspace-tools](../src/extensions/workspace-tools/index.ts)，无需 `-e`。
+
+- `pnpm start -e examples/extensions/skills`：发现 `.uina/skills/*.md` 或子目录 `SKILL.md`，通过服务与文件工具组合。
 - `-e examples/extensions/custom-compaction`：以公共模型接口替换压缩生成。
 
-示例均为可选本地扩展；图片请求需要模型明确声明 `imageInput: true`。契约、取舍和验证边界见 [扩展设计](../docs/extensions.md)。
+示例均为可选本地扩展；图片能力未知时允许请求，明确 `imageInput: false` 时拒绝。契约、取舍和验证边界见 [扩展设计](../docs/extensions.md)。

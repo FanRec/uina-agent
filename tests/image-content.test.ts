@@ -1,6 +1,6 @@
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 import { afterEach, expect, it } from "vitest";
 import { Subject } from "../src/agent/loop.js";
@@ -62,9 +62,9 @@ it("encodes images in all adapters while retaining tool result identity", () => 
 	expect(gemini).toContain(png);
 });
 
-it("rejects unknown/unsupported image capability rather than dropping attachments", () => {
+it("attempts unknown image capability, rejects explicit unsupported and invalid attachments", () => {
 	const req = request([{ role: "user", content: "see", images: [image] }]);
-	expect(() => assertImageInput(mockModel(), req)).toThrow("未声明");
+	expect(() => assertImageInput(mockModel(), req)).not.toThrow();
 	expect(() => assertImageInput(mockModel({ imageInput: false }), req)).toThrow("不支持");
 	expect(() => assertImageInput(mockModel({ imageInput: true }), req)).not.toThrow();
 	expect(() =>
@@ -75,7 +75,7 @@ it("rejects unknown/unsupported image capability rather than dropping attachment
 	).toThrow("无效");
 });
 
-it("reads an actual image through a directory extension, sends it on the wire, persists and restores it", async () => {
+it("reads an actual image through the default built-in extension with unknown model capability, sends it on the wire, persists and restores it", async () => {
 	const cwd = await mkdtemp(join(tmpdir(), "uina-image-"));
 	directories.push(cwd);
 	await writeFile(join(cwd, "pixel.png"), Buffer.from(png, "base64"));
@@ -127,7 +127,6 @@ it("reads an actual image through a directory extension, sends it on the wire, p
 		apiKey: "fixture",
 		baseUrl: "http://127.0.0.1:" + address.port,
 		modelContextWindow: 100000,
-		imageInput: true,
 	});
 	const file = join(cwd, "session.jsonl");
 	const host = await UinaHost.create({
@@ -135,7 +134,6 @@ it("reads an actual image through a directory extension, sends it on the wire, p
 		sessionPath: file,
 		model,
 		provider,
-		extensionPaths: [resolve("examples/extensions/workspace-tools")],
 	});
 	hosts.push(host);
 	const done: unknown[] = [];
@@ -225,4 +223,25 @@ it("resumes queued image events with their original identity and keeps them out 
 	const reopened = await openJsonlSession(file);
 	expect(reopened.snapshot.entries[0]).toMatchObject({ kind: "input", input });
 	await reopened.store.close();
+});
+
+
+it("default filesystem tools read ranges, preserve full text and identify image bytes independently of filename", async () => {
+ const cwd = await mkdtemp(join(tmpdir(), "uina-files-")); directories.push(cwd);
+ const host = await UinaHost.create({ cwd, model: mockModel() }); hosts.push(host); await host.start();
+ expect((await host.runToolDirect("write_file", {path:"notes.txt", text:"one\ntwo\nthree\n"})).status).toBe("succeeded");
+ expect((await host.runToolDirect("read_file", {path:"notes.txt"})).result).toBe("one\ntwo\nthree\n");
+ expect((await host.runToolDirect("read_file", {path:"notes.txt",offset:2,limit:1})).result).toBe("two");
+ expect((await host.runToolDirect("read_file", {path:"notes.txt",offset:0})).status).not.toBe("succeeded");
+ expect((await host.runToolDirect("read_file", {path:"absent"})).status).toBe("failed");
+ await writeFile(join(cwd,"image.bin"),Buffer.from(png,"base64"));
+ expect((await host.runToolDirect("read_image", {path:"image.bin"})).images?.[0].mimeType).toBe("image/png");
+ await writeFile(join(cwd,"fake.png"),"not an image");
+ expect((await host.runToolDirect("read_image", {path:"fake.png"})).status).toBe("failed");
+});
+
+it("host assembly can disable filesystem tools", async () => {
+ const cwd = await mkdtemp(join(tmpdir(), "uina-no-files-")); directories.push(cwd);
+ const host = await UinaHost.create({cwd,model:mockModel(),workspaceTools:false}); hosts.push(host); await host.start();
+ expect((await host.runToolDirect("read_file",{path:"absent"})).status).not.toBe("succeeded");
 });

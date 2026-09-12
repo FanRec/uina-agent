@@ -90,7 +90,7 @@ TTY 输入区支持多行编辑与粘贴折叠，恢复多个队列消息时按�
 
 ## 工具
 
-所有工具都由 ActivationScope 注册。内置工具位于 `src/extensions/runtime-tools/`，通过 `builtin:runtime-tools` 激活；项目扩展位于 `.uina/extensions/`，在 `activate(pi)` 中调用 `pi.registerTool()`。Uina 不再扫描 `tools/` 目录或从资源事件动态加载工具文件。
+所有工具都由 ActivationScope 注册。内置运行工具位于 `src/extensions/runtime-tools/`，通过 `builtin:runtime-tools` 激活；默认文件工具位于 `src/extensions/workspace-tools/`，通过 `builtin:workspace-tools` 激活，提供 `read_file`（可选 offset/limit 按行读取）、`write_file`（覆盖 UTF-8 文件）和 `read_image`（按文件签名识别 PNG/JPEG/GIF/WebP）；项目扩展位于 `.uina/extensions/`，在 `activate(pi)` 中调用 `pi.registerTool()`。Uina 不再扫描 `tools/` 目录或从资源事件动态加载工具文件。
 
 工具声明包含 OpenAI function schema。启动时编译 schema，调用前使用 Ajv 校验参数。工具名必须全局唯一，`Tool.run` 返回 `{ result: string, status: ToolResultStatus }`。状态为 `succeeded`、`failed`、`cancelled`、`unknown` 或 `not_started`，由工具明确给出，Broker 不解析结果正文猜测成败。例如：`return { result: "done", status: "succeeded" }`。`tool_result` hook 同样使用 `status`，替代原来的 `isError`；仅修改正文时会保留原状态。
 

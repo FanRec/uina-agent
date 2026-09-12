@@ -1,3 +1,4 @@
+import activateWorkspaceTools from "../src/extensions/workspace-tools/index.js";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -375,11 +376,14 @@ it("skills and filesystem extensions compose through services and the existing t
 	const host = runner(cwd, {
 		tools,
 		extensionPaths: [
-			join(process.cwd(), "examples/extensions/workspace-tools"),
 			join(process.cwd(), "examples/extensions/skills"),
 		],
 	});
+	await host.activateBuiltin("workspace-tools", activateWorkspaceTools);
 	const consumer = await activate(host, "consumer");
+	const undoRead = consumer.registerTool({ ...echo("replacement"), def: { ...echo("").def, function: { ...echo("").def.function, name: "read_file" } } }, { replace: true });
+	expect((await consumer.callTool("read_file", { text: "x" })).result).toBe("replacement");
+	undoRead();
 	await host.load();
 	expect(host.diagnostics().filter((e) => e.status === "failed")).toEqual([]);
 	expect(await consumer.callService("skills.discover/v1", null)).toMatchObject([{ name: "example" }]);

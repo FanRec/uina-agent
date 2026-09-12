@@ -12,6 +12,7 @@ import { ExtensionRunner } from "../extensions/runner.js";
 import { CommandRouter } from "../extensions/commands.js";
 import { activateBuiltinCommands, type BuiltinUI } from "../extensions/builtin.js";
 import { activateRuntimeTools, createChildTools } from "../extensions/runtime-tools/index.js";
+import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
 import { killTrackedDetachedChildren } from "../runtime/process-tracker.js";
 import { MemorySessionStore, openJsonlSession } from "../session/jsonl-store.js";
 import { projectAgentHistory } from "../session/recovery.js";
@@ -33,6 +34,8 @@ export interface UinaHostOptions {
 	/** 组合根工作目录；项目扩展从 <cwd>/.uina/extensions 加载。 */
 	cwd: string;
  extensionPaths?: readonly string[];
+ /** Disable default filesystem capabilities when the host supplies its own assembly. */
+ workspaceTools?: boolean;
 	/** 会话 journal 路径。省略时使用内存 store（测试与嵌入场景）。 */
 	sessionPath?: string;
 	/** 注入 provider（测试与嵌入）。省略时按 ~/.uina/auth.json 创建。 */
@@ -334,6 +337,7 @@ export class UinaHost {
 
 	/** 内置能力与项目扩展走同一套 ActivationScope；在消费者接入之后调用。 */
 	async start(startOptions: HostStartOptions = {}): Promise<void> {
+		if (this.options.workspaceTools !== false) await this.extensionHost.activateBuiltin("workspace-tools", activateWorkspaceTools);
 		await this.extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools({ jobs: this.jobs, subagents: this.subagents }));
 		await this.extensionHost.activateBuiltin("commands", activateBuiltinCommands({
 			subject: this.subject,

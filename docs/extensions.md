@@ -66,7 +66,7 @@ registerCompactor(fn, { shouldCompact? })：
 
 正文继续用 content/result 字符串；images 是 { type: "image", mimeType, data, alt? } 数组，data 为 base64 字节，支持 PNG/JPEG/GIF/WebP。工具 details 供程序和 UI 使用，不发送给模型。
 
-输入、custom message、工具结果、hook、JSONL、上下文投影和 Host 事件保留图片。imageInput 必须来自配置、模型注册或目录事实；未知或 false 时内置 Provider 明确报错，不删除图片后继续请求。
+输入、custom message、工具结果、hook、JSONL、上下文投影和 Host 事件保留图片。imageInput 必须来自配置、模型注册或目录事实；false 时内置 Provider 明确报错；未知允许尝试，不删除附件或将尝试结果自动登记为模型能力。
 
 OpenAI-compatible 将工具图片放在全部相邻 tool result 之后的 user 图片消息，标明 callId；Anthropic 放入 tool_result 内容；Gemini 编码为对应 user 内容的 inlineData。没有新增图片生成、音视频或远程资产管理。
 
@@ -80,7 +80,7 @@ Markdown transformer 只处理 user/assistant 显示文本，带角色、流式�
 
 没有照搬 resources_discover hook。Pi 该事件服务于已有 skill/prompt/theme loader；Uina 先用程序服务证明资源发现与消费，再决定是否需要公共资源层。
 
-- [workspace-tools](../examples/extensions/workspace-tools/index.ts)：直接文件读写、图片读取、文件 renderer。
+- [workspace-tools](../src/extensions/workspace-tools/index.ts)：默认内置文件读写、图片读取、文件 renderer；Host `workspaceTools: false` 可禁用，公开 replace 注册可替换。
 - [skills](../examples/extensions/skills/index.ts)：skills.discover/v1、上下文目录与 read_skill；后者调用 workspace-tools 的 read_file。
 - [custom-compaction](../examples/extensions/custom-compaction/index.ts)：用公共 models.stream 提交摘要。
 

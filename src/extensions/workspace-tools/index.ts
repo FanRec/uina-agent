@@ -1,6 +1,8 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { extname, resolve } from "node:path";
-import type { ExtensionAPI, ImageContent } from "../../../src/extensions/index.js";
+import { resolve } from "node:path";
+import type { ExtensionAPI, ImageContent } from "../index.js";
+
+import { truncateToWidth } from "../../ui/core/utils.js";
 
 /** Trusted filesystem capabilities; no shell process or Core changes. */
 export default function activate(api: ExtensionAPI): void {
@@ -13,12 +15,15 @@ export default function activate(api: ExtensionAPI): void {
 	api.registerTool({
 		def: {
 			type: "function",
-			function: { name: "read_file", description: "Read a UTF-8 text file.", parameters: fileSchema },
+			function: { name: "read_file", description: "Read a UTF-8 text file. Optional offset (1-based line) and limit select a line range; omitted reads the entire file.", parameters: { ...fileSchema, properties: { ...fileSchema.properties, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1 } } } },
 		},
 		run: async (args, signal) => {
 			const file = resolve(api.cwd, String(args.path));
-			const result = await readFile(file, { encoding: "utf8", signal });
-			return { result, status: "succeeded", details: { path: file, lines: result.split("\n").length } };
+			const text = await readFile(file, { encoding: "utf8", signal });
+			const lines = text.split("\n");
+			const offset = Number(args.offset ?? 1);
+			const selected = lines.slice(offset - 1, args.limit === undefined ? undefined : offset - 1 + Number(args.limit));
+			return { result: selected.join("\n"), status: "succeeded", details: { path: file, lines: selected.length, totalLines: lines.length, offset } };
 		},
 	});
 	api.registerTool({
@@ -47,22 +52,15 @@ export default function activate(api: ExtensionAPI): void {
 			function: {
 				name: "read_image",
 				description:
-					"Read a PNG, JPEG, GIF or WebP image into model context. Requires a model with declared image input support.",
+					"Read a PNG, JPEG, GIF or WebP image into model context. Unknown model capability is attempted; explicitly unsupported models reject image input.",
 				parameters: fileSchema,
 			},
 		},
 		run: async (args, signal) => {
 			const file = resolve(api.cwd, String(args.path));
-			const types: Record<string, ImageContent["mimeType"]> = {
-				".png": "image/png",
-				".jpg": "image/jpeg",
-				".jpeg": "image/jpeg",
-				".gif": "image/gif",
-				".webp": "image/webp",
-			};
-			const mimeType = types[extname(file).toLowerCase()];
-			if (!mimeType) throw new Error("Unsupported image extension: " + file);
 			const bytes = await readFile(file, { signal });
+			const mimeType = imageMimeType(bytes);
+			if (!mimeType) throw new Error("Unsupported image data (expected PNG, JPEG, GIF or WebP): " + file);
 			return {
 				result: "Image: " + file,
 				status: "succeeded",
@@ -72,12 +70,21 @@ export default function activate(api: ExtensionAPI): void {
 		},
 	});
 	api.registerToolRenderer("read_file", (tool, options) => ({
-		render: () => {
+		render: (width) => {
 			const details = tool.details as { path?: string; lines?: number } | undefined;
 			return [
 				"Read " + (details?.path ?? String((tool.args as { path?: string })?.path ?? "")) + " · " + tool.status,
 				...(options.expanded ? (tool.result ?? "").split("\n") : [String(details?.lines ?? "?") + " lines"]),
-			];
+			].map(line => truncateToWidth(line, width));
 		},
 	}));
+}
+
+/** Identify the file signature; this does not certify that every image frame decodes. */
+function imageMimeType(bytes: Buffer): ImageContent["mimeType"] | undefined {
+	if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return "image/png";
+	if (bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return "image/jpeg";
+	if (["GIF87a", "GIF89a"].includes(bytes.toString("ascii", 0, 6))) return "image/gif";
+	if (bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP") return "image/webp";
+	return undefined;
 }

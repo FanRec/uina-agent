@@ -6,7 +6,7 @@
 
 - 自动入口：Host.cwd 下 .uina/extensions/ 的脚本或一级目录入口。
 - 目录使用 index.ts/js/mts/mjs，或 package.json 的 uina.extensions 数组声明脚本入口。
-- 显式入口：pnpm start -e examples/extensions/workspace-tools；-e/--extension 可重复。
+- 显式入口：pnpm start -e examples/extensions/skills；-e/--extension 可重复。
 - 内置能力：组合层调用 ExtensionRunner.activateBuiltin，与项目扩展共用注册生命周期。
 
 脚本支持 ts/mts/cts/js/mjs/cjs。源码与构建后的 CLI 都通过 jiti 加载扩展；项目扩展无需先纳入 Uina 的构建。相对资源路径应基于 api.cwd 或 api.path，不假设进程工作目录与嵌入 Host 相同。
@@ -51,7 +51,7 @@ export default function activate(api) {
 
 run(args, signal?, context?) 返回 { result, status, images?, details?, continuation? }。status 必须区分 succeeded、failed、cancelled、unknown、not_started；取消请求不等于副作用已经停止。把 signal 传给支持取消的操作。context.ownerId 属于实际 Subject；程序调用另带 callerId。
 
-用 api.callTool(name, args, { signal }) 复用其他工具，保留执行管线。不要直接调用另一个扩展的 tool.run 绕过校验和事实记录。details 可携带结构化数据；模型正文仍使用 result 字符串。images 携带真实字节，模型须明确声明 imageInput 支持。
+用 api.callTool(name, args, { signal }) 复用其他工具，保留执行管线。不要直接调用另一个扩展的 tool.run 绕过校验和事实记录。details 可携带结构化数据；模型正文仍使用 result 字符串。images 携带真实字节，模型 imageInput 未知时允许尝试，明确 false 时拒绝，true 表示显式声明支持。
 
 程序间的查询可用服务：
 
@@ -97,4 +97,10 @@ registerToolRenderer 与 registerMarkdownTransformer 只控制显示。widget、
 
 嵌入 Host 缺少模型、Provider、消息或输入端口时，相应操作明确失败。标准 Host 已接入；不能把一次 API 调用当成未接线能力的成功证据。
 
-[workspace-tools](../examples/extensions/workspace-tools/index.ts) 与 [skills](../examples/extensions/skills/index.ts) 展示文件、图片、服务、工具、上下文和 renderer 的组合。检查入口、实际 cwd、default export、重名、失效 API，再检查依赖与外部错误。真实 Provider 验收使用临时数据，不属于普通离线测试。
+[workspace-tools](../src/extensions/workspace-tools/index.ts) 与 [skills](../examples/extensions/skills/index.ts) 展示文件、图片、服务、工具、上下文和 renderer 的组合。检查入口、实际 cwd、default export、重名、失效 API，再检查依赖与外部错误。真实 Provider 验收使用临时数据，不属于普通离线测试。
+
+## 默认文件与图片工具
+
+`builtin:workspace-tools` 随 Host 启动；无需加载原 workspace-tools 示例。`read_file` 默认完整读取 UTF-8，可传 `offset`（从 1 开始）与 `limit` 选择行；目前仍在内存读取完整文件。`write_file` 覆盖 UTF-8 文件，父目录须存在。`read_image` 按文件签名识别 PNG/JPEG/GIF/WebP，传递原始字节；签名识别不等于完整图片解码校验。路径相对 `api.cwd` 解析，绝对路径可用。
+
+Host 可用 `workspaceTools: false` 关闭这组默认能力。项目扩展通过 `registerTool(..., { replace: true })` 与 `registerToolRenderer(..., { replace: true })` 分别替换行为和展示，释放注册后恢复前一个存活实现。

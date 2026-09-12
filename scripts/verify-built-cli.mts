@@ -7,7 +7,7 @@ import {tmpdir} from "node:os";
 import {join,resolve} from "node:path";
 const reviewRoot=process.cwd();
 if(process.platform==="win32"){const helper=createRequire(import.meta.url)(join(reviewRoot,`dist/src/ui/core/native/win32-${process.arch}.node`));assert.equal(typeof helper.isModifierPressed,"function");console.log(JSON.stringify({nativeLoaded:true,platform:process.platform,arch:process.arch}));}
-for (const mode of ["tool-success", "extension-image", "truncated-provider"] as const) {
+for (const mode of ["tool-success", "builtin-image", "truncated-provider"] as const) {
   const tempRoot = await mkdtemp(join(tmpdir(), "uina-direction-cli-"));
   const work = join(tempRoot, "work");
   const configRoot = join(tempRoot, "home");
@@ -37,7 +37,7 @@ for (const mode of ["tool-success", "extension-image", "truncated-provider"] as 
       const deltas = mode === "truncated-provider"
         ? [{ choices: [{ delta: { content: "partial" } }] }]
         : requests === 1
-          ? [{ choices: [{ delta: { tool_calls: [{ index: 0, id: "c", function: { name: mode === "extension-image" ? "read_image" : "get_time", arguments: mode === "extension-image" ? '{"path":"pixel.png"}' : "{}" } }] } }] }, { choices: [{ delta: {}, finish_reason: "tool_calls" }] }]
+          ? [{ choices: [{ delta: { tool_calls: [{ index: 0, id: "c", function: { name: mode === "builtin-image" ? "read_image" : "get_time", arguments: mode === "builtin-image" ? '{"path":"pixel.png"}' : "{}" } }] } }] }, { choices: [{ delta: {}, finish_reason: "tool_calls" }] }]
           : [{ choices: [{ delta: { content: "COMPILED_TOOL_OK" } }] }, { choices: [{ delta: {}, finish_reason: "stop" }] }];
       res.end(deltas.map(d => `data: ${JSON.stringify(d)}\n\n`).join("") + (mode !== "truncated-provider" ? "data: [DONE]\n\n" : ""));
     });
@@ -48,10 +48,10 @@ for (const mode of ["tool-success", "extension-image", "truncated-provider"] as 
     if (!address || typeof address === "string") throw new Error("fixture address missing");
     await writeFile(join(configRoot, ".uina/auth.json"), JSON.stringify({
       default: "review_fixture", thinkingLevel: "off", providers: {
-        review_fixture: { type: "openai-compatible", baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "local-test", model: "review-fixture", modelContextWindow: 4096, imageInput: true, thinkingLevels: ["off"] },
+        review_fixture: { type: "openai-compatible", baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "local-test", model: "review-fixture", modelContextWindow: 4096, thinkingLevels: ["off"] },
       },
     }));
-    const child = spawn(process.execPath, [join(reviewRoot, "dist/src/main.js"), ...(mode === "extension-image" ? ["-e", join(reviewRoot, "examples/extensions/workspace-tools")] : [])], {
+    const child = spawn(process.execPath, [join(reviewRoot, "dist/src/main.js"), ], {
       cwd: work,
       env: { ...process.env, UINA_HOME: configRoot, UINA_ONESHOT_MSG: "review fixture" },
       stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
@@ -63,7 +63,7 @@ for (const mode of ["tool-success", "extension-image", "truncated-provider"] as 
     const successMarker = stdout.includes("COMPILED_TOOL_OK");
     assert.equal(exitCode, mode !== "truncated-provider" ? 0 : 1);
     assert.equal(sawToolResult, mode !== "truncated-provider");
-    assert.equal(sawImage, mode === "extension-image");
+    assert.equal(sawImage, mode === "builtin-image");
     // The marker is the observable end of the tool round-trip; printing it
     // without asserting it would let an empty-but-successful run pass.
     assert.equal(successMarker, mode !== "truncated-provider");
