@@ -392,7 +392,7 @@ RuntimeView {
 当前互相冲突的例子：
 
 - README/DESIGN 把 Job/Subagent 列为非目标。
-- `12-factor-audit.md` 称没有通用事件总线和后台 Job。
+- `(已删除：内容并入当前运行时)` 称没有通用事件总线和后台 Job。
 - background design 称 UI projection 未实现，但已有 task/subagent/trajectory UI。
 - `pi-gap-map.md` 称没有并发上限，但 JobRegistry 默认限制 10。
 
@@ -810,7 +810,8 @@ Uina 未来作为开放主体，至少应能回答：
 
 ## 附录 B：本次生成文件
 
-- `docs/history/reviews/architecture-review-notes.md`：审查过程中的临时证据账本。
+- `(已删除：内容并入正式报告)`：审查过程中的临时证据账本。
 - `docs/history/reviews/architecture-review-report.md`：本正式报告。
 
 本次没有修改 Uina 运行代码，也没有修改 Pi。所有 smoke/probe 临时脚本均已删除。
+

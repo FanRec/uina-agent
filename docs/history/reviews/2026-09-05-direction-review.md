@@ -17,7 +17,7 @@
 - 构建后的 `dist/src/main.js` 在全新临时工作目录与配置目录中，通过 localhost SSE 完成真实 `get_time` 工具回注，退出码 0。
 - 新增四份隔离复现脚本；涉及真实临时 JSONL、本地 shell、内存 Provider/Job、localhost 协议。没有调用真实厂商模型、没有使用真实会话数据。
 - 真实厂商协议兼容性、真实 TTY/IME、TTS、实际崩溃杀进程和持续负载未验证。对照官方协议的结论会另作标记。
-- 审查开始时已有未跟踪文件 `docs/uina-deep-audit.md`；本轮未修改它，也未把其中结论当作本轮验证结果。
+- 审查开始时已有未跟踪文件 `docs/history/audits/2026-09-09-uina-deep-audit.md`；本轮未修改它，也未把其中结论当作本轮验证结果。
 
 审查对象涉及持久化、副作用和取消，错误影响较高，因此使用了组合复现与干净目录 CLI 验证。此次交付只新增审查材料，没有修改业务代码或已有测试；未进行真实设备或外部服务操作。
 
@@ -203,3 +203,4 @@ pnpm exec tsx docs/history/reviews/2026-09-05-direction-evidence/ui-cli.mts
 core 探针使用临时 JSONL 与 fake Provider；输入丢失用合法日志前缀模拟崩溃窗口。extensions 探针执行无文件副作用的本地 `exit 7`，其余使用内存 producer/Provider。provider 探针只使用进程内 fetch stub。ui-cli 探针使用内存 UI 投影，并在临时目录启动编译后 CLI 与 localhost SSE 服务。
 
 此次新增本报告及上述四份脚本；没有修复业务代码，没有更改已有测试，没有扩大实际 Provider/设备权限。最终建议为：**继续当前方向，先统一现有事实与生命周期，再让 Uina 的具体行为推动扩展。**
+

@@ -50,7 +50,7 @@
   （`src/ai/providers.ts:52-57`、`651-678`）。校验只剩 anthropic/gemini 适配器内部的逐请求 `assertModelFacts`（`:82`、`:252`）。
 - 影响：非法配置在启动时静默通过，运行时才失败；且 `openai-compatible` 连逐请求校验都没有。
   这与 `assertProviderFacts` 自己的注释「在真实 Provider 创建时调用，因此错误发生在启动阶段」以及
-  `docs/uina-deep-audit.md:294` 记录的设计理由直接矛盾。
+  `docs/history/audits/2026-09-09-uina-deep-audit.md:294` 记录的设计理由直接矛盾。
 - 归属：Registry 构造（唯一装配点）负责，不该由适配器兜底。
 
 ### P0-3 OpenAI/Qwen 协议的 `includeThinking` 由 false 变成 true
@@ -284,3 +284,4 @@ A06 的验收里正好包含「不同端点不误合并」，这个廉价断言�
 - 新增本文件（未跟踪）：`docs/history/reviews/2026-09-12-model-provider-decoupling-review.md`。
 - 审查期间临时创建的探针脚本已删除，工作树中除本文件外与审查前一致
   （`M` 41 个已跟踪文件 + `?? .workbuddy/` + `?? tests/model-provider-decoupling.test.ts`）。
+

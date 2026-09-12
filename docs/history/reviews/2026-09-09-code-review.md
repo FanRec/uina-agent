@@ -1,6 +1,6 @@
 # Uina 全仓代码审查报告（2026-09-09）
 
-> 基线：HEAD `d85a43f`（工作区干净，仅 docs/uina-deep-audit.md 为未跟踪的历史审查稿）。
+> 基线：HEAD `d85a43f`（工作区干净，仅 docs/history/audits/2026-09-09-uina-deep-audit.md 为未跟踪的历史审查稿）。
 > 方法：全量静态阅读（src 全部 79 个文件）+ 定向实证（`pnpm typecheck`、`pnpm test` 15 文件/251 用例、`pnpm build` 均通过；用 tsx 探针实跑 JSONL 恢复、边界正则、Node 信号语义、Buffer spread 上限）+ 与既有审查稿逐条对照（标注"已修复/仍存在"）。
 > 证据等级：**已确认**＝代码链路或实跑可判定；**疑似**＝需特定运行条件；**未验证**＝缺少环境。
 
@@ -232,12 +232,12 @@
 | K2 | P2 | 已确认 | "缺少可靠总量时显示估算"不成立 | `docs/current-runtime.md:76` vs `gateway.ts:280`/`providers.ts:421` 合成 totalTokens + `loop.ts:431` 标 actual |
 | K3 | P3 | 已确认 | "所有能力经 ActivationScope 注册"有旁路 | `docs/current-runtime.md:64-70` vs `cli/app.ts:284-307` 的 `!command` |
 | K4 | P3 | 已确认 | 声明的所有权与依赖不符 | `docs/current-runtime.md:26,31` 称 session 不依赖 agent、UI 不拥有能力事实；实际 `session/recovery.ts:2` → `agent/context.ts`，`ui-host.ts` 直接持有 Job/Subagent port |
-| K5 | P3 | 已确认 | 旧审查稿仍在仓库且已过时 | `docs/uina-deep-audit.md` 标注"进行中"；其中 loadSession 状态伪造（`:232`）、Job 并发上限 10（`:49,59`）、UI 扩思考档位（`:91,100`）在当前代码中已不成立（见第四节） |
+| K5 | P3 | 已确认 | 旧审查稿仍在仓库且已过时 | `docs/history/audits/2026-09-09-uina-deep-audit.md` 标注"进行中"；其中 loadSession 状态伪造（`:232`）、Job 并发上限 10（`:49,59`）、UI 扩思考档位（`:91,100`）在当前代码中已不成立（见第四节） |
 | K6 | P3 | 已确认 | 示例转接路径只在仓库内成立 | `examples/README.md:10` 的 `../../dist/examples/file-events.mjs` 仅在"用户项目根 == Uina 仓库"时正确 |
 
 ---
 
-## 四、相对旧审查（docs/uina-deep-audit.md）已变化的部分
+## 四、相对旧审查（docs/history/audits/2026-09-09-uina-deep-audit.md）已变化的部分
 
 | 旧结论 | 当前事实 |
 |---|---|
@@ -321,7 +321,7 @@
 
 ### 已完成的后续重构（2026-09-09 第二轮）
 
-B1 布局/滚动、B3 overlay 几何、B2 grapheme 宽度已按 `docs/proposals/ui-layout-refactor.md` 实施并验证：`ui-host.ts` 抽出唯一 `computeLayout()`（渲染/滚动/锚点/命中区共用），`transcript.ts` 抽出唯一 `layoutTurn/ensureModel` 行模型（流式热区与渲染行号一致），hover 只重建命中轮次，`renderAbove` 统一几何（offsetY/margin/anchor/maxHeight 全部生效且超限保留贴近输入框一侧），宽度改为 grapheme + 8 列制表位。新增 `tests/ui-layout.test.ts` 14 项；50/80/120 列实测无超宽行。
+B1 布局/滚动、B3 overlay 几何、B2 grapheme 宽度已按 `docs/history/reviews/2026-09-09-ui-layout-refactor.md` 实施并验证：`ui-host.ts` 抽出唯一 `computeLayout()`（渲染/滚动/锚点/命中区共用），`transcript.ts` 抽出唯一 `layoutTurn/ensureModel` 行模型（流式热区与渲染行号一致），hover 只重建命中轮次，`renderAbove` 统一几何（offsetY/margin/anchor/maxHeight 全部生效且超限保留贴近输入框一侧），宽度改为 grapheme + 8 列制表位。新增 `tests/ui-layout.test.ts` 14 项；50/80/120 列实测无超宽行。
 
 第二轮补完三项遗留：**编辑器簇级模型**（`getVisualLayout` 按 grapheme 簇建 atom、光标吸附簇边界，ZWJ 家庭 emoji 在输入框中占 2 列而非 4~6 列）、**布局增量失效**（`invalidateTurn/invalidateCompaction` 只重建受影响块；`UIHost.lastLayout` 让 `preserveScrollAnchor` 只渲染一次）、**时间线轨自适应**（刻度密度随视口高度伸缩并可配置 `maxTicks`，预览卡宽度随内容宽度伸缩并可配置 `previewMaxWidth`）。`tests/ui-layout.test.ts` 扩到 19 项，全量 281 项通过。
 
@@ -329,3 +329,4 @@ B1 布局/滚动、B3 overlay 几何、B2 grapheme 宽度已按 `docs/proposals/
 
 - `/reload` 的传递依赖热重载（Pi 靠 jiti，Uina 不宜引入）、`!command` 的 ToolBroker 旁路、SIGTERM 关停时的写队列超时兜底、子 Agent 正常 waiting 的父级通知：需要新的端口或明确产品决策。
 - 会话中间坏行的容错（当前策略是拒绝启动）：Pi 的两种策略（coding-agent 跳过 / agent v4 严格）各有取舍，Uina 采用严格校验 + 末行修复，属有意选择。
+
