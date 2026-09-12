@@ -116,4 +116,17 @@ describe("background jobs", () => {
 		expect(provider.calls[0]?.messages.some((message) => message.content.includes("job-notice"))).toBe(true);
 		expect(lastUser(provider.calls[0])).toContain("[运行时事件 job-notice");
 	});
+
+	it("enforces safe parameter validation and timeout limits in job tools", async () => {
+		const { broker } = make();
+		const res1 = JSON.parse(await broker.run("job_output", { job_id: "" }));
+		expect(res1.error).toContain("job_id");
+		const res2 = JSON.parse(await broker.run("job_output", { job_id: "job-1", cursor: -1 }));
+		expect(res2.error).toContain("cursor");
+		const res3 = JSON.parse(await broker.run("job_output", { job_id: "job-1", wait: true, timeout_ms: 3_000_000_000 }));
+		expect(res3.error).toContain("timeout_ms");
+		const res4 = JSON.parse(await broker.run("job_kill", { job_id: "" }));
+		expect(res4.error).toContain("job_id");
+	});
 });
+

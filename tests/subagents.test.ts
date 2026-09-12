@@ -164,6 +164,23 @@ describe("SubagentRegistry", () => {
 		});
 		await registry.close();
 	});
+
+	it("enforces safe parameter validation in subagent tools", async () => {
+		const registry = make(providerFor(() => "ok"));
+		const broker = new ToolBroker({ ownerId: "root" });
+		const { createSubagentTools } = await import("../src/extensions/subagents/tools.js");
+		for (const t of createSubagentTools(registry, "root")) broker.register(t);
+
+		const res1 = JSON.parse(await broker.run("subagent_start", { label: "", prompt: "test" }));
+		expect(res1.error).toContain("label");
+		const res2 = JSON.parse(await broker.run("subagent_status", { subagent_id: "" }));
+		expect(res2.error).toContain("subagent_id");
+		const res3 = JSON.parse(await broker.run("subagent_send", { subagent_id: "s-1", text: "" }));
+		expect(res3.error).toContain("text");
+		const res4 = JSON.parse(await broker.run("subagent_output", { subagent_id: "s-1", cursor: -2 }));
+		expect(res4.error).toContain("cursor");
+		await registry.close();
+	});
 });
 
 describe("AgentHandle lifecycle", () => {
