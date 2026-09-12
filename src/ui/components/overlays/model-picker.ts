@@ -36,7 +36,7 @@ export class ModelPicker implements Component, Focusable {
 		this.groups = groups;
 		this.currentModelId = currentModelId;
 
-		const grpIdx = this.groups.findIndex((g) => g.id === currentModelId || g.models.some((m) => this.isCurrent(m)));
+		const grpIdx = this.groups.findIndex((g) => g.models.some((m) => this.isCurrent(m)));
 		if (grpIdx >= 0) {
 			this.selectedGroupIndex = grpIdx;
 			const mIdx = this.groups[grpIdx]!.models.findIndex((m) => this.isCurrent(m));
@@ -45,11 +45,7 @@ export class ModelPicker implements Component, Focusable {
 	}
 
 	private isCurrent(m: ModelItem): boolean {
-		return (
-			m.id === this.currentModelId ||
-			m.name === this.currentModelId ||
-			`${m.provider}/${m.id}` === this.currentModelId
-		);
+		return m.id === this.currentModelId || `${m.provider}/${m.id}` === this.currentModelId;
 	}
 
 	navigateUp(): void {
@@ -153,7 +149,7 @@ export class ModelPicker implements Component, Focusable {
 			for (let i = 0; i < this.groups.length; i++) {
 				const grp = this.groups[i]!;
 				const isSelected = i === this.selectedGroupIndex;
-				const hasCurrent = grp.id === this.currentModelId || grp.models.some((m) => this.isCurrent(m));
+				const hasCurrent = grp.models.some((m) => this.isCurrent(m));
 				const pointer = isSelected ? `${C.bold}${C.cyan}❯${C.reset}` : " ";
 				const nameTag = isSelected
 					? `${C.bold}${C.white}[${grp.name}]${C.reset}`

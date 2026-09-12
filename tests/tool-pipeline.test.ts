@@ -288,7 +288,8 @@ export default function activate(uina) {
 				"utf8",
 			);
 
-			const host = await UinaHost.create({ cwd, provider: scriptedProvider([]) });
+			const mock = scriptedProvider([]);
+			const host = await UinaHost.create({ cwd, provider: mock, model: mock.model });
 			await host.start();
 
 			const res = await host.runToolDirect("host_direct_probe", { val: "test123" });

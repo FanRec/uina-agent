@@ -56,7 +56,8 @@ async function makeHost(options: { sessionPath?: string } = {}): Promise<UinaHos
 	dirs.push(cwd);
 	await mkdir(join(cwd, ".uina", "extensions"), { recursive: true });
 	await writeFile(join(cwd, ".uina", "extensions", "probe.mjs"), PROJECT_EXTENSION, "utf8");
-	const host = await UinaHost.create({ cwd, provider: probeProvider(), ...options });
+	const probe = probeProvider();
+	const host = await UinaHost.create({ cwd, provider: probe, model: probe.model, ...options });
 	await host.start();
 	return host;
 }
@@ -121,14 +122,16 @@ describe("RC-1 宿主与消费者分离", () => {
 		dirs.push(cwd);
 		const sessionPath = join(cwd, "session.jsonl");
 
-		const first = await UinaHost.create({ cwd, sessionPath, provider: probeProvider() });
+		const probe1 = probeProvider();
+		const first = await UinaHost.create({ cwd, sessionPath, provider: probe1, model: probe1.model });
 		await first.start();
 		await runOnce(first, "写进日志");
 		const beforeDispose = first.historyCount();
 		expect(beforeDispose).toBeGreaterThan(0);
 		await first.dispose();
 
-		const second = await UinaHost.create({ cwd, sessionPath, provider: probeProvider() });
+		const probe2 = probeProvider();
+		const second = await UinaHost.create({ cwd, sessionPath, provider: probe2, model: probe2.model });
 		await second.start();
 		expect(second.restoredEntries.length).toBeGreaterThan(0);
 		expect(second.historyCount()).toBe(beforeDispose);

@@ -146,16 +146,10 @@ export class ToolBroker implements ToolView {
 				status: "not_started",
 			};
 		}
-		if (!this.has(prepared.name)) {
-			return {
-				result: JSON.stringify({ error: `工具不可用: ${prepared.name} 已被卸载或不存在`, status: "not_started" }),
-				status: "not_started",
-			};
-		}
-		const tool = this.tools.get(prepared.name)?.tool ?? prepared.tool;
+		const tool = this.tools.get(prepared.name)?.tool;
 		if (!tool) {
 			return {
-				result: JSON.stringify({ error: `未知工具 ${prepared.name}`, status: "not_started" }),
+				result: JSON.stringify({ error: `工具不可用: ${prepared.name} 已被卸载或不存在`, status: "not_started" }),
 				status: "not_started",
 			};
 		}
@@ -280,7 +274,8 @@ export class ScopedToolView implements ToolView {
 				status: "not_started",
 			};
 		}
-		if (!this.root.has(prepared.name)) {
+		const tool = this.root.get(prepared.name);
+		if (!tool) {
 			return {
 				result: JSON.stringify({ error: `工具不可用: ${prepared.name} 已被卸载或不存在`, status: "not_started" }),
 				status: "not_started",
@@ -292,13 +287,6 @@ export class ScopedToolView implements ToolView {
 				: "未包含在当前作用域允许名单中";
 			return {
 				result: JSON.stringify({ error: `工具不可用: ${prepared.name} (${reason})`, status: "not_started" }),
-				status: "not_started",
-			};
-		}
-		const tool = this.root.get(prepared.name);
-		if (!tool) {
-			return {
-				result: JSON.stringify({ error: `工具不可用: ${prepared.name} 已被卸载或不存在`, status: "not_started" }),
 				status: "not_started",
 			};
 		}

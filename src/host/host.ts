@@ -99,14 +99,11 @@ export class UinaHost {
 		const models = new ModelRegistry(config);
 		if (options.provider) {
 			models.registerProvider(options.provider);
-			if ("model" in options.provider && (options.provider as { model?: Model }).model) {
-				models.registerModel((options.provider as { model: Model }).model);
-			}
 		}
 		if (options.model) {
 			models.registerModel(options.model);
 		}
-		const activeModel = options.model ?? (options.provider && "model" in options.provider ? (options.provider as { model?: Model }).model : undefined) ?? (() => {
+		const activeModel = options.model ?? (() => {
 			if (options.modelName) {
 				return models.resolve(options.modelName);
 			}
