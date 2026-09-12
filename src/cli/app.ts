@@ -1,5 +1,3 @@
-import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { BuiltinUI } from "../extensions/builtin.js";
 import { UinaHost } from "../host/host.js";
@@ -10,9 +8,9 @@ import { combineQueuedDraft } from "./draft.js";
 import { sanitizeTerminalText, toolStartLine, toolResultLines } from "../ui/format.js";
 import { createJobAdapter } from "../ui/adapters/jobs.js";
 import { createSubagentAdapter } from "../ui/adapters/subagents.js";
+import { formatHelp, parseArgs, readPipedStdin, UINA_VERSION } from "./args.js";
+import { resolveSessionPath } from "./session-path.js";
 
-const DATA_DIR = join(process.cwd(), "data");
-const SESSION_FILE = join(DATA_DIR, "session.jsonl");
 const CLEAR_LINE = "\r\x1b[2K";
 const ERR = "\x1b[31m";
 const RESET = "\x1b[0m";
@@ -23,11 +21,34 @@ const RESET = "\x1b[0m";
  * 主体（UinaHost）不再由 UI 拥有：TUI 只是 subscribe 到宿主事件流的一个消费者。
  * 因此 TUI 关闭、换成 stdio、或接入第二个观察者，都不影响主体是否继续存活。
  */
-export async function runApp(): Promise<void> {
-	mkdirSync(DATA_DIR, { recursive: true });
+export async function runApp(rawArgs: readonly string[] = process.argv.slice(2)): Promise<void> {
+	const args = parseArgs(rawArgs);
+	if (args.help) {
+		process.stdout.write(formatHelp());
+		return;
+	}
+	if (args.version) {
+		process.stdout.write(`v${UINA_VERSION}\n`);
+		return;
+	}
 
+	const piped = await readPipedStdin();
+	let initialPrompt: string | undefined;
+	if (piped && args.prompt) {
+		initialPrompt = `${args.prompt}\n\n[标准输入内容]:\n${piped}`;
+	} else if (piped) {
+		initialPrompt = piped;
+	} else if (args.prompt) {
+		initialPrompt = args.prompt;
+	}
 	const oneshot = process.env.UINA_ONESHOT_MSG;
+	if (oneshot !== undefined) {
+		initialPrompt = oneshot;
+	}
+
+	const isPrintMode = args.print || oneshot !== undefined || (!process.stdout.isTTY && initialPrompt !== undefined);
 	const isTTY = process.stdout.isTTY && process.stdin.isTTY;
+	const shouldRunTUI = isTTY && !isPrintMode;
 
 	let tui: InteractiveTUI | null = null;
 	let nonTTY: ReturnType<typeof createInterface> | null = null;
@@ -93,11 +114,13 @@ export async function runApp(): Promise<void> {
 	};
 
 	// —— 宿主：唯一的主体所有者。它不认识 TUI。 ——
+	const sessionPath = resolveSessionPath({ noSession: args.noSession, cwd: process.cwd() });
 	let host: UinaHost;
 	try {
 		host = await UinaHost.create({
 			cwd: process.cwd(),
-			sessionPath: SESSION_FILE,
+			sessionPath,
+			modelName: args.model,
 			onError: (text) => render({ type: "error", text }),
 		});
 	} catch (error) {
@@ -107,10 +130,10 @@ export async function runApp(): Promise<void> {
 	}
 	unsubscribe = host.subscribe(render);
 
-	if (!isTTY) {
+	if (!shouldRunTUI && !isPrintMode) {
 		process.stdout.write(`Uina 就绪（模型：${host.snapshot().modelName}）— /quit 退出\n\n`);
 	}
-	if (host.historyCount() > 0) {
+	if (host.historyCount() > 0 && !isPrintMode) {
 		process.stdout.write(`（已恢复 JSONL 会话：${host.historyCount()} 条消息）\n\n`);
 	}
 
@@ -141,7 +164,7 @@ export async function runApp(): Promise<void> {
 		tui?.close();
 		nonTTY?.close();
 		uninstallHostGuards();
-		process.exitCode = oneshot !== undefined && hadError ? 1 : 0;
+		process.exitCode = (isPrintMode || oneshot !== undefined) && hadError ? 1 : 0;
 	};
 
 	const restoreQueueToEditor = async (): Promise<number> => {
@@ -315,7 +338,7 @@ export async function runApp(): Promise<void> {
 	};
 
 	// —— 消费者接入 ——
-	if (isTTY) {
+	if (shouldRunTUI) {
 		const snapshot = host.snapshot();
 		tui = createInteractiveUI({
 			modelName: snapshot.modelName,
@@ -348,7 +371,7 @@ export async function runApp(): Promise<void> {
 		});
 		if (host.restoredEntries.length > 0) tui.loadSession(host.restoredEntries);
 		tui.setPendingQueue(snapshot.queue);
-	} else if (oneshot === undefined) {
+	} else if (!isPrintMode) {
 		nonTTY = createInterface({ input: process.stdin });
 		nonTTY.on("line", (line) => onUserLine(line, "followUp"));
 		nonTTY.on("close", () => {
@@ -356,7 +379,7 @@ export async function runApp(): Promise<void> {
 		});
 	}
 
-	installHostGuards(isTTY);
+	installHostGuards(shouldRunTUI);
 
 	const builtinUI: BuiltinUI | undefined = tui ? {
 		openHelpMenu: () => tui!.host.openHelpMenu(),
@@ -389,12 +412,19 @@ export async function runApp(): Promise<void> {
 		requestShutdown: () => shutdown(),
 	});
 
-	if (oneshot !== undefined) {
-		await host.submitText(oneshot, "direct").catch((error: unknown) => {
-			process.stderr.write(`[oneshot 提交失败] ${String(error)}\n`);
-			hadError = true;
-		});
-		await host.waitForIdle();
+	if (isPrintMode) {
+		if (initialPrompt !== undefined) {
+			await host.submitText(initialPrompt, "direct").catch((error: unknown) => {
+				process.stderr.write(`[执行失败] ${String(error)}\n`);
+				hadError = true;
+			});
+			await host.waitForIdle();
+		}
 		await shutdown(false);
+	} else if (initialPrompt !== undefined) {
+		// 交互模式下带有初始 prompt：自动提交首条任务，执行后停留在 TUI
+		void host.submitText(initialPrompt, "direct").catch((error: unknown) => {
+			process.stderr.write(`[初始任务提交失败] ${String(error)}\n`);
+		});
 	}
 }

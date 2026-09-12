@@ -38,6 +38,8 @@ export interface UinaHostOptions {
 	provider?: Provider;
 	/** 注入初始活跃模型。 */
 	model?: Model;
+	/** 显式指定初始活跃模型名称（例如 deepseek-r1 或 openai/gpt-4o）。 */
+	modelName?: string;
 	/** 注入流式函数。 */
 	stream?: ModelStreamFn;
 	/** 默认 thinking 档位。 */
@@ -105,6 +107,9 @@ export class UinaHost {
 			models.registerModel(options.model);
 		}
 		const activeModel = options.model ?? (options.provider && "model" in options.provider ? (options.provider as { model?: Model }).model : undefined) ?? (() => {
+			if (options.modelName) {
+				return models.resolve(options.modelName);
+			}
 			if (config) {
 				const active = activeProvider(config);
 				return models.resolve(active.name);

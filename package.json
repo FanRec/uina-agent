@@ -7,6 +7,9 @@
   "engines": {
     "node": ">=22"
   },
+  "bin": {
+    "uina": "./dist/src/main.js"
+  },
   "scripts": {
     "start": "tsx src/main.ts",
     "start:dist": "node dist/src/main.js",
