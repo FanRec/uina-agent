@@ -44,11 +44,6 @@ export class ModelPicker implements Component, Focusable {
 		}
 	}
 
-	setGroups(groups: ModelGroup[]): void {
-		this.groups = groups;
-		this.selectedGroupIndex = Math.min(this.selectedGroupIndex, Math.max(0, groups.length - 1));
-	}
-
 	navigateUp(): void {
 		if (this.level === "groups") {
 			this.selectedGroupIndex = Math.max(0, this.selectedGroupIndex - 1);

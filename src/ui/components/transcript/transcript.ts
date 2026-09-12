@@ -9,15 +9,18 @@ import { projectInputMessage } from "../../../session/recovery.js";
 import type { ChatMsg, ToolResultStatus } from "../../../core/types.js";
 import type { SessionEntry } from "../../../session/types.js";
 import { C, wrapTextWithAnsi, stripAnsi } from "../../core/utils.js";
-import { formatThinkingLines } from "./thinking-view.js";
 import { sanitizeRenderText } from "../../format.js";
 import { formatToolCardLines } from "./tool-view.js";
 import { formatFullMarkdown } from "./stream-markdown.js";
 import { formatDiffCardLines } from "./diff-view.js";
-import { formatCompactionCardLines, type CompactionRecord } from "./compact-view.js";
+import {
+	formatThinkingLines,
+	formatCompactionCardLines,
+	type CompactionRecord,
+	CustomMessageComponent,
+	CustomEntryComponent,
+} from "./cards.js";
 import { SmoothRevealController } from "./smooth-reveal.js";
-import { CustomMessageComponent } from "./custom-message.js";
-import { CustomEntryComponent } from "./custom-entry.js";
 import type { CustomMessage, CustomEntry, MessageRenderer, EntryRenderer } from "../../../extensions/ui-contract.js";
 
 export interface ToolRecord {
@@ -178,7 +181,6 @@ export class TranscriptContainer implements Component {
 	private readonly timeline: TimelineItem[] = [];
 	private readonly historyTurns: TurnRecord[] = [];
 	private currentTurn: TurnRecord | null = null;
-	private thinkingCommitted = false;
 	private hoveredThinkingTurnN: number | null = null;
 	private hoveredToolId: string | null = null;
 	private hoveredCompactionIndex: number | null = null;
@@ -370,18 +372,6 @@ export class TranscriptContainer implements Component {
 	private messageRenderer: (type: string) => MessageRenderer | undefined = () => undefined;
 	private entryRenderer: (type: string) => EntryRenderer | undefined = () => undefined;
 
-	setMessageRenderer(type: string, renderer: MessageRenderer): void {
-		const previous = this.messageRenderer;
-		this.messageRenderer = (candidate) => candidate === type ? renderer : previous(candidate);
-		this.invalidate();
-	}
-
-	setEntryRenderer(type: string, renderer: EntryRenderer): void {
-		const previous = this.entryRenderer;
-		this.entryRenderer = (candidate) => candidate === type ? renderer : previous(candidate);
-		this.invalidate();
-	}
-
 	setRendererResolver(resolve: { message(type: string): MessageRenderer | undefined; entry(type: string): EntryRenderer | undefined }): void {
 		this.messageRenderer = resolve.message;
 		this.entryRenderer = resolve.entry;
@@ -393,7 +383,6 @@ export class TranscriptContainer implements Component {
 			this.commitCurrentTurn();
 		}
 		this.currentTurn = createTurnRecord(n, userText);
-		this.thinkingCommitted = false;
 	}
 
 	appendToken(token: string): void {
@@ -418,13 +407,7 @@ export class TranscriptContainer implements Component {
 		}
 	}
 
-	commitThinking(): void {
-		this.thinkingCommitted = true;
-	}
-
-	isThinkingCommitted(): boolean {
-		return this.thinkingCommitted;
-	}
+	commitThinking(): void {}
 
 	startTool(name: string, args?: unknown, callId?: string): void {
 		if (!this.currentTurn) {
@@ -498,13 +481,6 @@ export class TranscriptContainer implements Component {
 			});
 		}
 		this.invalidate();
-	}
-
-	addDiff(oldText: string, newText: string, filename: string, collapsed = true): void {
-		if (!this.currentTurn) {
-			this.startTurn(this.historyTurns.length + 1, "");
-		}
-		this.currentTurn?.items.push({ oldText, newText, filename, collapsed, kind: "diff" });
 	}
 
 	addCompaction(record: CompactionRecord): void {

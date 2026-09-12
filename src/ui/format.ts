@@ -7,6 +7,15 @@ import { truncateToWidth } from "./core/utils.js";
 
 export type Style = (s: string) => string;
 
+/** 格式化毫秒耗时为紧凑文本（如 5s, 3m12s） */
+export function formatDuration(ms: number): string {
+	const seconds = Math.floor(Math.max(0, ms) / 1000);
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	const remSec = seconds % 60;
+	return `${minutes}m${remSec}s`;
+}
+
 export function sanitizeTerminalText(value: string): string {
 	return value.replace(/[\u001b\u009b][[\]()#;?]*(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "");
 }

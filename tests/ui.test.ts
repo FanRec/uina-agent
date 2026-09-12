@@ -22,27 +22,6 @@ import {
 	alignSplitDiff,
 	formatSplitDiffCardLines,
 	formatDiffCardLines,
-} from "../src/ui/components/transcript/diff-view.js";
-import { ActivityLineComponent, formatTpsGauge, formatTpsSparkline } from "../src/ui/components/widgets/activity-line.js";
-import { PendingQueueComponent } from "../src/ui/components/widgets/pending-queue.js";
-import { InputLine, segmentWithMarkers, snapCursorToMarkerBoundary } from "../src/ui/components/editor/input-line.js";
-import { calculateContextSegments } from "../src/agent/context.js";
-import { combineQueuedDraft } from "../src/cli/draft.js";
-import { ExtensionRegistry } from "../src/extensions/renderer-registry.js";
-import { createExtensionUIContext } from "../src/ui/extension-ui-context.js";
-import { CustomMessageComponent } from "../src/ui/components/transcript/custom-message.js";
-import { CustomEntryComponent } from "../src/ui/components/transcript/custom-entry.js";
-import { JobRegistry, type JobOutcome, type JobSnapshot } from "../src/extensions/jobs/registry.js";
-import { createJobAdapter } from "../src/ui/adapters/jobs.js";
-import { TaskDashboard, type JobPort } from "../src/ui/components/overlays/task-dashboard.js";
-import { createSubagentAdapter } from "../src/ui/adapters/subagents.js";
-import { SubagentDashboard } from "../src/ui/components/overlays/subagent-dashboard.js";
-import { TrajectoryProjection } from "../src/ui/adapters/agent-events.js";
-import { TrajectoryScene } from "../src/ui/components/overlays/trajectory-scene.js";
-import { createInteractiveUI, InteractiveTUI } from "../src/ui/tui.js";
-import { UIHost } from "../src/ui/ui-host.js";
-import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
-import {
 	formatToolCardLines,
 	getToolCategory,
 	getToolCategoryColor,
@@ -56,11 +35,41 @@ import {
 	MULTIPLICATION_X,
 	GUTTER_FIRST,
 	GUTTER_REST,
-} from "../src/ui/components/transcript/tool-view.js";
-import { ModelPicker } from "../src/ui/components/overlays/model-picker.js";
-import { EffortSlider } from "../src/ui/components/overlays/effort-slider.js";
+	CustomMessageComponent,
+	CustomEntryComponent,
+	TranscriptContainer,
+} from "../src/ui/components/transcript/index.js";
+import {
+	ActivityLineComponent,
+	PendingQueueComponent,
+	formatTpsGauge,
+	formatTpsSparkline,
+} from "../src/ui/components/widgets/index.js";
+import {
+	InputLine,
+	segmentWithMarkers,
+	snapCursorToMarkerBoundary,
+} from "../src/ui/components/editor/index.js";
+import {
+	TaskDashboard,
+	type JobPort,
+	SubagentDashboard,
+	TrajectoryScene,
+	ModelPicker,
+	EffortSlider,
+	HelpMenu,
+} from "../src/ui/components/overlays/index.js";
 import { getStartupBanner } from "../src/ui/components/primitives/banner.js";
-import { HelpMenu } from "../src/ui/components/overlays/help-menu.js";
+import { calculateContextSegments } from "../src/agent/context.js";
+import { combineQueuedDraft } from "../src/cli/draft.js";
+import { ExtensionRegistry } from "../src/extensions/renderer-registry.js";
+import { createExtensionUIContext } from "../src/ui/extension-ui-context.js";
+import { JobRegistry, type JobOutcome, type JobSnapshot } from "../src/extensions/jobs/registry.js";
+import { createJobAdapter } from "../src/ui/adapters/jobs.js";
+import { createSubagentAdapter } from "../src/ui/adapters/subagents.js";
+import { TrajectoryProjection } from "../src/ui/adapters/agent-events.js";
+import { createInteractiveUI, InteractiveTUI } from "../src/ui/tui.js";
+import { UIHost } from "../src/ui/ui-host.js";
 
 describe("UI Core: Utils", () => {
 	it("正确计算包含中文与 ANSI 样式的可见字符宽度", () => {
@@ -566,7 +575,7 @@ describe("UI Components & Visual Rendering", () => {
 	});
 
 	it("CompactionRecord 格式化渲染与折叠双态像素对齐", async () => {
-		const { formatCompactionCardLines } = await import("../src/ui/components/transcript/compact-view.js");
+		const { formatCompactionCardLines } = await import("../src/ui/components/transcript/cards.js");
 
 		const record = {
 			summary: "1. 讨论系统架构\n2. 落地输入联想与差异卡片\n3. 优化文件发现机制",

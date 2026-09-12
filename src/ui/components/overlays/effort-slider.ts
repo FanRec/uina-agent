@@ -84,21 +84,8 @@ export class EffortSlider implements Component, Focusable {
 		return this.getCurrentTier();
 	}
 
-	setFocusIndex(index: number): EffortTier {
-		if (index >= 0 && index < this.tiers.length) {
-			this.focusIndex = index;
-			this.activeTierId = this.tiers[this.focusIndex]?.id ?? "off";
-			this.onChange?.(this.activeTierId);
-		}
-		return this.getCurrentTier();
-	}
-
 	getCurrentTier(): EffortTier {
 		return this.tiers[this.focusIndex] ?? this.tiers[0] ?? { id: "off", name: "Off", description: "" };
-	}
-
-	getActiveTierId(): ThinkingLevel {
-		return this.activeTierId;
 	}
 
 	handleInput(data: string): void {

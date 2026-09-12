@@ -16,29 +16,42 @@ import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "
 import type { ThinkingLevel } from "../core/types.js";
 import type { SessionEntry } from "../session/types.js";
 import { C, copyToClipboardUnified, visibleWidth, truncateToWidth } from "./core/utils.js";
-import { InputLine } from "./components/editor/input-line.js";
-import { BannerComponent } from "./components/primitives/banner.js";
-import { TranscriptContainer } from "./components/transcript/transcript.js";
-import { ActivityLineComponent } from "./components/widgets/activity-line.js";
-import { ContextBarComponent, formatCacheHitRate, type ContextSegments } from "./components/widgets/context-bar.js";
-import { PendingQueueComponent } from "./components/widgets/pending-queue.js";
-import type { QueuedMessage } from "../agent/queue.js";
-import { TimelineRailComponent } from "./components/widgets/timeline-rail.js";
-import { ScrollbarGutterComponent } from "./components/widgets/scrollbar-gutter.js";
-import { HelpMenu } from "./components/overlays/help-menu.js";
-import { ModelPicker, type ModelGroup } from "./components/overlays/model-picker.js";
-import { EffortSlider, DEFAULT_EFFORT_TIERS, type EffortTier } from "./components/overlays/effort-slider.js";
-import { TaskDashboard, type JobPort } from "./components/overlays/task-dashboard.js";
-import { SubagentDashboard } from "./components/overlays/subagent-dashboard.js";
-import { SubagentDetailScene } from "./components/overlays/subagent-detail-scene.js";
-import { TrajectoryScene } from "./components/overlays/trajectory-scene.js";
-import type { SubagentPort } from "./adapters/subagents.js";
 import {
+	InputLine,
 	formatSuggestionCardLines,
 	getFileCandidates,
 	type CommandItem,
 	type FileItem,
-} from "./components/editor/suggestions.js";
+} from "./components/editor/index.js";
+import { BannerComponent } from "./components/primitives/banner.js";
+import {
+	TranscriptContainer,
+	type CompactionRecord,
+} from "./components/transcript/index.js";
+import {
+	ActivityLineComponent,
+	PendingQueueComponent,
+	ContextBarComponent,
+	formatCacheHitRate,
+	type ContextSegments,
+	TimelineRailComponent,
+	ScrollbarGutterComponent,
+} from "./components/widgets/index.js";
+import {
+	HelpMenu,
+	ModelPicker,
+	type ModelGroup,
+	EffortSlider,
+	DEFAULT_EFFORT_TIERS,
+	type EffortTier,
+	TaskDashboard,
+	type JobPort,
+	SubagentDashboard,
+	SubagentDetailScene,
+	TrajectoryScene,
+} from "./components/overlays/index.js";
+import type { QueuedMessage } from "../agent/queue.js";
+import type { SubagentPort } from "./adapters/subagents.js";
 import { ExtensionRegistry } from "../extensions/renderer-registry.js";
 import { createExtensionUIContext, type UIHostContextPort } from "./extension-ui-context.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
@@ -452,7 +465,7 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	addCompaction(record: import("./components/transcript/compact-view.js").CompactionRecord): void {
+	addCompaction(record: CompactionRecord): void {
 		this.transcript.addCompaction(record);
 		this.trajectoryProjection.onCompaction(record.summary, record.tokensSaved);
 		this.requestRender();

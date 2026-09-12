@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { UIHost } from "../src/ui/ui-host.js";
-import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
+import { TranscriptContainer } from "../src/ui/components/transcript/index.js";
 import { stripAnsi } from "../src/ui/core/utils.js";
 import type { ProcessTerminal } from "../src/ui/core/terminal.js";
 import { OverlayStack } from "../src/ui/core/overlay.js";
 import { FocusManager } from "../src/ui/core/focus.js";
 import { visibleWidth, truncateToWidth, wrapTextWithAnsi } from "../src/ui/core/utils.js";
-import { InputLine, snapToGraphemeBoundary } from "../src/ui/components/editor/input-line.js";
+import { InputLine, snapToGraphemeBoundary } from "../src/ui/components/editor/index.js";
 
 function fakeTerminal(columns = 80, rows = 24): { terminal: ProcessTerminal; frames: string[] } {
 	const frames: string[] = [];

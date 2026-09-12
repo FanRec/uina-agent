@@ -13,8 +13,7 @@ import { projectModelHistory } from "../src/agent/projection.js";
 import type { QueuedInput } from "../src/session/types.js";
 import { ToolBroker, type Tool } from "../src/tools/broker.js";
 import { InteractiveTUI } from "../src/ui/tui.js";
-import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
-import { formatToolCardLines } from "../src/ui/components/transcript/tool-view.js";
+import { TranscriptContainer, formatToolCardLines } from "../src/ui/components/transcript/index.js";
 import { mockModel, scriptedProvider, toolCallDelta } from "./helpers/mock-provider.js";
 
 const dirs: string[] = [];

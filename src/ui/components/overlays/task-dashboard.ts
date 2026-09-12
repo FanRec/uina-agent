@@ -8,19 +8,12 @@ import type { Component, Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
 import { C, visibleWidth, truncateToWidth } from "../../core/utils.js";
 import type { JobSnapshot, JobStatus, JobRead } from "../../../extensions/jobs/registry.js";
+import { formatDuration } from "../../format.js";
 
 export interface JobPort {
 	list(): JobSnapshot[];
 	read(id: string, fromCursor?: number): JobRead;
 	cancel(id: string, reason?: string): boolean;
-}
-
-function formatDuration(ms: number): string {
-	const seconds = Math.floor(ms / 1000);
-	if (seconds < 60) return `${seconds}s`;
-	const minutes = Math.floor(seconds / 60);
-	const remSec = seconds % 60;
-	return `${minutes}m${remSec}s`;
 }
 
 export class TaskDashboard implements Component, Focusable {
