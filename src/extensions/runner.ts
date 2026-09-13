@@ -27,6 +27,11 @@ import { createRuntimeHooks } from "./runtime-hooks.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
 
 export interface ExtensionAPI {
+	readonly session: {
+		list: import("../session/types.js").SessionAccess["list"];
+		read: import("../session/types.js").SessionAccess["read"];
+		requestRewind(request: import("../session/types.js").RewindRequest, options?: CallOptions): Promise<import("../session/types.js").RewindResult>;
+	};
 	readonly id: string;
 	readonly path: string;
 	readonly cwd: string;
@@ -100,6 +105,7 @@ export type ExtensionActivation = (pi: ExtensionAPI) => void | ExtensionTeardown
 export type ExtensionModule = { default?: ExtensionActivation };
 
 export interface ExtensionRunnerOptions {
+	session?: import("../session/types.js").SessionAccess;
 	cwd: string;
 	extensionPaths?: readonly string[];
 	models?: ExtensionModelAccess;
@@ -435,12 +441,22 @@ export class ExtensionRunner extends ExtensionHost {
 			own(dispose);
 			return dispose;
 		};
+		const sessionAccess = (): import("../session/types.js").SessionAccess => {
+			assertActive();
+			if (!this.options.session) throw new Error("宿主未提供会话入口");
+			return this.options.session;
+		};
 		const modelAccess = (): ExtensionModelAccess => {
 			assertActive();
 			if (!this.options.models) throw new Error("宿主未提供模型服务");
 			return this.options.models;
 		};
 		return {
+			session: {
+				list: options => sessionAccess().list(options),
+				read: id => sessionAccess().read(id),
+				requestRewind: (request, options) => scope.run(signal => sessionAccess().requestRewind(request,scope.id,signal),options?.signal),
+			},
 			id: scope.id,
 			path: scope.path,
 			cwd: this.options.cwd,

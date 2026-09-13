@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto";
+import { listSessionNodes, readSessionNode } from "../session/navigation.js";
+import { isSafeRewindTarget, projectAgentHistory, protectRewindContext, recoverRecords } from "../session/recovery.js";
+import type { SessionAccess, RewindRequest, RewindResult, SessionRewindRecord } from "../session/types.js";
 import { validImages } from "../core/content.js";
 import type { Compactor, CompactionTrigger } from "../core/compaction.js";
 import { readonlySnapshot } from "../runtime/guard.js";
@@ -6,7 +10,6 @@ import type {
 	ChatMsg,
 	CompletedToolCall,
 	ContextSegments,
-	FinishReason,
 	DeliveryMode,
 	Model,
 	ModelStreamFn,
@@ -19,6 +22,7 @@ import { projectInputMessage } from "../session/recovery.js";
 import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, findKeepFrom, shouldCompact } from "./compaction.js";
 import { buildContext, calculateContextSegments, convertToLlm, defaultSystemPrompt, estimateContextTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
+import { TurnStreamCollector, type StreamCollectorResult } from "./stream-collector.js";
 import type { PreparedToolCall, ToolView } from "../tools/broker.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
 import type { OutputEvent, RuntimeEvent } from "../runtime/events.js";
@@ -61,7 +65,7 @@ export interface AgentInput {
 }
 
 export class Subject {
-	private activity: "turn" | "compact" | undefined;
+	private activity: "turn" | "compact" | "rewind" | undefined;
 	private compactionActive = false;
 	private history: AgentMessage[] = [];
 	private turnSeq = 0;
@@ -71,6 +75,22 @@ export class Subject {
 	private readonly systemPrompt: string;
 	private readonly compaction: CompactionSettings;
 	private readonly store?: SessionStore;
+	private pendingRewind?: { request: RewindRequest; source: string; requestId: string; signal?: AbortSignal };
+	private rewindCommitting = false;
+	readonly session: SessionAccess = {
+		list: options => {
+			if (!this.store) throw new Error("未配置会话存储，会话查询不可用");
+			return listSessionNodes(this.store.readRecords(), options);
+		},
+		read: id => {
+			if (!this.store) throw new Error("未配置会话存储，会话查询不可用");
+			return readSessionNode(this.store.readRecords(), id);
+		},
+		requestRewind: async (request, source, signal) => {
+			if (!this.store) throw new Error("未配置会话存储，回溯不可用");
+			return this.requestRewind(request, source, signal);
+		},
+	};
 	private activeRun?: Promise<void>;
 	private settleActiveRun?: () => void;
 	private resumingQueue = false;
@@ -237,6 +257,148 @@ export class Subject {
 			} finally {
 				this.completeActiveRun();
 			}
+		}
+	}
+
+	private async requestRewind(request: RewindRequest, source: string, signal?: AbortSignal): Promise<RewindResult> {
+		signal?.throwIfAborted();
+		if (!this.store) {
+			throw new Error("未配置会话存储，回溯不可用");
+		}
+		if (
+			!request ||
+			typeof request.targetId !== "string" ||
+			!request.targetId ||
+			typeof request.reason !== "string" ||
+			!request.reason.trim() ||
+			typeof source !== "string" ||
+			!source.trim() ||
+			(request.summary !== undefined && typeof request.summary !== "string")
+		) {
+			throw new Error("回溯需要 targetId、reason 和来源");
+		}
+		if (this.pendingRewind || this.rewindCommitting || this.activity === "compact" || this.activity === "rewind") {
+			throw new Error("已有会话转换正在处理");
+		}
+		const entries = recoverRecords([...this.store.readRecords()], false).entries;
+		const index = entries.findIndex((entry) => entry.id === request.targetId);
+		if (index < 0 || index === entries.length - 1 || !isSafeRewindTarget(entries, index)) {
+			throw new Error("回溯目标必须是当前主线的安全历史祖先");
+		}
+		const pending = { request: structuredClone(request), source, signal, requestId: randomUUID() };
+		if (this.isBusy() && this.activity !== "turn") {
+			throw new Error("当前不在可接纳回溯请求的运行阶段");
+		}
+		if (this.isBusy()) {
+			this.pendingRewind = pending;
+			return { requestId: pending.requestId, status: "scheduled" };
+		}
+		this.activity = "rewind";
+		this.interrupted = false;
+		this.abort = new AbortController();
+		this.activeRun = new Promise((resolve) => {
+			this.settleActiveRun = resolve;
+		});
+		try {
+			const rewindId = await this.commitRewind(pending);
+			if (!this.interrupted && !pending.signal?.aborted) {
+				this.activity = "turn";
+				const turn = ++this.turnSeq;
+				const prepared = await this.runtimeHooks.turn.prepare(
+					{ prompt: "", systemPrompt: this.systemPrompt },
+					this.currentSignal(),
+				);
+				await this.runtimeHooks.events.emit({ type: "agent_start", turnSeq: turn });
+				await this.runTurn(
+					undefined,
+					turn,
+					this.model,
+					prepared.systemPrompt ?? this.systemPrompt,
+					prepared.messages ? [...prepared.messages] : [],
+				);
+			}
+			return { requestId: pending.requestId, status: "committed", rewindId };
+		} finally {
+			this.activity = undefined;
+			this.abort = null;
+			try {
+				await this.runtimeHooks.events.flush();
+			} finally {
+				this.completeActiveRun();
+			}
+		}
+	}
+
+	private async applyPendingRewind(): Promise<boolean> {
+		const pending = this.pendingRewind;
+		if (!pending) return false;
+		try {
+			await this.commitRewind(pending);
+			this.pendingRewind = undefined;
+			return true;
+		} catch (error) {
+			this.pendingRewind = undefined;
+			this.reportError(`回溯请求 ${pending.requestId} 未提交: ${safeError(error)}`);
+			return false;
+		}
+	}
+
+	private async commitRewind(pending: NonNullable<Subject["pendingRewind"]>): Promise<string> {
+		this.rewindCommitting = true;
+		let committed = false;
+		try {
+			pending.signal?.throwIfAborted();
+			this.currentSignal().throwIfAborted();
+			if (!this.store) {
+				throw new Error("未配置会话存储，回溯不可用");
+			}
+			const records = [...this.store.readRecords()];
+			const entries = recoverRecords(records, false).entries;
+			const fromId = entries.at(-1)?.id;
+			if (!fromId) {
+				throw new Error("会话没有可回溯历史");
+			}
+			const record: SessionRewindRecord = {
+				...pending.request,
+				kind: "rewind",
+				id: randomUUID(),
+				requestId: pending.requestId,
+				source: pending.source,
+				fromId,
+				seq: (records.at(-1)?.seq ?? 0) + 1,
+				timestamp: new Date().toISOString(),
+			};
+			const next = recoverRecords([...records, record]);
+			const history = projectAgentHistory(next.entries);
+			const estimated = estimateContextTokens(
+				buildContext({ history, systemPrompt: this.systemPrompt }),
+				{ tools: this.tools.defs(), includeThinking: this.model.includeThinking },
+			).tokens;
+			if (this.model.contextWindow !== undefined && estimated > this.model.contextWindow) {
+				throw new Error("回溯后的上下文估算超过模型上限；主线未改变，请选择其他目标或纠错方式");
+			}
+			pending.signal?.throwIfAborted();
+			this.currentSignal().throwIfAborted();
+			await this.store.appendRewind(record);
+			committed = true;
+			this.history = history;
+			this.lastReportedUsage = null;
+			await this.dispatch({
+				type: "session_rewind",
+				turnNumber: this.activity === "turn" ? this.turnSeq : undefined,
+				requestId: pending.requestId,
+				rewindId: record.id,
+				fromId,
+				targetId: record.targetId,
+			});
+			return record.id;
+		} catch (error) {
+			throw new Error(
+				`回溯请求 ${pending.requestId} ${committed ? "已提交，但通知失败" : "未提交"}: ${safeError(error)}`,
+				{ cause: error },
+			);
+		} finally {
+			this.rewindCommitting = false;
 		}
 	}
 
@@ -431,6 +593,10 @@ export class Subject {
 				this.reportError(runError);
 			}
 		} finally {
+			if (this.pendingRewind) {
+				const requestId = this.pendingRewind.requestId; this.pendingRewind = undefined;
+				this.reportError(`回溯请求 ${requestId} 未提交：回合失败或被取消，主线保持不变`);
+			}
 			this.abort = null;
 			this.activity = undefined;
 			try {
@@ -501,6 +667,16 @@ export class Subject {
 		systemPrompt = this.systemPrompt,
 		beforeMessages: readonly (AgentMessage | ChatMsg)[] = [],
 	): Promise<void> {
+		const applyRewind = async (): Promise<boolean> => {
+			if (!await this.applyPendingRewind()) return false;
+			const prepared = await this.runtimeHooks.turn.prepare(
+				{ prompt: "", systemPrompt: this.systemPrompt },
+				this.currentSignal(),
+			);
+			systemPrompt = prepared.systemPrompt ?? this.systemPrompt;
+			beforeMessages = prepared.messages ? [...prepared.messages] : [];
+			return true;
+		};
 		await this.prepareTurn(model, systemPrompt);
 		for (;;) {
 			if (this.interrupted) {
@@ -508,48 +684,15 @@ export class Subject {
 				return;
 			}
 
-			let requestMessages = [
-				...buildContext({
-					history: this.history,
-					systemPrompt,
-					includeThinking: model.includeThinking,
-				}),
-				...convertToLlm(beforeMessages),
-			];
-			requestMessages = await this.runtimeHooks.turn.transformContext(requestMessages);
+			await applyRewind();
+			const requestMessages = await this.buildRequestMessages(model, systemPrompt, beforeMessages);
 
-			const toolCalls: CompletedToolCall[] = [];
-			let reply = "";
-			let thinking = "";
-			let thinkingSignature: string | undefined;
-			let usage: Usage | undefined;
-			let providerReplay: import("../core/types.js").ProviderReplay | undefined;
-			let finishReason: FinishReason | null = null;
+			const collector = new TurnStreamCollector(
+				`stream-${this.turnSeq}-${++this.streamSeq}`,
+				(event) => this.dispatch(event),
+				{ onUsage: (usage) => { this.lastReportedUsage = usage; } },
+			);
 			this.lastReportedUsage = null;
-
-			const streamId = `stream-${this.turnSeq}-${++this.streamSeq}`;
-			let textOffset = 0;
-			let thinkingOffset = 0;
-			let hasEmittedContentStart = false;
-			let hasEmittedThinkingStart = false;
-			const closeOutput = (outcome: "end" | "interrupted", reason?: "cancelled" | "error"): void => {
-				if (hasEmittedThinkingStart) {
-					this.dispatch(
-						outcome === "end"
-							? { type: "output_end", streamId, channel: "thinking" }
-							: { type: "output_interrupted", streamId, channel: "thinking", reason: reason! },
-					);
-					hasEmittedThinkingStart = false;
-				}
-				if (hasEmittedContentStart) {
-					this.dispatch(
-						outcome === "end"
-							? { type: "output_end", streamId, channel: "content" }
-							: { type: "output_interrupted", streamId, channel: "content", reason: reason!, spokenUntil: textOffset },
-					);
-					hasEmittedContentStart = false;
-				}
-			};
 
 			try {
 				await this.streamFn(
@@ -560,161 +703,139 @@ export class Subject {
 						thinkingLevel: clampThinkingLevel(this.thinkingLevel, model.thinkingLevels),
 						providerHooks: this.runtimeHooks.provider,
 					},
-					(delta) => {
-						if (finishReason && delta.kind !== "usage") throw new Error("模型 finish 后仍返回输出事件");
-						if (delta.kind === "provider_replay") {
-							providerReplay = structuredClone(delta.replay);
-						} else if (delta.kind === "thinking") {
-							thinking += delta.text;
-							if (!hasEmittedThinkingStart) {
-								hasEmittedThinkingStart = true;
-								this.dispatch({ type: "output_start", streamId, channel: "thinking" });
-							}
-							thinkingOffset += delta.text.length;
-							this.dispatch({
-								type: "output_update",
-								streamId,
-								offset: thinkingOffset,
-								channel: "thinking",
-								text: delta.text,
-							});
-						} else if (delta.kind === "thinking_signature") {
-							thinkingSignature = delta.signature;
-						} else if (delta.kind === "text") {
-							reply += delta.text;
-							if (!hasEmittedContentStart) {
-								hasEmittedContentStart = true;
-								this.dispatch({ type: "output_start", streamId, channel: "content" });
-							}
-							textOffset += delta.text.length;
-							this.dispatch({
-								type: "output_update",
-								streamId,
-								offset: textOffset,
-								channel: "content",
-								text: delta.text,
-							});
-						} else if (delta.kind === "usage") {
-							usage = delta.usage;
-							this.lastReportedUsage = delta.usage;
-						} else if (delta.kind === "tool_call") {
-							const parsedArgs = parseToolArgs(delta.call.args);
-							toolCalls.push({
-								id: delta.call.id,
-								name: delta.call.name,
-								args: parsedArgs.value,
-								argsValid: delta.call.argsValid !== false && parsedArgs.valid,
-								...(delta.call.thinkingSignature ? { thinkingSignature: delta.call.thinkingSignature } : {}),
-							});
-						} else if (!finishReason) {
-							finishReason = delta.reason;
-						}
-					},
+					(delta) => collector.handleDelta(delta),
 					this.currentSignal(),
 				);
 			} catch (error) {
-				closeOutput("interrupted", this.interrupted || this.currentSignal().aborted ? "cancelled" : "error");
-				if (this.interrupted || this.currentSignal().aborted) {
-					await this.emitInterrupted(reply, thinking, thinkingSignature);
-					return;
-				}
-				if (reply.trim() || thinking.trim() || thinkingSignature) {
-					await this.appendMessage({
-						role: "assistant",
-						content: reply,
-						thinking: thinking || undefined,
-						thinkingSignature,
-						providerReplay,
-						status: "error",
-						usage,
-					});
-				}
-				throw error;
+				await this.handleStreamError(collector, error);
+				return;
 			}
 
 			if (this.interrupted || this.currentSignal().aborted) {
-				closeOutput("interrupted", "cancelled");
-				await this.emitInterrupted(reply, thinking, thinkingSignature);
+				collector.closeOutput("interrupted", "cancelled");
+				const partial = collector.getPartialOutput();
+				await this.emitInterrupted(partial.reply, partial.thinking, partial.thinkingSignature);
 				return;
 			}
-			if (!finishReason) {
-				closeOutput("interrupted", "error");
-				throw new Error(`模型返回未知或缺失 finish reason: ${finishReason ?? "none"}`);
-			}
-			if (finishReason === "tool_calls" && toolCalls.length === 0) {
-				closeOutput("interrupted", "error");
-				throw new Error("模型声明了 tool_calls，但没有返回工具调用");
-			}
-			closeOutput("end");
-			if (finishReason !== "tool_calls") {
-				if (reply.trim() || toolCalls.length > 0) {
-					await this.appendMessage({
-						role: "assistant",
-						content: reply,
-						thinking: thinking || undefined,
-						thinkingSignature,
-						providerReplay,
-						...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
-						status: finishReason === "length" ? "length" : "complete",
-						usage,
-					});
-					for (const call of toolCalls) {
-						await this.appendMessage({
-							role: "tool",
-							tool_call_id: call.id,
-							content: JSON.stringify({ error: "工具调用未执行（模型没有以 tool_calls 终止）", status: "not_started" }),
-							status: "not_started",
-						});
-					}
-				}
-				const steer = this.queues.peekMany("steer", this.queueModes.steer);
-				if (steer.length > 0) {
-					for (const item of steer) await this.consumeQueueItem(item);
-					continue;
-				}
-				const followUp = this.queues.peekMany("followUp", this.queueModes.followUp);
-				if (followUp.length > 0) {
-					for (const item of followUp) await this.consumeQueueItem(item);
-					continue;
-				}
+
+			const streamResult = collector.validateAndFinalize();
+
+			if (streamResult.finishReason !== "tool_calls") {
+				await this.recordTerminalAssistant(streamResult);
+				if (await applyRewind()) continue;
+				if (await this.drainQueuedInputs("steer")) continue;
+				if (await this.drainQueuedInputs("followUp")) continue;
 				this.notifyQueueChanged();
 				return;
 			}
 
-			const assistant: AgentMessage = {
-				role: "assistant",
-				content: reply,
-				thinking: thinking || undefined,
-				thinkingSignature,
-				providerReplay,
-				tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
-				status: finishReason === "length" ? "length" : "complete",
-				usage,
-				timestamp: new Date().toISOString(),
-			};
-			await this.appendMessage(assistant);
-			const results = await this.executeToolCalls(toolCalls);
-			for (const result of results) {
-				await this.appendMessage({
-					role: "tool",
-					tool_call_id: result.callId,
-					content: result.result,
-					images: result.images,
-					details: result.details,
-					status: result.status,
-					timestamp: new Date().toISOString(),
-				});
-			}
+			const { stopped } = await this.settleToolExchange(streamResult);
 			if (this.interrupted || this.currentSignal().aborted) {
 				await this.emitInterrupted("", "", undefined);
 				return;
 			}
-			if (results.some((result) => result.continuation === "stop")) return;
-			const steer = this.queues.peekMany("steer", this.queueModes.steer);
-			if (steer.length > 0) {
-				for (const item of steer) await this.consumeQueueItem(item);
+			if (await applyRewind()) continue;
+			if (stopped) return;
+			await this.drainQueuedInputs("steer");
+		}
+	}
+
+	private async buildRequestMessages(
+		model: Model,
+		systemPrompt: string,
+		beforeMessages: readonly (AgentMessage | ChatMsg)[],
+	) {
+		const requestMessages = [
+			...buildContext({
+				history: this.history,
+				systemPrompt,
+				includeThinking: model.includeThinking,
+			}),
+			...convertToLlm(beforeMessages),
+		];
+		return this.runtimeHooks.turn.transformContext(requestMessages);
+	}
+
+	private async handleStreamError(collector: TurnStreamCollector, error: unknown): Promise<void> {
+		collector.closeOutput("interrupted", this.interrupted || this.currentSignal().aborted ? "cancelled" : "error");
+		if (this.interrupted || this.currentSignal().aborted) {
+			const partial = collector.getPartialOutput();
+			await this.emitInterrupted(partial.reply, partial.thinking, partial.thinkingSignature);
+			return;
+		}
+		const partial = collector.getPartialOutput();
+		if (partial.reply.trim() || partial.thinking.trim() || partial.thinkingSignature) {
+			await this.appendMessage({
+				role: "assistant",
+				content: partial.reply,
+				thinking: partial.thinking || undefined,
+				thinkingSignature: partial.thinkingSignature,
+				providerReplay: partial.providerReplay,
+				status: "error",
+				usage: partial.usage,
+			});
+		}
+		throw error;
+	}
+
+	private async recordTerminalAssistant(result: StreamCollectorResult): Promise<void> {
+		if (result.reply.trim() || result.toolCalls.length > 0) {
+			await this.appendMessage({
+				role: "assistant",
+				content: result.reply,
+				thinking: result.thinking || undefined,
+				thinkingSignature: result.thinkingSignature,
+				providerReplay: result.providerReplay,
+				...(result.toolCalls.length > 0 ? { tool_calls: result.toolCalls } : {}),
+				status: result.finishReason === "length" ? "length" : "complete",
+				usage: result.usage,
+			});
+			for (const call of result.toolCalls) {
+				await this.appendMessage({
+					role: "tool",
+					tool_call_id: call.id,
+					content: JSON.stringify({ error: "工具调用未执行（模型没有以 tool_calls 终止）", status: "not_started" }),
+					status: "not_started",
+				});
 			}
 		}
+	}
+
+	private async settleToolExchange(result: StreamCollectorResult): Promise<{ stopped: boolean }> {
+		const assistant: AgentMessage = {
+			role: "assistant",
+			content: result.reply,
+			thinking: result.thinking || undefined,
+			thinkingSignature: result.thinkingSignature,
+			providerReplay: result.providerReplay,
+			tool_calls: result.toolCalls.length > 0 ? result.toolCalls : undefined,
+			status: result.finishReason === "length" ? "length" : "complete",
+			usage: result.usage,
+			timestamp: new Date().toISOString(),
+		};
+		await this.appendMessage(assistant);
+		const results = await this.executeToolCalls(result.toolCalls);
+		for (const res of results) {
+			await this.appendMessage({
+				role: "tool",
+				tool_call_id: res.callId,
+				content: res.result,
+				images: res.images,
+				details: res.details,
+				status: res.status,
+				timestamp: new Date().toISOString(),
+			});
+		}
+		return { stopped: results.some((res) => res.continuation === "stop") };
+	}
+
+	private async drainQueuedInputs(mode: "steer" | "followUp"): Promise<boolean> {
+		const items = this.queues.peekMany(mode, this.queueModes[mode]);
+		if (items.length === 0) return false;
+		for (const item of items) {
+			await this.consumeQueueItem(item);
+		}
+		return true;
 	}
 
 	private async executeToolCalls(calls: CompletedToolCall[]): Promise<
@@ -877,7 +998,7 @@ export class Subject {
 			if (!result) return;
 			signal.throwIfAborted();
 			await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);
-			this.history = [
+			this.history = protectRewindContext([
 				{
 					role: "compactionSummary",
 					summary: result.summary,
@@ -885,7 +1006,7 @@ export class Subject {
 					tokensBefore: result.tokensBefore,
 				},
 				...result.retainedTail,
-			];
+			], this.store ? recoverRecords([...this.store.readRecords()]).entries : []);
 			await this.runtimeHooks.events.emit({
 				type: "session_compact",
 				summary: result.summary,
@@ -910,6 +1031,7 @@ export class Subject {
 		display?: boolean;
 		details?: unknown;
 	}): Promise<void> {
+		if (this.rewindCommitting || this.activity === "rewind") throw new Error("回溯提交期间不能修改模型历史");
 		if (this.compactionActive || this.activity === "compact") throw new Error("压缩期间不能修改模型历史");
 		if (!validImages(message.images)) throw new Error("图片内容无效");
 		await this.store?.appendCustomMessage(message);
@@ -952,6 +1074,10 @@ export class Subject {
 	}
 
 	private completeActiveRun(): void {
+		if (this.pendingRewind) {
+			const id=this.pendingRewind.requestId;this.pendingRewind=undefined;
+			this.reportError(`回溯请求 ${id} 未提交：活动已结束`);
+		}
 		const settle = this.settleActiveRun;
 		this.settleActiveRun = undefined;
 		this.activeRun = undefined;
@@ -976,18 +1102,6 @@ export class Subject {
 		}
 		await this.storeEvent("turn_aborted", { turnId: this.turnSeq });
 		this.dispatch({ type: "turn_aborted", turnNumber: this.turnSeq });
-	}
-}
-
-function parseToolArgs(text: string): { value: unknown; valid: boolean } {
-	try {
-		const value = JSON.parse(text || "{}");
-		return {
-			value,
-			valid: !!value && typeof value === "object" && !Array.isArray(value),
-		};
-	} catch {
-		return { value: {}, valid: false };
 	}
 }
 

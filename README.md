@@ -105,3 +105,5 @@ stdout/stderr 各自限制展示为 50 KB 或 2000 行，并保留尾部；超�
 当前已通过类型检查、281 项测试和构建；localhost 覆盖 OpenAI-compatible、Anthropic、Gemini 协议。真实 DeepSeek v4 Flash 已验证思考控制、usage、取消，以及文件事件 → 后台工作 → 结果回注、用户响应与安静决定。其他真实服务和真实 TTY/IME 仍未验证。详情见 [交付记录](docs/history/reviews/2026-09-05-plan-delivery.md)。
 
 真实 DeepSeek、Ollama、真实终端 IME 和跨平台 shell 仍需在对应环境单独验证。长期记忆、语音、视觉、动态能力筛选、后台 Job、RPC 和权限审批不属于 v0。
+
+会话默认保留一条可续写主线。`/history` 查看节点，`/history all` 查看包括归档在内的历史，`/history read <id>` 读取节点，`/rewind <id> <原因>` 回溯并继续。模型可使用对应的 `session_list`、`session_read`、`session_rewind` 工具。回溯不会撤销文件修改或后台任务。详见 [会话设计](docs/session-rewind.md)。

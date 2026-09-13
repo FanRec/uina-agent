@@ -50,15 +50,15 @@
 
 ## 会话与恢复
 
-`data/session.jsonl` 追加 header、message、input、custom message/entry、compaction 和 lifecycle event。恢复后保留单一有序 `SessionEntry[]`：模型历史与 TUI timeline 从同一序列投影，避免 custom message 在重启后改变位置。
+`data/session.jsonl` 按真实时间追加 header、message、input、custom message/entry、compaction、rewind 和 lifecycle event。日志是权威事实；Session 从日志推导当前主线与全部历史节点，模型历史与 TUI 从同一主线投影。回溯只允许选择当前主线的安全历史祖先，退出路径只读，外部状态不撤销。设计与阶段验收见 [会话主线与回溯](session-rewind.md)。
 
-工具已开始但没有最终结果时，恢复为 `unknown`，不推断外部副作用成功。
+工具已开始但没有最终结果时，恢复为 `unknown`，不推断外部副作用成功。打开日志时将末尾恢复结果追加落盘，之后的实时会话查询不会将正在执行的工具误判为崩溃。
 
 扩展阻止执行时记录 `not_started` 及原因，不生成 `tool_started`；该日志可正常重开。compaction 的 retained tail 按 `AgentMessage` 校验，接受 `custom` 和 `compactionSummary`，保留其内容、顺序与元数据；`custom_entry` 不进入模型上下文。
 
 队列移交通过一条携带输入 ID、内容和来源的 `input` 记录提交：提交前归队列，提交后归会话，不再先写 `queue_consumed` 再另写 user message。用户输入投影为 user message，runtime 来源投影为隐藏 custom 消息，标明运行时来源，重开后仍可进入上下文，不伪装成人类发言。提交失败报告错误并保留待处理队列，失败轮次不自动续跑。这里保证输入归属，不保证外部副作用恰好执行一次或跨重启 producer 对账。
 
-header 仍为 v2，新 reader 保留原有合法 v2 记录及 `queue_consumed`/`queue_restored` 的读取。旧 reader 不认识新增 `input` 子类型或缺字段的 usage，不能直接回读包含这些记录的新日志；回退使用升级前日志备份或隔离会话目录。不会自动猜测修复旧实现留下的非法生命周期记录，也无法补回旧日志中已丢失的输入。
+header 仍为 v2，新 reader 保留原有合法 v2 记录及 `queue_consumed`/`queue_restored` 的读取。旧 reader 不认识新增 `rewind` 或 `input` 子类型或缺字段的 usage，不能直接回读包含这些记录的新日志；回退使用升级前日志备份或隔离会话目录。不会自动猜测修复旧实现留下的非法生命周期记录，也无法补回旧日志中已丢失的输入。
 
 ## 工具结果
 
@@ -74,7 +74,8 @@ shell 非零退出码为 `failed`；后台任务成功创建表示此次工具�
 
 - `builtin:runtime-tools` 注册 `get_time`、`exec_command`、Job 与 Subagent 工具，并拥有其关闭清理。
 - `builtin:workspace-tools` 默认注册 `read_file`、`write_file`、`read_image` 和文件 renderer；Host 可用 `workspaceTools: false` 禁用，扩展可显式 replace。
-- `builtin:commands` 注册内置命令。
+- `builtin:session-tools` 注册历史查询/回溯工具与 `/history`、`/rewind`；继承工具按执行者身份访问自身会话。
+- `builtin:commands` 注册内置命令；`/session` 仍用于查看会话用量。
 - 项目扩展从 `.uina/extensions/` 的脚本、一级目录入口或 `package.json#uina.extensions` 加载；CLI `-e` 与 Host `extensionPaths` 可指定额外入口。在 `activate(pi)` 中调用 `pi.registerTool()`、`pi.registerCommand()`、`pi.registerProvider()`、renderer 或 hook 注册 API。
 
 没有独立的 `tools/` 扫描或执行旁路。脚本加载使用 jiti，并刷新本地子模块；导入预检失败保留旧 activation，激活失败回收局部注册。ActivationScope 发出取消、执行 teardown、等待公共 API 在途调用并释放自己的注册。
@@ -110,6 +111,8 @@ SubagentRegistry 从 AgentHandle 派生运行/空闲状态，只维护关系、�
 shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计时 100ms），因此持有继承管道的分离子进程不会让工具永久挂起；子进程 PID 被登记，关闭时统一杀进程树。`exec_command` 的 `timeout`（秒）可省略；非法值直接报错，不做静默截断。
 
 ## 已验证与未验证
+
+会话回溯实现：类型与 5 条边界检查、28 文件 391 项测试通过；隔离构建和编译 CLI 四组探针通过，包括三次 localhost 请求完成查询、回溯和继续。详细分阶段结果及证据边界见 [会话设计](session-rewind.md)。
 
 2026-09-13 文件/图片转正：`pnpm typecheck` 和全量 27 文件、377 项测试通过；隔离目录执行相同 build 与 verify:cli 脚本通过，Windows x64 native 已加载。localhost 编译 CLI 无需 `-e` 或 imageInput 声明即可完成图片工具回注；文件范围读取、格式签名、禁用装配及显式替换恢复已测试。这些结果不代表真实视觉服务端接受或识图质量。
 

@@ -56,6 +56,12 @@ export class SubagentRegistry {
 		return this.snapshot(record);
 	}
 
+	session(id: string): import("../../session/types.js").SessionAccess {
+		const record = this.records.get(id);
+		if (!record || record.status) throw new Error(`子代理会话不可用: ${id}`);
+		return record.handle.subject.session;
+	}
+
 	list(ownerId: string): SubagentSnapshot[] {
 		return [...this.records.values()]
 			.filter((record) => record.ownerId === ownerId)

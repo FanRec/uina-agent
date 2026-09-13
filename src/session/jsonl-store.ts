@@ -48,7 +48,19 @@ export async function openJsonlSession(path: string): Promise<{
 	// Positional writes allow rollback on Windows, where append-only handles
 	// cannot be truncated. This store serializes all writes to its handle.
 	const handle = await open(path, "r+");
-	return { store: new JsonlSessionStore(path, handle, snapshot.lastSeq), snapshot };
+	const store = new JsonlSessionStore(path, handle, snapshot.lastSeq, snapshot.records);
+	// Recovery outcomes become durable before the session is exposed to live readers.
+	// Live snapshots must never infer that an in-flight tool has crashed.
+	try {
+		const tail = recoverRecords([...snapshot.records]).recoveredTail;
+		for (const message of tail) await store.appendMessage(message);
+		if (tail.length) {
+			snapshot.records = [...store.readRecords()];
+			snapshot.entries = recoverRecords(snapshot.records, false).entries;
+			snapshot.lastSeq = snapshot.records.at(-1)!.seq;
+		}
+		return {store,snapshot};
+	} catch (error) { await store.close(); throw error; }
 }
 
 export class JsonlSessionStore implements SessionStore {
@@ -60,7 +72,13 @@ export class JsonlSessionStore implements SessionStore {
 		readonly path: string,
 		private readonly handle: FileHandle,
 		private nextSeq: number,
-	) {}
+		private readonly records: SessionRecord[] = [],
+	) { this.records = structuredClone(records); }
+
+	readRecords(): readonly SessionRecord[] { return [...this.records]; }
+	appendRewind(record: Omit<import("./types.js").SessionRewindRecord, "kind" | "seq" | "timestamp">): Promise<void> {
+		return this.append({ ...structuredClone(record), kind:"rewind", seq:++this.nextSeq, timestamp:new Date().toISOString() });
+	}
 
 	appendInput(input: QueuedInput): Promise<void> {
 		return this.append({ kind: "input", id: randomUUID(), seq: ++this.nextSeq, timestamp: new Date().toISOString(), input: structuredClone(input) });
@@ -129,6 +147,10 @@ export class JsonlSessionStore implements SessionStore {
 		const result = this.tail.then(async () => {
 			if (this.closed) throw new Error("session store 已关闭");
 			if (this.writeFailure) throw this.writeFailure;
+			if (record.kind === "rewind") {
+				if (!isRecord(record)) throw new SessionFormatError("回溯记录无效");
+				recoverRecords([...this.records, record]);
+			}
 			const data = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
 			const { size } = await this.handle.stat();
 			try {
@@ -139,6 +161,7 @@ export class JsonlSessionStore implements SessionStore {
 					offset += bytesWritten;
 				}
 				await this.handle.sync();
+				this.records.push(structuredClone(record));
 			} catch (error) {
 				try {
 					await this.handle.truncate(size);
@@ -161,6 +184,12 @@ export class JsonlSessionStore implements SessionStore {
 export class MemorySessionStore implements SessionStore {
 	readonly path = ":memory:";
 	readonly records: SessionRecord[] = [];
+	readRecords(): readonly SessionRecord[] { return [...this.records]; }
+	appendRewind(record: Omit<import("./types.js").SessionRewindRecord, "kind" | "seq" | "timestamp">): Promise<void> {
+		const next: import("./types.js").SessionRewindRecord = { ...structuredClone(record),kind:"rewind",seq:this.records.length+1,timestamp:new Date().toISOString() };
+		if (!isRecord(next)) return Promise.reject(new SessionFormatError("回溯记录无效"));
+		recoverRecords([...this.records,next]); this.records.push(next); return Promise.resolve();
+	}
 
 	appendInput(input: QueuedInput): Promise<void> {
 		this.records.push({ kind: "input", id: randomUUID(), seq: this.records.length + 1, timestamp: new Date().toISOString(), input: structuredClone(input) });
@@ -267,6 +296,7 @@ async function readSnapshot(path: string): Promise<SessionSnapshot> {
 	const recovered = recoverRecords(records);
 	return {
 		header,
+		records,
 		entries: recovered.entries,
 		queued: recovered.queued,
 		lastSeq,

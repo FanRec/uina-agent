@@ -10,6 +10,7 @@ import type { CustomEntry, CustomMessage } from "../extensions/ui-contract.js";
  * 消费者可以随时接入或断开，主体的生命期不受影响。
  */
 export type HostEvent =
+	| { type: "session_rewind"; turnNumber?: number; requestId: string; rewindId: string; fromId: string; targetId: string; entries: readonly import("../session/types.js").SessionEntry[] }
 	| { type: "text"; text: string }
 	| { type: "thinking"; text: string }
 	| { type: "turn_start"; n: number; text: string; images?: readonly import("../core/content.js").ImageContent[] }

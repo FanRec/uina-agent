@@ -318,7 +318,8 @@ describe("JSONL session", () => {
 		await reopened.store.close();
 		const lines = readFileSync(path, "utf8").trim().split("\n");
 		expect(lines[0]).toContain('"kind":"header"');
-		expect(lines.length).toBe(4);
+		expect(lines.length).toBe(5);
+		expect(JSON.parse(lines.at(-1)!)).toMatchObject({kind:"message",message:{role:"tool",status:"unknown"}});
 
 		const completedPath = join(root, "completed.jsonl");
 		const completed = await openJsonlSession(completedPath);

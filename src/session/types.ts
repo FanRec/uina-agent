@@ -80,7 +80,20 @@ export interface SessionEventRecord {
 	data: Record<string, unknown>;
 }
 
+export interface RewindRequest { targetId: string; reason: string; summary?: string; }
+export interface SessionRewindRecord extends RewindRequest {
+	kind: "rewind"; id: string; seq: number; timestamp: string; fromId: string; source: string; requestId: string;
+}
+export interface RewindResult { requestId: string; status: "scheduled" | "committed"; rewindId?: string; }
+export interface SessionAccess {
+	list(options?: { scope?: "main" | "all"; after?: string; limit?: number }): { nodes: SessionNodeInfo[]; next?: string; headId?: string };
+	read(id: string): HydratedSessionEntry;
+	requestRewind(request: RewindRequest, source: string, signal?: AbortSignal): Promise<RewindResult>;
+}
+export interface SessionNodeInfo { id: string; parentId: string | null; seq: number; kind: SessionEntry["kind"]; active: boolean; canRewind: boolean; preview: string; }
+
 export type SessionRecord =
+	| SessionRewindRecord
 	| SessionInputRecord
 	| SessionMessageRecord
 	| SessionCustomMessageRecord
@@ -88,16 +101,22 @@ export type SessionRecord =
 	| SessionCompactionRecord
 	| SessionEventRecord;
 
-/** Ordered durable session content. Operational events are replayed into state,
- * while these entries retain their original journal order for model and UI projections. */
-export type SessionEntry =
+export interface SessionEntryMeta {
+	id: string;
+	parentId: string | null;
+	seq: number;
+	timestamp: string;
+}
+
+export type SessionEntryPayload =
+	| { kind: "rewind"; record: SessionRewindRecord; notice: string; carriedInputs: AgentMessage[] }
 	| { kind: "input"; input: QueuedInput }
 	| { kind: "message"; message: AgentMessage | ChatMsg }
 	| {
 			kind: "custom_message";
 			customType: string;
 			content: string;
- images?: import("../core/content.js").ImageContent[];
+			images?: import("../core/content.js").ImageContent[];
 			display?: boolean;
 			details?: unknown;
 	  }
@@ -109,17 +128,27 @@ export type SessionEntry =
 			tokensBefore: number;
 	  };
 
+/** Hydrated, durable session entry with confirmed node identity and topological lineage. */
+export type HydratedSessionEntry = SessionEntryMeta & SessionEntryPayload;
+
+/** An ordered session entry, which may be unhydrated before journal persistence
+ * or fully hydrated when recovered from a store. */
+export type SessionEntry = Partial<SessionEntryMeta> & SessionEntryPayload;
+
 export type QueuedInput = QueuedMessage;
 
 export interface SessionSnapshot {
 	header: SessionHeader;
-	entries: SessionEntry[];
+	records: SessionRecord[];
+	entries: HydratedSessionEntry[];
 	queued: QueuedInput[];
 	lastSeq: number;
 }
 
 export interface SessionStore {
 	readonly path: string;
+	readRecords(): readonly SessionRecord[];
+	appendRewind(record: Omit<SessionRewindRecord, "kind" | "seq" | "timestamp">): Promise<void>;
 	appendInput(input: QueuedInput): Promise<void>;
 	appendMessage(message: AgentMessage | ChatMsg): Promise<void>;
 	appendCustomMessage(message: { customType: string; content: string; images?: import("../core/content.js").ImageContent[]; display?: boolean; details?: unknown }): Promise<void>;

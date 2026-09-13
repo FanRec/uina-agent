@@ -55,7 +55,10 @@ export interface QueueEvent { readonly type: "queue"; readonly items: readonly D
 export interface TurnAbortedEvent { readonly type: "turn_aborted"; readonly turnNumber: number; }
 export interface ErrorEvent { readonly type: "error"; readonly text: string; }
 
+export interface SessionRewindEvent { readonly type: "session_rewind"; readonly turnNumber?: number; readonly requestId: string; readonly rewindId: string; readonly fromId: string; readonly targetId: string; }
+
 export type RuntimeEvent =
+	| SessionRewindEvent
 	| BeforeAgentStartEvent | AgentStartEvent | AgentEndEvent | AgentSettledEvent | TurnStartEvent | TurnEndEvent
 	| ContextEvent | ToolCallEvent | ToolResultEvent | ModelSelectEvent | ThinkingLevelSelectEvent
 	| SessionBeforeCompactEvent | SessionCompactEvent | SessionCompactFailedEvent

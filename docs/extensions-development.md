@@ -104,3 +104,11 @@ registerToolRenderer 与 registerMarkdownTransformer 只控制显示。widget、
 `builtin:workspace-tools` 随 Host 启动；无需加载原 workspace-tools 示例。`read_file` 默认完整读取 UTF-8，可传 `offset`（从 1 开始）与 `limit` 选择行；目前仍在内存读取完整文件。`write_file` 覆盖 UTF-8 文件，父目录须存在。`read_image` 按文件签名识别 PNG/JPEG/GIF/WebP，传递原始字节；签名识别不等于完整图片解码校验。路径相对 `api.cwd` 解析，绝对路径可用。
 
 Host 可用 `workspaceTools: false` 关闭这组默认能力。项目扩展通过 `registerTool(..., { replace: true })` 与 `registerToolRenderer(..., { replace: true })` 分别替换行为和展示，释放注册后恢复前一个存活实现。
+
+## 会话历史与回溯
+
+`api.session.list({ scope: "main" | "all", after?, limit? })` 返回节点（含 id、parentId、active、canRewind、预览）、headId 和可选 next。after 使用上一页返回的节点 ID；默认每页 50 项，可显式调整。`api.session.read(id)` 返回完整节点，包含图片与元数据。返回值是快照，修改它不会改变会话。
+
+`api.session.requestRewind({ targetId, reason, summary? }, { signal? })` 的来源绑定当前扩展。忙于回合时返回 scheduled，整批工具结算后提交；空闲时提交并继续运行，再返回 committed。成功记录含 requestId，错误含同一请求 ID；scheduled 只表示已排期，重启不自动补执行。扩展卸载会取消尚未提交的请求。已提交的回溯不会因后续取消撤销。
+
+`session_rewind` 事件在提交后发送，含请求、回溯节点、原位置和目标 ID；它是观察事件，不可取消已经提交的事实。摘要、目标选择和自主纠错策略由扩展实现，可复用模型 API，无需新增专用 hook。业务状态应按其所有者恢复，不能把主线投影当作外部世界的历史快照。

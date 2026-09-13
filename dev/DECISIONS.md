@@ -66,3 +66,7 @@ PowerShell：`$env:UINA_ONESHOT_MSG="你好"; pnpm start`。
 ## 文件与图片能力（2026-09-13）
 
 文件/图片工具默认由 builtin:workspace-tools 注册，业务实现属于 Extension，Host 可用 workspaceTools: false 关闭此装配；项目扩展可通过公开 replace 契约替换工具。图片能力未知允许尝试，明确 false 才拒绝；请求成功不自动更改模型能力事实。
+
+## 会话回溯（2026-09-12 UTC）
+
+单主线、祖先回溯、归档只读；日志按时间追加 rewind 记录，主线从日志派生。当前上下文回溯不撤销外部状态。工具调用只排期，在运行安全点落盘后切换历史；策略属于 Extension。打开日志先追加末尾未完成工具的恢复结论，实时投影不推断崩溃。详情见 docs/session-rewind.md。

@@ -12,10 +12,11 @@ import { ExtensionRunner } from "../extensions/runner.js";
 import { CommandRouter } from "../extensions/commands.js";
 import { activateBuiltinCommands, type BuiltinUI } from "../extensions/builtin.js";
 import { activateRuntimeTools, createChildTools } from "../extensions/runtime-tools/index.js";
+import { activateSessionTools } from "../extensions/session-tools/index.js";
 import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
 import { killTrackedDetachedChildren } from "../runtime/process-tracker.js";
 import { MemorySessionStore, openJsonlSession } from "../session/jsonl-store.js";
-import { projectAgentHistory } from "../session/recovery.js";
+import { projectAgentHistory, recoverRecords } from "../session/recovery.js";
 import type { SessionEntry, SessionStore } from "../session/types.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 import type { HostEvent, HostEventListener } from "./events.js";
@@ -170,6 +171,7 @@ export class UinaHost {
 		});
 
 		const extensionHost = new ExtensionRunner({
+			session: { list: options => subject.session.list(options), read: id => subject.session.read(id), requestRewind: (request,source,signal) => state.stopping ? Promise.reject(new Error("宿主正在关闭")) : subject.session.requestRewind(request,source,signal) },
    cwd: options.cwd,
    extensionPaths: options.extensionPaths,
    onCompact: (instruction) => subject.compact(instruction),
@@ -177,7 +179,7 @@ export class UinaHost {
 			tools,
 			onInput: (input) => state.stopping ? Promise.reject(new Error("宿主正在关闭")) : subject.accept(input),
 			onError: (text) => emit({ type: "error", text }),
-			onNotice: (text) => emit({ type: "notice", text }),
+   onNotice: (text) => emit({ type: "notice", text }),
 			onProvider: (name, registered, options) => models.register(name, registered, options),
    onModel: (model, options) => models.registerModel(model, options),
 			onCustomMessage: async (message) => { await subject.appendCustomMessage(message); emit({ type: "custom_message", message }); },
@@ -194,6 +196,9 @@ export class UinaHost {
 
 		subject.subscribe((event) => {
 			switch (event.type) {
+				case "session_rewind":
+					emit({ ...event, entries: recoverRecords([...store.readRecords()], false).entries });
+					break;
 				case "output_update":
 					if (event.channel === "content") emit({ type: "text", text: event.text });
 					else if (event.channel === "thinking") emit({ type: "thinking", text: event.text });
@@ -337,6 +342,7 @@ export class UinaHost {
 
 	/** 内置能力与项目扩展走同一套 ActivationScope；在消费者接入之后调用。 */
 	async start(startOptions: HostStartOptions = {}): Promise<void> {
+		await this.extensionHost.activateBuiltin("session-tools", activateSessionTools(ownerId => ownerId === "root" ? this.subject.session : this.subagents.session(ownerId)));
 		if (this.options.workspaceTools !== false) await this.extensionHost.activateBuiltin("workspace-tools", activateWorkspaceTools);
 		await this.extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools({ jobs: this.jobs, subagents: this.subagents }));
 		await this.extensionHost.activateBuiltin("commands", activateBuiltinCommands({
@@ -349,6 +355,10 @@ export class UinaHost {
 			shutdown: startOptions.requestShutdown ?? (() => this.dispose()),
 		}));
 		await this.extensionHost.load();
+	}
+
+	get session(): import("../session/types.js").SessionAccess {
+		return { list: options => this.subject.session.list(options), read: id => this.subject.session.read(id), requestRewind: (request,source,signal) => { this.assertAccepting(); return this.subject.session.requestRewind(request,source,signal); } };
 	}
 
 	async reloadExtensions(): Promise<void> {

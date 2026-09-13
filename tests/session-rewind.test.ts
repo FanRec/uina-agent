@@ -1,0 +1,352 @@
+import { describe, expect, it } from "vitest";
+import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
+import { projectAgentHistory, protectRewindContext, recoverRecords } from "../src/session/recovery.js";
+import { listSessionNodes, readSessionNode } from "../src/session/navigation.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+async function seed(store: MemorySessionStore | Awaited<ReturnType<typeof openJsonlSession>>["store"]) {
+	await store.appendMessage({role:"user",content:"original task"});
+	await store.appendMessage({role:"assistant",content:"bad plan"});
+	await store.appendMessage({role:"user",content:"stop writing files"});
+	return store.readRecords();
+}
+describe("session mainline persistence", () => {
+	it("keeps abandoned nodes readable, preserves subsequent inputs, and forbids revisiting an archive", async () => {
+		const store = new MemorySessionStore(); const records = await seed(store);
+		await store.appendRewind({id:"r1",requestId:"q1",targetId:records[0].id,fromId:records[2].id,source:"user",reason:"bad premise"});
+		const main = listSessionNodes(store.readRecords());
+		expect(main.nodes.map(node=>node.id)).toEqual([records[0].id,"r1"]);
+		expect(readSessionNode(store.readRecords(),records[1].id)).toMatchObject({kind:"message",message:{content:"bad plan"}});
+		const context = projectAgentHistory(recoverRecords([...store.readRecords()]).entries);
+		expect(context.some(message=>message.content === "bad plan")).toBe(false);
+		expect(context.some(message=>message.content.includes("stop writing files"))).toBe(true);
+		expect(() => store.appendRewind({id:"bad",requestId:"bad",targetId:records[1].id,fromId:"r1",source:"user",reason:"archive"})).toThrow("祖先");
+		await store.appendMessage({role:"assistant",content:"corrected plan"});
+		const latest=store.readRecords().at(-1)!;
+		await store.appendRewind({id:"r2",requestId:"q2",targetId:records[0].id,fromId:latest.id,source:"user",reason:"again"});
+		expect(listSessionNodes(store.readRecords(),{scope:"all"}).nodes.filter(node=>!node.active).length).toBe(4);
+		expect(projectAgentHistory(recoverRecords([...store.readRecords()]).entries).filter(message=>message.content.includes("stop writing files"))).toHaveLength(1);
+	});
+	it("rejects cuts inside tool exchanges", async () => {
+		const store=new MemorySessionStore(); await seed(store);
+		await store.appendMessage({role:"assistant",content:"",tool_calls:[{id:"call",name:"write_file",args:{}}]});
+		const target=store.readRecords().at(-1)!.id;
+		await store.appendMessage({role:"tool",tool_call_id:"call",content:"written",status:"succeeded"});
+		const fromId=store.readRecords().at(-1)!.id;
+		expect(()=>store.appendRewind({id:"r",requestId:"q",targetId:target,fromId,source:"test",reason:"cut"})).toThrow("工具");
+	});
+	it("reopens the same mainline and ignores compression from the abandoned path", async () => {
+		const dir=await mkdtemp(join(tmpdir(),"uina-rewind-")); const path=join(dir,"session.jsonl");
+		try {
+			const {store}=await openJsonlSession(path); const records=await seed(store);
+			await store.appendCompaction("bad compressed plan",[],100);
+			await store.appendRewind({id:"r",requestId:"q",targetId:records[0].id,fromId:store.readRecords().at(-1)!.id,source:"test",reason:"wrong"});
+			await store.close();
+			const reopened=await openJsonlSession(path);
+			expect(projectAgentHistory(reopened.snapshot.entries).some(message=>message.content.includes("bad compressed plan"))).toBe(false);
+			expect(listSessionNodes(reopened.store.readRecords()).headId).toBe("r");
+			await reopened.store.appendCompaction("short summary",[],100);
+			expect(projectAgentHistory(recoverRecords([...reopened.store.readRecords()]).entries).some(message=>message.content.includes("会话回溯"))).toBe(true);
+			await reopened.store.close();
+		} finally { await rm(dir,{recursive:true,force:true}); }
+	});
+});
+
+import { UinaHost } from "../src/host/host.js";
+import { Subject } from "../src/agent/loop.js";
+import { ToolBroker } from "../src/tools/broker.js";
+import { mockModel } from "./helpers/mock-provider.js";
+import { readFile } from "node:fs/promises";
+import type { SessionRewindRecord } from "../src/session/types.js";
+
+describe("rewind runtime safe points", () => {
+	it("settles the whole tool batch before rewinding, preserves files and resumes the new mainline", async () => {
+		const cwd=await mkdtemp(join(tmpdir(),"uina-rewind-host-"));
+		let count=0,targetId=""; const errors:string[]=[]; let rewinds=0;
+		const host=await UinaHost.create({cwd,sessionPath:join(cwd,"session.jsonl"),model:mockModel(),stream:async (_m,req,emit)=>{
+			count++;
+			if(count===1) { emit({kind:"text",text:"bad original plan"}); emit({kind:"finish",reason:"stop"}); return; }
+			if(count===2) {
+				emit({kind:"tool_call",call:{id:"rewind-call",name:"session_rewind",args:JSON.stringify({targetId,reason:"incorrect premise",summary:"do not repeat the write"})}});
+				emit({kind:"tool_call",call:{id:"write-call",name:"write_file",args:JSON.stringify({path:"effect.txt",text:"already written"})}});
+				emit({kind:"finish",reason:"tool_calls"});return;
+			}
+			expect(await readFile(join(cwd,"effect.txt"),"utf8")).toBe("already written");
+			expect(req.messages.some(m=>m.content==="bad original plan")).toBe(false);
+			expect(req.messages.some(m=>m.content.includes("会话回溯"))).toBe(true);
+			expect(req.messages.some(m=>m.content.includes("new requirement"))).toBe(true);
+			emit({kind:"text",text:"corrected response"});emit({kind:"finish",reason:"stop"});
+		}});
+		host.subscribe(event=>{if(event.type==="error")errors.push(event.text);if(event.type==="session_rewind")rewinds++;});
+		try {
+			await host.start();await host.submitText("initial task");targetId=host.session.list().nodes[0].id;
+			await host.submitText("new requirement: preserve existing changes");
+			expect(errors).toEqual([]);expect(rewinds).toBe(1);expect(count).toBe(3);
+			expect(host.session.list({scope:"all"}).nodes.filter(node=>!node.active).length).toBeGreaterThan(0);
+			await host.dispose();
+			const reopened=await openJsonlSession(join(cwd,"session.jsonl"));
+			expect(projectAgentHistory(reopened.snapshot.entries).at(-1)?.content).toBe("corrected response");
+			await reopened.store.close();
+		} finally {await host.dispose();await rm(cwd,{recursive:true,force:true});}
+	});
+	it("leaves history untouched if the rewind append fails", async () => {
+		class FailingStore extends MemorySessionStore { override appendRewind(_record: Omit<SessionRewindRecord,"kind"|"seq"|"timestamp">):Promise<void>{return Promise.reject(new Error("disk unavailable"));} }
+		const store=new FailingStore();const records=await seed(store);
+		const subject=new Subject(mockModel(),async()=>{throw new Error("must not run");},new ToolBroker(),{store});
+		const history=projectAgentHistory(recoverRecords([...store.readRecords()]).entries);subject.addHistory(history);
+		await expect(subject.session.requestRewind({targetId:records[0].id,reason:"wrong"},"test")).rejects.toThrow("disk unavailable");
+		expect(subject.historySnapshot()).toEqual(history);expect(subject.isBusy()).toBe(false);
+	});
+	it("cancels a scheduled rewind without dropping newly queued input", async () => {
+		const store=new MemorySessionStore();const records=await seed(store);let entered!:()=>void;
+		const started=new Promise<void>(resolve=>{entered=resolve;});
+		const subject=new Subject(mockModel(),async(_model,_req,_emit,signal)=>{
+			entered();await new Promise<void>(resolve=>signal!.addEventListener("abort",()=>resolve(),{once:true}));
+		},new ToolBroker(),{store});
+		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
+		const run=subject.pushInput("working");await started;
+		const result=await subject.session.requestRewind({targetId:records[0].id,reason:"wrong"},"test");expect(result.status).toBe("scheduled");
+		await subject.steer("latest instruction");subject.interrupt();await run;
+		expect(store.readRecords().some(record=>record.kind==="rewind")).toBe(false);
+		expect(subject.queuedSnapshot()[0].text).toBe("latest instruction");
+	});
+	it("rejects an oversized reconstructed context before committing", async () => {
+		const store=new MemorySessionStore();const records=await seed(store);
+		const subject=new Subject(mockModel({contextWindow:1}),async()=>{},new ToolBroker(),{store});
+		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
+		await expect(subject.session.requestRewind({targetId:records[0].id,reason:"wrong"},"test")).rejects.toThrow("估算超过");
+		expect(store.readRecords().some(record=>record.kind==="rewind")).toBe(false);
+	});
+});
+
+import { ExtensionRunner } from "../src/extensions/runner.js";
+import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
+
+describe("rewind composition", () => {
+	it("exposes a scoped public API and cancels requests from an unloaded extension", async () => {
+		const store=new MemorySessionStore();const records=await seed(store);let ready!:()=>void,finish!:()=>void;
+		const entered=new Promise<void>(resolve=>ready=resolve);const finishStream=new Promise<void>(resolve=>finish=resolve);
+		const subject=new Subject(mockModel(),async(_m,_r,emit)=>{ready();await finishStream;emit({kind:"text",text:"old result"});emit({kind:"finish",reason:"stop"});},new ToolBroker(),{store});
+		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
+		const runner=new ExtensionRunner({cwd:process.cwd(),tools:new ToolBroker(),session:subject.session});
+		let api!:import("../src/extensions/runner.js").ExtensionAPI;
+		await runner.activateBuiltin("rewind-policy",value=>{api=value;});
+		const run=subject.pushInput("working");await entered;
+		expect((await api.session.requestRewind({targetId:records[0].id,reason:"bad"})).status).toBe("scheduled");
+		await runner.dispose();finish();await run;
+		expect(store.readRecords().some(record=>record.kind==="rewind")).toBe(false);
+		expect(()=>api.session.list()).toThrow("失效");
+	});
+	it("keeps the rewind notice through live compaction and displays it in restored transcripts", async () => {
+		const store=new MemorySessionStore();const records=await seed(store);
+		const subject=new Subject(mockModel(),async(_m,_r,emit)=>{emit({kind:"text",text:"new plan"});emit({kind:"finish",reason:"stop"});},new ToolBroker(),{store,compactor:async request=>({summary:"用户要求停止写文件；原方案已退出。",keepFrom:request.history.length})});
+		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
+		await subject.session.requestRewind({targetId:records[0].id,reason:"wrong"},"test");
+		await subject.compact();
+		expect(subject.historySnapshot().some(message=>message.content.includes("会话回溯"))).toBe(true);
+		const entries=recoverRecords([...store.readRecords()]).entries;
+		const transcript=new TranscriptContainer();transcript.loadSession(entries);
+		expect(transcript.render(100).join("\n")).toContain("会话回溯");
+		expect(subject.historySnapshot()).toEqual(projectAgentHistory(entries));
+	});
+	it("routes inherited session tools to the executing child, leaving the root mainline untouched", async () => {
+		const cwd=await mkdtemp(join(tmpdir(),"uina-rewind-child-"));let childCalls=0;let childTarget="";
+		let childDone!:()=>void;const done=new Promise<void>(resolve=>childDone=resolve);
+		const host=await UinaHost.create({cwd,model:mockModel(),stream:async(_m,req,emit)=>{
+			if(!req.messages.some(message=>message.content.includes("unique child task"))) {emit({kind:"text",text:"root answer"});emit({kind:"finish",reason:"stop"});return;}
+			childCalls++;
+			if(childCalls===1) {emit({kind:"tool_call",call:{id:"list-child",name:"session_list",args:"{}"}});emit({kind:"finish",reason:"tool_calls"});return;}
+			if(childCalls===2) {
+				const nodeList=JSON.parse(req.messages.find(message=>message.role==="tool")!.content);
+				childTarget=nodeList.nodes[0].id;
+				emit({kind:"tool_call",call:{id:"rewind-child",name:"session_rewind",args:JSON.stringify({targetId:childTarget,reason:"test child scope"})}});emit({kind:"finish",reason:"tool_calls"});return;
+			}
+			expect(req.messages.some(message=>message.content.includes("会话回溯"))).toBe(true);
+			emit({kind:"text",text:"child corrected"});emit({kind:"finish",reason:"stop"});childDone();
+		}});
+		try {
+			await host.start();await host.submitText("root task");const rootIds=host.session.list().nodes.map(node=>node.id);
+			host.subagents.start({ownerId:"root",label:"child",prompt:"unique child task"});
+			await done;
+			expect(childCalls).toBe(3);expect(rootIds).not.toContain(childTarget);
+			expect(host.session.list({scope:"all"}).nodes.some(node=>node.kind==="rewind")).toBe(false);
+		} finally {await host.dispose();await rm(cwd,{recursive:true,force:true});}
+	});
+});
+
+import { vi } from "vitest";
+import { open } from "node:fs/promises";
+import { JsonlSessionStore } from "../src/session/jsonl-store.js";
+
+it("rolls back a failed rewind fsync without changing either the file or cached head", async () => {
+	const dir=await mkdtemp(join(tmpdir(),"uina-rewind-sync-"));const path=join(dir,"session.jsonl");
+	try {
+		const initial=await openJsonlSession(path);const records=await seed(initial.store);await initial.store.close();
+		const handle=await open(path,"r+");const store=new JsonlSessionStore(path,handle,records.at(-1)!.seq,[...records]);
+		vi.spyOn(handle,"sync").mockRejectedValueOnce(new Error("fsync failed"));
+		await expect(store.appendRewind({id:"r",requestId:"q",targetId:records[0].id,fromId:records[2].id,source:"test",reason:"wrong"})).rejects.toThrow("fsync failed");
+		expect(store.readRecords()).toEqual(records);await store.close();
+		const reopened=await openJsonlSession(path);expect(reopened.store.readRecords()).toEqual(records);await reopened.store.close();
+	} finally {await rm(dir,{recursive:true,force:true});}
+});
+
+it("paginates inferred recovery entries without skipping adjacent records", async () => {
+	const store=new MemorySessionStore();
+	await store.appendMessage({role:"assistant",content:"",tool_calls:[{id:"interrupted",name:"exec_command",args:{}}]});
+	await store.appendEvent("tool_started",{callId:"interrupted"});
+	await store.appendMessage({role:"user",content:"continue after crash"});
+	let after: string|undefined;const ids:string[]=[];
+	do {const page=listSessionNodes(store.readRecords(),{after,limit:1});ids.push(...page.nodes.map(node=>node.id));after=page.next;} while(after);
+	expect(ids).toHaveLength(3);expect(new Set(ids).size).toBe(3);expect(ids[1]).toBe(`recovered:${store.readRecords()[0].id}:interrupted`);
+	expect(listSessionNodes(store.readRecords()).nodes[1].canRewind).toBe(false);
+});
+
+it("does not invent a crash during live reads and durably settles unfinished calls on reopen", async () => {
+	const dir=await mkdtemp(join(tmpdir(),"uina-rewind-recovery-"));const path=join(dir,"session.jsonl");
+	try {
+		const initial=await openJsonlSession(path);
+		await initial.store.appendMessage({role:"user",content:"task"});
+		await initial.store.appendMessage({role:"assistant",content:"",tool_calls:[{id:"unfinished",name:"exec_command",args:{}}]});
+		await initial.store.appendEvent("tool_started",{callId:"unfinished"});
+		const live=listSessionNodes(initial.store.readRecords());
+		expect(live.nodes).toHaveLength(2);expect(live.nodes.some(node=>node.id.startsWith("recovered:"))).toBe(false);
+		expect(live.nodes[1].preview).toBe("[调用 exec_command]");
+		expect(() => readSessionNode(initial.store.readRecords(), `recovered:${initial.store.readRecords()[1].id}:unfinished`)).toThrow("未知会话节点");
+		await initial.store.close();
+		const reopened=await openJsonlSession(path);
+		expect(reopened.store.readRecords().at(-1)).toMatchObject({kind:"message",message:{role:"tool",status:"unknown"}});
+		const nodes=listSessionNodes(reopened.store.readRecords());
+		expect(nodes.nodes).toHaveLength(3);expect(nodes.nodes.some(node=>node.id.startsWith("recovered:"))).toBe(false);
+		await reopened.store.appendRewind({id:"after-crash",requestId:"q",targetId:nodes.nodes[0].id,fromId:nodes.headId!,source:"test",reason:"recover"});
+		await reopened.store.close();
+		const again=await openJsonlSession(path);expect(listSessionNodes(again.store.readRecords()).headId).toBe("after-crash");await again.store.close();
+	} finally {await rm(dir,{recursive:true,force:true});}
+});
+
+it("matches reused provider call IDs within each exchange, including after rewind", async () => {
+ const store=new MemorySessionStore();
+ await store.appendMessage({role:"user",content:"task"});const targetId=store.readRecords()[0].id;
+ for (const result of ["old result","new result"]) {
+  await store.appendMessage({role:"assistant",content:"",tool_calls:[{id:"provider-local-0",name:"get_time",args:{}}]});
+  await store.appendEvent("tool_started",{callId:"provider-local-0"});
+  await store.appendEvent("tool_finished",{callId:"provider-local-0",status:"succeeded",result});
+  await store.appendMessage({role:"tool",tool_call_id:"provider-local-0",content:result,status:"succeeded"});
+  if(result==="old result") await store.appendRewind({id:"r",requestId:"q",targetId,fromId:store.readRecords().at(-1)!.id,source:"test",reason:"retry a different path"});
+ }
+ const state=recoverRecords([...store.readRecords()]);
+ expect(projectAgentHistory(state.entries).filter(message=>message.role==="tool").map(message=>message.content)).toEqual(["new result"]);
+ expect(state.allEntries.filter(entry=>entry.kind==="message" && entry.message.role==="tool")).toHaveLength(2);
+});
+
+it("does not pollute mainline with abandoned branch inputs on multiple rewinds and inherits carried inputs when targeting a rewind node", async () => {
+	const store = new MemorySessionStore();
+	// 主线起始
+	await store.appendMessage({ role: "user", content: "root task" }); // node 0
+	await store.appendMessage({ role: "assistant", content: "root answer" }); // node 1
+	const rootId = store.readRecords()[1].id;
+
+	// 分支 1：提出 temp instruction 1，随后失败回溯
+	await store.appendMessage({ role: "user", content: "temp instruction 1" }); // node 2
+	await store.appendMessage({ role: "assistant", content: "bad attempt 1" }); // node 3
+	await store.appendRewind({ id: "r1", requestId: "q1", targetId: rootId, fromId: store.readRecords().at(-1)!.id, source: "user", reason: "failed branch 1" });
+
+	// 分支 2：在新主线上执行
+	await store.appendMessage({ role: "assistant", content: "branch 2 response" });
+	await store.appendMessage({ role: "user", content: "temp instruction 2" });
+	await store.appendMessage({ role: "assistant", content: "bad attempt 2" });
+	const branch2Head = store.readRecords().at(-1)!.id;
+
+	// 场景 A：回溯到前次回溯节点 r1，验证 r1 原有的 carriedInputs (temp instruction 1) 不丢失，且包含 branch 2 产生的新指令
+	await store.appendRewind({ id: "r2", requestId: "q2", targetId: "r1", fromId: branch2Head, source: "user", reason: "retry from r1" });
+	const stateA = recoverRecords([...store.readRecords()]);
+	const historyA = projectAgentHistory(stateA.entries);
+	expect(historyA.some(m => m.content.includes("temp instruction 1"))).toBe(true);
+	expect(historyA.some(m => m.content.includes("temp instruction 2"))).toBe(true);
+
+	// 场景 B：从当前主线再回溯到最初的 rootId，验证只收集当前被放弃主线上的指令，且去重无重复
+	await store.appendMessage({ role: "assistant", content: "branch 3 response" });
+	const latestHead = store.readRecords().at(-1)!.id;
+	await store.appendRewind({ id: "r3", requestId: "q3", targetId: rootId, fromId: latestHead, source: "user", reason: "back to root" });
+	const stateB = recoverRecords([...store.readRecords()]);
+	const historyB = projectAgentHistory(stateB.entries);
+	// 验证：去重后，每条指令只保留一条
+	const t1Count = historyB.filter(m => m.content.includes("temp instruction 1")).length;
+	const t2Count = historyB.filter(m => m.content.includes("temp instruction 2")).length;
+	expect(t1Count).toBe(1);
+	expect(t2Count).toBe(1);
+});
+
+it("positions rewind notice between compactionSummary and retainedTail, never after latest user prompt", async () => {
+	const store = new MemorySessionStore();
+	await store.appendMessage({ role: "user", content: "task 1" });
+	await store.appendMessage({ role: "assistant", content: "reply 1" });
+	const targetId = store.readRecords()[1].id;
+	await store.appendMessage({ role: "user", content: "task 2" });
+	await store.appendRewind({ id: "r1", requestId: "q1", targetId, fromId: store.readRecords().at(-1)!.id, source: "test", reason: "rewind 1" });
+	await store.appendMessage({ role: "assistant", content: "reply after rewind" });
+	await store.appendMessage({ role: "user", content: "latest user question" });
+
+	const entries = recoverRecords([...store.readRecords()]).entries;
+	// 模拟压缩：保留最后两条消息（reply after rewind 和 latest user question）
+	const rawHistory = [
+		{ role: "compactionSummary" as const, summary: "compacted history", content: "[历史摘要] compacted history" },
+		{ role: "assistant" as const, content: "reply after rewind" },
+		{ role: "user" as const, content: "latest user question" },
+	];
+	const protectedHistory = protectRewindContext(rawHistory, entries);
+
+	// 验证：回溯提示必须位于 compactionSummary 之后、latest user question 之前
+	expect(protectedHistory[0].role).toBe("compactionSummary");
+	expect(protectedHistory[1].content).toContain("会话回溯");
+	expect(protectedHistory[protectedHistory.length - 1].content).toBe("latest user question");
+	expect(protectedHistory[protectedHistory.length - 1].role).toBe("user");
+});
+
+it("does not fail the whole turn when scheduled rewind commit fails at safe point", async () => {
+	const cwd = await mkdtemp(join(tmpdir(), "uina-safe-fail-"));
+	let turnErrors: string[] = [];
+	let turnStarts = 0;
+	let turnEnds = 0;
+	let calls = 0;
+	const host = await UinaHost.create({
+		cwd,
+		model: mockModel({ contextWindow: 50 }), // 设置极小的 contextWindow 导致 commitRewind 超限
+		stream: async (_m, _req, emit) => {
+			calls++;
+			if (calls === 1) {
+				emit({ kind: "tool_call", call: { id: "rewind-call", name: "session_rewind", args: JSON.stringify({ targetId: "non-existent-or-oversized", reason: "bad" }) } });
+				emit({ kind: "finish", reason: "tool_calls" });
+			} else {
+				emit({ kind: "text", text: "completed despite failed rewind" });
+				emit({ kind: "finish", reason: "stop" });
+			}
+		},
+	});
+	host.subscribe(e => {
+		if (e.type === "error") turnErrors.push(e.text);
+		if (e.type === "turn_start") turnStarts++;
+		if (e.type === "turn_end") turnEnds++;
+	});
+	try {
+		await host.start();
+		// 提交文本运行
+		// 因为 tool 参数里的 targetId 在祖先里找不到，工具执行直接失败并返回工具结果，或者若进入排期后超限，也不会导致整个回合崩盘
+		await host.submitText("run task");
+		expect(turnStarts).toBe(1);
+		expect(turnEnds).toBe(1);
+	} finally {
+		await host.dispose();
+		await rm(cwd, { recursive: true, force: true });
+	}
+});
+
+it("rejects session operations when subject has no store configured", async () => {
+	const subject = new Subject(mockModel(), async () => {}, new ToolBroker());
+	expect(() => subject.session.list()).toThrow("未配置会话存储");
+	expect(() => subject.session.read("any")).toThrow("未配置会话存储");
+	await expect(subject.session.requestRewind({ targetId: "any", reason: "test" }, "test")).rejects.toThrow("未配置会话存储");
+});
+
+

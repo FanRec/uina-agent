@@ -601,6 +601,11 @@ export class TranscriptContainer implements Component {
 
 		for (const entry of entries) {
 			if ((entry as any).kind === "event") continue;
+			if (entry.kind === "rewind") {
+				commit();
+				this.timeline.push({kind:"customMessage",message:{customType:"session-rewind",content:entry.notice + (entry.record.summary ? `\n[经验摘要] ${entry.record.summary}` : "")}});
+				continue;
+			}
 			if (entry.kind === "custom_message") {
 				if (entry.display === false) continue;
 				commit();

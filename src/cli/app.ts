@@ -92,6 +92,9 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				}
 				break;
 			}
+			case "session_rewind":
+				process.stdout.write(`\n[会话回溯] ${message.fromId} → ${message.targetId}；退出路径只读，外部状态未撤销。\n`);
+				break;
 			case "notice":
 				process.stdout.write(`\n⚠ ${message.text}\n`);
 				break;

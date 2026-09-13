@@ -21,3 +21,5 @@ export type {
 export type { Model, ModelRequest, Provider, ChatMsg, AgentMessage, ToolResultStatus } from "../core/types.js";
 export type { ImageContent } from "../core/content.js";
 export type { Tool, ToolExecutionContext, ToolExecutionResult } from "../tools/broker.js";
+
+export type { SessionAccess, RewindRequest, RewindResult, SessionEntry, SessionNodeInfo } from "../session/types.js";

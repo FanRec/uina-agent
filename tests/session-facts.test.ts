@@ -95,7 +95,7 @@ describe("S1 durable session facts", () => {
 			const accepted = entries.filter(e => e.kind === "input" && e.input.id === input.id);
 			expect(queued.length + accepted.length).toBe(1);
 			expect(queued.length).toBe(index === 0 ? 1 : 0);
-			if (index === 1) expect(accepted).toEqual([{ kind: "input", input }]);
+			if (index === 1) expect(accepted).toMatchObject([{ kind: "input", input }]);
 			const userMessages = projectAgentHistory(entries).filter(m => m.role === "user");
 			expect(userMessages).toHaveLength(index === 1 && kind === "user" ? 1 : 0);
 		}
@@ -128,7 +128,7 @@ describe("S1 durable session facts", () => {
 		await reopened.store.close();
 		const inputEntries = reopened.snapshot.entries.filter(e => e.kind === "input");
 		expect(inputEntries).toHaveLength(1);
-		expect(inputEntries[0]).toEqual({
+		expect(inputEntries[0]).toMatchObject({
 			kind: "input",
 			input: {
 				id: "idle-input-123",

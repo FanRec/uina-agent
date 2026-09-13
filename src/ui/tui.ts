@@ -151,6 +151,19 @@ export class InteractiveTUI {
 
 	render(m: HostEvent): void {
 		switch (m.type) {
+			case "session_rewind":
+				this.currentThinkingId = undefined;
+				this.host.transcript.clear();
+				this.host.loadSession(m.entries);
+				if (m.turnNumber !== undefined) {
+					this.host.transcript.startTurn(m.turnNumber, "");
+					this.host.activityLine.start("thinking", "正在思考与生成回复...");
+				} else {
+					this.host.activityLine.reset();
+				}
+				this.host.markUsageEstimated();
+				this.host.requestRender();
+				break;
 			case "turn_start":
 				this.currentThinkingId = undefined;
 				this.host.markUsageEstimated();
