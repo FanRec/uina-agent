@@ -4,6 +4,7 @@
  */
 
 import { UIHost, type UIHostOptions } from "./ui-host.js";
+import { STREAM_CHARS_PER_TOKEN } from "./components/widgets/activity-line.js";
 import type { QueuedMessage } from "../agent/queue.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 import type { SessionEntry } from "../session/types.js";
@@ -187,6 +188,9 @@ export class InteractiveTUI {
 					cacheWrite: m.cacheWrite,
 					segments: m.segments,
 				});
+				// 服务端的 output 是"本次调用"的输出量，累加成回合总量用于速度计算：
+				// 一个回合可以有多轮模型调用，各自输出都应计入这一轮的生成速度。
+				if (m.outputTokens !== undefined) this.host.activityLine.addRealOutputTokens(m.outputTokens);
 				break;
 
 			case "text":
@@ -196,7 +200,7 @@ export class InteractiveTUI {
 				}
 				this.host.transcript.appendToken(m.text);
 				{
-					const estimatedTokens = Math.max(1, Math.ceil(m.text.length / 3));
+					const estimatedTokens = Math.max(1, Math.ceil(m.text.length / STREAM_CHARS_PER_TOKEN));
 					this.host.incrementTokens(estimatedTokens);
 					this.host.activityLine.addTokens(estimatedTokens);
 				}

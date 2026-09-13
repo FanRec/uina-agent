@@ -160,7 +160,7 @@ export class UIHost implements UIHostContextPort {
 	private busy = false;
 	private turnStartTime = 0;
 	private streamTokenCount = 0;
-	private lastTps = 0;
+
 	private lastElapsedMs = 0;
 	private renderScheduled = false;
 	private animTimer: NodeJS.Timeout | null = null;
@@ -1045,14 +1045,6 @@ export class UIHost implements UIHostContextPort {
 		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual, this.contextSegments);
 		this.inputLine.setReasoningEffort(this.reasoningEffort);
 		this.inputLine.setCacheRate(formatCacheHitRate(this.cacheReadTokens, this.inputTokensCount, this.cacheWriteTokens));
-		const now = Date.now();
-		const elapsed = this.busy ? Math.max(1, now - this.turnStartTime) : this.lastElapsedMs;
-		const currentTps = this.busy
-			? (this.streamTokenCount > 0 && elapsed > 100
-				? Math.round((this.streamTokenCount / (elapsed / 1000)) * 10) / 10
-				: 0)
-			: this.lastTps;
-		this.inputLine.setSpeedStats(currentTps, elapsed, this.busy);
 	}
 
 	/**

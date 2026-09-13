@@ -182,9 +182,9 @@ export class InputLine implements Component, Focusable {
 	private progressHotspotWidth = 35; // 进度条热区列宽，供鼠标 Hover 检测
 	private lastRenderWidth = 80;
 	private cwd = "";
-	private tps = 0;
-	private elapsedMs = 0;
-	private isStreaming = false;
+
+
+
 	private isBusy = false;
 
 	// 事件回调
@@ -209,16 +209,6 @@ export class InputLine implements Component, Focusable {
 
 	getCwd(): string {
 		return this.cwd;
-	}
-
-	setSpeedStats(tps: number, elapsedMs: number, isStreaming: boolean): void {
-		this.tps = tps;
-		this.elapsedMs = elapsedMs;
-		this.isStreaming = isStreaming;
-	}
-
-	getSpeedStats(): { tps: number; elapsedMs: number; isStreaming: boolean } {
-		return { tps: this.tps, elapsedMs: this.elapsedMs, isStreaming: this.isStreaming };
 	}
 
 	setStatusHeader(header: string): void {
@@ -508,7 +498,7 @@ export class InputLine implements Component, Focusable {
 		if (
 			matchesKey(data, Key.shiftEnter) ||
 			matchesKey(data, Key.shift("enter")) ||
-			(matchesKey(data, Key.altEnter) && !this.isStreaming && !this.isBusy)
+			(matchesKey(data, Key.altEnter) && !this.isBusy)
 		) {
 			this.text = this.text.slice(0, this.cursorIndex) + "\n" + this.text.slice(this.cursorIndex);
 			this.cursorIndex += 1;
@@ -532,7 +522,7 @@ export class InputLine implements Component, Focusable {
 		}
 
 		// 5.2 工作态下 Tab 或 Alt+Enter：排队投递（follow-up），当前轮结束后按序处理
-		if ((matchesKey(data, Key.tab) || matchesKey(data, Key.altEnter)) && (this.isStreaming || this.isBusy)) {
+		if ((matchesKey(data, Key.tab) || matchesKey(data, Key.altEnter)) && this.isBusy) {
 			const submission = this.getText();
 			if (submission.trim()) {
 				this.addHistory(submission);
@@ -555,7 +545,7 @@ export class InputLine implements Component, Focusable {
 				const toSubmit = submission;
 				this.clear();
 				if (this.onSubmitMode) {
-					const mode = (this.isStreaming || this.isBusy) ? "steer" : "direct";
+					const mode = this.isBusy ? "steer" : "direct";
 					this.onSubmitMode(toSubmit, mode);
 				} else {
 					this.onSubmit?.(toSubmit);

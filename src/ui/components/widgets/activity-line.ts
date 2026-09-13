@@ -13,6 +13,17 @@ import type { QueuedMessage } from "../../../agent/queue.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/**
+ * 流式过程中把字符数折算成 token 的兜底系数。
+ *
+ * 与 `agent/context.ts` 的 `CHARS_PER_TOKEN` (=4, 用于上下文压缩阈值) 刻意分开：
+ * 这里只服务于"正在生成时的速度显示"，而速度的分母是实时窗口、且只要服务端报了
+ * output 就立刻改用真实值，所以它只需要量级对得上，不需要和压缩口径一致。
+ * 中文比英文更"贵"（一个汉字 ≈ 1 token，而非 4 字符），所以这个兜底会偏低——
+ * 但只要真实值一到就会被覆盖，不会影响最终读数。
+ */
+export const STREAM_CHARS_PER_TOKEN = 3;
+
 interface Rgb {
 	r: number;
 	g: number;
@@ -63,6 +74,8 @@ export function sweep(text: string, timeMs: number, base: Rgb = ICE_RGB, highlig
 
 export type ActivityPhase = "idle" | "thinking" | "streaming" | "tool" | "done";
 
+/** 表盘量程地板：低于它的峰值会被抬到此处，避免小样本把表盘放得过大。 */
+const GAUGE_FLOOR = 40;
 const HBLOCKS = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
 const VBLOCKS = [" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 const TRACK = "·";
@@ -74,7 +87,9 @@ const TRACK = "·";
 export function formatTpsGauge(tps: number, targetPeak = 60, gaugeWidth = 8): string {
 	if (gaugeWidth <= 0) return "";
 	const safeTps = Math.max(0, tps);
-	const ratio = Math.min(1, safeTps / Math.max(20, targetPeak));
+	// 量程按采样峰值自适应（地板 40）：写死峰值会让"超过峰值"的一切都画成满格，
+	// 表盘就失去了区分度。dsh-tui 的 renderTpsGauge 用 max(peak, floor) 同理。
+	const ratio = Math.min(1, safeTps / Math.max(GAUGE_FLOOR, targetPeak));
 	const eighths = Math.round(ratio * gaugeWidth * 8);
 	const full = Math.floor(eighths / 8);
 	const rem = eighths % 8;
@@ -117,6 +132,18 @@ export class ActivityLineComponent implements Component {
 	private tokenCount = 0;
 	private elapsedMs = 0;
 
+	/**
+	 * 首个输出 token 的墙钟时刻；tps 的分母从它算起。
+	 *
+	 * 不用 startTime：那是回合开始的时刻，回合里还包含工具执行与每次请求的
+	 * 首 token 等待（TTFT）。把它们算进分母会把生成速度稀释掉——工具跑 8 秒、
+	 * 生成 2 秒，显示出来的 tps 就只有真值的 1/5。dsh-tui 同样只累计
+	 * first-token → message 的跨度。
+	 */
+	private decodeStartTime = 0;
+	/** 服务端报过的真实输出 token 数（本次回合累计）；有它就不再用字符估算。 */
+	private realOutputTokens = 0;
+
 	// TPS 采样环形缓冲区
 	private tpsSamples: number[] = [];
 	private lastSampleTime = 0;
@@ -128,6 +155,8 @@ export class ActivityLineComponent implements Component {
 		this.startTime = Date.now();
 		this.tokenCount = 0;
 		this.elapsedMs = 0;
+		this.decodeStartTime = 0;
+		this.realOutputTokens = 0;
 		this.tpsSamples = [];
 		this.lastSampleTime = this.startTime;
 		this.lastSampleTokens = 0;
@@ -141,6 +170,8 @@ export class ActivityLineComponent implements Component {
 	addTokens(count: number): void {
 		this.tokenCount += count;
 		const now = Date.now();
+		// 第一个 token 到达时才开始计解码时间：此前的等待是 TTFT，不是生成。
+		if (this.decodeStartTime === 0) this.decodeStartTime = now;
 		// 每 250ms 采样一次局部速率
 		if (now - this.lastSampleTime >= 250) {
 			const deltaTokens = this.tokenCount - this.lastSampleTokens;
@@ -178,6 +209,8 @@ export class ActivityLineComponent implements Component {
 		this.startTime = 0;
 		this.tokenCount = 0;
 		this.elapsedMs = 0;
+		this.decodeStartTime = 0;
+		this.realOutputTokens = 0;
 		this.tpsSamples = [];
 		this.lastSampleTime = 0;
 		this.lastSampleTokens = 0;
@@ -191,32 +224,61 @@ export class ActivityLineComponent implements Component {
 		return this.tpsSamples;
 	}
 
+	/**
+	 * 累加一次模型调用报来的真实输出 token 数。
+	 *
+	 * 服务端的 output 是"本次调用"的 completion_tokens；一个回合可以有多轮调用
+	 * （stream → tool → stream），每一轮的输出都应计入这一轮的生成速度，所以这里是
+	 * 累加而不是覆盖。字符估算（`chars / 3`）对中文严重偏低（一个汉字远比 3 个字符
+	 * 更"贵"），所以只要有真实值就改用它，估算只在流式过程中兜底。
+	 */
+	addRealOutputTokens(tokens: number): void {
+		if (tokens > 0) this.realOutputTokens += tokens;
+	}
+
+	/** 生成速度的分子：真实值优先，否则用流式累计的估算。 */
+	private outputTokenCount(): number {
+		return this.realOutputTokens > 0 ? this.realOutputTokens : this.tokenCount;
+	}
+
+	/** 生成速度的分母：只算首个 token 之后的生成耗时（毫秒）。 */
+	private decodeMs(now: number): number {
+		if (this.phase === "done") return this.elapsedMs;
+		return this.decodeStartTime > 0 ? Math.max(0, now - this.decodeStartTime) : 0;
+	}
+
 	/** 提取适用于圆角盒顶边框嵌入的状态文本 */
 	getHeaderString(maxWidth = 60): string {
 		if (this.phase === "idle") return "";
 		const now = Date.now();
+		// "耗时"展示整个回合的墙钟时间（含工具执行），这是用户感知的总时长。
 		const currentElapsed = this.phase === "done" ? this.elapsedMs : (this.startTime > 0 ? now - this.startTime : 0);
 		const seconds = (Math.max(0, currentElapsed) / 1000).toFixed(1);
+		const tokens = this.outputTokenCount();
+		const decodeMs = this.decodeMs(now);
 
 		if (this.phase === "done") {
 			const prefix = `${C.green}✓${C.reset}`;
 			let sparkStr = "";
-			if (this.tokenCount > 0 && this.elapsedMs > 0) {
-				const avgTps = Math.round(this.tokenCount / (this.elapsedMs / 1000));
+			// tps 的分母是解码耗时而非墙钟耗时：工具执行不该稀释生成速度。
+			if (tokens > 0 && decodeMs > 0) {
+				const avgTps = Math.round(tokens / (decodeMs / 1000));
 				const spark = formatTpsSparkline(this.tpsSamples.length > 0 ? this.tpsSamples : [avgTps]);
 				const sparkColor = avgTps >= 50 ? C.green : avgTps >= 20 ? C.yellow : C.red;
 				sparkStr = spark ? ` · ${sparkColor}${spark}${C.reset} ~${avgTps} tps` : ` · ~${avgTps} tps`;
 			}
-			const text = `${C.gray}${this.message} · 耗时 ${seconds}s${this.tokenCount > 0 ? ` · ~${this.tokenCount} tokens` : ""}${sparkStr}${C.reset}`;
+			const text = `${C.gray}${this.message} · 耗时 ${seconds}s${tokens > 0 ? ` · ~${tokens} tokens` : ""}${sparkStr}${C.reset}`;
 			return truncateToWidth(`${prefix} ${text}`, maxWidth);
 		}
 
 		const frameIdx = Math.floor(now / 80) % SPINNER_FRAMES.length;
 		const spinner = `${C.iceBlue}${SPINNER_FRAMES[frameIdx]}${C.reset}`;
 		let tpsStr = "";
-		if (this.tokenCount > 0 && currentElapsed > 400) {
-			const tps = Math.round(this.tokenCount / (currentElapsed / 1000));
-			const gauge = formatTpsGauge(tps, 60, 8);
+		if (tokens > 0 && decodeMs > 400) {
+			const tps = Math.round(tokens / (decodeMs / 1000));
+			// 量程随采样峰值缩放，柱状图才不会长期满格。
+			const peak = Math.max(tps, ...this.tpsSamples, 0);
+			const gauge = formatTpsGauge(tps, peak, 8);
 			tpsStr = ` · ${gauge} ~${tps} tps`;
 		}
 
