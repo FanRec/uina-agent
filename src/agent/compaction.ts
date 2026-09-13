@@ -129,34 +129,45 @@ export function findTurnStartIndex(
 	return -1;
 }
 
+/** 收集所有可作为切点的消息下标（升序），tool 与 system 不计入。 */
+function collectCutPoints(history: readonly (AgentMessage | ChatMsg)[]): number[] {
+	const points: number[] = [];
+	history.forEach((message, index) => {
+		if (isCutPoint(message)) points.push(index);
+	});
+	return points;
+}
+
+function firstCutPointAtOrAfter(cutPoints: readonly number[], index: number): number | undefined {
+	for (const point of cutPoints) {
+		if (point >= index) return point;
+	}
+	return undefined;
+}
+
+/** 从末尾往前累计 token，返回预算用尽处的消息下标；未用尽时返回 -1。 */
+function indexWhereBudgetIsSpent(history: readonly (AgentMessage | ChatMsg)[], keepRecentTokens: number): number {
+	let accumulated = 0;
+	for (let i = history.length - 1; i >= 0; i--) {
+		const message = history[i];
+		if (!message) continue;
+		accumulated += estimateMessageTokens(message);
+		if (accumulated >= keepRecentTokens) return i;
+	}
+	return -1;
+}
+
 export function findCutPoint(
 	history: readonly (AgentMessage | ChatMsg)[],
 	keepRecentTokens: number,
 	/** 手动压缩即使历史小于保留预算也必须推进；自动压缩不必。 */
 	allowShortHistoryFallback = false,
 ): CutPointResult {
-	const cutPoints: number[] = [];
-	history.forEach((message, index) => {
-		if (isCutPoint(message)) cutPoints.push(index);
-	});
+	const cutPoints = collectCutPoints(history);
 	if (cutPoints.length === 0) return { firstKeptEntryIndex: 0, turnStartIndex: -1, isSplitTurn: false };
 
-	let accumulated = 0;
-	let cutIndex = cutPoints[0];
-	for (let i = history.length - 1; i >= 0; i--) {
-		const message = history[i];
-		if (!message) continue;
-		accumulated += estimateMessageTokens(message);
-		if (accumulated >= keepRecentTokens) {
-			for (const point of cutPoints) {
-				if (point >= i) {
-					cutIndex = point;
-					break;
-				}
-			}
-			break;
-		}
-	}
+	const spentAt = indexWhereBudgetIsSpent(history, keepRecentTokens);
+	let cutIndex = firstCutPointAtOrAfter(cutPoints, spentAt) ?? cutPoints[0];
 	// 历史整体小于保留预算时，Pi 停在 cutPoints[0]（等于不压缩）。手动压缩必须推进，
 	// 否则 /compact 会变成空操作：退守到最靠后的合法切点，只保留末尾一小段。
 	// 这与被替换的 findKeepFrom（keepFrom = length - 1 再回退越过 tool）结果一致。
@@ -165,8 +176,7 @@ export function findCutPoint(
 			if (point > 0 && point < history.length) cutIndex = point;
 		}
 	}
-	const cutRole = history[cutIndex]?.role;
-	const isTurnStartCut = cutRole === "user" || cutRole === "custom";
+	const isTurnStartCut = isTurnStart(history[cutIndex]);
 	const turnStartIndex = isTurnStartCut ? -1 : findTurnStartIndex(history, cutIndex, 0);
 	return {
 		firstKeptEntryIndex: cutIndex,
@@ -233,6 +243,14 @@ export function truncateForSummary(text: string, maxChars: number): string {
 	return `${text.slice(0, maxChars)}\n\n[... 已截断 ${text.length - maxChars} 个字符]`;
 }
 
+/** 把一个工具调用渲染成 `name(key=value, ...)`，供摘要正文使用。 */
+function formatToolCall(call: { name: string; args?: unknown }): string {
+	const args = typeof call.args === "object" && call.args !== null ? (call.args as Record<string, unknown>) : {};
+	const rendered = Object.entries(args)
+		.map(([key, value]) => `${key}=${safeJsonStringify(value)}`)
+		.join(", ");
+	return `${call.name}(${rendered})`;
+}
 /** 把消息序列化成纯文本，供摘要提示词使用；工具结果超长时截断。 */
 export function serializeConversation(messages: readonly (AgentMessage | ChatMsg)[]): string {
 	const parts: string[] = [];
@@ -255,14 +273,7 @@ export function serializeConversation(messages: readonly (AgentMessage | ChatMsg
 				if (thinking) parts.push(`[助手思考]: ${thinking}`);
 				if (message.content?.trim()) parts.push(`[助手]: ${message.content}`);
 				if (message.tool_calls?.length) {
-					const calls = message.tool_calls.map((call) => {
-						const args = typeof call.args === "object" && call.args !== null ? (call.args as Record<string, unknown>) : {};
-						const rendered = Object.entries(args)
-							.map(([key, value]) => `${key}=${safeJsonStringify(value)}`)
-							.join(", ");
-						return `${call.name}(${rendered})`;
-					});
-					parts.push(`[助手工具调用]: ${calls.join("; ")}`);
+					parts.push(`[助手工具调用]: ${message.tool_calls.map(formatToolCall).join("; ")}`);
 				}
 				break;
 			}

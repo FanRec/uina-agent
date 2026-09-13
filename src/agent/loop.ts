@@ -980,8 +980,8 @@ export class Subject {
 			)
 		)
 			return;
-		const cut = findCutPoint(this.history, this.compaction.keepRecentTokens, manual);
-		if (!this.history.length || (cut.firstKeptEntryIndex <= 0 && !this.compactor)) {
+		const cutPoint = findCutPoint(this.history, this.compaction.keepRecentTokens, manual);
+		if (!this.history.length || (cutPoint.firstKeptEntryIndex <= 0 && !this.compactor)) {
 			if (manual)
 				await this.runtimeHooks.events.emit({ type: "session_compact_failed", error: "当前会话消息过短，无需压缩" });
 			return;
@@ -998,7 +998,7 @@ export class Subject {
 			const request = readonlySnapshot({
 				reason,
 				history: this.history,
-				suggestedKeepFrom: cut.firstKeptEntryIndex,
+				suggestedKeepFrom: cutPoint.firstKeptEntryIndex,
 				tokensBefore,
 				model,
 				instruction,
@@ -1007,19 +1007,19 @@ export class Subject {
 			signal.throwIfAborted();
 			let result: import("./compaction.js").CompactionResult | null;
 			if (proposal !== undefined) {
-				const { summary, keepFrom: cut } = proposal;
+				const { summary, keepFrom } = proposal;
 				if (typeof summary !== "string" || !summary.trim()) throw new Error("compaction 返回空摘要");
 				// A cut that keeps the whole history compacts nothing; accepting it would persist a
 				// summary plus the very messages it summarizes, growing the context it was meant to shrink.
-				if (!Number.isInteger(cut) || cut <= 0 || cut >= this.history.length) throw new Error("compaction 保留位置无效");
-				if (this.history[cut]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
-				result = { summary: summary.trim(), retainedTail: clearRetainedUsage(this.history.slice(cut)), tokensBefore };
+				if (!Number.isInteger(keepFrom) || keepFrom <= 0 || keepFrom >= this.history.length) throw new Error("compaction 保留位置无效");
+				if (this.history[keepFrom]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
+				result = { summary: summary.trim(), retainedTail: clearRetainedUsage(this.history.slice(keepFrom)), tokensBefore };
 			} else {
 				result = await compactHistory(
 					this.history,
 					model,
 					this.streamFn,
-					{ cut, tokensBefore, instruction },
+					{ cut: cutPoint, tokensBefore, instruction },
 					this.runtimeHooks.provider,
 					signal,
 				);
@@ -1059,14 +1059,14 @@ export class Subject {
 	): Promise<import("./compaction.js").CompactionResult | null> {
 		const contextWindow = this.model.contextWindow;
 		if (contextWindow === undefined || estimated <= contextWindow) return null;
-		const cut = findCutPoint(history, this.compaction.keepRecentTokens, false);
-		if (cut.firstKeptEntryIndex <= 0) throw new Error(OVERSIZED_REWIND);
+		const cutPoint = findCutPoint(history, this.compaction.keepRecentTokens, false);
+		if (cutPoint.firstKeptEntryIndex <= 0) throw new Error(OVERSIZED_REWIND);
 		const compactionSignal = signal ?? this.currentSignal();
 		const proposal = await this.compactor?.(
 			{
 				reason: "automatic",
 				history,
-				suggestedKeepFrom: cut.firstKeptEntryIndex,
+				suggestedKeepFrom: cutPoint.firstKeptEntryIndex,
 				tokensBefore: estimated,
 				model: this.model,
 				instruction: "由于回溯使历史重新展开导致上下文超限，请压缩前期历史",
@@ -1075,17 +1075,17 @@ export class Subject {
 		);
 		let prepared: import("./compaction.js").CompactionResult | null;
 		if (proposal !== undefined) {
-			const cut = proposal.keepFrom;
+			const keepFrom = proposal.keepFrom;
 			if (typeof proposal.summary !== "string" || !proposal.summary.trim()) throw new Error("compaction 返回空摘要");
-			if (!Number.isInteger(cut) || cut <= 0 || cut >= history.length) throw new Error("compaction 保留位置无效");
-			if (history[cut]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
-			prepared = { summary: proposal.summary.trim(), retainedTail: clearRetainedUsage(history.slice(cut)), tokensBefore: estimated };
+			if (!Number.isInteger(keepFrom) || keepFrom <= 0 || keepFrom >= history.length) throw new Error("compaction 保留位置无效");
+			if (history[keepFrom]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
+			prepared = { summary: proposal.summary.trim(), retainedTail: clearRetainedUsage(history.slice(keepFrom)), tokensBefore: estimated };
 		} else {
 			prepared = await compactHistory(
 				history,
 				this.model,
 				this.streamFn,
-				{ cut, tokensBefore: estimated },
+				{ cut: cutPoint, tokensBefore: estimated },
 				this.runtimeHooks.provider,
 				compactionSignal,
 			);
