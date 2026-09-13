@@ -19,7 +19,7 @@ import type {
 } from "../core/types.js";
 import type { SessionStore } from "../session/types.js";
 import { projectInputMessage } from "../session/recovery.js";
-import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, findKeepFrom, shouldCompact } from "./compaction.js";
+import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, findCutPoint, shouldCompact } from "./compaction.js";
 import { buildContext, calculateContextSegments, convertToLlm, defaultSystemPrompt, estimateContextTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import { TurnStreamCollector, type StreamCollectorResult } from "./stream-collector.js";
@@ -980,8 +980,8 @@ export class Subject {
 			)
 		)
 			return;
-		const keepFrom = findKeepFrom(this.history, this.compaction.keepRecentTokens, manual);
-		if (!this.history.length || (keepFrom <= 0 && !this.compactor)) {
+		const cut = findCutPoint(this.history, this.compaction.keepRecentTokens, manual);
+		if (!this.history.length || (cut.firstKeptEntryIndex <= 0 && !this.compactor)) {
 			if (manual)
 				await this.runtimeHooks.events.emit({ type: "session_compact_failed", error: "当前会话消息过短，无需压缩" });
 			return;
@@ -998,7 +998,7 @@ export class Subject {
 			const request = readonlySnapshot({
 				reason,
 				history: this.history,
-				suggestedKeepFrom: keepFrom,
+				suggestedKeepFrom: cut.firstKeptEntryIndex,
 				tokensBefore,
 				model,
 				instruction,
@@ -1019,7 +1019,7 @@ export class Subject {
 					this.history,
 					model,
 					this.streamFn,
-					{ keepFrom, tokensBefore, instruction },
+					{ cut, tokensBefore, instruction },
 					this.runtimeHooks.provider,
 					signal,
 				);
@@ -1059,14 +1059,14 @@ export class Subject {
 	): Promise<import("./compaction.js").CompactionResult | null> {
 		const contextWindow = this.model.contextWindow;
 		if (contextWindow === undefined || estimated <= contextWindow) return null;
-		const keepFrom = findKeepFrom(history, this.compaction.keepRecentTokens, false);
-		if (keepFrom <= 0) throw new Error(OVERSIZED_REWIND);
+		const cut = findCutPoint(history, this.compaction.keepRecentTokens, false);
+		if (cut.firstKeptEntryIndex <= 0) throw new Error(OVERSIZED_REWIND);
 		const compactionSignal = signal ?? this.currentSignal();
 		const proposal = await this.compactor?.(
 			{
 				reason: "automatic",
 				history,
-				suggestedKeepFrom: keepFrom,
+				suggestedKeepFrom: cut.firstKeptEntryIndex,
 				tokensBefore: estimated,
 				model: this.model,
 				instruction: "由于回溯使历史重新展开导致上下文超限，请压缩前期历史",
@@ -1085,7 +1085,7 @@ export class Subject {
 				history,
 				this.model,
 				this.streamFn,
-				{ keepFrom, tokensBefore: estimated },
+				{ cut, tokensBefore: estimated },
 				this.runtimeHooks.provider,
 				compactionSignal,
 			);

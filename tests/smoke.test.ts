@@ -204,7 +204,7 @@ describe("Subject", () => {
 		const broker = new ToolBroker();
 		const provider = scriptedProvider([
 			{
-				match: (req) => (req.messages[0]?.content ?? "").includes("压缩成不超过"),
+				match: (req) => (req.messages[0]?.content ?? "").includes("你是上下文摘要助手"),
 				produce: () => [{ kind: "text", text: "保留的摘要" }],
 			},
 			{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] },
@@ -218,11 +218,11 @@ describe("Subject", () => {
 		})));
 		subject.pushInput("new");
 		await idle(subject);
-		expect(provider.calls.some((call) => (call.messages[0]?.content ?? "").includes("压缩成不超过"))).toBe(true);
+		expect(provider.calls.some((call) => (call.messages[0]?.content ?? "").includes("你是上下文摘要助手"))).toBe(true);
 		expect(subject.historySnapshot().some((message) => message.content === "[历史摘要] 保留的摘要")).toBe(true);
 
 		const failing = scriptedProvider([
-			{ match: (req) => (req.messages[0]?.content ?? "").includes("压缩成不超过"), produce: () => { throw new Error("compact down"); } },
+			{ match: (req) => (req.messages[0]?.content ?? "").includes("你是上下文摘要助手"), produce: () => { throw new Error("compact down"); } },
 		]);
 		const failedSubject = new Subject(failing.model, failing.stream, broker, {
 			compaction: { contextWindow: 100, reserveTokens: 10, keepRecentTokens: 10 },
