@@ -177,7 +177,12 @@ export function displayName(rawName: string): string {
 	const mapped = KNOWN[rawName.toLowerCase()];
 	if (mapped) return mapped;
 	if (rawName.length === 0) return rawName;
-	return rawName[0]!.toUpperCase() + rawName.slice(1);
+	// 兜底：按 _ / - / 空格切词再大驼峰，避免未登记的新工具显示成 "Get_time"
+	return rawName
+		.split(/[_\-\s]+/)
+		.filter((part) => part.length > 0)
+		.map((part) => part[0]!.toUpperCase() + part.slice(1))
+		.join("");
 }
 
 /** 时间格式化（<1s 显示 ms，>=1s 显示 1 位小数秒） */
@@ -288,6 +293,20 @@ function extractDiff(args: unknown, resultObj: Record<string, unknown> | null): 
 		}
 	}
 	return null;
+}
+
+/** 结构化值 → 单行文本：对象/数组走 JSON，绝不渲染成 "[object Object]" */
+function formatStructuredValue(value: unknown): string {
+	if (value === null) return "null";
+	if (typeof value === "object") {
+		try {
+			return JSON.stringify(value);
+		} catch {
+			return String(value);
+		}
+	}
+	// 值里的换行会撑破卡片的 ⎿ 悬挂缩进，单行化后再交给折叠预算
+	return String(value).replace(/\r?\n/g, "⏎ ");
 }
 
 /**
@@ -519,15 +538,26 @@ export function formatToolCardLines(
 		}
 
 		if (!stdout && !output && !stderr && exitCode === 0) {
-			const customKeys = Object.keys(obj).filter(
-				(k) => k !== "code" && k !== "exitCode" && k !== "elapsedMs" && k !== "status" && k !== "cancelled",
-			);
-			if (customKeys.length > 0) {
-				const summary = customKeys
-					.slice(0, 3)
-					.map((k) => `${k}: ${String(obj![k]).slice(0, 40)}`)
-					.join(", ");
-				bodyLines.push(`${C.dim}${summary}${C.reset}`);
+			const skipKeys = new Set(["code", "exitCode", "elapsedMs", "status", "cancelled"]);
+			if (Array.isArray(obj)) {
+				// 结构化列表（session_list / job_list / subagent_list …）每项独占一行，
+				// 交给折叠预算处理，而不是渲染成 "0: [object Object]"。
+				if (obj.length === 0) {
+					bodyLines.push(`${C.dim}[]${C.reset}`);
+				} else {
+					for (const item of obj) {
+						bodyLines.push(formatStructuredValue(item));
+					}
+				}
+			} else {
+				const customKeys = Object.keys(obj).filter((k) => !skipKeys.has(k));
+				if (customKeys.length > 0) {
+					const summary = customKeys
+						.slice(0, 3)
+						.map((k) => `${k}: ${formatStructuredValue(obj![k]).slice(0, 40)}`)
+						.join(", ");
+					bodyLines.push(`${C.dim}${summary}${C.reset}`);
+				}
 			}
 		}
 	} else {

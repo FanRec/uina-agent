@@ -2642,6 +2642,46 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				}
 			});
 
+			it("displayName 兜底把分隔符切成大驼峰（新工具不再显示成 Get_time）", () => {
+				expect(displayName("brand_new_tool")).toBe("BrandNewTool");
+				expect(displayName("kebab-tool")).toBe("KebabTool");
+				expect(displayName("alreadyCamel")).toBe("AlreadyCamel");
+			});
+
+			it("结构化结果（数组 / 嵌套对象）不再渲染成 [object Object]", () => {
+				// session_list / job_list / subagent_list 的结果是 JSON 数组
+				const listText = stripAnsi(
+					formatToolCardLines(
+						"session_list",
+						JSON.stringify([{ id: "a", source: "main" }, { id: "b", source: "main" }]),
+						10,
+						100,
+						"succeeded",
+					).join("\n"),
+				);
+				expect(listText).not.toContain("[object Object]");
+				expect(listText).toContain(`"id":"a"`);
+				expect(listText).toContain(`"id":"b"`);
+
+				// job_kill 返回嵌套对象：job 字段本身是对象，旧代码会渲染成 [object Object]
+				const nestedText = stripAnsi(
+					formatToolCardLines(
+						"job_kill",
+						JSON.stringify({ outcome: "cancellation-requested", job: { id: "j1", status: "killed" } }),
+						10,
+						100,
+						"succeeded",
+					).join("\n"),
+				);
+				expect(nestedText).not.toContain("[object Object]");
+				expect(nestedText).toContain("cancellation-requested");
+
+				// 空数组有明确表示，不退化成「执行完成，无输出」
+				const emptyText = stripAnsi(formatToolCardLines("job_list", JSON.stringify([]), 10, 100, "succeeded").join("\n"));
+				expect(emptyText).toContain("[]");
+				expect(emptyText).not.toContain("无输出");
+			});
+
 			it("extractSummaryArgs 兼容 JSON 字符串与多样化参数对象", () => {
 				expect(extractSummaryArgs("exec_command", JSON.stringify({ command: "Get-Date" })).summary).toBe("Get-Date");
 				expect(extractSummaryArgs("exec", { cmd: "dir" }).summary).toBe("dir");
