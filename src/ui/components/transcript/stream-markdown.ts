@@ -7,7 +7,7 @@
  * 4. 粗体、行内代码与列表精细配色。
  */
 
-import { C, visibleWidth, truncateToWidth, getContentBoxWidth } from "../../core/utils.js";
+import { C, visibleWidth, getContentBoxWidth, wrapTextWithAnsi } from "../../core/utils.js";
 import { highlightCode } from "../primitives/syntax-text.js";
 import {
 	isMarkdownTableLine,
@@ -57,9 +57,8 @@ export class StreamMarkdownFormatter {
 		if (this.inCodeBlock) {
 			const innerWidth = boxWidth - 4; // 减去两端 "│ " (2) 与 " │" (2)
 			const highlighted = highlightCode(cleanRaw, this.codeBlockLang);
-			const truncatedCode = truncateToWidth(highlighted, innerWidth, "");
-			const padLen = Math.max(0, innerWidth - visibleWidth(truncatedCode));
-			return `${C.promptBorder}│${C.reset} ${truncatedCode}${" ".repeat(padLen)} ${C.promptBorder}│${C.reset}`;
+			const codeLines = wrapTextWithAnsi(highlighted, innerWidth);
+			return codeLines.map((line) => `${C.promptBorder}│${C.reset} ${line}${" ".repeat(Math.max(0, innerWidth - visibleWidth(line)))} ${C.promptBorder}│${C.reset}`).join("\n");
 		}
 
 		// 3. 标题格式化（对标 dsh-TUI: H1 mist blue + 下划线，H2 suggestion 冰蓝，H3 text 粗体）
@@ -216,7 +215,7 @@ export function formatFullMarkdown(text: string, width = 80): string[] {
 			}
 		}
 		for (const l of tableLines) {
-			res.push(formatter.formatLine(l));
+			res.push(...formatter.formatLine(l).split("\n"));
 		}
 		tableLines = [];
 	};
@@ -242,3 +241,4 @@ export function formatFullMarkdown(text: string, width = 80): string[] {
 	}
 	return res;
 }
+

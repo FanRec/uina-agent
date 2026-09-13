@@ -86,6 +86,7 @@ export class SmoothRevealController {
 	 */
 	feed(key: string, fullText: string): void {
 		if (!this.enabled) return;
+		if (this.completedReveals.has(key)) return;
 
 		const cursor = this.textCursors.get(key);
 		if (!cursor) {

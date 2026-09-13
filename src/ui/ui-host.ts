@@ -15,7 +15,7 @@ import { MouseSelectionTracker, type InteractiveTarget, type SelectableRegion } 
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ThinkingLevel } from "../core/types.js";
 import type { SessionAccess, SessionEntry } from "../session/types.js";
-import { C, copyToClipboardUnified, visibleWidth, truncateToWidth } from "./core/utils.js";
+import { C, copyToClipboardUnified, visibleWidth, truncateToWidth, stripAnsi } from "./core/utils.js";
 import {
 	InputLine,
 	formatSuggestionCardLines,
@@ -256,12 +256,30 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	private onCopyOnSelect = (text: string): void => {
+		text = this.cleanCodeBlockSelection(text);
 		copyToClipboardUnified(text);
 
 		const lineCount = text.split("\n").length;
 		const toast = lineCount > 1 ? `已复制 ${lineCount} 行 (${text.length} 字符)` : `已复制 ${text.length} 字符`;
 		this.showCopyToast(toast);
 	};
+
+	private cleanCodeBlockSelection(text: string): string {
+		const lines = text.split("\n");
+		const hasCodeFrame = lines.some((line) => {
+			const clean = stripAnsi(line);
+			return /^\s*[┌└]─/.test(clean) || /^\s*│/.test(clean) || /│\s*$/.test(clean);
+		});
+		if (!hasCodeFrame) return text;
+		return lines
+			.filter((line) => !/^\s*[┌└]─+.*[┐┘]\s*$/.test(stripAnsi(line)))
+			.map((line) => {
+				const match = stripAnsi(line).match(/^\s*│\s?(.*?)\s?│\s*$/);
+				return match ? match[1]! : line;
+			})
+			.join("\n");
+	}
+
 
 	// 事件回调
 	onUserLine?: (text: string, mode: "steer" | "followUp" | "direct") => void;
@@ -1971,3 +1989,4 @@ export class UIHost implements UIHostContextPort {
 		this.onUserLine?.(text, mode);
 	}
 }
+
