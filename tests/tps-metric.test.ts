@@ -53,10 +53,30 @@ describe("ActivityLineComponent：真实值优先于字符估算", () => {
 	it("跨调用的真实输出累加，而不是后者覆盖前者", () => {
 		const act = new ActivityLineComponent();
 		act.start("streaming", "正在输出...");
+		act.addTokens(30); // 调用 1 的增量：真值要有跨度才进分子
 		act.addRealOutputTokens("call-1", 30);
+		act.sealDecodeSpan(); // 调用 1 结束（tool_start）：封存这一跨度
+		act.addTokens(45); // 调用 2 的增量
 		act.addRealOutputTokens("call-2", 45);
 		act.finish("完成", 1000);
 		expect(plain(act.getHeaderString(160))).toContain("~75 tokens");
+	});
+
+	it("没有跨度的真值不进分子：纯工具调用轮次（无 token 增量）不计入读数", () => {
+		// 口径 A：分子按调用累计、分母按跨度累计。一次调用报回了 output、但期间一个
+		// token 增量都没有（整轮输出都是工具调用参数）时，这段输出量没有对应的生成时间
+		// 可除，全额进分子只会让 tps 虚高。真机实测：175 / 820 这类 token 进了分子、
+		// 跨度为 0，一路读到 2092 tokens / 2.32s = 902 tps。
+		const act = new ActivityLineComponent();
+		act.start("streaming", "正在输出...");
+		act.addTokens(120); // 调用 1 有增量 → 有跨度
+		act.addRealOutputTokens("call-1", 120);
+		act.sealDecodeSpan(); // 调用 1 结束
+		act.addRealOutputTokens("call-2", 175); // 调用 2 只报 usage，零 token 增量
+		act.finish("完成", 1000);
+		const rendered = plain(act.getHeaderString(160));
+		expect(rendered).toContain("~120 tokens"); // 只有占过跨度的 120
+		expect(rendered).not.toContain("~295 tokens"); // 不是 120 + 175
 	});
 
 	it("同一次调用反复推送到同一个累积 usage，只计最后一次而不是累加", () => {
@@ -64,6 +84,7 @@ describe("ActivityLineComponent：真实值优先于字符估算", () => {
 		// 旧实现按"每次调用累加"处理，会把一个调用的输出按推送次数重复计成四位数 tps。
 		const act = new ActivityLineComponent();
 		act.start("streaming", "正在输出...");
+		act.addTokens(45); // 这一轮有真实增量 → 有跨度
 		act.addRealOutputTokens("call-1", 30);
 		act.addRealOutputTokens("call-1", 45);
 		act.finish("完成", 1000);

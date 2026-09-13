@@ -42,7 +42,10 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 	it("跨调用的真实输出累加（多轮 stream→tool→stream）", () => {
 		const tui = createInteractiveUI({ modelName: "TestModel" });
 		tui.render({ type: "turn_start", n: 1, text: "跑两轮" });
+		tui.render({ type: "text", text: "第一轮的输出" }); // 调用 1 有增量 → 有跨度
 		tui.render({ type: "usage_update", callId: "call-1", usedTokens: 1000, outputTokens: 30 });
+		tui.render({ type: "tool_start", name: "list_dir", args: {}, callId: "tool-1" }); // 调用 1 结束，封存跨度
+		tui.render({ type: "text", text: "第二轮的输出" }); // 调用 2 的增量
 		tui.render({ type: "usage_update", callId: "call-2", usedTokens: 1000, outputTokens: 45 });
 		tui.render({ type: "turn_end", n: 1 });
 

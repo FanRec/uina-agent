@@ -174,6 +174,9 @@ export class ActivityLineComponent implements Component {
 	/** 每回合一个速度采样，跨回合保留（结束后的火花线取最近若干个回合）。 */
 	private tpsSamples: number[] = [];
 
+	/** 自上次结算以来是否封存过跨度：只有占过跨度的真值才进分子。 */
+	private pendingSpanSinceSettle = false;
+
 	start(phase: ActivityPhase, message: string): void {
 		this.phase = phase;
 		this.message = message;
@@ -186,6 +189,7 @@ export class ActivityLineComponent implements Component {
 		this.realOutputTokens = 0;
 		this.currentCallId = "";
 		this.currentCallTokens = 0;
+		this.pendingSpanSinceSettle = false;
 		// tpsSamples 不在这里清空：只留一个回合的历史，量程峰值就等于当前值，
 		// 表盘每个回合都会从满格重新开始缩；跨回合保留才有参照物。
 	}
@@ -215,10 +219,13 @@ export class ActivityLineComponent implements Component {
 		// 调度空档不是生成时间。
 		this.decodeMsAccum += Math.max(0, this.lastTokenTime - this.decodeStartTime);
 		this.decodeStartTime = 0;
+		this.pendingSpanSinceSettle = true;
 	}
 
 	finish(summary = "本轮已完成", elapsedOverride?: number, tokensOverride?: number): void {
 		this.sealDecodeSpan();
+		// 最后一个调用没有下一个 callId 来触发换账，在这里补结算，判据与中途一致。
+		this.settleCurrentCall();
 		this.phase = "done";
 		// 字符估算只在没有任何真实值时兜底，避免真实值与估算被计两次。
 		if (tokensOverride !== undefined && tokensOverride > 0 && this.realOutputTokens + this.currentCallTokens === 0) {
@@ -253,6 +260,7 @@ export class ActivityLineComponent implements Component {
 		this.realOutputTokens = 0;
 		this.currentCallId = "";
 		this.currentCallTokens = 0;
+		this.pendingSpanSinceSettle = false;
 	}
 
 	getPhase(): ActivityPhase {
@@ -273,11 +281,28 @@ export class ActivityLineComponent implements Component {
 		if (tokens <= 0) return;
 		if (callId !== this.currentCallId) {
 			// 换调用：把上一个调用的最终值结进累计，再开新账。
-			this.realOutputTokens += this.currentCallTokens;
+			this.settleCurrentCall();
 			this.currentCallId = callId;
 		}
 		this.currentCallTokens = tokens;
 		this.spanEstimateTokens = 0;
+	}
+
+	/**
+	 * 结算当前调用：只有自上次结算以来封存过跨度（这次调用确实产生过 token 增量）时，
+	 * 它的真值才进分子。
+	 *
+	 * 分子按调用累计、分母按跨度累计，两者触发点不同步：真值无条件进分子就会出现
+	 * "有输出量、没有对应生成时间"的白送。真机实测：某次调用报回 175 / 820 个
+	 * output，期间一个 token 增量都没有（整轮输出都是工具调用参数），跨度为 0，
+	 * 于是一路读到 2092 tokens / 2.32s = 902 tps 的虚高读数。
+	 * 口径 A：无跨度的真值不进分子、也不进分母 —— 代价是纯工具调用轮次的输出量
+	 * 不出现在读数里。
+	 */
+	private settleCurrentCall(): void {
+		if (this.pendingSpanSinceSettle) this.realOutputTokens += this.currentCallTokens;
+		this.currentCallTokens = 0;
+		this.pendingSpanSinceSettle = false;
 	}
 
 	/**
@@ -293,7 +318,9 @@ export class ActivityLineComponent implements Component {
 	 * （真机实测：模型正以约 350 tps 输出，显示值却从 297 单调跌到 75）。
 	 */
 	private outputTokenCount(): number {
-		return this.realOutputTokens + this.currentCallTokens + this.spanEstimateTokens;
+		// 当前调用的真值同样只在它占着跨度时才算：没有跨度的输出量没有分母可除。
+		const current = this.pendingSpanSinceSettle || this.decodeStartTime > 0 ? this.currentCallTokens : 0;
+		return this.realOutputTokens + current + this.spanEstimateTokens;
 	}
 
 	/**
