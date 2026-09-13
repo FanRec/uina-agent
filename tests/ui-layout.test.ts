@@ -103,6 +103,34 @@ describe("B1: transcript line model", () => {
 		expect(uids).toHaveLength(2);
 		expect(turnStarts.get(uids[0]!)).toBeLessThan(turnStarts.get(uids[1]!)!);
 	});
+
+	it("toggles one thinking block without touching the others in the same turn", () => {
+		// 一个轮次里可以有多个思考块（thinking → 文本/工具 → thinking），
+		// 所以折叠状态必须落在块上，不能落在轮次上。
+		const transcript = new TranscriptContainer();
+		transcript.startTurn(1, "Q");
+		transcript.appendThinking("ONE");
+		transcript.appendToken("mid");
+		transcript.appendThinking("TWO");
+		transcript.finishTurn();
+
+		const locs = transcript.getThinkingLineIndices(60);
+		expect(locs).toHaveLength(2);
+		expect(locs[0]!.item.uid).not.toBe(locs[1]!.item.uid);
+
+		transcript.toggleThinking(locs[0]!.item, 60);
+		expect(locs[0]!.item.collapsed).toBe(false);
+		expect(locs[1]!.item.collapsed).not.toBe(false);
+
+		transcript.toggleThinking(locs[0]!.item, 60);
+		expect(locs[0]!.item.collapsed).toBe(true);
+		expect(locs[1]!.item.collapsed).not.toBe(false);
+
+		// alt+o 是唯一的轮次级批量入口，逐块写入
+		transcript.toggleAllThinking(true);
+		expect(locs[0]!.item.collapsed).toBe(true);
+		expect(locs[1]!.item.collapsed).toBe(true);
+	});
 });
 
 describe("B1: layout is the single source of truth", () => {
@@ -170,6 +198,45 @@ describe("B1: layout is the single source of truth", () => {
 		rows = plainFrame(frames.at(-1)!);
 		expect(rows.some((row) => row.includes("USER-TURN-COLLIDE"))).toBe(true);
 	});
+
+	it("highlights and toggles only the hovered thinking block inside one turn", async () => {
+		const { terminal, frames } = fakeTerminal();
+		const host = new UIHost({ terminal, modelName: "TestModel" });
+		host.start();
+		// 一个轮次里两个思考块：真实会话常常是 thinking → 文本/工具 → thinking。
+		host.transcript.startTurn(1, "Q-ONE");
+		host.transcript.appendThinking("THINK-ONE");
+		host.transcript.appendToken("MID-TEXT");
+		host.transcript.appendThinking("THINK-TWO");
+		host.transcript.appendToken("A-ONE");
+		host.transcript.finishTurn();
+		host.requestRender();
+		await settle();
+
+		const rows = (): string[] => plainFrame(frames.at(-1)!).map(stripAnsi);
+		expect(rows().filter((row) => row.includes("点击"))).toHaveLength(0);
+
+		const oneRow = rows().findIndex((row) => row.includes("THINK-ONE"));
+		expect(oneRow).toBeGreaterThan(0);
+		// 真实鼠标移动（SGR：btn=35 为无按键移动，col/row 均为 1 基）
+		host.handleInput(`\x1b[<35;10;${oneRow + 1}M`);
+		host.requestRender();
+		await settle();
+
+		// 只有被悬停的那一个块亮，同轮的另一个块不受影响
+		expect(rows().filter((row) => row.includes("点击"))).toHaveLength(1);
+		expect(rows().some((row) => row.includes("THINK-ONE") && row.includes("点击"))).toBe(true);
+
+		// 点击只展开被点的那个块，同轮的另一个块必须保持折叠
+		host.handleInput(`\x1b[<0;10;${oneRow + 1}M`);
+		await settle();
+		host.handleInput(`\x1b[<0;10;${oneRow + 1}m`);
+		host.requestRender();
+		await settle();
+
+		expect(rows().filter((row) => row.includes("收起"))).toHaveLength(1);
+		expect(rows().some((row) => row.includes("THINK-TWO") && row.includes("展开"))).toBe(true);
+	});
 });
 
 describe("B1: hover is local", () => {
@@ -215,7 +282,7 @@ describe("B1: hover is local", () => {
 		expect(new Set(locs.map((l) => l.turn.n)).size).toBe(1); // n 确实撞号
 
 		const before = transcript.render(78).map(stripAnsi);
-		expect(transcript.setHoveredThinkingTurn(locs[0]!.turn.uid)).toBe(true);
+		expect(transcript.setHoveredThinkingUid(locs[0]!.item.uid)).toBe(true);
 		const after = transcript.render(78).map(stripAnsi);
 
 		// 只有一个轮次进入 hover 态

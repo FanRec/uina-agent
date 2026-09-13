@@ -176,6 +176,36 @@ export function visibleWidth(str: string): number {
 }
 
 /**
+ * 把制表符展开成空格（8 列制表位，与 visibleWidth 同一模型；ANSI 序列原样保留）。
+ *
+ * 终端里的 HT 只移动光标、**不涂色**：被它跳过的格子会保留上一帧的内容、或露出默认底色。
+ * 实测后果有两个（同一根因）：
+ *   1. 卡片底色中间出现空洞（跳过的格子没被涂上卡片底色）；
+ *   2. 上一帧的旧文本残留在新行里，看起来像两段内容"重叠"。
+ * 所以帧行在写入终端前必须先展开制表符，保证"写出去的每个格子都被我们涂过"。
+ */
+export function expandTabs(text: string): string {
+	if (!text.includes("\t")) return text;
+	let out = "";
+	let col = 0;
+	walkGraphemes(text, (segment, isAnsi) => {
+		if (isAnsi) {
+			out += segment;
+			return;
+		}
+		if (segment === "\t") {
+			const advance = tabAdvance(col);
+			out += " ".repeat(advance);
+			col += advance;
+			return;
+		}
+		out += segment;
+		col += graphemeWidth(segment);
+	});
+	return out;
+}
+
+/**
  * 从指定位置提取完整的 ANSI 控制码（用于流式扫描）
  */
 export function extractAnsiCode(

@@ -38,7 +38,14 @@ export interface DiffRecord {
 }
 
 export type TurnItem =
-	| { kind: "thinking"; text: string; collapsed?: boolean }
+	| {
+			kind: "thinking";
+			text: string;
+			collapsed?: boolean;
+			/** 块级身份。一个轮次可以有多个思考块（thinking → 工具 → thinking），
+			 * 折叠状态与 hover 必须落在块上；落在轮次上会让整轮的思考一起亮、一起展开。 */
+			uid: number;
+	  }
 	| { kind: "text"; text: string }
 	| {
 			kind: "tool";
@@ -65,6 +72,9 @@ export type TurnItem =
 			text: string;
 	  };
 
+/** 单个思考块。折叠与 hover 的身份单位。 */
+export type ThinkingItem = Extract<TurnItem, { kind: "thinking" }>;
+
 export interface TurnRecord {
 	n: number;
 	/** 由容器签发的唯一票据。n 来自「引擎 turnSeq」与「恢复期局部计数」两套互不
@@ -75,7 +85,6 @@ export interface TurnRecord {
 	userText: string;
  userImages?: readonly import("../../../core/content.js").ImageContent[];
 	items: TurnItem[];
-	thinkingCollapsed?: boolean;
 	readonly assistantMarkdown: string;
 	readonly thinkingText?: string;
 	readonly tools: ToolRecord[];
@@ -120,6 +129,8 @@ export interface ThinkingLineLocation {
 	lineCount?: number;
 	/** 精确指向该 thinking 所属的轮次，不能只依赖可能重复的 turnN。 */
 	turn: TurnRecord;
+	/** 该行属于哪个思考块。一个轮次可有多个思考块，热区与折叠都以它为身份。 */
+	item: ThinkingItem;
 }
 
 export interface ToolLineLocation {
@@ -193,9 +204,10 @@ export class TranscriptContainer implements Component {
 	private readonly timeline: TimelineItem[] = [];
 	private readonly historyTurns: TurnRecord[] = [];
 	private currentTurn: TurnRecord | null = null;
-	/** uid 的唯一签发点：只在本容器内递增，同容器内绝不重复。 */
-	private turnUidSeq = 0;
-	private hoveredThinkingTurnUid: number | null = null;
+	/** uid 的唯一签发点（轮次与思考块共用）：只在本容器内递增，绝不重复。 */
+	private uidSeq = 0;
+	/** 被悬停的思考【块】uid。一个轮次可以有多个思考块，故不能存轮次身份。 */
+	private hoveredThinkingUid: number | null = null;
 	private hoveredToolId: string | null = null;
 	private hoveredCompactionIndex: number | null = null;
 	private readonly expandedToolIds = new Set<string>();
@@ -223,19 +235,20 @@ export class TranscriptContainer implements Component {
 		this.settledBlocks.staleCompactions.add(index);
 	}
 
-	setHoveredThinkingTurn(turnUid: number | null): boolean {
-		if (this.hoveredThinkingTurnUid !== turnUid) {
-			this.hoveredThinkingTurnUid = turnUid;
-			// Hover is applied at assembly time, so only the per-turn hover cache
-			// is dropped; settled blocks stay valid.
+	/** @param thinkingUid 思考块的 uid（块级身份，一个轮次可有多个块）。 */
+	setHoveredThinkingUid(thinkingUid: number | null): boolean {
+		if (this.hoveredThinkingUid !== thinkingUid) {
+			this.hoveredThinkingUid = thinkingUid;
+			// Hover is applied at assembly time, so only the hover cache is
+			// dropped; settled blocks stay valid.
 			this.hoveredBlockCache.clear();
 			return true;
 		}
 		return false;
 	}
 
-	getHoveredThinkingTurn(): number | null {
-		return this.hoveredThinkingTurnUid;
+	getHoveredThinkingUid(): number | null {
+		return this.hoveredThinkingUid;
 	}
 
 	setHoveredToolId(toolId: string | null): boolean {
@@ -416,7 +429,7 @@ export class TranscriptContainer implements Component {
 		if (this.currentTurn) {
 			this.commitCurrentTurn();
 		}
-		this.currentTurn = createTurnRecord(n, ++this.turnUidSeq, userText);
+		this.currentTurn = createTurnRecord(n, ++this.uidSeq, userText);
   this.currentTurn.userImages = images;
 	}
 
@@ -438,7 +451,7 @@ export class TranscriptContainer implements Component {
 		if (last && last.kind === "thinking") {
 			last.text += text;
 		} else {
-			this.currentTurn.items.push({ kind: "thinking", text });
+			this.currentTurn.items.push({ kind: "thinking", text, uid: ++this.uidSeq });
 		}
 	}
 
@@ -606,7 +619,7 @@ export class TranscriptContainer implements Component {
 		};
 		const createTurn = (userText = ""): TurnRecord => {
 			turnN++;
-			return createTurnRecord(turnN, ++this.turnUidSeq, userText);
+			return createTurnRecord(turnN, ++this.uidSeq, userText);
 		};
 
 		for (const entry of entries) {
@@ -674,7 +687,7 @@ export class TranscriptContainer implements Component {
 			} else if (msg.role === "assistant") {
 				current ??= createTurn();
 				if (msg.thinking) {
-					current.items.push({ kind: "thinking", text: msg.thinking });
+					current.items.push({ kind: "thinking", text: msg.thinking, uid: ++this.uidSeq });
 				}
 				if (msg.content) {
 					if (msg.status === "aborted" && msg.content.includes("已打断")) {
@@ -726,48 +739,62 @@ export class TranscriptContainer implements Component {
 		this.invalidate();
 	}
 
-	/**
-	 * @param targetOrRecord 要切换的轮次本体。这里刻意不接受轮次编号：n 会撞号，
-	 * 按 n 解析会把点击落到同号的另一个轮次上。调用方一律传热区里的 turn 对象。
-	 */
-	toggleThinking(targetOrRecord?: TurnRecord, width = 80): { toggled: boolean; lineDelta: number } {
-		const target =
-			targetOrRecord ??
-			(this.currentTurn?.thinkingText
-				? this.currentTurn
-				: this.historyTurns.slice().reverse().find((t) => t.thinkingText));
-
-		if (target && target.thinkingText) {
-			const wasCollapsed = target.thinkingCollapsed ?? true;
-			const beforeCount = formatThinkingLines(target.thinkingText, wasCollapsed, width).length;
-			target.thinkingCollapsed = !wasCollapsed;
-			for (const it of target.items) {
-				if (it.kind === "thinking") {
-					it.collapsed = !wasCollapsed;
-				}
-			}
-			this.invalidateTurn(target.uid);
-			const afterCount = formatThinkingLines(target.thinkingText, !wasCollapsed, width).length;
-			return { toggled: true, lineDelta: afterCount - beforeCount };
-		}
-		return { toggled: false, lineDelta: 0 };
-	}
-
-	toggleAllThinking(collapsed?: boolean): void {
+	/** 全量轮次（历史 + 当前）。 */
+	private allTurns(): TurnRecord[] {
 		const all = [...this.historyTurns];
 		if (this.currentTurn) all.push(this.currentTurn);
-		const anyExpanded = all.some((t) => t.thinkingText && t.thinkingCollapsed === false);
-		const targetState = collapsed ?? anyExpanded;
-		for (const t of all) {
-			if (t.thinkingText) {
-				t.thinkingCollapsed = targetState;
-				for (const it of t.items) {
-					if (it.kind === "thinking") {
-						it.collapsed = targetState;
-					}
+		return all;
+	}
+
+	/**
+	 * 解析目标思考块及其所属轮次。
+	 * @param target 指定块时按对象浅查找（顺带校验它确实属于本容器）；省略则取最后一个思考块。
+	 */
+	private resolveThinking(target?: ThinkingItem): { turn: TurnRecord; item: ThinkingItem } | null {
+		const all = this.allTurns();
+		if (target) {
+			for (const turn of all) {
+				for (const item of turn.items) {
+					if (item === target && item.kind === "thinking") return { turn, item };
 				}
 			}
+			return null;
 		}
+		for (let i = all.length - 1; i >= 0; i--) {
+			const turn = all[i]!;
+			for (let j = turn.items.length - 1; j >= 0; j--) {
+				const item = turn.items[j]!;
+				if (item.kind === "thinking") return { turn, item };
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * 折叠/展开【单个】思考块。
+	 * @param target 目标块；省略时取最后一个思考块（Ctrl+O 语义）。
+	 * 一个轮次可以有多个思考块，故这里绝不做轮次级批量切换——那会让整轮一起展开。
+	 */
+	toggleThinking(target?: ThinkingItem, width = 80): { toggled: boolean; lineDelta: number } {
+		const resolved = this.resolveThinking(target);
+		if (!resolved) return { toggled: false, lineDelta: 0 };
+		const { turn, item } = resolved;
+		const wasCollapsed = item.collapsed ?? true;
+		const beforeCount = formatThinkingLines(item.text, wasCollapsed, width).length;
+		item.collapsed = !wasCollapsed;
+		this.invalidateTurn(turn.uid);
+		const afterCount = formatThinkingLines(item.text, !wasCollapsed, width).length;
+		return { toggled: true, lineDelta: afterCount - beforeCount };
+	}
+
+	/** 全展开/全折叠（alt+o）：唯一的轮次级批量入口，但逐块写入块状态。 */
+	toggleAllThinking(collapsed?: boolean): void {
+		const items = this.allTurns()
+			.flatMap((turn) => turn.items)
+			.filter((item): item is ThinkingItem => item.kind === "thinking");
+		if (items.length === 0) return;
+		const targetState = collapsed ?? items.some((item) => item.collapsed === false);
+		for (const item of items) item.collapsed = targetState;
 		this.invalidate();
 	}
 
@@ -940,10 +967,10 @@ export class TranscriptContainer implements Component {
 		let hasRenderedText = false;
 		for (const item of turn.items) {
 			if (item.kind === "thinking") {
-				const isHovered = hover && this.hoveredThinkingTurnUid === turn.uid;
-				const collapsed = item.collapsed ?? turn.thinkingCollapsed ?? true;
+				const isHovered = hover && this.hoveredThinkingUid === item.uid;
+				const collapsed = item.collapsed ?? true;
 				const lines = formatThinkingLines(item.text, collapsed, width, isHovered);
-				sink.thinking.push({ turnN: turn.n, lineIndex: out.length, lineCount: lines.length, turn });
+				sink.thinking.push({ turnN: turn.n, lineIndex: out.length, lineCount: lines.length, turn, item });
 				out.push(...lines);
 			} else if (item.kind === "text") {
 				const textToRender = isCurrent
@@ -974,10 +1001,12 @@ export class TranscriptContainer implements Component {
 
 	/** Hover on settled turns rebuilds only the affected block. */
 	private turnBlockFor(base: TurnBlock, width: number): TurnBlock {
-		const hoveredThinkingHere = this.hoveredThinkingTurnUid === base.turn.uid;
+		const hoveredThinkingHere =
+			this.hoveredThinkingUid !== null &&
+			base.turn.items.some((it) => it.kind === "thinking" && it.uid === this.hoveredThinkingUid);
 		const hoveredToolHere = this.hoveredToolId !== null && base.tools.some((tool) => tool.callId === this.hoveredToolId);
 		if (!hoveredThinkingHere && !hoveredToolHere) return base;
-		const key = `${width}:${base.turn.uid}:${this.hoveredToolId ?? ""}:${this.hoveredThinkingTurnUid ?? ""}`;
+		const key = `${width}:${base.turn.uid}:${this.hoveredToolId ?? ""}:${this.hoveredThinkingUid ?? ""}`;
 		const cached = this.hoveredBlockCache.get(key);
 		if (cached) return cached;
 		const rebuilt = this.buildTurnBlock(base.turn, width, true, this.getLatestFailedTool());

@@ -15,7 +15,7 @@ import { MouseSelectionTracker, type InteractiveTarget, type SelectableRegion } 
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ThinkingLevel } from "../core/types.js";
 import type { SessionAccess, SessionEntry } from "../session/types.js";
-import { C, copyToClipboardUnified, visibleWidth, truncateToWidth, stripAnsi } from "./core/utils.js";
+import { C, copyToClipboardUnified, visibleWidth, truncateToWidth, stripAnsi, expandTabs } from "./core/utils.js";
 import {
 	InputLine,
 	formatSuggestionCardLines,
@@ -1230,7 +1230,8 @@ export class UIHost implements UIHostContextPort {
 		const allChatRows = [...visibleTranscript, ...gapLines];
 		const atBottom = this.scrollOffset === 0;
 
-		this.lastPermanentLines = permanentLines;
+		// 跨屏选区提取用的是"用户看到的那一份行"，所以在这里就与屏幕对齐（制表符已展开）。
+		this.lastPermanentLines = permanentLines.map((row) => expandTabs(row));
 		this.lastMaxScroll = maxScroll;
 		this.mouseTracker.setScrollContext(scrollStart, chatAreaH);
 
@@ -1289,13 +1290,15 @@ export class UIHost implements UIHostContextPort {
 				if (absLine >= scrollStart && absLine < scrollStart + visibleTranscript.length) {
 					const screenRow = absLine - scrollStart;
 					interactiveTargets.push({
-						id: `thinking:${loc.turn.uid}`,
+						// 块级 id：一个思考块一个 id（块内所有行共享）。逐行不同 id 会被
+						// 当成"目标变了"而触发全量重绘。
+						id: `thinking:${loc.item.uid}`,
 						row: screenRow,
 						colStart: 0,
 						colEnd: Math.max(0, transcriptContentW - 1),
 						onClick: () => {
 							this.preserveScrollAnchor(() => {
-								this.transcript.toggleThinking(loc.turn, transcriptContentW);
+								this.transcript.toggleThinking(loc.item, transcriptContentW);
 							}, bannerCount + loc.lineIndex);
 							this.requestRender();
 						},
@@ -1479,8 +1482,10 @@ export class UIHost implements UIHostContextPort {
 		this.mouseTracker.setSelectableRegions(selectableRegions);
 
 		// 9. 保存当前完整帧供鼠标选区提取，注入划词反色高亮并提交渲染
-		this.lastRenderedRows = fullScreenRows;
-		const finalRows = this.mouseTracker.applyHighlight(fullScreenRows, scrollStart);
+		// 屏幕逐格显示的就是这份行：渲染器与鼠标/选区共用它，列模型才不会与屏幕分叉。
+		const displayRows = fullScreenRows.map((row) => expandTabs(row));
+		this.lastRenderedRows = displayRows;
+		const finalRows = this.mouseTracker.applyHighlight(displayRows, scrollStart);
 		this.renderer.renderFrame(finalRows);
 	}
 
@@ -1546,12 +1551,12 @@ export class UIHost implements UIHostContextPort {
 					}
 
 					if (res.hoverTargetId !== undefined) {
-						const hoveredThinkingTurnUid = res.hoverTargetId?.startsWith("thinking:")
+						const hoveredThinkingUid = res.hoverTargetId?.startsWith("thinking:")
 							? parseInt(res.hoverTargetId.split(":")[1] ?? "", 10)
 							: res.hoverTargetId?.startsWith("thinking-")
 								? parseInt(res.hoverTargetId.replace("thinking-", ""), 10)
 								: null;
-						if (this.transcript.setHoveredThinkingTurn(hoveredThinkingTurnUid)) {
+						if (this.transcript.setHoveredThinkingUid(hoveredThinkingUid)) {
 							anyNeedRender = true;
 						}
 

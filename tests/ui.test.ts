@@ -507,7 +507,7 @@ describe("UI Components & Visual Rendering", () => {
 			.toEqual([{ turnN: 1, lineIndex: 3 }]);
 	});
 
-	it("鼠标折叠当前 thinking 时按轮次对象定位，不会误切同编号的历史轮次", () => {
+	it("鼠标折叠当前 thinking 时按块对象定位，不会误切同编号的历史轮次", () => {
 		const transcript = new TranscriptContainer();
 		transcript.loadHistory([
 			{ role: "user", content: "旧问题" },
@@ -519,10 +519,11 @@ describe("UI Components & Visual Rendering", () => {
 		const locations = transcript.getThinkingLineIndices(60);
 		const current = locations.find((location) => location.turn === transcript.getCurrentTurn());
 		expect(current).toBeDefined();
-		transcript.toggleThinking(current!.turn, 60);
+		transcript.toggleThinking(current!.item, 60);
 
-		expect(transcript.getCurrentTurn()?.thinkingCollapsed).toBe(false);
-		expect(transcript.getHistory()[0]?.thinkingCollapsed).not.toBe(false);
+		expect(current!.item.collapsed).toBe(false);
+		const historical = locations.find((location) => location.turn === transcript.getHistory()[0]);
+		expect(historical!.item.collapsed).not.toBe(false);
 	});
 
 	it("ContextBar 上下文隐藏信息行与 Hover 展开", () => {

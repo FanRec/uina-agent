@@ -9,7 +9,7 @@
  */
 
 import { CURSOR_MARKER } from "./types.js";
-import { truncateToWidth, visibleWidth } from "./utils.js";
+import { expandTabs, truncateToWidth, visibleWidth } from "./utils.js";
 import type { ProcessTerminal } from "./terminal.js";
 
 export interface CursorPosition {
@@ -36,6 +36,9 @@ export class MainScreenRenderer {
 		let cursorPos: CursorPosition | null = null;
 		// Every emitted row must fit the terminal, otherwise the terminal wraps it
 		// and the whole frame shifts (Pi: tui-main-screen.ts rendered-width check).
+		// Tabs are expanded first: a raw HT only moves the cursor without painting the
+		// cells it skips, so those cells keep the previous frame's text (looks like an
+		// overlap) or the default background (a hole in a card background).
 		const width = Math.max(1, this.terminal.columns);
 
 		for (let r = 0; r < rows.length; r++) {
@@ -51,7 +54,7 @@ export class MainScreenRenderer {
 			// "pending wrap" state. Advancing with CR LF from there moves down two rows on
 			// hosts that act on the wrap immediately (the classic double-spaced frame), so
 			// every row is positioned absolutely instead of relying on line-feed movement.
-			frame += `\x1b[${r + 1};1H` + this.fitToWidth(cleanLine, width) + "\x1b[K";
+			frame += `\x1b[${r + 1};1H` + this.fitToWidth(expandTabs(cleanLine), width) + "\x1b[K";
 		}
 
 		// 硬件光标精确定位至输入框焦点所在行列，唤起原生系统 IME 候选框
