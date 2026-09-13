@@ -90,7 +90,7 @@ describe("ActivityLineComponent：真实值优先于字符估算", () => {
 	it("没有真实值时退回字符估算（÷ STREAM_CHARS_PER_TOKEN）", () => {
 		const act = new ActivityLineComponent();
 		act.start("streaming", "正在输出...");
-		const chars = 300;
+		const chars = 400;
 		act.addTokens(Math.ceil(chars / STREAM_CHARS_PER_TOKEN));
 		act.finish("完成", 1000);
 		expect(plain(act.getHeaderString(160))).toContain("~100 tokens");

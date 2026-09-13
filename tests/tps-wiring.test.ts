@@ -69,12 +69,12 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 			tui.render({ type: "turn_end", n: 1 });
 
 			const rendered = headerTokens(tui);
-			// 思考的两段估算必须计入（3x100=300），不能只剩正文那一段（100）
-			expect(rendered).toContain("~300 tokens");
-			expect(rendered).not.toContain("~100 tokens");
-			// 分母 = 首个思考 token 到最后一个 token = 7.0s，300/7 约 43 tps；
-			// 若思考增量不进跨度，分母退回墙钟 9s、分子只剩 100 → 11 tps。
-			expect(rendered).toContain("~43 tps");
+			// 思考的两段估算必须计入（3x75=225），不能只剩正文那一段（75）
+			expect(rendered).toContain("~225 tokens");
+			expect(rendered).not.toContain("~75 tokens");
+			// 分母 = 首个思考 token 到最后一个 token = 7.0s，225/7 约 32 tps；
+			// 若思考增量不进跨度，分母退回墙钟 9s、分子只剩 75 → 8 tps。
+			expect(rendered).toContain("~32 tps");
 		} finally {
 			vi.useRealTimers();
 		}
@@ -89,19 +89,19 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 			const tui = createInteractiveUI({ modelName: "TestModel" });
 			tui.render({ type: "turn_start", n: 1, text: "两轮输出" });
 			vi.setSystemTime(T0 + 10);
-			tui.render({ type: "thinking", text: "甲".repeat(300) }); // 估算 100
+			tui.render({ type: "thinking", text: "甲".repeat(300) }); // 估算 75
 			vi.setSystemTime(T0 + 510);
 			// 调用 1 收尾，真值 120 到位
 			tui.render({ type: "usage_update", callId: "call-1", usedTokens: 1000, outputTokens: 120 });
 			vi.setSystemTime(T0 + 1010);
-			tui.render({ type: "thinking", text: "乙".repeat(300) }); // 调用 2 又吐 100
-			// 分子 = 120 + 100 = 220，分母 = 1.0s → ~220 tps；丢弃估算则只剩 120 → ~120 tps
-			expect(headerTokens(tui)).toContain("~220 tps");
+			tui.render({ type: "thinking", text: "乙".repeat(300) }); // 调用 2 又吐 75
+			// 分子 = 120 + 75 = 195，分母 = 1.0s → ~195 tps；丢弃估算则只剩 120 → ~120 tps
+			expect(headerTokens(tui)).toContain("~195 tps");
 			vi.setSystemTime(T0 + 2010);
 			tui.render({ type: "thinking", text: "丙".repeat(300) });
-			// 分子 = 120 + 200 = 320，分母 = 2.0s → ~160 tps；丢弃估算则 120/2 = ~60 tps
+			// 分子 = 120 + 150 = 270，分母 = 2.0s → ~135 tps；丢弃估算则 120/2 = ~60 tps
 			const rendered = headerTokens(tui);
-			expect(rendered).toContain("~160 tps");
+			expect(rendered).toContain("~135 tps");
 			expect(rendered).not.toContain("~60 tps");
 		} finally {
 			vi.useRealTimers();
