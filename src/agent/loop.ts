@@ -113,7 +113,16 @@ export class Subject {
 	private readonly runtimeHooks: RuntimeHooks;
 	private readonly compactor?: Compactor;
 	private readonly compactionTrigger?: CompactionTrigger;
+	/** 本次模型调用拿到的 usage；每次调用开始前清空，只对本次调用有意义。 */
 	private lastReportedUsage: Usage | null = null;
+	/**
+	 * 最后一次拿到的真实用量，跨回合保留。
+	 *
+	 * `lastReportedUsage` 会在回合结束时清空（它的语义是"本次调用"），但底栏要的是"最后已知
+	 * 的真实上下文占用"，不该因为一次回合结束就退回字符估算。只有历史真的被替换（压缩、
+	 * 回溯）时它才失效——那时旧值不再描述任何东西。
+	 */
+	private lastKnownUsage: Usage | null = null;
 	private streamSeq = 0;
 	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
 
@@ -173,6 +182,29 @@ export class Subject {
 		return this.runtimeHooks.events.emit(event);
 	}
 
+	/**
+	 * 单次模型调用的真实 usage 到达时立即上报，让底栏不必等 turn_end。
+	 *
+	 * 这里是唯一的写入点，所以 `lastReportedUsage` 与它派发出的 usage_update 永远同源：
+	 * getUsedTokens()/turn_end 与实时刷新看到的是同一个数。
+	 */
+	private publishUsage(usage: Usage): void {
+		this.lastReportedUsage = usage;
+		this.lastKnownUsage = usage;
+		const used = usage.totalTokens ?? estimateContextTokens(this.history).tokens;
+		void this.dispatch({
+			type: "usage_update",
+			usedTokens: used,
+			contextWindow: this.getContextWindow(),
+			actual: usage.totalTokens !== undefined,
+			cacheRead: usage.cacheRead,
+			cacheWrite: usage.cacheWrite,
+			inputTokens: usage.input,
+			outputTokens: usage.output,
+			segments: this.getContextSegments(used),
+		});
+	}
+
 	getModel(): Model {
 		return this.model;
 	}
@@ -190,12 +222,15 @@ export class Subject {
 	}
 
 	getUsedTokens(): number {
-		return estimateContextTokens(this.history).tokens;
+		// 服务端报过的真实总量优先：它是权威事实，而 estimateContextTokens 是纯字符启发式。
+		// 这个字段跨回合保留，所以底栏不会在回合结束时从真实值跌回估算值。
+		const reported = this.lastKnownUsage?.totalTokens;
+		return reported !== undefined ? reported : estimateContextTokens(this.history).tokens;
 	}
 
 	getContextSegments(usedTokens?: number): ContextSegments {
 		const context = buildContext({ history: this.history, systemPrompt: this.systemPrompt });
-		const used = usedTokens ?? this.lastReportedUsage?.totalTokens ?? estimateContextTokens(this.history).tokens;
+		const used = usedTokens ?? this.lastKnownUsage?.totalTokens ?? estimateContextTokens(this.history).tokens;
 		return calculateContextSegments(context, this.tools.defs(), used);
 	}
 
@@ -407,6 +442,8 @@ export class Subject {
 				});
 			}
 			this.lastReportedUsage = null;
+			// 历史刚被替换，旧的真实占用不再描述任何东西。
+			this.lastKnownUsage = null;
 			await this.dispatch({
 				type: "session_rewind",
 				turnNumber: this.activity === "turn" ? this.turnSeq : undefined,
@@ -646,6 +683,7 @@ export class Subject {
 			} catch (error) {
 				this.reportError(error);
 			} finally {
+				// 只清"本次调用"的值；lastKnownUsage 留着，底栏不必退回估算。
 				this.lastReportedUsage = null;
 			}
 			await this.dispatch({ type: "agent_end", turnSeq: turn, success, error: runError });
@@ -717,7 +755,7 @@ export class Subject {
 			const collector = new TurnStreamCollector(
 				`stream-${this.turnSeq}-${++this.streamSeq}`,
 				(event) => this.dispatch(event),
-				{ onUsage: (usage) => { this.lastReportedUsage = usage; } },
+				{ onUsage: (usage) => void this.publishUsage(usage) },
 			);
 			this.lastReportedUsage = null;
 
@@ -1042,6 +1080,8 @@ export class Subject {
 				tokensBefore: result.tokensBefore,
 				retainedTailCount: result.retainedTail.length,
 			});
+			// 压缩把历史换成了摘要 + 尾巴，压缩前的真实占用不再描述现在。
+			this.lastKnownUsage = null;
 		} finally {
 			this.compactionActive = false;
 		}

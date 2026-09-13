@@ -34,6 +34,28 @@ export interface TurnEndEvent {
 }
 
 export interface ContextEvent { readonly type: "context"; readonly messages: readonly DeepReadonly<ChatMsg>[]; }
+
+/**
+ * 单次模型调用的真实用量快照。
+ *
+ * 目的：模型服务端在一次调用的响应收尾就会带上真实 usage，而 turn_end 要等整个回合
+ * （可能包含几十次模型调用、工具往返）才发一次。只靠 turn_end 上报，底栏的上下文占用
+ * 就会"完成一次任务之后才更新"。这个事件让消费者在每次调用边界就能刷新。
+ *
+ * 与 turn_end 的区别是**粒度不是语义**：它不表示回合结束，不携带回合级字段，
+ * 只回答"此刻上下文里真实有多少 token"。
+ */
+export interface UsageUpdateEvent {
+	readonly type: "usage_update";
+	readonly usedTokens: number;
+	readonly contextWindow?: number;
+	readonly segments?: ContextSegments;
+	readonly actual?: boolean;
+	readonly cacheRead?: number;
+	readonly cacheWrite?: number;
+	readonly inputTokens?: number;
+	readonly outputTokens?: number;
+}
 export interface ToolCallEvent { readonly type: "tool_call"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly callId: string; }
 export interface ToolResultEvent { readonly type: "tool_result"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly result: string; readonly images?: readonly import("../core/content.js").ImageContent[]; readonly details?: unknown; readonly status: import("../core/types.js").ToolResultStatus; readonly callId: string; }
 export interface ModelSelectEvent { readonly type: "model_select"; readonly model: string; readonly previousModel?: string; }
@@ -64,6 +86,7 @@ export type RuntimeEvent =
 	| SessionBeforeCompactEvent | SessionCompactEvent | SessionCompactFailedEvent
 	| OutputStartEvent | OutputUpdateEvent | OutputEndEvent | OutputInterruptedEvent
 	| BeforeProviderHeadersEvent | BeforeProviderRequestEvent | AfterProviderResponseEvent
+	| UsageUpdateEvent
 	| QueueEvent | TurnAbortedEvent | ErrorEvent;
 
 export type OutputEvent = OutputStartEvent | OutputUpdateEvent | OutputEndEvent | OutputInterruptedEvent;

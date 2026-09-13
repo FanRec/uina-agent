@@ -178,6 +178,17 @@ export class InteractiveTUI {
 				this.host.requestRender();
 				break;
 
+			case "usage_update":
+				// 回合进行中也要让上下文占用推进：每次模型调用收尾都有真实 usage。
+				this.host.setUsage(m.usedTokens, m.contextWindow, m.actual ?? false, {
+					input: m.inputTokens,
+					output: m.outputTokens,
+					cacheRead: m.cacheRead,
+					cacheWrite: m.cacheWrite,
+					segments: m.segments,
+				});
+				break;
+
 			case "text":
 				if (this.currentThinkingId) {
 					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);

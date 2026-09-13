@@ -28,6 +28,21 @@ export type HostEvent =
 				segments?: ContextSegments;
 			};
 		}
+	| {
+			/**
+			 * 单次模型调用的真实用量快照，粒度小于 turn_end：回合进行中也会发。
+			 * 消费者据此让上下文占用实时推进，而不是等整轮结束。
+			 */
+			type: "usage_update";
+			usedTokens: number;
+			contextWindow?: number;
+			actual?: boolean;
+			cacheRead?: number;
+			cacheWrite?: number;
+			inputTokens?: number;
+			outputTokens?: number;
+			segments?: ContextSegments;
+		}
 	| { type: "error"; text: string }
 	| { type: "notice"; text: string }
 	| { type: "turn_aborted"; n: number }

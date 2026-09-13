@@ -232,6 +232,19 @@ export class UinaHost {
 				case "turn_end":
 					emit({ type: "turn_end", n: event.turnNumber, usage: event.usage });
 					break;
+				case "usage_update":
+					emit({
+						type: "usage_update",
+						usedTokens: event.usedTokens,
+						contextWindow: event.contextWindow,
+						actual: event.actual,
+						cacheRead: event.cacheRead,
+						cacheWrite: event.cacheWrite,
+						inputTokens: event.inputTokens,
+						outputTokens: event.outputTokens,
+						segments: event.segments,
+					});
+					break;
 				case "tool_call":
 					if (event.callId) toolStartedAt.set(event.callId, Date.now());
 					emit({ type: "tool_start", name: event.toolName, args: event.args, callId: event.callId });
