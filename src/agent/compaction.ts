@@ -157,8 +157,9 @@ export function findCutPoint(
 			break;
 		}
 	}
-	// 历史整体小于保留预算时，Pi 停在 cutPoints[0]（等于不压缩）。手动压缩需要推进，
-	// 因此取最后一个合法切点，与 Uina 原有“至少压掉前缀”的行为一致。
+	// 历史整体小于保留预算时，Pi 停在 cutPoints[0]（等于不压缩）。手动压缩必须推进，
+	// 否则 /compact 会变成空操作：退守到最靠后的合法切点，只保留末尾一小段。
+	// 这与被替换的 findKeepFrom（keepFrom = length - 1 再回退越过 tool）结果一致。
 	if (allowShortHistoryFallback && cutIndex <= 0 && history.length > 1) {
 		for (const point of cutPoints) {
 			if (point > 0 && point < history.length) cutIndex = point;
@@ -227,7 +228,7 @@ export function prepareCompaction(
 
 const TOOL_RESULT_MAX_CHARS = 2000;
 
-function truncateForSummary(text: string, maxChars: number): string {
+export function truncateForSummary(text: string, maxChars: number): string {
 	if (text.length <= maxChars) return text;
 	return `${text.slice(0, maxChars)}\n\n[... 已截断 ${text.length - maxChars} 个字符]`;
 }
@@ -278,7 +279,7 @@ export function serializeConversation(messages: readonly (AgentMessage | ChatMsg
 const READ_TOOLS = new Set(["read_file", "read_image"]);
 const WRITE_TOOLS = new Set(["write_file"]);
 
-function collectFileOperations(
+export function collectFileOperations(
 	messages: readonly (AgentMessage | ChatMsg)[],
 ): { readFiles: string[]; modifiedFiles: string[] } {
 	const read = new Set<string>();
@@ -299,7 +300,7 @@ function collectFileOperations(
 	};
 }
 
-function formatFileOperations(readFiles: string[], modifiedFiles: string[]): string {
+export function formatFileOperations(readFiles: string[], modifiedFiles: string[]): string {
 	const sections: string[] = [];
 	if (readFiles.length > 0) sections.push(`<read-files>\n${readFiles.join("\n")}\n</read-files>`);
 	if (modifiedFiles.length > 0) sections.push(`<modified-files>\n${modifiedFiles.join("\n")}\n</modified-files>`);
