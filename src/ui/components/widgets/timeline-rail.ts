@@ -13,13 +13,16 @@ import type { Component } from "../../core/types.js";
 import { C, truncateToWidth, visibleWidth } from "../../core/utils.js";
 
 export interface TimelineRailTurn {
+	/** 身份：刻度的活跃/悬停判定一律用它，n 会撞号。 */
+	uid: number;
+	/** 显示用轮次编号，仅用于预览卡兜底文案。 */
 	n: number;
 	userText: string;
 }
 
 export interface TimelineRailClickTarget {
 	type: "tick" | "up" | "down";
-	turnN?: number;
+	turnUid?: number;
 	row: number;
 }
 
@@ -42,8 +45,8 @@ export interface TimelineRailOptions {
 export class TimelineRailComponent implements Component {
 	private turns: TimelineRailTurn[] = [];
 	private readonly options: TimelineRailOptions;
-	private activeTurnN: number | null = null;
-	private hoverTurnN: number | null = null;
+	private activeTurnUid: number | null = null;
+	private hoverTurnUid: number | null = null;
 	private hoverRow: number | null = null;
 	private enabled = true;
 
@@ -51,9 +54,9 @@ export class TimelineRailComponent implements Component {
 		this.options = options;
 	}
 
-	updateTurns(turns: readonly TimelineRailTurn[], activeTurnN: number | null): void {
+	updateTurns(turns: readonly TimelineRailTurn[], activeTurnUid: number | null): void {
 		this.turns = [...turns];
-		this.activeTurnN = activeTurnN;
+		this.activeTurnUid = activeTurnUid;
 	}
 
 	setHover(row: number | null): boolean {
@@ -68,12 +71,12 @@ export class TimelineRailComponent implements Component {
 		return this.hoverRow;
 	}
 
-	setHoverTurnN(turnN: number | null): void {
-		this.hoverTurnN = turnN;
+	setHoverTurnUid(turnUid: number | null): void {
+		this.hoverTurnUid = turnUid;
 	}
 
-	getHoverTurnN(): number | null {
-		return this.hoverTurnN;
+	getHoverTurnUid(): number | null {
+		return this.hoverTurnUid;
 	}
 
 	getGeometry(height: number, atBottom = true): TimelineRailGeometry | null {
@@ -92,8 +95,8 @@ export class TimelineRailComponent implements Component {
 		let start = 0;
 		if (turnCount > maxTicks) {
 			const tailStart = turnCount - maxTicks;
-			const activeIdx = this.activeTurnN !== null
-				? this.turns.findIndex((t) => t.n === this.activeTurnN)
+			const activeIdx = this.activeTurnUid !== null
+				? this.turns.findIndex((t) => t.uid === this.activeTurnUid)
 				: -1;
 			const anchor = activeIdx >= 0 ? activeIdx : turnCount - 1;
 			start = atBottom
@@ -125,7 +128,7 @@ export class TimelineRailComponent implements Component {
 			const idx = relRow - geo.tickTop;
 			const turn = this.turns[geo.windowStart + idx];
 			if (turn) {
-				return { type: "tick", turnN: turn.n, row: relRow };
+				return { type: "tick", turnUid: turn.uid, row: relRow };
 			}
 		}
 		return null;
@@ -170,8 +173,8 @@ export class TimelineRailComponent implements Component {
 			const turn = this.turns[index]!;
 			const r = geo.tickTop + k;
 
-			const isActive = this.activeTurnN === turn.n;
-			const isHovered = this.hoverRow === r || this.hoverTurnN === turn.n;
+			const isActive = this.activeTurnUid === turn.uid;
+			const isHovered = this.hoverRow === r || this.hoverTurnUid === turn.uid;
 
 			if (isHovered) {
 				hoveredTurn = turn;

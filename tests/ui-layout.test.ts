@@ -84,6 +84,25 @@ describe("B1: transcript line model", () => {
 		expect(withRender).toBe(withoutRender);
 		expect(stripAnsi(lines[withRender] ?? "")).toContain("GetTime");
 	});
+
+	it("keeps one start line per turn when turn numbers collide", () => {
+		// turn_start 的 n 来自引擎 turnSeq，它从不从会话播种；恢复会话后引擎从 0
+		// 重新计数，于是恢复出的第 1 轮与引擎新产出的轮次拿到同一个 n。
+		const transcript = new TranscriptContainer();
+		transcript.startTurn(1, "FIRST");
+		transcript.appendToken("body-first");
+		transcript.finishTurn();
+		transcript.startTurn(1, "COLLIDING");
+		transcript.appendToken("body-colliding");
+		transcript.finishTurn();
+
+		const turnStarts = transcript.getTurnStartLinesByUid(66);
+		// 以 n 为键时第二次 set 会覆盖第一次，表里只剩一轮，▲/▼ 会整轮丢失。
+		expect(turnStarts.size).toBe(2);
+		const uids = transcript.getTimelineTurns().map((turn) => turn.uid);
+		expect(uids).toHaveLength(2);
+		expect(turnStarts.get(uids[0]!)).toBeLessThan(turnStarts.get(uids[1]!)!);
+	});
 });
 
 describe("B1: layout is the single source of truth", () => {
@@ -104,24 +123,52 @@ describe("B1: layout is the single source of truth", () => {
 
 	it("reports the nearest turn above and below the viewport", async () => {
 		const { host } = scrollableHost();
-		const nav = host as unknown as { upTurnN: number | null; downTurnN: number | null };
+		const nav = host as unknown as { upTurnUid: number | null; downTurnUid: number | null };
 		host.requestRender();
 		await settle();
 		host.scrollToTop();
 		host.requestRender();
 		await settle();
-		expect(nav.upTurnN).toBeNull();
-		expect(nav.downTurnN).toBe(2);
+		expect(nav.upTurnUid).toBeNull();
+		expect(nav.downTurnUid).toBe(2);
 		host.scrollToBottom();
 		host.requestRender();
 		await settle();
-		expect(nav.upTurnN).not.toBeNull();
-		expect(nav.downTurnN).toBeNull();
+		expect(nav.upTurnUid).not.toBeNull();
+		expect(nav.downTurnUid).toBeNull();
 		host.scrollToTurn(3);
 		host.requestRender();
 		await settle();
-		expect(nav.upTurnN).toBe(2);
-		expect(nav.downTurnN).toBe(6);
+		expect(nav.upTurnUid).toBe(2);
+		expect(nav.downTurnUid).toBe(6);
+	});
+
+	it("scrolls to the asked-for turn when turn numbers collide", async () => {
+		const { host, frames } = scrollableHost();
+		// 第 7 个轮次故意复用第 1 轮的 n，模拟恢复会话后的撞号。
+		host.transcript.startTurn(1, "USER-TURN-COLLIDE");
+		host.transcript.appendToken("collide ".repeat(200));
+		host.transcript.finishTurn();
+		const turns = host.transcript.getTimelineTurns();
+		expect(turns.map((turn) => turn.n)).toEqual([1, 2, 3, 4, 5, 6, 1]);
+		const firstUid = turns[0]!.uid;
+		const collidingUid = turns[6]!.uid;
+		expect(collidingUid).not.toBe(firstUid);
+		host.requestRender();
+		await settle();
+
+		host.scrollToTurn(firstUid);
+		host.requestRender();
+		await settle();
+		let rows = plainFrame(frames.at(-1)!);
+		expect(rows.some((row) => row.includes("USER-TURN-1"))).toBe(true);
+		expect(rows.some((row) => row.includes("USER-TURN-COLLIDE"))).toBe(false);
+
+		host.scrollToTurn(collidingUid);
+		host.requestRender();
+		await settle();
+		rows = plainFrame(frames.at(-1)!);
+		expect(rows.some((row) => row.includes("USER-TURN-COLLIDE"))).toBe(true);
 	});
 });
 

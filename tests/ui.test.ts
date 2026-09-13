@@ -1491,8 +1491,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		const { TimelineRailComponent } = await import("../src/ui/components/widgets/timeline-rail.js");
 		const rail = new TimelineRailComponent();
 		rail.updateTurns([
-			{ n: 1, userText: "第一轮用户问题" },
-			{ n: 2, userText: "第二轮长问题" },
+			{ uid: 1, n: 1, userText: "第一轮用户问题" },
+			{ uid: 2, n: 2, userText: "第二轮长问题" },
 		], 1);
 
 		const geo = rail.getGeometry(10)!;
@@ -2006,8 +2006,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		it("TimelineRailComponent 严格使用 TrueColor，无纯黑或 dim 字符，正确呈现 ▴ / ▾ 与刻度线", () => {
 			const rail = new TimelineRailComponent();
 			rail.updateTurns([
-				{ n: 1, userText: "问题一" },
-				{ n: 2, userText: "问题二" },
+				{ uid: 1, n: 1, userText: "问题一" },
+				{ uid: 2, n: 2, userText: "问题二" },
 			], 2);
 			const res = rail.renderRailRows(20, true, true, false);
 			// 包含顶底小三角 ▴ / ▾
@@ -2025,7 +2025,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 		it("TimelineRailComponent 刻度密度随视口高度自适应，并可用 maxTicks 收紧", () => {
 			const rail = new TimelineRailComponent();
-			const turns = Array.from({ length: 50 }, (_, i) => ({ n: i + 1, userText: `用户轮次 ${i + 1}` }));
+			const turns = Array.from({ length: 50 }, (_, i) => ({ uid: i + 1, n: i + 1, userText: `用户轮次 ${i + 1}` }));
 			rail.updateTurns(turns, 50);
 
 			// 46 行终端：可用刻度 = height - 6 = 40（保留顶底呼吸留白），不再有固定 24 上限
@@ -2059,15 +2059,38 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 		it("TimelineRailComponent 预览卡宽度随内容宽度伸缩", () => {
 			const rail = new TimelineRailComponent();
-			const turns = [{ n: 1, userText: "这是一个相当长的轮次标题用于测试预览卡宽度自适应" }];
+			const turns = [{ uid: 1, n: 1, userText: "这是一个相当长的轮次标题用于测试预览卡宽度自适应" }];
 			rail.updateTurns(turns, 1);
-			rail.setHoverTurnN(1);
+			rail.setHoverTurnUid(1);
 			const narrow = rail.renderRailRows(12, true, true, true, 40).previewCard;
 			const wide = rail.renderRailRows(12, true, true, true, 200).previewCard;
 			expect(narrow).toBeDefined();
 			expect(wide).toBeDefined();
 			expect(visibleWidth(narrow!.lines[1]!)).toBeLessThan(visibleWidth(wide!.lines[1]!));
 			expect(visibleWidth(wide!.lines[1]!)).toBeLessThanOrEqual(48 + 6);
+		});
+
+		it("TimelineRailComponent 在轮次编号撞号时按 uid 区分刻度", () => {
+			const rail = new TimelineRailComponent();
+			rail.updateTurns([
+				{ uid: 11, n: 1, userText: "第一轮" },
+				{ uid: 12, n: 1, userText: "撞号的第七轮" },
+			], 12);
+			const geo = rail.getGeometry(10)!;
+			const active = rail.renderRailRows(10);
+			// 活跃刻度只能是 uid=12 那一行；按 n 查找会命中第 0 行。
+			expect(active.railGlyphs[geo.tickTop]!.includes("━━")).toBe(false);
+			expect(active.railGlyphs[geo.tickTop + 1]!.includes("━━")).toBe(true);
+
+			rail.setHoverTurnUid(11);
+			const hovered = rail.renderRailRows(10);
+			expect(hovered.railGlyphs[geo.tickTop]!.includes("──")).toBe(true);
+			expect(hovered.railGlyphs[geo.tickTop + 1]!.includes("──")).toBe(false);
+			expect(hovered.previewCard?.lines[1]).toContain("第一轮");
+
+			// 点击目标必须带 uid，否则调用方只能拿撞号的 n 去定位。
+			expect(rail.getClickTarget(geo.tickTop, 10)?.turnUid).toBe(11);
+			expect(rail.getClickTarget(geo.tickTop + 1, 10)?.turnUid).toBe(12);
 		});
 
 		it("SmoothReveal revealStep 算法严格按照指数级追赶", () => {
@@ -2308,8 +2331,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			const lines2 = tc.render(80);
 			expect(lines1).toEqual(lines2);
 
-			const startMap1 = tc.getTurnStartLines(80);
-			const startMap2 = tc.getTurnStartLines(80);
+			const startMap1 = tc.getTurnStartLinesByUid(80);
+			const startMap2 = tc.getTurnStartLinesByUid(80);
 			expect(startMap1.get(1)).toBe(startMap2.get(1));
 
 			// 添加压缩卡片

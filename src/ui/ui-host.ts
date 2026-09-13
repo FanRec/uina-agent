@@ -134,8 +134,9 @@ export class UIHost implements UIHostContextPort {
 	readonly timelineRail: TimelineRailComponent;
 	readonly scrollbarGutter: ScrollbarGutterComponent;
 	private gutterMode: "timeline" | "scrollbar" = "timeline";
-	private upTurnN: number | null = null;
-	private downTurnN: number | null = null;
+	/** 视口上方/下方最近的轮次，按 uid 定位（n 会撞号）。 */
+	private upTurnUid: number | null = null;
+	private downTurnUid: number | null = null;
 
 	// 状态投影
 	readonly trajectoryProjection: TrajectoryProjection;
@@ -594,11 +595,12 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	scrollToTurn(turnN: number): void {
+	/** @param turnUid 轮次身份（来自 getTimelineTurns / 热区 id），不是显示用的 n。 */
+	scrollToTurn(turnUid: number): void {
 		// Uses the geometry the user actually clicked on (last frame), falling
 		// back to a fresh layout when nothing has been rendered yet.
 		const layout = this.lastLayout ?? this.computeLayout();
-		const lineOffset = this.transcript.getTurnStartLines(layout.transcriptContentW).get(turnN);
+		const lineOffset = this.transcript.getTurnStartLinesByUid(layout.transcriptContentW).get(turnUid);
 		if (lineOffset === undefined) return;
 		const targetScroll = layout.totalPerm - (layout.bannerCount + lineOffset) - layout.transcriptH;
 		this.scrollOffset = Math.max(0, Math.min(layout.maxScroll, targetScroll));
@@ -606,16 +608,16 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	scrollTurnUp(): void {
-		if (this.upTurnN !== null) {
-			this.scrollToTurn(this.upTurnN);
+		if (this.upTurnUid !== null) {
+			this.scrollToTurn(this.upTurnUid);
 		} else {
 			this.scrollUp(5);
 		}
 	}
 
 	scrollTurnDown(): void {
-		if (this.downTurnN !== null) {
-			this.scrollToTurn(this.downTurnN);
+		if (this.downTurnUid !== null) {
+			this.scrollToTurn(this.downTurnUid);
 		} else {
 			this.scrollDown(5);
 		}
@@ -1164,36 +1166,36 @@ export class UIHost implements UIHostContextPort {
 
 		// 7.5. 右侧时间线导航轨（TimelineRail，对标图一）合成
 		const timelineTurns = this.transcript.getTimelineTurns();
-		const turnStartMap = this.transcript.getTurnStartLines(transcriptContentW);
+		const turnStartByUid = this.transcript.getTurnStartLinesByUid(transcriptContentW);
 
 		// Navigation semantics: ▲ targets the nearest turn above the viewport,
 		// ▼ the nearest turn below it. Comparing an absolute line against the
 		// scroll *distance* (the old code) pointed at rows already on screen.
 		const viewportTop = scrollStart;
 		const viewportBottom = scrollStart + visibleTranscript.length;
-		let activeTurnN: number | null = null;
-		let upTurnN: number | null = null;
-		let downTurnN: number | null = null;
+		let activeTurnUid: number | null = null;
+		let upTurnUid: number | null = null;
+		let downTurnUid: number | null = null;
 
-		for (const [turnN, lineOffset] of turnStartMap.entries()) {
+		for (const [turnUid, lineOffset] of turnStartByUid.entries()) {
 			const absLine = bannerCount + lineOffset;
 			if (absLine <= viewportTop) {
-				activeTurnN = turnN;
+				activeTurnUid = turnUid;
 			}
 			if (absLine < viewportTop) {
-				upTurnN = turnN;
+				upTurnUid = turnUid;
 			}
-			if (absLine >= viewportBottom && downTurnN === null) {
-				downTurnN = turnN;
+			if (absLine >= viewportBottom && downTurnUid === null) {
+				downTurnUid = turnUid;
 			}
 		}
 
-		if (activeTurnN === null && timelineTurns.length > 0) {
-			activeTurnN = timelineTurns[0]!.n;
+		if (activeTurnUid === null && timelineTurns.length > 0) {
+			activeTurnUid = timelineTurns[0]!.uid;
 		}
 
-		this.upTurnN = upTurnN;
-		this.downTurnN = downTurnN;
+		this.upTurnUid = upTurnUid;
+		this.downTurnUid = downTurnUid;
 
 		// 8. 组装整屏行数组（转录区 + 填充空白 + 提示条）
 		let toastStr = "";
@@ -1240,8 +1242,8 @@ export class UIHost implements UIHostContextPort {
 			railGlyphs = scrollRes.gutterGlyphs;
 			previewCard = scrollRes.hoverChip;
 		} else {
-			this.timelineRail.updateTurns(timelineTurns, activeTurnN);
-			const tlRes = this.timelineRail.renderRailRows(chatAreaH, atBottom, upTurnN !== null, downTurnN !== null, transcriptContentW);
+			this.timelineRail.updateTurns(timelineTurns, activeTurnUid);
+			const tlRes = this.timelineRail.renderRailRows(chatAreaH, atBottom, upTurnUid !== null, downTurnUid !== null, transcriptContentW);
 			railGlyphs = tlRes.railGlyphs;
 			previewCard = tlRes.previewCard;
 		}
@@ -1408,11 +1410,11 @@ export class UIHost implements UIHostContextPort {
 					const turn = timelineTurns[railGeo.windowStart + k];
 					if (turn) {
 						interactiveTargets.push({
-							id: `rail-tick-${turn.n}`,
+							id: `rail-tick-${turn.uid}`,
 							row: screenRow,
 							colStart: safeW - 2,
 							colEnd: safeW,
-							onClick: () => this.scrollToTurn(turn.n),
+							onClick: () => this.scrollToTurn(turn.uid),
 						});
 					}
 				}
@@ -1581,8 +1583,8 @@ export class UIHost implements UIHostContextPort {
 						}
 
 						if (res.hoverTargetId?.startsWith("rail-tick-")) {
-							const turnN = parseInt(res.hoverTargetId.replace("rail-tick-", ""), 10);
-							this.timelineRail.setHoverTurnN(turnN);
+							const turnUid = parseInt(res.hoverTargetId.replace("rail-tick-", ""), 10);
+							this.timelineRail.setHoverTurnUid(turnUid);
 							const target = this.mouseTracker.getTarget(res.hoverTargetId);
 							if (target) {
 								this.timelineRail.setHover(target.row);
@@ -1601,8 +1603,8 @@ export class UIHost implements UIHostContextPort {
 							}
 						} else {
 							let needReq = false;
-							if (this.timelineRail.getHoverRow() !== null || this.timelineRail.getHoverTurnN() !== null) {
-								this.timelineRail.setHoverTurnN(null);
+							if (this.timelineRail.getHoverRow() !== null || this.timelineRail.getHoverTurnUid() !== null) {
+								this.timelineRail.setHoverTurnUid(null);
 								this.timelineRail.setHover(null);
 								needReq = true;
 							}

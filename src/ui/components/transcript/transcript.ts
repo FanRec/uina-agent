@@ -67,8 +67,10 @@ export type TurnItem =
 
 export interface TurnRecord {
 	n: number;
-	/** 唯一身份：n 来自「引擎 turnSeq」与「恢复期局部计数」两套不共享的计数器，
-	 * 撞号会让 hover / 缓存键 / 失效集合把两个轮次认成同一个，故身份一律走 uid。 */
+	/** 由容器签发的唯一票据。n 来自「引擎 turnSeq」与「恢复期局部计数」两套互不
+	 * 共享的计数器（loop.ts turnSeq 从不从会话播种），撞号是常态；因此凡是把轮次
+	 * 当键的地方——hover、块缓存、失效集合、typewriter、滚动定位、导航轨——一律
+	 * 用 uid，n 只作为显示用的轮次编号。 */
 	readonly uid: number;
 	userText: string;
  userImages?: readonly import("../../../core/content.js").ImageContent[];
@@ -80,13 +82,11 @@ export interface TurnRecord {
 	readonly diffs?: DiffRecord[];
 }
 
-let turnUidSeq = 0;
-
-export function createTurnRecord(n: number, userText = ""): TurnRecord {
+export function createTurnRecord(n: number, uid: number, userText = ""): TurnRecord {
 	const items: TurnItem[] = [];
 	return {
 		n,
-		uid: ++turnUidSeq,
+		uid,
 		userText,
 		items,
 		get assistantMarkdown(): string {
@@ -179,10 +179,12 @@ interface LayoutSink {
 /** The single line model consumed by rendering, scrolling and mouse hit zones. */
 interface LineModel {
 	lines: string[];
-	turnStartMap: Map<number, number>;
+	/** uid → 该轮次起始行号（相对转录区，不含 banner）。 */
+	turnStartByUid: Map<number, number>;
 	thinkingLocations: ThinkingLineLocation[];
 	toolLocations: ToolLineLocation[];
 	compactionLocations: CompactionLineLocation[];
+	/** uid → 该轮次的行区间。当前无任何消费方，仅为与 uid 身份保持一致。 */
 	turnRanges: Map<number, { start: number; end: number }>;
 }
 
@@ -191,6 +193,8 @@ export class TranscriptContainer implements Component {
 	private readonly timeline: TimelineItem[] = [];
 	private readonly historyTurns: TurnRecord[] = [];
 	private currentTurn: TurnRecord | null = null;
+	/** uid 的唯一签发点：只在本容器内递增，同容器内绝不重复。 */
+	private turnUidSeq = 0;
 	private hoveredThinkingTurnUid: number | null = null;
 	private hoveredToolId: string | null = null;
 	private hoveredCompactionIndex: number | null = null;
@@ -412,7 +416,7 @@ export class TranscriptContainer implements Component {
 		if (this.currentTurn) {
 			this.commitCurrentTurn();
 		}
-		this.currentTurn = createTurnRecord(n, userText);
+		this.currentTurn = createTurnRecord(n, ++this.turnUidSeq, userText);
   this.currentTurn.userImages = images;
 	}
 
@@ -602,7 +606,7 @@ export class TranscriptContainer implements Component {
 		};
 		const createTurn = (userText = ""): TurnRecord => {
 			turnN++;
-			return createTurnRecord(turnN, userText);
+			return createTurnRecord(turnN, ++this.turnUidSeq, userText);
 		};
 
 		for (const entry of entries) {
@@ -722,13 +726,16 @@ export class TranscriptContainer implements Component {
 		this.invalidate();
 	}
 
-	toggleThinking(targetOrN?: number | TurnRecord, width = 80): { toggled: boolean; lineDelta: number } {
+	/**
+	 * @param targetOrRecord 要切换的轮次本体。这里刻意不接受轮次编号：n 会撞号，
+	 * 按 n 解析会把点击落到同号的另一个轮次上。调用方一律传热区里的 turn 对象。
+	 */
+	toggleThinking(targetOrRecord?: TurnRecord, width = 80): { toggled: boolean; lineDelta: number } {
 		const target =
-			targetOrN !== undefined && typeof targetOrN === "object"
-				? targetOrN
-				: targetOrN !== undefined
-					? this.historyTurns.find((t) => t.n === targetOrN) || (this.currentTurn?.n === targetOrN ? this.currentTurn : null)
-					: (this.currentTurn?.thinkingText ? this.currentTurn : this.historyTurns.slice().reverse().find((t) => t.thinkingText));
+			targetOrRecord ??
+			(this.currentTurn?.thinkingText
+				? this.currentTurn
+				: this.historyTurns.slice().reverse().find((t) => t.thinkingText));
 
 		if (target && target.thinkingText) {
 			const wasCollapsed = target.thinkingCollapsed ?? true;
@@ -981,7 +988,7 @@ export class TranscriptContainer implements Component {
 
 	private assemble(blocks: readonly SettledBlock[], width: number): LineModel {
 		const lines: string[] = [];
-		const turnStartMap = new Map<number, number>();
+		const turnStartByUid = new Map<number, number>();
 		const thinkingLocations: ThinkingLineLocation[] = [];
 		const toolLocations: ToolLineLocation[] = [];
 		const compactionLocations: CompactionLineLocation[] = [];
@@ -991,11 +998,11 @@ export class TranscriptContainer implements Component {
 			const start = lines.length;
 			if (block.kind === "turn") {
 				const rendered = this.turnBlockFor(block, width);
-				turnStartMap.set(block.turn.n, start);
+				turnStartByUid.set(block.turn.uid, start);
 				lines.push(...rendered.lines);
 				for (const loc of rendered.thinking) thinkingLocations.push({ ...loc, lineIndex: start + loc.lineIndex });
 				for (const loc of rendered.tools) toolLocations.push({ ...loc, lineIndex: start + loc.lineIndex });
-				turnRanges.set(block.turn.n, { start, end: lines.length });
+				turnRanges.set(block.turn.uid, { start, end: lines.length });
 			} else if (block.kind === "compaction") {
 				const cardLines = this.hoveredCompactionIndex === block.index ? formatCompactionCardLines(block.record, width, true) : block.lines;
 				compactionLocations.push({ index: block.index, lineIndex: start, lineCount: cardLines.length, record: block.record });
@@ -1004,7 +1011,7 @@ export class TranscriptContainer implements Component {
 				lines.push(...block.lines);
 			}
 		}
-		return { lines, turnStartMap, thinkingLocations, toolLocations, compactionLocations, turnRanges };
+		return { lines, turnStartByUid, thinkingLocations, toolLocations, compactionLocations, turnRanges };
 	}
 
 	/** The single line model consumed by render, scrolling and hit zones. */
@@ -1014,10 +1021,10 @@ export class TranscriptContainer implements Component {
 			const start = model.lines.length;
 			const sink: LayoutSink = { thinking: [], tools: [] };
 			this.layoutTurn(this.currentTurn, width, model.lines, sink, { isCurrent: true, hover: true });
-			model.turnStartMap.set(this.currentTurn.n, start);
+			model.turnStartByUid.set(this.currentTurn.uid, start);
 			model.thinkingLocations.push(...sink.thinking);
 			model.toolLocations.push(...sink.tools);
-			model.turnRanges.set(this.currentTurn.n, { start, end: model.lines.length });
+			model.turnRanges.set(this.currentTurn.uid, { start, end: model.lines.length });
 		}
 		return model;
 	}
@@ -1026,22 +1033,25 @@ export class TranscriptContainer implements Component {
 		return this.ensureModel(width).lines.slice();
 	}
 
-	getTimelineTurns(): Array<{ n: number; userText: string }> {
-		const result: Array<{ n: number; userText: string }> = [];
+	getTimelineTurns(): Array<{ uid: number; n: number; userText: string }> {
+		const result: Array<{ uid: number; n: number; userText: string }> = [];
 		for (const t of this.historyTurns) {
-			result.push({ n: t.n, userText: t.userText });
+			result.push({ uid: t.uid, n: t.n, userText: t.userText });
 		}
 		if (this.currentTurn) {
-			result.push({ n: this.currentTurn.n, userText: this.currentTurn.userText });
+			result.push({ uid: this.currentTurn.uid, n: this.currentTurn.n, userText: this.currentTurn.userText });
 		}
 		return result;
 	}
 
 	/**
-	 * 获取每一轮次在转录完整行序列中的起始行号映射表
+	 * 获取每一轮次在转录完整行序列中的起始行号映射表。
+	 *
+	 * 键是轮次的 uid（身份），不是 n（可能撞号的显示编号）。用 n 当键会让
+	 * 同号轮次互相覆盖，表里只剩最后一个，▲/▼ 导航会整轮丢失、刻度跳错轮次。
 	 */
-	getTurnStartLines(width: number): Map<number, number> {
-		return new Map(this.ensureModel(width).turnStartMap);
+	getTurnStartLinesByUid(width: number): Map<number, number> {
+		return new Map(this.ensureModel(width).turnStartByUid);
 	}
 
 	/**
