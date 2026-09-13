@@ -19,7 +19,7 @@ import type {
 } from "../core/types.js";
 import type { SessionStore } from "../session/types.js";
 import { projectInputMessage } from "../session/recovery.js";
-import { compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, findCutPoint, shouldCompact } from "./compaction.js";
+import { clearRetainedUsage, compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, findCutPoint, shouldCompact } from "./compaction.js";
 import { buildContext, calculateContextSegments, convertToLlm, defaultSystemPrompt, estimateContextTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import { TurnStreamCollector, type StreamCollectorResult } from "./stream-collector.js";
@@ -1013,7 +1013,7 @@ export class Subject {
 				// summary plus the very messages it summarizes, growing the context it was meant to shrink.
 				if (!Number.isInteger(cut) || cut <= 0 || cut >= this.history.length) throw new Error("compaction 保留位置无效");
 				if (this.history[cut]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
-				result = { summary: summary.trim(), retainedTail: structuredClone(this.history.slice(cut)), tokensBefore };
+				result = { summary: summary.trim(), retainedTail: clearRetainedUsage(this.history.slice(cut)), tokensBefore };
 			} else {
 				result = await compactHistory(
 					this.history,
@@ -1079,7 +1079,7 @@ export class Subject {
 			if (typeof proposal.summary !== "string" || !proposal.summary.trim()) throw new Error("compaction 返回空摘要");
 			if (!Number.isInteger(cut) || cut <= 0 || cut >= history.length) throw new Error("compaction 保留位置无效");
 			if (history[cut]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
-			prepared = { summary: proposal.summary.trim(), retainedTail: structuredClone(history.slice(cut)), tokensBefore: estimated };
+			prepared = { summary: proposal.summary.trim(), retainedTail: clearRetainedUsage(history.slice(cut)), tokensBefore: estimated };
 		} else {
 			prepared = await compactHistory(
 				history,

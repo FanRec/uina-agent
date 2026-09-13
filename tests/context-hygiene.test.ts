@@ -158,6 +158,33 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 		expect(anthropic[0]?.content).toBe("[历史摘要] Previous context\n\nCurrent question");
 	});
 
+	it("does not anchor compaction token estimates on stale pre-compaction usage", async () => {
+		const { estimateContextTokens } = await import("../src/agent/context.js");
+		const { clearRetainedUsage } = await import("../src/agent/compaction.js");
+
+		// A retained assistant from before compaction still carries the absolute usage the
+		// provider reported for the *pre-compaction* context.
+		const staleUsage = { input: 110000, output: 2000, totalTokens: 112000 };
+		const retained: import("../src/core/types.js").AgentMessage[] = [
+			{ role: "assistant", content: "earlier reply", usage: staleUsage },
+			{ role: "tool", tool_call_id: "c1", content: "tool output", status: "succeeded" },
+		];
+
+		// Anchoring on the stale usage reports the pre-compaction size.
+		expect(estimateContextTokens(retained).tokens).toBeGreaterThan(100000);
+
+		// After compaction clears retained usage, the estimate reflects the real context.
+		const cleared = clearRetainedUsage(retained);
+		expect((cleared[0] as { usage?: unknown }).usage).toBeUndefined();
+		const after = estimateContextTokens([
+			{ role: "compactionSummary", summary: "x".repeat(400), content: "compacted" },
+			...cleared,
+		]).tokens;
+		expect(after).toBeLessThan(10000);
+
+		// The source message must not be mutated (clone semantics stay intact).
+		expect(retained[0]?.usage).toBe(staleUsage);
+	});
 	it("skips empty assistant frames in Gemini and groups function responses", () => {
 		const messages: ModelRequest["messages"] = [
 			{ role: "user", content: "hi" },
@@ -224,4 +251,3 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 		expect(userTexts).toContain("next question");
 	});
 });
-

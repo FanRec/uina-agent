@@ -20,6 +20,21 @@ export interface CompactionResult {
 	tokensBefore: number;
 }
 
+/**
+ * 压缩会重组上下文，历史消息上残留的 `usage.totalTokens` 是**压缩前**服务端报的绝对总量，
+ * 不再等于压缩后的上下文大小。若不清除，`estimateContextTokens` 会锚定这个过期的大值，
+ * 让“压缩后依旧超限”反复触发压缩。
+ */
+export function clearRetainedUsage(
+	retainedTail: readonly (AgentMessage | ChatMsg)[],
+): (AgentMessage | ChatMsg)[] {
+	return retainedTail.map((message) => {
+		const cloned = structuredClone(message);
+		if (cloned.role === "assistant") delete cloned.usage;
+		return cloned;
+	});
+}
+
 /** Token 超上限时的自动压缩判据（对齐 Pi shouldCompact）。 */
 export function shouldCompact(
 	history: readonly (AgentMessage | ChatMsg)[],
@@ -482,7 +497,7 @@ export async function compactHistory(
 
 	return {
 		summary,
-		retainedTail: prepared.retainedTail.map((message) => structuredClone(message)),
+		retainedTail: clearRetainedUsage(prepared.retainedTail),
 		tokensBefore,
 	};
 }
