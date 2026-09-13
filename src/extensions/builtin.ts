@@ -207,6 +207,9 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			} else {
 				process.stdout.write(`\n[会话压缩] ${e.summary}\n`);
 			}
+			// Compaction rebuilds history in place; refresh the usage meter right away instead
+			// of waiting for the next turn_end to report the new (smaller) context size.
+			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow());
 		});
 
 		pi.on("session_compact_failed", () => {
