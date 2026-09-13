@@ -45,18 +45,42 @@ describe("ActivityLineComponent：真实值优先于字符估算", () => {
 		const act = new ActivityLineComponent();
 		act.start("streaming", "正在输出...");
 		act.addTokens(300); // 估算 300
-		act.addRealOutputTokens(120); // 真实 120，估算应作废
+		act.addRealOutputTokens("c1", 120); // 真实 120，估算应作废
 		act.finish("完成", 1000);
 		expect(plain(act.getHeaderString(160))).toContain("~120 tokens");
 	});
 
-	it("多轮调用的真实输出累加，而不是后者覆盖前者", () => {
+	it("跨调用的真实输出累加，而不是后者覆盖前者", () => {
 		const act = new ActivityLineComponent();
 		act.start("streaming", "正在输出...");
-		act.addRealOutputTokens(30);
-		act.addRealOutputTokens(45);
+		act.addRealOutputTokens("call-1", 30);
+		act.addRealOutputTokens("call-2", 45);
 		act.finish("完成", 1000);
 		expect(plain(act.getHeaderString(160))).toContain("~75 tokens");
+	});
+
+	it("同一次调用反复推送到同一个累积 usage，只计最后一次而不是累加", () => {
+		// 服务端在一次调用进行中会反复推送累积快照（同一个 output 值发多次）。
+		// 旧实现按"每次调用累加"处理，会把一个调用的输出按推送次数重复计成四位数 tps。
+		const act = new ActivityLineComponent();
+		act.start("streaming", "正在输出...");
+		act.addRealOutputTokens("call-1", 30);
+		act.addRealOutputTokens("call-1", 45);
+		act.finish("完成", 1000);
+		expect(plain(act.getHeaderString(160))).toContain("~45 tokens");
+		expect(plain(act.getHeaderString(160))).not.toContain("~75 tokens");
+	});
+
+	it("真实值到达后再来 text delta，估算不会与真值相加", () => {
+		// addTokens 每次 text delta 都会涨回估算；真值一到它只能作废，不能又叠上去。
+		// 旧实现 outputTokenCount = realOutputTokens + spanEstimateTokens，会算成 120 + 999。
+		const act = new ActivityLineComponent();
+		act.start("streaming", "正在输出...");
+		act.addTokens(300); // 估算占位
+		act.addRealOutputTokens("call-1", 120); // 真值到达，估算作废
+		act.addTokens(999); // 又来一段 text delta，估算又涨
+		act.finish("完成", 1000);
+		expect(plain(act.getHeaderString(160))).toContain("~120 tokens");
 	});
 
 	it("没有真实值时退回字符估算（÷ STREAM_CHARS_PER_TOKEN）", () => {
@@ -80,7 +104,7 @@ describe("ActivityLineComponent：分母只算解码跨度", () => {
 		act.addTokens(50);
 		vi.setSystemTime(T0 + 1000);
 		act.addTokens(50);
-		act.addRealOutputTokens(50);
+		act.addRealOutputTokens("call-1", 50);
 		act.sealDecodeSpan(); // tool_start：封存这一跨度
 
 		// 工具执行 30 秒（这段时间不该被算成生成时间）
@@ -90,7 +114,7 @@ describe("ActivityLineComponent：分母只算解码跨度", () => {
 		act.addTokens(50);
 		vi.setSystemTime(T0 + 32_000);
 		act.addTokens(50);
-		act.addRealOutputTokens(50);
+		act.addRealOutputTokens("call-2", 50);
 		act.finish("完成");
 
 		const header = plain(act.getHeaderString(200));
@@ -116,6 +140,34 @@ describe("ActivityLineComponent：分母只算解码跨度", () => {
 		const after = plain(act.getHeaderString(200));
 		// 分母没变，读数就不该变。旧实现按渲染时刻算分母，这里会掉到 ~33。
 		expect(after).toContain("~200 tps");
+	});
+
+	it("一次调用内发起多个工具，解码跨度只封存一次（不按工具数切碎）", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(T0);
+		const act = new ActivityLineComponent();
+		act.start("streaming", "正在输出...");
+
+		// 一次模型调用：解码 1 秒，报回真实输出 100
+		act.addTokens(50);
+		vi.setSystemTime(T0 + 1000);
+		act.addTokens(50);
+		act.addRealOutputTokens("call-1", 100);
+
+		// 同一次调用发起两把工具：tui 会在每个 tool_start 上调用 sealDecodeSpan。
+		// 第一次封存这一跨度；第二次必须成为空操作，否则工具空档会被反复计入分母。
+		act.sealDecodeSpan();
+		vi.setSystemTime(T0 + 5000); // 工具执行 4 秒
+		act.sealDecodeSpan();
+		vi.setSystemTime(T0 + 9000); // 工具继续，共 8 秒
+		act.sealDecodeSpan();
+		act.finish("完成");
+
+		const header = plain(act.getHeaderString(200));
+		expect(header).toContain("~100 tokens");
+		// 100 token / 1 秒解码 = 100 tps。守卫若失效，第二次封存会把工具空档并进去，
+		// 分母涨到 ~8 秒，读数掉到 ~12 tps。
+		expect(header).toContain("~100 tps");
 	});
 
 	it("解码跨度太短时不显示速度，避免抖出离谱数字", () => {

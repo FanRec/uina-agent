@@ -34,6 +34,7 @@ export type HostEvent =
 			 * 消费者据此让上下文占用实时推进，而不是等整轮结束。
 			 */
 			type: "usage_update";
+			callId: string;
 			usedTokens: number;
 			contextWindow?: number;
 			actual?: boolean;

@@ -57,6 +57,9 @@ describe("usage_update：每次模型调用收尾就上报真实用量", () => {
 		expect(usageEvent.inputTokens).toBe(4_000);
 		expect(usageEvent.outputTokens).toBe(200);
 		expect(usageEvent.cacheRead).toBe(1_000);
+		// 事件必须带调用标识：同一次调用的多条累积快照要靠它去重（消费端按调用记账）。
+		expect(typeof usageEvent.callId).toBe("string");
+		expect(usageEvent.callId.length).toBeGreaterThan(0);
 	});
 
 	it("每次模型调用都上报一次（多轮工具往返不只报最后一次）", async () => {
@@ -83,6 +86,8 @@ describe("usage_update：每次模型调用收尾就上报真实用量", () => {
 		expect(call).toBeGreaterThanOrEqual(2);
 		// 每次调用各自的真实值都要上报，而不是被最后一次覆盖。
 		expect(updates.map((u) => u.usedTokens)).toEqual([11_000, 12_000]);
+		// 两次调用必须是不同的 callId（一次模型调用一个标识），消费端才能正确切分调用边界。
+		expect(new Set(updates.map((u) => u.callId)).size).toBe(updates.length);
 	});
 
 	it("turn_end 与实时上报同源（底栏不会在估算值与真实值之间跳）", async () => {

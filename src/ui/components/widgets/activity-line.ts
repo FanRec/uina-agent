@@ -154,8 +154,18 @@ export class ActivityLineComponent implements Component {
 	private lastTokenTime = 0;
 	/** 本回合已封存的解码跨度总和（毫秒）。 */
 	private decodeMsAccum = 0;
-	/** 本回合已完成调用报回的真实输出 token 累计；有它就优先于字符估算。 */
+	/**
+	 * 本回合**已结算**调用报回的真实输出 token 累计（不含当前正在进行的这次调用）。
+	 */
 	private realOutputTokens = 0;
+	/**
+	 * 当前模型调用的标识。服务端会在同一次调用进行中反复推送"累积快照"（同一个
+	 * output 值发多次），所以必须按调用记账：同 id 覆盖、换 id 才结算，绝不能每条
+	 * usage_update 都累加——那会把一个调用的输出按推送次数重复计。
+	 */
+	private currentCallId = "";
+	/** 当前这次调用最近一次报回的真实输出 token（同一调用的多次推送取最后一次）。 */
+	private currentCallTokens = 0;
 
 	/** 每回合一个速度采样，跨回合保留（结束后的火花线取最近若干个回合）。 */
 	private tpsSamples: number[] = [];
@@ -170,6 +180,8 @@ export class ActivityLineComponent implements Component {
 		this.lastTokenTime = 0;
 		this.decodeMsAccum = 0;
 		this.realOutputTokens = 0;
+		this.currentCallId = "";
+		this.currentCallTokens = 0;
 		// tpsSamples 不在这里清空：只留一个回合的历史，量程峰值就等于当前值，
 		// 表盘每个回合都会从满格重新开始缩；跨回合保留才有参照物。
 	}
@@ -205,7 +217,7 @@ export class ActivityLineComponent implements Component {
 		this.sealDecodeSpan();
 		this.phase = "done";
 		// 字符估算只在没有任何真实值时兜底，避免真实值与估算被计两次。
-		if (tokensOverride !== undefined && tokensOverride > 0 && this.realOutputTokens === 0) {
+		if (tokensOverride !== undefined && tokensOverride > 0 && this.realOutputTokens + this.currentCallTokens === 0) {
 			this.spanEstimateTokens = tokensOverride;
 		}
 		if (elapsedOverride !== undefined && elapsedOverride > 0) {
@@ -235,6 +247,8 @@ export class ActivityLineComponent implements Component {
 		this.lastTokenTime = 0;
 		this.decodeMsAccum = 0;
 		this.realOutputTokens = 0;
+		this.currentCallId = "";
+		this.currentCallTokens = 0;
 	}
 
 	getPhase(): ActivityPhase {
@@ -246,22 +260,33 @@ export class ActivityLineComponent implements Component {
 	}
 
 	/**
-	 * 累加一次模型调用报来的真实输出 token 数。
+	 * 记录一次模型调用报回的真实输出 token 数，按调用标识去重。
 	 *
-	 * 服务端的 output 是"本次调用"的 completion_tokens；一个回合可以有多轮调用
-	 * （stream → tool → stream），每一轮的输出都应计入这一轮的生成速度，所以这里是
-	 * 累加而不是覆盖。真实值一到就丢掉当前跨度里那份字符估算——估算（`chars / 3`）
-	 * 对中文严重偏低（一个汉字远比 3 个字符更"贵"），但它只是真实值到达前的占位。
+	 * 服务端的 output 是"本次调用"的 completion_tokens，但同一次调用会收到多条
+	 * usage_update（累积快照，值可能一路增长），因此：同一个 callId 只取最后一次
+	 * （覆盖），换 callId 时才把上一个调用的结果结算进 realOutputTokens。一个回合可以
+	 * 有多轮调用（stream → tool → stream），各轮结算后才累加，计入这一轮的总速度。
+	 * 真实值一到就丢掉当前跨度里那份字符估算——估算（`chars / N`）对中文严重偏低，
+	 * 只是真实值到达前的占位，两者绝不能相加。
 	 */
-	addRealOutputTokens(tokens: number): void {
+	addRealOutputTokens(callId: string, tokens: number): void {
 		if (tokens <= 0) return;
-		this.realOutputTokens += tokens;
+		if (callId !== this.currentCallId) {
+			// 换调用：把上一个调用的最终值结进累计，再开新账。
+			this.realOutputTokens += this.currentCallTokens;
+			this.currentCallId = callId;
+		}
+		this.currentCallTokens = tokens;
 		this.spanEstimateTokens = 0;
 	}
 
-	/** 速度分子：已完成调用的真实值 + 当前跨度尚未落定的估算。 */
+	/**
+	 * 速度分子：已结算调用的真实值 + 当前调用最近一次的真实值；两者都为空时才退回
+	 * 字符估算。真实值到达后估算即作废，绝不与真实值相加。
+	 */
 	private outputTokenCount(): number {
-		return this.realOutputTokens + this.spanEstimateTokens;
+		const real = this.realOutputTokens + this.currentCallTokens;
+		return real > 0 ? real : this.spanEstimateTokens;
 	}
 
 	/**

@@ -47,6 +47,11 @@ export interface ContextEvent { readonly type: "context"; readonly messages: rea
  */
 export interface UsageUpdateEvent {
 	readonly type: "usage_update";
+	/**
+	 * 本次模型调用的标识。同一个 callId 会发多条 usage_update（服务端在调用进行中
+	 * 反复推送累积快照），消费者必须按它去重/覆盖，而不是每条都当作增量累加。
+	 */
+	readonly callId: string;
 	readonly usedTokens: number;
 	readonly contextWindow?: number;
 	readonly segments?: ContextSegments;

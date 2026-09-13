@@ -190,7 +190,7 @@ export class InteractiveTUI {
 				});
 				// 服务端的 output 是"本次调用"的输出量，累加成回合总量用于速度计算：
 				// 一个回合可以有多轮模型调用，各自输出都应计入这一轮的生成速度。
-				if (m.outputTokens !== undefined) this.host.activityLine.addRealOutputTokens(m.outputTokens);
+				if (m.outputTokens !== undefined) this.host.activityLine.addRealOutputTokens(m.callId, m.outputTokens);
 				break;
 
 			case "text":

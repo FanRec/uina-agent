@@ -188,12 +188,13 @@ export class Subject {
 	 * 这里是唯一的写入点，所以 `lastReportedUsage` 与它派发出的 usage_update 永远同源：
 	 * getUsedTokens()/turn_end 与实时刷新看到的是同一个数。
 	 */
-	private publishUsage(usage: Usage): void {
+	private publishUsage(usage: Usage, callId: string): void {
 		this.lastReportedUsage = usage;
 		this.lastKnownUsage = usage;
 		const used = usage.totalTokens ?? estimateContextTokens(this.history).tokens;
 		void this.dispatch({
 			type: "usage_update",
+			callId,
 			usedTokens: used,
 			contextWindow: this.getContextWindow(),
 			actual: usage.totalTokens !== undefined,
@@ -752,10 +753,11 @@ export class Subject {
 			await applyRewind();
 			const requestMessages = await this.buildRequestMessages(model, systemPrompt, beforeMessages);
 
+			const callId = `stream-${this.turnSeq}-${++this.streamSeq}`;
 			const collector = new TurnStreamCollector(
-				`stream-${this.turnSeq}-${++this.streamSeq}`,
+				callId,
 				(event) => this.dispatch(event),
-				{ onUsage: (usage) => void this.publishUsage(usage) },
+				{ onUsage: (usage) => void this.publishUsage(usage, callId) },
 			);
 			this.lastReportedUsage = null;
 

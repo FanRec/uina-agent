@@ -235,6 +235,7 @@ export class UinaHost {
 				case "usage_update":
 					emit({
 						type: "usage_update",
+						callId: event.callId,
 						usedTokens: event.usedTokens,
 						contextWindow: event.contextWindow,
 						actual: event.actual,
