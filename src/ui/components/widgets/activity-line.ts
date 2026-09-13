@@ -28,6 +28,7 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
  */
 export const STREAM_CHARS_PER_TOKEN = 4;
 
+
 interface Rgb {
 	r: number;
 	g: number;
@@ -139,13 +140,20 @@ export class ActivityLineComponent implements Component {
 	private spanEstimateTokens = 0;
 
 	/**
-	 * 当前解码跨度的起点（该跨度首个输出 token 的墙钟时刻）；0 表示没有正在进行的解码。
+	 * 当前解码跨度的左端（首个 token 到达时刻）；0 表示没有正在进行的解码。
 	 *
 	 * 一个「step」= 一次模型调用 + 它触发的工具执行。速度的分母只累加每个 step 的
-	 * 「首个 token → 调用结束」跨度，工具执行与每次请求的首 token 等待（TTFT）都不计入：
-	 * 工具跑 8 秒、生成 2 秒，若把工具时间算进分母，显示的速度就只有真值的 1/5。
-	 * 对齐 dsh-TUI channel.ts 的 tpsTurnDecodeMs —— "summing only first-token → message
-	 * spans excludes tool execution and per-request TTFT from generation speed"。
+	 * 「首个 token → 末个 token」跨度，工具执行时间不计入：工具跑 8 秒、生成 2 秒，
+	 * 若把工具时间算进分母，显示的速度就只有真值的 1/5。
+	 *
+	 * 左端只取「首个 delta 到达的时刻」，量的是纯解码速度：TTFT（组装上下文 + 网络 +
+	 * 服务端预热）与尾部静默都不在分母里。这两段都确实不是模型在吐字的时间，把它们
+	 * 算进分母会让短调用被摊薄到几十 tps —— 那回答的是「本轮平均吞吐」，不是解码速度。
+	 *
+	 * 代价（已知且接受）：服务端报回的 completion_tokens 含不以 text/thinking delta
+	 * 到达的内容（首要是工具调用参数），这部分只在分子里、没有对应的生成时间，所以纯
+	 * 工具调用轮次的读数会偏高；真机实测不开思考时约 700 tps。要根除它，只能等协议
+	 * 给出增量 token 数 —— 当前 API 只在收尾时报一次 usage，流式期间没有任何真值可用。
 	 */
 	private decodeStartTime = 0;
 	/**
@@ -203,7 +211,6 @@ export class ActivityLineComponent implements Component {
 		this.spanEstimateTokens += count;
 		const now = Date.now();
 		this.lastTokenTime = now;
-		// 跨度内首个 token 到达时才开始计时：此前的等待是 TTFT，不是生成。
 		if (this.decodeStartTime === 0) this.decodeStartTime = now;
 	}
 
@@ -215,8 +222,6 @@ export class ActivityLineComponent implements Component {
 	 */
 	sealDecodeSpan(): void {
 		if (this.decodeStartTime <= 0) return;
-		// 右端取最近一个 token 的时刻，而非封存时刻：调用收尾到进入工具执行之间的
-		// 调度空档不是生成时间。
 		this.decodeMsAccum += Math.max(0, this.lastTokenTime - this.decodeStartTime);
 		this.decodeStartTime = 0;
 		this.pendingSpanSinceSettle = true;
