@@ -67,6 +67,9 @@ export type TurnItem =
 
 export interface TurnRecord {
 	n: number;
+	/** 唯一身份：n 来自「引擎 turnSeq」与「恢复期局部计数」两套不共享的计数器，
+	 * 撞号会让 hover / 缓存键 / 失效集合把两个轮次认成同一个，故身份一律走 uid。 */
+	readonly uid: number;
 	userText: string;
  userImages?: readonly import("../../../core/content.js").ImageContent[];
 	items: TurnItem[];
@@ -77,10 +80,13 @@ export interface TurnRecord {
 	readonly diffs?: DiffRecord[];
 }
 
+let turnUidSeq = 0;
+
 export function createTurnRecord(n: number, userText = ""): TurnRecord {
 	const items: TurnItem[] = [];
 	return {
 		n,
+		uid: ++turnUidSeq,
 		userText,
 		items,
 		get assistantMarkdown(): string {
@@ -185,7 +191,7 @@ export class TranscriptContainer implements Component {
 	private readonly timeline: TimelineItem[] = [];
 	private readonly historyTurns: TurnRecord[] = [];
 	private currentTurn: TurnRecord | null = null;
-	private hoveredThinkingTurnN: number | null = null;
+	private hoveredThinkingTurnUid: number | null = null;
 	private hoveredToolId: string | null = null;
 	private hoveredCompactionIndex: number | null = null;
 	private readonly expandedToolIds = new Set<string>();
@@ -201,9 +207,9 @@ export class TranscriptContainer implements Component {
 	}
 
 	/** Rebuild only one settled turn's block; the rest of the cache stays valid. */
-	invalidateTurn(turnN: number): void {
+	invalidateTurn(turnUid: number): void {
 		if (!this.settledBlocks) return; // a full build will pick the change up
-		this.settledBlocks.staleTurns.add(turnN);
+		this.settledBlocks.staleTurns.add(turnUid);
 		this.hoveredBlockCache.clear();
 	}
 
@@ -213,9 +219,9 @@ export class TranscriptContainer implements Component {
 		this.settledBlocks.staleCompactions.add(index);
 	}
 
-	setHoveredThinkingTurn(turnN: number | null): boolean {
-		if (this.hoveredThinkingTurnN !== turnN) {
-			this.hoveredThinkingTurnN = turnN;
+	setHoveredThinkingTurn(turnUid: number | null): boolean {
+		if (this.hoveredThinkingTurnUid !== turnUid) {
+			this.hoveredThinkingTurnUid = turnUid;
 			// Hover is applied at assembly time, so only the per-turn hover cache
 			// is dropped; settled blocks stay valid.
 			this.hoveredBlockCache.clear();
@@ -225,7 +231,7 @@ export class TranscriptContainer implements Component {
 	}
 
 	getHoveredThinkingTurn(): number | null {
-		return this.hoveredThinkingTurnN;
+		return this.hoveredThinkingTurnUid;
 	}
 
 	setHoveredToolId(toolId: string | null): boolean {
@@ -329,7 +335,7 @@ export class TranscriptContainer implements Component {
 			} else {
 				this.expandedToolIds.add(callId);
 			}
-			if (ownerTurn) this.invalidateTurn(ownerTurn.n);
+			if (ownerTurn) this.invalidateTurn(ownerTurn.uid);
 			else this.invalidate();
 
 			const afterCount = this.renderTool(targetItem, width, {
@@ -415,10 +421,10 @@ export class TranscriptContainer implements Component {
 		const last = this.currentTurn.items.at(-1);
 		if (last && last.kind === "text") {
 			last.text += token;
-			this.smoothReveal.feed(`turn-${this.currentTurn.n}-text`, last.text);
+			this.smoothReveal.feed(`turn-${this.currentTurn.uid}-text`, last.text);
 		} else {
 			this.currentTurn.items.push({ kind: "text", text: token });
-			this.smoothReveal.feed(`turn-${this.currentTurn.n}-text`, token);
+			this.smoothReveal.feed(`turn-${this.currentTurn.uid}-text`, token);
 		}
 	}
 
@@ -733,7 +739,7 @@ export class TranscriptContainer implements Component {
 					it.collapsed = !wasCollapsed;
 				}
 			}
-			this.invalidateTurn(target.n);
+			this.invalidateTurn(target.uid);
 			const afterCount = formatThinkingLines(target.thinkingText, !wasCollapsed, width).length;
 			return { toggled: true, lineDelta: afterCount - beforeCount };
 		}
@@ -775,7 +781,7 @@ export class TranscriptContainer implements Component {
 
 	private commitCurrentTurn(): void {
 		if (this.currentTurn) {
-			this.smoothReveal.snapToLatest(`turn-${this.currentTurn.n}-text`);
+			this.smoothReveal.snapToLatest(`turn-${this.currentTurn.uid}-text`);
 			this.historyTurns.push(this.currentTurn);
 			this.timeline.push({ kind: "turn", turn: this.currentTurn });
 			this.currentTurn = null;
@@ -851,7 +857,7 @@ export class TranscriptContainer implements Component {
 			// Incremental: only the stale turn/compaction blocks are re-rendered.
 			const latestFailed = this.getLatestFailedTool();
 			cache.blocks = cache.blocks.map((block) => {
-				if (block.kind === "turn" && cache.staleTurns.has(block.turn.n)) {
+				if (block.kind === "turn" && cache.staleTurns.has(block.turn.uid)) {
 					return this.buildTurnBlock(block.turn, width, false, latestFailed);
 				}
 				if (block.kind === "compaction" && cache.staleCompactions.has(block.index)) {
@@ -927,14 +933,14 @@ export class TranscriptContainer implements Component {
 		let hasRenderedText = false;
 		for (const item of turn.items) {
 			if (item.kind === "thinking") {
-				const isHovered = hover && this.hoveredThinkingTurnN === turn.n;
+				const isHovered = hover && this.hoveredThinkingTurnUid === turn.uid;
 				const collapsed = item.collapsed ?? turn.thinkingCollapsed ?? true;
 				const lines = formatThinkingLines(item.text, collapsed, width, isHovered);
 				sink.thinking.push({ turnN: turn.n, lineIndex: out.length, lineCount: lines.length, turn });
 				out.push(...lines);
 			} else if (item.kind === "text") {
 				const textToRender = isCurrent
-					? this.smoothReveal.getRevealedText(`turn-${turn.n}-text`, item.text, true)
+					? this.smoothReveal.getRevealedText(`turn-${turn.uid}-text`, item.text, true)
 					: item.text;
 				out.push(...this.formatAssistantMarkdown(textToRender, width, !hasRenderedText, isCurrent));
 				hasRenderedText = true;
@@ -961,10 +967,10 @@ export class TranscriptContainer implements Component {
 
 	/** Hover on settled turns rebuilds only the affected block. */
 	private turnBlockFor(base: TurnBlock, width: number): TurnBlock {
-		const hoveredThinkingHere = this.hoveredThinkingTurnN === base.turn.n;
+		const hoveredThinkingHere = this.hoveredThinkingTurnUid === base.turn.uid;
 		const hoveredToolHere = this.hoveredToolId !== null && base.tools.some((tool) => tool.callId === this.hoveredToolId);
 		if (!hoveredThinkingHere && !hoveredToolHere) return base;
-		const key = `${width}:${base.turn.n}:${this.hoveredToolId ?? ""}:${this.hoveredThinkingTurnN ?? ""}`;
+		const key = `${width}:${base.turn.uid}:${this.hoveredToolId ?? ""}:${this.hoveredThinkingTurnUid ?? ""}`;
 		const cached = this.hoveredBlockCache.get(key);
 		if (cached) return cached;
 		const rebuilt = this.buildTurnBlock(base.turn, width, true, this.getLatestFailedTool());

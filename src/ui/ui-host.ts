@@ -1287,7 +1287,7 @@ export class UIHost implements UIHostContextPort {
 				if (absLine >= scrollStart && absLine < scrollStart + visibleTranscript.length) {
 					const screenRow = absLine - scrollStart;
 					interactiveTargets.push({
-						id: `thinking:${loc.turnN}:${absLine}`,
+						id: `thinking:${loc.turn.uid}`,
 						row: screenRow,
 						colStart: 0,
 						colEnd: Math.max(0, transcriptContentW - 1),
@@ -1544,12 +1544,12 @@ export class UIHost implements UIHostContextPort {
 					}
 
 					if (res.hoverTargetId !== undefined) {
-						const hoveredThinkingTurn = res.hoverTargetId?.startsWith("thinking:")
+						const hoveredThinkingTurnUid = res.hoverTargetId?.startsWith("thinking:")
 							? parseInt(res.hoverTargetId.split(":")[1] ?? "", 10)
 							: res.hoverTargetId?.startsWith("thinking-")
 								? parseInt(res.hoverTargetId.replace("thinking-", ""), 10)
 								: null;
-						if (this.transcript.setHoveredThinkingTurn(hoveredThinkingTurn)) {
+						if (this.transcript.setHoveredThinkingTurn(hoveredThinkingTurnUid)) {
 							anyNeedRender = true;
 						}
 

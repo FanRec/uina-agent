@@ -149,6 +149,37 @@ describe("B1: hover is local", () => {
 		expect(host.transcript.setHoveredToolId(null)).toBe(true);
 		expect(host.transcript.getToolLineIndices(W)[0]!.lineIndex).toBe(indexBefore);
 	});
+
+	it("keeps identity separate when two turns share the same turn number", () => {
+		// n 来自引擎 turnSeq 与恢复期局部计数两套不共享的计数器，撞号是常态。
+		// 身份一旦退回 n，hover 会同时命中多个轮次，hoveredBlockCache 还会把
+		// 一个轮次的块发给另一个轮次，导致内容被顶替、行数突变、视口跳动。
+		const transcript = new TranscriptContainer();
+		for (const [user, think] of [["ALPHA", "THINK-A"], ["BRAVO", "THINK-B"], ["CHARLIE", "THINK-C"]] as const) {
+			transcript.startTurn(1, user);
+			transcript.appendThinking(think);
+			transcript.appendToken(`BODY-${user.length}`);
+			transcript.finishTurn();
+		}
+
+		const locs = transcript.getThinkingLineIndices(78);
+		expect(locs).toHaveLength(3);
+		expect(new Set(locs.map((l) => l.turn.uid)).size).toBe(3); // 身份唯一
+		expect(new Set(locs.map((l) => l.turn.n)).size).toBe(1); // n 确实撞号
+
+		const before = transcript.render(78).map(stripAnsi);
+		expect(transcript.setHoveredThinkingTurn(locs[0]!.turn.uid)).toBe(true);
+		const after = transcript.render(78).map(stripAnsi);
+
+		// 只有一个轮次进入 hover 态
+		expect(after.filter((l) => l.includes("点击"))).toHaveLength(1);
+		// 每个轮次保留自己的行，不被撞号邻居顶替
+		for (const tag of ["ALPHA", "BRAVO", "CHARLIE", "THINK-A", "THINK-B", "THINK-C"]) {
+			expect(after.filter((l) => l.includes(tag))).toHaveLength(1);
+		}
+		// hover 不得改变总行数，否则 totalPerm 突变会让视口位移
+		expect(after).toHaveLength(before.length);
+	});
 });
 
 describe("B3: overlay geometry", () => {
