@@ -8,7 +8,9 @@ import {
 	formatFileOperations,
 	prepareCompaction,
 	serializeConversation,
+	SUMMARIZATION_PROMPT,
 	truncateForSummary,
+	UPDATE_SUMMARIZATION_PROMPT,
 } from "../src/agent/compaction.js";
 import type { AgentMessage, ChatMsg } from "../src/core/types.js";
 
@@ -274,4 +276,23 @@ describe("clearRetainedUsage", () => {
 		const cleared = clearRetainedUsage([user("hi")]);
 		expect(cleared[0]).toEqual(user("hi"));
 	});
+});
+
+describe("summarisation prompts keep the length discipline", () => {
+	// 这些提示词决定压缩后上下文有多满。回归点：早期版本的提示词只要求“保持简洁”，
+	// 结果模型把 git 提交流水账和代码行号整段抄进摘要，产出 23k 字符的“摘要”，
+	// 重新撑满了保留预算。长度纪律一旦被删掉，这个测试应当失败。
+	for (const [name, prompt] of [
+		["SUMMARIZATION_PROMPT", SUMMARIZATION_PROMPT],
+		["UPDATE_SUMMARIZATION_PROMPT", UPDATE_SUMMARIZATION_PROMPT],
+	] as const) {
+		it(`${name} caps the summary length and bans the two known noise sources`, () => {
+			expect(prompt).toContain("长度纪律");
+			// 明确禁止 commit 流水账与行号——这两样是上一版摘要最大的噪声来源。
+			expect(prompt).toMatch(/git log/);
+			expect(prompt).toMatch(/行号/);
+			// 必须给出一个可核对的字符上限，而不是只说“保持简洁”。
+			expect(prompt).toMatch(/8000\s*字符/);
+		});
+	}
 });
