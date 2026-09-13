@@ -224,6 +224,28 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 		expect(renderedCustom).toEqual([">>> VIP [test:custom]: special content"]);
 	});
 
+	it("renders a dedicated rewind card with reason, effects and the read-only exit path", () => {
+		const comp = new CustomMessageComponent({
+			customType: "session-rewind",
+			content: "[会话回溯 r1] 从 aaaaaaa 回溯至 bbbbbbb",
+			details: {
+				record: { fromId: "aaaaaaa1", targetId: "bbbbbbb2", source: "model", reason: "前期假设错误" },
+				effects: {
+					modifiedFiles: ["src/config.ts"],
+					executedCommands: ["pnpm build"],
+					dispatchedTasks: [{ id: "job-102", type: "job" }],
+				},
+			},
+		});
+		const rendered = comp.render(80).join("\n");
+		expect(rendered).toContain("会话回溯");
+		expect(rendered).toContain("前期假设错误");
+		expect(rendered).toContain("src/config.ts");
+		expect(rendered).toContain("pnpm build");
+		expect(rendered).toContain("job-102");
+		expect(rendered).toContain("/history");
+	});
+
 	it("CustomEntryComponent 支持动态注册的 EntryRenderer 与默认兜底", () => {
 		const registry = new ExtensionRegistry();
 

@@ -7,6 +7,8 @@ import { OverlayStack } from "../src/ui/core/overlay.js";
 import { FocusManager } from "../src/ui/core/focus.js";
 import { visibleWidth, truncateToWidth, wrapTextWithAnsi } from "../src/ui/core/utils.js";
 import { InputLine, snapToGraphemeBoundary } from "../src/ui/components/editor/index.js";
+import { MemorySessionStore } from "../src/session/jsonl-store.js";
+import { listSessionNodes, readSessionNode } from "../src/session/navigation.js";
 
 function fakeTerminal(columns = 80, rows = 24): { terminal: ProcessTerminal; frames: string[] } {
 	const frames: string[] = [];
@@ -30,7 +32,10 @@ function fakeTerminal(columns = 80, rows = 24): { terminal: ProcessTerminal; fra
 }
 
 const plainFrame = (frame: string): string[] =>
-	frame.split("\r\n").map((line) => stripAnsi(line).replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, ""));
+	frame
+		.split(/\x1b\[\d+;1H/)
+		.slice(1)
+		.map((line) => line.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "").replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, ""));
 
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 30));
 
@@ -297,5 +302,47 @@ describe("Incremental layout invalidation", () => {
 		host.preserveScrollAnchor(() => { host.transcript.toggleTool("call-1", 77); }, 0);
 		expect(spy.mock.calls.length).toBe(1);
 		spy.mockRestore();
+	});
+});
+
+describe("C: overlay frame composition", () => {
+	// A panel row wider than its declared box is wrapped by the terminal, which pushed the
+	// bottom-pinned editor into the middle of the panel. The composed frame must never
+	// contain a row wider than the terminal, and the panel must cover its own region.
+	it("opens the history panel through Alt+H and composes a frame without wrapping", async () => {
+		const { terminal, frames } = fakeTerminal(148, 29);
+		const store = new MemorySessionStore();
+		for (let i = 0; i < 50; i++) {
+			await store.appendMessage({
+				role: i % 2 === 0 ? "user" : "assistant",
+				content: `${i} 条 ${i % 3 === 0 ? '{"error":"工具已返回"}' : "**你好！** 很高兴你又来找我 😌～ 🍞"}`,
+			});
+		}
+		const host = new UIHost({
+			terminal,
+			modelName: "TestModel",
+			sessionPort: {
+				list: (options) => listSessionNodes(store.readRecords(), options),
+				read: (id) => readSessionNode(store.readRecords(), id),
+				requestRewind: async () => ({ requestId: "probe", status: "committed" as const }),
+			},
+		});
+		host.start();
+		host.transcript.startTurn(1, "你好");
+		host.transcript.appendToken("**你好！** 很高兴你又来找我。");
+		host.transcript.finishTurn();
+		await settle();
+
+		host.handleInput("\x1bh");
+		await settle();
+		expect(plainFrame(frames.at(-1) ?? "").some((line) => line.includes("会话历史与分支检视器"))).toBe(true);
+
+		// Walk to the bottom of the list, where the earlier breakage was reported.
+		for (let step = 0; step < 80; step++) host.handleInput("\x1b[B");
+		await settle();
+
+		const lines = plainFrame(frames.at(-1) ?? "");
+		expect(lines.length).toBe(29);
+		expect(lines.filter((line) => visibleWidth(line) > 148)).toEqual([]);
 	});
 });

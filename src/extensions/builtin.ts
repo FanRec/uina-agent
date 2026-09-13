@@ -21,6 +21,7 @@ export interface BuiltinUI {
 	openTasks(): void;
 	openSubagents(): void;
 	openTrajectory(): void;
+	openHistory?(): void;
 	setModel?(name: string): void;
 	setThinkingLevels?(levels?: readonly ThinkingLevel[]): void;
 	setReasoningEffort?(level?: ThinkingLevel): void;
@@ -228,6 +229,28 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			name: "trajectory",
 			description: "全屏审计轨迹时序看板 (Alt+T)",
 			handler: () => ui?.openTrajectory(),
+		});
+
+		const openHistory = (): void => {
+			if (ui?.openHistory) {
+				ui.openHistory();
+				return;
+			}
+			const nodes = services.subject.session.list({ scope: "all" }).nodes;
+			const formatted = nodes.map((n) => `[${n.active ? "主线" : "只读"} #${n.seq} ${n.kind}] ${n.id.slice(0, 8)} ${n.preview}`).join("\n");
+			pi.ui.notify(formatted ? `会话历史节点:\n${formatted}` : "暂无历史节点", "info", 8000);
+		};
+
+		pi.registerCommand({
+			name: "history",
+			description: "会话历史节点与已回溯分支看板 (Alt+H)",
+			handler: openHistory,
+		});
+
+		pi.registerCommand({
+			name: "branches",
+			description: "会话历史分支检视 (同 /history)",
+			handler: openHistory,
 		});
 
 		pi.registerCommand({

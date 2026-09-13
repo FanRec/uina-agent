@@ -9,3 +9,4 @@ export * from "./effort-slider.js";
 export * from "./task-dashboard.js";
 export * from "./subagent-dashboard.js";
 export * from "./trajectory-scene.js";
+export * from "./branch-inspector.js";

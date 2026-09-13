@@ -97,6 +97,10 @@ export class InteractiveTUI {
 		return this.host.ctxUI;
 	}
 
+	openHistory(): void {
+		this.host.openHistory();
+	}
+
 	start(): void {
 		this.host.start();
 	}

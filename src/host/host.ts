@@ -79,6 +79,7 @@ export class UinaHost {
 	private stopPromise?: Promise<void>;
 	private readonly directRuns = new Map<AbortController, Promise<ToolExecutionResult>>();
 	private reloading = 0;
+	readonly abandonedTaskIds: Set<string>;
 
 	private constructor(
 		private readonly options: UinaHostOptions,
@@ -95,8 +96,10 @@ export class UinaHost {
 		listeners: Set<HostEventListener>,
 		/** 共享的关闭标志：钩子与扩展输入入口据此拒绝关闭后的新工作。 */
 		private readonly state: { stopping: boolean },
+		abandonedTaskIds: Set<string>,
 	) {
 		this.listeners = listeners;
+		this.abandonedTaskIds = abandonedTaskIds;
 	}
 
 	static async create(options: UinaHostOptions): Promise<UinaHost> {
@@ -142,6 +145,12 @@ export class UinaHost {
 		const listeners = new Set<HostEventListener>();
 		const toolStartedAt = new Map<string, number>();
 		const state = { stopping: false };
+		const abandonedTaskIds = new Set<string>();
+		for (const entry of restoredEntries) {
+			if (entry.kind === "rewind" && entry.effects?.dispatchedTasks) {
+				for (const task of entry.effects.dispatchedTasks) abandonedTaskIds.add(task.id);
+			}
+		}
 		const emit = (event: HostEvent): void => {
 			for (const listener of [...listeners]) {
 				try { listener(event); }
@@ -159,11 +168,18 @@ export class UinaHost {
 			createTools: (ownerId) => createChildTools(tools, { ownerId }),
 			notify: async (text, data, ownerId) => {
 				if (state.stopping) return;
+				const idStr = String(data.id);
+				const isAbandoned = abandonedTaskIds.has(idStr);
 				const input: AgentInput = {
-					id: `subagent-notice-${String(data.id)}`,
+					id: `subagent-notice-${idStr}`,
 					mode: "followUp",
-					source: { kind: "runtime", type: "subagent-notice", ref: String(data.id) },
-					text,
+					source: {
+						kind: "runtime",
+						type: "subagent-notice",
+						ref: idStr,
+						...(isAbandoned ? { provenance: { abandoned: true } } : {}),
+					},
+					text: isAbandoned ? `${text}（注意：该子代理来自已回溯放弃的历史分支）` : text,
 					data,
 				};
 				await (ownerId === "root" ? subject.accept(input) : subagents.acceptInput(ownerId, input));
@@ -196,9 +212,16 @@ export class UinaHost {
 
 		subject.subscribe((event) => {
 			switch (event.type) {
-				case "session_rewind":
-					emit({ ...event, entries: recoverRecords([...store.readRecords()], false).entries });
+				case "session_rewind": {
+					const recovered = recoverRecords([...store.readRecords()], false);
+					for (const entry of recovered.allEntries) {
+						if (entry.kind === "rewind" && entry.effects?.dispatchedTasks) {
+							for (const task of entry.effects.dispatchedTasks) abandonedTaskIds.add(task.id);
+						}
+					}
+					emit({ ...event, entries: recovered.entries });
 					break;
+				}
 				case "output_update":
 					if (event.channel === "content") emit({ type: "text", text: event.text });
 					else if (event.channel === "thinking") emit({ type: "thinking", text: event.text });
@@ -250,7 +273,7 @@ export class UinaHost {
 				options.onError?.(`[模型目录刷新失败] ${error instanceof Error ? error.message : String(error)}`);
 			});
 		}
-		return new UinaHost(options, subject, store, extensionHost, tools, models, jobs, subagents, commands, restoredEntries, listeners, state);
+		return new UinaHost(options, subject, store, extensionHost, tools, models, jobs, subagents, commands, restoredEntries, listeners, state, abandonedTaskIds);
 	}
 
 	subscribe(listener: HostEventListener): () => void {
@@ -344,7 +367,7 @@ export class UinaHost {
 	async start(startOptions: HostStartOptions = {}): Promise<void> {
 		await this.extensionHost.activateBuiltin("session-tools", activateSessionTools(ownerId => ownerId === "root" ? this.subject.session : this.subagents.session(ownerId)));
 		if (this.options.workspaceTools !== false) await this.extensionHost.activateBuiltin("workspace-tools", activateWorkspaceTools);
-		await this.extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools({ jobs: this.jobs, subagents: this.subagents }));
+		await this.extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools({ jobs: this.jobs, subagents: this.subagents, isTaskAbandoned: (id) => this.abandonedTaskIds.has(id) }));
 		await this.extensionHost.activateBuiltin("commands", activateBuiltinCommands({
 			subject: this.subject,
 			models: this.models,

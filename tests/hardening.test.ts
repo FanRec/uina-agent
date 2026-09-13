@@ -172,8 +172,12 @@ describe("hardening: keyboard and frame invariants", () => {
 		let written = "";
 		const terminal = { columns: 20, syncWrite: (data: string) => { written = data; } } as unknown as ProcessTerminal;
 		new MainScreenRenderer(terminal).renderFrame(["short", "x".repeat(60)]);
-		for (const line of written.split("\r\n")) {
-			const plain = line.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
+		// Rows are positioned absolutely rather than CR LF delimited, so writing a row that
+		// fills the terminal never leaves the cursor in a wrap state for the next row.
+		const rows = written.split(/\x1b\[\d+;1H/).slice(1);
+		expect(rows).toHaveLength(2);
+		for (const row of rows) {
+			const plain = row.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
 			expect(visibleWidth(plain)).toBeLessThanOrEqual(20);
 		}
 	});

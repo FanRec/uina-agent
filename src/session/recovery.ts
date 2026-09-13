@@ -1,6 +1,7 @@
 import { validImages } from "../core/content.js";
-import type { AgentMessage, ToolResultStatus } from "../core/types.js";
+import type { AgentMessage, ToolAgentMessage, ToolResultStatus } from "../core/types.js";
 import type {
+	AbandonedSideEffects,
 	HydratedSessionEntry,
 	QueuedInput,
 	SessionEntry,
@@ -104,6 +105,118 @@ class SessionReplayContext {
 	}
 }
 
+interface ToolCallDetail {
+	name: string;
+	args: Record<string, unknown>;
+	status?: ToolResultStatus;
+	resultObj?: Record<string, unknown>;
+}
+
+/** Uina writes files through write_file; the rest are read-only capabilities. */
+const WRITE_TOOL_NAMES = new Set(["write_file"]);
+
+function parseResultObject(msg: ToolAgentMessage): Record<string, unknown> | undefined {
+	if (msg.details && typeof msg.details === "object") {
+		return msg.details as Record<string, unknown>;
+	}
+	if (typeof msg.content === "string") {
+		try {
+			const parsed = JSON.parse(msg.content);
+			if (parsed && typeof parsed === "object") return parsed;
+		} catch {
+			// not JSON
+		}
+	}
+	return undefined;
+}
+
+function collectCallDetails(abandoned: readonly SessionEntry[]): Map<string, ToolCallDetail> {
+	const callDetails = new Map<string, ToolCallDetail>();
+	for (const entry of abandoned) {
+		if (entry.kind !== "message") continue;
+		const msg = entry.message as AgentMessage;
+		if (msg.role === "assistant" && msg.tool_calls) {
+			for (const call of msg.tool_calls) {
+				if (call.id) {
+					callDetails.set(call.id, {
+						name: call.name,
+						args: (call.args && typeof call.args === "object") ? (call.args as Record<string, unknown>) : {},
+					});
+				}
+			}
+		} else if (msg.role === "tool" && msg.tool_call_id) {
+			const existing = callDetails.get(msg.tool_call_id);
+			if (existing) {
+				existing.status = msg.status;
+				const res = parseResultObject(msg);
+				if (res) existing.resultObj = res;
+			}
+		}	}
+	return callDetails;
+}
+
+function extractModifiedFile(call: ToolCallDetail): string | undefined {
+	if (!WRITE_TOOL_NAMES.has(call.name)) return undefined;
+	const candidate = call.args.path ?? call.resultObj?.path;
+	if (typeof candidate === "string" && candidate.trim()) {
+		return candidate.trim();
+	}
+	return undefined;
+}
+
+function extractCommandOrTask(callId: string, call: ToolCallDetail):
+	| { command?: string; task?: { id: string; type: "job" | "subagent"; label?: string } }
+	| undefined {
+	if (call.name === "exec_command") {
+		const cmd = typeof call.args.command === "string" ? call.args.command.trim() : "";
+		if (call.args.run_in_background === true) {
+			const jobId = typeof call.resultObj?.jobId === "string" ? call.resultObj.jobId : callId;
+			return { task: { id: jobId, type: "job", ...(cmd ? { label: cmd } : {}) } };
+		}
+		if (cmd) return { command: cmd };
+	} else if (call.name === "subagent_start") {
+		const subId = typeof call.resultObj?.id === "string" ? call.resultObj.id : callId;
+		const label = typeof call.args.label === "string" ? call.args.label : undefined;
+		return { task: { id: subId, type: "subagent", ...(label ? { label } : {}) } };
+	}
+	return undefined;
+}
+
+export function summarizeAbandonedEffects(abandoned: readonly SessionEntry[]): AbandonedSideEffects {
+	const modifiedFiles = new Set<string>();
+	const executedCommands = new Set<string>();
+	const dispatchedTasksMap = new Map<string, { id: string; type: "job" | "subagent"; label?: string }>();
+
+	for (const entry of abandoned) {
+		if (entry.kind === "rewind" && entry.effects) {
+			for (const f of entry.effects.modifiedFiles) modifiedFiles.add(f);
+			for (const c of entry.effects.executedCommands) executedCommands.add(c);
+			for (const t of entry.effects.dispatchedTasks) dispatchedTasksMap.set(t.id, t);
+		}
+	}
+
+	const callDetails = collectCallDetails(abandoned);
+
+	for (const [callId, call] of callDetails) {
+		if (call.status === "failed" || call.status === "cancelled" || call.status === "not_started") {
+			continue;
+		}
+
+		const file = extractModifiedFile(call);
+		if (file) modifiedFiles.add(file);
+
+		const cmdOrTask = extractCommandOrTask(callId, call);
+		if (cmdOrTask?.command) executedCommands.add(cmdOrTask.command);
+		if (cmdOrTask?.task) dispatchedTasksMap.set(cmdOrTask.task.id, cmdOrTask.task);
+	}
+
+	return {
+		modifiedFiles: [...modifiedFiles],
+		executedCommands: [...executedCommands],
+		dispatchedTasks: [...dispatchedTasksMap.values()],
+	};
+}
+
 function replayRewind(ctx: SessionReplayContext, record: SessionRecord & { kind: "rewind" }): void {
 	if (ctx.pendingCalls.some((call) => !ctx.resultIds.has(call.callId))) {
 		throw new SessionFormatError("回溯前有未结算工具调用");
@@ -117,14 +230,30 @@ function replayRewind(ctx: SessionReplayContext, record: SessionRecord & { kind:
 	}
 	const abandoned = ctx.entries.slice(index + 1);
 	const carriedInputs = collectCarriedInputs(abandoned);
-	const notice =
+	const effects = summarizeAbandonedEffects(abandoned);
+	let notice =
 		`[会话回溯 ${record.id}]\n` +
 		`从 ${record.fromId} 回溯至 ${record.targetId}；来源：${record.source}。\n` +
 		`原因（发起方说明）：${record.reason}\n` +
 		`退出路径只读，可用 session_list(scope=all) / session_read 查询，包括此前回溯。外部副作用、文件和后台任务没有被撤销；重新行动前核实当前状态。后附历史输入保留原要求，不表示再次执行旧任务；最新要求不因回溯而失效。`;
+
+	const effectLines: string[] = [];
+	if (effects.modifiedFiles.length > 0) {
+		effectLines.push(`- 被修改文件 (${effects.modifiedFiles.length}): ${effects.modifiedFiles.join(", ")}`);
+	}
+	if (effects.executedCommands.length > 0) {
+		effectLines.push(`- 已执行命令 (${effects.executedCommands.length}): ${effects.executedCommands.map((c) => `\`${c}\``).join(", ")}`);
+	}
+	if (effects.dispatchedTasks.length > 0) {
+		effectLines.push(`- 派生/后台任务 (${effects.dispatchedTasks.length}): ${effects.dispatchedTasks.map((t) => `${t.type}:${t.id}${t.label ? ` (${t.label})` : ""}`).join(", ")}`);
+	}
+	if (effectLines.length > 0) {
+		notice += `\n[在被放弃历史切片中产生的外部操作]\n` + effectLines.join("\n");
+	}
+
 	ctx.entries.splice(index + 1);
 	ctx.pendingCalls = [];
-	ctx.add({ kind: "rewind", record: structuredClone(record), notice, carriedInputs });
+	ctx.add({ kind: "rewind", record: structuredClone(record), notice, carriedInputs, effects });
 }
 
 function replayInput(ctx: SessionReplayContext, record: SessionRecord & { kind: "input" }): void {
@@ -297,13 +426,14 @@ export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMess
 /** Runtime inputs remain identifiable session facts, not human utterances. */
 export function projectInputMessage(input: QueuedInput): AgentMessage {
 	if (input.source?.kind === "runtime") {
+		const prov = input.source.provenance?.abandoned ? " [来自废弃分支]" : "";
 		return {
 			role: "custom",
 			id: input.id,
 			customType: "runtime-input",
 			display: false,
 			images: input.images,
-			content: `[运行时事件 ${input.source.type}${input.source.ref ? ` · ${input.source.ref}` : ""}]\n${input.text}`,
+			content: `[运行时事件 ${input.source.type}${input.source.ref ? ` · ${input.source.ref}` : ""}${prov}]\n${input.text}`,
 			details: { source: input.source, data: input.data },
 		};
 	}
@@ -628,6 +758,10 @@ function rewindMessages(entry: Extract<SessionEntry, { kind: "rewind" }>): Agent
 			content: `[回溯后保留的历史输入；不是新的执行请求]\n${message.content}`,
 			images: message.images,
 		});
+	}
+	if (entry.record.compaction) {
+		messages.push({ role: "compactionSummary", summary: entry.record.compaction.summary, content: "[历史摘要] " + entry.record.compaction.summary, tokensBefore: entry.record.compaction.tokensBefore });
+		messages.push(...structuredClone(entry.record.compaction.retainedTail as AgentMessage[]));
 	}
 	return messages;
 }

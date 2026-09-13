@@ -14,7 +14,7 @@ import { Key, matchesKey } from "./core/keys.js";
 import { MouseSelectionTracker, type InteractiveTarget, type SelectableRegion } from "./core/mouse-selection.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ThinkingLevel } from "../core/types.js";
-import type { SessionEntry } from "../session/types.js";
+import type { SessionAccess, SessionEntry } from "../session/types.js";
 import { C, copyToClipboardUnified, visibleWidth, truncateToWidth } from "./core/utils.js";
 import {
 	InputLine,
@@ -49,6 +49,7 @@ import {
 	SubagentDashboard,
 	SubagentDetailScene,
 	TrajectoryScene,
+	BranchInspectorOverlay,
 } from "./components/overlays/index.js";
 import type { QueuedMessage } from "../agent/queue.js";
 import type { SubagentPort } from "./adapters/subagents.js";
@@ -76,6 +77,7 @@ export interface UIHostOptions {
 	registry?: ExtensionRegistry;
 	jobPort?: JobPort;
 	subagentPort?: SubagentPort;
+	sessionPort?: SessionAccess;
 }
 
 /** Immutable frame geometry shared by rendering, scrolling and hit zones. */
@@ -273,6 +275,7 @@ export class UIHost implements UIHostContextPort {
 	private cancelPending = false;
 	private jobPort?: JobPort;
 	private subagentPort?: SubagentPort;
+	private sessionPort?: SessionAccess;
 
 	setJobPort(port: JobPort): void {
 		this.jobPort = port;
@@ -311,6 +314,7 @@ export class UIHost implements UIHostContextPort {
 	constructor(options: UIHostOptions = {}) {
 		this.jobPort = options.jobPort;
 		this.subagentPort = options.subagentPort;
+		this.sessionPort = options.sessionPort;
 		this.cwd = options.cwd ?? process.cwd();
 		this.modelName = options.modelName;
 		this.thinkingLevels = options.thinkingLevels ? [...options.thinkingLevels] : [];
@@ -983,6 +987,22 @@ export class UIHost implements UIHostContextPort {
 			};
 			scene.onRequestRender = () => this.requestRender();
 			handle = this.overlayStack.showOverlay(scene, { anchor: "center" }, () => close());
+			return handle;
+		});
+	}
+
+	openHistory(): void {
+		const sessionPort = this.sessionPort;
+		if (!sessionPort) return;
+		this.toggleModal("history", (close) => {
+			const view = new BranchInspectorOverlay(sessionPort);
+			let handle: OverlayHandle | null = null;
+			view.onClose = () => {
+				close();
+				handle?.hide();
+			};
+			view.onRequestRender = () => this.requestRender();
+			handle = this.overlayStack.showOverlay(view, { anchor: "center" }, () => close());
 			return handle;
 		});
 	}
@@ -1683,6 +1703,11 @@ export class UIHost implements UIHostContextPort {
 
 		if (matchesKey(data, Key.alt("t")) || matchesKey(data, Key.alt("T"))) {
 			this.openTrajectory();
+			return;
+		}
+
+		if (matchesKey(data, Key.alt("h")) || matchesKey(data, Key.alt("H"))) {
+			this.openHistory();
 			return;
 		}
 

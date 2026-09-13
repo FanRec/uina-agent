@@ -235,6 +235,19 @@ export function matchesKey(data: string, keyId: string): boolean {
 				data === "\x1b[1;3j" ||
 				data === "\x1b[1;3J"
 			);
+		case "alt+h":
+			return (
+				data === "\x1bh" ||
+				data === "\x1bH" ||
+				data === "\x1b\x1bh" ||
+				data === "\x1b\x1bH" ||
+				data === "\x1b[104;3u" ||
+				data === "\x1b[72;3u" ||
+				data === "\x1b[27;3;104~" ||
+				data === "\x1b[27;3;72~" ||
+				data === "\x1b[1;3h" ||
+				data === "\x1b[1;3H"
+			);
 		case "alt+t":
 			return (
 				data === "\x1bt" ||

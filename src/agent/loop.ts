@@ -55,6 +55,9 @@ export interface QueueInputOptions {
 	mode?: DeliveryMode;
 }
 
+/** One wording for every way an oversized rewind is refused; the mainline never moves in these cases. */
+const OVERSIZED_REWIND = "回溯后的上下文估算超过模型上限；主线未改变，请选择其他目标或纠错方式";
+
 export interface AgentInput {
 	id: string;
 	mode: "steer" | "followUp";
@@ -369,19 +372,32 @@ export class Subject {
 				timestamp: new Date().toISOString(),
 			};
 			const next = recoverRecords([...records, record]);
+			// The projection stays derived from records; an oversized rewind is compacted before it is
+			// persisted so a committed rewind never leaves an unusable context behind.
 			const history = projectAgentHistory(next.entries);
 			const estimated = estimateContextTokens(
 				buildContext({ history, systemPrompt: this.systemPrompt }),
 				{ tools: this.tools.defs(), includeThinking: this.model.includeThinking },
 			).tokens;
-			if (this.model.contextWindow !== undefined && estimated > this.model.contextWindow) {
-				throw new Error("回溯后的上下文估算超过模型上限；主线未改变，请选择其他目标或纠错方式");
-			}
+			const compacted = await this.compactProjectionForRewind(history, estimated, pending.signal);
+
 			pending.signal?.throwIfAborted();
 			this.currentSignal().throwIfAborted();
-			await this.store.appendRewind(record);
+			// Persist rewind and its optional compaction as one durable transition.
+			const finalRecord = compacted ? { ...record, compaction: compacted } : record;
+			const finalState = recoverRecords([...records, finalRecord]);
+			const finalHistory = projectAgentHistory(finalState.entries);
+			await this.store.appendRewind(finalRecord);
 			committed = true;
-			this.history = history;
+			this.history = finalHistory;
+			if (compacted) {
+				await this.runtimeHooks.events.emit({
+					type: "session_compact",
+					summary: compacted.summary,
+					tokensBefore: compacted.tokensBefore,
+					retainedTailCount: compacted.retainedTail.length,
+				});
+			}
 			this.lastReportedUsage = null;
 			await this.dispatch({
 				type: "session_rewind",
@@ -677,6 +693,9 @@ export class Subject {
 			beforeMessages = prepared.messages ? [...prepared.messages] : [];
 			return true;
 		};
+		// A scheduled rewind commits before turn preparation, so compaction always measures the
+		// mainline that is about to be sent — never a projection the rewind is about to replace.
+		await applyRewind();
 		await this.prepareTurn(model, systemPrompt);
 		for (;;) {
 			if (this.interrupted) {
@@ -961,7 +980,7 @@ export class Subject {
 		}
 		this.compactionActive = true;
 		try {
-			const signal = this.abort!.signal;
+			const signal = this.currentSignal();
 			const decision = await this.runtimeHooks.turn.beforeCompact({ tokensBefore });
 			if (decision.cancel) {
 				if (manual)
@@ -982,7 +1001,9 @@ export class Subject {
 			if (proposal !== undefined) {
 				const { summary, keepFrom: cut } = proposal;
 				if (typeof summary !== "string" || !summary.trim()) throw new Error("compaction 返回空摘要");
-				if (!Number.isInteger(cut) || cut <= 0 || cut > this.history.length) throw new Error("compaction 保留位置无效");
+				// A cut that keeps the whole history compacts nothing; accepting it would persist a
+				// summary plus the very messages it summarizes, growing the context it was meant to shrink.
+				if (!Number.isInteger(cut) || cut <= 0 || cut >= this.history.length) throw new Error("compaction 保留位置无效");
 				if (this.history[cut]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
 				result = { summary: summary.trim(), retainedTail: structuredClone(this.history.slice(cut)), tokensBefore };
 			} else {
@@ -1016,6 +1037,74 @@ export class Subject {
 		} finally {
 			this.compactionActive = false;
 		}
+	}
+
+	/**
+	 * A rewind can re-expose history that was already compacted away, so the projected main line is
+	 * measured before it is persisted. Returns a fitting compaction, or null when the projection
+	 * already fits the model window; throws when compaction cannot bring it back under the window.
+	 */
+	private async compactProjectionForRewind(
+		history: AgentMessage[],
+		estimated: number,
+		signal?: AbortSignal,
+	): Promise<import("./compaction.js").CompactionResult | null> {
+		const contextWindow = this.model.contextWindow;
+		if (contextWindow === undefined || estimated <= contextWindow) return null;
+		const keepFrom = findKeepFrom(history, this.compaction.keepRecentTokens, false);
+		if (keepFrom <= 0) throw new Error(OVERSIZED_REWIND);
+		const compactionSignal = signal ?? this.currentSignal();
+		const proposal = await this.compactor?.(
+			{
+				reason: "automatic",
+				history,
+				suggestedKeepFrom: keepFrom,
+				tokensBefore: estimated,
+				model: this.model,
+				instruction: "由于回溯使历史重新展开导致上下文超限，请压缩前期历史",
+			},
+			compactionSignal,
+		);
+		let prepared: import("./compaction.js").CompactionResult | null;
+		if (proposal !== undefined) {
+			const cut = proposal.keepFrom;
+			if (typeof proposal.summary !== "string" || !proposal.summary.trim()) throw new Error("compaction 返回空摘要");
+			if (!Number.isInteger(cut) || cut <= 0 || cut >= history.length) throw new Error("compaction 保留位置无效");
+			if (history[cut]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
+			prepared = { summary: proposal.summary.trim(), retainedTail: structuredClone(history.slice(cut)), tokensBefore: estimated };
+		} else {
+			prepared = await compactHistory(
+				history,
+				this.model,
+				this.streamFn,
+				{ keepFrom, tokensBefore: estimated },
+				this.runtimeHooks.provider,
+				compactionSignal,
+			);
+		}
+		if (!prepared) throw new Error(OVERSIZED_REWIND);
+		compactionSignal.throwIfAborted();
+		const after = estimateContextTokens(
+			buildContext({
+				history: [
+					{
+						role: "compactionSummary",
+						summary: prepared.summary,
+						content: "[历史摘要] " + prepared.summary,
+						tokensBefore: prepared.tokensBefore,
+					},
+					...prepared.retainedTail,
+				],
+				systemPrompt: this.systemPrompt,
+			}),
+			{ tools: this.tools.defs(), includeThinking: this.model.includeThinking },
+		).tokens;
+		if (after > contextWindow) {
+			throw new Error(
+				`${OVERSIZED_REWIND}：压缩后仍约 ${after} tokens，模型上限 ${contextWindow}`,
+			);
+		}
+		return prepared;
 	}
 
 	private async appendMessage(message: AgentMessage): Promise<void> {

@@ -5,7 +5,7 @@
 
 import { imageNotice } from "../../../core/content.js";
 import { Container } from "../../core/container.js";
-import { C, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../../core/utils.js";
+import { C, stripAnsi, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
 import type { Component } from "../../core/types.js";
 import type {
@@ -201,20 +201,76 @@ abstract class BaseCustomComponent<
 }
 
 export class CustomMessageComponent extends BaseCustomComponent<CustomMessage, MessageRenderer> {
+	/** Rewind card: one declared frame width, content rows measured in display columns. */
+	private renderRewindCard(w: number): string[] {
+		const boxW = Math.max(32, Math.min(w, 88));
+		const innerW = boxW - 6;
+		const borderCol = C.yellow;
+		const tag = " ⟲ 会话回溯 · 主线反思 ";
+		const topFill = Math.max(2, boxW - visibleWidth(tag) - 5);
+		const header = `  ${borderCol}╭─${C.bold}${C.yellow}${tag}${C.reset}${borderCol}${"─".repeat(topFill)}╮${C.reset}`;
+
+		const rows: string[] = [];
+		const addLine = (label: string, value: string, valCol = C.reset) => {
+			rows.push(`${C.bold}${label}:${C.reset} ${valCol}${sanitizeRenderText(value)}${C.reset}`);
+		};
+
+		const details = this.item.details as {
+			record?: { fromId: string; targetId: string; source: string; reason: string; summary?: string };
+			effects?: { modifiedFiles?: readonly string[]; executedCommands?: readonly string[]; dispatchedTasks?: readonly { id: string; type: string; label?: string }[] };
+		} | undefined;
+
+		const record = details?.record;
+		const effects = details?.effects;
+
+		if (record) {
+			addLine("回溯路径", `${record.fromId.slice(0, 8)} ➔ ${record.targetId.slice(0, 8)} [${record.source}]`, C.cyan);
+			addLine("决策原因", record.reason, C.white);
+			if (record.summary) addLine("经验摘要", record.summary, C.green);
+		} else {
+			for (const rawLine of sanitizeRenderText(this.item.content).split("\n").slice(0, 4)) {
+				rows.push(rawLine);
+			}
+		}
+
+		if (effects) {
+			if (effects.modifiedFiles && effects.modifiedFiles.length > 0) {
+				addLine("涉及文件", effects.modifiedFiles.join(", "), C.yellow);
+			}
+			if (effects.executedCommands && effects.executedCommands.length > 0) {
+				addLine("已跑命令", effects.executedCommands.join(", "), C.yellow);
+			}
+			if (effects.dispatchedTasks && effects.dispatchedTasks.length > 0) {
+				addLine("派生任务", effects.dispatchedTasks.map((t) => `${t.type}:${t.id}`).join(", "), C.yellow);
+			}
+		}
+
+		rows.push(`${C.gray}退出路径已转为只读历史，可用 /history 检视${C.reset}`);
+
+		const body = rows.map((row) => {
+			const text = truncateToWidth(stripAnsi(row), innerW, "");
+			return `  ${borderCol}│${C.reset} ${text}${" ".repeat(Math.max(0, innerW - visibleWidth(text)))} ${borderCol}│${C.reset}`;
+		});
+
+		const footer = `  ${borderCol}╰${"─".repeat(boxW - 4)}╯${C.reset}`;
+		return [header, ...body, footer];
+	}
+
 	protected renderFallback(w: number): string[] {
+		if (this.item.customType === "session-rewind") {
+			return this.renderRewindCard(w);
+		}
 		const boxW = Math.max(24, Math.min(w, 80));
 		const innerW = boxW - 6;
 		const tag = `[${this.item.customType}]`;
 		const borderCol = C.blue;
-		const topFill = Math.max(2, boxW - visibleWidth(tag) - 8);
-		const header = `  ${borderCol}╭─ ${C.bold}${tag}${C.reset}${borderCol} ${"─".repeat(topFill)}╮${C.reset}`;
+		const header = `  ${borderCol}╭─ ${C.bold}${tag}${C.reset}${borderCol} ${"─".repeat(Math.max(2, boxW - visibleWidth(tag) - 7))}╮${C.reset}`;
 		const rawLines = sanitizeRenderText(this.item.content + imageNotice(this.item.images)).replace(/\r\n/g, "\n").split("\n");
 		const bodyLines = rawLines.map((line) => {
-			const text = truncateToWidth(line, innerW);
-			const pad = Math.max(0, innerW - visibleWidth(text));
-			return `  ${borderCol}│${C.reset}  ${text}${" ".repeat(pad)}  ${borderCol}│${C.reset}`;
+			const text = truncateToWidth(stripAnsi(line), innerW, "");
+			return `  ${borderCol}│${C.reset} ${text}${" ".repeat(Math.max(0, innerW - visibleWidth(text)))} ${borderCol}│${C.reset}`;
 		});
-		const footer = `  ${borderCol}╰${"─".repeat(Math.max(4, boxW - 4))}╯${C.reset}`;
+		const footer = `  ${borderCol}╰${"─".repeat(boxW - 4)}╯${C.reset}`;
 		return [header, ...bodyLines, footer];
 	}
 }

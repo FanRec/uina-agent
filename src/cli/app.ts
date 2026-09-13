@@ -347,6 +347,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			registry: host.extensionRegistry,
 			jobPort: createJobAdapter(host.jobs),
 			subagentPort: createSubagentAdapter(host.subagents),
+			sessionPort: host.session,
 		});
 		host.attachExtensionUI(tui.ctxUI);
 		tui.onLine(onUserLine);
@@ -395,6 +396,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		openTasks: () => tui!.host.openTasks(),
 		openSubagents: () => tui!.host.openSubagents(),
 		openTrajectory: () => tui!.host.openTrajectory(),
+		openHistory: () => tui!.host.openHistory(),
 		setModel: (name) => tui!.host.setModel(name),
 		setThinkingLevels: (levels) => tui!.host.setThinkingLevels(levels),
 		setReasoningEffort: (level) => tui!.host.setReasoningEffort(level),

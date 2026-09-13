@@ -41,17 +41,17 @@ export class MainScreenRenderer {
 		for (let r = 0; r < rows.length; r++) {
 			const line = rows[r]!;
 			const markerIndex = line.indexOf(CURSOR_MARKER);
+			const cleanLine = markerIndex === -1 ? line : line.replace(CURSOR_MARKER, "");
 			if (markerIndex !== -1) {
 				const beforeMarker = line.slice(0, markerIndex);
 				const col = visibleWidth(beforeMarker) + 1;
 				cursorPos = { row: r, col: Math.min(col, width) };
-				const cleanLine = line.replace(CURSOR_MARKER, "");
-				if (r > 0) frame += "\r\n";
-				frame += this.fitToWidth(cleanLine, width) + "\x1b[K";
-			} else {
-				if (r > 0) frame += "\r\n";
-				frame += this.fitToWidth(line, width) + "\x1b[K";
 			}
+			// Rows are padded to exactly the terminal width, which leaves the cursor in the
+			// "pending wrap" state. Advancing with CR LF from there moves down two rows on
+			// hosts that act on the wrap immediately (the classic double-spaced frame), so
+			// every row is positioned absolutely instead of relying on line-feed movement.
+			frame += `\x1b[${r + 1};1H` + this.fitToWidth(cleanLine, width) + "\x1b[K";
 		}
 
 		// 硬件光标精确定位至输入框焦点所在行列，唤起原生系统 IME 候选框

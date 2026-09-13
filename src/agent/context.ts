@@ -123,8 +123,9 @@ export function buildContext(b: BuildInput): ChatMsg[] {
 	];
 }
 
-function formatRuntimeInput(input: { source: { kind: string; type: string; ref?: string }; text?: string; data?: unknown }): string {
-	const source = `${input.source.kind}/${input.source.type}${input.source.ref ? `:${input.source.ref}` : ""}`;
+function formatRuntimeInput(input: { source: { kind: string; type: string; ref?: string; provenance?: { branchId?: string; abandoned?: boolean } }; text?: string; data?: unknown }): string {
+	const prov = input.source.provenance?.abandoned ? " [来自废弃分支]" : "";
+	const source = `${input.source.kind}/${input.source.type}${input.source.ref ? `:${input.source.ref}` : ""}${prov}`;
 	const data = input.data === undefined ? "" : ` data=${JSON.stringify(input.data)}`;
 	return `[${source}] ${input.text ?? ""}${data}`;
 }

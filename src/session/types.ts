@@ -80,9 +80,11 @@ export interface SessionEventRecord {
 	data: Record<string, unknown>;
 }
 
+export interface RewindCompaction { summary: string; retainedTail: (AgentMessage | ChatMsg)[]; tokensBefore: number; }
+
 export interface RewindRequest { targetId: string; reason: string; summary?: string; }
 export interface SessionRewindRecord extends RewindRequest {
-	kind: "rewind"; id: string; seq: number; timestamp: string; fromId: string; source: string; requestId: string;
+	kind: "rewind"; id: string; seq: number; timestamp: string; fromId: string; source: string; requestId: string; compaction?: RewindCompaction;
 }
 export interface RewindResult { requestId: string; status: "scheduled" | "committed"; rewindId?: string; }
 export interface SessionAccess {
@@ -108,8 +110,18 @@ export interface SessionEntryMeta {
 	timestamp: string;
 }
 
+export interface AbandonedSideEffects {
+	readonly modifiedFiles: readonly string[];
+	readonly executedCommands: readonly string[];
+	readonly dispatchedTasks: readonly {
+		readonly id: string;
+		readonly type: "job" | "subagent";
+		readonly label?: string;
+	}[];
+}
+
 export type SessionEntryPayload =
-	| { kind: "rewind"; record: SessionRewindRecord; notice: string; carriedInputs: AgentMessage[] }
+	| { kind: "rewind"; record: SessionRewindRecord; notice: string; carriedInputs: AgentMessage[]; effects?: AbandonedSideEffects }
 	| { kind: "input"; input: QueuedInput }
 	| { kind: "message"; message: AgentMessage | ChatMsg }
 	| {

@@ -20,7 +20,7 @@ export interface QueuedMessage {
 	mode: Exclude<DeliveryMode, "direct">;
 	text: string;
  images?: ImageContent[];
-	source?: { kind: "user" | "runtime" | "agent"; type: string; ref?: string };
+	source?: { kind: "user" | "runtime" | "agent"; type: string; ref?: string; provenance?: { branchId?: string; abandoned?: boolean } };
 	data?: unknown;
 }
 

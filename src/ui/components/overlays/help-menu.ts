@@ -65,6 +65,7 @@ export class HelpMenu implements Component, Focusable {
 			["Alt+A", "子智能体看板 (Subagents)"],
 			["Alt+J", "后台任务看板 (TaskDashboard)"],
 			["Alt+T", "全屏审计轨迹时序 (Trajectory)"],
+			["Alt+H", "会话历史分支检视 (History)"],
 			["Alt+↑ / Alt+Q", "待办队列撤回至草稿"],
 			["Ctrl+Enter", "紧急打断并立即插队发送"],
 			["Shift+Tab", "循环切换思考强度 (off/high/max)"],
@@ -77,7 +78,7 @@ export class HelpMenu implements Component, Focusable {
 
 		const commandMap = new Map<string, string>();
 		for (const c of this.commands) {
-			if (c.name === "agents" || c.name === "jobs" || c.name === "traj" || c.name === "exit" || c.name === "think") {
+			if (c.name === "agents" || c.name === "jobs" || c.name === "traj" || c.name === "exit" || c.name === "think" || c.name === "branches") {
 				continue;
 			}
 			let nameDisplay = `/${c.name}`;
@@ -91,6 +92,9 @@ export class HelpMenu implements Component, Focusable {
 			} else if (c.name === "trajectory") {
 				nameDisplay = "/trajectory, /traj";
 				desc = "全屏审计轨迹时序看板 (Alt+T)";
+			} else if (c.name === "history") {
+				nameDisplay = "/history, /branches";
+				desc = "会话历史与分支看板 (Alt+H)";
 			} else if (c.name === "quit") {
 				nameDisplay = "/quit, /exit";
 				desc = "退出控制台";

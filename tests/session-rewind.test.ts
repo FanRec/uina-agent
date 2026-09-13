@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
-import { projectAgentHistory, protectRewindContext, recoverRecords } from "../src/session/recovery.js";
+import { projectAgentHistory, protectRewindContext, recoverRecords, summarizeAbandonedEffects, projectInputMessage } from "../src/session/recovery.js";
+import { BranchInspectorOverlay } from "../src/ui/components/overlays/branch-inspector.js";
 import { listSessionNodes, readSessionNode } from "../src/session/navigation.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -119,6 +120,73 @@ describe("rewind runtime safe points", () => {
 		await expect(subject.session.requestRewind({targetId:records[0].id,reason:"wrong"},"test")).rejects.toThrow("估算超过");
 		expect(store.readRecords().some(record=>record.kind==="rewind")).toBe(false);
 	});
+	it("rebuilds the pre-compaction mainline and drops the abandoned summary when rewinding across a compaction", async () => {
+		const store=new MemorySessionStore();
+		await store.appendMessage({role:"user",content:"PRE-COMPACTION USER"});
+		await store.appendMessage({role:"assistant",content:"pre-compaction answer"});
+		const targetId=store.readRecords()[1].id;
+		await store.appendCompaction("STALE SUMMARY of the abandoned path",[{role:"assistant",content:"pre-compaction answer"}],900);
+		await store.appendMessage({role:"user",content:"post-compaction user"});
+		await store.appendMessage({role:"assistant",content:"post-compaction answer"});
+		const fromId=store.readRecords().at(-1)!.id;
+		await store.appendRewind({id:"r-cross",requestId:"q",targetId,fromId,source:"model",reason:"fold back before the summary"});
+
+		const entries=recoverRecords([...store.readRecords()]).entries;
+		const history=projectAgentHistory(entries);
+		expect(history.some(message=>message.content==="PRE-COMPACTION USER")).toBe(true);
+		expect(history.some(message=>message.content.includes("STALE SUMMARY"))).toBe(false);
+		expect(history.some(message=>message.content.includes("会话回溯"))).toBe(true);
+		// The abandoned path stays readable as history, it just stops shaping the mainline.
+		const all=recoverRecords([...store.readRecords()]).allEntries;
+		expect(all.some(entry=>entry.kind==="compaction")).toBe(true);
+		expect(listSessionNodes(store.readRecords(),{scope:"all"}).nodes.some(node=>!node.active)).toBe(true);
+	});
+	it("compacts a rewind that re-exposes compacted history instead of refusing it", async () => {
+		const store=new MemorySessionStore();
+		await store.appendMessage({role:"user",content:"KEEP-THIS-PREFIX "+"p".repeat(2000)});
+		await store.appendMessage({role:"assistant",content:"ack",usage:{totalTokens:120}});
+		await store.appendMessage({role:"user",content:"abandoned instruction"});
+		await store.appendMessage({role:"assistant",content:"abandoned answer"});
+		const targetId=store.readRecords().at(-1)!.id;
+		await store.appendMessage({role:"user",content:"RE-EXPOSED "+"r".repeat(2000)});
+		const fromId=store.readRecords().at(-1)!.id;
+		await store.appendRewind({id:"r1",requestId:"q1",targetId,fromId,source:"test",reason:"oversized"});
+
+		const histories:number[]=[];const sent:string[][]=[];
+		const subject=new Subject(mockModel({contextWindow:400}),async(_m,req,emit)=>{
+			sent.push(req.messages.map(message=>String((message as {content?:string}).content ?? "")));
+			emit({kind:"text",text:"continued"});emit({kind:"finish",reason:"stop"});
+		},new ToolBroker(),{store,compactor:async request=>{histories.push(request.history.length);return {summary:"压缩摘要：重新展开的早期历史已折叠",keepFrom:1};}});
+		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
+
+		// The mainline projection now carries the re-exposed pre-compaction history, which overflows.
+		await subject.pushInput("carry on");
+
+		expect(histories).toHaveLength(1);
+		const flat=sent.flat();
+		expect(flat.some(text=>text.includes("[历史摘要] 压缩摘要：重新展开的早期历史已折叠"))).toBe(true);
+		expect(flat.some(text=>text.includes("会话回溯"))).toBe(true);
+		expect(store.readRecords().filter(record=>record.kind==="compaction")).toHaveLength(1);
+	});
+
+	it("refuses a rewind when the accepted compaction cut keeps the whole history", async () => {
+		const store=new MemorySessionStore();
+		await store.appendMessage({role:"user",content:"start"});
+		await store.appendMessage({role:"assistant",content:"ack"});
+		const targetId=store.readRecords()[1].id;
+		await store.appendMessage({role:"assistant",content:"JUST-DISCARD "+"d".repeat(16000)});
+		const fromId=store.readRecords().at(-1)!.id;
+		await store.appendRewind({id:"r1",requestId:"q1",targetId,fromId,source:"test",reason:"oversized"});
+
+		// keepFrom 0 removes nothing; accepting it would persist a summary plus everything it summarizes.
+		let proposed=0;
+		const subject=new Subject(mockModel({contextWindow:400}),async()=>{},new ToolBroker(),{store,compactor:async()=>{proposed++;return {summary:"无效压缩",keepFrom:0};}});
+		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
+		await subject.pushInput("carry on");
+		expect(proposed).toBe(1);
+		expect(store.readRecords().filter(record=>record.kind==="compaction")).toHaveLength(0);
+		expect(store.readRecords().filter(record=>record.kind==="rewind")).toHaveLength(1);
+	});
 });
 
 import { ExtensionRunner } from "../src/extensions/runner.js";
@@ -141,7 +209,7 @@ describe("rewind composition", () => {
 	});
 	it("keeps the rewind notice through live compaction and displays it in restored transcripts", async () => {
 		const store=new MemorySessionStore();const records=await seed(store);
-		const subject=new Subject(mockModel(),async(_m,_r,emit)=>{emit({kind:"text",text:"new plan"});emit({kind:"finish",reason:"stop"});},new ToolBroker(),{store,compactor:async request=>({summary:"用户要求停止写文件；原方案已退出。",keepFrom:request.history.length})});
+		const subject=new Subject(mockModel(),async(_m,_r,emit)=>{emit({kind:"text",text:"new plan"});emit({kind:"finish",reason:"stop"});},new ToolBroker(),{store,compactor:async request=>({summary:"用户要求停止写文件；原方案已退出。",keepFrom:request.history.length-1})});
 		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
 		await subject.session.requestRewind({targetId:records[0].id,reason:"wrong"},"test");
 		await subject.compact();
@@ -348,5 +416,230 @@ it("rejects session operations when subject has no store configured", async () =
 	expect(() => subject.session.read("any")).toThrow("未配置会话存储");
 	await expect(subject.session.requestRewind({ targetId: "any", reason: "test" }, "test")).rejects.toThrow("未配置会话存储");
 });
+
+describe("abandoned side-effects extraction", () => {
+	it("extracts modified files, executed commands and dispatched tasks, ignoring failed calls", () => {
+		const abandonedEntries = [
+			{
+				kind: "message" as const,
+				message: {
+					role: "assistant" as const,
+					content: "calling tools",
+					tool_calls: [
+						{ id: "c1", name: "write_file", args: { path: "src/index.ts", text: "hello" } },
+						{ id: "c2", name: "exec_command", args: { command: "npm test" } },
+						{ id: "c3", name: "exec_command", args: { command: "pnpm build", run_in_background: true } },
+						{ id: "c4", name: "write_file", args: { path: "fail.txt", text: "err" } },
+						{ id: "c5", name: "subagent_start", args: { label: "worker-1", prompt: "do work" } },
+					],
+				},
+			},
+			{
+				kind: "message" as const,
+				message: { role: "tool" as const, tool_call_id: "c1", content: "written", status: "succeeded" as const },
+			},
+			{
+				kind: "message" as const,
+				message: { role: "tool" as const, tool_call_id: "c2", content: JSON.stringify({ code: 0 }), status: "succeeded" as const },
+			},
+			{
+				kind: "message" as const,
+				message: { role: "tool" as const, tool_call_id: "c3", content: JSON.stringify({ jobId: "job-bg-99" }), status: "succeeded" as const },
+			},
+			{
+				kind: "message" as const,
+				message: { role: "tool" as const, tool_call_id: "c4", content: "disk error", status: "failed" as const },
+			},
+			{
+				kind: "message" as const,
+				message: { role: "tool" as const, tool_call_id: "c5", content: JSON.stringify({ id: "sub-42" }), status: "succeeded" as const },
+			},
+		];
+
+		const effects = summarizeAbandonedEffects(abandonedEntries);
+		expect(effects.modifiedFiles).toEqual(["src/index.ts"]);
+		expect(effects.executedCommands).toEqual(["npm test"]);
+		expect(effects.dispatchedTasks).toEqual([
+			{ id: "job-bg-99", type: "job", label: "pnpm build" },
+			{ id: "sub-42", type: "subagent", label: "worker-1" },
+		]);
+	});
+
+	it("takes the written path from the tool result when args carry no path", () => {
+		const effects = summarizeAbandonedEffects([
+			{
+				kind: "message",
+				message: {
+					role: "assistant",
+					content: "",
+					tool_calls: [{ id: "w1", name: "write_file", args: { text: "body" } }],
+				},
+			},
+			{
+				kind: "message",
+				message: {
+					role: "tool",
+					tool_call_id: "w1",
+					content: "written",
+					status: "succeeded",
+					details: { path: "notes/output.md" },
+				},
+			},
+		]);
+		expect(effects.modifiedFiles).toEqual(["notes/output.md"]);
+	});
+
+	it("injects structured side-effects manifest into rewind notice", async () => {
+		const store = new MemorySessionStore();
+		await store.appendMessage({ role: "user", content: "start" });
+		const targetId = store.readRecords()[0].id;
+		await store.appendMessage({
+			role: "assistant",
+			content: "write file",
+			tool_calls: [{ id: "c1", name: "write_file", args: { path: "hello.txt", text: "test" } }],
+		});
+		await store.appendMessage({ role: "tool", tool_call_id: "c1", content: "ok", status: "succeeded" });
+		const fromId = store.readRecords().at(-1)!.id;
+
+		await store.appendRewind({
+			id: "r-effects",
+			requestId: "req-1",
+			targetId,
+			fromId,
+			source: "test",
+			reason: "testing side effects injection",
+		});
+
+		const snapshot = recoverRecords([...store.readRecords()]);
+		const rewindEntry = snapshot.entries.find((e) => e.kind === "rewind");
+		expect(rewindEntry).toBeDefined();
+		if (rewindEntry && rewindEntry.kind === "rewind") {
+			expect(rewindEntry.effects?.modifiedFiles).toEqual(["hello.txt"]);
+			expect(rewindEntry.notice).toContain("hello.txt");
+			expect(rewindEntry.notice).toContain("[在被放弃历史切片中产生的外部操作]");
+		}
+	});
+});
+
+describe("provenance tagging for abandoned tasks", () => {
+	it("projects runtime inputs with provenance tag when from abandoned branches", () => {
+		const inputNormal = {
+			id: "in-1",
+			order: 1,
+			mode: "followUp" as const,
+			text: "task completed",
+			source: { kind: "runtime" as const, type: "job-notice", ref: "job-1" },
+		};
+		const projectedNormal = projectInputMessage(inputNormal);
+		expect(projectedNormal.content).not.toContain("来自废弃分支");
+
+		const inputAbandoned = {
+			id: "in-2",
+			order: 2,
+			mode: "followUp" as const,
+			text: "abandoned task completed",
+			source: {
+				kind: "runtime" as const,
+				type: "job-notice",
+				ref: "job-2",
+				provenance: { abandoned: true },
+			},
+		};
+		const projectedAbandoned = projectInputMessage(inputAbandoned);
+		expect(projectedAbandoned.content).toContain("[来自废弃分支]");
+	});
+
+	it("tags background job notices when they finish after their originating branch is rewound", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "uina-provenance-test-"));
+		try {
+			const host = await UinaHost.create({
+				cwd,
+				model: mockModel(),
+				stream: async () => {},
+			});
+			await host.start();
+
+			// Seed a session with a tool call that started a background job
+			await host.submitText("step 1");
+			const targetId = host.session.list().nodes[0].id;
+
+			// Append tool calling background job
+			await (host as any).store.appendMessage({
+				role: "assistant",
+				content: "running background job",
+				tool_calls: [{ id: "c-bg", name: "exec_command", args: { command: "sleep 10", run_in_background: true } }],
+			});
+			await (host as any).store.appendMessage({
+				role: "tool",
+				tool_call_id: "c-bg",
+				content: JSON.stringify({ jobId: "job-abandoned-1" }),
+				status: "succeeded",
+			});
+
+			// Perform rewind to targetId
+			await host.session.requestRewind({
+				targetId,
+				reason: "abandoning job branch",
+			}, "test");
+
+			// Verify that host now knows job-abandoned-1 is abandoned
+			expect(host.abandonedTaskIds.has("job-abandoned-1")).toBe(true);
+			await host.dispose();
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("BranchInspectorOverlay", () => {
+	it("renders session nodes, supports switching filter scope, and inspects details", async () => {
+		const store = new MemorySessionStore();
+		await store.appendMessage({ role: "user", content: "hello world" });
+		const targetId = store.readRecords()[0].id;
+		await store.appendMessage({ role: "assistant", content: "reply on old branch" });
+		const fromId = store.readRecords().at(-1)!.id;
+		await store.appendRewind({
+			id: "rewind-node",
+			requestId: "req-1",
+			targetId,
+			fromId,
+			source: "user",
+			reason: "testing inspector",
+		});
+
+		const access = {
+			list: (opts?: any) => listSessionNodes(store.readRecords(), opts),
+			read: (id: string) => readSessionNode(store.readRecords(), id),
+			requestRewind: async () => ({ requestId: "dummy", status: "committed" as const }),
+		};
+
+		const overlay = new BranchInspectorOverlay(access);
+		let rendered = overlay.render(80).join("\n");
+		expect(rendered).toContain("会话历史与分支检视器");
+		expect(rendered).toContain("hello world");
+
+		// Toggle filter scope: all -> abandoned -> main
+		overlay.handleInput("f");
+		rendered = overlay.render(80).join("\n");
+		expect(rendered).toContain("[ABANDONED]");
+
+		overlay.handleInput("f");
+		rendered = overlay.render(80).join("\n");
+		expect(rendered).toContain("[MAIN]");
+
+		// Tab to focus detail, scroll down
+		overlay.handleInput("\t");
+		overlay.handleInput("\x1b[B"); // down arrow
+		rendered = overlay.render(80).join("\n");
+		expect(rendered).toBeDefined();
+
+		// Esc to close
+		let closed = false;
+		overlay.onClose = () => { closed = true; };
+		overlay.handleInput("\x1b");
+		expect(closed).toBe(true);
+	});
+});
+
 
 

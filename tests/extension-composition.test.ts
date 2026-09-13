@@ -352,7 +352,7 @@ it("restores overridden model and provider registrations with their original fac
 it("an extension can choose its own automatic compression trigger without inventing a context window", async () => {
 	const host = runner(await temp());
 	const api = await activate(host, "summary");
-	api.registerCompactor(async (request) => ({ summary: "policy summary", keepFrom: request.history.length }), {
+	api.registerCompactor(async () => ({ summary: "policy summary", keepFrom: 1 }), {
 		shouldCompact: (input) => input.historyLength >= 2,
 	});
 	const subject = new Subject(mockModel(), stream, new ToolBroker(), {
@@ -366,6 +366,30 @@ it("an extension can choose its own automatic compression trigger without invent
 	await subject.pushInput("new");
 	expect(subject.historySnapshot()[0]).toMatchObject({ summary: "policy summary" });
 	expect(subject.getContextWindow()).toBeUndefined();
+});
+
+it("rejects a compactor proposal that keeps the whole history", async () => {
+	const host = runner(await temp());
+	const api = await activate(host, "keep-everything");
+	api.registerCompactor(async (request) => ({ summary: "no-op summary", keepFrom: request.history.length }), {
+		shouldCompact: () => true,
+	});
+	const subject = new Subject(mockModel(), stream, new ToolBroker(), {
+		compactor: host.compactor,
+		compactionTrigger: host.compactionTrigger,
+	});
+	subject.addHistory([
+		{ role: "user", content: "old" },
+		{ role: "assistant", content: "old answer" },
+	]);
+	const errors: string[] = [];
+	subject.subscribe((event) => {
+		if (event.type === "error") errors.push(event.text);
+	});
+	await subject.pushInput("new");
+	// The probe must reject it: accepting would persist a summary plus the messages it summarizes.
+	expect(errors.some((text) => text.includes("compaction 保留位置无效"))).toBe(true);
+	expect(subject.historySnapshot().some((message) => message.role === "compactionSummary")).toBe(false);
 });
 
 it("skills and filesystem extensions compose through services and the existing tool execution pipeline", async () => {
