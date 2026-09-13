@@ -3,7 +3,7 @@ import type { ModelRegistry } from "../ai/providers.js";
 import type { JobRegistry } from "./jobs/registry.js";
 import type { SubagentRegistry } from "./subagents/registry.js";
 import type { ExtensionAPI } from "./runner.js";
-import type { ThinkingLevel } from "../core/types.js";
+import type { ContextSegments, ThinkingLevel } from "../core/types.js";
 
 export interface BuiltinUIModelGroup {
 	id: string;
@@ -25,7 +25,7 @@ export interface BuiltinUI {
 	setModel?(name: string): void;
 	setThinkingLevels?(levels?: readonly ThinkingLevel[]): void;
 	setReasoningEffort?(level?: ThinkingLevel): void;
-	setUsage?(used: number, window?: number): void;
+	setUsage?(used: number, window?: number, segments?: ContextSegments): void;
 	getGutterMode?(): "scrollbar" | "timeline";
 	setGutterMode?(mode: "scrollbar" | "timeline"): void;
 	getScrollbarThumbStyle?(): "slim" | "block" | "wide";
@@ -139,7 +139,7 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			ui?.setModel?.(model.name);
 			ui?.setThinkingLevels?.(model.thinkingLevels);
 			ui?.setReasoningEffort?.(model.thinkingLevels?.length ? services.subject.getThinkingLevel() : undefined);
-			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow());
+			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow(), services.subject.getContextSegments());
 			pi.ui.notify(`已切换至模型: ${model.name}`);
 		};
 
@@ -148,7 +148,7 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
    ui?.setModel?.(model.name);
    ui?.setThinkingLevels?.(model.thinkingLevels);
    ui?.setReasoningEffort?.(model.thinkingLevels?.length ? services.subject.getThinkingLevel() : undefined);
-   ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow());
+   ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow(), services.subject.getContextSegments());
   });
 
 		pi.registerCommand({
@@ -209,7 +209,7 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			}
 			// Compaction rebuilds history in place; refresh the usage meter right away instead
 			// of waiting for the next turn_end to report the new (smaller) context size.
-			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow());
+			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow(), services.subject.getContextSegments());
 		});
 
 		pi.on("session_compact_failed", () => {
