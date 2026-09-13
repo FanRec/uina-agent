@@ -1032,6 +1032,128 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 		}
 	});
 
+	it("高频与粘包 SGR 鼠标事件被彻底拦截隔离，绝不泄漏至 InputLine 产生伪造粘贴标记", () => {
+		let stdinCallback: ((data: string) => void) | undefined;
+		const mockStdout = {
+			columns: 80,
+			rows: 24,
+			isTTY: true,
+			write: () => true,
+			on: () => {},
+			removeListener: () => {},
+		};
+		const mockStdin = {
+			isTTY: true,
+			setRawMode: () => true,
+			resume: () => {},
+			pause: () => {},
+			setEncoding: () => {},
+			on: (_evt: string, cb: (data: string) => void) => {
+				stdinCallback = cb;
+			},
+			removeListener: () => {},
+		};
+
+		const origStdout = process.stdout;
+		const origStdin = process.stdin;
+		Object.defineProperty(process, "stdout", { value: mockStdout, configurable: true });
+		Object.defineProperty(process, "stdin", { value: mockStdin, configurable: true });
+
+		try {
+			const tui = createInteractiveUI({
+				modelName: "test-model",
+			});
+
+			// 模拟高频移动产生的大量粘包 SGR 鼠标事件 (35 号 hover/move 事件连发)
+			const packetChunk = "\x1b[<35;54;39M\x1b[<35;53;39M\x1b[<35;52;39M\x1b[<35;51;39M\x1b[<35;50;40M".repeat(5);
+			stdinCallback!(packetChunk);
+
+			// 模拟拆包时遗失了开头的 ESC 导致的残片
+			stdinCallback!("[<35;54;39M[<35;53;39M");
+
+			// 验证输入框中绝对没有任何内容，更无 [已粘贴] 胶囊
+			const text = tui.host.getEditorText();
+			expect(text).toBe("");
+			expect(text.includes("已粘贴")).toBe(false);
+			expect(text.includes("[<35;")).toBe(false);
+
+			tui.close();
+		} finally {
+			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
+			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+		}
+	});
+
+	it("Agent 流式输出追加内容时，离开底部的视口保持绝对行号锚定，绝不被新内容顶跑", () => {
+		let stdinCallback: ((data: string) => void) | undefined;
+		const mockStdout = {
+			columns: 80,
+			rows: 20,
+			isTTY: true,
+			write: () => true,
+			on: () => {},
+			removeListener: () => {},
+		};
+		const mockStdin = {
+			isTTY: true,
+			setRawMode: () => true,
+			resume: () => {},
+			pause: () => {},
+			setEncoding: () => {},
+			on: (_evt: string, cb: (data: string) => void) => {
+				stdinCallback = cb;
+			},
+			removeListener: () => {},
+		};
+
+		const origStdout = process.stdout;
+		const origStdin = process.stdin;
+		Object.defineProperty(process, "stdout", { value: mockStdout, configurable: true });
+		Object.defineProperty(process, "stdin", { value: mockStdin, configurable: true });
+
+		try {
+			const tui = createInteractiveUI({
+				modelName: "test-model",
+			});
+
+			// 初始化 50 行历史，形成可滚动视口
+			tui.host.transcript.startTurn(1, "初次提问");
+			for (let i = 0; i < 50; i++) {
+				tui.host.transcript.appendToken(`历史数据行 ${i}\n`);
+			}
+			tui.host.transcript.commitThinking();
+
+			// 触发一次初始全帧渲染
+			(tui.host as any).renderCurrentFrame();
+			const initialLayout = (tui.host as any).computeLayout();
+			const initialScrollStart = initialLayout.scrollStart;
+
+			// 用户向上滚动查看历史
+			stdinCallback!("\x1b[<64;20;10M"); // 滚轮向上滚 3 行
+			stdinCallback!("\x1b[<64;20;10M"); // 滚轮向上滚 3 行
+			(tui.host as any).renderCurrentFrame();
+
+			const userScrolledLayout = (tui.host as any).computeLayout();
+			const anchoredScrollStart = userScrolledLayout.scrollStart;
+			expect(anchoredScrollStart).toBeLessThan(initialScrollStart);
+
+			// 模拟 Agent 正在工作流式吐字，连续追加 30 行新内容
+			for (let i = 0; i < 30; i++) {
+				tui.host.transcript.appendToken(`流式新增行 ${i}\n`);
+			}
+
+			// 再次渲染，验证用户的视口顶部绝对行号纹丝不动，绝对没有被新行顶跑
+			(tui.host as any).renderCurrentFrame();
+			const streamedLayout = (tui.host as any).computeLayout();
+			expect(streamedLayout.scrollStart).toBe(anchoredScrollStart);
+
+			tui.close();
+		} finally {
+			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
+			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+		}
+	});
+
 	it("支持 / 命令与 @ 文件输入联想浮层与 Tab 补全", () => {
 		let stdinCallback: ((data: string) => void) | undefined;
 		const mockStdout = {

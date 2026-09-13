@@ -393,6 +393,11 @@ export class InputLine implements Component, Focusable {
 	}
 
 	handleInput(data: string): void {
+		// 0. 防御性拦截：坚决丢弃任何未消费的 SGR 鼠标序列及剥落 ESC 后的残留片段
+		if (data.includes("\x1b[<") || data.includes("\x1b[M") || /^\[<\d+;\d+;\d+[Mm]/.test(data)) {
+			return;
+		}
+
 		// 1. 括号粘贴转义序列
 		if (data.includes("\x1b[200~")) {
 			this.inPasteMode = true;

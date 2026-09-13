@@ -164,6 +164,7 @@ export class UIHost implements UIHostContextPort {
 	private renderScheduled = false;
 	private animTimer: NodeJS.Timeout | null = null;
 	private scrollOffset = 0;
+	private lastTotalPerm = 0;
 
 	private activeSuggestions: {
 		type: "command" | "file";
@@ -184,8 +185,6 @@ export class UIHost implements UIHostContextPort {
 	private mouseTracker = new MouseSelectionTracker();
 	private lastRenderedRows: string[] = [];
 	private lastPermanentLines: string[] = [];
-	private lastScrollStart = 0;
-	private lastChatAreaH = 0;
 	private lastMaxScroll = 0;
 	private autoScrollTimer: NodeJS.Timeout | null = null;
 	private autoScrollDirection: "up" | "down" | null = null;
@@ -220,19 +219,14 @@ export class UIHost implements UIHostContextPort {
 					return;
 				}
 				this.scrollOffset = Math.min(this.lastMaxScroll, this.scrollOffset + 1);
-				const newScrollStart = Math.max(0, this.lastScrollStart - 1);
-				this.mouseTracker.updateFocusContent(newScrollStart, 0);
-				this.renderCurrentFrame();
+				this.requestRender();
 			} else {
 				if (this.scrollOffset <= 0) {
 					this.stopAutoScroll();
 					return;
 				}
 				this.scrollOffset = Math.max(0, this.scrollOffset - 1);
-				const bottomRow = Math.max(0, this.lastChatAreaH - 1);
-				const newScrollStart = Math.min(this.lastMaxScroll, this.lastScrollStart + 1);
-				this.mouseTracker.updateFocusContent(newScrollStart + bottomRow, bottomRow);
-				this.renderCurrentFrame();
+				this.requestRender();
 			}
 		}, 60);
 	}
@@ -634,11 +628,15 @@ export class UIHost implements UIHostContextPort {
 
 	loadHistory(messages: readonly import("../core/types.js").ChatMsg[]): void {
 		this.transcript.loadHistory(messages);
+		this.scrollOffset = 0;
+		this.lastTotalPerm = 0;
 		this.requestRender();
 	}
 
 	loadSession(entries: readonly SessionEntry[]): void {
 		this.transcript.loadSession(entries);
+		this.scrollOffset = 0;
+		this.lastTotalPerm = 0;
 		this.requestRender();
 	}
 
@@ -659,6 +657,7 @@ export class UIHost implements UIHostContextPort {
 
 	scrollToBottom(): void {
 		this.scrollOffset = 0;
+		this.lastTotalPerm = 0;
 		this.requestRender();
 	}
 
@@ -1127,6 +1126,15 @@ export class UIHost implements UIHostContextPort {
 		const permanentLines = [...bannerLines, ...transcriptLines];
 		const totalPerm = permanentLines.length;
 		const maxScroll = Math.max(0, totalPerm - transcriptH);
+
+		// 如果用户离开了底部（正在查看历史），底层追加了新内容（totalPerm 增大）时，
+		// 自动增加 scrollOffset 保持视口顶部的绝对行号绝对不变，防止新 token 将用户正在查看的内容顶跑。
+		if (this.scrollOffset > 0 && this.lastTotalPerm > 0 && totalPerm > this.lastTotalPerm) {
+			const delta = totalPerm - this.lastTotalPerm;
+			this.scrollOffset += delta;
+		}
+		this.lastTotalPerm = totalPerm;
+
 		const effScroll = totalPerm <= transcriptH ? 0 : Math.max(0, Math.min(this.scrollOffset, maxScroll));
 		const scrollStart = totalPerm <= transcriptH ? 0 : totalPerm - transcriptH - effScroll;
 		const visibleTranscript = totalPerm <= transcriptH
@@ -1221,8 +1229,6 @@ export class UIHost implements UIHostContextPort {
 		const atBottom = this.scrollOffset === 0;
 
 		this.lastPermanentLines = permanentLines;
-		this.lastScrollStart = scrollStart;
-		this.lastChatAreaH = chatAreaH;
 		this.lastMaxScroll = maxScroll;
 		this.mouseTracker.setScrollContext(scrollStart, chatAreaH);
 
@@ -1511,109 +1517,123 @@ export class UIHost implements UIHostContextPort {
 			} catch (error) { this.notify(`终端输入监听器失败: ${String(error)}`, "error"); }
 		}
 
-		// 1.5 鼠标 SGR 协议拦截（滚轮视口滚动、划词选区与交互热区）
-		if (data.startsWith("\x1b[<")) {
-			const isRelease = data.endsWith("m");
-			const res = this.mouseTracker.handleInput(
-				data,
-				this.lastRenderedRows,
-				this.onCopyOnSelect,
-				this.lastPermanentLines,
-			);
-			if (isRelease) {
-				this.stopAutoScroll();
-			}
-			if (res.handled) {
-				if (res.dragEdge === "top") {
-					this.startAutoScroll("up");
-				} else if (res.dragEdge === "bottom") {
-					this.startAutoScroll("down");
-				} else if (res.dragEdge === null && this.autoScrollTimer) {
+		// 1.5 鼠标 SGR 与 X10 协议拦截（滚轮视口滚动、划词选区与交互热区）
+		const sgrPattern = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
+		const sgrMatches = [...data.matchAll(sgrPattern)];
+		if (sgrMatches.length > 0 || data.includes("\x1b[<") || /^\[<\d+;\d+;\d+[Mm]/.test(data)) {
+			let anyNeedRender = false;
+			for (const match of sgrMatches) {
+				const eventStr = match[0];
+				const isRelease = match[4] === "m";
+				const res = this.mouseTracker.handleInput(
+					eventStr,
+					this.lastRenderedRows,
+					this.onCopyOnSelect,
+					this.lastPermanentLines,
+				);
+				if (isRelease) {
 					this.stopAutoScroll();
 				}
-
-				if (res.hoverTargetId !== undefined) {
-					const hoveredThinkingTurn = res.hoverTargetId?.startsWith("thinking:")
-						? parseInt(res.hoverTargetId.split(":")[1] ?? "", 10)
-						: res.hoverTargetId?.startsWith("thinking-")
-							? parseInt(res.hoverTargetId.replace("thinking-", ""), 10)
-							: null;
-					if (this.transcript.setHoveredThinkingTurn(hoveredThinkingTurn)) {
-						this.requestRender();
+				if (res.handled) {
+					if (res.dragEdge === "top") {
+						this.startAutoScroll("up");
+					} else if (res.dragEdge === "bottom") {
+						this.startAutoScroll("down");
+					} else if (res.dragEdge === null && this.autoScrollTimer) {
+						this.stopAutoScroll();
 					}
 
-					let hoveredToolId: string | null = null;
-					if (res.hoverTargetId?.startsWith("tool:")) {
-						const parts = res.hoverTargetId.split(":");
-						hoveredToolId = parts[1] ?? null;
-					} else if (res.hoverTargetId?.startsWith("tool-")) {
-						const parts = res.hoverTargetId.split("-");
-						hoveredToolId = parts.slice(1, -1).join("-");
-					}
-					if (this.transcript.setHoveredToolId(hoveredToolId)) {
-						this.requestRender();
-					}
+					if (res.hoverTargetId !== undefined) {
+						const hoveredThinkingTurn = res.hoverTargetId?.startsWith("thinking:")
+							? parseInt(res.hoverTargetId.split(":")[1] ?? "", 10)
+							: res.hoverTargetId?.startsWith("thinking-")
+								? parseInt(res.hoverTargetId.replace("thinking-", ""), 10)
+								: null;
+						if (this.transcript.setHoveredThinkingTurn(hoveredThinkingTurn)) {
+							anyNeedRender = true;
+						}
 
-					let hoveredCompactionIndex: number | null = null;
-					if (res.hoverTargetId?.startsWith("compaction:")) {
-						const parts = res.hoverTargetId.split(":");
-						const idx = parseInt(parts[1] ?? "", 10);
-						if (!Number.isNaN(idx)) hoveredCompactionIndex = idx;
-					}
-					if (this.transcript.setHoveredCompaction(hoveredCompactionIndex)) {
-						this.requestRender();
-					}
+						let hoveredToolId: string | null = null;
+						if (res.hoverTargetId?.startsWith("tool:")) {
+							const parts = res.hoverTargetId.split(":");
+							hoveredToolId = parts[1] ?? null;
+						} else if (res.hoverTargetId?.startsWith("tool-")) {
+							const parts = res.hoverTargetId.split("-");
+							hoveredToolId = parts.slice(1, -1).join("-");
+						}
+						if (this.transcript.setHoveredToolId(hoveredToolId)) {
+							anyNeedRender = true;
+						}
 
-					const isCtxProgressHovered = res.hoverTargetId === "context-progress";
-					if (this.contextBar.setHovered(isCtxProgressHovered)) {
-						this.requestRender();
-					}
+						let hoveredCompactionIndex: number | null = null;
+						if (res.hoverTargetId?.startsWith("compaction:")) {
+							const parts = res.hoverTargetId.split(":");
+							const idx = parseInt(parts[1] ?? "", 10);
+							if (!Number.isNaN(idx)) hoveredCompactionIndex = idx;
+						}
+						if (this.transcript.setHoveredCompaction(hoveredCompactionIndex)) {
+							anyNeedRender = true;
+						}
 
-					if (res.hoverTargetId?.startsWith("rail-tick-")) {
-						const turnN = parseInt(res.hoverTargetId.replace("rail-tick-", ""), 10);
-						this.timelineRail.setHoverTurnN(turnN);
-						const target = this.mouseTracker.getTarget(res.hoverTargetId);
-						if (target) {
-							this.timelineRail.setHover(target.row);
+						const isCtxProgressHovered = res.hoverTargetId === "context-progress";
+						if (this.contextBar.setHovered(isCtxProgressHovered)) {
+							anyNeedRender = true;
 						}
-						this.requestRender();
-					} else if (res.hoverTargetId === "rail-up" || res.hoverTargetId === "rail-down") {
-						const target = this.mouseTracker.getTarget(res.hoverTargetId);
-						if (target) {
-							this.timelineRail.setHover(target.row);
+
+						if (res.hoverTargetId?.startsWith("rail-tick-")) {
+							const turnN = parseInt(res.hoverTargetId.replace("rail-tick-", ""), 10);
+							this.timelineRail.setHoverTurnN(turnN);
+							const target = this.mouseTracker.getTarget(res.hoverTargetId);
+							if (target) {
+								this.timelineRail.setHover(target.row);
+							}
+							anyNeedRender = true;
+						} else if (res.hoverTargetId === "rail-up" || res.hoverTargetId === "rail-down") {
+							const target = this.mouseTracker.getTarget(res.hoverTargetId);
+							if (target) {
+								this.timelineRail.setHover(target.row);
+							}
+							anyNeedRender = true;
+						} else if (res.hoverTargetId?.startsWith("scrollbar-row-")) {
+							const row = parseInt(res.hoverTargetId.replace("scrollbar-row-", ""), 10);
+							if (this.scrollbarGutter.setHover(row)) {
+								anyNeedRender = true;
+							}
+						} else {
+							let needReq = false;
+							if (this.timelineRail.getHoverRow() !== null || this.timelineRail.getHoverTurnN() !== null) {
+								this.timelineRail.setHoverTurnN(null);
+								this.timelineRail.setHover(null);
+								needReq = true;
+							}
+							if (this.scrollbarGutter.getHoverRow() !== null) {
+								this.scrollbarGutter.clearHover();
+								needReq = true;
+							}
+							if (needReq) {
+								anyNeedRender = true;
+							}
 						}
-						this.requestRender();
-					} else if (res.hoverTargetId?.startsWith("scrollbar-row-")) {
-						const row = parseInt(res.hoverTargetId.replace("scrollbar-row-", ""), 10);
-						if (this.scrollbarGutter.setHover(row)) {
-							this.requestRender();
+					}
+					if (res.wheelDelta !== undefined) {
+						if (res.wheelDelta < 0) {
+							this.scrollUp(Math.abs(res.wheelDelta));
+						} else {
+							this.scrollDown(res.wheelDelta);
 						}
-					} else {
-						let needReq = false;
-						if (this.timelineRail.getHoverRow() !== null || this.timelineRail.getHoverTurnN() !== null) {
-							this.timelineRail.setHoverTurnN(null);
-							this.timelineRail.setHover(null);
-							needReq = true;
-						}
-						if (this.scrollbarGutter.getHoverRow() !== null) {
-							this.scrollbarGutter.clearHover();
-							needReq = true;
-						}
-						if (needReq) {
-							this.requestRender();
-						}
+					}
+					if (res.needRender) {
+						anyNeedRender = true;
 					}
 				}
-				if (res.wheelDelta !== undefined) {
-					if (res.wheelDelta < 0) {
-						this.scrollUp(Math.abs(res.wheelDelta));
-					} else {
-						this.scrollDown(res.wheelDelta);
-					}
-				}
-				if (res.needRender) {
-					this.renderCurrentFrame();
-				}
+			}
+			if (anyNeedRender) {
+				this.requestRender();
+			}
+
+			// 从输入流中彻底剥除所有 SGR 鼠标序列及其残缺碎片，防止透传到输入框
+			data = data.replace(sgrPattern, "").replace(/\[<\d+;\d+;\d+[Mm]/g, "");
+			if (!data || data.trim() === "" || data.includes("\x1b[<")) {
 				return;
 			}
 		}
@@ -1970,6 +1990,7 @@ export class UIHost implements UIHostContextPort {
 
 	private handleUserSubmitMode(text: string, mode: "direct" | "steer" | "followUp" | "interrupt"): void {
 		this.scrollOffset = 0;
+		this.lastTotalPerm = 0;
 		this.activeSuggestions = null;
 		this.inputLine.clear();
 
