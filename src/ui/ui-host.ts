@@ -159,7 +159,6 @@ export class UIHost implements UIHostContextPort {
  private stopRegistryUpdates?: () => void;
 	private busy = false;
 	private turnStartTime = 0;
-	private streamTokenCount = 0;
 
 	private lastElapsedMs = 0;
 	private renderScheduled = false;
@@ -504,10 +503,6 @@ export class UIHost implements UIHostContextPort {
 		return this.reasoningEffort;
 	}
 
-	getStreamTokenCount(): number {
-		return this.streamTokenCount;
-	}
-
 	setGutterMode(mode: "timeline" | "scrollbar"): void {
 		this.gutterMode = mode;
 		this.requestRender();
@@ -535,7 +530,6 @@ export class UIHost implements UIHostContextPort {
 		this.inputLine.setBusy(busy);
 		if (busy) {
 			this.turnStartTime = Date.now();
-			this.streamTokenCount = 0;
 			this.startAnimation();
 		} else {
 			this.cancelPending = false;
@@ -553,10 +547,6 @@ export class UIHost implements UIHostContextPort {
 
 	isBusy(): boolean {
 		return this.busy;
-	}
-
-	incrementTokens(count = 1): void {
-		this.streamTokenCount += count;
 	}
 
 	setUsage(

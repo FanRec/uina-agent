@@ -201,7 +201,6 @@ export class InteractiveTUI {
 				this.host.transcript.appendToken(m.text);
 				{
 					const estimatedTokens = Math.max(1, Math.ceil(m.text.length / STREAM_CHARS_PER_TOKEN));
-					this.host.incrementTokens(estimatedTokens);
 					this.host.activityLine.addTokens(estimatedTokens);
 				}
 				this.host.activityLine.update("streaming", "正在输出回复...");
@@ -218,6 +217,8 @@ export class InteractiveTUI {
 				break;
 
 			case "tool_start": {
+				// 模型调用到此结束，封存解码跨度；接下来的工具执行时间不计入生成速度。
+				this.host.activityLine.sealDecodeSpan();
 				if (this.currentThinkingId) {
 					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
@@ -276,9 +277,9 @@ export class InteractiveTUI {
 				const lastTurn = history[history.length - 1];
 				const isInterrupted = lastTurn?.items.some((it) => it.kind === "interrupt");
 				if (isInterrupted) {
-					this.host.activityLine.finish("已打断当前轮次", elapsed > 0 ? elapsed : undefined, this.host.getStreamTokenCount());
+					this.host.activityLine.finish("已打断当前轮次", elapsed > 0 ? elapsed : undefined);
 				} else {
-					this.host.activityLine.finish("本轮已完成", elapsed > 0 ? elapsed : undefined, this.host.getStreamTokenCount());
+					this.host.activityLine.finish("本轮已完成", elapsed > 0 ? elapsed : undefined);
 				}
 				this.host.requestRender();
 				break;

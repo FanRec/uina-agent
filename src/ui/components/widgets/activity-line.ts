@@ -129,37 +129,49 @@ export class ActivityLineComponent implements Component {
 	private phase: ActivityPhase = "idle";
 	private message = "";
 	private startTime = 0;
-	private tokenCount = 0;
 	private elapsedMs = 0;
 
+	/** 当前解码跨度内、尚未被真实值取代的字符估算 token 数。 */
+	private spanEstimateTokens = 0;
+
 	/**
-	 * 首个输出 token 的墙钟时刻；tps 的分母从它算起。
+	 * 当前解码跨度的起点（该跨度首个输出 token 的墙钟时刻）；0 表示没有正在进行的解码。
 	 *
-	 * 不用 startTime：那是回合开始的时刻，回合里还包含工具执行与每次请求的
-	 * 首 token 等待（TTFT）。把它们算进分母会把生成速度稀释掉——工具跑 8 秒、
-	 * 生成 2 秒，显示出来的 tps 就只有真值的 1/5。dsh-tui 同样只累计
-	 * first-token → message 的跨度。
+	 * 一个「step」= 一次模型调用 + 它触发的工具执行。速度的分母只累加每个 step 的
+	 * 「首个 token → 调用结束」跨度，工具执行与每次请求的首 token 等待（TTFT）都不计入：
+	 * 工具跑 8 秒、生成 2 秒，若把工具时间算进分母，显示的速度就只有真值的 1/5。
+	 * 对齐 dsh-TUI channel.ts 的 tpsTurnDecodeMs —— "summing only first-token → message
+	 * spans excludes tool execution and per-request TTFT from generation speed"。
 	 */
 	private decodeStartTime = 0;
-	/** 服务端报过的真实输出 token 数（本次回合累计）；有它就不再用字符估算。 */
+	/**
+	 * 最近一个输出 token 到达的墙钟时刻，也就是当前跨度的右端。
+	 *
+	 * 不用渲染时刻当右端：两次 token 之间分母会继续涨而分子不动，显示出来的速度就会
+	 * 一路往下掉（"一开始很快、越跑越慢"的假象）。dsh-TUI 的实时值同样以 token 事件
+	 * 自身的时间戳为右端 —— elapsedMs = event.time - step.firstTokenTime。
+	 */
+	private lastTokenTime = 0;
+	/** 本回合已封存的解码跨度总和（毫秒）。 */
+	private decodeMsAccum = 0;
+	/** 本回合已完成调用报回的真实输出 token 累计；有它就优先于字符估算。 */
 	private realOutputTokens = 0;
 
-	// TPS 采样环形缓冲区
+	/** 每回合一个速度采样，跨回合保留（结束后的火花线取最近若干个回合）。 */
 	private tpsSamples: number[] = [];
-	private lastSampleTime = 0;
-	private lastSampleTokens = 0;
 
 	start(phase: ActivityPhase, message: string): void {
 		this.phase = phase;
 		this.message = message;
 		this.startTime = Date.now();
-		this.tokenCount = 0;
+		this.spanEstimateTokens = 0;
 		this.elapsedMs = 0;
 		this.decodeStartTime = 0;
+		this.lastTokenTime = 0;
+		this.decodeMsAccum = 0;
 		this.realOutputTokens = 0;
-		this.tpsSamples = [];
-		this.lastSampleTime = this.startTime;
-		this.lastSampleTokens = 0;
+		// tpsSamples 不在这里清空：只留一个回合的历史，量程峰值就等于当前值，
+		// 表盘每个回合都会从满格重新开始缩；跨回合保留才有参照物。
 	}
 
 	update(phase: ActivityPhase, message: string): void {
@@ -168,30 +180,33 @@ export class ActivityLineComponent implements Component {
 	}
 
 	addTokens(count: number): void {
-		this.tokenCount += count;
+		this.spanEstimateTokens += count;
 		const now = Date.now();
-		// 第一个 token 到达时才开始计解码时间：此前的等待是 TTFT，不是生成。
+		this.lastTokenTime = now;
+		// 跨度内首个 token 到达时才开始计时：此前的等待是 TTFT，不是生成。
 		if (this.decodeStartTime === 0) this.decodeStartTime = now;
-		// 每 250ms 采样一次局部速率
-		if (now - this.lastSampleTime >= 250) {
-			const deltaTokens = this.tokenCount - this.lastSampleTokens;
-			const deltaSec = (now - this.lastSampleTime) / 1000;
-			if (deltaSec > 0) {
-				const sampleTps = Math.round(deltaTokens / deltaSec);
-				this.tpsSamples.push(sampleTps);
-				if (this.tpsSamples.length > 10) {
-					this.tpsSamples.shift();
-				}
-			}
-			this.lastSampleTime = now;
-			this.lastSampleTokens = this.tokenCount;
-		}
+	}
+
+	/**
+	 * 封存当前解码跨度。模型调用结束（进入工具执行）或回合结束时调用。
+	 *
+	 * 工具执行期间不会再封存，于是工具耗时落不进分母；下一个 token 到达时会开启
+	 * 一个新跨度。dsh-TUI 对应 tpsTurnDecodeMs += 首token→message 的跨度。
+	 */
+	sealDecodeSpan(): void {
+		if (this.decodeStartTime <= 0) return;
+		// 右端取最近一个 token 的时刻，而非封存时刻：调用收尾到进入工具执行之间的
+		// 调度空档不是生成时间。
+		this.decodeMsAccum += Math.max(0, this.lastTokenTime - this.decodeStartTime);
+		this.decodeStartTime = 0;
 	}
 
 	finish(summary = "本轮已完成", elapsedOverride?: number, tokensOverride?: number): void {
+		this.sealDecodeSpan();
 		this.phase = "done";
-		if (tokensOverride !== undefined && tokensOverride > 0) {
-			this.tokenCount = tokensOverride;
+		// 字符估算只在没有任何真实值时兜底，避免真实值与估算被计两次。
+		if (tokensOverride !== undefined && tokensOverride > 0 && this.realOutputTokens === 0) {
+			this.spanEstimateTokens = tokensOverride;
 		}
 		if (elapsedOverride !== undefined && elapsedOverride > 0) {
 			this.elapsedMs = elapsedOverride;
@@ -201,19 +216,25 @@ export class ActivityLineComponent implements Component {
 			this.elapsedMs = 0;
 		}
 		this.message = summary;
+		// 回合级采样：结束后火花线用最近若干个回合的速度。
+		const decodeMs = this.settledDecodeMs();
+		const tokens = this.outputTokenCount();
+		if (tokens > 0 && decodeMs > 0) {
+			this.tpsSamples.push(Math.round(tokens / (decodeMs / 1000)));
+			if (this.tpsSamples.length > 500) this.tpsSamples.shift();
+		}
 	}
 
 	reset(): void {
 		this.phase = "idle";
 		this.message = "";
 		this.startTime = 0;
-		this.tokenCount = 0;
+		this.spanEstimateTokens = 0;
 		this.elapsedMs = 0;
 		this.decodeStartTime = 0;
+		this.lastTokenTime = 0;
+		this.decodeMsAccum = 0;
 		this.realOutputTokens = 0;
-		this.tpsSamples = [];
-		this.lastSampleTime = 0;
-		this.lastSampleTokens = 0;
 	}
 
 	getPhase(): ActivityPhase {
@@ -229,22 +250,37 @@ export class ActivityLineComponent implements Component {
 	 *
 	 * 服务端的 output 是"本次调用"的 completion_tokens；一个回合可以有多轮调用
 	 * （stream → tool → stream），每一轮的输出都应计入这一轮的生成速度，所以这里是
-	 * 累加而不是覆盖。字符估算（`chars / 3`）对中文严重偏低（一个汉字远比 3 个字符
-	 * 更"贵"），所以只要有真实值就改用它，估算只在流式过程中兜底。
+	 * 累加而不是覆盖。真实值一到就丢掉当前跨度里那份字符估算——估算（`chars / 3`）
+	 * 对中文严重偏低（一个汉字远比 3 个字符更"贵"），但它只是真实值到达前的占位。
 	 */
 	addRealOutputTokens(tokens: number): void {
-		if (tokens > 0) this.realOutputTokens += tokens;
+		if (tokens <= 0) return;
+		this.realOutputTokens += tokens;
+		this.spanEstimateTokens = 0;
 	}
 
-	/** 生成速度的分子：真实值优先，否则用流式累计的估算。 */
+	/** 速度分子：已完成调用的真实值 + 当前跨度尚未落定的估算。 */
 	private outputTokenCount(): number {
-		return this.realOutputTokens > 0 ? this.realOutputTokens : this.tokenCount;
+		return this.realOutputTokens + this.spanEstimateTokens;
 	}
 
-	/** 生成速度的分母：只算首个 token 之后的生成耗时（毫秒）。 */
-	private decodeMs(now: number): number {
-		if (this.phase === "done") return this.elapsedMs;
-		return this.decodeStartTime > 0 ? Math.max(0, now - this.decodeStartTime) : 0;
+	/**
+	 * 解码耗时（毫秒）：已封存跨度 + 当前正在进行的跨度。
+	 *
+	 * 当前跨度以「最近一个 token 的时刻」为右端，所以没有新 token 时这个值不变，
+	 * 显示的速度也就不会自己往下掉。
+	 */
+	private decodeMs(): number {
+		if (this.decodeStartTime > 0) {
+			const end = Math.max(this.lastTokenTime, this.decodeStartTime);
+			return this.decodeMsAccum + Math.max(0, end - this.decodeStartTime);
+		}
+		return this.decodeMsAccum;
+	}
+
+	/** 结束态的解码耗时：实测跨度优先，一次都没测到才退回墙钟。 */
+	private settledDecodeMs(): number {
+		return this.decodeMsAccum > 0 ? this.decodeMsAccum : this.elapsedMs;
 	}
 
 	/** 提取适用于圆角盒顶边框嵌入的状态文本 */
@@ -255,15 +291,16 @@ export class ActivityLineComponent implements Component {
 		const currentElapsed = this.phase === "done" ? this.elapsedMs : (this.startTime > 0 ? now - this.startTime : 0);
 		const seconds = (Math.max(0, currentElapsed) / 1000).toFixed(1);
 		const tokens = this.outputTokenCount();
-		const decodeMs = this.decodeMs(now);
 
 		if (this.phase === "done") {
 			const prefix = `${C.green}✓${C.reset}`;
 			let sparkStr = "";
 			// tps 的分母是解码耗时而非墙钟耗时：工具执行不该稀释生成速度。
+			const decodeMs = this.settledDecodeMs();
 			if (tokens > 0 && decodeMs > 0) {
 				const avgTps = Math.round(tokens / (decodeMs / 1000));
-				const spark = formatTpsSparkline(this.tpsSamples.length > 0 ? this.tpsSamples : [avgTps]);
+				// 火花线取最近 12 个回合（dsh-TUI 同为 slice(-12)）。
+				const spark = formatTpsSparkline(this.tpsSamples.slice(-12));
 				const sparkColor = avgTps >= 50 ? C.green : avgTps >= 20 ? C.yellow : C.red;
 				sparkStr = spark ? ` · ${sparkColor}${spark}${C.reset} ~${avgTps} tps` : ` · ~${avgTps} tps`;
 			}
@@ -274,9 +311,12 @@ export class ActivityLineComponent implements Component {
 		const frameIdx = Math.floor(now / 80) % SPINNER_FRAMES.length;
 		const spinner = `${C.iceBlue}${SPINNER_FRAMES[frameIdx]}${C.reset}`;
 		let tpsStr = "";
-		if (tokens > 0 && decodeMs > 400) {
+		// 分母由 token 到达时刻推算：没有新 token 时分子分母一起停住，不会因为
+		// 分母空转而显示成"越来越慢"。dsh-TUI 的门控同为 elapsed > 500ms。
+		const decodeMs = this.decodeMs();
+		if (tokens > 0 && decodeMs > 500) {
 			const tps = Math.round(tokens / (decodeMs / 1000));
-			// 量程随采样峰值缩放，柱状图才不会长期满格。
+			// 量程随采样峰值缩放（地板 40），柱状图才不会长期满格。
 			const peak = Math.max(tps, ...this.tpsSamples, 0);
 			const gauge = formatTpsGauge(tps, peak, 8);
 			tpsStr = ` · ${gauge} ~${tps} tps`;
