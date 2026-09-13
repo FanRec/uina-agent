@@ -183,7 +183,7 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 		expect(after).toBeLessThan(10000);
 
 		// The source message must not be mutated (clone semantics stay intact).
-		expect(retained[0]?.usage).toBe(staleUsage);
+		expect((retained[0] as { usage?: unknown }).usage).toBe(staleUsage);
 	});
 	it("anchors on trustworthy usage only and never marks a part-sum fallback as exact", async () => {
 		const { estimateContextTokens } = await import("../src/agent/context.js");
