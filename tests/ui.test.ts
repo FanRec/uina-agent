@@ -2611,6 +2611,37 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(getToolCategory("run_command")).toBe("exec");
 			});
 
+			it("Uina 自有工具必须有显式类别与显示名，不得依赖兜底", () => {
+				// 回归点：类别表与显示名表是从 Claude Code / dsh-TUI 抄来的别名表，
+				// 长期只覆盖 exec_command / read_file。其余本地工具（write_file、read_image、
+				// get_time、session_*、job_*、subagent_*）全部落到兜底分支：显示成
+				// "Write_file" / "Get_time" 这类带下划线的名字，颜色也退回 default。
+				// 删掉下表任意一行，都应当因为映射缺失而失败。
+				const expected: Array<[name: string, display: string, category: string]> = [
+					["exec_command", "Exec", "exec"],
+					["get_time", "GetTime", "read"],
+					["session_list", "SessionList", "read"],
+					["session_read", "SessionRead", "read"],
+					["session_rewind", "SessionRewind", "default"],
+					["read_file", "Read", "read"],
+					["read_image", "ReadImage", "read"],
+					["write_file", "Write", "write"],
+					["job_list", "JobList", "task"],
+					["job_output", "JobOutput", "task"],
+					["job_kill", "JobKill", "task"],
+					["subagent_start", "SubagentStart", "task"],
+					["subagent_list", "SubagentList", "task"],
+					["subagent_status", "SubagentStatus", "task"],
+					["subagent_output", "SubagentOutput", "task"],
+					["subagent_messages", "SubagentMessages", "task"],
+					["subagent_send", "SubagentSend", "task"],
+					["subagent_interrupt", "SubagentInterrupt", "task"],
+				];
+				for (const [name, display, category] of expected) {
+					expect({ name, display: displayName(name), category: getToolCategory(name) }).toEqual({ name, display, category });
+				}
+			});
+
 			it("extractSummaryArgs 兼容 JSON 字符串与多样化参数对象", () => {
 				expect(extractSummaryArgs("exec_command", JSON.stringify({ command: "Get-Date" })).summary).toBe("Get-Date");
 				expect(extractSummaryArgs("exec", { cmd: "dir" }).summary).toBe("dir");

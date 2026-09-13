@@ -2,8 +2,6 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ExtensionAPI, ImageContent } from "../index.js";
 
-import { truncateToWidth } from "../../ui/core/utils.js";
-
 /** Trusted filesystem capabilities; no shell process or Core changes. */
 export default function activate(api: ExtensionAPI): void {
 	const fileSchema = {
@@ -69,15 +67,6 @@ export default function activate(api: ExtensionAPI): void {
 			};
 		},
 	});
-	api.registerToolRenderer("read_file", (tool, options) => ({
-		render: (width) => {
-			const details = tool.details as { path?: string; lines?: number } | undefined;
-			return [
-				"Read " + (details?.path ?? String((tool.args as { path?: string })?.path ?? "")) + " · " + tool.status,
-				...(options.expanded ? (tool.result ?? "").split("\n") : [String(details?.lines ?? "?") + " lines"]),
-			].map(line => truncateToWidth(line, width));
-		},
-	}));
 }
 
 /** Identify the file signature; this does not certify that every image frame decodes. */

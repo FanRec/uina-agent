@@ -82,7 +82,7 @@ describe("B1: transcript line model", () => {
 		const lines = transcript.render(80);
 		const withRender = transcript.getToolLineIndices(80)[0]!.lineIndex;
 		expect(withRender).toBe(withoutRender);
-		expect(stripAnsi(lines[withRender] ?? "")).toContain("Get_time");
+		expect(stripAnsi(lines[withRender] ?? "")).toContain("GetTime");
 	});
 });
 

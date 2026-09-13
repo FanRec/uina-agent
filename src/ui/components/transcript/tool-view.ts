@@ -36,6 +36,7 @@ export type ToolCategory = "write" | "exec" | "read" | "web" | "task" | "default
 export const CATEGORY_BY_TOOL: Record<string, ToolCategory> = {
 	// write / mutate (Warm Gold / Amber)
 	write: "write",
+	write_file: "write",
 	edit: "write",
 	write_to_file: "write",
 	replace_file_content: "write",
@@ -62,6 +63,10 @@ export const CATEGORY_BY_TOOL: Record<string, ToolCategory> = {
 	read: "read",
 	view_file: "read",
 	read_file: "read",
+	read_image: "read",
+	get_time: "read",
+	session_list: "read",
+	session_read: "read",
 	grep: "read",
 	grep_search: "read",
 	glob: "read",
@@ -86,6 +91,16 @@ export const CATEGORY_BY_TOOL: Record<string, ToolCategory> = {
 	schedule: "task",
 	define_subagent: "task",
 	job: "task",
+	job_list: "task",
+	job_output: "task",
+	job_kill: "task",
+	subagent_start: "task",
+	subagent_list: "task",
+	subagent_status: "task",
+	subagent_output: "task",
+	subagent_messages: "task",
+	subagent_send: "task",
+	subagent_interrupt: "task",
 	workflow: "task",
 };
 
@@ -123,11 +138,13 @@ export function displayName(rawName: string): string {
 		run_command: "RunCommand",
 		read: "Read",
 		read_file: "Read",
+		read_image: "ReadImage",
 		view_file: "ViewFile",
 		glob: "Glob",
 		grep: "Grep",
 		grep_search: "Grep",
 		write: "Write",
+		write_file: "Write",
 		write_to_file: "Write",
 		edit: "Edit",
 		replace_file_content: "Edit",
@@ -140,6 +157,22 @@ export function displayName(rawName: string): string {
 		search_web: "WebSearch",
 		read_url_content: "ReadUrl",
 		schedule: "Schedule",
+
+		// Uina 自有工具（dsh/Claude Code 别名表之外的本地工具名）
+		get_time: "GetTime",
+		session_list: "SessionList",
+		session_read: "SessionRead",
+		session_rewind: "SessionRewind",
+		job_list: "JobList",
+		job_output: "JobOutput",
+		job_kill: "JobKill",
+		subagent_start: "SubagentStart",
+		subagent_list: "SubagentList",
+		subagent_status: "SubagentStatus",
+		subagent_output: "SubagentOutput",
+		subagent_messages: "SubagentMessages",
+		subagent_send: "SubagentSend",
+		subagent_interrupt: "SubagentInterrupt",
 	};
 	const mapped = KNOWN[rawName.toLowerCase()];
 	if (mapped) return mapped;
