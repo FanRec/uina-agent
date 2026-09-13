@@ -185,6 +185,31 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 		// The source message must not be mutated (clone semantics stay intact).
 		expect(retained[0]?.usage).toBe(staleUsage);
 	});
+	it("anchors on trustworthy usage only and never marks a part-sum fallback as exact", async () => {
+		const { estimateContextTokens } = await import("../src/agent/context.js");
+
+		// Aborted / errored turns never saw a complete context; their usage must not anchor.
+		const aborted = estimateContextTokens([
+			{ role: "user", content: "hi" },
+			{ role: "assistant", content: "cut off", status: "aborted", usage: { totalTokens: 99999 } },
+		]);
+		expect(aborted.tokens).toBeLessThan(99999);
+		expect(aborted.actual).toBe(false);
+
+		// A provider total is exact.
+		const withTotal = estimateContextTokens([
+			{ role: "assistant", content: "ok", status: "complete", usage: { totalTokens: 5000 } },
+		]);
+		expect(withTotal.tokens).toBe(5000);
+		expect(withTotal.actual).toBe(true);
+
+		// A part-sum fallback is a usable anchor but must stay marked as not exact.
+		const partSum = estimateContextTokens([
+			{ role: "assistant", content: "ok", status: "complete", usage: { input: 100, output: 20 } },
+		]);
+		expect(partSum.tokens).toBe(120);
+		expect(partSum.actual).toBe(false);
+	});
 	it("skips empty assistant frames in Gemini and groups function responses", () => {
 		const messages: ModelRequest["messages"] = [
 			{ role: "user", content: "hi" },

@@ -1,5 +1,5 @@
 import { imageNotice } from "../core/content.js";
-import type { AgentMessage, ChatMsg, ContextSegments, ToolDef } from "../core/types.js";
+import type { AgentMessage, ChatMsg, ContextSegments, ToolDef, Usage } from "../core/types.js";
 
 export interface ContextEstimate { tokens: number; actual: boolean; }
 
@@ -194,25 +194,47 @@ export interface EstimateContextOptions {
 	includeThinking?: boolean;
 }
 
-/** Pi-style: the latest persisted provider usage anchors the immutable prefix; newer content is estimated. */
+/**
+ * Total context tokens for a usage block, mirroring Pi `calculateContextTokens`
+ * (packages/ai/src/utils/estimate.ts): prefer the provider-reported total, and fall
+ * back to the summed parts when a provider omits `totalTokens`.
+ */
+function contextTokensFromUsage(usage: Usage): number {
+	const total = usage.totalTokens;
+	if (total !== undefined && total > 0) return total;
+	return (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+}
+
+/**
+ * Pi-style anchor: the latest *trustworthy* provider usage measures the immutable prefix and newer
+ * content is estimated. Mirrors Pi `getAssistantUsage` — an aborted or errored turn never reported a
+ * complete context, so its usage must not anchor the estimate (Uina's `status` is Pi's `stopReason`).
+ */
 export function estimateContextTokens(
 	messages: readonly (AgentMessage | ChatMsg)[],
 	options: EstimateContextOptions = {},
 ): ContextEstimate {
 	let anchor = -1;
 	let tokens = 0;
+	let exact = false;
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const message = messages[i];
-		if (message.role === "assistant" && message.usage?.totalTokens !== undefined) {
-			anchor = i;
-			tokens = message.usage.totalTokens;
-			break;
-		}
+		if (message.role !== "assistant") continue;
+		if (message.status === "aborted" || message.status === "error") continue;
+		if (!message.usage) continue;
+		const usageTokens = contextTokensFromUsage(message.usage);
+		if (usageTokens <= 0) continue;
+		anchor = i;
+		tokens = usageTokens;
+		// Only a provider-reported total is exact; a part-sum fallback is a good anchor but is
+		// still an approximation, so it must not be reported as an actual measurement.
+		exact = message.usage.totalTokens !== undefined && message.usage.totalTokens > 0;
+		break;
 	}
 	const trailing = messages.slice(anchor + 1);
 	return {
 		tokens: tokens + estimateRequestTokens(trailing, options.tools, options.includeThinking),
-		actual: anchor >= 0 && trailing.length === 0,
+		actual: anchor >= 0 && trailing.length === 0 && exact,
 	};
 }
 
