@@ -212,6 +212,13 @@ export class InteractiveTUI {
 					this.currentThinkingId = this.host.trajectoryProjection.onThinkingStart("深度推理");
 				}
 				this.host.transcript.appendThinking(m.text);
+				{
+					// 思考 token 也是「生成」，必须进解码跨度：服务端报回的 outputTokens
+					// 是 completion_tokens，本就含思考 token。此前只有正文增量走 addTokens，
+					// 于是分母要等正文首字才起算 —— 分子含思考、分母不含，开思考后读数虚高几十倍。
+					const thinkingTokens = Math.max(1, Math.ceil(m.text.length / STREAM_CHARS_PER_TOKEN));
+					this.host.activityLine.addTokens(thinkingTokens);
+				}
 				this.host.activityLine.update("thinking", "正在深度推理 (Thinking)...");
 				this.host.requestRender();
 				break;

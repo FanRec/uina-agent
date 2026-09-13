@@ -6,8 +6,11 @@
  * （子代理变异验证 #4），所以 2218 tps 的接线错误能一路溜到真机。
  * 这里从真实入口 createInteractiveUI 驱动 HostEvent，把接线本身钉住。
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createInteractiveUI } from "../src/ui/tui.js";
+
+/** 假时钟基准：TTFT 与生成跨度靠它区分。 */
+const T0 = 1_700_000_000_000;
 
 /** 从 SGR 序列里剥掉颜色与粗体，只留可见字形。 */
 const plain = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -45,5 +48,35 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 
 		const rendered = headerTokens(tui);
 		expect(rendered).toContain("~75 tokens");
+	});
+
+	it("思考增量也进解码跨度：分母从「首个生成的 token」起算，而非正文首字", () => {
+		// 服务端的 outputTokens 是 completion_tokens，含思考 token。若思考增量不喂
+		// addTokens，分母就要等正文首字才起算 —— 分子含思考、分母不含，读数虚高几十倍
+		// （真机实测 9952 tps，而同期墙钟下界只有 143 tps）。
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(T0);
+			const tui = createInteractiveUI({ modelName: "TestModel" });
+			tui.render({ type: "turn_start", n: 1, text: "想久一点" });
+			vi.setSystemTime(T0 + 1000); // +1s：TTFT 等待，不是生成，不计入分母
+			tui.render({ type: "thinking", text: "思".repeat(300) });
+			vi.setSystemTime(T0 + 6000); // +5s：思考生成中
+			tui.render({ type: "thinking", text: "考".repeat(300) });
+			vi.setSystemTime(T0 + 8000); // +2s：正文生成
+			tui.render({ type: "text", text: "答".repeat(300) });
+			vi.setSystemTime(T0 + 9000);
+			tui.render({ type: "turn_end", n: 1 });
+
+			const rendered = headerTokens(tui);
+			// 思考的两段估算必须计入（3x100=300），不能只剩正文那一段（100）
+			expect(rendered).toContain("~300 tokens");
+			expect(rendered).not.toContain("~100 tokens");
+			// 分母 = 首个思考 token 到最后一个 token = 7.0s，300/7 约 43 tps；
+			// 若思考增量不进跨度，分母退回墙钟 9s、分子只剩 100 → 11 tps。
+			expect(rendered).toContain("~43 tps");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
