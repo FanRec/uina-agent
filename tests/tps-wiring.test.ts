@@ -19,7 +19,7 @@ const headerTokens = (tui: ReturnType<typeof createInteractiveUI>): string =>
 	plain(tui.host.activityLine.render(200).join("\n"));
 
 describe("InteractiveTUI：usage_update 接线到速度计账", () => {
-	it("同一调用的多条 usage_update 只按最后一次计，不叠加、不与估算相加", () => {
+	it("同一调用的多条 usage_update 只按最后一次计，不叠加；该调用的字符估算被真值取代", () => {
 		const tui = createInteractiveUI({ modelName: "TestModel" });
 		tui.render({ type: "turn_start", n: 1, text: "做任务" });
 		// 模拟一次 text delta 留下的字符估算占位
@@ -75,6 +75,34 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 			// 分母 = 首个思考 token 到最后一个 token = 7.0s，300/7 约 43 tps；
 			// 若思考增量不进跨度，分母退回墙钟 9s、分子只剩 100 → 11 tps。
 			expect(rendered).toContain("~43 tps");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("上一次调用的真值到位后，本次调用新吐出的 token 仍要进分子（否则读数一路往下掉）", () => {
+		// 真机实测：调用 1 收尾报回 672 之后，调用 2 的 2271 个字符估算被永久丢弃，
+		// 分子冻在 672、分母照涨 —— 显示值从 297 tps 单调跌到 75，而模型一直在全速输出。
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(T0);
+			const tui = createInteractiveUI({ modelName: "TestModel" });
+			tui.render({ type: "turn_start", n: 1, text: "两轮输出" });
+			vi.setSystemTime(T0 + 10);
+			tui.render({ type: "thinking", text: "甲".repeat(300) }); // 估算 100
+			vi.setSystemTime(T0 + 510);
+			// 调用 1 收尾，真值 120 到位
+			tui.render({ type: "usage_update", callId: "call-1", usedTokens: 1000, outputTokens: 120 });
+			vi.setSystemTime(T0 + 1010);
+			tui.render({ type: "thinking", text: "乙".repeat(300) }); // 调用 2 又吐 100
+			// 分子 = 120 + 100 = 220，分母 = 1.0s → ~220 tps；丢弃估算则只剩 120 → ~120 tps
+			expect(headerTokens(tui)).toContain("~220 tps");
+			vi.setSystemTime(T0 + 2010);
+			tui.render({ type: "thinking", text: "丙".repeat(300) });
+			// 分子 = 120 + 200 = 320，分母 = 2.0s → ~160 tps；丢弃估算则 120/2 = ~60 tps
+			const rendered = headerTokens(tui);
+			expect(rendered).toContain("~160 tps");
+			expect(rendered).not.toContain("~60 tps");
 		} finally {
 			vi.useRealTimers();
 		}

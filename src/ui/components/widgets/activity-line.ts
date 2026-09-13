@@ -18,7 +18,7 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
  *
  * 与 `agent/context.ts` 的 `CHARS_PER_TOKEN` (=4, 用于上下文压缩阈值) 刻意分开：
  * 这里只服务于"正在生成时的速度显示"，而速度的分母是实时窗口、且只要服务端报了
- * output 就立刻改用真实值，所以它只需要量级对得上，不需要和压缩口径一致。
+ * output 还没报回的那一段先由它垫上，所以只需要量级对得上，不需要和压缩口径一致。
  * 中文比英文更"贵"（一个汉字 ≈ 1 token，而非 4 字符），所以这个兜底会偏低——
  * 但只要真实值一到就会被覆盖，不会影响最终读数。
  */
@@ -131,7 +131,7 @@ export class ActivityLineComponent implements Component {
 	private startTime = 0;
 	private elapsedMs = 0;
 
-	/** 当前解码跨度内、尚未被真实值取代的字符估算 token 数。 */
+	/** 上一个真值到达之后新产生的字符折算出的 token 估算数（真值覆盖它时清零）。 */
 	private spanEstimateTokens = 0;
 
 	/**
@@ -262,8 +262,8 @@ export class ActivityLineComponent implements Component {
 	 * usage_update（累积快照，值可能一路增长），因此：同一个 callId 只取最后一次
 	 * （覆盖），换 callId 时才把上一个调用的结果结算进 realOutputTokens。一个回合可以
 	 * 有多轮调用（stream → tool → stream），各轮结算后才累加，计入这一轮的总速度。
-	 * 真实值一到就丢掉当前跨度里那份字符估算——估算（`chars / N`）对中文严重偏低，
-	 * 只是真实值到达前的占位，两者绝不能相加。
+	 * 真值到达时清空字符估算：它覆盖的正是这次调用已经吐出的那段字符，真值权威更高，
+	 * 两者不能并存。清空同时也是边界标记 —— 此后新到达的字符重新从零累计。
 	 */
 	addRealOutputTokens(callId: string, tokens: number): void {
 		if (tokens <= 0) return;
@@ -277,12 +277,19 @@ export class ActivityLineComponent implements Component {
 	}
 
 	/**
-	 * 速度分子：已结算调用的真实值 + 当前调用最近一次的真实值；两者都为空时才退回
-	 * 字符估算。真实值到达后估算即作废，绝不与真实值相加。
+	 * 速度分子：已结算调用的真实值 + 当前调用最近一次的真实值 + 当前跨度内还没被真值
+	 * 覆盖的字符估算。
+	 *
+	 * 三项相加不会重复计数：服务端每次调用只在收尾时报一次 output（实测每个 callId 只
+	 * 报一个恒定值，并不存在想像中的同一调用内多值递增快照），所以 spanEstimateTokens
+	 * 攒下的总是上一个真值之后新产生的字符，与任何已计入的真值都不重叠。
+	 *
+	 * 此前写成 real > 0 ? real : spanEstimateTokens —— 只要有过一次真值就永久丢弃估算，
+	 * 于是当前这次调用吐出的 token 全都不进分子、而分母照涨，读数一路往下掉
+	 * （真机实测：模型正以约 350 tps 输出，显示值却从 297 单调跌到 75）。
 	 */
 	private outputTokenCount(): number {
-		const real = this.realOutputTokens + this.currentCallTokens;
-		return real > 0 ? real : this.spanEstimateTokens;
+		return this.realOutputTokens + this.currentCallTokens + this.spanEstimateTokens;
 	}
 
 	/**

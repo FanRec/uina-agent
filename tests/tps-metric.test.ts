@@ -71,16 +71,20 @@ describe("ActivityLineComponent：真实值优先于字符估算", () => {
 		expect(plain(act.getHeaderString(160))).not.toContain("~75 tokens");
 	});
 
-	it("真实值到达后再来 text delta，估算不会与真值相加", () => {
-		// addTokens 每次 text delta 都会涨回估算；真值一到它只能作废，不能又叠上去。
-		// 旧实现 outputTokenCount = realOutputTokens + spanEstimateTokens，会算成 120 + 999。
+	it("真值只取代它已覆盖的那段估算；清零之后新到的增量仍要计入", () => {
+		// 真值到达时 spanEstimateTokens 被清零，它覆盖的那 300 估算随之作废、不会重复计。
+		// 但清零之后新到达的字符属于后续调用的输出，必须继续计入 —— 否则分子冻结、分母照涨，
+		// 读数一路往下掉。真机实测：调用 1 报回 672 之后，调用 2 的 2271 个估算被永久丢弃，
+		// 显示值从 297 tps 单调跌到 75，而模型一直在全速输出。
 		const act = new ActivityLineComponent();
 		act.start("streaming", "正在输出...");
-		act.addTokens(300); // 估算占位
-		act.addRealOutputTokens("call-1", 120); // 真值到达，估算作废
-		act.addTokens(999); // 又来一段 text delta，估算又涨
+		act.addTokens(300); // 调用 1 的估算占位
+		act.addRealOutputTokens("call-1", 120); // 调用 1 真值到达 → 那 300 作废
+		act.addTokens(999); // 调用 2 的增量
 		act.finish("完成", 1000);
-		expect(plain(act.getHeaderString(160))).toContain("~120 tokens");
+		const out = plain(act.getHeaderString(160));
+		expect(out).toContain("~1119 tokens"); // 120（真值）+ 999（新增量）
+		expect(out).not.toContain("~1419 tokens"); // 已被真值取代的 300 不得复活
 	});
 
 	it("没有真实值时退回字符估算（÷ STREAM_CHARS_PER_TOKEN）", () => {
