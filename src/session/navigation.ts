@@ -126,8 +126,11 @@ export function readSessionNode(records: readonly SessionRecord[], id: string): 
 type RewindNode = Extract<HydratedSessionEntry, { kind: "rewind" }>;
 
 /**
- * 取出一条 rewind 所放弃的那段节点：`targetId`（保留的一端）之后、`fromId`（切断处）之前，
- * 并排除 rewind 节点自身。端点缺失或顺序颠倒时视为没有节点（返回空数组）。
+ * 取出一条 rewind 所放弃的那段节点：`targetId`（保留的一端）之后，到 `fromId`（切断处）为止。
+ * 端点缺失或顺序颠倒时视为没有节点（返回空数组）。
+ *
+ * 不必再排除 rewind 节点自身：allEntries 按记录顺序（seq 升序）追加，而被放弃段的最后一个节点
+ * 就是创建这条 rewind 时的历史末端，rewind 记录必然排在它之后，落在切片上界之外。
  *
  * P1.3：这段切片边界原先在 listSessionBranches 与 readSessionBranch 里各写了一份，
  * 收成唯一实现后，只有一处需要正确。
@@ -136,13 +139,10 @@ function branchEntries(
 	allEntries: readonly HydratedSessionEntry[],
 	targetId: string,
 	fromId: string,
-	excludeId: string,
 ): HydratedSessionEntry[] {
 	const start = allEntries.findIndex((n) => n.id === targetId);
 	const end = allEntries.findIndex((n) => n.id === fromId);
-	return start >= 0 && end > start
-		? allEntries.slice(start + 1, end + 1).filter((n) => n.id !== excludeId)
-		: [];
+	return start >= 0 && end > start ? allEntries.slice(start + 1, end + 1) : [];
 }
 
 /**
@@ -168,7 +168,7 @@ export function listSessionBranches(records: readonly SessionRecord[]): { branch
 	const { allEntries } = recoverRecords([...records], false);
 	const branches = allEntries
 		.filter((e) => e.kind === "rewind")
-		.map((e) => toBranchInfo(e, branchEntries(allEntries, e.record.targetId, e.record.fromId, e.id).length));
+		.map((e) => toBranchInfo(e, branchEntries(allEntries, e.record.targetId, e.record.fromId).length));
 	return { branches };
 }
 
@@ -178,7 +178,7 @@ export function readSessionBranch(records: readonly SessionRecord[], id: string)
 	if (rewind?.kind !== "rewind") {
 		throw new SessionNavigationError(`未知会话分支: ${id}`);
 	}
-	const nodes = branchEntries(allEntries, rewind.record.targetId, rewind.record.fromId, id);
+	const nodes = branchEntries(allEntries, rewind.record.targetId, rewind.record.fromId);
 	return {
 		branch: toBranchInfo(rewind, nodes.length),
 		nodes: nodes.map((n) => ({

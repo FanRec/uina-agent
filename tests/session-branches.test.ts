@@ -60,16 +60,28 @@ describe("readSessionBranch", () => {
 		}
 	});
 
-	it("返回的 nodes 是映射后的 SessionNodeInfo（带 preview），并排除 rewind 节点自身", async () => {
+	it("返回的 nodes 是映射后的 SessionNodeInfo（带 preview），且每条分支都不含自己的 rewind 节点", async () => {
 		const { records } = await seedWithTwoBranches();
-		const { nodes } = readSessionBranch(records, "r1");
-		expect(nodes.length).toBeGreaterThan(0);
-		for (const n of nodes) {
-			expect(n.id).not.toBe("r1");
-			expect(typeof n.preview).toBe("string");
-			expect(n).toHaveProperty("active");
-			expect(n).toHaveProperty("canRewind");
+		const { branches } = listSessionBranches(records);
+		expect(branches.length).toBeGreaterThan(1);
+		for (const b of branches) {
+			const { nodes } = readSessionBranch(records, b.id);
+			expect(nodes.length).toBeGreaterThan(0);
+			for (const n of nodes) {
+				// 切片上界若算错（多含一格），这条分支自己的 rewind 节点就会漏进来。
+				expect(n.id).not.toBe(b.id);
+				expect(typeof n.preview).toBe("string");
+				expect(n).toHaveProperty("active");
+				expect(n).toHaveProperty("canRewind");
+			}
 		}
+	});
+
+	it("更早的 rewind 节点会出现在后一次回溯的 nodes 里（它确实被这次回溯放弃了）", async () => {
+		const { records } = await seedWithTwoBranches();
+		// r2 回退到 m1，区间覆盖 [m2, r1, m3] —— r1 是先前那次回溯的记录，也被放弃。
+		const { nodes } = readSessionBranch(records, "r2");
+		expect(nodes.map((n) => n.id)).toContain("r1");
 	});
 
 	it("nodeCount 与返回的 nodes 数量一致", async () => {
