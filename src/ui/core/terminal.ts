@@ -48,8 +48,8 @@ export class ProcessTerminal {
 				process.stdout.on("resize", this.onResizeHandler);
 			}
 
-			// 开启备用屏（DEC 1049）、清屏、括号粘贴模式、键盘扩展、SGR 鼠标跟踪（滚轮、点击与选区拖拽）
-			process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?2004h\x1b[>1u\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+			// 开启备用屏（DEC 1049）、清屏、括号粘贴模式、键盘扩展、SGR 鼠标跟踪（滚轮、选区与 Hover 悬停）
+			process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?2004h\x1b[>1u\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
 		}
 	}
 
