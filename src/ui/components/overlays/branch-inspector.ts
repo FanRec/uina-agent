@@ -8,10 +8,18 @@ import type { Component, Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
 import { C, stripAnsi, visibleWidth, truncateToWidth } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
-import { listAllSessionNodes } from "../../../session/navigation.js";
+import { listAllSessionNodes, listBranchNodes } from "../../../session/navigation.js";
 import type { SessionAccess, SessionNodeInfo, HydratedSessionEntry } from "../../../session/types.js";
 
-type ViewMode = "main" | "branch-list" | "branch-history";
+/**
+ * 视图状态。三种视图共用同一套列表渲染，但"分支历史"必须同时知道是哪条分支 ——
+ * 把 branchId 编进这个联合后，"模式是分支历史、却没有选中分支"这种组合不再存在，
+ * 于是读取节点时不需要任何语义可疑的兜底分支。
+ */
+type View =
+	| { mode: "main" }
+	| { mode: "branch-list" }
+	| { mode: "branch-history"; branchId: string };
 
 /** Visible list rows; combined with the engine budget this matches the other dashboards. */
 const LIST_ROWS = 13;
@@ -23,19 +31,18 @@ export class BranchInspectorOverlay implements Component, Focusable {
 	// 翻页要按实际列宽算详情行数，否则 X/Y 与渲染出来的行数会对不上。
 	private lastWidth = 80;
 	private focusTarget: "list" | "detail" = "list";
-	private viewMode: ViewMode = "main";
-	private selectedBranchId: string | null = null;
+	private view: View = { mode: "main" };
 
 	onClose?: () => void;
 	onRequestRender?: () => void;
 
 	constructor(private readonly sessionPort: SessionAccess) {}
 
+	/** 三个视图各自的节点来源，全部来自内核投影。 */
 	private nodes(): SessionNodeInfo[] {
-		if (this.viewMode === "main") return listAllSessionNodes(this.sessionPort, { scope: "main" });
-		if (this.viewMode === "branch-history" && this.selectedBranchId && this.sessionPort.readBranch) return this.sessionPort.readBranch(this.selectedBranchId).nodes;
-		if (this.sessionPort.listBranches) return this.sessionPort.listBranches().branches.map((b) => ({ id:b.id, parentId:b.targetId, seq:0, kind:"rewind", active:false, canRewind:false, preview:`分支 ${b.id.slice(0,6)} · ${b.nodeCount} 节点 · ${b.reason}` }));
-		return listAllSessionNodes(this.sessionPort, { scope: "all" }).filter((n) => !n.active);
+		if (this.view.mode === "main") return listAllSessionNodes(this.sessionPort, { scope: "main" });
+		if (this.view.mode === "branch-history") return this.sessionPort.readBranch(this.view.branchId).nodes;
+		return listBranchNodes(this.sessionPort.listBranches().branches);
 	}
 
 
@@ -48,7 +55,7 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		const nodes = this.nodes();
 
 		if (matchesKey(data, Key.escape)) {
-			if (this.viewMode === "branch-history") { this.viewMode = "branch-list"; this.selectedBranchId = null; this.selectedIndex = 0; this.onRequestRender?.(); return; }
+			if (this.view.mode === "branch-history") { this.view = { mode: "branch-list" }; this.selectedIndex = 0; this.onRequestRender?.(); return; }
 			this.onClose?.(); this.onRequestRender?.(); return;
 		}
 
@@ -66,17 +73,17 @@ export class BranchInspectorOverlay implements Component, Focusable {
 				const maxOffset = Math.max(0, this.detailRowCount() - LIST_ROWS);
 				this.detailScrollOffset = Math.max(0, Math.min(maxOffset, this.detailScrollOffset + (forward ? LIST_ROWS : -LIST_ROWS)));
 			} else {
-				this.viewMode = this.viewMode === "main" ? "branch-list" : "main";
-				this.selectedBranchId = null;
+				this.view = this.view.mode === "main" ? { mode: "branch-list" } : { mode: "main" };
 				this.selectedIndex = 0;
 				this.detailScrollOffset = 0;
 			}
 			this.onRequestRender?.();
 			return;
 		}
-		if (data === "\r" && this.viewMode === "branch-list" && this.sessionPort.listBranches) {
-			const branches = this.sessionPort.listBranches().branches;
-			if (branches[this.selectedIndex]) { this.selectedBranchId = branches[this.selectedIndex].id; this.viewMode = "branch-history"; this.selectedIndex = 0; this.detailScrollOffset = 0; this.onRequestRender?.(); return; }
+		if (data === "\r" && this.view.mode === "branch-list") {
+			// 行 id 就是分支 id（listBranchNodes 建立的投影），不必再查一次分支列表。
+			const row = nodes[this.selectedIndex];
+			if (row) { this.view = { mode: "branch-history", branchId: row.id }; this.selectedIndex = 0; this.detailScrollOffset = 0; this.onRequestRender?.(); return; }
 		}
 
 		if (matchesKey(data, Key.up)) {
@@ -154,10 +161,10 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		const splitRow = (left: string, right: string): string =>
 			`  ${rule} ${cell(left, leftW)}${cha(colMid)}${rule} ${cell(right, rightW)} ${cha(colRight)}${rule}`;
 
-		const titleTag = `─ 会话历史与分支检视器 [${this.viewMode === "main" ? "主线" : this.viewMode === "branch-list" ? "分支选择 [只读分支]" : "分支历史（只读）"}] `;
+		const titleTag = `─ 会话历史与分支检视器 [${this.view.mode === "main" ? "主线" : this.view.mode === "branch-list" ? "分支选择 [只读分支]" : "分支历史（只读）"}] `;
 		output.push(`  ${border}╭${titleTag}${"─".repeat(Math.max(1, boxWidth - 4 - visibleWidth(titleTag)))}${cha(colRight)}${border}╮${C.reset}`);
 
-		const help = `${this.viewMode === "main" ? "当前主线" : this.viewMode === "branch-list" ? "选择要查看的分支" : "废弃分支（只读）"} · ${nodes.length} 节点 · [←/→] 切换视图 [Tab] 焦点 ${this.focusTarget} [↑/↓] 移动 [Esc] 关闭`;
+		const help = `${this.view.mode === "main" ? "当前主线" : this.view.mode === "branch-list" ? "选择要查看的分支" : "废弃分支（只读）"} · ${nodes.length} 节点 · [←/→] 切换视图 [Tab] 焦点 ${this.focusTarget} [↑/↓] 移动 [Esc] 关闭`;
 		output.push(contentRow(help, C.dim));
 		output.push(`  ${border}├${"─".repeat(boxWidth - 4)}${cha(colRight)}${border}┤${C.reset}`);
 

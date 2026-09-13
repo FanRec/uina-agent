@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import {
 	SessionNavigationError,
+	listBranchNodes,
 	listSessionBranches,
 	readSessionBranch,
 } from "../src/session/navigation.js";
@@ -94,5 +95,29 @@ describe("readSessionBranch", () => {
 		const { records } = await seedWithTwoBranches();
 		expect(() => readSessionBranch(records, "nope")).toThrow(SessionNavigationError);
 		expect(() => readSessionBranch(records, "nope")).toThrow("未知会话分支");
+	});
+});
+
+describe("listBranchNodes", () => {
+	it("每条分支产出一行，预览文案与只读语义都在投影里", async () => {
+		const { records } = await seedWithTwoBranches();
+		const { branches } = listSessionBranches(records);
+		const rows = listBranchNodes(branches);
+
+		expect(rows.map((row) => row.id)).toEqual(branches.map((branch) => branch.id));
+		for (const [index, row] of rows.entries()) {
+			const branch = branches[index]!;
+			expect(row).toMatchObject({
+				id: branch.id,
+				parentId: branch.targetId,
+				kind: "rewind",
+				// 分支在主线之外，且这个视图不提供动作 —— 只读。
+				active: false,
+				canRewind: false,
+			});
+			expect(row.preview).toContain(branch.id.slice(0, 6));
+			expect(row.preview).toContain(`${branch.nodeCount} 节点`);
+			expect(row.preview).toContain(branch.reason);
+		}
 	});
 });

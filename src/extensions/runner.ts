@@ -104,8 +104,11 @@ export type ExtensionTeardown = () => void | Promise<void>;
 export type ExtensionActivation = (pi: ExtensionAPI) => void | ExtensionTeardown | Promise<void | ExtensionTeardown>;
 export type ExtensionModule = { default?: ExtensionActivation };
 
+/** 运行器真正需要的会话能力：查询与回溯请求。分支查询不在其中，所以不向宿主索取。 */
+type SessionQuery = Pick<import("../session/types.js").SessionAccess, "list" | "read" | "requestRewind">;
+
 export interface ExtensionRunnerOptions {
-	session?: import("../session/types.js").SessionAccess;
+	session?: SessionQuery;
 	cwd: string;
 	extensionPaths?: readonly string[];
 	models?: ExtensionModelAccess;
@@ -441,7 +444,7 @@ export class ExtensionRunner extends ExtensionHost {
 			own(dispose);
 			return dispose;
 		};
-		const sessionAccess = (): import("../session/types.js").SessionAccess => {
+		const sessionAccess = (): SessionQuery => {
 			assertActive();
 			if (!this.options.session) throw new Error("宿主未提供会话入口");
 			return this.options.session;

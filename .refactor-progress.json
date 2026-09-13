@@ -34,8 +34,8 @@
       "反自我欺骗"
     ],
     "createdAt": "2026-09-13T21:43:57+08:00",
-    "updatedAt": "2026-09-13T22:35:00+08:00",
-    "revision": 10
+    "updatedAt": "2026-09-14T00:27:21+08:00",
+    "revision": 11
   },
   "statusLegend": [
     "pending",
@@ -510,15 +510,19 @@
       "severity": "medium",
       "kind": "domain-boundary",
       "title": "navigation.ts 新增 listBranchNodes：把分支→节点投影下沉到领域层",
-      "status": "pending",
+      "status": "done",
       "evidence": [
         "src/ui/components/overlays/branch-inspector.ts:34 在 UI 层把 SessionBranchInfo 投影为 SessionNodeInfo，并生成 preview 文案模板",
         "src/session/navigation.ts:12 formatNodePreview 已是领域层的 preview 生成器 → 同一概念两份实现",
-        "src/extensions/session-tools/index.ts 未提供分支工具，正是因为非 UI 消费者拿不到分支的节点视图"
+        "src/extensions/session-tools/index.ts 未提供分支工具，正是因为非 UI 消费者拿不到分支的节点视图",
+        "实现：src/session/navigation.ts 新增 listBranchNodes(branches) —— 一条 rewind 记录 = 一行，preview 走 formatBranchPreview()",
+        "单测：tests/session-branches.test.ts describe('listBranchNodes') 覆盖 id/parentId/kind/active/canRewind 与预览文案（短 id · 节点数 · 原因）",
+        "UI 侧不再需要理解 SessionBranchInfo 的形状"
       ],
       "evidenceVerified": true,
       "files": [
-        "src/session/navigation.ts"
+        "src/session/navigation.ts",
+        "tests/session-branches.test.ts"
       ],
       "change": "新增 listBranchNodes(records, id?)，返回分支列表/单个分支的节点视图（preview 由领域层生成）",
       "acceptance": [
@@ -538,14 +542,20 @@
       "severity": "medium",
       "kind": "domain-boundary",
       "title": "branch-inspector.nodes() 改为纯委派",
-      "status": "pending",
+      "status": "done",
       "evidence": [
         "src/ui/components/overlays/branch-inspector.ts:31-37 在 UI 内决定数据源、过滤 !active、并把分支映射为节点",
-        ":35 的兜底把「主线节点」当作「分支列表」返回，是语义错误的数据源降级"
+        ":35 的兜底把「主线节点」当作「分支列表」返回，是语义错误的数据源降级",
+        "nodes() 收成三行纯委派（主线 / 分支历史 / 分支列表），删除 UI 内自行投影与 :35 的「把被放弃的节点当分支」兜底",
+        "视图状态由 viewMode+selectedBranchId 两个字段改为判别联合 type View —— 「模式是分支历史却没有 branchId」不可能构造，因此不需要兜底分支",
+        "Enter 进分支改为复用已算出的行 id，不再二次查询 listBranches()",
+        "测试：tests/branch-inspector.test.ts 新增三条语义用例（分支列表来自内核投影 / 被放弃节点不列为分支 / 进入分支列出被放弃节点）；原先编码旧兜底行为的断言与一条空转的 'f 键切换过滤范围' 用例（组件里没有 f 分支）改为跨三视图的框宽一致性",
+        "变异验证：把 nodes() 改回旧兜底 → 恰好这 3 条变红，其余 14 条照过"
       ],
       "evidenceVerified": true,
       "files": [
-        "src/ui/components/overlays/branch-inspector.ts"
+        "src/ui/components/overlays/branch-inspector.ts",
+        "tests/branch-inspector.test.ts"
       ],
       "lines": "31-37",
       "change": "main → sessionPort.list({scope:\"main\"})；branch-list → sessionPort.listBranches；branch-history → sessionPort.readBranch。删除自行投影与 :35 兜底",
@@ -568,16 +578,20 @@
       "severity": "medium",
       "kind": "contract",
       "title": "SessionAccess 的 listBranches/readBranch 由可选改为必需",
-      "status": "pending",
+      "status": "done",
       "evidence": [
         "src/session/types.ts 中 listBranches?() 与 readBranch?() 为可选",
         "生产实现 src/agent/loop.ts:83-104 始终提供二者；唯一不提供者是 tests/branch-inspector.test.ts:44-50 的 mock",
-        "可选性迫使 UI 写语义可疑的降级（见 P2.2）"
+        "可选性迫使 UI 写语义可疑的降级（见 P2.2）",
+        "src/session/types.ts：listBranches() / readBranch() 去掉可选标记",
+        "tsc 强制出全部实现者：host.ts:398 去掉两处 !；tests 三个 mock（branch-inspector / session-rewind / ui-layout）补齐实现",
+        "顺带纠正反向问题：ExtensionRunnerOptions.session 原声明为整套 SessionAccess，实际只用 list/read/requestRewind —— 收窄为 SessionQuery，不再向宿主索取分支能力（否则以后每加一个必需成员都会无故波及扩展运行器）"
       ],
       "evidenceVerified": true,
       "files": [
         "src/session/types.ts",
-        "tests/branch-inspector.test.ts"
+        "src/host/host.ts",
+        "src/extensions/runner.ts"
       ],
       "change": "去掉两个 `?`；补齐测试 mock",
       "acceptance": [
@@ -596,14 +610,15 @@
       "severity": "low",
       "kind": "dedup",
       "title": "统一分支 preview 生成",
-      "status": "pending",
+      "status": "done",
       "evidence": [
-        "branch-inspector.ts:34 的 `分支 ${id} · ${nodeCount} 节点 · ${reason}` 属领域表述，与 navigation.ts:12 的 preview 生成并存"
+        "branch-inspector.ts:34 的 `分支 ${id} · ${nodeCount} 节点 · ${reason}` 属领域表述，与 navigation.ts:12 的 preview 生成并存",
+        "分支 preview 模板下沉为 navigation.ts 的 formatBranchPreview()，与 formatNodePreview() 同处领域层",
+        "单测断言 preview 含短 id、节点数、原因三段"
       ],
       "evidenceVerified": true,
       "files": [
-        "src/session/navigation.ts",
-        "src/ui/components/overlays/branch-inspector.ts"
+        "src/session/navigation.ts"
       ],
       "change": "preview 模板下沉至 navigation.ts（随 P2.1 落地）",
       "acceptance": [
@@ -702,6 +717,28 @@
       "sizeHint": "+约 15 行 helper + 2 处调用点替换",
       "completedAt": "2026-09-13T22:10:30+08:00",
       "notes": "测试策略：先加回归测试并在**未修复代码**上跑出红（tests/branch-inspector.test.ts:328 —— 面板报 \"50 节点\" 而真实是 60），再实现修复。 变异验证：把 `if (!page.next) return nodes;` 改为 `if (!page.next || nodes.length > 0) ...`（只取首页），两个新用例如期变红（2 failed / 13 passed）， 还原后与变异前备份**逐字节一致**（a===b 为 true），全量 492 测试恢复全绿。备份用 .bak（非 git），因为 navigation.ts 当时含未提交修复，git checkout 会连修复一起丢掉。 变异前的备份文件 src/session/navigation.ts.bak-p07-mut 已按验证结果清理。 架构判断：builtin.ts 原本 6 行 import 全是 import type（纯契约模块），本次为它新增了一个**值 import**（../session/navigation.js）。 依据：check-boundaries.mjs 规则 1 只禁止 session→extensions，未禁止 extensions→session；且 builtin.ts 运行期本来就通过注入的 services.subject.session 调用同一契约， 依赖方向未改变。已跑 `node scripts/check-boundaries.mjs` 确认 5 条规则全过。 覆盖说明：新加的 2 个用例覆盖了 listAllSessionNodes 本身与面板端到端；builtin.ts 的降级分支**无单测覆盖**（需要 mock ExtensionAPI + 无 UI 环境），此点如实记账。"
+    },
+    {
+      "id": "P1.5",
+      "phase": "P1",
+      "priority": 3,
+      "severity": "low",
+      "kind": "deadcode",
+      "title": "删除 branchEntries 恒真的 .filter((n) => n.id !== excludeId)",
+      "status": "done",
+      "evidence": [
+        "原先只以「变异删掉后 6 条测试全绿」为据 —— 那是「没有测试覆盖」，不是「恒真」，不足以定案",
+        "实证：10 个 rewind（真实 6283 条会话 1 个 + MemorySessionStore 构造 9 个：单次/相邻/最早/回溯后再回溯/三层链）上，未过滤切片长度与 nodeCount 每次都相等 → filter 移除 0 个节点",
+        "源码依据：allEntries 按记录 seq 升序追加（SessionReplayContext.add 只 push 不排序）；被放弃段最后一个节点是造该 rewind 时的历史末端，rewind 记录必然排在它之后，落在切片上界之外",
+        "excludeId 失去唯一消费者，参数与两处调用点一并删除（否则 noUnusedParameters 报错）",
+        "回归测试改为遍历每条分支；变异（切片上界 end+1 → end+2）令分支自身漏进 nodes，恰好该条变红",
+        "顺带确证：更早的 rewind 节点**可以**出现在后一次回溯的区间内（它确实被放弃），已补独立用例记录该行为"
+      ],
+      "evidenceVerified": true,
+      "files": [
+        "src/session/navigation.ts",
+        "tests/session-branches.test.ts"
+      ]
     }
   ],
   "notDoing": [

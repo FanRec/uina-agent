@@ -8,7 +8,7 @@ import { FocusManager } from "../src/ui/core/focus.js";
 import { visibleWidth, truncateToWidth, wrapTextWithAnsi } from "../src/ui/core/utils.js";
 import { InputLine, snapToGraphemeBoundary } from "../src/ui/components/editor/index.js";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
-import { listSessionNodes, readSessionNode } from "../src/session/navigation.js";
+import { listSessionBranches, listSessionNodes, readSessionBranch, readSessionNode } from "../src/session/navigation.js";
 
 function fakeTerminal(columns = 80, rows = 24): { terminal: ProcessTerminal; frames: string[] } {
 	const frames: string[] = [];
@@ -468,6 +468,8 @@ describe("C: overlay frame composition", () => {
 			modelName: "TestModel",
 			sessionPort: {
 				list: (options) => listSessionNodes(store.readRecords(), options),
+				listBranches: () => listSessionBranches(store.readRecords()),
+				readBranch: (id: string) => readSessionBranch(store.readRecords(), id),
 				read: (id) => readSessionNode(store.readRecords(), id),
 				requestRewind: async () => ({ requestId: "probe", status: "committed" as const }),
 			},

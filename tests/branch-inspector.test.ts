@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
-import { listAllSessionNodes, listSessionNodes, readSessionNode } from "../src/session/navigation.js";
+import { listAllSessionNodes, listSessionBranches, listSessionNodes, readSessionBranch, readSessionNode } from "../src/session/navigation.js";
 import { BranchInspectorOverlay } from "../src/ui/components/overlays/branch-inspector.js";
 import { CustomMessageComponent } from "../src/ui/components/transcript/cards.js";
 import { Key, matchesKey } from "../src/ui/core/keys.js";
@@ -44,6 +44,8 @@ async function seedInspectorStore(): Promise<MemorySessionStore> {
 function accessFor(store: MemorySessionStore) {
 	return {
 		list: (options?: Parameters<typeof listSessionNodes>[1]) => listSessionNodes(store.readRecords(), options),
+		listBranches: () => listSessionBranches(store.readRecords()),
+		readBranch: (id: string) => readSessionBranch(store.readRecords(), id),
 		read: (id: string) => readSessionNode(store.readRecords(), id),
 		requestRewind: async () => ({ requestId: "x", status: "committed" as const }),
 	};
@@ -255,14 +257,28 @@ describe("BranchInspectorOverlay geometry", () => {
 		expect(mismatches).toEqual([]);
 	});
 
-	it("keeps one frame width while cycling the filter scope", async () => {
+	// 三种视图的列表行来自不同投影（主线节点 / 分支行 / 分支内节点），框宽必须都收敛到同一值。
+	// 这条原先挂在"f 键切换过滤范围"上 —— 而组件里根本没有 f 分支，等于空转。
+	it("keeps one frame width across all three views", async () => {
 		const store = await seedInspectorStore();
 		const view = new BranchInspectorOverlay(accessFor(store));
-		for (const presses of [0, 1, 2, 3]) {
-			for (let step = 0; step < presses; step++) view.handleInput("f");
-			const widths = new Set(view.render(120).map((line) => visibleWidth(stripAnsi(line))));
-			expect([...widths]).toEqual([96]);
-		}
+		const widths = () => [...new Set(view.render(120).map((line) => visibleWidth(stripAnsi(line))))];
+		const header = () => stripAnsi(view.render(120)[0]!);
+
+		expect(header()).toContain("主线");
+		expect(widths()).toEqual([96]);
+
+		view.handleInput("\x1b[C"); // → 分支列表
+		expect(header()).toContain("分支选择");
+		expect(widths()).toEqual([96]);
+
+		view.handleInput("\r"); // Enter → 分支历史
+		expect(header()).toContain("分支历史");
+		expect(widths()).toEqual([96]);
+
+		view.handleInput("\x1b"); // Esc → 退回分支列表
+		expect(header()).toContain("分支选择");
+		expect(widths()).toEqual([96]);
 	});
 
 	// The panel is anchored above the bottom-pinned editor, so an oversized panel would be
@@ -300,14 +316,25 @@ describe("BranchInspectorOverlay geometry", () => {
 		expect(view.render(120).some((line) => line.includes("\n") || line.includes("\r"))).toBe(false);
 	});
 
-	it("shows the rewind facts of the selected node inside the frame", async () => {		const store = await seedInspectorStore();
+	it("分支列表是内核投影：一条 rewind 记录一行，被放弃的节点不出现在这里", async () => {
+		const store = await seedInspectorStore();
+		const view = new BranchInspectorOverlay(accessFor(store));
+		view.handleInput("\x1b[C");
+		const rendered = stripAnsi(view.render(120).join("\n"));
+		expect(rendered).toContain("[只读分支]");
+		// 该会话只有一条 rewind 记录 → 只有一行分支，行内是分支摘要（短 id · 节点数 · 原因）。
+		expect(rendered).toContain("验证覆盖层布局宽度收敛与换行行为");
+		// 被放弃的正文是那条分支的内容，不是分支本身 —— 不该被当成分支列出来。
+		expect(rendered).not.toContain("被放弃的分支回复");
+	});
+
+	it("进入分支后列出被放弃的节点", async () => {
+		const store = await seedInspectorStore();
 		const view = new BranchInspectorOverlay(accessFor(store));
 		view.handleInput("\x1b[C");
 		view.handleInput("\r");
-		const nodeCount = listSessionNodes(store.readRecords(), { scope: "all" }).nodes.length;
-		for (let step = 0; step < nodeCount; step++) view.handleInput("\x1b[B");
-		const rendered = view.render(120).map((line) => stripAnsi(line)).join("\n");
-		expect(rendered).toContain("只读分支");
+		const rendered = stripAnsi(view.render(120).join("\n"));
+		expect(rendered).toContain("分支历史（只读）");
 		expect(rendered).toContain("被放弃的分支回复");
 	});
 });

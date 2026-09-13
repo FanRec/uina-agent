@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { projectAgentHistory, protectRewindContext, recoverRecords, summarizeAbandonedEffects, projectInputMessage } from "../src/session/recovery.js";
 import { BranchInspectorOverlay } from "../src/ui/components/overlays/branch-inspector.js";
-import { listSessionNodes, readSessionNode } from "../src/session/navigation.js";
+import { listSessionBranches, listSessionNodes, readSessionBranch, readSessionNode } from "../src/session/navigation.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -609,6 +609,8 @@ describe("BranchInspectorOverlay", () => {
 
 		const access = {
 			list: (opts?: any) => listSessionNodes(store.readRecords(), opts),
+			listBranches: () => listSessionBranches(store.readRecords()),
+			readBranch: (id: string) => readSessionBranch(store.readRecords(), id),
 			read: (id: string) => readSessionNode(store.readRecords(), id),
 			requestRewind: async () => ({ requestId: "dummy", status: "committed" as const }),
 		};

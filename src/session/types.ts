@@ -90,8 +90,8 @@ export interface RewindResult { requestId: string; status: "scheduled" | "commit
 export interface SessionBranchInfo { id: string; targetId: string; fromId: string; headId: string; nodeCount: number; createdAt: string; reason: string; }
 export interface SessionAccess {
 	list(options?: { scope?: "main" | "all"; after?: string; limit?: number }): { nodes: SessionNodeInfo[]; next?: string; headId?: string };
-	listBranches?(): { branches: SessionBranchInfo[] };
-	readBranch?(id: string): { branch: SessionBranchInfo; nodes: SessionNodeInfo[] };
+	listBranches(): { branches: SessionBranchInfo[] };
+	readBranch(id: string): { branch: SessionBranchInfo; nodes: SessionNodeInfo[] };
 	read(id: string): HydratedSessionEntry;
 	requestRewind(request: RewindRequest, source: string, signal?: AbortSignal): Promise<RewindResult>;
 }

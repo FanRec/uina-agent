@@ -192,3 +192,30 @@ export function readSessionBranch(records: readonly SessionRecord[], id: string)
 		})),
 	};
 }
+
+/**
+ * 把分支列表投影成面板可直接渲染的节点行：一条 rewind 记录 = 一行。
+ *
+ * 面板的列表渲染器只认 SessionNodeInfo，所以分支在这里被映射成该形状。各字段按
+ * "只读的分支行"解释：
+ * - id 取分支 id：面板据此进入该分支的节点视图，不必再查一次分支列表；
+ * - parentId 取被保留的那一端（targetId）；
+ * - seq 是节点概念，分支没有对应量，用 0 占位；
+ * - active / canRewind 恒为 false —— 分支在主线之外，且这个视图不提供动作。
+ */
+export function listBranchNodes(branches: readonly SessionBranchInfo[]): SessionNodeInfo[] {
+	return branches.map((branch) => ({
+		id: branch.id,
+		parentId: branch.targetId,
+		seq: 0,
+		kind: "rewind",
+		active: false,
+		canRewind: false,
+		preview: formatBranchPreview(branch),
+	}));
+}
+
+/** 分支行的一行摘要：短 id、节点数、回溯原因。 */
+function formatBranchPreview(branch: SessionBranchInfo): string {
+	return `分支 ${branch.id.slice(0, 6)} · ${branch.nodeCount} 节点 · ${branch.reason}`;
+}
