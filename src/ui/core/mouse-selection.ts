@@ -138,10 +138,6 @@ export class MouseSelectionTracker {
 		this.targets.length = 0;
 	}
 
-	getHoverTargetId(): string | null {
-		return this.currentHoverTargetId;
-	}
-
 	hasSelection(): boolean {
 		if (!this.anchor || !this.focus) return false;
 		if (this.anchor.contentRow !== undefined && this.focus.contentRow !== undefined) {

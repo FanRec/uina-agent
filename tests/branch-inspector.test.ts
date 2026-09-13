@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
-import { listSessionNodes, readSessionNode } from "../src/session/navigation.js";
+import { listAllSessionNodes, listSessionNodes, readSessionNode } from "../src/session/navigation.js";
 import { BranchInspectorOverlay } from "../src/ui/components/overlays/branch-inspector.js";
 import { CustomMessageComponent } from "../src/ui/components/transcript/cards.js";
 import { Key, matchesKey } from "../src/ui/core/keys.js";
@@ -309,6 +309,71 @@ describe("BranchInspectorOverlay geometry", () => {
 		const rendered = view.render(120).map((line) => stripAnsi(line)).join("\n");
 		expect(rendered).toContain("只读分支");
 		expect(rendered).toContain("被放弃的分支回复");
+	});
+});
+
+describe("BranchInspectorOverlay arrow-key semantics", () => {
+	it("switches view while the list has focus, pages the detail pane once it has focus", async () => {
+		const store = await seedInspectorStore();
+		const view = new BranchInspectorOverlay(accessFor(store));
+		const header = () => stripAnsi(view.render(100)[0]!);
+
+		// 列表焦点：←/→ 仍是切视图（提示也这么写）。
+		expect(header()).toContain("主线");
+		view.handleInput("\x1b[C");
+		expect(header()).toContain("分支选择");
+		view.handleInput("\x1b[D");
+		expect(header()).toContain("主线");
+
+		// 详情焦点：←/→ 改去翻详情面板，而不是又切一次视图。
+		view.handleInput("\t");
+		view.handleInput("\x1b[C");
+		expect(header()).toContain("主线");
+
+		// 向后翻用右箭头，向前翻用左箭头；X/Y 会跟着动。
+		const paged = () => stripAnsi(view.render(100).at(-1)!).match(/翻页详情 (\d+)\/(\d+)/);
+		const start = paged();
+		if (start) {
+			view.handleInput("\x1b[C");
+			expect(Number(paged()![1])).toBeGreaterThan(Number(start[1]));
+			view.handleInput("\x1b[D");
+			expect(Number(paged()![1])).toBe(Number(start[1]));
+		}
+	});
+});
+
+describe("BranchInspectorOverlay paging", () => {
+	// list() 的分页游标必须被排空：漏一页会让第 51 条起消失，重复消费则会让同一条出现两次。
+	it("drains every page in order without duplicates", async () => {
+		const store = new MemorySessionStore();
+		for (let i = 0; i < 125; i++) {
+			await store.appendMessage({ role: i % 2 === 0 ? "user" : "assistant", content: "分页 " + i });
+		}
+		const port = { list: (options?: Parameters<typeof listSessionNodes>[1]) => listSessionNodes(store.readRecords(), options) };
+		const drained = listAllSessionNodes(port, { scope: "main" });
+		const expected = listSessionNodes(store.readRecords(), { scope: "main", limit: 1000 }).nodes;
+		expect(drained.map((n) => n.id)).toEqual(expected.map((n) => n.id));
+		expect(new Set(drained.map((n) => n.id)).size).toBe(drained.length);
+	});
+
+
+	// list() 的 limit 是分页页大小（默认 50），不是上限。面板若只取首页，第 51 条起
+	// 会静默消失 —— 而标题还会把截断后的条数当作总数印出来，等于对用户撒谎。
+	it("shows every mainline node once the history exceeds one page", async () => {
+		const store = new MemorySessionStore();
+		for (let i = 0; i < 60; i++) {
+			await store.appendMessage({ role: i % 2 === 0 ? "user" : "assistant", content: "分页节点 " + i });
+		}
+		// 用显式大 limit 取真实总数，绝不把 bug 的产物（50）当成期望值
+		const all = listSessionNodes(store.readRecords(), { scope: "main", limit: 1000 }).nodes;
+		expect(all.length).toBeGreaterThan(50);
+
+		const view = new BranchInspectorOverlay(accessFor(store));
+		expect(stripAnsi(view.render(200).join("\n"))).toContain(all.length + " 节点");
+
+		// 滚到列表末尾：最后一条必须可达，而不是停在第 50 条
+		for (let step = 0; step < all.length; step++) view.handleInput("\x1b[B");
+		expect(stripAnsi(view.render(200).join("\n"))).toContain("#" + all.at(-1)!.seq);
 	});
 });
 

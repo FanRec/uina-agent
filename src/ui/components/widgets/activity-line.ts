@@ -255,10 +255,6 @@ export class ActivityLineComponent implements Component {
 		return this.phase;
 	}
 
-	getTpsSamples(): readonly number[] {
-		return this.tpsSamples;
-	}
-
 	/**
 	 * 记录一次模型调用报回的真实输出 token 数，按调用标识去重。
 	 *

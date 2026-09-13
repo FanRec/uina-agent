@@ -1,5 +1,5 @@
 import { safeRewindTargets, recoverRecords } from "./recovery.js";
-import type { HydratedSessionEntry, SessionAccess, SessionEntry, SessionNodeInfo, SessionRecord } from "./types.js";
+import type { HydratedSessionEntry, SessionAccess, SessionBranchInfo, SessionEntry, SessionNodeInfo, SessionRecord } from "./types.js";
 
 export class SessionNavigationError extends Error {
 
@@ -93,6 +93,26 @@ export function listSessionNodes(
 	};
 }
 
+/**
+ * 消费 list() 的 next 游标，把所有分页取全。
+ *
+ * list() 的 limit 是**分页页大小**（默认 50），不是“最多返回这么多”。需要完整路径的
+ * 消费者必须自行翻页，否则第 51 条起会被静默丢弃 —— 面板还会把截断后的条数当总数印出来。
+ */
+export function listAllSessionNodes(
+	port: Pick<SessionAccess, "list">,
+	options: { scope?: "main" | "all" } = {},
+): SessionNodeInfo[] {
+	const nodes: SessionNodeInfo[] = [];
+	let after: string | undefined;
+	for (;;) {
+		const page = after === undefined ? port.list(options) : port.list({ ...options, after });
+		nodes.push(...page.nodes);
+		if (!page.next) return nodes;
+		after = page.next;
+	}
+}
+
 export function readSessionNode(records: readonly SessionRecord[], id: string): HydratedSessionEntry {
 	const node = recoverRecords([...records], false).allEntries.find((entry) => entry.id === id);
 	if (!node) {
@@ -102,21 +122,73 @@ export function readSessionNode(records: readonly SessionRecord[], id: string): 
 }
 
 
-export function listSessionBranches(records: readonly SessionRecord[]): { branches: import("./types.js").SessionBranchInfo[] } {
- const { allEntries } = recoverRecords([...records], false);
- const branches = allEntries.filter((e) => e.kind === "rewind").map(e => {
-  const start = allEntries.findIndex(n => n.id === e.record.targetId); const end = allEntries.findIndex(n => n.id === e.record.fromId);
-  const nodes = start >= 0 && end > start ? allEntries.slice(start + 1, end + 1).filter(n => n.id !== e.id) : [];
-  return { id: e.id, targetId: e.record.targetId, fromId: e.record.fromId, headId: e.record.fromId, nodeCount: nodes.length, createdAt: e.timestamp, reason: e.record.reason };
- });
- return { branches };
+/** 一条 rewind 节点；分支信息可直接由它构造，无需重算全部分支。 */
+type RewindNode = Extract<HydratedSessionEntry, { kind: "rewind" }>;
+
+/**
+ * 取出一条 rewind 所放弃的那段节点：`targetId`（保留的一端）之后、`fromId`（切断处）之前，
+ * 并排除 rewind 节点自身。端点缺失或顺序颠倒时视为没有节点（返回空数组）。
+ *
+ * P1.3：这段切片边界原先在 listSessionBranches 与 readSessionBranch 里各写了一份，
+ * 收成唯一实现后，只有一处需要正确。
+ */
+function branchEntries(
+	allEntries: readonly HydratedSessionEntry[],
+	targetId: string,
+	fromId: string,
+	excludeId: string,
+): HydratedSessionEntry[] {
+	const start = allEntries.findIndex((n) => n.id === targetId);
+	const end = allEntries.findIndex((n) => n.id === fromId);
+	return start >= 0 && end > start
+		? allEntries.slice(start + 1, end + 1).filter((n) => n.id !== excludeId)
+		: [];
 }
 
-export function readSessionBranch(records: readonly SessionRecord[], id: string): { branch: import("./types.js").SessionBranchInfo; nodes: SessionNodeInfo[] } {
- const { allEntries } = recoverRecords([...records], false); const rewind = allEntries.find(e => e.kind === "rewind" && e.id === id);
- if (!rewind || rewind.kind !== "rewind") throw new SessionNavigationError(`未知会话分支: ${id}`);
- const start = allEntries.findIndex(n => n.id === rewind.record.targetId); const end = allEntries.findIndex(n => n.id === rewind.record.fromId);
- const nodes = start >= 0 && end > start ? allEntries.slice(start + 1, end + 1).filter(n => n.id !== id) : [];
- const { branches } = listSessionBranches(records); const branch = branches.find(b => b.id === id)!;
- return { branch, nodes: nodes.map(n => ({ id:n.id, parentId:n.parentId, seq:n.seq, kind:n.kind, active:false, canRewind:false, preview:formatNodePreview(n) })) };
+/**
+ * 由 rewind 节点与其范围内节点数构造分支信息。
+ *
+ * P1.4：此前 readSessionBranch 会先跑一遍 listSessionBranches 造出全部分支、再 find 出自己那条，
+ * 末尾还用 `!` 掩盖「找不到」。但它要的 rewind 记录本来就在手上 —— 直接构造即可，
+ * 既省掉整轮重算，也去掉了那个不可能为真的断言。
+ */
+function toBranchInfo(entry: RewindNode, nodeCount: number): SessionBranchInfo {
+	return {
+		id: entry.id,
+		targetId: entry.record.targetId,
+		fromId: entry.record.fromId,
+		headId: entry.record.fromId,
+		nodeCount,
+		createdAt: entry.timestamp,
+		reason: entry.record.reason,
+	};
+}
+
+export function listSessionBranches(records: readonly SessionRecord[]): { branches: SessionBranchInfo[] } {
+	const { allEntries } = recoverRecords([...records], false);
+	const branches = allEntries
+		.filter((e) => e.kind === "rewind")
+		.map((e) => toBranchInfo(e, branchEntries(allEntries, e.record.targetId, e.record.fromId, e.id).length));
+	return { branches };
+}
+
+export function readSessionBranch(records: readonly SessionRecord[], id: string): { branch: SessionBranchInfo; nodes: SessionNodeInfo[] } {
+	const { allEntries } = recoverRecords([...records], false);
+	const rewind = allEntries.find((e) => e.kind === "rewind" && e.id === id);
+	if (rewind?.kind !== "rewind") {
+		throw new SessionNavigationError(`未知会话分支: ${id}`);
+	}
+	const nodes = branchEntries(allEntries, rewind.record.targetId, rewind.record.fromId, id);
+	return {
+		branch: toBranchInfo(rewind, nodes.length),
+		nodes: nodes.map((n) => ({
+			id: n.id,
+			parentId: n.parentId,
+			seq: n.seq,
+			kind: n.kind,
+			active: false,
+			canRewind: false,
+			preview: formatNodePreview(n),
+		})),
+	};
 }

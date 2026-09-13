@@ -12,7 +12,10 @@
     "verbatimModuleSyntax": true,
     "types": ["node"],
     "noUnusedLocals": true,
-    "noUnusedParameters": true
+    "noUnusedParameters": true,
+    "allowUnreachableCode": false,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true
   },
   "include": ["examples", "src", "tests", "scripts", "vitest.config.ts"]
 }

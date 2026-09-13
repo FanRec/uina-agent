@@ -158,7 +158,6 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			tui?.close();
 			nonTTY?.close();
 			process.exit(0);
-			return;
 		}
 		unsubscribe();
 		if (cancelCurrent && host.isBusy()) host.interrupt();

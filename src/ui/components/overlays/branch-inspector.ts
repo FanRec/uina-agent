@@ -8,6 +8,7 @@ import type { Component, Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
 import { C, stripAnsi, visibleWidth, truncateToWidth } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
+import { listAllSessionNodes } from "../../../session/navigation.js";
 import type { SessionAccess, SessionNodeInfo, HydratedSessionEntry } from "../../../session/types.js";
 
 type ViewMode = "main" | "branch-list" | "branch-history";
@@ -19,6 +20,8 @@ export class BranchInspectorOverlay implements Component, Focusable {
 	focused = true;
 	private selectedIndex = 0;
 	private detailScrollOffset = 0;
+	// 翻页要按实际列宽算详情行数，否则 X/Y 与渲染出来的行数会对不上。
+	private lastWidth = 80;
 	private focusTarget: "list" | "detail" = "list";
 	private viewMode: ViewMode = "main";
 	private selectedBranchId: string | null = null;
@@ -29,11 +32,10 @@ export class BranchInspectorOverlay implements Component, Focusable {
 	constructor(private readonly sessionPort: SessionAccess) {}
 
 	private nodes(): SessionNodeInfo[] {
-		if (this.viewMode === "main") return this.sessionPort.list({ scope: "main" }).nodes ?? [];
+		if (this.viewMode === "main") return listAllSessionNodes(this.sessionPort, { scope: "main" });
 		if (this.viewMode === "branch-history" && this.selectedBranchId && this.sessionPort.readBranch) return this.sessionPort.readBranch(this.selectedBranchId).nodes;
 		if (this.sessionPort.listBranches) return this.sessionPort.listBranches().branches.map((b) => ({ id:b.id, parentId:b.targetId, seq:0, kind:"rewind", active:false, canRewind:false, preview:`分支 ${b.id.slice(0,6)} · ${b.nodeCount} 节点 · ${b.reason}` }));
-		return this.sessionPort.list({ scope: "all" }).nodes.filter((n) => !n.active);
-		return [];
+		return listAllSessionNodes(this.sessionPort, { scope: "all" }).filter((n) => !n.active);
 	}
 
 
@@ -56,11 +58,19 @@ export class BranchInspectorOverlay implements Component, Focusable {
 			return;
 		}
 
+		// ←/→ 的语义取决于焦点，这不是可选的润色而是提示文案已经承诺的行为：
+		// 底部写着「←→ 翻页详情 X/Y」时，按键必须真的翻页。
 		if (matchesKey(data, Key.left) || matchesKey(data, Key.right)) {
-			this.viewMode = this.viewMode === "main" ? "branch-list" : "main";
-			this.selectedBranchId = null;
-			this.selectedIndex = 0;
-			this.detailScrollOffset = 0;
+			const forward = matchesKey(data, Key.right);
+			if (this.focusTarget === "detail") {
+				const maxOffset = Math.max(0, this.detailRowCount() - LIST_ROWS);
+				this.detailScrollOffset = Math.max(0, Math.min(maxOffset, this.detailScrollOffset + (forward ? LIST_ROWS : -LIST_ROWS)));
+			} else {
+				this.viewMode = this.viewMode === "main" ? "branch-list" : "main";
+				this.selectedBranchId = null;
+				this.selectedIndex = 0;
+				this.detailScrollOffset = 0;
+			}
 			this.onRequestRender?.();
 			return;
 		}
@@ -75,18 +85,38 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		} else if (matchesKey(data, Key.down)) {
 			if (this.focusTarget === "list") this.moveSelection(1, Math.max(0, nodes.length - 1));
 			else this.detailScrollOffset++;
-		} else if (matchesKey(data, Key.left) && this.focusTarget === "detail") {
-			this.detailScrollOffset = Math.max(0, this.detailScrollOffset - LIST_ROWS);
-		} else if (matchesKey(data, Key.right) && this.focusTarget === "detail") {
-			this.detailScrollOffset += LIST_ROWS;
 		}
 		this.onRequestRender?.();
+	}
+
+	/** 详情行数。渲染与翻页共用同一投影，X/Y 才不会和实际能翻的页数脱节。 */
+	private detailRowCount(): number {
+		const nodes = this.nodes();
+		const selectedIndex = nodes.length === 0 ? -1 : Math.min(Math.max(0, this.selectedIndex), nodes.length - 1);
+		const entry = selectedIndex < 0 ? null : this.tryReadEntry(nodes[selectedIndex]!.id);
+		return formatNodeDetails(entry, this.detailWidth()).length;
+	}
+
+	private detailWidth(): number {
+		const boxWidth = Math.max(54, Math.min((this.lastWidth || 80) - 6, 96));
+		const splitBudget = boxWidth - 8;
+		const leftW = Math.max(12, Math.floor(splitBudget * 0.45));
+		return Math.max(8, splitBudget - leftW);
+	}
+
+	private tryReadEntry(id: string): HydratedSessionEntry | null {
+		try {
+			return this.sessionPort.read(id);
+		} catch {
+			return null;
+		}
 	}
 
 	invalidate(): void {}
 
 	render(terminalWidth = 80): string[] {
 		// Same frame geometry as the sibling dashboards (trajectory / tasks / subagents).
+		this.lastWidth = terminalWidth;
 		const boxWidth = Math.max(54, Math.min(terminalWidth - 6, 96));
 		const innerW = boxWidth - 6;
 		const border = C.gray;
@@ -144,13 +174,8 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		output.push(`  ${border}├${"─".repeat(leftW + 1)}${cha(colMid)}${border}┼${"─".repeat(rightW + 2)}${cha(colRight)}${border}┤${C.reset}`);
 
 		let selectedEntry: HydratedSessionEntry | null = null;
-		if (selectedIndex >= 0) {
-			try {
-				selectedEntry = this.sessionPort.read(nodes[selectedIndex]!.id);
-			} catch {
-				selectedEntry = null;
-			}
-		}
+		// 与 detailRowCount() 走同一个读取路径：X/Y 的分母不能和实际渲染分叉。
+		if (selectedIndex >= 0) selectedEntry = this.tryReadEntry(nodes[selectedIndex]!.id);
 
 		const leftRows = formatNodeList(nodes, selectedIndex, leftW);
 		const rightRows = formatNodeDetails(selectedEntry, rightW);

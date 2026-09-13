@@ -1,0 +1,987 @@
+{
+  "meta": {
+    "project": "Uina",
+    "repoPath": "E:/Uina/Uina",
+    "planDoc": ".refactor-plan.md",
+    "auditRange": {
+      "from": "eb56fd1",
+      "to": "15aedec",
+      "label": "eb56fd1..HEAD",
+      "commits": 26,
+      "filesChanged": 61,
+      "insertions": 5852,
+      "deletions": 838
+    },
+    "baseline": {
+      "head": "15aedec",
+      "headSubject": "fix(ui): count real output tokens per model call, not per usage_update",
+      "tests": "490 passed / 34 files",
+      "coverage": {
+        "statements": 72.36,
+        "branches": 66.3,
+        "functions": 70.16,
+        "lines": 74.7
+      },
+      "typecheck": "clean (strict + noUnusedLocals + noUnusedParameters)"
+    },
+    "evidenceEnv": "E:/Uina/.audit/Uina-cov (git archive HEAD snapshot + @vitest/coverage-v8@4.1.11, isolated from main repo)",
+    "lenses": [
+      "第一性原则",
+      "对抗式审查",
+      "奥卡姆剃刀",
+      "高内聚低耦合",
+      "精简内核",
+      "反自我欺骗"
+    ],
+    "createdAt": "2026-09-13T21:43:57+08:00",
+    "updatedAt": "2026-09-13T22:35:00+08:00",
+    "revision": 10
+  },
+  "statusLegend": [
+    "pending",
+    "in_progress",
+    "blocked",
+    "done",
+    "deferred",
+    "dropped"
+  ],
+  "constraints": [
+    "不擅自装依赖；不擅自改 build 流程；不擅自杀 Uina 进程；不擅自扩大范围",
+    "变异验证必须回读确认变异真的落盘；还原一律用 .bak-* 备份文件，禁用 git checkout",
+    "字符串替换一律用 Node 脚本文件 + 唯一性命中校验，不嵌命令行",
+    "滚动/鼠标时序类改动必须真机验收，不靠单测假装测过",
+    "tsconfig 属 build 配置：仅在用户确认后执行",
+    "改源码后由用户重启 Uina 验收，不代为重启"
+  ],
+  "phases": [
+    {
+      "id": "P0",
+      "order": 1,
+      "name": "消灭确凿的谎言与死码",
+      "goal": "零风险清除不可达代码、死分支、与行为不符的提示、纯测试后门",
+      "gate": "G1"
+    },
+    {
+      "id": "P4",
+      "order": 2,
+      "name": "防复发机制",
+      "goal": "用编译器取代人眼来发现不可达代码/fallthrough/override 漂移",
+      "gate": "G2"
+    },
+    {
+      "id": "P1",
+      "order": 3,
+      "name": "收口真相",
+      "goal": "把跨层隐式协议（hover 编码）与重复计算收口为纯函数单一真相",
+      "gate": "G3"
+    },
+    {
+      "id": "P2",
+      "order": 4,
+      "name": "补齐内核能力缺口",
+      "goal": "把领域投影下沉到 session 层；契约只表达生产环境的事实",
+      "gate": "G4"
+    },
+    {
+      "id": "P3",
+      "order": 5,
+      "name": "结构性债务（不立即动手）",
+      "goal": "记录并评估巨型类型，等真实缺陷驱动再拆",
+      "gate": "G5"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "P0.1",
+      "phase": "P0",
+      "priority": 1,
+      "severity": "low",
+      "kind": "deadcode",
+      "title": "删除 branch-inspector.ts 不可达的 return []",
+      "status": "done",
+      "evidence": [
+        "src/ui/components/overlays/branch-inspector.ts:35 为无条件 return，导致 :36 `return [];` 不可达",
+        "隔离环境实测：tsconfig 加 allowUnreachableCode:false 后 tsc 报 TS7027 @ (36,3)"
+      ],
+      "evidenceVerified": true,
+      "introducedBy": "本次范围内（6599f27 / 646361e）",
+      "files": [
+        "src/ui/components/overlays/branch-inspector.ts"
+      ],
+      "lines": "36",
+      "change": "删除该行",
+      "acceptance": [
+        "npx tsc --noEmit 干净",
+        "全量 490 测试仍绿"
+      ],
+      "mutation": "无需变异（纯死码删除，无可红的断言）",
+      "risk": "zero",
+      "dependsOn": [],
+      "sizeHint": "-1 行",
+      "completedAt": "2026-09-13T21:51:00+08:00"
+    },
+    {
+      "id": "P0.2",
+      "phase": "P0",
+      "priority": 1,
+      "severity": "low",
+      "kind": "deadcode",
+      "title": "删除 cli/app.ts 中 process.exit(0) 之后不可达的 return",
+      "status": "done",
+      "evidence": [
+        "src/cli/app.ts:153-162 shutdown() 的 force 分支中 :160 process.exit(0) 后紧跟 :161 `return;`",
+        "隔离环境实测 TS7027 @ (161,4)",
+        "注：此项为上一轮审查漏报，本轮由编译器实测发现"
+      ],
+      "evidenceVerified": true,
+      "introducedBy": "待 blame 确认（前置于或属于本次范围）",
+      "files": [
+        "src/cli/app.ts"
+      ],
+      "lines": "161",
+      "change": "删除该行",
+      "acceptance": [
+        "npx tsc --noEmit 干净",
+        "全量 490 测试仍绿",
+        "CLI 退出行为不变（真机：正常退出码）"
+      ],
+      "mutation": "无需变异",
+      "risk": "zero",
+      "dependsOn": [],
+      "sizeHint": "-1 行",
+      "completedAt": "2026-09-13T21:51:00+08:00"
+    },
+    {
+      "id": "P0.3",
+      "phase": "P0",
+      "priority": 2,
+      "severity": "low",
+      "kind": "deadcode",
+      "title": "删除 hoverTargetId 的 thinking- / tool- 死分支",
+      "status": "done",
+      "evidence": [
+        "hoverTargetId 生产者仅一处：src/ui/ui-host.ts:1264-1441 构造 interactiveTargets",
+        "实际编码：`thinking:${uid}`(:1277) / `tool:${callId}:${absLine}`(:1301) / `compaction:${index}:${absLine}`(:1325) / `scrollbar-row-${r}`(:1361) / `rail-tick-${uid}`(:1398)",
+        "消费端 src/ui/ui-host.ts:1538-1539（thinking-）与 :1549-1551（tool-）所支持的前缀没有任何生产者，全仓 grep 无命中"
+      ],
+      "evidenceVerified": true,
+      "introducedBy": "本次范围内（兼容层遗留）",
+      "files": [
+        "src/ui/ui-host.ts"
+      ],
+      "lines": "1536-1552",
+      "change": "删除 thinking- 三元分支（2 行）与 tool- else-if 分支（3 行）",
+      "acceptance": [
+        "npx tsc --noEmit 干净",
+        "新增 decode 单测：`tool-<id>` 形式不得解析出 toolId",
+        "真机：对工具行、思考块、压缩块 hover 仍正常高亮"
+      ],
+      "mutation": "恢复 tool- 分支后，新增单测必须红（旧逻辑下 `tool-x-1` 会被解析成 id）",
+      "risk": "low（属鼠标热区，需真机复核）",
+      "dependsOn": [],
+      "sizeHint": "-14 行",
+      "notes": "两处连字符分支确为不可达：hoverTargetId 的值域 = MouseSelectionTracker.targets[].id（mouse-selection.ts:236-246），而 setTargets 全仓唯一调用点是 ui-host.ts:1441，其注册的 id 前缀只有 thinking: / tool: / compaction: / help-overlay-row- / scrollbar-row- / rail-up / rail-down / rail-tick- / context-progress。 且 agent-events.ts:79 的 `tool-${name}-${ts}` 是 callId 的**值**（嵌在 tool:${callId}:${line} 里作 parts[1]），不是 id 前缀，故不构成 tool- 生产者。 引入历史：a8fd380（'对齐 dsh-TUI ... 上下文悬停详情'）首次引入，ce75909 / 4261d4c 后续改动；a8fd380 是 eb56fd1 的祖先 → 属审查范围**之前**的历史遗留，非本次 26 提交引入（修正此前'本次加剧'的说法）。 改动：ui-host.ts 2002 -> 1997 行（非空 1808 -> 1803）。",
+      "completedAt": "2026-09-13T22:12:00+08:00"
+    },
+    {
+      "id": "P0.4",
+      "phase": "P0",
+      "priority": 2,
+      "severity": "medium",
+      "kind": "logic-bug",
+      "title": "修复详情栏翻页：left/right 被视图切换遮蔽",
+      "status": "done",
+      "evidence": [
+        "src/ui/components/overlays/branch-inspector.ts:59-66 对 Key.left/Key.right 无条件 return，且不检查 focusTarget",
+        "因此 :78-81 的 `focusTarget === \"detail\"` 翻页分支永不可达",
+        "render() :170-172 却提示 `←→ 翻页详情 X/Y`，承诺了不存在的行为",
+        "副作用：:158 对 detailScrollOffset 做 clamp 后，用户永远无法看到 LIST_ROWS 之外的详情"
+      ],
+      "evidenceVerified": true,
+      "introducedBy": "本次范围内（6599f27）",
+      "files": [
+        "src/ui/components/overlays/branch-inspector.ts"
+      ],
+      "lines": "59-66, 78-81, 170-172",
+      "change": "branch-inspector.ts handleInput：←/→ 改为**焦点感知**——detail 焦点下按 maxOffset 夹取翻详情页（提示文案承诺的行为），list 焦点下仍切换视图。 新增私有 detailRowCount()/detailWidth()/tryReadEntry()；render() 与翻页共用同一详情投影，X/Y 不会与实际页数脱节。",
+      "acceptance": [
+        "新增交互单测：detail 焦点下 ←/→ 改变 detailScrollOffset；list 焦点下 ←/→ 切换 viewMode",
+        "新增断言：提示文案与实际可用操作一致"
+      ],
+      "mutation": "在旧逻辑下，新增的 detail-翻页断言必须红",
+      "risk": "medium（交互语义，需真机 Alt+H 验收）",
+      "dependsOn": [],
+      "sizeHint": "+1 / -8 行",
+      "completedAt": "2026-09-13T22:22:00+08:00",
+      "notes": "根因与 P0.3 同型：`if (left || right)` 无条件 return，把后面的 `else if (left && focusTarget===\"detail\")` 翻页分支变成了死码。 方案 A（用户拍板）：修翻页而不是删提示。 回归测试 tests/branch-inspector.test.ts 「arrow-key semantics」：断言 list 焦点切视图（主线↔分支选择）、detail 焦点不切视图、且 X/Y 随 ←/→ 增减。 变异验证：把 `if (this.focusTarget === \"detail\")` 改为 `if (false && ...)` -> 该用例变红（333 行）；还原后逐字节一致。 中途事故（如实记录）：第一次替换的锚点没覆盖完整语句，残留旧块前 6 行，造成嵌套死码 + tsc TS1128；已 git checkout 回 HEAD 重做（该文件当时 == HEAD）， 并连带重放了被一起还原的 P0.1 与 P0.7 两处（均再次通过唯一性校验）。另有一次 apply 重复执行导致 P0.4 用例被插入两份，已去重（413 行）。"
+    },
+    {
+      "id": "P0.5",
+      "phase": "P0",
+      "priority": 2,
+      "severity": "medium",
+      "kind": "self-deception",
+      "title": "删除 getTpsSamples() 测试后门，测试改为断言渲染输出",
+      "status": "done",
+      "evidence": [
+        "src/ui/components/widgets/activity-line.ts:258 getTpsSamples() 在 src 内 0 消费方，仅 tests/tps-metric.test.ts:197-202 使用",
+        "tpsSamples 确实驱动渲染：:328 formatTpsSparkline(this.tpsSamples.slice(-12))、:345 peak = Math.max(tps, ...this.tpsSamples, 0)",
+        "故测试主题（跨回合采样保留）是通过渲染可观测的真实行为"
+      ],
+      "evidenceVerified": true,
+      "introducedBy": "本次范围前既有（测试为本次新增/调整）",
+      "files": [
+        "src/ui/components/widgets/activity-line.ts",
+        "tests/tps-metric.test.ts"
+      ],
+      "lines": "activity-line.ts:258-260; tps-metric.test.ts:186-204",
+      "change": "删 ActivityLineComponent.getTpsSamples() 公开 getter。 tests/tps-metric.test.ts 改为断言渲染输出（~200 tps / 火花线柱），不再读取私有状态。",
+      "acceptance": [
+        "删除后 tsc 干净、测试全绿",
+        "新测试不依赖任何测试后门"
+      ],
+      "mutation": "在 start() 中清空 tpsSamples（破坏跨回合保留）后，改写的测试必须红",
+      "risk": "low（需确认渲染断言能区分保留/清空）",
+      "dependsOn": [],
+      "sizeHint": "-3 / +10 行",
+      "completedAt": "2026-09-13T22:22:00+08:00",
+      "notes": "关键澄清：getTpsSamples() **不是**仅测试后门 —— 生产代码（done 分支火花线 slice(-12)、live 分支峰值量程）仍在读同一字段， 删的只是这个公开泄漏；私有 tpsSamples 与两个消费方原样保留（已回读确认）。 测试迁移：原断言 `getTpsSamples().length===1 / [0]===200` 是**名不副实**的（声明\"跨回合保留\"，单回合断言与该声明无关）； 拆成两条真正可观察的用例：(1) 回合结束按解码跨度算出 ~200 tps；(2) 两轮采样后火花线出现第二根柱。 变异验证：禁用 finish() 里的样本推入 -> 第 (2) 条如期变红（第 (1) 条仍绿，因为它测的是 done 分支的直接计算，与样本数组无关——证明两条测试不冗余）；还原后逐字节一致。 我原先猜最低柱字形为 ▁，实测两轮同为 200 tps 时两根柱都满格（▄▄）；已改为字符类断言 /[▁▂▃▄▅▆▇█]{2}/，不猜具体字形。"
+    },
+    {
+      "id": "P0.6",
+      "phase": "P0",
+      "priority": 3,
+      "severity": "low",
+      "kind": "deadcode",
+      "title": "确认并删除 mouse-selection.ts 的 getHoverTargetId()",
+      "status": "done",
+      "evidence": [
+        "src/ui/core/mouse-selection.ts:141 getHoverTargetId() 全仓 grep 无消费方（仅定义处）"
+      ],
+      "evidenceVerified": true,
+      "introducedBy": "本次范围前既有",
+      "files": [
+        "src/ui/core/mouse-selection.ts"
+      ],
+      "lines": "141-143",
+      "change": "删除该 getter（4 行）；内部字段 currentHoverTargetId 保留（仍被 updateHover 逻辑使用）",
+      "acceptance": [
+        "tsc 干净",
+        "测试全绿"
+      ],
+      "mutation": "无需变异",
+      "risk": "low（grep 不能覆盖动态访问，需人工二次确认）",
+      "dependsOn": [],
+      "sizeHint": "-3 行",
+      "completedAt": "2026-09-13T22:14:00+08:00",
+      "notes": "全仓（src + tests）搜索 'getHoverTargetId' 仅命中定义处自身，零消费方；ui-host 消费的是 handleInput() 返回的 hoverTargetId 字段，与本 getter 无关。 mouse-selection.ts 654 -> 650 行；currentHoverTargetId 由 4 处引用降为 3 处（字段声明 + updateHover 内 2 处）。"
+    },
+    {
+      "id": "P4.1",
+      "phase": "P4",
+      "priority": 1,
+      "severity": "low",
+      "kind": "guardrail",
+      "title": "tsconfig 开启 allowUnreachableCode: false",
+      "status": "done",
+      "evidence": [
+        "隔离环境实测：开启后全仓仅报 2 处 TS7027（branch-inspector.ts:36、cli/app.ts:161）",
+        "当前 tsconfig 未设置该选项（默认 undefined = 仅编辑器提示，tsc 不报错）"
+      ],
+      "evidenceVerified": true,
+      "files": [
+        "tsconfig.json"
+      ],
+      "change": "compilerOptions 增加 \"allowUnreachableCode\": false",
+      "acceptance": [
+        "P0.1、P0.2 完成后 tsc --noEmit 必须干净（否则说明还有未清的死码）"
+      ],
+      "mutation": "无需变异",
+      "risk": "zero",
+      "dependsOn": [
+        "P0.1",
+        "P0.2"
+      ],
+      "sizeHint": "+1 行",
+      "completedAt": "2026-09-13T21:51:00+08:00"
+    },
+    {
+      "id": "P4.2",
+      "phase": "P4",
+      "priority": 1,
+      "severity": "low",
+      "kind": "guardrail",
+      "title": "tsconfig 开启 noFallthroughCasesInSwitch: true",
+      "status": "done",
+      "evidence": [
+        "隔离环境实测：开启后 0 错误"
+      ],
+      "evidenceVerified": true,
+      "files": [
+        "tsconfig.json"
+      ],
+      "change": "compilerOptions 增加 \"noFallthroughCasesInSwitch\": true",
+      "acceptance": [
+        "tsc 干净"
+      ],
+      "mutation": "无需变异",
+      "risk": "zero",
+      "dependsOn": [],
+      "sizeHint": "+1 行",
+      "completedAt": "2026-09-13T21:51:00+08:00"
+    },
+    {
+      "id": "P4.3",
+      "phase": "P4",
+      "priority": 2,
+      "severity": "low",
+      "kind": "guardrail",
+      "title": "tsconfig 开启 noImplicitOverride: true",
+      "status": "done",
+      "evidence": [
+        "隔离环境实测：开启后 0 错误"
+      ],
+      "evidenceVerified": true,
+      "files": [
+        "tsconfig.json"
+      ],
+      "change": "compilerOptions 增加 \"noImplicitOverride\": true",
+      "acceptance": [
+        "tsc 干净"
+      ],
+      "mutation": "无需变异",
+      "risk": "zero",
+      "dependsOn": [],
+      "sizeHint": "+1 行",
+      "completedAt": "2026-09-13T21:51:00+08:00"
+    },
+    {
+      "id": "P4.4",
+      "phase": "P4",
+      "priority": 3,
+      "severity": "low",
+      "kind": "process",
+      "title": "package.json 增加 test 脚本（vitest run）",
+      "status": "done",
+      "evidence": [
+        "仓库无 CI；提交前手动跑全量测试是最低成本的行为门禁"
+      ],
+      "evidenceVerified": true,
+      "files": [
+        "package.json"
+      ],
+      "change": "（无需改动）确认既有 test 脚本",
+      "acceptance": [
+        "pnpm test 可跑通 490 测试"
+      ],
+      "mutation": "n/a",
+      "risk": "zero",
+      "dependsOn": [],
+      "sizeHint": "+1 行",
+      "completedAt": "2026-09-13T21:51:00+08:00",
+      "notes": "核实后无需改动：package.json 已含 \"test\": \"vitest run\"。本轮 npx vitest run 实测 490 通过。"
+    },
+    {
+      "id": "P1.1",
+      "phase": "P1",
+      "priority": 1,
+      "severity": "medium",
+      "kind": "cohesion",
+      "title": "新建 src/ui/core/hover-target.ts：编码/解码纯函数单一真相",
+      "status": "done",
+      "evidence": [
+        "生产者 src/ui/ui-host.ts:1264-1441，消费者 :1535-1606，同文件相隔约 150 行，id 格式靠人脑同步",
+        "5 种 target 编码混用冒号与连字符两种风格",
+        "解析散落：split(\":\") / split(\"-\") / replace() / parseInt 重复出现"
+      ],
+      "evidenceVerified": true,
+      "files": [
+        "src/ui/core/hover-target.ts (新建)"
+      ],
+      "change": "新建 src/ui/core/hover-target.ts：HoverTarget 判别联合（9 个 kind）+ encodeHoverTarget() / decodeHoverTarget() 纯函数。 解码对无法识别或畸形的输入返回 null（'没有热区'是正常结果，不是错误），不抛异常。含 switch + never 穷尽性检查。",
+      "acceptance": [
+        "纯函数单测覆盖全部 target 种类与非法输入",
+        "decode(encode(t)) === t 往返一致"
+      ],
+      "mutation": "改动任一编码格式时，必须使对应用例红",
+      "risk": "low（纯逻辑，可单测，不涉时序）",
+      "dependsOn": [],
+      "sizeHint": "+90 行（新文件）",
+      "completedAt": "2026-09-13T22:27:00+08:00",
+      "notes": "战略价值：把鼠标热区协议从隐式字符串变成显式类型。生产端与消费端此前相隔 150 行、各拿字面量拼拆，格式靠人脑同步。 编码格式与既有字节串**逐字一致**（单测有专门断言），因此不改变线上协议。 新增 tests/hover-target.test.ts 5 条：往返一致、编码字节对齐、未知前缀返回 null、畸形字段返回 null、callId 含冒号视为无法解析。 先写测试的价值被实证：单测立刻抓出两件事——(1) 实现漏判空 callId（`tool::7` 解出 `callId:\"\"`）；(2) 我自己的一条期望写错了（callId 含冒号时字段顺序错位，应返回 null 而非半解析）。两处都已修。"
+    },
+    {
+      "id": "P1.2",
+      "phase": "P1",
+      "priority": 1,
+      "severity": "medium",
+      "kind": "cohesion",
+      "title": "ui-host 生产端与消费端接入 encode/decode",
+      "status": "done",
+      "evidence": [
+        "同 P1.1"
+      ],
+      "evidenceVerified": true,
+      "files": [
+        "src/ui/ui-host.ts"
+      ],
+      "lines": "1264-1441, 1535-1606",
+      "change": "src/ui/ui-host.ts 两端接入 hover-target：9 处 id 字面量改为 encodeHoverTarget()；消费端 5 分支的 startsWith/split/parseInt 改为一次 decodeHoverTarget() + kind 分派。 行数 1997 -> 1983（净 -14）。",
+      "acceptance": [
+        "handleTerminalInput 行数显著下降（约 -70 行）",
+        "真机：滚轮、hover、拖选行为不变"
+      ],
+      "mutation": "n/a（行为保持重构，由 P0.3 的单测保护）",
+      "risk": "medium（涉及鼠标，需真机验收）",
+      "dependsOn": [
+        "P1.1"
+      ],
+      "sizeHint": "-70 / +25 行",
+      "completedAt": "2026-09-13T22:27:00+08:00",
+      "notes": "等价性验证（.p12-equivalence.cjs）：用 27 个 id 样本（含 11 个真实形状 + 16 个边界/垃圾串）对拍「旧解析逻辑」与「新解码」，逐条比较解出的语义。 结果：23 同 / 4 异，且 4 处差异**全部是新逻辑更严格**——`tool:`、`tool::7` 旧版解出空 callId（高亮一个不存在的工具），`tool:x:y`、`compaction:3` 旧版拿非法/缺失行号仍去高亮；新版一律返回 null。 这些畸形串生产端不可能发出（encodeHoverTarget 的类型系统保证 line/index 是 number、callId 是 string），故真实路径行为不变，属行为改善而非回归。 另用 encode->decode 往返自检了边界值（line=0 / index=0）正确。 tsc 事故（如实记录）：接入后先跑 vitest（499 全绿）**掩盖了 5 个 tsc 错误**（vitest 不做类型检查）——import 行被我误删两个 type、`res.hoverTargetId !== undefined` 未排掉 null 导致类型没收窄。 根因是我 dry-run 时用 Select-String 读的是已改过的行而非原行。已修，tsc exit 0。**教训：顺序必须是 tsc -> 测试。** 未做：hover 消费端无单测覆盖（对拍脚本是外部验证，未入库为测试）；真实鼠标行为需真机验收。"
+    },
+    {
+      "id": "P1.3",
+      "phase": "P1",
+      "priority": 2,
+      "severity": "medium",
+      "kind": "dedup",
+      "title": "navigation.ts 抽取 branchNodeRange 并统一风格",
+      "status": "done",
+      "evidence": [
+        "src/session/navigation.ts:108-109 与 :118-119 是逐字重复的 start/end/nodes 计算",
+        "src/session/navigation.ts:105-122 使用单空格缩进与行内多语句，与文件其余部分（tab）不一致",
+        ":105 与 :123 附近有空行/内联 import 类型（import(\"./types.js\").SessionBranchInfo）"
+      ],
+      "evidenceVerified": true,
+      "introducedBy": "本次范围内（646361e）",
+      "files": [
+        "src/session/navigation.ts"
+      ],
+      "lines": "104-123",
+      "change": "src/session/navigation.ts 抽出私有 branchEntries(allEntries, targetId, fromId, excludeId)——原先在 listSessionBranches 与 readSessionBranch 里逐字重复的切片边界，现只有一处需要正确。",
+      "acceptance": [
+        "tsc 干净",
+        "新增单测：listSessionBranches 与 readSessionBranch 对同一 rewind 得到相同 nodes",
+        "git diff 确认无 CRLF 混入"
+      ],
+      "mutation": "修改 branchNodeRange 的边界（如 end > start 改 >=）应使单测红",
+      "risk": "low",
+      "dependsOn": [],
+      "sizeHint": "-12 / +16 行",
+      "completedAt": "2026-09-13T22:35:00+08:00",
+      "notes": "顺带把这两个函数的缩进从孤岛式单空格统一为 Tab（与文件其余部分一致）。 新增 tests/session-branches.test.ts 6 条（这两个函数此前**零测试覆盖**），先跑旧实现确认 6/6 绿（契约成立）再重构。 **诚实发现（未修，留待用户定）**：branchEntries 里的 `.filter((n) => n.id !== excludeId)` 疑似死代码——rewind 节点在记录数组里的下标恒大于其 fromId，而 slice 上界 end+1 已排除它。 佐证：把该 filter 整体删掉（变异 M1）后，6 条用例**全绿**，说明它在我构造的所有场景下都没触发。 依据 recoverRecords 的实现（allEntries.push 按记录数组顺序发生）可推出它可证死。我**保留**它而非删除（原样忠实，删死码属独立变更），上报给用户决定。"
+    },
+    {
+      "id": "P1.4",
+      "phase": "P1",
+      "priority": 2,
+      "severity": "low",
+      "kind": "dedup",
+      "title": "readSessionBranch 去掉重复计算与非空断言",
+      "status": "done",
+      "evidence": [
+        "src/session/navigation.ts:120 调用 listSessionBranches(records) 重新计算全部分支，再用 `!` 断言取其中一个",
+        ":116 已经用 find 拿到了 rewind，branch 信息可直接构造"
+      ],
+      "evidenceVerified": true,
+      "files": [
+        "src/session/navigation.ts"
+      ],
+      "lines": "115-122",
+      "change": "readSessionBranch 不再跑一遍 listSessionBranches 再 find 出自己那条 + `!`，改为直接用手上的 rewind 记录经 toBranchInfo() 构造分支信息。省掉整轮重算，去掉不可能为真的非空断言。",
+      "acceptance": [
+        "tsc 干净",
+        "单测：未知分支 id 仍抛 SessionNavigationError"
+      ],
+      "mutation": "删除 find 的存在性检查应使「未知分支」用例红",
+      "risk": "low",
+      "dependsOn": [
+        "P1.3"
+      ],
+      "sizeHint": "-4 / +2 行",
+      "completedAt": "2026-09-13T22:35:00+08:00",
+      "notes": "toBranchInfo() 由 listSessionBranches 与 readSessionBranch 共用，保证两条路径的字段语义永不漂移。 等价性对拍（测试内）：readSessionBranch().branch 与 listSessionBranches() 里同 id 那条 toEqual。 变异验证 M2：把 toBranchInfo 的 headId 从 fromId 改成 targetId -> 「headId 指向被保留的那一端」用例**变红**（被抓）。 但同一变异下**等价性对拍仍绿**（两条路径共用 toBranchInfo，一起变）——这正说明光有对拍不够，字段级断言不可省，两者互补。 变异均已回读确认落盘，并从 .bak-p13 逐字节还原。"
+    },
+    {
+      "id": "P2.1",
+      "phase": "P2",
+      "priority": 1,
+      "severity": "medium",
+      "kind": "domain-boundary",
+      "title": "navigation.ts 新增 listBranchNodes：把分支→节点投影下沉到领域层",
+      "status": "pending",
+      "evidence": [
+        "src/ui/components/overlays/branch-inspector.ts:34 在 UI 层把 SessionBranchInfo 投影为 SessionNodeInfo，并生成 preview 文案模板",
+        "src/session/navigation.ts:12 formatNodePreview 已是领域层的 preview 生成器 → 同一概念两份实现",
+        "src/extensions/session-tools/index.ts 未提供分支工具，正是因为非 UI 消费者拿不到分支的节点视图"
+      ],
+      "evidenceVerified": true,
+      "files": [
+        "src/session/navigation.ts"
+      ],
+      "change": "新增 listBranchNodes(records, id?)，返回分支列表/单个分支的节点视图（preview 由领域层生成）",
+      "acceptance": [
+        "单测：分支节点视图内容与只读语义（active=false, canRewind=false）"
+      ],
+      "mutation": "n/a",
+      "risk": "low",
+      "dependsOn": [
+        "P1.3"
+      ],
+      "sizeHint": "+30 行"
+    },
+    {
+      "id": "P2.2",
+      "phase": "P2",
+      "priority": 1,
+      "severity": "medium",
+      "kind": "domain-boundary",
+      "title": "branch-inspector.nodes() 改为纯委派",
+      "status": "pending",
+      "evidence": [
+        "src/ui/components/overlays/branch-inspector.ts:31-37 在 UI 内决定数据源、过滤 !active、并把分支映射为节点",
+        ":35 的兜底把「主线节点」当作「分支列表」返回，是语义错误的数据源降级"
+      ],
+      "evidenceVerified": true,
+      "files": [
+        "src/ui/components/overlays/branch-inspector.ts"
+      ],
+      "lines": "31-37",
+      "change": "main → sessionPort.list({scope:\"main\"})；branch-list → sessionPort.listBranches；branch-history → sessionPort.readBranch。删除自行投影与 :35 兜底",
+      "acceptance": [
+        "补全测试 mock 的 listBranches/readBranch 实现",
+        "新增交互语义单测（当前 13 条测试全是几何断言，语义 0 覆盖）"
+      ],
+      "mutation": "恢复 :35 兜底并断言「branch-list 不显示主线节点」应使用例红",
+      "risk": "medium（需真机 Alt+H 验收）",
+      "dependsOn": [
+        "P2.1",
+        "P2.3"
+      ],
+      "sizeHint": "-10 / +4 行"
+    },
+    {
+      "id": "P2.3",
+      "phase": "P2",
+      "priority": 2,
+      "severity": "medium",
+      "kind": "contract",
+      "title": "SessionAccess 的 listBranches/readBranch 由可选改为必需",
+      "status": "pending",
+      "evidence": [
+        "src/session/types.ts 中 listBranches?() 与 readBranch?() 为可选",
+        "生产实现 src/agent/loop.ts:83-104 始终提供二者；唯一不提供者是 tests/branch-inspector.test.ts:44-50 的 mock",
+        "可选性迫使 UI 写语义可疑的降级（见 P2.2）"
+      ],
+      "evidenceVerified": true,
+      "files": [
+        "src/session/types.ts",
+        "tests/branch-inspector.test.ts"
+      ],
+      "change": "去掉两个 `?`；补齐测试 mock",
+      "acceptance": [
+        "tsc 干净（编译器强制所有实现者提供）",
+        "测试全绿"
+      ],
+      "mutation": "n/a",
+      "risk": "medium（破坏仓库外任何自定义 SessionAccess 实现；Uina 为单仓，需用户确认无外部实现）",
+      "dependsOn": [],
+      "sizeHint": "-2 / +4 行"
+    },
+    {
+      "id": "P2.4",
+      "phase": "P2",
+      "priority": 3,
+      "severity": "low",
+      "kind": "dedup",
+      "title": "统一分支 preview 生成",
+      "status": "pending",
+      "evidence": [
+        "branch-inspector.ts:34 的 `分支 ${id} · ${nodeCount} 节点 · ${reason}` 属领域表述，与 navigation.ts:12 的 preview 生成并存"
+      ],
+      "evidenceVerified": true,
+      "files": [
+        "src/session/navigation.ts",
+        "src/ui/components/overlays/branch-inspector.ts"
+      ],
+      "change": "preview 模板下沉至 navigation.ts（随 P2.1 落地）",
+      "acceptance": [
+        "单测：分支 preview 文案"
+      ],
+      "mutation": "n/a",
+      "risk": "low",
+      "dependsOn": [
+        "P2.1"
+      ],
+      "sizeHint": "0 净变化"
+    },
+    {
+      "id": "P3.1",
+      "phase": "P3",
+      "priority": 4,
+      "severity": "low",
+      "kind": "debt",
+      "title": "Subject（loop.ts 1184 非空行 / 总 1266 行 / 84 方法）拆分",
+      "status": "deferred",
+      "evidence": [
+        "src/agent/loop.ts 1184 行、84 个类内方法、仅 5 个顶层导出（class Subject + 4 个类型/函数）",
+        "覆盖率 avgCov 87%，CRAP>30 仅 1 个函数 → 当前无真实缺陷驱动"
+      ],
+      "evidenceVerified": true,
+      "files": [
+        "src/agent/loop.ts"
+      ],
+      "change": "暂不拆分。拆分需共享 history/store/abort/activity 等状态，硬拆会引入跨对象隐式同步（违反高内聚）",
+      "acceptance": [
+        "触发条件：该文件下次出现真实缺陷，或新增第 3 个正交职责时重新评估"
+      ],
+      "mutation": "n/a",
+      "risk": "n/a",
+      "dependsOn": [],
+      "sizeHint": "0（本次不动）"
+    },
+    {
+      "id": "P3.2",
+      "phase": "P3",
+      "priority": 4,
+      "severity": "low",
+      "kind": "debt",
+      "title": "ui-host.ts（1808 非空行 / 总 2002 行 / 169 函数）拆分",
+      "status": "deferred",
+      "evidence": [
+        "src/ui/ui-host.ts 1808 行；handleTerminalInput cc=127 / cov=56% / 473 行（eb56fd1 既有）",
+        "本次在其内部新增约 20 个 hover 分派分支，加剧了复杂度"
+      ],
+      "evidenceVerified": true,
+      "files": [
+        "src/ui/ui-host.ts"
+      ],
+      "change": "暂不整文件拆分；P1.1/P1.2 已自然削减最复杂函数",
+      "acceptance": [
+        "P1.2 完成后复查 handleTerminalInput 行数与 cc"
+      ],
+      "mutation": "n/a",
+      "risk": "n/a",
+      "dependsOn": [
+        "P1.2"
+      ],
+      "sizeHint": "0（本次不动）"
+    },
+    {
+      "id": "P0.7",
+      "phase": "P0",
+      "priority": 1,
+      "severity": "medium",
+      "kind": "bug",
+      "title": "修复 history 面板静默截断：list() 的分页默认 limit=50 被当作「取全部」使用",
+      "status": "done",
+      "evidence": [
+        "src/session/navigation.ts:49 `const limit = options.limit ?? 50;` —— 这是分页 API 的页大小默认值",
+        "src/ui/components/overlays/branch-inspector.ts:32 调 list({ scope: 'main' }) 不传 limit → 主线视图只拿到前 50 条（用户实测现象）",
+        "src/ui/components/overlays/branch-inspector.ts:35（分支列表降级路径）与 src/extensions/builtin.ts:242（/history 无 UI 降级路径）同样不传 limit",
+        "navigation.ts:82-88 已计算并返回 next 游标，但上述三处调用点无一消费 —— 与审查已记录的 turnRanges「有生产者无消费者」同类",
+        "面板标题以 nodes.length 报「N 节点」，把截断值当作总数展示（静默撒谎）"
+      ],
+      "evidenceVerified": true,
+      "introducedBy": "待 git blame 核实（不猜）",
+      "files": [
+        "src/ui/components/overlays/branch-inspector.ts",
+        "src/extensions/builtin.ts"
+      ],
+      "lines": "branch-inspector.ts:32,35 / builtin.ts:242",
+      "change": "src/session/navigation.ts 新增 listAllSessionNodes(port, scope)：消费 list() 的 next 游标循环拉全，不引入 Number.MAX_SAFE_INTEGER 之类的 magic limit。branch-inspector.ts 两处（主线 / 分支列表降级）与 builtin.ts 一处（/history 无 UI 降级）改为调用它。",
+      "acceptance": [
+        "新增单测：构造 >50 条 record，断言拉取结果完整、顺序正确、无重复、无死循环",
+        "真机 Alt+H：节点数 > 50，且可滚动到底部",
+        "变异验证：破坏 next 消费后，全量断言必须变红（并回读确认变异真的落盘）"
+      ],
+      "mutation": "先注入「忽略 next」的变异，确认新增断言变红；还原用 git（改动前该文件 == HEAD）",
+      "risk": "low",
+      "dependsOn": [],
+      "sizeHint": "+约 15 行 helper + 2 处调用点替换",
+      "completedAt": "2026-09-13T22:10:30+08:00",
+      "notes": "测试策略：先加回归测试并在**未修复代码**上跑出红（tests/branch-inspector.test.ts:328 —— 面板报 \"50 节点\" 而真实是 60），再实现修复。 变异验证：把 `if (!page.next) return nodes;` 改为 `if (!page.next || nodes.length > 0) ...`（只取首页），两个新用例如期变红（2 failed / 13 passed）， 还原后与变异前备份**逐字节一致**（a===b 为 true），全量 492 测试恢复全绿。备份用 .bak（非 git），因为 navigation.ts 当时含未提交修复，git checkout 会连修复一起丢掉。 变异前的备份文件 src/session/navigation.ts.bak-p07-mut 已按验证结果清理。 架构判断：builtin.ts 原本 6 行 import 全是 import type（纯契约模块），本次为它新增了一个**值 import**（../session/navigation.js）。 依据：check-boundaries.mjs 规则 1 只禁止 session→extensions，未禁止 extensions→session；且 builtin.ts 运行期本来就通过注入的 services.subject.session 调用同一契约， 依赖方向未改变。已跑 `node scripts/check-boundaries.mjs` 确认 5 条规则全过。 覆盖说明：新加的 2 个用例覆盖了 listAllSessionNodes 本身与面板端到端；builtin.ts 的降级分支**无单测覆盖**（需要 mock ExtensionAPI + 无 UI 环境），此点如实记账。"
+    }
+  ],
+  "notDoing": [
+    {
+      "item": "拆 Subject / ui-host.ts",
+      "reason": "无真实缺陷驱动（CRAP 低、覆盖高）；为假想未来拆分 = 制造新复杂度"
+    },
+    {
+      "item": "引入 eslint / coverage 门禁 / prettier",
+      "reason": "个人项目、无 CI，配置与维护成本 > 收益"
+    },
+    {
+      "item": "重写鼠标/滚动时序逻辑",
+      "reason": "滚动时序单测测不出，且未确证存在 bug"
+    },
+    {
+      "item": "以 CRAP 数值作为门禁",
+      "reason": "cc 口径含 ??/?:，数值不可跨项目比较，仅可相对排序"
+    },
+    {
+      "item": "改动 compaction.ts",
+      "reason": "94% 覆盖、0 个 CRAP>30，本次最健康模块，能动就不碰"
+    },
+    {
+      "item": "改动 build 流程",
+      "reason": "用户明确约束"
+    }
+  ],
+  "gates": [
+    {
+      "id": "G1",
+      "after": [
+        "P0.1",
+        "P0.2",
+        "P0.3",
+        "P0.4",
+        "P0.5",
+        "P0.6"
+      ],
+      "checks": [
+        "npx tsc --noEmit 干净",
+        "npx vitest run 全绿（490）",
+        "每条新增测试已做变异验证：旧逻辑下必红，且回读确认变异落盘",
+        "还原一律通过 .bak-* 备份文件完成"
+      ]
+    },
+    {
+      "id": "G2",
+      "after": [
+        "P4.1",
+        "P4.2",
+        "P4.3"
+      ],
+      "checks": [
+        "npx tsc --noEmit 干净（若报 TS7027，说明 P0 未清完）",
+        "构建仍可完成（改动 tsconfig 后需用户确认再跑 pnpm build）"
+      ]
+    },
+    {
+      "id": "G3",
+      "after": [
+        "P1.1",
+        "P1.2",
+        "P1.3",
+        "P1.4"
+      ],
+      "checks": [
+        "hover-target 纯函数单测覆盖全部种类与非法输入",
+        "handleTerminalInput 行数下降",
+        "真机验收：滚轮、hover、拖选、Alt+H 全流程"
+      ]
+    },
+    {
+      "id": "G4",
+      "after": [
+        "P2.1",
+        "P2.2",
+        "P2.3",
+        "P2.4"
+      ],
+      "checks": [
+        "分支交互语义单测（补全 mock 后）",
+        "真机验收：Alt+H 切换视图、详情翻页、分支列表内容正确",
+        "tsc 强制 SessionAccess 所有实现者提供分支方法"
+      ]
+    },
+    {
+      "id": "G5",
+      "after": [
+        "P3.1",
+        "P3.2"
+      ],
+      "checks": [
+        "债务清单已记录，无代码改动"
+      ]
+    }
+  ],
+  "openQuestions": [
+    {
+      "q": "cli/app.ts:161 的死 return 是否属本次 26 提交引入？",
+      "status": "待 git blame 确认"
+    },
+    {
+      "q": "P0.4 采用方案A（修翻页）还是方案B（删提示）？",
+      "status": "倾向方案A：提示已承诺该功能，且 clamp 逻辑已就绪"
+    },
+    {
+      "q": "仓库外是否存在自定义 SessionAccess 实现（影响 P2.3 风险）？",
+      "status": "待用户确认"
+    },
+    {
+      "q": "鼠标 hover 的 thinking-/tool- 前缀是否为历史兼容而故意保留？",
+      "status": "待用户确认；当前证据是无生产者"
+    }
+  ],
+  "selfCorrections": [
+    {
+      "what": "上一轮审查结论欠账",
+      "detail": "称 getTpsSamples() 为「死 API」不准确 —— 它被测试引用，准确说法是「仅测试使用的后门」。已改判为自我欺骗类问题（P0.5）。",
+      "status": "corrected"
+    },
+    {
+      "what": "漏报",
+      "detail": "上一轮未发现 src/cli/app.ts:161 的不可达 return，本轮由 allowUnreachableCode:false 实测暴露（P0.2）。",
+      "status": "corrected"
+    },
+    {
+      "what": "方法学局限",
+      "detail": "CRAP 对 subprocess 路径系统性高估：src/cli/app.ts 显示 cov=0%，但 tests/cli-session.test.ts 有 4 处 spawn 真实执行 CLI，scripts/verify-built-cli.mts 亦覆盖。故其 CRAP 数值不可采信。",
+      "status": "documented"
+    },
+    {
+      "what": "本轮误判（已自我纠正）",
+      "detail": "曾报告规划文档行数「错了 7~11%」（loop.ts 1184 / ui-host.ts 1808 / recovery.ts 705），实为上轮采用「非空行」口径、本轮用「总行数」对照所致。逐一实测非空行恰为 1184 / 1808 / 705，与文档完全吻合 —— 数字本身正确，缺陷只是文档未标注口径。已给 .refactor-plan.md 三处与 P3.1/P3.2 任务标题补上「非空行 / 总行数」双标注。教训：对照数字前必须先对齐口径，否则会得出完全反向的结论并误伤正确数据。",
+      "status": "corrected"
+    }
+  ],
+  "verification": {
+    "round1": {
+      "at": "2026-09-13T21:51:00+08:00",
+      "scope": [
+        "P0.1",
+        "P0.2",
+        "P4.1",
+        "P4.2",
+        "P4.3",
+        "P4.4"
+      ],
+      "tsc": "npx tsc --noEmit -> exit 0（allowUnreachableCode / noFallthroughCasesInSwitch / noImplicitOverride 均已生效且无报错）",
+      "tests": "npx vitest run -> 34 files / 490 tests passed (7.32s)",
+      "lineDeltas": {
+        "src/ui/components/overlays/branch-inspector.ts": "310 -> 309",
+        "src/cli/app.ts": "432 -> 431",
+        "tsconfig.json": "+3 options (allowUnreachableCode/noFallthroughCasesInSwitch/noImplicitOverride)"
+      },
+      "backups": [
+        "src/ui/components/overlays/branch-inspector.ts.bak-refactor",
+        "src/cli/app.ts.bak-refactor",
+        "tsconfig.json.bak-refactor"
+      ],
+      "appliedBy": ".p0-apply.cjs --apply（先 dry-run 通过唯一性校验）",
+      "caveats": [
+        "dist/ 未重建：上述源码改动对正在运行的 Uina 无影响（删除的是死码，不改变行为）",
+        "tsconfig 新选项已在 tsc 生效，但尚未经 pnpm build 验证；build 需在完全退出 Uina 后进行",
+        "本轮无行为变更，故未做变异验证（无可红断言）",
+        "唯一性校验曾被自身缺陷挡下一次：初版要求 app.ts 内 'return;' 全文件唯一（实为 14 处），已改为按位置关系判定"
+      ],
+      "backupPolicy": "初版为 3 个目标文件各生成 .bak-refactor；已按用户意见删除 —— 改动前这些文件均 == HEAD，git 即可精确还原（git diff 看改动 / git checkout -- <file> 还原），.bak 属冗余。规则修正：目标文件改动前 == HEAD 时用 git；仅当目标文件本身含未提交改动（如 activity-line.ts 的 trace 探针）时才用 .bak 快照。"
+    },
+    "round2": {
+      "at": "2026-09-13T22:12:00+08:00",
+      "scope": [
+        "P0.3"
+      ],
+      "tsc": "npx tsc --noEmit -> exit 0",
+      "tests": "npx vitest run -> 34 files / 490 tests passed (12.29s, dot reporter)",
+      "lineDeltas": {
+        "src/ui/ui-host.ts": "2002 -> 1997 (非空 1808 -> 1803)"
+      },
+      "rollback": "git checkout -- src/ui/ui-host.ts（改动前该文件 == HEAD，无需 .bak）",
+      "caveats": [
+        "P0.3 的鼠标 hover 行为（悬停思考块 / 工具卡片高亮）单测覆盖不到 —— 需用户真机 Alt+H 之外直接鼠标悬停验收",
+        "删除的 2 行解析逻辑若在别处曾被 WIP 依赖，本仓库内不存在（全仓搜索已确认）"
+      ]
+    },
+    "round3": {
+      "at": "2026-09-13T22:14:00+08:00",
+      "scope": [
+        "P0.6"
+      ],
+      "tsc": "npx tsc --noEmit -> exit 0",
+      "tests": "npx vitest run -> 34 files / 490 tests passed (9.56s, dot reporter)",
+      "lineDeltas": {
+        "src/ui/core/mouse-selection.ts": "654 -> 650"
+      },
+      "rollback": "git checkout -- src/ui/core/mouse-selection.ts（改动前该文件 == HEAD）",
+      "caveats": [
+        "删除的是零引用 getter，无行为影响；tsc 已证明无残留引用"
+      ]
+    },
+    "round4": {
+      "at": "2026-09-13T22:10:30+08:00",
+      "scope": [
+        "P0.7"
+      ],
+      "redFirst": "未修复时 tests/branch-inspector.test.ts:328 失败（面板报 50 节点，真实 60）—— 回归测试先在旧逻辑下变红",
+      "mutation": "注入「只取首页」变异后 2 failed；还原后逐字节一致 + 492 全绿",
+      "tsc": "npx tsc --noEmit -> exit 0",
+      "boundaries": "node scripts/check-boundaries.mjs -> boundary check ok: 5 rules",
+      "tests": "npx vitest run -> 34 files / 492 tests passed (490 -> 492)",
+      "lineDeltas": {
+        "src/session/navigation.ts": "123 -> 143",
+        "src/ui/components/overlays/branch-inspector.ts": "309 -> 310",
+        "src/extensions/builtin.ts": "276 -> 277",
+        "tests/branch-inspector.test.ts": "369 -> 383"
+      },
+      "rollback": "涉及的 4 个文件中，navigation.ts 含未提交修复 -> 已还原验证；其余可用 git checkout（改动前 == HEAD）",
+      "caveats": [
+        "builtin.ts 的降级分支无单测覆盖（需 mock ExtensionAPI + 无 UI 环境）",
+        "面板行为需真机 Alt+H 验收：节点数应 > 50"
+      ]
+    },
+    "round5": {
+      "at": "2026-09-13T22:22:00+08:00",
+      "scope": [
+        "P0.4",
+        "P0.5"
+      ],
+      "mutation": {
+        "m1": "P0.4 焦点分支禁用 -> branch-inspector arrow-key 用例变红（预期）",
+        "m2": "P0.5 finish() 样本推入禁用 -> tps 火花线用例变红、tps 显示用例仍绿（预期，两条测不同东西）",
+        "restore": "两文件还原后与 .bak 逐字节一致（a===b 为 true），无残留 MUT 标记"
+      },
+      "tsc": "npx tsc --noEmit -> exit 0",
+      "boundaries": "node scripts/check-boundaries.mjs -> boundary check ok: 5 rules",
+      "tests": "npx vitest run -> 34 files / 494 tests passed",
+      "incidents": [
+        "P0.4 首次替换锚点不完整 -> 嵌套死码 + TS1128；git checkout 回 HEAD 重做（同时重放 P0.1 / P0.7 两处）",
+        "apply 重复执行导致 P0.4 用例插入两份 -> 已去重",
+        "node -e 内嵌引号在本轮再次咬坏命令（第四次）-> 全部改用脚本文件"
+      ],
+      "rollback": "branch-inspector.ts / activity-line.ts 含未提交改动 -> 用 .bak 验证与还原；.bak 已在验证后清理"
+    },
+    "round6": {
+      "at": "2026-09-13T22:27:00+08:00",
+      "scope": [
+        "P1.1",
+        "P1.2"
+      ],
+      "newTests": "tests/hover-target.test.ts 5 条（纯函数，可真红真绿）",
+      "equivalence": ".p12-equivalence.cjs 对拍 27 样本：23 同 / 4 异，4 处均为新逻辑对畸形输入的收紧（生产端不会发出）",
+      "tsc": "npx tsc --noEmit -> exit 0",
+      "boundaries": "node scripts/check-boundaries.mjs -> boundary check ok: 5 rules（ui/core 保持 presentation leaf）",
+      "tests": "npx vitest run -> 35 files / 499 tests passed（494 -> 499）",
+      "lineDelta": "src/ui/ui-host.ts 1997 -> 1983（净 -14）",
+      "incidents": [
+        "接入后先跑 vitest 掩盖了 5 个 tsc 错误 -> 顺序应为 tsc 先于测试",
+        "dry-run 时用 Select-String 读的是改后行，导致 import 锚点判断错误 -> 改锚点前先 git diff 看原行"
+      ],
+      "manual": "鼠标全流程（悬停思考块/工具卡片/压缩卡片、Gutter 悬停、rail tick、context 进度条）需真机验收，规划 G3 要求"
+    },
+    "round7": {
+      "at": "2026-09-13T22:35:00+08:00",
+      "scope": [
+        "P1.3",
+        "P1.4"
+      ],
+      "newTests": "tests/session-branches.test.ts 6 条（此前 branch 两函数零覆盖）",
+      "mutations": [
+        "M1 去掉 branchEntries 的 excludeId 过滤 -> 6 条全绿（该 filter 未触发，疑似死码，已上报）",
+        "M2 toBranchInfo.headId 用 targetId -> headId 用例变红（抓住）；等价对拍仍绿（证明字段级断言不可省）"
+      ],
+      "tsc": "npx tsc --noEmit -> exit 0",
+      "boundaries": "5 rules ok",
+      "tests": "npx vitest run -> 36 files / 505 tests passed（499 -> 505）",
+      "diffStat": "src/session/navigation.ts +88 -16（含 P0.7 的 listAllSessionNodes，此前未提交）",
+      "incidents": [
+        "还原校验写错：.bak-p13 是重构前快照，我却拿新代码标记去校验 -> 误判，且发现还原把重构整个退回了；已重做重构并把 .bak-p13 覆盖为重构后基线",
+        "P1.2 的教训在此复现：vitest 不做类型检查，必须先 tsc"
+      ]
+    }
+  }
+}

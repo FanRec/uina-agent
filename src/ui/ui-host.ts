@@ -12,6 +12,7 @@ import { ProcessTerminal } from "./core/terminal.js";
 import { MainScreenRenderer } from "./core/renderer.js";
 import { Key, matchesKey } from "./core/keys.js";
 import { MouseSelectionTracker, type InteractiveTarget, type SelectableRegion } from "./core/mouse-selection.js";
+import { decodeHoverTarget, encodeHoverTarget } from "./core/hover-target.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ThinkingLevel } from "../core/types.js";
 import type { SessionAccess, SessionEntry } from "../session/types.js";
@@ -1274,7 +1275,7 @@ export class UIHost implements UIHostContextPort {
 					interactiveTargets.push({
 						// 块级 id：一个思考块一个 id（块内所有行共享）。逐行不同 id 会被
 						// 当成"目标变了"而触发全量重绘。
-						id: `thinking:${loc.item.uid}`,
+						id: encodeHoverTarget({ kind: "thinking", uid: loc.item.uid }),
 						row: screenRow,
 						colStart: 0,
 						colEnd: Math.max(0, transcriptContentW - 1),
@@ -1298,7 +1299,7 @@ export class UIHost implements UIHostContextPort {
 				if (absLine >= scrollStart && absLine < scrollStart + visibleTranscript.length) {
 					const screenRow = absLine - scrollStart;
 					interactiveTargets.push({
-						id: `tool:${loc.callId}:${absLine}`,
+						id: encodeHoverTarget({ kind: "tool", callId: loc.callId, line: absLine }),
 						row: screenRow,
 						colStart: 0,
 						colEnd: Math.max(0, transcriptContentW - 1),
@@ -1322,7 +1323,7 @@ export class UIHost implements UIHostContextPort {
 				if (absLine >= scrollStart && absLine < scrollStart + visibleTranscript.length) {
 					const screenRow = absLine - scrollStart;
 					interactiveTargets.push({
-						id: `compaction:${loc.index}:${absLine}`,
+						id: encodeHoverTarget({ kind: "compaction", index: loc.index, line: absLine }),
 						row: screenRow,
 						colStart: 0,
 						colEnd: Math.max(0, transcriptContentW - 1),
@@ -1342,7 +1343,7 @@ export class UIHost implements UIHostContextPort {
 			const aboveStartRow = allChatRows.length;
 			for (let r = 0; r < aboveH; r++) {
 				interactiveTargets.push({
-					id: `help-overlay-row-${r}`,
+					id: encodeHoverTarget({ kind: "help-overlay-row", row: r }),
 					row: aboveStartRow + r,
 					colStart: 0,
 					colEnd: Math.max(0, width - 1),
@@ -1358,7 +1359,7 @@ export class UIHost implements UIHostContextPort {
 		if (this.gutterMode === "scrollbar") {
 			for (let r = 0; r < chatAreaH; r++) {
 				interactiveTargets.push({
-					id: `scrollbar-row-${r}`,
+					id: encodeHoverTarget({ kind: "scrollbar-row", row: r }),
 					row: r,
 					colStart: safeW - 2,
 					colEnd: safeW,
@@ -1377,14 +1378,14 @@ export class UIHost implements UIHostContextPort {
 			const railGeo = this.timelineRail.getGeometry(chatAreaH, atBottom);
 			if (railGeo && timelineTurns.length > 0) {
 				interactiveTargets.push({
-					id: "rail-up",
+					id: encodeHoverTarget({ kind: "rail-up" }),
 					row: railGeo.upRow,
 					colStart: safeW - 2,
 					colEnd: safeW,
 					onClick: () => this.scrollTurnUp(),
 				});
 				interactiveTargets.push({
-					id: "rail-down",
+					id: encodeHoverTarget({ kind: "rail-down" }),
 					row: railGeo.downRow,
 					colStart: safeW - 2,
 					colEnd: safeW,
@@ -1395,7 +1396,7 @@ export class UIHost implements UIHostContextPort {
 					const turn = timelineTurns[railGeo.windowStart + k];
 					if (turn) {
 						interactiveTargets.push({
-							id: `rail-tick-${turn.uid}`,
+							id: encodeHoverTarget({ kind: "rail-tick", turnUid: turn.uid }),
 							row: screenRow,
 							colStart: safeW - 2,
 							colEnd: safeW,
@@ -1412,7 +1413,7 @@ export class UIHost implements UIHostContextPort {
 		const inputBottomBorderRow = inputStartRow + inputH - 1;
 		const progressHotspotW = Math.max(1, this.inputLine.getProgressHotspotWidth?.() ?? 35);
 		interactiveTargets.push({
-			id: "context-progress",
+			id: encodeHoverTarget({ kind: "context-progress" }),
 			row: inputBottomBorderRow,
 			colStart: 0,
 			colEnd: Math.max(0, Math.min(inputWidth - 1, progressHotspotW - 1)),
@@ -1532,60 +1533,40 @@ export class UIHost implements UIHostContextPort {
 						this.stopAutoScroll();
 					}
 
-					if (res.hoverTargetId !== undefined) {
-						const hoveredThinkingUid = res.hoverTargetId?.startsWith("thinking:")
-							? parseInt(res.hoverTargetId.split(":")[1] ?? "", 10)
-							: res.hoverTargetId?.startsWith("thinking-")
-								? parseInt(res.hoverTargetId.replace("thinking-", ""), 10)
-								: null;
+					if (res.hoverTargetId != null) {
+						// 热区协议集中到 hover-target.ts 编解码；此处只做「解出的 kind -> 该谁高亮」的分派。
+						const target = decodeHoverTarget(res.hoverTargetId);
+
+						const hoveredThinkingUid = target?.kind === "thinking" ? target.uid : null;
 						if (this.transcript.setHoveredThinkingUid(hoveredThinkingUid)) {
 							anyNeedRender = true;
 						}
 
-						let hoveredToolId: string | null = null;
-						if (res.hoverTargetId?.startsWith("tool:")) {
-							const parts = res.hoverTargetId.split(":");
-							hoveredToolId = parts[1] ?? null;
-						} else if (res.hoverTargetId?.startsWith("tool-")) {
-							const parts = res.hoverTargetId.split("-");
-							hoveredToolId = parts.slice(1, -1).join("-");
-						}
+						const hoveredToolId = target?.kind === "tool" ? target.callId : null;
 						if (this.transcript.setHoveredToolId(hoveredToolId)) {
 							anyNeedRender = true;
 						}
 
-						let hoveredCompactionIndex: number | null = null;
-						if (res.hoverTargetId?.startsWith("compaction:")) {
-							const parts = res.hoverTargetId.split(":");
-							const idx = parseInt(parts[1] ?? "", 10);
-							if (!Number.isNaN(idx)) hoveredCompactionIndex = idx;
-						}
+						const hoveredCompactionIndex = target?.kind === "compaction" ? target.index : null;
 						if (this.transcript.setHoveredCompaction(hoveredCompactionIndex)) {
 							anyNeedRender = true;
 						}
 
-						const isCtxProgressHovered = res.hoverTargetId === "context-progress";
-						if (this.contextBar.setHovered(isCtxProgressHovered)) {
+						if (this.contextBar.setHovered(target?.kind === "context-progress")) {
 							anyNeedRender = true;
 						}
 
-						if (res.hoverTargetId?.startsWith("rail-tick-")) {
-							const turnUid = parseInt(res.hoverTargetId.replace("rail-tick-", ""), 10);
-							this.timelineRail.setHoverTurnUid(turnUid);
-							const target = this.mouseTracker.getTarget(res.hoverTargetId);
-							if (target) {
-								this.timelineRail.setHover(target.row);
-							}
+						if (target?.kind === "rail-tick") {
+							this.timelineRail.setHoverTurnUid(target.turnUid);
+							const hit = this.mouseTracker.getTarget(res.hoverTargetId);
+							if (hit) this.timelineRail.setHover(hit.row);
 							anyNeedRender = true;
-						} else if (res.hoverTargetId === "rail-up" || res.hoverTargetId === "rail-down") {
-							const target = this.mouseTracker.getTarget(res.hoverTargetId);
-							if (target) {
-								this.timelineRail.setHover(target.row);
-							}
+						} else if (target?.kind === "rail-up" || target?.kind === "rail-down") {
+							const hit = this.mouseTracker.getTarget(res.hoverTargetId);
+							if (hit) this.timelineRail.setHover(hit.row);
 							anyNeedRender = true;
-						} else if (res.hoverTargetId?.startsWith("scrollbar-row-")) {
-							const row = parseInt(res.hoverTargetId.replace("scrollbar-row-", ""), 10);
-							if (this.scrollbarGutter.setHover(row)) {
+						} else if (target?.kind === "scrollbar-row") {
+							if (this.scrollbarGutter.setHover(target.row)) {
 								anyNeedRender = true;
 							}
 						} else {

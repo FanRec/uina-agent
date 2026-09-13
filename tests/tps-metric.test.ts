@@ -184,6 +184,21 @@ describe("ActivityLineComponent：分母只算解码跨度", () => {
 });
 
 describe("ActivityLineComponent：回合级采样", () => {
+	// 采样是私有状态，只能从渲染输出观察；不为测试开公开 getter。
+	it("回合结束时按解码跨度算出速度并显示", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(T0);
+		const act = new ActivityLineComponent();
+		act.start("streaming", "第一轮");
+		act.addTokens(100);
+		vi.setSystemTime(T0 + 1000);
+		act.addTokens(100);
+		act.finish("完成");
+
+		// 200 tokens / 1.000s 解码 = 200 tps。
+		expect(plain(act.getHeaderString(200))).toContain("~200 tps");
+	});
+
 	it("速度采样跨回合保留，量程才有历史参照", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(T0);
@@ -194,11 +209,16 @@ describe("ActivityLineComponent：回合级采样", () => {
 		act.addTokens(100);
 		act.finish("完成");
 
-		expect(act.getTpsSamples().length).toBe(1);
-		expect(act.getTpsSamples()[0]).toBe(200);
-
-		// 新一轮开始不应丢掉上一轮：只留一回合时峰值恒等于当前值，表盘每回合都满格。
+		// 第二轮同样 200 tps：峰值仍有上一轮作参照，量程不会每回合从零重缩。
 		act.start("streaming", "第二轮");
-		expect(act.getTpsSamples().length).toBe(1);
+		act.addTokens(100);
+		vi.setSystemTime(T0 + 2000);
+		act.addTokens(100);
+		act.finish("完成");
+
+		const text = plain(act.getHeaderString(200));
+		expect(text).toContain("~200 tps");
+		// 两轮都已采样：跨回合保留才会让火花线出现第二个柱（不猜某一格的具体字形）。
+		expect(text).toMatch(/[▁▂▃▄▅▆▇█]{2}/);
 	});
 });
