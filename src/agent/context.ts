@@ -1,6 +1,12 @@
 import { imageNotice } from "../core/content.js";
 import type { AgentMessage, ChatMsg, ContextSegments, ToolDef, Usage } from "../core/types.js";
 
+/**
+ * 近似 token 估算使用的字符/token 比。英文约 4，但中文与工具 JSON 的密度更高，
+ * 因此该常数偏小会让估算偏低。对齐 Pi 的 CHARS_PER_TOKEN，集中在此便于调整。
+ */
+export const CHARS_PER_TOKEN = 4;
+
 export interface ContextEstimate { tokens: number; actual: boolean; }
 
 export interface BuildInput {
@@ -186,7 +192,7 @@ export function estimateRequestTokens(
 ): number {
 	const seg = countContextSegmentChars(messages, tools);
 	const totalChars = seg.system + seg.prompt + seg.assistant + (includeThinking ? seg.thinking : 0) + seg.tools;
-	return Math.ceil(totalChars / 4);
+	return Math.ceil(totalChars / CHARS_PER_TOKEN);
 }
 
 export interface EstimateContextOptions {
@@ -280,10 +286,10 @@ export function calculateContextSegments(
 	}
 
 	return {
-		system: Math.ceil(seg.system / 4),
-		prompt: Math.ceil(seg.prompt / 4),
-		assistant: Math.ceil(seg.assistant / 4),
-		thinking: Math.ceil(seg.thinking / 4),
-		tools: Math.ceil(seg.tools / 4),
+		system: Math.ceil(seg.system / CHARS_PER_TOKEN),
+		prompt: Math.ceil(seg.prompt / CHARS_PER_TOKEN),
+		assistant: Math.ceil(seg.assistant / CHARS_PER_TOKEN),
+		thinking: Math.ceil(seg.thinking / CHARS_PER_TOKEN),
+		tools: Math.ceil(seg.tools / CHARS_PER_TOKEN),
 	};
 }

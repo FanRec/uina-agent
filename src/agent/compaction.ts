@@ -1,7 +1,7 @@
 import { imageNotice } from "../core/content.js";
 import type { AgentMessage, ChatMsg, Model, ModelStreamFn, ToolDef } from "../core/types.js";
 import type { ProviderHooks } from "../runtime/hooks.js";
-import { buildContext, estimateContextTokens } from "./context.js";
+import { buildContext, CHARS_PER_TOKEN, estimateContextTokens } from "./context.js";
 
 export interface CompactionSettings {
 	contextWindow?: number;
@@ -83,7 +83,7 @@ export function estimateMessageTokens(message: AgentMessage | ChatMsg): number {
 			chars = contentChars(message);
 			break;
 	}
-	return Math.ceil(chars / 4);
+	return Math.ceil(chars / CHARS_PER_TOKEN);
 }
 
 // ---------------------------------------------------------------------------
