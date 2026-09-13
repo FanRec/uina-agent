@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { listSessionNodes, readSessionNode } from "../session/navigation.js";
+import { listSessionNodes, readSessionNode, listSessionBranches, readSessionBranch } from "../session/navigation.js";
 import { isSafeRewindTarget, projectAgentHistory, protectRewindContext, recoverRecords } from "../session/recovery.js";
 import type { SessionAccess, RewindRequest, RewindResult, SessionRewindRecord } from "../session/types.js";
 import { validImages } from "../core/content.js";
@@ -84,6 +84,14 @@ export class Subject {
 		list: options => {
 			if (!this.store) throw new Error("未配置会话存储，会话查询不可用");
 			return listSessionNodes(this.store.readRecords(), options);
+		},
+		listBranches: () => {
+			if (!this.store) throw new Error("未配置会话存储，会话查询不可用");
+			return listSessionBranches(this.store.readRecords());
+		},
+		readBranch: id => {
+			if (!this.store) throw new Error("未配置会话存储，会话查询不可用");
+			return readSessionBranch(this.store.readRecords(), id);
 		},
 		read: id => {
 			if (!this.store) throw new Error("未配置会话存储，会话查询不可用");

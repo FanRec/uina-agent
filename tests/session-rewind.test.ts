@@ -22,13 +22,13 @@ describe("session mainline persistence", () => {
 		expect(readSessionNode(store.readRecords(),records[1].id)).toMatchObject({kind:"message",message:{content:"bad plan"}});
 		const context = projectAgentHistory(recoverRecords([...store.readRecords()]).entries);
 		expect(context.some(message=>message.content === "bad plan")).toBe(false);
-		expect(context.some(message=>message.content.includes("stop writing files"))).toBe(true);
+		expect(context.some(message=>message.content.includes("stop writing files"))).toBe(false);
 		expect(() => store.appendRewind({id:"bad",requestId:"bad",targetId:records[1].id,fromId:"r1",source:"user",reason:"archive"})).toThrow("祖先");
 		await store.appendMessage({role:"assistant",content:"corrected plan"});
 		const latest=store.readRecords().at(-1)!;
 		await store.appendRewind({id:"r2",requestId:"q2",targetId:records[0].id,fromId:latest.id,source:"user",reason:"again"});
 		expect(listSessionNodes(store.readRecords(),{scope:"all"}).nodes.filter(node=>!node.active).length).toBe(4);
-		expect(projectAgentHistory(recoverRecords([...store.readRecords()]).entries).filter(message=>message.content.includes("stop writing files"))).toHaveLength(1);
+		expect(projectAgentHistory(recoverRecords([...store.readRecords()]).entries).filter(message=>message.content.includes("stop writing files"))).toHaveLength(0);
 	});
 	it("rejects cuts inside tool exchanges", async () => {
 		const store=new MemorySessionStore(); await seed(store);
@@ -77,7 +77,7 @@ describe("rewind runtime safe points", () => {
 			expect(await readFile(join(cwd,"effect.txt"),"utf8")).toBe("already written");
 			expect(req.messages.some(m=>m.content==="bad original plan")).toBe(false);
 			expect(req.messages.some(m=>m.content.includes("会话回溯"))).toBe(true);
-			expect(req.messages.some(m=>m.content.includes("new requirement"))).toBe(true);
+			expect(req.messages.some(m=>m.content.includes("new requirement"))).toBe(false);
 			emit({kind:"text",text:"corrected response"});emit({kind:"finish",reason:"stop"});
 		}});
 		host.subscribe(event=>{if(event.type==="error")errors.push(event.text);if(event.type==="session_rewind")rewinds++;});
@@ -330,8 +330,8 @@ it("does not pollute mainline with abandoned branch inputs on multiple rewinds a
 	await store.appendRewind({ id: "r2", requestId: "q2", targetId: "r1", fromId: branch2Head, source: "user", reason: "retry from r1" });
 	const stateA = recoverRecords([...store.readRecords()]);
 	const historyA = projectAgentHistory(stateA.entries);
-	expect(historyA.some(m => m.content.includes("temp instruction 1"))).toBe(true);
-	expect(historyA.some(m => m.content.includes("temp instruction 2"))).toBe(true);
+	expect(historyA.some(m => m.content.includes("temp instruction 1"))).toBe(false);
+	expect(historyA.some(m => m.content.includes("temp instruction 2"))).toBe(false);
 
 	// 场景 B：从当前主线再回溯到最初的 rootId，验证只收集当前被放弃主线上的指令，且去重无重复
 	await store.appendMessage({ role: "assistant", content: "branch 3 response" });
@@ -342,8 +342,8 @@ it("does not pollute mainline with abandoned branch inputs on multiple rewinds a
 	// 验证：去重后，每条指令只保留一条
 	const t1Count = historyB.filter(m => m.content.includes("temp instruction 1")).length;
 	const t2Count = historyB.filter(m => m.content.includes("temp instruction 2")).length;
-	expect(t1Count).toBe(1);
-	expect(t2Count).toBe(1);
+	expect(t1Count).toBe(0);
+	expect(t2Count).toBe(0);
 });
 
 it("positions rewind notice between compactionSummary and retainedTail, never after latest user prompt", async () => {
@@ -618,14 +618,14 @@ describe("BranchInspectorOverlay", () => {
 		expect(rendered).toContain("会话历史与分支检视器");
 		expect(rendered).toContain("hello world");
 
-		// Toggle filter scope: all -> abandoned -> main
-		overlay.handleInput("f");
+		// Switch from the mainline to the read-only branch view
+		overlay.handleInput("\x1b[C");
 		rendered = overlay.render(80).join("\n");
-		expect(rendered).toContain("[ABANDONED]");
+		expect(rendered).toContain("[只读分支]");
 
-		overlay.handleInput("f");
+		overlay.handleInput("\x1b[D");
 		rendered = overlay.render(80).join("\n");
-		expect(rendered).toContain("[MAIN]");
+		expect(rendered).toContain("主线");
 
 		// Tab to focus detail, scroll down
 		overlay.handleInput("\t");
@@ -640,6 +640,7 @@ describe("BranchInspectorOverlay", () => {
 		expect(closed).toBe(true);
 	});
 });
+
 
 
 

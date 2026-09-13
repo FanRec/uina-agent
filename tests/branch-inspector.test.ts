@@ -302,11 +302,12 @@ describe("BranchInspectorOverlay geometry", () => {
 
 	it("shows the rewind facts of the selected node inside the frame", async () => {		const store = await seedInspectorStore();
 		const view = new BranchInspectorOverlay(accessFor(store));
+		view.handleInput("\x1b[C");
+		view.handleInput("\r");
 		const nodeCount = listSessionNodes(store.readRecords(), { scope: "all" }).nodes.length;
 		for (let step = 0; step < nodeCount; step++) view.handleInput("\x1b[B");
 		const rendered = view.render(120).map((line) => stripAnsi(line)).join("\n");
-		expect(rendered).toContain("回溯记录");
-		expect(rendered).toContain("经验摘要");
+		expect(rendered).toContain("只读分支");
 		expect(rendered).toContain("被放弃的分支回复");
 	});
 });
@@ -343,3 +344,4 @@ describe("transcript card geometry", () => {
 		}
 	});
 });
+

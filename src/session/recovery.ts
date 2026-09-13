@@ -730,40 +730,14 @@ function collectCarriedInputs(abandoned: readonly SessionEntry[]): AgentMessage[
 }
 
 function rewindMessages(entry: Extract<SessionEntry, { kind: "rewind" }>): AgentMessage[] {
-	const messages: AgentMessage[] = [
-		{
-			id: `continuity:${entry.id}`,
-			role: "custom",
-			customType: "session-continuity",
-			content: entry.notice,
-			display: true,
-		},
-	];
-	if (entry.record.summary) {
-		messages.push({
-			id: `continuity:${entry.id}:summary`,
-			role: "custom",
-			customType: "session-continuity",
-			display: false,
-			content: `[回溯经验摘要（发起方解释）]\n${entry.record.summary}`,
-		});
-	}
-	for (let index = 0; index < entry.carriedInputs.length; index++) {
-		const message = entry.carriedInputs[index];
-		messages.push({
-			id: `continuity:${entry.id}:${index}`,
-			role: "custom",
-			customType: "session-continuity",
-			display: false,
-			content: `[回溯后保留的历史输入；不是新的执行请求]\n${message.content}`,
-			images: message.images,
-		});
-	}
-	if (entry.record.compaction) {
-		messages.push({ role: "compactionSummary", summary: entry.record.compaction.summary, content: "[历史摘要] " + entry.record.compaction.summary, tokensBefore: entry.record.compaction.tokensBefore });
-		messages.push(...structuredClone(entry.record.compaction.retainedTail as AgentMessage[]));
-	}
-	return messages;
+	const content = `${entry.notice}\n[当前主线从此处继续；被放弃分支仅在需要时通过只读历史查询]`;
+	return [{
+		id: `continuity:${entry.id}`,
+		role: "custom",
+		customType: "session-continuity",
+		content,
+		display: true,
+	}];
 }
 
 /** Compaction is a projection; it cannot erase the latest committed rewind facts.

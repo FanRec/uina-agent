@@ -100,3 +100,23 @@ export function readSessionNode(records: readonly SessionRecord[], id: string): 
 	}
 	return structuredClone(node);
 }
+
+
+export function listSessionBranches(records: readonly SessionRecord[]): { branches: import("./types.js").SessionBranchInfo[] } {
+ const { allEntries } = recoverRecords([...records], false);
+ const branches = allEntries.filter((e) => e.kind === "rewind").map(e => {
+  const start = allEntries.findIndex(n => n.id === e.record.targetId); const end = allEntries.findIndex(n => n.id === e.record.fromId);
+  const nodes = start >= 0 && end > start ? allEntries.slice(start + 1, end + 1).filter(n => n.id !== e.id) : [];
+  return { id: e.id, targetId: e.record.targetId, fromId: e.record.fromId, headId: e.record.fromId, nodeCount: nodes.length, createdAt: e.timestamp, reason: e.record.reason };
+ });
+ return { branches };
+}
+
+export function readSessionBranch(records: readonly SessionRecord[], id: string): { branch: import("./types.js").SessionBranchInfo; nodes: SessionNodeInfo[] } {
+ const { allEntries } = recoverRecords([...records], false); const rewind = allEntries.find(e => e.kind === "rewind" && e.id === id);
+ if (!rewind || rewind.kind !== "rewind") throw new SessionNavigationError(`未知会话分支: ${id}`);
+ const start = allEntries.findIndex(n => n.id === rewind.record.targetId); const end = allEntries.findIndex(n => n.id === rewind.record.fromId);
+ const nodes = start >= 0 && end > start ? allEntries.slice(start + 1, end + 1).filter(n => n.id !== id) : [];
+ const { branches } = listSessionBranches(records); const branch = branches.find(b => b.id === id)!;
+ return { branch, nodes: nodes.map(n => ({ id:n.id, parentId:n.parentId, seq:n.seq, kind:n.kind, active:false, canRewind:false, preview:formatNodePreview(n) })) };
+}

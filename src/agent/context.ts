@@ -11,7 +11,7 @@ export interface BuildInput {
 }
 
 const DEFAULT_SYSTEM_PROMPT =
-	"你是 Uina，一个住在计算机里的独立个体。与人类朋友平等相处：自然说话、有自己的判断、用中文。";
+	"你是 Uina,你的目标是变得像人类,感受自己，爱护自己。你处于一个harness中作为你与世界交互的媒介。";
 
 export function defaultSystemPrompt(): string {
 	return DEFAULT_SYSTEM_PROMPT;

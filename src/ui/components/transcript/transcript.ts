@@ -607,10 +607,13 @@ export class TranscriptContainer implements Component {
 					kind: "customMessage",
 					message: {
 						customType: "session-rewind",
-						content: entry.notice + (entry.record.summary ? `\n[经验摘要] ${entry.record.summary}` : ""),
+						content: entry.notice + "\n[当前主线从此处继续]" + (entry.record.summary ? `\n[经验摘要] ${entry.record.summary}` : ""),
 						details: { record: entry.record, effects: entry.effects },
 					},
 				});
+				if (entry.record.compaction) {
+					this.timeline.push({ kind: "compaction", record: { summary: entry.record.compaction.summary, turnsCount: turnN, tokensSaved: entry.record.compaction.tokensBefore, collapsed: true } });
+				}
 				continue;
 			}
 			if (entry.kind === "custom_message") {

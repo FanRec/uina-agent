@@ -10,7 +10,7 @@ import { C, stripAnsi, visibleWidth, truncateToWidth } from "../../core/utils.js
 import { sanitizeRenderText } from "../../format.js";
 import type { SessionAccess, SessionNodeInfo, HydratedSessionEntry } from "../../../session/types.js";
 
-export type FilterScope = "all" | "abandoned" | "main";
+type ViewMode = "main" | "branch-list" | "branch-history";
 
 /** Visible list rows; combined with the engine budget this matches the other dashboards. */
 const LIST_ROWS = 13;
@@ -20,7 +20,8 @@ export class BranchInspectorOverlay implements Component, Focusable {
 	private selectedIndex = 0;
 	private detailScrollOffset = 0;
 	private focusTarget: "list" | "detail" = "list";
-	private filterScope: FilterScope = "all";
+	private viewMode: ViewMode = "main";
+	private selectedBranchId: string | null = null;
 
 	onClose?: () => void;
 	onRequestRender?: () => void;
@@ -28,19 +29,13 @@ export class BranchInspectorOverlay implements Component, Focusable {
 	constructor(private readonly sessionPort: SessionAccess) {}
 
 	private nodes(): SessionNodeInfo[] {
-		const allNodes = this.sessionPort.list({ scope: "all" }).nodes ?? [];
-		if (this.filterScope === "main") return allNodes.filter((node) => node.active);
-		if (this.filterScope === "abandoned") return allNodes.filter((node) => !node.active);
-		return allNodes;
+		if (this.viewMode === "main") return this.sessionPort.list({ scope: "main" }).nodes ?? [];
+		if (this.viewMode === "branch-history" && this.selectedBranchId && this.sessionPort.readBranch) return this.sessionPort.readBranch(this.selectedBranchId).nodes;
+		if (this.sessionPort.listBranches) return this.sessionPort.listBranches().branches.map((b) => ({ id:b.id, parentId:b.targetId, seq:0, kind:"rewind", active:false, canRewind:false, preview:`分支 ${b.id.slice(0,6)} · ${b.nodeCount} 节点 · ${b.reason}` }));
+		return this.sessionPort.list({ scope: "all" }).nodes.filter((n) => !n.active);
+		return [];
 	}
 
-	private cycleFilterScope(): void {
-		if (this.filterScope === "all") this.filterScope = "abandoned";
-		else if (this.filterScope === "abandoned") this.filterScope = "main";
-		else this.filterScope = "all";
-		this.selectedIndex = 0;
-		this.detailScrollOffset = 0;
-	}
 
 	private moveSelection(delta: number, maxIndex: number): void {
 		this.selectedIndex = Math.max(0, Math.min(maxIndex, this.selectedIndex + delta));
@@ -51,9 +46,8 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		const nodes = this.nodes();
 
 		if (matchesKey(data, Key.escape)) {
-			this.onClose?.();
-			this.onRequestRender?.();
-			return;
+			if (this.viewMode === "branch-history") { this.viewMode = "branch-list"; this.selectedBranchId = null; this.selectedIndex = 0; this.onRequestRender?.(); return; }
+			this.onClose?.(); this.onRequestRender?.(); return;
 		}
 
 		if (matchesKey(data, Key.tab)) {
@@ -62,10 +56,17 @@ export class BranchInspectorOverlay implements Component, Focusable {
 			return;
 		}
 
-		if (data === "f" || data === "F") {
-			this.cycleFilterScope();
+		if (matchesKey(data, Key.left) || matchesKey(data, Key.right)) {
+			this.viewMode = this.viewMode === "main" ? "branch-list" : "main";
+			this.selectedBranchId = null;
+			this.selectedIndex = 0;
+			this.detailScrollOffset = 0;
 			this.onRequestRender?.();
 			return;
+		}
+		if (data === "\r" && this.viewMode === "branch-list" && this.sessionPort.listBranches) {
+			const branches = this.sessionPort.listBranches().branches;
+			if (branches[this.selectedIndex]) { this.selectedBranchId = branches[this.selectedIndex].id; this.viewMode = "branch-history"; this.selectedIndex = 0; this.detailScrollOffset = 0; this.onRequestRender?.(); return; }
 		}
 
 		if (matchesKey(data, Key.up)) {
@@ -123,10 +124,10 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		const splitRow = (left: string, right: string): string =>
 			`  ${rule} ${cell(left, leftW)}${cha(colMid)}${rule} ${cell(right, rightW)} ${cha(colRight)}${rule}`;
 
-		const titleTag = `─ 会话历史与分支检视器 [${this.filterScope.toUpperCase()}] `;
+		const titleTag = `─ 会话历史与分支检视器 [${this.viewMode === "main" ? "主线" : this.viewMode === "branch-list" ? "分支选择 [只读分支]" : "分支历史（只读）"}] `;
 		output.push(`  ${border}╭${titleTag}${"─".repeat(Math.max(1, boxWidth - 4 - visibleWidth(titleTag)))}${cha(colRight)}${border}╮${C.reset}`);
 
-		const help = `共 ${nodes.length} 节点 · [F] 筛选 [Tab] 焦点 ${this.focusTarget} [↑/↓] 移动 [Esc] 关闭`;
+		const help = `${this.viewMode === "main" ? "当前主线" : this.viewMode === "branch-list" ? "选择要查看的分支" : "废弃分支（只读）"} · ${nodes.length} 节点 · [←/→] 切换视图 [Tab] 焦点 ${this.focusTarget} [↑/↓] 移动 [Esc] 关闭`;
 		output.push(contentRow(help, C.dim));
 		output.push(`  ${border}├${"─".repeat(boxWidth - 4)}${cha(colRight)}${border}┤${C.reset}`);
 
@@ -304,3 +305,5 @@ function wrapPlain(text: string, width: number): string[] {
 	if (rest.length > 0) rows.push("…");
 	return rows;
 }
+
+

@@ -381,7 +381,7 @@ export class UinaHost {
 	}
 
 	get session(): import("../session/types.js").SessionAccess {
-		return { list: options => this.subject.session.list(options), read: id => this.subject.session.read(id), requestRewind: (request,source,signal) => { this.assertAccepting(); return this.subject.session.requestRewind(request,source,signal); } };
+		return { list: options => this.subject.session.list(options), listBranches: () => this.subject.session.listBranches!(), readBranch: id => this.subject.session.readBranch!(id), read: id => this.subject.session.read(id), requestRewind: (request,source,signal) => { this.assertAccepting(); return this.subject.session.requestRewind(request,source,signal); } };
 	}
 
 	async reloadExtensions(): Promise<void> {
