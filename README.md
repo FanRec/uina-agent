@@ -331,7 +331,7 @@ git diff | uina "总结这次改动"          # 管道内容作为上下文
 | --- | --- |
 | `read_file` | 读 UTF-8 文本，可按 `offset` / `limit` 读片段 |
 | `write_file` | 覆盖写入文件 |
-| `read_image` | 按文件签名读取 PNG / JPEG / GIF / WebP |
+| `edit_file` | 精确文本替换：`edits[]` 中每个 `oldText` 必须在文件中唯一，一次调用可携带多个不相交编辑；自动适配 LF/CRLF 行尾并保留 BOM || `read_image` | 按文件签名读取 PNG / JPEG / GIF / WebP |
 | `exec_command` | 执行系统命令（Windows 走 PowerShell / `cmd`，Unix 走 `/bin/sh`） |
 | `get_time` | 当前日期时间 |
 | `job_list` / `job_output` / `job_kill` | 后台任务：列出、读取增量输出、取消 |

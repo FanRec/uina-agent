@@ -1,4 +1,5 @@
 import { readFile, writeFile } from "node:fs/promises";
+import { activateEditFile } from "./edit-file.js";
 import { resolve } from "node:path";
 import type { ExtensionAPI, ImageContent } from "../index.js";
 
@@ -44,10 +45,11 @@ export default function activate(api: ExtensionAPI): void {
 			return { result: "Written " + file, status: "succeeded", details: { path: file } };
 		},
 	});
-	api.registerTool({
-		def: {
-			type: "function",
-			function: {
+		activateEditFile(api);
+api.registerTool({
+		def: {
+			type: "function",
+			function: {
 				name: "read_image",
 				description:
 					"Read a PNG, JPEG, GIF or WebP image into model context. Unknown model capability is attempted; explicitly unsupported models reject image input.",

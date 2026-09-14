@@ -73,7 +73,7 @@ shell 非零退出码为 `failed`；后台任务成功创建表示此次工具�
 所有能力经 ActivationScope 注册：
 
 - `builtin:runtime-tools` 注册 `get_time`、`exec_command`、Job 与 Subagent 工具，并拥有其关闭清理。
-- `builtin:workspace-tools` 默认注册 `read_file`、`write_file`、`read_image` 和文件 renderer；Host 可用 `workspaceTools: false` 禁用，扩展可显式 replace。
+- `builtin:workspace-tools` 默认注册 `read_file`、`write_file`、`edit_file`、`read_image` 和文件 renderer；Host 可用 `workspaceTools: false` 禁用，扩展可显式 replace。
 - `builtin:session-tools` 注册历史查询/回溯工具与 `/history`、`/rewind`；继承工具按执行者身份访问自身会话。
 - `builtin:commands` 注册内置命令；`/session` 仍用于查看会话用量。
 - 项目扩展从 `.uina/extensions/` 的脚本、一级目录入口或 `package.json#uina.extensions` 加载；CLI `-e` 与 Host `extensionPaths` 可指定额外入口。在 `activate(pi)` 中调用 `pi.registerTool()`、`pi.registerCommand()`、`pi.registerProvider()`、renderer 或 hook 注册 API。
