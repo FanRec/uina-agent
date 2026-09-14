@@ -14,6 +14,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ExtensionAPI } from "../index.js";
+import { summarizeEdit } from "./edit-diff.js";
 
 interface Edit {
 	oldText: string;
@@ -120,10 +121,12 @@ export function activateEditFile(api: ExtensionAPI): void {
 			const matched = matchEdits(normalized, edits.map((e) => ({ oldText: normalizeToLF(e.oldText), newText: normalizeToLF(e.newText) })), file);
 			const updated = restoreLineEndings(applyMatched(normalized, matched), ending);
 			await writeFile(file, bom + updated, { encoding: "utf8", signal });
+			// LF 视图上的变更摘要：带行号 ± 片段 + 新文件首个变更行，供调用方免全量复读确认
+			const summary = summarizeEdit(normalized, normalizeToLF(updated), matched);
 			return {
-				result: `Edited ${file}: ${edits.length} replacement(s).`,
+				result: `Edited ${file}: ${edits.length} replacement(s).\n${summary.diff}`,
 				status: "succeeded",
-				details: { path: file, edits: edits.length, lineEnding: ending },
+				details: { path: file, edits: edits.length, lineEnding: ending, firstChangedLine: summary.firstChangedLine },
 			};
 		},
 	});

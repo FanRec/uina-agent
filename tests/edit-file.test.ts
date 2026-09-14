@@ -113,6 +113,46 @@ describe("edit_file", () => {
 		expect(await readFile(file, "utf8")).toBe("abcdef\n");
 	});
 
+	it("returns a line-numbered diff summary so callers can confirm without re-reading", async () => {
+		const { api, dir } = await setup();
+		const file = join(dir, "diff.txt");
+		await writeFile(file, "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n", "utf8");
+		const result = await api.callTool("edit_file", {
+			path: file,
+			edits: [{ oldText: "l5", newText: "L5\nL5b" }],
+		});
+		expect(result.status).toBe("succeeded");
+		const text = String(result.result);
+		expect(text).toContain("-  5 l5");
+		expect(text).toContain("+  5 L5");
+		expect(text).toContain("+  6 L5b");
+		expect(text).toContain("   4 l4"); // 上文
+		expect(text).toContain("   7 l7"); // 下文
+		expect(text).not.toContain("l9"); // 远处折叠不出现
+		expect(result.details).toMatchObject({ firstChangedLine: 5 });
+	});
+
+	it("shifts line numbers across multiple hunks in one call", async () => {
+		const { api, dir } = await setup();
+		const file = join(dir, "multi-hunk.txt");
+		await writeFile(file, "a\nb\nc\nd\ne\nf\n", "utf8");
+		const result = await api.callTool("edit_file", {
+			path: file,
+			edits: [
+				{ oldText: "a", newText: "A1\nA2" },
+				{ oldText: "e", newText: "E1\nE2\nE3" },
+			],
+		});
+		expect(result.status).toBe("succeeded");
+		const text = String(result.result);
+		expect(text).toContain("+ 1 A1");
+		expect(text).toContain("+ 2 A2");
+		// 第二个 hunk 的新文件行号要计入前一 hunk 净增 1 行
+		expect(text).toContain("+ 6 E1");
+		expect(text).toContain("- 5 e");
+		expect(result.details).toMatchObject({ firstChangedLine: 1 });
+	});
+
 	it("rejects an empty edits array", async () => {
 		const { api, dir } = await setup();
 		const file = join(dir, "empty.txt");
