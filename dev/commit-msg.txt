@@ -1,0 +1,29 @@
+feat(host): 模型与思考度跨重启保持 —— 会话偏好持久化到 ~/.uina/settings.json
+
+现象：每次重启后模型回落 auth.json 默认、思考度回落档位首位，用户在
+UI 里切换的选择不跨会话存活。
+
+根因：切换只存在于 Subject 内存态（setModel/setThinkingLevel），没有任何
+持久化写入点；auth.json 虽有 thinkingLevel 读取位但无 UI 侧写入路径。
+
+机制：
+- 新增 src/ai/settings.ts：settings.json 原子读写（临时文件 + rename，
+  与 jsonl-store 同纪律），独立于 auth.json —— 凭据是部署态手工维护，
+  偏好是 UI 随手改写的会话态，职责不混。
+- 组合根（host.ts）在扩展宿主上监听 model_select / thinking_level_select
+  落盘。这两个事件只经 runtimeHooks（扩展宿主）分发、不进 Subject 的
+  subscribe 监听者列表，所以持久化挂点必须在扩展宿主上而非
+  subject.subscribe 的 switch 里。写操作串行化：背靠背切换时未保序的
+  并发写会让慢的旧快照 rename 覆盖快的新快照。
+- 恢复优先级：CLI -m 显式指定 > settings.json > auth.json 默认。恢复值
+  过与运行时相同的校验（models.resolve / 档位必须在新模型 thinkingLevels
+  内），失效静默降级 —— 偏好是会话态，陈旧数据不值得炸启动。
+- Subject 不感知持久化存在（Core 机制、策略归组合根）；/model、/effort、
+  滑杆、快捷键循环全部收敛到同一对方法，自动被覆盖。
+
+验证：tests/session-settings.test.ts 走真实链路（UINA_HOME 临时目录 +
+auth.json 两 provider），覆盖 切换写盘/重启恢复/-m 优先/失效降级/损坏
+容错/原子写 六条；全量 542 测试三连跑全绿，tsc 零错误。
+
+回退验证：回退本提交后 tests/session-settings.test.ts 全部 6 条变红
+（切换后 loadSettings() 读不到写入值）。

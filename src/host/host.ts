@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ContextSegments, Model, ModelStreamFn, Provider, ThinkingLevel } from "../core/types.js";
 import { activeProvider, loadConfig } from "../ai/config.js";
+import { loadSettings, saveSettings } from "../ai/settings.js";
 import { ModelRegistry } from "../ai/providers.js";
 import { ToolBroker, type ToolExecutionResult } from "../tools/broker.js";
 import { Subject, type AgentInput } from "../agent/loop.js";
@@ -111,7 +112,20 @@ export class UinaHost {
 		if (options.model) {
 			models.registerModel(options.model);
 		}
-		const activeModel = options.model ?? (() => {
+		// 会话偏好恢复：CLI 显式指定 > settings.json（上次会话）> auth.json 默认。
+		// 恢复值必须过与运行时相同的校验（resolve / clamp），失效即静默降级 ——
+		// 偏好是会话态，陈旧数据不值得让启动失败。
+		const settings = options.modelName || options.model ? {} : await loadSettings();
+		let activeModelName: string | undefined;
+		if (settings.model) {
+			try {
+				activeModelName = models.resolve(settings.model).name;
+			} catch {
+				activeModelName = undefined; // 上次的模型已不存在（配置变更/下线），落回默认
+			}
+		}
+		const restoredModel = activeModelName !== undefined ? models.resolve(activeModelName) : undefined;
+		const activeModel = options.model ?? restoredModel ?? (() => {
 			if (options.modelName) {
 				return models.resolve(options.modelName);
 			}
@@ -125,7 +139,9 @@ export class UinaHost {
 			}
 			throw new Error("必须提供 model 或有效的配置文件");
 		})();
-		const thinkingLevel = options.thinkingLevel ?? config?.thinkingLevel;
+		const thinkingLevel = options.thinkingLevel
+			?? (restoredModel?.thinkingLevels?.includes(settings.thinkingLevel as ThinkingLevel) ? settings.thinkingLevel as ThinkingLevel : undefined)
+			?? config?.thinkingLevel;
 		const streamFn: ModelStreamFn = options.stream ?? ((m, req, onDelta, signal) => models.stream(m, req, onDelta, signal));
 
 		const tools = new ToolBroker({ ownerId: "root" });
@@ -201,6 +217,21 @@ export class UinaHost {
 			onCustomMessage: async (message) => { await subject.appendCustomMessage(message); emit({ type: "custom_message", message }); },
 			onCustomEntry: async (entry) => { await subject.appendCustomEntry(entry); emit({ type: "custom_entry", entry }); },
 		});
+
+		// 会话偏好持久化：model_select / thinking_level_select 只经扩展宿主分发
+		// （Subject 不把它们发给 subscribe 监听者），组合根在此以监听者身份落盘。
+		// 静默失败 —— 偏好落盘失败不值得打断回合，下一次切换会再写。
+		// 写必须串行：两次切换背靠背时，未保序的并发写会让慢的旧快照
+		// rename 覆盖快的新快照，settings.json 停在过期状态。
+		let settingsSaveTail: Promise<void> = Promise.resolve();
+		const persistSettings = (): void => {
+			settingsSaveTail = settingsSaveTail.then(() => saveSettings({
+				model: subject.getModel().name,
+				thinkingLevel: subject.getThinkingLevel(),
+			}).catch(() => {}));
+		};
+		extensionHost.on("model_select", persistSettings);
+		extensionHost.on("thinking_level_select", persistSettings);
 
 		subject = new Subject(activeModel, streamFn, tools, {
 			store,
