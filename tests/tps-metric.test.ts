@@ -206,6 +206,11 @@ describe("ActivityLineComponent：分子与分母量同一个 step", () => {
 
 describe("ActivityLineComponent：累计字符，切分无关", () => {
 	it("同一段文本切成任意块，估算完全一致", () => {
+		// 必须钉时钟：本测试比较三种切法的渲染文本，而分母是真实的毫秒跨度。
+		// 不钉的话，切得越碎就越多一次 Date.now()，偶尔跨 1 毫秒就会让「每字符一段」
+		// 那一份算出 235000 tps 而另外两份不显示速度 —— 那是时钟抖动，不是切分敏感。
+		vi.useFakeTimers();
+		vi.setSystemTime(T0);
 		const text = "思".repeat(200) + "hello world ".repeat(20);
 		const run = (chunks: string[]): string => {
 			const act = new ActivityLineComponent();
