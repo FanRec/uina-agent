@@ -206,6 +206,16 @@ export class Subject {
 		});
 	}
 
+	/**
+	 * 历史被整体替换（压缩 / 回溯）后必须调用：两个 usage 缓存都不再描述当前历史。
+	 * 调用点必须排在广播之前 —— session_compact 的监听者会同步读 getUsedTokens()，
+	 * 清晚了它拿到的还是替换前的旧真值（底栏数字不动、只多一个 ~）。
+	 */
+	private forgetUsage(): void {
+		this.lastReportedUsage = null;
+		this.lastKnownUsage = null;
+	}
+
 	getModel(): Model {
 		return this.model;
 	}
@@ -434,6 +444,8 @@ export class Subject {
 			await this.store.appendRewind(finalRecord);
 			committed = true;
 			this.history = finalHistory;
+			// 历史刚被替换：先失效 usage 缓存，再广播。
+			this.forgetUsage();
 			if (compacted) {
 				await this.runtimeHooks.events.emit({
 					type: "session_compact",
@@ -442,9 +454,6 @@ export class Subject {
 					retainedTailCount: compacted.retainedTail.length,
 				});
 			}
-			this.lastReportedUsage = null;
-			// 历史刚被替换，旧的真实占用不再描述任何东西。
-			this.lastKnownUsage = null;
 			await this.dispatch({
 				type: "session_rewind",
 				turnNumber: this.activity === "turn" ? this.turnSeq : undefined,
@@ -1076,14 +1085,14 @@ export class Subject {
 				},
 				...result.retainedTail,
 			], this.store ? recoverRecords([...this.store.readRecords()]).entries : []);
+			// 历史换成摘要 + 尾巴：先失效 usage 缓存，再广播。
+			this.forgetUsage();
 			await this.runtimeHooks.events.emit({
 				type: "session_compact",
 				summary: result.summary,
 				tokensBefore: result.tokensBefore,
 				retainedTailCount: result.retainedTail.length,
 			});
-			// 压缩把历史换成了摘要 + 尾巴，压缩前的真实占用不再描述现在。
-			this.lastKnownUsage = null;
 		} finally {
 			this.compactionActive = false;
 		}
