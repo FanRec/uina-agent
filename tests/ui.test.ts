@@ -2485,6 +2485,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			const mockClear = vi.fn();
 			const mockAddCompaction = vi.fn();
 			const mockSetEffort = vi.fn();
+			const setUsageCalls: unknown[][] = [];
 
 			const handlers = new Map<string, Function>();
 			const mockPi: any = {
@@ -2500,13 +2501,22 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			};
 
 			const mockServices: any = {
-				subject: { compact: vi.fn(), getModel: () => ({ thinkingLevels: ["off", "high", "max"] }) },
+				subject: {
+					compact: vi.fn(),
+					getModel: () => ({ thinkingLevels: ["off", "high", "max"] }),
+					getUsedTokens: () => 4200,
+					getContextWindow: () => 124000,
+					getContextSegments: () => ({ system: 900, prompt: 300, assistant: 1200, thinking: 400, tools: 1400 }),
+				},
 				models: { choices: () => [] },
 				jobs: {},
 				subagents: {},
 				ui: {
 					addCompaction: mockAddCompaction,
 					setReasoningEffort: mockSetEffort,
+					setUsage: (...args: unknown[]) => {
+						setUsageCalls.push(args);
+					},
 				},
 				reload: vi.fn(),
 				shutdown: vi.fn(),
@@ -2537,6 +2547,18 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				tokensSaved: 15000,
 				collapsed: true,
 			});
+
+			// 压缩换了历史，底栏的占用与分段必须当场刷新，而不是等下一次 turn_end。
+			// 这里真正锁的是位置参数：老接口把第三参叫 segments，UIHost.setUsage 的
+			// 第三参是 actual —— 错位时 segments 落进 actual，彩条永远不更新。
+			expect(setUsageCalls.length).toBeGreaterThan(0);
+			const lastCall = setUsageCalls[setUsageCalls.length - 1]!;
+			const [usedTok, windowTok, actual, details] = lastCall;
+			expect(typeof usedTok).toBe("number");
+			expect(typeof windowTok).toBe("number");
+			expect(actual).toBe(false); // 保留尾巴是估算值，不能标成真实
+			expect(details).toBeDefined();
+			expect((details as { segments?: unknown }).segments).toBeDefined(); // 分段必须真的送到
 
 			// 3. 触发 session_compact_failed
 			const failedHandler = handlers.get("session_compact_failed");

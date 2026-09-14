@@ -26,7 +26,12 @@ export interface BuiltinUI {
 	setModel?(name: string): void;
 	setThinkingLevels?(levels?: readonly ThinkingLevel[]): void;
 	setReasoningEffort?(level?: ThinkingLevel): void;
-	setUsage?(used: number, window?: number, segments?: ContextSegments): void;
+	setUsage?(
+		used: number,
+		contextWindow?: number,
+		actual?: boolean,
+		details?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; segments?: ContextSegments },
+	): void;
 	getGutterMode?(): "scrollbar" | "timeline";
 	setGutterMode?(mode: "scrollbar" | "timeline"): void;
 	getScrollbarThumbStyle?(): "slim" | "block" | "wide";
@@ -140,7 +145,9 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			ui?.setModel?.(model.name);
 			ui?.setThinkingLevels?.(model.thinkingLevels);
 			ui?.setReasoningEffort?.(model.thinkingLevels?.length ? services.subject.getThinkingLevel() : undefined);
-			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow(), services.subject.getContextSegments());
+			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow(), false, {
+				segments: services.subject.getContextSegments(),
+			});
 			pi.ui.notify(`已切换至模型: ${model.name}`);
 		};
 
@@ -149,7 +156,9 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
    ui?.setModel?.(model.name);
    ui?.setThinkingLevels?.(model.thinkingLevels);
    ui?.setReasoningEffort?.(model.thinkingLevels?.length ? services.subject.getThinkingLevel() : undefined);
-   ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow(), services.subject.getContextSegments());
+   ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow(), false, {
+    segments: services.subject.getContextSegments(),
+   });
   });
 
 		pi.registerCommand({
@@ -209,8 +218,13 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 				process.stdout.write(`\n[会话压缩] ${e.summary}\n`);
 			}
 			// Compaction rebuilds history in place; refresh the usage meter right away instead
+			// of waiting for the next turn_end to report the new (smaller) context size. The
+			// retained tail is a character estimate (the provider truth was just invalidated),
+			// so this refresh is explicitly not-actual.
 			// of waiting for the next turn_end to report the new (smaller) context size.
-			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow(), services.subject.getContextSegments());
+			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow(), false, {
+				segments: services.subject.getContextSegments(),
+			});
 		});
 
 		pi.on("session_compact_failed", () => {
