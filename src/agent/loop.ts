@@ -752,7 +752,6 @@ export class Subject {
 		// A scheduled rewind commits before turn preparation, so compaction always measures the
 		// mainline that is about to be sent — never a projection the rewind is about to replace.
 		await applyRewind();
-		await this.prepareTurn(model, systemPrompt);
 		for (;;) {
 			if (this.interrupted) {
 				await this.emitInterrupted();
@@ -760,6 +759,9 @@ export class Subject {
 			}
 
 			await applyRewind();
+			// 每步体检（对齐 dsh between-step pressure）：回合内工具输出能让上下文暴涨，
+			// 只在回合边界查一次会一路涨到越界，压缩请求本身就成了超大请求。
+			await this.prepareTurn(model, systemPrompt);
 			const requestMessages = await this.buildRequestMessages(model, systemPrompt, beforeMessages);
 
 			const callId = `stream-${this.turnSeq}-${++this.streamSeq}`;
