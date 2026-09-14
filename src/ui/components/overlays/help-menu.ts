@@ -76,36 +76,11 @@ export class HelpMenu implements Component, Focusable {
 			["?", "在空行快速唤起/收起此帮助"],
 		];
 
+		// 帮助面板展示的命令必须与 CommandRouter 的实际分发表一致：
+		// 没有别名机制，凡是 registry 里不存在的名字一律不展示，避免「幽灵命令」。
 		const commandMap = new Map<string, string>();
 		for (const c of this.commands) {
-			if (c.name === "agents" || c.name === "jobs" || c.name === "traj" || c.name === "exit" || c.name === "think" || c.name === "branches") {
-				continue;
-			}
-			let nameDisplay = `/${c.name}`;
-			let desc = c.description;
-			if (c.name === "subagents") {
-				nameDisplay = "/subagents, /agents";
-				desc = "多智能体并行看板 (Alt+A)";
-			} else if (c.name === "tasks") {
-				nameDisplay = "/tasks, /jobs";
-				desc = "后台任务与进程看板 (Alt+J)";
-			} else if (c.name === "trajectory") {
-				nameDisplay = "/trajectory, /traj";
-				desc = "全屏审计轨迹时序看板 (Alt+T)";
-			} else if (c.name === "history") {
-				nameDisplay = "/history, /branches";
-				desc = "会话历史与分支看板 (Alt+H)";
-			} else if (c.name === "quit") {
-				nameDisplay = "/quit, /exit";
-				desc = "退出控制台";
-			} else if (c.name === "gutter") {
-				desc = "切换右侧导航轨 (scrollbar/timeline)";
-			} else if (c.name === "model") {
-				desc = "切换模型或打开模型选择面板";
-			} else if (c.name === "effort") {
-				desc = "设置或调整模型思考强度 (滑块/参数)";
-			}
-			commandMap.set(nameDisplay, desc);
+			commandMap.set(`/${c.name}`, c.description);
 		}
 
 		const defaultRightCommands: Array<[string, string]> = [
@@ -113,13 +88,13 @@ export class HelpMenu implements Component, Focusable {
 			["/model", "切换模型或打开模型选择面板"],
 			["/effort", "设置或调整模型思考强度 (滑块/参数)"],
 			["/compact", "会话压缩与释放上下文空间"],
-			["/subagents, /agents", "多智能体并行看板 (Alt+A)"],
-			["/tasks, /jobs", "后台任务与进程看板 (Alt+J)"],
-			["/trajectory, /traj", "全屏审计轨迹时序看板 (Alt+T)"],
+			["/subagents", "多智能体并行看板 (Alt+A)"],
+			["/tasks", "后台任务与进程看板 (Alt+J)"],
+			["/trajectory", "全屏审计轨迹时序看板 (Alt+T)"],
 			["/gutter", "切换右侧导航轨 (scrollbar/timeline)"],
 			["/clear", "清空当前屏幕转录流"],
 			["/reload", "重载项目与本地扩展"],
-			["/quit, /exit", "退出控制台"],
+			["/quit", "退出控制台"],
 		];
 
 		const rightCommands: Array<[string, string]> =

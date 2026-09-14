@@ -2271,6 +2271,31 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(rendered).toContain("/compact");
 		});
 
+		it("HelpMenu 只展示分发表里真实存在的命令，不虚构别名", () => {
+			// CommandRouter 无别名机制：/exit、/agents、/jobs、/traj、/branches
+			// 都不是注册表里的名字，面板不得把它们渲染成可用命令。
+			const registered = [
+				{ name: "help", description: "查看所有可用命令与快捷键" },
+				{ name: "model", description: "切换模型或打开模型选择面板" },
+				{ name: "subagents", description: "多智能体并行看板" },
+				{ name: "tasks", description: "后台任务与进程看板" },
+				{ name: "trajectory", description: "全屏审计轨迹时序看板" },
+				{ name: "quit", description: "退出控制台" },
+			];
+			const lines = new HelpMenu(registered).render(80).join("\n");
+			expect(lines).toContain("/quit");
+			expect(lines).toContain("/subagents");
+			expect(lines).toContain("/tasks");
+			expect(lines).toContain("/trajectory");
+			// 注意 /trajectory 包含子串 /traj，必须按整词匹配（前后非字母）
+			const stripAnsi = (t: string): string => t.replace(/\x1b\[[0-9;]*m/g, "");
+			const plain = stripAnsi(lines);
+			for (const ghost of ["/exit", "/agents", "/jobs", "/traj", "/think", "/compact"]) {
+				const re = new RegExp(ghost.replace("/", "/") + "(?![a-zA-Z])");
+				expect(re.test(plain)).toBe(false);
+			}
+		});
+
 		it("HelpMenu: 按 '?' 优先触发 onConvertToInput，未提供则回退至 onClose", () => {
 			const menu = new HelpMenu();
 			let convertedText = "";
