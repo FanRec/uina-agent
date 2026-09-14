@@ -65,10 +65,6 @@ export function foldStreamChars(counts: { cjk: number; other: number }): number 
 	return Math.max(1, Math.round(counts.cjk * STREAM_TOKENS_PER_CJK_CHAR + counts.other * STREAM_TOKENS_PER_OTHER_CHAR));
 }
 
-/** 单段文本的折算值（`foldStreamChars(classifyStreamText(text))`）。 */
-export function estimateStreamTokens(text: string): number {
-	return foldStreamChars(classifyStreamText(text));
-}
 
 interface Rgb {
 	r: number;

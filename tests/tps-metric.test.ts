@@ -25,10 +25,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	ActivityLineComponent,
 	classifyStreamText,
-	estimateStreamTokens,
 	foldStreamChars,
 	formatTpsGauge,
 } from "../src/ui/components/widgets/activity-line.js";
+
+/** 单段文本的折算值：`estimateStreamTokens` 已从 src 删除（src 无调用方），这里内联等价实现。 */
+const estimateStreamTokens = (text: string): number => foldStreamChars(classifyStreamText(text));
 
 /** 从 SGR 序列里剥掉颜色与粗体，只留可见字形。 */
 const plain = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");

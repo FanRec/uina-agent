@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	clearRetainedUsage,
+	shouldCompact,
 	collectFileOperations,
 	estimateMessageTokens,
 	findCutPoint,
@@ -296,3 +297,20 @@ describe("summarisation prompts keep the length discipline", () => {
 		});
 	}
 });
+
+describe("shouldCompact", () => {
+	const settings = { contextWindow: 100_000, reserveTokens: 16_384, keepRecentTokens: 20_000 };
+
+	it("contextWindow 未定义时不压缩：未知就说明未知，不伪造判据", () => {
+		expect(shouldCompact(999_999, { ...settings, contextWindow: undefined })).toBe(false);
+	});
+
+	it("估算值恰好等于阈值（window - reserve）时不压缩", () => {
+		expect(shouldCompact(83_616, settings)).toBe(false);
+	});
+
+	it("超过阈值才压缩", () => {
+		expect(shouldCompact(83_617, settings)).toBe(true);
+	});
+});
+

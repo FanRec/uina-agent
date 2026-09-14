@@ -1,7 +1,7 @@
 import { imageNotice } from "../core/content.js";
-import type { AgentMessage, ChatMsg, Model, ModelStreamFn, ToolDef } from "../core/types.js";
+import type { AgentMessage, ChatMsg, Model, ModelStreamFn } from "../core/types.js";
 import type { ProviderHooks } from "../runtime/hooks.js";
-import { buildContext, CHARS_PER_TOKEN, estimateContextTokens } from "./context.js";
+import { CHARS_PER_TOKEN } from "./context.js";
 
 export interface CompactionSettings {
 	contextWindow?: number;
@@ -35,19 +35,16 @@ export function clearRetainedUsage(
 	});
 }
 
-/** Token 超上限时的自动压缩判据（对齐 Pi shouldCompact）。 */
+/**
+ * Token 超上限时的自动压缩判据（对齐 Pi shouldCompact(contextTokens, contextWindow, settings)）。
+ * 上下文估算由调用方完成并传入：本函数不做估算，避免同一份历史在一次体检里被反复扫描。
+ */
 export function shouldCompact(
-	history: readonly (AgentMessage | ChatMsg)[],
-	systemPrompt: string,
-	tools: readonly ToolDef[],
+	contextTokens: number,
 	settings: CompactionSettings,
-	includeThinking = false,
 ): boolean {
 	if (settings.contextWindow === undefined) return false;
-	return (
-		estimateContextTokens(buildContext({ history: [...history], systemPrompt }), { tools, includeThinking }).tokens >
-		settings.contextWindow - settings.reserveTokens
-	);
+	return contextTokens > settings.contextWindow - settings.reserveTokens;
 }
 
 // ---------------------------------------------------------------------------

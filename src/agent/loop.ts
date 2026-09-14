@@ -1015,13 +1015,7 @@ export class Subject {
 			tools: this.tools.defs(),
 			includeThinking: model.includeThinking,
 		}).tokens;
-		const defaultDecision = shouldCompact(
-			this.history,
-			systemPrompt,
-			this.tools.defs(),
-			this.compaction,
-			model.includeThinking,
-		);
+		const defaultDecision = shouldCompact(tokensBefore, this.compaction);
 		if (
 			!manual &&
 			!(
