@@ -139,27 +139,30 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			},
 		});
 
-		const selectModel = async (arg: string): Promise<void> => {
-			await pi.models.select(arg);
-   const model = pi.models.current();
-			ui?.setModel?.(model.name);
-			ui?.setThinkingLevels?.(model.thinkingLevels);
-			ui?.setReasoningEffort?.(model.thinkingLevels?.length ? services.subject.getThinkingLevel() : undefined);
+		/** 用量表刷新：真值已作废（压缩 / 切模型），先按估算显示并标注非真实。 */
+		const refreshUsageMeter = (): void => {
 			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow(), false, {
 				segments: services.subject.getContextSegments(),
 			});
+		};
+
+		const selectModel = async (arg: string): Promise<void> => {
+			await pi.models.select(arg);
+			const model = pi.models.current();
+			ui?.setModel?.(model.name);
+			ui?.setThinkingLevels?.(model.thinkingLevels);
+			ui?.setReasoningEffort?.(model.thinkingLevels?.length ? services.subject.getThinkingLevel() : undefined);
+			refreshUsageMeter();
 			pi.ui.notify(`已切换至模型: ${model.name}`);
 		};
 
-  pi.on('model_select', () => {
-   const model = pi.models.current();
-   ui?.setModel?.(model.name);
-   ui?.setThinkingLevels?.(model.thinkingLevels);
-   ui?.setReasoningEffort?.(model.thinkingLevels?.length ? services.subject.getThinkingLevel() : undefined);
-   ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow(), false, {
-    segments: services.subject.getContextSegments(),
-   });
-  });
+		pi.on("model_select", () => {
+			const model = pi.models.current();
+			ui?.setModel?.(model.name);
+			ui?.setThinkingLevels?.(model.thinkingLevels);
+			ui?.setReasoningEffort?.(model.thinkingLevels?.length ? services.subject.getThinkingLevel() : undefined);
+			refreshUsageMeter();
+		});
 
 		pi.registerCommand({
 			name: "effort",
@@ -217,14 +220,8 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			} else {
 				process.stdout.write(`\n[会话压缩] ${e.summary}\n`);
 			}
-			// Compaction rebuilds history in place; refresh the usage meter right away instead
-			// of waiting for the next turn_end to report the new (smaller) context size. The
-			// retained tail is a character estimate (the provider truth was just invalidated),
-			// so this refresh is explicitly not-actual.
-			// of waiting for the next turn_end to report the new (smaller) context size.
-			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow(), false, {
-				segments: services.subject.getContextSegments(),
-			});
+			// 压缩换掉了历史：用量表立即按估算刷新，并标注为非真实（保留尾巴是字符估算）。
+			refreshUsageMeter();
 		});
 
 		pi.on("session_compact_failed", () => {
