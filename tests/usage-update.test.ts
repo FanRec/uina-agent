@@ -183,4 +183,27 @@ describe("setModel：口径换了，旧模型的 usage 锚必须失效", () => {
 		expect(subject.getUsedTokens()).not.toBe(99_999);
 		expect(subject.getContextWindow()).toBe(200_000);
 	});
+
+	it("带 usage 的 assistant 不在末位时（后跟工具结果），旧锚同样必须失效", async () => {
+		const { Subject } = await import("../src/agent/loop.js");
+		const { ToolBroker } = await import("../src/tools/broker.js");
+		const subject = new Subject(MODEL, streamWithUsage({ input: 1, output: 1, totalTokens: 99_999 }), new ToolBroker(), {
+			systemPrompt: "sys",
+		});
+		// 工具交换中途停手的形态：带 usage 的 assistant 后面跟着 tool 结果 ——
+		// 回合被打断、工具 stop 收尾、not_started 尾巴都长这样。
+		// estimateContextTokens 从后往前找，仍会锚到那条 assistant。
+		subject.addHistory([
+			{ role: "user", content: "第一回合" },
+			{ role: "assistant", content: "", tool_calls: [{ id: "c1", name: "read", args: "{}" }], status: "complete", usage: { input: 1, output: 1, totalTokens: 99_999 } },
+			{ role: "tool", tool_call_id: "c1", content: "结果", status: "succeeded" },
+		] as never);
+		expect(subject.getUsedTokens()).toBe(99_999 + 5);
+
+		await subject.setModel(mockModel({ id: "mock2", name: "mock2", contextWindow: 200_000 }));
+
+		// 只剥最后一条 assistant 的 usage 盖不住这个形态：旧锚从历史深处存活，
+		// getUsedTokens() 继续顶着旧口径的 99_999。
+		expect(subject.getUsedTokens()).not.toBe(99_999);
+	});
 });
