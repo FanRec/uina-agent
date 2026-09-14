@@ -319,7 +319,11 @@ function formatNodeDetails(entry: HydratedSessionEntry | null, width: number): s
 }
 
 function plainLines(text: string): string[] {
-	return stripAnsi(String(text)).split("\n");
+	// Windows 工具结果带物理 CRLF：只按 \n 切分会让行尾 CR 残留在 detail 行上。
+	// CR 是零宽的 —— visibleWidth/truncateToWidth/padTo 都看不见它，一路活到
+	// 渲染器写入端（renderer 也不剥 CR），终端收到 CR 就从行首重写当前行，整帧
+	// 从那行起被顶得错位（左列表前缀被覆盖、游离边框、标题消失）。
+	return stripAnsi(String(text)).replace(/\r/g, "").split("\n");
 }
 
 /** Wraps already-styled text by visible width without emitting an over-wide row. */
