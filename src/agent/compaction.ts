@@ -248,8 +248,17 @@ function formatToolCall(call: { name: string; args?: unknown }): string {
 		.join(", ");
 	return `${call.name}(${rendered})`;
 }
-/** 把消息序列化成纯文本，供摘要提示词使用；工具结果超长时截断。 */
-export function serializeConversation(messages: readonly (AgentMessage | ChatMsg)[]): string {
+/**
+ * 把消息序列化成纯文本，供摘要提示词使用；工具结果超长时截断。
+ *
+ * omitToolResults=true 时丢弃工具结果正文（换成一行政明规模的占位），只保留调用名与
+ * 参数。这是摘要请求自身超限时的降级：工具结果是膨胀主因，一级降级通常足以让请求
+ * 装得下。消息仍会被摘要 —— 丢的是原文，不是事实。
+ */
+export function serializeConversation(
+	messages: readonly (AgentMessage | ChatMsg)[],
+	options: { omitToolResults?: boolean } = {},
+): string {
 	const parts: string[] = [];
 	for (const message of messages) {
 		switch (message.role) {
@@ -276,7 +285,10 @@ export function serializeConversation(messages: readonly (AgentMessage | ChatMsg
 			}
 			case "tool": {
 				const content = message.content + imageNotice(message.images);
-				if (content) parts.push(`[工具结果]: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
+				if (!content) break;
+				parts.push(options.omitToolResults
+					? `[工具结果已省略：原 ${content.length} 字符]`
+					: `[工具结果]: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
 				break;
 			}
 		}
@@ -452,8 +464,9 @@ function buildConversationPrompt(
 	previousSummary: string | undefined,
 	basePrompt: string,
 	instruction: string | undefined,
+	omitToolResults = false,
 ): string {
-	let prompt = `<conversation>\n${serializeConversation(messages)}\n</conversation>\n\n`;
+	let prompt = `<conversation>\n${serializeConversation(messages, { omitToolResults })}\n</conversation>\n\n`;
 	if (previousSummary) prompt += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
 	prompt += basePrompt;
 	if (instruction?.trim()) prompt += `\n\n额外关注：${instruction.trim()}`;
@@ -473,19 +486,44 @@ export async function compactHistory(
 	if (cut.firstKeptEntryIndex <= 0) return null;
 
 	const prepared = prepareCompaction(history, cut, tokensBefore);
-	const historyPrompt = () =>
+	const historyPrompt = (omitToolResults = false) =>
 		buildConversationPrompt(
 			prepared.messagesToSummarize,
 			prepared.previousSummary,
 			prepared.previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT,
 			instruction,
+			omitToolResults,
 		);
+
+	// 摘要请求自身可能超限：恢复一个用大窗口模型录制的会话后，被折叠段的序列化
+	// 结果可以远超当前模型的硬限 —— 那次注定失败的请求会在传输层被切断并重试，
+	// 最后以难以定位的 turn_failed 告终（真机事故：182k 上下文压 124k 窗口）。
+	// 发出前先量一次：超限先降级（丢工具结果正文，保留调用名与参数），仍超限则
+	// 立即以带数字的错误终止 —— 失败可见、可定位，而不是黑盒重试。工具结果是
+	// 膨胀主因，一级降级通常已足够；连降级都装不下的形态出现时再议下一步。
+	// contextWindow 未知时跳过全部检查 —— 未知就说明未知，不伪造保护。
+	let omitToolResults = false;
+	if (model.contextWindow !== undefined) {
+		// 约束只有一个：prompt + 摘要输出必须装进窗口硬限（reserveTokens 是主线体检的
+		// 判据，与这里无关）。输出按长度纪律的上限预留（2000 tokens ≈ 8000 字符），
+		// 但封顶窗口一半 —— 小窗口下按比例缩，否则余量吃光预算，任何输入都被拒。
+		const outputAllowanceTokens = Math.min(2_000, Math.floor(model.contextWindow / 2));
+		const budgetChars = (model.contextWindow - outputAllowanceTokens) * CHARS_PER_TOKEN;
+		if (historyPrompt().length > budgetChars) {
+			if (historyPrompt(true).length > budgetChars) {
+				throw new Error(
+					`摘要输入约 ${Math.ceil(historyPrompt(true).length / CHARS_PER_TOKEN)} tokens，超模型窗口 ${model.contextWindow}`,
+				);
+			}
+			omitToolResults = true;
+		}
+	}
 
 	let summary: string;
 	if (prepared.isSplitTurn && prepared.turnPrefixMessages.length > 0) {
 		const historyText =
 			prepared.messagesToSummarize.length > 0
-				? await runSummaryTurn(model, stream, providerHooks, historyPrompt(), signal)
+				? await runSummaryTurn(model, stream, providerHooks, historyPrompt(omitToolResults), signal)
 				: "无更早历史。";
 		const prefixText = await runSummaryTurn(
 			model,
@@ -496,7 +534,7 @@ export async function compactHistory(
 		);
 		summary = `${historyText}\n\n---\n\n**本轮上下文（拆分回合）：**\n\n${prefixText}`;
 	} else {
-		summary = await runSummaryTurn(model, stream, providerHooks, historyPrompt(), signal);
+		summary = await runSummaryTurn(model, stream, providerHooks, historyPrompt(omitToolResults), signal);
 	}
 
 	const { readFiles, modifiedFiles } = collectFileOperations([
