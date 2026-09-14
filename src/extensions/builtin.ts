@@ -13,6 +13,22 @@ export interface BuiltinUIModelGroup {
 	models: Array<{ id: string; name: string; description: string; provider: string }>;
 }
 
+/**
+ * 用量表快照：一次 setUsage 的全部信息。单对象参数 —— 同形异义的位置参数
+ * 曾跨层漂移（桥接层第三参是 segments、宿主层是 actual，对象落进布尔位），
+ * 对象字段名自描述，这类漂移无从发生。
+ */
+export interface UsageSnapshot {
+	used: number;
+	contextWindow?: number;
+	/** false = 估算值（保留尾巴 / 刚切口径），true = 服务端真实总量。 */
+	actual?: boolean;
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	segments?: ContextSegments;
+}
 export interface BuiltinUI {
 	openHelpMenu(): void;
 	toggleThinking(): void;
@@ -26,12 +42,7 @@ export interface BuiltinUI {
 	setModel?(name: string): void;
 	setThinkingLevels?(levels?: readonly ThinkingLevel[]): void;
 	setReasoningEffort?(level?: ThinkingLevel): void;
-	setUsage?(
-		used: number,
-		contextWindow?: number,
-		actual?: boolean,
-		details?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; segments?: ContextSegments },
-	): void;
+	setUsage?(snapshot: UsageSnapshot): void;
 	getGutterMode?(): "scrollbar" | "timeline";
 	setGutterMode?(mode: "scrollbar" | "timeline"): void;
 	getScrollbarThumbStyle?(): "slim" | "block" | "wide";
@@ -141,7 +152,10 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 
 		/** 用量表刷新：真值已作废（压缩 / 切模型），先按估算显示并标注非真实。 */
 		const refreshUsageMeter = (): void => {
-			ui?.setUsage?.(services.subject.getUsedTokens(), services.subject.getContextWindow(), false, {
+			ui?.setUsage?.({
+				used: services.subject.getUsedTokens(),
+				contextWindow: services.subject.getContextWindow(),
+				actual: false,
 				segments: services.subject.getContextSegments(),
 			});
 		};

@@ -16,6 +16,7 @@ import { decodeHoverTarget, encodeHoverTarget } from "./core/hover-target.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ThinkingLevel } from "../core/types.js";
 import type { SessionAccess, SessionEntry } from "../session/types.js";
+import type { UsageSnapshot } from "../extensions/builtin.js";
 import { C, copyToClipboardUnified, visibleWidth, truncateToWidth, stripAnsi, expandTabs } from "./core/utils.js";
 import {
 	InputLine,
@@ -550,20 +551,16 @@ export class UIHost implements UIHostContextPort {
 		return this.busy;
 	}
 
-	setUsage(
-		used: number,
-		contextWindow?: number,
-		actual = false,
-		details?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; segments?: ContextSegments },
-	): void {
+	setUsage(snapshot: UsageSnapshot): void {
+		const { used, contextWindow, actual = false, input, cacheRead, cacheWrite, segments } = snapshot;
 		this.usedTokens = used;
 		this.contextWindow = contextWindow && contextWindow > 0 ? contextWindow : undefined;
 		this.usageActual = actual;
-		this.cacheReadTokens = details?.cacheRead;
-		this.inputTokensCount = details?.input;
-		this.cacheWriteTokens = details?.cacheWrite;
-		if (details?.segments) {
-			this.contextSegments = details.segments;
+		this.cacheReadTokens = cacheRead;
+		this.inputTokensCount = input;
+		this.cacheWriteTokens = cacheWrite;
+		if (segments) {
+			this.contextSegments = segments;
 		}
 		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, actual, this.contextSegments);
 		this.contextBar.update({

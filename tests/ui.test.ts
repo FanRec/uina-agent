@@ -2485,7 +2485,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			const mockClear = vi.fn();
 			const mockAddCompaction = vi.fn();
 			const mockSetEffort = vi.fn();
-			const setUsageCalls: unknown[][] = [];
+			const setUsageCalls: unknown[] = [];
 
 			const handlers = new Map<string, Function>();
 			const mockPi: any = {
@@ -2514,8 +2514,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				ui: {
 					addCompaction: mockAddCompaction,
 					setReasoningEffort: mockSetEffort,
-					setUsage: (...args: unknown[]) => {
-						setUsageCalls.push(args);
+					setUsage: (snapshot: unknown) => {
+						setUsageCalls.push(snapshot);
 					},
 				},
 				reload: vi.fn(),
@@ -2549,16 +2549,14 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			});
 
 			// 压缩换了历史，底栏的占用与分段必须当场刷新，而不是等下一次 turn_end。
-			// 这里真正锁的是位置参数：老接口把第三参叫 segments，UIHost.setUsage 的
-			// 第三参是 actual —— 错位时 segments 落进 actual，彩条永远不更新。
+			// 接口已收敛为单对象参数（UsageSnapshot）：字段名自描述，同形异义的位置
+			// 参数漂移（segments 落进 actual 位）无从发生。这里锁字段语义。
 			expect(setUsageCalls.length).toBeGreaterThan(0);
-			const lastCall = setUsageCalls[setUsageCalls.length - 1]!;
-			const [usedTok, windowTok, actual, details] = lastCall;
-			expect(typeof usedTok).toBe("number");
-			expect(typeof windowTok).toBe("number");
-			expect(actual).toBe(false); // 保留尾巴是估算值，不能标成真实
-			expect(details).toBeDefined();
-			expect((details as { segments?: unknown }).segments).toBeDefined(); // 分段必须真的送到
+			const lastCall = setUsageCalls[setUsageCalls.length - 1]! as { used: number; contextWindow?: number; actual?: boolean; segments?: unknown };
+			expect(typeof lastCall.used).toBe("number");
+			expect(typeof lastCall.contextWindow).toBe("number");
+			expect(lastCall.actual).toBe(false); // 保留尾巴是估算值，不能标成真实
+			expect(lastCall.segments).toBeDefined(); // 分段必须真的送到
 
 			// 3. 触发 session_compact_failed
 			const failedHandler = handlers.get("session_compact_failed");

@@ -365,7 +365,10 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			}
 			host.cycleThinkingLevel();
 		});
-		tui.host.setUsage(snapshot.usedTokens, snapshot.contextWindow, false, {
+		tui.host.setUsage({
+			used: snapshot.usedTokens,
+			contextWindow: snapshot.contextWindow,
+			actual: false,
 			segments: snapshot.segments,
 		});
 		if (host.restoredEntries.length > 0) tui.loadSession(host.restoredEntries);
@@ -399,7 +402,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		setModel: (name) => tui!.host.setModel(name),
 		setThinkingLevels: (levels) => tui!.host.setThinkingLevels(levels),
 		setReasoningEffort: (level) => tui!.host.setReasoningEffort(level),
-		setUsage: (used, window, actual, details) => tui!.host.setUsage(used, window, actual, details),
+		setUsage: (snapshot) => tui!.host.setUsage(snapshot),
 		getGutterMode: () => tui!.host.getGutterMode(),
 		setGutterMode: (mode) => tui!.host.setGutterMode(mode),
 		getScrollbarThumbStyle: () => tui!.host.getScrollbarThumbStyle(),

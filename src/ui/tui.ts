@@ -181,7 +181,10 @@ export class InteractiveTUI {
 
 			case "usage_update":
 				// 回合进行中也要让上下文占用推进：每次模型调用收尾都有真实 usage。
-				this.host.setUsage(m.usedTokens, m.contextWindow, m.actual ?? false, {
+				this.host.setUsage({
+					used: m.usedTokens,
+					contextWindow: m.contextWindow,
+					actual: m.actual ?? false,
 					input: m.inputTokens,
 					output: m.outputTokens,
 					cacheRead: m.cacheRead,
@@ -260,18 +263,16 @@ export class InteractiveTUI {
 				this.host.transcript.finishTurn();
 				this.host.trajectoryProjection.onTurnEnd(m.n, m.usage);
 				if (m.usage) {
-					this.host.setUsage(
-						m.usage.usedTokens,
-						m.usage.contextWindow,
-						m.usage.actual ?? false,
-						{
-							input: m.usage.inputTokens,
-							output: m.usage.outputTokens,
-							cacheRead: m.usage.cacheRead,
-							cacheWrite: m.usage.cacheWrite,
-							segments: m.usage.segments,
-						},
-					);
+				this.host.setUsage({
+					used: m.usage.usedTokens,
+					contextWindow: m.usage.contextWindow,
+					actual: m.usage.actual ?? false,
+					input: m.usage.inputTokens,
+					output: m.usage.outputTokens,
+					cacheRead: m.usage.cacheRead,
+					cacheWrite: m.usage.cacheWrite,
+					segments: m.usage.segments,
+				});
 				}
 				const elapsed = this.host.getLastElapsedMs();
 				const history = this.host.transcript.getHistory();
