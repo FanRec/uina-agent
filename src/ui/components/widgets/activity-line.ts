@@ -392,12 +392,21 @@ export class ActivityLineComponent implements Component {
 		const frameIdx = Math.floor(now / 80) % SPINNER_FRAMES.length;
 		const spinner = `${C.iceBlue}${SPINNER_FRAMES[frameIdx]}${C.reset}`;
 		let tpsStr = "";
-		// 解码跨度太短时不显示速度，避免抖出离谱数字。门控与 dsh-TUI 一致：当前 step 已解码
-		// > 500ms 才更新；已经结算过 step 时沿用累计值（dsh-TUI 结算后同样保留 state.tps）。
+		// 门控抄 dsh-TUI（channel.ts 实时路径：Math.max(0, event.time - step.firstTokenTime)
+		// > 500 才重算 state.tps，否则保留上一次的可度量值）：
+		//   当前 step 自身跨度 > 500ms → 用「已结算累计 + 当前 step」重算；
+		//   不足 500ms → 沿用已结算的累计值，不把刚起步的 step 混进分母：那几十毫秒会
+		//   带着自己的取整误差和切分抖动一起进入读数；
+		//   还没有任何已结算 step → 不显示（未知不是 0）。
 		const openMs = this.stepFirstTokenAt === 0 ? 0 : Math.max(0, (this.stepUsageAt > 0 ? this.stepUsageAt : this.stepLastTokenAt) - this.stepFirstTokenAt);
-		const decodeMs = this.decodeMs();
-		if (tokens > 0 && (this.settledDecodeMs > 0 || openMs > 500)) {
-			const tps = Math.round(tokens / (decodeMs / 1000));
+		let tps = 0;
+		if (openMs > 500) {
+			const decodeMs = this.decodeMs();
+			if (tokens > 0 && decodeMs > 0) tps = Math.round(tokens / (decodeMs / 1000));
+		} else if (this.settledDecodeMs > 0 && this.settledOutputTokens > 0) {
+			tps = Math.round(this.settledOutputTokens / (this.settledDecodeMs / 1000));
+		}
+		if (tps > 0) {
 			// 量程随采样峰值缩放（地板 40），柱状图才不会长期满格。
 			const peak = Math.max(tps, ...this.tpsSamples, 0);
 			const gauge = formatTpsGauge(tps, peak, 8);

@@ -324,7 +324,7 @@ describe("ActivityLineComponent：分母只算解码跨度", () => {
 		expect(header).not.toContain("Infinity");
 	});
 
-	it("门控与 dsh-TUI 一致：当前 step 不足 500ms 只沿用累计值，不重新起算", () => {
+	it("门控与 dsh-TUI 一致：当前 step 不足 500ms 沿用已结算值，不把它混进分母", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(T0);
 		const act = new ActivityLineComponent();
@@ -335,12 +335,35 @@ describe("ActivityLineComponent：分母只算解码跨度", () => {
 		act.addRealOutputTokens(200);
 		act.endStep(); // 结算：200 token / 0.3s
 
-		// 新 step 从 0.3s 起、0.4s 收尾：累计跨度 0.4s 不足 500ms，但已结算过 step，沿用累计值。
+		// 新 step 从 0.3s 起步，0.4s 时自身才跨 100ms：沿用已结算的 200 / 0.3s。
+		// 把刚起步的 step 混进分母会读到 (200 + 折算(10 字)) / 0.4s —— 那几十毫秒带着
+		// 自己的折算残差和流式切分误差一起进读数，dsh-TUI 此时也不重算 state.tps。
 		act.addStreamText("新".repeat(5));
 		vi.setSystemTime(T0 + 400);
 		act.addStreamText("新".repeat(5));
-		const liveEstimates = foldStreamChars({ cjk: 10, other: 0 });
-		expect(plain(act.getHeaderString(200))).toContain(`~${Math.round((200 + liveEstimates) / 0.4)} tps`);
+		const mixed = Math.round((200 + foldStreamChars({ cjk: 10, other: 0 })) / 0.4);
+		const header = plain(act.getHeaderString(200));
+		expect(header).toContain("~667 tps"); // 200 / 0.3s
+		expect(header).not.toContain(`~${mixed} tps`);
+
+		// 越过 500ms 后重新起算：已结算累计 + 当前 step 一起进分子分母。
+		vi.setSystemTime(T0 + 900); // 当前 step 跨 0.3s → 0.9s = 600ms
+		act.addStreamText("新".repeat(5));
+		const combined = Math.round((200 + foldStreamChars({ cjk: 15, other: 0 })) / 0.9);
+		expect(plain(act.getHeaderString(200))).toContain(`~${combined} tps`);
+	});
+
+	it("首个 step 还不足 500ms 时不显示速度：没有可度量的跨度就说未知", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(T0);
+		const act = new ActivityLineComponent();
+		act.start("streaming", "正在输出...");
+		act.addStreamText("思".repeat(10));
+		vi.setSystemTime(T0 + 200);
+
+		const header = plain(act.getHeaderString(200));
+		expect(header).toContain("0.2s");
+		expect(header).not.toContain("tps");
 	});
 });
 
