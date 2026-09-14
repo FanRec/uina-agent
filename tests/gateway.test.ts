@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createOpenAIProvider, sendModelStreamRequest, toWireMessages } from "../src/ai/gateway.js";
+import { createOpenAIProvider, ProviderHttpError, sendModelStreamRequest, toWireMessages } from "../src/ai/gateway.js";
 import { ProviderProtocolError } from "../src/ai/sse.js";
 import type { Model, StreamDelta } from "../src/core/types.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
@@ -183,7 +183,7 @@ describe("OpenAI gateway", () => {
 		expect(JSON.parse(capturedBody)).toEqual({ prompt: "hello", extra: true });
 	});
 
-	it("sendModelStreamRequest throws formatted error with status and truncated body on non-ok HTTP", async () => {
+	it("sendModelStreamRequest 把非 2xx 的 status 作为结构化字段抛出，而不只是拼进文本", async () => {
 		const server = createServer((_req, res) => {
 			res.writeHead(502, { "content-type": "text/plain" });
 			res.end("Bad Gateway Error Details");
@@ -192,16 +192,28 @@ describe("OpenAI gateway", () => {
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 		const port = (server.address() as AddressInfo).port;
 
-		await expect(
-			sendModelStreamRequest({
+		let caught: unknown;
+		try {
+			await sendModelStreamRequest({
 				url: `http://127.0.0.1:${port}/error`,
 				providerId: "probe-prov",
 				headers: {},
 				body: {},
 				hooks: NO_RUNTIME_HOOKS.provider,
 				maxRetries: 0,
-			}),
-		).rejects.toThrow("probe-prov 请求失败 HTTP 502: Bad Gateway Error Details");
+			});
+		} catch (error) {
+			caught = error;
+		}
+
+		// 上层要按状态码/错误码分流，就得有字段可读。回退成裸 Error 后 instanceof 先红。
+		expect(caught).toBeInstanceOf(ProviderHttpError);
+		const http = caught as ProviderHttpError;
+		expect(http.provider).toBe("probe-prov");
+		expect(http.status).toBe(502);
+		expect(http.body).toBe("Bad Gateway Error Details");
+		// 人读的文本保持原样，报错观感不变。
+		expect(http.message).toBe("probe-prov 请求失败 HTTP 502: Bad Gateway Error Details");
 	});
 
 	it("sendModelStreamRequest throws ProviderProtocolError when response has no body", async () => {

@@ -11,6 +11,26 @@ import type { ProviderHooks } from "../runtime/hooks.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
 import { copyValue, readonlySnapshot } from "../runtime/guard.js";
 
+/**
+ * provider 以非 2xx 拒绝了请求。status 与 body 是结构化字段：上层若要按 provider
+ * 自己的错误码分流（例如上下文超限），读它们即可，不必去 parse message。
+ */
+export class ProviderHttpError extends Error {
+	readonly provider: string;
+	readonly status: number;
+	/** 服务端原始响应体（已截断）。模型目录这类不读 body 的请求留空串。 */
+	readonly body: string;
+
+	constructor(input: Readonly<{ provider: string; status: number; action?: string; body?: string }>) {
+		const body = input.body ?? "";
+		super(`${input.provider} ${input.action ?? "请求"}失败 HTTP ${input.status}${body ? `: ${body}` : ""}`);
+		this.name = "ProviderHttpError";
+		this.provider = input.provider;
+		this.status = input.status;
+		this.body = body;
+	}
+}
+
 export interface OpenAIEndpointConf {
 	baseUrl: string;
 	apiKey: string;
@@ -24,7 +44,7 @@ export function createOpenAIProvider(id: string, conf: OpenAIEndpointConf): Prov
 		baseUrl: conf.baseUrl,
 		async refreshModels() {
 			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, { headers: { Authorization: `Bearer ${conf.apiKey}` } });
-			if (!response.ok) throw new Error(`模型目录请求失败 HTTP ${response.status}`);
+			if (!response.ok) throw new ProviderHttpError({ provider: id, status: response.status, action: "模型目录请求" });
 			const payload = await response.json() as { data?: Array<{ id?: string }> };
 			return (payload.data ?? []).flatMap((model) => typeof model.id === "string" ? [{ id: model.id }] : []);
 		},
@@ -216,9 +236,11 @@ export async function sendModelStreamRequest(
 
 	if (!response.ok) {
 		const bodyText = await response.text().catch(() => "");
-		throw new Error(
-			`${options.providerId} 请求失败 HTTP ${response.status}: ${bodyText.slice(0, 300)}`,
-		);
+		throw new ProviderHttpError({
+			provider: options.providerId,
+			status: response.status,
+			body: bodyText.slice(0, 300),
+		});
 	}
 	if (!response.body) {
 		throw new ProviderProtocolError(`${options.providerId} 响应无 body`);
@@ -252,7 +274,10 @@ function isRetryableStatus(status: number): boolean {
 }
 
 function isNetworkError(error: unknown): boolean {
-	return error instanceof TypeError || (error instanceof Error && error.name === "FetchError");
+	// WHATWG fetch 规范把网络失败统一抛成 TypeError；Node 22 的原生 fetch 走 undici，
+	// 断连/DNS/超时都藏在 cause 里，外壳仍是 TypeError。AbortError 是 DOMException，
+	// 不会被误判 —— 且调用方另有 signal.aborted 守卫。依赖里没有 node-fetch。
+	return error instanceof TypeError;
 }
 
 function retryAfter(value: string | null): number | undefined {

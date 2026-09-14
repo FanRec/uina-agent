@@ -19,7 +19,7 @@ import {
 	type ProviderKind,
 	type UinaConfig,
 } from "./config.js";
-import { createOpenAIProvider, sendModelStreamRequest } from "./gateway.js";
+import { createOpenAIProvider, ProviderHttpError, sendModelStreamRequest } from "./gateway.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
 
 /** 创建声明式纯数据 Model 规格 */
@@ -76,7 +76,7 @@ export function createAnthropicProvider(id: string, conf: ProviderConfig): Provi
 			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, {
 				headers: { "x-api-key": conf.apiKey, "anthropic-version": "2023-06-01" },
 			});
-			if (!response.ok) throw new Error(`Anthropic 模型目录请求失败 HTTP ${response.status}`);
+			if (!response.ok) throw new ProviderHttpError({ provider: id, status: response.status, action: "模型目录请求" });
 			const payload = (await response.json()) as { data?: Array<{ id?: string }> };
 			return (payload.data ?? []).flatMap((model) => typeof model.id === "string" ? [{ id: model.id }] : []);
 		},
@@ -239,7 +239,7 @@ export function createGeminiProvider(id: string, conf: ProviderConfig): Provider
 		baseUrl: conf.baseUrl,
 		async refreshModels() {
 			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, { headers: { "x-goog-api-key": conf.apiKey } });
-			if (!response.ok) throw new Error(`Gemini 模型目录请求失败 HTTP ${response.status}`);
+			if (!response.ok) throw new ProviderHttpError({ provider: id, status: response.status, action: "模型目录请求" });
 			const payload = (await response.json()) as { models?: Array<{ baseModelId?: string; inputTokenLimit?: number; thinking?: boolean; supportedGenerationMethods?: string[] }> };
 			return (payload.models ?? []).flatMap((model) => {
 				const contextWindow = model.inputTokenLimit;
