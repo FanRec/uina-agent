@@ -4,7 +4,7 @@
  */
 
 import { UIHost, type UIHostOptions } from "./ui-host.js";
-import { STREAM_CHARS_PER_TOKEN } from "./components/widgets/activity-line.js";
+
 import type { QueuedMessage } from "../agent/queue.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 import type { SessionEntry } from "../session/types.js";
@@ -188,9 +188,9 @@ export class InteractiveTUI {
 					cacheWrite: m.cacheWrite,
 					segments: m.segments,
 				});
-				// 服务端的 output 是"本次调用"的输出量，累加成回合总量用于速度计算：
-				// 一个回合可以有多轮模型调用，各自输出都应计入这一轮的生成速度。
-				if (m.outputTokens !== undefined) this.host.activityLine.addRealOutputTokens(m.callId, m.outputTokens);
+				// 服务端报回的 output 是"本次调用"的输出量（含工具调用参数的分），交给活动行
+				// 按 step 结算：它既是这一步的分子，也是这一步解码区间的右端。
+				if (m.outputTokens !== undefined) this.host.activityLine.addRealOutputTokens(m.outputTokens);
 				break;
 
 			case "text":
@@ -199,10 +199,7 @@ export class InteractiveTUI {
 					this.currentThinkingId = undefined;
 				}
 				this.host.transcript.appendToken(m.text);
-				{
-					const estimatedTokens = Math.max(1, Math.ceil(m.text.length / STREAM_CHARS_PER_TOKEN));
-					this.host.activityLine.addTokens(estimatedTokens);
-				}
+				this.host.activityLine.addStreamText(m.text);
 				this.host.activityLine.update("streaming", "正在输出回复...");
 				this.host.requestRender();
 				break;
@@ -212,20 +209,17 @@ export class InteractiveTUI {
 					this.currentThinkingId = this.host.trajectoryProjection.onThinkingStart("深度推理");
 				}
 				this.host.transcript.appendThinking(m.text);
-				{
-					// 思考 token 也是「生成」，必须进解码跨度：服务端报回的 outputTokens
-					// 是 completion_tokens，本就含思考 token。此前只有正文增量走 addTokens，
-					// 于是分母要等正文首字才起算 —— 分子含思考、分母不含，开思考后读数虚高几十倍。
-					const thinkingTokens = Math.max(1, Math.ceil(m.text.length / STREAM_CHARS_PER_TOKEN));
-					this.host.activityLine.addTokens(thinkingTokens);
-				}
+				// 思考 token 也是「生成」，必须进解码区间：服务端报回的 outputTokens 是
+				// completion_tokens，本就含思考 token。此前只有正文增量喂活动行，于是左端要等
+				// 正文首字才起算 —— 分子含思考、分母不含，开思考后读数虚高几十倍。
+				this.host.activityLine.addStreamText(m.text);
 				this.host.activityLine.update("thinking", "正在深度推理 (Thinking)...");
 				this.host.requestRender();
 				break;
 
 			case "tool_start": {
-				// 模型调用到此结束，封存解码跨度；接下来的工具执行时间不计入生成速度。
-				this.host.activityLine.sealDecodeSpan();
+				// 模型调用到此结束，结算这一步的解码区间与输出量；接下来的工具执行时间不计入生成速度。
+				this.host.activityLine.endStep();
 				if (this.currentThinkingId) {
 					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;

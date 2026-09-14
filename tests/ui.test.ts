@@ -1845,16 +1845,24 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		});
 
 		it("ActivityLineComponent 在完成时输出耗时、Token数与火花线趋势图", () => {
-			const act = new ActivityLineComponent();
-			act.start("streaming", "正在生成回复...");
-			act.addTokens(50);
-			act.finish("生成结束", 1000, 50);
+			vi.useFakeTimers();
+			try {
+				vi.setSystemTime(1_700_000_000_000);
+				const act = new ActivityLineComponent();
+				act.start("streaming", "正在生成回复...");
+				act.addStreamText("先想一下"); // 字符估算占位
+				vi.setSystemTime(1_700_000_001_000);
+				act.addRealOutputTokens(80); // 收尾真值：它取代估算
+				act.finish("生成结束", 1000);
 
-			const header = act.getHeaderString(100);
-			expect(header).toContain("生成结束");
-			expect(header).toContain("耗时 1.0s");
-			expect(header).toContain("50 tokens");
-			expect(header).toContain("tps");
+				const header = act.getHeaderString(100);
+				expect(header).toContain("生成结束");
+				expect(header).toContain("耗时 1.0s");
+				expect(header).toContain("~80 tokens");
+				expect(header).toContain("tps");
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 
 		it("calculateContextSegments 从消息历史与工具定义中计算多段分布并支持比例对齐", () => {
