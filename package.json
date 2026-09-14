@@ -19,8 +19,7 @@
     "typecheck": "pnpm check:boundaries && tsc --noEmit",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "verify:cli": "tsx scripts/verify-built-cli.mts",
-    "verify:file-events": "tsx scripts/verify-file-events.mts",
-    "dev:baseline": "node dev/baseline.mjs"
+    "verify:file-events": "tsx scripts/verify-file-events.mts"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",

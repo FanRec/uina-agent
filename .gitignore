@@ -4,3 +4,13 @@ dist/
 *.log
 .VSCodeCounter/
 .workbuddy/
+
+# 私人开发工作台与过程文档，不随仓库公开
+dev/
+.agents/
+docs/history/
+docs/proposals/
+docs/references/
+docs/TODO.md
+docs/README.md
+AGENTS.md
