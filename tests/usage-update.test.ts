@@ -159,3 +159,28 @@ describe("压缩后：底栏回落估算，而不是接着显示压缩前的真�
 		expect(seenInHandler).toBe(subject.getUsedTokens());
 	});
 });
+
+describe("setModel：口径换了，旧模型的 usage 锚必须失效", () => {
+	it("切换模型后 getUsedTokens() 不再返回旧模型报的真实总量", async () => {
+		const { Subject } = await import("../src/agent/loop.js");
+		const { ToolBroker } = await import("../src/tools/broker.js");
+		const subject = new Subject(
+			MODEL,
+			streamWithUsage({ input: 1, output: 1, totalTokens: 99_999 }),
+			new ToolBroker(),
+			{ systemPrompt: "sys" },
+		);
+		await subject.pushInput("你好");
+		await subject.waitForIdle();
+		expect(subject.getUsedTokens()).toBe(99_999);
+
+		const bigger = mockModel({ id: "mock2", name: "mock2", contextWindow: 200_000 });
+		await subject.setModel(bigger);
+
+		// 旧模型报的 99_999 是旧窗口口径下的绝对总量，对新窗口没有描述力：
+		// 切模型后必须回落到字符估算，与压缩 / 回溯同一条失效纪律。
+		// 回退本修复（删掉 setModel 里的 forgetUsage()）后，这里恒为 99_999。
+		expect(subject.getUsedTokens()).not.toBe(99_999);
+		expect(subject.getContextWindow()).toBe(200_000);
+	});
+});

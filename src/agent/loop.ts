@@ -249,6 +249,18 @@ export class Subject {
 		const prev = this.model.name;
 		this.model = model;
 		this.compaction.contextWindow = model.contextWindow;
+		// 口径换了（窗口与 thinking 层级都属于新模型）：旧模型报的真实总量不再描述
+		// 当前上下文。锚有两处 —— Subject 缓存（forgetUsage）与最后一条 assistant
+		// 消息上的 usage（estimateContextTokens 会从历史重新锚定回来）；只清前者，
+		// 底栏数字纹丝不动。与压缩时 clearRetainedUsage 清锚是同一纪律的两个入口。
+		this.forgetUsage();
+		if (this.history.length > 0) {
+			const last = this.history[this.history.length - 1];
+			if (last?.role === "assistant" && last.usage) {
+				const { usage: _dropped, ...rest } = last;
+				this.history[this.history.length - 1] = { ...rest } as typeof last;
+			}
+		}
 		const prevLevel = this.thinkingLevel;
 		this.thinkingLevel = clampThinkingLevel(this.preferredThinkingLevel, model.thinkingLevels);
 
