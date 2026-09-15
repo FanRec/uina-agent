@@ -55,6 +55,7 @@ export function activateFindFile(api: ExtensionAPI): void {
 				}
 				for (const { name, isDir, full } of entries) {
 					if (limitHit) return;
+					if (name === ".git") continue; // git 内部文件永不列出
 					const rel = relative(root, full).split(sep).join("/");
 					if (matcher.ignored(rel, isDir)) continue;
 					const hit = fullRegex ? fullRegex.test(rel) : regex.test(name);

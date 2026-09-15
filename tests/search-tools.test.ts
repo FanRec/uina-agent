@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ExtensionRunner, type ExtensionAPI } from "../src/extensions/runner.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import activateWorkspaceTools from "../src/extensions/workspace-tools/index.js";
-import { globToRegExp, GitignoreMatcher } from "../src/extensions/workspace-tools/search-core.js";
+import { createJsonLineParser, globToRegExp, GitignoreMatcher } from "../src/extensions/workspace-tools/search-core.js";
 import { formatGrepOutput, runGrep } from "../src/extensions/workspace-tools/search-core.js";
 
 const runners: ExtensionRunner[] = [];
@@ -41,6 +41,9 @@ async function seedProject(dir: string): Promise<void> {
 		"utf8",
 	);
 	await writeFile(join(dir, "debug.log"), "alpha in log\n", "utf8");
+	// 模拟 .git 内部文件：文本可匹配，两引擎都不应搜索它
+	await mkdir(join(dir, ".git"), { recursive: true });
+	await writeFile(join(dir, ".git", "config"), "alpha inside git config\n", "utf8");
 }
 
 describe("grep_file 工具", () => {
@@ -53,9 +56,10 @@ describe("grep_file 工具", () => {
 		expect(text).toContain("app.ts:1:");
 		expect(text).toContain("src/util.ts:1:");
 		expect(text).toContain("readme.md:1:");
-		// node_modules 与 *.log 被 .gitignore 排除
+		// node_modules 与 *.log 被 .gitignore 排除；.git 内部文件也不应出现
 		expect(text).not.toContain("node_modules");
 		expect(text).not.toContain("debug.log");
+		expect(text).not.toContain(".git");
 	});
 
 	it("applies glob filter and literal mode", async () => {
@@ -113,6 +117,28 @@ describe("find_file 工具", () => {
 });
 
 describe("search-core 单元", () => {
+	it("createJsonLineParser: 跨 chunk 劈开的 JSON 行不丢失", () => {
+		const parser = createJsonLineParser();
+		const line1 = JSON.stringify({ type: "match", n: 1 });
+		const line2 = JSON.stringify({ type: "begin" });
+		const half = Math.floor(line1.length / 2);
+		// chunk1 = line1 前半（被劈开，无换行）；chunk2 = line1 后半 + 换行 + line2 完整行
+		const first = parser.push(line1.slice(0, half));
+		expect(first).toHaveLength(0);
+		const rest = parser.push(line1.slice(half) + "\n" + line2 + "\n");
+		expect(rest).toHaveLength(2);
+		expect(rest[0]).toMatchObject({ type: "match", n: 1 });
+		expect(rest[1]).toMatchObject({ type: "begin" });
+		expect(parser.flush()).toHaveLength(0);
+	});
+
+	it("createJsonLineParser: 完整行立即产出，非法行跳过", () => {
+		const parser = createJsonLineParser();
+		const out = parser.push('"a"\nnot-json\n"b"\n');
+		expect(out).toHaveLength(2);
+		expect(parser.flush()).toHaveLength(0);
+	});
+
 	it("globToRegExp: * within segment, ** across segments, literal chars escaped", () => {
 		expect(globToRegExp("*.ts").test("app.test.ts")).toBe(true);
 		expect(globToRegExp("*.ts").test("src/app.ts")).toBe(false);

@@ -57,13 +57,51 @@ export interface GrepOptions {
 
 /* ---------------- rg 引擎 ---------------- */
 
+/** 字节流 → 完整 JSON 行：跨 chunk 劈开的行缓冲到下次 push，flush 收尾。纯函数可单测。 */
+export function createJsonLineParser(): { push: (chunk: string) => unknown[]; flush: () => unknown[] } {
+	let buffer = "";
+	const emit = (): unknown[] => {
+		const out: unknown[] = [];
+		const lines = buffer.split("\n");
+		// 最后一段是残余（无换行结尾），留到下次；其余行完整
+		buffer = lines.pop() ?? "";
+		for (const rawLine of lines) {
+			if (!rawLine.trim()) continue;
+			try {
+				out.push(JSON.parse(rawLine));
+			} catch {
+				// 单行非法（不应发生）：跳过，不污染后续行
+			}
+		}
+		return out;
+	};
+	return {
+		push: (chunk: string) => {
+			buffer += chunk;
+			return emit();
+		},
+		// 流结束时残余未带换行的最后一行也要尝试产出
+		flush: (): unknown[] => {
+			const tail = buffer;
+			buffer = "";
+			if (!tail.trim()) return [];
+			try {
+				return [JSON.parse(tail)];
+			} catch {
+				return [];
+			}
+		},
+	};
+}
+
+
 /** rg 可执行路径：PATH → 缓存/自动下载。返回 null 表示 rg 不可用（调用方降级 node 引擎）。 */
 async function resolveRg(): Promise<string | null> {
 	return ensureRg();
 }
 
 async function grepWithRg(opts: GrepOptions, rgPath: string): Promise<SearchOutcome> {
-	const args = ["--json", "--line-number", "--color=never", "--hidden"];
+	const args = ["--json", "--line-number", "--color=never", "--hidden", "--glob", "!**/.git/**"];
 	// rg 的 VCS ignore 只在检测到 git 仓库时生效；非 git 目录需显式传 root 的 .gitignore
 	const rootGitignore = join(opts.root, ".gitignore");
 	if (!isInsideGitRepo(opts.root) && existsSync(rootGitignore)) {
@@ -93,20 +131,16 @@ async function grepWithRg(opts: GrepOptions, rgPath: string): Promise<SearchOutc
 		};
 		opts.signal?.addEventListener("abort", onAbort, { once: true });
 		child.stderr?.on("data", (c) => (stderr += c.toString()));
+		const parser = createJsonLineParser();
 		child.stdout?.on("data", (chunk) => {
-			// rg --json 每行一个事件；逐行解析
-			for (const rawLine of chunk.toString().split("\n")) {
-				if (!rawLine.trim() || matches.length >= limit) continue;
-				let event: { type?: string; data?: { path?: { text?: string }; line_number?: number; lines?: { text?: string } } };
-				try {
-					event = JSON.parse(rawLine);
-				} catch {
-					continue;
-				}
-				if (event.type !== "match") continue;
-				const file = event.data?.path?.text;
-				const lineNo = event.data?.line_number;
-				const text = event.data?.lines?.text;
+			// rg --json 每行一个事件；parser 处理跨 chunk 劈开的行
+			for (const event of parser.push(chunk.toString())) {
+				if (matches.length >= limit) return;
+				if ((event as { type?: string }).type !== "match") continue;
+				const data = (event as { data?: { path?: { text?: string }; line_number?: number; lines?: { text?: string } } }).data;
+				const file = data?.path?.text;
+				const lineNo = data?.line_number;
+				const text = data?.lines?.text;
 				if (file && typeof lineNo === "number") {
 					matches.push({ file, line: lineNo, text: (text ?? "").replace(/\r?\n$/, "") });
 					if (matches.length >= limit) {
@@ -241,8 +275,9 @@ async function grepWithNode(opts: GrepOptions, limit: number): Promise<SearchOut
 			const isDirectory = entry.isDirectory();
 			entries.push({ name: entry.name, isDir: isDirectory, full });
 		}
-		for (const { isDir: entryIsDir, full } of entries) {
+		for (const { isDir: entryIsDir, name, full } of entries) {
 			if (limitHit) return;
+			if (name === ".git") continue; // git 内部文件不是用户代码，永不搜索
 			const rel = relative(opts.root, full).split(sep).join("/");
 			if (matcher.ignored(rel, entryIsDir)) continue;
 			if (entryIsDir) {
