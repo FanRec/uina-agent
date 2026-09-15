@@ -25,17 +25,19 @@ export default function activate(api: ExtensionAPI): void {
 			if (looksBinary(buffer)) throw new Error(`疑似二进制文件，read_file 拒绝读为文本：${file}（用 read_image 或 exec_command 处理）`);
 			const lines = buffer.toString("utf8").split("\n");
 			if (lines.at(-1) === "") lines.pop(); // 结尾换行不产生幽灵空行
+			// CRLF 文件：剥掉每行尾部 \r（只读展示；不碰原文件，edit_file 自行保留行尾）
+			const cleanLines = lines.map((l) => (l.endsWith("\r") ? l.slice(0, -1) : l));
 			const offset = Number(args.offset ?? 1);
 			const start = offset - 1;
 			if (start >= lines.length) {
 				throw new Error(`offset ${offset} 超出文件末尾（共 ${lines.length} 行）`);
 			}
-			const end = args.limit === undefined ? lines.length : Math.min(start + Number(args.limit), lines.length);
-			const selected = lines.slice(start, end);
+			const end = args.limit === undefined ? cleanLines.length : Math.min(start + Number(args.limit), cleanLines.length);
+			const selected = cleanLines.slice(start, end);
 			const trunc = truncateReadLines(selected);
 			let text = trunc.text;
 			if (trunc.firstLineExceedsLimit) {
-				text += `\n\n[第 ${offset} 行超过 ${formatSize(READ_MAX_BYTES)} 上限，仅显示前 ${READ_MAX_LINE_CHARS} 字符。用 exec_command: Get-Content ${args.path} | Select-Object -First 1 等命令按字节取片段。]`;
+				text += `\n\n[第 ${offset} 行超过 ${formatSize(READ_MAX_BYTES)} 上限，仅显示前 ${READ_MAX_LINE_CHARS} 字符。${end < lines.length ? `用 offset=${offset + 1} 读后续行；` : "这是末行，"}确需行内更多字节时用 exec_command 按字节取片段。]`;
 			} else if (trunc.truncated) {
 				const nextOffset = start + trunc.outputLines + 1;
 				const by = trunc.truncatedBy === "lines" ? `${READ_MAX_LINES} 行上限` : `${formatSize(READ_MAX_BYTES)} 上限`;

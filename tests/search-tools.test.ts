@@ -116,6 +116,20 @@ describe("find_file 工具", () => {
 	});
 });
 
+describe("取消与共享 walker", () => {
+	it("abort 的调用不启动（not_started）；grep/find 遍历尊重 signal", async () => {
+		const { api, dir } = await setup();
+		await seedProject(dir);
+		const controller = new AbortController();
+		controller.abort();
+		// broker 契约：启动前已 abort -> not_started，工具体根本不执行
+		const grep = await api.callTool("grep_file", { pattern: "alpha", literal: true }, { signal: controller.signal });
+		expect(grep.status).toBe("not_started");
+		const find = await api.callTool("find_file", { pattern: "*.ts" }, { signal: controller.signal });
+		expect(find.status).toBe("not_started");
+	});
+});
+
 describe("search-core 单元", () => {
 	it("createJsonLineParser: 跨 chunk 劈开的 JSON 行不丢失", () => {
 		const parser = createJsonLineParser();

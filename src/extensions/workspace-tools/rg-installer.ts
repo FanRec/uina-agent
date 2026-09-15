@@ -23,7 +23,7 @@ function rgBinaryName(): string {
 	return platform() === "win32" ? "rg.exe" : "rg";
 }
 
-/** 缓存路径（不保证存在）；PATH 探测由调用方先做。 */
+/** 缓存路径（不保证存在）；ensureRg 探测顺序：缓存 → PATH → 下载。 */
 function cachedPath(): string {
 	return join(binDir(), rgBinaryName());
 }
@@ -33,15 +33,39 @@ function commandExists(cmd: string): boolean {
 	return !result.error && result.status === 0;
 }
 
-/** 返回可用的 rg 路径；找不到（且未下载成功）返回 null。下载失败不抛错，交给调用方降级。 */
+let inflight: Promise<string | null> | undefined;
+/** 进程内 memo：成功结果不再重探；失败负缓存 10 分钟（离线机器不每次撞 120s 超时）。 */
+let resolved: string | null | undefined;
+let lastFailureAt = 0;
+const FAILURE_TTL_MS = 10 * 60 * 1000;
+
 export async function ensureRg(): Promise<string | null> {
+	if (resolved !== undefined) return resolved;
+	if (inflight) return inflight;
+	if (Date.now() - lastFailureAt < FAILURE_TTL_MS) return null;
+	inflight = ensureRgInner()
+		.then((value) => {
+			resolved = value;
+			return value;
+		})
+		.catch((error) => {
+			inflight = undefined;
+			lastFailureAt = Date.now();
+			throw error;
+		});
+	try {
+		return await inflight;
+	} catch {
+		return null; // 下载失败交由调用方降级 node 引擎
+	}
+}
+
+async function ensureRgInner(): Promise<string | null> {
 	const local = cachedPath();
 	if (existsSync(local) && commandExists(local)) return local;
 	if (commandExists("rg")) return "rg";
-	return downloadRg().catch(() => null);
+	return downloadRg();
 }
-
-let inflight: Promise<string | null> | undefined;
 
 function downloadRg(): Promise<string | null> {
 	inflight ??= downloadRgInner().catch((error) => {

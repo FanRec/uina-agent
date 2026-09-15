@@ -11,7 +11,7 @@
  * 附带可操作的提示（如何翻页/如何收窄）。
  */
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { opendir, readFile, stat } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { ensureRg } from "./rg-installer.js";
@@ -94,12 +94,6 @@ export function createJsonLineParser(): { push: (chunk: string) => unknown[]; fl
 	};
 }
 
-
-/** rg 可执行路径：PATH → 缓存/自动下载。返回 null 表示 rg 不可用（调用方降级 node 引擎）。 */
-async function resolveRg(): Promise<string | null> {
-	return ensureRg();
-}
-
 async function grepWithRg(opts: GrepOptions, rgPath: string): Promise<SearchOutcome> {
 	const args = ["--json", "--line-number", "--color=never", "--hidden", "--glob", "!**/.git/**"];
 	// rg 的 VCS ignore 只在检测到 git 仓库时生效；非 git 目录需显式传 root 的 .gitignore
@@ -169,7 +163,7 @@ async function grepWithRg(opts: GrepOptions, rgPath: string): Promise<SearchOutc
 
 /** 极简 gitignore 语义：每行一个模式；# 注释；尾部 / 标目录；* 通配段内、** 跨段；! 例外不支持（保持简单，v1 无真实需求）。导出给 find_file 复用。 */
 export class GitignoreMatcher {
-	private patterns: Array<{ dir: boolean; regex: RegExp }> = [];
+	private patterns: Array<{ regex: RegExp }> = [];
 
 	constructor(private root: string) {}
 
@@ -186,14 +180,13 @@ export class GitignoreMatcher {
 		for (const rawLine of content.split(/\r?\n/)) {
 			const line = rawLine.trim();
 			if (!line || line.startsWith("#")) continue;
-			const dirOnly = line.endsWith("/");
 			const cleaned = line.replace(/\/+$/, "");
 			// 锚定：含 / 的模式相对该 .gitignore 所在目录；否则匹配任意层级
 			const anchored = cleaned.includes("/");
 			const base = anchored ? (rel ? rel.split(sep).join("/") + "/" : "") : "";
 			// globSource 无锚定，此处统一组装一次锚定；目录模式 (/.*)?$ 同时覆盖其下文件
 			const source = "^" + base + (anchored ? "" : "(?:.*/)?") + globSource(cleaned) + "(/.*)?$";
-			this.patterns.push({ dir: dirOnly, regex: new RegExp(source) });
+			this.patterns.push({ regex: new RegExp(source) });
 		}
 	}
 
@@ -208,7 +201,6 @@ export class GitignoreMatcher {
 	}
 }
 
-/** glob → RegExp 源：** 跨段，* 段内，? 单字符；其余字符按字面量转义。 */
 /** glob → 无锚定 RegExp 源：** 跨段，* 段内，? 单字符；其余字符按字面量转义。 */
 function globSource(glob: string): string {
 	let source = "";
@@ -241,6 +233,48 @@ function globFilter(relPath: string, glob: string): boolean {
 	return globToRegExp(glob).test(relPath.split(sep).join("/"));
 }
 
+/* ---------------- 共享遍历 walker（grep 与 find 复用） ---------------- */
+
+export interface WalkVisitor {
+	/** 每个非忽略条目回调；返回 true 表示已达上限，遍历立即终止。 */
+	visit(relPath: string, name: string, isDir: boolean, full: string): boolean | void;
+	/** 是否跳过该文件的内容处理（find 不读文件内容，无需此钩子；grep 用 matcher 自行处理）。 */
+	readFile?: boolean;
+}
+
+/**
+ * 按 gitignore 语义遍历 root（跳过 .git；支持 AbortSignal；进入子目录时惰性加载该层 .gitignore）。
+ * walker 只管「走哪」，命中判定与计数归 visitor（高内聚切分）。
+ */
+export async function walkTree(
+	root: string,
+	matcher: GitignoreMatcher,
+	visit: WalkVisitor["visit"],
+	signal?: AbortSignal,
+): Promise<void> {
+	async function walk(dir: string): Promise<boolean> {
+		if (signal?.aborted) return true;
+		const rel0 = relative(root, dir).split(sep).join("/");
+		if (rel0 && matcher.ignored(rel0, true)) return false;
+		await matcher.addDir(dir);
+		const dirHandle = await opendir(dir);
+		const entries: Array<{ name: string; isDir: boolean; full: string }> = [];
+		for await (const entry of dirHandle) {
+			entries.push({ name: entry.name, isDir: entry.isDirectory(), full: join(dir, entry.name) });
+		}
+		for (const { name, isDir, full } of entries) {
+			if (signal?.aborted) return true;
+			if (name === ".git") continue; // git 内部文件不是用户代码，永不遍历
+			const rel = relative(root, full).split(sep).join("/");
+			if (matcher.ignored(rel, isDir)) continue;
+			if (visit(rel, name, isDir, full)) return true;
+			if (isDir && (await walk(full))) return true;
+		}
+		return false;
+	}
+	await walk(root);
+}
+
 async function grepWithNode(opts: GrepOptions, limit: number): Promise<SearchOutcome> {
 	const s = await stat(opts.root).catch(() => null);
 	if (!s) throw new Error(`search：路径不存在：${opts.root}`);
@@ -263,64 +297,46 @@ async function grepWithNode(opts: GrepOptions, limit: number): Promise<SearchOut
 	const matches: SearchMatch[] = [];
 	let limitHit = false;
 
-	async function walk(dir: string): Promise<void> {
-		if (limitHit) return;
-		const rel0 = relative(opts.root, dir);
-		if (rel0 && matcher.ignored(rel0.split(sep).join("/"), true)) return;
-		await matcher.addDir(dir);
-		const dirHandle = await opendir(dir);
-		const entries: Array<{ name: string; isDir: boolean; full: string }> = [];
-		for await (const entry of dirHandle) {
-			const full = join(dir, entry.name);
-			const isDirectory = entry.isDirectory();
-			entries.push({ name: entry.name, isDir: isDirectory, full });
+	const matchFile = (full: string): boolean => {
+		// 同步读 + 逐行匹配；返回是否已达上限
+		let content: string;
+		try {
+			content = readFileSync(full, "utf8");
+		} catch {
+			return false; // 二进制或不可读：跳过
 		}
-		for (const { isDir: entryIsDir, name, full } of entries) {
-			if (limitHit) return;
-			if (name === ".git") continue; // git 内部文件不是用户代码，永不搜索
-			const rel = relative(opts.root, full).split(sep).join("/");
-			if (matcher.ignored(rel, entryIsDir)) continue;
-			if (entryIsDir) {
-				await walk(full);
-				continue;
-			}
-			if (opts.glob && !globFilter(rel, opts.glob)) continue;
-			let content: string;
-			try {
-				content = await readFile(full, "utf8");
-			} catch {
-				continue; // 二进制或不可读：跳过
-			}
-			// 含 NUL 视为二进制，跳过
-			if (content.includes("\0")) continue;
-			const lines = content.split("\n");
-			for (let i = 0; i < lines.length; i++) {
-				if (regex.test(lines[i].replace(/\r$/, ""))) {
-					matches.push({ file: full, line: i + 1, text: lines[i].replace(/\r$/, "") });
-					if (matches.length >= limit) {
-						limitHit = true;
-						return;
-					}
-				}
+		if (content.includes("\0")) return false; // 含 NUL 视为二进制
+		const lines = content.split("\n");
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i].replace(/\r$/, "");
+			if (regex.test(line)) {
+				matches.push({ file: full, line: i + 1, text: line });
+				if (matches.length >= limit) return true;
 			}
 		}
-	}
+		return false;
+	};
 
 	if (isDir) {
-		await walk(opts.root);
+		await walkTree(
+			opts.root,
+			matcher,
+			(rel, _name, isDirEntry, full) => {
+				if (isDirEntry) return false;
+				if (opts.glob && !globFilter(rel, opts.glob)) return false;
+				if (matchFile(full)) {
+					limitHit = true;
+					return true;
+				}
+				return false;
+			},
+			opts.signal,
+		);
+		if (opts.signal?.aborted) throw new Error("search：调用已取消。");
 	} else {
 		// 单文件搜索
-		const rel = relative(opts.root, opts.root);
-		if (!matcher.ignored(rel, false) && (!opts.glob || globFilter(rel, opts.glob))) {
-			const content = await readFile(opts.root, "utf8");
-			const lines = content.split("\n");
-			for (let i = 0; i < lines.length && !limitHit; i++) {
-				if (regex.test(lines[i].replace(/\r$/, ""))) {
-					matches.push({ file: opts.root, line: i + 1, text: lines[i].replace(/\r$/, "") });
-					if (matches.length >= limit) limitHit = true;
-				}
-			}
-		}
+		if (opts.signal?.aborted) throw new Error("search：调用已取消。");
+		if (matchFile(opts.root)) limitHit = true;
 	}
 	return { matches, limitHit, engine: "node" };
 }
@@ -329,7 +345,7 @@ async function grepWithNode(opts: GrepOptions, limit: number): Promise<SearchOut
 
 export async function runGrep(opts: GrepOptions): Promise<SearchOutcome> {
 	const limit = Math.max(1, opts.limit ?? MAX_MATCHES);
-	const rgPath = await resolveRg();
+	const rgPath = await ensureRg();
 	if (rgPath) {
 		try {
 			return await grepWithRg(opts, rgPath);

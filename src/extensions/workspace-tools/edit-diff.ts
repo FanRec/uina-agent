@@ -41,8 +41,7 @@ function hunkSpans(
 	const raw = replacements
 		.map((r) => {
 			const startLine = lineOf(r.matchIndex);
-			const endOffset = r.matchIndex + r.matchLength - 1;
-			const endLine = lineOf(Math.max(r.matchIndex, endOffset));
+			const endLine = lineOf(r.matchIndex + r.matchLength - 1); // oldText 非空保证 matchLength≥1
 			return { oldStart: startLine, oldCount: endLine - startLine + 1, newCount: r.newText.split("\n").length };
 		})
 		.sort((a, b) => a.oldStart - b.oldStart);
