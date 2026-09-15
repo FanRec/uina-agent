@@ -395,12 +395,13 @@ export class UIHost implements UIHostContextPort {
 				this.overlayStack.hideTopOverlay();
 			} else if (this.activeSuggestions) {
 				this.activeSuggestions = null;
-			} else if (this.busy) {
-				this.cancelTurn();
 			} else if (this.inputLine.hasSelection()) {
 				this.inputLine.clearSelection();
 			} else if (this.inputLine.hasText()) {
+				// 体验优先级：输入框里有内容时 Escape 先清草稿，而不是打断工作中的回合
 				this.inputLine.clear();
+			} else if (this.busy) {
+				this.cancelTurn();
 			}
 			this.requestRender();
 		};
@@ -1646,7 +1647,20 @@ export class UIHost implements UIHostContextPort {
 		}
 
 		if (matchesKey(data, Key.ctrl("c"))) {
-			// 1. 如果处于工作态（模型生成、工具执行中）
+			// 1. 输入框有选区或草稿时优先清除（含工作态）：草稿是用户未提交的心智负担，
+			// 先满足「清空内容」再谈「中断工作」；输入框为空且工作态才打断回合。
+			if (this.inputLine.hasSelection()) {
+				this.inputLine.clearSelection();
+				this.requestRender();
+				return;
+			}
+			if (this.inputLine.hasText()) {
+				this.inputLine.clear();
+				this.requestRender();
+				return;
+			}
+
+			// 2. 工作态（模型生成、工具执行中）且输入框为空
 			if (this.busy) {
 				if (this.cancelPending) {
 					// 正在中断收敛中或底层卡死，用户再次按下 Ctrl+C 意图强制退出应用（对齐 dsh-TUI Chat.tsx onExit()）
@@ -1670,18 +1684,6 @@ export class UIHost implements UIHostContextPort {
 					this.exitTimer = null;
 				}
 				this.cancelTurn("ctrl+c");
-				return;
-			}
-
-			// 2. 空闲态下，第 1 次按 Ctrl+C：若输入框有选区先清选区；若有草稿先清草稿；都为空则提示“再次按 Ctrl+C 退出”
-			if (this.inputLine.hasSelection()) {
-				this.inputLine.clearSelection();
-				this.requestRender();
-				return;
-			}
-			if (this.inputLine.hasText()) {
-				this.inputLine.clear();
-				this.requestRender();
 				return;
 			}
 
