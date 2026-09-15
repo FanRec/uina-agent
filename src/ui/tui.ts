@@ -30,28 +30,18 @@ export class InteractiveTUI {
 	private thinkingLevelCycleCallback?: () => void;
 	private toolCallMap = new Map<string, { startedAt: number; name: string; args?: unknown }>();
 	private currentThinkingId?: string;
-	private toolAnimationTimer?: NodeJS.Timeout;
 
+	/**
+	 * 工具运行中的重绘需求已并入 UIHost 统一帧时钟：
+	 * 旧实现是独立的 300ms setInterval；现在只需在工具状态变化时告知宿主，
+	 * 宿主把 hasRunningTools() 作为心跳状态源之一（见 UIHost.updateHeartbeat）。
+	 */
 	private syncToolAnimationTimer(): void {
-		const hasRunning = this.toolCallMap.size > 0 || this.host.transcript.hasRunningTools();
-		if (hasRunning && !this.toolAnimationTimer) {
-			this.toolAnimationTimer = setInterval(() => {
-				if (this.toolCallMap.size === 0 && !this.host.transcript.hasRunningTools()) {
-					this.stopToolAnimationTimer();
-					return;
-				}
-				this.host.requestRender();
-			}, 300);
-		} else if (!hasRunning && this.toolAnimationTimer) {
-			this.stopToolAnimationTimer();
-		}
+		this.host.notifyToolActivity();
 	}
 
 	private stopToolAnimationTimer(): void {
-		if (this.toolAnimationTimer) {
-			clearInterval(this.toolAnimationTimer);
-			this.toolAnimationTimer = undefined;
-		}
+		this.host.notifyToolActivity();
 	}
 
 	constructor(options: InteractiveTUIOptions = {}) {

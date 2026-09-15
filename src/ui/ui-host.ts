@@ -167,7 +167,16 @@ export class UIHost implements UIHostContextPort {
 
 	private lastElapsedMs = 0;
 	private renderScheduled = false;
-	private animTimer: NodeJS.Timeout | null = null;
+	/**
+	 * 统一帧时钟：唯一的动画重绘定时器（50ms）。
+	 *
+	 * busy 动画、smoothReveal 揭示、工具运行三类「状态在变」场景共用。
+	 * 旧实现是三个独立 setInterval（60/50/300ms），相位漂移导致帧率抖动，
+	 * 且各自持句柄、各自启停。现在状态源只置标志，updateHeartbeat() 收敛启停。
+	 */
+	private heartbeatTimer: NodeJS.Timeout | null = null;
+	/** busy 动画需要重绘（转圈 spinner、耗时计时器）。仅作心跳状态源标志。 */
+	private busyAnimation = false;
 	private scrollOffset = 0;
 	private lastTotalPerm = 0;
 
@@ -357,7 +366,7 @@ export class UIHost implements UIHostContextPort {
 		this.rootContainer = new Container();
 		this.headerContainer = new Container();
 		this.transcript = new TranscriptContainer();
-		this.transcript.smoothReveal.setOnTick(() => this.requestRender());
+		this.transcript.smoothReveal.setOnTick(() => this.updateHeartbeat());
 		this.transcript.setRendererResolver({
 			message: (type) => this.registry.getMessageRenderer(type),
 			entry: (type) => this.registry.getEntryRenderer(type),
@@ -1504,18 +1513,58 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
+	/**
+	 * 心跳状态源聚合与启停收敛。任何「状态在变」标志为真即开，全假即关。
+	 */
+	private updateHeartbeat(): void {
+		const needed =
+			this.busyAnimation ||
+			this.transcript.smoothReveal.isAnimating() ||
+			this.transcript.hasRunningTools();
+		if (needed && this.heartbeatTimer === null) {
+			this.heartbeatTimer = setInterval(() => {
+				// 推进揭示游标后统一重绘；所有状态源归零时自停
+				if (this.transcript.smoothReveal.isAnimating()) this.transcript.smoothReveal.advance();
+				this.requestRender();
+				if (
+					!this.busyAnimation &&
+					!this.transcript.smoothReveal.isAnimating() &&
+					!this.transcript.hasRunningTools()
+				) {
+					this.stopHeartbeat();
+				}
+			}, 50);
+		} else if (!needed && this.heartbeatTimer !== null) {
+			this.stopHeartbeat();
+		}
+	}
+
+	private stopHeartbeat(): void {
+		if (this.heartbeatTimer) {
+			clearInterval(this.heartbeatTimer);
+			this.heartbeatTimer = null;
+		}
+	}
+
+	getHeartbeatActiveForTest(): boolean {
+		return this.heartbeatTimer !== null;
+	}
+
+	/** 工具状态变化（开始/结束）时由 tui 门面调用：重新评估心跳需求。 */
+	notifyToolActivity(): void {
+		this.updateHeartbeat();
+	}
+
 	private startAnimation(): void {
-		if (this.animTimer) return;
-		this.animTimer = setInterval(() => {
-			this.requestRender();
-		}, 60);
+		if (this.busyAnimation) return;
+		this.busyAnimation = true;
+		this.updateHeartbeat();
 	}
 
 	private stopAnimation(): void {
-		if (this.animTimer) {
-			clearInterval(this.animTimer);
-			this.animTimer = null;
-		}
+		if (!this.busyAnimation) return;
+		this.busyAnimation = false;
+		this.updateHeartbeat();
 	}
 
 	// =========================================================================

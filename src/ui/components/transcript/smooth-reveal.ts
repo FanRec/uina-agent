@@ -1,8 +1,8 @@
-/**
+﻿/**
  * 流式平滑揭示控制器（严格复刻 dsh-TUI / oh-my-pi Smooth Streaming 机制）。
  *
  * 特性：
- * 1. 独立 ~20fps 调度器（REVEAL_FRAME_MS = 50ms），解耦“模型交付文本速度”与“终端绘制速度”；
+ * 1. 约 20fps 的揭示节奏由宿主统一帧时钟驱动（50ms tick），解耦“模型交付文本速度”与“终端绘制速度”；
  * 2. 自适应指数衰减追赶算法：
  *    step = max(MIN_STEP, ceil(backlog / CATCHUP_FRAMES))
  *    大块批次吐字时前几帧消化绝大部分内容，随后平缓收尾；匀速流式保持恒定打字机节奏；
@@ -45,7 +45,10 @@ export class SmoothRevealController {
 	private readonly textCursors = new Map<string, TextRevealCursor>();
 	private readonly completedReveals = new Set<string>();
 	private static readonly COMPLETED_REVEALS_MAX = 2048;
-	private timer: NodeJS.Timeout | null = null;
+	/**
+	 * 揭示调度权已上交宿主（UIHost 统一帧时钟）：本类不再自持 setInterval。
+	 * 宿主每帧调 advance() 推进游标；isAnimating() 为真期间宿主保持心跳。
+	 */
 	private onTick?: () => void;
 	private enabled = false;
 
@@ -93,11 +96,10 @@ export class SmoothRevealController {
 			this.completedReveals.delete(key);
 			const initialStep = Math.min(fullText.length, revealStep(fullText.length));
 			this.textCursors.set(key, { text: fullText, revealed: initialStep });
+			this.onTick?.();
 		} else {
 			cursor.text = fullText;
 		}
-
-		this.ensureTimer();
 	}
 
 	/**
@@ -118,7 +120,7 @@ export class SmoothRevealController {
 			const initialStep = Math.min(fullText.length, revealStep(fullText.length));
 			cursor = { text: fullText, revealed: initialStep };
 			this.textCursors.set(key, cursor);
-			this.ensureTimer();
+			this.onTick?.();
 		} else {
 			cursor.text = fullText;
 		}
@@ -140,7 +142,6 @@ export class SmoothRevealController {
 			}
 			this.textCursors.clear();
 		}
-		this.stopTimerIfIdle();
 	}
 
 	/**
@@ -161,28 +162,15 @@ export class SmoothRevealController {
 	 */
 	reset(): void {
 		this.snapToLatest();
-		if (this.timer) {
-			clearInterval(this.timer);
-			this.timer = null;
-		}
 	}
 
-	private ensureTimer(): void {
-		if (this.timer === null && this.textCursors.size > 0) {
-			this.timer = setInterval(() => this.tick(), REVEAL_FRAME_MS);
-			this.timer.unref?.();
-		}
+	/** 是否有未揭示完的游标（宿主据此决定是否保持心跳）。 */
+	isAnimating(): boolean {
+		return this.enabled && this.textCursors.size > 0;
 	}
 
-	private stopTimerIfIdle(): void {
-		if (this.textCursors.size === 0 && this.timer !== null) {
-			clearInterval(this.timer);
-			this.timer = null;
-		}
-	}
-
-	private tick(): void {
-		let advanced = false;
+	/** 推进一帧揭示（由宿主心跳驱动，约 20fps）。 */
+	advance(): void {
 		for (const [key, cursor] of this.textCursors) {
 			const total = cursor.text.length;
 			if (cursor.revealed >= total) {
@@ -190,16 +178,8 @@ export class SmoothRevealController {
 				this.markCompleted(key);
 				continue;
 			}
-
 			const step = revealStep(total - cursor.revealed);
 			cursor.revealed = Math.min(total, cursor.revealed + step);
-			advanced = true;
-		}
-
-		if (advanced) {
-			this.onTick?.();
-		} else {
-			this.stopTimerIfIdle();
 		}
 	}
 }

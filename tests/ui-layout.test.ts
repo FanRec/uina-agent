@@ -563,3 +563,46 @@ describe("B1: 视口主权（提交不拽视口 + 视口指示器交互）", () 
 		expect(after.some((row) => row.includes("[视口"))).toBe(false);
 	});
 });
+
+describe("UIHost: 统一帧时钟（heartbeat）", () => {
+	it("setBusy(true) 后心跳开启且 tick 推进重绘；setBusy(false) 后心跳停止", async () => {
+		vi.useFakeTimers();
+		try {
+			const { host } = scrollableHost();
+			host.requestRender();
+			const renderSpy = vi.spyOn(host, "requestRender");
+			renderSpy.mockClear();
+
+			host.setBusy(true);
+			expect(host.getHeartbeatActiveForTest()).toBe(true);
+			renderSpy.mockClear();
+			vi.advanceTimersByTime(160); // ~3 个 50ms tick
+			expect(renderSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
+
+			host.setBusy(false);
+			expect(host.getHeartbeatActiveForTest()).toBe(false);
+			renderSpy.mockClear();
+			vi.advanceTimersByTime(200);
+			expect(renderSpy.mock.calls.length).toBe(0);
+			host.stop();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("smoothReveal 有未揭示游标时心跳保持，揭示完成后自动停止", () => {
+		vi.useFakeTimers();
+		try {
+			const { host } = scrollableHost();
+			host.transcript.smoothReveal.setEnabled(true);
+			host.transcript.startTurn(9, "流式");
+			host.transcript.appendToken("这是一段足够长的流式文本，用于保证揭示游标跨越多个心跳周期。".repeat(3));
+			expect(host.getHeartbeatActiveForTest()).toBe(true);
+			vi.advanceTimersByTime(5000);
+			expect(host.getHeartbeatActiveForTest()).toBe(false);
+			host.stop();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
