@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ToolBroker, type Tool, type ToolExecutionContext } from "../src/tools/broker.js";
+import { formatToolCardLines } from "../src/ui/components/transcript/tool-view.js";
 
 function makeTool(
 	name: string,
@@ -238,5 +239,25 @@ describe("ScopedToolView", () => {
 		expect(view.getExecutionMode("parallel_tool")).toBe("parallel");
 		expect(view.getExecutionMode("seq_tool")).toBe("sequential");
 		expect(view.getExecutionMode("unknown")).toBe("parallel");
+	});
+});
+
+describe("hover 行数一致性（反抖动）", () => {
+	const LONG = "npx vitest run tests/ui.test.ts -t \"很长的测试名用来撑爆单行宽度让标题必然超过卡片宽度产生软换行\" 2>&1 | Select-String -Pattern \"Tests\" | Select-Object -First 3";
+	const args = { command: LONG };
+	const base = { name: "run_command", result: "", elapsed: 0, width: 90, status: "succeeded" as const, params: args };
+
+	it("hover 与非 hover 行数一致，且不产生 … 截断", () => {
+		const plain = formatToolCardLines(base.name, base.result, base.elapsed, base.width, base.status, base.params, { isExpanded: true });
+		const hovered = formatToolCardLines(base.name, base.result, base.elapsed, base.width, base.status, base.params, { isExpanded: true, isHovered: true });
+		expect(hovered.length).toBe(plain.length);
+		// hover 态不应把软换行内容截成 …
+		expect(hovered.some((l) => l.includes("First 3"))).toBe(true);
+	});
+
+	it("运行中 hover 同样行数一致", () => {
+		const plain = formatToolCardLines(base.name, "", 0, base.width, "running", base.params, { startedAt: Date.now() - 5000 });
+		const hovered = formatToolCardLines(base.name, "", 0, base.width, "running", base.params, { isHovered: true, startedAt: Date.now() - 5000 });
+		expect(hovered.length).toBe(plain.length);
 	});
 });

@@ -347,11 +347,11 @@ function finishCard(lines: string[], isHovered: boolean, width: number): string[
 
 	const out: string[] = [];
 	for (const line of flattenedLines) {
-		if (isHovered) {
-			out.push(applyCardBackground(line, C.toolCardBackground, width));
-		} else {
-			// 软换行而非截断：超宽行（如展开后的完整命令）在卡片宽度内折行，信息零丢失
-			out.push(...wrapTextWithAnsi(line, width));
+		// 软换行先于底色：hover 只改样式不改内容，两态行数恒等（反抖动）。
+		// 若先上色再截断，超宽行会被拍平成单行加 …，hover 前后状态不一致。
+		const wrapped = wrapTextWithAnsi(line, width);
+		for (const frag of wrapped) {
+			out.push(isHovered ? applyCardBackground(frag, C.toolCardBackground, width) : frag);
 		}
 	}
 	out.push("");
