@@ -331,13 +331,16 @@ export function applyCardBackground(
 	let padLen = Math.max(0, width - effW);
 	// 端徽（hover 指示符）画在底色右端 padding 区：挤占填充空格而不占内容列，
 	// 放不下（padding 为 0）就丢弃，保证行宽恒为 width、内容两态恒等。
+	// 端徽取纯字符、不带 SGR：任何内嵌的 reset（含自带的 \x1b[0m）都会把 bg
+	// 抹掉，而 badge 之后的剩余 padding 会漏成默认背景洞；样式由 bg 统一赋予。
 	let badge = "";
 	const endBadge = opts?.endBadge;
 	if (endBadge) {
-		const badgeW = visibleWidth(endBadge);
+		const badgeText = endBadge.replace(/\x1b\[[0-9;]*m/g, "");
+		const badgeW = visibleWidth(badgeText);
 		if (badgeW > 0 && badgeW <= padLen) {
 			padLen -= badgeW;
-			badge = endBadge;
+			badge = badgeText;
 		}
 	}
 	const padding = " ".repeat(padLen);

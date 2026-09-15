@@ -274,4 +274,33 @@ describe("hover 行数一致性（反抖动）", () => {
 			expect(hovered.length).toBe(plain.length);
 		}
 	});
+
+	it("hover 底色逐列连续：badge 与行尾 padding 均不漏默认背景", () => {
+		// 回归背景：badge 自带 SGR reset 会把底色抹掉，其后的 padding 漏成
+		// 默认背景洞（用户截图：Tests 行中部一段没高亮）。锁定不变量：
+		// hover 态每行从首列到末列底色状态机始终开启。
+		const BG = "\x1b[48;2;36;43;58m";
+		const scanHoles = (row: string): number => {
+			let bgOn = false, holes = 0;
+			const re = /\x1b\[[0-9;]*m|[\s\S]/gu;
+			let m: RegExpExecArray | null;
+			while ((m = re.exec(row))) {
+				const tok = m[0];
+				if (tok.startsWith("\x1b[")) {
+					if (tok === "\x1b[0m" || tok === "\x1b[m" || tok === "\x1b[49m") bgOn = false;
+					else if (/^\x1b\[48/.test(tok)) bgOn = true;
+					continue;
+				}
+				if (!bgOn) holes++;
+			}
+			return holes;
+		};
+		// 正文含内嵌 SGR（dim/红/绿 + 行尾 dim 收尾）——vitest 真实形态
+		const stdout = `\x1b[2m      Tests \x1b[22m \x1b[1m\x1b[31m1 failed\x1b[39m\x1b[22m\x1b[90m (1)\x1b[39m`;
+		const result = JSON.stringify({ stdout, code: 1 });
+		const lines = formatToolCardLines("Exec", result, 100, 110, "succeeded", "npx vitest run", { isHovered: true });
+		for (const line of lines) {
+			expect(scanHoles(line)).toBe(0);
+		}
+	});
 });

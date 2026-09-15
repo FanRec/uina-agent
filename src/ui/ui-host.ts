@@ -1237,6 +1237,20 @@ export class UIHost implements UIHostContextPort {
 		this.mouseTracker.setScrollContext(scrollStart, chatAreaH);
 
 		let railGlyphs: string[] = [];
+		// hover 中工具卡占用的屏幕行集合（含卡片末尾空行），供 rail 交界底色延伸判断
+		const hoveredToolRowSet = new Set<number>();
+		const hoveredToolIdNow = this.transcript.getHoveredToolId();
+		if (hoveredToolIdNow !== null) {
+			for (const loc of frameModel.toolLocations) {
+				if (loc.callId !== hoveredToolIdNow) continue;
+				for (let r = 0; r < loc.lineCount; r++) {
+					const absLine = bannerCount + loc.lineIndex + r;
+					if (absLine >= scrollStart && absLine < scrollStart + visibleTranscript.length) {
+						hoveredToolRowSet.add(absLine - scrollStart);
+					}
+				}
+			}
+		}
 		let previewCard: { topRow: number; lines: string[] } | undefined;
 
 		if (this.gutterMode === "scrollbar") {
@@ -1254,7 +1268,16 @@ export class UIHost implements UIHostContextPort {
 			const rawLine = allChatRows[r] ?? "";
 			const baseLine = truncateToWidth(rawLine, transcriptContentW, " ");
 			const pad = Math.max(0, transcriptContentW - visibleWidth(baseLine));
-			allChatRows[r] = `${baseLine}${" ".repeat(pad)}${railGlyphs[r] ?? "  "}`;
+			const rail = railGlyphs[r] ?? "  ";
+			// hover 中的工具卡行：底色延伸覆盖 rail 交界 2 列，否则卡片底色到
+			// transcriptContentW 截止，交界处漏出 2 列默认背景（高亮空缺）。
+			// 闲置刻度轨自带 SGR（▔/─/空格），其 reset 后重新注入 bg 保持连续。
+			if (hoveredToolRowSet.has(r)) {
+				const patchedRail = rail.replace(/\x1b\[0?m/g, `\x1b[0m${C.toolCardBackground}`).replace(/\x1b\[49m/g, C.toolCardBackground);
+				allChatRows[r] = `${baseLine}${" ".repeat(pad)}${C.toolCardBackground}${patchedRail}${C.reset}`;
+			} else {
+				allChatRows[r] = `${baseLine}${" ".repeat(pad)}${rail}`;
+			}
 		}
 
 		if (previewCard) {
