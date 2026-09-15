@@ -573,12 +573,12 @@ export class Subject {
 		return this.queues.oldestAgeMs();
 	}
 
-	/** Removes queued inputs and returns them in original arrival order for UI editing. */
+	/** Removes queued inputs and returns them in original arrival order for UI editing.
+	 * Ownership is claimed synchronously before any await so concurrent queue consumption cannot see claimed items. */
 	async takeQueuedForEditor(): Promise<QueuedMessage[]> {
-		const items = this.queues.all();
+		const items = this.queues.takeAll();
 		for (const item of items) {
 			await this.storeEvent("queue_restored", eventData(item));
-			this.queues.remove(item.id);
 		}
 		this.notifyQueueChanged();
 		return items;
@@ -589,8 +589,9 @@ export class Subject {
 		const items = this.queues.all();
 		if (items.length === 0) return null;
 		const last = items[items.length - 1]!;
+		const claimed = this.queues.remove(last.id);
+		if (!claimed) return null;
 		await this.storeEvent("queue_restored", eventData(last));
-		this.queues.remove(last.id);
 		this.notifyQueueChanged();
 		return last;
 	}
@@ -624,6 +625,12 @@ export class Subject {
 			this.interrupted = false;
 			this.abort = new AbortController();
 			const turn = ++this.turnSeq;
+			if (queuedInput) {
+				// Claim ownership synchronously before the first await; the item must leave the
+				// queue before prepare/emits so it can neither be restored to the editor nor re-consumed.
+				this.queues.remove(queuedInput.id);
+				this.notifyQueueChanged();
+			}
 
 			const prepared = await this.runtimeHooks.turn.prepare(
 				{ prompt: text ?? "", systemPrompt: this.systemPrompt },
@@ -920,6 +927,12 @@ export class Subject {
 	private async drainQueuedInputs(mode: "steer" | "followUp"): Promise<boolean> {
 		const items = this.queues.peekMany(mode, this.queueModes[mode]);
 		if (items.length === 0) return false;
+		// Claim all items synchronously before the first await so none of them can be
+		// restored to the editor while a previous item is being persisted.
+		for (const item of items) {
+			this.queues.remove(item.id);
+		}
+		this.notifyQueueChanged();
 		for (const item of items) {
 			await this.consumeQueueItem(item);
 		}
@@ -1205,11 +1218,19 @@ export class Subject {
 	}
 
 	private async consumeQueueItem(item: QueuedMessage): Promise<void> {
-		await this.store?.appendInput(item);
-		const message = projectInputMessage(item);
-		if (message) this.history.push(message);
+		// Claim synchronously: once consumption begins the item can no longer be restored to the editor.
 		this.queues.remove(item.id);
 		this.notifyQueueChanged();
+		try {
+			await this.store?.appendInput(item);
+		} catch (error) {
+			// Commit failure means the input was never consumed; return ownership to the queue.
+			this.queues.add(item);
+			this.notifyQueueChanged();
+			throw error;
+		}
+		const message = projectInputMessage(item);
+		if (message) this.history.push(message);
 	}
 
 	private async storeEvent(
