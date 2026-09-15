@@ -299,8 +299,8 @@ export class InteractiveTUI {
 				break;
 
 			case "notice":
-				this.host.transcript.addNotice(m.text);
-				this.host.requestRender();
+				// 瞬态通知走 toast（对话框右侧上方，3s 消失），与模型切换提示同形态，不进 transcript
+				this.host.notify(m.text, "info", 3000);
 				break;
 
 			case "error":

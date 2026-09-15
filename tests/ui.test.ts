@@ -3844,5 +3844,17 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			});
 		});
 	});
-});
+	it("InteractiveTUI: reload notice 走 notify toast 而非 transcript", () => {
+		const tui = new InteractiveTUI();
+		const host = tui.host;
+		const initialTranscriptLen = host.transcript.render(80).length;
 
+		// 宿主事件流派发 notice（reloadExtensions 的产物）——经 tui.render 分发
+		tui.render({ type: "notice", text: "项目扩展已重新加载：1 个扩展激活。" });
+
+		// 不污染 transcript，出现在 toast 里
+		expect(host.transcript.render(80).length).toBe(initialTranscriptLen);
+		expect(host.getNotificationToast()).toEqual({ message: "项目扩展已重新加载：1 个扩展激活。", type: "info" });
+		tui.close();
+	});
+});
