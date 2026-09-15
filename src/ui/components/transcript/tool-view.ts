@@ -1,4 +1,4 @@
-import type { ToolResultStatus } from "../../../core/types.js";
+﻿import type { ToolResultStatus } from "../../../core/types.js";
 /**
  * 工具调用状态与结果卡片组件（完美对齐 dsh-TUI / Claude Code 工具呈现规范）。
  *
@@ -318,22 +318,38 @@ function formatStructuredValue(value: unknown): string {
  *    彻底根治“ANSI reset 导致背景断裂成前缀小色块”的终端渲染顽疾；
  * 3. 尊重终端双字节全角字符（CJK）与 Emoji 宽度，绝不产生对齐错位。
  */
-export function applyCardBackground(line: string, bg: string, width: number): string {
+export function applyCardBackground(
+	line: string,
+	bg: string,
+	width: number,
+	opts?: { endBadge?: string },
+): string {
 	if (!bg) return line;
 	const curW = visibleWidth(line);
 	const effLine = curW > width ? truncateToWidth(line, width, "…") : line;
 	const effW = curW > width ? visibleWidth(effLine) : curW;
-	const padLen = Math.max(0, width - effW);
+	let padLen = Math.max(0, width - effW);
+	// 端徽（hover 指示符）画在底色右端 padding 区：挤占填充空格而不占内容列，
+	// 放不下（padding 为 0）就丢弃，保证行宽恒为 width、内容两态恒等。
+	let badge = "";
+	const endBadge = opts?.endBadge;
+	if (endBadge) {
+		const badgeW = visibleWidth(endBadge);
+		if (badgeW > 0 && badgeW <= padLen) {
+			padLen -= badgeW;
+			badge = endBadge;
+		}
+	}
 	const padding = " ".repeat(padLen);
 
 	const patched = effLine
 		.replace(/\x1b\[0?m/g, `\x1b[0m${bg}`)
 		.replace(/\x1b\[49m/g, bg);
 
-	return `${bg}${patched}${padding}${C.reset}`;
+	return `${bg}${patched}${padding}${badge}${C.reset}`;
 }
 
-function finishCard(lines: string[], isHovered: boolean, width: number): string[] {
+function finishCard(lines: string[], isHovered: boolean, width: number, endBadge?: string): string[] {
 	const flattenedLines: string[] = [];
 	for (const line of lines) {
 		if (line.includes("\n")) {
@@ -351,7 +367,7 @@ function finishCard(lines: string[], isHovered: boolean, width: number): string[
 		// 若先上色再截断，超宽行会被拍平成单行加 …，hover 前后状态不一致。
 		const wrapped = wrapTextWithAnsi(line, width);
 		for (const frag of wrapped) {
-			out.push(isHovered ? applyCardBackground(frag, C.toolCardBackground, width) : frag);
+			out.push(isHovered ? applyCardBackground(frag, C.toolCardBackground, width, { endBadge }) : frag);
 		}
 	}
 	out.push("");
@@ -430,7 +446,10 @@ export function formatToolCardLines(
 	const statusSuffix = status === "cancelled" ? " · 已取消" : status === "unknown" ? " · 结果未知" : status === "not_started" ? " · 未执行" : "";
 	const statusColor = isError ? C.error : isUnconfirmed ? C.warning : C.dim;
 	const elapsedColor = isHovered ? C.text : C.dim;
-	const hoverIndicator = isHovered ? (isExpanded ? ` ${C.dim}▴${C.reset}` : ` ${C.dim}▾${C.reset}`) : "";
+	// hover 指示符不拼进行内容：多出的可视列会让临界满宽标题行在 hover 态软换行
+	// 多出一行，打破「两态行数恒等」并误触发视口锚定。改画在底色右端 padding 区
+	//（applyCardBackground 的 endBadge），画不下就丢弃，内容与行数两态恒等。
+	const headerBadge = isHovered ? (isExpanded ? `${C.dim}▴${C.reset}` : `${C.dim}▾${C.reset}`) : undefined;
 
 	// 组装标题行：● Name(args) · 1.2s ▾
 	let titleContent = "";
@@ -443,7 +462,7 @@ export function formatToolCardLines(
 		titleContent = `${C.bold}${catColor}${toolDisplayName}${C.reset}`;
 	}
 
-	const headerSuffix = `${elapsedColor}${elapsedText}${C.reset}${statusSuffix ? `${statusColor}${statusSuffix}${C.reset}` : ""}${hoverIndicator}`;
+	const headerSuffix = `${elapsedColor}${elapsedText}${C.reset}${statusSuffix ? `${statusColor}${statusSuffix}${C.reset}` : ""}`;
 	const headerLine = `${iconStr}${titleContent}${headerSuffix}`;
 
 	// 4. 解析结果体 (Body lines)
@@ -461,7 +480,7 @@ export function formatToolCardLines(
 		const runMs = options.startedAt ? Math.max(0, now - options.startedAt) : elapsedMs;
 		const runLine = `${C.dim}${GUTTER_FIRST}Running… (${formatDuration(runMs)})${C.reset}`;
 		cardLines.push(runLine);
-		return finishCard(cardLines, isHovered, maxW);
+		return finishCard(cardLines, isHovered, maxW, headerBadge);
 	}
 
 	// 6. 检查是否为 Diff 视图
@@ -480,13 +499,13 @@ export function formatToolCardLines(
 		if (options.isNewestFailure) {
 			cardLines.push(`   ${C.subtle}⎿ Alt+T 查看轨迹${C.reset}`);
 		}
-		return finishCard(cardLines, isHovered, maxW);
+		return finishCard(cardLines, isHovered, maxW, headerBadge);
 	}
 
 	// 7. 处理执行失败或取消状态
 	if (obj && obj.cancelled) {
 		cardLines.push(`${C.yellow}${GUTTER_FIRST}⚠ 操作已取消${C.reset}`);
-		return finishCard(cardLines, isHovered, maxW);
+		return finishCard(cardLines, isHovered, maxW, headerBadge);
 	}
 
 	const rawError = isError
@@ -503,7 +522,7 @@ export function formatToolCardLines(
 		if (options.isNewestFailure) {
 			cardLines.push(`   ${C.subtle}⎿ Alt+T 查看轨迹${C.reset}`);
 		}
-		return finishCard(cardLines, isHovered, maxW);
+		return finishCard(cardLines, isHovered, maxW, headerBadge);
 	}
 
 	// 8. 正常输出体提取与格式化
@@ -604,6 +623,6 @@ export function formatToolCardLines(
 		cardLines.push(`   ${C.subtle}⎿ Alt+T 查看轨迹${C.reset}`);
 	}
 
-	return finishCard(cardLines, isHovered, maxW);
+	return finishCard(cardLines, isHovered, maxW, headerBadge);
 }
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+﻿import { describe, expect, it } from "vitest";
 import { ToolBroker, type Tool, type ToolExecutionContext } from "../src/tools/broker.js";
 import { formatToolCardLines } from "../src/ui/components/transcript/tool-view.js";
 
@@ -259,5 +259,19 @@ describe("hover 行数一致性（反抖动）", () => {
 		const plain = formatToolCardLines(base.name, "", 0, base.width, "running", base.params, { startedAt: Date.now() - 5000 });
 		const hovered = formatToolCardLines(base.name, "", 0, base.width, "running", base.params, { isHovered: true, startedAt: Date.now() - 5000 });
 		expect(hovered.length).toBe(plain.length);
+	});
+	it("标题行满宽时 hover 仍行数恒等（指示符画在底色 padding，不撑行）", () => {
+		// 回归背景：折叠态标题行可视宽度恰好顶满卡片宽时，旧实现把 ▴/▾
+		// 拼进行内容 → hover 态软换行多出一行 → 视口锚定被误触发，整帧错位。
+		const statusLine = `\x1b[2mTest Files\x1b[22m \x1b[31m1 failed\x1b[22m \x1b[32m42 passed\x1b[22m`;
+		const result = JSON.stringify({ stdout: statusLine, code: 0 });
+		// 逐渐缩短参数扫过满宽边界，确保命中「恰好 110/108/106…列」的临界样本
+		const cmd = "cd E:\\Uina\\Uina; npx vitest run 2>&1 | Select-String -Pattern 'FAIL|x' | Select-Object -First 5";
+		for (let cut = 0; cut <= 8; cut++) {
+			const argsText = cmd.slice(0, cmd.length - cut);
+			const plain = formatToolCardLines("Exec", result, 8900, 110, "succeeded", argsText, { isExpanded: false });
+			const hovered = formatToolCardLines("Exec", result, 8900, 110, "succeeded", argsText, { isExpanded: false, isHovered: true });
+			expect(hovered.length).toBe(plain.length);
+		}
 	});
 });
