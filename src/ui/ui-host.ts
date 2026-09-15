@@ -653,12 +653,6 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	/** 显示瞬态通知（输入框顶边框右侧，提交后清除）；供宿主事件（如 reload 完成）路由 */
-	showNotice(text: string): void {
-		this.inputLine.showNotice(text);
-		this.requestRender();
-	}
-
 	getScrollOffset(): number {
 		return this.scrollOffset;
 	}
@@ -1997,7 +1991,6 @@ export class UIHost implements UIHostContextPort {
 		// 不强制回底：视口主权归用户。在底部时 bottom-pinned 引擎自动跟随新内容；
 		// 在历史位置时 computeLayout 的锚定机制保持视口绝对行号不变。
 		this.activeSuggestions = null;
-		this.inputLine.clearTransientNotice();
 		this.inputLine.clear();
 
 		if (mode === "interrupt") {

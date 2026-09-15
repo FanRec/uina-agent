@@ -172,8 +172,6 @@ export class InputLine implements Component, Focusable {
 
 	// 外部状态注入
 	private topStatusHeader = "";
-	/** 通知消息：显示在顶边框右侧，提交新输入后清除 */
-	private transientNotice = "";
 	private modelName?: string;
 	private reasoningEffort?: string;
 	private usedTokens = 0;
@@ -215,15 +213,6 @@ export class InputLine implements Component, Focusable {
 
 	setStatusHeader(header: string): void {
 		this.topStatusHeader = header;
-	}
-
-	/** 显示瞬态通知（顶边框右侧，右对齐）；提交新输入时清除 */
-	showNotice(text: string): void {
-		this.transientNotice = text;
-	}
-
-	clearTransientNotice(): void {
-		this.transientNotice = "";
 	}
 
 	setContextStats(
@@ -1035,18 +1024,12 @@ export class InputLine implements Component, Focusable {
 		}
 
 		let topLine = "";
-		if (topLabel || this.transientNotice) {
-			// 左侧：状态头；右侧：瞬态通知（右对齐贴边框）。样式一致（C.text），通知无 emoji。
-			const notifyW = this.transientNotice ? visibleWidth(this.transientNotice) + 2 : 0;
-			const maxHeaderW = Math.max(8, boxWidth - notifyW - 8);
-			const safeHeader = topLabel ? truncateToWidth(topLabel, maxHeaderW) : "";
-			const leftW = safeHeader ? 3 + visibleWidth(safeHeader) + 1 : 0;
-			const safeNotice = this.transientNotice ? truncateToWidth(this.transientNotice, Math.max(1, boxWidth - leftW - 8)) : "";
-			const rightW = safeNotice ? visibleWidth(safeNotice) + 1 : 0;
-			const midLen = Math.max(1, boxWidth - leftW - rightW - 4);
-			const leftPart = safeHeader ? `─ ${C.text}${safeHeader} ${borderCol}` : "";
-			const rightPart = safeNotice ? `${C.text}${safeNotice} ${borderCol}` : "";
-			topLine = `${borderCol}╭${leftPart}${"─".repeat(midLen)}${rightPart}╮${C.reset}`;
+		if (topLabel) {
+			const maxHeaderW = Math.max(8, boxWidth - 8);
+			const safeHeader = truncateToWidth(topLabel, maxHeaderW);
+			const baseW = 3 + visibleWidth(safeHeader) + 1 + 1;
+			const rightLen = Math.max(1, boxWidth - baseW);
+			topLine = `${borderCol}╭─ ${C.text}${safeHeader} ${borderCol}${"─".repeat(rightLen)}╮${C.reset}`;
 		} else {
 			const fillLen = Math.max(1, boxWidth - 2);
 			topLine = `${borderCol}╭${"─".repeat(fillLen)}╮${C.reset}`;

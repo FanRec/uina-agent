@@ -299,8 +299,8 @@ export class InteractiveTUI {
 				break;
 
 			case "notice":
-				// 瞬态通知走输入框顶边框右侧（提交后清除）；错误仍留 transcript 可回看
-				this.host.showNotice(m.text);
+				this.host.transcript.addNotice(m.text);
+				this.host.requestRender();
 				break;
 
 			case "error":
