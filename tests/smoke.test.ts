@@ -164,6 +164,42 @@ describe("Subject", () => {
 		expect(lastUser(normal.calls[0])).toBe("steer\n\nfollow");
 	});
 
+	it("轮中被消费的排队项必须为每条产生 turn_start（TUI 用户消息渲染依赖它）", async () => {
+		let release: (() => void) | undefined;
+		const model: Model = {
+			id: "queue-render-test",
+			name: "queue-render-test",
+			providerId: "mock",
+			contextWindow: 128_000,
+		};
+		const stream: ModelStreamFn = async (_m: Model, req: ModelRequest, onDelta: (delta: StreamDelta) => void, signal?: AbortSignal) => {
+			const input = lastUser(req);
+			if (input === "first") {
+				await new Promise<void>((resolve, reject) => {
+					release = resolve;
+					signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+				});
+			}
+			onDelta({ kind: "text", text: input });
+			onDelta({ kind: "finish", reason: "stop" });
+		};
+		const subject = new Subject(model, stream, new ToolBroker());
+		const turnTexts: string[] = [];
+		subject.subscribe((event) => {
+			if (event.type === "turn_start") turnTexts.push(event.userText);
+		});
+
+		subject.pushInput("first");
+		await wait(20);
+		subject.steer("steer-A");
+		subject.followUp("follow-B");
+		release?.();
+		await idle(subject);
+
+		// 每条被消费的排队内容都应开启一个新可见回合；text 为空串（非本轮用户消息）不算数
+		expect(turnTexts.filter((t) => t.length > 0)).toEqual(["first", "steer-A", "follow-B"]);
+	});
+
 	it("does not execute malformed tool arguments", async () => {
 		const broker = new ToolBroker();
 		let executed = false;

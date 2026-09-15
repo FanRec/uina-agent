@@ -934,6 +934,12 @@ export class Subject {
 		}
 		this.notifyQueueChanged();
 		for (const item of items) {
+			// 用户输入的排队项被消费时开一个可见回合（与首条消费路径的 turn_start 对齐）：
+			// 否则 TUI 只收到 queue 事件清空待办区，transcript 没有任何它被采纳的痕迹。
+			// runtime 来源项投影为 display:false 的 custom 消息，不开可见回合。
+			if (item.source?.kind !== "runtime") {
+				await this.dispatch({ type: "turn_start", turnNumber: ++this.turnSeq, userText: item.text, images: item.images });
+			}
 			await this.consumeQueueItem(item);
 		}
 		return true;
