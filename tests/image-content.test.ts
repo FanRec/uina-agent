@@ -230,8 +230,8 @@ it("default filesystem tools read ranges, preserve full text and identify image 
  const cwd = await mkdtemp(join(tmpdir(), "uina-files-")); directories.push(cwd);
  const host = await UinaHost.create({ cwd, model: mockModel() }); hosts.push(host); await host.start();
  expect((await host.runToolDirect("write_file", {path:"notes.txt", text:"one\ntwo\nthree\n"})).status).toBe("succeeded");
- expect((await host.runToolDirect("read_file", {path:"notes.txt"})).result).toBe("one\ntwo\nthree\n");
- expect((await host.runToolDirect("read_file", {path:"notes.txt",offset:2,limit:1})).result).toBe("two");
+ expect((await host.runToolDirect("read_file", {path:"notes.txt"})).result).toBe("one\ntwo\nthree"); // 结尾换行不产生幽灵空行
+ expect(String((await host.runToolDirect("read_file", {path:"notes.txt",offset:2,limit:1})).result)).toContain("two"); // 分页提示可存在，但内容在
  expect((await host.runToolDirect("read_file", {path:"notes.txt",offset:0})).status).not.toBe("succeeded");
  expect((await host.runToolDirect("read_file", {path:"absent"})).status).toBe("failed");
  await writeFile(join(cwd,"image.bin"),Buffer.from(png,"base64"));

@@ -329,7 +329,7 @@ git diff | uina "总结这次改动"          # 管道内容作为上下文
 
 | 工具 | 说明 |
 | --- | --- |
-| `read_file` | 读 UTF-8 文本，可按 `offset` / `limit` 读片段 |
+| `read_file` | 读 UTF-8 文本，可按 `offset` / `limit` 读片段；输出上限 2000 行 / 50KB（先命中者生效），截断时附续读 offset；二进制文件拒读 |
 | `write_file` | 覆盖写入文件 |
 | `edit_file` | 精确文本替换：`edits[]` 中每个 `oldText` 必须在文件中唯一，一次调用可携带多个不相交编辑；自动适配 LF/CRLF 行尾并保留 BOM |
 | `grep_file` | 按正则或字面量搜索文件内容，尊重 .gitignore；上限 100 条匹配 / 50KB 输出，超出给出收窄提示 |

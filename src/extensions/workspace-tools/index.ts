@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { activateEditFile } from "./edit-file.js";
 import { activateFindFile } from "./find-file.js";
 import { activateGrepFile } from "./grep-file.js";
+import { formatSize, looksBinary, READ_MAX_BYTES, READ_MAX_LINE_CHARS, READ_MAX_LINES, truncateReadLines } from "./read-truncate.js";
 import { resolve } from "node:path";
 import type { ExtensionAPI, ImageContent } from "../index.js";
 
@@ -16,15 +17,34 @@ export default function activate(api: ExtensionAPI): void {
 	api.registerTool({
 		def: {
 			type: "function",
-			function: { name: "read_file", description: "Read a UTF-8 text file. Optional offset (1-based line) and limit select a line range; omitted reads the entire file.", parameters: { ...fileSchema, properties: { ...fileSchema.properties, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1 } } } },
+			function: { name: "read_file", description: "Read a UTF-8 text file. Optional offset (1-based line) and limit select a line range; omitted reads the entire file. Output is capped at 2000 lines / 50KB (whichever is hit first) with a continuation notice; oversized single lines are clipped. Use offset to page through large files.", parameters: { ...fileSchema, properties: { ...fileSchema.properties, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1 } } } },
 		},
 		run: async (args, signal) => {
 			const file = resolve(api.cwd, String(args.path));
-			const text = await readFile(file, { encoding: "utf8", signal });
-			const lines = text.split("\n");
+			const buffer = await readFile(file, { signal });
+			if (looksBinary(buffer)) throw new Error(`疑似二进制文件，read_file 拒绝读为文本：${file}（用 read_image 或 exec_command 处理）`);
+			const lines = buffer.toString("utf8").split("\n");
+			if (lines.at(-1) === "") lines.pop(); // 结尾换行不产生幽灵空行
 			const offset = Number(args.offset ?? 1);
-			const selected = lines.slice(offset - 1, args.limit === undefined ? undefined : offset - 1 + Number(args.limit));
-			return { result: selected.join("\n"), status: "succeeded", details: { path: file, lines: selected.length, totalLines: lines.length, offset } };
+			const start = offset - 1;
+			if (start >= lines.length) {
+				throw new Error(`offset ${offset} 超出文件末尾（共 ${lines.length} 行）`);
+			}
+			const end = args.limit === undefined ? lines.length : Math.min(start + Number(args.limit), lines.length);
+			const selected = lines.slice(start, end);
+			const trunc = truncateReadLines(selected);
+			let text = trunc.text;
+			if (trunc.firstLineExceedsLimit) {
+				text += `\n\n[第 ${offset} 行超过 ${formatSize(READ_MAX_BYTES)} 上限，仅显示前 ${READ_MAX_LINE_CHARS} 字符。用 exec_command: Get-Content ${args.path} | Select-Object -First 1 等命令按字节取片段。]`;
+			} else if (trunc.truncated) {
+				const nextOffset = start + trunc.outputLines + 1;
+				const by = trunc.truncatedBy === "lines" ? `${READ_MAX_LINES} 行上限` : `${formatSize(READ_MAX_BYTES)} 上限`;
+				text += `\n\n[已截断：显示第 ${offset}-${start + trunc.outputLines} 行（命中${by}），文件共 ${lines.length} 行。用 offset=${nextOffset} 继续读。]`;
+			} else if (end < lines.length) {
+				// 用户指定 limit 读完了所选段但文件还有后续：同样给出续读提示。
+				text += `\n\n[文件共 ${lines.length} 行，当前显示到第 ${end} 行。用 offset=${end + 1} 继续读。]`;
+			}
+			return { result: text, status: "succeeded", details: { path: file, lines: trunc.outputLines, totalLines: lines.length, offset, truncated: trunc.truncated, truncatedBy: trunc.truncatedBy, ...(trunc.firstLineExceedsLimit ? { firstLineExceedsLimit: true } : {}) } };
 		},
 	});
 	api.registerTool({

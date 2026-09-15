@@ -101,7 +101,7 @@ registerToolRenderer 与 registerMarkdownTransformer 只控制显示。widget、
 
 ## 默认文件与图片工具
 
-`builtin:workspace-tools` 随 Host 启动；无需加载原 workspace-tools 示例。`read_file` 默认完整读取 UTF-8，可传 `offset`（从 1 开始）与 `limit` 选择行；目前仍在内存读取完整文件。`write_file` 覆盖 UTF-8 文件，父目录须存在。`read_image` 按文件签名识别 PNG/JPEG/GIF/WebP，传递原始字节；签名识别不等于完整图片解码校验。路径相对 `api.cwd` 解析，绝对路径可用。
+`builtin:workspace-tools` 随 Host 启动；无需加载原 workspace-tools 示例。`read_file` 读 UTF-8 文本，可传 `offset`（从 1 开始）与 `limit` 选择行；输出上限 2000 行 / 50KB（先命中者生效），截断时在尾部附续读 offset 提示，单行超限则截前 2000 字符并给 exec_command 兕底；前 8KB 含 NUL 字节按二进制拒读。`write_file` 覆盖 UTF-8 文件，父目录须存在。`read_image` 按文件签名识别 PNG/JPEG/GIF/WebP，传递原始字节；签名识别不等于完整图片解码校验。路径相对 `api.cwd` 解析，绝对路径可用。
 
 Host 可用 `workspaceTools: false` 关闭这组默认能力。项目扩展通过 `registerTool(..., { replace: true })` 与 `registerToolRenderer(..., { replace: true })` 分别替换行为和展示，释放注册后恢复前一个存活实现。
 
