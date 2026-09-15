@@ -431,14 +431,37 @@ export class UinaHost {
 
 	async reloadExtensions(): Promise<void> {
 		this.assertAccepting();
+		// 忙时不阻塞命令派发：立即回执受理，等本轮（及队列）排空后后台执行。
+		if (this.subject.isBusy()) {
+			this.emit({ type: "notice", text: "已受理 /reload：本轮结束后自动重新加载项目扩展。" });
+			void this.subject.waitForIdle()
+				.then(() => this.runReload())
+				.catch(() => undefined);
+			return;
+		}
+		await this.runReload();
+	}
+
+	private async runReload(): Promise<void> {
 		this.reloading++;
 		try {
 			await this.subject.waitForIdle();
 			await Promise.allSettled([...this.directRuns.values()]);
 			if (this.state.stopping) throw new Error("宿主正在关闭");
 			await this.extensionHost.reload();
-			this.emit({ type: "notice", text: "项目扩展已重新加载。" });
+			this.emit({ type: "notice", text: this.reloadSummaryNotice() });
 		} finally { this.reloading--; }
+	}
+
+	/** 重载完成通知：项目扩展激活数 + 失败摘要，让 reload 结果可观测而非一句空话。 */
+	private reloadSummaryNotice(): string {
+		const project = this.extensionHost.diagnostics().filter((d) => d.id.startsWith("project:"));
+		if (project.length === 0) return "项目扩展已重新加载：当前没有项目扩展。";
+		const active = project.filter((d) => d.status === "active").length;
+		const failed = project.filter((d) => d.status === "failed");
+		let text = `项目扩展已重新加载：${active} 个扩展激活`;
+		if (failed.length > 0) text += `，失败 ${failed.length}：${failed.map((f) => f.path).join("、")}`;
+		return text + "。";
 	}
 
 	/** 关闭主体：等待活动结束、释放扩展、杀掉工具留下的分离子进程、关闭会话。 */

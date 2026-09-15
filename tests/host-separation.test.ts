@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { UinaHost } from "../src/host/host.js";
 import type { HostEvent } from "../src/host/events.js";
-import { scriptedProvider } from "./helpers/mock-provider.js";
+import { scriptedProvider, createMockProvider, mockModel } from "./helpers/mock-provider.js";
 import type { ModelRequest, StreamDelta } from "../src/core/types.js";
 
 /** 一个普通项目扩展：注册一个工具。扩展装载也一并被这条路径验证。 */
@@ -136,5 +136,75 @@ describe("RC-1 宿主与消费者分离", () => {
 		expect(second.restoredEntries.length).toBeGreaterThan(0);
 		expect(second.historyCount()).toBe(beforeDispose);
 		await second.dispose();
+	});
+});
+describe("/reload 反馈", () => {
+	async function makeReloadHost(): Promise<{ host: UinaHost; cwd: string }> {
+		const cwd = await mkdtemp(join(tmpdir(), "uina-host-"));
+		dirs.push(cwd);
+		await mkdir(join(cwd, ".uina", "extensions"), { recursive: true });
+		await writeFile(join(cwd, ".uina", "extensions", "probe.mjs"), PROJECT_EXTENSION, "utf8");
+		const probe = probeProvider();
+		const host = await UinaHost.create({ cwd, provider: probe, model: probe.model });
+		await host.start();
+		return { host, cwd };
+	}
+
+	it("完成通知带扩展摘要：成功数量与失败数量", async () => {
+		const { host, cwd } = await makeReloadHost();
+		await writeFile(join(cwd, ".uina", "extensions", "bad.mjs"), "export default function () { throw new Error('broken'); }", "utf8");
+		const events: HostEvent[] = [];
+		host.subscribe((event) => events.push(event));
+
+		await host.reloadExtensions();
+
+		const notices = events.filter((e) => e.type === "notice").map((e) => (e as { text: string }).text);
+		const summary = notices.find((text) => text.includes("项目扩展已重新加载"));
+		expect(summary).toBeDefined();
+		expect(summary!).toContain("1 个扩展");
+		expect(summary!).toContain("失败 1");
+		expect(summary!).toContain("bad.mjs");
+		await host.dispose();
+	});
+
+	it("忙时提交 /reload：本轮结束后才执行，且受理即有回执", async () => {
+		// 门控 provider：回合卡在 stream 内部，直到测试放行，确保 dispatch 时宿主确实在忙
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const cwd = await mkdtemp(join(tmpdir(), "uina-host-"));
+		dirs.push(cwd);
+		await mkdir(join(cwd, ".uina", "extensions"), { recursive: true });
+		await writeFile(join(cwd, ".uina", "extensions", "probe.mjs"), PROJECT_EXTENSION, "utf8");
+		const gatedProvider = createMockProvider(async (_m, _req, onDelta) => {
+			await gate;
+			onDelta({ kind: "text", text: "完成" });
+			onDelta({ kind: "finish", reason: "stop" });
+		});
+		const host = await UinaHost.create({ cwd, provider: gatedProvider, model: mockModel() });
+		await host.start();
+		const events: HostEvent[] = [];
+		host.subscribe((event) => events.push(event));
+
+		// 让宿主进入忙碌状态（不 await：submitText 会等回合结束，门控下它会一直阻塞）
+		const turnSettled = host.submitText("开始", "direct").catch(() => undefined);
+		for (let i = 0; i < 50 && !host.isBusy(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(host.isBusy()).toBe(true);
+
+		await host.commands.dispatch("/reload");
+
+		// 受理回执立即出现，且此刻 reload 尚未执行（仍在忙）
+		const earlyNotices = events.filter((e) => e.type === "notice").map((e) => (e as { text: string }).text);
+		expect(earlyNotices.some((text) => text.includes("本轮结束后") && text.includes("重新加载"))).toBe(true);
+		expect(events.some((e) => e.type === "notice" && (e as { text: string }).text.includes("已重新加载"))).toBe(false);
+		expect(host.isBusy()).toBe(true);
+
+		// 放行回合 → reload 自动执行，带摘要的成功通知出现
+		release();
+		await turnSettled;
+		await host.waitForIdle();
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		const notices = events.filter((e) => e.type === "notice").map((e) => (e as { text: string }).text);
+		expect(notices.some((text) => text.includes("项目扩展已重新加载"))).toBe(true);
+		await host.dispose();
 	});
 });
