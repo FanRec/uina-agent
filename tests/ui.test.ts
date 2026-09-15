@@ -791,6 +791,31 @@ describe("UI Components & Visual Rendering", () => {
 		expect(lines[lines.length - 1]).toContain("┘");
 	});
 
+	it("MarkdownTable: 长单元格默认软换行显示全文，不用 … 截断", async () => {
+		const { parseMarkdownTable, formatMarkdownTableLines } = await import(
+			"../src/ui/components/primitives/markdown-table.js"
+		);
+
+		const longText = "这是一段特别长的判断文本用来验证表格单元格在列宽不足时会换行而不是被省略号截断掉";
+		const rawTable = [
+			"| 方案 | 判断 |",
+			"| --- | --- |",
+			`| 方案甲 | 短判断 |`,
+			`| 方案乙 | ${longText} |`,
+		];
+		const parsed = parseMarkdownTable(rawTable);
+		expect(parsed).not.toBeNull();
+
+		const lines = formatMarkdownTableLines(parsed!, 70);
+		const stripped = lines.map(stripAnsi).join("\n");
+
+		// 全文可见：长文本软换行为多物理行，每个片段都完整出现，无省略号
+		const mid = Math.floor(longText.length / 2);
+		expect(stripped).toContain(longText.slice(0, mid));
+		expect(stripped.replace(/[│\s]/g, "")).toContain(longText.slice(mid).replace(/\s/g, ""));
+		expect(stripped).not.toContain("…");
+	});
+
 	it("SuggestionCard 格式化渲染与像素级对齐", async () => {
 		const { formatSuggestionCardLines } = await import("../src/ui/components/editor/suggestions.js");
 
@@ -3021,6 +3046,37 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(strippedExpanded.some((l) => l.endsWith("   d"))).toBe(true);
 				expect(strippedExpanded.some((l) => l.endsWith("   e"))).toBe(true);
 				expect(strippedExpanded.some((l) => l.includes("(ctrl+o to expand)"))).toBe(false);
+			});
+
+			it("展开态显示完整命令：超 120 字符的单行命令与多行命令全文可见", () => {
+				const longCmd = "cd E:\\Uina\\Uina; npx vitest run tests/ui.test.ts -t \"划词复制输入框中的粘贴芯片\" 2>&1 | Select-String -Pattern \"Tests \" | Select-Object -First 4";
+				expect(longCmd.length).toBeGreaterThan(120);
+				const expanded = formatToolCardLines(
+					"run_command",
+					"",
+					0,
+					200,
+					"failed",
+					{ command: longCmd },
+					{ isExpanded: true },
+				);
+				const stripped = expanded.map(stripAnsi).join("\n");
+				// 完整命令（含尾部）在展开态可见
+				expect(stripped).toContain("Select-Object -First 4");
+
+				// 多行命令：展开态下第 2..N 行也要可见（修复假出口）
+				const multi = formatToolCardLines(
+					"run_command",
+					"",
+					0,
+					200,
+					"succeeded",
+					{ command: "first-line-cmd\nsecond-line-cmd\nthird-line-cmd" },
+					{ isExpanded: true },
+				);
+				const strippedMulti = multi.map(stripAnsi).join("\n");
+				expect(strippedMulti).toContain("second-line-cmd");
+				expect(strippedMulti).toContain("third-line-cmd");
 			});
 
 			it("内嵌 Diff 视图与双模折叠", () => {

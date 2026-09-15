@@ -2,7 +2,7 @@
  * Markdown 原生表格渲染组件（复刻 dsh-TUI 与 Claude Code MarkdownTable 视觉与排版规范）。
  */
 
-import { C, visibleWidth, truncateToWidth, getContentBoxWidth } from "../../core/utils.js";
+import { C, visibleWidth, truncateToWidth, getContentBoxWidth, wrapTextWithAnsi } from "../../core/utils.js";
 
 export type ColumnAlign = "left" | "center" | "right";
 
@@ -96,6 +96,19 @@ function alignCellText(text: string, width: number, align: ColumnAlign): string 
 }
 
 /**
+ * 单元格渲染：文本在列宽内软换行（信息零丢失），返回物理行片段；
+ * 每个片段已按 align 对齐并补齐到列宽。极窄列（<4）降级为截断。
+ */
+function renderCellFragments(text: string, w: number, align: ColumnAlign): string[] {
+	if (w < 4) {
+		// 极窄列无法换行（每行只搾下 3 字符），降级为截断保可读性
+		return [alignCellText(truncateToWidth(text, w, "…"), w, align)];
+	}
+	const wrapped = wrapTextWithAnsi(text, w);
+	return wrapped.map((frag) => alignCellText(frag, w, align));
+}
+
+/**
  * 渲染 Markdown 表格为终端行
  */
 export function formatMarkdownTableLines(table: ParsedTable, terminalWidth = 80): string[] {
@@ -138,13 +151,18 @@ export function formatMarkdownTableLines(table: ParsedTable, terminalWidth = 80)
 		}
 	}
 
-	// 2. 按比例收缩或扩展列宽
+	// 2. 按比例收缩或扩展列宽（下限 8：保证最短的可读列；总预算不够时才回退纯比例）
 	const naturalSum = naturalColWidths.reduce((a, b) => a + b, 0);
+	const MIN_COL = 8;
 	const colWidths = naturalColWidths.map((w) => {
 		if (naturalSum <= actualBudget) {
 			return w;
 		}
-		return Math.max(3, Math.floor((w / naturalSum) * actualBudget));
+		const squeezed = Math.floor((w / naturalSum) * actualBudget);
+		if (colCount * MIN_COL <= actualBudget) {
+			return Math.max(MIN_COL, squeezed);
+		}
+		return Math.max(3, squeezed); // 列数过多：仍回退比例压缩，交给极窄降级
 	});
 
 	// 3. 构建边框行
@@ -161,28 +179,39 @@ export function formatMarkdownTableLines(table: ParsedTable, terminalWidth = 80)
 	const output: string[] = [topLine];
 
 	// 表头
-	const headerCells = table.headers.map((h, i) => {
+	const headerFragments = table.headers.map((h, i) => {
 		const w = colWidths[i]!;
 		const align = table.alignments[i] ?? "left";
-		const truncated = truncateToWidth(h, w, "…");
-		const padded = alignCellText(truncated, w, align);
-		return ` ${C.bold}${C.cyan}${padded}${C.reset} `;
+		return renderCellFragments(h, w, align).map((frag) => ` ${C.bold}${C.cyan}${frag}${C.reset} `);
 	});
-	output.push(`${borderCol}│${C.reset}${headerCells.join(`${borderCol}│${C.reset}`)}${borderCol}│${C.reset}`);
+	emitRowFragments(headerFragments);
 	output.push(midLine);
 
 	// 数据行
 	for (const row of table.rows) {
-		const cells = row.map((val, i) => {
+		const rowFragments = row.map((val, i) => {
 			const w = colWidths[i]!;
 			const align = table.alignments[i] ?? "left";
-			const truncated = truncateToWidth(val, w, "…");
-			const padded = alignCellText(truncated, w, align);
-			return ` ${padded} `;
+			return renderCellFragments(val, w, align).map((frag) => ` ${frag} `);
 		});
-		output.push(`${borderCol}│${C.reset}${cells.join(`${borderCol}│${C.reset}`)}${borderCol}│${C.reset}`);
+		emitRowFragments(rowFragments);
 	}
 
 	output.push(botLine);
 	return output;
+
+	/** 多物理行行片段组装：短列补空行，各列片段垂直堆叠进边框 */
+	function emitRowFragments(cells: string[][]): void {
+		const height = Math.max(1, ...cells.map((frags) => frags.length));
+		for (let r = 0; r < height; r++) {
+			// 空缺物理行用同宽空格占位，保持列边界连续
+			const paddedCells = cells.map((frags, i) => {
+				const frag = frags[r];
+				if (frag !== undefined) return frag;
+				const w = colWidths[i]!;
+				return ` ${" ".repeat(w)} `;
+			});
+			output.push(`${borderCol}│${C.reset}${paddedCells.join(`${borderCol}│${C.reset}`)}${borderCol}│${C.reset}`);
+		}
+	}
 }

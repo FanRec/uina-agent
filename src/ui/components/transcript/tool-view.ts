@@ -27,7 +27,7 @@ import type { ToolResultStatus } from "../../../core/types.js";
  *    - 鼠标悬停感知：卡片底色微亮、折叠角标 ▾/▴ 浮现、折叠提示文字由暗淡升格为明亮。
  */
 
-import { C, truncateToWidth, visibleWidth } from "../../core/utils.js";
+import { C, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
 import { formatDiffCardLines } from "./diff-view.js";
 
@@ -350,7 +350,8 @@ function finishCard(lines: string[], isHovered: boolean, width: number): string[
 		if (isHovered) {
 			out.push(applyCardBackground(line, C.toolCardBackground, width));
 		} else {
-			out.push(truncateToWidth(line, width, "…"));
+			// 软换行而非截断：超宽行（如展开后的完整命令）在卡片宽度内折行，信息零丢失
+			out.push(...wrapTextWithAnsi(line, width));
 		}
 	}
 	out.push("");
@@ -403,19 +404,17 @@ export function formatToolCardLines(
 	let displayArg = argSummary;
 	let argFoldHint = "";
 
-	if (argIsMultiLine) {
+	if (argIsMultiLine && !isExpanded) {
 		const folded = foldTerminalCommand(argSummary);
 		if (folded) {
 			displayArg = folded.first;
-			argFoldHint = isExpanded
-				? ` ${C.dim}… +${folded.hidden} lines${C.reset}`
-				: ` ${C.dim}… +${folded.hidden} lines (ctrl+o to expand)${C.reset}`;
+			argFoldHint = ` ${C.dim}… +${folded.hidden} lines (ctrl+o to expand)${C.reset}`;
 		}
 	}
 
-	// 单行内最大参数长度限制（防止巨型参数撑爆终端 wrap 计算）
+	// 单行参数超长截断仅在收起态生效；展开态全文交由 finishCard 软换行（信息零丢失）
 	const HEADER_ARGS_BUDGET = 120;
-	if (displayArg.length > HEADER_ARGS_BUDGET) {
+	if (!isExpanded && displayArg.length > HEADER_ARGS_BUDGET) {
 		displayArg = `${displayArg.slice(0, HEADER_ARGS_BUDGET - 1)}…`;
 	}
 
