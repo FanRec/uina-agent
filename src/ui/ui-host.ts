@@ -29,6 +29,7 @@ import { BannerComponent } from "./components/primitives/banner.js";
 import {
 	TranscriptContainer,
 	type CompactionRecord,
+	type LineModel,
 } from "./components/transcript/index.js";
 import {
 	ActivityLineComponent,
@@ -102,6 +103,8 @@ interface FrameLayout {
 	bannerLines: string[];
 	bannerCount: number;
 	transcriptLines: string[];
+	/** 帧内单一行模型（转录区原始引用，仅当帧有效）。 */
+	frameModel: LineModel;
 	permanentLines: string[];
 	totalPerm: number;
 	safeW: number;
@@ -1111,7 +1114,9 @@ export class UIHost implements UIHostContextPort {
 		const safeW = Math.max(20, innerW - 1);
 		const transcriptContentW = Math.max(18, safeW - 2);
 		const bannerLines = this.headerContainer.render(transcriptContentW).map((l) => (l ? `${margin}${l}` : ""));
-		const transcriptLines = this.transcript.render(transcriptContentW).map((l) => (l ? `${margin}${l}` : ""));
+		// 帧内单一行模型：一次 ensureModel，行序列与四个热区索引全部同源（旧写法各取各的，assemble 重复 5 次）
+		const frameModel = this.transcript.getFrameModel(transcriptContentW);
+		const transcriptLines = frameModel.lines.map((l) => (l ? `${margin}${l}` : ""));
 		const permanentLines = [...bannerLines, ...transcriptLines];
 		const totalPerm = permanentLines.length;
 		const maxScroll = Math.max(0, totalPerm - transcriptH);
@@ -1135,7 +1140,7 @@ export class UIHost implements UIHostContextPort {
 			belowLines, belowH, maxAboveH, overlayLines, suggestionLines, pendingLines,
 			aboveLines, aboveH, bannerLines, bannerCount: bannerLines.length,
 			transcriptLines, permanentLines, totalPerm, safeW, transcriptContentW,
-			transcriptH, maxScroll, effScroll, scrollStart, visibleTranscript,
+			transcriptH, maxScroll, effScroll, scrollStart, visibleTranscript, frameModel,
 		};
 	}
 
@@ -1148,12 +1153,12 @@ export class UIHost implements UIHostContextPort {
 		const {
 			width, height, margin, inputWidth, inputLines, inputH,
 			belowLines, belowH, aboveLines, aboveH, bannerCount, transcriptContentW,
-			safeW, permanentLines, totalPerm, maxScroll, scrollStart, visibleTranscript,
+			safeW, permanentLines, totalPerm, maxScroll, scrollStart, visibleTranscript, frameModel,
 		} = layout;
 
 		// 7.5. 右侧时间线导航轨（TimelineRail，对标图一）合成
 		const timelineTurns = this.transcript.getTimelineTurns();
-		const turnStartByUid = this.transcript.getTurnStartLinesByUid(transcriptContentW);
+		const turnStartByUid = frameModel.turnStartByUid;
 
 		// Navigation semantics: ▲ targets the nearest turn above the viewport,
 		// ▼ the nearest turn below it. Comparing an absolute line against the
@@ -1269,7 +1274,7 @@ export class UIHost implements UIHostContextPort {
 		const interactiveTargets: InteractiveTarget[] = [];
 
 		// (1) 注册思考折叠行交互（按思考块全域行注册）
-		const thinkingLocs = this.transcript.getThinkingLineIndices(transcriptContentW);
+		const thinkingLocs = frameModel.thinkingLocations;
 		for (const loc of thinkingLocs) {
 			const thinkingRows = Math.max(1, loc.lineCount ?? 1);
 			for (let r = 0; r < thinkingRows; r++) {
@@ -1295,7 +1300,7 @@ export class UIHost implements UIHostContextPort {
 		}
 
 		// (1.5) 注册工具卡片折叠交互（Tool Cards：按整张卡片块全域注册）
-		const toolLocs = this.transcript.getToolLineIndices(transcriptContentW);
+		const toolLocs = frameModel.toolLocations;
 		for (const loc of toolLocs) {
 			const cardContentRows = Math.max(1, loc.lineCount - 1);
 			for (let r = 0; r < cardContentRows; r++) {
@@ -1319,7 +1324,7 @@ export class UIHost implements UIHostContextPort {
 		}
 
 		// (1.8) 注册会话压缩卡片折叠交互（Compaction Cards：整张卡片全域点击展开/收起）
-		const compactionLocs = this.transcript.getCompactionLineIndices(transcriptContentW);
+		const compactionLocs = frameModel.compactionLocations;
 		for (const loc of compactionLocs) {
 			const compactionRows = Math.max(1, loc.lineCount);
 			for (let r = 0; r < compactionRows; r++) {

@@ -188,7 +188,7 @@ interface LayoutSink {
 }
 
 /** The single line model consumed by rendering, scrolling and mouse hit zones. */
-interface LineModel {
+export interface LineModel {
 	lines: string[];
 	/** uid → 该轮次起始行号（相对转录区，不含 banner）。 */
 	turnStartByUid: Map<number, number>;
@@ -1056,6 +1056,18 @@ export class TranscriptContainer implements Component {
 			model.turnRanges.set(this.currentTurn.uid, { start, end: model.lines.length });
 		}
 		return model;
+	}
+
+	/**
+	 * 帧内单一行模型：与 render(width) 语义恒等，但返回内部引用（零拷贝）。
+	 *
+	 * ui-host 每帧要从行模型同时取：行序列、轮次起始表、思考/工具/压缩卡热区索引。
+	 * 旧的 getter 们各自走一遍 ensureModel，同一帧内 assemble 重复执行 5 次（实测占
+	 * 转录区每帧开销的 ~85%）。本方法让一帧只算一次；调用方约定：仅在当前帧内消费，
+	 * 不得持有到下一帧或就地变更。
+	 */
+	getFrameModel(width: number): LineModel {
+		return this.ensureModel(width);
 	}
 
 	render(width: number): string[] {

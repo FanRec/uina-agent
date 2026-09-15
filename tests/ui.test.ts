@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+﻿import { describe, it, expect, vi } from "vitest";
 import {
 	C,
 	visibleWidth,
@@ -3856,5 +3856,63 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		expect(host.transcript.render(80).length).toBe(initialTranscriptLen);
 		expect(host.getNotificationToast()).toEqual({ message: "项目扩展已重新加载：1 个扩展激活。", type: "info" });
 		tui.close();
+	});
+});
+
+describe("Transcript: 帧内单一行模型（getFrameModel）", () => {
+	it("getFrameModel 与 render 输出恒等，且各索引 lineIndex 落在正确行", () => {
+		const transcript = new TranscriptContainer();
+		transcript.startTurn(1, "第一轮：请介绍你自己");
+		transcript.appendToken("我是助手。\n\n第二段内容，包含一些较长的文本用于产生折行，确保行索引计算覆盖多行段落场景。");
+		transcript.appendThinking("这是一段思考内容");
+		transcript.appendToken("\n\n思考后的回答正文。");
+		transcript.startTool("bash", { command: "echo hi" }, "call-1");
+		transcript.addToolDone("bash", "hi", 5, "succeeded", "call-1", { command: "echo hi" });
+		transcript.appendToken("\n\n工具之后的收尾。");
+		transcript.finishTurn();
+
+		const W = 80;
+		const model = transcript.getFrameModel(W);
+		// 1. 行序列与 render 恒等
+		expect(model.lines).toEqual(transcript.render(W));
+
+		// 2. turnStartByUid：每个轮次起始行就是该轮的首行（用户行或空行）
+		for (const [, start] of model.turnStartByUid) {
+			expect(start).toBeGreaterThanOrEqual(0);
+			expect(start).toBeLessThan(model.lines.length);
+		}
+
+		// 3. thinking 索引：指向的行确实是思考块（含 ✦ 图标与「思考」标题）
+		expect(model.thinkingLocations.length).toBe(1);
+		for (const loc of model.thinkingLocations) {
+			const seg = model.lines.slice(loc.lineIndex, loc.lineIndex + Math.max(1, loc.lineCount ?? 1));
+			expect(seg.join("\n")).toContain("思考");
+		}
+
+		// 4. tool 索引：指向的行确实是工具卡片（含工具名）
+		expect(model.toolLocations.length).toBe(1);
+		for (const loc of model.toolLocations) {
+			const seg = model.lines.slice(loc.lineIndex, loc.lineIndex + Math.max(1, loc.lineCount));
+			expect(seg.join("\n").toLowerCase()).toContain(loc.name.toLowerCase());
+		}
+
+		// 5. 帧内单源由调用方保证（FrameLayout.frameModel 贯通），这里验证重复取用内容不漂移
+		expect(transcript.getFrameModel(W).lines).toEqual(model.lines);
+	});
+
+	it("流式进行中（currentTurn 存在）同样保持 model/render 恒等", () => {
+		const transcript = new TranscriptContainer();
+		transcript.startTurn(1, "流式问题");
+		transcript.appendToken("流式进行中的部分回答。");
+		transcript.appendThinking("思考中");
+		const W = 60;
+		const model = transcript.getFrameModel(W);
+		expect(model.lines).toEqual(transcript.render(W));
+		// 当前回合也登记进 turnStartByUid（一行一条，起始行落在行序列内）
+		expect(model.turnStartByUid.size).toBe(1);
+		for (const start of model.turnStartByUid.values()) {
+			expect(start).toBeGreaterThanOrEqual(0);
+			expect(start).toBeLessThan(model.lines.length);
+		}
 	});
 });

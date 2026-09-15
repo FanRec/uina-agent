@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+﻿import { describe, expect, it, vi } from "vitest";
 import { UIHost } from "../src/ui/ui-host.js";
 import { TranscriptContainer } from "../src/ui/components/transcript/index.js";
 import { stripAnsi } from "../src/ui/core/utils.js";
@@ -442,7 +442,7 @@ describe("Incremental layout invalidation", () => {
 		const { host } = scrollableHost();
 		host.requestRender();
 		await settle();
-		const spy = vi.spyOn(host.transcript, "render");
+		const spy = vi.spyOn(host.transcript, "getFrameModel");
 		spy.mockClear();
 		host.preserveScrollAnchor(() => { host.transcript.toggleTool("call-1", 77); }, 0);
 		expect(spy.mock.calls.length).toBe(1);
