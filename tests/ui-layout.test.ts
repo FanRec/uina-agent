@@ -493,3 +493,73 @@ describe("C: overlay frame composition", () => {
 		expect(lines.filter((line) => visibleWidth(line) > 148)).toEqual([]);
 	});
 });
+describe("B1: 视口主权（提交不拽视口 + 视口指示器交互）", () => {
+	it("提交新输入不强制回底：正在查看历史时视口位置保持", async () => {
+		const { host } = scrollableHost();
+		host.requestRender();
+		await settle();
+		host.scrollToTurn(3);
+		host.requestRender();
+		await settle();
+		const before = host.getScrollOffset();
+		expect(before).toBeGreaterThan(0);
+
+		const inner = host as unknown as { handleUserSubmitMode(text: string, mode: "direct" | "steer"): void };
+		inner.handleUserSubmitMode("继续", "direct");
+		host.requestRender();
+		await settle();
+
+		expect(host.getScrollOffset()).toBeGreaterThan(0);
+	});
+
+	it("视口指示器无 emoji，用品牌雾蓝并告知点击出口", async () => {
+		const { host, frames } = scrollableHost();
+		host.requestRender();
+		await settle();
+		host.scrollToTurn(3);
+		host.requestRender();
+		await settle();
+
+		const rows = plainFrame(frames.at(-1)!);
+		const labelRow = rows.find((row) => row.includes("[视口"));
+		expect(labelRow).toBeDefined();
+		expect(labelRow!).toContain("点击回到最新");
+		// 全帧无 emoji 与旧文案
+		expect(frames.at(-1)).not.toContain("📜");
+		expect(frames.at(-1)).not.toContain("PageDn");
+		// 静止态用品牌雾蓝（#7DA1DE）
+		expect(frames.at(-1)).toContain("\x1b[38;2;125;161;222m[视口");
+	});
+
+	it("hover 指示器高亮，点击回到最新", async () => {
+		const { host, frames } = scrollableHost();
+		host.requestRender();
+		await settle();
+		host.scrollToTurn(3);
+		host.requestRender();
+		await settle();
+		expect(host.getScrollOffset()).toBeGreaterThan(0);
+
+		const rows = plainFrame(frames.at(-1)!);
+		const labelRowIdx = rows.findIndex((row) => row.includes("[视口"));
+		expect(labelRowIdx).toBeGreaterThan(0);
+		const sgrRow = labelRowIdx + 1; // SGR 1 基
+
+		// hover：无按键移动（btn=35）——热区第 0 列（1 基 col=1），避开 ❯ 提示符的 cursor 列
+		host.handleInput(`\x1b[<35;1;${sgrRow}M`);
+		host.requestRender();
+		await settle();
+		expect(frames.at(-1)).toContain("\x1b[1m\x1b[38;2;125;161;222m[视口");
+
+		// 点击：按下 + 抬起（热区第 0 列）
+		host.handleInput(`\x1b[<0;1;${sgrRow}M`);
+		await settle();
+		host.handleInput(`\x1b[<0;1;${sgrRow}m`);
+		host.requestRender();
+		await settle();
+
+		expect(host.getScrollOffset()).toBe(0);
+		const after = plainFrame(frames.at(-1)!);
+		expect(after.some((row) => row.includes("[视口"))).toBe(false);
+	});
+});

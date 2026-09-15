@@ -190,6 +190,8 @@ export class UIHost implements UIHostContextPort {
 	private lastMaxScroll = 0;
 	private autoScrollTimer: NodeJS.Timeout | null = null;
 	private autoScrollDirection: "up" | "down" | null = null;
+	/** 视口离底指示器是否被 hover（驱动加粗高亮） */
+	private viewportStatusHovered = false;
 	/** Geometry of the most recently rendered frame; reused by scroll/anchor paths. */
 	private lastLayout: FrameLayout | null = null;
 	private exitPending = false;
@@ -1028,7 +1030,11 @@ export class UIHost implements UIHostContextPort {
 		// lag is unavoidable (and previously the header never rendered at all).
 		const scrolled = this.lastMaxScroll > 0 && this.scrollOffset > 0;
 		const percent = scrolled ? Math.round(((this.lastMaxScroll - Math.min(this.scrollOffset, this.lastMaxScroll)) / this.lastMaxScroll) * 100) : 100;
-		this.inputLine.setStatusHeader(scrolled ? `${C.yellow}[📜 视口 ${percent}% (PageDn到底)]${C.reset} ${statusHeader}` : statusHeader);
+		// 视口离底指示器：品牌雾蓝（非告警语义），文案告知点击出口；hover 高亮由 viewport-status 热区分派
+		const viewportLabel = scrolled
+			? `${this.viewportStatusHovered ? C.bold : ""}${C.claude}[视口 ${percent}% · 点击回到最新]${C.reset}`
+			: "";
+		this.inputLine.setStatusHeader(viewportLabel ? `${viewportLabel} ${statusHeader}` : statusHeader);
 		this.inputLine.setCwd(this.cwd);
 		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual, this.contextSegments);
 		this.inputLine.setReasoningEffort(this.reasoningEffort);
@@ -1416,6 +1422,20 @@ export class UIHost implements UIHostContextPort {
 			colEnd: Math.max(0, Math.min(inputWidth - 1, progressHotspotW - 1)),
 		});
 
+		// (3.5) 视口离底指示器热区：仅离底时存在（顶部边框行），点击回底，hover 高亮
+		if (this.lastMaxScroll > 0 && this.scrollOffset > 0) {
+			const labelLen = visibleWidth(`[视口 ${Math.round(((this.lastMaxScroll - Math.min(this.scrollOffset, this.lastMaxScroll)) / this.lastMaxScroll) * 100)}% · 点击回到最新]`);
+			interactiveTargets.push({
+				id: encodeHoverTarget({ kind: "viewport-status" }),
+				row: inputStartRow,
+				colStart: 0,
+				colEnd: Math.max(0, labelLen),
+				onClick: () => {
+					this.scrollToBottom();
+				},
+			});
+		}
+
 		// (4) 注册输入框点击交互，点击聚焦或定位光标
 		if (inputH >= 3) {
 			for (let r = 1; r < inputH - 1; r++) {
@@ -1552,6 +1572,16 @@ export class UIHost implements UIHostContextPort {
 						}
 
 						if (this.contextBar.setHovered(target?.kind === "context-progress")) {
+							anyNeedRender = true;
+						}
+
+						if (target?.kind === "viewport-status") {
+							if (!this.viewportStatusHovered) {
+								this.viewportStatusHovered = true;
+								anyNeedRender = true;
+							}
+						} else if (this.viewportStatusHovered) {
+							this.viewportStatusHovered = false;
 							anyNeedRender = true;
 						}
 
@@ -1958,8 +1988,8 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	private handleUserSubmitMode(text: string, mode: "direct" | "steer" | "followUp" | "interrupt"): void {
-		this.scrollOffset = 0;
-		this.lastTotalPerm = 0;
+		// 不强制回底：视口主权归用户。在底部时 bottom-pinned 引擎自动跟随新内容；
+		// 在历史位置时 computeLayout 的锚定机制保持视口绝对行号不变。
 		this.activeSuggestions = null;
 		this.inputLine.clear();
 

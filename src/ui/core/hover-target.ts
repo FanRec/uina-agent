@@ -22,7 +22,8 @@ export type HoverTarget =
 	| { kind: "rail-down" }
 	| { kind: "scrollbar-row"; row: number }
 	| { kind: "help-overlay-row"; row: number }
-	| { kind: "context-progress" };
+	| { kind: "context-progress" }
+	| { kind: "viewport-status" };
 
 export function encodeHoverTarget(target: HoverTarget): string {
 	switch (target.kind) {
@@ -44,6 +45,8 @@ export function encodeHoverTarget(target: HoverTarget): string {
 			return "rail-down";
 		case "context-progress":
 			return "context-progress";
+		case "viewport-status":
+			return "viewport-status";
 		default: {
 			// 穷尽性检查：新增 kind 却忘了在这里编码，会在此编译失败。
 			const _exhaustive: never = target;
@@ -67,6 +70,7 @@ export function decodeHoverTarget(id: string): HoverTarget | null {
 	if (id === "rail-up") return { kind: "rail-up" };
 	if (id === "rail-down") return { kind: "rail-down" };
 	if (id === "context-progress") return { kind: "context-progress" };
+	if (id === "viewport-status") return { kind: "viewport-status" };
 
 	if (id.startsWith("thinking:")) {
 		const uid = intOrNull(id.slice("thinking:".length));

@@ -1082,13 +1082,14 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 			stdinCallback!("\x1b[<65;20;10M");
 			expect(tui.host.getScrollOffset()).toBe(0);
 
-			// 5. 模拟滚上去后发送新消息，视口自动归位
+			// 5. 模拟滚上去后发送新消息，视口保持用户位置（不强制回底）；
+			// 新内容追加由 computeLayout 锚定机制补偿，offset 随 totalPerm 同步增长。
 			stdinCallback!("\x1b[<64;20;10M");
 			expect(tui.host.getScrollOffset()).toBe(3);
 			stdinCallback!("h");
 			stdinCallback!("i");
 			stdinCallback!("\r");
-			expect(tui.host.getScrollOffset()).toBe(0);
+			expect(tui.host.getScrollOffset()).toBeGreaterThan(0);
 
 			tui.close();
 		} finally {
