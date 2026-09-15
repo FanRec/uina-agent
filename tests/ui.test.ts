@@ -2912,8 +2912,10 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					expect(visibleWidth(lines[i]!)).toBe(60);
 					expect(lines[i]!).toContain(C.toolCardBackground);
 				}
-				// 卡片末尾空行作为边距留白，绝不带底色
-				expect(lines[lines.length - 1]).toBe("");
+				// 卡片末尾空行作为呼吸边距，hover 时同样铺底（否则卡下方出现
+				// 默认背景黑条，视觉上像卡片被切断）；非 hover 时仍为裸空行
+				expect(stripAnsi(lines[lines.length - 1]!)).toBe(" ".repeat(60));
+				expect(lines[lines.length - 1]!).toContain(C.toolCardBackground);
 			});
 
 			it("formatDuration 精确处理毫秒与秒数", () => {

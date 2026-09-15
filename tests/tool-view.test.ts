@@ -279,7 +279,6 @@ describe("hover 行数一致性（反抖动）", () => {
 		// 回归背景：badge 自带 SGR reset 会把底色抹掉，其后的 padding 漏成
 		// 默认背景洞（用户截图：Tests 行中部一段没高亮）。锁定不变量：
 		// hover 态每行从首列到末列底色状态机始终开启。
-		const BG = "\x1b[48;2;36;43;58m";
 		const scanHoles = (row: string): number => {
 			let bgOn = false, holes = 0;
 			const re = /\x1b\[[0-9;]*m|[\s\S]/gu;

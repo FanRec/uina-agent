@@ -365,15 +365,21 @@ function finishCard(lines: string[], isHovered: boolean, width: number, endBadge
 	}
 
 	const out: string[] = [];
-	for (const line of flattenedLines) {
+	for (let i = 0; i < flattenedLines.length; i++) {
 		// 软换行先于底色：hover 只改样式不改内容，两态行数恒等（反抖动）。
 		// 若先上色再截断，超宽行会被拍平成单行加 …，hover 前后状态不一致。
-		const wrapped = wrapTextWithAnsi(line, width);
-		for (const frag of wrapped) {
-			out.push(isHovered ? applyCardBackground(frag, C.toolCardBackground, width, { endBadge }) : frag);
+		const wrapped = wrapTextWithAnsi(flattenedLines[i]!, width);
+		for (let j = 0; j < wrapped.length; j++) {
+			// 端徽只画在首行（标题行）、紧跟内容之后（padding 起始处），
+			// 复刻旧版「▾ 紧贴 elapsed」的视觉锚点；其余行裸底色。
+			const badge = i === 0 && j === 0 ? endBadge : undefined;
+			const frag = wrapped[j]!;
+			out.push(isHovered ? applyCardBackground(frag, C.toolCardBackground, width, { endBadge: badge }) : frag);
 		}
 	}
-	out.push("");
+	// 卡片呼吸边距空行：hover 时也吃底色，否则卡片与下方内容之间出现一条
+	// 默认背景黑条（视觉上属于卡片却被切开）。非 hover 保持裸空行。
+	out.push(isHovered ? applyCardBackground("", C.toolCardBackground, width) : "");
 	return out;
 }
 
