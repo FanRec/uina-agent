@@ -156,12 +156,16 @@ export class MouseSelectionTracker {
 
 	/**
 	 * 解析终端输入流中的 SGR 鼠标事件（CSI < btn;col;row M/m）
+	 *
+	 * copyTransform：可选的区域级文本变换（在提取之后、回调之前调用），
+	 * 用于把屏上显示形态（如粘贴芯片）还原为逻辑内容。tracker 不感知具体语义。
 	 */
 	handleInput(
 		data: string,
 		rows: readonly string[],
 		onCopy?: (text: string) => void,
 		permanentLines?: readonly string[],
+		copyTransform?: (regionId: string, text: string) => string,
 	): MouseEventResult {
 		const match = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
 		if (!match) return { handled: false };
@@ -274,10 +278,10 @@ export class MouseSelectionTracker {
 			}
 
 			// 如果判定为拖拽选择（Drag Selection），优先从全量永久内容提取，支持跨屏无损拷贝
-			if (this.hasSelection() && onCopy) {
+			if (this.hasSelection() && onCopy && this.activeRegion) {
 				const selectedText = (permanentLines ? this.extractSelectedContentText(permanentLines) : "") || this.extractSelectedText(rows);
 				if (selectedText && selectedText.trim()) {
-					onCopy(selectedText);
+					onCopy(copyTransform ? copyTransform(this.activeRegion.id, selectedText) : selectedText);
 				}
 			}
 			this.clear();

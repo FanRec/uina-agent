@@ -1517,6 +1517,8 @@ export class UIHost implements UIHostContextPort {
 					this.lastRenderedRows,
 					this.onCopyOnSelect,
 					this.lastPermanentLines,
+					// 输入框区域的芯片是视图压缩，复制时还原为逻辑内容；转录区原样透传
+					(regionId, text) => (regionId === "input" ? this.inputLine.expandForCopy(text) : text),
 				);
 				if (isRelease) {
 					this.stopAutoScroll();

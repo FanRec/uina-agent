@@ -1338,6 +1338,54 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		expect(copiedText).toBe("World");
 	});
 
+	it("划词复制输入框中的粘贴芯片时，剪贴板拿到展开后的原始内容而非芯片标记", async () => {
+		const { MouseSelectionTracker } = await import("../src/ui/core/mouse-selection.js");
+		const tracker = new MouseSelectionTracker();
+
+		// 模拟输入框渲染帧：芯片在屏上就是标记原文（渲染层不做隐藏）
+		const screenRows = [
+			"│ 检查这段代码 [已粘贴 #1 +20行] 谢谢 │",
+		];
+		// 区域判定：整个屏幕第 0 行视作 input 区域（colStart=0, colEnd=行尾）
+		tracker.setSelectableRegions([{ id: "input", startRow: 0, endRow: 0, colStart: 0, colEnd: 60 }]);
+
+		let copied = "";
+		const onCopy = (text: string) => { copied = text; };
+		// 与 ui-host 接线同构：变换按区域分派，芯片语义不在 tracker 里
+		const copyTransform = (regionId: string, text: string) =>
+			regionId === "input"
+				? text.replace(/\[已粘贴 #(\d+) (\+\d+行|\d+字)\]/g, (_, id) => (id === "1" ? "const a = 1;\nconst b = 2;" : ""))
+				: text;
+
+		tracker.handleInput("\x1b[<0;1;1M", screenRows, onCopy, undefined, copyTransform);
+		tracker.handleInput("\x1b[<32;40;1M", screenRows, onCopy, undefined, copyTransform);
+		tracker.handleInput("\x1b[<0;40;1m", screenRows, onCopy, undefined, copyTransform);
+
+		expect(copied).toContain("const a = 1;");
+		expect(copied).toContain("const b = 2;");
+		expect(copied).not.toContain("[已粘贴");
+	});
+
+	it("expandForCopy 屏上芯片形态（无 #id 带 ▾）按 spec 一致 + id 升序消解为原始内容", async () => {
+		const { InputLine } = await import("../src/ui/components/editor/input-line.js");
+		const box = new InputLine();
+
+		// 两次真实粘贴注册：#1 是多行、#2 是单行长文本（>80 字符才会折叠成芯片）
+		box.insertText("alpha\nbeta\ngamma");
+		const longSingle = "x".repeat(90);
+		box.insertText(longSingle);
+
+		// 模拟从帧缓冲抠出的文本：屏上形态无 #id、带 ▾
+		const extracted = "检查 [已粘贴 +3行 ▾] 与 [已粘贴 90字 ▾]";
+		const expanded = box.expandForCopy(extracted);
+
+		expect(expanded).toBe("检查 alpha\nbeta\ngamma 与 " + longSingle);
+		// 逻辑形态同样可展开
+		expect(box.expandForCopy("前缀 [已粘贴 #2 90字]")).toBe("前缀 " + longSingle);
+		// 无匹配 spec 的芯片（如已删除）不回填
+		expect(box.expandForCopy("孤 [已粘贴 +9行 ▾]")).toBe("孤 ");
+	});
+
 	it("MouseSelectionTracker noSelect 保护：智能剥离 ● 符号与输入框外框 │", async () => {
 		const { MouseSelectionTracker } = await import("../src/ui/core/mouse-selection.js");
 		const tracker = new MouseSelectionTracker();

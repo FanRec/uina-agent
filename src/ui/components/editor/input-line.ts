@@ -273,6 +273,36 @@ export class InputLine implements Component, Focusable {
 		});
 	}
 
+	/** 划词复制用：屏上抠出的文本里芯片 token 是唯一确定形态，整 token 命中才回填原文；
+	 * 选中芯片一半（几何选区切半）保持原样，不做选区吸附。
+	 * 两种形态：逻辑标记 `[已粘贴 #N spec]`（getRawText）与屏上显示 `[已粘贴 spec ▾]`
+	 * （帧缓冲提取，不含 id）；屏上形态按 spec 一致 + id 升序消解，与插入顺序一致。 */
+	expandForCopy(content: string): string {
+		const usedIds = new Set<number>();
+		const resolveBySpec = (spec: string): string => {
+			for (const id of [...this.pastes.keys()].sort((a, b) => a - b)) {
+				if (usedIds.has(id)) continue;
+				const raw = this.pastes.get(id)!;
+				const lines = raw.split("\n");
+				const rawSpec = lines.length > 1 ? `+${lines.length}行` : `${raw.length}字`;
+				if (rawSpec === spec) {
+					usedIds.add(id);
+					return raw;
+				}
+			}
+			return ""; // 无匹配 id（如已被删除的芯片），不回填
+		};
+		// 屏上形态（无 id，带 ▾）
+		let result = content.replace(/\[已粘贴 (\+\d+行|\d+字) ▾\]/g, (_, spec) => resolveBySpec(spec));
+		// 逻辑形态（含 #id）
+		result = result.replace(PASTE_MARKER_REGEX, (_, idStr) => {
+			const id = Number(idStr);
+			if (!usedIds.has(id)) usedIds.add(id);
+			return this.pastes.get(id) ?? "";
+		});
+		return result;
+	}
+
 	getText(): string {
 		return this.expandMarkers(this.text);
 	}
