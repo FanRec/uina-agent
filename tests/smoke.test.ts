@@ -545,3 +545,42 @@ describe("shell output", () => {
 		expect(invalid.snapshot().content).toBe("\uFFFD\uFFFD");
 	});
 });
+
+
+describe("模型切换语义", () => {
+	it("工作中切模型后，steer 续跑使用新模型与思考档（下一轮语义）", async () => {
+		const { Subject } = await import("../src/agent/loop.js");
+		const { ToolBroker } = await import("../src/tools/broker.js");
+		type M = import("../src/core/types.js").Model;
+		const modelA: M = { id: "model-a", name: "model-a", providerId: "mock", contextWindow: 128_000, thinkingLevels: ["off", "high"] };
+		const modelB: M = { id: "model-b", name: "model-b", providerId: "mock", contextWindow: 128_000, thinkingLevels: ["off", "high"] };
+		const calls: Array<{ model: string; level?: string; user?: string }> = [];
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const stream: import("../src/core/types.js").ModelStreamFn = async (m, req, onDelta) => {
+			const lastMsg = [...req.messages].reverse().find((msg) => msg.role === "user");
+			const userText = typeof lastMsg?.content === "string" ? lastMsg.content : "";
+			calls.push({ model: m.id, level: req.thinkingLevel, user: userText });
+			if (userText === "first") {
+				await gate;
+				// 模拟首请求挂起期间被打断的情形由 interrupt 侧处理；此处被释放后正常收尾
+			}
+			onDelta({ kind: "text", text: userText });
+			onDelta({ kind: "finish", reason: "stop" });
+		};
+		const subject = new Subject(modelA, stream, new ToolBroker(), { thinkingLevel: "high" });
+		const run = subject.pushInput("first");
+		await new Promise((r) => setTimeout(r, 30));
+		// 工作中：切模型 + 关思考
+		await subject.setModel(modelB);
+		subject.setThinkingLevel("off");
+		release();
+		// steer 续跑（旧行为：仍用 modelA + high；期望：modelB + off）
+		await subject.steer("second");
+		await run;
+		await subject.waitForIdle();
+		expect(calls.length).toBe(2);
+		expect(calls[0]).toMatchObject({ model: "model-a", level: "high" });
+		expect(calls[1]).toMatchObject({ model: "model-b", level: "off", user: "second" });
+	});
+});

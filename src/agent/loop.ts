@@ -818,9 +818,9 @@ export class Subject {
 			if (streamResult.finishReason !== "tool_calls") {
 				await this.recordTerminalAssistant(streamResult);
 				if (await applyRewind()) continue;
-				if (await this.drainQueuedInputs("steer")) continue;
-				if (await this.drainQueuedInputs("followUp")) continue;
-				this.notifyQueueChanged();
+				// steer/followUp 续跑不在这里内联消费：decide 的 model 参数是回合开始的快照，
+				// 在此 drain 会让切模型/改思考档后的排队输入仍用旧口径（假切换）。
+				// 交还 runTurn 收尾的 resumeQueued 链路 —— startRun 会重新取 this.model 快照。
 				return;
 			}
 
