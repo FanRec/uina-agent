@@ -755,13 +755,14 @@ export class ModelRegistry {
 			return group;
 		};
 
-		// 1. Configured providers & default models
+		// 1. Configured providers & default models。展示 id 统一为 providerId/modelId 复合键：
+		// 同名模型跨 provider 时选择器能区分当前项，onPick 回传的键可被 resolve() 精确解析。
 		if (this.config) {
 			for (const [providerId, conf] of Object.entries(this.config.providers)) {
 				const group = ensureGroup(providerId);
 				const modelId = conf.model;
 				group.models.set(modelId, {
-					id: modelId,
+					id: `${providerId}/${modelId}`,
 					name: modelId,
 					description: `默认配置模型 · ${conf.type ?? "openai-compatible"}`,
 					provider: providerId,
@@ -774,7 +775,7 @@ export class ModelRegistry {
 			const group = ensureGroup(model.providerId);
 			if (!group.models.has(model.id)) {
 				group.models.set(model.id, {
-					id: model.id,
+					id: `${model.providerId}/${model.id}`,
 					name: model.name || model.id,
 					description: `${model.providerId} 注册模型`,
 					provider: model.providerId,

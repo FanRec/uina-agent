@@ -646,6 +646,45 @@ describe("UI Components & Visual Rendering", () => {
 		expect(closed).toBe(true);
 	});
 
+	it("同 id 模型跨 provider 时 ✓ 只标当前项，选中项回传复合键", () => {
+		const groups = [
+			{
+				id: "providerA",
+				name: "providerA",
+				description: "A",
+				models: [{ id: "providerA/gpt-x", name: "gpt-x", description: "A 注册模型", provider: "providerA" }],
+			},
+			{
+				id: "providerB",
+				name: "providerB",
+				description: "B",
+				models: [{ id: "providerB/gpt-x", name: "gpt-x", description: "B 注册模型", provider: "providerB" }],
+			},
+		];
+
+		// 当前模型是 providerA/gpt-x：只有 providerA 组打 ✓
+		const picker = new ModelPicker("providerA/gpt-x", groups);
+		const groupLines = stripAnsi(picker.render(80).join("\n"));
+		expect(groupLines).toContain("[providerA]");
+		expect(groupLines).toContain("✓");
+		const checkedGroupBlock = groupLines.split("\n").filter((l) => l.includes("✓"));
+		expect(checkedGroupBlock).toHaveLength(1);
+		expect(checkedGroupBlock[0]).toContain("[providerA]");
+
+		// 下钻 providerB，其 gpt-x 不得打 ✓（防假切换）
+		picker.handleInput("\x1b[B");
+		picker.handleInput("\r");
+		const modelLines = stripAnsi(picker.render(80).join("\n"));
+		expect(modelLines).toContain("gpt-x");
+		expect(modelLines).not.toContain("✓");
+
+		// 确认选择后回传复合键，精确指向 providerB
+		let picked = "";
+		picker.onPick = (id) => { picked = id; };
+		picker.handleInput("\r");
+		expect(picked).toBe("providerB/gpt-x");
+	});
+
 	it("Shift+Tab 只请求 runtime 切换 thinking，不直接改写 UI 权威状态", () => {
 		const host = new UIHost({ modelName: "model", thinkingLevels: ["off", "high"], thinkingLevel: "off" });
 		const requested = vi.fn();

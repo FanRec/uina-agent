@@ -44,8 +44,9 @@ export class ModelPicker implements Component, Focusable {
 		}
 	}
 
+	// 调用方传入并回传的都是 providerId/modelId 复合键（groups() 统一产出），精确比较即可
 	private isCurrent(m: ModelItem): boolean {
-		return m.id === this.currentModelId || `${m.provider}/${m.id}` === this.currentModelId;
+		return m.id === this.currentModelId;
 	}
 
 	navigateUp(): void {

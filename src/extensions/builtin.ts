@@ -142,7 +142,10 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			handler: async (arg) => {
 				if (!arg) {
 					if (ui) {
-						ui.openModelPicker(services.subject.getModel().name, modelGroups(services.models), (name) => selectModel(name));
+						// 传复合键 providerId/modelId：同 id 模型跨 provider 时选择器才能唯一标定当前项；
+					// onPick 回传复合键，resolve() 精确命中对应 provider（避免假切换到首个同名模型）。
+					const current = services.subject.getModel();
+					ui.openModelPicker(`${current.providerId}/${current.id}`, modelGroups(services.models), (name) => selectModel(name));
 					}
 					return;
 				}

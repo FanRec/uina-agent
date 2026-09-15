@@ -199,11 +199,11 @@ describe("Pi-aligned Model and Provider Decoupling", () => {
 		expect(grps[0]!.id).toBe("deepseek");
 		expect(grps[0]!.name).toBe("deepseek");
 		expect(grps[0]!.models).toHaveLength(1);
-		expect(grps[0]!.models[0]!.id).toBe("deepseek-v4-flash");
+		expect(grps[0]!.models[0]!.id).toBe("deepseek/deepseek-v4-flash");
 
 		const choices = registry.choices();
 		expect(choices).toHaveLength(1);
-		expect(choices[0]).toEqual({ id: "deepseek-v4-flash", name: "deepseek-v4-flash" });
+		expect(choices[0]).toEqual({ id: "deepseek/deepseek-v4-flash", name: "deepseek-v4-flash" });
 	});
 });
 
