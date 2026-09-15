@@ -1552,9 +1552,10 @@ export class UIHost implements UIHostContextPort {
 						this.stopAutoScroll();
 					}
 
-					if (res.hoverTargetId != null) {
-						// 热区协议集中到 hover-target.ts 编解码；此处只做「解出的 kind -> 该谁高亮」的分派。
-						const target = decodeHoverTarget(res.hoverTargetId);
+					if (res.hoverTargetId !== undefined) {
+						// 注意 null 与 undefined 之别：null = 鼠标已离开所有热区（必须走分派清除旧 hover）；
+						// undefined = 本事件不携带 hover 信息。用 != null 会让移出事件被挡在门外，hover 永不熄灭。
+						const target = decodeHoverTarget(res.hoverTargetId ?? "");
 
 						const hoveredThinkingUid = target?.kind === "thinking" ? target.uid : null;
 						if (this.transcript.setHoveredThinkingUid(hoveredThinkingUid)) {
@@ -1587,11 +1588,11 @@ export class UIHost implements UIHostContextPort {
 
 						if (target?.kind === "rail-tick") {
 							this.timelineRail.setHoverTurnUid(target.turnUid);
-							const hit = this.mouseTracker.getTarget(res.hoverTargetId);
+							const hit = this.mouseTracker.getTarget(res.hoverTargetId ?? "");
 							if (hit) this.timelineRail.setHover(hit.row);
 							anyNeedRender = true;
 						} else if (target?.kind === "rail-up" || target?.kind === "rail-down") {
-							const hit = this.mouseTracker.getTarget(res.hoverTargetId);
+							const hit = this.mouseTracker.getTarget(res.hoverTargetId ?? "");
 							if (hit) this.timelineRail.setHover(hit.row);
 							anyNeedRender = true;
 						} else if (target?.kind === "scrollbar-row") {
