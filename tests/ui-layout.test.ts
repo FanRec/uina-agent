@@ -563,3 +563,37 @@ describe("B1: 视口主权（提交不拽视口 + 视口指示器交互）", () 
 		expect(after.some((row) => row.includes("[视口"))).toBe(false);
 	});
 });
+
+describe("B1: 通知上边框右侧", () => {
+	it("showNotice 渲染在输入框顶边框右侧，右对齐", async () => {
+		const { host, frames } = scrollableHost();
+		host.requestRender();
+		await settle();
+
+		const inner = host as unknown as { showNotice(text: string): void };
+		inner.showNotice("项目扩展已重新加载。");
+		host.requestRender();
+		await settle();
+
+		const rows = plainFrame(frames.at(-1)!).map(stripAnsi);
+		const topRow = rows.find((row) => row.includes("╭") && row.includes("项目扩展已重新加载"));
+		expect(topRow).toBeDefined();
+		// 右对齐：标签靠近右边框 ╮
+		expect(topRow!.indexOf("项目扩展")).toBeGreaterThan(topRow!.length - 30);
+	});
+
+	it("提交新输入后通知清除", async () => {
+		const { host, frames } = scrollableHost();
+		host.requestRender();
+		await settle();
+
+		const inner = host as unknown as { showNotice(text: string): void; handleUserSubmitMode(text: string, mode: "direct"): void };
+		inner.showNotice("项目扩展已重新加载。");
+		inner.handleUserSubmitMode("下一条", "direct");
+		host.requestRender();
+		await settle();
+
+		const rows = plainFrame(frames.at(-1)!).map(stripAnsi);
+		expect(rows.some((row) => row.includes("项目扩展已重新加载"))).toBe(false);
+	});
+});
