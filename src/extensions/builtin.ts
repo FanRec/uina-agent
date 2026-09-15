@@ -170,7 +170,8 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			ui?.setThinkingLevels?.(model.thinkingLevels);
 			ui?.setReasoningEffort?.(model.thinkingLevels?.length ? services.subject.getThinkingLevel() : undefined);
 			refreshUsageMeter();
-			pi.ui.notify(`已切换至模型: ${model.name}`);
+			// 诚实化：回合内模型是快照，工作中切换要到下一个请求批次才生效
+			pi.ui.notify(services.subject.isBusy?.() ? `已切换至模型: ${model.name}（当前回合结束后生效）` : `已切换至模型: ${model.name}`);
 		};
 
 		pi.on("model_select", () => {
@@ -210,7 +211,7 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 
 		pi.on("thinking_level_select", (e) => {
 			ui?.setReasoningEffort?.(services.subject.getModel().thinkingLevels?.includes(e.level) ? e.level : undefined);
-			pi.ui.notify(`思考等级: ${e.level}`, "info", 2000);
+			pi.ui.notify(services.subject.isBusy?.() ? `思考等级: ${e.level}（当前回合结束后生效）` : `思考等级: ${e.level}`, "info", 2000);
 		});
 
 		pi.registerCommand({
