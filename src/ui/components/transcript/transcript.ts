@@ -220,6 +220,7 @@ export class TranscriptContainer implements Component {
 	invalidate(): void {
 		this.settledBlocks = null;
 		this.hoveredBlockCache.clear();
+		this.currentParagraphCache.clear();
 	}
 
 	/** Rebuild only one settled turn's block; the rest of the cache stays valid. */
@@ -843,22 +844,93 @@ export class TranscriptContainer implements Component {
 		return lines;
 	}
 
+	/**
+	 * 助手文本渲染的段落级缓存层。
+	 *
+	 * 每帧对当前回合的累积全文重跑 markdown 管线是流式长文卡顿的根因（实测 40KB
+	 * 单帧 2.8ms、100KB 7.4ms）。切块策略与旧全文管线逐行同构：
+	 *
+	 * - 单空行（围栏内除外）是切块分隔符，本身产出一个 "" 行 —— 与全文管线对
+	 *   空行的处理（rawLine 为空 → push("")）一致；
+	 * - 每个文本 item 的末尾恒补一个 "" 行（旧实现 883 行 formatted.push("")），
+	 *   由 formatAssistantMarkdown 而非块内完成；
+	 * - 围栏（``` ）内部的空行不切块、也照原文进入块内容；
+	 * - 非尾块永不增长，行数组直接命中缓存（键 = width + 块原文）；仅尾块每帧
+	 *   重排，成本 O(增量)。
+	 *
+	 * 正确性前提：transformMarkdown 与 sanitizeRenderText 逐块应用等价于全文应用
+	 * ——内置实现逐字符、无跨行状态；streaming 标志按块传递。● 前缀是轮次粒度
+	 * （本轮首个文本 item 的首行），在拼接阶段注入，不进缓存。
+	 */
+	private currentParagraphCache = new Map<string, string[]>();
+
+	/** 围栏感知切块：块内含行内容，不含分隔空行；分隔空行数量另计。 */
+	private splitAssistantBlocks(text: string): Array<{ block: string; blankAfter: number }> {
+		const parts: Array<{ block: string; blankAfter: number }> = [];
+		const lines = text.split("\n");
+		let block: string[] = [];
+		let inFence = false;
+		const flush = () => {
+			if (block.length > 0) parts.push({ block: block.join("\n"), blankAfter: 0 });
+			block = [];
+		};
+		for (const line of lines) {
+			if (!inFence && /^\s*```/.test(line)) inFence = true;
+			else if (inFence && /^\s*```/.test(line)) inFence = false;
+			if (!inFence && line === "") {
+				flush();
+				if (parts.length > 0) parts[parts.length - 1]!.blankAfter++;
+			} else {
+				block.push(line);
+			}
+		}
+		flush();
+		return parts;
+	}
+
 	private formatAssistantMarkdown(md: string, width: number, isFirstParagraph = true, streaming = false): string[] {
-  md = this.transformMarkdown(md, "assistant", width, streaming);
-		md = sanitizeRenderText(md);
-		if (!md) return [];
+		const parts = this.splitAssistantBlocks(md);
 		const contentBudget = Math.max(20, width - 2);
-		const rawLines = formatFullMarkdown(md, contentBudget);
 		const formatted: string[] = [];
 		let isFirst = isFirstParagraph;
+
+		for (const { block, blankAfter } of parts) {
+			const cacheKey = `${width}:${block}`;
+			let blockLines = this.currentParagraphCache.get(cacheKey);
+			if (!blockLines) {
+				blockLines = this.formatAssistantBlock(block, contentBudget, streaming);
+				if (this.currentParagraphCache.size >= 4096) this.currentParagraphCache.clear();
+				this.currentParagraphCache.set(cacheKey, blockLines);
+			}
+			// ● 前缀是轮次粒度（本轮首个文本 item 的首行），拼接时注入，不改缓存内容
+			if (isFirst && blockLines.length > 0 && !blockLines[0]!.startsWith("│") && !blockLines[0]!.startsWith("├")) {
+				formatted.push(`${C.bold}${C.text}● ${C.reset}${blockLines[0]!}`);
+				formatted.push(...blockLines.slice(1));
+				isFirst = false;
+			} else {
+				formatted.push(...blockLines);
+			}
+			// 分隔空行逐个产出（与全文管线对空行的处理一致）
+			for (let b = 0; b < blankAfter; b++) formatted.push("");
+		}
+		// 旧全文管线在 item 末尾恒补一个空行；无内容时不补（旧实现 !md 提前返回）
+		if (parts.length > 0) formatted.push("");
+		return formatted;
+	}
+
+	/** 单块渲染：与旧 formatAssistantMarkdown 主体逐行等价（仅去掉首行前缀与末尾补行）。 */
+	private formatAssistantBlock(block: string, contentBudget: number, streaming: boolean): string[] {
+		let transformed = this.transformMarkdown(block, "assistant", contentBudget, streaming);
+		transformed = sanitizeRenderText(transformed);
+		if (!transformed) return [];
+		const rawLines = formatFullMarkdown(transformed, contentBudget);
+		const formatted: string[] = [];
 
 		for (const rawLine of rawLines) {
 			if (!rawLine.trim()) {
 				formatted.push("");
 				continue;
 			}
-
-			// 剥离 ANSI 转义码后再判断是否为代码块或制表符边框
 			const clean = stripAnsi(rawLine).trimStart();
 			if (
 				clean.startsWith("┌") || clean.startsWith("│") || clean.startsWith("└") ||
@@ -867,20 +939,9 @@ export class TranscriptContainer implements Component {
 				formatted.push(rawLine.trimStart());
 				continue;
 			}
-
-			// 对段落行进行严格 word-wrap
 			const wrapped = wrapTextWithAnsi(rawLine.trim(), contentBudget);
-			for (let i = 0; i < wrapped.length; i++) {
-				const piece = wrapped[i]!;
-				if (isFirst && i === 0) {
-					formatted.push(`${C.bold}${C.text}● ${C.reset}${piece}`);
-					isFirst = false;
-				} else {
-					formatted.push(piece);
-				}
-			}
+			formatted.push(...wrapped);
 		}
-		formatted.push("");
 		return formatted;
 	}
 

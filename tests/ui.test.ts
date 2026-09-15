@@ -12,7 +12,7 @@ import { OverlayStack } from "../src/ui/core/overlay.js";
 import { WidgetSlots } from "../src/ui/core/slots.js";
 import { CURSOR_MARKER } from "../src/ui/core/types.js";
 import { Key, matchesKey } from "../src/ui/core/keys.js";
-import { StreamMarkdownFormatter } from "../src/ui/components/transcript/stream-markdown.js";
+import { StreamMarkdownFormatter, formatFullMarkdown } from "../src/ui/components/transcript/stream-markdown.js";
 import { ContextBarComponent, allocateBarColumns, renderSegmentedBar } from "../src/ui/components/widgets/context-bar.js";
 import { ScrollbarGutterComponent } from "../src/ui/components/widgets/scrollbar-gutter.js";
 import { TimelineRailComponent } from "../src/ui/components/widgets/timeline-rail.js";
@@ -3914,5 +3914,109 @@ describe("Transcript: 帧内单一行模型（getFrameModel）", () => {
 			expect(start).toBeGreaterThanOrEqual(0);
 			expect(start).toBeLessThan(model.lines.length);
 		}
+	});
+});
+
+describe("Transcript: 助手文本分段渲染与全文一次成型逐行等价", () => {
+	// 参考实现：与分段缓存改造前的 formatAssistantMarkdown 算法逐行一致，
+	// 作为「分段路径 ≡ 全文路径」的对拍基准。
+	function referenceFormatFull(markdown: string, width: number, isFirstParagraph: boolean): string[] {
+		const contentBudget = Math.max(20, width - 2);
+		const rawLines = formatFullMarkdown(markdown, contentBudget);
+		const formatted: string[] = [];
+		let isFirst = isFirstParagraph;
+		for (const rawLine of rawLines) {
+			if (!rawLine.trim()) { formatted.push(""); continue; }
+			const clean = stripAnsi(rawLine).trimStart();
+			if (["┌", "│", "└", "├", "┼", "┴", "┬"].some((ch) => clean.startsWith(ch))) {
+				formatted.push(rawLine.trimStart());
+				continue;
+			}
+			const wrapped = wrapTextWithAnsi(rawLine.trim(), contentBudget);
+			for (let i = 0; i < wrapped.length; i++) {
+				const piece = wrapped[i]!;
+				if (isFirst && i === 0) {
+					formatted.push(`${C.bold}${C.text}● ${C.reset}${piece}`);
+					isFirst = false;
+				} else {
+					formatted.push(piece);
+				}
+			}
+		}
+		formatted.push("");
+		return formatted;
+	}
+
+	const GNARLY_MD = [
+		"# 主标题",
+		"",
+		"这是开头段落，包含**加粗**、`行内代码`与[链接](https://example.com)的中文文本，足够长以便在窄宽度下发生自动折行测试。".repeat(2),
+		"",
+		"- 列表项一",
+		"- 列表项二：带有 `code` 与**强调**",
+		"",
+		"> 引用块内容",
+		"",
+		"```typescript",
+		"const a = 1;",
+		"",
+		"const b = 2; // 代码块内含空行，分段不得切断围栏",
+		"```",
+		"",
+		"| 列一 | 列二 |",
+		"| --- | --- |",
+		"| 甲 | 乙 |",
+		"| 丙 | 丁 |",
+		"",
+		"## 二级标题",
+		"",
+		"结尾段落。`尾段` 会随流式增长，必须每帧重排。",
+	].join("\n");
+
+	it("settled 渲染（走分段路径）与改造前全文算法逐行恒等", () => {
+		const transcript = new TranscriptContainer();
+		transcript.startTurn(1, "复杂 markdown");
+		transcript.appendToken(GNARLY_MD);
+		transcript.finishTurn();
+		const rendered = transcript.render(80);
+		// 转录区 turn 外壳 = 用户行 + 空行 + 正文 + 空行；正文部分对拍参考算法
+		const body = rendered.slice(3);
+		const expected = referenceFormatFull(GNARLY_MD, 80, true);
+		expect(body).toEqual(expected);
+	});
+
+	it("流式进行中（currentTurn，含前缀段落）与 settled 渲染恒等", () => {
+		const transcript = new TranscriptContainer();
+		transcript.startTurn(1, "流式等价");
+		transcript.appendToken(GNARLY_MD);
+		const streamingRender = transcript.render(80);
+		transcript.finishTurn();
+		const settledRender = transcript.render(80);
+		expect(streamingRender).toEqual(settledRender);
+	});
+
+	it("分段后前缀定位：每个文本 item 的首段带 ●（现状口径：item 粒度）", () => {
+		const transcript = new TranscriptContainer();
+		transcript.startTurn(1, "q");
+		transcript.appendToken("第一段。");
+		transcript.appendThinking("思考");
+		transcript.appendToken("第二段才带前缀。");
+		transcript.finishTurn();
+		const rendered = transcript.render(80);
+		// ● 前缀是轮次粒度：仅本轮首个文本 item 的首行；后续 item 不再带
+		expect(rendered.find((l) => l.includes("第一段"))).toContain("●");
+		expect(rendered.find((l) => l.includes("第二段才带前缀"))).not.toContain("●");
+	});
+
+	it("多个回合各自首段都带 ● 前缀（缓存不跨回合污染前缀状态）", () => {
+		const transcript = new TranscriptContainer();
+		transcript.startTurn(1, "第一问");
+		transcript.appendToken("回合一的回答。");
+		transcript.finishTurn();
+		transcript.startTurn(2, "第二问");
+		transcript.appendToken("回合二的回答。");
+		transcript.finishTurn();
+		const rendered = transcript.render(80);
+		expect(rendered.filter((l) => l.includes("●") && l.includes("回答")).length).toBe(2);
 	});
 });
