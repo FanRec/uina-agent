@@ -66,6 +66,8 @@ export interface ToolResultEvent { readonly type: "tool_result"; readonly toolNa
 export interface ModelSelectEvent { readonly type: "model_select"; readonly model: string; readonly previousModel?: string; }
 export interface ThinkingLevelSelectEvent { readonly type: "thinking_level_select"; readonly level: ThinkingLevel; readonly previousLevel?: ThinkingLevel; }
 export interface SessionBeforeCompactEvent { readonly type: "session_before_compact"; readonly tokensBefore: number; }
+/** Continuation query hook (not a broadcast): handlers may stop the tool loop between turns. */
+export interface TurnShouldStopEvent { readonly type: "turn_should_stop"; readonly turnNumber: number; readonly finishReason: import("../core/types.js").FinishReason; readonly reply: string; readonly toolCallCount: number; }
 export interface SessionCompactEvent { readonly type: "session_compact"; readonly summary: string; readonly tokensBefore: number; readonly retainedTailCount: number; }
 export interface SessionCompactFailedEvent { readonly type: "session_compact_failed"; readonly error: string; }
 
@@ -89,6 +91,7 @@ export type RuntimeEvent =
 	| BeforeAgentStartEvent | AgentStartEvent | AgentEndEvent | AgentSettledEvent | TurnStartEvent | TurnEndEvent
 	| ContextEvent | ToolCallEvent | ToolResultEvent | ModelSelectEvent | ThinkingLevelSelectEvent
 	| SessionBeforeCompactEvent | SessionCompactEvent | SessionCompactFailedEvent
+	| TurnShouldStopEvent
 	| OutputStartEvent | OutputUpdateEvent | OutputEndEvent | OutputInterruptedEvent
 	| BeforeProviderHeadersEvent | BeforeProviderRequestEvent | AfterProviderResponseEvent
 	| UsageUpdateEvent

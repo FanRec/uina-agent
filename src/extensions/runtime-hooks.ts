@@ -15,10 +15,13 @@ export function createRuntimeHooks(host: ExtensionHost, scope?: RuntimeScopeFilt
 				return Object.freeze({
 					...(prepared?.messages ? { messages: structuredClone(prepared.messages) } : {}),
 					...(prepared?.systemPrompt !== undefined ? { systemPrompt: prepared.systemPrompt } : {}),
+					...(prepared?.model !== undefined ? { model: structuredClone(prepared.model) } : {}),
+					...(prepared?.thinkingLevel !== undefined ? { thinkingLevel: prepared.thinkingLevel } : {}),
 				});
 			},
 			transformContext: async (messages) => host.emitContext(messages as readonly ChatMsg[], scope),
 			beforeCompact: async (input) => Object.freeze({ cancel: await host.emitSessionBeforeCompact(input.tokensBefore, scope) || undefined }),
+			shouldStop: async (input) => Object.freeze({ stop: await host.emitTurnShouldStop(input, scope) || undefined }),
 		}),
 		tools: Object.freeze({
 			beforeCall: async (input) => Object.freeze(await host.emitToolCall({

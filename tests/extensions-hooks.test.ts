@@ -631,3 +631,57 @@ describe("ExtensionHost & Hooks Architecture", () => {
 	});
 
 });
+
+describe("run-safety seams: prepare model swap and shouldStop", () => {
+	it("applies a model fact returned from before_agent_start with full setModel discipline", async () => {
+		const host = new ExtensionHost();
+		const baseModel = mockModel({ id: "base-model", name: "base" });
+		const nextModel = mockModel({ id: "next-model", name: "next" });
+		const events: string[] = [];
+		host.on("before_agent_start", () => ({ model: structuredClone(nextModel) }));
+		host.on("model_select", (event) => events.push(`model_select:${event.model}`));
+
+		const requested: string[] = [];
+		const stream: ModelStreamFn = async (model, _req, emit) => {
+			requested.push(model.id);
+			emit({ kind: "text", text: "ok" });
+			emit({ kind: "finish", reason: "stop" });
+		};
+		const subject = new Subject(baseModel, stream, new ToolBroker(), { runtimeHooks: createRuntimeHooks(host) });
+		await subject.pushInput("hello");
+		await subject.waitForIdle();
+
+		expect(requested).toEqual(["next-model"]);
+		expect(subject.getModel().id).toBe("next-model");
+		expect(events).toEqual(["model_select:next"]);
+	});
+
+	it("stops the tool loop between turns when an extension returns stop", async () => {
+		const host = new ExtensionHost();
+		host.on("turn_should_stop", (event) => {
+			expect(event.finishReason).toBe("tool_calls");
+			expect(event.toolCallCount).toBe(1);
+			return { stop: true };
+		});
+		let streamCalls = 0;
+		const stream: ModelStreamFn = async (_model, _req, emit, signal) => {
+			streamCalls++;
+			if (streamCalls > 1) throw new Error("shouldStop 未生效：发起了第二次模型调用");
+			emit({ kind: "tool_call", call: { id: "t1", name: "noop", args: "{}" } });
+			emit({ kind: "finish", reason: "tool_calls" });
+			void signal;
+		};
+		const broker = new ToolBroker();
+		broker.register({
+			def: { type: "function", function: { name: "noop", description: "noop", parameters: { type: "object", properties: {}, additionalProperties: false } } },
+			run: async () => ({ result: "ok", status: "succeeded" as const }),
+		});
+		const subject = new Subject(mockModel(), stream, broker, { runtimeHooks: createRuntimeHooks(host) });
+		await subject.pushInput("run tool once");
+		await subject.waitForIdle();
+
+		expect(streamCalls).toBe(1);
+		const toolResult = subject.historySnapshot().find((message) => message.role === "tool");
+		expect(toolResult && "status" in toolResult ? toolResult.status : undefined).toBe("succeeded");
+	});
+});

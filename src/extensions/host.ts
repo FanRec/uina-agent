@@ -67,6 +67,9 @@ export interface InputEvent {
 export interface BeforeAgentStartResult {
 	readonly message?: ChatMsg;
 	readonly systemPrompt?: string;
+	/** 换用另一个模型事实（Subject 以 setModel 的完整纪律应用）。 */
+	readonly model?: import("../core/types.js").Model;
+	readonly thinkingLevel?: import("../core/types.js").ThinkingLevel;
 }
 
 export interface ContextEventResult {
@@ -260,10 +263,12 @@ export class ExtensionHost {
 		systemPrompt: string,
 		scope?: RuntimeScopeFilter,
   signal?: AbortSignal,
-	): Promise<{ messages?: ChatMsg[]; systemPrompt?: string } | undefined> {
+	): Promise<{ messages?: ChatMsg[]; systemPrompt?: string; model?: import("../core/types.js").Model; thinkingLevel?: import("../core/types.js").ThinkingLevel } | undefined> {
 		const handlers = this.handlersFor("before_agent_start", scope);
 		const messages: ChatMsg[] = [];
 		let currentPrompt = systemPrompt;
+		let currentModel: import("../core/types.js").Model | undefined;
+		let currentThinking: import("../core/types.js").ThinkingLevel | undefined;
 		let modified = false;
 
 		for (const handler of handlers) {
@@ -280,6 +285,14 @@ export class ExtensionHost {
 					}
 					if (res.systemPrompt !== undefined) {
 						currentPrompt = res.systemPrompt;
+						modified = true;
+					}
+					if (res.model !== undefined) {
+						currentModel = structuredClone(res.model);
+						modified = true;
+					}
+					if (res.thinkingLevel !== undefined) {
+						currentThinking = res.thinkingLevel;
 						modified = true;
 					}
 				}
@@ -300,6 +313,8 @@ export class ExtensionHost {
 			? {
 					messages: messages.length > 0 ? messages : undefined,
 					systemPrompt: currentPrompt !== systemPrompt ? currentPrompt : undefined,
+					...(currentModel !== undefined ? { model: currentModel } : {}),
+					...(currentThinking !== undefined ? { thinkingLevel: currentThinking } : {}),
 				}
 			: undefined;
 	}
@@ -320,6 +335,26 @@ export class ExtensionHost {
 				}
 			} catch (err) {
 				this.emitError("session_before_compact", err);
+			}
+		}
+		return false;
+	}
+
+	/** 回合间停止决策：任一扩展返回 stop 即收尾（对应 Pi shouldStopAfterTurn）。 */
+	async emitTurnShouldStop(
+		input: { turnNumber: number; finishReason: import("../core/types.js").FinishReason; reply: string; toolCallCount: number },
+		scope?: RuntimeScopeFilter,
+	): Promise<boolean> {
+		const handlers = this.handlersFor("turn_should_stop", scope);
+		for (const handler of handlers) {
+			try {
+				const res = (await handler(readonlySnapshot({
+					type: "turn_should_stop",
+					...input,
+				}))) as { stop?: boolean } | undefined;
+				if (res?.stop) return true;
+			} catch (err) {
+				this.emitError("turn_should_stop", err);
 			}
 		}
 		return false;

@@ -350,6 +350,7 @@ export class Subject {
 					{ prompt: "", systemPrompt: this.systemPrompt },
 					this.currentSignal(),
 				);
+				await this.applyPreparedRuntime(prepared);
 				await this.runtimeHooks.events.emit({ type: "agent_start", turnSeq: turn });
 				await this.runTurn(
 					undefined,
@@ -593,6 +594,7 @@ export class Subject {
 				{ prompt: text ?? "", systemPrompt: this.systemPrompt },
 				this.abort.signal,
 			);
+			await this.applyPreparedRuntime(prepared);
 			await this.runtimeHooks.events.emit({ type: "agent_start", turnSeq: turn });
 
 			await this.runTurn(
@@ -708,8 +710,22 @@ export class Subject {
 		await this.startRun(item.source?.kind === "runtime" ? undefined : item.text, item);
 	}
 
+	/** Applies runtime-provided model/thinking facts at a run-safety point.
+	 * Model swaps reuse setModel's full discipline (usage-anchor invalidation +
+	 * model_select broadcast); thinking swaps clamp against the current model. */
+	private async applyPreparedRuntime(
+		prepared: Readonly<{ model?: Model; thinkingLevel?: ThinkingLevel }>,
+	): Promise<void> {
+		if (prepared.model && !(prepared.model.id === this.model.id && prepared.model.providerId === this.model.providerId)) {
+			await this.setModel(prepared.model);
+		}
+		if (prepared.thinkingLevel !== undefined && prepared.thinkingLevel !== this.preferredThinkingLevel) {
+			this.setThinkingLevel(prepared.thinkingLevel);
+		}
+	}
+
 	private async decide(
-		model = this.model,
+		model: Model = this.model,
 		systemPrompt = this.systemPrompt,
 		beforeMessages: readonly (AgentMessage | ChatMsg)[] = [],
 	): Promise<void> {
@@ -719,6 +735,9 @@ export class Subject {
 				{ prompt: "", systemPrompt: this.systemPrompt },
 				this.currentSignal(),
 			);
+			await this.applyPreparedRuntime(prepared);
+			// 换模型/换档即刻生效于本 decide 循环的下一次请求（安全点已过，口径统一）。
+			model = this.model;
 			systemPrompt = prepared.systemPrompt ?? this.systemPrompt;
 			beforeMessages = prepared.messages ? [...prepared.messages] : [];
 			return true;
@@ -788,6 +807,15 @@ export class Subject {
 			}
 			if (await applyRewind()) continue;
 			if (stopped) return;
+			// 回合间停止决策（对应 Pi shouldStopAfterTurn）：任一扩展要求停止时立即收尾，
+			// 不再发起下一次模型调用。仅作用于本运行内的续跑；队列恢复语义不变。
+			const stopDecision = await this.runtimeHooks.turn.shouldStop({
+				turnNumber: this.turnSeq,
+				finishReason: streamResult.finishReason,
+				reply: streamResult.reply,
+				toolCallCount: streamResult.toolCalls.length,
+			});
+			if (stopDecision.stop) return;
 			await this.drainQueuedInputs("steer");
 		}
 	}

@@ -21,6 +21,7 @@ export function guardRuntimeHooks(hooks: RuntimeHooks): RuntimeHooks {
 			prepare: async (input, signal) => copyPrepare(await hooks.turn.prepare(readonlySnapshot(input), signal)),
 			transformContext: async (messages) => copyMessages(await hooks.turn.transformContext(readonlySnapshot(messages))),
 			beforeCompact: async (input) => Object.freeze({ ...(await hooks.turn.beforeCompact(readonlySnapshot(input))) }),
+			shouldStop: async (input) => Object.freeze({ ...(await hooks.turn.shouldStop(readonlySnapshot(input))) }),
 		}),
 		tools: Object.freeze({
 			beforeCall: async (input) => Object.freeze({ ...(await hooks.tools.beforeCall(readonlySnapshot(input))) }),
@@ -40,10 +41,14 @@ export function guardRuntimeHooks(hooks: RuntimeHooks): RuntimeHooks {
 	return Object.freeze(guarded);
 }
 
-function copyPrepare(value: Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string }>): Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string }> {
+function copyPrepare(
+	value: Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string; model?: import("../core/types.js").Model; thinkingLevel?: import("../core/types.js").ThinkingLevel }>,
+): Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string; model?: import("../core/types.js").Model; thinkingLevel?: import("../core/types.js").ThinkingLevel }> {
 	return Object.freeze({
 		...(value.messages ? { messages: copyMessages(value.messages) } : {}),
 		...(value.systemPrompt !== undefined ? { systemPrompt: value.systemPrompt } : {}),
+		...(value.model !== undefined ? { model: clone(value.model) } : {}),
+		...(value.thinkingLevel !== undefined ? { thinkingLevel: value.thinkingLevel } : {}),
 	});
 }
 
