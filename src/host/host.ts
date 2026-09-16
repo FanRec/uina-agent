@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ContextSegments, Model, ModelStreamFn, Provider, ThinkingLevel } from "../core/types.js";
 import { activeProvider, loadConfig } from "../ai/config.js";
 import { loadSettings, saveSettings } from "../ai/settings.js";
-import { ModelRegistry } from "../ai/providers.js";
+import { modelKey, ModelRegistry } from "../ai/providers.js";
 import { ToolBroker, type ToolExecutionResult } from "../tools/broker.js";
 import { Subject, type AgentInput } from "../agent/loop.js";
 import type { QueuedMessage } from "../agent/queue.js";
@@ -116,15 +116,25 @@ export class UinaHost {
 		// 恢复值必须过与运行时相同的校验（resolve / clamp），失效即静默降级 ——
 		// 偏好是会话态，陈旧数据不值得让启动失败。
 		const settings = options.modelName || options.model ? {} : await loadSettings();
-		let activeModelName: string | undefined;
+		// 偏好里存的是 modelKey（providerId/id）身份键：跨 provider 的同名模型必须精确还原，
+		// 只按裸 id 分辨会落到注册表里恰好先注册的那一个。兼容旧格式裸名；provider 改名或下线
+		// 时回落到同名模型，两者都不阻断开局（偏好是会话态，陈旧数据不值得让启动失败）。
+		let restoredModel: Model | undefined;
 		if (settings.model) {
 			try {
-				activeModelName = models.resolve(settings.model).name;
+				restoredModel = models.resolve(settings.model);
 			} catch {
-				activeModelName = undefined; // 上次的模型已不存在（配置变更/下线），落回默认
+				const slash = settings.model.indexOf("/");
+				const bare = slash >= 0 ? settings.model.slice(slash + 1) : undefined;
+				if (bare !== undefined) {
+					try {
+						restoredModel = models.resolve(bare);
+					} catch {
+						restoredModel = undefined; // 上次的模型已不存在（配置变更/下线），落回默认
+					}
+				}
 			}
 		}
-		const restoredModel = activeModelName !== undefined ? models.resolve(activeModelName) : undefined;
 		const activeModel = options.model ?? restoredModel ?? (() => {
 			if (options.modelName) {
 				return models.resolve(options.modelName);
@@ -226,7 +236,7 @@ export class UinaHost {
 		let settingsSaveTail: Promise<void> = Promise.resolve();
 		const persistSettings = (): void => {
 			settingsSaveTail = settingsSaveTail.then(() => saveSettings({
-				model: subject.getModel().name,
+				model: modelKey(subject.getModel()),
 				thinkingLevel: subject.getThinkingLevel(),
 			}).catch(() => {}));
 		};

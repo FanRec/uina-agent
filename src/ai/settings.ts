@@ -6,6 +6,7 @@
  * 每次用户切换模型/档位都会写盘，绝不与凭据文件混用。
  *
  * 结构刻意保持为平面两字段；出现第三个持久化偏好时再考虑泛化。
+ * 模型字段存的是 `providerId/id` 身份键，不是裸模型 id。
  * 归属：组合根（host/cli）读写，Subject 纯机制不知道它的存在。
  */
 
@@ -14,7 +15,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
 export interface SessionSettings {
-	/** 上次会话使用的模型名（models.resolve 的入参形态）。 */
+	/** 上次会话使用的模型身份键 `providerId/id`（models.resolve 的入参形态；跨 provider 同名模型靠它区分）。 */
 	model?: string;
 	/** 上次会话的思考档位（恢复时仍要过 clampThinkingLevel 校验）。 */
 	thinkingLevel?: string;

@@ -637,6 +637,17 @@ interface GeminiChunk {
 	candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ thought?: boolean; text?: string; thoughtSignature?: string; functionCall?: { id?: string; name?: string; args?: Record<string, unknown>; thoughtSignature?: string } }> } }>;
 }
 
+/**
+ * 模型身份键：`providerId/id`。
+ *
+ * 跨 provider 的**同名模型**必须能精确区分 —— 选择器展示、resolve 入参、
+ * 会话偏好持久化统一用这个键（只按裸 id 分辨会让"另一个 provider 的同名模型"
+ * 在重启后被还原成注册表里恰好先注册的那一个）。
+ */
+export function modelKey(model: Pick<Model, "providerId" | "id">): string {
+	return `${model.providerId}/${model.id}`;
+}
+
 export class ModelRegistry {
 	private providers = new Registrations<Provider>();
 	private models = new Registrations<Model>();
@@ -658,7 +669,7 @@ export class ModelRegistry {
 		}
 	}
 
-	listModels(): readonly Model[] { const effective = new Map<string, Model>(); for (const model of this.models.values()) effective.set(`${model.providerId}/${model.id}`, this.getModel(`${model.providerId}/${model.id}`) ?? model); return [...effective.values()]; }
+	listModels(): readonly Model[] { const effective = new Map<string, Model>(); for (const model of this.models.values()) effective.set(modelKey(model), this.getModel(modelKey(model)) ?? model); return [...effective.values()]; }
 
 	getProvider(id: string): Provider | undefined {
 		return this.providers.get(id);
@@ -666,13 +677,12 @@ export class ModelRegistry {
 
 	getModel(nameOrKey: string): Model | undefined {
 		const base = this.models.get(nameOrKey) ?? this.defaultModels.get(nameOrKey);
-  return base ? this.models.get(`${base.providerId}/${base.id}`) ?? base : undefined;
+  return base ? this.models.get(modelKey(base)) ?? base : undefined;
 	}
 
 	resolve(modelOrProviderName: string): Model {
 		const existing = this.getModel(modelOrProviderName);
 		if (existing) return existing;
-
 		const slash = modelOrProviderName.indexOf("/");
 		if (slash > 0) {
 			const providerId = modelOrProviderName.slice(0, slash);
@@ -715,7 +725,7 @@ export class ModelRegistry {
   return this.providers.register(provider.id, provider, options);
  }
  registerModel(model: Model, options?: { replace?: boolean }): () => void {
-  const key = model.providerId + '/' + model.id;
+  const key = modelKey(model);
   const remove = this.models.register(key, model, options);
   const alias = this.models.get(model.id);
   const removeAlias = !alias || alias.providerId === model.providerId ? this.models.register(model.id, model, { replace: true }) : undefined;
