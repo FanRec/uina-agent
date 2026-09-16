@@ -8,6 +8,7 @@
  * 4. 支持链式变换（context、tool_result、before_provider_request 等）。
  */
 
+import { errorMessage } from "../core/errors.js";
 import { Registrations } from "../core/registrations.js";
 import type { ChatMsg } from "../core/types.js";
 import { copyValue, readonlySnapshot } from "../runtime/guard.js";
@@ -143,7 +144,7 @@ export class ExtensionHost {
 	}
 
 	protected emitError(event: string, err: unknown, extensionName?: string): void {
-		const message = err instanceof Error ? err.message : String(err);
+		const message = errorMessage(err);
 		const stack = err instanceof Error ? err.stack : undefined;
 		for (const listener of this.errorListeners) {
 			try {

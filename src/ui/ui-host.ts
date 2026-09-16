@@ -116,6 +116,12 @@ interface FrameLayout {
 	visibleTranscript: string[];
 }
 
+/** 可挂进 overlayStack 的居中面板组件契约：可选的关闭回调与重绘请求。 */
+interface PanelComponent extends Component {
+	onClose?: () => void;
+	onRequestRender?: () => void;
+}
+
 export class UIHost implements UIHostContextPort {
 	readonly terminal: ProcessTerminal;
 	readonly renderer: MainScreenRenderer;
@@ -889,41 +895,54 @@ export class UIHost implements UIHostContextPort {
 		}
 	}
 
-	openHelpMenu(): void {
-		this.toggleModal("help", (close) => {
-			const menu = new HelpMenu(this.registry.listCommands());
+	// =========================================================================
+	// 模态面板装配（所有居中面板共用同一套 onClose/onRequestRender/hide 接线）
+	// =========================================================================
+
+	/**
+	 * toggleModal + showOverlay 的唯一接线点：close()/hide()/onClose 三者互相唤醒的
+	 * 顺序在这里只写一次，7 个面板不可能再各自漂移出不同的关闭语义。
+	 */
+	private openPanel(id: string, build: (close: () => void, api: { hide: () => void }) => PanelComponent): void {
+		this.toggleModal(id, (close) => {
 			let handle: OverlayHandle | null = null;
-			menu.onClose = () => {
+			const panel = build(close, { hide: () => handle?.hide() });
+			panel.onRequestRender = () => this.requestRender();
+			const userOnClose = panel.onClose;
+			panel.onClose = () => {
+				userOnClose?.();
 				close();
 				handle?.hide();
 			};
-			menu.onConvertToInput = (text) => {
-				close();
-				handle?.hide();
-				this.inputLine.setText(text);
-				this.requestRender();
-			};
-			handle = this.overlayStack.showOverlay(menu, { anchor: "center" }, () => close());
+			handle = this.overlayStack.showOverlay(panel, { anchor: "center" }, () => close());
 			return handle;
 		});
 	}
 
+	openHelpMenu(): void {
+		this.openPanel("help", (close, { hide }) => {
+			const menu = new HelpMenu(this.registry.listCommands());
+			menu.onClose = () => close();
+			menu.onConvertToInput = (text) => {
+				close();
+				// close() 只清模态状态；overlay 必须显式 hide 移出栈，否则会继续捕获输入。
+				hide();
+				this.inputLine.setText(text);
+				this.requestRender();
+			};
+			return menu;
+		});
+	}
+
 	openModelPicker(currentModel?: string, groups: ModelGroup[] = [], onPick?: (name: string) => Promise<void> | void): void {
-		this.toggleModal("model", (close) => {
+		this.openPanel("model", (close) => {
 			const picker = new ModelPicker(currentModel ?? this.modelName, groups);
-			let handle: OverlayHandle | null = null;
 			picker.onPick = (name) => {
 				if (onPick) void onPick(name);
 				close();
-				handle?.hide();
 			};
-			picker.onClose = () => {
-				close();
-				handle?.hide();
-			};
-			picker.onRequestRender = () => this.requestRender();
-			handle = this.overlayStack.showOverlay(picker, { anchor: "center" }, () => close());
-			return handle;
+			picker.onClose = () => close();
+			return picker;
 		});
 	}
 
@@ -933,99 +952,67 @@ export class UIHost implements UIHostContextPort {
 		onChange?: (level: ThinkingLevel) => void,
 	): void {
 		if (!this.thinkingLevels.length) { this.notify("当前模型未声明思考档位", "info"); return; }
-		this.toggleModal("effort", (close) => {
+		this.openPanel("effort", (close) => {
 			const declaredTiers = (tiers && tiers.length > 0)
 				? tiers.filter(t => this.thinkingLevels.includes(typeof t === "string" ? t : t.id))
 				: DEFAULT_EFFORT_TIERS.filter((t) => this.thinkingLevels.includes(t.id));
 			const slider = new EffortSlider(currentLevel ?? this.reasoningEffort ?? "off", declaredTiers);
-			let handle: OverlayHandle | null = null;
 			slider.onChange = (level) => {
 				this.setReasoningEffort(level);
 				onChange?.(level);
 			};
-			slider.onClose = () => {
-				close();
-				handle?.hide();
-			};
-			slider.onRequestRender = () => this.requestRender();
-			handle = this.overlayStack.showOverlay(slider, { anchor: "center" }, () => close());
-			return handle;
+			slider.onClose = () => close();
+			return slider;
 		});
 	}
 
 	openTasks(): void {
 		if (!this.jobPort) return;
-		this.toggleModal("tasks", (close) => {
+		this.openPanel("tasks", (close) => {
 			const view = new TaskDashboard(this.jobPort!);
-			let handle: OverlayHandle | null = null;
-			view.onClose = () => {
-				close();
-				handle?.hide();
-			};
-			view.onRequestRender = () => this.requestRender();
-			handle = this.overlayStack.showOverlay(view, { anchor: "center" }, () => close());
-			return handle;
+			view.onClose = () => close();
+			return view;
 		});
 	}
 
 	openSubagents(): void {
 		if (!this.subagentPort) return;
-		this.toggleModal("subagents", (close) => {
+		this.openPanel("subagents", (close, { hide }) => {
 			const view = new SubagentDashboard(this.subagentPort!);
-			let handle: OverlayHandle | null = null;
-			let detailHandle: OverlayHandle | null = null;
-
-			view.onClose = () => {
-				close();
-				handle?.hide();
-			};
+			view.onClose = () => close();
 			view.onDrilldown = (agent) => {
-				handle?.hide();
+				// 详情页是叠在列表之上的第二层 overlay：自己持 handle、自己 hide，
+				// 关闭语义（hide 详情 → close 整个模态）与列表层相互独立。
+				hide();
 				const detail = new SubagentDetailScene(agent, this.subagentPort!);
-				detailHandle = this.overlayStack.showOverlay(detail, { anchor: "center" }, () => close());
+				let detailHandle: OverlayHandle | null = null;
 				detail.onClose = () => {
 					detailHandle?.hide();
 					detailHandle = null;
 					close();
 				};
 				detail.onRequestRender = () => this.requestRender();
+				detailHandle = this.overlayStack.showOverlay(detail, { anchor: "center" }, () => close());
 			};
-			view.onRequestRender = () => this.requestRender();
-
-			handle = this.overlayStack.showOverlay(view, { anchor: "center" }, () => {
-				if (!detailHandle) close();
-			});
-			return handle;
+			return view;
 		});
 	}
 
 	openTrajectory(): void {
-		this.toggleModal("trajectory", (close) => {
+		this.openPanel("trajectory", (close) => {
 			const scene = new TrajectoryScene(this.trajectoryProjection);
-			let handle: OverlayHandle | null = null;
-			scene.onClose = () => {
-				close();
-				handle?.hide();
-			};
-			scene.onRequestRender = () => this.requestRender();
-			handle = this.overlayStack.showOverlay(scene, { anchor: "center" }, () => close());
-			return handle;
+			scene.onClose = () => close();
+			return scene;
 		});
 	}
 
 	openHistory(): void {
 		const sessionPort = this.sessionPort;
 		if (!sessionPort) return;
-		this.toggleModal("history", (close) => {
+		this.openPanel("history", (close) => {
 			const view = new BranchInspectorOverlay(sessionPort);
-			let handle: OverlayHandle | null = null;
-			view.onClose = () => {
-				close();
-				handle?.hide();
-			};
-			view.onRequestRender = () => this.requestRender();
-			handle = this.overlayStack.showOverlay(view, { anchor: "center" }, () => close());
-			return handle;
+			view.onClose = () => close();
+			return view;
 		});
 	}
 
@@ -1306,78 +1293,65 @@ export class UIHost implements UIHostContextPort {
 		const interactiveTargets: InteractiveTarget[] = [];
 
 		// (1) 注册思考折叠行交互（按思考块全域行注册）
-		const thinkingLocs = frameModel.thinkingLocations;
-		for (const loc of thinkingLocs) {
-			const thinkingRows = Math.max(1, loc.lineCount ?? 1);
-			for (let r = 0; r < thinkingRows; r++) {
-				const absLine = bannerCount + loc.lineIndex + r;
-				if (absLine >= scrollStart && absLine < scrollStart + visibleTranscript.length) {
-					const screenRow = absLine - scrollStart;
-					interactiveTargets.push({
-						// 块级 id：一个思考块一个 id（块内所有行共享）。逐行不同 id 会被
-						// 当成"目标变了"而触发全量重绘。
-						id: encodeHoverTarget({ kind: "thinking", uid: loc.item.uid }),
-						row: screenRow,
-						colStart: 0,
-						colEnd: Math.max(0, transcriptContentW - 1),
-						onClick: () => {
-							this.preserveScrollAnchor(() => {
-								this.transcript.toggleThinking(loc.item, transcriptContentW);
-							}, bannerCount + loc.lineIndex);
-							this.requestRender();
-						},
-					});
-				}
-			}
-		}
-
 		// (1.5) 注册工具卡片折叠交互（Tool Cards：按整张卡片块全域注册）
-		const toolLocs = frameModel.toolLocations;
-		for (const loc of toolLocs) {
-			const cardContentRows = Math.max(1, loc.lineCount - 1);
-			for (let r = 0; r < cardContentRows; r++) {
-				const absLine = bannerCount + loc.lineIndex + r;
-				if (absLine >= scrollStart && absLine < scrollStart + visibleTranscript.length) {
-					const screenRow = absLine - scrollStart;
-					interactiveTargets.push({
-						id: encodeHoverTarget({ kind: "tool", callId: loc.callId, line: absLine }),
-						row: screenRow,
-						colStart: 0,
-						colEnd: Math.max(0, transcriptContentW - 1),
-						onClick: () => {
-							this.preserveScrollAnchor(() => {
-								this.transcript.toggleTool(loc.item, transcriptContentW);
-							}, bannerCount + loc.lineIndex);
-							this.requestRender();
-						},
-					});
-				}
-			}
-		}
-
 		// (1.8) 注册会话压缩卡片折叠交互（Compaction Cards：整张卡片全域点击展开/收起）
-		const compactionLocs = frameModel.compactionLocations;
-		for (const loc of compactionLocs) {
-			const compactionRows = Math.max(1, loc.lineCount);
-			for (let r = 0; r < compactionRows; r++) {
-				const absLine = bannerCount + loc.lineIndex + r;
-				if (absLine >= scrollStart && absLine < scrollStart + visibleTranscript.length) {
-					const screenRow = absLine - scrollStart;
+		// 三类块共用同一几何规则：块内每一行共享一个 id，注册为视口内可见行的点击热区。
+		const blockGeo = { bannerCount, scrollStart, visibleH: visibleTranscript.length, contentW: transcriptContentW };
+		const addBlockTargets = (
+			blocks: readonly { lineIndex: number; rowCount: number; id: string; onClick: (absLine: number) => void }[],
+		): void => {
+			for (const block of blocks) {
+				for (let r = 0; r < Math.max(1, block.rowCount); r++) {
+					const absLine = blockGeo.bannerCount + block.lineIndex + r;
+					if (absLine < blockGeo.scrollStart || absLine >= blockGeo.scrollStart + blockGeo.visibleH) continue;
 					interactiveTargets.push({
-						id: encodeHoverTarget({ kind: "compaction", index: loc.index, line: absLine }),
-						row: screenRow,
+						id: block.id,
+						row: absLine - blockGeo.scrollStart,
 						colStart: 0,
-						colEnd: Math.max(0, transcriptContentW - 1),
-						onClick: () => {
-							this.preserveScrollAnchor(() => {
-								this.transcript.toggleCompaction(loc.index);
-							}, bannerCount + loc.lineIndex);
-							this.requestRender();
-						},
+						colEnd: Math.max(0, blockGeo.contentW - 1),
+						onClick: () => block.onClick(absLine),
 					});
 				}
 			}
-		}
+		};
+
+		addBlockTargets(frameModel.thinkingLocations.map((loc) => ({
+			lineIndex: loc.lineIndex,
+			// 块级 id：一个思考块一个 id（块内所有行共享）。逐行不同 id 会被
+			// 当成"目标变了"而触发全量重绘。
+			rowCount: loc.lineCount ?? 1,
+			id: encodeHoverTarget({ kind: "thinking", uid: loc.item.uid }),
+			onClick: () => {
+				this.preserveScrollAnchor(() => {
+					this.transcript.toggleThinking(loc.item, transcriptContentW);
+				}, bannerCount + loc.lineIndex);
+				this.requestRender();
+			},
+		})));
+
+		addBlockTargets(frameModel.toolLocations.map((loc) => ({
+			lineIndex: loc.lineIndex,
+			rowCount: loc.lineCount - 1, // 卡片末行是底边框，不参与点击
+			id: encodeHoverTarget({ kind: "tool", callId: loc.callId, line: bannerCount + loc.lineIndex }),
+			onClick: () => {
+				this.preserveScrollAnchor(() => {
+					this.transcript.toggleTool(loc.item, transcriptContentW);
+				}, bannerCount + loc.lineIndex);
+				this.requestRender();
+			},
+		})));
+
+		addBlockTargets(frameModel.compactionLocations.map((loc) => ({
+			lineIndex: loc.lineIndex,
+			rowCount: loc.lineCount,
+			id: encodeHoverTarget({ kind: "compaction", index: loc.index, line: bannerCount + loc.lineIndex }),
+			onClick: () => {
+				this.preserveScrollAnchor(() => {
+					this.transcript.toggleCompaction(loc.index);
+				}, bannerCount + loc.lineIndex);
+				this.requestRender();
+			},
+		})));
 
 		// (1.9) 注册帮助浮层全域点击收起交互
 		if (this.activeModalId === "help" && aboveH > 0) {

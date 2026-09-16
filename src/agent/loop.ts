@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { errorMessage } from "../core/errors.js";
 import { listSessionNodes, readSessionNode, listSessionBranches, readSessionBranch } from "../session/navigation.js";
 import { isSafeRewindTarget, projectAgentHistory, protectRewindContext, recoverRecords } from "../session/recovery.js";
 import type { SessionAccess, RewindRequest, RewindResult, SessionRewindRecord } from "../session/types.js";
@@ -19,7 +20,7 @@ import type {
 } from "../core/types.js";
 import type { SessionStore } from "../session/types.js";
 import { projectInputMessage } from "../session/recovery.js";
-import { clearRetainedUsage, compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, findCutPoint, shouldCompact } from "./compaction.js";
+import { clearRetainedUsage, compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, type CutPointResult, findCutPoint, shouldCompact } from "./compaction.js";
 import { buildContext, calculateContextSegments, convertToLlm, defaultSystemPrompt, estimateContextTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import { TurnStreamCollector, type StreamCollectorResult } from "./stream-collector.js";
@@ -405,7 +406,7 @@ export class Subject {
 			return true;
 		} catch (error) {
 			this.pendingRewind = undefined;
-			this.reportError(`回溯请求 ${pending.requestId} 未提交: ${safeError(error)}`);
+			this.reportError(`回溯请求 ${pending.requestId} 未提交: ${errorMessage(error)}`);
 			return false;
 		}
 	}
@@ -475,7 +476,7 @@ export class Subject {
 			return record.id;
 		} catch (error) {
 			throw new Error(
-				`回溯请求 ${pending.requestId} ${committed ? "已提交，但通知失败" : "未提交"}: ${safeError(error)}`,
+				`回溯请求 ${pending.requestId} ${committed ? "已提交，但通知失败" : "未提交"}: ${errorMessage(error)}`,
 				{ cause: error },
 			);
 		} finally {
@@ -673,7 +674,7 @@ export class Subject {
 			await this.decide(model, systemPrompt, beforeMessages);
 			success = true;
 		} catch (error) {
-			runError = safeError(error);
+			runError = errorMessage(error);
 			if (this.interrupted || this.currentSignal().aborted) {
 				await this.emitInterrupted();
 			} else {
@@ -1069,35 +1070,20 @@ export class Subject {
 					await this.runtimeHooks.events.emit({ type: "session_compact_failed", error: "会话压缩已被扩展取消" });
 				return;
 			}
-			const request = readonlySnapshot({
-				reason,
-				history: this.history,
-				suggestedKeepFrom: cutPoint.firstKeptEntryIndex,
-				tokensBefore,
-				model,
-				instruction,
-			});
-			const proposal = await this.compactor?.(request as import("../core/compaction.js").CompactionRequest, signal);
-			signal.throwIfAborted();
-			let result: import("./compaction.js").CompactionResult | null;
-			if (proposal !== undefined) {
-				const { summary, keepFrom } = proposal;
-				if (typeof summary !== "string" || !summary.trim()) throw new Error("compaction 返回空摘要");
-				// A cut that keeps the whole history compacts nothing; accepting it would persist a
-				// summary plus the very messages it summarizes, growing the context it was meant to shrink.
-				if (!Number.isInteger(keepFrom) || keepFrom <= 0 || keepFrom >= this.history.length) throw new Error("compaction 保留位置无效");
-				if (this.history[keepFrom]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
-				result = { summary: summary.trim(), retainedTail: clearRetainedUsage(this.history.slice(keepFrom)), tokensBefore };
-			} else {
-				result = await compactHistory(
-					this.history,
-					model,
-					this.streamFn,
-					{ cut: cutPoint, tokensBefore, instruction },
-					this.runtimeHooks.provider,
-					signal,
-				);
-			}
+		const request = readonlySnapshot({
+			reason,
+			history: this.history,
+			suggestedKeepFrom: cutPoint.firstKeptEntryIndex,
+			tokensBefore,
+			model,
+			instruction,
+		});
+		const proposal = await this.compactor?.(request as import("../core/compaction.js").CompactionRequest, signal);
+		const result = await this.resolveCompactionResult(proposal, this.history, cutPoint, tokensBefore, {
+			model,
+			signal,
+			instruction,
+		});
 			if (!result) return;
 			signal.throwIfAborted();
 			await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);
@@ -1121,6 +1107,37 @@ export class Subject {
 		} finally {
 			this.compactionActive = false;
 		}
+	}
+
+	/**
+	 * compaction 提案 → 结果的唯一裁决点：外部 proposal 与默认算法两条路径的
+	 * 验证、保留切点与 usage 锚清理都在这里，performCompaction 与回溯投影共用，
+	 * 两条路径不可能漂移出不同的有效性规则。
+	 */
+	private async resolveCompactionResult(
+		proposal: import("../core/compaction.js").CompactionProposal | undefined,
+		history: AgentMessage[],
+		cutPoint: CutPointResult,
+		tokensBefore: number,
+		options: { model: Model; signal: AbortSignal; instruction?: string },
+	): Promise<import("./compaction.js").CompactionResult | null> {
+		if (proposal !== undefined) {
+			const { summary, keepFrom } = proposal;
+			if (typeof summary !== "string" || !summary.trim()) throw new Error("compaction 返回空摘要");
+			// A cut that keeps the whole history compacts nothing; accepting it would persist a
+			// summary plus the very messages it summarizes, growing the context it was meant to shrink.
+			if (!Number.isInteger(keepFrom) || keepFrom <= 0 || keepFrom >= history.length) throw new Error("compaction 保留位置无效");
+			if (history[keepFrom]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
+			return { summary: summary.trim(), retainedTail: clearRetainedUsage(history.slice(keepFrom)), tokensBefore };
+		}
+		return compactHistory(
+			history,
+			options.model,
+			this.streamFn,
+			{ cut: cutPoint, tokensBefore, instruction: options.instruction },
+			this.runtimeHooks.provider,
+			options.signal,
+		);
 	}
 
 	/**
@@ -1150,22 +1167,11 @@ export class Subject {
 			compactionSignal,
 		);
 		let prepared: import("./compaction.js").CompactionResult | null;
-		if (proposal !== undefined) {
-			const keepFrom = proposal.keepFrom;
-			if (typeof proposal.summary !== "string" || !proposal.summary.trim()) throw new Error("compaction 返回空摘要");
-			if (!Number.isInteger(keepFrom) || keepFrom <= 0 || keepFrom >= history.length) throw new Error("compaction 保留位置无效");
-			if (history[keepFrom]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
-			prepared = { summary: proposal.summary.trim(), retainedTail: clearRetainedUsage(history.slice(keepFrom)), tokensBefore: estimated };
-		} else {
-			prepared = await compactHistory(
-				history,
-				this.model,
-				this.streamFn,
-				{ cut: cutPoint, tokensBefore: estimated },
-				this.runtimeHooks.provider,
-				compactionSignal,
-			);
-		}
+		// 指令只约束外部 compactor；默认算法在回溯路径保持与压缩前一致的无指令行为。
+		prepared = await this.resolveCompactionResult(proposal, history, cutPoint, estimated, {
+			model: this.model,
+			signal: compactionSignal,
+		});
 		if (!prepared) throw new Error(OVERSIZED_REWIND);
 		compactionSignal.throwIfAborted();
 		const after = estimateContextTokens(
@@ -1251,7 +1257,7 @@ export class Subject {
 	}
 
 	private reportError(error: unknown): void {
-		this.dispatch({ type: "error", text: safeError(error) });
+		this.dispatch({ type: "error", text: errorMessage(error) });
 	}
 
 	private completeActiveRun(): void {
@@ -1290,9 +1296,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function safeError(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
 
 function eventData(value: object): Record<string, unknown> {
 	return { ...value };

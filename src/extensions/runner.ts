@@ -1,6 +1,7 @@
 /** Project-local, trusted extension runtime. It deliberately mirrors Pi's
  * lifecycle model: registrations are owned by an activation and become stale
  * on reload/dispose instead of leaking into the next runtime. */
+import { errorMessage } from "../core/errors.js";
 import { randomUUID } from "node:crypto";
 import { Registrations } from "../core/registrations.js";
 import { discoverExtensions, importExtension } from "./loader.js";
@@ -765,9 +766,6 @@ function ownedUI(
 	});
 }
 
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
 
 export function createPrintUI(
 	write: (message: string, type?: "info" | "warning" | "error") => void,

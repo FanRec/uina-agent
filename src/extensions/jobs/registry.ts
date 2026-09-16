@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { errorMessage } from "../../core/errors.js";
 import { TaskOutputBuffer } from "../../runtime/task-handle.js";
 
 export type JobStatus = "running" | "stopping" | "completed" | "killed" | "failed" | "unknown";
@@ -329,9 +330,6 @@ function formatObservation(observation: ObservationChunk): string {
 	return observation.stream === "stderr" ? `[stderr] ${observation.text}` : observation.text;
 }
 
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
 
 function isJobHandle(value: unknown): value is JobHandle {
 	return !!value

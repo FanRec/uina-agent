@@ -1,4 +1,5 @@
 import type { Tool } from "../../../tools/broker.js";
+import { errorMessage } from "../../../core/errors.js";
 import type { ToolResultStatus } from "../../../core/types.js";
 import type { JobContext, JobHandle, JobOutcome } from "../../jobs/registry.js";
 import { executeShellProcess, type ProcessResult } from "./process.js";
@@ -24,9 +25,6 @@ export interface ShellRunOptions {
 	timeoutMs?: number;
 }
 
-function safeError(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
-}
 
 /** Human-readable shell name for the current platform (used in the tool description). */
 function shellDisplayName(): string {
@@ -95,7 +93,7 @@ export function startBackgroundCommand(command: string, context: JobContext, opt
 				fullOutputPath: result.stdoutMeta?.fullOutputPath ?? result.stderrMeta?.fullOutputPath,
 			},
 		};
-	}, (error): JobOutcome => ({ status: "failed", detail: `命令执行或输出收集失败：${safeError(error)}` }));
+	}, (error): JobOutcome => ({ status: "failed", detail: `命令执行或输出收集失败：${errorMessage(error)}` }));
 	return { cancel: (reason) => context.update({ detail: reason ?? "已请求取消" }), done };
 }
 

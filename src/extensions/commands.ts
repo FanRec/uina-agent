@@ -1,4 +1,5 @@
 import type { ExtensionRegistry } from "./renderer-registry.js";
+import { errorMessage } from "../core/errors.js";
 
 /** One command path for terminal UI, pipe/stdin and one-shot execution. */
 export class CommandRouter {
@@ -14,7 +15,7 @@ export class CommandRouter {
 			return true;
 		}
 		try { await command.handler(rest.join(" ")); }
-		catch (error) { this.report(`/${name} 执行失败: ${error instanceof Error ? error.message : String(error)}`); }
+		catch (error) { this.report(`/${name} 执行失败: ${errorMessage(error)}`); }
 		return true;
 	}
 }

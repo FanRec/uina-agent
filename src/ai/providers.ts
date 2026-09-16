@@ -1,4 +1,5 @@
 import { Registrations } from "../core/registrations.js";
+import { errorMessage } from "../core/errors.js";
 import { assertImageInput } from "../core/content.js";
 import type {
 	DiscoveredModel,
@@ -844,7 +845,7 @@ export class ModelRegistry {
 					this.discovered.set(id, [...await provider.refreshModels()]);
 				}
 			} catch (error) {
-				failures.push(`${id}: ${error instanceof Error ? error.message : String(error)}`);
+				failures.push(`${id}: ${errorMessage(error)}`);
 			}
 		}
 		if (failures.length > 0) throw new Error(`模型目录刷新失败：${failures.join("；")}`);

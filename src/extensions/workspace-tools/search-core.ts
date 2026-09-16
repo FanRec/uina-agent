@@ -10,6 +10,7 @@
  * 匹配数上限、输出字节上限、单行长度上限——任一触发即在输出尾部
  * 附带可操作的提示（如何翻页/如何收窄）。
  */
+import { errorMessage } from "../../core/errors.js";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { opendir, readFile, stat } from "node:fs/promises";
@@ -290,7 +291,7 @@ async function grepWithNode(opts: GrepOptions, limit: number): Promise<SearchOut
 		try {
 			regex = new RegExp(opts.pattern, opts.ignoreCase ? "i" : "");
 		} catch (error) {
-			throw new Error(`search：pattern 不是合法正则：${error instanceof Error ? error.message : String(error)}`);
+			throw new Error(`search：pattern 不是合法正则：${errorMessage(error)}`);
 		}
 	}
 

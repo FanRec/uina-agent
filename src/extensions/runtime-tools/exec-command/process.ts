@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { errorMessage } from "../../../core/errors.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { join } from "node:path";
 
@@ -63,7 +64,7 @@ export function executeShellProcess(
 		child.stdout?.on("data", callbacks.onStdout);
 		child.stderr?.on("data", callbacks.onStderr);
 		child.on("error", (error) => {
-			callbacks.onStderr(Buffer.from(`spawn failed: ${safeError(error)}\n`));
+			callbacks.onStderr(Buffer.from(`spawn failed: ${errorMessage(error)}\n`));
 			finish(null);
 		});
 
@@ -194,6 +195,3 @@ function resolveShell(): { shell: string; args: (command: string) => string[] } 
 
 
 
-function safeError(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}

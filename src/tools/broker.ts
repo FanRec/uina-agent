@@ -1,4 +1,5 @@
 import { validImages } from "../core/content.js";
+import { errorMessage } from "../core/errors.js";
 import { Registrations } from "../core/registrations.js";
 import { createRequire } from "node:module";
 import type { ValidateFunction } from "ajv";
@@ -214,7 +215,7 @@ async function executeToolCore(
 		}
 		return {
 			result: JSON.stringify({
-				error: `${name} 执行失败: ${safeErrorMessage(error)}`,
+				error: `${name} 执行失败: ${errorMessage(error)}`,
 				status: "failed",
 			}),
 			status: "failed",
@@ -336,9 +337,6 @@ function validateToolDefinition(t: Tool): void {
 	}
 }
 
-export function safeErrorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
 
 export {
 	executeToolPipeline,

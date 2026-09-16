@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { errorMessage } from "../../core/errors.js";
 import type { AgentFactory, AgentHandle } from "../../agent/runtime.js";
 import type { AgentInput } from "../../agent/loop.js";
 import type { ToolView } from "../../tools/broker.js";
@@ -241,6 +242,3 @@ export class SubagentRegistry {
 	}
 }
 
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}

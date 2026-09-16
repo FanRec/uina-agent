@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline/promises";
+import { errorMessage } from "../core/errors.js";
 import type { BuiltinUI } from "../extensions/builtin.js";
 import { UinaHost } from "../host/host.js";
 import type { HostEvent } from "../host/events.js";
@@ -129,7 +130,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			onError: (text) => render({ type: "error", text }),
 		});
 	} catch (error) {
-		process.stderr.write(`[启动失败] ${error instanceof Error ? error.message : String(error)}\n`);
+		process.stderr.write(`[启动失败] ${errorMessage(error)}\n`);
 		process.exitCode = 1;
 		return;
 	}

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { errorMessage } from "../core/errors.js";
 import type { ContextSegments, Model, ModelStreamFn, Provider, ThinkingLevel } from "../core/types.js";
 import { activeProvider, loadConfig } from "../ai/config.js";
 import { loadSettings, saveSettings } from "../ai/settings.js";
@@ -180,7 +181,7 @@ export class UinaHost {
 		const emit = (event: HostEvent): void => {
 			for (const listener of [...listeners]) {
 				try { listener(event); }
-				catch (error) { options.onError?.(`消费者处理事件失败: ${error instanceof Error ? error.message : String(error)}`); }
+				catch (error) { options.onError?.(`消费者处理事件失败: ${errorMessage(error)}`); }
 			}
 		};
 
@@ -326,7 +327,7 @@ export class UinaHost {
 
 		if (config !== undefined) {
 			void models.refreshModels().catch((error: unknown) => {
-				options.onError?.(`[模型目录刷新失败] ${error instanceof Error ? error.message : String(error)}`);
+				options.onError?.(`[模型目录刷新失败] ${errorMessage(error)}`);
 			});
 		}
 		return new UinaHost(options, subject, store, extensionHost, tools, models, jobs, subagents, commands, restoredEntries, listeners, state, abandonedTaskIds);
@@ -341,7 +342,7 @@ export class UinaHost {
 	emit(event: HostEvent): void {
 		for (const listener of [...this.listeners]) {
 			try { listener(event); }
-			catch (error) { this.options.onError?.(`消费者处理事件失败: ${error instanceof Error ? error.message : String(error)}`); }
+			catch (error) { this.options.onError?.(`消费者处理事件失败: ${errorMessage(error)}`); }
 		}
 	}
 
