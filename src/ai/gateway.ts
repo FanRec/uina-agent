@@ -288,7 +288,8 @@ function retryAfter(value: string | null): number | undefined {
 	return Number.isFinite(timestamp) ? Math.max(0, timestamp - Date.now()) : undefined;
 }
 
-function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+/** 可中断延迟（导出仅为契约测试；重试风暴下的监听器卫生依赖它）。 */
+export function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 	if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
 	return new Promise((resolve, reject) => {
 		const abort = (): void => {
