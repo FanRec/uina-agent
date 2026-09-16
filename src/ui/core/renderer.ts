@@ -54,7 +54,19 @@ export class MainScreenRenderer {
 			// "pending wrap" state. Advancing with CR LF from there moves down two rows on
 			// hosts that act on the wrap immediately (the classic double-spaced frame), so
 			// every row is positioned absolutely instead of relying on line-feed movement.
-			frame += `\x1b[${r + 1};1H` + this.fitToWidth(expandTabs(cleanLine), width) + "\x1b[K";
+			// fitToWidth 截断超宽行后光标落在 pending-wrap 边界：此状态下 \x1b[K 在
+			// Windows Terminal 会把下一行涂黑（真机黑条）。而正常路径每行已 pad 到
+			// 满宽，无需 erase。统一改为截断后重新绝对定位到行尾列再 \x1b[K，
+			// 使光标离开 pending-wrap 状态；尾部残留列由 K 以当前 bg 涂刷。
+			const fitted = this.fitToWidth(expandTabs(cleanLine), width);
+			const fittedW = visibleWidth(fitted);
+			frame += `\x1b[${r + 1};1H` + fitted;
+			if (fittedW < width) {
+				// 内容不足满宽：以当前 bg 涂掉剩余列（避免 pending-wrap + K 异常）
+				frame += `\x1b[K`;
+			} else {
+				frame += `\x1b[${r + 1};${width}H\x1b[K`;
+			}
 		}
 
 		// 硬件光标精确定位至输入框焦点所在行列，唤起原生系统 IME 候选框
