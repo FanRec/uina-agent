@@ -18,6 +18,7 @@ import { activateSessionTools } from "../extensions/session-tools/index.js";
 import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
 import { killTrackedDetachedChildren } from "../runtime/process-tracker.js";
 import { MemorySessionStore, openJsonlSession } from "../session/jsonl-store.js";
+import { createSessionAccess } from "../session/access.js";
 import { projectAgentHistory, recoverRecords } from "../session/recovery.js";
 import type { SessionEntry, SessionStore } from "../session/types.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
@@ -187,6 +188,11 @@ export class UinaHost {
 
 		// subagents 与 extensionHost 只捕获 subject 的延迟引用，因此可以先建立。
 		let subject!: Subject;
+		// Lazy session view: navigation reads compose from the store, rewind routes
+		// through the Subject's run-safety points. Built lazily because subject is
+		// assigned after the extension host below.
+		const rootSessionView = (): import("../session/types.js").SessionAccess =>
+			createSessionAccess(store, (request, source, signal) => subject.requestRewind(request, source, signal));
 		const subagents = new SubagentRegistry({
 			factory: new DefaultAgentFactory(),
 			model: () => subject.getModel(),
@@ -214,7 +220,11 @@ export class UinaHost {
 		});
 
 		const extensionHost = new ExtensionRunner({
-			session: { list: options => subject.session.list(options), read: id => subject.session.read(id), requestRewind: (request,source,signal) => state.stopping ? Promise.reject(new Error("宿主正在关闭")) : subject.session.requestRewind(request,source,signal) },
+			session: {
+				list: options => rootSessionView().list(options),
+				read: id => rootSessionView().read(id),
+				requestRewind: (request, source, signal) => state.stopping ? Promise.reject(new Error("宿主正在关闭")) : rootSessionView().requestRewind(request, source, signal),
+			},
    cwd: options.cwd,
    extensionPaths: options.extensionPaths,
    onCompact: (instruction) => subject.compact(instruction),
@@ -422,11 +432,12 @@ export class UinaHost {
 
 	/** 内置能力与项目扩展走同一套 ActivationScope；在消费者接入之后调用。 */
 	async start(startOptions: HostStartOptions = {}): Promise<void> {
-		await this.extensionHost.activateBuiltin("session-tools", activateSessionTools(ownerId => ownerId === "root" ? this.subject.session : this.subagents.session(ownerId)));
+		await this.extensionHost.activateBuiltin("session-tools", activateSessionTools(ownerId => ownerId === "root" ? this.rootSession : this.subagents.session(ownerId)));
 		if (this.options.workspaceTools !== false) await this.extensionHost.activateBuiltin("workspace-tools", activateWorkspaceTools);
 		await this.extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools({ jobs: this.jobs, subagents: this.subagents, isTaskAbandoned: (id) => this.abandonedTaskIds.has(id) }));
 		await this.extensionHost.activateBuiltin("commands", activateBuiltinCommands({
 			subject: this.subject,
+			session: this.rootSession,
 			models: this.models,
 			jobs: this.jobs,
 			subagents: this.subagents,
@@ -438,7 +449,12 @@ export class UinaHost {
 	}
 
 	get session(): import("../session/types.js").SessionAccess {
-		return { list: options => this.subject.session.list(options), listBranches: () => this.subject.session.listBranches(), readBranch: id => this.subject.session.readBranch(id), read: id => this.subject.session.read(id), requestRewind: (request,source,signal) => { this.assertAccepting(); return this.subject.session.requestRewind(request,source,signal); } };
+		return { list: options => this.rootSession.list(options), listBranches: () => this.rootSession.listBranches(), readBranch: id => this.rootSession.readBranch(id), read: id => this.rootSession.read(id), requestRewind: (request,source,signal) => { this.assertAccepting(); return this.rootSession.requestRewind(request,source,signal); } };
+	}
+
+	/** Root session view composed from the store; rewind goes through the Subject. */
+	get rootSession(): import("../session/types.js").SessionAccess {
+		return createSessionAccess(this.store, (request, source, signal) => this.subject.requestRewind(request, source, signal));
 	}
 
 	async reloadExtensions(): Promise<void> {

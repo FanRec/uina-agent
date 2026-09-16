@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
+import { createSessionAccess } from "../src/session/access.js";
 import { projectAgentHistory, protectRewindContext, recoverRecords, summarizeAbandonedEffects, projectInputMessage } from "../src/session/recovery.js";
 import { BranchInspectorOverlay } from "../src/ui/components/overlays/branch-inspector.js";
 import { listSessionBranches, listSessionNodes, readSessionBranch, readSessionNode } from "../src/session/navigation.js";
@@ -97,7 +98,7 @@ describe("rewind runtime safe points", () => {
 		const store=new FailingStore();const records=await seed(store);
 		const subject=new Subject(mockModel(),async()=>{throw new Error("must not run");},new ToolBroker(),{store});
 		const history=projectAgentHistory(recoverRecords([...store.readRecords()]).entries);subject.addHistory(history);
-		await expect(subject.session.requestRewind({targetId:records[0].id,reason:"wrong"},"test")).rejects.toThrow("disk unavailable");
+		await expect(subject.requestRewind({targetId:records[0].id,reason:"wrong"},"test")).rejects.toThrow("disk unavailable");
 		expect(subject.historySnapshot()).toEqual(history);expect(subject.isBusy()).toBe(false);
 	});
 	it("cancels a scheduled rewind without dropping newly queued input", async () => {
@@ -108,7 +109,7 @@ describe("rewind runtime safe points", () => {
 		},new ToolBroker(),{store});
 		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
 		const run=subject.pushInput("working");await started;
-		const result=await subject.session.requestRewind({targetId:records[0].id,reason:"wrong"},"test");expect(result.status).toBe("scheduled");
+		const result=await subject.requestRewind({targetId:records[0].id,reason:"wrong"},"test");expect(result.status).toBe("scheduled");
 		await subject.steer("latest instruction");subject.interrupt();await run;
 		expect(store.readRecords().some(record=>record.kind==="rewind")).toBe(false);
 		expect(subject.queuedSnapshot()[0].text).toBe("latest instruction");
@@ -117,7 +118,7 @@ describe("rewind runtime safe points", () => {
 		const store=new MemorySessionStore();const records=await seed(store);
 		const subject=new Subject(mockModel({contextWindow:1}),async()=>{},new ToolBroker(),{store});
 		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
-		await expect(subject.session.requestRewind({targetId:records[0].id,reason:"wrong"},"test")).rejects.toThrow("估算超过");
+		await expect(subject.requestRewind({targetId:records[0].id,reason:"wrong"},"test")).rejects.toThrow("估算超过");
 		expect(store.readRecords().some(record=>record.kind==="rewind")).toBe(false);
 	});
 	it("rebuilds the pre-compaction mainline and drops the abandoned summary when rewinding across a compaction", async () => {
@@ -198,7 +199,7 @@ describe("rewind composition", () => {
 		const entered=new Promise<void>(resolve=>ready=resolve);const finishStream=new Promise<void>(resolve=>finish=resolve);
 		const subject=new Subject(mockModel(),async(_m,_r,emit)=>{ready();await finishStream;emit({kind:"text",text:"old result"});emit({kind:"finish",reason:"stop"});},new ToolBroker(),{store});
 		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
-		const runner=new ExtensionRunner({cwd:process.cwd(),tools:new ToolBroker(),session:subject.session});
+		const runner=new ExtensionRunner({cwd:process.cwd(),tools:new ToolBroker(),session:createSessionAccess(store,(request,source,signal)=>subject.requestRewind(request,source,signal))});
 		let api!:import("../src/extensions/runner.js").ExtensionAPI;
 		await runner.activateBuiltin("rewind-policy",value=>{api=value;});
 		const run=subject.pushInput("working");await entered;
@@ -211,7 +212,7 @@ describe("rewind composition", () => {
 		const store=new MemorySessionStore();const records=await seed(store);
 		const subject=new Subject(mockModel(),async(_m,_r,emit)=>{emit({kind:"text",text:"new plan"});emit({kind:"finish",reason:"stop"});},new ToolBroker(),{store,compactor:async request=>({summary:"用户要求停止写文件；原方案已退出。",keepFrom:request.history.length-1})});
 		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
-		await subject.session.requestRewind({targetId:records[0].id,reason:"wrong"},"test");
+		await subject.requestRewind({targetId:records[0].id,reason:"wrong"},"test");
 		await subject.compact();
 		expect(subject.historySnapshot().some(message=>message.content.includes("会话回溯"))).toBe(true);
 		const entries=recoverRecords([...store.readRecords()]).entries;
@@ -412,9 +413,13 @@ it("does not fail the whole turn when scheduled rewind commit fails at safe poin
 
 it("rejects session operations when subject has no store configured", async () => {
 	const subject = new Subject(mockModel(), async () => {}, new ToolBroker());
-	expect(() => subject.session.list()).toThrow("未配置会话存储");
-	expect(() => subject.session.read("any")).toThrow("未配置会话存储");
-	await expect(subject.session.requestRewind({ targetId: "any", reason: "test" }, "test")).rejects.toThrow("未配置会话存储");
+	await expect(subject.requestRewind({ targetId: "any", reason: "test" }, "test")).rejects.toThrow("未配置会话存储");
+	// Session views are composed from a store by session/access.ts; without a rewind
+	// entry the view stays navigable but rewind fails loudly.
+	const memoryStore = new MemorySessionStore();
+	const view = createSessionAccess(memoryStore);
+	expect(view.list().nodes).toHaveLength(0);
+	await expect(view.requestRewind({ targetId: "any", reason: "test" }, "test")).rejects.toThrow("未配置回溯入口");
 });
 
 describe("abandoned side-effects extraction", () => {

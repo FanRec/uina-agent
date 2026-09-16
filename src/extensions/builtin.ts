@@ -57,6 +57,8 @@ export interface BuiltinUI {
 
 export interface BuiltinServices {
 	subject: Subject;
+	/** Root session view (navigation reads + rewind), composed by the host. */
+	session: import("../session/types.js").SessionAccess;
 	models: ModelRegistry;
 	jobs: JobRegistry;
 	subagents: SubagentRegistry;
@@ -269,7 +271,7 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 				ui.openHistory();
 				return;
 			}
-			const nodes = listAllSessionNodes(services.subject.session, { scope: "all" });
+			const nodes = listAllSessionNodes(services.session, { scope: "all" });
 			const formatted = nodes.map((n) => `[${n.active ? "主线" : "只读"} #${n.seq} ${n.kind}] ${n.id.slice(0, 8)} ${n.preview}`).join("\n");
 			pi.ui.notify(formatted ? `会话历史节点:\n${formatted}` : "暂无历史节点", "info", 8000);
 		};

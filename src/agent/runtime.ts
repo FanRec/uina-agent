@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "../core/types.js";
 import { MemorySessionStore } from "../session/jsonl-store.js";
-import type { SessionStore } from "../session/types.js";
+import type { SessionAccess, SessionStore } from "../session/types.js";
+import { createSessionAccess } from "../session/access.js";
 import { Subject, type AgentInput } from "./loop.js";
 import type { ToolView } from "../tools/broker.js";
 import type { Model, ModelStreamFn } from "../core/types.js";
@@ -30,6 +31,8 @@ export interface AgentCreateOptions {
 export interface AgentHandle {
 	readonly id: string;
 	readonly subject: Subject;
+	/** Session view composed from this agent's store; rewind is routed through the Subject's safety points. */
+	readonly session: SessionAccess;
 	send(input: AgentInput): Promise<void>;
 	interrupt(reason?: string): Promise<void>;
 	waitForIdle(): Promise<void>;
@@ -48,6 +51,7 @@ class RuntimeAgent implements AgentHandle {
 	private readonly store: SessionStore;
 	private disposePromise?: Promise<void>;
 	readonly subject: Subject;
+	readonly session: SessionAccess;
 
 	constructor(readonly id: string, options: AgentCreateOptions) {
 		this.store = options.store ?? new MemorySessionStore();
@@ -57,6 +61,9 @@ class RuntimeAgent implements AgentHandle {
 			thinkingLevel: options.thinkingLevel,
 			runtimeHooks: options.runtimeHooks,
 		});
+		this.session = createSessionAccess(this.store, (request, source, signal) =>
+			this.subject.requestRewind(request, source, signal),
+		);
 		this.subject.subscribe((event) => {
 			if (event.type === "turn_start") {
 				this.turn = event.turnNumber;

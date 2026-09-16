@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { errorMessage } from "../core/errors.js";
-import { listSessionNodes, readSessionNode, listSessionBranches, readSessionBranch } from "../session/navigation.js";
 import { isSafeRewindTarget, projectAgentHistory, protectRewindContext, recoverRecords } from "../session/recovery.js";
-import type { SessionAccess, RewindRequest, RewindResult, SessionRewindRecord } from "../session/types.js";
+import type { RewindRequest, RewindResult, SessionRewindRecord } from "../session/types.js";
 import { validImages } from "../core/content.js";
 import type { Compactor, CompactionTrigger } from "../core/compaction.js";
 import { readonlySnapshot } from "../runtime/guard.js";
@@ -81,28 +80,6 @@ export class Subject {
 	private readonly store?: SessionStore;
 	private pendingRewind?: { request: RewindRequest; source: string; requestId: string; signal?: AbortSignal };
 	private rewindCommitting = false;
-	readonly session: SessionAccess = {
-		list: options => {
-			if (!this.store) throw new Error("未配置会话存储，会话查询不可用");
-			return listSessionNodes(this.store.readRecords(), options);
-		},
-		listBranches: () => {
-			if (!this.store) throw new Error("未配置会话存储，会话查询不可用");
-			return listSessionBranches(this.store.readRecords());
-		},
-		readBranch: id => {
-			if (!this.store) throw new Error("未配置会话存储，会话查询不可用");
-			return readSessionBranch(this.store.readRecords(), id);
-		},
-		read: id => {
-			if (!this.store) throw new Error("未配置会话存储，会话查询不可用");
-			return readSessionNode(this.store.readRecords(), id);
-		},
-		requestRewind: async (request, source, signal) => {
-			if (!this.store) throw new Error("未配置会话存储，回溯不可用");
-			return this.requestRewind(request, source, signal);
-		},
-	};
 	private activeRun?: Promise<void>;
 	private settleActiveRun?: () => void;
 	private resumingQueue = false;
@@ -328,7 +305,9 @@ export class Subject {
 		}
 	}
 
-	private async requestRewind(request: RewindRequest, source: string, signal?: AbortSignal): Promise<RewindResult> {
+	/** Session rewind entry: run-safety scheduling lives here; navigation/reading
+	 * views are composed from the store by session/access.ts, not by the Subject. */
+	async requestRewind(request: RewindRequest, source: string, signal?: AbortSignal): Promise<RewindResult> {
 		signal?.throwIfAborted();
 		if (!this.store) {
 			throw new Error("未配置会话存储，回溯不可用");
