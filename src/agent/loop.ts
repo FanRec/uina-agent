@@ -38,8 +38,6 @@ export interface SubjectOptions {
  compactionTrigger?: CompactionTrigger;
 	systemPrompt?: string;
 	thinkingLevel?: ThinkingLevel;
-	steerQueueMode?: import("../core/types.js").QueueMode;
-	followUpQueueMode?: import("../core/types.js").QueueMode;
 	runtimeHooks?: RuntimeHooks;
 }
 
@@ -81,7 +79,10 @@ export class Subject {
 	private activeRun?: Promise<void>;
 	private settleActiveRun?: () => void;
 	private resumingQueue = false;
-	private readonly queueModes: Record<"steer" | "followUp", import("../core/types.js").QueueMode>;
+	private readonly queueModes: Record<"steer" | "followUp", import("../core/types.js").QueueMode> = {
+		steer: "one-at-a-time",
+		followUp: "one-at-a-time",
+	};
 	private model: Model;
 	private readonly streamFn: ModelStreamFn;
 	private thinkingLevel: ThinkingLevel;
@@ -119,10 +120,6 @@ export class Subject {
 		};
 		this.compactor = options.compactor;
 		this.compactionTrigger = options.compactionTrigger;
-		this.queueModes = {
-			steer: options.steerQueueMode ?? "one-at-a-time",
-			followUp: options.followUpQueueMode ?? "one-at-a-time",
-		};
 		this.preferredThinkingLevel = options.thinkingLevel ?? model.thinkingLevels?.[0] ?? "off";
 		if (this.preferredThinkingLevel !== "off" && !model.thinkingLevels?.includes(this.preferredThinkingLevel)) {
 			throw new Error(`model ${model.name} 未声明支持 thinking level: ${this.preferredThinkingLevel}`);

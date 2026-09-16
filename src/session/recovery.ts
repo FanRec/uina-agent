@@ -1,5 +1,6 @@
 import { validImages } from "../core/content.js";
-import type { AgentMessage, ToolAgentMessage, ToolEffect, ToolResultStatus } from "../core/types.js";
+import { readDeclaredEffects } from "../core/effects.js";
+import type { AgentMessage, ToolEffect, ToolResultStatus } from "../core/types.js";
 import type {
 	AbandonedEffects,
 	HydratedSessionEntry,
@@ -105,30 +106,11 @@ class SessionReplayContext {
 	}
 }
 
-function isToolEffect(value: unknown): value is ToolEffect {
-	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-	const candidate = value as Record<string, unknown>;
-	return (
-		typeof candidate.effectType === "string" &&
-		candidate.effectType.trim().length > 0 &&
-		(candidate.externalOperationId === undefined || typeof candidate.externalOperationId === "string") &&
-		(candidate.label === undefined || typeof candidate.label === "string")
-	);
-}
-
-/** 收集工具结果消息 details.effects 里声明的通用效果事实。 */
-function declaredEffects(msg: ToolAgentMessage): readonly ToolEffect[] {
-	const details = msg.details as { effects?: unknown } | undefined;
-	const declared = details && typeof details === "object" && Array.isArray(details.effects) ? details.effects : undefined;
-	if (!declared) return [];
-	return declared.filter(isToolEffect);
-}
-
 /**
  * 聚合被放弃历史切片中"发生过什么外部效果"的通用事实。
  * Session Core 不认识任何具体工具：效果由工具在自己的结果 details.effects
- * 里声明（Generic effect facts），这里只做过滤（failed/cancelled/not_started
- * 不构成已发生的事实；unknown 仍上报）与去重。
+ * 里声明（Generic effect facts，经 core/effects.ts 契约读取），这里只做过滤
+ * （failed/cancelled/not_started 不构成已发生的事实；unknown 仍上报）与去重。
  */
 export function summarizeAbandonedEffects(abandoned: readonly SessionEntry[]): AbandonedEffects {
 	const effects: ToolEffect[] = [];
@@ -149,7 +131,7 @@ export function summarizeAbandonedEffects(abandoned: readonly SessionEntry[]): A
 		const msg = entry.message as AgentMessage;
 		if (msg.role !== "tool") continue;
 		if (msg.status === "failed" || msg.status === "cancelled" || msg.status === "not_started") continue;
-		for (const effect of declaredEffects(msg)) push(effect);
+		for (const effect of readDeclaredEffects(msg)) push(effect);
 	}
 
 	return { effects };

@@ -22,6 +22,12 @@ const assistant = (content: string, toolCalls?: ChatMsg[]): ChatMsg => ({
 	...(toolCalls ? { tool_calls: toolCalls as never } : {}),
 });
 const tool = (content: string, callId = "c1"): ChatMsg => ({ role: "tool", tool_call_id: callId, content });
+const toolMsg = (callId: string, content: string, details: Record<string, unknown>): ChatMsg => ({
+	role: "tool",
+	tool_call_id: callId,
+	content,
+	details,
+});
 const call = (name: string, args: Record<string, unknown>) => ({ id: "c1", name, args });
 
 // ---------------------------------------------------------------------------
@@ -223,19 +229,27 @@ describe("truncateForSummary", () => {
 // ---------------------------------------------------------------------------
 
 describe("collectFileOperations", () => {
-	it("separates reads from writes and drops files that were also written", () => {
+	it("reads come from read-tool args; writes come from declared effect facts", () => {
 		const history = [
 			assistant("", [call("read_file", { path: "read.ts" })] as never),
 			assistant("", [call("read_file", { path: "both.ts" })] as never),
-			assistant("", [call("write_file", { path: "both.ts", content: "x" })] as never),
-			assistant("", [call("write_file", { path: "new.ts", content: "y" })] as never),
+			toolMsg("w1", "written", { effects: [{ effectType: "file.write", label: "both.ts" }] }),
+			toolMsg("w2", "written", { effects: [{ effectType: "file.write", label: "new.ts" }] }),
 		];
 		const { readFiles, modifiedFiles } = collectFileOperations(history);
 		expect(readFiles).toEqual(["read.ts"]);
 		expect(modifiedFiles).toEqual(["both.ts", "new.ts"]);
 	});
 
-	it("deduplicates and sorts", () => {
+	it("picks up writes from any tool that declares a file.write effect", () => {
+		const history = [
+			assistant("", [call("edit_file", { path: "edited.ts" })] as never),
+			toolMsg("e1", "edited", { edits: 1, effects: [{ effectType: "file.write", label: "edited.ts" }] }),
+		];
+		expect(collectFileOperations(history).modifiedFiles).toEqual(["edited.ts"]);
+	});
+
+	it("deduplicates and sorts reads", () => {
 		const history = [
 			assistant("", [call("read_file", { path: "b.ts" })] as never),
 			assistant("", [call("read_file", { path: "a.ts" })] as never),
@@ -244,9 +258,13 @@ describe("collectFileOperations", () => {
 		expect(collectFileOperations(history).readFiles).toEqual(["a.ts", "b.ts"]);
 	});
 
-	it("ignores calls without a string path", () => {
-		const history = [assistant("", [call("read_file", {}), call("read_file", { path: 42 })] as never)];
+	it("ignores calls without a string path and undeclared writes", () => {
+		const history = [
+			assistant("", [call("read_file", {}), call("read_file", { path: 42 })] as never),
+			toolMsg("w1", "written", {}),
+		];
 		expect(collectFileOperations(history).readFiles).toEqual([]);
+		expect(collectFileOperations(history).modifiedFiles).toEqual([]);
 	});
 });
 

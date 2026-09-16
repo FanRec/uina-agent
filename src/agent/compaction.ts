@@ -1,4 +1,5 @@
 import { imageNotice } from "../core/content.js";
+import { readDeclaredEffects } from "../core/effects.js";
 import type { CompactionProposal } from "../core/compaction.js";
 import type { AgentMessage, ChatMsg, Model, ModelStreamFn } from "../core/types.js";
 import type { ProviderHooks } from "../runtime/hooks.js";
@@ -298,21 +299,31 @@ export function serializeConversation(
 }
 
 const READ_TOOLS = new Set(["read_file", "read_image"]);
-const WRITE_TOOLS = new Set(["write_file"]);
 
+/**
+ * 默认摘要器的文件操作清单。读取清单来自内置只读工具的调用参数（纯展示惯例）；
+ * 写入清单以工具声明的效果事实（details.effects 的 file.write）为准——
+ * 任何声明了写入效果的工具（write_file、edit_file、未来的部署类工具）自动进入，
+ * 默认压缩器不再枚举工具名。
+ */
 export function collectFileOperations(
 	messages: readonly (AgentMessage | ChatMsg)[],
 ): { readFiles: string[]; modifiedFiles: string[] } {
 	const read = new Set<string>();
 	const written = new Set<string>();
 	for (const message of messages) {
-		if (message.role !== "assistant" || !message.tool_calls?.length) continue;
-		for (const call of message.tool_calls) {
-			if (typeof call.args !== "object" || call.args === null) continue;
-			const path = (call.args as Record<string, unknown>).path;
-			if (typeof path !== "string") continue;
-			if (READ_TOOLS.has(call.name)) read.add(path);
-			else if (WRITE_TOOLS.has(call.name)) written.add(path);
+		if (message.role === "assistant" && message.tool_calls?.length) {
+			for (const call of message.tool_calls) {
+				if (typeof call.args !== "object" || call.args === null) continue;
+				const path = (call.args as Record<string, unknown>).path;
+				if (typeof path === "string" && READ_TOOLS.has(call.name)) read.add(path);
+			}
+		} else if (message.role === "tool") {
+			for (const effect of readDeclaredEffects(message)) {
+				if (effect.effectType !== "file.write") continue;
+				const target = effect.label ?? effect.externalOperationId;
+				if (target) written.add(target);
+			}
 		}
 	}
 	return {
