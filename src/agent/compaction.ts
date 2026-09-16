@@ -1,4 +1,5 @@
 import { imageNotice } from "../core/content.js";
+import type { CompactionProposal } from "../core/compaction.js";
 import type { AgentMessage, ChatMsg, Model, ModelStreamFn } from "../core/types.js";
 import type { ProviderHooks } from "../runtime/hooks.js";
 import { CHARS_PER_TOKEN } from "./context.js";
@@ -471,6 +472,43 @@ function buildConversationPrompt(
 	prompt += basePrompt;
 	if (instruction?.trim()) prompt += `\n\n额外关注：${instruction.trim()}`;
 	return prompt;
+}
+
+/**
+ * compaction 提案 → 结果的唯一裁决点：外部 proposal 与默认算法两条路径的
+ * 验证、保留切点与 usage 锚清理都在这里。主回合压缩与回溯投影压缩共用，
+ * 两条路径不可能漂移出不同的有效性规则。
+ */
+export async function resolveCompactionResult(
+	proposal: CompactionProposal | undefined,
+	history: AgentMessage[],
+	cutPoint: CutPointResult,
+	tokensBefore: number,
+	options: {
+		model: Model;
+		stream: ModelStreamFn;
+		providerHooks: ProviderHooks;
+		signal?: AbortSignal;
+		instruction?: string;
+	},
+): Promise<CompactionResult | null> {
+	if (proposal !== undefined) {
+		const { summary, keepFrom } = proposal;
+		if (typeof summary !== "string" || !summary.trim()) throw new Error("compaction 返回空摘要");
+		// A cut that keeps the whole history compacts nothing; accepting it would persist a
+		// summary plus the very messages it summarizes, growing the context it was meant to shrink.
+		if (!Number.isInteger(keepFrom) || keepFrom <= 0 || keepFrom >= history.length) throw new Error("compaction 保留位置无效");
+		if (history[keepFrom]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
+		return { summary: summary.trim(), retainedTail: clearRetainedUsage(history.slice(keepFrom)), tokensBefore };
+	}
+	return compactHistory(
+		history,
+		options.model,
+		options.stream,
+		{ cut: cutPoint, tokensBefore, instruction: options.instruction },
+		options.providerHooks,
+		options.signal,
+	);
 }
 
 export async function compactHistory(

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { errorMessage } from "../core/errors.js";
-import { isSafeRewindTarget, projectAgentHistory, protectRewindContext, recoverRecords } from "../session/recovery.js";
-import type { RewindRequest, RewindResult, SessionRewindRecord } from "../session/types.js";
+import { isSafeRewindTarget, protectRewindContext, recoverRecords } from "../session/recovery.js";
+import type { RewindRequest, RewindResult } from "../session/types.js";
 import { validImages } from "../core/content.js";
 import type { Compactor, CompactionTrigger } from "../core/compaction.js";
 import { readonlySnapshot } from "../runtime/guard.js";
@@ -19,7 +19,8 @@ import type {
 } from "../core/types.js";
 import type { SessionStore } from "../session/types.js";
 import { projectInputMessage } from "../session/recovery.js";
-import { clearRetainedUsage, compactHistory, DEFAULT_COMPACTION_SETTINGS, type CompactionSettings, type CutPointResult, findCutPoint, shouldCompact } from "./compaction.js";
+import { DEFAULT_COMPACTION_SETTINGS, resolveCompactionResult, type CompactionSettings, findCutPoint, shouldCompact } from "./compaction.js";
+import { commitRewindTransition } from "./rewind.js";
 import { buildContext, calculateContextSegments, convertToLlm, defaultSystemPrompt, estimateContextTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import { TurnStreamCollector, type StreamCollectorResult } from "./stream-collector.js";
@@ -54,9 +55,6 @@ export function clampThinkingLevel(
 export interface QueueInputOptions {
 	mode?: DeliveryMode;
 }
-
-/** One wording for every way an oversized rewind is refused; the mainline never moves in these cases. */
-const OVERSIZED_REWIND = "回溯后的上下文估算超过模型上限；主线未改变，请选择其他目标或纠错方式";
 
 export interface AgentInput {
 	id: string;
@@ -390,50 +388,32 @@ export class Subject {
 		}
 	}
 
+	/** Durable transition (record + projection + pre-persist compaction) lives in
+	 * agent/rewind.ts; this method owns only the ordering discipline: adopt the
+	 * projected history, invalidate usage caches before broadcasting, then emit. */
 	private async commitRewind(pending: NonNullable<Subject["pendingRewind"]>): Promise<string> {
 		this.rewindCommitting = true;
 		let committed = false;
 		try {
-			pending.signal?.throwIfAborted();
-			this.currentSignal().throwIfAborted();
 			if (!this.store) {
 				throw new Error("未配置会话存储，回溯不可用");
 			}
-			const records = [...this.store.readRecords()];
-			const entries = recoverRecords(records, false).entries;
-			const fromId = entries.at(-1)?.id;
-			if (!fromId) {
-				throw new Error("会话没有可回溯历史");
-			}
-			const record: SessionRewindRecord = {
-				...pending.request,
-				kind: "rewind",
-				id: randomUUID(),
-				requestId: pending.requestId,
-				source: pending.source,
-				fromId,
-				seq: (records.at(-1)?.seq ?? 0) + 1,
-				timestamp: new Date().toISOString(),
-			};
-			const next = recoverRecords([...records, record]);
-			// The projection stays derived from records; an oversized rewind is compacted before it is
-			// persisted so a committed rewind never leaves an unusable context behind.
-			const history = projectAgentHistory(next.entries);
-			const estimated = estimateContextTokens(
-				buildContext({ history, systemPrompt: this.systemPrompt }),
-				{ tools: this.tools.defs(), includeThinking: this.model.includeThinking },
-			).tokens;
-			const compacted = await this.compactProjectionForRewind(history, estimated, pending.signal);
-
-			pending.signal?.throwIfAborted();
-			this.currentSignal().throwIfAborted();
-			// Persist rewind and its optional compaction as one durable transition.
-			const finalRecord = compacted ? { ...record, compaction: compacted } : record;
-			const finalState = recoverRecords([...records, finalRecord]);
-			const finalHistory = projectAgentHistory(finalState.entries);
-			await this.store.appendRewind(finalRecord);
+			const { rewindId, fromId, targetId, history, compacted } = await commitRewindTransition(
+				this.store,
+				pending,
+				{
+					model: this.model,
+					systemPrompt: this.systemPrompt,
+					tools: this.tools.defs(),
+					keepRecentTokens: this.compaction.keepRecentTokens,
+					compactor: this.compactor,
+					stream: this.streamFn,
+					providerHooks: this.runtimeHooks.provider,
+				},
+				this.currentSignal(),
+			);
 			committed = true;
-			this.history = finalHistory;
+			this.history = history;
 			// 历史刚被替换：先失效 usage 缓存，再广播。
 			this.forgetUsage();
 			if (compacted) {
@@ -448,11 +428,11 @@ export class Subject {
 				type: "session_rewind",
 				turnNumber: this.activity === "turn" ? this.turnSeq : undefined,
 				requestId: pending.requestId,
-				rewindId: record.id,
+				rewindId,
 				fromId,
-				targetId: record.targetId,
+				targetId,
 			});
-			return record.id;
+			return rewindId;
 		} catch (error) {
 			throw new Error(
 				`回溯请求 ${pending.requestId} ${committed ? "已提交，但通知失败" : "未提交"}: ${errorMessage(error)}`,
@@ -1058,8 +1038,10 @@ export class Subject {
 			instruction,
 		});
 		const proposal = await this.compactor?.(request as import("../core/compaction.js").CompactionRequest, signal);
-		const result = await this.resolveCompactionResult(proposal, this.history, cutPoint, tokensBefore, {
+		const result = await resolveCompactionResult(proposal, this.history, cutPoint, tokensBefore, {
 			model,
+			stream: this.streamFn,
+			providerHooks: this.runtimeHooks.provider,
 			signal,
 			instruction,
 		});
@@ -1086,94 +1068,6 @@ export class Subject {
 		} finally {
 			this.compactionActive = false;
 		}
-	}
-
-	/**
-	 * compaction 提案 → 结果的唯一裁决点：外部 proposal 与默认算法两条路径的
-	 * 验证、保留切点与 usage 锚清理都在这里，performCompaction 与回溯投影共用，
-	 * 两条路径不可能漂移出不同的有效性规则。
-	 */
-	private async resolveCompactionResult(
-		proposal: import("../core/compaction.js").CompactionProposal | undefined,
-		history: AgentMessage[],
-		cutPoint: CutPointResult,
-		tokensBefore: number,
-		options: { model: Model; signal: AbortSignal; instruction?: string },
-	): Promise<import("./compaction.js").CompactionResult | null> {
-		if (proposal !== undefined) {
-			const { summary, keepFrom } = proposal;
-			if (typeof summary !== "string" || !summary.trim()) throw new Error("compaction 返回空摘要");
-			// A cut that keeps the whole history compacts nothing; accepting it would persist a
-			// summary plus the very messages it summarizes, growing the context it was meant to shrink.
-			if (!Number.isInteger(keepFrom) || keepFrom <= 0 || keepFrom >= history.length) throw new Error("compaction 保留位置无效");
-			if (history[keepFrom]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
-			return { summary: summary.trim(), retainedTail: clearRetainedUsage(history.slice(keepFrom)), tokensBefore };
-		}
-		return compactHistory(
-			history,
-			options.model,
-			this.streamFn,
-			{ cut: cutPoint, tokensBefore, instruction: options.instruction },
-			this.runtimeHooks.provider,
-			options.signal,
-		);
-	}
-
-	/**
-	 * A rewind can re-expose history that was already compacted away, so the projected main line is
-	 * measured before it is persisted. Returns a fitting compaction, or null when the projection
-	 * already fits the model window; throws when compaction cannot bring it back under the window.
-	 */
-	private async compactProjectionForRewind(
-		history: AgentMessage[],
-		estimated: number,
-		signal?: AbortSignal,
-	): Promise<import("./compaction.js").CompactionResult | null> {
-		const contextWindow = this.model.contextWindow;
-		if (contextWindow === undefined || estimated <= contextWindow) return null;
-		const cutPoint = findCutPoint(history, this.compaction.keepRecentTokens, false);
-		if (cutPoint.firstKeptEntryIndex <= 0) throw new Error(OVERSIZED_REWIND);
-		const compactionSignal = signal ?? this.currentSignal();
-		const proposal = await this.compactor?.(
-			{
-				reason: "automatic",
-				history,
-				suggestedKeepFrom: cutPoint.firstKeptEntryIndex,
-				tokensBefore: estimated,
-				model: this.model,
-				instruction: "由于回溯使历史重新展开导致上下文超限，请压缩前期历史",
-			},
-			compactionSignal,
-		);
-		let prepared: import("./compaction.js").CompactionResult | null;
-		// 指令只约束外部 compactor；默认算法在回溯路径保持与压缩前一致的无指令行为。
-		prepared = await this.resolveCompactionResult(proposal, history, cutPoint, estimated, {
-			model: this.model,
-			signal: compactionSignal,
-		});
-		if (!prepared) throw new Error(OVERSIZED_REWIND);
-		compactionSignal.throwIfAborted();
-		const after = estimateContextTokens(
-			buildContext({
-				history: [
-					{
-						role: "compactionSummary",
-						summary: prepared.summary,
-						content: "[历史摘要] " + prepared.summary,
-						tokensBefore: prepared.tokensBefore,
-					},
-					...prepared.retainedTail,
-				],
-				systemPrompt: this.systemPrompt,
-			}),
-			{ tools: this.tools.defs(), includeThinking: this.model.includeThinking },
-		).tokens;
-		if (after > contextWindow) {
-			throw new Error(
-				`${OVERSIZED_REWIND}：压缩后仍约 ${after} tokens，模型上限 ${contextWindow}`,
-			);
-		}
-		return prepared;
 	}
 
 	private async appendMessage(message: AgentMessage): Promise<void> {

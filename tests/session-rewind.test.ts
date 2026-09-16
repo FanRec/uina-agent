@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { createSessionAccess } from "../src/session/access.js";
+import { commitRewindTransition } from "../src/agent/rewind.js";
+import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { projectAgentHistory, protectRewindContext, recoverRecords, summarizeAbandonedEffects, projectInputMessage } from "../src/session/recovery.js";
 import { BranchInspectorOverlay } from "../src/ui/components/overlays/branch-inspector.js";
 import { listSessionBranches, listSessionNodes, readSessionBranch, readSessionNode } from "../src/session/navigation.js";
@@ -420,6 +422,64 @@ it("rejects session operations when subject has no store configured", async () =
 	const view = createSessionAccess(memoryStore);
 	expect(view.list().nodes).toHaveLength(0);
 	await expect(view.requestRewind({ targetId: "any", reason: "test" }, "test")).rejects.toThrow("未配置回溯入口");
+});
+
+describe("commitRewindTransition mechanism", () => {
+	const context = () => ({
+		model: mockModel(),
+		systemPrompt: "sys",
+		tools: [],
+		keepRecentTokens: 20_000,
+		stream: async () => {},
+		providerHooks: NO_RUNTIME_HOOKS.provider,
+	});
+	it("appends exactly one rewind record and returns the projected mainline", async () => {
+		const store = new MemorySessionStore();
+		const records = await seed(store);
+		const commit = await commitRewindTransition(
+			store,
+			{ request: { targetId: records[0].id, reason: "bad premise" }, source: "test", requestId: "req-1" },
+			context(),
+			new AbortController().signal,
+		);
+		const rewindRecords = store.readRecords().filter((record) => record.kind === "rewind");
+		expect(rewindRecords).toHaveLength(1);
+		expect(commit.rewindId).toBe((rewindRecords[0] as { id: string }).id);
+		expect(commit.fromId).toBe(records[2].id);
+		expect(commit.targetId).toBe(records[0].id);
+		expect(commit.compacted).toBeNull();
+		// 主线投影回退到目标祖先，不再包含被放弃的消息。
+		expect(commit.history.some((message) => message.role === "user" && message.content === "original task")).toBe(true);
+		expect(commit.history.some((message) => message.content === "bad plan")).toBe(false);
+	});
+	it("persists nothing when the reconstructed projection exceeds the model window", async () => {
+		const store = new MemorySessionStore();
+		const records = await seed(store);
+		await expect(
+			commitRewindTransition(
+				store,
+				{ request: { targetId: records[0].id, reason: "wrong" }, source: "test", requestId: "req-2" },
+				{ ...context(), model: mockModel({ contextWindow: 1 }) },
+				new AbortController().signal,
+			),
+		).rejects.toThrow("估算超过");
+		expect(store.readRecords().some((record) => record.kind === "rewind")).toBe(false);
+	});
+	it("refuses to commit when the abort signal fires before the journal append", async () => {
+		const store = new MemorySessionStore();
+		const records = await seed(store);
+		const controller = new AbortController();
+		controller.abort();
+		await expect(
+			commitRewindTransition(
+				store,
+				{ request: { targetId: records[0].id, reason: "late" }, source: "test", requestId: "req-3" },
+				context(),
+				controller.signal,
+			),
+		).rejects.toThrow();
+		expect(store.readRecords().some((record) => record.kind === "rewind")).toBe(false);
+	});
 });
 
 describe("abandoned side-effects extraction", () => {
