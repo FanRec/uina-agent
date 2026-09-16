@@ -127,7 +127,7 @@ export function activateEditFile(api: ExtensionAPI): void {
 			return {
 				result: `Edited ${file}: ${edits.length} replacement(s).\n${summary.diff}`,
 				status: "succeeded",
-				details: { path: file, edits: edits.length, lineEnding: ending, firstChangedLine: summary.firstChangedLine },
+				details: { path: file, edits: edits.length, lineEnding: ending, firstChangedLine: summary.firstChangedLine, effects: [{ effectType: "file.write", label: file }] },
 			};
 		},
 	});

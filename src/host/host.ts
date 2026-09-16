@@ -13,7 +13,7 @@ import { SubagentRegistry } from "../extensions/subagents/registry.js";
 import { ExtensionRunner } from "../extensions/runner.js";
 import { CommandRouter } from "../extensions/commands.js";
 import { activateBuiltinCommands, type BuiltinUI } from "../extensions/builtin.js";
-import { activateRuntimeTools, createChildTools } from "../extensions/runtime-tools/index.js";
+import { activateRuntimeTools, createChildTools, TASK_DISPATCH_EFFECT } from "../extensions/runtime-tools/index.js";
 import { activateSessionTools } from "../extensions/session-tools/index.js";
 import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
 import { killTrackedDetachedChildren } from "../runtime/process-tracker.js";
@@ -174,11 +174,19 @@ export class UinaHost {
 		const toolStartedAt = new Map<string, number>();
 		const state = { stopping: false };
 		const abandonedTaskIds = new Set<string>();
-		for (const entry of restoredEntries) {
-			if (entry.kind === "rewind" && entry.effects?.dispatchedTasks) {
-				for (const task of entry.effects.dispatchedTasks) abandonedTaskIds.add(task.id);
+		// Host 装配层消费工具声明的 generic effect facts：只认 task.dispatch 的
+		// 外部操作身份（与 runtime-tools 的声明契约），不认识具体工具。
+		const collectAbandonedTaskIds = (entries: readonly SessionEntry[]): void => {
+			for (const entry of entries) {
+				if (entry.kind !== "rewind" || !entry.effects) continue;
+				for (const effect of entry.effects.effects) {
+					if (effect.effectType === TASK_DISPATCH_EFFECT && effect.externalOperationId) {
+						abandonedTaskIds.add(effect.externalOperationId);
+					}
+				}
 			}
-		}
+		};
+		collectAbandonedTaskIds(restoredEntries);
 		const emit = (event: HostEvent): void => {
 			for (const listener of [...listeners]) {
 				try { listener(event); }
@@ -266,11 +274,7 @@ export class UinaHost {
 			switch (event.type) {
 				case "session_rewind": {
 					const recovered = recoverRecords([...store.readRecords()], false);
-					for (const entry of recovered.allEntries) {
-						if (entry.kind === "rewind" && entry.effects?.dispatchedTasks) {
-							for (const task of entry.effects.dispatchedTasks) abandonedTaskIds.add(task.id);
-						}
-					}
+					collectAbandonedTaskIds(recovered.allEntries);
 					emit({ ...event, entries: recovered.entries });
 					break;
 				}

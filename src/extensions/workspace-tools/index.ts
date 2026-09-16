@@ -66,7 +66,11 @@ export default function activate(api: ExtensionAPI): void {
 		run: async (args, signal) => {
 			const file = resolve(api.cwd, String(args.path));
 			await writeFile(file, String(args.text), { encoding: "utf8", signal });
-			return { result: "Written " + file, status: "succeeded", details: { path: file } };
+			return {
+				result: "Written " + file,
+				status: "succeeded",
+				details: { path: file, effects: [{ effectType: "file.write", label: file }] },
+			};
 		},
 	});
 		activateEditFile(api);

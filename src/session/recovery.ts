@@ -1,7 +1,7 @@
 import { validImages } from "../core/content.js";
-import type { AgentMessage, ToolAgentMessage, ToolResultStatus } from "../core/types.js";
+import type { AgentMessage, ToolAgentMessage, ToolEffect, ToolResultStatus } from "../core/types.js";
 import type {
-	AbandonedSideEffects,
+	AbandonedEffects,
 	HydratedSessionEntry,
 	QueuedInput,
 	SessionEntry,
@@ -105,116 +105,54 @@ class SessionReplayContext {
 	}
 }
 
-interface ToolCallDetail {
-	name: string;
-	args: Record<string, unknown>;
-	status?: ToolResultStatus;
-	resultObj?: Record<string, unknown>;
+function isToolEffect(value: unknown): value is ToolEffect {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const candidate = value as Record<string, unknown>;
+	return (
+		typeof candidate.effectType === "string" &&
+		candidate.effectType.trim().length > 0 &&
+		(candidate.externalOperationId === undefined || typeof candidate.externalOperationId === "string") &&
+		(candidate.label === undefined || typeof candidate.label === "string")
+	);
 }
 
-/** Uina writes files through write_file; the rest are read-only capabilities. */
-const WRITE_TOOL_NAMES = new Set(["write_file"]);
-
-function parseResultObject(msg: ToolAgentMessage): Record<string, unknown> | undefined {
-	if (msg.details && typeof msg.details === "object") {
-		return msg.details as Record<string, unknown>;
-	}
-	if (typeof msg.content === "string") {
-		try {
-			const parsed = JSON.parse(msg.content);
-			if (parsed && typeof parsed === "object") return parsed;
-		} catch {
-			// not JSON
-		}
-	}
-	return undefined;
+/** 收集工具结果消息 details.effects 里声明的通用效果事实。 */
+function declaredEffects(msg: ToolAgentMessage): readonly ToolEffect[] {
+	const details = msg.details as { effects?: unknown } | undefined;
+	const declared = details && typeof details === "object" && Array.isArray(details.effects) ? details.effects : undefined;
+	if (!declared) return [];
+	return declared.filter(isToolEffect);
 }
 
-function collectCallDetails(abandoned: readonly SessionEntry[]): Map<string, ToolCallDetail> {
-	const callDetails = new Map<string, ToolCallDetail>();
-	for (const entry of abandoned) {
-		if (entry.kind !== "message") continue;
-		const msg = entry.message as AgentMessage;
-		if (msg.role === "assistant" && msg.tool_calls) {
-			for (const call of msg.tool_calls) {
-				if (call.id) {
-					callDetails.set(call.id, {
-						name: call.name,
-						args: (call.args && typeof call.args === "object") ? (call.args as Record<string, unknown>) : {},
-					});
-				}
-			}
-		} else if (msg.role === "tool" && msg.tool_call_id) {
-			const existing = callDetails.get(msg.tool_call_id);
-			if (existing) {
-				existing.status = msg.status;
-				const res = parseResultObject(msg);
-				if (res) existing.resultObj = res;
-			}
-		}	}
-	return callDetails;
-}
-
-function extractModifiedFile(call: ToolCallDetail): string | undefined {
-	if (!WRITE_TOOL_NAMES.has(call.name)) return undefined;
-	const candidate = call.args.path ?? call.resultObj?.path;
-	if (typeof candidate === "string" && candidate.trim()) {
-		return candidate.trim();
-	}
-	return undefined;
-}
-
-function extractCommandOrTask(callId: string, call: ToolCallDetail):
-	| { command?: string; task?: { id: string; type: "job" | "subagent"; label?: string } }
-	| undefined {
-	if (call.name === "exec_command") {
-		const cmd = typeof call.args.command === "string" ? call.args.command.trim() : "";
-		if (call.args.run_in_background === true) {
-			const jobId = typeof call.resultObj?.jobId === "string" ? call.resultObj.jobId : callId;
-			return { task: { id: jobId, type: "job", ...(cmd ? { label: cmd } : {}) } };
-		}
-		if (cmd) return { command: cmd };
-	} else if (call.name === "subagent_start") {
-		const subId = typeof call.resultObj?.id === "string" ? call.resultObj.id : callId;
-		const label = typeof call.args.label === "string" ? call.args.label : undefined;
-		return { task: { id: subId, type: "subagent", ...(label ? { label } : {}) } };
-	}
-	return undefined;
-}
-
-export function summarizeAbandonedEffects(abandoned: readonly SessionEntry[]): AbandonedSideEffects {
-	const modifiedFiles = new Set<string>();
-	const executedCommands = new Set<string>();
-	const dispatchedTasksMap = new Map<string, { id: string; type: "job" | "subagent"; label?: string }>();
+/**
+ * 聚合被放弃历史切片中"发生过什么外部效果"的通用事实。
+ * Session Core 不认识任何具体工具：效果由工具在自己的结果 details.effects
+ * 里声明（Generic effect facts），这里只做过滤（failed/cancelled/not_started
+ * 不构成已发生的事实；unknown 仍上报）与去重。
+ */
+export function summarizeAbandonedEffects(abandoned: readonly SessionEntry[]): AbandonedEffects {
+	const effects: ToolEffect[] = [];
+	const seen = new Set<string>();
+	const push = (effect: ToolEffect): void => {
+		const key = `${effect.effectType}:${effect.externalOperationId ?? ""}:${effect.label ?? ""}`;
+		if (seen.has(key)) return;
+		seen.add(key);
+		effects.push(effect);
+	};
 
 	for (const entry of abandoned) {
 		if (entry.kind === "rewind" && entry.effects) {
-			for (const f of entry.effects.modifiedFiles) modifiedFiles.add(f);
-			for (const c of entry.effects.executedCommands) executedCommands.add(c);
-			for (const t of entry.effects.dispatchedTasks) dispatchedTasksMap.set(t.id, t);
-		}
-	}
-
-	const callDetails = collectCallDetails(abandoned);
-
-	for (const [callId, call] of callDetails) {
-		if (call.status === "failed" || call.status === "cancelled" || call.status === "not_started") {
+			for (const effect of entry.effects.effects) push(effect);
 			continue;
 		}
-
-		const file = extractModifiedFile(call);
-		if (file) modifiedFiles.add(file);
-
-		const cmdOrTask = extractCommandOrTask(callId, call);
-		if (cmdOrTask?.command) executedCommands.add(cmdOrTask.command);
-		if (cmdOrTask?.task) dispatchedTasksMap.set(cmdOrTask.task.id, cmdOrTask.task);
+		if (entry.kind !== "message") continue;
+		const msg = entry.message as AgentMessage;
+		if (msg.role !== "tool") continue;
+		if (msg.status === "failed" || msg.status === "cancelled" || msg.status === "not_started") continue;
+		for (const effect of declaredEffects(msg)) push(effect);
 	}
 
-	return {
-		modifiedFiles: [...modifiedFiles],
-		executedCommands: [...executedCommands],
-		dispatchedTasks: [...dispatchedTasksMap.values()],
-	};
+	return { effects };
 }
 
 function replayRewind(ctx: SessionReplayContext, record: SessionRecord & { kind: "rewind" }): void {
@@ -238,14 +176,15 @@ function replayRewind(ctx: SessionReplayContext, record: SessionRecord & { kind:
 		`退出路径只读，可用 session_list(scope=all) / session_read 查询，包括此前回溯。外部副作用、文件和后台任务没有被撤销；重新行动前核实当前状态。后附历史输入保留原要求，不表示再次执行旧任务；最新要求不因回溯而失效。`;
 
 	const effectLines: string[] = [];
-	if (effects.modifiedFiles.length > 0) {
-		effectLines.push(`- 被修改文件 (${effects.modifiedFiles.length}): ${effects.modifiedFiles.join(", ")}`);
+	// 通用展示：按声明方给的 effectType 分组，行内容取 label / 外部操作身份。
+	const grouped = new Map<string, string[]>();
+	for (const effect of effects.effects) {
+		const labels = grouped.get(effect.effectType) ?? [];
+		labels.push(effect.label ?? effect.externalOperationId ?? "?");
+		grouped.set(effect.effectType, labels);
 	}
-	if (effects.executedCommands.length > 0) {
-		effectLines.push(`- 已执行命令 (${effects.executedCommands.length}): ${effects.executedCommands.map((c) => `\`${c}\``).join(", ")}`);
-	}
-	if (effects.dispatchedTasks.length > 0) {
-		effectLines.push(`- 派生/后台任务 (${effects.dispatchedTasks.length}): ${effects.dispatchedTasks.map((t) => `${t.type}:${t.id}${t.label ? ` (${t.label})` : ""}`).join(", ")}`);
+	for (const [effectType, labels] of grouped) {
+		effectLines.push(`- ${effectType} (${labels.length}): ${labels.join(", ")}`);
 	}
 	if (effectLines.length > 0) {
 		notice += `\n[在被放弃历史切片中产生的外部操作]\n` + effectLines.join("\n");

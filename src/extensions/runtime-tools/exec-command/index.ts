@@ -132,7 +132,11 @@ export function createExecCommandTool(
 					source: { extension: "shell", operation: "exec" },
 					start: (context) => startBackgroundCommand(command, context, { timeoutMs }),
 				});
-				return { result: JSON.stringify({ jobId: id, source: { extension: "shell", operation: "exec" }, status: "running" }), status: "succeeded" };
+				return {
+					result: JSON.stringify({ jobId: id, source: { extension: "shell", operation: "exec" }, status: "running" }),
+					status: "succeeded",
+					details: { effects: [{ effectType: "task.dispatch", externalOperationId: id, label: command }] },
+				};
 			}
 			const result = await execCommandDirect(command, signal, { timeoutMs });
 			const status: ToolResultStatus = result.cancelled
@@ -158,7 +162,11 @@ export function createExecCommandTool(
 			};
 			if (result.timedOut) body.error = `命令超时（${timeoutMs} ms）`;
 			else if (result.code !== 0 && !result.cancelled) body.error = `退出码 ${result.code}`;
-			return { result: JSON.stringify(body), status };
+			return {
+				result: JSON.stringify(body),
+				status,
+				details: { effects: [{ effectType: "command.exec", label: command }] },
+			};
 		},
 	};
 }

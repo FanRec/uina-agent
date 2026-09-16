@@ -265,15 +265,16 @@ function formatNodeDetails(entry: HydratedSessionEntry | null, width: number): s
 		rows.push(label("来源", entry.record.source));
 		rows.push(...wrapPlain(label("原因", entry.record.reason), width));
 		if (entry.record.summary) rows.push(...wrapPlain(label("摘要", entry.record.summary), width));
-		if (entry.effects) {
-			if (entry.effects.modifiedFiles.length > 0) {
-				rows.push(...wrapPlain(label("修改文件", entry.effects.modifiedFiles.join(", ")), width));
+		if (entry.effects && entry.effects.effects.length > 0) {
+			// 通用效果清单：按声明方的 effectType 分组展示，不解释语义。
+			const grouped = new Map<string, string[]>();
+			for (const effect of entry.effects.effects) {
+				const labels = grouped.get(effect.effectType) ?? [];
+				labels.push(effect.label ?? effect.externalOperationId ?? "?");
+				grouped.set(effect.effectType, labels);
 			}
-			if (entry.effects.executedCommands.length > 0) {
-				rows.push(...wrapPlain(label("执行命令", entry.effects.executedCommands.join(", ")), width));
-			}
-			if (entry.effects.dispatchedTasks.length > 0) {
-				rows.push(...wrapPlain(label("派生任务", entry.effects.dispatchedTasks.map((task) => `${task.type}:${task.id}`).join(", ")), width));
+			for (const [effectType, labels] of grouped) {
+				rows.push(...wrapPlain(label("外部效果", `${effectType}: ${labels.join(", ")}`), width));
 			}
 		}
 		return rows;

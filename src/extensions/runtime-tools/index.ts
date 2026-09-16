@@ -13,6 +13,11 @@ export interface RuntimeToolsServices {
 	isTaskAbandoned?: (id: string) => boolean;
 }
 
+/** Effect type declared by tools that dispatch a background task (job or subagent).
+ * Producer: runtime-tools / subagent tools. Consumer: host assembly (abandoned-task
+ * tracking). Session Core never interprets this string. */
+export const TASK_DISPATCH_EFFECT = "task.dispatch";
+
 /** Registers Uina's built-in runtime capabilities through the same activation
  * API used by project extensions. */
 export function activateRuntimeTools(services: RuntimeToolsServices): ExtensionActivation {

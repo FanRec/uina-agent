@@ -113,18 +113,16 @@ export interface SessionEntryMeta {
 	timestamp: string;
 }
 
-export interface AbandonedSideEffects {
-	readonly modifiedFiles: readonly string[];
-	readonly executedCommands: readonly string[];
-	readonly dispatchedTasks: readonly {
-		readonly id: string;
-		readonly type: "job" | "subagent";
-		readonly label?: string;
-	}[];
+/**
+ * 被放弃历史切片的外部效果清单。条目是工具自行声明的通用 ToolEffect；
+ * Session Core 只聚合与展示，不理解任何具体 effectType 的语义。
+ */
+export interface AbandonedEffects {
+	readonly effects: readonly import("../core/types.js").ToolEffect[];
 }
 
 export type SessionEntryPayload =
-	| { kind: "rewind"; record: SessionRewindRecord; notice: string; carriedInputs: AgentMessage[]; effects?: AbandonedSideEffects }
+	| { kind: "rewind"; record: SessionRewindRecord; notice: string; carriedInputs: AgentMessage[]; effects?: AbandonedEffects }
 	| { kind: "input"; input: QueuedInput }
 	| { kind: "message"; message: AgentMessage | ChatMsg }
 	| {

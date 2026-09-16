@@ -482,79 +482,99 @@ describe("commitRewindTransition mechanism", () => {
 	});
 });
 
-describe("abandoned side-effects extraction", () => {
-	it("extracts modified files, executed commands and dispatched tasks, ignoring failed calls", () => {
+describe("abandoned side-effects extraction (generic effect facts)", () => {
+	it("aggregates declared effects, skipping failed/cancelled/not_started results", () => {
 		const abandonedEntries = [
 			{
 				kind: "message" as const,
 				message: {
-					role: "assistant" as const,
-					content: "calling tools",
-					tool_calls: [
-						{ id: "c1", name: "write_file", args: { path: "src/index.ts", text: "hello" } },
-						{ id: "c2", name: "exec_command", args: { command: "npm test" } },
-						{ id: "c3", name: "exec_command", args: { command: "pnpm build", run_in_background: true } },
-						{ id: "c4", name: "write_file", args: { path: "fail.txt", text: "err" } },
-						{ id: "c5", name: "subagent_start", args: { label: "worker-1", prompt: "do work" } },
-					],
+					role: "tool" as const,
+					tool_call_id: "c1",
+					content: "written",
+					status: "succeeded" as const,
+					details: { effects: [{ effectType: "file.write", label: "src/index.ts" }] },
 				},
 			},
 			{
 				kind: "message" as const,
-				message: { role: "tool" as const, tool_call_id: "c1", content: "written", status: "succeeded" as const },
+				message: {
+					role: "tool" as const,
+					tool_call_id: "c2",
+					content: JSON.stringify({ code: 0 }),
+					status: "succeeded" as const,
+					details: { effects: [{ effectType: "command.exec", label: "npm test" }] },
+				},
 			},
 			{
 				kind: "message" as const,
-				message: { role: "tool" as const, tool_call_id: "c2", content: JSON.stringify({ code: 0 }), status: "succeeded" as const },
+				message: {
+					role: "tool" as const,
+					tool_call_id: "c3",
+					content: JSON.stringify({ jobId: "job-bg-99" }),
+					status: "succeeded" as const,
+					details: { effects: [{ effectType: "task.dispatch", externalOperationId: "job-bg-99", label: "pnpm build" }] },
+				},
 			},
 			{
 				kind: "message" as const,
-				message: { role: "tool" as const, tool_call_id: "c3", content: JSON.stringify({ jobId: "job-bg-99" }), status: "succeeded" as const },
+				message: {
+					role: "tool" as const,
+					tool_call_id: "c4",
+					content: "disk error",
+					status: "failed" as const,
+					details: { effects: [{ effectType: "file.write", label: "fail.txt" }] },
+				},
 			},
 			{
 				kind: "message" as const,
-				message: { role: "tool" as const, tool_call_id: "c4", content: "disk error", status: "failed" as const },
-			},
-			{
-				kind: "message" as const,
-				message: { role: "tool" as const, tool_call_id: "c5", content: JSON.stringify({ id: "sub-42" }), status: "succeeded" as const },
+				message: {
+					role: "tool" as const,
+					tool_call_id: "c5",
+					content: JSON.stringify({ id: "sub-42" }),
+					status: "unknown" as const,
+					details: { effects: [{ effectType: "task.dispatch", externalOperationId: "sub-42", label: "worker-1" }] },
+				},
 			},
 		];
 
 		const effects = summarizeAbandonedEffects(abandonedEntries);
-		expect(effects.modifiedFiles).toEqual(["src/index.ts"]);
-		expect(effects.executedCommands).toEqual(["npm test"]);
-		expect(effects.dispatchedTasks).toEqual([
-			{ id: "job-bg-99", type: "job", label: "pnpm build" },
-			{ id: "sub-42", type: "subagent", label: "worker-1" },
+		// Session Core 不解释语义，只按声明原样聚合；unknown 仍上报，failed 被过滤。
+		expect(effects.effects).toEqual([
+			{ effectType: "file.write", label: "src/index.ts" },
+			{ effectType: "command.exec", label: "npm test" },
+			{ effectType: "task.dispatch", externalOperationId: "job-bg-99", label: "pnpm build" },
+			{ effectType: "task.dispatch", externalOperationId: "sub-42", label: "worker-1" },
 		]);
 	});
 
-	it("takes the written path from the tool result when args carry no path", () => {
+	it("chains effects from earlier rewind entries and deduplicates by identity", () => {
+		const earlier: import("../src/session/types.js").SessionEntry = {
+			kind: "rewind",
+			record: { kind: "rewind", id: "r1", targetId: "t", fromId: "f", source: "s", requestId: "q", reason: "x", seq: 1, timestamp: new Date().toISOString() },
+			notice: "n",
+			carriedInputs: [],
+			effects: { effects: [{ effectType: "file.write", label: "same.txt" }] },
+		};
 		const effects = summarizeAbandonedEffects([
-			{
-				kind: "message",
-				message: {
-					role: "assistant",
-					content: "",
-					tool_calls: [{ id: "w1", name: "write_file", args: { text: "body" } }],
-				},
-			},
+			earlier,
 			{
 				kind: "message",
 				message: {
 					role: "tool",
-					tool_call_id: "w1",
+					tool_call_id: "c1",
 					content: "written",
 					status: "succeeded",
-					details: { path: "notes/output.md" },
+					details: { effects: [{ effectType: "file.write", label: "same.txt" }, { effectType: "file.write", label: "other.txt" }] },
 				},
 			},
 		]);
-		expect(effects.modifiedFiles).toEqual(["notes/output.md"]);
+		expect(effects.effects).toEqual([
+			{ effectType: "file.write", label: "same.txt" },
+			{ effectType: "file.write", label: "other.txt" },
+		]);
 	});
 
-	it("injects structured side-effects manifest into rewind notice", async () => {
+	it("injects declared effect facts into the rewind notice", async () => {
 		const store = new MemorySessionStore();
 		await store.appendMessage({ role: "user", content: "start" });
 		const targetId = store.readRecords()[0].id;
@@ -563,7 +583,13 @@ describe("abandoned side-effects extraction", () => {
 			content: "write file",
 			tool_calls: [{ id: "c1", name: "write_file", args: { path: "hello.txt", text: "test" } }],
 		});
-		await store.appendMessage({ role: "tool", tool_call_id: "c1", content: "ok", status: "succeeded" });
+		await store.appendMessage({
+			role: "tool",
+			tool_call_id: "c1",
+			content: "ok",
+			status: "succeeded",
+			details: { path: "hello.txt", effects: [{ effectType: "file.write", label: "hello.txt" }] },
+		});
 		const fromId = store.readRecords().at(-1)!.id;
 
 		await store.appendRewind({
@@ -579,8 +605,9 @@ describe("abandoned side-effects extraction", () => {
 		const rewindEntry = snapshot.entries.find((e) => e.kind === "rewind");
 		expect(rewindEntry).toBeDefined();
 		if (rewindEntry && rewindEntry.kind === "rewind") {
-			expect(rewindEntry.effects?.modifiedFiles).toEqual(["hello.txt"]);
+			expect(rewindEntry.effects?.effects).toEqual([{ effectType: "file.write", label: "hello.txt" }]);
 			expect(rewindEntry.notice).toContain("hello.txt");
+			expect(rewindEntry.notice).toContain("file.write");
 			expect(rewindEntry.notice).toContain("[在被放弃历史切片中产生的外部操作]");
 		}
 	});
@@ -628,7 +655,7 @@ describe("provenance tagging for abandoned tasks", () => {
 			await host.submitText("step 1");
 			const targetId = host.session.list().nodes[0].id;
 
-			// Append tool calling background job
+			// Append tool calling background job (the tool itself declares the effect fact)
 			await (host as any).store.appendMessage({
 				role: "assistant",
 				content: "running background job",
@@ -639,6 +666,7 @@ describe("provenance tagging for abandoned tasks", () => {
 				tool_call_id: "c-bg",
 				content: JSON.stringify({ jobId: "job-abandoned-1" }),
 				status: "succeeded",
+				details: { effects: [{ effectType: "task.dispatch", externalOperationId: "job-abandoned-1", label: "sleep 10" }] },
 			});
 
 			// Perform rewind to targetId

@@ -18,23 +18,37 @@ export function createSubagentTools(registry: SubagentRegistry, ownerId: string)
 	) => createOwnedTool(name, description, parameters, handler, ownerId);
 
 	return [
-		tool(
-			"subagent_start",
-			"启动并派生一个可持久交谈的内部子代理。",
-			{
-				type: "object",
-				additionalProperties: false,
-				required: ["label", "prompt"],
-				properties: { label: { type: "string", minLength: 1 }, prompt: { type: "string", minLength: 1 } },
+		{
+			def: {
+				type: "function",
+				function: {
+					name: "subagent_start",
+					description: "启动并派生一个可持久交谈的内部子代理。",
+					parameters: {
+						type: "object",
+						additionalProperties: false,
+						required: ["label", "prompt"],
+						properties: { label: { type: "string", minLength: 1 }, prompt: { type: "string", minLength: 1 } },
+					},
+				},
 			},
-			(args, caller) =>
-				registry.start({
+			run: async (args, _signal, context) => {
+				const caller = context?.ownerId ?? ownerId;
+				const snapshot = registry.start({
 					ownerId: caller,
 					parentId: caller,
 					label: args.label as string,
 					prompt: args.prompt as string,
-				}),
-		),
+				});
+				// Generic effect fact: this tool dispatched a background task. The id is the
+				// stable external operation identity; Session Core only records it.
+				return {
+					result: JSON.stringify(snapshot),
+					status: "succeeded" as const,
+					details: { effects: [{ effectType: "task.dispatch", externalOperationId: snapshot.id, label: String(args.label) }] },
+				};
+			},
+		},
 		tool("subagent_list", "查看当前调用方拥有的所有内部子代理列表。", { type: "object", additionalProperties: false, properties: {} }, (_args, caller) => registry.list(caller)),
 		tool("subagent_status", "查看指定内部子代理的实时状态与执行快照。", byIdSchema, (args, caller) => registry.get(args.subagent_id as string, caller)),
 		tool(
