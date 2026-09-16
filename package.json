@@ -19,7 +19,8 @@
     "typecheck": "pnpm check:boundaries && tsc --noEmit",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "verify:cli": "tsx scripts/verify-built-cli.mts",
-    "verify:file-events": "tsx scripts/verify-file-events.mts"
+    "verify:file-events": "tsx scripts/verify-file-events.mts",
+    "diagnose:frames": "tsx scripts/diagnose-frame-log.mts"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",

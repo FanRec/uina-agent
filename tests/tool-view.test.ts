@@ -303,3 +303,32 @@ describe("hover 行数一致性（反抖动）", () => {
 		}
 	});
 });
+
+describe("工具输出的颜色与危险序列", () => {
+	const renderBody = (stdout: string): string =>
+		formatToolCardLines("exec_command", JSON.stringify({ code: 0, stdout }), 30, 168, "succeeded", { command: "echo x" }, {})
+			.join("\n");
+
+	it("保留 SGR 颜色：绿色的 3 passed 必须还在", () => {
+		const out = renderBody("\u001b[2mTest Files\u001b[22m \u001b[1m\u001b[32m3 passed\u001b[39m\u001b[22m\u001b[90m (3)\u001b[39m\r\n");
+		expect(out).toContain("\u001b[32m");
+		expect(out).toContain("3 passed");
+		expect(out).not.toContain("\r");
+	});
+
+	it("剥掉会驱动光标的序列与裸控制符（保留颜色、剔除危险转义）", () => {
+		const out = renderBody("前\u001b[2J中\u001b[H后\u001b[K尾\u001b(B集\u001b孤");
+		expect(out).toContain("前");
+		expect(out).toContain("中");
+		expect(out).toContain("后");
+		expect(out).not.toContain("\u001b[2J");
+		expect(out).not.toContain("\u001b[H");
+		expect(out).not.toContain("\u001b(B");
+		expect(out).not.toContain("(B");
+		// 卡片自身的样式也是 SGR：因此"每个 ESC 都必须开启一个 SGR"是精确判据
+		//（任何非 SGR 转义、裸 ESC、OSC/APC 都会让这个差不为 0）
+		const escCount = (out.match(/\u001b/g) ?? []).length;
+		const sgrCount = (out.match(/\u001b\[[0-9;]*m/g) ?? []).length;
+		expect(escCount - sgrCount, "存在非 SGR 的 ESC 序列").toBe(0);
+	});
+});

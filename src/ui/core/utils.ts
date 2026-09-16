@@ -159,6 +159,67 @@ export function walkGraphemes(text: string, visit: (segment: string, isAnsi: boo
 	}
 }
 
+/**
+ * 丢弃"非法的裸控制字符"：只保留合法 ANSI 序列、可见字符与制表符。
+ *
+ * 为什么必须有这一步：帧行里一个孤立的 ESC 会让终端把**后面的字节**当成转义序列的一部分
+ * 吞掉 —— 下一条 `CUP`（行定位）和 `SGR`（底色）随之失效，表现为内容错位、残留、高亮缺格。
+ * 真机来源实例：工具结果是 JSON 字符串，`sanitizeRenderText` 作用在 JSON **文本**上时
+ * `\u001b` 只是普通字符，`JSON.parse` 之后才变成真 ESC，随后只清了 `\r`，ESC 就进了帧。
+ */
+export function dropStrayControls(text: string): string {
+	if (!text) return "";
+	let out = "";
+	let i = 0;
+	while (i < text.length) {
+		const ansi = extractAnsiCode(text, i);
+		if (ansi) {
+			out += ansi.code;
+			i += ansi.length;
+			continue;
+		}
+		const code = text.charCodeAt(i);
+		// 制表符交给 expandTabs、回车交给 resolveCarriageReturns；
+		// 其余 C0/DEL/C1 一律丢弃（含孤立 ESC：它会让终端吞掉后续定位/底色序列）
+		if (code === 0x09 || code === 0x0d) {
+			out += text[i];
+		} else if (code > 0x1f && code !== 0x7f && !(code >= 0x80 && code <= 0x9f)) {
+			out += text[i];
+		}
+		i++;
+	}
+	return out;
+}
+
+/**
+ * 回车（CR）语义落地：终端遇到 `\r` 会把光标移回行首，其后的字符**覆盖**该行开头。
+ * 帧行里绝不允许出现裸 `\r`：被覆盖的格子不会被涂色、行尾格子则永远没人涂
+ *（真机表现为"两段内容重叠" + 底色缺口）。这里按终端语义先算完：后段覆盖前段，
+ * 超出部分保留前段尾巴（`"abc\rde"` → `"dec"`，与真机逐格一致）。
+ */
+export function resolveCarriageReturns(text: string): string {
+	if (!text.includes("\r")) return text;
+	return text
+		.split("\n")
+		.map((line) => {
+			if (!line.includes("\r")) return line;
+			let out = "";
+			for (const seg of line.split("\r")) {
+				out = out.length > seg.length ? seg + out.slice(seg.length) : seg;
+			}
+			return out;
+		})
+		.join("\n");
+}
+
+/**
+ * 行进入帧之前的唯一规范化入口：先丢弃孤立控制符，再落地 CR 覆盖语义，最后展开制表符
+ *（制表位依赖 CR 之后的内容，顺序不能反）。所有把行交给终端的地方都必须走这里。
+ */
+export function normalizeFrameLine(line: string): string {
+	return expandTabs(resolveCarriageReturns(dropStrayControls(line)));
+}
+
 /** tab 展开到下一个 8 列制表位。 */
 function tabAdvance(currentColumn: number): number {
 	return 8 - (currentColumn % 8);

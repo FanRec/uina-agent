@@ -17,7 +17,7 @@ import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "
 import type { ThinkingLevel } from "../core/types.js";
 import type { SessionAccess, SessionEntry } from "../session/types.js";
 import type { UsageSnapshot } from "../extensions/builtin.js";
-import { C, copyToClipboardUnified, visibleWidth, truncateToWidth, stripAnsi, expandTabs } from "./core/utils.js";
+import { C, copyToClipboardUnified, visibleWidth, truncateToWidth, stripAnsi, normalizeFrameLine } from "./core/utils.js";
 import {
 	InputLine,
 	formatSuggestionCardLines,
@@ -1232,7 +1232,7 @@ export class UIHost implements UIHostContextPort {
 		const atBottom = this.scrollOffset === 0;
 
 		// 跨屏选区提取用的是"用户看到的那一份行"，所以在这里就与屏幕对齐（制表符已展开）。
-		this.lastPermanentLines = permanentLines.map((row) => expandTabs(row));
+		this.lastPermanentLines = permanentLines.map((row) => normalizeFrameLine(row));
 		this.lastMaxScroll = maxScroll;
 		this.mouseTracker.setScrollContext(scrollStart, chatAreaH);
 
@@ -1521,7 +1521,7 @@ export class UIHost implements UIHostContextPort {
 
 		// 9. 保存当前完整帧供鼠标选区提取，注入划词反色高亮并提交渲染
 		// 屏幕逐格显示的就是这份行：渲染器与鼠标/选区共用它，列模型才不会与屏幕分叉。
-		const displayRows = fullScreenRows.map((row) => expandTabs(row));
+		const displayRows = fullScreenRows.map((row) => normalizeFrameLine(row));
 		this.lastRenderedRows = displayRows;
 		const finalRows = this.mouseTracker.applyHighlight(displayRows, scrollStart);
 		this.renderer.renderFrame(finalRows);

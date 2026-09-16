@@ -9,7 +9,7 @@
  */
 
 import { CURSOR_MARKER } from "./types.js";
-import { expandTabs, truncateToWidth, visibleWidth } from "./utils.js";
+import { normalizeFrameLine, truncateToWidth, visibleWidth } from "./utils.js";
 import type { ProcessTerminal } from "./terminal.js";
 
 export interface CursorPosition {
@@ -58,7 +58,7 @@ export class MainScreenRenderer {
 			// Windows Terminal 会把下一行涂黑（真机黑条）。而正常路径每行已 pad 到
 			// 满宽，无需 erase。统一改为截断后重新绝对定位到行尾列再 \x1b[K，
 			// 使光标离开 pending-wrap 状态；尾部残留列由 K 以当前 bg 涂刷。
-			const fitted = this.fitToWidth(expandTabs(cleanLine), width);
+			const fitted = this.fitToWidth(normalizeFrameLine(cleanLine), width);
 			const fittedW = visibleWidth(fitted);
 			frame += `\x1b[${r + 1};1H` + fitted;
 			if (fittedW < width) {

@@ -27,8 +27,8 @@
  *    - 鼠标悬停感知：卡片底色微亮、折叠角标 ▾/▴ 浮现、折叠提示文字由暗淡升格为明亮。
  */
 
-import { C, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../../core/utils.js";
-import { sanitizeRenderText } from "../../format.js";
+import { C, resolveCarriageReturns, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../../core/utils.js";
+import { keepSgrOnly, sanitizeRenderText } from "../../format.js";
 import { formatDiffCardLines } from "./diff-view.js";
 
 export type ToolCategory = "write" | "exec" | "read" | "web" | "task" | "default";
@@ -305,8 +305,9 @@ function formatStructuredValue(value: unknown): string {
 			return String(value);
 		}
 	}
-	// 值里的换行会撑破卡片的 ⎿ 悬挂缩进，单行化后再交给折叠预算
-	return String(value).replace(/\r?\n/g, "⏎ ");
+	// 值里的换行会撑破卡片的 ⎿ 悬挂缩进，单行化后再交给折叠预算；
+	// 同时净化裸控制字符（同 JSON.parse 之后必须再净化的道理）
+	return resolveCarriageReturns(keepSgrOnly(String(value))).replace(/\n/g, "⏎ ");
 }
 
 /**
@@ -518,11 +519,11 @@ export function formatToolCardLines(
 	}
 
 	const rawError = isError
-		? (obj && typeof obj.error === "string" ? obj.error : String(result || "执行遇到错误"))
-		: (obj && typeof obj.error === "string" ? obj.error : "");
+		? (obj && typeof obj.error === "string" ? keepSgrOnly(obj.error) : String(result || "执行遇到错误"))
+		: (obj && typeof obj.error === "string" ? keepSgrOnly(obj.error) : "");
 
 	if (rawError) {
-		const errClean = rawError.replace(/\r/g, "").trim();
+		const errClean = resolveCarriageReturns(keepSgrOnly(rawError)).trim();
 		const errLines = errClean.split("\n").map((l) => l.trimEnd()).filter(Boolean);
 		for (let i = 0; i < errLines.length; i++) {
 			const gutter = i === 0 ? GUTTER_FIRST : GUTTER_REST;
@@ -547,9 +548,18 @@ export function formatToolCardLines(
 			bodyLines.push(`${C.red}Killed by signal ${String(obj.signal)}${C.reset}`);
 		}
 
-		const stdout = typeof obj.stdout === "string" ? obj.stdout.replace(/\r/g, "").trim() : "";
-		const stderr = typeof obj.stderr === "string" ? obj.stderr.replace(/\r/g, "").trim() : "";
-		const output = typeof obj.output === "string" ? obj.output.replace(/\r/g, "").trim() : "";
+		// 关键：JSON.parse 之后字段里可能是**真控制字符**（例如 vitest 彩色输出尾部残留的
+		// ESC）。sanitizeRenderText 之前作用在 JSON 文本上，那时 ESC 还只是 `\\u001b` 六个字符，
+		// 解码后必须再净化一次，否则裸 ESC 会进帧、吞掉后续定位/底色序列。
+		// 工具输出：保留 SGR 颜色（"3 passed" 的绿色就在这里），剥掉其它一切转义与裸控制符
+		// （光标移动/清屏/孤立 ESC 会让终端吞掉我们后面的定位与底色序列）；
+		// CR 交给覆盖语义（终端遇 \r 回行首覆盖），而不是直接删掉 —— 删掉会把
+		// "50%\r100%" 拼成一行垃圾；CRLF 的行尾 CR 会被覆盖语义自然吃掉。
+		const decodeText = (value: unknown): string =>
+			typeof value === "string" ? resolveCarriageReturns(keepSgrOnly(value)).trim() : "";
+		const stdout = decodeText(obj.stdout);
+		const stderr = decodeText(obj.stderr);
+		const output = decodeText(obj.output);
 
 		if (stdout) {
 			bodyLines.push(...stdout.split("\n").map((s) => s.trimEnd()));
@@ -588,7 +598,7 @@ export function formatToolCardLines(
 			}
 		}
 	} else {
-		const rawStr = String(result ?? "").replace(/\r/g, "").trim();
+		const rawStr = resolveCarriageReturns(keepSgrOnly(String(result ?? ""))).trim();
 		if (rawStr) {
 			bodyLines.push(...rawStr.split("\n").map((s) => s.trimEnd()));
 		}
