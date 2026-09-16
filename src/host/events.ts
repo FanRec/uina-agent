@@ -51,6 +51,7 @@ export type HostEvent =
 	| {
 			type: "tool_done";
 			name: string;
+			args?: unknown;
 			result: string;
    images?: import("../core/content.js").ImageContent[];
    details?: unknown;

@@ -512,7 +512,7 @@ export class UIHost implements UIHostContextPort {
 
 	addCompaction(record: CompactionRecord): void {
 		this.transcript.addCompaction(record);
-		this.trajectoryProjection.onCompaction(record.summary, record.tokensSaved);
+		this.trajectoryProjection.onCompaction(record.summary, record.tokensBefore);
 		this.requestRender();
 	}
 
@@ -1988,27 +1988,7 @@ export class UIHost implements UIHostContextPort {
 			return;
 		}
 
-		// 4.1 终端鼠标滚轮支持（SGR \x1b[< 与 X10 模式）
-		if (data.includes("\x1b[<")) {
-			const sgrMatches = [...data.matchAll(/\x1b\[<(\d+);(\d+);(\d+)[Mm]/g)];
-			if (sgrMatches.length > 0) {
-				let delta = 0;
-				for (const m of sgrMatches) {
-					const code = parseInt(m[1]!, 10);
-					if ((code & 64) === 64) {
-						if ((code & 1) === 0) delta += 3;
-						else delta -= 3;
-					}
-				}
-				if (delta > 0) {
-					this.scrollUp(delta);
-					return;
-				} else if (delta < 0) {
-					this.scrollDown(-delta);
-					return;
-				}
-			}
-		}
+		// 4.1 X10 鼠标滚轮（SGR 协议已在 1.5 拦截处理，这里只剩 \x1b[M 编码）
 		if (data.startsWith("\x1b[M") && data.length >= 6) {
 			let offset = 0;
 			let delta = 0;

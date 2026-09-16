@@ -145,7 +145,6 @@ export class TrajectoryScene implements Component, Focusable {
 	focused = true;
 	private viewMode: "timeline" | "hotspot" = "timeline";
 	private cursorIndex = 0;
-	private isMaximized = false;
 
 	onClose?: () => void;
 	onRequestRender?: () => void;
@@ -156,23 +155,12 @@ export class TrajectoryScene implements Component, Focusable {
 		const nodes = this.source.list();
 
 		if (matchesKey(data, Key.escape)) {
-			if (this.isMaximized) {
-				this.isMaximized = false;
-				this.onRequestRender?.();
-			} else {
-				this.onClose?.();
-			}
+			this.onClose?.();
 			return;
 		}
 
 		if (matchesKey(data, Key.tab)) {
 			this.viewMode = this.viewMode === "timeline" ? "hotspot" : "timeline";
-			this.onRequestRender?.();
-			return;
-		}
-
-		if (matchesKey(data, Key.enter)) {
-			this.isMaximized = !this.isMaximized;
 			this.onRequestRender?.();
 			return;
 		}

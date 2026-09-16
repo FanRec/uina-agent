@@ -724,7 +724,7 @@ describe("UI Components & Visual Rendering", () => {
 		const record = {
 			summary: "1. 讨论系统架构\n2. 落地输入联想与差异卡片\n3. 优化文件发现机制",
 			turnsCount: 3,
-			tokensSaved: 18500,
+			tokensBefore: 18500,
 			collapsed: true,
 		};
 
@@ -1187,7 +1187,6 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 			for (let i = 0; i < 50; i++) {
 				tui.host.transcript.appendToken(`历史数据行 ${i}\n`);
 			}
-			tui.host.transcript.commitThinking();
 
 			// 触发一次初始全帧渲染
 			(tui.host as any).renderCurrentFrame();
@@ -2486,7 +2485,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			tc.addCompaction({
 				summary: "会话已压缩摘要",
 				turnsCount: 1,
-				tokensSaved: 5000,
+				tokensBefore: 5000,
 				collapsed: true,
 			});
 
@@ -2524,7 +2523,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			tui.host.addCompaction({
 				summary: "历史压缩摘要",
 				turnsCount: 1,
-				tokensSaved: 3000,
+				tokensBefore: 3000,
 				collapsed: true,
 			});
 			const compNode = tui.host.trajectoryProjection.list().find((n) => n.kind === "compaction");
@@ -2577,7 +2576,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			host.addCompaction({
 				summary: "第 1 轮到第 3 轮的压缩总结",
 				turnsCount: 3,
-				tokensSaved: 12000,
+				tokensBefore: 12000,
 				collapsed: true,
 			});
 
@@ -2682,7 +2681,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(mockAddCompaction).toHaveBeenCalledWith({
 				summary: "完成测试总结",
 				turnsCount: 2,
-				tokensSaved: 15000,
+				tokensBefore: 15000,
 				collapsed: true,
 			});
 

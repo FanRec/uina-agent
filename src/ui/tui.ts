@@ -28,7 +28,6 @@ export class InteractiveTUI {
 	private interruptAndDeliverCallback?: (text: string) => void;
 	private pullBackQueueCallback?: () => void;
 	private thinkingLevelCycleCallback?: () => void;
-	private toolCallMap = new Map<string, { startedAt: number; name: string; args?: unknown }>();
 	private currentThinkingId?: string;
 
 	/**
@@ -218,9 +217,7 @@ export class InteractiveTUI {
 					this.currentThinkingId = undefined;
 				}
 				const callId = m.callId ?? `tool-${m.name}-${Date.now()}`;
-				this.toolCallMap.set(callId, { startedAt: Date.now(), name: m.name, args: m.args });
 				this.host.transcript.smoothReveal.snapToLatest();
-				this.host.transcript.commitThinking();
 				this.host.transcript.startTool(m.name, m.args, callId);
 				this.host.trajectoryProjection.onToolStart(m.name, m.args, callId);
 				this.host.activityLine.update("tool", `正在执行工具: ${m.name}`);
@@ -230,12 +227,11 @@ export class InteractiveTUI {
 			}
 
 			case "tool_done": {
-				const record = m.callId ? this.toolCallMap.get(m.callId) : undefined;
-				const elapsed = m.elapsedMs ?? (m.ts ? Date.now() - m.ts : record ? Date.now() - record.startedAt : 0);
-				if (m.callId) this.toolCallMap.delete(m.callId);
+				// 计时与参数都由宿主事件携带：UI 不再自建 toolCallMap 之类的运行时状态表。
+				const elapsed = m.elapsedMs ?? (m.ts ? Date.now() - m.ts : 0);
 
 				const status = m.status ?? "unknown";
-				this.host.transcript.addToolDone(m.name, m.result, elapsed, status, m.callId, record?.args, { images: m.images, details: m.details });
+				this.host.transcript.addToolDone(m.name, m.result, elapsed, status, m.callId, m.args, { images: m.images, details: m.details });
 				this.host.trajectoryProjection.onToolDone(m.callId ?? "", m.name, m.result, elapsed, status);
 				this.host.activityLine.update("streaming", `工具 ${m.name} 执行完毕，继续生成...`);
 				this.syncToolAnimationTimer();

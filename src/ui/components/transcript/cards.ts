@@ -65,7 +65,7 @@ export function formatThinkingLines(
 export interface CompactionRecord {
 	summary: string;
 	turnsCount: number;
-	tokensSaved: number;
+	tokensBefore: number;
 	collapsed: boolean;
 }
 
@@ -87,10 +87,10 @@ export function formatCompactionCardLines(
 	isHovered = false,
 ): string[] {
 	const boxW = Math.max(20, width);
-	const tokenSavedStr =
-		record.tokensSaved >= 1000
-			? `${(record.tokensSaved / 1000).toFixed(1)}k`
-			: `${record.tokensSaved}`;
+	const tokensBeforeStr =
+		record.tokensBefore >= 1000
+			? `${(record.tokensBefore / 1000).toFixed(1)}k`
+			: `${record.tokensBefore}`;
 
 	const leftDashes = "───";
 	const leftW = visibleWidth(leftDashes);
@@ -143,7 +143,7 @@ export function formatCompactionCardLines(
 
 	// 底部统计与提示
 	const arrow = `${isHovered ? C.suggestion : C.claude}↳${C.reset}`;
-	const stats = `${C.success}压缩前 ~${tokenSavedStr} tokens${C.reset} · ${C.inactive}保留最近 ${record.turnsCount} 轮对话${C.reset}`;
+	const stats = `${C.success}压缩前 ~${tokensBeforeStr} tokens${C.reset} · ${C.inactive}保留最近 ${record.turnsCount} 轮对话${C.reset}`;
 	const hint = isHovered ? `${C.suggestion}(点击 / ctrl+o 收起)${C.reset}` : `${C.inactive}(ctrl+o / 点击收起)${C.reset}`;
 	const footerRaw = `  ${arrow} ${stats} · ${hint}`;
 	const effFooter = visibleWidth(footerRaw) > boxW ? truncateToWidth(footerRaw, boxW, "…") : footerRaw;

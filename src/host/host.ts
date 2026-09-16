@@ -297,6 +297,7 @@ export class UinaHost {
 					emit({
 						type: "tool_done",
 						name: event.toolName,
+						args: event.args,
 						result: event.result,
       images: event.images ? [...event.images] : undefined,
       details: event.details,

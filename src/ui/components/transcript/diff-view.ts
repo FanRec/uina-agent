@@ -43,24 +43,27 @@ export function computeLineDiff(oldText: string, newText: string): DiffResult {
 	const n = a.length;
 	const m = b.length;
 
-	// 动态规划构建 LCS 长度表（限制最大矩阵大小，防止超大文件耗尽内存）
+	// LCS 长度表限制在 1000×1000 以内防止超大文件耗尽内存。
+	// 帽外的行不参与比对，但绝不能静默丢弃：超出部分按整段 del/add 补录，
+	// 计数与显示都保持诚实（旧实现把第 1000 行之后的内容直接丢掉）。
 	const MAX_DIFF_LINES = 1000;
 	const safeN = Math.min(n, MAX_DIFF_LINES);
 	const safeM = Math.min(m, MAX_DIFF_LINES);
 
-	const dp: number[][] = Array.from({ length: safeN + 1 }, () => new Array<number>(safeM + 1).fill(0));
+	const dp = new Int32Array((safeN + 1) * (safeM + 1));
+	const at = (i: number, j: number): number => dp[i * (safeM + 1) + j]!;
 
 	for (let i = 1; i <= safeN; i++) {
 		for (let j = 1; j <= safeM; j++) {
 			if (a[i - 1] === b[j - 1]) {
-				dp[i]![j] = dp[i - 1]![j - 1]! + 1;
+				dp[i * (safeM + 1) + j] = at(i - 1, j - 1) + 1;
 			} else {
-				dp[i]![j] = Math.max(dp[i - 1]![j]!, dp[i]![j - 1]!);
+				dp[i * (safeM + 1) + j] = Math.max(at(i - 1, j), at(i, j - 1));
 			}
 		}
 	}
 
-	// 回溯还原 diff
+	// 回溯还原 diff（只覆盖帽内的前缀）
 	const items: DiffItem[] = [];
 	let i = safeN;
 	let j = safeM;
@@ -72,11 +75,11 @@ export function computeLineDiff(oldText: string, newText: string): DiffResult {
 			items.push({ type: "same", line: a[i - 1]! });
 			i--;
 			j--;
-		} else if (j > 0 && (i === 0 || dp[i]![j - 1]! >= dp[i - 1]![j]!)) {
+		} else if (j > 0 && (i === 0 || at(i, j - 1) >= at(i - 1, j))) {
 			items.push({ type: "add", line: b[j - 1]! });
 			addCount++;
 			j--;
-		} else if (i > 0 && (j === 0 || dp[i]![j - 1]! < dp[i - 1]![j]!)) {
+		} else if (i > 0 && (j === 0 || at(i, j - 1) < at(i - 1, j))) {
 			items.push({ type: "del", line: a[i - 1]! });
 			delCount++;
 			i--;
@@ -84,6 +87,19 @@ export function computeLineDiff(oldText: string, newText: string): DiffResult {
 	}
 
 	items.reverse();
+
+	// 帽外尾段：两侧都超出比对窗口，按整段增删补录，行数与计数都不丢。
+	if (n > safeN || m > safeM) {
+		for (let k = safeN; k < n; k++) {
+			items.push({ type: "del", line: a[k]! });
+			delCount++;
+		}
+		for (let k = safeM; k < m; k++) {
+			items.push({ type: "add", line: b[k]! });
+			addCount++;
+		}
+	}
+
 	return { items, addCount, delCount };
 }
 
@@ -111,17 +127,28 @@ export function computeWordDiff(
 	const aTokens = tokenizeWords(oldBody);
 	const bTokens = tokenizeWords(newBody);
 
-	// 计算词级 LCS
-	const n = Math.min(aTokens.length, 200);
-	const m = Math.min(bTokens.length, 200);
-	const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+	// 词级 LCS 以 200 token 为帽。任一侧超帽时放弃词级高亮，整行按增删着色：
+	// LCS 只对前 200 个 token 建表，超帽 token 从不进 same 集合，若仍逐 token 渲染，
+	// 完全相同的超长行会被整体标成"变更词"（错配不是近似）。
+	const WORD_DIFF_TOKEN_CAP = 200;
+	if (aTokens.length > WORD_DIFF_TOKEN_CAP || bTokens.length > WORD_DIFF_TOKEN_CAP) {
+		return {
+			oldFormatted: `${C.red}${oldLine}${C.reset}`,
+			newFormatted: `${C.green}${newLine}${C.reset}`,
+		};
+	}
+
+	const n = aTokens.length;
+	const m = bTokens.length;
+	const dp = new Int32Array((n + 1) * (m + 1));
+	const at = (i: number, j: number): number => dp[i * (m + 1) + j]!;
 
 	for (let i = 1; i <= n; i++) {
 		for (let j = 1; j <= m; j++) {
 			if (aTokens[i - 1] === bTokens[j - 1]) {
-				dp[i]![j] = dp[i - 1]![j - 1]! + 1;
+				dp[i * (m + 1) + j] = at(i - 1, j - 1) + 1;
 			} else {
-				dp[i]![j] = Math.max(dp[i - 1]![j]!, dp[i]![j - 1]!);
+				dp[i * (m + 1) + j] = Math.max(at(i - 1, j), at(i, j - 1));
 			}
 		}
 	}
@@ -136,7 +163,7 @@ export function computeWordDiff(
 			bSame.add(j - 1);
 			i--;
 			j--;
-		} else if (dp[i - 1]![j]! >= dp[i]![j - 1]!) {
+		} else if (at(i - 1, j) >= at(i, j - 1)) {
 			i--;
 		} else {
 			j--;

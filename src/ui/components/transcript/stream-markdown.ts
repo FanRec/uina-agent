@@ -228,7 +228,9 @@ export function formatFullMarkdown(text: string, width = 80): string[] {
 		if (tableLines.length > 0) {
 			flushTable();
 		}
-		res.push(formatter.formatLine(line));
+		// 本函数的契约是"一行一条目"。代码块行在 formatLine 内会折行并 join("\n")，
+		// 这里必须再展开，否则内嵌换行会作为单行进入下游行模型。
+		res.push(...formatter.formatLine(line).split("\n"));
 	}
 
 	if (tableLines.length > 0) {

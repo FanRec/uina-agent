@@ -15,6 +15,11 @@ export class TrajectoryProjection implements TrajectoryEventSource {
 	private readonly listeners = new Set<() => void>();
 	private currentTurnN = 0;
 	private turnStartTime = 0;
+	/** 节点 id 用单调序列：Date.now() 同毫秒撞号会让 onThinkingDone/onToolDone 错配节点。 */
+	private nodeSeq = 0;
+	private nextNodeId(prefix: string): string {
+		return `${prefix}-${++this.nodeSeq}`;
+	}
 
 	subscribe(fn: () => void): () => void {
 		this.listeners.add(fn);
@@ -38,7 +43,7 @@ export class TrajectoryProjection implements TrajectoryEventSource {
 		this.turnStartTime = Date.now();
 
 		this.nodes.push({
-			id: `turn-${n}-${Date.now()}`,
+			id: this.nextNodeId("turn"),
 			turn: n,
 			kind: "turn_start",
 			label: `用户提问: ${userText.slice(0, 40)}`,
@@ -51,7 +56,7 @@ export class TrajectoryProjection implements TrajectoryEventSource {
 	}
 
 	onThinkingStart(preview = "深度推理"): string {
-		const id = `think-${Date.now()}`;
+		const id = this.nextNodeId("think");
 		this.nodes.push({
 			id,
 			turn: this.currentTurnN,
@@ -76,7 +81,7 @@ export class TrajectoryProjection implements TrajectoryEventSource {
 	}
 
 	onToolStart(name: string, args: unknown, callId?: string): string {
-		const id = callId ?? `tool-${name}-${Date.now()}`;
+		const id = callId ?? this.nextNodeId(`tool-${name}`);
 		this.nodes.push({
 			id,
 			turn: this.currentTurnN,
@@ -109,7 +114,7 @@ export class TrajectoryProjection implements TrajectoryEventSource {
 		const elapsed = Math.max(1, now - this.turnStartTime);
 
 		this.nodes.push({
-			id: `stream-${n}-${now}`,
+			id: this.nextNodeId("stream"),
 			turn: n,
 			kind: "model_stream",
 			label: `回复生成 (Turn #${n})`,
@@ -124,7 +129,7 @@ export class TrajectoryProjection implements TrajectoryEventSource {
 
 	onError(msg: string): void {
 		this.nodes.push({
-			id: `err-${Date.now()}`,
+			id: this.nextNodeId("err"),
 			turn: this.currentTurnN,
 			kind: "error",
 			label: msg.slice(0, 50),
@@ -139,7 +144,7 @@ export class TrajectoryProjection implements TrajectoryEventSource {
 
 	onCompaction(summary: string, tokensBefore: number): void {
 		this.nodes.push({
-			id: `comp-${Date.now()}`,
+			id: this.nextNodeId("comp"),
 			turn: this.currentTurnN,
 			kind: "compaction",
 			label: "会话历史压缩",

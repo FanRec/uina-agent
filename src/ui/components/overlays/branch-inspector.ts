@@ -80,7 +80,7 @@ export class BranchInspectorOverlay implements Component, Focusable {
 			this.onRequestRender?.();
 			return;
 		}
-		if (data === "\r" && this.view.mode === "branch-list") {
+		if (matchesKey(data, Key.enter) && this.view.mode === "branch-list") {
 			// 行 id 就是分支 id（listBranchNodes 建立的投影），不必再查一次分支列表。
 			const row = nodes[this.selectedIndex];
 			if (row) { this.view = { mode: "branch-history", branchId: row.id }; this.selectedIndex = 0; this.detailScrollOffset = 0; this.onRequestRender?.(); return; }

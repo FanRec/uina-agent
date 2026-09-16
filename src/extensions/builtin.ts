@@ -50,7 +50,7 @@ export interface BuiltinUI {
 	addCompaction?(record: {
 		summary: string;
 		turnsCount: number;
-		tokensSaved: number;
+		tokensBefore: number;
 		collapsed: boolean;
 	}): void;
 }
@@ -232,7 +232,7 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 				ui.addCompaction({
 					summary: e.summary,
 					turnsCount: e.retainedTailCount,
-					tokensSaved: e.tokensBefore,
+					tokensBefore: e.tokensBefore,
 					collapsed: true,
 				});
 			} else {

@@ -195,8 +195,6 @@ export interface LineModel {
 	thinkingLocations: ThinkingLineLocation[];
 	toolLocations: ToolLineLocation[];
 	compactionLocations: CompactionLineLocation[];
-	/** uid → 该轮次的行区间。当前无任何消费方，仅为与 uid 身份保持一致。 */
-	turnRanges: Map<number, { start: number; end: number }>;
 }
 
 export class TranscriptContainer implements Component {
@@ -456,8 +454,6 @@ export class TranscriptContainer implements Component {
 		}
 	}
 
-	commitThinking(): void {}
-
 	startTool(name: string, args?: unknown, callId?: string): void {
 		if (!this.currentTurn) {
 			this.startTurn(this.historyTurns.length + 1, "");
@@ -569,7 +565,6 @@ export class TranscriptContainer implements Component {
 
 	interruptTurn(modelName?: string): void {
 		this.smoothReveal.snapToLatest();
-		this.commitThinking();
 		const name = modelName || "Uina";
 		const notice = `已打断 · 接下来想让 ${name} 做什么？`;
 		if (this.currentTurn) {
@@ -636,7 +631,7 @@ export class TranscriptContainer implements Component {
 					},
 				});
 				if (entry.record.compaction) {
-					this.timeline.push({ kind: "compaction", record: { summary: entry.record.compaction.summary, turnsCount: turnN, tokensSaved: entry.record.compaction.tokensBefore, collapsed: true } });
+					this.timeline.push({ kind: "compaction", record: { summary: entry.record.compaction.summary, turnsCount: turnN, tokensBefore: entry.record.compaction.tokensBefore, collapsed: true } });
 				}
 				continue;
 			}
@@ -671,7 +666,7 @@ export class TranscriptContainer implements Component {
 					record: {
 						summary: entry.summary,
 						turnsCount: turnN,
-						tokensSaved: entry.tokensBefore,
+						tokensBefore: entry.tokensBefore,
 						collapsed: true,
 					},
 				});
@@ -1082,7 +1077,6 @@ export class TranscriptContainer implements Component {
 		const thinkingLocations: ThinkingLineLocation[] = [];
 		const toolLocations: ToolLineLocation[] = [];
 		const compactionLocations: CompactionLineLocation[] = [];
-		const turnRanges = new Map<number, { start: number; end: number }>();
 
 		for (const block of blocks) {
 			const start = lines.length;
@@ -1092,7 +1086,6 @@ export class TranscriptContainer implements Component {
 				lines.push(...rendered.lines);
 				for (const loc of rendered.thinking) thinkingLocations.push({ ...loc, lineIndex: start + loc.lineIndex });
 				for (const loc of rendered.tools) toolLocations.push({ ...loc, lineIndex: start + loc.lineIndex });
-				turnRanges.set(block.turn.uid, { start, end: lines.length });
 			} else if (block.kind === "compaction") {
 				const cardLines = this.hoveredCompactionIndex === block.index ? formatCompactionCardLines(block.record, width, true) : block.lines;
 				compactionLocations.push({ index: block.index, lineIndex: start, lineCount: cardLines.length, record: block.record });
@@ -1101,7 +1094,7 @@ export class TranscriptContainer implements Component {
 				lines.push(...block.lines);
 			}
 		}
-		return { lines, turnStartByUid, thinkingLocations, toolLocations, compactionLocations, turnRanges };
+		return { lines, turnStartByUid, thinkingLocations, toolLocations, compactionLocations };
 	}
 
 	/** The single line model consumed by render, scrolling and hit zones. */
@@ -1114,7 +1107,6 @@ export class TranscriptContainer implements Component {
 			model.turnStartByUid.set(this.currentTurn.uid, start);
 			model.thinkingLocations.push(...sink.thinking);
 			model.toolLocations.push(...sink.tools);
-			model.turnRanges.set(this.currentTurn.uid, { start, end: model.lines.length });
 		}
 		return model;
 	}

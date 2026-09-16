@@ -317,10 +317,6 @@ export function getFileCandidates(cwd: string, query: string, topK = 50): FileIt
 }
 
 /** 兼容旧接口别名 */
-export function scanDirectoryFiles(cwd: string): FileItem[] {
-	return listFilesDeepCandidates(cwd);
-}
-
 export interface SuggestionRenderOptions {
 	type: "command" | "file";
 	title: string;

@@ -291,9 +291,19 @@ function retryAfter(value: string | null): number | undefined {
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 	if (signal?.aborted) return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
 	return new Promise((resolve, reject) => {
-		const timer = setTimeout(resolve, ms);
-		const abort = (): void => { clearTimeout(timer); reject(signal?.reason ?? new DOMException("Aborted", "AbortError")); };
-		signal?.addEventListener("abort", abort, { once: true });
+		const abort = (): void => {
+			clearTimeout(timer);
+			cleanup();
+			reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));
+		};
+		// 正常到期也必须摘除监听器：fetchWithRetry 的重试循环复用同一个长寿命 signal，
+		// 只靠 once:true 只在 abort 路径移除，重试风暴下监听器会逐次累积。
+		const cleanup = (): void => signal?.removeEventListener("abort", abort);
+		const timer = setTimeout(() => {
+			cleanup();
+			resolve();
+		}, ms);
+		signal?.addEventListener("abort", abort);
 	});
 }
 

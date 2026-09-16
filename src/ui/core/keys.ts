@@ -140,32 +140,16 @@ export function matchesKey(data: string, keyId: string): boolean {
 		// 常用快捷键组合
 		case "ctrl+a":
 			return data === "\x01";
-		case "ctrl+b":
-			return data === "\x02";
 		case "ctrl+c":
 			return data === "\x03";
-		case "ctrl+d":
-			return data === "\x04";
 		case "ctrl+e":
 			return data === "\x05";
 		case "ctrl+k":
 			return data === "\x0b";
-		case "ctrl+l":
-			return data === "\x0c";
-		case "ctrl+n":
-			return data === "\x0e";
 		case "ctrl+o":
 			return data === "\x0f";
-		case "ctrl+p":
-			return data === "\x10";
 		case "ctrl+u":
 			return data === "\x15";
-		case "ctrl+v":
-			return data === "\x16";
-		case "ctrl+w":
-			return data === "\x17";
-		case "ctrl+z":
-			return data === "\x1a";
 		case "ctrl+left":
 			return data === "\x1b[1;5D" || data === "\x1b\x1b[D";
 		case "ctrl+right":
@@ -265,37 +249,3 @@ export function matchesKey(data: string, keyId: string): boolean {
 			return data === keyId;
 	}
 }
-
-/** 判断是否为 Bracketed Paste 开始标记 */
-export function isPasteStart(data: string): boolean {
-	return data.startsWith("\x1b[200~");
-}
-
-/** 判断是否为 Bracketed Paste 结束标记 */
-export function isPasteEnd(data: string): boolean {
-	return data.includes("\x1b[201~");
-}
-
-export interface MouseClickEvent {
-	button: number; // 0: left, 1: middle, 2: right
-	col: number; // 1-based
-	row: number; // 1-based
-	isDown: boolean;
-}
-
-/**
- * 解析 ANSI SGR 鼠标点击事件（\x1b[<button;col;row(M|m)）
- */
-export function parseMouseEvent(data: string): MouseClickEvent | null {
-	const match = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])/);
-	if (match) {
-		return {
-			button: parseInt(match[1]!, 10),
-			col: parseInt(match[2]!, 10),
-			row: parseInt(match[3]!, 10),
-			isDown: match[4] === "M",
-		};
-	}
-	return null;
-}
-

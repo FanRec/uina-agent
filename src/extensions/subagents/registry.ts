@@ -135,7 +135,6 @@ export class SubagentRegistry {
 
 	private makeRecord(id: string, request: SubagentStartOptions): TrackedSubagent {
 		const buffer = new TaskOutputBuffer<SubagentChunk>({ maxBytes: OUTPUT_BUDGET_BYTES });
-		let record!: TrackedSubagent;
 		const handle = this.options.factory.create({
 			id,
 			model: this.options.model(),
@@ -143,6 +142,17 @@ export class SubagentRegistry {
 			tools: this.options.createTools(id),
 			thinkingLevel: this.options.thinkingLevel,
 		});
+		// record 先于 subscribe 完整构造：回调里引用的对象必须在任何事件可能到达前就绪，
+		// 不依赖"subscribe 与赋值之间没有 await"这类隐式时序。
+		const record: TrackedSubagent = {
+			id,
+			ownerId: request.ownerId,
+			parentId: request.parentId,
+			label: request.label,
+			createdAt: Date.now(),
+			handle,
+			buffer,
+		};
 		handle.subject.subscribe((event) => {
 			if (event.type === "output_update") {
 				if (event.channel === "content" && event.text) buffer.append({ kind: "text", text: event.text });
@@ -156,15 +166,6 @@ export class SubagentRegistry {
 				record.detail = event.text;
 			}
 		});
-		record = {
-			id,
-			ownerId: request.ownerId,
-			parentId: request.parentId,
-			label: request.label,
-			createdAt: Date.now(),
-			handle,
-			buffer,
-		};
 		return record;
 	}
 

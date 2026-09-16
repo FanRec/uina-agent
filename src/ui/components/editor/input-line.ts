@@ -488,12 +488,8 @@ export class InputLine implements Component, Focusable {
 			return;
 		}
 
-		// 全选状态下的任何常规操作拦截
+		// 全选状态下的任何常规操作拦截（Ctrl+C 已在上方处理并 return，不会到这里）
 		if (this.isAllSelected) {
-			if (matchesKey(data, Key.ctrl("c"))) {
-				this.copySelection();
-				return;
-			}
 			if (matchesKey(data, Key.backspace) || matchesKey(data, Key.delete) || matchesKey(data, Key.ctrl("u"))) {
 				this.clear();
 				return;
