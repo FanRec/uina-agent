@@ -2631,6 +2631,10 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					handlers.set(event, handler);
 					return () => handlers.delete(event);
 				}),
+				onHook: vi.fn((hook: string, handler: Function) => {
+					handlers.set(hook, handler);
+					return () => handlers.delete(hook);
+				}),
 				ui: {
 					notify: mockNotify,
 					clearNotification: mockClear,
@@ -2662,10 +2666,10 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			const activate = activateBuiltinCommands(mockServices);
 			activate(mockPi);
 
-			// 1. 触发 session_before_compact
-			const beforeHandler = handlers.get("session_before_compact");
+			// 1. 触发 turn.beforeCompact（干预点观察挂法：返回 undefined 不取消压缩）
+			const beforeHandler = handlers.get("turn.beforeCompact");
 			expect(beforeHandler).toBeDefined();
-			beforeHandler!({ type: "session_before_compact", tokensBefore: 15000 });
+			expect(beforeHandler!({ tokensBefore: 15000 })).toBeUndefined();
 			expect(mockNotify).toHaveBeenCalledWith("正在压缩会话…", "info", 0);
 
 			// 2. 触发 session_compact

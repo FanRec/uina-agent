@@ -1,11 +1,83 @@
 import type { ChatMsg, FinishReason, Model, ThinkingLevel, ToolResultStatus } from "../core/types.js";
 import type { DeepReadonly, OutputEvent, RuntimeEvent } from "./events.js";
+import type { ImageContent } from "../core/content.js";
 
 export interface ProviderHooks {
 	transformHeaders(provider: string, headers: Readonly<Record<string, string>>): Promise<Record<string, string>>;
 	transformPayload(provider: string, payload: DeepReadonly<unknown>): Promise<unknown>;
 	observeResponse(input: Readonly<{ provider: string; status: number; headers: Record<string, string> }>): Promise<void>;
 }
+
+/**
+ * 干预注册点词汇（Hook ≠ Event，铁律 L1）。
+ *
+ * Hook = 系统问扩展"你要不要影响这件事？"——有返回协议，按下面各链的合并规则组合；
+ * Event = 系统告诉世界"这件事已经发生了"——无返回值，单流广播（RuntimeEvent）。
+ * 干预注册只能用这里的名字（onHook），事实订阅只能用 RuntimeEvent 的 type（on）。
+ * 两个词表不得混居：混居会让扩展作者无法分辨自己在影响系统还是在观察系统。
+ */
+export type HookName =
+	| "turn.prepare"
+	| "turn.transformContext"
+	| "turn.beforeCompact"
+	| "turn.shouldStop"
+	| "tools.beforeCall"
+	| "tools.transformResult"
+	| "provider.transformHeaders"
+	| "provider.transformPayload"
+	| "provider.observeResponse";
+
+/** 各干预注册点的输入（只读化由 HookHandler 统一施加，形状与 RuntimeHooks 对应方法的入参一致）。 */
+export interface HookInputs {
+	"turn.prepare": { readonly prompt: string; readonly systemPrompt: string };
+	"turn.transformContext": readonly ChatMsg[];
+	"turn.beforeCompact": { readonly tokensBefore: number };
+	"turn.shouldStop": { readonly turnNumber: number; readonly finishReason: FinishReason; readonly reply: string; readonly toolCallCount: number };
+	"tools.beforeCall": { readonly callId: string; readonly name: string; readonly args: Record<string, unknown> };
+	"tools.transformResult": { readonly callId: string; readonly name: string; readonly args: Record<string, unknown>; readonly result: string; readonly status: ToolResultStatus; readonly images?: readonly ImageContent[]; readonly details?: unknown };
+	"provider.transformHeaders": { readonly provider: string; readonly headers: Readonly<Record<string, string>> };
+	"provider.transformPayload": { readonly provider: string; readonly payload: unknown };
+	"provider.observeResponse": { readonly provider: string; readonly status: number; readonly headers: Record<string, string> };
+}
+
+/**
+ * 单个扩展在干预点的贡献形状（onHook handler 的返回值）。
+ * RuntimeHooks 对应方法的返回值 = 所有扩展贡献按合并规则聚合后的结果。
+ */
+export interface HookContributions {
+	"turn.prepare": { readonly message?: ChatMsg; readonly systemPrompt?: string; readonly model?: Model; readonly thinkingLevel?: ThinkingLevel };
+	"turn.transformContext": { readonly messages?: readonly DeepReadonly<ChatMsg>[] };
+	"turn.beforeCompact": { readonly cancel?: boolean };
+	"turn.shouldStop": { readonly stop?: boolean };
+	"tools.beforeCall": { readonly block?: boolean; readonly reason?: string };
+	"tools.transformResult": { readonly result?: string; readonly status?: ToolResultStatus; readonly images?: readonly ImageContent[]; readonly details?: unknown };
+	"provider.transformHeaders": { readonly headers?: Record<string, string> };
+	"provider.transformPayload": { readonly payload?: unknown };
+	"provider.observeResponse": void;
+}
+
+/** 干预注册点（onHook）的 handler：输入为只读快照，返回该扩展的单点贡献。 */
+export type HookHandler<K extends HookName> = (
+	input: DeepReadonly<HookInputs[K]>,
+) => Promise<HookContributions[K] | undefined> | HookContributions[K] | undefined;
+
+/**
+ * 各 Interceptor 链的合并规则（铁律 L6：每条链的组合语义必须成文）。
+ * 注册顺序 = 激活顺序（内置能力先于项目扩展），同链内逐个传递。
+ *
+ * | hook                        | 合并规则                                   |
+ * | --------------------------- | ------------------------------------------ |
+ * | turn.prepare                | systemPrompt/model/thinkingLevel 后写覆盖先写；message 聚合追加 |
+ * | turn.transformContext       | 链式：后一个收到前一个的输出，返回整组替换      |
+ * | turn.beforeCompact          | 短路：任一 cancel=true 即取消，后续不再询问     |
+ * | turn.shouldStop             | 短路：任一 stop=true 即收尾，后续不再询问       |
+ * | tools.beforeCall            | 短路：任一 block=true 即拦截，后续不再询问      |
+ * | tools.transformResult       | 链式：后一个收到前一个改写后的结果，逐字段覆盖   |
+ * | provider.transformHeaders   | 链式：后一个收到前一个的输出，整组替换          |
+ * | provider.transformPayload   | 链式：后一个收到前一个的输出，整组替换          |
+ * | provider.observeResponse    | 观察：无返回值，只多播（响应已发生的审计点）     |
+ */
+export type HookMergeRule = Record<HookName, string>;
 
 export interface RuntimeHooks {
 	readonly turn: {

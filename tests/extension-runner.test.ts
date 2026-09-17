@@ -107,7 +107,7 @@ describe("project extension runner", () => {
 		roots.push(root);
 		const runner = new ExtensionRunner({ cwd: root, tools: new ToolBroker() });
 		await runner.activateBuiltin("root-context", (pi) => {
-			pi.on("context", (event) => ({ messages: [...event.messages, { role: "user", content: "root-only" }] }));
+			pi.onHook("turn.transformContext", (messages) => ({ messages: [...messages, { role: "user", content: "root-only" }] }));
 		});
 		let received = "";
 		const model: Model = mockModel({ id: "child", name: "child" });

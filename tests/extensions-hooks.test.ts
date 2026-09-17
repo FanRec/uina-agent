@@ -58,8 +58,8 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		const host = new ExtensionHost();
 		let toolActuallyExecuted = false;
 
-		host.on("tool_call", (event) => {
-			if (event.toolName === "dangerous_tool") {
+		host.onHook("tools.beforeCall", (input) => {
+			if (input.name === "dangerous_tool") {
 				return { block: true, reason: "安全策略拦截高危工具" };
 			}
 		});
@@ -115,9 +115,9 @@ describe("ExtensionHost & Hooks Architecture", () => {
 	it("transforms tool_result after tool finishes execution", async () => {
 		const host = new ExtensionHost();
 
-		host.on("tool_result", (event) => {
-			if (event.toolName === "calc") {
-				return { result: `[AUDITED] ${event.result}` };
+		host.onHook("tools.transformResult", (input) => {
+			if (input.name === "calc") {
+				return { result: `[AUDITED] ${input.result}` };
 			}
 		});
 
@@ -237,7 +237,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		let beforeCalled = false;
 		let compactCalled = false;
 
-		host.on("session_before_compact", () => {
+		host.onHook("turn.beforeCompact", () => {
 			beforeCalled = true;
 			if (cancelNext) return { cancel: true };
 		});
@@ -275,7 +275,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 	it("在未达到压缩阈值或刚聊一句时，绝不触发 session_before_compact", async () => {
 		const host = new ExtensionHost();
 		let beforeCalled = false;
-		host.on("session_before_compact", () => {
+		host.onHook("turn.beforeCompact", () => {
 			beforeCalled = true;
 		});
 
@@ -295,10 +295,10 @@ describe("ExtensionHost & Hooks Architecture", () => {
 
 	it("transforms context before sending request to provider", async () => {
 		const host = new ExtensionHost();
-		host.on("context", (e) => {
+		host.onHook("turn.transformContext", (messages) => {
 			return {
 				messages: [
-					...e.messages,
+					...messages,
 					{ role: "user", content: "【注入感知信息: 阳光明媚】" },
 				],
 			};
@@ -330,9 +330,9 @@ describe("ExtensionHost & Hooks Architecture", () => {
 	it("passes frozen snapshots to transform handlers and accepts explicit replacements only", async () => {
 		const host = new ExtensionHost();
 		let frozen = false;
-		host.on("context", (event) => {
-			frozen = Object.isFrozen(event) && Object.isFrozen(event.messages) && Object.isFrozen(event.messages[0]!);
-			return { messages: [...event.messages, { role: "user", content: "replacement" }] };
+		host.onHook("turn.transformContext", (messages) => {
+			frozen = Object.isFrozen(messages) && Object.isFrozen(messages[0]!);
+			return { messages: [...messages, { role: "user", content: "replacement" }] };
 		});
 		const hooks = createRuntimeHooks(host);
 		const transformed = await hooks.turn.transformContext([{ role: "user", content: "original" }]);
@@ -383,7 +383,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		const host = new ExtensionHost();
 		const sequence: string[] = [];
 
-		host.on("before_agent_start", () => sequence.push("before_agent_start"));
+		host.onHook("turn.prepare", () => { sequence.push("turn.prepare"); });
 		host.on("agent_start", () => sequence.push("agent_start"));
 		host.on("turn_start", () => sequence.push("turn_start"));
 		host.on("turn_end", () => sequence.push("turn_end"));
@@ -402,7 +402,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		await subject.waitForIdle();
 
 		expect(sequence).toEqual([
-			"before_agent_start",
+			"turn.prepare",
 			"agent_start",
 			"turn_start",
 			"turn_end",
@@ -568,14 +568,14 @@ describe("ExtensionHost & Hooks Architecture", () => {
 	it("intercepts HTTP requests at provider network level (before_provider_headers, before_provider_request, after_provider_response)", async () => {
 		const host = new ExtensionHost();
 
-		host.on("before_provider_headers", (e) => ({ headers: { ...e.headers, "X-Custom-Tenant": "tenant-123" } }));
-		host.on("before_provider_request", (e) => {
-			return { ...(e.payload as Record<string, unknown>), custom_tag: "injected" };
+		host.onHook("provider.transformHeaders", (input) => ({ headers: { ...input.headers, "X-Custom-Tenant": "tenant-123" } }));
+		host.onHook("provider.transformPayload", (input) => {
+			return { payload: { ...(input.payload as Record<string, unknown>), custom_tag: "injected" } };
 		});
 
 		let afterResponseStatus = 0;
-		host.on("after_provider_response", (e) => {
-			afterResponseStatus = e.status;
+		host.onHook("provider.observeResponse", (input) => {
+			afterResponseStatus = input.status;
 		});
 
 		let receivedHeaders: Record<string, string> = {};
@@ -638,7 +638,7 @@ describe("run-safety seams: prepare model swap and shouldStop", () => {
 		const baseModel = mockModel({ id: "base-model", name: "base" });
 		const nextModel = mockModel({ id: "next-model", name: "next" });
 		const events: string[] = [];
-		host.on("before_agent_start", () => ({ model: structuredClone(nextModel) }));
+		host.onHook("turn.prepare", () => ({ model: structuredClone(nextModel) }));
 		host.on("model_select", (event) => events.push(`model_select:${event.model}`));
 
 		const requested: string[] = [];
@@ -658,9 +658,9 @@ describe("run-safety seams: prepare model swap and shouldStop", () => {
 
 	it("stops the tool loop between turns when an extension returns stop", async () => {
 		const host = new ExtensionHost();
-		host.on("turn_should_stop", (event) => {
-			expect(event.finishReason).toBe("tool_calls");
-			expect(event.toolCallCount).toBe(1);
+		host.onHook("turn.shouldStop", (input) => {
+			expect(input.finishReason).toBe("tool_calls");
+			expect(input.toolCallCount).toBe(1);
 			return { stop: true };
 		});
 		let streamCalls = 0;

@@ -278,9 +278,9 @@ export default function activate(uina) {
     },
     async run(args) { return { result: "pong:" + args.val, status: "succeeded" }; },
   });
-  uina.on("tool_result", (event) => {
-    if (event.toolName === "host_direct_probe") {
-      return { result: "[HOOKED] " + event.result };
+  uina.onHook("tools.transformResult", (input) => {
+    if (input.name === "host_direct_probe") {
+      return { result: "[HOOKED] " + input.result };
     }
   });
 }

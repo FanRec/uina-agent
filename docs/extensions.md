@@ -42,7 +42,9 @@ callService 使用可 structuredClone 的数据。实现收到 callerId 和合�
 
 ## 上下文组合
 
-原有 context、before_agent_start 等整体变换按注册顺序运行，可以显式覆盖先前结果。registerContextContributor 则在提示词变换后累加独立消息，收到快照与主体取消信号；作用域过滤与 runtimeHooks(scopeIds) 一致。低层 context 变换仍可修改最终模型上下文。
+干预与观察是两个词表（Hook ≠ Event）：`pi.on(type)` 只订阅**事实**（RuntimeEvent：已经发生的，无返回值）；`pi.onHook(hook)` 在**干预点**注册（如 `turn.prepare`、`turn.transformContext`、`tools.beforeCall`、`provider.transformHeaders`），返回值按该链的合并规则参与组合。合并规则：turn.prepare 后写覆盖/消息聚合；transformContext、tools.transformResult、provider.transformHeaders/transformPayload 链式传递；beforeCompact、shouldStop、beforeCall 短路；observeResponse 纯观察。
+
+回合注入有两处时机：`turn.prepare`（回合边界）与 `turn.transformContext`（每请求）；registerContextContributor 是提示词变换后累加独立消息的第三条路径，收到快照与主体取消信号；作用域过滤与 runtimeHooks(scopeIds) 一致。
 
 贡献内容应标明来源。昂贵检索、索引或模型调用尽量异步准备，贡献阶段读取结果；没有引入隐式轮次、并发或容量上限。
 
@@ -56,7 +58,7 @@ registerCompactor(fn, { shouldCompact? })：
 - fn 收到 reason、history、suggestedKeepFrom、tokensBefore、model、instruction，以及 AbortSignal。
 - 返回 { summary, keepFrom }；keepFrom 是当前快照索引，history.length 表示全部旧消息被摘要替代。
 - undefined 明确委托默认算法；抛错不自动回退。
-- session_before_compact 保留取消/通知用途，不承担策略竞争。
+- turn.beforeCompact 保留取消/通知用途（onHook 注册），不承担策略竞争。
 
 只有运行时提交：摘要非空、保留位置有效、不切断工具调用与结果。先写入一条 compaction，再更新历史；写入失败、取消或策略失败不替换历史。已移除分别返回 history/compaction 的 prepareNextTurn 旁路。
 

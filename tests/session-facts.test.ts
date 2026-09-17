@@ -41,7 +41,7 @@ describe("S1 durable session facts", () => {
 		const broker = new ToolBroker();
 		broker.register(toolWith(async () => { executions++; return { result: "ok", status: "succeeded" }; }));
 		const host = new ExtensionHost();
-		host.on("tool_call", () => ({ block: true, reason: "extension decision" }));
+		host.onHook("tools.beforeCall", () => ({ block: true, reason: "extension decision" }));
 		const p = providerFor("probe");
 		const subject = new Subject(p.model, p.stream, broker, { store, runtimeHooks: createRuntimeHooks(host) });
 		await subject.pushInput("run");
@@ -235,7 +235,7 @@ describe("S1 tool outcome propagation", () => {
 		broker.register(toolWith(async () => ({ result: "opaque content", status })));
 		const host = new ExtensionHost();
 		const observed: ToolResultStatus[] = [];
-		host.on("tool_result", event => { observed.push(event.status); return { result: `[hook] ${event.result}` }; });
+		host.onHook("tools.transformResult", input => { observed.push(input.status); return { result: `[hook] ${input.result}` }; });
 		const tui = new InteractiveTUI();
 		const p3 = providerFor("probe");
 		const subject = new Subject(p3.model, p3.stream, broker, { store, runtimeHooks: createRuntimeHooks(host) });
@@ -266,7 +266,7 @@ describe("S1 tool outcome propagation", () => {
 		const broker = new ToolBroker(); broker.register(execCommand);
 		const host = new ExtensionHost();
 		const seen: ToolResultStatus[] = [];
-		host.on("tool_result", event => { seen.push(event.status); });
+		host.onHook("tools.transformResult", input => { seen.push(input.status); });
 		const p4 = providerFor(execCommand.def.function.name, { command: "exit 7" });
 		const subject = new Subject(p4.model, p4.stream, broker, { store, runtimeHooks: createRuntimeHooks(host) });
 		await subject.pushInput("run"); await subject.waitForIdle(); await store.close();

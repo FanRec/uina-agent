@@ -99,13 +99,13 @@ describe("extension composition", () => {
 				details: { source: "echo" },
 			}),
 		});
-		consumer.on("tool_result", () => ({ result: "transformed" }));
+		consumer.onHook("tools.transformResult", () => ({ result: "transformed" }));
 		const result = await consumer.callTool("echo", { text: "hello" });
 		expect(result).toMatchObject({ result: "transformed", status: "succeeded", details: { source: "echo" } });
 		expect(records).toHaveLength(2);
 		expect(JSON.stringify(records)).toContain("builtin:consumer");
 		expect((await consumer.callTool("echo", { bad: 2 })).status).toBe("not_started");
-		consumer.on("tool_call", () => ({ block: true, reason: "blocked by test" }));
+		consumer.onHook("tools.beforeCall", () => ({ block: true, reason: "blocked by test" }));
 		expect((await consumer.callTool("echo", { text: "hello" })).status).toBe("not_started");
 	});
 	it("cancels and settles an in-flight service on unload", async () => {
@@ -195,7 +195,7 @@ describe("extension composition", () => {
 		const host = runner(await temp());
 		const a = await activate(host, "a");
 		const b = await activate(host, "b");
-		a.on("before_agent_start", () => ({ systemPrompt: "changed" }));
+		a.onHook("turn.prepare", () => ({ systemPrompt: "changed" }));
 		a.registerContextContributor("memory", () => [{ role: "user", content: "memory" }]);
 		b.registerContextContributor("skills", (ctx) => [{ role: "user", content: ctx.systemPrompt + ":skills" }]);
 		const result = await host.runtimeHooks().turn.prepare({ prompt: "hi", systemPrompt: "initial" });

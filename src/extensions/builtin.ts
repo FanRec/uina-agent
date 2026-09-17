@@ -224,8 +224,9 @@ export function activateBuiltinCommands(services: BuiltinServices): (pi: Extensi
 			handler: (arg) => pi.compact(arg || undefined),
 		});
 
-		pi.on("session_before_compact", () => {
+		pi.onHook("turn.beforeCompact", () => {
 			pi.ui.notify("正在压缩会话…", "info", 0);
+			return undefined; // 观察挂点：不取消压缩（取消语义留给真正需要它的扩展）
 		});
 
 		pi.on("session_compact", (e) => {

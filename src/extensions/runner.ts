@@ -23,7 +23,8 @@ import type {
 	MarkdownTransformer,
 } from "./ui-contract.js";
 import { ExtensionRegistry } from "./renderer-registry.js";
-import { ExtensionHost, type ExtensionEvent, type ExtensionEventHandler } from "./host.js";
+import { ExtensionHost, type ExtensionEvent, type ExtensionEventHandler, type HookHandler } from "./host.js";
+import type { HookName } from "../runtime/hooks.js";
 import { createRuntimeHooks } from "./runtime-hooks.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
 
@@ -43,6 +44,11 @@ export interface ExtensionAPI {
 		type: T,
 		handler: ExtensionEventHandler<Extract<ExtensionEvent, { type: T }>>,
 	): () => void;
+	/**
+	 * 在干预点注册（Hook ≠ Event，L1）：hook 专属词汇（如 "tools.beforeCall"），
+	 * 返回值按该链的合并规则参与组合。事实观察用 on()。
+	 */
+	onHook<K extends HookName>(hook: K, handler: HookHandler<K>): () => void;
 	registerTool(tool: Tool, options?: { replace?: boolean }): () => void;
 	callTool(
 		name: string,
@@ -586,6 +592,20 @@ export class ExtensionRunner extends ExtensionHost {
 					}
 				};
 				const dispose = super.onScoped(scope.id, type, wrapped as never);
+				own(dispose);
+				return dispose;
+			},
+			onHook: (hook, handler) => {
+				assertActive();
+				const wrapped: HookHandler<HookName> = async (input) => {
+					try {
+						return await handler(input as never);
+					} catch (error) {
+						this.emitOwnedError(scope.id, hook, error);
+						return undefined;
+					}
+				};
+				const dispose = this.onHook(hook, wrapped, { scopeId: scope.id });
 				own(dispose);
 				return dispose;
 			},

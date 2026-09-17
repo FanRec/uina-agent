@@ -1,11 +1,12 @@
 /**
  * Uina 扩展事件宿主（ExtensionHost）。
  *
- * 作为扩展层的事件分发与生命周期中枢，负责：
- * 1. 统一管理扩展 Handler 注册与派发；
- * 2. 异步执行监听器并提供异常安全隔离（单个扩展异常不阻塞核心运行）；
- * 3. 支持拦截式事件（tool_call、session_before_compact 等）的快速短路判定；
- * 4. 支持链式变换（context、tool_result、before_provider_request 等）。
+ * 两个词表严格分离（铁律 L1：Hook ≠ Event）：
+ * 1. **事实**（on / emit）：RuntimeEvent 单流广播，订阅方无返回值——系统告诉世界"已经发生了"。
+ * 2. **干预**（onHook / run*）：hook 专属词汇（HookName），有返回协议，按 HookMergeRule 组合——
+ *    系统问扩展"你要不要影响这件事？"。禁止以事件形状挂干预。
+ *
+ * 另负责扩展 Handler 注册与生命周期派发、异常安全隔离（单个扩展异常不阻塞核心运行）。
  */
 
 import { errorMessage } from "../core/errors.js";
@@ -16,19 +17,18 @@ import type {
 	DeepReadonly,
 	OutputEvent,
 	RuntimeEvent,
-	ToolCallEvent,
-	ToolResultEvent,
 } from "../runtime/events.js";
+import type {
+	HookContributions,
+	HookHandler,
+	HookInputs,
+	HookName,
+} from "../runtime/hooks.js";
 
 export type {
-	AfterProviderResponseEvent,
 	AgentEndEvent,
 	AgentSettledEvent,
 	AgentStartEvent,
-	BeforeAgentStartEvent,
-	BeforeProviderHeadersEvent,
-	BeforeProviderRequestEvent,
-	ContextEvent,
 	ErrorEvent,
 	ModelSelectEvent,
 	OutputEndEvent,
@@ -37,7 +37,6 @@ export type {
 	OutputUpdateEvent,
 	QueueEvent,
 	RuntimeEvent,
-	SessionBeforeCompactEvent,
 	SessionCompactEvent,
 	SessionCompactFailedEvent,
 	ThinkingLevelSelectEvent,
@@ -48,6 +47,14 @@ export type {
 	TurnStartEvent,
 } from "../runtime/events.js";
 
+export type {
+	HookContributions,
+	HookHandler,
+	HookInputs,
+	HookMergeRule,
+	HookName,
+} from "../runtime/hooks.js";
+
 export interface ExtensionError {
 	extensionName?: string;
 	event: string;
@@ -57,52 +64,19 @@ export interface ExtensionError {
 
 export type ExtensionErrorListener = (err: ExtensionError) => void;
 
-// 1. 输入与 Prompt 事件
-export interface InputEvent {
-	readonly type: "input";
-	readonly text: string;
-	readonly source: Readonly<{ kind: "user" | "runtime" | "agent"; type: string; ref?: string }>;
-}
-
-export interface BeforeAgentStartResult {
-	readonly message?: ChatMsg;
-	readonly systemPrompt?: string;
-	/** 换用另一个模型事实（Subject 以 setModel 的完整纪律应用）。 */
-	readonly model?: import("../core/types.js").Model;
-	readonly thinkingLevel?: import("../core/types.js").ThinkingLevel;
-}
-
-export interface ContextEventResult {
-	readonly messages: readonly ChatMsg[];
-}
-
-export interface ToolCallResult {
-	readonly block?: boolean;
-	readonly reason?: string;
-}
-
-export interface ToolResultEventResult {
-	readonly result?: string;
-	readonly status?: import("../core/types.js").ToolResultStatus;
-	readonly details?: unknown;
- readonly images?: readonly import("../core/content.js").ImageContent[];
-}
-
-export interface SessionBeforeCompactResult {
-	readonly cancel?: boolean;
-}
-
-export interface BeforeProviderHeadersResult {
-	readonly headers?: Record<string, string>;
-}
-export type ExtensionEvent = InputEvent | RuntimeEvent;
-
-export type ExtensionEventHandler<T extends ExtensionEvent = ExtensionEvent> = (
+/** 事实事件订阅（on）的 handler：只观察，无返回协议。 */
+export type ExtensionEventHandler<T extends RuntimeEvent = RuntimeEvent> = (
 	event: DeepReadonly<T>,
 ) => Promise<unknown> | unknown;
 
+/** 事实事件类型（干预已退出事件词表，on() 的类型域由此收窄）。 */
+export type ExtensionEvent = RuntimeEvent;
+
+/** 注册容器的中性存储签名：事实与干预 handler 共用容器，存取两侧各自 cast。 */
+type RegistryHandler = (input: never) => unknown;
+
 interface RegisteredHandler {
-	readonly handler: ExtensionEventHandler;
+	readonly handler: RegistryHandler;
 	readonly scopeId?: string;
 }
 
@@ -111,11 +85,13 @@ export type RuntimeScopeFilter = readonly string[] | undefined;
 export class ExtensionHost {
 	private readonly contextContributors = new Registrations<{ scopeId?: string; run: (input: Readonly<{ prompt: string; systemPrompt: string }>, signal?: AbortSignal) => Promise<readonly ChatMsg[]> }>();
  registerContextContributor(name: string, contributor: (input: Readonly<{ prompt: string; systemPrompt: string }>, signal?: AbortSignal) => Promise<readonly ChatMsg[]>, options?: { replace?: boolean; scopeId?: string }): () => void { return this.contextContributors.register(name, { run: contributor, scopeId: options?.scopeId }, options); }
- private handlers = new Map<string, Set<RegisteredHandler>>();
+	private handlers = new Map<string, Set<RegisteredHandler>>();
+	/** 干预注册空间：键是 HookName 词汇，与事实事件名（handlers）分属两个词表。 */
+	private hookHandlers = new Map<HookName, Set<RegisteredHandler>>();
 	private errorListeners = new Set<ExtensionErrorListener>();
 	private observedTail: Promise<void> = Promise.resolve();
 
-	/** 注册事件监听器 */
+	/** 订阅事实事件：只观察"已经发生的"，无返回协议。干预注册请用 onHook。 */
 	on<T extends ExtensionEvent["type"]>(
 		eventType: T,
 		handler: ExtensionEventHandler<Extract<ExtensionEvent, { type: T }>>,
@@ -133,7 +109,21 @@ export class ExtensionHost {
 			set = new Set();
 			this.handlers.set(eventType, set);
 		}
-		const entry: RegisteredHandler = { handler: handler as ExtensionEventHandler, ...(scopeId === undefined ? {} : { scopeId }) };
+		const entry: RegisteredHandler = { handler: handler as unknown as RegistryHandler, ...(scopeId === undefined ? {} : { scopeId }) };
+		set.add(entry);
+		return () => {
+			set?.delete(entry);
+		};
+	}
+
+	/** 在干预点注册：返回值按该链的合并规则参与组合（Hook ≠ Event，L1）。 */
+	onHook<K extends HookName>(hook: K, handler: HookHandler<K>, options?: { scopeId?: string }): () => void {
+		let set = this.hookHandlers.get(hook);
+		if (!set) {
+			set = new Set();
+			this.hookHandlers.set(hook, set);
+		}
+		const entry: RegisteredHandler = { handler: handler as unknown as RegistryHandler, ...(options?.scopeId === undefined ? {} : { scopeId: options.scopeId }) };
 		set.add(entry);
 		return () => {
 			set?.delete(entry);
@@ -170,7 +160,7 @@ export class ExtensionHost {
 
 		for (const handler of handlers) {
 			try {
-				await handler(readonlySnapshot(event));
+				await handler(readonlySnapshot(event) as never);
 			} catch (err) {
 				this.emitError(event.type, err);
 			}
@@ -186,98 +176,84 @@ export class ExtensionHost {
 		await this.observedTail;
 	}
 
-	/** 触发工具调用前拦截（支持 block 短路） */
-	async emitToolCall(event: ToolCallEvent, scope?: RuntimeScopeFilter): Promise<ToolCallResult | undefined> {
-		const handlers = this.handlersFor("tool_call", scope);
-		if (handlers.length === 0) return undefined;
-
-		for (const handler of handlers) {
+	/** tools.beforeCall：短路链——任一 block=true 即拦截。 */
+	async runBeforeCall(input: HookInputs["tools.beforeCall"], scope?: RuntimeScopeFilter): Promise<HookContributions["tools.beforeCall"] | undefined> {
+		for (const handler of this.hooksFor("tools.beforeCall", scope)) {
 			try {
-				const res = (await handler(readonlySnapshot(event))) as ToolCallResult | undefined;
-				if (res?.block) {
-					return res; // 立即短路，跳过后续拦截器
-				}
+				const res = (await handler(readonlySnapshot(input) as never)) as HookContributions["tools.beforeCall"] | undefined;
+				if (res?.block) return res; // 立即短路，跳过后续拦截器
 			} catch (err) {
-				this.emitError("tool_call", err);
+				this.emitError("tools.beforeCall", err);
 			}
 		}
 		return undefined;
 	}
 
-	/** 触发工具结果改写/审计（链式传递） */
-	async emitToolResult(event: ToolResultEvent, scope?: RuntimeScopeFilter): Promise<ToolResultEventResult | undefined> {
-		const handlers = this.handlersFor("tool_result", scope);
-		if (handlers.length === 0) return undefined;
-
-		const current = { ...event };
+	/** tools.transformResult：链式——后一个收到前一个改写后的结果，逐字段覆盖。 */
+	async runTransformResult(input: HookInputs["tools.transformResult"], scope?: RuntimeScopeFilter): Promise<HookContributions["tools.transformResult"] | undefined> {
+		const current = { ...input };
 		let modified = false;
 
-		for (const handler of handlers) {
+		for (const handler of this.hooksFor("tools.transformResult", scope)) {
 			try {
-				const res = (await handler(readonlySnapshot(current))) as ToolResultEventResult | undefined;
+				const res = (await handler(readonlySnapshot(current) as never)) as HookContributions["tools.transformResult"] | undefined;
 				if (res) {
-					if (res.result !== undefined) {
-						current.result = res.result;
-						modified = true;
-					}
+					if (res.result !== undefined) { current.result = res.result; modified = true; }
 					if (res.details !== undefined) { current.details = copyValue(res.details); modified = true; }
-     if (res.images !== undefined) { current.images = copyValue(res.images); modified = true; }
-     if (res.status !== undefined) {
-						current.status = res.status;
-						modified = true;
-					}
+					if (res.images !== undefined) { current.images = copyValue(res.images); modified = true; }
+					if (res.status !== undefined) { current.status = res.status; modified = true; }
 				}
 			} catch (err) {
-				this.emitError("tool_result", err);
+				this.emitError("tools.transformResult", err);
 			}
 		}
 
 		return modified ? { result: current.result, status: current.status, details: current.details, images: current.images } : undefined;
 	}
 
-	/** 触发上下文消息变换 */
-	async emitContext(messages: readonly ChatMsg[], scope?: RuntimeScopeFilter): Promise<ChatMsg[]> {
-		const handlers = this.handlersFor("context", scope);
+	/** turn.transformContext：链式——后一个收到前一个的输出，返回整组替换。 */
+	async runTransformContext(messages: readonly ChatMsg[], scope?: RuntimeScopeFilter): Promise<ChatMsg[]> {
+		const handlers = this.hooksFor("turn.transformContext", scope);
 		if (handlers.length === 0) return [...messages];
 
 		let currentMessages = [...messages];
 		for (const handler of handlers) {
 			try {
-				const res = (await handler(readonlySnapshot({
-					type: "context",
-					messages: currentMessages,
-				}))) as ContextEventResult | undefined;
+				const res = (await handler(readonlySnapshot(currentMessages) as never)) as HookContributions["turn.transformContext"] | undefined;
 				if (res?.messages) {
-					currentMessages = [...structuredClone(res.messages)];
+					// 贡献里的元素允许是只读视图；归一化为可变 ChatMsg[] 是 host 的收口职责。
+					currentMessages = structuredClone(res.messages) as ChatMsg[];
 				}
 			} catch (err) {
-				this.emitError("context", err);
+				this.emitError("turn.transformContext", err);
 			}
 		}
 		return currentMessages;
 	}
 
-	/** 触发 Agent 启动前准备（可注入额外消息或修改 systemPrompt） */
-	async emitBeforeAgentStart(
-		prompt: string,
-		systemPrompt: string,
+	/**
+	 * turn.prepare：systemPrompt/model/thinkingLevel 后写覆盖先写；message 聚合追加。
+	 * 返回值是全链聚合后的回合准备结果（RuntimeHooks.turn.prepare 的形状）。
+	 * contextContributors 是同一注入时机的第三条路径（inventory #2），P2 收敛时退役。
+	 */
+	async runTurnPrepare(
+		input: HookInputs["turn.prepare"],
 		scope?: RuntimeScopeFilter,
-  signal?: AbortSignal,
-	): Promise<{ messages?: ChatMsg[]; systemPrompt?: string; model?: import("../core/types.js").Model; thinkingLevel?: import("../core/types.js").ThinkingLevel } | undefined> {
-		const handlers = this.handlersFor("before_agent_start", scope);
+		signal?: AbortSignal,
+	): Promise<Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string; model?: import("../core/types.js").Model; thinkingLevel?: import("../core/types.js").ThinkingLevel }> | undefined> {
+		const handlers = this.hooksFor("turn.prepare", scope);
 		const messages: ChatMsg[] = [];
-		let currentPrompt = systemPrompt;
-		let currentModel: import("../core/types.js").Model | undefined;
-		let currentThinking: import("../core/types.js").ThinkingLevel | undefined;
+		let currentPrompt = input.systemPrompt;
+		let currentModel: HookContributions["turn.prepare"]["model"];
+		let currentThinking: HookContributions["turn.prepare"]["thinkingLevel"];
 		let modified = false;
 
 		for (const handler of handlers) {
 			try {
 				const res = (await handler(readonlySnapshot({
-					type: "before_agent_start",
-					prompt,
+					prompt: input.prompt,
 					systemPrompt: currentPrompt,
-				}))) as BeforeAgentStartResult | undefined;
+				}) as never)) as HookContributions["turn.prepare"] | undefined;
 				if (res) {
 					if (res.message) {
 						messages.push(structuredClone(res.message));
@@ -297,141 +273,122 @@ export class ExtensionHost {
 					}
 				}
 			} catch (err) {
-				this.emitError("before_agent_start", err);
+				this.emitError("turn.prepare", err);
 			}
 		}
 
-  {
-   for (const contributor of this.contextContributors.values()) {
-    if (scope && (!contributor.scopeId || !scope.includes(contributor.scopeId))) continue;
-    const additions = await contributor.run(readonlySnapshot({ prompt, systemPrompt: currentPrompt }), signal);
-    messages.push(...structuredClone(additions));
-    if (additions.length) modified = true;
-   }
-  }
+		{
+			for (const contributor of this.contextContributors.values()) {
+				if (scope && (!contributor.scopeId || !scope.includes(contributor.scopeId))) continue;
+				const additions = await contributor.run(readonlySnapshot({ prompt: input.prompt, systemPrompt: currentPrompt }), signal);
+				messages.push(...structuredClone(additions));
+				if (additions.length) modified = true;
+			}
+		}
 		return modified
 			? {
 					messages: messages.length > 0 ? messages : undefined,
-					systemPrompt: currentPrompt !== systemPrompt ? currentPrompt : undefined,
+					systemPrompt: currentPrompt !== input.systemPrompt ? currentPrompt : undefined,
 					...(currentModel !== undefined ? { model: currentModel } : {}),
 					...(currentThinking !== undefined ? { thinkingLevel: currentThinking } : {}),
 				}
 			: undefined;
 	}
 
-	/** 触发压缩前检查（支持取消压缩） */
-	async emitSessionBeforeCompact(tokensBefore: number, scope?: RuntimeScopeFilter): Promise<boolean> {
-		const handlers = this.handlersFor("session_before_compact", scope);
-		if (handlers.length === 0) return false;
-
-		for (const handler of handlers) {
+	/** turn.beforeCompact：短路链——任一 cancel=true 即取消。返回值协议冻结（P2 裁定不扩约）。 */
+	async runBeforeCompact(tokensBefore: number, scope?: RuntimeScopeFilter): Promise<boolean> {
+		for (const handler of this.hooksFor("turn.beforeCompact", scope)) {
 			try {
-				const res = (await handler(readonlySnapshot({
-					type: "session_before_compact",
-					tokensBefore,
-				}))) as SessionBeforeCompactResult | undefined;
+				const res = (await handler(readonlySnapshot({ tokensBefore }) as never)) as HookContributions["turn.beforeCompact"] | undefined;
 				if (res?.cancel) {
 					return true; // 请求取消压缩
 				}
 			} catch (err) {
-				this.emitError("session_before_compact", err);
+				this.emitError("turn.beforeCompact", err);
 			}
 		}
 		return false;
 	}
 
-	/** 回合间停止决策：任一扩展返回 stop 即收尾（对应 Pi shouldStopAfterTurn）。 */
-	async emitTurnShouldStop(
-		input: { turnNumber: number; finishReason: import("../core/types.js").FinishReason; reply: string; toolCallCount: number },
+	/** turn.shouldStop：短路链——任一 stop=true 即收尾。 */
+	async runShouldStop(
+		input: HookInputs["turn.shouldStop"],
 		scope?: RuntimeScopeFilter,
 	): Promise<boolean> {
-		const handlers = this.handlersFor("turn_should_stop", scope);
-		for (const handler of handlers) {
+		for (const handler of this.hooksFor("turn.shouldStop", scope)) {
 			try {
-				const res = (await handler(readonlySnapshot({
-					type: "turn_should_stop",
-					...input,
-				}))) as { stop?: boolean } | undefined;
+				const res = (await handler(readonlySnapshot(input) as never)) as HookContributions["turn.shouldStop"] | undefined;
 				if (res?.stop) return true;
 			} catch (err) {
-				this.emitError("turn_should_stop", err);
+				this.emitError("turn.shouldStop", err);
 			}
 		}
 		return false;
 	}
 
-	/** 触发 Provider 请求 Headers 修改 */
-	async emitBeforeProviderHeaders(
+	/** provider.transformHeaders：链式——后一个收到前一个的输出，整组替换。 */
+	async runTransformHeaders(
 		provider: string,
 		headers: Readonly<Record<string, string>>,
 		scope?: RuntimeScopeFilter,
 	): Promise<Record<string, string>> {
-		const handlers = this.handlersFor("before_provider_headers", scope);
+		const handlers = this.hooksFor("provider.transformHeaders", scope);
 		if (handlers.length === 0) return { ...headers };
 
 		let current = { ...headers };
 		for (const handler of handlers) {
 			try {
-				const res = (await handler(readonlySnapshot({
-					type: "before_provider_headers",
-					provider,
-					headers: current,
-				}))) as BeforeProviderHeadersResult | undefined;
+				const res = (await handler(readonlySnapshot({ provider, headers: current }) as never)) as HookContributions["provider.transformHeaders"] | undefined;
 				if (res?.headers) current = structuredClone(res.headers);
 			} catch (err) {
-				this.emitError("before_provider_headers", err);
+				this.emitError("provider.transformHeaders", err);
 			}
 		}
 		return structuredClone(current);
 	}
 
-	/** 触发 Provider 请求 Payload 修改 */
-	async emitBeforeProviderRequest(provider: string, payload: DeepReadonly<unknown>, scope?: RuntimeScopeFilter): Promise<unknown> {
-		const handlers = this.handlersFor("before_provider_request", scope);
+	/** provider.transformPayload：链式——后一个收到前一个的输出，整组替换。 */
+	async runTransformPayload(provider: string, payload: DeepReadonly<unknown>, scope?: RuntimeScopeFilter): Promise<unknown> {
+		const handlers = this.hooksFor("provider.transformPayload", scope);
 		if (handlers.length === 0) return payload;
 
 		let current = payload;
 		for (const handler of handlers) {
 			try {
-				const res = await handler(readonlySnapshot({
-					type: "before_provider_request",
-					provider,
-					payload: current,
-				}));
-				if (res !== undefined) {
-					current = copyValue(res);
+				const res = (await handler(readonlySnapshot({ provider, payload: current }) as never)) as HookContributions["provider.transformPayload"] | undefined;
+				if (res !== undefined && res.payload !== undefined) {
+					current = copyValue(res.payload) as typeof current;
 				}
 			} catch (err) {
-				this.emitError("before_provider_request", err);
+				this.emitError("provider.transformPayload", err);
 			}
 		}
 		return copyValue(current);
 	}
 
-	/** 触发 Provider 响应审计 */
-	async emitAfterProviderResponse(
-		provider: string,
-		status: number, headers: Readonly<Record<string, string>>,
+	/** provider.observeResponse：观察点——响应已发生的审计，无返回值。 */
+	async runObserveResponse(
+		input: HookInputs["provider.observeResponse"],
 		scope?: RuntimeScopeFilter,
 	): Promise<void> {
-		const handlers = this.handlersFor("after_provider_response", scope);
-		if (handlers.length === 0) return;
-
-		for (const handler of handlers) {
+		for (const handler of this.hooksFor("provider.observeResponse", scope)) {
 			try {
-				await handler(readonlySnapshot({
-					type: "after_provider_response",
-					provider,
-					status,
-					headers,
-				}));
+				await handler(readonlySnapshot(input) as never);
 			} catch (err) {
-				this.emitError("after_provider_response", err);
+				this.emitError("provider.observeResponse", err);
 			}
 		}
 	}
 
-	private handlersFor(eventType: string, scope?: RuntimeScopeFilter): ExtensionEventHandler[] {
+	private hooksFor(hook: HookName, scope?: RuntimeScopeFilter): RegistryHandler[] {
+		const set = this.hookHandlers.get(hook);
+		if (!set) return [];
+		if (scope === undefined) return [...set].map((entry) => entry.handler);
+		const visible = new Set(scope);
+		return [...set].filter((entry) => entry.scopeId === undefined || visible.has(entry.scopeId)).map((entry) => entry.handler);
+	}
+
+	private handlersFor(eventType: string, scope?: RuntimeScopeFilter): RegistryHandler[] {
 		const set = this.handlers.get(eventType);
 		if (!set) return [];
 		if (scope === undefined) return [...set].map((entry) => entry.handler);

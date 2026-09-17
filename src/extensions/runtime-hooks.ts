@@ -1,4 +1,3 @@
-import type { ChatMsg } from "../core/types.js";
 import type { DeepReadonly, OutputEvent, RuntimeEvent } from "../runtime/events.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
 import { ExtensionHost, type RuntimeScopeFilter } from "./host.js";
@@ -11,7 +10,7 @@ export function createRuntimeHooks(host: ExtensionHost, scope?: RuntimeScopeFilt
 	const hooks: RuntimeHooks = {
 		turn: Object.freeze({
 			prepare: async (input, signal) => {
-				const prepared = await host.emitBeforeAgentStart(input.prompt, input.systemPrompt, scope, signal);
+				const prepared = await host.runTurnPrepare(input, scope, signal);
 				return Object.freeze({
 					...(prepared?.messages ? { messages: structuredClone(prepared.messages) } : {}),
 					...(prepared?.systemPrompt !== undefined ? { systemPrompt: prepared.systemPrompt } : {}),
@@ -19,31 +18,26 @@ export function createRuntimeHooks(host: ExtensionHost, scope?: RuntimeScopeFilt
 					...(prepared?.thinkingLevel !== undefined ? { thinkingLevel: prepared.thinkingLevel } : {}),
 				});
 			},
-			transformContext: async (messages) => host.emitContext(messages as readonly ChatMsg[], scope),
-			beforeCompact: async (input) => Object.freeze({ cancel: await host.emitSessionBeforeCompact(input.tokensBefore, scope) || undefined }),
-			shouldStop: async (input) => Object.freeze({ stop: await host.emitTurnShouldStop(input, scope) || undefined }),
+			transformContext: (messages) => host.runTransformContext(messages as readonly import("../core/types.js").ChatMsg[], scope),
+			beforeCompact: async (input) => Object.freeze({ cancel: await host.runBeforeCompact(input.tokensBefore, scope) || undefined }),
+			shouldStop: async (input) => Object.freeze({ stop: await host.runShouldStop(input, scope) || undefined }),
 		}),
 		tools: Object.freeze({
-			beforeCall: async (input) => Object.freeze(await host.emitToolCall({
-				type: "tool_call", toolName: input.name, args: input.args, callId: input.callId,
-			}, scope) ?? {}),
+			beforeCall: async (input) => Object.freeze(await host.runBeforeCall(input, scope) ?? {}),
 			transformResult: async (input) => {
-				const result = await host.emitToolResult({
-					type: "tool_result", toolName: input.name, args: input.args, result: input.result,
-					status: input.status, callId: input.callId, images: input.images, details: input.details,
-				}, scope);
+				const result = await host.runTransformResult(input, scope);
 				return Object.freeze({
 					...(result?.result !== undefined ? { result: result.result } : {}),
 					...(result?.status !== undefined ? { status: result.status } : {}),
-     ...(result?.images !== undefined ? { images: result.images } : {}),
-     ...(result?.details !== undefined ? { details: result.details } : {}),
+					...(result?.images !== undefined ? { images: result.images } : {}),
+					...(result?.details !== undefined ? { details: result.details } : {}),
 				});
 			},
 		}),
 		provider: Object.freeze({
-			transformHeaders: (provider: string, headers: Readonly<Record<string, string>>) => host.emitBeforeProviderHeaders(provider, headers, scope),
-			transformPayload: (provider: string, payload: DeepReadonly<unknown>) => host.emitBeforeProviderRequest(provider, payload, scope),
-			observeResponse: (input: Readonly<{ provider: string; status: number; headers: Record<string, string> }>) => host.emitAfterProviderResponse(input.provider, input.status, input.headers, scope),
+			transformHeaders: (provider: string, headers: Readonly<Record<string, string>>) => host.runTransformHeaders(provider, headers, scope),
+			transformPayload: (provider: string, payload: DeepReadonly<unknown>) => host.runTransformPayload(provider, payload, scope),
+			observeResponse: (input: Readonly<{ provider: string; status: number; headers: Record<string, string> }>) => host.runObserveResponse(input, scope),
 		}),
 		events: Object.freeze({
 			emit: (event: RuntimeEvent) => host.emit(event, scope),
