@@ -291,7 +291,9 @@ it("does not invent a crash during live reads and durably settles unfinished cal
 		const reopened=await openJsonlSession(path);
 		expect(reopened.store.readRecords().at(-1)).toMatchObject({kind:"message",message:{role:"tool",status:"unknown"}});
 		const nodes=listSessionNodes(reopened.store.readRecords());
-		expect(nodes.nodes).toHaveLength(3);expect(nodes.nodes.some(node=>node.id.startsWith("recovered:"))).toBe(false);
+		expect(nodes.nodes).toHaveLength(3);
+		// 恢复事实带稳定身份落盘（planRecovery → 可审计）；恢复节点被 reducer 结构性排除出安全回溯目标
+		expect(nodes.nodes.at(-1)).toMatchObject({ id: expect.stringMatching(/^recovered:/), canRewind: false });
 		await reopened.store.appendRewind({id:"after-crash",requestId:"q",targetId:nodes.nodes[0].id,fromId:nodes.headId!,source:"test",reason:"recover"});
 		await reopened.store.close();
 		const again=await openJsonlSession(path);expect(listSessionNodes(again.store.readRecords()).headId).toBe("after-crash");await again.store.close();

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { Compactor } from "../core/compaction.js";
 import type { AgentMessage, Model, ModelStreamFn, ToolDef } from "../core/types.js";
 import type { ProviderHooks } from "../runtime/hooks.js";
-import { projectAgentHistory, recoverRecords } from "../session/recovery.js";
+import { applyRecord, canonicalReplay, checkRecord, projectAgentHistory } from "../session/recovery.js";
 import type { RewindRequest, SessionRewindRecord, SessionStore } from "../session/types.js";
 import {
 	resolveCompactionResult,
@@ -109,8 +109,9 @@ export async function commitRewindTransition(
 	pending.signal?.throwIfAborted();
 	signal?.throwIfAborted();
 	const records = [...store.readRecords()];
-	const entries = recoverRecords(records, false).entries;
-	const fromId = entries.at(-1)?.id;
+	// 回溯提交是校验路径：全量 fold 一次，之后 check/apply 两相推进候选状态。
+	const state = canonicalReplay(records);
+	const fromId = state.entries.at(-1)?.id;
 	if (!fromId) {
 		throw new Error("会话没有可回溯历史");
 	}
@@ -124,10 +125,11 @@ export async function commitRewindTransition(
 		seq: (records.at(-1)?.seq ?? 0) + 1,
 		timestamp: new Date().toISOString(),
 	};
-	const next = recoverRecords([...records, record]);
+	checkRecord(state, record);
 	// The projection stays derived from records; an oversized rewind is compacted before it is
 	// persisted so a committed rewind never leaves an unusable context behind.
-	const history = projectAgentHistory(next.entries);
+	applyRecord(state, record);
+	const history = projectAgentHistory(state.entries);
 	const estimated = estimateContextTokens(
 		buildContext({ history, systemPrompt: context.systemPrompt }),
 		{ tools: context.tools, includeThinking: context.model.includeThinking },
@@ -137,9 +139,16 @@ export async function commitRewindTransition(
 	pending.signal?.throwIfAborted();
 	signal?.throwIfAborted();
 	// Persist rewind and its optional compaction as one durable transition.
-	const finalRecord = compacted ? { ...record, compaction: compacted } : record;
-	const finalState = recoverRecords([...records, finalRecord]);
-	const finalHistory = projectAgentHistory(finalState.entries);
-	await store.appendRewind(finalRecord);
+	// 嵌入压缩只改变同一条回溯记录的持久形态，合法性已由 checkRecord 覆盖。
+	let finalHistory = history;
+	if (compacted) {
+		const finalRecord = { ...record, compaction: compacted };
+		const finalState = canonicalReplay(records);
+		applyRecord(finalState, finalRecord);
+		finalHistory = projectAgentHistory(finalState.entries);
+		await store.appendRewind(finalRecord);
+	} else {
+		await store.appendRewind(record);
+	}
 	return { rewindId: record.id, fromId, targetId: record.targetId, history: finalHistory, compacted };
 }

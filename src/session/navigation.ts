@@ -1,4 +1,4 @@
-import { safeRewindTargets, recoverRecords } from "./recovery.js";
+import { canonicalReplay } from "./recovery.js";
 import type { HydratedSessionEntry, SessionAccess, SessionBranchInfo, SessionEntry, SessionNodeInfo, SessionRecord } from "./types.js";
 
 export class SessionNavigationError extends Error {
@@ -45,7 +45,8 @@ export function listSessionNodes(
 	records: readonly SessionRecord[],
 	options: Parameters<SessionAccess["list"]>[0] = {},
 ): ReturnType<SessionAccess["list"]> {
-	const { entries, allEntries } = recoverRecords([...records], false);
+	const state = canonicalReplay(records);
+	const { entries, allEntries } = state;
 	const limit = options.limit ?? 50;
 	if (!Number.isSafeInteger(limit) || limit < 1) {
 		throw new SessionNavigationError("limit 必须是正整数");
@@ -54,7 +55,7 @@ export function listSessionNodes(
 		throw new SessionNavigationError("scope 必须是 main 或 all");
 	}
 
-	const safe = safeRewindTargets(entries);
+	const safe = state.safeTargets;
 	const active = new Set(entries.map((entry) => entry.id));
 	const selected = options.scope === "all" ? allEntries : entries;
 
@@ -114,7 +115,7 @@ export function listAllSessionNodes(
 }
 
 export function readSessionNode(records: readonly SessionRecord[], id: string): HydratedSessionEntry {
-	const node = recoverRecords([...records], false).allEntries.find((entry) => entry.id === id);
+	const node = canonicalReplay(records).allEntries.find((entry) => entry.id === id);
 	if (!node) {
 		throw new SessionNavigationError(`未知会话节点: ${id}`);
 	}
@@ -165,7 +166,7 @@ function toBranchInfo(entry: RewindNode, nodeCount: number): SessionBranchInfo {
 }
 
 export function listSessionBranches(records: readonly SessionRecord[]): { branches: SessionBranchInfo[] } {
-	const { allEntries } = recoverRecords([...records], false);
+	const { allEntries } = canonicalReplay(records);
 	const branches = allEntries
 		.filter((e) => e.kind === "rewind")
 		.map((e) => toBranchInfo(e, branchEntries(allEntries, e.record.targetId, e.record.fromId).length));
@@ -173,7 +174,7 @@ export function listSessionBranches(records: readonly SessionRecord[]): { branch
 }
 
 export function readSessionBranch(records: readonly SessionRecord[], id: string): { branch: SessionBranchInfo; nodes: SessionNodeInfo[] } {
-	const { allEntries } = recoverRecords([...records], false);
+	const { allEntries } = canonicalReplay(records);
 	const rewind = allEntries.find((e) => e.kind === "rewind" && e.id === id);
 	if (rewind?.kind !== "rewind") {
 		throw new SessionNavigationError(`未知会话分支: ${id}`);

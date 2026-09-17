@@ -1,8 +1,5 @@
-import type {
-	AgentMessage,
-	ChatMsg,
-	QueuedMessage,
-} from "../core/types.js";
+import type { AgentMessage, ChatMsg, QueuedMessage } from "../core/types.js";
+import type { CanonicalState } from "./recovery.js";
 
 export interface SessionHeader {
 	kind: "header";
@@ -160,10 +157,13 @@ export interface SessionSnapshot {
 
 export interface SessionStore {
 	readonly path: string;
+	/** 常驻 canonical 状态：派生查询一律从它计算，禁止对 records 再写第二个 walker。 */
+	readonly state: CanonicalState;
 	readRecords(): readonly SessionRecord[];
 	appendRewind(record: Omit<SessionRewindRecord, "kind" | "seq" | "timestamp">): Promise<void>;
 	appendInput(input: QueuedInput): Promise<void>;
-	appendMessage(message: AgentMessage | ChatMsg): Promise<void>;
+	/** id 用于恢复事实带稳定身份落盘（planRecovery → recovered:${originId}:${callId}）。 */
+	appendMessage(message: AgentMessage | ChatMsg, id?: string): Promise<void>;
 	appendCustomMessage(message: { customType: string; content: string; images?: import("../core/content.js").ImageContent[]; display?: boolean; details?: unknown }): Promise<void>;
 	appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void>;
 	appendCompaction(

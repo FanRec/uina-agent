@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { errorMessage } from "../core/errors.js";
-import { isSafeRewindTarget, protectRewindContext, recoverRecords } from "../session/recovery.js";
+import { protectRewindContext } from "../session/recovery.js";
 import type { RewindRequest, RewindResult } from "../session/types.js";
 import { validImages } from "../core/content.js";
 import type { Compactor, CompactionTrigger } from "../core/compaction.js";
@@ -322,9 +322,11 @@ export class Subject {
 		if (this.pendingRewind || this.rewindCommitting || this.activity === "compact" || this.activity === "rewind") {
 			throw new Error("已有会话转换正在处理");
 		}
-		const entries = recoverRecords([...this.store.readRecords()], false).entries;
+		// 回溯合法性直接查常驻 canonical 状态（safeTargets 由 reducer 增量维护）。
+		const state = this.store.state;
+		const entries = state.entries;
 		const index = entries.findIndex((entry) => entry.id === request.targetId);
-		if (index < 0 || index === entries.length - 1 || !isSafeRewindTarget(entries, index)) {
+		if (index < 0 || index === entries.length - 1 || !state.safeTargets.has(request.targetId)) {
 			throw new Error("回溯目标必须是当前主线的安全历史祖先");
 		}
 		const pending = { request: structuredClone(request), source, signal, requestId: randomUUID() };
@@ -427,7 +429,7 @@ export class Subject {
 				fromId,
 				targetId,
 				// 回溯后的会话条目是回溯事实的一部分：消费者据此重建视图，同源单流。
-				entries: this.store ? recoverRecords([...this.store.readRecords()], false).entries : [],
+				entries: this.store ? this.store.state.entries : [],
 			});
 			return rewindId;
 		} catch (error) {
@@ -1071,7 +1073,7 @@ export class Subject {
 					tokensBefore: result.tokensBefore,
 				},
 				...result.retainedTail,
-			], this.store ? recoverRecords([...this.store.readRecords()]).entries : []);
+			], this.store ? this.store.state.entries : []);
 			// 历史换成摘要 + 尾巴：先失效 usage 缓存，再广播。
 			this.forgetUsage();
 			await this.runtimeHooks.events.emit({

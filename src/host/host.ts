@@ -19,7 +19,7 @@ import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
 import { killTrackedDetachedChildren } from "../runtime/process-tracker.js";
 import { MemorySessionStore, openJsonlSession } from "../session/jsonl-store.js";
 import { createSessionAccess } from "../session/access.js";
-import { projectAgentHistory, recoverRecords } from "../session/recovery.js";
+import { projectAgentHistory } from "../session/recovery.js";
 import type { SessionEntry, SessionStore } from "../session/types.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 import type { HostEvent, HostEventListener } from "./events.js";
@@ -280,8 +280,8 @@ export class UinaHost {
 			// 宿主内部派生状态：回溯后刷新被放弃的任务集合（它只关心 task.dispatch 效果事实，
 			// 不是翻译——事件本身 1:1 透传给消费者）。
 			if (event.type === "session_rewind") {
-				const recovered = recoverRecords([...store.readRecords()], false);
-				collectAbandonedTaskIds(recovered.allEntries);
+				// 被放弃切片直接读常驻 canonical 状态，不再重放 journal。
+				collectAbandonedTaskIds(store.state.allEntries);
 			}
 			// 事实单流 1:1 透传：宿主不翻译字段、不改形状。notice 是宿主域事件，
 			// 主体词汇表不收它，只在此处产生。

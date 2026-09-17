@@ -9,6 +9,7 @@ import type {
 	SessionEntryPayload,
 	SessionEventRecord,
 	SessionRecord,
+	SessionRewindRecord,
 } from "./types.js";
 
 export class SessionFormatError extends Error {
@@ -25,93 +26,483 @@ interface PendingCall {
 	started: boolean;
 }
 
+/**
+ * canonical replay 的唯一事实状态机（双部分模型，执行稿 v6 §2）：
+ * - **semantic state**：仅 CanonicalRecord 可改——主线、全历史、队列、工具因果；
+ * - **auxiliary timeline**：AuxiliaryRecord 的 opaque 登记处（event 按 name 级静态
+ *   分类：queue_* 与 tool_* 名称为 Canonical；turn_failed/turn_aborted 仅登记不解释），
+ *   供 projector 与展示消费。
+ *
+ * 派生查询（safeTargets）一律从本状态增量维护，禁止第二个 journal walker。
+ * 纯度契约：解释不修复——tail 恢复决策在 planRecovery；历史间隙结算按 P3a
+ * 成文偏离仍留在 fold 内（P3b 移出并全部落盘）。
+ */
+export interface CanonicalState {
+	/** 主线（回溯在此截断）。 */
+	entries: HydratedSessionEntry[];
+	/** 全历史，含被放弃切片（只增不减）。 */
+	allEntries: HydratedSessionEntry[];
+	queued: Map<string, QueuedInput>;
+	pendingCalls: PendingCall[];
+	finishedEvents: Map<string, { status: ToolResultStatus; result?: string }>;
+	resultIds: Set<string>;
+	/** 记录身份幂等索引：reducer 拒绝重复记录 id；recovery identity 由本索引结构化管理。 */
+	recordIds: Set<string>;
+	/** 派生查询：主线上可安全回溯的目标（完整工具交换处的持久化节点）。 */
+	safeTargets: Set<string>;
+	/** auxiliary timeline：仅登记、不解释的记录。 */
+	auxiliary: SessionEventRecord[];
+	// ---- safeTargets 增量维护的游标（reducer 内部状态，非公共语义）----
+	openCallIds: Set<string>;
+	settlementInvalid: boolean;
+}
+
+export function initialCanonicalState(): CanonicalState {
+	return {
+		entries: [],
+		allEntries: [],
+		queued: new Map(),
+		pendingCalls: [],
+		finishedEvents: new Map(),
+		resultIds: new Set(),
+		recordIds: new Set(),
+		safeTargets: new Set(),
+		auxiliary: [],
+		openCallIds: new Set(),
+		settlementInvalid: false,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// reduceRecord：check / apply 两相
+//
+// check 先行（非法即 throw SessionFormatError，绝不触碰状态），apply 落状态。
+// 持久化路径据此达成"内存永不领先磁盘"：check → durable append → apply。
+// ---------------------------------------------------------------------------
+
+/** 两相第一相：校验记录对当前状态的合法性。失败即抛，状态不变。 */
+export function checkRecord(state: CanonicalState, record: SessionRecord): void {
+	if (state.recordIds.has(record.id)) {
+		throw new SessionFormatError(`重复记录 id: ${record.id}`);
+	}
+	switch (record.kind) {
+		case "rewind":
+			return checkRewind(state, record);
+		case "input":
+			if (!state.queued.has(record.input.id)) {
+				throw new SessionFormatError(`input 没有对应队列项: ${record.input.id}`);
+			}
+			return;
+		case "message":
+			return checkMessage(state, record);
+		case "event":
+			return checkEvent(state, record);
+		case "custom_message":
+		case "custom_entry":
+		case "compaction":
+			// schema 已由 isRecord 把关，语义上无条件接受。
+			return;
+	}
+}
+
+function checkRewind(state: CanonicalState, record: SessionRewindRecord): void {
+	if (state.pendingCalls.some((call) => !state.resultIds.has(call.callId))) {
+		throw new SessionFormatError("回溯前有未结算工具调用");
+	}
+	const index = state.entries.findIndex((entry) => entry.id === record.targetId);
+	if (state.entries.at(-1)?.id !== record.fromId || index < 0 || index === state.entries.length - 1) {
+		throw new SessionFormatError("回溯目标必须是当前主线的历史祖先，原位置必须匹配");
+	}
+	if (!state.safeTargets.has(record.targetId)) {
+		throw new SessionFormatError("回溯目标切断工具调用与结果或不是持久化节点");
+	}
+}
+
+function checkMessage(state: CanonicalState, record: SessionRecord & { kind: "message" }): void {
+	const { message } = record;
+	if (message.role === "assistant" && message.tool_calls?.length) {
+		const ids = new Set<string>();
+		for (const call of message.tool_calls) {
+			if (!call.id || ids.has(call.id)) {
+				throw new SessionFormatError(`重复工具调用 id: ${call.id}`);
+			}
+			ids.add(call.id);
+		}
+		return;
+	}
+	if (message.role === "tool") {
+		const toolMsg = message as { role: "tool"; tool_call_id: string };
+		const call = state.pendingCalls.find((candidate) => candidate.callId === toolMsg.tool_call_id);
+		if (!call || state.resultIds.has(call.callId)) {
+			throw new SessionFormatError(`工具结果没有对应的未完成调用: ${toolMsg.tool_call_id}`);
+		}
+	}
+}
+
+function checkEvent(state: CanonicalState, record: SessionEventRecord): void {
+	const data = record.data;
+	switch (record.event) {
+		case "queue_enqueued": {
+			if (
+				typeof data.id !== "string" ||
+				typeof data.order !== "number" ||
+				(data.mode !== "steer" && data.mode !== "followUp") ||
+				typeof data.text !== "string" ||
+				!validImages(data.images)
+			) {
+				throw new SessionFormatError("queue_enqueued 数据不完整");
+			}
+			if (state.queued.has(data.id)) {
+				throw new SessionFormatError(`重复队列 id: ${data.id}`);
+			}
+			if (!Number.isSafeInteger(data.order) || data.order <= 0) {
+				throw new SessionFormatError("queue_enqueued order 无效");
+			}
+			return;
+		}
+		case "queue_consumed":
+		case "queue_restored": {
+			if (typeof data.id !== "string" || !state.queued.has(data.id)) {
+				throw new SessionFormatError(`${record.event} 缺少 id`);
+			}
+			return;
+		}
+		case "tool_started":
+		case "tool_finished": {
+			if (typeof data.callId !== "string") {
+				throw new SessionFormatError(`${record.event} 缺少 callId`);
+			}
+			const pending = state.pendingCalls.find((call) => call.callId === data.callId);
+			if (!pending) {
+				throw new SessionFormatError(`${record.event} 没有对应调用: ${data.callId}`);
+			}
+			if (record.event === "tool_started") {
+				if (pending.started) {
+					throw new SessionFormatError(`tool_started 重复: ${data.callId}`);
+				}
+				return;
+			}
+			if (state.finishedEvents.has(data.callId)) {
+				throw new SessionFormatError(`tool_finished 重复: ${data.callId}`);
+			}
+			const status = data.status;
+			if (status !== "not_started" && !pending.started) {
+				throw new SessionFormatError(`工具未启动即完成: ${data.callId}`);
+			}
+			if (
+				status !== "succeeded" &&
+				status !== "failed" &&
+				status !== "cancelled" &&
+				status !== "unknown" &&
+				status !== "not_started"
+			) {
+				throw new SessionFormatError(`tool_finished status 无效: ${data.callId}`);
+			}
+			return;
+		}
+		case "turn_failed":
+		case "turn_aborted":
+			// Auxiliary：无语义校验，apply 仅登记。
+			return;
+	}
+}
+
+/** 两相第二相：增量登记。前置契约 = checkRecord 已对同一 state 通过。 */
+export function applyRecord(state: CanonicalState, record: SessionRecord): void {
+	state.recordIds.add(record.id);
+	switch (record.kind) {
+		case "rewind":
+			return applyRewind(state, record);
+		case "input":
+			settlePending(state, record);
+			state.queued.delete(record.input.id);
+			return addEntry(state, record, { kind: "input", input: structuredClone(record.input) });
+		case "custom_message":
+			return addEntry(state, record, {
+				kind: "custom_message",
+				customType: record.customType,
+				content: record.content,
+				...(record.images ? { images: record.images } : {}),
+				...(record.display === undefined ? {} : { display: record.display }),
+				...(record.details === undefined ? {} : { details: record.details }),
+			});
+		case "custom_entry":
+			return addEntry(state, record, {
+				kind: "custom_entry",
+				customType: record.customType,
+				...(record.data === undefined ? {} : { data: record.data }),
+			});
+		case "message":
+			return applyMessage(state, record);
+		case "compaction":
+			settlePending(state, record);
+			return addEntry(state, record, {
+				kind: "compaction",
+				summary: record.summary,
+				retainedTail: structuredClone(record.retainedTail),
+				tokensBefore: record.tokensBefore,
+			});
+		case "event":
+			return applyEvent(state, record);
+	}
+}
+
+function applyRewind(state: CanonicalState, record: SessionRewindRecord): void {
+	const index = state.entries.findIndex((entry) => entry.id === record.targetId);
+	const abandoned = state.entries.slice(index + 1);
+	const carriedInputs = collectCarriedInputs(abandoned);
+	const effects = summarizeAbandonedEffects(abandoned);
+	const notice = buildRewindNotice(record, effects);
+	state.entries.splice(index + 1);
+	state.pendingCalls = [];
+	addEntry(state, record, { kind: "rewind", record: structuredClone(record), notice, carriedInputs, effects });
+}
+
+function applyMessage(state: CanonicalState, record: SessionRecord & { kind: "message" }): void {
+	const { message } = record;
+	if (message.role === "assistant" && message.tool_calls?.length) {
+		settlePending(state, record);
+		state.resultIds.clear();
+		state.finishedEvents.clear();
+		addEntry(state, record, { kind: "message", message });
+		state.pendingCalls = message.tool_calls.map((call) => ({
+			originId: record.id,
+			callId: call.id,
+			name: call.name,
+			started: false,
+		}));
+		return;
+	}
+	if (message.role !== "tool") {
+		settlePending(state, record);
+	}
+	if (message.role === "tool") {
+		// 闭合调用：resultIds 是"已收到结果"的权威索引，planRecovery 据此不再生成恢复事实。
+		const toolMsg = message as { role: "tool"; tool_call_id: string };
+		const call = state.pendingCalls.find((candidate) => candidate.callId === toolMsg.tool_call_id)!;
+		state.resultIds.add(call.callId);
+	}
+	addEntry(state, record, { kind: "message", message });
+}
+
+function applyEvent(state: CanonicalState, record: SessionEventRecord): void {
+	const data = record.data;
+	switch (record.event) {
+		case "queue_enqueued":
+			state.queued.set(data.id as string, {
+				id: data.id as string,
+				order: data.order as number,
+				mode: data.mode as "steer" | "followUp",
+				text: data.text as string,
+				...(validImages(data.images) && data.images ? { images: data.images } : {}),
+				...(isInputSource(data.source) ? { source: data.source } : {}),
+				...(data.data !== undefined ? { data: data.data } : {}),
+			});
+			return;
+		case "queue_consumed":
+		case "queue_restored":
+			state.queued.delete(data.id as string);
+			return;
+		case "tool_started": {
+			const pending = state.pendingCalls.find((call) => call.callId === data.callId)!;
+			pending.started = true;
+			return;
+		}
+		case "tool_finished":
+			state.finishedEvents.set(data.callId as string, {
+				status: data.status as ToolResultStatus,
+				result: typeof data.result === "string" ? data.result : undefined,
+			});
+			return;
+		case "turn_failed":
+		case "turn_aborted":
+			// Auxiliary 登记：不改变 semantic state，只同步 opaque timeline。
+			state.auxiliary.push(record);
+			return;
+	}
+}
+
+/** 主线/全历史追加 + safeTargets 增量维护：每个条目只在此处入队，单一路径。 */
+function addEntry(
+	state: CanonicalState,
+	record: SessionRecord,
+	payload: SessionEntryPayload,
+	syntheticId?: string,
+): void {
+	const entry: HydratedSessionEntry = {
+		...payload,
+		id: syntheticId ?? record.id,
+		seq: record.seq,
+		timestamp: record.timestamp,
+		parentId: state.entries.at(-1)?.id ?? null,
+	};
+	state.entries.push(entry);
+	state.allEntries.push(entry);
+	trackSafety(state, entry);
+}
+
+/** safeTargets 增量规则（与逐前缀派生等价）：压缩/回溯重置工具交换状态；
+ * 消息按 assistant(开启调用)/tool(闭合调用) 增量更新；无未闭合调用且无结果
+ * 孤儿处的持久化节点才是安全回溯目标。 */
+function trackSafety(state: CanonicalState, entry: HydratedSessionEntry): void {
+	if (entry.kind === "compaction") {
+		state.openCallIds.clear();
+		state.settlementInvalid = false;
+		for (const message of entry.retainedTail as AgentMessage[]) {
+			applySafetyMessage(state, message);
+		}
+	} else if (entry.kind === "rewind") {
+		state.openCallIds.clear();
+		state.settlementInvalid = false;
+	} else if (entry.kind === "message") {
+		applySafetyMessage(state, entry.message as AgentMessage);
+	}
+	if (!state.settlementInvalid && state.openCallIds.size === 0 && !entry.id.startsWith("recovered:")) {
+		state.safeTargets.add(entry.id);
+	}
+}
+
+function applySafetyMessage(state: CanonicalState, message: AgentMessage): void {
+	if (message.role === "assistant") {
+		for (const call of message.tool_calls ?? []) {
+			state.openCallIds.add(call.id);
+		}
+	}
+	if (message.role === "tool") {
+		if (!state.openCallIds.delete(message.tool_call_id)) {
+			state.settlementInvalid = true;
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// canonicalReplay：同一个 reducer 从头折叠（仅启动、校验与测试）
+// ---------------------------------------------------------------------------
+
+/** 唯一解释器：check 先行、apply 落状态。 */
+export function reduceRecord(state: CanonicalState, record: SessionRecord): void {
+	checkRecord(state, record);
+	applyRecord(state, record);
+}
+
+/** canonicalReplay：pure、deterministic、no I/O。对同一状态自增 reduceRecord，
+ * 与持久化路径的增量步语义严格一致（replay ≡ memory 的机器可验证基础）。 */
+export function canonicalReplay(records: readonly SessionRecord[]): CanonicalState {
+	const state = initialCanonicalState();
+	for (const record of records) {
+		reduceRecord(state, record);
+	}
+	return state;
+}
+
+/** 队列的对外视图：按 order 稳定排序。 */
+export function queuedInputs(state: CanonicalState): QueuedInput[] {
+	return [...state.queued.values()].sort((a, b) => a.order - b.order);
+}
+
+// ---------------------------------------------------------------------------
+// planRecovery：crash 结算决策（纯函数，独立于 reducer）
+// ---------------------------------------------------------------------------
+
+/** 一条恢复事实：稳定身份 + 合成工具结果。 */
+export interface RecoveryEntry {
+	/** 稳定恢复身份 `recovered:${originId}:${callId}`；落盘后 reducer 经 recordIds 拒绝重复。 */
+	id: string;
+	callId: string;
+	message: AgentMessage;
+}
+
+export interface RecoveryPlan {
+	/** 逐条提交后 CanonicalState 均合法；任意前缀落盘后再 crash，
+	 * replay + planRecovery 从该处续作且不再生成已落盘项（幂等）。 */
+	entries: RecoveryEntry[];
+}
+
+/** crash 结算决策：把未决调用结算为显式恢复事实。pure、deterministic、no I/O。
+ * 产出必须持久化（带稳定身份）后才成为 canonical fact——replay 不制造事实（L3）。 */
+export function planRecovery(state: CanonicalState): RecoveryPlan {
+	const entries: RecoveryEntry[] = [];
+	for (const call of state.pendingCalls) {
+		if (state.resultIds.has(call.callId)) continue;
+		entries.push({
+			id: `recovered:${call.originId}:${call.callId}`,
+			callId: call.callId,
+			message: recoveredToolMessage(call, state.finishedEvents),
+		});
+	}
+	return { entries };
+}
+
+function recoveredToolMessage(
+	call: PendingCall,
+	finishedEvents: Map<string, { status: ToolResultStatus; result?: string }>,
+): AgentMessage {
+	const finished = finishedEvents.get(call.callId);
+	const status: ToolResultStatus =
+		finished?.status ?? (call.started ? "unknown" : "not_started");
+	const content = finished?.result ??
+		JSON.stringify({
+			error:
+				finished
+					? "工具结果记录不完整；外部副作用结果未知"
+					: status === "unknown"
+						? "工具已启动，但进程在结果提交前结束；结果未知"
+						: "工具调用在进程结束前尚未启动",
+			status: finished ? "unknown" : status,
+		});
+	const recoveredStatus =
+		finished && finished.result === undefined && finished.status !== "not_started"
+			? "unknown"
+			: status;
+	return {
+		role: "tool",
+		tool_call_id: call.callId,
+		status: recoveredStatus,
+		content,
+	};
+}
+
+/** 把恢复计划并入状态（recovered: 身份的解释视图条目，非持久化记录）。
+ * 锚点提供条目的 seq/timestamp（与该计划所结算的未决记录同源）。 */
+function applyRecovery(state: CanonicalState, plan: RecoveryPlan, anchor?: SessionRecord): void {
+	if (plan.entries.length === 0) return;
+	// 未决调用必然来自已解释的记录：plan 非空则锚点必存在。
+	const record = anchor!;
+	for (const entry of plan.entries) {
+		addEntry(state, record, { kind: "message", message: entry.message }, entry.id);
+		state.resultIds.add(entry.callId);
+	}
+	state.pendingCalls = [];
+}
+
+/** 历史间隙结算（P3a 成文偏离：留在 fold 内；P3b 移出并全部落盘）。
+ * 当后续记录要求关闭未决调用时，以 planRecovery 的决策合成恢复条目。 */
+function settlePending(state: CanonicalState, record: SessionRecord): void {
+	applyRecovery(state, planRecovery(state), record);
+}
+
 export interface RecoveredState {
 	entries: HydratedSessionEntry[];
 	allEntries: HydratedSessionEntry[];
-	recoveredTail: AgentMessage[];
 	queued: QueuedInput[];
 }
 
-class SessionReplayContext {
-	readonly entries: HydratedSessionEntry[] = [];
-	readonly allEntries: HydratedSessionEntry[] = [];
-	readonly recoveredTail: AgentMessage[] = [];
-	readonly queued = new Map<string, QueuedInput>();
-	readonly finishedEvents = new Map<string, { status: ToolResultStatus; result?: string }>();
-	readonly resultIds = new Set<string>();
-	readonly recordIds = new Set<string>();
-	pendingCalls: PendingCall[] = [];
-	currentRecord?: SessionRecord;
-	settlingTail = false;
-
-	add(payload: SessionEntryPayload, syntheticId?: string): void {
-		const node: HydratedSessionEntry = {
-			...payload,
-			id: syntheticId ?? this.currentRecord!.id,
-			seq: this.currentRecord!.seq,
-			timestamp: this.currentRecord!.timestamp,
-			parentId: this.entries.at(-1)?.id ?? null,
-		};
-		this.entries.push(node);
-		this.allEntries.push(node);
-		if (this.settlingTail && syntheticId && payload.kind === "message") {
-			this.recoveredTail.push(structuredClone(payload.message as AgentMessage));
-		}
-	}
-
-	closePending(): void {
-		for (const call of this.pendingCalls) {
-			if (this.resultIds.has(call.callId)) continue;
-			const finished = this.finishedEvents.get(call.callId);
-			const status: ToolResultStatus =
-				finished?.status ?? (call.started ? "unknown" : "not_started");
-			const content = finished?.result ??
-				JSON.stringify({
-					error:
-						finished
-							? "工具结果记录不完整；外部副作用结果未知"
-							: status === "unknown"
-								? "工具已启动，但进程在结果提交前结束；结果未知"
-								: "工具调用在进程结束前尚未启动",
-					status: finished ? "unknown" : status,
-				});
-			const recoveredStatus =
-				finished && finished.result === undefined && finished.status !== "not_started"
-					? "unknown"
-					: status;
-			this.add(
-				{
-					kind: "message",
-					message: {
-						role: "tool",
-						tool_call_id: call.callId,
-						status: recoveredStatus,
-						content,
-					},
-				},
-				`recovered:${call.originId}:${call.callId}`,
-			);
-			this.resultIds.add(call.callId);
-		}
-		this.pendingCalls = [];
-	}
-
-	toState(): RecoveredState {
-		return {
-			entries: this.entries,
-			allEntries: this.allEntries,
-			recoveredTail: this.recoveredTail,
-			queued: [...this.queued.values()].sort((a, b) => a.order - b.order),
-		};
-	}
+/** 崩溃结算后的解释视图：canonicalReplay + 应用 planRecovery（仅在内存中呈现，
+ * 不落盘）。持久化路径必须走 planRecovery → 带身份落盘，不得用本函数替代。 */
+export function recoverRecords(records: readonly SessionRecord[]): RecoveredState {
+	const state = canonicalReplay(records);
+	applyRecovery(state, planRecovery(state), records.at(-1));
+	return { entries: state.entries, allEntries: state.allEntries, queued: queuedInputs(state) };
 }
 
-/**
- * 聚合被放弃历史切片中"发生过什么外部效果"的通用事实。
+// ---------------------------------------------------------------------------
+// 投影（自由接缝：解释自由，失败只报 provider 错、不伤 journal）
+// ---------------------------------------------------------------------------
+
+/** 聚合被放弃历史切片中"发生过什么外部效果"的通用事实。
  * Session Core 不认识任何具体工具：效果由工具在自己的结果 details.effects
  * 里声明（Generic effect facts，经 core/effects.ts 契约读取），这里只做过滤
- * （failed/cancelled/not_started 不构成已发生的事实；unknown 仍上报）与去重。
- */
+ * （failed/cancelled/not_started 不构成已发生的事实；unknown 仍上报）与去重。 */
 export function summarizeAbandonedEffects(abandoned: readonly SessionEntry[]): AbandonedEffects {
 	const effects: ToolEffect[] = [];
 	const seen = new Set<string>();
@@ -137,20 +528,7 @@ export function summarizeAbandonedEffects(abandoned: readonly SessionEntry[]): A
 	return { effects };
 }
 
-function replayRewind(ctx: SessionReplayContext, record: SessionRecord & { kind: "rewind" }): void {
-	if (ctx.pendingCalls.some((call) => !ctx.resultIds.has(call.callId))) {
-		throw new SessionFormatError("回溯前有未结算工具调用");
-	}
-	const index = ctx.entries.findIndex((entry) => entry.id === record.targetId);
-	if (ctx.entries.at(-1)?.id !== record.fromId || index < 0 || index === ctx.entries.length - 1) {
-		throw new SessionFormatError("回溯目标必须是当前主线的历史祖先，原位置必须匹配");
-	}
-	if (!isSafeRewindTarget(ctx.entries, index)) {
-		throw new SessionFormatError("回溯目标切断工具调用与结果或不是持久化节点");
-	}
-	const abandoned = ctx.entries.slice(index + 1);
-	const carriedInputs = collectCarriedInputs(abandoned);
-	const effects = summarizeAbandonedEffects(abandoned);
+function buildRewindNotice(record: SessionRewindRecord, effects: AbandonedEffects): string {
 	let notice =
 		`[会话回溯 ${record.id}]\n` +
 		`从 ${record.fromId} 回溯至 ${record.targetId}；来源：${record.source}。\n` +
@@ -171,136 +549,50 @@ function replayRewind(ctx: SessionReplayContext, record: SessionRecord & { kind:
 	if (effectLines.length > 0) {
 		notice += `\n[在被放弃历史切片中产生的外部操作]\n` + effectLines.join("\n");
 	}
-
-	ctx.entries.splice(index + 1);
-	ctx.pendingCalls = [];
-	ctx.add({ kind: "rewind", record: structuredClone(record), notice, carriedInputs, effects });
+	return notice;
 }
 
-function replayInput(ctx: SessionReplayContext, record: SessionRecord & { kind: "input" }): void {
-	if (!ctx.queued.has(record.input.id)) {
-		throw new SessionFormatError(`input 没有对应队列项: ${record.input.id}`);
-	}
-	ctx.closePending();
-	ctx.queued.delete(record.input.id);
-	ctx.add({ kind: "input", input: structuredClone(record.input) });
-}
-
-function replayCustomMessage(
-	ctx: SessionReplayContext,
-	record: SessionRecord & { kind: "custom_message" },
-): void {
-	ctx.add({
-		kind: "custom_message",
-		customType: record.customType,
-		content: record.content,
-		...(record.images ? { images: record.images } : {}),
-		...(record.display === undefined ? {} : { display: record.display }),
-		...(record.details === undefined ? {} : { details: record.details }),
-	});
-}
-
-function replayCustomEntry(
-	ctx: SessionReplayContext,
-	record: SessionRecord & { kind: "custom_entry" },
-): void {
-	ctx.add({
-		kind: "custom_entry",
-		customType: record.customType,
-		...(record.data === undefined ? {} : { data: record.data }),
-	});
-}
-
-function replayMessage(ctx: SessionReplayContext, record: SessionRecord & { kind: "message" }): void {
-	if (record.message.role === "assistant" && record.message.tool_calls?.length) {
-		ctx.closePending();
-		ctx.resultIds.clear();
-		ctx.finishedEvents.clear();
-		const ids = new Set<string>();
-		for (const call of record.message.tool_calls) {
-			if (!call.id || ids.has(call.id)) {
-				throw new SessionFormatError(`重复工具调用 id: ${call.id}`);
-			}
-			ids.add(call.id);
-		}
-		ctx.add({ kind: "message", message: record.message });
-		ctx.pendingCalls = record.message.tool_calls.map((call) => ({
-			originId: record.id,
-			callId: call.id,
-			name: call.name,
-			started: false,
-		}));
-		return;
-	}
-
-	if (record.message.role !== "tool") {
-		ctx.closePending();
-	}
-	if (record.message.role === "tool") {
-		const toolMsg = record.message as { role: "tool"; tool_call_id: string; content: string };
-		const call = ctx.pendingCalls.find((candidate) => candidate.callId === toolMsg.tool_call_id);
-		if (!call || ctx.resultIds.has(call.callId)) {
-			throw new SessionFormatError(`工具结果没有对应的未完成调用: ${toolMsg.tool_call_id}`);
-		}
-		ctx.resultIds.add(call.callId);
-	}
-	ctx.add({ kind: "message", message: record.message });
-}
-
-function replayCompaction(
-	ctx: SessionReplayContext,
-	record: SessionRecord & { kind: "compaction" },
-): void {
-	ctx.closePending();
-	ctx.add({
-		kind: "compaction",
-		summary: record.summary,
-		retainedTail: structuredClone(record.retainedTail),
-		tokensBefore: record.tokensBefore,
-	});
-}
-
-/** Replays records and inserts explicit results for calls interrupted by a crash. */
-export function recoverRecords(records: SessionRecord[], settleTail = true): RecoveredState {
-	const ctx = new SessionReplayContext();
-
-	for (const record of records) {
-		if (ctx.recordIds.has(record.id)) {
-			throw new SessionFormatError(`重复记录 id: ${record.id}`);
-		}
-		ctx.recordIds.add(record.id);
-		ctx.currentRecord = record;
-
-		switch (record.kind) {
-			case "rewind":
-				replayRewind(ctx, record);
-				break;
-			case "input":
-				replayInput(ctx, record);
-				break;
-			case "custom_message":
-				replayCustomMessage(ctx, record);
-				break;
-			case "custom_entry":
-				replayCustomEntry(ctx, record);
-				break;
-			case "message":
-				replayMessage(ctx, record);
-				break;
-			case "compaction":
-				replayCompaction(ctx, record);
-				break;
-			case "event":
-				applyEvent(record, ctx.queued, ctx.finishedEvents, ctx.pendingCalls);
-				break;
+function collectCarriedInputs(abandoned: readonly SessionEntry[]): AgentMessage[] {
+	const raw: AgentMessage[] = [];
+	for (const entry of abandoned) {
+		if (entry.kind === "input" && entry.input.source?.kind !== "runtime") {
+			const m = projectInputMessage(entry.input);
+			if (m) raw.push(m);
+		} else if (entry.kind === "message" && entry.message.role === "user") {
+			raw.push(structuredClone(entry.message as AgentMessage));
+		} else if (entry.kind === "rewind") {
+			raw.push(...entry.carriedInputs.map((m) => structuredClone(m)));
 		}
 	}
-
-	ctx.settlingTail = true;
-	if (settleTail) {
-		ctx.closePending();
+	const seen = new Set<string>();
+	const deduped: AgentMessage[] = [];
+	for (const msg of raw) {
+		const key = msg.id ? `id:${msg.id}` : `text:${msg.content}`;
+		if (!seen.has(key)) {
+			seen.add(key);
+			deduped.push(msg);
+		}
 	}
-	return ctx.toState();
+	return deduped;
+}
+
+function rewindMessages(entry: Extract<SessionEntry, { kind: "rewind" }>): AgentMessage[] {
+	const content = `${entry.notice}\n[当前主线从此处继续；被放弃分支仅在需要时通过只读历史查询]`;
+	return [{
+		id: `continuity:${entry.id}`,
+		role: "custom",
+		customType: "session-continuity",
+		content,
+		display: true,
+		// renderable 结构：效果事实与回溯身份从散文中独立出来，UI 可据此渲染。
+		details: {
+			rewindId: entry.id,
+			targetId: entry.record.targetId,
+			fromId: entry.record.fromId,
+			source: entry.record.source,
+			...(entry.effects ? { effects: entry.effects.effects } : {}),
+		},
+	}];
 }
 
 /** Projects the ordered journal into the effective AgentMessage history, preserving custom and compaction messages. */
@@ -345,7 +637,7 @@ export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMess
 				role: "custom",
 				customType: entry.customType,
 				content: entry.content,
-    ...(entry.images ? { images: entry.images } : {}),
+				...(entry.images ? { images: entry.images } : {}),
 				display: entry.display,
 				details: entry.details,
 			});
@@ -389,112 +681,23 @@ export function projectInputMessage(input: QueuedInput): AgentMessage {
 	};
 }
 
-function applyQueueEvent(record: SessionEventRecord, queued: Map<string, QueuedInput>): void {
-	const data = record.data;
-	if (record.event === "queue_enqueued") {
-		if (
-			typeof data.id !== "string" ||
-			typeof data.order !== "number" ||
-			(data.mode !== "steer" && data.mode !== "followUp") ||
-			typeof data.text !== "string" ||
-			!validImages(data.images)
-		) {
-			throw new SessionFormatError("queue_enqueued 数据不完整");
-		}
-		if (queued.has(data.id)) {
-			throw new SessionFormatError(`重复队列 id: ${data.id}`);
-		}
-		if (!Number.isSafeInteger(data.order) || data.order <= 0) {
-			throw new SessionFormatError("queue_enqueued order 无效");
-		}
-		queued.set(data.id, {
-			id: data.id,
-			order: data.order,
-			mode: data.mode,
-			text: data.text,
-			...(validImages(data.images) && data.images ? { images: data.images } : {}),
-			...(isInputSource(data.source) ? { source: data.source } : {}),
-			...(data.data !== undefined ? { data: data.data } : {}),
-		});
-		return;
+/** Compaction is a projection; it cannot erase the latest committed rewind facts.
+ * Injected notice is positioned immediately after compactionSummary, never at the absolute tail. */
+export function protectRewindContext(messages: AgentMessage[], entries: readonly SessionEntry[]): AgentMessage[] {
+	const latest = entries.findLast((entry): entry is Extract<SessionEntry, { kind: "rewind" }> => entry.kind === "rewind");
+	if (!latest) return messages;
+	const ids = new Set(messages.map((message) => message.id));
+	const missing = rewindMessages(latest).slice(0, 1).filter((message) => !ids.has(message.id));
+	if (missing.length === 0) return messages;
+	if (messages.length > 0 && messages[0].role === "compactionSummary") {
+		return [messages[0], ...missing, ...messages.slice(1)];
 	}
-	if (record.event === "queue_consumed" || record.event === "queue_restored") {
-		if (typeof data.id !== "string" || !queued.has(data.id)) {
-			throw new SessionFormatError(`${record.event} 缺少 id`);
-		}
-		queued.delete(data.id);
-	}
+	return [...missing, ...messages];
 }
 
-function applyToolEvent(
-	record: SessionEventRecord,
-	finishedEvents: Map<string, { status: ToolResultStatus; result?: string }>,
-	pendingCalls: PendingCall[],
-): void {
-	const data = record.data;
-	if (typeof data.callId !== "string") {
-		throw new SessionFormatError(`${record.event} 缺少 callId`);
-	}
-	const pending = pendingCalls.find((call) => call.callId === data.callId);
-	if (!pending) {
-		throw new SessionFormatError(`${record.event} 没有对应调用: ${data.callId}`);
-	}
-
-	if (record.event === "tool_started") {
-		if (pending.started) {
-			throw new SessionFormatError(`tool_started 重复: ${data.callId}`);
-		}
-		pending.started = true;
-		return;
-	}
-
-	if (record.event === "tool_finished") {
-		if (finishedEvents.has(data.callId)) {
-			throw new SessionFormatError(`tool_finished 重复: ${data.callId}`);
-		}
-		const status = data.status;
-		if (status !== "not_started" && !pending.started) {
-			throw new SessionFormatError(`工具未启动即完成: ${data.callId}`);
-		}
-		if (
-			status !== "succeeded" &&
-			status !== "failed" &&
-			status !== "cancelled" &&
-			status !== "unknown" &&
-			status !== "not_started"
-		) {
-			throw new SessionFormatError(`tool_finished status 无效: ${data.callId}`);
-		}
-		finishedEvents.set(data.callId, {
-			status,
-			result: typeof data.result === "string" ? data.result : undefined,
-		});
-	}
-}
-
-function applyEvent(
-	record: SessionEventRecord,
-	queued: Map<string, QueuedInput>,
-	finishedEvents: Map<string, { status: ToolResultStatus; result?: string }>,
-	pendingCalls: PendingCall[],
-): void {
-	switch (record.event) {
-		case "queue_enqueued":
-		case "queue_consumed":
-		case "queue_restored":
-			applyQueueEvent(record, queued);
-			break;
-
-		case "tool_started":
-		case "tool_finished":
-			applyToolEvent(record, finishedEvents, pendingCalls);
-			break;
-
-		case "turn_failed":
-		case "turn_aborted":
-			break;
-	}
-}
+// ---------------------------------------------------------------------------
+// record schema 校验（解析边界）
+// ---------------------------------------------------------------------------
 
 function isInputSource(value: unknown): value is QueuedInput["source"] {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -571,7 +774,7 @@ export function isRecord(value: unknown): value is SessionRecord {
 function isAgentMessage(value: unknown): value is AgentMessage {
 	if (!value || typeof value !== "object") return false;
 	const message = value as Record<string, unknown>;
- if (!validImages(message.images)) return false;
+	if (!validImages(message.images)) return false;
 	if (message.role === "custom") return typeof message.content === "string" && typeof message.customType === "string" && message.customType.length > 0 && (message.display === undefined || typeof message.display === "boolean");
 	if (message.role === "compactionSummary") return typeof message.content === "string" && typeof message.summary === "string" && (message.tokensBefore === undefined || (typeof message.tokensBefore === "number" && Number.isFinite(message.tokensBefore)));
 	if (
@@ -605,95 +808,4 @@ function isAgentMessage(value: unknown): value is AgentMessage {
 			);
 		})
 	);
-}
-
-/** A rewind may only keep a complete tool exchange at a persisted node. */
-export function safeRewindTargets(entries: readonly SessionEntry[]): Set<string> {
-	const safe = new Set<string>();
-	const pending = new Set<string>();
-	let invalid = false;
-	const apply = (message: AgentMessage): void => {
-		if (message.role === "assistant") {
-			for (const call of message.tool_calls ?? []) {
-				pending.add(call.id);
-			}
-		}
-		if (message.role === "tool") {
-			if (!pending.delete(message.tool_call_id)) {
-				invalid = true;
-			}
-		}
-	};
-	for (const entry of entries) {
-		if (entry.kind === "compaction") {
-			pending.clear();
-			invalid = false;
-			for (const message of entry.retainedTail) {
-				apply(message as AgentMessage);
-			}
-		} else if (entry.kind === "rewind") {
-			pending.clear();
-			invalid = false;
-		} else if (entry.kind === "message") {
-			apply(entry.message as AgentMessage);
-		}
-		if (!invalid && pending.size === 0 && entry.id && !entry.id.startsWith("recovered:")) {
-			safe.add(entry.id);
-		}
-	}
-	return safe;
-}
-
-export function isSafeRewindTarget(entries: readonly SessionEntry[], index: number): boolean {
-	const id = entries[index]?.id;
-	return !!id && safeRewindTargets(entries.slice(0, index + 1)).has(id);
-}
-
-function collectCarriedInputs(abandoned: readonly SessionEntry[]): AgentMessage[] {
-	const raw: AgentMessage[] = [];
-	for (const entry of abandoned) {
-		if (entry.kind === "input" && entry.input.source?.kind !== "runtime") {
-			const m = projectInputMessage(entry.input);
-			if (m) raw.push(m);
-		} else if (entry.kind === "message" && entry.message.role === "user") {
-			raw.push(structuredClone(entry.message as AgentMessage));
-		} else if (entry.kind === "rewind") {
-			raw.push(...entry.carriedInputs.map((m) => structuredClone(m)));
-		}
-	}
-	const seen = new Set<string>();
-	const deduped: AgentMessage[] = [];
-	for (const msg of raw) {
-		const key = msg.id ? `id:${msg.id}` : `text:${msg.content}`;
-		if (!seen.has(key)) {
-			seen.add(key);
-			deduped.push(msg);
-		}
-	}
-	return deduped;
-}
-
-function rewindMessages(entry: Extract<SessionEntry, { kind: "rewind" }>): AgentMessage[] {
-	const content = `${entry.notice}\n[当前主线从此处继续；被放弃分支仅在需要时通过只读历史查询]`;
-	return [{
-		id: `continuity:${entry.id}`,
-		role: "custom",
-		customType: "session-continuity",
-		content,
-		display: true,
-	}];
-}
-
-/** Compaction is a projection; it cannot erase the latest committed rewind facts.
- * Injected notice is positioned immediately after compactionSummary, never at the absolute tail. */
-export function protectRewindContext(messages: AgentMessage[], entries: readonly SessionEntry[]): AgentMessage[] {
-	const latest = entries.findLast((entry): entry is Extract<SessionEntry, { kind: "rewind" }> => entry.kind === "rewind");
-	if (!latest) return messages;
-	const ids = new Set(messages.map((message) => message.id));
-	const missing = rewindMessages(latest).slice(0, 1).filter((message) => !ids.has(message.id));
-	if (missing.length === 0) return messages;
-	if (messages.length > 0 && messages[0].role === "compactionSummary") {
-		return [messages[0], ...missing, ...messages.slice(1)];
-	}
-	return [...missing, ...messages];
 }

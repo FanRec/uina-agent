@@ -4,10 +4,16 @@ import { access, mkdir, open, readFile, rename, unlink, writeFile } from "node:f
 import type { FileHandle } from "node:fs/promises";
 import type { AgentMessage, ChatMsg } from "../core/types.js";
 import {
+	applyRecord,
+	canonicalReplay,
+	checkRecord,
+	initialCanonicalState,
 	isRecord,
-	recoverRecords,
+	planRecovery,
+	queuedInputs,
 	SessionFormatError,
 } from "./recovery.js";
+import type { CanonicalState } from "./recovery.js";
 import type {
 	QueuedInput,
 	SessionCompactionRecord,
@@ -56,23 +62,40 @@ export async function openJsonlSession(path: string): Promise<{
 		}
 	}
 
-	const snapshot = await readSnapshot(path);
+	const { header, records, lastSeq } = await readSnapshot(path);
 	// Positional writes allow rollback on Windows, where append-only handles
 	// cannot be truncated. This store serializes all writes to its handle.
 	const handle = await open(path, "r+");
-	const store = new JsonlSessionStore(path, handle, snapshot.lastSeq, snapshot.records);
-	// Recovery outcomes become durable before the session is exposed to live readers.
-	// Live snapshots must never infer that an in-flight tool has crashed.
+	let store: JsonlSessionStore;
 	try {
-		const tail = recoverRecords([...snapshot.records]).recoveredTail;
-		for (const message of tail) await store.appendMessage(message);
-		if (tail.length) {
-			snapshot.records = [...store.readRecords()];
-			snapshot.entries = recoverRecords(snapshot.records, false).entries;
-			snapshot.lastSeq = snapshot.records.at(-1)!.seq;
+		store = new JsonlSessionStore(path, handle, lastSeq, records);
+	} catch (error) {
+		await handle.close();
+		throw error;
+	}
+	// Recovery decisions become auditable facts: planRecovery's entries are
+	// persisted under their stable identity (recovered:${originId}:${callId}).
+	// Idempotence is structural — a persisted recovery message closes its call,
+	// so the next open's plan stays empty.
+	try {
+		for (const entry of planRecovery(store.state).entries) {
+			await store.appendMessage(entry.message, entry.id);
 		}
-		return {store,snapshot};
-	} catch (error) { await store.close(); throw error; }
+		const snapshotRecords = store.readRecords();
+		return {
+			store,
+			snapshot: {
+				header,
+				records: [...snapshotRecords],
+				entries: [...store.state.entries],
+				queued: queuedInputs(store.state),
+				lastSeq: snapshotRecords.at(-1)?.seq ?? lastSeq,
+			},
+		};
+	} catch (error) {
+		await store.close();
+		throw error;
+	}
 }
 
 export class JsonlSessionStore implements SessionStore {
@@ -80,12 +103,19 @@ export class JsonlSessionStore implements SessionStore {
 	private closed = false;
 	private writeFailure?: Error;
 
+	/** 常驻 canonical 状态：append = check → 落盘 → apply，内存永不领先磁盘。 */
+	readonly state: CanonicalState;
+	private readonly records: SessionRecord[];
+
 	constructor(
 		readonly path: string,
 		private readonly handle: FileHandle,
 		private nextSeq: number,
-		private readonly records: SessionRecord[] = [],
-	) { this.records = structuredClone(records); }
+		records: SessionRecord[] = [],
+	) {
+		this.records = structuredClone(records);
+		this.state = canonicalReplay(records);
+	}
 
 	readRecords(): readonly SessionRecord[] { return [...this.records]; }
 	appendRewind(record: Omit<import("./types.js").SessionRewindRecord, "kind" | "seq" | "timestamp">): Promise<void> {
@@ -96,10 +126,10 @@ export class JsonlSessionStore implements SessionStore {
 		return this.append({ kind: "input", id: randomUUID(), seq: ++this.nextSeq, timestamp: new Date().toISOString(), input: structuredClone(input) });
 	}
 
-	appendMessage(message: AgentMessage | ChatMsg): Promise<void> {
+	appendMessage(message: AgentMessage | ChatMsg, id?: string): Promise<void> {
 		return this.append({
 			kind: "message",
-			id: randomUUID(),
+			id: id ?? randomUUID(),
 			seq: ++this.nextSeq,
 			timestamp: new Date().toISOString(),
 			message,
@@ -159,10 +189,9 @@ export class JsonlSessionStore implements SessionStore {
 		const result = this.tail.then(async () => {
 			if (this.closed) throw new Error("session store 已关闭");
 			if (this.writeFailure) throw this.writeFailure;
-			if (record.kind === "rewind") {
-				if (!isRecord(record)) throw new SessionFormatError("回溯记录无效");
-				recoverRecords([...this.records, record]);
-			}
+			if (record.kind === "rewind" && !isRecord(record)) throw new SessionFormatError("回溯记录无效");
+			// 两相第一相：语义校验先行，非法记录拒绝落盘（不触碰常驻状态）。
+			checkRecord(this.state, record);
 			const data = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
 			const { size } = await this.handle.stat();
 			try {
@@ -174,6 +203,8 @@ export class JsonlSessionStore implements SessionStore {
 				}
 				await this.handle.sync();
 				this.records.push(structuredClone(record));
+				// 两相第二相：落盘成功后 O(1) 增量登记（canonical 解释 + auxiliary 登记）。
+				applyRecord(this.state, record);
 			} catch (error) {
 				try {
 					await this.handle.truncate(size);
@@ -196,22 +227,35 @@ export class JsonlSessionStore implements SessionStore {
 export class MemorySessionStore implements SessionStore {
 	readonly path = ":memory:";
 	readonly records: SessionRecord[] = [];
+	/** 常驻 canonical 状态：与 records 严格同步（append = check → push → apply）。 */
+	readonly state: CanonicalState = initialCanonicalState();
+
 	readRecords(): readonly SessionRecord[] { return [...this.records]; }
+
+	/** 单一写入路径：语义校验先行，失败即拒绝；成功后 O(1) 增量登记。 */
+	private appendSync(record: SessionRecord): void {
+		checkRecord(this.state, record);
+		const stored = structuredClone(record);
+		this.records.push(stored);
+		applyRecord(this.state, stored);
+	}
+
 	appendRewind(record: Omit<import("./types.js").SessionRewindRecord, "kind" | "seq" | "timestamp">): Promise<void> {
 		const next: import("./types.js").SessionRewindRecord = { ...structuredClone(record),kind:"rewind",seq:this.records.length+1,timestamp:new Date().toISOString() };
 		if (!isRecord(next)) return Promise.reject(new SessionFormatError("回溯记录无效"));
-		recoverRecords([...this.records,next]); this.records.push(next); return Promise.resolve();
-	}
-
-	appendInput(input: QueuedInput): Promise<void> {
-		this.records.push({ kind: "input", id: randomUUID(), seq: this.records.length + 1, timestamp: new Date().toISOString(), input: structuredClone(input) });
+		this.appendSync(next);
 		return Promise.resolve();
 	}
 
-	appendMessage(message: AgentMessage | ChatMsg): Promise<void> {
-		this.records.push({
+	appendInput(input: QueuedInput): Promise<void> {
+		this.appendSync({ kind: "input", id: randomUUID(), seq: this.records.length + 1, timestamp: new Date().toISOString(), input: structuredClone(input) });
+		return Promise.resolve();
+	}
+
+	appendMessage(message: AgentMessage | ChatMsg, id?: string): Promise<void> {
+		this.appendSync({
 			kind: "message",
-			id: randomUUID(),
+			id: id ?? randomUUID(),
 			seq: this.records.length + 1,
 			timestamp: new Date().toISOString(),
 			message: structuredClone(message),
@@ -220,12 +264,12 @@ export class MemorySessionStore implements SessionStore {
 	}
 
 	appendCustomMessage(message: { customType: string; content: string; images?: import("../core/content.js").ImageContent[]; display?: boolean; details?: unknown }): Promise<void> {
-		this.records.push({ kind: "custom_message", id: randomUUID(), seq: this.records.length + 1, timestamp: new Date().toISOString(), ...structuredClone(message) });
+		this.appendSync({ kind: "custom_message", id: randomUUID(), seq: this.records.length + 1, timestamp: new Date().toISOString(), ...structuredClone(message) });
 		return Promise.resolve();
 	}
 
 	appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void> {
-		this.records.push({ kind: "custom_entry", id: randomUUID(), seq: this.records.length + 1, timestamp: new Date().toISOString(), ...structuredClone(entry) });
+		this.appendSync({ kind: "custom_entry", id: randomUUID(), seq: this.records.length + 1, timestamp: new Date().toISOString(), ...structuredClone(entry) });
 		return Promise.resolve();
 	}
 
@@ -234,7 +278,7 @@ export class MemorySessionStore implements SessionStore {
 		retainedTail: (AgentMessage | ChatMsg)[],
 		tokensBefore: number,
 	): Promise<void> {
-		this.records.push({
+		this.appendSync({
 			kind: "compaction",
 			id: randomUUID(),
 			seq: this.records.length + 1,
@@ -250,7 +294,7 @@ export class MemorySessionStore implements SessionStore {
 		event: SessionEventName,
 		data: Record<string, unknown>,
 	): Promise<void> {
-		this.records.push({
+		this.appendSync({
 			kind: "event",
 			id: randomUUID(),
 			seq: this.records.length + 1,
@@ -266,7 +310,11 @@ export class MemorySessionStore implements SessionStore {
 	}
 }
 
-async function readSnapshot(path: string): Promise<SessionSnapshot> {
+async function readSnapshot(path: string): Promise<{
+	header: SessionHeader;
+	records: SessionRecord[];
+	lastSeq: number;
+}> {
 	let text = await readFile(path, "utf8");
 	const needsFinalNewline = text.length > 0 && !text.endsWith("\n");
 	let lines = text.split("\n");
@@ -304,15 +352,7 @@ async function readSnapshot(path: string): Promise<SessionSnapshot> {
 		records.push(value);
 	}
 	if (needsFinalNewline && !repairedTail) await appendFinalNewline(path, text);
-
-	const recovered = recoverRecords(records);
-	return {
-		header,
-		records,
-		entries: recovered.entries,
-		queued: recovered.queued,
-		lastSeq,
-	};
+	return { header, records, lastSeq };
 }
 
 async function appendFinalNewline(path: string, content: string): Promise<void> {
