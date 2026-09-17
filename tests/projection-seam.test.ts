@@ -7,12 +7,16 @@
  * 不做 contributor chain、不造 ProjectorPipeline（L6 明禁）。
  */
 import { describe, expect, it } from "vitest";
+import { tmpdir } from "node:os";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
 import { Subject } from "../src/agent/loop.js";
 import { ToolBroker } from "../src/tools/broker.js";
-import { MemorySessionStore } from "../src/session/jsonl-store.js";
+import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { projectAgentHistory } from "../src/session/recovery.js";
 import { convertToLlm } from "../src/agent/context.js";
 import { projectModelHistory, resolveProjectionPolicy } from "../src/agent/projection.js";
+import { UinaHost } from "../src/host/host.js";
 import { mockModel, scriptedProvider } from "./helpers/mock-provider.js";
 
 async function idle(subject: Subject, timeoutMs = 5000): Promise<void> {
@@ -85,5 +89,38 @@ describe("projection Replacement seam (P3c)", () => {
 		// 缝边界：回溯后新回合产生的 assistant 回复是全新运行时事实，
 		// 不经 journal→memory 投影，天然不被 projectHistory policy 形塑。
 		expect(history.some((m) => m.content === "ok")).toBe(true);
+	});
+
+	it("routes host-level policy through the startup restore path", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "uina-host-proj-"));
+		try {
+			const path = join(dir, "session.jsonl");
+			const initial = await openJsonlSession(path);
+			await initial.store.appendMessage({ role: "user", content: "restore-me" });
+			await initial.store.appendMessage({ role: "assistant", content: "restored reply" });
+			await initial.store.close();
+
+			const probe = scriptedProvider([
+				{ match: () => true, produce: () => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }] },
+			]);
+			const host = await UinaHost.create({
+				cwd: dir,
+				provider: probe,
+				model: probe.model,
+				sessionPath: path,
+				projection: {
+					projectHistory: (entries) =>
+						projectAgentHistory(entries).map((m) => ({ ...m, content: `${m.content} [projected]` })),
+				},
+			});
+			await host.start();
+
+			const history = host.subject.historySnapshot();
+			expect(history.some((m) => m.content.includes("restore-me [projected]"))).toBe(true);
+			expect(history.some((m) => m.content.includes("restored reply [projected]"))).toBe(true);
+			await host.dispose();
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
 	});
 });

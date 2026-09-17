@@ -19,6 +19,7 @@ import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
 import { killTrackedDetachedChildren } from "../runtime/process-tracker.js";
 import { MemorySessionStore, openJsonlSession } from "../session/jsonl-store.js";
 import { createSessionAccess } from "../session/access.js";
+import type { ProjectionPolicy } from "../agent/projection.js";
 import type { SessionEntry, SessionStore } from "../session/types.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 import type { HostEvent, HostEventListener } from "./events.js";
@@ -36,9 +37,9 @@ import type { HostEvent, HostEventListener } from "./events.js";
 export interface UinaHostOptions {
 	/** 组合根工作目录；项目扩展从 <cwd>/.uina/extensions 加载。 */
 	cwd: string;
- extensionPaths?: readonly string[];
- /** Disable default filesystem capabilities when the host supplies its own assembly. */
- workspaceTools?: boolean;
+	extensionPaths?: readonly string[];
+	/** Disable default filesystem capabilities when the host supplies its own assembly. */
+	workspaceTools?: boolean;
 	/** 会话 journal 路径。省略时使用内存 store（测试与嵌入场景）。 */
 	sessionPath?: string;
 	/** 注入 provider（测试与嵌入）。省略时按 ~/.uina/auth.json 创建。 */
@@ -51,6 +52,8 @@ export interface UinaHostOptions {
 	stream?: ModelStreamFn;
 	/** 默认 thinking 档位。 */
 	thinkingLevel?: ThinkingLevel;
+	/** 投影 Replacement 缝（单 owner = Subject 实例；组合根经此提供，P4 起宿主可注入）。 */
+	projection?: ProjectionPolicy;
 	/** 诊断出口：消费者尚未接入时也必须可见，绝不静默吞掉。 */
 	onError?: (text: string) => void;
 }
@@ -271,8 +274,9 @@ export class UinaHost {
 			store,
 			thinkingLevel,
 			runtimeHooks: extensionHost.runtimeHooks(),
-   compactor: extensionHost.compactor,
-   compactionTrigger: extensionHost.compactionTrigger,
+			compactor: extensionHost.compactor,
+			compactionTrigger: extensionHost.compactionTrigger,
+			projection: options.projection,
 		});
 
 		subject.subscribe((event) => {
