@@ -19,6 +19,18 @@ import type {
 	SessionStore,
 } from "./types.js";
 
+/**
+ * Journal schema version, single source of truth for both the writer
+ * (header creation) and the reader (parseHeader validation).
+ *
+ * Migration skeleton: bumping this constant is a schema change and MUST be
+ * accompanied by a migration chain here — parseHeader accepts older versions
+ * and each step upgrades in-memory before records are interpreted. Never
+ * rewrite old journals in place; migration is a read-time concern until a
+ * dedicated migration commit is authorized (out of P0 scope).
+ */
+const JOURNAL_VERSION = 2;
+
 export async function openJsonlSession(path: string): Promise<{
 	store: JsonlSessionStore;
 	snapshot: SessionSnapshot;
@@ -27,7 +39,7 @@ export async function openJsonlSession(path: string): Promise<{
 	if (!(await pathExists(path))) {
 		const header: SessionHeader = {
 			kind: "header",
-			version: 2,
+			version: JOURNAL_VERSION,
 			id: randomUUID(),
 			cwd: process.cwd(),
 			createdAt: new Date().toISOString(),
@@ -320,9 +332,19 @@ function parseHeader(value: string | undefined, path: string): SessionHeader {
 		throw new SessionFormatError(`${path}:1 header JSON 无法解析: ${String(error)}`);
 	}
 	const header = parsed as Partial<SessionHeader>;
+	if (header.kind !== "header") {
+		throw new SessionFormatError(`${path}:1 header schema 无效`);
+	}
+	// Migration landing point: when JOURNAL_VERSION is bumped, this branch
+	// becomes a version switch — older headers are upgraded in memory via a
+	// migration chain instead of being rejected outright. For now only the
+	// current version is accepted (P0 freeze).
+	if (header.version !== JOURNAL_VERSION) {
+		throw new SessionFormatError(
+			`${path}:1 header 版本不支持: ${String(header.version)}（期望 ${JOURNAL_VERSION}）`,
+		);
+	}
 	if (
-		header.kind !== "header" ||
-		header.version !== 2 ||
 		typeof header.id !== "string" ||
 		typeof header.cwd !== "string" ||
 		typeof header.createdAt !== "string"

@@ -61,6 +61,14 @@ const rules = [
 		roots: ["src/host"],
 		test: (source) => importsSegment(source, "ui"),
 	},
+	{
+		// Subject Runtime P0 冻结：内核五目录只依赖彼此与 node 内置，
+		// 宿主装配（host）、UI 实现（ui）与 AI 配置层（ai）一律不可达。
+		name: "kernel must not depend on host, ui or ai config layers",
+		roots: ["src/agent", "src/session", "src/core", "src/tools", "src/runtime"],
+		test: (source) =>
+			["host", "ui", "ai"].some((segment) => importsSegment(source, segment)),
+	},
 ];
 
 /**
@@ -92,6 +100,11 @@ const selfTestSamples = [
 		rule: 4,
 		bad: 'import { UIHost } from "../ui/ui-host.js";',
 		good: 'import type { HostEvent } from "./events.js";',
+	},
+	{
+		rule: 5,
+		bad: 'import { loadConfig } from "../ai/config.js";',
+		good: 'import type { SessionStore } from "../session/types.js";',
 	},
 ];
 
