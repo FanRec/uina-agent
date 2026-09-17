@@ -232,7 +232,7 @@ describe("extension composition", () => {
 });
 
 describe("replaceable compaction", () => {
-	it("uses one proposal/commit path for manual and automatic compaction", async () => {
+	it("commits an extension compactor proposal through the manual compact flow", async () => {
 		const host = runner(await temp());
 		const reasons: string[] = [];
 		const api = await activate(host, "summary");
@@ -240,20 +240,17 @@ describe("replaceable compaction", () => {
 			reasons.push(request.reason);
 			return { summary: "extension summary", keepFrom: request.suggestedKeepFrom };
 		});
-		for (const manual of [true, false]) {
-			const subject = new Subject(mockModel(), stream, new ToolBroker(), {
-				compactor: host.compactor,
-				compaction: { contextWindow: manual ? undefined : 1, reserveTokens: 0, keepRecentTokens: 1 },
-			});
-			subject.addHistory([
-				{ role: "user", content: "old" },
-				{ role: "assistant", content: "previous answer" },
-			]);
-			if (manual) await subject.compact();
-			else await subject.pushInput("new");
-			expect(subject.historySnapshot()[0]).toMatchObject({ role: "compactionSummary", summary: "extension summary" });
-		}
-		expect(reasons).toEqual(["manual", "automatic"]);
+		const subject = new Subject(mockModel(), stream, new ToolBroker(), {
+			compactor: host.compactor,
+		});
+		subject.addHistory([
+			{ role: "user", content: "old" },
+			{ role: "assistant", content: "previous answer" },
+		]);
+		await subject.compact();
+		expect(subject.historySnapshot()[0]).toMatchObject({ role: "compactionSummary", summary: "extension summary" });
+		// P6b：自动压缩编排退役——compactor 槽只服务 manual 流。
+		expect(reasons).toEqual(["manual"]);
 	});
 	it("does not fall back after strategy failure or commit an invalid cut", async () => {
 		const fallback = vi.fn(stream);
@@ -349,46 +346,34 @@ it("restores overridden model and provider registrations with their original fac
 	expect(registry.resolve("provider/model").imageInput).toBe(true);
 });
 
-it("an extension can choose its own automatic compression trigger without inventing a context window", async () => {
+it("an extension compactor serves the manual compact flow", async () => {
 	const host = runner(await temp());
 	const api = await activate(host, "summary");
-	api.registerCompactor(async () => ({ summary: "policy summary", keepFrom: 1 }), {
-		shouldCompact: (input) => input.historyLength >= 2,
-	});
+	api.registerCompactor(async () => ({ summary: "policy summary", keepFrom: 1 }));
 	const subject = new Subject(mockModel(), stream, new ToolBroker(), {
 		compactor: host.compactor,
-		compactionTrigger: host.compactionTrigger,
 	});
 	subject.addHistory([
 		{ role: "user", content: "old" },
 		{ role: "assistant", content: "old answer" },
 	]);
-	await subject.pushInput("new");
+	await subject.compact();
 	expect(subject.historySnapshot()[0]).toMatchObject({ summary: "policy summary" });
-	expect(subject.getContextWindow()).toBeUndefined();
 });
 
 it("rejects a compactor proposal that keeps the whole history", async () => {
 	const host = runner(await temp());
 	const api = await activate(host, "keep-everything");
-	api.registerCompactor(async (request) => ({ summary: "no-op summary", keepFrom: request.history.length }), {
-		shouldCompact: () => true,
-	});
+	api.registerCompactor(async (request) => ({ summary: "no-op summary", keepFrom: request.history.length }));
 	const subject = new Subject(mockModel(), stream, new ToolBroker(), {
 		compactor: host.compactor,
-		compactionTrigger: host.compactionTrigger,
 	});
 	subject.addHistory([
 		{ role: "user", content: "old" },
 		{ role: "assistant", content: "old answer" },
 	]);
-	const errors: string[] = [];
-	subject.subscribe((event) => {
-		if (event.type === "error") errors.push(event.text);
-	});
-	await subject.pushInput("new");
 	// The probe must reject it: accepting would persist a summary plus the messages it summarizes.
-	expect(errors.some((text) => text.includes("compaction 保留位置无效"))).toBe(true);
+	await expect(subject.compact()).rejects.toThrow("compaction 保留位置无效");
 	expect(subject.historySnapshot().some((message) => message.role === "compactionSummary")).toBe(false);
 });
 

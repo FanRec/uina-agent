@@ -5,7 +5,7 @@ import { errorMessage } from "../core/errors.js";
 import { randomUUID } from "node:crypto";
 import { Registrations } from "../core/registrations.js";
 import { discoverExtensions, importExtension } from "./loader.js";
-import type { Compactor, CompactionTrigger } from "../core/compaction.js";
+import type { Compactor } from "../core/compaction.js";
 import type { CallOptions, ServiceHandler, ExtensionModelAccess, ExtensionModelRequest } from "./services.js";
 import { relative } from "node:path";
 
@@ -49,6 +49,10 @@ export interface ExtensionAPI {
 	 * 返回值按该链的合并规则参与组合。事实观察用 on()。
 	 */
 	onHook<K extends HookName>(hook: K, handler: HookHandler<K>): () => void;
+	/** 主线 hydrated entries（含 id/customType）：capability 读历史与自身持久化状态的唯一通道。 */
+	history(): readonly import("../session/types.js").HydratedSessionEntry[];
+	/** 事实出口（RuntimeEvent 单流广播）：capability 产生"已发生"的事实（如 session_compact）。 */
+	emitEvent(event: import("../runtime/events.js").RuntimeEvent): Promise<void>;
 	registerTool(tool: Tool, options?: { replace?: boolean }): () => void;
 	callTool(
 		name: string,
@@ -60,7 +64,7 @@ export interface ExtensionAPI {
 	hasService(name: string): boolean;
 	registerCompactor(
 		compactor: Compactor,
-		options?: { replace?: boolean; shouldCompact?: CompactionTrigger },
+		options?: { replace?: boolean },
 	): () => void;
 	compact(instruction?: string): Promise<void>;
 	readonly models: {
@@ -142,6 +146,10 @@ export interface ExtensionRunnerOptions {
 	setThinkingLevel?: (level: import("../core/types.js").ThinkingLevel) => void;
 	/** 主体忙闲（pi.isBusy()）。 */
 	isBusy?: () => boolean;
+	/** 主线 hydrated entries（pi.history()）。 */
+	history?: () => readonly import("../session/types.js").HydratedSessionEntry[];
+	/** 事实出口（pi.emitEvent → RuntimeEvent 单流广播）。 */
+	emitRuntimeEvent?: (event: import("../runtime/events.js").RuntimeEvent) => Promise<void>;
 	/** 宿主级扩展重载（pi.reload()）。 */
 	reload?: () => Promise<void>;
 	/** 消费者关闭流程（pi.shutdown()）。 */
@@ -228,7 +236,7 @@ export class ExtensionRunner extends ExtensionHost {
 	private lifecycleTail: Promise<void> = Promise.resolve();
 	private closed = false;
 	private readonly services = new Registrations<ServiceHandler>();
-	private readonly compactors = new Registrations<{ run: Compactor; shouldCompact?: CompactionTrigger }>();
+	private readonly compactors = new Registrations<{ run: Compactor }>();
 	private readonly sharedUI = new Map<string, Map<string, Parameters<ExtensionUIContext["setHeader"]>[0]>>();
 	private readonly extensions = new Map<string, ActivationScope>();
 	private readonly failures = new Map<string, { id: string; path: string; error: string }>();
@@ -263,7 +271,6 @@ export class ExtensionRunner extends ExtensionHost {
 		return discoverExtensions(this.options.cwd, this.options.extensionPaths);
 	}
 
-	readonly compactionTrigger: CompactionTrigger = (input) => this.compactors.get("compaction")?.shouldCompact?.(input);
 	readonly compactor: Compactor = async (request, signal) => this.compactors.get("compaction")?.run(request, signal);
 
 	private setSharedUI(
@@ -526,7 +533,6 @@ export class ExtensionRunner extends ExtensionHost {
 									combined.throwIfAborted();
 									return proposal;
 								}, signal),
-							shouldCompact: options?.shouldCompact,
 						},
 						// 槽是 Replacement 接缝（单 owner）：后注册者接管，dispose 恢复前值
 						// —— 项目扩展覆盖 builtin 默认 capability 无需显式 replace。
@@ -741,6 +747,14 @@ export class ExtensionRunner extends ExtensionHost {
 				assertActive();
 				if (!this.options.onCustomEntry) throw new Error("宿主未提供 custom entry 入口");
 				await this.options.onCustomEntry(structuredClone(entry));
+			},
+			history: () => {
+				if (!this.options.history) throw new Error("宿主未提供历史读取入口");
+				return this.options.history();
+			},
+			emitEvent: async (event) => {
+				if (!this.options.emitRuntimeEvent) throw new Error("宿主未提供事实出口");
+				await this.options.emitRuntimeEvent(event);
 			},
 		};
 	}

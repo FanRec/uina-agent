@@ -244,6 +244,8 @@ export class UinaHost {
 			thinkingLevel: () => subject.getThinkingLevel(),
 			setThinkingLevel: (level) => subject.setThinkingLevel(level),
 			isBusy: () => subject.isBusy(),
+			history: () => store.state.entries,
+			emitRuntimeEvent: (event) => extensionHost.runtimeHooks().events.emit(event),
 			reload: () => hostSelf.reloadExtensions(),
 			shutdown: () => hostSelf.requestShutdown?.() ?? hostSelf.dispose(),
 			tools,
@@ -276,7 +278,6 @@ export class UinaHost {
 			thinkingLevel,
 			runtimeHooks: extensionHost.runtimeHooks(),
 			compactor: extensionHost.compactor,
-			compactionTrigger: extensionHost.compactionTrigger,
 			projection: options.projection,
 		});
 

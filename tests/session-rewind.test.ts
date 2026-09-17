@@ -4,7 +4,7 @@ import { createSessionAccess } from "../src/session/access.js";
 import { commitRewindTransition } from "../src/agent/rewind.js";
 import { resolveProjectionPolicy } from "../src/agent/projection.js";
 import { buildContext, estimateContextTokens } from "../src/agent/context.js";
-import type { AgentMessage } from "../src/core/types.js";
+import type { AgentMessage, ModelStreamFn } from "../src/core/types.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { projectAgentHistory, protectRewindContext, summarizeAbandonedEffects, projectInputMessage } from "../src/session/recovery.js";
 import { BranchInspectorOverlay } from "../src/ui/components/overlays/branch-inspector.js";
@@ -12,6 +12,25 @@ import { listSessionBranches, listSessionNodes, readSessionBranch, readSessionNo
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+/** P6b：把 official compaction capability 装进裸 Subject（host 装配的最小等价物）。 */
+async function capabilitySubject(store: MemorySessionStore, model: ReturnType<typeof mockModel>, stream: ModelStreamFn) {
+	const { ExtensionRunner } = await import("../src/extensions/runner.js");
+	const { createRuntimeHooks } = await import("../src/extensions/runtime-hooks.js");
+	const { default: activateCompaction } = await import("../src/extensions/compaction/index.js");
+	let hooks: ReturnType<typeof createRuntimeHooks> | undefined;
+	const runner = new ExtensionRunner({
+		cwd: process.cwd(),
+		tools: new ToolBroker(),
+		models: { current: () => model, list: () => [model], groups: () => [], resolve: () => model, select: async () => {}, stream },
+		history: () => store.state.entries,
+		emitRuntimeEvent: (event) => hooks!.events.emit(event),
+		onCustomEntry: (entry) => store.appendCustomEntry(entry),
+	});
+	await runner.activateBuiltin("compaction", activateCompaction);
+	hooks = createRuntimeHooks(runner);
+	return new Subject(model, stream, new ToolBroker(), { store, runtimeHooks: hooks });
+}
 
 async function seed(store: MemorySessionStore | Awaited<ReturnType<typeof openJsonlSession>>["store"]) {
 	await store.appendMessage({role:"user",content:"original task"});
@@ -147,49 +166,66 @@ describe("rewind runtime safe points", () => {
 		expect(all.some(entry=>entry.kind==="compaction")).toBe(true);
 		expect(listSessionNodes(store.readRecords(),{scope:"all"}).nodes.some(node=>!node.active)).toBe(true);
 	});
-	it("compacts a rewind that re-exposes compacted history instead of refusing it", async () => {
+	it("trims a rewind that re-exposes oversized history instead of refusing it", async () => {
 		const store=new MemorySessionStore();
-		await store.appendMessage({role:"user",content:"KEEP-THIS-PREFIX "+"p".repeat(2000)});
+		await store.appendMessage({role:"user",content:"KEEP-THIS-PREFIX "+"p".repeat(80000)});
 		await store.appendMessage({role:"assistant",content:"ack",usage:{totalTokens:120}});
 		await store.appendMessage({role:"user",content:"abandoned instruction"});
 		await store.appendMessage({role:"assistant",content:"abandoned answer"});
 		const targetId=store.readRecords().at(-1)!.id;
-		await store.appendMessage({role:"user",content:"RE-EXPOSED "+"r".repeat(2000)});
+		await store.appendMessage({role:"user",content:"RE-EXPOSED "+"r".repeat(8000)});
 		const fromId=store.readRecords().at(-1)!.id;
 		await store.appendRewind({id:"r1",requestId:"q1",targetId,fromId,source:"test",reason:"oversized"});
 
-		const histories:number[]=[];const sent:string[][]=[];
-		const subject=new Subject(mockModel({contextWindow:400}),async(_m,req,emit)=>{
-			sent.push(req.messages.map(message=>String((message as {content?:string}).content ?? "")));
-			emit({kind:"text",text:"continued"});emit({kind:"finish",reason:"stop"});
-		},new ToolBroker(),{store,compactor:async request=>{histories.push(request.history.length);return {summary:"压缩摘要：重新展开的早期历史已折叠",keepFrom:1};}});
+		const sent:string[][]=[];
+		const stream=async(_m:unknown,req:{messages:{role:string;content?:string}[]},emit:(d:{kind:string;text?:string;reason?:string})=>void)=>{
+			if (!String(req.messages[0]?.content??"").includes("上下文摘要助手")) {
+				sent.push(req.messages.map(message=>String(message.content ?? "")));
+			}
+			emit({kind:"text",text:"continued"});
+			emit({kind:"finish",reason:"stop"});
+		};
+		// 预算 = 20_000 - 16_384 = 3_616 tokens；重展开历史 ≈ 数千 tokens → 触发裁剪。
+		const subject=await capabilitySubject(store,mockModel({contextWindow:20_000}),stream as never);
 		subject.addHistory(projectAgentHistory(store.state.entries));
 
 		// The mainline projection now carries the re-exposed pre-compaction history, which overflows.
 		await subject.pushInput("carry on");
 
-		expect(histories).toHaveLength(1);
 		const flat=sent.flat();
-		expect(flat.some(text=>text.includes("[历史摘要] 压缩摘要：重新展开的早期历史已折叠"))).toBe(true);
+		expect(flat.some(text=>text.startsWith("[历史摘要] "))).toBe(true);
 		expect(flat.some(text=>text.includes("会话回溯"))).toBe(true);
-		expect(store.readRecords().filter(record=>record.kind==="compaction")).toHaveLength(1);
+		// P6b：裁剪不写 canonical compaction record——摘要走 uina.compaction.summary 条目。
+		expect(store.readRecords().filter(record=>record.kind==="compaction")).toHaveLength(0);
+		expect(store.readRecords().some(record=>record.kind==="custom_entry"&&(record as {customType?:string}).customType==="uina.compaction.summary")).toBe(true);
 	});
 
-	it("refuses a rewind when the accepted compaction cut keeps the whole history", async () => {
+	it("keeps a rewind re-exposing history recoverable via trim without canonical compaction records", async () => {
 		const store=new MemorySessionStore();
+		await store.appendMessage({role:"user",content:"EARLIER "+"e".repeat(80000)});
 		await store.appendMessage({role:"user",content:"start"});
 		await store.appendMessage({role:"assistant",content:"ack"});
-		const targetId=store.readRecords()[1].id;
-		await store.appendMessage({role:"assistant",content:"JUST-DISCARD "+"d".repeat(16000)});
+		const targetId=store.readRecords()[2].id;
+		await store.appendMessage({role:"assistant",content:"JUST-DISCARD "+"d".repeat(12000)});
 		const fromId=store.readRecords().at(-1)!.id;
 		await store.appendRewind({id:"r1",requestId:"q1",targetId,fromId,source:"test",reason:"oversized"});
 
-		// keepFrom 0 removes nothing; accepting it would persist a summary plus everything it summarizes.
-		let proposed=0;
-		const subject=new Subject(mockModel({contextWindow:400}),async()=>{},new ToolBroker(),{store,compactor:async()=>{proposed++;return {summary:"无效压缩",keepFrom:0};}});
+		const sent:string[][]=[];
+		const stream=async(_m:unknown,req:{messages:{role:string;content?:string}[]},emit:(d:{kind:string;text?:string;reason?:string})=>void)=>{
+			if (!String(req.messages[0]?.content??"").includes("上下文摘要助手")) {
+				sent.push(req.messages.map(message=>String(message.content ?? "")));
+			}
+			emit({kind:"text",text:"continued"});
+			emit({kind:"finish",reason:"stop"});
+		};
+		const subject=await capabilitySubject(store,mockModel({contextWindow:20_000}),stream as never);
 		subject.addHistory(projectAgentHistory(store.state.entries));
 		await subject.pushInput("carry on");
-		expect(proposed).toBe(1);
+
+		// P6b：超限不拒绝也不截断主线——请求被裁剪收敛，"start" 仍在预算内尾部可见。
+		const flat=sent.flat();
+		expect(flat.some(text=>text.startsWith("[历史摘要] "))).toBe(true);
+		expect(flat.some(text=>text.includes("start"))).toBe(true);
 		expect(store.readRecords().filter(record=>record.kind==="compaction")).toHaveLength(0);
 		expect(store.readRecords().filter(record=>record.kind==="rewind")).toHaveLength(1);
 	});

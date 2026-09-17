@@ -237,7 +237,7 @@ describe("Subject", () => {
 		expect(subject.historySnapshot().find((message) => message.role === "tool")?.status).toBe("not_started");
 	});
 
-	it("compacts with provider-sized limits and keeps old history on failure", async () => {
+	it("manual compaction summarizes via the compactor and keeps old history on failure", async () => {
 		const broker = new ToolBroker();
 		const provider = scriptedProvider([
 			{
@@ -247,15 +247,14 @@ describe("Subject", () => {
 			{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] },
 		]);
 		const subject = new Subject(provider.model, provider.stream, broker, {
-			compaction: { contextWindow: 100, reserveTokens: 10, keepRecentTokens: 10 },
+			compaction: { reserveTokens: 10, keepRecentTokens: 10 },
 			compactor: streamCompactor(provider.stream),
 		});
 		subject.addHistory(Array.from({ length: 10 }, (_, index) => ({
 			role: "user" as const,
 			content: `history-${index}-${"x".repeat(30)}`,
 		})));
-		subject.pushInput("new");
-		await idle(subject);
+		await subject.compact();
 		expect(provider.calls.some((call) => (call.messages[0]?.content ?? "").includes("你是上下文摘要助手"))).toBe(true);
 		expect(subject.historySnapshot().some((message) => message.content === "[历史摘要] 保留的摘要")).toBe(true);
 
@@ -263,15 +262,13 @@ describe("Subject", () => {
 			{ match: (req) => (req.messages[0]?.content ?? "").includes("你是上下文摘要助手"), produce: () => { throw new Error("compact down"); } },
 		]);
 		const failedSubject = new Subject(failing.model, failing.stream, broker, {
-			compaction: { contextWindow: 100, reserveTokens: 10, keepRecentTokens: 10 },
+			compaction: { reserveTokens: 10, keepRecentTokens: 10 },
 			compactor: streamCompactor(failing.stream),
 		});
 		failedSubject.addHistory([{ role: "user", content: "old history" }, { role: "user", content: "x".repeat(500) }]);
-		failedSubject.pushInput("new");
-		await idle(failedSubject);
+		await expect(failedSubject.compact()).rejects.toThrow("compact down");
 		const failedHistory = failedSubject.historySnapshot();
 		expect(failedHistory.some((message) => message.content === "old history")).toBe(true);
-		expect(failedHistory.some((message) => (message.content ?? "").includes("上轮处理出错"))).toBe(false);
 	});
 
 	it("scopes actual usage to one provider request and does not reuse it on the next turn", async () => {

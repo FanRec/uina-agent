@@ -3,7 +3,7 @@ import { errorMessage } from "../core/errors.js";
 import { protectRewindContext } from "../session/recovery.js";
 import type { RewindRequest, RewindResult } from "../session/types.js";
 import { validImages } from "../core/content.js";
-import type { Compactor, CompactionTrigger } from "../core/compaction.js";
+import type { Compactor } from "../core/compaction.js";
 import { readonlySnapshot } from "../runtime/guard.js";
 import type {
 	AgentMessage,
@@ -19,7 +19,7 @@ import type {
 } from "../core/types.js";
 import type { SessionStore } from "../session/types.js";
 import { projectInputMessage } from "../session/recovery.js";
-import { DEFAULT_COMPACTION_SETTINGS, resolveCompactionResult, type CompactionSettings, findCutPoint, shouldCompact } from "./compaction.js";
+import { DEFAULT_COMPACTION_SETTINGS, resolveCompactionResult, type CompactionSettings, findCutPoint } from "./compaction.js";
 import { commitRewindTransition } from "./rewind.js";
 import { resolveProjectionPolicy, type ProjectionPolicy, type ResolvedProjection } from "./projection.js";
 import { buildContext, calculateContextSegments, defaultSystemPrompt, estimateContextTokens } from "./context.js";
@@ -36,7 +36,6 @@ export interface SubjectOptions {
 	store?: SessionStore;
 	compaction?: Partial<CompactionSettings>;
 	compactor?: Compactor;
-	compactionTrigger?: CompactionTrigger;
 	/** 投影 Replacement 缝（单 owner = 本 Subject 实例；缺省字段回落默认实现）。 */
 	projection?: ProjectionPolicy;
 	systemPrompt?: string;
@@ -92,7 +91,6 @@ export class Subject {
 	private preferredThinkingLevel: ThinkingLevel;
 	private readonly runtimeHooks: RuntimeHooks;
 	private readonly compactor?: Compactor;
-	private readonly compactionTrigger?: CompactionTrigger;
 	/** 投影 Replacement 缝的现役实现（解析后两字段非空；本实例即单 owner）。 */
 	readonly projection: ResolvedProjection;
 	/** 本次模型调用拿到的 usage；每次调用开始前清空，只对本次调用有意义。 */
@@ -124,7 +122,6 @@ export class Subject {
 			...options.compaction,
 		};
 		this.compactor = options.compactor;
-		this.compactionTrigger = options.compactionTrigger;
 		this.projection = resolveProjectionPolicy(options.projection);
 		this.preferredThinkingLevel = options.thinkingLevel ?? model.thinkingLevels?.[0] ?? "off";
 		if (this.preferredThinkingLevel !== "off" && !model.thinkingLevels?.includes(this.preferredThinkingLevel)) {
@@ -286,7 +283,7 @@ export class Subject {
 			this.settleActiveRun = resolve;
 		});
 		try {
-			await this.performCompaction("manual", instruction);
+			await this.performCompaction(instruction);
 			completed = true;
 		} catch (err) {
 			await this.runtimeHooks.events.emit({
@@ -749,9 +746,8 @@ export class Subject {
 			}
 
 			await applyRewind();
-			// 每步体检（对齐 dsh between-step pressure）：回合内工具输出能让上下文暴涨，
-			// 只在回合边界查一次会一路涨到越界，压缩请求本身就成了超大请求。
-			await this.prepareTurn(model, systemPrompt);
+			// 回合内暴涨由每请求的 transformContext 裁剪收敛（P6b：capability 拥有
+			// 上下文窗口管理）——这里不再有 between-step 压缩体检。
 			const requestMessages = await this.buildRequestMessages(model, systemPrompt, beforeMessages);
 
 			const callId = `stream-${this.turnSeq}-${++this.streamSeq}`;
@@ -1007,40 +1003,17 @@ export class Subject {
 		);
 	}
 
-	private async prepareTurn(model = this.model, systemPrompt = this.systemPrompt): Promise<void> {
-		try {
-			await this.performCompaction("automatic", undefined, model, systemPrompt);
-		} catch (error) {
-			await this.runtimeHooks.events.emit({ type: "session_compact_failed", error: String(error) });
-			throw error;
-		}
-	}
-
-	private async performCompaction(
-		reason: "manual" | "automatic",
-		instruction?: string,
-		model = this.model,
-		systemPrompt = this.systemPrompt,
-	): Promise<void> {
-		const manual = reason === "manual";
+	// P6b：自动压缩编排退役——每请求上下文由 official compaction capability 的
+	// transformContext 裁剪收敛（journal 保留全量历史，Subject 零自动压缩词汇）。
+	// 剩余的 performCompaction 只服务手动 compact()。
+	private async performCompaction(instruction?: string, model = this.model, systemPrompt = this.systemPrompt): Promise<void> {
 		const tokensBefore = estimateContextTokens(buildContext({ history: this.history, systemPrompt, convertToLlm: this.projection.convertToLlm }), {
 			tools: this.tools.defs(),
 			includeThinking: model.includeThinking,
 		}).tokens;
-		const defaultDecision = shouldCompact(tokensBefore, this.compaction);
-		if (
-			!manual &&
-			!(
-				this.compactionTrigger?.(
-					readonlySnapshot({ historyLength: this.history.length, tokensBefore, model, defaultDecision }),
-				) ?? defaultDecision
-			)
-		)
-			return;
-		const cutPoint = findCutPoint(this.history, this.compaction.keepRecentTokens, manual);
+		const cutPoint = findCutPoint(this.history, this.compaction.keepRecentTokens, true);
 		if (!this.history.length || (cutPoint.firstKeptEntryIndex <= 0 && !this.compactor)) {
-			if (manual)
-				await this.runtimeHooks.events.emit({ type: "session_compact_failed", error: "当前会话消息过短，无需压缩" });
+			await this.runtimeHooks.events.emit({ type: "session_compact_failed", error: "当前会话消息过短，无需压缩" });
 			return;
 		}
 		this.compactionActive = true;
@@ -1048,21 +1021,20 @@ export class Subject {
 			const signal = this.currentSignal();
 			const decision = await this.runtimeHooks.turn.beforeCompact({ tokensBefore });
 			if (decision.cancel) {
-				if (manual)
-					await this.runtimeHooks.events.emit({ type: "session_compact_failed", error: "会话压缩已被扩展取消" });
+				await this.runtimeHooks.events.emit({ type: "session_compact_failed", error: "会话压缩已被扩展取消" });
 				return;
 			}
-		const request = readonlySnapshot({
-			reason,
-			history: this.history,
-			suggestedKeepFrom: cutPoint.firstKeptEntryIndex,
-			tokensBefore,
-			model,
-			instruction,
-			cut: { turnStartIndex: cutPoint.turnStartIndex, isSplitTurn: cutPoint.isSplitTurn },
-		});
-		const proposal = await this.compactor?.(request as import("../core/compaction.js").CompactionRequest, signal);
-		const result = await resolveCompactionResult(proposal, this.history, tokensBefore);
+			const request = readonlySnapshot({
+				reason: "manual",
+				history: this.history,
+				suggestedKeepFrom: cutPoint.firstKeptEntryIndex,
+				tokensBefore,
+				model,
+				instruction,
+				cut: { turnStartIndex: cutPoint.turnStartIndex, isSplitTurn: cutPoint.isSplitTurn },
+			});
+			const proposal = await this.compactor?.(request as import("../core/compaction.js").CompactionRequest, signal);
+			const result = await resolveCompactionResult(proposal, this.history, tokensBefore);
 			if (!result) return;
 			signal.throwIfAborted();
 			await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);

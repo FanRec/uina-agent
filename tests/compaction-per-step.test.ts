@@ -1,70 +1,120 @@
 /**
- * 回合内体检（对齐 dsh 的 between-step pressure）。
+ * 自动压缩语义切换（P6b）：上下文窗口管理归 official compaction capability，
+ * 经 turn.transformContext 每请求裁剪——journal 保留全量历史，Subject 内存
+ * 视图不被自动截断，摘要以 uina.compaction.summary custom entry 持久化。
  *
- * 背景：自动压缩原先只在 prepareTurn（回合开头）查一次。一个回合可以跑几十次工具调用，
- * 上下文在回合内从 10 万涨到 18 万，期间无人过问 —— 等下一个回合开头才压缩，那时的压缩
- * 请求自身就是一个超大请求（实测 163k 真实输入），在传输层被切断，整个回合 turn_failed。
- *
- * 回退本修复（把 prepareTurn 移回 runTurn 开头）后，这条测试会因为 session_compact
- * 不再出现而变红。
+ * 回合内暴涨的安全网 = 每请求裁剪本身：工具输出让上下文越过阈值后，
+ * 下一次模型调用收到的就是 [历史摘要, 预算内尾部]，而不是超大请求。
  */
 import { describe, expect, it } from "vitest";
-import type { AgentMessage, Model, ModelStreamFn } from "../src/core/types.js";
-import { streamCompactor } from "../src/agent/compaction.js";
-import { mockModel } from "./helpers/mock-provider.js";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
+import { mockModel, scriptedProvider, type ScriptRule } from "./helpers/mock-provider.js";
 
-// 阈值 = contextWindow(100_000) - reserveTokens(16_384 默认) = 83_616
-const MODEL: Model = mockModel({ id: "mock", name: "mock", contextWindow: 100_000 });
+// 预算 = contextWindow(50_000) - RESERVE_TOKENS(16_384) = 33_616 tokens；
+// CHARS_PER_TOKEN = 4，"词".repeat(4_000) ≈ 1_000 tokens/条。
+const MODEL: Model = mockModel({ id: "mock", name: "mock", contextWindow: 50_000 });
 
-describe("自动压缩：每次模型调用前都体检，而不是只在回合开头", () => {
-	it("同一个回合内上下文越过阈值后，在下一次调用前就压缩", async () => {
-		const { ExtensionHost } = await import("../src/extensions/host.js");
-		const { createRuntimeHooks } = await import("../src/extensions/runtime-hooks.js");
-		const { Subject } = await import("../src/agent/loop.js");
-		const { ToolBroker } = await import("../src/tools/broker.js");
+const hasToolResult = (req: ModelRequest): boolean => req.messages.some((m) => m.role === "tool");
 
-		let call = 0;
-		const stream: ModelStreamFn = async (_model, _req, onDelta) => {
-			call++;
-			if (call === 1) {
-				// 第一步：请求一个不存在的工具，逼出工具往返，让回合继续到第二次调用。
-				onDelta({ kind: "tool_call", call: { id: "c1", name: "no_such_tool", args: "{}" } });
-				// 服务端报回一个越过阈值的真实总量：它成为后续估算的锚。
-				onDelta({ kind: "usage", usage: { input: 1, output: 1, totalTokens: 90_000 } });
-				onDelta({ kind: "finish", reason: "tool_calls" });
-				return;
-			}
-			// 压缩请求与后续正常调用都返回一段文本。
-			onDelta({ kind: "text", text: "摘要内容" });
-			onDelta({ kind: "finish", reason: "stop" });
+const seedHistory = (): { role: "user" | "assistant"; content: string }[] =>
+	Array.from({ length: 100 }, (_, index) =>
+		index % 2 === 0 ? { role: "user" as const, content: `第${index}问 ${"词".repeat(4_000)}` } : { role: "assistant" as const, content: `第${index}答 ${"词".repeat(4_000)}` },
+	);
+
+describe("自动压缩：capability 经 transformContext 每请求裁剪", () => {
+	it("同一个回合内上下文越过阈值后，下一次调用收到的是摘要 + 预算内尾部，journal 保留全量历史", async () => {
+		const { UinaHost } = await import("../src/host/host.js");
+		const calls: ModelRequest[] = [];
+		const stream: ModelStreamFn = async (_model, req, onDelta) => {
+			calls.push(req);
+			const isSummaryCall = (req.messages[0]?.content ?? "").includes("上下文摘要助手");
+			const deltas: StreamDelta[] = isSummaryCall
+				? [{ kind: "text", text: "早期对话围绕长文本输入展开" }]
+				: hasToolResult(req)
+					? [{ kind: "text", text: "收到工具结果，处理完成" }]
+					: [{ kind: "tool_call", call: { id: "c1", name: "no_such_tool", args: "{}" } }];
+			for (const delta of deltas) onDelta(delta);
+			onDelta({ kind: "finish", reason: deltas.some((d) => d.kind === "tool_call") ? "tool_calls" : "stop" });
 		};
 
-		const host = new ExtensionHost();
-		const subject = new Subject(MODEL, stream, new ToolBroker(), {
-			systemPrompt: "sys",
-			runtimeHooks: createRuntimeHooks(host),
-			// P6a：默认算法不再内置于 Subject——显式装配官方压缩器的算法内核
-			compactor: streamCompactor(stream),
-		});
+		const cwd = await mkdtemp(join(tmpdir(), "uina-trim-"));
+		try {
+			const sessionPath = join(cwd, "session.jsonl");
+			const host = await UinaHost.create({ cwd, provider: { id: "mock", name: "mock", model: MODEL, stream } as never, model: MODEL, sessionPath });
+			await host.start();
 
-		// 铺垫一段足够长的历史，让自动压缩有可推进的切点（keepRecentTokens 默认 20k）。
-		const chunk = "词".repeat(4_000);
-		const seed: AgentMessage[] = [];
-		for (let i = 0; i < 12; i++) {
-			seed.push({ role: "user", content: `第${i}问 ${chunk}` });
-			seed.push({ role: "assistant", content: `第${i}答 ${chunk}` });
+			host.subject.addHistory(seedHistory());
+
+			await host.submitText("跑两轮", "direct");
+			await host.waitForIdle();
+
+			// 第二次调用（带工具结果的那次）已被裁剪：摘要消息开头。
+			expect(calls.length).toBeGreaterThanOrEqual(2);
+			const trimmedRequest = calls.find((req) => hasToolResult(req));
+			expect(trimmedRequest).toBeDefined();
+			// leading system 保留，摘要消息紧随其后。
+			const first = trimmedRequest?.messages[1];
+			expect(first?.role).toBe("user");
+			expect((first?.content ?? "").startsWith("[历史摘要] ")).toBe(true);
+
+			// Subject 内存视图不被自动截断：全量历史仍在，无 canonical 截断产物。
+			const memory = host.subject.historySnapshot();
+			expect(memory.some((message) => message.role === "compactionSummary")).toBe(false);
+			expect(memory.some((message) => (message.content as string)?.includes("第0问"))).toBe(true);
+
+			// journal 持久化了滚动摘要（uina.compaction.summary custom entry，
+			// 经 pi.emitEvent → 扩展事件总线广播 session_compact，与旧 manual 路径同可见性）。
+			const journal = await readFile(sessionPath, "utf8");
+			expect(journal).toContain("uina.compaction.summary");
+			await host.dispose();
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
 		}
-		subject.addHistory(seed);
+	});
 
-		let compacted = 0;
-		host.on("session_compact", () => { compacted++; });
+	it("重启后从 journal 重载滚动摘要，不重复生成", async () => {
+		const { UinaHost } = await import("../src/host/host.js");
+		const { openJsonlSession } = await import("../src/session/jsonl-store.js");
+		const rules: ScriptRule[] = [
+			{ match: (req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"), produce: () => [{ kind: "text", text: "ok-tail" }] },
+			{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] },
+		];
+		const provider = scriptedProvider(rules, { contextWindow: 50_000 });
+		const cwd = await mkdtemp(join(tmpdir(), "uina-reload-"));
+		try {
+			const sessionPath = join(cwd, "session.jsonl");
+			// 种子先落盘（addHistory 只进内存）：重启后主线仍超预算，裁剪才有前提。
+			const seeded = await openJsonlSession(sessionPath);
+			for (const message of seedHistory()) await seeded.store.appendMessage(message);
+			const host = await UinaHost.create({ cwd, provider, model: provider.model, sessionPath });
+			await host.start();
+			await host.submitText("第一轮", "direct");
+			await host.waitForIdle();
+			const summaryCallsAfterFirst = provider.calls.filter((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手")).length;
+			expect(summaryCallsAfterFirst).toBeGreaterThanOrEqual(1);
 
-		await subject.pushInput("跑两轮");
-		await subject.waitForIdle();
+			// 同一宿主再跑一轮：摘要已缓存且仍有效，不再生成第二份。
+			await host.submitText("第二轮", "direct");
+			await host.waitForIdle();
+			const summaryCallsAfterSecond = provider.calls.filter((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手")).length;
+			expect(summaryCallsAfterSecond).toBe(summaryCallsAfterFirst);
+			await host.dispose();
 
-		// 回合内第二步调用前就该压缩：90k 的真实锚已超过 83,616 的阈值。
-		// 回退修复后这里恒为 0 —— 那时只在回合开头查一次，而开头还没有 90k 的锚。
-		expect(compacted).toBe(1);
-		expect(call).toBeGreaterThanOrEqual(3);
+			// 重启：从 journal 重载摘要，裁剪照常生效且不重新生成。
+			const provider2 = scriptedProvider(rules, { contextWindow: 50_000 });
+			const host2 = await UinaHost.create({ cwd, provider: provider2, model: provider2.model, sessionPath });
+			await host2.start();
+			await host2.submitText("重启后一轮", "direct");
+			await host2.waitForIdle();
+			expect(provider2.calls.filter((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手")).length).toBe(0);
+			const reloaded = provider2.calls.at(-1);
+			expect(reloaded?.messages.some((m) => m.role === "user" && (m.content ?? "").startsWith("[历史摘要] "))).toBe(true);
+			await host2.dispose();
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
 	});
 });
