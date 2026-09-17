@@ -307,7 +307,30 @@ export function recoverRecords(records: SessionRecord[], settleTail = true): Rec
 export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMessage[] {
 	const messages: AgentMessage[] = [];
 	for (const entry of entries) {
-		if (entry.kind === "rewind") { messages.push(...rewindMessages(entry)); continue; }
+		if (entry.kind === "rewind") {
+			const compaction = entry.record.compaction;
+			if (compaction) {
+				// 嵌入压缩在此应用（与 standalone compaction 条目同语义）：落盘的压缩结果
+				// 就是生效的上下文，不再等待后续体检重算一遍摘要。
+				messages.length = 0;
+				messages.push({
+					role: "compactionSummary",
+					summary: compaction.summary,
+					content: `[历史摘要] ${compaction.summary}`,
+					tokensBefore: compaction.tokensBefore,
+				});
+				// 连续性提示不原样保留在尾位：从保留尾中滤出，由 protectRewindContext
+				// 统一重注入到 compactionSummary 之后（"never at the absolute tail"）。
+				messages.push(
+					...(compaction.retainedTail as AgentMessage[]).filter(
+						(message) => !(message as { id?: string }).id?.startsWith("continuity:"),
+					),
+				);
+			} else {
+				messages.push(...rewindMessages(entry));
+			}
+			continue;
+		}
 		if (entry.kind === "input") {
 			const message = projectInputMessage(entry.input);
 			if (message) messages.push(message);
