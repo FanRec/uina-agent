@@ -153,7 +153,7 @@ describe("Subject", () => {
 		subject.interrupt();
 		await idle(subject);
 		expect(subject.queuedSnapshot().map((item) => item.text)).toEqual(["steer", "follow"]);
-		const editorItems = await subject.takeQueuedForEditor();
+		const editorItems = await subject.claimAllQueued();
 		expect(editorItems.map((item) => item.text)).toEqual(["steer", "follow"]);
 		release?.();
 
@@ -311,7 +311,7 @@ describe("Subject", () => {
 		expect(provider.calls).toHaveLength(1);
 	});
 
-	it("takes queued items for editor in single LIFO pull-back order", async () => {
+	it("claims queued items by identity in single LIFO pull-back order (UI peek + claim 组合)", async () => {
 		const provider = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] }]);
 		const subject = new Subject(provider.model, provider.stream, new ToolBroker());
 		subject.seedQueue([
@@ -320,20 +320,20 @@ describe("Subject", () => {
 		]);
 		expect(subject.queuedSnapshot()).toHaveLength(2);
 
-		// takeLastQueuedForEditor 取出最后入队的一条（对齐 Alt+Up pullBackLast）
-		const last = await subject.takeLastQueuedForEditor();
+		// UI pull-back 组合：peek 快照取最后入队的身份，claim 按身份领取（对齐 Alt+Up）
+		const last = await subject.claimQueued(subject.queuedSnapshot().at(-1)!.id);
 		expect(last?.id).toBe("q2");
 		expect(last?.text).toBe("task 2");
 		expect(subject.queuedSnapshot()).toHaveLength(1);
 
-		// 再次取出最后一条
-		const first = await subject.takeLastQueuedForEditor();
+		// 再次领取最后一条
+		const first = await subject.claimQueued(subject.queuedSnapshot().at(-1)!.id);
 		expect(first?.id).toBe("q1");
 		expect(first?.text).toBe("task 1");
 		expect(subject.queuedSnapshot()).toHaveLength(0);
 
-		// 队列为空时返回 null
-		const empty = await subject.takeLastQueuedForEditor();
+		// 队列为空时 peek 无候选；未知身份幂等返回 null
+		const empty = await subject.claimQueued("missing-id");
 		expect(empty).toBeNull();
 	});
 
@@ -387,7 +387,7 @@ describe("Subject", () => {
 		void subject.pushInput("first");
 		await subject.pushInput("second", { mode: "followUp" });
 		// 认领在调用时刻同步完成，queue_restored 写入仍被挂起
-		const pulled = subject.takeLastQueuedForEditor();
+		const pulled = subject.claimQueued(subject.queuedSnapshot().at(-1)!.id);
 		// 放行第一轮：回合收尾触发 resumeQueued，此时 second 已被认领，不得被消费
 		releaseModel();
 		await wait();

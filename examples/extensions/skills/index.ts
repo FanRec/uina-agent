@@ -33,19 +33,20 @@ export default async function activate(api: ExtensionAPI): Promise<void> {
 		}
 	}
 	api.registerService("skills.discover/v1", discover);
-	api.registerContextContributor("skills.catalog", async (_input, signal) => {
-		const skills = await api.callService<Skill[]>("skills.discover/v1", null, { signal });
-		return skills.length
-			? [
-					{
-						role: "user",
-						content:
-							"[Available skills]\n" +
-							skills.map((s) => s.name + ": " + s.path).join("\n") +
-							"\nUse read_skill to read instructions when relevant.",
-					},
-				]
-			: [];
+	api.onHook("turn.prepare", async () => {
+		const skills = await api.callService<Skill[]>("skills.discover/v1", null, { signal: api.signal });
+		if (!skills.length) return undefined;
+		return {
+			messages: [
+				{
+					role: "user",
+					content:
+						"[Available skills]\n" +
+						skills.map((s) => s.name + ": " + s.path).join("\n") +
+						"\nUse read_skill to read instructions when relevant.",
+				},
+			],
+		};
 	});
 	api.registerTool({
 		def: {

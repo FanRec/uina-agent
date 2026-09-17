@@ -10,7 +10,6 @@
  */
 
 import { errorMessage } from "../core/errors.js";
-import { Registrations } from "../core/registrations.js";
 import type { ChatMsg } from "../core/types.js";
 import { copyValue, readonlySnapshot } from "../runtime/guard.js";
 import type {
@@ -82,8 +81,6 @@ interface RegisteredHandler {
 export type RuntimeScopeFilter = readonly string[] | undefined;
 
 export class ExtensionHost {
-	private readonly contextContributors = new Registrations<{ scopeId?: string; run: (input: Readonly<{ prompt: string; systemPrompt: string }>, signal?: AbortSignal) => Promise<readonly ChatMsg[]> }>();
- registerContextContributor(name: string, contributor: (input: Readonly<{ prompt: string; systemPrompt: string }>, signal?: AbortSignal) => Promise<readonly ChatMsg[]>, options?: { replace?: boolean; scopeId?: string }): () => void { return this.contextContributors.register(name, { run: contributor, scopeId: options?.scopeId }, options); }
 	private handlers = new Map<string, Set<RegisteredHandler>>();
 	/** 干预注册空间：键是 HookName 词汇，与事实事件名（handlers）分属两个词表。 */
 	private hookHandlers = new Map<HookName, Set<RegisteredHandler>>();
@@ -226,14 +223,14 @@ export class ExtensionHost {
 	}
 
 	/**
-	 * turn.prepare：systemPrompt/model/thinkingLevel 后写覆盖先写；message 聚合追加。
+	 * turn.prepare：systemPrompt/model/thinkingLevel 后写覆盖先写；messages 聚合追加。
 	 * 返回值是全链聚合后的回合准备结果（RuntimeHooks.turn.prepare 的形状）。
-	 * contextContributors 是同一注入时机的第三条路径（inventory #2），P2 收敛时退役。
+	 * 回合注入只有两条路径：prepare（回合边界）与 transformContext（每请求）——
+	 * 第三条路径 contextContributors 已退役（P2，inventory #2）。
 	 */
 	async runTurnPrepare(
 		input: HookInputs["turn.prepare"],
 		scope?: RuntimeScopeFilter,
-		signal?: AbortSignal,
 	): Promise<Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string; model?: import("../core/types.js").Model; thinkingLevel?: import("../core/types.js").ThinkingLevel }> | undefined> {
 		const handlers = this.hooksFor("turn.prepare", scope);
 		const messages: ChatMsg[] = [];
@@ -249,8 +246,8 @@ export class ExtensionHost {
 					systemPrompt: currentPrompt,
 				}) as never)) as HookContributions["turn.prepare"] | undefined;
 				if (res) {
-					if (res.message) {
-						messages.push(structuredClone(res.message));
+					if (res.messages?.length) {
+						messages.push(...structuredClone(res.messages) as ChatMsg[]);
 						modified = true;
 					}
 					if (res.systemPrompt !== undefined) {
@@ -271,14 +268,6 @@ export class ExtensionHost {
 			}
 		}
 
-		{
-			for (const contributor of this.contextContributors.values()) {
-				if (scope && (!contributor.scopeId || !scope.includes(contributor.scopeId))) continue;
-				const additions = await contributor.run(readonlySnapshot({ prompt: input.prompt, systemPrompt: currentPrompt }), signal);
-				messages.push(...structuredClone(additions));
-				if (additions.length) modified = true;
-			}
-		}
 		return modified
 			? {
 					messages: messages.length > 0 ? messages : undefined,

@@ -196,8 +196,8 @@ describe("extension composition", () => {
 		const a = await activate(host, "a");
 		const b = await activate(host, "b");
 		a.onHook("turn.prepare", () => ({ systemPrompt: "changed" }));
-		a.registerContextContributor("memory", () => [{ role: "user", content: "memory" }]);
-		b.registerContextContributor("skills", (ctx) => [{ role: "user", content: ctx.systemPrompt + ":skills" }]);
+		a.onHook("turn.prepare", () => ({ messages: [{ role: "user", content: "memory" }] }));
+		b.onHook("turn.prepare", (ctx) => ({ messages: [{ role: "user", content: ctx.systemPrompt + ":skills" }] }));
 		const result = await host.runtimeHooks().turn.prepare({ prompt: "hi", systemPrompt: "initial" });
 		expect(result.messages?.map((m) => m.content)).toEqual(["memory", "changed:skills"]);
 		expect(result.systemPrompt).toBe("changed");

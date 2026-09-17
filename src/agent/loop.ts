@@ -346,10 +346,7 @@ export class Subject {
 			if (!this.interrupted && !pending.signal?.aborted) {
 				this.activity = "turn";
 				const turn = ++this.turnSeq;
-				const prepared = await this.runtimeHooks.turn.prepare(
-					{ prompt: "", systemPrompt: this.systemPrompt },
-					this.currentSignal(),
-				);
+				const prepared = await this.runtimeHooks.turn.prepare({ prompt: "", systemPrompt: this.systemPrompt });
 				await this.applyPreparedRuntime(prepared);
 				await this.runtimeHooks.events.emit({ type: "agent_start", turnSeq: turn });
 				await this.runTurn(
@@ -533,9 +530,9 @@ export class Subject {
 		return this.queues.oldestAgeMs();
 	}
 
-	/** Removes queued inputs and returns them in original arrival order for UI editing.
+	/** Claims all queued inputs (mailbox claim 原语) and returns them in arrival order.
 	 * Ownership is claimed synchronously before any await so concurrent queue consumption cannot see claimed items. */
-	async takeQueuedForEditor(): Promise<QueuedMessage[]> {
+	async claimAllQueued(): Promise<QueuedMessage[]> {
 		const items = this.queues.takeAll();
 		for (const item of items) {
 			await this.storeEvent("queue_restored", eventData(item));
@@ -544,16 +541,13 @@ export class Subject {
 		return items;
 	}
 
-	/** Removes the latest queued input and returns it for UI editing. */
-	async takeLastQueuedForEditor(): Promise<QueuedMessage | null> {
-		const items = this.queues.all();
-		if (items.length === 0) return null;
-		const last = items[items.length - 1]!;
-		const claimed = this.queues.remove(last.id);
+	/** Claims one queued input by identity；不存在的身份返回 null（幂等领取）。 */
+	async claimQueued(id: string): Promise<QueuedMessage | null> {
+		const claimed = this.queues.remove(id);
 		if (!claimed) return null;
-		await this.storeEvent("queue_restored", eventData(last));
+		await this.storeEvent("queue_restored", eventData(claimed));
 		this.notifyQueueChanged();
-		return last;
+		return claimed;
 	}
 
 	private async startRun(
@@ -592,10 +586,7 @@ export class Subject {
 				this.notifyQueueChanged();
 			}
 
-			const prepared = await this.runtimeHooks.turn.prepare(
-				{ prompt: text ?? "", systemPrompt: this.systemPrompt },
-				this.abort.signal,
-			);
+			const prepared = await this.runtimeHooks.turn.prepare({ prompt: text ?? "", systemPrompt: this.systemPrompt });
 			await this.applyPreparedRuntime(prepared);
 			await this.runtimeHooks.events.emit({ type: "agent_start", turnSeq: turn });
 
@@ -733,10 +724,7 @@ export class Subject {
 	): Promise<void> {
 		const applyRewind = async (): Promise<boolean> => {
 			if (!await this.applyPendingRewind()) return false;
-			const prepared = await this.runtimeHooks.turn.prepare(
-				{ prompt: "", systemPrompt: this.systemPrompt },
-				this.currentSignal(),
-			);
+			const prepared = await this.runtimeHooks.turn.prepare({ prompt: "", systemPrompt: this.systemPrompt });
 			await this.applyPreparedRuntime(prepared);
 			// 换模型/换档即刻生效于本 decide 循环的下一次请求（安全点已过，口径统一）。
 			model = this.model;

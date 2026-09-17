@@ -5,20 +5,10 @@
 import type { Component, Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
 import { C, visibleWidth } from "../../core/utils.js";
+import type { ModelPickerGroup } from "../../../extensions/ui-contract.js";
 
-export interface ModelItem {
-	id: string;
-	name: string;
-	description: string;
-	provider: string;
-}
-
-export interface ModelGroup {
-	id: string;
-	name: string;
-	description: string;
-	models: ModelItem[];
-}
+export type ModelGroup = ModelPickerGroup;
+type ModelItem = ModelPickerGroup["models"][number];
 
 export class ModelPicker implements Component, Focusable {
 	focused = true;

@@ -1,4 +1,5 @@
 import type { Model, ModelRequest, ModelStreamFn } from "../core/types.js";
+import type { ModelPickerGroup } from "./ui-contract.js";
 export interface CallOptions {
 	signal?: AbortSignal;
 }
@@ -11,6 +12,8 @@ export type ServiceHandler<I = unknown, O = unknown> = (input: I, context: Servi
 export interface ExtensionModelAccess {
 	current(): Model;
 	list(): readonly Model[];
+	/** Provider 分组的模型目录（模型选择器数据源）。 */
+	groups(): ModelPickerGroup[];
 	resolve(name: string): Model;
 	select(name: string): Promise<void>;
 	stream: ModelStreamFn;

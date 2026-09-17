@@ -16,7 +16,7 @@ import { decodeHoverTarget, encodeHoverTarget } from "./core/hover-target.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ThinkingLevel } from "../core/types.js";
 import type { SessionAccess, SessionEntry } from "../session/types.js";
-import type { UsageSnapshot } from "../extensions/builtin.js";
+import type { UsageSnapshot } from "../extensions/ui-contract.js";
 import { C, copyToClipboardUnified, visibleWidth, truncateToWidth, stripAnsi, normalizeFrameLine } from "./core/utils.js";
 import {
 	InputLine,
@@ -537,6 +537,18 @@ export class UIHost implements UIHostContextPort {
 
 	toggleGutterMode(): void {
 		this.setGutterMode(this.gutterMode === "timeline" ? "scrollbar" : "timeline");
+	}
+
+	/** 展开/折叠深度思考过程（官方 /think 命令经 pi.ui 调用）。 */
+	toggleThinking(): void {
+		this.transcript.toggleThinking();
+		this.requestRender();
+	}
+
+	/** 清空当前屏幕转录流（官方 /clear 命令经 pi.ui 调用）。 */
+	clearTranscript(): void {
+		this.transcript.clear();
+		this.requestRender();
 	}
 
 	getScrollbarThumbStyle(): import("./components/widgets/scrollbar-gutter.js").ScrollbarThumbStyle {

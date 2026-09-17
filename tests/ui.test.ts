@@ -2625,6 +2625,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			const setUsageCalls: unknown[] = [];
 
 			const handlers = new Map<string, Function>();
+			// 官方命令已并入 pi 单一 API 面（P2）：不再有 BuiltinServices 特权束。
 			const mockPi: any = {
 				registerCommand: vi.fn(),
 				on: vi.fn((event: string, handler: Function) => {
@@ -2638,33 +2639,21 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				ui: {
 					notify: mockNotify,
 					clearNotification: mockClear,
-				},
-			};
-
-			const mockServices: any = {
-				subject: {
-					compact: vi.fn(),
-					getModel: () => ({ thinkingLevels: ["off", "high", "max"] }),
-					getUsedTokens: () => 4200,
-					getContextWindow: () => 124000,
-					getContextSegments: () => ({ system: 900, prompt: 300, assistant: 1200, thinking: 400, tools: 1400 }),
-				},
-				models: { choices: () => [] },
-				jobs: {},
-				subagents: {},
-				ui: {
 					addCompaction: mockAddCompaction,
 					setReasoningEffort: mockSetEffort,
 					setUsage: (snapshot: unknown) => {
 						setUsageCalls.push(snapshot);
 					},
 				},
-				reload: vi.fn(),
-				shutdown: vi.fn(),
+				models: {
+					current: () => ({ name: "mock-model", providerId: "mock", id: "mock-model", thinkingLevels: ["off", "high", "max"] }),
+					thinkingLevel: () => "off",
+				},
+				usage: () => ({ used: 4200, contextWindow: 124000, segments: { system: 900, prompt: 300, assistant: 1200, thinking: 400, tools: 1400 } }),
+				isBusy: () => false,
 			};
 
-			const activate = activateBuiltinCommands(mockServices);
-			activate(mockPi);
+			activateBuiltinCommands(mockPi);
 
 			// 1. 触发 turn.beforeCompact（干预点观察挂法：返回 undefined 不取消压缩）
 			const beforeHandler = handlers.get("turn.beforeCompact");

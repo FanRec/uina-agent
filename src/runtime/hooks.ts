@@ -45,7 +45,7 @@ export interface HookInputs {
  * RuntimeHooks 对应方法的返回值 = 所有扩展贡献按合并规则聚合后的结果。
  */
 export interface HookContributions {
-	"turn.prepare": { readonly message?: ChatMsg; readonly systemPrompt?: string; readonly model?: Model; readonly thinkingLevel?: ThinkingLevel };
+	"turn.prepare": { readonly messages?: readonly ChatMsg[]; readonly systemPrompt?: string; readonly model?: Model; readonly thinkingLevel?: ThinkingLevel };
 	"turn.transformContext": { readonly messages?: readonly DeepReadonly<ChatMsg>[] };
 	"turn.beforeCompact": { readonly cancel?: boolean };
 	"turn.shouldStop": { readonly stop?: boolean };
@@ -66,7 +66,7 @@ export type HookHandler<K extends HookName> = (
  *
  * | hook                        | 合并规则                                   |
  * | --------------------------- | ------------------------------------------ |
- * | turn.prepare                | systemPrompt/model/thinkingLevel 后写覆盖先写；message 聚合追加 |
+ * | turn.prepare                | systemPrompt/model/thinkingLevel 后写覆盖先写；messages 聚合追加 |
  * | turn.transformContext       | 链式：后一个收到前一个的输出，返回整组替换      |
  * | turn.beforeCompact          | 短路：任一 cancel=true 即取消，后续不再询问     |
  * | turn.shouldStop             | 短路：任一 stop=true 即收尾，后续不再询问       |
@@ -84,7 +84,7 @@ export interface RuntimeHooks {
 		 * 或 thinking 档位（Subject 在安全点以 setModel 的完整纪律应用：失效 usage 锚、
 		 * 广播 model_select）。对应 Pi 的 prepareNextTurn。
 		 */
-		prepare(input: Readonly<{ prompt: string; systemPrompt: string }>, signal?: AbortSignal): Promise<Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string; model?: Model; thinkingLevel?: ThinkingLevel }>>;
+		prepare(input: Readonly<{ prompt: string; systemPrompt: string }>): Promise<Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string; model?: Model; thinkingLevel?: ThinkingLevel }>>;
 		transformContext(messages: readonly DeepReadonly<ChatMsg>[]): Promise<ChatMsg[]>;
 		beforeCompact(input: Readonly<{ tokensBefore: number }>): Promise<Readonly<{ cancel?: boolean }>>;
 		/**

@@ -58,14 +58,6 @@ export interface ExtensionAPI {
 	registerService<I, O>(name: string, handler: ServiceHandler<I, O>, options?: { replace?: boolean }): () => void;
 	callService<O = unknown>(name: string, input: unknown, options?: CallOptions): Promise<O>;
 	hasService(name: string): boolean;
-	registerContextContributor(
-		name: string,
-		contributor: (
-			input: Readonly<{ prompt: string; systemPrompt: string }>,
-			signal: AbortSignal,
-		) => readonly import("../core/types.js").ChatMsg[] | Promise<readonly import("../core/types.js").ChatMsg[]>,
-		options?: { replace?: boolean },
-	): () => void;
 	registerCompactor(
 		compactor: Compactor,
 		options?: { replace?: boolean; shouldCompact?: CompactionTrigger },
@@ -74,8 +66,14 @@ export interface ExtensionAPI {
 	readonly models: {
 		current(): import("../core/types.js").Model;
 		list(): readonly import("../core/types.js").Model[];
+		/** Provider 分组的模型目录（模型选择器数据源）。 */
+		groups(): import("./ui-contract.js").ModelPickerGroup[];
 		resolve(name: string): import("../core/types.js").Model;
 		select(name: string): Promise<void>;
+		/** 当前思考档位；模型未声明 thinking 能力时为 undefined。 */
+		thinkingLevel(): import("../core/types.js").ThinkingLevel | undefined;
+		/** 设置思考档位（与宿主同纪律：失效 usage 锚、广播 thinking_level_select）。 */
+		setThinkingLevel(level: import("../core/types.js").ThinkingLevel): void;
 		stream(
 			model: import("../core/types.js").Model,
 			request: ExtensionModelRequest,
@@ -83,6 +81,14 @@ export interface ExtensionAPI {
 			signal?: AbortSignal,
 		): Promise<void>;
 	};
+	/** 主体用量事实快照（/session 面板与用量表的数据源）。 */
+	usage(): { used: number; contextWindow?: number; segments?: import("../core/types.js").ContextSegments };
+	/** 主体是否正在回合中。 */
+	isBusy(): boolean;
+	/** 重载项目扩展（与宿主 /reload 同一入口：忙时受理，空闲后执行）。 */
+	reload(): Promise<void>;
+	/** 请求宿主关闭（消费者自定义关闭流程；未接入时走宿主 dispose）。 */
+	shutdown(): Promise<void>;
 	readonly signal: AbortSignal;
 	registerCommand(command: LocalCommand, options?: { replace?: boolean }): () => void;
 	registerMessageRenderer<T = unknown>(
@@ -129,6 +135,17 @@ export interface ExtensionRunnerOptions {
 	onCustomMessage?: (message: CustomMessage) => Promise<void>;
 	onCustomEntry?: (entry: CustomEntry) => Promise<void>;
 	onInput?: (input: AgentInput) => Promise<void>;
+	/** 主体用量事实（pi.usage()）。 */
+	usage?: () => { used: number; contextWindow?: number; segments?: import("../core/types.js").ContextSegments };
+	/** 思考档位读写（pi.models.thinkingLevel / setThinkingLevel）。 */
+	thinkingLevel?: () => import("../core/types.js").ThinkingLevel | undefined;
+	setThinkingLevel?: (level: import("../core/types.js").ThinkingLevel) => void;
+	/** 主体忙闲（pi.isBusy()）。 */
+	isBusy?: () => boolean;
+	/** 宿主级扩展重载（pi.reload()）。 */
+	reload?: () => Promise<void>;
+	/** 消费者关闭流程（pi.shutdown()）。 */
+	shutdown?: () => Promise<void>;
 }
 
 /** One activation owns every registration it creates. This is the small part
@@ -477,19 +494,25 @@ export class ExtensionRunner extends ExtensionHost {
 				if (!this.options.onCompact) throw new Error("宿主未提供压缩入口");
 				return this.options.onCompact(instruction);
 			},
-			registerContextContributor: (name, contributor, options) => {
+			usage: () => {
 				assertActive();
-				return ownRegistration(
-					this.registerContextContributor(
-						name,
-						(input, cancellation) =>
-							scope.run(async (signal) => {
-								signal.throwIfAborted();
-								return await contributor(input, signal);
-							}, cancellation),
-						{ ...options, scopeId: scope.id },
-					),
-				);
+				if (!this.options.usage) throw new Error("宿主未提供用量事实入口");
+				return structuredClone(this.options.usage());
+			},
+			isBusy: () => {
+				assertActive();
+				if (!this.options.isBusy) throw new Error("宿主未提供忙闲事实入口");
+				return this.options.isBusy();
+			},
+			reload: () => {
+				assertActive();
+				if (!this.options.reload) throw new Error("宿主未提供扩展重载入口");
+				return this.options.reload();
+			},
+			shutdown: () => {
+				assertActive();
+				if (!this.options.shutdown) throw new Error("宿主未提供关闭入口");
+				return this.options.shutdown();
 			},
 			registerCompactor: (compactor, options) => {
 				assertActive();
@@ -512,8 +535,19 @@ export class ExtensionRunner extends ExtensionHost {
 			models: {
 				current: () => structuredClone(modelAccess().current()),
 				list: () => structuredClone(modelAccess().list()),
+				groups: () => structuredClone(modelAccess().groups()),
 				resolve: (name) => structuredClone(modelAccess().resolve(name)),
 				select: (name) => modelAccess().select(name),
+				thinkingLevel: () => {
+					assertActive();
+					if (!this.options.thinkingLevel) throw new Error("宿主未提供思考档位事实入口");
+					return this.options.thinkingLevel();
+				},
+				setThinkingLevel: (level) => {
+					assertActive();
+					if (!this.options.setThinkingLevel) throw new Error("宿主未提供思考档位设置入口");
+					return this.options.setThinkingLevel(level);
+				},
 				stream: (model, request, onDelta, signal) =>
 					scope.run(
 						(combined) =>

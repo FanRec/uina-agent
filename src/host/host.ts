@@ -12,7 +12,7 @@ import { JobRegistry } from "../extensions/jobs/registry.js";
 import { SubagentRegistry } from "../extensions/subagents/registry.js";
 import { ExtensionRunner } from "../extensions/runner.js";
 import { CommandRouter } from "../extensions/commands.js";
-import { activateBuiltinCommands, type BuiltinUI } from "../extensions/builtin.js";
+import { activateBuiltinCommands } from "../extensions/builtin.js";
 import { activateRuntimeTools, createChildTools, TASK_DISPATCH_EFFECT } from "../extensions/runtime-tools/index.js";
 import { activateSessionTools } from "../extensions/session-tools/index.js";
 import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
@@ -71,8 +71,6 @@ export interface HostSnapshot {
 }
 
 export interface HostStartOptions {
-	/** 内置命令需要的消费者 UI 能力；无 UI 的消费者省略即可。 */
-	ui?: BuiltinUI;
 	/** 消费者自己的关闭流程（例如同时关闭 TUI）。默认只 dispose 宿主。 */
 	requestShutdown?: () => Promise<void>;
 }
@@ -82,6 +80,8 @@ export class UinaHost {
 	private stopPromise?: Promise<void>;
 	private readonly directRuns = new Map<AbortController, Promise<ToolExecutionResult>>();
 	private reloading = 0;
+	/** 消费者自定义关闭流程（start 时接入；pi.shutdown 与 /quit 经此关闭）。 */
+	private requestShutdown?: () => Promise<void>;
 	readonly abandonedTaskIds: Set<string>;
 
 	private constructor(
@@ -195,6 +195,7 @@ export class UinaHost {
 
 		// subagents 与 extensionHost 只捕获 subject 的延迟引用，因此可以先建立。
 		let subject!: Subject;
+		let hostSelf!: UinaHost;
 		// Lazy session view: navigation reads compose from the store, rewind routes
 		// through the Subject's run-safety points. Built lazily because subject is
 		// assigned after the extension host below.
@@ -235,7 +236,13 @@ export class UinaHost {
    cwd: options.cwd,
    extensionPaths: options.extensionPaths,
    onCompact: (instruction) => subject.compact(instruction),
-   models: { current: () => subject.getModel(), list: () => models.listModels(), resolve: name => models.resolve(name), select: name => subject.setModel(models.resolve(name)), stream: streamFn },
+   models: { current: () => subject.getModel(), list: () => models.listModels(), groups: () => models.groups(), resolve: name => models.resolve(name), select: name => subject.setModel(models.resolve(name)), stream: streamFn },
+			usage: () => ({ used: subject.getUsedTokens(), contextWindow: subject.getContextWindow(), segments: subject.getContextSegments() }),
+			thinkingLevel: () => subject.getThinkingLevel(),
+			setThinkingLevel: (level) => subject.setThinkingLevel(level),
+			isBusy: () => subject.isBusy(),
+			reload: () => hostSelf.reloadExtensions(),
+			shutdown: () => hostSelf.requestShutdown?.() ?? hostSelf.dispose(),
 			tools,
 			onInput: (input) => state.stopping ? Promise.reject(new Error("宿主正在关闭")) : subject.accept(input),
 			onError: (text) => emit({ type: "error", text }),
@@ -290,7 +297,7 @@ export class UinaHost {
 				options.onError?.(`[模型目录刷新失败] ${errorMessage(error)}`);
 			});
 		}
-		return new UinaHost(options, subject, store, extensionHost, tools, models, jobs, subagents, commands, restoredEntries, listeners, state, abandonedTaskIds);
+		return (hostSelf = new UinaHost(options, subject, store, extensionHost, tools, models, jobs, subagents, commands, restoredEntries, listeners, state, abandonedTaskIds));
 	}
 
 	subscribe(listener: HostEventListener): () => void {
@@ -357,8 +364,8 @@ export class UinaHost {
 	isBusy(): boolean { return this.subject.isBusy(); }
 	waitForIdle(): Promise<void> { return this.subject.waitForIdle(); }
  resumePending(): Promise<void> { this.assertAccepting(); return this.subject.resumePending(); }
-	takeQueuedForEditor(): Promise<QueuedMessage[]> { return this.subject.takeQueuedForEditor(); }
-	takeLastQueuedForEditor(): Promise<QueuedMessage | null> { return this.subject.takeLastQueuedForEditor(); }
+	claimAllQueued(): Promise<QueuedMessage[]> { return this.subject.claimAllQueued(); }
+	claimQueued(id: string): Promise<QueuedMessage | null> { return this.subject.claimQueued(id); }
 	cycleThinkingLevel(): ThinkingLevel { return this.subject.cycleThinkingLevel(); }
 	setThinkingLevel(level: ThinkingLevel): void { this.subject.setThinkingLevel(level); }
 	attachExtensionUI(ui: ExtensionUIContext): void { this.extensionHost.attachUI(ui); }
@@ -380,21 +387,13 @@ export class UinaHost {
 		};
 	}
 
-	/** 内置能力与项目扩展走同一套 ActivationScope；在消费者接入之后调用。 */
+	/** 内置能力与项目扩展走同一套 ActivationScope 与同一张 pi API 面；在消费者接入之后调用。 */
 	async start(startOptions: HostStartOptions = {}): Promise<void> {
+		this.requestShutdown = startOptions.requestShutdown;
 		await this.extensionHost.activateBuiltin("session-tools", activateSessionTools(ownerId => ownerId === "root" ? this.rootSession : this.subagents.session(ownerId)));
 		if (this.options.workspaceTools !== false) await this.extensionHost.activateBuiltin("workspace-tools", activateWorkspaceTools);
 		await this.extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools({ jobs: this.jobs, subagents: this.subagents, isTaskAbandoned: (id) => this.abandonedTaskIds.has(id) }));
-		await this.extensionHost.activateBuiltin("commands", activateBuiltinCommands({
-			subject: this.subject,
-			session: this.rootSession,
-			models: this.models,
-			jobs: this.jobs,
-			subagents: this.subagents,
-			ui: startOptions.ui,
-			reload: () => this.reloadExtensions(),
-			shutdown: startOptions.requestShutdown ?? (() => this.dispose()),
-		}));
+		await this.extensionHost.activateBuiltin("commands", activateBuiltinCommands);
 		await this.extensionHost.load();
 	}
 

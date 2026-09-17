@@ -1,6 +1,5 @@
 import { createInterface } from "node:readline/promises";
 import { errorMessage } from "../core/errors.js";
-import type { BuiltinUI } from "../extensions/builtin.js";
 import { UinaHost } from "../host/host.js";
 import type { HostEvent } from "../host/events.js";
 import { createInteractiveUI, type InteractiveTUI } from "../ui/tui.js";
@@ -176,7 +175,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	const restoreQueueToEditor = async (): Promise<number> => {
 		if (!tui) return 0;
   if (!canEditQueuedDraft(host.snapshot().queue)) { tui.host.notify('队列包含图片或扩展事件，已保留；可按 Esc 继续处理', 'info'); return 0; }
-		const items = await host.takeQueuedForEditor();
+		const items = await host.claimAllQueued();
 		if (items.length === 0) return 0;
 		tui.replaceInput(combineQueuedDraft(items, tui.host.inputLine.getText()));
 		tui.host.transcript.addNotice(`已打断当前轮次，已将 ${items.length} 条排队消息退回输入栏`);
@@ -278,9 +277,14 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 
 	const handlePullBackQueue = async (): Promise<void> => {
 		if (!tui) return;
+		// UI 组合：peek（快照）选目标，claim（mailbox 原语）领取。Subject 不懂"编辑器"语义。
 		const candidate = host.snapshot().queue.at(-1);
-  if (candidate && !canEditQueuedDraft([candidate])) { tui.host.notify('该输入包含图片或扩展来源，已保留在队列中', 'info'); return; }
-  const last = await host.takeLastQueuedForEditor();
+		if (!candidate) {
+			tui.host.notify("排队队列为空，无待办可撤回", "warning", 2000);
+			return;
+		}
+  if (!canEditQueuedDraft([candidate])) { tui.host.notify('该输入包含图片或扩展来源，已保留在队列中', 'info'); return; }
+  const last = await host.claimQueued(candidate.id);
 		if (!last) {
 			tui.host.notify("排队队列为空，无待办可撤回", "warning", 2000);
 			return;
@@ -385,35 +389,9 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 
 	installHostGuards(shouldRunTUI);
 
-	const builtinUI: BuiltinUI | undefined = tui ? {
-		openHelpMenu: () => tui!.host.openHelpMenu(),
-		toggleThinking: () => {
-			tui!.host.transcript.toggleThinking();
-			tui!.host.requestRender();
-		},
-		clear: () => {
-			tui!.host.transcript.clear();
-			tui!.host.requestRender();
-		},
-		openModelPicker: (current, groups, onPick) => { tui!.host.openModelPicker(current, groups as never, onPick as never); },
-		openEffortSlider: (current, declaredLevels, onChange) => { tui!.host.openEffortSlider(current, declaredLevels, onChange); },
-		openTasks: () => tui!.host.openTasks(),
-		openSubagents: () => tui!.host.openSubagents(),
-		openTrajectory: () => tui!.host.openTrajectory(),
-		openHistory: () => tui!.host.openHistory(),
-		setModel: (name) => tui!.host.setModel(name),
-		setThinkingLevels: (levels) => tui!.host.setThinkingLevels(levels),
-		setReasoningEffort: (level) => tui!.host.setReasoningEffort(level),
-		setUsage: (snapshot) => tui!.host.setUsage(snapshot),
-		getGutterMode: () => tui!.host.getGutterMode(),
-		setGutterMode: (mode) => tui!.host.setGutterMode(mode),
-		getScrollbarThumbStyle: () => tui!.host.getScrollbarThumbStyle(),
-		setScrollbarThumbStyle: (style) => tui!.host.setScrollbarThumbStyle(style),
-		addCompaction: (record) => tui!.host.addCompaction(record),
-	} : undefined;
-
+	// 官方命令已并入 pi 面：TUI 的富 UI 能力经 ctxUI（attachExtensionUI）到达 pi.ui，
+	// 不再需要 BuiltinUI 桥接对象。
 	await host.start({
-		ui: builtinUI,
 		requestShutdown: () => shutdown(),
 	});
 

@@ -7,7 +7,8 @@ import type { Component, Focusable, OverlayHandle, OverlayOptions, WidgetPlaceme
 import { CURSOR_MARKER } from "./core/types.js";
 import { Key, matchesKey } from "./core/keys.js";
 import { C, visibleWidth, truncateToWidth, getPrevGraphemeIndex, getNextGraphemeIndex } from "./core/utils.js";
-import type { ExtensionUIContext } from "../extensions/ui-contract.js";
+import type { ExtensionUIContext, UsageSnapshot, ModelPickerGroup } from "../extensions/ui-contract.js";
+import type { ThinkingLevel } from "../core/types.js";
 
 export interface UIHostContextPort {
 	notify(message: string, type?: "info" | "warning" | "error", timeoutMs?: number): void;
@@ -26,6 +27,23 @@ export interface UIHostContextPort {
 	requestRender(): void;
 	getGutterMode?(): "scrollbar" | "timeline";
 	setGutterMode?(mode: "scrollbar" | "timeline"): void;
+	// 消费者富能力（可选；ExtensionUIContext 的可选成员由此转发）
+	openHelpMenu?(): void;
+	toggleThinking?(): void;
+	clearTranscript?(): void;
+	openModelPicker?(currentModel: string, groups: ModelPickerGroup[], onPick: (name: string) => Promise<void> | void): void;
+	openEffortSlider?(currentLevel: ThinkingLevel | undefined, declaredLevels: ThinkingLevel[], onChange: (level: ThinkingLevel) => void): void;
+	openTasks?(): void;
+	openSubagents?(): void;
+	openTrajectory?(): void;
+	openHistory?(): void;
+	setModel?(name: string): void;
+	setThinkingLevels?(levels?: readonly ThinkingLevel[]): void;
+	setReasoningEffort?(level?: ThinkingLevel): void;
+	setUsage?(snapshot: UsageSnapshot): void;
+	getScrollbarThumbStyle?(): "slim" | "block" | "wide";
+	setScrollbarThumbStyle?(style: "slim" | "block" | "wide"): void;
+	addCompaction?(record: { summary: string; turnsCount: number; tokensBefore: number; collapsed: boolean }): void;
 }
 
 export function createExtensionUIContext(host: UIHostContextPort): ExtensionUIContext {
@@ -364,5 +382,23 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 		hasUI(): boolean {
 			return true;
 		},
+
+		// 消费者富能力转发：端口不提供即留 undefined，扩展侧 ?.() 自然降级为无操作。
+		openHelpMenu: () => host.openHelpMenu?.(),
+		toggleThinking: () => host.toggleThinking?.(),
+		clearTranscript: () => host.clearTranscript?.(),
+		openModelPicker: (currentModel, groups, onPick) => host.openModelPicker?.(currentModel, groups, onPick),
+		openEffortSlider: (currentLevel, declaredLevels, onChange) => host.openEffortSlider?.(currentLevel, declaredLevels, onChange),
+		openTasks: () => host.openTasks?.(),
+		openSubagents: () => host.openSubagents?.(),
+		openTrajectory: () => host.openTrajectory?.(),
+		openHistory: () => host.openHistory?.(),
+		setModel: (name) => host.setModel?.(name),
+		setThinkingLevels: (levels) => host.setThinkingLevels?.(levels),
+		setReasoningEffort: (level) => host.setReasoningEffort?.(level),
+		setUsage: (snapshot) => host.setUsage?.(snapshot),
+		getScrollbarThumbStyle: (): "slim" | "block" | "wide" => host.getScrollbarThumbStyle?.() ?? "slim",
+		setScrollbarThumbStyle: (style) => host.setScrollbarThumbStyle?.(style),
+		addCompaction: (record) => host.addCompaction?.(record),
 	};
 }

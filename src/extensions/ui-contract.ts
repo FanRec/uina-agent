@@ -3,7 +3,39 @@
  */
 
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "../ui/core/types.js";
+import type { ThinkingLevel, ContextSegments } from "../core/types.js";
 export type { Component, OverlayHandle, OverlayOptions, WidgetPlacement };
+
+/** 模型选择器的一组条目（provider 分组）。官方 /model 命令与选择器共享此形状。 */
+export interface ModelPickerModel {
+	id: string;
+	name: string;
+	description: string;
+	provider: string;
+}
+export interface ModelPickerGroup {
+	id: string;
+	name: string;
+	description: string;
+	models: ModelPickerModel[];
+}
+
+/**
+ * 用量表快照：一次 setUsage 的全部信息。单对象参数 —— 同形异义的位置参数
+ * 曾跨层漂移（桥接层第三参是 segments、宿主层是 actual，对象落进布尔位），
+ * 对象字段名自描述，这类漂移无从发生。
+ */
+export interface UsageSnapshot {
+	used: number;
+	contextWindow?: number;
+	/** false = 估算值（保留尾巴 / 刚切口径），true = 服务端真实总量。 */
+	actual?: boolean;
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	segments?: ContextSegments;
+}
 
 /** 自定义消息：进入会话历史，也参与模型上下文 */
 export interface CustomMessage<T = unknown> {
@@ -111,6 +143,40 @@ export interface ExtensionUIContext {
 	/** 是否存在真实交互式 UI。非 TTY 兜底实现返回 false，扩展据此分支，
 	 * 而不是把 undefined/false 当成用户的选择（Pi: ExtensionUIContext.hasUI）。 */
 	hasUI(): boolean;
+
+	// —— 消费者可选富能力（官方内置命令与项目扩展同一张脸；不支持的消费者留空即可）——
+
+	/** 打开帮助菜单（快捷键总览） */
+	openHelpMenu?(): void;
+	/** 展开/折叠深度思考过程 */
+	toggleThinking?(): void;
+	/** 清空当前屏幕转录流 */
+	clearTranscript?(): void;
+	/** 打开模型选择面板（两级 provider 下钻）；onPick 回传复合键 providerId/modelId */
+	openModelPicker?(currentModel: string, groups: ModelPickerGroup[], onPick: (name: string) => Promise<void> | void): void;
+	/** 打开思考强度滑杆 */
+	openEffortSlider?(currentLevel: ThinkingLevel | undefined, declaredLevels: ThinkingLevel[], onChange: (level: ThinkingLevel) => void): void;
+	/** 后台任务看板 */
+	openTasks?(): void;
+	/** 子代理看板 */
+	openSubagents?(): void;
+	/** 审计轨迹时序看板 */
+	openTrajectory?(): void;
+	/** 会话历史分支看板 */
+	openHistory?(): void;
+	/** 底栏模型名同步 */
+	setModel?(name: string): void;
+	/** 底栏思考档位元数据同步 */
+	setThinkingLevels?(levels?: readonly ThinkingLevel[]): void;
+	/** 底栏当前思考档位同步 */
+	setReasoningEffort?(level?: ThinkingLevel): void;
+	/** 底栏用量表同步（字段语义见 UsageSnapshot） */
+	setUsage?(snapshot: UsageSnapshot): void;
+	/** 右侧导航轨滑块样式 */
+	getScrollbarThumbStyle?(): "slim" | "block" | "wide";
+	setScrollbarThumbStyle?(style: "slim" | "block" | "wide"): void;
+	/** 转录流追加一条折叠的压缩摘要卡片 */
+	addCompaction?(record: { summary: string; turnsCount: number; tokensBefore: number; collapsed: boolean }): void;
 }
 
 /** A pure view of one tool invocation; execution and persisted facts remain outside UI. */
