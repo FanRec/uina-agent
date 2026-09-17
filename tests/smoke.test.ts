@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ToolBroker, type Tool } from "../src/tools/broker.js";
 import { Subject } from "../src/agent/loop.js";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
-import { SessionFormatError, recoverRecords } from "../src/session/recovery.js";
+import { SessionFormatError, canonicalReplay, queuedInputs } from "../src/session/recovery.js";
 import { projectModelHistory } from "../src/agent/projection.js";
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
 import execCommandTool, { execCommandDirect } from "../src/extensions/runtime-tools/exec-command/index.js";
@@ -347,8 +347,8 @@ describe("Subject", () => {
 
 		const records = store.readRecords();
 		// 完整重放必须成功，且队列无残留
-		const state = recoverRecords([...records]);
-		expect(state.queued).toHaveLength(0);
+		const state = canonicalReplay(records);
+		expect(queuedInputs(state)).toHaveLength(0);
 		// 中间不允许出现 queue_restored
 		expect(records.some((r) => r.kind === "event" && r.event === "queue_restored")).toBe(false);
 		// second 必须恰好被消费为一条 input（ENQUEUED → INPUT）
@@ -401,8 +401,8 @@ describe("Subject", () => {
 		expect(records.some((r) => r.kind === "input")).toBe(false);
 		expect(records.filter((r) => r.kind === "event" && r.event === "queue_restored")).toHaveLength(1);
 		// 完整重放合法（ENQUEUED → RESTORED 是合法终态）
-		const state = recoverRecords([...records]);
-		expect(state.queued).toHaveLength(0);
+		const state = canonicalReplay(records);
+		expect(queuedInputs(state)).toHaveLength(0);
 	});
 });
 

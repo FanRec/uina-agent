@@ -68,16 +68,22 @@ describe("replay ≡ memory invariants", () => {
 		assertReplayEqualsMemory(store);
 		expect(store.state.safeTargets.has(targetId)).toBe(true);
 
-		// 历史间隙结算（P3a 成文偏离：fold 内合成 recovered: 条目）
+		// 历史间隙（P3b 裁定：fold 零合成，replay 不制造事实；恢复只能经持久化落盘）
 		await store.appendMessage({ role: "assistant", content: "", tool_calls: [{ id: "c2", name: "probe", args: {} }] });
 		assertReplayEqualsMemory(store);
 		await store.appendEvent("tool_started", { callId: "c2" });
 		assertReplayEqualsMemory(store);
-		await store.appendMessage({ role: "user", content: "continue after crash" });
+		// L3 unresolved-operation detection：未决期间写入事实记录非法
+		// （MemorySessionStore 语义为同步抛出，与既有测试钉点一致）
+		expect(() => store.appendMessage({ role: "user", content: "premature" })).toThrow(/未结算/);
+		// 恢复经 planRecovery → 带稳定身份落盘（启动恢复语义），之后事实记录恢复合法
+		const plan = planRecovery(store.state);
+		await store.appendMessage(plan.entries[0]!.message, plan.entries[0]!.id);
 		assertReplayEqualsMemory(store);
 		expect(store.state.entries.some((entry) => entry.id.startsWith("recovered:"))).toBe(true);
-		// 间隙已在 fold 内闭合：tail 恢复计划为空
 		expect(planRecovery(store.state).entries).toHaveLength(0);
+		await store.appendMessage({ role: "user", content: "continue after crash" });
+		assertReplayEqualsMemory(store);
 	});
 
 	it("makes planRecovery idempotent via the reducer's identity index", async () => {

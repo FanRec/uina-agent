@@ -12,6 +12,11 @@ export default defineConfig({
 			// Native binaries under src/ cannot be AST-parsed by the v8 provider's
 			// uncovered-files pass; without this the whole coverage run dies.
 			exclude: ["src/ui/core/native/**"],
+			// Single canonical output consumed by scripts/crap.mjs --gate. Writing
+			// anywhere else lets the gate silently pair current AST line ranges with
+			// stale coverage (it fails closed, but with misleading "0% 函数" reports).
+			reportsDirectory: "coverage-raw",
+			reporter: ["json", "text"],
 		},
 	},
 });

@@ -8,7 +8,7 @@ import { ExtensionHost } from "../src/extensions/host.js";
 import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
 import execCommand from "../src/extensions/runtime-tools/exec-command/index.js";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
-import { projectAgentHistory, recoverRecords } from "../src/session/recovery.js";
+import { canonicalReplay, projectAgentHistory, queuedInputs } from "../src/session/recovery.js";
 import { projectModelHistory } from "../src/agent/projection.js";
 import type { QueuedInput, SessionRecord } from "../src/session/types.js";
 import { ToolBroker, type Tool } from "../src/tools/broker.js";
@@ -221,8 +221,8 @@ describe("S1 durable session facts", () => {
 			{ kind: "event", id: "r2", seq: 2, timestamp: "2026-01-01T00:00:01.000Z", event: "queue_consumed", data: { id: "legacy-1" } },
 			{ kind: "message", id: "r3", seq: 3, timestamp: "2026-01-01T00:00:02.000Z", message: { role: "user", content: "legacy" } },
 		];
-		const state = recoverRecords(records);
-		expect(state.queued).toHaveLength(0);
+		const state = canonicalReplay(records);
+		expect(queuedInputs(state)).toHaveLength(0);
 		expect(projectAgentHistory(state.entries).map((m) => m.content)).toEqual(["legacy"]);
 	});
 });

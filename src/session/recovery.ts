@@ -34,8 +34,8 @@ interface PendingCall {
  *   供 projector 与展示消费。
  *
  * 派生查询（safeTargets）一律从本状态增量维护，禁止第二个 journal walker。
- * 纯度契约：解释不修复——tail 恢复决策在 planRecovery；历史间隙结算按 P3a
- * 成文偏离仍留在 fold 内（P3b 移出并全部落盘）。
+ * 纯度契约：解释不修复——replay 零合成（P3b 起），未决操作由 checkRecord 的
+ * unresolved-operation detection 拒绝非法延续；恢复只能经 planRecovery 落盘。
  */
 export interface CanonicalState {
 	/** 主线（回溯在此截断）。 */
@@ -74,6 +74,16 @@ export function initialCanonicalState(): CanonicalState {
 }
 
 // ---------------------------------------------------------------------------
+// CanonicalRecord / AuxiliaryRecord 静态分类（持久化双原语的分类依据，event 到
+// name 级）。双原语共享同一持久化强度（durable append + fsync），唯一区别是
+// reducer 的语义效果：CanonicalRecord 改变 semantic state；AuxiliaryRecord 仅
+// 登记 auxiliary timeline——内存 timeline 同步由 applyRecord 统一完成。
+// 分类成文于 applyRecord/applyEvent 的分派 switch（唯一执行点）：
+// turn_failed/turn_aborted 仅登记；custom_entry 现仍解释进 session 条目
+// （P3a 起成文保留，P6 数据模型裁定时收口为仅登记）。
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // reduceRecord：check / apply 两相
 //
 // check 先行（非法即 throw SessionFormatError，绝不触碰状态），apply 落状态。
@@ -89,6 +99,7 @@ export function checkRecord(state: CanonicalState, record: SessionRecord): void 
 		case "rewind":
 			return checkRewind(state, record);
 		case "input":
+			ensureSettled(state, record.kind);
 			if (!state.queued.has(record.input.id)) {
 				throw new SessionFormatError(`input 没有对应队列项: ${record.input.id}`);
 			}
@@ -99,16 +110,29 @@ export function checkRecord(state: CanonicalState, record: SessionRecord): void 
 			return checkEvent(state, record);
 		case "custom_message":
 		case "custom_entry":
-		case "compaction":
+			ensureSettled(state, record.kind);
 			// schema 已由 isRecord 把关，语义上无条件接受。
+			return;
+		case "compaction":
+			ensureSettled(state, record.kind);
 			return;
 	}
 }
 
-function checkRewind(state: CanonicalState, record: SessionRewindRecord): void {
-	if (state.pendingCalls.some((call) => !state.resultIds.has(call.callId))) {
-		throw new SessionFormatError("回溯前有未结算工具调用");
+/** L3 unresolved-operation detection：存在未结算调用时，任何改变对话事实的
+ * 后续记录都非法（恢复必须先经 planRecovery 落盘，replay 不制造事实）。
+ * tool message / tool 事件 / 队列事件 / auxiliary 事件不受此限。 */
+function ensureSettled(state: CanonicalState, kind: SessionRecord["kind"]): void {
+	const unsettled = state.pendingCalls.filter((call) => !state.resultIds.has(call.callId));
+	if (unsettled.length > 0) {
+		throw new SessionFormatError(
+			`存在未结算的工具调用，无法解释 ${kind} 记录: ${unsettled.map((call) => call.callId).join(", ")}`,
+		);
 	}
+}
+
+function checkRewind(state: CanonicalState, record: SessionRewindRecord): void {
+	ensureSettled(state, record.kind);
 	const index = state.entries.findIndex((entry) => entry.id === record.targetId);
 	if (state.entries.at(-1)?.id !== record.fromId || index < 0 || index === state.entries.length - 1) {
 		throw new SessionFormatError("回溯目标必须是当前主线的历史祖先，原位置必须匹配");
@@ -128,6 +152,8 @@ function checkMessage(state: CanonicalState, record: SessionRecord & { kind: "me
 			}
 			ids.add(call.id);
 		}
+		// assistant-with-calls 开启新的调用批：之前的调用必须已全部结算。
+		ensureSettled(state, record.kind);
 		return;
 	}
 	if (message.role === "tool") {
@@ -136,7 +162,9 @@ function checkMessage(state: CanonicalState, record: SessionRecord & { kind: "me
 		if (!call || state.resultIds.has(call.callId)) {
 			throw new SessionFormatError(`工具结果没有对应的未完成调用: ${toolMsg.tool_call_id}`);
 		}
+		return;
 	}
+	ensureSettled(state, record.kind);
 }
 
 function checkEvent(state: CanonicalState, record: SessionEventRecord): void {
@@ -214,7 +242,6 @@ export function applyRecord(state: CanonicalState, record: SessionRecord): void 
 		case "rewind":
 			return applyRewind(state, record);
 		case "input":
-			settlePending(state, record);
 			state.queued.delete(record.input.id);
 			return addEntry(state, record, { kind: "input", input: structuredClone(record.input) });
 		case "custom_message":
@@ -235,7 +262,6 @@ export function applyRecord(state: CanonicalState, record: SessionRecord): void 
 		case "message":
 			return applyMessage(state, record);
 		case "compaction":
-			settlePending(state, record);
 			return addEntry(state, record, {
 				kind: "compaction",
 				summary: record.summary,
@@ -261,7 +287,6 @@ function applyRewind(state: CanonicalState, record: SessionRewindRecord): void {
 function applyMessage(state: CanonicalState, record: SessionRecord & { kind: "message" }): void {
 	const { message } = record;
 	if (message.role === "assistant" && message.tool_calls?.length) {
-		settlePending(state, record);
 		state.resultIds.clear();
 		state.finishedEvents.clear();
 		addEntry(state, record, { kind: "message", message });
@@ -272,9 +297,6 @@ function applyMessage(state: CanonicalState, record: SessionRecord & { kind: "me
 			started: false,
 		}));
 		return;
-	}
-	if (message.role !== "tool") {
-		settlePending(state, record);
 	}
 	if (message.role === "tool") {
 		// 闭合调用：resultIds 是"已收到结果"的权威索引，planRecovery 据此不再生成恢复事实。
@@ -460,39 +482,6 @@ function recoveredToolMessage(
 		status: recoveredStatus,
 		content,
 	};
-}
-
-/** 把恢复计划并入状态（recovered: 身份的解释视图条目，非持久化记录）。
- * 锚点提供条目的 seq/timestamp（与该计划所结算的未决记录同源）。 */
-function applyRecovery(state: CanonicalState, plan: RecoveryPlan, anchor?: SessionRecord): void {
-	if (plan.entries.length === 0) return;
-	// 未决调用必然来自已解释的记录：plan 非空则锚点必存在。
-	const record = anchor!;
-	for (const entry of plan.entries) {
-		addEntry(state, record, { kind: "message", message: entry.message }, entry.id);
-		state.resultIds.add(entry.callId);
-	}
-	state.pendingCalls = [];
-}
-
-/** 历史间隙结算（P3a 成文偏离：留在 fold 内；P3b 移出并全部落盘）。
- * 当后续记录要求关闭未决调用时，以 planRecovery 的决策合成恢复条目。 */
-function settlePending(state: CanonicalState, record: SessionRecord): void {
-	applyRecovery(state, planRecovery(state), record);
-}
-
-export interface RecoveredState {
-	entries: HydratedSessionEntry[];
-	allEntries: HydratedSessionEntry[];
-	queued: QueuedInput[];
-}
-
-/** 崩溃结算后的解释视图：canonicalReplay + 应用 planRecovery（仅在内存中呈现，
- * 不落盘）。持久化路径必须走 planRecovery → 带身份落盘，不得用本函数替代。 */
-export function recoverRecords(records: readonly SessionRecord[]): RecoveredState {
-	const state = canonicalReplay(records);
-	applyRecovery(state, planRecovery(state), records.at(-1));
-	return { entries: state.entries, allEntries: state.allEntries, queued: queuedInputs(state) };
 }
 
 // ---------------------------------------------------------------------------

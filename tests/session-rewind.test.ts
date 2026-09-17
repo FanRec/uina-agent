@@ -5,7 +5,7 @@ import { commitRewindTransition } from "../src/agent/rewind.js";
 import { buildContext, estimateContextTokens } from "../src/agent/context.js";
 import type { AgentMessage, ModelStreamFn } from "../src/core/types.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
-import { projectAgentHistory, protectRewindContext, recoverRecords, summarizeAbandonedEffects, projectInputMessage } from "../src/session/recovery.js";
+import { projectAgentHistory, protectRewindContext, summarizeAbandonedEffects, projectInputMessage } from "../src/session/recovery.js";
 import { BranchInspectorOverlay } from "../src/ui/components/overlays/branch-inspector.js";
 import { listSessionBranches, listSessionNodes, readSessionBranch, readSessionNode } from "../src/session/navigation.js";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -25,7 +25,7 @@ describe("session mainline persistence", () => {
 		const main = listSessionNodes(store.readRecords());
 		expect(main.nodes.map(node=>node.id)).toEqual([records[0].id,"r1"]);
 		expect(readSessionNode(store.readRecords(),records[1].id)).toMatchObject({kind:"message",message:{content:"bad plan"}});
-		const context = projectAgentHistory(recoverRecords([...store.readRecords()]).entries);
+		const context = projectAgentHistory(store.state.entries);
 		expect(context.some(message=>message.content === "bad plan")).toBe(false);
 		expect(context.some(message=>message.content.includes("stop writing files"))).toBe(false);
 		expect(() => store.appendRewind({id:"bad",requestId:"bad",targetId:records[1].id,fromId:"r1",source:"user",reason:"archive"})).toThrow("祖先");
@@ -33,7 +33,7 @@ describe("session mainline persistence", () => {
 		const latest=store.readRecords().at(-1)!;
 		await store.appendRewind({id:"r2",requestId:"q2",targetId:records[0].id,fromId:latest.id,source:"user",reason:"again"});
 		expect(listSessionNodes(store.readRecords(),{scope:"all"}).nodes.filter(node=>!node.active).length).toBe(4);
-		expect(projectAgentHistory(recoverRecords([...store.readRecords()]).entries).filter(message=>message.content.includes("stop writing files"))).toHaveLength(0);
+		expect(projectAgentHistory(store.state.entries).filter(message=>message.content.includes("stop writing files"))).toHaveLength(0);
 	});
 	it("rejects cuts inside tool exchanges", async () => {
 		const store=new MemorySessionStore(); await seed(store);
@@ -54,7 +54,7 @@ describe("session mainline persistence", () => {
 			expect(projectAgentHistory(reopened.snapshot.entries).some(message=>message.content.includes("bad compressed plan"))).toBe(false);
 			expect(listSessionNodes(reopened.store.readRecords()).headId).toBe("r");
 			await reopened.store.appendCompaction("short summary",[],100);
-			expect(projectAgentHistory(recoverRecords([...reopened.store.readRecords()]).entries).some(message=>message.content.includes("会话回溯"))).toBe(true);
+			expect(projectAgentHistory(reopened.store.state.entries).some(message=>message.content.includes("会话回溯"))).toBe(true);
 			await reopened.store.close();
 		} finally { await rm(dir,{recursive:true,force:true}); }
 	});
@@ -101,7 +101,7 @@ describe("rewind runtime safe points", () => {
 		class FailingStore extends MemorySessionStore { override appendRewind(_record: Omit<SessionRewindRecord,"kind"|"seq"|"timestamp">):Promise<void>{return Promise.reject(new Error("disk unavailable"));} }
 		const store=new FailingStore();const records=await seed(store);
 		const subject=new Subject(mockModel(),async()=>{throw new Error("must not run");},new ToolBroker(),{store});
-		const history=projectAgentHistory(recoverRecords([...store.readRecords()]).entries);subject.addHistory(history);
+		const history=projectAgentHistory(store.state.entries);subject.addHistory(history);
 		await expect(subject.requestRewind({targetId:records[0].id,reason:"wrong"},"test")).rejects.toThrow("disk unavailable");
 		expect(subject.historySnapshot()).toEqual(history);expect(subject.isBusy()).toBe(false);
 	});
@@ -111,7 +111,7 @@ describe("rewind runtime safe points", () => {
 		const subject=new Subject(mockModel(),async(_model,_req,_emit,signal)=>{
 			entered();await new Promise<void>(resolve=>signal!.addEventListener("abort",()=>resolve(),{once:true}));
 		},new ToolBroker(),{store});
-		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
+		subject.addHistory(projectAgentHistory(store.state.entries));
 		const run=subject.pushInput("working");await started;
 		const result=await subject.requestRewind({targetId:records[0].id,reason:"wrong"},"test");expect(result.status).toBe("scheduled");
 		await subject.steer("latest instruction");subject.interrupt();await run;
@@ -121,7 +121,7 @@ describe("rewind runtime safe points", () => {
 	it("rejects an oversized reconstructed context before committing", async () => {
 		const store=new MemorySessionStore();const records=await seed(store);
 		const subject=new Subject(mockModel({contextWindow:1}),async()=>{},new ToolBroker(),{store});
-		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
+		subject.addHistory(projectAgentHistory(store.state.entries));
 		await expect(subject.requestRewind({targetId:records[0].id,reason:"wrong"},"test")).rejects.toThrow("估算超过");
 		expect(store.readRecords().some(record=>record.kind==="rewind")).toBe(false);
 	});
@@ -136,13 +136,13 @@ describe("rewind runtime safe points", () => {
 		const fromId=store.readRecords().at(-1)!.id;
 		await store.appendRewind({id:"r-cross",requestId:"q",targetId,fromId,source:"model",reason:"fold back before the summary"});
 
-		const entries=recoverRecords([...store.readRecords()]).entries;
+		const entries=store.state.entries;
 		const history=projectAgentHistory(entries);
 		expect(history.some(message=>message.content==="PRE-COMPACTION USER")).toBe(true);
 		expect(history.some(message=>message.content.includes("STALE SUMMARY"))).toBe(false);
 		expect(history.some(message=>message.content.includes("会话回溯"))).toBe(true);
 		// The abandoned path stays readable as history, it just stops shaping the mainline.
-		const all=recoverRecords([...store.readRecords()]).allEntries;
+		const all=store.state.allEntries;
 		expect(all.some(entry=>entry.kind==="compaction")).toBe(true);
 		expect(listSessionNodes(store.readRecords(),{scope:"all"}).nodes.some(node=>!node.active)).toBe(true);
 	});
@@ -162,7 +162,7 @@ describe("rewind runtime safe points", () => {
 			sent.push(req.messages.map(message=>String((message as {content?:string}).content ?? "")));
 			emit({kind:"text",text:"continued"});emit({kind:"finish",reason:"stop"});
 		},new ToolBroker(),{store,compactor:async request=>{histories.push(request.history.length);return {summary:"压缩摘要：重新展开的早期历史已折叠",keepFrom:1};}});
-		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
+		subject.addHistory(projectAgentHistory(store.state.entries));
 
 		// The mainline projection now carries the re-exposed pre-compaction history, which overflows.
 		await subject.pushInput("carry on");
@@ -186,7 +186,7 @@ describe("rewind runtime safe points", () => {
 		// keepFrom 0 removes nothing; accepting it would persist a summary plus everything it summarizes.
 		let proposed=0;
 		const subject=new Subject(mockModel({contextWindow:400}),async()=>{},new ToolBroker(),{store,compactor:async()=>{proposed++;return {summary:"无效压缩",keepFrom:0};}});
-		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
+		subject.addHistory(projectAgentHistory(store.state.entries));
 		await subject.pushInput("carry on");
 		expect(proposed).toBe(1);
 		expect(store.readRecords().filter(record=>record.kind==="compaction")).toHaveLength(0);
@@ -202,7 +202,7 @@ describe("rewind composition", () => {
 		const store=new MemorySessionStore();const records=await seed(store);let ready!:()=>void,finish!:()=>void;
 		const entered=new Promise<void>(resolve=>ready=resolve);const finishStream=new Promise<void>(resolve=>finish=resolve);
 		const subject=new Subject(mockModel(),async(_m,_r,emit)=>{ready();await finishStream;emit({kind:"text",text:"old result"});emit({kind:"finish",reason:"stop"});},new ToolBroker(),{store});
-		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
+		subject.addHistory(projectAgentHistory(store.state.entries));
 		const runner=new ExtensionRunner({cwd:process.cwd(),tools:new ToolBroker(),session:createSessionAccess(store,(request,source,signal)=>subject.requestRewind(request,source,signal))});
 		let api!:import("../src/extensions/runner.js").ExtensionAPI;
 		await runner.activateBuiltin("rewind-policy",value=>{api=value;});
@@ -215,11 +215,11 @@ describe("rewind composition", () => {
 	it("keeps the rewind notice through live compaction and displays it in restored transcripts", async () => {
 		const store=new MemorySessionStore();const records=await seed(store);
 		const subject=new Subject(mockModel(),async(_m,_r,emit)=>{emit({kind:"text",text:"new plan"});emit({kind:"finish",reason:"stop"});},new ToolBroker(),{store,compactor:async request=>({summary:"用户要求停止写文件；原方案已退出。",keepFrom:request.history.length-1})});
-		subject.addHistory(projectAgentHistory(recoverRecords([...store.readRecords()]).entries));
+		subject.addHistory(projectAgentHistory(store.state.entries));
 		await subject.requestRewind({targetId:records[0].id,reason:"wrong"},"test");
 		await subject.compact();
 		expect(subject.historySnapshot().some(message=>message.content.includes("会话回溯"))).toBe(true);
-		const entries=recoverRecords([...store.readRecords()]).entries;
+		const entries=store.state.entries;
 		const transcript=new TranscriptContainer();transcript.loadSession(entries);
 		expect(transcript.render(100).join("\n")).toContain("会话回溯");
 		expect(subject.historySnapshot()).toEqual(projectAgentHistory(entries));
@@ -265,15 +265,24 @@ it("rolls back a failed rewind fsync without changing either the file or cached 
 	} finally {await rm(dir,{recursive:true,force:true});}
 });
 
-it("paginates inferred recovery entries without skipping adjacent records", async () => {
-	const store=new MemorySessionStore();
-	await store.appendMessage({role:"assistant",content:"",tool_calls:[{id:"interrupted",name:"exec_command",args:{}}]});
-	await store.appendEvent("tool_started",{callId:"interrupted"});
-	await store.appendMessage({role:"user",content:"continue after crash"});
-	let after: string|undefined;const ids:string[]=[];
-	do {const page=listSessionNodes(store.readRecords(),{after,limit:1});ids.push(...page.nodes.map(node=>node.id));after=page.next;} while(after);
-	expect(ids).toHaveLength(3);expect(new Set(ids).size).toBe(3);expect(ids[1]).toBe(`recovered:${store.readRecords()[0].id}:interrupted`);
-	expect(listSessionNodes(store.readRecords()).nodes[1].canRewind).toBe(false);
+it("paginates persisted recovery entries without skipping adjacent records", async () => {
+	const dir=await mkdtemp(join(tmpdir(),"uina-rewind-page-"));const path=join(dir,"session.jsonl");
+	try {
+		const initial=await openJsonlSession(path);
+		await initial.store.appendMessage({role:"assistant",content:"",tool_calls:[{id:"interrupted",name:"exec_command",args:{}}]});
+		await initial.store.appendEvent("tool_started",{callId:"interrupted"});
+		await initial.store.close();
+		// P3b 裁定：未决调用 + 后续事实记录的 journal 形态非法；恢复必须先经
+		// 启动恢复（planRecovery → 带身份落盘），分页覆盖真实持久化恢复条目。
+		const reopened=await openJsonlSession(path);
+		await reopened.store.appendMessage({role:"user",content:"continue after crash"});
+		let after: string|undefined;const ids:string[]=[];
+		do {const page=listSessionNodes(reopened.store.readRecords(),{after,limit:1});ids.push(...page.nodes.map(node=>node.id));after=page.next;} while(after);
+		const originId=reopened.store.readRecords()[0].id;
+		expect(ids).toHaveLength(3);expect(new Set(ids).size).toBe(3);expect(ids[1]).toBe(`recovered:${originId}:interrupted`);
+		expect(listSessionNodes(reopened.store.readRecords()).nodes[1].canRewind).toBe(false);
+		await reopened.store.close();
+	} finally {await rm(dir,{recursive:true,force:true});}
 });
 
 it("does not invent a crash during live reads and durably settles unfinished calls on reopen", async () => {
@@ -310,7 +319,7 @@ it("matches reused provider call IDs within each exchange, including after rewin
   await store.appendMessage({role:"tool",tool_call_id:"provider-local-0",content:result,status:"succeeded"});
   if(result==="old result") await store.appendRewind({id:"r",requestId:"q",targetId,fromId:store.readRecords().at(-1)!.id,source:"test",reason:"retry a different path"});
  }
- const state=recoverRecords([...store.readRecords()]);
+ const state=store.state;
  expect(projectAgentHistory(state.entries).filter(message=>message.role==="tool").map(message=>message.content)).toEqual(["new result"]);
  expect(state.allEntries.filter(entry=>entry.kind==="message" && entry.message.role==="tool")).toHaveLength(2);
 });
@@ -335,7 +344,7 @@ it("does not pollute mainline with abandoned branch inputs on multiple rewinds a
 
 	// 场景 A：回溯到前次回溯节点 r1，验证 r1 原有的 carriedInputs (temp instruction 1) 不丢失，且包含 branch 2 产生的新指令
 	await store.appendRewind({ id: "r2", requestId: "q2", targetId: "r1", fromId: branch2Head, source: "user", reason: "retry from r1" });
-	const stateA = recoverRecords([...store.readRecords()]);
+	const stateA = store.state;
 	const historyA = projectAgentHistory(stateA.entries);
 	expect(historyA.some(m => m.content.includes("temp instruction 1"))).toBe(false);
 	expect(historyA.some(m => m.content.includes("temp instruction 2"))).toBe(false);
@@ -344,7 +353,7 @@ it("does not pollute mainline with abandoned branch inputs on multiple rewinds a
 	await store.appendMessage({ role: "assistant", content: "branch 3 response" });
 	const latestHead = store.readRecords().at(-1)!.id;
 	await store.appendRewind({ id: "r3", requestId: "q3", targetId: rootId, fromId: latestHead, source: "user", reason: "back to root" });
-	const stateB = recoverRecords([...store.readRecords()]);
+	const stateB = store.state;
 	const historyB = projectAgentHistory(stateB.entries);
 	// 验证：去重后，每条指令只保留一条
 	const t1Count = historyB.filter(m => m.content.includes("temp instruction 1")).length;
@@ -363,7 +372,7 @@ it("positions rewind notice between compactionSummary and retainedTail, never af
 	await store.appendMessage({ role: "assistant", content: "reply after rewind" });
 	await store.appendMessage({ role: "user", content: "latest user question" });
 
-	const entries = recoverRecords([...store.readRecords()]).entries;
+	const entries = store.state.entries;
 	// 模拟压缩：保留最后两条消息（reply after rewind 和 latest user question）
 	const rawHistory = [
 		{ role: "compactionSummary" as const, summary: "compacted history", content: "[历史摘要] compacted history" },
@@ -732,7 +741,7 @@ describe("abandoned side-effects extraction (generic effect facts)", () => {
 			reason: "testing side effects injection",
 		});
 
-		const snapshot = recoverRecords([...store.readRecords()]);
+		const snapshot = store.state;
 		const rewindEntry = snapshot.entries.find((e) => e.kind === "rewind");
 		expect(rewindEntry).toBeDefined();
 		if (rewindEntry && rewindEntry.kind === "rewind") {
