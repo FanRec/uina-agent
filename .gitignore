@@ -14,3 +14,9 @@ docs/references/
 docs/TODO.md
 docs/README.md
 AGENTS.md
+
+# 本地质量工具与覆盖率产物（不入库；覆盖率生成：
+# npx vitest run --coverage.enabled --coverage.reporter=json --coverage.include="src/**" --coverage.reportsDirectory=coverage-raw）
+coverage/
+coverage-raw/
+scripts/crap.mjs
