@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { createSessionAccess } from "../src/session/access.js";
 import { commitRewindTransition } from "../src/agent/rewind.js";
+import { resolveProjectionPolicy } from "../src/agent/projection.js";
 import { buildContext, estimateContextTokens } from "../src/agent/context.js";
 import type { AgentMessage, ModelStreamFn } from "../src/core/types.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
@@ -445,6 +446,7 @@ describe("commitRewindTransition mechanism", () => {
 		keepRecentTokens: 20_000,
 		stream: async () => {},
 		providerHooks: NO_RUNTIME_HOOKS.provider,
+		projection: resolveProjectionPolicy(),
 	});
 	it("appends exactly one rewind record and returns the projected mainline", async () => {
 		const store = new MemorySessionStore();

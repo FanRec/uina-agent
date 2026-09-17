@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { Compactor } from "../core/compaction.js";
 import type { AgentMessage, Model, ModelStreamFn, ToolDef } from "../core/types.js";
 import type { ProviderHooks } from "../runtime/hooks.js";
-import { applyRecord, canonicalReplay, checkRecord, projectAgentHistory } from "../session/recovery.js";
+import { applyRecord, canonicalReplay, checkRecord } from "../session/recovery.js";
 import type { RewindRequest, SessionRewindRecord, SessionStore } from "../session/types.js";
 import {
 	resolveCompactionResult,
@@ -13,6 +13,7 @@ import {
 	type CompactionResult,
 } from "./compaction.js";
 import { buildContext, estimateContextTokens } from "./context.js";
+import type { ResolvedProjection } from "./projection.js";
 
 /** One wording for every way an oversized rewind is refused; the mainline never moves in these cases. */
 export const OVERSIZED_REWIND = "回溯后的上下文估算超过模型上限；主线未改变，请选择其他目标或纠错方式";
@@ -27,6 +28,8 @@ export interface RewindProjectionContext {
 	/** 默认压缩算法的传输与 hooks；仅在投影超限触发压缩时使用。 */
 	stream: ModelStreamFn;
 	providerHooks: ProviderHooks;
+	/** 投影 Replacement 缝的现役实现（owner = Subject；必填，无静默默认）。 */
+	projection: ResolvedProjection;
 }
 
 export interface RewindCommit {
@@ -86,6 +89,7 @@ export async function compactProjectionForRewind(
 				...prepared.retainedTail,
 			],
 			systemPrompt: context.systemPrompt,
+			convertToLlm: context.projection.convertToLlm,
 		}),
 		{ tools: context.tools, includeThinking: context.model.includeThinking },
 	).tokens;
@@ -129,9 +133,9 @@ export async function commitRewindTransition(
 	// The projection stays derived from records; an oversized rewind is compacted before it is
 	// persisted so a committed rewind never leaves an unusable context behind.
 	applyRecord(state, record);
-	const history = projectAgentHistory(state.entries);
+	const history = context.projection.projectHistory(state.entries, state);
 	const estimated = estimateContextTokens(
-		buildContext({ history, systemPrompt: context.systemPrompt }),
+		buildContext({ history, systemPrompt: context.systemPrompt, convertToLlm: context.projection.convertToLlm }),
 		{ tools: context.tools, includeThinking: context.model.includeThinking },
 	).tokens;
 	const compacted = await compactProjectionForRewind(history, estimated, context, pending.signal ?? signal);
@@ -145,7 +149,7 @@ export async function commitRewindTransition(
 		const finalRecord = { ...record, compaction: compacted };
 		const finalState = canonicalReplay(records);
 		applyRecord(finalState, finalRecord);
-		finalHistory = projectAgentHistory(finalState.entries);
+		finalHistory = context.projection.projectHistory(finalState.entries, finalState);
 		await store.appendRewind(finalRecord);
 	} else {
 		await store.appendRewind(record);

@@ -21,7 +21,8 @@ import type { SessionStore } from "../session/types.js";
 import { projectInputMessage } from "../session/recovery.js";
 import { DEFAULT_COMPACTION_SETTINGS, resolveCompactionResult, type CompactionSettings, findCutPoint, shouldCompact } from "./compaction.js";
 import { commitRewindTransition } from "./rewind.js";
-import { buildContext, calculateContextSegments, convertToLlm, defaultSystemPrompt, estimateContextTokens } from "./context.js";
+import { resolveProjectionPolicy, type ProjectionPolicy, type ResolvedProjection } from "./projection.js";
+import { buildContext, calculateContextSegments, defaultSystemPrompt, estimateContextTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import { TurnStreamCollector, type StreamCollectorResult } from "./stream-collector.js";
 import type { PreparedToolCall, ToolView } from "../tools/broker.js";
@@ -35,7 +36,9 @@ export interface SubjectOptions {
 	store?: SessionStore;
 	compaction?: Partial<CompactionSettings>;
 	compactor?: Compactor;
- compactionTrigger?: CompactionTrigger;
+	compactionTrigger?: CompactionTrigger;
+	/** 投影 Replacement 缝（单 owner = 本 Subject 实例；缺省字段回落默认实现）。 */
+	projection?: ProjectionPolicy;
 	systemPrompt?: string;
 	thinkingLevel?: ThinkingLevel;
 	runtimeHooks?: RuntimeHooks;
@@ -90,6 +93,8 @@ export class Subject {
 	private readonly runtimeHooks: RuntimeHooks;
 	private readonly compactor?: Compactor;
 	private readonly compactionTrigger?: CompactionTrigger;
+	/** 投影 Replacement 缝的现役实现（解析后两字段非空；本实例即单 owner）。 */
+	readonly projection: ResolvedProjection;
 	/** 本次模型调用拿到的 usage；每次调用开始前清空，只对本次调用有意义。 */
 	private lastReportedUsage: Usage | null = null;
 	/**
@@ -120,6 +125,7 @@ export class Subject {
 		};
 		this.compactor = options.compactor;
 		this.compactionTrigger = options.compactionTrigger;
+		this.projection = resolveProjectionPolicy(options.projection);
 		this.preferredThinkingLevel = options.thinkingLevel ?? model.thinkingLevels?.[0] ?? "off";
 		if (this.preferredThinkingLevel !== "off" && !model.thinkingLevels?.includes(this.preferredThinkingLevel)) {
 			throw new Error(`model ${model.name} 未声明支持 thinking level: ${this.preferredThinkingLevel}`);
@@ -213,7 +219,7 @@ export class Subject {
 	}
 
 	getContextSegments(usedTokens?: number): ContextSegments {
-		const context = buildContext({ history: this.history, systemPrompt: this.systemPrompt });
+		const context = buildContext({ history: this.history, systemPrompt: this.systemPrompt, convertToLlm: this.projection.convertToLlm });
 		const used = usedTokens ?? this.lastKnownUsage?.totalTokens ?? estimateContextTokens(this.history).tokens;
 		return calculateContextSegments(context, this.tools.defs(), used);
 	}
@@ -406,6 +412,7 @@ export class Subject {
 					compactor: this.compactor,
 					stream: this.streamFn,
 					providerHooks: this.runtimeHooks.provider,
+					projection: this.projection,
 				},
 				this.currentSignal(),
 			);
@@ -822,8 +829,9 @@ export class Subject {
 				history: this.history,
 				systemPrompt,
 				includeThinking: model.includeThinking,
+				convertToLlm: this.projection.convertToLlm,
 			}),
-			...convertToLlm(beforeMessages),
+			...this.projection.convertToLlm(beforeMessages),
 		];
 		return this.runtimeHooks.turn.transformContext(requestMessages);
 	}
@@ -1017,7 +1025,7 @@ export class Subject {
 		systemPrompt = this.systemPrompt,
 	): Promise<void> {
 		const manual = reason === "manual";
-		const tokensBefore = estimateContextTokens(buildContext({ history: this.history, systemPrompt }), {
+		const tokensBefore = estimateContextTokens(buildContext({ history: this.history, systemPrompt, convertToLlm: this.projection.convertToLlm }), {
 			tools: this.tools.defs(),
 			includeThinking: model.includeThinking,
 		}).tokens;

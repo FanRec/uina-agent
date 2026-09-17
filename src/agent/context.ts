@@ -14,6 +14,11 @@ export interface BuildInput {
 	systemPrompt?: string;
 	includeThinking?: boolean;
 	runtimeInputs?: readonly { source: { kind: string; type: string; ref?: string }; text?: string; data?: unknown }[];
+	/** Replacement 缝：memory→provider 形塑（缺省 = convertToLlm 默认实现）。 */
+	convertToLlm?: (
+		messages: readonly (AgentMessage | ChatMsg)[],
+		opts?: { includeThinking?: boolean },
+	) => ChatMsg[];
 }
 
 const DEFAULT_SYSTEM_PROMPT =
@@ -119,7 +124,8 @@ export function buildContext(b: BuildInput): ChatMsg[] {
 		? `${baseSystem}\n\n<runtime_events>\n${b.runtimeInputs.map(formatRuntimeInput).join("\n")}\n</runtime_events>`
 		: baseSystem;
 
-	const cleaned = convertToLlm(b.history, {
+	const toLlm = b.convertToLlm ?? convertToLlm;
+	const cleaned = toLlm(b.history, {
 		includeThinking: b.includeThinking,
 	});
 

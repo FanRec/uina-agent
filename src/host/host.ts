@@ -19,7 +19,6 @@ import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
 import { killTrackedDetachedChildren } from "../runtime/process-tracker.js";
 import { MemorySessionStore, openJsonlSession } from "../session/jsonl-store.js";
 import { createSessionAccess } from "../session/access.js";
-import { projectAgentHistory } from "../session/recovery.js";
 import type { SessionEntry, SessionStore } from "../session/types.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 import type { HostEvent, HostEventListener } from "./events.js";
@@ -289,7 +288,7 @@ export class UinaHost {
 		});
 		const commands = new CommandRouter(extensionHost.registry, (text) => emit({ type: "error", text }));
 
-		subject.addHistory(projectAgentHistory(restoredEntries));
+		subject.addHistory(subject.projection.projectHistory(restoredEntries, store.state));
 		if (restoredQueue.length > 0) subject.seedQueue(restoredQueue);
 
 		if (config !== undefined) {
