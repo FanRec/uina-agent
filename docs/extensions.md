@@ -29,8 +29,9 @@ ActivationScope 拥有注册、取消信号和工具、服务、模型流、上�
 | registerTool / callTool | 模型可用能力；程序调用同样经过 schema、hook、取消和结果管线 |
 | registerService / callService / hasService | 扩展间请求/响应，每次按名称解析当前实现 |
 | registerProvider / registerModel | 分别注册端点与模型事实 |
-| models.current/list/resolve/select/stream | 获取事实、选择模型、使用现有传输，不暴露凭据 |
-| registerContextContributor | 贡献独立消息，不必重写整份历史 |
+| models.current/list/groups/resolve/select/stream | 获取事实、分组目录、选择模型、使用现有传输，不暴露凭据 |
+| models.thinkingLevel / setThinkingLevel | 思考档位事实与设置（与宿主同一应用纪律） |
+| usage / isBusy / reload / shutdown | 主体用量与忙闲事实；扩展重载与消费者关闭流程 |
 | registerCompactor / compact | 替换压缩策略或请求手动压缩 |
 | registerToolRenderer / registerMarkdownTransformer | 变换显示，不改变执行与模型上下文 |
 
@@ -44,7 +45,7 @@ callService 使用可 structuredClone 的数据。实现收到 callerId 和合�
 
 干预与观察是两个词表（Hook ≠ Event）：`pi.on(type)` 只订阅**事实**（RuntimeEvent：已经发生的，无返回值）；`pi.onHook(hook)` 在**干预点**注册（如 `turn.prepare`、`turn.transformContext`、`tools.beforeCall`、`provider.transformHeaders`），返回值按该链的合并规则参与组合。合并规则：turn.prepare 后写覆盖/消息聚合；transformContext、tools.transformResult、provider.transformHeaders/transformPayload 链式传递；beforeCompact、shouldStop、beforeCall 短路；observeResponse 纯观察。
 
-回合注入有两处时机：`turn.prepare`（回合边界）与 `turn.transformContext`（每请求）；registerContextContributor 是提示词变换后累加独立消息的第三条路径，收到快照与主体取消信号；作用域过滤与 runtimeHooks(scopeIds) 一致。
+回合注入只有两条时机：`turn.prepare`（回合边界；贡献形状 messages 聚合追加）与 `turn.transformContext`（每请求）。registerContextContributor 第三条路径已退役（P2，inventory #2）：同一功能由 turn.prepare 的有状态 handler 承担。turn.prepare handler 不接收取消信号——回合中断后其结果会被丢弃；扩展自身的生命期取消用 api.signal。
 
 贡献内容应标明来源。昂贵检索、索引或模型调用尽量异步准备，贡献阶段读取结果；没有引入隐式轮次、并发或容量上限。
 
