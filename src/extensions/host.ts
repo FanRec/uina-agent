@@ -3,7 +3,7 @@
  *
  * 两个词表严格分离（铁律 L1：Hook ≠ Event）：
  * 1. **事实**（on / emit）：RuntimeEvent 单流广播，订阅方无返回值——系统告诉世界"已经发生了"。
- * 2. **干预**（onHook / run*）：hook 专属词汇（HookName），有返回协议，按 HookMergeRule 组合——
+ * 2. **干预**（onHook / run*）：hook 专属词汇（HookName），有返回协议，按各自链的合并规则组合——
  *    系统问扩展"你要不要影响这件事？"。禁止以事件形状挂干预。
  *
  * 另负责扩展 Handler 注册与生命周期派发、异常安全隔离（单个扩展异常不阻塞核心运行）。
@@ -51,7 +51,6 @@ export type {
 	HookContributions,
 	HookHandler,
 	HookInputs,
-	HookMergeRule,
 	HookName,
 } from "../runtime/hooks.js";
 
@@ -146,11 +145,6 @@ export class ExtensionHost {
 				// 避免错误监听器本身发生次生异常
 			}
 		}
-	}
-
-	/** 检查某事件是否有监听器 */
-	hasHandlers(eventType: string, scope?: RuntimeScopeFilter): boolean {
-		return this.handlersFor(eventType, scope).length > 0;
 	}
 
 	/** 广播通用无返回值事件（安全隔离异常） */

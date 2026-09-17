@@ -63,7 +63,6 @@ export type HookHandler<K extends HookName> = (
 
 /**
  * 各 Interceptor 链的合并规则（铁律 L6：每条链的组合语义必须成文）。
- * 注册顺序 = 激活顺序（内置能力先于项目扩展），同链内逐个传递。
  *
  * | hook                        | 合并规则                                   |
  * | --------------------------- | ------------------------------------------ |
@@ -77,7 +76,6 @@ export type HookHandler<K extends HookName> = (
  * | provider.transformPayload   | 链式：后一个收到前一个的输出，整组替换          |
  * | provider.observeResponse    | 观察：无返回值，只多播（响应已发生的审计点）     |
  */
-export type HookMergeRule = Record<HookName, string>;
 
 export interface RuntimeHooks {
 	readonly turn: {
