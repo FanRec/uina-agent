@@ -8,5 +8,10 @@ export default defineConfig({
 		testTimeout: 30_000,
 		hookTimeout: 30_000,
 		restoreMocks: true,
+		coverage: {
+			// Native binaries under src/ cannot be AST-parsed by the v8 provider's
+			// uncovered-files pass; without this the whole coverage run dies.
+			exclude: ["src/ui/core/native/**"],
+		},
 	},
 });
