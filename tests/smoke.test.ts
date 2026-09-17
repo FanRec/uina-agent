@@ -7,7 +7,6 @@ import { Subject } from "../src/agent/loop.js";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { SessionFormatError, canonicalReplay, queuedInputs } from "../src/session/recovery.js";
 import { projectModelHistory } from "../src/agent/projection.js";
-import { streamCompactor } from "../src/agent/compaction.js";
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
 import execCommandTool, { execCommandDirect } from "../src/extensions/runtime-tools/exec-command/index.js";
 import { OutputCollector } from "../src/extensions/runtime-tools/exec-command/output.js";
@@ -235,40 +234,6 @@ describe("Subject", () => {
 		expect(executed).toBe(false);
 		expect(subject.historySnapshot().find((message) => message.role === "assistant")?.status).toBe("length");
 		expect(subject.historySnapshot().find((message) => message.role === "tool")?.status).toBe("not_started");
-	});
-
-	it("manual compaction summarizes via the compactor and keeps old history on failure", async () => {
-		const broker = new ToolBroker();
-		const provider = scriptedProvider([
-			{
-				match: (req) => (req.messages[0]?.content ?? "").includes("你是上下文摘要助手"),
-				produce: () => [{ kind: "text", text: "保留的摘要" }],
-			},
-			{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] },
-		]);
-		const subject = new Subject(provider.model, provider.stream, broker, {
-			compaction: { reserveTokens: 10, keepRecentTokens: 10 },
-			compactor: streamCompactor(provider.stream),
-		});
-		subject.addHistory(Array.from({ length: 10 }, (_, index) => ({
-			role: "user" as const,
-			content: `history-${index}-${"x".repeat(30)}`,
-		})));
-		await subject.compact();
-		expect(provider.calls.some((call) => (call.messages[0]?.content ?? "").includes("你是上下文摘要助手"))).toBe(true);
-		expect(subject.historySnapshot().some((message) => message.content === "[历史摘要] 保留的摘要")).toBe(true);
-
-		const failing = scriptedProvider([
-			{ match: (req) => (req.messages[0]?.content ?? "").includes("你是上下文摘要助手"), produce: () => { throw new Error("compact down"); } },
-		]);
-		const failedSubject = new Subject(failing.model, failing.stream, broker, {
-			compaction: { reserveTokens: 10, keepRecentTokens: 10 },
-			compactor: streamCompactor(failing.stream),
-		});
-		failedSubject.addHistory([{ role: "user", content: "old history" }, { role: "user", content: "x".repeat(500) }]);
-		await expect(failedSubject.compact()).rejects.toThrow("compact down");
-		const failedHistory = failedSubject.historySnapshot();
-		expect(failedHistory.some((message) => message.content === "old history")).toBe(true);
 	});
 
 	it("scopes actual usage to one provider request and does not reuse it on the next turn", async () => {

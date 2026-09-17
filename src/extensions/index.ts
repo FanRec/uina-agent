@@ -11,13 +11,6 @@ export type {
 	MessageRenderer,
 	EntryRenderer,
 } from "./ui-contract.js";
-export type {
-	Compactor,
-	CompactionRequest,
-	CompactionProposal,
-	CompactionTrigger,
-	CompactionCheck,
-} from "../core/compaction.js";
 export type { Model, ModelRequest, Provider, ChatMsg, AgentMessage, ToolResultStatus } from "../core/types.js";
 export type { ImageContent } from "../core/content.js";
 export type { Tool, ToolExecutionContext, ToolExecutionResult } from "../tools/broker.js";

@@ -278,21 +278,6 @@ export class ExtensionHost {
 			: undefined;
 	}
 
-	/** turn.beforeCompact：短路链——任一 cancel=true 即取消。返回值协议冻结（P2 裁定不扩约）。 */
-	async runBeforeCompact(tokensBefore: number, scope?: RuntimeScopeFilter): Promise<boolean> {
-		for (const handler of this.hooksFor("turn.beforeCompact", scope)) {
-			try {
-				const res = (await handler(readonlySnapshot({ tokensBefore }) as never)) as HookContributions["turn.beforeCompact"] | undefined;
-				if (res?.cancel) {
-					return true; // 请求取消压缩
-				}
-			} catch (err) {
-				this.emitError("turn.beforeCompact", err);
-			}
-		}
-		return false;
-	}
-
 	/** turn.shouldStop：短路链——任一 stop=true 即收尾。 */
 	async runShouldStop(
 		input: HookInputs["turn.shouldStop"],

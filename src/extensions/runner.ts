@@ -5,7 +5,6 @@ import { errorMessage } from "../core/errors.js";
 import { randomUUID } from "node:crypto";
 import { Registrations } from "../core/registrations.js";
 import { discoverExtensions, importExtension } from "./loader.js";
-import type { Compactor } from "../core/compaction.js";
 import type { CallOptions, ServiceHandler, ExtensionModelAccess, ExtensionModelRequest } from "./services.js";
 import { relative } from "node:path";
 
@@ -62,11 +61,6 @@ export interface ExtensionAPI {
 	registerService<I, O>(name: string, handler: ServiceHandler<I, O>, options?: { replace?: boolean }): () => void;
 	callService<O = unknown>(name: string, input: unknown, options?: CallOptions): Promise<O>;
 	hasService(name: string): boolean;
-	registerCompactor(
-		compactor: Compactor,
-		options?: { replace?: boolean },
-	): () => void;
-	compact(instruction?: string): Promise<void>;
 	readonly models: {
 		current(): import("../core/types.js").Model;
 		list(): readonly import("../core/types.js").Model[];
@@ -129,7 +123,6 @@ export interface ExtensionRunnerOptions {
 	cwd: string;
 	extensionPaths?: readonly string[];
 	models?: ExtensionModelAccess;
-	onCompact?: (instruction?: string) => Promise<void>;
 	tools: ToolBroker;
 	onError?: (text: string) => void;
 	/** Informational/warning notifications from the fallback UI before a real UI attaches. */
@@ -236,7 +229,6 @@ export class ExtensionRunner extends ExtensionHost {
 	private lifecycleTail: Promise<void> = Promise.resolve();
 	private closed = false;
 	private readonly services = new Registrations<ServiceHandler>();
-	private readonly compactors = new Registrations<{ run: Compactor }>();
 	private readonly sharedUI = new Map<string, Map<string, Parameters<ExtensionUIContext["setHeader"]>[0]>>();
 	private readonly extensions = new Map<string, ActivationScope>();
 	private readonly failures = new Map<string, { id: string; path: string; error: string }>();
@@ -270,8 +262,6 @@ export class ExtensionRunner extends ExtensionHost {
 	private listProjectFiles(): Promise<string[]> {
 		return discoverExtensions(this.options.cwd, this.options.extensionPaths);
 	}
-
-	readonly compactor: Compactor = async (request, signal) => this.compactors.get("compaction")?.run(request, signal);
 
 	private setSharedUI(
 		slot: "header" | "footer",
@@ -496,11 +486,6 @@ export class ExtensionRunner extends ExtensionHost {
 			cwd: this.options.cwd,
 			ui,
 			signal: scope.abort.signal,
-			compact: (instruction) => {
-				assertActive();
-				if (!this.options.onCompact) throw new Error("宿主未提供压缩入口");
-				return this.options.onCompact(instruction);
-			},
 			usage: () => {
 				assertActive();
 				if (!this.options.usage) throw new Error("宿主未提供用量事实入口");
@@ -520,25 +505,6 @@ export class ExtensionRunner extends ExtensionHost {
 				assertActive();
 				if (!this.options.shutdown) throw new Error("宿主未提供关闭入口");
 				return this.options.shutdown();
-			},
-			registerCompactor: (compactor, options) => {
-				assertActive();
-				return ownRegistration(
-					this.compactors.register(
-						"compaction",
-						{
-							run: (request, signal) =>
-								scope.run(async (combined) => {
-									const proposal = await compactor(request, combined);
-									combined.throwIfAborted();
-									return proposal;
-								}, signal),
-						},
-						// 槽是 Replacement 接缝（单 owner）：后注册者接管，dispose 恢复前值
-						// —— 项目扩展覆盖 builtin 默认 capability 无需显式 replace。
-						{ ...options, replace: true },
-					),
-				);
 			},
 			models: {
 				current: () => structuredClone(modelAccess().current()),

@@ -153,18 +153,10 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		pi.ui.notify(pi.isBusy() ? `思考等级: ${e.level}（当前回合结束后生效）` : `思考等级: ${e.level}`, "info", 2000);
 	});
 
-	pi.registerCommand({
-		name: "compact",
-		description: "压缩会话历史释放上下文空间",
-		hasArgs: true,
-		argumentHint: "[instruction]",
-		handler: (arg) => pi.compact(arg || undefined),
-	});
-
-	pi.onHook("turn.beforeCompact", () => {
-		pi.ui.notify("正在压缩会话…", "info", 0);
-		return undefined; // 观察挂点：不取消压缩（取消语义留给真正需要它的扩展）
-	});
+	// P6c：/compact 命令归 official compaction capability 端到端拥有；
+	// 旧 pi.compact → Subject.compact → canonical 截断链路整体退役。
+	// beforeCompact 干预挂点随 canonical 截断退役（无压缩提交即无取消语义），
+	// 压缩进度由 session_compact / session_compact_failed 事实事件表达。
 
 	pi.on("session_compact", (e) => {
 		pi.ui.notify("会话已压缩", "info", 2500);
@@ -182,8 +174,8 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		refreshUsageMeter();
 	});
 
-	pi.on("session_compact_failed", () => {
-		pi.ui.notify("会话压缩失败", "warning", 3000);
+	pi.on("session_compact_failed", (e) => {
+		pi.ui.notify(`会话压缩失败：${e.error}`, "warning", 3000);
 	});
 
 	pi.registerCommand({

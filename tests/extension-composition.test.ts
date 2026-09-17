@@ -5,17 +5,57 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExtensionRunner, createPrintUI, type ExtensionAPI } from "../src/extensions/runner.js";
 import { ToolBroker, type Tool } from "../src/tools/broker.js";
-import { Subject } from "../src/agent/loop.js";
-import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
-import { projectAgentHistory } from "../src/session/recovery.js";
-import { mockModel } from "./helpers/mock-provider.js";
-import type { ModelStreamFn } from "../src/core/types.js";
 import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
-import { ModelRegistry } from "../src/ai/providers.js";
 import { parseArgs } from "../src/cli/args.js";
+import activateCompaction from "../src/extensions/compaction/index.js";
+import { mockModel } from "./helpers/mock-provider.js";
+import type { Model, ModelStreamFn } from "../src/core/types.js";
 
 const directories: string[] = [];
 const runners: ExtensionRunner[] = [];
+
+/** P6c：compaction capability 的 /compact 事实出口测试的模型装配。 */
+const compactionModel = (): Model => mockModel({ id: "mock", name: "mock", contextWindow: 50_000 });
+const summarizingStream = (summary: string | Error): { stream: ModelStreamFn; summaryCalls: () => number } => {
+	let calls = 0;
+	const stream: ModelStreamFn = async (_m, req, emit) => {
+		calls++;
+		if ((req.messages[0]?.content ?? "").includes("上下文摘要助手")) {
+			if (summary instanceof Error) throw summary;
+			emit({ kind: "text", text: summary });
+		} else {
+			emit({ kind: "text", text: "ok" });
+		}
+		emit({ kind: "finish", reason: "stop" });
+	};
+	return { stream, summaryCalls: () => calls };
+};
+const bigHistory = (): { role: "user" | "assistant"; content: string }[] =>
+	Array.from({ length: 30 }, (_, index) =>
+		index % 2 === 0 ? { role: "user" as const, content: `问${index} ${"词".repeat(3_000)}` } : { role: "assistant" as const, content: `答${index} ${"词".repeat(3_000)}` },
+	);
+const compactionHost = (cwd: string, stream: ModelStreamFn) => {
+	let value!: ExtensionRunner;
+	value = runner(cwd, {
+		models: {
+			current: () => compactionModel(),
+			list: () => [compactionModel()],
+			groups: () => [],
+			resolve: () => compactionModel(),
+			select: async () => {},
+			thinkingLevel: () => undefined,
+			setThinkingLevel: () => {},
+			stream: ((model, request, onDelta, signal) => stream(model, request, onDelta, signal)) as ModelStreamFn,
+		} as never,
+		// capability 的 anchorId 取主线头 entry id；无 journal 的纯扩展层测试给一条合成主线头。
+		history: () => [{ kind: "message", id: "head", seq: 1, timestamp: "", message: { role: "user", content: "head" } }] as never,
+		// pi.emitEvent 的装配：capability 事实进扩展事件总线（同宿主真实装配）。
+		emitRuntimeEvent: (event) => value.emit(event),
+		onCustomEntry: async () => {},
+	});
+	return value;
+};
+
 afterEach(async () => {
 	for (const runner of runners.splice(0)) await runner.dispose();
 	await Promise.all(directories.splice(0).map((p) => rm(p, { recursive: true, force: true })));
@@ -54,10 +94,6 @@ const echo = (value: string): Tool => ({
 	},
 	run: async () => ({ result: value, status: "succeeded" }),
 });
-const stream: ModelStreamFn = async (_m, _r, emit) => {
-	emit({ kind: "text", text: "answer" });
-	emit({ kind: "finish", reason: "stop" });
-};
 
 describe("extension composition", () => {
 	it("calls independent services, restores explicit replacement, and rejects disposed consumers", async () => {
@@ -231,151 +267,44 @@ describe("extension composition", () => {
 	});
 });
 
-describe("replaceable compaction", () => {
-	it("commits an extension compactor proposal through the manual compact flow", async () => {
-		const host = runner(await temp());
-		const reasons: string[] = [];
-		const api = await activate(host, "summary");
-		api.registerCompactor(async (request) => {
-			reasons.push(request.reason);
-			return { summary: "extension summary", keepFrom: request.suggestedKeepFrom };
-		});
-		const subject = new Subject(mockModel(), stream, new ToolBroker(), {
-			compactor: host.compactor,
-		});
-		subject.addHistory([
-			{ role: "user", content: "old" },
-			{ role: "assistant", content: "previous answer" },
-		]);
-		await subject.compact();
-		expect(subject.historySnapshot()[0]).toMatchObject({ role: "compactionSummary", summary: "extension summary" });
-		// P6b：自动压缩编排退役——compactor 槽只服务 manual 流。
-		expect(reasons).toEqual(["manual"]);
+// P6c：Subject.compact/registerCompactor/resolveCompactionResult 退役后，
+// compaction capability 的事件出口契约——事实经 pi.emitEvent 进扩展事件
+// 总线（builtin UI 是消费者），不再进宿主 subject.dispatch 流。
+describe("compaction capability event contract", () => {
+	it("broadcasts session_compact after a forced trim with summary persisted via appendEntry", async () => {
+		const { stream, summaryCalls } = summarizingStream("总线摘要");
+		const host = compactionHost(await temp(), stream);
+		const seen: string[] = [];
+		host.on("session_compact", () => seen.push("compact"));
+		await activate(host, "compaction", activateCompaction);
+		const force = host.registry.getCommand("compact");
+		expect(force?.handler).toBeDefined();
+
+		const messages = bigHistory();
+		await force?.handler?.("");
+		const trimmed = await host.runTransformContext(messages as never);
+		expect(summaryCalls()).toBe(1);
+		// 摘要消息紧随（无 leading system），尾部保留在预算内。
+		expect((trimmed[0] as { content: string }).content).toBe("[历史摘要] 总线摘要");
+		expect(trimmed.length).toBeLessThan(messages.length);
+		expect(seen).toEqual(["compact"]);
 	});
-	it("does not fall back after strategy failure or commit an invalid cut", async () => {
-		const fallback = vi.fn(stream);
-		const host = runner(await temp());
-		const api = await activate(host, "summary");
-		let proposal: "throw" | "invalid" = "throw";
-		api.registerCompactor(async () => {
-			if (proposal === "throw") throw new Error("summary failed");
-			return { summary: "bad cut", keepFrom: 2 };
-		});
-		const subject = new Subject(mockModel(), fallback, new ToolBroker(), { compactor: host.compactor });
-		subject.addHistory([
-			{ role: "user", content: "old" },
-			{ role: "assistant", content: "", tool_calls: [{ id: "c", name: "x", args: {} }] },
-			{ role: "tool", tool_call_id: "c", content: "ok", status: "succeeded" },
-		]);
-		const before = subject.historySnapshot();
-		await expect(subject.compact()).rejects.toThrow("summary failed");
-		proposal = "invalid";
-		await expect(subject.compact()).rejects.toThrow("切断");
-		expect(subject.historySnapshot()).toEqual(before);
-		expect(fallback).not.toHaveBeenCalled();
-	});
-	it("cancellation and store failure preserve original history", async () => {
-		const store = new MemorySessionStore();
-		const save = vi.spyOn(store, "appendCompaction").mockRejectedValue(new Error("disk failed"));
-		const subject = new Subject(mockModel(), stream, new ToolBroker(), {
-			store,
-			compactor: async () => ({ summary: "new", keepFrom: 1 }),
-		});
-		subject.addHistory([
-			{ role: "user", content: "old" },
-			{ role: "assistant", content: "answer" },
-		]);
-		const before = subject.historySnapshot();
-		await expect(subject.compact()).rejects.toThrow("disk failed");
-		expect(subject.historySnapshot()).toEqual(before);
-		save.mockRestore();
-		let started!: () => void;
-		const ready = new Promise<void>((r) => {
-			started = r;
-		});
-		const cancelled = new Subject(mockModel(), stream, new ToolBroker(), {
-			compactor: (_request, signal) =>
-				new Promise((_resolve, reject) => {
-					started();
-					signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-				}),
-		});
-		cancelled.addHistory(before);
-		const work = cancelled.compact();
-		const failure = expect(work).rejects.toThrow();
-		await ready;
-		cancelled.interrupt();
-		await failure;
-		expect(cancelled.historySnapshot()).toEqual(before);
-		expect(cancelled.isBusy()).toBe(false);
-	});
-	it("recovers exactly the committed extension summary and retained tail", async () => {
-		const cwd = await temp();
-		const file = join(cwd, "session.jsonl");
-		const opened = await openJsonlSession(file);
-		const subject = new Subject(mockModel(), stream, new ToolBroker(), {
-			store: opened.store,
-			compactor: async () => ({ summary: "persisted", keepFrom: 2 }),
-		});
-		await subject.pushInput("one");
-		await subject.pushInput("two");
-		await subject.compact();
-		const expected = subject.historySnapshot();
-		await opened.store.close();
-		const reopened = await openJsonlSession(file);
-		expect(projectAgentHistory(reopened.snapshot.entries)).toEqual(expected);
-		await reopened.store.close();
+
+	it("broadcasts session_compact_failed when the summarizer fails and passes the request through", async () => {
+		const { stream } = summarizingStream(new Error("summary down"));
+		const host = compactionHost(await temp(), stream);
+		const failures: string[] = [];
+		host.on("session_compact_failed", (event) => failures.push((event as { error?: string }).error ?? ""));
+		await activate(host, "compaction", activateCompaction);
+		const force = host.registry.getCommand("compact");
+		const messages = bigHistory();
+		await force?.handler?.("");
+		const passed = await host.runTransformContext(messages as never);
+		expect(passed).toEqual(messages);
+		expect(failures.some((error) => error.includes("summary down"))).toBe(true);
 	});
 });
 
-it("restores overridden model and provider registrations with their original facts", async () => {
-	const registry = new ModelRegistry();
-	const old = { id: "provider", stream };
-	registry.registerProvider(old);
-	registry.registerModel(mockModel({ id: "model", providerId: "provider", imageInput: true }));
-	const newer = { id: "provider", stream: vi.fn(stream) };
-	const undoProvider = registry.registerProvider(newer, { replace: true });
-	const undoModel = registry.registerModel(mockModel({ id: "model", providerId: "provider", imageInput: false }), {
-		replace: true,
-	});
-	expect(registry.getProvider("provider")).toBe(newer);
-	expect(registry.resolve("provider/model").imageInput).toBe(false);
-	undoModel();
-	undoProvider();
-	expect(registry.getProvider("provider")).toBe(old);
-	expect(registry.resolve("provider/model").imageInput).toBe(true);
-});
-
-it("an extension compactor serves the manual compact flow", async () => {
-	const host = runner(await temp());
-	const api = await activate(host, "summary");
-	api.registerCompactor(async () => ({ summary: "policy summary", keepFrom: 1 }));
-	const subject = new Subject(mockModel(), stream, new ToolBroker(), {
-		compactor: host.compactor,
-	});
-	subject.addHistory([
-		{ role: "user", content: "old" },
-		{ role: "assistant", content: "old answer" },
-	]);
-	await subject.compact();
-	expect(subject.historySnapshot()[0]).toMatchObject({ summary: "policy summary" });
-});
-
-it("rejects a compactor proposal that keeps the whole history", async () => {
-	const host = runner(await temp());
-	const api = await activate(host, "keep-everything");
-	api.registerCompactor(async (request) => ({ summary: "no-op summary", keepFrom: request.history.length }));
-	const subject = new Subject(mockModel(), stream, new ToolBroker(), {
-		compactor: host.compactor,
-	});
-	subject.addHistory([
-		{ role: "user", content: "old" },
-		{ role: "assistant", content: "old answer" },
-	]);
-	// The probe must reject it: accepting would persist a summary plus the messages it summarizes.
-	await expect(subject.compact()).rejects.toThrow("compaction 保留位置无效");
-	expect(subject.historySnapshot().some((message) => message.role === "compactionSummary")).toBe(false);
-});
 
 it("skills and filesystem extensions compose through services and the existing tool execution pipeline", async () => {
 	const cwd = await temp();

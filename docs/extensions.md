@@ -32,7 +32,7 @@ ActivationScope 拥有注册、取消信号和工具、服务、模型流、上�
 | models.current/list/groups/resolve/select/stream | 获取事实、分组目录、选择模型、使用现有传输，不暴露凭据 |
 | models.thinkingLevel / setThinkingLevel | 思考档位事实与设置（与宿主同一应用纪律） |
 | usage / isBusy / reload / shutdown | 主体用量与忙闲事实；扩展重载与消费者关闭流程 |
-| registerCompactor / compact | 替换压缩策略或请求手动压缩 |
+| history / emitEvent | 主线 hydrated entries 只读访问；capability 事实出口（session_compact 等广播） |
 | registerToolRenderer / registerMarkdownTransformer | 变换显示，不改变执行与模型上下文 |
 
 callTool 的 ownerId 是实际 Subject，callerId 是调用扩展；嵌套调用有独立 callId。程序调用写入带来源的 extension.tool 自定义条目，不伪造 assistant tool call，也不自动加入模型历史。调用者通过工具返回、sendMessage 或 submitInput 决定如何继续传递结果。
@@ -49,21 +49,16 @@ callService 使用可 structuredClone 的数据。实现收到 callerId 和合�
 
 贡献内容应标明来源。昂贵检索、索引或模型调用尽量异步准备，贡献阶段读取结果；没有引入隐式轮次、并发或容量上限。
 
-## 压缩策略与提交
+## 压缩策略与提交（P6c）
 
-手动和自动压缩共用：触发判断 → 只读快照 → 提案 → 校验 → 持久化 → 更新历史 → 完成事件。
+压缩（上下文窗口管理）由 official compaction capability 端到端拥有，唯一入口是 `turn.transformContext` 每请求裁剪（Interceptor 链）。journal 保留全量历史，任何压缩路径都不再截断它；滚动摘要以 `uina.compaction.summary` custom entry（Auxiliary）持久化，重启后从 `pi.history()` 重载。
 
-registerCompactor(fn, { shouldCompact? })：
+- 自动压缩：估算超窗口预算（reserve 随窗口缩放）时按 keepRecent 语义裁剪当前请求上下文，摘要覆盖与裁剪边界同点对齐（无未摘要间隙）；摘要锚定生成时主线头 entry id，回溯切断锚即失效重生成。
+- 手动压缩：`/compact [instruction]` 命令（capability 注册）只设强制标志，下一次请求的 transformContext 强制裁剪并携带 instruction；没有下一个请求就没有压缩对象。失败经 `session_compact_failed` 事实事件可见。
+- 扩展自定义裁剪策略：在同一条 `turn.transformContext` Interceptor 链上注册（后激活者收到前者的输出，链式传递）；与 Memory/RAG 等注入扩展共存。
+- 事实出口：`session_compact` / `session_compact_failed` 经 `pi.emitEvent` 进扩展事件总线（Hook ≠ Event：transformContext 是干预注册点，session_compact 是事实广播）。
 
-- shouldCompact 是同步策略，收到文本 token 估算、历史条数、模型事实和默认判断；undefined 使用默认判断。
-- fn 收到 reason、history、suggestedKeepFrom、tokensBefore、model、instruction，以及 AbortSignal。
-- 返回 { summary, keepFrom }；keepFrom 是当前快照索引，history.length 表示全部旧消息被摘要替代。
-- undefined 明确委托默认算法；抛错不自动回退。
-- turn.beforeCompact 保留取消/通知用途（onHook 注册），不承担策略竞争。
-
-只有运行时提交：摘要非空、保留位置有效、不切断工具调用与结果。先写入一条 compaction，再更新历史；写入失败、取消或策略失败不替换历史。已移除分别返回 history/compaction 的 prepareNextTurn 旁路。
-
-默认摘要算法保留为裸 Subject 的默认值。扩展可替换生成、保留位置和自动触发。默认自动判断要求已知 contextWindow；显式扩展策略可依据其他事实触发，不会生成虚构窗口。字符 token 估算不覆盖图像成本，不能视为完整多模态用量。
+旧 canonical 压缩记录（独立 compaction record 与 rewind record 内嵌 compaction 载荷）按数据模型原则 legacy 化：旧 journal 由投影照常解释，新链路零产生。`SessionStore` 接口已无 `appendCompaction`。
 
 ## 图片与展示
 
@@ -85,7 +80,7 @@ Markdown transformer 只处理 user/assistant 显示文本，带角色、流式�
 
 - [workspace-tools](../src/extensions/workspace-tools/index.ts)：默认内置文件读写、图片读取、文件 renderer；Host `workspaceTools: false` 可禁用，公开 replace 注册可替换。
 - [skills](../examples/extensions/skills/index.ts)：skills.discover/v1、上下文目录与 read_skill；后者调用 workspace-tools 的 read_file。
-- [custom-compaction](../examples/extensions/custom-compaction/index.ts)：用公共 models.stream 提交摘要。
+- [custom-compaction](../examples/extensions/custom-compaction/index.ts)：在 turn.transformContext 链上提供自定义裁剪策略。
 
 技能示例展示组合合同，不声称实现完整 Pi skill 元数据规范。目录来源、技能选择和提示词属于扩展；文件工具没有下沉到 Core。
 

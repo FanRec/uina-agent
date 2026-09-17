@@ -117,4 +117,62 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 			await rm(cwd, { recursive: true, force: true });
 		}
 	});
+
+	it("手动 /compact：下一请求强制裁剪并携带 instruction；失败广播 session_compact_failed 且请求透传", async () => {
+		const { UinaHost } = await import("../src/host/host.js");
+		// force 边界按 MANUAL_KEEP_TOKENS(20_000) 计算：种子 ≈ 22.5k tokens 必须超过它。
+		const history = Array.from({ length: 30 }, (_, index) =>
+			index % 2 === 0 ? { role: "user" as const, content: `问${index} ${"词".repeat(3_000)}` } : { role: "assistant" as const, content: `答${index} ${"词".repeat(3_000)}` },
+		);
+		const rules: ScriptRule[] = [
+			{ match: (req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"), produce: () => [{ kind: "text", text: "手动摘要内容" }] },
+			{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] },
+		];
+		const provider = scriptedProvider(rules, { contextWindow: 50_000 });
+		const cwd = await mkdtemp(join(tmpdir(), "uina-manual-"));
+		try {
+			const host = await UinaHost.create({ cwd, provider, model: provider.model, sessionPath: join(cwd, "session.jsonl") });
+			await host.start();
+
+			// 预算内（自动路径不触发），/compact 强制受理。
+			for (const message of history) host.subject.addHistory([message]);
+			const before = provider.calls.filter((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手")).length;
+			await host.commands.dispatch("/compact 关注决策");
+			await host.submitText("强制一轮", "direct");
+			await host.waitForIdle();
+
+			const summaryCalls = provider.calls.filter((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"));
+			expect(summaryCalls.length).toBe(before + 1);
+			// instruction 注入摘要提示词。
+			expect(summaryCalls.at(-1)?.messages.at(-1)?.content).toContain("额外关注：关注决策");
+			// 下一次请求以摘要开头（leading system 原位）。
+			const last = provider.calls.at(-1);
+			expect(last?.messages[1]?.content).toBe("[历史摘要] 手动摘要内容");
+			// 内存视图与 journal 仍全量：无 canonical 截断。
+			expect(host.subject.historySnapshot().some((m) => m.content === "[历史摘要] 手动摘要内容")).toBe(false);
+			const { readFile: rf } = await import("node:fs/promises");
+			expect(await rf(join(cwd, "session.jsonl"), "utf8")).toContain("uina.compaction.summary");
+			await host.dispose();
+
+			// 失败路径：摘要生成抛错 → session_compact_failed 广播，请求透传。
+			const failing = scriptedProvider([
+				{ match: (req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"), produce: () => { throw new Error("compact down"); } },
+				{ match: () => true, produce: () => [{ kind: "text", text: "ok" }] },
+			], { contextWindow: 50_000 });
+			const failDir = await mkdtemp(join(tmpdir(), "uina-manual-fail-"));
+			const host2 = await UinaHost.create({ cwd: failDir, provider: failing, model: failing.model, sessionPath: join(failDir, "session.jsonl") });
+			await host2.start();
+			for (const message of history) host2.subject.addHistory([message]);
+			await host2.commands.dispatch("/compact");
+			await host2.submitText("失败一轮", "direct");
+			await host2.waitForIdle();
+			// 摘要失败 → 强制路径透传原上下文（无摘要消息），事件可见性由
+			// extension-composition 的 capability 事件契约测试钉住。
+			expect(failing.calls.at(-1)?.messages.some((m) => (m.content ?? "").startsWith("[历史摘要] "))).toBe(false);
+			await host2.dispose();
+			await rm(failDir, { recursive: true, force: true });
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
 });

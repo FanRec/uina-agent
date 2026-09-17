@@ -1,49 +1,29 @@
 import type { ExtensionAPI } from "../../../src/extensions/index.js";
-/** Replaces summary generation while the runtime retains cancellation and commit ownership. */
+/**
+ * P6c 后压缩（上下文窗口管理）由官方 compaction capability 在
+ * turn.transformContext 每请求拥有；本示例演示扩展在同一条 Interceptor 链上
+ * 提供自己的裁剪策略（与官方 capability 链式组合：后激活者收到前者的输出）。
+ * 这里不做 LLM 摘要——只折叠中段历史，保留头部任务陈述与最近工作。
+ */
 export default function activate(api: ExtensionAPI): void {
-	api.registerCompactor(async (request, signal) => {
-		let summary = "";
-		let finished = false;
-		await api.models.stream(
-			request.model,
-			{
-				messages: [
-					{
-						role: "system",
-						content:
-							request.instruction ??
-							"Summarize the supplied history, preserving facts, sources, preferences and unresolved commitments. Return only the summary.",
-					},
-					{
-						role: "user",
-						content: request.history
-							.slice(0, request.suggestedKeepFrom)
-							.map(
-								(message) =>
-									"[" +
-									message.role +
-									"] " +
-									message.content +
-									(message.images?.length
-										? " [images: " + message.images.map((image) => image.alt ?? image.mimeType).join(", ") + "]"
-										: ""),
-							)
-							.join("\n"),
-					},
-				],
-			},
-			(delta) => {
-				if (delta.kind === "text") summary += delta.text;
-				if (delta.kind === "tool_call") throw new Error("Summarizer returned a tool call");
-				if (delta.kind === "finish") {
-					if (delta.reason !== "stop") throw new Error("Summary incomplete: " + delta.reason);
-					finished = true;
-				}
-			},
-			signal,
-		);
-		signal.throwIfAborted();
-		if (!finished || !summary.trim()) throw new Error("Summary is empty or incomplete");
-		return { summary, keepFrom: request.suggestedKeepFrom };
+	api.onHook("turn.transformContext", async (messages) => {
+		const KEEP_HEAD = 2;
+		const KEEP_TAIL = 6;
+		if (messages.length <= KEEP_HEAD + KEEP_TAIL) return undefined;
+		const middle = messages.slice(KEEP_HEAD, messages.length - KEEP_TAIL);
+		const digest =
+			`[${middle.length} 条早期消息已折叠] ` +
+			middle
+				.filter((message) => message.role === "user")
+				.slice(0, 3)
+				.map((message) => message.content.slice(0, 80))
+				.join(" / ");
+		return {
+			messages: [
+				...messages.slice(0, KEEP_HEAD),
+				{ role: "user", content: digest },
+				...messages.slice(-KEEP_TAIL),
+			],
+		};
 	});
 }

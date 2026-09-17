@@ -238,7 +238,6 @@ export class UinaHost {
 			},
    cwd: options.cwd,
    extensionPaths: options.extensionPaths,
-   onCompact: (instruction) => subject.compact(instruction),
    models: { current: () => subject.getModel(), list: () => models.listModels(), groups: () => models.groups(), resolve: name => models.resolve(name), select: name => subject.setModel(models.resolve(name)), stream: streamFn },
 			usage: () => ({ used: subject.getUsedTokens(), contextWindow: subject.getContextWindow(), segments: subject.getContextSegments() }),
 			thinkingLevel: () => subject.getThinkingLevel(),
@@ -277,7 +276,6 @@ export class UinaHost {
 			store,
 			thinkingLevel,
 			runtimeHooks: extensionHost.runtimeHooks(),
-			compactor: extensionHost.compactor,
 			projection: options.projection,
 		});
 

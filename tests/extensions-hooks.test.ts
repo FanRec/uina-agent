@@ -4,7 +4,6 @@ import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
 import type { RuntimeHooks } from "../src/runtime/hooks.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { Subject } from "../src/agent/loop.js";
-import { streamCompactor } from "../src/agent/compaction.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta, ThinkingLevel } from "../src/core/types.js";
 import { mockModel } from "./helpers/mock-provider.js";
@@ -230,68 +229,6 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		// 3. 热切换回支持思考的模型：自动恢复到 high
 		await subject.setModel(thinkingModel);
 		expect(subject.getThinkingLevel()).toBe("high");
-	});
-
-	it("dispatches session_compact events and allows cancelling via session_before_compact", async () => {
-		const host = new ExtensionHost();
-		let cancelNext = true;
-		let beforeCalled = false;
-		let compactCalled = false;
-
-		host.onHook("turn.beforeCompact", () => {
-			beforeCalled = true;
-			if (cancelNext) return { cancel: true };
-		});
-		host.on("session_compact", () => {
-			compactCalled = true;
-		});
-
-		const pair = mockPair([{ kind: "text", text: "历史摘要内容" }, { kind: "finish", reason: "stop" }]);
-
-		const subject = new Subject(
-			pair.model,
-			pair.stream,
-			new ToolBroker(),
-			{ runtimeHooks: createRuntimeHooks(host), compactor: streamCompactor(pair.stream) },
-		);
-
-		subject.addHistory([
-			{ role: "user", content: "第一条" },
-			{ role: "assistant", content: "回复一" },
-			{ role: "user", content: "第二条" },
-			{ role: "assistant", content: "回复二" },
-		]);
-
-		// 第一次：被 session_before_compact cancel 阻断
-		await subject.compact();
-		expect(beforeCalled).toBe(true);
-		expect(compactCalled).toBe(false);
-
-		// 第二次：允许压缩
-		cancelNext = false;
-		await subject.compact();
-		expect(compactCalled).toBe(true);
-	});
-
-	it("在未达到压缩阈值或刚聊一句时，绝不触发 session_before_compact", async () => {
-		const host = new ExtensionHost();
-		let beforeCalled = false;
-		host.onHook("turn.beforeCompact", () => {
-			beforeCalled = true;
-		});
-
-		const pair = mockPair([{ kind: "text", text: "正常回复" }, { kind: "finish", reason: "stop" }], "mock", 128000);
-
-		const subject = new Subject(
-			pair.model,
-			pair.stream,
-			new ToolBroker(),
-			{ runtimeHooks: createRuntimeHooks(host) },
-		);
-
-		// 发送单条消息（一问一答）
-		await subject.pushInput("你好呀");
-		expect(beforeCalled).toBe(false);
 	});
 
 	it("transforms context before sending request to provider", async () => {

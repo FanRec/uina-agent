@@ -20,7 +20,6 @@ export function guardRuntimeHooks(hooks: RuntimeHooks): RuntimeHooks {
 		turn: Object.freeze({
 			prepare: async (input) => copyPrepare(await hooks.turn.prepare(readonlySnapshot(input))),
 			transformContext: async (messages) => copyMessages(await hooks.turn.transformContext(readonlySnapshot(messages))),
-			beforeCompact: async (input) => Object.freeze({ ...(await hooks.turn.beforeCompact(readonlySnapshot(input))) }),
 			shouldStop: async (input) => Object.freeze({ ...(await hooks.turn.shouldStop(readonlySnapshot(input))) }),
 		}),
 		tools: Object.freeze({

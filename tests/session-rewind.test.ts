@@ -3,9 +3,7 @@ import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store
 import { createSessionAccess } from "../src/session/access.js";
 import { commitRewindTransition } from "../src/agent/rewind.js";
 import { resolveProjectionPolicy } from "../src/agent/projection.js";
-import { buildContext, estimateContextTokens } from "../src/agent/context.js";
-import type { AgentMessage, ModelStreamFn } from "../src/core/types.js";
-import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
+import type { ModelStreamFn } from "../src/core/types.js";
 import { projectAgentHistory, protectRewindContext, summarizeAbandonedEffects, projectInputMessage } from "../src/session/recovery.js";
 import { BranchInspectorOverlay } from "../src/ui/components/overlays/branch-inspector.js";
 import { listSessionBranches, listSessionNodes, readSessionBranch, readSessionNode } from "../src/session/navigation.js";
@@ -138,13 +136,9 @@ describe("rewind runtime safe points", () => {
 		expect(store.readRecords().some(record=>record.kind==="rewind")).toBe(false);
 		expect(subject.queuedSnapshot()[0].text).toBe("latest instruction");
 	});
-	it("rejects an oversized reconstructed context before committing", async () => {
-		const store=new MemorySessionStore();const records=await seed(store);
-		const subject=new Subject(mockModel({contextWindow:1}),async()=>{},new ToolBroker(),{store});
-		subject.addHistory(projectAgentHistory(store.state.entries));
-		await expect(subject.requestRewind({targetId:records[0].id,reason:"wrong"},"test")).rejects.toThrow("估算超过");
-		expect(store.readRecords().some(record=>record.kind==="rewind")).toBe(false);
-	});
+	// P6c：超限回溯拒绝门退役——回溯总是提交，窗口压力由 capability 的
+	// transformContext 每请求裁剪收敛（正向覆盖见 "trims a rewind that
+	// re-exposes oversized history instead of refusing it"）。
 	it("rebuilds the pre-compaction mainline and drops the abandoned summary when rewinding across a compaction", async () => {
 		const store=new MemorySessionStore();
 		await store.appendMessage({role:"user",content:"PRE-COMPACTION USER"});
@@ -249,12 +243,12 @@ describe("rewind composition", () => {
 		expect(store.readRecords().some(record=>record.kind==="rewind")).toBe(false);
 		expect(()=>api.session.list()).toThrow("失效");
 	});
-	it("keeps the rewind notice through live compaction and displays it in restored transcripts", async () => {
+	it("keeps the rewind notice in the mainline and displays it in restored transcripts", async () => {
 		const store=new MemorySessionStore();const records=await seed(store);
-		const subject=new Subject(mockModel(),async(_m,_r,emit)=>{emit({kind:"text",text:"new plan"});emit({kind:"finish",reason:"stop"});},new ToolBroker(),{store,compactor:async request=>({summary:"用户要求停止写文件；原方案已退出。",keepFrom:request.history.length-1})});
+		const subject=new Subject(mockModel(),async(_m,_r,emit)=>{emit({kind:"text",text:"new plan"});emit({kind:"finish",reason:"stop"});},new ToolBroker(),{store});
 		subject.addHistory(projectAgentHistory(store.state.entries));
 		await subject.requestRewind({targetId:records[0].id,reason:"wrong"},"test");
-		await subject.compact();
+		await subject.pushInput("继续");
 		expect(subject.historySnapshot().some(message=>message.content.includes("会话回溯"))).toBe(true);
 		const entries=store.state.entries;
 		const transcript=new TranscriptContainer();transcript.loadSession(entries);
@@ -476,12 +470,6 @@ it("rejects session operations when subject has no store configured", async () =
 
 describe("commitRewindTransition mechanism", () => {
 	const context = () => ({
-		model: mockModel(),
-		systemPrompt: "sys",
-		tools: [],
-		keepRecentTokens: 20_000,
-		stream: async () => {},
-		providerHooks: NO_RUNTIME_HOOKS.provider,
 		projection: resolveProjectionPolicy(),
 	});
 	it("appends exactly one rewind record and returns the projected mainline", async () => {
@@ -498,24 +486,13 @@ describe("commitRewindTransition mechanism", () => {
 		expect(commit.rewindId).toBe((rewindRecords[0] as { id: string }).id);
 		expect(commit.fromId).toBe(records[2].id);
 		expect(commit.targetId).toBe(records[0].id);
-		expect(commit.compacted).toBeNull();
 		// 主线投影回退到目标祖先，不再包含被放弃的消息。
 		expect(commit.history.some((message) => message.role === "user" && message.content === "original task")).toBe(true);
 		expect(commit.history.some((message) => message.content === "bad plan")).toBe(false);
 	});
-	it("persists nothing when the reconstructed projection exceeds the model window", async () => {
-		const store = new MemorySessionStore();
-		const records = await seed(store);
-		await expect(
-			commitRewindTransition(
-				store,
-				{ request: { targetId: records[0].id, reason: "wrong" }, source: "test", requestId: "req-2" },
-				{ ...context(), model: mockModel({ contextWindow: 1 }) },
-				new AbortController().signal,
-			),
-		).rejects.toThrow("估算超过");
-		expect(store.readRecords().some((record) => record.kind === "rewind")).toBe(false);
-	});
+	// P6c：超限回溯拒绝门退役——回溯总是提交，窗口压力由 capability 的
+	// transformContext 每请求裁剪收敛（端到端覆盖见 "trims a rewind that
+	// re-exposes oversized history"）。
 	it("refuses to commit when the abort signal fires before the journal append", async () => {
 		const store = new MemorySessionStore();
 		const records = await seed(store);
@@ -529,115 +506,6 @@ describe("commitRewindTransition mechanism", () => {
 				controller.signal,
 			),
 		).rejects.toThrow();
-		expect(store.readRecords().some((record) => record.kind === "rewind")).toBe(false);
-	});
-
-	it("rescues an oversized rewind with the registered compactor and persists the compaction", async () => {
-		const store = new MemorySessionStore();
-		const content = (marker: string) => `${marker} ${"x".repeat(2000)}`;
-		const messages: AgentMessage[] = [];
-		for (let i = 0; i < 16; i++) {
-			const message = { role: i % 2 === 0 ? "user" : "assistant", content: content(`msg-${i}`) } as AgentMessage;
-			messages.push(message);
-			await store.appendMessage(message);
-		}
-		const records = store.readRecords();
-		// 回溯目标 m12（前 13 条为主线的祖先投影）。窗口 = 该投影估算 - 1，
-		// 保证投影超限（含实现侧额外计入的连续性提示），且压缩后必然放得下。
-		const projectedTokens = estimateContextTokens(
-			buildContext({ history: messages.slice(0, 13), systemPrompt: "sys" }),
-			{ tools: [], includeThinking: false },
-		).tokens;
-		let summaryCalls = 0;
-		const commit = await commitRewindTransition(
-			store,
-			{ request: { targetId: records[12].id, reason: "model window shrank" }, source: "test", requestId: "req-rescue" },
-			{
-				...context(),
-				model: mockModel({ contextWindow: projectedTokens - 1 }),
-				keepRecentTokens: 3400,
-				compactor: async (request) => {
-					summaryCalls++;
-					// 切点落在回合起点 m6（user）：摘要器恰好调用一次，不拆回合；
-					// 嵌入压缩接线后，这次摘要的结果就是生效上下文，不再有第二次重算。
-					return { summary: "rescued summary", keepFrom: request.suggestedKeepFrom };
-				},
-			},
-			new AbortController().signal,
-		);
-		expect(summaryCalls).toBe(1);
-		expect(commit.compacted?.summary).toContain("rescued summary");
-		const rewindRecords = store.readRecords().filter((record) => record.kind === "rewind");
-		expect(rewindRecords).toHaveLength(1);
-		const persisted = (rewindRecords[0] as { compaction?: { summary: string; retainedTail: unknown[] } }).compaction;
-		expect(persisted?.summary).toContain("rescued summary");
-		// 新契约：采纳的历史 = 嵌入压缩应用后的投影 —— compactionSummary 开头，
-		// 连续性提示由 protectRewindContext 重注入到摘要之后（不在尾位）。
-		expect(commit.history[0]?.role).toBe("compactionSummary");
-		expect(commit.history[0]?.content).toContain("rescued summary");
-		expect(commit.history[1]?.role).toBe("custom");
-		expect((commit.history[1] as { customType?: string }).customType).toBe("session-continuity");
-		expect(commit.history.some((message) => message.role === "user" && message.content.startsWith("msg-6"))).toBe(true);
-		expect(commit.history.some((message) => message.content.startsWith("msg-5 "))).toBe(false); // 被摘要掉的前缀
-		expect(commit.history.some((message) => message.content.startsWith("msg-13"))).toBe(false); // 被放弃切片
-	});
-
-	it("delegates an oversized rewind projection to an external compactor without touching the summarizer", async () => {
-		const store = new MemorySessionStore();
-		await store.appendMessage({ role: "user", content: "big premise " + "y".repeat(800) });
-		await store.appendMessage({ role: "user", content: "tail" }); // 回溯目标不能是末条：必须留非空被放弃切片
-		const records = store.readRecords();
-		const requests: { reason: string; instruction: string; suggestedKeepFrom: number; tokensBefore: number }[] = [];
-		const commit = await commitRewindTransition(
-			store,
-			{ request: { targetId: records[0].id, reason: "wrong direction" }, source: "test", requestId: "req-ext" },
-			{
-				...context(),
-				model: mockModel({ contextWindow: 150 }),
-				keepRecentTokens: 1,
-				compactor: async (request) => {
-					requests.push(request as { reason: string; instruction: string; suggestedKeepFrom: number; tokensBefore: number });
-					return { summary: "精简摘要", keepFrom: 1 };
-				},
-			},
-			new AbortController().signal,
-		);
-		expect(requests).toHaveLength(1);
-		expect(requests[0].reason).toBe("automatic");
-		expect(requests[0].instruction).toContain("回溯");
-		expect(requests[0].suggestedKeepFrom).toBe(1); // 切点 = 连续性提示（唯一合法切点）
-		expect(requests[0].tokensBefore).toBeGreaterThan(0);
-		expect(commit.compacted?.summary).toBe("精简摘要");
-		// 嵌入压缩接线：采纳的历史以压缩摘要开头，连续性提示紧随其后。
-		expect(commit.history[0]?.role).toBe("compactionSummary");
-		expect(commit.history[0]?.content).toContain("精简摘要");
-		expect(commit.history[1]?.role).toBe("custom");
-		expect((commit.history[1] as { customType?: string }).customType).toBe("session-continuity");
-		const rewindRecords = store.readRecords().filter((record) => record.kind === "rewind");
-		expect(rewindRecords).toHaveLength(1);
-		const persisted = (rewindRecords[0] as { compaction?: { summary: string; retainedTail: unknown[] } }).compaction;
-		expect(persisted?.summary).toBe("精简摘要");
-		expect(persisted?.retainedTail).toHaveLength(1); // keepFrom=1 → 仅剩连续性提示
-	});
-
-	it("rejects the rewind when even the compaction cannot fit the projection", async () => {
-		const store = new MemorySessionStore();
-		await store.appendMessage({ role: "user", content: "big premise " + "y".repeat(800) });
-		await store.appendMessage({ role: "user", content: "tail" });
-		const records = store.readRecords();
-		await expect(
-			commitRewindTransition(
-				store,
-				{ request: { targetId: records[0].id, reason: "wrong" }, source: "test", requestId: "req-hopeless" },
-				{
-					...context(),
-					model: mockModel({ contextWindow: 3 }),
-					keepRecentTokens: 1,
-					compactor: async () => ({ summary: "z".repeat(400), keepFrom: 1 }),
-				},
-				new AbortController().signal,
-			),
-		).rejects.toThrow("压缩后仍约");
 		expect(store.readRecords().some((record) => record.kind === "rewind")).toBe(false);
 	});
 

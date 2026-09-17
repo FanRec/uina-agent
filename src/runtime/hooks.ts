@@ -19,7 +19,6 @@ export interface ProviderHooks {
 export type HookName =
 	| "turn.prepare"
 	| "turn.transformContext"
-	| "turn.beforeCompact"
 	| "turn.shouldStop"
 	| "tools.beforeCall"
 	| "tools.transformResult"
@@ -31,7 +30,6 @@ export type HookName =
 export interface HookInputs {
 	"turn.prepare": { readonly prompt: string; readonly systemPrompt: string };
 	"turn.transformContext": readonly ChatMsg[];
-	"turn.beforeCompact": { readonly tokensBefore: number };
 	"turn.shouldStop": { readonly turnNumber: number; readonly finishReason: FinishReason; readonly reply: string; readonly toolCallCount: number };
 	"tools.beforeCall": { readonly callId: string; readonly name: string; readonly args: Record<string, unknown> };
 	"tools.transformResult": { readonly callId: string; readonly name: string; readonly args: Record<string, unknown>; readonly result: string; readonly status: ToolResultStatus; readonly images?: readonly ImageContent[]; readonly details?: unknown };
@@ -47,7 +45,6 @@ export interface HookInputs {
 export interface HookContributions {
 	"turn.prepare": { readonly messages?: readonly ChatMsg[]; readonly systemPrompt?: string; readonly model?: Model; readonly thinkingLevel?: ThinkingLevel };
 	"turn.transformContext": { readonly messages?: readonly DeepReadonly<ChatMsg>[] };
-	"turn.beforeCompact": { readonly cancel?: boolean };
 	"turn.shouldStop": { readonly stop?: boolean };
 	"tools.beforeCall": { readonly block?: boolean; readonly reason?: string };
 	"tools.transformResult": { readonly result?: string; readonly status?: ToolResultStatus; readonly images?: readonly ImageContent[]; readonly details?: unknown };
@@ -68,7 +65,6 @@ export type HookHandler<K extends HookName> = (
  * | --------------------------- | ------------------------------------------ |
  * | turn.prepare                | systemPrompt/model/thinkingLevel 后写覆盖先写；messages 聚合追加 |
  * | turn.transformContext       | 链式：后一个收到前一个的输出，返回整组替换      |
- * | turn.beforeCompact          | 短路：任一 cancel=true 即取消，后续不再询问     |
  * | turn.shouldStop             | 短路：任一 stop=true 即收尾，后续不再询问       |
  * | tools.beforeCall            | 短路：任一 block=true 即拦截，后续不再询问      |
  * | tools.transformResult       | 链式：后一个收到前一个改写后的结果，逐字段覆盖   |
@@ -86,7 +82,6 @@ export interface RuntimeHooks {
 		 */
 		prepare(input: Readonly<{ prompt: string; systemPrompt: string }>): Promise<Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string; model?: Model; thinkingLevel?: ThinkingLevel }>>;
 		transformContext(messages: readonly DeepReadonly<ChatMsg>[]): Promise<ChatMsg[]>;
-		beforeCompact(input: Readonly<{ tokensBefore: number }>): Promise<Readonly<{ cancel?: boolean }>>;
 		/**
 		 * 回合间停止决策：在工具交换后的续跑点询问；返回 stop 时本轮立即收尾，
 		 * 不再发起下一次模型调用。对应 Pi 的 shouldStopAfterTurn。

@@ -6,7 +6,6 @@ export const NO_RUNTIME_HOOKS: RuntimeHooks = Object.freeze({
 	turn: Object.freeze({
 		prepare: async () => ({}),
 		transformContext: async (messages: readonly DeepReadonly<ChatMsg>[]) => [...messages] as ChatMsg[],
-		beforeCompact: async () => ({}),
 		shouldStop: async () => ({}),
 	}),
 	tools: Object.freeze({

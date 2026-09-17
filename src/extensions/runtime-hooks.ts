@@ -13,7 +13,6 @@ export function createRuntimeHooks(host: ExtensionHost, scope?: RuntimeScopeFilt
 		turn: Object.freeze({
 			prepare: async (input) => Object.freeze(await host.runTurnPrepare(input, scope) ?? {}),
 			transformContext: (messages) => host.runTransformContext(messages as readonly import("../core/types.js").ChatMsg[], scope),
-			beforeCompact: async (input) => Object.freeze({ cancel: await host.runBeforeCompact(input.tokensBefore, scope) }),
 			shouldStop: async (input) => Object.freeze({ stop: await host.runShouldStop(input, scope) }),
 		}),
 		tools: Object.freeze({

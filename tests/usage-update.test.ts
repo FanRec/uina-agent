@@ -9,7 +9,6 @@ import { describe, expect, it } from "vitest";
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
 import type { RuntimeEvent } from "../src/runtime/events.js";
 import { mockModel } from "./helpers/mock-provider.js";
-import { streamCompactor } from "../src/agent/compaction.js";
 
 const MODEL: Model = mockModel({ id: "mock", name: "mock", contextWindow: 100_000 });
 
@@ -123,44 +122,6 @@ describe("getUsedTokens：真实值优先于字符估算", () => {
 		expect(before).not.toBe(99_999);
 	});
 });
-describe("压缩后：底栏回落估算，而不是接着显示压缩前的真值", () => {
-	it("session_compact 广播的那一刻，监听者读到的已按新历史重算", async () => {
-		const { ExtensionHost } = await import("../src/extensions/host.js");
-		const { createRuntimeHooks } = await import("../src/extensions/runtime-hooks.js");
-
-		const host = new ExtensionHost();
-		const subject = new (await import("../src/agent/loop.js")).Subject(
-			MODEL,
-			streamWithUsage({ input: 1, output: 1, totalTokens: 99_999 }),
-			new (await import("../src/tools/broker.js")).ToolBroker(),
-			{ systemPrompt: "sys", runtimeHooks: createRuntimeHooks(host), compactor: streamCompactor(streamWithUsage({ input: 1, output: 1, totalTokens: 99_999 })) },
-		);
-		subject.addHistory([
-			{ role: "user", content: "第一条" },
-			{ role: "assistant", content: "回复一" },
-			{ role: "user", content: "第二条" },
-			{ role: "assistant", content: "回复二" },
-		]);
-
-		await subject.pushInput("你好");
-		await subject.waitForIdle();
-		expect(subject.getUsedTokens()).toBe(99_999);
-
-		let seenInHandler: number | undefined;
-		host.on("session_compact", () => {
-			seenInHandler = subject.getUsedTokens();
-		});
-		await subject.compact();
-
-		// 压缩换掉了历史，压缩前的 99_999 不再描述现在。如果清空发生在广播之后，
-		// 监听者（底栏刷新）会把旧真值写回去 —— 数字不动、只多一个 ~。
-		expect(seenInHandler).toBeDefined();
-		expect(seenInHandler).not.toBe(99_999);
-		// 广播里看到的就是压缩后的最终状态，不留瞬态。
-		expect(seenInHandler).toBe(subject.getUsedTokens());
-	});
-});
-
 describe("setModel：口径换了，旧模型的 usage 锚必须失效", () => {
 	it("切换模型后 getUsedTokens() 不再返回旧模型报的真实总量", async () => {
 		const { Subject } = await import("../src/agent/loop.js");

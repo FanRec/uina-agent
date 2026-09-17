@@ -144,6 +144,9 @@ export class JsonlSessionStore implements SessionStore {
 		return this.append({ kind: "custom_entry", id: randomUUID(), seq: ++this.nextSeq, timestamp: new Date().toISOString(), ...structuredClone(entry) });
 	}
 
+	/** legacy 铸造器（P6c）：生产链路不再新写 compaction record（压缩 =
+	 * capability 的 transformContext 裁剪，journal 保留全量）；仅测试用它
+	 * 铸造旧版本 journal 形态，验证 legacy 读取器。不在 SessionStore 接口内。 */
 	appendCompaction(
 		summary: string,
 		retainedTail: (AgentMessage | ChatMsg)[],
@@ -273,6 +276,7 @@ export class MemorySessionStore implements SessionStore {
 		return Promise.resolve();
 	}
 
+	/** legacy 铸造器（P6c）：同 JsonlSessionStore——仅供测试铸造旧 journal 形态。 */
 	appendCompaction(
 		summary: string,
 		retainedTail: (AgentMessage | ChatMsg)[],

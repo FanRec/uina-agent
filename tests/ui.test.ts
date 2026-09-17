@@ -2655,11 +2655,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			activateBuiltinCommands(mockPi);
 
-			// 1. 触发 turn.beforeCompact（干预点观察挂法：返回 undefined 不取消压缩）
-			const beforeHandler = handlers.get("turn.beforeCompact");
-			expect(beforeHandler).toBeDefined();
-			expect(beforeHandler!({ tokensBefore: 15000 })).toBeUndefined();
-			expect(mockNotify).toHaveBeenCalledWith("正在压缩会话…", "info", 0);
+			// 1. P6c：turn.beforeCompact 干预挂点随 canonical 截断退役——
+			// 压缩进度只由 session_compact / session_compact_failed 事实事件表达。
+			expect(handlers.get("turn.beforeCompact")).toBeUndefined();
 
 			// 2. 触发 session_compact
 			const compactHandler = handlers.get("session_compact");
@@ -2692,7 +2690,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			const failedHandler = handlers.get("session_compact_failed");
 			expect(failedHandler).toBeDefined();
 			failedHandler!({ type: "session_compact_failed", error: "Token limit" });
-			expect(mockNotify).toHaveBeenCalledWith("会话压缩失败", "warning", 3000);
+			expect(mockNotify).toHaveBeenCalledWith("会话压缩失败：Token limit", "warning", 3000);
 
 			// 4. 触发 thinking_level_select 驱动 Toast 与底栏状态联动
 			const thinkingHandler = handlers.get("thinking_level_select");

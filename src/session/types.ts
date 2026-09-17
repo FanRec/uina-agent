@@ -166,11 +166,6 @@ export interface SessionStore {
 	appendMessage(message: AgentMessage | ChatMsg, id?: string): Promise<void>;
 	appendCustomMessage(message: { customType: string; content: string; images?: import("../core/content.js").ImageContent[]; display?: boolean; details?: unknown }): Promise<void>;
 	appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void>;
-	appendCompaction(
-		summary: string,
-		retainedTail: (AgentMessage | ChatMsg)[],
-		tokensBefore: number,
-	): Promise<void>;
 	appendEvent(
 		event: SessionEventName,
 		data: Record<string, unknown>,

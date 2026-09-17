@@ -1,10 +1,14 @@
 /**
- * 官方压缩 capability（P6a：manual 算法槽；P6b：自动压缩语义切换）。
+ * 官方压缩 capability（P6a 算法下沉；P6b 自动压缩语义切换；P6c 端到端收口）。
  *
- * P6b 起自动压缩完全由本 capability 拥有，实现路径 = 执行稿 P6 行：
- *   transformContext 按 summary 裁剪当前请求上下文，阈值体检按裁剪后
- *   上下文估算。journal 不再被自动压缩截断——全量历史始终持久化，
- *   每个请求的 ChatMsg 流由无状态裁剪器收敛进窗口。
+ * 本 capability 是上下文窗口管理的唯一入口（L1 一语义一入口）：自动压缩与
+ * 手动 /compact 都收敛到同一个 transformContext 裁剪点——按 summary 裁剪
+ * 当前请求上下文，journal 不再被任何压缩路径截断，全量历史始终持久化，
+ * 每个请求的 ChatMsg 流由无状态裁剪器收敛进窗口。
+ *
+ * 手动 /compact = force 标志：跳过预算早退，按下一次请求的 transformContext
+ * 强制裁剪（保留 keepRecent 尾部）。没有下一个请求就没有压缩对象——压缩
+ * 本就是请求上下文的操作，语义自洽。
  *
  * 摘要对齐与 rewind-proof 的构造性保证：
  * - 滚动摘要覆盖生成时刻的 ChatMsg 流前缀 [0..coveredUpTo)；流坐标对
@@ -17,7 +21,6 @@
  *   私有持久态），重启后从 pi.history() 重载。
  */
 import { CHARS_PER_TOKEN } from "../../agent/context.js";
-import { streamCompactor } from "../../agent/compaction.js";
 import type { HydratedSessionEntry } from "../../session/types.js";
 import type { RuntimeEvent } from "../../runtime/events.js";
 import type { ExtensionAPI } from "../runner.js";
@@ -25,9 +28,12 @@ import type { ExtensionAPI } from "../runner.js";
 /** 摘要持久化的命名空间（数据模型原则：私有持久态走 custom entry）。 */
 export const SUMMARY_ENTRY_TYPE = "uina.compaction.summary";
 
-/** 触发阈值与目标窗口的保留量（对齐 DEFAULT_COMPACTION_SETTINGS.reserveTokens；
+/** 触发阈值与目标窗口的保留量（对齐旧 DEFAULT_COMPACTION_SETTINGS.reserveTokens；
  * 同时吸收摘要消息本身的开销）。 */
 const RESERVE_TOKENS = 16_384;
+
+/** 手动 /compact 的尾部保留量（对齐旧 DEFAULT_COMPACTION_SETTINGS.keepRecentTokens）。 */
+const MANUAL_KEEP_TOKENS = 20_000;
 
 /** 滚动摘要的内存态（重启后由 journal 重载）。 */
 interface RollingSummary {
@@ -129,15 +135,24 @@ export function loadSummary(entries: readonly HydratedSessionEntry[]): RollingSu
 }
 
 export default function activateCompaction(pi: ExtensionAPI): void {
-	// P6a：manual 压缩算法槽（Subject.compact 的算法来源；P6c manual 命令化时收口）。
-	// pi.models.stream 会以 runtime provider hooks 覆盖 request.providerHooks：
-	// streamCompactor 内部的占位 hooks 永远不会真正生效。
-	pi.registerCompactor(streamCompactor((model, request, onDelta, signal) =>
-		pi.models.stream(model, request, onDelta, signal),
-	));
-
 	let cached: RollingSummary | undefined;
 	let reloaded = false;
+	/** /compact 的待生效请求：下一个 transformContext 强制裁剪。 */
+	let force: { instruction?: string } | undefined;
+
+	// P6c：手动压缩命令化——/compact 归 capability 端到端拥有（旧 pi.compact →
+	// Subject.compact → canonical 截断链路整体退役）。只设标志不直接执行：
+	// 压缩对象是"下一次请求的上下文"，没有下一个请求就没有压缩对象。
+	pi.registerCommand({
+		name: "compact",
+		description: "压缩会话历史释放上下文空间",
+		hasArgs: true,
+		argumentHint: "[instruction]",
+		handler: (arg) => {
+			force = { instruction: arg || undefined };
+			pi.ui.notify("已安排压缩：下一次请求时生效", "info", 2500);
+		},
+	});
 
 	/** 覆盖目标 = 裁剪边界 + 余量（半个预算）：吸收回合内增长，避免逐请求重生成螺旋。 */
 	const coverTargetFor = (messages: readonly StreamMessageView[], boundary: number, budgetTokens: number): number => {
@@ -157,16 +172,28 @@ export default function activateCompaction(pi: ExtensionAPI): void {
 		entries.some((entry) => entry.id === summary.anchorId) && boundary <= summary.coveredUpTo && summary.coveredUpTo <= streamLength;
 
 	pi.onHook("turn.transformContext", async (messages) => {
+		// 手动压缩优先受理：无论预算状态都强制走裁剪路径（跳过预算早退）。
+		const forced = force;
+		force = undefined;
 		const window = pi.models.current().contextWindow;
-		// 未知窗口即未知，不伪造保护（对齐 shouldCompact 的哲学）。
+		// 未知窗口即未知，不伪造保护；force 无从确定边界，一并透传。
 		if (window === undefined) return undefined;
 		// reserve 随窗口缩放（永不超窗口一半）：小窗口模型下 16k 保留量会吃掉全部预算。
 		const budget = window - Math.min(RESERVE_TOKENS, Math.floor(window / 2));
 		const tokensBefore = estimateStreamTokens(messages);
-		if (tokensBefore <= budget) return undefined;
-		const boundary = findTrimBoundary(messages, budget);
-		// 单条超窗且无法安全切分：透传（与旧"切点落空即跳过"语义一致）。
-		if (boundary === null) return undefined;
+		const boundary = forced
+			? findTrimBoundary(messages, MANUAL_KEEP_TOKENS)
+			: tokensBefore <= budget
+				? null
+				: findTrimBoundary(messages, budget);
+		if (boundary === null) {
+			// 自动路径：整流在预算内，无事可做。强制路径：保留预算内整流放得下，
+			// 没有可压缩的前缀——失败可见，与旧 manual "无需压缩" 提示同语义。
+			if (forced) {
+				await pi.emitEvent({ type: "session_compact_failed", error: "当前会话上下文无需压缩" });
+			}
+			return undefined;
+		}
 
 		const entries = pi.history();
 		// 重启恢复：journal 里的滚动摘要只在本次激活内加载一次。
@@ -180,33 +207,47 @@ export default function activateCompaction(pi: ExtensionAPI): void {
 			const anchorId = entries.at(-1)?.id;
 			if (!anchorId) return undefined;
 			const coverTarget = coverTargetFor(messages, boundary, budget);
-			const summary = await requestSummary(pi, messages.slice(0, coverTarget));
-			if (!summary) return undefined;
-			cached = { summary, coveredUpTo: coverTarget, anchorId };
-			await pi.appendEntry({ customType: SUMMARY_ENTRY_TYPE, data: { summary, coveredUpTo: coverTarget, anchorId } });
-			const event: RuntimeEvent = {
-				type: "session_compact",
-				summary,
-				tokensBefore,
-				retainedTailCount: messages.length - boundary,
-			};
-			await pi.emitEvent(event);
+			try {
+				const summary = await requestSummary(pi, messages.slice(0, coverTarget), forced?.instruction);
+				if (!summary) throw new Error("摘要生成返回空结果");
+				cached = { summary, coveredUpTo: coverTarget, anchorId };
+				await pi.appendEntry({ customType: SUMMARY_ENTRY_TYPE, data: { summary, coveredUpTo: coverTarget, anchorId } });
+				const event: RuntimeEvent = {
+					type: "session_compact",
+					summary,
+					tokensBefore,
+					retainedTailCount: messages.length - boundary,
+				};
+				await pi.emitEvent(event);
+			} catch (err) {
+				// 强制路径失败必须可见（用户显式要求过）；自动路径静默——
+				// 下一个请求自然重试，provider 层错误另有出口。
+				if (forced) {
+					await pi.emitEvent({ type: "session_compact_failed", error: String((err as Error).message ?? err) });
+				}
+				return undefined;
+			}
 		}
 		return { messages: renderTrimmed(messages, boundary, [cached.summary]) };
 	});
 }
 
 /** 请求级摘要生成：摘要"模型实际看到的内容"（请求消息流），经 pi.models.stream。 */
-async function requestSummary(pi: ExtensionAPI, dropped: readonly StreamMessageView[]): Promise<string | undefined> {
+async function requestSummary(
+	pi: ExtensionAPI,
+	dropped: readonly StreamMessageView[],
+	instruction?: string,
+): Promise<string | undefined> {
 	const model = pi.models.current();
 	let summary = "";
 	const signal = pi.signal;
+	const focus = instruction?.trim() ? `\n\n额外关注：${instruction.trim()}` : "";
 	await pi.models.stream(
 		model,
 		{
 			messages: [
 				{ role: "system", content: "你是上下文摘要助手。把对话历史压缩成一份保留关键事实、决定与未竟事项的摘要，供后续对话作为唯一前情参考。直接输出摘要正文。" },
-				{ role: "user", content: transcript(dropped) },
+				{ role: "user", content: transcript(dropped) + focus },
 			],
 			tools: [],
 		},

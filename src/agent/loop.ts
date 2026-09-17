@@ -1,10 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { errorMessage } from "../core/errors.js";
-import { protectRewindContext } from "../session/recovery.js";
 import type { RewindRequest, RewindResult } from "../session/types.js";
 import { validImages } from "../core/content.js";
-import type { Compactor } from "../core/compaction.js";
-import { readonlySnapshot } from "../runtime/guard.js";
 import type {
 	AgentMessage,
 	ChatMsg,
@@ -19,7 +16,6 @@ import type {
 } from "../core/types.js";
 import type { SessionStore } from "../session/types.js";
 import { projectInputMessage } from "../session/recovery.js";
-import { DEFAULT_COMPACTION_SETTINGS, resolveCompactionResult, type CompactionSettings, findCutPoint } from "./compaction.js";
 import { commitRewindTransition } from "./rewind.js";
 import { resolveProjectionPolicy, type ProjectionPolicy, type ResolvedProjection } from "./projection.js";
 import { buildContext, calculateContextSegments, defaultSystemPrompt, estimateContextTokens } from "./context.js";
@@ -34,8 +30,6 @@ import { guardRuntimeHooks } from "../runtime/guard.js";
 
 export interface SubjectOptions {
 	store?: SessionStore;
-	compaction?: Partial<CompactionSettings>;
-	compactor?: Compactor;
 	/** 投影 Replacement 缝（单 owner = 本 Subject 实例；缺省字段回落默认实现）。 */
 	projection?: ProjectionPolicy;
 	systemPrompt?: string;
@@ -66,15 +60,13 @@ export interface AgentInput {
 }
 
 export class Subject {
-	private activity: "turn" | "compact" | "rewind" | undefined;
-	private compactionActive = false;
+	private activity: "turn" | "rewind" | undefined;
 	private history: AgentMessage[] = [];
 	private turnSeq = 0;
 	private interrupted = false;
 	private abort: AbortController | null = null;
 	private readonly queues = new InputQueues();
 	private readonly systemPrompt: string;
-	private readonly compaction: CompactionSettings;
 	private readonly store?: SessionStore;
 	private pendingRewind?: { request: RewindRequest; source: string; requestId: string; signal?: AbortSignal };
 	private rewindCommitting = false;
@@ -90,7 +82,6 @@ export class Subject {
 	private thinkingLevel: ThinkingLevel;
 	private preferredThinkingLevel: ThinkingLevel;
 	private readonly runtimeHooks: RuntimeHooks;
-	private readonly compactor?: Compactor;
 	/** 投影 Replacement 缝的现役实现（解析后两字段非空；本实例即单 owner）。 */
 	readonly projection: ResolvedProjection;
 	/** 本次模型调用拿到的 usage；每次调用开始前清空，只对本次调用有意义。 */
@@ -116,12 +107,6 @@ export class Subject {
 		this.streamFn = streamFn;
 		this.store = options.store;
 		this.systemPrompt = options.systemPrompt ?? defaultSystemPrompt();
-		this.compaction = {
-			...DEFAULT_COMPACTION_SETTINGS,
-			contextWindow: model.contextWindow,
-			...options.compaction,
-		};
-		this.compactor = options.compactor;
 		this.projection = resolveProjectionPolicy(options.projection);
 		this.preferredThinkingLevel = options.thinkingLevel ?? model.thinkingLevels?.[0] ?? "off";
 		if (this.preferredThinkingLevel !== "off" && !model.thinkingLevels?.includes(this.preferredThinkingLevel)) {
@@ -205,7 +190,7 @@ export class Subject {
 	}
 
 	getContextWindow(): number | undefined {
-		return this.compaction.contextWindow;
+		return this.model.contextWindow;
 	}
 
 	getUsedTokens(): number {
@@ -224,7 +209,6 @@ export class Subject {
 	async setModel(model: Model): Promise<void> {
 		const prev = this.model.name;
 		this.model = model;
-		this.compaction.contextWindow = model.contextWindow;
 		// 口径换了（窗口与 thinking 层级都属于新模型）：历史里任何 assistant 消息上残留的
 		// usage 都是旧模型报的绝对总量，estimateContextTokens 会从最后一条重新锚定 ——
 		// 不只是末位那条（工具交换中途停手时它后面还跟着 tool 结果）。
@@ -273,36 +257,6 @@ export class Subject {
 		return this.thinkingLevel;
 	}
 
-	async compact(instruction?: string): Promise<void> {
-		if (this.isBusy()) throw new Error("Agent 正在运行中，无法手动压缩会话");
-		let completed = false;
-		this.activity = "compact";
-		this.interrupted = false;
-		this.abort = new AbortController();
-		this.activeRun = new Promise<void>((resolve) => {
-			this.settleActiveRun = resolve;
-		});
-		try {
-			await this.performCompaction(instruction);
-			completed = true;
-		} catch (err) {
-			await this.runtimeHooks.events.emit({
-				type: "session_compact_failed",
-				error: (err as Error).message,
-			});
-			throw err;
-		} finally {
-			this.activity = undefined;
-			this.abort = null;
-			try {
-				if (completed && !this.interrupted && this.queues.size > 0) await this.resumeQueued();
-				await this.runtimeHooks.events.flush();
-			} finally {
-				this.completeActiveRun();
-			}
-		}
-	}
-
 	/** Session rewind entry: run-safety scheduling lives here; navigation/reading
 	 * views are composed from the store by session/access.ts, not by the Subject. */
 	async requestRewind(request: RewindRequest, source: string, signal?: AbortSignal): Promise<RewindResult> {
@@ -322,7 +276,7 @@ export class Subject {
 		) {
 			throw new Error("回溯需要 targetId、reason 和来源");
 		}
-		if (this.pendingRewind || this.rewindCommitting || this.activity === "compact" || this.activity === "rewind") {
+		if (this.pendingRewind || this.rewindCommitting || this.activity === "rewind") {
 			throw new Error("已有会话转换正在处理");
 		}
 		// 回溯合法性直接查常驻 canonical 状态（safeTargets 由 reducer 增量维护）。
@@ -388,9 +342,9 @@ export class Subject {
 		}
 	}
 
-	/** Durable transition (record + projection + pre-persist compaction) lives in
-	 * agent/rewind.ts; this method owns only the ordering discipline: adopt the
-	 * projected history, invalidate usage caches before broadcasting, then emit. */
+	/** Durable transition (record + projection) lives in agent/rewind.ts; this
+	 * method owns only the ordering discipline: adopt the projected history,
+	 * invalidate usage caches before broadcasting, then emit. */
 	private async commitRewind(pending: NonNullable<Subject["pendingRewind"]>): Promise<string> {
 		this.rewindCommitting = true;
 		let committed = false;
@@ -398,31 +352,16 @@ export class Subject {
 			if (!this.store) {
 				throw new Error("未配置会话存储，回溯不可用");
 			}
-			const { rewindId, fromId, targetId, history, compacted } = await commitRewindTransition(
+			const { rewindId, fromId, targetId, history } = await commitRewindTransition(
 				this.store,
 				pending,
-				{
-					model: this.model,
-					systemPrompt: this.systemPrompt,
-					tools: this.tools.defs(),
-					keepRecentTokens: this.compaction.keepRecentTokens,
-					compactor: this.compactor,
-					projection: this.projection,
-				},
+				{ projection: this.projection },
 				this.currentSignal(),
 			);
 			committed = true;
 			this.history = history;
 			// 历史刚被替换：先失效 usage 缓存，再广播。
 			this.forgetUsage();
-			if (compacted) {
-				await this.runtimeHooks.events.emit({
-					type: "session_compact",
-					summary: compacted.summary,
-					tokensBefore: compacted.tokensBefore,
-					retainedTailCount: compacted.retainedTail.length,
-				});
-			}
 			await this.dispatch({
 				type: "session_rewind",
 				turnNumber: this.activity === "turn" ? this.turnSeq : undefined,
@@ -736,8 +675,8 @@ export class Subject {
 			beforeMessages = prepared.messages ? [...prepared.messages] : [];
 			return true;
 		};
-		// A scheduled rewind commits before turn preparation, so compaction always measures the
-		// mainline that is about to be sent — never a projection the rewind is about to replace.
+		// A scheduled rewind commits before turn preparation, so each request always sees
+		// the mainline that is about to be sent — never a projection the rewind is about to replace.
 		await applyRewind();
 		for (;;) {
 			if (this.interrupted) {
@@ -1003,62 +942,9 @@ export class Subject {
 		);
 	}
 
-	// P6b：自动压缩编排退役——每请求上下文由 official compaction capability 的
-	// transformContext 裁剪收敛（journal 保留全量历史，Subject 零自动压缩词汇）。
-	// 剩余的 performCompaction 只服务手动 compact()。
-	private async performCompaction(instruction?: string, model = this.model, systemPrompt = this.systemPrompt): Promise<void> {
-		const tokensBefore = estimateContextTokens(buildContext({ history: this.history, systemPrompt, convertToLlm: this.projection.convertToLlm }), {
-			tools: this.tools.defs(),
-			includeThinking: model.includeThinking,
-		}).tokens;
-		const cutPoint = findCutPoint(this.history, this.compaction.keepRecentTokens, true);
-		if (!this.history.length || (cutPoint.firstKeptEntryIndex <= 0 && !this.compactor)) {
-			await this.runtimeHooks.events.emit({ type: "session_compact_failed", error: "当前会话消息过短，无需压缩" });
-			return;
-		}
-		this.compactionActive = true;
-		try {
-			const signal = this.currentSignal();
-			const decision = await this.runtimeHooks.turn.beforeCompact({ tokensBefore });
-			if (decision.cancel) {
-				await this.runtimeHooks.events.emit({ type: "session_compact_failed", error: "会话压缩已被扩展取消" });
-				return;
-			}
-			const request = readonlySnapshot({
-				reason: "manual",
-				history: this.history,
-				suggestedKeepFrom: cutPoint.firstKeptEntryIndex,
-				tokensBefore,
-				model,
-				instruction,
-				cut: { turnStartIndex: cutPoint.turnStartIndex, isSplitTurn: cutPoint.isSplitTurn },
-			});
-			const proposal = await this.compactor?.(request as import("../core/compaction.js").CompactionRequest, signal);
-			const result = await resolveCompactionResult(proposal, this.history, tokensBefore);
-			if (!result) return;
-			signal.throwIfAborted();
-			await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);
-			this.history = protectRewindContext([
-				{
-					role: "compactionSummary",
-					summary: result.summary,
-					content: "[历史摘要] " + result.summary,
-					tokensBefore: result.tokensBefore,
-				},
-				...result.retainedTail,
-			], this.store ? this.store.state.entries : []);
-			// 历史换成摘要 + 尾巴：先失效 usage 缓存，再广播。
-			this.forgetUsage();
-			await this.runtimeHooks.events.emit({
-				type: "session_compact",
-				summary: result.summary,
-				tokensBefore: result.tokensBefore,
-				retainedTailCount: result.retainedTail.length,
-			});
-		} finally {
-			this.compactionActive = false;
-		}
-	}
+	// P6c：Subject 压缩编排全部退役（prepareTurn 在 P6b 已删、手动 compact 在 P6c
+	// 命令化给 official compaction capability）。上下文窗口管理唯一入口 =
+	// capability 的 turn.transformContext 每请求裁剪；journal 保留全量历史。
 
 	private async appendMessage(message: AgentMessage): Promise<void> {
 		await this.store?.appendMessage(message);
@@ -1074,7 +960,6 @@ export class Subject {
 		details?: unknown;
 	}): Promise<void> {
 		if (this.rewindCommitting || this.activity === "rewind") throw new Error("回溯提交期间不能修改模型历史");
-		if (this.compactionActive || this.activity === "compact") throw new Error("压缩期间不能修改模型历史");
 		if (!validImages(message.images)) throw new Error("图片内容无效");
 		await this.store?.appendCustomMessage(message);
 		this.history.push({
