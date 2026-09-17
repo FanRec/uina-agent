@@ -4,6 +4,7 @@ import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
 import type { RuntimeHooks } from "../src/runtime/hooks.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { Subject } from "../src/agent/loop.js";
+import { streamCompactor } from "../src/agent/compaction.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta, ThinkingLevel } from "../src/core/types.js";
 import { mockModel } from "./helpers/mock-provider.js";
@@ -251,7 +252,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			pair.model,
 			pair.stream,
 			new ToolBroker(),
-			{ runtimeHooks: createRuntimeHooks(host) },
+			{ runtimeHooks: createRuntimeHooks(host), compactor: streamCompactor(pair.stream) },
 		);
 
 		subject.addHistory([

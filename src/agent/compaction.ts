@@ -1,8 +1,9 @@
 import { imageNotice } from "../core/content.js";
 import { readDeclaredEffects } from "../core/effects.js";
-import type { CompactionProposal } from "../core/compaction.js";
+import type { CompactionProposal, Compactor } from "../core/compaction.js";
 import type { AgentMessage, ChatMsg, Model, ModelStreamFn } from "../core/types.js";
 import type { ProviderHooks } from "../runtime/hooks.js";
+import { NO_RUNTIME_HOOKS } from "../runtime/noop.js";
 import { CHARS_PER_TOKEN } from "./context.js";
 
 export interface CompactionSettings {
@@ -493,33 +494,18 @@ function buildConversationPrompt(
 export async function resolveCompactionResult(
 	proposal: CompactionProposal | undefined,
 	history: AgentMessage[],
-	cutPoint: CutPointResult,
 	tokensBefore: number,
-	options: {
-		model: Model;
-		stream: ModelStreamFn;
-		providerHooks: ProviderHooks;
-		signal?: AbortSignal;
-		instruction?: string;
-	},
 ): Promise<CompactionResult | null> {
-	if (proposal !== undefined) {
-		const { summary, keepFrom } = proposal;
-		if (typeof summary !== "string" || !summary.trim()) throw new Error("compaction 返回空摘要");
-		// A cut that keeps the whole history compacts nothing; accepting it would persist a
-		// summary plus the very messages it summarizes, growing the context it was meant to shrink.
-		if (!Number.isInteger(keepFrom) || keepFrom <= 0 || keepFrom >= history.length) throw new Error("compaction 保留位置无效");
-		if (history[keepFrom]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
-		return { summary: summary.trim(), retainedTail: clearRetainedUsage(history.slice(keepFrom)), tokensBefore };
-	}
-	return compactHistory(
-		history,
-		options.model,
-		options.stream,
-		{ cut: cutPoint, tokensBefore, instruction: options.instruction },
-		options.providerHooks,
-		options.signal,
-	);
+	// P6a 裁定：默认算法的所有权下沉 official capability（extensions/compaction）；
+	// 无压缩器注册 = 无压缩能力，回退分支随之退役。
+	if (proposal === undefined) return null;
+	const { summary, keepFrom } = proposal;
+	if (typeof summary !== "string" || !summary.trim()) throw new Error("compaction 返回空摘要");
+	// A cut that keeps the whole history compacts nothing; accepting it would persist a
+	// summary plus the very messages it summarizes, growing the context it was meant to shrink.
+	if (!Number.isInteger(keepFrom) || keepFrom <= 0 || keepFrom >= history.length) throw new Error("compaction 保留位置无效");
+	if (history[keepFrom]?.role === "tool") throw new Error("compaction 不能切断工具调用与结果");
+	return { summary: summary.trim(), retainedTail: clearRetainedUsage(history.slice(keepFrom)), tokensBefore };
 }
 
 export async function compactHistory(
@@ -596,5 +582,30 @@ export async function compactHistory(
 		summary,
 		retainedTail: clearRetainedUsage(prepared.retainedTail),
 		tokensBefore,
+	};
+}
+
+/**
+ * 默认算法的 Compactor 形态（P6a）：official capability 与测试共用同一装配点。
+ * transport 是"逐字收集文本"的模型调用通道（official capability 用
+ * pi.models.stream 适配——provider hooks 由传输层注入，这里的占位永远被覆盖）。
+ */
+export function streamCompactor(transport: ModelStreamFn): Compactor {
+	return async (request, signal) => {
+		const cut = request.cut ?? { turnStartIndex: -1, isSplitTurn: false };
+		const result = await compactHistory(
+			request.history,
+			request.model,
+			transport,
+			{
+				cut: { firstKeptEntryIndex: request.suggestedKeepFrom, ...cut },
+				tokensBefore: request.tokensBefore,
+				instruction: request.instruction,
+			},
+			NO_RUNTIME_HOOKS.provider,
+			signal,
+		);
+		if (!result) return undefined;
+		return { summary: result.summary, keepFrom: request.suggestedKeepFrom };
 	};
 }

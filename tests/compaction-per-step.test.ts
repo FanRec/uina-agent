@@ -10,6 +10,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { AgentMessage, Model, ModelStreamFn } from "../src/core/types.js";
+import { streamCompactor } from "../src/agent/compaction.js";
 import { mockModel } from "./helpers/mock-provider.js";
 
 // 阈值 = contextWindow(100_000) - reserveTokens(16_384 默认) = 83_616
@@ -42,6 +43,8 @@ describe("自动压缩：每次模型调用前都体检，而不是只在回合�
 		const subject = new Subject(MODEL, stream, new ToolBroker(), {
 			systemPrompt: "sys",
 			runtimeHooks: createRuntimeHooks(host),
+			// P6a：默认算法不再内置于 Subject——显式装配官方压缩器的算法内核
+			compactor: streamCompactor(stream),
 		});
 
 		// 铺垫一段足够长的历史，让自动压缩有可推进的切点（keepRecentTokens 默认 20k）。

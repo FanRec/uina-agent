@@ -3,8 +3,7 @@
  * 与 journal 追加都由这里完成，保证"先测量、后落盘"的持久化纪律单点实现。 */
 import { randomUUID } from "node:crypto";
 import type { Compactor } from "../core/compaction.js";
-import type { AgentMessage, Model, ModelStreamFn, ToolDef } from "../core/types.js";
-import type { ProviderHooks } from "../runtime/hooks.js";
+import type { AgentMessage, Model, ToolDef } from "../core/types.js";
 import { applyRecord, canonicalReplay, checkRecord } from "../session/recovery.js";
 import type { RewindRequest, SessionRewindRecord, SessionStore } from "../session/types.js";
 import {
@@ -25,9 +24,6 @@ export interface RewindProjectionContext {
 	tools: readonly ToolDef[];
 	keepRecentTokens: number;
 	compactor?: Compactor;
-	/** 默认压缩算法的传输与 hooks；仅在投影超限触发压缩时使用。 */
-	stream: ModelStreamFn;
-	providerHooks: ProviderHooks;
 	/** 投影 Replacement 缝的现役实现（owner = Subject；必填，无静默默认）。 */
 	projection: ResolvedProjection;
 }
@@ -64,17 +60,13 @@ export async function compactProjectionForRewind(
 			tokensBefore: estimated,
 			model: context.model,
 			instruction: "由于回溯使历史重新展开导致上下文超限，请压缩前期历史",
+			cut: { turnStartIndex: cutPoint.turnStartIndex, isSplitTurn: cutPoint.isSplitTurn },
 		},
 		signal,
 	);
 	let prepared: CompactionResult | null;
 	// 指令只约束外部 compactor；默认算法在回溯路径保持与压缩前一致的无指令行为。
-	prepared = await resolveCompactionResult(proposal, history, cutPoint, estimated, {
-		model: context.model,
-		stream: context.stream,
-		providerHooks: context.providerHooks,
-		signal,
-	});
+	prepared = await resolveCompactionResult(proposal, history, estimated);
 	if (!prepared) throw new Error(OVERSIZED_REWIND);
 	signal.throwIfAborted();
 	const after = estimateContextTokens(

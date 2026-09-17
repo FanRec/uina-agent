@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DefaultAgentFactory } from "../src/agent/runtime.js";
+import { streamCompactor } from "../src/agent/compaction.js";
 import { JobRegistry, type JobOutcome } from "../src/extensions/jobs/registry.js";
 import { SubagentRegistry } from "../src/extensions/subagents/registry.js";
 import { ToolBroker } from "../src/tools/broker.js";
@@ -20,7 +21,7 @@ it("manual compaction owns activity until cancellation and disposal have finishe
 	const stream = async (_m: unknown, _req: unknown, emit: (d: any) => void, cancellation?: AbortSignal) => {
 		signal = cancellation; entered.resolve(); await finish.promise; emit({ kind: "text", text: "summary" }); emit({ kind: "finish", reason: "stop" });
 	};
-	const handle = new DefaultAgentFactory().create({ store, tools: new ToolBroker(), model, stream });
+	const handle = new DefaultAgentFactory().create({ store, tools: new ToolBroker(), model, stream, compactor: streamCompactor(stream as never) });
 	const history = [{ role: "user" as const, content: "first" }, { role: "assistant" as const, content: "answer" }, { role: "user" as const, content: "next" }];
 	for (const message of history) await store.appendMessage(message);
 	handle.subject.addHistory(history);

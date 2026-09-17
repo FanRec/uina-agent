@@ -7,6 +7,8 @@ export interface CompactionRequest {
 	readonly tokensBefore: number;
 	readonly model: Model;
 	readonly instruction?: string;
+	/** 完整切点（split-turn 拆分语义）。缺省 = 切点落在回合边界。 */
+	readonly cut?: { readonly turnStartIndex: number; readonly isSplitTurn: boolean };
 }
 export interface CompactionProposal {
 	readonly summary: string;

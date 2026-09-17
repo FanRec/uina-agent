@@ -528,7 +528,9 @@ export class ExtensionRunner extends ExtensionHost {
 								}, signal),
 							shouldCompact: options?.shouldCompact,
 						},
-						options,
+						// 槽是 Replacement 接缝（单 owner）：后注册者接管，dispose 恢复前值
+						// —— 项目扩展覆盖 builtin 默认 capability 无需显式 replace。
+						{ ...options, replace: true },
 					),
 				);
 			},

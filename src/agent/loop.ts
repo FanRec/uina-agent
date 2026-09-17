@@ -410,8 +410,6 @@ export class Subject {
 					tools: this.tools.defs(),
 					keepRecentTokens: this.compaction.keepRecentTokens,
 					compactor: this.compactor,
-					stream: this.streamFn,
-					providerHooks: this.runtimeHooks.provider,
 					projection: this.projection,
 				},
 				this.currentSignal(),
@@ -1061,15 +1059,10 @@ export class Subject {
 			tokensBefore,
 			model,
 			instruction,
+			cut: { turnStartIndex: cutPoint.turnStartIndex, isSplitTurn: cutPoint.isSplitTurn },
 		});
 		const proposal = await this.compactor?.(request as import("../core/compaction.js").CompactionRequest, signal);
-		const result = await resolveCompactionResult(proposal, this.history, cutPoint, tokensBefore, {
-			model,
-			stream: this.streamFn,
-			providerHooks: this.runtimeHooks.provider,
-			signal,
-			instruction,
-		});
+		const result = await resolveCompactionResult(proposal, this.history, tokensBefore);
 			if (!result) return;
 			signal.throwIfAborted();
 			await this.store?.appendCompaction(result.summary, result.retainedTail, result.tokensBefore);

@@ -13,6 +13,7 @@ import { SubagentRegistry } from "../extensions/subagents/registry.js";
 import { ExtensionRunner } from "../extensions/runner.js";
 import { CommandRouter } from "../extensions/commands.js";
 import { activateBuiltinCommands } from "../extensions/builtin.js";
+import activateCompaction from "../extensions/compaction/index.js";
 import { activateRuntimeTools, createChildTools, TASK_DISPATCH_EFFECT } from "../extensions/runtime-tools/index.js";
 import { activateSessionTools } from "../extensions/session-tools/index.js";
 import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
@@ -397,6 +398,7 @@ export class UinaHost {
 		if (this.options.workspaceTools !== false) await this.extensionHost.activateBuiltin("workspace-tools", activateWorkspaceTools);
 		await this.extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools({ jobs: this.jobs, subagents: this.subagents, isTaskAbandoned: (id) => this.abandonedTaskIds.has(id) }));
 		await this.extensionHost.activateBuiltin("commands", activateBuiltinCommands);
+		await this.extensionHost.activateBuiltin("compaction", activateCompaction);
 		await this.extensionHost.load();
 	}
 

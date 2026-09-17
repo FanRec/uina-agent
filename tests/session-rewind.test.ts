@@ -4,7 +4,7 @@ import { createSessionAccess } from "../src/session/access.js";
 import { commitRewindTransition } from "../src/agent/rewind.js";
 import { resolveProjectionPolicy } from "../src/agent/projection.js";
 import { buildContext, estimateContextTokens } from "../src/agent/context.js";
-import type { AgentMessage, ModelStreamFn } from "../src/core/types.js";
+import type { AgentMessage } from "../src/core/types.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { projectAgentHistory, protectRewindContext, summarizeAbandonedEffects, projectInputMessage } from "../src/session/recovery.js";
 import { BranchInspectorOverlay } from "../src/ui/components/overlays/branch-inspector.js";
@@ -496,7 +496,7 @@ describe("commitRewindTransition mechanism", () => {
 		expect(store.readRecords().some((record) => record.kind === "rewind")).toBe(false);
 	});
 
-	it("rescues an oversized rewind with the default compactor and persists the compaction", async () => {
+	it("rescues an oversized rewind with the registered compactor and persists the compaction", async () => {
 		const store = new MemorySessionStore();
 		const content = (marker: string) => `${marker} ${"x".repeat(2000)}`;
 		const messages: AgentMessage[] = [];
@@ -513,19 +513,22 @@ describe("commitRewindTransition mechanism", () => {
 			{ tools: [], includeThinking: false },
 		).tokens;
 		let summaryCalls = 0;
-		const summarizer: ModelStreamFn = async (_model, _request, emit) => {
-			summaryCalls++;
-			emit({ kind: "text", text: " rescued summary" });
-			emit({ kind: "finish", reason: "stop" });
-		};
 		const commit = await commitRewindTransition(
 			store,
 			{ request: { targetId: records[12].id, reason: "model window shrank" }, source: "test", requestId: "req-rescue" },
-			{ ...context(), model: mockModel({ contextWindow: projectedTokens - 1 }), keepRecentTokens: 3400, stream: summarizer },
+			{
+				...context(),
+				model: mockModel({ contextWindow: projectedTokens - 1 }),
+				keepRecentTokens: 3400,
+				compactor: async (request) => {
+					summaryCalls++;
+					// 切点落在回合起点 m6（user）：摘要器恰好调用一次，不拆回合；
+					// 嵌入压缩接线后，这次摘要的结果就是生效上下文，不再有第二次重算。
+					return { summary: "rescued summary", keepFrom: request.suggestedKeepFrom };
+				},
+			},
 			new AbortController().signal,
 		);
-		// 切点落在回合起点 m6（user）：默认摘要器恰好调用一次，不拆回合；
-		// 嵌入压缩接线后，这次摘要的结果就是生效上下文，不再有第二次重算。
 		expect(summaryCalls).toBe(1);
 		expect(commit.compacted?.summary).toContain("rescued summary");
 		const rewindRecords = store.readRecords().filter((record) => record.kind === "rewind");
@@ -549,7 +552,6 @@ describe("commitRewindTransition mechanism", () => {
 		await store.appendMessage({ role: "user", content: "tail" }); // 回溯目标不能是末条：必须留非空被放弃切片
 		const records = store.readRecords();
 		const requests: { reason: string; instruction: string; suggestedKeepFrom: number; tokensBefore: number }[] = [];
-		let streamCalls = 0;
 		const commit = await commitRewindTransition(
 			store,
 			{ request: { targetId: records[0].id, reason: "wrong direction" }, source: "test", requestId: "req-ext" },
@@ -557,10 +559,6 @@ describe("commitRewindTransition mechanism", () => {
 				...context(),
 				model: mockModel({ contextWindow: 150 }),
 				keepRecentTokens: 1,
-				stream: async () => {
-					streamCalls++;
-					throw new Error("外部 compactor 在场时不应调用默认摘要器");
-				},
 				compactor: async (request) => {
 					requests.push(request as { reason: string; instruction: string; suggestedKeepFrom: number; tokensBefore: number });
 					return { summary: "精简摘要", keepFrom: 1 };
@@ -573,7 +571,6 @@ describe("commitRewindTransition mechanism", () => {
 		expect(requests[0].instruction).toContain("回溯");
 		expect(requests[0].suggestedKeepFrom).toBe(1); // 切点 = 连续性提示（唯一合法切点）
 		expect(requests[0].tokensBefore).toBeGreaterThan(0);
-		expect(streamCalls).toBe(0);
 		expect(commit.compacted?.summary).toBe("精简摘要");
 		// 嵌入压缩接线：采纳的历史以压缩摘要开头，连续性提示紧随其后。
 		expect(commit.history[0]?.role).toBe("compactionSummary");
@@ -600,9 +597,6 @@ describe("commitRewindTransition mechanism", () => {
 					...context(),
 					model: mockModel({ contextWindow: 3 }),
 					keepRecentTokens: 1,
-					stream: async () => {
-						throw new Error("不应走到默认摘要器");
-					},
 					compactor: async () => ({ summary: "z".repeat(400), keepFrom: 1 }),
 				},
 				new AbortController().signal,

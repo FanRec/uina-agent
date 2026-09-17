@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentMessage, ThinkingLevel } from "../core/types.js";
+import type { Compactor } from "../core/compaction.js";
 import { MemorySessionStore } from "../session/jsonl-store.js";
 import type { SessionAccess, SessionStore } from "../session/types.js";
 import { createSessionAccess } from "../session/access.js";
@@ -26,6 +27,8 @@ export interface AgentCreateOptions {
 	systemPrompt?: string;
 	thinkingLevel?: ThinkingLevel;
 	runtimeHooks?: RuntimeHooks;
+	/** 压缩器（P6a 起默认算法下沉 capability，代理级经此注入）。 */
+	compactor?: Compactor;
 }
 
 export interface AgentHandle {
@@ -60,6 +63,7 @@ class RuntimeAgent implements AgentHandle {
 			systemPrompt: options.systemPrompt,
 			thinkingLevel: options.thinkingLevel,
 			runtimeHooks: options.runtimeHooks,
+			compactor: options.compactor,
 		});
 		this.session = createSessionAccess(this.store, (request, source, signal) =>
 			this.subject.requestRewind(request, source, signal),

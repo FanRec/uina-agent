@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
 import type { RuntimeEvent } from "../src/runtime/events.js";
 import { mockModel } from "./helpers/mock-provider.js";
+import { streamCompactor } from "../src/agent/compaction.js";
 
 const MODEL: Model = mockModel({ id: "mock", name: "mock", contextWindow: 100_000 });
 
@@ -132,7 +133,7 @@ describe("压缩后：底栏回落估算，而不是接着显示压缩前的真�
 			MODEL,
 			streamWithUsage({ input: 1, output: 1, totalTokens: 99_999 }),
 			new (await import("../src/tools/broker.js")).ToolBroker(),
-			{ systemPrompt: "sys", runtimeHooks: createRuntimeHooks(host) },
+			{ systemPrompt: "sys", runtimeHooks: createRuntimeHooks(host), compactor: streamCompactor(streamWithUsage({ input: 1, output: 1, totalTokens: 99_999 })) },
 		);
 		subject.addHistory([
 			{ role: "user", content: "第一条" },

@@ -7,6 +7,7 @@ import { Subject } from "../src/agent/loop.js";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { SessionFormatError, canonicalReplay, queuedInputs } from "../src/session/recovery.js";
 import { projectModelHistory } from "../src/agent/projection.js";
+import { streamCompactor } from "../src/agent/compaction.js";
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
 import execCommandTool, { execCommandDirect } from "../src/extensions/runtime-tools/exec-command/index.js";
 import { OutputCollector } from "../src/extensions/runtime-tools/exec-command/output.js";
@@ -247,6 +248,7 @@ describe("Subject", () => {
 		]);
 		const subject = new Subject(provider.model, provider.stream, broker, {
 			compaction: { contextWindow: 100, reserveTokens: 10, keepRecentTokens: 10 },
+			compactor: streamCompactor(provider.stream),
 		});
 		subject.addHistory(Array.from({ length: 10 }, (_, index) => ({
 			role: "user" as const,
@@ -262,6 +264,7 @@ describe("Subject", () => {
 		]);
 		const failedSubject = new Subject(failing.model, failing.stream, broker, {
 			compaction: { contextWindow: 100, reserveTokens: 10, keepRecentTokens: 10 },
+			compactor: streamCompactor(failing.stream),
 		});
 		failedSubject.addHistory([{ role: "user", content: "old history" }, { role: "user", content: "x".repeat(500) }]);
 		failedSubject.pushInput("new");
