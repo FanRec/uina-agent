@@ -62,32 +62,35 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	let execRunning = false;
 	let execAbort: AbortController | null = null;
 
+	const toolStartedAt = new Map<string, number>();
 	const renderStdio = (message: HostEvent): void => {
 		switch (message.type) {
-			case "thinking":
-				break;
-			case "text":
+			case "output_update":
+				if (message.channel !== "content") break;
 				process.stdout.write(sanitizeTerminalText(message.text));
 				break;
 			case "turn_start":
-				process.stdout.write(`\n${message.text ? `你 > ${message.text}\n` : ""}Uina > `);
+				process.stdout.write(`\n${message.userText ? `你 > ${message.userText}\n` : ""}Uina > `);
 				break;
 			case "turn_end":
 				process.stdout.write("\n");
 				break;
-			case "tool_start":
-				process.stdout.write(`\n  ⏳ ${toolStartLine(message.name, message.args)}`);
+			case "tool_call":
+				if (message.callId) toolStartedAt.set(message.callId, Date.now());
+				process.stdout.write(`\n  ⏳ ${toolStartLine(message.toolName, message.args)}`);
 				break;
-			case "tool_done": {
-    if (message.images?.length) process.stdout.write("\n  [图片: " + message.images.map(image => image.alt ?? image.mimeType).join(", ") + "]");
-				const elapsed = message.elapsedMs ?? 0;
+			case "tool_result": {
+				if (message.images?.length) process.stdout.write("\n  [图片: " + message.images.map(image => image.alt ?? image.mimeType).join(", ") + "]");
+				const startedAt = message.callId !== undefined ? toolStartedAt.get(message.callId) : undefined;
+				if (message.callId !== undefined) toolStartedAt.delete(message.callId);
+				const elapsed = startedAt === undefined ? 0 : Date.now() - startedAt;
 				const style = {
 					ok: (value: string) => value,
 					err: (value: string) => value,
 					warn: (value: string) => value,
 					dim: (value: string) => value,
 				};
-				process.stdout.write(`\n  ${message.status === "succeeded" ? "✓" : "!"} ${message.name}`);
+				process.stdout.write(`\n  ${message.status === "succeeded" ? "✓" : "!"} ${message.toolName}`);
 				for (const line of toolResultLines(message.result, elapsed, style)) {
 					process.stdout.write(`\n    ${line}`);
 				}
@@ -104,8 +107,6 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				break;
 			case "error":
 				process.stdout.write(`[错误] ${message.text}\n`);
-				break;
-			case "queue":
 				break;
 			default:
 				break;

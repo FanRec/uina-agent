@@ -29,6 +29,8 @@ export class InteractiveTUI {
 	private pullBackQueueCallback?: () => void;
 	private thinkingLevelCycleCallback?: () => void;
 	private currentThinkingId?: string;
+	/** 工具事实只携带 callId：开始时刻由消费者自记，用于结算耗时。 */
+	private readonly toolStartedAt = new Map<string, number>();
 
 	/**
 	 * 工具运行中的重绘需求已并入 UIHost 统一帧时钟：
@@ -162,8 +164,8 @@ export class InteractiveTUI {
 				this.currentThinkingId = undefined;
 				this.host.markUsageEstimated();
 				this.host.setBusy(true);
-				this.host.transcript.startTurn(m.n, m.text, m.images);
-				this.host.trajectoryProjection.onTurnStart(m.n, m.text);
+				this.host.transcript.startTurn(m.turnNumber, m.userText, m.images);
+				this.host.trajectoryProjection.onTurnStart(m.turnNumber, m.userText);
 				this.host.activityLine.start("thinking", "正在思考与生成回复...");
 				this.host.requestRender();
 				break;
@@ -185,7 +187,21 @@ export class InteractiveTUI {
 				if (m.outputTokens !== undefined) this.host.activityLine.addRealOutputTokens(m.outputTokens);
 				break;
 
-			case "text":
+			case "output_update":
+				if (m.channel === "thinking") {
+					if (!this.currentThinkingId) {
+						this.currentThinkingId = this.host.trajectoryProjection.onThinkingStart("深度推理");
+					}
+					this.host.transcript.appendThinking(m.text);
+					// 思考 token 也是「生成」，必须进解码区间：服务端报回的 outputTokens 是
+					// completion_tokens，本就含思考 token。此前只有正文增量喂活动行，于是左端要等
+					// 正文首字才起算 —— 分子含思考、分母不含，开思考后读数虚高几十倍。
+					this.host.activityLine.addStreamText(m.text);
+					this.host.activityLine.update("thinking", "正在深度推理 (Thinking)...");
+					this.host.requestRender();
+					break;
+				}
+				if (m.channel !== "content") break;
 				if (this.currentThinkingId) {
 					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
@@ -196,44 +212,32 @@ export class InteractiveTUI {
 				this.host.requestRender();
 				break;
 
-			case "thinking":
-				if (!this.currentThinkingId) {
-					this.currentThinkingId = this.host.trajectoryProjection.onThinkingStart("深度推理");
-				}
-				this.host.transcript.appendThinking(m.text);
-				// 思考 token 也是「生成」，必须进解码区间：服务端报回的 outputTokens 是
-				// completion_tokens，本就含思考 token。此前只有正文增量喂活动行，于是左端要等
-				// 正文首字才起算 —— 分子含思考、分母不含，开思考后读数虚高几十倍。
-				this.host.activityLine.addStreamText(m.text);
-				this.host.activityLine.update("thinking", "正在深度推理 (Thinking)...");
-				this.host.requestRender();
-				break;
-
-			case "tool_start": {
+			case "tool_call": {
 				// 模型调用到此结束，结算这一步的解码区间与输出量；接下来的工具执行时间不计入生成速度。
 				this.host.activityLine.endStep();
 				if (this.currentThinkingId) {
 					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
 				}
-				const callId = m.callId ?? `tool-${m.name}-${Date.now()}`;
+				if (m.callId) this.toolStartedAt.set(m.callId, Date.now());
+				const callId = m.callId ?? `tool-${m.toolName}-${Date.now()}`;
 				this.host.transcript.smoothReveal.snapToLatest();
-				this.host.transcript.startTool(m.name, m.args, callId);
-				this.host.trajectoryProjection.onToolStart(m.name, m.args, callId);
-				this.host.activityLine.update("tool", `正在执行工具: ${m.name}`);
+				this.host.transcript.startTool(m.toolName, m.args, callId);
+				this.host.trajectoryProjection.onToolStart(m.toolName, m.args, callId);
+				this.host.activityLine.update("tool", `正在执行工具: ${m.toolName}`);
 				this.syncToolAnimationTimer();
 				this.host.requestRender();
 				break;
 			}
 
-			case "tool_done": {
-				// 计时与参数都由宿主事件携带：UI 不再自建 toolCallMap 之类的运行时状态表。
-				const elapsed = m.elapsedMs ?? (m.ts ? Date.now() - m.ts : 0);
-
-				const status = m.status ?? "unknown";
-				this.host.transcript.addToolDone(m.name, m.result, elapsed, status, m.callId, m.args, { images: m.images, details: m.details });
-				this.host.trajectoryProjection.onToolDone(m.callId ?? "", m.name, m.result, elapsed, status);
-				this.host.activityLine.update("streaming", `工具 ${m.name} 执行完毕，继续生成...`);
+			case "tool_result": {
+				// 工具事实携带 callId：耗时由消费者按开始时刻自算（事实流不携带宿主计时）。
+				const startedAt = m.callId !== undefined ? this.toolStartedAt.get(m.callId) : undefined;
+				if (m.callId !== undefined) this.toolStartedAt.delete(m.callId);
+				const elapsed = startedAt === undefined ? 0 : Date.now() - startedAt;
+				this.host.transcript.addToolDone(m.toolName, m.result, elapsed, m.status, m.callId, m.args, { images: m.images ? [...m.images] : undefined, details: m.details });
+				this.host.trajectoryProjection.onToolDone(m.callId ?? "", m.toolName, m.result, elapsed, m.status);
+				this.host.activityLine.update("streaming", `工具 ${m.toolName} 执行完毕，继续生成...`);
 				this.syncToolAnimationTimer();
 				this.host.requestRender();
 				break;
@@ -247,7 +251,7 @@ export class InteractiveTUI {
 				this.stopToolAnimationTimer();
 				this.host.setBusy(false);
 				this.host.transcript.finishTurn();
-				this.host.trajectoryProjection.onTurnEnd(m.n, m.usage);
+				this.host.trajectoryProjection.onTurnEnd(m.turnNumber, m.usage);
 				if (m.usage) {
 				this.host.setUsage({
 					used: m.usage.usedTokens,
@@ -303,7 +307,7 @@ export class InteractiveTUI {
 				break;
 
 			case "queue":
-				this.host.setPendingQueue(m.items);
+				this.host.setPendingQueue(m.items as QueuedMessage[]);
 				break;
 		}
 	}

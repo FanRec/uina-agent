@@ -1,68 +1,19 @@
-import type { ContextSegments, ToolResultStatus } from "../core/types.js";
-import type { QueuedMessage } from "../agent/queue.js";
-import type { CustomEntry, CustomMessage } from "../extensions/ui-contract.js";
+import type { RuntimeEvent } from "../runtime/events.js";
 
 /**
  * 宿主 → 消费者的有序事件流。
  *
- * 这是主体对外**唯一**的观察面。任何消费者（TUI、stdio、未来的 TTS 或远程观察者）
+ * 主体对外**唯一**的观察面 = 事实单流（RuntimeEvent，1:1 透传，不做任何翻译）
+ * 加一个宿主域事件（notice：宿主生命周期提示，如扩展重载进度——它不是主体的
+ * 事实，主体词汇表不收它）。任何消费者（TUI、stdio、未来的 TTS 或远程观察者）
  * 都通过 subscribe() 收到同一份序列；宿主不知道谁在监听，也不引用任何 UI 类型。
  * 消费者可以随时接入或断开，主体的生命期不受影响。
  */
-export type HostEvent =
-	| { type: "session_rewind"; turnNumber?: number; requestId: string; rewindId: string; fromId: string; targetId: string; entries: readonly import("../session/types.js").SessionEntry[] }
-	| { type: "text"; text: string }
-	| { type: "thinking"; text: string }
-	| { type: "turn_start"; n: number; text: string; images?: readonly import("../core/content.js").ImageContent[] }
-	| {
-			type: "turn_end";
-			n: number;
-			usage?: {
-				usedTokens: number;
-				contextWindow?: number;
-				actual?: boolean;
-				cacheRead?: number;
-				cacheWrite?: number;
-				inputTokens?: number;
-				outputTokens?: number;
-				segments?: ContextSegments;
-			};
-		}
-	| {
-			/**
-			 * 单次模型调用的真实用量快照，粒度小于 turn_end：回合进行中也会发。
-			 * 消费者据此让上下文占用实时推进，而不是等整轮结束。
-			 */
-			type: "usage_update";
-			callId: string;
-			usedTokens: number;
-			contextWindow?: number;
-			actual?: boolean;
-			cacheRead?: number;
-			cacheWrite?: number;
-			inputTokens?: number;
-			outputTokens?: number;
-			segments?: ContextSegments;
-		}
-	| { type: "error"; text: string }
-	| { type: "notice"; text: string }
-	| { type: "turn_aborted"; n: number }
-	| { type: "tool_start"; name: string; args: unknown; callId?: string }
-	| {
-			type: "tool_done";
-			name: string;
-			args?: unknown;
-			result: string;
-   images?: import("../core/content.js").ImageContent[];
-   details?: unknown;
-			status?: ToolResultStatus;
-			callId?: string;
-			/** 工具开始时刻，由宿主测量，消费者不再自行维护计时表。 */
-			ts?: number;
-			elapsedMs?: number;
-		}
-	| { type: "queue"; items: readonly QueuedMessage[] }
-	| { type: "custom_message"; message: CustomMessage }
-	| { type: "custom_entry"; entry: CustomEntry };
+export type HostEvent = RuntimeEvent | HostNoticeEvent;
+
+export interface HostNoticeEvent {
+	readonly type: "notice";
+	readonly text: string;
+}
 
 export type HostEventListener = (event: HostEvent) => void;

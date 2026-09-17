@@ -429,6 +429,8 @@ export class Subject {
 				rewindId,
 				fromId,
 				targetId,
+				// 回溯后的会话条目是回溯事实的一部分：消费者据此重建视图，同源单流。
+				entries: this.store ? recoverRecords([...this.store.readRecords()], false).entries : [],
 			});
 			return rewindId;
 		} catch (error) {
@@ -1121,10 +1123,28 @@ export class Subject {
 			details: message.details,
 			timestamp: new Date().toISOString(),
 		});
+		// Durable fact 已落盘，广播权在 Subject 单流（宿主不得代为编排事实）。
+		await this.dispatch({
+			type: "custom_message",
+			message: {
+				customType: message.customType,
+				content: message.content,
+				...(message.images ? { images: message.images } : {}),
+				...(message.display !== undefined ? { display: message.display } : {}),
+				...(message.details !== undefined ? { details: message.details } : {}),
+			},
+		});
 	}
 
 	async appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void> {
 		await this.store?.appendCustomEntry(entry);
+		await this.dispatch({
+			type: "custom_entry",
+			entry: {
+				customType: entry.customType,
+				...(entry.data !== undefined ? { data: entry.data } : {}),
+			},
+		});
 	}
 
 	private async consumeQueueItem(item: QueuedMessage): Promise<void> {

@@ -138,7 +138,7 @@ it("reads an actual image through the default built-in extension with unknown mo
 	hosts.push(host);
 	const done: unknown[] = [];
 	host.subscribe((event) => {
-		if (event.type === "tool_done") done.push(event);
+		if (event.type === "tool_result") done.push(event);
 	});
 	await host.start();
 	await host.submitText("read the image");

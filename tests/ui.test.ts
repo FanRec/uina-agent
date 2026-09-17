@@ -901,14 +901,14 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 
 			expect(tui.host.isBusy()).toBe(false);
 
-			tui.render({ type: "turn_start", n: 1, text: "测试提问" });
+			tui.render({ type: "turn_start", turnNumber: 1, userText: "测试提问" });
 			expect(tui.host.isBusy()).toBe(true);
 
-			tui.render({ type: "text", text: "模型正在分析..." });
-			tui.render({ type: "tool_start", name: "list_dir", args: {} });
-			tui.render({ type: "tool_done", name: "list_dir", result: "dir output", elapsedMs: 50 });
+			tui.render({ type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "模型正在分析..." });
+			tui.render({ type: "tool_call", toolName: "list_dir", args: {}, callId: "tool-1" });
+			tui.render({ type: "tool_result", toolName: "list_dir", args: {}, result: "dir output", status: "succeeded", callId: "tool-1" });
 
-			tui.render({ type: "turn_end", n: 1, usage: { usedTokens: 2048, contextWindow: 65536, actual: false } });
+			tui.render({ type: "turn_end", turnNumber: 1, usage: { usedTokens: 2048, contextWindow: 65536, actual: false } });
 			expect(tui.host.isBusy()).toBe(false);
 
 			tui.close();
@@ -2502,14 +2502,14 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 		it("InteractiveTUI 真实事件联动：轨迹收集与 Token 逼真计算", () => {
 			const tui = new InteractiveTUI();
-			tui.render({ type: "turn_start", n: 1, text: "你好" });
-			tui.render({ type: "thinking", text: "正在思考哲学问题..." });
-			tui.render({ type: "text", text: "这是一段长度为 30 个字符的回复文本用于测试" });
-			tui.render({ type: "tool_start", name: "bash", args: { cmd: "ls" }, callId: "tool-1" });
-			tui.render({ type: "tool_done", name: "bash", result: "file.txt", status: "succeeded", callId: "tool-1", elapsedMs: 120 });
+			tui.render({ type: "turn_start", turnNumber: 1, userText: "你好" });
+			tui.render({ type: "output_update", streamId: "s1", offset: 0, channel: "thinking", text: "正在思考哲学问题..." });
+			tui.render({ type: "output_update", streamId: "s1", offset: 1, channel: "content", text: "这是一段长度为 30 个字符的回复文本用于测试" });
+			tui.render({ type: "tool_call", toolName: "bash", args: { cmd: "ls" }, callId: "tool-1" });
+			tui.render({ type: "tool_result", toolName: "bash", args: { cmd: "ls" }, result: "file.txt", status: "succeeded", callId: "tool-1" });
 			tui.render({
 				type: "turn_end",
-				n: 1,
+				turnNumber: 1,
 				usage: { usedTokens: 500, contextWindow: 128000, actual: true },
 			});
 
@@ -3510,11 +3510,11 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			it("InteractiveTUI: 接收到 turn_aborted 事件时自动调用 interruptTurn 并重置状态", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
-				tui.render({ type: "turn_start", n: 1, text: "做某事" });
+				tui.render({ type: "turn_start", turnNumber: 1, userText: "做某事" });
 				expect(tui.host.isBusy()).toBe(true);
 
 				// 模拟收到内核发出的结构化 turn_aborted 事件
-				tui.render({ type: "turn_aborted", n: 1 });
+				tui.render({ type: "turn_aborted", turnNumber: 1 });
 
 				// 此时 busy 状态自动解除，且 transcript 正确记录 interrupt 行
 				expect(tui.host.isBusy()).toBe(false);
@@ -3551,11 +3551,11 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			it("InteractiveTUI: 打断的轮次在结算时 activityLine 展示 '已打断当前轮次' 而非 '本轮已完成'", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
-				tui.render({ type: "turn_start", n: 1, text: "做任务" });
+				tui.render({ type: "turn_start", turnNumber: 1, userText: "做任务" });
 				tui.host.cancelTurn("escape");
 
 				// 收到后端的 turn_end
-				tui.render({ type: "turn_end", n: 1 });
+				tui.render({ type: "turn_end", turnNumber: 1 });
 
 				// 校验 activityLine 总结状态为“已打断当前轮次”
 				const rendered = tui.host.activityLine.render(80).join("\n");
@@ -3565,7 +3565,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			it("InteractiveTUI: 排队消息回填与草稿按时间顺序拼接，并置光标于末尾 (对齐 Pi restoreQueuedMessagesToEditor)", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
-				tui.render({ type: "turn_start", n: 1, text: "运行长任务" });
+				tui.render({ type: "turn_start", turnNumber: 1, userText: "运行长任务" });
 
 				// 用户输入半截未发送的临时草稿
 				tui.host.handleInput("未发送的临时草稿");
@@ -3590,7 +3590,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			it("InteractiveTUI: 工作态下第 1 次按 Ctrl+C 触发 onCancel('ctrl+c')，第 2 次触发 onForceExit (对齐 dsh-TUI 防卡死强制退出)", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
-				tui.render({ type: "turn_start", n: 1, text: "长耗时操作" });
+				tui.render({ type: "turn_start", turnNumber: 1, userText: "长耗时操作" });
 
 				let cancelSource: string | undefined;
 				let forceExited = false;
@@ -3638,7 +3638,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			it("InteractiveTUI: 工作态下按 Esc 触发 onCancel('escape') 并保留输入栏未发送草稿", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
-				tui.render({ type: "turn_start", n: 1, text: "正在执行任务" });
+				tui.render({ type: "turn_start", turnNumber: 1, userText: "正在执行任务" });
 
 				let cancelSource: string | undefined;
 				tui.onCancel((source) => {
@@ -3657,7 +3657,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			it("InteractiveTUI: 工作态下 Ctrl+Enter 触发 onInterruptAndDeliver 且不触发 onCancel", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
-				tui.render({ type: "turn_start", n: 1, text: "执行中" });
+				tui.render({ type: "turn_start", turnNumber: 1, userText: "执行中" });
 
 				let deliveredText: string | undefined;
 				let cancelCalled = false;

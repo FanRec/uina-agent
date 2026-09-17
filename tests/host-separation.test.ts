@@ -77,15 +77,18 @@ describe("RC-1 宿主与消费者分离", () => {
 		await runOnce(host, "调用工具");
 
 		expect(events.filter((e) => e.type === "turn_start")).toHaveLength(1);
-		const started = events.find((e) => e.type === "tool_start");
-		expect(started).toMatchObject({ type: "tool_start", name: "probe_echo" });
-		const done = events.find((e) => e.type === "tool_done");
-		expect(done).toMatchObject({ name: "probe_echo", result: "你好", status: "succeeded" });
-		// 计时归宿主：消费者不再各自维护一张并行的工具计时表。
-		expect(typeof (done as { elapsedMs?: number }).elapsedMs).toBe("number");
-		const text = events.filter((e) => e.type === "text").map((e) => (e as { text: string }).text).join("");
+		const started = events.find((e) => e.type === "tool_call");
+		expect(started).toMatchObject({ type: "tool_call", toolName: "probe_echo" });
+		const done = events.find((e) => e.type === "tool_result");
+		expect(done).toMatchObject({ toolName: "probe_echo", result: "你好", status: "succeeded" });
+		const text = events
+			.filter((e): e is Extract<typeof e, { type: "output_update" }> => e.type === "output_update" && e.channel === "content")
+			.map((e) => e.text).join("");
 		expect(text).toContain("工具已返回");
-		expect(events.at(-1)?.type).toBe("turn_end");
+		// 事实单流 1:1 透传后，消费者能看到回合收尾的完整事实序列：turn_end 之后
+		// 是 agent_end（回合结果）与 agent_settled（副作用结算完成）。
+		expect(events.some((e) => e.type === "turn_end")).toBe(true);
+		expect(events.at(-1)?.type).toBe("agent_settled");
 		await host.dispose();
 	});
 
@@ -112,8 +115,8 @@ describe("RC-1 宿主与消费者分离", () => {
 
 		expect(first).toHaveLength(seenByFirst); // 已断开的消费者不再收到任何事件
 		const turnStart = second.find((e) => e.type === "turn_start");
-		expect(turnStart).toMatchObject({ type: "turn_start", text: "第三次" });
-		expect(second.at(-1)?.type).toBe("turn_end");
+		expect(turnStart).toMatchObject({ type: "turn_start", userText: "第三次" });
+		expect(second.at(-1)?.type).toBe("agent_settled");
 		await host.dispose();
 	});
 

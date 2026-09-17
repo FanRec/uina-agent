@@ -20,7 +20,8 @@ export type RuntimeEvent =
 	| SessionCompactEvent | SessionCompactFailedEvent
 	| OutputStartEvent | OutputUpdateEvent | OutputEndEvent | OutputInterruptedEvent
 	| UsageUpdateEvent
-	| QueueEvent | TurnAbortedEvent | ErrorEvent;
+	| QueueEvent | TurnAbortedEvent | ErrorEvent
+	| CustomMessageEvent | CustomEntryEvent;
 
 export interface AgentStartEvent { readonly type: "agent_start"; readonly turnSeq: number; }
 export interface AgentEndEvent { readonly type: "agent_end"; readonly turnSeq: number; readonly success: boolean; readonly error?: string; }
@@ -83,6 +84,17 @@ export interface QueueEvent { readonly type: "queue"; readonly items: readonly D
 export interface TurnAbortedEvent { readonly type: "turn_aborted"; readonly turnNumber: number; }
 export interface ErrorEvent { readonly type: "error"; readonly text: string; }
 
-export interface SessionRewindEvent { readonly type: "session_rewind"; readonly turnNumber?: number; readonly requestId: string; readonly rewindId: string; readonly fromId: string; readonly targetId: string; }
+export interface SessionRewindEvent { readonly type: "session_rewind"; readonly turnNumber?: number; readonly requestId: string; readonly rewindId: string; readonly fromId: string; readonly targetId: string; readonly entries: readonly import("../session/types.js").SessionEntry[]; }
+
+/** 扩展有意让模型看见的自定义消息（durable：写 journal 后广播）。 */
+export interface CustomMessageEvent {
+	readonly type: "custom_message";
+	readonly message: { readonly customType: string; readonly content: string; readonly images?: readonly import("../core/content.js").ImageContent[]; readonly display?: boolean; readonly details?: unknown };
+}
+/** 扩展私有持久条目（durable：写 journal 后广播；不进模型上下文）。 */
+export interface CustomEntryEvent {
+	readonly type: "custom_entry";
+	readonly entry: { readonly customType: string; readonly data?: unknown };
+}
 
 export type OutputEvent = OutputStartEvent | OutputUpdateEvent | OutputEndEvent | OutputInterruptedEvent;

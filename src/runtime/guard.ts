@@ -33,7 +33,8 @@ export function guardRuntimeHooks(hooks: RuntimeHooks): RuntimeHooks {
 			observeResponse: async (input: Readonly<{ provider: string; status: number; headers: Record<string, string> }>) => hooks.provider.observeResponse(readonlySnapshot(input)),
 		}),
 		events: Object.freeze({
-			emit: (event: RuntimeEvent) => hooks.events.emit(readonlySnapshot(event)),
+			// DeepReadonly 视图传给 emit：契约形状是 RuntimeEvent，但只读性由 deepFreeze 保证。
+			emit: (event: RuntimeEvent) => hooks.events.emit(readonlySnapshot(event) as RuntimeEvent),
 			observe: (event: OutputEvent) => hooks.events.observe(readonlySnapshot(event)),
 			flush: () => hooks.events.flush(),
 		}),

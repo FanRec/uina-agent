@@ -171,7 +171,6 @@ export class UinaHost {
 
 		// 这三个对象在宿主实例之前建立，并被实例与其钩子共享，避免任何后补赋值。
 		const listeners = new Set<HostEventListener>();
-		const toolStartedAt = new Map<string, number>();
 		const state = { stopping: false };
 		const abandonedTaskIds = new Set<string>();
 		// Host 装配层消费工具声明的 generic effect facts：只认 task.dispatch 的
@@ -243,8 +242,8 @@ export class UinaHost {
    onNotice: (text) => emit({ type: "notice", text }),
 			onProvider: (name, registered, options) => models.register(name, registered, options),
    onModel: (model, options) => models.registerModel(model, options),
-			onCustomMessage: async (message) => { await subject.appendCustomMessage(message); emit({ type: "custom_message", message }); },
-			onCustomEntry: async (entry) => { await subject.appendCustomEntry(entry); emit({ type: "custom_entry", entry }); },
+			onCustomMessage: (message) => subject.appendCustomMessage(message),
+			onCustomEntry: (entry) => subject.appendCustomEntry(entry),
 		});
 
 		// 会话偏好持久化：model_select / thinking_level_select 只经扩展宿主分发
@@ -271,68 +270,15 @@ export class UinaHost {
 		});
 
 		subject.subscribe((event) => {
-			switch (event.type) {
-				case "session_rewind": {
-					const recovered = recoverRecords([...store.readRecords()], false);
-					collectAbandonedTaskIds(recovered.allEntries);
-					emit({ ...event, entries: recovered.entries });
-					break;
-				}
-				case "output_update":
-					if (event.channel === "content") emit({ type: "text", text: event.text });
-					else if (event.channel === "thinking") emit({ type: "thinking", text: event.text });
-					break;
-				case "turn_start":
-					emit({ type: "turn_start", n: event.turnNumber, text: event.userText, images: event.images });
-					break;
-				case "turn_end":
-					emit({ type: "turn_end", n: event.turnNumber, usage: event.usage });
-					break;
-				case "usage_update":
-					emit({
-						type: "usage_update",
-						callId: event.callId,
-						usedTokens: event.usedTokens,
-						contextWindow: event.contextWindow,
-						actual: event.actual,
-						cacheRead: event.cacheRead,
-						cacheWrite: event.cacheWrite,
-						inputTokens: event.inputTokens,
-						outputTokens: event.outputTokens,
-						segments: event.segments,
-					});
-					break;
-				case "tool_call":
-					if (event.callId) toolStartedAt.set(event.callId, Date.now());
-					emit({ type: "tool_start", name: event.toolName, args: event.args, callId: event.callId });
-					break;
-				case "tool_result": {
-					const ts = event.callId ? toolStartedAt.get(event.callId) : undefined;
-					if (event.callId) toolStartedAt.delete(event.callId);
-					emit({
-						type: "tool_done",
-						name: event.toolName,
-						args: event.args,
-						result: event.result,
-      images: event.images ? [...event.images] : undefined,
-      details: event.details,
-						status: event.status,
-						callId: event.callId,
-						ts,
-						elapsedMs: ts === undefined ? undefined : Date.now() - ts,
-					});
-					break;
-				}
-				case "queue":
-					emit({ type: "queue", items: event.items as QueuedMessage[] });
-					break;
-				case "turn_aborted":
-					emit({ type: "turn_aborted", n: event.turnNumber });
-					break;
-				case "error":
-					emit({ type: "error", text: event.text });
-					break;
+			// 宿主内部派生状态：回溯后刷新被放弃的任务集合（它只关心 task.dispatch 效果事实，
+			// 不是翻译——事件本身 1:1 透传给消费者）。
+			if (event.type === "session_rewind") {
+				const recovered = recoverRecords([...store.readRecords()], false);
+				collectAbandonedTaskIds(recovered.allEntries);
 			}
+			// 事实单流 1:1 透传：宿主不翻译字段、不改形状。notice 是宿主域事件，
+			// 主体词汇表不收它，只在此处产生。
+			emit(event);
 		});
 		const commands = new CommandRouter(extensionHost.registry, (text) => emit({ type: "error", text }));
 

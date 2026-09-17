@@ -239,11 +239,7 @@ describe("S1 tool outcome propagation", () => {
 		const tui = new InteractiveTUI();
 		const p3 = providerFor("probe");
 		const subject = new Subject(p3.model, p3.stream, broker, { store, runtimeHooks: createRuntimeHooks(host) });
-		subject.subscribe((e) => {
-			if (e.type === "turn_start") tui.render({ type: "turn_start", n: e.turnNumber, text: e.userText });
-			else if (e.type === "tool_call") tui.render({ type: "tool_start", name: e.toolName, args: e.args, callId: e.callId });
-			else if (e.type === "tool_result") tui.render({ type: "tool_done", name: e.toolName, result: e.result, status: e.status, callId: e.callId });
-		});
+		subject.subscribe((e) => tui.render(e));
 		await subject.pushInput("run");
 		await subject.waitForIdle();
 		tui.host.transcript.finishTurn();
