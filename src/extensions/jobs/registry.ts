@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { errorMessage } from "../../core/errors.js";
 import { TaskOutputBuffer } from "../../runtime/task-handle.js";
 
-export type JobStatus = "running" | "stopping" | "completed" | "killed" | "failed" | "unknown";
+export type JobStatus = "running" | "stopping" | "completed" | "killed" | "failed";
 
 export interface JobSource {
 	extension: string;
@@ -309,7 +309,7 @@ export class JobRegistry {
 }
 
 function isTerminal(status: JobStatus): boolean {
-	return status === "completed" || status === "killed" || status === "failed" || status === "unknown";
+	return status === "completed" || status === "killed" || status === "failed";
 }
 
 function snapshotOf(job: TrackedJob): JobSnapshot {
