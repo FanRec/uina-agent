@@ -333,14 +333,13 @@ export class UinaHost {
 	}
 
 	/**
-	 * 提交一行用户文本：这是**投递模式规则**的唯一归属。
-	 * 忙时 direct 升级为 steer；空闲时一律 direct，与 CLI 的既有语义一致。
+	 * 提交一行用户文本（交互行）。两段规则的划分（P2-C 单点化）：
+	 * - 此处只表达交互契约"空闲时用户输入必须立即开跑"→ 空闲统一按 direct 提交；
+	 * - direct 的忙时升级（→steer）等投递规则唯一归属 Subject.pushInput。
 	 */
 	async submitText(text: string, mode: "direct" | "steer" | "followUp" = "followUp"): Promise<void> {
 		this.assertAccepting();
-		const effective: "direct" | "steer" | "followUp" = this.subject.isBusy()
-			? (mode === "direct" ? "steer" : mode)
-			: "direct";
+		const effective = this.subject.isBusy() ? mode : "direct";
 		return this.subject.pushInput(text, { mode: effective });
 	}
 

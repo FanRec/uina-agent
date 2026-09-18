@@ -404,16 +404,27 @@ export class Subject {
 	pushInput(text: string, options: QueueInputOptions = {}): Promise<void> {
 		const normalized = text.trim();
 		if (!normalized) return Promise.resolve();
-		const mode = options.mode ?? (this.isBusy() ? "steer" : "direct");
-		if (mode === "direct" && !this.isBusy() && this.queues.size === 0) {
+		const busy = this.isBusy();
+		// 投递模式规则唯一归属（P2-C）：显式 steer/followUp 原样入队；direct 空闲
+		// 即开跑；忙时语义化升级为 steer（下一请求注入，与 submitText 规则一致），
+		// 不再静默降级 followUp；空闲但有排队时随队保序（followUp）并立即消化。
+		const mode = options.mode ?? (busy ? "steer" : "direct");
+		if (mode === "direct") {
+			if (busy) return this.enqueueQueued(normalized, "steer", false);
+			if (this.queues.size > 0) return this.enqueueQueued(normalized, "followUp", true);
 			return this.startRun(normalized);
 		}
-		const queued = this.queues.create(normalized, mode === "direct" ? "followUp" : mode);
+		return this.enqueueQueued(normalized, mode, false);
+	}
+
+	/** 队列入队的单一持久化路径：storeEvent → 内存队列 → 通知 → 可选空闲消化。 */
+	private enqueueQueued(text: string, mode: "steer" | "followUp", resumeIfIdle: boolean): Promise<void> {
+		const queued = this.queues.create(text, mode);
 		const persisted = this.storeEvent("queue_enqueued", eventData(queued));
 		return persisted.then(async () => {
 			this.queues.add(queued);
 			this.notifyQueueChanged();
-			if (!this.isBusy() && mode === "direct") await this.resumeQueued();
+			if (resumeIfIdle && !this.isBusy()) await this.resumeQueued();
 		});
 	}
 

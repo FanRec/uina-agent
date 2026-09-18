@@ -63,9 +63,8 @@ export async function executeToolPipeline(
 		return { ...outcome, callId: call.callId };
 	}
 
-	// 3. 参数准备与校验
+	// 3. 参数准备与校验（tool identity 的最终复核在 broker.execute，此处不做二次 prepare）
 	let prepared = call.prepared ?? broker.prepare(call.name, call.args);
- if (!prepared.error && prepared.tool !== broker.prepare(call.name, call.args).tool) prepared = { ...prepared, error: "工具在执行前已替换或卸载" };
 	if (prepared.error) {
 		const outcome = await broker.execute(prepared, signal);
 		await observers?.onDone?.(outcome, call);
