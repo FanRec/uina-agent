@@ -52,8 +52,6 @@ describe("replay ≡ memory invariants", () => {
 		assertReplayEqualsMemory(store);
 		await store.appendCustomEntry({ customType: "private", data: { x: 1 } });
 		assertReplayEqualsMemory(store);
-		await store.appendCompaction("summary", [{ role: "assistant", content: "partial" }], 42);
-		assertReplayEqualsMemory(store);
 
 		// auxiliary 登记：turn_failed/turn_aborted 仅入 timeline，不改 semantic state
 		await store.appendEvent("turn_failed", { turn: 3 });
@@ -68,7 +66,7 @@ describe("replay ≡ memory invariants", () => {
 		assertReplayEqualsMemory(store);
 		expect(store.state.safeTargets.has(targetId)).toBe(true);
 
-		// 历史间隙（P3b 裁定：fold 零合成，replay 不制造事实；恢复只能经持久化落盘）
+		// 历史间隙（fold 零合成，replay 不制造事实；恢复只能经持久化落盘）
 		await store.appendMessage({ role: "assistant", content: "", tool_calls: [{ id: "c2", name: "probe", args: {} }] });
 		assertReplayEqualsMemory(store);
 		await store.appendEvent("tool_started", { callId: "c2" });

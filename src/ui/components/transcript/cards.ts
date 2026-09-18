@@ -60,7 +60,7 @@ export function formatThinkingLines(
 /* 2. 会话压缩摘要卡片                                                 */
 /* ------------------------------------------------------------------ */
 
-export interface CompactionRecord {
+export interface CompactionCardData {
 	summary: string;
 	turnsCount: number;
 	tokensBefore: number;
@@ -80,7 +80,7 @@ function applyCardBackground(line: string, bg: string, width: number): string {
  * 格式化渲染会话压缩卡片行
  */
 export function formatCompactionCardLines(
-	record: CompactionRecord,
+	record: CompactionCardData,
 	width = 80,
 	isHovered = false,
 ): string[] {

@@ -28,7 +28,7 @@ import {
 import { BannerComponent } from "./components/primitives/banner.js";
 import {
 	TranscriptContainer,
-	type CompactionRecord,
+	type CompactionCardData,
 	type LineModel,
 } from "./components/transcript/index.js";
 import {
@@ -515,7 +515,7 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	addCompaction(record: CompactionRecord): void {
+	addCompaction(record: CompactionCardData): void {
 		this.transcript.addCompaction(record);
 		this.trajectoryProjection.onCompaction(record.summary, record.tokensBefore);
 		this.requestRender();

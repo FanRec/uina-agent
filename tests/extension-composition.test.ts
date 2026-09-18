@@ -272,9 +272,8 @@ describe("extension composition", () => {
 	});
 });
 
-// P6c：Subject.compact/registerCompactor/resolveCompactionResult 退役后，
 // compaction capability 的事件出口契约——事实经 pi.emitEvent 进扩展事件
-// 总线（builtin UI 是消费者），不再进宿主 subject.dispatch 流。
+// 总线（builtin UI 是消费者），不进宿主 subject.dispatch 流。
 describe("compaction capability event contract", () => {
 	it("broadcasts session_compact after a forced trim with summary persisted via appendEntry", async () => {
 		const { stream, summaryCalls } = summarizingStream("总线摘要");

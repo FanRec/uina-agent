@@ -198,21 +198,19 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 		expect(roles).toEqual(["user", "model", "user"]);
 	});
 
-	it("convertToLlm cleanly projects custom and compactionSummary AgentMessages into LLM user turns", async () => {
+	it("convertToLlm cleanly projects custom AgentMessages into LLM user turns", async () => {
 		const { convertToLlm } = await import("../src/agent/context.js");
 		const agentMessages: import("../src/core/types.js").AgentMessage[] = [
-			{ role: "compactionSummary", summary: "compacted memory", content: "[历史摘要] compacted memory" },
 			{ role: "custom", customType: "probe", content: "injected probe context" },
 			{ role: "user", content: "user query" },
 			{ role: "assistant", content: "assistant answer" },
 		];
 
 		const llmMessages = convertToLlm(agentMessages);
-		expect(llmMessages.map((m) => m.role)).toEqual(["user", "user", "user", "assistant"]);
-		expect(llmMessages[0]?.content).toBe("[历史摘要] compacted memory");
-		expect(llmMessages[1]?.content).toBe("injected probe context");
-		expect(llmMessages[2]?.content).toBe("user query");
-		expect(llmMessages[3]?.content).toBe("assistant answer");
+		expect(llmMessages.map((m) => m.role)).toEqual(["user", "user", "assistant"]);
+		expect(llmMessages[0]?.content).toBe("injected probe context");
+		expect(llmMessages[1]?.content).toBe("user query");
+		expect(llmMessages[2]?.content).toBe("assistant answer");
 	});
 
 	it("Subject stores custom message as role 'custom' in historySnapshot but projects cleanly to LLM", async () => {

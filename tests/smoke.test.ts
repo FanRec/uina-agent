@@ -424,42 +424,11 @@ describe("JSONL session", () => {
 		await reopened.store.close();
 	});
 
-	it("uses the latest compaction as the model-history boundary without rewriting journal order", async () => {
-		const root = mkdtempSync(join(tmpdir(), "uina-session-compact-"));
-		tempDirs.push(root);
-		const path = join(root, "session.jsonl");
-		const opened = await openJsonlSession(path);
-		await opened.store.appendMessage({ role: "user", content: "old" });
-		await opened.store.appendCustomMessage({ customType: "old-custom", content: "old-custom" });
-		await opened.store.appendMessage({ role: "assistant", content: "tail" });
-		await opened.store.appendCompaction("summary", [{ role: "assistant", content: "tail" }], 100);
-		await opened.store.appendCustomMessage({ customType: "new-custom", content: "new-custom" });
-		await opened.store.appendMessage({ role: "assistant", content: "after" });
-		await opened.store.close();
-
-		const reopened = await openJsonlSession(path);
-		expect(reopened.snapshot.entries.map((entry) => entry.kind)).toEqual([
-			"message",
-			"custom_message",
-			"message",
-			"compaction",
-			"custom_message",
-			"message",
-		]);
-		expect(projectModelHistory(reopened.snapshot.entries).map((message) => message.content)).toEqual([
-			"[历史摘要] summary",
-			"tail",
-			"new-custom",
-			"after",
-		]);
-		await reopened.store.close();
-	});
-
 	it("repairs only a torn final line and rejects an invalid middle line", async () => {
 		const root = mkdtempSync(join(tmpdir(), "uina-session-"));
 		tempDirs.push(root);
 		const path = join(root, "session.jsonl");
-		const header = JSON.stringify({ kind: "header", version: 2, id: "x", cwd: root, createdAt: new Date().toISOString() });
+		const header = JSON.stringify({ kind: "header", version: 3, id: "x", cwd: root, createdAt: new Date().toISOString() });
 		const message = JSON.stringify({ kind: "message", id: "m", seq: 1, timestamp: new Date().toISOString(), message: { role: "user", content: "ok" } });
 		writeFileSync(path, `${header}\n${message}\n{"kind":"message"`);
 		const opened = await openJsonlSession(path);

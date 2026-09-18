@@ -4,8 +4,8 @@ import { listAllSessionNodes } from "../session/navigation.js";
 
 /**
  * 官方内置命令 = preinstalled capability：与项目扩展完全相同的 API 面（pi.*），
- * 不持有特权 Subject 句柄，也不再有平行的 BuiltinServices/BuiltinUI 装配束
- * （P2 语义去重，inventory #5 #6）。消费者富 UI 能力经 pi.ui 的可选成员提供，
+ * 不持有特权 Subject 句柄，也没有平行的 BuiltinServices/BuiltinUI 装配束。
+ * 消费者富 UI 能力经 pi.ui 的可选成员提供，
  * 不支持的消费者（stdio/print）自然降级为无操作。
  */
 export function activateBuiltinCommands(pi: ExtensionAPI): void {
@@ -153,10 +153,8 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		pi.ui.notify(pi.isBusy() ? `思考等级: ${e.level}（当前回合结束后生效）` : `思考等级: ${e.level}`, "info", 2000);
 	});
 
-	// P6c：/compact 命令归 official compaction capability 端到端拥有；
-	// 旧 pi.compact → Subject.compact → canonical 截断链路整体退役。
-	// beforeCompact 干预挂点随 canonical 截断退役（无压缩提交即无取消语义），
-	// 压缩进度由 session_compact / session_compact_failed 事实事件表达。
+	// /compact 命令归 official compaction capability 端到端拥有；压缩进度由
+	// session_compact / session_compact_failed 事实事件表达。
 
 	pi.on("session_compact", (e) => {
 		pi.ui.notify("会话已压缩", "info", 2500);

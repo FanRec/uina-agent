@@ -10,16 +10,15 @@ import { projectAgentHistory } from "../src/session/recovery.js";
 import { scriptedProvider } from "./helpers/mock-provider.js";
 
 // 减法测试（七问 #6）：不激活任何 capability/extension，仅内核五目录。
-// 验收：内核可启动、可跑回合、工具可用、journal 持久、旧会话 legacy 记录照常回放。
+// 验收：内核可启动、可跑回合、工具可用、journal 持久。
 it("减法测试：删掉所有 capability 后 Subject 仍完整成立（七问#6）", async () => {
 	const cwd = await mkdtemp(join(tmpdir(), "uina-subtraction-"));
 	const path = join(cwd, "session.jsonl");
 	const { store } = await openJsonlSession(path);
 
-	// 1) 先铸造一个"旧世界"journal：legacy compaction record + rewind record。
+	// 1) 先铸造一个带回溯历史的 journal。
 	await store.appendMessage({ role: "user", content: "old premise" });
 	await store.appendMessage({ role: "assistant", content: "old answer" });
-	await store.appendCompaction("旧摘要：用户讨论过基础问题", [{ role: "user", content: "旧尾巴" }], 1234);
 	await store.appendRewind({
 		id: "rewind-1",
 		requestId: "req-1",
@@ -40,9 +39,9 @@ it("减法测试：删掉所有 capability 后 Subject 仍完整成立（七问#
 	const subject = new Subject(provider.model, provider.stream, broker, { store });
 	subject.addHistory(projectAgentHistory(store.state.entries));
 
-	// 3) 旧会话照常回放（canonicalReplay + legacy 读取器，零扩展参与）。
-	// 回溯目标 = 首条消息：放弃其后一切（含旧回答与 compaction 尾巴）——
-	// "回溯重建压缩前主线"是既定语义（session-rewind 已钉）。
+	// 3) 历史照常回放（canonicalReplay，零扩展参与）。
+	// 回溯目标 = 首条消息：放弃其后一切（含旧回答）——
+	// "回溯重建先前主线"是既定语义（session-rewind 已钉）。
 	const replayed = projectModelHistory(store.state.entries);
 	expect(replayed.some((m) => m.content === "old premise")).toBe(true);
 	expect(replayed.some((m) => m.content === "old answer")).toBe(false);
@@ -56,7 +55,6 @@ it("减法测试：删掉所有 capability 后 Subject 仍完整成立（七问#
 	// 5) journal 持久化到磁盘。
 	const raw = await readFile(path, "utf8");
 	expect(raw).toContain("fresh reply");
-	expect(raw).toContain("旧摘要：用户讨论过基础问题");
 
 	await rm(cwd, { recursive: true, force: true });
 });

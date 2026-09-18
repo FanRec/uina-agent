@@ -31,9 +31,6 @@ function formatNodePreview(entry: SessionEntry): string {
 		case "rewind":
 			text = entry.notice;
 			break;
-		case "compaction":
-			text = entry.summary;
-			break;
 	}
 	return (text ?? "").slice(0, 160);
 }
@@ -144,11 +141,8 @@ function branchEntries(
 }
 
 /**
- * 由 rewind 节点与其范围内节点数构造分支信息。
- *
- * P1.4：此前 readSessionBranch 会先跑一遍 listSessionBranches 造出全部分支、再 find 出自己那条，
- * 末尾还用 `!` 掩盖「找不到」。但它要的 rewind 记录本来就在手上 —— 直接构造即可，
- * 既省掉整轮重算，也去掉了那个不可能为真的断言。
+ * 由 rewind 节点与其范围内节点数构造分支信息：直接用手上已有的 rewind 记录构造，
+ * 不经全量分支列表再 find。
  */
 function toBranchInfo(entry: RewindNode, nodeCount: number): SessionBranchInfo {
 	return {

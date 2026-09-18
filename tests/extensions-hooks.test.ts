@@ -571,7 +571,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 });
 
 describe("run-safety seams: prepare model swap and shouldStop", () => {
-	it("applies a model fact returned from before_agent_start with full setModel discipline", async () => {
+	it("applies a model fact returned from turn.prepare with full setModel discipline", async () => {
 		const host = new ExtensionHost();
 		const baseModel = mockModel({ id: "base-model", name: "base" });
 		const nextModel = mockModel({ id: "next-model", name: "next" });

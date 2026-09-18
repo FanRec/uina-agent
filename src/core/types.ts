@@ -153,23 +153,12 @@ export interface CustomAgentMessage {
 	timestamp?: string;
 }
 
-export interface CompactionSummaryAgentMessage {
-	id?: string;
-	role: "compactionSummary";
-	summary: string;
-	content: string;
- images?: ImageContent[];
-	tokensBefore?: number;
-	timestamp?: string;
-}
-
 export type AgentMessage =
 	| SystemAgentMessage
 	| UserAgentMessage
 	| AssistantAgentMessage
 	| ToolAgentMessage
-	| CustomAgentMessage
-	| CompactionSummaryAgentMessage;
+	| CustomAgentMessage;
 
 export type ChatMsg =
 	| { role: "system" | "user"; content: string; images?: ImageContent[] }

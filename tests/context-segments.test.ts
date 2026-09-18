@@ -24,7 +24,6 @@ describe("Context Segments & Unified Token Estimation", () => {
 			{ role: "system", content: "You are Uina." }, // system: 13 + 16 = 29
 			{ role: "user", content: "Hello" }, // prompt: 5 + 16 = 21
 			{ role: "custom", content: "custom alert", customType: "notice" }, // prompt: 12 + 16 = 28
-			{ role: "compactionSummary", summary: "short summary", content: "short summary" }, // prompt: 13 + 32 = 45
 			{
 				role: "assistant",
 				content: "I will use search.", // assistant: 18 + 16 = 34
@@ -37,7 +36,7 @@ describe("Context Segments & Unified Token Estimation", () => {
 		const seg = countContextSegmentChars(messages, sampleTools);
 
 		expect(seg.system).toBe(29);
-		expect(seg.prompt).toBe(21 + 28 + 45);
+		expect(seg.prompt).toBe(21 + 28);
 		expect(seg.assistant).toBe(34);
 		expect(seg.thinking).toBe(31);
 		const expectedToolCallsChars = JSON.stringify([{ id: "c1", name: "search_tool", args: { q: "abc" } }]).length;

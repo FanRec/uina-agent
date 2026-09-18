@@ -44,21 +44,21 @@
 
 `Subject` 对外以 `activeRun` 表示完整运行。`waitForIdle()` 会等待 turn 结束、extension handler、队列续跑和 observed output flush 全部结算。
 
-手动与自动 compact 共用提案、校验与提交路径。扩展可替换生成、保留位置与触发策略；运行时拥有取消和会话提交。失败或取消不替换历史；AgentHandle 的 busy/status 从实际主体活动派生，dispose 等待活动与存储关闭。
+上下文窗口管理由 compaction capability 在 `turn.transformContext` 每请求裁剪，`/compact` 为其命令；journal 保留全量历史，失败或取消不替换历史。AgentHandle 的 busy/status 从实际主体活动派生，dispose 等待活动与存储关闭。
 
 每个已启动的 `content` 或 `thinking` 输出 channel 恰好以一个 `output_end` 或 `output_interrupted` 终止。网络错误、取消和协议失败不伪造成正常结束。
 
 ## 会话与恢复
 
-`data/session.jsonl` 按真实时间追加 header、message、input、custom message/entry、compaction、rewind 和 lifecycle event。日志是权威事实；Session 从日志推导当前主线与全部历史节点，模型历史与 TUI 从同一主线投影。回溯只允许选择当前主线的安全历史祖先，退出路径只读，外部状态不撤销。设计与阶段验收见 [会话主线与回溯](session-rewind.md)。
+`data/session.jsonl` 按真实时间追加 header、message、input、custom message/entry、rewind 和 lifecycle event。日志是权威事实；Session 从日志推导当前主线与全部历史节点，模型历史与 TUI 从同一主线投影。回溯只允许选择当前主线的安全历史祖先，退出路径只读，外部状态不撤销。设计与阶段验收见 [会话主线与回溯](session-rewind.md)。
 
 工具已开始但没有最终结果时，恢复为 `unknown`，不推断外部副作用成功。打开日志时将末尾恢复结果追加落盘，之后的实时会话查询不会将正在执行的工具误判为崩溃。
 
-扩展阻止执行时记录 `not_started` 及原因，不生成 `tool_started`；该日志可正常重开。compaction 的 retained tail 按 `AgentMessage` 校验，接受 `custom` 和 `compactionSummary`，保留其内容、顺序与元数据；`custom_entry` 不进入模型上下文。
+扩展阻止执行时记录 `not_started` 及原因，不生成 `tool_started`；该日志可正常重开。`custom_entry` 是 capability 私有持久状态（Auxiliary）：仅登记在 auxiliary timeline，不进入主线 entries 与模型上下文。
 
-队列移交通过一条携带输入 ID、内容和来源的 `input` 记录提交：提交前归队列，提交后归会话，不再先写 `queue_consumed` 再另写 user message。用户输入投影为 user message，runtime 来源投影为隐藏 custom 消息，标明运行时来源，重开后仍可进入上下文，不伪装成人类发言。提交失败报告错误并保留待处理队列，失败轮次不自动续跑。这里保证输入归属，不保证外部副作用恰好执行一次或跨重启 producer 对账。
+队列移交通过一条携带输入 ID、内容和来源的 `input` 记录提交：提交前归队列，提交后归会话。用户输入投影为 user message，runtime 来源投影为隐藏 custom 消息，标明运行时来源，重开后仍可进入上下文，不伪装成人类发言。提交失败报告错误并保留待处理队列，失败轮次不自动续跑。这里保证输入归属，不保证外部副作用恰好执行一次或跨重启 producer 对账。
 
-header 仍为 v2，新 reader 保留原有合法 v2 记录及 `queue_consumed`/`queue_restored` 的读取。旧 reader 不认识新增 `rewind` 或 `input` 子类型或缺字段的 usage，不能直接回读包含这些记录的新日志；回退使用升级前日志备份或隔离会话目录。不会自动猜测修复旧实现留下的非法生命周期记录，也无法补回旧日志中已丢失的输入。
+header 为 v3，且只接受 v3：v2 及更早版本明确拒绝，没有迁移链，也没有旧版本 reader——旧 journal 直接开新会话。不会自动猜测修复非法生命周期记录，也无法补回已丢失的输入。
 
 ## 工具结果
 

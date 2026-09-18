@@ -685,8 +685,8 @@ export class Subject {
 			}
 
 			await applyRewind();
-			// 回合内暴涨由每请求的 transformContext 裁剪收敛（P6b：capability 拥有
-			// 上下文窗口管理）——这里不再有 between-step 压缩体检。
+			// 回合内暴涨由每请求的 transformContext 裁剪收敛（compaction capability
+			// 拥有上下文窗口管理）——这里不再有 between-step 压缩体检。
 			const requestMessages = await this.buildRequestMessages(model, systemPrompt, beforeMessages);
 
 			const callId = `stream-${this.turnSeq}-${++this.streamSeq}`;
@@ -942,9 +942,8 @@ export class Subject {
 		);
 	}
 
-	// P6c：Subject 压缩编排全部退役（prepareTurn 在 P6b 已删、手动 compact 在 P6c
-	// 命令化给 official compaction capability）。上下文窗口管理唯一入口 =
-	// capability 的 turn.transformContext 每请求裁剪；journal 保留全量历史。
+	// Subject 无压缩编排：上下文窗口管理唯一入口 = compaction capability 的
+	// turn.transformContext 每请求裁剪；journal 保留全量历史。
 
 	private async appendMessage(message: AgentMessage): Promise<void> {
 		await this.store?.appendMessage(message);

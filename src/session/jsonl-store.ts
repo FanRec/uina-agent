@@ -16,7 +16,6 @@ import {
 import type { CanonicalState } from "./recovery.js";
 import type {
 	QueuedInput,
-	SessionCompactionRecord,
 	SessionEventName,
 	SessionEventRecord,
 	SessionHeader,
@@ -29,13 +28,11 @@ import type {
  * Journal schema version, single source of truth for both the writer
  * (header creation) and the reader (parseHeader validation).
  *
- * Migration skeleton: bumping this constant is a schema change and MUST be
- * accompanied by a migration chain here — parseHeader accepts older versions
- * and each step upgrades in-memory before records are interpreted. Never
- * rewrite old journals in place; migration is a read-time concern until a
- * dedicated migration commit is authorized (out of P0 scope).
+ * v3 是当前唯一格式：写 v3、读只接受 v3。不维护迁移链，也没有旧版本
+ * reader——旧版本 journal 明确拒绝（新会话开新文件即可，不为旧数据
+ * 保留兼容代码）。
  */
-const JOURNAL_VERSION = 2;
+const JOURNAL_VERSION = 3;
 
 export async function openJsonlSession(path: string): Promise<{
 	store: JsonlSessionStore;
@@ -142,26 +139,6 @@ export class JsonlSessionStore implements SessionStore {
 
 	appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void> {
 		return this.append({ kind: "custom_entry", id: randomUUID(), seq: ++this.nextSeq, timestamp: new Date().toISOString(), ...structuredClone(entry) });
-	}
-
-	/** legacy 铸造器（P6c）：生产链路不再新写 compaction record（压缩 =
-	 * capability 的 transformContext 裁剪，journal 保留全量）；仅测试用它
-	 * 铸造旧版本 journal 形态，验证 legacy 读取器。不在 SessionStore 接口内。 */
-	appendCompaction(
-		summary: string,
-		retainedTail: (AgentMessage | ChatMsg)[],
-		tokensBefore: number,
-	): Promise<void> {
-		const record: SessionCompactionRecord = {
-			kind: "compaction",
-			id: randomUUID(),
-			seq: ++this.nextSeq,
-			timestamp: new Date().toISOString(),
-			summary,
-			retainedTail: structuredClone(retainedTail),
-			tokensBefore,
-		};
-		return this.append(record);
 	}
 
 	appendEvent(
@@ -276,24 +253,6 @@ export class MemorySessionStore implements SessionStore {
 		return Promise.resolve();
 	}
 
-	/** legacy 铸造器（P6c）：同 JsonlSessionStore——仅供测试铸造旧 journal 形态。 */
-	appendCompaction(
-		summary: string,
-		retainedTail: (AgentMessage | ChatMsg)[],
-		tokensBefore: number,
-	): Promise<void> {
-		this.appendSync({
-			kind: "compaction",
-			id: randomUUID(),
-			seq: this.records.length + 1,
-			timestamp: new Date().toISOString(),
-			summary,
-			retainedTail: structuredClone(retainedTail),
-			tokensBefore,
-		});
-		return Promise.resolve();
-	}
-
 	appendEvent(
 		event: SessionEventName,
 		data: Record<string, unknown>,
@@ -379,10 +338,7 @@ function parseHeader(value: string | undefined, path: string): SessionHeader {
 	if (header.kind !== "header") {
 		throw new SessionFormatError(`${path}:1 header schema 无效`);
 	}
-	// Migration landing point: when JOURNAL_VERSION is bumped, this branch
-	// becomes a version switch — older headers are upgraded in memory via a
-	// migration chain instead of being rejected outright. For now only the
-	// current version is accepted (P0 freeze).
+	// 版本断代：只接受当前版本。旧版本 journal 明确拒绝，不做内存升级。
 	if (header.version !== JOURNAL_VERSION) {
 		throw new SessionFormatError(
 			`${path}:1 header 版本不支持: ${String(header.version)}（期望 ${JOURNAL_VERSION}）`,

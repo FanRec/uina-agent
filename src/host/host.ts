@@ -53,7 +53,7 @@ export interface UinaHostOptions {
 	stream?: ModelStreamFn;
 	/** 默认 thinking 档位。 */
 	thinkingLevel?: ThinkingLevel;
-	/** 投影 Replacement 缝（单 owner = Subject 实例；组合根经此提供，P4 起宿主可注入）。 */
+	/** 投影 Replacement 缝（单 owner = Subject 实例；组合根经此提供，宿主可注入）。 */
 	projection?: ProjectionPolicy;
 	/** 诊断出口：消费者尚未接入时也必须可见，绝不静默吞掉。 */
 	onError?: (text: string) => void;
@@ -122,22 +122,14 @@ export class UinaHost {
 		// 偏好是会话态，陈旧数据不值得让启动失败。
 		const settings = options.modelName || options.model ? {} : await loadSettings();
 		// 偏好里存的是 modelKey（providerId/id）身份键：跨 provider 的同名模型必须精确还原，
-		// 只按裸 id 分辨会落到注册表里恰好先注册的那一个。兼容旧格式裸名；provider 改名或下线
-		// 时回落到同名模型，两者都不阻断开局（偏好是会话态，陈旧数据不值得让启动失败）。
+		// 只按裸 id 分辨会落到注册表里恰好先注册的那一个。只认身份键；解析失败
+		// （provider 改名/模型下线/旧格式裸名）即落回默认模型，不猜旧配置的含义。
 		let restoredModel: Model | undefined;
 		if (settings.model) {
 			try {
 				restoredModel = models.resolve(settings.model);
 			} catch {
-				const slash = settings.model.indexOf("/");
-				const bare = slash >= 0 ? settings.model.slice(slash + 1) : undefined;
-				if (bare !== undefined) {
-					try {
-						restoredModel = models.resolve(bare);
-					} catch {
-						restoredModel = undefined; // 上次的模型已不存在（配置变更/下线），落回默认
-					}
-				}
+				restoredModel = undefined; // 上次的模型已不存在（配置变更/下线），落回默认
 			}
 		}
 		const activeModel = options.model ?? restoredModel ?? (() => {

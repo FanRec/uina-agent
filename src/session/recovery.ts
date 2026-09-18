@@ -35,7 +35,7 @@ interface PendingCall {
  *   供 projector 与展示消费。
  *
  * 派生查询（safeTargets）一律从本状态增量维护，禁止第二个 journal walker。
- * 纯度契约：解释不修复——replay 零合成（P3b 起），未决操作由 checkRecord 的
+ * 纯度契约：解释不修复——replay 零合成，未决操作由 checkRecord 的
  * unresolved-operation detection 拒绝非法延续；恢复只能经 planRecovery 落盘。
  */
 export interface CanonicalState {
@@ -82,7 +82,7 @@ export function initialCanonicalState(): CanonicalState {
 // 登记 auxiliary timeline——内存 timeline 同步由 applyRecord 统一完成。
 // 分类成文于 applyRecord/applyEvent 的分派 switch（唯一执行点）：
 // turn_failed/turn_aborted 与 custom_entry 仅登记（custom_entry = capability
-// 私有持久状态，P6 数据模型裁定收口；同属 Auxiliary，checkRecord 豁免
+// 私有持久状态，数据模型裁定收口；同属 Auxiliary，checkRecord 豁免
 // ensureSettled——未决调用期间写私有状态无害且不制造恢复歧义）。
 // ---------------------------------------------------------------------------
 
@@ -118,9 +118,6 @@ export function checkRecord(state: CanonicalState, record: SessionRecord): void 
 		case "custom_entry":
 			// Auxiliary（capability 私有状态）：与 turn_failed/turn_aborted 同类豁免
 			// ——未决调用期间写私有状态不改变对话事实，也不制造恢复歧义。
-			return;
-		case "compaction":
-			ensureSettled(state, record.kind);
 			return;
 	}
 }
@@ -194,7 +191,6 @@ function checkEvent(state: CanonicalState, record: SessionEventRecord): void {
 			}
 			return;
 		}
-		case "queue_consumed":
 		case "queue_restored": {
 			if (typeof data.id !== "string" || !state.queued.has(data.id)) {
 				throw new SessionFormatError(`${record.event} 缺少 id`);
@@ -261,18 +257,11 @@ export function applyRecord(state: CanonicalState, record: SessionRecord): void 
 			});
 		case "custom_entry":
 			// Auxiliary：capability 私有持久状态，仅登记——不进主线/全历史/安全目标
-			// （数据模型裁定 P6 收口落地：私有状态不定义对话事实，不构成回溯语义节点）。
+			// （数据模型裁定：私有状态不定义对话事实，不构成回溯语义节点）。
 			state.auxiliary.push(record);
 			return;
 		case "message":
 			return applyMessage(state, record);
-		case "compaction":
-			return addEntry(state, record, {
-				kind: "compaction",
-				summary: record.summary,
-				retainedTail: structuredClone(record.retainedTail),
-				tokensBefore: record.tokensBefore,
-			});
 		case "event":
 			return applyEvent(state, record);
 	}
@@ -326,7 +315,6 @@ function applyEvent(state: CanonicalState, record: SessionEventRecord): void {
 				...(data.data !== undefined ? { data: data.data } : {}),
 			});
 			return;
-		case "queue_consumed":
 		case "queue_restored":
 			state.queued.delete(data.id as string);
 			return;
@@ -368,17 +356,11 @@ function addEntry(
 	trackSafety(state, entry);
 }
 
-/** safeTargets 增量规则（与逐前缀派生等价）：压缩/回溯重置工具交换状态；
+/** safeTargets 增量规则（与逐前缀派生等价）：回溯重置工具交换状态；
  * 消息按 assistant(开启调用)/tool(闭合调用) 增量更新；无未闭合调用且无结果
  * 孤儿处的持久化节点才是安全回溯目标。 */
 function trackSafety(state: CanonicalState, entry: HydratedSessionEntry): void {
-	if (entry.kind === "compaction") {
-		state.openCallIds.clear();
-		state.settlementInvalid = false;
-		for (const message of entry.retainedTail as AgentMessage[]) {
-			applySafetyMessage(state, message);
-		}
-	} else if (entry.kind === "rewind") {
+	if (entry.kind === "rewind") {
 		state.openCallIds.clear();
 		state.settlementInvalid = false;
 	} else if (entry.kind === "message") {
@@ -589,32 +571,12 @@ function rewindMessages(entry: Extract<SessionEntry, { kind: "rewind" }>): Agent
 	}];
 }
 
-/** Projects the ordered journal into the effective AgentMessage history, preserving custom and compaction messages. */
+/** Projects the ordered journal into the effective AgentMessage history, preserving custom messages. */
 export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMessage[] {
 	const messages: AgentMessage[] = [];
 	for (const entry of entries) {
 		if (entry.kind === "rewind") {
-			const compaction = entry.record.compaction;
-			if (compaction) {
-				// 嵌入压缩在此应用（与 standalone compaction 条目同语义）：落盘的压缩结果
-				// 就是生效的上下文，不再等待后续体检重算一遍摘要。
-				messages.length = 0;
-				messages.push({
-					role: "compactionSummary",
-					summary: compaction.summary,
-					content: `[历史摘要] ${compaction.summary}`,
-					tokensBefore: compaction.tokensBefore,
-				});
-				// 连续性提示不原样保留在尾位：从保留尾中滤出，由 protectRewindContext
-				// 统一重注入到 compactionSummary 之后（"never at the absolute tail"）。
-				messages.push(
-					...(compaction.retainedTail as AgentMessage[]).filter(
-						(message) => !(message as { id?: string }).id?.startsWith("continuity:"),
-					),
-				);
-			} else {
-				messages.push(...rewindMessages(entry));
-			}
+			messages.push(...rewindMessages(entry));
 			continue;
 		}
 		if (entry.kind === "input") {
@@ -636,18 +598,6 @@ export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMess
 				details: entry.details,
 			});
 			continue;
-		}
-		if (entry.kind === "compaction") {
-			messages.length = 0;
-			messages.push(
-				{
-					role: "compactionSummary",
-					summary: entry.summary,
-					content: `[历史摘要] ${entry.summary}`,
-					tokensBefore: entry.tokensBefore,
-				},
-				...(entry.retainedTail as AgentMessage[]).map((m) => structuredClone(m)),
-			);
 		}
 	}
 	return protectRewindContext(messages, entries);
@@ -675,17 +625,15 @@ export function projectInputMessage(input: QueuedInput): AgentMessage {
 	};
 }
 
-/** Compaction is a projection; it cannot erase the latest committed rewind facts.
- * Injected notice is positioned immediately after compactionSummary, never at the absolute tail. */
+/** A projection cannot erase the latest committed rewind facts. The injected
+ * notice is positioned at the head of the effective history, never at the
+ * absolute tail where it would masquerade as the newest user prompt. */
 export function protectRewindContext(messages: AgentMessage[], entries: readonly SessionEntry[]): AgentMessage[] {
 	const latest = entries.findLast((entry): entry is Extract<SessionEntry, { kind: "rewind" }> => entry.kind === "rewind");
 	if (!latest) return messages;
 	const ids = new Set(messages.map((message) => message.id));
 	const missing = rewindMessages(latest).slice(0, 1).filter((message) => !ids.has(message.id));
 	if (missing.length === 0) return messages;
-	if (messages.length > 0 && messages[0].role === "compactionSummary") {
-		return [messages[0], ...missing, ...messages.slice(1)];
-	}
 	return [...missing, ...messages];
 }
 
@@ -717,7 +665,6 @@ export function isRecord(value: unknown): value is SessionRecord {
 		record.kind !== "message" &&
 		record.kind !== "custom_message" &&
 		record.kind !== "custom_entry" &&
-		record.kind !== "compaction" &&
 		record.kind !== "event"
 	) {
 		return false;
@@ -739,20 +686,10 @@ export function isRecord(value: unknown): value is SessionRecord {
 	if (record.kind === "custom_entry") {
 		return typeof record.customType === "string" && record.customType.length > 0;
 	}
-	if (record.kind === "compaction") {
-		return (
-			typeof record.summary === "string" &&
-			typeof record.tokensBefore === "number" &&
-			Number.isFinite(record.tokensBefore) &&
-			Array.isArray(record.retainedTail) &&
-			record.retainedTail.every(isAgentMessage)
-		);
-	}
 	return (
 		typeof record.event === "string" &&
 		[
 			"queue_enqueued",
-			"queue_consumed",
 			"queue_restored",
 			"tool_started",
 			"tool_finished",
@@ -770,7 +707,6 @@ function isAgentMessage(value: unknown): value is AgentMessage {
 	const message = value as Record<string, unknown>;
 	if (!validImages(message.images)) return false;
 	if (message.role === "custom") return typeof message.content === "string" && typeof message.customType === "string" && message.customType.length > 0 && (message.display === undefined || typeof message.display === "boolean");
-	if (message.role === "compactionSummary") return typeof message.content === "string" && typeof message.summary === "string" && (message.tokensBefore === undefined || (typeof message.tokensBefore === "number" && Number.isFinite(message.tokensBefore)));
 	if (
 		typeof message.content !== "string" ||
 		(message.role !== "system" &&

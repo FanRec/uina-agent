@@ -231,11 +231,9 @@ function formatNodeList(
 		const dot = node.active ? `${C.green}●${C.reset}` : `${C.dim}○${C.reset}`;
 		const kind = node.kind === "rewind"
 			? `${C.warning}⟲${C.reset}`
-			: node.kind === "compaction"
-				? `${C.blue}◧${C.reset}`
-				: node.kind === "input"
-					? `${C.briefLabelYou}▸${C.reset}`
-					: `${C.claude}◆${C.reset}`;
+			: node.kind === "input"
+				? `${C.briefLabelYou}▸${C.reset}`
+				: `${C.claude}◆${C.reset}`;
 		// Session content is untrusted for rendering: it carries newlines, ANSI and control
 		// characters. Collapse it to a single line before measuring, or one message destroys
 		// the frame the same way a multi-line label would.
@@ -292,14 +290,6 @@ function formatNodeDetails(entry: HydratedSessionEntry | null, width: number): s
 				rows.push(...wrapPlain(`${C.cyan}${call.name}${C.reset}(${JSON.stringify(call.args ?? {})})`, width));
 			}
 		}
-		return rows;
-	}
-
-	if (entry.kind === "compaction") {
-		rows.push(`${C.blue}── 历史压缩摘要 ──${C.reset}`);
-		rows.push(label("保留尾部", `${entry.retainedTail.length} 条消息`));
-		rows.push(label("压缩前", `${entry.tokensBefore} tokens`));
-		rows.push(...wrapPlain(entry.summary, width));
 		return rows;
 	}
 

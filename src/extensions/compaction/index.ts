@@ -1,5 +1,5 @@
 /**
- * 官方压缩 capability（P6a 算法下沉；P6b 自动压缩语义切换；P6c 端到端收口）。
+ * 官方压缩 capability。
  *
  * 本 capability 是上下文窗口管理的唯一入口（L1 一语义一入口）：自动压缩与
  * 手动 /compact 都收敛到同一个 transformContext 裁剪点——按 summary 裁剪
@@ -95,8 +95,7 @@ function findTrimBoundary(messages: readonly StreamMessageView[], budgetTokens: 
 	return keepFrom;
 }
 
-/** 裁剪后的请求流：leading system 原位保留，摘要紧随其后（与 convertToLlm 对
- * compactionSummary 的渲染同构），再接预算内尾部。 */
+/** 裁剪后的请求流：leading system 原位保留，摘要以 user 消息紧随其后，再接预算内尾部。 */
 function renderTrimmed<T extends StreamMessageView>(
 	messages: readonly T[],
 	boundary: number,
@@ -140,8 +139,7 @@ export default function activateCompaction(pi: ExtensionAPI): void {
 	/** /compact 的待生效请求：下一个 transformContext 强制裁剪。 */
 	let force: { instruction?: string } | undefined;
 
-	// P6c：手动压缩命令化——/compact 归 capability 端到端拥有（旧 pi.compact →
-	// Subject.compact → canonical 截断链路整体退役）。只设标志不直接执行：
+	// 手动压缩命令化——/compact 归 capability 端到端拥有。只设标志不直接执行：
 	// 压缩对象是"下一次请求的上下文"，没有下一个请求就没有压缩对象。
 	pi.registerCommand({
 		name: "compact",

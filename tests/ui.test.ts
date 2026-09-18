@@ -245,18 +245,17 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 		expect(rendered).toContain("/history");
 	});
 
-	it("从单一 session entry 流按原顺序恢复消息、扩展内容和压缩记录", () => {
+	it("从单一 session entry 流按原顺序恢复消息与扩展内容", () => {
 		const transcript = new TranscriptContainer();
 		transcript.loadSession([
 			{ kind: "message", message: { role: "user", content: "ORDER_A" } },
 			{ kind: "custom_message", customType: "probe", content: "ORDER_C" },
 			{ kind: "message", message: { role: "assistant", content: "ORDER_B" } },
 			{ kind: "custom_message", customType: "hidden", content: "MUST_NOT_RENDER", display: false },
-			{ kind: "compaction", summary: "ORDER_SUMMARY", retainedTail: [], tokensBefore: 42 },
 		]);
 
 		const rendered = stripAnsi(transcript.render(80).join("\n"));
-		const positions = ["ORDER_A", "ORDER_C", "ORDER_B", "ORDER_SUMMARY"].map((text) => rendered.indexOf(text));
+		const positions = ["ORDER_A", "ORDER_C", "ORDER_B"].map((text) => rendered.indexOf(text));
 		expect(positions.every((position) => position >= 0)).toBe(true);
 		expect(positions).toEqual([...positions].sort((a, b) => a - b));
 		expect(rendered).not.toContain("MUST_NOT_RENDER");
@@ -694,7 +693,7 @@ describe("UI Components & Visual Rendering", () => {
 		expect(widths.every((w) => w === firstW)).toBe(true);
 	});
 
-	it("CompactionRecord 格式化渲染与折叠双态像素对齐", async () => {
+	it("CompactionCardData 格式化渲染与折叠双态像素对齐", async () => {
 		const { formatCompactionCardLines } = await import("../src/ui/components/transcript/cards.js");
 
 		const record = {
@@ -2631,11 +2630,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			activateBuiltinCommands(mockPi);
 
-			// 1. P6c：turn.beforeCompact 干预挂点随 canonical 截断退役——
-			// 压缩进度只由 session_compact / session_compact_failed 事实事件表达。
-			expect(handlers.get("turn.beforeCompact")).toBeUndefined();
-
-			// 2. 触发 session_compact
+			// 触发 session_compact
 			const compactHandler = handlers.get("session_compact");
 			expect(compactHandler).toBeDefined();
 			compactHandler!({

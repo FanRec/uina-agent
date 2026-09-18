@@ -2,11 +2,9 @@
  * Subject 只保留运行安全点调度与事件广播；record 构建、投影推导与 journal
  * 追加都由这里完成，保证持久化纪律单点实现。
  *
- * P6c 裁定：回溯不再携带嵌入压缩（旧 compactProjectionForRewind 退役）。
- * journal 保留全量历史（P6b），presented line 每请求由 capability 的
- * transformContext 无状态裁剪重建——回溯重暴露的超长历史由同一条裁剪路径
- * 收敛（L1 一语义一入口），超限拒绝门随之失去存在理由。旧 journal 中 rewind
- * record 的 compaction 载荷仍由投影解释（legacy 读取器，recovery.ts）。 */
+ * 回溯不携带压缩：journal 保留全量历史，presented line 每请求由
+ * compaction capability 的 transformContext 无状态裁剪重建——回溯重暴露的
+ * 超长历史由同一条裁剪路径收敛（L1 一语义一入口）。 */
 import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "../core/types.js";
 import { applyRecord, canonicalReplay, checkRecord } from "../session/recovery.js";

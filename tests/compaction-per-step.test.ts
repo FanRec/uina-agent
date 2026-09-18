@@ -62,7 +62,6 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 
 			// Subject 内存视图不被自动截断：全量历史仍在，无 canonical 截断产物。
 			const memory = host.subject.historySnapshot();
-			expect(memory.some((message) => message.role === "compactionSummary")).toBe(false);
 			expect(memory.some((message) => (message.content as string)?.includes("第0问"))).toBe(true);
 
 			// journal 持久化了滚动摘要（uina.compaction.summary custom entry，

@@ -11,7 +11,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/** P6b：把 official compaction capability 装进裸 Subject（host 装配的最小等价物）。 */
+/** 把 official compaction capability 装进裸 Subject（host 装配的最小等价物）。 */
 async function capabilitySubject(store: MemorySessionStore, model: ReturnType<typeof mockModel>, stream: ModelStreamFn) {
 	const { ExtensionRunner } = await import("../src/extensions/runner.js");
 	const { createRuntimeHooks } = await import("../src/extensions/runtime-hooks.js");
@@ -62,17 +62,17 @@ describe("session mainline persistence", () => {
 		const fromId=store.readRecords().at(-1)!.id;
 		expect(()=>store.appendRewind({id:"r",requestId:"q",targetId:target,fromId,source:"test",reason:"cut"})).toThrow("工具");
 	});
-	it("reopens the same mainline and ignores compression from the abandoned path", async () => {
+	it("reopens the same mainline after a rewind and keeps the continuity notice", async () => {
 		const dir=await mkdtemp(join(tmpdir(),"uina-rewind-")); const path=join(dir,"session.jsonl");
 		try {
 			const {store}=await openJsonlSession(path); const records=await seed(store);
-			await store.appendCompaction("bad compressed plan",[],100);
+			await store.appendMessage({role:"assistant",content:"abandoned answer"});
 			await store.appendRewind({id:"r",requestId:"q",targetId:records[0].id,fromId:store.readRecords().at(-1)!.id,source:"test",reason:"wrong"});
 			await store.close();
 			const reopened=await openJsonlSession(path);
-			expect(projectAgentHistory(reopened.snapshot.entries).some(message=>message.content.includes("bad compressed plan"))).toBe(false);
+			expect(projectAgentHistory(reopened.snapshot.entries).some(message=>message.content.includes("abandoned answer"))).toBe(false);
 			expect(listSessionNodes(reopened.store.readRecords()).headId).toBe("r");
-			await reopened.store.appendCompaction("short summary",[],100);
+			await reopened.store.appendMessage({role:"user",content:"continue"});
 			expect(projectAgentHistory(reopened.store.state.entries).some(message=>message.content.includes("会话回溯"))).toBe(true);
 			await reopened.store.close();
 		} finally { await rm(dir,{recursive:true,force:true}); }
@@ -137,30 +137,6 @@ describe("rewind runtime safe points", () => {
 		expect(store.readRecords().some(record=>record.kind==="rewind")).toBe(false);
 		expect(subject.queuedSnapshot()[0].text).toBe("latest instruction");
 	});
-	// P6c：超限回溯拒绝门退役——回溯总是提交，窗口压力由 capability 的
-	// transformContext 每请求裁剪收敛（正向覆盖见 "trims a rewind that
-	// re-exposes oversized history instead of refusing it"）。
-	it("rebuilds the pre-compaction mainline and drops the abandoned summary when rewinding across a compaction", async () => {
-		const store=new MemorySessionStore();
-		await store.appendMessage({role:"user",content:"PRE-COMPACTION USER"});
-		await store.appendMessage({role:"assistant",content:"pre-compaction answer"});
-		const targetId=store.readRecords()[1].id;
-		await store.appendCompaction("STALE SUMMARY of the abandoned path",[{role:"assistant",content:"pre-compaction answer"}],900);
-		await store.appendMessage({role:"user",content:"post-compaction user"});
-		await store.appendMessage({role:"assistant",content:"post-compaction answer"});
-		const fromId=store.readRecords().at(-1)!.id;
-		await store.appendRewind({id:"r-cross",requestId:"q",targetId,fromId,source:"model",reason:"fold back before the summary"});
-
-		const entries=store.state.entries;
-		const history=projectAgentHistory(entries);
-		expect(history.some(message=>message.content==="PRE-COMPACTION USER")).toBe(true);
-		expect(history.some(message=>message.content.includes("STALE SUMMARY"))).toBe(false);
-		expect(history.some(message=>message.content.includes("会话回溯"))).toBe(true);
-		// The abandoned path stays readable as history, it just stops shaping the mainline.
-		const all=store.state.allEntries;
-		expect(all.some(entry=>entry.kind==="compaction")).toBe(true);
-		expect(listSessionNodes(store.readRecords(),{scope:"all"}).nodes.some(node=>!node.active)).toBe(true);
-	});
 	it("trims a rewind that re-exposes oversized history instead of refusing it", async () => {
 		const store=new MemorySessionStore();
 		await store.appendMessage({role:"user",content:"KEEP-THIS-PREFIX "+"p".repeat(80000)});
@@ -184,14 +160,13 @@ describe("rewind runtime safe points", () => {
 		const subject=await capabilitySubject(store,mockModel({contextWindow:20_000}),stream as never);
 		subject.addHistory(projectAgentHistory(store.state.entries));
 
-		// The mainline projection now carries the re-exposed pre-compaction history, which overflows.
+		// The mainline projection now carries the re-exposed abandoned history, which overflows.
 		await subject.pushInput("carry on");
 
 		const flat=sent.flat();
 		expect(flat.some(text=>text.startsWith("[历史摘要] "))).toBe(true);
 		expect(flat.some(text=>text.includes("会话回溯"))).toBe(true);
-		// P6b：裁剪不写 canonical compaction record——摘要走 uina.compaction.summary 条目。
-		expect(store.readRecords().filter(record=>record.kind==="compaction")).toHaveLength(0);
+		// 裁剪不截断 journal——摘要走 uina.compaction.summary 条目。
 		expect(store.readRecords().some(record=>record.kind==="custom_entry"&&(record as {customType?:string}).customType==="uina.compaction.summary")).toBe(true);
 	});
 
@@ -217,11 +192,10 @@ describe("rewind runtime safe points", () => {
 		subject.addHistory(projectAgentHistory(store.state.entries));
 		await subject.pushInput("carry on");
 
-		// P6b：超限不拒绝也不截断主线——请求被裁剪收敛，"start" 仍在预算内尾部可见。
+		// 超限不拒绝也不截断主线——请求被裁剪收敛，"start" 仍在预算内尾部可见。
 		const flat=sent.flat();
 		expect(flat.some(text=>text.startsWith("[历史摘要] "))).toBe(true);
 		expect(flat.some(text=>text.includes("start"))).toBe(true);
-		expect(store.readRecords().filter(record=>record.kind==="compaction")).toHaveLength(0);
 		expect(store.readRecords().filter(record=>record.kind==="rewind")).toHaveLength(1);
 	});
 });
@@ -304,7 +278,7 @@ it("paginates persisted recovery entries without skipping adjacent records", asy
 		await initial.store.appendMessage({role:"assistant",content:"",tool_calls:[{id:"interrupted",name:"exec_command",args:{}}]});
 		await initial.store.appendEvent("tool_started",{callId:"interrupted"});
 		await initial.store.close();
-		// P3b 裁定：未决调用 + 后续事实记录的 journal 形态非法；恢复必须先经
+		// 未决调用 + 后续事实记录的 journal 形态非法；恢复必须先经
 		// 启动恢复（planRecovery → 带身份落盘），分页覆盖真实持久化恢复条目。
 		const reopened=await openJsonlSession(path);
 		await reopened.store.appendMessage({role:"user",content:"continue after crash"});
@@ -394,7 +368,7 @@ it("does not pollute mainline with abandoned branch inputs on multiple rewinds a
 	expect(t2Count).toBe(0);
 });
 
-it("positions rewind notice between compactionSummary and retainedTail, never after latest user prompt", async () => {
+it("reinjects a missing rewind notice at the head of a trimmed history, never after the latest user prompt", async () => {
 	const store = new MemorySessionStore();
 	await store.appendMessage({ role: "user", content: "task 1" });
 	await store.appendMessage({ role: "assistant", content: "reply 1" });
@@ -405,17 +379,15 @@ it("positions rewind notice between compactionSummary and retainedTail, never af
 	await store.appendMessage({ role: "user", content: "latest user question" });
 
 	const entries = store.state.entries;
-	// 模拟压缩：保留最后两条消息（reply after rewind 和 latest user question）
-	const rawHistory = [
-		{ role: "compactionSummary" as const, summary: "compacted history", content: "[历史摘要] compacted history" },
-		{ role: "assistant" as const, content: "reply after rewind" },
-		{ role: "user" as const, content: "latest user question" },
+	// 模拟压缩裁剪：回溯提示被挤出请求历史，只剩两条消息。
+	const rawHistory: import("../src/core/types.js").AgentMessage[] = [
+		{ role: "assistant", content: "reply after rewind" },
+		{ role: "user", content: "latest user question" },
 	];
 	const protectedHistory = protectRewindContext(rawHistory, entries);
 
-	// 验证：回溯提示必须位于 compactionSummary 之后、latest user question 之前
-	expect(protectedHistory[0].role).toBe("compactionSummary");
-	expect(protectedHistory[1].content).toContain("会话回溯");
+	// 验证：回溯提示被重注入到头部，最新 user 消息仍在尾部
+	expect(protectedHistory[0].content).toContain("会话回溯");
 	expect(protectedHistory[protectedHistory.length - 1].content).toBe("latest user question");
 	expect(protectedHistory[protectedHistory.length - 1].role).toBe("user");
 });
@@ -491,9 +463,6 @@ describe("commitRewindTransition mechanism", () => {
 		expect(commit.history.some((message) => message.role === "user" && message.content === "original task")).toBe(true);
 		expect(commit.history.some((message) => message.content === "bad plan")).toBe(false);
 	});
-	// P6c：超限回溯拒绝门退役——回溯总是提交，窗口压力由 capability 的
-	// transformContext 每请求裁剪收敛（端到端覆盖见 "trims a rewind that
-	// re-exposes oversized history"）。
 	it("refuses to commit when the abort signal fires before the journal append", async () => {
 		const store = new MemorySessionStore();
 		const records = await seed(store);

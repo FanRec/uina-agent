@@ -151,16 +151,4 @@ describe("会话偏好持久化", () => {
 		expect(second.subject.getModel().contextWindow).toBe(8192);
 	});
 
-	it("[兼容] 旧格式裸模型名按注册顺序还原；provider 改名/下线时回落到同名模型", async () => {
-		const home = await useTempHome();
-		// 旧格式（裸名）：仍能还原（落到该 id 的默认 provider alpha）
-		await writeFile(settingsFile(home), JSON.stringify({ model: "model-beta" }), "utf8");
-		const legacy = await makeHost();
-		expect(legacy.subject.getModel().id).toBe("model-beta");
-
-		// 身份键里的 provider 已不存在（改名/下线）：回落到同名模型，不炸启动
-		await writeFile(settingsFile(home), JSON.stringify({ model: "ghost/model-beta" }), "utf8");
-		const renamed = await makeHost();
-		expect(renamed.subject.getModel().id).toBe("model-beta");
-	});
 });

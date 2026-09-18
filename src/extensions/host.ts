@@ -225,8 +225,7 @@ export class ExtensionHost {
 	/**
 	 * turn.prepare：systemPrompt/model/thinkingLevel 后写覆盖先写；messages 聚合追加。
 	 * 返回值是全链聚合后的回合准备结果（RuntimeHooks.turn.prepare 的形状）。
-	 * 回合注入只有两条路径：prepare（回合边界）与 transformContext（每请求）——
-	 * 第三条路径 contextContributors 已退役（P2，inventory #2）。
+	 * 回合注入只有两条路径：prepare（回合边界）与 transformContext（每请求）。
 	 */
 	async runTurnPrepare(
 		input: HookInputs["turn.prepare"],

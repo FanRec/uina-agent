@@ -3,7 +3,7 @@ import type { CanonicalState } from "./recovery.js";
 
 export interface SessionHeader {
 	kind: "header";
-	version: 2;
+	version: 3;
 	id: string;
 	cwd: string;
 	createdAt: string;
@@ -49,19 +49,8 @@ export interface SessionInputRecord {
 	input: QueuedInput;
 }
 
-export interface SessionCompactionRecord {
-	kind: "compaction";
-	id: string;
-	seq: number;
-	timestamp: string;
-	summary: string;
-	retainedTail: (AgentMessage | ChatMsg)[];
-	tokensBefore: number;
-}
-
 export type SessionEventName =
 	| "queue_enqueued"
-	| "queue_consumed"
 	| "queue_restored"
 	| "tool_started"
 	| "tool_finished"
@@ -77,11 +66,9 @@ export interface SessionEventRecord {
 	data: Record<string, unknown>;
 }
 
-export interface RewindCompaction { summary: string; retainedTail: (AgentMessage | ChatMsg)[]; tokensBefore: number; }
-
 export interface RewindRequest { targetId: string; reason: string; summary?: string; }
 export interface SessionRewindRecord extends RewindRequest {
-	kind: "rewind"; id: string; seq: number; timestamp: string; fromId: string; source: string; requestId: string; compaction?: RewindCompaction;
+	kind: "rewind"; id: string; seq: number; timestamp: string; fromId: string; source: string; requestId: string;
 }
 export interface RewindResult { requestId: string; status: "scheduled" | "committed"; rewindId?: string; }
 export interface SessionBranchInfo { id: string; targetId: string; fromId: string; headId: string; nodeCount: number; createdAt: string; reason: string; }
@@ -100,7 +87,6 @@ export type SessionRecord =
 	| SessionMessageRecord
 	| SessionCustomMessageRecord
 	| SessionCustomEntryRecord
-	| SessionCompactionRecord
 	| SessionEventRecord;
 
 export interface SessionEntryMeta {
@@ -129,12 +115,6 @@ export type SessionEntryPayload =
 			images?: import("../core/content.js").ImageContent[];
 			display?: boolean;
 			details?: unknown;
-	  }
-	| {
-			kind: "compaction";
-			summary: string;
-			retainedTail: (AgentMessage | ChatMsg)[];
-			tokensBefore: number;
 	  };
 
 /** Hydrated, durable session entry with confirmed node identity and topological lineage. */

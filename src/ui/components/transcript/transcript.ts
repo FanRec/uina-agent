@@ -17,7 +17,7 @@ import { formatDiffCardLines } from "./diff-view.js";
 import {
 	formatThinkingLines,
 	formatCompactionCardLines,
-	type CompactionRecord,
+	type CompactionCardData,
 	CustomMessageComponent,
 } from "./cards.js";
 import { SmoothRevealController } from "./smooth-reveal.js";
@@ -146,13 +146,13 @@ export interface CompactionLineLocation {
 	index: number;
 	lineIndex: number;
 	lineCount: number;
-	record: CompactionRecord;
+	record: CompactionCardData;
 }
 
 export type TimelineItem =
 	| { kind: "turn"; turn: TurnRecord }
 	| { kind: "notice"; text: string }
-	| { kind: "compaction"; record: CompactionRecord }
+	| { kind: "compaction"; record: CompactionCardData }
 	| { kind: "customMessage"; message: CustomMessage }
 ;
 /** One settled turn rendered as a self-contained block. Location indices are
@@ -173,7 +173,7 @@ interface StaticBlock {
 interface CompactionBlock {
 	kind: "compaction";
 	index: number;
-	record: CompactionRecord;
+	record: CompactionCardData;
 	lines: string[];
 }
 
@@ -527,7 +527,7 @@ export class TranscriptContainer implements Component {
 		this.invalidate();
 	}
 
-	addCompaction(record: CompactionRecord): void {
+	addCompaction(record: CompactionCardData): void {
 		this.timeline.push({ kind: "compaction", record });
 		this.invalidate();
 	}
@@ -621,9 +621,6 @@ export class TranscriptContainer implements Component {
 						details: { record: entry.record, effects: entry.effects },
 					},
 				});
-				if (entry.record.compaction) {
-					this.timeline.push({ kind: "compaction", record: { summary: entry.record.compaction.summary, turnsCount: turnN, tokensBefore: entry.record.compaction.tokensBefore, collapsed: true } });
-				}
 				continue;
 			}
 			if (entry.kind === "custom_message") {
@@ -635,19 +632,6 @@ export class TranscriptContainer implements Component {
 						customType: entry.customType,
 						content: entry.content,
 						...(entry.details === undefined ? {} : { details: entry.details }),
-					},
-				});
-				continue;
-			}
-			if (entry.kind === "compaction") {
-				commit();
-				this.timeline.push({
-					kind: "compaction",
-					record: {
-						summary: entry.summary,
-						turnsCount: turnN,
-						tokensBefore: entry.tokensBefore,
-						collapsed: true,
 					},
 				});
 				continue;

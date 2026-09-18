@@ -4,7 +4,7 @@
 
 ## 职责与取舍
 
-Extension 提供能力与策略；Core 保留执行事实、取消、协议与会话提交；Host 保留主体装配；UI 保留展示。接缝包括工具、程序服务、上下文贡献、压缩策略和展示注册；没有新增通用事件总线、依赖求解器、权限层或另一套权威状态。
+Extension 提供能力与策略；Core 保留执行事实、取消、协议与会话提交；Host 保留主体装配；UI 保留展示。接缝包括工具、程序服务、上下文贡献与裁剪和展示注册；没有新增通用事件总线、依赖求解器、权限层或另一套权威状态。
 
 ## 加载与生命周期
 
@@ -16,7 +16,7 @@ ActivationScope 拥有注册、取消信号和工具、服务、模型流、上�
 
 ## 注册与替换
 
-工具、命令、Provider、Model、服务、压缩器、renderer 和 Markdown transformer 默认拒绝重名；显式 { replace: true } 才替换。注册返回注销函数，并归属 activation。注销只释放自己的注册，恢复前一个仍存活的实现。
+工具、命令、Provider、Model、服务、renderer 和 Markdown transformer 默认拒绝重名；显式 { replace: true } 才替换。注册返回注销函数，并归属 activation。注销只释放自己的注册，恢复前一个仍存活的实现。
 
 工具执行前发现注册已替换或卸载时返回 not_started，不把旧 schema 校验过的参数交给新实现。widget/status 按扩展命名空间隔离；header/footer 是共享槽，最后设置者生效，清除或卸载恢复其他存活贡献。
 
@@ -32,7 +32,7 @@ ActivationScope 拥有注册、取消信号和工具、服务、模型流、上�
 | models.current/list/groups/resolve/select/stream | 获取事实、分组目录、选择模型、使用现有传输，不暴露凭据 |
 | models.thinkingLevel / setThinkingLevel | 思考档位事实与设置（与宿主同一应用纪律） |
 | usage / isBusy / reload / shutdown | 主体用量与忙闲事实；扩展重载与消费者关闭流程 |
-| history / emitEvent | 主线 hydrated entries 只读访问；capability 事实出口（session_compact 等广播） |
+| history / auxiliary / appendEntry / emitEvent | canonical 主线 hydrated entries 只读访问；capability 私有持久状态（auxiliary timeline）的写入与读回；capability 事实出口（session_compact 等广播） |
 | registerToolRenderer / registerMarkdownTransformer | 变换显示，不改变执行与模型上下文 |
 
 callTool 的 ownerId 是实际 Subject，callerId 是调用扩展；嵌套调用有独立 callId。程序调用写入带来源的 extension.tool 自定义条目，不伪造 assistant tool call，也不自动加入模型历史。调用者通过工具返回、sendMessage 或 submitInput 决定如何继续传递结果。
@@ -43,22 +43,28 @@ callService 使用可 structuredClone 的数据。实现收到 callerId 和合�
 
 ## 上下文组合
 
-干预与观察是两个词表（Hook ≠ Event）：`pi.on(type)` 只订阅**事实**（RuntimeEvent：已经发生的，无返回值）；`pi.onHook(hook)` 在**干预点**注册（如 `turn.prepare`、`turn.transformContext`、`tools.beforeCall`、`provider.transformHeaders`），返回值按该链的合并规则参与组合。合并规则：turn.prepare 后写覆盖/消息聚合；transformContext、tools.transformResult、provider.transformHeaders/transformPayload 链式传递；beforeCompact、shouldStop、beforeCall 短路；observeResponse 纯观察。
+干预与观察是两个词表（Hook ≠ Event）：`pi.on(type)` 只订阅**事实**（RuntimeEvent：已经发生的，无返回值）；`pi.onHook(hook)` 在**干预点**注册（如 `turn.prepare`、`turn.transformContext`、`tools.beforeCall`、`provider.transformHeaders`），返回值按该链的合并规则参与组合。合并规则：turn.prepare 后写覆盖/消息聚合；transformContext、tools.transformResult、provider.transformHeaders/transformPayload 链式传递；shouldStop、beforeCall 短路；observeResponse 纯观察。
 
-回合注入只有两条时机：`turn.prepare`（回合边界；贡献形状 messages 聚合追加）与 `turn.transformContext`（每请求）。registerContextContributor 第三条路径已退役（P2，inventory #2）：同一功能由 turn.prepare 的有状态 handler 承担。turn.prepare handler 不接收取消信号——回合中断后其结果会被丢弃；扩展自身的生命期取消用 api.signal。
+回合注入只有两条时机：`turn.prepare`（回合边界；贡献形状 messages 聚合追加）与 `turn.transformContext`（每请求）。turn.prepare handler 不接收取消信号——回合中断后其结果会被丢弃；扩展自身的生命期取消用 api.signal。
 
 贡献内容应标明来源。昂贵检索、索引或模型调用尽量异步准备，贡献阶段读取结果；没有引入隐式轮次、并发或容量上限。
 
-## 压缩策略与提交（P6c）
+## 压缩与上下文裁剪
 
-压缩（上下文窗口管理）由 official compaction capability 端到端拥有，唯一入口是 `turn.transformContext` 每请求裁剪（Interceptor 链）。journal 保留全量历史，任何压缩路径都不再截断它；滚动摘要以 `uina.compaction.summary` custom entry（Auxiliary）持久化，重启后从 `pi.history()` 重载。
+压缩（上下文窗口管理）由 official compaction capability 端到端拥有，唯一入口是 `turn.transformContext` 每请求裁剪（Interceptor 链）。journal 保留全量历史，任何压缩路径都不再截断它；滚动摘要以 `uina.compaction.summary` custom entry（Auxiliary）持久化，重启后从 `pi.auxiliary()` 重载。
+
+三个词各归各位：
+
+- `history()` = canonical history（主线 hydrated entries 只读）。
+- `auxiliary()` = capability durable state（私有持久状态的写入经 `appendEntry`，读回经 `auxiliary()`）。
+- compaction = `turn.transformContext`（每请求裁剪）+ `appendEntry`（摘要持久化）+ `auxiliary`（重启重载）。
 
 - 自动压缩：估算超窗口预算（reserve 随窗口缩放）时按 keepRecent 语义裁剪当前请求上下文，摘要覆盖与裁剪边界同点对齐（无未摘要间隙）；摘要锚定生成时主线头 entry id，回溯切断锚即失效重生成。
 - 手动压缩：`/compact [instruction]` 命令（capability 注册）只设强制标志，下一次请求的 transformContext 强制裁剪并携带 instruction；没有下一个请求就没有压缩对象。失败经 `session_compact_failed` 事实事件可见。
 - 扩展自定义裁剪策略：在同一条 `turn.transformContext` Interceptor 链上注册（后激活者收到前者的输出，链式传递）；与 Memory/RAG 等注入扩展共存。
 - 事实出口：`session_compact` / `session_compact_failed` 经 `pi.emitEvent` 进扩展事件总线（Hook ≠ Event：transformContext 是干预注册点，session_compact 是事实广播）。
 
-旧 canonical 压缩记录（独立 compaction record 与 rewind record 内嵌 compaction 载荷）按数据模型原则 legacy 化：旧 journal 由投影照常解释，新链路零产生。`SessionStore` 接口已无 `appendCompaction`。
+Session Core 零压缩词汇：journal 不存在压缩记录类型，Session Store 不提供压缩追加接口，投影不解释任何压缩载荷。压缩在 Session 层只留下两样现役事实：capability 写的 `uina.compaction.summary` custom entry 与 `session_compact` 事件。
 
 ## 图片与展示
 

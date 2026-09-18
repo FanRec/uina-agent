@@ -27,7 +27,7 @@ export function defaultSystemPrompt(): string {
 	return DEFAULT_SYSTEM_PROMPT;
 }
 
-/** Pure projection from agent history stream (including custom and compaction messages) to valid LLM messages. */
+/** Pure projection from agent history stream (including custom messages) to valid LLM messages. */
 export function convertToLlm(
 	messages: readonly (AgentMessage | ChatMsg)[],
 	options: {
@@ -50,9 +50,6 @@ export function convertToLlm(
 				break;
 			case "custom":
 				intermediate.push({ role: "user", content: msg.content, images: msg.images });
-				break;
-			case "compactionSummary":
-				intermediate.push({ role: "user", content: `[历史摘要] ${msg.summary}` });
 				break;
 			case "user":
 				intermediate.push({ role: "user", content: msg.content, images: msg.images });
@@ -153,10 +150,6 @@ export function countContextSegmentChars(
 	for (const message of messages) {
 		if (message.role === "custom") {
 			seg.prompt += message.content ? message.content.length + 16 : 16;
-			continue;
-		}
-		if (message.role === "compactionSummary") {
-			seg.prompt += message.summary ? message.summary.length + 32 : 32;
 			continue;
 		}
 		const baseChars = message.content ? message.content.length + 16 : 16;

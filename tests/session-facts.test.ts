@@ -3,14 +3,14 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Subject } from "../src/agent/loop.js";
-import type { AgentMessage, ModelStreamFn, ToolResultStatus } from "../src/core/types.js";
+import type { ModelStreamFn, ToolResultStatus } from "../src/core/types.js";
 import { ExtensionHost } from "../src/extensions/host.js";
 import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
 import execCommand from "../src/extensions/runtime-tools/exec-command/index.js";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
-import { canonicalReplay, projectAgentHistory, queuedInputs } from "../src/session/recovery.js";
+import { projectAgentHistory } from "../src/session/recovery.js";
 import { projectModelHistory } from "../src/agent/projection.js";
-import type { QueuedInput, SessionRecord } from "../src/session/types.js";
+import type { QueuedInput } from "../src/session/types.js";
 import { ToolBroker, type Tool } from "../src/tools/broker.js";
 import { InteractiveTUI } from "../src/ui/tui.js";
 import { TranscriptContainer, formatToolCardLines } from "../src/ui/components/transcript/index.js";
@@ -58,21 +58,17 @@ describe("S1 durable session facts", () => {
 		expect((await readFile(path, "utf8")).split("\n").filter(l => l.includes('"tool_started"'))).toHaveLength(1);
 	});
 
-	it("reopens domain custom messages in compaction tails without promoting custom entries", async () => {
+	it("reopens domain custom messages without promoting custom entries", async () => {
 		const path = await sessionPath();
 		const { store } = await openJsonlSession(path);
-		const tail: AgentMessage[] = [
-			{ role: "user", content: "before" },
-			{ role: "custom", customType: "observation", content: "observed", display: false, details: { origin: "fixture" } },
-			{ role: "compactionSummary", summary: "earlier", content: "earlier summary", tokensBefore: 12 },
-			{ role: "assistant", content: "after" },
-		];
+		await store.appendMessage({ role: "user", content: "before" });
 		await store.appendCustomEntry({ customType: "private", data: { secret: "not model content" } });
-		await store.appendCompaction("summary", tail, 50);
+		await store.appendCustomMessage({ customType: "observation", content: "observed", display: false, details: { origin: "fixture" } });
+		await store.appendMessage({ role: "assistant", content: "after" });
 		await store.close();
 		const reopened = await openJsonlSession(path);
 		await reopened.store.close();
-		expect(projectAgentHistory(reopened.snapshot.entries).slice(1)).toEqual(tail);
+		expect(projectAgentHistory(reopened.snapshot.entries).map((m) => m.content)).toEqual(["before", "observed", "after"]);
 		expect(JSON.stringify(projectModelHistory(reopened.snapshot.entries))).not.toContain("not model content");
 		// custom_entry 是 Auxiliary：不进主线 entries，只登记在 auxiliary timeline。
 		expect(reopened.snapshot.entries.some((entry) => (entry as { kind: string }).kind === "custom_entry")).toBe(false);
@@ -214,18 +210,6 @@ describe("S1 durable session facts", () => {
 		expect(reopened.snapshot.queued).toEqual([]);
 		expect(projectAgentHistory(reopened.snapshot.entries)).toEqual(subject.historySnapshot());
 		expect(subject.historySnapshot().filter(m => m.role === "user").map(m => m.content)).toEqual(["pending", "continue"]);
-	});
-	it("keeps reading legacy journals that record queue handoff via queue_consumed", () => {
-		// 旧实现（input 记录引入之前）：queue_enqueued → queue_consumed → user message。
-		// current-runtime.md 与 TODO N5 规定：新 reader 持续接受这类合法 v2 记录，不做历史迁移。
-		const records: SessionRecord[] = [
-			{ kind: "event", id: "r1", seq: 1, timestamp: "2026-01-01T00:00:00.000Z", event: "queue_enqueued", data: { id: "legacy-1", order: 1, mode: "followUp", text: "legacy" } },
-			{ kind: "event", id: "r2", seq: 2, timestamp: "2026-01-01T00:00:01.000Z", event: "queue_consumed", data: { id: "legacy-1" } },
-			{ kind: "message", id: "r3", seq: 3, timestamp: "2026-01-01T00:00:02.000Z", message: { role: "user", content: "legacy" } },
-		];
-		const state = canonicalReplay(records);
-		expect(queuedInputs(state)).toHaveLength(0);
-		expect(projectAgentHistory(state.entries).map((m) => m.content)).toEqual(["legacy"]);
 	});
 });
 

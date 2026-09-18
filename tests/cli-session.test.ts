@@ -69,7 +69,7 @@ describe("CLI session recovery", () => {
 
 		const timestamp = new Date(0).toISOString();
 		await writeFile(join(cwd, "data", "session.jsonl"), [
-			JSON.stringify({ kind: "header", version: 2, id: "session", cwd, createdAt: timestamp }),
+			JSON.stringify({ kind: "header", version: 3, id: "session", cwd, createdAt: timestamp }),
 			JSON.stringify({ kind: "message", id: "1", seq: 1, timestamp, message: { role: "user", content: "ORDER_A" } }),
 			JSON.stringify({ kind: "custom_message", id: "2", seq: 2, timestamp, customType: "probe", content: "ORDER_C" }),
 			JSON.stringify({ kind: "message", id: "3", seq: 3, timestamp, message: { role: "assistant", content: "ORDER_B" } }),
