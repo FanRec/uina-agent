@@ -109,58 +109,159 @@ export function toolStartLine(name: string, args: unknown): string {
 }
 
 /**
+ * 工具结果的中立解析视图：与展示样式解耦（纯数据，可独立单测）。
+ *
+ * - `text`：非 JSON / 非对象 JSON（如裸数字）——按纯文本缩进展示；
+ * - `cancelled/unknown/not_started`：终态标记行；
+ * - `structured`：结构化返回。`error` 为空串表示无错；`stderr/stdout` 仅在
+ *   字段为 string 时填充（字段存在但类型不对时保持 undefined，渲染层据此
+ *   走键值摘要或耗时回退，与旧实现语义一致）。
+ */
+export type ToolResultView =
+	| { kind: "cancelled" }
+	| { kind: "unknown" }
+	| { kind: "not_started" }
+	| { kind: "text"; text: string }
+	| {
+			kind: "structured";
+			obj: Record<string, unknown>;
+			error: string;
+			stderr?: string;
+			stdout?: string;
+	  };
+
+type StructuredToolResultView = Extract<ToolResultView, { kind: "structured" }>;
+
+function tryParseObject(text: string): Record<string, unknown> | null {
+	try {
+		const parsed: unknown = JSON.parse(text);
+		return parsed !== null && typeof parsed === "object"
+			? (parsed as Record<string, unknown>)
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+/** 结构化返回的终态分类：cancelled 优先（obj.cancelled 真值即命中，对齐旧语义）。 */
+function classifyTerminalStatus(
+	obj: Record<string, unknown>,
+): "cancelled" | "unknown" | "not_started" | null {
+	if (obj.cancelled || obj.status === "cancelled") return "cancelled";
+	if (obj.status === "unknown") return "unknown";
+	if (obj.status === "not_started") return "not_started";
+	return null;
+}
+
+/** 解析工具结果为中立视图（纯函数：先剥 ANSI，再 JSON 解析 + 分类）。 */
+export function parseToolResult(result: string): ToolResultView {
+	const clean = sanitizeTerminalText(result);
+	const obj = tryParseObject(clean);
+	if (obj === null) return { kind: "text", text: clean.trim() };
+	const status = classifyTerminalStatus(obj);
+	if (status) return { kind: status };
+	return {
+		kind: "structured",
+		obj,
+		error: typeof obj.error === "string" ? obj.error : "",
+		stderr: typeof obj.stderr === "string" ? obj.stderr : undefined,
+		stdout: typeof obj.stdout === "string" ? obj.stdout : undefined,
+	};
+}
+
+function formatElapsed(ms: number): string {
+	return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
+/** 把中立视图渲染为展示行（样式决策集中于此，解析不参与）。 */
+export function renderToolResult(
+	view: ToolResultView,
+	elapsedMs: number,
+	s: ToolResultStyle,
+): string[] {
+	const t = formatElapsed(elapsedMs);
+	switch (view.kind) {
+		case "cancelled":
+			return [s.warn(`⚠ 已取消（${t}）`)];
+		case "unknown":
+			return [s.warn(`⚠ 结果未知（${t}）`)];
+		case "not_started":
+			return [s.warn(`⚠ 未执行（${t}）`)];
+		case "text":
+			return view.text ? indentLines(view.text, s.dim) : [s.dim(`↳ ${t}`)];
+		case "structured":
+			return structuredResultLines(view, t, s);
+	}
+}
+
+function structuredResultLines(
+	view: StructuredToolResultView,
+	t: string,
+	s: ToolResultStyle,
+): string[] {
+	const lines = [
+		...errorHeader(view.error, t, s),
+		...stderrSection(view, s),
+		...stdoutSection(view, t, s),
+	];
+	return lines.length > 0 ? lines : otherKeysOrTime(view, t, s);
+}
+
+function errorHeader(error: string, t: string, s: ToolResultStyle): string[] {
+	return error ? [s.err(`✗ ${error.slice(0, 120)}（${t}）`)] : [];
+}
+
+function stderrSection(
+	view: StructuredToolResultView,
+	s: ToolResultStyle,
+): string[] {
+	const stderr = view.stderr;
+	if (!stderr || !stderr.trim()) return [];
+	if (view.error) return indentLines(stderr, s.err);
+	return [s.warn("stderr"), ...indentLines(stderr, s.warn)];
+}
+
+function stdoutSection(
+	view: StructuredToolResultView,
+	t: string,
+	s: ToolResultStyle,
+): string[] {
+	const stdout = view.stdout;
+	if (!stdout || !stdout.trim()) return [];
+	const lines = view.error ? [s.err("── stdout ──")] : [];
+	lines.push(...indentLines(stdout, view.error ? s.err : s.dim));
+	lines.push(s.dim(`（${t}）`));
+	return lines;
+}
+
+/** 无 error/stdout/stderr 正文时的回退：键值摘要一行；有 stderr/stdout 键
+ * （但正文为空白）时不得走摘要，退到耗时行——对齐旧实现的存在性判断。 */
+function otherKeysOrTime(
+	view: StructuredToolResultView,
+	t: string,
+	s: ToolResultStyle,
+): string[] {
+	if (!view.error && !("stdout" in view.obj) && !("stderr" in view.obj)) {
+		const keys = Object.keys(view.obj)
+			.slice(0, 3)
+			.map((k) => `${k}: ${short(view.obj[k])}`)
+			.join(", ");
+		return [s.dim(`↳ ${keys}`)];
+	}
+	return [s.dim(`↳ ${t}`)];
+}
+
+/**
  * 工具结果的展示行（对齐 pi 折叠区第一屏）：解析结构化返回，
  * stdout 摘要几行 + 截断标记；error 红字 / cancelled 黄字 / 普通结果灰字。
+ * 解析（parseToolResult）与渲染（renderToolResult）已拆分，本函数保持旧签名。
  */
 export function toolResultLines(
 	result: string,
 	elapsedMs: number,
 	s: ToolResultStyle,
 ): string[] {
-	result = sanitizeTerminalText(result);
-	const t =
-		elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(1)}s` : `${elapsedMs}ms`;
-
-	let obj: Record<string, unknown> | null = null;
-	try {
-		obj = JSON.parse(result) as Record<string, unknown>;
-	} catch {
-		obj = null;
-	}
-
-	if (obj && typeof obj === "object") {
-		if (obj.cancelled || obj.status === "cancelled") return [s.warn(`⚠ 已取消（${t}）`)];
-		if (obj.status === "unknown") return [s.warn(`⚠ 结果未知（${t}）`)];
-		if (obj.status === "not_started") return [s.warn(`⚠ 未执行（${t}）`)];
-		const errText = typeof obj.error === "string" ? obj.error : "";
-		const hasErr = errText !== "";
-		const lines: string[] = [];
-		if (hasErr) lines.push(s.err(`✗ ${errText.slice(0, 120)}（${t}）`));
-		if (typeof obj.stderr === "string" && obj.stderr.trim()) {
-			if (hasErr) lines.push(...indentLines(obj.stderr, s.err));
-			else {
-				lines.push(s.warn("stderr"));
-				lines.push(...indentLines(obj.stderr, s.warn));
-			}
-		}
-		if (typeof obj.stdout === "string" && obj.stdout.trim()) {
-			if (hasErr) lines.push(s.err("── stdout ──"));
-			lines.push(...indentLines(obj.stdout, hasErr ? s.err : s.dim));
-			lines.push(s.dim(`（${t}）`));
-		}
-		// 其他结构化返回（非 stdout/error 形状）：键值摘要一行
-		if (!hasErr && !("stdout" in obj) && !("stderr" in obj)) {
-			const keys = Object.keys(obj)
-				.slice(0, 3)
-				.map((k) => `${k}: ${short(obj[k])}`)
-				.join(", ");
-			lines.push(s.dim(`↳ ${keys}`));
-		}
-		return lines.length > 0 ? lines : [s.dim(`↳ ${t}`)];
-	}
-
-	const text = String(result).trim();
-	return text ? indentLines(text, s.dim) : [s.dim(`↳ ${t}`)];
+	return renderToolResult(parseToolResult(result), elapsedMs, s);
 }
 
 function short(v: unknown): string {
