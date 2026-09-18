@@ -200,6 +200,41 @@ describe("Subject", () => {
 		expect(turnTexts.filter((t) => t.length > 0)).toEqual(["first", "steer-A", "follow-B"]);
 	});
 
+	it("被消费的排队项必须产生配对的 turn_start/turn_end（turnNumber 一致）", async () => {
+		let release: (() => void) | undefined;
+		const model: Model = {
+			id: "turn-pair-test",
+			name: "turn-pair-test",
+			providerId: "mock",
+			contextWindow: 128_000,
+		};
+		const stream: ModelStreamFn = async (_m: Model, req: ModelRequest, onDelta: (delta: StreamDelta) => void) => {
+			if (lastUser(req) === "first") {
+				await new Promise<void>((resolve) => { release = resolve; });
+			}
+			onDelta({ kind: "text", text: "done" });
+			onDelta({ kind: "finish", reason: "stop" });
+		};
+		const subject = new Subject(model, stream, new ToolBroker());
+		const starts: number[] = [];
+		const ends: number[] = [];
+		subject.subscribe((event) => {
+			if (event.type === "turn_start") starts.push(event.turnNumber);
+			if (event.type === "turn_end") ends.push(event.turnNumber);
+		});
+
+		subject.pushInput("first");
+		await wait(20);
+		subject.steer("steer-A");
+		await wait(20);
+		release?.();
+		subject.steer("steer-B");
+		await idle(subject);
+
+		// 每个开启的可见回合都必须有同号终态：trajectory / transcript 的 turn 号口径一致
+		expect([...starts].sort((a, b) => a - b)).toEqual([...ends].sort((a, b) => a - b));
+	});
+
 	it("does not execute malformed tool arguments", async () => {
 		const broker = new ToolBroker();
 		let executed = false;

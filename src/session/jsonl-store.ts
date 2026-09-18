@@ -169,7 +169,11 @@ export class JsonlSessionStore implements SessionStore {
 		const result = this.tail.then(async () => {
 			if (this.closed) throw new Error("session store 已关闭");
 			if (this.writeFailure) throw this.writeFailure;
-			if (record.kind === "rewind" && !isRecord(record)) throw new SessionFormatError("回溯记录无效");
+			// 两相第零相：schema 边界，对全部 record kind 一致——畸形输入拒绝落盘，
+			// 否则"可写不可读"，重开即砖。
+			if (!isRecord(record)) {
+				throw new SessionFormatError(`record schema 无效: ${String((record as { kind?: unknown }).kind)}`);
+			}
 			// 两相第一相：语义校验先行，非法记录拒绝落盘（不触碰常驻状态）。
 			checkRecord(this.state, record);
 			const data = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
@@ -212,8 +216,9 @@ export class MemorySessionStore implements SessionStore {
 
 	readRecords(): readonly SessionRecord[] { return [...this.records]; }
 
-	/** 单一写入路径：语义校验先行，失败即拒绝；成功后 O(1) 增量登记。 */
+	/** 单一写入路径：schema 校验 + 语义校验先行，失败即拒绝；成功后 O(1) 增量登记。 */
 	private appendSync(record: SessionRecord): void {
+		if (!isRecord(record)) throw new SessionFormatError(`record schema 无效: ${String((record as { kind?: unknown }).kind)}`);
 		checkRecord(this.state, record);
 		const stored = structuredClone(record);
 		this.records.push(stored);
@@ -222,7 +227,6 @@ export class MemorySessionStore implements SessionStore {
 
 	appendRewind(record: Omit<import("./types.js").SessionRewindRecord, "kind" | "seq" | "timestamp">): Promise<void> {
 		const next: import("./types.js").SessionRewindRecord = { ...structuredClone(record),kind:"rewind",seq:this.records.length+1,timestamp:new Date().toISOString() };
-		if (!isRecord(next)) return Promise.reject(new SessionFormatError("回溯记录无效"));
 		this.appendSync(next);
 		return Promise.resolve();
 	}

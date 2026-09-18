@@ -138,6 +138,9 @@ export interface SessionStore {
 	readonly path: string;
 	/** 常驻 canonical 状态：派生查询一律从它计算，禁止对 records 再写第二个 walker。 */
 	readonly state: CanonicalState;
+	/** 写入契约（两层校验）：调用方保证构造合法（trusted caller）；store 对全部
+	 * record kind 先做 schema 校验（isRecord，防"可写不可读"），reducer 再做
+	 * 语义校验（checkRecord）。两者任一失败即拒绝，状态不变。 */
 	readRecords(): readonly SessionRecord[];
 	appendRewind(record: Omit<SessionRewindRecord, "kind" | "seq" | "timestamp">): Promise<void>;
 	appendInput(input: QueuedInput): Promise<void>;

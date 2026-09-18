@@ -167,6 +167,23 @@ export class Subject {
 		});
 	}
 
+	/** turn_end 与配对终态事件共用的用量快照：真实测量优先，缺锚回退字符估算。 */
+	private buildUsageSnapshot() {
+		const estimate = estimateContextTokens(this.history);
+		const last = this.lastReportedUsage;
+		const used = last?.totalTokens ?? estimate.tokens;
+		return {
+			usedTokens: used,
+			contextWindow: this.getContextWindow(),
+			actual: last?.totalTokens !== undefined || estimate.actual,
+			cacheRead: last?.cacheRead,
+			cacheWrite: last?.cacheWrite,
+			inputTokens: last?.input,
+			outputTokens: last?.output,
+			segments: this.getContextSegments(used),
+		};
+	}
+
 	/**
 	 * 当前 model 的计量口径失效（setModel），或 canonical history 被真正替换
 	 * （回溯提交）时清除：两个 usage 缓存都不再描述当前事实。
@@ -508,11 +525,7 @@ export class Subject {
 		}
 
 		try {
-			if (this.model.thinkingLevels && !this.model.thinkingLevels.includes(this.thinkingLevel)) {
-				this.reportError(new Error(`model ${this.model.name} 不支持 thinking level: ${this.thinkingLevel}`));
-				return;
-			}
-			if (queuedInput && options.needsEnqueueEvent) {
+		if (queuedInput && options.needsEnqueueEvent) {
 				await this.storeEvent("queue_enqueued", {
 					...eventData(queuedInput),
 					source: queuedInput.source,
@@ -584,24 +597,10 @@ export class Subject {
 			this.abort = null;
 			this.activity = undefined;
 			try {
-				const estimate = estimateContextTokens(this.history);
-				const last = this.lastReportedUsage;
-				const used = last?.totalTokens ?? estimate.tokens;
-				const segments = this.getContextSegments(used);
-				const usage = {
-					usedTokens: used,
-					contextWindow: this.getContextWindow(),
-					actual: last?.totalTokens !== undefined || estimate.actual,
-					cacheRead: last?.cacheRead,
-					cacheWrite: last?.cacheWrite,
-					inputTokens: last?.input,
-					outputTokens: last?.output,
-					segments,
-				};
 				await this.dispatch({
 					type: "turn_end",
 					turnNumber: turn,
-					usage,
+					usage: this.buildUsageSnapshot(),
 				});
 			} catch (error) {
 				this.reportError(error);
@@ -857,9 +856,16 @@ export class Subject {
 			// 否则 TUI 只收到 queue 事件清空待办区，transcript 没有任何它被采纳的痕迹。
 			// runtime 来源项投影为 display:false 的 custom 消息，不开可见回合。
 			if (item.source?.kind !== "runtime") {
-				await this.dispatch({ type: "turn_start", turnNumber: ++this.turnSeq, userText: item.text, images: item.images });
+				const itemTurn = ++this.turnSeq;
+				await this.dispatch({ type: "turn_start", turnNumber: itemTurn, userText: item.text, images: item.images });
+				await this.consumeQueueItem(item);
+				// turn_start/turn_end 按 turnNumber 严格一一配对：runTurn 收尾只携带最初
+				// 回合号，中途消费的可见回合必须自带终态事件，否则 trajectory /
+				// transcript 的 turn 号口径漂移。
+				await this.dispatch({ type: "turn_end", turnNumber: itemTurn, usage: this.buildUsageSnapshot() });
+			} else {
+				await this.consumeQueueItem(item);
 			}
-			await this.consumeQueueItem(item);
 		}
 		return true;
 	}

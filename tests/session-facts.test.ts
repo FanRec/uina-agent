@@ -269,3 +269,17 @@ describe("S1 tool outcome propagation", () => {
 		}
 	});
 });
+
+describe("SessionStore schema 边界", () => {
+	it("append 拒绝 schema 无效的记录（防可写不可读）", async () => {
+		const store = new MemorySessionStore();
+		// 兼容两种拒绝形态：Memory 同步抛、Jsonl 返回 rejected promise。
+		const rejects = (fn: () => unknown) => expect(Promise.resolve().then(fn)).rejects.toThrow();
+		await rejects(() => store.appendMessage({ role: "user", content: 123 } as unknown as never));
+		expect(store.readRecords()).toHaveLength(0);
+		await rejects(() => store.appendEvent("queue_enqueued", { id: "x" } as unknown as Record<string, unknown>));
+		expect(store.readRecords()).toHaveLength(0);
+		await rejects(() => store.appendCustomMessage({ customType: "", content: "x" }));
+		expect(store.readRecords()).toHaveLength(0);
+	});
+});
