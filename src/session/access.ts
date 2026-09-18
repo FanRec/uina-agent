@@ -14,12 +14,14 @@ export type RewindEntry = (
  * the agent loop implementing session navigation itself.
  */
 export function createSessionAccess(store: SessionStore, requestRewind?: RewindEntry): SessionAccess {
-	const list: SessionAccess["list"] = options => listSessionNodes(store.readRecords(), options);
+	// 全部查询直读常驻 state：零拷贝、零重放（journal 解释只发生在 store 的 reducer）。
+	const state = store.state;
+	const list: SessionAccess["list"] = options => listSessionNodes(state, options);
 	const access: SessionAccess = {
 		list,
-		listBranches: () => listSessionBranches(store.readRecords()),
-		readBranch: id => readSessionBranch(store.readRecords(), id),
-		read: id => readSessionNode(store.readRecords(), id),
+		listBranches: () => listSessionBranches(state),
+		readBranch: id => readSessionBranch(state, id),
+		read: id => readSessionNode(state, id),
 		requestRewind: async (request, source, signal) => {
 			if (!requestRewind) throw new Error("未配置回溯入口，回溯不可用");
 			return requestRewind(request, source, signal);

@@ -41,9 +41,9 @@ describe("session mainline persistence", () => {
 	it("keeps abandoned nodes readable, preserves subsequent inputs, and forbids revisiting an archive", async () => {
 		const store = new MemorySessionStore(); const records = await seed(store);
 		await store.appendRewind({id:"r1",requestId:"q1",targetId:records[0].id,fromId:records[2].id,source:"user",reason:"bad premise"});
-		const main = listSessionNodes(store.readRecords());
+		const main = listSessionNodes(store.state);
 		expect(main.nodes.map(node=>node.id)).toEqual([records[0].id,"r1"]);
-		expect(readSessionNode(store.readRecords(),records[1].id)).toMatchObject({kind:"message",message:{content:"bad plan"}});
+		expect(readSessionNode(store.state,records[1].id)).toMatchObject({kind:"message",message:{content:"bad plan"}});
 		const context = projectAgentHistory(store.state.entries);
 		expect(context.some(message=>message.content === "bad plan")).toBe(false);
 		expect(context.some(message=>message.content.includes("stop writing files"))).toBe(false);
@@ -51,7 +51,7 @@ describe("session mainline persistence", () => {
 		await store.appendMessage({role:"assistant",content:"corrected plan"});
 		const latest=store.readRecords().at(-1)!;
 		await store.appendRewind({id:"r2",requestId:"q2",targetId:records[0].id,fromId:latest.id,source:"user",reason:"again"});
-		expect(listSessionNodes(store.readRecords(),{scope:"all"}).nodes.filter(node=>!node.active).length).toBe(4);
+		expect(listSessionNodes(store.state,{scope:"all"}).nodes.filter(node=>!node.active).length).toBe(4);
 		expect(projectAgentHistory(store.state.entries).filter(message=>message.content.includes("stop writing files"))).toHaveLength(0);
 	});
 	it("rejects cuts inside tool exchanges", async () => {
@@ -71,7 +71,7 @@ describe("session mainline persistence", () => {
 			await store.close();
 			const reopened=await openJsonlSession(path);
 			expect(projectAgentHistory(reopened.snapshot.entries).some(message=>message.content.includes("abandoned answer"))).toBe(false);
-			expect(listSessionNodes(reopened.store.readRecords()).headId).toBe("r");
+			expect(listSessionNodes(reopened.store.state).headId).toBe("r");
 			await reopened.store.appendMessage({role:"user",content:"continue"});
 			expect(projectAgentHistory(reopened.store.state.entries).some(message=>message.content.includes("会话回溯"))).toBe(true);
 			await reopened.store.close();
@@ -283,10 +283,10 @@ it("paginates persisted recovery entries without skipping adjacent records", asy
 		const reopened=await openJsonlSession(path);
 		await reopened.store.appendMessage({role:"user",content:"continue after crash"});
 		let after: string|undefined;const ids:string[]=[];
-		do {const page=listSessionNodes(reopened.store.readRecords(),{after,limit:1});ids.push(...page.nodes.map(node=>node.id));after=page.next;} while(after);
+		do {const page=listSessionNodes(reopened.store.state,{after,limit:1});ids.push(...page.nodes.map(node=>node.id));after=page.next;} while(after);
 		const originId=reopened.store.readRecords()[0].id;
 		expect(ids).toHaveLength(3);expect(new Set(ids).size).toBe(3);expect(ids[1]).toBe(`recovered:${originId}:interrupted`);
-		expect(listSessionNodes(reopened.store.readRecords()).nodes[1].canRewind).toBe(false);
+		expect(listSessionNodes(reopened.store.state).nodes[1].canRewind).toBe(false);
 		await reopened.store.close();
 	} finally {await rm(dir,{recursive:true,force:true});}
 });
@@ -298,20 +298,20 @@ it("does not invent a crash during live reads and durably settles unfinished cal
 		await initial.store.appendMessage({role:"user",content:"task"});
 		await initial.store.appendMessage({role:"assistant",content:"",tool_calls:[{id:"unfinished",name:"exec_command",args:{}}]});
 		await initial.store.appendEvent("tool_started",{callId:"unfinished"});
-		const live=listSessionNodes(initial.store.readRecords());
+		const live=listSessionNodes(initial.store.state);
 		expect(live.nodes).toHaveLength(2);expect(live.nodes.some(node=>node.id.startsWith("recovered:"))).toBe(false);
 		expect(live.nodes[1].preview).toBe("[调用 exec_command]");
-		expect(() => readSessionNode(initial.store.readRecords(), `recovered:${initial.store.readRecords()[1].id}:unfinished`)).toThrow("未知会话节点");
+		expect(() => readSessionNode(initial.store.state, `recovered:${initial.store.readRecords()[1].id}:unfinished`)).toThrow("未知会话节点");
 		await initial.store.close();
 		const reopened=await openJsonlSession(path);
 		expect(reopened.store.readRecords().at(-1)).toMatchObject({kind:"message",message:{role:"tool",status:"unknown"}});
-		const nodes=listSessionNodes(reopened.store.readRecords());
+		const nodes=listSessionNodes(reopened.store.state);
 		expect(nodes.nodes).toHaveLength(3);
 		// 恢复事实带稳定身份落盘（planRecovery → 可审计）；恢复节点被 reducer 结构性排除出安全回溯目标
 		expect(nodes.nodes.at(-1)).toMatchObject({ id: expect.stringMatching(/^recovered:/), canRewind: false });
 		await reopened.store.appendRewind({id:"after-crash",requestId:"q",targetId:nodes.nodes[0].id,fromId:nodes.headId!,source:"test",reason:"recover"});
 		await reopened.store.close();
-		const again=await openJsonlSession(path);expect(listSessionNodes(again.store.readRecords()).headId).toBe("after-crash");await again.store.close();
+		const again=await openJsonlSession(path);expect(listSessionNodes(again.store.state).headId).toBe("after-crash");await again.store.close();
 	} finally {await rm(dir,{recursive:true,force:true});}
 });
 
@@ -711,10 +711,10 @@ describe("BranchInspectorOverlay", () => {
 		});
 
 		const access = {
-			list: (opts?: any) => listSessionNodes(store.readRecords(), opts),
-			listBranches: () => listSessionBranches(store.readRecords()),
-			readBranch: (id: string) => readSessionBranch(store.readRecords(), id),
-			read: (id: string) => readSessionNode(store.readRecords(), id),
+			list: (opts?: any) => listSessionNodes(store.state, opts),
+			listBranches: () => listSessionBranches(store.state),
+			readBranch: (id: string) => readSessionBranch(store.state, id),
+			read: (id: string) => readSessionNode(store.state, id),
 			requestRewind: async () => ({ requestId: "dummy", status: "committed" as const }),
 		};
 

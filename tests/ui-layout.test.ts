@@ -467,10 +467,10 @@ describe("C: overlay frame composition", () => {
 			terminal,
 			modelName: "TestModel",
 			sessionPort: {
-				list: (options) => listSessionNodes(store.readRecords(), options),
-				listBranches: () => listSessionBranches(store.readRecords()),
-				readBranch: (id: string) => readSessionBranch(store.readRecords(), id),
-				read: (id) => readSessionNode(store.readRecords(), id),
+				list: (options) => listSessionNodes(store.state, options),
+				listBranches: () => listSessionBranches(store.state),
+				readBranch: (id: string) => readSessionBranch(store.state, id),
+				read: (id) => readSessionNode(store.state, id),
 				requestRewind: async () => ({ requestId: "probe", status: "committed" as const }),
 			},
 		});

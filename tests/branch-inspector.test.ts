@@ -43,10 +43,10 @@ async function seedInspectorStore(): Promise<MemorySessionStore> {
 
 function accessFor(store: MemorySessionStore) {
 	return {
-		list: (options?: Parameters<typeof listSessionNodes>[1]) => listSessionNodes(store.readRecords(), options),
-		listBranches: () => listSessionBranches(store.readRecords()),
-		readBranch: (id: string) => readSessionBranch(store.readRecords(), id),
-		read: (id: string) => readSessionNode(store.readRecords(), id),
+		list: (options?: Parameters<typeof listSessionNodes>[1]) => listSessionNodes(store.state, options),
+		listBranches: () => listSessionBranches(store.state),
+		readBranch: (id: string) => readSessionBranch(store.state, id),
+		read: (id: string) => readSessionNode(store.state, id),
 		requestRewind: async () => ({ requestId: "x", status: "committed" as const }),
 	};
 }
@@ -376,9 +376,9 @@ describe("BranchInspectorOverlay paging", () => {
 		for (let i = 0; i < 125; i++) {
 			await store.appendMessage({ role: i % 2 === 0 ? "user" : "assistant", content: "分页 " + i });
 		}
-		const port = { list: (options?: Parameters<typeof listSessionNodes>[1]) => listSessionNodes(store.readRecords(), options) };
+		const port = { list: (options?: Parameters<typeof listSessionNodes>[1]) => listSessionNodes(store.state, options) };
 		const drained = listAllSessionNodes(port, { scope: "main" });
-		const expected = listSessionNodes(store.readRecords(), { scope: "main", limit: 1000 }).nodes;
+		const expected = listSessionNodes(store.state, { scope: "main", limit: 1000 }).nodes;
 		expect(drained.map((n) => n.id)).toEqual(expected.map((n) => n.id));
 		expect(new Set(drained.map((n) => n.id)).size).toBe(drained.length);
 	});
@@ -392,7 +392,7 @@ describe("BranchInspectorOverlay paging", () => {
 			await store.appendMessage({ role: i % 2 === 0 ? "user" : "assistant", content: "分页节点 " + i });
 		}
 		// 用显式大 limit 取真实总数，绝不把 bug 的产物（50）当成期望值
-		const all = listSessionNodes(store.readRecords(), { scope: "main", limit: 1000 }).nodes;
+		const all = listSessionNodes(store.state, { scope: "main", limit: 1000 }).nodes;
 		expect(all.length).toBeGreaterThan(50);
 
 		const view = new BranchInspectorOverlay(accessFor(store));

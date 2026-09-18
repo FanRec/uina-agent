@@ -1,5 +1,5 @@
-import { canonicalReplay } from "./recovery.js";
-import type { HydratedSessionEntry, SessionAccess, SessionBranchInfo, SessionEntry, SessionNodeInfo, SessionRecord } from "./types.js";
+import type { CanonicalState } from "./recovery.js";
+import type { HydratedSessionEntry, SessionAccess, SessionBranchInfo, SessionEntry, SessionNodeInfo } from "./types.js";
 
 export class SessionNavigationError extends Error {
 
@@ -35,11 +35,12 @@ function formatNodePreview(entry: SessionEntry): string {
 	return (text ?? "").slice(0, 160);
 }
 
+/** 全部导航查询直接消费常驻 CanonicalState——journal 的唯一解释点在 reducer，
+	 * 这里禁止再对 records 折叠（禁止第二个 journal walker）。 */
 export function listSessionNodes(
-	records: readonly SessionRecord[],
+	state: CanonicalState,
 	options: Parameters<SessionAccess["list"]>[0] = {},
 ): ReturnType<SessionAccess["list"]> {
-	const state = canonicalReplay(records);
 	const { entries, allEntries } = state;
 	const limit = options.limit ?? 50;
 	if (!Number.isSafeInteger(limit) || limit < 1) {
@@ -108,8 +109,8 @@ export function listAllSessionNodes(
 	}
 }
 
-export function readSessionNode(records: readonly SessionRecord[], id: string): HydratedSessionEntry {
-	const node = canonicalReplay(records).allEntries.find((entry) => entry.id === id);
+export function readSessionNode(state: CanonicalState, id: string): HydratedSessionEntry {
+	const node = state.allEntries.find((entry) => entry.id === id);
 	if (!node) {
 		throw new SessionNavigationError(`未知会话节点: ${id}`);
 	}
@@ -126,9 +127,6 @@ type RewindNode = Extract<HydratedSessionEntry, { kind: "rewind" }>;
  *
  * 不必再排除 rewind 节点自身：allEntries 按记录顺序（seq 升序）追加，而被放弃段的最后一个节点
  * 就是创建这条 rewind 时的历史末端，rewind 记录必然排在它之后，落在切片上界之外。
- *
- * P1.3：这段切片边界原先在 listSessionBranches 与 readSessionBranch 里各写了一份，
- * 收成唯一实现后，只有一处需要正确。
  */
 function branchEntries(
 	allEntries: readonly HydratedSessionEntry[],
@@ -156,16 +154,16 @@ function toBranchInfo(entry: RewindNode, nodeCount: number): SessionBranchInfo {
 	};
 }
 
-export function listSessionBranches(records: readonly SessionRecord[]): { branches: SessionBranchInfo[] } {
-	const { allEntries } = canonicalReplay(records);
+export function listSessionBranches(state: CanonicalState): { branches: SessionBranchInfo[] } {
+	const { allEntries } = state;
 	const branches = allEntries
 		.filter((e) => e.kind === "rewind")
 		.map((e) => toBranchInfo(e, branchEntries(allEntries, e.record.targetId, e.record.fromId).length));
 	return { branches };
 }
 
-export function readSessionBranch(records: readonly SessionRecord[], id: string): { branch: SessionBranchInfo; nodes: SessionNodeInfo[] } {
-	const { allEntries } = canonicalReplay(records);
+export function readSessionBranch(state: CanonicalState, id: string): { branch: SessionBranchInfo; nodes: SessionNodeInfo[] } {
+	const { allEntries } = state;
 	const rewind = allEntries.find((e) => e.kind === "rewind" && e.id === id);
 	if (rewind?.kind !== "rewind") {
 		throw new SessionNavigationError(`未知会话分支: ${id}`);
