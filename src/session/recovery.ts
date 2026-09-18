@@ -1,6 +1,6 @@
 import { validImages } from "../core/content.js";
 import { readDeclaredEffects } from "../core/effects.js";
-import type { AgentMessage, ToolEffect, ToolResultStatus } from "../core/types.js";
+import { TOOL_RESULT_STATUSES, type AgentMessage, type ToolEffect, type ToolResultStatus } from "../core/types.js";
 import type {
 	AbandonedEffects,
 	HydratedSessionEntry,
@@ -221,13 +221,7 @@ function checkEvent(state: CanonicalState, record: SessionEventRecord): void {
 			if (status !== "not_started" && !pending.started) {
 				throw new SessionFormatError(`工具未启动即完成: ${data.callId}`);
 			}
-			if (
-				status !== "succeeded" &&
-				status !== "failed" &&
-				status !== "cancelled" &&
-				status !== "unknown" &&
-				status !== "not_started"
-			) {
+			if (!(TOOL_RESULT_STATUSES as readonly unknown[]).includes(status)) {
 				throw new SessionFormatError(`tool_finished status 无效: ${data.callId}`);
 			}
 			return;
@@ -694,7 +688,7 @@ export function isRecord(value: unknown): value is SessionRecord {
 	) {
 		return false;
 	}
-	if (record.kind === "rewind") return ["id", "targetId", "fromId", "source", "requestId", "reason"].every(key => typeof record[key] === "string" && (record[key] as string).trim().length > 0) && (record.summary === undefined || typeof record.summary === "string");
+	if (record.kind === "rewind") return ["id", "targetId", "fromId", "source", "requestId", "reason"].every(key => typeof record[key] === "string" && (record[key] as string).trim().length > 0) && (record.note === undefined || typeof record.note === "string");
 	if (record.kind === "input") {
 		if (!record.input || typeof record.input !== "object") return false;
 		const input = record.input as Record<string, unknown>;

@@ -13,6 +13,17 @@ export type ToolResultStatus =
 	| "unknown"
 	| "not_started";
 
+/** ToolResultStatus 的合法值集合（P2-H 单一事实）：broker 的运行时校验与
+ * recovery.checkEvent 的 journal 校验共用；第三方 Tool 是不可信边界，两处
+ * 校验都保留。 */
+export const TOOL_RESULT_STATUSES: readonly ToolResultStatus[] = [
+	"succeeded",
+	"failed",
+	"cancelled",
+	"unknown",
+	"not_started",
+];
+
 /**
  * 一个由工具自行声明的通用外部效果事实。Core 只存储与聚合 effectType/标识，
  * 不理解 "file.write / command.exec / task.dispatch" 等具体语义——那是声明它的

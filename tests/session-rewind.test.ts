@@ -94,7 +94,7 @@ describe("rewind runtime safe points", () => {
 			count++;
 			if(count===1) { emit({kind:"text",text:"bad original plan"}); emit({kind:"finish",reason:"stop"}); return; }
 			if(count===2) {
-				emit({kind:"tool_call",call:{id:"rewind-call",name:"session_rewind",args:JSON.stringify({targetId,reason:"incorrect premise",summary:"do not repeat the write"})}});
+				emit({kind:"tool_call",call:{id:"rewind-call",name:"session_rewind",args:JSON.stringify({targetId,reason:"incorrect premise",note:"do not repeat the write"})}});
 				emit({kind:"tool_call",call:{id:"write-call",name:"write_file",args:JSON.stringify({path:"effect.txt",text:"already written"})}});
 				emit({kind:"finish",reason:"tool_calls"});return;
 			}

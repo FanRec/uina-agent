@@ -1,4 +1,4 @@
-import type { AgentMessage, ChatMsg, QueuedMessage } from "../core/types.js";
+import type { AgentMessage, QueuedMessage } from "../core/types.js";
 import type { CanonicalState } from "./recovery.js";
 
 export interface SessionHeader {
@@ -37,7 +37,9 @@ export interface SessionMessageRecord {
 	id: string;
 	seq: number;
 	timestamp: string;
-	message: AgentMessage | ChatMsg;
+	/** 主线消息记录只承载 AgentMessage（运行时事实）；ChatMsg 是 provider
+	 * 投影产物，由 convertToLlm 在每请求时派生，不落盘。 */
+	message: AgentMessage;
 }
 
 /** One durable transition from a pending queue item to accepted session input. */
@@ -66,7 +68,7 @@ export interface SessionEventRecord {
 	data: Record<string, unknown>;
 }
 
-export interface RewindRequest { targetId: string; reason: string; summary?: string; }
+export interface RewindRequest { targetId: string; reason: string; note?: string; }
 export interface SessionRewindRecord extends RewindRequest {
 	kind: "rewind"; id: string; seq: number; timestamp: string; fromId: string; source: string; requestId: string;
 }
@@ -107,7 +109,7 @@ export interface AbandonedEffects {
 export type SessionEntryPayload =
 	| { kind: "rewind"; record: SessionRewindRecord; notice: string; carriedInputs: AgentMessage[]; effects?: AbandonedEffects }
 	| { kind: "input"; input: QueuedInput }
-	| { kind: "message"; message: AgentMessage | ChatMsg }
+	| { kind: "message"; message: AgentMessage }
 	| {
 			kind: "custom_message";
 			customType: string;
@@ -145,7 +147,7 @@ export interface SessionStore {
 	appendRewind(record: Omit<SessionRewindRecord, "kind" | "seq" | "timestamp">): Promise<void>;
 	appendInput(input: QueuedInput): Promise<void>;
 	/** id 用于恢复事实带稳定身份落盘（planRecovery → recovered:${originId}:${callId}）。 */
-	appendMessage(message: AgentMessage | ChatMsg, id?: string): Promise<void>;
+	appendMessage(message: AgentMessage, id?: string): Promise<void>;
 	appendCustomMessage(message: { customType: string; content: string; images?: import("../core/content.js").ImageContent[]; display?: boolean; details?: unknown }): Promise<void>;
 	appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void>;
 	appendEvent(

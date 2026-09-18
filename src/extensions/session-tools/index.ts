@@ -63,13 +63,13 @@ export function activateSessionTools(resolve: (ownerId: string) => SessionAccess
 				function: {
 					name: "session_rewind",
 					description:
-						"Request context rewind to a safe ancestor on the current mainline when an entire reasoning path is wrong. Provide reason and optional lessons summary. The current tool batch settles first; scheduled is not committed. Abandoned paths remain readable. Files, background work and external effects are NOT undone; verify state before repeating actions. Later human inputs remain available.",
+						"Request context rewind to a safe ancestor on the current mainline when an entire reasoning path is wrong. Provide reason and optional lessons note. The current tool batch settles first; scheduled is not committed. Abandoned paths remain readable. Files, background work and external effects are NOT undone; verify state before repeating actions. Later human inputs remain available.",
 					parameters: {
 						type: "object",
 						properties: {
 							targetId: { type: "string", minLength: 1 },
 							reason: { type: "string", minLength: 1 },
-							summary: { type: "string" },
+							note: { type: "string" },
 						},
 						required: ["targetId", "reason"],
 						additionalProperties: false,
@@ -82,10 +82,10 @@ export function activateSessionTools(resolve: (ownerId: string) => SessionAccess
 				if (!targetId || !reason) {
 					throw new Error("session_rewind 需要提供有效的 targetId 与 reason");
 				}
-				const summary = typeof args?.summary === "string" ? args.summary : undefined;
+				const summary = typeof args?.note === "string" ? args.note : undefined;
 				const access = resolve(context?.ownerId ?? "root");
 				const result = await access.requestRewind(
-					{ targetId, reason, ...(summary ? { summary } : {}) },
+					{ targetId, reason, ...(summary ? { note: summary } : {}) },
 					context?.callerId ?? api.id,
 					signal,
 				);

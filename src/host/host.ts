@@ -368,6 +368,7 @@ export class UinaHost {
 	/** 消费者渲染所需的全部事实，一次取齐。 */
 	snapshot(): HostSnapshot {
 		const model = this.subject.getModel();
+		const queue = this.subject.queuedSnapshot();
 		return {
 			modelName: model.name,
 			thinkingLevels: model.thinkingLevels,
@@ -376,8 +377,8 @@ export class UinaHost {
 			contextWindow: this.subject.getContextWindow(),
 			segments: this.subject.getContextSegments(),
 			busy: this.subject.isBusy(),
-			queue: this.subject.queuedSnapshot(),
-			queueDepth: this.subject.queuedSnapshot().length,
+			queue,
+			queueDepth: queue.length,
 			queueOldestAgeMs: this.subject.queueOldestAgeMs(),
 		};
 	}

@@ -214,7 +214,7 @@ export class CustomMessageComponent extends BaseCustomComponent<CustomMessage, M
 		};
 
 		const details = this.item.details as {
-			record?: { fromId: string; targetId: string; source: string; reason: string; summary?: string };
+			record?: { fromId: string; targetId: string; source: string; reason: string; note?: string };
 			effects?: { modifiedFiles?: readonly string[]; executedCommands?: readonly string[]; dispatchedTasks?: readonly { id: string; type: string; label?: string }[] };
 		} | undefined;
 
@@ -224,7 +224,7 @@ export class CustomMessageComponent extends BaseCustomComponent<CustomMessage, M
 		if (record) {
 			addLine("回溯路径", `${record.fromId.slice(0, 8)} ➔ ${record.targetId.slice(0, 8)} [${record.source}]`, C.cyan);
 			addLine("决策原因", record.reason, C.white);
-			if (record.summary) addLine("经验摘要", record.summary, C.green);
+			if (record.note) addLine("经验附注", record.note, C.green);
 		} else {
 			for (const rawLine of sanitizeRenderText(this.item.content).split("\n").slice(0, 4)) {
 				rows.push(rawLine);

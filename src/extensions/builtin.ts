@@ -93,7 +93,7 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		},
 	});
 
-	/** 用量表刷新：真值已作废（压缩 / 切模型），先按估算显示并标注非真实。 */
+	/** 用量表刷新：切模型后上一模型的 usage 真值失效，先按估算显示并标注非真实。 */
 	const refreshUsageMeter = (): void => {
 		const usage = pi.usage();
 		ui.setUsage?.({

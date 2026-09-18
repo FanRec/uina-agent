@@ -262,7 +262,7 @@ function formatNodeDetails(entry: HydratedSessionEntry | null, width: number): s
 		rows.push(label("原位置", entry.record.fromId));
 		rows.push(label("来源", entry.record.source));
 		rows.push(...wrapPlain(label("原因", entry.record.reason), width));
-		if (entry.record.summary) rows.push(...wrapPlain(label("摘要", entry.record.summary), width));
+		if (entry.record.note) rows.push(...wrapPlain(label("附注", entry.record.note), width));
 		if (entry.effects && entry.effects.effects.length > 0) {
 			// 通用效果清单：按声明方的 effectType 分组展示，不解释语义。
 			const grouped = new Map<string, string[]>();

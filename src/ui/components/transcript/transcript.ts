@@ -617,7 +617,7 @@ export class TranscriptContainer implements Component {
 					kind: "customMessage",
 					message: {
 						customType: "session-rewind",
-						content: entry.notice + "\n[当前主线从此处继续]" + (entry.record.summary ? `\n[经验摘要] ${entry.record.summary}` : ""),
+						content: entry.notice + "\n[当前主线从此处继续]" + (entry.record.note ? `\n[经验附注] ${entry.record.note}` : ""),
 						details: { record: entry.record, effects: entry.effects },
 					},
 				});

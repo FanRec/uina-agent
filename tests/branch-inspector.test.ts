@@ -36,7 +36,7 @@ async function seedInspectorStore(): Promise<MemorySessionStore> {
 		fromId: store.readRecords().at(-1)!.id,
 		source: "model",
 		reason: "验证覆盖层布局宽度收敛与换行行为",
-		summary: "经验摘要：先测量再落盘，避免提交无法使用的上下文。",
+		note: "经验摘要：先测量再落盘，避免提交无法使用的上下文。",
 	});
 	return store;
 }

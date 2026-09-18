@@ -26,7 +26,7 @@ it("减法测试：删掉所有 capability 后 Subject 仍完整成立（七问#
 		fromId: store.readRecords().at(-1)!.id,
 		source: "model",
 		reason: "subtraction test",
-		summary: "回溯验证",
+		note: "回溯验证",
 	});
 
 	// 2) 裸内核：零 capability，直接 Subject + Broker + 本地工具。

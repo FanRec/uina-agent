@@ -26,7 +26,12 @@ export function defaultSystemPrompt(): string {
 	return DEFAULT_SYSTEM_PROMPT;
 }
 
-/** Pure projection from agent history stream (including custom messages) to valid LLM messages. */
+/** Pure projection from agent history stream (including custom messages) to valid LLM messages.
+ *
+ * 保留为自由函数（非管道成员，P2-J 裁定）：provider 边界的纵深防御——输入不只来自
+ * journal 投影，还含 turn.prepare 注入的 messages 与自定义 projectHistory policy
+ * 的产物，这里统一清洗（孤儿 tool_calls/幽灵 assistant 帧），保证任何来源的
+ * 历史都以协议合法的形状到达 provider。 */
 export function convertToLlm(
 	messages: readonly (AgentMessage | ChatMsg)[],
 	options: {

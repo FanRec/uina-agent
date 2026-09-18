@@ -286,7 +286,7 @@ export class Subject {
 			!request.reason.trim() ||
 			typeof source !== "string" ||
 			!source.trim() ||
-			(request.summary !== undefined && typeof request.summary !== "string")
+			(request.note !== undefined && typeof request.note !== "string")
 		) {
 			throw new Error("回溯需要 targetId、reason 和来源");
 		}
@@ -439,7 +439,7 @@ export class Subject {
 			const promptText = queued.source?.kind === "runtime" ? undefined : queued.text;
 			return this.startRun(promptText, queued, { needsEnqueueEvent: true });
 		}
-		return this.storeEvent("queue_enqueued", { ...eventData(queued), source: input.source, data: input.data }).then(
+		return this.storeEvent("queue_enqueued", { ...queued }).then(
 			async () => {
 				this.queues.add(queued);
 				this.notifyQueueChanged();
@@ -513,7 +513,7 @@ export class Subject {
 	async claimQueued(id: string): Promise<QueuedMessage | null> {
 		const claimed = this.queues.remove(id);
 		if (!claimed) return null;
-		await this.storeEvent("queue_restored", eventData(claimed));
+		await this.storeEvent("queue_restored", { ...claimed });
 		this.notifyQueueChanged();
 		return claimed;
 	}
@@ -534,7 +534,7 @@ export class Subject {
 		try {
 		if (queuedInput && options.needsEnqueueEvent) {
 				await this.storeEvent("queue_enqueued", {
-					...eventData(queuedInput),
+					...queuedInput,
 					source: queuedInput.source,
 					data: queuedInput.data,
 				});

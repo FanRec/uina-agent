@@ -8,6 +8,7 @@ import type {
 	ToolExecutionMode,
 	ToolResultStatus,
 } from "../core/types.js";
+import { TOOL_RESULT_STATUSES } from "../core/types.js";
 import {
 	executeToolPipeline,
 	type ToolCallRequest,
@@ -196,7 +197,7 @@ async function executeToolCore(
 			!result ||
 			typeof result.result !== "string" ||
    !validImages(result.images) ||
-			!["succeeded", "failed", "cancelled", "unknown", "not_started"].includes(result.status)
+			!(TOOL_RESULT_STATUSES as readonly unknown[]).includes(result.status)
 		) {
 			throw new Error("工具必须返回 { result: string, status: ToolResultStatus }");
 		}
