@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { ExtensionHost } from "../src/extensions/host.js";
 import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
+import { guardRuntimeHooks } from "../src/runtime/guard.js";
 import type { RuntimeHooks } from "../src/runtime/hooks.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { Subject } from "../src/agent/loop.js";
@@ -272,7 +273,9 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			frozen = Object.isFrozen(messages) && Object.isFrozen(messages[0]!);
 			return { messages: [...messages, { role: "user", content: "replacement" }] };
 		});
-		const hooks = createRuntimeHooks(host);
+		// P1-3 规则成文：clone+freeze 只发生在 guard 边界——所有 RuntimeHooks 出口
+		// （含 runner.runtimeHooks 旁路）统一过 guard，host.run* 是纯聚合器。
+		const hooks = guardRuntimeHooks(createRuntimeHooks(host));
 		const transformed = await hooks.turn.transformContext([{ role: "user", content: "original" }]);
 		expect(frozen).toBe(true);
 		expect(transformed.map((message) => message.content)).toEqual(["original", "replacement"]);

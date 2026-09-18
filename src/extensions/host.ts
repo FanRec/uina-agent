@@ -11,7 +11,6 @@
 
 import { errorMessage } from "../core/errors.js";
 import type { ChatMsg } from "../core/types.js";
-import { copyValue, readonlySnapshot } from "../runtime/guard.js";
 import type {
 	DeepReadonly,
 	OutputEvent,
@@ -149,14 +148,14 @@ export class ExtensionHost {
 		const handlers = this.handlersFor(event.type, scope);
 		if (handlers.length === 0) return;
 
-		for (const handler of handlers) {
-			try {
-				await handler(readonlySnapshot(event) as never);
-			} catch (err) {
-				this.emitError(event.type, err);
-			}
+	for (const handler of handlers) {
+		try {
+			await handler(event as never);
+		} catch (err) {
+			this.emitError(event.type, err);
 		}
 	}
+}
 
 	/** Queue observational events so stream consumers always observe start → update → end. */
 	emitObserved(event: OutputEvent, scope?: RuntimeScopeFilter): void {
@@ -167,11 +166,12 @@ export class ExtensionHost {
 		await this.observedTail;
 	}
 
-	/** tools.beforeCall：短路链——任一 block=true 即拦截。 */
+	/** tools.beforeCall：短路链——任一 block=true 即拦截。
+	 * 纯聚合器：只读不变量由 guard 入侧 clone+freeze 保证（P1-3），此处不再复制。 */
 	async runBeforeCall(input: HookInputs["tools.beforeCall"], scope?: RuntimeScopeFilter): Promise<HookContributions["tools.beforeCall"] | undefined> {
 		for (const handler of this.hooksFor("tools.beforeCall", scope)) {
 			try {
-				const res = (await handler(readonlySnapshot(input) as never)) as HookContributions["tools.beforeCall"] | undefined;
+				const res = (await handler(input as never)) as HookContributions["tools.beforeCall"] | undefined;
 				if (res?.block) return res; // 立即短路，跳过后续拦截器
 			} catch (err) {
 				this.emitError("tools.beforeCall", err);
@@ -180,19 +180,26 @@ export class ExtensionHost {
 		return undefined;
 	}
 
-	/** tools.transformResult：链式——后一个收到前一个改写后的结果，逐字段覆盖。 */
+	/** tools.transformResult：链式——后一个收到前一个改写后的结果，逐字段覆盖。
+	 * 纯聚合器（P1-3）：深拷贝只发生在 guard 边界；此处链步间以 shallow rebuild +
+	 * Object.freeze 呈现只读视图（O(1)，零拷贝），返回收口在 guard 一次。 */
 	async runTransformResult(input: HookInputs["tools.transformResult"], scope?: RuntimeScopeFilter): Promise<HookContributions["tools.transformResult"] | undefined> {
-		const current = { ...input };
+		let current = input;
 		let modified = false;
 
 		for (const handler of this.hooksFor("tools.transformResult", scope)) {
 			try {
-				const res = (await handler(readonlySnapshot(current) as never)) as HookContributions["tools.transformResult"] | undefined;
+				const res = (await handler(current as never)) as HookContributions["tools.transformResult"] | undefined;
 				if (res) {
-					if (res.result !== undefined) { current.result = res.result; modified = true; }
-					if (res.details !== undefined) { current.details = copyValue(res.details); modified = true; }
-					if (res.images !== undefined) { current.images = copyValue(res.images); modified = true; }
-					if (res.status !== undefined) { current.status = res.status; modified = true; }
+					const patch: Record<string, unknown> = {};
+					if (res.result !== undefined) patch.result = res.result;
+					if (res.details !== undefined) patch.details = res.details;
+					if (res.images !== undefined) patch.images = res.images;
+					if (res.status !== undefined) patch.status = res.status;
+					if (Object.keys(patch).length > 0) {
+						current = Object.freeze({ ...current, ...patch }) as typeof current;
+						modified = true;
+					}
 				}
 			} catch (err) {
 				this.emitError("tools.transformResult", err);
@@ -202,24 +209,25 @@ export class ExtensionHost {
 		return modified ? { result: current.result, status: current.status, details: current.details, images: current.images } : undefined;
 	}
 
-	/** turn.transformContext：链式——后一个收到前一个的输出，返回整组替换。 */
+	/** turn.transformContext：链式——后一个收到前一个的输出，返回整组替换。
+	 * 纯聚合器（P1-3）：入侧视图已由 guard 冻结并直传；贡献重绑时浅冻为下一
+	 * 步的只读视图，零深拷贝；返回收口在 guard 一次（copyMessages）。 */
 	async runTransformContext(messages: readonly ChatMsg[], scope?: RuntimeScopeFilter): Promise<ChatMsg[]> {
 		const handlers = this.hooksFor("turn.transformContext", scope);
 		if (handlers.length === 0) return [...messages];
 
-		let currentMessages = [...messages];
+		let currentMessages: readonly ChatMsg[] = messages;
 		for (const handler of handlers) {
 			try {
-				const res = (await handler(readonlySnapshot(currentMessages) as never)) as HookContributions["turn.transformContext"] | undefined;
+				const res = (await handler(currentMessages as never)) as HookContributions["turn.transformContext"] | undefined;
 				if (res?.messages) {
-					// 贡献里的元素允许是只读视图；归一化为可变 ChatMsg[] 是 host 的收口职责。
-					currentMessages = structuredClone(res.messages) as ChatMsg[];
+					currentMessages = Object.freeze(res.messages as ChatMsg[]);
 				}
 			} catch (err) {
 				this.emitError("turn.transformContext", err);
 			}
 		}
-		return currentMessages;
+		return currentMessages as ChatMsg[];
 	}
 
 	/**
@@ -240,13 +248,10 @@ export class ExtensionHost {
 
 		for (const handler of handlers) {
 			try {
-				const res = (await handler(readonlySnapshot({
-					prompt: input.prompt,
-					systemPrompt: currentPrompt,
-				}) as never)) as HookContributions["turn.prepare"] | undefined;
+				const res = (await handler(Object.freeze({ prompt: input.prompt, systemPrompt: currentPrompt }) as never)) as HookContributions["turn.prepare"] | undefined;
 				if (res) {
 					if (res.messages?.length) {
-						messages.push(...structuredClone(res.messages) as ChatMsg[]);
+						messages.push(...(res.messages as ChatMsg[]));
 						modified = true;
 					}
 					if (res.systemPrompt !== undefined) {
@@ -254,7 +259,7 @@ export class ExtensionHost {
 						modified = true;
 					}
 					if (res.model !== undefined) {
-						currentModel = structuredClone(res.model);
+						currentModel = res.model;
 						modified = true;
 					}
 					if (res.thinkingLevel !== undefined) {
@@ -284,7 +289,7 @@ export class ExtensionHost {
 	): Promise<boolean> {
 		for (const handler of this.hooksFor("turn.shouldStop", scope)) {
 			try {
-				const res = (await handler(readonlySnapshot(input) as never)) as HookContributions["turn.shouldStop"] | undefined;
+				const res = (await handler(input as never)) as HookContributions["turn.shouldStop"] | undefined;
 				if (res?.stop) return true;
 			} catch (err) {
 				this.emitError("turn.shouldStop", err);
@@ -305,16 +310,18 @@ export class ExtensionHost {
 		let current = { ...headers };
 		for (const handler of handlers) {
 			try {
-				const res = (await handler(readonlySnapshot({ provider, headers: current }) as never)) as HookContributions["provider.transformHeaders"] | undefined;
-				if (res?.headers) current = structuredClone(res.headers);
+				const res = (await handler({ provider, headers: current } as never)) as HookContributions["provider.transformHeaders"] | undefined;
+				if (res?.headers) current = res.headers;
 			} catch (err) {
 				this.emitError("provider.transformHeaders", err);
 			}
 		}
-		return structuredClone(current);
+		return current;
 	}
 
 	/** provider.transformPayload：链式——后一个收到前一个的输出，整组替换。 */
+	/** provider.transformPayload：链式——后一个收到前一个的输出，整组替换。
+	 * 纯聚合器（P1-3）：入侧视图已冻结、链步 shallow rebuild + 浅冻，零深拷贝。 */
 	async runTransformPayload(provider: string, payload: DeepReadonly<unknown>, scope?: RuntimeScopeFilter): Promise<unknown> {
 		const handlers = this.hooksFor("provider.transformPayload", scope);
 		if (handlers.length === 0) return payload;
@@ -322,15 +329,15 @@ export class ExtensionHost {
 		let current = payload;
 		for (const handler of handlers) {
 			try {
-				const res = (await handler(readonlySnapshot({ provider, payload: current }) as never)) as HookContributions["provider.transformPayload"] | undefined;
+				const res = (await handler(Object.freeze({ provider, payload: current }) as never)) as HookContributions["provider.transformPayload"] | undefined;
 				if (res !== undefined && res.payload !== undefined) {
-					current = copyValue(res.payload) as typeof current;
+					current = Object.freeze(res.payload) as typeof current;
 				}
 			} catch (err) {
 				this.emitError("provider.transformPayload", err);
 			}
 		}
-		return copyValue(current);
+		return current;
 	}
 
 	/** provider.observeResponse：观察点——响应已发生的审计，无返回值。 */
@@ -340,7 +347,7 @@ export class ExtensionHost {
 	): Promise<void> {
 		for (const handler of this.hooksFor("provider.observeResponse", scope)) {
 			try {
-				await handler(readonlySnapshot(input) as never);
+				await handler(input as never);
 			} catch (err) {
 				this.emitError("provider.observeResponse", err);
 			}

@@ -14,8 +14,14 @@ export function copyValue<T>(value: T): T {
 	return clone(value);
 }
 
+/** clone+freeze 单点边界（P1-3 规则成文）：所有 RuntimeHooks 出口在此统一
+ * 过 guard；幂等——已 guard 的实例二次包装零成本返回（Subject 与
+ * runner.runtimeHooks 旁路同权，不允许双重克隆）。 */
+const GUARDED = Symbol("guardedRuntimeHooks");
+
 export function guardRuntimeHooks(hooks: RuntimeHooks): RuntimeHooks {
 	if (hooks === NO_RUNTIME_HOOKS) return hooks;
+	if ((hooks as { [GUARDED]?: boolean })[GUARDED]) return hooks;
 	const guarded: RuntimeHooks = {
 		turn: Object.freeze({
 			prepare: async (input) => copyPrepare(await hooks.turn.prepare(readonlySnapshot(input))),
@@ -37,7 +43,8 @@ export function guardRuntimeHooks(hooks: RuntimeHooks): RuntimeHooks {
 			observe: (event: OutputEvent) => hooks.events.observe(readonlySnapshot(event)),
 			flush: () => hooks.events.flush(),
 		}),
-	};
+		[GUARDED]: true,
+	} as RuntimeHooks & { [GUARDED]?: boolean };
 	return Object.freeze(guarded);
 }
 

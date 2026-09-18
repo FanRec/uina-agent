@@ -24,6 +24,7 @@ import { ExtensionRegistry } from "./renderer-registry.js";
 import { ExtensionHost, type ExtensionEvent, type ExtensionEventHandler, type HookHandler } from "./host.js";
 import type { HookName } from "../runtime/hooks.js";
 import { createRuntimeHooks } from "./runtime-hooks.js";
+import { guardRuntimeHooks } from "../runtime/guard.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
 
 export interface ExtensionAPI {
@@ -403,9 +404,11 @@ export class ExtensionRunner extends ExtensionHost {
 		return [...active, ...failed];
 	}
 
-	/** Produces a dispatch view over this one Host; it never creates another owner. */
+	/** Produces a dispatch view over this one Host; it never creates another owner.
+	 * 所有出口统一过 guard（clone+freeze 单点）：Subject 与 runToolDirect/callTool
+	 * 旁路同权，host.run* 由此敢假设输入只读；guard 幂等，重复包装零成本。 */
 	runtimeHooks(scope?: readonly string[]): RuntimeHooks {
-		return createRuntimeHooks(this, scope);
+		return guardRuntimeHooks(createRuntimeHooks(this, scope));
 	}
 
 	private async activate(file: string): Promise<void> {
