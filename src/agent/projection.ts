@@ -1,6 +1,6 @@
 import type { AgentMessage, ChatMsg } from "../core/types.js";
 import { convertToLlm } from "./context.js";
-import { projectAgentHistory, type CanonicalState } from "../session/recovery.js";
+import { projectAgentHistory, protectRewindContext, type CanonicalState } from "../session/recovery.js";
 import type { SessionEntry } from "../session/types.js";
 
 /** Projects the ordered journal into the effective provider history. A
@@ -30,10 +30,22 @@ export interface ProjectionPolicy {
 /** 解析后的策略：两个字段均为现役实现（缺省回落默认，无静默空位）。 */
 export type ResolvedProjection = Required<ProjectionPolicy>;
 
+/** Core invariant（P2-B 升格，替代"默认路径 no-op 但自定义路径裸奔"的旧状）：
+ * 任何 journal→memory 投影不得擦除最新的已提交回溯事实——rewind notice 被裁掉
+ * 时主线会伪装成"从未回溯"。默认实现由 projectAgentHistory 内建同一规则
+ * （零开销，不双重包裹）；自定义 policy 一律经此装饰器。 */
+function protectCanonicalContinuity(
+	project: (entries: readonly SessionEntry[], state: CanonicalState) => AgentMessage[],
+): (entries: readonly SessionEntry[], state: CanonicalState) => AgentMessage[] {
+	return (entries, state) => protectRewindContext(project(entries, state), entries);
+}
+
 /** 默认解析单点：Subject 构造时调用；默认实现即本模块组合的两个自由函数。 */
 export function resolveProjectionPolicy(policy?: ProjectionPolicy): ResolvedProjection {
 	return {
-		projectHistory: policy?.projectHistory ?? ((entries) => projectAgentHistory(entries)),
+		projectHistory: policy?.projectHistory
+			? protectCanonicalContinuity(policy.projectHistory)
+			: (entries) => projectAgentHistory(entries),
 		convertToLlm: policy?.convertToLlm ?? ((messages, opts) => convertToLlm(messages, opts)),
 	};
 }

@@ -45,7 +45,9 @@ export interface CanonicalState {
 	allEntries: HydratedSessionEntry[];
 	queued: Map<string, QueuedInput>;
 	pendingCalls: PendingCall[];
-	finishedEvents: Map<string, { status: ToolResultStatus; result?: string }>;
+	/** tool_finished 只证明 execution terminal（P2-A B 方案裁定）：callId → 终态。
+	 * 结果文本由 tool message 承载，这里不复制（旧 result 字段已清算）。 */
+	finishedEvents: Map<string, ToolResultStatus>;
 	resultIds: Set<string>;
 	/** 记录身份幂等索引：reducer 拒绝重复记录 id；recovery identity 由本索引结构化管理。 */
 	recordIds: Set<string>;
@@ -272,6 +274,9 @@ function applyRewind(state: CanonicalState, record: SessionRewindRecord): void {
 	const entry = buildRewindCandidateEntry(state, record);
 	state.entries.splice(index + 1);
 	state.pendingCalls = [];
+	// 工具交换状态随主线截断重置（P2-A）：孤儿索引不跨回溯存活。
+	state.resultIds.clear();
+	state.finishedEvents.clear();
 	pushEntry(state, entry);
 }
 
@@ -347,10 +352,7 @@ function applyEvent(state: CanonicalState, record: SessionEventRecord): void {
 			return;
 		}
 		case "tool_finished":
-			state.finishedEvents.set(data.callId as string, {
-				status: data.status as ToolResultStatus,
-				result: typeof data.result === "string" ? data.result : undefined,
-			});
+			state.finishedEvents.set(data.callId as string, data.status as ToolResultStatus);
 			return;
 		case "turn_failed":
 		case "turn_aborted":
@@ -471,29 +473,25 @@ export function planRecovery(state: CanonicalState): RecoveryPlan {
 
 function recoveredToolMessage(
 	call: PendingCall,
-	finishedEvents: Map<string, { status: ToolResultStatus; result?: string }>,
+	finishedEvents: Map<string, ToolResultStatus>,
 ): AgentMessage {
 	const finished = finishedEvents.get(call.callId);
 	const status: ToolResultStatus =
-		finished?.status ?? (call.started ? "unknown" : "not_started");
-	const content = finished?.result ??
-		JSON.stringify({
-			error:
-				finished
-					? "工具结果记录不完整；外部副作用结果未知"
-					: status === "unknown"
-						? "工具已启动，但进程在结果提交前结束；结果未知"
-						: "工具调用在进程结束前尚未启动",
-			status: finished ? "unknown" : status,
-		});
-	const recoveredStatus =
-		finished && finished.result === undefined && finished.status !== "not_started"
-			? "unknown"
-			: status;
+		finished ?? (call.started ? "unknown" : "not_started");
+	// finished 存在 = execution terminal 已是权威事实（含"副作用已发生"的信息量）；
+	// 结果文本未随 message 落盘，content 如实说明未知。
+	const content = JSON.stringify({
+		error: finished
+			? "工具结果记录不完整；外部副作用结果未知"
+			: status === "unknown"
+				? "工具已启动，但进程在结果提交前结束；结果未知"
+				: "工具调用在进程结束前尚未启动",
+		status,
+	});
 	return {
 		role: "tool",
 		tool_call_id: call.callId,
-		status: recoveredStatus,
+		status,
 		content,
 	};
 }
