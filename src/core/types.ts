@@ -2,7 +2,6 @@ import type { ImageContent } from "./content.js";
 /** 跨层共享的公共类型：会话消息与模型协议形状。 */
 
 export type DeliveryMode = "direct" | "steer" | "followUp";
-export type QueueMode = "all" | "one-at-a-time";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ToolExecutionMode = "parallel" | "sequential";
 export type AssistantStatus = "complete" | "length" | "aborted" | "error";

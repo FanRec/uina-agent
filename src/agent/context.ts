@@ -12,7 +12,6 @@ export interface BuildInput {
 	history: readonly (AgentMessage | ChatMsg)[];
 	systemPrompt?: string;
 	includeThinking?: boolean;
-	runtimeInputs?: readonly { source: { kind: string; type: string; ref?: string }; text?: string; data?: unknown }[];
 	/** Replacement 缝：memory→provider 形塑（缺省 = convertToLlm 默认实现）。 */
 	convertToLlm?: (
 		messages: readonly (AgentMessage | ChatMsg)[],
@@ -115,10 +114,9 @@ export function convertToLlm(
 }
 
 export function buildContext(b: BuildInput): ChatMsg[] {
-	const baseSystem = b.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
-	const systemContent = b.runtimeInputs?.length
-		? `${baseSystem}\n\n<runtime_events>\n${b.runtimeInputs.map(formatRuntimeInput).join("\n")}\n</runtime_events>`
-		: baseSystem;
+	// 运行时事件不走 system 拼接：runtime input 经队列落为 runtime-input custom
+	// 消息进主线历史（projectInputMessage），由 convertToLlm 统一投影。
+	const systemContent = b.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
 
 	const toLlm = b.convertToLlm ?? convertToLlm;
 	const cleaned = toLlm(b.history, {
@@ -129,13 +127,6 @@ export function buildContext(b: BuildInput): ChatMsg[] {
 		{ role: "system", content: systemContent },
 		...cleaned,
 	];
-}
-
-function formatRuntimeInput(input: { source: { kind: string; type: string; ref?: string; provenance?: { branchId?: string; abandoned?: boolean } }; text?: string; data?: unknown }): string {
-	const prov = input.source.provenance?.abandoned ? " [来自废弃分支]" : "";
-	const source = `${input.source.kind}/${input.source.type}${input.source.ref ? `:${input.source.ref}` : ""}${prov}`;
-	const data = input.data === undefined ? "" : ` data=${JSON.stringify(input.data)}`;
-	return `[${source}] ${input.text ?? ""}${data}`;
 }
 
 /**

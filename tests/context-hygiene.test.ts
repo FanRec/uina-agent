@@ -6,27 +6,22 @@ import type { ChatMsg, ModelRequest, ModelStreamFn } from "../src/core/types.js"
 import { mockModel } from "./helpers/mock-provider.js";
 
 describe("Context Hygiene & Protocol Sanitization", () => {
-	it("embeds runtime events into system prompt and never produces trailing system messages", () => {
+	it("emits a single head system message and never a trailing one", () => {
 		const history: ChatMsg[] = [
 			{ role: "user", content: "hello" },
 			{ role: "assistant", content: "hi there" },
 			{ role: "user", content: "what is next?" },
 		];
-		const runtimeInputs = [
-			{ source: { kind: "watcher", type: "fs" }, text: "file.txt changed" },
-		];
 
 		const context = buildContext({
 			history,
 			systemPrompt: "You are Uina.",
-			runtimeInputs,
 		});
 
-		// First message is system and contains runtime events
+		// First message is system; runtime events ride the mainline as
+		// runtime-input custom messages, not system-prompt concatenation.
 		expect(context[0]?.role).toBe("system");
 		expect(context[0]?.content).toContain("You are Uina.");
-		expect(context[0]?.content).toContain("<runtime_events>");
-		expect(context[0]?.content).toContain("file.txt changed");
 
 		// Last message MUST NOT be a system message
 		expect(context.at(-1)?.role).toBe("user");

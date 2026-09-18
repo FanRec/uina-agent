@@ -73,10 +73,6 @@ export class Subject {
 	private activeRun?: Promise<void>;
 	private settleActiveRun?: () => void;
 	private resumingQueue = false;
-	private readonly queueModes: Record<"steer" | "followUp", import("../core/types.js").QueueMode> = {
-		steer: "one-at-a-time",
-		followUp: "one-at-a-time",
-	};
 	private model: Model;
 	private readonly streamFn: ModelStreamFn;
 	private thinkingLevel: ThinkingLevel;
@@ -802,18 +798,24 @@ export class Subject {
 		throw error;
 	}
 
+	/** 终态 assistant 消息的共用构造器（P2-F）：recordTerminalAssistant 与
+	 * settleToolExchange 组装同一组事实字段，仅落盘路径不同。 */
+	private buildAssistantMessage(result: StreamCollectorResult): AgentMessage {
+		return {
+			role: "assistant",
+			content: result.reply,
+			thinking: result.thinking || undefined,
+			thinkingSignature: result.thinkingSignature,
+			providerReplay: result.providerReplay,
+			...(result.toolCalls.length > 0 ? { tool_calls: result.toolCalls } : {}),
+			status: result.finishReason === "length" ? "length" : "complete",
+			usage: result.usage,
+		};
+	}
+
 	private async recordTerminalAssistant(result: StreamCollectorResult): Promise<void> {
 		if (result.reply.trim() || result.toolCalls.length > 0) {
-			await this.appendMessage({
-				role: "assistant",
-				content: result.reply,
-				thinking: result.thinking || undefined,
-				thinkingSignature: result.thinkingSignature,
-				providerReplay: result.providerReplay,
-				...(result.toolCalls.length > 0 ? { tool_calls: result.toolCalls } : {}),
-				status: result.finishReason === "length" ? "length" : "complete",
-				usage: result.usage,
-			});
+			await this.appendMessage(this.buildAssistantMessage(result));
 			for (const call of result.toolCalls) {
 				await this.appendMessage({
 					role: "tool",
@@ -826,18 +828,7 @@ export class Subject {
 	}
 
 	private async settleToolExchange(result: StreamCollectorResult): Promise<{ stopped: boolean }> {
-		const assistant: AgentMessage = {
-			role: "assistant",
-			content: result.reply,
-			thinking: result.thinking || undefined,
-			thinkingSignature: result.thinkingSignature,
-			providerReplay: result.providerReplay,
-			tool_calls: result.toolCalls.length > 0 ? result.toolCalls : undefined,
-			status: result.finishReason === "length" ? "length" : "complete",
-			usage: result.usage,
-			timestamp: new Date().toISOString(),
-		};
-		await this.appendMessage(assistant);
+		await this.appendMessage({ ...this.buildAssistantMessage(result), timestamp: new Date().toISOString() });
 		const results = await this.executeToolCalls(result.toolCalls);
 		for (const res of results) {
 			await this.appendMessage({
@@ -854,7 +845,7 @@ export class Subject {
 	}
 
 	private async drainQueuedInputs(mode: "steer" | "followUp"): Promise<boolean> {
-		const items = this.queues.peekMany(mode, this.queueModes[mode]);
+		const items = this.queues.peekMany(mode);
 		if (items.length === 0) return false;
 		// Claim all items synchronously before the first await so none of them can be
 		// restored to the editor while a previous item is being persisted.

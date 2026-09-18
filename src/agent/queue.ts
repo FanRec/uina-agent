@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { DeliveryMode, QueueMode } from "../core/types.js";
+import type { DeliveryMode } from "../core/types.js";
 import type { QueuedInput } from "../session/types.js";
 
 export type QueuedMessage = QueuedInput;
@@ -9,12 +9,6 @@ export class InputQueues {
 	private readonly enqueuedAt = new Map<string, number>();
 	private readonly steer: QueuedMessage[] = [];
 	private readonly followUp: QueuedMessage[] = [];
-
-	enqueue(text: string, mode: Exclude<DeliveryMode, "direct">, extra: Pick<QueuedMessage, "source" | "data" | "images"> = {}): QueuedMessage {
-		const item = this.create(text, mode, extra);
-		this.add(item);
-		return item;
-	}
 
 	create(text: string, mode: Exclude<DeliveryMode, "direct">, extra: Pick<QueuedMessage, "source" | "data" | "images"> = {}): QueuedMessage {
 		return {
@@ -43,9 +37,8 @@ export class InputQueues {
 		return this.queueFor(mode)[0];
 	}
 
-	peekMany(mode: Exclude<DeliveryMode, "direct">, queueMode: QueueMode): QueuedMessage[] {
-		const queue = this.queueFor(mode);
-		return queueMode === "all" ? [...queue] : queue.slice(0, 1);
+	peekMany(mode: Exclude<DeliveryMode, "direct">): QueuedMessage[] {
+		return [...this.queueFor(mode)];
 	}
 
 	seed(items: readonly QueuedMessage[]): void {
