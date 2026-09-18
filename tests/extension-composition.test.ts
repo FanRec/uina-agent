@@ -14,7 +14,7 @@ import type { Model, ModelStreamFn } from "../src/core/types.js";
 const directories: string[] = [];
 const runners: ExtensionRunner[] = [];
 
-/** P6c：compaction capability 的 /compact 事实出口测试的模型装配。 */
+/** compaction capability 的 /compact 事实出口测试的模型装配。 */
 const compactionModel = (): Model => mockModel({ id: "mock", name: "mock", contextWindow: 50_000 });
 const summarizingStream = (summary: string | Error): { stream: ModelStreamFn; summaryCalls: () => number } => {
 	let calls = 0;

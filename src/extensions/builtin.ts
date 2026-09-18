@@ -168,8 +168,9 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		} else {
 			process.stdout.write(`\n[会话压缩] ${e.summary}\n`);
 		}
-		// 压缩换掉了历史：用量表立即按估算刷新，并标注为非真实（保留尾巴是字符估算）。
-		refreshUsageMeter();
+		// 压缩只裁剪请求上下文，不替换 Subject 历史：usage 缓存仍是上一次请求的
+		// 真实测量。不在事件里刷新——用旧真值标"估算"才是误导；等下一次
+		// Provider usage_update 自然更新。
 	});
 
 	pi.on("session_compact_failed", (e) => {

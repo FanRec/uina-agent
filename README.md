@@ -345,7 +345,7 @@ git diff | uina "总结这次改动"          # 管道内容作为上下文
 
 ## 会话与回溯
 
-会话逐条追加写入 `session.jsonl`：首行是 header，之后每行是消息、压缩或生命周期事件，写入即 flush。
+会话逐条追加写入 `session.jsonl`：首行是 header，之后每行是消息、回溯或生命周期事件，写入即 flush。
 
 启动时重放日志。末行若是未完成的写入会被原子修复；中间记录损坏则拒绝启动。工具已启动但没有完成记录时，恢复为 `unknown`，不推断为成功。
 
@@ -353,7 +353,7 @@ git diff | uina "总结这次改动"          # 管道内容作为上下文
 
 ## 扩展
 
-项目扩展放在工作目录的 `.uina/extensions/`，在默认导出的 `activate(api)` 里注册工具、命令、服务或压缩策略：
+项目扩展放在工作目录的 `.uina/extensions/`，在默认导出的 `activate(api)` 里注册工具、命令、服务或上下文裁剪策略（`turn.transformContext` 链）：
 
 ```ts
 export default function activate(api) {
@@ -376,11 +376,11 @@ src/
   main.ts        进程入口
   cli/           组合根：建宿主、接一个消费者、处理信号与退出
   host/          主体生命周期所有者，对外只有输入入口与事件流
-  agent/         前台循环、上下文投影、压缩、steer / followUp 队列
+  agent/         前台循环、上下文投影、steer / followUp 队列
   ai/            配置、provider 适配、wire 转换、SSE 解析
   session/       JSONL 追加日志、恢复、损坏尾行修复
   tools/         工具注册、schema 校验与执行
-  extensions/    扩展契约、加载、内置能力（运行时工具 / 任务 / 子智能体）
+  extensions/    扩展契约、加载、内置能力（运行时工具 / 任务 / 子智能体 / 压缩）
   ui/            终端消费者：渲染、输入、焦点、组件组合
   core/          跨层类型
 docs/            运行时事实、提案与历史审查

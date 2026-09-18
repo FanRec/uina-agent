@@ -1,5 +1,5 @@
 /**
- * P3a replay ≡ memory 不变量守卫（执行稿 v6：全量 fold 抽查对照机器化）。
+ * replay ≡ memory 不变量守卫：全量 fold 抽查对照机器化。
  * 常驻 canonical 状态（增量 reduceRecord 维护）必须与从头 canonicalReplay
  * 折叠严格一致；planRecovery 必须前缀安全 + 幂等（结构保证而非算法自觉）。
  */

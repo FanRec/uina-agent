@@ -2647,15 +2647,10 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				collapsed: true,
 			});
 
-			// 压缩换了历史，底栏的占用与分段必须当场刷新，而不是等下一次 turn_end。
-			// 接口已收敛为单对象参数（UsageSnapshot）：字段名自描述，同形异义的位置
-			// 参数漂移（segments 落进 actual 位）无从发生。这里锁字段语义。
-			expect(setUsageCalls.length).toBeGreaterThan(0);
-			const lastCall = setUsageCalls[setUsageCalls.length - 1]! as { used: number; contextWindow?: number; actual?: boolean; segments?: unknown };
-			expect(typeof lastCall.used).toBe("number");
-			expect(typeof lastCall.contextWindow).toBe("number");
-			expect(lastCall.actual).toBe(false); // 保留尾巴是估算值，不能标成真实
-			expect(lastCall.segments).toBeDefined(); // 分段必须真的送到
+			// 压缩只裁剪请求上下文，不替换 Subject 历史：session_compact 不触发
+			// 用量刷新——usage 缓存仍是上一次请求的真实测量，等下一次 Provider
+			// usage_update 自然更新（用旧真值标"估算"才是误导）。
+			expect(setUsageCalls.length).toBe(0);
 
 			// 3. 触发 session_compact_failed
 			const failedHandler = handlers.get("session_compact_failed");

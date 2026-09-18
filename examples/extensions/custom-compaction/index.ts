@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "../../../src/extensions/index.js";
 /**
- * P6c 后压缩（上下文窗口管理）由官方 compaction capability 在
+ * 压缩（上下文窗口管理）由官方 compaction capability 在
  * turn.transformContext 每请求拥有；本示例演示扩展在同一条 Interceptor 链上
  * 提供自己的裁剪策略（与官方 capability 链式组合：后激活者收到前者的输出）。
  * 这里不做 LLM 摘要——只折叠中段历史，保留头部任务陈述与最近工作。

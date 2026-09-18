@@ -1,5 +1,5 @@
 /**
- * 自动压缩语义切换（P6b）：上下文窗口管理归 official compaction capability，
+ * 自动压缩语义：上下文窗口管理归 official compaction capability，
  * 经 turn.transformContext 每请求裁剪——journal 保留全量历史，Subject 内存
  * 视图不被自动截断，摘要以 uina.compaction.summary custom entry 持久化。
  *

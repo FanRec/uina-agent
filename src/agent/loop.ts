@@ -168,8 +168,9 @@ export class Subject {
 	}
 
 	/**
-	 * 历史被整体替换（压缩 / 回溯）后必须调用：两个 usage 缓存都不再描述当前历史。
-	 * 调用点必须排在广播之前 —— session_compact 的监听者会同步读 getUsedTokens()，
+	 * 当前 model 的计量口径失效（setModel），或 canonical history 被真正替换
+	 * （回溯提交）时清除：两个 usage 缓存都不再描述当前事实。
+	 * 调用点必须排在广播之前 —— 回溯事件的监听者会同步读 getUsedTokens()，
 	 * 清晚了它拿到的还是替换前的旧真值（底栏数字不动、只多一个 ~）。
 	 */
 	private forgetUsage(): void {

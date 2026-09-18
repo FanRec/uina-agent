@@ -18,7 +18,7 @@
  * - 裁剪边界与摘要覆盖在同一处理点用同一预算函数计算——覆盖不足时
  *   当场补生成（罕见路径，等价旧"回合内暴涨"压缩），构造上无未摘要间隙。
  * - 摘要持久化为 uina.compaction.summary custom entry（Auxiliary 数据，
- *   私有持久态），重启后从 pi.history() 重载。
+ *   私有持久态），重启后从 pi.auxiliary() 重载。
  */
 import { CHARS_PER_TOKEN } from "../../agent/context.js";
 import type { HydratedSessionEntry } from "../../session/types.js";
