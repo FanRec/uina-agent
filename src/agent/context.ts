@@ -1,4 +1,3 @@
-import { imageNotice } from "../core/content.js";
 import type { AgentMessage, ChatMsg, ContextSegments, ToolDef, Usage } from "../core/types.js";
 
 /**
@@ -248,16 +247,6 @@ export function estimateContextTokens(
 		tokens: tokens + estimateRequestTokens(trailing, options.tools, options.includeThinking),
 		actual: anchor >= 0 && trailing.length === 0 && exact,
 	};
-}
-
-export function formatForSummary(message: AgentMessage | ChatMsg): string {
-	if (message.role === "assistant" && message.tool_calls) {
-		return `thinking=${message.thinking ?? ""} tool_calls=${JSON.stringify(message.tool_calls)} ${message.content}`;
-	}
-	if (message.role === "compactionSummary") {
-		return `[历史摘要] ${message.summary}`;
-	}
-	return message.content + imageNotice(message.images);
 }
 
 /**

@@ -30,7 +30,7 @@ function isInsideGitRepo(dir: string): boolean {
 
 export const MAX_MATCHES = 100;
 export const MAX_OUTPUT_BYTES = 50 * 1024;
-export const MAX_LINE_LENGTH = 500;
+const MAX_LINE_LENGTH = 500;
 
 export interface SearchMatch {
 	file: string;

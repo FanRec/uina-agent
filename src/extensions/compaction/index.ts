@@ -26,7 +26,7 @@ import type { RuntimeEvent } from "../../runtime/events.js";
 import type { ExtensionAPI } from "../runner.js";
 
 /** 摘要持久化的命名空间（数据模型原则：私有持久态走 custom entry）。 */
-export const SUMMARY_ENTRY_TYPE = "uina.compaction.summary";
+const SUMMARY_ENTRY_TYPE = "uina.compaction.summary";
 
 /** 触发阈值与目标窗口的保留量（对齐旧 DEFAULT_COMPACTION_SETTINGS.reserveTokens；
  * 同时吸收摘要消息本身的开销）。 */
@@ -69,7 +69,7 @@ export function estimateStreamTokens(messages: readonly StreamMessageView[]): nu
  * 整流放得下返回 null。保护 leading system 消息；不把工具结果与其调用拆开
  * （边界落在 tool 结果或带调用的 assistant 上时向前越过硬边界）。
  */
-export function findTrimBoundary(messages: readonly StreamMessageView[], budgetTokens: number): number | null {
+function findTrimBoundary(messages: readonly StreamMessageView[], budgetTokens: number): number | null {
 	if (estimateStreamTokens(messages) <= budgetTokens) return null;
 	let acc = 0;
 	let keepFrom = messages.length;
@@ -97,7 +97,7 @@ export function findTrimBoundary(messages: readonly StreamMessageView[], budgetT
 
 /** 裁剪后的请求流：leading system 原位保留，摘要紧随其后（与 convertToLlm 对
  * compactionSummary 的渲染同构），再接预算内尾部。 */
-export function renderTrimmed<T extends StreamMessageView>(
+function renderTrimmed<T extends StreamMessageView>(
 	messages: readonly T[],
 	boundary: number,
 	summaries: readonly string[],
@@ -122,7 +122,7 @@ function transcript(messages: readonly StreamMessageView[]): string {
 }
 
 /** 从 journal 的 custom entry 重载滚动摘要（取 seq 最新的一条）。 */
-export function loadSummary(entries: readonly HydratedSessionEntry[]): RollingSummary | undefined {
+function loadSummary(entries: readonly HydratedSessionEntry[]): RollingSummary | undefined {
 	let latest: RollingSummary | undefined;
 	for (const entry of entries) {
 		if (entry.kind !== "custom_entry" || entry.customType !== SUMMARY_ENTRY_TYPE) continue;

@@ -4,7 +4,7 @@ import type { AgentMessage, ChatMsg, ToolAgentMessage, ToolEffect } from "./type
  * 结果 details 里声明通用效果事实，Core/Session/默认压缩器都经由这里读取，
  * 保证"声明在工具、读取用同一契约"不漂移。Core 不解释 effectType 语义。
  */
-export function isToolEffect(value: unknown): value is ToolEffect {
+function isToolEffect(value: unknown): value is ToolEffect {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 	const candidate = value as Record<string, unknown>;
 	return (

@@ -21,7 +21,7 @@ export interface StreamCollectorOptions {
 	onUsage?: (usage: Usage) => void;
 }
 
-export function parseToolArgs(text: string): { value: unknown; valid: boolean } {
+function parseToolArgs(text: string): { value: unknown; valid: boolean } {
 	try {
 		const value = JSON.parse(text || "{}");
 		return {
