@@ -10,9 +10,7 @@ import { sanitizeRenderText } from "../../format.js";
 import type { Component } from "../../core/types.js";
 import type {
 	CustomMessage,
-	CustomEntry,
 	MessageRenderer,
-	EntryRenderer,
 } from "../../../extensions/ui-contract.js";
 
 /* ------------------------------------------------------------------ */
@@ -275,17 +273,3 @@ export class CustomMessageComponent extends BaseCustomComponent<CustomMessage, M
 	}
 }
 
-export class CustomEntryComponent extends BaseCustomComponent<CustomEntry, EntryRenderer> {
-	protected renderFallback(w: number): string[] {
-		const tag = `[条目: ${this.item.customType}]`;
-		let preview = "(无附带数据)";
-		if (this.item.data !== undefined) {
-			try {
-				preview = sanitizeRenderText(JSON.stringify(this.item.data) ?? "null");
-			} catch {
-				preview = "[无法序列化的数据]";
-			}
-		}
-		return [`  ${C.gray}◈ ${C.cyan}${tag}${C.reset} ${truncateToWidth(preview, Math.max(10, w - 20))}`];
-	}
-}

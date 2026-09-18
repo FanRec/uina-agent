@@ -9,7 +9,6 @@ export type {
 	CustomMessage,
 	CustomEntry,
 	MessageRenderer,
-	EntryRenderer,
 } from "./ui-contract.js";
 export type { Model, ModelRequest, Provider, ChatMsg, AgentMessage, ToolResultStatus } from "../core/types.js";
 export type { ImageContent } from "../core/content.js";

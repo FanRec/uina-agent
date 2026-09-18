@@ -46,7 +46,7 @@ export interface CustomMessage<T = unknown> {
 	details?: T;
 }
 
-/** 自定义条目：仅用于会话持久化与终端呈现，不参与模型上下文 */
+/** 自定义条目：仅用于 capability 私有持久化（auxiliary），不参与模型上下文与呈现 */
 export interface CustomEntry<T = unknown> {
 	customType: string;
 	data?: T;
@@ -56,18 +56,9 @@ export interface MessageRenderOptions {
 	expanded?: boolean;
 }
 
-export interface EntryRenderOptions {
-	expanded?: boolean;
-}
-
 export type MessageRenderer<T = unknown> = (
 	message: CustomMessage<T>,
 	options: MessageRenderOptions,
-) => Component | undefined;
-
-export type EntryRenderer<T = unknown> = (
-	entry: CustomEntry<T>,
-	options: EntryRenderOptions,
 ) => Component | undefined;
 
 /** 斜杠命令定义 */

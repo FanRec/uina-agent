@@ -375,7 +375,6 @@ export class UIHost implements UIHostContextPort {
 		this.transcript.smoothReveal.setOnTick(() => this.updateHeartbeat());
 		this.transcript.setRendererResolver({
 			message: (type) => this.registry.getMessageRenderer(type),
-			entry: (type) => this.registry.getEntryRenderer(type),
    tool: (name) => this.registry.getToolRenderer(name),
    markdown: (text, context) => this.registry.transformMarkdown(text, context),
 		});

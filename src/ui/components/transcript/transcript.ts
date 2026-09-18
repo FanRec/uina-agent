@@ -19,10 +19,9 @@ import {
 	formatCompactionCardLines,
 	type CompactionRecord,
 	CustomMessageComponent,
-	CustomEntryComponent,
 } from "./cards.js";
 import { SmoothRevealController } from "./smooth-reveal.js";
-import type { CustomMessage, CustomEntry, MessageRenderer, EntryRenderer, ToolRenderer, MarkdownTransformer } from "../../../extensions/ui-contract.js";
+import type { CustomMessage, MessageRenderer, ToolRenderer, MarkdownTransformer } from "../../../extensions/ui-contract.js";
 
 export interface ToolRecord {
 	name: string;
@@ -155,8 +154,7 @@ export type TimelineItem =
 	| { kind: "notice"; text: string }
 	| { kind: "compaction"; record: CompactionRecord }
 	| { kind: "customMessage"; message: CustomMessage }
-	| { kind: "customEntry"; entry: CustomEntry };
-
+;
 /** One settled turn rendered as a self-contained block. Location indices are
  * block-relative; the assembler rebases them onto the final line array. */
 interface TurnBlock {
@@ -414,11 +412,9 @@ export class TranscriptContainer implements Component {
   catch (error) { return text + '\n[markdown renderer: ' + String(error) + ']'; }
  }
  private messageRenderer: (type: string) => MessageRenderer | undefined = () => undefined;
-	private entryRenderer: (type: string) => EntryRenderer | undefined = () => undefined;
 
-	setRendererResolver(resolve: { message(type: string): MessageRenderer | undefined; entry(type: string): EntryRenderer | undefined; tool?(name: string): ToolRenderer | undefined; markdown?: MarkdownTransformer }): void {
+	setRendererResolver(resolve: { message(type: string): MessageRenderer | undefined; tool?(name: string): ToolRenderer | undefined; markdown?: MarkdownTransformer }): void {
 		this.messageRenderer = resolve.message;
-		this.entryRenderer = resolve.entry;
   this.toolRenderer = resolve.tool ?? (() => undefined);
   this.markdownTransformer = resolve.markdown ?? (text => text);
 		this.invalidate();
@@ -542,11 +538,6 @@ export class TranscriptContainer implements Component {
 		this.invalidate();
 	}
 
-	addCustomEntry(entry: CustomEntry): void {
-		this.timeline.push({ kind: "customEntry", entry });
-		this.invalidate();
-	}
-
 	addNotice(text: string): void {
 		const formatted = `  ${C.blue}ℹ ${text}${C.reset}`;
 		this.timeline.push({ kind: "notice", text: formatted });
@@ -644,17 +635,6 @@ export class TranscriptContainer implements Component {
 						customType: entry.customType,
 						content: entry.content,
 						...(entry.details === undefined ? {} : { details: entry.details }),
-					},
-				});
-				continue;
-			}
-			if (entry.kind === "custom_entry") {
-				commit();
-				this.timeline.push({
-					kind: "customEntry",
-					entry: {
-						customType: entry.customType,
-						...(entry.data === undefined ? {} : { data: entry.data }),
 					},
 				});
 				continue;
@@ -983,11 +963,6 @@ export class TranscriptContainer implements Component {
 					break;
 				case "customMessage": {
 					const comp = new CustomMessageComponent(item.message, this.messageRenderer(item.message.customType));
-					blocks.push({ kind: "static", lines: comp.render(width) });
-					break;
-				}
-				case "customEntry": {
-					const comp = new CustomEntryComponent(item.entry, this.entryRenderer(item.entry.customType));
 					blocks.push({ kind: "static", lines: comp.render(width) });
 					break;
 				}

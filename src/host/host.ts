@@ -244,6 +244,7 @@ export class UinaHost {
 			setThinkingLevel: (level) => subject.setThinkingLevel(level),
 			isBusy: () => subject.isBusy(),
 			history: () => store.state.entries,
+			auxiliary: () => store.state.auxiliary,
 			emitRuntimeEvent: (event) => extensionHost.runtimeHooks().events.emit(event),
 			reload: () => hostSelf.reloadExtensions(),
 			shutdown: () => hostSelf.requestShutdown?.() ?? hostSelf.dispose(),

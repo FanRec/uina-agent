@@ -1,9 +1,8 @@
 import { Registrations } from "../core/registrations.js";
-import type { EntryRenderer, LocalCommand, MessageRenderer, ToolRenderer, MarkdownTransformer } from "./ui-contract.js";
+import type { LocalCommand, MessageRenderer, ToolRenderer, MarkdownTransformer } from "./ui-contract.js";
 /** Shared presentation registry. Changes invalidate cached transcript projections. */
 export class ExtensionRegistry {
 	private readonly messageRenderers = new Registrations<MessageRenderer>();
-	private readonly entryRenderers = new Registrations<EntryRenderer>();
 	private readonly toolRenderers = new Registrations<ToolRenderer>();
 	private readonly markdown = new Registrations<MarkdownTransformer>();
 	private readonly commands = new Registrations<LocalCommand>();
@@ -34,16 +33,6 @@ export class ExtensionRegistry {
 	}
 	getMessageRenderer(type: string): MessageRenderer | undefined {
 		return this.messageRenderers.get(type);
-	}
-	registerEntryRenderer<T = unknown>(
-		type: string,
-		renderer: EntryRenderer<T>,
-		options?: { replace?: boolean },
-	): () => void {
-		return this.register(this.entryRenderers, type, renderer as EntryRenderer, options);
-	}
-	getEntryRenderer(type: string): EntryRenderer | undefined {
-		return this.entryRenderers.get(type);
 	}
 	registerToolRenderer(name: string, renderer: ToolRenderer, options?: { replace?: boolean }): () => void {
 		return this.register(this.toolRenderers, name, renderer, options);

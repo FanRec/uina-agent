@@ -413,12 +413,13 @@ describe("JSONL session", () => {
 		await opened.store.close();
 
 		const reopened = await openJsonlSession(path);
+		// custom_entry 是 Auxiliary：journal 序保留，主线 entries 不含。
 		expect(reopened.snapshot.entries.map((entry) => entry.kind)).toEqual([
 			"message",
 			"custom_message",
 			"message",
-			"custom_entry",
 		]);
+		expect(reopened.store.state.auxiliary.map((record) => (record as { customType?: string }).customType)).toEqual(["ui-only"]);
 		expect(projectModelHistory(reopened.snapshot.entries).map((message) => message.content)).toEqual(["A", "C", "B"]);
 		await reopened.store.close();
 	});

@@ -60,7 +60,7 @@ describe("replay ≡ memory invariants", () => {
 		assertReplayEqualsMemory(store);
 		await store.appendEvent("turn_aborted", { turn: 4 });
 		assertReplayEqualsMemory(store);
-		expect(store.state.auxiliary.map((record) => record.event)).toEqual(["turn_failed", "turn_aborted"]);
+		expect(store.state.auxiliary.filter((r): r is import("../src/session/types.js").SessionEventRecord => r.kind === "event").map((record) => record.event)).toEqual(["turn_failed", "turn_aborted"]);
 
 		// 回溯：合法目标 + 增量 safeTargets 查询一致
 		const fromId = store.state.entries.at(-1)!.id;

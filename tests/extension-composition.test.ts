@@ -35,6 +35,7 @@ const bigHistory = (): { role: "user" | "assistant"; content: string }[] =>
 		index % 2 === 0 ? { role: "user" as const, content: `问${index} ${"词".repeat(3_000)}` } : { role: "assistant" as const, content: `答${index} ${"词".repeat(3_000)}` },
 	);
 const compactionHost = (cwd: string, stream: ModelStreamFn) => {
+	const auxiliary: import("../src/session/types.js").SessionCustomEntryRecord[] = [];
 	let value!: ExtensionRunner;
 	value = runner(cwd, {
 		models: {
@@ -49,9 +50,14 @@ const compactionHost = (cwd: string, stream: ModelStreamFn) => {
 		} as never,
 		// capability 的 anchorId 取主线头 entry id；无 journal 的纯扩展层测试给一条合成主线头。
 		history: () => [{ kind: "message", id: "head", seq: 1, timestamp: "", message: { role: "user", content: "head" } }] as never,
+		// capability 私有持久状态（uina.compaction.summary）的落点：auxiliary timeline。
+		auxiliary: () => auxiliary,
 		// pi.emitEvent 的装配：capability 事实进扩展事件总线（同宿主真实装配）。
 		emitRuntimeEvent: (event) => value.emit(event),
-		onCustomEntry: async () => {},
+		onCustomEntry: async (entry) => {
+			// 模拟宿主 journal 语义：custom_entry 落 auxiliary timeline（非主线）。
+			auxiliary.push({ kind: "custom_entry", id: `aux-${auxiliary.length + 1}`, seq: auxiliary.length + 1, timestamp: "", customType: entry.customType, data: entry.data });
+		},
 	});
 	return value;
 };
@@ -244,7 +250,6 @@ describe("extension composition", () => {
 		const transcript = new TranscriptContainer();
 		transcript.setRendererResolver({
 			message: (t) => host.registry.getMessageRenderer(t),
-			entry: (t) => host.registry.getEntryRenderer(t),
 			tool: (n) => host.registry.getToolRenderer(n),
 			markdown: (text, ctx) => host.registry.transformMarkdown(text, ctx),
 		});

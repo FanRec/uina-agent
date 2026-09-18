@@ -121,12 +121,12 @@ function transcript(messages: readonly StreamMessageView[]): string {
 	return lines.join("\n");
 }
 
-/** 从 journal 的 custom entry 重载滚动摘要（取 seq 最新的一条）。 */
-function loadSummary(entries: readonly HydratedSessionEntry[]): RollingSummary | undefined {
+/** 从 auxiliary timeline 的私有 custom entry 重载滚动摘要（取 seq 最新的一条）。 */
+function loadSummary(auxiliary: readonly { kind: string; customType?: string; data?: unknown; seq?: number }[]): RollingSummary | undefined {
 	let latest: RollingSummary | undefined;
-	for (const entry of entries) {
-		if (entry.kind !== "custom_entry" || entry.customType !== SUMMARY_ENTRY_TYPE) continue;
-		const data = entry.data as RollingSummary | undefined;
+	for (const record of auxiliary) {
+		if (record.kind !== "custom_entry" || record.customType !== SUMMARY_ENTRY_TYPE) continue;
+		const data = record.data as RollingSummary | undefined;
 		if (data && typeof data.summary === "string" && typeof data.coveredUpTo === "number" && typeof data.anchorId === "string") {
 			latest = { summary: data.summary, coveredUpTo: data.coveredUpTo, anchorId: data.anchorId };
 		}
@@ -196,9 +196,10 @@ export default function activateCompaction(pi: ExtensionAPI): void {
 		}
 
 		const entries = pi.history();
-		// 重启恢复：journal 里的滚动摘要只在本次激活内加载一次。
+		// 重启恢复：journal 里的滚动摘要只在本次激活内加载一次（私有状态走 auxiliary，
+		// 与 canonical 主线分离——锚语义要求主线头 id 来自 history() 而非私有记录）。
 		if (!reloaded) {
-			cached = loadSummary(entries);
+			cached = loadSummary(pi.auxiliary());
 			reloaded = true;
 		}
 		if (!cached || !summaryValid(cached, entries, boundary, messages.length)) {

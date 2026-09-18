@@ -34,9 +34,6 @@ function formatNodePreview(entry: SessionEntry): string {
 		case "compaction":
 			text = entry.summary;
 			break;
-		case "custom_entry":
-			text = entry.customType;
-			break;
 	}
 	return (text ?? "").slice(0, 160);
 }

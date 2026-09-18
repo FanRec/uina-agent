@@ -5,6 +5,7 @@ import type {
 	AbandonedEffects,
 	HydratedSessionEntry,
 	QueuedInput,
+	SessionCustomEntryRecord,
 	SessionEntry,
 	SessionEntryPayload,
 	SessionEventRecord,
@@ -50,8 +51,9 @@ export interface CanonicalState {
 	recordIds: Set<string>;
 	/** 派生查询：主线上可安全回溯的目标（完整工具交换处的持久化节点）。 */
 	safeTargets: Set<string>;
-	/** auxiliary timeline：仅登记、不解释的记录。 */
-	auxiliary: SessionEventRecord[];
+	/** auxiliary timeline：仅登记、不解释的记录（auxiliary event + capability
+	 * 私有 custom_entry——后者是 capability durable state，非对话事实）。 */
+	auxiliary: (SessionEventRecord | SessionCustomEntryRecord)[];
 	// ---- safeTargets 增量维护的游标（reducer 内部状态，非公共语义）----
 	openCallIds: Set<string>;
 	settlementInvalid: boolean;
@@ -79,8 +81,9 @@ export function initialCanonicalState(): CanonicalState {
 // reducer 的语义效果：CanonicalRecord 改变 semantic state；AuxiliaryRecord 仅
 // 登记 auxiliary timeline——内存 timeline 同步由 applyRecord 统一完成。
 // 分类成文于 applyRecord/applyEvent 的分派 switch（唯一执行点）：
-// turn_failed/turn_aborted 仅登记；custom_entry 现仍解释进 session 条目
-// （P3a 起成文保留，P6 数据模型裁定时收口为仅登记）。
+// turn_failed/turn_aborted 与 custom_entry 仅登记（custom_entry = capability
+// 私有持久状态，P6 数据模型裁定收口；同属 Auxiliary，checkRecord 豁免
+// ensureSettled——未决调用期间写私有状态无害且不制造恢复歧义）。
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -109,9 +112,12 @@ export function checkRecord(state: CanonicalState, record: SessionRecord): void 
 		case "event":
 			return checkEvent(state, record);
 		case "custom_message":
-		case "custom_entry":
 			ensureSettled(state, record.kind);
 			// schema 已由 isRecord 把关，语义上无条件接受。
+			return;
+		case "custom_entry":
+			// Auxiliary（capability 私有状态）：与 turn_failed/turn_aborted 同类豁免
+			// ——未决调用期间写私有状态不改变对话事实，也不制造恢复歧义。
 			return;
 		case "compaction":
 			ensureSettled(state, record.kind);
@@ -254,11 +260,10 @@ export function applyRecord(state: CanonicalState, record: SessionRecord): void 
 				...(record.details === undefined ? {} : { details: record.details }),
 			});
 		case "custom_entry":
-			return addEntry(state, record, {
-				kind: "custom_entry",
-				customType: record.customType,
-				...(record.data === undefined ? {} : { data: record.data }),
-			});
+			// Auxiliary：capability 私有持久状态，仅登记——不进主线/全历史/安全目标
+			// （数据模型裁定 P6 收口落地：私有状态不定义对话事实，不构成回溯语义节点）。
+			state.auxiliary.push(record);
+			return;
 		case "message":
 			return applyMessage(state, record);
 		case "compaction":

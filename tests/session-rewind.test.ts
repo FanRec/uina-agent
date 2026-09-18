@@ -22,6 +22,7 @@ async function capabilitySubject(store: MemorySessionStore, model: ReturnType<ty
 		tools: new ToolBroker(),
 		models: { current: () => model, list: () => [model], groups: () => [], resolve: () => model, select: async () => {}, stream },
 		history: () => store.state.entries,
+		auxiliary: () => store.state.auxiliary,
 		emitRuntimeEvent: (event) => hooks!.events.emit(event),
 		onCustomEntry: (entry) => store.appendCustomEntry(entry),
 	});

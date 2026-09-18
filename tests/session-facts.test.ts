@@ -74,7 +74,9 @@ describe("S1 durable session facts", () => {
 		await reopened.store.close();
 		expect(projectAgentHistory(reopened.snapshot.entries).slice(1)).toEqual(tail);
 		expect(JSON.stringify(projectModelHistory(reopened.snapshot.entries))).not.toContain("not model content");
-		expect(reopened.snapshot.entries[0]?.kind).toBe("custom_entry");
+		// custom_entry 是 Auxiliary：不进主线 entries，只登记在 auxiliary timeline。
+		expect(reopened.snapshot.entries.some((entry) => (entry as { kind: string }).kind === "custom_entry")).toBe(false);
+		expect(reopened.store.state.auxiliary.some((record) => record.kind === "custom_entry" && record.customType === "private")).toBe(true);
 	});
 
 	it.each(["user", "runtime"] as const)("gives %s input one owner before and after its commit", async kind => {

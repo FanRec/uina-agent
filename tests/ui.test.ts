@@ -36,7 +36,6 @@ import {
 	GUTTER_FIRST,
 	GUTTER_REST,
 	CustomMessageComponent,
-	CustomEntryComponent,
 	TranscriptContainer,
 } from "../src/ui/components/transcript/index.js";
 import {
@@ -246,28 +245,6 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 		expect(rendered).toContain("/history");
 	});
 
-	it("CustomEntryComponent 支持动态注册的 EntryRenderer 与默认兜底", () => {
-		const registry = new ExtensionRegistry();
-
-		const compDefault = new CustomEntryComponent({
-			customType: "meta:run",
-			data: { runId: 123 },
-		});
-		const renderedDefault = compDefault.render(80);
-		expect(renderedDefault.join("\n")).toContain("[条目: meta:run]");
-		expect(renderedDefault.join("\n")).toContain('"runId":123');
-
-		registry.registerEntryRenderer("meta:run", (entry) => ({
-			render: () => [`Custom Entry: ${JSON.stringify(entry.data)}`],
-		}));
-
-		const compCustom = new CustomEntryComponent(
-			{ customType: "meta:run", data: { runId: 123 } },
-			registry.getEntryRenderer("meta:run"),
-		);
-		expect(compCustom.render(80)).toEqual(['Custom Entry: {"runId":123}']);
-	});
-
 	it("从单一 session entry 流按原顺序恢复消息、扩展内容和压缩记录", () => {
 		const transcript = new TranscriptContainer();
 		transcript.loadSession([
@@ -275,12 +252,11 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 			{ kind: "custom_message", customType: "probe", content: "ORDER_C" },
 			{ kind: "message", message: { role: "assistant", content: "ORDER_B" } },
 			{ kind: "custom_message", customType: "hidden", content: "MUST_NOT_RENDER", display: false },
-			{ kind: "custom_entry", customType: "probe-entry", data: { text: "ORDER_D" } },
 			{ kind: "compaction", summary: "ORDER_SUMMARY", retainedTail: [], tokensBefore: 42 },
 		]);
 
 		const rendered = stripAnsi(transcript.render(80).join("\n"));
-		const positions = ["ORDER_A", "ORDER_C", "ORDER_B", "ORDER_D", "ORDER_SUMMARY"].map((text) => rendered.indexOf(text));
+		const positions = ["ORDER_A", "ORDER_C", "ORDER_B", "ORDER_SUMMARY"].map((text) => rendered.indexOf(text));
 		expect(positions.every((position) => position >= 0)).toBe(true);
 		expect(positions).toEqual([...positions].sort((a, b) => a - b));
 		expect(rendered).not.toContain("MUST_NOT_RENDER");

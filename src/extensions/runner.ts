@@ -15,7 +15,6 @@ import type {
 	ExtensionUIContext,
 	CustomEntry,
 	CustomMessage,
-	EntryRenderer,
 	LocalCommand,
 	MessageRenderer,
 	ToolRenderer,
@@ -48,8 +47,13 @@ export interface ExtensionAPI {
 	 * 返回值按该链的合并规则参与组合。事实观察用 on()。
 	 */
 	onHook<K extends HookName>(hook: K, handler: HookHandler<K>): () => void;
-	/** 主线 hydrated entries（含 id/customType）：capability 读历史与自身持久化状态的唯一通道。 */
+	/** 主线 hydrated entries（canonical only）：capability 读对话历史的通道。 */
 	history(): readonly import("../session/types.js").HydratedSessionEntry[];
+	/** auxiliary timeline（仅登记的 records）：capability 读自身私有持久状态的通道——
+	 * 私有状态不进主线（非对话事实、非回溯语义节点），故与 history() 分离。 */
+	auxiliary(): readonly (
+		import("../session/types.js").SessionEventRecord | import("../session/types.js").SessionCustomEntryRecord
+	)[];
 	/** 事实出口（RuntimeEvent 单流广播）：capability 产生"已发生"的事实（如 session_compact）。 */
 	emitEvent(event: import("../runtime/events.js").RuntimeEvent): Promise<void>;
 	registerTool(tool: Tool, options?: { replace?: boolean }): () => void;
@@ -94,11 +98,6 @@ export interface ExtensionAPI {
 		renderer: MessageRenderer<T>,
 		options?: { replace?: boolean },
 	): () => void;
-	registerEntryRenderer<T = unknown>(
-		customType: string,
-		renderer: EntryRenderer<T>,
-		options?: { replace?: boolean },
-	): () => void;
 	registerToolRenderer(name: string, renderer: ToolRenderer, options?: { replace?: boolean }): () => void;
 	registerMarkdownTransformer(
 		name: string,
@@ -139,8 +138,12 @@ export interface ExtensionRunnerOptions {
 	setThinkingLevel?: (level: import("../core/types.js").ThinkingLevel) => void;
 	/** 主体忙闲（pi.isBusy()）。 */
 	isBusy?: () => boolean;
-	/** 主线 hydrated entries（pi.history()）。 */
+	/** 主线 hydrated entries（pi.history()，canonical only）。 */
 	history?: () => readonly import("../session/types.js").HydratedSessionEntry[];
+	/** auxiliary timeline（pi.auxiliary()，仅登记 records）。 */
+	auxiliary?: () => readonly (
+		import("../session/types.js").SessionEventRecord | import("../session/types.js").SessionCustomEntryRecord
+	)[];
 	/** 事实出口（pi.emitEvent → RuntimeEvent 单流广播）。 */
 	emitRuntimeEvent?: (event: import("../runtime/events.js").RuntimeEvent) => Promise<void>;
 	/** 宿主级扩展重载（pi.reload()）。 */
@@ -661,10 +664,6 @@ export class ExtensionRunner extends ExtensionHost {
 				assertActive();
 				return ownRegistration(this.registry.registerMessageRenderer(type, renderer, options));
 			},
-			registerEntryRenderer: (type, renderer, options) => {
-				assertActive();
-				return ownRegistration(this.registry.registerEntryRenderer(type, renderer, options));
-			},
 			registerToolRenderer: (name, renderer, options) => {
 				assertActive();
 				return ownRegistration(this.registry.registerToolRenderer(name, renderer, options));
@@ -717,6 +716,10 @@ export class ExtensionRunner extends ExtensionHost {
 			history: () => {
 				if (!this.options.history) throw new Error("宿主未提供历史读取入口");
 				return this.options.history();
+			},
+			auxiliary: () => {
+				if (!this.options.auxiliary) throw new Error("宿主未提供 auxiliary 读取入口");
+				return this.options.auxiliary();
 			},
 			emitEvent: async (event) => {
 				if (!this.options.emitRuntimeEvent) throw new Error("宿主未提供事实出口");

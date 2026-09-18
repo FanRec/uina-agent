@@ -130,7 +130,6 @@ export type SessionEntryPayload =
 			display?: boolean;
 			details?: unknown;
 	  }
-	| { kind: "custom_entry"; customType: string; data?: unknown }
 	| {
 			kind: "compaction";
 			summary: string;

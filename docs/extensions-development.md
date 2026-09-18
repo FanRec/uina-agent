@@ -70,7 +70,7 @@ const result = await api.callService("index.query/v1", { query: "example" });
 ## 消息与主动输入
 
 - sendMessage({ customType, content, images?, display?, details? })：持久化并参与模型上下文，自身不触发回合；display:false 只隐藏展示。
-- appendEntry({ customType, data? })：仅持久化和展示，不进入模型上下文。
+- appendEntry({ customType, data? })：capability 私有持久状态（auxiliary timeline）——持久化但既不进入模型上下文、也不进入主线与回溯目标；用 auxiliary() 读回自己的记录。会话级可见消息用 sendMessage。
 - submitInput({ id, mode, source, text, images?, data? })：进入主体输入入口，空闲时启动，忙时排队。
 
 外部观察使用 source.kind="runtime"，保留来源，不伪装成人类输入。id 与非空 text 必需；持久化数据应能无损 JSON 表达。不要在主体正在等待的 hook 中 await 一次重新进入同一主体的调用。
@@ -81,15 +81,15 @@ const result = await api.callService("index.query/v1", { query: "example" });
 
 registerProvider 与 registerModel 分别提供端点和能力事实；models.current/list/resolve/select/stream 使用公共模型入口，不接触凭据。能力未知时保持未知。
 
-registerCompactor 提交 { summary, keepFrom }，可附 shouldCompact 触发策略；运行时负责取消、校验、持久化与历史更新。错误不会自动回退。完整示例见 [custom-compaction](../examples/extensions/custom-compaction/index.ts)。
+压缩由官方 compaction capability 端到端拥有：唯一入口是 turn.transformContext 每请求裁剪（journal 保留全量历史），/compact 为其命令。自定义裁剪策略在同一条 transformContext 链上注册（后激活者收到前者输出）；私有摘要状态用 appendEntry/auxiliary 落盘。完整示例见 [custom-compaction](../examples/extensions/custom-compaction/index.ts)。
 
 registerToolRenderer 与 registerMarkdownTransformer 只控制显示。widget、header/footer、overlay、输入对话框和编辑器操作通过 api.ui 使用。先判断 ui.hasUI()，无 UI 时不能把 select/input 的 undefined 或 confirm 的 false 当成人类答复。
 
 ## Hook 与贡献
 
-已有 on(event, handler) 保留观察和整体变换能力。常用返回：before_agent_start 的 { message?, systemPrompt? }、context 的 { messages }、tool_call 的 { block, reason? }、tool_result 的 { result?, status?, images?, details? }、session_before_compact 的 { cancel }。完整类型见 [events](../src/runtime/events.ts) 和 [host](../src/extensions/host.ts)。
+干预用 onHook(hookName, handler)，观察用 on(event, handler)——Hook 与 Event 各一词表、各一出口。现役干预点（8 条）：turn.prepare 的 { systemPrompt?, model?, thinkingLevel? }（后写覆盖先写）、turn.transformContext 的 { messages }（链式）、turn.shouldStop 的 { stop }、tools.beforeCall 的 { block?, reason? }、tools.transformResult 的 { result?, status?, images?, details? }、provider.transformHeaders/transformPayload/observeResponse。完整类型见 [hooks](../src/runtime/hooks.ts)。
 
-只需增加上下文时优先 registerContextContributor；多个贡献累加，并收到主体取消信号。需要改变整份上下文时再使用 context hook。不要在流式观察或每帧渲染链中同步等待长期工作。
+只需追加上下文时在 turn.transformContext 链上返回 { messages: [...原消息, 追加项] }；需要整组替换时返回整组。后激活者收到前者的输出（链式传递），与压缩、Memory 注入等 capability 共存。不要在流式观察或每帧渲染链中同步等待长期工作。
 
 ## 清理与验证
 
