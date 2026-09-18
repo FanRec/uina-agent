@@ -269,13 +269,36 @@ export function applyRecord(state: CanonicalState, record: SessionRecord): void 
 
 function applyRewind(state: CanonicalState, record: SessionRewindRecord): void {
 	const index = state.entries.findIndex((entry) => entry.id === record.targetId);
-	const abandoned = state.entries.slice(index + 1);
-	const carriedInputs = collectCarriedInputs(abandoned);
-	const effects = summarizeAbandonedEffects(abandoned);
-	const notice = buildRewindNotice(record, effects);
+	const entry = buildRewindCandidateEntry(state, record);
 	state.entries.splice(index + 1);
 	state.pendingCalls = [];
-	addEntry(state, record, { kind: "rewind", record: structuredClone(record), notice, carriedInputs, effects });
+	pushEntry(state, entry);
+}
+
+/** 构造回溯候选 hydrated entry（pure、no mutation）：notice/effects/carriedInputs
+ * 的唯一派生点，applyRewind 与 rewind 提交的 candidate 路径共享同一推导，
+ * 保证"投影所见 = 落盘后 replay 所得"。要求 record 已通过 checkRecord。 */
+export function buildRewindCandidateEntry(
+	state: CanonicalState,
+	record: SessionRewindRecord,
+): HydratedSessionEntry {
+	const index = state.entries.findIndex((entry) => entry.id === record.targetId);
+	const abandoned = state.entries.slice(index + 1);
+	const effects = summarizeAbandonedEffects(abandoned);
+	const notice = buildRewindNotice(record, effects);
+	const carriedInputs = collectCarriedInputs(abandoned);
+	return {
+		kind: "rewind",
+		record: structuredClone(record),
+		notice,
+		carriedInputs,
+		effects,
+		id: record.id,
+		seq: record.seq,
+		timestamp: record.timestamp,
+		// 截断后主线头即回溯目标（checkRewind 保证 targetId 是主线祖先且非头）。
+		parentId: record.targetId,
+	};
 }
 
 function applyMessage(state: CanonicalState, record: SessionRecord & { kind: "message" }): void {
@@ -338,6 +361,12 @@ function applyEvent(state: CanonicalState, record: SessionEventRecord): void {
 }
 
 /** 主线/全历史追加 + safeTargets 增量维护：每个条目只在此处入队，单一路径。 */
+function pushEntry(state: CanonicalState, entry: HydratedSessionEntry): void {
+	state.entries.push(entry);
+	state.allEntries.push(entry);
+	trackSafety(state, entry);
+}
+
 function addEntry(
 	state: CanonicalState,
 	record: SessionRecord,
@@ -351,9 +380,7 @@ function addEntry(
 		timestamp: record.timestamp,
 		parentId: state.entries.at(-1)?.id ?? null,
 	};
-	state.entries.push(entry);
-	state.allEntries.push(entry);
-	trackSafety(state, entry);
+	pushEntry(state, entry);
 }
 
 /** safeTargets 增量规则（与逐前缀派生等价）：回溯重置工具交换状态；
