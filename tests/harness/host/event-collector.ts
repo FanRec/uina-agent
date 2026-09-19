@@ -10,6 +10,10 @@ export class EventCollector {
 	get all(): readonly HostEvent[] {
 		return this.events;
 	}
+
+	get errors(): Array<Extract<HostEvent, { type: "error" }>> {
+		return this.filter("error");
+	}
 	private readonly waitQueue: Array<{
 		predicate: (e: HostEvent) => boolean;
 		resolve: (e: HostEvent) => void;

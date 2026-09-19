@@ -1,8 +1,26 @@
-import { test, expect, defineExtensionConformanceTests } from "./index.js";
-import activateWorkspaceTools from "../../src/extensions/workspace-tools/index.js";
+import { test, expect, SubjectHarness, mockTool } from "./index.js";
+import { MemorySessionStore } from "../../src/session/jsonl-store.js";
 
-// 1. 验证扩展契约合规套件
-defineExtensionConformanceTests("workspace-tools", activateWorkspaceTools);
+// 1. 验证 Core 门面 SubjectHarness 与 mockTool
+test("Uina Test Kit: SubjectHarness 裸回路与 mockTool", async () => {
+	let executed = false;
+	const h = SubjectHarness.create({
+		store: new MemorySessionStore(),
+		tools: [mockTool("sample_tool", () => {
+			executed = true;
+			return "sample_ok";
+		})],
+	});
+
+	h.scenario
+		.replyWithToolCall("c1", "sample_tool", {})
+		.reply("完成");
+
+	await h.run("执行工具");
+	expect(executed).toBe(true);
+	expect(h.history.some((m) => m.role === "tool")).toBe(true);
+	expect(h.records.length).toBeGreaterThan(0);
+});
 
 // 2. 验证剧本仿真与核心交互
 test("Uina Test Kit: 声明式剧本多轮交互与 DAG 守卫", async ({ uina, scenario }) => {

@@ -1,11 +1,10 @@
 import { expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
-import { Subject } from "../src/agent/loop.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import { ExtensionRunner } from "../src/extensions/runner.js";
 import { openJsonlSession } from "../src/session/jsonl-store.js";
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
-import { IsolatedEnv, mockModel } from "./harness/index.js";
+import { IsolatedEnv, mockModel, SubjectHarness } from "./harness/index.js";
 
 // The shell tool uses the platform shell, so the fixture commands must too.
 const IS_WINDOWS = process.platform === "win32";
@@ -24,7 +23,7 @@ it("ordinary file extension handles real jobs, silence, user input, failure and 
 	const broker = new ToolBroker();
 	const errors: string[] = [];
 	const text: string[] = [];
-	let subject!: Subject;
+	let subject!: SubjectHarness["subject"];
 	let requests = 0;
 	let call = 0;
 	const runner = new ExtensionRunner({ cwd: env.path, tools: broker, onInput: input => subject.accept(input), onError: error => errors.push(error) });
@@ -43,7 +42,14 @@ it("ordinary file extension handles real jobs, silence, user input, failure and 
 			emit({ kind: "tool_call", call: { id: `call-${++call}`, name: "watch_silence", args: "{}" } }); emit({ kind: "finish", reason: "tool_calls" });
 		} else { if (content === "hello") emit({ kind: "text", text: "here" }); emit({ kind: "finish", reason: "stop" }); }
 	};
-	subject = new Subject(model, stream, broker, { store, runtimeHooks: runner.runtimeHooks() });
+	const harness = SubjectHarness.create({
+		model,
+		stream,
+		broker,
+		store,
+		runtimeHooks: runner.runtimeHooks(),
+	});
+	subject = harness.subject;
 	subject.subscribe((e) => {
 		if (e.type === "output_update" && e.channel === "content") text.push(e.text);
 		else if (e.type === "error") errors.push(e.text);

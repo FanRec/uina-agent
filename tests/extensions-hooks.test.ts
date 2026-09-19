@@ -4,10 +4,9 @@ import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
 import { guardRuntimeHooks } from "../src/runtime/guard.js";
 import type { RuntimeHooks } from "../src/runtime/hooks.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
-import { Subject } from "../src/agent/loop.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta, ThinkingLevel } from "../src/core/types.js";
-import { mockModel } from "./harness/index.js";
+import { mockModel, SubjectHarness, createExtensionHarness, mockTool } from "./harness/index.js";
 import { createOpenAIProvider } from "../src/ai/gateway.js";
 import { createServer } from "node:http";
 
@@ -37,48 +36,34 @@ const mockProvider = mockPair;
 
 describe("ExtensionHost & Hooks Architecture", () => {
 	it("isolates errors in event handlers without disrupting execution", async () => {
-		const host = new ExtensionHost();
-		const errors: string[] = [];
-		host.onError((err) => errors.push(err.error));
-
-		host.on("agent_start", () => {
+		const ext = createExtensionHarness();
+		ext.host.on("agent_start", () => {
 			throw new Error("扩展意外崩溃");
 		});
 
 		let normalRan = false;
-		host.on("agent_start", () => {
+		ext.host.on("agent_start", () => {
 			normalRan = true;
 		});
 
-		await host.emit({ type: "agent_start", turnSeq: 1 });
+		await ext.emit({ type: "agent_start", turnSeq: 1 });
 		expect(normalRan).toBe(true);
-		expect(errors).toContain("扩展意外崩溃");
+		expect(ext.errors).toContain("扩展意外崩溃");
 	});
 
 	it("intercepts tool_call when block: true is returned", async () => {
-		const host = new ExtensionHost();
+		const ext = createExtensionHarness();
 		let toolActuallyExecuted = false;
 
-		host.onHook("tools.beforeCall", (input) => {
+		ext.onHook("tools.beforeCall", (input) => {
 			if (input.name === "dangerous_tool") {
 				return { block: true, reason: "安全策略拦截高危工具" };
 			}
 		});
 
-		const tools = new ToolBroker();
-		tools.register({
-			def: {
-				type: "function",
-				function: {
-					name: "dangerous_tool",
-					description: "高危工具",
-					parameters: { type: "object", properties: {} },
-				},
-			},
-			async run() {
-				toolActuallyExecuted = true;
-				return { result: "executed", status: "succeeded" };
-			},
+		ext.registerTool("dangerous_tool", async () => {
+			toolActuallyExecuted = true;
+			return { result: "executed", status: "succeeded" };
 		});
 
 		const pair = {
@@ -98,44 +83,35 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		};
 
 		const toolDones: Array<{ name: string; result: string; status?: string }> = [];
-		const subject = new Subject(pair.model, pair.stream, tools, { runtimeHooks: createRuntimeHooks(host) });
-		subject.subscribe((e) => {
+		const harness = SubjectHarness.create({
+			model: pair.model,
+			stream: pair.stream,
+			broker: ext.tools,
+			runtimeHooks: createRuntimeHooks(ext.host),
+		});
+		harness.subscribe((e) => {
 			if (e.type === "tool_result") toolDones.push({ name: e.toolName, result: e.result, status: e.status });
 		});
 
-		await subject.pushInput("请运行危险工具");
-		await subject.waitForIdle();
+		await harness.run("请运行危险工具");
 
 		expect(toolActuallyExecuted).toBe(false);
 		expect(toolDones.some((d) => d.name === "dangerous_tool" && d.status === "not_started")).toBe(true);
-		const history = subject.historySnapshot();
+		const history = harness.historySnapshot();
 		const toolResultMsg = history.find((m) => m.role === "tool");
 		expect(toolResultMsg?.content).toContain("[blocked] 工具执行已被拦截: 安全策略拦截高危工具");
 	});
 
 	it("transforms tool_result after tool finishes execution", async () => {
-		const host = new ExtensionHost();
+		const ext = createExtensionHarness();
 
-		host.onHook("tools.transformResult", (input) => {
+		ext.onHook("tools.transformResult", (input) => {
 			if (input.name === "calc") {
 				return { result: `[AUDITED] ${input.result}` };
 			}
 		});
 
-		const tools = new ToolBroker();
-		tools.register({
-			def: {
-				type: "function",
-				function: {
-					name: "calc",
-					description: "计算器",
-					parameters: { type: "object", properties: {} },
-				},
-			},
-			async run() {
-				return { result: "42", status: "succeeded" };
-			},
-		});
+		ext.registerTool("calc", () => ({ result: "42", status: "succeeded" }));
 
 		const pair = {
 			model: mockModel({ id: "mock", name: "mock" }),
@@ -153,17 +129,16 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			},
 		};
 
-		const subject = new Subject(
-			pair.model,
-			pair.stream,
-			tools,
-			{ runtimeHooks: createRuntimeHooks(host) },
-		);
+		const harness = SubjectHarness.create({
+			model: pair.model,
+			stream: pair.stream,
+			broker: ext.tools,
+			runtimeHooks: createRuntimeHooks(ext.host),
+		});
 
-		await subject.pushInput("算一下");
-		await subject.waitForIdle();
+		await harness.run("算一下");
 
-		const history = subject.historySnapshot();
+		const history = harness.historySnapshot();
 		const toolMsg = history.find((m) => m.role === "tool");
 		expect(toolMsg?.content).toBe("[AUDITED] 42");
 	});
@@ -178,17 +153,16 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		const prov1 = mockProvider();
 		const prov2 = mockPair([{ kind: "text", text: "切换成功" }, { kind: "finish", reason: "stop" }], "deepseek-reasoner", 65536, ["off", "high"]);
 
-		const subject = new Subject(
-			prov1.model,
-			prov1.stream,
-			new ToolBroker(),
-			{ runtimeHooks: createRuntimeHooks(host) },
-		);
+		const harness = SubjectHarness.create({
+			model: prov1.model,
+			stream: prov1.stream,
+			runtimeHooks: createRuntimeHooks(host),
+		});
 
-		expect(subject.getModel().name).toBe("mock-model");
-		await subject.setModel(prov2.model);
+		expect(harness.getModel().name).toBe("mock-model");
+		await harness.setModel(prov2.model);
 
-		expect(subject.getModel().name).toBe("deepseek-reasoner");
+		expect(harness.getModel().name).toBe("deepseek-reasoner");
 		expect(modelSelects).toEqual(["deepseek-reasoner"]);
 	});
 
@@ -210,26 +184,25 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			thinkingLevels: ["off"],
 		});
 
-		const subject = new Subject(
-			thinkingModel,
-			async () => {},
-			new ToolBroker(),
-			{ runtimeHooks: createRuntimeHooks(host) },
-		);
+		const harness = SubjectHarness.create({
+			model: thinkingModel,
+			stream: async () => {},
+			runtimeHooks: createRuntimeHooks(host),
+		});
 
 		// 1. 设置思考深度为 high
-		subject.setThinkingLevel("high");
-		expect(subject.getThinkingLevel()).toBe("high");
-		expect(subject.getPreferredThinkingLevel()).toBe("high");
+		harness.setThinkingLevel("high");
+		expect(harness.getThinkingLevel()).toBe("high");
+		expect(harness.getPreferredThinkingLevel()).toBe("high");
 
 		// 2. 热切换到不支持思考的模型：自动 clamp 到 off
-		await subject.setModel(dumbModel);
-		expect(subject.getThinkingLevel()).toBe("off");
-		expect(subject.getPreferredThinkingLevel()).toBe("high"); // 依然保留用户的意图
+		await harness.setModel(dumbModel);
+		expect(harness.getThinkingLevel()).toBe("off");
+		expect(harness.getPreferredThinkingLevel()).toBe("high"); // 依然保留用户的意图
 
 		// 3. 热切换回支持思考的模型：自动恢复到 high
-		await subject.setModel(thinkingModel);
-		expect(subject.getThinkingLevel()).toBe("high");
+		await harness.setModel(thinkingModel);
+		expect(harness.getThinkingLevel()).toBe("high");
 	});
 
 	it("transforms context before sending request to provider", async () => {
@@ -253,15 +226,13 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			},
 		};
 
-		const subject = new Subject(
-			pair.model,
-			pair.stream,
-			new ToolBroker(),
-			{ runtimeHooks: createRuntimeHooks(host) },
-		);
+		const harness = SubjectHarness.create({
+			model: pair.model,
+			stream: pair.stream,
+			runtimeHooks: createRuntimeHooks(host),
+		});
 
-		await subject.pushInput("你好");
-		await subject.waitForIdle();
+		await harness.run("你好");
 
 		expect(receivedMessages.some((m) => m.content?.includes("阳光明媚"))).toBe(true);
 	});
@@ -310,12 +281,12 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			received = request.messages.map((message) => message.content).join("\n");
 			emit({ kind: "finish", reason: "stop" });
 		};
-		const subject = new Subject(model, stream, new ToolBroker(), { runtimeHooks });
-		const run = subject.pushInput("original");
+		const harness = SubjectHarness.create({ model, stream, runtimeHooks });
+		const run = harness.pushInput("original");
 		await contextReady;
 		releaseProvider();
 		await run;
-		await subject.waitForIdle();
+		await harness.waitForIdle();
 		expect(inputFrozen).toBe(true);
 		expect(received).toBe("replacement");
 	});
@@ -332,15 +303,13 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		host.on("agent_settled", () => sequence.push("agent_settled"));
 
 		const pair = mockProvider();
-		const subject = new Subject(
-			pair.model,
-			pair.stream,
-			new ToolBroker(),
-			{ runtimeHooks: createRuntimeHooks(host) },
-		);
+		const harness = SubjectHarness.create({
+			model: pair.model,
+			stream: pair.stream,
+			runtimeHooks: createRuntimeHooks(host),
+		});
 
-		await subject.pushInput("测试生命周期");
-		await subject.waitForIdle();
+		await harness.run("测试生命周期");
 
 		expect(sequence).toEqual([
 			"turn.prepare",
@@ -375,22 +344,22 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			emit({ kind: "text", text: "ok" });
 			emit({ kind: "finish", reason: "stop" });
 		};
-		const subject = new Subject(model, stream, new ToolBroker(), { runtimeHooks: createRuntimeHooks(host) });
-		const firstRun = subject.pushInput("first");
+		const harness = SubjectHarness.create({ model, stream, runtimeHooks: createRuntimeHooks(host) });
+		const firstRun = harness.pushInput("first");
 		await firstEndReached;
 
 		let idleResolved = false;
-		const idle = subject.waitForIdle().then(() => { idleResolved = true; });
-		await subject.pushInput("second");
+		const idle = harness.waitForIdle().then(() => { idleResolved = true; });
+		await harness.pushInput("second");
 		await Promise.resolve();
-		expect(subject.isBusy()).toBe(true);
+		expect(harness.isBusy()).toBe(true);
 		expect(idleResolved).toBe(false);
 
 		continueFirstEnd();
 		await firstRun;
 		await idle;
 		expect(users).toEqual(["first", "second"]);
-		expect(subject.isBusy()).toBe(false);
+		expect(harness.isBusy()).toBe(false);
 	});
 
 	it("emits normalized output stream events (output_start, update, end)", async () => {
@@ -398,7 +367,6 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		const outputDeltas: Array<{ offset: number; text: string; channel: string }> = [];
 		let startSeen = false;
 		let endSeen = false;
-
 		host.on("output_start", (e) => {
 			if (e.channel === "content") startSeen = true;
 		});
@@ -415,15 +383,13 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			{ kind: "finish", reason: "stop" },
 		]);
 
-		const subject = new Subject(
-			pair.model,
-			pair.stream,
-			new ToolBroker(),
-			{ runtimeHooks: createRuntimeHooks(host) },
-		);
+		const harness = SubjectHarness.create({
+			model: pair.model,
+			stream: pair.stream,
+			runtimeHooks: createRuntimeHooks(host),
+		});
 
-		await subject.pushInput("打个招呼");
-		await subject.waitForIdle();
+		await harness.run("打个招呼");
 
 		expect(startSeen).toBe(true);
 		expect(endSeen).toBe(true);
@@ -442,14 +408,14 @@ describe("ExtensionHost & Hooks Architecture", () => {
 					events.push(`${event.type}:${event.channel}${event.type === "output_interrupted" ? `:${event.reason}` : ""}`);
 				});
 			}
-			const subject = new Subject(pair.model, pair.stream, new ToolBroker(), { runtimeHooks: createRuntimeHooks(host) });
-			const run = subject.pushInput("probe");
+			const harness = SubjectHarness.create({ model: pair.model, stream: pair.stream, runtimeHooks: createRuntimeHooks(host) });
+			const run = harness.pushInput("probe");
 			if (interruptAfterStart) {
 				await new Promise<void>((resolve) => setTimeout(resolve, 0));
-				subject.interrupt();
+				harness.interrupt();
 			}
 			await run;
-			await subject.waitForIdle();
+			await harness.waitForIdle();
 			return events;
 		};
 
@@ -588,12 +554,11 @@ describe("run-safety seams: prepare model swap and shouldStop", () => {
 			emit({ kind: "text", text: "ok" });
 			emit({ kind: "finish", reason: "stop" });
 		};
-		const subject = new Subject(baseModel, stream, new ToolBroker(), { runtimeHooks: createRuntimeHooks(host) });
-		await subject.pushInput("hello");
-		await subject.waitForIdle();
+		const harness = SubjectHarness.create({ model: baseModel, stream, runtimeHooks: createRuntimeHooks(host) });
+		await harness.run("hello");
 
 		expect(requested).toEqual(["next-model"]);
-		expect(subject.getModel().id).toBe("next-model");
+		expect(harness.getModel().id).toBe("next-model");
 		expect(events).toEqual(["model_select:next"]);
 	});
 
@@ -613,16 +578,12 @@ describe("run-safety seams: prepare model swap and shouldStop", () => {
 			void signal;
 		};
 		const broker = new ToolBroker();
-		broker.register({
-			def: { type: "function", function: { name: "noop", description: "noop", parameters: { type: "object", properties: {}, additionalProperties: false } } },
-			run: async () => ({ result: "ok", status: "succeeded" as const }),
-		});
-		const subject = new Subject(mockModel(), stream, broker, { runtimeHooks: createRuntimeHooks(host) });
-		await subject.pushInput("run tool once");
-		await subject.waitForIdle();
+		broker.register(mockTool("noop", async () => ({ result: "ok", status: "succeeded" as const })));
+		const harness = SubjectHarness.create({ model: mockModel(), stream, broker, runtimeHooks: createRuntimeHooks(host) });
+		await harness.run("run tool once");
 
 		expect(streamCalls).toBe(1);
-		const toolResult = subject.historySnapshot().find((message) => message.role === "tool");
+		const toolResult = harness.historySnapshot().find((message) => message.role === "tool");
 		expect(toolResult && "status" in toolResult ? toolResult.status : undefined).toBe("succeeded");
 	});
 });

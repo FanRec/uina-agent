@@ -32,6 +32,7 @@ export class UinaTestHarness {
 	readonly terminal: SilentTerminalResult;
 
 	private readonly options: HarnessOptions;
+	private readonly ownsEnv: boolean;
 	private disposed = false;
 
 	private constructor(
@@ -41,6 +42,7 @@ export class UinaTestHarness {
 		events: EventCollector,
 		terminal: SilentTerminalResult,
 		options: HarnessOptions,
+		ownsEnv = true,
 	) {
 		this.host = host;
 		this.env = env;
@@ -48,6 +50,7 @@ export class UinaTestHarness {
 		this.events = events;
 		this.terminal = terminal;
 		this.options = options;
+		this.ownsEnv = ownsEnv;
 
 		// 订阅所有事件至收集器
 		this.host.subscribe(this.events.listener);
@@ -71,7 +74,7 @@ export class UinaTestHarness {
 			await host.start();
 		}
 
-		return new UinaTestHarness(host, env, scenario, events, terminal, options);
+		return new UinaTestHarness(host, env, scenario, events, terminal, options, !options.env);
 	}
 
 	/** 手动启动内置能力与项目扩展（当 autoStart 为 false 时使用） */
@@ -150,10 +153,16 @@ export class UinaTestHarness {
 		return this.host.isBusy();
 	}
 
+	async closeHost(): Promise<void> {
+		await this.host.dispose().catch(() => undefined);
+	}
+
 	async dispose(): Promise<void> {
 		if (this.disposed) return;
 		this.disposed = true;
 		await this.host.dispose().catch(() => undefined);
-		await this.env.dispose().catch(() => undefined);
+		if (this.ownsEnv) {
+			await this.env.dispose().catch(() => undefined);
+		}
 	}
 }

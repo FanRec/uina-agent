@@ -1,56 +1,33 @@
-import { describe, expect, test, it } from "./harness/index.js";
+import { describe, expect, test, it, UinaTestHarness, SubjectHarness, Scenario, seedSession, rewindTo } from "./harness/index.js";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { createSessionAccess } from "../src/session/access.js";
 import { commitRewindTransition } from "../src/agent/rewind.js";
 import { resolveProjectionPolicy } from "../src/agent/projection.js";
-import type { ModelStreamFn } from "../src/core/types.js";
 import { projectAgentHistory, protectRewindContext, summarizeAbandonedEffects, projectInputMessage } from "../src/session/recovery.js";
 import { BranchInspectorOverlay } from "../src/ui/components/overlays/branch-inspector.js";
 import { listSessionBranches, listSessionNodes, readSessionBranch, readSessionNode } from "../src/session/navigation.js";
 import { join } from "node:path";
 
-/** 把 official compaction capability 装进裸 Subject（host 装配的最小等价物）。 */
-async function capabilitySubject(store: MemorySessionStore, model: ReturnType<typeof mockModel>, stream: ModelStreamFn) {
-	const { ExtensionRunner } = await import("../src/extensions/runner.js");
-	const { createRuntimeHooks } = await import("../src/extensions/runtime-hooks.js");
-	const { default: activateCompaction } = await import("../src/extensions/compaction/index.js");
-	let hooks: ReturnType<typeof createRuntimeHooks> | undefined;
-	const runner = new ExtensionRunner({
-		cwd: process.cwd(),
-		tools: new ToolBroker(),
-		models: { current: () => model, list: () => [model], groups: () => [], resolve: () => model, select: async () => {}, stream },
-		history: () => store.state.entries,
-		auxiliary: () => store.state.auxiliary,
-		emitRuntimeEvent: (event) => hooks!.events.emit(event),
-		onCustomEntry: (entry) => store.appendCustomEntry(entry),
-	});
-	await runner.activateBuiltin("compaction", activateCompaction);
-	hooks = createRuntimeHooks(runner);
-	return new Subject(model, stream, new ToolBroker(), { store, runtimeHooks: hooks });
-}
+const SEED_MESSAGES = ["original task", "bad plan", "stop writing files"];
+const seed = (store: any) => seedSession(store, SEED_MESSAGES);
 
-async function seed(store: MemorySessionStore | Awaited<ReturnType<typeof openJsonlSession>>["store"]) {
-	await store.appendMessage({role:"user",content:"original task"});
-	await store.appendMessage({role:"assistant",content:"bad plan"});
-	await store.appendMessage({role:"user",content:"stop writing files"});
-	return store.readRecords();
-}
 describe("session mainline persistence", () => {
 	it("keeps abandoned nodes readable, preserves subsequent inputs, and forbids revisiting an archive", async () => {
-		const store = new MemorySessionStore(); const records = await seed(store);
-		await store.appendRewind({id:"r1",requestId:"q1",targetId:records[0].id,fromId:records[2].id,source:"user",reason:"bad premise"});
+		const store = new MemorySessionStore();
+		const records = await seedSession(store, SEED_MESSAGES);
+		await rewindTo(store, records[0].id, { id: "r1", requestId: "q1", fromId: records[2].id, reason: "bad premise" });
 		const main = listSessionNodes(store.state);
-		expect(main.nodes.map(node=>node.id)).toEqual([records[0].id,"r1"]);
-		expect(readSessionNode(store.state,records[1].id)).toMatchObject({kind:"message",message:{content:"bad plan"}});
+		expect(main.nodes.map(node => node.id)).toEqual([records[0].id, "r1"]);
+		expect(readSessionNode(store.state, records[1].id)).toMatchObject({ kind: "message", message: { content: "bad plan" } });
 		const context = projectAgentHistory(store.state.entries);
-		expect(context.some(message=>message.content === "bad plan")).toBe(false);
-		expect(context.some(message=>message.content.includes("stop writing files"))).toBe(false);
-		expect(() => store.appendRewind({id:"bad",requestId:"bad",targetId:records[1].id,fromId:"r1",source:"user",reason:"archive"})).toThrow("祖先");
-		await store.appendMessage({role:"assistant",content:"corrected plan"});
-		const latest=store.readRecords().at(-1)!;
-		await store.appendRewind({id:"r2",requestId:"q2",targetId:records[0].id,fromId:latest.id,source:"user",reason:"again"});
-		expect(listSessionNodes(store.state,{scope:"all"}).nodes.filter(node=>!node.active).length).toBe(4);
-		expect(projectAgentHistory(store.state.entries).filter(message=>message.content.includes("stop writing files"))).toHaveLength(0);
+		expect(context.some(message => message.content === "bad plan")).toBe(false);
+		expect(context.some(message => message.content.includes("stop writing files"))).toBe(false);
+		expect(() => store.appendRewind({ id: "bad", requestId: "bad", targetId: records[1].id, fromId: "r1", source: "user", reason: "archive" })).toThrow("祖先");
+		await store.appendMessage({ role: "assistant", content: "corrected plan" });
+		const latest = store.readRecords().at(-1)!;
+		await rewindTo(store, records[0].id, { id: "r2", requestId: "q2", fromId: latest.id, reason: "again" });
+		expect(listSessionNodes(store.state, { scope: "all" }).nodes.filter(node => !node.active).length).toBe(4);
+		expect(projectAgentHistory(store.state.entries).filter(message => message.content.includes("stop writing files"))).toHaveLength(0);
 	});
 	it("rejects cuts inside tool exchanges", async () => {
 		const store=new MemorySessionStore(); await seed(store);
@@ -77,7 +54,6 @@ describe("session mainline persistence", () => {
 });
 
 import { UinaHost } from "../src/host/host.js";
-import { Subject } from "../src/agent/loop.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import { mockModel } from "./harness/index.js";
 import { readFile } from "node:fs/promises";
@@ -86,53 +62,71 @@ import type { SessionRewindRecord } from "../src/session/types.js";
 describe("rewind runtime safe points", () => {
 	test("settles the whole tool batch before rewinding, preserves files and resumes the new mainline", async ({ env }) => {
 		const cwd = env.cwd;
-		let count = 0, targetId = ""; const errors: string[] = []; let rewinds = 0;
-		const host = await UinaHost.create({ cwd, sessionPath: env.sessionPath, model: mockModel(), stream: async (_m, req, emit) => {
-			count++;
-			if (count === 1) { emit({ kind: "text", text: "bad original plan" }); emit({ kind: "finish", reason: "stop" }); return; }
-			if (count === 2) {
-				emit({ kind: "tool_call", call: { id: "rewind-call", name: "session_rewind", args: JSON.stringify({ targetId, reason: "incorrect premise", note: "do not repeat the write" }) } });
-				emit({ kind: "tool_call", call: { id: "write-call", name: "write_file", args: JSON.stringify({ path: "effect.txt", text: "already written" }) } });
-				emit({ kind: "finish", reason: "tool_calls" }); return;
-			}
-			expect(await readFile(join(cwd, "effect.txt"), "utf8")).toBe("already written");
-			expect(req.messages.some((m) => m.content === "bad original plan")).toBe(false);
-			expect(req.messages.some((m) => m.content.includes("会话回溯"))).toBe(true);
-			expect(req.messages.some((m) => m.content.includes("new requirement"))).toBe(false);
-			emit({ kind: "text", text: "corrected response" }); emit({ kind: "finish", reason: "stop" });
-		} });
-		host.subscribe((event) => { if (event.type === "error") errors.push(event.text); if (event.type === "session_rewind") rewinds++; });
+		let targetId = "";
+		const harness = await UinaTestHarness.create({ env });
+
+		harness.scenario
+			.when((req) => !req.messages.some((m) => String(m.content ?? "").includes("new requirement") || String(m.content ?? "").includes("会话回溯")))
+			.reply("bad original plan")
+			.when((req) => req.messages.some((m) => String(m.content ?? "").includes("new requirement")))
+			.then(() => [
+				{ kind: "tool_call", call: { id: "rewind-call", name: "session_rewind", args: JSON.stringify({ targetId, reason: "incorrect premise", note: "do not repeat the write" }) } },
+				{ kind: "tool_call", call: { id: "write-call", name: "write_file", args: JSON.stringify({ path: "effect.txt", text: "already written" }) } },
+				{ kind: "finish", reason: "tool_calls" },
+			])
+			.when((req) => req.messages.some((m) => String(m.content ?? "").includes("会话回溯")))
+			.then((req) => {
+				expect(req.messages.some((m) => m.content === "bad original plan")).toBe(false);
+				expect(req.messages.some((m) => String(m.content ?? "").includes("new requirement"))).toBe(false);
+				return [{ kind: "text", text: "corrected response" }, { kind: "finish", reason: "stop" }];
+			});
+
 		try {
-			await host.start(); await host.submitText("initial task"); targetId = host.session.list().nodes[0].id;
-			await host.submitText("new requirement: preserve existing changes");
-			expect(errors).toEqual([]); expect(rewinds).toBe(1); expect(count).toBe(3);
-			expect(host.session.list({ scope: "all" }).nodes.filter((node) => !node.active).length).toBeGreaterThan(0);
-			await host.dispose();
+			await harness.send("initial task");
+			targetId = harness.host.session.list().nodes[0].id;
+			await harness.send("new requirement: preserve existing changes");
+
+			expect(await readFile(join(cwd, "effect.txt"), "utf8")).toBe("already written");
+			expect(harness.events.errors).toHaveLength(0);
+			expect(harness.events.find("session_rewind")).toBeDefined();
+			expect(harness.host.session.list({ scope: "all" }).nodes.filter((node) => !node.active).length).toBeGreaterThan(0);
+
+			await harness.dispose();
 			const reopened = await openJsonlSession(env.sessionPath);
 			expect(projectAgentHistory(reopened.snapshot.entries).at(-1)?.content).toBe("corrected response");
 			await reopened.store.close();
-		} finally { await host.dispose(); }
+		} finally {
+			await harness.dispose();
+		}
 	});
 	it("leaves history untouched if the rewind append fails", async () => {
 		class FailingStore extends MemorySessionStore { override appendRewind(_record: Omit<SessionRewindRecord,"kind"|"seq"|"timestamp">):Promise<void>{return Promise.reject(new Error("disk unavailable"));} }
 		const store=new FailingStore();const records=await seed(store);
-		const subject=new Subject(mockModel(),async()=>{throw new Error("must not run");},new ToolBroker(),{store});
-		const history=projectAgentHistory(store.state.entries);subject.addHistory(history);
-		await expect(subject.requestRewind({targetId:records[0].id,reason:"wrong"},"test")).rejects.toThrow("disk unavailable");
-		expect(subject.historySnapshot()).toEqual(history);expect(subject.isBusy()).toBe(false);
+		const harness = SubjectHarness.create({
+			model: mockModel(),
+			stream: async () => { throw new Error("must not run"); },
+			store,
+		});
+		const history=projectAgentHistory(store.state.entries);harness.subject.addHistory(history);
+		await expect(harness.requestRewind({targetId:records[0].id,reason:"wrong"},"test")).rejects.toThrow("disk unavailable");
+		expect(harness.historySnapshot()).toEqual(history);expect(harness.isBusy()).toBe(false);
 	});
 	it("cancels a scheduled rewind without dropping newly queued input", async () => {
 		const store=new MemorySessionStore();const records=await seed(store);let entered!:()=>void;
 		const started=new Promise<void>(resolve=>{entered=resolve;});
-		const subject=new Subject(mockModel(),async(_model,_req,_emit,signal)=>{
-			entered();await new Promise<void>(resolve=>signal!.addEventListener("abort",()=>resolve(),{once:true}));
-		},new ToolBroker(),{store});
-		subject.addHistory(projectAgentHistory(store.state.entries));
-		const run=subject.pushInput("working");await started;
-		const result=await subject.requestRewind({targetId:records[0].id,reason:"wrong"},"test");expect(result.status).toBe("scheduled");
-		await subject.steer("latest instruction");subject.interrupt();await run;
+		const harness = SubjectHarness.create({
+			model: mockModel(),
+			stream: async (_model,_req,_emit,signal)=>{
+				entered();await new Promise<void>(resolve=>signal!.addEventListener("abort",()=>resolve(),{once:true}));
+			},
+			store,
+		});
+		harness.subject.addHistory(projectAgentHistory(store.state.entries));
+		const run=harness.pushInput("working");await started;
+		const result=await harness.requestRewind({targetId:records[0].id,reason:"wrong"},"test");expect(result.status).toBe("scheduled");
+		await harness.subject.steer("latest instruction");harness.interrupt();await run;
 		expect(store.readRecords().some(record=>record.kind==="rewind")).toBe(false);
-		expect(subject.queuedSnapshot()[0].text).toBe("latest instruction");
+		expect(harness.queuedSnapshot()[0].text).toBe("latest instruction");
 	});
 	it("trims a rewind that re-exposes oversized history instead of refusing it", async () => {
 		const store=new MemorySessionStore();
@@ -145,57 +139,93 @@ describe("rewind runtime safe points", () => {
 		const fromId=store.readRecords().at(-1)!.id;
 		await store.appendRewind({id:"r1",requestId:"q1",targetId,fromId,source:"test",reason:"oversized"});
 
-		const sent:string[][]=[];
-		const stream=async(_m:unknown,req:{messages:{role:string;content?:string}[]},emit:(d:{kind:string;text?:string;reason?:string})=>void)=>{
-			if (!String(req.messages[0]?.content??"").includes("上下文摘要助手")) {
-				sent.push(req.messages.map(message=>String(message.content ?? "")));
+		const sent: string[][] = [];
+		const scenario1 = new Scenario({ contextWindow: 20_000 });
+		scenario1.fallback((req) => {
+			if (!String(req.messages[0]?.content ?? "").includes("上下文摘要助手")) {
+				sent.push(req.messages.map((message) => String(message.content ?? "")));
 			}
-			emit({kind:"text",text:"continued"});
-			emit({kind:"finish",reason:"stop"});
-		};
-		// 预算 = 20_000 - 16_384 = 3_616 tokens；重展开历史 ≈ 数千 tokens → 触发裁剪。
-		const subject=await capabilitySubject(store,mockModel({contextWindow:20_000}),stream as never);
-		subject.addHistory(projectAgentHistory(store.state.entries));
+			return [{ kind: "text", text: "continued" }, { kind: "finish", reason: "stop" }];
+		});
+		const h1 = await createSubjectWithCompaction({ store, scenario: scenario1 });
+		h1.subject.addHistory(projectAgentHistory(store.state.entries));
+		await h1.run("carry on");
 
-		// The mainline projection now carries the re-exposed abandoned history, which overflows.
-		await subject.pushInput("carry on");
-
-		const flat=sent.flat();
-		expect(flat.some(text=>text.startsWith("[历史摘要] "))).toBe(true);
-		expect(flat.some(text=>text.includes("会话回溯"))).toBe(true);
+		const flat = sent.flat();
+		expect(flat.some((text) => text.startsWith("[历史摘要] "))).toBe(true);
+		expect(flat.some((text) => text.includes("会话回溯"))).toBe(true);
 		// 裁剪不截断 journal——摘要走 uina.compaction.summary 条目。
-		expect(store.readRecords().some(record=>record.kind==="custom_entry"&&(record as {customType?:string}).customType==="uina.compaction.summary")).toBe(true);
+		expect(store.readRecords().some((record) => record.kind === "custom_entry" && (record as { customType?: string }).customType === "uina.compaction.summary")).toBe(true);
 	});
 
 	it("keeps a rewind re-exposing history recoverable via trim without canonical compaction records", async () => {
-		const store=new MemorySessionStore();
-		await store.appendMessage({role:"user",content:"EARLIER "+"e".repeat(80000)});
-		await store.appendMessage({role:"user",content:"start"});
-		await store.appendMessage({role:"assistant",content:"ack"});
-		const targetId=store.readRecords()[2].id;
-		await store.appendMessage({role:"assistant",content:"JUST-DISCARD "+"d".repeat(12000)});
-		const fromId=store.readRecords().at(-1)!.id;
-		await store.appendRewind({id:"r1",requestId:"q1",targetId,fromId,source:"test",reason:"oversized"});
+		const store = new MemorySessionStore();
+		await store.appendMessage({ role: "user", content: "EARLIER " + "e".repeat(80000) });
+		await store.appendMessage({ role: "user", content: "start" });
+		await store.appendMessage({ role: "assistant", content: "ack" });
+		const targetId = store.readRecords()[2].id;
+		await store.appendMessage({ role: "assistant", content: "JUST-DISCARD " + "d".repeat(12000) });
+		const fromId = store.readRecords().at(-1)!.id;
+		await store.appendRewind({ id: "r1", requestId: "q1", targetId, fromId, source: "test", reason: "oversized" });
 
-		const sent:string[][]=[];
-		const stream=async(_m:unknown,req:{messages:{role:string;content?:string}[]},emit:(d:{kind:string;text?:string;reason?:string})=>void)=>{
-			if (!String(req.messages[0]?.content??"").includes("上下文摘要助手")) {
-				sent.push(req.messages.map(message=>String(message.content ?? "")));
+		const sent: string[][] = [];
+		const scenario2 = new Scenario({ contextWindow: 20_000 });
+		scenario2.fallback((req) => {
+			if (!String(req.messages[0]?.content ?? "").includes("上下文摘要助手")) {
+				sent.push(req.messages.map((message) => String(message.content ?? "")));
 			}
-			emit({kind:"text",text:"continued"});
-			emit({kind:"finish",reason:"stop"});
-		};
-		const subject=await capabilitySubject(store,mockModel({contextWindow:20_000}),stream as never);
-		subject.addHistory(projectAgentHistory(store.state.entries));
-		await subject.pushInput("carry on");
+			return [{ kind: "text", text: "continued" }, { kind: "finish", reason: "stop" }];
+		});
+		const h2 = await createSubjectWithCompaction({ store, scenario: scenario2 });
+		h2.subject.addHistory(projectAgentHistory(store.state.entries));
+		await h2.run("carry on");
 
 		// 超限不拒绝也不截断主线——请求被裁剪收敛，"start" 仍在预算内尾部可见。
-		const flat=sent.flat();
-		expect(flat.some(text=>text.startsWith("[历史摘要] "))).toBe(true);
-		expect(flat.some(text=>text.includes("start"))).toBe(true);
-		expect(store.readRecords().filter(record=>record.kind==="rewind")).toHaveLength(1);
+		const flat = sent.flat();
+		expect(flat.some((text) => text.startsWith("[历史摘要] "))).toBe(true);
+		expect(flat.some((text) => text.includes("start"))).toBe(true);
+		expect(store.readRecords().filter((record) => record.kind === "rewind")).toHaveLength(1);
 	});
 });
+
+async function createSubjectWithCompaction(options: { store: MemorySessionStore; scenario: Scenario }): Promise<SubjectHarness> {
+	const { ToolBroker } = await import("../src/tools/broker.js");
+	const { Subject } = await import("../src/agent/loop.js");
+	const { createRuntimeHooks } = await import("../src/extensions/runtime-hooks.js");
+	const { default: activateCompaction } = await import("../src/extensions/compaction/index.js");
+
+	const broker = new ToolBroker();
+	const store = options.store;
+	const scenario = options.scenario;
+	let hooks: ReturnType<typeof createRuntimeHooks> | undefined;
+	const runner = new ExtensionRunner({
+		cwd: process.cwd(),
+		tools: broker,
+		models: {
+			current: () => scenario.model,
+			list: () => [scenario.model],
+			groups: () => [],
+			resolve: () => scenario.model,
+			select: async () => {},
+			stream: (m, req, onDelta, signal) => scenario.stream(m, req, onDelta, signal),
+		},
+		history: () => store.state.entries,
+		auxiliary: () => store.state.auxiliary,
+		emitRuntimeEvent: (event) => hooks!.events.emit(event),
+		onCustomEntry: (entry) => store.appendCustomEntry(entry),
+	});
+	await runner.activateBuiltin("compaction", activateCompaction);
+	hooks = createRuntimeHooks(runner);
+
+	const subject = new Subject(
+		scenario.model,
+		(m, req, onDelta, signal) => scenario.stream(m, req, onDelta, signal),
+		broker,
+		{ store, runtimeHooks: hooks },
+	);
+
+	return new SubjectHarness(subject, broker, store, scenario);
+}
 
 import { ExtensionRunner } from "../src/extensions/runner.js";
 import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
@@ -204,51 +234,76 @@ describe("rewind composition", () => {
 	it("exposes a scoped public API and cancels requests from an unloaded extension", async () => {
 		const store=new MemorySessionStore();const records=await seed(store);let ready!:()=>void,finish!:()=>void;
 		const entered=new Promise<void>(resolve=>ready=resolve);const finishStream=new Promise<void>(resolve=>finish=resolve);
-		const subject=new Subject(mockModel(),async(_m,_r,emit)=>{ready();await finishStream;emit({kind:"text",text:"old result"});emit({kind:"finish",reason:"stop"});},new ToolBroker(),{store});
-		subject.addHistory(projectAgentHistory(store.state.entries));
-		const runner=new ExtensionRunner({cwd:process.cwd(),tools:new ToolBroker(),session:createSessionAccess(store,(request,source,signal)=>subject.requestRewind(request,source,signal))});
+		const harness = SubjectHarness.create({
+			model: mockModel(),
+			stream: async (_m,_r,emit)=>{ready();await finishStream;emit({kind:"text",text:"old result"});emit({kind:"finish",reason:"stop"});},
+			store,
+		});
+		harness.subject.addHistory(projectAgentHistory(store.state.entries));
+		const runner=new ExtensionRunner({cwd:process.cwd(),tools:new ToolBroker(),session:createSessionAccess(store,(request,source,signal)=>harness.requestRewind(request,source,signal))});
 		let api!:import("../src/extensions/runner.js").ExtensionAPI;
 		await runner.activateBuiltin("rewind-policy",value=>{api=value;});
-		const run=subject.pushInput("working");await entered;
+		const run=harness.pushInput("working");await entered;
 		expect((await api.session.requestRewind({targetId:records[0].id,reason:"bad"})).status).toBe("scheduled");
 		await runner.dispose();finish();await run;
 		expect(store.readRecords().some(record=>record.kind==="rewind")).toBe(false);
 		expect(()=>api.session.list()).toThrow("失效");
 	});
 	it("keeps the rewind notice in the mainline and displays it in restored transcripts", async () => {
-		const store=new MemorySessionStore();const records=await seed(store);
-		const subject=new Subject(mockModel(),async(_m,_r,emit)=>{emit({kind:"text",text:"new plan"});emit({kind:"finish",reason:"stop"});},new ToolBroker(),{store});
-		subject.addHistory(projectAgentHistory(store.state.entries));
-		await subject.requestRewind({targetId:records[0].id,reason:"wrong"},"test");
-		await subject.pushInput("继续");
-		expect(subject.historySnapshot().some(message=>message.content.includes("会话回溯"))).toBe(true);
-		const entries=store.state.entries;
-		const transcript=new TranscriptContainer();transcript.loadSession(entries);
+		const store = new MemorySessionStore();
+		const records = await seed(store);
+		const h = SubjectHarness.create({ store });
+		h.scenario.fallback(() => [{ kind: "text", text: "new plan" }, { kind: "finish", reason: "stop" }]);
+		h.subject.addHistory(projectAgentHistory(store.state.entries));
+		await h.subject.requestRewind({ targetId: records[0].id, reason: "wrong" }, "test");
+		await h.run("继续");
+		expect(h.history.some((message) => String(message.content ?? "").includes("会话回溯"))).toBe(true);
+		const entries = store.state.entries;
+		const transcript = new TranscriptContainer();
+		transcript.loadSession(entries);
 		expect(transcript.render(100).join("\n")).toContain("会话回溯");
-		expect(subject.historySnapshot()).toEqual(projectAgentHistory(entries));
+		expect(h.history).toEqual(projectAgentHistory(entries));
 	});
 	test("routes inherited session tools to the executing child, leaving the root mainline untouched", async ({ env }) => {
-		const cwd = env.cwd; let childCalls = 0; let childTarget = "";
-		let childDone!: () => void; const done = new Promise<void>((resolve) => childDone = resolve);
-		const host = await UinaHost.create({ cwd, model: mockModel(), stream: async (_m, req, emit) => {
-			if (!req.messages.some((message) => message.content.includes("unique child task"))) { emit({ kind: "text", text: "root answer" }); emit({ kind: "finish", reason: "stop" }); return; }
-			childCalls++;
-			if (childCalls === 1) { emit({ kind: "tool_call", call: { id: "list-child", name: "session_list", args: "{}" } }); emit({ kind: "finish", reason: "tool_calls" }); return; }
-			if (childCalls === 2) {
-				const nodeList = JSON.parse(req.messages.find((message) => message.role === "tool")!.content);
+		let childCalls = 0, childTarget = "";
+		let childDone!: () => void;
+		const done = new Promise<void>((resolve) => (childDone = resolve));
+		const harness = await UinaTestHarness.create({ env });
+
+		harness.scenario
+			.when((req) => !req.messages.some((m) => String(m.content ?? "").includes("unique child task")))
+			.reply("root answer")
+			.when(() => {
+				childCalls++;
+				return childCalls === 1;
+			})
+			.replyWithToolCall("list-child", "session_list", {})
+			.when(() => childCalls === 2)
+			.then((req) => {
+				const nodeList = JSON.parse(req.messages.find((m) => m.role === "tool")!.content as string);
 				childTarget = nodeList.nodes[0].id;
-				emit({ kind: "tool_call", call: { id: "rewind-child", name: "session_rewind", args: JSON.stringify({ targetId: childTarget, reason: "test child scope" }) } }); emit({ kind: "finish", reason: "tool_calls" }); return;
-			}
-			expect(req.messages.some((message) => message.content.includes("会话回溯"))).toBe(true);
-			emit({ kind: "text", text: "child corrected" }); emit({ kind: "finish", reason: "stop" }); childDone();
-		} });
+				return [
+					{ kind: "tool_call", call: { id: "rewind-child", name: "session_rewind", args: JSON.stringify({ targetId: childTarget, reason: "test child scope" }) } },
+					{ kind: "finish", reason: "tool_calls" },
+				];
+			})
+			.fallback((req) => {
+				expect(req.messages.some((m) => String(m.content ?? "").includes("会话回溯"))).toBe(true);
+				childDone();
+				return [{ kind: "text", text: "child corrected" }, { kind: "finish", reason: "stop" }];
+			});
+
 		try {
-			await host.start(); await host.submitText("root task"); const rootIds = host.session.list().nodes.map((node) => node.id);
-			host.subagents.start({ ownerId: "root", label: "child", prompt: "unique child task" });
+			await harness.send("root task");
+			const rootIds = harness.host.session.list().nodes.map((node) => node.id);
+			harness.host.subagents.start({ ownerId: "root", label: "child", prompt: "unique child task" });
 			await done;
-			expect(childCalls).toBe(3); expect(rootIds).not.toContain(childTarget);
-			expect(host.session.list({ scope: "all" }).nodes.some((node) => node.kind === "rewind")).toBe(false);
-		} finally { await host.dispose(); }
+			expect(childCalls).toBe(3);
+			expect(rootIds).not.toContain(childTarget);
+			expect(harness.host.session.list({ scope: "all" }).nodes.some((node) => node.kind === "rewind")).toBe(false);
+		} finally {
+			await harness.dispose();
+		}
 	});
 });
 
@@ -383,46 +438,27 @@ it("reinjects a missing rewind notice at the head of a trimmed history, never af
 	expect(protectedHistory[protectedHistory.length - 1].role).toBe("user");
 });
 
-test("does not fail the whole turn when scheduled rewind commit fails at safe point", async ({ env }) => {
-	const cwd = env.cwd;
-	let turnErrors: string[] = [];
-	let turnStarts = 0;
-	let turnEnds = 0;
-	let calls = 0;
-	const host = await UinaHost.create({
-		cwd,
-		model: mockModel({ contextWindow: 50 }), // 设置极小的 contextWindow 导致 commitRewind 超限
-		stream: async (_m, _req, emit) => {
-			calls++;
-			if (calls === 1) {
-				emit({ kind: "tool_call", call: { id: "rewind-call", name: "session_rewind", args: JSON.stringify({ targetId: "non-existent-or-oversized", reason: "bad" }) } });
-				emit({ kind: "finish", reason: "tool_calls" });
-			} else {
-				emit({ kind: "text", text: "completed despite failed rewind" });
-				emit({ kind: "finish", reason: "stop" });
-			}
-		},
+	test("does not fail the whole turn when scheduled rewind commit fails at safe point", async ({ env }) => {
+		const harness = await UinaTestHarness.create({
+			env,
+			model: { contextWindow: 50 },
+		});
+		harness.scenario
+			.replyWithToolCall("rewind-call", "session_rewind", { targetId: "non-existent-or-oversized", reason: "bad" })
+			.reply("completed despite failed rewind");
+
+		try {
+			await harness.send("run task");
+			expect(harness.events.filter("turn_start")).toHaveLength(1);
+			expect(harness.events.filter("turn_end")).toHaveLength(1);
+		} finally {
+			await harness.dispose();
+		}
 	});
-	host.subscribe(e => {
-		if (e.type === "error") turnErrors.push(e.text);
-		if (e.type === "turn_start") turnStarts++;
-		if (e.type === "turn_end") turnEnds++;
-	});
-	try {
-		await host.start();
-		// 提交文本运行
-		// 因为 tool 参数里的 targetId 在祖先里找不到，工具执行直接失败并返回工具结果，或者若进入排期后超限，也不会导致整个回合崩盘
-		await host.submitText("run task");
-		expect(turnStarts).toBe(1);
-		expect(turnEnds).toBe(1);
-	} finally {
-		await host.dispose();
-	}
-});
 
 it("rejects session operations when subject has no store configured", async () => {
-	const subject = new Subject(mockModel(), async () => {}, new ToolBroker());
-	await expect(subject.requestRewind({ targetId: "any", reason: "test" }, "test")).rejects.toThrow("未配置会话存储");
+	const harness = SubjectHarness.create({ model: mockModel(), stream: async () => {} });
+	await expect(harness.requestRewind({ targetId: "any", reason: "test" }, "test")).rejects.toThrow("未配置会话存储");
 	// Session views are composed from a store by session/access.ts; without a rewind
 	// entry the view stays navigable but rewind fails loudly.
 	const memoryStore = new MemorySessionStore();

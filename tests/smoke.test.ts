@@ -1,8 +1,7 @@
-import { describe, expect, test } from "./harness/index.js";
+import { describe, expect, test, SubjectHarness } from "./harness/index.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ToolBroker, type Tool } from "../src/tools/broker.js";
-import { Subject } from "../src/agent/loop.js";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { SessionFormatError, canonicalReplay, queuedInputs } from "../src/session/recovery.js";
 import { projectModelHistory } from "../src/agent/projection.js";
@@ -56,68 +55,50 @@ describe("ToolBroker", () => {
 });
 
 describe("Subject", () => {
-	test("executes a tool loop and persists message events", async ({ scenario }) => {
-		const broker = new ToolBroker();
-		broker.register(getTimeTool);
-		const store = new MemorySessionStore();
-
-		scenario
+	test("executes a tool loop and persists message events", async () => {
+		const h = SubjectHarness.create({ tools: [getTimeTool], store: new MemorySessionStore() });
+		h.scenario
 			.when((req) => !req.messages.some((message) => message.role === "tool"))
 			.replyWithToolCall("t1", "get_time", {});
-		scenario.fallback(() => [{ kind: "text", text: "完成" }, { kind: "finish", reason: "stop" }]);
+		h.scenario.fallback(() => [{ kind: "text", text: "完成" }, { kind: "finish", reason: "stop" }]);
 
-		const subject = new Subject(scenario.model, (m, req, onDelta, signal) => scenario.stream(m, req, onDelta, signal), broker, { store });
-		subject.pushInput("几点");
-		await subject.waitForIdle();
-		expect(scenario.calls).toHaveLength(2);
-		expect(subject.historySnapshot().filter((message) => message.role === "tool")).toHaveLength(1);
-		expect(store.records.some((record) => record.kind === "event" && record.event === "tool_started")).toBe(true);
+		await h.run("几点");
+		expect(h.scenario.calls).toHaveLength(2);
+		expect(h.history.filter((message) => message.role === "tool")).toHaveLength(1);
+		expect(h.records.some((record) => record.kind === "event" && record.event === "tool_started")).toBe(true);
 	});
 
-	test("preserves tool results already bounded by the tool output contract", async ({ scenario }) => {
-		const broker = new ToolBroker();
-		broker.register(makeTool("large", async () => "x".repeat(5000)));
-
-		scenario
+	test("preserves tool results already bounded by the tool output contract", async () => {
+		const h = SubjectHarness.create({ tools: [makeTool("large", async () => "x".repeat(5000))] });
+		h.scenario
 			.when((req) => !req.messages.some((message) => message.role === "tool"))
 			.replyWithToolCall("large-1", "large", {});
-		scenario.fallback(() => [{ kind: "text", text: "done" }, { kind: "finish", reason: "stop" }]);
+		h.scenario.fallback(() => [{ kind: "text", text: "done" }, { kind: "finish", reason: "stop" }]);
 
-		const subject = new Subject(scenario.model, (m, req, onDelta, signal) => scenario.stream(m, req, onDelta, signal), broker);
-		subject.pushInput("large");
-		await subject.waitForIdle();
-		const tool = scenario.calls[1].messages.find((message) => message.role === "tool");
+		await h.run("large");
+		const tool = h.scenario.calls[1].messages.find((message) => message.role === "tool");
 		expect(tool?.content).toBe("x".repeat(5000));
 	});
 
-	test("runs independent tools in parallel and returns results in call order", async ({ scenario }) => {
-		const broker = new ToolBroker();
-		let active = 0;
-		let maxActive = 0;
+	test("runs independent tools in parallel and returns results in call order", async () => {
+		let active = 0, maxActive = 0;
 		const run = async (args: Record<string, unknown>) => {
-			active++;
-			maxActive = Math.max(maxActive, active);
-			await wait(80);
-			active--;
-			return String(args.value);
+			active++; maxActive = Math.max(maxActive, active);
+			await wait(80); active--; return String(args.value);
 		};
-		broker.register(makeTool("one", run));
-		broker.register(makeTool("two", run));
-
-		scenario
+		const h = SubjectHarness.create({ tools: [makeTool("one", run), makeTool("two", run)] });
+		h.scenario
 			.when((req) => !req.messages.some((message) => message.role === "tool"))
 			.then(() => [
 				{ kind: "tool_call", call: { id: "1", name: "one", args: JSON.stringify({ value: "one" }) } },
 				{ kind: "tool_call", call: { id: "2", name: "two", args: JSON.stringify({ value: "two" }) } },
 				{ kind: "finish", reason: "tool_calls" },
 			]);
-		scenario.fallback(() => [{ kind: "text", text: "done" }, { kind: "finish", reason: "stop" }]);
+		h.scenario.fallback(() => [{ kind: "text", text: "done" }, { kind: "finish", reason: "stop" }]);
 
-		const subject = new Subject(scenario.model, (m, req, onDelta, signal) => scenario.stream(m, req, onDelta, signal), broker);
-		subject.pushInput("run");
-		await subject.waitForIdle();
+		await h.run("run");
 		expect(maxActive).toBe(2);
-		const toolMessages = subject.historySnapshot().filter((message) => message.role === "tool");
+		const toolMessages = h.history.filter((message) => message.role === "tool");
 		expect(toolMessages.map((message) => message.role === "tool" && message.tool_call_id)).toEqual(["1", "2"]);
 	});
 
@@ -142,23 +123,23 @@ describe("Subject", () => {
 			onDelta({ kind: "finish", reason: "stop" });
 		};
 		const broker = new ToolBroker();
-		const subject = new Subject(model, stream, broker);
-		subject.pushInput("first");
+		const h1 = SubjectHarness.create({ model, stream, broker });
+		h1.pushInput("first");
 		await wait(20);
-		subject.steer("steer");
-		subject.followUp("follow");
-		subject.interrupt();
-		await subject.waitForIdle();
-		expect(subject.queuedSnapshot().map((item) => item.text)).toEqual(["steer", "follow"]);
-		const editorItems = await subject.claimAllQueued();
+		h1.subject.steer("steer");
+		h1.subject.followUp("follow");
+		h1.interrupt();
+		await h1.waitForIdle();
+		expect(h1.queuedSnapshot().map((item) => item.text)).toEqual(["steer", "follow"]);
+		const editorItems = await h1.claimAllQueued();
 		expect(editorItems.map((item) => item.text)).toEqual(["steer", "follow"]);
 		release?.();
 
 		const normal = new Scenario();
 		normal.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
-		const resumed = new Subject(normal.model, (m, req, onDelta, signal) => normal.stream(m, req, onDelta, signal), broker);
-		resumed.pushInput(editorItems.map((item) => item.text).join("\n\n"));
-		await resumed.waitForIdle();
+		const h2 = SubjectHarness.create({ scenario: normal, broker });
+		h2.pushInput(editorItems.map((item) => item.text).join("\n\n"));
+		await h2.waitForIdle();
 		const lastUserMsg = [...normal.calls[0].messages].reverse().find((m) => m.role === "user");
 		expect(lastUserMsg?.content).toBe("steer\n\nfollow");
 	});
@@ -183,18 +164,18 @@ describe("Subject", () => {
 			onDelta({ kind: "text", text: input });
 			onDelta({ kind: "finish", reason: "stop" });
 		};
-		const subject = new Subject(model, stream, new ToolBroker());
+		const harness = SubjectHarness.create({ model, stream });
 		const turnTexts: string[] = [];
-		subject.subscribe((event) => {
+		harness.subscribe((event) => {
 			if (event.type === "turn_start") turnTexts.push(event.userText);
 		});
 
-		subject.pushInput("first");
+		harness.pushInput("first");
 		await wait(20);
-		subject.steer("steer-A");
-		subject.followUp("follow-B");
+		harness.subject.steer("steer-A");
+		harness.subject.followUp("follow-B");
 		release?.();
-		await subject.waitForIdle();
+		await harness.waitForIdle();
 
 		// 每条被消费的排队内容都应开启一个新可见回合；text 为空串（非本轮用户消息）不算数
 		expect(turnTexts.filter((t) => t.length > 0)).toEqual(["first", "steer-A", "follow-B"]);
@@ -217,68 +198,56 @@ describe("Subject", () => {
 			onDelta({ kind: "text", text: "done" });
 			onDelta({ kind: "finish", reason: "stop" });
 		};
-		const subject = new Subject(model, stream, new ToolBroker());
+		const harness = SubjectHarness.create({ model, stream });
 		const starts: number[] = [];
 		const ends: number[] = [];
-		subject.subscribe((event) => {
+		harness.subscribe((event) => {
 			if (event.type === "turn_start") starts.push(event.turnNumber);
 			if (event.type === "turn_end") ends.push(event.turnNumber);
 		});
 
-		subject.pushInput("first");
+		harness.pushInput("first");
 		await wait(20);
-		subject.steer("steer-A");
+		harness.subject.steer("steer-A");
 		await wait(20);
 		release?.();
-		subject.steer("steer-B");
-		await subject.waitForIdle();
+		harness.subject.steer("steer-B");
+		await harness.waitForIdle();
 
 		// 每个开启的可见回合都必须有同号终态：trajectory / transcript 的 turn 号口径一致
 		expect([...starts].sort((a, b) => a - b)).toEqual([...ends].sort((a, b) => a - b));
 	});
 
-	test("does not execute malformed tool arguments", async ({ scenario }) => {
-		const broker = new ToolBroker();
+	test("does not execute malformed tool arguments", async () => {
 		let executed = false;
-		broker.register(makeTool("bad", async () => {
-			executed = true;
-			return "bad";
-		}));
+		const h = SubjectHarness.create({ tools: [makeTool("bad", async () => { executed = true; return "bad"; })] });
 
-		scenario
+		h.scenario
 			.when((req) => !req.messages.some((message) => message.role === "tool"))
 			.then(() => [
 				{ kind: "tool_call", call: { id: "bad-1", name: "bad", args: "{\"value\":", argsValid: false } },
 				{ kind: "finish", reason: "tool_calls" },
 			]);
-		scenario.fallback(() => [{ kind: "text", text: "stopped" }, { kind: "finish", reason: "stop" }]);
+		h.scenario.fallback(() => [{ kind: "text", text: "stopped" }, { kind: "finish", reason: "stop" }]);
 
-		const subject = new Subject(scenario.model, (m, req, onDelta, signal) => scenario.stream(m, req, onDelta, signal), broker);
-		subject.pushInput("bad args");
-		await subject.waitForIdle();
+		await h.run("bad args");
 		expect(executed).toBe(false);
-		expect(subject.historySnapshot().find((message) => message.role === "tool")?.status).toBe("not_started");
+		expect(h.history.find((message) => message.role === "tool")?.status).toBe("not_started");
 	});
 
-	test("does not execute tool calls when the provider ended on length", async ({ scenario }) => {
-		const broker = new ToolBroker();
+	test("does not execute tool calls when the provider ended on length", async () => {
 		let executed = false;
-		broker.register(makeTool("length_tool", async () => {
-			executed = true;
-			return "should not run";
-		}));
+		const h = SubjectHarness.create({ tools: [makeTool("length_tool", async () => { executed = true; return "should not run"; })] });
 
-		scenario.fallback(() => [
+		h.scenario.fallback(() => [
 			{ kind: "tool_call", call: { id: "length-1", name: "length_tool", args: "{}" } },
 			{ kind: "finish", reason: "length" },
 		]);
 
-		const subject = new Subject(scenario.model, (m, req, onDelta, signal) => scenario.stream(m, req, onDelta, signal), broker);
-		subject.pushInput("length");
-		await subject.waitForIdle();
+		await h.run("length");
 		expect(executed).toBe(false);
-		expect(subject.historySnapshot().find((message) => message.role === "assistant")?.status).toBe("length");
-		expect(subject.historySnapshot().find((message) => message.role === "tool")?.status).toBe("not_started");
+		expect(h.history.find((message) => message.role === "assistant")?.status).toBe("length");
+		expect(h.history.find((message) => message.role === "tool")?.status).toBe("not_started");
 	});
 
 	test("scopes actual usage to one provider request and does not reuse it on the next turn", async () => {
@@ -299,64 +268,62 @@ describe("Subject", () => {
 			}
 			emit({ kind: "finish", reason: "stop" });
 		};
-		const subject = new Subject(model, stream, new ToolBroker());
-		subject.subscribe((event) => {
+		const harness = SubjectHarness.create({ model, stream });
+		harness.subscribe((event) => {
 			if (event.type === "turn_end" && event.usage) {
 				reports.push(event.usage as { usedTokens: number; actual: boolean; cacheRead?: number });
 			}
 		});
-		await subject.pushInput("one");
-		await subject.pushInput("two");
+		await harness.pushInput("one");
+		await harness.pushInput("two");
 		expect(reports[0]).toMatchObject({ usedTokens: 22, actual: true, cacheRead: 7 });
 		expect(reports[1]?.actual).toBe(false);
 		expect(reports[1]?.cacheRead).toBeUndefined();
 	});
 
 	test("keeps an unknown provider context window unknown and disables automatic compaction", async () => {
-		const scenario = new Scenario({ contextWindow: undefined });
-		scenario.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
-		const subject = new Subject(scenario.model, (m, req, onDelta, signal) => scenario.stream(m, req, onDelta, signal), new ToolBroker());
-		subject.addHistory([{ role: "user", content: "x".repeat(300_000) }]);
-		await subject.pushInput("next");
-		expect(subject.getContextWindow()).toBeUndefined();
-		expect(scenario.calls).toHaveLength(1);
+		const h = SubjectHarness.create({ model: { contextWindow: undefined } });
+		h.scenario.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
+		h.subject.addHistory([{ role: "user", content: "x".repeat(300_000) }]);
+		await h.run("next");
+		expect(h.subject.getContextWindow()).toBeUndefined();
+		expect(h.scenario.calls).toHaveLength(1);
 	});
 
-	test("claims queued items by identity in single LIFO pull-back order (UI peek + claim 组合)", async ({ scenario }) => {
-		scenario.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
-		const subject = new Subject(scenario.model, (m, req, onDelta, signal) => scenario.stream(m, req, onDelta, signal), new ToolBroker());
-		subject.seedQueue([
+	test("claims queued items by identity in single LIFO pull-back order (UI peek + claim 组合)", async () => {
+		const h = SubjectHarness.create();
+		h.scenario.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
+		h.subject.seedQueue([
 			{ id: "q1", order: 1, text: "task 1", mode: "followUp" },
 			{ id: "q2", order: 2, text: "task 2", mode: "followUp" },
 		]);
-		expect(subject.queuedSnapshot()).toHaveLength(2);
+		expect(h.subject.queuedSnapshot()).toHaveLength(2);
 
 		// UI pull-back 组合：peek 快照取最后入队的身份，claim 按身份领取（对齐 Alt+Up）
-		const last = await subject.claimQueued(subject.queuedSnapshot().at(-1)!.id);
+		const last = await h.subject.claimQueued(h.subject.queuedSnapshot().at(-1)!.id);
 		expect(last?.id).toBe("q2");
 		expect(last?.text).toBe("task 2");
-		expect(subject.queuedSnapshot()).toHaveLength(1);
+		expect(h.subject.queuedSnapshot()).toHaveLength(1);
 
 		// 再次领取最后一条
-		const first = await subject.claimQueued(subject.queuedSnapshot().at(-1)!.id);
+		const first = await h.subject.claimQueued(h.subject.queuedSnapshot().at(-1)!.id);
 		expect(first?.id).toBe("q1");
 		expect(first?.text).toBe("task 1");
-		expect(subject.queuedSnapshot()).toHaveLength(0);
+		expect(h.subject.queuedSnapshot()).toHaveLength(0);
 
 		// 队列为空时 peek 无候选；未知身份幂等返回 null
-		const empty = await subject.claimQueued("missing-id");
+		const empty = await h.subject.claimQueued("missing-id");
 		expect(empty).toBeNull();
 	});
 
-	test("consumes an input enqueued mid-run after the previous turn and replays the full session", async ({ scenario }) => {
-		scenario.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
-		const store = new MemorySessionStore();
-		const subject = new Subject(scenario.model, (m, req, onDelta, signal) => scenario.stream(m, req, onDelta, signal), new ToolBroker(), { store });
-		void subject.pushInput("first");
-		await subject.pushInput("second", { mode: "followUp" });
-		await subject.waitForIdle();
+	test("consumes an input enqueued mid-run after the previous turn and replays the full session", async () => {
+		const h = SubjectHarness.create({ store: new MemorySessionStore() });
+		h.scenario.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
+		void h.subject.pushInput("first");
+		await h.subject.pushInput("second", { mode: "followUp" });
+		await h.subject.waitForIdle();
 
-		const records = store.readRecords();
+		const records = h.records;
 		// 完整重放必须成功，且队列无残留
 		const state = canonicalReplay(records);
 		expect(queuedInputs(state)).toHaveLength(0);
@@ -393,18 +360,18 @@ describe("Subject", () => {
 				return result;
 			},
 		});
-		const subject = new Subject(model, stream, new ToolBroker(), { store });
+		const harness = SubjectHarness.create({ model, stream, store });
 
-		void subject.pushInput("first");
-		await subject.pushInput("second", { mode: "followUp" });
+		void harness.pushInput("first");
+		await harness.pushInput("second", { mode: "followUp" });
 		// 认领在调用时刻同步完成，queue_restored 写入仍被挂起
-		const pulled = subject.claimQueued(subject.queuedSnapshot().at(-1)!.id);
+		const pulled = harness.claimQueued(harness.queuedSnapshot().at(-1)!.id);
 		// 放行第一轮：回合收尾触发 resumeQueued，此时 second 已被认领，不得被消费
 		releaseModel();
 		await wait();
 		releaseRestored();
 		const last = await pulled;
-		await subject.waitForIdle();
+		await harness.waitForIdle();
 
 		expect(last?.text).toBe("second");
 		const records = store.readRecords();
@@ -539,17 +506,17 @@ describe("模型切换语义", () => {
 			onDelta({ kind: "text", text: userText });
 			onDelta({ kind: "finish", reason: "stop" });
 		};
-		const subject = new Subject(modelA, stream, new ToolBroker(), { thinkingLevel: "high" });
-		const run = subject.pushInput("first");
+		const harness = SubjectHarness.create({ model: modelA, stream, thinkingLevel: "high" });
+		const run = harness.pushInput("first");
 		await new Promise((r) => setTimeout(r, 30));
 		// 工作中：切模型 + 关思考
-		await subject.setModel(modelB);
-		subject.setThinkingLevel("off");
+		await harness.setModel(modelB);
+		harness.setThinkingLevel("off");
 		release();
 		// steer 续跑（旧行为：仍用 modelA + high；期望：modelB + off）
-		await subject.steer("second");
+		await harness.subject.steer("second");
 		await run;
-		await subject.waitForIdle();
+		await harness.waitForIdle();
 		expect(calls.length).toBe(2);
 		expect(calls[0]).toMatchObject({ model: "model-a", level: "high" });
 		expect(calls[1]).toMatchObject({ model: "model-b", level: "off", user: "second" });

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { open } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { IsolatedEnv } from "./harness/index.js";
+import { IsolatedEnv, mockTool } from "./harness/index.js";
 import { JsonlSessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { JobRegistry } from "../src/extensions/jobs/registry.js";
 import { SubagentRegistry } from "../src/extensions/subagents/registry.js";
@@ -14,12 +14,7 @@ import { MainScreenRenderer } from "../src/ui/core/renderer.js";
 import type { ProcessTerminal } from "../src/ui/core/terminal.js";
 import { visibleWidth } from "../src/ui/core/utils.js";
 
-function tool(name: string): Tool {
-	return {
-		def: { type: "function", function: { name, description: name, parameters: { type: "object", properties: {} } } },
-		run: async () => ({ result: "ok", status: "succeeded" }),
-	};
-}
+const tool = (name: string): Tool => mockTool(name, async () => ({ result: "ok", status: "succeeded" }));
 
 describe("hardening: session write queue", () => {
 	it.each(["append", "sync"])("rolls back a failed %s before accepting the next record", async (stage) => {

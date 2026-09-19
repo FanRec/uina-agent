@@ -322,4 +322,12 @@ export class VtScreen {
 	rowBgs(r: number): string[] {
 		return (this.grid[r] ?? []).map((c) => c.bg);
 	}
+
+	/** 获取当前屏幕栅格的纯文本表达（逐行拼接，自动去除行尾空白） */
+	getVisibleText(): string {
+		return this.grid
+			.map((row) => row.map((c) => c.ch).join("").trimEnd())
+			.join("\n")
+			.trimEnd();
+	}
 }

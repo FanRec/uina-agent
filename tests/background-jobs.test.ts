@@ -3,8 +3,7 @@ import { ToolBroker } from "../src/tools/broker.js";
 import { JobRegistry } from "../src/extensions/jobs/registry.js";
 import { createJobTools } from "../src/extensions/jobs/tools.js";
 import { createExecCommandTool } from "../src/extensions/runtime-tools/exec-command/index.js";
-import { Subject } from "../src/agent/loop.js";
-import { Scenario } from "./harness/index.js";
+import { Scenario, SubjectHarness } from "./harness/index.js";
 
 const registries: JobRegistry[] = [];
 afterEach(async () => {
@@ -104,15 +103,14 @@ describe("background jobs", () => {
 
 	it("delivers a runtime notice without adding a user message to history", async () => {
 		const scenario = Scenario.create().reply("ack");
-		const subject = new Subject(scenario.model, scenario.stream, new ToolBroker());
-		await subject.accept({
+		const harness = SubjectHarness.create({ scenario });
+		await harness.run({
 			id: "notice-1",
 			mode: "followUp",
 			source: { kind: "runtime", type: "job-notice", ref: "job-1" },
 			text: "后台任务 job-1 已完成",
 		});
-		while (subject.isBusy()) await new Promise((resolve) => setTimeout(resolve, 1));
-		expect(subject.historySnapshot().filter((message) => message.role === "user")).toHaveLength(0);
+		expect(harness.historySnapshot().filter((message) => message.role === "user")).toHaveLength(0);
 		expect(scenario.calls[0]?.messages.some((message) => message.content.includes("job-notice"))).toBe(true);
 		expect(scenario.lastPrompt).toContain("[运行时事件 job-notice");
 	});

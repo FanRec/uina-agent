@@ -12,10 +12,7 @@ import {
 	projectAgentHistory,
 } from "../src/session/recovery.js";
 import type { SessionRecord } from "../src/session/types.js";
-import { Subject } from "../src/agent/loop.js";
-import { ToolBroker } from "../src/tools/broker.js";
-import type { Tool } from "../src/tools/broker.js";
-import { IsolatedEnv, Scenario } from "./harness/index.js";
+import { IsolatedEnv, Scenario, SubjectHarness, mockTool } from "./harness/index.js";
 
 /** 每个提交点后的机器守卫：常驻状态 ≡ 全量 fold。 */
 function assertReplayEqualsMemory(store: MemorySessionStore): void {
@@ -124,23 +121,22 @@ describe("replay ≡ memory invariants", () => {
 	});
 
 	it("holds for a real subject run: fold equals resident state and projection equals history", async () => {
-		const tool: Tool = {
-			def: { type: "function", function: { name: "probe", description: "probe", parameters: { type: "object", properties: {} } } },
-			run: async () => ({ result: "ok", status: "succeeded" }),
-		};
-		const broker = new ToolBroker();
-		broker.register(tool);
+		const tool = mockTool("probe", async () => ({ result: "ok", status: "succeeded" }));
 		const scenario = Scenario.create()
 			.when((req) => req.messages.some((message) => message.role === "tool")).reply("done")
 			.when(() => true).replyWithToolCall("call-1", "probe", {});
 		const store = new MemorySessionStore();
-		const subject = new Subject(scenario.model, scenario.stream, broker, { store });
-		void subject.pushInput("run with tool");
-		await subject.pushInput("second", { mode: "followUp" });
-		await subject.waitForIdle();
+		const harness = SubjectHarness.create({
+			scenario,
+			tools: [tool],
+			store,
+		});
+		void harness.pushInput("run with tool");
+		await harness.pushInput("second", { mode: "followUp" });
+		await harness.waitForIdle();
 
 		assertReplayEqualsMemory(store);
-		expect(subject.historySnapshot()).toEqual(projectAgentHistory(canonicalReplay(store.readRecords()).entries));
+		expect(harness.historySnapshot()).toEqual(projectAgentHistory(canonicalReplay(store.readRecords()).entries));
 	});
 });
 

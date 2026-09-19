@@ -6,6 +6,7 @@ import {
 	listSessionBranches,
 	readSessionBranch,
 } from "../src/session/navigation.js";
+import { seedSession, rewindTo } from "./harness/index.js";
 
 /**
  * 分支查询（P1.3 / P1.4 的回归网）。
@@ -16,14 +17,13 @@ import {
  */
 async function seedWithTwoBranches() {
 	const store = new MemorySessionStore();
-	await store.appendMessage({ role: "user", content: "original task" });
-	await store.appendMessage({ role: "assistant", content: "bad plan" });
-	const target = store.readRecords()[0].id;
-	const cutAt = store.readRecords()[1].id;
-	await store.appendRewind({ id: "r1", requestId: "q1", targetId: target, fromId: cutAt, source: "user", reason: "bad premise" });
+	const records = await seedSession(store, ["original task", "bad plan"]);
+	const target = records[0].id;
+	const cutAt = records[1].id;
+	await rewindTo(store, target, { id: "r1", requestId: "q1", fromId: cutAt, reason: "bad premise" });
 	await store.appendMessage({ role: "assistant", content: "corrected plan" });
 	const beforeSecond = store.readRecords().at(-1)!.id;
-	await store.appendRewind({ id: "r2", requestId: "q2", targetId: target, fromId: beforeSecond, source: "user", reason: "again" });
+	await rewindTo(store, target, { id: "r2", requestId: "q2", fromId: beforeSecond, reason: "again" });
 	return { store, state: store.state, target, cutAt };
 }
 

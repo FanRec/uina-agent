@@ -1,10 +1,14 @@
 import type { ProcessTerminal } from "../../../src/ui/core/terminal.js";
+import { VtScreen } from "./vt-screen.js";
 
 export interface SilentTerminalResult {
 	readonly terminal: ProcessTerminal;
 	readonly frames: string[];
+	readonly screen: VtScreen;
 	getVisibleText(): string;
 	getLastFrame(): string | undefined;
+	feedInput(data: string): void;
+	resize(cols: number, rows: number): void;
 	clear(): void;
 }
 
@@ -23,7 +27,7 @@ export interface SilentTerminalOptions {
 
 /**
  * 创建静音的虚拟终端实例：
- * 捕获所有渲染帧，绝不向真实 process.stdout 刷屏输出，杜绝测试控制台污染。
+ * 捕获所有渲染帧，由 VtScreen 逐格仿真当前真实可见屏幕，绝不向真实 process.stdout 刷屏。
  */
 export function createSilentTerminal(
 	optionsOrColumns: SilentTerminalOptions | number = 120,
@@ -34,23 +38,38 @@ export function createSilentTerminal(
 			? { columns: optionsOrColumns, rows: rowsArg }
 			: optionsOrColumns;
 
-	const columns = options.columns ?? 120;
-	const rows = options.rows ?? 30;
+	let columns = options.columns ?? 120;
+	let rows = options.rows ?? 30;
 	const isTTY = options.isTTY ?? true;
 	const frames: string[] = [];
+	let screen = new VtScreen(columns, rows);
+	let inputHandler: ((data: string) => void) | undefined;
+	let resizeHandler: (() => void) | undefined;
 
 	const terminal = {
-		columns,
-		rows,
+		get columns() {
+			return columns;
+		},
+		get rows() {
+			return rows;
+		},
 		isTTY,
 		syncWrite: (data: string) => {
 			frames.push(data);
+			screen.feed(data);
 		},
 		write: (data: string) => {
 			frames.push(data);
+			screen.feed(data);
 		},
-		start: () => {},
-		stop: () => {},
+		start: (onInput?: (data: string) => void, onResize?: () => void) => {
+			inputHandler = onInput;
+			resizeHandler = onResize;
+		},
+		stop: () => {
+			inputHandler = undefined;
+			resizeHandler = undefined;
+		},
 		hideCursor: () => {},
 		showCursor: () => {},
 		cursorUp: () => {},
@@ -63,10 +82,23 @@ export function createSilentTerminal(
 	return {
 		terminal,
 		frames,
-		getVisibleText: () => stripAnsiColors(frames.join("\n")),
+		get screen() {
+			return screen;
+		},
+		getVisibleText: () => screen.getVisibleText(),
 		getLastFrame: () => frames.at(-1),
+		feedInput: (data: string) => {
+			inputHandler?.(data);
+		},
+		resize: (cols: number, newRows: number) => {
+			columns = cols;
+			rows = newRows;
+			screen = new VtScreen(columns, rows);
+			resizeHandler?.();
+		},
 		clear: () => {
 			frames.length = 0;
+			screen = new VtScreen(columns, rows);
 		},
 	};
 }

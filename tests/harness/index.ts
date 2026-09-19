@@ -12,17 +12,18 @@
  * - createSilentTerminal: 静音虚拟终端
  */
 
-export { test, expect } from "./fixtures.js";
+export { test, expect, mockTool } from "./fixtures.js";
 export type { UinaTestFixtures } from "./fixtures.js";
 export { describe, it, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
-
-export { defineExtensionConformanceTests } from "./conformance/extension-conformance.js";
 
 export { Scenario, createScenario, mockModel } from "./provider/scenario.js";
 export { StreamBuilder, stream } from "./provider/stream-builder.js";
 
 export { UinaTestHarness } from "./host/harness.js";
 export type { HarnessOptions } from "./host/harness.js";
+
+export { SubjectHarness } from "./core/subject-harness.js";
+export type { SubjectHarnessOptions } from "./core/subject-harness.js";
 
 export { EventCollector } from "./host/event-collector.js";
 
@@ -34,3 +35,11 @@ export { VtScreen } from "./environment/vt-screen.js";
 export type { VtCell, Run } from "./environment/vt-screen.js";
 
 export { assertDAGInvariants, assertNoResourceLeaks } from "./matchers/invariants.js";
+
+export { UITestHarness, createTestTUI, renderWidget, mockModelGroups } from "./ui/ui-harness.js";
+export type { TestTUIOptions } from "./ui/ui-harness.js";
+
+export { ExtensionHarness, createExtensionHarness } from "./extensions/extension-harness.js";
+export type { ExtensionHarnessOptions } from "./extensions/extension-harness.js";
+
+export { seedSession, rewindTo } from "./session/session-helpers.js";

@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
-import { Subject } from "../src/agent/loop.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import type { ModelRequest, ModelStreamFn } from "../src/core/types.js";
 import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
 import { ExtensionRunner } from "../src/extensions/runner.js";
 import activateMemory, { MEMORY_ENTRY_TYPE } from "./helpers/memory-capability.js";
-import { Scenario, mockModel } from "./harness/index.js";
+import { Scenario, mockModel, SubjectHarness } from "./harness/index.js";
 
 /**
  * Memory 派生实验（P0 冻结概念 allowlist 的第五关实证）：
@@ -50,7 +49,12 @@ describe("Memory 派生实验：capability 零内核内碰触", () => {
 			return scenario.stream(model, req, onDelta, signal);
 		};
 
-		const subject = new Subject(mockModel(), stream, new ToolBroker(), { store, runtimeHooks: hooks });
+		const harness = SubjectHarness.create({
+			model: mockModel(),
+			stream,
+			store,
+			runtimeHooks: hooks,
+		});
 
 		// 1. 记住一条事实：/remember → pi.appendEntry → auxiliary（非主线）。
 		const remember = runner.registry.getCommand("remember");
@@ -64,8 +68,7 @@ describe("Memory 派生实验：capability 零内核内碰触", () => {
 		}
 
 		// 2. 跑一回合：prepare 注入 systemPrompt，transformContext 注入记忆上下文。
-		await subject.pushInput("你好");
-		await subject.waitForIdle();
+		await harness.run("你好");
 
 		expect(requests).toHaveLength(1);
 		expect(requests[0]!.messages.some((m) => m.role === "system" && (m.content as string).includes("[已知记忆]"))).toBe(true);

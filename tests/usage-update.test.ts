@@ -5,10 +5,9 @@
  * 一个回合可以有几十次调用，期间底栏的"已用/总量"一直停在上一轮的值——用户看到的就是
  * "完成一次任务之后才更新"。服务端 usage 在每次调用收尾就到手，所以让它在那一刻上报。
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, mockModel, SubjectHarness } from "./harness/index.js";
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
 import type { RuntimeEvent } from "../src/runtime/events.js";
-import { mockModel } from "./harness/index.js";
 
 const MODEL: Model = mockModel({ id: "mock", name: "mock", contextWindow: 100_000 });
 
@@ -22,24 +21,23 @@ function streamWithUsage(usage: { input: number; output: number; totalTokens: nu
 }
 
 /** 录制所有 runtime 事件，返回"某类事件在 turn_end 之前出现的次数"这类查询能力。 */
-async function collect(): Promise<{ events: RuntimeEvent[]; subject: import("../src/agent/loop.js").Subject }> {
-	const { Subject } = await import("../src/agent/loop.js");
-	const { ToolBroker } = await import("../src/tools/broker.js");
+function collect(): { events: RuntimeEvent[]; harness: SubjectHarness } {
 	const events: RuntimeEvent[] = [];
-	const subject = new Subject(MODEL, streamWithUsage({ input: 4_000, output: 200, totalTokens: 12_345, cacheRead: 1_000 }), new ToolBroker(), {
+	const harness = SubjectHarness.create({
+		model: MODEL,
+		stream: streamWithUsage({ input: 4_000, output: 200, totalTokens: 12_345, cacheRead: 1_000 }),
 		systemPrompt: "sys",
 	});
-	subject.subscribe((event) => events.push(event));
-	return { events, subject };
+	harness.subscribe((event) => events.push(event));
+	return { events, harness };
 }
 
 const indexOf = (events: RuntimeEvent[], type: RuntimeEvent["type"]): number => events.findIndex((e) => e.type === type);
 
 describe("usage_update：每次模型调用收尾就上报真实用量", () => {
 	it("在 turn_end 之前就发出 usage_update，且带服务端真实 token 数", async () => {
-		const { events, subject } = await collect();
-		await subject.pushInput("你好");
-		await subject.waitForIdle();
+		const { events, harness } = collect();
+		await harness.run("你好");
 
 		const usageIdx = indexOf(events, "usage_update");
 		const endIdx = indexOf(events, "turn_end");
@@ -63,8 +61,6 @@ describe("usage_update：每次模型调用收尾就上报真实用量", () => {
 	});
 
 	it("每次模型调用都上报一次（多轮工具往返不只报最后一次）", async () => {
-		const { Subject } = await import("../src/agent/loop.js");
-		const { ToolBroker } = await import("../src/tools/broker.js");
 		const events: RuntimeEvent[] = [];
 
 		let call = 0;
@@ -77,10 +73,9 @@ describe("usage_update：每次模型调用收尾就上报真实用量", () => {
 			onDelta({ kind: "finish", reason: call === 1 ? "tool_calls" : "stop" });
 		};
 
-		const subject = new Subject(MODEL, stream, new ToolBroker(), { systemPrompt: "sys" });
-		subject.subscribe((event) => events.push(event));
-		await subject.pushInput("跑两轮");
-		await subject.waitForIdle();
+		const harness = SubjectHarness.create({ model: MODEL, stream, systemPrompt: "sys" });
+		harness.subscribe((event) => events.push(event));
+		await harness.run("跑两轮");
 
 		const updates = events.filter((e): e is Extract<RuntimeEvent, { type: "usage_update" }> => e.type === "usage_update");
 		expect(call).toBeGreaterThanOrEqual(2);
@@ -91,9 +86,8 @@ describe("usage_update：每次模型调用收尾就上报真实用量", () => {
 	});
 
 	it("turn_end 与实时上报同源（底栏不会在估算值与真实值之间跳）", async () => {
-		const { events, subject } = await collect();
-		await subject.pushInput("你好");
-		await subject.waitForIdle();
+		const { events, harness } = collect();
+		await harness.run("你好");
 
 		const usageEvent = events.find((e): e is Extract<RuntimeEvent, { type: "usage_update" }> => e.type === "usage_update")!;
 		const endEvent = events.find((e): e is Extract<RuntimeEvent, { type: "turn_end" }> => e.type === "turn_end")!;
@@ -104,17 +98,14 @@ describe("usage_update：每次模型调用收尾就上报真实用量", () => {
 
 describe("getUsedTokens：真实值优先于字符估算", () => {
 	it("服务端报过总量后返回真实值，而不是 estimateContextTokens 的启发式结果", async () => {
-		const { Subject } = await import("../src/agent/loop.js");
-		const { ToolBroker } = await import("../src/tools/broker.js");
 		const stream: ModelStreamFn = async (_m, _req, onDelta) => {
 			onDelta({ kind: "usage", usage: { input: 1, output: 1, totalTokens: 99_999 } });
 			onDelta({ kind: "finish", reason: "stop" });
 		};
-		const subject = new Subject(MODEL, stream, new ToolBroker(), { systemPrompt: "sys" });
-		const before = subject.getUsedTokens();
-		await subject.pushInput("你好");
-		await subject.waitForIdle();
-		const after = subject.getUsedTokens();
+		const harness = SubjectHarness.create({ model: MODEL, stream, systemPrompt: "sys" });
+		const before = harness.subject.getUsedTokens();
+		await harness.run("你好");
+		const after = harness.subject.getUsedTokens();
 
 		expect(after).toBe(99_999);
 		// 真实值不和估算值重合（否则这条测试区分不出实现）——历史里带着用户输入与回复，
@@ -122,50 +113,47 @@ describe("getUsedTokens：真实值优先于字符估算", () => {
 		expect(before).not.toBe(99_999);
 	});
 });
+
 describe("setModel：口径换了，旧模型的 usage 锚必须失效", () => {
 	it("切换模型后 getUsedTokens() 不再返回旧模型报的真实总量", async () => {
-		const { Subject } = await import("../src/agent/loop.js");
-		const { ToolBroker } = await import("../src/tools/broker.js");
-		const subject = new Subject(
-			MODEL,
-			streamWithUsage({ input: 1, output: 1, totalTokens: 99_999 }),
-			new ToolBroker(),
-			{ systemPrompt: "sys" },
-		);
-		await subject.pushInput("你好");
-		await subject.waitForIdle();
-		expect(subject.getUsedTokens()).toBe(99_999);
+		const harness = SubjectHarness.create({
+			model: MODEL,
+			stream: streamWithUsage({ input: 1, output: 1, totalTokens: 99_999 }),
+			systemPrompt: "sys",
+		});
+		await harness.run("你好");
+		expect(harness.subject.getUsedTokens()).toBe(99_999);
 
 		const bigger = mockModel({ id: "mock2", name: "mock2", contextWindow: 200_000 });
-		await subject.setModel(bigger);
+		await harness.subject.setModel(bigger);
 
 		// 旧模型报的 99_999 是旧窗口口径下的绝对总量，对新窗口没有描述力：
 		// 切模型后必须回落到字符估算，与压缩 / 回溯同一条失效纪律。
 		// 回退本修复（删掉 setModel 里的 forgetUsage()）后，这里恒为 99_999。
-		expect(subject.getUsedTokens()).not.toBe(99_999);
-		expect(subject.getContextWindow()).toBe(200_000);
+		expect(harness.subject.getUsedTokens()).not.toBe(99_999);
+		expect(harness.subject.getContextWindow()).toBe(200_000);
 	});
 
 	it("带 usage 的 assistant 不在末位时（后跟工具结果），旧锚同样必须失效", async () => {
-		const { Subject } = await import("../src/agent/loop.js");
-		const { ToolBroker } = await import("../src/tools/broker.js");
-		const subject = new Subject(MODEL, streamWithUsage({ input: 1, output: 1, totalTokens: 99_999 }), new ToolBroker(), {
+		const harness = SubjectHarness.create({
+			model: MODEL,
+			stream: streamWithUsage({ input: 1, output: 1, totalTokens: 99_999 }),
 			systemPrompt: "sys",
 		});
 		// 工具交换中途停手的形态：带 usage 的 assistant 后面跟着 tool 结果 ——
 		// 回合被打断、工具 stop 收尾、not_started 尾巴都长这样。
 		// estimateContextTokens 从后往前找，仍会锚到那条 assistant。
-		subject.addHistory([
+		harness.subject.addHistory([
 			{ role: "user", content: "第一回合" },
 			{ role: "assistant", content: "", tool_calls: [{ id: "c1", name: "read", args: "{}" }], status: "complete", usage: { input: 1, output: 1, totalTokens: 99_999 } },
 			{ role: "tool", tool_call_id: "c1", content: "结果", status: "succeeded" },
 		] as never);
-		expect(subject.getUsedTokens()).toBe(99_999 + 5);
+		expect(harness.subject.getUsedTokens()).toBe(99_999 + 5);
 
-		await subject.setModel(mockModel({ id: "mock2", name: "mock2", contextWindow: 200_000 }));
+		await harness.subject.setModel(mockModel({ id: "mock2", name: "mock2", contextWindow: 200_000 }));
 
 		// 只剥最后一条 assistant 的 usage 盖不住这个形态：旧锚从历史深处存活，
 		// getUsedTokens() 继续顶着旧口径的 99_999。
-		expect(subject.getUsedTokens()).not.toBe(99_999);
+		expect(harness.subject.getUsedTokens()).not.toBe(99_999);
 	});
 });

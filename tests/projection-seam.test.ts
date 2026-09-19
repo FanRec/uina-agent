@@ -8,9 +8,7 @@
  *
  * 基于 Uina Test Kit 进行重构，消灭手工 mkdtemp/rm 样板代码与空转轮询。
  */
-import { describe, expect, test } from "./harness/index.js";
-import { Subject } from "../src/agent/loop.js";
-import { ToolBroker } from "../src/tools/broker.js";
+import { describe, expect, test, SubjectHarness } from "./harness/index.js";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { projectAgentHistory } from "../src/session/recovery.js";
 import { convertToLlm } from "../src/agent/context.js";
@@ -32,15 +30,15 @@ describe("projection Replacement seam (P3c)", () => {
 	test("routes provider-bound shaping through the injected convertToLlm policy", async ({ scenario }) => {
 		scenario.reply("ok");
 
-		const subject = new Subject(scenario.model, (m, req, onDelta, signal) => scenario.stream(m, req, onDelta, signal), new ToolBroker(), {
+		const harness = SubjectHarness.create({
+			scenario,
 			projection: {
 				convertToLlm: (messages, opts) =>
 					convertToLlm(messages, opts).map((m) => ({ ...m, content: `[shaped] ${m.content}` })),
 			},
 		});
 
-		await subject.pushInput("hello");
-		await subject.waitForIdle();
+		await harness.run("hello");
 
 		expect(scenario.calls).toHaveLength(1);
 		const seen = scenario.calls[0]!.messages.filter((m) => m.role !== "system");
@@ -57,21 +55,17 @@ describe("projection Replacement seam (P3c)", () => {
 
 		scenario.reply("ok");
 
-		const subject = new Subject(
-			scenario.model,
-			(m, req, onDelta, signal) => scenario.stream(m, req, onDelta, signal),
-			new ToolBroker(),
-			{
-				store,
-				projection: {
-					projectHistory: (entries) =>
-						projectAgentHistory(entries).map((m) => ({ ...m, content: `${m.content} [projected]` })),
-				},
+		const harness = SubjectHarness.create({
+			scenario,
+			store,
+			projection: {
+				projectHistory: (entries) =>
+					projectAgentHistory(entries).map((m) => ({ ...m, content: `${m.content} [projected]` })),
 			},
-		);
-		await subject.requestRewind({ targetId, reason: "wrong premise" }, "test");
+		});
+		await harness.requestRewind({ targetId, reason: "wrong premise" }, "test");
 
-		const history = subject.historySnapshot();
+		const history = harness.historySnapshot();
 		// 回溯采用的主线整体来自 policy 形塑；被放弃切片不回归主线。
 		expect(history.some((m) => m.content.includes("reply 1 [projected]"))).toBe(true);
 		expect(history.some((m) => m.content.includes("task 2"))).toBe(false);

@@ -7,10 +7,9 @@ import type {
 	StreamDelta,
 } from "../src/core/types.js";
 import { ModelRegistry, createModel } from "../src/ai/providers.js";
-import { Subject } from "../src/agent/loop.js";
-import { ToolBroker } from "../src/tools/broker.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { assertProviderFacts, effectiveContextWindow, protocolCarriesThinking } from "../src/ai/config.js";
+import { SubjectHarness } from "./harness/index.js";
 
 describe("Pi-aligned Model and Provider Decoupling", () => {
 	it("enforces Model as a pure data specification without runtime methods", () => {
@@ -114,16 +113,15 @@ describe("Pi-aligned Model and Provider Decoupling", () => {
 		expect(() => registry.resolve("p1/unselectable-no-window")).toThrow("缺少 contextWindow");
 
 		// Subject 切换 Model（纯数据切换）
-		const subject = new Subject(
-			registry.getModel("static-m1")!,
-			registry.stream.bind(registry),
-			new ToolBroker(),
-		);
+		const harness = SubjectHarness.create({
+			model: registry.getModel("static-m1")!,
+			stream: registry.stream.bind(registry),
+		});
 
-		expect(subject.getModel().id).toBe("static-m1");
-		subject.setModel(resolvedDyn);
-		expect(subject.getModel().id).toBe("dyn-m1");
-		expect(subject.getContextWindow()).toBe(64_000);
+		expect(harness.getModel().id).toBe("static-m1");
+		await harness.setModel(resolvedDyn);
+		expect(harness.getModel().id).toBe("dyn-m1");
+		expect(harness.getContextWindow()).toBe(64_000);
 	});
 
 	it("preserves all 5 P0 security guarantees", () => {

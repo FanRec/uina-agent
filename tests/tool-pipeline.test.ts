@@ -1,4 +1,4 @@
-import { describe, expect, test } from "./harness/index.js";
+import { describe, expect, test, mockTool } from "./harness/index.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import { executeToolPipeline } from "../src/tools/pipeline.js";
 import type { ToolResultStatus } from "../src/core/types.js";
@@ -6,26 +6,17 @@ import type { ToolResultStatus } from "../src/core/types.js";
 describe("Tool Execution Pipeline", () => {
 	function createTestBroker() {
 		const broker = new ToolBroker();
-		broker.register({
-			def: {
-				type: "function",
-				function: {
-					name: "echo_tool",
-					description: "回显输入",
-					parameters: {
-						type: "object",
-						properties: {
-							msg: { type: "string" },
-						},
-						required: ["msg"],
-						additionalProperties: false,
-					},
+		broker.register(mockTool("echo_tool", async (args) => ({ result: `echo:${String(args.msg)}`, status: "succeeded" }), {
+			description: "回显输入",
+			parameters: {
+				type: "object",
+				properties: {
+					msg: { type: "string" },
 				},
+				required: ["msg"],
+				additionalProperties: false,
 			},
-			async run(args) {
-				return { result: `echo:${String(args.msg)}`, status: "succeeded" };
-			},
-		});
+		}));
 		return broker;
 	}
 
@@ -183,29 +174,19 @@ describe("Tool Execution Pipeline", () => {
 		const controller = new AbortController();
 		const trace: string[] = [];
 
-		broker.register({
-			def: {
-				type: "function",
-				function: {
-					name: "hanging_tool",
-					description: "等待取消",
-					parameters: { type: "object", properties: {} },
-				},
-			},
-			async run(_args, signal) {
-				return new Promise((_resolve, reject) => {
-					// 已经在执行中触发中断
-					controller.abort();
-					if (signal?.aborted) {
+		broker.register(mockTool("hanging_tool", async (_args, signal) => {
+			return new Promise((_resolve, reject) => {
+				// 已经在执行中触发中断
+				controller.abort();
+				if (signal?.aborted) {
+					reject(new Error("aborted"));
+				} else {
+					signal?.addEventListener("abort", () => {
 						reject(new Error("aborted"));
-					} else {
-						signal?.addEventListener("abort", () => {
-							reject(new Error("aborted"));
-						});
-					}
-				});
-			},
-		});
+					});
+				}
+			});
+		}, { description: "等待取消" }));
 
 		const pipelinePromise = executeToolPipeline(
 			broker,
@@ -230,19 +211,9 @@ describe("Tool Execution Pipeline", () => {
 
 	test("preserves continuation stop from tool outcome", async () => {
 		const broker = new ToolBroker();
-		broker.register({
-			def: {
-				type: "function",
-				function: {
-					name: "stopper",
-					description: "请求中断决策",
-					parameters: { type: "object", properties: {} },
-				},
-			},
-			async run() {
-				return { result: "done", status: "succeeded" as ToolResultStatus, continuation: "stop" };
-			},
-		});
+		broker.register(mockTool("stopper", async () => {
+			return { result: "done", status: "succeeded" as ToolResultStatus, continuation: "stop" };
+		}, { description: "请求中断决策" }));
 
 		const outcome = await broker.executePipeline(
 			{ callId: "c-stop", name: "stopper", args: {} },

@@ -54,3 +54,4 @@ export const test = baseTest.extend<UinaTestFixtures>({
 });
 
 export { expect };
+export { mockTool } from "./core/subject-harness.js";

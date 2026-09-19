@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { readFile, writeFile } from "node:fs/promises";
-import { Subject } from "../src/agent/loop.js";
 import type { ModelStreamFn, ToolResultStatus } from "../src/core/types.js";
 import { ExtensionHost } from "../src/extensions/host.js";
 import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
@@ -12,7 +11,7 @@ import type { QueuedInput } from "../src/session/types.js";
 import { ToolBroker, type Tool } from "../src/tools/broker.js";
 import { InteractiveTUI } from "../src/ui/tui.js";
 import { TranscriptContainer, formatToolCardLines } from "../src/ui/components/transcript/index.js";
-import { IsolatedEnv, Scenario, mockModel } from "./harness/index.js";
+import { IsolatedEnv, Scenario, mockModel, SubjectHarness, mockTool } from "./harness/index.js";
 
 const envs: IsolatedEnv[] = [];
 afterEach(async () => {
@@ -28,23 +27,22 @@ function providerFor(name: string, args: Record<string, unknown> = {}) {
 		.when(req => !req.messages.some(m => m.role === "tool")).replyWithToolCall("call", name, args)
 		.when(() => true).reply("done");
 }
-function toolWith(run: Tool["run"]): Tool {
-	return { def: { type: "function", function: { name: "probe", description: "probe", parameters: { type: "object", properties: {} } } }, run };
-}
+const toolWith = (run: Tool["run"]): Tool => mockTool("probe", run);
 
 describe("S1 durable session facts", () => {
 	it("reopens a blocked call without execution, while a started unfinished call stays unknown", async () => {
 		const path = await sessionPath();
 		const { store } = await openJsonlSession(path);
 		let executions = 0;
-		const broker = new ToolBroker();
-		broker.register(toolWith(async () => { executions++; return { result: "ok", status: "succeeded" }; }));
 		const host = new ExtensionHost();
 		host.onHook("tools.beforeCall", () => ({ block: true, reason: "extension decision" }));
-		const p = providerFor("probe");
-		const subject = new Subject(p.model, p.stream, broker, { store, runtimeHooks: createRuntimeHooks(host) });
-		await subject.pushInput("run");
-		await subject.waitForIdle();
+		const harness = SubjectHarness.create({
+			scenario: providerFor("probe"),
+			store,
+			runtimeHooks: createRuntimeHooks(host),
+			tools: [toolWith(async () => { executions++; return { result: "ok", status: "succeeded" }; })],
+		});
+		await harness.run("run");
 		await store.appendMessage({ role: "assistant", content: "", tool_calls: [{ id: "unfinished", name: "probe", args: {} }] });
 		await store.appendEvent("tool_started", { callId: "unfinished", name: "probe" });
 		await store.close();
@@ -102,21 +100,18 @@ describe("S1 durable session facts", () => {
 	it("commits idle accept input as durable input record without short-circuiting metadata", async () => {
 		const path = await sessionPath();
 		const { store } = await openJsonlSession(path);
-		const p = Scenario.create().reply("acknowledged");
-		const subject = new Subject(
-			p.model,
-			p.stream,
-			new ToolBroker(),
-			{ store },
-		);
-		await subject.accept({
+		const harness = SubjectHarness.create({
+			scenario: Scenario.create().reply("acknowledged"),
+			store,
+		});
+		await harness.subject.accept({
 			id: "idle-input-123",
 			mode: "followUp",
 			source: { kind: "agent", type: "subagent-start", ref: "sub-1" },
 			text: "task from child",
 			data: { trace: "abc" },
 		});
-		await subject.waitForIdle();
+		await harness.waitForIdle();
 		await store.close();
 
 		const rawLines = (await readFile(path, "utf8")).trim().split("\n");
@@ -158,20 +153,19 @@ describe("S1 durable session facts", () => {
 			if (++calls === 1) { entered(); await gate; }
 			delta({ kind: "text", text: "done" }); delta({ kind: "finish", reason: "stop" });
 		};
-		const subject = new Subject(model, stream, new ToolBroker(), { store });
-		const run = subject.pushInput("first");
+		const harness = SubjectHarness.create({ model, stream, store });
+		harness.pushInput("first");
 		await waiting;
-		await subject.steer("steer");
-		await subject.followUp("follow");
+		await harness.subject.steer("steer");
+		await harness.subject.followUp("follow");
 		release();
-		await run;
-		await subject.waitForIdle();
+		await harness.waitForIdle();
 		await store.close();
 		const reopened = await openJsonlSession(path);
 		await reopened.store.close();
 		expect(reopened.snapshot.queued).toEqual([]);
-		expect(projectAgentHistory(reopened.snapshot.entries)).toEqual(subject.historySnapshot());
-		expect(subject.historySnapshot().filter(m => m.role === "user").map(m => m.content)).toEqual(["first", "steer", "follow"]);
+		expect(projectAgentHistory(reopened.snapshot.entries)).toEqual(harness.historySnapshot());
+		expect(harness.historySnapshot().filter(m => m.role === "user").map(m => m.content)).toEqual(["first", "steer", "follow"]);
 		expect(reopened.snapshot.entries.filter(e => e.kind === "input")).toHaveLength(2);
 	});
 
@@ -181,16 +175,15 @@ describe("S1 durable session facts", () => {
 		store.appendInput = async () => { attempts++; throw new Error("commit failed"); };
 		const errors: string[] = [];
 		const p1 = Scenario.create().reply("done");
-		const subject = new Subject(p1.model, p1.stream, new ToolBroker(), { store });
-		subject.subscribe((e) => { if (e.type === "error") errors.push(e.text); });
-		const run = subject.pushInput("first");
-		await subject.followUp("pending");
-		await run;
-		await subject.waitForIdle();
+		const harness = SubjectHarness.create({ scenario: p1, store });
+		harness.subscribe((e) => { if (e.type === "error") errors.push(e.text); });
+		harness.pushInput("first");
+		await harness.subject.followUp("pending");
+		await harness.waitForIdle();
 		expect(attempts).toBe(1);
 		expect(errors.join("\n")).toContain("commit failed");
-		expect(subject.queuedSnapshot().map(i => i.text)).toEqual(["pending"]);
-		expect(subject.historySnapshot().some(m => m.content === "pending")).toBe(false);
+		expect(harness.queuedSnapshot().map(i => i.text)).toEqual(["pending"]);
+		expect(harness.historySnapshot().some(m => m.content === "pending")).toBe(false);
 	});
 
 	it("resumes a recovered queue through the same input commit", async () => {
@@ -200,16 +193,15 @@ describe("S1 durable session facts", () => {
 		await original.store.close();
 		const resumed = await openJsonlSession(path);
 		const p2 = Scenario.create().reply("done");
-		const subject = new Subject(p2.model, p2.stream, new ToolBroker(), { store: resumed.store });
-		subject.seedQueue(resumed.snapshot.queued);
-		await subject.pushInput("continue");
-		await subject.waitForIdle();
+		const harness = SubjectHarness.create({ scenario: p2, store: resumed.store });
+		harness.subject.seedQueue(resumed.snapshot.queued);
+		await harness.run("continue");
 		await resumed.store.close();
 		const reopened = await openJsonlSession(path);
 		await reopened.store.close();
 		expect(reopened.snapshot.queued).toEqual([]);
-		expect(projectAgentHistory(reopened.snapshot.entries)).toEqual(subject.historySnapshot());
-		expect(subject.historySnapshot().filter(m => m.role === "user").map(m => m.content)).toEqual(["pending", "continue"]);
+		expect(projectAgentHistory(reopened.snapshot.entries)).toEqual(harness.historySnapshot());
+		expect(harness.historySnapshot().filter(m => m.role === "user").map(m => m.content)).toEqual(["pending", "continue"]);
 	});
 });
 
@@ -217,17 +209,18 @@ describe("S1 tool outcome propagation", () => {
 	it.each(["succeeded", "failed", "cancelled", "unknown", "not_started"] as ToolResultStatus[])("preserves %s through hooks, live UI and JSONL replay", async status => {
 		const path = await sessionPath();
 		const { store } = await openJsonlSession(path);
-		const broker = new ToolBroker();
-		broker.register(toolWith(async () => ({ result: "opaque content", status })));
 		const host = new ExtensionHost();
 		const observed: ToolResultStatus[] = [];
 		host.onHook("tools.transformResult", input => { observed.push(input.status); return { result: `[hook] ${input.result}` }; });
 		const tui = new InteractiveTUI();
-		const p3 = providerFor("probe");
-		const subject = new Subject(p3.model, p3.stream, broker, { store, runtimeHooks: createRuntimeHooks(host) });
-		subject.subscribe((e) => tui.render(e));
-		await subject.pushInput("run");
-		await subject.waitForIdle();
+		const harness = SubjectHarness.create({
+			scenario: providerFor("probe"),
+			store,
+			runtimeHooks: createRuntimeHooks(host),
+			tools: [toolWith(async () => ({ result: "opaque content", status }))],
+		});
+		harness.subscribe((e) => tui.render(e));
+		await harness.run("run");
 		tui.host.transcript.finishTurn();
 		await store.close();
 		const reopened = await openJsonlSession(path);
@@ -245,13 +238,17 @@ describe("S1 tool outcome propagation", () => {
 	it("records a real shell exit 7 as failed in the hook, event and message", async () => {
 		const path = await sessionPath();
 		const { store } = await openJsonlSession(path);
-		const broker = new ToolBroker(); broker.register(execCommand);
 		const host = new ExtensionHost();
 		const seen: ToolResultStatus[] = [];
 		host.onHook("tools.transformResult", input => { seen.push(input.status); });
-		const p4 = providerFor(execCommand.def.function.name, { command: "exit 7" });
-		const subject = new Subject(p4.model, p4.stream, broker, { store, runtimeHooks: createRuntimeHooks(host) });
-		await subject.pushInput("run"); await subject.waitForIdle(); await store.close();
+		const harness = SubjectHarness.create({
+			scenario: providerFor(execCommand.def.function.name, { command: "exit 7" }),
+			store,
+			runtimeHooks: createRuntimeHooks(host),
+			tools: [execCommand],
+		});
+		await harness.run("run");
+		await store.close();
 		const records = (await readFile(path, "utf8")).trim().split("\n").map(l => JSON.parse(l));
 		expect(seen).toEqual(["failed"]);
 		expect(records.find(r => r.event === "tool_finished").data.status).toBe("failed");
@@ -260,13 +257,17 @@ describe("S1 tool outcome propagation", () => {
 	it("records a failing external process command as failed", async () => {
 		const path = await sessionPath();
 		const { store } = await openJsonlSession(path);
-		const broker = new ToolBroker(); broker.register(execCommand);
 		const host = new ExtensionHost();
 		const seen: ToolResultStatus[] = [];
 		host.onHook("tools.transformResult", input => { seen.push(input.status); });
-		const p4 = providerFor(execCommand.def.function.name, { command: "git checkout --nonexistent-probe-flag-12345" });
-		const subject = new Subject(p4.model, p4.stream, broker, { store, runtimeHooks: createRuntimeHooks(host) });
-		await subject.pushInput("run"); await subject.waitForIdle(); await store.close();
+		const harness = SubjectHarness.create({
+			scenario: providerFor(execCommand.def.function.name, { command: "git checkout --nonexistent-probe-flag-12345" }),
+			store,
+			runtimeHooks: createRuntimeHooks(host),
+			tools: [execCommand],
+		});
+		await harness.run("run");
+		await store.close();
 		const records = (await readFile(path, "utf8")).trim().split("\n").map(l => JSON.parse(l));
 		expect(seen).toEqual(["failed"]);
 		expect(records.find((r: any) => r.event === "tool_finished").data.status).toBe("failed");

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExtensionRunner } from "../src/extensions/runner.js";
-import { ToolBroker, type Tool } from "../src/tools/broker.js";
+import { ToolBroker } from "../src/tools/broker.js";
 import { DefaultAgentFactory } from "../src/agent/runtime.js";
 import type { Model, ModelStreamFn } from "../src/core/types.js";
-import { IsolatedEnv, Scenario } from "./harness/index.js";
+import { IsolatedEnv, Scenario, mockTool } from "./harness/index.js";
 
 const envs: IsolatedEnv[] = [];
 afterEach(async () => {
@@ -49,7 +49,7 @@ describe("project extension runner", () => {
 		expect(onError).toHaveBeenCalledWith(expect.stringContaining("broken extension"));
 	});
 
-	it("attributes handler failures and awaits async teardown for project and builtin scopes", async () => {
+	it("isolates errors across extensions and disposes resources cleanly", async () => {
 		const env = await createEnv();
 		await env.writeExtension("async.js", `export default function(pi) {
  pi.on('agent_start', () => { throw new Error('owned handler failure'); });
@@ -63,13 +63,7 @@ describe("project extension runner", () => {
 		await runner.emit({ type: "agent_start", turnSeq: 1 });
 		expect(onError).toHaveBeenCalledWith(expect.stringContaining("project:.uina/extensions/async.js:agent_start"));
 
-		const builtinTool: Tool = {
-			def: {
-				type: "function",
-				function: { name: "builtin_scope_tool", description: "scope test", parameters: { type: "object", properties: {} } },
-			},
-			run: async () => ({ result: "ok", status: "succeeded" }),
-		};
+		const builtinTool = mockTool("builtin_scope_tool", async () => ({ result: "ok", status: "succeeded" }));
 		let builtinDisposed = false;
 		await runner.activateBuiltin("scope-test", (pi) => {
 			pi.registerTool(builtinTool);
@@ -246,10 +240,7 @@ describe("project extension runner", () => {
 		const tools = new ToolBroker();
 		const runner = new ExtensionRunner({ cwd: env.path, tools });
 		await runner.activateBuiltin("core", (pi) => {
-			pi.registerTool({
-				def: { type: "function", function: { name: "builtin_tool", description: "builtin", parameters: { type: "object", properties: {} } } },
-				run: async () => ({ result: "builtin", status: "succeeded" }),
-			});
+			pi.registerTool(mockTool("builtin_tool", async () => ({ result: "builtin", status: "succeeded" })));
 		});
 
 		await env.writeExtension("proj.js", `export default function(pi) {

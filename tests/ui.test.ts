@@ -1,4 +1,5 @@
-﻿import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { createTestTUI, createSilentTerminal, mockModelGroups, renderWidget } from "./harness/index.js";
 import {
 	C,
 	visibleWidth,
@@ -540,40 +541,7 @@ describe("UI Components & Visual Rendering", () => {
 	});
 
 	it("模型选择器两级展示：第一级为服务商，Enter展开第二级模型列表，Enter选择，Esc返回", () => {
-		const groups = [
-			{
-				id: "deepseek",
-				name: "deepseek",
-				description: "https://api.deepseek.com",
-				models: [
-					{
-						id: "deepseek-v4-flash",
-						name: "deepseek-v4-flash",
-						description: "默认配置模型",
-						provider: "deepseek",
-					},
-				],
-			},
-			{
-				id: "anthropic",
-				name: "anthropic",
-				description: "api.anthropic.com",
-				models: [
-					{
-						id: "claude-3-7-sonnet",
-						name: "claude-3-7-sonnet",
-						description: "主力模型",
-						provider: "anthropic",
-					},
-					{
-						id: "claude-3-5-haiku",
-						name: "claude-3-5-haiku",
-						description: "轻量模型",
-						provider: "anthropic",
-					},
-				],
-			},
-		];
+		const groups = mockModelGroups();
 
 		const picker = new ModelPicker("deepseek-v4-flash", groups);
 		let pickedModel = "";
@@ -844,423 +812,215 @@ describe("UI Components & Visual Rendering", () => {
 
 describe("InteractiveTUI & UIHost Lifecycle", () => {
 	it("createInteractiveUI 启动、消息分发与安全关闭", () => {
-		const mockStdout = {
+		const harness = createTestTUI({
+			modelName: "deepseek-chat",
+			cwd: "e:/Uina/test",
 			columns: 80,
 			rows: 24,
-			isTTY: true,
-			write: vi.fn(),
-			on: vi.fn(),
-			removeListener: vi.fn(),
-		};
-		const mockStdin = {
-			isTTY: true,
-			setRawMode: vi.fn(),
-			resume: vi.fn(),
-			pause: vi.fn(),
-			setEncoding: vi.fn(),
-			on: vi.fn(),
-			removeListener: vi.fn(),
-		};
-
-		const origStdout = process.stdout;
-		const origStdin = process.stdin;
-		Object.defineProperty(process, "stdout", { value: mockStdout, configurable: true });
-		Object.defineProperty(process, "stdin", { value: mockStdin, configurable: true });
-
+		});
 		try {
-			const tui = createInteractiveUI({
-				modelName: "deepseek-chat",
-				cwd: "e:/Uina/test",
-			});
-			tui.host.registry.registerCommand({ name: "model", description: "切换模型", hasArgs: true });
+			harness.host.registry.registerCommand({ name: "model", description: "切换模型", hasArgs: true });
 
-			expect(tui.host.isBusy()).toBe(false);
+			expect(harness.host.isBusy()).toBe(false);
 
-			tui.render({ type: "turn_start", turnNumber: 1, userText: "测试提问" });
-			expect(tui.host.isBusy()).toBe(true);
+			harness.tui.render({ type: "turn_start", turnNumber: 1, userText: "测试提问" });
+			expect(harness.host.isBusy()).toBe(true);
 
-			tui.render({ type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "模型正在分析..." });
-			tui.render({ type: "tool_call", toolName: "list_dir", args: {}, callId: "tool-1" });
-			tui.render({ type: "tool_result", toolName: "list_dir", args: {}, result: "dir output", status: "succeeded", callId: "tool-1" });
+			harness.tui.render({ type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "模型正在分析..." });
+			harness.tui.render({ type: "tool_call", toolName: "list_dir", args: {}, callId: "tool-1" });
+			harness.tui.render({ type: "tool_result", toolName: "list_dir", args: {}, result: "dir output", status: "succeeded", callId: "tool-1" });
 
-			tui.render({ type: "turn_end", turnNumber: 1, usage: { usedTokens: 2048, contextWindow: 65536, actual: false } });
-			expect(tui.host.isBusy()).toBe(false);
-
-			tui.close();
+			harness.tui.render({ type: "turn_end", turnNumber: 1, usage: { usedTokens: 2048, contextWindow: 65536, actual: false } });
+			expect(harness.host.isBusy()).toBe(false);
 		} finally {
-			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
-			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+			harness.dispose();
 		}
 	});
 
 	it("正确捕获终端输入并在按下 Enter 时提交用户行", () => {
-		let stdinCallback: ((data: string) => void) | undefined;
-		const mockStdout = {
+		const harness = createTestTUI({
+			modelName: "test-model",
 			columns: 80,
 			rows: 24,
-			isTTY: true,
-			write: vi.fn(),
-			on: vi.fn(),
-			removeListener: vi.fn(),
-		};
-		const mockStdin = {
-			isTTY: true,
-			setRawMode: vi.fn(),
-			resume: vi.fn(),
-			pause: vi.fn(),
-			setEncoding: vi.fn(),
-			on: vi.fn((event: string, cb: (data: string) => void) => {
-				if (event === "data") stdinCallback = cb;
-			}),
-			removeListener: vi.fn(),
-		};
-
-		const origStdout = process.stdout;
-		const origStdin = process.stdin;
-		Object.defineProperty(process, "stdout", { value: mockStdout, configurable: true });
-		Object.defineProperty(process, "stdin", { value: mockStdin, configurable: true });
-
+		});
 		try {
-			const tui = createInteractiveUI({
-				modelName: "test-model",
-			});
-
 			const submittedLines: string[] = [];
-			tui.onLine((line) => {
+			harness.tui.onLine((line) => {
 				submittedLines.push(line);
 			});
 
 			// 1. 模拟输入 "2222" 并按回车 (\r)
-			expect(stdinCallback).toBeDefined();
-			stdinCallback!("2");
-			stdinCallback!("2");
-			stdinCallback!("2");
-			stdinCallback!("2");
-			stdinCallback!("\r");
-
+			harness.type("2222").press("enter");
 			expect(submittedLines).toEqual(["2222"]);
 
 			// 2. 模拟输入 "3333" 并按回车 (\n)
-			stdinCallback!("3");
-			stdinCallback!("3");
-			stdinCallback!("3");
-			stdinCallback!("3");
-			stdinCallback!("\n");
-
+			harness.type("3333").feedInput("\n");
 			expect(submittedLines).toEqual(["2222", "3333"]);
-
-			tui.close();
 		} finally {
-			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
-			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+			harness.dispose();
 		}
 	});
 
 	it("启动时正确恢复历史会话消息 (loadHistory) 到转录流中", () => {
-		const mockStdout = {
+		const harness = createTestTUI({
+			modelName: "test-model",
 			columns: 80,
 			rows: 24,
-			isTTY: true,
-			write: vi.fn(),
-			on: vi.fn(),
-			removeListener: vi.fn(),
-		};
-		const mockStdin = {
-			isTTY: true,
-			setRawMode: vi.fn(),
-			resume: vi.fn(),
-			pause: vi.fn(),
-			setEncoding: vi.fn(),
-			on: vi.fn(),
-			removeListener: vi.fn(),
-		};
-
-		const origStdout = process.stdout;
-		const origStdin = process.stdin;
-		Object.defineProperty(process, "stdout", { value: mockStdout, configurable: true });
-		Object.defineProperty(process, "stdin", { value: mockStdin, configurable: true });
-
+		});
 		try {
-			const tui = createInteractiveUI({
-				modelName: "test-model",
-			});
-
-			tui.loadHistory([
+			harness.tui.loadHistory([
 				{ role: "user", content: "之前问的问题" },
 				{ role: "assistant", content: "之前回答的答案", thinking: "思考过程" },
 			]);
 
-			const history = tui.host.transcript.getHistory();
+			const history = harness.host.transcript.getHistory();
 			expect(history.length).toBe(1);
 			expect(history[0]?.userText).toBe("之前问的问题");
 			expect(history[0]?.assistantMarkdown).toBe("之前回答的答案");
 			expect(history[0]?.thinkingText).toBe("思考过程");
 
-			const rendered = tui.host.transcript.render(80);
+			const rendered = harness.host.transcript.render(80);
 			expect(rendered.some((l) => l.includes("之前问的问题"))).toBe(true);
 			expect(rendered.some((l) => l.includes("之前回答的答案"))).toBe(true);
-
-			tui.close();
 		} finally {
-			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
-			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+			harness.dispose();
 		}
 	});
 
 	it("支持鼠标滚轮与键盘 (PageUp/PageDown) 视口滚动", () => {
-		let stdinCallback: ((data: string) => void) | undefined;
-		const mockStdout = {
+		const harness = createTestTUI({
+			modelName: "test-model",
 			columns: 80,
 			rows: 24,
-			isTTY: true,
-			write: vi.fn(),
-			on: vi.fn(),
-			removeListener: vi.fn(),
-		};
-		const mockStdin = {
-			isTTY: true,
-			setRawMode: vi.fn(),
-			resume: vi.fn(),
-			pause: vi.fn(),
-			setEncoding: vi.fn(),
-			on: vi.fn((event: string, cb: (data: string) => void) => {
-				if (event === "data") stdinCallback = cb;
-			}),
-			removeListener: vi.fn(),
-		};
-
-		const origStdout = process.stdout;
-		const origStdin = process.stdin;
-		Object.defineProperty(process, "stdout", { value: mockStdout, configurable: true });
-		Object.defineProperty(process, "stdin", { value: mockStdin, configurable: true });
-
+		});
 		try {
-			const tui = createInteractiveUI({
-				modelName: "test-model",
-			});
-
-			expect(tui.host.getScrollOffset()).toBe(0);
+			expect(harness.host.getScrollOffset()).toBe(0);
 
 			// 1. 模拟按下 PageUp (\x1b[5~)
-			stdinCallback!("\x1b[5~");
-			expect(tui.host.getScrollOffset()).toBeGreaterThan(0);
+			harness.press("pageup");
+			expect(harness.host.getScrollOffset()).toBeGreaterThan(0);
 
 			// 2. 模拟按下 PageDown (\x1b[6~)
-			stdinCallback!("\x1b[6~");
-			expect(tui.host.getScrollOffset()).toBe(0);
+			harness.press("pagedown");
+			expect(harness.host.getScrollOffset()).toBe(0);
 
 			// 3. 模拟 SGR 鼠标滚轮向上滚动 (\x1b[<64;20;10M)
-			stdinCallback!("\x1b[<64;20;10M");
-			expect(tui.host.getScrollOffset()).toBe(3);
+			harness.feedInput("\x1b[<64;20;10M");
+			expect(harness.host.getScrollOffset()).toBe(3);
 
 			// 4. 模拟 SGR 鼠标滚轮向下滚动 (\x1b[<65;20;10M)
-			stdinCallback!("\x1b[<65;20;10M");
-			expect(tui.host.getScrollOffset()).toBe(0);
+			harness.feedInput("\x1b[<65;20;10M");
+			expect(harness.host.getScrollOffset()).toBe(0);
 
 			// 5. 模拟滚上去后发送新消息，视口保持用户位置（不强制回底）；
 			// 新内容追加由 computeLayout 锚定机制补偿，offset 随 totalPerm 同步增长。
-			stdinCallback!("\x1b[<64;20;10M");
-			expect(tui.host.getScrollOffset()).toBe(3);
-			stdinCallback!("h");
-			stdinCallback!("i");
-			stdinCallback!("\r");
-			expect(tui.host.getScrollOffset()).toBeGreaterThan(0);
-
-			tui.close();
+			harness.feedInput("\x1b[<64;20;10M");
+			expect(harness.host.getScrollOffset()).toBe(3);
+			harness.type("hi").press("enter");
+			expect(harness.host.getScrollOffset()).toBeGreaterThan(0);
 		} finally {
-			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
-			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+			harness.dispose();
 		}
 	});
 
 	it("高频与粘包 SGR 鼠标事件被彻底拦截隔离，绝不泄漏至 InputLine 产生伪造粘贴标记", () => {
-		let stdinCallback: ((data: string) => void) | undefined;
-		const mockStdout = {
+		const harness = createTestTUI({
+			modelName: "test-model",
 			columns: 80,
 			rows: 24,
-			isTTY: true,
-			write: () => true,
-			on: () => {},
-			removeListener: () => {},
-		};
-		const mockStdin = {
-			isTTY: true,
-			setRawMode: () => true,
-			resume: () => {},
-			pause: () => {},
-			setEncoding: () => {},
-			on: (_evt: string, cb: (data: string) => void) => {
-				stdinCallback = cb;
-			},
-			removeListener: () => {},
-		};
-
-		const origStdout = process.stdout;
-		const origStdin = process.stdin;
-		Object.defineProperty(process, "stdout", { value: mockStdout, configurable: true });
-		Object.defineProperty(process, "stdin", { value: mockStdin, configurable: true });
-
+		});
 		try {
-			const tui = createInteractiveUI({
-				modelName: "test-model",
-			});
-
 			// 模拟高频移动产生的大量粘包 SGR 鼠标事件 (35 号 hover/move 事件连发)
 			const packetChunk = "\x1b[<35;54;39M\x1b[<35;53;39M\x1b[<35;52;39M\x1b[<35;51;39M\x1b[<35;50;40M".repeat(5);
-			stdinCallback!(packetChunk);
+			harness.feedInput(packetChunk);
 
 			// 模拟拆包时遗失了开头的 ESC 导致的残片
-			stdinCallback!("[<35;54;39M[<35;53;39M");
+			harness.feedInput("[<35;54;39M[<35;53;39M");
 
 			// 验证输入框中绝对没有任何内容，更无 [已粘贴] 胶囊
-			const text = tui.host.getEditorText();
+			const text = harness.host.getEditorText();
 			expect(text).toBe("");
 			expect(text.includes("已粘贴")).toBe(false);
 			expect(text.includes("[<35;")).toBe(false);
-
-			tui.close();
 		} finally {
-			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
-			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+			harness.dispose();
 		}
 	});
 
 	it("Agent 流式输出追加内容时，离开底部的视口保持绝对行号锚定，绝不被新内容顶跑", () => {
-		let stdinCallback: ((data: string) => void) | undefined;
-		const mockStdout = {
+		const harness = createTestTUI({
+			modelName: "test-model",
 			columns: 80,
 			rows: 20,
-			isTTY: true,
-			write: () => true,
-			on: () => {},
-			removeListener: () => {},
-		};
-		const mockStdin = {
-			isTTY: true,
-			setRawMode: () => true,
-			resume: () => {},
-			pause: () => {},
-			setEncoding: () => {},
-			on: (_evt: string, cb: (data: string) => void) => {
-				stdinCallback = cb;
-			},
-			removeListener: () => {},
-		};
-
-		const origStdout = process.stdout;
-		const origStdin = process.stdin;
-		Object.defineProperty(process, "stdout", { value: mockStdout, configurable: true });
-		Object.defineProperty(process, "stdin", { value: mockStdin, configurable: true });
-
+		});
 		try {
-			const tui = createInteractiveUI({
-				modelName: "test-model",
-			});
-
 			// 初始化 50 行历史，形成可滚动视口
-			tui.host.transcript.startTurn(1, "初次提问");
+			harness.host.transcript.startTurn(1, "初次提问");
 			for (let i = 0; i < 50; i++) {
-				tui.host.transcript.appendToken(`历史数据行 ${i}\n`);
+				harness.host.transcript.appendToken(`历史数据行 ${i}\n`);
 			}
 
 			// 触发一次初始全帧渲染
-			(tui.host as any).renderCurrentFrame();
-			const initialLayout = (tui.host as any).computeLayout();
+			(harness.host as any).renderCurrentFrame();
+			const initialLayout = (harness.host as any).computeLayout();
 			const initialScrollStart = initialLayout.scrollStart;
 
 			// 用户向上滚动查看历史
-			stdinCallback!("\x1b[<64;20;10M"); // 滚轮向上滚 3 行
-			stdinCallback!("\x1b[<64;20;10M"); // 滚轮向上滚 3 行
-			(tui.host as any).renderCurrentFrame();
+			harness.feedInput("\x1b[<64;20;10M"); // 滚轮向上滚 3 行
+			harness.feedInput("\x1b[<64;20;10M"); // 滚轮向上滚 3 行
+			(harness.host as any).renderCurrentFrame();
 
-			const userScrolledLayout = (tui.host as any).computeLayout();
+			const userScrolledLayout = (harness.host as any).computeLayout();
 			const anchoredScrollStart = userScrolledLayout.scrollStart;
 			expect(anchoredScrollStart).toBeLessThan(initialScrollStart);
 
 			// 模拟 Agent 正在工作流式吐字，连续追加 30 行新内容
 			for (let i = 0; i < 30; i++) {
-				tui.host.transcript.appendToken(`流式新增行 ${i}\n`);
+				harness.host.transcript.appendToken(`流式新增行 ${i}\n`);
 			}
 
 			// 再次渲染，验证用户的视口顶部绝对行号纹丝不动，绝对没有被新行顶跑
-			(tui.host as any).renderCurrentFrame();
-			const streamedLayout = (tui.host as any).computeLayout();
+			(harness.host as any).renderCurrentFrame();
+			const streamedLayout = (harness.host as any).computeLayout();
 			expect(streamedLayout.scrollStart).toBe(anchoredScrollStart);
-
-			tui.close();
 		} finally {
-			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
-			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+			harness.dispose();
 		}
 	});
 
 	it("支持 / 命令与 @ 文件输入联想浮层与 Tab 补全", () => {
-		let stdinCallback: ((data: string) => void) | undefined;
-		const mockStdout = {
+		const harness = createTestTUI({
+			modelName: "test-model",
+			cwd: process.cwd(),
 			columns: 80,
 			rows: 24,
-			isTTY: true,
-			write: vi.fn(),
-			on: vi.fn(),
-			removeListener: vi.fn(),
-		};
-		const mockStdin = {
-			isTTY: true,
-			setRawMode: vi.fn(),
-			resume: vi.fn(),
-			pause: vi.fn(),
-			setEncoding: vi.fn(),
-			on: vi.fn((event: string, cb: (data: string) => void) => {
-				if (event === "data") stdinCallback = cb;
-			}),
-			removeListener: vi.fn(),
-		};
-
-		const origStdout = process.stdout;
-		const origStdin = process.stdin;
-		Object.defineProperty(process, "stdout", { value: mockStdout, configurable: true });
-		Object.defineProperty(process, "stdin", { value: mockStdin, configurable: true });
-
+		});
 		try {
-			const tui = createInteractiveUI({
-				modelName: "test-model",
-				cwd: process.cwd(),
-			});
-			tui.host.registry.registerCommand({ name: "model", description: "切换模型", hasArgs: true });
+			harness.host.registry.registerCommand({ name: "model", description: "切换模型", hasArgs: true });
 
 			// 1. 输入 / 触发斜杠命令联想
-			stdinCallback!("/");
-			stdinCallback!("m");
-			stdinCallback!("o");
-			stdinCallback!("d");
+			harness.type("/mod");
 
 			// 验证输入框文本为 /mod
-			expect(tui.host.inputLine.getText()).toBe("/mod");
+			expect(harness.host.inputLine.getText()).toBe("/mod");
 
 			// 按 Tab 自动补全为 /model
-			stdinCallback!("\t");
-			expect(tui.host.inputLine.getText()).toBe("/model ");
+			harness.press("tab");
+			expect(harness.host.inputLine.getText()).toBe("/model ");
 
 			// 清空输入框
-			tui.host.inputLine.clear();
+			harness.host.inputLine.clear();
 
 			// 2. 输入 @ 触发文件路径联想
-			stdinCallback!("@");
-			stdinCallback!("p");
-			stdinCallback!("a");
-			stdinCallback!("c");
-			stdinCallback!("k");
+			harness.type("@pack");
 
-			expect(tui.host.inputLine.getText()).toBe("@pack");
+			expect(harness.host.inputLine.getText()).toBe("@pack");
 
 			// 按 Tab 自动补全
-			stdinCallback!("\t");
-			expect(tui.host.inputLine.getText()).toContain("@package.json");
-
-			tui.close();
+			harness.press("tab");
+			expect(harness.host.inputLine.getText()).toContain("@package.json");
 		} finally {
-			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
-			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+			harness.dispose();
 		}
 	});
 
@@ -1270,7 +1030,7 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 		transcript.appendToken("等于 2。");
 		transcript.finishTurn();
 
-		const rendered = transcript.render(80);
+		const rendered = renderWidget(transcript, { width: 80 });
 		expect(rendered.some((l: string) => l.includes("●") && l.includes("等于 2。"))).toBe(true);
 	});
 
@@ -1281,7 +1041,7 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 		transcript.appendToken("这是一段非常长的助手回答内容用于测试换行功能确保换行后严格左对齐杜绝多余空格污染复制。");
 		transcript.finishTurn();
 
-		const rendered = transcript.render(30);
+		const rendered = renderWidget(transcript, { width: 30 });
 		// 校验用户前缀
 		expect(rendered.some((l: string) => l.includes("❯") && l.includes("你好世界"))).toBe(true);
 
@@ -1607,62 +1367,38 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		expect(formatCacheHitRate(0, 1000, 0)).toBeUndefined();
 	});
 
-	it("Ctrl+C 在输入框有内容时清空内容而不触发退出流程", async () => {
-		const origStdout = process.stdout;
-		const origStdin = process.stdin;
+	it("Ctrl+C 在输入框有内容时清空内容而不触发退出流程", () => {
+		const harness = createTestTUI({
+			modelName: "deepseek-chat",
+			cwd: "e:/Uina/test",
+			columns: 100,
+			rows: 30,
+		});
 		try {
-			const fakeStdout = {
-				columns: 100,
-				rows: 30,
-				write: () => true,
-				on: () => fakeStdout,
-				removeListener: () => fakeStdout,
-			} as unknown as NodeJS.WriteStream;
-
-			const fakeStdin = {
-				isTTY: true,
-				setRawMode: () => fakeStdin,
-				resume: () => fakeStdin,
-				pause: () => fakeStdin,
-				on: () => fakeStdin,
-				removeListener: () => fakeStdin,
-			} as unknown as NodeJS.ReadStream;
-
-			Object.defineProperty(process, "stdout", { value: fakeStdout, configurable: true });
-			Object.defineProperty(process, "stdin", { value: fakeStdin, configurable: true });
-
-			const tui = createInteractiveUI({
-				modelName: "deepseek-chat",
-				cwd: "e:/Uina/test",
-			});
-
 			let interruptCalled = false;
-			tui.host.onInterrupt = () => {
+			harness.host.onInterrupt = () => {
 				interruptCalled = true;
 			};
 
 			// 输入文字
-			tui.host.handleInput("hello world");
-			expect(tui.host.inputLine.getText()).toBe("hello world");
+			harness.host.handleInput("hello world");
+			expect(harness.host.inputLine.getText()).toBe("hello world");
 
 			// 按 Ctrl+C：应清空输入框内容，不应退出也不应触发退出确认
-			tui.host.handleInput("\x03"); // Ctrl+C
-			expect(tui.host.inputLine.getText()).toBe("");
+			harness.host.handleInput("\x03"); // Ctrl+C
+			expect(harness.host.inputLine.getText()).toBe("");
 			expect(interruptCalled).toBe(false);
-			expect((tui.host as any).exitPending).toBe(false);
+			expect((harness.host as any).exitPending).toBe(false);
 
 			// 输入框已清空后，再次按 Ctrl+C：应触发退出确认 (exitPending = true)
-			tui.host.handleInput("\x03");
-			expect((tui.host as any).exitPending).toBe(true);
+			harness.host.handleInput("\x03");
+			expect((harness.host as any).exitPending).toBe(true);
 
 			// 3秒内再次按 Ctrl+C：真正退出
-			tui.host.handleInput("\x03");
+			harness.host.handleInput("\x03");
 			expect(interruptCalled).toBe(true);
-
-			tui.close();
 		} finally {
-			Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
-			Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+			harness.dispose();
 		}
 	});
 
@@ -3093,35 +2829,14 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			});
 
 			it("UIHost 将多行工具卡片的每一行正文注册为交互热区，支持点击卡片任意行切换折叠且悬停任意行触发整卡高亮", () => {
-				const origStdout = process.stdout;
-				const origStdin = process.stdin;
+				const term = createSilentTerminal({ columns: 100, rows: 30, isTTY: true });
+				const host = new UIHost({
+					modelName: "deepseek-chat",
+					cwd: "e:/Uina/test",
+					terminal: term.terminal,
+				});
+				host.start();
 				try {
-					const fakeStdout = {
-						columns: 100,
-						rows: 30,
-						write: () => true,
-						on: () => fakeStdout,
-						removeListener: () => fakeStdout,
-					} as unknown as NodeJS.WriteStream;
-
-					const fakeStdin = {
-						isTTY: true,
-						setRawMode: () => fakeStdin,
-						resume: () => fakeStdin,
-						pause: () => fakeStdin,
-						on: () => fakeStdin,
-						removeListener: () => fakeStdin,
-					} as unknown as NodeJS.ReadStream;
-
-					Object.defineProperty(process, "stdout", { value: fakeStdout, configurable: true });
-					Object.defineProperty(process, "stdin", { value: fakeStdin, configurable: true });
-
-					const host = new UIHost({
-						modelName: "deepseek-chat",
-						cwd: "e:/Uina/test",
-					});
-					host.start();
-
 					// 开启一轮对话并添加一个多行输出的工具调用
 					host.transcript.startTurn(1, "运行测试脚本");
 					host.transcript.startTool("bash", { command: "npm test" }, "call-test-123");
@@ -3167,44 +2882,20 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					// 验证工具卡片被成功切换为展开状态（isExpanded = true）
 					const locs = host.transcript.getToolLineIndices(100);
 					expect(locs.find((l) => l.callId === "call-test-123")?.isExpanded).toBe(true);
-
-					host.stop();
 				} finally {
-					Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
-					Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+					host.stop();
 				}
 			});
 
 			it("展开与收起思考内容时保持画面原位置绝对稳定（锚点固定，鼠标点击与 Ctrl+O 均不跳屏）", () => {
-				const origStdout = process.stdout;
-				const origStdin = process.stdin;
+				const term = createSilentTerminal({ columns: 80, rows: 24, isTTY: true });
+				const host = new UIHost({
+					modelName: "deepseek-chat",
+					cwd: "e:/Uina/test",
+					terminal: term.terminal,
+				});
+				host.start();
 				try {
-					const fakeStdout = {
-						columns: 80,
-						rows: 24,
-						write: () => true,
-						on: () => fakeStdout,
-						removeListener: () => fakeStdout,
-					} as unknown as NodeJS.WriteStream;
-
-					const fakeStdin = {
-						isTTY: true,
-						setRawMode: () => fakeStdin,
-						resume: () => fakeStdin,
-						pause: () => fakeStdin,
-						on: () => fakeStdin,
-						removeListener: () => fakeStdin,
-					} as unknown as NodeJS.ReadStream;
-
-					Object.defineProperty(process, "stdout", { value: fakeStdout, configurable: true });
-					Object.defineProperty(process, "stdin", { value: fakeStdin, configurable: true });
-
-					const host = new UIHost({
-						modelName: "deepseek-chat",
-						cwd: "e:/Uina/test",
-					});
-					host.start();
-
 					// 填充若干轮次历史记录，使总行数超出视口高度
 					for (let t = 1; t <= 5; t++) {
 						host.transcript.startTurn(t, `这是历史提问 ${t}`);
@@ -3266,11 +2957,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					const thinkingTargetCtrlOCol = ctrlOCollapsedTargets.find((t) => t.id.startsWith("thinking:"));
 					expect(thinkingTargetCtrlOCol?.row).toBe(initThinkingRow);
 					expect(host.getScrollOffset()).toBe(0);
-
-					host.stop();
 				} finally {
-					Object.defineProperty(process, "stdout", { value: origStdout, configurable: true });
-					Object.defineProperty(process, "stdin", { value: origStdin, configurable: true });
+					host.stop();
 				}
 			});
 		});

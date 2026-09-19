@@ -1,9 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, mockModel, SubjectHarness } from "./harness/index.js";
 import { buildContext } from "../src/agent/context.js";
 import { toWireMessages } from "../src/ai/gateway.js";
 import { anthropicMessages, geminiRequest } from "../src/ai/providers.js";
 import type { ChatMsg, ModelRequest, ModelStreamFn } from "../src/core/types.js";
-import { mockModel } from "./harness/index.js";
 
 describe("Context Hygiene & Protocol Sanitization", () => {
 	it("emits a single head system message and never a trailing one", () => {
@@ -209,8 +208,6 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 	});
 
 	it("Subject stores custom message as role 'custom' in historySnapshot but projects cleanly to LLM", async () => {
-		const { Subject } = await import("../src/agent/loop.js");
-		const { ToolBroker } = await import("../src/tools/broker.js");
 		const recordedRequests: ModelRequest[] = [];
 		const model = mockModel({ id: "mock", name: "mock" });
 		const stream: ModelStreamFn = async (_m, req, onDelta) => {
@@ -219,21 +216,20 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 			onDelta({ kind: "finish", reason: "stop" });
 		};
 
-		const subject = new Subject(model, stream, new ToolBroker());
-		await subject.appendCustomMessage({
+		const harness = SubjectHarness.create({ model, stream });
+		await harness.subject.appendCustomMessage({
 			customType: "test-probe",
 			content: "PROBE_DATA_123",
 		});
 
-		// 1. Single-track fact: subject.historySnapshot() retains role: 'custom'
-		const history = subject.historySnapshot();
+		// 1. Single-track fact: harness.historySnapshot() retains role: 'custom'
+		const history = harness.historySnapshot();
 		expect(history).toHaveLength(1);
 		expect(history[0]?.role).toBe("custom");
 		expect((history[0] as any).customType).toBe("test-probe");
 
 		// 2. Next turn: pure projection converts it for LLM request
-		await subject.pushInput("next question");
-		await subject.waitForIdle();
+		await harness.run("next question");
 
 		expect(recordedRequests.length).toBeGreaterThan(0);
 		const lastReq = recordedRequests[0]!;

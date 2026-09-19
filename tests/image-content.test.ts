@@ -1,7 +1,5 @@
 import { createServer, type Server } from "node:http";
 import { describe, expect, test, afterEach } from "./harness/index.js";
-import { Subject } from "../src/agent/loop.js";
-import { ToolBroker } from "../src/tools/broker.js";
 import { canEditQueuedDraft } from "../src/cli/draft.js";
 import { UinaHost } from "../src/host/host.js";
 import { createProviderAndModel, anthropicMessages, geminiRequest } from "../src/ai/providers.js";
@@ -13,7 +11,7 @@ import { openJsonlSession } from "../src/session/jsonl-store.js";
 import { projectAgentHistory } from "../src/session/recovery.js";
 import { convertToLlm } from "../src/agent/context.js";
 import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
-import { IsolatedEnv, mockModel, UinaTestHarness } from "./harness/index.js";
+import { IsolatedEnv, mockModel, UinaTestHarness, SubjectHarness } from "./harness/index.js";
 
 const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlWQAAAAASUVORK5CYII=";
 const image: ImageContent = { type: "image", mimeType: "image/png", data: png, alt: "one pixel" };
@@ -196,24 +194,23 @@ describe("Image Content & Multimodal Tools", () => {
 			images: [image],
 		};
 		await store.appendEvent("queue_enqueued", { ...input });
-		const subject = new Subject(
-			mockModel({ imageInput: true }),
-			async (_model, req, emit) => {
+		const harness = SubjectHarness.create({
+			model: mockModel({ imageInput: true }),
+			store,
+			stream: async (_model, req, emit) => {
 				expect(
 					req.messages.some((message) => message.images?.[0].data === png && message.content.includes("camera")),
 				).toBe(true);
 				emit({ kind: "text", text: "observed" });
 				emit({ kind: "finish", reason: "stop" });
 			},
-			new ToolBroker(),
-			{ store },
-		);
-		subject.seedQueue([input]);
-		expect(canEditQueuedDraft(subject.queuedSnapshot())).toBe(false);
+		});
+		harness.subject.seedQueue([input]);
+		expect(canEditQueuedDraft(harness.subject.queuedSnapshot())).toBe(false);
 		expect(canEditQueuedDraft([{ source: { kind: "user" } }])).toBe(true);
-		await subject.resumePending();
-		expect(subject.queuedSnapshot()).toEqual([]);
-		expect(subject.historySnapshot()[0]).toMatchObject({ id: input.id, role: "custom", images: [image] });
+		await harness.subject.resumePending();
+		expect(harness.subject.queuedSnapshot()).toEqual([]);
+		expect(harness.subject.historySnapshot()[0]).toMatchObject({ id: input.id, role: "custom", images: [image] });
 		await store.close();
 
 		const reopened = await openJsonlSession(env.sessionPath);

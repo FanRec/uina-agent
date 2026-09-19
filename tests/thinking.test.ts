@@ -1,11 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, SubjectHarness } from "./harness/index.js";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { Subject } from "../src/agent/loop.js";
 import { createOpenAIProvider } from "../src/ai/gateway.js";
 import { createModel } from "../src/ai/providers.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
-import { ToolBroker } from "../src/tools/broker.js";
 import type { Model, ModelStreamFn, StreamDelta } from "../src/core/types.js";
 
 const servers: Server[] = [];
@@ -33,13 +31,16 @@ describe("thinking pipeline", () => {
 			{ kind: "text", text: "答案" },
 			{ kind: "finish", reason: "stop" },
 		]);
-		const subject = new Subject(pair.model, pair.stream, new ToolBroker(), { thinkingLevel: "high" });
-		subject.subscribe((e) => {
+		const harness = SubjectHarness.create({
+			model: pair.model,
+			stream: pair.stream,
+			thinkingLevel: "high",
+		});
+		harness.subscribe((e) => {
 			if (e.type === "output_update" && e.channel === "thinking") thinking.push(e.text);
 		});
-		subject.pushInput("问题");
-		await subject.waitForIdle();
-		const answer = subject.historySnapshot().find((message) => message.role === "assistant");
+		await harness.run("问题");
+		const answer = harness.historySnapshot().find((message) => message.role === "assistant");
 		expect(thinking).toEqual(["先分析"]);
 		expect(answer).toMatchObject({ content: "答案", thinking: "先分析", status: "complete" });
 	});
@@ -58,13 +59,13 @@ describe("thinking pipeline", () => {
 			thinkingSeen?.();
 			await new Promise<void>((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }));
 		};
-		const subject = new Subject(model, stream, new ToolBroker(), { thinkingLevel: "high" });
+		const harness = SubjectHarness.create({ model, stream, thinkingLevel: "high" });
 		const seen = new Promise<void>((resolve) => { thinkingSeen = resolve; });
-		subject.pushInput("中断问题");
+		harness.pushInput("中断问题");
 		await seen;
-		subject.interrupt();
-		await subject.waitForIdle();
-		expect(subject.historySnapshot().some((message) => message.role === "assistant" && message.thinking === "未完成分析" && message.status === "aborted")).toBe(true);
+		harness.interrupt();
+		await harness.waitForIdle();
+		expect(harness.historySnapshot().some((message) => message.role === "assistant" && message.thinking === "未完成分析" && message.status === "aborted")).toBe(true);
 	});
 
 	it("rejects an unsupported configured level before provider execution", async () => {
@@ -77,7 +78,7 @@ describe("thinking pipeline", () => {
 			thinkingLevels: ["off"],
 		};
 		const stream: ModelStreamFn = async () => { called = true; };
-		expect(() => new Subject(model, stream, new ToolBroker(), { thinkingLevel: "high" }))
+		expect(() => SubjectHarness.create({ model, stream, thinkingLevel: "high" }))
 			.toThrow("未声明支持 thinking level");
 		expect(called).toBe(false);
 	});
