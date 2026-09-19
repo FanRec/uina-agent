@@ -28,7 +28,7 @@ export class Registrations<T> {
 	values(): T[] {
 		return this.keys().map((name) => this.get(name)!);
 	}
-	delete(name: string): void {
-		this.entries.delete(name);
+	delete(name: string): boolean {
+		return this.entries.delete(name);
 	}
 }

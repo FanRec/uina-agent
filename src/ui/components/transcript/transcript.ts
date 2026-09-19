@@ -610,7 +610,6 @@ export class TranscriptContainer implements Component {
 		};
 
 		for (const entry of entries) {
-			if ((entry as any).kind === "event") continue;
 			if (entry.kind === "rewind") {
 				commit();
 				this.timeline.push({

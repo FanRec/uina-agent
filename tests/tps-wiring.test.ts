@@ -9,6 +9,7 @@
  * 分母（分子含参数、分母不含，不开思考时读数虚拟高两个数量级）。
  */
 import { describe, expect, it, vi } from "vitest";
+import type { ProcessTerminal } from "../src/ui/core/terminal.js";
 import { foldStreamChars } from "../src/ui/components/widgets/activity-line.js";
 import { createInteractiveUI } from "../src/ui/tui.js";
 
@@ -18,12 +19,28 @@ const T0 = 1_700_000_000_000;
 /** 从 SGR 序列里剥掉颜色与粗体，只留可见字形。 */
 const plain = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
 
+function fakeTerminal(): ProcessTerminal {
+	return {
+		columns: 120,
+		rows: 30,
+		isTTY: false,
+		syncWrite: () => {},
+		write: () => {},
+		start: () => {},
+		stop: () => {},
+		hideCursor: () => {},
+		showCursor: () => {},
+	} as unknown as ProcessTerminal;
+}
+
+const createTestUI = () => createInteractiveUI({ modelName: "TestModel", terminal: fakeTerminal() });
+
 const headerTokens = (tui: ReturnType<typeof createInteractiveUI>): string =>
 	plain(tui.host.activityLine.render(200).join("\n"));
 
 describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 	it("同一调用的多条 usage_update 只按最后一次计，不叠加；该调用的字符估算被真值取代", () => {
-		const tui = createInteractiveUI({ modelName: "TestModel" });
+		const tui = createTestUI();
 		tui.render({ type: "turn_start", turnNumber: 1, userText: "做任务" });
 		// 模拟一次 text delta 留下的字符估算占位（系数由模块标定，这里只钉"真值取代估算"）
 		const placeholder = foldStreamChars({ cjk: 1150, other: 0 });
@@ -44,7 +61,7 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 	});
 
 	it("跨 step 的真实输出累加（多轮 stream→tool→stream）", () => {
-		const tui = createInteractiveUI({ modelName: "TestModel" });
+		const tui = createTestUI();
 		tui.render({ type: "turn_start", turnNumber: 1, userText: "跑两轮" });
 		tui.render({ type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "第一轮的输出" }); // 调用 1 有增量 → 有解码区间
 		tui.render({ type: "usage_update", callId: "call-1", usedTokens: 1000, outputTokens: 30 });
@@ -63,7 +80,7 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 		vi.useFakeTimers();
 		try {
 			vi.setSystemTime(T0);
-			const tui = createInteractiveUI({ modelName: "TestModel" });
+			const tui = createTestUI();
 			tui.render({ type: "turn_start", turnNumber: 1, userText: "想久一点" });
 			vi.setSystemTime(T0 + 1000); // +1s：TTFT 等待，不是生成，不计入分母
 			tui.render({ type: "output_update", streamId: "s1", offset: 0, channel: "thinking", text: "思".repeat(300) });
@@ -95,7 +112,7 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 		vi.useFakeTimers();
 		try {
 			vi.setSystemTime(T0);
-			const tui = createInteractiveUI({ modelName: "TestModel" });
+			const tui = createTestUI();
 			tui.render({ type: "turn_start", turnNumber: 1, userText: "两轮输出" });
 			vi.setSystemTime(T0 + 10);
 			tui.render({ type: "output_update", streamId: "s1", offset: 0, channel: "thinking", text: "甲".repeat(300) }); // 估算 300
@@ -127,7 +144,7 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 		vi.useFakeTimers();
 		try {
 			vi.setSystemTime(T0);
-			const tui = createInteractiveUI({ modelName: "TestModel" });
+			const tui = createTestUI();
 			tui.render({ type: "turn_start", turnNumber: 1, userText: "看下这个文件" });
 			vi.setSystemTime(T0 + 10);
 			tui.render({ type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "我来看看这个文件" });

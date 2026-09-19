@@ -47,12 +47,17 @@ export async function executeToolPipeline(
 		return { ...outcome, callId: call.callId };
 	}
 
-	// 2. 扩展前置拦截
-	const blocked = await hooks?.beforeCall?.({
-		callId: call.callId,
-		name: call.name,
-		args: call.args as DeepReadonly<Record<string, unknown>>,
-	});
+	// 2. 扩展前置拦截（捕获 hook 异常，防止第三方扩展错误击穿系统）
+	let blocked: Readonly<{ block?: boolean; reason?: string }> | undefined;
+	try {
+		blocked = await hooks?.beforeCall?.({
+			callId: call.callId,
+			name: call.name,
+			args: call.args as DeepReadonly<Record<string, unknown>>,
+		});
+	} catch (hookError) {
+		// 钩子异常不击穿核心工具流水线
+	}
 	if (blocked?.block) {
 		const reason = blocked.reason || "操作已被扩展阻止";
 		const outcome: ToolExecutionResult = {
@@ -77,25 +82,29 @@ export async function executeToolPipeline(
 	// 5. 核心工具执行
 	let outcome = await broker.execute(prepared, signal);
 
-	// 6. 扩展后置结果改写
-	const transformed = await hooks?.transformResult?.({
-		callId: call.callId,
-		name: call.name,
-		args: call.args as DeepReadonly<Record<string, unknown>>,
-		result: outcome.result,
-  images: outcome.images,
-  details: outcome.details,
-		status: outcome.status,
-	});
-	if (transformed?.result !== undefined || transformed?.status !== undefined || transformed?.images !== undefined || transformed?.details !== undefined) {
-		if (!validImages(transformed?.images)) throw new Error("tool_result hook 返回无效图片");
-  outcome = {
-			...outcome,
-   ...(transformed?.images !== undefined ? { images: structuredClone([...transformed.images]) } : {}),
-   ...(transformed?.details !== undefined ? { details: structuredClone(transformed.details) } : {}),
-			result: transformed.result ?? outcome.result,
-			status: transformed.status ?? outcome.status,
-		};
+	// 6. 扩展后置结果改写（捕获 hook 异常，防止第三方错误丢失已成功执行的结果）
+	try {
+		const transformed = await hooks?.transformResult?.({
+			callId: call.callId,
+			name: call.name,
+			args: call.args as DeepReadonly<Record<string, unknown>>,
+			result: outcome.result,
+			images: outcome.images,
+			details: outcome.details,
+			status: outcome.status,
+		});
+		if (transformed?.result !== undefined || transformed?.status !== undefined || transformed?.images !== undefined || transformed?.details !== undefined) {
+			if (!validImages(transformed?.images)) throw new Error("tool_result hook 返回无效图片");
+			outcome = {
+				...outcome,
+				...(transformed?.images !== undefined ? { images: structuredClone([...transformed.images]) } : {}),
+				...(transformed?.details !== undefined ? { details: structuredClone(transformed.details) } : {}),
+				result: transformed.result ?? outcome.result,
+				status: transformed.status ?? outcome.status,
+			};
+		}
+	} catch (hookError) {
+		// 钩子异常不影响已产出的工具执行结果
 	}
 
 	// 7. 执行后观测点

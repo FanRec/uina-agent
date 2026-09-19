@@ -1,9 +1,9 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { activateEditFile } from "./edit-file.js";
 import { activateFindFile } from "./find-file.js";
 import { activateGrepFile } from "./grep-file.js";
 import { formatSize, looksBinary, READ_MAX_BYTES, READ_MAX_LINE_CHARS, READ_MAX_LINES, truncateReadLines } from "./read-truncate.js";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { ExtensionAPI, ImageContent } from "../index.js";
 
 /** Trusted filesystem capabilities; no shell process or Core changes. */
@@ -65,6 +65,7 @@ export default function activate(api: ExtensionAPI): void {
 		},
 		run: async (args, signal) => {
 			const file = resolve(api.cwd, String(args.path));
+			await mkdir(dirname(file), { recursive: true });
 			await writeFile(file, String(args.text), { encoding: "utf8", signal });
 			return {
 				result: "Written " + file,

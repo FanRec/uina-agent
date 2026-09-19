@@ -38,30 +38,38 @@ export function convertToLlm(
 		includeThinking?: boolean;
 	} = {},
 ): ChatMsg[] {
-	const intermediate: ChatMsg[] = [];
-	const toolResponses = new Set<string>();
+	const responseIds = new Set<string>();
+	const callIds = new Set<string>();
 
 	for (const msg of messages) {
 		if (msg.role === "tool" && msg.tool_call_id) {
-			toolResponses.add(msg.tool_call_id);
+			responseIds.add(msg.tool_call_id);
+		} else if (msg.role === "assistant" && msg.tool_calls) {
+			for (const call of msg.tool_calls) {
+				callIds.add(call.id);
+			}
 		}
 	}
 
+	const pairedIds = new Set<string>();
+	for (const id of responseIds) {
+		if (callIds.has(id)) pairedIds.add(id);
+	}
+
+	const result: ChatMsg[] = [];
 	for (const msg of messages) {
 		switch (msg.role) {
 			case "system":
-				intermediate.push({ role: "system", content: msg.content, images: msg.images });
+				result.push({ role: "system", content: msg.content, images: msg.images });
 				break;
 			case "custom":
-				intermediate.push({ role: "user", content: msg.content, images: msg.images });
-				break;
 			case "user":
-				intermediate.push({ role: "user", content: msg.content, images: msg.images });
+				result.push({ role: "user", content: msg.content, images: msg.images });
 				break;
 			case "assistant": {
 				const thinking = options.includeThinking ? msg.thinking : undefined;
 				const thinkingSignature = options.includeThinking ? msg.thinkingSignature : undefined;
-				const validToolCalls = msg.tool_calls?.filter((call) => toolResponses.has(call.id));
+				const validToolCalls = msg.tool_calls?.filter((call) => pairedIds.has(call.id));
 				const tool_calls = validToolCalls && validToolCalls.length > 0 ? validToolCalls : undefined;
 				const content = typeof msg.content === "string" ? msg.content : "";
 				const hasContent = content.trim().length > 0;
@@ -73,7 +81,7 @@ export function convertToLlm(
 					continue;
 				}
 
-				intermediate.push({
+				result.push({
 					role: "assistant",
 					content,
 					thinking,
@@ -86,36 +94,21 @@ export function convertToLlm(
 				break;
 			}
 			case "tool":
-				intermediate.push({
-					role: "tool",
-					tool_call_id: msg.tool_call_id,
-					content: msg.content,
-     images: msg.images,
-     details: msg.details,
-					status: msg.status,
-				});
+				if (msg.tool_call_id && pairedIds.has(msg.tool_call_id)) {
+					result.push({
+						role: "tool",
+						tool_call_id: msg.tool_call_id,
+						content: msg.content,
+						images: msg.images,
+						details: msg.details,
+						status: msg.status,
+					});
+				}
 				break;
 		}
 	}
 
-	const validToolCallIds = new Set<string>();
-	for (const msg of intermediate) {
-		if (msg.role === "assistant" && msg.tool_calls) {
-			for (const call of msg.tool_calls) {
-				validToolCallIds.add(call.id);
-			}
-		}
-	}
-
-	const cleaned: ChatMsg[] = [];
-	for (const message of intermediate) {
-		if (message.role === "tool" && message.tool_call_id && !validToolCallIds.has(message.tool_call_id)) {
-			continue;
-		}
-		cleaned.push(message);
-	}
-
-	return cleaned;
+	return result;
 }
 
 export function buildContext(b: BuildInput): ChatMsg[] {

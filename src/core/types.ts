@@ -221,8 +221,6 @@ export interface Model {
 	readonly providerId: string;
 	/** 有效上下文上限（token），已知时为数字，未知为 undefined */
 	readonly contextWindow?: number;
-	readonly maxContextWindow?: number;
-	readonly modelContextWindow?: number;
 	/** 最大输出 token 数（Anthropic messages 必须显式给出） */
 	readonly maxOutputTokens?: number;
 	/** 支持的思考等级档位 */

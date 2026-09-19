@@ -255,7 +255,22 @@ describe("S1 tool outcome propagation", () => {
 		const records = (await readFile(path, "utf8")).trim().split("\n").map(l => JSON.parse(l));
 		expect(seen).toEqual(["failed"]);
 		expect(records.find(r => r.event === "tool_finished").data.status).toBe("failed");
-		expect(records.find(r => r.message?.role === "tool").message.status).toBe("failed");
+	});
+
+	it("records a failing external process command as failed", async () => {
+		const path = await sessionPath();
+		const { store } = await openJsonlSession(path);
+		const broker = new ToolBroker(); broker.register(execCommand);
+		const host = new ExtensionHost();
+		const seen: ToolResultStatus[] = [];
+		host.onHook("tools.transformResult", input => { seen.push(input.status); });
+		const p4 = providerFor(execCommand.def.function.name, { command: "git checkout --nonexistent-probe-flag-12345" });
+		const subject = new Subject(p4.model, p4.stream, broker, { store, runtimeHooks: createRuntimeHooks(host) });
+		await subject.pushInput("run"); await subject.waitForIdle(); await store.close();
+		const records = (await readFile(path, "utf8")).trim().split("\n").map(l => JSON.parse(l));
+		expect(seen).toEqual(["failed"]);
+		expect(records.find((r: any) => r.event === "tool_finished").data.status).toBe("failed");
+		expect(records.find((r: any) => r.message?.role === "tool").message.status).toBe("failed");
 	});
 
 	it("trusts explicit outcomes after cancellation and keeps unconfirmed exceptions unknown", async () => {

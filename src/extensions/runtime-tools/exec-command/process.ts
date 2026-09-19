@@ -174,12 +174,13 @@ function resolveShell(): { shell: string; args: (command: string) => string[] } 
 		return { shell: "/bin/sh", args: (command) => ["-c", command] };
 	}
 	const utf8Prefix = "$OutputEncoding = [Console]::OutputEncoding = [Console]::InputEncoding = [System.Text.Encoding]::UTF8; ";
+	const exitSuffix = "; if ($LASTEXITCODE) { exit $LASTEXITCODE }";
 	const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
 	const pwsh = join(programFiles, "PowerShell", "7", "pwsh.exe");
 	if (existsSync(pwsh)) {
 		return {
 			shell: pwsh,
-			args: (command) => ["-NoProfile", "-NonInteractive", "-Command", `${utf8Prefix}${command}`],
+			args: (command) => ["-NoProfile", "-NonInteractive", "-Command", `${utf8Prefix}${command}${exitSuffix}`],
 		};
 	}
 	const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
@@ -187,7 +188,7 @@ function resolveShell(): { shell: string; args: (command: string) => string[] } 
 	if (existsSync(powershell)) {
 		return {
 			shell: powershell,
-			args: (command) => ["-NoProfile", "-NonInteractive", "-Command", `${utf8Prefix}${command}`],
+			args: (command) => ["-NoProfile", "-NonInteractive", "-Command", `${utf8Prefix}${command}${exitSuffix}`],
 		};
 	}
 	return { shell: "cmd.exe", args: (command) => ["/d", "/s", "/c", command] };

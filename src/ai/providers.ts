@@ -34,8 +34,6 @@ export function createModel(conf: ProviderConfig, providerId: string): Model {
 		name: conf.model,
 		providerId,
 		contextWindow: effectiveWindow,
-		maxContextWindow: conf.maxContextWindow,
-		modelContextWindow: conf.modelContextWindow,
 		maxOutputTokens: conf.maxOutputTokens,
 		thinkingLevels: levels,
 		includeThinking: conf.includeThinking ?? protocolCarriesThinking(kind, conf.thinkingFormat, levels),
@@ -701,8 +699,6 @@ export class ModelRegistry {
 					name: modelId,
 					providerId,
 					contextWindow: Math.min(discovered.contextWindow, base?.maxContextWindow ?? discovered.contextWindow),
-					maxContextWindow: base?.maxContextWindow,
-					modelContextWindow: discovered.contextWindow,
 					thinkingLevels: discovered.thinkingLevels?.filter(level => !base?.thinkingLevels || base.thinkingLevels.includes(level)),
 					includeThinking: protocolCarriesThinking(kind, base?.thinkingFormat, discovered.thinkingLevels),
 					compat: {

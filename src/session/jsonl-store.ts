@@ -318,17 +318,17 @@ async function readSnapshot(path: string): Promise<{
 		lastSeq = value.seq;
 		records.push(value);
 	}
-	if (needsFinalNewline && !repairedTail) await appendFinalNewline(path, text);
+	if (needsFinalNewline && !repairedTail) await appendFinalNewline(path);
 	return { header, records, lastSeq };
 }
 
-async function appendFinalNewline(path: string, content: string): Promise<void> {
-	const temp = `${path}.${process.pid}.${Date.now()}.newline.tmp`;
-	await writeFile(temp, `${content}\n`, "utf8");
-	await rename(temp, path).catch(async (error) => {
-		await unlink(temp).catch(() => undefined);
-		throw error;
-	});
+async function appendFinalNewline(path: string): Promise<void> {
+	const handle = await open(path, "a");
+	try {
+		await handle.write("\n");
+	} finally {
+		await handle.close();
+	}
 }
 
 function parseHeader(value: string | undefined, path: string): SessionHeader {

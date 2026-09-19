@@ -55,7 +55,7 @@ function matchEdits(content: string, edits: Edit[], path: string): MatchedEdit[]
 		const first = content.indexOf(oldText);
 		if (first === -1) throw new Error(`edit_file：edits[${i}].oldText 在 ${path} 中不存在，必须与文件内容逐字符一致（含空白与换行）。`);
 		let occurrences = 1;
-		for (let pos = first + oldText.length; (pos = content.indexOf(oldText, pos)) !== -1; pos += oldText.length) occurrences++;
+		for (let pos = first + 1; (pos = content.indexOf(oldText, pos)) !== -1; pos++) occurrences++;
 		if (occurrences > 1) throw new Error(`edit_file：edits[${i}].oldText 在 ${path} 中出现 ${occurrences} 次，必须唯一；请补充上下文使其唯一。`);
 		matched.push({ editIndex: i, matchIndex: first, matchLength: oldText.length, newText });
 	}

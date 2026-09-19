@@ -18,7 +18,7 @@ export function validImages(value: unknown): value is ImageContent[] | undefined
 					typeof image.data === "string" &&
 					image.data.length > 0 &&
 					image.data.length % 4 === 0 &&
-					/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(image.data) &&
+					/^[A-Za-z0-9+/]+={0,2}$/.test(image.data) &&
 					(image.alt === undefined || typeof image.alt === "string"),
 			))
 	);

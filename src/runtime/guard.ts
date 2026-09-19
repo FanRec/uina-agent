@@ -6,6 +6,13 @@ import { NO_RUNTIME_HOOKS } from "./noop.js";
 /** Copies and freezes data at the kernel boundary so hook implementations can
  * neither mutate runtime-owned values nor retain a mutable return reference. */
 export function readonlySnapshot<T>(value: T): DeepReadonly<T> {
+	if (!value || typeof value !== "object") return value as DeepReadonly<T>;
+	if ("type" in (value as object) && typeof (value as any).type === "string") {
+		const t = (value as any).type;
+		if (t === "output_update" || t === "output_start" || t === "output_end" || t === "output_interrupted") {
+			return Object.freeze({ ...(value as object) }) as DeepReadonly<T>;
+		}
+	}
 	return deepFreeze(clone(value)) as DeepReadonly<T>;
 }
 

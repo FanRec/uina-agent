@@ -277,19 +277,19 @@ export class ScopedToolView implements ToolView {
 				status: "not_started",
 			};
 		}
-		const tool = this.root.get(prepared.name);
-		if (!tool) {
-			return {
-				result: JSON.stringify({ error: `工具不可用: ${prepared.name} 已被卸载或不存在`, status: "not_started" }),
-				status: "not_started",
-			};
-		}
 		if (!this.isAllowed(prepared.name)) {
 			const reason = this.options.exclude?.includes(prepared.name)
 				? "已被当前作用域策略排除"
 				: "未包含在当前作用域允许名单中";
 			return {
 				result: JSON.stringify({ error: `工具不可用: ${prepared.name} (${reason})`, status: "not_started" }),
+				status: "not_started",
+			};
+		}
+		const tool = this.root.get(prepared.name);
+		if (!tool || tool !== prepared.tool) {
+			return {
+				result: JSON.stringify({ error: `工具不可用: ${prepared.name} 已被卸载或不存在`, status: "not_started" }),
 				status: "not_started",
 			};
 		}

@@ -437,3 +437,41 @@ describe("transcript card geometry", () => {
 	});
 });
 
+describe("BranchInspectorOverlay：CRLF 详情不炸帧", () => {
+	function makePort(content: string): import("../src/session/types.js").SessionAccess {
+		return {
+			list: () => ({
+				nodes: Array.from({ length: 20 }, (_, i) => ({
+					id: `node-${i}`, parentId: null, seq: i + 1, kind: "message" as const,
+					active: true, canRewind: false, preview: `节点 ${i}`,
+				})),
+			}),
+			listBranches: () => ({ branches: [] }),
+			readBranch: () => ({ branch: { id: "b", nodeCount: 0, reason: "" }, nodes: [] }),
+			read: () => ({
+				id: "node-3", parentId: null, seq: 4, timestamp: "t", kind: "message" as const,
+				message: { role: "tool" as const, content },
+			}),
+			requestRewind: () => { throw new Error("not used"); },
+		} as unknown as import("../src/session/types.js").SessionAccess;
+	}
+
+	const CRLF_TOOL_OUTPUT = 'stdout 行一\r\nstdout 行二\r\n{"code":0}\r\n'.repeat(30);
+
+	it("详情行不携带 CR（终端收到 CR 会从行首重写当前行）", () => {
+		const overlay = new BranchInspectorOverlay(makePort(CRLF_TOOL_OUTPUT));
+		overlay.render(96);
+		overlay.handleInput("\x1b[B");
+		const rows = overlay.render(96);
+		const crlfRows = rows.filter((r) => r.includes("\r"));
+		expect(crlfRows, `详情行携带物理 CR：\n${crlfRows.map((r) => JSON.stringify(r)).join("\n")}`).toEqual([]);
+	});
+
+	it("整帧行数不超预算（CR 引发的软换行会把后续行顶出视口）", () => {
+		const overlay = new BranchInspectorOverlay(makePort(CRLF_TOOL_OUTPUT));
+		overlay.handleInput("\x1b[B");
+		const rows = overlay.render(96);
+		expect(rows.length).toBeLessThanOrEqual(20);
+	});
+});
+

@@ -597,7 +597,7 @@ export class Subject {
 				this.reportError(runError);
 			}
 		} finally {
-			if (this.pendingRewind) {
+			if (this.pendingRewind && (!success || this.interrupted)) {
 				const requestId = this.pendingRewind.requestId; this.pendingRewind = undefined;
 				this.reportError(`回溯请求 ${requestId} 未提交：回合失败或被取消，主线保持不变`);
 			}
@@ -616,6 +616,9 @@ export class Subject {
 				this.lastReportedUsage = null;
 			}
 			await this.dispatch({ type: "agent_end", turnSeq: turn, success, error: runError });
+			if (success && !this.interrupted && this.pendingRewind) {
+				await this.applyPendingRewind();
+			}
 			if (success && !this.interrupted && this.queues.size > 0) {
 				try {
 					await this.resumeQueued();
@@ -684,7 +687,7 @@ export class Subject {
 		};
 		// A scheduled rewind commits before turn preparation, so each request always sees
 		// the mainline that is about to be sent — never a projection the rewind is about to replace.
-		await applyRewind();
+		let consecutiveToolCalls = 0;
 		for (;;) {
 			if (this.interrupted) {
 				await this.emitInterrupted();
@@ -737,6 +740,11 @@ export class Subject {
 				// 在此 drain 会让切模型/改思考档后的排队输入仍用旧口径（假切换）。
 				// 交还 runTurn 收尾的 resumeQueued 链路 —— startRun 会重新取 this.model 快照。
 				return;
+			}
+
+			consecutiveToolCalls += streamResult.toolCalls.length;
+			if (consecutiveToolCalls >= 100 && consecutiveToolCalls % 50 === 0) {
+				console.warn(`[Subject:decide] 提示：本回合连续工具调用已达 ${consecutiveToolCalls} 次（未施加人工上限，请关注模型状态）`);
 			}
 
 			const { stopped } = await this.settleToolExchange(streamResult);
@@ -853,20 +861,30 @@ export class Subject {
 			this.queues.remove(item.id);
 		}
 		this.notifyQueueChanged();
-		for (const item of items) {
-			// 用户输入的排队项被消费时开一个可见回合（与首条消费路径的 turn_start 对齐）：
-			// 否则 TUI 只收到 queue 事件清空待办区，transcript 没有任何它被采纳的痕迹。
-			// runtime 来源项投影为 display:false 的 custom 消息，不开可见回合。
-			if (item.source?.kind !== "runtime") {
-				const itemTurn = ++this.turnSeq;
-				await this.dispatch({ type: "turn_start", turnNumber: itemTurn, userText: item.text, images: item.images });
-				await this.consumeQueueItem(item);
-				// turn_start/turn_end 按 turnNumber 严格一一配对：runTurn 收尾只携带最初
-				// 回合号，中途消费的可见回合必须自带终态事件，否则 trajectory /
-				// transcript 的 turn 号口径漂移。
-				await this.dispatch({ type: "turn_end", turnNumber: itemTurn, usage: this.buildUsageSnapshot() });
-			} else {
-				await this.consumeQueueItem(item);
+		for (let i = 0; i < items.length; i++) {
+			const item = items[i];
+			try {
+				// 用户输入的排队项被消费时开一个可见回合（与首条消费路径的 turn_start 对齐）：
+				// 否则 TUI 只收到 queue 事件清空待办区，transcript 没有任何它被采纳的痕迹。
+				// runtime 来源项投影为 display:false 的 custom 消息，不开可见回合。
+				if (item.source?.kind !== "runtime") {
+					const itemTurn = ++this.turnSeq;
+					await this.dispatch({ type: "turn_start", turnNumber: itemTurn, userText: item.text, images: item.images });
+					await this.consumeQueueItem(item);
+					// turn_start/turn_end 按 turnNumber 严格一一配对：runTurn 收尾只携带最初
+					// 回合号，中途消费的可见回合必须自带终态事件，否则 trajectory /
+					// transcript 的 turn 号口径漂移。
+					await this.dispatch({ type: "turn_end", turnNumber: itemTurn, usage: this.buildUsageSnapshot() });
+				} else {
+					await this.consumeQueueItem(item);
+				}
+			} catch (error) {
+				// 某项持久化/消费失败时，将尚未处理的后续 items 全部恢复回队列，防止消息丢失
+				for (let j = i + 1; j < items.length; j++) {
+					this.queues.add(items[j]);
+				}
+				this.notifyQueueChanged();
+				throw error;
 			}
 		}
 		return true;

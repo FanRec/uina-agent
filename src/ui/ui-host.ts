@@ -288,10 +288,12 @@ export class UIHost implements UIHostContextPort {
 		});
 		if (!hasCodeFrame) return text;
 		return lines
-			.filter((line) => !/^\s*[┌└]─+.*[┐┘]\s*$/.test(stripAnsi(line)))
+			.filter((line) => !/^\s*[┌└]─+[─┐┘\s]*$/.test(stripAnsi(line)))
 			.map((line) => {
-				const match = stripAnsi(line).match(/^\s*│\s?(.*?)\s?│\s*$/);
-				return match ? match[1]! : line;
+				const clean = stripAnsi(line);
+				const match = clean.match(/^\s*│\s?(.*?)\s?│\s*$/);
+				if (match && !match[1].includes("│")) return match[1];
+				return line;
 			})
 			.join("\n");
 	}
@@ -1469,9 +1471,9 @@ export class UIHost implements UIHostContextPort {
 					colEnd: inputWidth - 1,
 					onClick: (col?: number) => {
 						this.focusManager.setFocus(this.inputLine);
-						if (typeof col === "number" && typeof (this.inputLine as any).setCursorByClick === "function") {
+						if (typeof col === "number") {
 							// 减去 dsh-tui 风格的 `› ` 提示符（共 2 列）
-							(this.inputLine as any).setCursorByClick(Math.max(0, col - 2));
+							this.inputLine.setCursorByClick(Math.max(0, col - 2));
 						}
 						this.requestRender();
 					},

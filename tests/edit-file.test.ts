@@ -153,6 +153,15 @@ describe("edit_file", () => {
 		expect(result.details).toMatchObject({ firstChangedLine: 1 });
 	});
 
+	it("rejects when oldText appears multiple times overlapping", async () => {
+		const { api, dir } = await setup();
+		const file = join(dir, "overlap-dup.txt");
+		await writeFile(file, "aaaa\n", "utf8");
+		const res = await api.callTool("edit_file", { path: file, edits: [{ oldText: "aaa", newText: "b" }] });
+		expect(res.status).toBe("failed");
+		expect(String(res.result)).toContain("出现 2 次，必须唯一");
+	});
+
 	it("rejects an empty edits array", async () => {
 		const { api, dir } = await setup();
 		const file = join(dir, "empty.txt");
@@ -162,3 +171,14 @@ describe("edit_file", () => {
 		expect(empty.status).toBe("not_started");
 	});
 });
+
+describe("write_file", () => {
+	it("automatically creates non-existent parent directories recursively", async () => {
+		const { api, dir } = await setup();
+		const file = join(dir, "sub", "deep", "nested.txt");
+		const res = await api.callTool("write_file", { path: file, text: "hello nested" });
+		expect(res.status).toBe("succeeded");
+		expect(await readFile(file, "utf8")).toBe("hello nested");
+	});
+});
+

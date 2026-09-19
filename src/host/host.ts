@@ -164,10 +164,11 @@ export class UinaHost {
 			restoredQueue = opened.snapshot.queued;
 		}
 
-		// 这三个对象在宿主实例之前建立，并被实例与其钩子共享，避免任何后补赋值。
-		const listeners = new Set<HostEventListener>();
-		const state = { stopping: false };
-		const abandonedTaskIds = new Set<string>();
+		try {
+			// 这三个对象在宿主实例之前建立，并被实例与其钩子共享，避免任何后补赋值。
+			const listeners = new Set<HostEventListener>();
+			const state = { stopping: false };
+			const abandonedTaskIds = new Set<string>();
 		// Host 装配层消费工具声明的 generic effect facts：只认 task.dispatch 的
 		// 外部操作身份（与 runtime-tools 的声明契约），不认识具体工具。
 		const collectAbandonedTaskIds = (entries: readonly SessionEntry[]): void => {
@@ -294,6 +295,10 @@ export class UinaHost {
 			});
 		}
 		return (hostSelf = new UinaHost(options, subject, store, extensionHost, tools, models, jobs, subagents, commands, restoredEntries, listeners, state, abandonedTaskIds));
+		} catch (error) {
+			await store.close().catch(() => undefined);
+			throw error;
+		}
 	}
 
 	subscribe(listener: HostEventListener): () => void {

@@ -159,6 +159,7 @@ export class ExtensionHost {
 
 	/** Queue observational events so stream consumers always observe start → update → end. */
 	emitObserved(event: OutputEvent, scope?: RuntimeScopeFilter): void {
+		if (!this.handlers.has(event.type)) return;
 		this.observedTail = this.observedTail.then(() => this.emit(event, scope)).catch((error) => this.emitError(event.type, error));
 	}
 
