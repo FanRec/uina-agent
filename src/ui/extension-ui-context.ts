@@ -46,6 +46,28 @@ export interface UIHostContextPort {
 	addCompaction?(record: { summary: string; turnsCount: number; tokensBefore: number; collapsed: boolean }): void;
 }
 
+/** 终端鼠标上报前缀（覆盖层统一忽略，避免吞掉后续按键字节）。 */
+export function isMouseReport(data: string): boolean {
+	return data.startsWith("\x1b[<") || data.startsWith("\x1b[M");
+}
+
+/** confirm 对话框的左右切换键（←/→/Tab）。 */
+export function isToggleKey(data: string): boolean {
+	return matchesKey(data, Key.left) || matchesKey(data, Key.right) || matchesKey(data, Key.tab);
+}
+
+/**
+ * confirm 对话框的确认键 → 布尔结果（纯函数）：
+ * y/Y 恒真、n/N 恒假、Enter 随当前焦点、Esc 取消为假；其余 undefined = 无动作。
+ */
+export function confirmChoice(data: string, yesSelected: boolean): boolean | undefined {
+	if (data === "y" || data === "Y") return true;
+	if (data === "n" || data === "N") return false;
+	if (matchesKey(data, Key.enter)) return yesSelected;
+	if (matchesKey(data, Key.escape)) return false;
+	return undefined;
+}
+
 export function createExtensionUIContext(host: UIHostContextPort): ExtensionUIContext {
 	return {
 		select(title: string, options: string[]): Promise<string | undefined> {
@@ -158,22 +180,16 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 						return out;
 					},
 					handleInput(data: string): void {
-						if (data.startsWith("\x1b[<") || data.startsWith("\x1b[M")) return;
-						if (matchesKey(data, Key.left) || matchesKey(data, Key.right) || matchesKey(data, Key.tab)) {
+						if (isMouseReport(data)) return;
+						if (isToggleKey(data)) {
 							yesSelected = !yesSelected;
 							host.requestRender();
-						} else if (data === "y" || data === "Y") {
+							return;
+						}
+						const choice = confirmChoice(data, yesSelected);
+						if (choice !== undefined) {
 							handle?.hide();
-							resolve(true);
-						} else if (data === "n" || data === "N") {
-							handle?.hide();
-							resolve(false);
-						} else if (matchesKey(data, Key.enter)) {
-							handle?.hide();
-							resolve(yesSelected);
-						} else if (matchesKey(data, Key.escape)) {
-							handle?.hide();
-							resolve(false);
+							resolve(choice);
 						}
 					},
 					invalidate(): void {},

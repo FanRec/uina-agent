@@ -150,6 +150,62 @@ function formatSubagentStatusIcon(status: SubagentStatus): string {
 	}
 }
 
+export type DetailAction = "close" | "toggleTab" | "scrollUp" | "scrollDown" | "interrupt" | "none";
+
+const DETAIL_NAV: ReadonlyArray<{ key: string; action: DetailAction }> = [
+	{ key: Key.escape, action: "close" },
+	{ key: Key.tab, action: "toggleTab" },
+	{ key: Key.up, action: "scrollUp" },
+	{ key: Key.down, action: "scrollDown" },
+];
+
+/** 中断只对活跃子代理生效（列表页与详情页共用同一语义）。 */
+export function isInterruptible(status: SubagentStatus): boolean {
+	return status === "running" || status === "accepted";
+}
+
+/** 详情页 Tab 切换（纯函数）。 */
+export function nextDetailTab(tab: "logs" | "transcript"): "logs" | "transcript" {
+	return tab === "logs" ? "transcript" : "logs";
+}
+
+/** 详情页按键 → 动作（纯函数；I/i 仅在可中断状态下生效）。 */
+export function detailKeyAction(data: string, status: SubagentStatus): DetailAction {
+	for (const { key, action } of DETAIL_NAV) {
+		if (matchesKey(data, key)) return action;
+	}
+	if ((data === "i" || data === "I") && isInterruptible(status)) return "interrupt";
+	return "none";
+}
+
+/** 多行文本按前缀拍平成单行数组（\\r\\n 归一为 \\n）。 */
+export function flattenLines(prefix: string, text: string): string[] {
+	return text.replace(/\r\n/g, "\n").split("\n").map((line) => `${prefix}${line}`);
+}
+
+/** Tab 栏：激活项反显，按内宽补齐尾随空格（纯函数）。 */
+export function formatDetailTabBar(activeTab: "logs" | "transcript", innerW: number): string {
+	const tab1 = activeTab === "logs"
+		? `\x1b[7m 输出流 (Logs) \x1b[0m`
+		: `${C.dim} 输出流 (Logs) ${C.reset}`;
+	const tab2 = activeTab === "transcript"
+		? `\x1b[7m 对话历史 (Transcript) \x1b[0m`
+		: `${C.dim} 对话历史 (Transcript) ${C.reset}`;
+	const padTabs = Math.max(0, innerW - visibleWidth(tab1) - visibleWidth(tab2) - 8);
+	return `[Tab] ${tab1}  ${tab2}${" ".repeat(padTabs)}`;
+}
+
+/** 滚动视口切片：scrollOffset 从尾部计，不足 maxRows 补空行（纯函数）。 */
+export function sliceContentWindow(lines: string[], scrollOffset: number, maxRows: number): string[] {
+	const end = Math.max(0, lines.length - scrollOffset);
+	const start = Math.max(0, end - maxRows);
+	const sliced = lines.slice(start, end);
+	while (sliced.length < maxRows) {
+		sliced.push("");
+	}
+	return sliced;
+}
+
 /**
  * 子智能体二级审查详情页组件（SubagentDetailScene）。
  * 针对指定子代理提供全量输出流与完整历史会话审查。
@@ -169,36 +225,31 @@ export class SubagentDetailScene implements Component, Focusable {
 	) {}
 
 	handleInput(data: string): void {
-		if (matchesKey(data, Key.escape)) {
-			this.onClose?.();
-			return;
-		}
-
-		if (matchesKey(data, Key.tab)) {
-			this.activeTab = this.activeTab === "logs" ? "transcript" : "logs";
-			this.scrollOffset = 0;
-			this.onRequestRender?.();
-			return;
-		}
-
-		if (matchesKey(data, Key.up)) {
-			this.scrollOffset++;
-			this.onRequestRender?.();
-			return;
-		}
-
-		if (matchesKey(data, Key.down)) {
-			this.scrollOffset = Math.max(0, this.scrollOffset - 1);
-			this.onRequestRender?.();
-			return;
-		}
-
-		if (data === "i" || data === "I") {
-			if (this.subagent.status === "running" || this.subagent.status === "accepted") {
+		const action = detailKeyAction(data, this.subagent.status);
+		switch (action) {
+			case "close":
+				this.onClose?.();
+				return;
+			case "toggleTab":
+				this.activeTab = nextDetailTab(this.activeTab);
+				this.scrollOffset = 0;
+				this.onRequestRender?.();
+				return;
+			case "scrollUp":
+				this.scrollOffset++;
+				this.onRequestRender?.();
+				return;
+			case "scrollDown":
+				this.scrollOffset = Math.max(0, this.scrollOffset - 1);
+				this.onRequestRender?.();
+				return;
+			case "interrupt":
 				void this.subagentPort.interrupt(this.subagent.id, this.ownerId).then(() => {
 					this.onRequestRender?.();
 				});
-			}
+				return;
+			case "none":
+				return;
 		}
 	}
 
@@ -217,31 +268,22 @@ export class SubagentDetailScene implements Component, Focusable {
 		const output: string[] = [panelTopLine(geo, `─ 子智能体审查: ${this.subagent.label} (${duration}) `)];
 
 		// 2. Tab 栏
-		const tab1 = this.activeTab === "logs"
-			? `\x1b[7m 输出流 (Logs) \x1b[0m`
-			: `${C.dim} 输出流 (Logs) ${C.reset}`;
-		const tab2 = this.activeTab === "transcript"
-			? `\x1b[7m 对话历史 (Transcript) \x1b[0m`
-			: `${C.dim} 对话历史 (Transcript) ${C.reset}`;
-		const padTabs = Math.max(0, innerW - visibleWidth(tab1) - visibleWidth(tab2) - 8);
-		output.push(panelRow(geo, `[Tab] ${tab1}  ${tab2}${" ".repeat(padTabs)}`));
+		output.push(panelRow(geo, formatDetailTabBar(this.activeTab, innerW)));
 		output.push(panelDivider(geo));
 
 		// 3. 内容区
 		const maxRows = Math.max(6, terminalHeight - 8);
 		let contentLines: string[] = [];
 
-		const flatten = (prefix: string, text: string): string[] =>
-			text.replace(/\r\n/g, "\n").split("\n").map((line) => `${prefix}${line}`);
 		if (this.activeTab === "logs") {
 			const readRes = this.subagentPort.read(this.subagent.id, this.ownerId, 0);
-			contentLines = readRes.output.flatMap((o) => flatten(`[${o.kind}] `, o.text));
+			contentLines = readRes.output.flatMap((o) => flattenLines(`[${o.kind}] `, o.text));
 		} else {
 			const trRes = this.subagentPort.transcript(this.subagent.id, this.ownerId);
 			contentLines = trRes.messages.flatMap((m) => {
 				const role = m.role.toUpperCase();
 				const text = typeof m.content === "string" ? m.content : JSON.stringify(m.content);
-				return flatten(`${C.bold}${role}:${C.reset} `, text);
+				return flattenLines(`${C.bold}${role}:${C.reset} `, text);
 			});
 		}
 
@@ -249,14 +291,7 @@ export class SubagentDetailScene implements Component, Focusable {
 			contentLines = [`${C.dim}(暂无数据记录)${C.reset}`];
 		}
 
-		const end = Math.max(0, contentLines.length - this.scrollOffset);
-		const start = Math.max(0, end - maxRows);
-		const sliced = contentLines.slice(start, end);
-		while (sliced.length < maxRows) {
-			sliced.push("");
-		}
-
-		for (const line of sliced) {
+		for (const line of sliceContentWindow(contentLines, this.scrollOffset, maxRows)) {
 			output.push(panelRow(geo, truncateToWidth(line, innerW)));
 		}
 
