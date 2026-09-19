@@ -4,7 +4,7 @@ import { JobRegistry } from "../src/extensions/jobs/registry.js";
 import { createJobTools } from "../src/extensions/jobs/tools.js";
 import { createExecCommandTool } from "../src/extensions/runtime-tools/exec-command/index.js";
 import { Subject } from "../src/agent/loop.js";
-import { scriptedProvider, lastUser } from "./helpers/mock-provider.js";
+import { Scenario } from "./harness/index.js";
 
 const registries: JobRegistry[] = [];
 afterEach(async () => {
@@ -103,8 +103,8 @@ describe("background jobs", () => {
 	});
 
 	it("delivers a runtime notice without adding a user message to history", async () => {
-		const provider = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "ack" }] }]);
-		const subject = new Subject(provider.model, provider.stream, new ToolBroker());
+		const scenario = Scenario.create().reply("ack");
+		const subject = new Subject(scenario.model, scenario.stream, new ToolBroker());
 		await subject.accept({
 			id: "notice-1",
 			mode: "followUp",
@@ -113,8 +113,8 @@ describe("background jobs", () => {
 		});
 		while (subject.isBusy()) await new Promise((resolve) => setTimeout(resolve, 1));
 		expect(subject.historySnapshot().filter((message) => message.role === "user")).toHaveLength(0);
-		expect(provider.calls[0]?.messages.some((message) => message.content.includes("job-notice"))).toBe(true);
-		expect(lastUser(provider.calls[0])).toContain("[运行时事件 job-notice");
+		expect(scenario.calls[0]?.messages.some((message) => message.content.includes("job-notice"))).toBe(true);
+		expect(scenario.lastPrompt).toContain("[运行时事件 job-notice");
 	});
 
 	it("enforces safe parameter validation and timeout limits in job tools", async () => {

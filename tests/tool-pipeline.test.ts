@@ -1,12 +1,7 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, test } from "./harness/index.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import { executeToolPipeline } from "../src/tools/pipeline.js";
 import type { ToolResultStatus } from "../src/core/types.js";
-import { UinaHost } from "../src/host/host.js";
-import { scriptedProvider } from "./helpers/mock-provider.js";
 
 describe("Tool Execution Pipeline", () => {
 	function createTestBroker() {
@@ -34,7 +29,7 @@ describe("Tool Execution Pipeline", () => {
 		return broker;
 	}
 
-	it("executes the full pipeline in order: beforeCall -> onStart -> run -> transformResult -> onDone", async () => {
+	test("executes the full pipeline in order: beforeCall -> onStart -> run -> transformResult -> onDone", async () => {
 		const broker = createTestBroker();
 		const trace: string[] = [];
 
@@ -76,7 +71,7 @@ describe("Tool Execution Pipeline", () => {
 		});
 	});
 
-	it("short-circuits when signal is already aborted before start", async () => {
+	test("short-circuits when signal is already aborted before start", async () => {
 		const broker = createTestBroker();
 		const trace: string[] = [];
 		const controller = new AbortController();
@@ -109,7 +104,7 @@ describe("Tool Execution Pipeline", () => {
 		expect(outcome.result).toContain("工具调用未启动");
 	});
 
-	it("short-circuits when beforeCall blocks execution", async () => {
+	test("short-circuits when beforeCall blocks execution", async () => {
 		const broker = createTestBroker();
 		const trace: string[] = [];
 
@@ -146,7 +141,7 @@ describe("Tool Execution Pipeline", () => {
 		expect(outcome.result).toBe("[blocked] 工具执行已被拦截: 安全策略拒绝执行");
 	});
 
-	it("handles schema validation errors without invoking transformResult or onStart", async () => {
+	test("handles schema validation errors without invoking transformResult or onStart", async () => {
 		const broker = createTestBroker();
 		const trace: string[] = [];
 
@@ -183,7 +178,7 @@ describe("Tool Execution Pipeline", () => {
 		expect(outcome.result).toContain("参数校验失败");
 	});
 
-	it("records onStart and closes with status unknown if cancelled during execution", async () => {
+	test("records onStart and closes with status unknown if cancelled during execution", async () => {
 		const broker = new ToolBroker();
 		const controller = new AbortController();
 		const trace: string[] = [];
@@ -233,7 +228,7 @@ describe("Tool Execution Pipeline", () => {
 		expect(outcome.status).toBe("unknown");
 	});
 
-	it("preserves continuation stop from tool outcome", async () => {
+	test("preserves continuation stop from tool outcome", async () => {
 		const broker = new ToolBroker();
 		broker.register({
 			def: {
@@ -257,15 +252,10 @@ describe("Tool Execution Pipeline", () => {
 		expect(outcome.status).toBe("succeeded");
 	});
 
-	it("executes tools directly through Host.runToolDirect with extension hooks and no model history", async () => {
-		const dirs: string[] = [];
-		const cwd = await mkdtemp(join(tmpdir(), "uina-pipeline-host-"));
-		dirs.push(cwd);
-		try {
-			await mkdir(join(cwd, ".uina", "extensions"), { recursive: true });
-			await writeFile(
-				join(cwd, ".uina", "extensions", "probe.mjs"),
-				`
+	test("executes tools directly through Host.runToolDirect with extension hooks and no model history", async ({ uina, env }) => {
+		await env.writeExtension(
+			"probe.mjs",
+			`
 export default function activate(uina) {
   uina.registerTool({
     def: {
@@ -285,22 +275,14 @@ export default function activate(uina) {
   });
 }
 `,
-				"utf8",
-			);
+		);
+		await uina.start();
 
-			const mock = scriptedProvider([]);
-			const host = await UinaHost.create({ cwd, provider: mock, model: mock.model });
-			await host.start();
-
-			const res = await host.runToolDirect("host_direct_probe", { val: "test123" });
-			expect(res.status).toBe("succeeded");
-			expect(res.result).toBe("[HOOKED] pong:test123");
-			// 验证没有写入模型会话历史
-			expect(host.historyCount()).toBe(0);
-
-			await host.dispose();
-		} finally {
-			for (const dir of dirs) await rm(dir, { recursive: true, force: true });
-		}
+		const res = await uina.callTool("host_direct_probe", { val: "test123" });
+		expect(res.status).toBe("succeeded");
+		expect(res.result).toBe("[HOOKED] pong:test123");
+		// 验证没有写入模型会话历史
+		expect(uina.history).toHaveLength(0);
+		expect(uina).toHaveNoLeakedResources();
 	});
 });

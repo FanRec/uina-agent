@@ -1,8 +1,7 @@
-﻿import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { UIHost } from "../src/ui/ui-host.js";
 import { TranscriptContainer } from "../src/ui/components/transcript/index.js";
 import { stripAnsi } from "../src/ui/core/utils.js";
-import type { ProcessTerminal } from "../src/ui/core/terminal.js";
 import { OverlayStack } from "../src/ui/core/overlay.js";
 import { FocusManager } from "../src/ui/core/focus.js";
 import { visibleWidth, truncateToWidth, wrapTextWithAnsi } from "../src/ui/core/utils.js";
@@ -10,26 +9,9 @@ import { InputLine, snapToGraphemeBoundary } from "../src/ui/components/editor/i
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import { listSessionBranches, listSessionNodes, readSessionBranch, readSessionNode } from "../src/session/navigation.js";
 
-function fakeTerminal(columns = 80, rows = 24): { terminal: ProcessTerminal; frames: string[] } {
-	const frames: string[] = [];
-	const terminal = {
-		columns,
-		rows,
-		isTTY: true,
-		syncWrite: (data: string) => { frames.push(data); },
-		write: () => {},
-		start: () => {},
-		stop: () => {},
-		hideCursor: () => {},
-		showCursor: () => {},
-		cursorUp: () => {},
-		cursorDown: () => {},
-		clearLine: () => {},
-		clearDown: () => {},
-		moveTo: () => {},
-	} as unknown as ProcessTerminal;
-	return { terminal, frames };
-}
+import { createSilentTerminal } from "./harness/index.js";
+
+const fakeTerminal = (columns = 80, rows = 24) => createSilentTerminal(columns, rows);
 
 const plainFrame = (frame: string): string[] =>
 	frame

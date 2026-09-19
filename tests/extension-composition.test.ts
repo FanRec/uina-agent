@@ -1,6 +1,5 @@
 import activateWorkspaceTools from "../src/extensions/workspace-tools/index.js";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExtensionRunner, createPrintUI, type ExtensionAPI } from "../src/extensions/runner.js";
@@ -8,10 +7,10 @@ import { ToolBroker, type Tool } from "../src/tools/broker.js";
 import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
 import { parseArgs } from "../src/cli/args.js";
 import activateCompaction from "../src/extensions/compaction/index.js";
-import { mockModel } from "./helpers/mock-provider.js";
 import type { Model, ModelStreamFn } from "../src/core/types.js";
+import { IsolatedEnv, mockModel } from "./harness/index.js";
 
-const directories: string[] = [];
+const envs: IsolatedEnv[] = [];
 const runners: ExtensionRunner[] = [];
 
 /** compaction capability 的 /compact 事实出口测试的模型装配。 */
@@ -64,12 +63,12 @@ const compactionHost = (cwd: string, stream: ModelStreamFn) => {
 
 afterEach(async () => {
 	for (const runner of runners.splice(0)) await runner.dispose();
-	await Promise.all(directories.splice(0).map((p) => rm(p, { recursive: true, force: true })));
+	await Promise.all(envs.splice(0).map((env) => env.cleanup()));
 });
 async function temp() {
-	const dir = await mkdtemp(join(tmpdir(), "uina-composition-"));
-	directories.push(dir);
-	return dir;
+	const env = await IsolatedEnv.create();
+	envs.push(env);
+	return env.path;
 }
 function runner(cwd: string, options: Partial<ConstructorParameters<typeof ExtensionRunner>[0]> = {}) {
 	const value = new ExtensionRunner({ cwd, tools: new ToolBroker({ ownerId: "root" }), ...options });

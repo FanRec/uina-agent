@@ -1,29 +1,29 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ExtensionRunner, type ExtensionAPI } from "../src/extensions/runner.js";
 import activateWorkspaceTools from "../src/extensions/workspace-tools/index.js";
 import { ToolBroker } from "../src/tools/broker.js";
+import { IsolatedEnv } from "./harness/index.js";
 
 const runners: ExtensionRunner[] = [];
-const directories: string[] = [];
+const envs: IsolatedEnv[] = [];
 afterEach(async () => {
 	for (const runner of runners.splice(0)) await runner.dispose();
-	await Promise.all(directories.splice(0).map((p) => rm(p, { recursive: true, force: true })));
+	await Promise.all(envs.splice(0).map((env) => env.cleanup()));
 });
 
 async function setup(): Promise<{ api: ExtensionAPI; dir: string }> {
-	const dir = await mkdtemp(join(tmpdir(), "uina-edit-"));
-	directories.push(dir);
-	const host = new ExtensionRunner({ cwd: dir, tools: new ToolBroker({ ownerId: "root" }) });
+	const env = await IsolatedEnv.create({ prefix: "uina-edit-" });
+	envs.push(env);
+	const host = new ExtensionRunner({ cwd: env.path, tools: new ToolBroker({ ownerId: "root" }) });
 	runners.push(host);
 	const captured: ExtensionAPI[] = [];
 	await host.activateBuiltin("workspace-tools", (value: ExtensionAPI) => {
 		captured.push(value);
 		activateWorkspaceTools(value);
 	});
-	return { api: captured[0], dir };
+	return { api: captured[0], dir: env.path };
 }
 
 describe("edit_file", () => {

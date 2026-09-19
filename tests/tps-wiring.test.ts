@@ -9,7 +9,6 @@
  * 分母（分子含参数、分母不含，不开思考时读数虚拟高两个数量级）。
  */
 import { describe, expect, it, vi } from "vitest";
-import type { ProcessTerminal } from "../src/ui/core/terminal.js";
 import { foldStreamChars } from "../src/ui/components/widgets/activity-line.js";
 import { createInteractiveUI } from "../src/ui/tui.js";
 
@@ -19,21 +18,9 @@ const T0 = 1_700_000_000_000;
 /** 从 SGR 序列里剥掉颜色与粗体，只留可见字形。 */
 const plain = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
 
-function fakeTerminal(): ProcessTerminal {
-	return {
-		columns: 120,
-		rows: 30,
-		isTTY: false,
-		syncWrite: () => {},
-		write: () => {},
-		start: () => {},
-		stop: () => {},
-		hideCursor: () => {},
-		showCursor: () => {},
-	} as unknown as ProcessTerminal;
-}
+import { createSilentTerminal } from "./harness/index.js";
 
-const createTestUI = () => createInteractiveUI({ modelName: "TestModel", terminal: fakeTerminal() });
+const createTestUI = () => createInteractiveUI({ modelName: "TestModel", terminal: createSilentTerminal(120, 30).terminal });
 
 const headerTokens = (tui: ReturnType<typeof createInteractiveUI>): string =>
 	plain(tui.host.activityLine.render(200).join("\n"));

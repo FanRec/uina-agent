@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
 import type { RuntimeEvent } from "../src/runtime/events.js";
-import { mockModel } from "./helpers/mock-provider.js";
+import { mockModel } from "./harness/index.js";
 
 const MODEL: Model = mockModel({ id: "mock", name: "mock", contextWindow: 100_000 });
 

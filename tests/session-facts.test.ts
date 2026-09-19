@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFile, writeFile } from "node:fs/promises";
 import { Subject } from "../src/agent/loop.js";
 import type { ModelStreamFn, ToolResultStatus } from "../src/core/types.js";
 import { ExtensionHost } from "../src/extensions/host.js";
@@ -14,20 +12,21 @@ import type { QueuedInput } from "../src/session/types.js";
 import { ToolBroker, type Tool } from "../src/tools/broker.js";
 import { InteractiveTUI } from "../src/ui/tui.js";
 import { TranscriptContainer, formatToolCardLines } from "../src/ui/components/transcript/index.js";
-import { mockModel, scriptedProvider, toolCallDelta } from "./helpers/mock-provider.js";
+import { IsolatedEnv, Scenario, mockModel } from "./harness/index.js";
 
-const dirs: string[] = [];
-afterEach(async () => { for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }); });
+const envs: IsolatedEnv[] = [];
+afterEach(async () => {
+	await Promise.all(envs.splice(0).map((env) => env.cleanup()));
+});
 async function sessionPath() {
-	const dir = await mkdtemp(join(tmpdir(), "uina-s1-"));
-	dirs.push(dir);
-	return join(dir, "session.jsonl");
+	const env = await IsolatedEnv.create();
+	envs.push(env);
+	return env.resolve("session.jsonl");
 }
 function providerFor(name: string, args: Record<string, unknown> = {}) {
-	return scriptedProvider([
-		{ match: req => !req.messages.some(m => m.role === "tool"), produce: () => [toolCallDelta("call", name, args)] },
-		{ match: () => true, produce: () => [{ kind: "text", text: "done" }] },
-	]);
+	return Scenario.create()
+		.when(req => !req.messages.some(m => m.role === "tool")).replyWithToolCall("call", name, args)
+		.when(() => true).reply("done");
 }
 function toolWith(run: Tool["run"]): Tool {
 	return { def: { type: "function", function: { name: "probe", description: "probe", parameters: { type: "object", properties: {} } } }, run };
@@ -84,8 +83,9 @@ describe("S1 durable session facts", () => {
 		await store.appendInput(input);
 		await store.close();
 		const after = await readFile(path, "utf8");
+		const currentEnv = envs[envs.length - 1]!;
 		for (const [index, contents] of [before, after].entries()) {
-			const cutPath = join(dirs[dirs.length - 1]!, `cut-${index}.jsonl`);
+			const cutPath = currentEnv.resolve(`cut-${index}.jsonl`);
 			await writeFile(cutPath, contents);
 			const reopened = await openJsonlSession(cutPath);
 			await reopened.store.close();
@@ -102,7 +102,7 @@ describe("S1 durable session facts", () => {
 	it("commits idle accept input as durable input record without short-circuiting metadata", async () => {
 		const path = await sessionPath();
 		const { store } = await openJsonlSession(path);
-		const p = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "acknowledged" }] }]);
+		const p = Scenario.create().reply("acknowledged");
 		const subject = new Subject(
 			p.model,
 			p.stream,
@@ -180,7 +180,7 @@ describe("S1 durable session facts", () => {
 		let attempts = 0;
 		store.appendInput = async () => { attempts++; throw new Error("commit failed"); };
 		const errors: string[] = [];
-		const p1 = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "done" }] }]);
+		const p1 = Scenario.create().reply("done");
 		const subject = new Subject(p1.model, p1.stream, new ToolBroker(), { store });
 		subject.subscribe((e) => { if (e.type === "error") errors.push(e.text); });
 		const run = subject.pushInput("first");
@@ -199,7 +199,7 @@ describe("S1 durable session facts", () => {
 		await original.store.appendEvent("queue_enqueued", { id: "pending-id", order: 1, mode: "followUp", text: "pending" });
 		await original.store.close();
 		const resumed = await openJsonlSession(path);
-		const p2 = scriptedProvider([{ match: () => true, produce: () => [{ kind: "text", text: "done" }] }]);
+		const p2 = Scenario.create().reply("done");
 		const subject = new Subject(p2.model, p2.stream, new ToolBroker(), { store: resumed.store });
 		subject.seedQueue(resumed.snapshot.queued);
 		await subject.pushInput("continue");

@@ -7,7 +7,7 @@ import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { Subject } from "../src/agent/loop.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta, ThinkingLevel } from "../src/core/types.js";
-import { mockModel } from "./helpers/mock-provider.js";
+import { mockModel } from "./harness/index.js";
 import { createOpenAIProvider } from "../src/ai/gateway.js";
 import { createServer } from "node:http";
 

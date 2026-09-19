@@ -12,7 +12,7 @@
  *   4. 相邻帧之间到底哪几行的内容变了（把异常时刻定位到具体帧）。
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { VtScreen } from "../tests/helpers/vt-screen.js";
+import { VtScreen, type Run } from "../tests/harness/index.js";
 import { visibleWidth } from "../src/ui/core/utils.js";
 
 interface LoggedFrame { seq: number; t: number; cols: number; rows: number; data: string; kind?: string }
@@ -67,7 +67,7 @@ for (const f of frames) {
 	if (problems.length) {
 		flagged++;
 		report.push(`#${f.seq} t=${new Date(f.t).toLocaleTimeString()} ${f.cols}x${f.rows} :: ${problems.join(" / ")}`);
-		if (idle.length) report.push(`   ${idle.slice(0, 6).map((r) => `row${r.row} x=${r.start}..${r.end}`).join(" | ")}`);
+		if (idle.length) report.push(`   ${idle.slice(0, 6).map((r: Run) => `row${r.row} x=${r.start}..${r.end}`).join(" | ")}`);
 	}
 	if (flagged <= 3 && problems.length === 0) {
 		report.push(

@@ -3,11 +3,11 @@ import { readFile } from "node:fs/promises";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import { Subject } from "../src/agent/loop.js";
 import { ToolBroker } from "../src/tools/broker.js";
-import { mockModel, mockStream } from "./helpers/mock-provider.js";
 import type { ModelRequest, ModelStreamFn } from "../src/core/types.js";
 import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
 import { ExtensionRunner } from "../src/extensions/runner.js";
 import activateMemory, { MEMORY_ENTRY_TYPE } from "./helpers/memory-capability.js";
+import { Scenario, mockModel } from "./harness/index.js";
 
 /**
  * Memory 派生实验（P0 冻结概念 allowlist 的第五关实证）：
@@ -44,9 +44,10 @@ describe("Memory 派生实验：capability 零内核内碰触", () => {
 		const hooks = createRuntimeHooks(runner);
 
 		const requests: ModelRequest[] = [];
+		const scenario = Scenario.create().reply("ack");
 		const stream: ModelStreamFn = async (model, req, onDelta, signal) => {
 			requests.push(req as ModelRequest);
-			return mockStream([{ kind: "text", text: "ack" }, { kind: "finish", reason: "stop" }])(model, req, onDelta, signal);
+			return scenario.stream(model, req, onDelta, signal);
 		};
 
 		const subject = new Subject(mockModel(), stream, new ToolBroker(), { store, runtimeHooks: hooks });

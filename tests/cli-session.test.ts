@@ -1,26 +1,24 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-
-const roots: string[] = [];
-const servers: Server[] = [];
-
-afterEach(async () => {
-	for (const server of servers.splice(0)) await new Promise<void>((resolve) => server.close(() => resolve()));
-	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+import { describe, expect, test, afterEach } from "./harness/index.js";
+import { IsolatedEnv } from "./harness/environment/isolated-env.js";
 
 describe("CLI session recovery", () => {
-	it("preserves ordered custom messages in the provider request from the real entry point", async () => {
-		const root = await mkdtemp(join(tmpdir(), "uina-cli-session-"));
-		roots.push(root);
-		const home = join(root, "home");
-		const cwd = join(root, "work");
-		await mkdir(join(home, ".uina"), { recursive: true });
-		await mkdir(join(cwd, "data"), { recursive: true });
+	const servers: Server[] = [];
+	const envs: IsolatedEnv[] = [];
+
+	afterEach(async () => {
+		for (const server of servers.splice(0)) await new Promise<void>((resolve) => server.close(() => resolve()));
+		for (const env of envs.splice(0)) await env.dispose();
+	});
+
+	test("preserves ordered custom messages in the provider request from the real entry point", async () => {
+		const root = await IsolatedEnv.create({ prefix: "uina-cli-session-" });
+		envs.push(root);
+		const home = join(root.cwd, "home");
+		const cwd = join(root.cwd, "work");
 
 		const requests: Array<{ messages?: Array<{ role?: string; content?: string }> }> = [];
 		const server = createServer((request, response) => {
@@ -52,7 +50,7 @@ describe("CLI session recovery", () => {
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("测试 Provider 地址不可用");
 
-		await writeFile(join(home, ".uina", "auth.json"), JSON.stringify({
+		await root.writeFile(join("home", ".uina", "auth.json"), JSON.stringify({
 			default: "audit",
 			thinkingLevel: "off",
 			providers: {
@@ -65,16 +63,16 @@ describe("CLI session recovery", () => {
 					thinkingLevels: ["off"],
 				},
 			},
-		}), "utf8");
+		}));
 
 		const timestamp = new Date(0).toISOString();
-		await writeFile(join(cwd, "data", "session.jsonl"), [
+		await root.writeFile(join("work", "data", "session.jsonl"), [
 			JSON.stringify({ kind: "header", version: 3, id: "session", cwd, createdAt: timestamp }),
 			JSON.stringify({ kind: "message", id: "1", seq: 1, timestamp, message: { role: "user", content: "ORDER_A" } }),
 			JSON.stringify({ kind: "custom_message", id: "2", seq: 2, timestamp, customType: "probe", content: "ORDER_C" }),
 			JSON.stringify({ kind: "message", id: "3", seq: 3, timestamp, message: { role: "assistant", content: "ORDER_B" } }),
 			"",
-		].join("\n"), "utf8");
+		].join("\n"));
 
 		const child = spawn(
 			process.execPath,
@@ -103,12 +101,11 @@ describe("CLI session recovery", () => {
 		]);
 	});
 
-	it("activates builtin runtime tools before a real one-shot tool loop", async () => {
-		const root = await mkdtemp(join(tmpdir(), "uina-cli-tools-"));
-		roots.push(root);
-		const home = join(root, "home");
-		const cwd = join(root, "work");
-		await mkdir(join(home, ".uina"), { recursive: true });
+	test("activates builtin runtime tools before a real one-shot tool loop", async () => {
+		const root = await IsolatedEnv.create({ prefix: "uina-cli-tools-" });
+		envs.push(root);
+		const home = join(root.cwd, "home");
+		const cwd = join(root.cwd, "work");
 		await mkdir(cwd, { recursive: true });
 
 		let chatRequests = 0;
@@ -142,7 +139,7 @@ describe("CLI session recovery", () => {
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("测试 Provider 地址不可用");
 
-		await writeFile(join(home, ".uina", "auth.json"), JSON.stringify({
+		await root.writeFile(join("home", ".uina", "auth.json"), JSON.stringify({
 			default: "audit",
 			thinkingLevel: "off",
 			providers: {
@@ -155,7 +152,7 @@ describe("CLI session recovery", () => {
 					thinkingLevels: ["off"],
 				},
 			},
-		}), "utf8");
+		}));
 
 		const child = spawn(
 			process.execPath,
@@ -170,7 +167,10 @@ describe("CLI session recovery", () => {
 		let stderr = "";
 		child.stdout.on("data", (chunk) => { stdout += String(chunk); });
 		child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-		const exitCode = await new Promise<number | null>((resolve) => child.on("close", resolve));
+		const exitCode = await new Promise<number | null>((resolve, reject) => {
+			child.on("error", reject);
+			child.on("close", resolve);
+		});
 
 		expect(exitCode, stderr).toBe(0);
 		expect(chatRequests).toBe(2);
@@ -179,12 +179,19 @@ describe("CLI session recovery", () => {
 });
 
 describe("CLI provider protocol closure", () => {
-	it("completes an Anthropic text/tool loop through the real entry point", async () => {
-		const root = await mkdtemp(join(tmpdir(), "uina-cli-anthropic-"));
-		roots.push(root);
-		const home = join(root, "home");
-		const cwd = join(root, "work");
-		await mkdir(join(home, ".uina"), { recursive: true });
+	const servers: Server[] = [];
+	const envs: IsolatedEnv[] = [];
+
+	afterEach(async () => {
+		for (const server of servers.splice(0)) await new Promise<void>((resolve) => server.close(() => resolve()));
+		for (const env of envs.splice(0)) await env.dispose();
+	});
+
+	test("completes an Anthropic text/tool loop through the real entry point", async () => {
+		const root = await IsolatedEnv.create({ prefix: "uina-cli-anthropic-" });
+		envs.push(root);
+		const home = join(root.cwd, "home");
+		const cwd = join(root.cwd, "work");
 		await mkdir(cwd, { recursive: true });
 		let chatRequests = 0;
 		const server = createServer((request, response) => {
@@ -221,7 +228,7 @@ describe("CLI provider protocol closure", () => {
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("测试 Provider 地址不可用");
-		await writeFile(join(home, ".uina", "auth.json"), JSON.stringify({
+		await root.writeFile(join("home", ".uina", "auth.json"), JSON.stringify({
 			default: "anthropic",
 			thinkingLevel: "off",
 			providers: {
@@ -235,7 +242,7 @@ describe("CLI provider protocol closure", () => {
 					thinkingLevels: ["off"],
 				},
 			},
-		}), "utf8");
+		}));
 		const child = spawn(process.execPath, [join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"), join(process.cwd(), "src", "main.ts")], {
 			cwd,
 			env: { ...process.env, UINA_HOME: home, UINA_ONESHOT_MSG: "调用时间工具" },
@@ -245,18 +252,20 @@ describe("CLI provider protocol closure", () => {
 		let stderr = "";
 		child.stdout.on("data", (chunk) => { stdout += String(chunk); });
 		child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-		const exitCode = await new Promise<number | null>((resolve) => child.on("close", resolve));
+		const exitCode = await new Promise<number | null>((resolve, reject) => {
+			child.on("error", reject);
+			child.on("close", resolve);
+		});
 		expect(exitCode, stderr).toBe(0);
 		expect(chatRequests).toBe(2);
 		expect(stdout).toContain("ANTHROPIC_CLI_OK");
 	});
 
-	it("completes a Gemini text/tool loop through the real entry point", async () => {
-		const root = await mkdtemp(join(tmpdir(), "uina-cli-gemini-"));
-		roots.push(root);
-		const home = join(root, "home");
-		const cwd = join(root, "work");
-		await mkdir(join(home, ".uina"), { recursive: true });
+	test("completes a Gemini text/tool loop through the real entry point", async () => {
+		const root = await IsolatedEnv.create({ prefix: "uina-cli-gemini-" });
+		envs.push(root);
+		const home = join(root.cwd, "home");
+		const cwd = join(root.cwd, "work");
 		await mkdir(cwd, { recursive: true });
 		let chatRequests = 0;
 		const server = createServer((request, response) => {
@@ -286,7 +295,7 @@ describe("CLI provider protocol closure", () => {
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("测试 Provider 地址不可用");
-		await writeFile(join(home, ".uina", "auth.json"), JSON.stringify({
+		await root.writeFile(join("home", ".uina", "auth.json"), JSON.stringify({
 			default: "gemini",
 			thinkingLevel: "off",
 			providers: {
@@ -300,7 +309,7 @@ describe("CLI provider protocol closure", () => {
 					geminiToolCallIds: true,
 				},
 			},
-		}), "utf8");
+		}));
 		const child = spawn(process.execPath, [join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"), join(process.cwd(), "src", "main.ts")], {
 			cwd,
 			env: { ...process.env, UINA_HOME: home, UINA_ONESHOT_MSG: "调用时间工具" },
@@ -310,7 +319,10 @@ describe("CLI provider protocol closure", () => {
 		let stderr = "";
 		child.stdout.on("data", (chunk) => { stdout += String(chunk); });
 		child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-		const exitCode = await new Promise<number | null>((resolve) => child.on("close", resolve));
+		const exitCode = await new Promise<number | null>((resolve, reject) => {
+			child.on("error", reject);
+			child.on("close", resolve);
+		});
 		expect(exitCode, stderr).toBe(0);
 		expect(chatRequests).toBe(2);
 		expect(stdout).toContain("GEMINI_CLI_OK");

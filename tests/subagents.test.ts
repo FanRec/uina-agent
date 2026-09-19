@@ -7,7 +7,7 @@ import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import { JobRegistry } from "../src/extensions/jobs/registry.js";
 import { ExtensionRunner } from "../src/extensions/runner.js";
 import { activateRuntimeTools, createChildTools } from "../src/extensions/runtime-tools/index.js";
-import { scriptedProvider, toolCallDelta } from "./helpers/mock-provider.js";
+import { Scenario } from "./harness/index.js";
 
 function providerFor(reply: (prompt: string) => string | Promise<string>): { model: Model; stream: ModelStreamFn } {
 	const model: Model = {
@@ -48,16 +48,15 @@ describe("SubagentRegistry", () => {
 		const children = new Map<string, ToolView>();
 		const jobs = new JobRegistry();
 		const rootInputs: unknown[] = [], errors: string[] = [];
-		const provider = scriptedProvider([
-			{ match: req => req.messages.some(m => m.content.includes("job-notice")), produce: () => [{ kind: "text", text: "received own job" }] },
-			{ match: req => req.messages.some(m => m.content === "grandchild"), produce: () => [{ kind: "text", text: "grandchild ready" }] },
-			{ match: req => !req.messages.some(m => m.role === "tool"), produce: () => [toolCallDelta("start-job", "exec_command", { command: process.platform === "win32" ? "Write-Output child-result" : "echo child-result", run_in_background: true })] },
-			{ match: () => true, produce: () => [{ kind: "text", text: "waiting" }] },
-		]);
+		const scenario = Scenario.create()
+			.when(req => req.messages.some(m => m.content.includes("job-notice"))).reply("received own job")
+			.when(req => req.messages.some(m => m.content === "grandchild")).reply("grandchild ready")
+			.when(req => !req.messages.some(m => m.role === "tool")).replyWithToolCall("start-job", "exec_command", { command: process.platform === "win32" ? "Write-Output child-result" : "echo child-result", run_in_background: true })
+			.when(() => true).reply("waiting");
 		const registry = new SubagentRegistry({
 			factory: new DefaultAgentFactory(),
-			model: () => provider.model,
-			stream: provider.stream,
+			model: () => scenario.model,
+			stream: scenario.stream,
 			createTools: ownerId => { const tools = createChildTools(root, { ownerId }); children.set(ownerId, tools); return tools; },
 		});
 		const runner = new ExtensionRunner({ cwd: process.cwd(), tools: root, onInput: async input => { rootInputs.push(input); }, onError: error => errors.push(error) });

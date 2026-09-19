@@ -18,8 +18,7 @@
 import { describe, expect, it } from "vitest";
 import { UIHost } from "../src/ui/ui-host.js";
 import { C, dropStrayControls, expandTabs, extractAnsiCode, normalizeFrameLine, resolveCarriageReturns, visibleWidth } from "../src/ui/core/utils.js";
-import { VtScreen } from "./helpers/vt-screen.js";
-import type { ProcessTerminal } from "../src/ui/core/terminal.js";
+import { VtScreen } from "./harness/index.js";
 
 const COLUMNS = 171;
 const ROWS = 30;
@@ -44,18 +43,9 @@ function declaredTailBg(row: string): string {
 /** 从 SGR 序列里取底色标识（与 VtScreen 内部记录格式一致：r,g,b） */
 const rgbOf = (sgr: string): string => sgr.replace(/\x1b\[48;2;(\d+);(\d+);(\d+)m/, "$1,$2,$3");
 
-function fakeTerminal(): { terminal: ProcessTerminal; frames: string[] } {
-	const frames: string[] = [];
-	const terminal = {
-		columns: COLUMNS,
-		rows: ROWS,
-		isTTY: true,
-		syncWrite: (data: string) => { frames.push(data); },
-		write: () => {}, start: () => {}, stop: () => {},
-		hideCursor: () => {}, showCursor: () => {},
-	} as unknown as ProcessTerminal;
-	return { terminal, frames };
-}
+import { createSilentTerminal } from "./harness/index.js";
+
+const fakeTerminal = () => createSilentTerminal(COLUMNS, ROWS);
 
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 60));
 

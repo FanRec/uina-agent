@@ -4,9 +4,6 @@
  * 折叠严格一致；planRecovery 必须前缀安全 + 幂等（结构保证而非算法自觉）。
  */
 import { describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import {
 	applyRecord,
@@ -18,7 +15,7 @@ import type { SessionRecord } from "../src/session/types.js";
 import { Subject } from "../src/agent/loop.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import type { Tool } from "../src/tools/broker.js";
-import { scriptedProvider } from "./helpers/mock-provider.js";
+import { IsolatedEnv, Scenario } from "./harness/index.js";
 
 /** 每个提交点后的机器守卫：常驻状态 ≡ 全量 fold。 */
 function assertReplayEqualsMemory(store: MemorySessionStore): void {
@@ -133,21 +130,11 @@ describe("replay ≡ memory invariants", () => {
 		};
 		const broker = new ToolBroker();
 		broker.register(tool);
-		const provider = scriptedProvider([
-			{
-				match: (req) => req.messages.some((message) => message.role === "tool"),
-				produce: () => [{ kind: "text", text: "done" }, { kind: "finish", reason: "stop" }],
-			},
-			{
-				match: () => true,
-				produce: () => [
-					{ kind: "tool_call", call: { id: "call-1", name: "probe", args: "{}" } },
-					{ kind: "finish", reason: "tool_calls" },
-				],
-			},
-		]);
+		const scenario = Scenario.create()
+			.when((req) => req.messages.some((message) => message.role === "tool")).reply("done")
+			.when(() => true).replyWithToolCall("call-1", "probe", {});
 		const store = new MemorySessionStore();
-		const subject = new Subject(provider.model, provider.stream, broker, { store });
+		const subject = new Subject(scenario.model, scenario.stream, broker, { store });
 		void subject.pushInput("run with tool");
 		await subject.pushInput("second", { mode: "followUp" });
 		await subject.waitForIdle();
@@ -159,9 +146,9 @@ describe("replay ≡ memory invariants", () => {
 
 describe("jsonl durable recovery identity", () => {
 	it("persists recovery once under its stable identity and never regenerates it", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "uina-replay-"));
+		const env = await IsolatedEnv.create();
 		try {
-			const path = join(dir, "session.jsonl");
+			const path = env.resolve("session.jsonl");
 			const first = await openJsonlSession(path);
 			await first.store.appendMessage({ role: "user", content: "hello" });
 			await first.store.appendMessage({ role: "assistant", content: "", tool_calls: [{ id: "call-1", name: "x", args: {} }] });
@@ -180,7 +167,7 @@ describe("jsonl durable recovery identity", () => {
 			expect(again.store.readRecords().filter((record) => record.id.startsWith("recovered:"))).toHaveLength(1);
 			await again.store.close();
 		} finally {
-			await rm(dir, { recursive: true, force: true });
+			await env.cleanup();
 		}
 	});
 });

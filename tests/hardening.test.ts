@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm, open } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { open } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
+import { IsolatedEnv } from "./harness/index.js";
 import { JsonlSessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { JobRegistry } from "../src/extensions/jobs/registry.js";
 import { SubagentRegistry } from "../src/extensions/subagents/registry.js";
@@ -24,8 +23,8 @@ function tool(name: string): Tool {
 
 describe("hardening: session write queue", () => {
 	it.each(["append", "sync"])("rolls back a failed %s before accepting the next record", async (stage) => {
-		const dir = await mkdtemp(join(tmpdir(), "uina-append-"));
-		const path = join(dir, "session.jsonl");
+		const env = await IsolatedEnv.create();
+		const path = env.resolve("session.jsonl");
 		try {
 			const initial = await openJsonlSession(path);
 			await initial.store.close();
@@ -45,7 +44,7 @@ describe("hardening: session write queue", () => {
 			const reopened = await openJsonlSession(path);
 			expect(reopened.snapshot.entries.filter(e => e.kind === "message").map(e => e.message.content)).toEqual(["before", "after"]);
 			await reopened.store.close();
-		} finally { await rm(dir, { recursive: true, force: true }); }
+		} finally { await env.cleanup(); }
 	});
 
 	it("rejects later writes if rollback cannot restore the file boundary", async () => {

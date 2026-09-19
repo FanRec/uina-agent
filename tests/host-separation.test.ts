@@ -3,15 +3,11 @@
  *
  * 这些是**反例**：它们证明的不是“能跑通”，而是“没有 UI 也能跑通”、
  * “零消费者状态下主体照常工作”、以及“第二个观察者能拿到它接入后的事件流”。
+ *
+ * 基于 Uina Test Kit 进行统一治理，消灭手工 mkdtemp/dirs 样板。
  */
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { UinaHost } from "../src/host/host.js";
+import { describe, expect, test } from "./harness/index.js";
 import type { HostEvent } from "../src/host/events.js";
-import { scriptedProvider, createMockProvider, mockModel } from "./helpers/mock-provider.js";
-import type { ModelRequest, StreamDelta } from "../src/core/types.js";
 
 /** 一个普通项目扩展：注册一个工具。扩展装载也一并被这条路径验证。 */
 const PROJECT_EXTENSION = `
@@ -30,184 +26,137 @@ export default function activate(uina) {
 }
 `;
 
-const hasToolResult = (req: ModelRequest): boolean => req.messages.some((m) => m.role === "tool");
-
-/** 第一轮请求工具，拿到结果后第二轮返回文本。 */
-function probeProvider() {
-	return scriptedProvider([
-		{
-			match: (req) => !hasToolResult(req),
-			produce: () => [{ kind: "tool_call", call: { id: "call-1", name: "probe_echo", args: JSON.stringify({ text: "你好" }) } }],
-		},
-		{
-			match: (req) => hasToolResult(req),
-			produce: (): StreamDelta[] => [{ kind: "text", text: "工具已返回" }],
-		},
-	]);
-}
-
-const dirs: string[] = [];
-afterEach(async () => {
-	for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
-});
-
-async function makeHost(options: { sessionPath?: string } = {}): Promise<UinaHost> {
-	const cwd = await mkdtemp(join(tmpdir(), "uina-host-"));
-	dirs.push(cwd);
-	await mkdir(join(cwd, ".uina", "extensions"), { recursive: true });
-	await writeFile(join(cwd, ".uina", "extensions", "probe.mjs"), PROJECT_EXTENSION, "utf8");
-	const probe = probeProvider();
-	const host = await UinaHost.create({ cwd, provider: probe, model: probe.model, ...options });
-	await host.start();
-	return host;
-}
-
-async function runOnce(host: UinaHost, text: string): Promise<void> {
-	await host.submitText(text, "direct");
-	await host.waitForIdle();
-}
-
 describe("RC-1 宿主与消费者分离", () => {
-	it("不创建任何 UI，注入假消费者即可跑通 文本 → 工具调用 → 结果回注", async () => {
-		const host = await makeHost();
-		const events: HostEvent[] = [];
-		// 全程没有 TUI、没有 stdio：消费者就是一个数组。
-		host.subscribe((event) => events.push(event));
+	test("不创建任何 UI，注入假消费者即可跑通 文本 → 工具调用 → 结果回注", async ({ uina, scenario, env }) => {
+		await env.writeExtension("probe.mjs", PROJECT_EXTENSION);
+		await uina.start(); // 激活项目扩展
 
-		await runOnce(host, "调用工具");
+		scenario
+			.replyWithToolCall("call-1", "probe_echo", { text: "你好" })
+			.reply("工具已返回");
 
+		await uina.send("调用工具");
+		await uina.waitForIdle();
+
+		const events = uina.events.all;
 		expect(events.filter((e) => e.type === "turn_start")).toHaveLength(1);
 		const started = events.find((e) => e.type === "tool_call");
 		expect(started).toMatchObject({ type: "tool_call", toolName: "probe_echo" });
 		const done = events.find((e) => e.type === "tool_result");
 		expect(done).toMatchObject({ toolName: "probe_echo", result: "你好", status: "succeeded" });
+
 		const text = events
 			.filter((e): e is Extract<typeof e, { type: "output_update" }> => e.type === "output_update" && e.channel === "content")
 			.map((e) => e.text).join("");
 		expect(text).toContain("工具已返回");
+
 		// 事实单流 1:1 透传后，消费者能看到回合收尾的完整事实序列：turn_end 之后
 		// 是 agent_end（回合结果）与 agent_settled（副作用结算完成）。
 		expect(events.some((e) => e.type === "turn_end")).toBe(true);
 		expect(events.at(-1)?.type).toBe("agent_settled");
-		await host.dispose();
+		expect(uina).toConformToDAG();
 	});
 
-	it("零消费者状态下主体照常工作，之后接入的观察者能拿到新事件", async () => {
-		const host = await makeHost();
+	test("零消费者状态下主体照常工作，之后接入的观察者能拿到新事件", async ({ uina, scenario }) => {
+		scenario
+			.reply("一")
+			.reply("二")
+			.reply("三");
+
 		const first: HostEvent[] = [];
-		const unsubscribe = host.subscribe((event) => first.push(event));
-		await runOnce(host, "第一次");
+		const unsubscribe = uina.host.subscribe((event) => first.push(event));
+
+		await uina.send("第一次");
+		await uina.waitForIdle();
 		const seenByFirst = first.length;
-		const historyAfterFirst = host.historyCount();
+		const historyAfterFirst = uina.host.historyCount();
 		expect(seenByFirst).toBeGreaterThan(0);
 
 		// 断开唯一的消费者。如果生命期属于 UI，主体到这里就该死了。
 		unsubscribe();
 
 		// 在**零消费者**状态下完整跑一轮：事件没有去处，但主体必须照常工作。
-		await runOnce(host, "第二次");
-		expect(host.historyCount()).toBeGreaterThan(historyAfterFirst);
+		await uina.send("第二次");
+		await uina.waitForIdle();
+		expect(uina.host.historyCount()).toBeGreaterThan(historyAfterFirst);
 
 		// 之后接入的新观察者，拿到的是它接入之后的运行。
 		const second: HostEvent[] = [];
-		host.subscribe((event) => second.push(event));
-		await runOnce(host, "第三次");
+		uina.host.subscribe((event) => second.push(event));
+
+		await uina.send("第三次");
+		await uina.waitForIdle();
 
 		expect(first).toHaveLength(seenByFirst); // 已断开的消费者不再收到任何事件
 		const turnStart = second.find((e) => e.type === "turn_start");
 		expect(turnStart).toMatchObject({ type: "turn_start", userText: "第三次" });
 		expect(second.at(-1)?.type).toBe("agent_settled");
-		await host.dispose();
 	});
 
-	it("会话由宿主拥有：dispose 后重开能恢复历史", async () => {
-		const cwd = await mkdtemp(join(tmpdir(), "uina-host-"));
-		dirs.push(cwd);
-		const sessionPath = join(cwd, "session.jsonl");
+	test("会话由宿主拥有：dispose 后重开能恢复历史", async ({ uina, scenario }) => {
+		scenario.reply("已记录");
 
-		const probe1 = probeProvider();
-		const first = await UinaHost.create({ cwd, sessionPath, provider: probe1, model: probe1.model });
-		await first.start();
-		await runOnce(first, "写进日志");
-		const beforeDispose = first.historyCount();
+		await uina.send("写进日志");
+		await uina.waitForIdle();
+		const beforeDispose = uina.host.historyCount();
 		expect(beforeDispose).toBeGreaterThan(0);
-		await first.dispose();
 
-		const probe2 = probeProvider();
-		const second = await UinaHost.create({ cwd, sessionPath, provider: probe2, model: probe2.model });
-		await second.start();
-		expect(second.restoredEntries.length).toBeGreaterThan(0);
-		expect(second.historyCount()).toBe(beforeDispose);
-		await second.dispose();
+		// 基于同一 session 文件重启宿主
+		const restarted = await uina.restart();
+		expect(restarted.host.restoredEntries.length).toBeGreaterThan(0);
+		expect(restarted.host.historyCount()).toBe(beforeDispose);
 	});
 });
+
 describe("/reload 反馈", () => {
-	async function makeReloadHost(): Promise<{ host: UinaHost; cwd: string }> {
-		const cwd = await mkdtemp(join(tmpdir(), "uina-host-"));
-		dirs.push(cwd);
-		await mkdir(join(cwd, ".uina", "extensions"), { recursive: true });
-		await writeFile(join(cwd, ".uina", "extensions", "probe.mjs"), PROJECT_EXTENSION, "utf8");
-		const probe = probeProvider();
-		const host = await UinaHost.create({ cwd, provider: probe, model: probe.model });
-		await host.start();
-		return { host, cwd };
-	}
+	test("完成通知带扩展摘要：成功数量与失败数量", async ({ uina, env }) => {
+		await env.writeExtension("probe.mjs", PROJECT_EXTENSION);
+		await env.writeExtension("bad.mjs", "export default function () { throw new Error('broken'); }");
+		await uina.start();
 
-	it("完成通知带扩展摘要：成功数量与失败数量", async () => {
-		const { host, cwd } = await makeReloadHost();
-		await writeFile(join(cwd, ".uina", "extensions", "bad.mjs"), "export default function () { throw new Error('broken'); }", "utf8");
-		const events: HostEvent[] = [];
-		host.subscribe((event) => events.push(event));
+		await uina.host.reloadExtensions();
 
-		await host.reloadExtensions();
-
-		const notices = events.filter((e) => e.type === "notice").map((e) => (e as { text: string }).text);
+		const notices = uina.events.filter("notice").map((e) => e.text);
 		const summary = notices.find((text) => text.includes("项目扩展已重新加载"));
 		expect(summary).toBeDefined();
 		expect(summary!).toContain("1 个扩展");
 		expect(summary!).toContain("失败 1");
 		expect(summary!).toContain("bad.mjs");
-		await host.dispose();
 	});
 
-	it("忙时提交 /reload：本轮结束后才执行，且受理即有回执", async () => {
+	test("忙时提交 /reload：本轮结束后才执行，且受理即有回执", async ({ uina, scenario, env }) => {
+		await env.writeExtension("probe.mjs", PROJECT_EXTENSION);
+		await uina.start();
+
 		// 门控 provider：回合卡在 stream 内部，直到测试放行，确保 dispatch 时宿主确实在忙
 		let release: () => void = () => {};
 		const gate = new Promise<void>((resolve) => { release = resolve; });
-		const cwd = await mkdtemp(join(tmpdir(), "uina-host-"));
-		dirs.push(cwd);
-		await mkdir(join(cwd, ".uina", "extensions"), { recursive: true });
-		await writeFile(join(cwd, ".uina", "extensions", "probe.mjs"), PROJECT_EXTENSION, "utf8");
-		const gatedProvider = createMockProvider(async (_m, _req, onDelta) => {
+
+		scenario.when(() => true).thenStream(async (_m, _req, onDelta) => {
 			await gate;
 			onDelta({ kind: "text", text: "完成" });
 			onDelta({ kind: "finish", reason: "stop" });
 		});
-		const host = await UinaHost.create({ cwd, provider: gatedProvider, model: mockModel() });
-		await host.start();
-		const events: HostEvent[] = [];
-		host.subscribe((event) => events.push(event));
 
 		// 让宿主进入忙碌状态（不 await：submitText 会等回合结束，门控下它会一直阻塞）
-		const turnSettled = host.submitText("开始", "direct").catch(() => undefined);
-		for (let i = 0; i < 50 && !host.isBusy(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
-		expect(host.isBusy()).toBe(true);
+		const turnSettled = uina.host.submitText("开始", "direct").catch(() => undefined);
+		for (let i = 0; i < 50 && !uina.isBusy(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(uina.isBusy()).toBe(true);
 
-		await host.commands.dispatch("/reload");
+		await uina.host.commands.dispatch("/reload");
 
 		// 受理回执立即出现，且此刻 reload 尚未执行（仍在忙）
-		const earlyNotices = events.filter((e) => e.type === "notice").map((e) => (e as { text: string }).text);
+		const earlyNotices = uina.events.filter("notice").map((e) => e.text);
 		expect(earlyNotices.some((text) => text.includes("本轮结束后") && text.includes("重新加载"))).toBe(true);
-		expect(events.some((e) => e.type === "notice" && (e as { text: string }).text.includes("已重新加载"))).toBe(false);
-		expect(host.isBusy()).toBe(true);
+		expect(uina.events.filter("notice").some((e) => e.text.includes("已重新加载"))).toBe(false);
+		expect(uina.isBusy()).toBe(true);
 
 		// 放行回合 → reload 自动执行，带摘要的成功通知出现
 		release();
 		await turnSettled;
-		await host.waitForIdle();
+		await uina.waitForIdle();
 		await new Promise((resolve) => setTimeout(resolve, 50));
-		const notices = events.filter((e) => e.type === "notice").map((e) => (e as { text: string }).text);
+		const notices = uina.events.filter("notice").map((e) => e.text);
 		expect(notices.some((text) => text.includes("项目扩展已重新加载"))).toBe(true);
-		await host.dispose();
 	});
 });

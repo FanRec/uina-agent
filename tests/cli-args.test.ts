@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { formatHelp, parseArgs, UINA_VERSION } from "../src/cli/args.js";
 import { resolveSessionPath } from "../src/cli/session-path.js";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { IsolatedEnv } from "./harness/index.js";
 
 describe("CLI Arguments Parser & Session Resolver", () => {
 	it("parses empty arguments to default values", () => {
@@ -86,35 +84,34 @@ describe("CLI Arguments Parser & Session Resolver", () => {
 			}
 		});
 
-		it("preserves data/session.jsonl if it already exists in the workspace", () => {
-			const tempDir = mkdtempSync(join(tmpdir(), "uina-test-local-"));
+		it("preserves data/session.jsonl if it already exists in the workspace", async () => {
+			const env = await IsolatedEnv.create({ prefix: "uina-test-local-" });
 			try {
-				mkdirSync(join(tempDir, "data"), { recursive: true });
-				writeFileSync(join(tempDir, "data", "session.jsonl"), "");
-				const resolved = resolveSessionPath({ cwd: tempDir });
-				expect(resolved).toBe(join(tempDir, "data", "session.jsonl"));
+				await env.writeFile("data/session.jsonl", "");
+				const resolved = resolveSessionPath({ cwd: env.path });
+				expect(resolved).toBe(env.resolve("data/session.jsonl"));
 			} finally {
-				rmSync(tempDir, { recursive: true, force: true });
+				await env.cleanup();
 			}
 		});
 
-		it("resolves to global unified session path ~/.uina/session.jsonl for external workspaces", () => {
-			const tempHome = mkdtempSync(join(tmpdir(), "uina-test-home-"));
-			const extDir = mkdtempSync(join(tmpdir(), "uina-test-ext-project-"));
+		it("resolves to global unified session path ~/.uina/session.jsonl for external workspaces", async () => {
+			const homeEnv = await IsolatedEnv.create({ prefix: "uina-test-home-" });
+			const extEnv = await IsolatedEnv.create({ prefix: "uina-test-ext-project-" });
 			const prevHome = process.env.UINA_HOME;
 			const prevSessionPath = process.env.UINA_SESSION_PATH;
 			try {
 				delete process.env.UINA_SESSION_PATH;
-				process.env.UINA_HOME = tempHome;
-				const resolved = resolveSessionPath({ cwd: extDir });
-				expect(resolved).toBe(join(tempHome, ".uina", "session.jsonl"));
+				process.env.UINA_HOME = homeEnv.path;
+				const resolved = resolveSessionPath({ cwd: extEnv.path });
+				expect(resolved).toBe(homeEnv.resolve(".uina", "session.jsonl"));
 			} finally {
 				if (prevHome !== undefined) process.env.UINA_HOME = prevHome;
 				else delete process.env.UINA_HOME;
 				if (prevSessionPath !== undefined) process.env.UINA_SESSION_PATH = prevSessionPath;
 				else delete process.env.UINA_SESSION_PATH;
-				rmSync(tempHome, { recursive: true, force: true });
-				rmSync(extDir, { recursive: true, force: true });
+				await homeEnv.cleanup();
+				await extEnv.cleanup();
 			}
 		});
 	});

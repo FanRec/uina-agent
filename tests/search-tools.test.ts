@@ -1,5 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ExtensionRunner, type ExtensionAPI } from "../src/extensions/runner.js";
@@ -13,25 +12,26 @@ import {
 	matchLines,
 	type SearchMatch,
 } from "../src/extensions/workspace-tools/search-core.js";
+import { IsolatedEnv } from "./harness/index.js";
 
 const runners: ExtensionRunner[] = [];
-const directories: string[] = [];
+const envs: IsolatedEnv[] = [];
 afterEach(async () => {
 	for (const runner of runners.splice(0)) await runner.dispose();
-	await Promise.all(directories.splice(0).map((p) => rm(p, { recursive: true, force: true })));
+	await Promise.all(envs.splice(0).map((env) => env.cleanup()));
 });
 
 async function setup(): Promise<{ api: ExtensionAPI; dir: string }> {
-	const dir = await mkdtemp(join(tmpdir(), "uina-search-"));
-	directories.push(dir);
-	const host = new ExtensionRunner({ cwd: dir, tools: new ToolBroker({ ownerId: "root" }) });
+	const env = await IsolatedEnv.create({ prefix: "uina-search-" });
+	envs.push(env);
+	const host = new ExtensionRunner({ cwd: env.path, tools: new ToolBroker({ ownerId: "root" }) });
 	runners.push(host);
 	const captured: ExtensionAPI[] = [];
 	await host.activateBuiltin("workspace-tools", (value: ExtensionAPI) => {
 		captured.push(value);
 		activateWorkspaceTools(value);
 	});
-	return { api: captured[0], dir };
+	return { api: captured[0], dir: env.path };
 }
 
 async function seedProject(dir: string): Promise<void> {
@@ -168,8 +168,9 @@ describe("search-core 单元", () => {
 	});
 
 	it("GitignoreMatcher: loaded patterns ignore matching paths", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "uina-gi-"));
-		directories.push(dir);
+		const env = await IsolatedEnv.create({ prefix: "uina-gi-" });
+		envs.push(env);
+		const dir = env.path;
 		await writeFile(join(dir, ".gitignore"), "node_modules/\n*.log\n", "utf8");
 		const m = new GitignoreMatcher(dir);
 		await m.addDir(dir);
@@ -193,8 +194,9 @@ describe("search-core 单元", () => {
 
 describe("runGrep node 降级引擎", () => {
 	it("falls back to node engine semantics via runGrep (engine reported)", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "uina-nodegrep-"));
-		directories.push(dir);
+		const env = await IsolatedEnv.create({ prefix: "uina-nodegrep-" });
+		envs.push(env);
+		const dir = env.path;
 		await seedProject(dir);
 		// 无论本机是否有 rg，runGrep 都应返回一致的结果集；本机有 rg 时 engine=rg，否则 node
 		const outcome = await runGrep({ pattern: "alpha", root: dir, literal: true });
