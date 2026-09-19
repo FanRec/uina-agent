@@ -276,6 +276,66 @@ export async function walkTree(
 	await walk(root);
 }
 
+/** 模式 → 行匹配正则（纯函数）：literal 模式转义全部元字符；非法正则抛带指引的错误。 */
+export function buildLineMatcher(pattern: string, literal?: boolean, ignoreCase?: boolean): RegExp {
+	const flags = ignoreCase ? "i" : "";
+	if (literal) return new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), flags);
+	try {
+		return new RegExp(pattern, flags);
+	} catch (error) {
+		throw new Error(`search：pattern 不是合法正则：${errorMessage(error)}`);
+	}
+}
+
+/** 逐行匹配已读内容：命中追加进 matches（1 基行号、剥 \r），达上限返回 true（纯计算，无 IO）。 */
+export function matchLines(
+	content: string,
+	regex: RegExp,
+	file: string,
+	matches: SearchMatch[],
+	limit: number,
+): boolean {
+	const lines = content.split("\n");
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i].replace(/\r$/, "");
+		if (regex.test(line)) {
+			matches.push({ file, line: i + 1, text: line });
+			if (matches.length >= limit) return true;
+		}
+	}
+	return false;
+}
+
+/** 目录遍历 + glob 过滤 + 逐文件匹配（matchFile 返回是否已达上限）。 */
+async function walkGrep(
+	opts: GrepOptions,
+	matcher: GitignoreMatcher,
+	matchFile: (full: string) => boolean,
+): Promise<boolean> {
+	let limitHit = false;
+	await walkTree(
+		opts.root,
+		matcher,
+		(rel, _name, isDirEntry, full) => {
+			if (isDirEntry) return false;
+			if (opts.glob && !globFilter(rel, opts.glob)) return false;
+			if (matchFile(full)) {
+				limitHit = true;
+				return true;
+			}
+			return false;
+		},
+		opts.signal,
+	);
+	return limitHit;
+}
+
+/** 单文件搜索：取消检查 + 匹配。 */
+function searchSingleFile(opts: GrepOptions, matchFile: (full: string) => boolean): boolean {
+	if (opts.signal?.aborted) throw new Error("search：调用已取消。");
+	return matchFile(opts.root);
+}
+
 async function grepWithNode(opts: GrepOptions, limit: number): Promise<SearchOutcome> {
 	const s = await stat(opts.root).catch(() => null);
 	if (!s) throw new Error(`search：路径不存在：${opts.root}`);
@@ -283,21 +343,9 @@ async function grepWithNode(opts: GrepOptions, limit: number): Promise<SearchOut
 	const matcher = new GitignoreMatcher(opts.root);
 	const rootDir = isDir ? opts.root : opts.root.slice(0, opts.root.lastIndexOf(sep)) || opts.root;
 	await matcher.addDir(rootDir);
-
-	let regex: RegExp;
-	if (opts.literal) {
-		regex = new RegExp(opts.pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), opts.ignoreCase ? "i" : "");
-	} else {
-		try {
-			regex = new RegExp(opts.pattern, opts.ignoreCase ? "i" : "");
-		} catch (error) {
-			throw new Error(`search：pattern 不是合法正则：${errorMessage(error)}`);
-		}
-	}
+	const regex = buildLineMatcher(opts.pattern, opts.literal, opts.ignoreCase);
 
 	const matches: SearchMatch[] = [];
-	let limitHit = false;
-
 	const matchFile = (full: string): boolean => {
 		// 同步读 + 逐行匹配；返回是否已达上限
 		let content: string;
@@ -307,37 +355,16 @@ async function grepWithNode(opts: GrepOptions, limit: number): Promise<SearchOut
 			return false; // 二进制或不可读：跳过
 		}
 		if (content.includes("\0")) return false; // 含 NUL 视为二进制
-		const lines = content.split("\n");
-		for (let i = 0; i < lines.length; i++) {
-			const line = lines[i].replace(/\r$/, "");
-			if (regex.test(line)) {
-				matches.push({ file: full, line: i + 1, text: line });
-				if (matches.length >= limit) return true;
-			}
-		}
-		return false;
+		return matchLines(content, regex, full, matches, limit);
 	};
 
+	let limitHit = false;
 	if (isDir) {
-		await walkTree(
-			opts.root,
-			matcher,
-			(rel, _name, isDirEntry, full) => {
-				if (isDirEntry) return false;
-				if (opts.glob && !globFilter(rel, opts.glob)) return false;
-				if (matchFile(full)) {
-					limitHit = true;
-					return true;
-				}
-				return false;
-			},
-			opts.signal,
-		);
+		limitHit = await walkGrep(opts, matcher, matchFile);
 		if (opts.signal?.aborted) throw new Error("search：调用已取消。");
 	} else {
 		// 单文件搜索
-		if (opts.signal?.aborted) throw new Error("search：调用已取消。");
-		if (matchFile(opts.root)) limitHit = true;
+		limitHit = searchSingleFile(opts, matchFile);
 	}
 	return { matches, limitHit, engine: "node" };
 }

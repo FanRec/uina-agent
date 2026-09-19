@@ -75,39 +75,57 @@ function downloadRg(): Promise<string | null> {
 	return inflight;
 }
 
+/** 平台/架构 → release 资产名（纯函数矩阵；不支持的平台抛错）。 */
+export function resolveRgAsset(plat: string, architecture: string): string {
+	const archLabel = architecture === "arm64" ? "aarch64" : "x86_64";
+	switch (plat) {
+		case "win32":
+			return `ripgrep-${RG_VERSION}-${archLabel}-pc-windows-msvc.zip`;
+		case "darwin":
+			return `ripgrep-${RG_VERSION}-${archLabel}-apple-darwin.tar.gz`;
+		case "linux":
+			return `ripgrep-${RG_VERSION}-${archLabel}-unknown-linux-musl.tar.gz`;
+		default:
+			throw new Error(`不支持的 ${plat}/${architecture} 平台`);
+	}
+}
+
+/** 解压目录内二进制的候选位置：官方包嵌套目录优先，平铺兜底（纯函数）。 */
+export function binaryCandidates(extractDir: string, assetName: string, fileName: string): string[] {
+	const nested = join(extractDir, assetName.replace(/\.(tar\.gz|zip)$/, ""), fileName);
+	return [nested, join(extractDir, fileName)];
+}
+
+async function writeArchive(url: string, archivePath: string): Promise<void> {
+	const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+	if (!response.ok || !response.body) throw new Error(`下载失败：HTTP ${response.status}`);
+	await pipeline(Readable.fromWeb(response.body as never), createWriteStream(archivePath));
+}
+
+function extractArchive(archivePath: string, extractDir: string, plat: string): void {
+	// Windows 10+ 的 System32 tar.exe 是 bsdtar，可直接解 zip
+	const tar = plat === "win32" ? join(process.env.SystemRoot ?? "", "System32", "tar.exe") : "tar";
+	const extract = spawnSync(tar, ["xf", archivePath, "-C", extractDir], { stdio: "pipe", shell: false });
+	if (extract.error || extract.status !== 0) {
+		throw new Error(`解压失败：${extract.error?.message ?? extract.stderr?.toString().trim() ?? "tar 退出码 " + extract.status}`);
+	}
+}
+
 async function downloadRgInner(): Promise<string> {
 	const plat = platform();
-	const architecture = arch();
-	let assetName: string | null = null;
-	if (plat === "win32") {
-		assetName = `ripgrep-${RG_VERSION}-${architecture === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc.zip`;
-	} else if (plat === "darwin") {
-		assetName = `ripgrep-${RG_VERSION}-${architecture === "arm64" ? "aarch64" : "x86_64"}-apple-darwin.tar.gz`;
-	} else if (plat === "linux") {
-		assetName = `ripgrep-${RG_VERSION}-${architecture === "arm64" ? "aarch64" : "x86_64"}-unknown-linux-musl.tar.gz`;
-	}
-	if (!assetName) throw new Error(`不支持的 ${plat}/${architecture} 平台`);
-
+	const assetName = resolveRgAsset(plat, arch());
 	const dir = binDir();
 	mkdirSync(dir, { recursive: true });
 	const url = `https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${assetName}`;
 	const archivePath = join(dir, assetName);
-	const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
-	if (!response.ok || !response.body) throw new Error(`下载失败：HTTP ${response.status}`);
-	await pipeline(Readable.fromWeb(response.body as never), createWriteStream(archivePath));
-
+	await writeArchive(url, archivePath);
 	const extractDir = join(dir, `extract_tmp_${process.pid}_${Date.now()}`);
 	mkdirSync(extractDir, { recursive: true });
 	try {
-		// Windows 10+ 的 System32 tar.exe 是 bsdtar，可直接解 zip
-		const tar = plat === "win32" ? join(process.env.SystemRoot ?? "", "System32", "tar.exe") : "tar";
-		const extract = spawnSync(tar, ["xf", archivePath, "-C", extractDir], { stdio: "pipe", shell: false });
-		if (extract.error || extract.status !== 0) {
-			throw new Error(`解压失败：${extract.error?.message ?? extract.stderr?.toString().trim() ?? "tar 退出码 " + extract.status}`);
-		}
+		extractArchive(archivePath, extractDir, plat);
 		const binaryFileName = rgBinaryName();
-		const nested = join(extractDir, assetName.replace(/\.(tar\.gz|zip)$/, ""), binaryFileName);
-		const binary = [nested, join(extractDir, binaryFileName)].find(existsSync) ?? findRgRecursively(extractDir, binaryFileName);
+		const binary = binaryCandidates(extractDir, assetName, binaryFileName).find(existsSync)
+			?? findRgRecursively(extractDir, binaryFileName);
 		if (!binary) throw new Error(`压缩包内未找到 ${binaryFileName}`);
 		const target = cachedPath();
 		renameSync(binary, target);
