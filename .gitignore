@@ -20,3 +20,10 @@ AGENTS.md
 coverage/
 coverage-raw/
 scripts/crap.mjs
+
+# 本地外部插件与应用
+.uina/
+tests/netease-jukebox.test.ts
+tests/soundboard.test.ts
+tests/tts-extension.test.ts
+

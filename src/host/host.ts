@@ -14,6 +14,7 @@ import { ExtensionRunner } from "../extensions/runner.js";
 import { CommandRouter } from "../extensions/commands.js";
 import { activateBuiltinCommands } from "../extensions/builtin.js";
 import activateCompaction from "../extensions/compaction/index.js";
+import { activateAppFramework } from "../extensions/app-framework/index.js";
 import { activateRuntimeTools, createChildTools, TASK_DISPATCH_EFFECT } from "../extensions/runtime-tools/index.js";
 import { activateSessionTools } from "../extensions/session-tools/index.js";
 import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
@@ -396,7 +397,9 @@ export class UinaHost {
 		await this.extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools({ jobs: this.jobs, subagents: this.subagents, isTaskAbandoned: (id) => this.abandonedTaskIds.has(id) }));
 		await this.extensionHost.activateBuiltin("commands", activateBuiltinCommands);
 		await this.extensionHost.activateBuiltin("compaction", activateCompaction);
+		await this.extensionHost.activateBuiltin("app-framework", activateAppFramework);
 		await this.extensionHost.load();
+
 	}
 
 	get session(): import("../session/types.js").SessionAccess {
