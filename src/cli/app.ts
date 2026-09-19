@@ -5,11 +5,13 @@ import type { HostEvent } from "../host/events.js";
 import { createInteractiveUI, type InteractiveTUI } from "../ui/tui.js";
 import { installTerminalGuards } from "../ui/core/terminal.js";
 import { combineQueuedDraft, canEditQueuedDraft } from "./draft.js";
-import { sanitizeTerminalText, toolStartLine, toolResultLines } from "../ui/format.js";
+import { toolResultLines } from "../ui/format.js";
 import { createJobAdapter } from "../ui/adapters/jobs.js";
 import { createSubagentAdapter } from "../ui/adapters/subagents.js";
 import { formatHelp, parseArgs, readPipedStdin, UINA_VERSION } from "./args.js";
 import { resolveSessionPath } from "./session-path.js";
+import { formatStartupBanner, resolveExitCode, resolveRunMode } from "./run-mode.js";
+import { formatStdioEventLine, formatToolCallLine, formatToolResultBlock } from "./stdio-render.js";
 
 const CLEAR_LINE = "\r\x1b[2K";
 const ERR = "\x1b[31m";
@@ -33,22 +35,15 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	}
 
 	const piped = await readPipedStdin();
-	let initialPrompt: string | undefined;
-	if (piped && args.prompt) {
-		initialPrompt = `${args.prompt}\n\n[标准输入内容]:\n${piped}`;
-	} else if (piped) {
-		initialPrompt = piped;
-	} else if (args.prompt) {
-		initialPrompt = args.prompt;
-	}
 	const oneshot = process.env.UINA_ONESHOT_MSG;
-	if (oneshot !== undefined) {
-		initialPrompt = oneshot;
-	}
-
-	const isPrintMode = args.print || oneshot !== undefined || (!process.stdout.isTTY && initialPrompt !== undefined);
-	const isTTY = process.stdout.isTTY && process.stdin.isTTY;
-	const shouldRunTUI = isTTY && !isPrintMode;
+	const { initialPrompt, isPrintMode, shouldRunTUI } = resolveRunMode({
+		print: args.print,
+		piped,
+		prompt: args.prompt,
+		oneshot,
+		stdoutTTY: process.stdout.isTTY,
+		stdinTTY: process.stdin.isTTY,
+	});
 
 	let tui: InteractiveTUI | null = null;
 	let nonTTY: ReturnType<typeof createInterface> | null = null;
@@ -62,53 +57,26 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	let execAbort: AbortController | null = null;
 
 	const toolStartedAt = new Map<string, number>();
+	/** tool_result 的耗时取值（顺带清账）；callId 缺失按 0 计。 */
+	const elapsedFor = (callId: string | undefined): number => {
+		if (callId === undefined) return 0;
+		const startedAt = toolStartedAt.get(callId);
+		toolStartedAt.delete(callId);
+		return startedAt === undefined ? 0 : Date.now() - startedAt;
+	};
 	const renderStdio = (message: HostEvent): void => {
 		switch (message.type) {
-			case "output_update":
-				if (message.channel !== "content") break;
-				process.stdout.write(sanitizeTerminalText(message.text));
-				break;
-			case "turn_start":
-				process.stdout.write(`\n${message.userText ? `你 > ${message.userText}\n` : ""}Uina > `);
-				break;
-			case "turn_end":
-				process.stdout.write("\n");
-				break;
 			case "tool_call":
 				if (message.callId) toolStartedAt.set(message.callId, Date.now());
-				process.stdout.write(`\n  ⏳ ${toolStartLine(message.toolName, message.args)}`);
-				break;
-			case "tool_result": {
-				if (message.images?.length) process.stdout.write("\n  [图片: " + message.images.map(image => image.alt ?? image.mimeType).join(", ") + "]");
-				const startedAt = message.callId !== undefined ? toolStartedAt.get(message.callId) : undefined;
-				if (message.callId !== undefined) toolStartedAt.delete(message.callId);
-				const elapsed = startedAt === undefined ? 0 : Date.now() - startedAt;
-				const style = {
-					ok: (value: string) => value,
-					err: (value: string) => value,
-					warn: (value: string) => value,
-					dim: (value: string) => value,
-				};
-				process.stdout.write(`\n  ${message.status === "succeeded" ? "✓" : "!"} ${message.toolName}`);
-				for (const line of toolResultLines(message.result, elapsed, style)) {
-					process.stdout.write(`\n    ${line}`);
-				}
-				break;
+				process.stdout.write(formatToolCallLine(message));
+				return;
+			case "tool_result":
+				process.stdout.write(formatToolResultBlock(message, elapsedFor(message.callId)));
+				return;
+			default: {
+				const line = formatStdioEventLine(message);
+				if (line !== null) process.stdout.write(line);
 			}
-			case "session_rewind":
-				process.stdout.write(`\n[会话回溯] ${message.fromId} → ${message.targetId}；退出路径只读，外部状态未撤销。\n`);
-				break;
-			case "notice":
-				process.stdout.write(`\n⚠ ${message.text}\n`);
-				break;
-			case "turn_aborted":
-				process.stdout.write("\n[已打断]\n");
-				break;
-			case "error":
-				process.stdout.write(`[错误] ${message.text}\n`);
-				break;
-			default:
-				break;
 		}
 	};
 
@@ -136,12 +104,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	}
 	unsubscribe = host.subscribe(render);
 
-	if (!shouldRunTUI && !isPrintMode) {
-		process.stdout.write(`Uina 就绪（模型：${host.snapshot().modelName}）— /quit 退出\n\n`);
-	}
-	if (host.historyCount() > 0 && !isPrintMode) {
-		process.stdout.write(`（已恢复 JSONL 会话：${host.historyCount()} 条消息）\n\n`);
-	}
+	process.stdout.write(formatStartupBanner(host.snapshot().modelName, host.historyCount(), shouldRunTUI, isPrintMode));
 
 	// —— 进程级守卫：信号与 stdout/stderr 归属进程，不属于任何 UI。 ——
 	const hostGuardCleanups: Array<() => void> = [];
@@ -169,7 +132,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		tui?.close();
 		nonTTY?.close();
 		uninstallHostGuards();
-		process.exitCode = (isPrintMode || oneshot !== undefined) && hadError ? 1 : 0;
+		process.exitCode = resolveExitCode(isPrintMode, oneshot !== undefined, hadError);
 	};
 
 	const restoreQueueToEditor = async (): Promise<number> => {
@@ -342,50 +305,54 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	};
 
 	// —— 消费者接入 ——
-	if (shouldRunTUI) {
-		const snapshot = host.snapshot();
-		tui = createInteractiveUI({
-			modelName: snapshot.modelName,
-			thinkingLevels: snapshot.thinkingLevels,
-			thinkingLevel: snapshot.thinkingLevel,
-			cwd: process.cwd(),
-			registry: host.extensionRegistry,
-			jobPort: createJobAdapter(host.jobs),
-			subagentPort: createSubagentAdapter(host.subagents),
-			sessionPort: host.session,
-		});
-		host.attachExtensionUI(tui.ctxUI);
-		tui.onLine(onUserLine);
-		tui.onCancel(handleCancel);
-		tui.onExit(handleExit);
-		tui.onSIGINT(() => handleInterrupt(false));
-		tui.onForceExit(() => handleInterrupt(true));
-		tui.onInterruptAndDeliver(handleInterruptAndDeliver);
-		tui.onPullBackQueue(() => {
-			void handlePullBackQueue();
-		});
-		tui.onThinkingLevelCycle(() => {
-			if (!host.snapshot().thinkingLevels?.length) {
-				tui?.host.notify("当前 Provider 未提供 thinking 能力元数据；无法循环档位。", "warning", 2500);
-				return;
-			}
-			host.cycleThinkingLevel();
-		});
-		tui.host.setUsage({
-			used: snapshot.usedTokens,
-			contextWindow: snapshot.contextWindow,
-			actual: false,
-			segments: snapshot.segments,
-		});
-		if (host.restoredEntries.length > 0) tui.loadSession(host.restoredEntries);
-		tui.setPendingQueue(snapshot.queue);
-	} else if (!isPrintMode) {
+	const attachConsumer = (): void => {
+		if (shouldRunTUI) {
+			const snapshot = host.snapshot();
+			tui = createInteractiveUI({
+				modelName: snapshot.modelName,
+				thinkingLevels: snapshot.thinkingLevels,
+				thinkingLevel: snapshot.thinkingLevel,
+				cwd: process.cwd(),
+				registry: host.extensionRegistry,
+				jobPort: createJobAdapter(host.jobs),
+				subagentPort: createSubagentAdapter(host.subagents),
+				sessionPort: host.session,
+			});
+			host.attachExtensionUI(tui.ctxUI);
+			tui.onLine(onUserLine);
+			tui.onCancel(handleCancel);
+			tui.onExit(handleExit);
+			tui.onSIGINT(() => handleInterrupt(false));
+			tui.onForceExit(() => handleInterrupt(true));
+			tui.onInterruptAndDeliver(handleInterruptAndDeliver);
+			tui.onPullBackQueue(() => {
+				void handlePullBackQueue();
+			});
+			tui.onThinkingLevelCycle(() => {
+				if (!host.snapshot().thinkingLevels?.length) {
+					tui?.host.notify("当前 Provider 未提供 thinking 能力元数据；无法循环档位。", "warning", 2500);
+					return;
+				}
+				host.cycleThinkingLevel();
+			});
+			tui.host.setUsage({
+				used: snapshot.usedTokens,
+				contextWindow: snapshot.contextWindow,
+				actual: false,
+				segments: snapshot.segments,
+			});
+			if (host.restoredEntries.length > 0) tui.loadSession(host.restoredEntries);
+			tui.setPendingQueue(snapshot.queue);
+			return;
+		}
+		if (isPrintMode) return;
 		nonTTY = createInterface({ input: process.stdin });
 		nonTTY.on("line", (line) => onUserLine(line, "followUp"));
 		nonTTY.on("close", () => {
 			void shutdown(false);
 		});
-	}
+	};
+	attachConsumer();
 
 	installHostGuards(shouldRunTUI);
 
@@ -395,7 +362,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		requestShutdown: () => shutdown(),
 	});
 
-	if (isPrintMode) {
+	const runPrintPhase = async (): Promise<void> => {
 		if (initialPrompt !== undefined) {
 			await host.submitText(initialPrompt, "direct").catch((error: unknown) => {
 				process.stderr.write(`[执行失败] ${String(error)}\n`);
@@ -404,10 +371,17 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			await host.waitForIdle();
 		}
 		await shutdown(false);
-	} else if (initialPrompt !== undefined) {
+	};
+	const submitInitialPromptInteractive = (prompt: string): void => {
 		// 交互模式下带有初始 prompt：自动提交首条任务，执行后停留在 TUI
-		void host.submitText(initialPrompt, "direct").catch((error: unknown) => {
+		void host.submitText(prompt, "direct").catch((error: unknown) => {
 			process.stderr.write(`[初始任务提交失败] ${String(error)}\n`);
 		});
+	};
+
+	if (isPrintMode) {
+		await runPrintPhase();
+	} else if (initialPrompt !== undefined) {
+		submitInitialPromptInteractive(initialPrompt);
 	}
 }
