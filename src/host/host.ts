@@ -18,6 +18,7 @@ import { activateAppFramework } from "../extensions/app-framework/index.js";
 import { activateRuntimeTools, createChildTools, TASK_DISPATCH_EFFECT } from "../extensions/runtime-tools/index.js";
 import { activateSessionTools } from "../extensions/session-tools/index.js";
 import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
+import { createEventFrameProfile } from "../extensions/event-frames/index.js";
 import { killTrackedDetachedChildren } from "../runtime/process-tracker.js";
 import { MemorySessionStore, openJsonlSession } from "../session/jsonl-store.js";
 import { createSessionAccess } from "../session/access.js";
@@ -199,8 +200,12 @@ export class UinaHost {
 		// assigned after the extension host below.
 		const rootSessionView = (): import("../session/types.js").SessionAccess =>
 			createSessionAccess(store, (request, source, signal) => subject.requestRewind(request, source, signal));
-		const resolvedProjection = options.projection;
-		const resolvedSystemPrompt = options.systemPrompt;
+		// Host 默认装配事件帧 profile（外部输入以 external_event_frame 回执呈现，协议校验
+		// 随每请求执行；预算门仍归 Subject）。显式传入 projection/systemPrompt 的装配方
+		// （测试与组合根）完全覆盖默认值，不叠加。
+		const eventFrameProfile = createEventFrameProfile();
+		const resolvedProjection = options.projection ?? eventFrameProfile.projection;
+		const resolvedSystemPrompt = options.systemPrompt ?? eventFrameProfile.systemPrompt;
 		const subagents = new SubagentRegistry({
 			factory: new DefaultAgentFactory(),
 			model: () => subject.getModel(),
@@ -398,6 +403,15 @@ export class UinaHost {
 	/** 内置能力与项目扩展走同一套 ActivationScope 与同一张 pi API 面；在消费者接入之后调用。 */
 	async start(startOptions: HostStartOptions = {}): Promise<void> {
 		this.requestShutdown = startOptions.requestShutdown;
+		// ── 官方能力装配顺序合同 ──────────────────────────────────────────
+		// transformContext 是链式 hook（后一个收到前一个的输出），执行顺序 = 下面的
+		// 激活顺序：compaction → app-framework（transformContext 为 no-op）→ 项目扩展。
+		// 完整请求管线顺序为：帧投影(convertToLlm) → transformContext 链 → 请求级
+		// 预算门(Subject) → 协议校验(validateContext)。
+		// 该顺序是能力语义依赖的硬合同（compaction 必须先裁剪、为后注入的记忆/视口
+		// 块留出预算；认知扩展的记忆块依赖 compaction 之后的位置），由
+		// tests/projection-order.test.ts 持有——重排激活顺序而不更新该测试属于破坏性变更。
+		// ────────────────────────────────────────────────────────────────
 		await this.extensionHost.activateBuiltin("session-tools", activateSessionTools(ownerId => ownerId === "root" ? this.rootSession : this.subagents.session(ownerId)));
 		if (this.options.workspaceTools !== false) await this.extensionHost.activateBuiltin("workspace-tools", activateWorkspaceTools);
 		await this.extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools({ jobs: this.jobs, subagents: this.subagents, isTaskAbandoned: (id) => this.abandonedTaskIds.has(id) }));

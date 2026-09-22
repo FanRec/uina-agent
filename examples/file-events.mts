@@ -48,7 +48,8 @@ export default async function activate(pi: import("../src/extensions/runner.js")
 			if (!active || content === previous) return;
 			previous = content;
 			// Queue the observation without waiting for the model on the file-read path.
-			void pi.submitInput({ id: randomUUID(), mode: "steer", source: { kind: "runtime", type: "file-changed", ref: path }, text: `文件 ${path} 发生变化。以下是文件内容，不是人类发言：\n${content}\n根据实际需要决定行动；长命令用 watch_exec 的后台模式，不需要对外表达时调用 watch_silence，不要先输出解释。`, data: { path, observedAt: Date.now() } }).catch(report);
+				// origin: external —— 文件变化来自外部世界，投影层将以 external_event_frame 呈现。
+				void pi.submitInput({ id: randomUUID(), mode: "steer", source: { kind: "runtime", type: "file-changed", ref: path, origin: "external" }, text: `文件 ${path} 发生变化。以下是文件内容，不是人类发言：\n${content}\n根据实际需要决定行动；长命令用 watch_exec 的后台模式，不需要对外表达时调用 watch_silence，不要先输出解释。`, data: { path, observedAt: Date.now() } }).catch(report);
 		}).catch(report);
 	});
 	watcher.on("error", report);

@@ -5,6 +5,8 @@ import { ExtensionRunner } from "../src/extensions/runner.js";
 import { openJsonlSession } from "../src/session/jsonl-store.js";
 import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
 import { IsolatedEnv, mockModel, SubjectHarness } from "./harness/index.js";
+import { createEventFrameProfile } from "../src/extensions/event-frames/index.js";
+import { EVENT_FRAME_KIND } from "../src/extensions/event-frames/protocol.js";
 
 // The shell tool uses the platform shell, so the fixture commands must too.
 const IS_WINDOWS = process.platform === "win32";
@@ -28,17 +30,31 @@ it("ordinary file extension handles real jobs, silence, user input, failure and 
 	let call = 0;
 	const runner = new ExtensionRunner({ cwd: env.path, tools: broker, onInput: input => subject.accept(input), onError: error => errors.push(error) });
 	const model = mockModel({ id: "deterministic-fixture", name: "deterministic-fixture" });
+	const observedText = (message: ModelRequest["messages"][number] | undefined): string => {
+		if (!message) return "";
+		// 真实工具回执不是新观察。外部观察在 Host 同款投影下是帧回执，正文在 JSON text 里。
+		if (message.role === "tool") {
+			if (message.context?.kind !== EVENT_FRAME_KIND) return "";
+			try {
+				const body = JSON.parse(message.content) as { text?: unknown };
+				return typeof body.text === "string" ? body.text : "";
+			} catch {
+				return "";
+			}
+		}
+		return message.content ?? "";
+	};
 	const stream: ModelStreamFn = async (_m: Model, req: ModelRequest, emit: (d: StreamDelta) => void) => {
-		requests++; const last = req.messages.at(-1); const content = last?.content ?? "";
-		if (last?.role !== "tool" && content.includes("[运行时事件 file-changed") && /RUN|LONG|FAIL/.test(content)) {
+		requests++; const content = observedText(req.messages.at(-1));
+		if (content.includes("发生变化") && /RUN|LONG|FAIL/.test(content)) {
 			const command = content.includes("LONG") ? LONG_JOB : content.includes("FAIL") ? "exit 7" : SHORT_JOB;
 			emit({ kind: "tool_call", call: { id: `call-${++call}`, name: "watch_exec", args: JSON.stringify({ command, run_in_background: true }) } });
 			emit({ kind: "finish", reason: "tool_calls" });
-		} else if (last?.role !== "tool" && content.includes("[运行时事件 watch-job")) {
+		} else if (content.includes("[运行时事件 watch-job")) {
 			const id = content.match(/job-[\da-f-]+/)?.[0];
 			emit({ kind: "tool_call", call: { id: `call-${++call}`, name: "watch_job_output", args: JSON.stringify({ job_id: id }) } });
 			emit({ kind: "finish", reason: "tool_calls" });
-		} else if (last?.role !== "tool" && content.includes("IGNORE")) {
+		} else if (content.includes("IGNORE")) {
 			emit({ kind: "tool_call", call: { id: `call-${++call}`, name: "watch_silence", args: "{}" } }); emit({ kind: "finish", reason: "tool_calls" });
 		} else { if (content === "hello") emit({ kind: "text", text: "here" }); emit({ kind: "finish", reason: "stop" }); }
 	};
@@ -48,6 +64,7 @@ it("ordinary file extension handles real jobs, silence, user input, failure and 
 		broker,
 		store,
 		runtimeHooks: runner.runtimeHooks(),
+		projection: createEventFrameProfile().projection,
 	});
 	subject = harness.subject;
 	subject.subscribe((e) => {
@@ -76,7 +93,7 @@ it("ordinary file extension handles real jobs, silence, user input, failure and 
 		expect(broker.has("watch_exec")).toBe(false); expect(errors).toEqual([]);
 		await store.close();
 		const reopened = await openJsonlSession(session); await reopened.store.close();
-		expect(reopened.snapshot.entries.some(e => e.kind === "input" && e.input.source?.type === "file-changed")).toBe(true);
+		expect(reopened.snapshot.entries.some(e => e.kind === "input" && e.input.source?.type === "file-changed" && e.input.source.origin === "external")).toBe(true);
 		expect((await readFile(session, "utf8")).includes("watch-job")).toBe(true);
 	} finally {
 		await runner.dispose(); subject.interrupt(); await subject.waitForIdle(); await store.close();

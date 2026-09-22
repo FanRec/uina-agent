@@ -211,6 +211,7 @@ export class ExtensionHost {
 	}
 
 	/** tools.transformResult：链式——后一个收到前一个改写后的结果，逐字段覆盖。
+	 * status 是执行事实，不参与链式覆盖（贡献合同已删除该字段；流水线独占）。
 	 * 纯聚合器（P1-3）：深拷贝只发生在 guard 边界；此处链步间以 shallow rebuild +
 	 * Object.freeze 呈现只读视图（O(1)，零拷贝），返回收口在 guard 一次。 */
 	async runTransformResult(input: HookInputs["tools.transformResult"], scope?: RuntimeScopeFilter): Promise<HookContributions["tools.transformResult"] | undefined> {
@@ -225,7 +226,6 @@ export class ExtensionHost {
 					if (res.result !== undefined) patch.result = res.result;
 					if (res.details !== undefined) patch.details = res.details;
 					if (res.images !== undefined) patch.images = res.images;
-					if (res.status !== undefined) patch.status = res.status;
 					if (Object.keys(patch).length > 0) {
 						current = Object.freeze({ ...current, ...patch }) as typeof current;
 						modified = true;
@@ -236,7 +236,7 @@ export class ExtensionHost {
 			}
 		}
 
-		return modified ? { result: current.result, status: current.status, details: current.details, images: current.images } : undefined;
+		return modified ? { result: current.result, details: current.details, images: current.images } : undefined;
 	}
 
 	/** turn.transformContext：链式——后一个收到前一个的输出，返回整组替换。

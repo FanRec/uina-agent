@@ -5,7 +5,7 @@ import type { PreparedToolCall, ToolExecutionResult, ToolView } from "./broker.j
 
 export interface ToolPipelineHooks {
 	beforeCall?(input: Readonly<{ callId: string; name: string; args: DeepReadonly<Record<string, unknown>> }>): Promise<Readonly<{ block?: boolean; reason?: string }>>;
-	transformResult?(input: Readonly<{ callId: string; name: string; args: DeepReadonly<Record<string, unknown>>; result: string; status: ToolResultStatus; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>): Promise<Readonly<{ result?: string; status?: ToolResultStatus; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>>;
+	transformResult?(input: Readonly<{ callId: string; name: string; args: DeepReadonly<Record<string, unknown>>; result: string; status: ToolResultStatus; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>): Promise<Readonly<{ result?: string; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>>;
 }
 
 export interface ToolCallRequest {
@@ -93,14 +93,18 @@ export async function executeToolPipeline(
 			details: outcome.details,
 			status: outcome.status,
 		});
-		if (transformed?.result !== undefined || transformed?.status !== undefined || transformed?.images !== undefined || transformed?.details !== undefined) {
+		if (transformed?.result !== undefined || transformed?.images !== undefined || transformed?.details !== undefined) {
 			if (!validImages(transformed?.images)) throw new Error("tool_result hook 返回无效图片");
+			// status 是执行事实，由流水线独占（内核诚实性不变量：未确认副作用不得推断成功）。
+			// 合同已删除贡献 status；此处防呆丢弃 JS 扩展无视类型返回的 status，只警告不改写。
+			if ((transformed as { status?: unknown }).status !== undefined) {
+				console.warn("[ToolPipeline] tools.transformResult 贡献的 status 已被忽略：执行状态由工具结果独占，不可改写");
+			}
 			outcome = {
 				...outcome,
 				...(transformed?.images !== undefined ? { images: structuredClone([...transformed.images]) } : {}),
 				...(transformed?.details !== undefined ? { details: structuredClone(transformed.details) } : {}),
 				result: transformed.result ?? outcome.result,
-				status: transformed.status ?? outcome.status,
 			};
 		}
 	} catch (hookError) {

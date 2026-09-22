@@ -29,6 +29,31 @@ describe('external event projection', () => {
   expect(msgs[0]!.content).toContain('agent');
   expect(()=>p.validateContext!(msgs)).not.toThrow();
  });
+ it('does not double-label runtime inputs that already carry the access-layer prefix', () => {
+  const p=createEventFrameProfile().projection;
+  const msgs=p.convertToLlm!([
+   { role:'custom', customType:'runtime-input', content:'[运行时事件 subagent-notice · ref-1]\nnotify', input:{eventId:'r1',source:{kind:'runtime',type:'subagent-notice'}} },
+  ]);
+  expect(msgs.map(m=>m.role)).toEqual(['user']);
+  expect(msgs[0]!.content).toContain('[运行时事件 subagent-notice · ref-1]\nnotify');
+  expect(msgs[0]!.content).not.toContain('[内部信息');
+  expect(()=>p.validateContext!(msgs)).not.toThrow();
+ });
+ it('still labels non-runtime internal inputs', () => {
+  const p=createEventFrameProfile().projection;
+  const msgs=p.convertToLlm!([
+   { role:'user', content:'internal note', input:{eventId:'i1',source:{kind:'agent',type:'memory'}} },
+  ]);
+  expect(msgs[0]!.content).toContain('[内部信息');
+  expect(msgs[0]!.content).toContain('internal note');
+ });
+ it('throws a locateable error when an external input lacks a stable eventId', () => {
+  const p=createEventFrameProfile().projection;
+  expect(()=>p.convertToLlm!([{ role:'user', content:'hook-injected guidance without metadata' } as AgentMessage]))
+   .toThrow(/hook-injected guidance without metadata/);
+  expect(()=>p.convertToLlm!([{ role:'user', content:'hook-injected guidance without metadata' } as AgentMessage]))
+   .toThrow(/context\.kind|input 或 id/);
+ });
  it('does not invent a completed tool when projecting an input', async()=>{
   const p=createEventFrameProfile(); const store=new MemorySessionStore();
   const h=SubjectHarness.create({store,projection:p.projection,systemPrompt:p.systemPrompt});

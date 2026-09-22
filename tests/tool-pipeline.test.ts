@@ -62,6 +62,40 @@ describe("Tool Execution Pipeline", () => {
 		});
 	});
 
+	test("drops contribution status so execution facts cannot be rewritten (failed stays failed)", async () => {
+		const broker = new ToolBroker();
+		broker.register(mockTool("fail_tool", async () => ({ result: "boom", status: "failed" }), { description: "失败工具" }));
+
+		const outcome = await executeToolPipeline(
+			broker,
+			{ callId: "c-fail", name: "fail_tool", args: {} },
+			{
+				hooks: {
+					// 模拟 JS 扩展无视类型合同返回 status：流水线必须丢弃，result/details 改写仍生效
+					transformResult: async (input) => ({ result: `[SPUN] ${input.result}`, status: "succeeded" } as never),
+				},
+			},
+		);
+		expect(outcome.status).toBe("failed");
+		expect(outcome.result).toBe("[SPUN] boom");
+	});
+
+	test("drops contribution status on succeeded outcomes too", async () => {
+		const broker = createTestBroker();
+
+		const outcome = await executeToolPipeline(
+			broker,
+			{ callId: "c-ok", name: "echo_tool", args: { msg: "keep" } },
+			{
+				hooks: {
+					transformResult: async (input) => ({ result: `[AUDITED] ${input.result}`, status: "cancelled" } as never),
+				},
+			},
+		);
+		expect(outcome.status).toBe("succeeded");
+		expect(outcome.result).toBe("[AUDITED] echo:keep");
+	});
+
 	test("short-circuits when signal is already aborted before start", async () => {
 		const broker = createTestBroker();
 		const trace: string[] = [];

@@ -5,6 +5,31 @@ import {createServer} from "node:http";
 import {spawn} from "node:child_process";
 import {tmpdir} from "node:os";
 import {join,resolve} from "node:path";
+
+type WireMessage = { role?: string; content?: string; tool_call_id?: string; tool_calls?: Array<{ id?: string; function?: { name?: string } }> };
+function eventFrameIds(messages: readonly WireMessage[] | undefined): Set<string> {
+  const ids = new Set<string>();
+  for (const message of messages ?? []) {
+    for (const call of message.tool_calls ?? []) {
+      if (call.function?.name === "external_event_frame" && call.id) ids.add(call.id);
+    }
+  }
+  return ids;
+}
+function realToolMessages(messages: readonly WireMessage[] | undefined): WireMessage[] {
+  const frames = eventFrameIds(messages);
+  return (messages ?? []).filter((message) => message.role === "tool" && !(message.tool_call_id && frames.has(message.tool_call_id)));
+}
+function sessionListTarget(messages: readonly WireMessage[] | undefined): string | undefined {
+  for (const message of realToolMessages(messages)) {
+    try {
+      const body = JSON.parse(message.content ?? "") as { nodes?: Array<{ id?: string }> };
+      const id = body.nodes?.[0]?.id;
+      if (id) return id;
+    } catch { /* 帧回执或其他工具正文 */ }
+  }
+  return undefined;
+}
 const reviewRoot=process.cwd();
 if(process.platform==="win32"){const helper=createRequire(import.meta.url)(join(reviewRoot,`dist/src/ui/core/native/win32-${process.arch}.node`));assert.equal(typeof helper.isModifierPressed,"function");console.log(JSON.stringify({nativeLoaded:true,platform:process.platform,arch:process.arch}));}
 for (const mode of ["tool-success", "builtin-image", "session-rewind", "truncated-provider"] as const) {
@@ -31,13 +56,15 @@ for (const mode of ["tool-success", "builtin-image", "session-rewind", "truncate
     req.on("data", (chunk: string) => { body += chunk; });
     req.on("end", () => {
       requests++;
-						const parsed = JSON.parse(body) as { messages?: Array<{ role?: string; content?: string }> };
-      sawToolResult ||= parsed.messages?.some(m => m.role === "tool") ?? false;
+						const parsed = JSON.parse(body) as { messages?: WireMessage[] };
+      sawToolResult ||= realToolMessages(parsed.messages).length > 0;
 						sawRewind ||= body.includes("会话回溯");
       sawImage ||= body.includes("data:image/png;base64," + png);
       res.writeHead(200, { "content-type": "text/event-stream" });
-						const rewindCall = mode === "session-rewind" && requests === 2
-								? {name:"session_rewind",arguments:JSON.stringify({targetId:JSON.parse(parsed.messages!.find(m=>m.role==="tool")!.content!).nodes[0].id,reason:"CLI roundtrip"})} : undefined;
+						const rewindTarget = mode === "session-rewind" && requests === 2 ? sessionListTarget(parsed.messages) : undefined;
+						if (mode === "session-rewind" && requests === 2 && !rewindTarget) throw new Error("session_list 结果不在第 2 次请求里");
+						const rewindCall = rewindTarget
+								? {name:"session_rewind",arguments:JSON.stringify({targetId:rewindTarget,reason:"CLI roundtrip"})} : undefined;
       const deltas = mode === "truncated-provider"
         ? [{ choices: [{ delta: { content: "partial" } }] }]
 								: rewindCall

@@ -17,7 +17,10 @@ import { UinaTestHarness } from "./harness/host/harness.js";
 import { Scenario } from "./harness/provider/scenario.js";
 import { IsolatedEnv } from "./harness/environment/isolated-env.js";
 
-const hasToolResult = (req: ModelRequest): boolean => req.messages.some((m) => m.role === "tool");
+// 帧回执（external_event_frame 合成 tool 消息）不算真实工具结果：默认装配下
+// 外部输入也会投影为 tool 角色回执，这里只关心模型真实工具调用的结果。
+const hasToolResult = (req: ModelRequest): boolean =>
+	req.messages.some((m) => m.role === "tool" && m.context?.kind !== "uina.external-event-frame");
 
 const seedHistory = (): { role: "user" | "assistant"; content: string }[] =>
 	Array.from({ length: 100 }, (_, index) =>

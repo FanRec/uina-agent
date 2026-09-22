@@ -47,7 +47,7 @@ export interface HookContributions {
 	"turn.transformContext": { readonly messages?: readonly DeepReadonly<ChatMsg>[] };
 	"turn.shouldStop": { readonly stop?: boolean };
 	"tools.beforeCall": { readonly block?: boolean; readonly reason?: string };
-	"tools.transformResult": { readonly result?: string; readonly status?: ToolResultStatus; readonly images?: readonly ImageContent[]; readonly details?: unknown };
+	"tools.transformResult": { readonly result?: string; readonly images?: readonly ImageContent[]; readonly details?: unknown };
 	"provider.transformHeaders": { readonly headers?: Record<string, string> };
 	"provider.transformPayload": { readonly payload?: unknown };
 	"provider.observeResponse": void;
@@ -67,7 +67,7 @@ export type HookHandler<K extends HookName> = (
  * | turn.transformContext       | 链式：后一个收到前一个的输出，返回整组替换      |
  * | turn.shouldStop             | 短路：任一 stop=true 即收尾，后续不再询问       |
  * | tools.beforeCall            | 短路：任一 block=true 即拦截，后续不再询问      |
- * | tools.transformResult       | 链式：后一个收到前一个改写后的结果，逐字段覆盖   |
+ * | tools.transformResult       | 链式：后一个收到前一个改写后的结果，逐字段覆盖（status 除外——执行事实由流水线独占） |
  * | provider.transformHeaders   | 链式：后一个收到前一个的输出，整组替换          |
  * | provider.transformPayload   | 链式：后一个收到前一个的输出，整组替换          |
  * | provider.observeResponse    | 观察：无返回值，只多播（响应已发生的审计点）     |
@@ -90,7 +90,7 @@ export interface RuntimeHooks {
 	};
 	readonly tools: {
 		beforeCall(input: Readonly<{ callId: string; name: string; args: DeepReadonly<Record<string, unknown>> }>): Promise<Readonly<{ block?: boolean; reason?: string }>>;
-		transformResult(input: Readonly<{ callId: string; name: string; args: DeepReadonly<Record<string, unknown>>; result: string; status: ToolResultStatus; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>): Promise<Readonly<{ result?: string; status?: ToolResultStatus; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>>;
+		transformResult(input: Readonly<{ callId: string; name: string; args: DeepReadonly<Record<string, unknown>>; result: string; status: ToolResultStatus; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>): Promise<Readonly<{ result?: string; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>>;
 	};
 	readonly provider: ProviderHooks;
 	readonly events: {

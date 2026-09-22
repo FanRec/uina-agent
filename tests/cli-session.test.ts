@@ -91,14 +91,14 @@ describe("CLI session recovery", () => {
 
 		expect(exitCode, stderr).toBe(0);
 		expect(stdout).toContain("SESSION_ORDER_OK");
-		const orderedContent = requests[0]?.messages?.map((message) => message.content).filter((value): value is string => value !== undefined);
-		expect(orderedContent).toEqual([
-			expect.any(String),
-			"ORDER_A",
-			"ORDER_C",
-			"ORDER_B",
-			"ORDER_NEXT",
-		]);
+		// 默认事件帧装配下：外部输入（ORDER_A/ORDER_NEXT）以 external_event_frame 回执呈现，
+		// custom 消息（ORDER_C）带 [内部信息] 来源标注前缀；顺序语义保持 A → C → B → NEXT。
+		const joined = (requests[0]?.messages ?? []).map((message) => message.content).filter((value): value is string => value !== undefined).join("\n---\n");
+		const order = ["ORDER_A", "ORDER_C", "ORDER_B", "ORDER_NEXT"].map((token) => joined.indexOf(token));
+		expect(order.every((index) => index >= 0), joined).toBe(true);
+		expect(order, joined).toEqual([...order].sort((a, b) => a - b));
+		// 外部正文不直接暴露为 user 消息，只存在于帧回执 JSON 内。
+		expect((requests[0]?.messages ?? []).some((message) => message.content === "ORDER_A")).toBe(false);
 	});
 
 	test("activates builtin runtime tools before a real one-shot tool loop", async () => {

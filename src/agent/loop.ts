@@ -489,7 +489,14 @@ export class Subject {
 
 	addHistory(messages: readonly (AgentMessage | ChatMsg)[]): void {
 		if (this.isBusy()) throw new Error("活动期间不能替换历史");
-		this.history.push(...messages.map((m) => structuredClone(m as AgentMessage)));
+		// 无 id 的 user 消息补 id（与 projectAgentHistory 的 journal 回填语义一致）：
+		// 投影层将缺省 user 消息判为来源 unknown 的外部事件，无稳定 eventId 会明确报错。
+		this.history.push(...messages.map((m) => {
+			const hasId = "id" in m && Boolean((m as { id?: string }).id);
+			const hasInput = "input" in m && Boolean((m as { input?: unknown }).input);
+			if (m.role === "user" && !hasId && !hasInput) return { ...structuredClone(m as AgentMessage), id: randomUUID() };
+			return structuredClone(m as AgentMessage);
+		}));
 	}
 
 	seedQueue(items: readonly QueuedMessage[]): void {
