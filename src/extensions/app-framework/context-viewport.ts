@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
 import type { ChatMsg } from "../../core/types.js";
-import { buildEventFrameGroup } from "../event-frames/projection.js";
+import { buildEventFrameGroup, snapshotNotice, contentAddressedEventId } from "../event-frames/projection.js";
 import type { AppRuntime, SurfaceTier } from "./types.js";
 
 export interface ContextViewportOptions {
@@ -119,11 +118,10 @@ export class ContextViewport {
 	async buildTailFrame(): Promise<ChatMsg[] | undefined> {
 		const text = await this.renderViewport();
 		if (!text) return undefined;
-		const eventId = `app-viewport:${createHash("sha256").update(text).digest("hex").slice(0, 32)}`;
 		return buildEventFrameGroup({
-			eventId,
+			eventId: contentAddressedEventId("app-viewport", text),
 			text,
-			notice: "[运行时通知] 以下为应用视口瞬态快照（环境感知信息，非用户输入，无需直接回应）；正文在随后的 external_event_frame 回执中。",
+			notice: snapshotNotice("应用视口"),
 			source: { kind: "runtime", type: "app-viewport", origin: "external" },
 		});
 	}

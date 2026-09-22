@@ -88,3 +88,23 @@ describe('external event projection', () => {
   expect(() => requestToolDefs([EVENT_FRAME_TOOL], profile.projection.contextTools)).toThrow(/上下文工具声明重名: external_event_frame/);
  });
 });
+
+describe('buildEventFrameGroup deep module', () => {
+ it('coerces undefined text to empty string instead of dropping the field (protocol survives)', () => {
+  const p = createEventFrameProfile().projection;
+  const msgs = p.convertToLlm!([{ role: 'user', content: undefined as never, input: { eventId: 'u1', source: { kind: 'user', type: 'chat', origin: 'external' } } }]);
+  const body = JSON.parse(msgs[2]!.content) as { text: string };
+  expect(body.text).toBe('');
+  expect(() => p.validateContext!(msgs)).not.toThrow();
+ });
+ it('contentAddressedEventId is deterministic and namespace-isolated', async () => {
+  const { contentAddressedEventId, snapshotNotice, appendTailFrame } = await import('../src/extensions/event-frames/projection.js');
+  expect(contentAddressedEventId('ns', 'abc')).toBe(contentAddressedEventId('ns', 'abc'));
+  expect(contentAddressedEventId('a', 'x')).not.toBe(contentAddressedEventId('b', 'x'));
+  expect(snapshotNotice('测试')).toContain('测试');
+  expect(snapshotNotice('测试')).toContain('无需直接回应');
+  expect(appendTailFrame([{ role: 'user', content: 'm' }], undefined)).toBeUndefined();
+  const appended = appendTailFrame([{ role: 'user', content: 'm' }], [{ role: 'user', content: 'tail' }]);
+  expect(appended!.messages).toEqual([{ role: 'user', content: 'm' }, { role: 'user', content: 'tail' }]);
+ });
+});

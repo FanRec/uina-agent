@@ -11,6 +11,7 @@ import { ExtensionHost } from "../src/extensions/host.js";
 import { guardRuntimeHooks } from "../src/runtime/guard.js";
 import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
 import { ContextViewport } from "../src/extensions/app-framework/context-viewport.js";
+import { appendTailFrame } from "../src/extensions/event-frames/projection.js";
 import type { AppRuntime } from "../src/extensions/app-framework/types.js";
 import type { ChatMsg } from "../src/core/types.js";
 
@@ -33,9 +34,7 @@ describe("尾部瞬态帧的前缀缓存合同", () => {
 
 		const host = new ExtensionHost();
 		host.onHook("turn.transformContext", async (messages) => {
-			const frame = await viewport.buildTailFrame();
-			if (!frame) return undefined;
-			return { messages: [...messages, ...frame] };
+			return appendTailFrame(messages, await viewport.buildTailFrame());
 		}, { tail: true });
 		const hooks = guardRuntimeHooks(createRuntimeHooks(host));
 
@@ -72,9 +71,7 @@ describe("尾部瞬态帧的前缀缓存合同", () => {
 		const viewport = new ContextViewport({ getRuntimes: () => [runtime] });
 		const host = new ExtensionHost();
 		host.onHook("turn.transformContext", async (messages) => {
-			const frame = await viewport.buildTailFrame();
-			if (!frame) return undefined;
-			return { messages: [...messages, ...frame] };
+			return appendTailFrame(messages, await viewport.buildTailFrame());
 		}, { tail: true });
 		const hooks = guardRuntimeHooks(createRuntimeHooks(host));
 

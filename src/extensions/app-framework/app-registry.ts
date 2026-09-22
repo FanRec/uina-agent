@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "../runner.js";
 import { ContextViewport } from "./context-viewport.js";
+import { appendTailFrame } from "../event-frames/projection.js";
 import { createFacadeTool } from "./facade-tool.js";
 import {
 	APP_HOST_EVENT_TYPES,
@@ -80,9 +81,7 @@ export class AppRegistry {
 		// - systemPrompt 保持完全静态（可变内容不再进入系统提示，消除前缀缓存击穿）；
 		// - 全 hidden ⇒ buildTailFrame 返回 undefined ⇒ 0 修改透传（0 token）。
 		this.pi.onHook("turn.transformContext", async (messages) => {
-			const frame = await this.viewport.buildTailFrame();
-			if (!frame) return undefined;
-			return { messages: [...messages, ...frame] };
+			return appendTailFrame(messages, await this.viewport.buildTailFrame());
 		}, { tail: true });
 	}
 

@@ -197,7 +197,7 @@ describe.skipIf(!hasLocalRuntime)("应用端点 ↔ 具身路由：跨真实边�
 		expect(output.length).toBe(messages.length + 3);
 		const tail = output.slice(messages.length);
 		expect(tail.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
-		expect(tail[0]!.content).toContain("具身状态感知快照");
+		expect(tail[0]!.content).toContain("具身状态感知");
 		expect(tail[0]!.content).toContain("非用户输入");
 		expect(tail[2]!.content).toContain(PROBE_BODY_ID);
 		expect(tail[2]!.content).toContain("warm_smile");

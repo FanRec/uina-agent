@@ -1,5 +1,6 @@
 import type { AgentMessage, ChatMsg, InputProvenance, InputSource, ModelContextMeta } from '../../core/types.js';
 import type { ImageContent } from '../../core/content.js';
+import { createHash } from 'node:crypto';
 import { convertToLlm } from '../../agent/context.js';
 import { EVENT_FRAME_KIND, EVENT_FRAME_TOOL_NAME, frameCallId } from './protocol.js';
 
@@ -15,6 +16,25 @@ function external(m: AgentMessage | ChatMsg): boolean {
 }
 
 const DEFAULT_FRAME_NOTICE = '[运行时通知] 收到一条外部事件；正文在随后的 external_event_frame 回执中。';
+
+/** 瞬态快照类尾部帧（视口/具身状态等环境观测）的统一通知文案模板。 */
+export function snapshotNotice(kind: string): string {
+ return `[运行时通知] 以下为${kind}瞬态快照（环境感知信息，非用户输入，无需直接回应）；正文在随后的 external_event_frame 回执中。`;
+}
+
+/** 内容寻址 eventId：内容不变 ⇒ 同 eventId ⇒ 帧组逐字节稳定（尾部帧缓存语义的根基）。
+ * namespace 隔离不同注入方（app-viewport / embodiment-state / ...），避免跨源撞号。 */
+export function contentAddressedEventId(namespace: string, text: string): string {
+ return `${namespace}:${createHash('sha256').update(text).digest('hex').slice(0, 32)}`;
+}
+
+/** 标准尾部注入拼装：有帧则追加，无帧（undefined）则 0 修改透传。
+ * 泛型以兼容 DeepReadonly 视图（hook 链消息是冻结快照，不要求可变 ChatMsg）。
+ * 所有 tail 注入方（AppRegistry / embodiment / ...）共用，收敛“if (!frame) return undefined”样板。 */
+export function appendTailFrame<T>(messages: readonly T[], frame: readonly T[] | undefined): { messages: readonly T[] } | undefined {
+ if (!frame || frame.length === 0) return undefined;
+ return { messages: [...messages, ...frame] };
+}
 
 export interface EventFrameGroupOptions {
  eventId: string;
@@ -39,8 +59,11 @@ export interface EventFrameGroupOptions {
  * （应用视口 / 具身状态——运行时合成的环境观测，不落 Session 历史）。
  */
 export function buildEventFrameGroup(options: EventFrameGroupOptions): ChatMsg[] {
- const { eventId, text, notice = DEFAULT_FRAME_NOTICE, source, receivedAt, images } = options;
+ const { eventId, text: rawText, notice = DEFAULT_FRAME_NOTICE, source, receivedAt, images } = options;
  if (!eventId) throw new Error('外部事件帧缺少稳定 eventId');
+ // 收口为 string：undefined 正文经 JSON.stringify 会丢失 text 字段，触发协议校验
+ // “回执不是合法帧”回合失败——空正文帧仍合法，比回合崩溃正确。
+ const text = String(rawText ?? '');
  const input: InputProvenance = { eventId, ...(source ? { source } : {}), ...(receivedAt ? { receivedAt } : {}) };
  const id = frameCallId(eventId);
  const context = (index: number): ModelContextMeta => ({ kind: EVENT_FRAME_KIND, input,
