@@ -104,6 +104,22 @@ describe("M4 工具面：五态适配", () => {
 		expect(conflictPayload.currentHash).toBe(revised.hash);
 	});
 
+	it("memory_search 命中返回（工具级正路径：ID/标题/摘要/版本）", async () => {
+		broker = new ToolBroker();
+		const store = createStore();
+		for (const tool of createMemoryTools(store)) broker.register(tool);
+
+		await broker.execute(broker.prepare("memory_write", {
+			operation: { op: "create", record: { type: "note", basis: "observed", title: "部署偏好", body: "先跑测试再部署", scope: {}, sources: [{ sessionId: "default" }], pinned: false } },
+		}));
+		const search = await broker.execute(broker.prepare("memory_search", { query: "部署" }));
+		expect(search.status).toBe("succeeded");
+		const payload = JSON.parse(search.result) as { hits: Array<{ id: string; title: string; excerpt: string; revision: number }> };
+		expect(payload.hits).toHaveLength(1);
+		expect(payload.hits[0]!.title).toBe("部署偏好");
+		expect(payload.hits[0]!.excerpt).toContain("先跑测试");
+	});
+
 	it("retire 后搜索不再返回；memory_read 报 failed；writer 异常 → unknown（不猜结果）", async () => {
 		broker = new ToolBroker();
 		const store = createMemoryStore({

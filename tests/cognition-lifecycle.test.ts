@@ -214,6 +214,17 @@ describe("M6 整理 worker：关闭与迟到 patch", () => {
 		expect(await worker.closeReport()).toEqual({ closed: true, providerSettled: true, message: "已关闭" });
 	});
 
+	it("close 前的 closeReport 如实报告运行中（未关闭分支）", async () => {
+		await seedRecord();
+		const worker = createConsolidationWorker({
+			store,
+			stateRoot: join(root, "state"),
+			runModel: responsiveModel([]),
+			listEvidence: () => [],
+		});
+		expect(await worker.closeReport()).toEqual({ closed: false, providerSettled: true, message: "运行中" });
+	});
+
 	it("close 后水位与抑制状态落盘（cognition.json 持久化）", async () => {
 		await seedRecord();
 		const worker = createConsolidationWorker({
