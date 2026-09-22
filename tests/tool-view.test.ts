@@ -223,7 +223,8 @@ describe("ScopedToolView", () => {
 			"before:pipe-1",
 			"start:pipe-1",
 			"transform:pipeline_echo:pipe-val",
-			"done:TRANSFORMED(pipeline_echo:pipe-val)",
+			// 阶段 D/M7：onDone（journal 权威）拿原始正文；改写只作用于返回值投影。
+			"done:pipeline_echo:pipe-val",
 		]);
 		expect(outcome.result).toBe("TRANSFORMED(pipeline_echo:pipe-val)");
 		expect(outcome.status).toBe("succeeded");

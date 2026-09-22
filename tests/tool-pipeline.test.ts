@@ -54,13 +54,14 @@ describe("Tool Execution Pipeline", () => {
 			"beforeCall:c-1:echo_tool",
 			"onStart:c-1",
 			"transformResult:c-1:echo:hello",
-			"onDone:c-1:succeeded:[AUDITED] echo:hello",
+			// 阶段 D/M7：onDone（journal 权威事实）拿原始正文；改写只作用于返回值投影。
+			"onDone:c-1:succeeded:echo:hello",
 		]);
-		expect(outcome).toEqual({
-			callId: "c-1",
-			result: "[AUDITED] echo:hello",
-			status: "succeeded",
-		});
+		expect(outcome.status).toBe("succeeded");
+		expect(outcome.result).toBe("[AUDITED] echo:hello");
+		// 阶段 D/M7：返回值携带 canonical（原始执行结果）供 journal 落盘。
+		expect(outcome.canonical).toBeDefined();
+		expect(outcome.canonical!.result).toBe("echo:hello");
 	});
 
 	test("drops contribution status so execution facts cannot be rewritten (failed stays failed)", async () => {

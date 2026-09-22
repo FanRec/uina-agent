@@ -229,7 +229,8 @@ describe("S1 tool outcome propagation", () => {
 		replay.loadSession(reopened.snapshot.entries);
 		for (const transcript of [tui.host.transcript, replay]) {
 			const tool = transcript.getHistory().flatMap(t => t.items).find(i => i.kind === "tool");
-			expect(tool).toMatchObject({ status, result: "[hook] opaque content" });
+			// 阶段 D/M7：canonical 历史（journal/UI/回放）存原始执行正文；hook 改写只作用于模型可见投影。
+			expect(tool).toMatchObject({ status, result: "opaque content" });
 		}
 		expect(observed).toEqual([status]);
 		expect(projectAgentHistory(reopened.snapshot.entries).find(m => m.role === "tool")).toMatchObject({ status });

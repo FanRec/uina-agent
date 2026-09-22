@@ -67,7 +67,7 @@ export interface ToolView {
 	executePipeline(
 		call: ToolCallRequest,
 		options?: ToolPipelineOptions,
-	): Promise<ToolExecutionResult & { callId: string }>;
+	): Promise<ToolExecutionResult & { callId: string; /** 原始执行结果（阶段 D/M7）：canonical journal 落盘用，未经 transformResult 改写。 */ canonical?: ToolExecutionResult }>;
 }
 
 export interface ScopedToolOptions {
@@ -310,7 +310,7 @@ export class ScopedToolView implements ToolView {
 	async executePipeline(
 		call: ToolCallRequest,
 		options?: ToolPipelineOptions,
-	): Promise<ToolExecutionResult & { callId: string }> {
+	): Promise<ToolExecutionResult & { callId: string; canonical?: ToolExecutionResult }> {
 		return executeToolPipeline(this, call, options);
 	}
 }

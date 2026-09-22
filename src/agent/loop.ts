@@ -880,13 +880,16 @@ export class Subject {
 		await this.appendMessage(this.buildAssistantMessage(result));
 		const results = await this.executeToolCalls(result.toolCalls);
 		for (const res of results) {
+			// 阶段 D/M7：canonical journal 落原始执行正文（未经 transformResult 改写）；
+			// 模型可见改写投影经后续请求的投影链生效，不进 canonical 历史。
+			const evidence = res.canonical ?? res;
 			await this.appendMessage({
 				role: "tool",
 				tool_call_id: res.callId,
-				content: res.result,
-				images: res.images,
-				details: res.details,
-				status: res.status,
+				content: evidence.result,
+				images: evidence.images,
+				details: evidence.details,
+				status: evidence.status,
 				timestamp: new Date().toISOString(),
 			});
 		}
@@ -942,6 +945,8 @@ export class Subject {
 			continuation?: "stop";
 			images?: import("../core/content.js").ImageContent[];
 			details?: unknown;
+			/** 原始执行结果（阶段 D/M7）：canonical journal 落盘用，未经 transformResult 改写。 */
+			canonical?: import("../tools/broker.js").ToolExecutionResult;
 		}>
 	> {
 		const prepared: Array<{ call: CompletedToolCall; tool: PreparedToolCall }> = [];

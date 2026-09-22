@@ -140,7 +140,8 @@ describe("ExtensionHost & Hooks Architecture", () => {
 
 		const history = harness.historySnapshot();
 		const toolMsg = history.find((m) => m.role === "tool");
-		expect(toolMsg?.content).toBe("[AUDITED] 42");
+		// 阶段 D/M7：canonical 历史存原始执行正文；hook 改写只作用于模型可见投影。
+		expect(toolMsg?.content).toBe("42");
 	});
 
 	it("supports dynamic model switching via setModel and emits model_select", async () => {

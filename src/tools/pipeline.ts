@@ -35,7 +35,7 @@ export async function executeToolPipeline(
 	broker: ToolView,
 	call: ToolCallRequest,
 	options: ToolPipelineOptions = {},
-): Promise<ToolExecutionResult & { callId: string }> {
+): Promise<ToolExecutionResult & { callId: string; /** 原始执行结果（阶段 D/M7）：canonical journal 落盘用，未经 transformResult 改写。 */ canonical?: ToolExecutionResult }> {
 	const { signal, hooks, observers } = options;
 
 	// 1. 预检查取消：若工具尚未启动时已被中断，直接返回 not_started，不触发 beforeCall 与 onStart
@@ -82,6 +82,9 @@ export async function executeToolPipeline(
 
 	// 5. 核心工具执行
 	let outcome = await broker.execute(prepared, signal);
+	// 权威执行事实（阶段 D / M7）：transformResult 改写前留档；onDone（journal tool_finished
+	// + tool_result 派发）必须拿到原始正文——模型可见变换不能改写 canonical 历史。
+	const canonical: ToolExecutionResult = outcome;
 
 	// 6. 扩展后置结果改写（捕获 hook 异常，防止第三方错误丢失已成功执行的结果）
 	try {
@@ -108,8 +111,9 @@ export async function executeToolPipeline(
 		// 钩子异常不影响已产出的工具执行结果
 	}
 
-	// 7. 执行后观测点
-	await observers?.onDone?.(outcome, call);
+	// 7. 执行后观测点：拿 canonical（原始执行结果），不是改写后的投影
+	await observers?.onDone?.(canonical, call);
 
-	return { ...outcome, callId: call.callId };
+	// 返回值 = 模型可见投影；canonical 字段 = 原始执行结果（loop 落 journal 用）。
+	return { ...outcome, callId: call.callId, canonical };
 }
