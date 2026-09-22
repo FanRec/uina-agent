@@ -1,6 +1,7 @@
 import { validImages } from "../core/content.js";
 import type { ToolResultStatus } from "../core/types.js";
 import type { DeepReadonly } from "../runtime/events.js";
+import { warnIgnoredToolStatus } from "../runtime/hooks.js";
 import type { PreparedToolCall, ToolExecutionResult, ToolView } from "./broker.js";
 
 export interface ToolPipelineHooks {
@@ -93,13 +94,9 @@ export async function executeToolPipeline(
 			details: outcome.details,
 			status: outcome.status,
 		});
+		warnIgnoredToolStatus(transformed);
 		if (transformed?.result !== undefined || transformed?.images !== undefined || transformed?.details !== undefined) {
 			if (!validImages(transformed?.images)) throw new Error("tool_result hook 返回无效图片");
-			// status 是执行事实，由流水线独占（内核诚实性不变量：未确认副作用不得推断成功）。
-			// 合同已删除贡献 status；此处防呆丢弃 JS 扩展无视类型返回的 status，只警告不改写。
-			if ((transformed as { status?: unknown }).status !== undefined) {
-				console.warn("[ToolPipeline] tools.transformResult 贡献的 status 已被忽略：执行状态由工具结果独占，不可改写");
-			}
 			outcome = {
 				...outcome,
 				...(transformed?.images !== undefined ? { images: structuredClone([...transformed.images]) } : {}),

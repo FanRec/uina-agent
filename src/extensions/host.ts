@@ -16,11 +16,12 @@ import type {
 	OutputEvent,
 	RuntimeEvent,
 } from "../runtime/events.js";
-import type {
-	HookContributions,
-	HookHandler,
-	HookInputs,
-	HookName,
+import {
+	warnIgnoredToolStatus,
+	type HookContributions,
+	type HookHandler,
+	type HookInputs,
+	type HookName,
 } from "../runtime/hooks.js";
 
 export type {
@@ -222,6 +223,7 @@ export class ExtensionHost {
 			try {
 				const res = (await handler(current as never)) as HookContributions["tools.transformResult"] | undefined;
 				if (res) {
+					warnIgnoredToolStatus(res);
 					const patch: Record<string, unknown> = {};
 					if (res.result !== undefined) patch.result = res.result;
 					if (res.details !== undefined) patch.details = res.details;

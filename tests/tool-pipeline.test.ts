@@ -1,4 +1,5 @@
 import { describe, expect, test, mockTool } from "./harness/index.js";
+import { vi } from "vitest";
 import { ToolBroker } from "../src/tools/broker.js";
 import { executeToolPipeline } from "../src/tools/pipeline.js";
 import type { ToolResultStatus } from "../src/core/types.js";
@@ -290,4 +291,22 @@ export default function activate(uina) {
 		expect(uina.history).toHaveLength(0);
 		expect(uina).toHaveNoLeakedResources();
 	});
+	test("warns when a contribution carries only status and does not flip the execution result", async () => {
+		const broker = new ToolBroker();
+		broker.register(mockTool("fail_tool", async () => ({ result: "boom", status: "failed" }), { description: "失败工具" }));
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const outcome = await executeToolPipeline(
+				broker,
+				{ callId: "c-status", name: "fail_tool", args: {} },
+				{ hooks: { transformResult: async () => ({ status: "succeeded" } as never) } },
+			);
+			expect(outcome.status).toBe("failed");
+			expect(outcome.result).toBe("boom");
+			expect(warn.mock.calls.some(call => String(call[0]).includes("status"))).toBe(true);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
 });

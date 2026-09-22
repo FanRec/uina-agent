@@ -73,6 +73,14 @@ export type HookHandler<K extends HookName> = (
  * | provider.observeResponse    | 观察：无返回值，只多播（响应已发生的审计点）     |
  */
 
+
+/** 贡献合同没有 status。JS 扩展仍可能带回该字段：丢弃前警告，不把笔误升级成整回合失败。 */
+export function warnIgnoredToolStatus(contribution: object | null | undefined): void {
+	if (contribution != null && "status" in contribution && (contribution as { status?: unknown }).status !== undefined) {
+		console.warn("[工具结果] tools.transformResult 贡献的 status 已被忽略：执行状态由工具结果独占，不可改写");
+	}
+}
+
 export interface RuntimeHooks {
 	readonly turn: {
 		/**

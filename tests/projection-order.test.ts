@@ -13,7 +13,6 @@
 import { describe, expect, test } from "./harness/index.js";
 import { UinaTestHarness } from "./harness/host/harness.js";
 import { Scenario } from "./harness/provider/scenario.js";
-import { IsolatedEnv } from "./harness/environment/isolated-env.js";
 
 describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展（认知占位）", () => {
 	test("超预算历史下：摘要先于记忆块、帧组原子、预算门通过", async ({ env }) => {

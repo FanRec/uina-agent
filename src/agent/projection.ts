@@ -1,4 +1,4 @@
-import type { AgentMessage, ChatMsg } from "../core/types.js";
+import type { AgentMessage, ChatMsg, ToolDef } from "../core/types.js";
 import { convertToLlm } from "./context.js";
 import { projectAgentHistory, protectRewindContext, type CanonicalState } from "../session/recovery.js";
 import type { SessionEntry } from "../session/types.js";
@@ -42,6 +42,16 @@ function protectCanonicalContinuity(
 	project: (entries: readonly SessionEntry[], state: CanonicalState) => AgentMessage[],
 ): (entries: readonly SessionEntry[], state: CanonicalState) => AgentMessage[] {
 	return (entries, state) => protectRewindContext(project(entries, state), entries);
+}
+
+/** 请求实际声明的工具：可执行定义加投影上下文工具。同名即冲突，不静默覆盖。 */
+export function requestToolDefs(executable: readonly ToolDef[], contextTools: readonly ToolDef[] = []): ToolDef[] {
+	const names = new Set(executable.map((tool) => tool.function.name));
+	for (const tool of contextTools) {
+		if (names.has(tool.function.name)) throw new Error(`上下文工具声明重名: ${tool.function.name}`);
+		names.add(tool.function.name);
+	}
+	return [...executable, ...contextTools];
 }
 
 /** 默认解析单点：Subject 构造时调用；默认实现即本模块组合的两个自由函数。 */

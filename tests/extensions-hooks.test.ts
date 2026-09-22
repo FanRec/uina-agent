@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { ExtensionHost } from "../src/extensions/host.js";
 import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
 import { guardRuntimeHooks } from "../src/runtime/guard.js";
@@ -535,6 +535,29 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		expect(receivedHeaders["x-custom-tenant"]).toBe("tenant-123");
 		expect(JSON.parse(receivedBody).custom_tag).toBe("injected");
 		expect(afterResponseStatus).toBe(200);
+	});
+
+	it("drops a status-only transformResult contribution and still applies a later result rewrite", async () => {
+		const statusOnly = new ExtensionHost();
+		statusOnly.onHook("tools.transformResult", () => ({ status: "succeeded" }) as never);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const dropped = await statusOnly.runTransformResult({
+				callId: "c", name: "probe", args: {}, result: "boom", status: "failed",
+			});
+			expect(dropped).toBeUndefined();
+			expect(warn.mock.calls.some(call => String(call[0]).includes("status"))).toBe(true);
+		} finally {
+			warn.mockRestore();
+		}
+
+		const rewriting = new ExtensionHost();
+		rewriting.onHook("tools.transformResult", () => ({ status: "succeeded", result: "rewritten" }) as never);
+		const rewritten = await rewriting.runTransformResult({
+			callId: "c2", name: "probe", args: {}, result: "boom", status: "failed",
+		});
+		expect(rewritten?.result).toBe("rewritten");
+		expect(rewritten).not.toHaveProperty("status");
 	});
 
 });

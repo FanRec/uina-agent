@@ -1,4 +1,5 @@
 import type { ProjectionPolicy } from '../../agent/projection.js';
+import { defaultSystemPrompt } from '../../agent/context.js';
 import { projectEventFrames } from './projection.js';
 import { assertEventFrameContext, EVENT_FRAME_PROMPT, EVENT_FRAME_TOOL } from './protocol.js';
 export { EVENT_FRAME_PROMPT, EVENT_FRAME_TOOL_NAME, frameCallId } from './protocol.js';
@@ -7,6 +8,6 @@ export { EVENT_FRAME_PROMPT, EVENT_FRAME_TOOL_NAME, frameCallId } from './protoc
 export function createEventFrameProfile(): { projection: ProjectionPolicy & { validateContext: typeof assertEventFrameContext }; systemPrompt: string } {
  return {
   projection: { convertToLlm: projectEventFrames, contextTools: [structuredClone(EVENT_FRAME_TOOL)], validateContext: assertEventFrameContext },
-  systemPrompt: `你是 Uina。你处于一个 harness 中，这是你与世界交互的媒介。\n\n${EVENT_FRAME_PROMPT}`,
+  systemPrompt: `${defaultSystemPrompt()}\n\n${EVENT_FRAME_PROMPT}`,
  };
 }

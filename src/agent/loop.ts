@@ -17,7 +17,7 @@ import type {
 import type { SessionStore } from "../session/types.js";
 import { projectInputMessage } from "../session/recovery.js";
 import { commitRewindTransition } from "./rewind.js";
-import { resolveProjectionPolicy, type ProjectionPolicy, type ResolvedProjection } from "./projection.js";
+import { requestToolDefs, resolveProjectionPolicy, type ProjectionPolicy, type ResolvedProjection } from "./projection.js";
 import { availableContextBudget, buildContext, calculateContextSegments, defaultSystemPrompt, estimateContextTokens, estimateRequestTokens } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import { TurnStreamCollector, type StreamCollectorResult } from "./stream-collector.js";
@@ -227,7 +227,7 @@ export class Subject {
 	getContextSegments(usedTokens?: number): ContextSegments {
 		const context = buildContext({ history: this.history, systemPrompt: this.systemPrompt, convertToLlm: this.projection.convertToLlm });
 		const used = usedTokens ?? this.lastKnownUsage?.totalTokens;
-		return calculateContextSegments(context, this.requestTools(), used);
+		return calculateContextSegments(context, this.declaredTools(), used);
 	}
 
 	async setModel(model: Model): Promise<void> {
@@ -489,8 +489,7 @@ export class Subject {
 
 	addHistory(messages: readonly (AgentMessage | ChatMsg)[]): void {
 		if (this.isBusy()) throw new Error("活动期间不能替换历史");
-		// 无 id 的 user 消息补 id（与 projectAgentHistory 的 journal 回填语义一致）：
-		// 投影层将缺省 user 消息判为来源 unknown 的外部事件，无稳定 eventId 会明确报错。
+		// 仅补进程内事件 id。journal 回放使用条目 id，不把这里的随机 id 写成事实。
 		this.history.push(...messages.map((m) => {
 			const hasId = "id" in m && Boolean((m as { id?: string }).id);
 			const hasInput = "input" in m && Boolean((m as { input?: unknown }).input);
@@ -735,7 +734,7 @@ export class Subject {
 					model,
 					{
 						messages: requestMessages,
-						tools: this.requestTools(),
+						tools: this.declaredTools(),
 						thinkingLevel: clampThinkingLevel(this.thinkingLevel, model.thinkingLevels),
 						providerHooks: this.runtimeHooks.provider,
 					},
@@ -808,7 +807,7 @@ export class Subject {
 		// 请求级预算门（硬不变量，归 Subject 而非任何 hook）：transformContext 链对
 		// handler 错误只上报不中断，压缩的"预算不足"失败会被吞成原样请求，这里兜底
 		// 保证超限请求显式 turn_failed，而不是带着超预算上下文打到 Provider。
-		const tools = this.requestTools();
+		const tools = this.declaredTools();
 		if (model.contextWindow !== undefined
 			&& estimateRequestTokens(transformed, tools) > availableContextBudget(model.contextWindow)) {
 			throw new Error("上下文超过可用预算；无法保留完整的最近上下文，请压缩或缩减输入");
@@ -817,15 +816,10 @@ export class Subject {
 		return transformed;
 	}
 
- private requestTools(): import("../core/types.js").ToolDef[] {
-  const tools = this.tools.defs();
-  const names = new Set(tools.map(t => t.function.name));
-  for (const def of this.projection.contextTools) {
-   if (names.has(def.function.name)) throw new Error(`上下文工具声明重名: ${def.function.name}`);
-   names.add(def.function.name);
-  }
-  return [...tools, ...this.projection.contextTools];
- }
+	/** 下一次模型请求会声明的工具。压缩预算与请求门共用这一份，不能只数可执行工具。 */
+	declaredTools(): import("../core/types.js").ToolDef[] {
+		return requestToolDefs(this.tools.defs(), this.projection.contextTools);
+	}
 
 	private async handleStreamError(collector: TurnStreamCollector, error: unknown): Promise<void> {
 		collector.closeOutput("interrupted", this.interrupted || this.currentSignal().aborted ? "cancelled" : "error");

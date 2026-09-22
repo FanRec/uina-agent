@@ -37,6 +37,7 @@ const stream: ModelStreamFn = async (m, req, emit, signal) => {
 	timings.push({ phase, event: "model-request", atMs: Math.round(performance.now() - since) });
 	await provider.stream(m, req, emit, signal);
 };
+// 裸 Subject：不使用 Host 默认事件帧。这里验收工具行为，不证明帧投影下的模型表现。
 subject = new Subject(model, stream, tools, {
 	store, thinkingLevel: "off", runtimeHooks: runner.runtimeHooks(),
 	systemPrompt: "你是 Uina。当前是隔离验收。文件事件不是人类说话。按文件所述使用 watch_exec，长工作必须 run_in_background=true。后台通知回来后用 watch_job_output 读取结果。文件只包含 IGNORE 时，只调用 watch_silence，不输出解释或文字。人类发 hello 时只回复 hello，不要等待后台工作。除需要验收的结果外不寒暄。",

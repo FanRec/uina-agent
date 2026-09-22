@@ -416,9 +416,10 @@ export class UinaHost {
 		if (this.options.workspaceTools !== false) await this.extensionHost.activateBuiltin("workspace-tools", activateWorkspaceTools);
 		await this.extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools({ jobs: this.jobs, subagents: this.subagents, isTaskAbandoned: (id) => this.abandonedTaskIds.has(id) }));
 		await this.extensionHost.activateBuiltin("commands", activateBuiltinCommands);
-		// 传入实时 tools 视图：contextTools 声明等 schema 成本必须计入压缩预算，
-		// 否则压缩按偏小占用裁剪、请求仍会超窗。
-		await this.extensionHost.activateBuiltin("compaction", (pi) => activateCompaction(pi, { tools: () => this.tools.defs() }));
+		// 压缩预算直接读 Subject 声明的工具。再在宿主里拼一次，以后声明规则一变就会静默分叉。
+		await this.extensionHost.activateBuiltin("compaction", (pi) => activateCompaction(pi, {
+			tools: () => this.subject.declaredTools(),
+		}));
 		await this.extensionHost.activateBuiltin("app-framework", activateAppFramework);
 		await this.extensionHost.load();
 
