@@ -434,8 +434,17 @@ export class Subject {
 		});
 	}
 
+	/** 瞬态世界快照的 runtime 输入类型：同一内容由 tail 相位帧每请求注入，
+	 * 历史里再多一份副本纯属冗余（viewport-event-frame-refactor.md:29 "不落 Session 历史"）。
+	 * 客户端侧重复投递从此无害：accept 直接丢弃，不进队列、不落史、不启动回合。 */
+	private static readonly TRANSIENT_SNAPSHOT_TYPES = new Set(["app-viewport", "embodiment-state"]);
+
 	accept(input: AgentInput): Promise<void> {
 		if (!validImages(input.images)) return Promise.reject(new Error("图片内容无效"));
+		if (input.source?.kind === "runtime" && input.source.type !== undefined && Subject.TRANSIENT_SNAPSHOT_TYPES.has(input.source.type)) {
+			// 瞬态世界快照：tail 帧已在请求层提供最新一份，历史副本被丢弃。
+			return Promise.resolve();
+		}
 		if (!input.id || !input.text?.trim()) return Promise.reject(new Error("AgentInput 必须包含 id 和 text"));
 		const queued: QueuedMessage = {
 			...this.queues.create(input.text.trim(), input.mode, {
