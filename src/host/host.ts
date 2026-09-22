@@ -18,6 +18,7 @@ import { activateAppFramework } from "../extensions/app-framework/index.js";
 import { activateRuntimeTools, createChildTools, TASK_DISPATCH_EFFECT } from "../extensions/runtime-tools/index.js";
 import { activateSessionTools } from "../extensions/session-tools/index.js";
 import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
+import { activateCognition } from "../extensions/cognition/context.js";
 import { createEventFrameProfile } from "../extensions/event-frames/index.js";
 import type { SubjectProfile } from "./profile.js";
 import { killTrackedDetachedChildren } from "../runtime/process-tracker.js";
@@ -434,6 +435,12 @@ export class UinaHost {
 			tools: () => this.subject.declaredTools(),
 		}));
 		await this.extensionHost.activateBuiltin("app-framework", activateAppFramework);
+		// 认知扩展（阶段 C 接线）：仅 profile 模式激活——pi.subject 存在时注册三工具与
+		// 非 tail transformContext 召回注入；无 profile 时零影响（原路径逐字节不变）。
+		// 层序：cognition 为非 tail，注册顺序在 app-framework 之前/之后不影响（非 tail 恒在尾帧前）。
+		if (this.options.profile) {
+			await this.extensionHost.activateBuiltin("cognition", (pi) => activateCognition(pi));
+		}
 		await this.extensionHost.load();
 
 	}
