@@ -183,14 +183,29 @@ describe.skipIf(!hasLocalRuntime)("应用端点 ↔ 具身路由：跨真实边�
 		expect(result.result).not.toContain("bogus");
 	});
 
-	it("turn.prepare 把 cue 词汇注入系统提示（S2）", async () => {
-		const output = await runner.runtimeHooks().turn.prepare({ prompt: "", systemPrompt: "BASE" });
-		const systemPrompt = output?.systemPrompt ?? "";
+	it("tail transformContext 把 cue 词汇注入具身状态帧组（S2）", async () => {
+		const messages = [
+			{ role: "user" as const, content: "原文" },
+		];
+		const output = await runner.runtimeHooks().turn.transformContext(messages);
 
-		expect(systemPrompt).toContain("BASE");
-		expect(systemPrompt).toContain(PROBE_BODY_ID);
-		expect(systemPrompt).toContain("warm_smile");
-		expect(systemPrompt).toContain("curious_tilt");
+		// systemPrompt 路径已废弃：prepare 不再追加具身文本（无其它 prepare 注入者时保持原样/undefined）
+		const prepared = await runner.runtimeHooks().turn.prepare({ prompt: "", systemPrompt: "BASE" });
+		expect(prepared?.systemPrompt ?? "BASE").toBe("BASE");
+
+		// 尾部帧组：三消息原子组，回执含主导身体与 cue 词汇
+		expect(output.length).toBe(messages.length + 3);
+		const tail = output.slice(messages.length);
+		expect(tail.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
+		expect(tail[0]!.content).toContain("具身状态感知快照");
+		expect(tail[0]!.content).toContain("非用户输入");
+		expect(tail[2]!.content).toContain(PROBE_BODY_ID);
+		expect(tail[2]!.content).toContain("warm_smile");
+		expect(tail[2]!.content).toContain("curious_tilt");
+
+		// 协议校验：帧组结构合法
+		const profile = await import("../src/extensions/event-frames/index.js");
+		expect(() => profile.createEventFrameProfile().projection.validateContext!(tail as never)).not.toThrow();
 	});
 
 	it("输出流里的 <cue> 真正抵达端点，含跨分块被截断的标签（S3）", async () => {

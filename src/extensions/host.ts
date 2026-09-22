@@ -76,6 +76,8 @@ type RegistryHandler = (input: never) => unknown;
 interface RegisteredHandler {
 	readonly handler: RegistryHandler;
 	readonly scopeId?: string;
+	/** transformContext 尾部相位：无论注册先后，恒排在非 tail 注册者之后（瞬态尾部注入专用）。 */
+	readonly tail?: boolean;
 }
 
 export type RuntimeScopeFilter = readonly string[] | undefined;
@@ -114,14 +116,16 @@ export class ExtensionHost {
 		};
 	}
 
-	/** 在干预点注册：返回值按该链的合并规则参与组合（Hook ≠ Event，L1）。 */
-	onHook<K extends HookName>(hook: K, handler: HookHandler<K>, options?: { scopeId?: string }): () => void {
+	/** 在干预点注册：返回值按该链的合并规则参与组合（Hook ≠ Event，L1）。
+	 * options.tail 仅对 turn.transformContext 有语义：tail 注册者恒排在非 tail 之后（按各自注册序），
+	 * 用于瞬态尾部注入（视口/具身快照帧）落在一切历史注入之后。其余 hook 忽略该选项。 */
+	onHook<K extends HookName>(hook: K, handler: HookHandler<K>, options?: { scopeId?: string; tail?: boolean }): () => void {
 		let set = this.hookHandlers.get(hook);
 		if (!set) {
 			set = new Set();
 			this.hookHandlers.set(hook, set);
 		}
-		const entry: RegisteredHandler = { handler: handler as unknown as RegistryHandler, ...(options?.scopeId === undefined ? {} : { scopeId: options.scopeId }) };
+		const entry: RegisteredHandler = { handler: handler as unknown as RegistryHandler, ...(options?.scopeId === undefined ? {} : { scopeId: options.scopeId }), ...(options?.tail ? { tail: true } : {}) };
 		set.add(entry);
 		return () => {
 			set?.delete(entry);
@@ -243,10 +247,13 @@ export class ExtensionHost {
 
 	/** turn.transformContext：链式——后一个收到前一个的输出，返回整组替换。
 	 * 纯聚合器（P1-3）：入侧视图已由 guard 冻结并直传；贡献重绑时浅冻为下一
-	 * 步的只读视图，零深拷贝；返回收口在 guard 一次（copyMessages）。 */
+	 * 步的只读视图，零深拷贝；返回收口在 guard 一次（copyMessages）。
+	 * 尾部相位：tail 注册者（瞬态尾部注入，如视口/具身快照帧）恒在非 tail（历史/裁剪注入）之后执行，
+	 * 保证“历史投影 → 裁剪 → 项目扩展注入 → 尾部瞬态帧”的层序，与注册先后无关。 */
 	async runTransformContext(messages: readonly ChatMsg[], scope?: RuntimeScopeFilter): Promise<ChatMsg[]> {
-		const handlers = this.hooksFor("turn.transformContext", scope);
-		if (handlers.length === 0) return [...messages];
+		const all = this.hookEntriesFor("turn.transformContext", scope);
+		if (all.length === 0) return [...messages];
+		const handlers = [...all.filter((entry) => !entry.tail), ...all.filter((entry) => entry.tail)].map((entry) => entry.handler);
 
 		let currentMessages: readonly ChatMsg[] = messages;
 		for (const handler of handlers) {
@@ -386,12 +393,16 @@ export class ExtensionHost {
 		}
 	}
 
-	private hooksFor(hook: HookName, scope?: RuntimeScopeFilter): RegistryHandler[] {
+	private hookEntriesFor(hook: HookName, scope?: RuntimeScopeFilter): RegisteredHandler[] {
 		const set = this.hookHandlers.get(hook);
 		if (!set) return [];
-		if (scope === undefined) return [...set].map((entry) => entry.handler);
+		if (scope === undefined) return [...set];
 		const visible = new Set(scope);
-		return [...set].filter((entry) => entry.scopeId === undefined || visible.has(entry.scopeId)).map((entry) => entry.handler);
+		return [...set].filter((entry) => entry.scopeId === undefined || visible.has(entry.scopeId));
+	}
+
+	private hooksFor(hook: HookName, scope?: RuntimeScopeFilter): RegistryHandler[] {
+		return this.hookEntriesFor(hook, scope).map((entry) => entry.handler);
 	}
 
 	private handlersFor(eventType: string, scope?: RuntimeScopeFilter): RegistryHandler[] {

@@ -237,6 +237,36 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		expect(receivedMessages.some((m) => m.content?.includes("阳光明媚"))).toBe(true);
 	});
 
+	it("runs tail-phase transformContext handlers last regardless of registration order", async () => {
+		const host = new ExtensionHost();
+		const sequence: string[] = [];
+		const mark = (name: string) => () => {
+			sequence.push(name);
+			return undefined;
+		};
+		// tail 先注册：仍必须最后执行；非 tail 保持注册序。
+		host.onHook("turn.transformContext", mark("tailA"), { tail: true });
+		host.onHook("turn.transformContext", mark("normal1"));
+		host.onHook("turn.transformContext", mark("tailB"), { tail: true });
+		host.onHook("turn.transformContext", mark("normal2"));
+
+		const hooks = guardRuntimeHooks(createRuntimeHooks(host));
+		await hooks.turn.transformContext([{ role: "user", content: "original" }]);
+		expect(sequence).toEqual(["normal1", "normal2", "tailA", "tailB"]);
+
+		// tail 注入者的产出在非 tail 注入者之后追加（链式聚合顺序）。
+		const host2 = new ExtensionHost();
+		host2.onHook("turn.transformContext", (messages) => ({
+			messages: [...messages, { role: "user", content: "[normal]" }],
+		}));
+		host2.onHook("turn.transformContext", (messages) => ({
+			messages: [...messages, { role: "user", content: "[tail]" }],
+		}), { tail: true });
+		const hooks2 = guardRuntimeHooks(createRuntimeHooks(host2));
+		const out = await hooks2.turn.transformContext([{ role: "user", content: "original" }]);
+		expect(out.map((m) => m.content)).toEqual(["original", "[normal]", "[tail]"]);
+	});
+
 	it("passes frozen snapshots to transform handlers and accepts explicit replacements only", async () => {
 		const host = new ExtensionHost();
 		let frozen = false;

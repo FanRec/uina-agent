@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { ContextViewport } from "../src/extensions/app-framework/context-viewport.js";
+import { assertEventFrameContext, EVENT_FRAME_TOOL_NAME } from "../src/extensions/event-frames/protocol.js";
 import type { AppRuntime } from "../src/extensions/app-framework/types.js";
 import type { ChatMsg } from "../src/core/types.js";
 
-describe("App Framework: Context Viewport", () => {
+describe("App Framework: Context Viewport tail frame", () => {
 	function createMockRuntime(name: string, tier: "hidden" | "ambient" | "expanded" = "hidden"): AppRuntime {
 		return {
 			definition: {
@@ -21,60 +22,75 @@ describe("App Framework: Context Viewport", () => {
 		};
 	}
 
-	it("全 hidden 状态下：0 变更，原样返回消息列表", async () => {
+	it("全 hidden 状态下：返回 undefined（0 帧 0 token）", async () => {
 		const r1 = createMockRuntime("jukebox", "hidden");
 		const r2 = createMockRuntime("live2d", "hidden");
 		const viewport = new ContextViewport({
 			getRuntimes: () => [r1, r2],
 		});
 
-		const input: ChatMsg[] = [
-			{ role: "user", content: "你好初奈" },
-			{ role: "assistant", content: "你好呀！" },
-		];
-
-		const output = await viewport.transformContext(input);
-		expect(output).toEqual(input);
+		expect(await viewport.buildTailFrame()).toBeUndefined();
 	});
 
-	it("ambient 状态：独立追加一条 user 帧，不污染既有 user 消息", async () => {
+	it("ambient 状态：三消息组承载视口快照，tool 回执含横幅与渲染文本", async () => {
 		const r1 = createMockRuntime("jukebox", "ambient");
 		const viewport = new ContextViewport({
 			getRuntimes: () => [r1],
 		});
 
-		const input: ChatMsg[] = [
-			{ role: "user", content: "今天天气不错" },
-		];
+		const frame = await viewport.buildTailFrame();
+		expect(frame).toBeDefined();
+		const [notice, call, receipt] = frame!;
+		expect(frame!.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
 
-		const output = await viewport.transformContext(input);
-		expect(output.length).toBe(2);
-		// 原消息字节级不变（不伪装成 user 输入）。
-		expect(output[0]).toEqual(input[0]);
-		// 视口以独立消息追加。
-		const injected = output[1];
-		expect(injected.role).toBe("user");
-		expect(injected.content).toContain("【运行中的应用程序 / Running Apps】");
-		expect(injected.content).toContain("[jukebox: 正在后台轻量运行]");
+		// notice：瞬态快照声明，非用户输入、无需回应
+		expect(notice!.content).toContain("应用视口瞬态快照");
+		expect(notice!.content).toContain("非用户输入");
+		expect(notice!.content).toContain("无需直接回应");
+
+		// 合成调用与配对
+		const calls = "tool_calls" in call! ? call!.tool_calls : undefined;
+		expect(calls?.length).toBe(1);
+		expect(calls![0]!.name).toBe(EVENT_FRAME_TOOL_NAME);
+
+		// 回执正文：外部来源标注 + 视口文本
+		const body = JSON.parse(receipt!.content) as { eventId: string; source: { kind: string; type: string; origin: string }; text: string };
+		expect(body.source).toEqual({ kind: "runtime", type: "app-viewport", origin: "external" });
+		expect(body.text).toContain("【运行中的应用程序 / Running Apps】");
+		expect(body.text).toContain("[jukebox: 正在后台轻量运行]");
+
+		expect(() => assertEventFrameContext(frame!)).not.toThrow();
 	});
 
-	it("expanded 状态：独立消息承载完整面板，原消息内容不变", async () => {
+	it("expanded 状态：回执正文含完整面板数据", async () => {
 		const r1 = createMockRuntime("jukebox", "expanded");
 		const viewport = new ContextViewport({
 			getRuntimes: () => [r1],
 		});
 
-		const input: ChatMsg[] = [
-			{ role: "user", content: "放首歌" },
-		];
+		const frame = await viewport.buildTailFrame();
+		const body = JSON.parse(frame![2]!.content) as { text: string };
+		expect(body.text).toContain("[App: jukebox]");
+		expect(body.text).toContain("状态: 正常");
+		expect(body.text).toContain("<data>测试数据</data>");
+	});
 
-		const output = await viewport.transformContext(input);
-		expect(output.length).toBe(2);
-		expect(output[0]).toEqual(input[0]);
-		const injected = output[1];
-		expect(injected.content).toContain("[App: jukebox]");
-		expect(injected.content).toContain("状态: 正常");
-		expect(injected.content).toContain("<data>测试数据</data>");
+	it("确定性：同内容两次构建产出逐字节相同的帧组；内容变化 ⇒ eventId/callId 变化", async () => {
+		const r1 = createMockRuntime("jukebox", "ambient");
+		const viewport = new ContextViewport({ getRuntimes: () => [r1] });
+
+		const a = await viewport.buildTailFrame();
+		const b = await viewport.buildTailFrame();
+		expect(a).toEqual(b);
+
+		// 内容变化（模拟进度 tick）
+		r1.definition.render = () => "[jukebox: 正在播放另一首歌]";
+		const c = await viewport.buildTailFrame();
+		expect(c).not.toEqual(a);
+		const callIdOf = (frame: ChatMsg[]) => (frame[1]! as Extract<ChatMsg, { tool_calls?: unknown }>).tool_calls![0]!.id;
+		expect(callIdOf(c!)).not.toBe(callIdOf(a!));
+		// 两组帧共存仍通过协议校验（多组并存的上下文合法）
+		expect(() => assertEventFrameContext([...a!, ...c!])).not.toThrow();
 	});
 
 	it("maxExpanded 限制与自动降级：超出上限时最旧应用降为 ambient", async () => {
@@ -100,7 +116,7 @@ describe("App Framework: Context Viewport", () => {
 		expect(r2.surfaceTier).toBe("expanded");
 	});
 
-	it("render 抛错容错：应用异常不阻断回合，输出降级错误提示", async () => {
+	it("render 抛错容错：应用异常不阻断回合，回执正文降级错误提示", async () => {
 		const buggyRuntime: AppRuntime = {
 			definition: {
 				name: "brokenApp",
@@ -119,22 +135,8 @@ describe("App Framework: Context Viewport", () => {
 			getRuntimes: () => [buggyRuntime],
 		});
 
-		const input: ChatMsg[] = [{ role: "user", content: "测试" }];
-		const output = await viewport.transformContext(input);
-		expect(output.length).toBe(2);
-		expect(output[0]).toEqual(input[0]);
-		expect(output[1].content).toContain("[App: brokenApp] (界面渲染失败: 外部服务超时)");
-	});
-
-	it("空消息列表输入时：仍独立生成一条承载视口文本的消息", async () => {
-		const r1 = createMockRuntime("jukebox", "ambient");
-		const viewport = new ContextViewport({
-			getRuntimes: () => [r1],
-		});
-
-		const output = await viewport.transformContext([]);
-		expect(output.length).toBe(1);
-		expect(output[0].role).toBe("user");
-		expect(output[0].content).toContain("[jukebox: 正在后台轻量运行]");
+		const frame = await viewport.buildTailFrame();
+		const body = JSON.parse(frame![2]!.content) as { text: string };
+		expect(body.text).toContain("[App: brokenApp] (界面渲染失败: 外部服务超时)");
 	});
 });

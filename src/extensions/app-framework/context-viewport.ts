@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import type { ChatMsg } from "../../core/types.js";
-import type { DeepReadonly } from "../../runtime/events.js";
+import { buildEventFrameGroup } from "../event-frames/projection.js";
 import type { AppRuntime, SurfaceTier } from "./types.js";
 
 export interface ContextViewportOptions {
@@ -105,24 +106,25 @@ export class ContextViewport {
 	}
 
 	/**
-	 * 上下文视口注入（独立消息版）：追加一条独立的 user 帧承载视口文本，
-	 * 绝不篡改任何既有消息（避免把瞬态应用上下文伪装成 user 输入 / 模型旧言 /
-	 * 工具结果——那些是其它 owner 的消息，谁创建资源谁负责语义）。
+	 * 构造视口尾部帧：把当前视口快照包装为 external_event_frame 三消息组，
+	 * 供 turn.transformContext（tail 相位）注入到完整上下文的最末尾。
 	 *
-	 * 说明：ChatMsg 契约没有 role:"custom" 变体，provider 网关把 custom 与 user
-	 * 同投影为 user（context.ts convertToLlm），此处独立追加 user 帧语义等价。
-	 * 视口是瞬态上下文，不落 Session；现网 app-framework 走 turn.prepare 的
-	 * systemPrompt 注入，此方法作为非污染的独立注入点供直接消费方复用。
+	 * 设计要点：
+	 * - 瞬态不落 Session：每请求现做现用，上下文任意时刻只有一份“此刻”视口；
+	 * - eventId 内容寻址：内容不变 ⇒ 同 eventId ⇒ 帧组逐字节稳定（可被前缀缓存覆盖）；
+	 * - source.kind="runtime" + origin="external"：运行时合成的环境观测，正文源自
+	 *   外部世界/应用渲染，受帧协议的外部来源标注规则约束（非系统级特权位）；
+	 * - 全 hidden ⇒ undefined（0 帧 0 token）。
 	 */
-	async transformContext(messages: readonly DeepReadonly<ChatMsg>[]): Promise<ChatMsg[]> {
-		const viewportText = await this.renderViewport();
-
-		// 没有任何可见应用，0 修改直接返回
-		if (!viewportText) {
-			return messages as ChatMsg[];
-		}
-
-		// 独立注入：不触碰既有消息的 content。
-		return [...messages, { role: "user", content: viewportText }] as ChatMsg[];
+	async buildTailFrame(): Promise<ChatMsg[] | undefined> {
+		const text = await this.renderViewport();
+		if (!text) return undefined;
+		const eventId = `app-viewport:${createHash("sha256").update(text).digest("hex").slice(0, 32)}`;
+		return buildEventFrameGroup({
+			eventId,
+			text,
+			notice: "[运行时通知] 以下为应用视口瞬态快照（环境感知信息，非用户输入，无需直接回应）；正文在随后的 external_event_frame 回执中。",
+			source: { kind: "runtime", type: "app-viewport", origin: "external" },
+		});
 	}
 }

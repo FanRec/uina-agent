@@ -1,4 +1,5 @@
-import type { AgentMessage, ChatMsg, InputProvenance, ModelContextMeta } from '../../core/types.js';
+import type { AgentMessage, ChatMsg, InputProvenance, InputSource, ModelContextMeta } from '../../core/types.js';
+import type { ImageContent } from '../../core/content.js';
 import { convertToLlm } from '../../agent/context.js';
 import { EVENT_FRAME_KIND, EVENT_FRAME_TOOL_NAME, frameCallId } from './protocol.js';
 
@@ -13,6 +14,46 @@ function external(m: AgentMessage | ChatMsg): boolean {
  return m.role === 'user' && !('context' in m && m.context?.kind);
 }
 
+const DEFAULT_FRAME_NOTICE = '[运行时通知] 收到一条外部事件；正文在随后的 external_event_frame 回执中。';
+
+export interface EventFrameGroupOptions {
+ eventId: string;
+ /** 回执正文（来自标明的外部来源 / 运行时合成的观测快照）。 */
+ text: string;
+ /** 覆盖默认通知文案；用于区分到达事件与瞬态快照等不同呈现。 */
+ notice?: string;
+ /** 缺省 { type: 'unknown', origin: 'external' }（与到达事件行为一致）。 */
+ source?: InputSource;
+ receivedAt?: string;
+ /** 原样附加到回执消息（多模态正文）。 */
+ images?: ImageContent[];
+}
+
+/**
+ * 构造一组协议完整的 external_event_frame 三消息组：
+ * [notice(user), 合成调用(assistant), 回执(tool)]，三消息共享原子分组元数据，
+ * 可直接通过 assertEventFrameContext 校验。
+ *
+ * 深模块：调用方只需给出 eventId 与正文，分组/callId/来源标注机制全部在此封装。
+ * 两类生产消费方：① encodeExternalInput（到达事件投影）；② 瞬态尾部帧注入
+ * （应用视口 / 具身状态——运行时合成的环境观测，不落 Session 历史）。
+ */
+export function buildEventFrameGroup(options: EventFrameGroupOptions): ChatMsg[] {
+ const { eventId, text, notice = DEFAULT_FRAME_NOTICE, source, receivedAt, images } = options;
+ if (!eventId) throw new Error('外部事件帧缺少稳定 eventId');
+ const input: InputProvenance = { eventId, ...(source ? { source } : {}), ...(receivedAt ? { receivedAt } : {}) };
+ const id = frameCallId(eventId);
+ const context = (index: number): ModelContextMeta => ({ kind: EVENT_FRAME_KIND, input,
+  group: { id, index, size: 3 }, retain: true });
+ const body = { eventId, ...(receivedAt ? { receivedAt } : {}),
+  source: source ?? { type: 'unknown', origin: 'external' }, text };
+ return [
+  { role: 'user', content: notice, context: context(0) },
+  { role: 'assistant', content: '', tool_calls: [{ id, name: EVENT_FRAME_TOOL_NAME, args: { eventId } }], context: context(1) },
+  { role: 'tool', tool_call_id: id, content: JSON.stringify(body), ...(images ? { images } : {}), context: context(2) },
+ ];
+}
+
 export function encodeExternalInput(message: AgentMessage | ChatMsg): ChatMsg[] {
  const input = provenance(message) ?? { eventId: 'id' in message ? message.id ?? '' : '' };
  if (!input.eventId) {
@@ -22,16 +63,13 @@ export function encodeExternalInput(message: AgentMessage | ChatMsg): ChatMsg[] 
    `修复指引：turn.prepare 注入的 user 消息需带 context.kind 标注为内部信息；` +
    `需要作为外部事件呈现的输入必须在接入层提供 input 或 id 元数据。`);
  }
- const id = frameCallId(input.eventId);
- const context = (index: number): ModelContextMeta => ({ kind: EVENT_FRAME_KIND, input,
-  group: { id, index, size: 3 }, retain: true });
- const body = { eventId: input.eventId, ...(input.receivedAt ? { receivedAt: input.receivedAt } : {}),
-  source: input.source ?? { type: 'unknown', origin: 'external' }, text: message.content };
- return [
-  { role: 'user', content: '[运行时通知] 收到一条外部事件；正文在随后的 external_event_frame 回执中。', context: context(0) },
-  { role: 'assistant', content: '', tool_calls: [{ id, name: EVENT_FRAME_TOOL_NAME, args: { eventId: input.eventId } }], context: context(1) },
-  { role: 'tool', tool_call_id: id, content: JSON.stringify(body), ...(message.images ? { images: message.images } : {}), context: context(2) },
- ];
+ return buildEventFrameGroup({
+  eventId: input.eventId,
+  text: message.content,
+  source: input.source,
+  receivedAt: input.receivedAt,
+  images: message.images,
+ });
 }
 
 export function projectEventFrames(messages: readonly (AgentMessage | ChatMsg)[], options?: { includeThinking?: boolean }): ChatMsg[] {

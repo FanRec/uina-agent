@@ -1,14 +1,15 @@
 /**
  * Host 装配顺序合同（host.start() 注释引用本文件）：
- * 帧投影(convertToLlm) → transformContext 链(compaction → 项目扩展) → 预算门 → 协议校验。
+ * 帧投影(convertToLlm) → transformContext 链（compaction 裁剪 → 项目扩展注入 → tail 相位尾帧）
+ * → 预算门 → 协议校验。
  *
  * 以认知扩展的占位 hook（项目扩展注入 [记忆] 块）验证：
  * 1. compaction 先于项目扩展 hook 运行（后者收到的是已裁剪、已带摘要的消息）；
- * 2. 记忆块注入在摘要之后、消息组末尾；
- * 3. 帧组原子性保持（最新外部输入以完整三消息组到达 Provider）；
+ * 2. 记忆块注入在摘要之后、tail 尾帧之前；
+ * 3. 帧组原子性保持（最新外部输入以完整三消息组到达 Provider；多组帧并存合法）；
  * 4. 请求级预算门通过（远期历史被裁剪，回合不因超预算失败）。
  *
- * 重排 host.start() 的激活顺序或请求管线顺序而不更新本测试，属于破坏性变更。
+ * 重排 host.start() 的激活顺序、tail 相位规则或请求管线顺序而不更新本测试，属于破坏性变更。
  */
 import { describe, expect, test } from "./harness/index.js";
 import { UinaTestHarness } from "./harness/host/harness.js";
@@ -33,6 +34,10 @@ describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展（
 					};
 					return { messages: [...messages, { role: "user", content: "[记忆] 认知占位块" }] };
 				});
+				// tail 相位：注入一个可辨识的尾帧（模拟视口/具身快照），验证恒排在非 tail 注入之后。
+				uina.onHook("turn.transformContext", (messages) => {
+					return { messages: [...messages, { role: "user", content: "[TAIL] 瞬态尾帧占位" }] };
+				}, { tail: true });
 			}
 		`);
 
@@ -57,11 +62,15 @@ describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展（
 			expect(probe?.sawSummary).toBe(true);
 			expect(probe?.sawFarHistory).toBe(false);
 
-			// 2. 摘要紧随 leading system；记忆块在摘要之后且位于消息组末尾。
+			// 2. 摘要紧随 leading system；记忆块在摘要之后；tail 尾帧在记忆块之后且位于消息组末尾。
 			expect(contents[1]?.startsWith("[历史摘要] ")).toBe(true);
 			const memoryIndex = contents.findIndex((c) => c.includes("[记忆] 认知占位块"));
 			expect(memoryIndex).toBeGreaterThan(1);
-			expect(memoryIndex).toBe(contents.length - 1);
+			expect(contents[memoryIndex + 1]).toContain("[TAIL] 瞬态尾帧占位");
+			expect(contents[contents.length - 1]).toContain("[TAIL] 瞬态尾帧占位");
+			// systemPrompt 纯净性：记忆块与尾帧文本都不得进入 system。
+			expect(contents[0]).not.toContain("[记忆]");
+			expect(contents[0]).not.toContain("[TAIL]");
 
 			// 3. 帧组原子：最新外部输入「跑一轮」以完整帧组到达（通知 + 合成调用 + 回执）。
 			const messages = last?.messages ?? [];

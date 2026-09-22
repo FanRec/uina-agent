@@ -46,8 +46,9 @@ export interface ExtensionAPI {
 	/**
 	 * 在干预点注册（Hook ≠ Event，L1）：hook 专属词汇（如 "tools.beforeCall"），
 	 * 返回值按该链的合并规则参与组合。事实观察用 on()。
+	 * options.tail 仅对 turn.transformContext 有语义（尾部相位，见 ExtensionHost.onHook）。
 	 */
-	onHook<K extends HookName>(hook: K, handler: HookHandler<K>): () => void;
+	onHook<K extends HookName>(hook: K, handler: HookHandler<K>, options?: { tail?: boolean }): () => void;
 	/** 主线 hydrated entries（canonical only）：capability 读对话历史的通道。 */
 	history(): readonly import("../session/types.js").HydratedSessionEntry[];
 	/** auxiliary timeline（仅登记的 records）：capability 读自身私有持久状态的通道——
@@ -629,7 +630,7 @@ export class ExtensionRunner extends ExtensionHost {
 				own(dispose);
 				return dispose;
 			},
-			onHook: (hook, handler) => {
+			onHook: (hook, handler, options) => {
 				assertActive();
 				const wrapped: HookHandler<HookName> = async (input) => {
 					try {
@@ -639,7 +640,7 @@ export class ExtensionRunner extends ExtensionHost {
 						return undefined;
 					}
 				};
-				const dispose = this.onHook(hook, wrapped, { scopeId: scope.id });
+				const dispose = this.onHook(hook, wrapped, { scopeId: scope.id, ...(options?.tail ? { tail: true } : {}) });
 				own(dispose);
 				return dispose;
 			},

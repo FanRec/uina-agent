@@ -74,20 +74,16 @@ export class AppRegistry {
 			getRuntimes: () => this.apps.values(),
 		});
 
-		// 挂载 turn.prepare 钩子：在系统提示词层注入当前活跃应用视口，
-		// 保证历史用户消息与助手消息 100% 字节级不变，彻底解决 Prompt Cache 击穿问题。
-		this.pi.onHook("turn.prepare", async (input) => {
-			const viewportText = await this.viewport.renderViewport();
-			if (!viewportText) return undefined;
-			const base = input.systemPrompt ?? "";
-			return {
-				systemPrompt: base ? `${base}\n\n${viewportText}` : viewportText,
-			};
-		});
-
-		// 保持 turn.transformContext 注册以兼容扩展契约与测试断言，但 0-token 保持透传，
-		// 避免在消息数组末尾变异旧消息
-		this.pi.onHook("turn.transformContext", async () => undefined);
+		// 尾部相位（tail）：在 compaction 裁剪与项目扩展注入之后，把当前视口快照
+		// 以 external_event_frame 三消息组追加到完整上下文的最末尾。
+		// - 视口是瞬态上下文，不落 Session；每请求现做现用，上下文任意时刻只有一份“此刻”视口；
+		// - systemPrompt 保持完全静态（可变内容不再进入系统提示，消除前缀缓存击穿）；
+		// - 全 hidden ⇒ buildTailFrame 返回 undefined ⇒ 0 修改透传（0 token）。
+		this.pi.onHook("turn.transformContext", async (messages) => {
+			const frame = await this.viewport.buildTailFrame();
+			if (!frame) return undefined;
+			return { messages: [...messages, ...frame] };
+		}, { tail: true });
 	}
 
 	/**

@@ -102,7 +102,7 @@ registerToolRenderer 与 registerMarkdownTransformer 只控制显示。widget、
 
 干预用 onHook(hookName, handler)，观察用 on(event, handler)——Hook 与 Event 各一词表、各一出口。现役干预点（8 条）：turn.prepare 的 { systemPrompt?, model?, thinkingLevel? }（后写覆盖先写）、turn.transformContext 的 { messages }（链式）、turn.shouldStop 的 { stop }、tools.beforeCall 的 { block?, reason? }、tools.transformResult 的 { result?, status?, images?, details? }、provider.transformHeaders/transformPayload/observeResponse。完整类型见 [hooks](../src/runtime/hooks.ts)。
 
-只需追加上下文时在 turn.transformContext 链上返回 { messages: [...原消息, 追加项] }；需要整组替换时返回整组。后激活者收到前者的输出（链式传递），与压缩、Memory 注入等 capability 共存。不要在流式观察或每帧渲染链中同步等待长期工作。
+只需追加上下文时在 turn.transformContext 链上返回 { messages: [...原消息, 追加项] }；需要整组替换时返回整组。后激活者收到前者的输出（链式传递），与压缩、Memory 注入等 capability 共存。注册时可传 { tail: true }（尾部相位）：tail 注册者无论注册先后恒排在非 tail 之后，用于瞬态尾部注入——可变世界状态（应用视口/具身状态快照）经 buildEventFrameGroup 包装为 external_event_frame 三消息组追加到完整上下文最末尾，不落 Session 历史、不进 systemPrompt（system 只放基本不变的内容；可变内容进系统提示会从 token 0 击穿前缀缓存并占据特权位）。完整示例见 [custom-compaction](../examples/extensions/custom-compaction/index.ts)。
 
 ## 清理与验证
 

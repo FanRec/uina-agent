@@ -405,12 +405,14 @@ export class UinaHost {
 		this.requestShutdown = startOptions.requestShutdown;
 		// ── 官方能力装配顺序合同 ──────────────────────────────────────────
 		// transformContext 是链式 hook（后一个收到前一个的输出），执行顺序 = 下面的
-		// 激活顺序：compaction → app-framework（transformContext 为 no-op）→ 项目扩展。
-		// 完整请求管线顺序为：帧投影(convertToLlm) → transformContext 链 → 请求级
-		// 预算门(Subject) → 协议校验(validateContext)。
-		// 该顺序是能力语义依赖的硬合同（compaction 必须先裁剪、为后注入的记忆/视口
-		// 块留出预算；认知扩展的记忆块依赖 compaction 之后的位置），由
-		// tests/projection-order.test.ts 持有——重排激活顺序而不更新该测试属于破坏性变更。
+		// 激活顺序：compaction → app-framework（tail 尾帧）→ 项目扩展；其中 tail 相位
+		// 注册者（app-framework 视口帧、具身状态帧）无论注册先后恒排在非 tail 之后——
+		// 完整层序：帧投影(convertToLlm) → compaction 裁剪 → 项目扩展注入 → tail 尾帧 →
+		// 请求级预算门(Subject) → 协议校验(validateContext)。systemPrompt 保持完全静态，
+		// 可变世界状态（视口/具身快照）只经尾部帧注入，不进系统提示（前缀缓存合同）。
+		// 该顺序是能力语义依赖的硬合同（compaction 必须先裁剪、为后注入的记忆块留出
+		// 预算；尾帧恒在最末尾），由 tests/projection-order.test.ts 持有——重排激活顺序
+		// 或 tail 相位规则而不更新该测试属于破坏性变更。
 		// ────────────────────────────────────────────────────────────────
 		await this.extensionHost.activateBuiltin("session-tools", activateSessionTools(ownerId => ownerId === "root" ? this.rootSession : this.subagents.session(ownerId)));
 		if (this.options.workspaceTools !== false) await this.extensionHost.activateBuiltin("workspace-tools", activateWorkspaceTools);
