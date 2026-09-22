@@ -243,7 +243,7 @@ export class UinaHost {
 			// 主体绑定（认知阶段 A）：扩展经 pi.subject 拿到绑定的资源根；无 profile 时缺省
 			// undefined——旧扩展与测试零影响。
 			subjectBinding: options.profile
-				? { sessionId: options.profile.sessions.sessionId, memoryRoot: options.profile.resources.memoryRoot, stateRoot: options.profile.resources.stateRoot }
+				? { subjectId: options.profile.identity.subjectId, sessionId: options.profile.sessions.sessionId, memoryRoot: options.profile.resources.memoryRoot, stateRoot: options.profile.resources.stateRoot }
 				: undefined,
 			session: {
 				list: options => rootSessionView().list(options),

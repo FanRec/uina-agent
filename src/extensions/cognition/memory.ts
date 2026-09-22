@@ -108,6 +108,7 @@ export interface MemoryHit {
 	hash: string;
 	revision: number;
 	score: number;
+	pinned: boolean;
 }
 
 // ---------- 构造参数 ----------
@@ -299,6 +300,7 @@ export function createMemoryStore(options: MemoryStoreOptions): MemoryStore {
 						hash: record.hash,
 						revision: record.revision,
 						score,
+						pinned: record.pinned,
 					});
 				}
 			}
