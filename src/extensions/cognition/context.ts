@@ -123,18 +123,17 @@ export function activateCognition(pi: ExtensionAPI): void {
 	for (const tool of createMemoryTools(store)) pi.registerTool(tool);
 
 	// M5：非 tail transformContext（默认注册即非 tail；尾相位留给视口/具身瞬态帧）。
+	// injector 在激活时构造一次（闭包只依赖 store/scope，无需每请求重建）；
 	// hook handler 收到的就是消息数组（非包装对象），返回 { messages } 整组替换。
+	const injector = createContextInjector({ store, scope: {} });
 	pi.onHook("turn.transformContext", async (messages) => {
-		const injector = createContextInjector({ store, scope: {} });
 		const result = await injector(messages as unknown as readonly MinimalMessage[]);
 		if (!result) return undefined;
 		return { messages: result.messages } as unknown as { readonly messages?: readonly import("../../core/types.js").ChatMsg[] };
 	});
 
-	// 生命周期：scope 关闭时等待在途写结算（短提交），不再接受新请求。
+	// 生命周期：scope 关闭时等待在途写结算（此后写入明确拒绝——store.close 硬合同）。
 	pi.signal.addEventListener("abort", () => {
 		void store.close();
 	});
 }
-
-/** subjectId 推断已废弃：身份由 Host 经 pi.subject.subjectId 显式绑定，不从路径猜。 */

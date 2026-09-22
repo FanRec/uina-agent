@@ -17,9 +17,10 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { readCognitionState, updateCognitionState } from "./cognition-state.js";
 
 // ---------- 数据模型（design §7） ----------
 
@@ -128,25 +129,6 @@ export interface MemoryStoreOptions {
 const META_COMMENT_PREFIX = "<!-- uina-memory ";
 const RECORDS_DIR = "records";
 const REVISIONS_DIR = "revisions";
-const COGNITION_STATE_FILE = "cognition.json";
-
-interface CognitionState {
-	forgottenIds?: string[];
-}
-
-function readCognitionState(stateRoot: string): CognitionState {
-	const path = join(stateRoot, COGNITION_STATE_FILE);
-	if (!existsSync(path)) return {};
-	try {
-		return JSON.parse(readFileSync(path, "utf8")) as CognitionState;
-	} catch {
-		return {};
-	}
-}
-
-function writeCognitionState(stateRoot: string, state: CognitionState): Promise<void> {
-	return writeFile(join(stateRoot, COGNITION_STATE_FILE), JSON.stringify(state, null, "\t"), "utf8");
-}
 
 // ---------- 序列化 ----------
 
@@ -179,11 +161,14 @@ function parseRecordFile(raw: string, subjectId: string): MemoryRecord | undefin
 
 export interface MemoryStore {
 	read(id: string): Promise<MemoryRecord | undefined>;
+	/** 列举当前主体全部可用记录（整理快照等真实消费者用——search 需要查询词，不适合当列举器）。 */
+	listActive(): Promise<MemoryRecord[]>;
 	search(query: string, scope: RecallScope): Promise<MemoryHit[]>;
 	write(change: MemoryChange): Promise<MemoryWriteResult>;
 	forget(id: string): Promise<void>;
 	/** 测试/降级验证用：清空内存索引，强制读路径回源磁盘。 */
 	invalidateIndex(): void;
+	/** 等待在途写结算；此后写入明确拒绝（弱合同转硬合同：不靠调用方自觉）。 */
 	close(): Promise<void>;
 }
 
@@ -195,13 +180,9 @@ export function createMemoryStore(options: MemoryStoreOptions): MemoryStore {
 	// 内存索引：id → {meta, body, raw}。权威在文件；未命中回源扫描。
 	type IndexedRecord = MemoryRecord & { raw: string };
 	let index = new Map<string, IndexedRecord>();
+	let closed = false;
 
 	const forgotten = (): Set<string> => new Set(readCognitionState(stateRoot).forgottenIds ?? []);
-
-	const ensureDirs = async (): Promise<void> => {
-		await mkdir(recordsDir, { recursive: true });
-		await mkdir(revisionsDir, { recursive: true });
-	};
 
 	/** 权威回源：扫描 records/ 目录重建索引（损坏文件跳过——报告排除，不拿他库回填）。 */
 	const rebuildIndex = async (): Promise<void> => {
@@ -283,6 +264,18 @@ export function createMemoryStore(options: MemoryStoreOptions): MemoryStore {
 			return rest;
 		},
 
+		async listActive() {
+			if (index.size === 0) await rebuildIndex();
+			const suppressed = forgotten();
+			const out: MemoryRecord[] = [];
+			for (const record of index.values()) {
+				if (record.status !== "active" || suppressed.has(record.id)) continue;
+				const { raw: _raw, ...rest } = record;
+				out.push(rest);
+			}
+			return out;
+		},
+
 		async search(query, scope) {
 			// 索引为空时回源一次（首次搜索的懒加载）。
 			if (index.size === 0) await rebuildIndex();
@@ -309,7 +302,9 @@ export function createMemoryStore(options: MemoryStoreOptions): MemoryStore {
 
 		write(change) {
 			return enqueue(async (): Promise<MemoryWriteResult> => {
-				await ensureDirs();
+				if (closed) return { status: "rejected", reason: "MemoryStore 已关闭，不再接受写入" };
+				await mkdir(recordsDir, { recursive: true });
+				await mkdir(revisionsDir, { recursive: true });
 
 				if (change.op === "create") {
 					const id = `m${randomUUID().slice(0, 8)}`;
@@ -335,13 +330,7 @@ export function createMemoryStore(options: MemoryStoreOptions): MemoryStore {
 						createdAt: now,
 						updatedAt: now,
 					};
-					const raw = serializeRecord(meta, change.record.body);
-					// 临时文件 + rename：进程异常时当前文件为旧版（不存在）或新版，不出现半写。
-					const tmpPath = join(recordsDir, `.${id}.tmp`);
-					await writeFile(tmpPath, raw, "utf8");
-					await rename(tmpPath, join(recordsDir, `${id}.md`));
-					index.set(id, { ...meta, body: change.record.body, hash: sha256(raw), raw });
-					return { status: "committed", id, hash: sha256(raw), revision: 1 };
+					return commit(id, meta, change.record.body, undefined);
 				}
 
 				// revise / retire 共同前置：目标必须存在、hash 必须匹配。
@@ -363,10 +352,7 @@ export function createMemoryStore(options: MemoryStoreOptions): MemoryStore {
 						return { status: "rejected", id: change.id, reason: "记录已是 retired 状态" };
 					}
 					const meta: MemoryMeta = { ...stripRaw(current), status: "retired", updatedAt: new Date().toISOString() };
-					const raw = serializeRecord(meta, current.body);
-					await backupAndReplace(change.id, current, raw);
-					index.set(change.id, { ...meta, body: current.body, hash: sha256(raw), raw });
-					return { status: "committed", id: change.id, hash: sha256(raw), revision: meta.revision };
+					return commit(change.id, meta, current.body, current);
 				}
 
 				// revise：合并字段；主体归属与 ID 不可变。
@@ -386,22 +372,18 @@ export function createMemoryStore(options: MemoryStoreOptions): MemoryStore {
 					basis: mergedBasis,
 					updatedAt: new Date().toISOString(),
 				};
-				const body = r.body ?? current.body;
-				const raw = serializeRecord(meta, body);
-				await backupAndReplace(change.id, current, raw);
-				index.set(change.id, { ...meta, body, hash: sha256(raw), raw });
-				return { status: "committed", id: change.id, hash: sha256(raw), revision: meta.revision };
+				return commit(change.id, meta, r.body ?? current.body, current);
 			});
 		},
 
 		async forget(id) {
 			return enqueue(async () => {
+				if (closed) throw new Error("MemoryStore 已关闭，不再接受遗忘操作");
 				// 顺序（备忘 §3.3）：抑制记录先落盘 → 停召回 → 清理副本。
-				await mkdir(stateRoot, { recursive: true });
-				const state = readCognitionState(stateRoot);
-				const ids = new Set(state.forgottenIds ?? []);
-				ids.add(id);
-				await writeCognitionState(stateRoot, { ...state, forgottenIds: [...ids] });
+				await updateCognitionState(stateRoot, (state) => ({
+					...state,
+					forgottenIds: [...new Set([...state.forgottenIds ?? [], id])],
+				}));
 				index.delete(id);
 				await rm(join(recordsDir, `${id}.md`), { force: true });
 				await rm(join(revisionsDir, id), { recursive: true, force: true });
@@ -413,10 +395,26 @@ export function createMemoryStore(options: MemoryStoreOptions): MemoryStore {
 		},
 
 		async close() {
-			// 等待在途写结算（短提交），不接收新请求由调用方保证。
+			closed = true;
 			await writeTail;
 		},
 	};
+
+	/** 统一提交路径：序列化 → hash 单算 → 备份（有旧版时）→ 原子替换 → 更新索引 → 返回。
+	 * 备份失败则不覆盖旧版；替换后索引更新失败以文件为准（下次读回源重建）。 */
+	async function commit(id: string, meta: MemoryMeta, body: string, previous: IndexedRecord | undefined): Promise<MemoryWriteResult> {
+		const raw = serializeRecord(meta, body);
+		const hash = sha256(raw);
+		if (previous) await backupAndReplace(id, previous, raw);
+		else {
+			// create：临时文件 + rename，进程异常时当前文件为不存在或完整新版，不出现半写。
+			const tmpPath = join(recordsDir, `.${id}.tmp`);
+			await writeFile(tmpPath, raw, "utf8");
+			await rename(tmpPath, join(recordsDir, `${id}.md`));
+		}
+		index.set(id, { ...meta, body, hash, raw });
+		return { status: "committed", id, hash, revision: meta.revision };
+	}
 
 	/** 备份旧版本到 revisions/<id>/，成功后原子替换当前文件。备份失败则不覆盖旧版。 */
 	async function backupAndReplace(id: string, current: IndexedRecord, newRaw: string): Promise<void> {

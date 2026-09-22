@@ -18,9 +18,7 @@
  * 迟到模型输出不会直接产生外部副作用。
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readCognitionState, updateCognitionState } from "./cognition-state.js";
 import type { MemoryStore, MemoryWriteResult } from "./memory.js";
 
 export interface ConsolidationEvidence {
@@ -61,20 +59,6 @@ export interface ConsolidationWorkerOptions {
 	onModelCalled?: () => Promise<void>;
 }
 
-interface ConsolidationPersistentState {
-	/** 水位：已整理的证据条数（按 listEvidence 的稳定序）。 */
-	consolidationWatermark?: number;
-}
-
-function readState(stateRoot: string): ConsolidationPersistentState {
-	const path = join(stateRoot, "cognition.json");
-	if (!existsSync(path)) return {};
-	try {
-		return JSON.parse(readFileSync(path, "utf8")) as ConsolidationPersistentState;
-	} catch {
-		return {};
-	}
-}
 
 export interface ConsolidationWorker {
 	run(): Promise<ConsolidationRunResult>;
@@ -90,12 +74,9 @@ export function createConsolidationWorker(options: ConsolidationWorkerOptions): 
 	let closed = false;
 	let closeReason = "";
 	let settled = true; // 无在途 run 时视为已结算
-	let lastRunResult: ConsolidationRunResult | undefined;
 
 	async function persistWatermark(watermark: number): Promise<void> {
-		await mkdir(stateRoot, { recursive: true });
-		const state = readState(stateRoot);
-		await writeFile(join(stateRoot, "cognition.json"), JSON.stringify({ ...state, consolidationWatermark: watermark }, null, "\t"), "utf8");
+		await updateCognitionState(stateRoot, (state) => ({ ...state, consolidationWatermark: watermark }));
 	}
 
 	async function run(): Promise<ConsolidationRunResult> {
@@ -109,8 +90,7 @@ export function createConsolidationWorker(options: ConsolidationWorkerOptions): 
 
 		const runTask = (async (): Promise<ConsolidationRunResult> => {
 			// 水位合并：只整理水位之上的新材料。
-			const state = readState(stateRoot);
-			const watermark = state.consolidationWatermark ?? 0;
+			const watermark = readCognitionState(stateRoot).consolidationWatermark ?? 0;
 			const all = listEvidence();
 			const pending = all.slice(watermark);
 			if (pending.length === 0) {
@@ -127,16 +107,15 @@ export function createConsolidationWorker(options: ConsolidationWorkerOptions): 
 				merged.push(item);
 			}
 
-			const records = [];
-			for (const hit of await store.search("", {})) {
-				const record = await store.read(hit.id);
-				if (record && record.status === "active") {
-					records.push({ id: record.id, title: record.title, body: record.body, hash: record.hash, revision: record.revision, status: record.status });
-				}
-			}
-			// search("") 不命中任何记录时（分值为 0），回退到 read 路径之外的快照方式：
-			// 第一版证据少，直接逐文件重读由 store.read 承担；此处用 search 仅为列出 ID，
-			// 空查询列不出时记录快照为空——模型只会看到证据，无 patch 可生成，安全。
+			// 真实记录快照（修 C1：search("") 恒空是自我欺骗；listActive 才是列举接口）。
+			const records = (await store.listActive()).map((record) => ({
+				id: record.id,
+				title: record.title,
+				body: record.body,
+				hash: record.hash,
+				revision: record.revision,
+				status: record.status,
+			}));
 
 			await onModelCalled?.();
 			if (generation.aborted) return { status: "aborted", patchesSubmitted: 0, conflicts: 0, modelCalls: 0 };
@@ -164,13 +143,11 @@ export function createConsolidationWorker(options: ConsolidationWorkerOptions): 
 
 		try {
 			const result = await runTask;
-			lastRunResult = result;
 			return result;
 		} catch (error) {
 			if (generation.aborted || closed) {
 				// 关闭引发的取消：不假报成功。
-				lastRunResult = { status: "aborted", patchesSubmitted: 0, conflicts: 0, modelCalls: 0 };
-				return lastRunResult;
+				return { status: "aborted", patchesSubmitted: 0, conflicts: 0, modelCalls: 0 };
 			}
 			throw error;
 		} finally {

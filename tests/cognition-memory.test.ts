@@ -243,6 +243,33 @@ describe("M3 MemoryStore：retire 与 forget", () => {
 });
 
 describe("M3 MemoryStore：索引降级与 subject 绑定", () => {
+	it("listActive 列举全部 active 记录（retired/已遗忘/他人记录排除）", async () => {
+		const a = await createRecord({ title: "甲", body: "甲的内容", scope: {} });
+		await createRecord({ title: "乙", body: "乙的内容", scope: {} });
+		if (a.status !== "committed") throw new Error("expected committed");
+		await store.write({ op: "retire", id: a.id, expectedHash: a.hash, reason: "x" });
+
+		const listed = await store.listActive();
+		expect(listed).toHaveLength(1);
+		expect(listed[0]!.title).toBe("乙");
+		expect(listed[0]!.hash).toBeTruthy();
+	});
+
+	it("close 后写入明确拒绝（硬合同，不靠调用方自觉）", async () => {
+		const created = await createRecord();
+		if (created.status !== "committed") throw new Error("expected committed");
+		await store.close();
+		const result = await store.write({
+			op: "revise",
+			id: created.id,
+			expectedHash: created.hash,
+			record: { body: "关闭后的修订" },
+		});
+		expect(result.status).toBe("rejected");
+		const record = await store.read(created.id);
+		expect(record!.body).toContain("先给结论");
+	});
+
 	it("索引降级（内存索引被清空）→ 读路径回源磁盘扫描，行为不变", async () => {
 		const created = await createRecord();
 		if (created.status !== "committed") throw new Error("expected committed");

@@ -227,5 +227,3 @@ export function createMemoryTools(store: MemoryStore): Tool[] {
 
 	return [memorySearch, memoryRead, memoryWrite];
 }
-
-export const COGNITION_PROMPT = /* 语义占位：实际行为协议在 PROMPT.md，经 Host 装配注入 */ "";
