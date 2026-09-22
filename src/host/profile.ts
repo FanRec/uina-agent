@@ -134,7 +134,9 @@ export function resolveProfile(options: ResolveProfileOptions): SubjectProfile |
 	}
 	let parsed: ProfileJson;
 	try {
-		parsed = JSON.parse(readFileSync(jsonPath, "utf8")) as ProfileJson;
+		// 容忍 Windows 编辑器写入的 UTF-8 BOM（\uFEFF）：JSON.parse 不接受 BOM 头。
+		const rawJson = readFileSync(jsonPath, "utf8").replace(/^\uFEFF/, "");
+		parsed = JSON.parse(rawJson) as ProfileJson;
 	} catch (error) {
 		throw new Error(`profile.json 不是合法 JSON（${jsonPath}）：${String(error)}`);
 	}
