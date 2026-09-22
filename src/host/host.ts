@@ -369,7 +369,13 @@ export class UinaHost {
 	async submitText(text: string, mode: "direct" | "steer" | "followUp" = "followUp"): Promise<void> {
 		this.assertAccepting();
 		const effective = this.subject.isBusy() ? mode : "direct";
-		return this.subject.pushInput(text, { mode: effective });
+		// 操作者输入来源标注（外部事件帧协议）：TUI/console 提交是已知操作者通道，
+		// 显式标注 type=operator，不再落到投影层的 unknown 缺省——消费端（模型）
+		// 据此区分操作者指令与环境快照的响应权重，不靠内容猜测。
+		return this.subject.pushInput(text, {
+			mode: effective,
+			source: { kind: "user", type: "operator", origin: "external" },
+		});
 	}
 
 	/** 程序化投递：原样入队，不做“忙时升级”转换（队列移交、后台通知走这条路）。 */
