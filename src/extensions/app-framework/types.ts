@@ -33,6 +33,14 @@ export interface ActionContext {
 	 * 当前操作的全局权威身份
 	 */
 	operationIdentity: OperationIdentity;
+	/**
+	 * 本次工具调用的取消信号。
+	 *
+	 * 长动作（如多步物理特技、连续分镜）**必须**把它透传给内部可取消原语
+	 * （如通道仲裁的 claim、分段等待），否则工具层报 cancelled 时物理动作仍在继续，
+	 * 构成对外谎报。短动作可忽略。
+	 */
+	signal: AbortSignal;
 }
 
 /**
@@ -60,7 +68,65 @@ export interface ActionDef<TParams = Record<string, unknown>> {
 export interface ServiceCompanionContext {
 	/** 取消信号（当宿主或应用关闭时触发） */
 	signal: AbortSignal;
+	/** 投递输入/机会至主脑信道（可选通用能力） */
+	submitInput?: (input: import("../../agent/loop.js").AgentInput) => Promise<void>;
+	/** 探测主脑是否忙碌（可选通用能力） */
+	isBusy?: () => boolean;
+	/** 应用数据目录（可选） */
+	appDataDir?: string;
+	/** 监听宿主通用活动事件（可选通用能力） */
+	onActivity?: (listener: (event: { origin: "human" | "external" | "runtime" }) => void) => () => void;
+	/**
+	 * 订阅宿主事实事件流（可选通用能力）。
+	 *
+	 * 与 onActivity 的分工：onActivity 是"有人/有东西在动"的极简信号，事件类型已丢失；
+	 * onHostEvent 保留 type 与 channel，供需要区分思考/输出/回合边界的应用使用。
+	 * 事件按 RuntimeEvent 词汇只读投递，订阅方不得回写。
+	 */
+	onHostEvent?: (
+		listener: (event: { readonly type: string; readonly channel?: string; readonly [key: string]: unknown }) => void,
+	) => () => void;
+	/**
+	 * 同进程行为出口（可选通用能力）。
+	 *
+	 * 把应用内部**活引用**（对象/函数）登记到宿主的同进程共享表，供系统扩展消费。
+	 * 这是与 callService 互补的通道：callService 走 structuredClone 只承载纯数据，
+	 * expose 不序列化因而能承载带原型方法的对象。**仅同进程有效**。
+	 *
+	 * 方向约束：应用只拿写方。应用不获得"读取他人共享值"的能力，因此无法主动伸手
+	 * 触及宿主内部——消费方一律是有 pi.shared 的系统扩展。
+	 */
+	expose?: (name: string, value: unknown) => () => void;
+	/** 调用其他扩展注册的通用服务（可选通用能力） */
+	callService?: <O = unknown>(name: string, input: unknown) => Promise<O>;
+	/** 检查某通用服务是否已注册（可选通用能力） */
+	hasService?: (name: string) => boolean;
 }
+
+/**
+ * 应用暴露的活引用登记表。
+ *
+ * 由 app-framework 以 `APP_EXPOSED_SHARED_NAME` 为名登记进宿主同进程共享表，
+ * 系统扩展通过 `pi.shared(APP_EXPOSED_SHARED_NAME)` 取得。应用自身**拿不到**该表，
+ * 因此应用只能被消费、不能主动读取他人共享值。
+ */
+export interface AppExposedRegistry {
+	/** 当前所有已登记的共享名（按登记顺序，重复登记同名只保留首个）。 */
+	names(): readonly string[];
+	/** 按名取值；未登记返回 undefined。 */
+	get(name: string): unknown;
+	/** 订阅登记表变化（登记 / 注销 / 应用停用整体清理）。返回退订函数。 */
+	subscribe(listener: () => void): () => void;
+}
+
+/** `AppExposedRegistry` 在宿主同进程共享表中的登记名。 */
+export const APP_EXPOSED_SHARED_NAME = "app-framework.exposed";
+
+/**
+ * 应用侧可观察的宿主事件子集：回合边界 + 输出流（含 thinking 通道）。
+ * 刻意不收窄为"全部 RuntimeEvent"——应用只需知道自己与回合并行的时序事实。
+ */
+export const APP_HOST_EVENT_TYPES = ["turn_start", "output_update", "turn_end", "turn_aborted"] as const;
 
 /**
  * 应用静态契约定义（App Definition）
@@ -85,7 +151,9 @@ export interface AppDef {
 
 	/**
 	 * 视口渲染函数（纯函数，仅在 tier 为 ambient 或 expanded 时调用）
-	 * 框架会将不可信应用数据结构化包裹，防范 Prompt Injection
+	 * 渲染结果作为 App-owned transient model context 注入（现网经 turn.prepare 的
+	 * systemPrompt 进瞬态上下文，不落 Session）。框架以 [App: name] 帧界定各应用
+	 * 渲染块——这是展示分隔，不是现成的 Prompt Injection 安全边界。
 	 */
 	render?: (tier: "ambient" | "expanded") => Promise<string> | string;
 

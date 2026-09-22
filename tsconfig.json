@@ -17,5 +17,5 @@
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true
   },
-  "include": ["examples", "src", "tests", "scripts", "vitest.config.ts"]
+  "include": ["examples", "src", "tests", "scripts", "vitest.config.ts", ".uina/apps", ".uina/extensions"]
 }

@@ -10,12 +10,13 @@ export class InputQueues {
 	private readonly steer: QueuedMessage[] = [];
 	private readonly followUp: QueuedMessage[] = [];
 
-	create(text: string, mode: Exclude<DeliveryMode, "direct">, extra: Pick<QueuedMessage, "source" | "data" | "images"> = {}): QueuedMessage {
+	create(text: string, mode: Exclude<DeliveryMode, "direct">, extra: Pick<QueuedMessage, "source" | "data" | "images" | "receivedAt"> = {}): QueuedMessage {
 		return {
 			id: randomUUID(),
 			order: ++this.order,
 			mode,
 			text,
+			receivedAt: new Date().toISOString(),
 			...extra,
 		};
 	}

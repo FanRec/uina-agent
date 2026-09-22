@@ -40,13 +40,32 @@ export interface ToolEffect {
 	data?: unknown;
 }
 
+export interface InputSource {
+ kind: "user" | "runtime" | "agent";
+ type: string;
+ ref?: string;
+ origin?: "external" | "internal";
+ channel?: string;
+ actor?: { id?: string; label?: string; relation?: "operator" | "participant" | "unknown" };
+ provenance?: { branchId?: string; abandoned?: boolean };
+}
+export interface InputProvenance { eventId: string; source?: InputSource; receivedAt?: string; }
+export interface ModelContextMeta {
+ input?: InputProvenance;
+ group?: { id: string; index: number; size: number };
+ kind?: string;
+ /** Retain this entire group when trimming recent context. */
+ retain?: boolean;
+}
+
 export interface QueuedMessage {
 	id: string;
 	order: number;
 	mode: Exclude<DeliveryMode, "direct">;
 	text: string;
  images?: ImageContent[];
-	source?: { kind: "user" | "runtime" | "agent"; type: string; ref?: string; provenance?: { branchId?: string; abandoned?: boolean } };
+	source?: InputSource;
+ receivedAt?: string;
 	data?: unknown;
 }
 
@@ -111,6 +130,7 @@ export interface CompletedToolCall {
 }
 
 export interface SystemAgentMessage {
+ input?: InputProvenance;
 	id?: string;
 	role: "system";
 	content: string;
@@ -119,6 +139,7 @@ export interface SystemAgentMessage {
 }
 
 export interface UserAgentMessage {
+ input?: InputProvenance;
 	id?: string;
 	role: "user";
 	content: string;
@@ -127,6 +148,7 @@ export interface UserAgentMessage {
 }
 
 export interface AssistantAgentMessage {
+ input?: InputProvenance;
 	id?: string;
 	role: "assistant";
 	content: string;
@@ -141,6 +163,7 @@ export interface AssistantAgentMessage {
 }
 
 export interface ToolAgentMessage {
+ input?: InputProvenance;
  details?: unknown;
 	id?: string;
 	role: "tool";
@@ -153,6 +176,7 @@ export interface ToolAgentMessage {
 }
 
 export interface CustomAgentMessage {
+ input?: InputProvenance;
 	id?: string;
 	role: "custom";
 	customType: string;
@@ -170,7 +194,7 @@ export type AgentMessage =
 	| ToolAgentMessage
 	| CustomAgentMessage;
 
-export type ChatMsg =
+export type ChatMsg = { context?: ModelContextMeta } & (
 	| { role: "system" | "user"; content: string; images?: ImageContent[] }
 	| {
 			role: "assistant";
@@ -190,7 +214,8 @@ export type ChatMsg =
 			content: string;
  images?: ImageContent[];
 			status?: ToolResultStatus;
-		};
+		}
+);
 
 export interface ModelRequest {
 	messages: ChatMsg[];

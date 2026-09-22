@@ -166,7 +166,7 @@ describe("S1 durable session facts", () => {
 		expect(reopened.snapshot.queued).toEqual([]);
 		expect(projectAgentHistory(reopened.snapshot.entries)).toEqual(harness.historySnapshot());
 		expect(harness.historySnapshot().filter(m => m.role === "user").map(m => m.content)).toEqual(["first", "steer", "follow"]);
-		expect(reopened.snapshot.entries.filter(e => e.kind === "input")).toHaveLength(2);
+		expect(reopened.snapshot.entries.filter(e => e.kind === "input")).toHaveLength(3);
 	});
 
 	it("leaves input pending and reports a failed commit without automatic retry", async () => {
@@ -182,7 +182,7 @@ describe("S1 durable session facts", () => {
 		await harness.waitForIdle();
 		expect(attempts).toBe(1);
 		expect(errors.join("\n")).toContain("commit failed");
-		expect(harness.queuedSnapshot().map(i => i.text)).toEqual(["pending"]);
+		expect(harness.queuedSnapshot().map(i => i.text)).toEqual(["first", "pending"]);
 		expect(harness.historySnapshot().some(m => m.content === "pending")).toBe(false);
 	});
 

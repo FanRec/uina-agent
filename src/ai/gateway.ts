@@ -44,6 +44,7 @@ export function createOpenAIProvider(id: string, conf: OpenAIEndpointConf): Prov
 		baseUrl: conf.baseUrl,
 		async refreshModels() {
 			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, { headers: { Authorization: `Bearer ${conf.apiKey}` } });
+			if (response.status === 404 || response.status === 405 || response.status === 501) return [];
 			if (!response.ok) throw new ProviderHttpError({ provider: id, status: response.status, action: "模型目录请求" });
 			const payload = await response.json() as { data?: Array<{ id?: string }> };
 			return (payload.data ?? []).flatMap((model) => typeof model.id === "string" ? [{ id: model.id }] : []);

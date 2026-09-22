@@ -23,6 +23,8 @@ export interface ShellResult {
 export interface ShellRunOptions {
 	/** Wall-clock limit in milliseconds. No limit when omitted. */
 	timeoutMs?: number;
+	/** Child process working directory. Defaults to `process.cwd()` when omitted. */
+	cwd?: string;
 }
 
 
@@ -100,6 +102,7 @@ export function startBackgroundCommand(command: string, context: JobContext, opt
 export function createExecCommandTool(
 	jobs?: import("../../jobs/registry.js").JobRegistry,
 	ownerId = "root",
+	cwd?: string,
 ): Tool {
 	return {
 		def: {
@@ -130,7 +133,7 @@ export function createExecCommandTool(
 					label: command,
 					ownerId: context?.ownerId ?? ownerId,
 					source: { extension: "shell", operation: "exec" },
-					start: (context) => startBackgroundCommand(command, context, { timeoutMs }),
+					start: (context) => startBackgroundCommand(command, context, { timeoutMs, cwd }),
 				});
 				return {
 					result: JSON.stringify({ jobId: id, source: { extension: "shell", operation: "exec" }, status: "running" }),
@@ -138,7 +141,7 @@ export function createExecCommandTool(
 					details: { effects: [{ effectType: "task.dispatch", externalOperationId: id, label: command }] },
 				};
 			}
-			const result = await execCommandDirect(command, signal, { timeoutMs });
+			const result = await execCommandDirect(command, signal, { timeoutMs, cwd });
 			const status: ToolResultStatus = result.cancelled
 				? "cancelled"
 				: result.timedOut ? "failed" : result.code === 0 ? "succeeded" : "failed";

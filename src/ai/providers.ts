@@ -75,6 +75,7 @@ export function createAnthropicProvider(id: string, conf: ProviderConfig): Provi
 			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, {
 				headers: { "x-api-key": conf.apiKey, "anthropic-version": "2023-06-01" },
 			});
+			if (response.status === 404 || response.status === 405 || response.status === 501) return [];
 			if (!response.ok) throw new ProviderHttpError({ provider: id, status: response.status, action: "模型目录请求" });
 			const payload = (await response.json()) as { data?: Array<{ id?: string }> };
 			return (payload.data ?? []).flatMap((model) => typeof model.id === "string" ? [{ id: model.id }] : []);
@@ -238,6 +239,7 @@ export function createGeminiProvider(id: string, conf: ProviderConfig): Provider
 		baseUrl: conf.baseUrl,
 		async refreshModels() {
 			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, { headers: { "x-goog-api-key": conf.apiKey } });
+			if (response.status === 404 || response.status === 405 || response.status === 501) return [];
 			if (!response.ok) throw new ProviderHttpError({ provider: id, status: response.status, action: "模型目录请求" });
 			const payload = (await response.json()) as { models?: Array<{ baseModelId?: string; inputTokenLimit?: number; thinking?: boolean; supportedGenerationMethods?: string[] }> };
 			return (payload.models ?? []).flatMap((model) => {
@@ -834,16 +836,22 @@ export class ModelRegistry {
 
 	async refreshModels(): Promise<void> {
 		const failures: string[] = [];
+		let attempted = 0;
 		for (const [id, provider] of this.providers.entriesList()) {
 			this.discovered.delete(id);
+			if (!provider.refreshModels) continue;
+			attempted += 1;
 			try {
-				if (provider.refreshModels) {
-					this.discovered.set(id, [...await provider.refreshModels()]);
-				}
+				this.discovered.set(id, [...await provider.refreshModels()]);
 			} catch (error) {
 				failures.push(`${id}: ${errorMessage(error)}`);
 			}
 		}
-		if (failures.length > 0) throw new Error(`模型目录刷新失败：${failures.join("；")}`);
+		if (failures.length === 0) return;
+		// 部分成功也是事实：成功者的目录**已经**更新进 discovered 了，把整体报成"刷新失败"
+		// 会让一次单点网络故障看起来像全盘失败。仍以抛错上报（调用方唯一的事实通道），
+		// 但必须说清 N/M 与具体未更新的是谁。
+		const updated = attempted - failures.length;
+		throw new Error(`模型目录刷新：${updated}/${attempted} 家已更新；未更新 ${failures.join("；")}`);
 	}
 }

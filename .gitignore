@@ -26,4 +26,13 @@ scripts/crap.mjs
 tests/netease-jukebox.test.ts
 tests/soundboard.test.ts
 tests/tts-extension.test.ts
+tests/bilibili-live.test.ts
+tests/bilibili-live-app.test.ts
+tests/voice-extension.test.ts
+tests/embodiment-runtime.test.ts
+tests/live2d-app.test.ts
+tests/live2d-motion-core.test.ts
+tests/pacing-ticker-app.test.ts
+tests/pacing-ticker-engine.test.ts
+tests/pacing-ticker-integration.test.ts
 

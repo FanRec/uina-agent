@@ -2,6 +2,8 @@ import { describe, expect, it, mockModel, SubjectHarness } from "./harness/index
 import { buildContext } from "../src/agent/context.js";
 import { toWireMessages } from "../src/ai/gateway.js";
 import { anthropicMessages, geminiRequest } from "../src/ai/providers.js";
+import { isRecord } from "../src/session/recovery.js";
+import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import type { ChatMsg, ModelRequest, ModelStreamFn } from "../src/core/types.js";
 
 describe("Context Hygiene & Protocol Sanitization", () => {
@@ -236,5 +238,28 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 		const userTexts = lastReq.messages.filter((m) => m.role === "user").map((m) => m.content);
 		expect(userTexts).toContain("PROBE_DATA_123");
 		expect(userTexts).toContain("next question");
+	});
+
+	it("fails the turn visibly when the final request exceeds the known context budget", async () => {
+		// transformContext 对 handler 错误只上报不中断；超限必须由 Subject 预算门
+		// 显式 turn_failed，而不是带着超预算上下文打到 Provider。
+		const store = new MemorySessionStore();
+		const harness = SubjectHarness.create({ model: mockModel({ contextWindow: 500 }), store });
+		await harness.run("x".repeat(5000));
+		const failed = store.readRecords().find((r) => r.kind === "event" && r.event === "turn_failed");
+		expect(failed).toBeDefined();
+		expect(JSON.stringify(failed)).toContain("上下文超过可用预算");
+		// 超限请求绝不能到达 Provider
+		expect(harness.scenario.calls).toHaveLength(0);
+	});
+
+	it("keeps journal intake closed to malformed message provenance", () => {
+		const base = { kind: "message" as const, id: "m1", seq: 1, timestamp: new Date(0).toISOString() };
+		expect(isRecord({ ...base, message: { role: "user", content: "x", input: { eventId: 42 } } })).toBe(false);
+		expect(isRecord({ ...base, message: { role: "user", content: "x", input: { eventId: "" } } })).toBe(false);
+		expect(isRecord({ ...base, message: { role: "user", content: "x", input: { eventId: "e1", receivedAt: "not-a-date" } } })).toBe(false);
+		expect(isRecord({ ...base, message: { role: "user", content: "x", input: { eventId: "e1", source: { kind: "user", type: "chat", origin: "sideways" } } } })).toBe(false);
+		// 合法 provenance 正常入库
+		expect(isRecord({ ...base, message: { role: "user", content: "x", input: { eventId: "e1", source: { kind: "user", type: "chat", origin: "external" } } } })).toBe(true);
 	});
 });

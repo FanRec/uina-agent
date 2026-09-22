@@ -133,3 +133,68 @@ describe("confirmChoice", () => {
 		expect(confirmChoice(ARROW_LEFT, true)).toBeUndefined();
 	});
 });
+
+describe("ModelPicker 边框闭合与选定行为", () => {
+	const sampleGroups = [
+		{
+			id: "deepseek",
+			name: "deepseek",
+			description: "DeepSeek",
+			models: [
+				{ id: "deepseek/deepseek-flash", name: "deepseek-flash", description: "默认配置模型 · openai-compatible", provider: "deepseek" },
+				{ id: "deepseek/deepseek-chat", name: "deepseek-chat", description: "Chat 模型", provider: "deepseek" },
+			],
+		},
+		{
+			id: "anthropic",
+			name: "anthropic",
+			description: "Anthropic",
+			models: [
+				{ id: "anthropic/claude-3-5-sonnet", name: "claude-3-5-sonnet", description: "Sonnet", provider: "anthropic" },
+			],
+		},
+	];
+
+	it("各行可见宽度严格相等，右边框与右下角闭合对齐", async () => {
+		const { ModelPicker } = await import("../src/ui/components/overlays/model-picker.js");
+		const { visibleWidth } = await import("../src/ui/core/utils.js");
+
+		// 测试 groups 层级
+		const picker = new ModelPicker("deepseek/deepseek-flash", sampleGroups);
+		for (const width of [60, 80, 100, 120]) {
+			const lines = picker.formatLines(width);
+			const expectedW = visibleWidth(lines[0]!);
+			for (let i = 0; i < lines.length; i++) {
+				expect(visibleWidth(lines[i]!), `Width ${width} line ${i} mismatch`).toBe(expectedW);
+			}
+		}
+
+		// 测试 models 层级
+		picker.confirm(); // 下钻到 models
+		for (const width of [60, 80, 100, 120]) {
+			const lines = picker.formatLines(width);
+			const expectedW = visibleWidth(lines[0]!);
+			for (let i = 0; i < lines.length; i++) {
+				expect(visibleWidth(lines[i]!), `Width ${width} line ${i} mismatch`).toBe(expectedW);
+			}
+		}
+	});
+
+	it("Enter 选定模型触发 onPick", async () => {
+		const { ModelPicker } = await import("../src/ui/components/overlays/model-picker.js");
+		const picker = new ModelPicker("deepseek/deepseek-flash", sampleGroups);
+
+		let pickedModel: string | undefined;
+		picker.onPick = (id) => {
+			pickedModel = id;
+		};
+
+		// 第一次 Enter 下钻
+		picker.handleInput(ENTER);
+		expect(pickedModel).toBeUndefined();
+
+		// 第二次 Enter 选定模型
+		picker.handleInput(ENTER);
+		expect(pickedModel).toBe("deepseek/deepseek-flash");
+	});
+});

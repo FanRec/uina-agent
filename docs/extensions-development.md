@@ -67,6 +67,19 @@ const result = await api.callService("index.query/v1", { query: "example" });
 
 注册默认拒绝重名。显式 { replace: true } 替换，返回的注销函数只释放该次注册；卸载后恢复前一个存活实现。所有注册也自动归属 activation。
 
+程序间的**行为**交付不能走服务：`callService` 对入参与返回值双向 `structuredClone`，函数会被丢弃、带闭包或原型方法的对象直接抛 `DataCloneError`。要把活引用交给其他扩展，用同进程共享：
+
+~~~js
+// 提供者：登记活引用（对象或函数），返回注销函数
+const dispose = api.share("embodiment.endpoint:arm", endpoint);
+// 消费者：在实际使用时解析，而非依赖激活顺序
+const endpoint = api.shared("embodiment.endpoint:arm");
+~~~
+
+共享表零语义（宿主不解释名字与值的含义）、不序列化、**仅同进程有效**；重名即报错而非覆盖——覆盖会让已经取过值的消费者指向非预期对象；生命周期与 `registerService` 同权，提供方 activation 卸载时自动回收。
+
+**铁律：纯数据走 `callService`，活引用走 `share`。** 判据是要交付的东西有没有行为：配置、状态、描述符走服务；带方法的对象、回调、订阅端走共享。两者不互相替代，也不要用其中之一去模拟另一个。
+
 ## 消息与主动输入
 
 - sendMessage({ customType, content, images?, display?, details? })：持久化并参与模型上下文，自身不触发回合；display:false 只隐藏展示。

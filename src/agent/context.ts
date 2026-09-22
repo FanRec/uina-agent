@@ -6,6 +6,18 @@ import type { AgentMessage, ChatMsg, ContextSegments, ToolDef, Usage } from "../
  */
 export const CHARS_PER_TOKEN = 4;
 
+/**
+ * 上下文预留量：为模型输出保留的 token 数。窗口未知即未知，不伪造保护；
+ * 已知窗口下预留量永不超窗口一半（小窗口模型不能被 16k 保留量吃掉全部预算）。
+ * 压缩扩展的裁剪预算与 Subject 的请求前预算门共用这一个常量，避免两处漂移。
+ */
+export const CONTEXT_RESERVE_TOKENS = 16_384;
+
+/** 已知窗口下的可用请求预算：窗口减去预留量（预留量按窗口一半封顶）。 */
+export function availableContextBudget(contextWindow: number): number {
+	return contextWindow - Math.min(CONTEXT_RESERVE_TOKENS, Math.floor(contextWindow / 2));
+}
+
 export interface ContextEstimate { tokens: number; actual: boolean; }
 
 export interface BuildInput {
@@ -58,13 +70,15 @@ export function convertToLlm(
 
 	const result: ChatMsg[] = [];
 	for (const msg of messages) {
+        const context = "context" in msg ? msg.context : "input" in msg && msg.input ? { input: msg.input } : undefined;
+        const meta = context ? { context } : {};
 		switch (msg.role) {
 			case "system":
-				result.push({ role: "system", content: msg.content, images: msg.images });
+				result.push({ ...meta, role: "system", content: msg.content, images: msg.images });
 				break;
 			case "custom":
 			case "user":
-				result.push({ role: "user", content: msg.content, images: msg.images });
+				result.push({ ...meta, role: "user", content: msg.content, images: msg.images });
 				break;
 			case "assistant": {
 				const thinking = options.includeThinking ? msg.thinking : undefined;
@@ -82,6 +96,7 @@ export function convertToLlm(
 				}
 
 				result.push({
+                    ...meta,
 					role: "assistant",
 					content,
 					thinking,
@@ -96,6 +111,7 @@ export function convertToLlm(
 			case "tool":
 				if (msg.tool_call_id && pairedIds.has(msg.tool_call_id)) {
 					result.push({
+                        ...meta,
 						role: "tool",
 						tool_call_id: msg.tool_call_id,
 						content: msg.content,

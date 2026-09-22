@@ -57,6 +57,7 @@ export async function discoverExternalAppEntries(searchDirs: readonly string[]):
 		try {
 			const items = await readdir(searchDir, { withFileTypes: true });
 			for (const item of items.sort((a, b) => a.name.localeCompare(b.name))) {
+				if (item.name.startsWith(".") || item.name === "node_modules") continue;
 				const fullPath = join(searchDir, item.name);
 				if (item.isDirectory()) {
 					const entry = await resolveDirectoryEntry(fullPath);

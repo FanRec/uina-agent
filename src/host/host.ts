@@ -56,6 +56,7 @@ export interface UinaHostOptions {
 	thinkingLevel?: ThinkingLevel;
 	/** 投影 Replacement 缝（单 owner = Subject 实例；组合根经此提供，宿主可注入）。 */
 	projection?: ProjectionPolicy;
+	systemPrompt?: string;
 	/** 诊断出口：消费者尚未接入时也必须可见，绝不静默吞掉。 */
 	onError?: (text: string) => void;
 }
@@ -198,12 +199,16 @@ export class UinaHost {
 		// assigned after the extension host below.
 		const rootSessionView = (): import("../session/types.js").SessionAccess =>
 			createSessionAccess(store, (request, source, signal) => subject.requestRewind(request, source, signal));
+		const resolvedProjection = options.projection;
+		const resolvedSystemPrompt = options.systemPrompt;
 		const subagents = new SubagentRegistry({
 			factory: new DefaultAgentFactory(),
 			model: () => subject.getModel(),
 			stream: streamFn,
 			thinkingLevel,
 			createTools: (ownerId) => createChildTools(tools, { ownerId }),
+            projection: resolvedProjection,
+            systemPrompt: resolvedSystemPrompt,
 			notify: async (text, data, ownerId) => {
 				if (state.stopping) return;
 				const idStr = String(data.id);
@@ -270,8 +275,9 @@ export class UinaHost {
 		subject = new Subject(activeModel, streamFn, tools, {
 			store,
 			thinkingLevel,
+            systemPrompt: resolvedSystemPrompt,
 			runtimeHooks: extensionHost.runtimeHooks(),
-			projection: options.projection,
+			projection: resolvedProjection,
 		});
 
 		subject.subscribe((event) => {
@@ -292,7 +298,7 @@ export class UinaHost {
 
 		if (config !== undefined) {
 			void models.refreshModels().catch((error: unknown) => {
-				options.onError?.(`[模型目录刷新失败] ${errorMessage(error)}`);
+				options.onError?.(`[模型目录刷新] ${errorMessage(error)}`);
 			});
 		}
 		return (hostSelf = new UinaHost(options, subject, store, extensionHost, tools, models, jobs, subagents, commands, restoredEntries, listeners, state, abandonedTaskIds));
@@ -396,7 +402,9 @@ export class UinaHost {
 		if (this.options.workspaceTools !== false) await this.extensionHost.activateBuiltin("workspace-tools", activateWorkspaceTools);
 		await this.extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools({ jobs: this.jobs, subagents: this.subagents, isTaskAbandoned: (id) => this.abandonedTaskIds.has(id) }));
 		await this.extensionHost.activateBuiltin("commands", activateBuiltinCommands);
-		await this.extensionHost.activateBuiltin("compaction", activateCompaction);
+		// 传入实时 tools 视图：contextTools 声明等 schema 成本必须计入压缩预算，
+		// 否则压缩按偏小占用裁剪、请求仍会超窗。
+		await this.extensionHost.activateBuiltin("compaction", (pi) => activateCompaction(pi, { tools: () => this.tools.defs() }));
 		await this.extensionHost.activateBuiltin("app-framework", activateAppFramework);
 		await this.extensionHost.load();
 

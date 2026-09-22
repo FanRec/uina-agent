@@ -10,25 +10,25 @@ import { ExtensionHost, type RuntimeScopeFilter } from "./host.js";
  */
 export function createRuntimeHooks(host: ExtensionHost, scope?: RuntimeScopeFilter): RuntimeHooks {
 	const hooks: RuntimeHooks = {
-		turn: Object.freeze({
-			prepare: async (input) => Object.freeze(await host.runTurnPrepare(input, scope) ?? {}),
+		turn: {
+			prepare: async (input) => (await host.runTurnPrepare(input, scope)) ?? {},
 			transformContext: (messages) => host.runTransformContext(messages as readonly import("../core/types.js").ChatMsg[], scope),
-			shouldStop: async (input) => Object.freeze({ stop: await host.runShouldStop(input, scope) }),
-		}),
-		tools: Object.freeze({
-			beforeCall: async (input) => Object.freeze(await host.runBeforeCall(input, scope) ?? {}),
-			transformResult: async (input) => Object.freeze(await host.runTransformResult(input, scope) ?? {}),
-		}),
-		provider: Object.freeze({
+			shouldStop: async (input) => ({ stop: await host.runShouldStop(input, scope) }),
+		},
+		tools: {
+			beforeCall: async (input) => (await host.runBeforeCall(input, scope)) ?? {},
+			transformResult: async (input) => (await host.runTransformResult(input, scope)) ?? {},
+		},
+		provider: {
 			transformHeaders: (provider: string, headers: Readonly<Record<string, string>>) => host.runTransformHeaders(provider, headers, scope),
 			transformPayload: (provider: string, payload: DeepReadonly<unknown>) => host.runTransformPayload(provider, payload, scope),
 			observeResponse: (input: Readonly<{ provider: string; status: number; headers: Record<string, string> }>) => host.runObserveResponse(input, scope),
-		}),
-		events: Object.freeze({
+		},
+		events: {
 			emit: (event: RuntimeEvent) => host.emit(event, scope),
 			observe: (event: OutputEvent) => host.emitObserved(event, scope),
 			flush: () => host.flush(),
-		}),
+		},
 	};
 	return Object.freeze(hooks);
 }

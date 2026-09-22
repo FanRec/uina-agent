@@ -58,13 +58,13 @@ export class ContextViewport {
 	}
 
 	/**
-	 * 在 turn.transformContext 拦截器中执行上下文视口拼装与注入
+	 * 渲染当前处于可见状态（expanded 或 ambient）的应用视口内容文本
 	 * 严格遵循：
-	 * 1. 全 hidden 时 0 Token 原样返回
-	 * 2. 结构化隔离可信控制指令与不可信数据，防御 Prompt Injection
-	 * 3. 跨 Provider 兼容性：附在末尾消息内，不伪造额外非法消息
+	 * 1. 全 hidden 或无可见文本时返回空字符串（0 Token）
+	 * 2. 以 [App: name] 帧标记界定各应用渲染区块（结构化包裹属展示语义，
+	 *    不是现成的可信边界——不声称它构成命运攻击隔离）
 	 */
-	async transformContext(messages: readonly DeepReadonly<ChatMsg>[]): Promise<ChatMsg[]> {
+	async renderViewport(): Promise<string> {
 		const visibleBlocks: string[] = [];
 
 		for (const rt of this.getRuntimes()) {
@@ -91,35 +91,38 @@ export class ContextViewport {
 			}
 		}
 
-		// 1. 如果没有任何可见应用，0 修改直接返回
 		if (visibleBlocks.length === 0) {
-			return messages as ChatMsg[];
+			return "";
 		}
 
-		// 2. 组装统一的视口包装块（含防注入说明）
 		const header = "======================= 【运行中的应用程序 / Running Apps】 =======================";
 		const footer = "================================================================================";
-		const viewportText = [
+		return [
 			header,
 			...visibleBlocks,
 			footer,
 		].join("\n");
+	}
 
-		// 3. 跨 Provider 安全末尾注入
-		const result: ChatMsg[] = (messages as ChatMsg[]).map((msg) => ({ ...msg }));
-		if (result.length === 0) {
-			return [{ role: "system", content: viewportText }];
+	/**
+	 * 上下文视口注入（独立消息版）：追加一条独立的 user 帧承载视口文本，
+	 * 绝不篡改任何既有消息（避免把瞬态应用上下文伪装成 user 输入 / 模型旧言 /
+	 * 工具结果——那些是其它 owner 的消息，谁创建资源谁负责语义）。
+	 *
+	 * 说明：ChatMsg 契约没有 role:"custom" 变体，provider 网关把 custom 与 user
+	 * 同投影为 user（context.ts convertToLlm），此处独立追加 user 帧语义等价。
+	 * 视口是瞬态上下文，不落 Session；现网 app-framework 走 turn.prepare 的
+	 * systemPrompt 注入，此方法作为非污染的独立注入点供直接消费方复用。
+	 */
+	async transformContext(messages: readonly DeepReadonly<ChatMsg>[]): Promise<ChatMsg[]> {
+		const viewportText = await this.renderViewport();
+
+		// 没有任何可见应用，0 修改直接返回
+		if (!viewportText) {
+			return messages as ChatMsg[];
 		}
 
-		const lastIndex = result.length - 1;
-		const lastMsg = result[lastIndex];
-
-		// 将视口附在最后一条消息末尾
-		result[lastIndex] = {
-			...lastMsg,
-			content: lastMsg.content ? `${lastMsg.content}\n\n${viewportText}` : viewportText,
-		};
-
-		return result;
+		// 独立注入：不触碰既有消息的 content。
+		return [...messages, { role: "user", content: viewportText }] as ChatMsg[];
 	}
 }

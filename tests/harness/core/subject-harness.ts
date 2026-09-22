@@ -182,7 +182,7 @@ export class SubjectHarness {
 	}
 
 	/** 获取主线历史快照 */
-	historySnapshot(): readonly (AgentMessage | ChatMsg)[] {
+	historySnapshot(): readonly AgentMessage[] {
 		return this.subject.historySnapshot();
 	}
 

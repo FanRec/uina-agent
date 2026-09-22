@@ -21,10 +21,14 @@ Uina 明确划分了两种扩展能力形态：
 
 ## 2. 目录规范与加载机制
 
-### 2.1 扫描路径
+### 2.1 扫描路径与忽略规则
 Uina 启动时由内置的 `app-loader` 自动扫描以下目录：
 1. **工作区目录**：`<cwd>/.uina/apps/`
 2. **用户全局目录**：`~/.uina/apps/`
+
+**目录扫描卫生防卫（自动忽略）**：
+- **系统项**：以 `.` 开头的隐藏文件/目录（如 `.git`、`.cache`、`.DS_Store`）与 `node_modules` 依赖目录会自动跳过，绝不扫描。
+- **辅助子目录**：只有包含入口文件（`index.ts/js/mts/mjs`）或有效 `package.json` 的目录才会被识别为应用包；纯资源或辅助代码目录（如 `assets/`、`fixtures/`）天然会被忽略，无需特殊标记。
 
 ### 2.2 两种组织形式
 - **单文件应用**：适合轻量独立 App，如 `.uina/apps/weather.ts` 或 `weather.mjs`。
@@ -51,6 +55,21 @@ Uina 启动时由内置的 `app-loader` 自动扫描以下目录：
 }
 ```
 > 若未显式指定 `main`，框架将依次按 `index.ts`、`index.js`、`index.mts`、`index.mjs` 回退解析。
+
+### 2.4 用户状态持久化与生命周期治理 (`.uina/apps.json`)
+当用户或前端通过 `app_store` 工具启用或停用应用时，该选择会自动记录在工作区配置文件 `<cwd>/.uina/apps.json` 中：
+```json
+{
+  "ticker": false,
+  "jukebox": true
+}
+```
+
+**应用启动状态优先级**：
+$$\text{生效状态} = \text{.uina/apps.json}[name] \;\;??\;\; \text{AppDef.defaultState.enabled} \;\;??\;\; \text{true}$$
+
+- **用户偏好优先**：一旦用户在前端或对话中停用了某个 App（如 `app_store.disable("ticker")`），即使代码中声明 `defaultState: { enabled: true }`，下次重启依然保持停用，**无需修改应用源码**；
+- **纯净状态分离**：禁用应用仅记录在状态文件中，绝不会对物理代码目录进行重命名（如改名为 `_ticker`），彻底规避 Windows 文件占用锁与 Git 脏提交问题。
 
 ---
 
@@ -123,8 +142,8 @@ export interface AppDef {
     enabled?: boolean;         // 启动时是否直接暴露给大模型（默认 true）
     tier?: SurfaceTier;        // 启动时的视口档位（默认 "hidden"）
   };
-  onStart?: (ctx: AppLifecycleContext) => Promise<void> | void;
-  onStop?: (ctx: AppLifecycleContext) => Promise<void> | void;
+  onStart?: (ctx: ServiceCompanionContext) => Promise<void> | void;
+  onStop?: (ctx: ServiceCompanionContext) => Promise<void> | void;
   render?: (tier: "ambient" | "expanded") => Promise<string> | string;
   actions: Record<string, ActionDef>;
 }
@@ -139,9 +158,28 @@ export interface AppDef {
    - `run(params, ctx)` 中的 `ctx: ActionContext` 提供：
      - `ctx.setTier(tier)`：主动切换视口档位（如播放后收起或展开）；
      - `ctx.getTier()`：读取当前视口档位（`"hidden" | "ambient" | "expanded"`），供 `status` 汇报；
-     - `ctx.operationIdentity`：当前操作的全局权威标识符（如 `app:soundboard/play`）。
+     - `ctx.operationIdentity`：当前操作的全局权威标识符（如 `app:soundboard/play`）；
+     - `ctx.signal`：本次工具调用的取消信号（**必选**）。长动作必须把它透传给内部可取消原语（如通道申请、分段等待），否则工具层回报 `cancelled` 时物理动作仍在继续，构成对外谎报。
 4. **`render(tier)`**：根据档位动态渲染注入到模型上下文中的视口内容（详见第 5 节）。
 5. **`onStart` / `onStop`**：应用生命周期钩子，主要用于伴生服务的拉起与释放（详见第 6 节）。
+
+### 4.2 应用与系统扩展之间的两条通道（架构铁律）
+
+**纯数据走 `callService`，活引用走 `share`。**
+
+`callService` 对入参与返回值双向 `structuredClone`，因此只能承载纯数据：函数会被丢弃，带闭包或原型方法的对象会直接抛 `DataCloneError`。需要把**行为**（一个带方法的对象）交给系统扩展时，必须走同进程共享：
+
+| 方向 | 应用侧能力 | 说明 |
+| :--- | :--- | :--- |
+| 应用 → 扩展（写） | `ctx.expose(name, value)` | 把活引用登记进宿主的同进程共享表，系统扩展用 `pi.shared(name)` 拉取。**应用只拿到写方**，读不到他人的共享值——因此不会因为需要交付行为而凭空获得伸手进宿主内部的能力。 |
+| 宿主 → 应用（读事件） | `ctx.onHostEvent(listener)` | 订阅宿主事实事件流的一个子集（`turn_start` / `output_update` / `turn_end` / `turn_aborted`），保留 `type` 与 `channel`。仅需"有人在动"这一粗粒度信号时才用较旧的 `onActivity`（它只剩 `origin`）。 |
+
+两者都由框架按应用记账：应用被 `disable` 时框架强制回收其暴露项与订阅，**不依赖应用自觉退订**；应用自己提前退订同样安全（两条路径幂等）。
+
+共享名由**契约拥有方**定义，宿主不解释其语义，也不做全局名称注册表。例如具身端点前缀 `body.endpoint:` 由 embodiment 扩展定义、声学电平接收端前缀 `voice.levelSink:` 由 voice 扩展定义，应用按前缀暴露、扩展按前缀发现。
+
+> 反例（已被修复的真实缺陷）：Live2D 端点曾试图通过 `callService("embodiment:register_endpoint", endpoint)` 注册自己。`BodyEndpoint` 带原型方法与闭包，`structuredClone` 必然抛错，异常又被 `try/catch` 吞成一条 `console.warn`——于是端点从未进入路由表，而 `cue` 词汇注入、`cue` 派发与 `body` 工具全部静默失效。**用数据通道传行为，失败是必然的，而且往往不会被发现。**
+
 
 ---
 

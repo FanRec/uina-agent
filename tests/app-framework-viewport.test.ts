@@ -37,7 +37,7 @@ describe("App Framework: Context Viewport", () => {
 		expect(output).toEqual(input);
 	});
 
-	it("ambient 状态：在最后一条消息末尾安全注入单行摘要", async () => {
+	it("ambient 状态：独立追加一条 user 帧，不污染既有 user 消息", async () => {
 		const r1 = createMockRuntime("jukebox", "ambient");
 		const viewport = new ContextViewport({
 			getRuntimes: () => [r1],
@@ -48,13 +48,17 @@ describe("App Framework: Context Viewport", () => {
 		];
 
 		const output = await viewport.transformContext(input);
-		expect(output.length).toBe(1);
-		expect(output[0].content).toContain("今天天气不错");
-		expect(output[0].content).toContain("【运行中的应用程序 / Running Apps】");
-		expect(output[0].content).toContain("[jukebox: 正在后台轻量运行]");
+		expect(output.length).toBe(2);
+		// 原消息字节级不变（不伪装成 user 输入）。
+		expect(output[0]).toEqual(input[0]);
+		// 视口以独立消息追加。
+		const injected = output[1];
+		expect(injected.role).toBe("user");
+		expect(injected.content).toContain("【运行中的应用程序 / Running Apps】");
+		expect(injected.content).toContain("[jukebox: 正在后台轻量运行]");
 	});
 
-	it("expanded 状态：在最后一条消息末尾注入完整面板", async () => {
+	it("expanded 状态：独立消息承载完整面板，原消息内容不变", async () => {
 		const r1 = createMockRuntime("jukebox", "expanded");
 		const viewport = new ContextViewport({
 			getRuntimes: () => [r1],
@@ -65,9 +69,12 @@ describe("App Framework: Context Viewport", () => {
 		];
 
 		const output = await viewport.transformContext(input);
-		expect(output[0].content).toContain("[App: jukebox]");
-		expect(output[0].content).toContain("状态: 正常");
-		expect(output[0].content).toContain("<data>测试数据</data>");
+		expect(output.length).toBe(2);
+		expect(output[0]).toEqual(input[0]);
+		const injected = output[1];
+		expect(injected.content).toContain("[App: jukebox]");
+		expect(injected.content).toContain("状态: 正常");
+		expect(injected.content).toContain("<data>测试数据</data>");
 	});
 
 	it("maxExpanded 限制与自动降级：超出上限时最旧应用降为 ambient", async () => {
@@ -114,10 +121,12 @@ describe("App Framework: Context Viewport", () => {
 
 		const input: ChatMsg[] = [{ role: "user", content: "测试" }];
 		const output = await viewport.transformContext(input);
-		expect(output[0].content).toContain("[App: brokenApp] (界面渲染失败: 外部服务超时)");
+		expect(output.length).toBe(2);
+		expect(output[0]).toEqual(input[0]);
+		expect(output[1].content).toContain("[App: brokenApp] (界面渲染失败: 外部服务超时)");
 	});
 
-	it("空消息列表输入时：生成包含视口文本的 system 消息", async () => {
+	it("空消息列表输入时：仍独立生成一条承载视口文本的消息", async () => {
 		const r1 = createMockRuntime("jukebox", "ambient");
 		const viewport = new ContextViewport({
 			getRuntimes: () => [r1],
@@ -125,7 +134,7 @@ describe("App Framework: Context Viewport", () => {
 
 		const output = await viewport.transformContext([]);
 		expect(output.length).toBe(1);
-		expect(output[0].role).toBe("system");
+		expect(output[0].role).toBe("user");
 		expect(output[0].content).toContain("[jukebox: 正在后台轻量运行]");
 	});
 });

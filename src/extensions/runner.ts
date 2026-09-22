@@ -66,6 +66,18 @@ export interface ExtensionAPI {
 	registerService<I, O>(name: string, handler: ServiceHandler<I, O>, options?: { replace?: boolean }): () => void;
 	callService<O = unknown>(name: string, input: unknown, options?: CallOptions): Promise<O>;
 	hasService(name: string): boolean;
+	/**
+	 * 同进程具名共享：把活引用（对象/函数）交给其他扩展消费。
+	 *
+	 * 与 callService 的分工是铁律：**纯数据走 callService，活引用走 share**。
+	 * callService 双向 structuredClone，传不了函数与带原型的对象；share 不序列化，
+	 * 因此**仅同进程有效**。宿主不解释名字与值的语义。
+	 *
+	 * 生命周期与 registerService 同权：调用方 scope 销毁时自动清理。
+	 */
+	share(name: string, value: unknown): () => void;
+	/** 查询同进程共享值（未登记返回 undefined）。 */
+	shared(name: string): unknown | undefined;
 	readonly models: {
 		current(): import("../core/types.js").Model;
 		list(): readonly import("../core/types.js").Model[];
@@ -562,6 +574,14 @@ export class ExtensionRunner extends ExtensionHost {
 					if (!service) throw new Error("扩展服务不可用: " + name);
 					return structuredClone(await service(structuredClone(input), { callerId: scope.id, signal })) as O;
 				}, options?.signal),
+			share: (name, value) => {
+				assertActive();
+				return ownRegistration(this.share(name, value));
+			},
+			shared: (name) => {
+				assertActive();
+				return this.shared(name);
+			},
 			callTool: (name, args, options) =>
 				scope.run(async (signal) => {
 					const callId = randomUUID();
@@ -718,11 +738,13 @@ export class ExtensionRunner extends ExtensionHost {
 			},
 			history: () => {
 				if (!this.options.history) throw new Error("宿主未提供历史读取入口");
-				return this.options.history();
+				// 所有权边界浅拷贝：canonical 数组属宿主，扩展不得通过数组结构操作破坏
+				// state === replay(journal)。条目对象仍共享引用（本地扩展默认受信任）。
+				return [...this.options.history()];
 			},
 			auxiliary: () => {
 				if (!this.options.auxiliary) throw new Error("宿主未提供 auxiliary 读取入口");
-				return this.options.auxiliary();
+				return [...this.options.auxiliary()];
 			},
 			emitEvent: async (event) => {
 				if (!this.options.emitRuntimeEvent) throw new Error("宿主未提供事实出口");

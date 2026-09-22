@@ -331,7 +331,7 @@ describe("Subject", () => {
 		expect(records.some((r) => r.kind === "event" && r.event === "queue_restored")).toBe(false);
 		// second 必须恰好被消费为一条 input（ENQUEUED → INPUT）
 		const inputs = records.filter((r) => r.kind === "input") as Array<{ input: { text: string } }>;
-		expect(inputs.map((r) => r.input.text)).toEqual(["second"]);
+		expect(inputs.map((r) => r.input.text)).toEqual(["first", "second"]);
 	});
 
 	test("does not consume an input already claimed for the editor while the run is settling", async () => {
@@ -376,7 +376,7 @@ describe("Subject", () => {
 		expect(last?.text).toBe("second");
 		const records = store.readRecords();
 		// second 只被还原到编辑器，从未产生 input 记录
-		expect(records.some((r) => r.kind === "input")).toBe(false);
+		expect(records.some((r) => r.kind === "input" && (r as any).input?.text === "second")).toBe(false);
 		expect(records.filter((r) => r.kind === "event" && r.event === "queue_restored")).toHaveLength(1);
 		// 完整重放合法（ENQUEUED → RESTORED 是合法终态）
 		const state = canonicalReplay(records);

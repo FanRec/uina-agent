@@ -19,6 +19,8 @@ export interface SubagentRegistryOptions {
 	stream: Parameters<AgentFactory["create"]>[0]["stream"];
 	createTools: (ownerId: string) => ToolView;
 	thinkingLevel?: Parameters<AgentFactory["create"]>[0]["thinkingLevel"];
+	projection?: Parameters<AgentFactory["create"]>[0]["projection"];
+	systemPrompt?: Parameters<AgentFactory["create"]>[0]["systemPrompt"];
 	notify?: (text: string, data: Record<string, unknown>, ownerId: string) => Promise<void>;
 }
 
@@ -142,6 +144,8 @@ export class SubagentRegistry {
 			stream: this.options.stream,
 			tools: this.options.createTools(id),
 			thinkingLevel: this.options.thinkingLevel,
+            projection: this.options.projection,
+            systemPrompt: this.options.systemPrompt,
 		});
 		// record 先于 subscribe 完整构造：回调里引用的对象必须在任何事件可能到达前就绪，
 		// 不依赖"subscribe 与赋值之间没有 await"这类隐式时序。

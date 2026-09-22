@@ -266,7 +266,10 @@ export function applyRecord(state: CanonicalState, record: SessionRecord): void 
 function applyRewind(state: CanonicalState, record: SessionRewindRecord): void {
 	const index = state.entries.findIndex((entry) => entry.id === record.targetId);
 	const entry = buildRewindCandidateEntry(state, record);
-	state.entries.splice(index + 1);
+	const abandoned = state.entries.splice(index + 1);
+	for (const item of abandoned) {
+		state.safeTargets.delete(item.id);
+	}
 	state.pendingCalls = [];
 	// 工具交换状态随主线截断重置（P2-A）：孤儿索引不跨回溯存活。
 	state.resultIds.clear();
@@ -335,6 +338,7 @@ function applyEvent(state: CanonicalState, record: SessionEventRecord): void {
 				...(validImages(data.images) && data.images ? { images: data.images } : {}),
 				...(isInputSource(data.source) ? { source: data.source } : {}),
 				...(data.data !== undefined ? { data: data.data } : {}),
+                ...(typeof data.receivedAt === "string" ? { receivedAt: data.receivedAt } : {}),
 			});
 			return;
 		case "queue_restored":
@@ -604,7 +608,7 @@ export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMess
 			continue;
 		}
 		if (entry.kind === "message") {
-			messages.push(structuredClone(entry.message as AgentMessage));
+			messages.push({ ...structuredClone(entry.message as AgentMessage), ...(entry.message.role === "user" && !entry.message.id ? { id: entry.id } : {}) });
 			continue;
 		}
 		if (entry.kind === "custom_message") {
@@ -624,12 +628,14 @@ export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMess
 
 /** Runtime inputs remain identifiable session facts, not human utterances. */
 export function projectInputMessage(input: QueuedInput): AgentMessage {
-	if (input.source?.kind === "runtime") {
+ const provenance = { eventId: input.id, ...(input.source ? { source: structuredClone(input.source) } : {}), ...(input.receivedAt ? { receivedAt: input.receivedAt } : {}) };
+	if (input.source?.kind === "runtime" && input.source.origin !== "external") {
 		const prov = input.source.provenance?.abandoned ? " [来自废弃分支]" : "";
 		return {
 			role: "custom",
 			id: input.id,
-			customType: "runtime-input",
+			input: provenance,
+            customType: "runtime-input",
 			display: false,
 			images: input.images,
 			content: `[运行时事件 ${input.source.type}${input.source.ref ? ` · ${input.source.ref}` : ""}${prov}]\n${input.text}`,
@@ -638,6 +644,7 @@ export function projectInputMessage(input: QueuedInput): AgentMessage {
 	}
 	return {
 		role: "user",
+        input: provenance,
 		id: input.id,
 		content: input.text,
 		images: input.images,
@@ -663,9 +670,33 @@ export function protectRewindContext(messages: AgentMessage[], entries: readonly
 function isInputSource(value: unknown): value is QueuedInput["source"] {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 	const source = value as Record<string, unknown>;
-	return (source.kind === "user" || source.kind === "runtime" || source.kind === "agent") && typeof source.type === "string";
+	return (source.kind === "user" || source.kind === "runtime" || source.kind === "agent") && typeof source.type === "string"
+ && (source.origin === undefined || source.origin === "external" || source.origin === "internal")
+ && ["ref", "channel"].every(k => source[k] === undefined || typeof source[k] === "string")
+ && (source.actor === undefined || validActor(source.actor))
+ && (source.provenance === undefined || validProvenance(source.provenance));
 }
 
+function validActor(value: unknown): boolean {
+ if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+ const a = value as Record<string, unknown>;
+ return ["id", "label"].every(k => a[k] === undefined || typeof a[k] === "string")
+  && (a.relation === undefined || ["operator", "participant", "unknown"].includes(a.relation as string));
+}
+function validProvenance(value: unknown): boolean {
+ if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+ const p = value as Record<string, unknown>;
+ return (p.branchId === undefined || typeof p.branchId === "string") && (p.abandoned === undefined || typeof p.abandoned === "boolean");
+}
+/** message.input 是输入记录的派生来源；类型非法的 provenance 一律拒绝入库。 */
+function isValidInputProvenance(value: unknown): boolean {
+ if (value === undefined) return true;
+ if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+ const prov = value as Record<string, unknown>;
+ if (typeof prov.eventId !== "string" || prov.eventId.length === 0) return false;
+ if (prov.receivedAt !== undefined && (typeof prov.receivedAt !== "string" || !Number.isFinite(Date.parse(prov.receivedAt)))) return false;
+ return prov.source === undefined || isInputSource(prov.source);
+}
 export function isRecord(value: unknown): value is SessionRecord {
 	if (!value || typeof value !== "object") return false;
 	const record = value as Record<string, unknown>;
@@ -694,7 +725,8 @@ export function isRecord(value: unknown): value is SessionRecord {
 		const input = record.input as Record<string, unknown>;
 		return typeof input.id === "string" && input.id.length > 0 && Number.isSafeInteger(input.order) && (input.order as number) > 0
 			&& (input.mode === "steer" || input.mode === "followUp") && typeof input.text === "string"
-			&& validImages(input.images) && (input.source === undefined || isInputSource(input.source));
+			&& validImages(input.images) && (input.source === undefined || isInputSource(input.source))
+            && (input.receivedAt === undefined || (typeof input.receivedAt === "string" && Number.isFinite(Date.parse(input.receivedAt))));
 	}
 	if (record.kind === "message") {
 		return isAgentMessage(record.message);
@@ -725,6 +757,7 @@ function isAgentMessage(value: unknown): value is AgentMessage {
 	if (!value || typeof value !== "object") return false;
 	const message = value as Record<string, unknown>;
 	if (!validImages(message.images)) return false;
+	if (!isValidInputProvenance(message.input)) return false;
 	if (message.role === "custom") return typeof message.content === "string" && typeof message.customType === "string" && message.customType.length > 0 && (message.display === undefined || typeof message.display === "boolean");
 	if (
 		typeof message.content !== "string" ||

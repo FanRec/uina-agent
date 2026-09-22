@@ -17,6 +17,8 @@ export interface ProcessCallbacks {
 export interface ProcessOptions {
 	/** Wall-clock limit in milliseconds. No limit when omitted. */
 	timeoutMs?: number;
+	/** Child process working directory. Defaults to `process.cwd()` when omitted. */
+	cwd?: string;
 }
 
 /** A quiet inherited stdio handle must not hold the caller hostage forever. */
@@ -38,7 +40,7 @@ export function executeShellProcess(
 	return new Promise((resolve) => {
 		const { shell, args } = resolveShell();
 		const child = spawn(shell, args(command), {
-			cwd: process.cwd(),
+			cwd: options.cwd ?? process.cwd(),
 			windowsHide: true,
 			env: { ...process.env, PYTHONIOENCODING: "utf-8" },
 			detached: process.platform !== "win32",

@@ -4,7 +4,7 @@
 
 import type { Component, Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
-import { C, visibleWidth } from "../../core/utils.js";
+import { C, visibleWidth, truncateToWidth } from "../../core/utils.js";
 import type { ModelPickerGroup } from "../../../extensions/ui-contract.js";
 
 export type ModelGroup = ModelPickerGroup;
@@ -135,7 +135,8 @@ export class ModelPicker implements Component, Focusable {
 
 		if (this.groups.length === 0) {
 			const empty = `${C.dim}没有来自配置、Provider 或可信目录的可选模型${C.reset}`;
-			output.push(`  ${borderCol}│${C.reset} ${empty}${" ".repeat(Math.max(0, innerW - visibleWidth(empty)))} ${borderCol}│${C.reset}`);
+			const truncated = truncateToWidth(empty, innerW);
+			output.push(`  ${borderCol}│${C.reset} ${truncated}${" ".repeat(Math.max(0, innerW - visibleWidth(truncated)))} ${borderCol}│${C.reset}`);
 		} else if (this.level === "groups") {
 			for (let i = 0; i < this.groups.length; i++) {
 				const grp = this.groups[i]!;
@@ -149,8 +150,9 @@ export class ModelPicker implements Component, Focusable {
 				const desc = `${C.dim}${grp.description} (${grp.models.length} 个模型)${C.reset}`;
 
 				const content = `${pointer} ${nameTag}${check}  ${desc}`;
-				const padLen = Math.max(0, innerW - visibleWidth(content));
-				output.push(`  ${borderCol}│${C.reset} ${content}${" ".repeat(padLen)} ${borderCol}│${C.reset}`);
+				const truncated = truncateToWidth(content, innerW);
+				const padLen = Math.max(0, innerW - visibleWidth(truncated));
+				output.push(`  ${borderCol}│${C.reset} ${truncated}${" ".repeat(padLen)} ${borderCol}│${C.reset}`);
 			}
 		} else {
 			for (let i = 0; i < (currentGroup?.models.length ?? 0); i++) {
@@ -165,8 +167,9 @@ export class ModelPicker implements Component, Focusable {
 				const desc = `${C.dim}${model.description}${C.reset}`;
 
 				const content = `${pointer} ${nameTag}${check}  ${desc}`;
-				const padLen = Math.max(0, innerW - visibleWidth(content));
-				output.push(`  ${borderCol}│${C.reset} ${content}${" ".repeat(padLen)} ${borderCol}│${C.reset}`);
+				const truncated = truncateToWidth(content, innerW);
+				const padLen = Math.max(0, innerW - visibleWidth(truncated));
+				output.push(`  ${borderCol}│${C.reset} ${truncated}${" ".repeat(padLen)} ${borderCol}│${C.reset}`);
 			}
 		}
 
@@ -175,7 +178,7 @@ export class ModelPicker implements Component, Focusable {
 			: this.level === "groups"
 				? `↑↓ 移动 · Enter 展开 · Esc 关闭`
 				: `↑↓ 移动 · Enter 确认切换 · Esc 返回`;
-		const botFillLen = Math.max(1, boxWidth - 2 - visibleWidth(bottomHint) - 2);
+		const botFillLen = Math.max(1, boxWidth - visibleWidth(bottomHint) - 5);
 		const botLine = `  ${borderCol}╰─ ${C.dim}${bottomHint}${C.reset} ${borderCol}${"─".repeat(botFillLen)}╯${C.reset}`;
 		output.push(botLine);
 

@@ -25,6 +25,7 @@ export interface AgentCreateOptions {
 	store?: SessionStore;
 	systemPrompt?: string;
 	thinkingLevel?: ThinkingLevel;
+	projection?: import("./projection.js").ProjectionPolicy;
 	runtimeHooks?: RuntimeHooks;
 }
 
@@ -59,6 +60,7 @@ class RuntimeAgent implements AgentHandle {
 			store: this.store,
 			systemPrompt: options.systemPrompt,
 			thinkingLevel: options.thinkingLevel,
+            projection: options.projection,
 			runtimeHooks: options.runtimeHooks,
 		});
 		this.session = createSessionAccess(this.store, (request, source, signal) =>

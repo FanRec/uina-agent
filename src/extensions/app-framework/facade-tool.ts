@@ -1,9 +1,25 @@
+import type { ValidateFunction } from "ajv";
+import { createRequire } from "node:module";
 import type { Tool } from "../../tools/broker.js";
 import type { ActionContext, AppDef, AppRuntime, OperationIdentity, SurfaceTier } from "./types.js";
+
+/** 与 ToolBroker 相同语义的 AJV（strict + allErrors + errorsText 错误格式）——
+ * 双真相消除：ActionDef.parameters 唯一权威做结构校验。不复用 broker 的实例句柄，
+ * 只复用同一套配置，避免把内核 tools/ 的私有实例暴露给扩展层。 */
+interface AjvLike {
+	compile(schema: object): ValidateFunction;
+	errorsText(errors: unknown): string;
+}
+type AjvConstructorType = new (options: { strict: boolean; allErrors: boolean }) => AjvLike;
+const AjvConstructor = createRequire(import.meta.url)("ajv") as AjvConstructorType;
+const ajv = new AjvConstructor({ strict: true, allErrors: true });
 
 /** 框架为所有 App 自动追加的通用内置动作 */
 export const BUILTIN_ACTIONS = ["close", "ambient", "help", "status"] as const;
 export type BuiltinAction = (typeof BUILTIN_ACTIONS)[number];
+
+/** 调用方未提供取消信号时的占位信号：诚实表达"本次调用不可取消"，绝不伪装成可取消。 */
+const NEVER_ABORTED = new AbortController().signal;
 
 export interface FacadeToolOptions {
 	/** 获取应用运行时状态的访问器 */
@@ -21,8 +37,14 @@ export interface FacadeToolOptions {
  */
 export function createFacadeTool(def: AppDef, options: FacadeToolOptions): Tool {
 	const allActionNames = [...Object.keys(def.actions), ...BUILTIN_ACTIONS];
+	// 注册期（工具创建）即编译结构校验器：parameters 是权威结构契约，非法 Schema 立即失败。
+	// 校验器只命中用户业务动作；无 parameters 的动作不做结构校验（语义等价"接受自由参数"）。
+	const structuralValidators = new Map<string, ValidateFunction>();
 	const actionSummaries: string[] = [];
 	for (const [name, actionDef] of Object.entries(def.actions)) {
+		if (actionDef.parameters) {
+			structuralValidators.set(name, ajv.compile(actionDef.parameters));
+		}
 		let paramDesc = "";
 		if (actionDef.parameters && typeof actionDef.parameters === "object") {
 			const props = (actionDef.parameters.properties ?? {}) as Record<string, { type?: string; description?: string }>;
@@ -73,8 +95,9 @@ export function createFacadeTool(def: AppDef, options: FacadeToolOptions): Tool 
 				options.setTier("expanded");
 				const runtime = options.getRuntime();
 				runtime.lastActiveTurn = Date.now();
+				const panelContent = def.render ? await def.render("expanded") : "";
 				return {
-					result: `《${def.name}》界面已展开。当前状态与可用指令已加载至视口底部。`,
+					result: `《${def.name}》界面已展开：\n\n${panelContent}`,
 					status: "succeeded",
 					details: {
 						operationIdentity: `app:${def.name}/open` as OperationIdentity,
@@ -170,7 +193,20 @@ export function createFacadeTool(def: AppDef, options: FacadeToolOptions): Tool 
 				};
 			}
 
-			// 4. 参数校验（如果定义了 validate）
+			// 4. 参数校验：JSON Schema（结构权威）→ 可选 validate（仅跨字段/业务语义）
+			const structuralValidator = structuralValidators.get(actionName);
+			if (structuralValidator && !structuralValidator(params)) {
+				return {
+					result: `【${def.name} 参数错误】操作 "${actionName}" 的参数无效: ${ajv.errorsText(structuralValidator.errors) ?? "格式不匹配"}`,
+					status: "failed",
+					details: {
+						operationIdentity: `app:${def.name}/${actionName}` as OperationIdentity,
+						appName: def.name,
+						action: actionName,
+						error: "invalid_parameters",
+					},
+				};
+			}
 			if (targetAction.validate) {
 				const validation = targetAction.validate(params);
 				if (!validation.valid) {
@@ -189,10 +225,14 @@ export function createFacadeTool(def: AppDef, options: FacadeToolOptions): Tool 
 
 			// 5. 执行动作
 			const operationIdentity: OperationIdentity = `app:${def.name}/${actionName}`;
+			// 取消信号必须透传进动作：长动作靠它中止内部可取消原语。调用方未提供信号时
+			// 给一个永不取消的信号（诚实表达"本次调用不具备取消能力"），而非让动作误判。
+			const actionSignal = signal ?? NEVER_ABORTED;
 			const actionContext: ActionContext = {
 				setTier: options.setTier,
 				getTier: () => options.getRuntime().surfaceTier,
 				operationIdentity,
+				signal: actionSignal,
 			};
 
 			const runtime = options.getRuntime();

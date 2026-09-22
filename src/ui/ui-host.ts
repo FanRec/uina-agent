@@ -917,17 +917,20 @@ export class UIHost implements UIHostContextPort {
 	 * 顺序在这里只写一次，7 个面板不可能再各自漂移出不同的关闭语义。
 	 */
 	private openPanel(id: string, build: (close: () => void, api: { hide: () => void }) => PanelComponent): void {
-		this.toggleModal(id, (close) => {
+		this.toggleModal(id, (closeModalState) => {
 			let handle: OverlayHandle | null = null;
-			const panel = build(close, { hide: () => handle?.hide() });
+			const doClose = () => {
+				closeModalState();
+				handle?.hide();
+			};
+			const panel = build(doClose, { hide: () => handle?.hide() });
 			panel.onRequestRender = () => this.requestRender();
 			const userOnClose = panel.onClose;
 			panel.onClose = () => {
 				userOnClose?.();
-				close();
-				handle?.hide();
+				doClose();
 			};
-			handle = this.overlayStack.showOverlay(panel, { anchor: "center" }, () => close());
+			handle = this.overlayStack.showOverlay(panel, { anchor: "center" }, () => closeModalState());
 			return handle;
 		});
 	}

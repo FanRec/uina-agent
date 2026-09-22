@@ -37,19 +37,30 @@ export async function defineApp(pi: ExtensionAPI, app: AppDef): Promise<() => Pr
 
 import { createAppStoreApp } from "./builtins/app-store.js";
 import { loadExternalApps } from "./app-loader.js";
+import { APP_EXPOSED_SHARED_NAME } from "./types.js";
 
 export * from "./builtins/app-store.js";
 export * from "./app-loader.js";
 
 /**
  * 官方内置扩展激活入口
+ *
+ * 生命周期收拢：不再自持 fire-and-forget 的中止监听。activation 返回的 teardown
+ * 由现有 Extension ActivationScope 统一接管（abort → await pending → await dispose），
+ * 责任唯一、顺序确定。
  */
-export async function activateAppFramework(pi: ExtensionAPI): Promise<void> {
+export async function activateAppFramework(pi: ExtensionAPI): Promise<() => Promise<void>> {
 	const registry = getAppRegistry(pi);
+	// 向宿主同进程共享表登记"应用暴露表"：应用用 ctx.expose 写入，系统扩展用
+	// pi.shared(APP_EXPOSED_SHARED_NAME) 读取。这是 App 与 Extension 之间唯一的
+	// 活引用通道——callService 双向 structuredClone，承载不了带原型方法的对象。
+	pi.share(APP_EXPOSED_SHARED_NAME, registry.exposedRegistry());
 	await registry.register(createAppStoreApp(registry));
 	const teardownApps = await loadExternalApps(pi, registry);
-	pi.signal.addEventListener("abort", () => {
-		void teardownApps();
-	});
+	// teardown：统一回收 registry 内全部应用，再摘除外置应用；由 ActivationScope await。
+	return async () => {
+		await registry.disposeAll();
+		await teardownApps();
+	};
 }
 

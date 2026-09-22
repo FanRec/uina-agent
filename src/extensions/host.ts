@@ -83,6 +83,8 @@ export class ExtensionHost {
 	private handlers = new Map<string, Set<RegisteredHandler>>();
 	/** 干预注册空间：键是 HookName 词汇，与事实事件名（handlers）分属两个词表。 */
 	private hookHandlers = new Map<HookName, Set<RegisteredHandler>>();
+	/** 同进程共享值表（M1）：零语义，不做序列化，与 services 的纯数据通道互补。 */
+	private readonly sharedValues = new Map<string, unknown>();
 	private errorListeners = new Set<ExtensionErrorListener>();
 	private observedTail: Promise<void> = Promise.resolve();
 
@@ -123,6 +125,33 @@ export class ExtensionHost {
 		return () => {
 			set?.delete(entry);
 		};
+	}
+
+	/**
+	 * 登记同进程共享值（活引用：对象/函数）。
+	 *
+	 * 与 services 的分工是一条铁律：**纯数据走 callService，活引用走 share**。
+	 * callService 对入参与返回值双向 structuredClone，只能承载纯数据；share 不做任何
+	 * 序列化，专门承载活引用，因此**仅同进程有效**。
+	 *
+	 * 本表零语义：宿主不解释名字与值的含义，只负责登记、查询与销毁。
+	 * 重名直接失败而非静默覆盖——覆盖会让已取值的消费者指向非预期对象。
+	 */
+	share(name: string, value: unknown): () => void {
+		if (this.sharedValues.has(name)) {
+			throw new Error(`共享名已被占用: ${name}`);
+		}
+		this.sharedValues.set(name, value);
+		return () => {
+			if (this.sharedValues.get(name) === value) {
+				this.sharedValues.delete(name);
+			}
+		};
+	}
+
+	/** 查询同进程共享值（未登记返回 undefined）。 */
+	shared(name: string): unknown | undefined {
+		return this.sharedValues.get(name);
 	}
 
 	/** 监听扩展执行异常 */

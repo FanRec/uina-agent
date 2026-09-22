@@ -23,7 +23,7 @@ export const TASK_DISPATCH_EFFECT = "task.dispatch";
 export function activateRuntimeTools(services: RuntimeToolsServices): ExtensionActivation {
 	return (pi) => {
 		pi.registerTool(getTimeTool);
-		pi.registerTool(createExecCommandTool(services.jobs, "root"));
+		pi.registerTool(createExecCommandTool(services.jobs, "root", pi.cwd));
 		for (const tool of createJobTools(services.jobs, "root")) pi.registerTool(tool);
 		for (const tool of createSubagentTools(services.subagents, "root")) pi.registerTool(tool);
 		const unsubscribe = services.jobs.onResolved(job => {

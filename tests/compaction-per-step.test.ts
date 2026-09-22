@@ -11,6 +11,7 @@
 import { describe, expect, test } from "./harness/index.js";
 import { readFile } from "node:fs/promises";
 import type { ModelRequest, StreamDelta } from "../src/core/types.js";
+import { estimateStreamTokens } from "../src/extensions/compaction/index.js";
 import { openJsonlSession } from "../src/session/jsonl-store.js";
 import { UinaTestHarness } from "./harness/host/harness.js";
 import { Scenario } from "./harness/provider/scenario.js";
@@ -167,6 +168,43 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 			expect(failing.calls.at(-1)?.messages.some((m) => (m.content ?? "").startsWith("[历史摘要] "))).toBe(false);
 		} finally {
 			await failHarness.dispose();
+		}
+	});
+
+	test("小窗口下手动 /compact：保留量夹取到安全预算，且持久化携带 prefixFingerprint", async ({ env }) => {
+		// 窗口仅 6k：手动保留量若仍硬按 MANUAL_KEEP_TOKENS(20_000)，裁剪后尾部就超窗口。
+		const scenario = new Scenario({ id: "mock", name: "mock", contextWindow: 6_000 });
+		scenario
+			.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"))
+			.reply("小窗摘要");
+		scenario.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
+
+		const uina = await UinaTestHarness.create({ env, scenario });
+		try {
+			const history = Array.from({ length: 30 }, (_, index) =>
+				index % 2 === 0 ? { role: "user" as const, content: `问${index} ${"词".repeat(3_000)}` } : { role: "assistant" as const, content: `答${index} ${"词".repeat(3_000)}` },
+			);
+			for (const message of history) uina.host.subject.addHistory([message]);
+
+			await uina.host.commands.dispatch("/compact");
+			await uina.send("小窗一轮", "direct");
+			await uina.waitForIdle();
+
+			const last = scenario.calls.at(-1);
+			expect(last?.messages.some((m) => (m.content ?? "").startsWith("[历史摘要] "))).toBe(true);
+			// 裁剪后整段（system + 摘要 + 保留尾部）必须落在窗口内——证明 keepBudget 被夹取到预算。
+			const views = last?.messages.map((m) => ({
+				role: m.role,
+				content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+				tool_call_id: (m as { tool_call_id?: string }).tool_call_id,
+				tool_calls: (m as { tool_calls?: { name: string; args?: unknown }[] }).tool_calls,
+			})) ?? [];
+			expect(estimateStreamTokens(views)).toBeLessThanOrEqual(6_000);
+			// 滚动摘要持久化携带指纹字段（复用门禁的数据来源）。
+			const journal = await readFile(env.sessionPath, "utf8");
+			expect(journal).toContain("prefixFingerprint");
+		} finally {
+			await uina.dispose();
 		}
 	});
 });

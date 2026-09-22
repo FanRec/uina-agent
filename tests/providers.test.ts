@@ -260,4 +260,31 @@ describe("Provider hooks and model discovery", () => {
 		const registry = new ModelRegistry({ default: "broken", providers: { broken: { ...baseConfig(baseUrl, "openai-compatible") } } });
 		await expect(registry.refreshModels()).rejects.toThrow("broken");
 	});
+
+	it("部分成功不得报成整体失败：说清 N/M，且成功者已取得的目录不因抛错丢失", async () => {
+		const okUrl = await endpoint(JSON.stringify({ data: [{ id: "dyn-ok" }] }), 200, { "content-type": "application/json" });
+		const badUrl = await endpoint("failed", 503, { "content-type": "text/plain" });
+		const registry = new ModelRegistry({
+			default: "good/model",
+			providers: {
+				good: { ...baseConfig(okUrl, "openai-compatible") },
+				bad: { ...baseConfig(badUrl, "openai-compatible") },
+			},
+		});
+
+		// 仍以抛错上报（保留既有「不得吞掉失败」的意图），但必须说清 N/M 与具体是谁
+		const error = await registry.refreshModels().then(
+			() => null,
+			(e: unknown) => e as Error,
+		);
+		expect(error).not.toBeNull();
+		expect(error!.message).toContain("1/2 家已更新");
+		expect(error!.message).toContain("bad");
+
+		// 成功者的发现结果必须仍在 registry 里：以「缺 contextWindow 不可选择」这一
+		// 特定错误区分「已发现但不可选」与「根本没发现」。
+		// （这两类 /models 端点不汇报上下文窗口，故发现结果本来就不可选——这是端点的
+		// 事实，不是 registry 的缺陷；本断言只证明结果没被抛错连带丢弃。）
+		expect(() => registry.resolve("good/dyn-ok")).toThrow(/缺少 contextWindow/);
+	});
 });

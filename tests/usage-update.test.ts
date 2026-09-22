@@ -156,4 +156,37 @@ describe("setModel：口径换了，旧模型的 usage 锚必须失效", () => {
 		// getUsedTokens() 继续顶着旧口径的 99_999。
 		expect(harness.subject.getUsedTokens()).not.toBe(99_999);
 	});
+
+	it("切换模型后，上下文分段中的工具段 (tools) 不发生等比缩水坍塌，保持全量估算", async () => {
+		const sampleTool = {
+			def: {
+				type: "function",
+				function: {
+					name: "test_tool",
+					description: "a".repeat(400),
+					parameters: { type: "object", properties: { q: { type: "string" } } },
+				},
+			},
+			run: async () => ({}),
+		};
+		const harness = SubjectHarness.create({
+			model: MODEL,
+			stream: streamWithUsage({ input: 1, output: 1, totalTokens: 5000 }),
+			systemPrompt: "system prompt content",
+			tools: [sampleTool as never],
+		});
+		await harness.run("你好");
+		const segmentsBefore = harness.subject.getContextSegments();
+		expect(segmentsBefore.tools).toBeGreaterThan(0);
+
+		const bigger = mockModel({ id: "mock2", name: "mock2", contextWindow: 200_000 });
+		await harness.subject.setModel(bigger);
+
+		const segmentsAfter = harness.subject.getContextSegments();
+		// 切模型后工具定义估算段必须保持真实，等于工具定义与历史中工具消息的独立字符估算，绝不等于 0 也绝不被消息估算强制压扁
+		expect(segmentsAfter.tools).toBeGreaterThan(100);
+		expect(harness.subject.getUsedTokens()).toBe(
+			segmentsAfter.system + segmentsAfter.prompt + segmentsAfter.assistant + segmentsAfter.thinking + segmentsAfter.tools
+		);
+	});
 });

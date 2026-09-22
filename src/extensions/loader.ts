@@ -45,6 +45,7 @@ export async function discoverExtensions(cwd: string, paths: readonly string[] =
 		for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) =>
 			a.name.localeCompare(b.name),
 		)) {
+			if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
 			if (entry.isDirectory() || sourceFile.test(entry.name))
 				files.push(...(await entries(join(directory, entry.name))));
 		}
