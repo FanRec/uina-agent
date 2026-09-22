@@ -44,11 +44,14 @@ export interface ExtensionAPI {
 		handler: ExtensionEventHandler<Extract<ExtensionEvent, { type: T }>>,
 	): () => void;
 	/**
-	 * 在干预点注册（Hook ≠ Event，L1）：hook 专属词汇（如 "tools.beforeCall"），
+ * 在干预点注册（Hook ≠ Event，L1）：hook 专属词汇（如 "tools.beforeCall"），
 	 * 返回值按该链的合并规则参与组合。事实观察用 on()。
 	 * options.tail 仅对 turn.transformContext 有语义（尾部相位，见 ExtensionHost.onHook）。
 	 */
 	onHook<K extends HookName>(hook: K, handler: HookHandler<K>, options?: { tail?: boolean }): () => void;
+	/** 主体绑定（认知阶段 A）：profile 模式下的只读资源根；非 profile 模式为 undefined。
+	 * 扩展从这里拿路径，不从模型参数或 cwd 猜测——隔离边界由 Host 装配保证。 */
+	readonly subject: { sessionId: string; memoryRoot: string; stateRoot: string } | undefined;
 	/** 主线 hydrated entries（canonical only）：capability 读对话历史的通道。 */
 	history(): readonly import("../session/types.js").HydratedSessionEntry[];
 	/** auxiliary timeline（仅登记的 records）：capability 读自身私有持久状态的通道——
@@ -135,6 +138,8 @@ export interface ExtensionRunnerOptions {
 	session?: SessionQuery;
 	cwd: string;
 	extensionPaths?: readonly string[];
+	/** 主体绑定（认知阶段 A）：提供时 pi.subject 暴露绑定的资源根；缺省 pi.subject 为 undefined。 */
+	subjectBinding?: { sessionId: string; memoryRoot: string; stateRoot: string };
 	models?: ExtensionModelAccess;
 	tools: ToolBroker;
 	onError?: (text: string) => void;
@@ -503,6 +508,7 @@ export class ExtensionRunner extends ExtensionHost {
 			id: scope.id,
 			path: scope.path,
 			cwd: this.options.cwd,
+			subject: this.options.subjectBinding ? Object.freeze({ ...this.options.subjectBinding }) : undefined,
 			ui,
 			signal: scope.abort.signal,
 			usage: () => {

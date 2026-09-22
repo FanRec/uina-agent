@@ -19,6 +19,7 @@ import { activateRuntimeTools, createChildTools, TASK_DISPATCH_EFFECT } from "..
 import { activateSessionTools } from "../extensions/session-tools/index.js";
 import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
 import { createEventFrameProfile } from "../extensions/event-frames/index.js";
+import type { SubjectProfile } from "./profile.js";
 import { killTrackedDetachedChildren } from "../runtime/process-tracker.js";
 import { MemorySessionStore, openJsonlSession } from "../session/jsonl-store.js";
 import { createSessionAccess } from "../session/access.js";
@@ -58,6 +59,8 @@ export interface UinaHostOptions {
 	/** 投影 Replacement 缝（单 owner = Subject 实例；组合根经此提供，宿主可注入）。 */
 	projection?: ProjectionPolicy;
 	systemPrompt?: string;
+	/** 主体 profile（认知阶段 A）：提供时 session/settings/扩展资源绑定全部从 profile 解析。 */
+	profile?: SubjectProfile;
 	/** 诊断出口：消费者尚未接入时也必须可见，绝不静默吞掉。 */
 	onError?: (text: string) => void;
 }
@@ -123,7 +126,9 @@ export class UinaHost {
 		// 会话偏好恢复：CLI 显式指定 > settings.json（上次会话）> auth.json 默认。
 		// 恢复值必须过与运行时相同的校验（resolve / clamp），失效即静默降级 ——
 		// 偏好是会话态，陈旧数据不值得让启动失败。
-		const settings = options.modelName || options.model ? {} : await loadSettings();
+		// profile 模式：settings 读写定向到主体根（settingsDir），不碰全局 ~/.uina。
+		const settingsHome = options.profile?.settingsDir;
+		const settings = options.modelName || options.model ? {} : await loadSettings(settingsHome);
 		// 偏好里存的是 modelKey（providerId/id）身份键：跨 provider 的同名模型必须精确还原，
 		// 只按裸 id 分辨会落到注册表里恰好先注册的那一个。只认身份键；解析失败
 		// （provider 改名/模型下线/旧格式裸名）即落回默认模型，不猜旧配置的含义。
@@ -235,6 +240,11 @@ export class UinaHost {
 		});
 
 		const extensionHost = new ExtensionRunner({
+			// 主体绑定（认知阶段 A）：扩展经 pi.subject 拿到绑定的资源根；无 profile 时缺省
+			// undefined——旧扩展与测试零影响。
+			subjectBinding: options.profile
+				? { sessionId: options.profile.sessions.sessionId, memoryRoot: options.profile.resources.memoryRoot, stateRoot: options.profile.resources.stateRoot }
+				: undefined,
 			session: {
 				list: options => rootSessionView().list(options),
 				read: id => rootSessionView().read(id),
@@ -268,11 +278,12 @@ export class UinaHost {
 		// 写必须串行：两次切换背靠背时，未保序的并发写会让慢的旧快照
 		// rename 覆盖快的新快照，settings.json 停在过期状态。
 		let settingsSaveTail: Promise<void> = Promise.resolve();
+		const settingsHomeForSave = options.profile?.settingsDir;
 		const persistSettings = (): void => {
 			settingsSaveTail = settingsSaveTail.then(() => saveSettings({
 				model: modelKey(subject.getModel()),
 				thinkingLevel: subject.getThinkingLevel(),
-			}).catch(() => {}));
+			}, settingsHomeForSave).catch(() => {}));
 		};
 		extensionHost.on("model_select", persistSettings);
 		extensionHost.on("thinking_level_select", persistSettings);

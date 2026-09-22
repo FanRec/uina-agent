@@ -10,6 +10,7 @@ import { createJobAdapter } from "../ui/adapters/jobs.js";
 import { createSubagentAdapter } from "../ui/adapters/subagents.js";
 import { formatHelp, parseArgs, readPipedStdin, UINA_VERSION } from "./args.js";
 import { resolveSessionPath } from "./session-path.js";
+import { resolveProfile, releaseProfileLock } from "../host/profile.js";
 import { formatStartupBanner, resolveExitCode, resolveRunMode } from "./run-mode.js";
 import { formatStdioEventLine, formatToolCallLine, formatToolResultBlock } from "./stdio-render.js";
 
@@ -87,12 +88,23 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	};
 
 	// —— 宿主：唯一的主体所有者。它不认识 TUI。 ——
-	const sessionPath = resolveSessionPath({ noSession: args.noSession, cwd: process.cwd() });
+	// 主体 profile（认知阶段 A）：--profile 提供时解析身份与资源绑定并取得独占锁；
+	// 不传时保持原有启动与数据位置。profile 存在时 sessionPath 从 profile 取。
+	let profile: ReturnType<typeof resolveProfile>;
+	try {
+		profile = resolveProfile({ profileArg: args.profile, cwd: process.cwd() });
+	} catch (error) {
+		process.stderr.write(`[启动失败] ${errorMessage(error)}\n`);
+		process.exitCode = 1;
+		return;
+	}
+	const sessionPath = profile?.sessions.journalPath ?? resolveSessionPath({ noSession: args.noSession, cwd: process.cwd() });
 	let host: UinaHost;
 	try {
 		host = await UinaHost.create({
 			cwd: process.cwd(),
 			sessionPath,
+			profile,
 			modelName: args.model,
    extensionPaths: args.extensions,
 			onError: (text) => render({ type: "error", text }),
@@ -129,6 +141,8 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		// 主体自己负责等待活动结束、释放扩展、杀掉工具留下的分离子进程、关闭会话。
 		await host.dispose();
 		await execTail;
+		// 主体 profile 锁在全部写入结算后释放（ownerToken 核对，不碰他人锁）。
+		if (profile) await releaseProfileLock(profile).catch(() => {});
 		tui?.close();
 		nonTTY?.close();
 		uninstallHostGuards();

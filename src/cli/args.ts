@@ -10,6 +10,8 @@ export interface ParsedArgs {
 	readonly print: boolean;
 	/** 临时覆盖当前会话使用的模型（如 openai/gpt-4o、deepseek-r1） */
 	readonly model?: string;
+	/** 主体 profile ID（认知阶段 A）：提供时 session/settings/扩展资源绑定到 profiles/<id>/。 */
+	readonly profile?: string;
 	/** 是否启用纯内存会话（不加载历史、不持久化落盘） */
 	readonly noSession: boolean;
 	/** 是否请求显示帮助文档 */
@@ -31,6 +33,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 	let print = false;
 	let model: string | undefined;
 	let noSession = false;
+	let profile: string | undefined;
 	let help = false;
 	let version = false;
 
@@ -71,6 +74,14 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 			continue;
 		}
 
+		if (arg === "--profile") {
+			if (i + 1 < argv.length) {
+				profile = argv[++i]!.trim() || undefined;
+				continue;
+			}
+			throw new Error("--profile 需要主体 ID");
+		}
+
 		if (arg === "-m" || arg === "--model") {
 			if (i + 1 < argv.length) {
 				model = argv[++i];
@@ -94,6 +105,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 	return {
 		prompt: prompt || undefined,
   ...(extensions.length ? { extensions } : {}),
+		profile,
 		print,
 		model: model?.trim() || undefined,
 		noSession,

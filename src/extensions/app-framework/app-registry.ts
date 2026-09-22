@@ -70,7 +70,9 @@ export class AppRegistry {
 	private readonly appSubscriptions = new Map<string, Array<() => void>>();
 
 	constructor(private readonly pi: ExtensionAPI) {
-		this.stateFilePath = this.pi.cwd ? join(this.pi.cwd, ".uina", "apps.json") : undefined;
+		this.stateFilePath = this.pi.subject
+			? join(this.pi.subject.stateRoot, "apps.json")
+			: this.pi.cwd ? join(this.pi.cwd, ".uina", "apps.json") : undefined;
 		this.viewport = new ContextViewport({
 			getRuntimes: () => this.apps.values(),
 		});
@@ -235,7 +237,9 @@ export class AppRegistry {
 				signal: this.abortController.signal,
 				submitInput: this.pi.submitInput ? async (input) => this.pi.submitInput(input) : undefined,
 				isBusy: this.pi.isBusy ? () => this.pi.isBusy() : undefined,
-				appDataDir: this.pi.cwd ? join(this.pi.cwd, ".uina/apps", runtime.definition.name) : undefined,
+				appDataDir: this.pi.subject
+					? join(this.pi.subject.stateRoot, "app-data", runtime.definition.name)
+					: this.pi.cwd ? join(this.pi.cwd, ".uina/apps", runtime.definition.name) : undefined,
 				onActivity: this.pi.on
 					? (listener) => {
 							const unbindTurnStart = this.pi.on("turn_start", () => {
