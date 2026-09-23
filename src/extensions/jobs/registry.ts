@@ -227,7 +227,6 @@ export class JobRegistry {
 		this.closePromise = Promise.all(active.map((job) => this.waitForTerminal(job))).then(() => undefined);
 		await this.closePromise;
 	}
-
 	private update(job: TrackedJob, update: { detail?: string; progress?: JobProgress }): void {
 		if (isTerminal(job.status)) return;
 		if (update.detail !== undefined) job.detail = update.detail;
@@ -302,9 +301,22 @@ export class JobRegistry {
 		return [...this.jobs.values()].filter((job) => job.ownerId === ownerId && !isTerminal(job.status)).length;
 	}
 
-	private waitForTerminal(job: TrackedJob): Promise<void> {
-		if (isTerminal(job.status)) return Promise.resolve();
-		return job.buffer.wait(() => isTerminal(job.status), 10_000).catch(() => {});
+	/**
+	 * 等 producer 的真实结算（handle.done → settle 置终态）。
+	 *
+	 * 不设超时、不吞错：取消请求只代表意图，producer 在明确结束前任务仍是 stopping，
+	 * 此时的 close() 保持 pending 比谎报“资源已回收但进程仍在跑”诚实。
+	 */
+	private async waitForTerminal(job: TrackedJob): Promise<void> {
+		if (isTerminal(job.status)) return;
+		await new Promise<void>((resolve) => {
+			const unbind = this.onChanged((snapshot) => {
+				if (snapshot.id === job.id && isTerminal(snapshot.status)) {
+					unbind();
+					resolve();
+				}
+			});
+		});
 	}
 }
 
