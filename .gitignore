@@ -26,6 +26,7 @@ scripts/crap.mjs
 tests/netease-jukebox.test.ts
 tests/soundboard.test.ts
 tests/tts-extension.test.ts
+tests/tts-delivery-perception.test.ts
 tests/bilibili-live.test.ts
 tests/bilibili-live-app.test.ts
 tests/voice-extension.test.ts
