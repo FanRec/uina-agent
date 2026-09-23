@@ -48,47 +48,50 @@ function probeEndpoint(bodyId: string, online = true): ProbeBodyEndpoint {
 	};
 }
 
-let exposed: { endpoint: ProbeBodyEndpoint; disposer: (() => void) | undefined } | undefined;
 let probeCtx: Parameters<NonNullable<AppDef["onStart"]>>[0] | undefined;
 
-/** 探针应用：onStart 时经真实 ctx.expose 暴露端点，onStop 回收。 */
-function createProbeApp(): AppDef {
-	return {
+/** 探针应用：onStart 时经真实 ctx.expose 暴露端点，onStop 回收。返回端点句柄供测试内重暴露。 */
+function createProbeApp(): { app: AppDef; getEndpoint: () => ProbeBodyEndpoint } {
+	let endpoint: ProbeBodyEndpoint | undefined;
+	let disposer: (() => void) | undefined;
+	const app: AppDef = {
 		name: "probe-body",
 		description: "集成测试用探针应用",
 		defaultState: { enabled: true, tier: "hidden" },
 		actions: {},
 		onStart(ctx) {
 			probeCtx = ctx;
-			const ep = probeEndpoint("live2d_mo");
-			exposed = { endpoint: ep, disposer: ctx.expose?.(BODY_ENDPOINT_EXPOSED_PREFIX + ep.bodyId, ep) };
+			endpoint = probeEndpoint("live2d_mo");
+			disposer = ctx.expose?.(BODY_ENDPOINT_EXPOSED_PREFIX + endpoint.bodyId, endpoint);
 		},
 		onStop() {
-			exposed?.disposer?.();
-			exposed = undefined;
+			disposer?.();
+			disposer = undefined;
+			probeCtx = undefined;
 		},
 	};
+	return { app, getEndpoint: () => endpoint! };
 }
 
-/** 可控替换端点状态的应用：默认启用，每次 start 暴露当前 replacerOnline 对应的端点。 */
-function createReplacerApp(): AppDef {
-	return {
+/** 可控替换端点状态的应用：每次 start 暴露 getOnline() 对应在线性的端点。 */
+function createReplacerApp(getOnline: () => boolean): { app: AppDef } {
+	let disposer: (() => void) | undefined;
+	const app: AppDef = {
 		name: "replace-body",
 		description: "可替换端点的探针应用",
 		defaultState: { enabled: true, tier: "hidden" },
 		actions: {},
 		onStart(ctx) {
-			const ep = probeEndpoint("arm", replacerOnline);
-			exposed = { endpoint: ep, disposer: ctx.expose?.(BODY_ENDPOINT_EXPOSED_PREFIX + ep.bodyId, ep) };
+			const ep = probeEndpoint("arm", getOnline());
+			disposer = ctx.expose?.(BODY_ENDPOINT_EXPOSED_PREFIX + ep.bodyId, ep);
 		},
 		onStop() {
-			exposed?.disposer?.();
-			exposed = undefined;
+			disposer?.();
+			disposer = undefined;
 		},
 	};
+	return { app };
 }
-
-let replacerOnline = true;
 
 describe.skipIf(!hasLocalRuntime)("具身状态变化落史（不唤醒）与 body status 查询", () => {
 	let env: IsolatedEnv;
@@ -97,6 +100,7 @@ describe.skipIf(!hasLocalRuntime)("具身状态变化落史（不唤醒）与 bo
 	beforeEach(async () => {
 		env = await IsolatedEnv.create({ prefix: "embodiment-state-journal-" });
 		entries = [];
+		probeCtx = undefined;
 	});
 
 	afterEach(async () => {
@@ -124,19 +128,23 @@ describe.skipIf(!hasLocalRuntime)("具身状态变化落史（不唤醒）与 bo
 	}
 
 	it("端点注册落史一条 state-change，重复同步不重复落史", async () => {
-		await setupRunner(createProbeApp());
+		const { app, getEndpoint } = createProbeApp();
+		await setupRunner(app);
 		await flush();
 		const changes = () => entries.filter((e) => e.customType === "embodiment.state-change");
 		expect(changes()).toHaveLength(1);
 
-		// 重新暴露同一端点对象（同名覆盖 → 订阅通知 → 同步运行）：摘要不变 → 不落史
-		probeCtx?.expose?.(BODY_ENDPOINT_EXPOSED_PREFIX + "live2d_mo", exposed!.endpoint);
+		// 重新暴露同一端点对象（同名覆盖 → 订阅通知 → 同步运行）：摘要不变 → 不落史。
+		// 局限：若共享表对同名重暴露是静默 no-op，sync 根本不跑，此断言空转——
+		// 黑盒下无更优探针（订阅 listener 不可从外触发），接受该空洞通过风险并明示。
+		probeCtx?.expose?.(BODY_ENDPOINT_EXPOSED_PREFIX + "live2d_mo", getEndpoint());
 		await flush();
 		expect(changes()).toHaveLength(1);
 	});
 
 	it("body status 返回即时真值，缺省主导身体", async () => {
-		const { tools } = await setupRunner(createProbeApp());
+		const { app } = createProbeApp();
+		const { tools } = await setupRunner(app);
 		await flush();
 
 		const result = await tools.execute(tools.prepare("body", { action: "status" }));
@@ -150,7 +158,8 @@ describe.skipIf(!hasLocalRuntime)("具身状态变化落史（不唤醒）与 bo
 	});
 
 	it("body status 查询未知端点报 failed；端点替换（注销+注册）落史", async () => {
-		const { runner, tools } = await setupRunner(createReplacerApp());
+		let replacerOnline = true;
+		const { tools } = await setupRunner(createReplacerApp(() => replacerOnline).app);
 		await flush();
 
 		const missing = await tools.execute(tools.prepare("body", { action: "status", target: "nope" }));
@@ -167,7 +176,6 @@ describe.skipIf(!hasLocalRuntime)("具身状态变化落史（不唤醒）与 bo
 		const changes = entries.filter((e) => e.customType === "embodiment.state-change");
 		const last = JSON.stringify(changes[changes.length - 1]);
 		expect(last).toContain('"online":false');
-		void runner;
 	});
 });
 
