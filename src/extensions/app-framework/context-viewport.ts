@@ -95,13 +95,9 @@ export class ContextViewport {
 			return "";
 		}
 
-		const header = "======================= 【运行中的应用程序 / Running Apps】 =======================";
-		const footer = "================================================================================";
-		return [
-			header,
-			...visibleBlocks,
-			footer,
-		].join("\n");
+		// 无装饰线：帧结构（source.type）已声明快照身份，文本内不再重复自我介绍；
+		// 多应用归属由各块的 [App: name] 前缀承载。
+		return visibleBlocks.join("\n");
 	}
 
 	/**

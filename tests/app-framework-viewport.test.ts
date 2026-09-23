@@ -56,7 +56,7 @@ describe("App Framework: Context Viewport tail frame", () => {
 		// 回执正文：外部来源标注 + 视口文本
 		const body = JSON.parse(receipt!.content) as { eventId: string; source: { kind: string; type: string; origin: string }; text: string };
 		expect(body.source).toEqual({ kind: "runtime", type: "app-viewport", origin: "external" });
-		expect(body.text).toContain("【运行中的应用程序 / Running Apps】");
+		expect(body.text).not.toContain("====");
 		expect(body.text).toContain("[jukebox: 正在后台轻量运行]");
 
 		expect(() => assertEventFrameContext(frame!)).not.toThrow();
