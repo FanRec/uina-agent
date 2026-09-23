@@ -22,12 +22,30 @@ export type RuntimeEvent =
 	| UsageUpdateEvent | ContextUpdateEvent
 	| ProviderRetryEvent | ProviderRecoveredEvent
 	| QueueEvent | TurnAbortedEvent | ErrorEvent
+	| InputAcceptedEvent
 	| CustomMessageEvent | CustomEntryEvent;
 
 export interface AgentStartEvent { readonly type: "agent_start"; readonly turnSeq: number; }
 export interface AgentEndEvent { readonly type: "agent_end"; readonly turnSeq: number; readonly success: boolean; readonly error?: string; }
 export interface AgentSettledEvent { readonly type: "agent_settled"; readonly turnSeq: number; }
 export interface TurnStartEvent { readonly type: "turn_start"; readonly turnNumber: number; readonly userText: string; readonly images?: readonly import("../core/content.js").ImageContent[]; }
+
+/**
+ * 输入已接纳（事实，一次输入恰好一条）。
+ *
+ * 与 turn_start 的分工：turn_start 表示"一个可见回合已经开始"，排队输入要等到被消费
+ * 才触发，且不携带来源；本事件在输入通过受理校验、进入直接开跑或队列时立即发出，
+ * 是"外部/运行时有人有东西在动"的唯一权威事实，供应用活动感知等消费方使用。
+ *
+ * 只携带最小来源事实：不携带正文与图片（正文事实已由 journal 的 input 记录持有）。
+ * source 保持 core InputSource 原样，消费方据 kind/origin 自行归类，不靠内容或时机猜测。
+ */
+export interface InputAcceptedEvent {
+	readonly type: "input_accepted";
+	readonly inputId: string;
+	readonly source?: import("../core/types.js").InputSource;
+	readonly receivedAt: string;
+}
 export interface TurnEndEvent {
 	readonly type: "turn_end";
 	readonly turnNumber: number;

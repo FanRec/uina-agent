@@ -432,9 +432,21 @@ export class Subject {
 		if (mode === "direct") {
 			if (busy) return this.enqueueQueued(normalized, "steer", false, options.source);
 			if (this.queues.size > 0) return this.enqueueQueued(normalized, "followUp", true, options.source);
-			return this.startRun(normalized, this.queues.create(normalized, "followUp", { source: options.source }), { needsEnqueueEvent: true });
+			const queued = this.queues.create(normalized, "followUp", { source: options.source });
+			this.publishInputAccepted(queued);
+			return this.startRun(normalized, queued, { needsEnqueueEvent: true });
 		}
 		return this.enqueueQueued(normalized, mode, false, options.source);
+	}
+
+	/** 输入受理的唯一入口：队列入队、直接开跑、accept 都经此发布 input_accepted。 */
+	private publishInputAccepted(queued: QueuedMessage): void {
+		this.dispatch({
+			type: "input_accepted",
+			inputId: queued.id,
+			...(queued.source ? { source: queued.source } : {}),
+			receivedAt: queued.receivedAt ?? new Date().toISOString(),
+		});
 	}
 
 	/** 队列入队的单一持久化路径：storeEvent → 内存队列 → 通知 → 可选空闲消化。 */
@@ -443,6 +455,7 @@ export class Subject {
 		const persisted = this.storeEvent("queue_enqueued", eventData(queued));
 		return persisted.then(async () => {
 			this.queues.add(queued);
+			this.publishInputAccepted(queued);
 			this.notifyQueueChanged();
 			if (resumeIfIdle && !this.isBusy()) await this.resumeQueued();
 		});
@@ -471,11 +484,13 @@ export class Subject {
 		};
 		if (!this.isBusy() && this.queues.size === 0) {
 			const promptText = queued.source?.kind === "runtime" ? undefined : queued.text;
+			this.publishInputAccepted(queued);
 			return this.startRun(promptText, queued, { needsEnqueueEvent: true });
 		}
 		return this.storeEvent("queue_enqueued", { ...queued }).then(
 			async () => {
 				this.queues.add(queued);
+				this.publishInputAccepted(queued);
 				this.notifyQueueChanged();
 				if (!this.isBusy()) await this.resumeQueued();
 			},
