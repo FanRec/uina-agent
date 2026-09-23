@@ -54,6 +54,8 @@ export interface ModelContextMeta {
  input?: InputProvenance;
  group?: { id: string; index: number; size: number };
  kind?: string;
+	/** Stable canonical request-bearing entry identity; never serialized to Provider wire. */
+	entryId?: string;
  /** Retain this entire group when trimming recent context. */
  retain?: boolean;
 }
@@ -225,6 +227,59 @@ export interface ModelRequest {
 	providerHooks: import("../runtime/hooks.js").ProviderHooks;
 }
 
+/**
+ * The complete model-semantic request assembled by Core before a Provider turns
+ * it into wire format.  This deliberately excludes transport concerns such as
+ * retries, headers, endpoints and tracing metadata.
+ */
+export interface RequestProjection {
+	readonly projectionId: string;
+	readonly modelKey: string;
+	readonly messages: readonly ChatMsg[];
+	readonly tools: readonly ToolDef[];
+	readonly thinkingLevel?: ThinkingLevel;
+}
+
+export interface TokenMeasurement {
+	readonly inputTokens: number;
+	readonly kind: "exact" | "approximate";
+	readonly source: string;
+	readonly segments?: ContextSegments;
+}
+
+export type ContextSnapshotBasis = "idle_baseline" | "active_request";
+
+export interface ContextSnapshot {
+	readonly projectionId: string;
+	readonly modelKey: string;
+	readonly basis: ContextSnapshotBasis;
+	readonly source: string;
+	readonly inputTokens: number;
+	readonly contextWindow?: number;
+	readonly availableInputBudget?: number;
+	readonly measurementKind: "exact" | "approximate";
+	readonly segments?: ContextSegments;
+}
+
+export interface RequestInspection {
+	readonly projection: RequestProjection;
+	readonly measurement: TokenMeasurement;
+	readonly contextWindow?: number;
+	readonly inputBudget?: number;
+}
+
+/** Usage reported by one completed or in-flight Provider request. */
+export interface RequestUsage {
+	readonly callId: string;
+	readonly projectionId?: string;
+	readonly modelKey?: string;
+	readonly promptTokens?: number;
+	readonly outputTokens?: number;
+	readonly cacheRead?: number;
+	readonly cacheWrite?: number;
+	readonly totalTokens?: number;
+}
+
 export type ThinkingWireFormat = "openai" | "deepseek" | "qwen";
 export type GeminiThinkingFormat = "budget" | "level";
 
@@ -267,6 +322,8 @@ export interface Provider {
 	/** Dynamic providers may refresh their current model catalog. Entries without
 	 * a contextWindow are discovery-only and must not become selectable. */
 	refreshModels?(): Promise<readonly DiscoveredModel[]>;
+	/** Optional exact or provider-specific context measurement. */
+	measureContext?(model: Model, projection: RequestProjection): TokenMeasurement | undefined;
 	/**
 	 * 以给定 Model 向该端点发起流式对话：逐段回调 onDelta。
 	 * 协议错误、异常断流和不完整响应必须抛错；主动中断通过 signal 传播。

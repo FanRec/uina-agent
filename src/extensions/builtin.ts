@@ -113,13 +113,14 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 	pi.registerCommand({
 		name: "session",
 		description: "查看会话用量与上下文信息",
-		handler: () => {
+		handler: async () => {
 			const model = pi.models.current();
-			const usage = pi.usage();
-			const window = usage.contextWindow;
-			const context = window === undefined
-				? `约 ${usage.used}/上限未知`
-				: `约 ${usage.used}/${window} (${Math.round((usage.used / window) * 100)}%)`;
+			const snapshot = await pi.context();
+			const used = snapshot.inputTokens;
+			const window = snapshot.contextWindow;
+			const context = used === undefined ? "未知" : window === undefined
+				? `约 ${used}/上限未知`
+				: `约 ${used}/${window} (${Math.round((used / window) * 100)}%)`;
 			pi.ui.notify(`会话信息: 模型=${model.name} · Token=${context} · 思考=${pi.models.thinkingLevel()}`);
 		},
 	});
@@ -141,24 +142,12 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		},
 	});
 
-	/** 用量表刷新：切模型后上一模型的 usage 真值失效，先按估算显示并标注非真实。 */
-	const refreshUsageMeter = (): void => {
-		const usage = pi.usage();
-		ui.setUsage?.({
-			used: usage.used,
-			contextWindow: usage.contextWindow,
-			actual: false,
-			segments: usage.segments,
-		});
-	};
-
 	const selectModel = async (arg: string): Promise<void> => {
 		await pi.models.select(arg);
 		const model = pi.models.current();
 		ui.setModel?.(model.name);
 		ui.setThinkingLevels?.(model.thinkingLevels);
 		ui.setReasoningEffort?.(model.thinkingLevels?.length ? pi.models.thinkingLevel() : undefined);
-		refreshUsageMeter();
 		// 诚实化：回合内模型是快照，工作中切换要到下一个请求批次才生效
 		pi.ui.notify(pi.isBusy() ? `已切换至模型: ${model.name}（当前回合结束后生效）` : `已切换至模型: ${model.name}`);
 	};
@@ -168,7 +157,6 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		ui.setModel?.(model.name);
 		ui.setThinkingLevels?.(model.thinkingLevels);
 		ui.setReasoningEffort?.(model.thinkingLevels?.length ? pi.models.thinkingLevel() : undefined);
-		refreshUsageMeter();
 	});
 
 	pi.registerCommand({
@@ -202,27 +190,32 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 	});
 
 	// /compact 命令归 official compaction capability 端到端拥有；压缩进度由
-	// session_compact / session_compact_failed 事实事件表达。
+	// 三个 session_compact_* 事实事件表达。
 
-	pi.on("session_compact", (e) => {
-		pi.ui.notify("会话已压缩", "info", 2500);
-		if (ui.addCompaction) {
-			ui.addCompaction({
-				summary: e.summary,
-				turnsCount: e.retainedTailCount,
-				tokensBefore: e.tokensBefore,
-				collapsed: true,
-			});
-		} else {
-			process.stdout.write(`\n[会话压缩] ${e.summary}\n`);
-		}
-		// 压缩只裁剪请求上下文，不替换 Subject 历史：usage 缓存仍是上一次请求的
-		// 真实测量。不在事件里刷新——用旧真值标"估算"才是误导；等下一次
-		// Provider usage_update 自然更新。
+	pi.on("session_compact_start", () => {
+		pi.ui.setWorkingMessage("正在压缩上下文");
+		pi.ui.setWorkingVisible(true);
 	});
 
-	pi.on("session_compact_failed", (e) => {
-		pi.ui.notify(`会话压缩失败：${e.error}`, "warning", 3000);
+	pi.on("session_compact_progress", (e) => {
+		pi.ui.setWorkingMessage(e.detail ? `正在压缩上下文：${e.detail}` : "正在压缩上下文");
+	});
+
+	pi.on("session_compact", (e) => {
+		pi.ui.setWorkingVisible(false);
+		const message = e.status === "completed" ? "会话已压缩" : e.status === "noop" ? "当前无需压缩" : `会话压缩${e.status === "cancelled" ? "已取消" : "失败"}${e.error ? `：${e.error}` : ""}`;
+		pi.ui.notify(message, e.status === "completed" || e.status === "noop" ? "info" : "warning", e.status === "completed" || e.status === "noop" ? 2500 : 3000);
+		if (ui.addCompaction) {
+			ui.addCompaction({
+				status: e.status,
+				summary: e.summary ?? e.error ?? message,
+				turnsCount: e.retainedTailCount ?? 0,
+				tokensBefore: e.tokensBefore ?? 0,
+				collapsed: e.status === "completed",
+			});
+		} else {
+			process.stdout.write(`\n[会话压缩] ${e.summary ?? e.error ?? message}\n`);
+		}
 	});
 
 	pi.registerCommand({

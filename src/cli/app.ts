@@ -349,12 +349,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				}
 				host.cycleThinkingLevel();
 			});
-			tui.host.setUsage({
-				used: snapshot.usedTokens,
-				contextWindow: snapshot.contextWindow,
-				actual: false,
-				segments: snapshot.segments,
-			});
+			if (snapshot.context) tui.host.setContext(snapshot.context);
 			if (host.restoredEntries.length > 0) tui.loadSession(host.restoredEntries);
 			tui.setPendingQueue(snapshot.queue);
 			return;

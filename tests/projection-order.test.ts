@@ -26,17 +26,21 @@ describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展（
 		// 认知占位扩展：记录收到的消息是否已带摘要/仍含远期历史，并在末尾注入记忆块。
 		await env.writeExtension("memory-standin.mjs", `
 			export default function activate(uina) {
-				uina.onHook("turn.transformContext", (messages) => {
-					const contents = messages.map((m) => String(m.content ?? ""));
+				uina.onHook("turn.transformContext", (projection) => {
+					const contents = projection.messages.map((m) => String(m.content ?? ""));
+					const previous = globalThis.__orderProbe;
+					const sawSummary = contents.some((c) => c.startsWith("[历史摘要] "));
 					globalThis.__orderProbe = {
-						sawSummary: contents.some((c) => c.startsWith("[历史摘要] ")),
-						sawFarHistory: contents.some((c) => c.includes("第0问")),
+						sawSummary: Boolean(previous?.sawSummary) || sawSummary,
+						sawFarHistory: sawSummary
+							? contents.some((c) => c.includes("第0问"))
+							: previous?.sawFarHistory ?? contents.some((c) => c.includes("第0问")),
 					};
-					return { messages: [...messages, { role: "user", content: "[记忆] 认知占位块" }] };
+					return { projection: { ...projection, messages: [...projection.messages, { role: "user", content: "[记忆] 认知占位块" }] } };
 				});
 				// tail 相位：注入一个可辨识的尾帧（模拟视口/具身快照），验证恒排在非 tail 注入之后。
-				uina.onHook("turn.transformContext", (messages) => {
-					return { messages: [...messages, { role: "user", content: "[TAIL] 瞬态尾帧占位" }] };
+				uina.onHook("turn.transformContext", (projection) => {
+					return { projection: { ...projection, messages: [...projection.messages, { role: "user", content: "[TAIL] 瞬态尾帧占位" }] } };
 				}, { tail: true });
 			}
 		`);

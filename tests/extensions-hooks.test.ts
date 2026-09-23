@@ -5,7 +5,7 @@ import { guardRuntimeHooks } from "../src/runtime/guard.js";
 import type { RuntimeHooks } from "../src/runtime/hooks.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { ToolBroker } from "../src/tools/broker.js";
-import type { Model, ModelRequest, ModelStreamFn, StreamDelta, ThinkingLevel } from "../src/core/types.js";
+import type { ChatMsg, Model, ModelRequest, ModelStreamFn, RequestProjection, StreamDelta, ThinkingLevel } from "../src/core/types.js";
 import { mockModel, SubjectHarness, createExtensionHarness, mockTool } from "./harness/index.js";
 import { createOpenAIProvider } from "../src/ai/gateway.js";
 import { createServer } from "node:http";
@@ -32,6 +32,8 @@ function mockPair(
 		},
 	};
 }
+
+const testProjection = (messages: readonly ChatMsg[]): RequestProjection => ({ projectionId: "test", modelKey: "test", messages, tools: [] });
 const mockProvider = mockPair;
 
 describe("ExtensionHost & Hooks Architecture", () => {
@@ -208,12 +210,15 @@ describe("ExtensionHost & Hooks Architecture", () => {
 
 	it("transforms context before sending request to provider", async () => {
 		const host = new ExtensionHost();
-		host.onHook("turn.transformContext", (messages) => {
+		host.onHook("turn.transformContext", (projection) => {
 			return {
-				messages: [
-					...messages,
+				projection: {
+					...projection,
+					messages: [
+					...projection.messages,
 					{ role: "user", content: "【注入感知信息: 阳光明媚】" },
-				],
+					],
+				},
 			};
 		});
 
@@ -238,7 +243,38 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		expect(receivedMessages.some((m) => m.content?.includes("阳光明媚"))).toBe(true);
 	});
 
+	it("gives transforms an owned deeply-readonly projection snapshot", async () => {
+		const host = new ExtensionHost();
+		let nestedFrozen = false;
+		host.onHook("turn.transformContext", (projection) => {
+			nestedFrozen = Object.isFrozen(projection.messages[0]);
+			expect(() => { (projection.messages[0] as { content: string }).content = "mutated"; }).toThrow();
+			return undefined;
+		});
+		const input = testProjection([{ role: "user", content: "original" }]);
+		const result = await guardRuntimeHooks(createRuntimeHooks(host)).turn.transformContext(input);
+
+		expect(nestedFrozen).toBe(true);
+		expect(input.messages[0]?.content).toBe("original");
+		expect(result.messages[0]?.content).toBe("original");
+	});
+
+	it("aggregates preflight decisions as fail > rebuild > send and joins reasons", async () => {
+		const host = new ExtensionHost();
+		host.onHook("turn.preflight", () => ({ action: "send" as const, reason: "no objection" }));
+		host.onHook("turn.preflight", () => ({ action: "rebuild" as const, reason: "compaction needed" }));
+		host.onHook("turn.preflight", () => ({ action: "fail" as const, reason: "policy stop" }));
+		const result = await host.runPreflight({
+			projection: testProjection([{ role: "user", content: "input" }]),
+			measurement: { inputTokens: 10, kind: "approximate", source: "test" },
+			pass: 0,
+		});
+		expect(result.action).toBe("fail");
+		expect(result.reason).toBe("no objection；compaction needed；policy stop");
+	});
+
 	it("runs tail-phase transformContext handlers last regardless of registration order", async () => {
+
 		const host = new ExtensionHost();
 		const sequence: string[] = [];
 		const mark = (name: string) => () => {
@@ -252,35 +288,35 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		host.onHook("turn.transformContext", mark("normal2"));
 
 		const hooks = guardRuntimeHooks(createRuntimeHooks(host));
-		await hooks.turn.transformContext([{ role: "user", content: "original" }]);
+		await hooks.turn.transformContext(testProjection([{ role: "user", content: "original" }]));
 		expect(sequence).toEqual(["normal1", "normal2", "tailA", "tailB"]);
 
 		// tail 注入者的产出在非 tail 注入者之后追加（链式聚合顺序）。
 		const host2 = new ExtensionHost();
-		host2.onHook("turn.transformContext", (messages) => ({
-			messages: [...messages, { role: "user", content: "[normal]" }],
+		host2.onHook("turn.transformContext", (projection) => ({
+			projection: { ...projection, messages: [...projection.messages, { role: "user", content: "[normal]" }] },
 		}));
-		host2.onHook("turn.transformContext", (messages) => ({
-			messages: [...messages, { role: "user", content: "[tail]" }],
+		host2.onHook("turn.transformContext", (projection) => ({
+			projection: { ...projection, messages: [...projection.messages, { role: "user", content: "[tail]" }] },
 		}), { tail: true });
 		const hooks2 = guardRuntimeHooks(createRuntimeHooks(host2));
-		const out = await hooks2.turn.transformContext([{ role: "user", content: "original" }]);
-		expect(out.map((m) => m.content)).toEqual(["original", "[normal]", "[tail]"]);
+		const out = await hooks2.turn.transformContext(testProjection([{ role: "user", content: "original" }]));
+		expect(out.messages.map((m) => m.content)).toEqual(["original", "[normal]", "[tail]"]);
 	});
 
 	it("passes frozen snapshots to transform handlers and accepts explicit replacements only", async () => {
 		const host = new ExtensionHost();
 		let frozen = false;
-		host.onHook("turn.transformContext", (messages) => {
-			frozen = Object.isFrozen(messages) && Object.isFrozen(messages[0]!);
-			return { messages: [...messages, { role: "user", content: "replacement" }] };
+		host.onHook("turn.transformContext", (projection) => {
+			frozen = Object.isFrozen(projection) && Object.isFrozen(projection.messages) && Object.isFrozen(projection.messages[0]!);
+			return { projection: { ...projection, messages: [...projection.messages, { role: "user", content: "replacement" }] } };
 		});
 		// P1-3 规则成文：clone+freeze 只发生在 guard 边界——所有 RuntimeHooks 出口
 		// （含 runner.runtimeHooks 旁路）统一过 guard，host.run* 是纯聚合器。
 		const hooks = guardRuntimeHooks(createRuntimeHooks(host));
-		const transformed = await hooks.turn.transformContext([{ role: "user", content: "original" }]);
+		const transformed = await hooks.turn.transformContext(testProjection([{ role: "user", content: "original" }]));
 		expect(frozen).toBe(true);
-		expect(transformed.map((message) => message.content)).toEqual(["original", "replacement"]);
+		expect(transformed.messages.map((message) => message.content)).toEqual(["original", "replacement"]);
 	});
 
 	it("guards every RuntimeHooks implementation at the Subject boundary", async () => {
@@ -294,14 +330,14 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			...NO_RUNTIME_HOOKS,
 			turn: {
 				...NO_RUNTIME_HOOKS.turn,
-				transformContext: async (messages) => {
-					inputFrozen = Object.isFrozen(messages) && Object.isFrozen(messages[0]!);
+				transformContext: async (projection) => {
+					inputFrozen = Object.isFrozen(projection) && Object.isFrozen(projection.messages) && Object.isFrozen(projection.messages[0]!);
 					returned = [{ role: "user", content: "replacement" }];
 					setTimeout(() => {
 						returned?.push({ role: "user", content: "late mutation" });
 						contextReturned();
 					}, 0);
-					return returned;
+					return { ...projection, messages: returned };
 				},
 			},
 		};

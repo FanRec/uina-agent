@@ -1,22 +1,7 @@
-import type { AgentMessage, ChatMsg, ContextSegments, ToolDef, Usage } from "../core/types.js";
+import type { AgentMessage, ChatMsg, ContextSegments, RequestProjection, TokenMeasurement, ToolDef, Usage } from "../core/types.js";
 
-/**
- * 近似 token 估算使用的字符/token 比。英文约 4，但中文与工具 JSON 的密度更高，
- * 因此该常数偏小会让估算偏低。对齐 Pi 的 CHARS_PER_TOKEN，集中在此便于调整。
- */
+/** ASCII fallback ratio. Non-ASCII code points are counted separately below. */
 export const CHARS_PER_TOKEN = 4;
-
-/**
- * 上下文预留量：为模型输出保留的 token 数。窗口未知即未知，不伪造保护；
- * 已知窗口下预留量永不超窗口一半（小窗口模型不能被 16k 保留量吃掉全部预算）。
- * 压缩扩展的裁剪预算与 Subject 的请求前预算门共用这一个常量，避免两处漂移。
- */
-export const CONTEXT_RESERVE_TOKENS = 16_384;
-
-/** 已知窗口下的可用请求预算：窗口减去预留量（预留量按窗口一半封顶）。 */
-export function availableContextBudget(contextWindow: number): number {
-	return contextWindow - Math.min(CONTEXT_RESERVE_TOKENS, Math.floor(contextWindow / 2));
-}
 
 export interface ContextEstimate { tokens: number; actual: boolean; }
 
@@ -70,7 +55,9 @@ export function convertToLlm(
 
 	const result: ChatMsg[] = [];
 	for (const msg of messages) {
-        const context = "context" in msg ? msg.context : "input" in msg && msg.input ? { input: msg.input } : undefined;
+		const inherited = "context" in msg ? msg.context : "input" in msg && msg.input ? { input: msg.input } : undefined;
+		const entryId = "id" in msg ? msg.id : undefined;
+		const context = inherited || entryId ? { ...inherited, ...(entryId ? { entryId } : {}) } : undefined;
         const meta = context ? { context } : {};
 		switch (msg.role) {
 			case "system":
@@ -193,9 +180,32 @@ export function estimateRequestTokens(
 	tools: readonly ToolDef[] = [],
 	includeThinking = false,
 ): number {
-	const seg = countContextSegmentChars(messages, tools);
-	const totalChars = seg.system + seg.prompt + seg.assistant + (includeThinking ? seg.thinking : 0) + seg.tools;
-	return Math.ceil(totalChars / CHARS_PER_TOKEN);
+	const seg = estimateContextSegments(messages, tools);
+	return seg.system + seg.prompt + seg.assistant + (includeThinking ? seg.thinking : 0) + seg.tools;
+}
+
+/** Measure one complete model-semantic projection. Provider-specific exact
+ * measurers may be supplied by the caller; the fallback remains explicitly
+ * approximate so UI and budget decisions cannot mistake it for server truth. */
+export function measureRequestContext(
+	projection: RequestProjection,
+	providerMeasure?: (projection: RequestProjection) => TokenMeasurement | undefined,
+): TokenMeasurement {
+	const measured = providerMeasure?.(projection);
+	if (measured) {
+		if (!Number.isSafeInteger(measured.inputTokens) || measured.inputTokens < 0) {
+			throw new Error(`上下文测量器返回非法 inputTokens: ${measured.inputTokens}`);
+		}
+		return measured;
+	}
+	const segments = estimateContextSegments(projection.messages, projection.tools);
+	return {
+		inputTokens: segments.system + segments.prompt + segments.assistant
+			+ (projection.thinkingLevel !== "off" ? segments.thinking : 0) + segments.tools,
+		kind: "approximate",
+		source: "fallback_estimator",
+		segments,
+	};
 }
 
 export interface EstimateContextOptions {
@@ -256,6 +266,7 @@ export function calculateContextSegments(
 	tools: readonly ToolDef[] = [],
 	totalScaleTokens?: number,
 ): ContextSegments {
+	const estimated = estimateContextSegments(messages, tools);
 	const seg = countContextSegmentChars(messages, tools);
 	const totalChars = seg.system + seg.prompt + seg.assistant + seg.thinking + seg.tools;
 	if (totalChars <= 0) {
@@ -278,11 +289,41 @@ export function calculateContextSegments(
 		};
 	}
 
-	return {
-		system: Math.ceil(seg.system / CHARS_PER_TOKEN),
-		prompt: Math.ceil(seg.prompt / CHARS_PER_TOKEN),
-		assistant: Math.ceil(seg.assistant / CHARS_PER_TOKEN),
-		thinking: Math.ceil(seg.thinking / CHARS_PER_TOKEN),
-		tools: Math.ceil(seg.tools / CHARS_PER_TOKEN),
-	};
+	return estimated;
+}
+
+/** Conservative fallback: ASCII text uses the conventional 4 chars/token;
+ * every non-ASCII code point counts as one token. This intentionally errs high
+ * for CJK and mixed JSON instead of pretending one global ratio is safe. */
+export function estimateTextTokens(text: string): number {
+	let ascii = 0;
+	let nonAscii = 0;
+	for (const char of text) {
+		if (char.codePointAt(0)! <= 0x7f) ascii++;
+		else nonAscii++;
+	}
+	return Math.ceil(ascii / CHARS_PER_TOKEN) + nonAscii;
+}
+
+export function estimateContextSegments(
+	messages: readonly (AgentMessage | ChatMsg)[],
+	tools: readonly ToolDef[] = [],
+): ContextSegments {
+	const result: ContextSegments = { system: 0, prompt: 0, assistant: 0, thinking: 0, tools: 0 };
+	for (const message of messages) {
+		const contentTokens = estimateTextTokens(message.content ?? "") + 4;
+		switch (message.role) {
+			case "system": result.system += contentTokens; break;
+			case "custom":
+			case "user": result.prompt += contentTokens; break;
+			case "assistant":
+				result.assistant += contentTokens;
+				if (message.thinking) result.thinking += estimateTextTokens(message.thinking) + 4;
+				if (message.tool_calls) result.tools += estimateTextTokens(JSON.stringify(message.tool_calls));
+				break;
+			case "tool": result.tools += contentTokens; break;
+		}
+	}
+	if (tools.length > 0) result.tools += estimateTextTokens(JSON.stringify(tools));
+	return result;
 }

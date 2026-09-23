@@ -7,7 +7,8 @@ import { ToolBroker, type Tool } from "../src/tools/broker.js";
 import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
 import { parseArgs } from "../src/cli/args.js";
 import activateCompaction from "../src/extensions/compaction/index.js";
-import type { Model, ModelStreamFn } from "../src/core/types.js";
+import { estimateRequestTokens } from "../src/agent/context.js";
+import type { ContextSnapshot, Model, ModelStreamFn } from "../src/core/types.js";
 import { IsolatedEnv, mockModel } from "./harness/index.js";
 
 const envs: IsolatedEnv[] = [];
@@ -16,10 +17,10 @@ const runners: ExtensionRunner[] = [];
 /** compaction capability 的 /compact 事实出口测试的模型装配。 */
 const compactionModel = (): Model => mockModel({ id: "mock", name: "mock", contextWindow: 50_000 });
 const summarizingStream = (summary: string | Error): { stream: ModelStreamFn; summaryCalls: () => number } => {
-	let calls = 0;
+	let summaryCallCount = 0;
 	const stream: ModelStreamFn = async (_m, req, emit) => {
-		calls++;
 		if ((req.messages[0]?.content ?? "").includes("上下文摘要助手")) {
+			summaryCallCount++;
 			if (summary instanceof Error) throw summary;
 			emit({ kind: "text", text: summary });
 		} else {
@@ -27,13 +28,19 @@ const summarizingStream = (summary: string | Error): { stream: ModelStreamFn; su
 		}
 		emit({ kind: "finish", reason: "stop" });
 	};
-	return { stream, summaryCalls: () => calls };
+	return { stream, summaryCalls: () => summaryCallCount };
 };
-const bigHistory = (): { role: "user" | "assistant"; content: string }[] =>
+const bigHistory = (): import("../src/core/types.js").ChatMsg[] =>
 	Array.from({ length: 30 }, (_, index) =>
-		index % 2 === 0 ? { role: "user" as const, content: `问${index} ${"词".repeat(3_000)}` } : { role: "assistant" as const, content: `答${index} ${"词".repeat(3_000)}` },
+		index % 2 === 0
+			? { role: "user" as const, content: `问${index} ${"词".repeat(3_000)}`, context: { entryId: `entry-${index}`, ...(index === 28 ? { retain: true } : {}) } }
+			: { role: "assistant" as const, content: `答${index} ${"词".repeat(3_000)}`, context: { entryId: `entry-${index}` } },
 	);
-const compactionHost = (cwd: string, stream: ModelStreamFn) => {
+const compactionHost = (
+	cwd: string,
+	stream: ModelStreamFn,
+	overrides: Partial<ConstructorParameters<typeof ExtensionRunner>[0]> = {},
+) => {
 	const auxiliary: import("../src/session/types.js").SessionCustomEntryRecord[] = [];
 	let value!: ExtensionRunner;
 	value = runner(cwd, {
@@ -48,15 +55,22 @@ const compactionHost = (cwd: string, stream: ModelStreamFn) => {
 			stream: ((model, request, onDelta, signal) => stream(model, request, onDelta, signal)) as ModelStreamFn,
 		} as never,
 		// capability 的 anchorId 取主线头 entry id；无 journal 的纯扩展层测试给一条合成主线头。
-		history: () => [{ kind: "message", id: "head", seq: 1, timestamp: "", message: { role: "user", content: "head" } }] as never,
+		history: () => bigHistory().map((message, index) => ({ kind: "message", id: `entry-${index}`, seq: index + 1, timestamp: "", message: { ...message, context: undefined } })) as never,
 		// capability 私有持久状态（uina.compaction.summary）的落点：auxiliary timeline。
 		auxiliary: () => auxiliary,
+		isBusy: () => false,
+		inspectRequest: async () => {
+			const projection = await value.runTransformContext({ projectionId: "test", modelKey: "mock/mock", messages: bigHistory(), tools: [] });
+			return { projection, measurement: { inputTokens: estimateRequestTokens(projection.messages, projection.tools), kind: "approximate" as const, source: "test" }, contextWindow: 50_000, inputBudget: 33_616 };
+		},
+		context: async (): Promise<ContextSnapshot> => ({ projectionId: "test", modelKey: "mock/mock", basis: "idle_baseline", source: "fallback_estimator", measurementKind: "approximate", inputTokens: 0 }),
 		// pi.emitEvent 的装配：capability 事实进扩展事件总线（同宿主真实装配）。
 		emitRuntimeEvent: (event) => value.emit(event),
 		onCustomEntry: async (entry) => {
 			// 模拟宿主 journal 语义：custom_entry 落 auxiliary timeline（非主线）。
 			auxiliary.push({ kind: "custom_entry", id: `aux-${auxiliary.length + 1}`, seq: auxiliary.length + 1, timestamp: "", customType: entry.customType, data: entry.data });
 		},
+		...overrides,
 	});
 	return value;
 };
@@ -285,26 +299,39 @@ describe("compaction capability event contract", () => {
 
 		const messages = bigHistory();
 		await force?.handler?.("");
-		const trimmed = await host.runTransformContext(messages as never);
-		expect(summaryCalls()).toBe(1);
+		const trimmed = (await host.runTransformContext({ projectionId: "test", modelKey: "mock/mock", messages, tools: [] })).messages;
+		expect(summaryCalls()).toBeGreaterThanOrEqual(1);
 		// 摘要消息紧随（无 leading system），尾部保留在预算内。
 		expect((trimmed[0] as { content: string }).content).toBe("[历史摘要] 总线摘要");
 		expect(trimmed.length).toBeLessThan(messages.length);
 		expect(seen).toEqual(["compact"]);
 	});
 
-	it("broadcasts session_compact_failed when the summarizer fails and passes the request through", async () => {
+	it("broadcasts a failed session_compact result when the summarizer fails", async () => {
 		const { stream } = summarizingStream(new Error("summary down"));
 		const host = compactionHost(await temp(), stream);
 		const failures: string[] = [];
-		host.on("session_compact_failed", (event) => failures.push((event as { error?: string }).error ?? ""));
+		host.on("session_compact", (event) => { if (event.status === "failed") failures.push(event.error ?? ""); });
 		await activate(host, "compaction", activateCompaction);
 		const force = host.registry.getCommand("compact");
-		const messages = bigHistory();
-		await force?.handler?.("");
-		const passed = await host.runTransformContext(messages as never);
-		expect(passed).toEqual(messages);
+		await expect(force?.handler?.("")).resolves.toBeUndefined();
 		expect(failures.some((error) => error.includes("summary down"))).toBe(true);
+	});
+
+	it("does not activate an unpersisted checkpoint when journal append fails", async () => {
+		const { stream } = summarizingStream("不可提交摘要");
+		const host = compactionHost(await temp(), stream, {
+			onCustomEntry: async () => { throw new Error("journal down"); },
+		});
+		const terminal: string[] = [];
+		host.on("session_compact", (event) => terminal.push(event.status));
+		await activate(host, "compaction", activateCompaction);
+
+		await expect(host.registry.getCommand("compact")?.handler?.("")).resolves.toBeUndefined();
+		const projection = await host.runTransformContext({ projectionId: "after-failure", modelKey: "mock/mock", messages: bigHistory(), tools: [] });
+
+		expect(terminal).toEqual(["failed"]);
+		expect(projection.messages.some((message) => String(message.content).startsWith("[历史摘要] "))).toBe(false);
 	});
 });
 

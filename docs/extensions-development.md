@@ -94,15 +94,15 @@ const endpoint = api.shared("embodiment.endpoint:arm");
 
 registerProvider 与 registerModel 分别提供端点和能力事实；models.current/list/resolve/select/stream 使用公共模型入口，不接触凭据。能力未知时保持未知。
 
-压缩由官方 compaction capability 端到端拥有：唯一入口是 turn.transformContext 每请求裁剪（journal 保留全量历史），/compact 为其命令。自定义裁剪策略在同一条 transformContext 链上注册（后激活者收到前者输出）；私有摘要状态用 appendEntry/auxiliary 落盘。完整示例见 [custom-compaction](../examples/extensions/custom-compaction/index.ts)。
+压缩由官方 compaction capability 端到端拥有：checkpoint 经 appendEntry/auxiliary 持久化，正常的 turn.transformContext 把 raw prefix 投影成 summary + tail；超预算时 turn.preflight 请求 Core rebuild，不能直接修改已测量投影。journal 保留全量历史。`/compact` 空闲时立即执行，忙时在 turn.afterEnd 安全点执行。完整示例见 [custom-compaction](../examples/extensions/custom-compaction/index.ts)。
 
 registerToolRenderer 与 registerMarkdownTransformer 只控制显示。widget、header/footer、overlay、输入对话框和编辑器操作通过 api.ui 使用。先判断 ui.hasUI()，无 UI 时不能把 select/input 的 undefined 或 confirm 的 false 当成人类答复。
 
 ## Hook 与贡献
 
-干预用 onHook(hookName, handler)，观察用 on(event, handler)——Hook 与 Event 各一词表、各一出口。现役干预点（8 条）：turn.prepare 的 { systemPrompt?, model?, thinkingLevel? }（后写覆盖先写）、turn.transformContext 的 { messages }（链式）、turn.shouldStop 的 { stop }、tools.beforeCall 的 { block?, reason? }、tools.transformResult 的 { result?, status?, images?, details? }、provider.transformHeaders/transformPayload/observeResponse。完整类型见 [hooks](../src/runtime/hooks.ts)。
+干预用 onHook(hookName, handler)，观察用 on(event, handler)——Hook 与 Event 各一词表、各一出口。现役干预点：turn.prepare；纯 RequestProjection 链 turn.transformContext；只读决策 turn.preflight（fail > rebuild > send）；安全点 turn.afterEnd；turn.shouldStop；tools.beforeCall / transformResult；provider.transformHeaders / transformPayload / observeResponse。完整类型见 [hooks](../src/runtime/hooks.ts)。
 
-只需追加上下文时在 turn.transformContext 链上返回 { messages: [...原消息, 追加项] }；需要整组替换时返回整组。后激活者收到前者的输出（链式传递），与压缩、Memory 注入等 capability 共存。注册时可传 { tail: true }（尾部相位）：tail 注册者无论注册先后恒排在非 tail 之后，用于瞬态尾部注入——可变世界状态（应用视口/具身状态快照）经 buildEventFrameGroup 包装为 external_event_frame 三消息组追加到完整上下文最末尾，不落 Session 历史、不进 systemPrompt（system 只放基本不变的内容；可变内容进系统提示会从 token 0 击穿前缀缓存并占据特权位）。完整示例见 [custom-compaction](../examples/extensions/custom-compaction/index.ts)。
+只需追加上下文时返回 `{ projection: { ...projection, messages: [...projection.messages, 追加项] } }`。transform 必须无副作用：inspection 与真实发送会重复运行，不能消费事件、持久化或触发外部工作。后激活者收到前者输出；输入为深只读快照。注册时可传 `{ tail: true }`，tail 注册者恒排在非 tail 之后，用于瞬态尾部注入；可变世界状态不落 Session、不进 systemPrompt。完整示例见 [custom-compaction](../examples/extensions/custom-compaction/index.ts)。
 
 ## 清理与验证
 

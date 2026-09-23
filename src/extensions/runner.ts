@@ -9,7 +9,7 @@ import type { CallOptions, ServiceHandler, ExtensionModelAccess, ExtensionModelR
 import { relative } from "node:path";
 
 import type { AgentInput } from "../agent/loop.js";
-import type { Provider } from "../core/types.js";
+import type { ContextSnapshot, Provider, RequestInspection, RequestUsage } from "../core/types.js";
 import type { ToolBroker, Tool, ToolExecutionResult } from "../tools/broker.js";
 import type {
 	ExtensionUIContext,
@@ -100,8 +100,12 @@ export interface ExtensionAPI {
 			signal?: AbortSignal,
 		): Promise<void>;
 	};
-	/** 主体用量事实快照（/session 面板与用量表的数据源）。 */
-	usage(): { used: number; contextWindow?: number; segments?: import("../core/types.js").ContextSegments };
+	/** 当前已知 RequestProjection 的上下文快照（可按需执行纯 inspection）。 */
+	context(): Promise<ContextSnapshot>;
+	/** Build and measure the same transformed request projection without sending it. */
+	inspectRequest(): Promise<RequestInspection>;
+	/** 最近一次已发生 Provider 调用的用量事实。 */
+	usage(): RequestUsage | undefined;
 	/** 主体是否正在回合中。 */
 	isBusy(): boolean;
 	/** 重载项目扩展（与宿主 /reload 同一入口：忙时受理，空闲后执行）。 */
@@ -150,8 +154,12 @@ export interface ExtensionRunnerOptions {
 	onCustomMessage?: (message: CustomMessage) => Promise<void>;
 	onCustomEntry?: (entry: CustomEntry) => Promise<void>;
 	onInput?: (input: AgentInput) => Promise<void>;
-	/** 主体用量事实（pi.usage()）。 */
-	usage?: () => { used: number; contextWindow?: number; segments?: import("../core/types.js").ContextSegments };
+	/** 当前上下文事实（pi.context()）。 */
+	context?: () => Promise<ContextSnapshot>;
+	/** 完整 RequestProjection inspection（不发送 Provider、不发布 ContextSnapshot）。 */
+	inspectRequest?: () => Promise<RequestInspection>;
+	/** 最近一次 Provider 请求用量（pi.usage()）。 */
+	usage?: () => RequestUsage | undefined;
 	/** 思考档位读写（pi.models.thinkingLevel / setThinkingLevel）。 */
 	thinkingLevel?: () => import("../core/types.js").ThinkingLevel | undefined;
 	setThinkingLevel?: (level: import("../core/types.js").ThinkingLevel) => void;
@@ -516,6 +524,16 @@ export class ExtensionRunner extends ExtensionHost {
 				if (!this.options.usage) throw new Error("宿主未提供用量事实入口");
 				return structuredClone(this.options.usage());
 			},
+			context: async () => {
+				assertActive();
+				if (!this.options.context) throw new Error("宿主未提供上下文事实入口");
+				return structuredClone(await this.options.context());
+			},
+			inspectRequest: async () => {
+				assertActive();
+				if (!this.options.inspectRequest) throw new Error("宿主未提供请求检查入口");
+				return structuredClone(await this.options.inspectRequest());
+			},
 			isBusy: () => {
 				assertActive();
 				if (!this.options.isBusy) throw new Error("宿主未提供忙闲事实入口");
@@ -727,6 +745,9 @@ export class ExtensionRunner extends ExtensionHost {
 									return provider.refreshModels!();
 								},
 							}
+						: {}),
+					...(provider.measureContext
+						? { measureContext: (model, projection) => provider.measureContext!(model, projection) }
 						: {}),
 				};
 				const dispose = this.options.onProvider(name, scoped, options);

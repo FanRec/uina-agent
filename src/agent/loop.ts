@@ -6,26 +6,31 @@ import type {
 	AgentMessage,
 	ChatMsg,
 	CompletedToolCall,
-	ContextSegments,
+	ContextSnapshot,
 	DeliveryMode,
 	Model,
 	ModelStreamFn,
+	RequestProjection,
+	RequestInspection,
+	RequestUsage,
+	TokenMeasurement,
 	ThinkingLevel,
 	ToolResultStatus,
 	Usage,
 } from "../core/types.js";
+import { inputTokenBudget, modelKey } from "../core/model.js";
 import type { SessionStore } from "../session/types.js";
 import { projectInputMessage } from "../session/recovery.js";
 import { commitRewindTransition } from "./rewind.js";
 import { requestToolDefs, resolveProjectionPolicy, type ProjectionPolicy, type ResolvedProjection } from "./projection.js";
-import { availableContextBudget, buildContext, calculateContextSegments, defaultSystemPrompt, estimateContextTokens, estimateRequestTokens } from "./context.js";
+import { buildContext, defaultSystemPrompt, measureRequestContext } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import { TurnStreamCollector, type StreamCollectorResult } from "./stream-collector.js";
 import type { PreparedToolCall, ToolView } from "../tools/broker.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
 import type { OutputEvent, RuntimeEvent } from "../runtime/events.js";
 import { NO_RUNTIME_HOOKS } from "../runtime/noop.js";
-import { guardRuntimeHooks } from "../runtime/guard.js";
+import { guardRuntimeHooks, immutableProjection } from "../runtime/guard.js";
 
 
 export interface SubjectOptions {
@@ -35,6 +40,7 @@ export interface SubjectOptions {
 	systemPrompt?: string;
 	thinkingLevel?: ThinkingLevel;
 	runtimeHooks?: RuntimeHooks;
+	measureContext?: (model: Model, projection: RequestProjection) => TokenMeasurement | undefined;
 }
 
 export function clampThinkingLevel(
@@ -80,18 +86,14 @@ export class Subject {
 	private thinkingLevel: ThinkingLevel;
 	private preferredThinkingLevel: ThinkingLevel;
 	private readonly runtimeHooks: RuntimeHooks;
+	private readonly measureContext?: SubjectOptions["measureContext"];
 	/** 投影 Replacement 缝的现役实现（解析后两字段非空；本实例即单 owner）。 */
 	readonly projection: ResolvedProjection;
-	/** 本次模型调用拿到的 usage；每次调用开始前清空，只对本次调用有意义。 */
-	private lastReportedUsage: Usage | null = null;
-	/**
-	 * 最后一次拿到的真实用量，跨回合保留。
-	 *
-	 * `lastReportedUsage` 会在回合结束时清空（它的语义是"本次调用"），但底栏要的是"最后已知
-	 * 的真实上下文占用"，不该因为一次回合结束就退回字符估算。只有历史真的被替换（压缩、
-	 * 回溯）时它才失效——那时旧值不再描述任何东西。
-	 */
-	private lastKnownUsage: Usage | null = null;
+	private lastRequestUsage?: RequestUsage;
+	private currentCallUsage?: RequestUsage;
+	private latestUsageSeq = 0;
+	private currentContextSnapshot?: ContextSnapshot;
+	private contextInspectionSeq = 0;
 	private streamSeq = 0;
 	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
 
@@ -112,6 +114,7 @@ export class Subject {
 		}
 		this.thinkingLevel = this.preferredThinkingLevel;
 		this.runtimeHooks = guardRuntimeHooks(options.runtimeHooks ?? NO_RUNTIME_HOOKS);
+		this.measureContext = options.measureContext;
 	}
 
 	subscribe(listener: (event: RuntimeEvent) => void): () => void {
@@ -144,53 +147,36 @@ export class Subject {
 	/**
 	 * 单次模型调用的真实 usage 到达时立即上报，让底栏不必等 turn_end。
 	 *
-	 * 这里是唯一的写入点，所以 `lastReportedUsage` 与它派发出的 usage_update 永远同源：
-	 * getUsedTokens()/turn_end 与实时刷新看到的是同一个数。
+	 * 这里是唯一的写入点，所以历史 usage 与它派发出的 usage_update 永远同源：
+	 * pi.usage()/turn_end 与实时刷新看到的是同一个事实。
 	 */
-	private publishUsage(usage: Usage, callId: string): void {
-		this.lastReportedUsage = usage;
-		this.lastKnownUsage = usage;
-		const used = usage.totalTokens ?? this.getUsedTokens();
-		void this.dispatch({
-			type: "usage_update",
+	private publishUsage(usage: Usage, callId: string, projection: RequestProjection, callSeq: number): void {
+		const requestUsage: RequestUsage = {
 			callId,
-			usedTokens: used,
-			contextWindow: this.getContextWindow(),
-			actual: usage.totalTokens !== undefined,
+			projectionId: projection.projectionId,
+			modelKey: projection.modelKey,
+			promptTokens: usage.input,
+			outputTokens: usage.output,
 			cacheRead: usage.cacheRead,
 			cacheWrite: usage.cacheWrite,
-			inputTokens: usage.input,
-			outputTokens: usage.output,
-			segments: this.getContextSegments(used),
-		});
-	}
-
-	/** turn_end 与配对终态事件共用的用量快照：真实测量优先，缺锚回退字符估算。 */
-	private buildUsageSnapshot() {
-		const estimate = estimateContextTokens(this.history);
-		const last = this.lastReportedUsage;
-		const used = last?.totalTokens ?? this.getUsedTokens();
-		return {
-			usedTokens: used,
-			contextWindow: this.getContextWindow(),
-			actual: last?.totalTokens !== undefined || estimate.actual,
-			cacheRead: last?.cacheRead,
-			cacheWrite: last?.cacheWrite,
-			inputTokens: last?.input,
-			outputTokens: last?.output,
-			segments: this.getContextSegments(used),
+			totalTokens: usage.totalTokens,
 		};
+		if (callSeq >= this.latestUsageSeq) {
+			this.latestUsageSeq = callSeq;
+			this.lastRequestUsage = requestUsage;
+		}
+		this.currentCallUsage = requestUsage;
+		void this.dispatch({ type: "usage_update", usage: requestUsage });
 	}
 
 	/**
 	 * 当前 model 的计量口径失效（setModel），或 canonical history 被真正替换
 	 * （回溯提交）时清除：两个 usage 缓存都不再描述当前事实。
-	 * 调用点必须排在广播之前 —— 回溯事件的监听者会同步读 getUsedTokens()，
-	 * 清晚了它拿到的还是替换前的旧真值（底栏数字不动、只多一个 ~）。
+	 * 递增 inspection 序号还会使正在返回的旧模型/旧历史测量结果失效。
 	 */
-	private forgetUsage(): void {
-		this.lastReportedUsage = null;
-		this.lastKnownUsage = null;
+	private invalidateContext(): void {
+		this.contextInspectionSeq++;
+		this.currentContextSnapshot = undefined;
 	}
 
 	getModel(): Model {
@@ -209,40 +195,55 @@ export class Subject {
 		return this.model.contextWindow;
 	}
 
-	getUsedTokens(): number {
-		// 服务端报过的真实总量优先：它是权威事实，而 estimateContextTokens 是纯字符启发式。
-		// 这个字段跨回合保留，所以底栏不会在回合结束时从真实值跌回估算值。
-		const reported = this.lastKnownUsage?.totalTokens;
-		if (reported !== undefined) return reported;
-		const context = buildContext({ history: this.history, systemPrompt: this.systemPrompt, convertToLlm: this.projection.convertToLlm });
-		const estimate = estimateContextTokens(context);
-		if (estimate.actual || this.history.some((m) => m.role === "assistant" && m.usage)) {
-			return estimate.tokens;
-		}
-		// 没有真实 usage 锚时（如刚切模型或首轮前）：全量估算包含 system、history 与 tool 声明
-		const segments = this.getContextSegments();
-		return segments.system + segments.prompt + segments.assistant + segments.thinking + segments.tools;
+	getRequestUsage(): RequestUsage | undefined {
+		return this.lastRequestUsage ? structuredClone(this.lastRequestUsage) : undefined;
 	}
 
-	getContextSegments(usedTokens?: number): ContextSegments {
-		const context = buildContext({ history: this.history, systemPrompt: this.systemPrompt, convertToLlm: this.projection.convertToLlm });
-		const used = usedTokens ?? this.lastKnownUsage?.totalTokens;
-		return calculateContextSegments(context, this.declaredTools(), used);
+	getCurrentContextSnapshot(): ContextSnapshot | undefined {
+		return this.currentContextSnapshot ? structuredClone(this.currentContextSnapshot) : undefined;
+	}
+
+	async inspectRequest(): Promise<RequestInspection> {
+		const model = this.model;
+		const projection = await this.prepareProjection(model, this.systemPrompt, [], true);
+		const measurement = measureRequestContext(projection, this.measureContext ? (value) => this.measureContext!(model, value) : undefined);
+		return { projection, measurement, contextWindow: model.contextWindow, inputBudget: inputTokenBudget(model, projection.thinkingLevel) };
+	}
+
+	async getContextSnapshot(basis: ContextSnapshot["basis"] = "idle_baseline"): Promise<ContextSnapshot> {
+		const sequence = ++this.contextInspectionSeq;
+		const inspection = await this.inspectRequest();
+		const snapshot = this.contextSnapshot(inspection, basis);
+		if (sequence === this.contextInspectionSeq && inspection.projection.modelKey === modelKey(this.model)) {
+			this.publishContextSnapshot(snapshot);
+		}
+		return snapshot;
+	}
+
+	private contextSnapshot(inspection: RequestInspection, basis: ContextSnapshot["basis"]): ContextSnapshot {
+		return {
+			projectionId: inspection.projection.projectionId,
+			modelKey: inspection.projection.modelKey,
+			basis,
+			source: inspection.measurement.source,
+			inputTokens: inspection.measurement.inputTokens,
+			contextWindow: inspection.contextWindow,
+			availableInputBudget: inspection.inputBudget,
+			measurementKind: inspection.measurement.kind,
+			segments: inspection.measurement.segments,
+		};
+	}
+
+	private publishContextSnapshot(snapshot: ContextSnapshot): void {
+		this.currentContextSnapshot = snapshot;
+		void this.dispatch({ type: "context_update", snapshot });
 	}
 
 	async setModel(model: Model): Promise<void> {
 		const prev = this.model.name;
 		this.model = model;
-		// 口径换了（窗口与 thinking 层级都属于新模型）：历史里任何 assistant 消息上残留的
-		// usage 都是旧模型报的绝对总量，estimateContextTokens 会从最后一条重新锚定 ——
-		// 不只是末位那条（工具交换中途停手时它后面还跟着 tool 结果）。
-		// 与压缩时 clearRetainedUsage 清锚是同一纪律：usage 锚随口径切换整体失效。
-		this.forgetUsage();
-		this.history = this.history.map((message) => {
-			if (message.role !== "assistant" || !message.usage) return message;
-			const { usage: _dropped, ...rest } = message;
-			return { ...rest } as typeof message;
-		});
+		// Current context is model-relative; past RequestUsage remains a historical fact.
+		this.invalidateContext();
 		const prevLevel = this.thinkingLevel;
 		this.thinkingLevel = clampThinkingLevel(this.preferredThinkingLevel, model.thinkingLevels);
 
@@ -259,18 +260,24 @@ export class Subject {
 				previousLevel: prevLevel,
 			});
 		}
+		await this.getContextSnapshot("idle_baseline");
 	}
 
 	setThinkingLevel(level: ThinkingLevel): void {
 		this.preferredThinkingLevel = level;
 		const prev = this.thinkingLevel;
 		this.thinkingLevel = clampThinkingLevel(level, this.model.thinkingLevels);
-
-		void this.runtimeHooks.events.emit({
-			type: "thinking_level_select",
-			level: this.thinkingLevel,
-			previousLevel: prev,
-		});
+		this.invalidateContext();
+		void (async () => {
+			await this.runtimeHooks.events.emit({
+				type: "thinking_level_select",
+				level: this.thinkingLevel,
+				previousLevel: prev,
+			});
+			// Active preparation publishes its own projection before sending. Idle
+			// changes need an immediate baseline refresh for the UI.
+			if (!this.isBusy()) await this.getContextSnapshot("idle_baseline");
+		})().catch((error) => this.reportError(error));
 	}
 
 	cycleThinkingLevel(): ThinkingLevel {
@@ -385,7 +392,7 @@ export class Subject {
 			committed = true;
 			this.history = history;
 			// 历史刚被替换：先失效 usage 缓存，再广播。
-			this.forgetUsage();
+			this.invalidateContext();
 			await this.dispatch({
 				type: "session_rewind",
 				turnNumber: this.activity === "turn" ? this.turnSeq : undefined,
@@ -636,17 +643,24 @@ export class Subject {
 				await this.dispatch({
 					type: "turn_end",
 					turnNumber: currentTurn,
-					usage: this.buildUsageSnapshot(),
+					requestUsage: this.currentCallUsage ? structuredClone(this.currentCallUsage) : undefined,
 				});
 			} catch (error) {
 				this.reportError(error);
-			} finally {
-				// 只清"本次调用"的值；lastKnownUsage 留着，底栏不必退回估算。
-				this.lastReportedUsage = null;
 			}
 			await this.dispatch({ type: "agent_end", turnSeq: currentTurn, success, error: runError });
 			if (success && !this.interrupted && this.pendingRewind) {
 				await this.applyPendingRewind();
+			}
+			try {
+				await this.runtimeHooks.turn.afterEnd({ turnNumber: currentTurn, success, ...(runError ? { error: runError } : {}) });
+			} catch (error) {
+				this.reportError(error);
+			}
+			try {
+				await this.getContextSnapshot("idle_baseline");
+			} catch (error) {
+				this.reportError(error);
 			}
 			if (success && !this.interrupted && this.queues.size > 0) {
 				try {
@@ -728,23 +742,23 @@ export class Subject {
 			await applyRewind();
 			// 回合内暴涨由每请求的 transformContext 裁剪收敛（compaction capability
 			// 拥有上下文窗口管理）——这里不再有 between-step 压缩体检。
-			const requestMessages = await this.buildRequestMessages(model, systemPrompt, beforeMessages);
-
+			const projection = await this.prepareProjectionForSend(model, systemPrompt, beforeMessages);
 			const callId = `stream-${this.turnSeq}-${++this.streamSeq}`;
+			const callSeq = this.streamSeq;
 			const collector = new TurnStreamCollector(
 				callId,
 				(event) => this.dispatch(event),
-				{ onUsage: (usage) => void this.publishUsage(usage, callId) },
+				{ onUsage: (usage) => void this.publishUsage(usage, callId, projection, callSeq) },
 			);
-			this.lastReportedUsage = null;
+			this.currentCallUsage = undefined;
 
 			try {
 				await this.streamFn(
 					model,
 					{
-						messages: requestMessages,
-						tools: this.declaredTools(),
-						thinkingLevel: clampThinkingLevel(this.thinkingLevel, model.thinkingLevels),
+						messages: [...projection.messages],
+						tools: [...projection.tools],
+						thinkingLevel: projection.thinkingLevel,
 						providerHooks: this.runtimeHooks.provider,
 					},
 					(delta) => collector.handleDelta(delta),
@@ -798,12 +812,38 @@ export class Subject {
 		}
 	}
 
-	private async buildRequestMessages(
+	private async prepareProjectionForSend(
 		model: Model,
 		systemPrompt: string,
 		beforeMessages: readonly (AgentMessage | ChatMsg)[],
-	) {
-		const requestMessages = [
+	): Promise<RequestProjection> {
+		for (let pass = 0; pass <= 1; pass++) {
+			const projection = await this.prepareProjection(model, systemPrompt, beforeMessages, true);
+			const measurement = measureRequestContext(projection, this.measureContext ? (p) => this.measureContext!(model, p) : undefined);
+			const decision = await this.runtimeHooks.turn.preflight({ projection, measurement, pass });
+			if (decision.action === "fail") throw new Error(decision.reason ?? "请求预检失败");
+			if (decision.action === "rebuild") {
+				if (pass >= 1) throw new Error(decision.reason ?? "请求重建后仍需要再次重建");
+				continue;
+			}
+			const budget = inputTokenBudget(model, projection.thinkingLevel);
+			if (budget !== undefined && measurement.inputTokens > budget) {
+				throw new Error("上下文超过可用预算；无法保留完整的最近上下文，请压缩或缩减输入");
+			}
+			this.projection.validateContext(projection.messages, { model, tools: projection.tools });
+			this.publishContextSnapshot(this.contextSnapshot({ projection, measurement, contextWindow: model.contextWindow, inputBudget: budget }, "active_request"));
+			return projection;
+		}
+		throw new Error("请求准备失败");
+	}
+
+	private async prepareProjection(
+		model: Model,
+		systemPrompt: string,
+		beforeMessages: readonly (AgentMessage | ChatMsg)[],
+		runTransforms: boolean,
+	): Promise<RequestProjection> {
+		const built = [
 			...buildContext({
 				history: this.history,
 				systemPrompt,
@@ -812,17 +852,30 @@ export class Subject {
 			}),
 			...this.projection.convertToLlm(beforeMessages),
 		];
-		const transformed = await this.runtimeHooks.turn.transformContext(requestMessages);
-		// 请求级预算门（硬不变量，归 Subject 而非任何 hook）：transformContext 链对
-		// handler 错误只上报不中断，压缩的"预算不足"失败会被吞成原样请求，这里兜底
-		// 保证超限请求显式 turn_failed，而不是带着超预算上下文打到 Provider。
-		const tools = this.declaredTools();
-		if (model.contextWindow !== undefined
-			&& estimateRequestTokens(transformed, tools) > availableContextBudget(model.contextWindow)) {
-			throw new Error("上下文超过可用预算；无法保留完整的最近上下文，请压缩或缩减输入");
+		const currentInputId = [...this.history].findLast((message) =>
+			(message.role === "user" || message.role === "custom") && Boolean(message.id),
+		)?.id;
+		const messages = currentInputId
+			? built.map((message) => message.context?.entryId === currentInputId
+				? { ...message, context: { ...message.context, retain: true } }
+				: message)
+			: built;
+		const base: RequestProjection = immutableProjection({
+			projectionId: randomUUID(),
+			modelKey: modelKey(model),
+			messages,
+			tools: this.declaredTools(),
+			thinkingLevel: clampThinkingLevel(this.thinkingLevel, model.thinkingLevels),
+		});
+		if (!runTransforms) return base;
+		const transformed = await this.runtimeHooks.turn.transformContext(base);
+		if (transformed.projectionId !== base.projectionId || transformed.modelKey !== base.modelKey) {
+			throw new Error("turn.transformContext 不得修改 projectionId 或 modelKey");
 		}
-		this.projection.validateContext(transformed, { model, tools });
-		return transformed;
+		if (transformed.thinkingLevel !== undefined && transformed.thinkingLevel !== "off" && !model.thinkingLevels?.includes(transformed.thinkingLevel)) {
+			throw new Error(`turn.transformContext 返回模型不支持的 thinking level: ${transformed.thinkingLevel}`);
+		}
+		return immutableProjection(transformed);
 	}
 
 	/** 下一次模型请求会声明的工具。压缩预算与请求门共用这一份，不能只数可执行工具。 */
@@ -926,7 +979,7 @@ export class Subject {
 				// runtime 来源项投影为 display:false 的 custom 消息，不开可见回合。
 				if (item.source?.kind !== "runtime") {
 					const previousTurn = getCurrentTurn?.() ?? this.turnSeq;
-					await this.dispatch({ type: "turn_end", turnNumber: previousTurn, usage: this.buildUsageSnapshot() });
+					await this.dispatch({ type: "turn_end", turnNumber: previousTurn, requestUsage: this.currentCallUsage ? structuredClone(this.currentCallUsage) : undefined });
 					const nextTurn = ++this.turnSeq;
 					onTurnTransition?.(nextTurn);
 					await this.dispatch({ type: "turn_start", turnNumber: nextTurn, userText: item.text, images: item.images });
@@ -1030,8 +1083,10 @@ export class Subject {
 	// turn.transformContext 每请求裁剪；journal 保留全量历史。
 
 	private async appendMessage(message: AgentMessage): Promise<void> {
-		await this.store?.appendMessage(message);
-		this.history.push(message);
+		const entryId = message.id ?? randomUUID();
+		const durable = { ...message, id: entryId } as AgentMessage;
+		await this.store?.appendMessage(durable, entryId);
+		this.history.push(durable);
 	}
 
 	/** Adds trusted extension content to both v2 persistence and the next provider context. */

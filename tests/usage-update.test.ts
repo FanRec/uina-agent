@@ -49,15 +49,13 @@ describe("usage_update：每次模型调用收尾就上报真实用量", () => {
 		expect(usageIdx).toBeLessThan(endIdx);
 
 		const usageEvent = events[usageIdx] as Extract<RuntimeEvent, { type: "usage_update" }>;
-		expect(usageEvent.usedTokens).toBe(12_345);
-		expect(usageEvent.actual).toBe(true);
-		expect(usageEvent.contextWindow).toBe(100_000);
-		expect(usageEvent.inputTokens).toBe(4_000);
-		expect(usageEvent.outputTokens).toBe(200);
-		expect(usageEvent.cacheRead).toBe(1_000);
+		expect(usageEvent.usage.totalTokens).toBe(12_345);
+		expect(usageEvent.usage.promptTokens).toBe(4_000);
+		expect(usageEvent.usage.outputTokens).toBe(200);
+		expect(usageEvent.usage.cacheRead).toBe(1_000);
 		// 事件必须带调用标识：同一次调用的多条累积快照要靠它去重（消费端按调用记账）。
-		expect(typeof usageEvent.callId).toBe("string");
-		expect(usageEvent.callId.length).toBeGreaterThan(0);
+		expect(typeof usageEvent.usage.callId).toBe("string");
+		expect(usageEvent.usage.callId.length).toBeGreaterThan(0);
 	});
 
 	it("每次模型调用都上报一次（多轮工具往返不只报最后一次）", async () => {
@@ -80,49 +78,47 @@ describe("usage_update：每次模型调用收尾就上报真实用量", () => {
 		const updates = events.filter((e): e is Extract<RuntimeEvent, { type: "usage_update" }> => e.type === "usage_update");
 		expect(call).toBeGreaterThanOrEqual(2);
 		// 每次调用各自的真实值都要上报，而不是被最后一次覆盖。
-		expect(updates.map((u) => u.usedTokens)).toEqual([11_000, 12_000]);
+		expect(updates.map((u) => u.usage.totalTokens)).toEqual([11_000, 12_000]);
 		// 两次调用必须是不同的 callId（一次模型调用一个标识），消费端才能正确切分调用边界。
-		expect(new Set(updates.map((u) => u.callId)).size).toBe(updates.length);
+		expect(new Set(updates.map((u) => u.usage.callId)).size).toBe(updates.length);
 	});
 
-	it("turn_end 与实时上报同源（底栏不会在估算值与真实值之间跳）", async () => {
+	it("turn_end 使用当前上下文快照，不被上一请求 actual 覆盖", async () => {
 		const { events, harness } = collect();
 		await harness.run("你好");
 
 		const usageEvent = events.find((e): e is Extract<RuntimeEvent, { type: "usage_update" }> => e.type === "usage_update")!;
 		const endEvent = events.find((e): e is Extract<RuntimeEvent, { type: "turn_end" }> => e.type === "turn_end")!;
-		expect(endEvent.usage?.usedTokens).toBe(usageEvent.usedTokens);
-		expect(endEvent.usage?.actual).toBe(usageEvent.actual);
+		expect(endEvent.requestUsage).toEqual(usageEvent.usage);
 	});
 });
 
-describe("getUsedTokens：真实值优先于字符估算", () => {
-	it("服务端报过总量后返回真实值，而不是 estimateContextTokens 的启发式结果", async () => {
+describe("inspectRequest：只表示当前 RequestProjection 的测量", () => {
+	it("服务端报过总量后仍不冒充当前上下文", async () => {
 		const stream: ModelStreamFn = async (_m, _req, onDelta) => {
 			onDelta({ kind: "usage", usage: { input: 1, output: 1, totalTokens: 99_999 } });
 			onDelta({ kind: "finish", reason: "stop" });
 		};
 		const harness = SubjectHarness.create({ model: MODEL, stream, systemPrompt: "sys" });
-		const before = harness.subject.getUsedTokens();
+		const before = (await harness.subject.inspectRequest()).measurement.inputTokens;
 		await harness.run("你好");
-		const after = harness.subject.getUsedTokens();
+		const after = (await harness.subject.inspectRequest()).measurement.inputTokens;
 
-		expect(after).toBe(99_999);
-		// 真实值不和估算值重合（否则这条测试区分不出实现）——历史里带着用户输入与回复，
-		// 估算结果远小于 99_999。
+		expect(after).not.toBe(99_999);
+		expect(after).toBeLessThan(99_999);
 		expect(before).not.toBe(99_999);
 	});
 });
 
-describe("setModel：口径换了，旧模型的 usage 锚必须失效", () => {
-	it("切换模型后 getUsedTokens() 不再返回旧模型报的真实总量", async () => {
+describe("setModel：ContextSnapshot 与历史 RequestUsage 保持分离", () => {
+	it("切换模型后 inspection 不返回旧模型报的真实总量", async () => {
 		const harness = SubjectHarness.create({
 			model: MODEL,
 			stream: streamWithUsage({ input: 1, output: 1, totalTokens: 99_999 }),
 			systemPrompt: "sys",
 		});
 		await harness.run("你好");
-		expect(harness.subject.getUsedTokens()).toBe(99_999);
+		expect((await harness.subject.inspectRequest()).measurement.inputTokens).not.toBe(99_999);
 
 		const bigger = mockModel({ id: "mock2", name: "mock2", contextWindow: 200_000 });
 		await harness.subject.setModel(bigger);
@@ -130,7 +126,7 @@ describe("setModel：口径换了，旧模型的 usage 锚必须失效", () => {
 		// 旧模型报的 99_999 是旧窗口口径下的绝对总量，对新窗口没有描述力：
 		// 切模型后必须回落到字符估算，与压缩 / 回溯同一条失效纪律。
 		// 回退本修复（删掉 setModel 里的 forgetUsage()）后，这里恒为 99_999。
-		expect(harness.subject.getUsedTokens()).not.toBe(99_999);
+		expect((await harness.subject.inspectRequest()).measurement.inputTokens).not.toBe(99_999);
 		expect(harness.subject.getContextWindow()).toBe(200_000);
 	});
 
@@ -148,13 +144,13 @@ describe("setModel：口径换了，旧模型的 usage 锚必须失效", () => {
 			{ role: "assistant", content: "", tool_calls: [{ id: "c1", name: "read", args: "{}" }], status: "complete", usage: { input: 1, output: 1, totalTokens: 99_999 } },
 			{ role: "tool", tool_call_id: "c1", content: "结果", status: "succeeded" },
 		] as never);
-		expect(harness.subject.getUsedTokens()).toBe(99_999 + 5);
+		expect((await harness.subject.inspectRequest()).measurement.inputTokens).not.toBe(99_999 + 5);
 
 		await harness.subject.setModel(mockModel({ id: "mock2", name: "mock2", contextWindow: 200_000 }));
 
 		// 只剥最后一条 assistant 的 usage 盖不住这个形态：旧锚从历史深处存活，
-		// getUsedTokens() 继续顶着旧口径的 99_999。
-		expect(harness.subject.getUsedTokens()).not.toBe(99_999);
+		// 当前投影测量不能继续顶着旧口径的 99_999。
+		expect((await harness.subject.inspectRequest()).measurement.inputTokens).not.toBe(99_999);
 	});
 
 	it("切换模型后，上下文分段中的工具段 (tools) 不发生等比缩水坍塌，保持全量估算", async () => {
@@ -176,16 +172,18 @@ describe("setModel：口径换了，旧模型的 usage 锚必须失效", () => {
 			tools: [sampleTool as never],
 		});
 		await harness.run("你好");
-		const segmentsBefore = harness.subject.getContextSegments();
+		const before = await harness.subject.inspectRequest();
+		const segmentsBefore = before.measurement.segments!;
 		expect(segmentsBefore.tools).toBeGreaterThan(0);
 
 		const bigger = mockModel({ id: "mock2", name: "mock2", contextWindow: 200_000 });
 		await harness.subject.setModel(bigger);
 
-		const segmentsAfter = harness.subject.getContextSegments();
+		const after = await harness.subject.inspectRequest();
+		const segmentsAfter = after.measurement.segments!;
 		// 切模型后工具定义估算段必须保持真实，等于工具定义与历史中工具消息的独立字符估算，绝不等于 0 也绝不被消息估算强制压扁
 		expect(segmentsAfter.tools).toBeGreaterThan(100);
-		expect(harness.subject.getUsedTokens()).toBe(
+		expect(after.measurement.inputTokens).toBe(
 			segmentsAfter.system + segmentsAfter.prompt + segmentsAfter.assistant + segmentsAfter.thinking + segmentsAfter.tools
 		);
 	});

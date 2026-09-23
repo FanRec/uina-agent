@@ -1,4 +1,4 @@
-import type { ChatMsg } from "../core/types.js";
+import type { ChatMsg, RequestProjection } from "../core/types.js";
 import type { DeepReadonly, OutputEvent, RuntimeEvent } from "./events.js";
 import type { RuntimeHooks } from "./hooks.js";
 import { NO_RUNTIME_HOOKS } from "./noop.js";
@@ -14,6 +14,11 @@ export function readonlySnapshot<T>(value: T): DeepReadonly<T> {
 		}
 	}
 	return deepFreeze(clone(value)) as DeepReadonly<T>;
+}
+
+/** Owns and deeply freezes one model-semantic request at a hook boundary. */
+export function immutableProjection(projection: RequestProjection): RequestProjection {
+	return readonlySnapshot(projection) as unknown as RequestProjection;
 }
 
 /** Takes ownership of a hook return without freezing the value the runtime must consume. */
@@ -32,7 +37,9 @@ export function guardRuntimeHooks(hooks: RuntimeHooks): RuntimeHooks {
 	const guarded: RuntimeHooks = {
 		turn: Object.freeze({
 			prepare: async (input) => copyPrepare(await hooks.turn.prepare(readonlySnapshot(input))),
-			transformContext: async (messages) => copyMessages(await hooks.turn.transformContext(readonlySnapshot(messages))),
+			transformContext: async (projection) => copyProjection(await hooks.turn.transformContext(readonlySnapshot(projection))),
+			preflight: async (input) => Object.freeze({ ...(await hooks.turn.preflight(readonlySnapshot(input))) }),
+			afterEnd: async (input) => hooks.turn.afterEnd(readonlySnapshot(input)),
 			shouldStop: async (input) => Object.freeze({ ...(await hooks.turn.shouldStop(readonlySnapshot(input))) }),
 		}),
 		tools: Object.freeze({
@@ -68,6 +75,16 @@ function copyPrepare(
 
 function copyMessages(messages: readonly DeepReadonly<ChatMsg>[] | readonly ChatMsg[]): ChatMsg[] {
 	return clone(messages) as ChatMsg[];
+}
+
+function copyProjection(projection: DeepReadonly<RequestProjection> | RequestProjection): RequestProjection {
+	return {
+		projectionId: projection.projectionId,
+		modelKey: projection.modelKey,
+		messages: copyMessages(projection.messages),
+		tools: clone(projection.tools),
+		...(projection.thinkingLevel !== undefined ? { thinkingLevel: projection.thinkingLevel } : {}),
+	};
 }
 
 function clone<T>(value: T): T {

@@ -3,7 +3,7 @@
  */
 
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "../ui/core/types.js";
-import type { ThinkingLevel, ContextSegments } from "../core/types.js";
+import type { ContextSnapshot, ThinkingLevel } from "../core/types.js";
 export type { Component, OverlayHandle, OverlayOptions, WidgetPlacement };
 
 /** 模型选择器的一组条目（provider 分组）。官方 /model 命令与选择器共享此形状。 */
@@ -18,23 +18,6 @@ export interface ModelPickerGroup {
 	name: string;
 	description: string;
 	models: ModelPickerModel[];
-}
-
-/**
- * 用量表快照：一次 setUsage 的全部信息。单对象参数 —— 同形异义的位置参数
- * 曾跨层漂移（桥接层第三参是 segments、宿主层是 actual，对象落进布尔位），
- * 对象字段名自描述，这类漂移无从发生。
- */
-export interface UsageSnapshot {
-	used: number;
-	contextWindow?: number;
-	/** false = 估算值（保留尾巴 / 刚切口径），true = 服务端真实总量。 */
-	actual?: boolean;
-	input?: number;
-	output?: number;
-	cacheRead?: number;
-	cacheWrite?: number;
-	segments?: ContextSegments;
 }
 
 /** 自定义消息：进入会话历史，也参与模型上下文 */
@@ -161,13 +144,13 @@ export interface ExtensionUIContext {
 	setThinkingLevels?(levels?: readonly ThinkingLevel[]): void;
 	/** 底栏当前思考档位同步 */
 	setReasoningEffort?(level?: ThinkingLevel): void;
-	/** 底栏用量表同步（字段语义见 UsageSnapshot） */
-	setUsage?(snapshot: UsageSnapshot): void;
+	/** 当前模型语义 RequestProjection 的上下文快照。 */
+	setContext?(snapshot: ContextSnapshot): void;
 	/** 右侧导航轨滑块样式 */
 	getScrollbarThumbStyle?(): "slim" | "block" | "wide";
 	setScrollbarThumbStyle?(style: "slim" | "block" | "wide"): void;
 	/** 转录流追加一条折叠的压缩摘要卡片 */
-	addCompaction?(record: { summary: string; turnsCount: number; tokensBefore: number; collapsed: boolean }): void;
+	addCompaction?(record: { status?: "completed" | "failed" | "cancelled" | "noop"; summary: string; turnsCount: number; tokensBefore: number; collapsed: boolean }): void;
 }
 
 /** A pure view of one tool invocation; execution and persisted facts remain outside UI. */

@@ -12,7 +12,9 @@ export function createRuntimeHooks(host: ExtensionHost, scope?: RuntimeScopeFilt
 	const hooks: RuntimeHooks = {
 		turn: {
 			prepare: async (input) => (await host.runTurnPrepare(input, scope)) ?? {},
-			transformContext: (messages) => host.runTransformContext(messages as readonly import("../core/types.js").ChatMsg[], scope),
+			transformContext: (projection) => host.runTransformContext(projection as never, scope),
+			preflight: (input) => host.runPreflight(input as never, scope),
+			afterEnd: (input) => host.runAfterEnd(input as never, scope),
 			shouldStop: async (input) => ({ stop: await host.runShouldStop(input, scope) }),
 		},
 		tools: {

@@ -171,20 +171,14 @@ export class InteractiveTUI {
 				break;
 
 			case "usage_update":
-				// 回合进行中也要让上下文占用推进：每次模型调用收尾都有真实 usage。
-				this.host.setUsage({
-					used: m.usedTokens,
-					contextWindow: m.contextWindow,
-					actual: m.actual ?? false,
-					input: m.inputTokens,
-					output: m.outputTokens,
-					cacheRead: m.cacheRead,
-					cacheWrite: m.cacheWrite,
-					segments: m.segments,
-				});
+				// Provider usage 描述过去的一次调用，不覆盖当前 RequestProjection 的上下文快照。
 				// 服务端报回的 output 是"本次调用"的输出量（含工具调用参数的分），交给活动行
 				// 按 step 结算：它既是这一步的分子，也是这一步解码区间的右端。
-				if (m.outputTokens !== undefined) this.host.activityLine.addRealOutputTokens(m.outputTokens);
+				if (m.usage.outputTokens !== undefined) this.host.activityLine.addRealOutputTokens(m.usage.outputTokens);
+				break;
+
+			case "context_update":
+				this.host.setContext(m.snapshot);
 				break;
 
 			case "output_update":
@@ -251,19 +245,7 @@ export class InteractiveTUI {
 				this.stopToolAnimationTimer();
 				this.host.setBusy(false);
 				this.host.transcript.finishTurn();
-				this.host.trajectoryProjection.onTurnEnd(m.turnNumber, m.usage);
-				if (m.usage) {
-				this.host.setUsage({
-					used: m.usage.usedTokens,
-					contextWindow: m.usage.contextWindow,
-					actual: m.usage.actual ?? false,
-					input: m.usage.inputTokens,
-					output: m.usage.outputTokens,
-					cacheRead: m.usage.cacheRead,
-					cacheWrite: m.usage.cacheWrite,
-					segments: m.usage.segments,
-				});
-				}
+				this.host.trajectoryProjection.onTurnEnd(m.turnNumber, m.requestUsage);
 				const elapsed = this.host.getLastElapsedMs();
 				const history = this.host.transcript.getHistory();
 				const lastTurn = history[history.length - 1];

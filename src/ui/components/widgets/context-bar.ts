@@ -19,7 +19,7 @@ export interface ContextSegments {
 }
 
 export interface ContextUsageData {
-	usedTokens: number;
+	usedTokens?: number;
 	contextWindow?: number;
 	actual?: boolean;
 	cwd?: string;
@@ -110,7 +110,7 @@ export function allocateBarColumns(values: readonly number[], width: number): nu
  */
 export function renderSegmentedBar(
 	segments: ContextSegments | undefined,
-	usedTokens: number,
+	usedTokens: number | undefined,
 	contextWindow: number | undefined,
 	width: number,
 	pctFallback?: number,
@@ -126,7 +126,7 @@ export function renderSegmentedBar(
 			segments.tools > 0);
 
 	if (hasSegments && contextWindow && contextWindow > 0) {
-		const freeTokens = Math.max(0, contextWindow - usedTokens);
+		const freeTokens = Math.max(0, contextWindow - (usedTokens ?? 0));
 		const values = [
 			segments.system,
 			segments.prompt,
@@ -152,7 +152,7 @@ export function renderSegmentedBar(
 	}
 
 	// 降级单色条
-	const pct = pctFallback ?? (contextWindow && contextWindow > 0 ? (usedTokens / contextWindow) * 100 : undefined);
+	const pct = pctFallback ?? (usedTokens !== undefined && contextWindow && contextWindow > 0 ? (usedTokens / contextWindow) * 100 : undefined);
 	if (pct === undefined) {
 		return `${C.subtle}${"?".repeat(width)}${C.reset}`;
 	}
@@ -163,7 +163,7 @@ export function renderSegmentedBar(
 }
 
 export class ContextBarComponent implements Component {
-	private usedTokens = 0;
+	private usedTokens?: number;
 	private contextWindow?: number;
 	private cwd = "";
 	private cacheRead?: number;
@@ -209,7 +209,7 @@ export class ContextBarComponent implements Component {
 		const parts: string[] = [];
 
 		// 1. 剩余容量（底边框已展示“已用/总量 (百分比)”，此处仅透视剩余可用空间，消除重复）
-		if (this.contextWindow !== undefined && this.contextWindow > 0) {
+		if (this.contextWindow !== undefined && this.contextWindow > 0 && this.usedTokens !== undefined) {
 			const remaining = Math.max(0, this.contextWindow - this.usedTokens);
 			parts.push(`${C.suggestion}剩余 ${formatTokensCompact(remaining)}${C.reset}`);
 		} else {

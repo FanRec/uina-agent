@@ -38,6 +38,8 @@ export function appendTailFrame<T>(messages: readonly T[], frame: readonly T[] |
 
 export interface EventFrameGroupOptions {
  eventId: string;
+	/** Canonical source entry represented by this frame; absent for transient tail frames. */
+	entryId?: string;
  /** 回执正文（来自标明的外部来源 / 运行时合成的观测快照）。 */
  text: string;
  /** 覆盖默认通知文案；用于区分到达事件与瞬态快照等不同呈现。 */
@@ -59,14 +61,14 @@ export interface EventFrameGroupOptions {
  * （应用视口 / 具身状态——运行时合成的环境观测，不落 Session 历史）。
  */
 export function buildEventFrameGroup(options: EventFrameGroupOptions): ChatMsg[] {
- const { eventId, text: rawText, notice = DEFAULT_FRAME_NOTICE, source, receivedAt, images } = options;
+ const { eventId, entryId, text: rawText, notice = DEFAULT_FRAME_NOTICE, source, receivedAt, images } = options;
  if (!eventId) throw new Error('外部事件帧缺少稳定 eventId');
  // 收口为 string：undefined 正文经 JSON.stringify 会丢失 text 字段，触发协议校验
  // “回执不是合法帧”回合失败——空正文帧仍合法，比回合崩溃正确。
  const text = String(rawText ?? '');
  const input: InputProvenance = { eventId, ...(source ? { source } : {}), ...(receivedAt ? { receivedAt } : {}) };
  const id = frameCallId(eventId);
- const context = (index: number): ModelContextMeta => ({ kind: EVENT_FRAME_KIND, input,
+ const context = (index: number): ModelContextMeta => ({ kind: EVENT_FRAME_KIND, input, ...(entryId ? { entryId } : {}),
   group: { id, index, size: 3 }, retain: true });
  const body = { eventId, ...(receivedAt ? { receivedAt } : {}),
   source: source ?? { type: 'unknown', origin: 'external' }, text };
@@ -88,6 +90,7 @@ export function encodeExternalInput(message: AgentMessage | ChatMsg): ChatMsg[] 
  }
  return buildEventFrameGroup({
   eventId: input.eventId,
+	entryId: "id" in message ? message.id : "context" in message ? message.context?.entryId : undefined,
   text: message.content,
   source: input.source,
   receivedAt: input.receivedAt,

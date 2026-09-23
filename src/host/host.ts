@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { errorMessage } from "../core/errors.js";
-import type { ContextSegments, Model, ModelStreamFn, Provider, ThinkingLevel } from "../core/types.js";
+import type { Model, ModelStreamFn, Provider, ThinkingLevel } from "../core/types.js";
 import { activeProvider, loadConfig } from "../ai/config.js";
 import { loadSettings, saveSettings } from "../ai/settings.js";
 import { modelKey, ModelRegistry } from "../ai/providers.js";
@@ -71,9 +71,7 @@ export interface HostSnapshot {
 	readonly modelName: string;
 	readonly thinkingLevels?: readonly ThinkingLevel[];
 	readonly thinkingLevel?: ThinkingLevel;
-	readonly usedTokens: number;
-	readonly contextWindow?: number;
-	readonly segments: ContextSegments;
+	readonly context?: import("../core/types.js").ContextSnapshot;
 	readonly busy: boolean;
 	readonly queue: readonly QueuedMessage[];
 	readonly queueDepth: number;
@@ -216,6 +214,7 @@ export class UinaHost {
 			factory: new DefaultAgentFactory(),
 			model: () => subject.getModel(),
 			stream: streamFn,
+			measureContext: (model, projection) => models.getProvider(model.providerId)?.measureContext?.(model, projection),
 			thinkingLevel,
 			createTools: (ownerId) => createChildTools(tools, { ownerId }),
             projection: resolvedProjection,
@@ -254,7 +253,9 @@ export class UinaHost {
    cwd: options.cwd,
    extensionPaths: options.extensionPaths,
    models: { current: () => subject.getModel(), list: () => models.listModels(), groups: () => models.groups(), resolve: name => models.resolve(name), select: name => subject.setModel(models.resolve(name)), stream: streamFn },
-			usage: () => ({ used: subject.getUsedTokens(), contextWindow: subject.getContextWindow(), segments: subject.getContextSegments() }),
+			context: () => subject.getContextSnapshot(),
+			inspectRequest: () => subject.inspectRequest(),
+			usage: () => subject.getRequestUsage(),
 			thinkingLevel: () => subject.getThinkingLevel(),
 			setThinkingLevel: (level) => subject.setThinkingLevel(level),
 			isBusy: () => subject.isBusy(),
@@ -295,6 +296,7 @@ export class UinaHost {
             systemPrompt: resolvedSystemPrompt,
 			runtimeHooks: extensionHost.runtimeHooks(),
 			projection: resolvedProjection,
+			measureContext: (model, projection) => models.getProvider(model.providerId)?.measureContext?.(model, projection),
 		});
 
 		subject.subscribe((event) => {
@@ -408,9 +410,7 @@ export class UinaHost {
 			modelName: model.name,
 			thinkingLevels: model.thinkingLevels,
 			thinkingLevel: model.thinkingLevels?.length ? this.subject.getThinkingLevel() : undefined,
-			usedTokens: this.subject.getUsedTokens(),
-			contextWindow: this.subject.getContextWindow(),
-			segments: this.subject.getContextSegments(),
+			context: this.subject.getCurrentContextSnapshot(),
 			busy: this.subject.isBusy(),
 			queue,
 			queueDepth: queue.length,
@@ -437,9 +437,7 @@ export class UinaHost {
 		await this.extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools({ jobs: this.jobs, subagents: this.subagents, isTaskAbandoned: (id) => this.abandonedTaskIds.has(id) }));
 		await this.extensionHost.activateBuiltin("commands", activateBuiltinCommands);
 		// 压缩预算直接读 Subject 声明的工具。再在宿主里拼一次，以后声明规则一变就会静默分叉。
-		await this.extensionHost.activateBuiltin("compaction", (pi) => activateCompaction(pi, {
-			tools: () => this.subject.declaredTools(),
-		}));
+		await this.extensionHost.activateBuiltin("compaction", activateCompaction);
 		await this.extensionHost.activateBuiltin("app-framework", activateAppFramework);
 		// 认知扩展（阶段 C 接线）：仅 profile 模式激活——pi.subject 存在时注册三工具与
 		// 非 tail transformContext 召回注入；无 profile 时零影响（原路径逐字节不变）。
@@ -448,7 +446,7 @@ export class UinaHost {
 			await this.extensionHost.activateBuiltin("cognition", (pi) => activateCognition(pi));
 		}
 		await this.extensionHost.load();
-
+		await this.subject.getContextSnapshot("idle_baseline");
 	}
 
 	get session(): import("../session/types.js").SessionAccess {
@@ -480,6 +478,7 @@ export class UinaHost {
 			await Promise.allSettled([...this.directRuns.values()]);
 			if (this.state.stopping) throw new Error("宿主正在关闭");
 			await this.extensionHost.reload();
+			await this.subject.getContextSnapshot("idle_baseline");
 			this.emit({ type: "notice", text: this.reloadSummaryNotice() });
 		} finally { this.reloading--; }
 	}

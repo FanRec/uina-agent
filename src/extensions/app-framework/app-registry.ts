@@ -82,8 +82,9 @@ export class AppRegistry {
 		// - 视口是瞬态上下文，不落 Session；每请求现做现用，上下文任意时刻只有一份“此刻”视口；
 		// - systemPrompt 保持完全静态（可变内容不再进入系统提示，消除前缀缓存击穿）；
 		// - 全 hidden ⇒ buildTailFrame 返回 undefined ⇒ 0 修改透传（0 token）。
-		this.pi.onHook("turn.transformContext", async (messages) => {
-			return appendTailFrame(messages, await this.viewport.buildTailFrame());
+		this.pi.onHook("turn.transformContext", async (projection) => {
+			const result = appendTailFrame(projection.messages, await this.viewport.buildTailFrame());
+			return result ? { projection: { ...projection, messages: result.messages } } : undefined;
 		}, { tail: true });
 	}
 

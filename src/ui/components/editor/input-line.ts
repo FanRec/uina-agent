@@ -174,7 +174,7 @@ export class InputLine implements Component, Focusable {
 	private topStatusHeader = "";
 	private modelName?: string;
 	private reasoningEffort?: string;
-	private usedTokens = 0;
+	private usedTokens?: number;
 	private contextWindow?: number;
 	private usageActual = false;
 	private segments?: ContextSegments;
@@ -217,7 +217,7 @@ export class InputLine implements Component, Focusable {
 
 	setContextStats(
 		modelName: string | undefined,
-		usedTokens: number,
+		usedTokens: number | undefined,
 		contextWindow?: number,
 		actual = false,
 		segments?: ContextSegments,
@@ -1062,12 +1062,11 @@ export class InputLine implements Component, Focusable {
 		// 5. 底边框：只展示宿主提供的事实。未知的上下文上限使用
 		//    明确占位，不把空进度条伪装成 0%。
 		// ─────────────────────────────────────────────────────────────
-		const pct = this.contextWindow === undefined
+		const pct = this.contextWindow === undefined || this.usedTokens === undefined
 			? undefined
 			: Math.min(100, Math.max(0, (this.usedTokens / this.contextWindow) * 100));
-		const pctStr = pct === undefined ? "上限未知" : `${pct.toFixed(1)}%`;
-		const usedText = formatTokensCompact(this.usedTokens);
-		const measuredUsed = `${this.usageActual ? "" : "~"}${usedText}`;
+		const pctStr = this.usedTokens === undefined ? "占用未知" : pct === undefined ? "上限未知" : `${pct.toFixed(1)}%`;
+		const measuredUsed = this.usedTokens === undefined ? "未知" : `${this.usageActual ? "" : "~"}${formatTokensCompact(this.usedTokens)}`;
 		const totalText = this.contextWindow === undefined ? "未知" : formatTokensCompact(this.contextWindow);
 		const fullReadout = `${measuredUsed}/${totalText}${pct === undefined ? "" : ` (${pctStr})`}`;
 		const compactReadout = `${measuredUsed}/${totalText}`;

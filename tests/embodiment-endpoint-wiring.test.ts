@@ -135,7 +135,7 @@ describe.skipIf(!hasLocalRuntime)("应用端点 ↔ 具身路由：跨真实边�
 		probeHostEvents = [];
 		env = await IsolatedEnv.create({ prefix: "uina-wiring-" });
 		tools = new ToolBroker();
-		runner = new ExtensionRunner({ cwd: env.path, tools });
+		runner = new ExtensionRunner({ cwd: env.path, tools, onCustomEntry: async () => {} });
 		errors = [];
 		runner.onError((err) => errors.push(err.error));
 
@@ -187,7 +187,7 @@ describe.skipIf(!hasLocalRuntime)("应用端点 ↔ 具身路由：跨真实边�
 		const messages = [
 			{ role: "user" as const, content: "原文" },
 		];
-		const output = await runner.runtimeHooks().turn.transformContext(messages);
+		const output = (await runner.runtimeHooks().turn.transformContext({ projectionId: "test", modelKey: "test", messages, tools: [] })).messages;
 
 		// systemPrompt 路径已废弃：prepare 不再追加具身文本（无其它 prepare 注入者时保持原样/undefined）
 		const prepared = await runner.runtimeHooks().turn.prepare({ prompt: "", systemPrompt: "BASE" });

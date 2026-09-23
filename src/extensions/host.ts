@@ -10,7 +10,7 @@
  */
 
 import { errorMessage } from "../core/errors.js";
-import type { ChatMsg } from "../core/types.js";
+import type { ChatMsg, RequestProjection } from "../core/types.js";
 import type {
 	DeepReadonly,
 	OutputEvent,
@@ -23,6 +23,7 @@ import {
 	type HookInputs,
 	type HookName,
 } from "../runtime/hooks.js";
+import { immutableProjection } from "../runtime/guard.js";
 
 export type {
 	AgentEndEvent,
@@ -36,8 +37,9 @@ export type {
 	OutputUpdateEvent,
 	QueueEvent,
 	RuntimeEvent,
+	SessionCompactStartEvent,
+	SessionCompactProgressEvent,
 	SessionCompactEvent,
-	SessionCompactFailedEvent,
 	ThinkingLevelSelectEvent,
 	ToolCallEvent,
 	ToolResultEvent,
@@ -189,7 +191,7 @@ export class ExtensionHost {
 			this.emitError(event.type, err);
 		}
 	}
-}
+	}
 
 	/** Queue observational events so stream consumers always observe start → update → end. */
 	emitObserved(event: OutputEvent, scope?: RuntimeScopeFilter): void {
@@ -245,28 +247,55 @@ export class ExtensionHost {
 		return modified ? { result: current.result, details: current.details, images: current.images } : undefined;
 	}
 
-	/** turn.transformContext：链式——后一个收到前一个的输出，返回整组替换。
-	 * 纯聚合器（P1-3）：入侧视图已由 guard 冻结并直传；贡献重绑时浅冻为下一
-	 * 步的只读视图，零深拷贝；返回收口在 guard 一次（copyMessages）。
-	 * 尾部相位：tail 注册者（瞬态尾部注入，如视口/具身快照帧）恒在非 tail（历史/裁剪注入）之后执行，
-	 * 保证“历史投影 → 裁剪 → 项目扩展注入 → 尾部瞬态帧”的层序，与注册先后无关。 */
-	async runTransformContext(messages: readonly ChatMsg[], scope?: RuntimeScopeFilter): Promise<ChatMsg[]> {
+	/** turn.transformContext：链式的纯 RequestProjection 变换。 */
+	async runTransformContext(projection: RequestProjection, scope?: RuntimeScopeFilter): Promise<RequestProjection> {
 		const all = this.hookEntriesFor("turn.transformContext", scope);
-		if (all.length === 0) return [...messages];
+		if (all.length === 0) return projection;
 		const handlers = [...all.filter((entry) => !entry.tail), ...all.filter((entry) => entry.tail)].map((entry) => entry.handler);
 
-		let currentMessages: readonly ChatMsg[] = messages;
+		let currentProjection: RequestProjection = immutableProjection(projection);
 		for (const handler of handlers) {
 			try {
-				const res = (await handler(currentMessages as never)) as HookContributions["turn.transformContext"] | undefined;
-				if (res?.messages) {
-					currentMessages = Object.freeze(res.messages as ChatMsg[]);
+				const res = (await handler(currentProjection as never)) as HookContributions["turn.transformContext"] | undefined;
+				if (res?.projection) {
+					currentProjection = immutableProjection(res.projection as RequestProjection);
 				}
 			} catch (err) {
 				this.emitError("turn.transformContext", err);
 			}
 		}
-		return currentMessages as ChatMsg[];
+		return currentProjection;
+	}
+
+	/** turn.preflight：所有决策看同一个只读投影，归并优先级 fail > rebuild > send。 */
+	async runPreflight(
+		input: HookInputs["turn.preflight"],
+		scope?: RuntimeScopeFilter,
+	): Promise<HookContributions["turn.preflight"]> {
+		let action: "send" | "rebuild" | "fail" = "send";
+		const reasons: string[] = [];
+		for (const handler of this.hooksFor("turn.preflight", scope)) {
+			try {
+				const res = (await handler(input as never)) as HookContributions["turn.preflight"] | undefined;
+				if (!res) continue;
+				if (res.reason) reasons.push(res.reason);
+				if (res.action === "fail") action = "fail";
+				else if (res.action === "rebuild" && action === "send") action = "rebuild";
+			} catch (err) {
+				this.emitError("turn.preflight", err);
+				if (action !== "fail") action = "fail";
+				reasons.push(errorMessage(err));
+			}
+		}
+		return { action, ...(reasons.length > 0 ? { reason: reasons.join("；") } : {}) };
+	}
+
+	/** All observers have seen agent_end; queued work has not resumed yet. */
+	async runAfterEnd(input: HookInputs["turn.afterEnd"], scope?: RuntimeScopeFilter): Promise<void> {
+		for (const handler of this.hooksFor("turn.afterEnd", scope)) {
+			try { await handler(input as never); }
+			catch (error) { this.emitError("turn.afterEnd", error); }
+		}
 	}
 
 	/**

@@ -124,12 +124,12 @@ export function activateCognition(pi: ExtensionAPI): void {
 
 	// M5：非 tail transformContext（默认注册即非 tail；尾相位留给视口/具身瞬态帧）。
 	// injector 在激活时构造一次（闭包只依赖 store/scope，无需每请求重建）；
-	// hook handler 收到的就是消息数组（非包装对象），返回 { messages } 整组替换。
+	// hook handler 只生成新的 RequestProjection，不修改传入投影。
 	const injector = createContextInjector({ store, scope: {} });
-	pi.onHook("turn.transformContext", async (messages) => {
-		const result = await injector(messages as unknown as readonly MinimalMessage[]);
+	pi.onHook("turn.transformContext", async (projection) => {
+		const result = await injector(projection.messages as unknown as readonly MinimalMessage[]);
 		if (!result) return undefined;
-		return { messages: result.messages } as unknown as { readonly messages?: readonly import("../../core/types.js").ChatMsg[] };
+		return { projection: { ...projection, messages: result.messages as import("../../core/types.js").ChatMsg[] } };
 	});
 
 	// 生命周期：scope 关闭时等待在途写结算（此后写入明确拒绝——store.close 硬合同）。

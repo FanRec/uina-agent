@@ -1,11 +1,17 @@
-import type { ChatMsg } from "../core/types.js";
+import type { ChatMsg, RequestProjection } from "../core/types.js";
 import type { DeepReadonly } from "./events.js";
 import type { RuntimeHooks } from "./hooks.js";
 
 export const NO_RUNTIME_HOOKS: RuntimeHooks = Object.freeze({
 	turn: Object.freeze({
 		prepare: async () => ({}),
-		transformContext: async (messages: readonly DeepReadonly<ChatMsg>[]) => [...messages] as ChatMsg[],
+		transformContext: async (projection: DeepReadonly<RequestProjection>) => ({
+			...projection,
+			messages: [...projection.messages] as ChatMsg[],
+			tools: [...projection.tools],
+		}),
+		preflight: async () => ({ action: "send" as const }),
+		afterEnd: async () => {},
 		shouldStop: async () => ({}),
 	}),
 	tools: Object.freeze({

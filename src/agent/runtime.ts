@@ -5,7 +5,7 @@ import type { SessionAccess, SessionStore } from "../session/types.js";
 import { createSessionAccess } from "../session/access.js";
 import { Subject, type AgentInput } from "./loop.js";
 import type { ToolView } from "../tools/broker.js";
-import type { Model, ModelStreamFn } from "../core/types.js";
+import type { Model, ModelStreamFn, RequestProjection, TokenMeasurement } from "../core/types.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
 
 export type AgentStatus = "running" | "idle" | "disposed";
@@ -27,6 +27,8 @@ export interface AgentCreateOptions {
 	thinkingLevel?: ThinkingLevel;
 	projection?: import("./projection.js").ProjectionPolicy;
 	runtimeHooks?: RuntimeHooks;
+	/** Optional provider/model-specific context measurer; absent means conservative fallback. */
+	measureContext?: (model: Model, projection: RequestProjection) => TokenMeasurement | undefined;
 }
 
 export interface AgentHandle {
@@ -62,6 +64,7 @@ class RuntimeAgent implements AgentHandle {
 			thinkingLevel: options.thinkingLevel,
             projection: options.projection,
 			runtimeHooks: options.runtimeHooks,
+			measureContext: options.measureContext,
 		});
 		this.session = createSessionAccess(this.store, (request, source, signal) =>
 			this.subject.requestRewind(request, source, signal),

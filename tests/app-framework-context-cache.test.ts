@@ -26,6 +26,7 @@ const inputFrame = (n: number): ChatMsg[] => [
 	{ role: "user", content: `第${n}轮输入` },
 	{ role: "assistant", content: `第${n}轮回复` },
 ];
+const projection = (messages: readonly ChatMsg[]) => ({ projectionId: "test", modelKey: "test", messages, tools: [] });
 
 describe("尾部瞬态帧的前缀缓存合同", () => {
 	it("进度 tick 前后：systemPrompt 不变（静态）、历史前缀逐字节相同、仅尾帧组不同", async () => {
@@ -33,21 +34,22 @@ describe("尾部瞬态帧的前缀缓存合同", () => {
 		const viewport = new ContextViewport({ getRuntimes: () => [runtime] });
 
 		const host = new ExtensionHost();
-		host.onHook("turn.transformContext", async (messages) => {
-			return appendTailFrame(messages, await viewport.buildTailFrame());
+		host.onHook("turn.transformContext", async (request) => {
+			const result = appendTailFrame(request.messages, await viewport.buildTailFrame());
+			return result ? { projection: { ...request, messages: result.messages } } : undefined;
 		}, { tail: true });
 		const hooks = guardRuntimeHooks(createRuntimeHooks(host));
 
 		// ── 第 N 轮请求：history + 当时的视口快照（尾帧是请求的最后部分，模型看它作答）──
 		const roundN = [...inputFrame(1), { role: "user" as const, content: "第2轮输入" }];
-		const requestN = await hooks.turn.transformContext(roundN);
+		const requestN = (await hooks.turn.transformContext(projection(roundN))).messages;
 
 		// ── 视口进度 tick，第 N+1 轮请求：真实时序中第 N 轮回复产生在其尾帧之后——
 		// 故第 N 轮完整请求（含旧尾帧）成为历史前缀，随后追加 a2 与新尾帧。──
 		runtime.definition.render = () => "[jukebox: 播放中 01:31]";
 		const tailN = requestN.slice(-3);
 		const roundN1 = [...roundN, ...tailN, { role: "assistant" as const, content: "第2轮回复" }];
-		const requestN1 = await hooks.turn.transformContext(roundN1);
+		const requestN1 = (await hooks.turn.transformContext(projection(roundN1))).messages;
 
 		// 1. 公共前缀 = sys 之外的第 N 轮全部请求消息，逐字节相同（可被前缀缓存命中）。
 		for (let i = 0; i < requestN.length; i++) {
@@ -70,13 +72,14 @@ describe("尾部瞬态帧的前缀缓存合同", () => {
 		const runtime = viewportRuntime(() => "[jukebox: 空闲]");
 		const viewport = new ContextViewport({ getRuntimes: () => [runtime] });
 		const host = new ExtensionHost();
-		host.onHook("turn.transformContext", async (messages) => {
-			return appendTailFrame(messages, await viewport.buildTailFrame());
+		host.onHook("turn.transformContext", async (request) => {
+			const result = appendTailFrame(request.messages, await viewport.buildTailFrame());
+			return result ? { projection: { ...request, messages: result.messages } } : undefined;
 		}, { tail: true });
 		const hooks = guardRuntimeHooks(createRuntimeHooks(host));
 
-		const a = await hooks.turn.transformContext([{ role: "user", content: "x" }]);
-		const b = await hooks.turn.transformContext([{ role: "user", content: "x" }]);
+		const a = (await hooks.turn.transformContext(projection([{ role: "user", content: "x" }]))).messages;
+		const b = (await hooks.turn.transformContext(projection([{ role: "user", content: "x" }]))).messages;
 		// 同内容 ⇒ 同 eventId ⇒ 同 callId ⇒ 三消息组逐字节相同
 		expect(a).toEqual(b);
 	});

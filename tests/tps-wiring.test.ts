@@ -33,8 +33,8 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 		const placeholder = foldStreamChars({ cjk: 1150, other: 0 });
 		tui.host.activityLine.addStreamText("思".repeat(1150));
 		// 同一次调用推两条累积快照（现实中值会一路增长，这里取终值）
-		tui.render({ type: "usage_update", callId: "call-1", usedTokens: 1000, outputTokens: 120 });
-		tui.render({ type: "usage_update", callId: "call-1", usedTokens: 1000, outputTokens: 120 });
+		tui.render({ type: "usage_update", usage: { callId: "call-1", outputTokens: 120 } });
+		tui.render({ type: "usage_update", usage: { callId: "call-1", outputTokens: 120 } });
 		tui.render({ type: "turn_end", turnNumber: 1 });
 
 		const rendered = headerTokens(tui);
@@ -51,10 +51,10 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 		const tui = createTestUI();
 		tui.render({ type: "turn_start", turnNumber: 1, userText: "跑两轮" });
 		tui.render({ type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "第一轮的输出" }); // 调用 1 有增量 → 有解码区间
-		tui.render({ type: "usage_update", callId: "call-1", usedTokens: 1000, outputTokens: 30 });
+		tui.render({ type: "usage_update", usage: { callId: "call-1", outputTokens: 30 } });
 		tui.render({ type: "tool_call", toolName: "list_dir", args: {}, callId: "tool-1" }); // 调用 1 收尾
 		tui.render({ type: "output_update", streamId: "s1", offset: 1, channel: "content", text: "第二轮的输出" }); // 调用 2 的增量
-		tui.render({ type: "usage_update", callId: "call-2", usedTokens: 1000, outputTokens: 45 });
+		tui.render({ type: "usage_update", usage: { callId: "call-2", outputTokens: 45 } });
 		tui.render({ type: "turn_end", turnNumber: 1 });
 
 		const rendered = headerTokens(tui);
@@ -105,7 +105,7 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 			tui.render({ type: "output_update", streamId: "s1", offset: 0, channel: "thinking", text: "甲".repeat(300) }); // 估算 300
 			vi.setSystemTime(T0 + 510);
 			// 调用 1 收尾，真值 120 到位
-			tui.render({ type: "usage_update", callId: "call-1", usedTokens: 1000, outputTokens: 120 });
+			tui.render({ type: "usage_update", usage: { callId: "call-1", outputTokens: 120 } });
 			vi.setSystemTime(T0 + 1010);
 			// 调用 1 收尾（它的工具开始跑）：0.5s 解码、120 token 结算进本回合
 			tui.render({ type: "tool_call", toolName: "list_dir", args: {}, callId: "tool-1" });
@@ -136,7 +136,7 @@ describe("InteractiveTUI：usage_update 接线到速度计账", () => {
 			vi.setSystemTime(T0 + 10);
 			tui.render({ type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "我来看看这个文件" });
 			vi.setSystemTime(T0 + 3010); // 3 秒工具参数流式：UI 收不到任何增量
-			tui.render({ type: "usage_update", callId: "call-1", usedTokens: 1000, outputTokens: 500 });
+			tui.render({ type: "usage_update", usage: { callId: "call-1", outputTokens: 500 } });
 			vi.setSystemTime(T0 + 3020);
 			tui.render({ type: "tool_call", toolName: "read_file", args: {}, callId: "tool-1" });
 

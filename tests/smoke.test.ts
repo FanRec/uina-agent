@@ -252,7 +252,7 @@ describe("Subject", () => {
 
 	test("scopes actual usage to one provider request and does not reuse it on the next turn", async () => {
 		let request = 0;
-		const reports: Array<{ usedTokens: number; actual: boolean; cacheRead?: number }> = [];
+		const reports: import("../src/core/types.js").RequestUsage[] = [];
 		const model: Model = {
 			id: "usage-scope",
 			name: "usage-scope",
@@ -270,14 +270,14 @@ describe("Subject", () => {
 		};
 		const harness = SubjectHarness.create({ model, stream });
 		harness.subscribe((event) => {
-			if (event.type === "turn_end" && event.usage) {
-				reports.push(event.usage as { usedTokens: number; actual: boolean; cacheRead?: number });
+			if (event.type === "turn_end" && event.requestUsage) {
+				reports.push(event.requestUsage);
 			}
 		});
 		await harness.pushInput("one");
 		await harness.pushInput("two");
-		expect(reports[0]).toMatchObject({ usedTokens: 22, actual: true, cacheRead: 7 });
-		expect(reports[1]?.actual).toBe(false);
+		expect(reports[0]?.cacheRead).toBe(7);
+		expect(reports[0]?.totalTokens).toBe(22);
 		expect(reports[1]?.cacheRead).toBeUndefined();
 	});
 

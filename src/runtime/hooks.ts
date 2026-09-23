@@ -1,4 +1,4 @@
-import type { ChatMsg, FinishReason, Model, ThinkingLevel, ToolResultStatus } from "../core/types.js";
+import type { ChatMsg, FinishReason, Model, RequestProjection, ThinkingLevel, TokenMeasurement, ToolResultStatus } from "../core/types.js";
 import type { DeepReadonly, OutputEvent, RuntimeEvent } from "./events.js";
 import type { ImageContent } from "../core/content.js";
 
@@ -19,6 +19,8 @@ export interface ProviderHooks {
 export type HookName =
 	| "turn.prepare"
 	| "turn.transformContext"
+	| "turn.preflight"
+	| "turn.afterEnd"
 	| "turn.shouldStop"
 	| "tools.beforeCall"
 	| "tools.transformResult"
@@ -29,7 +31,9 @@ export type HookName =
 /** 各干预注册点的输入（只读化由 HookHandler 统一施加，形状与 RuntimeHooks 对应方法的入参一致）。 */
 export interface HookInputs {
 	"turn.prepare": { readonly prompt: string; readonly systemPrompt: string };
-	"turn.transformContext": readonly ChatMsg[];
+	"turn.transformContext": RequestProjection;
+	"turn.preflight": { readonly projection: RequestProjection; readonly measurement: TokenMeasurement; readonly pass: number };
+	"turn.afterEnd": { readonly turnNumber: number; readonly success: boolean; readonly error?: string };
 	"turn.shouldStop": { readonly turnNumber: number; readonly finishReason: FinishReason; readonly reply: string; readonly toolCallCount: number };
 	"tools.beforeCall": { readonly callId: string; readonly name: string; readonly args: Record<string, unknown> };
 	"tools.transformResult": { readonly callId: string; readonly name: string; readonly args: Record<string, unknown>; readonly result: string; readonly status: ToolResultStatus; readonly images?: readonly ImageContent[]; readonly details?: unknown };
@@ -44,7 +48,9 @@ export interface HookInputs {
  */
 export interface HookContributions {
 	"turn.prepare": { readonly messages?: readonly ChatMsg[]; readonly systemPrompt?: string; readonly model?: Model; readonly thinkingLevel?: ThinkingLevel };
-	"turn.transformContext": { readonly messages?: readonly DeepReadonly<ChatMsg>[] };
+	"turn.transformContext": { readonly projection?: RequestProjection | DeepReadonly<RequestProjection> };
+	"turn.preflight": { readonly action?: "send" | "rebuild" | "fail"; readonly reason?: string };
+	"turn.afterEnd": Record<string, never>;
 	"turn.shouldStop": { readonly stop?: boolean };
 	"tools.beforeCall": { readonly block?: boolean; readonly reason?: string };
 	"tools.transformResult": { readonly result?: string; readonly images?: readonly ImageContent[]; readonly details?: unknown };
@@ -65,6 +71,7 @@ export type HookHandler<K extends HookName> = (
  * | --------------------------- | ------------------------------------------ |
  * | turn.prepare                | systemPrompt/model/thinkingLevel 后写覆盖先写；messages 聚合追加 |
  * | turn.transformContext       | 链式：后一个收到前一个的输出，返回整组替换      |
+ * | turn.preflight              | 归并：fail > rebuild > send；只读投影决策    |
  * | turn.shouldStop             | 短路：任一 stop=true 即收尾，后续不再询问       |
  * | tools.beforeCall            | 短路：任一 block=true 即拦截，后续不再询问      |
  * | tools.transformResult       | 链式：后一个收到前一个改写后的结果，逐字段覆盖（status 除外——执行事实由流水线独占） |
@@ -89,7 +96,13 @@ export interface RuntimeHooks {
 		 * 广播 model_select）。对应 Pi 的 prepareNextTurn。
 		 */
 		prepare(input: Readonly<{ prompt: string; systemPrompt: string }>): Promise<Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string; model?: Model; thinkingLevel?: ThinkingLevel }>>;
-		transformContext(messages: readonly DeepReadonly<ChatMsg>[]): Promise<ChatMsg[]>;
+		/** Pure projection transform. Handlers must not consume events, persist state or
+		 * perform external effects merely because inspection ran. */
+		transformContext(projection: DeepReadonly<RequestProjection>): Promise<RequestProjection>;
+		/** Read-only post-measurement decision. Core applies fail > rebuild > send. */
+		preflight(input: Readonly<{ projection: DeepReadonly<RequestProjection>; measurement: TokenMeasurement; pass: number }>): Promise<Readonly<{ action?: "send" | "rebuild" | "fail"; reason?: string }>>;
+		/** Awaited safe point after all agent_end observers and before queue resume. */
+		afterEnd(input: Readonly<{ turnNumber: number; success: boolean; error?: string }>): Promise<void>;
 		/**
 		 * 回合间停止决策：在工具交换后的续跑点询问；返回 stop 时本轮立即收尾，
 		 * 不再发起下一次模型调用。对应 Pi 的 shouldStopAfterTurn。

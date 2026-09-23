@@ -7,8 +7,8 @@ import type { Component, Focusable, OverlayHandle, OverlayOptions, WidgetPlaceme
 import { CURSOR_MARKER } from "./core/types.js";
 import { Key, matchesKey } from "./core/keys.js";
 import { C, visibleWidth, truncateToWidth, getPrevGraphemeIndex, getNextGraphemeIndex } from "./core/utils.js";
-import type { ExtensionUIContext, UsageSnapshot, ModelPickerGroup } from "../extensions/ui-contract.js";
-import type { ThinkingLevel } from "../core/types.js";
+import type { ExtensionUIContext, ModelPickerGroup } from "../extensions/ui-contract.js";
+import type { ContextSnapshot, ThinkingLevel } from "../core/types.js";
 
 export interface UIHostContextPort {
 	notify(message: string, type?: "info" | "warning" | "error", timeoutMs?: number): void;
@@ -40,10 +40,10 @@ export interface UIHostContextPort {
 	setModel?(name: string): void;
 	setThinkingLevels?(levels?: readonly ThinkingLevel[]): void;
 	setReasoningEffort?(level?: ThinkingLevel): void;
-	setUsage?(snapshot: UsageSnapshot): void;
+	setContext?(snapshot: ContextSnapshot): void;
 	getScrollbarThumbStyle?(): "slim" | "block" | "wide";
 	setScrollbarThumbStyle?(style: "slim" | "block" | "wide"): void;
-	addCompaction?(record: { summary: string; turnsCount: number; tokensBefore: number; collapsed: boolean }): void;
+	addCompaction?(record: { status?: "completed" | "failed" | "cancelled" | "noop"; summary: string; turnsCount: number; tokensBefore: number; collapsed: boolean }): void;
 }
 
 /** 终端鼠标上报前缀（覆盖层统一忽略，避免吞掉后续按键字节）。 */
@@ -412,7 +412,7 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 		setModel: (name) => host.setModel?.(name),
 		setThinkingLevels: (levels) => host.setThinkingLevels?.(levels),
 		setReasoningEffort: (level) => host.setReasoningEffort?.(level),
-		setUsage: (snapshot) => host.setUsage?.(snapshot),
+		setContext: (snapshot) => host.setContext?.(snapshot),
 		getScrollbarThumbStyle: (): "slim" | "block" | "wide" => host.getScrollbarThumbStyle?.() ?? "slim",
 		setScrollbarThumbStyle: (style) => host.setScrollbarThumbStyle?.(style),
 		addCompaction: (record) => host.addCompaction?.(record),

@@ -17,6 +17,7 @@ export interface SubagentRegistryOptions {
 	/** Resolved per child creation so a model switch affects new subagents. */
 	model: () => Parameters<AgentFactory["create"]>[0]["model"];
 	stream: Parameters<AgentFactory["create"]>[0]["stream"];
+	measureContext?: Parameters<AgentFactory["create"]>[0]["measureContext"];
 	createTools: (ownerId: string) => ToolView;
 	thinkingLevel?: Parameters<AgentFactory["create"]>[0]["thinkingLevel"];
 	projection?: Parameters<AgentFactory["create"]>[0]["projection"];
@@ -142,6 +143,7 @@ export class SubagentRegistry {
 			id,
 			model: this.options.model(),
 			stream: this.options.stream,
+			measureContext: this.options.measureContext,
 			tools: this.options.createTools(id),
 			thinkingLevel: this.options.thinkingLevel,
             projection: this.options.projection,

@@ -38,9 +38,9 @@ export default function activateMemory(pi: ExtensionAPI): void {
 		return { systemPrompt: `${input.systemPrompt}\n\n[已知记忆]\n- ${facts.join("\n- ")}` };
 	});
 
-	pi.onHook("turn.transformContext", (messages) => {
+	pi.onHook("turn.transformContext", (projection) => {
 		const facts = readFacts(pi);
 		if (facts.length === 0) return undefined;
-		return { messages: [...messages, { role: "user", content: `[记忆上下文] ${facts.join("；")}` }] };
+		return { projection: { ...projection, messages: [...projection.messages, { role: "user", content: `[记忆上下文] ${facts.join("；")}` }] } };
 	});
 }

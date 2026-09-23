@@ -604,16 +604,17 @@ export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMess
 		}
 		if (entry.kind === "input") {
 			const message = projectInputMessage(entry.input);
-			if (message) messages.push(message);
+			if (message) messages.push({ ...message, id: entry.id });
 			continue;
 		}
 		if (entry.kind === "message") {
-			messages.push({ ...structuredClone(entry.message as AgentMessage), ...(entry.message.role === "user" && !entry.message.id ? { id: entry.id } : {}) });
+			messages.push({ ...structuredClone(entry.message as AgentMessage), ...(!entry.message.id ? { id: entry.id } : {}) });
 			continue;
 		}
 		if (entry.kind === "custom_message") {
 			messages.push({
 				role: "custom",
+				id: entry.id,
 				customType: entry.customType,
 				content: entry.content,
 				...(entry.images ? { images: entry.images } : {}),

@@ -120,7 +120,7 @@ export class JsonlSessionStore implements SessionStore {
 	}
 
 	appendInput(input: QueuedInput): Promise<void> {
-		return this.append({ kind: "input", id: randomUUID(), seq: ++this.nextSeq, timestamp: new Date().toISOString(), input: structuredClone(input) });
+		return this.append({ kind: "input", id: input.id, seq: ++this.nextSeq, timestamp: new Date().toISOString(), input: structuredClone(input) });
 	}
 
 	appendMessage(message: AgentMessage | ChatMsg, id?: string): Promise<void> {
@@ -232,7 +232,7 @@ export class MemorySessionStore implements SessionStore {
 	}
 
 	appendInput(input: QueuedInput): Promise<void> {
-		this.appendSync({ kind: "input", id: randomUUID(), seq: this.records.length + 1, timestamp: new Date().toISOString(), input: structuredClone(input) });
+		this.appendSync({ kind: "input", id: input.id, seq: this.records.length + 1, timestamp: new Date().toISOString(), input: structuredClone(input) });
 		return Promise.resolve();
 	}
 

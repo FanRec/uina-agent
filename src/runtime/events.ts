@@ -1,4 +1,4 @@
-import type { ContextSegments, QueuedMessage, ThinkingLevel } from "../core/types.js";
+import type { ContextSnapshot, QueuedMessage, RequestUsage, ThinkingLevel } from "../core/types.js";
 
 export type DeepReadonly<T> = T extends (...args: never[]) => unknown
 	? T
@@ -17,9 +17,9 @@ export type RuntimeEvent =
 	| SessionRewindEvent
 	| AgentStartEvent | AgentEndEvent | AgentSettledEvent | TurnStartEvent | TurnEndEvent
 	| ToolCallEvent | ToolResultEvent | ModelSelectEvent | ThinkingLevelSelectEvent
-	| SessionCompactEvent | SessionCompactFailedEvent
+	| SessionCompactStartEvent | SessionCompactProgressEvent | SessionCompactEvent
 	| OutputStartEvent | OutputUpdateEvent | OutputEndEvent | OutputInterruptedEvent
-	| UsageUpdateEvent
+	| UsageUpdateEvent | ContextUpdateEvent
 	| QueueEvent | TurnAbortedEvent | ErrorEvent
 	| CustomMessageEvent | CustomEntryEvent;
 
@@ -30,16 +30,7 @@ export interface TurnStartEvent { readonly type: "turn_start"; readonly turnNumb
 export interface TurnEndEvent {
 	readonly type: "turn_end";
 	readonly turnNumber: number;
-	readonly usage?: {
-		readonly usedTokens: number;
-		readonly contextWindow?: number;
-		readonly segments?: ContextSegments;
-		readonly actual?: boolean;
-		readonly cacheRead?: number;
-		readonly cacheWrite?: number;
-		readonly inputTokens?: number;
-		readonly outputTokens?: number;
-	};
+	readonly requestUsage?: RequestUsage;
 }
 
 /**
@@ -54,26 +45,38 @@ export interface TurnEndEvent {
  */
 export interface UsageUpdateEvent {
 	readonly type: "usage_update";
-	/**
-	 * 本次模型调用的标识。同一个 callId 会发多条 usage_update（服务端在调用进行中
-	 * 反复推送累积快照），消费者必须按它去重/覆盖，而不是每条都当作增量累加。
-	 */
-	readonly callId: string;
-	readonly usedTokens: number;
-	readonly contextWindow?: number;
-	readonly segments?: ContextSegments;
-	readonly actual?: boolean;
-	readonly cacheRead?: number;
-	readonly cacheWrite?: number;
-	readonly inputTokens?: number;
-	readonly outputTokens?: number;
+	readonly usage: RequestUsage;
+}
+export interface ContextUpdateEvent {
+	readonly type: "context_update";
+	readonly snapshot: ContextSnapshot;
 }
 export interface ToolCallEvent { readonly type: "tool_call"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly callId: string; }
 export interface ToolResultEvent { readonly type: "tool_result"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly result: string; readonly images?: readonly import("../core/content.js").ImageContent[]; readonly details?: unknown; readonly status: import("../core/types.js").ToolResultStatus; readonly callId: string; }
 export interface ModelSelectEvent { readonly type: "model_select"; readonly model: string; readonly previousModel?: string; }
 export interface ThinkingLevelSelectEvent { readonly type: "thinking_level_select"; readonly level: ThinkingLevel; readonly previousLevel?: ThinkingLevel; }
-export interface SessionCompactEvent { readonly type: "session_compact"; readonly summary: string; readonly tokensBefore: number; readonly retainedTailCount: number; }
-export interface SessionCompactFailedEvent { readonly type: "session_compact_failed"; readonly error: string; }
+export interface SessionCompactStartEvent {
+	readonly type: "session_compact_start";
+	readonly operationId: string;
+	readonly reason: "manual" | "automatic";
+	readonly modelKey: string;
+}
+export interface SessionCompactProgressEvent {
+	readonly type: "session_compact_progress";
+	readonly operationId: string;
+	readonly phase: "queued" | "planning" | "summarizing" | "applying" | "measuring";
+	readonly detail?: string;
+}
+export interface SessionCompactEvent {
+	readonly type: "session_compact";
+	readonly operationId: string;
+	readonly status: "completed" | "failed" | "cancelled" | "noop";
+	readonly summary?: string;
+	readonly error?: string;
+	readonly tokensBefore?: number;
+	readonly tokensAfter?: number;
+	readonly retainedTailCount?: number;
+}
 
 export interface OutputStartEvent { readonly type: "output_start"; readonly streamId: string; readonly channel: "content" | "thinking" | "tool"; }
 export interface OutputUpdateEvent { readonly type: "output_update"; readonly streamId: string; readonly offset: number; readonly channel: "content" | "thinking" | "tool"; readonly text: string; }

@@ -1,4 +1,4 @@
-import type { ToolResultStatus } from "../../core/types.js";
+import type { RequestUsage, ToolResultStatus } from "../../core/types.js";
 /**
  * Agent 运行时事件适配器与轨迹只读投影（TrajectoryProjection）。
  * 接收 Subject 生命周期 hooks，向 Transcript 分发内容并构建真实时间线时序节点，杜绝任何假数据。
@@ -109,7 +109,7 @@ export class TrajectoryProjection implements TrajectoryEventSource {
 		}
 	}
 
-	onTurnEnd(n: number, usage?: { usedTokens: number; contextWindow?: number }): void {
+	onTurnEnd(n: number, usage?: RequestUsage): void {
 		const now = Date.now();
 		const elapsed = Math.max(1, now - this.turnStartTime);
 
@@ -122,7 +122,7 @@ export class TrajectoryProjection implements TrajectoryEventSource {
 			startedAt: this.turnStartTime,
 			endedAt: now,
 			durationMs: elapsed,
-			tokens: usage ? { total: usage.usedTokens } : undefined,
+			tokens: usage?.totalTokens !== undefined ? { total: usage.totalTokens } : undefined,
 		});
 		this.notify();
 	}

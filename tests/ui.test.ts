@@ -473,6 +473,24 @@ describe("UI Components & Visual Rendering", () => {
 		expect(stripAnsi(str)).toContain("流式生成中");
 	});
 
+	it("扩展后台工作从空闲态开始时启动独立墙钟计时", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+		const host = new UIHost();
+		try {
+			host.setWorkingMessage("正在压缩上下文：生成历史摘要");
+			host.setWorkingVisible(true);
+			vi.advanceTimersByTime(1_500);
+
+			const header = stripAnsi(host.activityLine.getHeaderString(80));
+			expect(header).toContain("正在压缩上下文：生成历史摘要");
+			expect(header).toContain("1.5s");
+		} finally {
+			host.setWorkingVisible(false);
+			vi.useRealTimers();
+		}
+	});
+
 	it("当前流式思考立即可见，并注册鼠标展开目标", () => {
 		const transcript = new TranscriptContainer();
 		transcript.startTurn(1, "正在处理的问题");
@@ -690,6 +708,16 @@ describe("UI Components & Visual Rendering", () => {
 		expect(eWidths.every((w) => w === eWidths[0])).toBe(true);
 	});
 
+	it("失败的压缩记录不显示为已压缩摘要", async () => {
+		const { formatCompactionCardLines } = await import("../src/ui/components/transcript/cards.js");
+		const rendered = stripAnsi(formatCompactionCardLines({
+			status: "failed", summary: "摘要模型请求终止", turnsCount: 0, tokensBefore: 0, collapsed: false,
+		}, 80).join("\n"));
+		expect(rendered).toContain("压缩失败");
+		expect(rendered).not.toContain("会话已压缩");
+		expect(rendered).not.toContain("完整摘要");
+	});
+
 	it("SyntaxText: 语言名称规范化与轻量语法高亮及降级", async () => {
 		const { normalizeLanguage, highlightCode, highlightLines } = await import("../src/ui/components/primitives/syntax-text.js");
 
@@ -830,7 +858,7 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 			harness.tui.render({ type: "tool_call", toolName: "list_dir", args: {}, callId: "tool-1" });
 			harness.tui.render({ type: "tool_result", toolName: "list_dir", args: {}, result: "dir output", status: "succeeded", callId: "tool-1" });
 
-			harness.tui.render({ type: "turn_end", turnNumber: 1, usage: { usedTokens: 2048, contextWindow: 65536, actual: false } });
+			harness.tui.render({ type: "turn_end", turnNumber: 1, requestUsage: { callId: "call-1", totalTokens: 2048 } });
 			expect(harness.host.isBusy()).toBe(false);
 		} finally {
 			harness.dispose();
@@ -2221,7 +2249,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			tui.render({
 				type: "turn_end",
 				turnNumber: 1,
-				usage: { usedTokens: 500, contextWindow: 128000, actual: true },
+				requestUsage: { callId: "call-1", totalTokens: 500 },
 			});
 
 			const nodes = tui.host.trajectoryProjection.list();
@@ -2333,6 +2361,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			const mockClear = vi.fn();
 			const mockAddCompaction = vi.fn();
 			const mockSetEffort = vi.fn();
+			const mockSetWorkingMessage = vi.fn();
+			const mockSetWorkingVisible = vi.fn();
 			const setUsageCalls: unknown[] = [];
 
 			const handlers = new Map<string, Function>();
@@ -2352,6 +2382,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					clearNotification: mockClear,
 					addCompaction: mockAddCompaction,
 					setReasoningEffort: mockSetEffort,
+					setWorkingMessage: mockSetWorkingMessage,
+					setWorkingVisible: mockSetWorkingVisible,
 					setUsage: (snapshot: unknown) => {
 						setUsageCalls.push(snapshot);
 					},
@@ -2371,12 +2403,14 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(compactHandler).toBeDefined();
 			compactHandler!({
 				type: "session_compact",
+				status: "completed",
 				summary: "完成测试总结",
 				tokensBefore: 15000,
 				retainedTailCount: 2,
 			});
 			expect(mockNotify).toHaveBeenCalledWith("会话已压缩", "info", 2500);
 			expect(mockAddCompaction).toHaveBeenCalledWith({
+				status: "completed",
 				summary: "完成测试总结",
 				turnsCount: 2,
 				tokensBefore: 15000,
@@ -2388,11 +2422,10 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			// usage_update 自然更新（用旧真值标"估算"才是误导）。
 			expect(setUsageCalls.length).toBe(0);
 
-			// 3. 触发 session_compact_failed
-			const failedHandler = handlers.get("session_compact_failed");
-			expect(failedHandler).toBeDefined();
-			failedHandler!({ type: "session_compact_failed", error: "Token limit" });
+			// 3. 失败也由统一 session_compact 终态事件表达
+			compactHandler!({ type: "session_compact", status: "failed", error: "Token limit" });
 			expect(mockNotify).toHaveBeenCalledWith("会话压缩失败：Token limit", "warning", 3000);
+			expect(mockAddCompaction).toHaveBeenLastCalledWith(expect.objectContaining({ status: "failed", collapsed: false, summary: "Token limit" }));
 
 			// 4. 触发 thinking_level_select 驱动 Toast 与底栏状态联动
 			const thinkingHandler = handlers.get("thinking_level_select");

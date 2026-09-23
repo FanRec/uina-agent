@@ -11,6 +11,7 @@ import type {
 	ThinkingLevel,
 	Usage,
 } from "../core/types.js";
+import { modelKey } from "../core/model.js";
 import {
 	assertProviderFacts,
 	configuredThinkingLevels,
@@ -645,9 +646,7 @@ interface GeminiChunk {
  * 会话偏好持久化统一用这个键（只按裸 id 分辨会让"另一个 provider 的同名模型"
  * 在重启后被还原成注册表里恰好先注册的那一个）。
  */
-export function modelKey(model: Pick<Model, "providerId" | "id">): string {
-	return `${model.providerId}/${model.id}`;
-}
+export { modelKey } from "../core/model.js";
 
 export class ModelRegistry {
 	private providers = new Registrations<Provider>();

@@ -16,7 +16,7 @@ import { decodeHoverTarget, encodeHoverTarget } from "./core/hover-target.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ThinkingLevel } from "../core/types.js";
 import type { SessionAccess, SessionEntry } from "../session/types.js";
-import type { UsageSnapshot } from "../extensions/ui-contract.js";
+import type { ContextSnapshot } from "../core/types.js";
 import { C, copyToClipboardUnified, visibleWidth, truncateToWidth, stripAnsi, normalizeFrameLine } from "./core/utils.js";
 import {
 	InputLine,
@@ -154,7 +154,7 @@ export class UIHost implements UIHostContextPort {
 
 	// 业务参数
 	modelName?: string;
-	private usedTokens = 0;
+	private usedTokens?: number;
 	private contextWindow?: number;
 	private usageActual = false;
 	private reasoningEffort?: ThinkingLevel;
@@ -519,7 +519,7 @@ export class UIHost implements UIHostContextPort {
 
 	addCompaction(record: CompactionCardData): void {
 		this.transcript.addCompaction(record);
-		this.trajectoryProjection.onCompaction(record.summary, record.tokensBefore);
+		if (!record.status || record.status === "completed") this.trajectoryProjection.onCompaction(record.summary, record.tokensBefore);
 		this.requestRender();
 	}
 
@@ -585,30 +585,18 @@ export class UIHost implements UIHostContextPort {
 		return this.busy;
 	}
 
-	setUsage(snapshot: UsageSnapshot): void {
-		const { used, contextWindow, actual = false, input, cacheRead, cacheWrite, segments } = snapshot;
-		this.usedTokens = used;
-		this.contextWindow = contextWindow && contextWindow > 0 ? contextWindow : undefined;
-		this.usageActual = actual;
-		this.cacheReadTokens = cacheRead;
-		this.inputTokensCount = input;
-		this.cacheWriteTokens = cacheWrite;
-		if (segments) {
-			this.contextSegments = segments;
-		}
-		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, actual, this.contextSegments);
-		this.contextBar.update({
-			usedTokens: this.usedTokens,
-			contextWindow: this.contextWindow,
-			cwd: this.cwd,
-			cacheRead: this.cacheReadTokens,
-			inputTokens: this.inputTokensCount,
-			cacheWrite: this.cacheWriteTokens,
-			segments: this.contextSegments,
-		});
+	setContext(snapshot: ContextSnapshot): void {
+		this.usedTokens = snapshot.inputTokens;
+		this.contextWindow = snapshot.contextWindow && snapshot.contextWindow > 0 ? snapshot.contextWindow : undefined;
+		this.usageActual = snapshot.measurementKind === "exact";
+		this.contextSegments = snapshot.segments;
+		this.cacheReadTokens = undefined;
+		this.inputTokensCount = undefined;
+		this.cacheWriteTokens = undefined;
+		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual, this.contextSegments);
+		this.contextBar.update({ usedTokens: this.usedTokens, contextWindow: this.contextWindow, cwd: this.cwd, segments: this.contextSegments });
 		this.requestRender();
 	}
-
 	markUsageEstimated(): void {
 		this.usageActual = false;
 		this.cacheReadTokens = undefined;
@@ -825,7 +813,9 @@ export class UIHost implements UIHostContextPort {
 
 	setWorkingMessage(message?: string): void {
 		if (message) {
-			this.activityLine.update("streaming", message);
+			const phase = this.activityLine.getPhase();
+			if (phase === "idle" || phase === "done") this.activityLine.start("streaming", message);
+			else this.activityLine.update("streaming", message);
 		} else {
 			this.activityLine.reset();
 		}
@@ -2059,4 +2049,3 @@ export class UIHost implements UIHostContextPort {
 		this.onUserLine?.(text, mode);
 	}
 }
-

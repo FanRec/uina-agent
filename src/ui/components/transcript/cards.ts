@@ -61,6 +61,7 @@ export function formatThinkingLines(
 /* ------------------------------------------------------------------ */
 
 export interface CompactionCardData {
+	status?: "completed" | "failed" | "cancelled" | "noop";
 	summary: string;
 	turnsCount: number;
 	tokensBefore: number;
@@ -85,6 +86,12 @@ export function formatCompactionCardLines(
 	isHovered = false,
 ): string[] {
 	const boxW = Math.max(20, width);
+	if (record.status && record.status !== "completed") {
+		const title = record.status === "failed" ? "压缩失败" : record.status === "cancelled" ? "压缩已取消" : "当前无需压缩";
+		const header = `${C.subtle}───${C.inactive} ${title} ${C.subtle}${"─".repeat(Math.max(3, boxW - visibleWidth(title) - 5))}${C.reset}`;
+		const detail = truncateToWidth(`  ${record.summary.replace(/\s+/g, " ").trim()}`, boxW, "…");
+		return [header, `${C.inactive}${detail}${C.reset}`, `${C.subtle}${"─".repeat(boxW)}${C.reset}`];
+	}
 	const tokensBeforeStr =
 		record.tokensBefore >= 1000
 			? `${(record.tokensBefore / 1000).toFixed(1)}k`
@@ -272,4 +279,3 @@ export class CustomMessageComponent extends BaseCustomComponent<CustomMessage, M
 		return [header, ...bodyLines, footer];
 	}
 }
-
