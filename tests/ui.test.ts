@@ -473,22 +473,168 @@ describe("UI Components & Visual Rendering", () => {
 		expect(stripAnsi(str)).toContain("流式生成中");
 	});
 
-	it("扩展后台工作从空闲态开始时启动独立墙钟计时", () => {
+	it("扩展后台工作从空闲态开始时启动独立墙钟计时", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-		const host = new UIHost();
+		const terminal = createSilentTerminal();
+		const host = new UIHost({ terminal: terminal.terminal });
 		try {
+			host.start();
 			host.setWorkingMessage("正在压缩上下文：生成历史摘要");
 			host.setWorkingVisible(true);
-			vi.advanceTimersByTime(1_500);
+			await vi.advanceTimersByTimeAsync(1_500);
 
-			const header = stripAnsi(host.activityLine.getHeaderString(80));
+			const header = terminal.getVisibleText();
 			expect(header).toContain("正在压缩上下文：生成历史摘要");
 			expect(header).toContain("1.5s");
 		} finally {
-			host.setWorkingVisible(false);
+			host.stop();
 			vi.useRealTimers();
 		}
+	});
+
+	it("压缩仍在运行时普通回合结束不能停止压缩心跳", () => {
+		const host = new UIHost();
+		try {
+			host.setWorkingMessage("正在压缩上下文：验证压缩后上下文");
+			host.setWorkingVisible(true);
+			expect(host.getHeartbeatActiveForTest()).toBe(true);
+			host.setBusy(false);
+			expect(host.getHeartbeatActiveForTest()).toBe(true);
+		} finally { host.setWorkingVisible(false); }
+	});
+
+	it("后台压缩无需鼠标输入也会持续刷新画面上的耗时", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+		const terminal = createSilentTerminal();
+		const host = new UIHost({ terminal: terminal.terminal });
+		try {
+			host.start();
+			host.setWorkingMessage("正在压缩上下文：写入检查点");
+			host.setWorkingVisible(true);
+			host.setBusy(false);
+			await vi.advanceTimersByTimeAsync(1_200);
+			expect(terminal.getVisibleText()).toContain("1.2s");
+		} finally {
+			host.stop();
+			vi.useRealTimers();
+		}
+	});
+
+	it("压缩期间活动行被重置后，显示耗时仍从压缩开始计算", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+		const terminal = createSilentTerminal();
+		const host = new UIHost({ terminal: terminal.terminal });
+		try {
+			host.start();
+			host.setWorkingMessage("正在压缩上下文：生成摘要");
+			host.setWorkingVisible(true);
+			await vi.advanceTimersByTimeAsync(50);
+			vi.setSystemTime(new Date("2026-01-01T00:01:00.000Z"));
+			host.activityLine.reset();
+			host.setWorkingMessage("正在压缩上下文：写入检查点");
+			await vi.advanceTimersByTimeAsync(50);
+			expect(terminal.getVisibleText()).toContain("60.0s");
+		} finally {
+			host.stop();
+			vi.useRealTimers();
+		}
+	});
+
+	it("Provider 重试状态持续显示在状态行，不依赖短时 toast", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+		const terminal = createSilentTerminal();
+		const host = new UIHost({ terminal: terminal.terminal });
+		try {
+			host.start();
+			host.setBusy(true);
+			host.setProviderRetryMessage("vanyo 连接失败（HTTP 503），16.0 秒后重试，第 8 次");
+			await vi.advanceTimersByTimeAsync(1_200);
+			expect(terminal.getVisibleText()).toContain("vanyo 连接失败");
+			expect(terminal.getVisibleText()).toContain("第 8 次");
+			host.setProviderRetryMessage();
+			await vi.advanceTimersByTimeAsync(50);
+			expect(terminal.getVisibleText()).not.toContain("vanyo 连接失败");
+		} finally {
+			host.stop();
+			vi.useRealTimers();
+		}
+	});
+
+	it("压缩完成后不留下静止的正在压缩状态", () => {
+		const host = new UIHost();
+		host.setWorkingMessage("正在压缩上下文：写入检查点");
+		host.setWorkingVisible(true);
+		host.setWorkingVisible(false);
+		expect(host.getHeartbeatActiveForTest()).toBe(false);
+		expect(host.activityLine.getHeaderString()).toBe("");
+	});
+
+	it("压缩覆盖提示结束后保留已完成回合的耗时与输出指标", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+		const terminal = createSilentTerminal();
+		const host = new UIHost({ terminal: terminal.terminal });
+		try {
+			host.start();
+			host.activityLine.start("streaming", "正在输出回复...");
+			host.activityLine.addStreamText("hello world");
+			host.activityLine.finish("本轮已完成", 1_234);
+			const before = stripAnsi(host.activityLine.getHeaderString(80));
+			host.setWorkingMessage("正在压缩上下文：生成摘要");
+			host.setWorkingVisible(true);
+			await vi.advanceTimersByTimeAsync(1_500);
+			expect(terminal.getVisibleText()).toContain("正在压缩上下文：生成摘要");
+			expect(terminal.getVisibleText()).toContain("1.5s");
+			host.setWorkingVisible(false);
+			await vi.advanceTimersByTimeAsync(50);
+			expect(stripAnsi(host.activityLine.getHeaderString(80))).toBe(before);
+			expect(terminal.getVisibleText()).toContain("本轮已完成");
+			expect(terminal.getVisibleText()).not.toContain("正在压缩上下文");
+		} finally {
+			host.stop();
+			vi.useRealTimers();
+		}
+	});
+
+	it("压缩期间回合活动变化不夺走压缩提示，结束后恢复原工具状态", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+		const terminal = createSilentTerminal();
+		const host = new UIHost({ terminal: terminal.terminal });
+		try {
+			host.start();
+			host.setBusy(true);
+			host.activityLine.start("thinking", "正在思考与生成回复...");
+			host.setWorkingMessage("正在压缩上下文：重建请求");
+			host.setWorkingVisible(true);
+			host.activityLine.update("tool", "正在执行工具: echo");
+			await vi.advanceTimersByTimeAsync(1_200);
+			expect(terminal.getVisibleText()).toContain("正在压缩上下文：重建请求");
+			expect(terminal.getVisibleText()).not.toContain("正在执行工具: echo");
+			host.setWorkingVisible(false);
+			await vi.advanceTimersByTimeAsync(50);
+			expect(terminal.getVisibleText()).toContain("正在执行工具: echo");
+		} finally {
+			host.stop();
+			vi.useRealTimers();
+		}
+	});
+
+	it("活动回合中的自动压缩结束后恢复回合提示", () => {
+		const host = new UIHost();
+		try {
+			host.setBusy(true);
+			host.activityLine.start("thinking", "正在思考与生成回复...");
+			host.setWorkingMessage("正在压缩上下文：写入检查点");
+			host.setWorkingVisible(true);
+			host.setWorkingVisible(false);
+			expect(stripAnsi(host.activityLine.getHeaderString())).toContain("正在思考与生成回复");
+			expect(host.getHeartbeatActiveForTest()).toBe(true);
+		} finally { host.setBusy(false); }
 	});
 
 	it("当前流式思考立即可见，并注册鼠标展开目标", () => {

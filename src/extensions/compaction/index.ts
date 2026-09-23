@@ -427,20 +427,19 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		await emitProgress(operationId, "summarizing", "生成历史摘要");
 		const summary = await requestSummary(pi, messages.slice(0, coverTarget), instruction,
 			(count) => emitProgress(operationId, "summarizing", `已完成 ${count} 块历史摘要`));
-		await emitProgress(operationId, "applying", "验证压缩候选");
 		staged = {
 			operationId,
 			checkpoint: { version: SUMMARY_VERSION, summary, coveredThroughEntryId, tailStartsAtEntryId, prefixFingerprint, source: reason },
 			tokensBefore: inspection.measurement.inputTokens,
 			retainedTailCount: messages.length - boundary,
 		};
+		await emitProgress(operationId, "measuring", "重建并测量压缩后的请求");
 		return "staged";
 	};
 
 	const commit = async (measurement: TokenMeasurement, mustFit: boolean, inputBudget?: number): Promise<void> => {
 		const candidate = staged;
 		if (!candidate) throw new Error("没有待验证的压缩候选");
-		await emitProgress(candidate.operationId, "measuring", "验证压缩后上下文");
 		if (measurement.inputTokens >= candidate.tokensBefore) {
 			const reason = `压缩后上下文没有改善（before=${candidate.tokensBefore}, after=${measurement.inputTokens}）`;
 			await terminal(candidate.operationId, "failed", reason);
@@ -450,10 +449,20 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 			await terminal(candidate.operationId, "failed", "压缩后上下文仍超过可用预算");
 			throw new Error("压缩后上下文仍超过可用预算");
 		}
+		await emitProgress(candidate.operationId, "applying", "写入压缩检查点");
 		try {
 			await pi.appendEntry({ customType: SUMMARY_ENTRY_TYPE, data: candidate.checkpoint });
-			checkpoints.push(candidate.checkpoint);
-			staged = undefined;
+		} catch (error) {
+			await terminal(candidate.operationId, pi.signal.aborted ? "cancelled" : "failed", error);
+			throw error;
+		}
+		checkpoints.push(candidate.checkpoint);
+		staged = undefined;
+		terminalOperations.add(candidate.operationId);
+		// 持久化是提交点；后续观察者失败不能将已生效的 checkpoint 说成失败。
+		try { await emitProgress(candidate.operationId, "applying", "发布压缩结果"); }
+		catch (error) { pi.reportError(error); }
+		try {
 			await pi.emitEvent({
 				type: "session_compact",
 				operationId: candidate.operationId,
@@ -463,11 +472,7 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 				tokensAfter: measurement.inputTokens,
 				retainedTailCount: candidate.retainedTailCount,
 			});
-			terminalOperations.add(candidate.operationId);
-		} catch (error) {
-			await terminal(candidate.operationId, pi.signal.aborted ? "cancelled" : "failed", error);
-			throw error;
-		}
+		} catch (error) { pi.reportError(error); }
 	};
 
 	const runManual = async (

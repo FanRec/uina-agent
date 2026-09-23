@@ -162,6 +162,7 @@ export class InteractiveTUI {
 				break;
 			case "turn_start":
 				this.currentThinkingId = undefined;
+				this.host.setProviderRetryMessage();
 				this.host.markUsageEstimated();
 				this.host.setBusy(true);
 				this.host.transcript.startTurn(m.turnNumber, m.userText, m.images);
@@ -179,6 +180,16 @@ export class InteractiveTUI {
 
 			case "context_update":
 				this.host.setContext(m.snapshot);
+				break;
+
+			case "provider_retry":
+				this.host.setProviderRetryMessage(`${m.provider} 连接失败（${m.status === undefined ? m.reason : `HTTP ${m.status}`}），${(m.delayMs / 1000).toFixed(1)} 秒后重试，第 ${m.attempt} 次`);
+				this.host.notify(`正在重试 ${m.provider}（第 ${m.attempt} 次，${(m.delayMs / 1000).toFixed(1)} 秒后）`, "warning", Math.min(3000, Math.max(1000, m.delayMs)));
+				break;
+
+			case "provider_recovered":
+				this.host.setProviderRetryMessage();
+				this.host.notify(`${m.provider} 已恢复连接，继续当前请求`, "info", 2000);
 				break;
 
 			case "output_update":
@@ -238,6 +249,7 @@ export class InteractiveTUI {
 			}
 
 			case "turn_end":
+				this.host.setProviderRetryMessage();
 				if (this.currentThinkingId) {
 					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
@@ -259,6 +271,7 @@ export class InteractiveTUI {
 				break;
 
 			case "turn_aborted":
+				this.host.setProviderRetryMessage();
 				if (this.currentThinkingId) {
 					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
@@ -276,6 +289,7 @@ export class InteractiveTUI {
 				break;
 
 			case "error":
+				this.host.setProviderRetryMessage();
 				if (this.currentThinkingId) {
 					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;

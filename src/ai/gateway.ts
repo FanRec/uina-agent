@@ -204,6 +204,8 @@ export interface ModelStreamRequestOptions {
 	hooks: ProviderHooks;
 	signal?: AbortSignal;
 	maxRetries?: number;
+	onRetry?: (event: { attempt: number; delayMs: number; status?: number; reason: string }) => void;
+	onRecovered?: (attempt: number) => void;
 }
 
 export async function sendModelStreamRequest(
@@ -217,8 +219,11 @@ export async function sendModelStreamRequest(
 	);
 
 	const response = await fetchWithRetry(options.url, {
-		maxRetries: options.maxRetries ?? 2,
+		// 未显式限制时持续重试，直到请求成功或 signal 被中止。
+		maxRetries: options.maxRetries ?? Number.POSITIVE_INFINITY,
 		signal: options.signal,
+		onRetry: options.onRetry,
+		onRecovered: options.onRecovered,
 		request: {
 			method: "POST",
 			headers,
@@ -252,22 +257,38 @@ export async function sendModelStreamRequest(
 
 export async function fetchWithRetry(
 	url: string,
-	options: { request: RequestInit; signal?: AbortSignal; maxRetries: number },
+	options: {
+		request: RequestInit;
+		signal?: AbortSignal;
+		maxRetries: number;
+		onRetry?: (event: { attempt: number; delayMs: number; status?: number; reason: string }) => void;
+		onRecovered?: (attempt: number) => void;
+	},
 ): Promise<Response> {
 	let attempt = 0;
 	while (true) {
 		try {
 			const response = await fetch(url, { ...options.request, signal: options.signal });
-			if (response.ok || !isRetryableStatus(response.status) || attempt >= options.maxRetries) return response;
+			if (response.ok || !isRetryableStatus(response.status) || attempt >= options.maxRetries) {
+				if (response.ok && attempt > 0) options.onRecovered?.(attempt);
+				return response;
+			}
 			await response.body?.cancel().catch(() => undefined);
-			const delay = retryAfter(response.headers.get("retry-after")) ?? 250 * 2 ** attempt;
+			const delay = Math.min(retryAfter(response.headers.get("retry-after")) ?? backoffDelay(attempt), 16_000);
+			options.onRetry?.({ attempt: attempt + 1, delayMs: delay, status: response.status, reason: `HTTP ${response.status}` });
 			await abortableDelay(Math.min(delay, 60_000), options.signal);
 		} catch (error) {
 			if (options.signal?.aborted || attempt >= options.maxRetries || !isNetworkError(error)) throw error;
-			await abortableDelay(Math.min(250 * 2 ** attempt, 60_000), options.signal);
+			const delay = backoffDelay(attempt);
+			options.onRetry?.({ attempt: attempt + 1, delayMs: delay, reason: "网络连接失败" });
+			await abortableDelay(delay, options.signal);
 		}
 		attempt++;
 	}
+}
+
+function backoffDelay(attempt: number): number {
+	return Math.min(16_000, 250 * 2 ** Math.min(attempt, 6));
 }
 
 function isRetryableStatus(status: number): boolean {

@@ -293,6 +293,9 @@ describe("compaction capability event contract", () => {
 		const host = compactionHost(await temp(), stream);
 		const seen: string[] = [];
 		host.on("session_compact", () => seen.push("compact"));
+		host.on("session_compact_progress", (event) => {
+			if (event.phase === "measuring" || event.phase === "applying") seen.push(event.detail ?? event.phase);
+		});
 		await activate(host, "compaction", activateCompaction);
 		const force = host.registry.getCommand("compact");
 		expect(force?.handler).toBeDefined();
@@ -304,7 +307,7 @@ describe("compaction capability event contract", () => {
 		// 摘要消息紧随（无 leading system），尾部保留在预算内。
 		expect((trimmed[0] as { content: string }).content).toBe("[历史摘要] 总线摘要");
 		expect(trimmed.length).toBeLessThan(messages.length);
-		expect(seen).toEqual(["compact"]);
+		expect(seen).toEqual(["重建并测量压缩后的请求", "写入压缩检查点", "发布压缩结果", "compact"]);
 	});
 
 	it("broadcasts a failed session_compact result when the summarizer fails", async () => {
@@ -332,6 +335,29 @@ describe("compaction capability event contract", () => {
 
 		expect(terminal).toEqual(["failed"]);
 		expect(projection.messages.some((message) => String(message.content).startsWith("[历史摘要] "))).toBe(false);
+	});
+
+	it("checkpoint 已写入后发布进度失败不谎报压缩失败", async () => {
+		const { stream } = summarizingStream("已提交摘要");
+		let host!: ExtensionRunner;
+		let writes = 0;
+		const terminal: string[] = [];
+		host = compactionHost(await temp(), stream, {
+			onCustomEntry: async () => { writes++; },
+			emitRuntimeEvent: async (event) => {
+				if (event.type === "session_compact_progress" && event.detail === "发布压缩结果") throw new Error("progress channel down");
+				await host.emit(event);
+			},
+		});
+		host.on("session_compact", (event) => terminal.push(event.status));
+		await activate(host, "compaction", activateCompaction);
+
+		await host.registry.getCommand("compact")?.handler?.("");
+		const projection = await host.runTransformContext({ projectionId: "after-commit", modelKey: "mock/mock", messages: bigHistory(), tools: [] });
+
+		expect(writes).toBe(1);
+		expect(terminal).toEqual(["completed"]);
+		expect(projection.messages.some((message) => String(message.content).startsWith("[历史摘要] 已提交摘要"))).toBe(true);
 	});
 });
 

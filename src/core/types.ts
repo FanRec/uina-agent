@@ -101,6 +101,8 @@ export interface DiscoveredModel {
 /** 模型流式输出中的一个增量片段（按到达顺序回调）。 */
 export type StreamDelta =
 	| { kind: "provider_replay"; replay: ProviderReplay }
+	| { kind: "provider_retry"; attempt: number; delayMs: number; status?: number; reason: string }
+	| { kind: "provider_recovered"; attempt: number }
 	| { kind: "thinking"; text: string }
 	| { kind: "thinking_signature"; signature: string }
 	| { kind: "text"; text: string }

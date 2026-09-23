@@ -20,6 +20,7 @@ export type RuntimeEvent =
 	| SessionCompactStartEvent | SessionCompactProgressEvent | SessionCompactEvent
 	| OutputStartEvent | OutputUpdateEvent | OutputEndEvent | OutputInterruptedEvent
 	| UsageUpdateEvent | ContextUpdateEvent
+	| ProviderRetryEvent | ProviderRecoveredEvent
 	| QueueEvent | TurnAbortedEvent | ErrorEvent
 	| CustomMessageEvent | CustomEntryEvent;
 
@@ -50,6 +51,19 @@ export interface UsageUpdateEvent {
 export interface ContextUpdateEvent {
 	readonly type: "context_update";
 	readonly snapshot: ContextSnapshot;
+}
+export interface ProviderRetryEvent {
+	readonly type: "provider_retry";
+	readonly provider: string;
+	readonly attempt: number;
+	readonly delayMs: number;
+	readonly status?: number;
+	readonly reason: string;
+}
+export interface ProviderRecoveredEvent {
+	readonly type: "provider_recovered";
+	readonly provider: string;
+	readonly attempt: number;
 }
 export interface ToolCallEvent { readonly type: "tool_call"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly callId: string; }
 export interface ToolResultEvent { readonly type: "tool_result"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly result: string; readonly images?: readonly import("../core/content.js").ImageContent[]; readonly details?: unknown; readonly status: import("../core/types.js").ToolResultStatus; readonly callId: string; }

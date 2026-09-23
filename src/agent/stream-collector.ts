@@ -19,6 +19,7 @@ export interface StreamCollectorResult {
 
 export interface StreamCollectorOptions {
 	onUsage?: (usage: Usage) => void;
+	onRetry?: (event: Extract<StreamDelta, { kind: "provider_retry" | "provider_recovered" }>) => void;
 }
 
 function parseToolArgs(text: string): { value: unknown; valid: boolean } {
@@ -59,7 +60,11 @@ export class TurnStreamCollector {
 			throw new Error("模型 finish 后仍返回输出事件");
 		}
 
-		switch (delta.kind) {
+		 switch (delta.kind) {
+			case "provider_retry":
+			case "provider_recovered":
+				this.options?.onRetry?.(delta);
+				break;
 			case "provider_replay":
 				this.providerReplay = structuredClone(delta.replay);
 				break;

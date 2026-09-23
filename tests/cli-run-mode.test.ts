@@ -90,6 +90,8 @@ describe("formatStdioEventLine", () => {
 	it("turn_end / notice / turn_aborted / error / session_rewind 文案", () => {
 		expect(formatStdioEventLine({ type: "turn_end", turnNumber: 1 })).toBe("\n");
 		expect(formatStdioEventLine({ type: "notice", text: "注意" })).toBe("\n⚠ 注意\n");
+		expect(formatStdioEventLine({ type: "provider_retry", provider: "vanyo", attempt: 3, delayMs: 4000, status: 503, reason: "HTTP 503" })).toContain("第 3 次");
+		expect(formatStdioEventLine({ type: "provider_recovered", provider: "vanyo", attempt: 3 })).toContain("已恢复连接");
 		expect(formatStdioEventLine({ type: "turn_aborted", turnNumber: 1 })).toBe("\n[已打断]\n");
 		expect(formatStdioEventLine({ type: "error", text: "坏了" })).toBe("[错误] 坏了\n");
 		expect(

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createOpenAIProvider, ProviderHttpError, sendModelStreamRequest, toWireMessages } from "../src/ai/gateway.js";
@@ -181,6 +181,64 @@ describe("OpenAI gateway", () => {
 		expect(events).toEqual(["headers:test-prov", "payload:test-prov", "resp:test-prov:200:ok"]);
 		expect(capturedHeaders["x-injected"]).toBe("1");
 		expect(JSON.parse(capturedBody)).toEqual({ prompt: "hello", extra: true });
+	});
+
+	it("503 后按退避重试并在恢复时发出恢复事实", async () => {
+		let calls = 0;
+		const server = createServer((_req, res) => {
+			calls++;
+			if (calls === 1) {
+				res.writeHead(503, { "content-type": "application/json" });
+				res.end(JSON.stringify({ error: "temporarily unavailable" }));
+				return;
+			}
+			res.writeHead(200, { "content-type": "text/event-stream" });
+			res.end("data: ok\n\n");
+		});
+		servers.push(server);
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const port = (server.address() as AddressInfo).port;
+		const retries: Array<{ attempt: number; delayMs: number; status?: number }> = [];
+		const recovered: number[] = [];
+
+		await sendModelStreamRequest({
+			url: `http://127.0.0.1:${port}/retry`,
+			providerId: "retry-prov",
+			headers: {},
+			body: {},
+			hooks: NO_RUNTIME_HOOKS.provider,
+			onRetry: (event) => retries.push(event),
+			onRecovered: (attempt) => recovered.push(attempt),
+		});
+
+		expect(calls).toBe(2);
+		expect(retries).toEqual([{ attempt: 1, delayMs: 250, status: 503, reason: "HTTP 503" }]);
+		expect(recovered).toEqual([1]);
+	});
+
+	it("默认无限重试只能由 AbortSignal 终止", async () => {
+		const controller = new AbortController();
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("down", { status: 503 }));
+		const retries: number[] = [];
+		try {
+			const request = sendModelStreamRequest({
+				url: "http://unavailable.test/stream",
+				providerId: "retry-prov",
+				headers: {},
+				body: {},
+				hooks: NO_RUNTIME_HOOKS.provider,
+				signal: controller.signal,
+				onRetry: ({ attempt }) => {
+					retries.push(attempt);
+					if (attempt === 2) controller.abort();
+				},
+			});
+			await expect(request).rejects.toThrow();
+			expect(retries).toEqual([1, 2]);
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+		} finally {
+			fetchMock.mockRestore();
+		}
 	});
 
 	it("sendModelStreamRequest 把非 2xx 的 status 作为结构化字段抛出，而不只是拼进文本", async () => {

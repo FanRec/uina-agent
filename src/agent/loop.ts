@@ -748,7 +748,12 @@ export class Subject {
 			const collector = new TurnStreamCollector(
 				callId,
 				(event) => this.dispatch(event),
-				{ onUsage: (usage) => void this.publishUsage(usage, callId, projection, callSeq) },
+				{
+					onUsage: (usage) => void this.publishUsage(usage, callId, projection, callSeq),
+					onRetry: (event) => this.dispatch(event.kind === "provider_retry"
+					? { type: "provider_retry", provider: model.providerId, ...event }
+					: { type: "provider_recovered", provider: model.providerId, attempt: event.attempt }),
+				},
 			);
 			this.currentCallUsage = undefined;
 

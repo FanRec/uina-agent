@@ -24,6 +24,8 @@ const STDIO_LINES: {
 	turn_end: () => "\n",
 	session_rewind: (m) => `\n[会话回溯] ${m.fromId} → ${m.targetId}；退出路径只读，外部状态未撤销。\n`,
 	notice: (m) => `\n⚠ ${m.text}\n`,
+	provider_retry: (m) => `\n⚠ ${m.provider} 连接失败（${m.status === undefined ? m.reason : `HTTP ${m.status}`}），${(m.delayMs / 1000).toFixed(1)} 秒后重试，第 ${m.attempt} 次\n`,
+	provider_recovered: (m) => `\n✓ ${m.provider} 已恢复连接，继续当前请求\n`,
 	turn_aborted: () => "\n[已打断]\n",
 	error: (m) => `[错误] ${m.text}\n`,
 };

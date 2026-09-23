@@ -116,6 +116,18 @@ export function sweep(text: string, timeMs: number, base: Rgb = ICE_RGB, highlig
 
 export type ActivityPhase = "idle" | "thinking" | "streaming" | "tool" | "done";
 
+function animatedHeader(message: string, elapsedMs: number, now: number, maxWidth: number, suffix = ""): string {
+	const spinner = `${C.iceBlue}${SPINNER_FRAMES[Math.floor(now / 80) % SPINNER_FRAMES.length]}${C.reset}`;
+	const shimmerText = sweep(message, now, ICE_RGB, FLASH_RGB, 60);
+	const seconds = (Math.max(0, elapsedMs) / 1000).toFixed(1);
+	return truncateToWidth(`${spinner} ${shimmerText}${C.gray} · ${seconds}s${suffix}${C.reset}`, maxWidth);
+}
+
+/** 扩展工作是独立的可见操作，不借用回合的 ActivityLine 状态和计时。 */
+export function formatWorkingHeader(message: string, elapsedMs: number, maxWidth = 60, now = Date.now()): string {
+	return animatedHeader(message, elapsedMs, now, maxWidth);
+}
+
 /** 表盘量程地板：低于它的峰值会被抬到此处，避免小样本把表盘放得过大。 */
 const GAUGE_FLOOR = 40;
 const HBLOCKS = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
@@ -385,8 +397,6 @@ export class ActivityLineComponent implements Component {
 			return truncateToWidth(`${prefix} ${text}`, maxWidth);
 		}
 
-		const frameIdx = Math.floor(now / 80) % SPINNER_FRAMES.length;
-		const spinner = `${C.iceBlue}${SPINNER_FRAMES[frameIdx]}${C.reset}`;
 		let tpsStr = "";
 		// 门控抄 dsh-TUI（channel.ts 实时路径：Math.max(0, event.time - step.firstTokenTime)
 		// > 500 才重算 state.tps，否则保留上一次的可度量值）：
@@ -409,10 +419,7 @@ export class ActivityLineComponent implements Component {
 			tpsStr = ` · ${gauge} ~${tps} tps`;
 		}
 
-		const shimmerText = sweep(this.message || "正在处理...", now, ICE_RGB, FLASH_RGB, 60);
-		const suffix = `${C.gray} · ${seconds}s${tpsStr}${C.reset}`;
-
-		return truncateToWidth(`${spinner} ${shimmerText}${suffix}`, maxWidth);
+		return animatedHeader(this.message || "正在处理...", currentElapsed, now, maxWidth, tpsStr);
 	}
 
 	render(width: number): string[] {

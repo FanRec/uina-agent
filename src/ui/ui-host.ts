@@ -33,6 +33,7 @@ import {
 } from "./components/transcript/index.js";
 import {
 	ActivityLineComponent,
+	formatWorkingHeader,
 	PendingQueueComponent,
 	ContextBarComponent,
 	formatCacheHitRate,
@@ -176,13 +177,16 @@ export class UIHost implements UIHostContextPort {
 	/**
 	 * 统一帧时钟：唯一的动画重绘定时器（50ms）。
 	 *
-	 * busy 动画、smoothReveal 揭示、工具运行三类「状态在变」场景共用。
+	 * busy 动画、扩展工作、smoothReveal 揭示、工具运行共用。
 	 * 旧实现是三个独立 setInterval（60/50/300ms），相位漂移导致帧率抖动，
 	 * 且各自持句柄、各自启停。现在状态源只置标志，updateHeartbeat() 收敛启停。
 	 */
 	private heartbeatTimer: NodeJS.Timeout | null = null;
 	/** busy 动画需要重绘（转圈 spinner、耗时计时器）。仅作心跳状态源标志。 */
 	private busyAnimation = false;
+	private workingMessage?: string;
+	private workingStartedAt?: number;
+	private providerRetryMessage?: string;
 	private scrollOffset = 0;
 	private lastTotalPerm = 0;
 
@@ -468,7 +472,11 @@ export class UIHost implements UIHostContextPort {
 		this.running = false;
 		this.transcript.smoothReveal.setEnabled(false);
 		this.stopAutoScroll();
+		this.workingMessage = undefined;
+		this.workingStartedAt = undefined;
+		this.providerRetryMessage = undefined;
 		this.stopAnimation();
+		this.stopHeartbeat();
 		if (this.notificationToast?.timer) {
 			clearTimeout(this.notificationToast.timer);
 			this.notificationToast = null;
@@ -812,19 +820,24 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	setWorkingMessage(message?: string): void {
-		if (message) {
-			const phase = this.activityLine.getPhase();
-			if (phase === "idle" || phase === "done") this.activityLine.start("streaming", message);
-			else this.activityLine.update("streaming", message);
-		} else {
-			this.activityLine.reset();
-		}
+		this.workingMessage = message;
 		this.requestRender();
 	}
 
 	setWorkingVisible(visible: boolean): void {
-		if (visible) this.startAnimation();
-		else this.stopAnimation();
+		if (visible) this.workingStartedAt ??= Date.now();
+		else {
+			this.workingStartedAt = undefined;
+			this.workingMessage = undefined;
+		}
+		this.updateHeartbeat();
+		this.requestRender();
+	}
+
+	/** 当前 Provider 重试状态。独立于回合 ActivityLine，直到恢复或回合结束才清除。 */
+	setProviderRetryMessage(message?: string): void {
+		this.providerRetryMessage = message;
+		this.updateHeartbeat();
 		this.requestRender();
 	}
 
@@ -1030,7 +1043,12 @@ export class UIHost implements UIHostContextPort {
 	/** Sync the input line's transient metrics before it is rendered. */
 	private syncInputMetrics(): void {
 		const innerW = this.terminal.columns;
-		const statusHeader = this.activityLine.getHeaderString(Math.min(60, innerW - 20));
+		const statusWidth = Math.min(60, innerW - 20);
+		const statusHeader = this.providerRetryMessage
+			? formatWorkingHeader(this.providerRetryMessage, this.busy ? Math.max(0, Date.now() - this.turnStartTime) : 0, statusWidth)
+			: this.workingStartedAt === undefined
+				? this.activityLine.getHeaderString(statusWidth)
+				: formatWorkingHeader(this.workingMessage || "正在处理...", Date.now() - this.workingStartedAt, statusWidth);
 		// Show the viewport percentage using the previous frame's geometry; the
 		// current frame's input height is required to compute it, so a one-frame
 		// lag is unavoidable (and previously the header never rendered at all).
@@ -1522,6 +1540,8 @@ export class UIHost implements UIHostContextPort {
 	private updateHeartbeat(): void {
 		const needed =
 			this.busyAnimation ||
+			this.providerRetryMessage !== undefined ||
+			this.workingStartedAt !== undefined ||
 			this.transcript.smoothReveal.isAnimating() ||
 			this.transcript.hasRunningTools();
 		if (needed && this.heartbeatTimer === null) {
@@ -1531,6 +1551,8 @@ export class UIHost implements UIHostContextPort {
 				this.requestRender();
 				if (
 					!this.busyAnimation &&
+					this.providerRetryMessage === undefined &&
+					this.workingStartedAt === undefined &&
 					!this.transcript.smoothReveal.isAnimating() &&
 					!this.transcript.hasRunningTools()
 				) {
