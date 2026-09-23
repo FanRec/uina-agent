@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, SubjectHarness } from "./harness/index.js";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createOpenAIProvider } from "../src/ai/gateway.js";
+import { createOpenAIProvider, toWireMessages } from "../src/ai/gateway.js";
 import { createModel } from "../src/ai/providers.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
-import type { Model, ModelStreamFn, StreamDelta } from "../src/core/types.js";
+import type { ChatMsg, Model, ModelStreamFn, StreamDelta } from "../src/core/types.js";
 
 const servers: Server[] = [];
 afterEach(() => servers.splice(0).forEach((server) => server.close()));
@@ -119,5 +119,32 @@ describe("OpenAI-compatible thinking", () => {
 		const base = { baseUrl: "https://example.test", apiKey: "x", model: "m", modelContextWindow: 4096 };
 		expect(createModel({ ...base, type: "anthropic", thinkingLevels: ["off", "high"], maxOutputTokens: 4096, thinkingBudgets: { high: 2048 } }, "a").thinkingLevels).toEqual(["off", "high"]);
 		expect(createModel({ ...base, type: "gemini" }, "g").thinkingLevels).toBeUndefined();
+	});
+});
+
+describe("deepseek reasoning_content 出站回传", () => {
+	// DeepSeek thinking 模式要求 assistant 帧携带 reasoning_content（空串即"无推理"）：
+	// 缺字段 + thinking enabled + 帧在生成前缀位 ⇒ 400
+	// `reasoning_content` in the thinking mode must be passed back。
+	it("无 thinking 的 assistant 帧补空串 reasoning_content", () => {
+		const wire = toWireMessages([
+			{ role: "user", content: "hi" },
+			{ role: "assistant", content: "", tool_calls: [{ id: "c1", name: "f", args: {}, argsValid: true }] },
+		] as ChatMsg[], "deepseek") as Array<{ role: string; reasoning_content?: unknown }>;
+		expect(wire[1]).toMatchObject({ role: "assistant", reasoning_content: "" });
+	});
+
+	it("保留真实 thinking 原文", () => {
+		const wire = toWireMessages([
+			{ role: "assistant", content: "好", thinking: "分析过程" },
+		] as ChatMsg[], "deepseek") as Array<{ role: string; reasoning_content?: unknown }>;
+		expect(wire[0]).toMatchObject({ reasoning_content: "分析过程" });
+	});
+
+	it("openai 格式不写 reasoning_content", () => {
+		const wire = toWireMessages([
+			{ role: "assistant", content: "好", thinking: "分析过程" },
+		] as ChatMsg[], "openai") as Array<Record<string, unknown>>;
+		expect("reasoning_content" in wire[0]!).toBe(false);
 	});
 });

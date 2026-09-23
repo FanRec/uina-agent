@@ -408,6 +408,13 @@ export function toWireMessages(messages: ModelRequest["messages"], thinkingForma
 				continue;
 			}
 
+			// DeepSeek thinking 模式要求 assistant 帧携带 reasoning_content 才能继续生成：
+			// 无推理时发空串（="无推理"，实测放行），缺字段则 400
+			//（`reasoning_content` in the thinking mode must be passed back）。
+			const reasoningField = thinkingFormat === "deepseek"
+				? { reasoning_content: message.thinking ?? "" }
+				: {};
+
 			wire.push({
 				role: "assistant",
 				content: message.content ?? "",
@@ -426,7 +433,7 @@ export function toWireMessages(messages: ModelRequest["messages"], thinkingForma
 							})),
 						}
 					: {}),
-				...(hasThinking ? { reasoning_content: message.thinking } : {}),
+				...(reasoningField),
 			});
 			continue;
 		}
