@@ -180,6 +180,20 @@ describe.skipIf(!hasLocalRuntime)("具身状态变化落史（不唤醒）与 bo
 		const last = JSON.stringify(changes[changes.length - 1]);
 	expect(last).toContain('"online":false');
 	});
+
+	it("turn.prepare 链聚合：激活扩展后 systemPrompt 含 [具身规范] 且不覆盖基线", async () => {
+		const { runner } = await setupRunner(createProbeApp().app);
+		const aggregated = await runner.runTurnPrepare({
+			prompt: "任意输入",
+			systemPrompt: "宿主基线提示词",
+		});
+		const prompt = aggregated?.systemPrompt;
+		expect(prompt).toBeDefined();
+		expect(prompt).toContain("宿主基线提示词");
+		expect(prompt).toContain("[具身规范]");
+		// 读后拼接不覆盖：基线在前，规范句在后，共存于同一串
+		expect(prompt!.indexOf("宿主基线提示词")).toBeLessThan(prompt!.indexOf("[具身规范]"));
+	});
 });
 
 describe("具身投影器 projectEmbodimentContext（三态合同）", () => {

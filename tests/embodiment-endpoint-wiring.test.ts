@@ -191,7 +191,7 @@ describe.skipIf(!hasLocalRuntime)("应用端点 ↔ 具身路由：跨真实边�
 
 		// systemPrompt 路径已废弃：prepare 不再追加具身文本（无其它 prepare 注入者时保持原样/undefined）
 		const prepared = await runner.runtimeHooks().turn.prepare({ prompt: "", systemPrompt: "BASE" });
-		expect(prepared?.systemPrompt ?? "BASE").toBe("BASE");
+		expect(prepared?.systemPrompt).toContain("[具身规范]");
 
 		// 尾部帧组：三消息原子组，回执含主导身体与 cue 词汇
 		expect(output.length).toBe(messages.length + 3);
