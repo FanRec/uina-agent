@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { errorMessage } from "../../core/errors.js";
 import type { ExtensionAPI } from "../runner.js";
 import { ContextViewport } from "./context-viewport.js";
 import { appendTailFrame } from "../event-frames/projection.js";
@@ -12,10 +13,22 @@ import {
 	type SurfaceTier,
 } from "./types.js";
 
-async function loadAppsState(filePath?: string): Promise<Record<string, boolean>> {
+/**
+ * 读应用期望状态。缺文件（ENOENT）是首次启动的正常缺省；
+ * 其余失败与坏 JSON 都要上报并保留诊断，不得静默当成空配置——
+ * "读不到"和"确实没有"是两种事实。
+ */
+async function loadAppsState(filePath?: string, reportError?: (error: unknown) => void): Promise<Record<string, boolean>> {
 	if (!filePath) return {};
+	let raw: string;
 	try {
-		const raw = await readFile(filePath, "utf8");
+		raw = await readFile(filePath, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return {};
+		reportError?.(new Error(`[App Framework] 读取应用状态 ${filePath} 失败: ${errorMessage(error)}。本次按缺省状态继续，但这不等价于"无保存状态"。`));
+		return {};
+	}
+	try {
 		const parsed: unknown = JSON.parse(raw);
 		if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
 			const result: Record<string, boolean> = {};
@@ -24,21 +37,36 @@ async function loadAppsState(filePath?: string): Promise<Record<string, boolean>
 			}
 			return result;
 		}
-	} catch {
-		// 文件不存在或损坏返回空对象
+		reportError?.(new Error(`[App Framework] 应用状态 ${filePath} 不是合法的对象形状，已忽略现有状态并按缺省继续。`));
+	} catch (error) {
+		reportError?.(new Error(`[App Framework] 应用状态 ${filePath} 不是合法 JSON，已忽略现有状态并按缺省继续: ${errorMessage(error)}`));
 	}
 	return {};
 }
 
+/** 原子写（同目录临时文件 + rename）。失败上抛，由调用链决定可见性。 */
 async function saveAppsState(filePath: string, state: Record<string, boolean>): Promise<void> {
-	try {
-		await mkdir(dirname(filePath), { recursive: true });
-		const temp = `${filePath}.tmp`;
-		await writeFile(temp, `${JSON.stringify(state, null, "\t")}\n`, "utf8");
-		await rename(temp, filePath);
-	} catch {
-		// 容错：落盘失败不阻断运行
-	}
+	await mkdir(dirname(filePath), { recursive: true });
+	const temp = `${filePath}.tmp`;
+	await writeFile(temp, `${JSON.stringify(state, null, "\t")}\n`, "utf8");
+	await rename(temp, filePath);
+}
+
+/** 一次写盘尝试的结果：成功、失败（含诊断）。写队列持有它直到下一次写开始。 */
+interface SaveOutcome { readonly ok: boolean; readonly error?: Error; }
+
+/**
+ * 把核心 InputSource 归类为应用可消费的粗粒度活动来源。
+ *
+ * 判定依据是接纳事实本身的声明字段，不做内容/时机推断：
+ * - kind="user" → human：人/操作者通道（外界有人说话）；
+ * - origin="external" → external：来自主体之外的运行时输入；
+ * - 其余（runtime+internal、agent、无 source）→ runtime：主体自身的内部活动。
+ */
+function activityOriginOf(source: import("../../core/types.js").InputSource | undefined): "human" | "external" | "runtime" {
+	if (source?.kind === "user") return "human";
+	if (source?.origin === "external") return "external";
+	return "runtime";
 }
 
 export class AppRegistry {
@@ -48,7 +76,10 @@ export class AppRegistry {
 	readonly viewport: ContextViewport;
 	private readonly stateFilePath?: string;
 	private persistedState: Record<string, boolean> | null = null;
-	private saveTail: Promise<void> = Promise.resolve();
+	private saveTail: Promise<SaveOutcome> = Promise.resolve({ ok: true });
+	/** 每应用启停串行锁：enable/disable 在多 await 之间提交 enabled，并发交错会导致重复
+	 * onStart 或遗漏 onStop。同应用的启停必须逐个结算。 */
+	private readonly lifecycleLocks = new Map<string, Promise<void>>();
 
 	/**
 	 * 应用暴露的活引用：appName → (共享名 → 值)。
@@ -222,9 +253,29 @@ export class AppRegistry {
 	}
 
 	/**
-	 * 启用一个应用（上桌面，向大模型暴露 Facade Tool）
+	 * 启用一个应用（上桌面，向大模型暴露 Facade Tool）。
+	 *
+	 * 同一应用的启停操作串行执行：内部在多个 await 之后才提交 enabled，
+	 * 并发交错会重复执行 onStart 或遗漏 onStop。
 	 */
 	async enable(name: string, persist = true): Promise<void> {
+		return this.withLifecycleLock(name, () => this.enableInner(name, persist));
+	}
+
+	/** 每应用串行锁：无论前一个操作成功还是失败，后续操作按提交顺序逐个结算。 */
+	private withLifecycleLock(name: string, op: () => Promise<void>): Promise<void> {
+		const previous = this.lifecycleLocks.get(name) ?? Promise.resolve();
+		const next = previous.then(op, op);
+		this.lifecycleLocks.set(name, next);
+		// 清理链自身必须吞错：finally 产生的新 Promise 若随 next 一起拒绝，
+		// 会成为调用方之外的第二条未处理拒绝路径。
+		void next.catch(() => {}).then(() => {
+			if (this.lifecycleLocks.get(name) === next) this.lifecycleLocks.delete(name);
+		});
+		return next;
+	}
+
+	private async enableInner(name: string, persist: boolean): Promise<void> {
 		const runtime = this.apps.get(name);
 		if (!runtime) {
 			throw new Error(`未找到应用: "${name}"`);
@@ -243,11 +294,13 @@ export class AppRegistry {
 					: this.pi.cwd ? join(this.pi.cwd, ".uina/apps", runtime.definition.name) : undefined,
 				onActivity: this.pi.on
 					? (listener) => {
-							const unbindTurnStart = this.pi.on("turn_start", () => {
-								listener({ origin: "human" });
+							// 来源直接取自 input_accepted 的权威 InputSource，不再把 turn_start 一律
+							// 当作 human：那会误分类运行时输入，且排队输入要等回合开始才可见。
+							const unbindAccepted = this.pi.on("input_accepted", (event) => {
+								listener({ origin: activityOriginOf(event.source) });
 							});
 							return this.trackSubscription(runtime.definition.name, () => {
-								unbindTurnStart();
+								unbindAccepted();
 							});
 					  }
 					: undefined,
@@ -300,7 +353,11 @@ export class AppRegistry {
 		if (persist) {
 			this.persistedState = this.persistedState ?? {};
 			this.persistedState[name] = true;
-			this.persistState();
+			const outcome = await this.persistState();
+			if (!outcome.ok) {
+				// 运行时启停已生效，落盘失败如实可见：期望状态与本进程实际状态暂时不一致。
+				this.pi.reportError?.(new Error(`[App Framework] 应用 "${name}" 启用成功但期望状态落盘失败: ${String(outcome.error)}`));
+			}
 		}
 	}
 
@@ -318,9 +375,14 @@ export class AppRegistry {
 	}
 
 	/**
-	 * 停用一个应用（收进抽屉，从大模型视野拔除 Facade Tool，触发 onStop）
+	 * 停用一个应用（收进抽屉，从大模型视野拔除 Facade Tool，触发 onStop）。
+	 * 与 enable 共用每应用串行锁，见 enable 注释。
 	 */
 	async disable(name: string, persist = true): Promise<void> {
+		return this.withLifecycleLock(name, () => this.disableInner(name, persist));
+	}
+
+	private async disableInner(name: string, persist: boolean): Promise<void> {
 		const runtime = this.apps.get(name);
 		if (!runtime || !runtime.enabled) return;
 
@@ -343,15 +405,30 @@ export class AppRegistry {
 		if (persist) {
 			this.persistedState = this.persistedState ?? {};
 			this.persistedState[name] = false;
-			this.persistState();
+			const outcome = await this.persistState();
+			if (!outcome.ok) {
+				// 运行时停用已生效，落盘失败如实可见：期望状态与本进程实际状态暂时不一致。
+				this.pi.reportError?.(new Error(`[App Framework] 应用 "${name}" 停用成功但期望状态落盘失败: ${String(outcome.error)}`));
+			}
 		}
 	}
 
-	private persistState(): void {
-		if (!this.stateFilePath || !this.persistedState) return;
+	/** 把当前期望状态快照串入写队列并等待其结算；失败不静默，返回诊断。 */
+	private async persistState(): Promise<SaveOutcome> {
+		if (!this.stateFilePath || !this.persistedState) return { ok: true };
 		const snapshot = { ...this.persistedState };
 		const targetPath = this.stateFilePath;
-		this.saveTail = this.saveTail.then(() => saveAppsState(targetPath, snapshot));
+		const run = this.saveTail.then(async (): Promise<SaveOutcome> => {
+			try {
+				await saveAppsState(targetPath, snapshot);
+				return { ok: true };
+			} catch (error) {
+				return { ok: false, error: error instanceof Error ? error : new Error(String(error)) };
+			}
+		});
+		// 写队列持有结算结果（而非吞错），下一次写在其后继续；调用方各自等待自己的 outcome。
+		this.saveTail = run.catch(() => ({ ok: false }));
+		return run;
 	}
 
 	/**
@@ -391,12 +468,18 @@ export class AppRegistry {
 	}
 
 	/**
-	 * 释放所有应用与伴生服务
+	 * 释放所有应用与伴生服务，并等待已提交的期望状态写入全部结算。
 	 */
 	async disposeAll(): Promise<void> {
 		this.abortController.abort();
 		for (const name of [...this.apps.keys()]) {
 			await this.disable(name, false);
+		}
+		// 关闭前等待全部已提交的期望状态写入结算：不等待就是"可能丢最后一次启停记录"。
+		// 若最后一笔写失败，以诊断形式上报后仍完成关闭（运行时资源已回收是另一回事实）。
+		const last = await this.saveTail;
+		if (!last.ok && last.error) {
+			this.pi.reportError?.(new Error(`[App Framework] 关闭前应用期望状态落盘失败: ${String(last.error)}`));
 		}
 	}
 }

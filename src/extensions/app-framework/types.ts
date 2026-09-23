@@ -74,7 +74,15 @@ export interface ServiceCompanionContext {
 	isBusy?: () => boolean;
 	/** 应用数据目录（可选） */
 	appDataDir?: string;
-	/** 监听宿主通用活动事件（可选通用能力） */
+	/**
+	 * 监听宿主通用活动事件（可选通用能力）。
+	 *
+	 * 来源来自 input_accepted 的权威 InputSource，不由消费方推断：
+	 * - kind="user" → human（人/操作者通道）；
+	 * - kind="runtime" 且 origin="external" → external（外部世界的运行时输入）；
+	 * - 其余（runtime+internal、agent、无 source）→ runtime（主体自身内部活动）。
+	 * 这是"有人/有东西刚投递了输入"的事实，与回合是否已开始无关。
+	 */
 	onActivity?: (listener: (event: { origin: "human" | "external" | "runtime" }) => void) => () => void;
 	/**
 	 * 订阅宿主事实事件流（可选通用能力）。
