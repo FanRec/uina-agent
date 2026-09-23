@@ -396,7 +396,7 @@ export class UinaHost {
 	isBusy(): boolean { return this.subject.isBusy(); }
 	waitForIdle(): Promise<void> { return this.subject.waitForIdle(); }
  resumePending(): Promise<void> { this.assertAccepting(); return this.subject.resumePending(); }
-	claimAllQueued(): Promise<QueuedMessage[]> { return this.subject.claimAllQueued(); }
+	claimAllQueued(): Promise<import("../agent/loop.js").ClaimAllResult> { return this.subject.claimAllQueued(); }
 	claimQueued(id: string): Promise<QueuedMessage | null> { return this.subject.claimQueued(id); }
 	cycleThinkingLevel(): ThinkingLevel { return this.subject.cycleThinkingLevel(); }
 	setThinkingLevel(level: ThinkingLevel): void { this.subject.setThinkingLevel(level); }

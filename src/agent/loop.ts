@@ -42,8 +42,9 @@ export interface SubjectOptions {
 	runtimeHooks?: RuntimeHooks;
 	measureContext?: (model: Model, projection: RequestProjection) => TokenMeasurement | undefined;
 	/**
-	 * 单回合连续工具调用硬上限（默认 500）。超限终止回合并如实交代原因——
-	 * 失控循环是状态不是异常，不抛错；跑超长批处理时显式调高。
+	 * 单回合工具调用预算硬上限（默认 500），按 processed（进入执行流水线）口径计。
+	 * 超限的 tool_calls 批次整批拒绝并如实落盘 not_started，回合一律以 turn_failed 收口
+	 * ——失控循环是政策终止不是异常，不抛错；跑超长批处理时显式调高。
 	 */
 	maxConsecutiveToolCalls?: number;
 }
@@ -68,9 +69,21 @@ export interface AgentInput {
 	source: import("../core/types.js").InputSource;
  receivedAt?: string;
 	text?: string;
- images?: import("../core/content.js").ImageContent[];
+	images?: import("../core/content.js").ImageContent[];
 	data?: unknown;
 }
+
+/** 批量 claim 的显式部分成功合同：journal 无批事务，已持久化的条目必须移交 caller。 */
+export type ClaimAllResult =
+	| { kind: "complete"; claimed: QueuedMessage[] }
+	| { kind: "partial"; claimed: QueuedMessage[]; failedId: string; error: unknown };
+
+/** decide 的回合终局。runTurn 据此统一收口 turn_failed / agent_end 事实；
+ * 普通程序错误仍走异常通道（catch → turn_failed），两者不概念重叠。 */
+export type DecisionOutcome =
+	| { kind: "completed" }
+	| { kind: "aborted" }
+	| { kind: "terminated"; reason: "tool_call_limit"; message: string };
 
 export class Subject {
 	private activity: "turn" | "rewind" | undefined;
@@ -554,21 +567,40 @@ export class Subject {
 	}
 
 	/** Claims all queued inputs (mailbox claim 原语) and returns them in arrival order.
-	 * Ownership is claimed synchronously before any await so concurrent queue consumption cannot see claimed items. */
-	async claimAllQueued(): Promise<QueuedMessage[]> {
+	 * Ownership is claimed synchronously before any await so concurrent queue consumption cannot see claimed items.
+	 * JSONL journal 无批事务：部分持久化失败时，已写入 queue_restored 的条目 ownership
+	 * 已经移交 caller，必须随结果返回而不是随异常蒸发；未持久化的条目归还队列。 */
+	async claimAllQueued(): Promise<ClaimAllResult> {
 		const items = this.queues.takeAll();
+		const claimed: QueuedMessage[] = [];
 		for (const item of items) {
-			await this.storeEvent("queue_restored", eventData(item));
+			try {
+				await this.storeEvent("queue_restored", eventData(item));
+				claimed.push(item);
+			} catch (error) {
+				for (const unclaimed of items.slice(claimed.length)) {
+					this.queues.add(unclaimed);
+				}
+				this.notifyQueueChanged();
+				return { kind: "partial", claimed: [...claimed], failedId: item.id, error };
+			}
 		}
 		this.notifyQueueChanged();
-		return items;
+		return { kind: "complete", claimed };
 	}
 
-	/** Claims one queued input by identity；不存在的身份返回 null（幂等领取）。 */
+	/** Claims one queued input by identity；不存在的身份返回 null（幂等领取）。
+	 * 持久化失败时条目归还队列后重抛——claim 未提交，所有权仍在 Subject。 */
 	async claimQueued(id: string): Promise<QueuedMessage | null> {
 		const claimed = this.queues.remove(id);
 		if (!claimed) return null;
-		await this.storeEvent("queue_restored", { ...claimed });
+		try {
+			await this.storeEvent("queue_restored", { ...claimed });
+		} catch (error) {
+			this.queues.add(claimed);
+			this.notifyQueueChanged();
+			throw error;
+		}
 		this.notifyQueueChanged();
 		return claimed;
 	}
@@ -637,15 +669,26 @@ export class Subject {
 		let success = false;
 		let runError: string | undefined;
 		let currentTurn = turn;
+		// afterEnd 的 post-turn signal：回合结算前捕获（finally 会先置空 this.abort）。
+		const turnSignal = this.currentSignal();
 		try {
 			await this.dispatch({ type: "turn_start", turnNumber: currentTurn, userText: text ?? "", images: queuedInput?.images });
 			if (queuedInput) await this.consumeQueueItem(queuedInput);
 			else if (text !== undefined)
 				await this.appendMessage({ role: "user", content: text, timestamp: new Date().toISOString() });
-			await this.decide(model, systemPrompt, beforeMessages, (nextTurn) => {
+			const outcome = await this.decide(model, systemPrompt, beforeMessages, (nextTurn) => {
 				currentTurn = nextTurn;
 			}, () => currentTurn);
-			success = true;
+			if (outcome.kind === "completed") {
+				success = true;
+			} else if (outcome.kind === "terminated") {
+				// 政策终止（如 tool_call_limit）：journal 由这里唯一收口 turn_failed；
+				// reason code 单独存放，error 字段与 agent_end 一致用人类可读消息。
+				runError = outcome.message;
+				await this.storeEvent("turn_failed", { turnId: currentTurn, error: outcome.message, reason: outcome.reason });
+				this.reportError(outcome.message);
+			}
+			// aborted：turn_aborted 已由 emitInterrupted 落盘，这里只让 success=false，不重复收口。
 		} catch (error) {
 			runError = errorMessage(error);
 			if (this.interrupted || this.currentSignal().aborted) {
@@ -675,7 +718,7 @@ export class Subject {
 				await this.applyPendingRewind();
 			}
 			try {
-				await this.runtimeHooks.turn.afterEnd({ turnNumber: currentTurn, success, ...(runError ? { error: runError } : {}) });
+				await this.runtimeHooks.turn.afterEnd({ turnNumber: currentTurn, success, ...(runError ? { error: runError } : {}), signal: turnSignal });
 			} catch (error) {
 				this.reportError(error);
 			}
@@ -741,7 +784,7 @@ export class Subject {
 		beforeMessages: readonly (AgentMessage | ChatMsg)[] = [],
 		onTurnTransition?: (nextTurn: number) => void,
 		getCurrentTurn?: () => number,
-	): Promise<void> {
+	): Promise<DecisionOutcome> {
 		const applyRewind = async (): Promise<boolean> => {
 			if (!await this.applyPendingRewind()) return false;
 			const prepared = await this.runtimeHooks.turn.prepare({ prompt: "", systemPrompt: this.systemPrompt });
@@ -754,17 +797,19 @@ export class Subject {
 		};
 		// A scheduled rewind commits before turn preparation, so each request always sees
 		// the mainline that is about to be sent — never a projection the rewind is about to replace.
-		let consecutiveToolCalls = 0;
+		// 预算口径 = processed（真正进入执行流水线的调用），防的是失控循环的模型请求预算，
+		// 不是"成功副作用"配额——无效/未知工具即便 not_started 也消耗预算，模型无法靠无效调用绕过上限。
+		let processedToolCalls = 0;
 		for (;;) {
 			if (this.interrupted) {
 				await this.emitInterrupted();
-				return;
+				return { kind: "aborted" };
 			}
 
 			await applyRewind();
 			// 回合内暴涨由每请求的 transformContext 裁剪收敛（compaction capability
 			// 拥有上下文窗口管理）——这里不再有 between-step 压缩体检。
-			const projection = await this.prepareProjectionForSend(model, systemPrompt, beforeMessages);
+			const projection = await this.prepareProjectionForSend(model, systemPrompt, beforeMessages, this.currentSignal());
 			const callId = `stream-${this.turnSeq}-${++this.streamSeq}`;
 			const callSeq = this.streamSeq;
 			const collector = new TurnStreamCollector(
@@ -792,15 +837,16 @@ export class Subject {
 					this.currentSignal(),
 				);
 			} catch (error) {
+				// handleStreamError 仅在 abort 已由 emitInterrupted 落盘后正常返回；其余错误继续上抛。
 				await this.handleStreamError(collector, error);
-				return;
+				return { kind: "aborted" };
 			}
 
 			if (this.interrupted || this.currentSignal().aborted) {
 				collector.closeOutput("interrupted", "cancelled");
 				const partial = collector.getPartialOutput();
 				await this.emitInterrupted(partial.reply, partial.thinking, partial.thinkingSignature);
-				return;
+				return { kind: "aborted" };
 			}
 
 			const streamResult = collector.validateAndFinalize();
@@ -811,29 +857,31 @@ export class Subject {
 				// steer/followUp 续跑不在这里内联消费：decide 的 model 参数是回合开始的快照，
 				// 在此 drain 会让切模型/改思考档后的排队输入仍用旧口径（假切换）。
 				// 交还 runTurn 收尾的 resumeQueued 链路 —— startRun 会重新取 this.model 快照。
-				return;
+				return { kind: "completed" };
 			}
 
-			consecutiveToolCalls += streamResult.toolCalls.length;
+			const proposedToolCalls = streamResult.toolCalls.length;
 			const toolCallCap = this.maxConsecutiveToolCalls;
-			if (consecutiveToolCalls >= toolCallCap) {
-				// 硬上限：失控循环是状态不是异常，不抛错；但必须如实落盘交代，不伪装成正常完成。
-				const capText = `[回合终止] 已连续调用工具 ${consecutiveToolCalls} 次，达到上限 ${toolCallCap}。本次任务未正常收敛，已停止执行。`;
-				console.warn(`[Subject:decide] 连续工具调用 ${consecutiveToolCalls} 次达到硬上限 ${toolCallCap}，终止本回合`);
+			if (processedToolCalls + proposedToolCalls > toolCallCap) {
+				// Provider 已返回的 tool_calls 是事实，不因预算拒绝而蒸发：整批落盘 + not_started 结算。
+				await this.recordTerminalAssistant(streamResult, `已达工具调用上限 ${toolCallCap}，本批未执行`);
+				const capText = `[回合终止] 已处理 ${processedToolCalls} 次工具调用，本批 ${proposedToolCalls} 个调用将超过上限 ${toolCallCap}，因此未执行。本次任务未正常收敛，已停止执行。`;
+				console.warn(`[Subject:decide] 工具调用预算耗尽（已处理 ${processedToolCalls}/${toolCallCap}），终止本回合`);
 				await this.appendMessage(this.buildAssistantMessage({ reply: capText }, { status: "error" }));
-				return;
-			}
-			if (consecutiveToolCalls >= 100 && consecutiveToolCalls % 50 === 0) {
-				console.warn(`[Subject:decide] 提示：本回合连续工具调用已达 ${consecutiveToolCalls} 次（上限 ${toolCallCap}）`);
+				return { kind: "terminated", reason: "tool_call_limit", message: capText };
 			}
 
 			const { stopped } = await this.settleToolExchange(streamResult);
+			processedToolCalls += proposedToolCalls;
+			if (processedToolCalls >= 100 && processedToolCalls % 50 === 0) {
+				console.warn(`[Subject:decide] 提示：本回合已处理工具调用 ${processedToolCalls} 次（上限 ${this.maxConsecutiveToolCalls}）`);
+			}
 			if (this.interrupted || this.currentSignal().aborted) {
 				await this.emitInterrupted("", "", undefined);
-				return;
+				return { kind: "aborted" };
 			}
 			if (await applyRewind()) continue;
-			if (stopped) return;
+			if (stopped) return { kind: "completed" };
 			// 回合间停止决策（对应 Pi shouldStopAfterTurn）：任一扩展要求停止时立即收尾，
 			// 不再发起下一次模型调用。仅作用于本运行内的续跑；队列恢复语义不变。
 			const stopDecision = await this.runtimeHooks.turn.shouldStop({
@@ -842,7 +890,7 @@ export class Subject {
 				reply: streamResult.reply,
 				toolCallCount: streamResult.toolCalls.length,
 			});
-			if (stopDecision.stop) return;
+			if (stopDecision.stop) return { kind: "completed" };
 			await this.drainQueuedInputs("steer", onTurnTransition, getCurrentTurn);
 		}
 	}
@@ -851,11 +899,12 @@ export class Subject {
 		model: Model,
 		systemPrompt: string,
 		beforeMessages: readonly (AgentMessage | ChatMsg)[],
+		turnSignal: AbortSignal,
 	): Promise<RequestProjection> {
 		for (let pass = 0; pass <= 1; pass++) {
 			const projection = await this.prepareProjection(model, systemPrompt, beforeMessages, true);
 			const measurement = measureRequestContext(projection, this.measureContext ? (p) => this.measureContext!(model, p) : undefined);
-			const decision = await this.runtimeHooks.turn.preflight({ projection, measurement, pass });
+			const decision = await this.runtimeHooks.turn.preflight({ projection, measurement, pass, signal: turnSignal });
 			if (decision.action === "fail") throw new Error(decision.reason ?? "请求预检失败");
 			if (decision.action === "rebuild") {
 				if (pass >= 1) throw new Error(decision.reason ?? "请求重建后仍需要再次重建");
@@ -958,14 +1007,14 @@ export class Subject {
 		};
 	}
 
-	private async recordTerminalAssistant(result: StreamCollectorResult): Promise<void> {
+	private async recordTerminalAssistant(result: StreamCollectorResult, notExecutedReason?: string): Promise<void> {
 		if (result.reply.trim() || result.toolCalls.length > 0) {
 			await this.appendMessage(this.buildAssistantMessage(result));
 			for (const call of result.toolCalls) {
 				await this.appendMessage({
 					role: "tool",
 					tool_call_id: call.id,
-					content: JSON.stringify({ error: "工具调用未执行（模型没有以 tool_calls 终止）", status: "not_started" }),
+					content: JSON.stringify({ error: notExecutedReason ?? "工具调用未执行（模型没有以 tool_calls 终止）", status: "not_started" }),
 					status: "not_started",
 					timestamp: new Date().toISOString(),
 				});

@@ -77,6 +77,9 @@ export function createOpenAIProvider(id: string, conf: OpenAIEndpointConf): Prov
 				hooks: req.providerHooks,
 				signal,
 				maxRetries: conf.maxRetries,
+				// retry 可观察性与其他 provider 对齐（providers.ts 同款协议），不在这里降级。
+				onRetry: (event) => onDelta({ kind: "provider_retry", ...event }),
+				onRecovered: (attempt) => onDelta({ kind: "provider_recovered", attempt }),
 			});
 
 			let finished = false;

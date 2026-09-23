@@ -16,6 +16,18 @@ export function readonlySnapshot<T>(value: T): DeepReadonly<T> {
 	return deepFreeze(clone(value)) as DeepReadonly<T>;
 }
 
+/** Copies and freezes data at the kernel boundary so hook implementations can
+ * neither mutate runtime-owned values nor retain a mutable return reference.
+ * AbortSignal lives outside this contract: it is runtime-owned identity that
+ * cannot survive structuredClone, so hook inputs carry it through untouched
+ * (signals are already immutable). */
+function withSignal<T extends { signal: AbortSignal }>(
+	input: Readonly<T>,
+): DeepReadonly<T> {
+	const { signal, ...data } = input;
+	return Object.freeze({ ...readonlySnapshot(data as Omit<T, "signal">), signal }) as DeepReadonly<T>;
+}
+
 /** Owns and deeply freezes one model-semantic request at a hook boundary. */
 export function immutableProjection(projection: RequestProjection): RequestProjection {
 	return readonlySnapshot(projection) as unknown as RequestProjection;
@@ -38,8 +50,8 @@ export function guardRuntimeHooks(hooks: RuntimeHooks): RuntimeHooks {
 		turn: Object.freeze({
 			prepare: async (input) => copyPrepare(await hooks.turn.prepare(readonlySnapshot(input))),
 			transformContext: async (projection) => copyProjection(await hooks.turn.transformContext(readonlySnapshot(projection))),
-			preflight: async (input) => Object.freeze({ ...(await hooks.turn.preflight(readonlySnapshot(input))) }),
-			afterEnd: async (input) => hooks.turn.afterEnd(readonlySnapshot(input)),
+			preflight: async (input) => Object.freeze({ ...(await hooks.turn.preflight(withSignal(input))) }),
+			afterEnd: async (input) => hooks.turn.afterEnd(withSignal(input)),
 			shouldStop: async (input) => Object.freeze({ ...(await hooks.turn.shouldStop(readonlySnapshot(input))) }),
 		}),
 		tools: Object.freeze({

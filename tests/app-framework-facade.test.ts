@@ -228,3 +228,49 @@ describe("App Framework: Facade Tool", () => {
 	});
 });
 
+
+describe("App Framework: Facade Tool 取消语义", () => {
+	function createAbortableApp() {
+		let currentTier: SurfaceTier = "hidden";
+		const def: AppDef = {
+			name: "slowapp",
+			description: "取消语义测试",
+			actions: {
+				slow: {
+					description: "挂起直到被取消",
+					run: (_params, ctx) =>
+						new Promise<string>((_, reject) => {
+							ctx.signal.addEventListener("abort", () => reject(new Error("operation aborted")), { once: true });
+						}),
+				},
+			},
+		};
+		const runtime: AppRuntime = { definition: def, enabled: true, surfaceTier: currentTier, lastActiveTurn: 0 };
+		const tool = createFacadeTool(def, {
+			getRuntime: () => runtime,
+			setTier: (tier) => {
+				currentTier = tier;
+				runtime.surfaceTier = tier;
+			},
+		});
+		return tool;
+	}
+
+	it("执行中取消且 action 抛出：如实报告 unknown，不吞成 failed", async () => {
+		const tool = createAbortableApp();
+		const controller = new AbortController();
+		const promise = tool.run({ action: "slow" }, controller.signal);
+		controller.abort();
+		const result = await promise;
+		expect(result.status).toBe("unknown");
+		expect(result.result).toContain("外部副作用状态未知");
+	});
+
+	it("执行开始前已取消：报告 cancelled", async () => {
+		const tool = createAbortableApp();
+		const controller = new AbortController();
+		controller.abort();
+		const result = await tool.run({ action: "slow" }, controller.signal);
+		expect(result.status).toBe("cancelled");
+	});
+});

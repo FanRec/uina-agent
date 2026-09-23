@@ -32,8 +32,10 @@ export type HookName =
 export interface HookInputs {
 	"turn.prepare": { readonly prompt: string; readonly systemPrompt: string };
 	"turn.transformContext": RequestProjection;
-	"turn.preflight": { readonly projection: RequestProjection; readonly measurement: TokenMeasurement; readonly pass: number };
-	"turn.afterEnd": { readonly turnNumber: number; readonly success: boolean; readonly error?: string };
+	/** signal = 当前主体活动的取消信号（preflight 为 turn signal，afterEnd 为 post-turn
+	 * signal）。长 IO 工作必须监听它；它与扩展生命周期信号（pi.signal）正交。 */
+	"turn.preflight": { readonly projection: RequestProjection; readonly measurement: TokenMeasurement; readonly pass: number; readonly signal: AbortSignal };
+	"turn.afterEnd": { readonly turnNumber: number; readonly success: boolean; readonly error?: string; readonly signal: AbortSignal };
 	"turn.shouldStop": { readonly turnNumber: number; readonly finishReason: FinishReason; readonly reply: string; readonly toolCallCount: number };
 	"tools.beforeCall": { readonly callId: string; readonly name: string; readonly args: Record<string, unknown> };
 	"tools.transformResult": { readonly callId: string; readonly name: string; readonly args: Record<string, unknown>; readonly result: string; readonly status: ToolResultStatus; readonly images?: readonly ImageContent[]; readonly details?: unknown };
@@ -100,9 +102,9 @@ export interface RuntimeHooks {
 		 * perform external effects merely because inspection ran. */
 		transformContext(projection: DeepReadonly<RequestProjection>): Promise<RequestProjection>;
 		/** Read-only post-measurement decision. Core applies fail > rebuild > send. */
-		preflight(input: Readonly<{ projection: DeepReadonly<RequestProjection>; measurement: TokenMeasurement; pass: number }>): Promise<Readonly<{ action?: "send" | "rebuild" | "fail"; reason?: string }>>;
+		preflight(input: Readonly<{ projection: DeepReadonly<RequestProjection>; measurement: TokenMeasurement; pass: number; readonly signal: AbortSignal }>): Promise<Readonly<{ action?: "send" | "rebuild" | "fail"; reason?: string }>>;
 		/** Awaited safe point after all agent_end observers and before queue resume. */
-		afterEnd(input: Readonly<{ turnNumber: number; success: boolean; error?: string }>): Promise<void>;
+		afterEnd(input: Readonly<{ turnNumber: number; success: boolean; error?: string; readonly signal: AbortSignal }>): Promise<void>;
 		/**
 		 * 回合间停止决策：在工具交换后的续跑点询问；返回 stop 时本轮立即收尾，
 		 * 不再发起下一次模型调用。对应 Pi 的 shouldStopAfterTurn。

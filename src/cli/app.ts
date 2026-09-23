@@ -152,7 +152,13 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	const restoreQueueToEditor = async (): Promise<number> => {
 		if (!tui) return 0;
   if (!canEditQueuedDraft(host.snapshot().queue)) { tui.host.notify('队列包含图片或扩展事件，已保留；可按 Esc 继续处理', 'info'); return 0; }
-		const items = await host.claimAllQueued();
+		const result = await host.claimAllQueued();
+		if (result.kind === "partial") {
+			// journal 无批事务：已持久化的条目 ownership 在 caller 手里，照常退回输入栏；
+			// 未持久化的条目仍在队列中，持久化故障必须可见。
+			tui.host.notify(`队列恢复中断：条目持久化失败（${errorMessage(result.error)}），其余排队消息已保留在队列中`, "warning");
+		}
+		const items = result.claimed;
 		if (items.length === 0) return 0;
 		tui.replaceInput(combineQueuedDraft(items, tui.host.inputLine.getText()));
 		tui.host.transcript.addNotice(`已打断当前轮次，已将 ${items.length} 条排队消息退回输入栏`);

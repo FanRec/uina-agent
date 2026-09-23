@@ -131,7 +131,9 @@ describe("Subject", () => {
 		h1.interrupt();
 		await h1.waitForIdle();
 		expect(h1.queuedSnapshot().map((item) => item.text)).toEqual(["steer", "follow"]);
-		const editorItems = await h1.claimAllQueued();
+		const claim = await h1.claimAllQueued();
+		expect(claim.kind).toBe("complete");
+		const editorItems = claim.claimed;
 		expect(editorItems.map((item) => item.text)).toEqual(["steer", "follow"]);
 		release?.();
 

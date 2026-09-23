@@ -34,7 +34,7 @@ describe('event frame compaction',()=>{
   const base=projection(input);
   const first=await runner.runTransformContext(base);
   const measurement={inputTokens: estimateRequestTokens(first.messages, first.tools), kind: 'approximate' as const, source: 'test'};
-  const decision=await runner.runPreflight({projection:first,measurement,pass:0});
+  const decision=await runner.runPreflight({projection:first,measurement,pass:0,signal:new AbortController().signal});
   expect(decision.action).toBe('rebuild');
   const out=(await runner.runTransformContext(base)).messages;
   expect(()=>p.validateContext!(out,{model:scenario.model,tools:[]})).not.toThrow();
@@ -74,7 +74,7 @@ describe('event frame compaction',()=>{
    const plainBase = projection(messages);
    const plainFirst = await plain.runner.runTransformContext(plainBase);
    const plainMeasurement = {inputTokens: inputTokenBudget({ contextWindow: window })!, kind: 'approximate' as const, source: 'test'};
-   const plainDecision = await plain.runner.runPreflight({projection: plainFirst, measurement: plainMeasurement, pass: 0});
+   const plainDecision = await plain.runner.runPreflight({projection: plainFirst, measurement: plainMeasurement, pass: 0, signal: new AbortController().signal});
    expect(plainDecision.action).toBe('send');
    const unchanged = (await plain.runner.runTransformContext(plainBase)).messages;
    expect(unchanged).toEqual(messages);
@@ -85,7 +85,7 @@ describe('event frame compaction',()=>{
    const armedBase = { ...projection(messages), tools: requestToolDefs([], [EVENT_FRAME_TOOL]) };
    const armedFirst = await armed.runner.runTransformContext(armedBase);
    const armedMeasurement = {inputTokens: inputTokenBudget({ contextWindow: window })! + 1, kind: 'approximate' as const, source: 'test'};
-   const armedDecision = await armed.runner.runPreflight({projection: armedFirst, measurement: armedMeasurement, pass: 0});
+   const armedDecision = await armed.runner.runPreflight({projection: armedFirst, measurement: armedMeasurement, pass: 0, signal: new AbortController().signal});
    expect(armedDecision.action).toBe('rebuild');
    const trimmed = (await armed.runner.runTransformContext(armedBase)).messages;
    expect(armed.scenario.calls.length).toBeGreaterThanOrEqual(1);

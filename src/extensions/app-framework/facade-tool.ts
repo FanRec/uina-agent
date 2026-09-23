@@ -267,6 +267,20 @@ export function createFacadeTool(def: AppDef, options: FacadeToolOptions): Tool 
 					},
 				};
 			} catch (error) {
+				// 执行开始后 signal 已中止：action 内部清理程度不可知，外部副作用状态未知。
+				// 按工具取消语义如实报 unknown，不吞成 failed（不做 AbortError 名称嗅探）。
+				if (actionSignal.aborted) {
+					return {
+						result: `【${def.name} 已中止】操作 "${actionName}" 在执行中被取消，外部副作用状态未知。`,
+						status: "unknown",
+						details: {
+							operationIdentity,
+							appName: def.name,
+							action: actionName,
+							error: error instanceof Error ? error.stack : String(error),
+						},
+					};
+				}
 				return {
 					result: `【${def.name} 执行失败】${error instanceof Error ? error.message : String(error)}`,
 					status: "failed",

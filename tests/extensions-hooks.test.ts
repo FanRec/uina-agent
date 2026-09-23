@@ -268,6 +268,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			projection: testProjection([{ role: "user", content: "input" }]),
 			measurement: { inputTokens: 10, kind: "approximate", source: "test" },
 			pass: 0,
+			signal: new AbortController().signal,
 		});
 		expect(result.action).toBe("fail");
 		expect(result.reason).toBe("no objection；compaction needed；policy stop");

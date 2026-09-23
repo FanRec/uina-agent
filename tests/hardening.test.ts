@@ -178,7 +178,7 @@ describe("hardening: keyboard and frame invariants", () => {
 });
 
 describe("hardening: consecutive tool call hard cap", () => {
-	it("到达硬上限时终止回合并如实落盘终止原因", async () => {
+	it("预算超限时整批拒绝并如实落盘终止原因", async () => {
 		const scenario = new Scenario().when(() => true).callTool("echo", {});
 		const harness = SubjectHarness.create({
 			scenario,
@@ -188,7 +188,7 @@ describe("hardening: consecutive tool call hard cap", () => {
 		await harness.subject.pushInput("开始");
 		await harness.subject.waitForIdle();
 		const text = harness.historySnapshot().map((m) => (m.role === "assistant" ? m.content : "")).join("\n");
-		expect(text).toContain("达到上限 2");
+		expect(text).toContain("将超过上限 2");
 		expect(text).toContain("未正常收敛");
 	});
 });

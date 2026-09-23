@@ -22,7 +22,12 @@ export class InputQueues {
 	}
 
 	add(item: QueuedMessage): void {
-		this.queueFor(item.mode).push({ ...item });
+		// 按 order 插入：rollback 复用本方法，不能让回滚条目改变同 mode 的真实消费顺序
+		//（peek 取原始数组头部，all() 的排序只美化快照、不修复 peek 的消费次序）。
+		const queue = this.queueFor(item.mode);
+		const index = queue.findIndex((existing) => existing.order > item.order);
+		if (index >= 0) queue.splice(index, 0, { ...item });
+		else queue.push({ ...item });
 		this.enqueuedAt.set(item.id, Date.now());
 	}
 
