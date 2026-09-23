@@ -17,6 +17,9 @@ import { ToolBroker } from "../src/tools/broker.js";
 import { activateAppFramework, defineApp } from "../src/extensions/app-framework/index.js";
 import { type AppDef } from "../src/extensions/app-framework/types.js";
 import { IsolatedEnv } from "./harness/index.js";
+import { BodyRouter } from "../.uina/extensions/embodiment/body-router.js";
+import { projectEmbodimentContext } from "../.uina/extensions/embodiment/context-projector.js";
+import type { BodyEndpoint } from "../.uina/extensions/embodiment/types.js";
 
 /** appendCustomEntry 的入参形状（与 ExtensionAPI.appendCustomEntry 内联合同一致）。 */
 interface StateChangeEntry {
@@ -175,7 +178,42 @@ describe.skipIf(!hasLocalRuntime)("具身状态变化落史（不唤醒）与 bo
 		await waitFor(() => entries.filter((e) => e.customType === "embodiment.state-change").length >= before + 2);
 		const changes = entries.filter((e) => e.customType === "embodiment.state-change");
 		const last = JSON.stringify(changes[changes.length - 1]);
-		expect(last).toContain('"online":false');
+	expect(last).toContain('"online":false');
+	});
+});
+
+describe("具身投影器 projectEmbodimentContext（三态合同）", () => {
+	function wireEndpoint(bodyId: string, online: boolean, fault?: string): BodyEndpoint {
+		return {
+			bodyId,
+			bodyType: "avatar_2d",
+			affordance: () => ({ bodyId, bodyType: "avatar_2d", cues: [{ id: "warm_smile", description: "微笑" }], description: "探针" }),
+			state: () => ({ online, fault }),
+			emitCue: () => {},
+			safeStop: async () => {},
+			onFocus: () => {},
+		};
+	}
+
+	it("在线：状态行 + cue 列表（行为必需，保留）", () => {
+		const router = new BodyRouter();
+		router.registerEndpoint(wireEndpoint("live2d_mo", true));
+		const text = projectEmbodimentContext(router)!;
+		expect(text).toContain("[body] live2d_mo: 在线");
+		expect(text).toContain("<cue id=\"warm_smile\"/>");
+		expect(text).not.toContain("注意");
+	});
+
+	it("离线：单行状态 + fault；行为规范句不再逐轮复读", () => {
+		const router = new BodyRouter();
+		router.registerEndpoint(wireEndpoint("live2d_mo", false, "disconnected"));
+		const text = projectEmbodimentContext(router)!;
+		expect(text).toBe("[body] live2d_mo: 离线 (disconnected)");
+		expect(text).not.toContain("若被问及");
+	});
+
+	it("无端点：undefined（0 帧 0 token）", () => {
+		expect(projectEmbodimentContext(new BodyRouter())).toBeUndefined();
 	});
 });
 
