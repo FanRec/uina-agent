@@ -219,8 +219,9 @@ export async function sendModelStreamRequest(
 	);
 
 	const response = await fetchWithRetry(options.url, {
-		// 未显式限制时持续重试，直到请求成功或 signal 被中止。
-		maxRetries: options.maxRetries ?? Number.POSITIVE_INFINITY,
+		// 未显式限制时默认重试上界 8 次（退避累计约 48 秒，足以穿过普通抖动）；
+		// 确需更长重试的调用方显式传 Infinity——缺省值必须安全，不可中断的无限循环不进缺省。
+		maxRetries: options.maxRetries ?? 8,
 		signal: options.signal,
 		onRetry: options.onRetry,
 		onRecovered: options.onRecovered,
@@ -276,11 +277,14 @@ export async function fetchWithRetry(
 			await response.body?.cancel().catch(() => undefined);
 			const delay = Math.min(retryAfter(response.headers.get("retry-after")) ?? backoffDelay(attempt), 16_000);
 			options.onRetry?.({ attempt: attempt + 1, delayMs: delay, status: response.status, reason: `HTTP ${response.status}` });
-			await abortableDelay(Math.min(delay, 60_000), options.signal);
+			await abortableDelay(delay, options.signal);
 		} catch (error) {
 			if (options.signal?.aborted || attempt >= options.maxRetries || !isNetworkError(error)) throw error;
+			// undici 把真实故障藏在 TypeError 外壳里；分类面保持窄，但提示信息必须
+			// 带上原始消息——否则用户在重试状态行里永远看不到真因。
+			const detail = error instanceof Error && error.message ? `：${error.message.slice(0, 120)}` : "";
 			const delay = backoffDelay(attempt);
-			options.onRetry?.({ attempt: attempt + 1, delayMs: delay, reason: "网络连接失败" });
+			options.onRetry?.({ attempt: attempt + 1, delayMs: delay, reason: `网络连接失败${detail}` });
 			await abortableDelay(delay, options.signal);
 		}
 		attempt++;
@@ -303,6 +307,9 @@ function isNetworkError(error: unknown): boolean {
 }
 
 function retryAfter(value: string | null): number | undefined {
+	// 注意：返回值在调用侧被 16s 封顶——服务端 Retry-After 超过 16s 时
+	// 我们有意提前重试（保护用户等待体验），可能连续撞 429。这是自觉取舍，
+	// 如需尊重服务端完整期限，应在调用侧单独放宽而非改这里。
 	if (!value) return undefined;
 	const seconds = Number(value);
 	if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
