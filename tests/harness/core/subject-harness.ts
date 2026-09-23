@@ -47,6 +47,7 @@ export interface SubjectHarnessOptions {
 	readonly thinkingLevel?: ThinkingLevel;
 	readonly systemPrompt?: string;
 	readonly projection?: ProjectionPolicy;
+	readonly maxConsecutiveToolCalls?: number;
 }
 
 /**
@@ -90,6 +91,7 @@ export class SubjectHarness {
 				thinkingLevel: options.thinkingLevel,
 				systemPrompt: options.systemPrompt,
 				projection: options.projection,
+				maxConsecutiveToolCalls: options.maxConsecutiveToolCalls,
 			},
 		);
 

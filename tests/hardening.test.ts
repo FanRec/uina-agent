@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+﻿import { describe, expect, it, vi } from "vitest";
 import { open } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { IsolatedEnv, mockTool } from "./harness/index.js";
+import { IsolatedEnv, mockTool, SubjectHarness, Scenario } from "./harness/index.js";
 import { JsonlSessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
 import { JobRegistry } from "../src/extensions/jobs/registry.js";
 import { SubagentRegistry } from "../src/extensions/subagents/registry.js";
@@ -174,5 +174,21 @@ describe("hardening: keyboard and frame invariants", () => {
 			const plain = row.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
 			expect(visibleWidth(plain)).toBeLessThanOrEqual(20);
 		}
+	});
+});
+
+describe("hardening: consecutive tool call hard cap", () => {
+	it("到达硬上限时终止回合并如实落盘终止原因", async () => {
+		const scenario = new Scenario().when(() => true).callTool("echo", {});
+		const harness = SubjectHarness.create({
+			scenario,
+			maxConsecutiveToolCalls: 2,
+			tools: [mockTool("echo", () => "ok")],
+		});
+		await harness.subject.pushInput("开始");
+		await harness.subject.waitForIdle();
+		const text = harness.historySnapshot().map((m) => (m.role === "assistant" ? m.content : "")).join("\n");
+		expect(text).toContain("达到上限 2");
+		expect(text).toContain("未正常收敛");
 	});
 });

@@ -41,6 +41,11 @@ export interface SubjectOptions {
 	thinkingLevel?: ThinkingLevel;
 	runtimeHooks?: RuntimeHooks;
 	measureContext?: (model: Model, projection: RequestProjection) => TokenMeasurement | undefined;
+	/**
+	 * 单回合连续工具调用硬上限（默认 500）。超限终止回合并如实交代原因——
+	 * 失控循环是状态不是异常，不抛错；跑超长批处理时显式调高。
+	 */
+	maxConsecutiveToolCalls?: number;
 }
 
 export function clampThinkingLevel(
@@ -75,6 +80,7 @@ export class Subject {
 	private abort: AbortController | null = null;
 	private readonly queues = new InputQueues();
 	private readonly systemPrompt: string;
+	private readonly maxConsecutiveToolCalls: number;
 	private readonly store?: SessionStore;
 	private pendingRewind?: { request: RewindRequest; source: string; requestId: string; signal?: AbortSignal };
 	private rewindCommitting = false;
@@ -115,6 +121,7 @@ export class Subject {
 		this.thinkingLevel = this.preferredThinkingLevel;
 		this.runtimeHooks = guardRuntimeHooks(options.runtimeHooks ?? NO_RUNTIME_HOOKS);
 		this.measureContext = options.measureContext;
+		this.maxConsecutiveToolCalls = options.maxConsecutiveToolCalls ?? 500;
 	}
 
 	subscribe(listener: (event: RuntimeEvent) => void): () => void {
@@ -793,8 +800,16 @@ export class Subject {
 			}
 
 			consecutiveToolCalls += streamResult.toolCalls.length;
+			const toolCallCap = this.maxConsecutiveToolCalls;
+			if (consecutiveToolCalls >= toolCallCap) {
+				// 硬上限：失控循环是状态不是异常，不抛错；但必须如实落盘交代，不伪装成正常完成。
+				const capText = `[回合终止] 已连续调用工具 ${consecutiveToolCalls} 次，达到上限 ${toolCallCap}。本次任务未正常收敛，已停止执行。`;
+				console.warn(`[Subject:decide] 连续工具调用 ${consecutiveToolCalls} 次达到硬上限 ${toolCallCap}，终止本回合`);
+				await this.appendMessage(this.buildAssistantMessage({ reply: capText }, { status: "error" }));
+				return;
+			}
 			if (consecutiveToolCalls >= 100 && consecutiveToolCalls % 50 === 0) {
-				console.warn(`[Subject:decide] 提示：本回合连续工具调用已达 ${consecutiveToolCalls} 次（未施加人工上限，请关注模型状态）`);
+				console.warn(`[Subject:decide] 提示：本回合连续工具调用已达 ${consecutiveToolCalls} 次（上限 ${toolCallCap}）`);
 			}
 
 			const { stopped } = await this.settleToolExchange(streamResult);
