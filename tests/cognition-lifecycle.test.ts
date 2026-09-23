@@ -147,6 +147,32 @@ describe("M6 整理 worker：patch 提交与冲突", () => {
 		const record = await store.read(created.id);
 		expect(record!.body).toBe("整理后的版本");
 	});
+
+	it("畸形 patch 经形状校验被拒：不入库且 validationRejected 计数可见", async () => {
+		const created = await seedRecord();
+		// 模型输出不可信：故意混入各形畸形（绕过类型层，运行时守卫必须接住）。
+		const hostile = [
+			null as unknown as ConsolidationPatch,
+			{ op: "create" } as unknown as ConsolidationPatch, // 不造新记忆
+			{ op: "revise", id: "", expectedHash: created.hash, record: {} } as unknown as ConsolidationPatch, // 空 id
+			{ op: "retire", id: created.id, expectedHash: created.hash } as unknown as ConsolidationPatch, // retire 缺 reason
+			{ op: "revise", id: created.id, expectedHash: created.hash, record: null } as unknown as ConsolidationPatch, // record 非对象
+			{ op: "revise", id: created.id, expectedHash: created.hash, record: { pinned: "yes" } } as unknown as ConsolidationPatch, // pinned 非布尔
+			{ op: "revise", id: created.id, expectedHash: created.hash, record: { body: "x".repeat(8193) } } as unknown as ConsolidationPatch, // 超长 body
+		];
+		const worker = createConsolidationWorker({
+			store,
+			stateRoot: join(root, "state"),
+			runModel: async () => hostile,
+			listEvidence: () => [{ sessionId: "default", entryId: "e1", text: "证据" }],
+		});
+		const result = await worker.run();
+		expect(result.status).toBe("completed");
+		expect(result.validationRejected).toBe(hostile.length);
+		expect(result.patchesSubmitted).toBe(0);
+		const record = await store.read(created.id);
+		expect(record!.body).toBe("部署前先跑测试。"); // 原文未被动过
+	});
 });
 
 describe("M6 整理 worker：关闭与迟到 patch", () => {

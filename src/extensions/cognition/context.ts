@@ -111,7 +111,7 @@ export function activateCognition(pi: ExtensionAPI): void {
 			if (ref.sessionId !== subject.sessionId) return false;
 			if (!ref.entryId) return true;
 			try {
-				pi.session.read(ref.entryId);
+				void pi.session.read(ref.entryId);
 				return true;
 			} catch {
 				return false;

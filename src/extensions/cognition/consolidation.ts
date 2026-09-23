@@ -44,7 +44,42 @@ export interface ConsolidationRunResult {
 	status: "completed" | "aborted";
 	patchesSubmitted: number;
 	conflicts: number;
+	/** 形状校验拒绝的 patch 数（与 store rejected 区分：坏输出可见，不静默蒸发）。 */
+	validationRejected?: number;
 	modelCalls: number;
+}
+
+/**
+ * 模型输出 → MemoryChange 的窄校验（不信任 runModel 返回值）。
+ * op 白名单 + 字段存在性 + 长度粗闸（防注入/防烧库）；上限可调。
+ */
+function asMemoryPatch(patch: unknown): Parameters<MemoryStore["write"]>[0] | null {
+	if (typeof patch !== "object" || patch === null) return null;
+	const p = patch as Record<string, unknown>;
+	if (p.op !== "revise" && p.op !== "retire") return null;
+	if (typeof p.id !== "string" || p.id.length === 0 || p.id.length > 256) return null;
+	if (typeof p.expectedHash !== "string" || p.expectedHash.length === 0 || p.expectedHash.length > 128) return null;
+	if (p.op === "retire") {
+		if (typeof p.reason !== "string" || p.reason.length === 0 || p.reason.length > 2048) return null;
+		return { op: "retire", id: p.id, expectedHash: p.expectedHash, reason: p.reason };
+	}
+	// revise
+	if (typeof p.record !== "object" || p.record === null) return null;
+	const r = p.record as Record<string, unknown>;
+	for (const key of ["title", "body", "pinned", "rationale"] as const) {
+		if (r[key] === undefined) continue;
+		if (key === "pinned") {
+			if (typeof r.pinned !== "boolean") return null;
+		} else if (typeof r[key] !== "string" || (r[key] as string).length > 8192) {
+			return null;
+		}
+	}
+	return {
+		op: "revise",
+		id: p.id,
+		expectedHash: p.expectedHash,
+		record: { title: r.title as string | undefined, body: r.body as string | undefined, pinned: r.pinned as boolean | undefined, rationale: r.rationale as string | undefined },
+	};
 }
 
 export interface ConsolidationWorkerOptions {
@@ -118,27 +153,33 @@ export function createConsolidationWorker(options: ConsolidationWorkerOptions): 
 			}));
 
 			await onModelCalled?.();
-			if (generation.aborted) return { status: "aborted", patchesSubmitted: 0, conflicts: 0, modelCalls: 0 };
+			if (generation.aborted) return { status: "aborted", patchesSubmitted: 0, conflicts: 0, validationRejected: 0, modelCalls: 0 };
 
 			const patches = await runModel({ subjectId: options.subjectId ?? "", evidence: merged, records }, controller.signal);
-			if (generation.aborted) return { status: "aborted", patchesSubmitted: 0, conflicts: 0, modelCalls: 1 };
+			if (generation.aborted) return { status: "aborted", patchesSubmitted: 0, conflicts: 0, validationRejected: 0, modelCalls: 1 };
 
 			// 逐条独立提交：部分提交有效，失败不重放旧 patch。
 			let patchesSubmitted = 0;
 			let conflicts = 0;
+			let validationRejected = 0;
 			for (const patch of patches) {
 				if (generation.aborted) break;
-				const change = patch as unknown as Parameters<MemoryStore["write"]>[0];
-				if (change.op !== "revise" && change.op !== "retire") continue; // 不造新记忆
+				// 模型输出不可信：形状校验通过才进 store（op 白名单之外还有字段存在性与长度粗闸）。
+				const change = asMemoryPatch(patch);
+				if (!change) {
+					validationRejected++;
+					continue;
+				}
 				const result: MemoryWriteResult = await store.write(change);
 				if (result.status === "committed") patchesSubmitted++;
 				else if (result.status === "conflict") conflicts++;
 				// rejected：丢弃并继续（前台已遗忘/不存在的目标）
 			}
 
-			// 提交后推进水位（水位不能替代实际写成功：仅统计提交/冲突后推进）。
+			// 水位语义 = "模型已见过此范围"（防重放死循环），非"全部 patch 已提交"；
+			// rejected 的 patch 不重放（前台已遗忘/不存在的目标，重试无意义）。
 			await persistWatermark(watermark + pending.length);
-			return { status: "completed", patchesSubmitted, conflicts, modelCalls: 1 };
+			return { status: "completed", patchesSubmitted, conflicts, validationRejected, modelCalls: 1 };
 		})();
 
 		try {
