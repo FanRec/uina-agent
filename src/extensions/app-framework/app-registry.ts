@@ -69,9 +69,14 @@ function activityOriginOf(source: import("../../core/types.js").InputSource | un
 	return "runtime";
 }
 
+interface AppInstance extends AppRuntime {
+	toolDisposer?: () => void;
+	readonly exposed: Map<string, unknown>;
+	readonly subscriptions: Array<() => void>;
+}
+
 export class AppRegistry {
-	private readonly apps = new Map<string, AppRuntime>();
-	private readonly toolDisposers = new Map<string, () => void>();
+	private readonly apps = new Map<string, AppInstance>();
 	private readonly abortController = new AbortController();
 	readonly viewport: ContextViewport;
 	private readonly stateFilePath?: string;
@@ -88,17 +93,8 @@ export class AppRegistry {
 	 * 应用被停用时不会自动清理。这里按应用分桶，使 disable() 能精确回收该应用
 	 * 的全部暴露项，避免"应用已停止但活引用仍可达"的悬垂。
 	 */
-	private readonly exposedByApp = new Map<string, Map<string, unknown>>();
 	private readonly exposedListeners = new Set<() => void>();
 
-	/**
-	 * 应用持有的宿主订阅（onActivity / onHostEvent）。
-	 *
-	 * 由框架按应用记账，而不是信任应用自觉退订：应用停用后仍在接收宿主事件，
-	 * 是"停用的应用仍活着"这类悬垂的典型来源。应用提前自己退订也没问题——登记前
-	 * 会套一层一次性保护，两条路径幂等。
-	 */
-	private readonly appSubscriptions = new Map<string, Array<() => void>>();
 
 	constructor(private readonly pi: ExtensionAPI) {
 		this.stateFilePath = this.pi.subject
@@ -129,14 +125,14 @@ export class AppRegistry {
 		return {
 			names: () => {
 				const all: string[] = [];
-				for (const bucket of this.exposedByApp.values()) {
-					all.push(...bucket.keys());
+				for (const app of this.apps.values()) {
+					all.push(...app.exposed.keys());
 				}
 				return all;
 			},
 			get: (name) => {
-				for (const bucket of this.exposedByApp.values()) {
-					if (bucket.has(name)) return bucket.get(name);
+				for (const app of this.apps.values()) {
+					if (app.exposed.has(name)) return app.exposed.get(name);
 				}
 				return undefined;
 			},
@@ -165,31 +161,27 @@ export class AppRegistry {
 	 * 那一层（两个不同扩展争抢同一名字才是真冲突）。
 	 */
 	private exposeFor(appName: string, name: string, value: unknown): () => void {
-		let bucket = this.exposedByApp.get(appName);
-		if (!bucket) {
-			bucket = new Map<string, unknown>();
-			this.exposedByApp.set(appName, bucket);
-		}
-		const wasPresent = bucket.has(name);
-		bucket.set(name, value);
+		const app = this.apps.get(appName);
+		if (!app) throw new Error(`未找到应用: "${appName}"`);
+		const wasPresent = app.exposed.has(name);
+		app.exposed.set(name, value);
 		if (!wasPresent) this.notifyExposed();
 
 		return () => {
-			const current = this.exposedByApp.get(appName);
-			if (!current || current.get(name) !== value) return;
-			current.delete(name);
-			if (current.size === 0) this.exposedByApp.delete(appName);
+			if (app.exposed.get(name) !== value) return;
+			app.exposed.delete(name);
 			this.notifyExposed();
 		};
 	}
 
 	private clearExposedFor(appName: string): void {
-		if (this.exposedByApp.delete(appName)) {
-			this.notifyExposed();
-		}
+		const app = this.apps.get(appName);
+		if (!app || app.exposed.size === 0) return;
+		app.exposed.clear();
+		this.notifyExposed();
 	}
 
-	/** 记账一个应用订阅，返回幂等的退订函数（应用自行退订与框架回收两条路径都安全）。 */
+	/** Track an app subscription with an idempotent disposer. */
 	private trackSubscription(appName: string, dispose: () => void): () => void {
 		let done = false;
 		const once = () => {
@@ -197,18 +189,17 @@ export class AppRegistry {
 			done = true;
 			dispose();
 		};
-		const list = this.appSubscriptions.get(appName) ?? [];
-		if (list.length === 0) this.appSubscriptions.set(appName, list);
-		list.push(once);
+		const app = this.apps.get(appName);
+		if (!app) throw new Error(`未找到应用: "${appName}"`);
+		app.subscriptions.push(once);
 		return once;
 	}
 
-	/** 应用停用：一次性撤下它持有的全部宿主订阅。 */
 	private clearSubscriptionsFor(appName: string): void {
-		const list = this.appSubscriptions.get(appName);
-		if (!list) return;
-		this.appSubscriptions.delete(appName);
-		for (const dispose of list) {
+		const app = this.apps.get(appName);
+		if (!app || app.subscriptions.length === 0) return;
+		const subscriptions = app.subscriptions.splice(0);
+		for (const dispose of subscriptions) {
 			try {
 				dispose();
 			} catch {
@@ -233,11 +224,13 @@ export class AppRegistry {
 		const defaultEnabled = def.defaultState?.enabled ?? true;
 		const isEnabled = this.persistedState[def.name] ?? defaultEnabled;
 
-		const runtime: AppRuntime = {
+		const runtime: AppInstance = {
 			definition: def,
 			enabled: false,
 			surfaceTier: defaultTier,
 			lastActiveTurn: 0,
+			exposed: new Map(),
+			subscriptions: [],
 		};
 
 		this.apps.set(def.name, runtime);
@@ -346,7 +339,7 @@ export class AppRegistry {
 			await this.stopCompanion(name, runtime.definition);
 			throw error;
 		}
-		this.toolDisposers.set(name, unregisterTool);
+		runtime.toolDisposer = unregisterTool;
 
 		runtime.enabled = true;
 
@@ -387,10 +380,10 @@ export class AppRegistry {
 		if (!runtime || !runtime.enabled) return;
 
 		// 1. 拔除 Facade Tool
-		const unregisterTool = this.toolDisposers.get(name);
+		const unregisterTool = runtime.toolDisposer;
 		if (unregisterTool) {
 			unregisterTool();
-			this.toolDisposers.delete(name);
+			runtime.toolDisposer = undefined;
 		}
 
 		// 2. 触发外部伴生服务 onStop 钩子

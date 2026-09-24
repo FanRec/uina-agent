@@ -148,12 +148,14 @@ describe("ScopedToolView", () => {
 		expect(excludedView.has("allowed_2")).toBe(true);
 		expect(excludedView.has("forbidden")).toBe(false);
 		expect(excludedView.names().sort()).toEqual(["allowed_1", "allowed_2"]);
+		expect(excludedView.defs().map((def) => def.function.name)).toEqual(["allowed_1", "allowed_2"]);
 
 		// Include filter
 		const includedView = root.createScopedView({ include: ["allowed_1"] });
 		expect(includedView.has("allowed_1")).toBe(true);
 		expect(includedView.has("allowed_2")).toBe(false);
 		expect(includedView.names()).toEqual(["allowed_1"]);
+		expect(includedView.defs().map((def) => def.function.name)).toEqual(["allowed_1"]);
 
 		// Prepare on excluded tool reports clear policy reason
 		const prepExcluded = excludedView.prepare("forbidden", {});

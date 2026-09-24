@@ -60,8 +60,12 @@ export function clampThinkingLevel(
 
 export interface QueueInputOptions {
 	mode?: DeliveryMode;
- source?: import("../core/types.js").InputSource;
+	source?: import("../core/types.js").InputSource;
 }
+
+type InputSubmission =
+	| { kind: "start"; promptText?: string }
+	| { kind: "queue"; resumeIfIdle: boolean };
 
 export interface AgentInput {
 	id: string;
@@ -440,22 +444,42 @@ export class Subject {
 	pushInput(text: string, options: QueueInputOptions = {}): Promise<void> {
 		const normalized = text.trim();
 		if (!normalized) return Promise.resolve();
+
 		const busy = this.isBusy();
-		// 投递模式规则唯一归属（P2-C）：显式 steer/followUp 原样入队；direct 空闲
-		// 即开跑；忙时语义化升级为 steer（下一请求注入，与 submitText 规则一致），
-		// 不再静默降级 followUp；空闲但有排队时随队保序（followUp）并立即消化。
-		const mode = options.mode ?? (busy ? "steer" : "direct");
-		if (mode === "direct") {
-			if (busy) return this.enqueueQueued(normalized, "steer", false, options.source);
-			if (this.queues.size > 0) return this.enqueueQueued(normalized, "followUp", true, options.source);
-			const queued = this.queues.create(normalized, "followUp", { source: options.source });
-			this.publishInputAccepted(queued);
-			return this.startRun(normalized, queued, { needsEnqueueEvent: true });
-		}
-		return this.enqueueQueued(normalized, mode, false, options.source);
+		// direct 空闲即开跑；忙时升级为 steer；空闲但已有队列时随队保序。
+		const requestedMode = options.mode ?? (busy ? "steer" : "direct");
+		const mode = requestedMode === "direct" ? (busy ? "steer" : "followUp") : requestedMode;
+		const hadQueuedItems = this.queues.size > 0;
+		const queued = this.queues.create(normalized, mode, { source: options.source });
+		const startImmediately = requestedMode === "direct" && !busy && !hadQueuedItems;
+		return this.submitInput(queued, startImmediately
+			? { kind: "start", promptText: normalized }
+			: { kind: "queue", resumeIfIdle: requestedMode === "direct" && !busy && hadQueuedItems });
 	}
 
-	/** 输入受理的唯一入口：队列入队、直接开跑、accept 都经此发布 input_accepted。 */
+	/**
+	 * 规范化后的输入唯一提交路径：直接启动或 queue_enqueued 持久化后入队。
+	 * 调用者在此之前保留各自的输入语义（来源、图片、瞬态快照和 prompt 策略）。
+	 */
+	private submitInput(
+		queued: QueuedMessage,
+		submission: InputSubmission,
+	): Promise<void> {
+		if (submission.kind === "start") {
+			if (this.isBusy() || this.queues.size > 0) return Promise.reject(new Error("Subject 忙碌，无法直接启动输入"));
+			this.publishInputAccepted(queued);
+			return this.startRun(submission.promptText, queued, { needsEnqueueEvent: true });
+		}
+
+		return this.storeEvent("queue_enqueued", eventData(queued)).then(async () => {
+			this.queues.add(queued);
+			this.publishInputAccepted(queued);
+			this.notifyQueueChanged();
+			if (submission.resumeIfIdle && !this.isBusy()) await this.resumeQueued();
+		});
+	}
+
+	/** 输入受理的唯一事实出口。调用方必须先完成持久化或明确的直接启动准入。 */
 	private publishInputAccepted(queued: QueuedMessage): void {
 		this.dispatch({
 			type: "input_accepted",
@@ -464,19 +488,6 @@ export class Subject {
 			receivedAt: queued.receivedAt ?? new Date().toISOString(),
 		});
 	}
-
-	/** 队列入队的单一持久化路径：storeEvent → 内存队列 → 通知 → 可选空闲消化。 */
-	private enqueueQueued(text: string, mode: "steer" | "followUp", resumeIfIdle: boolean, source?: import("../core/types.js").InputSource): Promise<void> {
-		const queued = this.queues.create(text, mode, { source });
-		const persisted = this.storeEvent("queue_enqueued", eventData(queued));
-		return persisted.then(async () => {
-			this.queues.add(queued);
-			this.publishInputAccepted(queued);
-			this.notifyQueueChanged();
-			if (resumeIfIdle && !this.isBusy()) await this.resumeQueued();
-		});
-	}
-
 	/** 瞬态世界快照的 runtime 输入类型：同一内容由 tail 相位帧每请求注入，
 	 * 历史里再多一份副本纯属冗余（viewport-event-frame-refactor.md:29 "不落 Session 历史"）。
 	 * 客户端侧重复投递从此无害：accept 直接丢弃，不进队列、不落史、不启动回合。 */
@@ -489,28 +500,20 @@ export class Subject {
 			return Promise.resolve();
 		}
 		if (!input.id || !input.text?.trim()) return Promise.reject(new Error("AgentInput 必须包含 id 和 text"));
+
 		const queued: QueuedMessage = {
 			...this.queues.create(input.text.trim(), input.mode, {
 				source: input.source,
-                ...(input.receivedAt ? { receivedAt: input.receivedAt } : {}),
+				...(input.receivedAt ? { receivedAt: input.receivedAt } : {}),
 				data: input.data,
 				images: input.images,
 			}),
 			id: input.id,
 		};
-		if (!this.isBusy() && this.queues.size === 0) {
-			const promptText = queued.source?.kind === "runtime" ? undefined : queued.text;
-			this.publishInputAccepted(queued);
-			return this.startRun(promptText, queued, { needsEnqueueEvent: true });
-		}
-		return this.storeEvent("queue_enqueued", { ...queued }).then(
-			async () => {
-				this.queues.add(queued);
-				this.publishInputAccepted(queued);
-				this.notifyQueueChanged();
-				if (!this.isBusy()) await this.resumeQueued();
-			},
-		);
+		const startImmediately = !this.isBusy() && this.queues.size === 0;
+		return this.submitInput(queued, startImmediately
+			? { kind: "start", promptText: queued.source?.kind === "runtime" ? undefined : queued.text }
+			: { kind: "queue", resumeIfIdle: true });
 	}
 
 	/** Queue an input for the next model request while the current run is active. */
@@ -1106,15 +1109,11 @@ export class Subject {
 					const nextTurn = ++this.turnSeq;
 					onTurnTransition?.(nextTurn);
 					await this.dispatch({ type: "turn_start", turnNumber: nextTurn, userText: item.text, images: item.images });
-					await this.consumeQueueItem(item);
-				} else {
-					await this.consumeQueueItem(item);
 				}
+				await this.commitQueueItem(item);
 			} catch (error) {
-				// 某项持久化/消费失败时，将尚未处理的后续 items 全部恢复回队列，防止消息丢失
-				for (let j = i + 1; j < items.length; j++) {
-					this.queues.add(items[j]);
-				}
+				// 批量认领路径尚未提交当前项时，当前项和后续项都归还队列。
+				for (const pending of items.slice(i)) this.queues.add(pending);
 				this.notifyQueueChanged();
 				throw error;
 			}
@@ -1261,13 +1260,17 @@ export class Subject {
 		this.queues.remove(item.id);
 		this.notifyQueueChanged();
 		try {
-			await this.store?.appendInput(item);
+			await this.commitQueueItem(item);
 		} catch (error) {
 			// Commit failure means the input was never consumed; return ownership to the queue.
 			this.queues.add(item);
 			this.notifyQueueChanged();
 			throw error;
 		}
+	}
+
+	private async commitQueueItem(item: QueuedMessage): Promise<void> {
+		await this.store?.appendInput(item);
 		const message = projectInputMessage(item);
 		if (message) this.history.push(message);
 	}

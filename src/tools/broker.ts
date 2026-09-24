@@ -244,9 +244,7 @@ export class ScopedToolView implements ToolView {
 	}
 
 	defs(): ToolDef[] {
-		return this.names()
-			.map((name) => this.root.get(name)?.def)
-			.filter((def): def is ToolDef => def !== undefined);
+		return this.root.defs().filter((def) => this.isAllowed(def.function.name));
 	}
 
 	getExecutionMode(name: string): ToolExecutionMode {

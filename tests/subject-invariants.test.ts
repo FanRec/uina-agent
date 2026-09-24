@@ -28,6 +28,14 @@ class FlakyRestoredStore extends MemorySessionStore {
 	}
 }
 
+class FlakyInputStore extends MemorySessionStore {
+	failOnInputId?: string;
+	override async appendInput(input: import("../src/core/types.js").QueuedMessage): Promise<void> {
+		if (input.id === this.failOnInputId) throw new Error("注入的输入提交故障");
+		await super.appendInput(input);
+	}
+}
+
 /** 门控流：第一次调用挂起直到 release（其余立即完成）；记录每次请求的末条 user 文本。
  * 注意：pushInput 的 direct 路径会 await 整个回合，首个输入不得在测试中 await。 */
 function firstCallGatedStream(log: string[]) {
@@ -49,7 +57,44 @@ function firstCallGatedStream(log: string[]) {
 	return { stream, release: () => release?.() };
 }
 
+function firstCallGatedToolStream() {
+	let release: (() => void) | undefined;
+	let calls = 0;
+	const stream: ModelStreamFn = async (_m, _req, onDelta, signal) => {
+		calls++;
+		if (calls === 1) {
+			await new Promise<void>((resolve) => {
+				release = resolve;
+				signal?.addEventListener("abort", () => resolve(), { once: true });
+			});
+			onDelta({ kind: "tool_call", call: { id: "tc1", name: "echo", args: "{}" } });
+			onDelta({ kind: "finish", reason: "tool_calls" });
+			return;
+		}
+		onDelta({ kind: "text", text: "done" });
+		onDelta({ kind: "finish", reason: "stop" });
+	};
+	return { stream, release: () => release?.() };
+}
+
 describe("不变量：accepted input 不得无归属地消失", () => {
+	it("队列年龄以持久化 receivedAt 为唯一时间来源，回滚和恢复不会重置", () => {
+		const q = new InputQueues();
+		const receivedAt = new Date(Date.now() - 5_000).toISOString();
+		const item = q.create("old", "followUp", { receivedAt });
+		q.add(item);
+
+		expect(q.oldestAgeMs(Date.parse(receivedAt) + 5_000)).toBe(5_000);
+		const claimed = q.remove(item.id);
+		expect(claimed?.id).toBe(item.id);
+		q.add(claimed!);
+		expect(q.oldestAgeMs(Date.parse(receivedAt) + 5_000)).toBe(5_000);
+
+		const restored = new InputQueues();
+		restored.seed([item]);
+		expect(restored.oldestAgeMs(Date.parse(receivedAt) + 5_000)).toBe(5_000);
+	});
+
 	it("InputQueues.add 回滚插入不改同 mode 消费顺序（peek 原始序）", () => {
 		const q = new InputQueues();
 		const a = q.create("a", "steer");
@@ -65,6 +110,41 @@ describe("不变量：accepted input 不得无归属地消失", () => {
 		expect(q.peek("steer")?.text).toBe("b");
 		q.remove(b.id);
 		expect(q.peek("steer")?.text).toBe("c");
+	});
+
+	it("InputQueues.all 在线性归并两个有序队列，并返回独立数组快照", () => {
+		const q = new InputQueues();
+		const steer1 = q.create("steer-1", "steer");
+		const followUp = q.create("follow-up", "followUp");
+		const steer2 = q.create("steer-2", "steer");
+		q.add(steer1);
+		q.add(followUp);
+		q.add(steer2);
+
+		const snapshot = q.all();
+		expect(snapshot.map((item) => item.text)).toEqual(["steer-1", "follow-up", "steer-2"]);
+		snapshot.shift();
+		expect(q.peek("steer")?.text).toBe("steer-1");
+	});
+
+	it("InputQueues.oldestAgeMs 只看两个队列头，不受后续条目影响", () => {
+		const q = new InputQueues();
+		const olderSteer = q.create("older", "steer", { receivedAt: new Date(1_000).toISOString() });
+		const newerFollowUp = q.create("newer", "followUp", { receivedAt: new Date(2_000).toISOString() });
+		q.add(olderSteer);
+		q.add(newerFollowUp);
+
+		expect(q.oldestAgeMs(6_000)).toBe(5_000);
+	});
+
+	it("InputQueues.oldestAgeMs 按 receivedAt 而不是 order 选择最老头部", () => {
+		const q = new InputQueues();
+		const newerSteer = q.create("newer", "steer", { receivedAt: new Date(2_000).toISOString() });
+		const olderFollowUp = q.create("older", "followUp", { receivedAt: new Date(1_000).toISOString() });
+		q.add(newerSteer);
+		q.add(olderFollowUp);
+
+		expect(q.oldestAgeMs(6_000)).toBe(5_000);
 	});
 
 	it("claimQueued 持久化失败：条目回滚入队且抛错，journal 无 queue_restored", async () => {
@@ -122,6 +202,49 @@ describe("不变量：accepted input 不得无归属地消失", () => {
 		const restored = h.records.filter((r) => r.kind === "event" && r.event === "queue_restored");
 		expect(restored).toHaveLength(1);
 		expect((restored[0] as { data: { id: string } }).data.id).toBe(a!.id);
+	});
+
+	it("批量消费的边界事件失败时恢复当前项和后续项", async () => {
+		const { stream, release } = firstCallGatedToolStream();
+		let failed = false;
+		const runtimeHooks: typeof NO_RUNTIME_HOOKS = {
+			...NO_RUNTIME_HOOKS,
+			events: {
+				...NO_RUNTIME_HOOKS.events,
+				emit: async (event) => {
+					if (event.type === "turn_end" && !failed) {
+						failed = true;
+						throw new Error("注入的边界事件故障");
+					}
+				},
+			},
+		};
+		const h = SubjectHarness.create({ stream, store: new MemorySessionStore(), runtimeHooks, tools: [mockTool("echo")] });
+		h.pushInput("first");
+		await wait(20);
+		await h.pushInput("a", { mode: "steer" });
+		await h.pushInput("b", { mode: "steer" });
+		release();
+		await h.waitForIdle();
+
+		expect(h.queuedSnapshot().map((item) => item.text)).toEqual(["a", "b"]);
+	});
+
+	it("批量消费的当前项提交失败时只恢复一次", async () => {
+		const store = new FlakyInputStore();
+		const { stream, release } = firstCallGatedToolStream();
+		const h = SubjectHarness.create({ stream, store, tools: [mockTool("echo")] });
+		h.pushInput("first");
+		await wait(20);
+		await h.pushInput("a", { mode: "steer" });
+		await h.pushInput("b", { mode: "steer" });
+		const [a] = h.queuedSnapshot();
+		store.failOnInputId = a!.id;
+		release();
+		await h.waitForIdle();
+
+		expect(h.queuedSnapshot().map((item) => item.text)).toEqual(["a", "b"]);
+		expect(h.records.filter((record) => record.kind === "input" && record.input.id === a!.id)).toHaveLength(0);
 	});
 });
 
@@ -221,6 +344,49 @@ describe("不变量：终局事实单一（completed / aborted / terminated）",
 });
 
 	describe("不变量：回合外前台活动与 post-turn 生命周期", () => {
+		it("afterEnd 仍属于 activeRun，interrupt 可取消但不回改已完成回合", async () => {
+			let resolveAfterEnd!: () => void;
+			let afterEndEntered = false;
+			const afterEndStarted = new Promise<void>((resolve) => { resolveAfterEnd = resolve; });
+			let afterEndAborted = false;
+			const runtimeHooks = {
+				...NO_RUNTIME_HOOKS,
+				turn: {
+					...NO_RUNTIME_HOOKS.turn,
+					afterEnd: async ({ signal }: { signal: AbortSignal }) => {
+						afterEndEntered = true;
+						resolveAfterEnd();
+						await new Promise<void>((resolve) => {
+							if (signal.aborted) {
+								afterEndAborted = true;
+								resolve();
+								return;
+							}
+							signal.addEventListener("abort", () => {
+								afterEndAborted = true;
+								resolve();
+							}, { once: true });
+						});
+					},
+				},
+			};
+			const h = SubjectHarness.create({
+				runtimeHooks,
+				stream: async (_model, _request, onDelta) => {
+					onDelta({ kind: "text", text: "done" });
+					onDelta({ kind: "finish", reason: "stop" });
+				},
+			});
+			const run = h.subject.pushInput("go");
+			await afterEndStarted;
+			expect(afterEndEntered).toBe(true);
+			expect(h.subject.isBusy()).toBe(true);
+			h.subject.interrupt();
+			await expect(run).resolves.toBeUndefined();
+			await expect(h.subject.waitForIdle()).resolves.toBeUndefined();
+			expect(afterEndAborted).toBe(true);
+			expect(h.subject.isBusy()).toBe(false);
+		});
 		it("runActivity 独占主体、可中断、waitForIdle 等待且异常释放", async () => {
 			const h = SubjectHarness.create({ store: new MemorySessionStore(), stream: async () => {} });
 			let entered = false;
