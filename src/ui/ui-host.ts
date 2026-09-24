@@ -27,8 +27,9 @@ import {
 } from "./components/editor/index.js";
 import { BannerComponent } from "./components/primitives/banner.js";
 import {
-	TranscriptContainer,
+		TranscriptContainer,
 	type CompactionCardData,
+	type CompactionReplayDecoration,
 	type LineModel,
 } from "./components/transcript/index.js";
 import {
@@ -312,6 +313,7 @@ export class UIHost implements UIHostContextPort {
 	onPullBackQueue?: () => void;
 	onThinkingLevelCycle?: () => void;
 
+	/** Ctrl+C 二次按键升级为强制退出；不是主体 busy/活动事实。 */
 	private cancelPending = false;
 	private jobPort?: JobPort;
 	private subagentPort?: SubagentPort;
@@ -333,22 +335,19 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	cancelTurn(source: "escape" | "ctrl+c" = "escape"): void {
+		// UI 只发送取消意图；Subject/Host 才是活动事实所有者。压缩 runActivity
+		// 期间 UI busy 可能仍为 false，不能在这里用本地状态短路。
 		if (this.busy) {
-			this.cancelPending = true;
+			this.cancelPending = source === "ctrl+c";
 			this.transcript.interruptTurn(this.modelName);
-			this.activityLine.update("idle", "已打断当前轮次");
-			try {
-				this.onCancel?.(source);
-			} catch {
-				// ignore
-			}
-			try {
-				this.onInterrupt?.(false);
-			} catch {
-				// ignore
-			}
-			this.requestRender();
+			this.activityLine.update("idle", "正在取消当前活动");
 		}
+		try {
+			this.onCancel?.(source);
+		} catch {
+			// ignore
+		}
+		this.requestRender();
 	}
 
 	constructor(options: UIHostOptions = {}) {
@@ -397,22 +396,6 @@ export class UIHost implements UIHostContextPort {
 		this.inputLine = new InputLine();
 		this.inputLine.onSubmit = (text) => this.handleUserSubmit(text);
 		this.inputLine.onSubmitMode = (text, mode) => this.handleUserSubmitMode(text, mode);
-		this.inputLine.onInterrupt = () => {
-			if (this.busy) {
-				this.cancelTurn("ctrl+c");
-			} else {
-				try {
-					this.onExit?.();
-				} catch {
-					// ignore
-				}
-				try {
-					this.onInterrupt?.(true);
-				} catch {
-					// ignore
-				}
-			}
-		};
 		this.inputLine.onEscape = () => {
 			if (this.overlayStack.hasVisible) {
 				this.overlayStack.hideTopOverlay();
@@ -423,7 +406,7 @@ export class UIHost implements UIHostContextPort {
 			} else if (this.inputLine.hasText()) {
 				// 体验优先级：输入框里有内容时 Escape 先清草稿，而不是打断工作中的回合
 				this.inputLine.clear();
-			} else if (this.busy) {
+			} else {
 				this.cancelTurn();
 			}
 			this.requestRender();
@@ -576,7 +559,6 @@ export class UIHost implements UIHostContextPort {
 			this.turnStartTime = Date.now();
 			this.startAnimation();
 		} else {
-			this.cancelPending = false;
 			if (this.turnStartTime > 0) {
 				this.lastElapsedMs = Math.max(1, Date.now() - this.turnStartTime);
 			}
@@ -653,8 +635,8 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	loadSession(entries: readonly SessionEntry[]): void {
-		this.transcript.loadSession(entries);
+	loadSession(entries: readonly SessionEntry[], decorations: readonly CompactionReplayDecoration[] = []): void {
+		this.transcript.loadSession(entries, decorations);
 		this.scrollOffset = 0;
 		this.lastTotalPerm = 0;
 		this.requestRender();
@@ -1726,11 +1708,9 @@ export class UIHost implements UIHostContextPort {
 		}
 
 		if (matchesKey(data, Key.ctrl("c"))) {
-			// 1. 输入框有选区或草稿时优先清除（含工作态）：草稿是用户未提交的心智负担，
-			// 先满足「清空内容」再谈「中断工作」；输入框为空且工作态才打断回合。
+			// 输入框编辑语义优先；但取消/退出事实由组合根查询 Host，不能读 UI busy。
 			if (this.inputLine.hasSelection()) {
-				this.inputLine.clearSelection();
-				this.requestRender();
+				this.inputLine.copySelection();
 				return;
 			}
 			if (this.inputLine.hasText()) {
@@ -1738,60 +1718,13 @@ export class UIHost implements UIHostContextPort {
 				this.requestRender();
 				return;
 			}
-
-			// 2. 工作态（模型生成、工具执行中）且输入框为空
-			if (this.busy) {
-				if (this.cancelPending) {
-					// 正在中断收敛中或底层卡死，用户再次按下 Ctrl+C 意图强制退出应用（对齐 dsh-TUI Chat.tsx onExit()）
-					this.cancelPending = false;
-					try {
-						this.onExit?.();
-					} catch {
-						// ignore
-					}
-					try {
-						this.onInterrupt?.(true);
-					} catch {
-						// ignore
-					}
-					return;
-				}
-				this.cancelPending = true;
-				this.exitPending = false;
-				if (this.exitTimer) {
-					clearTimeout(this.exitTimer);
-					this.exitTimer = null;
-				}
-				this.cancelTurn("ctrl+c");
+			if (this.cancelPending) {
+				this.cancelPending = false;
+				this.onExit?.();
+				this.onInterrupt?.(true);
 				return;
 			}
-
-			// 3. 空闲态且输入框为空：第 1 次提示，第 2 次在 2 秒内按下才真正触发退出
-			if (this.exitPending) {
-				if (this.exitTimer) {
-					clearTimeout(this.exitTimer);
-					this.exitTimer = null;
-				}
-				try {
-					this.onExit?.();
-				} catch {
-					// ignore
-				}
-				try {
-					this.onInterrupt?.(true); // 真正关闭退出
-				} catch {
-					// ignore
-				}
-				return;
-			}
-
-			this.exitPending = true;
-			this.requestRender();
-			if (this.exitTimer) clearTimeout(this.exitTimer);
-			this.exitTimer = setTimeout(() => {
-				this.exitPending = false;
-				this.requestRender();
-			}, 3000);
+			this.cancelTurn("ctrl+c");
 			return;
 		}
 
@@ -2057,7 +1990,6 @@ export class UIHost implements UIHostContextPort {
 
 		if (mode === "interrupt") {
 			if (this.busy) {
-				this.cancelPending = true;
 				this.transcript.interruptTurn(this.modelName);
 				this.activityLine.update("idle", "已打断当前轮次");
 				this.requestRender();

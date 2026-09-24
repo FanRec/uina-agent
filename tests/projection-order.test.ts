@@ -14,6 +14,7 @@
 import { describe, expect, test } from "./harness/index.js";
 import { UinaTestHarness } from "./harness/host/harness.js";
 import { Scenario } from "./harness/provider/scenario.js";
+import { openJsonlSession } from "../src/session/jsonl-store.js";
 
 describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展（认知占位）", () => {
 	test("超预算历史下：摘要先于记忆块、帧组原子、预算门通过", async ({ env }) => {
@@ -45,14 +46,16 @@ describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展（
 			}
 		`);
 
+		const history = Array.from({ length: 60 }, (_, index) =>
+			index % 2 === 0
+				? { role: "user" as const, content: `第${index}问 ${"词".repeat(3_000)}` }
+				: { role: "assistant" as const, content: `第${index}答 ${"词".repeat(3_000)}` },
+		);
+		const seeded = await openJsonlSession(env.sessionPath);
+		for (const message of history) await seeded.store.appendMessage(message);
+		await seeded.store.close();
 		const uina = await UinaTestHarness.create({ env, scenario });
 		try {
-			const history = Array.from({ length: 60 }, (_, index) =>
-				index % 2 === 0
-					? { role: "user" as const, content: `第${index}问 ${"词".repeat(3_000)}` }
-					: { role: "assistant" as const, content: `第${index}答 ${"词".repeat(3_000)}` },
-			);
-			uina.host.subject.addHistory(history);
 
 			await uina.send("跑一轮", "direct");
 			await uina.waitForIdle();

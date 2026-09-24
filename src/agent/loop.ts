@@ -86,7 +86,10 @@ export type DecisionOutcome =
 	| { kind: "terminated"; reason: "tool_call_limit"; message: string };
 
 export class Subject {
-	private activity: "turn" | "rewind" | undefined;
+	/** 主体活动阶段：turn（回合执行）→ afterEnd（post-turn 收尾：outcome 已冻结，
+	 * 但仍占用主体、仍可 interrupt）→ undefined；rewind 与 activity（回合外排他
+	 * 前台活动）为独立入口。 */
+	private activity: "turn" | "rewind" | "afterEnd" | "activity" | undefined;
 	private history: AgentMessage[] = [];
 	private turnSeq = 0;
 	private interrupted = false;
@@ -522,7 +525,9 @@ export class Subject {
 
 	interrupt(): void {
 		if (!this.activity) return;
-		this.interrupted = true;
+		// interrupted 是回合语义标志（决定 outcome 记为 aborted）。post-turn 与
+		// 回合外活动只取消执行，不回改已冻结的回合结果。
+		if (this.activity === "turn" || this.activity === "rewind") this.interrupted = true;
 		try {
 			this.abort?.abort();
 		} catch {
@@ -538,13 +543,44 @@ export class Subject {
 		return this.activeRun ?? Promise.resolve();
 	}
 
+	/**
+	 * 回合外排他前台活动：占用 Subject、阻止新 turn、受 interrupt 控制、被
+	 * waitForIdle/dispose 等待。仅 idle 可进入（与 runTurn/rewind/其他活动互斥）；
+	 * 不产生 turn 事件；异常不留半占用状态（finally 统一释放）。
+	 * 适用"必须独占主体、与用户回合串行"的工作（如空闲压缩）；可与回合并行的
+	 * 后台工作不属于这里。
+	 */
+	async runActivity(fn: (signal: AbortSignal) => Promise<void>): Promise<void> {
+		if (this.activity || this.activeRun !== undefined) {
+			throw new Error("Subject 忙碌，无法开始回合外活动");
+		}
+		this.activeRun = new Promise<void>((resolve) => {
+			this.settleActiveRun = resolve;
+		});
+		this.activity = "activity";
+		this.interrupted = false;
+		const controller = new AbortController();
+		this.abort = controller;
+		try {
+			await fn(controller.signal);
+		} finally {
+			this.abort = null;
+			this.activity = undefined;
+			this.completeActiveRun();
+		}
+	}
+
 	addHistory(messages: readonly (AgentMessage | ChatMsg)[]): void {
 		if (this.isBusy()) throw new Error("活动期间不能替换历史");
 		// 仅补进程内事件 id。journal 回放使用条目 id，不把这里的随机 id 写成事实。
 		this.history.push(...messages.map((m) => {
 			const hasId = "id" in m && Boolean((m as { id?: string }).id);
 			const hasInput = "input" in m && Boolean((m as { input?: unknown }).input);
-			if (m.role === "user" && !hasId && !hasInput) return { ...structuredClone(m as AgentMessage), id: randomUUID() };
+			// Canonical-boundary capabilities need every in-process message to carry a
+			// stable identity, not only user inputs. This identity is process-local and
+			// never written to the journal by addHistory; restored journal entries already
+			// carry their durable ids.
+			if (!hasId && !hasInput) return { ...structuredClone(m as AgentMessage), id: randomUUID() };
 			return structuredClone(m as AgentMessage);
 		}));
 	}
@@ -669,8 +705,6 @@ export class Subject {
 		let success = false;
 		let runError: string | undefined;
 		let currentTurn = turn;
-		// afterEnd 的 post-turn signal：回合结算前捕获（finally 会先置空 this.abort）。
-		const turnSignal = this.currentSignal();
 		try {
 			await this.dispatch({ type: "turn_start", turnNumber: currentTurn, userText: text ?? "", images: queuedInput?.images });
 			if (queuedInput) await this.consumeQueueItem(queuedInput);
@@ -702,8 +736,6 @@ export class Subject {
 				const requestId = this.pendingRewind.requestId; this.pendingRewind = undefined;
 				this.reportError(`回溯请求 ${requestId} 未提交：回合失败或被取消，主线保持不变`);
 			}
-			this.abort = null;
-			this.activity = undefined;
 			try {
 				await this.dispatch({
 					type: "turn_end",
@@ -717,11 +749,18 @@ export class Subject {
 			if (success && !this.interrupted && this.pendingRewind) {
 				await this.applyPendingRewind();
 			}
+			// POST-TURN 阶段：outcome 已冻结，但仍占用主体——isBusy 为真、interrupt 可达
+			//（只 abort post-turn signal，不影响已完成回合的结果记录）。
+			this.activity = "afterEnd";
+			this.abort = new AbortController();
+			const postTurnSignal = this.currentSignal();
 			try {
-				await this.runtimeHooks.turn.afterEnd({ turnNumber: currentTurn, success, ...(runError ? { error: runError } : {}), signal: turnSignal });
+				await this.runtimeHooks.turn.afterEnd({ turnNumber: currentTurn, success, ...(runError ? { error: runError } : {}), signal: postTurnSignal });
 			} catch (error) {
 				this.reportError(error);
 			}
+			this.abort = null;
+			this.activity = undefined;
 			try {
 				await this.getContextSnapshot("idle_baseline");
 			} catch (error) {

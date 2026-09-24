@@ -220,7 +220,33 @@ describe("不变量：终局事实单一（completed / aborted / terminated）",
 	});
 });
 
-describe("不变量：retry 可观察性全 provider 一致", () => {
+	describe("不变量：回合外前台活动与 post-turn 生命周期", () => {
+		it("runActivity 独占主体、可中断、waitForIdle 等待且异常释放", async () => {
+			const h = SubjectHarness.create({ store: new MemorySessionStore(), stream: async () => {} });
+			let entered = false;
+			let release!: () => void;
+			const run = h.subject.runActivity(async (signal) => {
+				entered = true;
+				expect(h.subject.isBusy()).toBe(true);
+				await new Promise<void>((resolve) => {
+					release = resolve;
+					signal.addEventListener("abort", () => resolve(), { once: true });
+				});
+			});
+			await vi.waitFor(() => expect(entered).toBe(true));
+			expect(h.subject.isBusy()).toBe(true);
+			await expect(h.subject.runActivity(async () => {})).rejects.toThrow("Subject 忙碌");
+		const idle = h.subject.waitForIdle();
+		h.subject.interrupt();
+		await expect(run).resolves.toBeUndefined();
+		await expect(idle).resolves.toBeUndefined();
+		expect(h.subject.isBusy()).toBe(false);
+		// 释放函数保留在这里仅防止测试 fixture 变成悬挂 Promise；abort 已使主体完成。
+		release?.();
+	});
+	});
+
+	describe("不变量：retry 可观察性全 provider 一致", () => {
 	it("openai-compatible provider 发出 provider_retry / provider_recovered delta", async () => {
 		let calls = 0;
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {

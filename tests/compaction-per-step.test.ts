@@ -29,19 +29,28 @@ const seedHistory = (): { role: "user" | "assistant"; content: string }[] =>
 		index % 2 === 0 ? { role: "user" as const, content: `第${index}问 ${"词".repeat(4_000)}` } : { role: "assistant" as const, content: `第${index}答 ${"词".repeat(4_000)}` },
 	);
 
+async function persistHistory(
+	env: IsolatedEnv,
+	history: readonly { role: "user" | "assistant"; content: string }[],
+): Promise<void> {
+	const opened = await openJsonlSession(env.sessionPath);
+	for (const message of history) await opened.store.appendMessage(message);
+	await opened.store.close();
+}
+
 describe("自动压缩：capability 经 transformContext 每请求裁剪", () => {
 	test("滚动摘要按已有摘要动态取下一块，所有摘要请求均不超输入预算", async ({ env }) => {
+		await persistHistory(env, Array.from({ length: 30 }, (_, index) => ({
+			role: index % 2 === 0 ? "user" as const : "assistant" as const,
+			content: `历史${index} ${"词".repeat(4_000)}`,
+		})));
 		const scenario = new Scenario({ id: "mock", name: "mock", contextWindow: 50_000 });
 		scenario.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"))
 			.reply("摘".repeat(4_000));
 		scenario.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
 		const uina = await UinaTestHarness.create({ env, scenario });
 		try {
-			uina.host.subject.addHistory(Array.from({ length: 30 }, (_, index) => ({
-				role: index % 2 === 0 ? "user" as const : "assistant" as const,
-				content: `历史${index} ${"词".repeat(4_000)}`,
-			})));
-			await uina.host.commands.dispatch("/compact");
+				await uina.host.commands.dispatch("/compact");
 			const summaryRequests = scenario.calls.filter((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"));
 			expect(summaryRequests.length).toBeGreaterThan(1);
 			for (const request of summaryRequests) {
@@ -52,18 +61,18 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 	});
 
 	test("单个超长回合分片摘要，checkpoint 仍只覆盖完整回合", async ({ env }) => {
+		await persistHistory(env, [
+			{ role: "user", content: "问".repeat(20_000) },
+			{ role: "assistant", content: "答".repeat(20_000) },
+			{ role: "user", content: "保留的下一回合" },
+			{ role: "assistant", content: "保留的答复" },
+		]);
 		const scenario = new Scenario({ id: "mock", name: "mock", contextWindow: 16_000 });
 		scenario.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"))
 			.reply("分片完成");
 		const uina = await UinaTestHarness.create({ env, scenario, hostOptions: { workspaceTools: false } });
 		try {
-			uina.host.subject.addHistory([
-				{ role: "user", content: "问".repeat(20_000) },
-				{ role: "assistant", content: "答".repeat(20_000) },
-				{ role: "user", content: "保留的下一回合" },
-				{ role: "assistant", content: "保留的答复" },
-			]);
-			await uina.host.commands.dispatch("/compact");
+				await uina.host.commands.dispatch("/compact");
 			const requests = scenario.calls.filter((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"));
 			expect(requests.length).toBeGreaterThan(1);
 			expect(requests.some((req) => req.messages[1]?.content.includes("[同一语义单元分片]"))).toBe(true);
@@ -74,16 +83,16 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 	});
 
 	test("模型返回超预算摘要时明确失败，不发送越界的下一次摘要请求", async ({ env }) => {
+		await persistHistory(env, Array.from({ length: 30 }, (_, index) => ({
+			role: index % 2 === 0 ? "user" as const : "assistant" as const,
+			content: `历史${index} ${"词".repeat(1_000)}`,
+		})));
 		const scenario = new Scenario({ id: "mock", name: "mock", contextWindow: 20_000 });
 		scenario.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"))
 			.reply("摘".repeat(12_000));
 		const uina = await UinaTestHarness.create({ env, scenario, hostOptions: { workspaceTools: false } });
 		try {
-			uina.host.subject.addHistory(Array.from({ length: 30 }, (_, index) => ({
-				role: index % 2 === 0 ? "user" as const : "assistant" as const,
-				content: `历史${index} ${"词".repeat(1_000)}`,
-			})));
-			await uina.host.commands.dispatch("/compact");
+				await uina.host.commands.dispatch("/compact");
 			const requests = scenario.calls.filter((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"));
 			expect(requests).toHaveLength(1);
 			expect(estimateRequestTokens(requests[0]!.messages, [])).toBeLessThanOrEqual(inputTokenBudget(scenario.model)!);
@@ -91,6 +100,7 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 		} finally { await uina.dispose(); }
 	});
 	test("同一个回合内上下文越过阈值后，下一次调用收到的是摘要 + 预算内尾部，journal 保留全量历史", async ({ env }) => {
+		await persistHistory(env, seedHistory());
 		const scenario = new Scenario({ id: "mock", name: "mock", contextWindow: 50_000 });
 
 		scenario.fallback((req) => {
@@ -108,9 +118,7 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 
 		const uina = await UinaTestHarness.create({ env, scenario });
 		try {
-			uina.host.subject.addHistory(seedHistory());
-
-			await uina.send("跑两轮", "direct");
+				await uina.send("跑两轮", "direct");
 			await uina.waitForIdle();
 
 			// 第二次调用（带工具结果的那次）已被裁剪：摘要消息开头。
@@ -187,6 +195,7 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 			index % 2 === 0 ? { role: "user" as const, content: `问${index} ${"词".repeat(3_000)}` } : { role: "assistant" as const, content: `答${index} ${"词".repeat(3_000)}` },
 		);
 
+		await persistHistory(env, history);
 		const scenario = new Scenario({ id: "mock", name: "mock", contextWindow: 50_000 });
 		scenario
 			.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"))
@@ -195,9 +204,8 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 
 		const uina = await UinaTestHarness.create({ env, scenario });
 		try {
-			// 预算内（自动路径不触发），/compact 强制受理。
-			for (const message of history) uina.host.subject.addHistory([message]);
-			const before = scenario.calls.filter((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手")).length;
+				// 预算内（自动路径不触发），/compact 强制受理。
+				const before = scenario.calls.filter((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手")).length;
 			await uina.host.commands.dispatch("/compact 关注决策");
 			await uina.send("强制一轮", "direct");
 			await uina.waitForIdle();
@@ -231,10 +239,10 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 			.then(() => { throw new TypeError("terminated", { cause: Object.assign(new Error("socket closed"), { code: "UND_ERR_SOCKET" }) }); });
 		failing.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
 
+		await persistHistory(failEnv, history);
 		const failHarness = await UinaTestHarness.create({ env: failEnv, scenario: failing });
 		try {
-			for (const message of history) failHarness.host.subject.addHistory([message]);
-			await failHarness.host.commands.dispatch("/compact");
+				await failHarness.host.commands.dispatch("/compact");
 			await failHarness.send("失败一轮", "direct");
 			await failHarness.waitForIdle();
 			expect(failing.calls.at(-1)?.messages.some((m) => (m.content ?? "").startsWith("[历史摘要] "))).toBe(false);
@@ -251,21 +259,20 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 	test("小窗口下手动 /compact：保留量夹取到安全预算，且持久化携带 prefixFingerprint", async ({ env }) => {
 		// 窗口仅 12k：扣除输出预留和内置工具 schema 后仍能容纳一个完整尾部事务，
 		// 但手动保留量若仍硬按 MANUAL_KEEP_TOKENS(20_000)，裁剪后一定超窗口。
+		const history = Array.from({ length: 30 }, (_, index) =>
+			index % 2 === 0 ? { role: "user" as const, content: `问${index} ${"词".repeat(800)}` } : { role: "assistant" as const, content: `答${index} ${"词".repeat(800)}` },
+		);
+		await persistHistory(env, history);
 		const scenario = new Scenario({ id: "mock", name: "mock", contextWindow: 12_000 });
 		scenario
 			.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"))
 			.reply("小窗摘要");
 		scenario.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
 
-		const uina = await UinaTestHarness.create({ env, scenario });
-		try {
-			const history = Array.from({ length: 30 }, (_, index) =>
-				index % 2 === 0 ? { role: "user" as const, content: `问${index} ${"词".repeat(800)}` } : { role: "assistant" as const, content: `答${index} ${"词".repeat(800)}` },
-			);
-			for (const message of history) uina.host.subject.addHistory([message]);
-
-			await uina.host.commands.dispatch("/compact");
-			await uina.send("小窗一轮", "direct");
+			const uina = await UinaTestHarness.create({ env, scenario });
+			try {
+				await uina.host.commands.dispatch("/compact");
+				await uina.send("小窗一轮", "direct");
 			await uina.waitForIdle();
 
 			const last = scenario.calls.at(-1);
@@ -326,13 +333,15 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 			emit({ kind: "finish", reason: "stop" });
 		});
 
+		const history = Array.from({ length: 12 }, (_, index) =>
+			index % 2 === 0
+				? { role: "user" as const, content: `问${index} ${"词".repeat(2_000)}` }
+				: { role: "assistant" as const, content: `答${index} ${"词".repeat(2_000)}` },
+		);
+		await persistHistory(env, history);
+
 		const uina = await UinaTestHarness.create({ env, scenario });
 		try {
-			uina.host.subject.addHistory(Array.from({ length: 12 }, (_, index) =>
-				index % 2 === 0
-					? { role: "user" as const, content: `问${index} ${"词".repeat(2_000)}` }
-					: { role: "assistant" as const, content: `答${index} ${"词".repeat(2_000)}` },
-			));
 			const firstRun = uina.send("当前回合", "direct");
 			await firstEntered;
 			await uina.host.commands.dispatch("/compact");

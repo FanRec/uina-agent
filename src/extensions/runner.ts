@@ -108,6 +108,10 @@ export interface ExtensionAPI {
 	usage(): RequestUsage | undefined;
 	/** 主体是否正在回合中。 */
 	isBusy(): boolean;
+	/** 回合外排他前台活动：占用 Subject、阻止新 turn、受 interrupt 控制、被
+	 * waitForIdle/dispose 等待。仅 idle 可进入；传入的 signal 在 Subject interrupt
+	 * 与扩展卸载时都会 abort。 */
+	runActivity(fn: (signal: AbortSignal) => Promise<void>): Promise<void>;
 	/** 重载项目扩展（与宿主 /reload 同一入口：忙时受理，空闲后执行）。 */
 	reload(): Promise<void>;
 	/** 请求宿主关闭（消费者自定义关闭流程；未接入时走宿主 dispose）。 */
@@ -165,6 +169,8 @@ export interface ExtensionRunnerOptions {
 	setThinkingLevel?: (level: import("../core/types.js").ThinkingLevel) => void;
 	/** 主体忙闲（pi.isBusy()）。 */
 	isBusy?: () => boolean;
+	/** 回合外排他前台活动（pi.runActivity）。 */
+	runActivity?: (fn: (signal: AbortSignal) => Promise<void>) => Promise<void>;
 	/** 主线 hydrated entries（pi.history()，canonical only）。 */
 	history?: () => readonly import("../session/types.js").HydratedSessionEntry[];
 	/** auxiliary timeline（pi.auxiliary()，仅登记 records）。 */
@@ -538,6 +544,13 @@ export class ExtensionRunner extends ExtensionHost {
 				assertActive();
 				if (!this.options.isBusy) throw new Error("宿主未提供忙闲事实入口");
 				return this.options.isBusy();
+			},
+			runActivity: (fn) => {
+				assertActive();
+				if (!this.options.runActivity) throw new Error("宿主未提供回合外活动入口");
+				// scope.run 把 Subject 信号与扩展卸载信号合并后交给 fn：两条取消源
+				// （用户 interrupt / deactivate）都到达工作体，且 pending 计入 scope。
+				return this.options.runActivity((signal) => scope.run(fn, signal));
 			},
 			reload: () => {
 				assertActive();

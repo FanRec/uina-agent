@@ -4,7 +4,7 @@ import { DEFAULT_OUTPUT_RESERVE_TOKENS, inputTokenBudget } from '../src/core/mod
 import { requestToolDefs } from '../src/agent/projection.js';
 import { EVENT_FRAME_TOOL } from '../src/extensions/event-frames/protocol.js';
 import { createEventFrameProfile } from '../src/extensions/event-frames/index.js';
-import activateCompaction, { estimateStreamTokens, fingerprintMessages } from '../src/extensions/compaction/index.js';
+import activateCompaction, { estimateStreamTokens } from '../src/extensions/compaction/index.js';
 import { ExtensionRunner } from '../src/extensions/runner.js';
 import { ToolBroker } from '../src/tools/broker.js';
 import { MemorySessionStore } from '../src/session/jsonl-store.js';
@@ -15,11 +15,6 @@ const projection = (messages: readonly import("../src/core/types.js").ChatMsg[])
 const frame = (id: string, text: string) => p.convertToLlm!([{ role:'user', id, content:text,
  input:{ eventId:id, source:{kind:'user',type:'terminal',origin:'external'} } }]);
 describe('event frame compaction',()=>{
- it('fingerprints provenance as well as text',()=>{
-  const a=frame('e1','hello'), b=structuredClone(a);
-  b[0]!.context!.input!.source!.actor={relation:'unknown'};
-  expect(fingerprintMessages(a)).not.toBe(fingerprintMessages(b));
- });
  it('keeps the newest frame and summarizes complete old frames as external evidence',async()=>{
   const store=new MemorySessionStore();
   await store.appendMessage({role:'user',id:'e1',content:'OLD '.repeat(1600)}, 'e1');

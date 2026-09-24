@@ -149,6 +149,14 @@ export interface CompactionLineLocation {
 	record: CompactionCardData;
 }
 
+/** UI-neutral replay decoration projected by the composition root. */
+export interface CompactionReplayDecoration {
+	readonly beforeEntryId: string;
+	readonly summary: string;
+	readonly tokensBefore?: number;
+	readonly retainedTailEntries?: number;
+}
+
 export type TimelineItem =
 	| { kind: "turn"; turn: TurnRecord }
 	| { kind: "notice"; text: string }
@@ -594,7 +602,7 @@ export class TranscriptContainer implements Component {
 
 	/** Restores the display projection from the same ordered entries used to
 	 * build provider history. Operational events never become transcript rows. */
-	loadSession(entries: readonly SessionEntry[]): void {
+	loadSession(entries: readonly SessionEntry[], decorations: readonly CompactionReplayDecoration[] = []): void {
 		let turnN = 0;
 		let current: TurnRecord | null = null;
 		let pendingToolCalls: Array<{ id: string; name: string; args?: unknown }> = [];
@@ -609,7 +617,26 @@ export class TranscriptContainer implements Component {
 			return createTurnRecord(turnN, ++this.uidSeq, userText);
 		};
 
+		const decorationsByEntry = new Map<string, CompactionReplayDecoration[]>();
+		for (const decoration of decorations) {
+			const list = decorationsByEntry.get(decoration.beforeEntryId) ?? [];
+			list.push(decoration);
+			decorationsByEntry.set(decoration.beforeEntryId, list);
+		}
 		for (const entry of entries) {
+			const before = entry.id ? decorationsByEntry.get(entry.id) : undefined;
+			if (before) {
+				commit();
+				for (const decoration of before) {
+					this.timeline.push({ kind: "compaction", record: {
+						status: "completed",
+						summary: decoration.summary,
+						...(decoration.retainedTailEntries === undefined ? {} : { retainedTailEntries: decoration.retainedTailEntries }),
+						tokensBefore: decoration.tokensBefore ?? 0,
+						collapsed: true,
+					} });
+				}
+			}
 			if (entry.kind === "rewind") {
 				commit();
 				this.timeline.push({

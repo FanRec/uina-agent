@@ -107,7 +107,8 @@ export interface SessionCompactEvent {
 	readonly error?: string;
 	readonly tokensBefore?: number;
 	readonly tokensAfter?: number;
-	readonly retainedTailCount?: number;
+	/** canonical 主线中压缩后保留的条目数（tailStartsAtEntryId 起算）。 */
+	readonly retainedTailEntries?: number;
 }
 
 export interface OutputStartEvent { readonly type: "output_start"; readonly streamId: string; readonly channel: "content" | "thinking" | "tool"; }

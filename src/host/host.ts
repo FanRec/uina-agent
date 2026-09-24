@@ -104,6 +104,8 @@ export class UinaHost {
 		readonly commands: CommandRouter,
 		/** 会话恢复出来的有序条目，交给消费者建立自己的视图。 */
 		readonly restoredEntries: readonly SessionEntry[],
+		/** 会话恢复出来的 auxiliary 登记（capability 私有持久状态），消费者回放装饰用。 */
+		readonly restoredAuxiliary: readonly (import("../session/types.js").SessionEventRecord | import("../session/types.js").SessionCustomEntryRecord)[],
 		listeners: Set<HostEventListener>,
 		/** 共享的关闭标志：钩子与扩展输入入口据此拒绝关闭后的新工作。 */
 		private readonly state: { stopping: boolean },
@@ -259,6 +261,7 @@ export class UinaHost {
 			thinkingLevel: () => subject.getThinkingLevel(),
 			setThinkingLevel: (level) => subject.setThinkingLevel(level),
 			isBusy: () => subject.isBusy(),
+			runActivity: (fn) => subject.runActivity(fn),
 			history: () => store.state.entries,
 			auxiliary: () => store.state.auxiliary,
 			emitRuntimeEvent: (event) => extensionHost.runtimeHooks().events.emit(event),
@@ -320,7 +323,7 @@ export class UinaHost {
 				options.onError?.(`[模型目录刷新] ${errorMessage(error)}`);
 			});
 		}
-		return (hostSelf = new UinaHost(options, subject, store, extensionHost, tools, models, jobs, subagents, commands, restoredEntries, listeners, state, abandonedTaskIds));
+		return (hostSelf = new UinaHost(options, subject, store, extensionHost, tools, models, jobs, subagents, commands, restoredEntries, [...store.state.auxiliary], listeners, state, abandonedTaskIds));
 		} catch (error) {
 			await store.close().catch(() => undefined);
 			throw error;

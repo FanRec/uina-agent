@@ -150,7 +150,7 @@ export interface ExtensionUIContext {
 	getScrollbarThumbStyle?(): "slim" | "block" | "wide";
 	setScrollbarThumbStyle?(style: "slim" | "block" | "wide"): void;
 	/** 转录流追加一条折叠的压缩摘要卡片 */
-	addCompaction?(record: { status?: "completed" | "failed" | "cancelled" | "noop"; summary: string; turnsCount: number; tokensBefore: number; collapsed: boolean }): void;
+	addCompaction?(record: { status?: "completed" | "failed" | "cancelled" | "noop"; summary: string; retainedTailEntries?: number; tokensBefore: number; collapsed: boolean }): void;
 }
 
 /** A pure view of one tool invocation; execution and persisted facts remain outside UI. */

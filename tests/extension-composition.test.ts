@@ -58,8 +58,9 @@ const compactionHost = (
 		history: () => bigHistory().map((message, index) => ({ kind: "message", id: `entry-${index}`, seq: index + 1, timestamp: "", message: { ...message, context: undefined } })) as never,
 		// capability 私有持久状态（uina.compaction.summary）的落点：auxiliary timeline。
 		auxiliary: () => auxiliary,
-		isBusy: () => false,
-		inspectRequest: async () => {
+			isBusy: () => false,
+			runActivity: async (fn) => { const controller = new AbortController(); await fn(controller.signal); },
+			inspectRequest: async () => {
 			const projection = await value.runTransformContext({ projectionId: "test", modelKey: "mock/mock", messages: bigHistory(), tools: [] });
 			return { projection, measurement: { inputTokens: estimateRequestTokens(projection.messages, projection.tools), kind: "approximate" as const, source: "test" }, contextWindow: 50_000, inputBudget: 33_616 };
 		},

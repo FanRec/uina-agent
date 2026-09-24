@@ -63,7 +63,8 @@ export function formatThinkingLines(
 export interface CompactionCardData {
 	status?: "completed" | "failed" | "cancelled" | "noop";
 	summary: string;
-	turnsCount: number;
+	/** canonical 主线中从压缩尾部起保留的条目数；旧 checkpoint 可未知。 */
+	retainedTailEntries?: number;
 	tokensBefore: number;
 	collapsed: boolean;
 }
@@ -127,7 +128,7 @@ export function formatCompactionCardLines(
 
 	// 展开态：自适应标题
 	const candidates = [
-		` 会话已压缩 · 完整摘要 (已归档 ${record.turnsCount} 轮) `,
+		` 会话已压缩 · 完整摘要${record.retainedTailEntries === undefined ? "" : ` (保留 ${record.retainedTailEntries} 条)`} `,
 		` 会话已压缩 · 完整摘要 `,
 		` 会话已压缩 `,
 		"",
@@ -148,7 +149,8 @@ export function formatCompactionCardLines(
 
 	// 底部统计与提示
 	const arrow = `${isHovered ? C.suggestion : C.claude}↳${C.reset}`;
-	const stats = `${C.success}压缩前 ~${tokensBeforeStr} tokens${C.reset} · ${C.inactive}保留最近 ${record.turnsCount} 轮对话${C.reset}`;
+	const retained = record.retainedTailEntries === undefined ? "保留条目未知" : `保留 ${record.retainedTailEntries} 条主线记录`;
+	const stats = `${C.success}压缩前 ~${tokensBeforeStr} tokens${C.reset} · ${C.inactive}${retained}${C.reset}`;
 	const hint = isHovered ? `${C.suggestion}(点击 / ctrl+o 收起)${C.reset}` : `${C.inactive}(ctrl+o / 点击收起)${C.reset}`;
 	const footerRaw = `  ${arrow} ${stats} · ${hint}`;
 	const effFooter = visibleWidth(footerRaw) > boxW ? truncateToWidth(footerRaw, boxW, "…") : footerRaw;

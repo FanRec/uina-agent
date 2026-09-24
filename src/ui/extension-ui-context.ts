@@ -43,7 +43,7 @@ export interface UIHostContextPort {
 	setContext?(snapshot: ContextSnapshot): void;
 	getScrollbarThumbStyle?(): "slim" | "block" | "wide";
 	setScrollbarThumbStyle?(style: "slim" | "block" | "wide"): void;
-	addCompaction?(record: { status?: "completed" | "failed" | "cancelled" | "noop"; summary: string; turnsCount: number; tokensBefore: number; collapsed: boolean }): void;
+	addCompaction?(record: { status?: "completed" | "failed" | "cancelled" | "noop"; summary: string; retainedTailEntries?: number; tokensBefore: number; collapsed: boolean }): void;
 }
 
 /** 终端鼠标上报前缀（覆盖层统一忽略，避免吞掉后续按键字节）。 */

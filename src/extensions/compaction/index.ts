@@ -16,13 +16,15 @@ interface CompactionCheckpoint {
 	readonly tailStartsAtEntryId: string;
 	readonly prefixFingerprint: string;
 	readonly source: "manual" | "automatic";
+	/** 压缩前请求的估算输入 tokens（展示用）；旧 checkpoint 无此字段。 */
+	readonly tokensBefore?: number;
+	/** canonical 主线中从 tailStartsAtEntryId 起保留的条目数（展示用）；旧 checkpoint 无此字段。 */
+	readonly retainedTailEntries?: number;
 }
 
 interface StagedCompaction {
 	readonly operationId: string;
 	readonly checkpoint: CompactionCheckpoint;
-	readonly tokensBefore: number;
-	readonly retainedTailCount: number;
 }
 
 interface StreamMessageView {
@@ -32,27 +34,6 @@ interface StreamMessageView {
 	readonly content: string;
 	readonly tool_call_id?: string;
 	readonly tool_calls?: readonly { readonly name: string; readonly args?: unknown }[];
-}
-
-export function fingerprintMessages(messages: readonly StreamMessageView[]): string {
-	return createHash("sha256").update(JSON.stringify(messages.map((message) => ({
-		role: message.role,
-		context: stableContext(message.context),
-		status: message.status,
-		content: message.content ?? "",
-		tool_call_id: message.tool_call_id,
-		tool_calls: message.tool_calls?.map((call) => ({ name: call.name, args: call.args ?? {} })),
-	})))).digest("hex");
-}
-
-function stableContext(context: StreamMessageView["context"]): unknown {
-	if (!context) return undefined;
-	return {
-		entryId: context.entryId,
-		kind: context.kind,
-		group: context.group,
-		input: context.input ? { eventId: context.input.eventId, source: context.input.source } : undefined,
-	};
 }
 
 export function estimateStreamTokens(messages: readonly StreamMessageView[]): number {
@@ -197,22 +178,14 @@ function fingerprintPrefix(entries: readonly HydratedSessionEntry[], coveredThro
 function checkpointValid(
 	checkpoint: CompactionCheckpoint,
 	entries: readonly HydratedSessionEntry[],
-	messages?: readonly StreamMessageView[],
 ): boolean {
 	const bearing = requestBearing(entries);
 	const covered = bearing.findIndex((entry) => entry.id === checkpoint.coveredThroughEntryId);
-	const tail = bearing.findIndex((entry) => entry.id === checkpoint.tailStartsAtEntryId);
-	if (covered >= 0 && tail === covered + 1) {
-		return fingerprintPrefix(entries, checkpoint.coveredThroughEntryId) === checkpoint.prefixFingerprint;
-	}
-	if (!messages) return false;
-	const tailIndex = messages.findIndex((message) => message.context?.entryId === checkpoint.tailStartsAtEntryId);
-	if (tailIndex < 0) return false;
-	let systemEnd = 0;
-	while (messages[systemEnd]?.role === "system") systemEnd++;
-	const ids = entryIds(messages, systemEnd, tailIndex + 1);
-	if (ids.at(-2) !== checkpoint.coveredThroughEntryId || ids.at(-1) !== checkpoint.tailStartsAtEntryId) return false;
-	return fingerprintMessages(messages.slice(systemEnd, tailIndex)) === checkpoint.prefixFingerprint;
+	// 唯一 canonical boundary：covered 必须存在于 requestBearing，且前缀指纹一致。
+	// 投影允许过滤/重组（event frame、扩展 transform），不要求 bearing 邻接；
+	// tail 对本次投影的适配由 renderCheckpoint 负责（找不到 tail 即不适用）。
+	if (covered < 0) return false;
+	return fingerprintPrefix(entries, checkpoint.coveredThroughEntryId) === checkpoint.prefixFingerprint;
 }
 
 function parseCheckpoint(value: unknown): CompactionCheckpoint | undefined {
@@ -222,6 +195,8 @@ function parseCheckpoint(value: unknown): CompactionCheckpoint | undefined {
 		|| typeof data.coveredThroughEntryId !== "string" || typeof data.tailStartsAtEntryId !== "string"
 		|| typeof data.prefixFingerprint !== "string"
 		|| (data.source !== "manual" && data.source !== "automatic")) return undefined;
+	if (data.tokensBefore !== undefined && typeof data.tokensBefore !== "number") return undefined;
+	if (data.retainedTailEntries !== undefined && typeof data.retainedTailEntries !== "number") return undefined;
 	return data as CompactionCheckpoint;
 }
 
@@ -282,16 +257,18 @@ function describeSummaryError(error: unknown): string {
 	return `${error.message}（底层原因：${code ? `${code}: ` : ""}${detail}）`;
 }
 
-async function summarizeOnce(pi: ExtensionAPI, body: string, focus: string): Promise<string> {
+async function summarizeOnce(pi: ExtensionAPI, body: string, focus: string, signal: AbortSignal): Promise<string> {
 	let summary = "";
 	try {
+		// signal = Subject 信号（turn/post-turn/activity）。pi.models.stream 内部经
+		// activation scope 与 pi.signal（扩展卸载）合并，两条取消源都到达 IO。
 		await pi.models.stream(pi.models.current(), {
 			messages: [
 				{ role: "system", content: SUMMARY_SYSTEM_PROMPT },
 				{ role: "user", content: body + focus },
 			],
 			tools: [],
-		}, (delta) => { if (delta.kind === "text") summary += delta.text; }, pi.signal);
+		}, (delta) => { if (delta.kind === "text") summary += delta.text; }, signal);
 	} catch (error) {
 		throw new Error(`摘要模型请求失败：${describeSummaryError(error)}`, { cause: error });
 	}
@@ -303,7 +280,8 @@ async function summarizeOnce(pi: ExtensionAPI, body: string, focus: string): Pro
 async function requestSummary(
 	pi: ExtensionAPI,
 	source: readonly StreamMessageView[],
-	instruction?: string,
+	instruction: string | undefined,
+	signal: AbortSignal,
 	onChunk?: (completed: number) => Promise<void>,
 ): Promise<string> {
 	const focus = instruction?.trim() ? `\n\n额外关注：${instruction.trim()}` : "";
@@ -339,7 +317,7 @@ async function requestSummary(
 			const first = [...rawUnit][0]!;
 			if (rolling && !fits(rolling, fragmentLabel + first)) {
 				if (!fits("", `[已有摘要]\n${rolling}`)) throw new Error("已有摘要无法装入摘要模型输入预算");
-				const reduced = await summarizeOnce(pi, `[已有摘要]\n${rolling}`, focus);
+				const reduced = await summarizeOnce(pi, `[已有摘要]\n${rolling}`, focus, signal);
 				if (summaryRequestTokens(reduced, focus) >= summaryRequestTokens(rolling, focus)
 					|| !fits(reduced, fragmentLabel + first)) {
 					throw new Error("已有摘要未能缩短到可继续处理历史的大小");
@@ -361,7 +339,7 @@ async function requestSummary(
 			else cursor++;
 			break;
 		}
-		rolling = await summarizeOnce(pi, summarizeInput(rolling, chunk), focus);
+		rolling = await summarizeOnce(pi, summarizeInput(rolling, chunk), focus, signal);
 		await onChunk?.(++completed);
 	}
 	return rolling;
@@ -380,9 +358,14 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		detail?: string,
 	) => pi.emitEvent({ type: "session_compact_progress", operationId, phase, ...(detail ? { detail } : {}) });
 
-	const activeCheckpoint = (messages?: readonly StreamMessageView[]): CompactionCheckpoint | undefined => {
+	/** 终态归因：Subject 信号（turn/post-turn/activity）或扩展卸载信号 aborted
+	 * 即 cancelled；否则 failed。两个信号是仅有的取消源。 */
+	const cancelKind = (signal?: AbortSignal): "cancelled" | "failed" =>
+		(signal !== undefined && signal.aborted) || pi.signal.aborted ? "cancelled" : "failed";
+
+	const activeCheckpoint = (): CompactionCheckpoint | undefined => {
 		const entries = pi.history();
-		return checkpoints.findLast((checkpoint) => checkpointValid(checkpoint, entries, messages));
+		return checkpoints.findLast((checkpoint) => checkpointValid(checkpoint, entries));
 	};
 
 	const terminal = async (operationId: string, status: "failed" | "cancelled", error: unknown): Promise<void> => {
@@ -398,6 +381,7 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		instruction?: string,
 		operationId: string = randomUUID(),
 		announced = false,
+		signal?: AbortSignal,
 	): Promise<"staged" | "noop"> => {
 		if (!announced) await pi.emitEvent({ type: "session_compact_start", operationId, reason, modelKey: inspection.projection.modelKey });
 		await emitProgress(operationId, "planning");
@@ -416,32 +400,46 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		const coverTarget = boundary;
 		const coveredIds = entryIds(messages, 0, coverTarget);
 		const tailIds = entryIds(messages, coverTarget, messages.length);
-		const previous = activeCheckpoint(messages);
+		const previous = activeCheckpoint();
 		const coveredThroughEntryId = coveredIds.at(-1) ?? previous?.coveredThroughEntryId;
 		const tailStartsAtEntryId = tailIds[0];
 		if (!coveredThroughEntryId || !tailStartsAtEntryId) throw new Error("无法将压缩边界映射到 canonical history");
-		let systemEnd = 0;
-		while (messages[systemEnd]?.role === "system") systemEnd++;
-		const prefixFingerprint = fingerprintPrefix(pi.history(), coveredThroughEntryId)
-			?? fingerprintMessages(messages.slice(systemEnd, coverTarget));
+		// 唯一 canonical boundary：压缩边界必须能映射回主线 requestBearing，指纹只算
+		// canonical entries 一种口径。映射不出当场失败，不落一个重启后注定验证失败的
+		// checkpoint（旧消息指纹兜底已删除——那是只隐藏错误的伪容错）。
+		const history = pi.history();
+		const tailEntryIndex = history.findIndex((entry) => entry.id === tailStartsAtEntryId);
+		if (tailEntryIndex < 0) throw new Error(`无法将压缩边界唯一映射到 canonical history（tail=${tailStartsAtEntryId}, covered=${coveredThroughEntryId}, entries=${history.map((entry) => entry.id).join(",")})`);
+		const prefixFingerprint = fingerprintPrefix(history, coveredThroughEntryId);
+		if (!prefixFingerprint) throw new Error(`无法将压缩边界唯一映射到 canonical history（covered=${coveredThroughEntryId}, tail=${tailStartsAtEntryId}, entries=${history.length}）`);
 		await emitProgress(operationId, "summarizing", "生成历史摘要");
-		const summary = await requestSummary(pi, messages.slice(0, coverTarget), instruction,
+		const summary = await requestSummary(pi, messages.slice(0, coverTarget), instruction, signal ?? pi.signal,
 			(count) => emitProgress(operationId, "summarizing", `已完成 ${count} 块历史摘要`));
 		staged = {
 			operationId,
-			checkpoint: { version: SUMMARY_VERSION, summary, coveredThroughEntryId, tailStartsAtEntryId, prefixFingerprint, source: reason },
-			tokensBefore: inspection.measurement.inputTokens,
-			retainedTailCount: messages.length - boundary,
+			checkpoint: {
+				version: SUMMARY_VERSION,
+				summary,
+				coveredThroughEntryId,
+				tailStartsAtEntryId,
+				prefixFingerprint,
+				source: reason,
+				tokensBefore: inspection.measurement.inputTokens,
+				retainedTailEntries: history.length - tailEntryIndex,
+			},
 		};
 		await emitProgress(operationId, "measuring", "重建并测量压缩后的请求");
 		return "staged";
 	};
 
-	const commit = async (measurement: TokenMeasurement, mustFit: boolean, inputBudget?: number): Promise<void> => {
+	const commit = async (measurement: TokenMeasurement, mustFit: boolean, inputBudget?: number, signal?: AbortSignal): Promise<void> => {
+		// 取消是提交门的一部分：摘要已生成不等于 checkpoint 已授权写入。
+		// 尤其要覆盖 stage → inspectRequest → appendEntry 之间的竞态窗口。
+		signal?.throwIfAborted();
 		const candidate = staged;
 		if (!candidate) throw new Error("没有待验证的压缩候选");
-		if (measurement.inputTokens >= candidate.tokensBefore) {
-			const reason = `压缩后上下文没有改善（before=${candidate.tokensBefore}, after=${measurement.inputTokens}）`;
+		if (measurement.inputTokens >= (candidate.checkpoint.tokensBefore ?? Number.POSITIVE_INFINITY)) {
+			const reason = `压缩后上下文没有改善（before=${candidate.checkpoint.tokensBefore ?? "?"}, after=${measurement.inputTokens}）`;
 			await terminal(candidate.operationId, "failed", reason);
 			throw new Error(reason);
 		}
@@ -450,10 +448,11 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 			throw new Error("压缩后上下文仍超过可用预算");
 		}
 		await emitProgress(candidate.operationId, "applying", "写入压缩检查点");
+		signal?.throwIfAborted();
 		try {
 			await pi.appendEntry({ customType: SUMMARY_ENTRY_TYPE, data: candidate.checkpoint });
 		} catch (error) {
-			await terminal(candidate.operationId, pi.signal.aborted ? "cancelled" : "failed", error);
+			await terminal(candidate.operationId, cancelKind(signal), error);
 			throw error;
 		}
 		checkpoints.push(candidate.checkpoint);
@@ -468,9 +467,9 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 				operationId: candidate.operationId,
 				status: "completed",
 				summary: candidate.checkpoint.summary,
-				tokensBefore: candidate.tokensBefore,
+				tokensBefore: candidate.checkpoint.tokensBefore,
 				tokensAfter: measurement.inputTokens,
-				retainedTailCount: candidate.retainedTailCount,
+				retainedTailEntries: candidate.checkpoint.retainedTailEntries,
 			});
 		} catch (error) { pi.reportError(error); }
 	};
@@ -479,22 +478,24 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		instruction?: string,
 		operationId: string = randomUUID(),
 		announced = false,
+		signal?: AbortSignal,
 	): Promise<"completed" | "noop"> => {
 		if (activeOperation) return activeOperation;
 		const task = (async (): Promise<"completed" | "noop"> => {
 			try {
 				const before = await pi.inspectRequest();
-				if (await stage(before, "manual", instruction, operationId, announced) === "noop") return "noop";
+				if (await stage(before, "manual", instruction, operationId, announced, signal) === "noop") return "noop";
 				const after = await pi.inspectRequest();
 				await commit(
 					after.measurement,
 					before.inputBudget !== undefined && before.measurement.inputTokens > before.inputBudget,
 					after.inputBudget,
+					signal,
 				);
 				if (!announced) await pi.context().catch((error) => pi.reportError(error));
 				return "completed";
 			} catch (error) {
-				await terminal(operationId, pi.signal.aborted ? "cancelled" : "failed", error);
+				await terminal(operationId, cancelKind(signal), error);
 				throw error;
 			}
 		})();
@@ -528,7 +529,11 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 				return;
 			}
 			const operationId = randomUUID();
-			try { await runManual(instruction, operationId); }
+			try {
+				// 空闲压缩是回合外排他前台活动：占用 Subject（busy 可见、阻止新 turn）、
+				// 受 interrupt 控制（Esc/Ctrl+C → cancelled）、被 dispose 等待。
+				await pi.runActivity(async (activitySignal) => { await runManual(instruction, operationId, false, activitySignal); });
+			}
 			catch (error) {
 				// The terminal event already owns the user-visible failure. Avoid a
 				// second CommandRouter error for the same operation.
@@ -537,29 +542,31 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		},
 	});
 
-	pi.onHook("turn.afterEnd", async () => {
+	pi.onHook("turn.afterEnd", async ({ signal }) => {
 		const pending = pendingManual;
 		if (!pending || activeOperation) return undefined;
 		pendingManual = undefined;
-		try { await runManual(pending.instruction, pending.operationId, true); }
+		// post-turn 阶段：outcome 已冻结，signal 是全新的 post-turn 信号——原回合被
+		// interrupt 不取消这里，压缩失败/取消也不回改回合结果。
+		try { await runManual(pending.instruction, pending.operationId, true, signal); }
 		catch (error) { if (!terminalOperations.has(pending.operationId)) pi.reportError(error); }
 		return undefined;
 	});
 
 	pi.onHook("turn.transformContext", async (projection) => {
 		const source = projection.messages as readonly StreamMessageView[];
-		const checkpoint = staged?.checkpoint ?? activeCheckpoint(source);
+		const checkpoint = staged?.checkpoint ?? activeCheckpoint();
 		if (!checkpoint) return undefined;
-		if (!staged && !checkpointValid(checkpoint, pi.history(), source)) return undefined;
+		if (!staged && !checkpointValid(checkpoint, pi.history())) return undefined;
 		const messages = renderCheckpoint(source, checkpoint);
 		return messages ? { projection: { ...projection, messages } as RequestProjection } : undefined;
 	});
 
-	pi.onHook("turn.preflight", async ({ projection, measurement, pass }) => {
+	pi.onHook("turn.preflight", async ({ projection, measurement, pass, signal }) => {
 		const budget = inputTokenBudget(pi.models.current(), projection.thinkingLevel);
 		if (pass > 0 && staged) {
 			try {
-				await commit(measurement, true, budget);
+				await commit(measurement, true, budget, signal);
 				return { action: "send" as const };
 			} catch (error) {
 				return { action: "fail" as const, reason: String((error as Error).message ?? error) };
@@ -575,12 +582,12 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 				contextWindow: pi.models.current().contextWindow,
 				inputBudget: budget,
 			};
-			const result = await stage(inspection, "automatic", undefined, operationId);
+			const result = await stage(inspection, "automatic", undefined, operationId, false, signal);
 			return result === "staged"
 				? { action: "rebuild" as const }
 				: { action: "fail" as const, reason: "上下文超过预算且没有可安全压缩的历史边界" };
 		} catch (error) {
-			await terminal(operationId, pi.signal.aborted ? "cancelled" : "failed", error);
+			await terminal(operationId, cancelKind(signal), error);
 			return { action: "fail" as const, reason: String((error as Error).message ?? error) };
 		}
 	});
@@ -595,4 +602,32 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 	};
 	pi.signal.addEventListener("abort", onAbort, { once: true });
 	return () => pi.signal.removeEventListener("abort", onAbort);
+}
+
+/** 重启回放的转录装饰：auxiliary checkpoint → UI 卡片投影。能力拥有自己的词汇
+ * （uina.compaction.summary），组合根经此把 checkpoint 变成 transcript 装饰，
+ * UI 不理解 auxiliary 世界。只保留 tail 仍在当前主线的 checkpoint——tail 已被
+ * 回溯放弃的 checkpoint 对模型同样失效，渲染它会撒谎。 */
+export interface CompactionTimelineDecoration {
+	kind: "compaction";
+	beforeEntryId: string;
+	summary: string;
+	tokensBefore?: number;
+	retainedTailEntries?: number;
+}
+
+export function compactionDecorations(
+	auxiliary: readonly { kind: string; customType?: string; data?: unknown }[],
+	entries: readonly { id?: string }[],
+): CompactionTimelineDecoration[] {
+	const mainlineIds = new Set(entries.map((entry) => entry.id));
+	return loadCheckpoints(auxiliary)
+		.filter((checkpoint) => mainlineIds.has(checkpoint.tailStartsAtEntryId))
+		.map((checkpoint) => ({
+			kind: "compaction" as const,
+			beforeEntryId: checkpoint.tailStartsAtEntryId,
+			summary: checkpoint.summary,
+			...(checkpoint.tokensBefore !== undefined ? { tokensBefore: checkpoint.tokensBefore } : {}),
+			...(checkpoint.retainedTailEntries !== undefined ? { retainedTailEntries: checkpoint.retainedTailEntries } : {}),
+		}));
 }

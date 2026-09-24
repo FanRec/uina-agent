@@ -205,15 +205,17 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		pi.ui.setWorkingVisible(false);
 		const message = e.status === "completed" ? "会话已压缩" : e.status === "noop" ? "当前无需压缩" : `会话压缩${e.status === "cancelled" ? "已取消" : "失败"}${e.error ? `：${e.error}` : ""}`;
 		pi.ui.notify(message, e.status === "completed" || e.status === "noop" ? "info" : "warning", e.status === "completed" || e.status === "noop" ? 2500 : 3000);
-		if (ui.addCompaction) {
+		// 永久转录只记录已提交的压缩事实；失败/取消/noop 是瞬态结果，
+		// 只通知不堆卡片，避免重试把错误状态污染会话阅读流。
+		if (e.status === "completed" && ui.addCompaction) {
 			ui.addCompaction({
 				status: e.status,
-				summary: e.summary ?? e.error ?? message,
-				turnsCount: e.retainedTailCount ?? 0,
+				summary: e.summary ?? message,
+				retainedTailEntries: e.retainedTailEntries ?? 0,
 				tokensBefore: e.tokensBefore ?? 0,
-				collapsed: e.status === "completed",
+				collapsed: true,
 			});
-		} else {
+		} else if (!ui.addCompaction) {
 			process.stdout.write(`\n[会话压缩] ${e.summary ?? e.error ?? message}\n`);
 		}
 	});

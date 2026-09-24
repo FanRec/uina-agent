@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { errorMessage } from "../core/errors.js";
 import { UinaHost } from "../host/host.js";
+import { compactionDecorations } from "../extensions/compaction/index.js";
 import type { HostEvent } from "../host/events.js";
 import { createInteractiveUI, type InteractiveTUI } from "../ui/tui.js";
 import { installTerminalGuards } from "../ui/core/terminal.js";
@@ -181,6 +182,10 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				return;
 			}
 			host.interrupt();
+		} else if (source === "ctrl+c" && !execRunning) {
+			// Ctrl+C while Subject is idle is an exit intent; the process-level
+			// shutdown path remains owned by the composition root.
+			handleExit(false);
 		}
 		if (execRunning) execAbort?.abort();
 	};
@@ -194,7 +199,8 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			handleExit(true);
 			return;
 		}
-		if (host.isBusy() || (tui && tui.host.isBusy())) {
+		// Host/Subject 是唯一活动事实源；UI busy 只服务动画与展示，不能决定退出。
+		if (host.isBusy()) {
 			handleCancel("ctrl+c");
 			return;
 		}
@@ -356,7 +362,10 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				host.cycleThinkingLevel();
 			});
 			if (snapshot.context) tui.host.setContext(snapshot.context);
-			if (host.restoredEntries.length > 0) tui.loadSession(host.restoredEntries);
+			if (host.restoredEntries.length > 0) {
+				const decorations = compactionDecorations(host.restoredAuxiliary, host.restoredEntries);
+				tui.loadSession(host.restoredEntries, decorations);
+			}
 			tui.setPendingQueue(snapshot.queue);
 			return;
 		}

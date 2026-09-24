@@ -190,7 +190,6 @@ export class InputLine implements Component, Focusable {
 	// 事件回调
 	public onSubmit?: (text: string) => void;
 	public onSubmitMode?: (text: string, mode: "direct" | "steer" | "followUp" | "interrupt") => void;
-	public onInterrupt?: () => void;
 	public onEscape?: () => void;
 
 	constructor() {}
@@ -452,22 +451,6 @@ export class InputLine implements Component, Focusable {
 		const lines = cleanData.split("\n");
 		if (lines.length >= 3 || (cleanData.length >= 100 && !cleanData.startsWith("\x1b"))) {
 			this.insertPastedText(cleanData);
-			return;
-		}
-
-		// 3. 特殊快捷键：Ctrl+C
-		if (matchesKey(data, Key.ctrl("c"))) {
-			if (this.isAllSelected) {
-				// Ctrl+A then Ctrl+C copies, as the component contract promises.
-				this.copySelection();
-				this.isAllSelected = false;
-				return;
-			}
-			if (this.text) {
-				this.clear();
-			} else {
-				this.onInterrupt?.();
-			}
 			return;
 		}
 

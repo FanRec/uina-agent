@@ -8,6 +8,7 @@ import { UIHost, type UIHostOptions } from "./ui-host.js";
 import type { QueuedMessage } from "../agent/queue.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 import type { SessionEntry } from "../session/types.js";
+import type { CompactionReplayDecoration } from "./components/transcript/transcript.js";
 
 import type { HostEvent } from "../host/events.js";
 
@@ -137,8 +138,8 @@ export class InteractiveTUI {
 		this.host.loadHistory(messages);
 	}
 
-	loadSession(entries: readonly SessionEntry[]): void {
-		this.host.loadSession(entries);
+	loadSession(entries: readonly SessionEntry[], decorations: readonly CompactionReplayDecoration[] = []): void {
+		this.host.loadSession(entries, decorations);
 	}
 
 	setPendingQueue(items: readonly QueuedMessage[]): void {

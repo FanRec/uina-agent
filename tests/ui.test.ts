@@ -830,7 +830,7 @@ describe("UI Components & Visual Rendering", () => {
 
 		const record = {
 			summary: "1. 讨论系统架构\n2. 落地输入联想与差异卡片\n3. 优化文件发现机制",
-			turnsCount: 3,
+			retainedTailEntries: 3,
 			tokensBefore: 18500,
 			collapsed: true,
 		};
@@ -857,7 +857,7 @@ describe("UI Components & Visual Rendering", () => {
 	it("失败的压缩记录不显示为已压缩摘要", async () => {
 		const { formatCompactionCardLines } = await import("../src/ui/components/transcript/cards.js");
 		const rendered = stripAnsi(formatCompactionCardLines({
-			status: "failed", summary: "摘要模型请求终止", turnsCount: 0, tokensBefore: 0, collapsed: false,
+			status: "failed", summary: "摘要模型请求终止", retainedTailEntries: 0, tokensBefore: 0, collapsed: false,
 		}, 80).join("\n"));
 		expect(rendered).toContain("压缩失败");
 		expect(rendered).not.toContain("会话已压缩");
@@ -1549,9 +1549,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			rows: 30,
 		});
 		try {
-			let interruptCalled = false;
-			harness.host.onInterrupt = () => {
-				interruptCalled = true;
+			let cancelCalled = false;
+			harness.host.onCancel = () => {
+				cancelCalled = true;
 			};
 
 			// 输入文字
@@ -1561,16 +1561,12 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			// 按 Ctrl+C：应清空输入框内容，不应退出也不应触发退出确认
 			harness.host.handleInput("\x03"); // Ctrl+C
 			expect(harness.host.inputLine.getText()).toBe("");
-			expect(interruptCalled).toBe(false);
+			expect(cancelCalled).toBe(false);
 			expect((harness.host as any).exitPending).toBe(false);
 
-			// 输入框已清空后，再次按 Ctrl+C：应触发退出确认 (exitPending = true)
+			// 输入框已清空后，Ctrl+C 直接发送取消/退出意图；不由 UI 复制 exitPending。
 			harness.host.handleInput("\x03");
-			expect((harness.host as any).exitPending).toBe(true);
-
-			// 3秒内再次按 Ctrl+C：真正退出
-			harness.host.handleInput("\x03");
-			expect(interruptCalled).toBe(true);
+			expect(cancelCalled).toBe(true);
 		} finally {
 			harness.dispose();
 		}
@@ -2369,7 +2365,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			// 添加压缩卡片
 			tc.addCompaction({
 				summary: "会话已压缩摘要",
-				turnsCount: 1,
+				retainedTailEntries: 1,
 				tokensBefore: 5000,
 				collapsed: true,
 			});
@@ -2407,7 +2403,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			// 测试压缩时轨迹同步
 			tui.host.addCompaction({
 				summary: "历史压缩摘要",
-				turnsCount: 1,
+				retainedTailEntries: 1,
 				tokensBefore: 3000,
 				collapsed: true,
 			});
@@ -2460,7 +2456,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			host.addCompaction({
 				summary: "第 1 轮到第 3 轮的压缩总结",
-				turnsCount: 3,
+				retainedTailEntries: 3,
 				tokensBefore: 12000,
 				collapsed: true,
 			});
@@ -2552,13 +2548,13 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				status: "completed",
 				summary: "完成测试总结",
 				tokensBefore: 15000,
-				retainedTailCount: 2,
+				retainedTailEntries: 2,
 			});
 			expect(mockNotify).toHaveBeenCalledWith("会话已压缩", "info", 2500);
 			expect(mockAddCompaction).toHaveBeenCalledWith({
 				status: "completed",
 				summary: "完成测试总结",
-				turnsCount: 2,
+				retainedTailEntries: 2,
 				tokensBefore: 15000,
 				collapsed: true,
 			});
@@ -2569,9 +2565,10 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(setUsageCalls.length).toBe(0);
 
 			// 3. 失败也由统一 session_compact 终态事件表达
-			compactHandler!({ type: "session_compact", status: "failed", error: "Token limit" });
-			expect(mockNotify).toHaveBeenCalledWith("会话压缩失败：Token limit", "warning", 3000);
-			expect(mockAddCompaction).toHaveBeenLastCalledWith(expect.objectContaining({ status: "failed", collapsed: false, summary: "Token limit" }));
+				compactHandler!({ type: "session_compact", status: "failed", error: "Token limit" });
+				expect(mockNotify).toHaveBeenCalledWith("会话压缩失败：Token limit", "warning", 3000);
+				// 失败/取消/noop 只保留 toast，不污染永久转录卡片。
+				expect(mockAddCompaction).toHaveBeenCalledTimes(1);
 
 			// 4. 触发 thinking_level_select 驱动 Toast 与底栏状态联动
 			const thinkingHandler = handlers.get("thinking_level_select");
@@ -3264,16 +3261,14 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					deliveredText = text;
 				};
 
-				// 1. 工作态下按 Esc -> 触发 cancelTurn，调用 onInterrupt(false)，cancelPending = true，busy 保持直到事件下发
-				host.setBusy(true);
-				host.handleInput("\x1b"); // Esc
-				expect(interruptedCalls).toEqual([false]);
-				expect((host as any).cancelPending).toBe(true);
-				expect(host.isBusy()).toBe(true);
-				// 模拟收到终端终止事件，解除 busy 与 cancelPending
-				host.setBusy(false);
-				expect(host.isBusy()).toBe(false);
-				expect((host as any).cancelPending).toBe(false);
+					// 1. 工作态下按 Esc -> 只发送取消意图；实际 Subject/Host 信号由组合根接管
+					host.setBusy(true);
+					host.handleInput("\x1b"); // Esc
+					expect(interruptedCalls).toEqual([]);
+					expect(host.isBusy()).toBe(true);
+					host.setBusy(false);
+					expect(host.isBusy()).toBe(false);
+
 
 				// 2. 空闲态下单按 Esc -> 清空输入框内容
 				host.handleInput("some draft text");
@@ -3281,18 +3276,14 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				host.handleInput("\x1b"); // Esc
 				expect((host as any).inputLine.getText()).toBe("");
 
-				// 3. 工作态下第 1 次按 Ctrl+C -> cancelTurn, cancelPending = true, busy 仍为 true
-				interruptedCalls = [];
-				host.setBusy(true);
-				host.handleInput("\x03"); // Ctrl+C
-				expect(interruptedCalls).toEqual([false]);
-				expect(host.isBusy()).toBe(true);
-				expect((host as any).cancelPending).toBe(true);
+					// 3. 工作态下 Ctrl+C -> UI 只发送取消意图，组合根查询 Host 权威忙闲
+					interruptedCalls = [];
+					host.setBusy(true);
+					host.handleInput("\x03"); // Ctrl+C
+					expect(interruptedCalls).toEqual([]);
+					expect(host.isBusy()).toBe(true);
+					host.setBusy(false);
 
-				// 4. 工作态且 cancelPending 时第 2 次按 Ctrl+C -> 触发强制退出 onInterrupt(true)
-				host.handleInput("\x03"); // Ctrl+C
-				expect(interruptedCalls).toEqual([false, true]);
-				host.setBusy(false);
 
 				// 5. 工作态下按 Ctrl+Enter -> 触发 cancelTurn 且调用 onInterruptAndDeliver
 				host.setBusy(true);
@@ -3322,10 +3313,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				// 触发 Esc
 				host.handleInput("\x1b");
 
-				// 当前轮次打断中，但草稿完好保留，绝不被清空
-				expect(host.isBusy()).toBe(true);
-				expect((host as any).cancelPending).toBe(true);
-				expect((host as any).inputLine.getText()).toBe("我的临时未发送草稿");
+					// UI 只发取消意图，草稿完好保留，绝不被清空
+					expect(host.isBusy()).toBe(true);
+					expect((host as any).inputLine.getText()).toBe("我的临时未发送草稿");
 			});
 
 			it("InteractiveTUI: 接收到 turn_aborted 事件时自动调用 interruptTurn 并重置状态", () => {
@@ -3447,13 +3437,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(tui.host.inputLine.getText()).toBe("");
 				expect(forceExited).toBe(false);
 
-				// 草稿为空时第 1 次 Ctrl+C：激活 exitPending
-				tui.host.handleInput("\x03");
-				expect(forceExited).toBe(false);
-
-				// 2 秒内第 2 次 Ctrl+C：触发退出
-				tui.host.handleInput("\x03");
-				expect(forceExited).toBe(true);
+					// 草稿为空时 Ctrl+C 也只发送取消意图；退出由组合根查询 Host idle 后决定。
+					tui.host.handleInput("\x03");
+					expect(forceExited).toBe(false);
 			});
 
 			it("InteractiveTUI: 工作态下按 Esc 触发 onCancel('escape') 并保留输入栏未发送草稿", () => {
