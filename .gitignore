@@ -37,3 +37,6 @@ tests/pacing-ticker-app.test.ts
 tests/pacing-ticker-engine.test.ts
 tests/pacing-ticker-integration.test.ts
 
+
+# Local runtime profiles contain persona, memory, sessions, and app state
+profiles/
