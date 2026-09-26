@@ -15,10 +15,6 @@ import { resolveProfile, releaseProfileLock } from "../host/profile.js";
 import { formatStartupBanner, resolveExitCode, resolveRunMode } from "./run-mode.js";
 import { formatStdioEventLine, formatToolCallLine, formatToolResultBlock } from "./stdio-render.js";
 
-const CLEAR_LINE = "\r\x1b[2K";
-const ERR = "\x1b[31m";
-const RESET = "\x1b[0m";
-
 /**
  * 组合根：只做四件事——建宿主、挂一个消费者、装进程级守卫、退出。
  *
@@ -82,9 +78,26 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		}
 	};
 
+	const writeCommandOutput = (text: string): void => {
+		if (tui) {
+			tui.host.transcript.addNotice(text);
+			tui.host.requestRender();
+			return;
+		}
+		process.stdout.write(`${text}\n`);
+	};
+
 	const render = (message: HostEvent): void => {
 		if (message.type === "error") hadError = true;
-		if (tui) tui.render(message);
+		if (message.type === "turn_end" || message.type === "turn_aborted") cancellationPending = false;
+		if (tui) {
+			if (message.type === "model_select") {
+				const snapshot = host.snapshot();
+				tui.host.setThinkingLevels(snapshot.thinkingLevels);
+				tui.host.setReasoningEffort(snapshot.thinkingLevel);
+			}
+			tui.render(message);
+		}
 		else renderStdio(message);
 	};
 
@@ -126,6 +139,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	};
 
 	let interruptSeq = 0;
+	let cancellationPending = false;
 
 	const shutdown = async (cancelCurrent = true, force = false): Promise<void> => {
 		if (shuttingDown) return;
@@ -168,24 +182,32 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	};
 
 	const handleCancel = (source: "escape" | "ctrl+c" = "escape"): void => {
-		if (host.isBusy()) {
-			const queued = host.snapshot().queue;
-			if (source === "escape" && queued.length > 0) {
-				deliverQueuedNow();
-				return;
-			}
-			if (source === "ctrl+c") {
-				void restoreQueueToEditor().catch((error) => {
-					process.stderr.write(`[队列恢复失败] ${String(error)}\n`);
-				});
+		if (source === "ctrl+c") {
+			if (host.isBusy()) {
+				if (cancellationPending) {
+					handleExit(true);
+					return;
+				}
+				cancellationPending = true;
+				if (host.snapshot().queue.length > 0) {
+					void restoreQueueToEditor().catch((error) => {
+						process.stderr.write(`[队列恢复失败] ${String(error)}\n`);
+					});
+				}
 				host.interrupt();
 				return;
 			}
+			if (!execRunning) handleExit(false);
+			else execAbort?.abort();
+			return;
+		}
+		if (host.isBusy()) {
+			const queued = host.snapshot().queue;
+			if (queued.length > 0) {
+				deliverQueuedNow();
+				return;
+			}
 			host.interrupt();
-		} else if (source === "ctrl+c" && !execRunning) {
-			// Ctrl+C while Subject is idle is an exit intent; the process-level
-			// shutdown path remains owned by the composition root.
-			handleExit(false);
 		}
 		if (execRunning) execAbort?.abort();
 	};
@@ -287,20 +309,18 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		const command = input.slice(1).trim();
 		if (!command || shuttingDown) return;
 		if (host.isBusy()) {
-			process.stdout.write("[!] 模型正在处理中，请等待本轮结束后再执行\n");
+			writeCommandOutput("[!] 模型正在处理中，请等待本轮结束后再执行");
 			return;
 		}
-		process.stdout.write(CLEAR_LINE);
 		execRunning = true;
 		execAbort = new AbortController();
 		try {
 			const started = Date.now();
 			const outcome = await host.runToolDirect("exec_command", { command }, execAbort.signal);
 			const plain = (value: string): string => value;
-			for (const line of toolResultLines(outcome.result, Date.now() - started, { ok: plain, err: plain, warn: plain, dim: plain })) {
-				process.stdout.write(line + "\n");
-			}
-			if (outcome.status !== "succeeded") process.stdout.write("[" + outcome.status + "]\n");
+			const lines = toolResultLines(outcome.result, Date.now() - started, { ok: plain, err: plain, warn: plain, dim: plain });
+			if (outcome.status !== "succeeded") lines.push(`[${outcome.status}]`);
+			if (lines.length > 0) writeCommandOutput(lines.join("\n"));
 		} finally {
 			execRunning = false;
 			execAbort = null;
@@ -310,6 +330,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	const onUserLine = (raw: string, mode: "steer" | "followUp" | "direct" = "followUp"): void => {
 		const text = raw.trim();
 		if (!text || shuttingDown) return;
+		cancellationPending = false;
 		if (text === "/stop") {
 			handleInterrupt();
 			return;
@@ -317,11 +338,11 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		if (text.startsWith("/")) { void host.commands.dispatch(text); return; }
 		if (text.startsWith("!")) {
 			if (host.isBusy()) {
-				process.stdout.write("[!] 模型正在处理中，请等待本轮结束后再执行\n");
+				writeCommandOutput("[!] 模型正在处理中，请等待本轮结束后再执行");
 				return;
 			}
 			execTail = execTail.then(() => runDirectCommand(text)).catch((error) => {
-				process.stdout.write(`${ERR}[命令错误]${RESET} ${String(error)}\n`);
+				writeCommandOutput(`[命令错误] ${String(error)}`);
 			});
 			return;
 		}
@@ -340,16 +361,16 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				thinkingLevel: snapshot.thinkingLevel,
 				cwd: process.cwd(),
 				registry: host.extensionRegistry,
-				jobPort: createJobAdapter(host.jobs),
-				subagentPort: createSubagentAdapter(host.subagents),
-				sessionPort: host.session,
+				features: {
+					jobPort: createJobAdapter(host.jobs),
+					subagentPort: createSubagentAdapter(host.subagents),
+					sessionPort: host.session,
+				},
 			});
 			host.attachExtensionUI(tui.ctxUI);
 			tui.onLine(onUserLine);
+			tui.onInteraction(() => { cancellationPending = false; });
 			tui.onCancel(handleCancel);
-			tui.onExit(handleExit);
-			tui.onSIGINT(() => handleInterrupt(false));
-			tui.onForceExit(() => handleInterrupt(true));
 			tui.onInterruptAndDeliver(handleInterruptAndDeliver);
 			tui.onPullBackQueue(() => {
 				void handlePullBackQueue();

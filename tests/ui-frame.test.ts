@@ -17,6 +17,8 @@
  */
 import { describe, expect, it } from "vitest";
 import { UIHost } from "../src/ui/ui-host.js";
+import { MainScreenRenderer } from "../src/ui/core/renderer.js";
+import { CURSOR_MARKER } from "../src/ui/core/types.js";
 import { C, dropStrayControls, expandTabs, extractAnsiCode, normalizeFrameLine, resolveCarriageReturns, visibleWidth } from "../src/ui/core/utils.js";
 import { VtScreen } from "./harness/index.js";
 
@@ -44,6 +46,40 @@ function declaredTailBg(row: string): string {
 const rgbOf = (sgr: string): string => sgr.replace(/\x1b\[48;2;(\d+);(\d+);(\d+)m/, "$1,$2,$3");
 
 import { createSilentTerminal } from "./harness/index.js";
+
+it("full 与 delta 渲染最终产生相同的逐格屏幕和 cursor", () => {
+	const fullTerminal = createSilentTerminal(12, 5);
+	const deltaTerminal = createSilentTerminal(12, 5);
+	const fullRenderer = new MainScreenRenderer(fullTerminal.terminal);
+	const deltaRenderer = new MainScreenRenderer(deltaTerminal.terminal);
+	const frames = [
+		[`\x1b[38;2;1;2;3m\x1b[48;2;4;5;6m你好🙂A`, `cursor${CURSOR_MARKER} row`, "old tail"],
+		[`\x1b[38;2;1;2;3m\x1b[48;2;4;5;6m你好🙂B`, `cursor${CURSOR_MARKER} row`, "old tail"],
+		[`\x1b[38;2;1;2;3m\x1b[48;2;4;5;6m你好🙂B`, `cursor row${CURSOR_MARKER}`, "old tail"],
+		[`\x1b[38;2;1;2;3m\x1b[48;2;4;5;6m你好🙂B`, `cursor row${CURSOR_MARKER}`],
+	];
+
+	for (const frame of frames) {
+		fullRenderer.handleResize();
+		fullRenderer.renderFrame(frame);
+		deltaRenderer.renderFrame(frame);
+	}
+
+	expect(deltaTerminal.screen.grid).toEqual(fullTerminal.screen.grid);
+	expect([deltaTerminal.screen.row, deltaTerminal.screen.col, deltaTerminal.screen.fg, deltaTerminal.screen.bg])
+		.toEqual([fullTerminal.screen.row, fullTerminal.screen.col, fullTerminal.screen.fg, fullTerminal.screen.bg]);
+	expect(deltaTerminal.writes[2]).toMatch(/^\x1b\[2;\d+H\x1b\[\?25h$/);
+	expect(deltaTerminal.writes[3]).toContain("\x1b[J");
+});
+
+it("renderer 丢弃非 SGR 终端控制序列及其 payload", () => {
+	const fake = createSilentTerminal(20, 3);
+	const renderer = new MainScreenRenderer(fake.terminal);
+	renderer.renderFrame(["A\x1b[2J B\x1b]52;c;clipboard\x07C\x1bPdevice-data\x1b\\D"]);
+
+	expect(fake.screen.rowText(0)).toBe("A BCD");
+	expect(fake.writes[0]).not.toMatch(/\x1b\[2J|\x1b\]52|device-data/);
+});
 
 const fakeTerminal = () => createSilentTerminal(COLUMNS, ROWS);
 

@@ -4,6 +4,8 @@
  */
 
 import { UIHost, type UIHostOptions } from "./ui-host.js";
+import { installUIFeatures, type UIFeatureOptions } from "./features.js";
+import { TrajectoryProjection } from "./adapters/agent-events.js";
 
 import type { QueuedMessage } from "../agent/queue.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
@@ -12,9 +14,11 @@ import type { CompactionReplayDecoration } from "./components/transcript/transcr
 
 import type { HostEvent } from "../host/events.js";
 
+
 export type { HostEvent };
 
 export interface InteractiveTUIOptions extends UIHostOptions {
+	features?: UIFeatureOptions;
 	onDirectCommand?: (cmd: string) => void | Promise<void>;
 	onCompactRequest?: (instruction?: string) => void | Promise<void>;
 }
@@ -22,14 +26,14 @@ export interface InteractiveTUIOptions extends UIHostOptions {
 export class InteractiveTUI {
 	readonly host: UIHost;
 	private lineCallback?: (line: string, mode: "steer" | "followUp") => void;
-	private sigintCallback?: () => void;
+	private interactionCallback?: () => void;
 	private cancelCallback?: (source?: "escape" | "ctrl+c") => void;
-	private exitCallback?: () => void;
-	private forceExitCallback?: () => void;
 	private interruptAndDeliverCallback?: (text: string) => void;
 	private pullBackQueueCallback?: () => void;
 	private thinkingLevelCycleCallback?: () => void;
 	private currentThinkingId?: string;
+	readonly trajectoryProjection: TrajectoryProjection;
+	private readonly featureDisposer: () => void;
 	/** 工具事实只携带 callId：开始时刻由消费者自记，用于结算耗时。 */
 	private readonly toolStartedAt = new Map<string, number>();
 
@@ -48,6 +52,9 @@ export class InteractiveTUI {
 
 	constructor(options: InteractiveTUIOptions = {}) {
 		this.host = new UIHost(options);
+		const features = installUIFeatures(this.host, options.features);
+		this.trajectoryProjection = features.trajectory;
+		this.featureDisposer = features.dispose;
 
 		this.host.onUserLine = (line, mode) => {
 			const m = mode === "direct" ? "steer" : mode;
@@ -57,20 +64,7 @@ export class InteractiveTUI {
 		this.host.onCancel = (source) => {
 			this.cancelCallback?.(source);
 		};
-
-		this.host.onExit = () => {
-			this.exitCallback?.();
-		};
-
-		this.host.onInterrupt = (force) => {
-			if (force) {
-				this.forceExitCallback?.();
-			} else {
-				if (!this.cancelCallback) {
-					this.sigintCallback?.();
-				}
-			}
-		};
+		this.host.onInteraction = () => this.interactionCallback?.();
 
 		this.host.onInterruptAndDeliver = (text) => {
 			this.interruptAndDeliverCallback?.(text);
@@ -90,9 +84,6 @@ export class InteractiveTUI {
 		return this.host.ctxUI;
 	}
 
-	openHistory(): void {
-		this.host.openHistory();
-	}
 
 	start(): void {
 		this.host.start();
@@ -102,20 +93,12 @@ export class InteractiveTUI {
 		this.lineCallback = cb;
 	}
 
-	onSIGINT(cb: () => void): void {
-		this.sigintCallback = cb;
+	onInteraction(cb: () => void): void {
+		this.interactionCallback = cb;
 	}
 
 	onCancel(cb: (source?: "escape" | "ctrl+c") => void): void {
 		this.cancelCallback = cb;
-	}
-
-	onExit(cb: () => void): void {
-		this.exitCallback = cb;
-	}
-
-	onForceExit(cb: () => void): void {
-		this.forceExitCallback = cb;
 	}
 
 	onInterruptAndDeliver(cb: (text: string) => void): void {
@@ -147,7 +130,15 @@ export class InteractiveTUI {
 	}
 
 	render(m: HostEvent): void {
-		switch (m.type) {
+			switch (m.type) {
+			case "model_select":
+				this.host.setModel(m.model);
+				break;
+
+			case "thinking_level_select":
+				this.host.setReasoningEffort(m.level);
+				break;
+
 			case "session_rewind":
 				this.currentThinkingId = undefined;
 				this.host.transcript.clear();
@@ -167,7 +158,7 @@ export class InteractiveTUI {
 				this.host.markUsageEstimated();
 				this.host.setBusy(true);
 				this.host.transcript.startTurn(m.turnNumber, m.userText, m.images);
-				this.host.trajectoryProjection.onTurnStart(m.turnNumber, m.userText);
+				this.trajectoryProjection.onTurnStart(m.turnNumber, m.userText);
 				this.host.activityLine.start("thinking", "正在思考与生成回复...");
 				this.host.requestRender();
 				break;
@@ -183,6 +174,19 @@ export class InteractiveTUI {
 				this.host.setContext(m.snapshot);
 				break;
 
+			case "session_compact":
+				if (m.status === "completed") {
+					this.host.addCompaction({
+						status: m.status,
+						summary: m.summary ?? "会话已压缩",
+						retainedTailEntries: m.retainedTailEntries ?? 0,
+						tokensBefore: m.tokensBefore ?? 0,
+						collapsed: true,
+					});
+					this.trajectoryProjection.onCompaction(m.summary ?? "会话已压缩", m.tokensBefore ?? 0);
+				}
+				break;
+
 			case "provider_retry":
 				this.host.setProviderRetryMessage(`${m.provider} 连接失败（${m.status === undefined ? m.reason : `HTTP ${m.status}`}），${(m.delayMs / 1000).toFixed(1)} 秒后重试，第 ${m.attempt} 次`);
 				this.host.notify(`正在重试 ${m.provider}（第 ${m.attempt} 次，${(m.delayMs / 1000).toFixed(1)} 秒后）`, "warning", Math.min(3000, Math.max(1000, m.delayMs)));
@@ -196,7 +200,7 @@ export class InteractiveTUI {
 			case "output_update":
 				if (m.channel === "thinking") {
 					if (!this.currentThinkingId) {
-						this.currentThinkingId = this.host.trajectoryProjection.onThinkingStart("深度推理");
+						this.currentThinkingId = this.trajectoryProjection.onThinkingStart("深度推理");
 					}
 					this.host.transcript.appendThinking(m.text);
 					// 思考 token 也是「生成」，必须进解码区间：服务端报回的 outputTokens 是
@@ -209,7 +213,7 @@ export class InteractiveTUI {
 				}
 				if (m.channel !== "content") break;
 				if (this.currentThinkingId) {
-					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
+					this.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
 				}
 				this.host.transcript.appendToken(m.text);
@@ -222,14 +226,14 @@ export class InteractiveTUI {
 				// 模型调用到此结束，结算这一步的解码区间与输出量；接下来的工具执行时间不计入生成速度。
 				this.host.activityLine.endStep();
 				if (this.currentThinkingId) {
-					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
+					this.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
 				}
 				if (m.callId) this.toolStartedAt.set(m.callId, Date.now());
 				const callId = m.callId ?? `tool-${m.toolName}-${Date.now()}`;
 				this.host.transcript.smoothReveal.snapToLatest();
 				this.host.transcript.startTool(m.toolName, m.args, callId);
-				this.host.trajectoryProjection.onToolStart(m.toolName, m.args, callId);
+				this.trajectoryProjection.onToolStart(m.toolName, m.args, callId);
 				this.host.activityLine.update("tool", `正在执行工具: ${m.toolName}`);
 				this.syncToolAnimationTimer();
 				this.host.requestRender();
@@ -242,7 +246,7 @@ export class InteractiveTUI {
 				if (m.callId !== undefined) this.toolStartedAt.delete(m.callId);
 				const elapsed = startedAt === undefined ? 0 : Date.now() - startedAt;
 				this.host.transcript.addToolDone(m.toolName, m.result, elapsed, m.status, m.callId, m.args, { images: m.images ? [...m.images] : undefined, details: m.details });
-				this.host.trajectoryProjection.onToolDone(m.callId ?? "", m.toolName, m.result, elapsed, m.status);
+				this.trajectoryProjection.onToolDone(m.callId ?? "", m.toolName, m.result, elapsed, m.status);
 				this.host.activityLine.update("streaming", `工具 ${m.toolName} 执行完毕，继续生成...`);
 				this.syncToolAnimationTimer();
 				this.host.requestRender();
@@ -252,13 +256,13 @@ export class InteractiveTUI {
 			case "turn_end":
 				this.host.setProviderRetryMessage();
 				if (this.currentThinkingId) {
-					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
+					this.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
 				}
 				this.stopToolAnimationTimer();
 				this.host.setBusy(false);
 				this.host.transcript.finishTurn();
-				this.host.trajectoryProjection.onTurnEnd(m.turnNumber, m.requestUsage);
+				this.trajectoryProjection.onTurnEnd(m.turnNumber, m.requestUsage);
 				const elapsed = this.host.getLastElapsedMs();
 				const history = this.host.transcript.getHistory();
 				const lastTurn = history[history.length - 1];
@@ -274,7 +278,7 @@ export class InteractiveTUI {
 			case "turn_aborted":
 				this.host.setProviderRetryMessage();
 				if (this.currentThinkingId) {
-					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
+					this.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
 				}
 				this.stopToolAnimationTimer();
@@ -292,13 +296,13 @@ export class InteractiveTUI {
 			case "error":
 				this.host.setProviderRetryMessage();
 				if (this.currentThinkingId) {
-					this.host.trajectoryProjection.onThinkingDone(this.currentThinkingId);
+					this.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
 				}
 				this.stopToolAnimationTimer();
 				this.host.setBusy(false);
 				this.host.transcript.addError(m.text);
-				this.host.trajectoryProjection.onError(m.text);
+				this.trajectoryProjection.onError(m.text);
 				this.host.activityLine.reset();
 				this.host.requestRender();
 				break;
@@ -311,6 +315,7 @@ export class InteractiveTUI {
 
 	close(): void {
 		this.stopToolAnimationTimer();
+		this.featureDisposer();
 		this.host.stop();
 	}
 }

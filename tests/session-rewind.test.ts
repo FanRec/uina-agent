@@ -4,7 +4,7 @@ import { createSessionAccess } from "../src/session/access.js";
 import { commitRewindTransition } from "../src/agent/rewind.js";
 import { resolveProjectionPolicy } from "../src/agent/projection.js";
 import { projectAgentHistory, protectRewindContext, summarizeAbandonedEffects, projectInputMessage } from "../src/session/recovery.js";
-import { BranchInspectorOverlay } from "../src/ui/components/overlays/branch-inspector.js";
+import { BranchInspectorOverlay } from "../src/ui/features/overlays/branch-inspector.js";
 import { listSessionBranches, listSessionNodes, readSessionBranch, readSessionNode } from "../src/session/navigation.js";
 import { join } from "node:path";
 

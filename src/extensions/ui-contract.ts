@@ -3,7 +3,6 @@
  */
 
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "../ui/core/types.js";
-import type { ContextSnapshot, ThinkingLevel } from "../core/types.js";
 export type { Component, OverlayHandle, OverlayOptions, WidgetPlacement };
 
 /** 模型选择器的一组条目（provider 分组）。官方 /model 命令与选择器共享此形状。 */
@@ -48,22 +47,27 @@ export type MessageRenderer<T = unknown> = (
 export interface LocalCommand {
 	name: string;
 	description: string;
+	keybinding?: string;
 	argumentHint?: string;
 	tag?: string;
 	hasArgs?: boolean;
 	handler?: (args: string) => void | Promise<void>;
 }
 
+export interface PromptOptions {
+	signal?: AbortSignal;
+}
+
 /** 扩展可访问的窄 UI 接口 */
 export interface ExtensionUIContext {
 	/** 显示选择器对话框并返回用户选择项 */
-	select(title: string, options: string[]): Promise<string | undefined>;
+	select(title: string, options: string[], promptOptions?: PromptOptions): Promise<string | undefined>;
 
 	/** 显示确认对话框 */
-	confirm(title: string, message: string): Promise<boolean>;
+	confirm(title: string, message: string, promptOptions?: PromptOptions): Promise<boolean>;
 
 	/** 显示单行文本输入对话框 */
-	input(title: string, placeholder?: string): Promise<string | undefined>;
+	input(title: string, placeholder?: string, promptOptions?: PromptOptions): Promise<string | undefined>;
 
 	/** 向用户发送瞬态通知（悬浮于输入框右上角呼吸空隙，零高度不污染历史） */
 	notify(message: string, type?: "info" | "warning" | "error", timeoutMs?: number): void;
@@ -74,11 +78,8 @@ export interface ExtensionUIContext {
 	/** 设置状态栏/底栏文本（传 undefined 表示清除） */
 	setStatus(key: string, text: string | undefined): void;
 
-	/** 设置流式运行期间的动态工作消息 */
-	setWorkingMessage(message?: string): void;
-
-	/** 显隐运行指示器 */
-	setWorkingVisible(visible: boolean): void;
+	/** 设置由当前扩展拥有的原子工作指示器；undefined 删除该指示器。 */
+	setWorking(key: string, message: string | undefined): void;
 
 	/** 挂载或更新小部件 */
 	setWidget(
@@ -118,39 +119,13 @@ export interface ExtensionUIContext {
 	 * 而不是把 undefined/false 当成用户的选择（Pi: ExtensionUIContext.hasUI）。 */
 	hasUI(): boolean;
 
-	// —— 消费者可选富能力（官方内置命令与项目扩展同一张脸；不支持的消费者留空即可）——
-
-	/** 打开帮助菜单（快捷键总览） */
-	openHelpMenu?(): void;
-	/** 展开/折叠深度思考过程 */
+	openFeature?(name: string, payload?: unknown): boolean;
 	toggleThinking?(): void;
-	/** 清空当前屏幕转录流 */
 	clearTranscript?(): void;
-	/** 打开模型选择面板（两级 provider 下钻）；onPick 回传复合键 providerId/modelId */
-	openModelPicker?(currentModel: string, groups: ModelPickerGroup[], onPick: (name: string) => Promise<void> | void): void;
-	/** 打开思考强度滑杆 */
-	openEffortSlider?(currentLevel: ThinkingLevel | undefined, declaredLevels: ThinkingLevel[], onChange: (level: ThinkingLevel) => void): void;
-	/** 后台任务看板 */
-	openTasks?(): void;
-	/** 子代理看板 */
-	openSubagents?(): void;
-	/** 审计轨迹时序看板 */
-	openTrajectory?(): void;
-	/** 会话历史分支看板 */
-	openHistory?(): void;
-	/** 底栏模型名同步 */
-	setModel?(name: string): void;
-	/** 底栏思考档位元数据同步 */
-	setThinkingLevels?(levels?: readonly ThinkingLevel[]): void;
-	/** 底栏当前思考档位同步 */
-	setReasoningEffort?(level?: ThinkingLevel): void;
-	/** 当前模型语义 RequestProjection 的上下文快照。 */
-	setContext?(snapshot: ContextSnapshot): void;
+
 	/** 右侧导航轨滑块样式 */
 	getScrollbarThumbStyle?(): "slim" | "block" | "wide";
 	setScrollbarThumbStyle?(style: "slim" | "block" | "wide"): void;
-	/** 转录流追加一条折叠的压缩摘要卡片 */
-	addCompaction?(record: { status?: "completed" | "failed" | "cancelled" | "noop"; summary: string; retainedTailEntries?: number; tokensBefore: number; collapsed: boolean }): void;
 }
 
 /** A pure view of one tool invocation; execution and persisted facts remain outside UI. */

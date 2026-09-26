@@ -8,7 +8,7 @@ import type {
 	HotspotRow,
 	TrajectoryEventSource,
 	TrajectoryNode,
-} from "../components/overlays/trajectory-scene.js";
+} from "../features/overlays/trajectory-scene.js";
 
 export class TrajectoryProjection implements TrajectoryEventSource {
 	private readonly nodes: TrajectoryNode[] = [];

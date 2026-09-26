@@ -17,6 +17,7 @@
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
     "test": "vitest run",
     "typecheck": "pnpm check:boundaries && tsc --noEmit",
+    "dev:baseline": "node dev/baseline.mjs",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "verify:cli": "tsx scripts/verify-built-cli.mts",
     "verify:file-events": "tsx scripts/verify-file-events.mts",

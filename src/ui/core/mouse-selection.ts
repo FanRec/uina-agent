@@ -110,6 +110,13 @@ export class MouseSelectionTracker {
 		this.focus = { col: clampedCol, row: clampedRow, contentRow };
 	}
 
+	updateFocusForScroll(scrollStart: number): void {
+		this.currentScrollStart = scrollStart;
+		if (!this.focus || !this.activeRegion || this.activeRegion.id !== "transcript") return;
+		const contentRow = scrollStart + this.focus.row - this.activeRegion.startRow;
+		this.updateFocusContent(contentRow, this.focus.row, this.focus.col);
+	}
+
 	setSelectableRegions(regions: readonly SelectableRegion[]): void {
 		this.regions = [...regions];
 	}

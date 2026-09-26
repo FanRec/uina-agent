@@ -9,7 +9,7 @@
  */
 
 import { CURSOR_MARKER } from "./types.js";
-import { normalizeFrameLine, truncateToWidth, visibleWidth } from "./utils.js";
+import { extractAnsiCode, normalizeFrameLine, truncateToWidth, visibleWidth } from "./utils.js";
 import type { ProcessTerminal } from "./terminal.js";
 
 export interface CursorPosition {
@@ -18,13 +18,18 @@ export interface CursorPosition {
 }
 
 export class MainScreenRenderer {
+	private previousPhysicalRows: string[] | null = null;
+	private previousWidth = 0;
+	private previousCursor: CursorPosition | null = null;
+	private invalidated = true;
+
 	constructor(private readonly terminal: ProcessTerminal) {}
 
 	/**
 	 * 终端尺寸变更响应
 	 */
 	handleResize(_newWidth?: number): void {
-		// 由下一次 requestRender 执行原子全帧重绘
+		this.invalidated = true;
 	}
 
 	/**
@@ -32,7 +37,6 @@ export class MainScreenRenderer {
 	 * 保证 rows 的总高度恒定撑满视口，输入框永远锁定吸附在最底端 [rows.length - inputH, rows.length - 1]
 	 */
 	renderFrame(rows: string[]): void {
-		let frame = "\x1b[H"; // 硬件光标绝对归位至视口左上角 (1, 1)
 		let cursorPos: CursorPosition | null = null;
 		// Every emitted row must fit the terminal, otherwise the terminal wraps it
 		// and the whole frame shifts (Pi: tui-main-screen.ts rendered-width check).
@@ -41,6 +45,7 @@ export class MainScreenRenderer {
 		// overlap) or the default background (a hole in a card background).
 		const width = Math.max(1, this.terminal.columns);
 
+		const physicalRows: string[] = [];
 		for (let r = 0; r < rows.length; r++) {
 			const line = rows[r]!;
 			const markerIndex = line.indexOf(CURSOR_MARKER);
@@ -58,28 +63,103 @@ export class MainScreenRenderer {
 			// Windows Terminal 会把下一行涂黑（真机黑条）。而正常路径每行已 pad 到
 			// 满宽，无需 erase。统一改为截断后重新绝对定位到行尾列再 \x1b[K，
 			// 使光标离开 pending-wrap 状态；尾部残留列由 K 以当前 bg 涂刷。
-			const fitted = this.fitToWidth(normalizeFrameLine(cleanLine), width);
+			physicalRows.push(this.fitToWidth(normalizeFrameLine(this.sanitizeRow(cleanLine)), width));
+		}
+
+		const fullRender = this.invalidated || this.previousPhysicalRows === null || this.previousWidth !== width;
+		let frame = fullRender ? "\x1b[H" : "";
+		const changedRows = fullRender
+			? physicalRows.map((_row, index) => index)
+			: physicalRows.reduce<number[]>((result, row, index) => {
+				if (this.previousPhysicalRows?.[index] !== row) result.push(index);
+				return result;
+			}, []);
+		for (const index of changedRows) {
+			const fitted = physicalRows[index]!;
 			const fittedW = visibleWidth(fitted);
-			frame += `\x1b[${r + 1};1H` + fitted;
-			if (fittedW < width) {
-				// 内容不足满宽：以当前 bg 涂掉剩余列（避免 pending-wrap + K 异常）
-				frame += `\x1b[K`;
-			} else {
-				frame += `\x1b[${r + 1};${width}H\x1b[K`;
-			}
+			frame += `\x1b[${index + 1};1H\x1b[0m${fitted}`;
+			if (fittedW < width) frame += "\x1b[0m\x1b[K";
+			else frame += `\x1b[${index + 1};${width}H\x1b[0m\x1b[K`;
+		}
+		const clearedTail = Boolean(this.previousPhysicalRows && this.previousPhysicalRows.length > physicalRows.length);
+		if (clearedTail) {
+			frame += `\x1b[${physicalRows.length + 1};1H\x1b[0m\x1b[J`;
 		}
 
 		// 硬件光标精确定位至输入框焦点所在行列，唤起原生系统 IME 候选框
-		if (cursorPos) {
+		const cursorChanged = fullRender || !sameCursor(this.previousCursor, cursorPos);
+		if (cursorPos && (cursorChanged || fullRender || changedRows.length > 0 || clearedTail)) {
 			frame += `\x1b[${cursorPos.row + 1};${cursorPos.col}H\x1b[?25h`;
-		} else {
+		} else if (!cursorPos && cursorChanged) {
 			frame += "\x1b[?25l";
 		}
 
-		this.terminal.syncWrite(frame);
+		if (frame.length > 0) this.terminal.syncWrite(frame);
+		const snapshotTerminal = this.terminal as ProcessTerminal & { recordLogicalFrameSnapshot?: (frame: string) => void };
+		if (snapshotTerminal.recordLogicalFrameSnapshot) {
+			let snapshot = "\x1b[H";
+			for (let index = 0; index < physicalRows.length; index++) {
+				const row = physicalRows[index]!;
+				snapshot += `\x1b[${index + 1};1H\x1b[0m${row}`;
+				snapshot += visibleWidth(row) < width ? "\x1b[0m\x1b[K" : `\x1b[${index + 1};${width}H\x1b[0m\x1b[K`;
+			}
+			snapshot += cursorPos ? `\x1b[${cursorPos.row + 1};${cursorPos.col}H\x1b[?25h` : "\x1b[?25l";
+			snapshotTerminal.recordLogicalFrameSnapshot(snapshot);
+		}
+		this.previousPhysicalRows = physicalRows;
+		this.previousWidth = width;
+		this.previousCursor = cursorPos;
+		this.invalidated = false;
+	}
+
+	private sanitizeRow(line: string): string {
+		let out = "";
+		let index = 0;
+		while (index < line.length) {
+			const ansi = extractAnsiCode(line, index);
+			if (ansi) {
+				if (/^\x1b\[[0-9;]*m$/.test(ansi.code)) out += ansi.code;
+				index += ansi.length;
+				continue;
+			}
+			if (line[index] === "\x1b") {
+				index = skipControlSequence(line, index);
+				continue;
+			}
+			const code = line.charCodeAt(index);
+			if (code > 0x1f && code !== 0x7f && !(code >= 0x80 && code <= 0x9f)) out += line[index];
+			index++;
+		}
+		return out;
 	}
 
 	private fitToWidth(line: string, width: number): string {
 		return visibleWidth(line) > width ? truncateToWidth(line, width, "") : line;
 	}
+}
+
+function sameCursor(a: CursorPosition | null, b: CursorPosition | null): boolean {
+	return a?.row === b?.row && a?.col === b?.col;
+}
+
+function skipControlSequence(text: string, start: number): number {
+	const introducer = text[start + 1];
+	if (introducer === "[") {
+		let index = start + 2;
+		while (index < text.length) {
+			const code = text.charCodeAt(index++);
+			if (code >= 0x40 && code <= 0x7e) break;
+		}
+		return index;
+	}
+	if (introducer === "]" || introducer === "_" || introducer === "P" || introducer === "^" || introducer === "X") {
+		let index = start + 2;
+		while (index < text.length) {
+			if (text[index] === "\x07") return index + 1;
+			if (text[index] === "\x1b" && text[index + 1] === "\\") return index + 2;
+			index++;
+		}
+		return index;
+	}
+	return Math.min(text.length, start + 2);
 }

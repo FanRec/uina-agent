@@ -58,7 +58,7 @@ import {
 	ModelPicker,
 	EffortSlider,
 	HelpMenu,
-} from "../src/ui/components/overlays/index.js";
+} from "../src/ui/features/overlays/index.js";
 import { getStartupBanner } from "../src/ui/components/primitives/banner.js";
 import { calculateContextSegments } from "../src/agent/context.js";
 import { combineQueuedDraft } from "../src/cli/draft.js";
@@ -70,6 +70,7 @@ import { createSubagentAdapter } from "../src/ui/adapters/subagents.js";
 import { TrajectoryProjection } from "../src/ui/adapters/agent-events.js";
 import { createInteractiveUI, InteractiveTUI } from "../src/ui/tui.js";
 import { UIHost } from "../src/ui/ui-host.js";
+import { installUIFeatures } from "../src/ui/features.js";
 
 describe("UI Core: Utils", () => {
 	it("正确计算包含中文与 ANSI 样式的可见字符宽度", () => {
@@ -125,7 +126,7 @@ describe("UI Core: Container & Focus & Overlay & Slots", () => {
 		expect(container.render(80)).toEqual(["lineB1"]);
 	});
 
-	it("FocusManager 焦点转移与 CURSOR_MARKER 提取", () => {
+	it("FocusManager 在焦点转移时更新组件焦点状态", () => {
 		const focusManager = new FocusManager();
 		const comp1 = { focused: false, render: () => [] };
 		const comp2 = { focused: false, render: () => [] };
@@ -137,15 +138,6 @@ describe("UI Core: Container & Focus & Overlay & Slots", () => {
 		expect(comp1.focused).toBe(false);
 		expect(comp2.focused).toBe(true);
 
-		const rawLines = [
-			"Top line text",
-			`Prompt > input text${CURSOR_MARKER}`,
-			"Bottom line text",
-		];
-		const { cleanLines, cursor } = focusManager.extractCursor(rawLines);
-		expect(cursor).toEqual({ row: 1, col: visibleWidth("Prompt > input text") + 1 });
-		expect(cleanLines[1]).toBe("Prompt > input text");
-		expect(cleanLines[1]).not.toContain(CURSOR_MARKER);
 	});
 
 	it("OverlayStack 覆盖层管理：堆叠、焦点返还与 renderAbove", () => {
@@ -199,6 +191,33 @@ describe("UI Core: Container & Focus & Overlay & Slots", () => {
 });
 
 describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
+	it("LocalCommand keybinding 仅在 capturing overlay 之后通用分发", () => {
+		const registry = new ExtensionRegistry();
+		let commandCalls = 0;
+		let overlayInput = "";
+		registry.registerCommand({
+			name: "keybinding-probe",
+			description: "test",
+			keybinding: "alt+j",
+			handler: () => { commandCalls++; },
+		} as any);
+		const harness = createTestTUI({ registry });
+		try {
+			harness.tui.host.showOverlay({
+				render: () => [],
+				handleInput: (data) => { overlayInput = data; },
+			});
+			harness.host.handleInput("\x1bj");
+			expect(overlayInput).toBe("\x1bj");
+			expect(commandCalls).toBe(0);
+			harness.tui.host.overlayStack.clear();
+			harness.host.handleInput("\x1bj");
+			expect(commandCalls).toBe(1);
+		} finally {
+			harness.dispose();
+		}
+	});
+
 	it("CustomMessageComponent 支持动态注册的 MessageRenderer 与默认兜底", () => {
 		const registry = new ExtensionRegistry();
 
@@ -266,8 +285,7 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 		const hostPort = {
 			notify: vi.fn(),
 			setStatus: vi.fn(),
-			setWorkingMessage: vi.fn(),
-			setWorkingVisible: vi.fn(),
+			setWorking: vi.fn(),
 			setWidget: vi.fn(),
 			setHeader: vi.fn(),
 			setFooter: vi.fn(),
@@ -287,8 +305,8 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 		ctx.setStatus("model", "gpt-4o");
 		expect(hostPort.setStatus).toHaveBeenCalledWith("model", "gpt-4o");
 
-		ctx.setWorkingMessage("searching...");
-		expect(hostPort.setWorkingMessage).toHaveBeenCalledWith("searching...");
+		ctx.setWorking("search", "searching...");
+		expect(hostPort.setWorking).toHaveBeenCalledWith("search", "searching...");
 
 		expect(ctx.getEditorText()).toBe("current-text");
 	});
@@ -480,8 +498,7 @@ describe("UI Components & Visual Rendering", () => {
 		const host = new UIHost({ terminal: terminal.terminal });
 		try {
 			host.start();
-			host.setWorkingMessage("正在压缩上下文：生成历史摘要");
-			host.setWorkingVisible(true);
+			host.setWorking("compaction", "正在压缩上下文：生成历史摘要");
 			await vi.advanceTimersByTimeAsync(1_500);
 
 			const header = terminal.getVisibleText();
@@ -496,12 +513,11 @@ describe("UI Components & Visual Rendering", () => {
 	it("压缩仍在运行时普通回合结束不能停止压缩心跳", () => {
 		const host = new UIHost();
 		try {
-			host.setWorkingMessage("正在压缩上下文：验证压缩后上下文");
-			host.setWorkingVisible(true);
+			host.setWorking("compaction", "正在压缩上下文：验证压缩后上下文");
 			expect(host.getHeartbeatActiveForTest()).toBe(true);
 			host.setBusy(false);
 			expect(host.getHeartbeatActiveForTest()).toBe(true);
-		} finally { host.setWorkingVisible(false); }
+		} finally { host.setWorking("compaction", undefined); }
 	});
 
 	it("后台压缩无需鼠标输入也会持续刷新画面上的耗时", async () => {
@@ -511,8 +527,7 @@ describe("UI Components & Visual Rendering", () => {
 		const host = new UIHost({ terminal: terminal.terminal });
 		try {
 			host.start();
-			host.setWorkingMessage("正在压缩上下文：写入检查点");
-			host.setWorkingVisible(true);
+			host.setWorking("compaction", "正在压缩上下文：写入检查点");
 			host.setBusy(false);
 			await vi.advanceTimersByTimeAsync(1_200);
 			expect(terminal.getVisibleText()).toContain("1.2s");
@@ -529,12 +544,11 @@ describe("UI Components & Visual Rendering", () => {
 		const host = new UIHost({ terminal: terminal.terminal });
 		try {
 			host.start();
-			host.setWorkingMessage("正在压缩上下文：生成摘要");
-			host.setWorkingVisible(true);
+			host.setWorking("compaction", "正在压缩上下文：生成摘要");
 			await vi.advanceTimersByTimeAsync(50);
 			vi.setSystemTime(new Date("2026-01-01T00:01:00.000Z"));
 			host.activityLine.reset();
-			host.setWorkingMessage("正在压缩上下文：写入检查点");
+			host.setWorking("compaction", "正在压缩上下文：写入检查点");
 			await vi.advanceTimersByTimeAsync(50);
 			expect(terminal.getVisibleText()).toContain("60.0s");
 		} finally {
@@ -566,9 +580,8 @@ describe("UI Components & Visual Rendering", () => {
 
 	it("压缩完成后不留下静止的正在压缩状态", () => {
 		const host = new UIHost();
-		host.setWorkingMessage("正在压缩上下文：写入检查点");
-		host.setWorkingVisible(true);
-		host.setWorkingVisible(false);
+		host.setWorking("compaction", "正在压缩上下文：写入检查点");
+		host.setWorking("compaction", undefined);
 		expect(host.getHeartbeatActiveForTest()).toBe(false);
 		expect(host.activityLine.getHeaderString()).toBe("");
 	});
@@ -584,12 +597,11 @@ describe("UI Components & Visual Rendering", () => {
 			host.activityLine.addStreamText("hello world");
 			host.activityLine.finish("本轮已完成", 1_234);
 			const before = stripAnsi(host.activityLine.getHeaderString(80));
-			host.setWorkingMessage("正在压缩上下文：生成摘要");
-			host.setWorkingVisible(true);
+		host.setWorking("compaction", "正在压缩上下文：生成摘要");
 			await vi.advanceTimersByTimeAsync(1_500);
 			expect(terminal.getVisibleText()).toContain("正在压缩上下文：生成摘要");
 			expect(terminal.getVisibleText()).toContain("1.5s");
-			host.setWorkingVisible(false);
+		host.setWorking("compaction", undefined);
 			await vi.advanceTimersByTimeAsync(50);
 			expect(stripAnsi(host.activityLine.getHeaderString(80))).toBe(before);
 			expect(terminal.getVisibleText()).toContain("本轮已完成");
@@ -609,13 +621,12 @@ describe("UI Components & Visual Rendering", () => {
 			host.start();
 			host.setBusy(true);
 			host.activityLine.start("thinking", "正在思考与生成回复...");
-			host.setWorkingMessage("正在压缩上下文：重建请求");
-			host.setWorkingVisible(true);
+		host.setWorking("compaction", "正在压缩上下文：重建请求");
 			host.activityLine.update("tool", "正在执行工具: echo");
 			await vi.advanceTimersByTimeAsync(1_200);
 			expect(terminal.getVisibleText()).toContain("正在压缩上下文：重建请求");
 			expect(terminal.getVisibleText()).not.toContain("正在执行工具: echo");
-			host.setWorkingVisible(false);
+		host.setWorking("compaction", undefined);
 			await vi.advanceTimersByTimeAsync(50);
 			expect(terminal.getVisibleText()).toContain("正在执行工具: echo");
 		} finally {
@@ -629,9 +640,8 @@ describe("UI Components & Visual Rendering", () => {
 		try {
 			host.setBusy(true);
 			host.activityLine.start("thinking", "正在思考与生成回复...");
-			host.setWorkingMessage("正在压缩上下文：写入检查点");
-			host.setWorkingVisible(true);
-			host.setWorkingVisible(false);
+		host.setWorking("compaction", "正在压缩上下文：写入检查点");
+		host.setWorking("compaction", undefined);
 			expect(stripAnsi(host.activityLine.getHeaderString())).toContain("正在思考与生成回复");
 			expect(host.getHeartbeatActiveForTest()).toBe(true);
 		} finally { host.setBusy(false); }
@@ -1509,6 +1519,21 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		expect(copiedLineCount).toBe(16);
 	});
 
+	it("自动滚动后按新 viewport 更新拖选 focus 的 content row", async () => {
+		const { MouseSelectionTracker } = await import("../src/ui/core/mouse-selection.js");
+		const tracker = new MouseSelectionTracker();
+		const permanentLines = Array.from({ length: 30 }, (_, i) => `row ${i} contents`);
+		tracker.setSelectableRegions([{ id: "transcript", startRow: 0, endRow: 9, colStart: 0, colEnd: 60 }]);
+		tracker.setScrollContext(10);
+		tracker.handleInput("\x1b[<0;1;6M", permanentLines.slice(10, 20));
+		tracker.handleInput("\x1b[<32;4;10M", permanentLines.slice(10, 20));
+
+		tracker.setScrollContext(11);
+		tracker.updateFocusForScroll(11);
+		const highlighted = tracker.applyHighlight(permanentLines.slice(11, 21), 11);
+		expect(highlighted[9]).toContain("\x1b[48;2;59;74;102m");
+	});
+
 	it("TimelineRail 导航轨刻度与 Hover 气泡卡片生成", async () => {
 		const { TimelineRailComponent } = await import("../src/ui/components/widgets/timeline-rail.js");
 		const rail = new TimelineRailComponent();
@@ -1562,9 +1587,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			harness.host.handleInput("\x03"); // Ctrl+C
 			expect(harness.host.inputLine.getText()).toBe("");
 			expect(cancelCalled).toBe(false);
-			expect((harness.host as any).exitPending).toBe(false);
 
-			// 输入框已清空后，Ctrl+C 直接发送取消/退出意图；不由 UI 复制 exitPending。
+			// 输入框已清空后，UI 将 Ctrl+C 意图发送给组合根。
 			harness.host.handleInput("\x03");
 			expect(cancelCalled).toBe(true);
 		} finally {
@@ -1626,23 +1650,65 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					onResize: () => {},
 				} as any,
 			});
+			installUIFeatures(host);
 
 			let changed: string = "";
-			// 模拟 builtin.ts 中执行 /effort 打开滑块传入 declaredLevels 字符串数组
-			host.openEffortSlider("off", ["off", "high", "max"] as any, (level) => {
-				changed = level;
-			});
+			// 模拟 builtin.ts 中执行 /effort 打开滑块传入 declaredLevels 字符串数组			installUIFeatures(host);
+			host.openFeature("effort-slider", { currentLevel: "off", tiers: ["off", "high", "max"], onChange: (level: string) => { changed = level; } });
 
-			// 按右箭头切换档位，验证绝不抛出 TypeError: Cannot read properties of undefined (reading 'toLowerCase')
-			expect(() => {
-				host.handleInput("\x1b[C"); // Key.right
-			}).not.toThrow();
-
+			expect(() => host.handleInput("\x1b[C")).not.toThrow();
 			expect(changed).toBe("high");
 			expect(host.getReasoningEffort()).toBe("high");
+			expect(() => host.setReasoningEffort(undefined)).not.toThrow();
+		});
 
-			// 验证 setReasoningEffort 传入 undefined/空值安全守卫
-			expect(() => host.setReasoningEffort(undefined as any)).not.toThrow();
+		it("InteractiveTUI 从 RuntimeEvent 投影模型、思考档位和压缩事实", () => {
+			const tui = new InteractiveTUI({ thinkingLevels: ["high"] });
+			tui.render({ type: "model_select", model: "provider/new-model" });
+			tui.render({ type: "thinking_level_select", level: "high" });
+			tui.render({
+				type: "session_compact",
+				operationId: "compact-1",
+				status: "completed",
+				summary: "compacted summary",
+				retainedTailEntries: 2,
+				tokensBefore: 5000,
+			});
+
+			expect(tui.host.modelName).toBe("provider/new-model");
+			expect(tui.host.getReasoningEffort()).toBe("high");
+			expect(tui.host.transcript.render(80).join("\n")).toContain("compacted summary");
+			expect(tui.trajectoryProjection.list().some((node) => node.kind === "compaction")).toBe(true);
+			tui.close();
+		});
+
+		it("ExtensionUIContext: caller abort closes select, confirm, and input overlays before settling", async () => {
+			const active = new Set<() => void>();
+			const ctx = createExtensionUIContext({
+				showOverlay: (_component: unknown, _options: unknown, dispose?: () => void) => {
+					let visible = true;
+					const hide = () => {
+						if (!visible) return;
+						visible = false;
+						active.delete(hide);
+						dispose?.();
+					};
+					active.add(hide);
+					return { hide, isHidden: () => !visible };
+				},
+				requestRender: () => {},
+			} as never);
+
+			const controllers = [new AbortController(), new AbortController(), new AbortController()];
+			const pending = [
+				ctx.select("select", ["a"], { signal: controllers[0]!.signal }),
+				ctx.confirm("confirm", "continue?", { signal: controllers[1]!.signal }),
+				ctx.input("input", "value", { signal: controllers[2]!.signal }),
+			];
+			expect(active.size).toBe(3);
+			for (const controller of controllers) controller.abort();
+			expect(await Promise.all(pending)).toEqual([undefined, false, undefined]);
+			expect(active.size).toBe(0);
 		});
 
 		it("TranscriptContainer 严格保证思考、文本、运行中工具与完成工具的时间序节点流", () => {
@@ -2320,6 +2386,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					onResize: () => {},
 				} as any,
 			});
+			installUIFeatures(host);
 
 			// 1. 空行按 '?' -> 唤起 HelpMenu 浮层
 			expect((host as any).inputLine.getText()).toBe("");
@@ -2394,20 +2461,15 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				requestUsage: { callId: "call-1", totalTokens: 500 },
 			});
 
-			const nodes = tui.host.trajectoryProjection.list();
+			const nodes = tui.trajectoryProjection.list();
 			expect(nodes.some((n) => n.kind === "turn_start")).toBe(true);
 			expect(nodes.some((n) => n.kind === "thinking" && n.status === "completed")).toBe(true);
 			expect(nodes.some((n) => n.kind === "tool_call" && n.status === "completed")).toBe(true);
 			expect(nodes.some((n) => n.kind === "model_stream" && n.status === "completed")).toBe(true);
 
 			// 测试压缩时轨迹同步
-			tui.host.addCompaction({
-				summary: "历史压缩摘要",
-				retainedTailEntries: 1,
-				tokensBefore: 3000,
-				collapsed: true,
-			});
-			const compNode = tui.host.trajectoryProjection.list().find((n) => n.kind === "compaction");
+			tui.render({ type: "session_compact", operationId: "compact-test", status: "completed", summary: "历史压缩摘要", retainedTailEntries: 1, tokensBefore: 3000 });
+			const compNode = tui.trajectoryProjection.list().find((n) => n.kind === "compaction");
 			expect(compNode).toBeDefined();
 			expect(compNode?.tokens?.total).toBe(3000);
 
@@ -2501,10 +2563,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			const { activateBuiltinCommands } = await import("../src/extensions/builtin.js");
 			const mockNotify = vi.fn();
 			const mockClear = vi.fn();
-			const mockAddCompaction = vi.fn();
 			const mockSetEffort = vi.fn();
-			const mockSetWorkingMessage = vi.fn();
-			const mockSetWorkingVisible = vi.fn();
+			const mockSetThinkingLevel = vi.fn();
 			const setUsageCalls: unknown[] = [];
 
 			const handlers = new Map<string, Function>();
@@ -2522,10 +2582,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				ui: {
 					notify: mockNotify,
 					clearNotification: mockClear,
-					addCompaction: mockAddCompaction,
 					setReasoningEffort: mockSetEffort,
-					setWorkingMessage: mockSetWorkingMessage,
-					setWorkingVisible: mockSetWorkingVisible,
+					setWorking: vi.fn(),
 					setUsage: (snapshot: unknown) => {
 						setUsageCalls.push(snapshot);
 					},
@@ -2533,6 +2591,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				models: {
 					current: () => ({ name: "mock-model", providerId: "mock", id: "mock-model", thinkingLevels: ["off", "high", "max"] }),
 					thinkingLevel: () => "off",
+					setThinkingLevel: mockSetThinkingLevel,
 				},
 				usage: () => ({ used: 4200, contextWindow: 124000, segments: { system: 900, prompt: 300, assistant: 1200, thinking: 400, tools: 1400 } }),
 				isBusy: () => false,
@@ -2551,13 +2610,6 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				retainedTailEntries: 2,
 			});
 			expect(mockNotify).toHaveBeenCalledWith("会话已压缩", "info", 2500);
-			expect(mockAddCompaction).toHaveBeenCalledWith({
-				status: "completed",
-				summary: "完成测试总结",
-				retainedTailEntries: 2,
-				tokensBefore: 15000,
-				collapsed: true,
-			});
 
 			// 压缩只裁剪请求上下文，不替换 Subject 历史：session_compact 不触发
 			// 用量刷新——usage 缓存仍是上一次请求的真实测量，等下一次 Provider
@@ -2568,14 +2620,11 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				compactHandler!({ type: "session_compact", status: "failed", error: "Token limit" });
 				expect(mockNotify).toHaveBeenCalledWith("会话压缩失败：Token limit", "warning", 3000);
 				// 失败/取消/noop 只保留 toast，不污染永久转录卡片。
-				expect(mockAddCompaction).toHaveBeenCalledTimes(1);
 
 			// 4. 触发 thinking_level_select 驱动 Toast 与底栏状态联动
 			const thinkingHandler = handlers.get("thinking_level_select");
 			expect(thinkingHandler).toBeDefined();
 			thinkingHandler!({ type: "thinking_level_select", level: "high" });
-			expect(mockSetEffort).toHaveBeenCalledWith("high");
-			expect(mockNotify).toHaveBeenCalledWith("思考等级: high", "info", 2000);
 		});
 
 		it("ExtensionUIContext: select 支持滚动窗口限制与超长截断", async () => {
@@ -3239,7 +3288,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			});
 
 			it("UIHost: Esc 阶梯与 Ctrl+C 二次强制退出机制", () => {
-				let interruptedCalls: boolean[] = [];
+				const cancelSources: Array<string | undefined> = [];
 				let deliveredText = "";
 
 				const host = new UIHost({
@@ -3254,9 +3303,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					} as any,
 				});
 
-				host.onInterrupt = (force) => {
-					interruptedCalls.push(force ?? false);
-				};
+				host.onCancel = (source) => { cancelSources.push(source); };
 				host.onInterruptAndDeliver = (text) => {
 					deliveredText = text;
 				};
@@ -3264,7 +3311,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					// 1. 工作态下按 Esc -> 只发送取消意图；实际 Subject/Host 信号由组合根接管
 					host.setBusy(true);
 					host.handleInput("\x1b"); // Esc
-					expect(interruptedCalls).toEqual([]);
+					expect(cancelSources).toEqual(["escape"]);
 					expect(host.isBusy()).toBe(true);
 					host.setBusy(false);
 					expect(host.isBusy()).toBe(false);
@@ -3277,10 +3324,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect((host as any).inputLine.getText()).toBe("");
 
 					// 3. 工作态下 Ctrl+C -> UI 只发送取消意图，组合根查询 Host 权威忙闲
-					interruptedCalls = [];
 					host.setBusy(true);
 					host.handleInput("\x03"); // Ctrl+C
-					expect(interruptedCalls).toEqual([]);
+					expect(cancelSources).toEqual(["escape", "ctrl+c"]);
 					expect(host.isBusy()).toBe(true);
 					host.setBusy(false);
 
@@ -3364,8 +3410,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				tui.render({ type: "turn_start", turnNumber: 1, userText: "做任务" });
 				tui.host.cancelTurn("escape");
 
-				// 收到后端的 turn_end
-				tui.render({ type: "turn_end", turnNumber: 1 });
+				// 收到 Host 的取消事实，而不是把取消意图伪装成正常完成。
+				tui.render({ type: "turn_aborted", turnNumber: 1 });
 
 				// 校验 activityLine 总结状态为“已打断当前轮次”
 				const rendered = tui.host.activityLine.render(80).join("\n");
@@ -3398,35 +3444,25 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(tui.host.inputLine.getCursorIndex()).toBe(expected.length);
 			});
 
-			it("InteractiveTUI: 工作态下第 1 次按 Ctrl+C 触发 onCancel('ctrl+c')，第 2 次触发 onForceExit (对齐 dsh-TUI 防卡死强制退出)", () => {
+			it("InteractiveTUI: 每次空白态 Ctrl+C 只向组合根发送取消意图", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
 				tui.render({ type: "turn_start", turnNumber: 1, userText: "长耗时操作" });
 
-				let cancelSource: string | undefined;
-				let forceExited = false;
+				const cancelSources: Array<string | undefined> = [];
 				tui.onCancel((source) => {
-					cancelSource = source;
-				});
-				tui.onForceExit(() => {
-					forceExited = true;
+					cancelSources.push(source);
 				});
 
-				// 第 1 次 Ctrl+C：打断当前轮次
+				// UI 每次只报告输入意图，是否升级退出由组合根根据 Host 状态决定。
 				tui.host.handleInput("\x03");
-				expect(cancelSource).toBe("ctrl+c");
-				expect(forceExited).toBe(false);
-
-				// 第 2 次 Ctrl+C（处于 cancelPending 阶段）：立即触发防卡死强制退出
 				tui.host.handleInput("\x03");
-				expect(forceExited).toBe(true);
+				expect(cancelSources).toEqual(["ctrl+c", "ctrl+c"]);
 			});
 
 			it("InteractiveTUI: 空闲态下 Ctrl+C 优先清空输入栏草稿，草稿为空时两连击退出", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
-				let forceExited = false;
-				tui.onForceExit(() => {
-					forceExited = true;
-				});
+				let cancelCount = 0;
+				tui.onCancel(() => { cancelCount++; });
 
 				// 输入草稿
 				tui.host.handleInput("草稿文本");
@@ -3435,11 +3471,11 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				// 第 1 次 Ctrl+C：清空草稿
 				tui.host.handleInput("\x03");
 				expect(tui.host.inputLine.getText()).toBe("");
-				expect(forceExited).toBe(false);
+				expect(cancelCount).toBe(0);
 
 					// 草稿为空时 Ctrl+C 也只发送取消意图；退出由组合根查询 Host idle 后决定。
-					tui.host.handleInput("\x03");
-					expect(forceExited).toBe(false);
+				tui.host.handleInput("\x03");
+				expect(cancelCount).toBe(1);
 			});
 
 			it("InteractiveTUI: 工作态下按 Esc 触发 onCancel('escape') 并保留输入栏未发送草稿", () => {
@@ -3503,7 +3539,13 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				tui.onPullBackQueue(() => {
 					pullBackTriggered = true;
 				});
-				const openSubagentsSpy = vi.spyOn(tui.host, "openSubagents");
+				const openSubagentsSpy = vi.spyOn(tui.host, "openFeature");
+				tui.host.registry.registerCommand({
+					name: "subagents",
+					description: "Subagents",
+					keybinding: "alt+a",
+					handler: () => { tui.host.openFeature("subagents"); },
+				});
 
 				// 按 Alt+Up (\x1b[1;3A)
 				tui.host.handleInput("\x1b[1;3A");

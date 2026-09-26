@@ -17,12 +17,12 @@ export class HelpMenu implements Component, Focusable {
 	onClose?: () => void;
 	onConvertToInput?: (text: string) => void;
 
-	constructor(commands: HelpCommandInfo[] = []) {
-		this.commands = commands;
+	constructor(commands: readonly HelpCommandInfo[] = []) {
+		this.commands = [...commands];
 	}
 
-	setCommands(commands: HelpCommandInfo[]): void {
-		this.commands = commands;
+	setCommands(commands: readonly HelpCommandInfo[]): void {
+		this.commands = [...commands];
 	}
 
 	handleInput(data: string): void {

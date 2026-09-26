@@ -8,7 +8,6 @@ import type { Component, Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
 import { C, visibleWidth, truncateToWidth } from "../../core/utils.js";
 import type { SubagentSnapshot, SubagentStatus } from "../../../extensions/subagents/types.js";
-import type { SubagentPort } from "../../adapters/subagents.js";
 import { formatDuration } from "../../format.js";
 import {
 	panelGeometry,
@@ -18,7 +17,17 @@ import {
 	panelEmpty,
 	panelBottomLine,
 	panelWindow,
-} from "../primitives/panel.js";
+} from "../../components/primitives/panel.js";
+
+export interface SubagentPort {
+	list(ownerId?: string): SubagentSnapshot[];
+	read(id: string, ownerId: string, cursor?: number): SubagentRead;
+	transcript(id: string, ownerId: string): SubagentTranscript;
+	send(id: string, ownerId: string, text: string): Promise<void>;
+	interrupt(id: string, ownerId: string): Promise<"interruption-requested" | "already-finished">;
+}
+
+import type { SubagentRead, SubagentTranscript } from "../../../extensions/subagents/types.js";
 
 export class SubagentDashboard implements Component, Focusable {
 	focused = true;

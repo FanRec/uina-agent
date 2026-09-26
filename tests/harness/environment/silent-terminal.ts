@@ -4,6 +4,7 @@ import { VtScreen } from "./vt-screen.js";
 export interface SilentTerminalResult {
 	readonly terminal: ProcessTerminal;
 	readonly frames: string[];
+	readonly writes: string[];
 	readonly screen: VtScreen;
 	getVisibleText(): string;
 	getLastFrame(): string | undefined;
@@ -42,6 +43,7 @@ export function createSilentTerminal(
 	let rows = options.rows ?? 30;
 	const isTTY = options.isTTY ?? true;
 	const frames: string[] = [];
+	const writes: string[] = [];
 	let screen = new VtScreen(columns, rows);
 	let inputHandler: ((data: string) => void) | undefined;
 	let resizeHandler: (() => void) | undefined;
@@ -55,11 +57,14 @@ export function createSilentTerminal(
 		},
 		isTTY,
 		syncWrite: (data: string) => {
-			frames.push(data);
+			writes.push(data);
 			screen.feed(data);
 		},
-		write: (data: string) => {
+		recordLogicalFrameSnapshot: (data: string) => {
 			frames.push(data);
+		},
+		write: (data: string) => {
+			writes.push(data);
 			screen.feed(data);
 		},
 		start: (onInput?: (data: string) => void, onResize?: () => void) => {
@@ -82,6 +87,7 @@ export function createSilentTerminal(
 	return {
 		terminal,
 		frames,
+		writes,
 		get screen() {
 			return screen;
 		},
@@ -98,6 +104,7 @@ export function createSilentTerminal(
 		},
 		clear: () => {
 			frames.length = 0;
+			writes.length = 0;
 			screen = new VtScreen(columns, rows);
 		},
 	};

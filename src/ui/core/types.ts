@@ -86,6 +86,7 @@ export interface OverlayOptions {
 /** showOverlay 返回的操作句柄 */
 export interface OverlayHandle {
 	hide(): void;
+	requestRender(): void;
 	setHidden(hidden: boolean): void;
 	isHidden(): boolean;
 	focus(): void;

@@ -2,7 +2,7 @@ import { createInteractiveUI, InteractiveTUI, type InteractiveTUIOptions } from 
 import { UIHost } from "../../../src/ui/ui-host.js";
 import { createSilentTerminal, type SilentTerminalResult } from "../environment/silent-terminal.js";
 import type { Component } from "../../../src/ui/core/types.js";
-import type { ModelGroup } from "../../../src/ui/components/overlays/index.js";
+import type { ModelGroup } from "../../../src/ui/features/overlays/index.js";
 import type { VtScreen } from "../environment/vt-screen.js";
 
 /** 常用键名到 ANSI 转义序列的映射 */

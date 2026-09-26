@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import { listAllSessionNodes, listSessionBranches, listSessionNodes, readSessionBranch, readSessionNode } from "../src/session/navigation.js";
-import { BranchInspectorOverlay } from "../src/ui/components/overlays/branch-inspector.js";
+import { BranchInspectorOverlay } from "../src/ui/features/overlays/branch-inspector.js";
 import { CustomMessageComponent } from "../src/ui/components/transcript/cards.js";
 import { Key, matchesKey } from "../src/ui/core/keys.js";
 import { stripAnsi, visibleWidth } from "../src/ui/core/utils.js";

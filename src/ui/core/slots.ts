@@ -58,9 +58,4 @@ export class WidgetSlots {
 		return lines;
 	}
 
-	invalidate(): void {
-		for (const item of this.widgets.values()) {
-			item.component.invalidate?.();
-		}
-	}
 }

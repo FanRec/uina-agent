@@ -4,11 +4,7 @@
  * 并处理 CURSOR_MARKER 定位以保障 IME 输入法候选框位置。
  */
 
-import { CURSOR_MARKER, isFocusable, type Component } from "./types.js";
-import { visibleWidth } from "./utils.js";
-import type { CursorPosition } from "./renderer.js";
-
-export type { CursorPosition };
+import { isFocusable, type Component } from "./types.js";
 
 export class FocusManager {
 	private currentFocused: Component | null = null;
@@ -33,34 +29,4 @@ export class FocusManager {
 		}
 	}
 
-	handleInput(data: string): boolean {
-		if (this.currentFocused?.handleInput) {
-			this.currentFocused.handleInput(data);
-			return true;
-		}
-		return false;
-	}
-
-	/**
-	 * 在渲染好的行数组中检索 CURSOR_MARKER，提取物理光标行列位置并返回清洗后的文本行
-	 */
-	extractCursor(lines: readonly string[]): { cleanLines: string[]; cursor: CursorPosition | null } {
-		let cursor: CursorPosition | null = null;
-		const cleanLines: string[] = [];
-
-		for (let row = 0; row < lines.length; row++) {
-			const line = lines[row]!;
-			const markerIndex = line.indexOf(CURSOR_MARKER);
-			if (markerIndex !== -1) {
-				const beforeMarker = line.slice(0, markerIndex);
-				const col = visibleWidth(beforeMarker) + 1;
-				cursor = { row, col };
-				cleanLines.push(line.replace(CURSOR_MARKER, ""));
-			} else {
-				cleanLines.push(line);
-			}
-		}
-
-		return { cleanLines, cursor };
-	}
 }

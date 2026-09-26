@@ -797,6 +797,32 @@ export class InputLine implements Component, Focusable {
 		this.cursorIndex = snapCursorToMarkerBoundary(Math.max(0, Math.min(idx, this.text.length)), this.text, this.pastes);
 	}
 
+	setCursorIndex(index: number): void {
+		this.cursorIndex = snapCursorToMarkerBoundary(index, this.text, this.pastes);
+	}
+
+	hitTest(screenRow: number, screenCol: number): number | undefined {
+		const visualRows = this.getVisualLayout(this.lastRenderWidth || 80);
+		const row = visualRows[this.scrollOffset + Math.max(0, screenRow)];
+		if (!row) return undefined;
+		if (row.positions.length === 0) return 0;
+		let closest = row.positions[0]!;
+		let distance = Math.abs(closest.col - Math.max(0, screenCol));
+		for (const position of row.positions) {
+			const nextDistance = Math.abs(position.col - Math.max(0, screenCol));
+			if (nextDistance < distance) {
+				closest = position;
+				distance = nextDistance;
+			}
+		}
+		const last = row.positions[row.positions.length - 1]!;
+		if (screenCol >= last.col) {
+			const segment = Array.from(graphemeSegmenter.segment(this.text)).find((item) => item.index === last.charIdx);
+			return snapCursorToMarkerBoundary(Math.min(this.text.length, last.charIdx + (segment?.segment.length ?? 0)), this.text, this.pastes);
+		}
+		return snapCursorToMarkerBoundary(closest.charIdx, this.text, this.pastes);
+	}
+
 	invalidate(): void {}
 
 	private getVisualLayout(width: number): VisualRow[] {

@@ -7,15 +7,13 @@ import type { Component, Focusable, OverlayHandle, OverlayOptions, WidgetPlaceme
 import { CURSOR_MARKER } from "./core/types.js";
 import { Key, matchesKey } from "./core/keys.js";
 import { C, visibleWidth, truncateToWidth, getPrevGraphemeIndex, getNextGraphemeIndex } from "./core/utils.js";
-import type { ExtensionUIContext, ModelPickerGroup } from "../extensions/ui-contract.js";
-import type { ContextSnapshot, ThinkingLevel } from "../core/types.js";
+import type { ExtensionUIContext, PromptOptions } from "../extensions/ui-contract.js";
 
 export interface UIHostContextPort {
 	notify(message: string, type?: "info" | "warning" | "error", timeoutMs?: number): void;
 	clearNotification?(): void;
 	setStatus(key: string, text: string | undefined): void;
-	setWorkingMessage(message?: string): void;
-	setWorkingVisible(visible: boolean): void;
+	setWorking(key: string, message: string | undefined): void;
 	setWidget(key: string, component: Component | undefined, placement?: WidgetPlacement, priority?: number): void;
 	setHeader(component: Component | undefined): void;
 	setFooter(component: Component | undefined): void;
@@ -25,25 +23,13 @@ export interface UIHostContextPort {
 	getEditorText(): string;
 	onTerminalInput(handler: (data: string) => void): () => void;
 	requestRender(): void;
+	openFeature?(name: string, payload?: unknown): boolean;
 	getGutterMode?(): "scrollbar" | "timeline";
 	setGutterMode?(mode: "scrollbar" | "timeline"): void;
-	// 消费者富能力（可选；ExtensionUIContext 的可选成员由此转发）
-	openHelpMenu?(): void;
 	toggleThinking?(): void;
 	clearTranscript?(): void;
-	openModelPicker?(currentModel: string, groups: ModelPickerGroup[], onPick: (name: string) => Promise<void> | void): void;
-	openEffortSlider?(currentLevel: ThinkingLevel | undefined, declaredLevels: ThinkingLevel[], onChange: (level: ThinkingLevel) => void): void;
-	openTasks?(): void;
-	openSubagents?(): void;
-	openTrajectory?(): void;
-	openHistory?(): void;
-	setModel?(name: string): void;
-	setThinkingLevels?(levels?: readonly ThinkingLevel[]): void;
-	setReasoningEffort?(level?: ThinkingLevel): void;
-	setContext?(snapshot: ContextSnapshot): void;
 	getScrollbarThumbStyle?(): "slim" | "block" | "wide";
 	setScrollbarThumbStyle?(style: "slim" | "block" | "wide"): void;
-	addCompaction?(record: { status?: "completed" | "failed" | "cancelled" | "noop"; summary: string; retainedTailEntries?: number; tokensBefore: number; collapsed: boolean }): void;
 }
 
 /** 终端鼠标上报前缀（覆盖层统一忽略，避免吞掉后续按键字节）。 */
@@ -70,12 +56,22 @@ export function confirmChoice(data: string, yesSelected: boolean): boolean | und
 
 export function createExtensionUIContext(host: UIHostContextPort): ExtensionUIContext {
 	return {
-		select(title: string, options: string[]): Promise<string | undefined> {
+		select(title: string, options: string[], promptOptions?: PromptOptions): Promise<string | undefined> {
 			return new Promise((resolve) => {
+				const signal = promptOptions?.signal;
 				let selected = 0;
 				let scrollOffset = 0;
 				const maxVisible = 8;
 				let handle: OverlayHandle | null = null;
+				let settled = false;
+				let abortListener: (() => void) | undefined;
+				const settle = (value: string | undefined): void => {
+					if (settled) return;
+					settled = true;
+					if (abortListener) signal?.removeEventListener("abort", abortListener);
+					handle?.hide();
+					resolve(value);
+				};
 
 				const comp: Component & Focusable = {
 					focused: true,
@@ -137,23 +133,37 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 								host.requestRender();
 							}
 						} else if (matchesKey(data, Key.enter)) {
-							handle?.hide();
-							resolve(options[selected]);
+							settle(options[selected]);
 						} else if (matchesKey(data, Key.escape)) {
-							handle?.hide();
-							resolve(undefined);
+							settle(undefined);
 						}
 					},
 					invalidate(): void {},
 				};
 
-				handle = host.showOverlay(comp);
+				if (signal?.aborted) {
+					settle(undefined);
+					return;
+				}
+				abortListener = () => settle(undefined);
+				signal?.addEventListener("abort", abortListener, { once: true });
+				handle = host.showOverlay(comp, undefined, () => settle(undefined));
 			});
 		},
 
-		confirm(title: string, message: string): Promise<boolean> {
+		confirm(title: string, message: string, promptOptions?: PromptOptions): Promise<boolean> {
 			return new Promise((resolve) => {
+				const signal = promptOptions?.signal;
 				let handle: OverlayHandle | null = null;
+				let settled = false;
+				let abortListener: (() => void) | undefined;
+				const settle = (value: boolean): void => {
+					if (settled) return;
+					settled = true;
+					if (abortListener) signal?.removeEventListener("abort", abortListener);
+					handle?.hide();
+					resolve(value);
+				};
 				let yesSelected = true;
 
 				const comp: Component & Focusable = {
@@ -188,24 +198,39 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 						}
 						const choice = confirmChoice(data, yesSelected);
 						if (choice !== undefined) {
-							handle?.hide();
-							resolve(choice);
+							settle(choice);
 						}
 					},
 					invalidate(): void {},
 				};
 
-				handle = host.showOverlay(comp);
+				if (signal?.aborted) {
+					settle(false);
+					return;
+				}
+				abortListener = () => settle(false);
+				signal?.addEventListener("abort", abortListener, { once: true });
+				handle = host.showOverlay(comp, undefined, () => settle(false));
 			});
 		},
 
-		input(title: string, placeholder = ""): Promise<string | undefined> {
+		input(title: string, placeholder = "", promptOptions?: PromptOptions): Promise<string | undefined> {
 			return new Promise((resolve) => {
+				const signal = promptOptions?.signal;
 				let text = "";
 				let cursorIndex = 0;
 				let inPaste = false;
 				let pasteBuf = "";
 				let handle: OverlayHandle | null = null;
+				let settled = false;
+				let abortListener: (() => void) | undefined;
+				const settle = (value: string | undefined): void => {
+					if (settled) return;
+					settled = true;
+					if (abortListener) signal?.removeEventListener("abort", abortListener);
+					handle?.hide();
+					resolve(value);
+				};
 
 				const comp: Component & Focusable = {
 					focused: true,
@@ -275,11 +300,9 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 						}
 
 						if (matchesKey(data, Key.enter)) {
-							handle?.hide();
-							resolve(text);
+							settle(text);
 						} else if (matchesKey(data, Key.escape)) {
-							handle?.hide();
-							resolve(undefined);
+							settle(undefined);
 						} else if (matchesKey(data, Key.left)) {
 							if (cursorIndex > 0) {
 								cursorIndex = getPrevGraphemeIndex(text, cursorIndex);
@@ -323,7 +346,13 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 					invalidate(): void {},
 				};
 
-				handle = host.showOverlay(comp);
+				if (signal?.aborted) {
+					settle(undefined);
+					return;
+				}
+				abortListener = () => settle(undefined);
+				signal?.addEventListener("abort", abortListener, { once: true });
+				handle = host.showOverlay(comp, undefined, () => settle(undefined));
 			});
 		},
 
@@ -343,12 +372,8 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 			host.setStatus(key, text);
 		},
 
-		setWorkingMessage(message?: string): void {
-			host.setWorkingMessage(message);
-		},
-
-		setWorkingVisible(visible: boolean): void {
-			host.setWorkingVisible(visible);
+		setWorking(key: string, message: string | undefined): void {
+			host.setWorking(key, message);
 		},
 
 		setWidget(
@@ -369,6 +394,10 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 
 		showOverlay(component: Component, options?: OverlayOptions): OverlayHandle {
 			return host.showOverlay(component, options);
+		},
+
+		openFeature(name: string, payload?: unknown): boolean {
+			return host.openFeature?.(name, payload) ?? false;
 		},
 
 		pasteToEditor(text: string): void {
@@ -399,22 +428,7 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 			return true;
 		},
 
-		// 消费者富能力转发：端口不提供即留 undefined，扩展侧 ?.() 自然降级为无操作。
-		openHelpMenu: () => host.openHelpMenu?.(),
-		toggleThinking: () => host.toggleThinking?.(),
-		clearTranscript: () => host.clearTranscript?.(),
-		openModelPicker: (currentModel, groups, onPick) => host.openModelPicker?.(currentModel, groups, onPick),
-		openEffortSlider: (currentLevel, declaredLevels, onChange) => host.openEffortSlider?.(currentLevel, declaredLevels, onChange),
-		openTasks: () => host.openTasks?.(),
-		openSubagents: () => host.openSubagents?.(),
-		openTrajectory: () => host.openTrajectory?.(),
-		openHistory: () => host.openHistory?.(),
-		setModel: (name) => host.setModel?.(name),
-		setThinkingLevels: (levels) => host.setThinkingLevels?.(levels),
-		setReasoningEffort: (level) => host.setReasoningEffort?.(level),
-		setContext: (snapshot) => host.setContext?.(snapshot),
 		getScrollbarThumbStyle: (): "slim" | "block" | "wide" => host.getScrollbarThumbStyle?.() ?? "slim",
 		setScrollbarThumbStyle: (style) => host.setScrollbarThumbStyle?.(style),
-		addCompaction: (record) => host.addCompaction?.(record),
 	};
 }

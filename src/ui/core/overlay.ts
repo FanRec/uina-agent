@@ -84,6 +84,9 @@ export class OverlayStack {
 			hide: () => {
 				this.removeEntry(entry);
 			},
+			requestRender: () => {
+				if (this.stack.includes(entry) && !entry.hidden) this.onRequestRender();
+			},
 			setHidden: (hidden: boolean) => {
 				if (entry.hidden === hidden) return;
 				entry.hidden = hidden;

@@ -18,7 +18,7 @@ import {
 	panelBottomLine,
 	panelWindow,
 	panelTailSlice,
-} from "../primitives/panel.js";
+} from "../../components/primitives/panel.js";
 
 export interface JobPort {
 	list(): JobSnapshot[];

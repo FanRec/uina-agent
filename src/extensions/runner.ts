@@ -13,6 +13,7 @@ import type { ContextSnapshot, Provider, RequestInspection, RequestUsage } from 
 import type { ToolBroker, Tool, ToolExecutionResult } from "../tools/broker.js";
 import type {
 	ExtensionUIContext,
+	PromptOptions,
 	CustomEntry,
 	CustomMessage,
 	LocalCommand,
@@ -118,6 +119,7 @@ export interface ExtensionAPI {
 	shutdown(): Promise<void>;
 	readonly signal: AbortSignal;
 	registerCommand(command: LocalCommand, options?: { replace?: boolean }): () => void;
+	listCommands(): readonly LocalCommand[];
 	registerMessageRenderer<T = unknown>(
 		customType: string,
 		renderer: MessageRenderer<T>,
@@ -498,6 +500,7 @@ export class ExtensionRunner extends ExtensionHost {
 			own,
 			ownKeyed,
 			(slot, component) => this.setSharedUI(slot, scope.id, component),
+			scope.abort.signal,
 		);
 		const ownRegistration = (dispose: () => void): (() => void) => {
 			own(dispose);
@@ -721,6 +724,7 @@ export class ExtensionRunner extends ExtensionHost {
 					),
 				);
 			},
+			listCommands: () => this.registry.listCommands(),
 			registerMessageRenderer: (type, renderer, options) => {
 				assertActive();
 				return ownRegistration(this.registry.registerMessageRenderer(type, renderer, options));
@@ -819,14 +823,36 @@ function ownedUI(
 	own: (dispose: ExtensionTeardown) => void,
 	ownKeyed: (key: string, dispose: ExtensionTeardown) => void,
 	setShared: (slot: "header" | "footer", component: Parameters<ExtensionUIContext["setHeader"]>[0]) => void,
+	scopeSignal: AbortSignal,
 ): ExtensionUIContext {
 	const key = (value: string) => `${id}:${value}`;
+	const withScopeSignal = (options?: PromptOptions): PromptOptions => ({
+		signal: options?.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal,
+	});
 	const overrides: Partial<ExtensionUIContext> = {
+		select: (title, options, promptOptions) => {
+			assertActive();
+			return base.select(title, options, withScopeSignal(promptOptions));
+		},
+		confirm: (title, message, promptOptions) => {
+			assertActive();
+			return base.confirm(title, message, withScopeSignal(promptOptions));
+		},
+		input: (title, placeholder, promptOptions) => {
+			assertActive();
+			return base.input(title, placeholder, withScopeSignal(promptOptions));
+		},
 		setStatus: (name, text) => {
 			assertActive();
 			const scoped = key(name);
 			base.setStatus(scoped, text);
 			ownKeyed(`status:${name}`, () => base.setStatus(scoped, undefined));
+		},
+		setWorking: (name, message) => {
+			assertActive();
+			const scoped = key(name);
+			base.setWorking(scoped, message);
+			ownKeyed(`working:${name}`, () => base.setWorking(scoped, undefined));
 		},
 		setWidget: (name, component, options) => {
 			assertActive();
@@ -882,8 +908,7 @@ export function createPrintUI(
 		notify: write,
 		clearNotification: () => {},
 		setStatus: () => {},
-		setWorkingMessage: () => {},
-		setWorkingVisible: () => {},
+		setWorking: () => {},
 		setWidget: () => {},
 		setHeader: () => {},
 		setFooter: () => {},
@@ -891,6 +916,7 @@ export function createPrintUI(
 		showOverlay: () => ({
 			hide() {},
 			setHidden() {},
+			requestRender() {},
 			isHidden: () => true,
 			focus() {},
 			unfocus() {},

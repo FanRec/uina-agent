@@ -603,6 +603,7 @@ export class TranscriptContainer implements Component {
 	/** Restores the display projection from the same ordered entries used to
 	 * build provider history. Operational events never become transcript rows. */
 	loadSession(entries: readonly SessionEntry[], decorations: readonly CompactionReplayDecoration[] = []): void {
+		this.clear();
 		let turnN = 0;
 		let current: TurnRecord | null = null;
 		let pendingToolCalls: Array<{ id: string; name: string; args?: unknown }> = [];

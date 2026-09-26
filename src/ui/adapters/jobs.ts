@@ -7,7 +7,8 @@
  */
 
 import type { JobRegistry, JobSnapshot, JobRead } from "../../extensions/jobs/registry.js";
-import type { JobPort } from "../components/overlays/task-dashboard.js";
+import type { JobPort } from "../features/overlays/task-dashboard.js";
+export type { JobPort };
 
 /** The host UI owns every job, including jobs started by project extensions,
  * so it deliberately reads without an owner filter. */

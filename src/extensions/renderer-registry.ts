@@ -57,7 +57,7 @@ export class ExtensionRegistry {
 	getCommand(name: string): LocalCommand | undefined {
 		return this.commands.get(name);
 	}
-	listCommands(): LocalCommand[] {
-		return this.commands.values();
+	listCommands(): readonly LocalCommand[] {
+		return [...this.commands.values()];
 	}
 }

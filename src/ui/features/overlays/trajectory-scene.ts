@@ -7,7 +7,7 @@
 import type { Component, Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
 import { C, visibleWidth, truncateToWidth } from "../../core/utils.js";
-import { highlightCode } from "../primitives/syntax-text.js";
+import { highlightCode } from "../../components/primitives/syntax-text.js";
 
 export type TrajectoryNodeKind =
 	| "turn_start"

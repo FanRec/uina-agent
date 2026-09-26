@@ -9,7 +9,7 @@ import {
 	isInterruptible,
 	nextDetailTab,
 	sliceContentWindow,
-} from "../src/ui/components/overlays/subagent-dashboard.js";
+} from "../src/ui/features/overlays/subagent-dashboard.js";
 import {
 	confirmChoice,
 	isMouseReport,
@@ -156,7 +156,7 @@ describe("ModelPicker 边框闭合与选定行为", () => {
 	];
 
 	it("各行可见宽度严格相等，右边框与右下角闭合对齐", async () => {
-		const { ModelPicker } = await import("../src/ui/components/overlays/model-picker.js");
+		const { ModelPicker } = await import("../src/ui/features/overlays/model-picker.js");
 		const { visibleWidth } = await import("../src/ui/core/utils.js");
 
 		// 测试 groups 层级
@@ -181,7 +181,7 @@ describe("ModelPicker 边框闭合与选定行为", () => {
 	});
 
 	it("Enter 选定模型触发 onPick", async () => {
-		const { ModelPicker } = await import("../src/ui/components/overlays/model-picker.js");
+		const { ModelPicker } = await import("../src/ui/features/overlays/model-picker.js");
 		const picker = new ModelPicker("deepseek/deepseek-flash", sampleGroups);
 
 		let pickedModel: string | undefined;

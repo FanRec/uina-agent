@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { UIHost } from "../src/ui/ui-host.js";
+import { installUIFeatures } from "../src/ui/features.js";
+import { ExtensionRegistry } from "../src/extensions/renderer-registry.js";
 import { TranscriptContainer } from "../src/ui/components/transcript/index.js";
 import { stripAnsi } from "../src/ui/core/utils.js";
 import { OverlayStack } from "../src/ui/core/overlay.js";
@@ -438,6 +440,7 @@ describe("C: overlay frame composition", () => {
 	// contain a row wider than the terminal, and the panel must cover its own region.
 	it("opens the history panel through Alt+H and composes a frame without wrapping", async () => {
 		const { terminal, frames } = fakeTerminal(148, 29);
+		const registry = new ExtensionRegistry();
 		const store = new MemorySessionStore();
 		for (let i = 0; i < 50; i++) {
 			await store.appendMessage({
@@ -445,16 +448,19 @@ describe("C: overlay frame composition", () => {
 				content: `${i} 条 ${i % 3 === 0 ? '{"error":"工具已返回"}' : "**你好！** 很高兴你又来找我 😌～ 🍞"}`,
 			});
 		}
-		const host = new UIHost({
-			terminal,
-			modelName: "TestModel",
-			sessionPort: {
-				list: (options) => listSessionNodes(store.state, options),
-				listBranches: () => listSessionBranches(store.state),
-				readBranch: (id: string) => readSessionBranch(store.state, id),
-				read: (id) => readSessionNode(store.state, id),
-				requestRewind: async () => ({ requestId: "probe", status: "committed" as const }),
-			},
+		const host = new UIHost({ terminal, modelName: "TestModel", registry });
+		installUIFeatures(host, { sessionPort: {
+			list: (options) => listSessionNodes(store.state, options),
+			listBranches: () => listSessionBranches(store.state),
+			readBranch: (id: string) => readSessionBranch(store.state, id),
+			read: (id) => readSessionNode(store.state, id),
+			requestRewind: async () => ({ requestId: "probe", status: "committed" as const }),
+		} });
+		registry.registerCommand({
+			name: "history",
+			description: "History",
+			keybinding: "alt+h",
+			handler: () => { host.openFeature("history"); },
 		});
 		host.start();
 		host.transcript.startTurn(1, "你好");

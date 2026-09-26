@@ -141,6 +141,30 @@ describe("hardening: extension host honesty", () => {
 		expect([...slots.values()]).toEqual([undefined, undefined, undefined, undefined]);
 		expect(clears).toHaveLength(4);
 	});
+	it("aborts an in-flight Extension UI prompt before activation teardown completes", async () => {
+		let promptSignal: AbortSignal | undefined;
+		let promptSettled = false;
+		let promptResult: Promise<void> | undefined;
+		const runner = new ExtensionRunner({ cwd: process.cwd(), tools: new ToolBroker() });
+		runner.attachUI({
+			...createPrintUI(() => {}),
+			select: (_title, _options, promptOptions) => {
+				promptSignal = promptOptions?.signal;
+				return new Promise((resolve) => {
+					if (promptSignal?.aborted) resolve(undefined);
+					else promptSignal?.addEventListener("abort", () => resolve(undefined), { once: true });
+				});
+			},
+		});
+		await runner.activateBuiltin("prompt", (pi) => {
+			promptResult = pi.ui.select("pending", []).then(() => { promptSettled = true; });
+		});
+
+		await runner.dispose();
+		await promptResult;
+		expect(promptSignal?.aborted).toBe(true);
+		expect(promptSettled).toBe(true);
+	});
 	it("registerProvider fails loudly when the host has no provider port", async () => {
 		const runner = new ExtensionRunner({ cwd: process.cwd(), tools: new ToolBroker() });
 		const provider = { name: "x", stream: async () => {} };
@@ -174,6 +198,47 @@ describe("hardening: keyboard and frame invariants", () => {
 			const plain = row.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "");
 			expect(visibleWidth(plain)).toBeLessThanOrEqual(20);
 		}
+	});
+
+	it("renderer writes only changed rows after the first frame", () => {
+		const writes: string[] = [];
+		const terminal = { columns: 20, syncWrite: (data: string) => { writes.push(data); } } as unknown as ProcessTerminal;
+		const renderer = new MainScreenRenderer(terminal);
+
+		renderer.renderFrame(["same", "first"]);
+		renderer.renderFrame(["same", "second"]);
+
+		expect(writes).toHaveLength(2);
+		expect(writes[1]).toContain("\x1b[2;1H");
+		expect(writes[1]).not.toContain("\x1b[1;1H");
+	});
+
+	it("renderer invalidates the physical frame after resize", () => {
+		const writes: string[] = [];
+		const terminal = { columns: 20, syncWrite: (data: string) => { writes.push(data); } } as unknown as ProcessTerminal;
+		const renderer = new MainScreenRenderer(terminal);
+
+		renderer.renderFrame(["same", "first"]);
+		renderer.renderFrame(["same", "first"]);
+		renderer.handleResize();
+		renderer.renderFrame(["same", "first"]);
+
+		expect(writes).toHaveLength(2);
+		expect(writes[1]).toContain("\x1b[1;1H");
+		expect(writes[1]).toContain("\x1b[2;1H");
+	});
+
+	it("renderer strips non-style terminal controls from frame rows", () => {
+		let written = "";
+		const terminal = { columns: 40, syncWrite: (data: string) => { written = data; } } as unknown as ProcessTerminal;
+		new MainScreenRenderer(terminal).renderFrame([
+			"ok\x1b[31m red\x1b[0m\x1b[2J\x1b]0;bad\x07",
+		]);
+
+		expect(written).toContain("ok");
+		expect(written).toContain("\x1b[31m");
+		expect(written).not.toContain("\x1b[2J");
+		expect(written).not.toContain("\x1b]0;bad\x07");
 	});
 });
 
