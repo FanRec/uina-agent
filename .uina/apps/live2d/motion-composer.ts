@@ -24,8 +24,19 @@ export class MotionComposer {
 
 	private currentBeatsController: AbortController | null = null;
 	private currentAllowedChannels?: readonly Live2DChannel[];
+	private speechPhase = 0;
+	private speechActivity = 0;
 
 	constructor(readonly arbiter?: ChannelArbiter) {}
+
+	getSpeechActivity(): number {
+		return this.speechActivity;
+	}
+
+	resetSpeechActivity(): void {
+		this.speechActivity = 0;
+		this.speechPhase = 0;
+	}
 
 	isPlayingExpressiveBeats(): boolean {
 		return this.currentBeatsController !== null && !this.currentBeatsController.signal.aborted;
@@ -122,14 +133,37 @@ export class MotionComposer {
 		this.currentBeatsController?.abort();
 		this.currentBeatsController = null;
 		this.currentAllowedChannels = undefined;
+		this.speechActivity = 0;
+		this.speechPhase = 0;
 		this.bodyDirector.resetVelocity("ParamAngleY");
 		this.bodyDirector.dampenToNeutral();
 	}
 
-	compose(deltaMs: number): Record<string, number> {
+	compose(deltaMs: number, options?: { speechEnergy?: number }): Record<string, number> {
+		const dt = Math.max(0.0001, deltaMs * 0.001);
+		const speechEnergy = options?.speechEnergy ?? 0;
+
+		// 语流连续律动动态跟踪 (Attack: ~120ms 爬升, Decay: ~250ms 半衰期指数平滑衰减)
+		if (speechEnergy > 0.02) {
+			const targetActivity = Math.min(1.0, speechEnergy * 1.5);
+			this.speechActivity += (targetActivity - this.speechActivity) * Math.min(1.0, dt * 8.0);
+			this.speechPhase += dt;
+		} else if (this.speechActivity > 0) {
+			this.speechActivity *= Math.exp(-deltaMs / 250);
+			if (this.speechActivity < 0.005) {
+				this.speechActivity = 0;
+			} else {
+				this.speechPhase += dt * 0.5;
+			}
+		}
+
 		const isTorsoLocked = this.arbiter
 			? (this.arbiter.isChannelLocked("torso", CHANNEL_PRIORITY.ACTION) ||
 			   this.arbiter.isChannelLocked("torso", CHANNEL_PRIORITY.CUE))
+			: false;
+		const isHeadLocked = this.arbiter
+			? (this.arbiter.isChannelLocked("head", CHANNEL_PRIORITY.ACTION) ||
+			   this.arbiter.isChannelLocked("head", CHANNEL_PRIORITY.CUE))
 			: false;
 
 		const noise = this.noise.tick(deltaMs);
@@ -145,6 +179,34 @@ export class MotionComposer {
 				merged[k] = clampLive2DParam(k, (merged[k] ?? 1.0) * blinkFactor);
 			} else {
 				merged[k] = clampLive2DParam(k, (merged[k] ?? 0) + nVal);
+			}
+		}
+
+		// 语流连续律动注入 (当未被高优先级动作锁定通道时，赋予自然说话体态节律)
+		if (this.speechActivity > 0.001) {
+			const p = this.speechPhase;
+			const act = this.speechActivity;
+
+			if (!isTorsoLocked) {
+				// 躯干左右微晃重心游移 (双谐波复合波：主频 ~0.65Hz 对应意群句式周期约 1.5s，次频 ~1.3Hz 对应音节音步)
+				const bodySwayX = (Math.sin(p * 4.1) * 0.72 + Math.sin(p * 2.05 + 0.5) * 0.28) * 4.5 * act;
+				// 胸腔起伏与说话呼吸前倾
+				const bodyPitchY = (Math.sin(p * 3.2 + 1.0) * 0.6 + Math.cos(p * 1.6) * 0.4) * 3.0 * act;
+				// 脊柱侧倾配合重心转移
+				const bodyRollZ = Math.cos(p * 4.1 + 0.8) * 2.5 * act;
+
+				merged.ParamBodyAngleX = clampLive2DParam("ParamBodyAngleX", (merged.ParamBodyAngleX ?? 0) + bodySwayX);
+				merged.ParamBodyAngleY = clampLive2DParam("ParamBodyAngleY", (merged.ParamBodyAngleY ?? 0) + bodyPitchY);
+				merged.ParamBodyAngleZ = clampLive2DParam("ParamBodyAngleZ", (merged.ParamBodyAngleZ ?? 0) + bodyRollZ);
+			}
+
+			if (!isHeadLocked) {
+				// 头部语流随动轻晃 (与躯干柔和耦合，形成生动的三维二次元律动)
+				const headSwayZ = Math.sin(p * 4.1 + 1.2) * 2.2 * act;
+				const headSwayX = Math.sin(p * 2.05) * 1.6 * act;
+
+				merged.ParamAngleZ = clampLive2DParam("ParamAngleZ", (merged.ParamAngleZ ?? 0) + headSwayZ);
+				merged.ParamAngleX = clampLive2DParam("ParamAngleX", (merged.ParamAngleX ?? 0) + headSwayX);
 			}
 		}
 

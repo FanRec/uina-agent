@@ -50,6 +50,14 @@ export class AudioObserver {
 		return this.mouthOpenY;
 	}
 
+	getSpeechEnergy(): number {
+		return Math.max(0, Math.min(1.0, this.currentEnvelope * 2.0));
+	}
+
+	isSpeaking(): boolean {
+		return this.mouthOpenY > 0.02 || this.currentEnvelope > 0.01;
+	}
+
 	/**
 	 * 立即重置归零口型与声学冲量状态 (在音频结束或打断时调用)
 	 */
@@ -60,6 +68,7 @@ export class AudioObserver {
 		this.previousRms = 0;
 		this.cooldownRemainingMs = 0;
 		this.composer?.resetAcousticImpulse();
+		this.composer?.resetSpeechActivity();
 	}
 
 	/**

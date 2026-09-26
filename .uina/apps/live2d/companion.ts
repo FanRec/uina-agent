@@ -131,12 +131,13 @@ export class VTSCompanion {
 		// 1. 驱动音频口型自然平滑衰减
 		this.audioObserver.tick(deltaMs);
 
-		// 2. 合成动效
-		const frame = this.composer.compose(deltaMs);
-
-		// 3. 提取实时音频口型开度 (当 mouth 通道未被高优先级 Action 锁定时)
+		// 2. 提取实时音频口型开度与语流能量 (当 mouth 通道未被高优先级 Action 锁定时)
 		const isMouthLocked = this.arbiter.isChannelLocked("mouth", CHANNEL_PRIORITY.ACTION);
 		const mouthOpen = isMouthLocked ? undefined : this.audioObserver.getMouthOpenY();
+		const speechEnergy = isMouthLocked ? 0 : this.audioObserver.getSpeechEnergy();
+
+		// 3. 合成动效 (传入当前语流能量，自动驱动躯干连续循环律动)
+		const frame = this.composer.compose(deltaMs, { speechEnergy });
 
 		// 4. 重定向与融合为 VTS 参数包 (零分配)
 		const params = this.retargeter.retarget(frame, mouthOpen);
