@@ -1,0 +1,7 @@
+{
+  "name": "@uina/extension-embodiment",
+  "version": "0.1.0",
+  "description": "Uina 具身中枢与多身体端点路由扩展",
+  "type": "module",
+  "main": "index.ts"
+}

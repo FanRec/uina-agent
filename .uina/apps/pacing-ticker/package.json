@@ -1,0 +1,10 @@
+{
+  "name": "pacing-ticker",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "description": "自主节拍器：提供时间脉搏与节奏调节，感知环境并自主维持存在",
+  "uina": {
+    "type": "app"
+  }
+}

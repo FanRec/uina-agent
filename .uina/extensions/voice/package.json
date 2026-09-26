@@ -1,0 +1,7 @@
+{
+  "name": "@uina/extension-voice",
+  "version": "0.1.0",
+  "description": "Uina 声音感官意志中枢与向下驱动接缝扩展",
+  "type": "module",
+  "main": "index.ts"
+}

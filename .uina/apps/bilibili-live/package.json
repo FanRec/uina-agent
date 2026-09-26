@@ -1,0 +1,10 @@
+{
+  "name": "bilibili-live",
+  "version": "1.0.0",
+  "description": "B站直播弹幕与互动接入应用",
+  "type": "module",
+  "main": "./src/index.ts",
+  "uina": {
+    "type": "app"
+  }
+}

@@ -21,8 +21,7 @@ coverage/
 coverage-raw/
 scripts/crap.mjs
 
-# 本地外部插件与应用
-.uina/
+# 本地外部插件与应用：纳入主仓库管理
 tests/netease-jukebox.test.ts
 tests/soundboard.test.ts
 tests/tts-extension.test.ts
@@ -38,5 +37,4 @@ tests/pacing-ticker-engine.test.ts
 tests/pacing-ticker-integration.test.ts
 
 
-# Local runtime profiles contain persona, memory, sessions, and app state
-profiles/
+# Runtime profiles are intentionally versioned for this repository.

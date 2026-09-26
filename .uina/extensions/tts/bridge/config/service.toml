@@ -1,0 +1,75 @@
+service_name = "tts_bridge"
+base_url = "http://127.0.0.1:8102"
+host = "127.0.0.1"
+port = 8102
+vendor_port = 9880
+startup_timeout_ms = 30000
+request_timeout_ms = 120000
+output_dir = "e:/Uina/Uina/.uina/extensions/tts/bridge/output"
+playback_enabled = true
+
+[vendor]
+api_style = "api_v2"
+python_executable = "E:/Uina/ThirdParty/gpt_sovits_v2pro/runtime/python.exe"
+entry_script = "E:/Uina/ThirdParty/gpt_sovits_v2pro/api_v2.py"
+tts_config_path = "e:/Uina/Uina/.uina/extensions/tts/bridge/config/zhenxun_tts_infer.yaml"
+device = "cuda"
+
+[preset]
+ref_audio_path = "e:/Uina/Uina/.uina/extensions/tts/bridge/distill/auditions_v2/L2_neutral.wav"
+prompt_text = "……嗯。计算完成了。你要的答案，在这里。"
+prompt_lang = "zh"
+text_lang = "auto"
+text_split_method = "cut5"
+speed_factor = 1.0
+media_type = "wav"
+
+[streaming]
+enabled = true
+stream_strategy = "fixed_streaming"
+media_type = "raw"
+sample_rate = 32000
+mirror_device = "CABLE Input (VB-Audio Virtual Cable)"
+vendor_streaming_mode = 2
+min_chunk_length = 32
+fragment_interval = 0.05
+first_chunk_vendor_streaming_mode = 3
+first_chunk_min_chunk_length = 16
+first_chunk_fragment_interval = 0.03
+first_chunk_prebuffer_ms = 300
+first_chunk_gate_timeout_ms = 1800
+warmup_enabled = true
+warmup_text = "嗯。"
+warmup_timeout_ms = 25000
+batch_size = 1
+prebuffer_ms = 340
+rebuffer_ms = 600
+drain_timeout_ms = 2000
+stream_idle_timeout_ms = 60000
+stream_total_timeout_ms = 120000
+synthesis_lock_timeout_ms = 60000
+max_delivery_task_ms = 60000
+
+fallback_to_batch_on_failure = true
+adaptive_playback_start_latency_ms = 1600
+adaptive_rebuffer_threshold = 2
+adaptive_max_chunk_gap_ms = 400.0
+adaptive_realtime_factor_threshold = 0.85
+adaptive_batch_recovery_successes = 2
+
+[subtitle_sync]
+enabled = false
+obs_base_url = "http://127.0.0.1:8104"
+progress_interval_ms = 16
+fallback_mode = "sentence_only"
+
+[lipsync_bridge]
+enabled = false
+streaming_enabled = false
+base_url = "http://127.0.0.1:8105"
+request_timeout_ms = 250
+inline_pcm_max_bytes = 4194304
+max_workers = 2
+max_pending_requests = 32
+stream_chunk_min_interval_ms = 20
+drop_log_interval_ms = 2000

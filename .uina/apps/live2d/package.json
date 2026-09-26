@@ -1,0 +1,10 @@
+{
+  "name": "live2d",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./index.ts",
+  "description": "Live2D 虚拟形象端点：提供四层动作合成、语义微节奏剧本与姿态控制",
+  "uina": {
+    "type": "app"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "soundsDir": "./sounds",
+  "defaultVolume": 80,
+  "soundOverrides": {
+    "metal_pipe": {
+      "gainOffset": -30
+    }
+  }
+}

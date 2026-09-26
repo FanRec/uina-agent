@@ -1,0 +1,44 @@
+{
+  "defaultRoomId": 24194689,
+  "sessdata": "3fb87c42%2C1804948101%2C0a6de%2A91CjBKsETmqLr1t3OSoathBULuPSQCKe_kPiyt77X8PeoYYoAsLdFGaAQuOS-fTEXC3ioSVk9pS3MxTXZkUzFOZkVHQTlzRFh3YVZlNG5QeDRnR3F3dmgzb2I2VWUzUW5zb3dRdmFTamhLeEp1eXVkNEFISU50Z1BHRDFYM252eWxCUlpab1U0Vnp3IIEC",
+  "biliJct": "74bdaa7eea895a16db8dd966d7f01b5c",
+  "buvid3": "581493C9-1F00-4AC4-D232-3991F5EA9C9277886infoc",
+
+  "viewport": {
+    "approximateBudgetTokens": 200,
+    "maxViewportChars": 600,
+    "maxItems": 20,
+    "minResidenceMs": 10000,
+    "showTimestamps": true,
+    "aggregationWindowMs": 20000
+  },
+
+  "filtering": {
+    "filterKeywords": [],
+    "ignoreEmojiOnly": false,
+    "maxDanmakuLength": 50
+  },
+
+  "gifts": {
+    "pendingThreshold": 1000,
+    "aggregationWindowMs": 10000
+  },
+
+  "network": {
+    "autoReconnect": true,
+    "requestTimeoutMs": 5000,
+    "maxReconnectDelayMs": 30000
+  },
+
+  "storage": {
+    "dataDir": "./data",
+    "journalCompactionThreshold": 500
+  },
+
+  "wakeup": {
+    "wakeOnSuperChat": true,
+    "superChatMinPrice": 0,
+    "wakeOnGuard": true,
+    "wakeOnGiftThreshold": 1000
+  }
+}

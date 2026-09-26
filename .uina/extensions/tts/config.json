@@ -1,0 +1,10 @@
+{
+  "serviceUrl": "http://127.0.0.1:8102",
+  "pythonPath": "E:\\Uina\\ThirdParty\\gpt_sovits_v2pro\\runtime\\python.exe",
+  "bridgeScript": "bridge/main.py",
+  "bridgeConfig": "bridge/config/service.toml",
+  "startupTimeoutMs": 30000,
+  "requestTimeoutMs": 5000,
+  "autoSpawn": true,
+  "maxSentenceChars": 20
+}

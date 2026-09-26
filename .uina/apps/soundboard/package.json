@@ -1,0 +1,9 @@
+{
+  "name": "soundboard",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./index.ts",
+  "uina": {
+    "type": "app"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "netease-jukebox",
+  "version": "1.0.0",
+  "description": "网易云音乐点歌机",
+  "type": "module",
+  "main": "./index.ts",
+  "uina": {
+    "type": "app"
+  }
+}

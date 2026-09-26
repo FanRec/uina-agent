@@ -1,0 +1,7 @@
+{
+  "name": "@uina/extension-tts",
+  "version": "0.1.0",
+  "description": "Uina 语音发声与打断扩展",
+  "type": "module",
+  "main": "./index.ts"
+}

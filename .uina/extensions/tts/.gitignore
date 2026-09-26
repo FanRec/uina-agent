@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+logs/
+output/
+.coverage
+htmlcov/
+crap_report.json
+node_modules/
+dist/
+.DS_Store
