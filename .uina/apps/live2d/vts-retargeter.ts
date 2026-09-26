@@ -7,9 +7,9 @@ export const CUBISM_TO_VTS_MAP: Readonly<Record<string, string | readonly string
 	ParamAngleX: "FaceAngleX",
 	ParamAngleY: "FaceAngleY",
 	ParamAngleZ: "FaceAngleZ",
-	ParamBodyAngleX: ["BodyAngleX", "FacePositionX"],
-	ParamBodyAngleY: ["BodyAngleY", "FacePositionY"],
-	ParamBodyAngleZ: ["BodyAngleZ", "FacePositionZ"],
+	ParamBodyAngleX: "FacePositionX",
+	ParamBodyAngleY: "FacePositionY",
+	ParamBodyAngleZ: "FacePositionZ",
 	ParamEyeBallX: ["EyeLeftX", "EyeRightX"],
 	ParamEyeBallY: ["EyeLeftY", "EyeRightY"],
 	ParamEyeLOpen: "EyeOpenLeft",
@@ -50,9 +50,7 @@ export class VTSParameterRetargeter {
 
 		let vtsVal = value;
 		if (sourceId.startsWith("ParamBodyAngle")) {
-			vtsVal = targetId.startsWith("BodyAngle")
-				? Math.max(-20, Math.min(20, value))
-				: Math.max(-10, Math.min(10, value * 0.25));
+			vtsVal = Math.max(-10, Math.min(10, value * 0.25));
 		}
 		this.vtsTargetMap.set(targetId, vtsVal);
 	}
