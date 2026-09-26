@@ -24,5 +24,8 @@ export function createJobAdapter(registry: JobRegistry): JobPort {
 			const res = registry.cancel(id, undefined, reason);
 			return res === "cancellation-requested";
 		},
+		subscribe(listener: () => void): () => void {
+			return registry.onChanged(() => listener());
+		},
 	};
 }

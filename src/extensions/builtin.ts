@@ -1,73 +1,9 @@
 import type { ExtensionAPI } from "./runner.js";
 import type { ThinkingLevel } from "../core/types.js";
 import { listAllSessionNodes } from "../session/navigation.js";
+export { resolveGutterAction } from "../ui/core/gutter.js";
 
 /** 右侧导航轨模式与滑块样式（与 ui-contract 的成员签名一致）。 */
-export type GutterMode = "scrollbar" | "timeline";
-export type GutterThumbStyle = "slim" | "block" | "wide";
-
-export interface GutterAction {
-	mode: GutterMode;
-	style?: GutterThumbStyle;
-	message: string;
-}
-
-const THUMB_STYLES: readonly GutterThumbStyle[] = ["slim", "block", "wide"];
-const GUTTER_MODES: readonly GutterMode[] = ["scrollbar", "timeline"];
-
-const STYLE_LABEL: Record<GutterThumbStyle, string> = {
-	slim: "纤细优雅 ( ▐)",
-	block: "单列方块 ( █)",
-	wide: "双列宽方块 (██)",
-};
-
-const MODE_LABEL: Record<GutterMode, string> = {
-	scrollbar: "视口比例滚动条 (Scrollbar)",
-	timeline: "时间线轮次轨 (Timeline)",
-};
-
-function isThumbStyle(value: string | undefined): value is GutterThumbStyle {
-	return (THUMB_STYLES as readonly (string | undefined)[]).includes(value);
-}
-
-function isGutterMode(value: string | undefined): value is GutterMode {
-	return (GUTTER_MODES as readonly (string | undefined)[]).includes(value);
-}
-
-/**
- * 把 /gutter 参数解析为一次导航轨动作（纯函数：只做决策，不触 UI）。
- *
- * 语义（对齐旧实现）：
- * - 首词是滑块样式（slim|block|wide）：切到 scrollbar 模式并设样式；
- * - 首词是模式（scrollbar|timeline）：切模式；scrollbar 且次词是合法样式时
- *   附加设样式；消息后缀携带原始次词（不校验），timeline 亦可带后缀；
- * - 其余（含空参）：在当前模式间切换。
- */
-export function resolveGutterAction(arg: string | undefined, currentMode: GutterMode): GutterAction {
-	const parts = arg?.trim().toLowerCase().split(/\s+/) ?? [];
-	const [first, second] = parts;
-
-	if (isThumbStyle(first)) {
-		return {
-			mode: "scrollbar",
-			style: first,
-			message: `已切换滚动条滑块样式为: ${STYLE_LABEL[first]}`,
-		};
-	}
-
-	if (isGutterMode(first)) {
-		const style = first === "scrollbar" && isThumbStyle(second) ? second : undefined;
-		const suffix = second ? ` [${second}]` : "";
-		return {
-			mode: first,
-			style,
-			message: `已切换右侧导航轨为: ${MODE_LABEL[first]}${suffix}`,
-		};
-	}
-
-	const next: GutterMode = currentMode === "scrollbar" ? "timeline" : "scrollbar";
-	return { mode: next, message: `已切换右侧导航轨为: ${MODE_LABEL[next]}` };
-}
 
 /**
  * 官方内置命令 = preinstalled capability：与项目扩展完全相同的 API 面（pi.*），
@@ -87,13 +23,13 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 	pi.registerCommand({
 		name: "think",
 		description: "展开或折叠深度思考过程",
-		handler: () => ui.toggleThinking?.(),
+		handler: () => { ui.openFeature?.("toggle-thinking"); },
 	});
 
 	pi.registerCommand({
 		name: "clear",
 		description: "清空当前屏幕转录流",
-		handler: () => ui.clearTranscript?.(),
+		handler: () => { ui.openFeature?.("clear-transcript"); },
 	});
 
 	pi.registerCommand({
@@ -101,13 +37,7 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		description: "切换右侧导航轨模式与滑块样式 (scrollbar|timeline [slim|block|wide])",
 		hasArgs: true,
 		argumentHint: "[scrollbar|timeline] [slim|block|wide]",
-		handler: (arg) => {
-			if (!ui.hasUI()) return; // 无交互 UI（stdio/print）时与并入前一致：静默不动作、不谎报"已切换"
-			const action = resolveGutterAction(arg, ui.getGutterMode());
-			ui.setGutterMode(action.mode);
-			if (action.style) ui.setScrollbarThumbStyle?.(action.style);
-			pi.ui.notify(action.message);
-		},
+		handler: (arg) => { ui.openFeature?.("gutter", { arg }); },
 	});
 
 	pi.registerCommand({

@@ -24,6 +24,7 @@ export interface JobPort {
 	list(): JobSnapshot[];
 	read(id: string, fromCursor?: number): JobRead;
 	cancel(id: string, reason?: string): boolean;
+	subscribe?(listener: () => void): () => void;
 }
 
 export class TaskDashboard implements Component, Focusable {
@@ -34,6 +35,7 @@ export class TaskDashboard implements Component, Focusable {
 	private focusTarget: "list" | "logs" = "list";
 
 	onClose?: () => void;
+	onDispose?: () => void;
 	onRequestRender?: () => void;
 
 	constructor(private readonly jobPort: JobPort) {}

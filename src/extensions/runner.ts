@@ -926,7 +926,5 @@ export function createPrintUI(
 		setEditorText: () => {},
 		getEditorText: () => "",
 		onTerminalInput: () => () => {},
-		getGutterMode: () => "scrollbar",
-		setGutterMode: () => {},
 	};
 }

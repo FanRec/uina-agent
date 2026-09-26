@@ -46,9 +46,21 @@ interface TrackedSubagent {
 
 export class SubagentRegistry {
 	private readonly records = new Map<string, TrackedSubagent>();
+	private readonly changed = new Set<() => void>();
 	private accepting = true;
 
 	constructor(private readonly options: SubagentRegistryOptions) {}
+
+	onChanged(listener: () => void): () => void {
+		this.changed.add(listener);
+		return () => this.changed.delete(listener);
+	}
+
+	private notifyChanged(): void {
+		for (const listener of this.changed) {
+			try { listener(); } catch { /* observers cannot alter lifecycle */ }
+		}
+	}
 
 	start(request: SubagentStartOptions): SubagentSnapshot {
 		if (!this.accepting) throw new Error("子代理服务已关闭");
@@ -56,6 +68,7 @@ export class SubagentRegistry {
 		const id = `subagent-${randomUUID()}`;
 		const record = this.makeRecord(id, request);
 		this.records.set(id, record);
+		this.notifyChanged();
 		void this.begin(record, request.prompt);
 		return this.snapshot(record);
 	}
@@ -123,6 +136,7 @@ export class SubagentRegistry {
 		}
 		if (record.status === "settled") return "already-finished";
 		record.status = "interrupted";
+		this.notifyChanged();
 		await record.handle.interrupt("子代理被请求中断");
 		await this.release(record, "interrupted");
 		return "interruption-requested";
@@ -172,6 +186,7 @@ export class SubagentRegistry {
 				record.error = event.text;
 				record.detail = event.text;
 			}
+			this.notifyChanged();
 		});
 		return record;
 	}
@@ -203,7 +218,7 @@ export class SubagentRegistry {
 			record.status = terminalStatus;
 			record.terminalStatus = terminalStatus;
 			try {
-				await record.handle.dispose();
+			await record.handle.dispose();
 			} catch (error) {
 				record.terminalStatus = "failed";
 				record.error = `释放失败：${errorMessage(error)}`;
@@ -211,6 +226,7 @@ export class SubagentRegistry {
 			}
 			record.status = "settled";
 			record.finishedAt = Date.now();
+			this.notifyChanged();
 			try {
 				await this.options.notify?.(
 					`子代理 ${record.id} 已${record.terminalStatus === "failed" ? "失败" : "中断"}。任务：${record.label}。请使用 subagent_status 或 subagent_output 读取详情。`,

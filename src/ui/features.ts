@@ -4,6 +4,7 @@ import type { UIHost } from "./ui-host.js";
 import type { JobPort } from "./adapters/jobs.js";
 import type { SubagentPort } from "./adapters/subagents.js";
 import { TrajectoryProjection } from "./adapters/agent-events.js";
+import { resolveGutterAction } from "./core/gutter.js";
 import {
 	BranchInspectorOverlay, DEFAULT_EFFORT_TIERS, EffortSlider, HelpMenu,
 	ModelPicker, SubagentDashboard, SubagentDetailScene, TaskDashboard,
@@ -69,9 +70,20 @@ export function installUIFeatures(host: UIHost, options: UIFeatureOptions = {}):
 		});
 	});
 
+	register("toggle-thinking", () => host.toggleThinking());
+	register("clear-transcript", () => host.clearTranscript());
+	register("gutter", (payload) => {
+		const arg = (payload as { arg?: string } | undefined)?.arg;
+		const action = resolveGutterAction(arg, host.getGutterMode());
+		host.setGutterMode(action.mode);
+		if (action.style) host.setScrollbarThumbStyle(action.style);
+		host.notify(action.message);
+	});
+
 	const jobPort = options.jobPort;
 	if (jobPort) register("tasks", () => host.showPanel("tasks", (close) => {
 		const view = new TaskDashboard(jobPort);
+		view.onDispose = jobPort.subscribe?.(() => host.requestRender());
 		view.onClose = close;
 		return view;
 	}));
@@ -79,13 +91,15 @@ export function installUIFeatures(host: UIHost, options: UIFeatureOptions = {}):
 	const subagentPort = options.subagentPort;
 	if (subagentPort) register("subagents", () => host.showPanel("subagents", (close, { hide }) => {
 		const view = new SubagentDashboard(subagentPort);
+		view.onDispose = subagentPort.subscribe?.(() => host.requestRender());
 		view.onClose = close;
 		view.onDrilldown = (agent) => {
 			hide();
-			const detail = new SubagentDetailScene(agent, subagentPort);
+			const detail = new SubagentDetailScene(agent.id, subagentPort);
 			let detailHandle: ReturnType<typeof host.overlayStack.showOverlay> | null = null;
 			detail.onClose = () => { detailHandle?.hide(); detailHandle = null; close(); };
 			detail.onRequestRender = () => host.requestRender();
+			detail.onDispose = subagentPort.subscribe?.(() => host.requestRender());
 			detailHandle = host.overlayStack.showOverlay(detail, { anchor: "center" }, close);
 		};
 		return view;

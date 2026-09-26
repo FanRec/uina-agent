@@ -143,11 +143,6 @@ export class ProcessTerminal {
 		this.onInputHandler?.(str);
 	};
 
-	/** 直接写入标准输出 */
-	write(data: string): void {
-		process.stdout.write(data);
-	}
-
 	/**
 	 * DEC CSI 2026 原子同步写入：
 	 * 告诉终端把这批字符作为单一渲染事务（Frame）瞬间提交，彻底消灭逐字符刷屏撕裂。
@@ -166,25 +161,6 @@ export class ProcessTerminal {
 		process.stdout.write("\x1b[?25h");
 	}
 
-	cursorUp(lines = 1): void {
-		if (lines > 0) process.stdout.write(`\x1b[${lines}A`);
-	}
-
-	cursorDown(lines = 1): void {
-		if (lines > 0) process.stdout.write(`\x1b[${lines}B`);
-	}
-
-	clearLine(): void {
-		process.stdout.write("\r\x1b[2K");
-	}
-
-	clearDown(): void {
-		process.stdout.write("\x1b[J");
-	}
-
-	moveTo(row: number, col: number): void {
-		process.stdout.write(`\x1b[${row};${col}H`);
-	}
 }
 
 function restoreTerminal(): void {

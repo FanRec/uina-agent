@@ -109,23 +109,11 @@ export interface ExtensionUIContext {
 	/** 监听终端原生键盘输入（返回取消监听函数） */
 	onTerminalInput(handler: (data: string) => void): () => void;
 
-	/** 获取右侧导航轨模式 (scrollbar / timeline) */
-	getGutterMode(): "scrollbar" | "timeline";
-
-	/** 设置右侧导航轨模式 */
-	setGutterMode(mode: "scrollbar" | "timeline"): void;
-
 	/** 是否存在真实交互式 UI。非 TTY 兜底实现返回 false，扩展据此分支，
 	 * 而不是把 undefined/false 当成用户的选择（Pi: ExtensionUIContext.hasUI）。 */
 	hasUI(): boolean;
 
 	openFeature?(name: string, payload?: unknown): boolean;
-	toggleThinking?(): void;
-	clearTranscript?(): void;
-
-	/** 右侧导航轨滑块样式 */
-	getScrollbarThumbStyle?(): "slim" | "block" | "wide";
-	setScrollbarThumbStyle?(style: "slim" | "block" | "wide"): void;
 }
 
 /** A pure view of one tool invocation; execution and persisted facts remain outside UI. */

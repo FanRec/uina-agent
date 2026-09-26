@@ -25,6 +25,7 @@ export interface SubagentPort {
 	transcript(id: string, ownerId: string): SubagentTranscript;
 	send(id: string, ownerId: string, text: string): Promise<void>;
 	interrupt(id: string, ownerId: string): Promise<"interruption-requested" | "already-finished">;
+	subscribe?(listener: () => void): () => void;
 }
 
 import type { SubagentRead, SubagentTranscript } from "../../../extensions/subagents/types.js";
@@ -34,6 +35,7 @@ export class SubagentDashboard implements Component, Focusable {
 	private selectedIndex = 0;
 
 	onClose?: () => void;
+	onDispose?: () => void;
 	onDrilldown?: (subagent: SubagentSnapshot) => void;
 	onRequestRender?: () => void;
 
@@ -225,16 +227,18 @@ export class SubagentDetailScene implements Component, Focusable {
 	private scrollOffset = 0;
 
 	onClose?: () => void;
+	onDispose?: () => void;
 	onRequestRender?: () => void;
 
 	constructor(
-		private subagent: SubagentSnapshot,
+	private readonly subagentId: string,
 		private readonly subagentPort: SubagentPort,
 		private readonly ownerId = "root",
 	) {}
 
 	handleInput(data: string): void {
-		const action = detailKeyAction(data, this.subagent.status);
+		const current = this.subagentPort.list(this.ownerId).find((item) => item.id === this.subagentId);
+		const action = detailKeyAction(data, current?.status ?? "settled");
 		switch (action) {
 			case "close":
 				this.onClose?.();
@@ -253,7 +257,7 @@ export class SubagentDetailScene implements Component, Focusable {
 				this.onRequestRender?.();
 				return;
 			case "interrupt":
-				void this.subagentPort.interrupt(this.subagent.id, this.ownerId).then(() => {
+				void this.subagentPort.interrupt(this.subagentId, this.ownerId).then(() => {
 					this.onRequestRender?.();
 				});
 				return;
@@ -271,10 +275,12 @@ export class SubagentDetailScene implements Component, Focusable {
 	formatLines(terminalWidth = 80, terminalHeight = 24): string[] {
 		const geo = panelGeometry(terminalWidth);
 		const { innerW } = geo;
-		const duration = formatDuration((this.subagent.finishedAt ?? Date.now()) - this.subagent.createdAt);
+		const subagent = this.subagentPort.list(this.ownerId).find((item) => item.id === this.subagentId);
+		if (!subagent) return panelEmpty(geo, "─ 子智能体审查 ", `${C.dim}子智能体已不可用 (按 Esc 返回)${C.reset}`);
+		const duration = formatDuration((subagent.finishedAt ?? Date.now()) - subagent.createdAt);
 
 		// 1. 顶边框
-		const output: string[] = [panelTopLine(geo, `─ 子智能体审查: ${this.subagent.label} (${duration}) `)];
+		const output: string[] = [panelTopLine(geo, `─ 子智能体审查: ${subagent.label} (${duration}) `)];
 
 		// 2. Tab 栏
 		output.push(panelRow(geo, formatDetailTabBar(this.activeTab, innerW)));
@@ -285,10 +291,10 @@ export class SubagentDetailScene implements Component, Focusable {
 		let contentLines: string[] = [];
 
 		if (this.activeTab === "logs") {
-			const readRes = this.subagentPort.read(this.subagent.id, this.ownerId, 0);
+			const readRes = this.subagentPort.read(this.subagentId, this.ownerId, 0);
 			contentLines = readRes.output.flatMap((o) => flattenLines(`[${o.kind}] `, o.text));
 		} else {
-			const trRes = this.subagentPort.transcript(this.subagent.id, this.ownerId);
+			const trRes = this.subagentPort.transcript(this.subagentId, this.ownerId);
 			contentLines = trRes.messages.flatMap((m) => {
 				const role = m.role.toUpperCase();
 				const text = typeof m.content === "string" ? m.content : JSON.stringify(m.content);

@@ -16,6 +16,7 @@ export interface SubagentPort {
 	transcript(id: string, ownerId: string): SubagentTranscript;
 	send(id: string, ownerId: string, text: string): Promise<void>;
 	interrupt(id: string, ownerId: string): Promise<"interruption-requested" | "already-finished">;
+	subscribe(listener: () => void): () => void;
 }
 
 export function createSubagentAdapter(registry: SubagentRegistry): SubagentPort {
@@ -34,6 +35,9 @@ export function createSubagentAdapter(registry: SubagentRegistry): SubagentPort 
 		},
 		interrupt(id: string, ownerId: string): Promise<"interruption-requested" | "already-finished"> {
 			return registry.interrupt(id, ownerId);
+		},
+		subscribe(listener: () => void): () => void {
+			return registry.onChanged(listener);
 		},
 	};
 }

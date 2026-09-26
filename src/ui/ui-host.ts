@@ -101,6 +101,7 @@ interface FrameLayout {
 export interface PanelComponent extends Component {
 	onClose?: () => void;
 	onRequestRender?: () => void;
+	onDispose?: () => void;
 }
 
 export class UIHost implements UIHostContextPort {
@@ -217,7 +218,7 @@ export class UIHost implements UIHostContextPort {
 					return;
 				}
 				this.scrollOffset = Math.min(this.lastMaxScroll, this.scrollOffset + 1);
-				const layout = this.computeLayout();
+				const layout = this.layoutFrame();
 				this.lastLayout = layout;
 				this.scrollOffset = layout.effScroll;
 				this.lastMaxScroll = layout.maxScroll;
@@ -230,7 +231,7 @@ export class UIHost implements UIHostContextPort {
 					return;
 				}
 				this.scrollOffset = Math.max(0, this.scrollOffset - 1);
-				const layout = this.computeLayout();
+				const layout = this.layoutFrame();
 				this.lastLayout = layout;
 				this.scrollOffset = layout.effScroll;
 				this.lastMaxScroll = layout.maxScroll;
@@ -575,7 +576,7 @@ export class UIHost implements UIHostContextPort {
 	scrollToTurn(turnUid: number): void {
 		// Uses the geometry the user actually clicked on (last frame), falling
 		// back to a fresh layout when nothing has been rendered yet.
-		const layout = this.lastLayout ?? this.computeLayout();
+		const layout = this.lastLayout ?? this.layoutFrame();
 		const lineOffset = this.transcript.getTurnStartLinesByUid(layout.transcriptContentW).get(turnUid);
 		if (lineOffset === undefined) return;
 		const targetScroll = layout.totalPerm - (layout.bannerCount + lineOffset) - layout.transcriptH;
@@ -650,7 +651,7 @@ export class UIHost implements UIHostContextPort {
 	preserveScrollAnchor(action: () => void, targetAbsLine?: number): void {
 		// "before" comes from the last rendered frame, so expanding a card costs
 		// one layout (the incremental one) instead of two full ones.
-		const before = this.lastLayout ?? this.computeLayout();
+		const before = this.lastLayout ?? this.layoutFrame();
 		const oldScrollStart = before.scrollStart;
 
 		// 确定锚点行在原全量内容中的绝对行索引及在视口中的屏幕行偏移
@@ -665,6 +666,7 @@ export class UIHost implements UIHostContextPort {
 		action();
 
 		const after = this.computeLayout();
+		this.updateViewportForContentChange(after.totalPerm, after.transcriptH);
 		if (after.totalPerm <= after.transcriptH) {
 			this.scrollOffset = 0;
 			return;
@@ -874,12 +876,22 @@ export class UIHost implements UIHostContextPort {
 			};
 			const panel = build(doClose, { hide: () => handle?.hide() });
 			panel.onRequestRender = () => this.requestRender();
+			const dispose = panel.onDispose;
+			let disposed = false;
+			const disposeOnce = () => {
+				if (disposed) return;
+				disposed = true;
+				dispose?.();
+			};
 			const userOnClose = panel.onClose;
 			panel.onClose = () => {
 				userOnClose?.();
 				doClose();
 			};
-			handle = this.overlayStack.showOverlay(panel, { anchor: "center" }, () => closeModalState());
+			handle = this.overlayStack.showOverlay(panel, { anchor: "center" }, () => {
+				disposeOnce();
+				closeModalState();
+			});
 			return handle;
 		});
 	}
@@ -991,14 +1003,6 @@ export class UIHost implements UIHostContextPort {
 		const totalPerm = permanentLines.length;
 		const maxScroll = Math.max(0, totalPerm - transcriptH);
 
-		// 如果用户离开了底部（正在查看历史），底层追加了新内容（totalPerm 增大）时，
-		// 自动增加 scrollOffset 保持视口顶部的绝对行号绝对不变，防止新 token 将用户正在查看的内容顶跑。
-		if (this.scrollOffset > 0 && this.lastTotalPerm > 0 && totalPerm > this.lastTotalPerm) {
-			const delta = totalPerm - this.lastTotalPerm;
-			this.scrollOffset += delta;
-		}
-		this.lastTotalPerm = totalPerm;
-
 		const effScroll = totalPerm <= transcriptH ? 0 : Math.max(0, Math.min(this.scrollOffset, maxScroll));
 		const scrollStart = totalPerm <= transcriptH ? 0 : totalPerm - transcriptH - effScroll;
 		const visibleTranscript = totalPerm <= transcriptH
@@ -1014,10 +1018,24 @@ export class UIHost implements UIHostContextPort {
 		};
 	}
 
+	private updateViewportForContentChange(totalPerm: number, transcriptH: number): void {
+		if (this.scrollOffset > 0 && this.lastTotalPerm > 0 && totalPerm > this.lastTotalPerm) {
+			this.scrollOffset += totalPerm - this.lastTotalPerm;
+		}
+		this.lastTotalPerm = totalPerm;
+		this.lastMaxScroll = Math.max(0, totalPerm - transcriptH);
+	}
+
+	private layoutFrame(): FrameLayout {
+		const provisional = this.computeLayout();
+		this.updateViewportForContentChange(provisional.totalPerm, provisional.transcriptH);
+		return this.computeLayout();
+	}
+
 	private renderCurrentFrame(): void {
 		if (!this.running) return;
 		this.syncInputMetrics();
-		const layout = this.computeLayout();
+		const layout = this.layoutFrame();
 		this.lastLayout = layout;
 		this.scrollOffset = layout.effScroll;
 		const {
@@ -1615,7 +1633,7 @@ export class UIHost implements UIHostContextPort {
 				this.requestRender();
 				return;
 			}
-			const layout = this.lastLayout ?? this.computeLayout();
+			const layout = this.lastLayout ?? this.layoutFrame();
 			const { transcriptContentW, bannerCount } = layout;
 
 			// 如果当前焦点或悬停在工具卡片上，单卡展开优先

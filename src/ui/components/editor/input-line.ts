@@ -17,6 +17,7 @@ import { CURSOR_MARKER, type Component, type Focusable } from "../../core/types.
 import { Key, matchesKey } from "../../core/keys.js";
 import { C, visibleWidth, truncateToWidth, copyToClipboardUnified } from "../../core/utils.js";
 import { formatTokensCompact, renderSegmentedBar, type ContextSegments } from "../widgets/context-bar.js";
+import { TextBuffer } from "../../core/text-buffer.js";
 
 const PASTE_MARKER_REGEX = /\[已粘贴 #(\d+) (\+\d+行|\d+字)\]/g;
 const MAX_VISIBLE_LINES = 5;
@@ -152,8 +153,11 @@ interface VisualRow {
 
 export class InputLine implements Component, Focusable {
 	focused = true;
-	private text = ""; // 当前编辑文本
-	private cursorIndex = 0;
+	private readonly textBuffer = new TextBuffer();
+	private get text(): string { return this.textBuffer.text; }
+	private set text(value: string) { this.textBuffer.setText(value); }
+	private get cursorIndex(): number { return this.textBuffer.cursor; }
+	private set cursorIndex(value: number) { this.textBuffer.setCursor(value); }
 	private isAllSelected = false; // Ctrl+A 全选状态
 	private scrollOffset = 0; // 多行视口滚动偏移量
 

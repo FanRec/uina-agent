@@ -6,7 +6,8 @@
 import type { Component, Focusable, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import { CURSOR_MARKER } from "./core/types.js";
 import { Key, matchesKey } from "./core/keys.js";
-import { C, visibleWidth, truncateToWidth, getPrevGraphemeIndex, getNextGraphemeIndex } from "./core/utils.js";
+import { C, visibleWidth, truncateToWidth } from "./core/utils.js";
+import { TextBuffer } from "./core/text-buffer.js";
 import type { ExtensionUIContext, PromptOptions } from "../extensions/ui-contract.js";
 
 export interface UIHostContextPort {
@@ -24,12 +25,6 @@ export interface UIHostContextPort {
 	onTerminalInput(handler: (data: string) => void): () => void;
 	requestRender(): void;
 	openFeature?(name: string, payload?: unknown): boolean;
-	getGutterMode?(): "scrollbar" | "timeline";
-	setGutterMode?(mode: "scrollbar" | "timeline"): void;
-	toggleThinking?(): void;
-	clearTranscript?(): void;
-	getScrollbarThumbStyle?(): "slim" | "block" | "wide";
-	setScrollbarThumbStyle?(style: "slim" | "block" | "wide"): void;
 }
 
 /** 终端鼠标上报前缀（覆盖层统一忽略，避免吞掉后续按键字节）。 */
@@ -217,8 +212,7 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 		input(title: string, placeholder = "", promptOptions?: PromptOptions): Promise<string | undefined> {
 			return new Promise((resolve) => {
 				const signal = promptOptions?.signal;
-				let text = "";
-				let cursorIndex = 0;
+				const buffer = new TextBuffer();
 				let inPaste = false;
 				let pasteBuf = "";
 				let handle: OverlayHandle | null = null;
@@ -244,12 +238,12 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 						const out = [top];
 
 						let content = "";
-						if (text.length === 0) {
+						if (buffer.text.length === 0) {
 							content = `${CURSOR_MARKER}\x1b[7m \x1b[27m${C.dim}${placeholder}${C.reset}`;
 						} else {
-							const before = text.slice(0, cursorIndex);
-							const atCursor = text.slice(cursorIndex, cursorIndex + 1);
-							const after = text.slice(cursorIndex + 1);
+							const before = buffer.text.slice(0, buffer.cursor);
+							const atCursor = buffer.cursorGrapheme;
+							const after = buffer.text.slice(buffer.cursor + atCursor.length);
 							const cursorChar = atCursor || " ";
 							content = `${before}${CURSOR_MARKER}\x1b[7m${cursorChar}\x1b[27m${after}`;
 						}
@@ -275,8 +269,7 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 							if (remaining.includes("\x1b[201~")) {
 								const endIdx = remaining.indexOf("\x1b[201~");
 								const pasted = remaining.slice(0, endIdx).replace(/[\r\n]/g, " ");
-								text = text.slice(0, cursorIndex) + pasted + text.slice(cursorIndex);
-								cursorIndex += pasted.length;
+								buffer.insert(pasted);
 								inPaste = false;
 								host.requestRender();
 								return;
@@ -289,8 +282,7 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 								const endIdx = data.indexOf("\x1b[201~");
 								pasteBuf += data.slice(0, endIdx);
 								const pasted = pasteBuf.replace(/[\r\n]/g, " ");
-								text = text.slice(0, cursorIndex) + pasted + text.slice(cursorIndex);
-								cursorIndex += pasted.length;
+								buffer.insert(pasted);
 								inPaste = false;
 								host.requestRender();
 								return;
@@ -300,46 +292,41 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 						}
 
 						if (matchesKey(data, Key.enter)) {
-							settle(text);
+							settle(buffer.text);
 						} else if (matchesKey(data, Key.escape)) {
 							settle(undefined);
 						} else if (matchesKey(data, Key.left)) {
-							if (cursorIndex > 0) {
-								cursorIndex = getPrevGraphemeIndex(text, cursorIndex);
+							if (buffer.cursor > 0) {
+								buffer.moveLeft();
 								host.requestRender();
 							}
 						} else if (matchesKey(data, Key.right)) {
-							if (cursorIndex < text.length) {
-								cursorIndex = getNextGraphemeIndex(text, cursorIndex);
+							if (buffer.cursor < buffer.text.length) {
+								buffer.moveRight();
 								host.requestRender();
 							}
 						} else if (matchesKey(data, Key.home)) {
-							cursorIndex = 0;
+							buffer.moveHome();
 							host.requestRender();
 						} else if (matchesKey(data, Key.end)) {
-							cursorIndex = text.length;
+							buffer.moveEnd();
 							host.requestRender();
 						} else if (matchesKey(data, Key.backspace)) {
-							if (cursorIndex > 0) {
-								const prev = getPrevGraphemeIndex(text, cursorIndex);
-								text = text.slice(0, prev) + text.slice(cursorIndex);
-								cursorIndex = prev;
+							if (buffer.cursor > 0) {
+								buffer.deleteBackward();
 								host.requestRender();
 							}
 						} else if (matchesKey(data, Key.delete)) {
-							if (cursorIndex < text.length) {
-								const next = getNextGraphemeIndex(text, cursorIndex);
-								text = text.slice(0, cursorIndex) + text.slice(next);
+							if (buffer.cursor < buffer.text.length) {
+								buffer.deleteForward();
 								host.requestRender();
 							}
 						} else if (matchesKey(data, Key.ctrl("u"))) {
-							text = "";
-							cursorIndex = 0;
+							buffer.setText("");
 							host.requestRender();
 						} else if (data && !data.startsWith("\x1b")) {
 							const clean = data.replace(/[\r\n]/g, "");
-							text = text.slice(0, cursorIndex) + clean + text.slice(cursorIndex);
-							cursorIndex += clean.length;
+							buffer.insert(clean);
 							host.requestRender();
 						}
 					},
@@ -416,19 +403,8 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 			return host.onTerminalInput(handler);
 		},
 
-		getGutterMode(): "scrollbar" | "timeline" {
-			return host.getGutterMode?.() ?? "scrollbar";
-		},
-
-		setGutterMode(mode: "scrollbar" | "timeline"): void {
-			host.setGutterMode?.(mode);
-		},
-
 		hasUI(): boolean {
 			return true;
 		},
-
-		getScrollbarThumbStyle: (): "slim" | "block" | "wide" => host.getScrollbarThumbStyle?.() ?? "slim",
-		setScrollbarThumbStyle: (style) => host.setScrollbarThumbStyle?.(style),
 	};
 }
