@@ -20,4 +20,5 @@ export interface JukeboxAppConfig {
   readonly apiBaseUrl?: string;
   readonly apiEnhancedDir?: string;
   readonly mpvPath?: string;
+  readonly simulation?: boolean;
 }

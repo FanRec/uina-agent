@@ -201,7 +201,7 @@ describe("Jukebox App Integration with AppFramework", () => {
     }) as unknown as typeof fetch;
 
     const mock = createMockExtensionAPI();
-    const jukeboxDef = createJukeboxApp();
+    const jukeboxDef = createJukeboxApp({ simulation: true });
 
     const unregister = await defineApp(mock.pi, jukeboxDef);
 

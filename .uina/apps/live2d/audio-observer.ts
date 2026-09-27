@@ -1,4 +1,4 @@
-import type { VoiceLevelEvent } from "../../extensions/voice/events.js";
+import type { VoiceLevelEvent } from "./contracts.js";
 import type { MotionComposer } from "./motion-composer.js";
 
 export interface AudioObserverOptions {

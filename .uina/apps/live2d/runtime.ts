@@ -1,10 +1,5 @@
-import type {
-	BodyAffordance,
-	BodyEndpoint,
-	BodyState,
-} from "../../extensions/embodiment/types.js";
-import { BODY_ENDPOINT_EXPOSED_PREFIX } from "../../extensions/embodiment/types.js";
-import { VOICE_LEVEL_SINK_EXPOSED_PREFIX } from "../../extensions/voice/events.js";
+import type { BodyAffordance, BodyEndpoint, BodyState } from "./contracts.js";
+import { BODY_ENDPOINT_EXPOSED_PREFIX, VOICE_LEVEL_SINK_EXPOSED_PREFIX } from "./contracts.js";
 import type { ActionContext, ServiceCompanionContext } from "../../../src/extensions/app-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { AudioObserver } from "./audio-observer.js";

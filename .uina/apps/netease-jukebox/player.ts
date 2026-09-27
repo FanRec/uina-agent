@@ -147,6 +147,20 @@ export class SimulatedMusicPlayer extends EventEmitter implements MusicPlayer {
   }
 }
 
+export class UnavailableMusicPlayer extends EventEmitter implements MusicPlayer {
+  readonly isSimulated = false;
+  private _volume = 80;
+  get status(): PlaybackStatus { return "idle"; }
+  get volume(): number { return this._volume; }
+  async load(): Promise<void> { throw new Error("未找到 mpv 播放器"); }
+  async pause(): Promise<void> { throw new Error("未找到 mpv 播放器"); }
+  async resume(): Promise<void> { throw new Error("未找到 mpv 播放器"); }
+  async stop(): Promise<void> {}
+  async setVolume(volume: number): Promise<void> { this._volume = Math.min(100, Math.max(0, Math.round(volume))); }
+  async progress(): Promise<PlayerProgress> { return { positionMs: 0, durationMs: null }; }
+  async close(): Promise<void> {}
+}
+
 export class MpvPlayer extends EventEmitter implements MusicPlayer {
   readonly isSimulated = false;
   private _status: PlaybackStatus = "idle";

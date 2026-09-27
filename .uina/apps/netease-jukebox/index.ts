@@ -1,7 +1,7 @@
 import type { AppDef, ActionContext } from "../../../src/extensions/app-framework/types.js";
 import { NeteaseApiClient } from "./api-client.js";
 import { loadJukeboxConfig } from "./config.js";
-import { SimulatedMusicPlayer, MpvPlayer, resolveMpvPath, type MusicPlayer } from "./player.js";
+import { SimulatedMusicPlayer, UnavailableMusicPlayer, MpvPlayer, resolveMpvPath, type MusicPlayer } from "./player.js";
 import { CompanionManager } from "./companion.js";
 import type { JukeboxState, JukeboxAppConfig, SongInfo } from "./types.js";
 
@@ -24,7 +24,11 @@ export function createJukeboxApp(config?: JukeboxAppConfig): AppDef {
   );
 
   const mpvPath = resolveMpvPath(mergedConfig.mpvPath);
-  const player: MusicPlayer = mpvPath ? new MpvPlayer(mpvPath) : new SimulatedMusicPlayer();
+  const player: MusicPlayer = mergedConfig.simulation
+    ? new SimulatedMusicPlayer()
+    : mpvPath
+      ? new MpvPlayer(mpvPath)
+      : new UnavailableMusicPlayer();
 
   let state: JukeboxState = {
     status: "idle",

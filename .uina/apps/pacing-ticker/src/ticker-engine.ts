@@ -55,9 +55,9 @@ export class TickerEngine {
 		this.durableState = {
 			baseIntervalMs: initialDurableState?.baseIntervalMs ?? 180_000,
 			pausedUntilEpochMs: initialDurableState?.pausedUntilEpochMs ?? null,
-			dailyWakeUsage:
-				initialDurableState?.dailyWakeUsage?.date === today
-					? { ...initialDurableState.dailyWakeUsage }
+			dailyAttempts:
+				initialDurableState?.dailyAttempts?.date === today
+					? { ...initialDurableState.dailyAttempts }
 					: { date: today, count: 0 },
 		};
 
@@ -185,14 +185,14 @@ export class TickerEngine {
 
 		// 2. 物理资源熔断护栏检查 (日唤醒限额，跨重启持久计数)
 		const today = new Date(this.clock.nowEpoch()).toDateString();
-		if (today !== this.durableState.dailyWakeUsage.date) {
-			this.durableState.dailyWakeUsage = { date: today, count: 0 };
+		if (today !== this.durableState.dailyAttempts.date) {
+			this.durableState.dailyAttempts = { date: today, count: 0 };
 			void this.persist();
 		}
 		if (
 			this.guardrails.maxDailyWakes !== null &&
 			this.guardrails.maxDailyWakes !== undefined &&
-			this.durableState.dailyWakeUsage.count >= this.guardrails.maxDailyWakes
+			this.durableState.dailyAttempts.count >= this.guardrails.maxDailyWakes
 		) {
 			// 达到人类设定的物理硬限额，退避至 1 小时后再次探测
 			this.scheduleNext(3600_000, generation);
@@ -222,11 +222,11 @@ export class TickerEngine {
 		});
 		const opportunityText = `[时钟节拍: ${timeStr} | 距上个外部活动已过去 ${idleMinutes > 0 ? `${idleMinutes}m` : "片刻"}]`;
 
-		this.durableState.dailyWakeUsage.count++;
+		this.durableState.dailyAttempts.count++;
 		try {
 			await this.persist();
 		} catch {
-			this.durableState.dailyWakeUsage.count--;
+			this.durableState.dailyAttempts.count--;
 			if (this.started && generation === this.generation) this.scheduleNext(15_000, generation);
 			return;
 		}
@@ -249,7 +249,7 @@ export class TickerEngine {
 		const snapshot: TickerDurableState = {
 			baseIntervalMs: this.durableState.baseIntervalMs,
 			pausedUntilEpochMs: this.durableState.pausedUntilEpochMs,
-			dailyWakeUsage: { ...this.durableState.dailyWakeUsage },
+			dailyAttempts: { ...this.durableState.dailyAttempts },
 		};
 
 		this.persistTail = this.host.saveDurableState(snapshot);
@@ -265,8 +265,9 @@ export class TickerEngine {
 			effectiveIntervalMinutes: Math.round(this.calculateNextInterval() / 60_000),
 			remainingSeconds: Math.max(0, Math.round((this.nextWakeMonoMs - now) / 1000)),
 			isPaused: now < this.pauseUntilMonoMs,
-			dailyWakesUsed: this.durableState.dailyWakeUsage.count,
-			dailyWakesLimit: this.guardrails.maxDailyWakes ?? null,
+			dailyAttemptsUsed: this.durableState.dailyAttempts.count,
+			dailyAttemptsLimit: this.guardrails.maxDailyWakes ?? null,
 		};
 	}
 }
+

@@ -27,11 +27,11 @@ async function loadState(filePath: string): Promise<TickerDurableState | undefin
     if (paused !== null && (typeof paused !== "number" || !Number.isFinite(paused))) {
       throw new Error("Ticker 暂停截止时间无效");
     }
-    const usage = data.dailyWakeUsage;
+    const usage = data.dailyAttempts;
     if (!usage || typeof usage.date !== "string" || typeof usage.count !== "number" || !Number.isFinite(usage.count)) {
       throw new Error("Ticker 用量状态无效");
     }
-    return { baseIntervalMs: data.baseIntervalMs, pausedUntilEpochMs: paused ?? null, dailyWakeUsage: { ...usage } };
+    return { baseIntervalMs: data.baseIntervalMs, pausedUntilEpochMs: paused ?? null, dailyAttempts: { ...usage } };
   } catch (error) {
     if (error instanceof SyntaxError || (error instanceof Error && /ENOENT/.test(error.message))) return undefined;
     throw error;
@@ -73,8 +73,8 @@ export function createPacingTickerApp(): AppDef {
       const state = s.isPaused ? "暂停中" : `${s.baseIntervalMinutes}m`;
       return `[ticker] 节拍: ${state} | 静默: ${s.idleMinutes}m`;
     }
-    const limit = s.dailyWakesLimit === null ? "无限制" : String(s.dailyWakesLimit);
-    return `[ticker]\n状态: ${s.isPaused ? "暂停中" : "运行中"} | 下次机会: ${s.remainingSeconds}s\n节拍: 基准 ${s.baseIntervalMinutes}m / 实际退避 ${s.effectiveIntervalMinutes}m\n静默: ${s.idleMinutes}m | 今日尝试: ${s.dailyWakesUsed} / ${limit}\n[/ticker]`;
+    const limit = s.dailyAttemptsLimit === null ? "无限制" : String(s.dailyAttemptsLimit);
+    return `[ticker]\n状态: ${s.isPaused ? "暂停中" : "运行中"} | 下次机会: ${s.remainingSeconds}s\n节拍: 基准 ${s.baseIntervalMinutes}m / 实际退避 ${s.effectiveIntervalMinutes}m\n静默: ${s.idleMinutes}m | 今日尝试: ${s.dailyAttemptsUsed} / ${limit}\n[/ticker]`;
   };
 
   const app: AppDef = {
@@ -122,7 +122,7 @@ export function createPacingTickerApp(): AppDef {
         if (!engine.getStatus().isPaused) return "自主节拍当前处于运行状态，无需恢复。";
         await engine.resume(); currentTier = "ambient"; ctx.setTier(currentTier); return "自主节拍已提前解除挂起。";
       } },
-      status: { description: "查看当前自主节拍器状态", run() { if (!engine) return JSON.stringify({ status: "stopped" }); const s = engine.getStatus(); return JSON.stringify({ status: s.isPaused ? "paused" : "running", baseIntervalMinutes: s.baseIntervalMinutes, effectiveIntervalMinutes: s.effectiveIntervalMinutes, idleMinutes: s.idleMinutes, remainingSeconds: s.remainingSeconds, dailyAttempts: s.dailyWakesUsed, dailyAttemptsLimit: s.dailyWakesLimit }); } },
+      status: { description: "查看当前自主节拍器状态", run() { if (!engine) return JSON.stringify({ status: "stopped" }); const s = engine.getStatus(); return JSON.stringify({ status: s.isPaused ? "paused" : "running", baseIntervalMinutes: s.baseIntervalMinutes, effectiveIntervalMinutes: s.effectiveIntervalMinutes, idleMinutes: s.idleMinutes, remainingSeconds: s.remainingSeconds, dailyAttempts: s.dailyAttemptsUsed, dailyAttemptsLimit: s.dailyAttemptsLimit }); } },
     },
   };
   return app;
@@ -130,3 +130,4 @@ export function createPacingTickerApp(): AppDef {
 
 export const pacingTickerApp = createPacingTickerApp();
 export default pacingTickerApp;
+

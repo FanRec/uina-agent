@@ -175,10 +175,11 @@ describe("pacingTickerApp (自主节拍器 App 契约与动作测试)", () => {
 
 		await pacingTickerApp.onStart?.(ctx);
 		const engine = getTickerEngine();
-		expect(engine?.getStatus().dailyWakesLimit).toBeNull();
+		expect(engine?.getStatus().dailyAttemptsLimit).toBeNull();
 
 		// 触发 abort 信号，引擎应被终止
 		abortController.abort();
 		expect(getTickerEngine()).toBeNull();
 	});
 });
+

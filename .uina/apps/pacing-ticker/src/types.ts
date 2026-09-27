@@ -34,7 +34,7 @@ export interface TickerDurableState {
 	/** 挂起截止时间 (绝对 Wall-Clock 毫秒，null 表示未挂起) */
 	pausedUntilEpochMs: number | null;
 	/** 每日唤醒用量统计 */
-	dailyWakeUsage: {
+	dailyAttempts: {
 		date: string;
 		count: number;
 	};
@@ -68,6 +68,7 @@ export interface TickerStatusSnapshot {
 	readonly effectiveIntervalMinutes: number;
 	readonly remainingSeconds: number;
 	readonly isPaused: boolean;
-	readonly dailyWakesUsed: number;
-	readonly dailyWakesLimit: number | null;
+	readonly dailyAttemptsUsed: number;
+	readonly dailyAttemptsLimit: number | null;
 }
+

@@ -44,3 +44,4 @@ describe("pacing ticker state boundaries", () => {
 		expect(submitted).toBe(1);
 	});
 });
+
