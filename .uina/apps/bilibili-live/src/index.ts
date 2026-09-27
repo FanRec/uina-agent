@@ -217,6 +217,13 @@ export function createBilibiliLiveApp(userConfig?: Partial<LiveAppConfig>): AppD
           autoReconnect: config.network.autoReconnect,
         });
 
+    c.on("roomInfo", (info: any) => {
+      if (generation !== connectionGeneration) return;
+      appState.roomId = info.room_id ?? appState.roomId;
+      appState.roomTitle = info.title ?? appState.roomTitle;
+      appState.roomStatus = info.live_status === 1 ? "online" : info.live_status === 0 ? "offline" : "unknown";
+    });
+
     c.on("danmaku", (msg: DanmakuEvent) => {
       if (generation !== connectionGeneration) return;
       const event = config.openPlatform ? normalizeOpenDanmaku(msg as never) : normalizeWebDanmaku(msg);

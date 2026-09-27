@@ -138,6 +138,7 @@ export async function fetchDanmuInfo(
 }
 
 export interface BilibiliLiveClientEvents {
+  roomInfo: (event: RoomInitResult) => void;
   connected: () => void;
   disconnected: () => void;
   reconnecting: (info: { retryCount: number; totalRetryCount: number; delaySeconds: number }) => void;
@@ -176,6 +177,7 @@ export class BilibiliLiveClient extends WebSocketClientBase {
         this.options.sessdata
       );
       this._realRoomId = roomInfo.room_id;
+		this.emit("roomInfo", roomInfo);
 
       const danmuInfo = await fetchDanmuInfo(
         this.options.roomId,

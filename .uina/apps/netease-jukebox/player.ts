@@ -15,6 +15,7 @@ export interface MusicPlayer {
   readonly status: PlaybackStatus;
   readonly volume: number;
   readonly isSimulated: boolean;
+  readonly availability: "real" | "simulation" | "unavailable";
   load(url: string, durationMs: number | null): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;
@@ -55,6 +56,7 @@ export function resolveMpvPath(customPath?: string): string | null {
 
 export class SimulatedMusicPlayer extends EventEmitter implements MusicPlayer {
   readonly isSimulated = true;
+  readonly availability = "simulation" as const;
   private _status: PlaybackStatus = "idle";
   private _volume = 80;
   private startedAt = 0;
@@ -149,6 +151,7 @@ export class SimulatedMusicPlayer extends EventEmitter implements MusicPlayer {
 
 export class UnavailableMusicPlayer extends EventEmitter implements MusicPlayer {
   readonly isSimulated = false;
+  readonly availability = "unavailable" as const;
   private _volume = 80;
   get status(): PlaybackStatus { return "idle"; }
   get volume(): number { return this._volume; }
@@ -163,6 +166,7 @@ export class UnavailableMusicPlayer extends EventEmitter implements MusicPlayer 
 
 export class MpvPlayer extends EventEmitter implements MusicPlayer {
   readonly isSimulated = false;
+  readonly availability = "real" as const;
   private _status: PlaybackStatus = "idle";
   private _volume = 80;
   private process: ChildProcess | null = null;

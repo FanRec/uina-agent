@@ -83,7 +83,7 @@ export function createJukeboxApp(config?: JukeboxAppConfig): AppDef {
       const currentPos = formatMs(progress.positionMs);
       const currentDur = formatMs(progress.durationMs);
       const statusStr = player.status === "playing" ? "播放中" : player.status === "paused" ? "已暂停" : "空闲";
-      const coreStr = player.isSimulated ? "模拟(无声)" : "mpv";
+      const coreStr = player.availability === "simulation" ? "模拟(无声)" : player.availability === "real" ? "mpv" : "不可用";
       const songStr = state.currentSong
         ? `当前曲目: ${state.currentSong.name} - ${state.currentSong.artists.join(", ")}\n进度: ${currentPos} / ${currentDur}`
         : "当前曲目: 无";
@@ -159,7 +159,7 @@ ${songStr}
           };
           ctx.setTier("ambient");
 
-          const simNotice = player.isSimulated
+          const simNotice = player.availability === "simulation"
             ? " (⚠️ 提示: 本地未检测到 mpv 播放器，处于静音模拟模式，无实际声音输出)"
             : "";
           return `正在播放: ${songToPlay.name} - ${songToPlay.artists.join(", ")}${simNotice}`;

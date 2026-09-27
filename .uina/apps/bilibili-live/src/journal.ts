@@ -174,8 +174,8 @@ export class LiveEventJournal {
       try {
         const entry = JSON.parse(trimmed) as JournalEntry;
         applyJournalEntry(entry, pendingEvents, counters, this.knownEventKeys);
-      } catch {
-        // 容错忽略损坏行
+      } catch (error) {
+        throw new Error(`B站直播 Journal 第 ${count} 行无效`, { cause: error });
       }
     }
 
