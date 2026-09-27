@@ -252,7 +252,7 @@ export class TickerEngine {
 			dailyWakeUsage: { ...this.durableState.dailyWakeUsage },
 		};
 
-		this.persistTail = this.persistTail.catch(() => undefined).then(() => this.host.saveDurableState(snapshot));
+		this.persistTail = this.host.saveDurableState(snapshot);
 
 		return this.persistTail;
 	}
