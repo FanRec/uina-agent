@@ -26,7 +26,7 @@
 | `session/` | 有序 SessionEntry、JSONL append/recovery、未完成工具 unknown | Provider 决策和 UI 规则 |
 | `tools/broker.ts` | 工具 schema、校验和执行 | 工具发现或扩展加载 |
 | `runtime/` | 只读 RuntimeHooks 合同与 no-op 实现 | handler、scope、扩展状态或 UI |
-| `extensions/runner.ts` | ActivationScope、项目/builtin 注册、来源诊断、异步 teardown | Agent 决策和工具业务实现 |
+| `extensions/runner.ts` | ResourceScope、项目/builtin 注册、来源诊断、异步 teardown | Agent 决策和工具业务实现 |
 | `extensions/runtime-tools/` | 内置 shell、时间、Job/Subagent 工具实现 | 项目扩展发现 |
 | `ui/` | 展示、输入、焦点、组件组合；作为宿主的一个消费者 | 模型能力事实、Agent 状态转移、主体生命期 |
 | `host/` | 主体生命期、provider/工具/Job/Subagent/扩展/会话的唯一装配、消费者事件流 | 任何 UI 类型（由边界检查强制） |
@@ -72,7 +72,7 @@ shell 非零退出码为 `failed`；后台任务成功创建表示此次工具�
 
 ## 能力注册
 
-所有能力经 ActivationScope 注册：
+所有能力经 ResourceScope 注册：
 
 - `builtin:runtime-tools` 注册 `get_time`、`exec_command`、Job 与 Subagent 工具，并拥有其关闭清理。
 - `builtin:workspace-tools` 默认注册 `read_file`、`write_file`、`edit_file`、`read_image` 和文件 renderer；Host 可用 `workspaceTools: false` 禁用，扩展可显式 replace。
@@ -80,7 +80,7 @@ shell 非零退出码为 `failed`；后台任务成功创建表示此次工具�
 - `builtin:commands` 注册内置命令；`/session` 仍用于查看会话用量。
 - 项目扩展从 `.uina/extensions/` 的脚本、一级目录入口或 `package.json#uina.extensions` 加载；CLI `-e` 与 Host `extensionPaths` 可指定额外入口。在 `activate(pi)` 中调用 `pi.registerTool()`、`pi.registerCommand()`、`pi.registerProvider()`、renderer 或 hook 注册 API。
 
-没有独立的 `tools/` 扫描或执行旁路。脚本加载使用 jiti，并刷新本地子模块；导入预检失败保留旧 activation，激活失败回收局部注册。ActivationScope 发出取消、执行 teardown、等待公共 API 在途调用并释放自己的注册。
+没有独立的 `tools/` 扫描或执行旁路。脚本加载使用 jiti，并刷新本地子模块；导入预检失败保留旧 activation，激活失败回收局部注册。ResourceScope 发出取消、执行 teardown、等待公共 API 在途调用并释放自己的注册。
 
 公共接口支持工具调用、服务注册/调用、模型注册/使用、压缩策略、独立工具 renderer、Markdown 显示变换与上下文贡献。重名默认报错，显式 replace 注册可在注销时恢复前一个存活实现；共享 header/footer 也按所有权恢复。程序化工具调用写入带来源的自定义条目，不伪造模型调用。设计、API 语义和示例见 [扩展契约](extensions.md)。
 
@@ -122,7 +122,7 @@ shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计�
 
 本次扩展组合实现：类型/边界检查、27 个测试文件共 375 项通过；隔离目录完成相同 package build 脚本、Windows native 加载及编译 CLI 验证，包括 `-e` 加载 TS 目录扩展后的 PNG 工具回注。原目录 clean build 受正在运行的 Uina native 文件锁影响，隔离构建复用已安装依赖，以 npm run 执行相同脚本，未中断该进程。真实 DeepSeek 文件事件验收通过；视觉服务端接受与识图质量仍未验证。新增范围见 [扩展契约](extensions.md)。
 
-当前已通过 `pnpm typecheck`、`pnpm test`、`pnpm build`；测试覆盖本地 OpenAI-compatible、Anthropic、Gemini SSE，三种 Provider 的真实 CLI one-shot 工具回注、SessionEntry 恢复、ActivationScope teardown 和 runtime tool activation。
+当前已通过 `pnpm typecheck`、`pnpm test`、`pnpm build`；测试覆盖本地 OpenAI-compatible、Anthropic、Gemini SSE，三种 Provider 的真实 CLI one-shot 工具回注、SessionEntry 恢复、ResourceScope teardown 和 runtime tool activation。
 
 以下仍未验证或未实现：其余真实 Provider 服务端、真实 TTY IME、ARM native 实际加载、跨平台 shell、实际断电、长期负载、跨重启 Job/Subagent 对账、长期记忆、语音、视觉、感知和分布式运行时。
 
@@ -132,4 +132,4 @@ shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计�
 
 真实 DeepSeek v4 Flash 已验证 off/high/max、usage、流式取消及普通文件扩展完整场景。后台运行期间用户答复在 715 ms 到达，安静决定没有回复文本，实际命令失败回注，后台取消在 523 ms 后确认，卸载后不再投递。完整范围、延迟与复现入口见 [交付证据](history/reviews/2026-09-05-plan-delivery.md)。
 
-Job/Subagent 当前是进程内 builtin capability；ActivationScope 只保证其注册与关闭归属，不承诺崩溃后恢复。
+Job/Subagent 当前是进程内 builtin capability；ResourceScope 只保证其注册与关闭归属，不承诺崩溃后恢复。

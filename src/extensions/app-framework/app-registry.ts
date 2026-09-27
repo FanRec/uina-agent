@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { errorMessage } from "../../core/errors.js";
 import type { ExtensionAPI } from "../runner.js";
+import { ResourceScope } from "../lifecycle-scope.js";
 import { ContextViewport } from "./context-viewport.js";
 import { appendTailFrame } from "../event-frames/projection.js";
 import { createFacadeTool } from "./facade-tool.js";
@@ -10,7 +11,6 @@ import {
 	type AppDef,
 	type AppExposedRegistry,
 	type AppRuntime,
-	type SurfaceTier,
 } from "./types.js";
 
 /**
@@ -69,15 +69,21 @@ function activityOriginOf(source: import("../../core/types.js").InputSource | un
 	return "runtime";
 }
 
-interface AppInstance extends AppRuntime {
+interface AppActivation {
+	readonly scope: ResourceScope;
 	toolDisposer?: () => void;
 	readonly exposed: Map<string, unknown>;
-	readonly subscriptions: Array<() => void>;
+	readonly subscriptions: Set<() => void>;
+}
+
+interface AppInstance extends AppRuntime {
+	activation?: AppActivation;
 }
 
 export class AppRegistry {
 	private readonly apps = new Map<string, AppInstance>();
-	private readonly abortController = new AbortController();
+	private closing = false;
+	private closePromise?: Promise<void>;
 	readonly viewport: ContextViewport;
 	private readonly stateFilePath?: string;
 	private persistedState: Record<string, boolean> | null = null;
@@ -126,13 +132,13 @@ export class AppRegistry {
 			names: () => {
 				const all: string[] = [];
 				for (const app of this.apps.values()) {
-					all.push(...app.exposed.keys());
+					all.push(...(app.activation?.exposed.keys() ?? []));
 				}
 				return all;
 			},
 			get: (name) => {
 				for (const app of this.apps.values()) {
-					if (app.exposed.has(name)) return app.exposed.get(name);
+					if (app.activation?.exposed.has(name)) return app.activation.exposed.get(name);
 				}
 				return undefined;
 			},
@@ -160,29 +166,29 @@ export class AppRegistry {
 	 * 而框架的职责是持有"该应用当前暴露的东西"。重名冲突的严格判定属于 pi.share
 	 * 那一层（两个不同扩展争抢同一名字才是真冲突）。
 	 */
-	private exposeFor(appName: string, name: string, value: unknown): () => void {
+	private exposeFor(appName: string, activation: AppActivation, name: string, value: unknown): () => void {
 		const app = this.apps.get(appName);
-		if (!app) throw new Error(`未找到应用: "${appName}"`);
-		const wasPresent = app.exposed.has(name);
-		app.exposed.set(name, value);
-		if (!wasPresent) this.notifyExposed();
+		if (!app || app.activation !== activation || !activation.scope.active) throw new Error("应用已停用: " + appName);
+		const previous = activation.exposed.get(name);
+		activation.exposed.set(name, value);
+		if (previous !== value) this.notifyExposed();
 
 		return () => {
-			if (app.exposed.get(name) !== value) return;
-			app.exposed.delete(name);
+			if (app.activation !== activation || activation.exposed.get(name) !== value) return;
+			activation.exposed.delete(name);
 			this.notifyExposed();
 		};
 	}
 
-	private clearExposedFor(appName: string): void {
+	private clearExposedFor(appName: string, activation: AppActivation): void {
 		const app = this.apps.get(appName);
-		if (!app || app.exposed.size === 0) return;
-		app.exposed.clear();
+		if (!app || app.activation !== activation || activation.exposed.size === 0) return;
+		activation.exposed.clear();
 		this.notifyExposed();
 	}
 
 	/** Track an app subscription with an idempotent disposer. */
-	private trackSubscription(appName: string, dispose: () => void): () => void {
+	private trackSubscription(appName: string, activation: AppActivation, dispose: () => void): () => void {
 		let done = false;
 		const once = () => {
 			if (done) return;
@@ -190,220 +196,157 @@ export class AppRegistry {
 			dispose();
 		};
 		const app = this.apps.get(appName);
-		if (!app) throw new Error(`未找到应用: "${appName}"`);
-		app.subscriptions.push(once);
+		if (!app || app.activation !== activation) throw new Error("应用已停用: " + appName);
+		activation.subscriptions.add(once);
+		activation.scope.onDispose(once);
 		return once;
-	}
-
-	private clearSubscriptionsFor(appName: string): void {
-		const app = this.apps.get(appName);
-		if (!app || app.subscriptions.length === 0) return;
-		const subscriptions = app.subscriptions.splice(0);
-		for (const dispose of subscriptions) {
-			try {
-				dispose();
-			} catch {
-				// 单个退订失败不阻断其余回收
-			}
-		}
 	}
 
 	/**
 	 * 注册一个 App 定义
 	 */
 	async register(def: AppDef): Promise<() => Promise<void>> {
-		if (this.apps.has(def.name)) {
-			throw new Error(`应用 "${def.name}" 已被注册，不允许重复注册。`);
-		}
-
-		if (this.persistedState === null) {
-			this.persistedState = await loadAppsState(this.stateFilePath);
-		}
-
-		const defaultTier: SurfaceTier = def.defaultState?.tier ?? "hidden";
-		const defaultEnabled = def.defaultState?.enabled ?? true;
-		const isEnabled = this.persistedState[def.name] ?? defaultEnabled;
+		this.assertOpen();
+		if (this.apps.has(def.name)) throw new Error("应用 \"" + def.name + "\" 已被注册");
+		if (this.persistedState === null) this.persistedState = await loadAppsState(this.stateFilePath);
 
 		const runtime: AppInstance = {
 			definition: def,
 			enabled: false,
-			surfaceTier: defaultTier,
+			surfaceTier: def.defaultState?.tier ?? "hidden",
 			lastActiveTurn: 0,
-			exposed: new Map(),
-			subscriptions: [],
 		};
-
 		this.apps.set(def.name, runtime);
-
-		// 如果默认启用，则挂载工具并触发 onStart（初始加载不写盘）
-		if (isEnabled) {
-			await this.enable(def.name, false);
+		try {
+			if (this.persistedState[def.name] ?? def.defaultState?.enabled ?? true) await this.enable(def.name, false);
+		} catch (error) {
+			this.apps.delete(def.name);
+			throw error;
 		}
-
-		return async () => {
-			await this.unregister(def.name);
-		};
+		return async () => this.unregister(def.name);
 	}
 
-	/**
-	 * 启用一个应用（上桌面，向大模型暴露 Facade Tool）。
-	 *
-	 * 同一应用的启停操作串行执行：内部在多个 await 之后才提交 enabled，
-	 * 并发交错会重复执行 onStart 或遗漏 onStop。
-	 */
+	private assertOpen(): void {
+		if (this.closing) throw new Error("App registry is closing");
+	}
+
 	async enable(name: string, persist = true): Promise<void> {
+		this.assertOpen();
 		return this.withLifecycleLock(name, () => this.enableInner(name, persist));
 	}
 
-	/** 每应用串行锁：无论前一个操作成功还是失败，后续操作按提交顺序逐个结算。 */
 	private withLifecycleLock(name: string, op: () => Promise<void>): Promise<void> {
 		const previous = this.lifecycleLocks.get(name) ?? Promise.resolve();
 		const next = previous.then(op, op);
 		this.lifecycleLocks.set(name, next);
-		// 清理链自身必须吞错：finally 产生的新 Promise 若随 next 一起拒绝，
-		// 会成为调用方之外的第二条未处理拒绝路径。
-		void next.catch(() => {}).then(() => {
-			if (this.lifecycleLocks.get(name) === next) this.lifecycleLocks.delete(name);
-		});
+		void next.then(() => this.releaseLifecycleLock(name, next), () => this.releaseLifecycleLock(name, next));
 		return next;
+	}
+
+	private releaseLifecycleLock(name: string, operation: Promise<void>): void {
+		if (this.lifecycleLocks.get(name) === operation) this.lifecycleLocks.delete(name);
+	}
+
+	private createActivation(runtime: AppInstance): AppActivation {
+		const activation: AppActivation = {
+			scope: new ResourceScope("app:" + runtime.definition.name),
+			exposed: new Map(),
+			subscriptions: new Set(),
+		};
+		activation.scope.onDispose(() => this.clearExposedFor(runtime.definition.name, activation));
+		runtime.activation = activation;
+		return activation;
+	}
+
+	private companionContext(runtime: AppInstance, activation: AppActivation): import("./types.js").ServiceCompanionContext {
+		return {
+			signal: activation.scope.signal,
+			submitInput: this.pi.submitInput ? (input) => this.pi.submitInput!(input) : undefined,
+			isBusy: this.pi.isBusy ? () => this.pi.isBusy!() : undefined,
+			appDataDir: this.pi.subject ? join(this.pi.subject.stateRoot, "app-data", runtime.definition.name) : this.pi.cwd ? join(this.pi.cwd, ".uina/apps", runtime.definition.name) : undefined,
+			onActivity: this.pi.on ? (listener) => {
+				const unbind = this.pi.on!("input_accepted", (event) => listener({ origin: activityOriginOf(event.source) }));
+				return this.trackSubscription(runtime.definition.name, activation, unbind);
+			} : undefined,
+			onHostEvent: this.pi.on ? (listener) => {
+				const disposers = APP_HOST_EVENT_TYPES.map((type) => this.pi.on!(type, (event) => listener(event as never)));
+				return this.trackSubscription(runtime.definition.name, activation, () => disposers.forEach((dispose) => dispose()));
+			} : undefined,
+			expose: (exposedName, value) => this.exposeFor(runtime.definition.name, activation, exposedName, value),
+			callService: this.pi.callService ? (serviceName, input) => this.pi.callService!(serviceName, input) : undefined,
+			hasService: this.pi.hasService ? (serviceName) => this.pi.hasService!(serviceName) : undefined,
+		};
 	}
 
 	private async enableInner(name: string, persist: boolean): Promise<void> {
 		const runtime = this.apps.get(name);
-		if (!runtime) {
-			throw new Error(`未找到应用: "${name}"`);
-		}
-
+		if (!runtime) throw new Error("未找到应用: " + name);
 		if (runtime.enabled) return;
-
-		// 1. 触发外部伴生服务 onStart 钩子
-		if (runtime.definition.onStart) {
-			await runtime.definition.onStart({
-				signal: this.abortController.signal,
-				submitInput: this.pi.submitInput ? async (input) => this.pi.submitInput(input) : undefined,
-				isBusy: this.pi.isBusy ? () => this.pi.isBusy() : undefined,
-				appDataDir: this.pi.subject
-					? join(this.pi.subject.stateRoot, "app-data", runtime.definition.name)
-					: this.pi.cwd ? join(this.pi.cwd, ".uina/apps", runtime.definition.name) : undefined,
-				onActivity: this.pi.on
-					? (listener) => {
-							// 来源直接取自 input_accepted 的权威 InputSource，不再把 turn_start 一律
-							// 当作 human：那会误分类运行时输入，且排队输入要等回合开始才可见。
-							const unbindAccepted = this.pi.on("input_accepted", (event) => {
-								listener({ origin: activityOriginOf(event.source) });
-							});
-							return this.trackSubscription(runtime.definition.name, () => {
-								unbindAccepted();
-							});
-					  }
-					: undefined,
-				// 宿主事件流视图：保留 type 与 channel，供需要区分思考/输出/回合边界的应用使用。
-				onHostEvent: this.pi.on
-					? (listener) => {
-							const disposers = APP_HOST_EVENT_TYPES.map((type) =>
-								this.pi.on(type, (event) => {
-									listener(event as never);
-								}),
-							);
-							return this.trackSubscription(runtime.definition.name, () => {
-								for (const dispose of disposers) dispose();
-							});
-					  }
-					: undefined,
-				// 同进程活引用出口：应用只写。消费侧是 pi.shared(APP_EXPOSED_SHARED_NAME)。
-				expose: (exposedName, value) => this.exposeFor(runtime.definition.name, exposedName, value),
-				callService: this.pi.callService
-					? (name, input) => this.pi.callService(name, input)
-					: undefined,
-				hasService: this.pi.hasService
-					? (name) => this.pi.hasService(name)
-					: undefined,
-			});
-		}
-
-		// 2+3. 装配 Facade Tool 并注册：失败必须回滚已启动的伴生服务（补偿语义，
-		// 避免"App 的资源在跑但工具未注册"。"enabled" 只在资源操作成功后提交。
-		let unregisterTool: () => void;
+		const activation = this.createActivation(runtime);
+		const context = this.companionContext(runtime, activation);
 		try {
-			const tool = createFacadeTool(runtime.definition, {
-				getRuntime: () => runtime,
-				setTier: (tier) => this.viewport.setTier(runtime, tier),
-			});
-			unregisterTool = this.pi.registerTool(tool);
+			await runtime.definition.onStart?.(context);
+			const rawTool = createFacadeTool(runtime.definition, { getRuntime: () => runtime, setTier: (tier) => this.viewport.setTier(runtime, tier) });
+			const tool = {
+				...rawTool,
+				run: (args: Record<string, unknown>, signal: AbortSignal | undefined, toolContext: Parameters<typeof rawTool.run>[2]) => {
+					if (!activation.scope.active) return Promise.resolve({ result: "应用已停用", status: "not_started" as const });
+					return activation.scope.run((combined) => rawTool.run(args, combined, toolContext), signal);
+				},
+			};
+			activation.toolDisposer = this.pi.registerTool(tool);
+			runtime.enabled = true;
 		} catch (error) {
-			// 补偿与 disable 收口一致：工具装配失败不仅要回滚伴生服务，还要撤下
-			// 应用在 onStart 里可能已登记的暴露活引用与宿主订阅，避免"资源停在半途
-			// 仍可达/仍收事件"的悬垂。enabled 未提交，走完回滚后异常上抛。
-			this.clearExposedFor(name);
-			this.clearSubscriptionsFor(name);
-			await this.stopCompanion(name, runtime.definition);
+			await this.rollbackActivation(runtime, activation, context, error);
 			throw error;
 		}
-		runtime.toolDisposer = unregisterTool;
-
-		runtime.enabled = true;
-
-		if (persist) {
-			this.persistedState = this.persistedState ?? {};
-			this.persistedState[name] = true;
-			const outcome = await this.persistState();
-			if (!outcome.ok) {
-				// 运行时启停已生效，落盘失败如实可见：期望状态与本进程实际状态暂时不一致。
-				this.pi.reportError?.(new Error(`[App Framework] 应用 "${name}" 启用成功但期望状态落盘失败: ${String(outcome.error)}`));
-			}
-		}
+		if (persist) await this.persistDesiredState(name, true);
 	}
 
-	/**
-	 * 触发伴生服务 onStop（杀子进程、释放端口）。onStop 失败不吞并主流程：
-	 * 以诊断形式上报但继续——工具装配失败需要保留原始 error，停用路径也要走完。
-	 */
-	private async stopCompanion(name: string, definition: AppDef): Promise<void> {
-		if (!definition.onStop) return;
-		try {
-			await definition.onStop({ signal: this.abortController.signal });
-		} catch (error) {
-			this.pi.reportError(new Error(`[${name}] onStop 执行失败: ${String(error)}`));
-		}
+	private async rollbackActivation(runtime: AppInstance, activation: AppActivation, context: import("./types.js").ServiceCompanionContext, cause: unknown): Promise<void> {
+		if (activation.toolDisposer) activation.toolDisposer();
+		const closePromise = activation.scope.close();
+		const errors: unknown[] = [cause];
+		try { await runtime.definition.onStop?.(context); } catch (error) { errors.push(error); }
+		try { await closePromise; } catch (error) { errors.push(error); }
+		runtime.activation = undefined;
+		runtime.enabled = false;
+		if (errors.length > 1) throw new AggregateError(errors, "应用启动回滚失败: " + runtime.definition.name);
 	}
 
-	/**
-	 * 停用一个应用（收进抽屉，从大模型视野拔除 Facade Tool，触发 onStop）。
-	 * 与 enable 共用每应用串行锁，见 enable 注释。
-	 */
+	private async persistDesiredState(name: string, enabled: boolean): Promise<void> {
+		this.persistedState = this.persistedState ?? {};
+		this.persistedState[name] = enabled;
+		const outcome = await this.persistState();
+		if (!outcome.ok) this.pi.reportError?.(new Error("应用状态落盘失败: " + name + ": " + String(outcome.error)));
+	}
+
 	async disable(name: string, persist = true): Promise<void> {
 		return this.withLifecycleLock(name, () => this.disableInner(name, persist));
 	}
 
 	private async disableInner(name: string, persist: boolean): Promise<void> {
 		const runtime = this.apps.get(name);
-		if (!runtime || !runtime.enabled) return;
-
-		// 1. 拔除 Facade Tool
-		const unregisterTool = runtime.toolDisposer;
-		if (unregisterTool) {
-			unregisterTool();
-			runtime.toolDisposer = undefined;
-		}
-
-		// 2. 触发外部伴生服务 onStop 钩子
-		await this.stopCompanion(name, runtime.definition);
-
+		if (!runtime || !runtime.activation) return;
+		const activation = runtime.activation;
+		const context = this.companionContext(runtime, activation);
+		if (activation.toolDisposer) activation.toolDisposer();
+		activation.toolDisposer = undefined;
 		runtime.enabled = false;
 		runtime.surfaceTier = "hidden";
-		// 应用已停止：回收它暴露的全部活引用与持有的宿主订阅，避免"应用已停但仍可达/仍收事件"的悬垂。
-		this.clearExposedFor(name);
-		this.clearSubscriptionsFor(name);
+		const closePromise = activation.scope.close();
+		const errors: unknown[] = [];
+		try { await runtime.definition.onStop?.(context); } catch (error) { errors.push(error); }
+		try { await closePromise; } catch (error) { errors.push(error); }
+		runtime.activation = undefined;
+		if (persist) await this.persistDesiredState(name, false);
+		if (errors.length > 0) throw new AggregateError(errors, "应用停用失败: " + name);
+	}
 
-		if (persist) {
-			this.persistedState = this.persistedState ?? {};
-			this.persistedState[name] = false;
-			const outcome = await this.persistState();
-			if (!outcome.ok) {
-				// 运行时停用已生效，落盘失败如实可见：期望状态与本进程实际状态暂时不一致。
-				this.pi.reportError?.(new Error(`[App Framework] 应用 "${name}" 停用成功但期望状态落盘失败: ${String(outcome.error)}`));
-			}
-		}
+	async unregister(name: string): Promise<void> {
+		this.assertOpen();
+		await this.disable(name, false);
+		this.apps.delete(name);
 	}
 
 	/** 把当前期望状态快照串入写队列并等待其结算；失败不静默，返回诊断。 */
@@ -422,14 +365,6 @@ export class AppRegistry {
 		// 写队列持有结算结果（而非吞错），下一次写在其后继续；调用方各自等待自己的 outcome。
 		this.saveTail = run.catch(() => ({ ok: false }));
 		return run;
-	}
-
-	/**
-	 * 注销并完全移除一个应用
-	 */
-	async unregister(name: string): Promise<void> {
-		await this.disable(name, false);
-		this.apps.delete(name);
 	}
 
 	/**
@@ -464,15 +399,17 @@ export class AppRegistry {
 	 * 释放所有应用与伴生服务，并等待已提交的期望状态写入全部结算。
 	 */
 	async disposeAll(): Promise<void> {
-		this.abortController.abort();
-		for (const name of [...this.apps.keys()]) {
-			await this.disable(name, false);
-		}
-		// 关闭前等待全部已提交的期望状态写入结算：不等待就是"可能丢最后一次启停记录"。
-		// 若最后一笔写失败，以诊断形式上报后仍完成关闭（运行时资源已回收是另一回事实）。
-		const last = await this.saveTail;
-		if (!last.ok && last.error) {
-			this.pi.reportError?.(new Error(`[App Framework] 关闭前应用期望状态落盘失败: ${String(last.error)}`));
-		}
+		if (this.closePromise) return this.closePromise;
+		this.closing = true;
+		this.closePromise = (async () => {
+			const errors: unknown[] = [];
+			for (const name of [...this.apps.keys()]) {
+				try { await this.disable(name, false); } catch (error) { errors.push(error); }
+			}
+			const last = await this.saveTail;
+			if (!last.ok && last.error) errors.push(last.error);
+			if (errors.length > 0) throw new AggregateError(errors, "App registry cleanup failed");
+		})();
+		return this.closePromise;
 	}
 }

@@ -27,6 +27,7 @@ import type { HookName } from "../runtime/hooks.js";
 import { createRuntimeHooks } from "./runtime-hooks.js";
 import { guardRuntimeHooks } from "../runtime/guard.js";
 import type { RuntimeHooks } from "../runtime/hooks.js";
+import { ResourceScope } from "./lifecycle-scope.js";
 
 export interface ExtensionAPI {
 	readonly session: {
@@ -187,88 +188,12 @@ export interface ExtensionRunnerOptions {
 	shutdown?: () => Promise<void>;
 }
 
-/** One activation owns every registration it creates. This is the small part
- * of Pi's extension loader/runner lifecycle that Uina needs today. */
-class ActivationScope {
-	active = true;
-	readonly abort = new AbortController();
-	private readonly pending = new Set<Promise<unknown>>();
-	run<T>(work: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
-		if (!this.active) return Promise.reject(new Error("扩展上下文已失效: " + this.id));
-		const combined = signal ? AbortSignal.any([signal, this.abort.signal]) : this.abort.signal;
-		const promise = Promise.resolve().then(() => work(combined));
-		this.pending.add(promise);
-		void promise.then(
-			() => this.pending.delete(promise),
-			() => this.pending.delete(promise),
-		);
-		return promise;
-	}
-	private readonly cleanup: ExtensionTeardown[] = [];
-	private readonly keyed = new Map<string, ExtensionTeardown>();
-	private dispose?: ExtensionTeardown;
-
-	constructor(
-		readonly id: string,
-		readonly path: string,
-	) {}
-
-	own(teardown: ExtensionTeardown): void {
-		this.cleanup.push(teardown);
-	}
-
-	/** One cleanup per slot, run only when the activation is disposed.
-	 * Updating a slot must not clear the content that was just installed. */
-	ownKeyed(key: string, teardown: ExtensionTeardown): void {
-		if (!this.keyed.has(key)) this.keyed.set(key, teardown);
-	}
-
-	setDispose(dispose: ExtensionTeardown): void {
-		this.dispose = dispose;
-	}
-
-	async deactivate(report: (event: string, error: unknown) => void): Promise<void> {
-		if (!this.active) return;
-		this.active = false;
-		this.abort.abort(new Error("扩展已卸载: " + this.id));
-		const errors: unknown[] = [];
-		const failed = (event: string, error: unknown): void => {
-			errors.push(error);
-			report(event, error);
-		};
-		if (this.dispose) {
-			try {
-				await this.dispose();
-			} catch (error) {
-				failed("dispose", error);
-			}
-		}
-		await Promise.allSettled([...this.pending]);
-		for (const teardown of this.keyed.values()) {
-			try {
-				await teardown();
-			} catch (error) {
-				failed("cleanup", error);
-			}
-		}
-		this.keyed.clear();
-		for (const cleanup of this.cleanup.splice(0).reverse()) {
-			try {
-				await cleanup();
-			} catch (error) {
-				failed("cleanup", error);
-			}
-		}
-		if (errors.length) throw new AggregateError(errors, "Extension cleanup failed: " + this.id);
-	}
-}
-
 export class ExtensionRunner extends ExtensionHost {
 	private lifecycleTail: Promise<void> = Promise.resolve();
 	private closed = false;
 	private readonly services = new Registrations<ServiceHandler>();
 	private readonly sharedUI = new Map<string, Map<string, Parameters<ExtensionUIContext["setHeader"]>[0]>>();
-	private readonly extensions = new Map<string, ActivationScope>();
+	private readonly extensions = new Map<string, ResourceScope>();
 	private readonly failures = new Map<string, { id: string; path: string; error: string }>();
 	private ui: ExtensionUIContext;
 	readonly registry = new ExtensionRegistry();
@@ -461,21 +386,22 @@ export class ExtensionRunner extends ExtensionHost {
 	private async activateScope(id: string, path: string, activate: ExtensionActivation): Promise<void> {
 		if (this.extensions.has(id)) throw new Error(`扩展重复加载: ${id}`);
 		this.failures.delete(id);
-		const scope = new ActivationScope(id, path);
+		const scope = new ResourceScope(id, path);
 		this.extensions.set(id, scope);
 		try {
 			const dispose = await activate(this.apiFor(scope));
-			if (typeof dispose === "function") scope.setDispose(dispose);
+			if (typeof dispose === "function") scope.onDispose(dispose);
 		} catch (error) {
 			await this.deactivate(scope);
 			throw error;
 		}
 	}
 
-	private async deactivate(scope: ActivationScope): Promise<void> {
+	private async deactivate(scope: ResourceScope): Promise<void> {
 		try {
-			await scope.deactivate((event, error) => this.emitOwnedError(scope.id, event, error));
+			await scope.close();
 		} catch (error) {
+			this.emitOwnedError(scope.id, "cleanup", error);
 			this.failures.set(scope.id, { id: scope.id, path: scope.path, error: errorMessage(error) });
 			throw error;
 		} finally {
@@ -483,15 +409,16 @@ export class ExtensionRunner extends ExtensionHost {
 		}
 	}
 
-	private apiFor(scope: ActivationScope): ExtensionAPI {
+	private apiFor(scope: ResourceScope): ExtensionAPI {
 		const assertActive = () => {
 			if (!scope.active) throw new Error(`扩展上下文已失效: ${scope.id}`);
 		};
-		const own = (dispose: ExtensionTeardown): void => {
-			scope.own(dispose);
-		};
+		const ownedKeys = new Set<string>();
+		const own = (dispose: ExtensionTeardown): void => scope.onDispose(dispose);
 		const ownKeyed = (key: string, dispose: ExtensionTeardown): void => {
-			scope.ownKeyed(key, dispose);
+			if (ownedKeys.has(key)) return;
+			ownedKeys.add(key);
+			scope.onDispose(dispose);
 		};
 		const ui = ownedUI(
 			dynamicUI(() => this.ui),
@@ -500,7 +427,7 @@ export class ExtensionRunner extends ExtensionHost {
 			own,
 			ownKeyed,
 			(slot, component) => this.setSharedUI(slot, scope.id, component),
-			scope.abort.signal,
+			scope.signal,
 		);
 		const ownRegistration = (dispose: () => void): (() => void) => {
 			own(dispose);
@@ -527,7 +454,7 @@ export class ExtensionRunner extends ExtensionHost {
 			cwd: this.options.cwd,
 			subject: this.options.subjectBinding ? Object.freeze({ ...this.options.subjectBinding }) : undefined,
 			ui,
-			signal: scope.abort.signal,
+				signal: scope.signal,
 			usage: () => {
 				assertActive();
 				if (!this.options.usage) throw new Error("宿主未提供用量事实入口");
@@ -608,13 +535,15 @@ export class ExtensionRunner extends ExtensionHost {
 				assertActive();
 				return this.services.has(name);
 			},
-			callService: <O>(name: string, input: unknown, options?: CallOptions): Promise<O> =>
-				scope.run(async (signal) => {
+			callService: <O>(name: string, input: unknown, options?: CallOptions): Promise<O> => {
+				if (!scope.active) return Promise.reject(new Error(`扩展上下文已失效: ${scope.id}`));
+				return scope.run(async (signal) => {
 					signal.throwIfAborted();
 					const service = this.services.get(name);
 					if (!service) throw new Error("扩展服务不可用: " + name);
 					return structuredClone(await service(structuredClone(input), { callerId: scope.id, signal })) as O;
-				}, options?.signal),
+				}, options?.signal);
+			},
 			share: (name, value) => {
 				assertActive();
 				return ownRegistration(this.share(name, value));

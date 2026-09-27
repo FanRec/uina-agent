@@ -110,7 +110,7 @@ describe("App Framework: Lifecycle & Registry", () => {
 		expect(onStart).toHaveBeenCalledTimes(2);
 	});
 
-	it("disposeAll：等待式回收全部伴生服务与工具（由 ActivationScope await，非 fire-and-forget）", async () => {
+	it("disposeAll：等待式回收全部伴生服务与工具（由 ResourceScope await，非 fire-and-forget）", async () => {
 		const mock = createMockExtensionAPI();
 		const registry = new AppRegistry(mock.pi);
 
@@ -133,7 +133,7 @@ describe("App Framework: Lifecycle & Registry", () => {
 
 		expect(mock.tools.size).toBe(2);
 
-		// 显式等待回收（生命周期收拢后由 ActivationScope 调用 activation 返回的 dispose）
+		// 显式等待回收（生命周期收拢后由 ResourceScope 调用 activation 返回的 dispose）
 		await registry.disposeAll();
 
 		// 两个应用的 onStop 均被调用，且工具被全部拔除
@@ -249,5 +249,74 @@ describe("App Framework: Lifecycle & Registry", () => {
 		} finally {
 			await rm(tempDir, { recursive: true, force: true });
 		}
+	});
+
+	it("停止一个 App 只取消它自己的动作", async () => {
+		const mock = createMockExtensionAPI();
+		const registry = new AppRegistry(mock.pi);
+		let aStarted = false;
+		let bStarted = false;
+		let bFinished = false;
+		let releaseB!: () => void;
+		const bReleased = new Promise<void>((resolve) => { releaseB = resolve; });
+
+		await registry.register({
+			name: "a",
+			description: "a",
+			defaultState: { enabled: false },
+			actions: { wait: { description: "wait", run: async (_params, ctx) => {
+				aStarted = true;
+				await new Promise<void>((resolve) => ctx.signal.addEventListener("abort", () => resolve(), { once: true }));
+				return "a";
+			} } },
+		});
+		await registry.register({
+			name: "b",
+			description: "b",
+			defaultState: { enabled: false },
+			actions: { wait: { description: "wait", run: async (_params, ctx) => {
+				bStarted = true;
+				await bReleased;
+				bFinished = !ctx.signal.aborted;
+				return "b";
+			} } },
+		});
+		await registry.enable("a");
+		await registry.enable("b");
+
+		const aWork = mock.tools.get("a")!.run({ action: "wait", params: {} }, undefined, undefined as never);
+		const bWork = mock.tools.get("b")!.run({ action: "wait", params: {} }, undefined, undefined as never);
+		await vi.waitFor(() => expect(aStarted && bStarted).toBe(true));
+		await registry.disable("a");
+		releaseB();
+		await Promise.all([aWork, bWork]);
+
+		expect(bFinished).toBe(true);
+	});
+
+	it("onStop 失败不会伪装成成功停用", async () => {
+		const mock = createMockExtensionAPI();
+		const registry = new AppRegistry(mock.pi);
+		await registry.register({
+			name: "broken-stop",
+			description: "broken stop",
+			onStop: () => { throw new Error("stop failed"); },
+			actions: {},
+		});
+
+		await expect(registry.disable("broken-stop")).rejects.toThrow("应用停用失败");
+		expect(registry.get("broken-stop")?.enabled).toBe(false);
+		expect(mock.tools.has("broken-stop")).toBe(false);
+	});
+
+	it("关闭开始后拒绝新的注册和启用", async () => {
+		const mock = createMockExtensionAPI();
+		const registry = new AppRegistry(mock.pi);
+		await registry.register({ name: "existing", description: "existing", actions: {} });
+		const closing = registry.disposeAll();
+
+		await expect(registry.register({ name: "late", description: "late", actions: {} })).rejects.toThrow("closing");
+		await expect(registry.enable("existing")).rejects.toThrow("closing");
+		await closing;
 	});
 });

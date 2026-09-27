@@ -421,7 +421,7 @@ export class UinaHost {
 		};
 	}
 
-	/** 内置能力与项目扩展走同一套 ActivationScope 与同一张 pi API 面；在消费者接入之后调用。 */
+	/** 内置能力与项目扩展共享同一套 ResourceScope 与同一张 pi API 面；在消费者接入之后调用。 */
 	async start(startOptions: HostStartOptions = {}): Promise<void> {
 		this.requestShutdown = startOptions.requestShutdown;
 		// ── 官方能力装配顺序合同 ──────────────────────────────────────────

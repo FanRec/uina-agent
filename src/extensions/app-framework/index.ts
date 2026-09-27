@@ -46,8 +46,7 @@ export * from "./app-loader.js";
  * 官方内置扩展激活入口
  *
  * 生命周期收拢：不再自持 fire-and-forget 的中止监听。activation 返回的 teardown
- * 由现有 Extension ActivationScope 统一接管（abort → await pending → await dispose），
- * 责任唯一、顺序确定。
+ * 由统一 ResourceScope 接管取消、等待和资源释放。
  */
 export async function activateAppFramework(pi: ExtensionAPI): Promise<() => Promise<void>> {
 	const registry = getAppRegistry(pi);
@@ -57,10 +56,9 @@ export async function activateAppFramework(pi: ExtensionAPI): Promise<() => Prom
 	pi.share(APP_EXPOSED_SHARED_NAME, registry.exposedRegistry());
 	await registry.register(createAppStoreApp(registry));
 	const teardownApps = await loadExternalApps(pi, registry);
-	// teardown：统一回收 registry 内全部应用，再摘除外置应用；由 ActivationScope await。
+	// teardown：统一回收 registry 内全部应用，再摘除外置应用。
 	return async () => {
 		await registry.disposeAll();
 		await teardownApps();
 	};
 }
-
