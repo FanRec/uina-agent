@@ -15,7 +15,7 @@ export class NeteaseApiClient {
         signal: controller.signal,
       }).catch(() => null);
       clearTimeout(timer);
-      return res !== null && (res.status === 200 || res.status === 301 || res.status === 404);
+      return res !== null && res.ok && res.status === 200;
     } catch {
       return false;
     }
@@ -34,9 +34,7 @@ export class NeteaseApiClient {
       url.searchParams.set("limit", String(limit));
 
       const res = await fetch(url.toString());
-      if (!res.ok) {
-        return this.fallbackSearch(trimmed, limit);
-      }
+      if (!res.ok) throw new Error(`网易云搜索失败: HTTP ${res.status}`);
       const data = (await res.json()) as {
         result?: {
           songs?: Array<{
@@ -53,9 +51,7 @@ export class NeteaseApiClient {
       };
 
       const songs = data.result?.songs;
-      if (!Array.isArray(songs) || songs.length === 0) {
-        return this.fallbackSearch(trimmed, limit);
-      }
+      if (!Array.isArray(songs)) throw new Error("网易云搜索响应格式错误");
 
       return songs.map((s) => ({
         id: String(s.id),
@@ -64,44 +60,8 @@ export class NeteaseApiClient {
         durationMs: s.dt ?? s.duration ?? null,
         album: s.al?.name ?? s.album?.name,
       }));
-    } catch {
-      return this.fallbackSearch(trimmed, limit);
-    }
-  }
-
-  private async fallbackSearch(query: string, limit: number): Promise<readonly SongInfo[]> {
-    try {
-      const url = new URL(`${this.baseUrl}/search`);
-      url.searchParams.set("keywords", query);
-      url.searchParams.set("type", "1");
-      url.searchParams.set("limit", String(limit));
-
-      const res = await fetch(url.toString());
-      if (!res.ok) {
-        return [];
-      }
-      const data = (await res.json()) as {
-        result?: {
-          songs?: Array<{
-            id: number | string;
-            name: string;
-            artists?: Array<{ name: string }>;
-            duration?: number;
-            album?: { name: string };
-          }>;
-        };
-      };
-
-      const songs = data.result?.songs ?? [];
-      return songs.map((s) => ({
-        id: String(s.id),
-        name: s.name ?? "未知曲目",
-        artists: (s.artists ?? []).map((a) => a.name).filter(Boolean),
-        durationMs: s.duration ?? null,
-        album: s.album?.name,
-      }));
-    } catch {
-      return [];
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(String(error));
     }
   }
 
@@ -122,19 +82,9 @@ export class NeteaseApiClient {
         }
       }
 
-      // Fallback to legacy /song/url
-      const legacyUrl = new URL(`${this.baseUrl}/song/url`);
-      legacyUrl.searchParams.set("id", songId);
-      const legRes = await fetch(legacyUrl.toString());
-      if (legRes.ok) {
-        const legData = (await legRes.json()) as {
-          data?: Array<{ url?: string }>;
-        };
-        return legData.data?.[0]?.url ?? null;
-      }
       return null;
-    } catch {
-      return null;
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(String(error));
     }
   }
 }

@@ -34,8 +34,6 @@ export function createJukeboxApp(config?: JukeboxAppConfig): AppDef {
     volume: 80,
   };
 
-  let lastContext: ActionContext | null = null;
-
   player.on("ended", () => {
     state = {
       ...state,
@@ -43,9 +41,6 @@ export function createJukeboxApp(config?: JukeboxAppConfig): AppDef {
       positionMs: 0,
       currentSong: null,
     };
-    if (lastContext) {
-      lastContext.setTier("hidden");
-    }
   });
 
   return {
@@ -56,9 +51,7 @@ export function createJukeboxApp(config?: JukeboxAppConfig): AppDef {
       tier: "hidden",
     },
 
-    async onStart(): Promise<void> {
-      void companionManager.ensureRunning(apiClient).catch(() => {});
-    },
+    async onStart(): Promise<void> {},
 
     async onStop(): Promise<void> {
       await player.stop();
@@ -107,8 +100,10 @@ ${songStr}
           },
         },
         async run(args: Record<string, unknown>, ctx: ActionContext) {
-          lastContext = ctx;
-          await companionManager.ensureRunning(apiClient);
+          const service = await companionManager.ensureRunning(apiClient);
+          if (!service.running) {
+            return { result: "网易云伴生服务不可用。", status: "failed", details: { reason: "service_unavailable" } };
+          }
 
           const rawId = args.song_id ?? args.id ?? args.songId ?? args.music_id;
           const rawQuery = args.query ?? args.keyword ?? args.keywords ?? args.song ?? args.name ?? args.q;
@@ -145,7 +140,11 @@ ${songStr}
               ctx.setTier("ambient");
               return `正在模拟播放: ${songToPlay.name} - ${songToPlay.artists.join(", ")} (⚠️ 提示: 未获取到音频流且处于模拟模式，无实际声音)`;
             }
-            return `无法获取歌曲 "${songToPlay.name}" (ID: ${songToPlay.id}) 的播放音频流`;
+            return {
+              result: `无法获取歌曲 "${songToPlay.name}" (ID: ${songToPlay.id}) 的播放音频流`,
+              status: "failed",
+              details: { reason: "audio_url_unavailable" },
+            };
           }
 
           await player.load(playUrl, songToPlay.durationMs);
@@ -193,7 +192,6 @@ ${songStr}
         description: "停止播放",
         parameters: { type: "object", properties: {} },
         async run(_args, ctx: ActionContext) {
-          lastContext = ctx;
           await player.stop();
           state = { ...state, status: "idle", currentSong: null };
           ctx.setTier("hidden");
@@ -236,7 +234,10 @@ ${songStr}
           required: ["query"],
         },
         async run(args: Record<string, unknown>) {
-          await companionManager.ensureRunning(apiClient);
+          const service = await companionManager.ensureRunning(apiClient);
+          if (!service.running) {
+            return { result: "网易云伴生服务不可用。", status: "failed", details: { reason: "service_unavailable" } };
+          }
           const raw = args.query ?? args.keyword ?? args.keywords ?? args.song ?? args.name ?? args.q;
           const query = String(raw ?? "").trim();
           if (!query) {

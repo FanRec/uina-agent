@@ -22,7 +22,7 @@ export interface MusicPlayer {
   setVolume(volumePercent: number): Promise<void>;
   progress(): Promise<PlayerProgress>;
   close(): Promise<void>;
-  on(event: "ended" | "error", listener: (error?: Error) => void): this;
+  on(event: "ended" | "error", listener: (info?: { reason: "eof" | "stop" | "error"; trackId: number } | Error) => void): this;
 }
 
 export function resolveMpvPath(customPath?: string): string | null {
@@ -155,6 +155,7 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
   private socket: Socket | null = null;
   private ipcPath: string | null = null;
   private requestId = 0;
+  private trackId = 0;
   private readonly pending = new Map<
     number,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
@@ -176,18 +177,22 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
 
   async load(url: string, durationMs: number | null): Promise<void> {
     await this.ensureStarted();
+    const trackId = ++this.trackId;
     this.durationHintMs = durationMs;
     await this.command(["loadfile", url, "replace"]);
     await this.command(["set_property", "pause", false]);
     this._status = "playing";
+    void trackId;
   }
 
   async pause(): Promise<void> {
+    if (!this.socket) throw new Error("mpv 未启动");
     await this.command(["set_property", "pause", true]);
     this._status = "paused";
   }
 
   async resume(): Promise<void> {
+    if (!this.socket) throw new Error("mpv 未启动");
     await this.command(["set_property", "pause", false]);
     this._status = "playing";
   }
@@ -226,13 +231,14 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
   }
 
   async close(): Promise<void> {
-    await this.command(["quit"]).catch(() => undefined);
+    if (this.socket) await this.command(["quit"]).catch(() => undefined);
     this.socket?.destroy();
     this.socket = null;
     if (this.process && !this.process.killed) {
       this.process.kill();
     }
     this.process = null;
+    this.rejectPending(new Error("mpv 已关闭"));
     this._status = "idle";
   }
 
@@ -265,12 +271,17 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
       this.socket = null;
       this.process = null;
       this._status = "idle";
+      this.rejectPending(new Error("mpv 进程已退出"));
     });
 
     this.socket = await this.connectWithRetry(this.ipcPath, 30, 50);
     this.socket.setEncoding("utf8");
     this.socket.on("data", (chunk) => this.handleData(String(chunk)));
-    this.socket.on("error", (err) => this.emit("error", err));
+    this.socket.on("error", (err) => {
+      this.rejectPending(err);
+      this.emit("error", err);
+    });
+    this.socket.on("close", () => this.rejectPending(new Error("mpv IPC 已断开")));
   }
 
   private async connectWithRetry(path: string, attempts: number, delayMs: number): Promise<Socket> {
@@ -292,14 +303,20 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
   }
 
   private async command(command: readonly unknown[]): Promise<unknown> {
-    await this.ensureStarted();
     if (!this.socket) {
       throw new Error("mpv IPC socket not available");
     }
     const requestId = ++this.requestId;
     const payload = JSON.stringify({ command, request_id: requestId }) + "\n";
     return new Promise((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(requestId);
+        reject(new Error("mpv IPC 请求超时"));
+      }, 10_000);
+      this.pending.set(requestId, {
+        resolve: (value) => { clearTimeout(timer); resolve(value); },
+        reject: (error) => { clearTimeout(timer); reject(error); },
+      });
       this.socket?.write(payload, "utf8", (err) => {
         if (err) {
           this.pending.delete(requestId);
@@ -307,6 +324,11 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
         }
       });
     });
+  }
+
+  private rejectPending(error: Error): void {
+    for (const pending of this.pending.values()) pending.reject(error);
+    this.pending.clear();
   }
 
   private handleData(chunk: string): void {
@@ -320,8 +342,9 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
           const msg = JSON.parse(line) as {
             request_id?: number;
             error?: string;
-            data?: unknown;
-            event?: string;
+          data?: unknown;
+          event?: string;
+          reason?: string;
           };
           if (typeof msg.request_id === "number") {
             const p = this.pending.get(msg.request_id);
@@ -333,9 +356,9 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
                 p.reject(new Error(msg.error ?? "mpv command failed"));
               }
             }
-          } else if (msg.event === "end-file") {
+          } else if (msg.event === "end-file" && msg.reason === "eof") {
             this._status = "idle";
-            this.emit("ended");
+            this.emit("ended", { reason: "eof", trackId: this.trackId });
           }
         } catch {
           // ignore parse error
