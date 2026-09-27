@@ -14,7 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from models import AudioAsset, BridgeTask, DefaultPreset, GenerationSession, LipsyncBridgeConfig, SegmentKey, SegmentRecord, StreamingConfig, StreamingProfile, SubtitleSyncConfig
-from playback_coordinator import PlaybackCoordinator
+from playback_coordinator import PlaybackCoordinator, PlaybackLease
 from synthesis_handlers import _PCMChunkStream
 from service import _AdmittedSpeakTask, BatchTaskStatusRequest, CancelRequest, CancelTraceRequest, SpeakRequest, TTSBridgeService, TurnEndRequest, _log_latency, _sanitize_vendor_text, _vendor_text_lang_for
 from sliding_window import SlidingWindowState
@@ -210,7 +210,7 @@ class TTSBridgeCancelTraceTest(unittest.TestCase):
             sessions_by_trace=service._sessions_by_trace,
             streaming_config=StreamingConfig(),
         )
-        service._playback._active_lease = ("trace_2", 1, 1)
+        service._playback._active_lease = PlaybackLease("trace_2", 1, 1)
 
         service.cancel_trace(CancelTraceRequest(trace_id="trace_1", mode="immediate"))
 
@@ -1093,11 +1093,11 @@ class PlaybackCoordinatorTest(unittest.TestCase):
             sessions_by_trace={},
             streaming_config=StreamingConfig(),
         )
-        coordinator._active_lease = ("trace_b", 2, 1)
+        coordinator._active_lease = PlaybackLease("trace_b", 2, 1)
 
-        self.assertFalse(coordinator.cancel_if_owner("trace_a", 1, 1))
+        self.assertFalse(coordinator.cancel_if_owner(PlaybackLease("trace_a", 1, 1)))
         self.assertFalse(player.cancelled)
-        self.assertTrue(coordinator.cancel_if_owner("trace_b", 2, 1))
+        self.assertTrue(coordinator.cancel_if_owner(PlaybackLease("trace_b", 2, 1)))
         self.assertTrue(player.cancelled)
 
     def test_playback_exception_releases_next_segment(self) -> None:

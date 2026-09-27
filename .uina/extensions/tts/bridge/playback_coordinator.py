@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import threading
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 from audio_playback import playback_timeout_ms
+
+
+class PlaybackLease(NamedTuple):
+    trace_id: str
+    generation_id: int
+    segment_index: int
 
 
 class PlaybackCoordinator:
@@ -14,7 +20,7 @@ class PlaybackCoordinator:
         self._streaming_config = streaming_config
         self._playback_lock = threading.Lock()
         self._trace_playback_order: list[str] = []
-        self._active_lease: tuple[str, int, int] | None = None
+        self._active_lease: PlaybackLease | None = None
 
     def _register_trace_locked(self, trace_id: str) -> None:
         if trace_id not in self._trace_playback_order:
@@ -39,10 +45,10 @@ class PlaybackCoordinator:
                 self._trace_playback_order.remove(trace_id)
             self._notify_all_sessions_locked()
 
-    def cancel_if_owner(self, trace_id: str, generation_id: int, segment_index: int) -> bool:
+    def cancel_if_owner(self, lease: PlaybackLease) -> bool:
         """Stop the physical player only when the requested lease owns it."""
         with self._lock:
-            if self._active_lease != (trace_id, generation_id, segment_index):
+            if self._active_lease != lease:
                 return False
             self._player.cancel_all()
             return True
@@ -227,12 +233,12 @@ class PlaybackCoordinator:
                     return {"playback_started": False, "playback_completed": False, "late_result_discarded": True}
 
             with self._lock:
-                self._active_lease = (trace_id, generation_id, segment_index)
+                self._active_lease = PlaybackLease(trace_id, generation_id, segment_index)
             try:
                 result, playback_failed = self._dispatch_playback_execution(asset, playback_runner)
             finally:
                 with self._lock:
-                    if self._active_lease == (trace_id, generation_id, segment_index):
+                    if self._active_lease == PlaybackLease(trace_id, generation_id, segment_index):
                         self._active_lease = None
 
             self._finalize_playback_turn(

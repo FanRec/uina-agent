@@ -64,6 +64,14 @@ export interface PlaybackEvent {
   readonly detail?: Record<string, unknown>;
 }
 
+export interface CancelTraceResponse {
+  readonly status: "cancelled";
+  readonly trace_id?: string;
+  readonly mode?: "immediate" | "segment_boundary";
+  readonly cancelled_task_count?: number;
+  readonly playback_stopped: boolean;
+}
+
 /**
  * 从播放事件中读取声学电平。
  *
@@ -133,7 +141,7 @@ export class TtsBridgeClient {
   async cancelTrace(
     traceId: string,
     mode: "immediate" | "segment_boundary" = "immediate",
-  ): Promise<{ status: string; playback_stopped?: boolean; cancelled_task_count?: number }> {
+  ): Promise<CancelTraceResponse> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -147,7 +155,7 @@ export class TtsBridgeClient {
         const errText = await res.text().catch(() => "");
         throw new Error(`TTS cancel-trace failed: HTTP ${res.status} ${errText}`);
       }
-      return (await res.json()) as { status: string };
+      return (await res.json()) as CancelTraceResponse;
     } finally {
       clearTimeout(timer);
     }

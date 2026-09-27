@@ -55,7 +55,7 @@ from models import (
     StreamingProfile,
     VendorConfig,
 )
-from playback_coordinator import PlaybackCoordinator
+from playback_coordinator import PlaybackCoordinator, PlaybackLease
 from runtime_components import PlaybackEventHub, TaskRegistry
 from sliding_window import SlidingWindowState
 from subtitle_sync import SubtitleSyncEmitter, _graphemes
@@ -1720,7 +1720,7 @@ class TTSBridgeService:
         return False
 
     def cancel(self, request: CancelRequest) -> dict[str, Any]:
-        playback_lease: tuple[str, int, int] | None = None
+        playback_lease: PlaybackLease | None = None
         with self._lock:
             task = self._tasks.get(request.task_id)
             if task is None or task.trace_id != request.trace_id:
@@ -1741,7 +1741,7 @@ class TTSBridgeService:
             generation_id = int(task.detail.get("generation_id", 1) or 1)
             segment_index = int(task.detail.get("segment_index", 0) or 0)
             if segment_index > 0:
-                playback_lease = (task.trace_id, generation_id, segment_index)
+                playback_lease = PlaybackLease(task.trace_id, generation_id, segment_index)
             if task.state == "pending":
                 task.state = "cancelled"
                 task.completed_at = time.time()
@@ -1754,7 +1754,7 @@ class TTSBridgeService:
             }
         playback_stopped = False
         if playback_lease is not None:
-            playback_stopped = self._playback.cancel_if_owner(*playback_lease)
+            playback_stopped = self._playback.cancel_if_owner(playback_lease)
         self._publish_playback_event(
             "cancelled",
             task=task,
@@ -1767,7 +1767,7 @@ class TTSBridgeService:
         affected: list[BridgeTask]
         boundary_task_ids: list[str] = []
         immediate_cutoff_segments: list[dict[str, Any]] = []
-        active_lease: tuple[str, int, int] | None = None
+        active_lease: PlaybackLease | None = None
         with self._lock:
             if request.mode == "immediate":
                 immediate_cutoff_segments = self._cutoff_segments_for_trace_locked(request.trace_id)
@@ -1778,7 +1778,7 @@ class TTSBridgeService:
                     None,
                 )
                 if active is not None:
-                    active_lease = (request.trace_id, session.generation_id, active.key.segment_index)
+                    active_lease = PlaybackLease(request.trace_id, session.generation_id, active.key.segment_index)
             playing_task_ids = {
                 record.task_id
                 for record in (session.segments.values() if session is not None else [])
@@ -1816,7 +1816,7 @@ class TTSBridgeService:
         playback_stopped = False
         if request.mode == "immediate" or not boundary_task_ids:
             if active_lease is not None:
-                playback_stopped = self._playback.cancel_if_owner(*active_lease)
+                playback_stopped = self._playback.cancel_if_owner(active_lease)
             self.subtitle_sync.emit_clear(trace_id=request.trace_id, generation_id=generation_id, reason="cancel_trace")
             self.lipsync_bridge.cancel_trace_async(trace_id=request.trace_id)
         else:
