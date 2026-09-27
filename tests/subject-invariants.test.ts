@@ -36,6 +36,25 @@ class FlakyInputStore extends MemorySessionStore {
 	}
 }
 
+class FlakyEnqueueStore extends MemorySessionStore {
+	fail = true;
+	override async appendEvent(event: SessionEventName, data: Record<string, unknown>): Promise<void> {
+		if (event === "queue_enqueued" && this.fail) throw new Error("注入的队列持久化故障");
+		await super.appendEvent(event, data);
+	}
+}
+
+class FlakyToolFinishedStore extends MemorySessionStore {
+	failed = false;
+	override async appendEvent(event: SessionEventName, data: Record<string, unknown>): Promise<void> {
+		if (event === "tool_finished" && !this.failed) {
+			this.failed = true;
+			throw new Error(`注入的工具收尾故障:${String(data.callId)}`);
+		}
+		await super.appendEvent(event, data);
+	}
+}
+
 /** 门控流：第一次调用挂起直到 release（其余立即完成）；记录每次请求的末条 user 文本。
  * 注意：pushInput 的 direct 路径会 await 整个回合，首个输入不得在测试中 await。 */
 function firstCallGatedStream(log: string[]) {
@@ -78,6 +97,80 @@ function firstCallGatedToolStream() {
 }
 
 describe("不变量：accepted input 不得无归属地消失", () => {
+	it("direct 输入在 prepare 失败后归还队列，且 input_accepted 只发一次", async () => {
+		let failPrepare = true;
+		const runtimeHooks: typeof NO_RUNTIME_HOOKS = {
+			...NO_RUNTIME_HOOKS,
+			turn: {
+				...NO_RUNTIME_HOOKS.turn,
+				prepare: async (input) => {
+					if (failPrepare) throw new Error("注入的 prepare 故障");
+					return { systemPrompt: input.systemPrompt };
+				},
+			},
+		};
+		const h = SubjectHarness.create({ runtimeHooks, store: new MemorySessionStore() });
+		const accepted: string[] = [];
+		h.subject.subscribe((event) => {
+			if (event.type === "input_accepted") accepted.push(event.inputId);
+		});
+		await h.pushInput("待恢复");
+		await h.waitForIdle();
+		expect(accepted).toHaveLength(1);
+		expect(h.queuedSnapshot().map((item) => item.text)).toEqual(["待恢复"]);
+		failPrepare = false;
+		await h.subject.resumePending();
+		await h.waitForIdle();
+		expect(h.queuedSnapshot()).toHaveLength(0);
+		expect(h.history.some((message) => message.role === "user" && message.content === "待恢复")).toBe(true);
+	});
+
+	it("direct 队列持久化失败时不发布 input_accepted", async () => {
+		const h = SubjectHarness.create({ store: new FlakyEnqueueStore() });
+		const accepted: string[] = [];
+		h.subject.subscribe((event) => {
+			if (event.type === "input_accepted") accepted.push(event.inputId);
+		});
+		await h.pushInput("不会接纳");
+		await h.waitForIdle();
+		expect(accepted).toEqual([]);
+		expect(h.queuedSnapshot()).toEqual([]);
+	});
+
+	it("并行工具全部结算后才收口，并为流水线异常保留未知终态", async () => {
+		const store = new FlakyToolFinishedStore();
+		let active = 0;
+		let maxActive = 0;
+		const run = async (args: Record<string, unknown>): Promise<string> => {
+			active++;
+			maxActive = Math.max(maxActive, active);
+			await wait(args.value === "slow" ? 60 : 5);
+			active--;
+			return String(args.value);
+		};
+		const h = SubjectHarness.create({
+			store,
+			tools: [mockTool("one", run), mockTool("two", run)],
+		});
+		h.scenario
+			.when((request) => !request.messages.some((message) => message.role === "tool"))
+			.then(() => [
+				{ kind: "tool_call" as const, call: { id: "one-call", name: "one", args: JSON.stringify({ value: "slow" }) } },
+				{ kind: "tool_call" as const, call: { id: "two-call", name: "two", args: JSON.stringify({ value: "fast" }) } },
+				{ kind: "finish" as const, reason: "tool_calls" as const },
+			]);
+		h.scenario.fallback(() => [{ kind: "text" as const, text: "收尾" }, { kind: "finish" as const, reason: "stop" as const }]);
+
+		await h.run("并行");
+		expect(maxActive).toBe(2);
+		expect(h.scenario.calls).toHaveLength(1);
+		const tools = h.history.filter((message) => message.role === "tool");
+		expect(tools).toHaveLength(2);
+		expect(tools.map((message) => message.status)).toContain("unknown");
+		await h.run("继续");
+		expect(h.history.some((message) => message.role === "assistant" && message.content === "收尾")).toBe(true);
+	});
+
 	it("队列年龄以持久化 receivedAt 为唯一时间来源，回滚和恢复不会重置", () => {
 		const q = new InputQueues();
 		const receivedAt = new Date(Date.now() - 5_000).toISOString();
@@ -234,6 +327,10 @@ describe("不变量：accepted input 不得无归属地消失", () => {
 		const store = new FlakyInputStore();
 		const { stream, release } = firstCallGatedToolStream();
 		const h = SubjectHarness.create({ stream, store, tools: [mockTool("echo")] });
+		const lifecycle: string[] = [];
+		h.subject.subscribe((event) => {
+			if (event.type === "turn_start" || event.type === "turn_end") lifecycle.push(event.type);
+		});
 		h.pushInput("first");
 		await wait(20);
 		await h.pushInput("a", { mode: "steer" });
@@ -245,6 +342,7 @@ describe("不变量：accepted input 不得无归属地消失", () => {
 
 		expect(h.queuedSnapshot().map((item) => item.text)).toEqual(["a", "b"]);
 		expect(h.records.filter((record) => record.kind === "input" && record.input.id === a!.id)).toHaveLength(0);
+		expect(lifecycle).toEqual(["turn_start", "turn_end"]);
 	});
 });
 

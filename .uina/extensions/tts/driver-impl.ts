@@ -31,6 +31,8 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
   private activeTrace: string | null = null;
   /** 尚有音频在路上的 trace（跨轮次存活，直到被本轮提交顶替） */
   private deliveryTrace: string | null = null;
+  private deliveryRevision = 0;
+  private probeInFlight: Promise<void> | null = null;
   private epochDirty = false;
   private submitted = 0;
   private readonly segmentTexts = new Map<number, string>();
@@ -55,6 +57,10 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
     return this.activeTrace;
   }
 
+  get deliveryTraceId(): string | null {
+    return this.deliveryTrace;
+  }
+
   /** 是否还有交付未收束 —— 进度探测的存续条件。 */
   get isDelivering(): boolean {
     return this.speaking || this.facts.pendingSegments > 0;
@@ -66,6 +72,7 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
 
   startTurn(turnNumber: number): string {
     this.activeTrace = `turn_${turnNumber}_${Date.now()}`;
+    this.deliveryRevision++;
     // 刻意不清账：上一轮可能还在念。账期切换推迟到本轮首次提交。
     this.epochDirty = true;
     return this.activeTrace;
@@ -107,11 +114,24 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
    * 探测失败时保留上一份已观测事实（陈旧但真实），不臆造"已停"或"已播完"。
    */
   async probe(): Promise<void> {
+	if (this.probeInFlight) return this.probeInFlight;
+	const task = this.probeOnce();
+	this.probeInFlight = task;
+	try {
+	  await task;
+	} finally {
+	  if (this.probeInFlight === task) this.probeInFlight = null;
+	}
+  }
+
+	private async probeOnce(): Promise<void> {
     const trace = this.deliveryTrace;
     if (!this._isOnline || !trace) return;
+    const revision = this.deliveryRevision;
 
     const state = await this.client.getSubtitleState(trace);
     if (!state) return;
+	if (revision !== this.deliveryRevision || trace !== this.deliveryTrace) return;
 
     // 归纳结果是**完整**的事实集（含作者侧句数），直接替换；
     // 片段式合并才是那个让人漏字段的写法。
@@ -155,6 +175,7 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
     if (!traceToCancel) {
       return null;
     }
+	this.deliveryRevision++;
 
     try {
       await this.client.cancelTrace(traceToCancel, "immediate");

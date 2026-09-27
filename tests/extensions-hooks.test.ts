@@ -467,6 +467,54 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		]);
 	});
 
+	it("waits for slow output observers before turn_end", async () => {
+		const host = new ExtensionHost();
+		const order: string[] = [];
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		host.on("output_update", async () => {
+			order.push("output_start");
+			await gate;
+			order.push("output_done");
+		});
+		host.on("turn_end", () => order.push("turn_end"));
+		const pair = mockProvider([{ kind: "text", text: "慢" }, { kind: "finish", reason: "stop" }]);
+		const harness = SubjectHarness.create({ model: pair.model, stream: pair.stream, runtimeHooks: createRuntimeHooks(host) });
+		const run = harness.pushInput("顺序");
+		await vi.waitFor(() => expect(order).toContain("output_start"));
+		expect(order).not.toContain("turn_end");
+		release();
+		await run;
+		await harness.waitForIdle();
+		expect(order).toEqual(["output_start", "output_done", "turn_end"]);
+	});
+
+	it("ignores output deltas after an interrupted stream is closed", async () => {
+		const events: string[] = [];
+		const host = new ExtensionHost();
+		for (const type of ["output_start", "output_update", "output_interrupted"] as const) {
+			host.on(type, (event) => events.push(`${event.type}:${event.channel}`));
+		}
+		let release!: () => void;
+		const stream = async (_m: Model, _req: ModelRequest, emit: (delta: StreamDelta) => void, signal?: AbortSignal) => {
+			emit({ kind: "text", text: "旧" });
+			await new Promise<void>((resolve) => {
+				release = resolve;
+				signal?.addEventListener("abort", () => resolve(), { once: true });
+			});
+			emit({ kind: "text", text: "迟到" });
+			emit({ kind: "finish", reason: "stop" });
+		};
+		const harness = SubjectHarness.create({ model: mockModel({ id: "late-output" }), stream, runtimeHooks: createRuntimeHooks(host) });
+		const run = harness.pushInput("打断");
+		await vi.waitFor(() => expect(events).toContain("output_update:content"));
+		harness.interrupt();
+		release();
+		await run;
+		await harness.waitForIdle();
+		expect(events.filter((event) => event === "output_update:content")).toHaveLength(1);
+	});
+
 	it("closes every opened output channel exactly once on success, error, and cancellation", async () => {
 		const collect = async (pair: { model: Model; stream: ModelStreamFn }, interruptAfterStart = false): Promise<string[]> => {
 			const host = new ExtensionHost();

@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "../../../src/extensions/runner.js";
-import type { TurnStartEvent, OutputUpdateEvent } from "../../../src/runtime/events.js";
+import type { ContextUpdateEvent, TurnStartEvent, OutputInterruptedEvent, OutputUpdateEvent } from "../../../src/runtime/events.js";
 import {
 	APP_EXPOSED_SHARED_NAME,
 	type AppExposedRegistry,
@@ -34,13 +34,8 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
   // 断点提示优先于实时进度行 —— 同一件事不铺两行；两者都无话可说时整体 0 token。
   let breakpointNotice: string | null = null;
 
-  const consumeDeliveryViewport = (): string | null => {
-    if (breakpointNotice) {
-      const notice = breakpointNotice;
-      breakpointNotice = null;
-      return notice;
-    }
-    return renderDeliveryLine(driver.snapshot());
+  const peekDeliveryViewport = (): string | null => {
+    return breakpointNotice ?? renderDeliveryLine(driver.snapshot());
   };
 
   // 1. 伴生服务管理（所有权自律：谁拉起谁销毁）
@@ -111,6 +106,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
   });
 
   let levelStream: AbortController | null = null;
+  let aborted = false;
 
   const pushLevel = (event: PlaybackEvent): void => {
     const level = readPlaybackLevel(event);
@@ -193,6 +189,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 
   // 5. 事实事件流闭环驱动
   pi.on("turn_start", (e: TurnStartEvent) => {
+    aborted = false;
     parser.reset();
     const traceId = driver.startTurn(e.turnNumber);
     // 伴生服务离线时不发无用请求，也就不会每回合刷一条错误
@@ -200,7 +197,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
   });
 
   pi.on("output_update", async (e: OutputUpdateEvent) => {
-    if (e.channel !== "content" || driver.isMuted || !driver.isOnline) return;
+    if (aborted || e.channel !== "content" || driver.isMuted || !driver.isOnline) return;
     const sentences = parser.feed(e.text);
     for (const s of sentences) {
       try {
@@ -247,19 +244,39 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
     }
   });
 
-  pi.on("turn_aborted", async () => {
-    parser.reset();
-    stopProgressPolling();
-    stopLevelStream();
-    const bp = await driver.interrupt();
-    if (bp) breakpointNotice = renderBreakpointNotice(bp);
+  let interruption: Promise<void> | null = null;
+  const interruptPlayback = (): Promise<void> => {
+    if (interruption) return interruption;
+    interruption = (async () => {
+      parser.reset();
+      stopProgressPolling();
+      stopLevelStream();
+      const bp = await driver.interrupt();
+      if (bp) breakpointNotice = renderBreakpointNotice(bp);
+    })().finally(() => {
+      interruption = null;
+    });
+    return interruption;
+  };
+
+  pi.on("output_interrupted", (_event: OutputInterruptedEvent) => {
+    void interruptPlayback();
+  });
+
+  pi.on("turn_aborted", () => {
+    aborted = true;
+    void interruptPlayback();
+  });
+
+  pi.on("context_update", (event: ContextUpdateEvent) => {
+    if (event.snapshot.basis === "active_request") breakpointNotice = null;
   });
 
   // 6. 交付视口投影：与上下文一同注入，独立 system 消息，不污染用户输入。
   //    视口只放坐标（第几句 / 还有几条），句子内容留在作者侧记账里按需查。
   pi.onHook("turn.transformContext", async (projection) => {
     if (projection.messages.length === 0) return undefined;
-    const viewportText = consumeDeliveryViewport();
+    const viewportText = peekDeliveryViewport();
     if (!viewportText) return undefined;
 
     return {

@@ -48,6 +48,7 @@ export class TurnStreamCollector {
 	private thinkingOffset = 0;
 	private hasEmittedContentStart = false;
 	private hasEmittedThinkingStart = false;
+	private interrupted = false;
 
 	constructor(
 		readonly streamId: string,
@@ -56,6 +57,7 @@ export class TurnStreamCollector {
 	) {}
 
 	handleDelta(delta: StreamDelta): void {
+		if (this.interrupted) return;
 		if (this.finishReason && delta.kind !== "usage") {
 			throw new Error("模型 finish 后仍返回输出事件");
 		}
@@ -133,6 +135,10 @@ export class TurnStreamCollector {
 	}
 
 	closeOutput(outcome: "end" | "interrupted", reason?: "cancelled" | "error"): void {
+		if (outcome === "interrupted") {
+			if (this.interrupted) return;
+			this.interrupted = true;
+		}
 		if (this.hasEmittedThinkingStart) {
 			this.dispatch(
 				outcome === "end"

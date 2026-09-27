@@ -89,6 +89,39 @@ export type DecisionOutcome =
 	| { kind: "aborted" }
 	| { kind: "terminated"; reason: "tool_call_limit"; message: string };
 
+type ToolBatchResult = import("../tools/broker.js").ToolExecutionResult & {
+	callId: string;
+	canonical?: import("../tools/broker.js").ToolExecutionResult;
+};
+
+type ToolBatchOutcome = {
+	results: ToolBatchResult[];
+	error?: AggregateError;
+};
+
+class ToolPipelineFailure extends Error {
+	readonly started: boolean;
+	readonly failure: unknown;
+	constructor(
+		started: boolean,
+		failure: unknown,
+	) {
+		super("工具流水线未能完成", { cause: failure });
+		this.started = started;
+		this.failure = failure;
+	}
+}
+
+function unresolvedToolResult(call: CompletedToolCall, started: boolean): ToolBatchResult {
+	const status: ToolResultStatus = started ? "unknown" : "not_started";
+	const error = started ? "工具已启动，但结果无法确认" : "工具未启动，流水线失败";
+	return { callId: call.id, result: JSON.stringify({ error, status }), status };
+}
+
+function asToolPipelineFailure(error: unknown): ToolPipelineFailure {
+	return error instanceof ToolPipelineFailure ? error : new ToolPipelineFailure(false, error);
+}
+
 export class Subject {
 	/** 主体活动阶段：turn（回合执行）→ afterEnd（post-turn 收尾：outcome 已冻结，
 	 * 但仍占用主体、仍可 interrupt）→ undefined；rewind 与 activity（回合外排他
@@ -467,7 +500,6 @@ export class Subject {
 	): Promise<void> {
 		if (submission.kind === "start") {
 			if (this.isBusy() || this.queues.size > 0) return Promise.reject(new Error("Subject 忙碌，无法直接启动输入"));
-			this.publishInputAccepted(queued);
 			return this.startRun(submission.promptText, queued, { needsEnqueueEvent: true });
 		}
 
@@ -657,13 +689,15 @@ export class Subject {
 			});
 		}
 
+		const inputState = queuedInput ? { durable: !options.needsEnqueueEvent, committed: false } : undefined;
 		try {
-		if (queuedInput && options.needsEnqueueEvent) {
+			if (queuedInput && options.needsEnqueueEvent) {
 				await this.storeEvent("queue_enqueued", {
 					...queuedInput,
 					source: queuedInput.source,
 					data: queuedInput.data,
 				});
+				inputState!.durable = true;
 			}
 			this.activity = "turn";
 			this.interrupted = false;
@@ -675,6 +709,7 @@ export class Subject {
 				this.queues.remove(queuedInput.id);
 				this.notifyQueueChanged();
 			}
+			if (options.needsEnqueueEvent) this.publishInputAccepted(queuedInput!);
 
 			const prepared = await this.runtimeHooks.turn.prepare({ prompt: text ?? "", systemPrompt: this.systemPrompt });
 			await this.applyPreparedRuntime(prepared);
@@ -687,8 +722,13 @@ export class Subject {
 				prepared.systemPrompt ?? this.systemPrompt,
 				prepared.messages ? [...prepared.messages] : [],
 				queuedInput,
+				() => { if (inputState) inputState.committed = true; },
 			);
 		} catch (error) {
+			if (queuedInput && inputState?.durable && !inputState.committed && !this.queues.has(queuedInput.id)) {
+				this.queues.add(queuedInput);
+				this.notifyQueueChanged();
+			}
 			this.abort = null;
 			this.activity = undefined;
 			this.reportError(error);
@@ -704,15 +744,18 @@ export class Subject {
 		systemPrompt = this.systemPrompt,
 		beforeMessages: readonly (AgentMessage | ChatMsg)[] = [],
 		queuedInput?: QueuedMessage,
+		onInputCommitted?: () => void,
 	): Promise<void> {
 		let success = false;
 		let runError: string | undefined;
 		let currentTurn = turn;
+		let turnStarted = false;
 		try {
-			await this.dispatch({ type: "turn_start", turnNumber: currentTurn, userText: text ?? "", images: queuedInput?.images });
-			if (queuedInput) await this.consumeQueueItem(queuedInput);
+			if (queuedInput) await this.consumeQueueItem(queuedInput, onInputCommitted);
 			else if (text !== undefined)
 				await this.appendMessage({ role: "user", content: text, timestamp: new Date().toISOString() });
+			await this.dispatch({ type: "turn_start", turnNumber: currentTurn, userText: text ?? "", images: queuedInput?.images });
+			turnStarted = true;
 			const outcome = await this.decide(model, systemPrompt, beforeMessages, (nextTurn) => {
 				currentTurn = nextTurn;
 			}, () => currentTurn);
@@ -727,58 +770,64 @@ export class Subject {
 			}
 			// aborted：turn_aborted 已由 emitInterrupted 落盘，这里只让 success=false，不重复收口。
 		} catch (error) {
-			runError = errorMessage(error);
-			if (this.interrupted || this.currentSignal().aborted) {
-				await this.emitInterrupted();
+			if (!turnStarted) {
+				throw error;
 			} else {
-				await this.storeEvent("turn_failed", { turnId: currentTurn, error: runError });
-				this.reportError(runError);
+				runError = errorMessage(error);
+				if (this.interrupted || this.currentSignal().aborted) {
+					await this.emitInterrupted();
+				} else {
+					await this.storeEvent("turn_failed", { turnId: currentTurn, error: runError });
+					this.reportError(runError);
+				}
 			}
 		} finally {
-			if (this.pendingRewind && (!success || this.interrupted)) {
-				const requestId = this.pendingRewind.requestId; this.pendingRewind = undefined;
-				this.reportError(`回溯请求 ${requestId} 未提交：回合失败或被取消，主线保持不变`);
-			}
-			try {
-				await this.dispatch({
-					type: "turn_end",
-					turnNumber: currentTurn,
-					requestUsage: this.currentCallUsage ? structuredClone(this.currentCallUsage) : undefined,
-				});
-			} catch (error) {
-				this.reportError(error);
-			}
-			await this.dispatch({ type: "agent_end", turnSeq: currentTurn, success, error: runError });
-			if (success && !this.interrupted && this.pendingRewind) {
-				await this.applyPendingRewind();
-			}
-			// POST-TURN 阶段：outcome 已冻结，但仍占用主体——isBusy 为真、interrupt 可达
-			//（只 abort post-turn signal，不影响已完成回合的结果记录）。
-			this.activity = "afterEnd";
-			this.abort = new AbortController();
-			const postTurnSignal = this.currentSignal();
-			try {
-				await this.runtimeHooks.turn.afterEnd({ turnNumber: currentTurn, success, ...(runError ? { error: runError } : {}), signal: postTurnSignal });
-			} catch (error) {
-				this.reportError(error);
-			}
-			this.abort = null;
-			this.activity = undefined;
-			try {
-				await this.getContextSnapshot("idle_baseline");
-			} catch (error) {
-				this.reportError(error);
-			}
-			if (success && !this.interrupted && this.queues.size > 0) {
-				try {
-					await this.resumeQueued();
-				} catch (error) {
-					this.reportError(error);
-				}
-			} else if (this.queues.size === 0) {
-				await this.dispatch({ type: "agent_settled", turnSeq: currentTurn });
-			}
+			if (turnStarted) await this.finishTurn(currentTurn, success, runError);
+		}
+	}
+
+	private async finishTurn(turnNumber: number, success: boolean, error?: string): Promise<void> {
+		if (this.pendingRewind && (!success || this.interrupted)) {
+			const requestId = this.pendingRewind.requestId;
+			this.pendingRewind = undefined;
+			this.reportError(`回溯请求 ${requestId} 未提交：回合失败或被取消，主线保持不变`);
+		}
+		try {
 			await this.runtimeHooks.events.flush();
+			await this.dispatch({
+				type: "turn_end",
+				turnNumber,
+				requestUsage: this.currentCallUsage ? structuredClone(this.currentCallUsage) : undefined,
+			});
+		} catch (dispatchError) {
+			this.reportError(dispatchError);
+		}
+		await this.dispatch({ type: "agent_end", turnSeq: turnNumber, success, error });
+		if (success && !this.interrupted && this.pendingRewind) await this.applyPendingRewind();
+
+		this.activity = "afterEnd";
+		this.abort = new AbortController();
+		const postTurnSignal = this.currentSignal();
+		try {
+			await this.runtimeHooks.turn.afterEnd({ turnNumber, success, ...(error ? { error } : {}), signal: postTurnSignal });
+		} catch (afterEndError) {
+			this.reportError(afterEndError);
+		}
+		this.abort = null;
+		this.activity = undefined;
+		try {
+			await this.getContextSnapshot("idle_baseline");
+		} catch (snapshotError) {
+			this.reportError(snapshotError);
+		}
+		if (success && !this.interrupted && this.queues.size > 0) {
+			try {
+				await this.resumeQueued();
+			} catch (resumeError) {
+				this.reportError(resumeError);
+			}
+		} else if (this.queues.size === 0) {
+			await this.dispatch({ type: "agent_settled", turnSeq: turnNumber });
 		}
 	}
 
@@ -865,6 +914,7 @@ export class Subject {
 				},
 			);
 			this.currentCallUsage = undefined;
+			const streamSignal = this.currentSignal();
 
 			try {
 				await this.streamFn(
@@ -875,8 +925,10 @@ export class Subject {
 						thinkingLevel: projection.thinkingLevel,
 						providerHooks: this.runtimeHooks.provider,
 					},
-					(delta) => collector.handleDelta(delta),
-					this.currentSignal(),
+					(delta) => {
+						if (!streamSignal.aborted) collector.handleDelta(delta);
+					},
+					streamSignal,
 				);
 			} catch (error) {
 				// handleStreamError 仅在 abort 已由 emitInterrupted 落盘后正常返回；其余错误继续上抛。
@@ -957,6 +1009,10 @@ export class Subject {
 				throw new Error("上下文超过可用预算；无法保留完整的最近上下文，请压缩或缩减输入");
 			}
 			this.projection.validateContext(projection.messages, { model, tools: projection.tools });
+			// An active request supersedes every idle inspection that is still in flight.
+			// Otherwise a slower idle measurement can publish after this snapshot and
+			// overwrite the context actually sent to the provider.
+			this.contextInspectionSeq++;
 			this.publishContextSnapshot(this.contextSnapshot({ projection, measurement, contextWindow: model.contextWindow, inputBudget: budget }, "active_request"));
 			return projection;
 		}
@@ -1066,8 +1122,8 @@ export class Subject {
 
 	private async settleToolExchange(result: StreamCollectorResult): Promise<{ stopped: boolean }> {
 		await this.appendMessage(this.buildAssistantMessage(result));
-		const results = await this.executeToolCalls(result.toolCalls);
-		for (const res of results) {
+		const batch = await this.executeToolCalls(result.toolCalls);
+		for (const res of batch.results) {
 			// 阶段 D/M7：canonical journal 落原始执行正文（未经 transformResult 改写）；
 			// 模型可见改写投影经后续请求的投影链生效，不进 canonical 历史。
 			const evidence = res.canonical ?? res;
@@ -1081,7 +1137,8 @@ export class Subject {
 				timestamp: new Date().toISOString(),
 			});
 		}
-		return { stopped: results.some((res) => res.continuation === "stop") };
+		if (batch.error) throw batch.error;
+		return { stopped: batch.results.some((res) => res.continuation === "stop") };
 	}
 
 	private async drainQueuedInputs(
@@ -1103,6 +1160,8 @@ export class Subject {
 				// 用户输入的排队项被消费时开一个可见回合（与首条消费路径的 turn_start 对齐）：
 				// 严格保序关闭上一可见回合，再开启新可见回合，彻底消除交错嵌套 bug。
 				// runtime 来源项投影为 display:false 的 custom 消息，不开可见回合。
+				if (item.source?.kind !== "runtime") await this.runtimeHooks.events.flush();
+				await this.commitQueueItem(item);
 				if (item.source?.kind !== "runtime") {
 					const previousTurn = getCurrentTurn?.() ?? this.turnSeq;
 					await this.dispatch({ type: "turn_end", turnNumber: previousTurn, requestUsage: this.currentCallUsage ? structuredClone(this.currentCallUsage) : undefined });
@@ -1110,7 +1169,6 @@ export class Subject {
 					onTurnTransition?.(nextTurn);
 					await this.dispatch({ type: "turn_start", turnNumber: nextTurn, userText: item.text, images: item.images });
 				}
-				await this.commitQueueItem(item);
 			} catch (error) {
 				// 批量认领路径尚未提交当前项时，当前项和后续项都归还队列。
 				for (const pending of items.slice(i)) this.queues.add(pending);
@@ -1121,18 +1179,7 @@ export class Subject {
 		return true;
 	}
 
-	private async executeToolCalls(calls: CompletedToolCall[]): Promise<
-		Array<{
-			callId: string;
-			result: string;
-			status: ToolResultStatus;
-			continuation?: "stop";
-			images?: import("../core/content.js").ImageContent[];
-			details?: unknown;
-			/** 原始执行结果（阶段 D/M7）：canonical journal 落盘用，未经 transformResult 改写。 */
-			canonical?: import("../tools/broker.js").ToolExecutionResult;
-		}>
-	> {
+	private async executeToolCalls(calls: CompletedToolCall[]): Promise<ToolBatchOutcome> {
 		const prepared: Array<{ call: CompletedToolCall; tool: PreparedToolCall }> = [];
 		for (const call of calls) {
 			const args = isRecord(call.args) ? call.args : {};
@@ -1145,18 +1192,56 @@ export class Subject {
 			prepared.push({ call, tool });
 		}
 		const sequential = prepared.some(({ call }) => this.tools.getExecutionMode(call.name) === "sequential");
+		const runOne = async ({ call, tool }: { call: CompletedToolCall; tool: PreparedToolCall }): Promise<ToolBatchResult> => {
+			let started = false;
+			try {
+				return await this.executeOne(call, tool, () => { started = true; });
+			} catch (error) {
+				throw new ToolPipelineFailure(started, error);
+			}
+		};
 		if (sequential) {
-			const results = [];
-			for (const item of prepared) results.push(await this.executeOne(item.call, item.tool));
-			return results;
+			const results: ToolBatchResult[] = [];
+			const failures: unknown[] = [];
+			let halted = false;
+			for (const item of prepared) {
+				if (halted) {
+					results.push(unresolvedToolResult(item.call, false));
+					continue;
+				}
+				try {
+					results.push(await runOne(item));
+				} catch (error) {
+					const failure = asToolPipelineFailure(error);
+					failures.push(failure.failure);
+					results.push(unresolvedToolResult(item.call, failure.started));
+					halted = true;
+				}
+			}
+			return { results, ...(failures.length > 0 ? { error: new AggregateError(failures, "串行工具批次未完整成功") } : {}) };
 		}
-		return Promise.all(prepared.map(({ call, tool }) => this.executeOne(call, tool)));
+		const settled = await Promise.allSettled(prepared.map(runOne));
+		const results: ToolBatchResult[] = [];
+		const failures: unknown[] = [];
+		for (let index = 0; index < settled.length; index++) {
+			const item = prepared[index]!;
+			const outcome = settled[index]!;
+			if (outcome.status === "fulfilled") {
+				results.push(outcome.value);
+				continue;
+			}
+			const failure = asToolPipelineFailure(outcome.reason);
+			failures.push(failure.failure);
+			results.push(unresolvedToolResult(item.call, failure.started));
+		}
+		return { results, ...(failures.length > 0 ? { error: new AggregateError(failures, "并行工具批次未完整成功") } : {}) };
 	}
 
 	private async executeOne(
 		call: CompletedToolCall,
 		prepared: PreparedToolCall,
-	): Promise<import("../tools/broker.js").ToolExecutionResult & { callId: string }> {
+		onStarted?: () => void,
+	): Promise<ToolBatchResult> {
 		const callArgs = (call.args && typeof call.args === "object" ? call.args : {}) as Record<string, unknown>;
 		// 在流水线启动前广播 tool_call，确保 UI 必定能收到工具调用声明并建立节点，
 		// 消除后续 onDone 产生孤儿 tool_result 的异常
@@ -1178,6 +1263,7 @@ export class Subject {
 							name: call.name,
 							args: call.args,
 						});
+						onStarted?.();
 					},
 					onDone: async (outcome) => {
 						await this.storeEvent("tool_finished", {
@@ -1255,12 +1341,13 @@ export class Subject {
 		});
 	}
 
-	private async consumeQueueItem(item: QueuedMessage): Promise<void> {
+	private async consumeQueueItem(item: QueuedMessage, onCommitted?: () => void): Promise<void> {
 		// Claim synchronously: once consumption begins the item can no longer be restored to the editor.
 		this.queues.remove(item.id);
 		this.notifyQueueChanged();
 		try {
 			await this.commitQueueItem(item);
+			onCommitted?.();
 		} catch (error) {
 			// Commit failure means the input was never consumed; return ownership to the queue.
 			this.queues.add(item);
@@ -1316,7 +1403,8 @@ export class Subject {
 			);
 		}
 		await this.storeEvent("turn_aborted", { turnId: this.turnSeq });
-		this.dispatch({ type: "turn_aborted", turnNumber: this.turnSeq });
+		const delivery = this.dispatch({ type: "turn_aborted", turnNumber: this.turnSeq });
+		if (delivery) void delivery.catch((error) => this.reportError(error));
 	}
 }
 

@@ -5,6 +5,7 @@ import type { Provider } from "../src/core/types.js";
 import { ExtensionHost } from "../src/extensions/host.js";
 import { createRuntimeHooks } from "../src/extensions/runtime-hooks.js";
 import type { RuntimeEvent } from "../src/runtime/events.js";
+import { vi } from "vitest";
 
 describe("ContextSnapshot", () => {
 	test("启动完成后在首条输入前测量完整扩展投影，且不调用 Provider", async ({ env }) => {
@@ -86,5 +87,39 @@ describe("ContextSnapshot", () => {
 		expect(updates).toHaveLength(1);
 		expect(updates[0]?.snapshot.modelKey).toMatch(/\/new$/);
 		expect(harness.subject.getCurrentContextSnapshot()?.modelKey).toMatch(/\/new$/);
+	});
+
+	test("真实请求快照会废弃仍在途的 idle inspection", async () => {
+		let entered!: () => void;
+		const staleEntered = new Promise<void>((resolve) => { entered = resolve; });
+		let release!: () => void;
+		const staleRelease = new Promise<void>((resolve) => { release = resolve; });
+		const extensions = new ExtensionHost();
+		extensions.onHook("turn.transformContext", async (projection) => {
+			const hasUser = projection.messages.some((message) => message.role === "user" && message.content === "active-input");
+			if (!hasUser) {
+				entered();
+				await staleRelease;
+			}
+			return undefined;
+		});
+		const harness = SubjectHarness.create({
+			model: mockModel({ id: "interleave", contextWindow: 100_000 }),
+			runtimeHooks: createRuntimeHooks(extensions),
+		});
+		const events: RuntimeEvent[] = [];
+		harness.subscribe((event) => events.push(event));
+		const stale = harness.subject.getContextSnapshot();
+		await staleEntered;
+		const run = harness.pushInput("active-input");
+		await vi.waitFor(() => expect(events.some((event) => event.type === "context_update" && event.snapshot.basis === "active_request")).toBe(true));
+		release();
+		await stale;
+		await run;
+		await harness.waitForIdle();
+		const updates = events.filter((event): event is Extract<RuntimeEvent, { type: "context_update" }> => event.type === "context_update");
+		const activeIndex = updates.findIndex((event) => event.snapshot.basis === "active_request");
+		expect(activeIndex).toBeGreaterThanOrEqual(0);
+		expect(updates.slice(activeIndex + 1).every((event) => event.snapshot.inputTokens >= updates[activeIndex]!.snapshot.inputTokens)).toBe(true);
 	});
 });

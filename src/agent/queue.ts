@@ -96,6 +96,10 @@ export class InputQueues {
 		return Number.isFinite(receivedAt) ? Math.max(0, now - receivedAt) : undefined;
 	}
 
+	has(id: string): boolean {
+		return this.steer.some((item) => item.id === id) || this.followUp.some((item) => item.id === id);
+	}
+
 	private oldestByReceivedAt(first?: QueuedMessage, second?: QueuedMessage): QueuedMessage | undefined {
 		if (!first) return second;
 		if (!second) return first;
