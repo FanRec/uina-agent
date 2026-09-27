@@ -6,6 +6,7 @@ import { AudioObserver } from "./audio-observer.js";
 import { ChannelArbiter } from "./channel-arbiter.js";
 import { Live2DStateTracker, VTSCompanion } from "./companion.js";
 import { MotionComposer } from "./motion-composer.js";
+import { MotionDirector } from "./motion-director.js";
 import {
 	CANONICAL_CUE_IDS,
 	CUE_DESCRIPTIONS,
@@ -123,6 +124,7 @@ export class Live2DRuntime {
 	readonly companion: VTSCompanion;
 	readonly endpoint: Live2DEndpoint;
 	readonly reflexDirector: ReflexDirector;
+	readonly director: MotionDirector;
 
 	currentCostume = "default";
 	currentBasePose: BasePoseName = "relaxed";
@@ -135,8 +137,9 @@ export class Live2DRuntime {
 	private isStarted = false;
 
 	constructor(options?: { vtsClient?: VTSClient }) {
-		this.arbiter = new ChannelArbiter();
-		this.composer = new MotionComposer(this.arbiter);
+		this.director = new MotionDirector();
+		this.arbiter = this.director.arbiter;
+		this.composer = this.director.composer;
 		this.audioObserver = new AudioObserver();
 		this.audioObserver.setComposer(this.composer);
 
