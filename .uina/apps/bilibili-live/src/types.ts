@@ -28,12 +28,12 @@ export function createEventTime(
  */
 export interface DanmakuRecord {
   readonly id: string;            // 短 ID（如 dm_1）
-  readonly uid: number;           // 首发用户 UID
+  readonly uid: number | string;  // Web UID or OpenLive openId
   readonly uname: string;         // 首发用户昵称
   readonly text: string;          // 原始完整代表文本（全文用于聚合）
   readonly time: EventTime;       // 到达双时钟
   count: number;                  // 聚合条数
-  uniqueSenders: Set<number>;     // 去重发送者 UID 集合
+  uniqueSenders: Set<number | string>; // 去重发送者身份集合
   firstSender: string;            // 首发用户昵称
 }
 
@@ -44,7 +44,7 @@ export interface BasePendingEventRecord {
   readonly durableId: string;        // 内部持久化 UUID
   readonly sourceEventKey: string;   // 外部幂等去重键: "bilibili:sc:<id>" 等
   readonly alias: string;            // 模型视口短别名: "sc_1", "gd_1", "gf_1"
-  readonly uid: number;              // 触发用户 UID
+  readonly uid: number | string;     // Web UID or OpenLive openId
   readonly uname: string;            // 触发用户昵称
   readonly time: EventTime;          // 接收双时钟
   handled: boolean;                  // 是否已处理/已感谢

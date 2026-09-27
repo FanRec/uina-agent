@@ -13,13 +13,23 @@ import { loadConfig, type ResolvedLiveAppConfig } from "./config.js";
 import { LiveEventJournal } from "./journal.js";
 import { sendDanmaku } from "./send.js";
 import type { LiveAppConfig, LiveAppState } from "./types.js";
+import {
+  normalizeOpenDanmaku,
+  normalizeOpenGift,
+  normalizeOpenGuard,
+  normalizeOpenSuperChat,
+  normalizeWebDanmaku,
+  normalizeWebGift,
+  normalizeWebGuard,
+  normalizeWebSuperChat,
+} from "./normalize.js";
 
 /**
  * 伴生服务上下文扩展（支持模式二：强事件唤醒）
  */
 export interface BilibiliLiveCompanionContext {
   signal: AbortSignal;
-  wake?: (reason: string) => void;
+  submitInput?: (input: import("../../../../src/agent/loop.js").AgentInput) => Promise<void>;
 }
 
 /**
@@ -181,10 +191,12 @@ export function createBilibiliLiveApp(userConfig?: Partial<LiveAppConfig>): AppD
     lastHeartbeatTime: 0,
   };
 
-  let wakeFn: ((reason: string) => void) | undefined;
+  let submitInput: BilibiliLiveCompanionContext["submitInput"];
   let client: BilibiliLiveClient | OpenLiveClient | null = null;
+  let connectionGeneration = 0;
 
   function initClient(roomId: number): BilibiliLiveClient | OpenLiveClient {
+    const generation = ++connectionGeneration;
     if (client) {
       void client.disconnect();
       client = null;
@@ -206,38 +218,87 @@ export function createBilibiliLiveApp(userConfig?: Partial<LiveAppConfig>): AppD
         });
 
     c.on("danmaku", (msg: DanmakuEvent) => {
-      buffer.addDanmaku(msg.uid, msg.uname, msg.text);
+      if (generation !== connectionGeneration) return;
+      const event = config.openPlatform ? normalizeOpenDanmaku(msg as never) : normalizeWebDanmaku(msg);
+      buffer.addDanmaku(event.actor.value, event.actor.name, String(event.payload.text), {
+        wallTimeMs: event.occurredAtMs,
+        monotonicTimeMs: performance.now(),
+      });
     });
 
     c.on("superChat", (msg: SuperChatEvent) => {
-      const { shouldWake } = buffer.ingestSuperChat(msg);
-      if (shouldWake) wakeFn?.(HIGH_PRIORITY_WAKE_NOTICE);
+      if (generation !== connectionGeneration) return;
+      const event = config.openPlatform ? normalizeOpenSuperChat(msg as never) : normalizeWebSuperChat(msg);
+      const payload = event.payload;
+      const { shouldWake } = buffer.ingestSuperChat({
+        id: event.eventId,
+        uid: event.actor.value,
+        uname: event.actor.name,
+        price: Number(payload.price ?? 0),
+        message: String(payload.message ?? ""),
+        timestamp: event.occurredAtMs,
+      });
+      if (shouldWake) void submitInput?.({
+        id: `bilibili-live-${event.eventId}`,
+        mode: "followUp",
+        source: { kind: "runtime", type: "bilibili-live", origin: "external", ref: event.eventId },
+        text: HIGH_PRIORITY_WAKE_NOTICE,
+      });
     });
 
     c.on("guardBuy", (msg: GuardBuyEvent) => {
-      const { shouldWake } = buffer.ingestGuard(msg);
-      if (shouldWake) wakeFn?.(HIGH_PRIORITY_WAKE_NOTICE);
+      if (generation !== connectionGeneration) return;
+      const event = config.openPlatform ? normalizeOpenGuard(msg as never) : normalizeWebGuard(msg);
+      const payload = event.payload;
+      const { shouldWake } = buffer.ingestGuard({
+        uid: event.actor.value, uname: event.actor.name,
+        guardLevel: Number(payload.guardLevel ?? 0), giftName: String(payload.giftName ?? ""),
+        timestamp: event.occurredAtMs,
+      });
+      if (shouldWake) void submitInput?.({
+        id: `bilibili-live-${event.eventId}`,
+        mode: "followUp",
+        source: { kind: "runtime", type: "bilibili-live", origin: "external", ref: event.eventId },
+        text: HIGH_PRIORITY_WAKE_NOTICE,
+      });
     });
 
     c.on("gift", (msg: GiftEvent) => {
-      const { shouldWake } = buffer.ingestGift(msg);
-      if (shouldWake) wakeFn?.(HIGH_PRIORITY_WAKE_NOTICE);
+      if (generation !== connectionGeneration) return;
+      const event = config.openPlatform ? normalizeOpenGift(msg as never) : normalizeWebGift(msg);
+      const payload = event.payload;
+      const { shouldWake } = buffer.ingestGift({
+        uid: event.actor.value, uname: event.actor.name,
+        giftId: Number(payload.giftId ?? 0), giftName: String(payload.giftName ?? ""),
+        price: Number(payload.price ?? 0), count: Number(payload.count ?? 0),
+        timestamp: event.occurredAtMs,
+      });
+      if (shouldWake) void submitInput?.({
+        id: `bilibili-live-${event.eventId}`,
+        mode: "followUp",
+        source: { kind: "runtime", type: "bilibili-live", origin: "external", ref: event.eventId },
+        text: HIGH_PRIORITY_WAKE_NOTICE,
+      });
     });
 
     c.on("heartbeat", (evt: HeartbeatEvent) => {
+      if (generation !== connectionGeneration) return;
       appState.popularity = evt.popularity;
       appState.lastHeartbeatTime = Date.now();
     });
 
     c.on("connected", () => {
+      if (generation !== connectionGeneration) return;
       appState.connectionStatus = "connected";
     });
 
     c.on("disconnected", () => {
+      if (generation !== connectionGeneration) return;
       appState.connectionStatus = "disconnected";
     });
 
     c.on("reconnecting", () => {
+      if (generation !== connectionGeneration) return;
       appState.connectionStatus = "reconnecting";
     });
 
@@ -251,7 +312,7 @@ export function createBilibiliLiveApp(userConfig?: Partial<LiveAppConfig>): AppD
       "B站直播应用，支持实时弹幕监控、SC/大航海/礼物感知、弹幕发送与待办互动管理。",
 
     async onStart(ctx: BilibiliLiveCompanionContext): Promise<void> {
-      wakeFn = ctx.wake;
+      submitInput = ctx.submitInput;
 
       ctx.signal?.addEventListener("abort", () => {
         if (client) {
@@ -275,7 +336,7 @@ export function createBilibiliLiveApp(userConfig?: Partial<LiveAppConfig>): AppD
         client = null;
       }
       buffer.dispose();
-      wakeFn = undefined;
+      submitInput = undefined;
     },
 
     render(tier: "ambient" | "expanded"): string {

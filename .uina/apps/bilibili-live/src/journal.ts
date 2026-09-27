@@ -200,14 +200,10 @@ export class LiveEventJournal {
    * 追加一条日志记录
    */
   append(entry: JournalEntry): void {
-    try {
-      this.ensureDataDir();
-      const line = JSON.stringify(entry) + "\n";
-      appendFileSync(this.filePath, line, "utf-8");
-      this.entriesCount++;
-    } catch (err) {
-      console.error("[bilibili-live] 写入 events.jsonl 失败:", err);
-    }
+	this.ensureDataDir();
+	const line = JSON.stringify(entry) + "\n";
+	appendFileSync(this.filePath, line, "utf-8");
+	this.entriesCount++;
   }
 
   /**
@@ -217,10 +213,14 @@ export class LiveEventJournal {
     if (this.knownEventKeys.has(record.sourceEventKey)) {
       return false; // 重连幂等丢弃
     }
-    this.knownEventKeys.add(record.sourceEventKey);
-    this.append({ op: record.kind, record } as JournalEntry);
+	this.append({ op: record.kind, record } as JournalEntry);
+	this.knownEventKeys.add(record.sourceEventKey);
     return true;
   }
+
+	updateEvent(record: PendingEventRecord): void {
+		this.append({ op: record.kind, record } as JournalEntry);
+	}
 
   recordSuperChat(record: SuperChatRecord): boolean {
     return this.recordEvent({ ...record, kind: "sc" });

@@ -35,12 +35,18 @@ export function formatTime(timestamp: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-function renderPendingSection(pendingEvents: Iterable<PendingEventRecord>): string[] {
+function renderPendingSection(pendingEvents: Iterable<PendingEventRecord>, maxItems: number): string[] {
   const lines: string[] = [];
   let hasHeading = false;
+  let shown = 0;
+  let omitted = 0;
 
   for (const event of pendingEvents) {
     if (!event.handled) {
+      if (shown >= maxItems) {
+        omitted++;
+        continue;
+      }
       if (!hasHeading) {
         lines.push("\n### 待办互动（请尽快感谢/回应并调用 mark_handled）:");
         hasHeading = true;
@@ -57,8 +63,10 @@ function renderPendingSection(pendingEvents: Iterable<PendingEventRecord>): stri
         const giftName = sanitizeUntrustedText(event.giftName);
         lines.push(`  * [${event.alias}] <data>${user} 赠送大额礼物 ${giftName} x${event.count}</data>`);
       }
+      shown++;
     }
   }
+  if (omitted > 0) lines.push(`  * 还有 ${omitted} 条待办，请使用 status 查询。`);
   return lines;
 }
 
@@ -167,7 +175,7 @@ export class LiveEventBuffer {
   }
 
   addDanmaku(
-    uid: number,
+    uid: number | string,
     uname: string,
     rawText: string,
     eventTime?: EventTime
@@ -293,7 +301,7 @@ export class LiveEventBuffer {
 
   ingestSuperChat(msg: {
     id: number | string;
-    uid: number;
+    uid: number | string;
     uname: string;
     price: number;
     message: number | string;
@@ -320,8 +328,8 @@ export class LiveEventBuffer {
       handled: false,
     };
 
-    this.pendingEvents.set(alias, record);
     this.journal.recordEvent(record);
+    this.pendingEvents.set(alias, record);
 
     const shouldWake =
       this.config.wakeup.wakeOnSuperChat &&
@@ -331,7 +339,7 @@ export class LiveEventBuffer {
   }
 
   ingestGuard(msg: {
-    uid: number;
+    uid: number | string;
     uname: string;
     guardLevel: number;
     giftName: string;
@@ -359,8 +367,8 @@ export class LiveEventBuffer {
       handled: false,
     };
 
-    this.pendingEvents.set(alias, record);
     this.journal.recordEvent(record);
+    this.pendingEvents.set(alias, record);
 
     const shouldWake = this.config.wakeup.wakeOnGuard;
     return { record, shouldWake };
@@ -369,7 +377,7 @@ export class LiveEventBuffer {
   private readonly transientGifts = new Map<
     string,
     {
-      uid: number;
+      uid: number | string;
       uname: string;
       giftId: number;
       giftName: string;
@@ -380,7 +388,7 @@ export class LiveEventBuffer {
   >();
 
   private findAggregatableGift(
-    uid: number,
+    uid: number | string,
     giftId: number,
     currentMonotonic: number,
     windowMs: number
@@ -400,7 +408,7 @@ export class LiveEventBuffer {
   }
 
   ingestGift(msg: {
-    uid: number;
+    uid: number | string;
     uname: string;
     giftId: number;
     giftName: string;
@@ -421,8 +429,9 @@ export class LiveEventBuffer {
     );
 
     if (pendingItem) {
-      pendingItem.count += msg.count;
-      this.journal.recordEvent(pendingItem);
+      const next = { ...pendingItem, count: pendingItem.count + msg.count };
+      this.journal.updateEvent(next);
+      pendingItem.count = next.count;
       const shouldWake =
         pendingItem.price * pendingItem.count >= this.config.wakeup.wakeOnGiftThreshold;
       return { record: pendingItem, shouldWake };
@@ -475,8 +484,8 @@ export class LiveEventBuffer {
       handled: false,
     };
 
-    this.pendingEvents.set(alias, record);
     this.journal.recordEvent(record);
+    this.pendingEvents.set(alias, record);
 
     const shouldWake = totalBattery >= this.config.wakeup.wakeOnGiftThreshold;
     return { record, shouldWake };
@@ -493,10 +502,16 @@ export class LiveEventBuffer {
       };
     }
 
+    try {
+      this.journal.recordHandled(eventId, now);
+    } catch (error) {
+      return {
+        status: "failed",
+        message: `持久化待办状态失败：${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
     record.handled = true;
     record.handledAt = now;
-
-    this.journal.recordHandled(eventId, now);
     this.journal.checkAndCompact(this.pendingEvents.values(), this.counters);
 
     return {
@@ -557,8 +572,11 @@ export class LiveEventBuffer {
 
   render(tier: "ambient" | "expanded", appState: LiveAppState): string {
     const { superChats, guards, gifts } = this.getPendingCounts();
-    const isOnline = appState.roomStatus === "online";
-    const statusIcon = isOnline ? "🟢 在线" : "⚪ 未开播";
+    const statusIcon = appState.roomStatus === "online"
+      ? "🟢 在线"
+      : appState.roomStatus === "offline"
+        ? "⚪ 未开播"
+        : "⚪ 状态未知";
 
     if (tier === "ambient") {
       const roomStr = appState.roomId ? `${appState.roomId}号房` : "未连接";
@@ -570,7 +588,7 @@ export class LiveEventBuffer {
     return [
       `[bili]`,
       `房间: ${appState.roomId ?? "未连接"} | ${statusIcon}${titleStr}`,
-      ...renderPendingSection(this.pendingEvents.values()),
+      ...renderPendingSection(this.pendingEvents.values(), this.config.viewport.maxItems),
       ...renderDanmakuSection(
         this.visibleSlots,
         this.config.viewport.maxViewportChars,
