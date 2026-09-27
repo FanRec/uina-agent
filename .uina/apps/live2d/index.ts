@@ -5,8 +5,7 @@ import type { BasePoseName, ExpressParams } from "./types.js";
 
 export * from "./runtime.js";
 
-// 模块级单一聚合根引用
-let currentRuntime: Live2DRuntime | null = null;
+let lastRuntimeForInspection: Live2DRuntime | null = null;
 
 /**
  * 测试注入缝：替换 VTS 物理传输（与 pacing-ticker 的 setTickerEngineForTest 同形）。
@@ -23,23 +22,16 @@ export function setVtsClientForTest(client: VTSClient | null): void {
 }
 
 export function getLive2DRuntime(): Live2DRuntime | null {
-	return currentRuntime;
+	return lastRuntimeForInspection;
 }
 
-function getRuntimeOrError(): { runtime: Live2DRuntime } | { error: { result: string; status: "failed"; details: Record<string, unknown> } } {
-	if (!currentRuntime) {
-		return {
-			error: {
-				result: "执行失败：Live2D 应用尚未启动。",
-				status: "failed" as const,
-				details: { reason: "app_not_started", effectStatus: "not_started" },
-			},
-		};
+export function createLive2DApp(): AppDef {
+	let currentRuntime: Live2DRuntime | null = null;
+	function getRuntimeOrError(): { runtime: Live2DRuntime } | { error: { result: string; status: "failed"; details: Record<string, unknown> } } {
+		if (!currentRuntime) return { error: { result: "执行失败：Live2D 应用尚未启动。", status: "failed", details: { reason: "app_not_started", effectStatus: "not_started" } } };
+		return { runtime: currentRuntime };
 	}
-	return { runtime: currentRuntime };
-}
-
-export const live2dApp: AppDef = {
+	const app: AppDef = {
 	name: "live2d",
 	description:
 		"控制当前在屏幕上呈现的 Live2D 虚拟二次元立绘形象（Mo）。日常说话时优先在台词中使用 <cue id='...'/> 进行 0 开销的自然肢体伴随（如微笑、点头、歪头）；仅在需要主动调整中长期人设体态、触发装扮、或进行多步显式表演分镜时调用本工具。",
@@ -57,6 +49,7 @@ export const live2dApp: AppDef = {
 
 		const runtime = new Live2DRuntime(vtsClientOverride ? { vtsClient: vtsClientOverride } : undefined);
 		currentRuntime = runtime;
+		lastRuntimeForInspection = runtime;
 
 		await runtime.start(ctx);
 
@@ -76,6 +69,7 @@ export const live2dApp: AppDef = {
 		if (currentRuntime) {
 			await currentRuntime.stop();
 			currentRuntime = null;
+			lastRuntimeForInspection = null;
 		}
 	},
 
@@ -198,5 +192,8 @@ export const live2dApp: AppDef = {
 		},
 	},
 };
+	return app;
+}
 
+export const live2dApp = createLive2DApp();
 export default live2dApp;

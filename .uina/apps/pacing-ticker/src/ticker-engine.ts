@@ -116,8 +116,9 @@ export class TickerEngine {
 	}
 
 	async setInterval(minutes: number): Promise<void> {
+		const previous = this.durableState.baseIntervalMs;
 		this.durableState.baseIntervalMs = Math.max(1, Math.min(120, minutes)) * 60_000;
-		await this.persist();
+		try { await this.persist(); } catch (error) { this.durableState.baseIntervalMs = previous; throw error; }
 		if (this.clock.nowMono() >= this.pauseUntilMonoMs) {
 			this.scheduleNext(this.calculateNextInterval());
 		}
@@ -128,7 +129,7 @@ export class TickerEngine {
 		const durationMs = Math.max(1, minutes) * 60_000;
 		this.pauseUntilMonoMs = this.clock.nowMono() + durationMs;
 		this.durableState.pausedUntilEpochMs = this.clock.nowEpoch() + durationMs;
-		await this.persist();
+		try { await this.persist(); } catch (error) { this.pauseUntilMonoMs = 0; this.durableState.pausedUntilEpochMs = null; throw error; }
 		// 立即重新调度瞄准 pause deadline
 		this.scheduleNext(durationMs);
 	}
@@ -222,7 +223,13 @@ export class TickerEngine {
 		const opportunityText = `[时钟节拍: ${timeStr} | 距上个外部活动已过去 ${idleMinutes > 0 ? `${idleMinutes}m` : "片刻"}]`;
 
 		this.durableState.dailyWakeUsage.count++;
-		void this.persist();
+		try {
+			await this.persist();
+		} catch {
+			this.durableState.dailyWakeUsage.count--;
+			if (this.started && generation === this.generation) this.scheduleNext(15_000, generation);
+			return;
+		}
 
 		try {
 			await this.host.submitOpportunity(opportunityText);
@@ -245,11 +252,7 @@ export class TickerEngine {
 			dailyWakeUsage: { ...this.durableState.dailyWakeUsage },
 		};
 
-		this.persistTail = this.persistTail
-			.then(() => this.host.saveDurableState(snapshot))
-			.catch(() => {
-				// 容错：落盘失败不阻断主逻辑，tail 保持可用向下流动
-			});
+		this.persistTail = this.persistTail.catch(() => undefined).then(() => this.host.saveDurableState(snapshot));
 
 		return this.persistTail;
 	}
