@@ -35,10 +35,10 @@ export class AudioObserver {
 	private composer?: MotionComposer;
 
 	constructor(options?: AudioObserverOptions) {
-		this.gain = options?.gain ?? 3.0;
-		this.releaseMs = options?.releaseMs ?? 80;
-		this.transientThreshold = options?.transientThreshold ?? 0.30;
-		this.onsetDeltaThreshold = options?.onsetDeltaThreshold ?? 0.15;
+		this.gain = options?.gain ?? 22.0;
+		this.releaseMs = options?.releaseMs ?? 90;
+		this.transientThreshold = options?.transientThreshold ?? 0.018;
+		this.onsetDeltaThreshold = options?.onsetDeltaThreshold ?? 0.008;
 		this.refractoryPeriodMs = options?.refractoryPeriodMs ?? 220;
 	}
 
@@ -51,11 +51,12 @@ export class AudioObserver {
 	}
 
 	getSpeechEnergy(): number {
-		return Math.max(0, Math.min(1.0, this.currentEnvelope * 2.0));
+		// 真实 16-bit PCM 对话 RMS 约为 0.008~0.04，将其平滑归一化至 0.0~1.0
+		return Math.max(0, Math.min(1.0, this.currentEnvelope * 28.0));
 	}
 
 	isSpeaking(): boolean {
-		return this.mouthOpenY > 0.02 || this.currentEnvelope > 0.01;
+		return this.currentEnvelope > 0.003 || this.mouthOpenY > 0.03;
 	}
 
 	/**
@@ -92,10 +93,12 @@ export class AudioObserver {
 		}
 		this.mouthOpenY = Math.max(0, Math.min(1.0, this.currentEnvelope * this.gain));
 
-		if (this.mouthOpenY < 0.015) {
+		if (this.mouthOpenY < 0.02) {
+			this.mouthOpenY = 0;
+		}
+		if (this.currentEnvelope < 0.0008) {
 			this.currentEnvelope = 0;
 			this.slowEnvelope = 0;
-			this.mouthOpenY = 0;
 		}
 	}
 
@@ -125,7 +128,8 @@ export class AudioObserver {
 			this.cooldownRemainingMs <= 0 &&
 			this.composer
 		) {
-			const magnitude = Math.min(1.0, (rawRms - this.transientThreshold) / 0.35);
+			const scale = this.transientThreshold >= 0.1 ? 0.35 : 0.025;
+			const magnitude = Math.min(1.0, (rawRms - this.transientThreshold) / scale);
 			this.composer.triggerAcousticImpulse(magnitude);
 			this.cooldownRemainingMs = this.refractoryPeriodMs;
 		}
