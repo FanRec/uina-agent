@@ -328,7 +328,7 @@ export class LiveEventBuffer {
       handled: false,
     };
 
-    this.journal.recordEvent(record);
+    try { this.journal.recordEvent(record); } catch (error) { this.counters.sc--; throw error; }
     this.pendingEvents.set(alias, record);
 
     const shouldWake =
@@ -367,7 +367,7 @@ export class LiveEventBuffer {
       handled: false,
     };
 
-    this.journal.recordEvent(record);
+    try { this.journal.recordEvent(record); } catch (error) { this.counters.gd--; throw error; }
     this.pendingEvents.set(alias, record);
 
     const shouldWake = this.config.wakeup.wakeOnGuard;
@@ -484,7 +484,7 @@ export class LiveEventBuffer {
       handled: false,
     };
 
-    this.journal.recordEvent(record);
+    try { this.journal.recordEvent(record); } catch (error) { this.counters.gf--; throw error; }
     this.pendingEvents.set(alias, record);
 
     const shouldWake = totalBattery >= this.config.wakeup.wakeOnGiftThreshold;

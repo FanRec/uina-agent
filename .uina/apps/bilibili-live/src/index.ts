@@ -250,7 +250,7 @@ export function createBilibiliLiveApp(userConfig?: Partial<LiveAppConfig>): AppD
         mode: "followUp",
         source: { kind: "runtime", type: "bilibili-live", origin: "external", ref: event.eventId },
         text: HIGH_PRIORITY_WAKE_NOTICE,
-      });
+      }).catch((error) => console.error(`[bilibili-live] 高优先级事件 ${event.eventId} 唤醒失败:`, error));
     });
 
     c.on("guardBuy", (msg: GuardBuyEvent) => {
@@ -267,7 +267,7 @@ export function createBilibiliLiveApp(userConfig?: Partial<LiveAppConfig>): AppD
         mode: "followUp",
         source: { kind: "runtime", type: "bilibili-live", origin: "external", ref: event.eventId },
         text: HIGH_PRIORITY_WAKE_NOTICE,
-      });
+      }).catch((error) => console.error(`[bilibili-live] 高优先级事件 ${event.eventId} 唤醒失败:`, error));
     });
 
     c.on("gift", (msg: GiftEvent) => {
@@ -285,7 +285,7 @@ export function createBilibiliLiveApp(userConfig?: Partial<LiveAppConfig>): AppD
         mode: "followUp",
         source: { kind: "runtime", type: "bilibili-live", origin: "external", ref: event.eventId },
         text: HIGH_PRIORITY_WAKE_NOTICE,
-      });
+      }).catch((error) => console.error(`[bilibili-live] 高优先级事件 ${event.eventId} 唤醒失败:`, error));
     });
 
     c.on("heartbeat", (evt: HeartbeatEvent) => {

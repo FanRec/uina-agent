@@ -9,9 +9,7 @@ export interface TickerCompanionContext extends ServiceCompanionContext {
   appDataDir?: string;
 }
 
-let lastEngineForInspection: TickerEngine | null = null;
-export function getTickerEngine(): TickerEngine | null { return lastEngineForInspection; }
-export function setTickerEngineForTest(engine: TickerEngine | null): void { lastEngineForInspection = engine; }
+const engines = new WeakMap<AppDef, TickerEngine>();
 
 function installDir(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
@@ -63,7 +61,7 @@ export function createPacingTickerApp(): AppDef {
     unbind = null;
     engine?.stop();
     engine = null;
-    lastEngineForInspection = null;
+    engines.delete(app);
   };
 
   const render = (tier: "ambient" | "expanded"): string => {
@@ -97,7 +95,7 @@ export function createPacingTickerApp(): AppDef {
         saveDurableState: (next: TickerDurableState) => saveState(stateFile, next),
       };
       engine = new TickerEngine(host, initial, guardrails);
-      lastEngineForInspection = engine;
+      engines.set(app, engine);
       engine.start();
       unbind = c.onActivity?.((event) => engine?.notifyActivity(event)) ?? null;
       ctx.signal.addEventListener("abort", teardown, { once: true });
@@ -130,4 +128,8 @@ export function createPacingTickerApp(): AppDef {
 
 export const pacingTickerApp = createPacingTickerApp();
 export default pacingTickerApp;
+
+export function getTickerEngine(app: AppDef): TickerEngine | null {
+  return engines.get(app) ?? null;
+}
 

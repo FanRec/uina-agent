@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import {
 	pacingTickerApp,
 	getTickerEngine,
-	setTickerEngineForTest,
 	type TickerCompanionContext,
 } from "../.uina/apps/pacing-ticker/src/index.js";
 import type { ActionContext } from "../src/extensions/app-framework/types.js";
@@ -26,7 +25,7 @@ describe("pacingTickerApp (自主节拍器 App 契约与动作测试)", () => {
 	beforeEach(async () => {
 		testDir = await mkdtemp(join(tmpdir(), "pacing-ticker-test-"));
 		currentTier = "ambient";
-		setTickerEngineForTest(null);
+		
 	});
 
 	afterEach(async () => {
@@ -68,7 +67,7 @@ describe("pacingTickerApp (自主节拍器 App 契约与动作测试)", () => {
 		};
 
 		await pacingTickerApp.onStart?.(ctx);
-		const engine = getTickerEngine();
+		const engine = getTickerEngine(pacingTickerApp);
 		expect(engine).not.toBeNull();
 
 		// 1. 正常设置
@@ -98,7 +97,7 @@ describe("pacingTickerApp (自主节拍器 App 契约与动作测试)", () => {
 		};
 
 		await pacingTickerApp.onStart?.(ctx);
-		const engine = getTickerEngine();
+		const engine = getTickerEngine(pacingTickerApp);
 
 		// 1. 未暂停时调用 resume，诚实反馈无需恢复
 		const resResume1 = await pacingTickerApp.actions.resume.run({}, mockActionContext);
@@ -174,12 +173,13 @@ describe("pacingTickerApp (自主节拍器 App 契约与动作测试)", () => {
 		};
 
 		await pacingTickerApp.onStart?.(ctx);
-		const engine = getTickerEngine();
+		const engine = getTickerEngine(pacingTickerApp);
 		expect(engine?.getStatus().dailyAttemptsLimit).toBeNull();
 
 		// 触发 abort 信号，引擎应被终止
 		abortController.abort();
-		expect(getTickerEngine()).toBeNull();
+		expect(getTickerEngine(pacingTickerApp)).toBeNull();
 	});
 });
+
 
