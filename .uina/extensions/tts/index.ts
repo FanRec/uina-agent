@@ -122,13 +122,13 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
     }
   };
 
-  const stopLevelStream = (): void => {
+  function stopLevelStream(): void {
     levelStream?.abort();
     levelStream = null;
     resetLevelSinks();
-  };
+  }
 
-  const resetLevelSinks = (): void => {
+  function resetLevelSinks(): void {
     // 音频结束/被打断时必须显式复位：这是"说话结束后不得永久张嘴"的兜底
     for (const sink of levelSinks) {
       try {
@@ -137,9 +137,9 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
         // 同上
       }
     }
-  };
+  }
 
-  const startLevelStream = (): void => {
+  function startLevelStream(): void {
     if (levelStream !== null) return;
     const controller = new AbortController();
     levelStream = controller;
@@ -156,7 +156,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
           );
         }
       });
-  };
+  }
 
   // 电平订阅的生命周期只有一个主人：返回的 teardown。
   // 不再额外挂 pi.signal 的 abort 监听 —— runner 卸载时本就是"先 abort、再跑 teardown"，

@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "../../../src/extensions/runner.js";
-import type { DeliverySnapshot, InterruptResult, PlaybackBreakpoint } from "./driver.js";
+import type { DeliverySnapshot, InterruptResult } from "./driver.js";
 
 export interface VoiceStatus {
   readonly voiceState: "enabled" | "muted";
@@ -85,13 +85,7 @@ export class VoiceSession {
 
   /** 打断只是转发：断点由驱动给出，交付提示由投影方（tts）落账。 */
   async interrupt(expectedTraceId?: string): Promise<InterruptResult> {
-    const result = await this.call<InterruptResult | PlaybackBreakpoint | null>(INTERRUPT_SERVICE, { expectedTraceId });
-    if (result && typeof result === "object" && "outcome" in result) return result as InterruptResult;
-    if (result && typeof result === "object" && "traceId" in result) {
-      return { outcome: "interrupted", breakpoint: result as PlaybackBreakpoint };
-    }
-    if (result === null) return { outcome: "no_op", breakpoint: null, reason: "当前没有可打断的语音" };
-    return {
+    return (await this.call<InterruptResult>(INTERRUPT_SERVICE, { expectedTraceId })) ?? {
       outcome: "failed",
       breakpoint: null,
       reason: "发声驱动未挂载",

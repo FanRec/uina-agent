@@ -180,7 +180,7 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
 
     try {
       const cancellation = await this.client.cancelTrace(traceToCancel, "immediate");
-      if (cancellation.status !== "cancelled" && cancellation.status !== "ok") {
+      if (cancellation.status !== "cancelled") {
         return { outcome: "failed", breakpoint: null, reason: `Bridge 拒绝打断: ${cancellation.status}` };
       }
       if (cancellation.playback_stopped === false && cancellation.cancelled_task_count === 0) {

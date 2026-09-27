@@ -190,6 +190,12 @@ def _service_with_admitted_task() -> TTSBridgeService:
     service._first_chunk_events = {}
     service._sliding_window = _SlidingWindow()
     service.player = _Player()
+    service._playback = PlaybackCoordinator(
+        lock=service._lock,
+        player=service.player,
+        sessions_by_trace=service._sessions_by_trace,
+        streaming_config=StreamingConfig(),
+    )
     service.subtitle_sync = _SubtitleSync()
     service.lipsync_bridge = _LipsyncBridge()
     return service

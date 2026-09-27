@@ -31,8 +31,6 @@ class StreamingSynthesisError(RuntimeError):
         self.fallback_allowed = fallback_allowed
 
 
-_STREAM_END = object()
-
 # 流式音频队列无消费空间的停滞阈值。正常背压（播放端短暂慢）在几秒内恢复；
 # 超过该阈值说明播放端已停滞（设备故障等），producer 必须显式失败并释放
 # 合成锁，而不是永久自旋冻结 vendor 推理。失败会明确上报，不静默丢句。
@@ -88,10 +86,6 @@ class _PCMChunkStream:
             except Empty:
                 return
 
-    def close(self) -> None:
-        """Compatibility alias for callers that close a stream on cancellation."""
-        self.cancel()
-
     def __iter__(self):
         while True:
             with self._state_lock:
@@ -104,8 +98,6 @@ class _PCMChunkStream:
                 if finished:
                     return
                 continue
-            if item is _STREAM_END:
-                return
             yield item
 
 

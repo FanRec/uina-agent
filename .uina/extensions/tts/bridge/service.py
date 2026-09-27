@@ -80,7 +80,6 @@ from synthesis_handlers import (
     TurnEndRequest,
     _AdmittedSpeakTask,
     _PCMChunkStream,
-    _STREAM_END,
     _estimate_stream_duration_ms_static,
     _latency_ms_since,
     _log_latency,
@@ -1754,7 +1753,7 @@ class TTSBridgeService:
                 "cancel_token": task.cancel_token,
             }
         playback_stopped = False
-        if playback_lease is not None and hasattr(self, "_playback"):
+        if playback_lease is not None:
             playback_stopped = self._playback.cancel_if_owner(*playback_lease)
         self._publish_playback_event(
             "cancelled",
@@ -1816,7 +1815,7 @@ class TTSBridgeService:
         self._sliding_window.close_trace(request.trace_id)
         playback_stopped = False
         if request.mode == "immediate" or not boundary_task_ids:
-            if active_lease is not None and hasattr(self, "_playback"):
+            if active_lease is not None:
                 playback_stopped = self._playback.cancel_if_owner(*active_lease)
             self.subtitle_sync.emit_clear(trace_id=request.trace_id, generation_id=generation_id, reason="cancel_trace")
             self.lipsync_bridge.cancel_trace_async(trace_id=request.trace_id)

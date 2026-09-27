@@ -101,8 +101,9 @@ export class StreamParser {
           i += 7 - prefixLength;
           continue;
         }
-        if (longestTagPrefixSuffix(combined, "<think>")) {
-          this.thinkTagBuffer = longestTagPrefixSuffix(combined, "<think>");
+        const prefix = longestTagPrefixSuffix(combined, "<think>");
+        if (prefix) {
+          this.thinkTagBuffer = prefix;
           break;
         }
         this.sentenceBuffer += this.thinkTagBuffer;

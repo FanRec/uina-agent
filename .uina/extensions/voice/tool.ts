@@ -1,5 +1,5 @@
 import type { Tool, ToolExecutionResult } from "../../../src/tools/broker.js";
-import { describeDelivery, type PlaybackBreakpoint } from "./driver.js";
+import { describeDelivery, type InterruptResult, type PlaybackBreakpoint } from "./driver.js";
 import { VoiceSession } from "./session.js";
 
 function describeBreakpoint(bp: PlaybackBreakpoint): string {
@@ -7,6 +7,26 @@ function describeBreakpoint(bp: PlaybackBreakpoint): string {
     ? `第 ${bp.segmentIndex} 句「${bp.segmentText.slice(0, 20)}」停在第 ${bp.committedCharEnd} 字`
     : `第 ${bp.segmentIndex} 句停在第 ${bp.committedCharEnd} 字`;
   return `（物理播放头${where}）`;
+}
+
+function renderInterruption(result: InterruptResult): Pick<ToolExecutionResult, "result" | "status"> {
+  if (result.breakpoint) {
+    return {
+      result: `已立即掐断当前发音并清空排队${describeBreakpoint(result.breakpoint)}。`,
+      status: "succeeded",
+    };
+  }
+  const reason = "reason" in result ? result.reason : "当前无发声";
+  switch (result.outcome) {
+    case "no_op":
+      return { result: `无需打断：${reason}`, status: "succeeded" };
+    case "failed":
+      return { result: `打断结果失败：（${reason}）`, status: "failed" };
+    case "unknown":
+      return { result: `打断结果未知：（${reason}）`, status: "unknown" };
+    case "interrupted":
+      return { result: `已停止当前发音，但没有可用断点：（${reason}）`, status: "succeeded" };
+  }
 }
 
 export function createVoiceTool(session: VoiceSession): Tool {
@@ -76,21 +96,8 @@ export function createVoiceTool(session: VoiceSession): Tool {
         case "interrupt": {
           const expectedTraceId = typeof params.expectedTraceId === "string" ? params.expectedTraceId : undefined;
           const interruption = await session.interrupt(expectedTraceId);
-          const detail = interruption.breakpoint
-            ? describeBreakpoint(interruption.breakpoint)
-            : `（${"reason" in interruption ? interruption.reason : "当前无发声"}）`;
-          const status = interruption.outcome === "failed"
-            ? "failed"
-            : interruption.outcome === "unknown"
-              ? "unknown"
-              : "succeeded";
           return {
-            result: interruption.outcome === "interrupted"
-              ? `已立即掐断当前发音并清空排队${detail}。`
-              : interruption.outcome === "no_op"
-                ? `无需打断：${detail}`
-                : `打断结果${interruption.outcome === "unknown" ? "未知" : "失败"}：${detail}`,
-            status,
+            ...renderInterruption(interruption),
             details: interruption,
           };
         }
