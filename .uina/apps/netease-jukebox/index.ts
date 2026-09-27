@@ -151,7 +151,7 @@ ${songStr}
             };
           }
 
-          await player.load(playUrl, songToPlay.durationMs);
+          await player.load(playUrl, songToPlay.durationMs, songToPlay.id);
           state = {
             ...state,
             status: "playing",

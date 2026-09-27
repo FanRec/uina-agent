@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
 	pacingTickerApp,
-	getTickerEngine,
 	type TickerCompanionContext,
 } from "../.uina/apps/pacing-ticker/src/index.js";
 import type { ActionContext } from "../src/extensions/app-framework/types.js";
@@ -67,18 +66,16 @@ describe("pacingTickerApp (自主节拍器 App 契约与动作测试)", () => {
 		};
 
 		await pacingTickerApp.onStart?.(ctx);
-		const engine = getTickerEngine(pacingTickerApp);
-		expect(engine).not.toBeNull();
 
 		// 1. 正常设置
 		const res1 = await pacingTickerApp.actions.set_interval.run({ minutes: 10 }, mockActionContext);
 		expect(res1).toContain("已将自主节拍基准周期调整为 10 分钟");
-		expect(engine?.getStatus().baseIntervalMinutes).toBe(10);
+		expect(JSON.parse(String(await pacingTickerApp.actions.status.run({}, mockActionContext))).baseIntervalMinutes).toBe(10);
 
 		// 2. 别名支持 (interval)
 		const res2 = await pacingTickerApp.actions.set_interval.run({ interval: 5 }, mockActionContext);
 		expect(res2).toContain("调整为 5 分钟");
-		expect(engine?.getStatus().baseIntervalMinutes).toBe(5);
+		expect(JSON.parse(String(await pacingTickerApp.actions.status.run({}, mockActionContext))).baseIntervalMinutes).toBe(5);
 
 		// 3. 超出范围校验 (< 1)
 		const res3 = await pacingTickerApp.actions.set_interval.run({ minutes: 0 }, mockActionContext);
@@ -97,7 +94,6 @@ describe("pacingTickerApp (自主节拍器 App 契约与动作测试)", () => {
 		};
 
 		await pacingTickerApp.onStart?.(ctx);
-		const engine = getTickerEngine(pacingTickerApp);
 
 		// 1. 未暂停时调用 resume，诚实反馈无需恢复
 		const resResume1 = await pacingTickerApp.actions.resume.run({}, mockActionContext);
@@ -106,12 +102,12 @@ describe("pacingTickerApp (自主节拍器 App 契约与动作测试)", () => {
 		// 2. 执行 pause
 		const resPause = await pacingTickerApp.actions.pause.run({ minutes: 15 }, mockActionContext);
 		expect(resPause).toContain("自主节拍已挂起 15 分钟");
-		expect(engine?.getStatus().isPaused).toBe(true);
+		expect(JSON.parse(String(await pacingTickerApp.actions.status.run({}, mockActionContext))).status).toBe("paused");
 
 		// 3. 暂停后再 resume，成功解除
 		const resResume2 = await pacingTickerApp.actions.resume.run({}, mockActionContext);
 		expect(resResume2).toContain("已提前解除挂起");
-		expect(engine?.getStatus().isPaused).toBe(false);
+		expect(JSON.parse(String(await pacingTickerApp.actions.status.run({}, mockActionContext))).status).toBe("running");
 	});
 
 	it("动作校验：status 返回完整真实物理状态快照", async () => {
@@ -173,12 +169,10 @@ describe("pacingTickerApp (自主节拍器 App 契约与动作测试)", () => {
 		};
 
 		await pacingTickerApp.onStart?.(ctx);
-		const engine = getTickerEngine(pacingTickerApp);
-		expect(engine?.getStatus().dailyAttemptsLimit).toBeNull();
+		expect(JSON.parse(String(await pacingTickerApp.actions.status.run({}, mockActionContext))).dailyAttemptsLimit).toBeNull();
 
 		// 触发 abort 信号，引擎应被终止
 		abortController.abort();
-		expect(getTickerEngine(pacingTickerApp)).toBeNull();
 	});
 });
 

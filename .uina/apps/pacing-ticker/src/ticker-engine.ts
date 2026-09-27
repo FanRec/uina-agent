@@ -48,7 +48,7 @@ export class TickerEngine {
 		this.clock = clock;
 		this.lastExternalActivityMonoMs = this.clock.nowMono();
 		this.guardrails = {
-			maxDailyWakes: guardrails?.maxDailyWakes ?? null,
+			maxDailyAttempts: guardrails?.maxDailyAttempts ?? null,
 		};
 
 		const today = new Date(this.clock.nowEpoch()).toDateString();
@@ -190,9 +190,9 @@ export class TickerEngine {
 			void this.persist();
 		}
 		if (
-			this.guardrails.maxDailyWakes !== null &&
-			this.guardrails.maxDailyWakes !== undefined &&
-			this.durableState.dailyAttempts.count >= this.guardrails.maxDailyWakes
+			this.guardrails.maxDailyAttempts !== null &&
+			this.guardrails.maxDailyAttempts !== undefined &&
+			this.durableState.dailyAttempts.count >= this.guardrails.maxDailyAttempts
 		) {
 			// 达到人类设定的物理硬限额，退避至 1 小时后再次探测
 			this.scheduleNext(3600_000, generation);
@@ -266,8 +266,9 @@ export class TickerEngine {
 			remainingSeconds: Math.max(0, Math.round((this.nextWakeMonoMs - now) / 1000)),
 			isPaused: now < this.pauseUntilMonoMs,
 			dailyAttemptsUsed: this.durableState.dailyAttempts.count,
-			dailyAttemptsLimit: this.guardrails.maxDailyWakes ?? null,
+			dailyAttemptsLimit: this.guardrails.maxDailyAttempts ?? null,
 		};
 	}
 }
+
 

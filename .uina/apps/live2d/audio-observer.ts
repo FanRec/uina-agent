@@ -1,5 +1,5 @@
 import type { VoiceLevelEvent } from "./contracts.js";
-import type { MotionComposer } from "./motion-composer.js";
+import type { MotionDirector } from "./motion-director.js";
 
 export interface AudioObserverOptions {
 	gain?: number; // 增益系数 (默认 3.0)
@@ -14,7 +14,7 @@ export interface AudioObserverOptions {
  * 职责：
  * 1. 接收 voice 侧下发的电平事件 (rms/peak，约 30Hz)；
  * 2. 实时更新口型 RMS 包络，并在 60Hz tick(deltaMs) 中自然平滑衰减，彻底杜绝“说话后永久张嘴”；
- * 3. 捕捉重音/爆破音起振瞬态 (Onset Detection)，配合不应期防抖，通知 MotionComposer 触发头部声学节拍微冲；
+ * 3. 捕捉重音/爆破音起振瞬态 (Onset Detection)，配合不应期防抖，通知 MotionDirector 触发头部声学节拍微冲；
  * 4. 响应 reset/stop，立即将口型复位回 0，并清空冷却与历史电平。
  *
  * 输入契约选择的是**电平**而不是 PCM：口型只需要包络，而 PCM 逐帧跨进程传输会引入
@@ -32,7 +32,7 @@ export class AudioObserver {
 	private previousRms = 0;
 	private cooldownRemainingMs = 0;
 	private mouthOpenY = 0;
-	private composer?: MotionComposer;
+	private director?: MotionDirector;
 
 	constructor(options?: AudioObserverOptions) {
 		this.gain = options?.gain ?? 22.0;
@@ -42,8 +42,8 @@ export class AudioObserver {
 		this.refractoryPeriodMs = options?.refractoryPeriodMs ?? 220;
 	}
 
-	setComposer(composer: MotionComposer): void {
-		this.composer = composer;
+	setDirector(director: MotionDirector): void {
+		this.director = director;
 	}
 
 	getMouthOpenY(): number {
@@ -68,8 +68,8 @@ export class AudioObserver {
 		this.mouthOpenY = 0;
 		this.previousRms = 0;
 		this.cooldownRemainingMs = 0;
-		this.composer?.resetAcousticImpulse();
-		this.composer?.resetSpeechActivity();
+		this.director?.resetAcousticImpulse();
+		this.director?.resetSpeechActivity();
 	}
 
 	/**
@@ -126,11 +126,11 @@ export class AudioObserver {
 			rawRms > this.transientThreshold &&
 			isOnsetSpike &&
 			this.cooldownRemainingMs <= 0 &&
-			this.composer
+			this.director
 		) {
 			const scale = this.transientThreshold >= 0.1 ? 0.35 : 0.025;
 			const magnitude = Math.min(1.0, (rawRms - this.transientThreshold) / scale);
-			this.composer.triggerAcousticImpulse(magnitude);
+			this.director.triggerAcousticImpulse(magnitude);
 			this.cooldownRemainingMs = this.refractoryPeriodMs;
 		}
 
@@ -139,3 +139,5 @@ export class AudioObserver {
 		this.previousRms = rawRms;
 	}
 }
+
+

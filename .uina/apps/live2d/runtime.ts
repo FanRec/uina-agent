@@ -3,9 +3,7 @@ import { BODY_ENDPOINT_EXPOSED_PREFIX, VOICE_LEVEL_SINK_EXPOSED_PREFIX } from ".
 import type { ActionContext, ServiceCompanionContext } from "../../../src/extensions/app-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { AudioObserver } from "./audio-observer.js";
-import { ChannelArbiter } from "./channel-arbiter.js";
 import { Live2DStateTracker, VTSCompanion } from "./companion.js";
-import { MotionComposer } from "./motion-composer.js";
 import { MotionDirector } from "./motion-director.js";
 import {
 	CANONICAL_CUE_IDS,
@@ -37,18 +35,17 @@ export class Live2DEndpoint implements BodyEndpoint {
 	readonly bodyType = "avatar_2d";
 
 	constructor(
-		readonly composer: MotionComposer,
-		readonly arbiter: ChannelArbiter,
+		readonly director: MotionDirector,
 		readonly stateTracker: Live2DStateTracker,
 	) {
-		this.arbiter.setCueDispatcher(async (cueId) => {
+		this.director.setCueDispatcher(async (cueId) => {
 			const beats = resolveCueToBeat(cueId);
 			if (!beats || beats.length === 0) return;
 
 			const channelsToClaim = getChannelsForBeats(beats);
 			let lease: import("./types.js").ChannelLease | undefined;
 			try {
-				lease = await this.arbiter.claim(channelsToClaim, {
+				lease = await this.director.claim(channelsToClaim, {
 					priority: CHANNEL_PRIORITY.CUE,
 					reason: `cue:${cueId}`,
 					allowDegrade: true,
@@ -60,12 +57,12 @@ export class Live2DEndpoint implements BodyEndpoint {
 			}
 
 			try {
-				await this.composer.playExpressiveBeats(
+				await this.director.playExpressiveBeats(
 					{ beats, intensity: 1.0 },
 					{ signal: lease.signal, allowedChannels: lease.channels },
 				);
 			} finally {
-				this.arbiter.release(lease);
+				this.director.release(lease);
 			}
 		});
 	}
@@ -83,19 +80,19 @@ export class Live2DEndpoint implements BodyEndpoint {
 
 	emitCue(cueId: string): void {
 		this.lastCue = { id: cueId, at: new Date().toLocaleTimeString("zh-CN", { hour12: false }) };
-		this.arbiter.dispatchCue(cueId);
+		this.director.dispatchCue(cueId);
 	}
 
 	async safeStop(): Promise<void> {
-		this.composer.abortAllMotions();
-		this.arbiter.releaseAll();
+		this.director.abortAllMotions();
+		this.director.releaseAll();
 	}
 
 	onFocus(isFocused: boolean): void {
 		if (isFocused) {
-			this.composer.bodyDirector.transitionToActivePose();
+			this.director.bodyDirector.transitionToActivePose();
 		} else {
-			this.composer.bodyDirector.transitionToParkedPose();
+			this.director.bodyDirector.transitionToParkedPose();
 		}
 	}
 }
@@ -117,14 +114,12 @@ export class Live2DEndpoint implements BodyEndpoint {
  * 逐帧 PCM 旁路方案已否决并删除：口型只需要包络，不值得为此新建二进制通道。
  */
 export class Live2DRuntime {
-	readonly arbiter: ChannelArbiter;
-	readonly composer: MotionComposer;
+	readonly director: MotionDirector;
 	readonly audioObserver: AudioObserver;
 	readonly vtsClient: VTSClient;
 	readonly companion: VTSCompanion;
 	readonly endpoint: Live2DEndpoint;
 	readonly reflexDirector: ReflexDirector;
-	readonly director: MotionDirector;
 
 	currentCostume = "default";
 	currentBasePose: BasePoseName = "relaxed";
@@ -138,18 +133,16 @@ export class Live2DRuntime {
 
 	constructor(options?: { vtsClient?: VTSClient }) {
 		this.director = new MotionDirector();
-		this.arbiter = this.director.arbiter;
-		this.composer = this.director.composer;
 		this.audioObserver = new AudioObserver();
-		this.audioObserver.setComposer(this.composer);
+		this.audioObserver.setDirector(this.director);
 
 		this.vtsClient = options?.vtsClient ?? new VTSClient();
-		this.companion = new VTSCompanion(this.composer, this.arbiter, this.vtsClient, this.audioObserver);
-		this.endpoint = new Live2DEndpoint(this.composer, this.arbiter, this.companion.stateTracker);
-		this.reflexDirector = new ReflexDirector(this.composer, this.arbiter, () => this.currentBasePose);
+		this.companion = new VTSCompanion(this.director, this.vtsClient, this.audioObserver);
+		this.endpoint = new Live2DEndpoint(this.director, this.companion.stateTracker);
+		this.reflexDirector = new ReflexDirector(this.director, () => this.currentBasePose);
 
 		// 状态双向同步：当底层限时基准姿态倒计时结束自动回正时，同步更新 currentBasePose
-		this.composer.bodyDirector.setOnBasePoseExpired(() => {
+		this.director.bodyDirector.setOnBasePoseExpired(() => {
 			this.currentBasePose = "relaxed";
 		});
 	}
@@ -243,8 +236,8 @@ export class Live2DRuntime {
 		}
 		this.cleanupFns.length = 0;
 
-		this.composer.abortAllMotions();
-		this.arbiter.releaseAll();
+		this.director.abortAllMotions();
+		this.director.releaseAll();
 	}
 
 	render(tier: "ambient" | "expanded"): string {
@@ -284,7 +277,7 @@ export class Live2DRuntime {
 		// 最小特权通道推导（复用通用推导，彻底消除手写判定）
 		const channelsToClaim = getChannelsForBeats(beats);
 
-		const lease = await this.arbiter.claim(channelsToClaim, {
+		const lease = await this.director.claim(channelsToClaim, {
 			reason: "action:express",
 			preemptSameReason: true,
 			allowDegrade: true,
@@ -292,7 +285,7 @@ export class Live2DRuntime {
 		});
 
 		try {
-			await this.composer.playExpressiveBeats(
+			await this.director.playExpressiveBeats(
 				{ beats, intensity: args.intensity ?? DEFAULT_EXPRESSIVE_INTENSITY },
 				{ signal: lease.signal, allowedChannels: lease.channels },
 			);
@@ -301,7 +294,7 @@ export class Live2DRuntime {
 			const note = isOnline ? "" : "（VTS 离线，已在本地同步姿态）";
 			return `即兴肢体表情已执行${note}。`;
 		} finally {
-			this.arbiter.release(lease);
+			this.director.release(lease);
 		}
 	}
 
@@ -309,14 +302,14 @@ export class Live2DRuntime {
 	 * 切换全身基准姿态与心境氛围 (pose 动作)
 	 */
 	async executePose(name: BasePoseName, durationMs: number, ctx: ActionContext): Promise<string> {
-		const lease = await this.arbiter.claim(["head", "torso"], {
+		const lease = await this.director.claim(["head", "torso"], {
 			reason: "action:pose",
 			preemptSameReason: true,
 			signal: ctx.signal,
 		});
 		try {
 			this.currentBasePose = name;
-			this.composer.bodyDirector.applyBasePose(name, {
+			this.director.bodyDirector.applyBasePose(name, {
 				transitionMs: 800,
 				holdMs: durationMs > 0 ? durationMs : undefined,
 			});
@@ -324,7 +317,7 @@ export class Live2DRuntime {
 			const returnMsg = durationMs > 0 ? `（保持 ${durationMs}ms 后自然回正）` : "（持续生效）";
 			return `基准体态已切换为: ${name} ${returnMsg}`;
 		} finally {
-			this.arbiter.release(lease);
+			this.director.release(lease);
 		}
 	}
 
@@ -361,7 +354,7 @@ export class Live2DRuntime {
 			};
 		}
 
-		const lease = await this.arbiter.claimAllChannels("costume", ctx.signal);
+		const lease = await this.director.claimAllChannels("costume", ctx.signal);
 		try {
 			try {
 				await this.vtsClient.triggerHotkey(matched.hotkeyID);
@@ -381,7 +374,7 @@ export class Live2DRuntime {
 				details: { executionMode: "vts_hotkey", effectStatus: "confirmed", hotkeyID: matched.hotkeyID },
 			};
 		} finally {
-			this.arbiter.release(lease);
+			this.director.release(lease);
 		}
 	}
 
@@ -460,7 +453,7 @@ export class Live2DRuntime {
 
 		let lease;
 		try {
-			lease = await this.arbiter.claimAllChannels("flip", ctx.signal);
+			lease = await this.director.claimAllChannels("flip", ctx.signal);
 		} catch (error) {
 			return {
 				result: `未执行 360° 翻转：身体通道申请失败（${error instanceof Error ? error.message : String(error)}）。`,
@@ -501,7 +494,7 @@ export class Live2DRuntime {
 				};
 			}
 
-			await this.composer.playExpressiveBeats(
+			await this.director.playExpressiveBeats(
 				{
 					beats: [
 						{ head: "lowered", face: "smug", hold_ms: 200 },
@@ -518,7 +511,10 @@ export class Live2DRuntime {
 				details: { executionMode: "vts_physical", effectStatus: "confirmed" },
 			};
 		} finally {
-			this.arbiter.release(lease);
+			this.director.release(lease);
 		}
 	}
 }
+
+
+

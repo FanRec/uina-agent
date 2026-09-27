@@ -16,7 +16,7 @@ export interface MusicPlayer {
   readonly volume: number;
   readonly isSimulated: boolean;
   readonly availability: "real" | "simulation" | "unavailable";
-  load(url: string, durationMs: number | null): Promise<void>;
+  load(url: string, durationMs: number | null, songId?: string): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;
   stop(): Promise<void>;
@@ -174,6 +174,8 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
   private ipcPath: string | null = null;
   private requestId = 0;
   private trackId = 0;
+  private activeEntryId: number | null = null;
+  private startWaiter: { generation: number; resolve: (entryId: number) => void; reject: (error: Error) => void; timer: NodeJS.Timeout } | null = null;
   private readonly pending = new Map<
     number,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
@@ -193,14 +195,21 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
     return this._volume;
   }
 
-  async load(url: string, durationMs: number | null): Promise<void> {
+  async load(url: string, durationMs: number | null, _songId?: string): Promise<void> {
     await this.ensureStarted();
-    const trackId = ++this.trackId;
+    const generation = ++this.trackId;
+    this.activeEntryId = null;
     this.durationHintMs = durationMs;
+    const started = new Promise<number>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("mpv 未报告 start-file 播放项")), 10_000);
+      this.startWaiter = { generation, resolve, reject, timer };
+    });
     await this.command(["loadfile", url, "replace"]);
+    const entryId = await started;
+    if (generation !== this.trackId) throw new Error("播放项已被新歌曲取代");
+    this.activeEntryId = entryId;
     await this.command(["set_property", "pause", false]);
     this._status = "playing";
-    void trackId;
   }
 
   async pause(): Promise<void> {
@@ -216,6 +225,9 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
   }
 
   async stop(): Promise<void> {
+    this.trackId++;
+    this.activeEntryId = null;
+    if (this.startWaiter) { clearTimeout(this.startWaiter.timer); this.startWaiter.reject(new Error("播放已停止")); this.startWaiter = null; }
     if (!this.socket) {
       this._status = "idle";
       return;
@@ -249,6 +261,8 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
   }
 
   async close(): Promise<void> {
+    this.trackId++;
+    this.activeEntryId = null;
     if (this.socket) await this.command(["quit"]).catch(() => undefined);
     this.socket?.destroy();
     this.socket = null;
@@ -345,6 +359,7 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
   }
 
   private rejectPending(error: Error): void {
+    if (this.startWaiter) { clearTimeout(this.startWaiter.timer); this.startWaiter.reject(error); this.startWaiter = null; }
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
   }
@@ -359,10 +374,11 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
         try {
           const msg = JSON.parse(line) as {
             request_id?: number;
-            error?: string;
+          error?: string;
           data?: unknown;
           event?: string;
           reason?: string;
+          playlist_entry_id?: number;
           };
           if (typeof msg.request_id === "number") {
             const p = this.pending.get(msg.request_id);
@@ -374,9 +390,17 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
                 p.reject(new Error(msg.error ?? "mpv command failed"));
               }
             }
-          } else if (msg.event === "end-file" && msg.reason === "eof") {
+          } else if (msg.event === "start-file" && typeof msg.playlist_entry_id === "number") {
+            if (this.startWaiter) {
+              const waiter = this.startWaiter;
+              this.startWaiter = null;
+              clearTimeout(waiter.timer);
+              if (waiter.generation === this.trackId) waiter.resolve(msg.playlist_entry_id);
+            }
+          } else if (msg.event === "end-file" && msg.reason === "eof" && msg.playlist_entry_id === this.activeEntryId) {
             this._status = "idle";
             this.emit("ended", { reason: "eof", trackId: this.trackId });
+            this.activeEntryId = null;
           }
         } catch {
           // ignore parse error

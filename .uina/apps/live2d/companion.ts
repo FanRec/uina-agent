@@ -1,6 +1,7 @@
 import type { AudioObserver } from "./audio-observer.js";
-import type { ChannelArbiter } from "./channel-arbiter.js";
-import type { MotionComposer } from "./motion-composer.js";
+import type { MotionDirector } from "./motion-director.js";
+
+
 import { CHANNEL_PRIORITY } from "./types.js";
 import {
 	type VTSClient,
@@ -38,7 +39,7 @@ export interface VTSCompanionOptions {
 /**
  * Live2D 后台伴生服务 (VTSCompanion)
  * 职责：
- * 1. 运行 60Hz 渲染时钟，驱动 MotionComposer 动作合成；
+ * 1. 运行 60Hz 渲染时钟，驱动 MotionDirector 动作合成；
  * 2. 调度 AudioObserver 驱动口型包络平滑衰减与瞬态捕获；
  * 3. 委派 VTSParameterRetargeter 执行语义重定向与表情融合；
  * 4. 向 VTube Studio 注入标准参数；
@@ -55,8 +56,7 @@ export class VTSCompanion {
 	private readonly idleOfflineFps: number;
 
 	constructor(
-		readonly composer: MotionComposer,
-		readonly arbiter: ChannelArbiter,
+		readonly director: MotionDirector,
 		readonly vtsClient: VTSClient,
 		readonly audioObserver: AudioObserver,
 		options?: VTSCompanionOptions,
@@ -132,12 +132,12 @@ export class VTSCompanion {
 		this.audioObserver.tick(deltaMs);
 
 		// 2. 提取实时音频口型开度与语流能量 (当 mouth 通道未被高优先级 Action 锁定时)
-		const isMouthLocked = this.arbiter.isChannelLocked("mouth", CHANNEL_PRIORITY.ACTION);
+		const isMouthLocked = this.director.isChannelLocked("mouth", CHANNEL_PRIORITY.ACTION);
 		const mouthOpen = isMouthLocked ? undefined : this.audioObserver.getMouthOpenY();
 		const speechEnergy = isMouthLocked ? 0 : this.audioObserver.getSpeechEnergy();
 
 		// 3. 合成动效 (传入当前语流能量，自动驱动躯干连续循环律动)
-		const frame = this.composer.compose(deltaMs, { speechEnergy });
+		const frame = this.director.compose(deltaMs, { speechEnergy });
 
 		// 4. 重定向与融合为 VTS 参数包 (零分配)
 		const params = this.retargeter.retarget(frame, mouthOpen);
@@ -146,3 +146,5 @@ export class VTSCompanion {
 		this.vtsClient.injectParameters(params);
 	}
 }
+
+

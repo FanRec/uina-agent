@@ -8,7 +8,7 @@ export * from "./runtime.js";
 let lastRuntimeForInspection: Live2DRuntime | null = null;
 
 /**
- * 测试注入缝：替换 VTS 物理传输（与 pacing-ticker 的 setTickerEngineForTest 同形）。
+ * 测试注入缝：替换 VTS 物理传输。
  *
  * 生产路径不需要它——Live2D 自建客户端并连接本机 VTube Studio。测试无法满足
  * "本机运行 VTS 且用户已在弹窗中授权"这一前提，故留一条显式替换口。
@@ -197,3 +197,4 @@ export function createLive2DApp(): AppDef {
 
 export const live2dApp = createLive2DApp();
 export default live2dApp;
+

@@ -22,7 +22,7 @@ export const BACKOFF_RULES: readonly BackoffRule[] = [
  */
 export interface TickerGuardrails {
 	/** 每日自主唤醒最大次数 (null 或 undefined 表示不设上限) */
-	readonly maxDailyWakes?: number | null;
+	readonly maxDailyAttempts?: number | null;
 }
 
 /**
@@ -71,4 +71,5 @@ export interface TickerStatusSnapshot {
 	readonly dailyAttemptsUsed: number;
 	readonly dailyAttemptsLimit: number | null;
 }
+
 

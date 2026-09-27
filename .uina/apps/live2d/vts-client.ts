@@ -539,3 +539,4 @@ export class VTSClient {
 		this.cleanupSocket();
 	}
 }
+

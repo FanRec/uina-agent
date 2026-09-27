@@ -1,7 +1,8 @@
 import type { BasePoseName } from "./types.js";
-import type { ChannelArbiter } from "./channel-arbiter.js";
-import type { MotionComposer } from "./motion-composer.js";
+
+
 import { CHANNEL_PRIORITY } from "./types.js";
+import type { MotionDirector } from "./motion-director.js";
 
 /**
  * Live2D 宿主生命周期反射策略器 (ReflexDirector)
@@ -16,24 +17,23 @@ export class ReflexDirector {
 	private isThinking = false;
 
 	constructor(
-		private readonly composer: MotionComposer,
-		private readonly arbiter: ChannelArbiter,
+		private readonly director: MotionDirector,
 		private readonly getBasePose?: () => BasePoseName,
 	) {}
 
 	async onTurnStart(): Promise<void> {
 		this.isThinking = false;
 		try {
-			const lease = await this.arbiter.claim(["head", "gaze"], {
+			const lease = await this.director.claim(["head", "gaze"], {
 				priority: CHANNEL_PRIORITY.REFLEX,
 				reason: "reflex:turn_start",
 				allowDegrade: true,
 			});
 			// 保持或唤醒至当前设定的基准姿态，绝不粗暴清零重置
 			const pose = this.getBasePose?.() ?? "focused";
-			this.composer.bodyDirector.transitionToActivePose(pose);
+			this.director.bodyDirector.transitionToActivePose(pose);
 			// 自动释放租约让弹簧继续自由运动
-			this.arbiter.release(lease);
+			this.director.release(lease);
 		} catch {
 			// 被高优先级动作占用时忽略
 		}
@@ -44,20 +44,20 @@ export class ReflexDirector {
 		this.isThinking = true;
 
 		try {
-			const lease = await this.arbiter.claim(["head", "gaze"], {
+			const lease = await this.director.claim(["head", "gaze"], {
 				priority: CHANNEL_PRIORITY.REFLEX,
 				reason: "reflex:thinking",
 				allowDegrade: true,
 			});
 
 			// 思考时明显歪头 + 视线微偏上 (清晰可辨的思考姿态)
-			this.composer.bodyDirector.setTargets([
+			this.director.bodyDirector.setTargets([
 				{ name: "ParamAngleZ", value: 10.0 },
 				{ name: "ParamEyeBallY", value: 0.6 },
 				{ name: "ParamEyeBallX", value: -0.4 },
 			]);
 
-			this.arbiter.release(lease);
+			this.director.release(lease);
 		} catch {
 			// 忽略冲突
 		}
@@ -66,23 +66,25 @@ export class ReflexDirector {
 	onSpeakingContent(): void {
 		if (this.isThinking) {
 			this.isThinking = false;
-			this.composer.bodyDirector.dampenParams(["ParamAngleZ", "ParamEyeBallX", "ParamEyeBallY"]);
+			this.director.bodyDirector.dampenParams(["ParamAngleZ", "ParamEyeBallX", "ParamEyeBallY"]);
 		}
 	}
 
 	async onTurnEnd(): Promise<void> {
 		this.isThinking = false;
-		if (this.composer.isPlayingExpressiveBeats?.()) {
-			const activeParams = this.composer.getActiveExpressiveParams?.() ?? [];
-			this.composer.bodyDirector.dampenToNeutral(activeParams);
+		if (this.director.isPlayingExpressiveBeats?.()) {
+			const activeParams = this.director.getActiveExpressiveParams?.() ?? [];
+			this.director.bodyDirector.dampenToNeutral(activeParams);
 		} else {
-			this.composer.bodyDirector.dampenToNeutral();
+			this.director.bodyDirector.dampenToNeutral();
 		}
 	}
 
 	onTurnAborted(): void {
 		this.isThinking = false;
-		this.composer.abortAllMotions();
-		this.arbiter.releaseAll();
+		this.director.abortAllMotions();
+		this.director.releaseAll();
 	}
 }
+
+

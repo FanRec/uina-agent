@@ -9,7 +9,6 @@ export interface TickerCompanionContext extends ServiceCompanionContext {
   appDataDir?: string;
 }
 
-const engines = new WeakMap<AppDef, TickerEngine>();
 
 function installDir(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
@@ -43,10 +42,10 @@ async function saveState(filePath: string, state: TickerDurableState): Promise<v
 
 async function loadGuardrails(filePath: string): Promise<TickerGuardrails> {
   try {
-    const data = JSON.parse(await readFile(filePath, "utf8")) as { maxDailyWakes?: unknown };
-    return { maxDailyWakes: typeof data.maxDailyWakes === "number" && Number.isFinite(data.maxDailyWakes) && data.maxDailyWakes > 0 ? data.maxDailyWakes : null };
+    const data = JSON.parse(await readFile(filePath, "utf8")) as { maxDailyAttempts?: unknown };
+    return { maxDailyAttempts: typeof data.maxDailyAttempts === "number" && Number.isFinite(data.maxDailyAttempts) && data.maxDailyAttempts > 0 ? data.maxDailyAttempts : null };
   } catch (error) {
-    if (error instanceof SyntaxError || (error instanceof Error && /ENOENT/.test(error.message))) return { maxDailyWakes: null };
+    if (error instanceof SyntaxError || (error instanceof Error && /ENOENT/.test(error.message))) return { maxDailyAttempts: null };
     throw error;
   }
 }
@@ -61,7 +60,6 @@ export function createPacingTickerApp(): AppDef {
     unbind = null;
     engine?.stop();
     engine = null;
-    engines.delete(app);
   };
 
   const render = (tier: "ambient" | "expanded"): string => {
@@ -95,7 +93,6 @@ export function createPacingTickerApp(): AppDef {
         saveDurableState: (next: TickerDurableState) => saveState(stateFile, next),
       };
       engine = new TickerEngine(host, initial, guardrails);
-      engines.set(app, engine);
       engine.start();
       unbind = c.onActivity?.((event) => engine?.notifyActivity(event)) ?? null;
       ctx.signal.addEventListener("abort", teardown, { once: true });
@@ -129,7 +126,5 @@ export function createPacingTickerApp(): AppDef {
 export const pacingTickerApp = createPacingTickerApp();
 export default pacingTickerApp;
 
-export function getTickerEngine(app: AppDef): TickerEngine | null {
-  return engines.get(app) ?? null;
-}
+
 

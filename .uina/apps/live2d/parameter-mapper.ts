@@ -348,3 +348,4 @@ export function getChannelsForBeats(beats: readonly ExpressBeat[]): Live2DChanne
 	}
 	return Array.from(channels);
 }
+
