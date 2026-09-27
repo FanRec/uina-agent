@@ -63,6 +63,13 @@ export class ReflexDirector {
 		}
 	}
 
+	onSpeakingContent(): void {
+		if (this.isThinking) {
+			this.isThinking = false;
+			this.composer.bodyDirector.dampenToNeutral(["ParamAngleZ", "ParamEyeBallX", "ParamEyeBallY"]);
+		}
+	}
+
 	async onTurnEnd(): Promise<void> {
 		this.isThinking = false;
 		if (this.composer.isPlayingExpressiveBeats?.()) {

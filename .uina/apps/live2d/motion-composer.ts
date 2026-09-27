@@ -189,11 +189,11 @@ export class MotionComposer {
 
 			if (!isTorsoLocked) {
 				// 躯干左右微晃重心游移 (双谐波复合波：主频 ~0.65Hz 对应意群句式周期约 1.5s，次频 ~1.3Hz 对应音节音步)
-				const bodySwayX = (Math.sin(p * 4.1) * 0.72 + Math.sin(p * 2.05 + 0.5) * 0.28) * 4.5 * act;
+				const bodySwayX = (Math.sin(p * 4.1) * 0.72 + Math.sin(p * 2.05 + 0.5) * 0.28) * 6.0 * act;
 				// 胸腔起伏与说话呼吸前倾
-				const bodyPitchY = (Math.sin(p * 3.2 + 1.0) * 0.6 + Math.cos(p * 1.6) * 0.4) * 3.0 * act;
+				const bodyPitchY = (Math.sin(p * 3.2 + 1.0) * 0.6 + Math.cos(p * 1.6) * 0.4) * 4.0 * act;
 				// 脊柱侧倾配合重心转移
-				const bodyRollZ = Math.cos(p * 4.1 + 0.8) * 2.5 * act;
+				const bodyRollZ = Math.cos(p * 4.1 + 0.8) * 3.5 * act;
 
 				merged.ParamBodyAngleX = clampLive2DParam("ParamBodyAngleX", (merged.ParamBodyAngleX ?? 0) + bodySwayX);
 				merged.ParamBodyAngleY = clampLive2DParam("ParamBodyAngleY", (merged.ParamBodyAngleY ?? 0) + bodyPitchY);
@@ -202,11 +202,14 @@ export class MotionComposer {
 
 			if (!isHeadLocked) {
 				// 头部语流随动轻晃 (与躯干柔和耦合，形成生动的三维二次元律动)
-				const headSwayZ = Math.sin(p * 4.1 + 1.2) * 2.2 * act;
-				const headSwayX = Math.sin(p * 2.05) * 1.6 * act;
+				const headSwayZ = Math.sin(p * 4.1 + 1.2) * 3.8 * act;
+				const headSwayX = Math.sin(p * 2.05) * 2.8 * act;
+				// 语流重音微点头律动 (主导节拍随语流起伏，在音步重音处产生自然的下潜微点头)
+				const headNodY = (Math.sin(p * 4.1 - 0.3) * 0.65 + Math.sin(p * 8.2) * 0.35) * -3.2 * act;
 
 				merged.ParamAngleZ = clampLive2DParam("ParamAngleZ", (merged.ParamAngleZ ?? 0) + headSwayZ);
 				merged.ParamAngleX = clampLive2DParam("ParamAngleX", (merged.ParamAngleX ?? 0) + headSwayX);
+				merged.ParamAngleY = clampLive2DParam("ParamAngleY", (merged.ParamAngleY ?? 0) + headNodY);
 			}
 		}
 

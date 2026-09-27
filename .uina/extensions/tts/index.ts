@@ -141,14 +141,20 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
     levelStream?.abort();
     const controller = new AbortController();
     levelStream = controller;
-    void client.subscribeEvents(traceId, pushLevel, controller.signal).catch((error: unknown) => {
-      // 电平是口型的增强能力：订阅失败只上报，绝不影响发声与回合推进
-      if (!controller.signal.aborted) {
-        pi.reportError(
-          `[TTS] 声学电平订阅失败（口型将无驱动）: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    });
+    void client.subscribeEvents(traceId, pushLevel, controller.signal)
+      .then(() => {
+        if (levelStream === controller && !driver.isDelivering) {
+          stopLevelStream();
+        }
+      })
+      .catch((error: unknown) => {
+        // 电平是口型的增强能力：订阅失败只上报，绝不影响发声与回合推进
+        if (!controller.signal.aborted) {
+          pi.reportError(
+            `[TTS] 声学电平订阅失败（口型将无驱动）: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      });
   };
 
   // 电平订阅的生命周期只有一个主人：返回的 teardown。
@@ -171,7 +177,10 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
         // 探测失败即"这一拍没看到新事实"，快照保留上一次观测；不刷屏、不臆造。
       })
       .then(() => {
-        if (!driver.isDelivering) stopProgressPolling();
+        if (!driver.isDelivering) {
+          stopProgressPolling();
+          stopLevelStream();
+        }
       });
   };
 
@@ -228,19 +237,22 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
         }
       }
     }
-    // 无论本回合是否真的发声，都要收束电平订阅并复位口型
-    stopLevelStream();
-    // 文本说完了，声音还在队列里：继续探测直到排空，视口才说得准。
-    if (driver.isDelivering) ensureProgressPolling();
-    else stopProgressPolling();
+    // 文本说完了：若音频仍在物理播放或在途队列，保持电平流直到交付彻底完成；
+    // 仅在完全无在途音频时立即收束电平与口型复位。
+    if (driver.isDelivering) {
+      ensureProgressPolling();
+    } else {
+      stopProgressPolling();
+      stopLevelStream();
+    }
   });
 
   pi.on("turn_aborted", async () => {
+    parser.reset();
+    stopProgressPolling();
+    stopLevelStream();
     const bp = await driver.interrupt();
     if (bp) breakpointNotice = renderBreakpointNotice(bp);
-    parser.reset();
-    stopLevelStream();
-    stopProgressPolling();
   });
 
   // 6. 交付视口投影：与上下文一同注入，独立 system 消息，不污染用户输入。

@@ -230,7 +230,11 @@ export class Live2DRuntime {
 						void this.reflexDirector.onTurnStart();
 						break;
 					case "output_update":
-						if (event.channel === "thinking") void this.reflexDirector.onThinking();
+						if (event.channel === "thinking") {
+							void this.reflexDirector.onThinking();
+						} else if (event.channel === "content") {
+							this.reflexDirector.onSpeakingContent();
+						}
 						break;
 					case "turn_end":
 						void this.reflexDirector.onTurnEnd();
