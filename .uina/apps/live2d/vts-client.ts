@@ -55,6 +55,7 @@ export class VTSClient {
 	private isDisposed = false;
 	private reconnectTimer: NodeJS.Timeout | null = null;
 	private isAuthenticated = false;
+	private connectionGeneration = 0;
 
 	private readonly injectableParameters = new Set<string>();
 	private readonly filteredParamBuffer: VTSParamValue[] = [];
@@ -105,15 +106,18 @@ export class VTSClient {
 	connect(): void {
 		if (this.isDisposed || this.ws !== null || this.isConnecting) return;
 		this.isConnecting = true;
+		const generation = ++this.connectionGeneration;
 
 		try {
 			const ws = this.wsFactory(this.url);
 			this.ws = ws;
 
-			ws.onopen = async () => {
-				this.isConnecting = false;
-				try {
-					await this.authenticate();
+		ws.onopen = async () => {
+			if (generation !== this.connectionGeneration || this.ws !== ws) return;
+			this.isConnecting = false;
+			try {
+				await this.authenticate();
+				if (generation !== this.connectionGeneration || this.ws !== ws) return;
 					this.isAuthenticated = true;
 					this.currentReconnectMs = this.baseReconnectMs;
 					this.onConnectionChange?.(true);
@@ -124,21 +128,24 @@ export class VTSClient {
 						"[Live2D] VTS 握手/鉴权失败:",
 						err instanceof Error ? err.message : String(err),
 					);
-					this.cleanupSocket();
+					if (generation === this.connectionGeneration) this.cleanupSocket();
 					this.scheduleReconnect();
 				}
 			};
 
-			ws.onmessage = (event) => {
-				this.handleMessage(String(event.data));
-			};
+		ws.onmessage = (event) => {
+			if (generation !== this.connectionGeneration || this.ws !== ws) return;
+			this.handleMessage(String(event.data));
+		};
 
-			ws.onclose = () => {
-				this.cleanupSocket();
-				this.scheduleReconnect();
-			};
+		ws.onclose = () => {
+			if (generation !== this.connectionGeneration || this.ws !== ws) return;
+			this.cleanupSocket();
+			this.scheduleReconnect();
+		};
 
-			ws.onerror = () => {
+		ws.onerror = () => {
+			if (generation !== this.connectionGeneration || this.ws !== ws) return;
 				// onerror 通常伴随 onclose
 			};
 		} catch (err) {
@@ -146,7 +153,7 @@ export class VTSClient {
 				"[Live2D] VTS 连接初始化异常:",
 				err instanceof Error ? err.message : String(err),
 			);
-			this.cleanupSocket();
+				this.cleanupSocket();
 			this.scheduleReconnect();
 		}
 	}
@@ -524,6 +531,7 @@ export class VTSClient {
 
 	disconnect(): void {
 		this.isDisposed = true;
+		this.connectionGeneration++;
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = null;

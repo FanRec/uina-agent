@@ -11,6 +11,7 @@ interface ChannelSlot {
 }
 
 interface InternalLease extends ChannelLease {
+	channels: Live2DChannel[];
 	isReleased: boolean;
 	onEvicted?: (channel: Live2DChannel) => void;
 	abortController?: AbortController;
@@ -120,10 +121,11 @@ export class ChannelArbiter {
 	 */
 	private evictLeases(leasesToEvict: Set<InternalLease>, acquiredChannels: Live2DChannel[]): void {
 		for (const oldLease of leasesToEvict) {
-			for (const ch of acquiredChannels) {
-				oldLease.onEvicted?.(ch);
-			}
-			const remainingChannels = oldLease.channels.filter((c) => !acquiredChannels.includes(c));
+				for (const ch of acquiredChannels) {
+					if (oldLease.channels.includes(ch)) oldLease.onEvicted?.(ch);
+				}
+				const remainingChannels = oldLease.channels.filter((c) => !acquiredChannels.includes(c));
+				oldLease.channels = remainingChannels;
 			// 若旧租约无剩余通道，或声明了原子性 (atomic: true)，则全量中断与释放，防止半残动作
 			if (remainingChannels.length === 0 || oldLease.atomic) {
 				oldLease.release();
@@ -147,7 +149,7 @@ export class ChannelArbiter {
 
 		const lease: InternalLease = {
 			id: leaseId,
-			channels: Object.freeze([...acquiredChannels]),
+				channels: [...acquiredChannels],
 			priority,
 			reason,
 			signal: leaseController.signal,

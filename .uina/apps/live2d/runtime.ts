@@ -390,20 +390,21 @@ export class Live2DRuntime {
 	/**
 	 * 单次 360° 腾空翻转特技的物理位移与旋转解算
 	 */
-	async executePhysicalFlip(signal?: AbortSignal): Promise<{ aborted: boolean }> {
-		await this.vtsClient.moveModel({
-			positionY: -0.08,
-			timeInSeconds: 0.15,
-			valuesAreRelativeToModel: true,
-		});
-		await abortableDelay(150, signal);
-
+	async executePhysicalFlip(signal?: AbortSignal): Promise<{ aborted: boolean; cleanupFailed: boolean }> {
 		const steps = 25;
 		const stepMs = 30;
-		let currentY = -0.08;
+		let currentY = 0;
 		let aborted = false;
+		let cleanupFailed = false;
 
 		try {
+			await this.vtsClient.moveModel({
+				positionY: -0.08,
+				timeInSeconds: 0.15,
+				valuesAreRelativeToModel: true,
+			});
+			currentY = -0.08;
+			await abortableDelay(150, signal);
 			for (let i = 0; i < steps; i++) {
 				if (signal?.aborted) {
 					aborted = true;
@@ -440,11 +441,11 @@ export class Live2DRuntime {
 				});
 				await new Promise((resolve) => setTimeout(resolve, 60));
 			} catch {
-				// ignore cleanup error
+				cleanupFailed = true;
 			}
 		}
 
-		return { aborted };
+		return { aborted, cleanupFailed };
 	}
 
 	/**
@@ -478,7 +479,14 @@ export class Live2DRuntime {
 			let aborted = false;
 			try {
 				const res = await this.executePhysicalFlip(ctx.signal);
-				aborted = res.aborted;
+					aborted = res.aborted;
+					if (res.cleanupFailed) {
+						return {
+							result: "VTS 翻转清理失败，模型物理状态未知。",
+							status: "unknown",
+							details: { executionMode: "vts_physical", effectStatus: "unknown", reason: "cleanup_failed" },
+						};
+					}
 			} catch (error) {
 				return {
 					result: `VTS 翻转请求失败，物理状态未知：${error instanceof Error ? error.message : String(error)}`,
