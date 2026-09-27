@@ -75,11 +75,23 @@ export function createVoiceTool(session: VoiceSession): Tool {
         }
         case "interrupt": {
           const expectedTraceId = typeof params.expectedTraceId === "string" ? params.expectedTraceId : undefined;
-          const bp = await session.interrupt(expectedTraceId);
-          const detail = bp ? describeBreakpoint(bp) : "（当前无发声或未捕获断点）";
+          const interruption = await session.interrupt(expectedTraceId);
+          const detail = interruption.breakpoint
+            ? describeBreakpoint(interruption.breakpoint)
+            : `（${"reason" in interruption ? interruption.reason : "当前无发声"}）`;
+          const status = interruption.outcome === "failed"
+            ? "failed"
+            : interruption.outcome === "unknown"
+              ? "unknown"
+              : "succeeded";
           return {
-            result: `已立即掐断当前发音并清空排队${detail}。`,
-            status: "succeeded",
+            result: interruption.outcome === "interrupted"
+              ? `已立即掐断当前发音并清空排队${detail}。`
+              : interruption.outcome === "no_op"
+                ? `无需打断：${detail}`
+                : `打断结果${interruption.outcome === "unknown" ? "未知" : "失败"}：${detail}`,
+            status,
+            details: interruption,
           };
         }
         case "status": {

@@ -17,6 +17,12 @@ export interface PlaybackBreakpoint {
   readonly segmentText?: string;
 }
 
+export type InterruptResult =
+  | { readonly outcome: "interrupted"; readonly breakpoint: PlaybackBreakpoint | null }
+  | { readonly outcome: "no_op"; readonly breakpoint: null; readonly reason?: string }
+  | { readonly outcome: "failed"; readonly breakpoint: null; readonly reason: string }
+  | { readonly outcome: "unknown"; readonly breakpoint: null; readonly reason: string };
+
 /**
  * 交付快照：某一时刻"我说到哪了"的全部已知事实。
  * 每个字段都是已归零的观测；读取不触发任何 IO。
@@ -43,10 +49,10 @@ export interface VoiceOutputDriver {
   setMuted(muted: boolean): Promise<{ success: boolean; isOnline?: boolean; reason?: string }>;
 
   /**
-   * 立即掐断物理声音并返回精确断点
+   * 立即掐断物理声音并返回基于字幕/播放时钟的估计断点
    * @param expectedTraceId 可选。若指定，则仅当当前播放 trace 与之一致时才掐断（消除异步竞态误杀下一轮）
    */
-  interrupt(expectedTraceId?: string): Promise<PlaybackBreakpoint | null>;
+  interrupt(expectedTraceId?: string): Promise<InterruptResult>;
 
   /** 同步读交付快照。渲染路径唯一允许的读取方式。 */
   snapshot(): DeliverySnapshot;

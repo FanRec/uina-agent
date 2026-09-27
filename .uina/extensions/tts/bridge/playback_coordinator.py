@@ -14,6 +14,7 @@ class PlaybackCoordinator:
         self._streaming_config = streaming_config
         self._playback_lock = threading.Lock()
         self._trace_playback_order: list[str] = []
+        self._active_lease: tuple[str, int, int] | None = None
 
     def _register_trace_locked(self, trace_id: str) -> None:
         if trace_id not in self._trace_playback_order:
@@ -37,6 +38,14 @@ class PlaybackCoordinator:
             if trace_id in self._trace_playback_order:
                 self._trace_playback_order.remove(trace_id)
             self._notify_all_sessions_locked()
+
+    def cancel_if_owner(self, trace_id: str, generation_id: int, segment_index: int) -> bool:
+        """Stop the physical player only when the requested lease owns it."""
+        with self._lock:
+            if self._active_lease != (trace_id, generation_id, segment_index):
+                return False
+            self._player.cancel_all()
+            return True
 
     def finish_trace(self, trace_id: str) -> None:
         with self._lock:
@@ -217,7 +226,14 @@ class PlaybackCoordinator:
                 if record is None or record.state != "playing":
                     return {"playback_started": False, "playback_completed": False, "late_result_discarded": True}
 
-            result, playback_failed = self._dispatch_playback_execution(asset, playback_runner)
+            with self._lock:
+                self._active_lease = (trace_id, generation_id, segment_index)
+            try:
+                result, playback_failed = self._dispatch_playback_execution(asset, playback_runner)
+            finally:
+                with self._lock:
+                    if self._active_lease == (trace_id, generation_id, segment_index):
+                        self._active_lease = None
 
             self._finalize_playback_turn(
                 trace_id=trace_id,

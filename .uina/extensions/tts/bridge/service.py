@@ -604,7 +604,7 @@ class TTSBridgeService:
             detail=detail,
         )
 
-    def playback_events(self, trace_id: str):
+    def playback_events(self, trace_id: str | None = None):
         yield from self._playback_event_hub.stream(trace_id)
 
     def _ensure_runtime_component_aliases(self) -> None:
@@ -1721,6 +1721,7 @@ class TTSBridgeService:
         return False
 
     def cancel(self, request: CancelRequest) -> dict[str, Any]:
+        playback_lease: tuple[str, int, int] | None = None
         with self._lock:
             task = self._tasks.get(request.task_id)
             if task is None or task.trace_id != request.trace_id:
@@ -1738,9 +1739,10 @@ class TTSBridgeService:
             task.cancel_requested = True
             if task.stream_cancel_event is not None:
                 task.stream_cancel_event.set()
-
-            # 立即停止播放（流式和文件模式）
-            self.player.cancel_all()
+            generation_id = int(task.detail.get("generation_id", 1) or 1)
+            segment_index = int(task.detail.get("segment_index", 0) or 0)
+            if segment_index > 0:
+                playback_lease = (task.trace_id, generation_id, segment_index)
             if task.state == "pending":
                 task.state = "cancelled"
                 task.completed_at = time.time()
@@ -1751,17 +1753,33 @@ class TTSBridgeService:
                 "task_id": task.task_id,
                 "cancel_token": task.cancel_token,
             }
-        self._publish_playback_event("cancelled", task=task, detail={"reason": "cancel"})
+        playback_stopped = False
+        if playback_lease is not None and hasattr(self, "_playback"):
+            playback_stopped = self._playback.cancel_if_owner(*playback_lease)
+        self._publish_playback_event(
+            "cancelled",
+            task=task,
+            detail={"reason": "cancel", "playback_stopped": playback_stopped},
+        )
+        response["playback_stopped"] = playback_stopped
         return response
 
     def cancel_trace(self, request: CancelTraceRequest) -> dict[str, Any]:
         affected: list[BridgeTask]
         boundary_task_ids: list[str] = []
         immediate_cutoff_segments: list[dict[str, Any]] = []
+        active_lease: tuple[str, int, int] | None = None
         with self._lock:
             if request.mode == "immediate":
                 immediate_cutoff_segments = self._cutoff_segments_for_trace_locked(request.trace_id)
             session = self._sessions_by_trace.get(request.trace_id)
+            if session is not None:
+                active = next(
+                    (record for record in session.segments.values() if record.state == "playing"),
+                    None,
+                )
+                if active is not None:
+                    active_lease = (request.trace_id, session.generation_id, active.key.segment_index)
             playing_task_ids = {
                 record.task_id
                 for record in (session.segments.values() if session is not None else [])
@@ -1796,8 +1814,10 @@ class TTSBridgeService:
                     event.set()
                     first_chunk_events.pop(key, None)
         self._sliding_window.close_trace(request.trace_id)
+        playback_stopped = False
         if request.mode == "immediate" or not boundary_task_ids:
-            self.player.cancel_all()
+            if active_lease is not None and hasattr(self, "_playback"):
+                playback_stopped = self._playback.cancel_if_owner(*active_lease)
             self.subtitle_sync.emit_clear(trace_id=request.trace_id, generation_id=generation_id, reason="cancel_trace")
             self.lipsync_bridge.cancel_trace_async(trace_id=request.trace_id)
         else:
@@ -1824,6 +1844,7 @@ class TTSBridgeService:
             "trace_id": request.trace_id,
             "mode": request.mode,
             "cancelled_task_count": len(cancelled_tasks),
+            "playback_stopped": playback_stopped,
             "cutoff_segments": (
                 immediate_cutoff_segments
                 if request.mode == "immediate"

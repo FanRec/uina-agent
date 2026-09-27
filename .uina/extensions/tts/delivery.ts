@@ -43,9 +43,10 @@ export function summarizeProgress(
     segments.find((s) => s.playback_started === true && s.playback_completed !== true)?.segment_index ??
     null;
 
-  const revealed = segments
-    .map((s) => s.revealed_count)
-    .filter((n): n is number => typeof n === "number" && Number.isFinite(n));
+  const currentSegment = speakingIndex === null
+    ? undefined
+    : segments.find((segment) => segment.segment_index === speakingIndex);
+  const revealed = currentSegment?.revealed_count;
 
   return {
     submittedSegments: Math.max(0, submitted),
@@ -55,7 +56,7 @@ export function summarizeProgress(
     currentSegmentIndex: speakingIndex,
     currentSegmentText:
       speakingIndex === null ? undefined : segmentTexts.get(speakingIndex) ?? state.current_speaking?.text,
-    committedCharEnd: revealed.length > 0 ? Math.max(...revealed) : undefined,
+    committedCharEnd: typeof revealed === "number" && Number.isFinite(revealed) ? Math.max(0, revealed) : undefined,
   };
 }
 

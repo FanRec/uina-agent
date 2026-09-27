@@ -61,7 +61,7 @@ def build_app(service: Any) -> FastAPI:
         return service.batch_task_status(request)
 
     @app.get("/v1/tts/events")
-    def playback_events(trace_id: str):
+    def playback_events(trace_id: str | None = None):
         return StreamingResponse(
             service.playback_events(trace_id),
             media_type="text/event-stream",

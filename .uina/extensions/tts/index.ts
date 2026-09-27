@@ -57,9 +57,11 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
   });
 
   pi.registerService("voice_driver:interrupt", async (input?: { expectedTraceId?: string }) => {
-    const bp = await driver.interrupt(input?.expectedTraceId);
-    if (bp) breakpointNotice = renderBreakpointNotice(bp);
-    return bp;
+    const result = await driver.interrupt(input?.expectedTraceId);
+    if (result.outcome === "interrupted" && result.breakpoint) {
+      breakpointNotice = renderBreakpointNotice(result.breakpoint);
+    }
+    return result;
   });
 
   // 读取路径只有一条：交付快照。同步事实的跨扩展代理，不做第二份账。
@@ -101,7 +103,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
     // 降级但如实上报：发声仍然可用，只是口型没有驱动来源。
     pi.reportError("[TTS] 宿主未提供同进程共享表，声学电平下发已停用（口型无驱动来源）；发声本身不受影响。");
   }
-  exposedFeed?.subscribe(() => {
+  const unsubscribeExposedFeed = exposedFeed?.subscribe(() => {
     levelSinks = resolveLevelSinks();
   });
 
@@ -123,6 +125,10 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
   const stopLevelStream = (): void => {
     levelStream?.abort();
     levelStream = null;
+    resetLevelSinks();
+  };
+
+  const resetLevelSinks = (): void => {
     // 音频结束/被打断时必须显式复位：这是"说话结束后不得永久张嘴"的兜底
     for (const sink of levelSinks) {
       try {
@@ -133,17 +139,16 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
     }
   };
 
-  const startLevelStream = (traceId: string): void => {
-    levelStream?.abort();
+  const startLevelStream = (): void => {
+    if (levelStream !== null) return;
     const controller = new AbortController();
     levelStream = controller;
-    void client.subscribeEvents(traceId, pushLevel, controller.signal)
+    void client.subscribeEvents(undefined, pushLevel, controller.signal)
       .then(() => {
-        if (levelStream === controller && !driver.isDelivering) {
-          stopLevelStream();
-        }
+        if (levelStream === controller) levelStream = null;
       })
       .catch((error: unknown) => {
+        if (levelStream === controller) levelStream = null;
         // 电平是口型的增强能力：订阅失败只上报，绝不影响发声与回合推进
         if (!controller.signal.aborted) {
           pi.reportError(
@@ -175,7 +180,6 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
       .then(() => {
         if (!driver.isDelivering) {
           stopProgressPolling();
-          stopLevelStream();
         }
       });
   };
@@ -191,9 +195,9 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
   pi.on("turn_start", (e: TurnStartEvent) => {
     aborted = false;
     parser.reset();
-    const traceId = driver.startTurn(e.turnNumber);
+    driver.startTurn(e.turnNumber);
     // 伴生服务离线时不发无用请求，也就不会每回合刷一条错误
-    if (driver.isOnline) startLevelStream(traceId);
+    if (driver.isOnline) startLevelStream();
   });
 
   pi.on("output_update", async (e: OutputUpdateEvent) => {
@@ -240,7 +244,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
       ensureProgressPolling();
     } else {
       stopProgressPolling();
-      stopLevelStream();
+      resetLevelSinks();
     }
   });
 
@@ -251,8 +255,10 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
       parser.reset();
       stopProgressPolling();
       stopLevelStream();
-      const bp = await driver.interrupt();
-      if (bp) breakpointNotice = renderBreakpointNotice(bp);
+      const result = await driver.interrupt();
+      if (result.outcome === "interrupted" && result.breakpoint) {
+        breakpointNotice = renderBreakpointNotice(result.breakpoint);
+      }
     })().finally(() => {
       interruption = null;
     });
@@ -293,6 +299,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
   // 卸载收束：先停探测与电平流，再等伴生进程真正退出（仅限本扩展拉起的进程）。
   // 停止失败如实上抛，由 runner 的 teardown 路径上报，不静默吞掉。
   return async () => {
+    unsubscribeExposedFeed?.();
     stopProgressPolling();
     stopLevelStream();
     await companionHandle?.stop();

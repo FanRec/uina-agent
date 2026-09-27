@@ -43,7 +43,9 @@ SHORT_SEGMENT_FAST_START_CHAR_LIMIT = 10
 class _PCMChunkStream:
     def __init__(self, *, max_chunks: int = 64, on_chunk=None) -> None:
         self._queue: Queue[bytes | object] = Queue(maxsize=max(max_chunks, 1))
-        self._closed = False
+        self._state_lock = threading.Lock()
+        self._finished = False
+        self._cancelled = False
         self._on_chunk = on_chunk
 
     def put(self, chunk: bytes, *, timeout: float | None = None) -> bool:
@@ -53,7 +55,10 @@ class _PCMChunkStream:
         ``timeout`` 秒后仍无空间则返回 False，由调用方决定失败上报。
         """
         deadline = None if timeout is None else time.perf_counter() + timeout
-        while not self._closed:
+        while True:
+            with self._state_lock:
+                if self._finished or self._cancelled:
+                    return False
             try:
                 self._queue.put(chunk, timeout=0.05)
                 if self._on_chunk is not None:
@@ -68,24 +73,39 @@ class _PCMChunkStream:
                 continue
         return False
 
+    def finish(self) -> None:
+        """Mark normal producer completion without discarding queued PCM."""
+        with self._state_lock:
+            self._finished = True
+
+    def cancel(self) -> None:
+        """Abort the stream and discard only the not-yet-consumed PCM."""
+        with self._state_lock:
+            self._cancelled = True
+        while True:
+            try:
+                self._queue.get_nowait()
+            except Empty:
+                return
+
     def close(self) -> None:
-        if not self._closed:
-            self._closed = True
-            while True:
-                try:
-                    self._queue.put(_STREAM_END, timeout=0.05)
-                    return
-                except Full:
-                    try:
-                        self._queue.get_nowait()
-                    except Empty:
-                        continue
+        """Compatibility alias for callers that close a stream on cancellation."""
+        self.cancel()
 
     def __iter__(self):
         while True:
-            item = self._queue.get()
+            with self._state_lock:
+                if self._cancelled:
+                    return
+                finished = self._finished
+            try:
+                item = self._queue.get(timeout=0.05)
+            except Empty:
+                if finished:
+                    return
+                continue
             if item is _STREAM_END:
-                break
+                return
             yield item
 
 

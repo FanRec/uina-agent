@@ -73,7 +73,8 @@ class StreamingSession:
         )
 
     def close(self) -> None:
-        self.live_stream.close()
+        self.stream_cancel_event.set()
+        self.live_stream.cancel()
         self.producer_thread.join(timeout=1.0)
 
     def wait_for_producer(self, timeout: float = 1.0) -> None:
@@ -275,7 +276,6 @@ class StreamingSynthesisEngine:
                                 chunk_bytes=len(chunk),
                             )
                         last_chunk_at = now
-                        audio_buffer.extend(chunk)
                         if not live_stream.put(chunk, timeout=STREAM_PUT_STALL_TIMEOUT_S):
                             producer_state["error"] = (
                                 "stalled",
@@ -284,6 +284,7 @@ class StreamingSynthesisEngine:
                                 ),
                             )
                             break
+                        audio_buffer.extend(chunk)
                         chunk_count += 1
                         chunk_audio_total_ms += len(chunk) / 2 / self.streaming.sample_rate * 1000
                         task.detail["chunk_count"] = chunk_count
@@ -308,7 +309,10 @@ class StreamingSynthesisEngine:
                 producer_state["chunk_audio_total_ms"] = chunk_audio_total_ms
                 producer_state["first_chunk_at"] = first_chunk_at
                 on_first_chunk()
-                live_stream.close()
+                if stream_cancel_event.is_set() or task.cancel_requested:
+                    live_stream.cancel()
+                else:
+                    live_stream.finish()
                 producer_done.set()
 
         producer_thread = threading.Thread(target=_produce, name=f"tts-stream-producer-{task.task_id}", daemon=True)

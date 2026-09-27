@@ -133,7 +133,7 @@ export class TtsBridgeClient {
   async cancelTrace(
     traceId: string,
     mode: "immediate" | "segment_boundary" = "immediate",
-  ): Promise<{ status: string }> {
+  ): Promise<{ status: string; playback_stopped?: boolean; cancelled_task_count?: number }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -202,11 +202,13 @@ export class TtsBridgeClient {
   }
 
   async subscribeEvents(
-    traceId: string,
+    traceId: string | undefined,
     onEvent: (event: PlaybackEvent) => void,
     signal?: AbortSignal,
   ): Promise<void> {
-    const url = `${this.baseUrl}/v1/tts/events?trace_id=${encodeURIComponent(traceId)}`;
+    const url = traceId
+      ? `${this.baseUrl}/v1/tts/events?trace_id=${encodeURIComponent(traceId)}`
+      : `${this.baseUrl}/v1/tts/events`;
     const res = await fetch(url, {
       method: "GET",
       headers: { Accept: "text/event-stream" },

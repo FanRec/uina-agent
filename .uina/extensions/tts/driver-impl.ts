@@ -1,4 +1,4 @@
-import type { DeliverySnapshot, PlaybackBreakpoint, VoiceOutputDriver } from "../voice/driver.js";
+import type { DeliverySnapshot, InterruptResult, PlaybackBreakpoint, VoiceOutputDriver } from "../voice/driver.js";
 import type { TtsBridgeClient } from "./client.js";
 import { summarizeProgress } from "./delivery.js";
 
@@ -165,21 +165,31 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
     return { success: true, isOnline: this._isOnline };
   }
 
-  async interrupt(expectedTraceId?: string): Promise<PlaybackBreakpoint | null> {
-    // 关键并发防误杀：若调用者指定了 expectedTraceId，必须且仅当与当前活跃 trace 一致时才中断
-    if (expectedTraceId && this.activeTrace !== expectedTraceId) {
-      return null;
+  async interrupt(expectedTraceId?: string): Promise<InterruptResult> {
+    // expectedTraceId 的语义是物理播放身份，不是当前正在生成文本的 activeTrace。
+    const currentPlaybackTarget = this.deliveryTrace ?? this.activeTrace;
+    if (expectedTraceId && currentPlaybackTarget !== expectedTraceId) {
+      return { outcome: "no_op", breakpoint: null, reason: "目标播放轮次已不是当前交付轮次" };
     }
 
     const traceToCancel = expectedTraceId ?? this.deliveryTrace ?? this.activeTrace;
     if (!traceToCancel) {
-      return null;
+      return { outcome: "no_op", breakpoint: null, reason: "当前没有可打断的语音" };
     }
 	this.deliveryRevision++;
 
     try {
-      await this.client.cancelTrace(traceToCancel, "immediate");
+      const cancellation = await this.client.cancelTrace(traceToCancel, "immediate");
+      if (cancellation.status !== "cancelled" && cancellation.status !== "ok") {
+        return { outcome: "failed", breakpoint: null, reason: `Bridge 拒绝打断: ${cancellation.status}` };
+      }
+      if (cancellation.playback_stopped === false && cancellation.cancelled_task_count === 0) {
+        return { outcome: "no_op", breakpoint: null, reason: "当前没有可打断的语音" };
+      }
       const state = await this.client.getSubtitleState(traceToCancel);
+      if (!state && cancellation.playback_stopped) {
+        return { outcome: "unknown", breakpoint: null, reason: "声卡停止已请求，但无法读取播放断点" };
+      }
 
       const interrupted = this.resolveBreakpoint(traceToCancel, state);
       // 掐断即清空在途：队列事实归零，但要如实标明这次是"被打断"而不是"播完"
@@ -191,10 +201,13 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
         currentSegmentText: undefined,
         committedCharEnd: interrupted?.committedCharEnd,
       };
-      return interrupted;
-    } catch {
-      // 忽略打断提取异常
-      return null;
+      return { outcome: "interrupted", breakpoint: interrupted };
+    } catch (error) {
+      return {
+        outcome: "unknown",
+        breakpoint: null,
+        reason: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 

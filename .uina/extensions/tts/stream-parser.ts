@@ -5,6 +5,14 @@ export interface StreamParserOptions {
 const TERMINAL_PUNCTUATIONS = new Set(["。", "！", "？", "；", "\n", "!", "?", ";", "…"]);
 const COMMA_PUNCTUATIONS = new Set(["，", ","]);
 
+function longestTagPrefixSuffix(text: string, tag: string): string {
+  const max = Math.min(text.length, tag.length - 1);
+  for (let length = max; length > 0; length--) {
+    if (text.endsWith(tag.slice(0, length))) return text.slice(-length);
+  }
+  return "";
+}
+
 /**
  * 清理待发声文本中的非发音元素（Markdown 语法、Emoji、多余空白等）。
  */
@@ -67,36 +75,53 @@ export class StreamParser {
     while (i < chunk.length) {
       // 1. 处理 <think>...</think> 状态机
       if (this.inThink) {
-        const closeIdx = chunk.indexOf("</think>", i);
+        const combined = this.thinkTagBuffer + chunk.slice(i);
+        const closeIdx = combined.indexOf("</think>");
         if (closeIdx !== -1) {
+          const prefixLength = this.thinkTagBuffer.length;
           this.inThink = false;
-          i = closeIdx + 8; // 跳过 </think>
           this.thinkTagBuffer = "";
+          // The prefix may have arrived in the previous chunk. Only advance
+          // over the part of the close tag present in this chunk.
+          i += Math.max(0, closeIdx + 8 - prefixLength);
           continue;
         } else {
-          // 检查末尾是否含有半截 "</think"
-          this.thinkTagBuffer = chunk.slice(Math.max(i, chunk.length - 8));
+          this.thinkTagBuffer = longestTagPrefixSuffix(combined, "</think>");
           break;
         }
       }
 
       // 检查进入 <think>
-      if (
-        chunk.startsWith("<think>", i) ||
-        (this.thinkTagBuffer && (this.thinkTagBuffer + chunk.slice(i)).startsWith("<think>"))
-      ) {
+      if (this.thinkTagBuffer) {
+        const combined = this.thinkTagBuffer + chunk.slice(i);
+        if (combined.startsWith("<think>")) {
+          const prefixLength = this.thinkTagBuffer.length;
+          this.inThink = true;
+          this.thinkTagBuffer = "";
+          i += 7 - prefixLength;
+          continue;
+        }
+        if (longestTagPrefixSuffix(combined, "<think>")) {
+          this.thinkTagBuffer = longestTagPrefixSuffix(combined, "<think>");
+          break;
+        }
+        this.sentenceBuffer += this.thinkTagBuffer;
+        this.thinkTagBuffer = "";
+      }
+
+      if (chunk.startsWith("<think>", i)) {
         this.inThink = true;
         this.thinkTagBuffer = "";
-        const tagLen = chunk.startsWith("<think>", i) ? 7 : 7 - this.thinkTagBuffer.length;
-        i += tagLen;
+        i += 7;
         continue;
       }
 
       // 缓存可能的标签前缀（如 "<th"）
       if (chunk[i] === "<") {
         const remaining = chunk.slice(i);
-        if ("<think>".startsWith(remaining)) {
-          this.thinkTagBuffer = remaining;
+        const prefix = longestTagPrefixSuffix(remaining, "<think>");
+        if (prefix) {
+          this.thinkTagBuffer = prefix;
           break;
         }
       }

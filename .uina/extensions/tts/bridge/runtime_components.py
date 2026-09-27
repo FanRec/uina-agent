@@ -112,17 +112,20 @@ class PlaybackEventHub:
         }
         with self._lock:
             subscribers = list(self.subscribers.get(current_trace_id, []))
+            if current_trace_id != "*":
+                subscribers.extend(self.subscribers.get("*", []))
         for subscriber in subscribers:
             try:
                 subscriber.put_nowait(event)
             except Full:
                 pass
 
-    def stream(self, trace_id: str) -> Iterator[str]:
+    def stream(self, trace_id: str | None = None) -> Iterator[str]:
+        subscription_key = trace_id or "*"
         queue: Queue[dict[str, Any] | object] = Queue(maxsize=128)
         self.stop_event.clear()
         with self._lock:
-            self.subscribers.setdefault(trace_id, []).append(queue)
+            self.subscribers.setdefault(subscription_key, []).append(queue)
         try:
             yield ": connected\n\n"
             while not self.stop_event.is_set():
@@ -135,8 +138,8 @@ class PlaybackEventHub:
                 yield f"event: tts.playback\ndata: {json.dumps(item, ensure_ascii=False)}\n\n"
         finally:
             with self._lock:
-                subscribers = self.subscribers.get(trace_id, [])
+                subscribers = self.subscribers.get(subscription_key, [])
                 if queue in subscribers:
                     subscribers.remove(queue)
                 if not subscribers:
-                    self.subscribers.pop(trace_id, None)
+                    self.subscribers.pop(subscription_key, None)

@@ -1,0 +1,55 @@
+import { describe, expect, it, vi } from "vitest";
+import { StreamParser } from "../.uina/extensions/tts/stream-parser.js";
+import { summarizeProgress } from "../.uina/extensions/tts/delivery.js";
+import { TtsVoiceOutputDriver } from "../.uina/extensions/tts/driver-impl.js";
+
+describe("TTS delivery hardening", () => {
+  it("reassembles a split closing think tag at every boundary", () => {
+    const input = "<think>hidden</think>visible。";
+    for (let cut = 1; cut < input.length; cut++) {
+      const parser = new StreamParser();
+      const output = [
+        ...parser.feed(input.slice(0, cut)),
+        ...parser.feed(input.slice(cut)),
+        ...parser.flush(),
+      ];
+      expect(output, `split at ${cut}`).toEqual(["visible。"]);
+    }
+  });
+
+  it("uses revealed progress from the current speaking segment only", () => {
+    const facts = summarizeProgress(
+      {
+        trace_id: "trace",
+        is_speaking: true,
+        current_speaking: { index: 2, text: "second" },
+        completed_segments: [{ index: 1, text: "first" }],
+        segments: [
+          { segment_index: 1, revealed_count: 99, playback_completed: true },
+          { segment_index: 2, revealed_count: 3, playback_started: true, playback_completed: false },
+        ],
+      },
+      2,
+      new Map([[1, "first"], [2, "second"]]),
+    );
+    expect(facts.currentSegmentIndex).toBe(2);
+    expect(facts.committedCharEnd).toBe(3);
+  });
+
+  it("checks expected playback ownership instead of the active text turn", async () => {
+    const client = {
+      speak: vi.fn().mockResolvedValue({ status: "accepted" }),
+      cancelTrace: vi.fn().mockResolvedValue({ status: "cancelled", playback_stopped: true, cancelled_task_count: 1 }),
+      getSubtitleState: vi.fn().mockResolvedValue({ trace_id: "turn_1", segments: [] }),
+      isHealthy: vi.fn().mockResolvedValue(true),
+    };
+    const driver = new TtsVoiceOutputDriver(client as never);
+    const first = driver.startTurn(1);
+    await driver.submitSegment("第一句。");
+    const second = driver.startTurn(2);
+
+    await expect(driver.interrupt(second)).resolves.toMatchObject({ outcome: "no_op" });
+    await expect(driver.interrupt(first)).resolves.toMatchObject({ outcome: "interrupted" });
+    expect(client.cancelTrace).toHaveBeenCalledWith(first, "immediate");
+  });
+});

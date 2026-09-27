@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from models import AudioAsset, BridgeTask, DefaultPreset, GenerationSession, LipsyncBridgeConfig, SegmentKey, SegmentRecord, StreamingConfig, StreamingProfile, SubtitleSyncConfig
 from playback_coordinator import PlaybackCoordinator
+from synthesis_handlers import _PCMChunkStream
 from service import _AdmittedSpeakTask, BatchTaskStatusRequest, CancelRequest, CancelTraceRequest, SpeakRequest, TTSBridgeService, TurnEndRequest, _log_latency, _sanitize_vendor_text, _vendor_text_lang_for
 from sliding_window import SlidingWindowState
 
@@ -195,6 +196,43 @@ def _service_with_admitted_task() -> TTSBridgeService:
 
 
 class TTSBridgeCancelTraceTest(unittest.TestCase):
+    def test_delayed_old_trace_cancel_does_not_stop_new_playback_lease(self) -> None:
+        service = _service_with_admitted_task()
+        service._playback = PlaybackCoordinator(
+            lock=service._lock,
+            player=service.player,
+            sessions_by_trace=service._sessions_by_trace,
+            streaming_config=StreamingConfig(),
+        )
+        service._playback._active_lease = ("trace_2", 1, 1)
+
+        service.cancel_trace(CancelTraceRequest(trace_id="trace_1", mode="immediate"))
+
+        self.assertFalse(service.player.cancelled)
+
+    def test_pcm_normal_finish_preserves_full_queue(self) -> None:
+        stream = _PCMChunkStream(max_chunks=1)
+        self.assertTrue(stream.put(b"first"))
+        stream.finish()
+        self.assertEqual(list(stream), [b"first"])
+
+    def test_pcm_cancel_wakes_consumer_and_discards_remaining_chunks(self) -> None:
+        stream = _PCMChunkStream(max_chunks=2)
+        self.assertTrue(stream.put(b"first"))
+        self.assertTrue(stream.put(b"second"))
+        stream.cancel()
+        self.assertEqual(list(stream), [])
+
+        waiting_stream = _PCMChunkStream(max_chunks=1)
+        consumed: list[bytes] = []
+        consumer = threading.Thread(target=lambda: consumed.extend(waiting_stream))
+        consumer.start()
+        time.sleep(0.01)
+        waiting_stream.cancel()
+        consumer.join(timeout=1.0)
+        self.assertFalse(consumer.is_alive())
+        self.assertEqual(consumed, [])
+
     def test_fixed_streaming_uses_two_sentence_prefetch_without_overloading_vendor(self) -> None:
         config = type(
             "Config",
@@ -252,6 +290,17 @@ class TTSBridgeCancelTraceTest(unittest.TestCase):
         stream.close()
         self.assertEqual(service._playback_event_subscribers, {})
 
+    def test_playback_events_without_trace_receives_multiple_traces(self) -> None:
+        service = _service_with_admitted_task()
+        stream = service.playback_events()
+        self.assertEqual(next(stream), ": connected\n\n")
+
+        service._publish_playback_event("playback_started", trace_id="trace_a", detail={"rms": 0.2})
+        payload = next(stream)
+
+        self.assertIn('"trace_id": "trace_a"', payload)
+        stream.close()
+
     def test_cancel_trace_publishes_cancelled_event_without_subscriber_failure(self) -> None:
         service = _service_with_admitted_task()
         stream = service.playback_events("trace_1")
@@ -275,7 +324,7 @@ class TTSBridgeCancelTraceTest(unittest.TestCase):
         self.assertEqual(service._tasks["task_1"].state, "cancelled")
         self.assertTrue(service._tasks["task_1"].cancel_requested)
         self.assertNotIn("task_1", service._admitted_tasks)
-        self.assertTrue(service.player.cancelled)
+        self.assertFalse(service.player.cancelled)
         self.assertEqual(service._sliding_window.closed, ["trace_1"])
         self.assertEqual(service.subtitle_sync.clear_events[0]["reason"], "cancel_trace")
         self.assertEqual(service.lipsync_bridge.cancelled, ["trace_1"])
@@ -299,7 +348,7 @@ class TTSBridgeCancelTraceTest(unittest.TestCase):
         self.assertEqual(result["mode"], "immediate")
         self.assertEqual(result["cutoff_segments"][0]["revealed_text"], "第一段。")
         self.assertEqual(result["cutoff_segments"][0]["revealed_count"], 4)
-        self.assertTrue(service.player.cancelled)
+        self.assertFalse(service.player.cancelled)
 
     def test_segment_boundary_cancel_waits_for_current_segment_without_stopping_player(self) -> None:
         service = _service_with_admitted_task()
@@ -1023,6 +1072,28 @@ class TTSBridgeStreamingProfileTest(unittest.TestCase):
 
 
 class PlaybackCoordinatorTest(unittest.TestCase):
+    def test_stale_lease_does_not_cancel_current_player(self) -> None:
+        class Player:
+            def __init__(self) -> None:
+                self.cancelled = False
+
+            def cancel_all(self) -> None:
+                self.cancelled = True
+
+        player = Player()
+        coordinator = PlaybackCoordinator(
+            lock=threading.RLock(),
+            player=player,
+            sessions_by_trace={},
+            streaming_config=StreamingConfig(),
+        )
+        coordinator._active_lease = ("trace_b", 2, 1)
+
+        self.assertFalse(coordinator.cancel_if_owner("trace_a", 1, 1))
+        self.assertFalse(player.cancelled)
+        self.assertTrue(coordinator.cancel_if_owner("trace_b", 2, 1))
+        self.assertTrue(player.cancelled)
+
     def test_playback_exception_releases_next_segment(self) -> None:
         lock = threading.RLock()
         condition = threading.Condition(lock)
