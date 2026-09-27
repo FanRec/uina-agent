@@ -30,6 +30,8 @@ export class TickerEngine {
 	private readonly durableState: TickerDurableState;
 	private readonly clock: ClockSource;
 	private timer: NodeJS.Timeout | null = null;
+	private generation = 0;
+	private started = false;
 
 	// 运行时瞬态 (单调毫秒)
 	private lastExternalActivityMonoMs: number;
@@ -71,15 +73,19 @@ export class TickerEngine {
 	}
 
 	start(): void {
+		this.started = true;
+		const generation = ++this.generation;
 		const nowMono = this.clock.nowMono();
 		const initialDelay =
 			this.pauseUntilMonoMs > nowMono
 				? this.pauseUntilMonoMs - nowMono
 				: this.calculateNextInterval();
-		this.scheduleNext(initialDelay);
+		this.scheduleNext(initialDelay, generation);
 	}
 
 	stop(): void {
+		this.started = false;
+		this.generation++;
 		if (this.timer) {
 			this.clock.clearTimeout(this.timer);
 			this.timer = null;
@@ -118,6 +124,7 @@ export class TickerEngine {
 	}
 
 	async pause(minutes: number): Promise<void> {
+		if (!Number.isFinite(minutes) || minutes < 1) throw new Error("暂停时长必须是有限的正数");
 		const durationMs = Math.max(1, minutes) * 60_000;
 		this.pauseUntilMonoMs = this.clock.nowMono() + durationMs;
 		this.durableState.pausedUntilEpochMs = this.clock.nowEpoch() + durationMs;
@@ -148,22 +155,26 @@ export class TickerEngine {
 		return minInterval;
 	}
 
-	private scheduleNext(delayMs: number): void {
+	private scheduleNext(delayMs: number, generation = this.generation): void {
+		if (!this.started || generation !== this.generation) return;
 		if (this.timer) this.clock.clearTimeout(this.timer);
 		const safeDelay = Math.max(0, delayMs);
 		this.nextWakeMonoMs = this.clock.nowMono() + safeDelay;
-		this.timer = this.clock.setTimeout(() => void this.onTick(), safeDelay);
+		this.timer = this.clock.setTimeout(() => {
+			if (this.started && generation === this.generation) void this.onTick(generation);
+		}, safeDelay);
 	}
 
 	/**
 	 * 节拍时钟触发处理 (包涵 Deadline 检查、配额护栏、礼貌避让与脉冲投递)
 	 */
-	async onTick(): Promise<void> {
+	async onTick(generation = this.generation): Promise<void> {
+		if (!this.started || generation !== this.generation) return;
 		const nowMono = this.clock.nowMono();
 
 		// 1. 精确 Deadline 检查
 		if (nowMono < this.pauseUntilMonoMs) {
-			this.scheduleNext(this.pauseUntilMonoMs - nowMono);
+			this.scheduleNext(this.pauseUntilMonoMs - nowMono, generation);
 			return;
 		}
 		if (this.durableState.pausedUntilEpochMs !== null) {
@@ -183,7 +194,7 @@ export class TickerEngine {
 			this.durableState.dailyWakeUsage.count >= this.guardrails.maxDailyWakes
 		) {
 			// 达到人类设定的物理硬限额，退避至 1 小时后再次探测
-			this.scheduleNext(3600_000);
+			this.scheduleNext(3600_000, generation);
 			return;
 		}
 
@@ -198,7 +209,7 @@ export class TickerEngine {
 			const retryDelay = isHumanRecent
 				? Math.max(5000, HUMAN_COOLDOWN_MS - humanElapsed)
 				: 15_000;
-			this.scheduleNext(retryDelay);
+			this.scheduleNext(retryDelay, generation);
 			return;
 		}
 
@@ -220,7 +231,9 @@ export class TickerEngine {
 		}
 
 		// 5. 调度下一次自适应节拍
-		this.scheduleNext(this.calculateNextInterval());
+		if (this.started && generation === this.generation) {
+			this.scheduleNext(this.calculateNextInterval(), generation);
+		}
 	}
 
 	private persistTail: Promise<void> = Promise.resolve();
