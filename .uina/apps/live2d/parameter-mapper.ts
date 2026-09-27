@@ -200,6 +200,29 @@ export const CUE_ALIASES: Readonly<Record<string, string>> = Object.freeze({
 export const CANONICAL_CUE_IDS: readonly string[] = Object.freeze(Object.keys(CUE_BEAT_TABLE));
 
 /**
+ * 规范 cue 的一行说明（注入提示词的 prose 事实字典）。
+ */
+export const CUE_DESCRIPTIONS: Readonly<Record<string, string>> = Object.freeze({
+	warm_smile: "温暖友善的微笑",
+	happy_laugh: "开心地眯眼大笑",
+	curious_tilt: "好奇探寻地歪头",
+	affirmative_nod: "肯定点头赞同",
+	double_nod: "用力连续点头两次，强烈赞成",
+	shake_head: "拨浪鼓式连连摇头",
+	shrug: "无奈耸肩叹气",
+	head_bop: "随说话节奏轻快点晃头",
+	playful_pout: "傲娇嘟嘴偏头",
+	surprised_gasp: "惊讶睁大眼睛倒吸气",
+	shy: "害羞脸红偏头避开视线",
+	look_away: "尴尬移开视线望向别处",
+	peek_back: "移开视线后又悄悄偷看回用户",
+	thinking_deep: "歪头托腮陷入深思",
+	winking: "调皮单眼眨眼",
+	smug_grin: "得意坏笑歪嘴",
+	sleepy_yawn: "犯困打哈欠微仰头",
+});
+
+/**
  * 求某规范 cue 的别名集合（反向 CUE_ALIASES）。
  * 过滤掉与规范 id 相同的恒等项（如 shrug: "shrug"），使声明保持干净。
  * 供宿主提示词能力声明与解析端共享同一份别名事实。

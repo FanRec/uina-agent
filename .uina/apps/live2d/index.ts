@@ -26,6 +26,19 @@ export function getLive2DRuntime(): Live2DRuntime | null {
 	return currentRuntime;
 }
 
+function getRuntimeOrError(): { runtime: Live2DRuntime } | { error: { result: string; status: "failed"; details: Record<string, unknown> } } {
+	if (!currentRuntime) {
+		return {
+			error: {
+				result: "执行失败：Live2D 应用尚未启动。",
+				status: "failed" as const,
+				details: { reason: "app_not_started", effectStatus: "not_started" },
+			},
+		};
+	}
+	return { runtime: currentRuntime };
+}
+
 export const live2dApp: AppDef = {
 	name: "live2d",
 	description:
@@ -120,14 +133,9 @@ export const live2dApp: AppDef = {
 				},
 			},
 			async run(args: Record<string, unknown>, ctx: ActionContext) {
-				if (!currentRuntime) {
-					return {
-						result: "执行失败：Live2D 应用尚未启动。",
-						status: "failed" as const,
-						details: { reason: "app_not_started", effectStatus: "not_started" },
-					};
-				}
-				return currentRuntime.executeExpress(args as unknown as ExpressParams, ctx);
+				const check = getRuntimeOrError();
+				if ("error" in check) return check.error;
+				return check.runtime.executeExpress(args as unknown as ExpressParams, ctx);
 			},
 		},
 
@@ -145,14 +153,9 @@ export const live2dApp: AppDef = {
 				required: ["item"],
 			},
 			async run(args: Record<string, unknown>, ctx: ActionContext) {
-				if (!currentRuntime) {
-					return {
-						result: "执行失败：Live2D 应用尚未启动。",
-						status: "failed" as const,
-						details: { reason: "app_not_started", effectStatus: "not_started" },
-					};
-				}
-				return currentRuntime.executeCostume(String(args.item ?? ""), ctx);
+				const check = getRuntimeOrError();
+				if ("error" in check) return check.error;
+				return check.runtime.executeCostume(String(args.item ?? ""), ctx);
 			},
 		},
 
@@ -176,16 +179,11 @@ export const live2dApp: AppDef = {
 				required: ["name"],
 			},
 			async run(args: Record<string, unknown>, ctx: ActionContext) {
-				if (!currentRuntime) {
-					return {
-						result: "执行失败：Live2D 应用尚未启动。",
-						status: "failed" as const,
-						details: { reason: "app_not_started", effectStatus: "not_started" },
-					};
-				}
+				const check = getRuntimeOrError();
+				if ("error" in check) return check.error;
 				const name = String(args.name) as BasePoseName;
 				const durationMs = typeof args.duration_ms === "number" ? args.duration_ms : 0;
-				return currentRuntime.executePose(name, durationMs, ctx);
+				return check.runtime.executePose(name, durationMs, ctx);
 			},
 		},
 
@@ -193,14 +191,9 @@ export const live2dApp: AppDef = {
 			description:
 				"控制模型在屏幕上进行一次 360° 腾空翻转特技跳跃（持续约 1.2 秒）。适合在打招呼、恶作剧成功、庆祝获胜或极其兴奋时使用。",
 			async run(_args: Record<string, unknown>, ctx: ActionContext) {
-				if (!currentRuntime) {
-					return {
-						result: "执行失败：Live2D 应用尚未启动。",
-						status: "failed" as const,
-						details: { reason: "app_not_started", effectStatus: "not_started" },
-					};
-				}
-				return currentRuntime.executeFlip(ctx);
+				const check = getRuntimeOrError();
+				if ("error" in check) return check.error;
+				return check.runtime.executeFlip(ctx);
 			},
 		},
 	},

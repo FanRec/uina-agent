@@ -3,6 +3,7 @@ import type { ChannelArbiter } from "./channel-arbiter.js";
 import { DEFAULT_EXPRESSIVE_INTENSITY, resolveBeatToParams } from "./parameter-mapper.js";
 import { PhysiologicalNoise } from "./physiological-noise.js";
 import {
+	abortableDelay,
 	CHANNEL_PRIORITY,
 	clampLive2DParam,
 	type ExpressParams,
@@ -53,6 +54,9 @@ export class MotionComposer {
 	}
 
 	triggerAcousticImpulse(magnitude = 1.0): void {
+		if (this.arbiter?.isChannelLocked("head", CHANNEL_PRIORITY.CUE)) {
+			return;
+		}
 		const clampedMag = Math.max(0, Math.min(1.0, magnitude));
 		this.bodyDirector.applyVelocityImpulse("ParamAngleY", -115.0 * clampedMag);
 	}
@@ -104,7 +108,7 @@ export class MotionComposer {
 				}
 
 				const holdMs = Math.max(200, Math.min(3000, beat.hold_ms ?? 800));
-				await this.delay(holdMs, internalController.signal);
+				await abortableDelay(holdMs, internalController.signal);
 			}
 
 			if (!internalController.signal.aborted) {
@@ -157,14 +161,8 @@ export class MotionComposer {
 			}
 		}
 
-		const isTorsoLocked = this.arbiter
-			? (this.arbiter.isChannelLocked("torso", CHANNEL_PRIORITY.ACTION) ||
-			   this.arbiter.isChannelLocked("torso", CHANNEL_PRIORITY.CUE))
-			: false;
-		const isHeadLocked = this.arbiter
-			? (this.arbiter.isChannelLocked("head", CHANNEL_PRIORITY.ACTION) ||
-			   this.arbiter.isChannelLocked("head", CHANNEL_PRIORITY.CUE))
-			: false;
+		const isTorsoLocked = this.arbiter?.isChannelLocked("torso", CHANNEL_PRIORITY.CUE) ?? false;
+		const isHeadLocked = this.arbiter?.isChannelLocked("head", CHANNEL_PRIORITY.CUE) ?? false;
 
 		const noise = this.noise.tick(deltaMs);
 		const merged = this.bodyDirector.tick(deltaMs, { isTorsoLocked });
@@ -214,20 +212,5 @@ export class MotionComposer {
 		}
 
 		return merged;
-	}
-
-	private delay(ms: number, signal?: AbortSignal): Promise<void> {
-		return new Promise((resolve) => {
-			if (signal?.aborted) return resolve();
-			const timer = setTimeout(() => {
-				if (signal) signal.removeEventListener("abort", abortHandler);
-				resolve();
-			}, ms);
-			const abortHandler = () => {
-				clearTimeout(timer);
-				resolve();
-			};
-			if (signal) signal.addEventListener("abort", abortHandler, { once: true });
-		});
 	}
 }

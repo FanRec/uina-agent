@@ -135,3 +135,26 @@ export function clampLive2DParam(name: string, val: number): number {
 	return val;
 }
 
+/**
+ * 可中断的异步等待辅助函数
+ */
+export function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal?.aborted) {
+			resolve();
+			return;
+		}
+		const timer = setTimeout(() => {
+			if (signal) signal.removeEventListener("abort", abortHandler);
+			resolve();
+		}, ms);
+
+		const abortHandler = () => {
+			clearTimeout(timer);
+			resolve();
+		};
+
+		if (signal) signal.addEventListener("abort", abortHandler, { once: true });
+	});
+}
+

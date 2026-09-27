@@ -252,6 +252,21 @@ export class BodyDirector {
 		}
 	}
 
+	/**
+	 * 精确阻尼指定参数回归至基准姿态（用于思考反射复位或指定通道复位）
+	 */
+	dampenParams(names: readonly string[]): void {
+		for (const name of names) {
+			const state = this.params.get(name);
+			if (state) {
+				state.target = this.getBasePoseTarget(name);
+				state.velocity *= 0.2;
+				state.tElapsed = undefined;
+				state.tDuration = undefined;
+			}
+		}
+	}
+
 	tick(deltaMs: number, options?: { isTorsoLocked?: boolean }): Record<string, number> {
 		const dt = Math.max(0.0001, deltaMs * 0.001);
 		this.updatePassiveSpineCoupling(options?.isTorsoLocked ?? false);
@@ -313,7 +328,11 @@ export class BodyDirector {
 			if (!name.startsWith("ParamAngle") && !name.startsWith("ParamBodyAngle")) continue;
 			const state = this.params.get(name);
 			if (state && state.tElapsed === undefined) {
-				state.target = baseVal * (1 + drift);
+				// 仅当参数处于基准姿态附近时叠加 living drift，防止踩踏正在执行的 Cue 或 Reflex
+				const isNearBase = Math.abs(state.target - baseVal) <= Math.abs(baseVal * 0.1) + 0.15;
+				if (isNearBase) {
+					state.target = baseVal * (1 + drift);
+				}
 			}
 		}
 

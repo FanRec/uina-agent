@@ -13,41 +13,15 @@ import { Live2DStateTracker, VTSCompanion } from "./companion.js";
 import { MotionComposer } from "./motion-composer.js";
 import {
 	CANONICAL_CUE_IDS,
+	CUE_DESCRIPTIONS,
 	DEFAULT_EXPRESSIVE_INTENSITY,
 	getChannelsForBeats,
 	getCueAliases,
 	resolveCueToBeat,
 } from "./parameter-mapper.js";
 import { ReflexDirector } from "./reflex-director.js";
-import { type BasePoseName, CHANNEL_PRIORITY, type ExpressParams } from "./types.js";
+import { abortableDelay, type BasePoseName, CHANNEL_PRIORITY, type ExpressParams } from "./types.js";
 import { VTSClient } from "./vts-client.js";
-
-/**
- * 规范 cue 的一行说明（注入提示词的 prose）。
- * id 集合与别名**不在这里定义**——它们由 parameter-mapper 的 CANONICAL_CUE_IDS /
- * CUE_ALIASES 派生，避免声明(id/别名)与解析端(CUE_BEAT_TABLE)两个来源漂移。
- * 这里只存放既含 id 又含别名之外的纯说明文本；规则：每个规范 id 必须有说明，
- * 每个说明对应的 id 必须是规范 id（由本文件底部的一致性测试守护）。
- */
-const CUE_DESCRIPTIONS: Readonly<Record<string, string>> = {
-	warm_smile: "温暖友善的微笑",
-	happy_laugh: "开心地眯眼大笑",
-	curious_tilt: "好奇探寻地歪头",
-	affirmative_nod: "肯定点头赞同",
-	double_nod: "用力连续点头两次，强烈赞成",
-	shake_head: "拨浪鼓式连连摇头",
-	shrug: "无奈耸肩叹气",
-	head_bop: "随说话节奏轻快点晃头",
-	playful_pout: "傲娇嘟嘴偏头",
-	surprised_gasp: "惊讶睁大眼睛倒吸气",
-	shy: "害羞脸红偏头避开视线",
-	look_away: "尴尬移开视线望向别处",
-	peek_back: "移开视线后又悄悄偷看回用户",
-	thinking_deep: "歪头托腮陷入深思",
-	winking: "调皮单眼眨眼",
-	smug_grin: "得意坏笑歪嘴",
-	sleepy_yawn: "犯困打哈欠微仰头",
-};
 
 export const live2dAffordance: BodyAffordance = {
 	bodyId: "live2d_mo",
@@ -541,24 +515,4 @@ export class Live2DRuntime {
 			this.arbiter.release(lease);
 		}
 	}
-}
-
-function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
-	return new Promise((resolve) => {
-		if (signal?.aborted) {
-			resolve();
-			return;
-		}
-		const timer = setTimeout(() => {
-			if (signal) signal.removeEventListener("abort", abortHandler);
-			resolve();
-		}, ms);
-
-		const abortHandler = () => {
-			clearTimeout(timer);
-			resolve();
-		};
-
-		if (signal) signal.addEventListener("abort", abortHandler, { once: true });
-	});
 }

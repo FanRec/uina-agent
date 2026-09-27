@@ -66,7 +66,7 @@ export class ReflexDirector {
 	onSpeakingContent(): void {
 		if (this.isThinking) {
 			this.isThinking = false;
-			this.composer.bodyDirector.dampenToNeutral(["ParamAngleZ", "ParamEyeBallX", "ParamEyeBallY"]);
+			this.composer.bodyDirector.dampenParams(["ParamAngleZ", "ParamEyeBallX", "ParamEyeBallY"]);
 		}
 	}
 

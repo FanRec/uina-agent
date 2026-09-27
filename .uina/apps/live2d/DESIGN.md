@@ -157,13 +157,13 @@ export class PhysiologicalNoise {
       ParamBreath: breath,
       ParamAngleX: headGlanceX,
       ParamAngleZ: headTiltZ,
-      ParamBodyAngleX: 0,   // 躯干漂移恒为 0：本层不驱动躯干
+      ParamBodyAngleX: Math.sin(this.phase * 0.87) * 1.2, // 躯干自然重心微晃（低频与头部错相）
     };
   }
 }
 ```
 
-> **校正**：原稿在此处声称"身体重心微小游移 (ParamBodyAngleX)"，但实现中 `ParamBodyAngleX` 恒为 0——低频晃动只作用于头部。**该能力未实现**（保留键位是为固定合成层参数集合）。若需要真实躯干游移，应作为表现力增强单独立项，而不是靠注释把 0 说成有。
+> **校正**：实现中 `ParamBodyAngleX` 真实由复合正弦波驱动 `Math.sin(phase * 0.87) * 1.2`，在待机状态下与头部倾角保持低频错相游移，消除立绘冻结感。在通道被 `torso` 租约锁定时被 Arbiter 抑制。
 
 ### 3.2 动力学与姿态导向 (`body-director.ts`)
 
