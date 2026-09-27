@@ -85,9 +85,11 @@ export function createVoiceTool(session: VoiceSession): Tool {
         case "status": {
           const status = await session.getStatus();
           const text = [
-            `发声意志: ${status.voiceState === "enabled" ? "🎙️ 开麦中" : "🔇 已关麦"}`,
+            `发声意志: ${status.voiceState === "enabled"
+              ? status.snapshot.online && !status.snapshot.muted ? "🎙️ 开麦中" : "允许发声（当前未开麦）"
+              : "🔇 已关麦"}`,
             `物理播放: ${describeDelivery(status.snapshot)}`,
-            `驱动挂载: ${status.hasDriver ? "✅ 已连接" : "⚠️ 未挂载"}`,
+            `驱动挂载: ${status.hasDriver ? "✅ 已挂载" : "⚠️ 未挂载"}`,
           ].join(" | ");
 
           return {

@@ -6,7 +6,8 @@
  *
  * 基于 Uina Test Kit 进行统一治理，消灭手工 mkdtemp/dirs 样板。
  */
-import { describe, expect, test } from "./harness/index.js";
+import { describe, expect, test, UinaTestHarness } from "./harness/index.js";
+import { fileURLToPath } from "node:url";
 import type { HostEvent } from "../src/host/events.js";
 
 /** 一个普通项目扩展：注册一个工具。扩展装载也一并被这条路径验证。 */
@@ -27,6 +28,27 @@ export default function activate(uina) {
 `;
 
 describe("RC-1 宿主与消费者分离", () => {
+	test("voice 工具与 TTS 离线解耦，启动后进入模型请求", async ({ env, scenario }) => {
+		const voicePath = fileURLToPath(new URL("../.uina/extensions/voice/index.ts", import.meta.url));
+		const uina = await UinaTestHarness.create({
+			env, scenario, autoStart: false, hostOptions: { extensionPaths: [voicePath] },
+		});
+		try {
+			expect(uina.host.subject.declaredTools().some((tool) => tool.function.name === "voice")).toBe(false);
+			await uina.start();
+			const status = await uina.callTool("voice", { action: "status" });
+			expect(status.status).toBe("succeeded");
+			expect(status.result).toContain("离线 (纯打字)");
+			expect(status.result).not.toContain("开麦中");
+			expect(status.result).not.toContain("已连接");
+			await uina.send("测试工具声明");
+			await uina.waitForIdle();
+			expect(scenario.calls[0]?.tools?.some((tool) => tool.function.name === "voice")).toBe(true);
+		} finally {
+			await uina.dispose();
+		}
+	});
+
 	test("不创建任何 UI，注入假消费者即可跑通 文本 → 工具调用 → 结果回注", async ({ uina, scenario, env }) => {
 		await env.writeExtension("probe.mjs", PROJECT_EXTENSION);
 		await uina.start(); // 激活项目扩展
