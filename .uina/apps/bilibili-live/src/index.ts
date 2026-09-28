@@ -1,28 +1,12 @@
 import type { AppDef, ActionContext } from "../../../../src/extensions/app-framework/types.js";
-import { BilibiliLiveClient } from "./blivedm-ts/client.js";
-import { OpenLiveClient } from "./blivedm-ts/open-live.js";
-import type {
-  DanmakuEvent,
-  GiftEvent,
-  SuperChatEvent,
-  GuardBuyEvent,
-  HeartbeatEvent,
-} from "./blivedm-ts/events.js";
+import { createLiveClient } from "./live-client-factory.js";
+import { LiveEventIngestion } from "./live-event-ingestion.js";
+import type { LiveClientAdapter } from "./live-client-adapter.js";
 import { LiveEventBuffer, sanitizeUntrustedText } from "./buffer.js";
 import { loadConfig, type ResolvedLiveAppConfig } from "./config.js";
 import { LiveEventJournal } from "./journal.js";
 import { sendDanmaku } from "./send.js";
 import type { LiveAppConfig, LiveAppState } from "./types.js";
-import {
-  normalizeOpenDanmaku,
-  normalizeOpenGift,
-  normalizeOpenGuard,
-  normalizeOpenSuperChat,
-  normalizeWebDanmaku,
-  normalizeWebGift,
-  normalizeWebGuard,
-  normalizeWebSuperChat,
-} from "./normalize.js";
 
 /**
  * 伴生服务上下文扩展（支持模式二：强事件唤醒）
@@ -43,7 +27,7 @@ export async function handleConnectAction(
   ctx: ActionContext,
   config: ResolvedLiveAppConfig,
   appState: LiveAppState,
-  initClient: (roomId: number) => BilibiliLiveClient | OpenLiveClient
+  initClient: (roomId: number) => LiveClientAdapter
 ): Promise<string> {
   const rawRoomId = args.roomId ?? args.room_id ?? config.defaultRoomId;
   const roomId = typeof rawRoomId === "number" ? rawRoomId : parseInt(String(rawRoomId), 10);
@@ -54,7 +38,7 @@ export async function handleConnectAction(
 
   const c = initClient(roomId);
   appState.roomId = roomId;
-  c.connect().catch((err) => {
+  c.connect().catch((err: unknown) => {
     console.warn(`[bilibili-live] 直播间 ${roomId} 连接异常:`, err);
   });
 
@@ -65,7 +49,7 @@ export async function handleConnectAction(
 export async function handleDisconnectAction(
   ctx: ActionContext,
   appState: LiveAppState,
-  client: BilibiliLiveClient | OpenLiveClient | null,
+  client: { disconnect(): Promise<void> } | null,
   clearClient: () => void
 ): Promise<string> {
   if (client) {
@@ -192,125 +176,24 @@ export function createBilibiliLiveApp(userConfig?: Partial<LiveAppConfig>): AppD
   };
 
   let submitInput: BilibiliLiveCompanionContext["submitInput"];
-  let client: BilibiliLiveClient | OpenLiveClient | null = null;
-  let connectionGeneration = 0;
-
-  function initClient(roomId: number): BilibiliLiveClient | OpenLiveClient {
-    const generation = ++connectionGeneration;
-    if (client) {
-      void client.disconnect();
-      client = null;
-    }
-
-    const c = config.openPlatform
-      ? new OpenLiveClient({
-          accessKeyId: config.openPlatform.accessKeyId,
-          accessKeySecret: config.openPlatform.accessKeySecret,
-          appId: config.openPlatform.appId,
-          roomOwnerAuthCode: config.openPlatform.code,
-          autoReconnect: config.network.autoReconnect,
-        })
-      : new BilibiliLiveClient({
-          roomId,
-          sessdata: config.sessdata,
-          buvid: config.buvid3,
-          autoReconnect: config.network.autoReconnect,
-        });
-
-    c.on("roomInfo", (info: any) => {
-      if (generation !== connectionGeneration) return;
+  const ingestion = new LiveEventIngestion(config, buffer, (update) => {
+    if (update.type === "roomInfo") {
+      const info = update.payload;
       appState.roomId = info.room_id ?? appState.roomId;
       appState.roomTitle = info.title ?? appState.roomTitle;
       appState.roomStatus = info.live_status === 1 ? "online" : info.live_status === 0 ? "offline" : "unknown";
-    });
-
-    c.on("danmaku", (msg: DanmakuEvent) => {
-      if (generation !== connectionGeneration) return;
-      const event = config.openPlatform ? normalizeOpenDanmaku(msg as never) : normalizeWebDanmaku(msg);
-      buffer.addDanmaku(event.actor.value, event.actor.name, String(event.payload.text), {
-        wallTimeMs: event.occurredAtMs,
-        monotonicTimeMs: performance.now(),
-      });
-    });
-
-    c.on("superChat", (msg: SuperChatEvent) => {
-      if (generation !== connectionGeneration) return;
-      const event = config.openPlatform ? normalizeOpenSuperChat(msg as never) : normalizeWebSuperChat(msg);
-      const payload = event.payload;
-      const { shouldWake } = buffer.ingestSuperChat({
-        id: event.eventId,
-        uid: event.actor.value,
-        uname: event.actor.name,
-        price: Number(payload.price ?? 0),
-        message: String(payload.message ?? ""),
-        timestamp: event.occurredAtMs,
-      });
-      if (shouldWake) void submitInput?.({
-        id: `bilibili-live-${event.eventId}`,
-        mode: "followUp",
-        source: { kind: "runtime", type: "bilibili-live", origin: "external", ref: event.eventId },
-        text: HIGH_PRIORITY_WAKE_NOTICE,
-      }).catch((error) => console.error(`[bilibili-live] 高优先级事件 ${event.eventId} 唤醒失败:`, error));
-    });
-
-    c.on("guardBuy", (msg: GuardBuyEvent) => {
-      if (generation !== connectionGeneration) return;
-      const event = config.openPlatform ? normalizeOpenGuard(msg as never) : normalizeWebGuard(msg);
-      const payload = event.payload;
-      const { shouldWake } = buffer.ingestGuard({
-        uid: event.actor.value, uname: event.actor.name,
-        guardLevel: Number(payload.guardLevel ?? 0), giftName: String(payload.giftName ?? ""),
-        timestamp: event.occurredAtMs,
-      });
-      if (shouldWake) void submitInput?.({
-        id: `bilibili-live-${event.eventId}`,
-        mode: "followUp",
-        source: { kind: "runtime", type: "bilibili-live", origin: "external", ref: event.eventId },
-        text: HIGH_PRIORITY_WAKE_NOTICE,
-      }).catch((error) => console.error(`[bilibili-live] 高优先级事件 ${event.eventId} 唤醒失败:`, error));
-    });
-
-    c.on("gift", (msg: GiftEvent) => {
-      if (generation !== connectionGeneration) return;
-      const event = config.openPlatform ? normalizeOpenGift(msg as never) : normalizeWebGift(msg);
-      const payload = event.payload;
-      const { shouldWake } = buffer.ingestGift({
-        uid: event.actor.value, uname: event.actor.name,
-        giftId: Number(payload.giftId ?? 0), giftName: String(payload.giftName ?? ""),
-        price: Number(payload.price ?? 0), count: Number(payload.count ?? 0),
-        timestamp: event.occurredAtMs,
-      });
-      if (shouldWake) void submitInput?.({
-        id: `bilibili-live-${event.eventId}`,
-        mode: "followUp",
-        source: { kind: "runtime", type: "bilibili-live", origin: "external", ref: event.eventId },
-        text: HIGH_PRIORITY_WAKE_NOTICE,
-      }).catch((error) => console.error(`[bilibili-live] 高优先级事件 ${event.eventId} 唤醒失败:`, error));
-    });
-
-    c.on("heartbeat", (evt: HeartbeatEvent) => {
-      if (generation !== connectionGeneration) return;
-      appState.popularity = evt.popularity;
+    } else if (update.type === "heartbeat") {
+      appState.popularity = update.payload.popularity;
       appState.lastHeartbeatTime = Date.now();
-    });
+    } else {
+      appState.connectionStatus = update.type;
+    }
+  }, (decision) => {
+    void submitInput?.({ id: `bilibili-live-${decision.eventId}`, mode: "followUp", source: { kind: "runtime", type: "bilibili-live", origin: "external", ref: decision.eventId }, text: HIGH_PRIORITY_WAKE_NOTICE }).catch((error) => console.error(`[bilibili-live] 高优先级事件 ${decision.eventId} 唤醒失败:`, error));
+  });
 
-    c.on("connected", () => {
-      if (generation !== connectionGeneration) return;
-      appState.connectionStatus = "connected";
-    });
-
-    c.on("disconnected", () => {
-      if (generation !== connectionGeneration) return;
-      appState.connectionStatus = "disconnected";
-    });
-
-    c.on("reconnecting", () => {
-      if (generation !== connectionGeneration) return;
-      appState.connectionStatus = "reconnecting";
-    });
-
-    client = c;
-    return c;
+  function initClient(roomId: number) {
+    return ingestion.replace(createLiveClient(config, roomId));
   }
 
   return {
@@ -330,10 +213,7 @@ export function createBilibiliLiveApp(userConfig?: Partial<LiveAppConfig>): AppD
     },
 
     async onStop(): Promise<void> {
-      if (client) {
-        await client.disconnect();
-        client = null;
-      }
+      await ingestion.stop();
       buffer.dispose();
       submitInput = undefined;
     },
@@ -360,9 +240,7 @@ export function createBilibiliLiveApp(userConfig?: Partial<LiveAppConfig>): AppD
       disconnect: {
         description: "断开当前B站直播间连接并收起视口。",
         run: (_args, ctx) =>
-          handleDisconnectAction(ctx, appState, client, () => {
-            client = null;
-          }),
+          handleDisconnectAction(ctx, appState, ingestion, () => undefined),
       },
 
       status: {
