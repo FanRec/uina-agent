@@ -96,9 +96,9 @@
   提供 `load(url, durationMs)`、`pause()`、`resume()`、`stop()`、`setVolume(vol)` 与 `progress()` 接口；
 - **`MpvPlayer` 硬件实现**：
   - 基于 IPC（Windows Named Pipe `\\.\pipe\uina-mpv-xxx` 或 Unix Domain Socket）与 MPV 守护进程保持双向通信；
-  - 监听 `end-file` 事件，在歌曲自然播放结束时自动重置播放器状态为 `idle`；
-- **`SimulatedMusicPlayer` 模拟器降级**：
-  - 本地未安装 MPV 时自动激活，模拟播放计时与状态流转，保证无头服务器与测试环境 100% 通过。
+  - 监听 `end-file` 和 IPC 断线，结算在途命令并更新播放状态；进程与 socket 创建可通过 `MpvTransport` 注入测试；
+- **`SimulatedMusicPlayer` 模拟器**：
+  - 仅在显式配置 `simulation: true` 时启用；未找到 MPV 且未启用模拟时，播放操作明确失败。
 
 ---
 
@@ -155,4 +155,5 @@
   - `NeteaseApiClient` 健康检查、搜索解析、歌曲直链获取与异常容错验证；
   - `CompanionManager` 服务已存在直接复用与非存在目录容错验证；
   - `AppFramework` 门面工具挂载、全动作执行、视口切换与 `loadExternalApps` 外部动态装配全流程验证。
+- `tests/netease-mpv-lifecycle.test.ts` 使用假的进程与 socket 验证 MPV IPC 启动、停止、替换、断线和错误结算；不代表真实 MPV 音频输出验收。
 - 质量指标：全模块 CRAP 复杂度 $\le 5.0$（远低于 30 重构警戒线）。

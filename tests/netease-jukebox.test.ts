@@ -73,7 +73,10 @@ describe("PlaybackSession", () => {
     const first = { id: "1", name: "一", artists: [], durationMs: null };
     const second = { id: "2", name: "二", artists: [], durationMs: null };
 
-    await Promise.all([session.load("test://one", first), session.load("test://two", second)]);
+    const firstLoad = session.load("test://one", first);
+    const firstRejected = expect(firstLoad).rejects.toThrow("取代");
+    await session.load("test://two", second);
+    await firstRejected;
     expect(session.snapshot().currentSong).toEqual(second);
     await session.stop();
     expect(session.snapshot().currentSong).toBeNull();

@@ -14,6 +14,8 @@ export class PlaybackSession {
   private currentSong: SongInfo | null = null;
   private lastError: string | null = null;
   private queue: Promise<unknown> = Promise.resolve();
+  private generation = 0;
+  private loading = false;
 
   constructor(private readonly player: MusicPlayer) {
     player.on("ended", () => {
@@ -22,6 +24,7 @@ export class PlaybackSession {
     player.on("error", (info) => {
       const error = info instanceof Error ? info : new Error("播放器发生未知错误");
       this.lastError = error.message;
+      this.currentSong = null;
     });
   }
 
@@ -41,10 +44,24 @@ export class PlaybackSession {
   }
 
   load(url: string, song: SongInfo): Promise<void> {
+    const generation = ++this.generation;
+    const interruption = this.loading ? this.player.stop() : Promise.resolve();
+    void interruption.catch(() => undefined);
     return this.enqueue(async () => {
+      await interruption;
+      if (generation !== this.generation) throw new Error("播放项已被新操作取代");
       this.lastError = null;
-      await this.player.load(url, song.durationMs, song.id);
-      this.currentSong = song;
+      this.loading = true;
+      try {
+        await this.player.load(url, song.durationMs, song.id);
+        if (generation !== this.generation) throw new Error("播放项已被新操作取代");
+        this.currentSong = song;
+      } catch (error) {
+        if (generation === this.generation) this.lastError = error instanceof Error ? error.message : String(error);
+        throw error;
+      } finally {
+        this.loading = false;
+      }
     });
   }
 
@@ -52,8 +69,11 @@ export class PlaybackSession {
   resume(): Promise<void> { return this.enqueue(() => this.player.resume()); }
 
   stop(): Promise<void> {
+    this.generation++;
+    const stopping = this.player.stop();
+    void stopping.catch(() => undefined);
     return this.enqueue(async () => {
-      await this.player.stop();
+      await stopping;
       this.currentSong = null;
     });
   }
@@ -63,9 +83,14 @@ export class PlaybackSession {
   progress(): Promise<PlayerProgress> { return this.player.progress(); }
 
   async close(): Promise<void> {
+    this.generation++;
+    if (this.loading) await this.player.stop().catch(() => undefined);
     await this.queue.catch(() => undefined);
-    await this.player.close();
-    this.currentSong = null;
+    try {
+      await this.player.close();
+    } finally {
+      this.currentSong = null;
+    }
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {

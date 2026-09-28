@@ -44,9 +44,15 @@ export function createJukeboxApp(config?: JukeboxAppConfig): AppDef {
     async onStart(): Promise<void> {},
 
     async onStop(): Promise<void> {
-      await playback.stop();
-      await playback.close();
-      await companionManager.stop();
+      try {
+        await playback.stop();
+      } finally {
+        try {
+          await playback.close();
+        } finally {
+          await companionManager.stop();
+        }
+      }
     },
 
     async render(tier: "ambient" | "expanded"): Promise<string> {
