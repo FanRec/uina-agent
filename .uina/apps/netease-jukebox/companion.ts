@@ -18,12 +18,16 @@ export class CompanionManager {
   constructor(
     private readonly serviceDir = "E:\\Uina\\ThirdParty\\api-enhanced",
     private readonly port = 3000,
-  ) {}
+  ) {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`无效的网易云伴生服务端口: ${port}`);
+    }
+  }
 
-  async ensureRunning(apiClient: NeteaseApiClient, maxWaitMs = 10000): Promise<CompanionStatus> {
+  async ensureRunning(apiClient: NeteaseApiClient, maxWaitMs = 10000, signal?: AbortSignal): Promise<CompanionStatus> {
     if (this.startPromise) return this.startPromise;
     const generation = ++this.generation;
-    this.startPromise = this.startInternal(apiClient, maxWaitMs, generation);
+    this.startPromise = this.startInternal(apiClient, maxWaitMs, generation, signal);
     try {
       return await this.startPromise;
     } finally {
@@ -31,9 +35,15 @@ export class CompanionManager {
     }
   }
 
-  private async startInternal(apiClient: NeteaseApiClient, maxWaitMs: number, generation: number): Promise<CompanionStatus> {
+  private async startInternal(apiClient: NeteaseApiClient, maxWaitMs: number, generation: number, signal?: AbortSignal): Promise<CompanionStatus> {
+    signal?.throwIfAborted();
     // 1. Check if already healthy
-    if (await apiClient.isHealthy(1500)) {
+    const healthy = await apiClient.isHealthy(1500, signal);
+    signal?.throwIfAborted();
+    if (generation !== this.generation) {
+      return { running: false, spawnedByUs: false, port: this.port };
+    }
+    if (healthy) {
       return { running: true, spawnedByUs: false, port: this.port };
     }
 
@@ -68,22 +78,32 @@ export class CompanionManager {
       // 4. Poll until healthy
       const start = Date.now();
       while (Date.now() - start < maxWaitMs) {
-        if (generation !== this.generation) {
-          return { running: false, spawnedByUs: true, port: this.port };
-        }
-        if (await apiClient.isHealthy(1000)) {
+        signal?.throwIfAborted();
+        if (generation !== this.generation) break;
+        const ready = await apiClient.isHealthy(1000, signal);
+        signal?.throwIfAborted();
+        if (generation !== this.generation) break;
+        if (ready) {
           return { running: true, spawnedByUs: true, port: this.port };
         }
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve();
+          }, 500);
+          const onAbort = () => {
+            clearTimeout(timer);
+            reject(signal?.reason ?? new Error("伴生服务启动已取消"));
+          };
+          signal?.addEventListener("abort", onAbort, { once: true });
+        });
       }
 
-      try { child.kill(); } catch { /* already exited */ }
-      if (this.childProcess === child) {
-        this.childProcess = null;
-        this.spawnedByUs = false;
-      }
+      this.killChild(child);
       return { running: false, spawnedByUs: false, port: this.port };
-    } catch {
+    } catch (error) {
+      if (this.childProcess) this.killChild(this.childProcess);
+      if (signal?.aborted) throw error;
       return { running: false, spawnedByUs: false, port: this.port };
     }
   }
@@ -109,5 +129,13 @@ export class CompanionManager {
       spawnedByUs: this.spawnedByUs,
       port: this.port,
     };
+  }
+
+  private killChild(child: ChildProcess): void {
+    try { child.kill(); } catch { /* already exited */ }
+    if (this.childProcess === child) {
+      this.childProcess = null;
+      this.spawnedByUs = false;
+    }
   }
 }

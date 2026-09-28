@@ -7,21 +7,15 @@ export class NeteaseApiClient {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
   }
 
-  async isHealthy(timeoutMs = 2000): Promise<boolean> {
+  async isHealthy(timeoutMs = 2000, signal?: AbortSignal): Promise<boolean> {
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      const res = await fetch(`${this.baseUrl}/login/status`, {
-        signal: controller.signal,
-      }).catch(() => null);
-      clearTimeout(timer);
-      return res !== null && res.ok && res.status === 200;
+      return await this.request(`${this.baseUrl}/login/status`, timeoutMs, signal, (res) => res.ok && res.status === 200);
     } catch {
       return false;
     }
   }
 
-  async searchSongs(query: string, limit = 10): Promise<readonly SongInfo[]> {
+  async searchSongs(query: string, limit = 10, signal?: AbortSignal): Promise<readonly SongInfo[]> {
     const trimmed = query.trim();
     if (!trimmed) {
       return [];
@@ -33,9 +27,9 @@ export class NeteaseApiClient {
       url.searchParams.set("type", "1");
       url.searchParams.set("limit", String(limit));
 
-      const res = await fetch(url.toString());
-      if (!res.ok) throw new Error(`网易云搜索失败: HTTP ${res.status}`);
-      const data = (await res.json()) as {
+      const data = await this.request(url.toString(), 15_000, signal, async (res) => {
+        if (!res.ok) throw new Error(`网易云搜索失败: HTTP ${res.status}`);
+        return await res.json() as {
         result?: {
           songs?: Array<{
             id: number | string;
@@ -48,7 +42,8 @@ export class NeteaseApiClient {
             album?: { name: string };
           }>;
         };
-      };
+        };
+      });
 
       const songs = data.result?.songs;
       if (!Array.isArray(songs)) throw new Error("网易云搜索响应格式错误");
@@ -65,26 +60,49 @@ export class NeteaseApiClient {
     }
   }
 
-  async getSongUrl(songId: string): Promise<string | null> {
+  async getSongUrl(songId: string, signal?: AbortSignal): Promise<string | null> {
     try {
       const url = new URL(`${this.baseUrl}/song/url/v1`);
       url.searchParams.set("id", songId);
       url.searchParams.set("level", "standard");
 
-      const res = await fetch(url.toString());
-      if (res.ok) {
-        const data = (await res.json()) as {
+      return await this.request(url.toString(), 15_000, signal, async (res) => {
+        if (res.ok) {
+          const data = (await res.json()) as {
           data?: Array<{ url?: string; freeTrialInfo?: unknown }>;
-        };
-        const item = data.data?.[0];
-        if (item?.url) {
-          return item.url;
+          };
+          const item = data.data?.[0];
+          if (item?.url) return item.url;
         }
-      }
-
-      return null;
+        return null;
+      });
     } catch (error) {
       throw error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  private async request<T>(url: string, timeoutMs: number, signal: AbortSignal | undefined, read: (response: Response) => T | Promise<T>): Promise<T> {
+    signal?.throwIfAborted();
+    const controller = new AbortController();
+    let timer: NodeJS.Timeout;
+    let rejectInterrupted: (reason: Error) => void = () => undefined;
+    const interrupted = new Promise<never>((_resolve, reject) => { rejectInterrupted = reject; });
+    timer = setTimeout(() => {
+      const error = new Error(`网易云请求超时 (${timeoutMs}ms)`);
+      controller.abort(error);
+      rejectInterrupted(error);
+    }, timeoutMs);
+    const onAbort = () => {
+      const error = signal?.reason instanceof Error ? signal.reason : new Error("网易云请求已取消");
+      controller.abort(error);
+      rejectInterrupted(error);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      return await Promise.race([fetch(url, { signal: controller.signal }).then(read), interrupted]);
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
     }
   }
 }

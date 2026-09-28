@@ -23,6 +23,7 @@ export function loadJukeboxConfig(): JukeboxAppConfig {
 
   return {
     apiBaseUrl: fileConfig.apiBaseUrl ?? process.env.NETEASE_API_URL ?? "http://localhost:3000",
+    apiPort: fileConfig.apiPort ?? Number(process.env.NETEASE_API_PORT ?? 3000),
     apiEnhancedDir:
       fileConfig.apiEnhancedDir ??
       process.env.NETEASE_API_DIR ??

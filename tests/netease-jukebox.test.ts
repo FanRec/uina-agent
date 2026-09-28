@@ -161,9 +161,80 @@ describe("NeteaseApiClient", () => {
     const url = await client.getSongUrl("12345");
     expect(url).toBe("http://music.163.com/song/12345.mp3");
   });
+
+  it("should propagate cancellation to network requests", async () => {
+    const controller = new AbortController();
+    globalThis.fetch = vi.fn((_url, init) => {
+      expect(init?.signal).toBeDefined();
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason ?? new Error("aborted")), { once: true });
+      });
+    }) as unknown as typeof fetch;
+    const pending = new NeteaseApiClient().searchSongs("测试", 1, controller.signal);
+    controller.abort(new Error("用户取消"));
+    await expect(pending).rejects.toThrow("用户取消");
+  });
+
+  it("should abort requests that exceed the timeout", async () => {
+    vi.useFakeTimers();
+    globalThis.fetch = vi.fn((_url, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("timeout")), { once: true });
+    })) as unknown as typeof fetch;
+    const pending = new NeteaseApiClient().getSongUrl("1");
+    const rejection = expect(pending).rejects.toThrow("网易云请求超时");
+    await vi.advanceTimersByTimeAsync(15_000);
+    await rejection;
+    vi.useRealTimers();
+  });
+
+  it("should time out while parsing a stalled response body", async () => {
+    vi.useFakeTimers();
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => new Promise<unknown>(() => undefined),
+    }) as unknown as typeof fetch;
+    const pending = new NeteaseApiClient().getSongUrl("1");
+    const rejection = expect(pending).rejects.toThrow("网易云请求超时");
+    await vi.advanceTimersByTimeAsync(15_000);
+    await rejection;
+    vi.useRealTimers();
+  });
 });
 
 describe("CompanionManager", () => {
+  it("rejects invalid configured ports", () => {
+    expect(() => new CompanionManager("unused", Number.NaN)).toThrow("无效的网易云伴生服务端口");
+    expect(() => new CompanionManager("unused", 65536)).toThrow("无效的网易云伴生服务端口");
+  });
+
+  it("does not spawn after stop during the first health probe", async () => {
+    let finishProbe: ((healthy: boolean) => void) | undefined;
+    const manager = new CompanionManager("E:\\non_existent_dir_12345", 4321);
+    const client = {
+      isHealthy: vi.fn().mockImplementation(() => new Promise<boolean>((resolve) => { finishProbe = resolve; })),
+    } as unknown as NeteaseApiClient;
+
+    const pending = manager.ensureRunning(client);
+    const stopping = manager.stop();
+    finishProbe?.(false);
+    await stopping;
+    await expect(pending).resolves.toEqual({ running: false, spawnedByUs: false, port: 4321 });
+  });
+
+  it("does not start after cancellation during health probing", async () => {
+    const controller = new AbortController();
+    const manager = new CompanionManager("E:\\non_existent_dir_12345", 4321);
+    const client = {
+      isHealthy: vi.fn().mockImplementation(async () => {
+        controller.abort(new Error("用户取消"));
+        return false;
+      }),
+    } as unknown as NeteaseApiClient;
+
+    await expect(manager.ensureRunning(client, 1000, controller.signal)).rejects.toThrow("用户取消");
+    expect(manager.getStatus()).toEqual({ running: false, spawnedByUs: false, port: 4321 });
+  });
+
   it("should detect when service is already running", async () => {
     const manager = new CompanionManager("non_existent_dir", 3000);
     const mockApiClient = {

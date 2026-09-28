@@ -21,7 +21,7 @@ export function createJukeboxApp(config?: JukeboxAppConfig): AppDef {
   const apiClient = new NeteaseApiClient(mergedConfig.apiBaseUrl ?? "http://localhost:3000");
   const companionManager = new CompanionManager(
     mergedConfig.apiEnhancedDir ?? "E:\\Uina\\ThirdParty\\api-enhanced",
-    3000,
+    mergedConfig.apiPort ?? 3000,
   );
 
   const mpvPath = resolveMpvPath(mergedConfig.mpvPath);
@@ -93,7 +93,7 @@ ${snapshot.lastError ? `错误: ${snapshot.lastError}` : ""}
           },
         },
         async run(args: Record<string, unknown>, ctx: ActionContext) {
-          const service = await companionManager.ensureRunning(apiClient);
+          const service = await companionManager.ensureRunning(apiClient, 10000, ctx.signal);
           if (!service.running) {
             return { result: "网易云伴生服务不可用。", status: "failed", details: { reason: "service_unavailable" } };
           }
@@ -112,7 +112,7 @@ ${snapshot.lastError ? `错误: ${snapshot.lastError}` : ""}
               durationMs: null,
             };
           } else if (typeof rawQuery === "string" && rawQuery.trim()) {
-            const results = await apiClient.searchSongs(rawQuery.trim(), 5);
+            const results = await apiClient.searchSongs(rawQuery.trim(), 5, ctx.signal);
             if (results.length === 0) {
               return `未搜索到关于 "${rawQuery}" 的歌曲`;
             }
@@ -121,7 +121,7 @@ ${snapshot.lastError ? `错误: ${snapshot.lastError}` : ""}
             return "参数错误：必须提供搜索关键词或歌曲ID。例如 { query: 'World is Mine' } 或 { song_id: '22677570' }。";
           }
 
-          const playUrl = await apiClient.getSongUrl(songToPlay.id);
+          const playUrl = await apiClient.getSongUrl(songToPlay.id, ctx.signal);
           if (!playUrl) {
             if (playback.isSimulated) {
               await playback.load("simulated://stream", songToPlay);
@@ -212,8 +212,8 @@ ${snapshot.lastError ? `错误: ${snapshot.lastError}` : ""}
           },
           required: ["query"],
         },
-        async run(args: Record<string, unknown>) {
-          const service = await companionManager.ensureRunning(apiClient);
+        async run(args: Record<string, unknown>, ctx: ActionContext) {
+          const service = await companionManager.ensureRunning(apiClient, 10000, ctx.signal);
           if (!service.running) {
             return { result: "网易云伴生服务不可用。", status: "failed", details: { reason: "service_unavailable" } };
           }
@@ -223,7 +223,7 @@ ${snapshot.lastError ? `错误: ${snapshot.lastError}` : ""}
             return "参数错误：缺少搜索关键词。请传入 { query: '歌名' }（也支持 keyword 或 q）。";
           }
           const limit = typeof args.limit === "number" ? args.limit : 10;
-          const songs = await apiClient.searchSongs(query, limit);
+          const songs = await apiClient.searchSongs(query, limit, ctx.signal);
           if (songs.length === 0) {
             return `未找到与 "${query}" 相关的歌曲`;
           }

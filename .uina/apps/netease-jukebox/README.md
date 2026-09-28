@@ -41,6 +41,7 @@
 ```json
 {
   "apiBaseUrl": "http://localhost:3000",
+  "apiPort": 3000,
   "apiEnhancedDir": "E:\\Uina\\ThirdParty\\api-enhanced",
   "mpvPath": "C:\\Program Files\\MPV Player\\mpv.com"
 }
@@ -50,6 +51,7 @@
 | 配置项 | 类型 | 默认值 | 说明与环境变量覆盖 |
 | :--- | :--- | :--- | :--- |
 | **`apiBaseUrl`** | `string` | `"http://localhost:3000"` | 网易云 API 服务 HTTP 请求基地址。<br>*环境变量*：`NETEASE_API_URL`。如果使用局域网/远端 API，填入对应地址即可免拉起本地进程。 |
+| **`apiPort`** | `number` | `3000` | 本地伴生进程监听端口；应与本地 `apiBaseUrl` 的端口一致。<br>*环境变量*：`NETEASE_API_PORT`。 |
 | **`apiEnhancedDir`** | `string` | `"E:\\Uina\\ThirdParty\\api-enhanced"` | 本地 `api-enhanced` 源码目录路径。<br>*环境变量*：`NETEASE_API_DIR`。伴生服务管理器在端口未启动时，会在此目录下执行 `node app.js`。 |
 | **`mpvPath`** | `string \| null` | `null` (自动探测) | 指定 MPV 播放器可执行文件路径。<br>*环境变量*：`MPV_PATH`。留空时系统会自动在常见安装目录探测。 |
 
