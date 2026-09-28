@@ -321,14 +321,6 @@ export function createBilibiliLiveApp(userConfig?: Partial<LiveAppConfig>): AppD
     async onStart(ctx: BilibiliLiveCompanionContext): Promise<void> {
       submitInput = ctx.submitInput;
 
-      ctx.signal?.addEventListener("abort", () => {
-        if (client) {
-          void client.disconnect();
-          client = null;
-        }
-        buffer.dispose();
-      });
-
       if (config.defaultRoomId) {
         const c = initClient(config.defaultRoomId);
         c.connect().catch((err) => {

@@ -95,7 +95,6 @@ export function createPacingTickerApp(): AppDef {
       engine = new TickerEngine(host, initial, guardrails);
       engine.start();
       unbind = c.onActivity?.((event) => engine?.notifyActivity(event)) ?? null;
-      ctx.signal.addEventListener("abort", teardown, { once: true });
     },
     async onStop() { teardown(); },
     render,

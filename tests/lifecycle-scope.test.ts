@@ -53,4 +53,19 @@ describe("ResourceScope", () => {
     await expect(first).rejects.toThrow("Resource scope cleanup failed: test");
     expect(cleanupCount).toBe(1);
   });
+
+  it("rejects late resource registration while closing", async () => {
+    const scope = new ResourceScope("test");
+    let release!: () => void;
+    const blocker = new Promise<void>((resolve) => { release = resolve; });
+
+    scope.onDispose(async () => {
+      await blocker;
+    });
+
+    const closing = scope.close();
+    expect(() => scope.onDispose(() => undefined)).toThrow("Resource scope is closed: test");
+    release();
+    await closing;
+  });
 });

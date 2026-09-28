@@ -52,17 +52,6 @@ export function createLive2DApp(): AppDef {
 		lastRuntimeForInspection = runtime;
 
 		await runtime.start(ctx);
-
-		ctx.signal.addEventListener(
-			"abort",
-			() => {
-				if (currentRuntime === runtime) {
-					void runtime.stop();
-					currentRuntime = null;
-				}
-			},
-			{ once: true },
-		);
 	},
 
 	async onStop(): Promise<void> {
