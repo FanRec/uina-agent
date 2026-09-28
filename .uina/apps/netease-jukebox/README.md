@@ -66,6 +66,7 @@
   ├── api-client.ts         # 网易云 API HTTP 客户端（含超时与降级容错）
   ├── companion.ts          # 伴生服务守护者（端口探测、进程拉起与终止闭环）
   ├── player.ts             # MPV 硬件播放器与静音模拟器实现
+  ├── playback-session.ts   # 播放会话：串行化命令、当前曲目和生命周期事实
   └── index.ts              # App 组合根：契约组装、三档视口渲染与默认导出
 ```
 

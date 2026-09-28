@@ -11,6 +11,25 @@ export interface PlayerProgress {
   readonly durationMs: number | null;
 }
 
+export interface MpvIpcMessage {
+  readonly request_id?: number;
+  readonly error?: string;
+  readonly data?: unknown;
+  readonly event?: string;
+  readonly reason?: string;
+  readonly playlist_entry_id?: number;
+}
+
+/** Protocol seam: malformed IPC is an observable protocol failure, never a fake event. */
+export function parseMpvLine(line: string): MpvIpcMessage | null {
+  try {
+    const value = JSON.parse(line) as unknown;
+    return value !== null && typeof value === "object" ? value as MpvIpcMessage : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface MusicPlayer {
   readonly status: PlaybackStatus;
   readonly volume: number;
@@ -371,15 +390,12 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
       const line = this.readBuffer.slice(0, newline).trim();
       this.readBuffer = this.readBuffer.slice(newline + 1);
       if (line) {
-        try {
-          const msg = JSON.parse(line) as {
-            request_id?: number;
-          error?: string;
-          data?: unknown;
-          event?: string;
-          reason?: string;
-          playlist_entry_id?: number;
-          };
+          const msg = parseMpvLine(line);
+          if (!msg) {
+            this.emit("error", new Error("mpv IPC 返回非法 JSON"));
+            newline = this.readBuffer.indexOf("\n");
+            continue;
+          }
           if (typeof msg.request_id === "number") {
             const p = this.pending.get(msg.request_id);
             if (p) {
@@ -402,9 +418,6 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
             this.emit("ended", { reason: "eof", trackId: this.trackId });
             this.activeEntryId = null;
           }
-        } catch {
-          // ignore parse error
-        }
       }
       newline = this.readBuffer.indexOf("\n");
     }

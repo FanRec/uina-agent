@@ -2,8 +2,9 @@ import type { AppDef, ActionContext } from "../../../src/extensions/app-framewor
 import { NeteaseApiClient } from "./api-client.js";
 import { loadJukeboxConfig } from "./config.js";
 import { SimulatedMusicPlayer, UnavailableMusicPlayer, MpvPlayer, resolveMpvPath, type MusicPlayer } from "./player.js";
+import { PlaybackSession } from "./playback-session.js";
 import { CompanionManager } from "./companion.js";
-import type { JukeboxState, JukeboxAppConfig, SongInfo } from "./types.js";
+import type { JukeboxAppConfig, SongInfo } from "./types.js";
 
 function formatMs(ms: number | null): string {
   if (ms === null || !Number.isFinite(ms)) {
@@ -30,22 +31,7 @@ export function createJukeboxApp(config?: JukeboxAppConfig): AppDef {
       ? new MpvPlayer(mpvPath)
       : new UnavailableMusicPlayer();
 
-  let state: JukeboxState = {
-    status: "idle",
-    currentSong: null,
-    positionMs: 0,
-    durationMs: null,
-    volume: 80,
-  };
-
-  player.on("ended", () => {
-    state = {
-      ...state,
-      status: "idle",
-      positionMs: 0,
-      currentSong: null,
-    };
-  });
+  const playback = new PlaybackSession(player);
 
   return {
     name: "jukebox",
@@ -58,8 +44,8 @@ export function createJukeboxApp(config?: JukeboxAppConfig): AppDef {
     async onStart(): Promise<void> {},
 
     async onStop(): Promise<void> {
-      await player.stop();
-      await player.close();
+      await playback.stop();
+      await playback.close();
       await companionManager.stop();
     },
 
@@ -67,11 +53,12 @@ export function createJukeboxApp(config?: JukeboxAppConfig): AppDef {
       if (tier === "ambient") {
         // ambient 模式下保持静态元数据，不携带秒级跳动的时间戳，保护 Prompt Cache 前缀；
         // 空闲状态返回空字符串，严格遵循 0-Token 常态退火规范。不查 progress（省一次跨进程 IPC）。
-        if (player.status === "playing" && state.currentSong) {
-          return `[jukebox] 正在播放: ${state.currentSong.name} - ${state.currentSong.artists.join(", ")}`;
+        const snapshot = playback.snapshot();
+        if (snapshot.status === "playing" && snapshot.currentSong) {
+          return `[jukebox] 正在播放: ${snapshot.currentSong.name} - ${snapshot.currentSong.artists.join(", ")}`;
         }
-        if (player.status === "paused" && state.currentSong) {
-          return `[jukebox] 已暂停: ${state.currentSong.name} - ${state.currentSong.artists.join(", ")}`;
+        if (snapshot.status === "paused" && snapshot.currentSong) {
+          return `[jukebox] 已暂停: ${snapshot.currentSong.name} - ${snapshot.currentSong.artists.join(", ")}`;
         }
         return "";
       }
@@ -79,17 +66,19 @@ export function createJukeboxApp(config?: JukeboxAppConfig): AppDef {
       // expanded panel：推送型状态；曲目/进度保留（compaction 后这是确认"现在放什么"的唯一渠道，
       // 容错答即说谎）；搜索结果列表是拉取型信息，经 search 动作按需查询。
       // progress 查询（跨进程 IPC）只在此分支发生，ambient 每轮渲染不付这个成本。
-      const progress = await player.progress();
+      const snapshot = playback.snapshot();
+      const progress = await playback.progress();
       const currentPos = formatMs(progress.positionMs);
       const currentDur = formatMs(progress.durationMs);
-      const statusStr = player.status === "playing" ? "播放中" : player.status === "paused" ? "已暂停" : "空闲";
-      const coreStr = player.availability === "simulation" ? "模拟(无声)" : player.availability === "real" ? "mpv" : "不可用";
-      const songStr = state.currentSong
-        ? `当前曲目: ${state.currentSong.name} - ${state.currentSong.artists.join(", ")}\n进度: ${currentPos} / ${currentDur}`
+      const statusStr = snapshot.status === "playing" ? "播放中" : snapshot.status === "paused" ? "已暂停" : "空闲";
+      const coreStr = snapshot.availability === "simulation" ? "模拟(无声)" : snapshot.availability === "real" ? "mpv" : "不可用";
+      const songStr = snapshot.currentSong
+        ? `当前曲目: ${snapshot.currentSong.name} - ${snapshot.currentSong.artists.join(", ")}\n进度: ${currentPos} / ${currentDur}`
         : "当前曲目: 无";
       return `[jukebox]
-状态: ${statusStr} | 内核: ${coreStr} | 音量: ${player.volume}%
+状态: ${statusStr} | 内核: ${coreStr} | 音量: ${snapshot.volume}%
 ${songStr}
+${snapshot.lastError ? `错误: ${snapshot.lastError}` : ""}
 [/jukebox]`;
     },
 
@@ -134,13 +123,8 @@ ${songStr}
 
           const playUrl = await apiClient.getSongUrl(songToPlay.id);
           if (!playUrl) {
-            if (player.isSimulated) {
-              await player.load("simulated://stream", songToPlay.durationMs);
-              state = {
-                ...state,
-                status: "playing",
-                currentSong: songToPlay,
-              };
+            if (playback.isSimulated) {
+              await playback.load("simulated://stream", songToPlay);
               ctx.setTier("ambient");
               return `正在模拟播放: ${songToPlay.name} - ${songToPlay.artists.join(", ")} (⚠️ 提示: 未获取到音频流且处于模拟模式，无实际声音)`;
             }
@@ -151,15 +135,10 @@ ${songStr}
             };
           }
 
-          await player.load(playUrl, songToPlay.durationMs, songToPlay.id);
-          state = {
-            ...state,
-            status: "playing",
-            currentSong: songToPlay,
-          };
+          await playback.load(playUrl, songToPlay);
           ctx.setTier("ambient");
 
-          const simNotice = player.availability === "simulation"
+          const simNotice = playback.availability === "simulation"
             ? " (⚠️ 提示: 本地未检测到 mpv 播放器，处于静音模拟模式，无实际声音输出)"
             : "";
           return `正在播放: ${songToPlay.name} - ${songToPlay.artists.join(", ")}${simNotice}`;
@@ -170,11 +149,10 @@ ${songStr}
         description: "暂停当前播放",
         parameters: { type: "object", properties: {} },
         async run() {
-          if (player.status !== "playing") {
+          if (playback.status !== "playing") {
             return "当前未在播放";
           }
-          await player.pause();
-          state = { ...state, status: "paused" };
+          await playback.pause();
           return "已暂停播放";
         },
       },
@@ -183,11 +161,10 @@ ${songStr}
         description: "恢复播放",
         parameters: { type: "object", properties: {} },
         async run() {
-          if (player.status !== "paused") {
+          if (playback.status !== "paused") {
             return "当前未处于暂停状态";
           }
-          await player.resume();
-          state = { ...state, status: "playing" };
+          await playback.resume();
           return "已恢复播放";
         },
       },
@@ -196,8 +173,7 @@ ${songStr}
         description: "停止播放",
         parameters: { type: "object", properties: {} },
         async run(_args, ctx: ActionContext) {
-          await player.stop();
-          state = { ...state, status: "idle", currentSong: null };
+          await playback.stop();
           ctx.setTier("hidden");
           return "已停止播放";
         },
@@ -214,16 +190,15 @@ ${songStr}
         async run(args: Record<string, unknown>) {
           const raw = args.level ?? args.volume ?? args.value ?? args.percent;
           if (raw === undefined) {
-            return `当前音量: ${player.volume}%。如需调整请输入 { level: 0-100 }。`;
+            return `当前音量: ${playback.volume}%。如需调整请输入 { level: 0-100 }。`;
           }
 
           const level = typeof raw === "number" ? raw : Number(raw);
           if (isNaN(level) || level < 0 || level > 100) {
             return "参数错误：音量必须是 0 到 100 之间的数字。例如 { level: 80 }。";
           }
-          await player.setVolume(level);
-          state = { ...state, volume: player.volume };
-          return `音量已设置为 ${player.volume}%`;
+          await playback.setVolume(level);
+          return `音量已设置为 ${playback.volume}%`;
         },
       },
 
@@ -266,7 +241,8 @@ ${songStr}
         description: "查看当前播放状态、视口档位、当前曲目、播放进度和音量",
         parameters: { type: "object", properties: {} },
         async run(_args, ctx: ActionContext) {
-          const progress = await player.progress();
+          const snapshot = playback.snapshot();
+          const progress = await playback.progress();
           const currentPos = formatMs(progress.positionMs);
           const currentDur = formatMs(progress.durationMs);
           const tier = ctx.getTier();
@@ -278,14 +254,15 @@ ${songStr}
               : "expanded (面板已展开)";
 
           const lines = [
-            `状态: ${player.status === "playing" ? "▶ 播放中" : player.status === "paused" ? "⏸ 已暂停" : "⏹ 空闲"}`,
+            `状态: ${snapshot.status === "playing" ? "▶ 播放中" : snapshot.status === "paused" ? "⏸ 已暂停" : "⏹ 空闲"}`,
             `视口档位: ${tierDesc}`,
-            `播放内核: ${player.isSimulated ? "⚠️ 静音模拟器 (未找到 mpv，无声音输出)" : "🔊 MPV 硬件解码音频输出"}`,
-            `音量: ${player.volume}%`,
+            `播放内核: ${snapshot.availability === "simulation" ? "⚠️ 静音模拟器 (未找到 mpv，无声音输出)" : snapshot.availability === "real" ? "🔊 MPV 硬件解码音频输出" : "播放器不可用"}`,
+            `音量: ${snapshot.volume}%`,
           ];
-          if (state.currentSong) {
-            lines.push(`当前曲目: ${state.currentSong.name} - ${state.currentSong.artists.join(", ")}`);
-            lines.push(`专辑: ${state.currentSong.album ?? "无"}`);
+          if (snapshot.lastError) lines.push(`错误: ${snapshot.lastError}`);
+          if (snapshot.currentSong) {
+            lines.push(`当前曲目: ${snapshot.currentSong.name} - ${snapshot.currentSong.artists.join(", ")}`);
+            lines.push(`专辑: ${snapshot.currentSong.album ?? "无"}`);
             lines.push(`进度: ${currentPos} / ${currentDur}`);
           } else {
             lines.push("当前曲目: 无");

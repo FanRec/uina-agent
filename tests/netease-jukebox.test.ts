@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { join } from "node:path";
-import { SimulatedMusicPlayer } from "../.uina/apps/netease-jukebox/player.js";
+import { SimulatedMusicPlayer, parseMpvLine } from "../.uina/apps/netease-jukebox/player.js";
+import { PlaybackSession } from "../.uina/apps/netease-jukebox/playback-session.js";
 import { NeteaseApiClient } from "../.uina/apps/netease-jukebox/api-client.js";
 import { CompanionManager } from "../.uina/apps/netease-jukebox/companion.js";
 import { createJukeboxApp } from "../.uina/apps/netease-jukebox/index.js";
@@ -48,6 +49,41 @@ describe("SimulatedMusicPlayer", () => {
     expect(player.status).toBe("idle");
 
     vi.useRealTimers();
+  });
+});
+
+describe("PlaybackSession", () => {
+  it("owns the current song and clears it on natural end", async () => {
+    vi.useFakeTimers();
+    const player = new SimulatedMusicPlayer();
+    const session = new PlaybackSession(player);
+    const song = { id: "1", name: "短曲", artists: ["歌手"], durationMs: 100 };
+
+    await session.load("test://song", song);
+    expect(session.snapshot().currentSong).toEqual(song);
+    vi.advanceTimersByTime(100);
+    expect(session.status).toBe("idle");
+    expect(session.snapshot().currentSong).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it("serializes replacement commands", async () => {
+    const player = new SimulatedMusicPlayer();
+    const session = new PlaybackSession(player);
+    const first = { id: "1", name: "一", artists: [], durationMs: null };
+    const second = { id: "2", name: "二", artists: [], durationMs: null };
+
+    await Promise.all([session.load("test://one", first), session.load("test://two", second)]);
+    expect(session.snapshot().currentSong).toEqual(second);
+    await session.stop();
+    expect(session.snapshot().currentSong).toBeNull();
+  });
+});
+
+describe("Mpv IPC protocol seam", () => {
+  it("parses valid messages and rejects malformed lines", () => {
+    expect(parseMpvLine('{"event":"end-file","reason":"eof"}')).toEqual({ event: "end-file", reason: "eof" });
+    expect(parseMpvLine("not-json")).toBeNull();
   });
 });
 
