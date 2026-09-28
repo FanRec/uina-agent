@@ -944,6 +944,139 @@ describe("UI Components & Visual Rendering", () => {
 		expect(stripped).not.toContain("…");
 	});
 
+	it("MarkdownTable: 响应式视口自适应、短列优先保全与大峡谷防御", async () => {
+		const { parseMarkdownTable, formatMarkdownTableLines, solveColumnWidths } = await import(
+			"../src/ui/components/primitives/markdown-table.js"
+		);
+
+		const rawTable = [
+			"| ID | 状态 | 详细描述 |",
+			"| --- | --- | --- |",
+			"| 1 | 运行中 | 正在执行长时间异步分析任务并持续监听输出队列 |",
+			"| 2 | 已完成 | 任务执行完毕 |",
+		];
+		const parsed = parseMarkdownTable(rawTable)!;
+
+		// 1. 宽屏舒适态（120 列）：长文本列得到充分舒展，短列（ID、状态）保持紧凑自然宽
+		const wideLines = formatMarkdownTableLines(parsed, 120);
+		for (const line of wideLines) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(120);
+		}
+		// 宽屏下总宽度不会无脑填充到 120 列（大峡谷防御）：自然展开的总宽约为 57 列
+		expect(visibleWidth(wideLines[0]!)).toBeLessThan(80);
+
+		// 2. 窄屏受限态（50 列）：短列（ID、状态）完整保留不折行，长描述列在剩余预算内弹性软换行
+		const narrowLines = formatMarkdownTableLines(parsed, 50);
+		for (const line of narrowLines) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(50);
+		}
+		const narrowStripped = narrowLines.map(stripAnsi).join("\n");
+		expect(narrowStripped).toContain("运行中");
+		expect(narrowStripped).toContain("已完成");
+
+		// 3. 算法纯函数测试：solveColumnWidths 数学求和严格等于预算 35，短列完美单行保全
+		const widths = solveColumnWidths(parsed.headers, parsed.rows, 35);
+		const sumWidths = widths.reduce((a, b) => a + b, 0);
+		expect(sumWidths).toBe(35);
+		// 短列完全按自然宽保全（ID=2, 状态=6），绝无冗余拉扯，剩余 27 列全额赋给详细描述
+		expect(widths[0]).toBe(2);
+		expect(widths[1]).toBe(6);
+		expect(widths[2]).toBe(27);
+
+		// 4. 超窄屏幕（20 列）：列数过多时平滑降级为垂直条目模式，绝对 <= 20 列
+		const extremeNarrow = formatMarkdownTableLines(parsed, 20);
+		expect(extremeNarrow.length).toBeGreaterThan(0);
+		for (const line of extremeNarrow) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(20);
+		}
+		expect(extremeNarrow.some((l) => l.includes("表格条目 #1"))).toBe(true);
+	});
+
+	it("MarkdownTable: 4列受限水位线分配与降级超长表头分行防御", async () => {
+		const { parseMarkdownTable, formatMarkdownTableLines, solveColumnWidths } = await import(
+			"../src/ui/components/primitives/markdown-table.js"
+		);
+
+		// 1. 4 列全长文本表格在极限受限预算下（budget = 16，4 列平均每列仅 4 格）
+		const rawHeaders = ["模块A", "任务详情B", "状态指标C", "结果记录D"];
+		const rawRows = [
+			["非常长的模块名字A", "这是一个很长的任务详情内容B", "正在运行中且耗时很长C", "最终输出结果很长D"],
+		];
+		const widths = solveColumnWidths(rawHeaders, rawRows, 16);
+		// 数学证明：求和必须严格等于 16，绝对不突破预算
+		expect(widths.reduce((a, b) => a + b, 0)).toBe(16);
+		// 每一列均分 4 格，无负数，无 0
+		for (const w of widths) expect(w).toBe(4);
+
+		// 2. 超长表头在降级条目下的响应式换行（终端仅 14 列，平均预算不足进入降级）
+		const longHeaderTable = [
+			"| 极长表头字段名称描述 | 简单值 |",
+			"| --- | --- |",
+			"| 核心架构逻辑实现 | 通过 |",
+		];
+		const parsedLong = parseMarkdownTable(longHeaderTable)!;
+		const fallbackLines = formatMarkdownTableLines(parsedLong, 14);
+		expect(fallbackLines.length).toBeGreaterThan(0);
+		// 每一行必须严格 <= 14 列（绝对零溢出、零破损）
+		for (const line of fallbackLines) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(14);
+		}
+		// 包含降级条目标记与表头内容
+		expect(fallbackLines.some((l) => l.includes("[#1]"))).toBe(true);
+		expect(fallbackLines.some((l) => l.includes("通过"))).toBe(true);
+	});
+
+	it("MarkdownTable: 转义竖线保护、极小预算水位线守恒、<br>与行内高亮", async () => {
+		const { parseMarkdownTable, formatMarkdownTableLines, solveColumnWidths, splitMarkdownCells } = await import(
+			"../src/ui/components/primitives/markdown-table.js"
+		);
+
+		// 1. 转义竖线 \| 与代码块 `a | b` 不被误炸开
+		const cells = splitMarkdownCells("| 命令 | `cat | grep` | 管道 \\| 或操作 |");
+		expect(cells).toEqual(["命令", "`cat | grep`", "管道 | 或操作"]);
+
+		const escapedTable = [
+			"| 规则 | 表达式 | 说明 |",
+			"| --- | --- | --- |",
+			"| 逻辑或 | A \\| B | 或运算 |",
+			"| 管道 | `echo 1 | cat` | 代码管道 |",
+		];
+		const parsedEscaped = parseMarkdownTable(escapedTable);
+		expect(parsedEscaped).not.toBeNull();
+		expect(parsedEscaped!.rows.length).toBe(2);
+		expect(parsedEscaped!.rows[0]).toEqual(["逻辑或", "A | B", "或运算"]);
+		expect(parsedEscaped!.rows[1]).toEqual(["管道", "`echo 1 | cat`", "代码管道"]);
+
+		// 2. 极端小预算下的水位线分配数学守恒（绝对无负数，sum 严格 <= budget）
+		// 3 列表格，各列自然需求较大，但预算仅给 5
+		const smallBudgetWidths = solveColumnWidths(["A", "B", "C"], [["long text 1", "long text 2", "long text 3"]], 5);
+		expect(smallBudgetWidths.reduce((a, b) => a + b, 0)).toBe(5);
+		for (const w of smallBudgetWidths) {
+			expect(w).toBeGreaterThan(0);
+		}
+
+		// 预算小于列数（3 列表格，预算给 2）
+		const tinyBudgetWidths = solveColumnWidths(["A", "B", "C"], [["foo", "bar", "baz"]], 2);
+		expect(tinyBudgetWidths.reduce((a, b) => a + b, 0)).toBe(2);
+		for (const w of tinyBudgetWidths) {
+			expect(w).toBeGreaterThanOrEqual(0);
+		}
+
+		// 3. 支持 <br> 显式换行与行内 Markdown 高亮
+		const richTable = [
+			"| 特性 | 说明 |",
+			"| --- | --- |",
+			"| **核心** | 第一行<br>第二行 |",
+		];
+		const parsedRich = parseMarkdownTable(richTable)!;
+		const richLines = formatMarkdownTableLines(parsedRich, 60);
+		const richStripped = richLines.map(stripAnsi).join("\n");
+		expect(richStripped).toContain("第一行");
+		expect(richStripped).toContain("第二行");
+		// 原始 ANSI 行中包含高亮转义码
+		expect(richLines.some((l) => l.includes("\x1b["))).toBe(true);
+	});
+
 	it("SuggestionCard 格式化渲染与像素级对齐", async () => {
 		const { formatSuggestionCardLines } = await import("../src/ui/components/editor/suggestions.js");
 

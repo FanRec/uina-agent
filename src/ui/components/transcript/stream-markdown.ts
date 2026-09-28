@@ -4,11 +4,13 @@
  * 1. 代码块升级为全封闭容器盒（┌─ 语言 ─┐、│ 代码 │、└────┘），与工具卡片风格像素级统一；
  * 2. 彻底消灭生硬的 "# " 字符，替换为优雅的实心几何标记（■ / ● / ▸）；
  * 3. 引用块（> ）升级为深蓝实体侧栏（▎ ）与暗淡字体；
- * 4. 粗体、行内代码与列表精细配色。
+ * 4. 粗体、行内代码与列表精细配色；
+ * 5. 表格状态机连续缓冲与响应式网格渲染。
  */
 
 import { C, visibleWidth, getContentBoxWidth, wrapTextWithAnsi } from "../../core/utils.js";
 import { highlightCode } from "../primitives/syntax-text.js";
+import { formatInlineMarkdown } from "../primitives/inline-markdown.js";
 import {
 	isMarkdownTableLine,
 	parseMarkdownTable,
@@ -31,7 +33,7 @@ export class StreamMarkdownFormatter {
 	}
 
 	/**
-	 * 格式化单行 Markdown 文本
+	 * 格式化单行非表格 Markdown 文本
 	 */
 	formatLine(rawLine: string): string {
 		const cleanRaw = rawLine.replace(/\r$/, "");
@@ -78,20 +80,20 @@ export class StreamMarkdownFormatter {
 		// 4. 引用块 (> )：对标 dsh-TUI ▎ 侧栏
 		if (trimmed.startsWith("> ")) {
 			const text = trimmed.slice(2);
-			return `${C.suggestion}▎${C.reset} ${C.inactive}${C.italic}${this.formatInline(text)}${C.reset}`;
+			return `${C.suggestion}▎${C.reset} ${C.inactive}${C.italic}${formatInlineMarkdown(text)}${C.reset}`;
 		}
 
 		// 5. 无序列表 (- / * )：零边距左对齐，• 采用 suggestion 冰蓝
 		if (/^[-*]\s/.test(trimmed)) {
 			const text = trimmed.slice(2);
-			return `${C.suggestion}•${C.reset} ${this.formatInline(text)}`;
+			return `${C.suggestion}•${C.reset} ${formatInlineMarkdown(text)}`;
 		}
 
 		// 6. 有序列表 (1. / 2. )
 		if (/^\d+\.\s/.test(trimmed)) {
 			const match = trimmed.match(/^(\d+\.)\s+(.*)$/);
 			if (match) {
-				return `${C.claude}${match[1]}${C.reset} ${this.formatInline(match[2]!)}`;
+				return `${C.claude}${match[1]}${C.reset} ${formatInlineMarkdown(match[2]!)}`;
 			}
 		}
 
@@ -102,25 +104,7 @@ export class StreamMarkdownFormatter {
 		}
 
 		// 普通行应用行内格式化
-		return this.formatInline(rawLine);
-	}
-
-	/**
-	 * 行内元素染色：粗体、行内代码、下划线
-	 */
-	private formatInline(text: string): string {
-		let out = text;
-
-		// 行内代码 `code` -> 青色高亮
-		out = out.replace(/`([^`]+)`/g, `${C.cyan}$1${C.reset}`);
-
-		// 粗体 **bold** -> 纯白加粗
-		out = out.replace(/\*\*([^*]+)\*\*/g, `${C.bold}${C.white}$1${C.reset}`);
-
-		// 链接格式简化 [title](url) -> 蓝色下划线
-		out = out.replace(/\[([^\]]+)\]\(([^)]+)\)/g, `${C.blue}${C.underline}$1${C.reset} ${C.gray}($2)${C.reset}`);
-
-		return out;
+		return formatInlineMarkdown(rawLine);
 	}
 
 	/**
@@ -130,7 +114,13 @@ export class StreamMarkdownFormatter {
 		if (this.tableBuffer.length < 2) {
 			const raw = [...this.tableBuffer];
 			this.tableBuffer = [];
-			return raw.map((l) => this.formatLine(l));
+			const out: string[] = [];
+			for (const l of raw) {
+				const formatted = this.formatLine(l);
+				if (formatted.includes("\n")) out.push(...formatted.split("\n"));
+				else out.push(formatted);
+			}
+			return out;
 		}
 		const parsed = parseMarkdownTable(this.tableBuffer);
 		const raw = [...this.tableBuffer];
@@ -138,7 +128,38 @@ export class StreamMarkdownFormatter {
 		if (parsed) {
 			return formatMarkdownTableLines(parsed, this.width);
 		}
-		return raw.map((l) => this.formatLine(l));
+		const out: string[] = [];
+		for (const l of raw) {
+			const formatted = this.formatLine(l);
+			if (formatted.includes("\n")) out.push(...formatted.split("\n"));
+			else out.push(formatted);
+		}
+		return out;
+	}
+
+	/**
+	 * 摄入单行文本（支持表格连续缓冲与自动冲刷），返回就绪的一维物理终端行列表
+	 */
+	feedLine(rawLine: string): string[] {
+		const line = rawLine.replace(/\r$/, "");
+		const ready: string[] = [];
+
+		if (isMarkdownTableLine(line)) {
+			this.tableBuffer.push(line);
+			return ready;
+		}
+
+		if (this.tableBuffer.length > 0) {
+			ready.push(...this.flushTableBuffer());
+		}
+
+		const formatted = this.formatLine(line);
+		if (formatted.includes("\n")) {
+			ready.push(...formatted.split("\n"));
+		} else {
+			ready.push(formatted);
+		}
+		return ready;
 	}
 
 	/**
@@ -150,17 +171,9 @@ export class StreamMarkdownFormatter {
 
 		while (this.lineBuffer.includes("\n")) {
 			const idx = this.lineBuffer.indexOf("\n");
-			const line = this.lineBuffer.slice(0, idx).replace(/\r$/, "");
+			const line = this.lineBuffer.slice(0, idx);
 			this.lineBuffer = this.lineBuffer.slice(idx + 1);
-
-			if (isMarkdownTableLine(line)) {
-				this.tableBuffer.push(line);
-			} else {
-				if (this.tableBuffer.length > 0) {
-					readyLines.push(...this.flushTableBuffer());
-				}
-				readyLines.push(this.formatLine(line));
-			}
+			readyLines.push(...this.feedLine(line));
 		}
 
 		return readyLines;
@@ -179,7 +192,12 @@ export class StreamMarkdownFormatter {
 				this.tableBuffer.push(this.lineBuffer);
 				res.push(...this.flushTableBuffer());
 			} else {
-				res.push(this.formatLine(this.lineBuffer));
+				const formatted = this.formatLine(this.lineBuffer);
+				if (formatted.includes("\n")) {
+					res.push(...formatted.split("\n"));
+				} else {
+					res.push(formatted);
+				}
 			}
 			this.lineBuffer = "";
 		}
@@ -196,51 +214,17 @@ export class StreamMarkdownFormatter {
 }
 
 /**
- * 全量格式化 Markdown 文本为终端渲染行
+ * 全量格式化 Markdown 文本为终端渲染行（纯粹委托模式，高复用且零双重缓冲）
  */
 export function formatFullMarkdown(text: string, width = 80): string[] {
 	if (!text) return [];
 	const formatter = new StreamMarkdownFormatter(width);
 	const rawLines = text.split("\n");
 	const res: string[] = [];
-	let tableLines: string[] = [];
-
-	const flushTable = () => {
-		if (tableLines.length >= 2) {
-			const parsed = parseMarkdownTable(tableLines);
-			if (parsed) {
-				res.push(...formatMarkdownTableLines(parsed, width));
-				tableLines = [];
-				return;
-			}
-		}
-		for (const l of tableLines) {
-			res.push(...formatter.formatLine(l).split("\n"));
-		}
-		tableLines = [];
-	};
 
 	for (const line of rawLines) {
-		if (isMarkdownTableLine(line)) {
-			tableLines.push(line);
-			continue;
-		}
-		if (tableLines.length > 0) {
-			flushTable();
-		}
-		// 本函数的契约是"一行一条目"。代码块行在 formatLine 内会折行并 join("\n")，
-		// 这里必须再展开，否则内嵌换行会作为单行进入下游行模型。
-		res.push(...formatter.formatLine(line).split("\n"));
+		res.push(...formatter.feedLine(line));
 	}
-
-	if (tableLines.length > 0) {
-		flushTable();
-	}
-
-	const flushed = formatter.flush();
-	if (flushed.length > 0) {
-		res.push(...flushed);
-	}
+	res.push(...formatter.flush());
 	return res;
 }
-
