@@ -75,7 +75,6 @@ export class MouseSelectionTracker {
 	private focus: Point | null = null;
 	private isDragging = false;
 	private mouseDownPos: Point | null = null;
-	private mouseDownTime = 0;
 
 	private targets: InteractiveTarget[] = [];
 	private currentHoverTargetId: string | null = null;
@@ -193,7 +192,6 @@ export class MouseSelectionTracker {
 		// 2. 左键按下（btn 0, action 'M'）
 		if (btn === 0 && action === "M") {
 			this.mouseDownPos = { col, row };
-			this.mouseDownTime = Date.now();
 			// 查找落点落在哪个合法划选区域内（转录区或输入框内容行）
 			const matched = this.regions.find(
 				(r) => row >= r.startRow && row <= r.endRow && col >= r.colStart && col <= r.colEnd,
@@ -262,7 +260,6 @@ export class MouseSelectionTracker {
 				startPos &&
 				Math.abs(startPos.col - col) <= 1 &&
 				Math.abs(startPos.row - row) === 0 &&
-				Date.now() - this.mouseDownTime < 350 &&
 				!this.hasSelection();
 
 			const contentRow = this.activeRegion?.id === "transcript"

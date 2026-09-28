@@ -847,7 +847,8 @@ export class ModelRegistry {
 			try {
 				this.discovered.set(id, [...await provider.refreshModels()]);
 			} catch (error) {
-				failures.push(`${id}: ${errorMessage(error)}`);
+				const msg = errorMessage(error);
+				failures.push(msg.includes(id) ? msg : `${id}: ${msg}`);
 			}
 		}
 		if (failures.length === 0) return;
@@ -855,6 +856,6 @@ export class ModelRegistry {
 		// 会让一次单点网络故障看起来像全盘失败。仍以抛错上报（调用方唯一的事实通道），
 		// 但必须说清 N/M 与具体未更新的是谁。
 		const updated = attempted - failures.length;
-		throw new Error(`模型目录刷新：${updated}/${attempted} 家已更新；未更新 ${failures.join("；")}`);
+		throw new Error(`${updated}/${attempted} 家已更新；未更新: ${failures.join("；")}`);
 	}
 }

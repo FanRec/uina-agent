@@ -23,6 +23,7 @@ import {
 	alignSplitDiff,
 	formatSplitDiffCardLines,
 	formatDiffCardLines,
+	formatErrorCardLines,
 	formatToolCardLines,
 	getToolCategory,
 	getToolCategoryColor,
@@ -3871,5 +3872,166 @@ describe("Transcript: 助手文本分段渲染与全文一次成型逐行等价"
 		transcript.finishTurn();
 		const rendered = transcript.render(80);
 		expect(rendered.filter((l) => l.includes("●") && l.includes("回答")).length).toBe(2);
+	});
+
+	it("InputLine: 词级移动 (Ctrl/Alt+Left/Right) 与词级删除 (Ctrl+W)", async () => {
+		const { InputLine } = await import("../src/ui/components/editor/input-line.js");
+		const input = new InputLine();
+		input.setText("hello world foo_bar");
+		expect(input.getCursorIndex()).toBe(19);
+
+		// Ctrl+Left (向左跳过 foo_bar)
+		input.handleInput("\x1b[1;5D");
+		expect(input.getCursorIndex()).toBe(12);
+
+		// Ctrl+Left (向左跳过 world)
+		input.handleInput("\x1b[1;5D");
+		expect(input.getCursorIndex()).toBe(6);
+
+		// Ctrl+Right (向右跳到 world 末尾)
+		input.handleInput("\x1b[1;5C");
+		expect(input.getCursorIndex()).toBe(11);
+
+		// 光标移到最后，测试 Ctrl+W 词级删除
+		input.setText("git commit -m");
+		input.handleInput("\x17"); // Ctrl+W 删除 -m
+		expect(input.getText()).toBe("git commit ");
+
+		input.handleInput("\x17"); // Ctrl+W 删除 commit
+		expect(input.getText()).toBe("git ");
+	});
+
+	it("InputLine: 全选状态下按 Left/Right 正确解脱全选并归位首尾", async () => {
+		const { InputLine } = await import("../src/ui/components/editor/input-line.js");
+		const input = new InputLine();
+		input.setText("hello world");
+		input.handleInput("\x01"); // Ctrl+A
+		expect(input.hasSelection()).toBe(true);
+
+		input.handleInput("\x1b[D"); // Left
+		expect(input.hasSelection()).toBe(false);
+		expect(input.getCursorIndex()).toBe(0);
+
+		input.handleInput("\x01"); // Ctrl+A
+		input.handleInput("\x1b[C"); // Right
+		expect(input.hasSelection()).toBe(false);
+		expect(input.getCursorIndex()).toBe(11);
+	});
+
+	it("UIHost: 模态面板支持通过自身绑定的快捷键 Toggle 关闭，同时不破坏浮层对其他按键的捕获契约", () => {
+		const registry = new ExtensionRegistry();
+		let commandCalls = 0;
+		registry.registerCommand({
+			name: "tasks-test",
+			description: "test tasks panel",
+			keybinding: "alt+j",
+			handler: () => {
+				commandCalls++;
+				harness.tui.host.showPanel("tasks-test", (close) => ({
+					render: () => ["tasks content"],
+					handleInput: () => {},
+					onClose: close,
+				}));
+			},
+		} as any);
+
+		const harness = createTestTUI({ registry });
+		try {
+			// 1. 初次按 Alt+J：打开面板
+			harness.host.handleInput("\x1bj");
+			expect(commandCalls).toBe(1);
+			expect(harness.tui.host.overlayStack.hasVisible).toBe(true);
+
+			// 2. 再次按 Alt+J：同键 Toggle 关闭面板
+			harness.host.handleInput("\x1bj");
+			expect(harness.tui.host.overlayStack.hasVisible).toBe(false);
+
+			// 3. 输入框有草稿时，打开面板后按 Ctrl+C：关闭面板，且不误删输入框草稿
+			harness.host.inputLine.setText("保留这段重要草稿");
+			harness.host.handleInput("\x1bj");
+			expect(harness.tui.host.overlayStack.hasVisible).toBe(true);
+
+			harness.host.handleInput("\x03");
+			expect(harness.tui.host.overlayStack.hasVisible).toBe(false);
+			expect(harness.host.inputLine.getText()).toBe("保留这段重要草稿");
+
+			// 4. 面板已关闭状态下，再次在输入框按 Ctrl+C：清空草稿
+			harness.host.handleInput("\x03");
+			expect(harness.host.inputLine.getText()).toBe("");
+		} finally {
+			harness.dispose();
+		}
+	});
+	it("formatErrorCardLines: 模型目录刷新告警卡片格式化（去重叠前缀、提炼徽标、友好注解、安全折行）", () => {
+		const raw = "[模型目录刷新] 模型目录刷新: 5/6 家已更新; 未更新 vanyo-gpt: 模型目录请求失败 HTTP 403";
+		const lines = formatErrorCardLines(raw, 80);
+		expect(lines.length).toBeGreaterThan(0);
+		const fullText = lines.join("\n");
+		// 1. 去除套娃前缀，仅保留提炼后的模块徽标 [模型目录]
+		expect(fullText).toContain("[模型目录]");
+		expect(fullText).not.toContain("[模型目录刷新] 模型目录刷新");
+		// 2. 摘要与明细分层
+		expect(fullText).toContain("5/6 家已更新");
+		expect(fullText).toContain("vanyo-gpt: 模型目录请求失败 HTTP 403");
+		// 3. 增强友好注解
+		expect(fullText).toContain("访问受限");
+		// 4. 部分成功识别为警告黄色
+		expect(lines[0]).toContain("⚠");
+		// 5. 末行留白
+		expect(lines[lines.length - 1]).toBe("");
+	});
+
+	it("formatErrorCardLines: 致命错误粉红标示与超窄宽度安全折行", () => {
+		const raw = "[命令错误] 未知参数: --experimental-flag-with-a-very-long-argument-string-exceeding-normal-width";
+		const lines = formatErrorCardLines(raw, 40);
+		expect(lines.length).toBeGreaterThan(1);
+		// 1. 致命错误标示为 ✗
+		expect(lines[0]).toContain("✗");
+		expect(lines[0]).toContain("[命令]");
+		// 2. 宽度严格自适应，没有单行超过 40 列
+		for (const line of lines) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+		}
+	});
+
+	it("formatErrorCardLines: 全盘失败 0/N 诚实标示为 error 而非降级 warning", () => {
+		const raw = "[模型目录] 0/6 家已更新；未更新: 全部 Provider 均不可达";
+		const lines = formatErrorCardLines(raw, 80);
+		expect(lines[0]).toContain("✗");
+		expect(lines[0]).not.toContain("⚠");
+		expect(lines.join("\n")).toContain("0/6 家已更新");
+	});
+
+	it("formatErrorCardLines: 极端超窄终端（25 列）绝对不超宽与自动换行防护", () => {
+		const raw = "[非常长的插件模块名称] 启动严重失败: 初始化依赖组件失败并在超长参数下尝试恢复";
+		const lines = formatErrorCardLines(raw, 25);
+		expect(lines.length).toBeGreaterThan(2);
+		// 每一行必须严格 <= 25 列（绝对杜绝 pending-wrap 与帧破坏）
+		for (const line of lines) {
+			expect(visibleWidth(line)).toBeLessThanOrEqual(25);
+		}
+	});
+
+	it("formatErrorCardLines: 堆栈调用行平滑缩进排版（无圆点 bullet 噪点）", () => {
+		const raw = "[系统异常] 发生未捕获异常\n  at Object.run (file.ts:1:2)\n  at process.tick (core.ts:3:4)";
+		const lines = formatErrorCardLines(raw, 80);
+		const full = lines.join("\n");
+		expect(full).toContain("at Object.run");
+		expect(full).toContain("at process.tick");
+		// 堆栈行前缀不应出现 bullet 圆点
+		const stackLines = lines.filter((l) => l.includes("at Object.run") || l.includes("at process.tick"));
+		for (const sl of stackLines) {
+			expect(sl).not.toContain("•");
+		}
+	});
+
+	it("TranscriptContainer: addError 接入结构化卡片渲染并在转录区展示", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addError("[扩展系统] 插件加载失败: 缺少依赖模块 lodash");
+		const blocks = transcript.render(80);
+		const rendered = blocks.join("\n");
+		expect(rendered).toContain("[扩展系统]");
+		expect(rendered).toContain("插件加载失败: 缺少依赖模块 lodash");
+		expect(rendered).toContain("✗");
 	});
 });

@@ -23,6 +23,11 @@ export const Key = {
 	pagedown: "pagedown",
 	altUp: "alt+up",
 	altDown: "alt+down",
+	ctrlLeft: "ctrl+left",
+	ctrlRight: "ctrl+right",
+	altLeft: "alt+left",
+	altRight: "alt+right",
+	altBackspace: "alt+backspace",
 	ctrl: (c: string) => `ctrl+${c.toLowerCase()}`,
 	alt: (c: string) => `alt+${c.toLowerCase()}`,
 	shift: (c: string) => `shift+${c.toLowerCase()}`,
@@ -150,10 +155,16 @@ export function matchesKey(data: string, keyId: string): boolean {
 			return data === "\x0f";
 		case "ctrl+u":
 			return data === "\x15";
+		case "ctrl+w":
+			return data === "\x17";
 		case "ctrl+left":
-			return data === "\x1b[1;5D" || data === "\x1b\x1b[D";
+			return data === "\x1b[1;5D" || data === "\x1b\x1b[D" || data === "\x1b[1;3D" || data === "\x1bb";
 		case "ctrl+right":
-			return data === "\x1b[1;5C" || data === "\x1b\x1b[C";
+			return data === "\x1b[1;5C" || data === "\x1b\x1b[C" || data === "\x1b[1;3C" || data === "\x1bf";
+		case "alt+left":
+			return data === "\x1b[1;3D" || data === "\x1bb" || data === "\x1b[1;5D";
+		case "alt+right":
+			return data === "\x1b[1;3C" || data === "\x1bf" || data === "\x1b[1;5C";
 		case "alt+backspace":
 			return data === "\x1b\x7f" || data === "\x1b\x08";
 		case "alt+o":

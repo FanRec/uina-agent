@@ -87,6 +87,8 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		process.stdout.write(`${text}\n`);
 	};
 
+	const earlyEvents: HostEvent[] = [];
+
 	const render = (message: HostEvent): void => {
 		if (message.type === "error") hadError = true;
 		if (message.type === "turn_end" || message.type === "turn_aborted") cancellationPending = false;
@@ -97,8 +99,12 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				tui.host.setReasoningEffort(snapshot.thinkingLevel);
 			}
 			tui.render(message);
+		} else if (shouldRunTUI) {
+			// 在 TUI 实例化与会话加载前到达的事件（如早期模型目录刷新、启动告警）暂存，避免被 stdio 污染后又被 alternate screen 抹除
+			earlyEvents.push(message);
+		} else {
+			renderStdio(message);
 		}
-		else renderStdio(message);
 	};
 
 	// —— 宿主：唯一的主体所有者。它不认识 TUI。 ——
@@ -141,36 +147,65 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	let interruptSeq = 0;
 	let cancellationPending = false;
 
-	const shutdown = async (cancelCurrent = true, force = false): Promise<void> => {
-		if (shuttingDown) return;
-		shuttingDown = true;
-		if (force) {
-			uninstallHostGuards();
-			tui?.close();
-			nonTTY?.close();
-			process.exit(0);
-		}
+	/** 释放所有宿主资源（存储刷新、扩展销毁、锁释放、信号守护注销） */
+	const cleanupResources = async (): Promise<void> => {
 		unsubscribe();
-		if (cancelCurrent && host.isBusy()) host.interrupt();
+		if (host.isBusy()) host.interrupt();
 		if (execRunning) execAbort?.abort();
-		// 主体自己负责等待活动结束、释放扩展、杀掉工具留下的分离子进程、关闭会话。
 		await host.dispose();
 		await execTail;
-		// 主体 profile 锁在全部写入结算后释放（ownerToken 核对，不碰他人锁）。
 		if (profile) await releaseProfileLock(profile).catch(() => {});
-		tui?.close();
-		nonTTY?.close();
 		uninstallHostGuards();
-		process.exitCode = resolveExitCode(isPrintMode, oneshot !== undefined, hadError);
+	};
+
+	/**
+	 * 统一交互退出协调器（第一性原则与奥卡姆剃刀）：
+	 * 1. 0ms 终端复原：进入退出即刻释放 TUI / Raw Mode，绝不让用户对着假死界面；
+	 * 2. 连击强退：退出中再次触发任何退出操作，立即 process.exit(0)；
+	 * 3. 异步解耦：通过 setImmediate 脱离微任务调用栈，彻底根除自等待死锁；
+	 * 4. 熔断竞争：给予底层资源清理 600ms 窗口，配合 800ms 不可取消硬熔断，保证必能退出。
+	 */
+	const executeExit = (force = false): void => {
+		uninstallHostGuards();
+		try { tui?.close(); } catch {}
+		try { nonTTY?.close(); } catch {}
+
+		if (shuttingDown || force) {
+			process.exit(0);
+		}
+		shuttingDown = true;
+
+		// 异步脱离当前事件处理栈（破除 ExtensionRunner.dispose 正在等待当前命令返回的死锁）
+		setImmediate(async () => {
+			const exitCode = resolveExitCode(isPrintMode, oneshot !== undefined, hadError);
+
+			// 800ms 强制超时熔断（不可 unref，硬保证进程绝不卡死挂起）
+			const hardDeadline = setTimeout(() => {
+				process.exit(exitCode);
+			}, 800);
+
+			try {
+				await Promise.race([
+					cleanupResources(),
+					new Promise((resolve) => setTimeout(resolve, 600)),
+				]);
+			} catch {
+				hadError = true;
+			} finally {
+				clearTimeout(hardDeadline);
+				process.exit(resolveExitCode(isPrintMode, oneshot !== undefined, hadError));
+			}
+		});
 	};
 
 	const restoreQueueToEditor = async (): Promise<number> => {
 		if (!tui) return 0;
-  if (!canEditQueuedDraft(host.snapshot().queue)) { tui.host.notify('队列包含图片或扩展事件，已保留；可按 Esc 继续处理', 'info'); return 0; }
+		if (!canEditQueuedDraft(host.snapshot().queue)) {
+			tui.host.notify("队列包含图片或扩展事件，已保留；可按 Esc 继续处理", "info");
+			return 0;
+		}
 		const result = await host.claimAllQueued();
 		if (result.kind === "partial") {
-			// journal 无批事务：已持久化的条目 ownership 在 caller 手里，照常退回输入栏；
-			// 未持久化的条目仍在队列中，持久化故障必须可见。
 			tui.host.notify(`队列恢复中断：条目持久化失败（${errorMessage(result.error)}），其余排队消息已保留在队列中`, "warning");
 		}
 		const items = result.claimed;
@@ -183,9 +218,10 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 
 	const handleCancel = (source: "escape" | "ctrl+c" = "escape"): void => {
 		if (source === "ctrl+c") {
+			// 工作态：第 1 次打断本轮；若已经在取消流程中再次按 Ctrl+C，则直接强制退出
 			if (host.isBusy()) {
 				if (cancellationPending) {
-					handleExit(true);
+					executeExit(true);
 					return;
 				}
 				cancellationPending = true;
@@ -197,10 +233,23 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				host.interrupt();
 				return;
 			}
-			if (!execRunning) handleExit(false);
-			else execAbort?.abort();
+			if (execRunning) {
+				execAbort?.abort();
+				return;
+			}
+			// 空闲态：防抖 2 秒内再次按下触发退出
+			if (cancellationPending) {
+				executeExit(false);
+				return;
+			}
+			cancellationPending = true;
+			tui?.host.notify("再按一次 Ctrl+C 退出程序", "info", 2000);
+			setTimeout(() => {
+				cancellationPending = false;
+			}, 2000).unref?.();
 			return;
 		}
+
 		if (host.isBusy()) {
 			const queued = host.snapshot().queue;
 			if (queued.length > 0) {
@@ -212,21 +261,16 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		if (execRunning) execAbort?.abort();
 	};
 
-	const handleExit = (force = false): void => {
-		void shutdown(false, force);
-	};
-
 	const handleInterrupt = (force = false): void => {
 		if (force) {
-			handleExit(true);
+			executeExit(true);
 			return;
 		}
-		// Host/Subject 是唯一活动事实源；UI busy 只服务动画与展示，不能决定退出。
 		if (host.isBusy()) {
 			handleCancel("ctrl+c");
 			return;
 		}
-		handleExit(false);
+		executeExit(false);
 	};
 
 	/**
@@ -242,7 +286,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		if (process.platform !== "win32") signals.push("SIGHUP");
 		for (const signal of signals) {
 			const handler = (): void => {
-				void shutdown(true).finally(() => process.exit(signal === "SIGHUP" ? 129 : 143));
+				executeExit(true);
 			};
 			process.prependListener(signal, handler);
 			hostGuardCleanups.push(() => process.off(signal, handler));
@@ -388,13 +432,16 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				tui.loadSession(host.restoredEntries, decorations);
 			}
 			tui.setPendingQueue(snapshot.queue);
+			for (const event of earlyEvents.splice(0)) {
+				render(event);
+			}
 			return;
 		}
 		if (isPrintMode) return;
 		nonTTY = createInterface({ input: process.stdin });
 		nonTTY.on("line", (line) => onUserLine(line, "followUp"));
 		nonTTY.on("close", () => {
-			void shutdown(false);
+			executeExit(false);
 		});
 	};
 	attachConsumer();
@@ -404,7 +451,10 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	// 官方命令已并入 pi 面：TUI 的富 UI 能力经 ctxUI（attachExtensionUI）到达 pi.ui，
 	// 不再需要 BuiltinUI 桥接对象。
 	await host.start({
-		requestShutdown: () => shutdown(),
+		requestShutdown: () => {
+			executeExit(false);
+			return Promise.resolve();
+		},
 	});
 
 	const runPrintPhase = async (): Promise<void> => {
@@ -415,7 +465,8 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			});
 			await host.waitForIdle();
 		}
-		await shutdown(false);
+		await cleanupResources();
+		process.exitCode = resolveExitCode(isPrintMode, oneshot !== undefined, hadError);
 	};
 	const submitInitialPromptInteractive = (prompt: string): void => {
 		// 交互模式下带有初始 prompt：自动提交首条任务，执行后停留在 TUI
@@ -430,3 +481,5 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		submitInitialPromptInteractive(initialPrompt);
 	}
 }
+
+

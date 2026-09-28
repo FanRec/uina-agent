@@ -325,6 +325,11 @@ export class UIHost implements UIHostContextPort {
 		return true;
 	}
 
+	private isMatchingModalKeybinding(modalId: string, data: string): boolean {
+		const command = this.registry.getCommand(modalId);
+		return Boolean(command?.keybinding && matchesKey(data, command.keybinding));
+	}
+
 	setPendingQueue(items: readonly QueuedMessage[]): void {
 		this.pendingQueue.setItems(items);
 		this.requestRender();
@@ -973,7 +978,7 @@ export class UIHost implements UIHostContextPort {
 				type: this.activeSuggestions.type,
 				title: this.activeSuggestions.type === "command" ? "命令" : "文件",
 				query: this.activeSuggestions.query,
-				columns: innerW,
+				columns: inputWidth,
 				selectedIndex: this.activeSuggestions.selectedIndex,
 				items: this.activeSuggestions.items,
 				maxVisible: 5,
@@ -1041,7 +1046,7 @@ export class UIHost implements UIHostContextPort {
 		const {
 			width, height, inputWidth, inputLines, inputH,
 			belowLines, belowH, aboveLines, aboveH, bannerCount, transcriptContentW,
-			safeW, permanentLines, totalPerm, maxScroll, scrollStart, visibleTranscript, frameModel,
+			safeW, permanentLines, totalPerm, maxScroll, scrollStart, visibleTranscript, frameModel, suggestionLines,
 		} = layout;
 
 		// 7.5. 右侧时间线导航轨（TimelineRail，对标图一）合成
@@ -1324,6 +1329,31 @@ export class UIHost implements UIHostContextPort {
 			colEnd: Math.max(0, Math.min(inputWidth - 1, progressHotspotW - 1)),
 		});
 
+		// (3.2) 注册联想浮层鼠标点击项
+		if (this.activeSuggestions && suggestionLines.length > 0 && !this.overlayStack.hasVisible) {
+			const maxVisible = 5;
+			const clampedIndex = Math.max(0, Math.min(this.activeSuggestions.selectedIndex, this.activeSuggestions.items.length - 1));
+			const startIndex = Math.max(0, Math.min(clampedIndex - Math.floor(maxVisible / 2), this.activeSuggestions.items.length - maxVisible));
+			const visibleCount = Math.min(maxVisible, this.activeSuggestions.items.length - startIndex);
+			const suggStartRow = inputStartRow - suggestionLines.length;
+
+			for (let i = 0; i < visibleCount; i++) {
+				const itemIdx = startIndex + i;
+				interactiveTargets.push({
+					id: `suggestion-item-${itemIdx}`,
+					row: suggStartRow + 1 + i,
+					colStart: 0,
+					colEnd: inputWidth - 1,
+					onClick: () => {
+						if (this.activeSuggestions) {
+							this.activeSuggestions.selectedIndex = itemIdx;
+							this.applyActiveSuggestion(false);
+						}
+					},
+				});
+			}
+		}
+
 		// (3.5) 视口离底指示器热区：仅离底时存在（顶部边框行），点击回底，hover 高亮
 		if (this.lastMaxScroll > 0 && this.scrollOffset > 0) {
 			const labelLen = visibleWidth(`[视口 ${Math.round(((this.lastMaxScroll - Math.min(this.scrollOffset, this.lastMaxScroll)) / this.lastMaxScroll) * 100)}% · 点击回到最新]`);
@@ -1331,7 +1361,7 @@ export class UIHost implements UIHostContextPort {
 				id: encodeHoverTarget({ kind: "viewport-status" }),
 				row: inputStartRow,
 				colStart: 0,
-				colEnd: Math.max(0, labelLen),
+				colEnd: Math.max(0, labelLen + 3),
 				onClick: () => {
 					this.scrollToBottom();
 				},
@@ -1587,13 +1617,22 @@ export class UIHost implements UIHostContextPort {
 		if (!matchesKey(data, Key.ctrl("c"))) this.onInteraction?.();
 		const capturingOverlay = this.overlayStack.topCapturing;
 		if (capturingOverlay) {
-			if (capturingOverlay.component.handleInput) {
-				capturingOverlay.component.handleInput(data);
+			if (this.activeModalId && this.isMatchingModalKeybinding(this.activeModalId, data)) {
+				this.closeModal();
+				this.requestRender();
 				return;
 			}
-			if (matchesKey(data, Key.escape)) {
-				this.closeModal();
-				this.overlayStack.hideTopOverlay();
+			if (matchesKey(data, Key.ctrl("c")) || matchesKey(data, Key.escape)) {
+				if (this.activeModalHandle) {
+					this.closeModal();
+				} else {
+					this.overlayStack.hideTopOverlay();
+				}
+				this.requestRender();
+				return;
+			}
+			if (capturingOverlay.component.handleInput) {
+				capturingOverlay.component.handleInput(data);
 				return;
 			}
 		}
@@ -1610,6 +1649,9 @@ export class UIHost implements UIHostContextPort {
 			// 输入框编辑语义优先；但取消/退出事实由组合根查询 Host，不能读 UI busy。
 			if (this.inputLine.hasSelection()) {
 				this.inputLine.copySelection();
+				this.inputLine.clearSelection();
+				this.notify("已复制输入框内容", "info", 1500);
+				this.requestRender();
 				return;
 			}
 			if (this.inputLine.hasText()) {
@@ -1707,44 +1749,9 @@ export class UIHost implements UIHostContextPort {
 				return;
 			}
 			if (matchesKey(data, Key.enter) || matchesKey(data, Key.tab)) {
-				const selected = this.activeSuggestions.items[this.activeSuggestions.selectedIndex];
-				if (selected) {
-					if (this.activeSuggestions.type === "command") {
-						const cmd = selected as CommandItem;
-						if (cmd.hasArgs) {
-							this.inputLine.setText(`/${cmd.name} `);
-							this.activeSuggestions = null;
-							this.requestRender();
-							return;
-						} else {
-							this.inputLine.clear();
-							this.activeSuggestions = null;
-							this.executeCommand(cmd.name, "");
-							this.requestRender();
-							return;
-						}
-					} else {
-						const file = selected as FileItem;
-						const isDir = file.kind === "directory";
-						const escapedPath = /\s/.test(file.path) ? `"${file.path}"` : file.path;
-						const replacement = isDir ? `@${escapedPath}` : `@${escapedPath} `;
-
-						this.inputLine.replaceRange(
-							this.activeSuggestions.start,
-							this.activeSuggestions.end,
-							replacement,
-						);
-
-						if (isDir) {
-							// 选中目录时无缝深入下级目录，保持浮层并立即重新索引
-							this.updateSuggestions();
-						} else {
-							this.activeSuggestions = null;
-						}
-						this.requestRender();
-						return;
-					}
-				}
+				const isTab = matchesKey(data, Key.tab);
+				this.applyActiveSuggestion(isTab);
+				return;
 			}
 		}
 
@@ -1822,6 +1829,44 @@ export class UIHost implements UIHostContextPort {
 		if (focused && focused.handleInput) {
 			focused.handleInput(data);
 			this.updateSuggestions();
+			this.requestRender();
+		}
+	}
+
+	private applyActiveSuggestion(isTab: boolean): void {
+		if (!this.activeSuggestions) return;
+		const selected = this.activeSuggestions.items[this.activeSuggestions.selectedIndex];
+		if (!selected) return;
+
+		if (this.activeSuggestions.type === "command") {
+			const cmd = selected as CommandItem;
+			if (isTab || cmd.hasArgs) {
+				this.inputLine.setText(`/${cmd.name} `);
+				this.activeSuggestions = null;
+				this.requestRender();
+			} else {
+				this.inputLine.clear();
+				this.activeSuggestions = null;
+				this.executeCommand(cmd.name, "");
+				this.requestRender();
+			}
+		} else {
+			const file = selected as FileItem;
+			const isDir = file.kind === "directory";
+			const escapedPath = /\s/.test(file.path) ? `"${file.path}"` : file.path;
+			const replacement = isDir ? `@${escapedPath}` : `@${escapedPath} `;
+
+			this.inputLine.replaceRange(
+				this.activeSuggestions.start,
+				this.activeSuggestions.end,
+				replacement,
+			);
+
+			if (isDir) {
+				this.updateSuggestions();
+			} else {
+				this.activeSuggestions = null;
+			}
 			this.requestRender();
 		}
 	}

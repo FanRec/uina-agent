@@ -17,6 +17,7 @@ import { formatDiffCardLines } from "./diff-view.js";
 import {
 	formatThinkingLines,
 	formatCompactionCardLines,
+	formatErrorCardLines,
 	type CompactionCardData,
 	CustomMessageComponent,
 } from "./cards.js";
@@ -160,6 +161,7 @@ export interface CompactionReplayDecoration {
 export type TimelineItem =
 	| { kind: "turn"; turn: TurnRecord }
 	| { kind: "notice"; text: string }
+	| { kind: "error"; text: string }
 	| { kind: "compaction"; record: CompactionCardData }
 	| { kind: "customMessage"; message: CustomMessage }
 ;
@@ -553,8 +555,7 @@ export class TranscriptContainer implements Component {
 	}
 
 	addError(text: string): void {
-		const formatted = `  ${C.red}✗ [错误] ${text}${C.reset}`;
-		this.timeline.push({ kind: "notice", text: formatted });
+		this.timeline.push({ kind: "error", text });
 		this.invalidate();
 	}
 
@@ -957,7 +958,16 @@ export class TranscriptContainer implements Component {
 		for (const item of this.timeline) {
 			switch (item.kind) {
 				case "notice":
-					blocks.push({ kind: "static", lines: [item.text] });
+					blocks.push({
+						kind: "static",
+						lines: wrapTextWithAnsi(item.text, Math.max(20, width - 2)),
+					});
+					break;
+				case "error":
+					blocks.push({
+						kind: "static",
+						lines: formatErrorCardLines(item.text, width),
+					});
 					break;
 				case "compaction": {
 					blocks.push({

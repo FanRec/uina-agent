@@ -131,6 +131,42 @@ export function snapToGraphemeBoundary(index: number, text: string): number {
 	return clamped;
 }
 
+/** 寻找前一个单词边界 (backward-word / unix-word-rubout) */
+export function findPrevWordBoundary(text: string, cursorIndex: number, whitespaceOnly = false): number {
+	if (cursorIndex <= 0) return 0;
+	let idx = cursorIndex;
+	while (idx > 0 && /\s/.test(text[idx - 1]!)) {
+		idx--;
+	}
+	if (idx === 0) return 0;
+	if (whitespaceOnly) {
+		while (idx > 0 && !/\s/.test(text[idx - 1]!)) {
+			idx--;
+		}
+		return idx;
+	}
+	const isWord = /[\w\p{L}\p{N}]/u.test(text[idx - 1]!);
+	while (idx > 0 && !/\s/.test(text[idx - 1]!) && /[\w\p{L}\p{N}]/u.test(text[idx - 1]!) === isWord) {
+		idx--;
+	}
+	return idx;
+}
+
+/** 寻找后一个单词边界 (forward-word) */
+export function findNextWordBoundary(text: string, cursorIndex: number): number {
+	if (cursorIndex >= text.length) return text.length;
+	let idx = cursorIndex;
+	while (idx < text.length && /\s/.test(text[idx]!)) {
+		idx++;
+	}
+	if (idx >= text.length) return text.length;
+	const isWord = /[\w\p{L}\p{N}]/u.test(text[idx]!);
+	while (idx < text.length && !/\s/.test(text[idx]!) && /[\w\p{L}\p{N}]/u.test(text[idx]!) === isWord) {
+		idx++;
+	}
+	return idx;
+}
+
 /** 清洗输入文本，彻底抹除所有 \r 与非法控制字符 */
 function sanitizeText(str: string): string {
 	return str
@@ -481,8 +517,14 @@ export class InputLine implements Component, Focusable {
 				this.clear();
 				return;
 			}
-			if (matchesKey(data, Key.left) || matchesKey(data, Key.right) || matchesKey(data, Key.home) || matchesKey(data, Key.end)) {
+			if (matchesKey(data, Key.left) || matchesKey(data, Key.home)) {
 				this.isAllSelected = false;
+				this.cursorIndex = 0;
+				return;
+			}
+			if (matchesKey(data, Key.right) || matchesKey(data, Key.end)) {
+				this.isAllSelected = false;
+				this.cursorIndex = this.text.length;
 				return;
 			}
 			// 打入其它普通字符时替换全选
@@ -570,6 +612,33 @@ export class InputLine implements Component, Focusable {
 		// 6. 原子化方向键移动（将 [已粘贴 #ID ...] 作为一个整体跳过）
 		const markers = findMarkers(this.text);
 
+		// 6.0 词级移动 (Ctrl+Left / Alt+Left, Ctrl+Right / Alt+Right)
+		if (matchesKey(data, Key.ctrlLeft) || matchesKey(data, Key.altLeft)) {
+			const prev = findPrevWordBoundary(this.text, this.cursorIndex);
+			this.cursorIndex = snapCursorToMarkerBoundary(prev, this.text, this.pastes);
+			return;
+		}
+		if (matchesKey(data, Key.ctrlRight) || matchesKey(data, Key.altRight)) {
+			const next = findNextWordBoundary(this.text, this.cursorIndex);
+			this.cursorIndex = snapCursorToMarkerBoundary(next, this.text, this.pastes);
+			return;
+		}
+
+		// 6.1 词级删除 (Ctrl+W: unix-word-rubout, Alt+Backspace: 词法词级删除)
+		if (matchesKey(data, Key.ctrl("w")) || matchesKey(data, Key.altBackspace)) {
+			if (this.cursorIndex > 0) {
+				const isCtrlW = matchesKey(data, Key.ctrl("w"));
+				const prev = snapCursorToMarkerBoundary(findPrevWordBoundary(this.text, this.cursorIndex, isCtrlW), this.text, this.pastes);
+				const deletedMarkers = markers.filter((m) => m.end > prev && m.start < this.cursorIndex);
+				for (const m of deletedMarkers) {
+					this.pastes.delete(m.id);
+				}
+				this.text = this.text.slice(0, prev) + this.text.slice(this.cursorIndex);
+				this.cursorIndex = prev;
+			}
+			return;
+		}
+
 		if (matchesKey(data, Key.left)) {
 			const markerEndingHere = markers.find((m) => m.end === this.cursorIndex);
 			if (markerEndingHere) {
@@ -629,7 +698,12 @@ export class InputLine implements Component, Focusable {
 					return;
 				}
 			}
-			// 到达顶行时触发历史记录
+			// 到达顶行时，如果光标不在行首，优先将光标归首以保护正在编辑的草稿
+			if (this.cursorIndex > 0) {
+				this.cursorIndex = 0;
+				return;
+			}
+			// 已经在行首时，才触发历史记录
 			if (this.history.length === 0) return;
 			if (this.historyIndex === -1) {
 				this.savedText = this.text;
@@ -664,7 +738,12 @@ export class InputLine implements Component, Focusable {
 					return;
 				}
 			}
-			// 到达底行时触发历史记录
+			// 到达底行时，如果光标不在末尾，优先将光标归尾保持对称
+			if (this.cursorIndex < this.text.length) {
+				this.cursorIndex = this.text.length;
+				return;
+			}
+			// 到达底行末尾时触发历史记录向后翻阅或草稿恢复
 			if (this.historyIndex === -1) return;
 			if (this.historyIndex < this.history.length - 1) {
 				this.historyIndex++;
@@ -821,6 +900,9 @@ export class InputLine implements Component, Focusable {
 		}
 		const last = row.positions[row.positions.length - 1]!;
 		if (screenCol >= last.col) {
+			if (last.charIdx >= this.text.length || this.text[last.charIdx] === "\n") {
+				return snapCursorToMarkerBoundary(last.charIdx, this.text, this.pastes);
+			}
 			const segment = Array.from(graphemeSegmenter.segment(this.text)).find((item) => item.index === last.charIdx);
 			return snapCursorToMarkerBoundary(Math.min(this.text.length, last.charIdx + (segment?.segment.length ?? 0)), this.text, this.pastes);
 		}

@@ -14,7 +14,7 @@ import { ExtensionRunner } from "../extensions/runner.js";
 import { CommandRouter } from "../extensions/commands.js";
 import { activateBuiltinCommands } from "../extensions/builtin.js";
 import activateCompaction from "../extensions/compaction/index.js";
-import { activateAppFramework } from "../extensions/app-framework/index.js";
+import { activateWorldFramework } from "../extensions/world-framework/index.js";
 import { activateRuntimeTools, createChildTools, TASK_DISPATCH_EFFECT } from "../extensions/runtime-tools/index.js";
 import { activateSessionTools } from "../extensions/session-tools/index.js";
 import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
@@ -320,7 +320,7 @@ export class UinaHost {
 
 		if (config !== undefined) {
 			void models.refreshModels().catch((error: unknown) => {
-				options.onError?.(`[模型目录刷新] ${errorMessage(error)}`);
+				options.onError?.(`[模型目录] ${errorMessage(error)}`);
 			});
 		}
 		return (hostSelf = new UinaHost(options, subject, store, extensionHost, tools, models, jobs, subagents, commands, restoredEntries, [...store.state.auxiliary], listeners, state, abandonedTaskIds));
@@ -426,8 +426,8 @@ export class UinaHost {
 		this.requestShutdown = startOptions.requestShutdown;
 		// ── 官方能力装配顺序合同 ──────────────────────────────────────────
 		// transformContext 是链式 hook（后一个收到前一个的输出），执行顺序 = 下面的
-		// 激活顺序：compaction → app-framework（tail 尾帧）→ 项目扩展；其中 tail 相位
-		// 注册者（app-framework 视口帧、具身状态帧）无论注册先后恒排在非 tail 之后——
+		// 激活顺序：compaction → world-framework（tail 尾帧）→ 项目扩展；其中 tail 相位
+		// 注册者（world-framework 视口帧、具身状态帧）无论注册先后恒排在非 tail 之后——
 		// 完整层序：帧投影(convertToLlm) → compaction 裁剪 → 项目扩展注入 → tail 尾帧 →
 		// 请求级预算门(Subject) → 协议校验(validateContext)。systemPrompt 保持完全静态，
 		// 可变世界状态（视口/具身快照）只经尾部帧注入，不进系统提示（前缀缓存合同）。
@@ -441,10 +441,10 @@ export class UinaHost {
 		await this.extensionHost.activateBuiltin("commands", activateBuiltinCommands);
 		// 压缩预算直接读 Subject 声明的工具。再在宿主里拼一次，以后声明规则一变就会静默分叉。
 		await this.extensionHost.activateBuiltin("compaction", activateCompaction);
-		await this.extensionHost.activateBuiltin("app-framework", activateAppFramework);
+		await this.extensionHost.activateBuiltin("world-framework", activateWorldFramework);
 		// 认知扩展（阶段 C 接线）：仅 profile 模式激活——pi.subject 存在时注册三工具与
 		// 非 tail transformContext 召回注入；无 profile 时零影响（原路径逐字节不变）。
-		// 层序：cognition 为非 tail，注册顺序在 app-framework 之前/之后不影响（非 tail 恒在尾帧前）。
+		// 层序：cognition 为非 tail，注册顺序在 world-framework 之前/之后不影响（非 tail 恒在尾帧前）。
 		if (this.options.profile) {
 			await this.extensionHost.activateBuiltin("cognition", (pi) => activateCognition(pi));
 		}

@@ -129,18 +129,21 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 	pi.registerCommand({
 		name: "tasks",
 		description: "后台任务与进程看板 (Alt+J)",
+		keybinding: "alt+j",
 		handler: () => { ui.openFeature?.("tasks"); },
 	});
 
 	pi.registerCommand({
 		name: "subagents",
 		description: "多子智能体并行看板 (Alt+A)",
+		keybinding: "alt+a",
 		handler: () => { ui.openFeature?.("subagents"); },
 	});
 
 	pi.registerCommand({
 		name: "trajectory",
 		description: "全屏审计轨迹时序看板 (Alt+T)",
+		keybinding: "alt+t",
 		handler: () => { ui.openFeature?.("trajectory"); },
 	});
 
@@ -154,6 +157,7 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 	pi.registerCommand({
 		name: "history",
 		description: "会话历史节点与已回溯分支看板 (Alt+H)",
+		keybinding: "alt+h",
 		handler: openHistory,
 	});
 
@@ -174,4 +178,11 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		description: "退出 Uina 控制台",
 		handler: () => pi.shutdown(),
 	});
+
+	pi.registerCommand({
+		name: "exit",
+		description: "退出 Uina 控制台 (同 /quit)",
+		handler: () => pi.shutdown(),
+	});
 }
+
