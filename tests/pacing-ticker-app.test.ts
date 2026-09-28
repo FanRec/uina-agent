@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -42,6 +42,13 @@ describe("pacingTickerApp (自主节拍器 App 契约与动作测试)", () => {
 		expect(pacingTickerApp.actions).toHaveProperty("pause");
 		expect(pacingTickerApp.actions).toHaveProperty("resume");
 		expect(pacingTickerApp.actions).toHaveProperty("status");
+	});
+
+	it("状态文件损坏时启动失败且保留原文件", async () => {
+		const path = join(testDir, "state.json");
+		await writeFile(path, "{broken", "utf8");
+		await expect(pacingTickerApp.onStart?.({ signal: new AbortController().signal, appDataDir: testDir })).rejects.toThrow();
+		expect(await readFile(path, "utf8")).toBe("{broken");
 	});
 
 	it("未启动时动作容错：诚实返回未启动提示", async () => {

@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ActionContext, AppDef, ServiceCompanionContext } from "../../../../src/extensions/app-framework/types.js";
@@ -15,29 +16,34 @@ function installDir(): string {
 }
 
 async function loadState(filePath: string): Promise<TickerDurableState | undefined> {
+  let raw: string;
   try {
-    const data = JSON.parse(await readFile(filePath, "utf8")) as Partial<TickerDurableState>;
-    if (!data || typeof data.baseIntervalMs !== "number" || !Number.isFinite(data.baseIntervalMs)) {
-      throw new Error("Ticker 状态格式无效");
-    }
-    const paused = data.pausedUntilEpochMs;
-    if (paused !== null && (typeof paused !== "number" || !Number.isFinite(paused))) {
-      throw new Error("Ticker 暂停截止时间无效");
-    }
-    const usage = data.dailyAttempts;
-    if (!usage || typeof usage.date !== "string" || typeof usage.count !== "number" || !Number.isFinite(usage.count)) {
-      throw new Error("Ticker 用量状态无效");
-    }
-    return { baseIntervalMs: data.baseIntervalMs, pausedUntilEpochMs: paused ?? null, dailyAttempts: { ...usage } };
+    raw = await readFile(filePath, "utf8");
   } catch (error) {
-    if (error instanceof SyntaxError || (error instanceof Error && /ENOENT/.test(error.message))) return undefined;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
+  const data: unknown = JSON.parse(raw);
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Ticker 状态格式无效");
+  const state = data as Record<string, unknown>;
+  const usage = state.dailyAttempts;
+  if (!Number.isFinite(state.baseIntervalMs) || (state.baseIntervalMs as number) < 60_000 || (state.baseIntervalMs as number) > 120 * 60_000) throw new Error("Ticker 周期状态无效");
+  if (state.pausedUntilEpochMs !== null && (!Number.isSafeInteger(state.pausedUntilEpochMs) || (state.pausedUntilEpochMs as number) < 0)) throw new Error("Ticker 暂停截止时间无效");
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) throw new Error("Ticker 用量状态无效");
+  const attempts = usage as Record<string, unknown>;
+  if (typeof attempts.date !== "string" || new Date(attempts.date).toDateString() !== attempts.date || !Number.isSafeInteger(attempts.count) || (attempts.count as number) < 0) throw new Error("Ticker 用量状态无效");
+  return { baseIntervalMs: state.baseIntervalMs as number, pausedUntilEpochMs: state.pausedUntilEpochMs as number | null, dailyAttempts: { date: attempts.date, count: attempts.count as number } };
 }
 
 async function saveState(filePath: string, state: TickerDurableState): Promise<void> {
   await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, JSON.stringify(state, null, 2), "utf8");
+  const temp = `${filePath}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temp, JSON.stringify(state, null, 2), "utf8");
+    await rename(temp, filePath);
+  } finally {
+    await rm(temp, { force: true });
+  }
 }
 
 async function loadGuardrails(filePath: string): Promise<TickerGuardrails> {

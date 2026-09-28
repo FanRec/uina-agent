@@ -24,14 +24,17 @@ const DEFAULT_CLOCK: ClockSource = {
 	setTimeout: (fn, delayMs) => setTimeout(fn, delayMs),
 	clearTimeout: (timer) => clearTimeout(timer),
 };
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export class TickerEngine {
 	private readonly guardrails: TickerGuardrails;
-	private readonly durableState: TickerDurableState;
+	private durableState: TickerDurableState;
 	private readonly clock: ClockSource;
 	private timer: NodeJS.Timeout | null = null;
 	private generation = 0;
 	private started = false;
+	private tickInFlight = false;
+	private persistTail: Promise<void> = Promise.resolve();
 
 	// 运行时瞬态 (单调毫秒)
 	private lastExternalActivityMonoMs: number;
@@ -116,9 +119,8 @@ export class TickerEngine {
 	}
 
 	async setInterval(minutes: number): Promise<void> {
-		const previous = this.durableState.baseIntervalMs;
-		this.durableState.baseIntervalMs = Math.max(1, Math.min(120, minutes)) * 60_000;
-		try { await this.persist(); } catch (error) { this.durableState.baseIntervalMs = previous; throw error; }
+		if (!Number.isFinite(minutes) || minutes < 1 || minutes > 120) throw new Error("节拍周期必须是 1 到 120 之间的有限数字");
+		await this.saveChange((state) => ({ ...state, baseIntervalMs: minutes * 60_000 }));
 		if (this.clock.nowMono() >= this.pauseUntilMonoMs) {
 			this.scheduleNext(this.calculateNextInterval());
 		}
@@ -126,18 +128,16 @@ export class TickerEngine {
 
 	async pause(minutes: number): Promise<void> {
 		if (!Number.isFinite(minutes) || minutes < 1) throw new Error("暂停时长必须是有限的正数");
-		const durationMs = Math.max(1, minutes) * 60_000;
-		this.pauseUntilMonoMs = this.clock.nowMono() + durationMs;
-		this.durableState.pausedUntilEpochMs = this.clock.nowEpoch() + durationMs;
-		try { await this.persist(); } catch (error) { this.pauseUntilMonoMs = 0; this.durableState.pausedUntilEpochMs = null; throw error; }
-		// 立即重新调度瞄准 pause deadline
-		this.scheduleNext(durationMs);
+		const deadline = this.clock.nowEpoch() + minutes * 60_000;
+		if (!Number.isFinite(deadline)) throw new Error("暂停截止时间无效");
+		await this.saveChange((state) => ({ ...state, pausedUntilEpochMs: deadline }));
+		this.pauseUntilMonoMs = this.clock.nowMono() + Math.max(0, deadline - this.clock.nowEpoch());
+		this.scheduleNext(this.pauseUntilMonoMs - this.clock.nowMono());
 	}
 
 	async resume(): Promise<void> {
+		await this.saveChange((state) => ({ ...state, pausedUntilEpochMs: null }));
 		this.pauseUntilMonoMs = 0;
-		this.durableState.pausedUntilEpochMs = null;
-		await this.persist();
 		this.scheduleNext(1000);
 	}
 
@@ -162,8 +162,9 @@ export class TickerEngine {
 		const safeDelay = Math.max(0, delayMs);
 		this.nextWakeMonoMs = this.clock.nowMono() + safeDelay;
 		this.timer = this.clock.setTimeout(() => {
-			if (this.started && generation === this.generation) void this.onTick(generation);
-		}, safeDelay);
+			this.timer = null;
+			if (this.started && generation === this.generation && !this.tickInFlight) void this.onTick(generation);
+		}, Math.min(safeDelay, MAX_TIMER_DELAY_MS));
 	}
 
 	/**
@@ -171,6 +172,16 @@ export class TickerEngine {
 	 */
 	async onTick(generation = this.generation): Promise<void> {
 		if (!this.started || generation !== this.generation) return;
+		if (this.tickInFlight) return;
+		this.tickInFlight = true;
+		try {
+			await this.runTick(generation);
+		} finally {
+			this.tickInFlight = false;
+		}
+	}
+
+	private async runTick(generation: number): Promise<void> {
 		const nowMono = this.clock.nowMono();
 
 		// 1. 精确 Deadline 检查
@@ -178,21 +189,13 @@ export class TickerEngine {
 			this.scheduleNext(this.pauseUntilMonoMs - nowMono, generation);
 			return;
 		}
-		if (this.durableState.pausedUntilEpochMs !== null) {
-			this.durableState.pausedUntilEpochMs = null;
-			void this.persist();
-		}
-
 		// 2. 物理资源熔断护栏检查 (日唤醒限额，跨重启持久计数)
 		const today = new Date(this.clock.nowEpoch()).toDateString();
-		if (today !== this.durableState.dailyAttempts.date) {
-			this.durableState.dailyAttempts = { date: today, count: 0 };
-			void this.persist();
-		}
+		const usedToday = today === this.durableState.dailyAttempts.date ? this.durableState.dailyAttempts.count : 0;
 		if (
 			this.guardrails.maxDailyAttempts !== null &&
 			this.guardrails.maxDailyAttempts !== undefined &&
-			this.durableState.dailyAttempts.count >= this.guardrails.maxDailyAttempts
+			usedToday >= this.guardrails.maxDailyAttempts
 		) {
 			// 达到人类设定的物理硬限额，退避至 1 小时后再次探测
 			this.scheduleNext(3600_000, generation);
@@ -222,14 +225,16 @@ export class TickerEngine {
 		});
 		const opportunityText = `[时钟节拍: ${timeStr} | 距上个外部活动已过去 ${idleMinutes > 0 ? `${idleMinutes}m` : "片刻"}]`;
 
-		this.durableState.dailyAttempts.count++;
 		try {
-			await this.persist();
+			await this.saveChange((state) => {
+				const count = state.dailyAttempts.date === today ? state.dailyAttempts.count : 0;
+				return { ...state, pausedUntilEpochMs: null, dailyAttempts: { date: today, count: count + 1 } };
+			});
 		} catch {
-			this.durableState.dailyAttempts.count--;
 			if (this.started && generation === this.generation) this.scheduleNext(15_000, generation);
 			return;
 		}
+		if (!this.started || generation !== this.generation) return;
 
 		try {
 			await this.host.submitOpportunity(opportunityText);
@@ -243,29 +248,26 @@ export class TickerEngine {
 		}
 	}
 
-	private persistTail: Promise<void> = Promise.resolve();
-
-	private persist(): Promise<void> {
-		const snapshot: TickerDurableState = {
-			baseIntervalMs: this.durableState.baseIntervalMs,
-			pausedUntilEpochMs: this.durableState.pausedUntilEpochMs,
-			dailyAttempts: { ...this.durableState.dailyAttempts },
-		};
-
-		this.persistTail = this.host.saveDurableState(snapshot);
-
-		return this.persistTail;
+	private saveChange(change: (state: TickerDurableState) => TickerDurableState): Promise<void> {
+		const operation = this.persistTail.then(async () => {
+			const next = change(this.durableState);
+			await this.host.saveDurableState(next);
+			this.durableState = next;
+		});
+		this.persistTail = operation.then(() => {}, () => {});
+		return operation;
 	}
 
 	getStatus(): TickerStatusSnapshot {
 		const now = this.clock.nowMono();
+		const today = new Date(this.clock.nowEpoch()).toDateString();
 		return {
 			baseIntervalMinutes: Math.round(this.durableState.baseIntervalMs / 60_000),
 			idleMinutes: Math.round((now - this.lastExternalActivityMonoMs) / 60_000),
 			effectiveIntervalMinutes: Math.round(this.calculateNextInterval() / 60_000),
 			remainingSeconds: Math.max(0, Math.round((this.nextWakeMonoMs - now) / 1000)),
 			isPaused: now < this.pauseUntilMonoMs,
-			dailyAttemptsUsed: this.durableState.dailyAttempts.count,
+			dailyAttemptsUsed: this.durableState.dailyAttempts.date === today ? this.durableState.dailyAttempts.count : 0,
 			dailyAttemptsLimit: this.guardrails.maxDailyAttempts ?? null,
 		};
 	}

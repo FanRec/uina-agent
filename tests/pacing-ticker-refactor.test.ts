@@ -37,6 +37,8 @@ describe("pacing ticker state boundaries", () => {
 		const engine = new TickerEngine({ isBusy: () => false, submitOpportunity: async () => { submitted++; await pending; }, saveDurableState: async () => {} }, { baseIntervalMs: 1 }, undefined, clock);
 		engine.start();
 		await clock.advance(60_000);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(submitted).toBe(1);
 		engine.stop();
 		release();
 		await Promise.resolve();
