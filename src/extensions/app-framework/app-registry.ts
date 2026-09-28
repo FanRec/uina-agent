@@ -71,9 +71,7 @@ function activityOriginOf(source: import("../../core/types.js").InputSource | un
 
 interface AppActivation {
 	readonly scope: ResourceScope;
-	toolDisposer?: () => void;
 	readonly exposed: Map<string, unknown>;
-	readonly subscriptions: Set<() => void>;
 }
 
 interface AppInstance extends AppRuntime {
@@ -187,7 +185,7 @@ export class AppRegistry {
 		this.notifyExposed();
 	}
 
-	/** Track an app subscription with an idempotent disposer. */
+	/** Track an app subscription in the activation scope. */
 	private trackSubscription(appName: string, activation: AppActivation, dispose: () => void): () => void {
 		let done = false;
 		const once = () => {
@@ -197,7 +195,6 @@ export class AppRegistry {
 		};
 		const app = this.apps.get(appName);
 		if (!app || app.activation !== activation) throw new Error("应用已停用: " + appName);
-		activation.subscriptions.add(once);
 		activation.scope.onDispose(once);
 		return once;
 	}
@@ -251,7 +248,6 @@ export class AppRegistry {
 		const activation: AppActivation = {
 			scope: new ResourceScope("app:" + runtime.definition.name),
 			exposed: new Map(),
-			subscriptions: new Set(),
 		};
 		activation.scope.onDispose(() => this.clearExposedFor(runtime.definition.name, activation));
 		runtime.activation = activation;
@@ -294,7 +290,7 @@ export class AppRegistry {
 					return activation.scope.run((combined) => rawTool.run(args, combined, toolContext), signal);
 				},
 			};
-			activation.toolDisposer = this.pi.registerTool(tool);
+			activation.scope.onDispose(this.pi.registerTool(tool));
 			runtime.enabled = true;
 		} catch (error) {
 			await this.rollbackActivation(runtime, activation, context, error);
@@ -304,11 +300,9 @@ export class AppRegistry {
 	}
 
 	private async rollbackActivation(runtime: AppInstance, activation: AppActivation, context: import("./types.js").ServiceCompanionContext, cause: unknown): Promise<void> {
-		if (activation.toolDisposer) activation.toolDisposer();
-		const closePromise = activation.scope.close();
 		const errors: unknown[] = [cause];
+		try { await activation.scope.close(); } catch (error) { errors.push(error); }
 		try { await runtime.definition.onStop?.(context); } catch (error) { errors.push(error); }
-		try { await closePromise; } catch (error) { errors.push(error); }
 		runtime.activation = undefined;
 		runtime.enabled = false;
 		if (errors.length > 1) throw new AggregateError(errors, "应用启动回滚失败: " + runtime.definition.name);
@@ -330,14 +324,11 @@ export class AppRegistry {
 		if (!runtime || !runtime.activation) return;
 		const activation = runtime.activation;
 		const context = this.companionContext(runtime, activation);
-		if (activation.toolDisposer) activation.toolDisposer();
-		activation.toolDisposer = undefined;
 		runtime.enabled = false;
 		runtime.surfaceTier = "hidden";
-		const closePromise = activation.scope.close();
 		const errors: unknown[] = [];
+		try { await activation.scope.close(); } catch (error) { errors.push(error); }
 		try { await runtime.definition.onStop?.(context); } catch (error) { errors.push(error); }
-		try { await closePromise; } catch (error) { errors.push(error); }
 		runtime.activation = undefined;
 		if (persist) await this.persistDesiredState(name, false);
 		if (errors.length > 0) throw new AggregateError(errors, "应用停用失败: " + name);

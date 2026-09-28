@@ -110,6 +110,41 @@ describe("App Framework: Lifecycle & Registry", () => {
 		expect(onStart).toHaveBeenCalledTimes(2);
 	});
 
+	it("disable：先取消并等待动作，再执行 onStop", async () => {
+		const mock = createMockExtensionAPI();
+		const registry = new AppRegistry(mock.pi);
+		const order: string[] = [];
+		let release!: () => void;
+		const released = new Promise<void>((resolve) => { release = resolve; });
+
+		await registry.register({
+			name: "ordered",
+			description: "ordered",
+			onStop: () => { order.push("stop"); },
+			actions: {
+				wait: {
+					description: "wait",
+					run: async (_params, ctx) => {
+						order.push("started");
+						await released;
+						order.push(ctx.signal.aborted ? "aborted" : "finished");
+						return "done";
+					},
+				},
+			},
+		});
+
+		const work = mock.tools.get("ordered")!.run({ action: "wait", params: {} }, undefined, undefined as never);
+		await vi.waitFor(() => expect(order).toEqual(["started"]));
+		const stopping = registry.disable("ordered");
+		await Promise.resolve();
+		expect(order).toEqual(["started"]);
+		release();
+		await stopping;
+		await work;
+		expect(order).toEqual(["started", "aborted", "stop"]);
+	});
+
 	it("disposeAll：等待式回收全部伴生服务与工具（由 ResourceScope await，非 fire-and-forget）", async () => {
 		const mock = createMockExtensionAPI();
 		const registry = new AppRegistry(mock.pi);
