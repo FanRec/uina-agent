@@ -217,11 +217,24 @@ interface BroadcastHudSnapshot {
 | `search` | 搜索歌曲、打开/浏览歌单或发现内容；结果进入当前 World 视图并产生稳定引用。 |
 | `play` | 立即播放 `ref`/歌曲 ID；默认保留已有队列，显式 `replace_queue: true` 才替换。 |
 | `queue` | `add`、`list`、`remove`、`clear`；只有明确调用 `queue` 才改变待播列表。 |
-| `playback` | `pause`、`resume`、`stop`、`next`、`previous`、`status`、`mode`；播放控制集中在一个动作。 |
+| `playback` | `pause`、`resume`、`stop`、`next`、`previous`、`status`、`mode`、`volume`；播放控制和音量集中在一个动作。 |
 | `lyrics` | 查询完整歌词或当前歌词窗口；当前歌曲省略 `song_id`。 |
 | `library` | 登录账号、喜欢、评论、歌单创建/修改/订阅等低频操作；写操作要求确认和结果验证。 |
 
 直觉规则：说“播放/放一首”只改变当前播放；说“加到队列/接下来播放”才入队；说“停掉”不清空队列，只有 `queue clear` 或 `playback stop(clear_queue=true)` 才清空。旧版十多个动作可以在实现内部保留函数，但不作为模型接口继续扩张。
+
+能力映射如下：
+
+| 新动作 | 旧动作 | 是否保留 |
+|---|---|---|
+| `search` | `search` | 保留；仍然产生 `search:<n>` 引用。 |
+| `play` | `play` | 保留；增加清晰的立即播放/替换队列语义。 |
+| `queue` | `add_to_queue` | 保留并扩展 `list`、`remove`、`clear`。 |
+| `playback` | `pause`、`resume`、`stop`、`next`、`previous`、`status`、`set_play_mode`、`set_volume`、`adjust_volume` | 全部保留，只改为 `operation` 参数。 |
+| `lyrics` | `lyrics`、`current_lyrics` | 全部保留。 |
+| `library` | `discover_songs`、`discover_playlists`、`open_playlist`、`get_my_playlists`、`get_created_playlists`、`get_subscribed_playlists`、`show_liked_songs`、`show_recent_songs`、`show_comments`、`like`、`unlike`、`create_playlist`、`add_to_playlist`、`remove_from_playlist`、`subscribe_playlist`、`unsubscribe_playlist`、`update_playlist` | 全部保留；低频账号和歌单操作集中管理。登录/二维码状态也归入此处。 |
+
+旧版的 `show_lyrics`、`hide_lyrics`、`expand_queue`、分页和面板折叠命令不是领域能力，而是 Workspace 面板控制。新 HUD 由状态自动渲染这些区域；若以后 TUI 需要折叠，只应做 UI 本地命令，不进入模型动作。
 
 模型可见的结果也遵循固定句式：成功说明“已完成什么 + 当前事实”；失败说明“没有完成什么 + 原因 + 可执行的下一步”；外部结果未确认时使用 `unknown`，不使用“应该已经播放”。搜索和歌单结果始终返回可引用的 `ref`，播放只接受当前视图中的 `ref` 或明确歌曲 ID，避免模型凭空编造网易云 ID。
 
