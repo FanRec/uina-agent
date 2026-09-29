@@ -2058,6 +2058,116 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			}
 		});
 
+		it("ActivityLineComponent 运行态秒表分期、实时Token计数与响应式TPS仪表盘", () => {
+			vi.useFakeTimers();
+			try {
+				vi.setSystemTime(1_700_000_000_000);
+				const act = new ActivityLineComponent();
+
+				// 1. 初始阶段：尚未收到首个 token，展示等待响应与真实秒表
+				act.start("thinking", "正在思考与生成回复...");
+				vi.setSystemTime(1_700_000_001_500); // 1.5 秒后
+				const waitingHeader = stripAnsi(act.getHeaderString(80));
+				expect(waitingHeader).toContain("1.5s");
+				expect(waitingHeader).toContain("等待响应");
+
+				// 2. 流式吐字阶段：收到字符，实时展示估算 token
+				act.addStreamText("这里是一段测试文本包含中文和English混合字符用来计算Token");
+				vi.setSystemTime(1_700_000_002_500); // 1 秒解码耗时（跨越 500ms 门控）
+				act.addStreamText("继续吐出更多内容");
+
+				const liveHeader = stripAnsi(act.getHeaderString(100));
+				expect(liveHeader).toContain("2.5s");
+				expect(liveHeader).toContain("tok"); // 实时 token 计数
+				expect(liveHeader).toContain("tps"); // 实时 TPS
+				expect(liveHeader).toContain("▕");   // 包含仪表盘符号
+
+				// 3. 窄屏自适应排版：在 45 列窄屏下自适应紧凑数字 TPS，且绝对不超宽
+				const compactHeader = stripAnsi(act.getHeaderString(45));
+				expect(visibleWidth(compactHeader)).toBeLessThanOrEqual(45);
+				expect(compactHeader).toContain("2.5s");
+
+				// 3.1 极限窄屏排版（20 列）：优先保全核心文案与秒表，且绝对 <= 20 列
+				const extremeNarrow = stripAnsi(act.getHeaderString(20));
+				expect(visibleWidth(extremeNarrow)).toBeLessThanOrEqual(20);
+
+				// 4. 工具阶段：秒表重置为该工具的独立执行耗时；且严格杜绝伪造模型解码 TPS
+				act.endStep();
+				act.update("tool", "正在执行工具: grep");
+				vi.setSystemTime(1_700_000_005_700); // 工具跑了 3.2 秒
+				const toolHeader = stripAnsi(act.getHeaderString(80));
+				expect(toolHeader).toContain("3.2s");
+				expect(toolHeader).toContain("正在执行工具: grep");
+				expect(toolHeader).not.toContain("tps"); // 工具执行态绝不显示假 TPS
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("formatActivityHeader 纯函数排版分级与数学无溢出闭环验证", async () => {
+			const { formatActivityHeader } = await import("../src/ui/components/widgets/activity-line.js");
+
+			// 1. 宽屏充裕模式（100 列）：完整展现 8 格仪表盘、Token 与秒表
+			const wide = stripAnsi(formatActivityHeader({
+				phase: "streaming",
+				message: "正在输出回复...",
+				elapsedMs: 3500,
+				outputTokens: 140,
+				tps: 40,
+				tpsSamples: [30, 40],
+			}, 100));
+			expect(visibleWidth(wide)).toBeLessThanOrEqual(100);
+			expect(wide).toContain("3.5s");
+			expect(wide).toContain("~140 tok");
+			expect(wide).toContain("~40 tps");
+			expect(wide).toContain("▕");
+
+			// 2. 中屏模式（60 列）：4 格紧凑图形仪表盘
+			const mid = stripAnsi(formatActivityHeader({
+				phase: "streaming",
+				message: "正在输出回复...",
+				elapsedMs: 3500,
+				outputTokens: 140,
+				tps: 40,
+			}, 60));
+			expect(visibleWidth(mid)).toBeLessThanOrEqual(60);
+			expect(mid).toContain("~40 tps");
+
+			// 3. 窄屏模式（45 列）：纯数字流速
+			const narrow = stripAnsi(formatActivityHeader({
+				phase: "streaming",
+				message: "正在输出回复...",
+				elapsedMs: 3500,
+				outputTokens: 140,
+				tps: 40,
+			}, 45));
+			expect(visibleWidth(narrow)).toBeLessThanOrEqual(45);
+			expect(narrow).toContain("~40 tps");
+
+			// 4. 极窄模式（25 列）：自动舍弃后缀，优先保全核心文案与秒表
+			const extreme = stripAnsi(formatActivityHeader({
+				phase: "streaming",
+				message: "正在输出回复...",
+				elapsedMs: 3500,
+				outputTokens: 140,
+				tps: 40,
+			}, 25));
+			expect(visibleWidth(extreme)).toBeLessThanOrEqual(25);
+			expect(extreme).toContain("3.5s");
+
+			// 5. 工具执行模式：无论参数如何，绝不渲染 tps 仪表盘
+			const toolLine = stripAnsi(formatActivityHeader({
+				phase: "tool",
+				message: "正在执行工具: bash",
+				elapsedMs: 2400,
+				outputTokens: 140,
+				tps: 40,
+			}, 80));
+			expect(toolLine).toContain("2.4s");
+			expect(toolLine).toContain("正在执行工具: bash");
+			expect(toolLine).not.toContain("tps");
+		});
+
 		it("calculateContextSegments 从消息历史与工具定义中计算多段分布并支持比例对齐", () => {
 			const messages = [
 				{ role: "system" as const, content: "系统提示词设定" },

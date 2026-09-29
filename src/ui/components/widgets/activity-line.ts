@@ -3,8 +3,8 @@
  * 特性：
  * 1. 冰蓝流光扫光（Shimmer Sweep）动态渐变效果；
  * 2. 动态旋转 Spinner 帧（⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏）；
- * 3. 实时耗时统计与 TPS 计算（口径见 ActivityLineComponent 的注释）；
- * 4. 支持独立行输出与嵌入圆角盒顶边框（getHeaderString）。
+ * 3. 真实秒表与流速呼吸（秒表分期、实时 Token 计数、响应式 TPS 仪表盘）；
+ * 4. 纯函数排版渲染器（formatActivityHeader）与高内聚状态机（ActivityLineComponent）。
  */
 
 import type { Component } from "../../core/types.js";
@@ -22,12 +22,6 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
  * /token），差 3.4 倍 —— 一律按 4 字符/token 会把中文压到约四分之一。
  * 不枚举语种：汉字/假名/谚文归一类，其余（拉丁、西里尔、阿拉伯……）归一类，新语种
  * 自动落进"其余"。换模型或语料结构明显变化时要重新标定。
- *
- * 已知缺口：工具调用参数占输出字符的中位 23%，但 Provider 把参数攒成一个完整 tool_call
- * 才上报，UI 在真值到达前看不到它 —— 工具密集的 step 在真值到达前会读低，真值一到即
- * 校正。这是如实反映"可见部分"，不是能用系数补偿的偏差。
- *
- * 只在真值缺位时占位；真值一到就让位，两者不相加。
  */
 export const STREAM_TOKENS_PER_CJK_CHAR = 0.867;
 export const STREAM_TOKENS_PER_OTHER_CHAR = 0.257;
@@ -56,15 +50,12 @@ export function classifyStreamText(text: string): { cjk: number; other: number }
 
 /**
  * 把累计的字符计数折算成 token 数；空文本是 0，非空至少 1。
- *
- * 只在累计量上折一次（dsh-TUI 同法：字符攒在 step 上，显示时 Math.ceil(chars/4)）。
- * 不要按 delta 逐条折算：向上取整的零头会随切片累加，估算结果就依赖切分方式了。
+ * 只在累计量上折一次，不按 delta 逐条折算，避免向上取整零头随切片累加。
  */
 export function foldStreamChars(counts: { cjk: number; other: number }): number {
 	if (counts.cjk + counts.other === 0) return 0;
 	return Math.max(1, Math.round(counts.cjk * STREAM_TOKENS_PER_CJK_CHAR + counts.other * STREAM_TOKENS_PER_OTHER_CHAR));
 }
-
 
 interface Rgb {
 	r: number;
@@ -85,6 +76,7 @@ function interpolateColor(a: Rgb, b: Rgb, factor: number): Rgb {
 }
 
 export function sweep(text: string, timeMs: number, base: Rgb = ICE_RGB, highlight: Rgb = FLASH_RGB, stepMs = 60): string {
+	if (!text) return "";
 	const width = visibleWidth(text);
 	const cycle = width + 18;
 	const glimmerStart = (Math.floor(timeMs / stepMs) % cycle) - 8;
@@ -117,10 +109,31 @@ export function sweep(text: string, timeMs: number, base: Rgb = ICE_RGB, highlig
 export type ActivityPhase = "idle" | "thinking" | "streaming" | "tool" | "done";
 
 function animatedHeader(message: string, elapsedMs: number, now: number, maxWidth: number, suffix = ""): string {
-	const spinner = `${C.iceBlue}${SPINNER_FRAMES[Math.floor(now / 80) % SPINNER_FRAMES.length]}${C.reset}`;
-	const shimmerText = sweep(message, now, ICE_RGB, FLASH_RGB, 60);
+	if (maxWidth <= 0) return "";
+	const spinner = `${C.iceBlue}${SPINNER_FRAMES[Math.floor(now / 80) % SPINNER_FRAMES.length]}${C.reset} `;
 	const seconds = (Math.max(0, elapsedMs) / 1000).toFixed(1);
-	return truncateToWidth(`${spinner} ${shimmerText}${C.gray} · ${seconds}s${suffix}${C.reset}`, maxWidth);
+	const secStr = `${C.gray}· ${seconds}s${C.reset}`;
+
+	const spinnerW = visibleWidth(spinner);
+	const suffixW = visibleWidth(secStr) + (suffix ? visibleWidth(suffix) : 0);
+
+	// 优先保障右侧关键指标（秒表、Token、TPS）完整展现，左侧阶段文案按剩余空间自适应
+	let availForMessage = maxWidth - spinnerW - suffixW - 1;
+	let activeSuffix = suffix;
+
+	// 若空间极端受限，逐级丢弃修饰后缀以保全阶段核心文案和秒表
+	if (availForMessage < 3 && suffix) {
+		activeSuffix = "";
+		const reducedSuffixW = visibleWidth(secStr);
+		availForMessage = maxWidth - spinnerW - reducedSuffixW - 1;
+	}
+
+	const safeAvail = Math.max(1, availForMessage);
+	const safeMsg = visibleWidth(message) > safeAvail ? truncateToWidth(message, safeAvail, "…") : message;
+	const shimmerText = safeMsg ? sweep(safeMsg, now, ICE_RGB, FLASH_RGB, 60) : "";
+
+	const line = shimmerText ? `${spinner}${shimmerText} ${secStr}${activeSuffix}` : `${spinner}${secStr}${activeSuffix}`;
+	return visibleWidth(line) > maxWidth ? truncateToWidth(line, maxWidth, "") : line;
 }
 
 /** 扩展工作是独立的可见操作，不借用回合的 ActivityLine 状态和计时。 */
@@ -141,8 +154,6 @@ const TRACK = "·";
 export function formatTpsGauge(tps: number, targetPeak = 60, gaugeWidth = 8): string {
 	if (gaugeWidth <= 0) return "";
 	const safeTps = Math.max(0, tps);
-	// 量程按采样峰值自适应（地板 40）：写死峰值会让"超过峰值"的一切都画成满格，
-	// 表盘就失去了区分度。dsh-tui 的 renderTpsGauge 用 max(peak, floor) 同理。
 	const ratio = Math.min(1, safeTps / Math.max(GAUGE_FLOOR, targetPeak));
 	const eighths = Math.round(ratio * gaugeWidth * 8);
 	const full = Math.floor(eighths / 8);
@@ -179,88 +190,108 @@ export function formatTpsSparkline(samples: readonly number[]): string {
 		.join("");
 }
 
+/** 状态行格式化度量快照参数契约 */
+export interface ActivityHeaderMetrics {
+	phase: ActivityPhase;
+	message: string;
+	elapsedMs: number;
+	outputTokens: number;
+	tps?: number;
+	avgTps?: number;
+	isWaitingFirstToken?: boolean;
+	tpsSamples?: readonly number[];
+}
+
+/**
+ * 纯函数：根据度量快照格式化终端状态行（解耦状态与排版视图）
+ */
+export function formatActivityHeader(
+	metrics: ActivityHeaderMetrics,
+	maxWidth = 60,
+	now = Date.now(),
+): string {
+	if (metrics.phase === "idle" || maxWidth <= 0) return "";
+	const seconds = (Math.max(0, metrics.elapsedMs) / 1000).toFixed(1);
+	const tokens = metrics.outputTokens;
+
+	if (metrics.phase === "done") {
+		const prefix = `${C.green}✓${C.reset}`;
+		let sparkStr = "";
+		if (metrics.avgTps !== undefined && metrics.avgTps > 0) {
+			const avgTps = metrics.avgTps;
+			const samples = metrics.tpsSamples ?? [];
+			const spark = formatTpsSparkline(samples.slice(-12));
+			const sparkColor = avgTps >= 50 ? C.green : avgTps >= 20 ? C.yellow : C.red;
+			sparkStr = spark ? ` · ${sparkColor}${spark}${C.reset} ~${avgTps} tps` : ` · ~${avgTps} tps`;
+		}
+		const text = `${C.gray}${metrics.message} · 耗时 ${seconds}s${tokens > 0 ? ` · ~${tokens} tokens` : ""}${sparkStr}${C.reset}`;
+		return truncateToWidth(`${prefix} ${text}`, maxWidth);
+	}
+
+	// 1. 组装 Token 实时体量或首包等待提示
+	let tokenStr = "";
+	if (metrics.isWaitingFirstToken) {
+		tokenStr = ` · ${C.inactive}等待响应${C.reset}`;
+	} else if (tokens > 0 && maxWidth >= 48) {
+		tokenStr = ` · ${C.gray}~${tokens} tok${C.reset}`;
+	}
+
+	// 2. 组装 TPS 实时流速仪表盘
+	// 严密物理守卫：TPS 仅属于模型活跃解码阶段（thinking / streaming），工具执行（tool）与完成态绝不渲染流速！
+	let tpsStr = "";
+	const isDecodingPhase = metrics.phase === "thinking" || metrics.phase === "streaming";
+	const tps = isDecodingPhase ? (metrics.tps ?? 0) : 0;
+	if (tps > 0 && maxWidth >= 40) {
+		const peak = Math.max(tps, ...(metrics.tpsSamples ?? []), 0);
+		// 响应式表盘宽度：宽屏 8 格，中屏 4 格，窄屏纯数字
+		const gaugeWidth = maxWidth >= 75 ? 8 : maxWidth >= 58 ? 4 : 0;
+		const gauge = gaugeWidth > 0 ? `${formatTpsGauge(tps, peak, gaugeWidth)} ` : "";
+		const tpsColor = tps >= 50 ? C.green : tps >= 20 ? C.yellow : C.red;
+		tpsStr = ` · ${gauge}${tpsColor}~${tps} tps${C.reset}`;
+	}
+
+	const suffix = `${tokenStr}${tpsStr}`;
+	return animatedHeader(metrics.message || "正在处理...", metrics.elapsedMs, now, maxWidth, suffix);
+}
+
 export class ActivityLineComponent implements Component {
 	private phase: ActivityPhase = "idle";
 	private message = "";
 	private startTime = 0;
 	private elapsedMs = 0;
+	private stepStartedAt = 0;
 
-	/**
-	 * 一个 step = 一次模型调用。分子与分母必须量同一段生成：
-	 *
-	 *   左端 = 这个 step 首个可见增量到达的时刻
-	 *   右端 = 这个 step 收尾报回真实 usage 的时刻（没报回时退回最后一个可见增量）
-	 *   分子 = 这个 step 的真实输出 token（没报回时退回可见增量折算的估算）
-	 *   回合速度 = Σ分子 ÷ Σ(右端 - 左端)，只计入两者都有的 step
-	 *
-	 * 这套口径抄自 dsh 的权威折叠（session-stats/projection.ts 的 decodeMs/decodeTokens
-	 * 与 ui-chat/contract/turn-metrics.ts 的 tokensPerSecond；dsh-TUI 是同一套的适配层）：
-	 * 那里右端是 assistant/message（步收尾）时刻，不是最后一个 token 的时刻。
-	 *
-	 * 右端用「收尾」而非「最后一个可见 token」，差在工具调用参数上：服务端把参数也算进
-	 * completion_tokens（真机一个回合 37 个 step 里，参数占输出 token 的中位 25%、最高
-	 * 56%），但 Provider 层把它们攒成一个完整的 tool_call 才上报，UI 在参数流式期间收不到
-	 * 任何增量。于是「最后一个可见 token」会把参数段的生成时间整段漏掉 —— 分子含它、
-	 * 分母不含。不开思考时输出几乎全是参数，实测正是这条把读数顶到 700 tps 量级。
-	 * usage 到达即 step 收尾（OpenAI 最后一个 chunk、Anthropic message_delta、Gemini 每个
-	 * chunk 都带），是 UI 能观测到的、最接近流结束的时刻，且与分子同源。
-	 *
-	 * 已知且接受的口径代价：整个 step 一个可见增量都没有时（纯工具调用，且没有前言文本），
-	 * 它既没有可信的左端也没有可信的右端，分子分母一起不计 —— 宁可不报，也不拿没有生成
-	 * 时间可除的输出量充数。dsh 能计这类 step，是因为它的流式 chunk 里本来就有
-	 * tool-call-delta；Uina 的 Provider 攒完才上报，UI 无从得知。
-	 *
-	 * 这些都和时间有关，所以测试用假时钟把时间钉死。
-	 */
 	private stepFirstTokenAt = 0;
-	/** 当前 step 最近一个可见增量到达的时刻：真实 usage 未到时用它当右端。 */
 	private stepLastTokenAt = 0;
-	/** 当前 step 可见增量的字符计数，按书写系统分开；折算留到读取时做。 */
 	private stepCjkChars = 0;
 	private stepOtherChars = 0;
-	/** 当前 step 收尾报回的真实输出 token；同一 step 的多次推送取最后一次。0 = 未报回。 */
 	private stepUsageTokens = 0;
-	/** 当前 step 真实 usage 最近一次到达的时刻，也就是这个 step 的右端。0 = 未报回。 */
 	private stepUsageAt = 0;
 
-	/** 已结算进本回合的解码耗时（毫秒）与输出 token（真实值优先，估算只补空档）。 */
 	private settledDecodeMs = 0;
 	private settledOutputTokens = 0;
 
-	/** 每回合一个速度采样，跨回合保留（结束后的火花线取最近若干个回合）。 */
 	private tpsSamples: number[] = [];
 
 	start(phase: ActivityPhase, message: string): void {
 		this.phase = phase;
 		this.message = message;
 		this.startTime = Date.now();
+		this.stepStartedAt = this.startTime;
 		this.elapsedMs = 0;
 		this.clearStep();
 		this.settledDecodeMs = 0;
 		this.settledOutputTokens = 0;
-		// tpsSamples 不在这里清空：只留一个回合的历史，量程峰值就等于当前值，
-		// 表盘每个回合都会从满格重新开始缩；跨回合保留才有参照物。
 	}
 
 	update(phase: ActivityPhase, message: string): void {
+		if (this.phase !== phase) {
+			this.stepStartedAt = Date.now();
+		}
 		this.phase = phase;
 		this.message = message;
 	}
 
-	/**
-	 * 记一次可见增量（正文或思考的原始文本）。
-	 *
-	 * 存字符、不存折算值：折算发生在读取时，切分方式因此不影响结果。
-	 * 空增量直接丢弃，不开启 step —— 上游 provider 目前会过滤空 delta，但不依赖它。
-	 *
-	 * 左端只取「首个增量到达的时刻」，量的是纯解码速度：TTFT（组装上下文 + 网络 +
-	 * 服务端预热）与尾部静默都不在分母里。这两段都确实不是模型在吐字的时间，把它们
-	 * 算进分母会让短调用被摊薄到几十 tps —— 那回答的是「本轮平均吞吐」，不是解码速度。
-	 *
-	 * 没有真实 usage 时右端取「最近一个增量到达的时刻」而不是渲染时刻：否则两次 token
-	 * 之间分母继续涨而分子不动，画面就会显示成"一开始很快、越跑越慢"。dsh-TUI 的实时值
-	 * 同样以 token 事件自身的时间戳为右端。
-	 */
 	addStreamText(text: string): void {
 		if (text.length === 0) return;
 		const counts = classifyStreamText(text);
@@ -271,33 +302,16 @@ export class ActivityLineComponent implements Component {
 		this.stepOtherChars += counts.other;
 	}
 
-	/** 当前 step 可见增量的折算值（真值缺位时的占位）。 */
 	private estimateTokens(): number {
 		return foldStreamChars({ cjk: this.stepCjkChars, other: this.stepOtherChars });
 	}
 
-	/**
-	 * 记一次模型调用报回的真实输出 token 数。
-	 *
-	 * 服务端会在同一次调用内反复推送累积快照（Gemini 每个 chunk 都带），所以同一 step
-	 * 只取最后一次（覆盖），绝不逐条累加 —— 那会把一个调用的输出按推送次数重复计。
-	 * 同时记下它到达的时刻：这是这个 step 解码区间的右端（见类注释）。
-	 *
-	 * 没有可见增量的 step（stepFirstTokenAt = 0）丢弃这条真值：没有左端就没有生成时间
-	 * 可除，只把分子做大就是虚高（真机实测 175 / 820 这类 token 曾把读数顶到 902 tps）。
-	 */
 	addRealOutputTokens(tokens: number): void {
 		if (tokens <= 0 || this.stepFirstTokenAt === 0) return;
 		this.stepUsageTokens = tokens;
 		this.stepUsageAt = Date.now();
 	}
 
-	/**
-	 * 结束当前 step：把它的解码区间与输出量成对结算进本回合。
-	 * 模型调用结束（进入工具执行）或回合结束时调用；没有可见增量的 step 是空操作。
-	 *
-	 * 工具执行期间不会再调用它，于是工具耗时落不进分母；下一个可见增量会开启新 step。
-	 */
 	endStep(): void {
 		if (this.stepFirstTokenAt === 0) return;
 		const end = this.stepUsageAt > 0 ? this.stepUsageAt : this.stepLastTokenAt;
@@ -317,7 +331,6 @@ export class ActivityLineComponent implements Component {
 			this.elapsedMs = 0;
 		}
 		this.message = summary;
-		// 回合级采样：结束后火花线用最近若干个回合的速度。
 		if (this.settledOutputTokens > 0 && this.settledDecodeMs > 0) {
 			this.tpsSamples.push(Math.round(this.settledOutputTokens / (this.settledDecodeMs / 1000)));
 			if (this.tpsSamples.length > 500) this.tpsSamples.shift();
@@ -329,6 +342,7 @@ export class ActivityLineComponent implements Component {
 		this.message = "";
 		this.startTime = 0;
 		this.elapsedMs = 0;
+		this.stepStartedAt = 0;
 		this.clearStep();
 		this.settledDecodeMs = 0;
 		this.settledOutputTokens = 0;
@@ -347,24 +361,11 @@ export class ActivityLineComponent implements Component {
 		this.stepUsageAt = 0;
 	}
 
-	/**
-	 * 速度分子：已结算 step 的输出量 + 当前 step 的输出量。
-	 *
-	 * 当前 step 优先用它自己的真实值（累积快照，覆盖整个 step 到此刻的输出），没有真实
-	 * 值才用可见增量折算的估算。两者是替代关系，不相加：真实值描述的就是这个 step 的
-	 * 全部输出，已经覆盖它自己的每一个可见增量。
-	 */
 	private outputTokens(): number {
 		const inFlight = this.stepUsageTokens > 0 ? this.stepUsageTokens : this.estimateTokens();
 		return this.settledOutputTokens + (this.stepFirstTokenAt > 0 ? inFlight : 0);
 	}
 
-	/**
-	 * 速度分母（毫秒）：已结算 step 的解码耗时 + 当前 step 正在进行的解码耗时。
-	 *
-	 * 当前 step 的右端同样优先取真实 usage 的到达时刻；没有新 token 时这个值不变，
-	 * 显示的速度也就不会自己往下掉。
-	 */
 	private decodeMs(): number {
 		if (this.stepFirstTokenAt === 0) return this.settledDecodeMs;
 		const end = this.stepUsageAt > 0 ? this.stepUsageAt : this.stepLastTokenAt;
@@ -373,53 +374,47 @@ export class ActivityLineComponent implements Component {
 
 	/** 提取适用于圆角盒顶边框嵌入的状态文本 */
 	getHeaderString(maxWidth = 60): string {
-		if (this.phase === "idle") return "";
+		if (this.phase === "idle" || maxWidth <= 0) return "";
 		const now = Date.now();
-		// "耗时"展示整个回合的墙钟时间（含工具执行），这是用户感知的总时长。
-		const currentElapsed = this.phase === "done" ? this.elapsedMs : (this.startTime > 0 ? now - this.startTime : 0);
-		const seconds = (Math.max(0, currentElapsed) / 1000).toFixed(1);
+		// "耗时"秒表：工具阶段展示当前工具的执行秒数；其余阶段展示整个回合的用户感知等待时长
+		const currentElapsed = this.phase === "done"
+			? this.elapsedMs
+			: this.phase === "tool"
+				? (this.stepStartedAt > 0 ? now - this.stepStartedAt : (this.startTime > 0 ? now - this.startTime : 0))
+				: (this.startTime > 0 ? now - this.startTime : 0);
+
 		const tokens = this.outputTokens();
+		let tps = 0;
+		let avgTps = 0;
 
 		if (this.phase === "done") {
-			const prefix = `${C.green}✓${C.reset}`;
-			let sparkStr = "";
-			// tps 的分母是解码耗时而非墙钟耗时：工具执行不该稀释生成速度。
-			// 一个可度量的 step 都没有时不显示速度 —— 那是"未知"，不是 0。
-			const decodeMs = this.settledDecodeMs;
-			if (tokens > 0 && decodeMs > 0) {
-				const avgTps = Math.round(tokens / (decodeMs / 1000));
-				// 火花线取最近 12 个回合（dsh-TUI 同为 slice(-12)）。
-				const spark = formatTpsSparkline(this.tpsSamples.slice(-12));
-				const sparkColor = avgTps >= 50 ? C.green : avgTps >= 20 ? C.yellow : C.red;
-				sparkStr = spark ? ` · ${sparkColor}${spark}${C.reset} ~${avgTps} tps` : ` · ~${avgTps} tps`;
+			if (tokens > 0 && this.settledDecodeMs > 0) {
+				avgTps = Math.round(tokens / (this.settledDecodeMs / 1000));
 			}
-			const text = `${C.gray}${this.message} · 耗时 ${seconds}s${tokens > 0 ? ` · ~${tokens} tokens` : ""}${sparkStr}${C.reset}`;
-			return truncateToWidth(`${prefix} ${text}`, maxWidth);
+		} else if (this.phase === "thinking" || this.phase === "streaming") {
+			const openMs = this.stepFirstTokenAt === 0 ? 0 : Math.max(0, (this.stepUsageAt > 0 ? this.stepUsageAt : this.stepLastTokenAt) - this.stepFirstTokenAt);
+			if (openMs > 500) {
+				const decodeMs = this.decodeMs();
+				if (tokens > 0 && decodeMs > 0) tps = Math.round(tokens / (decodeMs / 1000));
+			} else if (this.settledDecodeMs > 0 && this.settledOutputTokens > 0) {
+				tps = Math.round(this.settledOutputTokens / (this.settledDecodeMs / 1000));
+			}
 		}
 
-		let tpsStr = "";
-		// 门控抄 dsh-TUI（channel.ts 实时路径：Math.max(0, event.time - step.firstTokenTime)
-		// > 500 才重算 state.tps，否则保留上一次的可度量值）：
-		//   当前 step 自身跨度 > 500ms → 用「已结算累计 + 当前 step」重算；
-		//   不足 500ms → 沿用已结算的累计值，不把刚起步的 step 混进分母：那几十毫秒会
-		//   带着自己的取整误差和切分抖动一起进入读数；
-		//   还没有任何已结算 step → 不显示（未知不是 0）。
-		const openMs = this.stepFirstTokenAt === 0 ? 0 : Math.max(0, (this.stepUsageAt > 0 ? this.stepUsageAt : this.stepLastTokenAt) - this.stepFirstTokenAt);
-		let tps = 0;
-		if (openMs > 500) {
-			const decodeMs = this.decodeMs();
-			if (tokens > 0 && decodeMs > 0) tps = Math.round(tokens / (decodeMs / 1000));
-		} else if (this.settledDecodeMs > 0 && this.settledOutputTokens > 0) {
-			tps = Math.round(this.settledOutputTokens / (this.settledDecodeMs / 1000));
-		}
-		if (tps > 0) {
-			// 量程随采样峰值缩放（地板 40），柱状图才不会长期满格。
-			const peak = Math.max(tps, ...this.tpsSamples, 0);
-			const gauge = formatTpsGauge(tps, peak, 8);
-			tpsStr = ` · ${gauge} ~${tps} tps`;
-		}
-
-		return animatedHeader(this.message || "正在处理...", currentElapsed, now, maxWidth, tpsStr);
+		return formatActivityHeader(
+			{
+				phase: this.phase,
+				message: this.message,
+				elapsedMs: currentElapsed,
+				outputTokens: tokens,
+				tps,
+				avgTps,
+				isWaitingFirstToken: this.stepFirstTokenAt === 0 && (this.phase === "thinking" || this.phase === "streaming"),
+				tpsSamples: this.tpsSamples,
+			},
+			maxWidth,
+			now,
+		);
 	}
 
 	render(width: number): string[] {

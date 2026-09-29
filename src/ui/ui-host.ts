@@ -908,7 +908,9 @@ export class UIHost implements UIHostContextPort {
 	/** Sync the input line's transient metrics before it is rendered. */
 	private syncInputMetrics(): void {
 		const innerW = this.terminal.columns;
-		const statusWidth = Math.min(60, innerW - 20);
+		const scrolled = this.lastMaxScroll > 0 && this.scrollOffset > 0;
+		const reservedRight = scrolled ? 36 : 10;
+		const statusWidth = Math.max(24, innerW - reservedRight);
 		const statusHeader = this.providerRetryMessage
 			? formatWorkingHeader(this.providerRetryMessage, this.busy ? Math.max(0, Date.now() - this.turnStartTime) : 0, statusWidth)
 			: this.workingContributions.size === 0
@@ -920,7 +922,6 @@ export class UIHost implements UIHostContextPort {
 		// Show the viewport percentage using the previous frame's geometry; the
 		// current frame's input height is required to compute it, so a one-frame
 		// lag is unavoidable (and previously the header never rendered at all).
-		const scrolled = this.lastMaxScroll > 0 && this.scrollOffset > 0;
 		const percent = scrolled ? Math.round(((this.lastMaxScroll - Math.min(this.scrollOffset, this.lastMaxScroll)) / this.lastMaxScroll) * 100) : 100;
 		// 视口离底指示器：品牌雾蓝（非告警语义），文案告知点击出口；hover 高亮由 viewport-status 热区分派
 		const viewportLabel = scrolled
