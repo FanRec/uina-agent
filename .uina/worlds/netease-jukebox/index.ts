@@ -4,6 +4,7 @@ import { loadJukeboxConfig } from "./config.js";
 import { SimulatedMusicPlayer, UnavailableMusicPlayer, MpvPlayer, resolveMpvPath, type MusicPlayer } from "./player.js";
 import { PlaybackSession } from "./playback-session.js";
 import { CompanionManager } from "./companion.js";
+import { formatLyrics, parseLrc, type LyricLine } from "./lyrics.js";
 import type { JukeboxWorldConfig, SongInfo } from "./types.js";
 
 function formatMs(ms: number | null): string {
@@ -14,6 +15,10 @@ function formatMs(ms: number | null): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function songLabel(song: Pick<SongInfo, "name" | "artists">): string {
+  return `${song.name}${song.artists.length ? ` - ${song.artists.join(", ")}` : ""}`;
 }
 
 export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
@@ -32,6 +37,16 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
       : new UnavailableMusicPlayer();
 
   const playback = new PlaybackSession(player);
+  const lyricCache = new Map<string, readonly LyricLine[] | null>();
+
+  async function loadLyrics(songId: string, signal: AbortSignal): Promise<readonly LyricLine[] | null> {
+    const cached = lyricCache.get(songId);
+    if (cached !== undefined) return cached;
+    const raw = await apiClient.getLyrics(songId, signal);
+    const parsed = raw === null ? null : parseLrc(raw);
+    lyricCache.set(songId, parsed);
+    return parsed;
+  }
 
   return {
     name: "jukebox",
@@ -140,7 +155,7 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
       stop: {
         description: "停止播放",
         parameters: { type: "object", properties: {} },
-        async run(_args, ctx: ActionContext) {
+        async run(_args) {
           await playback.stop();
           return "已停止播放";
         },
@@ -154,7 +169,7 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
             level: { type: "number", description: "音量百分比 (0 - 100)" },
           },
         },
-        async run(args: Record<string, unknown>, ctx: ActionContext) {
+        async run(args: Record<string, unknown>) {
           const raw = args.level ?? args.volume ?? args.value ?? args.percent;
           if (raw === undefined) {
             return `当前音量: ${playback.volume}%。如需调整请输入 { level: 0-100 }。`;
@@ -204,10 +219,66 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
         },
       },
 
+      lyrics: {
+        description: "查询指定歌曲或当前播放歌曲的完整歌词。",
+        parameters: {
+          type: "object",
+          properties: {
+            song_id: { type: "string", description: "网易云音乐歌曲 ID；不传则查询当前歌曲。" },
+          },
+        },
+        async run(args: Record<string, unknown>, ctx: ActionContext) {
+          const service = await companionManager.ensureRunning(apiClient, 10000, ctx.signal);
+          if (!service.running) return { result: "网易云伴生服务不可用。", status: "failed", details: { reason: "service_unavailable" } };
+          const requestedId = String(args.song_id ?? args.id ?? "").trim();
+          const current = playback.snapshot().currentSong;
+          if (!requestedId && !current) return { result: "当前没有正在播放的歌曲，无法查询歌词。", status: "failed", details: { reason: "no_current_song" } };
+          const song = requestedId ? await apiClient.getSongInfo(requestedId, ctx.signal) : current;
+          if (!song) return { result: "当前没有正在播放的歌曲，无法查询歌词。", status: "failed", details: { reason: "no_current_song" } };
+          const lines = await loadLyrics(song.id, ctx.signal);
+          const title = `歌曲：${songLabel(song)}`;
+          if (!lines || lines.length === 0) return `${title}\n该歌曲没有可用歌词。`;
+          return `${title}\n\n${formatLyrics(lines)}`;
+        },
+      },
+
+      current_lyrics: {
+        description: "查询当前播放位置的歌词和附近几行。",
+        parameters: { type: "object", properties: {} },
+        async run(_args: Record<string, unknown>, ctx: ActionContext) {
+          const song = playback.snapshot().currentSong;
+          if (!song) return { result: "当前没有正在播放的歌曲，无法查询当前歌词。", status: "failed", details: { reason: "no_current_song" } };
+          const service = await companionManager.ensureRunning(apiClient, 10000, ctx.signal);
+          if (!service.running) return { result: "网易云伴生服务不可用。", status: "failed", details: { reason: "service_unavailable" } };
+          let progress;
+          try {
+            progress = await playback.progress();
+          } catch (error) {
+            return { result: `无法确认当前歌词位置：${error instanceof Error ? error.message : String(error)}`, status: "failed", details: { reason: "progress_unavailable" } };
+          }
+          const lines = await loadLyrics(song.id, ctx.signal);
+          const output = [`当前歌曲：${songLabel(song)}`, `播放位置：${formatMs(progress.positionMs)}`, ""];
+          if (!lines || lines.length === 0) {
+            output.push("该歌曲没有可用歌词。");
+            return output.join("\n");
+          }
+          const currentIndex = lines.findLastIndex((line) => line.timeMs <= progress.positionMs);
+          if (currentIndex < 0) {
+            output.push("当前句：尚未开始", "", `下一句：${lines[0]!.text}`);
+            return output.join("\n");
+          }
+          for (let index = Math.max(0, currentIndex - 2); index <= Math.min(lines.length - 1, currentIndex + 2); index++) {
+            const label = index === currentIndex ? "当前句" : index < currentIndex ? "上一句" : "下一句";
+            output.push(`${label}：${lines[index]!.text}`);
+          }
+          return output.join("\n");
+        },
+      },
+
       status: {
         description: "查看当前播放状态、当前曲目、播放进度和音量",
         parameters: { type: "object", properties: {} },
-        async run(_args, ctx: ActionContext) {
+        async run(_args) {
           const snapshot = playback.snapshot();
           const progress = await playback.progress();
           const currentPos = formatMs(progress.positionMs);

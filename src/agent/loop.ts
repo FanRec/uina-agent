@@ -866,8 +866,10 @@ export class Subject {
 		let queuedInputs = [item];
 		if (item.mode === "followUp" && isWorldInput(item)) {
 			queuedInputs = [];
+			const origin = item.source?.origin;
 			for (const candidate of this.queues.all().filter((candidate) => candidate.order >= item.order)) {
 				if (!isWorldInput(candidate)) break;
+				if (candidate.source?.origin !== origin) break;
 				queuedInputs.push(candidate);
 			}
 		}

@@ -8,7 +8,7 @@
 
 - `connect` / `disconnect`：发起或停止直播连接。`connect` 返回只表示尝试已发起，连接是否成功看 `status.connection`。
 - `status`：查询连接状态、最近错误、重试次数和等待时长，以及独立的房间开播状态、热度、缓冲和待办计数。房间在线不等于弹幕链路连通。
-- `notification_settings`：`operation: "status"` 查看偏好；`operation: "update"` 修改 `chat_messages`、`super_chats`、`memberships`、`gifts` 中指定字段为 `on` 或 `off`。
+- `notification_settings`：`operation: "status"` 查看偏好；`operation: "update"` 修改 `chat_messages`、`room_status`、`super_chats`、`memberships`、`gifts` 中指定字段为 `on` 或 `off`。
 - `recent`：查询最近聚合弹幕。
 - `mark_handled`：标记 SC、大航海或礼物待办已处理。
 - `send`：向当前房间发送弹幕。

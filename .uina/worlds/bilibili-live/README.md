@@ -8,4 +8,4 @@
 
 Super Chat、大航海和达到阈值的礼物写入 journal 待办，并以 queued external World 事件通知。事件正文消费时读取最新待办；`mark_handled` 后事件正文失效。外部弹幕、留言、用户名和礼物名称始终作为不可信数据处理。
 
-通知设置保存在 World 数据目录的 `notification-settings.json`，字段为 `chat_messages`、`super_chats`、`memberships`、`gifts`，值为 `on` 或 `off`。停用 World 会释放连接、监听器和事件出口。
+通知设置保存在 World 数据目录的 `notification-settings.json`，字段为 `chat_messages`、`room_status`、`super_chats`、`memberships`、`gifts`，值为 `on` 或 `off`。停用 World 会释放连接、监听器和事件出口。

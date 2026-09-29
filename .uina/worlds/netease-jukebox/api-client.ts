@@ -81,6 +81,48 @@ export class NeteaseApiClient {
     }
   }
 
+  async getLyrics(songId: string, signal?: AbortSignal): Promise<string | null> {
+    const id = songId.trim();
+    if (!id) throw new Error("歌曲 ID 不能为空");
+    const url = new URL(`${this.baseUrl}/lyric`);
+    url.searchParams.set("id", id);
+    return this.request(url.toString(), 15_000, signal, async (res) => {
+      if (!res.ok) throw new Error(`网易云歌词查询失败: HTTP ${res.status}`);
+      const data = await res.json() as { lrc?: { lyric?: unknown } };
+      if (data.lrc?.lyric === undefined || data.lrc.lyric === null) return null;
+      if (typeof data.lrc.lyric !== "string") throw new Error("网易云歌词响应格式错误");
+      return data.lrc.lyric;
+    });
+  }
+
+  async getSongInfo(songId: string, signal?: AbortSignal): Promise<SongInfo | null> {
+    const id = songId.trim();
+    if (!id) throw new Error("歌曲 ID 不能为空");
+    const url = new URL(`${this.baseUrl}/song/detail`);
+    url.searchParams.set("ids", id);
+    return this.request(url.toString(), 15_000, signal, async (res) => {
+      if (!res.ok) throw new Error(`网易云歌曲详情查询失败: HTTP ${res.status}`);
+      const data = await res.json() as {
+        songs?: Array<{
+          id: number | string;
+          name?: string;
+          ar?: Array<{ name?: string }>;
+          dt?: number;
+          al?: { name?: string };
+        }>;
+      };
+      const song = data.songs?.[0];
+      if (!song) return null;
+      return {
+        id: String(song.id),
+        name: song.name ?? `歌曲 #${id}`,
+        artists: (song.ar ?? []).map((artist) => artist.name ?? "").filter(Boolean),
+        durationMs: song.dt ?? null,
+        album: song.al?.name,
+      };
+    });
+  }
+
   private async request<T>(url: string, timeoutMs: number, signal: AbortSignal | undefined, read: (response: Response) => T | Promise<T>): Promise<T> {
     signal?.throwIfAborted();
     const controller = new AbortController();
