@@ -6,13 +6,13 @@
 
 ## 1. 目标与范围
 
-把 `E:\Uina_Core\extensions\external_adapters\netease_jukebox` 迁移到当前 Uina，保留旧版 OBS Overlay 的 HTML、JavaScript 和 CSS 作为显示资产；重新接入当前 World 运行时、扩展生命周期和本地状态出口。HUD 是 Uina 的可选扩展能力，服务于当前 Uina 的 Worlds，不提前做成通用媒体平台。
+把 `E:\Uina_Core\extensions\external_adapters\netease_jukebox` 迁移到当前 Uina，保留旧版 OBS Overlay 的 HTML、JavaScript 和 CSS 作为显示资产；重新接入当前 World 运行时和 `E:\Uina\ThirdParty` 中的外部伴生服务。HUD 不属于 Uina Extension，而是可被 Uina 管理、也可独立运行的 Companion。
 
 第一阶段需要形成一条可运行的纵向切片：
 
 ```text
 Uina World action -> 网易云 API -> 播放器 -> 唯一播放快照
-                                      -> broadcast-hud 扩展 -> OBS Overlay
+                                      -> broadcast-hud Companion -> OBS Overlay
 ```
 
 需要支持：
@@ -25,7 +25,7 @@ Uina World action -> 网易云 API -> 播放器 -> 唯一播放快照
 - Overlay 的 dashboard、now-playing、progress、lyrics、queue、wave 路由；
 - 为未来的 Uina 演唱 World 保留同形状的 HUD 状态源。
 
-明确不做：Core/Session 音乐特判、自动把播放状态写入会话主线、远程暴露本地桥、把 OBS 页面变成播放器控制面板、跨进程通用媒体协议、第一阶段实现音频混音器。
+明确不做：Core/Session 音乐特判、自动把播放状态写入会话主线、远程暴露本地桥、把 OBS 页面变成播放器控制面板、第一阶段实现通用媒体平台或音频混音器。
 
 ## 2. 当前现实
 
@@ -74,11 +74,13 @@ Overlay 首次 `GET /overlay/state?view=...`，随后连接 `/ws/music` 接收 `
 
 World framework 已提供 `onStart/onStop`、`worldDataDir`、`emitEvent`、`expose`、`callService` 和 `onHostEvent`。World 启停由 `WorldRegistry` 管理，停用时会关闭其 `ResourceScope` 并执行 `onStop`。`host/`、`agent/`、`session/` 不应知道音乐业务。
 
+当前 `E:\Uina\ThirdParty` 已存在 `api-enhanced` 和 `gpt_sovits_v2pro`。它是外部项目与伴生服务的实际归属位置，不是 Uina Extension 扫描目录。`api-enhanced` 是网易云数据源，`broadcast-hud` 应与它同级：`E:\Uina\ThirdParty\broadcast-hud`。
+
 ## 3. 架构决定
 
 ### 3.1 归属
 
-采用“Uina World + Uina `broadcast-hud` 扩展”的两层结构。`broadcast-hud` 是当前 Uina 的可选显示能力，不进入 Core，也不承担音乐业务：
+采用“Uina World + `ThirdParty/broadcast-hud` Companion”的两层结构。`broadcast-hud` 是独立进程，不进入 Uina Extension 扫描，也不承担音乐业务：
 
 ```text
 netease-jukebox World
@@ -86,10 +88,10 @@ netease-jukebox World
   ├─ PlaybackCoordinator + mpv
   ├─ queue / lyrics / account state
   ├─ World actions
-  └─ expose("broadcast-hud/source/jukebox", source)
+  └─ BroadcastHudClient -> localhost `/state`
 
-broadcast-hud Extension
-  ├─ 从 World 暴露表读取 source
+ThirdParty/broadcast-hud Companion
+  ├─ 接收版本化快照（HTTP ingest）
   ├─ loopback HTTP + WebSocket bridge
   ├─ 提供复制的 overlay/ 静态资源
   └─ 只展示快照，不执行播放动作
@@ -98,22 +100,24 @@ broadcast-hud Extension
 这样做的理由：
 
 1. 播放器和网易云业务属于 World；Overlay 是独立消费者，不应成为播放前置条件。
-2. HUD 与当前 Uina 的生命周期、World 启停和共享表天然一致；不需要额外的 producer 注册协议。
-3. 点歌 World 和未来演唱 World 只需暴露同一只读状态源，不互相依赖。
+2. HUD 可以脱离 Uina 启动、测试和服务 OBS；Uina 只提供一个很薄的发布适配器。
+3. 点歌 World 和未来演唱 World 都可以向同一个 Companion 发布快照，不互相依赖。
 4. Core、Session、Provider 和 UI 不增加音乐概念。
 
-第一阶段只注册网易云 source；第二个真实音频源出现前，HUD 不实现源混合、自动切换或音频路由。
+第一阶段只接收网易云 source；第二个真实音频源出现前，Companion 不实现源混合、自动切换或音频路由。
 
-### 3.2 `BroadcastHudSource` 最小契约
+### 3.2 `BroadcastHudPublisher` 最小契约
 
-契约属于 `broadcast-hud` 扩展与 World 之间的 Uina 扩展契约，不放进 Core。只传递活引用快照读取和变化通知，不把控制函数交给 HUD：
+契约属于 `ThirdParty/broadcast-hud` 与 Uina World 之间的独立协议包，不放进 Core，也不使用 `WorldExposedRegistry`。World 只发布不可变快照，不把播放控制交给 HUD：
 
 ```ts
-interface BroadcastHudSource {
-  readonly sourceId: string;
-  readonly kind: "music" | "singing";
-  snapshot(): BroadcastHudSnapshot;
-  subscribe(listener: () => void): () => void;
+interface BroadcastHudPublisher {
+  publish(snapshot: BroadcastHudSnapshot): Promise<PublishResult>;
+}
+
+interface PublishResult {
+  accepted: boolean;
+  reason?: "disabled" | "unavailable" | "stale" | "invalid";
 }
 ```
 
@@ -142,7 +146,7 @@ interface BroadcastHudSnapshot {
 }
 ```
 
-该契约是显示投影，不是新的权威状态。World 内部可以保留更丰富的账号、搜索和播放数据；HUD 只拿到当前可展示字段。
+该协议是显示投影，不是新的权威状态。World 内部可以保留更丰富的账号、搜索和播放数据；Companion 只拿到当前可展示字段。`revision` 由 World source 单调递增；Companion 按 source 和 revision 丢弃旧快照。
 
 ### 3.3 模块分工与唯一事实
 
@@ -154,18 +158,19 @@ interface BroadcastHudSnapshot {
 | `JukeboxApplication` | 意图动作 -> 结构化结果 | ref 解析、登录/确认规则、错误语义、catalog/playback 编排 |
 | `PlaybackCoordinator` | 命令、不可变快照、订阅 | 播放器事实、队列、历史、播放模式、取消代数、进度和歌词窗口 |
 | `NeteaseGateway` | 归一化的歌曲/歌单/账号读写 | loopback 校验、HTTP 重试、响应归一化、登录/VIP/不可播放分类 |
-| `broadcast-hud` | source 发现、快照投影、HTTP/WS | 仅展示状态、stale 处理、慢客户端丢旧快照、静态文件服务 |
+| `BroadcastHudClient` | 版本化快照发布、连接重试、停止收束 | 不拥有播放状态，不决定显示内容 |
+| `broadcast-hud` | 快照接收、HTTP/WS、stale 处理 | 仅展示状态、慢客户端丢旧快照、静态文件服务 |
 
 `index.ts` 只做装配和 action 注册，不直接解析网易云响应、不决定队列转移、不拼接播放成功文案。`PlaybackCoordinator` 是播放事实唯一拥有者；World `status`、HUD 和未来演唱适配都从同一个快照读取。频谱分析、账号库和搜索结果不塞进 PlaybackCoordinator。
 
-当前只有一个真实播放源，因此不实现多源 arbitration。`revision` 在 source 内单调递增；HUD 和 WS 客户端按 revision 丢弃旧快照，`updatedAt` 只用于展示和诊断，不承担顺序。
+当前只有一个真实播放源，因此不实现多源 arbitration。`revision` 在 source 内单调递增；Companion 和 WS 客户端按 revision 丢弃旧快照，`updatedAt` 只用于展示和诊断，不承担顺序。
 
 ### 3.4 Overlay 迁移规则
 
-`E:\Uina_Core\extensions\external_adapters\netease_jukebox\overlay\index.html`、`main.js`、`style.css` 直接复制到 `broadcast-hud` 的静态资源目录。迁移只允许做以下适配：
+`E:\Uina_Core\extensions\external_adapters\netease_jukebox\overlay\index.html`、`main.js`、`style.css` 直接复制到 `E:\Uina\ThirdParty\broadcast-hud\overlay`。迁移只允许做以下适配：
 
 - 保持现有路由和透明背景行为；
-- 将页面请求地址改为 `broadcast-hud` bridge 的同源 `/overlay/state` 和 `/ws/music`；
+- 将页面请求地址改为 Companion bridge 的同源 `/overlay/state` 和 `/ws/music`；
 - 保持 `OverlayState` 字段兼容；
 - 如需增加演唱来源，只使用 `source.kind/label` 和同一 `playback.currentTrack` 形状。
 
@@ -182,29 +187,31 @@ interface BroadcastHudSnapshot {
   -> PlaybackCoordinator 串行化状态变更
   -> mpv / api-enhanced 外部副作用
   -> 确认后的状态 patch
-  -> BroadcastHudSource.snapshot() / changed
+  -> BroadcastHudClient.publish(snapshot)
   -> broadcast-hud 广播 snapshot
 ```
 
 开始播放时先获取歌曲详情和播放 URL，再启动 mpv；未获得 URL 时返回 `failed/unavailable`，不把“已请求播放”写成“播放中”。mpv `end-file`、错误和断开分别驱动完成、错误或停止状态。取消加载时只确认取消了内部操作，不推断外部音频已经停止，直到播放器返回事实。
 
-### 4.2 `broadcast-hud` bridge
+### 4.2 `broadcast-hud` Companion bridge
 
 - 只监听 `127.0.0.1`、`localhost` 或 `::1`；配置非 loopback 时启动失败并保持播放可用。
 - `GET /health` 返回 bridge 状态。
 - `GET /overlay/state?view=<view>` 返回当前源的完整 OverlayState。
 - `GET /overlay/*` 提供白名单内静态文件，拒绝路径穿越。
 - `WS /ws/music` 连接后立即发送一次状态；源状态变化或进度/歌词变化时推送。
-- bridge 停止只关闭 HTTP/WS 和 source 订阅，不停止 World 或播放器；World 自己拥有播放生命周期。
-- 没有客户端连接时不做额外轮询；进度刷新由 PlaybackCoordinator 在播放中按配置周期执行，默认 500ms，HUD 只消费内存快照。
-- 扩展采用“先订阅暴露表、再同步当前 source”的顺序，兼容 World 先启动、后启动、停用和重新启用；没有 source 时 bridge 仍可提供 idle 页面。
-- loopback 端口冲突只让 HUD 降级，不阻止 World 注册或播放；`world_store disable broadcast-hud` 不影响点歌机。
+- Companion 停止只关闭 HTTP/WS 和 ingest 连接，不停止 World 或播放器；World 自己拥有播放生命周期。
+- 没有客户端连接时不做额外轮询；进度刷新由 PlaybackCoordinator 在播放中按配置周期执行，默认 500ms，Companion 只消费内存快照。
+- Companion 未运行时，World 的 `BroadcastHudClient` 返回 `unavailable`，但不阻止点歌和播放。
+- loopback 端口冲突只让 HUD 降级，不阻止 World 注册或播放。
 
 ### 4.3 源选择与未来演唱
 
-第一阶段 `broadcast-hud` 只消费 `jukebox` source，不实现多源仲裁。未来演唱 World 启动时通过 `ctx.expose("broadcast-hud/source/singing", source)` 注册第二个 source；扩展监听暴露表变化并重新绑定。source 停止或取消暴露后，HUD 显示 disconnected/idle，不继续把旧的 `playing` 当作当前播放。
+第一阶段 `broadcast-hud` 只接收 `jukebox` source，不实现多源仲裁。未来演唱 World 启动时通过同一 `BroadcastHudClient` 发布第二个 source。source 停止发布后，Companion 在 stale timeout 后显示 disconnected/idle，不继续把旧的 `playing` 当作当前播放。
 
-第二个 source 真正出现后，再增加显式的 active source 选择规则（默认最近一次有权声明 active 的 source）。不使用“两个 source 交替心跳就自动抢焦点”的隐式规则，避免直播画面抖动。
+第二个 source 真正出现后，再增加显式的 active source 选择规则（由发布方声明 active，并带 lease 过期时间）。不使用“两个 source 交替心跳就自动抢焦点”的隐式规则，避免直播画面抖动。
+
+传输保持单向、低认知负担：producer 向 `POST /state` 发送完整快照，Companion 返回 `accepted` 或明确拒绝原因；OBS 只读 `GET /overlay/state` 和 `WS /ws/music`。Companion 不接受播放控制请求，不需要 producer 注册或双向会话。
 
 ## 5. World 能力设计
 
@@ -270,7 +277,7 @@ interface BroadcastHudSnapshot {
 
 ### 6.1 配置与默认行为
 
-配置必须从 World 数据目录和显式配置得到，不再把 `E:\Uina\...` 之类的机器路径写进实现。默认值以“能解释、不会偷偷产生副作用”为准：
+配置必须从 World 数据目录和显式配置得到，不再把 `E:\Uina\...` 之类的机器路径硬编码进实现。`ThirdParty` 是默认安装根，但路径必须可覆盖。默认值以“能解释、不会偷偷产生副作用”为准：
 
 | 配置 | 默认 | 说明 |
 |---|---|---|
@@ -278,10 +285,25 @@ interface BroadcastHudSnapshot {
 | `api.baseUrl` | `http://127.0.0.1:3000` | 只允许 loopback HTTP。 |
 | `player` | `mpv` | 找不到 mpv 时明确 unavailable；不自动切到静音模拟。 |
 | `queueLimit` | `100` | 有限且可观察，超限拒绝。 |
-| `broadcastHud.enabled` | `false` | HUD 是可选能力；关闭不影响点歌和播放。 |
+| `broadcastHud.mode` | `manual` | `disabled` 不连接；`manual` 只连接已有 Companion；`auto` 不存在时由 World 启动。 |
+| `broadcastHud.dir` | `E:\Uina\ThirdParty\broadcast-hud` | Companion 安装目录，可配置覆盖。 |
 | `broadcastHud.port` | `18130` | 只监听 loopback，端口冲突只影响 HUD。 |
 
 模型不需要知道这些配置。`status` 只报告当前可用性和下一步，不暴露 cookie、进程参数或本地文件细节。
+
+### 6.2 Companion 启动所有权
+
+`broadcast-hud` 有独立入口、自己的 package/runtime、`/health` 和自己的测试。World 通过 `BroadcastHudCompanionManager` 管理连接：
+
+```text
+mode=disabled -> 不连接、不启动
+mode=manual   -> 只连接 localhost:18130，失败则 HUD unavailable
+mode=auto     -> 先连接；不可用时从 ThirdParty/broadcast-hud 启动；等待 /health
+```
+
+只有 `auto` 模式下由当前 World 成功启动的子进程才由它在 `onStop` 时停止；已由用户或其他进程启动的 Companion 不被误杀。World 停止时先停止 `BroadcastHudClient`，再停止自己拥有的 Companion。Companion 崩溃、端口冲突或 Overlay 无 OBS 客户端都不能影响播放器。
+
+`api-enhanced` 遵循同一规则，但与 HUD 分开配置和管理：它是网易云数据源，播放/搜索依赖它；`broadcast-hud` 只是显示消费者，永远不是播放前置条件。
 
 ## 7. 实施阶段
 
@@ -291,20 +313,21 @@ interface BroadcastHudSnapshot {
 2. 将当前 `PlaybackSession` 深化为 `PlaybackCoordinator`，先集中唯一状态快照、队列、模式、进度、歌词窗口和播放器结束/错误处理；不复制旧版全部实现。
 3. 将 `NeteaseApiClient` 深化为 `NeteaseGateway`，集中 loopback 校验、重试、响应归一化和不可播放分类。
 4. 将 World `index.ts` 收窄为装配，加入 `JukeboxApplication` 处理六个意图动作。
-5. 增加可选 `broadcast-hud` 扩展（静态资源、loopback server、World source 订阅），接入网易云 source。
-6. 实现 `search -> play -> snapshot -> Overlay` 真实链路。
+5. 在 `E:\Uina\ThirdParty\broadcast-hud` 建立独立 Companion（静态资源、loopback server、快照接收协议）。
+6. 在 World 内加入 `BroadcastHudClient` 和可选 `BroadcastHudCompanionManager`；HUD 不可用时播放仍可用。
+7. 实现 `search -> play -> snapshot -> Companion -> Overlay` 真实链路。
 
 ### P1：操作完整性
 
-1. 增加 `add_to_queue`、`next`、`previous`、播放模式和持久化偏好。
+1. 完成 `queue` 与 `playback` 的全部操作、播放模式和持久化偏好。
 2. 增加歌单/发现/账号读操作。
 3. 增加账号写操作和结果验证。
 4. 增加歌词窗口、进度和可选频谱分析。
 
 ### P2：未来演唱接缝
 
-1. 演唱 World 暴露第二个 `BroadcastHudSource`。
-2. `broadcast-hud` 增加显式 source 选择状态和 active source 规则。
+1. 演唱 World 使用同一 `BroadcastHudClient` 发布第二个 source。
+2. `broadcast-hud` 增加显式 source 选择状态和 active source lease。
 3. 为 singing source 增加最小测试，不修改 Overlay 的基础布局。
 
 P2 之前不添加通用媒体混音、媒体资产库、独立数据库或跨进程消息总线。
@@ -315,16 +338,16 @@ P2 之前不添加通用媒体混音、媒体资产库、独立数据库或跨�
 
 - `pnpm typecheck`：World/扩展边界、Overlay contract 和现有边界检查；
 - `pnpm test`：API 归一化、播放模式、队列上限、歌词窗口、取消和 `BroadcastHudSnapshot` schema；
-- bridge 路径白名单、loopback 校验、WS 初始快照和断开清理测试；
+- Companion `/health`、快照接收、loopback 校验、WS 初始快照和断开清理测试；
 - World 停用后不再执行新动作、不再广播状态。
-- `broadcast-hud` 先订阅再同步的启停顺序、source 注销、revision 单调性和慢客户端只保留最新快照。
+- Companion source stale、revision 单调性和慢客户端只保留最新快照。
 
 ### 组合测试
 
 - simulation player 下运行 `search -> play -> add_to_queue -> next -> stop`；
 - 在没有消费者时 World 仍能播放并更新状态；
-- HUD 扩展先启动或后启动都能接收 World source 快照；World 停止后 source 变为 disconnected；
-- bridge 无法监听时播放动作仍可运行。
+- Companion 先启动或后启动都能接收 World 快照；World 停止后 source 变为 disconnected；
+- Companion 无法监听或无法启动时播放动作仍可运行。
 
 ### 真实依赖验证
 
@@ -337,7 +360,7 @@ P2 之前不添加通用媒体混音、媒体资产库、独立数据库或跨�
 
 ## 9. 取舍与删除标准
 
-保留的抽象只有三个稳定 seam：`PlaybackCoordinator`、`NeteaseGateway`、`broadcast-hud` source。若未来没有第二个音频源，不增加 source arbitration，也不把 snapshot 协议扩展成媒体平台。
+保留的抽象只有三个稳定 seam：`PlaybackCoordinator`、`NeteaseGateway`、`BroadcastHudClient`。若未来没有第二个音频源，不增加 source arbitration，也不把 snapshot 协议扩展成媒体平台。
 
 出现以下情况时删除或收窄复杂度：
 
@@ -348,6 +371,6 @@ P2 之前不添加通用媒体混音、媒体资产库、独立数据库或跨�
 
 ## 10. 最终决策
 
-实现方向为：**网易云是一个 Uina World；World 内部的 `PlaybackCoordinator` 是唯一播放事实拥有者；可选的 `broadcast-hud` 扩展通过 World 暴露表读取只读 source，并提供 loopback bridge；未来演唱 World 暴露第二个 source。**
+实现方向为：**网易云是一个 Uina World；World 内部的 `PlaybackCoordinator` 是唯一播放事实拥有者；`E:\Uina\ThirdParty\broadcast-hud` 是独立 Companion，由 World 通过 `BroadcastHudClient` 可选地自动拉起或连接；未来演唱 World 复用同一快照协议。**
 
 下一步应先实现 P0，并以 simulation player 完成一条可测的 `search -> play -> state snapshot -> Overlay` 纵向切片，再接入真实 api-enhanced、mpv 和 OBS。Core、Session、Provider 和 UI 不需要为点歌机增加专用接口。
