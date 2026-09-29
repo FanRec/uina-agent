@@ -1,9 +1,9 @@
 import type { ExtensionAPI } from "../../../src/extensions/runner.js";
 import type { ContextUpdateEvent, TurnStartEvent, OutputInterruptedEvent, OutputUpdateEvent } from "../../../src/runtime/events.js";
 import {
-	APP_EXPOSED_SHARED_NAME,
-	type AppExposedRegistry,
-} from "../../../src/extensions/app-framework/types.js";
+	WORLD_EXPOSED_SHARED_NAME,
+	type WorldExposedRegistry,
+} from "../../../src/extensions/world-framework/types.js";
 import {
 	VOICE_LEVEL_SINK_EXPOSED_PREFIX,
 	isVoiceLevelSink,
@@ -69,15 +69,15 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 
   // 3. 声学电平下发：桥侧电平 -> 具备口型的身体外壳
   //
-  //    方向是"生产者推、消费者只提供接收端"：外壳用 ctx.expose 暴露 sink（应用只写、
+  //    方向是"生产者推、消费者只提供接收端"：外壳用 ctx.expose 暴露 sink（世界只写、
   //    读不到他人共享值），tts 用 pi.shared 拉取并按前缀筛选后推送。外壳因此不需要
   //    知道音频从哪来，也不需要为口型引入第二条传输通道。
-  const readExposedFeed = (): AppExposedRegistry | undefined => {
+  const readExposedFeed = (): WorldExposedRegistry | undefined => {
     // 声学电平是**增强能力**。宿主未提供同进程共享表（例如核心早于本扩展的进程）
     // 时必须跳过扇出而不是让整个 tts 激活失败——否则"缺一个唇形驱动"会把
     // "说话"本身一起弄死，而发声才是这个扩展的存在意义。
     if (typeof pi.shared !== "function") return undefined;
-    return pi.shared(APP_EXPOSED_SHARED_NAME) as AppExposedRegistry | undefined;
+    return pi.shared(WORLD_EXPOSED_SHARED_NAME) as WorldExposedRegistry | undefined;
   };
 
   const resolveLevelSinks = (): VoiceLevelSink[] => {
@@ -96,7 +96,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
     return sinks;
   };
 
-  // 缓存 + 随共享表变化重解析：外壳可能在运行期被停用/重新启用（app_store 启停）。
+  // 缓存 + 随共享表变化重解析：外壳可能在运行期被停用/重新启用（world_store 启停）。
   let levelSinks = resolveLevelSinks();
   const exposedFeed = readExposedFeed();
   if (!exposedFeed) {

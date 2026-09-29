@@ -80,7 +80,7 @@
 - Modify: `.uina/extensions/tts/index.ts`
 - Modify: `.uina/extensions/voice/tool.ts`
 - Modify: `.uina/extensions/voice/driver.ts`
-- Modify: `src/extensions/app-framework/types.ts` only if needed for typed teardown
+- Modify: `src/extensions/world-framework/types.ts` only if needed for typed teardown
 - Modify: `tests/tts-hardening.test.ts`
 - Modify: `tests/voice-extension.test.ts` only if tracked/available
 

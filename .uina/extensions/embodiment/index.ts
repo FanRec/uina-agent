@@ -1,12 +1,10 @@
 import type { ExtensionAPI } from "../../../src/extensions/runner.js";
 import {
-	APP_EXPOSED_SHARED_NAME,
-	type AppExposedRegistry,
-} from "../../../src/extensions/app-framework/types.js";
-import { buildEventFrameGroup, snapshotNotice, contentAddressedEventId } from "../../../src/extensions/event-frames/projection.js";
+	WORLD_EXPOSED_SHARED_NAME,
+	type WorldExposedRegistry,
+} from "../../../src/extensions/world-framework/types.js";
 import { BodyRouter } from "./body-router.js";
 import { StreamingTagStripper } from "./tag-stripper.js";
-import { projectEmbodimentContext } from "./context-projector.js";
 import { createBodyTool } from "./tools.js";
 import { BODY_ENDPOINT_EXPOSED_PREFIX, type BodyEndpoint } from "./types.js";
 
@@ -37,10 +35,10 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 	const router = new BodyRouter();
 	const stripper = new StreamingTagStripper();
 
-	// 1. 从宿主同进程共享表拉取应用暴露的具身端点。
+	// 1. 从宿主同进程共享表拉取世界暴露的具身端点。
 	//
-	//    刻意采用"拉取 + 订阅"而不是"应用启动时推送"：应用由 app-framework 在内置
-	//    capability 阶段装载，可能早于本扩展激活，也可能在运行期被 app_store 停用/
+	//    刻意采用"拉取 + 订阅"而不是"世界启动时推送"：世界由 world-framework 在内置
+	//    capability 阶段装载，可能早于本扩展激活，也可能在运行期被 world_store 停用/
 	//    启用而重新暴露。拉取对顺序免疫，订阅覆盖后续变化。
 	const registered = new Map<string, BodyEndpoint>();
 
@@ -63,7 +61,7 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 	};
 
 	const syncExposedEndpoints = (): void => {
-		const feed = pi.shared(APP_EXPOSED_SHARED_NAME) as AppExposedRegistry | undefined;
+		const feed = pi.shared(WORLD_EXPOSED_SHARED_NAME) as WorldExposedRegistry | undefined;
 
 		const present = new Map<string, BodyEndpoint>();
 		if (feed) {
@@ -100,7 +98,7 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 
 	// 先订阅后拉取：订阅建立之前发生的暴露不会被后续拉取错过；拉取本身幂等，
 	// 两步顺序颠倒会在“共享表在同步与订阅之间才出现/变更”时留下丢失窗口。
-	const exposedFeed = pi.shared(APP_EXPOSED_SHARED_NAME) as AppExposedRegistry | undefined;
+	const exposedFeed = pi.shared(WORLD_EXPOSED_SHARED_NAME) as WorldExposedRegistry | undefined;
 	const unsubscribeExposed = exposedFeed?.subscribe(syncExposedEndpoints);
 	syncExposedEndpoints();
 
@@ -119,26 +117,6 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 	const unhookPrepare = pi.onHook("turn.prepare", async (input) => ({
 		systemPrompt: `${input.systemPrompt}\n[具身规范] 身体离线时，伴随动作自动挂起；被问及身体状态时，如实告知。日常说话中适度自然流露动作即可，请勿在每句话中生硬堆砌动作标签。`,
 	}));
-	const unhookTransformContext = pi.onHook("turn.transformContext", async (projection) => {
-		const contextText = projectEmbodimentContext(router);
-		if (!contextText) {
-			return undefined;
-		}
-		return {
-			projection: {
-				...projection,
-				messages: [
-				...projection.messages,
-				...buildEventFrameGroup({
-					eventId: contentAddressedEventId("embodiment-state", contextText),
-					text: contextText,
-					notice: snapshotNotice("具身状态感知"),
-					source: { kind: "runtime", type: "embodiment-state", origin: "external" },
-				}),
-				],
-			},
-		};
-	}, { tail: true });
 
 	// 4. 监听输出流，流式剥离并分发 <cue> 标签。
 	//    只消费 cues：清洗后的正文由 voice/tts 各自的清洗器独立负责，此处不做二手转交。
@@ -212,7 +190,6 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 		unregisterTool?.();
 		unregisterMarkdown?.();
 		unhookPrepare?.();
-		unhookTransformContext?.();
 		pi.signal.removeEventListener("abort", onAbort);
 		void router.stopAll();
 	};

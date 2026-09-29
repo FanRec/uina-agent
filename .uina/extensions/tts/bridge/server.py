@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
@@ -61,7 +61,7 @@ def build_app(service: Any) -> FastAPI:
         return service.batch_task_status(request)
 
     @app.get("/v1/tts/events")
-    def playback_events(trace_id: str | None = None):
+    def playback_events(trace_id: Optional[str] = None):
         return StreamingResponse(
             service.playback_events(trace_id),
             media_type="text/event-stream",

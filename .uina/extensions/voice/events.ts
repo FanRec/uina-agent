@@ -24,7 +24,7 @@ export interface VoiceLevelEvent {
  *
  * 具备口型能力的身体外壳（如 Live2D App）用
  * `ctx.expose(VOICE_LEVEL_SINK_EXPOSED_PREFIX + bodyId, sink)` 暴露自己；
- * 声学生产者（tts）用 `pi.shared(APP_EXPOSED_SHARED_NAME)` 拉取并按此前缀筛选后推送。
+ * 声学生产者（tts）用 `pi.shared(WORLD_EXPOSED_SHARED_NAME)` 拉取并按此前缀筛选后推送。
  *
  * 方向是**生产者推、消费者只提供接收端**：消费者不必知道音频从哪来，
  * 也不因此获得读取生产者内部状态的能力。

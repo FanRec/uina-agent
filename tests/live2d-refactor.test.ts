@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { MotionDirector } from "../.uina/apps/live2d/motion-director.js";
-import { CHANNEL_PRIORITY } from "../.uina/apps/live2d/types.js";
+import { MotionDirector } from "../.uina/worlds/live2d/motion-director.js";
+import { CHANNEL_PRIORITY } from "../.uina/worlds/live2d/types.js";
 
 describe("Live2D channel ownership", () => {
 	it("removes preempted channels from a surviving lease", async () => {

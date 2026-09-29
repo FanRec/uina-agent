@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { CUE_ALIASES, CANONICAL_CUE_IDS, resolveCueToBeat } from "../.uina/apps/live2d/parameter-mapper.js";
-import { live2dAffordance } from "../.uina/apps/live2d/runtime.js";
+import { CUE_ALIASES, CANONICAL_CUE_IDS, resolveCueToBeat } from "../.uina/worlds/live2d/parameter-mapper.js";
+import { live2dAffordance } from "../.uina/worlds/live2d/runtime.js";
 
 /**
  * 单一事实来源一致性测试：

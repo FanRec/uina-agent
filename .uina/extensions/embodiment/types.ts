@@ -61,7 +61,7 @@ export interface ExtractedCue {
  * 具身端点在宿主同进程共享表中的登记名前缀。
  *
  * 端点提供方（如 Live2D App）用 `ctx.expose(PREFIX + bodyId, endpoint)` 暴露自己；
- * 具身路由扩展用 `pi.shared(APP_EXPOSED_SHARED_NAME)` 拉取全部登记项并按此前缀筛选。
+ * 具身路由扩展用 `pi.shared(WORLD_EXPOSED_SHARED_NAME)` 拉取全部登记项并按此前缀筛选。
  * 前缀是双方唯一的约定，宿主不解释它的语义。
  *
  * 为何走同进程共享而非服务调用：`BodyEndpoint` 是**行为契约**（带原型方法与闭包），

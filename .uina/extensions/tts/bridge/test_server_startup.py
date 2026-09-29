@@ -34,6 +34,17 @@ class RunServerTests(unittest.TestCase):
             log_level="info",
         )
 
+    def test_build_app_registers_routes_without_typing_evaluation_error(self) -> None:
+        from unittest.mock import MagicMock
+
+        service = MagicMock()
+        app = server.build_app(service)
+        self.assertIsNotNone(app)
+
+        routes = [getattr(r, "path", None) for r in app.routes]
+        self.assertIn("/v1/tts/events", routes)
+        self.assertIn("/health", routes)
+
 
 if __name__ == "__main__":
     unittest.main()

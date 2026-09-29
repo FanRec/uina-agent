@@ -1,0 +1,11 @@
+import type { WorldRegistry } from "../world-registry.js";
+import type { WorldDef } from "../types.js";
+
+export function createWorldStoreWorld(registry: WorldRegistry): WorldDef {
+ return { name: "world_store", description: "查询和管理已安装 World。使用 list/search 查看状态，enable/disable 控制启停。", environment: "本机已安装 World 的目录；动态状态通过本工具查询。", defaultState: { enabled: true }, actions: {
+  list: { description: "列出已安装 World 及启用状态", run: () => { const worlds = registry.list(); return worlds.length ? worlds.map(w => `- ${w.definition.name}: ${w.enabled ? "enabled" : "disabled"} - ${w.definition.description}`).join("\n") : "当前没有已安装 World。"; } },
+  search: { description: "按名称、描述或环境说明搜索 World", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }, validate: (p: any) => typeof p?.query === "string" && p.query.trim() ? { valid: true } : { valid: false, error: "query 不能为空" }, run: (p: any) => { const q = String(p.query).trim().toLowerCase(); const m = registry.list().filter(w => [w.definition.name, w.definition.description, w.definition.environment ?? ""].some(v => v.toLowerCase().includes(q))); return m.length ? m.map(w => `- ${w.definition.name}: ${w.enabled ? "enabled" : "disabled"} - ${w.definition.description}`).join("\n") : `未找到匹配的 World: ${p.query}`; } },
+  enable: { description: "启用指定 World", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] }, validate: (p: any) => typeof p?.name === "string" && p.name.trim() ? { valid: true } : { valid: false, error: "name 不能为空" }, run: async (p: any) => { const name = String(p.name).trim(); if (!registry.has(name)) return `未找到 World: ${name}`; await registry.enable(name); return `World 已启用: ${name}`; } },
+  disable: { description: "停用指定 World 并释放其资源", parameters: { type: "object", properties: { name: { type: "string" } }, required: ["name"] }, validate: (p: any) => typeof p?.name === "string" && p.name.trim() ? { valid: true } : { valid: false, error: "name 不能为空" }, run: async (p: any) => { const name = String(p.name).trim(); if (name === "world_store") return "不能停用 world_store。"; if (!registry.has(name)) return `未找到 World: ${name}`; await registry.disable(name); return `World 已停用: ${name}`; } },
+ } };
+}

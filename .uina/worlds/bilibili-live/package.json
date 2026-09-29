@@ -1,0 +1,10 @@
+{
+  "name": "bilibili-live",
+  "version": "1.0.0",
+  "description": "B站直播弹幕与互动 World",
+  "type": "module",
+  "main": "./src/index.ts",
+  "uina": {
+    "type": "world"
+  }
+}

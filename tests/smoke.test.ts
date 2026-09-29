@@ -146,6 +146,20 @@ describe("Subject", () => {
 		expect(lastUserMsg?.content).toBe("steer\n\nfollow");
 	});
 
+	test("连续 World follow-up 在一次模型请求中按顺序消费", async () => {
+		const scenario = new Scenario();
+		scenario.fallback(() => [{ kind: "text", text: "收到" }, { kind: "finish", reason: "stop" }]);
+		const harness = SubjectHarness.create({ scenario });
+		harness.subject.seedQueue([
+			{ id: "world-1", order: 1, mode: "followUp", text: "占位", source: { kind: "runtime", type: "gift", ref: "bilibili-live", origin: "external", channel: "world" } },
+			{ id: "world-2", order: 2, mode: "followUp", text: "占位", source: { kind: "runtime", type: "pacing-opportunity", ref: "ticker", origin: "internal", channel: "world" } },
+		]);
+		await harness.subject.resumePending();
+		await harness.waitForIdle();
+		expect(scenario.calls).toHaveLength(1);
+		expect(harness.subject.historySnapshot().filter((message) => message.id === "world-1" || message.id === "world-2").map((message) => message.id)).toEqual(["world-1", "world-2"]);
+	});
+
 	test("轮中被消费的排队项必须为每条产生 turn_start（TUI 用户消息渲染依赖它）", async () => {
 		let release: (() => void) | undefined;
 		const model: Model = {

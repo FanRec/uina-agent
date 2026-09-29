@@ -2,12 +2,12 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { AppRegistry } from "../src/extensions/app-framework/app-registry.js";
-import { defineApp } from "../src/extensions/app-framework/index.js";
+import { WorldRegistry } from "../src/extensions/world-framework/world-registry.js";
+import { defineWorld } from "../src/extensions/world-framework/index.js";
 import type { ExtensionAPI } from "../src/extensions/runner.js";
 import type { Tool } from "../src/tools/broker.js";
 
-describe("App Framework: Lifecycle & Registry", () => {
+describe("World Framework: Lifecycle & Registry", () => {
 	function createMockExtensionAPI(cwd?: string) {
 		const tools = new Map<string, Tool>();
 		const hooks: Record<string, Function[]> = {};
@@ -42,12 +42,12 @@ describe("App Framework: Lifecycle & Registry", () => {
 		};
 	}
 
-	it("defineApp: 自动注册门面工具并在注销时拔除", async () => {
+	it("defineWorld: 自动注册门面工具并在注销时拔除", async () => {
 		const mock = createMockExtensionAPI();
 		const onStart = vi.fn();
 		const onStop = vi.fn();
 
-		const unregister = await defineApp(mock.pi, {
+		const unregister = await defineWorld(mock.pi, {
 			name: "jukebox",
 			description: "网易云点歌机",
 			onStart,
@@ -66,7 +66,7 @@ describe("App Framework: Lifecycle & Registry", () => {
 		expect(mock.tools.has("jukebox")).toBe(true);
 		expect(onStart).toHaveBeenCalled();
 
-		// 注销应用
+		// 注销世界
 		await unregister();
 
 		// 验证工具已被拔除，onStop 被调用
@@ -76,7 +76,7 @@ describe("App Framework: Lifecycle & Registry", () => {
 
 	it("enable / disable 动态生命周期与 onStart / onStop 联动", async () => {
 		const mock = createMockExtensionAPI();
-		const registry = new AppRegistry(mock.pi);
+		const registry = new WorldRegistry(mock.pi);
 
 		const onStart = vi.fn();
 		const onStop = vi.fn();
@@ -110,9 +110,34 @@ describe("App Framework: Lifecycle & Registry", () => {
 		expect(onStart).toHaveBeenCalledTimes(2);
 	});
 
+	it("World 事件保留 deferred render，并带来源与投递模式", async () => {
+		const mock = createMockExtensionAPI();
+		let emitEvent: ((event: { id: string; type: string; channel: "world"; delivery: "queued" | "urgent"; render: () => string }) => Promise<void>) | undefined;
+		const inputs: Array<Record<string, unknown>> = [];
+		(mock.pi as any).submitInput = vi.fn(async (input: Record<string, unknown>) => { inputs.push(input); });
+		const unregister = await defineWorld(mock.pi, {
+			name: "event-world",
+			description: "event test",
+			onStart: (ctx) => { emitEvent = ctx.emitEvent as typeof emitEvent; },
+			actions: {},
+		});
+		let state = "old";
+		await emitEvent!({ id: "event-1", type: "changed", channel: "world", delivery: "queued", render: () => state });
+		expect(inputs).toHaveLength(1);
+		expect(inputs[0]?.mode).toBe("followUp");
+		expect((inputs[0]?.source as { origin?: string }).origin).toBe("external");
+		expect((inputs[0]?.source as { channel?: string }).channel).toBe("world");
+		expect(state).toBe("old");
+		state = "new";
+		const deferred = inputs[0]?.render as (() => string);
+		expect(await deferred()).toBe("new");
+		await unregister();
+		expect(await deferred()).toBeNull();
+	});
+
 	it("disable：先取消并等待动作，再执行 onStop", async () => {
 		const mock = createMockExtensionAPI();
-		const registry = new AppRegistry(mock.pi);
+		const registry = new WorldRegistry(mock.pi);
 		const order: string[] = [];
 		let release!: () => void;
 		const released = new Promise<void>((resolve) => { release = resolve; });
@@ -147,7 +172,7 @@ describe("App Framework: Lifecycle & Registry", () => {
 
 	it("disposeAll：等待式回收全部伴生服务与工具（由 ResourceScope await，非 fire-and-forget）", async () => {
 		const mock = createMockExtensionAPI();
-		const registry = new AppRegistry(mock.pi);
+		const registry = new WorldRegistry(mock.pi);
 
 		const onStop1 = vi.fn();
 		const onStop2 = vi.fn();
@@ -171,7 +196,7 @@ describe("App Framework: Lifecycle & Registry", () => {
 		// 显式等待回收（生命周期收拢后由 ResourceScope 调用 activation 返回的 dispose）
 		await registry.disposeAll();
 
-		// 两个应用的 onStop 均被调用，且工具被全部拔除
+		// 两个世界的 onStop 均被调用，且工具被全部拔除
 		expect(onStop1).toHaveBeenCalled();
 		expect(onStop2).toHaveBeenCalled();
 		expect(mock.tools.size).toBe(0);
@@ -184,14 +209,14 @@ describe("App Framework: Lifecycle & Registry", () => {
 		(original as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
 			throw new Error("工具重名");
 		});
-		const registry = new AppRegistry(mock.pi);
+		const registry = new WorldRegistry(mock.pi);
 
 		const onStart = vi.fn();
 		const onStop = vi.fn();
 
 		await registry.register({
 			name: "partitioned",
-			description: "可回滚应用",
+			description: "可回滚世界",
 			onStart,
 			onStop,
 			defaultState: { enabled: false },
@@ -208,9 +233,9 @@ describe("App Framework: Lifecycle & Registry", () => {
 		expect(mock.tools.has("partitioned")).toBe(false);
 	});
 
-	it("重复注册同名应用应报错", async () => {
+	it("重复注册同名世界应报错", async () => {
 		const mock = createMockExtensionAPI();
-		const registry = new AppRegistry(mock.pi);
+		const registry = new WorldRegistry(mock.pi);
 
 		await registry.register({
 			name: "dup",
@@ -224,16 +249,16 @@ describe("App Framework: Lifecycle & Registry", () => {
 				description: "dup2",
 				actions: {},
 			}),
-		).rejects.toThrow('应用 "dup" 已被注册');
+		).rejects.toThrow('世界 "dup" 已被注册');
 	});
 
-	it("持久化状态测试：disable/enable 写入 .uina/apps.json 并在下次启动时恢复", async () => {
+	it("持久化状态测试：disable/enable 写入 .uina/worlds.json 并在下次启动时恢复", async () => {
 		const tempDir = await mkdtemp(join(tmpdir(), "uina-app-persist-test-"));
 		try {
 			const mock1 = createMockExtensionAPI(tempDir);
-			const registry1 = new AppRegistry(mock1.pi);
+			const registry1 = new WorldRegistry(mock1.pi);
 
-			// 注册一个默认启用的应用
+			// 注册一个默认启用的世界
 			await registry1.register({
 				name: "jukebox",
 				description: "点歌机",
@@ -242,14 +267,14 @@ describe("App Framework: Lifecycle & Registry", () => {
 			});
 			expect(mock1.tools.has("jukebox")).toBe(true);
 
-			// 用户/前端停用该应用
+			// 用户/前端停用该世界
 			await registry1.disable("jukebox");
 			expect(mock1.tools.has("jukebox")).toBe(false);
 
 			// 等落盘完成。原先用固定 20ms：持久化是异步链式写入（saveTail → 临时文件 → rename），
 			// 全量并发负载下 20ms 并不总是够，曾反复造成门禁假失败。
 			// 测试应当等条件而不是等一个猜出来的时长——这里改为有界轮询。
-			const statePath = join(tempDir, ".uina", "apps.json");
+			const statePath = join(tempDir, ".uina", "worlds.json");
 			const deadline = Date.now() + 3000;
 			let persisted = "";
 			while (Date.now() < deadline) {
@@ -263,11 +288,11 @@ describe("App Framework: Lifecycle & Registry", () => {
 			}
 			expect(persisted).toContain('"jukebox": false');
 
-			// 模拟进程重启：创建新的 AppRegistry 实例（相同 cwd）
+			// 模拟进程重启：创建新的 WorldRegistry 实例（相同 cwd）
 			const mock2 = createMockExtensionAPI(tempDir);
-			const registry2 = new AppRegistry(mock2.pi);
+			const registry2 = new WorldRegistry(mock2.pi);
 
-			// 重新注册该应用（即使 defaultState 是 enabled: true）
+			// 重新注册该世界（即使 defaultState 是 enabled: true）
 			await registry2.register({
 				name: "jukebox",
 				description: "点歌机",
@@ -288,7 +313,7 @@ describe("App Framework: Lifecycle & Registry", () => {
 
 	it("停止一个 App 只取消它自己的动作", async () => {
 		const mock = createMockExtensionAPI();
-		const registry = new AppRegistry(mock.pi);
+		const registry = new WorldRegistry(mock.pi);
 		let aStarted = false;
 		let bStarted = false;
 		let bFinished = false;
@@ -331,7 +356,7 @@ describe("App Framework: Lifecycle & Registry", () => {
 
 	it("onStop 失败不会伪装成成功停用", async () => {
 		const mock = createMockExtensionAPI();
-		const registry = new AppRegistry(mock.pi);
+		const registry = new WorldRegistry(mock.pi);
 		await registry.register({
 			name: "broken-stop",
 			description: "broken stop",
@@ -339,14 +364,14 @@ describe("App Framework: Lifecycle & Registry", () => {
 			actions: {},
 		});
 
-		await expect(registry.disable("broken-stop")).rejects.toThrow("应用停用失败");
+		await expect(registry.disable("broken-stop")).rejects.toThrow("世界停用失败");
 		expect(registry.get("broken-stop")?.enabled).toBe(false);
 		expect(mock.tools.has("broken-stop")).toBe(false);
 	});
 
 	it("关闭开始后拒绝新的注册和启用", async () => {
 		const mock = createMockExtensionAPI();
-		const registry = new AppRegistry(mock.pi);
+		const registry = new WorldRegistry(mock.pi);
 		await registry.register({ name: "existing", description: "existing", actions: {} });
 		const closing = registry.disposeAll();
 

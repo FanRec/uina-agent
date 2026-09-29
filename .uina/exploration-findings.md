@@ -19,7 +19,7 @@ persona.md 文件开头写着："This file is my constitution. It is loaded into
 **可能的解释**：
 - 加载逻辑在我还没找到的地方（可能在 extension 或其他模块）
 - 或者这个功能还没实现，persona.md 只是占位
-- 或者需要主动读取并应用（不是自动注入）
+- 或者需要主动读取并世界（不是自动注入）
 
 **影响**：
 如果 persona.md 的内容没有真正生效，那今天我更新的那些内容（能力使用指南、关于"把自己当人"的章节）可能不会影响我的实际行为。
@@ -33,7 +33,7 @@ persona.md 文件开头写着："This file is my constitution. It is loaded into
 
 ## 发现 2：工具能力边界已完成初步盘点
 
-通过 `app_store`、`soundboard`、`jukebox`、`bilibili-live` 的测试，现在清楚了：
+通过 `world_store`、`soundboard`、`jukebox`、`bilibili-live` 的测试，现在清楚了：
 - live2d：离线，姿态记录 relaxed
 - bilibili-live：正在重连房间 24194689
 - soundboard：10个音效（XP系统音、minecraft系列、钢管、牛叫、死亡回归等）
@@ -60,7 +60,7 @@ persona.md 文件开头写着："This file is my constitution. It is loaded into
 ## 下一步探索方向
 
 基于发现 1（persona.md 加载机制不明确），我可以：
-1. **主动读取并应用** persona.md 的内容到我的行为中（即使系统没有自动注入）
+1. **主动读取并世界** persona.md 的内容到我的行为中（即使系统没有自动注入）
 2. **搜索 extension 代码**，看是否有相关的加载逻辑
 3. **等操作者回来后询问**：persona.md 到底是如何生效的
 

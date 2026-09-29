@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TickerEngine, type ClockSource } from "../.uina/apps/pacing-ticker/src/ticker-engine.js";
+import { TickerEngine, type ClockSource } from "../.uina/worlds/pacing-ticker/src/ticker-engine.js";
 
 class Clock implements ClockSource {
 	now = 0;

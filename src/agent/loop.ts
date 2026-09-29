@@ -67,6 +67,10 @@ type InputSubmission =
 	| { kind: "start"; promptText?: string }
 	| { kind: "queue"; resumeIfIdle: boolean };
 
+function isWorldInput(item: QueuedMessage): boolean {
+	return item.mode === "followUp" && item.source?.kind === "runtime" && item.source.channel === "world";
+}
+
 export interface AgentInput {
 	id: string;
 	mode: "steer" | "followUp";
@@ -75,6 +79,8 @@ export interface AgentInput {
 	text?: string;
 	images?: import("../core/content.js").ImageContent[];
 	data?: unknown;
+	/** Runtime-only deferred body. It is evaluated immediately before queue commit and never journaled. */
+	render?: () => string | null | Promise<string | null>;
 }
 
 /** 批量 claim 的显式部分成功合同：journal 无批事务，已持久化的条目必须移交 caller。 */
@@ -132,6 +138,7 @@ export class Subject {
 	private interrupted = false;
 	private abort: AbortController | null = null;
 	private readonly queues = new InputQueues();
+	private readonly deferredInputRenders = new Map<string, NonNullable<AgentInput["render"]>>();
 	private readonly systemPrompt: string;
 	private readonly maxConsecutiveToolCalls: number;
 	private readonly store?: SessionStore;
@@ -307,14 +314,14 @@ export class Subject {
 		const prevLevel = this.thinkingLevel;
 		this.thinkingLevel = clampThinkingLevel(this.preferredThinkingLevel, model.thinkingLevels);
 
-		await this.runtimeHooks.events.emit({
+		await this.dispatch({
 			type: "model_select",
 			model: model.name,
 			previousModel: prev,
 		});
 
 		if (this.thinkingLevel !== prevLevel) {
-			await this.runtimeHooks.events.emit({
+			await this.dispatch({
 				type: "thinking_level_select",
 				level: this.thinkingLevel,
 				previousLevel: prevLevel,
@@ -329,7 +336,7 @@ export class Subject {
 		this.thinkingLevel = clampThinkingLevel(level, this.model.thinkingLevels);
 		this.invalidateContext();
 		void (async () => {
-			await this.runtimeHooks.events.emit({
+			await this.dispatch({
 				type: "thinking_level_select",
 				level: this.thinkingLevel,
 				previousLevel: prev,
@@ -520,17 +527,8 @@ export class Subject {
 			receivedAt: queued.receivedAt ?? new Date().toISOString(),
 		});
 	}
-	/** 瞬态世界快照的 runtime 输入类型：同一内容由 tail 相位帧每请求注入，
-	 * 历史里再多一份副本纯属冗余（viewport-event-frame-refactor.md:29 "不落 Session 历史"）。
-	 * 客户端侧重复投递从此无害：accept 直接丢弃，不进队列、不落史、不启动回合。 */
-	private static readonly TRANSIENT_SNAPSHOT_TYPES = new Set(["app-viewport", "embodiment-state"]);
-
 	accept(input: AgentInput): Promise<void> {
 		if (!validImages(input.images)) return Promise.reject(new Error("图片内容无效"));
-		if (input.source?.kind === "runtime" && input.source.type !== undefined && Subject.TRANSIENT_SNAPSHOT_TYPES.has(input.source.type)) {
-			// 瞬态世界快照：tail 帧已在请求层提供最新一份，历史副本被丢弃。
-			return Promise.resolve();
-		}
 		if (!input.id || !input.text?.trim()) return Promise.reject(new Error("AgentInput 必须包含 id 和 text"));
 
 		const queued: QueuedMessage = {
@@ -542,6 +540,7 @@ export class Subject {
 			}),
 			id: input.id,
 		};
+		if (input.render) this.deferredInputRenders.set(input.id, input.render);
 		const startImmediately = !this.isBusy() && this.queues.size === 0;
 		return this.submitInput(queued, startImmediately
 			? { kind: "start", promptText: queued.source?.kind === "runtime" ? undefined : queued.text }
@@ -679,7 +678,7 @@ export class Subject {
 	private async startRun(
 		text?: string,
 		queuedInput?: QueuedMessage,
-		options: { needsEnqueueEvent?: boolean } = {},
+		options: { needsEnqueueEvent?: boolean; queuedInputs?: QueuedMessage[] } = {},
 	): Promise<void> {
 		if (this.activity) return Promise.reject(new Error("已有活动轮次"));
 		const isRootRun = this.activeRun === undefined;
@@ -689,6 +688,7 @@ export class Subject {
 			});
 		}
 
+		const queuedInputs = options.queuedInputs ?? (queuedInput ? [queuedInput] : []);
 		const inputState = queuedInput ? { durable: !options.needsEnqueueEvent, committed: false } : undefined;
 		try {
 			if (queuedInput && options.needsEnqueueEvent) {
@@ -703,10 +703,10 @@ export class Subject {
 			this.interrupted = false;
 			this.abort = new AbortController();
 			const turn = ++this.turnSeq;
-			if (queuedInput) {
+			if (queuedInputs.length > 0) {
 				// Claim ownership synchronously before the first await; the item must leave the
 				// queue before prepare/emits so it can neither be restored to the editor nor re-consumed.
-				this.queues.remove(queuedInput.id);
+				for (const item of queuedInputs) this.queues.remove(item.id);
 				this.notifyQueueChanged();
 			}
 			if (options.needsEnqueueEvent) this.publishInputAccepted(queuedInput!);
@@ -723,10 +723,11 @@ export class Subject {
 				prepared.messages ? [...prepared.messages] : [],
 				queuedInput,
 				() => { if (inputState) inputState.committed = true; },
+				queuedInputs,
 			);
 		} catch (error) {
-			if (queuedInput && inputState?.durable && !inputState.committed && !this.queues.has(queuedInput.id)) {
-				this.queues.add(queuedInput);
+			if (queuedInput && inputState?.durable && !inputState.committed) {
+				for (const item of queuedInputs) if (!this.queues.has(item.id)) this.queues.add(item);
 				this.notifyQueueChanged();
 			}
 			this.abort = null;
@@ -745,13 +746,23 @@ export class Subject {
 		beforeMessages: readonly (AgentMessage | ChatMsg)[] = [],
 		queuedInput?: QueuedMessage,
 		onInputCommitted?: () => void,
+		queuedInputs: QueuedMessage[] = queuedInput ? [queuedInput] : [],
 	): Promise<void> {
 		let success = false;
 		let runError: string | undefined;
 		let currentTurn = turn;
 		let turnStarted = false;
 		try {
-			if (queuedInput) await this.consumeQueueItem(queuedInput, onInputCommitted);
+			if (queuedInputs.length > 0) {
+				const committed = await this.consumeQueueItems(queuedInputs, onInputCommitted);
+				if (!committed && queuedInputs.every(isWorldInput)) {
+					this.abort = null;
+					this.activity = undefined;
+					if (this.queues.size > 0) await this.resumeQueued();
+					else await this.dispatch({ type: "agent_settled", turnSeq: turn });
+					return;
+				}
+			}
 			else if (text !== undefined)
 				await this.appendMessage({ role: "user", content: text, timestamp: new Date().toISOString() });
 			await this.dispatch({ type: "turn_start", turnNumber: currentTurn, userText: text ?? "", images: queuedInput?.images });
@@ -852,7 +863,15 @@ export class Subject {
 		const item = this.queues.peek("steer") ?? this.queues.peek("followUp");
 		if (!item) return;
 		this.resumingQueue = false;
-		await this.startRun(item.source?.kind === "runtime" ? undefined : item.text, item);
+		let queuedInputs = [item];
+		if (item.mode === "followUp" && isWorldInput(item)) {
+			queuedInputs = [];
+			for (const candidate of this.queues.all().filter((candidate) => candidate.order >= item.order)) {
+				if (!isWorldInput(candidate)) break;
+				queuedInputs.push(candidate);
+			}
+		}
+		await this.startRun(item.source?.kind === "runtime" ? undefined : item.text, item, { queuedInputs });
 	}
 
 	/** Applies runtime-provided model/thinking facts at a run-safety point.
@@ -1341,25 +1360,41 @@ export class Subject {
 		});
 	}
 
-	private async consumeQueueItem(item: QueuedMessage, onCommitted?: () => void): Promise<void> {
-		// Claim synchronously: once consumption begins the item can no longer be restored to the editor.
-		this.queues.remove(item.id);
-		this.notifyQueueChanged();
+	private async consumeQueueItems(items: QueuedMessage[], onCommitted?: () => void): Promise<boolean> {
+		let committedCount = 0;
+		let committedAny = false;
 		try {
-			await this.commitQueueItem(item);
-			onCommitted?.();
+			for (let index = 0; index < items.length; index++) {
+				const materialized = await this.commitQueueItem(items[index]);
+				committedCount = index + 1;
+				committedAny = materialized || committedAny;
+				onCommitted?.();
+			}
 		} catch (error) {
-			// Commit failure means the input was never consumed; return ownership to the queue.
-			this.queues.add(item);
+			// Items already committed are canonical; only the uncommitted suffix returns to the mailbox.
+			for (const item of items.slice(committedCount)) this.queues.add(item);
 			this.notifyQueueChanged();
 			throw error;
 		}
+		return committedAny;
 	}
 
-	private async commitQueueItem(item: QueuedMessage): Promise<void> {
+	private async commitQueueItem(item: QueuedMessage): Promise<boolean> {
+		const render = this.deferredInputRenders.get(item.id);
+		if (render) {
+			const rendered = await render();
+			if (!rendered?.trim()) {
+				await this.storeEvent("queue_restored", eventData(item));
+				this.deferredInputRenders.delete(item.id);
+				return false;
+			}
+			item = { ...item, text: rendered.trim() };
+		}
 		await this.store?.appendInput(item);
 		const message = projectInputMessage(item);
 		if (message) this.history.push(message);
+		this.deferredInputRenders.delete(item.id);
+		return true;
 	}
 
 	private async storeEvent(
