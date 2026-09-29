@@ -579,7 +579,7 @@ export class ExtensionRunner extends ExtensionHost {
 				assertActive();
 				if (!this.options.onInput) throw new Error("宿主未提供输入入口");
 				try {
-					await this.options.onInput(structuredClone(input));
+					await this.options.onInput(cloneAgentInputForHost(input));
 				} catch (error) {
 					this.emitOwnedError(scope.id, "submitInput", error);
 					throw error;
@@ -730,6 +730,15 @@ export class ExtensionRunner extends ExtensionHost {
 	private emitOwnedError(extensionName: string, event: string, error: unknown): void {
 		this.emitError(event, error, extensionName);
 	}
+}
+
+/** AgentInput combines durable data with one runtime-only capability. The host must
+ * not retain mutable extension-owned data, but deferred render is intentionally a
+ * live callback evaluated at canonical commit time and is never journaled. */
+function cloneAgentInputForHost(input: AgentInput): AgentInput {
+	const { render, ...durable } = input;
+	const cloned: AgentInput = structuredClone(durable);
+	return render ? { ...cloned, render } : cloned;
 }
 
 /** Live view over the current UI context. Forwarding is generic (Pi: {...ui}),

@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExtensionRunner } from "../src/extensions/runner.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import { DefaultAgentFactory } from "../src/agent/runtime.js";
+import type { AgentInput } from "../src/agent/loop.js";
+import type { InputSource } from "../src/core/types.js";
 import type { Model, ModelStreamFn } from "../src/core/types.js";
 import { IsolatedEnv, Scenario, mockTool } from "./harness/index.js";
 
@@ -230,6 +232,49 @@ describe("project extension runner", () => {
 		const diags = runner.diagnostics();
 		expect(diags.find(d => d.id === "project:.uina/extensions/a.js")?.status).toBe("active");
 		expect(diags.find(d => d.id === "project:.uina/extensions/b.js")?.status).toBe("failed");
+
+		await runner.dispose();
+	});
+
+	it("clones durable input fields but preserves deferred render", async () => {
+		const env = await createEnv();
+		const submitted: AgentInput[] = [];
+
+		const runner = new ExtensionRunner({
+			cwd: env.path,
+			tools: new ToolBroker(),
+			onInput: async (input) => { submitted.push(input); },
+		});
+
+		await runner.activateBuiltin("input-boundary", async (pi) => {
+			const source: InputSource = {
+				kind: "runtime",
+				type: "changed",
+				ref: "world",
+				origin: "external",
+				channel: "world",
+			};
+			const data = { version: 1 };
+			let state = "old";
+
+			await pi.submitInput({
+				id: "event-1",
+				mode: "followUp",
+				source,
+				text: "[deferred world event]",
+				data,
+				render: async () => state,
+			});
+
+			source.ref = "mutated";
+			data.version = 2;
+			state = "new";
+		});
+
+		expect(submitted).toHaveLength(1);
+		expect(submitted[0]?.source.ref).toBe("world");
+		expect(submitted[0]?.data).toEqual({ version: 1 });
+		expect(await submitted[0]?.render?.()).toBe("new");
 
 		await runner.dispose();
 	});
