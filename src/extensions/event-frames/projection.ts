@@ -23,14 +23,14 @@ export function snapshotNotice(kind: string): string {
 }
 
 /** 内容寻址 eventId：内容不变 ⇒ 同 eventId ⇒ 帧组逐字节稳定（尾部帧缓存语义的根基）。
- * namespace 隔离不同注入方（app-viewport / embodiment-state / ...），避免跨源撞号。 */
+ * namespace 隔离不同注入方（world-event / embodiment-event / ...），避免跨源撞号。 */
 export function contentAddressedEventId(namespace: string, text: string): string {
  return `${namespace}:${createHash('sha256').update(text).digest('hex').slice(0, 32)}`;
 }
 
 /** 标准尾部注入拼装：有帧则追加，无帧（undefined）则 0 修改透传。
  * 泛型以兼容 DeepReadonly 视图（hook 链消息是冻结快照，不要求可变 ChatMsg）。
- * 所有 tail 注入方（AppRegistry / embodiment / ...）共用，收敛“if (!frame) return undefined”样板。 */
+ * 所有 tail 注入方（WorldRegistry / embodiment / ...）共用，收敛“if (!frame) return undefined”样板。 */
 export function appendTailFrame<T>(messages: readonly T[], frame: readonly T[] | undefined): { messages: readonly T[] } | undefined {
  if (!frame || frame.length === 0) return undefined;
  return { messages: [...messages, ...frame] };
@@ -58,7 +58,7 @@ export interface EventFrameGroupOptions {
  *
  * 深模块：调用方只需给出 eventId 与正文，分组/callId/来源标注机制全部在此封装。
  * 两类生产消费方：① encodeExternalInput（到达事件投影）；② 瞬态尾部帧注入
- * （应用视口 / 具身状态——运行时合成的环境观测，不落 Session 历史）。
+ * （世界视口 / 具身状态——运行时合成的环境观测，不落 Session 历史）。
  */
 export function buildEventFrameGroup(options: EventFrameGroupOptions): ChatMsg[] {
  const { eventId, entryId, text: rawText, notice = DEFAULT_FRAME_NOTICE, source, receivedAt, images } = options;
@@ -70,7 +70,12 @@ export function buildEventFrameGroup(options: EventFrameGroupOptions): ChatMsg[]
  const id = frameCallId(eventId);
  const context = (index: number): ModelContextMeta => ({ kind: EVENT_FRAME_KIND, input, ...(entryId ? { entryId } : {}),
   group: { id, index, size: 3 }, retain: true });
- const body = { eventId, ...(receivedAt ? { receivedAt } : {}),
+ // receivedAt is ISO-8601 UTC by contract. Keep the exact canonical value for durable facts,
+ // and append the subject's local rendering to prevent timezone misreading by the model.
+ const receivedAtText = receivedAt
+  ? `${receivedAt} (local: ${new Date(receivedAt).toLocaleString('zh-CN', { hour12: false })})`
+  : undefined;
+ const body = { eventId, ...(receivedAtText ? { receivedAt: receivedAtText } : {}),
   source: source ?? { type: 'unknown', origin: 'external' }, text };
  return [
   { role: 'user', content: notice, context: context(0) },

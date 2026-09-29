@@ -20,6 +20,15 @@ describe('external event projection', () => {
   expect(()=>p.validateContext!(msgs)).not.toThrow();
   expect(()=>p.validateContext!(msgs.slice(1))).toThrow();
  });
+ it('renders receivedAt in both canonical UTC and local time', () => {
+  const p = createEventFrameProfile().projection;
+  const receivedAt = '2026-09-29T12:41:14.068Z';
+  const msgs = p.convertToLlm!([{ role: 'user', content: 'event', input: { eventId: 'e1', source: { kind: 'runtime', type: 'room-status', origin: 'external', channel: 'world' }, receivedAt } }]);
+  const body = JSON.parse(msgs[2]!.content) as { receivedAt: string };
+  expect(body.receivedAt).toContain(receivedAt);
+  expect(body.receivedAt).toContain('2026/9/29 20:41:14');
+ });
+
  it('preserves internal reports and real tool history without wrapping them', () => {
   const p=createEventFrameProfile().projection;
   const msgs=p.convertToLlm!([
