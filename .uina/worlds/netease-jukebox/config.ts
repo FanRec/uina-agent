@@ -29,5 +29,9 @@ export function loadJukeboxConfig(): JukeboxWorldConfig {
       process.env.NETEASE_API_DIR ??
       "E:\\Uina\\ThirdParty\\api-enhanced",
     mpvPath: fileConfig.mpvPath ?? process.env.MPV_PATH,
+    queueLimit: fileConfig.queueLimit ?? Number(process.env.NETEASE_QUEUE_LIMIT ?? 100),
+    broadcastHudUrl: fileConfig.broadcastHudUrl ?? process.env.BROADCAST_HUD_URL ?? "http://127.0.0.1:18130",
+    broadcastHudMode: fileConfig.broadcastHudMode ?? (process.env.BROADCAST_HUD_MODE as JukeboxWorldConfig["broadcastHudMode"] | undefined) ?? "manual",
+    broadcastHudDir: fileConfig.broadcastHudDir ?? process.env.BROADCAST_HUD_DIR ?? "E:\\Uina\\ThirdParty\\broadcast-hud",
   };
 }

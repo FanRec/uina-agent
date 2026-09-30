@@ -22,4 +22,8 @@ export interface JukeboxWorldConfig {
   readonly apiEnhancedDir?: string;
   readonly mpvPath?: string;
   readonly simulation?: boolean;
+  readonly queueLimit?: number;
+  readonly broadcastHudUrl?: string;
+  readonly broadcastHudMode?: "disabled" | "manual" | "auto";
+  readonly broadcastHudDir?: string;
 }
