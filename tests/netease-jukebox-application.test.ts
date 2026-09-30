@@ -32,6 +32,15 @@ function makeApplication() {
 }
 
 describe("JukeboxApplication", () => {
+  it("rejects the removed list_order playback mode", async () => {
+    const { application } = makeApplication();
+    const ctx = { operationIdentity: "world:jukebox/playback" as const, signal: new AbortController().signal };
+
+    const result = await application.actions.playback.run({ operation: "mode", mode: "list_order" }, ctx);
+
+    expect(result).toMatchObject({ status: "failed", details: { reason: "invalid_mode" } });
+  });
+
   it("resolves a search ref for playlist track writes", async () => {
     const { application, gateway } = makeApplication();
     const ctx = { operationIdentity: "world:jukebox/library" as const, signal: new AbortController().signal };

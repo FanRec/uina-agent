@@ -21,6 +21,7 @@ export interface JukeboxWorldConfig {
   readonly apiPort?: number;
   readonly apiEnhancedDir?: string;
   readonly mpvPath?: string;
+  readonly ffmpegPath?: string;
   readonly simulation?: boolean;
   readonly queueLimit?: number;
   readonly broadcastHudUrl?: string;

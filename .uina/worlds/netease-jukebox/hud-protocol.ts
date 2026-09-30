@@ -1,4 +1,4 @@
-export type PlaybackMode = "single_once" | "queue_order" | "list_order" | "list_loop" | "single_loop" | "shuffle";
+export type PlaybackMode = "single_once" | "queue_order" | "list_loop" | "single_loop" | "shuffle";
 
 export interface HudTrack {
   id: string;
@@ -25,7 +25,7 @@ export interface BroadcastHudSnapshot {
   };
   lyrics: { previous: string | null; current: string | null; next: string | null };
   queue: { items: HudTrack[]; total: number };
-  spectrum: { source: "audio" | "synthetic" | "silent"; bands: number[]; energy: number; beat: number };
+  spectrum: { source: "audio" | "silent"; bands: number[]; energy: number; beat: number };
 }
 
 export function toHudTrack(track: { id: string; name: string; artists: readonly string[]; album?: string; durationMs: number | null }): HudTrack {

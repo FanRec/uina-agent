@@ -1,4 +1,8 @@
 {
-  "apiBaseUrl": "http://localhost:3000",
-  "apiEnhancedDir": "E:\\Uina\\ThirdParty\\api-enhanced"
+  "apiBaseUrl": "http://127.0.0.1:3000",
+  "apiEnhancedDir": "E:\\Uina\\ThirdParty\\api-enhanced",
+  "simulation": false,
+  "mpvPath": "C:\\Program Files\\mpv\\mpv.exe",
+  "broadcastHudMode": "auto",
+  "broadcastHudUrl": "http://127.0.0.1:18130"
 }

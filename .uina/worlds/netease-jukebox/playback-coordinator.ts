@@ -23,8 +23,8 @@ export class PlaybackCoordinator {
   private listeners = new Set<(snapshot: PlaybackCoordinatorSnapshot) => void>();
 
   constructor(private readonly player: MusicPlayer, private readonly queueLimit = 100, private readonly historyLimit = 50) {
-    player.on("ended", () => { void this.handleEnded(); });
-    player.on("error", info => { this.lastError = info instanceof Error ? info.message : "播放器发生未知错误"; this.currentSong = null; this.emit(); });
+    player.on("ended", info => { if (info && !(info instanceof Error) && info.reason === "stop") return; void this.handleEnded(); });
+    player.on("error", info => { this.lastError = info instanceof Error ? info.message : "播放器发生未知错误"; this.currentSong = null; this.position = { positionMs: 0, durationMs: null }; this.emit(); });
   }
   setLoader(loader: TrackLoader): void { this.loader = loader; }
   get isSimulated(): boolean { return this.player.isSimulated; }
@@ -35,7 +35,7 @@ export class PlaybackCoordinator {
   snapshot(): PlaybackCoordinatorSnapshot { return { status: this.status, currentSong: this.currentSong, queue: [...this.queue], history: [...this.history], playMode: this.playModeValue, volume: this.player.volume, availability: this.player.availability, lastError: this.lastError, ...this.position }; }
   subscribe(listener: (snapshot: PlaybackCoordinatorSnapshot) => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
   setMode(mode: PlaybackMode): void { this.playModeValue = mode; this.emit(); }
-  async progress(): Promise<PlayerProgress> { this.position = await this.player.progress(); return this.position; }
+  async progress(): Promise<PlayerProgress> { this.position = this.player.status === "idle" ? { positionMs: 0, durationMs: null } : await this.player.progress(); return this.position; }
   load(url: string, song: SongInfo): Promise<void> { return this.enqueue(() => this.loadInternal(url, song)); }
   async loadSong(song: SongInfo, signal?: AbortSignal): Promise<void> { if (!this.loader) throw new Error("播放加载器未配置"); const generation = ++this.generation; return this.enqueue(async () => { const loaded = await this.loader!(song, signal); if (generation !== this.generation) throw new Error("播放项已被新操作取代"); if (!loaded.url && !this.isSimulated) throw new Error("歌曲没有可用播放地址"); await this.loadInternal(loaded.url ?? "simulated://stream", loaded.song); }); }
   add(song: SongInfo): void { if (this.queue.length >= this.queueLimit) throw new Error(`播放队列已满（上限 ${this.queueLimit}）`); this.queue.push(song); this.emit(); }
@@ -60,8 +60,8 @@ export class PlaybackCoordinator {
     this.emit();
     return song;
   }
-  pause(): Promise<void> { return this.enqueue(() => this.player.pause()); }
-  resume(): Promise<void> { return this.enqueue(() => this.player.resume()); }
+  pause(): Promise<void> { return this.enqueue(async () => { await this.player.pause(); this.position = await this.player.progress(); this.emit(); }); }
+  resume(): Promise<void> { return this.enqueue(async () => { await this.player.resume(); this.position = await this.player.progress(); this.emit(); }); }
   stop(clearQueue = false): Promise<void> { this.generation++; if (clearQueue) this.queue = []; return this.enqueue(async () => { await this.player.stop(); this.currentSong = null; this.lastError = null; this.position = { positionMs: 0, durationMs: null }; this.emit(); }); }
   setVolume(volume: number): Promise<void> { return this.enqueue(async () => { await this.player.setVolume(volume); this.emit(); }); }
   async close(): Promise<void> { this.generation++; await this.player.stop().catch(() => undefined); await this.operations.catch(() => undefined); await this.player.close(); this.listeners.clear(); }

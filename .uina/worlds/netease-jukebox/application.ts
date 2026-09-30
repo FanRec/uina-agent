@@ -1,13 +1,14 @@
 import type { ActionContext, ActionDef } from "../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import type { NeteaseApiClient } from "./api-client.js";
-import { formatLyrics, parseLrc, type LyricLine } from "./lyrics.js";
+import { formatLyrics } from "./lyrics.js";
+import { LiveLyricsTracker } from "./live-lyrics.js";
 import type { NeteaseGateway, EditablePlaylist } from "./netease-gateway.js";
 import type { PlaybackCoordinator } from "./playback-coordinator.js";
 import type { PlaybackMode } from "./hud-protocol.js";
 import type { SongInfo } from "./types.js";
 
-const modes = ["single_once", "queue_order", "list_order", "list_loop", "single_loop", "shuffle"] as const;
+const modes = ["single_once", "queue_order", "list_loop", "single_loop", "shuffle"] as const;
 const writeOperations = new Set([
   "playlist_create", "playlist_update", "playlist_track_add", "playlist_track_remove",
   "playlist_subscribe", "playlist_unsubscribe", "like", "unlike", "comment_add",
@@ -38,15 +39,16 @@ export interface JukeboxApplicationDeps {
   readonly gateway: NeteaseGateway;
   readonly playback: PlaybackCoordinator;
   readonly ensureService: EnsureService;
+  readonly lyrics?: LiveLyricsTracker;
 }
 
 export class JukeboxApplication {
   readonly actions: Record<string, ActionDef>;
   private readonly searchRefs = new Map<string, SongInfo>();
-  private lyricLines: readonly LyricLine[] | null = null;
-  private lyricSongId: string | null = null;
+  private readonly lyricsTracker: LiveLyricsTracker;
 
   constructor(private readonly deps: JukeboxApplicationDeps) {
+    this.lyricsTracker = deps.lyrics ?? new LiveLyricsTracker(deps.api);
     this.actions = {
       search: this.action(
         "搜索歌曲并返回可引用结果",
@@ -140,9 +142,11 @@ export class JukeboxApplication {
       this.deps.playback.add(song);
       return `已加入队列：${song.name}`;
     }
-    const url = await this.deps.api.getSongUrl(song.id, ctx.signal);
-    if (!url && !this.deps.playback.isSimulated) return fail(`无法获取“${song.name}”的播放地址。`, "audio_url_unavailable");
-    await this.deps.playback.load(url ?? "simulated://stream", song);
+    try {
+      await this.deps.playback.loadSong(song, ctx.signal);
+    } catch (error) {
+      return fail(`无法播放“${song.name}”：${error instanceof Error ? error.message : String(error)}`, "playback_failed");
+    }
     return `正在播放：${song.name} - ${song.artists.join(", ")}${this.deps.playback.isSimulated ? "（模拟模式，无实际声音）" : ""}`;
   }
 
@@ -206,10 +210,14 @@ export class JukeboxApplication {
     if (unavailable) return unavailable;
     const song = String(args.song_id ?? "").trim() ? await this.deps.api.getSongInfo(String(args.song_id), ctx.signal) : this.deps.playback.snapshot().currentSong;
     if (!song) return fail("当前没有可查询的歌曲。", "no_current_song");
-    if (!this.lyricLines || this.lyricSongId !== song.id) { const raw = await this.deps.api.getLyrics(song.id, ctx.signal); this.lyricLines = raw ? parseLrc(raw) : null; this.lyricSongId = song.id; }
-    if (!this.lyricLines?.length) return `${song.name}\n该歌曲没有可用歌词。`;
-    if (args.current === true) { const position = (await this.deps.playback.progress()).positionMs; const index = this.lyricLines.findLastIndex(line => line.timeMs <= position); return `当前歌曲：${song.name} - ${song.artists.join(", ")}\n${this.lyricLines.slice(Math.max(0, index - 1), index + 2).map(line => line.text).join("\n")}`; }
-    return `${song.name} - ${song.artists.join(", ")}\n\n${formatLyrics(this.lyricLines)}`;
+    const lines = await this.lyricsTracker.getLines(song, ctx.signal);
+    if (!lines.length) return `${song.name}\n该歌曲没有可用歌词。`;
+    if (args.current === true) {
+      const position = (await this.deps.playback.progress()).positionMs;
+      const window = this.lyricsTracker.windowFor(song.id, lines, position);
+      return `当前歌曲：${song.name} - ${song.artists.join(", ")}\n${[window.previous, window.current, window.next].filter(Boolean).join("\n")}`;
+    }
+    return `${song.name} - ${song.artists.join(", ")}\n\n${formatLyrics(lines)}`;
   }
 
   private async library(args: Record<string, unknown>, ctx: ActionContext): Promise<string | ToolExecutionResult> {

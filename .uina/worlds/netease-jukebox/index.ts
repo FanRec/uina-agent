@@ -11,17 +11,13 @@ import { PreferencesStore } from "./preferences.js";
 import { NeteaseGateway } from "./netease-gateway.js";
 import { toHudTrack, type BroadcastHudSnapshot } from "./hud-protocol.js";
 import type { JukeboxWorldConfig } from "./types.js";
+import { LiveLyricsTracker } from "./live-lyrics.js";
+import { SpectrumCapture } from "./spectrum-capture.js";
 
 function createPlayer(config: JukeboxWorldConfig, mpvPath: string | null): MusicPlayer {
   if (config.simulation) return new SimulatedMusicPlayer();
   if (mpvPath) return new MpvPlayer(mpvPath);
   return new UnavailableMusicPlayer();
-}
-
-function createSpectrum(status: string, positionMs: number): BroadcastHudSnapshot["spectrum"] {
-  if (status !== "playing") return { source: "silent", bands: Array(32).fill(0), energy: 0, beat: 0 };
-  const bands = Array.from({ length: 32 }, (_, index) => Math.max(0, Math.min(1, 0.2 + Math.sin(positionMs / 600 + index) * 0.15)));
-  return { source: "synthetic", bands, energy: 0.35, beat: 0 };
 }
 
 export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
@@ -32,47 +28,107 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
   const mpvPath = resolveMpvPath(merged.mpvPath);
   const player = createPlayer(merged, mpvPath);
   const playback = new PlaybackCoordinator(player, merged.queueLimit ?? 100);
-  const hud = new BroadcastHudClient({ baseUrl: merged.broadcastHudUrl, enabled: merged.broadcastHudMode !== "disabled" });
+  const hudOptions = { baseUrl: merged.broadcastHudUrl, enabled: merged.broadcastHudMode !== "disabled" };
+  let hud = new BroadcastHudClient(hudOptions);
   const hudManager = new HudCompanionManager(merged.broadcastHudDir ?? "E:\\Uina\\ThirdParty\\broadcast-hud", Number(new URL(merged.broadcastHudUrl ?? "http://127.0.0.1:18130").port || 18130));
+  const lyrics = new LiveLyricsTracker(api);
+  const spectrum = new SpectrumCapture({ ffmpegPath: merged.ffmpegPath });
   const sourceInstance = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   let preferenceStore: PreferencesStore | null = null;
   let revision = 0;
+  let hudHeartbeat: ReturnType<typeof setInterval> | null = null;
+  let selectedLyricsSongId: string | null = null;
+  let worldSignal: AbortSignal | undefined;
+  let hudConnection: "connected" | "degraded" = "connected";
+  const spectrumUrls = new Map<string, string>();
 
   const makeSnapshot = (): BroadcastHudSnapshot => {
     const state = playback.snapshot();
     return {
       version: 1, sourceInstance, revision: revision++, updatedAt: new Date().toISOString(),
       source: { id: "jukebox", kind: "music", label: "NeteaseJukebox" },
-      connection: { status: state.availability === "unavailable" ? "degraded" : "connected", lastError: state.lastError },
+      connection: { status: state.availability === "unavailable" || hudConnection === "degraded" ? "degraded" : "connected", lastError: state.lastError },
       playback: { status: state.status, playMode: state.playMode, volumePercent: state.volume, currentTrack: state.currentSong ? toHudTrack(state.currentSong) : null, positionMs: state.positionMs, durationMs: state.durationMs },
-      lyrics: { previous: null, current: null, next: null },
+      lyrics: lyrics.window(state.positionMs),
       queue: { items: state.queue.map(toHudTrack), total: state.queue.length },
-      spectrum: createSpectrum(state.status, state.positionMs),
+      spectrum: spectrum.latest(state.status === "playing"),
     };
   };
-  const publish = async (): Promise<void> => { await playback.progress().catch(() => undefined); void hud.publish(makeSnapshot()); };
+  const publish = async (): Promise<void> => {
+    await playback.progress().catch(() => undefined);
+    void hud.publish(makeSnapshot()).then(result => {
+      if (result.accepted) hudConnection = "connected";
+      else if (result.reason !== "disabled" && result.reason !== "stale") hudConnection = "degraded";
+    });
+  };
+  const startSpectrumFor = (snapshot: ReturnType<PlaybackCoordinator["snapshot"]>): void => {
+    if (snapshot.status !== "playing" || !snapshot.currentSong) {
+      void spectrum.stop();
+      return;
+    }
+    const url = spectrumUrls.get(snapshot.currentSong.id);
+    if (url) spectrum.start(url, snapshot.positionMs);
+    else void spectrum.stop();
+  };
+  const handlePlaybackSnapshot = (snapshot: ReturnType<PlaybackCoordinator["snapshot"]>): void => {
+    startSpectrumFor(snapshot);
+    void syncLyrics(snapshot.currentSong).then(() => publish());
+  };
+  const syncLyrics = async (song: ReturnType<PlaybackCoordinator["snapshot"]>["currentSong"]): Promise<void> => {
+    if (!song) {
+      selectedLyricsSongId = null;
+      lyrics.clear();
+      return;
+    }
+    if (selectedLyricsSongId === song.id) return;
+    selectedLyricsSongId = song.id;
+    try {
+      await lyrics.selectWithRetry(song, worldSignal);
+    } catch {
+      if (selectedLyricsSongId === song.id) lyrics.clear();
+    }
+  };
   let unsubscribe = (): void => undefined;
   let subscribed = false;
-  const application = new JukeboxApplication({ api, gateway, playback, ensureService: async ctx => serviceManager.ensureRunning(api, 10000, ctx.signal) });
-  playback.setLoader(async (song, signal) => ({ url: await api.getSongUrl(song.id, signal), song }));
+  const application = new JukeboxApplication({ api, gateway, playback, lyrics, ensureService: async ctx => serviceManager.ensureRunning(api, 10000, ctx.signal) });
+  playback.setLoader(async (song, signal) => {
+    const url = await api.getSongUrl(song.id, signal);
+    if (url) {
+      spectrumUrls.delete(song.id);
+      spectrumUrls.set(song.id, url);
+      while (spectrumUrls.size > 128) spectrumUrls.delete(spectrumUrls.keys().next().value!);
+    }
+    return { url, song };
+  });
 
   const world: WorldDef = {
     name: "jukebox",
     description: "网易云音乐点歌机：搜索、播放、队列、播放控制、歌词和账号库操作",
     defaultState: { enabled: true },
     async onStart(ctx) {
-      if (!subscribed) { unsubscribe = playback.subscribe(() => { void publish(); }); subscribed = true; }
+      if (hud.isClosed) hud = new BroadcastHudClient(hudOptions);
+      worldSignal = ctx.signal;
+      if (!subscribed) {
+        unsubscribe = playback.subscribe(handlePlaybackSnapshot);
+        subscribed = true;
+      }
       preferenceStore = new PreferencesStore(ctx.worldDataDir ?? ".uina/world-data/jukebox");
       const saved = await preferenceStore.load();
       playback.setMode(saved.playMode);
       await playback.setVolume(saved.volume);
-      if (merged.broadcastHudMode === "auto") await hudManager.ensureRunning(ctx.signal);
+      if (merged.broadcastHudMode === "auto") hudConnection = await hudManager.ensureRunning(ctx.signal) ? "connected" : "degraded";
       await publish();
+      if (hudHeartbeat === null) hudHeartbeat = setInterval(() => { void publish(); }, 250);
     },
     async onStop() {
+      if (hudHeartbeat !== null) { clearInterval(hudHeartbeat); hudHeartbeat = null; }
       unsubscribe(); unsubscribe = (): void => undefined; subscribed = false;
-      if (preferenceStore) await preferenceStore.save({ playMode: playback.mode, volume: playback.volume, queueLimit: merged.queueLimit ?? 100, broadcastHudMode: merged.broadcastHudMode ?? "manual" });
-      try { await playback.stop(); } finally { await playback.close(); await serviceManager.stop(); await hudManager.stop(); }
+      worldSignal = undefined;
+      hudConnection = "connected";
+      selectedLyricsSongId = null;
+      lyrics.clear();
+      if (preferenceStore) await preferenceStore.save({ playMode: playback.mode, volume: playback.volume, queueLimit: merged.queueLimit ?? 100 });
+      try { await playback.stop(); } finally { await spectrum.stop(); await playback.close(); await serviceManager.stop(); await hud.close(); await hudManager.stop(); }
     },
     actions: application.actions,
   };

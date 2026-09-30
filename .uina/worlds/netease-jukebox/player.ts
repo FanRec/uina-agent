@@ -141,6 +141,7 @@ export class SimulatedMusicPlayer extends EventEmitter implements MusicPlayer {
   async stop(): Promise<void> {
     this._status = "idle";
     this.pausedAtMs = 0;
+    this.durationMs = null;
     this.clearTimer();
   }
 
@@ -286,11 +287,13 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
     this.cancelStart(new Error("播放已停止"));
     if (!this.socket) {
       this.activeEntryId = null;
+      this.durationHintMs = null;
       this._status = "idle";
       return;
     }
     await this.command(["stop"]);
     this.activeEntryId = null;
+    this.durationHintMs = null;
     this._status = "idle";
   }
 
@@ -303,6 +306,7 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
   }
 
   async progress(): Promise<PlayerProgress> {
+    if (this._status === "idle") return { positionMs: 0, durationMs: null };
     if (!this.socket) {
       return { positionMs: 0, durationMs: this.durationHintMs };
     }
@@ -489,13 +493,14 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
               }
             }
           } else if (msg.event === "start-file" && typeof msg.playlist_entry_id === "number") {
+            this.activeEntryId = msg.playlist_entry_id;
             if (this.startWaiter) {
               const waiter = this.startWaiter;
               this.startWaiter = null;
               clearTimeout(waiter.timer);
               if (waiter.generation === this.trackId) waiter.resolve(msg.playlist_entry_id);
             }
-          } else if (msg.event === "end-file" && msg.playlist_entry_id === this.activeEntryId) {
+          } else if (msg.event === "end-file" && (msg.playlist_entry_id === undefined || msg.playlist_entry_id === this.activeEntryId)) {
             this._status = "idle";
             this.activeEntryId = null;
             if (msg.reason === "error") {

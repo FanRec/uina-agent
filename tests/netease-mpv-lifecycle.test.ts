@@ -146,6 +146,19 @@ describe("MpvPlayer lifecycle with injected transport", () => {
     await session.close();
   });
 
+  it("accepts an eof event when mpv omits playlist_entry_id", async () => {
+    const fake = fakeTransport();
+    const player = new MpvPlayer("fake-mpv", fake.transport);
+    const session = new PlaybackSession(player);
+    const loading = session.load("song://one", { id: "1", name: "一", artists: [], durationMs: null });
+    await vi.waitFor(() => expect(fake.socket.commands[0]?.command[0]).toBe("loadfile"));
+    fake.socket.message({ event: "start-file", playlist_entry_id: 1 });
+    await loading;
+    fake.socket.message({ event: "end-file", reason: "eof" });
+    expect(session.snapshot()).toMatchObject({ status: "idle", currentSong: null });
+    await session.close();
+  });
+
   it("does not report a rejected volume command as successful", async () => {
     const fake = fakeTransport();
     fake.socket.hold = (command) => command[0] === "set_property" && command[1] === "volume";
@@ -181,6 +194,19 @@ describe("MpvPlayer lifecycle with injected transport", () => {
     expect(player.status).toBe("playing");
     fake.socket.message({ event: "end-file", reason: "eof", playlist_entry_id: 1 });
     expect(player.status).toBe("idle");
+    await player.close();
+  });
+
+  it("reports no duration after a successful stop", async () => {
+    const fake = fakeTransport();
+    const player = new MpvPlayer("fake-mpv", fake.transport);
+    const loading = player.load("song://one", 12_000);
+    await vi.waitFor(() => expect(fake.socket.commands[0]?.command[0]).toBe("loadfile"));
+    fake.socket.message({ event: "start-file", playlist_entry_id: 1 });
+    await loading;
+    await player.stop();
+
+    expect(await player.progress()).toEqual({ positionMs: 0, durationMs: null });
     await player.close();
   });
 
