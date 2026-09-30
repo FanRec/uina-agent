@@ -6,5 +6,9 @@
   "startupTimeoutMs": 30000,
   "requestTimeoutMs": 5000,
   "autoSpawn": true,
-  "maxSentenceChars": 20
+  "maxSentenceChars": 20,
+  "subtitleServiceUrl": "http://127.0.0.1:18140",
+  "subtitleServiceDir": "E:\\Uina\\ThirdParty\\realtime-subtitles",
+  "subtitleAutoSpawn": true,
+  "subtitleStartupTimeoutMs": 10000
 }

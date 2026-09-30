@@ -11,9 +11,13 @@ export interface TtsExtensionConfig {
   readonly requestTimeoutMs: number;
   readonly autoSpawn: boolean;
   readonly maxSentenceChars: number;
+  readonly subtitleServiceUrl?: string;
+  readonly subtitleServiceDir?: string;
+  readonly subtitleAutoSpawn?: boolean;
+  readonly subtitleStartupTimeoutMs?: number;
 }
 
-const DEFAULT_CONFIG: TtsExtensionConfig = {
+const DEFAULT_CONFIG = {
   serviceUrl: "http://127.0.0.1:8102",
   pythonPath: "E:\\Uina\\ThirdParty\\gpt_sovits_v2pro\\runtime\\python.exe",
   bridgeScript: "bridge/main.py",
@@ -22,6 +26,10 @@ const DEFAULT_CONFIG: TtsExtensionConfig = {
   requestTimeoutMs: 5000,
   autoSpawn: true,
   maxSentenceChars: 20,
+  subtitleServiceUrl: "http://127.0.0.1:18140",
+  subtitleServiceDir: "E:\\Uina\\ThirdParty\\realtime-subtitles",
+  subtitleAutoSpawn: true,
+  subtitleStartupTimeoutMs: 10000,
 };
 
 export function getExtensionDir(): string {
@@ -35,7 +43,8 @@ export function getExtensionDir(): string {
 export function loadConfig(
   customExtensionDir?: string,
   overrides?: Partial<TtsExtensionConfig>,
-): TtsExtensionConfig {
+): TtsExtensionConfig & Required<Pick<TtsExtensionConfig,
+  "subtitleServiceUrl" | "subtitleServiceDir" | "subtitleAutoSpawn" | "subtitleStartupTimeoutMs">> {
   const extensionDir = customExtensionDir ? resolve(customExtensionDir) : getExtensionDir();
   const configPath = join(extensionDir, "config.json");
 
@@ -95,6 +104,27 @@ export function loadConfig(
     (typeof parsed.maxSentenceChars === "number" ? parsed.maxSentenceChars : undefined) ||
     DEFAULT_CONFIG.maxSentenceChars;
 
+  const subtitleServiceUrl =
+    process.env.UINA_SUBTITLE_SERVICE_URL ||
+    (typeof overrides?.subtitleServiceUrl === "string" ? overrides.subtitleServiceUrl : undefined) ||
+    (typeof parsed.subtitleServiceUrl === "string" ? parsed.subtitleServiceUrl : undefined) ||
+    DEFAULT_CONFIG.subtitleServiceUrl;
+  const subtitleServiceDir =
+    process.env.UINA_SUBTITLE_SERVICE_DIR ||
+    (typeof overrides?.subtitleServiceDir === "string" ? overrides.subtitleServiceDir : undefined) ||
+    (typeof parsed.subtitleServiceDir === "string" ? parsed.subtitleServiceDir : undefined) ||
+    DEFAULT_CONFIG.subtitleServiceDir;
+  const subtitleAutoSpawn =
+    typeof overrides?.subtitleAutoSpawn === "boolean"
+      ? overrides.subtitleAutoSpawn
+      : typeof parsed.subtitleAutoSpawn === "boolean"
+        ? parsed.subtitleAutoSpawn
+        : DEFAULT_CONFIG.subtitleAutoSpawn;
+  const subtitleStartupTimeoutMs =
+    (typeof overrides?.subtitleStartupTimeoutMs === "number" ? overrides.subtitleStartupTimeoutMs : undefined) ??
+    (typeof parsed.subtitleStartupTimeoutMs === "number" ? parsed.subtitleStartupTimeoutMs : undefined) ??
+    DEFAULT_CONFIG.subtitleStartupTimeoutMs;
+
   return {
     serviceUrl,
     pythonPath,
@@ -104,5 +134,9 @@ export function loadConfig(
     requestTimeoutMs,
     autoSpawn,
     maxSentenceChars,
+    subtitleServiceUrl,
+    subtitleServiceDir,
+    subtitleAutoSpawn,
+    subtitleStartupTimeoutMs,
   };
 }

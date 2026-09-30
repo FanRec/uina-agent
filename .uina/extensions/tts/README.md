@@ -36,3 +36,16 @@
 - `unmute`：开麦（恢复发音）
 - `interrupt`：请求立即掐断当前发音并清空排队；结果区分已打断、无需操作、失败和未知
 - `status`：查看当前开麦与发音状态
+
+## OBS 字幕伴生启动
+
+当前 TTS Extension 激活时会并行检查字幕服务的 `/health`。服务未运行时，默认启动 `E:/Uina/ThirdParty/realtime-subtitles`；启动失败会报告降级，TTS 仍可正常发声。已运行的外部服务直接复用，扩展卸载时只关闭自己启动的进程。
+
+配置位于本扩展的 `config.json`：
+
+- `subtitleServiceUrl`：默认 `http://127.0.0.1:18140`。
+- `subtitleServiceDir`：默认 `E:/Uina/ThirdParty/realtime-subtitles`。
+- `subtitleAutoSpawn`：默认 `true`，设为 `false` 后只连接已运行的服务。
+- `subtitleStartupTimeoutMs`：默认 `10000`。
+
+启动优先使用 `dist/main.js`，未构建时使用已安装的 `tsx` 运行源码。首次安装字幕服务依赖并构建后，重新加载 TTS 扩展即可自动启动。设置页为 `http://127.0.0.1:18140/`，OBS Browser Source 地址为 `http://127.0.0.1:18140/overlay/`。这是由 TTS 扩展暂时管理的伴生进程，不引入 Core 生命周期接口。
