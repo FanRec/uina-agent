@@ -13,9 +13,8 @@ import { Key, matchesKey } from "./core/keys.js";
 import { MouseSelectionTracker, type InteractiveTarget, type SelectableRegion } from "./core/mouse-selection.js";
 import { decodeHoverTarget, encodeHoverTarget } from "./core/hover-target.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
-import type { ThinkingLevel } from "../core/types.js";
+import type { ContextSnapshot, RequestUsage, ThinkingLevel } from "../core/types.js";
 import type { SessionEntry } from "../session/types.js";
-import type { ContextSnapshot } from "../core/types.js";
 import { C, copyToClipboardUnified, visibleWidth, truncateToWidth, stripAnsi, normalizeFrameLine } from "./core/utils.js";
 import {
 	InputLine,
@@ -136,9 +135,7 @@ export class UIHost implements UIHostContextPort {
 	private reasoningEffort?: ThinkingLevel;
 	private thinkingLevels: readonly ThinkingLevel[] = ["off"];
 	private cwd: string;
-	private cacheReadTokens?: number;
-	private inputTokensCount?: number;
-	private cacheWriteTokens?: number;
+	private lastUsage?: RequestUsage;
 	private contextSegments?: ContextSegments;
 
 	// 运行与动画状态
@@ -398,7 +395,6 @@ export class UIHost implements UIHostContextPort {
 			this.requestRender();
 		};
 		this.inputLine.setCwd(this.cwd);
-		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual);
 		this.inputLine.setReasoningEffort(this.reasoningEffort);
 
 		this.activityLine = new ActivityLineComponent();
@@ -407,6 +403,7 @@ export class UIHost implements UIHostContextPort {
 		this.scrollbarGutter = new ScrollbarGutterComponent();
 
 		this.focusManager.setFocus(this.inputLine);
+		this.syncContextComponents();
 	}
 
  private connectRegistry(): void {
@@ -468,7 +465,7 @@ export class UIHost implements UIHostContextPort {
 
 	setModel(model: string): void {
 		this.modelName = model;
-		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual, this.contextSegments);
+		this.syncContextComponents();
 		this.banner.setOptions({ modelName: this.modelName, cwd: this.cwd });
 		this.requestRender();
 	}
@@ -557,23 +554,39 @@ export class UIHost implements UIHostContextPort {
 		return this.busy;
 	}
 
+	private syncContextComponents(): void {
+		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual, this.contextSegments);
+		this.inputLine.setCacheRate(formatCacheHitRate(this.lastUsage?.cacheRead, this.lastUsage?.promptTokens, this.lastUsage?.cacheWrite));
+		this.contextBar.update({
+			usedTokens: this.usedTokens,
+			contextWindow: this.contextWindow,
+			cwd: this.cwd,
+			cacheRead: this.lastUsage?.cacheRead,
+			inputTokens: this.lastUsage?.promptTokens,
+			cacheWrite: this.lastUsage?.cacheWrite,
+			segments: this.contextSegments,
+		});
+	}
+
 	setContext(snapshot: ContextSnapshot): void {
 		this.usedTokens = snapshot.inputTokens;
 		this.contextWindow = snapshot.contextWindow && snapshot.contextWindow > 0 ? snapshot.contextWindow : undefined;
 		this.usageActual = snapshot.measurementKind === "exact";
 		this.contextSegments = snapshot.segments;
-		this.cacheReadTokens = undefined;
-		this.inputTokensCount = undefined;
-		this.cacheWriteTokens = undefined;
-		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual, this.contextSegments);
-		this.contextBar.update({ usedTokens: this.usedTokens, contextWindow: this.contextWindow, cwd: this.cwd, segments: this.contextSegments });
+		this.syncContextComponents();
 		this.requestRender();
 	}
+
+	setRequestUsage(usage: RequestUsage): void {
+		this.lastUsage = usage;
+		this.syncContextComponents();
+		this.requestRender();
+	}
+
 	markUsageEstimated(): void {
 		this.usageActual = false;
-		this.cacheReadTokens = undefined;
-		this.inputTokensCount = undefined;
-		this.cacheWriteTokens = undefined;
+		this.lastUsage = undefined;
+		this.syncContextComponents();
 		this.requestRender();
 	}
 
@@ -928,10 +941,6 @@ export class UIHost implements UIHostContextPort {
 			? `${this.viewportStatusHovered ? C.bold : ""}${C.claude}[视口 ${percent}% · 点击回到最新]${C.reset}`
 			: "";
 		this.inputLine.setStatusHeader(viewportLabel ? `${viewportLabel} ${statusHeader}` : statusHeader);
-		this.inputLine.setCwd(this.cwd);
-		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual, this.contextSegments);
-		this.inputLine.setReasoningEffort(this.reasoningEffort);
-		this.inputLine.setCacheRate(formatCacheHitRate(this.cacheReadTokens, this.inputTokensCount, this.cacheWriteTokens));
 	}
 
 	/**
@@ -949,15 +958,6 @@ export class UIHost implements UIHostContextPort {
 		const inputLines = this.inputLine.render(innerW);
 		const inputH = inputLines.length;
 
-		this.contextBar.update({
-			usedTokens: this.usedTokens,
-			contextWindow: this.contextWindow,
-			cwd: this.cwd,
-			cacheRead: this.cacheReadTokens,
-			inputTokens: this.inputTokensCount,
-			cacheWrite: this.cacheWriteTokens,
-			segments: this.contextSegments,
-		});
 		const contextBarLines = this.contextBar.render(inputWidth);
 		// The footer slot is a real frame region: extensions that call setFooter()
 		// must see it, otherwise the API silently does nothing.

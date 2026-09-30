@@ -168,6 +168,7 @@ export class InteractiveTUI {
 				// 服务端报回的 output 是"本次调用"的输出量（含工具调用参数的分），交给活动行
 				// 按 step 结算：它既是这一步的分子，也是这一步解码区间的右端。
 				if (m.usage.outputTokens !== undefined) this.host.activityLine.addRealOutputTokens(m.usage.outputTokens);
+				this.host.setRequestUsage(m.usage);
 				break;
 
 			case "context_update":
@@ -263,6 +264,9 @@ export class InteractiveTUI {
 				this.host.setBusy(false);
 				this.host.transcript.finishTurn();
 				this.trajectoryProjection.onTurnEnd(m.turnNumber, m.requestUsage);
+				if (m.requestUsage) {
+					this.host.setRequestUsage(m.requestUsage);
+				}
 				const elapsed = this.host.getLastElapsedMs();
 				const history = this.host.transcript.getHistory();
 				const lastTurn = history[history.length - 1];

@@ -21,7 +21,6 @@ export interface ContextSegments {
 export interface ContextUsageData {
 	usedTokens?: number;
 	contextWindow?: number;
-	actual?: boolean;
 	cwd?: string;
 	cacheRead?: number;
 	cacheWrite?: number;
