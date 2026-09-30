@@ -123,8 +123,9 @@ class PlaybackEventHub:
     def stream(self, trace_id: str | None = None) -> Iterator[str]:
         subscription_key = trace_id or "*"
         queue: Queue[dict[str, Any] | object] = Queue(maxsize=128)
-        self.stop_event.clear()
         with self._lock:
+            if self.stop_event.is_set():
+                return
             self.subscribers.setdefault(subscription_key, []).append(queue)
         try:
             yield ": connected\n\n"

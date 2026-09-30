@@ -14,6 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from models import AudioAsset, BridgeTask, DefaultPreset, GenerationSession, LipsyncBridgeConfig, SegmentKey, SegmentRecord, StreamingConfig, StreamingProfile, SubtitleSyncConfig
+from runtime_components import TaskRegistry
 from playback_coordinator import PlaybackCoordinator, PlaybackLease
 from synthesis_handlers import _PCMChunkStream
 from service import _AdmittedSpeakTask, BatchTaskStatusRequest, CancelRequest, CancelTraceRequest, SpeakRequest, TTSBridgeService, TurnEndRequest, _log_latency, _sanitize_vendor_text, _vendor_text_lang_for
@@ -263,7 +264,7 @@ class TTSBridgeCancelTraceTest(unittest.TestCase):
     def test_batch_task_status_returns_multiple_states_and_not_found(self) -> None:
         service = _service_with_admitted_task()
         service._tasks["task_1"].state = "completed"
-        service._tasks["task_1"].completed_at = 123.0
+        service._tasks["task_1"].completed_at = time.time()
         service._tasks["task_2"] = BridgeTask(
             task_id="task_2",
             trace_id="trace_1",
@@ -497,6 +498,56 @@ class TTSBridgeCancelTraceTest(unittest.TestCase):
         self.assertEqual(session.segments[1].state, "cancelled")
         self.assertEqual(session.next_play_index, 2)
         self.assertEqual(service._tasks["task_1"].state, "cancelled")
+
+    def test_admission_rejection_releases_registered_segment(self) -> None:
+        service = TTSBridgeService.__new__(TTSBridgeService)
+        service._lock = threading.RLock()
+        service._real_task_registry = TaskRegistry()
+        service._admitted_tasks = {}
+        service._delivery_queue = Queue()
+        service._delivery_thread = type("Thread", (), {"is_alive": lambda self: True})()
+        service._delivery_executor = type("Executor", (), {"_max_workers": 1})()
+        service._delivery_stop = threading.Event()
+        service._sessions_by_trace = {}
+        service._sliding_window = SlidingWindowState(lock=service._lock, sessions_by_trace=service._sessions_by_trace)
+        service._first_chunk_events = {}
+        service._last_delivery_error = None
+        service._ensure_delivery_worker = lambda: None
+        service._should_reject_admission = lambda: True
+        service._publish_playback_event = lambda *args, **kwargs: None
+        task = BridgeTask(task_id="reject-1", trace_id="trace-reject", state="pending", cancel_token="cancel")
+        task.detail.update({"generation_id": 1, "segment_index": 1, "original_text": "拒绝"})
+        profile = StreamingProfile(label="test", vendor_streaming_mode=2, min_chunk_length=1, fragment_interval=0.1, prebuffer_ms=1, rebuffer_ms=1)
+
+        def prepare(request, **kwargs):
+            service._tasks[task.task_id] = task
+            service._register_segment(trace_id=task.trace_id, generation_id=1, segment_index=1, task_id=task.task_id, text="拒绝", state="pending")
+            return task, Path("reference.wav"), 1000, profile, False
+
+        service._prepare_speak_task = prepare
+        with self.assertRaises(Exception):
+            service.admit_speak(SpeakRequest(trace_id=task.trace_id, segment_id=task.task_id, index=1, text="拒绝"))
+
+        self.assertEqual(task.state, "failed")
+        self.assertEqual(service._sessions_by_trace[task.trace_id].segments[1].state, "failed")
+        self.assertEqual(service._sessions_by_trace[task.trace_id].next_play_index, 2)
+
+    def test_completed_segment_releases_audio_asset(self) -> None:
+        service = _service_with_admitted_task()
+        condition = threading.Condition(service._lock)
+        service._sessions_by_trace = {
+            "trace_1": GenerationSession(
+                trace_id="trace_1", generation_id=1, condition=condition,
+                segments={1: SegmentRecord(
+                    key=SegmentKey(trace_id="trace_1", generation_id=1, segment_index=1),
+                    task_id="task_1", text="完成", state="ready",
+                    asset=AudioAsset(kind="pcm", artifact_path=None, sample_rate=32000, duration_ms=10, media_type="raw", pcm_stream=iter(()), metrics={"pcm_buffer": bytearray(b"audio")}),
+                )},
+            )
+        }
+        service._sliding_window = SlidingWindowState(lock=service._lock, sessions_by_trace=service._sessions_by_trace)
+        service._sliding_window.mark_segment_completed(trace_id="trace_1", generation_id=1, segment_index=1, detail={})
+        self.assertIsNone(service._sessions_by_trace["trace_1"].segments[1].asset)
 
 
     def test_health_reports_delivery_worker_summary(self) -> None:

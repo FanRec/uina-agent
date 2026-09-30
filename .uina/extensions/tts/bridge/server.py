@@ -68,6 +68,14 @@ def build_app(service: Any) -> FastAPI:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    @app.get("/v1/tts/playback/events")
+    def playback_snapshots():
+        return StreamingResponse(
+            service.playback_snapshots(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     @app.post("/v1/tts/cancel")
     def cancel(request: CancelRequest) -> dict[str, Any]:
         return service.cancel(request)

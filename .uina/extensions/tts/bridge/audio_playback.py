@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import math
 import queue
 import threading
 import time
@@ -23,6 +24,17 @@ def _wav_metadata(audio_bytes: bytes) -> tuple[int | None, int | None]:
             return duration_ms, sample_rate
     except wave.Error:
         return None, None
+
+
+def _time_info_value(time_info: Any, name: str, default: float = 0.0) -> float:
+    if isinstance(time_info, dict):
+        value = time_info.get(name, default)
+    else:
+        value = getattr(time_info, name, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def pcm_bytes_for_ms(sample_rate: int, channels: int, milliseconds: int) -> int:
@@ -170,6 +182,12 @@ class AudioPlayback:
         self._playback_started_at_ms: float | None = None
         self._playback_started = False
         self._played_bytes = 0
+        self._segment_id: str | None = None
+        self._segment_origin_bytes = 0
+        self._priming_bytes_remaining = 0
+        # Preallocated mapping from segment samples to output callback/DAC time.
+        self._dac_slots = [[0.0, 0.0, 0.0, 0.0] for _ in range(128)]
+        self._dac_count = 0
         # 最近一次喂入音频的电平测量（由 feed 在锁外算出、在锁内落值）。
         # 只存最近测量：包络平滑由消费端负责，这里不做时间衰减。
         self._level_rms = 0.0
@@ -370,7 +388,22 @@ class AudioPlayback:
                 outdata[:take] = view[start:end]
                 del view
                 self._buffer_read_pos = end
-                self._played_bytes += take
+                priming = min(take, self._priming_bytes_remaining)
+                self._priming_bytes_remaining -= priming
+                audio_bytes = take - priming
+                frame_bytes = max(self._stream_channels * 2, 1)
+                before_samples = (self._played_bytes - self._segment_origin_bytes) / frame_bytes
+                self._played_bytes += audio_bytes
+                if audio_bytes and time_info is not None and self._stream_sample_rate > 0:
+                    dac = _time_info_value(time_info, "outputBufferDacTime")
+                    current = _time_info_value(time_info, "currentTime")
+                    if dac > 0 and math.isfinite(dac) and math.isfinite(current) and -0.02 <= dac - current <= 1.0:
+                        slot = self._dac_slots[self._dac_count % len(self._dac_slots)]
+                        slot[0] = time.perf_counter() * 1000 + (dac - current) * 1000 + priming / frame_bytes / self._stream_sample_rate * 1000
+                        slot[1] = slot[0] + audio_bytes / frame_bytes / self._stream_sample_rate * 1000
+                        slot[2] = before_samples
+                        slot[3] = before_samples + audio_bytes / frame_bytes
+                        self._dac_count += 1
                 self._buffer_lock.notify_all()
                 wrote = take
             if take < needed and self._stream_finished:
@@ -410,6 +443,7 @@ class AudioPlayback:
                     warmup_bytes = pcm_bytes_for_ms(self._stream_sample_rate, self._stream_channels, 120)
                     if warmup_bytes > 0:
                         self._buffer.extend(b"\x00" * warmup_bytes)
+                        self._priming_bytes_remaining += warmup_bytes
             self._buffer.extend(data)
         if self._mirror is not None:
             try:
@@ -539,33 +573,53 @@ class AudioPlayback:
         with self._buffer_lock:
             played_samples = 0
             if self._stream_channels > 0:
-                played_samples = self._played_bytes // max(self._stream_channels * 2, 1)
-            # 优先用 wall-clock 计算 played_ms：自 DAC 开始播放以来经过的真实时间，
-            # 扣除 rebuffer 累计时间（underrun 期间 DAC 静音，字幕应等声音）。
-            # 这比 _played_bytes/sample_rate 更准确，因为后者包含 DAC 输出缓冲延迟。
+                played_samples = max(0, self._played_bytes - self._segment_origin_bytes) // max(self._stream_channels * 2, 1)
+            # This is consumed/submitted sample time, not a verified DAC clock.
+            # Silence inserted during rebuffering does not increment _played_bytes.
             played_ms = 0.0
-            if self._playback_started and self._playback_started_at_ms is not None:
-                now_ms = round(time.perf_counter() * 1000, 2)
-                elapsed_ms = now_ms - self._playback_started_at_ms
-                played_ms = max(0.0, elapsed_ms - self._rebuffer_total_ms)
-                if self._rebuffering and self._rebuffer_started_at_ms is not None:
-                    played_ms = max(0.0, played_ms - (now_ms - self._rebuffer_started_at_ms))
-            elif self._stream_sample_rate > 0:
+            quality = "submitted_samples" if self._stream_sample_rate > 0 else "unknown"
+            now = time.perf_counter() * 1000
+            tail_pending = False
+            if self._dac_count:
+                quality = "dac"
+                played_samples = 0
+                tail_pending = now < self._dac_slots[(self._dac_count - 1) % len(self._dac_slots)][1]
+                for index in range(self._dac_count - 1, max(-1, self._dac_count - len(self._dac_slots) - 1), -1):
+                    slot = self._dac_slots[index % len(self._dac_slots)]
+                    if now >= slot[0]:
+                        ratio = min(1.0, max(0.0, (now - slot[0]) / max(slot[1] - slot[0], 0.001)))
+                        played_samples = int(slot[2] + (slot[3] - slot[2]) * ratio)
+                        break
+            if self._stream_sample_rate > 0:
                 played_ms = played_samples / self._stream_sample_rate * 1000
             buffered_ms = 0.0
             if self._stream_sample_rate > 0 and self._stream_channels > 0:
                 buffered_samples = self._available_bytes_locked() // max(self._stream_channels * 2, 1)
                 buffered_ms = buffered_samples / self._stream_sample_rate * 1000
+            level_active = (
+                self._playback_started
+                and not self._rebuffering
+                and not (self._stream_finished and self._drained.is_set() and self._available_bytes_locked() <= 0)
+            )
             return PlaybackProgressSnapshot(
-                playback_started=self._playback_started,
+                playback_started=self._playback_started and played_samples > 0,
                 played_ms=min(round(played_ms, 2), float(duration_ms)),
                 played_samples=played_samples,
                 buffered_ms=round(buffered_ms, 2),
-                segment_finished=bool(self._stream_finished and self._available_bytes_locked() <= 0 and self._drained.is_set()),
+                segment_finished=bool(self._stream_finished and self._available_bytes_locked() <= 0 and self._drained.is_set() and not tail_pending),
                 duration_ms=duration_ms,
-                rms=self._level_rms,
-                peak=self._level_peak,
+                rms=self._level_rms if level_active else 0.0,
+                peak=self._level_peak if level_active else 0.0,
+                state="buffering" if self._rebuffering or not self._playback_started else "playing",
+                clock_quality=quality,
+                playback_id=self._segment_id,
             )
+
+    def bind_segment(self, playback_id: str) -> None:
+        with self._buffer_lock:
+            self._segment_id = playback_id
+            self._segment_origin_bytes = self._played_bytes
+            self._dac_count = 0
 
     def stop_stream(self) -> None:
         with self._buffer_lock:
@@ -575,6 +629,11 @@ class AudioPlayback:
             self._buffer.clear()
             self._buffer_read_pos = 0
             self._played_bytes = 0
+            self._segment_id = None
+            self._segment_origin_bytes = 0
+            self._priming_bytes_remaining = 0
+            self._dac_count = 0
+            self._playback_started = False
             self._stream_sample_rate = 0
             self._stream_channels = 1
             self._max_buffer_bytes = 0
@@ -642,10 +701,13 @@ class AudioPlayback:
         timeout_ms: int,
         prebuffer_ms: int = 60,
         rebuffer_ms: int = 120,
+        playback_id: str | None = None,
     ) -> bool:
         if not self._sd_available:
             return False
         self.start_stream(sample_rate=sample_rate, prebuffer_ms=prebuffer_ms, rebuffer_ms=rebuffer_ms)
+        if playback_id:
+            self.bind_segment(playback_id)
         self.feed(pcm_bytes)
         self.finish_stream()
         return self.wait_until_drained(timeout_ms)
@@ -658,10 +720,13 @@ class AudioPlayback:
         timeout_ms: int,
         prebuffer_ms: int = 60,
         rebuffer_ms: int = 120,
+        playback_id: str | None = None,
     ) -> bool:
         if not self._sd_available:
             return False
         self.start_stream(sample_rate=sample_rate, prebuffer_ms=prebuffer_ms, rebuffer_ms=rebuffer_ms)
+        if playback_id:
+            self.bind_segment(playback_id)
         try:
             for chunk in chunk_source:
                 self.feed(chunk)
@@ -669,7 +734,7 @@ class AudioPlayback:
             self.finish_stream()
         return self.wait_until_drained(timeout_ms)
 
-    def play_file_as_pcm_and_wait(self, *, path: Path, timeout_ms: int, prebuffer_ms: int = 60, rebuffer_ms: int = 120) -> bool:
+    def play_file_as_pcm_and_wait(self, *, path: Path, timeout_ms: int, prebuffer_ms: int = 60, rebuffer_ms: int = 120, playback_id: str | None = None) -> bool:
         if not self._sd_available:
             return False
         try:
@@ -682,6 +747,8 @@ class AudioPlayback:
         if sample_rate <= 0 or channels <= 0:
             return False
         self.start_stream(sample_rate=sample_rate, channels=channels, prebuffer_ms=prebuffer_ms, rebuffer_ms=rebuffer_ms)
+        if playback_id:
+            self.bind_segment(playback_id)
         self.feed(pcm_bytes)
         self.finish_stream()
         return self.wait_until_drained(timeout_ms)

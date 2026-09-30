@@ -1,6 +1,75 @@
 ﻿from __future__ import annotations
 
+from types import SimpleNamespace
+
 from audio_playback import AudioPlayback
+
+def test_continuous_stream_segment_has_its_own_atomic_identity_and_position() -> None:
+    player = AudioPlayback()
+    player._streaming = True
+    player._stream_sample_rate = 1000
+    player._stream_channels = 1
+    player._playback_started = True
+    player._played_bytes = 2000
+    player.bind_segment("second")
+    player._buffer.extend(b"\x01\x00" * 100)
+    player._audio_callback(bytearray(200), 100, None, None)
+    snapshot = player.progress_snapshot(duration_ms=1000)
+    assert snapshot.playback_id == "second"
+    assert snapshot.played_ms == 100
+    player.stop_stream()
+    assert not player.progress_snapshot(duration_ms=1000).playback_started
+    assert player.progress_snapshot(duration_ms=1000).played_ms == 0
+
+def test_warmup_samples_do_not_advance_dialogue_clock() -> None:
+    player = AudioPlayback()
+    player._streaming = True
+    player._stream_sample_rate = 1000
+    player._stream_channels = 1
+    player._playback_started = True
+    player.bind_segment("first")
+    player.feed(b"\x01\x00" * 100)
+    player._audio_callback(bytearray(240), 120, None, None)
+    assert player.progress_snapshot(duration_ms=1000).played_ms == 0
+    assert not player.progress_snapshot(duration_ms=1000).playback_started
+
+
+def test_audio_callback_accepts_valid_dac_time_info() -> None:
+    player = AudioPlayback()
+    player._streaming = True
+    player._stream_finished = True
+    player._playback_started = True
+    player._stream_sample_rate = 1000
+    player._stream_channels = 1
+    player._buffer.extend(b"\x01\x00" * 100)
+
+    player._audio_callback(
+        bytearray(200),
+        100,
+        SimpleNamespace(outputBufferDacTime=1.0, currentTime=0.9),
+        None,
+    )
+
+    assert player.progress_snapshot(duration_ms=1000).clock_quality == "dac"
+
+
+def test_level_is_silent_before_playback_and_during_rebuffer() -> None:
+    player = AudioPlayback()
+    player._streaming = True
+    player._stream_sample_rate = 1000
+    player._stream_channels = 1
+    player._level_rms = 0.5
+    player._level_peak = 0.8
+
+    before_start = player.progress_snapshot(duration_ms=1000)
+    assert before_start.rms == 0.0
+    assert before_start.peak == 0.0
+
+    player._playback_started = True
+    player._rebuffering = True
+    during_rebuffer = player.progress_snapshot(duration_ms=1000)
+    assert during_rebuffer.rms == 0.0
+    assert during_rebuffer.peak == 0.0
 
 
 def test_mirror_device_created_and_feed_forwarded() -> None:
@@ -15,6 +84,25 @@ def test_mirror_device_created_and_feed_forwarded() -> None:
     player.feed(b"\x01\x00" * 8)
 
     assert player._mirror._available_bytes_locked() == 16
+
+
+def test_audio_callback_accepts_mapping_time_info_and_falls_back_on_bad_dac_delay() -> None:
+    player = AudioPlayback()
+    player._streaming = True
+    player._stream_finished = True
+    player._playback_started = True
+    player._stream_sample_rate = 1000
+    player._stream_channels = 1
+    player._buffer.extend(b"\x01\x00" * 4)
+
+    out = bytearray(4)
+    player._audio_callback(out, 2, {"outputBufferDacTime": 10.01, "currentTime": 10.0}, None)
+    assert player.progress_snapshot(duration_ms=1000).clock_quality == "dac"
+
+    player.bind_segment("bad-delay")
+    player._buffer.extend(b"\x01\x00" * 4)
+    player._audio_callback(out, 2, {"outputBufferDacTime": 99.0, "currentTime": 10.0}, None)
+    assert player.progress_snapshot(duration_ms=1000).clock_quality == "submitted_samples"
 
 
 def test_audio_callback_consumes_buffer_without_early_rebuffer() -> None:
@@ -116,6 +204,7 @@ def test_feed_updates_level_and_progress_snapshot_carries_it() -> None:
     player._streaming = True
     player._stream_channels = 1
     player._stream_sample_rate = 32000
+    player._playback_started = True
 
     player.feed(_pcm_from_amplitude(0.5, 64))
     snapshot = player.progress_snapshot(duration_ms=1000)

@@ -112,6 +112,9 @@ class PlaybackProgressSnapshot:
     # 只承载"最近一段音频测到多少"，不做包络平滑——平滑是消费者的职责。
     rms: float = 0.0
     peak: float = 0.0
+    state: str = "idle"
+    clock_quality: str = "unknown"
+    playback_id: str | None = None
 
 
 @dataclass(frozen=True)

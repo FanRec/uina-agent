@@ -4,6 +4,27 @@ export interface StreamParserOptions {
 
 const TERMINAL_PUNCTUATIONS = new Set(["。", "！", "？", "；", "\n", "!", "?", ";", "…"]);
 const COMMA_PUNCTUATIONS = new Set(["，", ","]);
+const MAX_SAFE_SENTENCE_CHARS = 1000;
+
+function graphemeCount(text: string): number {
+  const Segmenter = (Intl as typeof Intl & { Segmenter?: new (locales?: string | string[], options?: { granularity?: string }) => { segment(input: string): Iterable<unknown> } }).Segmenter;
+  if (Segmenter) return Array.from(new Segmenter(undefined, { granularity: "grapheme" }).segment(text)).length;
+  return Array.from(text).length;
+}
+
+function graphemeSlice(text: string, count: number): string {
+  const Segmenter = (Intl as typeof Intl & { Segmenter?: new (locales?: string | string[], options?: { granularity?: string }) => { segment(input: string): Iterable<unknown> } }).Segmenter;
+  if (Segmenter) {
+    let end = 0;
+    let seen = 0;
+    for (const part of new Segmenter(undefined, { granularity: "grapheme" }).segment(text) as Iterable<{ segment: string; index: number }>) {
+      if (seen++ >= count) break;
+      end = part.index + part.segment.length;
+    }
+    return text.slice(0, end);
+  }
+  return Array.from(text).slice(0, count).join("");
+}
 
 function longestTagPrefixSuffix(text: string, tag: string): string {
   const max = Math.min(text.length, tag.length - 1);
@@ -65,7 +86,8 @@ export class StreamParser {
   private sentenceBuffer = "";
 
   constructor(options: StreamParserOptions = {}) {
-    this.maxSentenceChars = options.maxSentenceChars ?? 20;
+    const requested = Number.isFinite(options.maxSentenceChars) ? Math.floor(options.maxSentenceChars as number) : 20;
+    this.maxSentenceChars = Math.min(Math.max(requested, 1), MAX_SAFE_SENTENCE_CHARS);
   }
 
   feed(chunk: string): string[] {
@@ -170,7 +192,7 @@ export class StreamParser {
       this.sentenceBuffer += ch;
 
       // 4. 检查断句
-      const currentLen = this.sentenceBuffer.length;
+      const currentLen = graphemeCount(this.sentenceBuffer);
       const prevChar = currentLen >= 2 ? this.sentenceBuffer[currentLen - 2] : "";
       const nextChar = i + 1 < chunk.length ? chunk[i + 1] : "";
 
@@ -192,7 +214,7 @@ export class StreamParser {
           }
         }
         // 逗号长句防断流：超过 maxSentenceChars 且遇逗号
-        else if (COMMA_PUNCTUATIONS.has(ch) && this.sentenceBuffer.length >= this.maxSentenceChars) {
+        else if (COMMA_PUNCTUATIONS.has(ch) && currentLen >= this.maxSentenceChars) {
           const nextIsComma = i + 1 < chunk.length && COMMA_PUNCTUATIONS.has(chunk[i + 1]);
           if (!nextIsComma) {
             const cleaned = cleanSentence(this.sentenceBuffer);
@@ -201,6 +223,21 @@ export class StreamParser {
             }
             this.sentenceBuffer = "";
           }
+        }
+
+        // A model can omit punctuation for a long time. Keep normal
+        // whitespace as a safe boundary, then use a bounded code-point split
+        // as the last resort so first audio is not delayed for the whole turn.
+        if (this.sentenceBuffer.length >= this.maxSentenceChars &&
+            /\s/.test(ch) &&
+            !/[。！？；!?;，,]/.test(this.sentenceBuffer)) {
+          const cleaned = cleanSentence(this.sentenceBuffer);
+          if (hasPronounceableContent(cleaned)) sentences.push(cleaned);
+          this.sentenceBuffer = "";
+        } else if (this.sentenceBuffer.length >= Math.max(this.maxSentenceChars * 2, this.maxSentenceChars + 8)) {
+          const head = cleanSentence(graphemeSlice(this.sentenceBuffer, this.maxSentenceChars));
+          if (hasPronounceableContent(head)) sentences.push(head);
+          this.sentenceBuffer = this.sentenceBuffer.slice(graphemeSlice(this.sentenceBuffer, this.maxSentenceChars).length);
         }
       }
 

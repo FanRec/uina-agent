@@ -43,6 +43,7 @@ class RunServerTests(unittest.TestCase):
 
         routes = [getattr(r, "path", None) for r in app.routes]
         self.assertIn("/v1/tts/events", routes)
+        self.assertIn("/v1/tts/playback/events", routes)
         self.assertIn("/health", routes)
 
 

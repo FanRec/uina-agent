@@ -1,5 +1,5 @@
 import type { DeliverySnapshot, InterruptResult, PlaybackBreakpoint, VoiceOutputDriver } from "../voice/driver.js";
-import type { TtsBridgeClient } from "./client.js";
+import { TtsSpeakError, type TtsBridgeClient } from "./client.js";
 import { summarizeProgress } from "./delivery.js";
 
 /** 作者侧记账上限：只服务"这一轮说了什么"，不需要无限历史。 */
@@ -101,12 +101,37 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
       pendingSegments: this.facts.pendingSegments + 1,
     };
 
-    return await this.client.speak({
-      trace_id: traceId,
-      segment_id: `${traceId}:${index}`,
-      index,
-      text,
-    });
+    const rollbackRejected = (): { status: string; task_id: string } => {
+      // 明确 HTTP/业务拒绝：回滚作者侧 pending 与文本账，避免状态栏永久卡在“待播”。
+      this.segmentTexts.delete(index);
+      this.submitted = Math.max(0, this.submitted - 1);
+      this.facts = {
+        ...this.facts,
+        submittedSegments: this.submitted,
+        pendingSegments: Math.max(0, this.facts.pendingSegments - 1),
+        currentSegmentIndex: null,
+        currentSegmentText: undefined,
+      };
+      this.deliveryRevision++;
+      return { status: "rejected", task_id: `${traceId}:${index}` };
+    };
+
+    try {
+      const result = await this.client.speak({
+        trace_id: traceId,
+        segment_id: `${traceId}:${index}`,
+        index,
+        text,
+      });
+      if (["failed", "rejected"].includes(result.status)) return rollbackRejected();
+      return result;
+    } catch (error) {
+      if (!(error instanceof TtsSpeakError) || error.kind === "unknown") {
+        // 网络结果未知：保留 pending，在后续 probe 中等待物理事实，不能伪报失败或成功。
+        return { status: "uncertain", task_id: `${traceId}:${index}` };
+      }
+      return rollbackRejected();
+    }
   }
 
   /**

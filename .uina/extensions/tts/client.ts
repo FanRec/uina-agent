@@ -1,3 +1,18 @@
+
+export type TtsSpeakFailureKind = "rejected" | "unknown";
+
+export class TtsSpeakError extends Error {
+  readonly kind: TtsSpeakFailureKind;
+  readonly status?: number;
+
+  constructor(message: string, kind: TtsSpeakFailureKind, status?: number) {
+    super(message);
+    this.name = "TtsSpeakError";
+    this.kind = kind;
+    this.status = status;
+  }
+}
+
 export interface SpeakPayload {
   readonly trace_id: string;
   readonly segment_id: string;
@@ -130,9 +145,15 @@ export class TtsBridgeClient {
       });
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
-        throw new Error(`TTS speak failed: HTTP ${res.status} ${errText}`);
+        throw new TtsSpeakError(`TTS speak rejected: HTTP ${res.status} ${errText}`, "rejected", res.status);
       }
       return (await res.json()) as { status: string; task_id?: string };
+    } catch (error) {
+      if (error instanceof TtsSpeakError) throw error;
+      throw new TtsSpeakError(
+        `TTS speak result unknown: ${error instanceof Error ? error.message : String(error)}`,
+        "unknown",
+      );
     } finally {
       clearTimeout(timer);
     }

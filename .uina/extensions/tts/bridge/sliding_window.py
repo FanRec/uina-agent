@@ -135,6 +135,7 @@ class SlidingWindowState:
                 record.state = "completed"
             if session.next_play_index == segment_index:
                 session.next_play_index += 1
+            record.asset = None
             if session.condition is not None:
                 session.condition.notify_all()
 
@@ -155,6 +156,7 @@ class SlidingWindowState:
                     record.state = "obsolete"
                 elif record.state == "playing":
                     record.state = "cancelled"
+                record.asset = None
             if session.condition is not None:
                 session.condition.notify_all()
             return session

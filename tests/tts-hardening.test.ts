@@ -52,4 +52,22 @@ describe("TTS delivery hardening", () => {
     await expect(driver.interrupt(first)).resolves.toMatchObject({ outcome: "interrupted" });
     expect(client.cancelTrace).toHaveBeenCalledWith(first, "immediate");
   });
+
+  it("uses grapheme clusters and clamps unsafe sentence limits", () => {
+    const parser = new StreamParser({ maxSentenceChars: 5 });
+    const unit = "e\u0301";
+    const output = parser.feed(unit.repeat(11));
+    expect(output[0]).toBe(unit.repeat(5));
+    expect(parser.flush()[0]).toBe(unit.repeat(6));
+  });
+
+  it("hard-splits an unpunctuated stream at a safe boundary", () => {
+    const parser = new StreamParser({ maxSentenceChars: 10 });
+    const output = parser.feed("一二三四五六七八九十 后续");
+
+    expect(output).toEqual(["一二三四五六七八九十"]);
+    expect(parser.flush()).toEqual(["后续"]);
+  });
+
+
 });

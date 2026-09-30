@@ -25,46 +25,19 @@ def _graphemes(text: str) -> list[str]:
 class SubtitleSyncEmitter:
     def __init__(self, config: SubtitleSyncConfig, *, client: httpx.Client | None = None) -> None:
         self.config = config
-        self.client = client or httpx.Client(base_url=config.obs_base_url.rstrip("/"), trust_env=False)
+        # Progress bookkeeping remains local to the TTS bridge. OBS consumes the
+        # independent playback snapshot stream; this helper never performs OBS HTTP.
+        self.client = client
         self._lock = threading.Lock()
 
     def close(self) -> None:
-        self.client.close()
+        if self.client is not None:
+            self.client.close()
 
     def emit(self, event: SubtitleProgressEvent) -> None:
-        if not self.config.enabled:
-            return
-        payload = {
-            "trace_id": event.trace_id,
-            "task_id": event.task_id,
-            "text": event.text,
-            "action": event.action,
-            "metadata": {
-                "generation_id": event.generation_id,
-                "segment_index": event.segment_index,
-                "revealed_text": event.revealed_text,
-                "revealed_count": event.revealed_count,
-                "playback_started": event.playback_started,
-                "playback_completed": event.playback_completed,
-                **dict(event.metadata),
-            },
-        }
-        with self._lock:
-            try:
-                self.client.post("/v1/obs/subtitle", json=payload, timeout=0.5)
-            except Exception as exc:
-                logger.warning(
-                    "obs subtitle emit failed",
-                    extra={
-                        "trace_id": event.trace_id,
-                        "stage": "subtitle_sync",
-                        "service": "tts_bridge",
-                        "status": "degraded",
-                        "action": event.action,
-                        "segment_index": event.segment_index,
-                        "error": str(exc),
-                    },
-                )
+        # Kept as a local timing hook for existing progress callers. The OBS
+        # transport is PlaybackSnapshotHub, never this method.
+        return
 
     def emit_clear(self, *, trace_id: str, generation_id: int, reason: str) -> None:
         self.emit(

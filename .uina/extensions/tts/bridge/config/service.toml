@@ -57,12 +57,6 @@ adaptive_max_chunk_gap_ms = 400.0
 adaptive_realtime_factor_threshold = 0.85
 adaptive_batch_recovery_successes = 2
 
-[subtitle_sync]
-enabled = false
-obs_base_url = "http://127.0.0.1:8104"
-progress_interval_ms = 16
-fallback_mode = "sentence_only"
-
 [lipsync_bridge]
 enabled = false
 streaming_enabled = false

@@ -56,6 +56,7 @@ from models import (
     VendorConfig,
 )
 from playback_coordinator import PlaybackCoordinator, PlaybackLease
+from playback_projection import PlaybackProjection, PlaybackSnapshotHub
 from runtime_components import PlaybackEventHub, TaskRegistry
 from sliding_window import SlidingWindowState
 from subtitle_sync import SubtitleSyncEmitter, _graphemes
@@ -91,6 +92,8 @@ _DELIVERY_STOP = object()
 SYNTHESIS_PREFETCH_WINDOW_SIZE = 2
 MIN_FIXED_STREAMING_DELIVERY_WORKERS = 2
 MAX_FIXED_STREAMING_DELIVERY_WORKERS = 3
+TERMINAL_TASK_TTL_SECONDS = 3600
+MAX_TERMINAL_TASKS = 1000
 
 
 
@@ -110,7 +113,14 @@ class TTSBridgeService:
         )
         self.subtitle_sync = SubtitleSyncEmitter(config.subtitle_sync)
         self.lipsync_bridge = LipsyncBridgeClient(config.lipsync_bridge)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._admission_lock = threading.Lock()
+        self._closing = threading.Event()
+        self._delivery_futures: set[Future[Any]] = set()
+        self._warmup_thread: threading.Thread | None = None
+        self._last_artifact_sweep = 0.0
+        self._playback_projection = PlaybackProjection()
+        self._playback_snapshot_hub = PlaybackSnapshotHub(self._playback_projection)
         self._real_task_registry = TaskRegistry(lock=self._lock)
         self._real_playback_event_hub = PlaybackEventHub(lock=self._lock)
         self._real_adaptive_engine = AdaptiveStrategyEngine(self.config.streaming)
@@ -270,6 +280,10 @@ class TTSBridgeService:
             "is_playing": self.player.is_playing,
             "is_streaming": self.player.is_streaming,
             "active_playback_task_id": self._active_playback_task_id(),
+            "playback_snapshot_source_instance": (
+                self._playback_projection.snapshot()["sourceInstance"]
+                if hasattr(self, "_playback_projection") else None
+            ),
             "pending_delivery_tasks": self._delivery_queue.qsize(),
             "delivery_worker_alive": bool(self._delivery_thread is not None and self._delivery_thread.is_alive()),
             "delivery_executor_workers": self._delivery_executor._max_workers,
@@ -332,6 +346,8 @@ class TTSBridgeService:
         }
 
     def start(self) -> None:
+        if getattr(self, "_closing", threading.Event()).is_set():
+            raise RuntimeError("tts bridge is closed")
         self.vendor_manager.ensure_running()
         if self.config.playback_enabled:
             self.player.start()
@@ -339,22 +355,25 @@ class TTSBridgeService:
 
     def startup(self) -> None:
         self.start()
-        if self.vendor_manager.wait_until_ready(self.config.startup_timeout_ms):
-            self._warmup_vendor_best_effort()
-            return
         self._warmup_status = {
             "status": "waiting_for_vendor",
             "startup_timeout_ms": self.config.startup_timeout_ms,
             "at": time.time(),
         }
         print(
-            f"[TTS][warmup] waiting for vendor in background after startup_timeout_ms={self.config.startup_timeout_ms}",
+            f"[TTS][warmup] scheduling background warmup after startup_timeout_ms={self.config.startup_timeout_ms}",
             flush=True,
         )
-        threading.Thread(target=self._warmup_after_vendor_ready, name="tts-bridge-warmup", daemon=True).start()
+        self._warmup_thread = threading.Thread(
+            target=self._warmup_after_vendor_ready,
+            name="tts-bridge-warmup",
+            daemon=True,
+        )
+        self._warmup_thread.start()
 
     def _warmup_after_vendor_ready(self) -> None:
-        if not self.vendor_manager.wait_until_ready(max(self.config.startup_timeout_ms, self.config.streaming.warmup_timeout_ms)):
+        wait_timeout = max(self.config.startup_timeout_ms, self.config.streaming.warmup_timeout_ms)
+        if not self.vendor_manager.wait_until_ready(wait_timeout):
             self._warmup_status = {
                 "status": "skipped",
                 "reason": "vendor_not_ready",
@@ -362,7 +381,15 @@ class TTSBridgeService:
             }
             print("[TTS][warmup] skipped: vendor_not_ready", flush=True)
             return
-        self._warmup_vendor_best_effort()
+        for attempt in range(1, 4):
+            if getattr(self, "_closing", threading.Event()).is_set():
+                return
+            self._warmup_vendor_best_effort()
+            if self._warmup_status.get("status") == "completed":
+                self._warmup_status["attempt"] = attempt
+                return
+            if attempt < 3:
+                time.sleep(0.25 * attempt)
 
     def _warmup_vendor_best_effort(self) -> None:
         with self._synthesis_lock:
@@ -427,8 +454,11 @@ class TTSBridgeService:
             started_at = time.perf_counter()
             first_chunk_bytes = 0
             for chunk in self.vendor_manager.synthesize_stream(payload, timeout_ms=streaming.warmup_timeout_ms):
-                first_chunk_bytes = len(chunk)
-                break
+                if chunk and len(chunk) >= 2:
+                    first_chunk_bytes = len(chunk)
+                    break
+            if first_chunk_bytes < 2:
+                raise RuntimeError("warmup returned no valid PCM")
             elapsed_ms = round((time.perf_counter() - started_at) * 1000, 2)
             self._warmup_status = {
                 "status": "completed",
@@ -451,11 +481,28 @@ class TTSBridgeService:
             print(f"[TTS][warmup] skipped: {exc}", flush=True)
 
     def close(self) -> None:
+        if getattr(self, "_closing", threading.Event()).is_set():
+            return
+        self._closing.set()
+        with self._lock:
+            for task in self._tasks.values():
+                if task.state in {"pending", "in_progress", "synthesizing", "ready"}:
+                    task.cancel_requested = True
+                    task.state = "cancelled"
+                    task.completed_at = time.time()
+                    self._release_window_for_cancelled_task_locked(task)
+            self._admitted_tasks.clear()
+        snapshot_hub = getattr(self, "_playback_snapshot_hub", None)
+        if snapshot_hub is not None:
+            snapshot_hub.close()
         self._playback_event_hub.close()
         self._delivery_stop.set()
         self._delivery_queue.put(_DELIVERY_STOP)
         if self._delivery_thread is not None:
             self._delivery_thread.join(timeout=2.0)
+        warmup_thread = getattr(self, "_warmup_thread", None)
+        if warmup_thread is not None and warmup_thread.is_alive():
+            warmup_thread.join(timeout=0.5)
         self._delivery_executor.shutdown(wait=False, cancel_futures=True)
         self.player.stop()
         self.subtitle_sync.close()
@@ -463,6 +510,8 @@ class TTSBridgeService:
         self.vendor_manager.close()
 
     def _ensure_delivery_worker(self) -> None:
+        if getattr(self, "_closing", threading.Event()).is_set():
+            return
         if self._delivery_thread is not None and self._delivery_thread.is_alive():
             return
         self._delivery_stop.clear()
@@ -530,7 +579,32 @@ class TTSBridgeService:
         finally:
             self._active_delivery_tasks.discard(task_id)
 
+    def _existing_task_response(self, request: SpeakRequest) -> dict[str, Any] | None:
+        with self._lock:
+            existing = self._tasks.get(request.segment_id)
+            if existing is None:
+                return None
+            same_request = (
+                existing.trace_id == request.trace_id
+                and int(existing.detail.get("segment_index", request.index) or request.index) == int(request.index)
+                and str(existing.detail.get("original_text", existing.detail.get("text", ""))) == request.text
+            )
+            if not same_request:
+                raise HTTPException(status_code=409, detail=f"task_id already belongs to another request: {request.segment_id}")
+            return {
+                "status": "accepted",
+                "task_id": existing.task_id,
+                "cancel_token": existing.cancel_token,
+                "trace_id": existing.trace_id,
+                "generation_id": int(existing.detail.get("generation_id", 1) or 1),
+                "segment_index": int(existing.detail.get("segment_index", request.index) or request.index),
+                "deduplicated": True,
+            }
+
     def speak(self, request: SpeakRequest, traceparent: str | None = None) -> dict[str, Any]:
+        duplicate = self._existing_task_response(request)
+        if duplicate is not None:
+            return duplicate
         task, ref_audio_path, timeout, profile, use_batch_only = self._prepare_speak_task(request, wait_for_vendor_ready=True, traceparent=traceparent)
         return self._deliver_prepared_task(
             task=task,
@@ -541,12 +615,17 @@ class TTSBridgeService:
         )
 
     def admit_speak(self, request: SpeakRequest, traceparent: str | None = None) -> dict[str, Any]:
+        duplicate = self._existing_task_response(request)
+        if duplicate is not None:
+            return duplicate
         task, ref_audio_path, timeout, profile, use_batch_only = self._prepare_speak_task(request, wait_for_vendor_ready=False, traceparent=traceparent)
         self._ensure_delivery_worker()
         if self._should_reject_admission():
             task.state = "failed"
             task.completed_at = time.time()
             task.error = "tts delivery worker is not accepting new tasks"
+            self._mark_task_failed_and_release_window(task=task, reason="admission_rejected")
+            self._publish_playback_event("failed", task=task, detail={"error": task.error, "reason": "admission_rejected"})
             raise HTTPException(status_code=503, detail=task.error)
         self._admitted_tasks[task.task_id] = _AdmittedSpeakTask(
             task_id=task.task_id,
@@ -606,10 +685,14 @@ class TTSBridgeService:
     def playback_events(self, trace_id: str | None = None):
         yield from self._playback_event_hub.stream(trace_id)
 
+    def playback_snapshots(self):
+        yield from self._playback_snapshot_hub.stream()
+
     def _ensure_runtime_component_aliases(self) -> None:
         pass
 
     def task_status(self, task_id: str) -> dict[str, Any]:
+        self._prune_terminal_state()
         with self._lock:
             task = self._task_registry.get(task_id)
         if task is None:
@@ -656,31 +739,100 @@ class TTSBridgeService:
         # 防止积压任务永久占住 admission 名额：超过 max_delivery_task_ms 的
         # 排队任务直接失败并移出，避免长回复把队列打到 503。
         now = time.perf_counter()
-        stale_ids = [
-            task_id
-            for task_id, admitted in self._admitted_tasks.items()
-            if now - admitted.admitted_at > getattr(
-                getattr(getattr(self, "config", None), "streaming", None),
-                "max_delivery_task_ms",
-                60000,
-            ) / 1000
-        ]
-        for task_id in stale_ids:
-            self._admitted_tasks.pop(task_id, None)
-            task = self._tasks.get(task_id)
-            if task is not None:
-                task.state = "failed"
-                task.error = "delivery admission expired"
-                task.completed_at = time.time()
-                with self._lock:
+        with self._lock:
+            stale_ids = [
+                task_id
+                for task_id, admitted in self._admitted_tasks.items()
+                if now - admitted.admitted_at > getattr(
+                    getattr(getattr(self, "config", None), "streaming", None),
+                    "max_delivery_task_ms",
+                    60000,
+                ) / 1000
+            ]
+            for task_id in stale_ids:
+                self._admitted_tasks.pop(task_id, None)
+                task = self._tasks.get(task_id)
+                if task is not None:
+                    task.state = "failed"
+                    task.error = "delivery admission expired"
+                    task.completed_at = time.time()
                     self._release_window_for_cancelled_task_locked(task)
+            admitted_count = len(self._admitted_tasks)
         if stale_ids:
             print(f"[TTS] expired {len(stale_ids)} stale admitted tasks", flush=True)
+            for task_id in stale_ids:
+                task = self._tasks.get(task_id)
+                if task is not None:
+                    self._publish_playback_event(
+                        "failed",
+                        task=task,
+                        detail={"error": task.error, "reason": "admission_expired"},
+                    )
+        return admitted_count >= max(max_workers * 16, 32)
 
+    def _prune_terminal_state(self) -> None:
+        now = time.time()
+        with self._lock:
+            terminal = [
+                task for task in self._tasks.values()
+                if task.state in {"completed", "failed", "cancelled", "obsolete"}
+                and task.completed_at is not None
+            ]
+            expired = {
+                task.task_id for task in terminal
+                if now - float(task.completed_at or now) > TERMINAL_TASK_TTL_SECONDS
+            }
+            keep = [task for task in terminal if task.task_id not in expired]
+            if len(keep) > MAX_TERMINAL_TASKS:
+                keep.sort(key=lambda task: float(task.completed_at or 0.0))
+                expired.update(task.task_id for task in keep[:-MAX_TERMINAL_TASKS])
+            artifacts = []
+            for task_id in expired:
+                removed = self._task_registry.remove(task_id)
+                if removed is not None and removed.artifact_path:
+                    artifacts.append(removed.artifact_path)
 
-        if len(self._admitted_tasks) >= max(max_workers * 16, 32):
-            return True
-        return False
+            sessions_by_trace = getattr(self, "_sessions_by_trace", {})
+            for trace_id, session in list(sessions_by_trace.items()):
+                active = any(
+                    record.state not in {"completed", "failed", "cancelled", "obsolete"}
+                    for record in session.segments.values()
+                )
+                ended = session.expected_end_index is not None and session.next_play_index > session.expected_end_index
+                if not active and (session.closed or ended):
+                    for record in session.segments.values():
+                        record.asset = None
+                    sessions_by_trace.pop(trace_id, None)
+                    getattr(self, "_next_generation_id_by_trace", {}).pop(trace_id, None)
+                    for key in list(getattr(self, "_first_chunk_events", {})):
+                        if key[0] == trace_id:
+                            self._first_chunk_events.pop(key, None)
+                    if hasattr(self, "_real_adaptive_engine"):
+                        self._real_adaptive_engine.reset_trace(trace_id)
+            referenced = {t.artifact_path for t in self._tasks.values() if t.artifact_path}
+        output_dir = getattr(getattr(self, "config", None), "output_dir", None)
+        if output_dir is not None:
+            root = output_dir.resolve()
+            for raw in artifacts:
+                candidate = Path(raw).resolve()
+                if candidate.parent == root and str(candidate) not in referenced:
+                    candidate.unlink(missing_ok=True)
+            self._prune_audio_artifacts(root, referenced)
+
+    def _prune_audio_artifacts(self, root: Path, referenced: set[str]) -> None:
+        now = time.time()
+        if now - getattr(self, "_last_artifact_sweep", 0.0) < 60:
+            return
+        self._last_artifact_sweep = now
+        files = sorted(
+            (p for p in root.glob("uina-tts-*") if p.is_file() and p.resolve().parent == root),
+            key=lambda p: p.stat().st_mtime,
+        )
+        for index, file in enumerate(files):
+            if str(file.resolve()) in referenced:
+                continue
+            if now - file.stat().st_mtime > TERMINAL_TASK_TTL_SECONDS or index < len(files) - MAX_TERMINAL_TASKS:
+                file.unlink(missing_ok=True)
 
     def _prepare_speak_task(
         self,
@@ -967,7 +1119,11 @@ class TTSBridgeService:
                 "late_result_discarded": True,
             }
 
-        playback_result = self._play_ready_segment(trace_id=task.trace_id, generation_id=generation_id, segment_index=segment_index)
+        try:
+            playback_result = self._play_ready_segment(trace_id=task.trace_id, generation_id=generation_id, segment_index=segment_index)
+        except Exception:
+            stream_session.close()
+            raise
         _log_latency(
             task,
             "playback_result",
@@ -1007,6 +1163,7 @@ class TTSBridgeService:
                 task.state = "failed"
                 task.completed_at = time.time()
                 task.error = str(exc)
+            stream_session.close()
             if kind == "timeout":
                 raise StreamingSynthesisError("tts vendor request timed out", status_code=504, fallback_allowed=fallback_allowed) from exc
             if kind == "lock_timeout":
@@ -1026,6 +1183,7 @@ class TTSBridgeService:
             raise StreamingSynthesisError(f"tts vendor request failed: {exc}", status_code=502, fallback_allowed=fallback_allowed) from exc
 
         if task.cancel_requested:
+            stream_session.close()
             task.state = "cancelled"
             task.completed_at = time.time()
             return {
@@ -1063,6 +1221,7 @@ class TTSBridgeService:
             )
 
         if total_bytes <= 0:
+            stream_session.close()
             print(f"[TTS] streaming vendor returned empty audio", flush=True)
             raise StreamingSynthesisError("tts vendor returned empty audio", status_code=502, fallback_allowed=True)
 
@@ -1125,6 +1284,7 @@ class TTSBridgeService:
                     "error": task.error,
                 },
             )
+            stream_session.close()
             return {
                 "status": "failed",
                 "task_id": task.task_id,
@@ -1153,6 +1313,7 @@ class TTSBridgeService:
             },
         )
         self._record_adaptive_result(task.trace_id, task.detail, used_batch=False)
+        stream_session.close()
         print(
             "[TTS] streamed: "
             f"{duration_ms}ms audio in {latency_ms}ms "
@@ -1455,6 +1616,7 @@ class TTSBridgeService:
                         timeout_ms=playback_timeout_ms(asset.duration_ms, self.config.streaming.drain_timeout_ms),
                         prebuffer_ms=prebuffer_ms,
                         rebuffer_ms=rebuffer_ms,
+                        playback_id=task.detail.get("physical_playback_id"),
                     )
                 else:
                     start_stream = getattr(self.player, "start_stream", None)
@@ -1473,6 +1635,9 @@ class TTSBridgeService:
                         ), chunk_buffer=[asset.pcm_bytes or b""])
                     resume_or_start = getattr(self.player, "resume_or_start_stream", None) or start_stream
                     resume_or_start(sample_rate=asset.sample_rate, prebuffer_ms=prebuffer_ms, rebuffer_ms=rebuffer_ms)
+                    bind_segment = getattr(self.player, "bind_segment", None)
+                    if callable(bind_segment) and task.detail.get("physical_playback_id"):
+                        bind_segment(str(task.detail["physical_playback_id"]))
                     try:
                         for chunk in mirror_playback_chunks(asset.pcm_stream):
                             feed(chunk)
@@ -1494,6 +1659,7 @@ class TTSBridgeService:
                 timeout_ms=playback_timeout_ms(asset.duration_ms, self.config.streaming.drain_timeout_ms),
                 prebuffer_ms=prebuffer_ms,
                 rebuffer_ms=rebuffer_ms,
+                playback_id=task.detail.get("physical_playback_id"),
             )
             stats = self.player.stream_stats()
             snapshot = self._run_subtitle_progress_loop(task=task, duration_ms=asset.duration_ms)
@@ -1583,6 +1749,7 @@ class TTSBridgeService:
             timeout_ms=timeout_ms,
             prebuffer_ms=self.config.streaming.prebuffer_ms,
             rebuffer_ms=self.config.streaming.rebuffer_ms,
+            playback_id=task.detail.get("physical_playback_id"),
         )
         progress_thread.join(timeout=1.0)
         snapshot = snapshot_box.get("snapshot", self._player_progress_snapshot(duration_ms=asset.duration_ms))
@@ -1614,6 +1781,9 @@ class TTSBridgeService:
             return duration_ms
 
         def remember_snapshot(snapshot: PlaybackProgressSnapshot) -> PlaybackProgressSnapshot:
+            playback_id = task.detail.get("physical_playback_id")
+            self._playback_projection.update_progress(snapshot, playback_id=str(playback_id) if playback_id else None)
+            self._playback_snapshot_hub.publish(self._playback_projection.snapshot())
             text = str(task.detail.get("text", ""))
             graphemes = _graphemes(text)
             if snapshot.segment_finished:
@@ -1881,6 +2051,7 @@ class TTSBridgeService:
                 return {"status": "not_found", "trace_id": request.trace_id}
             if request.generation_id is not None and session.generation_id != int(request.generation_id):
                 return {"status": "stale", "trace_id": request.trace_id, "generation_id": session.generation_id}
+            had_segments = bool(session.segments)
             if request.last_segment_index is not None:
                 session.expected_end_index = max(int(request.last_segment_index), 1)
             elif session.expected_end_index is None:
@@ -1894,6 +2065,8 @@ class TTSBridgeService:
             generation_id=request.generation_id,
             last_segment_index=request.last_segment_index,
         )
+        if had_segments:
+            self._prune_terminal_state()
         return {"status": "accepted", "trace_id": request.trace_id}
 
     def _release_window_for_cancelled_task_locked(self, task: BridgeTask) -> None:
@@ -1911,7 +2084,8 @@ class TTSBridgeService:
             if record.task_id != task.task_id:
                 continue
             if record.state not in {"completed", "failed", "cancelled", "obsolete"}:
-                record.state = "cancelled"
+                record.state = "failed" if task.state == "failed" else "cancelled"
+            record.asset = None
             if session.next_play_index == index:
                 session.next_play_index += 1
             break
@@ -1933,6 +2107,7 @@ class TTSBridgeService:
                         "error": task.error or reason,
                         "failure_reason": reason,
                     }
+                    record.asset = None
                     if session.next_play_index == index:
                         session.next_play_index += 1
                     break
@@ -2238,6 +2413,15 @@ class TTSBridgeService:
             task = self._tasks.get(record.task_id)
         if task is None:
             return {"playback_started": False, "playback_completed": False}
+        playback_id = self._playback_projection.begin_segment(
+            trace_id=trace_id,
+            generation_id=generation_id,
+            segment_index=segment_index,
+            text=str(task.detail.get("text", "")),
+            duration_ms=asset.duration_ms,
+        )
+        task.detail["physical_playback_id"] = playback_id
+        self._playback_snapshot_hub.publish(self._playback_projection.snapshot())
         if asset.pcm_stream is None:
             self.lipsync_bridge.mirror_asset_async(
                 trace_id=trace_id,
@@ -2247,11 +2431,21 @@ class TTSBridgeService:
                 text=str(task.detail.get("text", "")),
                 asset=asset,
             )
-        if asset.kind == "pcm" and asset.pcm_stream is not None:
-            return self._play_streaming_asset(task=task, asset=asset, chunk_buffer=asset.pcm_stream)
-        if asset.kind == "pcm":
-            return self._play_streaming_asset(task=task, asset=asset, chunk_buffer=[asset.pcm_bytes or b""])
-        return self._play_batch_asset(task=task, asset=asset)
+        try:
+            if asset.kind == "pcm" and asset.pcm_stream is not None:
+                result = self._play_streaming_asset(task=task, asset=asset, chunk_buffer=asset.pcm_stream)
+            elif asset.kind == "pcm":
+                result = self._play_streaming_asset(task=task, asset=asset, chunk_buffer=[asset.pcm_bytes or b""])
+            else:
+                result = self._play_batch_asset(task=task, asset=asset)
+            reason = "interrupted" if task.cancel_requested else "completed" if result.get("playback_completed") else "failed"
+            self._playback_projection.finish(reason, playback_id=playback_id)
+            self._playback_snapshot_hub.publish(self._playback_projection.snapshot())
+            return result
+        except Exception:
+            self._playback_projection.finish("failed", playback_id=playback_id)
+            self._playback_snapshot_hub.publish(self._playback_projection.snapshot())
+            raise
 
     def _run_diagnostic_candidate(self, *, request: SpeakRequest, profile: StreamingProfile) -> dict[str, Any]:
         preset = self.config.preset
@@ -2310,7 +2504,7 @@ class TTSBridgeService:
     def _write_audio_artifact(self, *, task_id: str, audio_id: str, audio_bytes: bytes, media_type: str) -> Path:
         output_dir = self.config.output_dir.resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
-        artifact_path = output_dir / f"{task_id}_{audio_id}.{media_type}"
+        artifact_path = output_dir / f"uina-tts-{uuid4().hex}-{audio_id}.{media_type}"
         artifact_path.write_bytes(audio_bytes)
         return artifact_path
 
@@ -2380,5 +2574,3 @@ from server import (
     run_server,
     run_streaming_diagnostic,
 )
-
-
