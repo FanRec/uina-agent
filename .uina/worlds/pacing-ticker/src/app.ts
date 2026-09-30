@@ -15,6 +15,13 @@ function installDir(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
 }
 
+/**
+ * World 输入 ID 会直接进入持久化会话记录，必须跨进程重启与扩展重载保持唯一。
+ */
+export function createPacingOpportunityId(): string {
+  return `pacing-opportunity:${randomUUID()}`;
+}
+
 async function loadState(filePath: string): Promise<TickerDurableState | undefined> {
   let raw: string;
   try {
@@ -59,7 +66,6 @@ async function loadGuardrails(filePath: string): Promise<TickerGuardrails> {
 export function createPacingTickerWorld(): WorldDef {
   let engine: TickerEngine | null = null;
   let unbind: (() => void) | null = null;
-  let opportunitySequence = 0;
 
   const teardown = () => {
     unbind?.();
@@ -82,9 +88,8 @@ export function createPacingTickerWorld(): WorldDef {
         isBusy: () => c.isBusy?.() ?? false,
         submitOpportunity: async (text: string) => {
           if (!c.emitEvent) throw new Error("宿主未提供 emitEvent");
-          opportunitySequence += 1;
           await c.emitEvent({
-            id: `pacing-opportunity:${opportunitySequence}`,
+            id: createPacingOpportunityId(),
             type: "pacing-opportunity",
             channel: "world",
             delivery: "queued",
