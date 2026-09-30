@@ -69,7 +69,7 @@ export function buildEventFrameGroup(options: EventFrameGroupOptions): ChatMsg[]
  const input: InputProvenance = { eventId, ...(source ? { source } : {}), ...(receivedAt ? { receivedAt } : {}) };
  const id = frameCallId(eventId);
  const context = (index: number): ModelContextMeta => ({ kind: EVENT_FRAME_KIND, input, ...(entryId ? { entryId } : {}),
-  group: { id, index, size: 3 }, retain: true });
+  group: { id, index, size: 3 } });
  // receivedAt is ISO-8601 UTC by contract. Keep the exact canonical value for durable facts,
  // and append the subject's local rendering to prevent timezone misreading by the model.
  const receivedAtText = receivedAt

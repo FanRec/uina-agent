@@ -9,7 +9,7 @@ const SUMMARY_ENTRY_TYPE = "uina.compaction.summary";
 const MANUAL_KEEP_TOKENS = 20_000;
 const SUMMARY_VERSION = 1;
 
-interface CompactionCheckpoint {
+export interface CompactionCheckpoint {
 	readonly version: typeof SUMMARY_VERSION;
 	readonly summary: string;
 	readonly coveredThroughEntryId: string;
@@ -40,22 +40,15 @@ export function estimateStreamTokens(messages: readonly StreamMessageView[]): nu
 	return estimateRequestTokens(messages as readonly ChatMsg[], []);
 }
 
-function semanticUnits(messages: readonly StreamMessageView[]): Array<{ start: number; end: number; tokens: number }> {
+export function semanticUnits(messages: readonly StreamMessageView[]): Array<{ start: number; end: number; tokens: number }> {
 	const result: Array<{ start: number; end: number; tokens: number }> = [];
 	for (let start = 0; start < messages.length;) {
 		const message = messages[start]!;
 		let end = start + 1;
 		if (message.context?.group?.index === 0) {
 			end = Math.min(messages.length, start + message.context.group.size);
-		} else if (message.role === "user") {
-			// A normal completed turn begins with user context and owns every
-			// assistant/tool exchange until the next user context. Boundaries may
-			// never separate a prompt from its answer or a tool call from its result.
-			while (end < messages.length) {
-				const next = messages[end]!;
-				if (next.role === "system" || next.role === "user" || next.context?.group?.index === 0) break;
-				end++;
-			}
+		} else if (message.context?.group && message.context.group.index > 0) {
+			end = Math.min(messages.length, start + (message.context.group.size - message.context.group.index));
 		} else if (message.role === "assistant" && message.tool_calls?.length) {
 			while (end < messages.length && messages[end]!.role === "tool") end++;
 		}
@@ -65,15 +58,7 @@ function semanticUnits(messages: readonly StreamMessageView[]): Array<{ start: n
 	return result;
 }
 
-function newestRetainedStart(messages: readonly StreamMessageView[]): number {
-	for (let index = messages.length - 1; index >= 0; index--) {
-		const context = messages[index]!.context;
-		if (context?.retain && (!context.group || context.group.index === 0)) return index;
-	}
-	return messages.length;
-}
-
-function findTrimBoundary(messages: readonly StreamMessageView[], messageBudget: number): number | null {
+export function findTrimBoundary(messages: readonly StreamMessageView[], messageBudget: number): number | null {
 	if (estimateStreamTokens(messages) <= messageBudget) return null;
 	let systemEnd = 0;
 	while (messages[systemEnd]?.role === "system") systemEnd++;
@@ -84,8 +69,12 @@ function findTrimBoundary(messages: readonly StreamMessageView[], messageBudget:
 		remaining -= unit.tokens;
 		keepFrom = unit.start;
 	}
-	const retained = newestRetainedStart(messages);
-	if (keepFrom > retained) throw new Error(`上下文无法容纳完整的当前输入及其工具事务（budget=${messageBudget}, retained=${retained}, keepFrom=${keepFrom}, tail=${estimateStreamTokens(messages.slice(retained))}）`);
+	while (keepFrom < messages.length && messages[keepFrom]!.role === "tool") {
+		keepFrom++;
+	}
+	if (keepFrom >= messages.length) {
+		throw new Error(`最新单步上下文或工具结果已超过预算（budget=${messageBudget}），无法安全截取历史`);
+	}
 	return keepFrom > systemEnd ? keepFrom : null;
 }
 
@@ -168,14 +157,14 @@ function stableAgentMessage(message: import("../../core/types.js").AgentMessage)
 	}
 }
 
-function fingerprintPrefix(entries: readonly HydratedSessionEntry[], coveredThroughEntryId: string): string | undefined {
+export function fingerprintPrefix(entries: readonly HydratedSessionEntry[], coveredThroughEntryId: string): string | undefined {
 	const bearing = requestBearing(entries);
 	const index = bearing.findIndex((entry) => entry.id === coveredThroughEntryId);
 	if (index < 0) return undefined;
 	return createHash("sha256").update(JSON.stringify(bearing.slice(0, index + 1).map(stableEntry))).digest("hex");
 }
 
-function checkpointValid(
+export function checkpointValid(
 	checkpoint: CompactionCheckpoint,
 	entries: readonly HydratedSessionEntry[],
 ): boolean {

@@ -367,4 +367,136 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 			await uina.dispose();
 		}
 	});
+
+	test("多步工具调用链在当前回合内累积触顶上下文时，自动触发回合内平滑压缩并成功完成任务", async ({ env }) => {
+		await env.writeExtension("big-tool.mjs", `
+			export default function activate(pi) {
+				pi.registerTool({
+					def: {
+						type: "function",
+						function: {
+							name: "heavy_task",
+							description: "模拟产出较大结果的工具",
+							parameters: { type: "object", properties: {} },
+						},
+					},
+					async run() {
+						return {
+							result: "执行中间结果数据 ".repeat(300),
+							status: "succeeded",
+						};
+					},
+				});
+			}
+		`);
+
+		let stepCount = 0;
+		const scenario = new Scenario({ id: "mock", name: "mock", contextWindow: 20_000 });
+		scenario.fallback((req) => {
+			const isSummaryCall = (req.messages[0]?.content ?? "").includes("上下文摘要助手");
+			if (isSummaryCall) {
+				return [
+					{ kind: "text", text: "已完成前序工具调用步骤，获取到中间数据" },
+					{ kind: "finish", reason: "stop" },
+				];
+			}
+			stepCount++;
+			if (stepCount <= 4) {
+				return [
+					{ kind: "tool_call", call: { id: `call-${stepCount}`, name: "heavy_task", args: "{}" } },
+					{ kind: "finish", reason: "tool_calls" },
+				];
+			}
+			return [
+				{ kind: "text", text: "所有工具步骤处理完成，任务收敛" },
+				{ kind: "finish", reason: "stop" },
+			];
+		});
+
+		const uina = await UinaTestHarness.create({ env, scenario, hostOptions: { workspaceTools: false } });
+		try {
+			await uina.send("开始多步工具执行任务", "direct");
+			await uina.waitForIdle();
+
+			// 验证摘要调用确实在当前回合内被触发过
+			const summaryCalls = scenario.calls.filter((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"));
+			expect(summaryCalls.length).toBeGreaterThanOrEqual(1);
+
+			// 最终发给模型的最后一次请求中，包含了历史摘要，且成功完成了任务
+			const finalRequest = scenario.calls.at(-1);
+			expect(finalRequest?.messages.some((m) => m.role === "user" && (m.content ?? "").startsWith("[历史摘要] "))).toBe(true);
+
+			// 会话正常结束，未发生 turn_failed，且持久化了 checkpoint
+			const journal = await readFile(env.sessionPath, "utf8");
+			expect(journal).toContain("uina.compaction.summary");
+			expect(journal).not.toContain("turn_failed");
+		} finally {
+			await uina.dispose();
+		}
+	});
+
+	test("超长工具调用链触发多次连续回合内压缩，滚动摘要级联更新且任务顺利完成", async ({ env }) => {
+		await env.writeExtension("batch-tool.mjs", `
+			export default function activate(pi) {
+				pi.registerTool({
+					def: {
+						type: "function",
+						function: {
+							name: "chunk_task",
+							description: "模拟分批产生较大数据",
+							parameters: { type: "object", properties: {} },
+						},
+					},
+					async run() {
+						return {
+							result: "批量数据块 ".repeat(250),
+							status: "succeeded",
+						};
+					},
+				});
+			}
+		`);
+
+		let stepCount = 0;
+		// 紧凑窗口 12_000，每2~3步工具即会触顶
+		const scenario = new Scenario({ id: "mock", name: "mock", contextWindow: 12_000 });
+		scenario.fallback((req) => {
+			const isSummaryCall = (req.messages[0]?.content ?? "").includes("上下文摘要助手");
+			if (isSummaryCall) {
+				return [
+					{ kind: "text", text: "已阶段性总结前序数据块并更新当前进展" },
+					{ kind: "finish", reason: "stop" },
+				];
+			}
+			stepCount++;
+			if (stepCount <= 7) {
+				return [
+					{ kind: "tool_call", call: { id: `chunk-call-${stepCount}`, name: "chunk_task", args: "{}" } },
+					{ kind: "finish", reason: "tool_calls" },
+				];
+			}
+			return [
+				{ kind: "text", text: "全部长链路批次执行完毕" },
+				{ kind: "finish", reason: "stop" },
+			];
+		});
+
+		const uina = await UinaTestHarness.create({ env, scenario, hostOptions: { workspaceTools: false } });
+		try {
+			await uina.send("开始7轮批处理任务", "direct");
+			await uina.waitForIdle();
+
+			const summaryCalls = scenario.calls.filter((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"));
+			// 验证在单次回合内触发了不止一次（至少2次）压缩
+			expect(summaryCalls.length).toBeGreaterThanOrEqual(2);
+
+			const finalRequest = scenario.calls.at(-1);
+			expect(finalRequest?.messages.some((m) => m.role === "user" && (m.content ?? "").startsWith("[历史摘要] "))).toBe(true);
+
+			const journal = await readFile(env.sessionPath, "utf8");
+			expect(journal).not.toContain("turn_failed");
+		} finally {
+			await uina.dispose();
+		}
+	});
 });

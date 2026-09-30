@@ -1055,14 +1055,7 @@ export class Subject {
 			}),
 			...this.projection.convertToLlm(beforeMessages),
 		];
-		const currentInputId = [...this.history].findLast((message) =>
-			(message.role === "user" || message.role === "custom") && Boolean(message.id),
-		)?.id;
-		const messages = currentInputId
-			? built.map((message) => message.context?.entryId === currentInputId
-				? { ...message, context: { ...message.context, retain: true } }
-				: message)
-			: built;
+		const messages = built;
 		const base: RequestProjection = immutableProjection({
 			projectionId: randomUUID(),
 			modelKey: modelKey(model),

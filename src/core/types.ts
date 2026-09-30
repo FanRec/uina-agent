@@ -56,8 +56,6 @@ export interface ModelContextMeta {
  kind?: string;
 	/** Stable canonical request-bearing entry identity; never serialized to Provider wire. */
 	entryId?: string;
- /** Retain this entire group when trimming recent context. */
- retain?: boolean;
 }
 
 export interface QueuedMessage {
