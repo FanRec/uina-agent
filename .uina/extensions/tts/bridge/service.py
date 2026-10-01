@@ -1840,6 +1840,9 @@ class TTSBridgeService:
             prebuffer_ms=prebuffer_ms,
             rebuffer_ms=rebuffer_ms,
         )
+        bind_segment = getattr(self.player, "bind_segment", None)
+        if callable(bind_segment) and task.detail.get("physical_playback_id"):
+            bind_segment(str(task.detail["physical_playback_id"]))
         duration_holder: dict[str, float] = {}
         snapshot_box: dict[str, PlaybackProgressSnapshot] = {}
         progress_thread = threading.Thread(
