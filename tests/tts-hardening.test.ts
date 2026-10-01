@@ -87,6 +87,66 @@ describe("TTS delivery hardening", () => {
     expect(client.speak).toHaveBeenCalledTimes(2);
   });
 
+  it("does not relabel unknown Bridge ownership as external during restart", async () => {
+    const driver = new TtsVoiceOutputDriver({ isHealthy: vi.fn().mockResolvedValue(false) } as never);
+
+    await expect(driver.recover("restart", "inv-restart", "bridge")).resolves.toMatchObject({
+      status: "not_started",
+      ownership: "unknown",
+    });
+  });
+
+  it("reconnects after an owned Bridge restart and uses the new epoch before speaking", async () => {
+    const client = {
+      speak: vi.fn().mockResolvedValue({ status: "accepted", task_id: "t1" }),
+      reconnect: vi.fn().mockResolvedValue({ status: "reconnected", epoch: "epoch-new" }),
+      isHealthy: vi.fn().mockResolvedValue(true),
+    };
+    const driver = new TtsVoiceOutputDriver(client as never);
+    driver.setRestartBridge(vi.fn().mockResolvedValue({ status: "succeeded", ownership: "owned", ready: true }));
+
+    await expect(driver.recover("restart", "inv-restart", "bridge")).resolves.toMatchObject({ status: "succeeded" });
+    await expect(driver.speak("重启后发声", "inv-speak", false)).resolves.toMatchObject({ status: "accepted" });
+
+    expect(client.reconnect).toHaveBeenCalledWith("uina-default");
+    expect(client.speak).toHaveBeenCalledWith(expect.objectContaining({ epoch: "epoch-new" }));
+  });
+
+  it("checks speak idempotency before replace so a retry cannot interrupt newer audio", async () => {
+    const client = {
+      speak: vi.fn().mockResolvedValue({ status: "accepted", task_id: "t1" }),
+      cancelTrace: vi.fn().mockResolvedValue({ status: "cancelled", playback_stopped: true }),
+      getSubtitleState: vi.fn().mockResolvedValue({ trace_id: "trace", segments: [] }),
+      isHealthy: vi.fn().mockResolvedValue(true),
+    };
+    const driver = new TtsVoiceOutputDriver(client as never);
+
+    await expect(driver.speak("第一句", "inv-1", false)).resolves.toMatchObject({ status: "accepted" });
+    await expect(driver.speak("第一句", "inv-1", true)).resolves.toMatchObject({ status: "accepted" });
+
+    expect(client.speak).toHaveBeenCalledTimes(1);
+    expect(client.cancelTrace).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes a reachable legacy bridge from a disconnected bridge when unmuting", async () => {
+    const client = {
+      isHealthy: vi.fn().mockResolvedValue(false),
+      compatibility: vi.fn().mockResolvedValue({
+        reachable: true,
+        compatible: false,
+        missingPaths: ["/v1/tts/reset"],
+        reason: "缺少协议路径：/v1/tts/reset",
+      }),
+    };
+    const driver = new TtsVoiceOutputDriver(client as never);
+
+    await expect(driver.setMuted(false)).resolves.toMatchObject({
+      success: false,
+      isOnline: false,
+      reason: expect.stringContaining("协议不兼容"),
+    });
+  });
+
   it("does not run playback verification while muted", async () => {
     const client = {
       speak: vi.fn(), cancelTrace: vi.fn(), getSubtitleState: vi.fn(),

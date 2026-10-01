@@ -40,7 +40,9 @@ export class VoiceSession {
   get hasDriver(): boolean { return Boolean(this.pi?.hasService?.(SNAPSHOT_SERVICE)); }
 
   private async call<T>(name: string, input?: unknown): Promise<T | undefined> {
-    if (!this.hasDriver || typeof this.pi?.callService !== "function") return undefined;
+    // Driver 可以部分挂载（例如升级过程中只注册了 snapshot）。
+    // 逐服务检查，避免把“服务不存在”冒泡成未捕获异常。
+    if (typeof this.pi?.hasService !== "function" || !this.pi.hasService(name) || typeof this.pi.callService !== "function") return undefined;
     return await this.pi.callService<T>(name, input);
   }
 

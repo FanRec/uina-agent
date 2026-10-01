@@ -203,14 +203,24 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
 
   async setMuted(muted: boolean): Promise<{ success: boolean; isOnline?: boolean; reason?: string }> {
     if (!muted) {
-      const healthy = await this.client.isHealthy();
-      if (!healthy) {
+      const maybeClient = this.client as unknown as {
+        compatibility?: () => Promise<{ reachable: boolean; compatible: boolean; reason?: string }>;
+        isHealthy: () => Promise<boolean>;
+      };
+      const compatibility = maybeClient.compatibility;
+      const healthy = compatibility ? undefined : await maybeClient.isHealthy();
+      const readiness = compatibility
+        ? await compatibility.call(this.client)
+        : { reachable: Boolean(healthy), compatible: Boolean(healthy) };
+      if (!readiness.compatible) {
         this._isOnline = false;
         this._muted = true;
         return {
           success: false,
           isOnline: false,
-          reason: "伴生服务未连接（端口 8102 无响应）",
+          reason: readiness.reachable
+            ? `伴生服务协议不兼容：${readiness.reason ?? "能力握手失败"}`
+            : "伴生服务未连接（端口 8102 无响应）",
         };
       }
       this._isOnline = true;
@@ -273,6 +283,11 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
   async speak(text: string, invocationId?: string, replace = false): Promise<{ status: string; task_id?: string; reason?: string }> {
     const normalized = text.trim();
     if (!normalized) return { status: "rejected", reason: "台词为空" };
+    // 幂等性必须包住 replace：同一调用的重试不得先打断已经存在的声音。
+    if (invocationId) {
+      const previous = this.invocationResults.get(invocationId);
+      if (previous) return previous;
+    }
     if (this._muted) return { status: "rejected", reason: "当前已静音" };
     if (!this._isOnline) return { status: "unknown", reason: "发声驱动离线" };
     if (replace) {
@@ -285,8 +300,19 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
   }
 
   async inspect(): Promise<Record<string, unknown>> {
-    const health = await this.client.health();
-    return health ? { status: "observed", reachable: true, ownership: { bridge: this.bridgeOwnership, vendor: health.vendor_ownership ?? "unknown" }, health } : { status: "unknown", reachable: false, ownership: { bridge: this.bridgeOwnership, vendor: "unknown" }, reason: "Bridge health 不可达" };
+    const [health, compatibility] = await Promise.all([this.client.health(), this.client.compatibility()]);
+    if (!health) {
+      return { status: "unknown", reachable: false, ownership: { bridge: this.bridgeOwnership, vendor: "unknown" }, reason: "Bridge health 不可达" };
+    }
+    return {
+      status: compatibility.compatible ? "observed" : "unknown",
+      reachable: true,
+      compatible: compatibility.compatible,
+      missingPaths: compatibility.missingPaths,
+      ownership: { bridge: this.bridgeOwnership, vendor: health.vendor_ownership ?? "unknown" },
+      health,
+      ...(compatibility.compatible ? {} : { reason: compatibility.reason ?? "Bridge 协议不兼容" }),
+    };
   }
 
   async recover(operation: "reconnect" | "reset" | "restart", invocationId?: string, target?: "bridge" | "vendor"): Promise<Record<string, unknown>> {
@@ -299,8 +325,31 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
       }
       if (operation === "restart") {
         if (target === "vendor") return { operation, target, ...(await this.client.restartVendor()) };
-        if (!this.restartBridge) return { operation, target, status: "not_started", ownership: "external", reason: "Bridge 不是当前扩展明确拥有的进程" };
-        return { operation, target, ...(await this.restartBridge()) };
+        if (!this.restartBridge) {
+          const ownership = this.bridgeOwnership;
+          return {
+            operation, target, status: "not_started", ownership,
+            reason: ownership === "external"
+              ? "Bridge 不是当前扩展明确拥有的进程"
+              : "Bridge 所有权未确认，不能尝试重启",
+          };
+        }
+        const restarted = await this.restartBridge();
+        if (restarted.status !== "succeeded") {
+          this.epochDirty = true;
+          return { operation, target, ...restarted };
+        }
+        // Bridge 进程重建后，旧 session/epoch 不能直接复用；先重新协商，
+        // 再允许下一次提交跨过新 epoch 屏障。
+        const reconnected = await this.client.reconnect(sessionId);
+        if (reconnected.status !== "reconnected" || typeof reconnected.epoch !== "string") {
+          this.epochDirty = true;
+          return { operation, target, status: "unknown", restart: restarted, reconnect: reconnected, reason: "Bridge 已重启，但新 epoch 未确认" };
+        }
+        this.epoch = reconnected.epoch;
+        this.epochDirty = true;
+        this.sourcePoisoned = false;
+        return { operation, target, ...restarted, reconnect: reconnected };
       }
       const result = await this.client.reset(sessionId, this.epoch, undefined, invocationId);
       if (result.status === "unknown" || result.status === "failed") this.epochDirty = true;
@@ -310,6 +359,7 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
       }
       return { operation, ...result };
     } catch (error) {
+      if (operation === "restart") this.epochDirty = true;
       return { operation, status: "unknown", reason: error instanceof Error ? error.message : String(error) };
     }
   }

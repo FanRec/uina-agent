@@ -106,6 +106,21 @@ export function readPlaybackLevel(event: PlaybackEvent): { rms: number; peak: nu
   return { rms, peak: typeof peak === "number" && Number.isFinite(peak) ? peak : 0 };
 }
 
+const REQUIRED_BRIDGE_PATHS = [
+  "/v1/tts/speak",
+  "/v1/tts/reconnect",
+  "/v1/tts/reset",
+  "/v1/tts/test",
+  "/v1/tts/restart",
+] as const;
+
+export interface TtsBridgeCompatibility {
+  readonly reachable: boolean;
+  readonly compatible: boolean;
+  readonly missingPaths: readonly string[];
+  readonly reason?: string;
+}
+
 export class TtsBridgeClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
@@ -115,18 +130,44 @@ export class TtsBridgeClient {
     this.timeoutMs = timeoutMs;
   }
 
+  /**
+   * "健康"必须同时代表当前扩展所需协议可用；单纯 HTTP 200 不能让旧 Bridge 越过接缝。
+   */
   async isHealthy(): Promise<boolean> {
+    return (await this.compatibility()).compatible;
+  }
+
+  async compatibility(): Promise<TtsBridgeCompatibility> {
+    const health = await this.health();
+    if (!health) {
+      return { reachable: false, compatible: false, missingPaths: [], reason: "Bridge /health 不可达" };
+    }
+
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), Math.min(this.timeoutMs, 2000));
-      const res = await fetch(`${this.baseUrl}/health`, {
-        method: "GET",
-        signal: controller.signal,
-      });
+      const res = await fetch(`${this.baseUrl}/openapi.json`, { method: "GET", signal: controller.signal });
       clearTimeout(timer);
-      return res.ok;
-    } catch {
-      return false;
+      if (!res.ok) {
+        return { reachable: true, compatible: false, missingPaths: [...REQUIRED_BRIDGE_PATHS], reason: `Bridge /openapi.json 返回 HTTP ${res.status}` };
+      }
+      let parsed: unknown;
+      try { parsed = await res.json(); } catch {
+        return { reachable: true, compatible: false, missingPaths: [...REQUIRED_BRIDGE_PATHS], reason: "Bridge OpenAPI 响应不是有效 JSON" };
+      }
+      const paths = parsed && typeof parsed === "object" && "paths" in parsed
+        ? (parsed as { paths?: unknown }).paths
+        : undefined;
+      const missingPaths = REQUIRED_BRIDGE_PATHS.filter((path) => !(paths && typeof paths === "object" && path in paths));
+      if (missingPaths.length) {
+        return { reachable: true, compatible: false, missingPaths, reason: `缺少协议路径：${missingPaths.join(", ")}` };
+      }
+      if (health.bridge_ready !== true) {
+        return { reachable: true, compatible: false, missingPaths: [], reason: "Bridge ready 未确认" };
+      }
+      return { reachable: true, compatible: true, missingPaths: [] };
+    } catch (error) {
+      return { reachable: true, compatible: false, missingPaths: [...REQUIRED_BRIDGE_PATHS], reason: `Bridge 能访问但能力握手失败：${error instanceof Error ? error.message : String(error)}` };
     }
   }
 
@@ -164,15 +205,15 @@ export class TtsBridgeClient {
   }
 
   async health(): Promise<Record<string, unknown> | null> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(this.timeoutMs, 2000));
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), Math.min(this.timeoutMs, 2000));
       const res = await fetch(`${this.baseUrl}/health`, { signal: controller.signal });
-      clearTimeout(timer);
       if (!res.ok) return null;
       const body = await res.json();
       return body && typeof body === "object" ? body as Record<string, unknown> : null;
     } catch { return null; }
+    finally { clearTimeout(timer); }
   }
 
   private async jsonRequest(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {

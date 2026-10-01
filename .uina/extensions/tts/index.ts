@@ -91,7 +91,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
       driver.setBridgeOwnership("unknown");
       driver.setOnline(false);
       await driver.setMuted(true);
-      pi.reportError(`[TTS] 伴生服务未连接，已降级为纯打字模式 (可通过 voice 工具开麦自动重试): ${err instanceof Error ? err.message : String(err)}`);
+      pi.reportError(`[TTS] 伴生服务不可用（未连接或协议不兼容），已降级为纯打字模式 (可通过 voice 工具重试): ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // 2. 注册向下驱动服务（遵循 Uina IPC 序列化规范，纯数据交互）
@@ -101,6 +101,21 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
     pi.registerService("voice_driver:set_text_reading", async (input: { enabled: boolean }) => {
       readAssistantText = Boolean(input?.enabled);
       return { success: true };
+    });
+
+    pi.registerService("voice_driver:speak", async (input?: { text?: string; replace?: boolean; invocationId?: string }) => {
+      const result = await driver.speak(
+        typeof input?.text === "string" ? input.text : "",
+        typeof input?.invocationId === "string" ? input.invocationId : undefined,
+        input?.replace === true,
+      );
+      if (result.status === "unknown" || result.status === "uncertain" || result.status === "failed") {
+        await recordPerception({
+          kind: result.status === "unknown" || result.status === "uncertain" ? "delivery_unknown" : "delivery_failed",
+          summary: `直接发声${result.status === "unknown" || result.status === "uncertain" ? "结果未知" : "失败"}：${result.reason ?? "未提供原因"}。`,
+        });
+      }
+      return result;
     });
 
     pi.registerService("voice_driver:interrupt", async (input?: { expectedTraceId?: string }) => {

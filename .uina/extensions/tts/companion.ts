@@ -35,12 +35,17 @@ export async function ensureCompanion(
 ): Promise<CompanionHandle> {
   const client = new TtsBridgeClient(config.serviceUrl, 1500);
 
-  // 1. 探测优先：如果已有服务运行，直接复用，绝不杀死外部服务
-  if (await client.isHealthy()) {
+  // 1. 探测优先：只有协议完整的服务才可复用；端口可达不是 ready。
+  const existing = await client.compatibility();
+  if (existing.compatible) {
     return {
       didSpawn: false,
       stop: async () => {},
     };
+  }
+  if (existing.reachable) {
+    // 这是外部进程：不能因为协议过期而杀进程或伪造重启成功。
+    throw new Error(`TTS companion 协议不兼容，已拒绝复用外部服务：${existing.reason ?? "能力握手失败"}`);
   }
 
   // 如果未配置自动拉起且当前未运行，明确抛错以触发静音降级
