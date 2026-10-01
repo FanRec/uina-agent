@@ -91,7 +91,11 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
       driver.setBridgeOwnership("unknown");
       driver.setOnline(false);
       await driver.setMuted(true);
-      pi.reportError(`[TTS] 伴生服务不可用（未连接或协议不兼容），已降级为纯打字模式 (可通过 voice 工具重试): ${err instanceof Error ? err.message : String(err)}`);
+      const degradedMessage = `[TTS] 伴生服务不可用（未连接或协议不兼容），已降级为纯打字模式 (可通过 voice 工具重试): ${err instanceof Error ? err.message : String(err)}`;
+      // 这是可恢复的能力降级，不是扩展生命周期错误。reportError 会产生
+      // extension_error 红色错误事件，导致 Uina 刚启动就被错误打断；这里只做警告通知。
+      if (pi.ui?.notify) pi.ui.notify(degradedMessage, "warning", 8000);
+      else console.warn(degradedMessage);
     }
 
     // 2. 注册向下驱动服务（遵循 Uina IPC 序列化规范，纯数据交互）

@@ -5,12 +5,12 @@
 ## 架构特性
 
 - **内核绝对零侵入**：核心 `src/` 不包含任何 Python、音频或语音代码，即插即用；
-- **深模块设计（Deep Module）**：拒绝浅模块与文件碎化，收敛为 4 个高内聚深模块：
+- **高内聚、单一事实源**：
   - `stream-parser.ts`：流式分句、Emoji/Markdown 剥离、`<think>` 静音、代码块替换、括号心理活动免播、千分位小数保护；
-  - `session.ts`：全双工主体自律打断、单一权威事实源、播放身份并发控制与发声状态/退火视口；
-  - `client.ts`：8102 HTTP/SSE 权威通信客户端（带空文本拦截保护）；
-  - `companion.ts`：伴生进程按需拉起、UTF-8 控制台环境注入与所有权自律清理（谁拉起谁销毁）。
-- **全双工主体自律打断**：用户新输入时不自动截断上一轮声音，通过视口向模型投影发声状态，由 Agent 结合语义自主调用 `voice.interrupt` 进行自我打断；
+  - `driver-impl.ts`：正文与 `voice.speak` 的统一来源调度、播放账本、epoch、幂等、poison/unknown 屏障；
+  - `client.ts`：8102 HTTP/SSE 权威通信客户端，并在复用 Bridge 前完成 `/health` + OpenAPI 能力握手；
+  - `companion.ts`：伴生进程按需拉起、UTF-8 环境注入与所有权自律清理（只停止本扩展明确拉起的进程）。
+- **全双工主体自律打断**：用户新输入时不自动截断上一轮声音；Agent 可显式调用 `voice.interrupt`，结果严格区分已打断、无需操作、失败和未知；
 - **估计式字符断点**：打断时向 `tts_bridge` 提取 `revealed_text` 与播放时钟，向模型报告估计的听觉断点，不宣称逐字声学对齐；
 - **Producer-Consumer 绝对解耦**：`tts_bridge` 对外广播按物理播放身份标记的事件流和完整播放快照 SSE；Live2D 与独立 `E:/Uina/ThirdParty/realtime-subtitles` 服务各自订阅，TTS 不向 OBS 发同步 HTTP 请求。
 
@@ -31,11 +31,21 @@
 
 ## 门面工具 (`voice`)
 
-大模型与用户可通过 `voice` 工具进行状态控制与查询：
-- `mute`：关麦（静音模式，后续只打字不发音）
-- `unmute`：开麦（恢复发音）
+大模型与用户可通过 `voice` 工具进行交流控制与查询：
+- `speak`：将一段台词提交到统一播放路径，可选 `replace`；受 `invocationId` 幂等保护
 - `interrupt`：请求立即掐断当前发音并清空排队；结果区分已打断、无需操作、失败和未知
-- `status`：查看当前开麦与发音状态
+- `status`：查看是否仍在说、是否有未完成内容、当前播放断点和可确认的交付事实
+- `manage.mute` / `manage.unmute`：管理静音偏好，不把偏好当作设备播放成功
+- `manage.set_text_reading`：独立管理正文自动朗读偏好
+
+
+## 真实边界
+
+- `Bridge /health`、端口可达、OpenAPI 可达或任务已受理，都不等于合成完成、设备播放完成或用户听见。
+- 复用外部 Bridge 前必须通过协议能力握手；旧协议只会被报告为可达但不兼容，不会被扩展自动杀死。
+- `tts.inspect` 观察物理事实，`tts.recover` 只执行一次有限维修，`tts.test` 才执行真实 synthesis/playback 验证路径。
+- `runtime.perception` 是 Voice 的一次性瞬态投影，不进入 canonical history 或 compaction；正常进度、idle 和排空不会生成感知候选。
+- 真实 Vendor、声卡、外部进程退出和用户是否听见，必须在对应环境现场验证，不能由 mock 或 HTTP ready 代替。
 
 ## 播放事实流
 
