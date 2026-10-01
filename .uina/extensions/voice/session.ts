@@ -15,7 +15,6 @@ const SET_TEXT_READING_SERVICE = "voice_driver:set_text_reading";
 const SPEAK_SERVICE = "voice_driver:speak";
 const INTERRUPT_SERVICE = "voice_driver:interrupt";
 const SNAPSHOT_SERVICE = "voice_driver:snapshot";
-const PERCEPTION_RECORD_SERVICE = "voice_perception:record";
 
 export function emptySnapshot(muted: boolean): DeliverySnapshot {
   return { online: false, muted, submittedSegments: 0, spokenSegments: 0, pendingSegments: 0, currentSegmentIndex: null };
@@ -42,11 +41,6 @@ export class VoiceSession {
 
   private async call<T>(name: string, input?: unknown): Promise<T | undefined> {
     if (!this.hasDriver || typeof this.pi?.callService !== "function") return undefined;
-    return await this.pi.callService<T>(name, input);
-  }
-
-  private async callOptional<T>(name: string, input?: unknown): Promise<T | undefined> {
-    if (typeof this.pi?.hasService !== "function" || !this.pi.hasService(name) || typeof this.pi.callService !== "function") return undefined;
     return await this.pi.callService<T>(name, input);
   }
 
@@ -88,16 +82,7 @@ export class VoiceSession {
   }
 
   async interrupt(expectedTraceId?: string): Promise<InterruptResult> {
-    const result = (await this.call<InterruptResult>(INTERRUPT_SERVICE, { expectedTraceId })) ?? { outcome: "failed", breakpoint: null, reason: "发声驱动未挂载" };
-    if (result.outcome === "interrupted" || result.outcome === "unknown" || result.outcome === "failed") {
-      await this.callOptional(PERCEPTION_RECORD_SERVICE, {
-        fact: {
-          kind: result.outcome === "interrupted" ? "interrupted" : result.outcome === "unknown" ? "delivery_unknown" : "delivery_failed",
-          summary: result.outcome === "interrupted" ? "上一段声音被主动打断，后续内容未交付。" : `声音停止结果${result.outcome === "unknown" ? "未知" : "失败"}：${result.reason ?? "未取得进一步证据"}。`,
-        },
-      });
-    }
-    return result;
+    return (await this.call<InterruptResult>(INTERRUPT_SERVICE, { expectedTraceId })) ?? { outcome: "failed", breakpoint: null, reason: "发声驱动未挂载" };
   }
 
   async getStatus(): Promise<VoiceStatus> {
