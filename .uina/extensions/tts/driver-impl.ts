@@ -2,9 +2,6 @@ import type { DeliverySnapshot, InterruptResult, PlaybackBreakpoint, VoiceOutput
 import { TtsSpeakError, type TtsBridgeClient } from "./client.js";
 import { summarizeProgress } from "./delivery.js";
 
-/** 作者侧记账上限：只服务"这一轮说了什么"，不需要无限历史。 */
-const MAX_TRACKED_SEGMENTS = 32;
-
 /** 快照里去掉意志与连接态：那两个事实的拥有者是 `_muted` / `_isOnline` 本身，不存副本。 */
 type DeliveryFacts = Omit<DeliverySnapshot, "online" | "muted">;
 
@@ -45,7 +42,10 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
   private manualTraceSeq = 0;
   private restartBridge?: () => Promise<Record<string, unknown>>;
   private bridgeOwnership: "owned" | "external" | "unknown" = "unknown";
-  private sourcePoisoned = false;
+  /** 确定性失败的来源封闭：只拒绝同一 trace 的后续句子，不扩大到新来源（§8.4）。 */
+  private poisonedTrace: string | null = null;
+  /** 未确认缺口的全局屏障：只有 interrupt 确认停止、epoch reset 或受管重启能解除（§10.2）。 */
+  private deliveryBarrier = false;
 
   constructor(client: TtsBridgeClient) {
     this.client = client;
@@ -97,7 +97,8 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
    */
   async submitSegment(text: string, invocationId?: string): Promise<{ status: string; task_id?: string; reason?: string }> {
     const traceId = this.activeTrace;
-    if (this.sourcePoisoned) return { status: "unknown", task_id: `${traceId ?? "none"}:poisoned`, reason: "当前声音来源存在未确认缺口，未越过屏障继续播放" };
+    if (this.deliveryBarrier) return { status: "unknown", task_id: `${traceId ?? "none"}:barrier`, reason: "存在未确认的交付缺口，新来源不能越过屏障播放" };
+    if (traceId !== null && this.poisonedTrace === traceId) return { status: "rejected", task_id: `${traceId}:poisoned`, reason: "当前来源已被失败封闭，后续句子不再朗读" };
     if (invocationId) {
       const previous = this.invocationResults.get(invocationId);
       if (previous) return previous;
@@ -109,9 +110,6 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
     this.rotateEpochIfDirty(traceId);
     const index = ++this.submitted;
     this.segmentTexts.set(index, text);
-    if (this.segmentTexts.size > MAX_TRACKED_SEGMENTS) {
-      this.segmentTexts.delete(Math.min(...this.segmentTexts.keys()));
-    }
 
     // 提交即视为"在途"：桥侧还没回话之前，队列里已经有它了。
     this.facts = {
@@ -146,7 +144,8 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
         epoch: this.epoch,
       });
       if (["failed", "rejected"].includes(result.status)) {
-        this.sourcePoisoned = true;
+        // 确定性失败：只 poison 本来源，后续独立来源可按顺序继续（§8.4）。
+        this.poisonedTrace = traceId;
         const rejected = rollbackRejected();
         if (invocationId) this.invocationResults.set(invocationId, rejected);
         return rejected;
@@ -155,13 +154,14 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
       return result;
     } catch (error) {
       if (!(error instanceof TtsSpeakError) || error.kind === "unknown") {
-        // 网络结果未知：保留 pending，在后续 probe 中等待物理事实，不能伪报失败或成功。
-        this.sourcePoisoned = true;
-        const uncertain = { status: "uncertain", task_id: `${traceId}:${index}`, reason: "提交结果未知，后续来源不能越过缺口" };
+        // 网络结果未知：保留 pending，在后续 probe 中等待物理事实；
+        // 全局屏障直到 interrupt 确认停止、epoch reset 或受管重启才解除（§10.2）。
+        this.deliveryBarrier = true;
+        const uncertain = { status: "uncertain", task_id: `${traceId}:${index}`, reason: "提交结果未知，新来源不能越过缺口" };
         if (invocationId) this.invocationResults.set(invocationId, uncertain);
         return uncertain;
       }
-      this.sourcePoisoned = true;
+      this.poisonedTrace = traceId;
       return rollbackRejected();
     }
   }
@@ -203,18 +203,10 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
 
   async setMuted(muted: boolean): Promise<{ success: boolean; isOnline?: boolean; reason?: string }> {
     if (!muted) {
-      const maybeClient = this.client as unknown as {
-        compatibility?: () => Promise<{ reachable: boolean; compatible: boolean; reason?: string }>;
-        isHealthy: () => Promise<boolean>;
-      };
-      const compatibility = maybeClient.compatibility;
-      const healthy = compatibility ? undefined : await maybeClient.isHealthy();
-      const readiness = compatibility
-        ? await compatibility.call(this.client)
-        : { reachable: Boolean(healthy), compatible: Boolean(healthy) };
+      // unmute 顺带探活：不可用是连接事实，不能写进静音意志（§4.3）。
+      const readiness = await this.client.compatibility();
       if (!readiness.compatible) {
         this._isOnline = false;
-        this._muted = true;
         return {
           success: false,
           isOnline: false,
@@ -250,8 +242,12 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
       if (cancellation.status !== "cancelled") {
         return { outcome: "failed", breakpoint: null, reason: `Bridge 拒绝打断: ${cancellation.status}` };
       }
-      if (cancellation.playback_stopped === false && cancellation.cancelled_task_count === 0) {
-        return { outcome: "no_op", breakpoint: null, reason: "当前没有可打断的语音" };
+      if (cancellation.playback_stopped === false) {
+        if (cancellation.cancelled_task_count === 0) {
+          return { outcome: "no_op", breakpoint: null, reason: "当前没有可打断的语音" };
+        }
+        // 任务已取消但声卡停止未确认：不能把受理当作停止（§10.1）。
+        return { outcome: "unknown", breakpoint: null, reason: "任务已取消，但声卡停止未获确认" };
       }
       const state = await this.client.getSubtitleState(traceToCancel);
       if (!state && cancellation.playback_stopped) {
@@ -259,9 +255,11 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
       }
 
       const interrupted = this.resolveBreakpoint(traceToCancel, state);
-      // 掐断即清空在途：队列事实归零，但要如实标明这次是"被打断"而不是"播完"
+      // 掐断即清空在途：队列事实归零，但要如实标明这次是"被打断"而不是"播完"。
+      // 桥确认了停止：本来源封闭、屏障解除，新来源可以从干净状态开始（§10.2 路径1）。
       this.speaking = false;
-      this.sourcePoisoned = false;
+      this.poisonedTrace = null;
+      this.deliveryBarrier = false;
       this.facts = {
         ...this.facts,
         pendingSegments: 0,
@@ -321,6 +319,8 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
       if (operation === "reconnect") {
         const result = await this.client.reconnect(sessionId);
         if (typeof result.epoch === "string") this.epoch = result.epoch;
+        // 重连成功即恢复连接事实：离线降级由此解除，无需用户重新 unmute（§7.3）。
+        this._isOnline = true;
         return { operation, ...result };
       }
       if (operation === "restart") {
@@ -348,14 +348,19 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
         }
         this.epoch = reconnected.epoch;
         this.epochDirty = true;
-        this.sourcePoisoned = false;
+        this.poisonedTrace = null;
+        this.deliveryBarrier = false;
+        this._isOnline = true;
         return { operation, target, ...restarted, reconnect: reconnected };
       }
       const result = await this.client.reset(sessionId, this.epoch, undefined, invocationId);
       if (result.status === "unknown" || result.status === "failed") this.epochDirty = true;
       if (typeof result.epoch === "string" && result.status === "reset") {
         this.epoch = result.epoch;
-        this.sourcePoisoned = false;
+        this.poisonedTrace = null;
+        // epoch reset 是 unknown 屏障的解除路径之一（§10.2 路径2）。
+        this.deliveryBarrier = false;
+        this._isOnline = true;
       }
       return { operation, ...result };
     } catch (error) {

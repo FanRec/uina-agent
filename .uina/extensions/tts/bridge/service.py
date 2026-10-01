@@ -720,9 +720,23 @@ class TTSBridgeService:
             self._reset_results[key] = result
             return result
         trace_ids = [trace for trace, session in self._sessions_by_trace.items() if trace == session_id or trace.startswith(session_id + ":")]
+        stop_failures: list[str] = []
         for trace_id in trace_ids:
-            try: self.cancel_trace(CancelTraceRequest(trace_id=trace_id, mode="immediate"))
-            except Exception: pass
+            try:
+                cancelled = self.cancel_trace(CancelTraceRequest(trace_id=trace_id, mode="immediate"))
+                if cancelled.get("status") != "cancelled":
+                    stop_failures.append(f"{trace_id}: {cancelled.get('status')}")
+            except Exception as exc:
+                stop_failures.append(f"{trace_id}: {type(exc).__name__}: {exc}")
+        if stop_failures:
+            # 旧 epoch 的停止未全部确认：不能宣称 reset 成功、不能让新 epoch 出声（§10.3）。
+            result = {
+                "status": "unknown", "session_id": session_id, "epoch": current,
+                "stopped_traces": trace_ids, "stop_failures": stop_failures,
+                "reason": "旧 epoch 的停止未全部确认，new epoch 未启用",
+            }
+            self._reset_results[key] = result
+            return result
         epoch = new_epoch or uuid4().hex
         self._epoch_by_session[session_id] = epoch
         result = {"status": "reset", "session_id": session_id, "previous_epoch": current, "epoch": epoch, "stopped_traces": trace_ids}
@@ -734,7 +748,7 @@ class TTSBridgeService:
         if scope not in {"synthesis", "playback"}:
             return {"status": "failed", "scope": scope, "reason": "不支持的测试范围"}
         started_at = time.perf_counter()
-        text = "嗯。"
+        text = "语音测试。"
         sid = session_id or "uina-test"
         try:
             self._ensure_vendor_ready(wait_for_ready=True)

@@ -52,6 +52,8 @@ export function cleanSentence(text: string): string {
   s = s.replace(/\[([^\]]+)\](?:\([^)]+\))?/g, "$1");
   // 3. 移除行首 Markdown 标记 (#, >, -, *, + 等)
   s = s.replace(/^[#>\s*\-+]+/gm, "");
+  // 3.5 括号标点本身不发音，但括号内容保留（§4.4"不能一律吞掉"）
+  s = s.replace(/[()（）]/g, "");
   // 4. 移除行首数字列表标记 (1. , 2. 等)
   s = s.replace(/^\s*\d+\.\s+/gm, "");
   // 5. 移除行内 Markdown 格式符 (**, *, __, _, `)
@@ -80,7 +82,6 @@ export class StreamParser {
   private thinkTagBuffer = "";
   private inCode = false;
   private codeBacktickCount = 0;
-  private bracketDepth = 0;
 
   // 待切分文本缓冲
   private sentenceBuffer = "";
@@ -169,29 +170,11 @@ export class StreamParser {
         continue;
       }
 
-      // 3. 处理中英文括号 ( ) 与 （ ）
-      if (ch === "(" || ch === "（") {
-        this.bracketDepth++;
-        i++;
-        continue;
-      }
-      if (ch === ")" || ch === "）") {
-        if (this.bracketDepth > 0) {
-          this.bracketDepth--;
-        }
-        i++;
-        continue;
-      }
-
-      // 括号内部文本完全免播
-      if (this.bracketDepth > 0) {
-        i++;
-        continue;
-      }
-
+      // 括号标点不发音，但内容照常朗读（§4.4"不能一律吞掉"）。
+      // 标点剥离放在 cleanSentence 的 Markdown 链接规则之后，避免破坏 [text](url) 的模式匹配。
       this.sentenceBuffer += ch;
 
-      // 4. 检查断句
+      // 3. 检查断句
       const currentLen = graphemeCount(this.sentenceBuffer);
       const prevChar = currentLen >= 2 ? this.sentenceBuffer[currentLen - 2] : "";
       const nextChar = i + 1 < chunk.length ? chunk[i + 1] : "";
@@ -263,6 +246,5 @@ export class StreamParser {
     this.thinkTagBuffer = "";
     this.inCode = false;
     this.codeBacktickCount = 0;
-    this.bracketDepth = 0;
   }
 }

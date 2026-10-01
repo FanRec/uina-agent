@@ -19,7 +19,7 @@ export function createVoiceTool(session: VoiceSession): Tool {
   return {
     def: { type: "function", function: {
       name: "voice",
-      description: "交流发声：说一句、停止当前发声、查询交付状态或管理用户语音偏好。",
+      description: "交流发声。普通回答直接写正文即可（正文会自动朗读）。需要收住正在说的话用 interrupt；需要在正文之外独立说一句，或收住旧话后改口，用 speak(replace=true)。status 只在声音情况不明确且影响决定时查看，不用每次开口前查询。manage 改变后续发声偏好，仅按用户要求或已授权策略使用，不用于处理故障或临时打断。播放记录不代表用户听到或理解；检查发声系统问题用 tts。",
       parameters: { type: "object", additionalProperties: false, properties: { action: { type: "string" }, text: { type: "string" }, replace: { type: "boolean" }, operation: { type: "string" }, enabled: { type: "boolean" } }, oneOf: [
         { properties: { action: { const: "interrupt" } }, required: ["action"] },
         { properties: { action: { const: "status" } }, required: ["action"] },
@@ -52,12 +52,18 @@ export function createVoiceTool(session: VoiceSession): Tool {
         const operation = args.operation;
         if (operation === "mute" || operation === "unmute") {
           const result = await session.setMuted(operation === "mute");
-          return { result: result.success ? (operation === "mute" ? "已静音；后续发声不会输出。" : "已允许发声；仍需以实际交付事实为准。") : `偏好未完全生效：${result.reason ?? "物理驱动不可用"}。`, status: result.success ? "succeeded" : "unknown", details: result };
+          // 主副作用是偏好转换（§6.2）：偏好已改变即 succeeded；物理/持久化后果另行说明。
+          const physical = result.isOnline === false || (result as { ok?: boolean }).ok === false || result.persisted === false;
+          const note = operation === "unmute" && result.isOnline === false
+            ? "已允许发声，但发声服务当前不可用；修复后新内容可以发声。"
+            : operation === "mute" ? "已静音；后续发声不会输出。" : "已允许发声；仍需以实际交付事实为准。";
+          return { result: physical ? `${note}（${result.reason ?? "附带结果见 details"}）` : note, status: "succeeded", details: result };
         }
         const enabled = typeof args.enabled === "boolean" ? args.enabled : undefined;
         if (enabled === undefined) return { result: "set_text_reading 需要 enabled 布尔值。", status: "not_started" };
         const result = await session.setTextReading(enabled);
-        return { result: result.success ? `正文自动朗读已${enabled ? "开启" : "关闭"}。` : `正文朗读偏好未保存：${result.reason ?? "驱动不可用"}。`, status: result.success ? "succeeded" : "failed", details: result };
+        const note = `正文自动朗读已${enabled ? "开启" : "关闭"}。`;
+        return { result: result.persisted === false || result.reason ? `${note}（${result.reason ?? "偏好仅内存生效"}）` : note, status: "succeeded", details: result };
       }
       return { result: "voice action 未执行：参数不符合 voice 合同。", status: "not_started" };
     },

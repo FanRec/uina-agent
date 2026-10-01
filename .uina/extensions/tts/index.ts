@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "../../../src/extensions/runner.js";
-import type { TurnStartEvent, OutputInterruptedEvent, OutputUpdateEvent } from "../../../src/runtime/events.js";
+import type { TurnStartEvent, OutputInterruptedEvent, OutputUpdateEvent, OutputEndEvent } from "../../../src/runtime/events.js";
 import {
 	WORLD_EXPOSED_SHARED_NAME,
 	type WorldExposedRegistry,
@@ -89,8 +89,8 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
       driver.setOnline(true);
     } catch (err) {
       driver.setBridgeOwnership("unknown");
+      // 降级是连接事实，不是用户偏好：只标记离线，不改 muted（§4.3）。
       driver.setOnline(false);
-      await driver.setMuted(true);
       const degradedMessage = `[TTS] 伴生服务不可用（未连接或协议不兼容），已降级为纯打字模式 (可通过 voice 工具重试): ${err instanceof Error ? err.message : String(err)}`;
       // 这是可恢复的能力降级，不是扩展生命周期错误。reportError 会产生
       // extension_error 红色错误事件，导致 Uina 刚启动就被错误打断；这里只做警告通知。
@@ -277,38 +277,50 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
         });
         if (result.status === "unknown" || result.status === "uncertain") {
           driver.setOnline(false);
-          await driver.setMuted(true);
         }
-        throw new Error(result.reason ?? `TTS submit ${result.status}`);
+        throw Object.assign(new Error(result.reason ?? `TTS submit ${result.status}`), { status: result.status });
       }
       ensureProgressPolling();
     };
 
+    /** 投递失败只降级连接事实，绝不改用户静音偏好（§4.3）。 */
+    const reportSubmitFailure = (where: string, err: unknown): void => {
+      const status = (err as { status?: string })?.status;
+      if (status === "unknown" || status === "uncertain" || status === undefined) driver.setOnline(false);
+      pi.reportError(`[TTS] ${where}发声投递失败${status === "rejected" || status === "failed" ? "（本来源已封闭，后续来源可继续）" : "（伴生服务可能离线）"}: ${err instanceof Error ? err.message : String(err)}`);
+    };
+
+    const canSpeak = (): boolean => !aborted && readAssistantText && !driver.isMuted && driver.isOnline;
+
     pi.on("output_update", async (e: OutputUpdateEvent) => {
-      if (aborted || e.channel !== "content" || !readAssistantText || driver.isMuted || !driver.isOnline) return;
+      if (e.channel !== "content" || !canSpeak()) return;
       const sentences = parser.feed(e.text);
       for (const s of sentences) {
         try {
           await submitTextSegment(s);
         } catch (err) {
-          driver.setOnline(false);
-          await driver.setMuted(true);
-          pi.reportError(`[TTS] 发声投递失败，已自动转为静音 (伴生服务可能离线): ${err instanceof Error ? err.message : String(err)}`);
+          reportSubmitFailure("正文", err);
           break;
         }
       }
     });
 
+    // 正文流收尾即冲刷尾部（§4.1）：不等整个 turn_end，工具回注后的新流也不会拖延最后一句。
+    pi.on("output_end", (e: OutputEndEvent) => {
+      if (e.channel !== "content" || !canSpeak() || !driver.currentTraceId) return;
+      for (const s of parser.flush()) {
+        void submitTextSegment(s).catch((err: unknown) => reportSubmitFailure("流尾句", err));
+      }
+    });
+
     pi.on("turn_end", async () => {
-      if (!driver.isMuted && driver.isOnline && driver.currentTraceId) {
-        const tail = parser.flush();
-        for (const s of tail) {
+      if (canSpeak() && driver.currentTraceId) {
+        // output_end 通常已冲刷；这里只兜底漏网的残句（如 flush 后又有无标点尾巴）。
+        for (const s of parser.flush()) {
           try {
             await submitTextSegment(s);
           } catch (err) {
-            driver.setOnline(false);
-            await driver.setMuted(true);
-            pi.reportError(`[TTS] 尾句发声投递失败，已自动转为静音: ${err instanceof Error ? err.message : String(err)}`);
+            reportSubmitFailure("尾句", err);
             break;
           }
         }
@@ -333,11 +345,13 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
     let interruption: Promise<void> | null = null;
     const interruptPlayback = (): Promise<void> => {
       if (interruption) return interruption;
+      // 第一个 await 前冻结目标：旧轮的停止不能误杀已经开始交付的新轮声音（§10.1）。
+      const targetTraceId = driver.deliveryTraceId ?? driver.currentTraceId;
       interruption = (async () => {
         parser.reset();
         stopProgressPolling();
         stopLevelStream();
-        const result = await driver.interrupt();
+        const result = await driver.interrupt(targetTraceId ?? undefined);
         if (result.outcome === "unknown" || result.outcome === "failed") {
           await recordPerception({ kind: result.outcome === "unknown" ? "delivery_unknown" : "delivery_failed", summary: `声音停止结果${result.outcome === "unknown" ? "未知" : "失败"}：${result.reason}。` });
         } else if (result.outcome === "interrupted") {

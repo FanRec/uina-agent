@@ -87,6 +87,28 @@ describe("TTS delivery hardening", () => {
     expect(client.speak).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps a deterministic rejection scoped to its source instead of poisoning the whole session (§8.4)", async () => {
+    const client = {
+      speak: vi.fn()
+        .mockResolvedValueOnce({ status: "accepted" })
+        .mockResolvedValueOnce({ status: "rejected" })
+        .mockResolvedValue({ status: "accepted" }),
+      cancelTrace: vi.fn(),
+      getSubtitleState: vi.fn(),
+      isHealthy: vi.fn().mockResolvedValue(true),
+    };
+    const driver = new TtsVoiceOutputDriver(client as never);
+    driver.startTurn(1);
+    await expect(driver.submitSegment("第一句。")).resolves.toMatchObject({ status: "accepted" });
+    await expect(driver.submitSegment("第二句。")).resolves.toMatchObject({ status: "rejected" });
+    // 同一来源的后续句子不再朗读
+    await expect(driver.submitSegment("第三句。")).resolves.toMatchObject({ status: "rejected" });
+    // 新来源（新 turn）不被旧来源的确定性失败扩大化
+    driver.startTurn(2);
+    await expect(driver.submitSegment("新来源第一句。")).resolves.toMatchObject({ status: "accepted" });
+    expect(client.speak).toHaveBeenCalledTimes(3);
+  });
+
   it("does not relabel unknown Bridge ownership as external during restart", async () => {
     const driver = new TtsVoiceOutputDriver({ isHealthy: vi.fn().mockResolvedValue(false) } as never);
 

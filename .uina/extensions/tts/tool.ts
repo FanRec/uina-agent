@@ -31,9 +31,6 @@ export function createTtsTool(driver: TtsVoiceOutputDriver): Tool {
       if (action === "recover") {
         if (args.operation === "restart") {
           const target = args.target === "vendor" ? "vendor" : "bridge";
-          if (typeof (driver as unknown as { recover?: unknown }).recover !== "function") {
-            return { result: `restart ${target} 未执行：不能把端口或 PID 当作可重启所有权。`, status: "not_started", details: { target } };
-          }
           const details = await driver.recover("restart", context?.invocationId, target);
           return { result: renderRecover(details), status: toToolStatus(details.status), details };
         }

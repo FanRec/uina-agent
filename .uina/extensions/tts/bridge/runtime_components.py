@@ -131,8 +131,11 @@ class PlaybackEventHub:
             yield ": connected\n\n"
             while not self.stop_event.is_set():
                 try:
-                    item = queue.get(timeout=0.5)
+                    item = queue.get(timeout=15)
                 except Empty:
+                    # SSE 心跳：客户端 fetch 有空闲 body 超时（undici 默认 300s），
+                    # 无事件期间不发注释会被静默断开（与 PlaybackSnapshotHub 同一模式）。
+                    yield ": heartbeat\n\n"
                     continue
                 if item is STREAM_END:
                     break

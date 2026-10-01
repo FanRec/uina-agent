@@ -46,36 +46,40 @@ export class VoiceSession {
     return await this.pi.callService<T>(name, input);
   }
 
+  /**
+   * 偏好转换与物理结果是两件事（§6.2）：偏好转到哪由用户决定、总是落账并持久化；
+   * 驱动是否在线、物理静音是否生效，另行说明。不把"不可用"写回用户偏好。
+   */
   async setMuted(muted: boolean): Promise<{ success: boolean; isOnline?: boolean; persisted?: boolean; reason?: string }> {
     await this.preferencesReady;
-    if (muted) this._voiceState = "muted";
+    this._voiceState = muted ? "muted" : "enabled";
+    this.preferences = { ...this.preferences, muted };
     const result = await this.call<{ success: boolean; isOnline?: boolean; reason?: string }>(SET_MUTED_SERVICE, { muted });
-    if (!result) {
-      if (!muted) this._voiceState = "muted";
-      return { success: false, isOnline: false, reason: "发声驱动未挂载" };
-    }
-    if (result.success || muted) this._voiceState = muted ? "muted" : "enabled";
-    if (result.isOnline === false && !muted) this._voiceState = "muted";
-    this.preferences = { ...this.preferences, muted: this._voiceState === "muted" };
+    const physical = result
+      ? { ok: result.success, ...(result.isOnline !== undefined ? { isOnline: result.isOnline } : {}), ...(result.reason ? { reason: result.reason } : {}) }
+      : { ok: false, reason: "发声驱动未挂载" };
     try {
       await saveVoicePreferences(this.pi, this.preferences);
-      return { success: Boolean(result.success), persisted: true, isOnline: result.isOnline, ...(result.success ? {} : { reason: result.reason }) };
+      return { success: true, persisted: true, ...physical };
     } catch {
-      return { success: false, persisted: false, isOnline: result.isOnline, reason: "内存已生效，但偏好持久化失败" };
+      const { reason: physicalReason, ...rest } = physical;
+      const reason = [physicalReason, "偏好已在内存生效但持久化失败"].filter(Boolean).join("；");
+      return { success: true, persisted: false, ...rest, reason };
     }
   }
 
   async setTextReading(enabled: boolean): Promise<{ success: boolean; persisted?: boolean; reason?: string }> {
     await this.preferencesReady;
-    const result = await this.call<{ success: boolean; reason?: string }>(SET_TEXT_READING_SERVICE, { enabled });
-    if (!result) return { success: false, persisted: false, reason: "发声驱动未挂载" };
-    this.preferences = { ...this.preferences, readAssistantText: enabled };
     this._readAssistantText = enabled;
+    this.preferences = { ...this.preferences, readAssistantText: enabled };
+    const result = await this.call<{ success: boolean; reason?: string }>(SET_TEXT_READING_SERVICE, { enabled });
+    const driverNote = result?.reason ?? (result ? undefined : "发声驱动未挂载");
     try {
       await saveVoicePreferences(this.pi, this.preferences);
-      return { success: Boolean(result.success), persisted: true, ...(result.success ? {} : { reason: result.reason }) };
+      return { success: true, persisted: true, ...(driverNote ? { reason: driverNote } : {}) };
     } catch {
-      return { success: false, persisted: false, reason: "内存已生效，但偏好持久化失败" };
+      const reason = [driverNote, "偏好已在内存生效但持久化失败"].filter(Boolean).join("；");
+      return { success: true, persisted: false, reason };
     }
   }
 
