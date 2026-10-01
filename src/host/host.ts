@@ -350,7 +350,11 @@ export class UinaHost {
 		if (this.reloading) throw new Error("扩展正在重载，请稍后重试");
 	}
 
-	/** Explicit user invocation: registered capability and hooks, without model history. */
+	/** 人工恢复入口：只请求当前 session 的 TTS reset，不重播旧台词、不修改偏好。 */
+	async resetVoice(signal?: AbortSignal): Promise<ToolExecutionResult> {
+		return this.runToolDirect("tts", { action: "recover", operation: "reset" }, signal);
+	}
+
 	async runToolDirect(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolExecutionResult> {
 		this.assertAccepting();
 		const controller = new AbortController();

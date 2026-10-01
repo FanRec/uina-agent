@@ -136,6 +136,8 @@ class TTSBridgeService:
         self._active_delivery_tasks: set[str] = set()
         self._last_delivery_error: dict[str, Any] | None = None
         self._warmup_status: dict[str, Any] = {"status": "not_started"}
+        self._last_verification: dict[str, Any] | None = None
+        self._unknown_recovery: list[dict[str, Any]] = []
         # 全局合成串行锁：vendor 是单推理（api_v2 async 端点内同步推理），
         # 并发 /tts 请求只会交错竞争模型状态。合成端一次只允许一个 vendor
         # 请求在飞，播放与合成仍可重叠（合成持锁期间播放不受影响）。
@@ -270,10 +272,14 @@ class TTSBridgeService:
             vendor_pid = self.vendor_manager.process.pid
         vendor_ready = self.vendor_manager.ready()
         streaming = self.config.streaming
+        vendor_ownership = str(getattr(self.vendor_manager, "ownership", "unknown"))
         return {
             "service_ready": True,
             "bridge_ready": True,
-            "ownership": "self_managed",
+            # The HTTP endpoint cannot prove who owns the enclosing Bridge process.
+            # Companion supplies that separate fact; do not infer it from reachability.
+            "ownership": {"bridge": "unknown", "vendor": vendor_ownership},
+            "vendor_ownership": vendor_ownership,
             "epoch_sessions": len(getattr(self, "_epoch_by_session", {})),
             "vendor_ready": vendor_ready,
             "vendor_pid": vendor_pid,
@@ -296,6 +302,8 @@ class TTSBridgeService:
             "admitted_task_count": len(self._admitted_tasks),
             "oldest_pending_delivery_age_ms": self._oldest_pending_delivery_age_ms(),
             "last_delivery_error": self._last_delivery_error,
+            "last_verification": getattr(self, "_last_verification", None),
+            "unknown_recovery": list(getattr(self, "_unknown_recovery", [])[-8:]),
             "effective_config": {
                 "request_timeout_ms": self.config.request_timeout_ms,
                 "startup_timeout_ms": self.config.startup_timeout_ms,
@@ -722,11 +730,104 @@ class TTSBridgeService:
         return result
 
     def test(self, scope: str, session_id: str | None = None) -> dict[str, Any]:
-        # A test endpoint must not equate HTTP readiness with synthesis/playback success.
-        return {"status": "not_started", "scope": scope, "session_id": session_id, "reason": "真实测试路径尚未在 Bridge 中接线；未把 health 或 /docs 当作通过"}
+        """Run one bounded real verification path; readiness alone never passes it."""
+        if scope not in {"synthesis", "playback"}:
+            return {"status": "failed", "scope": scope, "reason": "不支持的测试范围"}
+        started_at = time.perf_counter()
+        text = "嗯。"
+        sid = session_id or "uina-test"
+        try:
+            self._ensure_vendor_ready(wait_for_ready=True)
+            ref_audio_path = self._resolve_ref_audio_path()
+            preset = self.config.preset
+            payload: dict[str, Any] = {
+                "text": text,
+                "media_type": preset.media_type,
+                "text_lang": _vendor_text_lang_for(text),
+                "ref_audio_path": str(ref_audio_path),
+                "prompt_text": preset.prompt_text,
+                "prompt_lang": preset.prompt_lang,
+                "text_split_method": preset.text_split_method,
+                "speed_factor": preset.speed_factor,
+                "streaming_mode": False,
+            }
+            if self.config.vendor.api_style == "legacy":
+                payload = {"text": text, "text_language": preset.text_lang, "media_type": preset.media_type}
+            response = self.vendor_manager.synthesize(payload, timeout_ms=self.config.request_timeout_ms)
+            if response.status_code != 200:
+                result = {"status": "failed", "scope": scope, "reason": self._vendor_failure_detail(response), "vendor_status": response.status_code}
+                self._last_verification = {**result, "verified_at": time.time()}
+                return result
+            duration_ms, sample_rate = _wav_metadata(response.content)
+            if not response.content or duration_ms is None or sample_rate is None or duration_ms <= 0:
+                result = {"status": "failed", "scope": scope, "reason": "Vendor 返回了空音频或不可解析音频"}
+                self._last_verification = {**result, "verified_at": time.time()}
+                return result
+            synthesis = {
+                "status": "succeeded", "scope": scope, "vendor_ready": True,
+                "audio_bytes": len(response.content), "duration_ms": duration_ms,
+                "sample_rate": sample_rate,
+                "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 2),
+            }
+            if scope == "synthesis" or not self.config.playback_enabled:
+                if scope == "playback" and not self.config.playback_enabled:
+                    synthesis = {**synthesis, "status": "not_started", "reason": "播放器在配置中被禁用"}
+                self._last_verification = {**synthesis, "verified_at": time.time()}
+                return synthesis
 
-    def _ensure_runtime_component_aliases(self) -> None:
-        pass
+            trace_id = f"__test__:{sid}:{uuid4().hex}"
+            task = BridgeTask(
+                task_id=f"test:{uuid4().hex}", trace_id=trace_id, state="pending",
+                cancel_token=uuid4().hex, session_id=sid, source_id=trace_id, epoch=self._epoch_by_session.setdefault(sid, uuid4().hex),
+            )
+            task.detail.update({"text": text, "generation_id": 1, "segment_index": 1})
+            condition = threading.Condition(self._lock)
+            with self._lock:
+                self._sessions_by_trace[trace_id] = GenerationSession(trace_id=trace_id, generation_id=1, condition=condition)
+                self._tasks[task.task_id] = task
+            self._register_segment(trace_id=trace_id, generation_id=1, segment_index=1, task_id=task.task_id, text=text, state="pending")
+            artifact = self._write_audio_artifact(task_id=task.task_id, audio_id=hashlib.sha1(response.content).hexdigest()[:16], audio_bytes=response.content, media_type=preset.media_type)
+            playback = self._play_batch_artifact(task, synth={"audio_id": hashlib.sha1(response.content).hexdigest()[:16], "artifact_path": artifact, "duration_ms": duration_ms, "sample_rate": sample_rate, "latency_ms": synthesis["elapsed_ms"]}, adaptive_fallback=False)
+            result = {**synthesis, **{k: v for k, v in playback.items() if k in {"playback_started", "playback_completed", "played_ms", "buffered_ms"}}}
+            result["status"] = "succeeded" if result.get("playback_completed") is True else "failed"
+            if result["status"] == "failed": result["reason"] = playback.get("playback_error", "播放器未确认完成")
+            self._last_verification = {**result, "verified_at": time.time()}
+            return result
+        except Exception as exc:
+            result = {"status": "unknown", "scope": scope, "reason": f"真实测试未取得完整证据：{type(exc).__name__}: {exc}"}
+            self._last_verification = {**result, "verified_at": time.time()}
+            return result
+        finally:
+            # Test traces are disposable and must never become replayable speech.
+            for trace_id in list(getattr(self, "_sessions_by_trace", {})):
+                if trace_id.startswith(f"__test__:{sid}:"):
+                    with self._lock:
+                        session = self._sessions_by_trace.pop(trace_id, None)
+                        if session is not None: session.closed = True
+
+    def restart(self, target: str) -> dict[str, Any]:
+        if target != "vendor":
+            return {"status": "not_started", "target": target, "reason": "Bridge 不能在自身进程内重启自己"}
+        ownership = str(getattr(self.vendor_manager, "ownership", "unknown"))
+        if ownership != "owned":
+            return {"status": "not_started", "target": target, "ownership": ownership, "reason": "Vendor 不是当前 Bridge 明确拥有的进程"}
+        stopped = self.vendor_manager.stop_owned()
+        if stopped.get("status") != "stopped":
+            result = {"status": "unknown", "target": target, "ownership": ownership, "stop": stopped, "reason": "Vendor 停止结果未确认"}
+            self._unknown_recovery.append(result)
+            return result
+        try:
+            started = self.vendor_manager.ensure_running()
+            ready = self.vendor_manager.wait_until_ready(self.config.startup_timeout_ms)
+            if not started or not ready:
+                result = {"status": "unknown", "target": target, "ownership": self.vendor_manager.ownership, "started": started, "ready": ready, "reason": "Vendor 重启后未确认 ready"}
+                self._unknown_recovery.append(result)
+                return result
+            return {"status": "succeeded", "target": target, "ownership": self.vendor_manager.ownership, "ready": True}
+        except Exception as exc:
+            result = {"status": "unknown", "target": target, "reason": f"Vendor 重启失败：{type(exc).__name__}: {exc}"}
+            self._unknown_recovery.append(result)
+            return result
 
     def task_status(self, task_id: str) -> dict[str, Any]:
         self._prune_terminal_state()
@@ -898,6 +999,8 @@ class TTSBridgeService:
             epoch_map = {}
             self._epoch_by_session = epoch_map
         epoch = epoch_map.setdefault(session_id, uuid4().hex)
+        if request.epoch is not None and request.epoch != epoch:
+            raise HTTPException(status_code=409, detail={"reason": "epoch 已失效", "session_id": session_id, "expected_epoch": epoch, "received_epoch": request.epoch})
         task = BridgeTask(task_id=task_id, trace_id=request.trace_id, state="pending", cancel_token=cancel_token, session_id=session_id, invocation_id=request.invocation_id, source_id=request.source_id or request.trace_id, epoch=epoch)
         with self._lock:
             self._tasks[task_id] = task
@@ -1779,7 +1882,7 @@ class TTSBridgeService:
             playback_completed = self.player.enqueue_and_wait(asset.artifact_path, wait=True, timeout_ms=timeout_ms)
             snapshot = self._run_subtitle_progress_loop(task=task, duration_ms=asset.duration_ms)
             return {
-                "playback_started": snapshot.playback_started,
+                "playback_started": bool(snapshot.playback_started or playback_completed),
                 "playback_completed": playback_completed,
                 "played_ms": snapshot.played_ms,
                 "buffered_ms": snapshot.buffered_ms,

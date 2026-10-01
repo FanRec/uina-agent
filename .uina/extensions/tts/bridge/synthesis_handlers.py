@@ -231,6 +231,7 @@ class SpeakRequest(BaseModel):
     session_id: Optional[str] = None
     invocation_id: Optional[str] = None
     source_id: Optional[str] = None
+    epoch: Optional[str] = None
 
 
 class CancelRequest(BaseModel):
@@ -267,6 +268,10 @@ class ResetRequest(BaseModel):
 class TestRequest(BaseModel):
     scope: Literal["synthesis", "playback"] = "synthesis"
     session_id: Optional[str] = None
+
+
+class RestartRequest(BaseModel):
+    target: Literal["vendor"]
 
 
 class BatchTaskStatusRequest(BaseModel):

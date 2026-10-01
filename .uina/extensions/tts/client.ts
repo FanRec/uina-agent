@@ -25,6 +25,7 @@ export interface SpeakPayload {
   readonly session_id?: string;
   readonly invocation_id?: string;
   readonly source_id?: string;
+  readonly epoch?: string;
 }
 
 export interface SubtitleSegmentState {
@@ -195,6 +196,9 @@ export class TtsBridgeClient {
   }
   async test(scope: "synthesis" | "playback", sessionId?: string): Promise<Record<string, unknown>> {
     return await this.jsonRequest("/v1/tts/test", { scope, ...(sessionId ? { session_id: sessionId } : {}) });
+  }
+  async restartVendor(): Promise<Record<string, unknown>> {
+    return await this.jsonRequest("/v1/tts/restart", { target: "vendor" });
   }
 
   async cancelTrace(

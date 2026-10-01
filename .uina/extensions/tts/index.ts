@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "../../../src/extensions/runner.js";
-import type { ContextUpdateEvent, TurnStartEvent, OutputInterruptedEvent, OutputUpdateEvent } from "../../../src/runtime/events.js";
+import type { TurnStartEvent, OutputInterruptedEvent, OutputUpdateEvent } from "../../../src/runtime/events.js";
 import {
 	WORLD_EXPOSED_SHARED_NAME,
 	type WorldExposedRegistry,
@@ -15,8 +15,9 @@ import { ensureCompanion } from "./companion.js";
 import { ensureSubtitleService } from "./subtitle-companion.js";
 import { StreamParser } from "./stream-parser.js";
 import { TtsVoiceOutputDriver } from "./driver-impl.js";
-import { renderBreakpointNotice, renderDeliveryLine } from "./delivery.js";
+
 import { createTtsTool } from "./tool.js";
+import { loadVoicePreferences } from "../voice/preferences.js";
 
 export * from "./delivery.js";
 export * from "./driver-impl.js";
@@ -31,21 +32,35 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
   const client = new TtsBridgeClient(config.serviceUrl, config.requestTimeoutMs);
   const parser = new StreamParser({ maxSentenceChars: config.maxSentenceChars });
   const driver = new TtsVoiceOutputDriver(client);
-  let readAssistantText = true;
+  let companionHandle: Awaited<ReturnType<typeof ensureCompanion>> | undefined;
+  driver.setRestartBridge(async () => {
+    if (!companionHandle?.didSpawn) {
+      return { status: "not_started", ownership: "external", reason: "Bridge 不是当前扩展明确拥有的进程" };
+    }
+    try {
+      await companionHandle.stop();
+      companionHandle = await ensureCompanion(config, pi.signal);
+      driver.setBridgeOwnership(companionHandle.didSpawn ? "owned" : "external");
+      driver.setOnline(true);
+      return { status: "succeeded", ownership: "owned", ready: true };
+    } catch (error) {
+      driver.setBridgeOwnership("unknown");
+      driver.setOnline(false);
+      return { status: "unknown", ownership: "owned", reason: error instanceof Error ? error.message : String(error) };
+    }
+  });
+  const initialPreferences = await loadVoicePreferences(pi);
+  let readAssistantText = initialPreferences.readAssistantText;
   (pi as ExtensionAPI & { registerTool?: (tool: import("../../../src/tools/broker.js").Tool) => unknown }).registerTool?.(createTtsTool(driver));
 
-  // 交付视口：本扩展是交付事实的拥有者，所以也只有它投影视口。
-  // 断点提示优先于实时进度行 —— 同一件事不铺两行；两者都无话可说时整体 0 token。
-  let breakpointNotice: string | null = null;
-
-  const peekDeliveryViewport = (): string | null => {
-    return breakpointNotice ?? renderDeliveryLine(driver.snapshot());
+  const recordPerception = async (fact: { kind: "interrupted" | "delivery_failed" | "delivery_unknown"; summary: string }): Promise<void> => {
+    if (typeof pi.hasService !== "function" || !pi.hasService("voice_perception:record") || typeof pi.callService !== "function") return;
+    await pi.callService("voice_perception:record", { fact }).catch(() => undefined);
   };
 
   // 1. 伴生服务管理（所有权自律：谁拉起谁销毁）
   // 句柄由本激活函数持有：若拉起了进程，在返回的 teardown 中 await stop()，
   // 清理失败交给 runner 报告；复用外部服务时 stop 是 no-op。
-  let companionHandle: Awaited<ReturnType<typeof ensureCompanion>> | undefined;
   let subtitleHandle: Awaited<ReturnType<typeof ensureSubtitleService>> | undefined;
   const subtitleStartup = (async () => {
     try {
@@ -70,8 +85,10 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
   try {
     try {
       companionHandle = await ensureCompanion(config, pi.signal);
+      driver.setBridgeOwnership(companionHandle.didSpawn ? "owned" : "external");
       driver.setOnline(true);
     } catch (err) {
+      driver.setBridgeOwnership("unknown");
       driver.setOnline(false);
       await driver.setMuted(true);
       pi.reportError(`[TTS] 伴生服务未连接，已降级为纯打字模式 (可通过 voice 工具开麦自动重试): ${err instanceof Error ? err.message : String(err)}`);
@@ -81,11 +98,17 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
     pi.registerService("voice_driver:set_muted", async (input: { muted: boolean }) => {
       return await driver.setMuted(Boolean(input?.muted));
     });
+    pi.registerService("voice_driver:set_text_reading", async (input: { enabled: boolean }) => {
+      readAssistantText = Boolean(input?.enabled);
+      return { success: true };
+    });
 
     pi.registerService("voice_driver:interrupt", async (input?: { expectedTraceId?: string }) => {
       const result = await driver.interrupt(input?.expectedTraceId);
-      if (result.outcome === "interrupted" && result.breakpoint) {
-        breakpointNotice = renderBreakpointNotice(result.breakpoint);
+      if (result.outcome === "unknown" || result.outcome === "failed") {
+        await recordPerception({ kind: result.outcome === "unknown" ? "delivery_unknown" : "delivery_failed", summary: `声音停止结果${result.outcome === "unknown" ? "未知" : "失败"}：${result.reason}。` });
+      } else if (result.outcome === "interrupted") {
+        await recordPerception({ kind: "interrupted", summary: "上一段声音被主动打断，后续内容未交付。" });
       }
       return result;
     });
@@ -226,14 +249,28 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
       if (driver.isOnline) startLevelStream();
     });
 
+    const submitTextSegment = async (text: string): Promise<void> => {
+      const result = await driver.submitSegment(text);
+      if (["unknown", "uncertain", "failed", "rejected"].includes(result.status)) {
+        await recordPerception({
+          kind: result.status === "unknown" || result.status === "uncertain" ? "delivery_unknown" : "delivery_failed",
+          summary: `正文发声${result.status === "unknown" || result.status === "uncertain" ? "结果未知" : "失败"}：${result.reason ?? "来源存在未确认缺口"}。`,
+        });
+        if (result.status === "unknown" || result.status === "uncertain") {
+          driver.setOnline(false);
+          await driver.setMuted(true);
+        }
+        throw new Error(result.reason ?? `TTS submit ${result.status}`);
+      }
+      ensureProgressPolling();
+    };
+
     pi.on("output_update", async (e: OutputUpdateEvent) => {
       if (aborted || e.channel !== "content" || !readAssistantText || driver.isMuted || !driver.isOnline) return;
       const sentences = parser.feed(e.text);
       for (const s of sentences) {
         try {
-          await driver.submitSegment(s);
-          // 提交才开探测：没有在途音频时不占用任何周期
-          ensureProgressPolling();
+          await submitTextSegment(s);
         } catch (err) {
           driver.setOnline(false);
           await driver.setMuted(true);
@@ -248,7 +285,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
         const tail = parser.flush();
         for (const s of tail) {
           try {
-            await driver.submitSegment(s);
+            await submitTextSegment(s);
           } catch (err) {
             driver.setOnline(false);
             await driver.setMuted(true);
@@ -282,8 +319,10 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
         stopProgressPolling();
         stopLevelStream();
         const result = await driver.interrupt();
-        if (result.outcome === "interrupted" && result.breakpoint) {
-          breakpointNotice = renderBreakpointNotice(result.breakpoint);
+        if (result.outcome === "unknown" || result.outcome === "failed") {
+          await recordPerception({ kind: result.outcome === "unknown" ? "delivery_unknown" : "delivery_failed", summary: `声音停止结果${result.outcome === "unknown" ? "未知" : "失败"}：${result.reason}。` });
+        } else if (result.outcome === "interrupted") {
+          await recordPerception({ kind: "interrupted", summary: "上一段声音被主动打断，后续内容未交付。" });
         }
       })().finally(() => {
         interruption = null;
@@ -298,28 +337,6 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
     pi.on("turn_aborted", () => {
       aborted = true;
       void interruptPlayback();
-    });
-
-    pi.on("context_update", (event: ContextUpdateEvent) => {
-      if (event.snapshot.basis === "active_request") breakpointNotice = null;
-    });
-
-    // 6. 交付视口投影：与上下文一同注入，独立 system 消息，不污染用户输入。
-    //    视口只放坐标（第几句 / 还有几条），句子内容留在作者侧记账里按需查。
-    pi.onHook("turn.transformContext", async (projection) => {
-      if (projection.messages.length === 0) return undefined;
-      const viewportText = peekDeliveryViewport();
-      if (!viewportText) return undefined;
-
-      return {
-        projection: {
-          ...projection,
-          messages: [
-            ...projection.messages,
-            { role: "system", content: viewportText },
-          ],
-        },
-      };
     });
 
     // 卸载收束：先停探测与电平流，再等伴生进程真正退出（仅限本扩展拉起的进程）。

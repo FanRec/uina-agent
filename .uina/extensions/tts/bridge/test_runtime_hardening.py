@@ -2,6 +2,9 @@ from dataclasses import replace
 from pathlib import Path
 import threading
 import time
+import io
+import wave
+import httpx
 from unittest.mock import patch
 
 import pytest
@@ -129,3 +132,45 @@ def test_close_marks_pending_delivery_terminal_and_does_not_restart_worker(servi
     assert service._tasks["waiting"].state in {"cancelled", "unknown"}
     with pytest.raises(HTTPException):
         service.admit_speak(SpeakRequest(trace_id="new",segment_id="new",index=1,text="hello"))
+
+
+def _valid_wav() -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(8000)
+        wav_file.writeframes(b"\x00\x00" * 800)
+    return buffer.getvalue()
+
+
+class SynthVendor(Vendor):
+    ownership = "external"
+
+    def synthesize(self, payload, *, timeout_ms):
+        return httpx.Response(200, content=_valid_wav())
+
+
+def test_synthesis_test_executes_vendor_and_validates_audio(service):
+    service.vendor_manager = SynthVendor()
+    result = service.test("synthesis", "test-session")
+    assert result["status"] == "succeeded"
+    assert result["duration_ms"] > 0
+    assert result["sample_rate"] == 8000
+    assert service.health()["last_verification"]["scope"] == "synthesis"
+
+
+def test_playback_test_uses_real_player_path_without_unmuting(service):
+    service.vendor_manager = SynthVendor()
+    service.player.enqueue_and_wait = lambda *args, **kwargs: True
+    result = service.test("playback", "test-session")
+    assert result["status"] == "succeeded"
+    assert result["playback_started"] is True
+    assert result["playback_completed"] is True
+
+
+def test_external_vendor_cannot_be_restarted(service):
+    service.vendor_manager = SynthVendor()
+    result = service.restart("vendor")
+    assert result["status"] == "not_started"
+    assert result["ownership"] == "external"

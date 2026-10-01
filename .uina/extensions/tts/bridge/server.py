@@ -19,6 +19,7 @@ from synthesis_handlers import (
     ReconnectRequest,
     ResetRequest,
     TestRequest,
+    RestartRequest,
 )
 
 if TYPE_CHECKING:
@@ -90,6 +91,10 @@ def build_app(service: Any) -> FastAPI:
     @app.post("/v1/tts/test")
     def test(request: TestRequest) -> dict[str, Any]:
         return service.test(request.scope, request.session_id)
+
+    @app.post("/v1/tts/restart")
+    def restart(request: RestartRequest) -> dict[str, Any]:
+        return service.restart(request.target)
 
     @app.post("/v1/tts/cancel")
     def cancel(request: CancelRequest) -> dict[str, Any]:

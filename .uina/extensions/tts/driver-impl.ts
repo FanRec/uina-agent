@@ -34,6 +34,7 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
   private deliveryRevision = 0;
   private probeInFlight: Promise<void> | null = null;
   private epochDirty = false;
+  private epoch: string | undefined;
   private submitted = 0;
   private readonly segmentTexts = new Map<number, string>();
   /** 桥侧物理事实（不含意志与连接态） */
@@ -42,9 +43,20 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
   private speaking = false;
   private readonly invocationResults = new Map<string, { status: string; task_id?: string }>();
   private manualTraceSeq = 0;
+  private restartBridge?: () => Promise<Record<string, unknown>>;
+  private bridgeOwnership: "owned" | "external" | "unknown" = "unknown";
+  private sourcePoisoned = false;
 
   constructor(client: TtsBridgeClient) {
     this.client = client;
+  }
+
+  setRestartBridge(handler: () => Promise<Record<string, unknown>>): void {
+    this.restartBridge = handler;
+  }
+
+  setBridgeOwnership(ownership: "owned" | "external" | "unknown"): void {
+    this.bridgeOwnership = ownership;
   }
 
   get isMuted(): boolean {
@@ -83,8 +95,9 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
   /**
    * 提交一句并落账。调用方负责把投递失败翻译成静音降级。
    */
-  async submitSegment(text: string, invocationId?: string): Promise<{ status: string; task_id?: string }> {
+  async submitSegment(text: string, invocationId?: string): Promise<{ status: string; task_id?: string; reason?: string }> {
     const traceId = this.activeTrace;
+    if (this.sourcePoisoned) return { status: "unknown", task_id: `${traceId ?? "none"}:poisoned`, reason: "当前声音来源存在未确认缺口，未越过屏障继续播放" };
     if (invocationId) {
       const previous = this.invocationResults.get(invocationId);
       if (previous) return previous;
@@ -130,8 +143,10 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
         text,
         invocation_id: invocationId,
         source_id: traceId,
+        epoch: this.epoch,
       });
       if (["failed", "rejected"].includes(result.status)) {
+        this.sourcePoisoned = true;
         const rejected = rollbackRejected();
         if (invocationId) this.invocationResults.set(invocationId, rejected);
         return rejected;
@@ -141,10 +156,12 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
     } catch (error) {
       if (!(error instanceof TtsSpeakError) || error.kind === "unknown") {
         // 网络结果未知：保留 pending，在后续 probe 中等待物理事实，不能伪报失败或成功。
-        const uncertain = { status: "uncertain", task_id: `${traceId}:${index}` };
+        this.sourcePoisoned = true;
+        const uncertain = { status: "uncertain", task_id: `${traceId}:${index}`, reason: "提交结果未知，后续来源不能越过缺口" };
         if (invocationId) this.invocationResults.set(invocationId, uncertain);
         return uncertain;
       }
+      this.sourcePoisoned = true;
       return rollbackRejected();
     }
   }
@@ -234,6 +251,7 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
       const interrupted = this.resolveBreakpoint(traceToCancel, state);
       // 掐断即清空在途：队列事实归零，但要如实标明这次是"被打断"而不是"播完"
       this.speaking = false;
+      this.sourcePoisoned = false;
       this.facts = {
         ...this.facts,
         pendingSegments: 0,
@@ -268,15 +286,28 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
 
   async inspect(): Promise<Record<string, unknown>> {
     const health = await this.client.health();
-    return health ? { status: "observed", reachable: true, health } : { status: "unknown", reachable: false, reason: "Bridge health 不可达" };
+    return health ? { status: "observed", reachable: true, ownership: { bridge: this.bridgeOwnership, vendor: health.vendor_ownership ?? "unknown" }, health } : { status: "unknown", reachable: false, ownership: { bridge: this.bridgeOwnership, vendor: "unknown" }, reason: "Bridge health 不可达" };
   }
 
-  async recover(operation: "reconnect" | "reset", invocationId?: string): Promise<Record<string, unknown>> {
+  async recover(operation: "reconnect" | "reset" | "restart", invocationId?: string, target?: "bridge" | "vendor"): Promise<Record<string, unknown>> {
     const sessionId = this.deliveryTrace ?? this.activeTrace ?? "uina-default";
     try {
-      if (operation === "reconnect") return { operation, ...(await this.client.reconnect(sessionId)) };
-      const result = await this.client.reset(sessionId, undefined, undefined, invocationId);
-      if (result.status === "unknown") this.epochDirty = true;
+      if (operation === "reconnect") {
+        const result = await this.client.reconnect(sessionId);
+        if (typeof result.epoch === "string") this.epoch = result.epoch;
+        return { operation, ...result };
+      }
+      if (operation === "restart") {
+        if (target === "vendor") return { operation, target, ...(await this.client.restartVendor()) };
+        if (!this.restartBridge) return { operation, target, status: "not_started", ownership: "external", reason: "Bridge 不是当前扩展明确拥有的进程" };
+        return { operation, target, ...(await this.restartBridge()) };
+      }
+      const result = await this.client.reset(sessionId, this.epoch, undefined, invocationId);
+      if (result.status === "unknown" || result.status === "failed") this.epochDirty = true;
+      if (typeof result.epoch === "string" && result.status === "reset") {
+        this.epoch = result.epoch;
+        this.sourcePoisoned = false;
+      }
       return { operation, ...result };
     } catch (error) {
       return { operation, status: "unknown", reason: error instanceof Error ? error.message : String(error) };
@@ -284,6 +315,7 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
   }
 
   async test(scope: "synthesis" | "playback"): Promise<Record<string, unknown>> {
+    if (scope === "playback" && this._muted) return { scope, status: "not_started", reason: "当前已静音；不会自动解除静音执行播放测试" };
     try { return { scope, ...(await this.client.test(scope, this.deliveryTrace ?? this.activeTrace ?? "uina-default")) }; }
     catch (error) { return { scope, status: "unknown", reason: error instanceof Error ? error.message : String(error) }; }
   }

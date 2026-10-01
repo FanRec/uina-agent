@@ -30,7 +30,12 @@ export function createTtsTool(driver: TtsVoiceOutputDriver): Tool {
       }
       if (action === "recover") {
         if (args.operation === "restart") {
-          return { result: "restart 未实现：当前 Companion 只提供扩展拥有的启动/停止句柄，不能把端口或 PID 当作可重启所有权。", status: "not_started", details: { target: args.target, ownership: "unverified" } };
+          const target = args.target === "vendor" ? "vendor" : "bridge";
+          if (typeof (driver as unknown as { recover?: unknown }).recover !== "function") {
+            return { result: `restart ${target} 未执行：不能把端口或 PID 当作可重启所有权。`, status: "not_started", details: { target } };
+          }
+          const details = await driver.recover("restart", context?.invocationId, target);
+          return { result: renderRecover(details), status: toToolStatus(details.status), details };
         }
         const details = await driver.recover(args.operation as "reconnect" | "reset", context?.invocationId);
         return { result: renderRecover(details), status: toToolStatus(details.status), details };
@@ -59,5 +64,6 @@ function renderTest(details: Record<string, unknown>): string {
 }
 function renderRecover(details: Record<string, unknown>): string {
   if (details.status === "unknown") return `已发起${String(details.operation)}，但结果未知：${String(details.reason ?? "未取得确认")}。不会清除 unknown，也不会自动重播旧台词。`;
+  if (details.status === "not_started") return `${String(details.operation)} 未执行：${String(details.reason ?? "当前所有权或能力不满足")}。`;
   return `${String(details.operation)} 已执行；返回结果只覆盖连接/epoch 对账范围，不等于声音已经恢复。`;
 }

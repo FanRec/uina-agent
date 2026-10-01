@@ -36,6 +36,14 @@ interface StreamMessageView {
 	readonly tool_calls?: readonly { readonly name: string; readonly args?: unknown }[];
 }
 
+export function isRuntimePerception(message: Pick<StreamMessageView, "context">): boolean {
+	return message.context?.kind === "runtime.perception";
+}
+
+export function filterCompactionMessages(messages: readonly StreamMessageView[]): StreamMessageView[] {
+	return messages.filter((message) => !isRuntimePerception(message));
+}
+
 export function estimateStreamTokens(messages: readonly StreamMessageView[]): number {
 	return estimateRequestTokens(messages as readonly ChatMsg[], []);
 }
@@ -375,7 +383,7 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		if (!announced) await pi.emitEvent({ type: "session_compact_start", operationId, reason, modelKey: inspection.projection.modelKey });
 		await emitProgress(operationId, "planning");
 		if (inspection.inputBudget === undefined) throw new Error("当前模型上下文窗口未知，无法安全压缩");
-		const messages = inspection.projection.messages as readonly StreamMessageView[];
+		const messages = filterCompactionMessages(inspection.projection.messages as readonly StreamMessageView[]);
 		const toolCost = estimateRequestTokens([], inspection.projection.tools);
 		const messageBudget = Math.max(0, inspection.inputBudget - toolCost);
 		const summaryReserve = Math.min(1024, Math.floor(messageBudget / 4));
@@ -547,8 +555,11 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		const checkpoint = staged?.checkpoint ?? activeCheckpoint();
 		if (!checkpoint) return undefined;
 		if (!staged && !checkpointValid(checkpoint, pi.history())) return undefined;
-		const messages = renderCheckpoint(source, checkpoint);
-		return messages ? { projection: { ...projection, messages } as RequestProjection } : undefined;
+		const canonicalSource = filterCompactionMessages(source);
+		const perception = source.filter((message) => isRuntimePerception(message));
+		const messages = renderCheckpoint(canonicalSource, checkpoint);
+		if (!messages) return undefined;
+		return { projection: { ...projection, messages: [...messages, ...perception] } as RequestProjection };
 	});
 
 	pi.onHook("turn.preflight", async ({ projection, measurement, pass, signal }) => {

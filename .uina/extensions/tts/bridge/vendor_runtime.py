@@ -18,6 +18,9 @@ class VendorRuntime:
         self.process: subprocess.Popen[str] | None = None
         self.client = client or httpx.Client(base_url=f"http://127.0.0.1:{config.vendor_port}", trust_env=False)
         self._vendor_log_path: Path | None = None
+        # Ownership is evidence, not inferred from port/PID alone.
+        self.ownership: str = "unknown"
+        self.last_stop: dict[str, Any] | None = None
 
     @property
     def vendor_base_url(self) -> str:
@@ -26,6 +29,9 @@ class VendorRuntime:
     def ensure_running(self) -> bool:
         """确保 vendor 进程在运行；返回 True 表示本次启动了新进程。"""
         if self.ready():
+            # A ready endpoint discovered before this runtime spawned anything is external/shared.
+            if self.process is None or self.process.poll() is not None:
+                self.ownership = "external"
             return False
         if self.process is not None and self.process.poll() is None:
             return False
@@ -79,24 +85,51 @@ class VendorRuntime:
                 text=True,
                 env=env,
             )
+            self.ownership = "owned"
+            self.last_stop = None
             return True
         finally:
             vendor_log_file.close()
 
-    def _cleanup_process(self) -> None:
-        if self.process is None:
-            return
-        if self.process.poll() is None:
-            self.process.terminate()
+    def stop_owned(self) -> dict[str, Any]:
+        """Stop only a process spawned by this runtime and report exit evidence."""
+        process = self.process
+        if self.ownership != "owned" or process is None:
+            result = {"status": "not_started", "ownership": self.ownership}
+            self.last_stop = result
+            return result
+        if process.poll() is not None:
+            code = process.returncode
+            self.process = None
+            result = {"status": "stopped", "ownership": "owned", "exit_code": code}
+            self.last_stop = result
+            self.ownership = "unknown"
+            return result
+        try:
+            process.terminate()
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
             try:
-                self.process.wait(timeout=3)
+                process.kill()
+                process.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                self.process.kill()
-                try:
-                    self.process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
+                result = {"status": "unknown", "ownership": "owned", "reason": "vendor 退出未确认"}
+                self.last_stop = result
+                return result
+        except OSError as exc:
+            result = {"status": "unknown", "ownership": "owned", "reason": str(exc)}
+            self.last_stop = result
+            return result
+        code = process.returncode
         self.process = None
+        self.ownership = "unknown"
+        result = {"status": "stopped", "ownership": "owned", "exit_code": code}
+        self.last_stop = result
+        return result
+
+    def _cleanup_process(self) -> None:
+        # Internal cleanup is ownership-aware; an external/shared Vendor is never killed.
+        self.stop_owned()
 
     def _wait_for_port_free(self, timeout: float = 10.0) -> None:
         deadline = time.perf_counter() + timeout
@@ -170,4 +203,4 @@ class VendorRuntime:
 
     def close(self) -> None:
         self.client.close()
-        self._cleanup_process()
+        self.stop_owned()

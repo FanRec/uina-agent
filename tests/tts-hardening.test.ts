@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { StreamParser } from "../.uina/extensions/tts/stream-parser.js";
 import { summarizeProgress } from "../.uina/extensions/tts/delivery.js";
 import { TtsVoiceOutputDriver } from "../.uina/extensions/tts/driver-impl.js";
+import { TtsSpeakError } from "../.uina/extensions/tts/client.js";
 
 describe("TTS delivery hardening", () => {
   it("reassembles a split closing think tag at every boundary", () => {
@@ -69,5 +70,33 @@ describe("TTS delivery hardening", () => {
     expect(parser.flush()).toEqual(["后续"]);
   });
 
+  it("poisons a source after an unknown submit and does not let later segments bypass the gap", async () => {
+    const client = {
+      speak: vi.fn()
+        .mockResolvedValueOnce({ status: "accepted" })
+        .mockRejectedValueOnce(new TtsSpeakError("timeout", "unknown")),
+      cancelTrace: vi.fn(),
+      getSubtitleState: vi.fn(),
+      isHealthy: vi.fn().mockResolvedValue(true),
+    };
+    const driver = new TtsVoiceOutputDriver(client as never);
+    driver.startTurn(1);
+    await expect(driver.submitSegment("第一句。" )).resolves.toMatchObject({ status: "accepted" });
+    await expect(driver.submitSegment("第二句。" )).resolves.toMatchObject({ status: "uncertain" });
+    await expect(driver.submitSegment("第三句。" )).resolves.toMatchObject({ status: "unknown" });
+    expect(client.speak).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not run playback verification while muted", async () => {
+    const client = {
+      speak: vi.fn(), cancelTrace: vi.fn(), getSubtitleState: vi.fn(),
+      isHealthy: vi.fn().mockResolvedValue(true),
+      test: vi.fn(),
+    };
+    const driver = new TtsVoiceOutputDriver(client as never);
+    await driver.setMuted(true);
+    await expect(driver.test("playback")).resolves.toMatchObject({ status: "not_started" });
+    expect(client.test).not.toHaveBeenCalled();
+  });
 
 });
