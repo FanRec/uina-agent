@@ -196,7 +196,8 @@ export class BodyDirector {
 		}
 	}
 
-	setBasePose(targets: Record<string, number>, durationMs = 800): void {
+	/** 设置基准姿态目标集合。注意与 runtime 的 setBasePose(姿态名) 区分：这里接收的是参数集合。 */
+	setBasePoseTargets(targets: Record<string, number>, durationMs = 800): void {
 		this.basePoseTargets.clear();
 		for (const [k, v] of Object.entries(targets)) {
 			this.basePoseTargets.set(k, v);
@@ -211,7 +212,7 @@ export class BodyDirector {
 		const transitionMs = typeof options === "number" ? options : (options?.transitionMs ?? 800);
 		const holdMs = typeof options === "object" ? options.holdMs : undefined;
 		const pose = BASE_POSES[name] ?? BASE_POSES.relaxed;
-		this.setBasePose(pose, transitionMs);
+		this.setBasePoseTargets(pose, transitionMs);
 		this.holdRemainingMs = holdMs !== undefined && holdMs > 0 ? holdMs : undefined;
 	}
 
@@ -222,10 +223,6 @@ export class BodyDirector {
 	/** 当前限时姿态的剩余保持时长（无限时则为 undefined）；供失焦停靠往返时延续倒计时。 */
 	getHoldRemainingMs(): number | undefined {
 		return this.holdRemainingMs;
-	}
-
-	transitionToActivePose(basePose: BasePoseName = "focused"): void {
-		this.applyBasePose(basePose, 800);
 	}
 
 	dampenToNeutral(exemptParams?: readonly string[]): void {

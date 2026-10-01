@@ -66,10 +66,13 @@ export class Live2DEndpoint implements BodyEndpoint {
 		return this.stateTracker.getState();
 	}
 
-	/** 最近一次到达本端点的线索（含时间）——给用户一个"cue 到底通没通"的可见凭据。 */
+	/** 最近一次成功送达并呈现的线索（含时间）——给用户一个"cue 到底通没通"的可见凭据。 */
 	lastCue?: { id: string; at: string };
 
 	emitCue(cueId: string): void {
+		// VTS 离线时 cue 无法呈现：既不写"已到达"的凭据（那会让凭据失真），也不做看不见的本地表演。
+		// 与 express 的离线诚实口径保持一致。
+		if (!this.stateTracker.getState().online) return;
 		this.lastCue = { id: cueId, at: new Date().toLocaleTimeString("zh-CN", { hour12: false }) };
 		this.director.dispatchCue(cueId);
 	}
@@ -116,6 +119,8 @@ export class Live2DRuntime {
 	levelSinkExposed = false;
 	/** 端点当前是否失焦停靠中（物理上呈现 relaxed，但权威姿态仍是用户的选择）。 */
 	private poseParked = false;
+	/** 用户姿态的剩余限时（由运行时独家记账，不借物理层搬运），停靠期间冻结。 */
+	private poseIntentRemainingMs?: number;
 
 	private readonly cleanupFns: Array<() => void> = [];
 	private isStarted = false;
@@ -130,11 +135,17 @@ export class Live2DRuntime {
 		this.endpoint = new Live2DEndpoint(this.director, this.companion.stateTracker, {
 			onFocused: (focused) => this.handleFocus(focused),
 		});
-		this.reflexDirector = new ReflexDirector(
-			this.director,
-			() => this.currentBasePose,
-			{ isPoseParked: () => this.poseParked },
-		);
+		this.reflexDirector = new ReflexDirector(this.director, {
+			getBasePose: () => this.currentBasePose,
+			isPoseParked: () => this.poseParked,
+			// 经权威写入口唤醒。反射从不切换姿态（保持用户的选择），只把当前姿态重新落下，
+			// 因此剩余限时恒保留——不保留就会在每次回合开始时静默清掉用户的限时姿态。
+			activateBasePose: (pose) =>
+				this.setBasePose(pose, {
+					transitionMs: 800,
+					holdMs: this.director.bodyDirector.getHoldRemainingMs(),
+				}),
+		});
 
 		// 限时基准姿态到期：回到 relaxed 待机并同步权威状态。
 		// （此前这里是直接把 currentBasePose 标成 relaxed 而物理参数清零回零位，
@@ -160,23 +171,39 @@ export class Live2DRuntime {
 		});
 	}
 
-	/** 姿态唯一写入口：权威状态与物理基准目标同源，杜绝两处各说各话。 */
+	/**
+	 * 姿态唯一写入口：权威状态与物理基准目标同源，杜绝两处各说各话。
+	 * 停靠中只更新用户意图（权威姿态与剩余限时），物理继续呈现 relaxed——
+	 * 否则物理层会带上倒计时，到期回调把权威姿态改写成 relaxed，从而吞掉用户姿态意图。
+	 */
 	private setBasePose(name: BasePoseName, options?: { transitionMs?: number; holdMs?: number }): void {
 		this.currentBasePose = name;
+		if (this.poseParked) {
+			this.poseIntentRemainingMs = options?.holdMs;
+			return;
+		}
 		this.director.bodyDirector.applyBasePose(name, options);
 	}
 
 	/**
 	 * 失焦停靠/回焦恢复：临时在 relaxed 待机与用户选择的姿态间切换。
-	 * 不改变 currentBasePose（用户的姿态意图），有限时保持时延续倒计时而非吞掉。
+	 * 不改变 currentBasePose（用户的姿态意图）。停靠期间剩余限时由运行时记账并冻结，
+	 * 回焦后还剩多少就再展示多少——既不吞掉、也不被停靠姿态的倒计时污染。
 	 */
 	private handleFocus(focused: boolean): void {
 		this.poseParked = !focused;
-		const remainingHoldMs = this.director.bodyDirector.getHoldRemainingMs();
-		this.director.bodyDirector.applyBasePose(focused ? this.currentBasePose : "relaxed", {
-			transitionMs: 800,
-			holdMs: remainingHoldMs,
-		});
+		if (focused) {
+			const remaining = this.poseIntentRemainingMs;
+			this.poseIntentRemainingMs = undefined;
+			this.director.bodyDirector.applyBasePose(this.currentBasePose, {
+				transitionMs: 800,
+				holdMs: remaining,
+			});
+		} else {
+			this.poseIntentRemainingMs = this.director.bodyDirector.getHoldRemainingMs();
+			// 停靠姿态不携带限时：物理层无倒计时 => 不会触发到期回调污染权威状态
+			this.director.bodyDirector.applyBasePose("relaxed", { transitionMs: 800 });
+		}
 	}
 
 	/**
@@ -266,17 +293,17 @@ export class Live2DRuntime {
 			const unbindHost = ctx.onHostEvent((event) => {
 				switch (event.type) {
 					case "turn_start":
-						void this.reflexDirector.onTurnStart();
+						this.reflexDirector.onTurnStart();
 						break;
 					case "output_update":
 						if (event.channel === "thinking") {
-							void this.reflexDirector.onThinking();
+							this.reflexDirector.onThinking();
 						} else if (event.channel === "content") {
 							this.reflexDirector.onSpeakingContent();
 						}
 						break;
 					case "turn_end":
-						void this.reflexDirector.onTurnEnd();
+						this.reflexDirector.onTurnEnd();
 						break;
 					case "turn_aborted":
 						this.reflexDirector.onTurnAborted();
@@ -288,7 +315,7 @@ export class Live2DRuntime {
 			// 降级：只剩"有人说话"这一个信号，思考/回正/急停反射不可用。
 			const unbindActivity = ctx.onActivity((event) => {
 				if (event.origin === "human") {
-					void this.reflexDirector.onTurnStart();
+					this.reflexDirector.onTurnStart();
 				}
 			});
 			this.cleanupFns.push(unbindActivity);
@@ -312,6 +339,11 @@ export class Live2DRuntime {
 
 		this.director.abortAllMotions();
 		this.director.releaseAll();
+		// 停靠与限时意图随运行时一起复位；物理层同时落回权威姿态，
+		// 否则"停机时正停靠"会留下权威=playful / 身体=relaxed 的错位，且重启后没有事件会纠正。
+		this.poseParked = false;
+		this.poseIntentRemainingMs = undefined;
+		this.director.bodyDirector.applyBasePose(this.currentBasePose, { transitionMs: 800 });
 	}
 
 	formatStatus() {

@@ -99,7 +99,12 @@ export function createLive2DApp(): WorldDef {
 								head: { type: "string", enum: [...HEAD_POSES] },
 								gaze: { type: "string", enum: [...GAZE_DIRECTIONS] },
 								face: { type: "string", enum: [...FACE_EXPRESSIONS] },
-								hold_ms: { type: "number", description: "维持时间(毫秒)，建议 400~1500" },
+								hold_ms: {
+									type: "number",
+									minimum: 200,
+									maximum: 3000,
+									description: "维持时间(毫秒)，超出 200~3000 会被钳制",
+								},
 							},
 						},
 					},
@@ -146,6 +151,7 @@ export function createLive2DApp(): WorldDef {
 					},
 					duration_ms: {
 						type: "number",
+						minimum: 0,
 						description: "可选。姿态保持时长（毫秒）。默认 0（持续保持循环生效直至下次切换）。若传入大于 0 的数值，则在保持指定时间后自然平滑回归 relaxed 待机。",
 					},
 				},

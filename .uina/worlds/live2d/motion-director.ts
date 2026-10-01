@@ -10,7 +10,13 @@ import {
 	PARAM_CHANNEL_MAP,
 } from "./types.js";
 import { BodyDirector } from "./body-director.js";
-import { DEFAULT_EXPRESSIVE_INTENSITY, resolveBeatToParams } from "./parameter-mapper.js";
+import {
+	DEFAULT_EXPRESSIVE_INTENSITY,
+	REFLEX_POSES,
+	REFLEX_POSE_PARAMS,
+	resolveBeatToParams,
+	type ReflexStateKey,
+} from "./parameter-mapper.js";
 import { PhysiologicalNoise } from "./physiological-noise.js";
 
 interface ChannelSlot {
@@ -30,32 +36,15 @@ interface InternalLease extends ChannelLease {
  * 1. 严格在内部管理 mouth, eyes, gaze, head, torso 五个物理通道，杜绝向外泄露通道细节；
  * 2. 基于优先级的抢占与租约（RAII Lease）管理；
  * 3. 支持超时、取消信号与退避降级；
- * 4. 驱动语义 Cue 分发与原子租约保护。
+ * 4. 原子租约保护（全量中断，防半残动作）。
  */
 class MotionLeaseManager {
 	private readonly channels: Map<Live2DChannel, ChannelSlot> = new Map();
-	private cueDispatcher?: (cueId: string) => unknown;
 	private leaseCounter = 0;
 
 	constructor() {
 		for (const ch of ALL_CHANNELS) {
 			this.channels.set(ch, { currentLease: null });
-		}
-	}
-
-	/**
-	 * 设置语义 Cue 接收处理器
-	 */
-	setCueDispatcher(dispatcher: (cueId: string) => unknown): void {
-		this.cueDispatcher = dispatcher;
-	}
-
-	/**
-	 * 分发语义 Cue (如 warm_smile, curious_tilt)
-	 */
-	dispatchCue(cueId: string): void {
-		if (this.cueDispatcher) {
-			void this.cueDispatcher(cueId);
 		}
 	}
 
@@ -293,6 +282,42 @@ class MotionFrameComposer {
 		});
 	}
 
+	/**
+	 * 回正到基准姿态；若仍有表情节拍在播放，则保留这些节拍活跃的参数不被覆盖。
+	 * "保留哪些参数"的策略收在合成层，避免反射层窥探合成层内部状态后自行拼装。
+	 */
+	dampenToNeutralPreservingActiveBeats(): void {
+		if (this.isPlayingExpressiveBeats()) {
+			this.bodyDirector.dampenToNeutral(this.getActiveExpressiveParams());
+		} else {
+			this.bodyDirector.dampenToNeutral();
+		}
+	}
+
+	/**
+	 * 应用反射持续状态姿态（按声明式表中的键，调用方不需要知道具体参数名）。
+	 * 逐参数按通道门控：被 >= REFLEX 级租约占用的通道不写入——
+	 * 否则只锁了 head 而 gaze 空闲时，"让位"检查会整体放行并覆盖别人正在用的 head。
+	 */
+	showStatePose(key: ReflexStateKey): void {
+		const writable = REFLEX_POSES[key].filter((target) => {
+			const channel = PARAM_CHANNEL_MAP[target.name];
+			return !channel || !this.arbiter.isChannelLocked(channel, CHANNEL_PRIORITY.REFLEX);
+		});
+		if (writable.length > 0) this.bodyDirector.setTargets(writable);
+	}
+
+	/**
+	 * 清除反射持续状态，令反射占用的参数回归基准。
+	 * 与 dampenToNeutralPreservingActiveBeats 同一口径：正在播放的节拍所持有的参数不回归，
+	 * 否则 thinking -> content 的复位会把一个正演到一半的头部/视线节拍当场截断。
+	 */
+	clearStatePose(): void {
+		const active = new Set(this.getActiveExpressiveParams());
+		const names = REFLEX_POSE_PARAMS.filter((name) => !active.has(name));
+		if (names.length > 0) this.bodyDirector.dampenParams(names);
+	}
+
 	triggerAcousticImpulse(magnitude = 1.0): void {
 		if (this.arbiter.isChannelLocked("head", CHANNEL_PRIORITY.CUE)) {
 			return;
@@ -464,6 +489,8 @@ class MotionFrameComposer {
 export class MotionDirector {
 	private readonly arbiter = new MotionLeaseManager();
 	private readonly composer: MotionFrameComposer;
+	/** 语义 cue 接收处理器：cue 分发是观察者回调，与通道租约仲裁无关，故由 director 自持。 */
+	private cueDispatcher?: (cueId: string) => unknown;
 	readonly noise: PhysiologicalNoise;
 	readonly bodyDirector: BodyDirector;
 
@@ -493,6 +520,18 @@ export class MotionDirector {
 
 	getActiveExpressiveParams(): readonly string[] {
 		return this.composer.getActiveExpressiveParams();
+	}
+
+	dampenToNeutralPreservingActiveBeats(): void {
+		this.composer.dampenToNeutralPreservingActiveBeats();
+	}
+
+	showStatePose(key: ReflexStateKey): void {
+		this.composer.showStatePose(key);
+	}
+
+	clearStatePose(): void {
+		this.composer.clearStatePose();
 	}
 
 	triggerAcousticImpulse(magnitude = 1.0): void {
@@ -549,10 +588,12 @@ export class MotionDirector {
 	}
 
 	dispatchCue(cueId: string): void {
-		this.arbiter.dispatchCue(cueId);
+		if (this.cueDispatcher) {
+			void this.cueDispatcher(cueId);
+		}
 	}
 
 	setCueDispatcher(dispatcher: (cueId: string) => unknown): void {
-		this.arbiter.setCueDispatcher(dispatcher);
+		this.cueDispatcher = dispatcher;
 	}
 }

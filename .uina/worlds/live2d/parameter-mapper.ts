@@ -263,6 +263,28 @@ export function getCueAliases(canonicalId: string): readonly string[] {
 }
 
 /**
+ * 反射持续状态的声明式姿态表。
+ * 区别于 CUE_BEAT_TABLE 的一次性节拍：这是"状态期间持续维持"的目标。
+ * 与 GAZE/HEAD/FACE 表同属单一事实来源——反射层只引用键名，不再内联魔法数。
+ * （此前"思考歪头"在反射层内联 ParamAngleZ=10.0，与表里 thinking_deep 引用的
+ * tilt_right(-18.0) 方向相反，同一概念两处定义且数值矛盾。）
+ */
+export type ReflexStateKey = "thinking";
+
+export const REFLEX_POSES: Readonly<Record<ReflexStateKey, readonly Live2DParamTarget[]>> = Object.freeze({
+	thinking: Object.freeze([
+		{ name: "ParamAngleZ", value: 10.0 },
+		{ name: "ParamEyeBallY", value: 0.6 },
+		{ name: "ParamEyeBallX", value: -0.4 },
+	]),
+});
+
+/** 反射状态姿态占用的参数名集合（供复位时精确回归基准）。 */
+export const REFLEX_POSE_PARAMS: readonly string[] = Object.freeze(
+	Array.from(new Set(Object.values(REFLEX_POSES).flatMap((targets) => targets.map((t) => t.name)))),
+);
+
+/**
  * 默认即兴表情与动作表现强度基准 (0.1 ~ 1.0)
  */
 export const DEFAULT_EXPRESSIVE_INTENSITY = 0.6;

@@ -180,7 +180,7 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 
 		it("should transition between active and relaxed poses using smootherstep", () => {
 			const director = new BodyDirector();
-			director.transitionToActivePose();
+			director.applyBasePose("focused", 800);
 
 			// Initial step
 			const start = director.tick(100);
@@ -260,7 +260,7 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 
 		it("should retain base pose targets after dampenToNeutral", () => {
 			const director = new BodyDirector();
-			director.setBasePose({ ParamAngleZ: 5.0, ParamBodyAngleX: 2.0 });
+			director.setBasePoseTargets({ ParamAngleZ: 5.0, ParamBodyAngleX: 2.0 });
 			director.tick(900);
 			expect(director.getParam("ParamAngleZ")).toBeCloseTo(5.0, 1);
 
@@ -914,12 +914,60 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 				expect(director.getParamTarget("ParamEyeBallY")).toBe(0);
 			});
 
+			it("onTurnStart 经注入的宿主权威入口唤醒姿态，不再直改物理层", () => {
+				const composer = new MotionDirector();
+				const activated: string[] = [];
+				const reflex = new ReflexDirector(composer, {
+					getBasePose: () => "playful",
+					activateBasePose: (pose) => activated.push(pose),
+				});
+
+				reflex.onTurnStart();
+				expect(activated).toEqual(["playful"]);
+				// 物理层未被反射直接改写：姿态落点只能来自宿主入口
+				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBe(0);
+			});
+
+			it("失焦停靠中 onTurnStart 不唤醒姿态", () => {
+				const composer = new MotionDirector();
+				const activated: string[] = [];
+				const reflex = new ReflexDirector(composer, {
+					getBasePose: () => "playful",
+					isPoseParked: () => true,
+					activateBasePose: (pose) => activated.push(pose),
+				});
+
+				reflex.onTurnStart();
+				expect(activated).toEqual([]);
+			});
+
+			it("showStatePose 不写入已被占用通道的参数", async () => {
+				const composer = new MotionDirector();
+				const lease = await composer.claim(["head"], {
+					priority: CHANNEL_PRIORITY.CUE,
+					reason: "test:head-busy",
+				});
+				try {
+					composer.showStatePose("thinking");
+					// head 被 CUE 级占用：ParamAngleZ 不得被反射覆盖
+					expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBe(0);
+					// gaze 空闲：视线照常落下
+					expect(composer.bodyDirector.getParamTarget("ParamEyeBallY")).toBe(0.6);
+					expect(composer.bodyDirector.getParamTarget("ParamEyeBallX")).toBe(-0.4);
+				} finally {
+					composer.release(lease);
+				}
+			});
+
 			it("should protect ongoing expressive beats in ReflexDirector.onTurnEnd", async () => {
 				const composer = new MotionDirector();
-			const reflex = new ReflexDirector(composer);
+				const reflex = new ReflexDirector(composer, {
+					getBasePose: () => "relaxed",
+					activateBasePose: () => {},
+				});
 
 				// Set thinking pose
-				await reflex.onThinking();
+				reflex.onThinking();
 				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBe(10.0);
 
 				// Start playing expressive beats
@@ -930,7 +978,7 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 				expect(composer.isPlayingExpressiveBeats()).toBe(true);
 
 				// Turn end arrives while beats are playing
-				await reflex.onTurnEnd();
+				reflex.onTurnEnd();
 
 				// ParamAngleZ is active in the beat, so its target is preserved (-18 * 0.6 intensity = -10.8)
 				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBeCloseTo(-18.0 * 0.6, 1);
@@ -953,11 +1001,14 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 				expect(director.getParamTarget("ParamAngleX")).toBe(8);
 			});
 
-			it("should reset thinking pose targets when ReflexDirector.onSpeakingContent is invoked", async () => {
+			it("should reset thinking pose targets when ReflexDirector.onSpeakingContent is invoked", () => {
 				const composer = new MotionDirector();
-			const reflex = new ReflexDirector(composer);
+				const reflex = new ReflexDirector(composer, {
+					getBasePose: () => "relaxed",
+					activateBasePose: () => {},
+				});
 
-				await reflex.onThinking();
+				reflex.onThinking();
 				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBe(10.0);
 				expect(composer.bodyDirector.getParamTarget("ParamEyeBallY")).toBe(0.6);
 				expect(composer.bodyDirector.getParamTarget("ParamEyeBallX")).toBe(-0.4);
@@ -967,6 +1018,33 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBe(0);
 				expect(composer.bodyDirector.getParamTarget("ParamEyeBallY")).toBe(0);
 				expect(composer.bodyDirector.getParamTarget("ParamEyeBallX")).toBe(0);
+			});
+
+			it("thinking -> content 的复位不截断正在播放的节拍", async () => {
+				const composer = new MotionDirector();
+				const reflex = new ReflexDirector(composer, {
+					getBasePose: () => "relaxed",
+					activateBasePose: () => {},
+				});
+
+				reflex.onThinking();
+				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBe(10.0);
+
+				// 头部节拍开始播放：ParamAngleZ 归节拍持有（-18 × 0.6 强度）
+				const beats = composer.playExpressiveBeats(
+					{ beats: [{ head: "tilt_right", hold_ms: 600 }] },
+					{ allowedChannels: ["head"] as const },
+				);
+				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBeCloseTo(-18.0 * 0.6, 2);
+
+				reflex.onSpeakingContent();
+
+				// 节拍持有的 ParamAngleZ 不被拽回基准；反射自己占用的视线参数照常回归
+				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBeCloseTo(-18.0 * 0.6, 2);
+				expect(composer.bodyDirector.getParamTarget("ParamEyeBallY")).toBe(0);
+				expect(composer.bodyDirector.getParamTarget("ParamEyeBallX")).toBe(0);
+
+				await beats;
 			});
 		});
 
@@ -1332,12 +1410,17 @@ describe("Live2DRuntime 姿态权威与 express 诚实性", () => {
 		expect(details.effectStatus).toBe("not_started");
 	});
 
-	it("失焦停靠不改变用户姿态意图，回焦恢复并延续限时保持倒计时", async () => {
+	it("失焦停靠不改变用户姿态意图，回焦恢复并冻结剩余限时", async () => {
 		const runtime = createOfflineRuntime();
 
-		await runtime.executePose("playful", 5000, fakeCtx());
+		await runtime.executePose("playful", 3000, fakeCtx());
 		expect(runtime.currentBasePose).toBe("playful");
-		expect(runtime.director.bodyDirector.getHoldRemainingMs()).toBe(5000);
+
+		// 推进物理时间：800ms 过渡完成后才开始消耗保持时长
+		for (let i = 0; i < 20; i++) runtime.director.bodyDirector.tick(50);
+		const remainingBeforePark = runtime.director.bodyDirector.getHoldRemainingMs();
+		expect(remainingBeforePark).toBeDefined();
+		expect(remainingBeforePark!).toBeLessThan(3000);
 
 		// 失焦：物理停靠到 relaxed，但权威姿态仍是用户选择的 playful
 		runtime.endpoint.onFocus(false);
@@ -1345,11 +1428,35 @@ describe("Live2DRuntime 姿态权威与 express 诚实性", () => {
 		expect(runtime.director.bodyDirector.getBasePoseTarget("ParamAngleZ")).toBe(-8.0);
 		expect(runtime.formatStatus()).toContain("失焦停靠中");
 
-		// 回焦：恢复 playful，且限时保持倒计时未被吞掉
+		// 停靠期间推进远超剩余保持时长：停靠姿态不携带倒计时，不得触发到期改写权威姿态
+		for (let i = 0; i < 200; i++) runtime.director.bodyDirector.tick(50);
+		expect(runtime.currentBasePose).toBe("playful");
+
+		// 回焦：恢复 playful，剩余限时冻结保持（未被停靠期流逝消耗、也未被吞掉）
 		runtime.endpoint.onFocus(true);
 		expect(runtime.currentBasePose).toBe("playful");
 		expect(runtime.director.bodyDirector.getBasePoseTarget("ParamAngleZ")).toBe(18.0);
-		expect(runtime.director.bodyDirector.getHoldRemainingMs()).toBe(5000);
+		expect(runtime.director.bodyDirector.getHoldRemainingMs()).toBe(remainingBeforePark);
+	});
+
+	it("停靠中经工具切换姿态只更新用户意图，物理仍呈现 relaxed", async () => {
+		const runtime = createOfflineRuntime();
+		runtime.endpoint.onFocus(false);
+
+		await runtime.executePose("confident", 0, fakeCtx());
+		expect(runtime.currentBasePose).toBe("confident");
+		// 物理层仍是停靠的 relaxed，未被工具直接改写
+		expect(runtime.director.bodyDirector.getBasePoseTarget("ParamAngleZ")).toBe(-8.0);
+
+		runtime.endpoint.onFocus(true);
+		expect(runtime.director.bodyDirector.getBasePoseTarget("ParamAngleZ")).toBe(-4.0);
+	});
+
+	it("VTS 离线时 cue 不写可见凭据，也不做本地表演", () => {
+		const runtime = createOfflineRuntime();
+		runtime.endpoint.emitCue("warm_smile");
+		expect(runtime.endpoint.lastCue).toBeUndefined();
+		expect(runtime.formatStatus()).toContain("最近线索: 无");
 	});
 });
 
