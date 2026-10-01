@@ -2,10 +2,10 @@ import type { VoiceLevelEvent } from "./contracts.js";
 import type { MotionDirector } from "./motion-director.js";
 
 export interface AudioObserverOptions {
-	gain?: number; // 增益系数 (默认 3.0)
-	releaseMs?: number; // 释音衰减半衰期 (默认 80ms)
-	transientThreshold?: number; // 声学微冲基础触发阈值 (默认 0.30)
-	onsetDeltaThreshold?: number; // 声学微冲起振能量差阈值 (默认 0.15)
+	gain?: number; // 增益系数 (默认 22.0，匹配真实 16-bit PCM 对话 RMS 0.008~0.04 的电平域)
+	releaseMs?: number; // 释音衰减半衰期 (默认 90ms)
+	transientThreshold?: number; // 声学微冲基础触发阈值 (默认 0.018)
+	onsetDeltaThreshold?: number; // 声学微冲起振能量差阈值 (默认 0.008)
 	refractoryPeriodMs?: number; // 声学微冲冷却不应期 (默认 220ms，防止持续长元音剧烈抽搐)
 }
 
@@ -88,9 +88,10 @@ export class AudioObserver {
 		// 依据 releaseMs 进行指数自然衰减
 		const decay = Math.exp(-deltaMs / this.releaseMs);
 		this.currentEnvelope *= decay;
-		if (this.slowEnvelope > this.currentEnvelope) {
-			this.slowEnvelope = this.currentEnvelope;
-		}
+		// 注意：不得把 slowEnvelope 钳到衰减后的包络谷值。持续发音时包络在事件间被
+		// release 衰减挖出系统性谷值（rms * ~0.24），钳制会让慢包络长期低于真实电平，
+		// 使 deltaSlow 每个不应期都假性过阈——持续元音变成周期性点头抽搐。
+		// 静音复位由下方"包络归零时 slowEnvelope 清零"兜底。
 		this.mouthOpenY = Math.max(0, Math.min(1.0, this.currentEnvelope * this.gain));
 
 		if (this.mouthOpenY < 0.02) {
@@ -128,8 +129,8 @@ export class AudioObserver {
 			this.cooldownRemainingMs <= 0 &&
 			this.director
 		) {
-			const scale = this.transientThreshold >= 0.1 ? 0.35 : 0.025;
-			const magnitude = Math.min(1.0, (rawRms - this.transientThreshold) / scale);
+			// 真实对话 RMS 域 (0.008~0.04)：阈值 0.018 之上的余量以 0.025 为满幅标尺
+			const magnitude = Math.min(1.0, (rawRms - this.transientThreshold) / 0.025);
 			this.director.triggerAcousticImpulse(magnitude);
 			this.cooldownRemainingMs = this.refractoryPeriodMs;
 		}

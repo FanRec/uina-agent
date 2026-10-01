@@ -94,7 +94,7 @@ export interface ExpressParams {
 	gaze?: GazeDirection | string;
 	face?: FaceExpression | string;
 	intensity?: number;
-	beats?: ExpressBeat[];
+	beats?: readonly ExpressBeat[];
 }
 
 export type BasePoseName =

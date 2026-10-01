@@ -58,6 +58,8 @@ export class VTSClient {
 	private connectionGeneration = 0;
 
 	private readonly injectableParameters = new Set<string>();
+	/** 参数清单是否已就绪：鉴权成功到清单返回之间存在窗口期，未就绪时注入会逐帧触发 453 报错。 */
+	private injectableParamsLoaded = false;
 	private readonly filteredParamBuffer: VTSParamValue[] = [];
 	private availableHotkeys: VTSHotkeyInfo[] = [];
 	private readonly normalizedHotkeyIndex = new Map<string, VTSHotkeyInfo>();
@@ -163,6 +165,7 @@ export class VTSClient {
 		const wasConnected = this.isAuthenticated;
 		this.isAuthenticated = false;
 		this.injectableParameters.clear();
+		this.injectableParamsLoaded = false;
 		this.availableHotkeys = [];
 		this.normalizedHotkeyIndex.clear();
 		if (this.ws) {
@@ -297,7 +300,11 @@ export class VTSClient {
 					}
 				}
 			}
+			this.injectableParamsLoaded = true;
 		} catch (err) {
+			// 清单获取失败：标记就绪并退化为不过滤全量注入（空集语义），
+			// 避免"永远等不到清单"导致形象彻底僵死。
+			this.injectableParamsLoaded = true;
 			if (this.isConnected() && !this.isDisposed) {
 				console.warn("[Live2D] 获取 VTS 可注入参数列表失败:", err);
 			}
@@ -464,6 +471,9 @@ export class VTSClient {
 	 */
 	injectParameters(parameters: readonly VTSParamValue[]): void {
 		if (!this.isConnected() || !this.ws) return;
+		// 鉴权成功到参数清单返回之间存在窗口期：此刻注入未知参数会被 VTS 逐帧回 453。
+		// 清单未就绪时跳过注入（一帧的沉默好过每帧报错刷屏）。
+		if (!this.injectableParamsLoaded) return;
 
 		// 严格过滤：若已知 VTS 参数列表，剔除非追踪参数，防止 453 导致整帧被拒
 		let validParameters: readonly VTSParamValue[] = parameters;

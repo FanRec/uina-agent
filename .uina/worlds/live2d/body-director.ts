@@ -215,30 +215,17 @@ export class BodyDirector {
 		this.holdRemainingMs = holdMs !== undefined && holdMs > 0 ? holdMs : undefined;
 	}
 
-	clearBasePose(durationMs = 600): void {
-		this.basePoseTargets.clear();
-		this.holdRemainingMs = undefined;
-		const neutralTargets: Record<string, number> = {};
-		for (const name of this.params.keys()) {
-			neutralTargets[name] = this.getBasePoseTarget(name);
-		}
-		if (durationMs > 0) {
-			this.transitionPose(neutralTargets, durationMs);
-		} else {
-			this.dampenToNeutral();
-		}
-	}
-
 	getBasePoseTarget(name: string): number {
 		return this.basePoseTargets.get(name) ?? (name.includes("Eye") && name.includes("Open") ? 1.0 : 0);
 	}
 
-	transitionToActivePose(basePose: BasePoseName = "focused"): void {
-		this.applyBasePose(basePose, 800);
+	/** 当前限时姿态的剩余保持时长（无限时则为 undefined）；供失焦停靠往返时延续倒计时。 */
+	getHoldRemainingMs(): number | undefined {
+		return this.holdRemainingMs;
 	}
 
-	transitionToParkedPose(): void {
-		this.applyBasePose("relaxed", 800);
+	transitionToActivePose(basePose: BasePoseName = "focused"): void {
+		this.applyBasePose(basePose, 800);
 	}
 
 	dampenToNeutral(exemptParams?: readonly string[]): void {
@@ -271,7 +258,7 @@ export class BodyDirector {
 		const dt = Math.max(0.0001, deltaMs * 0.001);
 		this.updatePassiveSpineCoupling(options?.isTorsoLocked ?? false);
 
-		if (!this.isAnyTransitionActive() && this.holdRemainingMs !== undefined) {
+		if (this.holdRemainingMs !== undefined && !this.isBasePoseTransitionActive()) {
 			this.updateLivingHold(deltaMs);
 		}
 
@@ -312,9 +299,11 @@ export class BodyDirector {
 		}
 	}
 
-	private isAnyTransitionActive(): boolean {
-		for (const s of this.params.values()) {
-			if (s.tElapsed !== undefined) return true;
+	/** 仅检查基准姿态自身参数是否仍在过渡：无关通道（视线/表情）的过渡不得冻结限时倒计时。 */
+	private isBasePoseTransitionActive(): boolean {
+		for (const name of this.basePoseTargets.keys()) {
+			const state = this.params.get(name);
+			if (state?.tElapsed !== undefined) return true;
 		}
 		return false;
 	}
@@ -338,7 +327,8 @@ export class BodyDirector {
 
 		if (this.holdRemainingMs! <= 0) {
 			this.holdRemainingMs = undefined;
-			this.clearBasePose(600);
+			// 到期回正的语义由上层决定（如切回 relaxed 待机）；本层只负责报时，
+			// 不再自行清零基准目标——那会让"回正"变成"回到零位"而非回到待机姿态。
 			this.onBasePoseExpired?.();
 		}
 	}

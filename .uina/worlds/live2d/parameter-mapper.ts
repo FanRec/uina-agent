@@ -116,6 +116,33 @@ const FACE_TABLE: Record<FaceExpression, ParamWeight[]> = {
 	],
 };
 
+/**
+ * 三个映射表的键集合（单一事实来源派生）：
+ * 工具 schema 的 enum、错误提示的可用值列表都必须从这里取，
+ * 防止 schema 手抄一份后与映射表漂移（曾出现 schema 只声明 7 个表情、表里却有 10 个）。
+ */
+export const GAZE_DIRECTIONS: readonly string[] = Object.freeze(Object.keys(GAZE_TABLE));
+export const HEAD_POSES: readonly string[] = Object.freeze(Object.keys(HEAD_TABLE));
+export const FACE_EXPRESSIONS: readonly string[] = Object.freeze(Object.keys(FACE_TABLE));
+
+/**
+ * 校验节拍字段：返回无法识别或缺失内容的描述（空数组 = 全部合法可执行）。
+ * 未知字段不得静默无操作——那会让执行方谎报成功。
+ */
+export function validateBeats(beats: readonly ExpressBeat[]): string[] {
+	const invalid: string[] = [];
+	for (const beat of beats) {
+		if (beat.head === undefined && beat.gaze === undefined && beat.face === undefined) {
+			invalid.push("空节拍（缺少 head/gaze/face 任一动作内容）");
+			continue;
+		}
+		if (beat.head !== undefined && !HEAD_TABLE[beat.head as HeadPose]) invalid.push(`head="${beat.head}"`);
+		if (beat.gaze !== undefined && !GAZE_TABLE[beat.gaze as GazeDirection]) invalid.push(`gaze="${beat.gaze}"`);
+		if (beat.face !== undefined && !FACE_TABLE[beat.face as FaceExpression]) invalid.push(`face="${beat.face}"`);
+	}
+	return invalid;
+}
+
 // 4. 语义 Cue 到 ExpressBeat 声明式映射表 (生动立体的组合微动作)
 const CUE_BEAT_TABLE: Record<string, ExpressBeat[]> = {
 	warm_smile: [{ face: "tender_smile", head: "tilt_left", gaze: "user", hold_ms: 1200 }],
@@ -320,7 +347,9 @@ const FACE_CHANNELS_MAP: Readonly<Record<FaceExpression, readonly Live2DChannel[
 });
 
 /**
- * 根据节拍序列推导需要锁定的物理通道集合（最小特权原则）
+ * 根据节拍序列推导需要锁定的物理通道集合（最小特权原则）。
+ * 调用方（express/cue）均已通过 validateBeats 或内部可信表保证节拍有内容，
+ * 无内容时返回空数组——claim([]) 会得到空租约而非谎占通道空转。
  */
 export function getChannelsForBeats(beats: readonly ExpressBeat[]): Live2DChannel[] {
 	const channels = new Set<Live2DChannel>();
@@ -340,11 +369,6 @@ export function getChannelsForBeats(beats: readonly ExpressBeat[]): Live2DChanne
 				}
 			}
 		}
-	}
-	if (channels.size === 0) {
-		channels.add("head");
-		channels.add("gaze");
-		channels.add("eyes");
 	}
 	return Array.from(channels);
 }

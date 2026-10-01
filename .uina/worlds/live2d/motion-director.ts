@@ -9,6 +9,9 @@ import {
 	type Live2DChannel,
 	PARAM_CHANNEL_MAP,
 } from "./types.js";
+import { BodyDirector } from "./body-director.js";
+import { DEFAULT_EXPRESSIVE_INTENSITY, resolveBeatToParams } from "./parameter-mapper.js";
+import { PhysiologicalNoise } from "./physiological-noise.js";
 
 interface ChannelSlot {
 	currentLease: InternalLease | null;
@@ -125,11 +128,11 @@ class MotionLeaseManager {
 	 */
 	private evictLeases(leasesToEvict: Set<InternalLease>, acquiredChannels: Live2DChannel[]): void {
 		for (const oldLease of leasesToEvict) {
-				for (const ch of acquiredChannels) {
-					if (oldLease.channels.includes(ch)) oldLease.onEvicted?.(ch);
-				}
-				const remainingChannels = oldLease.channels.filter((c) => !acquiredChannels.includes(c));
-				oldLease.channels = remainingChannels;
+			for (const ch of acquiredChannels) {
+				if (oldLease.channels.includes(ch)) oldLease.onEvicted?.(ch);
+			}
+			const remainingChannels = oldLease.channels.filter((c) => !acquiredChannels.includes(c));
+			oldLease.channels = remainingChannels;
 			// 若旧租约无剩余通道，或声明了原子性 (atomic: true)，则全量中断与释放，防止半残动作
 			if (remainingChannels.length === 0 || oldLease.atomic) {
 				oldLease.release();
@@ -153,7 +156,7 @@ class MotionLeaseManager {
 
 		const lease: InternalLease = {
 			id: leaseId,
-				channels: [...acquiredChannels],
+			channels: [...acquiredChannels],
 			priority,
 			reason,
 			signal: leaseController.signal,
@@ -252,18 +255,9 @@ class MotionLeaseManager {
 	}
 }
 
-import { BodyDirector } from "./body-director.js";
-
-import { DEFAULT_EXPRESSIVE_INTENSITY, resolveBeatToParams } from "./parameter-mapper.js";
-import { PhysiologicalNoise } from "./physiological-noise.js";
-
 /**
- * Live2D 动作合成器 (Layered Motion Composer)
- * 职责：
- * 1. 自发生理底噪 (PhysiologicalNoise) - 3.6s 呼吸 + 泊松微眨眼；
- * 2. 动力学滤波与姿态导向 (BodyDirector) - 欠阻尼弹簧 + 软限速 + 内部脊柱跟随；
- * 3. 通道仲裁接入：动作锁定通道时抑制该通道底噪；
- * 4. 最终合成参数输出。
+ * 动作合成器：物理基准姿态、生理噪声、语流律动与表情节拍的逐帧合成。
+ * 只读消费租约状态（isChannelLocked），不拥有租约。
  */
 class MotionFrameComposer {
 	readonly noise = new PhysiologicalNoise();
@@ -274,7 +268,7 @@ class MotionFrameComposer {
 	private speechPhase = 0;
 	private speechActivity = 0;
 
-	constructor(protected readonly arbiter: MotionLeaseManager) {}
+	constructor(private readonly arbiter: MotionLeaseManager) {}
 
 	getSpeechActivity(): number {
 		return this.speechActivity;
@@ -300,7 +294,7 @@ class MotionFrameComposer {
 	}
 
 	triggerAcousticImpulse(magnitude = 1.0): void {
-		if (this.arbiter?.isChannelLocked("head", CHANNEL_PRIORITY.CUE)) {
+		if (this.arbiter.isChannelLocked("head", CHANNEL_PRIORITY.CUE)) {
 			return;
 		}
 		const clampedMag = Math.max(0, Math.min(1.0, magnitude));
@@ -407,15 +401,15 @@ class MotionFrameComposer {
 			}
 		}
 
-		const isTorsoLocked = this.arbiter?.isChannelLocked("torso", CHANNEL_PRIORITY.CUE) ?? false;
-		const isHeadLocked = this.arbiter?.isChannelLocked("head", CHANNEL_PRIORITY.CUE) ?? false;
+		const isTorsoLocked = this.arbiter.isChannelLocked("torso", CHANNEL_PRIORITY.CUE);
+		const isHeadLocked = this.arbiter.isChannelLocked("head", CHANNEL_PRIORITY.CUE);
 
 		const noise = this.noise.tick(deltaMs);
 		const merged = this.bodyDirector.tick(deltaMs, { isTorsoLocked });
 
 		for (const k in noise) {
 			const ch = PARAM_CHANNEL_MAP[k];
-			const isLocked = ch ? (this.arbiter?.isChannelLocked(ch, CHANNEL_PRIORITY.ACTION) ?? false) : false;
+			const isLocked = ch ? this.arbiter.isChannelLocked(ch, CHANNEL_PRIORITY.ACTION) : false;
 			const nVal = isLocked ? 0 : noise[k]!;
 
 			if (k === "ParamEyeLOpen" || k === "ParamEyeROpen") {
@@ -461,19 +455,104 @@ class MotionFrameComposer {
 	}
 }
 
-/** 单一动作所有者：租约、动作和最终帧由同一对象拥有。 */
-export class MotionDirector extends MotionFrameComposer {
-  constructor() {
-    const arbiter = new MotionLeaseManager();
-    super(arbiter);
-  }
-  release(lease: import("./types.js").ChannelLease): void { this.arbiter.release(lease); }
-  async claim(channels: readonly import("./types.js").Live2DChannel[], options?: import("./types.js").ChannelClaimOptions) { return this.arbiter.claim(channels, options); }
-  async claimAllChannels(reason: string, signal?: AbortSignal, priority?: typeof CHANNEL_PRIORITY.ACTION, atomic?: boolean) { return this.arbiter.claimAllChannels(reason, signal, priority, atomic); }
-  dispatchCue(cueId: string): void { this.arbiter.dispatchCue(cueId); }
-  setCueDispatcher(dispatcher: (cueId: string) => unknown): void { this.arbiter.setCueDispatcher(dispatcher); }
-  releaseAll(): void { this.arbiter.releaseAll(); }
-  isChannelLocked(channel: import("./types.js").Live2DChannel, minPriority?: number): boolean { return this.arbiter.isChannelLocked(channel, minPriority); }
-  getActiveLeases(): readonly import("./types.js").ChannelLease[] { return this.arbiter.getActiveLeases(); }
-}
+/**
+ * 单一动作所有者：租约（MotionLeaseManager）与合成（MotionFrameComposer）
+ * 由同一对象拥有并以组合方式聚合，公开面保持稳定。
+ * 此前用"composer 持 protected arbiter + director 继承透传"的假继承，
+ * 实质是两个正交职责硬拗成一条继承链；组合让所有权一目了然。
+ */
+export class MotionDirector {
+	private readonly arbiter = new MotionLeaseManager();
+	private readonly composer: MotionFrameComposer;
+	readonly noise: PhysiologicalNoise;
+	readonly bodyDirector: BodyDirector;
 
+	constructor() {
+		this.composer = new MotionFrameComposer(this.arbiter);
+		this.noise = this.composer.noise;
+		this.bodyDirector = this.composer.bodyDirector;
+	}
+
+	// —— 合成层委托 ——
+
+	compose(deltaMs: number, options?: { speechEnergy?: number }): Record<string, number> {
+		return this.composer.compose(deltaMs, options);
+	}
+
+	getSpeechActivity(): number {
+		return this.composer.getSpeechActivity();
+	}
+
+	resetSpeechActivity(): void {
+		this.composer.resetSpeechActivity();
+	}
+
+	isPlayingExpressiveBeats(): boolean {
+		return this.composer.isPlayingExpressiveBeats();
+	}
+
+	getActiveExpressiveParams(): readonly string[] {
+		return this.composer.getActiveExpressiveParams();
+	}
+
+	triggerAcousticImpulse(magnitude = 1.0): void {
+		this.composer.triggerAcousticImpulse(magnitude);
+	}
+
+	resetAcousticImpulse(): void {
+		this.composer.resetAcousticImpulse();
+	}
+
+	async playExpressiveBeats(
+		params: ExpressParams,
+		options?: { signal?: AbortSignal; allowedChannels?: readonly Live2DChannel[] } | AbortSignal,
+	): Promise<void> {
+		return this.composer.playExpressiveBeats(params, options);
+	}
+
+	abortAllMotions(): void {
+		this.composer.abortAllMotions();
+	}
+
+	// —— 仲裁层委托 ——
+
+	async claim(
+		channels: readonly Live2DChannel[],
+		options?: ChannelClaimOptions,
+	): Promise<ChannelLease> {
+		return this.arbiter.claim(channels, options);
+	}
+
+	async claimAllChannels(
+		reason: string,
+		signal?: AbortSignal,
+		priority = CHANNEL_PRIORITY.ACTION,
+		atomic = true,
+	): Promise<ChannelLease> {
+		return this.arbiter.claimAllChannels(reason, signal, priority, atomic);
+	}
+
+	release(lease: ChannelLease): void {
+		this.arbiter.release(lease);
+	}
+
+	isChannelLocked(channel: Live2DChannel, minPriority: number = CHANNEL_PRIORITY.IDLE): boolean {
+		return this.arbiter.isChannelLocked(channel, minPriority);
+	}
+
+	getActiveLeases(): readonly ChannelLease[] {
+		return this.arbiter.getActiveLeases();
+	}
+
+	releaseAll(): void {
+		this.arbiter.releaseAll();
+	}
+
+	dispatchCue(cueId: string): void {
+		this.arbiter.dispatchCue(cueId);
+	}
+
+	setCueDispatcher(dispatcher: (cueId: string) => unknown): void {
+		this.arbiter.setCueDispatcher(dispatcher);
+	}
+}

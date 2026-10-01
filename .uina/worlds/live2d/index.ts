@@ -2,6 +2,7 @@ import type { ActionContext, WorldDef, ServiceCompanionContext } from "../../../
 import { Live2DRuntime } from "./runtime.js";
 import type { VTSClient } from "./vts-client.js";
 import type { BasePoseName, ExpressParams } from "./types.js";
+import { FACE_EXPRESSIONS, GAZE_DIRECTIONS, HEAD_POSES } from "./parameter-mapper.js";
 
 export * from "./runtime.js";
 
@@ -69,18 +70,18 @@ export function createLive2DApp(): WorldDef {
 				properties: {
 					head: {
 						type: "string",
-						enum: ["tilt_left", "tilt_right", "nod", "shake", "lowered", "lifted"],
+						enum: [...HEAD_POSES],
 						description: "头部体态（tilt_left/right=歪头, nod=点头, shake=摇头, lowered=低头, lifted=仰头）",
 					},
 					gaze: {
 						type: "string",
-						enum: ["user", "away_left", "away_right", "down", "side_peek"],
+						enum: [...GAZE_DIRECTIONS],
 						description: "视线方向（user=注视用户, side_peek=斜向偷看, down=垂眸, away_left/right=看旁边）",
 					},
 					face: {
 						type: "string",
-						enum: ["shy", "smug", "pout", "sparkle", "shocked", "tender_smile", "laugh"],
-						description: "面相微表情（shy=脸红害羞, smug=坏笑得意, pout=嘟嘴傲娇, sparkle=眼眸闪烁, shocked=惊讶睁大, tender_smile=温柔微笑, laugh=开怀大笑眯眼）",
+						enum: [...FACE_EXPRESSIONS],
+						description: "面相微表情（shy=脸红害羞, smug=坏笑得意, pout=嘟嘴傲娇, sparkle=眼眸闪烁, shocked=惊讶睁大, tender_smile=温柔微笑, laugh=开怀大笑眯眼, winking=单眼眨眼, smug_grin=得意坏笑, sleepy_yawn=犯困打哈欠）",
 					},
 					intensity: {
 						type: "number",
@@ -95,9 +96,9 @@ export function createLive2DApp(): WorldDef {
 						items: {
 							type: "object",
 							properties: {
-								head: { type: "string" },
-								gaze: { type: "string" },
-								face: { type: "string" },
+								head: { type: "string", enum: [...HEAD_POSES] },
+								gaze: { type: "string", enum: [...GAZE_DIRECTIONS] },
+								face: { type: "string", enum: [...FACE_EXPRESSIONS] },
 								hold_ms: { type: "number", description: "维持时间(毫秒)，建议 400~1500" },
 							},
 						},

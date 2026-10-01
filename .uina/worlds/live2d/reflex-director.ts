@@ -19,48 +19,45 @@ export class ReflexDirector {
 	constructor(
 		private readonly director: MotionDirector,
 		private readonly getBasePose?: () => BasePoseName,
-	) {}
-
-	async onTurnStart(): Promise<void> {
-		this.isThinking = false;
-		try {
-			const lease = await this.director.claim(["head", "gaze"], {
-				priority: CHANNEL_PRIORITY.REFLEX,
-				reason: "reflex:turn_start",
-				allowDegrade: true,
-			});
-			// 保持或唤醒至当前设定的基准姿态，绝不粗暴清零重置
-			const pose = this.getBasePose?.() ?? "focused";
-			this.director.bodyDirector.transitionToActivePose(pose);
-			// 自动释放租约让弹簧继续自由运动
-			this.director.release(lease);
-		} catch {
-			// 被高优先级动作占用时忽略
-		}
+		hooks?: { isPoseParked?: () => boolean },
+	) {
+		this.isPoseParked = hooks?.isPoseParked;
 	}
 
-	async onThinking(): Promise<void> {
+	private readonly isPoseParked?: () => boolean;
+
+	/**
+	 * 反射忙检查：head 与 gaze 均被 >= REFLEX 级租约占用时让位。
+	 * 此前用 claim+立即 release 做该检查——异步绕一圈只为读状态，改为同步门控。
+	 */
+	private isReflexBlocked(): boolean {
+		return (
+			this.director.isChannelLocked("head", CHANNEL_PRIORITY.REFLEX) &&
+			this.director.isChannelLocked("gaze", CHANNEL_PRIORITY.REFLEX)
+		);
+	}
+
+	onTurnStart(): void {
+		this.isThinking = false;
+		// 失焦停靠中不唤醒姿态：parked 语义是"视觉呈现 relaxed"，用户姿态意图保持不变
+		if (this.isPoseParked?.()) return;
+		if (this.isReflexBlocked()) return;
+		// 保持或唤醒至当前设定的基准姿态，绝不粗暴清零重置
+		const pose = this.getBasePose?.() ?? "focused";
+		this.director.bodyDirector.transitionToActivePose(pose);
+	}
+
+	onThinking(): void {
 		if (this.isThinking) return;
 		this.isThinking = true;
+		if (this.isReflexBlocked()) return;
 
-		try {
-			const lease = await this.director.claim(["head", "gaze"], {
-				priority: CHANNEL_PRIORITY.REFLEX,
-				reason: "reflex:thinking",
-				allowDegrade: true,
-			});
-
-			// 思考时明显歪头 + 视线微偏上 (清晰可辨的思考姿态)
-			this.director.bodyDirector.setTargets([
-				{ name: "ParamAngleZ", value: 10.0 },
-				{ name: "ParamEyeBallY", value: 0.6 },
-				{ name: "ParamEyeBallX", value: -0.4 },
-			]);
-
-			this.director.release(lease);
-		} catch {
-			// 忽略冲突
-		}
+		// 思考时明显歪头 + 视线微偏上 (清晰可辨的思考姿态)
+		this.director.bodyDirector.setTargets([
+			{ name: "ParamAngleZ", value: 10.0 },
+			{ name: "ParamEyeBallY", value: 0.6 },
+			{ name: "ParamEyeBallX", value: -0.4 },
+		]);
 	}
 
 	onSpeakingContent(): void {

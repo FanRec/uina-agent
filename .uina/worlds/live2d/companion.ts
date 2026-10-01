@@ -125,13 +125,18 @@ export class VTSCompanion {
 	 */
 	tick(): void {
 		const now = Date.now();
-		const deltaMs = this.lastTickTime > 0 ? Math.min(now - this.lastTickTime, 100) : this.intervalMs;
+		// start() 已保证 lastTickTime 有值；即使冷调用 tick 也被 100ms 上限兜底
+		const deltaMs = Math.min(now - this.lastTickTime, 100);
 		this.lastTickTime = now;
 
 		// 1. 驱动音频口型自然平滑衰减
 		this.audioObserver.tick(deltaMs);
 
-		// 2. 提取实时音频口型开度与语流能量 (当 mouth 通道未被高优先级 Action 锁定时)
+		// 2. 提取实时音频口型开度与语流能量
+		// 口型策略（显式化两个不同决策，而非统一阈值）：
+		// - 口型开度归音频驱动：只有 >= ACTION 级的动作才抑制（如 flip 特技期间的统一编排）；
+		//   CUE 级表情经 retargeter 的 max 融合叠加，不会顶掉说话口型。
+		// - 躯干/头部律动是装饰性的：在 compose 内按 CUE 级让位，此处不重复门控。
 		const isMouthLocked = this.director.isChannelLocked("mouth", CHANNEL_PRIORITY.ACTION);
 		const mouthOpen = isMouthLocked ? undefined : this.audioObserver.getMouthOpenY();
 		const speechEnergy = isMouthLocked ? 0 : this.audioObserver.getSpeechEnergy();
