@@ -37,8 +37,8 @@ export interface HookInputs {
 	"turn.preflight": { readonly projection: RequestProjection; readonly measurement: TokenMeasurement; readonly pass: number; readonly signal: AbortSignal };
 	"turn.afterEnd": { readonly turnNumber: number; readonly success: boolean; readonly error?: string; readonly signal: AbortSignal };
 	"turn.shouldStop": { readonly turnNumber: number; readonly finishReason: FinishReason; readonly reply: string; readonly toolCallCount: number };
-	"tools.beforeCall": { readonly callId: string; readonly name: string; readonly args: Record<string, unknown> };
-	"tools.transformResult": { readonly callId: string; readonly name: string; readonly args: Record<string, unknown>; readonly result: string; readonly status: ToolResultStatus; readonly images?: readonly ImageContent[]; readonly details?: unknown };
+	"tools.beforeCall": { readonly callId: string; readonly invocationId?: string; readonly name: string; readonly args: Record<string, unknown> };
+	"tools.transformResult": { readonly callId: string; readonly invocationId?: string; readonly name: string; readonly args: Record<string, unknown>; readonly result: string; readonly status: ToolResultStatus; readonly images?: readonly ImageContent[]; readonly details?: unknown };
 	"provider.transformHeaders": { readonly provider: string; readonly headers: Readonly<Record<string, string>> };
 	"provider.transformPayload": { readonly provider: string; readonly payload: unknown };
 	"provider.observeResponse": { readonly provider: string; readonly status: number; readonly headers: Record<string, string> };
@@ -112,8 +112,8 @@ export interface RuntimeHooks {
 		shouldStop(input: Readonly<{ turnNumber: number; finishReason: FinishReason; reply: string; toolCallCount: number }>): Promise<Readonly<{ stop?: boolean }>>;
 	};
 	readonly tools: {
-		beforeCall(input: Readonly<{ callId: string; name: string; args: DeepReadonly<Record<string, unknown>> }>): Promise<Readonly<{ block?: boolean; reason?: string }>>;
-		transformResult(input: Readonly<{ callId: string; name: string; args: DeepReadonly<Record<string, unknown>>; result: string; status: ToolResultStatus; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>): Promise<Readonly<{ result?: string; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>>;
+		beforeCall(input: Readonly<{ callId: string; invocationId: string; name: string; args: DeepReadonly<Record<string, unknown>> }>): Promise<Readonly<{ block?: boolean; reason?: string }>>;
+		transformResult(input: Readonly<{ callId: string; invocationId: string; name: string; args: DeepReadonly<Record<string, unknown>>; result: string; status: ToolResultStatus; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>): Promise<Readonly<{ result?: string; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>>;
 	};
 	readonly provider: ProviderHooks;
 	readonly events: {

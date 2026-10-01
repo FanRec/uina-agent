@@ -19,6 +19,7 @@ import {
 export interface ToolExecutionContext {
 	readonly ownerId: string;
  readonly callerId?: string;
+	readonly invocationId?: string;
 }
 
 export interface Tool {
@@ -62,12 +63,12 @@ export interface ToolView {
 	has(name: string): boolean;
 	getExecutionMode(name: string): ToolExecutionMode;
 	prepare(name: string, args: Record<string, unknown>): PreparedToolCall;
-	execute(prepared: PreparedToolCall, signal?: AbortSignal): Promise<ToolExecutionResult>;
+	execute(prepared: PreparedToolCall, signal?: AbortSignal, invocationId?: string): Promise<ToolExecutionResult>;
 	run(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string>;
 	executePipeline(
 		call: ToolCallRequest,
 		options?: ToolPipelineOptions,
-	): Promise<ToolExecutionResult & { callId: string; /** 原始执行结果（阶段 D/M7）：canonical journal 落盘用，未经 transformResult 改写。 */ canonical?: ToolExecutionResult }>;
+	): Promise<ToolExecutionResult & { callId: string; invocationId: string; /** 原始执行结果（阶段 D/M7）：canonical journal 落盘用，未经 transformResult 改写。 */ canonical?: ToolExecutionResult }>;
 }
 
 export interface ScopedToolOptions {
@@ -141,6 +142,7 @@ export class ToolBroker implements ToolView {
 	async execute(
 		prepared: PreparedToolCall,
 		signal?: AbortSignal,
+		invocationId?: string,
 	): Promise<ToolExecutionResult> {
 		if (prepared.error) {
 			return {
@@ -155,7 +157,7 @@ export class ToolBroker implements ToolView {
 				status: "not_started",
 			};
 		}
-		return executeToolCore(tool, prepared.name, prepared.args, signal, this.context);
+		return executeToolCore(tool, prepared.name, prepared.args, signal, this.context, invocationId);
 	}
 
 	async run(
@@ -169,7 +171,7 @@ export class ToolBroker implements ToolView {
 	async executePipeline(
 		call: ToolCallRequest,
 		options?: ToolPipelineOptions,
-	): Promise<ToolExecutionResult & { callId: string }> {
+	): Promise<ToolExecutionResult & { callId: string; invocationId: string }> {
 		return executeToolPipeline(this, call, options);
 	}
 
@@ -184,6 +186,7 @@ async function executeToolCore(
 	args: Record<string, unknown>,
 	signal?: AbortSignal,
 	context?: ToolExecutionContext,
+	invocationId?: string,
 ): Promise<ToolExecutionResult> {
 	if (signal?.aborted) {
 		return {
@@ -192,7 +195,7 @@ async function executeToolCore(
 		};
 	}
 	try {
-		const result = await tool.run(args, signal, context);
+		const result = await tool.run(args, signal, context ? { ...context, ...(invocationId ? { invocationId } : {}) } : undefined);
 		if (
 			!result ||
 			typeof result.result !== "string" ||
@@ -268,6 +271,7 @@ export class ScopedToolView implements ToolView {
 	async execute(
 		prepared: PreparedToolCall,
 		signal?: AbortSignal,
+		invocationId?: string,
 	): Promise<ToolExecutionResult> {
 		if (prepared.error) {
 			return {
@@ -294,7 +298,7 @@ export class ScopedToolView implements ToolView {
 		const context: ToolExecutionContext | undefined = this.ownerId !== undefined
 			? { ownerId: this.ownerId, callerId: this.options.callerId }
 			: this.root.getContext();
-		return executeToolCore(tool, prepared.name, prepared.args, signal, context);
+		return executeToolCore(tool, prepared.name, prepared.args, signal, context, invocationId);
 	}
 
 	async run(
@@ -308,7 +312,7 @@ export class ScopedToolView implements ToolView {
 	async executePipeline(
 		call: ToolCallRequest,
 		options?: ToolPipelineOptions,
-	): Promise<ToolExecutionResult & { callId: string; canonical?: ToolExecutionResult }> {
+	): Promise<ToolExecutionResult & { callId: string; invocationId: string; canonical?: ToolExecutionResult }> {
 		return executeToolPipeline(this, call, options);
 	}
 }

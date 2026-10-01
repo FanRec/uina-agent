@@ -16,6 +16,7 @@ import { ensureSubtitleService } from "./subtitle-companion.js";
 import { StreamParser } from "./stream-parser.js";
 import { TtsVoiceOutputDriver } from "./driver-impl.js";
 import { renderBreakpointNotice, renderDeliveryLine } from "./delivery.js";
+import { createTtsTool } from "./tool.js";
 
 export * from "./delivery.js";
 export * from "./driver-impl.js";
@@ -30,6 +31,8 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
   const client = new TtsBridgeClient(config.serviceUrl, config.requestTimeoutMs);
   const parser = new StreamParser({ maxSentenceChars: config.maxSentenceChars });
   const driver = new TtsVoiceOutputDriver(client);
+  let readAssistantText = true;
+  (pi as ExtensionAPI & { registerTool?: (tool: import("../../../src/tools/broker.js").Tool) => unknown }).registerTool?.(createTtsTool(driver));
 
   // 交付视口：本扩展是交付事实的拥有者，所以也只有它投影视口。
   // 断点提示优先于实时进度行 —— 同一件事不铺两行；两者都无话可说时整体 0 token。
@@ -224,7 +227,7 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
     });
 
     pi.on("output_update", async (e: OutputUpdateEvent) => {
-      if (aborted || e.channel !== "content" || driver.isMuted || !driver.isOnline) return;
+      if (aborted || e.channel !== "content" || !readAssistantText || driver.isMuted || !driver.isOnline) return;
       const sentences = parser.feed(e.text);
       for (const s of sentences) {
         try {

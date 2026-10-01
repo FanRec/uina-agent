@@ -357,8 +357,9 @@ export class UinaHost {
 		const cancellation = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
 		const hooks = this.extensionHost.runtimeHooks().tools;
 		const callId = "direct-" + randomUUID();
+		const invocationId = `direct:${callId}`;
 		const run = this.tools.executePipeline(
-			{ callId, name, args },
+			{ callId, invocationId, name, args },
 			{ signal: cancellation, hooks },
 		);
 		this.directRuns.set(controller, run);

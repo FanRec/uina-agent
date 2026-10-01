@@ -16,6 +16,9 @@ from synthesis_handlers import (
     CancelTraceRequest,
     SpeakRequest,
     TurnEndRequest,
+    ReconnectRequest,
+    ResetRequest,
+    TestRequest,
 )
 
 if TYPE_CHECKING:
@@ -75,6 +78,18 @@ def build_app(service: Any) -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.post("/v1/tts/reconnect")
+    def reconnect(request: ReconnectRequest) -> dict[str, Any]:
+        return service.reconnect(request.session_id)
+
+    @app.post("/v1/tts/reset")
+    def reset(request: ResetRequest) -> dict[str, Any]:
+        return service.reset(request.session_id, request.expected_epoch, request.new_epoch, request.invocation_id)
+
+    @app.post("/v1/tts/test")
+    def test(request: TestRequest) -> dict[str, Any]:
+        return service.test(request.scope, request.session_id)
 
     @app.post("/v1/tts/cancel")
     def cancel(request: CancelRequest) -> dict[str, Any]:

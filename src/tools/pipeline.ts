@@ -5,12 +5,13 @@ import { warnIgnoredToolStatus } from "../runtime/hooks.js";
 import type { PreparedToolCall, ToolExecutionResult, ToolView } from "./broker.js";
 
 export interface ToolPipelineHooks {
-	beforeCall?(input: Readonly<{ callId: string; name: string; args: DeepReadonly<Record<string, unknown>> }>): Promise<Readonly<{ block?: boolean; reason?: string }>>;
-	transformResult?(input: Readonly<{ callId: string; name: string; args: DeepReadonly<Record<string, unknown>>; result: string; status: ToolResultStatus; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>): Promise<Readonly<{ result?: string; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>>;
+	beforeCall?(input: Readonly<{ callId: string; invocationId: string; name: string; args: DeepReadonly<Record<string, unknown>> }>): Promise<Readonly<{ block?: boolean; reason?: string }>>;
+	transformResult?(input: Readonly<{ callId: string; invocationId: string; name: string; args: DeepReadonly<Record<string, unknown>>; result: string; status: ToolResultStatus; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>): Promise<Readonly<{ result?: string; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>>;
 }
 
 export interface ToolCallRequest {
 	readonly callId: string;
+	readonly invocationId?: string;
 	readonly name: string;
 	readonly args: Record<string, unknown>;
 	readonly prepared?: PreparedToolCall;
@@ -35,8 +36,10 @@ export async function executeToolPipeline(
 	broker: ToolView,
 	call: ToolCallRequest,
 	options: ToolPipelineOptions = {},
-): Promise<ToolExecutionResult & { callId: string; /** 原始执行结果（阶段 D/M7）：canonical journal 落盘用，未经 transformResult 改写。 */ canonical?: ToolExecutionResult }> {
+): Promise<ToolExecutionResult & { callId: string; invocationId: string; /** 原始执行结果（阶段 D/M7）：canonical journal 落盘用，未经 transformResult 改写。 */ canonical?: ToolExecutionResult }> {
 	const { signal, hooks, observers } = options;
+	const invocationId = call.invocationId ?? call.callId;
+	const executionCall: ToolCallRequest = call.invocationId ? call : { ...call, invocationId };
 
 	// 1. 预检查取消：若工具尚未启动时已被中断，直接返回 not_started，不触发 beforeCall 与 onStart
 	if (signal?.aborted) {
@@ -44,8 +47,8 @@ export async function executeToolPipeline(
 			result: JSON.stringify({ error: "工具调用未启动（本轮已取消）", status: "not_started" }),
 			status: "not_started",
 		};
-		await observers?.onDone?.(outcome, call);
-		return { ...outcome, callId: call.callId };
+		await observers?.onDone?.(outcome, executionCall);
+		return { ...outcome, callId: call.callId, invocationId: invocationId };
 	}
 
 	// 2. 扩展前置拦截（捕获 hook 异常，防止第三方扩展错误击穿系统）
@@ -53,6 +56,7 @@ export async function executeToolPipeline(
 	try {
 		blocked = await hooks?.beforeCall?.({
 			callId: call.callId,
+			invocationId: invocationId,
 			name: call.name,
 			args: call.args as DeepReadonly<Record<string, unknown>>,
 		});
@@ -65,23 +69,23 @@ export async function executeToolPipeline(
 			result: `[blocked] 工具执行已被拦截: ${reason}`,
 			status: "not_started",
 		};
-		await observers?.onDone?.(outcome, call);
-		return { ...outcome, callId: call.callId };
+		await observers?.onDone?.(outcome, executionCall);
+		return { ...outcome, callId: call.callId, invocationId: invocationId };
 	}
 
 	// 3. 参数准备与校验（tool identity 的最终复核在 broker.execute，此处不做二次 prepare）
 	let prepared = call.prepared ?? broker.prepare(call.name, call.args);
 	if (prepared.error) {
-		const outcome = await broker.execute(prepared, signal);
-		await observers?.onDone?.(outcome, call);
-		return { ...outcome, callId: call.callId };
+		const outcome = await broker.execute(prepared, signal, invocationId);
+		await observers?.onDone?.(outcome, executionCall);
+		return { ...outcome, callId: call.callId, invocationId: invocationId };
 	}
 
 	// 4. 执行前观测点（仅当确认启动时触发，满足会话 recovery 协议）
-	await observers?.onStart?.(call);
+	await observers?.onStart?.(executionCall);
 
 	// 5. 核心工具执行
-	let outcome = await broker.execute(prepared, signal);
+	let outcome = await broker.execute(prepared, signal, invocationId);
 	// 权威执行事实（阶段 D / M7）：transformResult 改写前留档；onDone（journal tool_finished
 	// + tool_result 派发）必须拿到原始正文——模型可见变换不能改写 canonical 历史。
 	const canonical: ToolExecutionResult = outcome;
@@ -90,6 +94,7 @@ export async function executeToolPipeline(
 	try {
 		const transformed = await hooks?.transformResult?.({
 			callId: call.callId,
+			invocationId: invocationId,
 			name: call.name,
 			args: call.args as DeepReadonly<Record<string, unknown>>,
 			result: outcome.result,
@@ -112,8 +117,8 @@ export async function executeToolPipeline(
 	}
 
 	// 7. 执行后观测点：拿 canonical（原始执行结果），不是改写后的投影
-	await observers?.onDone?.(canonical, call);
+	await observers?.onDone?.(canonical, executionCall);
 
 	// 返回值 = 模型可见投影；canonical 字段 = 原始执行结果（loop 落 journal 用）。
-	return { ...outcome, callId: call.callId, canonical };
+	return { ...outcome, callId: call.callId, invocationId: invocationId, canonical };
 }

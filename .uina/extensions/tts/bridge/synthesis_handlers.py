@@ -228,6 +228,9 @@ class SpeakRequest(BaseModel):
     timeout_ms: int = 3000
     generation_id: Optional[int] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    session_id: Optional[str] = None
+    invocation_id: Optional[str] = None
+    source_id: Optional[str] = None
 
 
 class CancelRequest(BaseModel):
@@ -237,13 +240,33 @@ class CancelRequest(BaseModel):
 
 class CancelTraceRequest(BaseModel):
     trace_id: str
+    session_id: Optional[str] = None
+    expected_epoch: Optional[str] = None
     mode: Literal["immediate", "segment_boundary"] = "immediate"
 
 
 class TurnEndRequest(BaseModel):
     trace_id: str
+    session_id: Optional[str] = None
+    epoch: Optional[str] = None
     generation_id: Optional[int] = None
     last_segment_index: Optional[int] = None
+
+
+class ReconnectRequest(BaseModel):
+    session_id: str
+
+
+class ResetRequest(BaseModel):
+    session_id: str
+    expected_epoch: Optional[str] = None
+    new_epoch: Optional[str] = None
+    invocation_id: Optional[str] = None
+
+
+class TestRequest(BaseModel):
+    scope: Literal["synthesis", "playback"] = "synthesis"
+    session_id: Optional[str] = None
 
 
 class BatchTaskStatusRequest(BaseModel):

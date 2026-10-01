@@ -97,6 +97,7 @@ export type DecisionOutcome =
 
 type ToolBatchResult = import("../tools/broker.js").ToolExecutionResult & {
 	callId: string;
+	invocationId: string;
 	canonical?: import("../tools/broker.js").ToolExecutionResult;
 };
 
@@ -121,7 +122,7 @@ class ToolPipelineFailure extends Error {
 function unresolvedToolResult(call: CompletedToolCall, started: boolean): ToolBatchResult {
 	const status: ToolResultStatus = started ? "unknown" : "not_started";
 	const error = started ? "工具已启动，但结果无法确认" : "工具未启动，流水线失败";
-	return { callId: call.id, result: JSON.stringify({ error, status }), status };
+	return { callId: call.id, invocationId: `model:${call.id}`, result: JSON.stringify({ error, status }), status };
 }
 
 function asToolPipelineFailure(error: unknown): ToolPipelineFailure {
@@ -765,7 +766,7 @@ export class Subject {
 			}
 			else if (text !== undefined)
 				await this.appendMessage({ role: "user", content: text, timestamp: new Date().toISOString() });
-			await this.dispatch({ type: "turn_start", turnNumber: currentTurn, userText: text ?? "", images: queuedInput?.images });
+			await this.dispatch({ type: "turn_start", turnNumber: currentTurn, userText: text ?? "", inputRefs: queuedInputs.map((item) => item.id), images: queuedInput?.images });
 			turnStarted = true;
 			const outcome = await this.decide(model, systemPrompt, beforeMessages, (nextTurn) => {
 				currentTurn = nextTurn;
@@ -1181,7 +1182,7 @@ export class Subject {
 					await this.dispatch({ type: "turn_end", turnNumber: previousTurn, requestUsage: this.currentCallUsage ? structuredClone(this.currentCallUsage) : undefined });
 					const nextTurn = ++this.turnSeq;
 					onTurnTransition?.(nextTurn);
-					await this.dispatch({ type: "turn_start", turnNumber: nextTurn, userText: item.text, images: item.images });
+					await this.dispatch({ type: "turn_start", turnNumber: nextTurn, userText: item.text, inputRefs: [item.id], images: item.images });
 				}
 			} catch (error) {
 				// 批量认领路径尚未提交当前项时，当前项和后续项都归还队列。
@@ -1264,9 +1265,10 @@ export class Subject {
 			toolName: call.name,
 			args: callArgs,
 			callId: call.id,
+			invocationId: `model:${call.id}`,
 		});
 		return this.tools.executePipeline(
-			{ callId: call.id, name: call.name, args: callArgs, prepared },
+			{ callId: call.id, invocationId: `model:${call.id}`, name: call.name, args: callArgs, prepared },
 			{
 				signal: this.currentSignal(),
 				hooks: this.runtimeHooks.tools,

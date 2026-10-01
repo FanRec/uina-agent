@@ -211,3 +211,7 @@ class BridgeTask:
     error: str | None = None
     detail: dict[str, Any] = field(default_factory=dict)
     subtitle_state: dict[str, Any] = field(default_factory=dict)
+    session_id: str | None = None
+    invocation_id: str | None = None
+    source_id: str | None = None
+    epoch: str | None = None

@@ -40,6 +40,8 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
   private facts: DeliveryFacts = EMPTY_FACTS;
   /** 桥侧说它正在出声 —— 队列算术说不出的"在途尾巴" */
   private speaking = false;
+  private readonly invocationResults = new Map<string, { status: string; task_id?: string }>();
+  private manualTraceSeq = 0;
 
   constructor(client: TtsBridgeClient) {
     this.client = client;
@@ -81,8 +83,12 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
   /**
    * 提交一句并落账。调用方负责把投递失败翻译成静音降级。
    */
-  async submitSegment(text: string): Promise<{ status: string; task_id?: string }> {
+  async submitSegment(text: string, invocationId?: string): Promise<{ status: string; task_id?: string }> {
     const traceId = this.activeTrace;
+    if (invocationId) {
+      const previous = this.invocationResults.get(invocationId);
+      if (previous) return previous;
+    }
     if (!traceId) {
       return { status: "skipped", task_id: undefined };
     }
@@ -122,13 +128,22 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
         segment_id: `${traceId}:${index}`,
         index,
         text,
+        invocation_id: invocationId,
+        source_id: traceId,
       });
-      if (["failed", "rejected"].includes(result.status)) return rollbackRejected();
+      if (["failed", "rejected"].includes(result.status)) {
+        const rejected = rollbackRejected();
+        if (invocationId) this.invocationResults.set(invocationId, rejected);
+        return rejected;
+      }
+      if (invocationId) this.invocationResults.set(invocationId, result);
       return result;
     } catch (error) {
       if (!(error instanceof TtsSpeakError) || error.kind === "unknown") {
         // 网络结果未知：保留 pending，在后续 probe 中等待物理事实，不能伪报失败或成功。
-        return { status: "uncertain", task_id: `${traceId}:${index}` };
+        const uncertain = { status: "uncertain", task_id: `${traceId}:${index}` };
+        if (invocationId) this.invocationResults.set(invocationId, uncertain);
+        return uncertain;
       }
       return rollbackRejected();
     }
@@ -234,6 +249,43 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
         reason: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+
+
+  async speak(text: string, invocationId?: string, replace = false): Promise<{ status: string; task_id?: string; reason?: string }> {
+    const normalized = text.trim();
+    if (!normalized) return { status: "rejected", reason: "台词为空" };
+    if (this._muted) return { status: "rejected", reason: "当前已静音" };
+    if (!this._isOnline) return { status: "unknown", reason: "发声驱动离线" };
+    if (replace) {
+      const interrupted = await this.interrupt();
+      if (interrupted.outcome === "unknown") return { status: "unknown", reason: interrupted.reason };
+      if (interrupted.outcome === "failed") return { status: "failed", reason: interrupted.reason };
+    }
+    if (!this.activeTrace) this.startTurn(++this.manualTraceSeq);
+    return await this.submitSegment(normalized, invocationId);
+  }
+
+  async inspect(): Promise<Record<string, unknown>> {
+    const health = await this.client.health();
+    return health ? { status: "observed", reachable: true, health } : { status: "unknown", reachable: false, reason: "Bridge health 不可达" };
+  }
+
+  async recover(operation: "reconnect" | "reset", invocationId?: string): Promise<Record<string, unknown>> {
+    const sessionId = this.deliveryTrace ?? this.activeTrace ?? "uina-default";
+    try {
+      if (operation === "reconnect") return { operation, ...(await this.client.reconnect(sessionId)) };
+      const result = await this.client.reset(sessionId, undefined, undefined, invocationId);
+      if (result.status === "unknown") this.epochDirty = true;
+      return { operation, ...result };
+    } catch (error) {
+      return { operation, status: "unknown", reason: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  async test(scope: "synthesis" | "playback"): Promise<Record<string, unknown>> {
+    try { return { scope, ...(await this.client.test(scope, this.deliveryTrace ?? this.activeTrace ?? "uina-default")) }; }
+    catch (error) { return { scope, status: "unknown", reason: error instanceof Error ? error.message : String(error) }; }
   }
 
   /** 从字幕状态里认出"停在哪一句的哪个字"，并把作者侧文本补回去。 */

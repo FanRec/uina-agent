@@ -1,129 +1,65 @@
-import type { Tool, ToolExecutionResult } from "../../../src/tools/broker.js";
-import { describeDelivery, type InterruptResult, type PlaybackBreakpoint } from "./driver.js";
+import type { Tool, ToolExecutionContext, ToolExecutionResult } from "../../../src/tools/broker.js";
+import type { PlaybackBreakpoint, InterruptResult } from "./driver.js";
+import { describeDelivery } from "./driver.js";
 import { VoiceSession } from "./session.js";
 
 function describeBreakpoint(bp: PlaybackBreakpoint): string {
-  const where = bp.segmentText
-    ? `第 ${bp.segmentIndex} 句「${bp.segmentText.slice(0, 20)}」停在第 ${bp.committedCharEnd} 字`
-    : `第 ${bp.segmentIndex} 句停在第 ${bp.committedCharEnd} 字`;
+  const where = bp.segmentText ? `第 ${bp.segmentIndex} 句「${bp.segmentText.slice(0, 20)}」停在第 ${bp.committedCharEnd} 字` : `第 ${bp.segmentIndex} 句停在第 ${bp.committedCharEnd} 字`;
   return `（物理播放头${where}）`;
 }
-
 function renderInterruption(result: InterruptResult): Pick<ToolExecutionResult, "result" | "status"> {
-  if (result.breakpoint) {
-    return {
-      result: `已立即掐断当前发音并清空排队${describeBreakpoint(result.breakpoint)}。`,
-      status: "succeeded",
-    };
-  }
-  const reason = "reason" in result ? result.reason : "当前无发声";
-  switch (result.outcome) {
-    case "no_op":
-      return { result: `无需打断：${reason}`, status: "succeeded" };
-    case "failed":
-      return { result: `打断结果失败：（${reason}）`, status: "failed" };
-    case "unknown":
-      return { result: `打断结果未知：（${reason}）`, status: "unknown" };
-    case "interrupted":
-      return { result: `已停止当前发音，但没有可用断点：（${reason}）`, status: "succeeded" };
-  }
+  if (result.breakpoint) return { result: `已停止当前发声并清空未播内容${describeBreakpoint(result.breakpoint)}。`, status: "succeeded" };
+  if (result.outcome === "no_op") return { result: `无需停止：${result.reason ?? "当前没有发声"}。`, status: "succeeded" };
+  if (result.outcome === "unknown") return { result: `停止结果未知：${result.reason}。`, status: "unknown" };
+  if (result.outcome === "failed") return { result: `停止失败：${result.reason}。`, status: "failed" };
+  return { result: "已停止当前发声，但没有可用播放断点。", status: "succeeded" };
 }
 
 export function createVoiceTool(session: VoiceSession): Tool {
   return {
-    def: {
-      type: "function",
-      function: {
-        name: "voice",
-        description: "初奈语音发声与状态控制（支持开麦、关麦、打断发音与状态查询）",
-        parameters: {
-          type: "object",
-          properties: {
-            action: {
-              type: "string",
-              description: `子操作名称:
-- "mute": 关麦/静音（后续回复只打字不发音）
-- "unmute": 开麦（恢复语音发音）
-- "interrupt": 立即掐断当前发音并清空未播排队
-- "status": 查看开麦状态、物理播放状态与交付进度（说到第几句、还有多少未播完）`,
-            },
-            params: {
-              type: "object",
-              properties: {
-                expectedTraceId: {
-                  type: "string",
-                  description: "可选。指定要打断的 traceId，若当前播放轮次已变更则不误杀下一轮",
-                },
-              },
-              description: "子操作参数（可选）",
-            },
-          },
-          required: ["action"],
-        },
-      },
-    },
-    run: async (args: Record<string, unknown>): Promise<ToolExecutionResult> => {
-      const action = String(args.action ?? "").trim().toLowerCase();
-      const params = (args.params && typeof args.params === "object" ? args.params : {}) as Record<string, unknown>;
-
-      switch (action) {
-        case "mute": {
-          const res = await session.setMuted(true);
-          if (res.isOnline === false) {
-            return {
-              result: `已关麦。${res.reason ?? "发声驱动不可用"}——本来也不会出声。`,
-              status: "succeeded",
-            };
-          }
-          return {
-            result: "麦克风已关麦（静音模式，后续回答只打字不发音）。",
-            status: "succeeded",
-          };
-        }
-        case "unmute": {
-          const res = await session.setMuted(false);
-          if (res.isOnline === false) {
-            return {
-              result: `开麦提示：${res.reason ?? "发声伴生服务离线"}。当前保持纯打字模式，可在后台启动服务后再次调用开麦。`,
-              status: "succeeded",
-            };
-          }
-          return {
-            result: "麦克风已开麦（已连接发声服务，恢复语音发声）。",
-            status: "succeeded",
-          };
-        }
-        case "interrupt": {
-          const expectedTraceId = typeof params.expectedTraceId === "string" ? params.expectedTraceId : undefined;
-          const interruption = await session.interrupt(expectedTraceId);
-          return {
-            ...renderInterruption(interruption),
-            details: interruption,
-          };
-        }
-        case "status": {
-          const status = await session.getStatus();
-          const text = [
-            `发声意志: ${status.voiceState === "enabled"
-              ? status.snapshot.online && !status.snapshot.muted ? "🎙️ 开麦中" : "允许发声（当前未开麦）"
-              : "🔇 已关麦"}`,
-            `物理播放: ${describeDelivery(status.snapshot)}`,
-            `驱动挂载: ${status.hasDriver ? "✅ 已挂载" : "⚠️ 未挂载"}`,
-          ].join(" | ");
-
-          return {
-            result: text,
-            status: "succeeded",
-            details: status,
-          };
-        }
-        default: {
-          return {
-            result: `未知的 voice 子操作: "${action}"。可用操作: mute, unmute, interrupt, status。`,
-            status: "failed",
-          };
-        }
+    def: { type: "function", function: {
+      name: "voice",
+      description: "交流发声：说一句、停止当前发声、查询交付状态或管理用户语音偏好。",
+      parameters: { type: "object", additionalProperties: false, properties: { action: { type: "string" }, text: { type: "string" }, replace: { type: "boolean" }, operation: { type: "string" }, enabled: { type: "boolean" } }, oneOf: [
+        { properties: { action: { const: "interrupt" } }, required: ["action"] },
+        { properties: { action: { const: "status" } }, required: ["action"] },
+        { properties: { action: { const: "speak" }, text: { type: "string", minLength: 1 }, replace: { type: "boolean" } }, required: ["action", "text"] },
+        { properties: { action: { const: "manage" }, operation: { enum: ["mute", "unmute", "set_text_reading"] }, enabled: { type: "boolean" } }, required: ["action", "operation"] },
+      ] },
+    } },
+    run: async (args: Record<string, unknown>, _signal?: AbortSignal, context?: ToolExecutionContext): Promise<ToolExecutionResult> => {
+      const action = args.action;
+      if (action === "speak") {
+        const text = typeof args.text === "string" ? args.text.trim() : "";
+        if (!text) return { result: "speak 未执行：台词为空。", status: "not_started" };
+        const result = await session.speak(text, args.replace === true, context);
+        if (!result) return { result: "speak 未执行：发声驱动未挂载。", status: "not_started" };
+        const outcome = result as { status?: string; reason?: string };
+        if (outcome.status === "unknown" || outcome.status === "uncertain") return { result: "台词已提交但交付结果未知，未自动重播。", status: "unknown", details: result };
+        if (outcome.status === "failed" || outcome.status === "rejected") return { result: `台词未接受：${outcome.reason ?? outcome.status}。`, status: "failed", details: result };
+        return { result: "台词已进入当前发声路径；这不等于设备已播放完成。", status: "succeeded", details: result };
       }
+      if (action === "interrupt") return { ...renderInterruption(await session.interrupt()), details: await session.getStatus() };
+      if (action === "status") {
+        const status = await session.getStatus();
+        return { result: [
+          `语音偏好：${status.voiceState === "enabled" ? "允许发声" : "已静音"}`,
+          `正文朗读：${status.readAssistantText ? "开启" : "关闭"}`,
+          `交付：${describeDelivery(status.snapshot)}`,
+        ].join("；"), status: "succeeded", details: status };
+      }
+      if (action === "manage") {
+        const operation = args.operation;
+        if (operation === "mute" || operation === "unmute") {
+          const result = await session.setMuted(operation === "mute");
+          return { result: result.success ? (operation === "mute" ? "已静音；后续发声不会输出。" : "已允许发声；仍需以实际交付事实为准。") : `偏好未完全生效：${result.reason ?? "物理驱动不可用"}。`, status: result.success ? "succeeded" : "unknown", details: result };
+        }
+        const enabled = typeof args.enabled === "boolean" ? args.enabled : undefined;
+        if (enabled === undefined) return { result: "set_text_reading 需要 enabled 布尔值。", status: "not_started" };
+        const result = await session.setTextReading(enabled);
+        return { result: result.success ? `正文自动朗读已${enabled ? "开启" : "关闭"}。` : `正文朗读偏好未保存：${result.reason ?? "驱动不可用"}。`, status: result.success ? "succeeded" : "failed", details: result };
+      }
+      return { result: "voice action 未执行：参数不符合 voice 合同。", status: "not_started" };
     },
   };
 }

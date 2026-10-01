@@ -10,7 +10,7 @@ export * from "./tool.js";
 export default function activate(pi: ExtensionAPI): void {
   const session = new VoiceSession(pi);
 
-  // 大模型门面工具：Uina 调用 voice action（mute/unmute/interrupt/status）的唯一入口。
+  // 大模型门面工具：Uina 调用 voice action（speak/interrupt/status/manage）的唯一入口。
   pi.registerTool(createVoiceTool(session));
 
   // 本扩展**不**投影任何交付视口。它只权威拥有"发声意志"（要不要出声）。

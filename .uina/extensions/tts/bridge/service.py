@@ -125,6 +125,8 @@ class TTSBridgeService:
         self._real_playback_event_hub = PlaybackEventHub(lock=self._lock)
         self._real_adaptive_engine = AdaptiveStrategyEngine(self.config.streaming)
         self._sessions_by_trace: dict[str, GenerationSession] = {}
+        self._epoch_by_session: dict[str, str] = {}
+        self._reset_results: dict[str, dict[str, Any]] = {}
         self._next_generation_id_by_trace: dict[str, int] = {}
         self._first_chunk_events: dict[tuple[str, int], threading.Event] = {}
         self._admitted_tasks: dict[str, _AdmittedSpeakTask] = {}
@@ -270,6 +272,9 @@ class TTSBridgeService:
         streaming = self.config.streaming
         return {
             "service_ready": True,
+            "bridge_ready": True,
+            "ownership": "self_managed",
+            "epoch_sessions": len(getattr(self, "_epoch_by_session", {})),
             "vendor_ready": vendor_ready,
             "vendor_pid": vendor_pid,
             "player_ready": self.player.ready and self.config.playback_enabled,
@@ -659,6 +664,8 @@ class TTSBridgeService:
             "trace_id": task.trace_id,
             "generation_id": int(task.detail.get("generation_id", 1) or 1),
             "segment_index": int(task.detail.get("segment_index", 0) or 0),
+            "session_id": task.session_id,
+            "epoch": task.epoch,
         }
 
     def _publish_playback_event(
@@ -687,6 +694,36 @@ class TTSBridgeService:
 
     def playback_snapshots(self):
         yield from self._playback_snapshot_hub.stream()
+
+    def reconnect(self, session_id: str) -> dict[str, Any]:
+        epoch = self._epoch_by_session.get(session_id)
+        if epoch is None:
+            epoch = uuid4().hex
+            self._epoch_by_session[session_id] = epoch
+        return {"status": "reconnected", "session_id": session_id, "epoch": epoch, "health": self.health()}
+
+    def reset(self, session_id: str, expected_epoch: str | None = None, new_epoch: str | None = None, invocation_id: str | None = None) -> dict[str, Any]:
+        key = invocation_id or f"reset:{session_id}:{expected_epoch or ''}:{new_epoch or ''}"
+        if key in self._reset_results:
+            return dict(self._reset_results[key])
+        current = self._epoch_by_session.get(session_id)
+        if expected_epoch is not None and current is not None and current != expected_epoch:
+            result = {"status": "failed", "reason": "expected_epoch 不匹配", "session_id": session_id, "epoch": current}
+            self._reset_results[key] = result
+            return result
+        trace_ids = [trace for trace, session in self._sessions_by_trace.items() if trace == session_id or trace.startswith(session_id + ":")]
+        for trace_id in trace_ids:
+            try: self.cancel_trace(CancelTraceRequest(trace_id=trace_id, mode="immediate"))
+            except Exception: pass
+        epoch = new_epoch or uuid4().hex
+        self._epoch_by_session[session_id] = epoch
+        result = {"status": "reset", "session_id": session_id, "previous_epoch": current, "epoch": epoch, "stopped_traces": trace_ids}
+        self._reset_results[key] = result
+        return result
+
+    def test(self, scope: str, session_id: str | None = None) -> dict[str, Any]:
+        # A test endpoint must not equate HTTP readiness with synthesis/playback success.
+        return {"status": "not_started", "scope": scope, "session_id": session_id, "reason": "真实测试路径尚未在 Bridge 中接线；未把 health 或 /docs 当作通过"}
 
     def _ensure_runtime_component_aliases(self) -> None:
         pass
@@ -855,7 +892,13 @@ class TTSBridgeService:
         generation_id = self._resolve_generation_id(request)
         task_id = request.segment_id
         cancel_token = f"cancel_{uuid4().hex[:16]}"
-        task = BridgeTask(task_id=task_id, trace_id=request.trace_id, state="pending", cancel_token=cancel_token)
+        session_id = request.session_id or request.trace_id
+        epoch_map = getattr(self, "_epoch_by_session", None)
+        if epoch_map is None:
+            epoch_map = {}
+            self._epoch_by_session = epoch_map
+        epoch = epoch_map.setdefault(session_id, uuid4().hex)
+        task = BridgeTask(task_id=task_id, trace_id=request.trace_id, state="pending", cancel_token=cancel_token, session_id=session_id, invocation_id=request.invocation_id, source_id=request.source_id or request.trace_id, epoch=epoch)
         with self._lock:
             self._tasks[task_id] = task
 
@@ -865,6 +908,10 @@ class TTSBridgeService:
         # 进而触发 vendor 重启（~20s 冷启动）。raw text 仅用于字幕/诊断。
         task.detail["text"] = vendor_text
         task.detail["original_text"] = request.text
+        task.detail["session_id"] = session_id
+        task.detail["epoch"] = epoch
+        if request.invocation_id: task.detail["invocation_id"] = request.invocation_id
+        if request.source_id: task.detail["source_id"] = request.source_id
         task.detail["segment_index"] = int(request.index)
         task.detail["generation_id"] = generation_id
         task.detail["latency_trace_started_at"] = time.perf_counter()
@@ -2466,7 +2513,7 @@ class TTSBridgeService:
         task.detail["text"] = vendor_text
         if vendor_text != request.text:
             task.detail["original_text"] = request.text
-            task.detail["text_sanitized_for_vendor"] = True
+        task.detail["text_sanitized_for_vendor"] = True
         task.detail["segment_index"] = int(request.index)
         generation_id = self._resolve_generation_id(request)
         task.detail["generation_id"] = generation_id

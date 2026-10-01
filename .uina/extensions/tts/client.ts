@@ -22,6 +22,9 @@ export interface SpeakPayload {
   readonly timeout_ms?: number;
   readonly generation_id?: number;
   readonly metadata?: Record<string, unknown>;
+  readonly session_id?: string;
+  readonly invocation_id?: string;
+  readonly source_id?: string;
 }
 
 export interface SubtitleSegmentState {
@@ -157,6 +160,41 @@ export class TtsBridgeClient {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  async health(): Promise<Record<string, unknown> | null> {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), Math.min(this.timeoutMs, 2000));
+      const res = await fetch(`${this.baseUrl}/health`, { signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) return null;
+      const body = await res.json();
+      return body && typeof body === "object" ? body as Record<string, unknown> : null;
+    } catch { return null; }
+  }
+
+  private async jsonRequest(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const res = await fetch(`${this.baseUrl}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: controller.signal });
+      const text = await res.text();
+      let parsed: Record<string, unknown> = {};
+      try { parsed = text ? JSON.parse(text) as Record<string, unknown> : {}; } catch { /* preserve HTTP evidence */ }
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${text}`);
+      return parsed;
+    } finally { clearTimeout(timer); }
+  }
+
+  async reconnect(sessionId: string): Promise<Record<string, unknown>> {
+    return await this.jsonRequest("/v1/tts/reconnect", { session_id: sessionId });
+  }
+  async reset(sessionId: string, expectedEpoch?: string, newEpoch?: string, invocationId?: string): Promise<Record<string, unknown>> {
+    return await this.jsonRequest("/v1/tts/reset", { session_id: sessionId, ...(expectedEpoch ? { expected_epoch: expectedEpoch } : {}), ...(newEpoch ? { new_epoch: newEpoch } : {}), ...(invocationId ? { invocation_id: invocationId } : {}) });
+  }
+  async test(scope: "synthesis" | "playback", sessionId?: string): Promise<Record<string, unknown>> {
+    return await this.jsonRequest("/v1/tts/test", { scope, ...(sessionId ? { session_id: sessionId } : {}) });
   }
 
   async cancelTrace(

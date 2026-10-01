@@ -28,7 +28,7 @@ export type RuntimeEvent =
 export interface AgentStartEvent { readonly type: "agent_start"; readonly turnSeq: number; }
 export interface AgentEndEvent { readonly type: "agent_end"; readonly turnSeq: number; readonly success: boolean; readonly error?: string; }
 export interface AgentSettledEvent { readonly type: "agent_settled"; readonly turnSeq: number; }
-export interface TurnStartEvent { readonly type: "turn_start"; readonly turnNumber: number; readonly userText: string; readonly images?: readonly import("../core/content.js").ImageContent[]; }
+export interface TurnStartEvent { readonly type: "turn_start"; readonly turnNumber: number; readonly userText: string; readonly inputRefs?: readonly string[]; readonly images?: readonly import("../core/content.js").ImageContent[]; }
 
 /**
  * 输入已接纳（事实，一次输入恰好一条）。
@@ -83,8 +83,8 @@ export interface ProviderRecoveredEvent {
 	readonly provider: string;
 	readonly attempt: number;
 }
-export interface ToolCallEvent { readonly type: "tool_call"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly callId: string; }
-export interface ToolResultEvent { readonly type: "tool_result"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly result: string; readonly images?: readonly import("../core/content.js").ImageContent[]; readonly details?: unknown; readonly status: import("../core/types.js").ToolResultStatus; readonly callId: string; }
+export interface ToolCallEvent { readonly type: "tool_call"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly callId: string; readonly invocationId?: string; }
+export interface ToolResultEvent { readonly type: "tool_result"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly result: string; readonly images?: readonly import("../core/content.js").ImageContent[]; readonly details?: unknown; readonly status: import("../core/types.js").ToolResultStatus; readonly callId: string; readonly invocationId?: string; }
 export interface ModelSelectEvent { readonly type: "model_select"; readonly model: string; readonly previousModel?: string; }
 export interface ThinkingLevelSelectEvent { readonly type: "thinking_level_select"; readonly level: ThinkingLevel; readonly previousLevel?: ThinkingLevel; }
 export interface SessionCompactStartEvent {

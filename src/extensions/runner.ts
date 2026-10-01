@@ -555,6 +555,7 @@ export class ExtensionRunner extends ExtensionHost {
 			callTool: (name, args, options) =>
 				scope.run(async (signal) => {
 					const callId = randomUUID();
+					const invocationId = `extension:${scope.id}:${callId}`;
 					const started = Date.now();
 					const record = async (phase: string, data: unknown) => {
 						await this.options.onCustomEntry?.({
@@ -563,7 +564,7 @@ export class ExtensionRunner extends ExtensionHost {
 						});
 					};
 					return this.options.tools.createScopedView({ callerId: scope.id }).executePipeline(
-						{ name, args: structuredClone(args), callId },
+						{ name, args: structuredClone(args), callId, invocationId },
 						{
 							signal,
 							hooks: this.runtimeHooks().tools,
