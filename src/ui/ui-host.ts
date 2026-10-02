@@ -186,6 +186,8 @@ export class UIHost implements UIHostContextPort {
 	private autoScrollDirection: "up" | "down" | null = null;
 	/** 视口离底指示器是否被 hover（驱动加粗高亮） */
 	private viewportStatusHovered = false;
+	/** 视口离底指示器纯文本（syncInputMetrics 单点计算，热区注册复用，防两处口径漂移）。 */
+	private viewportStatusText = "";
 	/** Geometry of the most recently rendered frame; reused by scroll/anchor paths. */
 	private lastLayout: FrameLayout | null = null;
 	private copyToastText = "";
@@ -201,12 +203,11 @@ export class UIHost implements UIHostContextPort {
 			return;
 		}
 		this.stopAutoScroll();
-		if (direction === "up" && this.scrollOffset >= this.lastMaxScroll) {
-			return;
-		}
-		if (direction === "down" && this.scrollOffset <= 0) {
-			return;
-		}
+		// up = scrollOffset 增（向更早内容），down = 减；到边界即不启动
+		const atEdge = direction === "up"
+			? this.scrollOffset >= this.lastMaxScroll
+			: this.scrollOffset <= 0;
+		if (atEdge) return;
 		this.autoScrollDirection = direction;
 		this.autoScrollTimer = setInterval(() => {
 			if (direction === "up") {
@@ -215,27 +216,20 @@ export class UIHost implements UIHostContextPort {
 					return;
 				}
 				this.scrollOffset = Math.min(this.lastMaxScroll, this.scrollOffset + 1);
-				const layout = this.layoutFrame();
-				this.lastLayout = layout;
-				this.scrollOffset = layout.effScroll;
-				this.lastMaxScroll = layout.maxScroll;
-				this.mouseTracker.setScrollContext(layout.scrollStart);
-				this.mouseTracker.updateFocusForScroll(layout.scrollStart);
-				this.requestRender();
 			} else {
 				if (this.scrollOffset <= 0) {
 					this.stopAutoScroll();
 					return;
 				}
 				this.scrollOffset = Math.max(0, this.scrollOffset - 1);
-				const layout = this.layoutFrame();
-				this.lastLayout = layout;
-				this.scrollOffset = layout.effScroll;
-				this.lastMaxScroll = layout.maxScroll;
-				this.mouseTracker.setScrollContext(layout.scrollStart);
-				this.mouseTracker.updateFocusForScroll(layout.scrollStart);
-				this.requestRender();
 			}
+			const layout = this.layoutFrame();
+			this.lastLayout = layout;
+			this.scrollOffset = layout.effScroll;
+			this.lastMaxScroll = layout.maxScroll;
+			this.mouseTracker.setScrollContext(layout.scrollStart);
+			this.mouseTracker.updateFocusForScroll(layout.scrollStart);
+			this.requestRender();
 		}, 60);
 	}
 
@@ -976,8 +970,10 @@ export class UIHost implements UIHostContextPort {
 		// lag is unavoidable (and previously the header never rendered at all).
 		const percent = scrolled ? Math.round(((this.lastMaxScroll - Math.min(this.scrollOffset, this.lastMaxScroll)) / this.lastMaxScroll) * 100) : 100;
 		// 视口离底指示器：品牌雾蓝（非告警语义），文案告知点击出口；hover 高亮由 viewport-status 热区分派
+		const viewportStatusText = scrolled ? `[视口 ${percent}% · 点击回到最新]` : "";
+		this.viewportStatusText = viewportStatusText;
 		const viewportLabel = scrolled
-			? `${this.viewportStatusHovered ? C.bold : ""}${C.claude}[视口 ${percent}% · 点击回到最新]${C.reset}`
+			? `${this.viewportStatusHovered ? C.bold : ""}${C.claude}${viewportStatusText}${C.reset}`
 			: "";
 		this.inputLine.setStatusHeader(viewportLabel ? `${viewportLabel} ${statusHeader}` : statusHeader);
 	}
@@ -1394,14 +1390,14 @@ export class UIHost implements UIHostContextPort {
 			}
 		}
 
-		// (3.5) 视口离底指示器热区：仅离底时存在（顶部边框行），点击回底，hover 高亮
-		if (this.lastMaxScroll > 0 && this.scrollOffset > 0) {
-			const labelLen = visibleWidth(`[视口 ${Math.round(((this.lastMaxScroll - Math.min(this.scrollOffset, this.lastMaxScroll)) / this.lastMaxScroll) * 100)}% · 点击回到最新]`);
+		// (3.5) 视口离底指示器热区：仅离底时存在（顶部边框行），点击回底，hover 高亮。
+		// 标签文本由 syncInputMetrics 单点计算，这里只复用，不再重复推导百分比。
+		if (this.viewportStatusText) {
 			interactiveTargets.push({
 				id: encodeHoverTarget({ kind: "viewport-status" }),
 				row: inputStartRow,
 				colStart: 0,
-				colEnd: Math.max(0, labelLen + 3),
+				colEnd: Math.max(0, visibleWidth(this.viewportStatusText) + 3),
 				onClick: () => {
 					this.scrollToBottom();
 				},

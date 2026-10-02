@@ -70,6 +70,29 @@ export interface SelectableRegion {
 	colEnd: number;
 }
 
+/** 行首输入标记清单：划词复制时剥离装饰图标（●/❯/✦/•）。 */
+const LEADING_MARKERS = ["● ", "❯ ", "✦ ", "• "];
+
+function stripLeadingMarker(line: string): string {
+	for (const marker of LEADING_MARKERS) {
+		if (line.startsWith(marker)) return line.slice(marker.length);
+	}
+	return line;
+}
+
+/** 按可视列区间 [minCol, maxCol) 从单行纯文本切片（全角字符按 2 列计）。 */
+function sliceLineByVisibleColumns(line: string, minCol: number, maxCol: number): string {
+	let curWidth = 0;
+	let slice = "";
+	for (const char of line) {
+		const w = charWidth(char);
+		if (curWidth >= minCol && curWidth < maxCol) slice += char;
+		curWidth += w;
+		if (curWidth >= maxCol) break;
+	}
+	return slice;
+}
+
 export class MouseSelectionTracker {
 	private anchor: Point | null = null;
 	private focus: Point | null = null;
@@ -347,34 +370,15 @@ export class MouseSelectionTracker {
 				continue;
 			}
 
-			let curWidth = 0;
-			let lineSlice = "";
-			for (const char of cleanLine) {
-				const w = charWidth(char);
-				if (curWidth >= minCol && curWidth < maxCol) {
-					lineSlice += char;
-				}
-				curWidth += w;
-				if (curWidth >= maxCol) break;
-			}
-
 			// noSelect 智能清洗：剥离输入框边框 │ 与行首标记
-			let trimmed = lineSlice.trimEnd();
+			let trimmed = sliceLineByVisibleColumns(cleanLine, minCol, maxCol).trimEnd();
 			if (trimmed.startsWith("│")) {
 				trimmed = trimmed.replace(/^│+\s*/, "");
 			}
 			if (trimmed.endsWith("│")) {
 				trimmed = trimmed.replace(/\s*│+$/, "");
 			}
-			if (trimmed.startsWith("● ")) {
-				trimmed = trimmed.slice(2);
-			} else if (trimmed.startsWith("❯ ")) {
-				trimmed = trimmed.slice(2);
-			} else if (trimmed.startsWith("✦ ")) {
-				trimmed = trimmed.slice(2);
-			} else if (trimmed.startsWith("• ")) {
-				trimmed = trimmed.slice(2);
-			}
+			trimmed = stripLeadingMarker(trimmed);
 
 			extractedLines.push(trimmed);
 		}
@@ -440,29 +444,7 @@ export class MouseSelectionTracker {
 				continue;
 			}
 
-			let curWidth = 0;
-			let lineSlice = "";
-			for (const char of cleanLine) {
-				const w = charWidth(char);
-				if (curWidth >= minCol && curWidth < maxCol) {
-					lineSlice += char;
-				}
-				curWidth += w;
-				if (curWidth >= maxCol) break;
-			}
-
-			let trimmed = lineSlice.trimEnd();
-			if (trimmed.startsWith("● ")) {
-				trimmed = trimmed.slice(2);
-			} else if (trimmed.startsWith("❯ ")) {
-				trimmed = trimmed.slice(2);
-			} else if (trimmed.startsWith("✦ ")) {
-				trimmed = trimmed.slice(2);
-			} else if (trimmed.startsWith("• ")) {
-				trimmed = trimmed.slice(2);
-			}
-
-			extractedLines.push(trimmed);
+			extractedLines.push(stripLeadingMarker(sliceLineByVisibleColumns(cleanLine, minCol, maxCol).trimEnd()));
 		}
 
 		return extractedLines.join("\n");

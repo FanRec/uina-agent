@@ -7,6 +7,7 @@ import { imageNotice } from "../../../core/content.js";
 import { Container } from "../../core/container.js";
 import { C, stripAnsi, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
+import { applyCardBackground } from "./tool-view.js";
 import type { Component } from "../../core/types.js";
 import type {
 	CustomMessage,
@@ -67,15 +68,6 @@ export interface CompactionCardData {
 	retainedTailEntries?: number;
 	tokensBefore: number;
 	collapsed: boolean;
-}
-
-function applyCardBackground(line: string, bg: string, width: number): string {
-	const curW = visibleWidth(line);
-	const effLine = curW > width ? truncateToWidth(line, width, "…") : line;
-	const effW = curW > width ? visibleWidth(effLine) : curW;
-	const padding = " ".repeat(Math.max(0, width - effW));
-	const patched = effLine.replace(/\x1b\[0?m/g, `\x1b[0m${bg}`).replace(/\x1b\[49m/g, bg);
-	return `${bg}${patched}${padding}${C.reset}`;
 }
 
 /**

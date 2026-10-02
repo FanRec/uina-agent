@@ -47,6 +47,15 @@ export class InteractiveTUI {
 		this.host.notifyToolActivity();
 	}
 
+	/** 结束当前思考块（若打开）：思考块的开关在 output_update/tool_call/turn 终态等
+	 * 五处出现，统一收口避免漏一处导致轨迹投影悬挂。 */
+	private closeThinking(): void {
+		if (this.currentThinkingId) {
+			this.trajectoryProjection.onThinkingDone(this.currentThinkingId);
+			this.currentThinkingId = undefined;
+		}
+	}
+
 	constructor(options: InteractiveTUIOptions = {}) {
 		this.host = new UIHost(options);
 		const features = installUIFeatures(this.host, options.features);
@@ -206,10 +215,7 @@ export class InteractiveTUI {
 					break;
 				}
 				if (m.channel !== "content") break;
-				if (this.currentThinkingId) {
-					this.trajectoryProjection.onThinkingDone(this.currentThinkingId);
-					this.currentThinkingId = undefined;
-				}
+				this.closeThinking();
 				this.host.transcript.appendToken(m.text);
 				this.host.activityLine.addStreamText(m.text);
 				this.host.activityLine.update("streaming", "正在输出回复...");
@@ -219,10 +225,7 @@ export class InteractiveTUI {
 			case "tool_call": {
 				// 模型调用到此结束，结算这一步的解码区间与输出量；接下来的工具执行时间不计入生成速度。
 				this.host.activityLine.endStep();
-				if (this.currentThinkingId) {
-					this.trajectoryProjection.onThinkingDone(this.currentThinkingId);
-					this.currentThinkingId = undefined;
-				}
+				this.closeThinking();
 				if (m.callId) this.toolStartedAt.set(m.callId, Date.now());
 				const callId = m.callId ?? `tool-${m.toolName}-${Date.now()}`;
 				this.host.transcript.smoothReveal.snapToLatest();
@@ -249,10 +252,7 @@ export class InteractiveTUI {
 
 			case "turn_end":
 				this.host.setProviderRetryMessage();
-				if (this.currentThinkingId) {
-					this.trajectoryProjection.onThinkingDone(this.currentThinkingId);
-					this.currentThinkingId = undefined;
-				}
+				this.closeThinking();
 				this.notifyToolActivity();
 				this.host.setBusy(false);
 				this.host.transcript.finishTurn();
@@ -274,10 +274,7 @@ export class InteractiveTUI {
 
 			case "turn_aborted":
 				this.host.setProviderRetryMessage();
-				if (this.currentThinkingId) {
-					this.trajectoryProjection.onThinkingDone(this.currentThinkingId);
-					this.currentThinkingId = undefined;
-				}
+				this.closeThinking();
 				this.notifyToolActivity();
 				this.host.transcript.interruptTurn(this.host.modelName);
 				this.host.setBusy(false);
@@ -292,10 +289,7 @@ export class InteractiveTUI {
 
 			case "error":
 				this.host.setProviderRetryMessage();
-				if (this.currentThinkingId) {
-					this.trajectoryProjection.onThinkingDone(this.currentThinkingId);
-					this.currentThinkingId = undefined;
-				}
+				this.closeThinking();
 				this.notifyToolActivity();
 				this.host.setBusy(false);
 				this.host.transcript.addError(m.text);
