@@ -12,6 +12,7 @@ import { MainScreenRenderer } from "./core/renderer.js";
 import { Key, matchesKey } from "./core/keys.js";
 import { MouseSelectionTracker, type InteractiveTarget, type SelectableRegion } from "./core/mouse-selection.js";
 import { decodeHoverTarget, encodeHoverTarget } from "./core/hover-target.js";
+import { ScrollController } from "./core/scroll-controller.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ContextSnapshot, RequestUsage, ThinkingLevel, ToolResultStatus } from "../core/types.js";
 import type { SessionEntry } from "../session/types.js";
@@ -130,9 +131,6 @@ export class UIHost implements UIHostContextPort {
 	readonly timelineRail: TimelineRailComponent;
 	readonly scrollbarGutter: ScrollbarGutterComponent;
 	private gutterMode: "timeline" | "scrollbar" = "timeline";
-	/** 视口上方/下方最近的轮次，按 uid 定位（n 会撞号）。 */
-	private upTurnUid: number | null = null;
-	private downTurnUid: number | null = null;
 
 	// 业务参数
 	modelName?: string;
@@ -166,8 +164,6 @@ export class UIHost implements UIHostContextPort {
 	private readonly workingContributions = new Map<string, { message: string; startedAt: number; sequence: number }>();
 	private contributionSequence = 0;
 	private providerRetryMessage?: string;
-	private scrollOffset = 0;
-	private lastTotalPerm = 0;
 
 	private activeSuggestions: {
 		type: "command" | "file";
@@ -187,9 +183,8 @@ export class UIHost implements UIHostContextPort {
 	private mouseTracker = new MouseSelectionTracker();
 	private lastRenderedRows: string[] = [];
 	private lastPermanentLines: string[] = [];
-	private lastMaxScroll = 0;
-	private autoScrollTimer: NodeJS.Timeout | null = null;
-	private autoScrollDirection: "up" | "down" | null = null;
+	/** 视口滚动状态与策略（offset/maxScroll/轮次邻居/自动滚屏）唯一属主。 */
+	readonly scroll = new ScrollController();
 	/** 视口离底指示器是否被 hover（驱动加粗高亮） */
 	private viewportStatusHovered = false;
 	/** 视口离底指示器纯文本（syncInputMetrics 单点计算，热区注册复用，防两处口径漂移）。 */
@@ -205,44 +200,18 @@ export class UIHost implements UIHostContextPort {
 	} | null = null;
 
 	startAutoScroll(direction: "up" | "down"): void {
-		if (this.autoScrollTimer && this.autoScrollDirection === direction) {
-			return;
-		}
-		this.stopAutoScroll();
-		// up = scrollOffset 增（向更早内容），down = 减；到边界即不启动
-		const atEdge = direction === "up" ? this.scrollOffset >= this.lastMaxScroll : this.scrollOffset <= 0;
-		if (atEdge) return;
-		this.autoScrollDirection = direction;
-		this.autoScrollTimer = setInterval(() => {
-			if (direction === "up") {
-				if (this.scrollOffset >= this.lastMaxScroll) {
-					this.stopAutoScroll();
-					return;
-				}
-				this.scrollOffset = Math.min(this.lastMaxScroll, this.scrollOffset + 1);
-			} else {
-				if (this.scrollOffset <= 0) {
-					this.stopAutoScroll();
-					return;
-				}
-				this.scrollOffset = Math.max(0, this.scrollOffset - 1);
-			}
+		this.scroll.startAutoScroll(direction, () => {
 			const layout = this.layoutFrame();
 			this.lastLayout = layout;
-			this.scrollOffset = layout.effScroll;
-			this.lastMaxScroll = layout.maxScroll;
+			this.scroll.syncFromLayout(layout.effScroll, layout.maxScroll);
 			this.mouseTracker.setScrollContext(layout.scrollStart);
 			this.mouseTracker.updateFocusForScroll(layout.scrollStart);
 			this.requestRender();
-		}, 60);
+		});
 	}
 
 	stopAutoScroll(): void {
-		if (this.autoScrollTimer) {
-			clearInterval(this.autoScrollTimer);
-			this.autoScrollTimer = null;
-		}
-		this.autoScrollDirection = null;
+		this.scroll.stopAutoScroll();
 	}
 
 	showCopyToast(text: string): void {
@@ -627,21 +596,23 @@ export class UIHost implements UIHostContextPort {
 		const lineOffset = this.transcript.getTurnStartLinesByUid(layout.transcriptContentW).get(turnUid);
 		if (lineOffset === undefined) return;
 		const targetScroll = layout.totalPerm - (layout.bannerCount + lineOffset) - layout.transcriptH;
-		this.scrollOffset = Math.max(0, Math.min(layout.maxScroll, targetScroll));
+		this.scroll.setOffset(Math.max(0, Math.min(layout.maxScroll, targetScroll)));
 		this.requestRender();
 	}
 
 	scrollTurnUp(): void {
-		if (this.upTurnUid !== null) {
-			this.scrollToTurn(this.upTurnUid);
+		const above = this.scroll.getTurnAbove();
+		if (above !== null) {
+			this.scrollToTurn(above);
 		} else {
 			this.scrollUp(5);
 		}
 	}
 
 	scrollTurnDown(): void {
-		if (this.downTurnUid !== null) {
-			this.scrollToTurn(this.downTurnUid);
+		const below = this.scroll.getTurnBelow();
+		if (below !== null) {
+			this.scrollToTurn(below);
 		} else {
 			this.scrollDown(5);
 		}
@@ -654,15 +625,13 @@ export class UIHost implements UIHostContextPort {
 
 	loadHistory(messages: readonly import("../core/types.js").ChatMsg[]): void {
 		this.transcript.loadHistory(messages);
-		this.scrollOffset = 0;
-		this.lastTotalPerm = 0;
+		this.scroll.resetTail();
 		this.requestRender();
 	}
 
 	loadSession(entries: readonly SessionEntry[], decorations: readonly CompactionReplayDecoration[] = []): void {
 		this.transcript.loadSession(entries, decorations);
-		this.scrollOffset = 0;
-		this.lastTotalPerm = 0;
+		this.scroll.resetTail();
 		this.requestRender();
 	}
 
@@ -773,28 +742,27 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	scrollUp(lines = 3): void {
-		this.scrollOffset += lines;
+		this.scroll.scrollUp(lines);
 		this.requestRender();
 	}
 
 	scrollDown(lines = 3): void {
-		this.scrollOffset = Math.max(0, this.scrollOffset - lines);
+		this.scroll.scrollDown(lines);
 		this.requestRender();
 	}
 
 	scrollToTop(): void {
-		this.scrollOffset = 999999;
+		this.scroll.scrollToTop();
 		this.requestRender();
 	}
 
 	scrollToBottom(): void {
-		this.scrollOffset = 0;
-		this.lastTotalPerm = 0;
+		this.scroll.resetTail();
 		this.requestRender();
 	}
 
 	getScrollOffset(): number {
-		return this.scrollOffset;
+		return this.scroll.getOffset();
 	}
 
 	/**
@@ -819,15 +787,17 @@ export class UIHost implements UIHostContextPort {
 		action();
 
 		const after = this.computeLayout();
-		this.updateViewportForContentChange(after.totalPerm, after.transcriptH);
+		this.scroll.markContent(after.totalPerm, after.transcriptH);
 		if (after.totalPerm <= after.transcriptH) {
-			this.scrollOffset = 0;
+			this.scroll.setOffset(0);
 			return;
 		}
 
 		// 保持锚点行留在原屏幕行偏移位置
 		const targetScrollStart = Math.max(0, Math.min(after.maxScroll, anchorLine - screenOffset));
-		this.scrollOffset = Math.max(0, Math.min(after.maxScroll, after.totalPerm - after.transcriptH - targetScrollStart));
+		this.scroll.setOffset(
+			Math.max(0, Math.min(after.maxScroll, after.totalPerm - after.transcriptH - targetScrollStart)),
+		);
 	}
 
 	executeCommand(name: string, args: string): void {
@@ -1056,7 +1026,7 @@ export class UIHost implements UIHostContextPort {
 	/** Sync the input line's transient metrics before it is rendered. */
 	private syncInputMetrics(): void {
 		const innerW = this.terminal.columns;
-		const scrolled = this.lastMaxScroll > 0 && this.scrollOffset > 0;
+		const scrolled = this.scroll.getMaxScroll() > 0 && this.scroll.getOffset() > 0;
 		const reservedRight = scrolled ? 36 : 10;
 		const statusWidth = Math.max(24, innerW - reservedRight);
 		const statusHeader = this.providerRetryMessage
@@ -1075,7 +1045,11 @@ export class UIHost implements UIHostContextPort {
 		// current frame's input height is required to compute it, so a one-frame
 		// lag is unavoidable (and previously the header never rendered at all).
 		const percent = scrolled
-			? Math.round(((this.lastMaxScroll - Math.min(this.scrollOffset, this.lastMaxScroll)) / this.lastMaxScroll) * 100)
+			? Math.round(
+					((this.scroll.getMaxScroll() - Math.min(this.scroll.getOffset(), this.scroll.getMaxScroll())) /
+						this.scroll.getMaxScroll()) *
+						100,
+				)
 			: 100;
 		// 视口离底指示器：品牌雾蓝（非告警语义），文案告知点击出口；hover 高亮由 viewport-status 热区分派
 		const viewportStatusText = scrolled ? `[视口 ${percent}% · 点击回到最新]` : "";
@@ -1148,7 +1122,7 @@ export class UIHost implements UIHostContextPort {
 		const totalPerm = permanentLines.length;
 		const maxScroll = Math.max(0, totalPerm - transcriptH);
 
-		const effScroll = totalPerm <= transcriptH ? 0 : Math.max(0, Math.min(this.scrollOffset, maxScroll));
+		const effScroll = totalPerm <= transcriptH ? 0 : Math.max(0, Math.min(this.scroll.getOffset(), maxScroll));
 		const scrollStart = totalPerm <= transcriptH ? 0 : totalPerm - transcriptH - effScroll;
 		const visibleTranscript =
 			totalPerm <= transcriptH
@@ -1186,17 +1160,9 @@ export class UIHost implements UIHostContextPort {
 		};
 	}
 
-	private updateViewportForContentChange(totalPerm: number, transcriptH: number): void {
-		if (this.scrollOffset > 0 && this.lastTotalPerm > 0 && totalPerm > this.lastTotalPerm) {
-			this.scrollOffset += totalPerm - this.lastTotalPerm;
-		}
-		this.lastTotalPerm = totalPerm;
-		this.lastMaxScroll = Math.max(0, totalPerm - transcriptH);
-	}
-
 	private layoutFrame(): FrameLayout {
 		const provisional = this.computeLayout();
-		this.updateViewportForContentChange(provisional.totalPerm, provisional.transcriptH);
+		this.scroll.markContent(provisional.totalPerm, provisional.transcriptH);
 		return this.computeLayout();
 	}
 
@@ -1205,7 +1171,7 @@ export class UIHost implements UIHostContextPort {
 		this.syncInputMetrics();
 		const layout = this.layoutFrame();
 		this.lastLayout = layout;
-		this.scrollOffset = layout.effScroll;
+		this.scroll.syncFromLayout(layout.effScroll, layout.maxScroll);
 		const {
 			width,
 			height,
@@ -1258,8 +1224,8 @@ export class UIHost implements UIHostContextPort {
 			activeTurnUid = timelineTurns[0]!.uid;
 		}
 
-		this.upTurnUid = upTurnUid;
-		this.downTurnUid = downTurnUid;
+		// 轮次邻居按 uid 定位（n 会撞号），写入滚动控制器供 rail 与翻轮入口消费。
+		this.scroll.setTurnNeighbors(upTurnUid, downTurnUid);
 
 		// 8. 组装整屏行数组（转录区 + 填充空白 + 提示条）
 		let toastStr = "";
@@ -1290,11 +1256,10 @@ export class UIHost implements UIHostContextPort {
 		// 整个对话区域高度（从屏幕顶部到输入框顶部的全部可用垂直空间）
 		const chatAreaH = visibleTranscript.length + gapLines.length;
 		const allChatRows = [...visibleTranscript, ...gapLines];
-		const atBottom = this.scrollOffset === 0;
+		const atBottom = this.scroll.atBottom();
 
 		// 跨屏选区提取用的是"用户看到的那一份行"，所以在这里就与屏幕对齐（制表符已展开）。
 		this.lastPermanentLines = permanentLines.map((row) => normalizeFrameLine(row));
-		this.lastMaxScroll = maxScroll;
 		this.mouseTracker.setScrollContext(scrollStart, chatAreaH);
 
 		let railGlyphs: string[] = [];
@@ -1466,7 +1431,7 @@ export class UIHost implements UIHostContextPort {
 						if (currentGeo) {
 							const targetContentTop = this.scrollbarGutter.mapRowToScrollTop(r, currentGeo);
 							const targetOffset = Math.max(0, maxScroll - targetContentTop);
-							this.scrollOffset = targetOffset;
+							this.scroll.setOffset(targetOffset);
 							this.requestRender();
 						}
 					},
@@ -1717,7 +1682,7 @@ export class UIHost implements UIHostContextPort {
 						this.startAutoScroll("up");
 					} else if (res.dragEdge === "bottom") {
 						this.startAutoScroll("down");
-					} else if (res.dragEdge === null && this.autoScrollTimer) {
+					} else if (res.dragEdge === null && this.scroll.isAutoScrolling()) {
 						this.stopAutoScroll();
 					}
 

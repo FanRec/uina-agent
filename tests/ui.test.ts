@@ -2461,27 +2461,24 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 		it("UIHost 自动滚屏定时器驱动与平稳停止", () => {
 			const host = new UIHost();
-			// 默认 lastMaxScroll 为 0，此时 startAutoScroll 不会无故起动计时器
+			// 默认 maxScroll 为 0，此时 startAutoScroll 不会无故起动计时器
 			host.startAutoScroll("up");
-			// 手动设置最大可滚动范围
-			(host as any).lastMaxScroll = 50;
-			(host as any).lastChatAreaH = 20;
-			(host as any).lastScrollStart = 30;
+			expect(host.scroll.isAutoScrolling()).toBe(false);
+			// 构造可滚动内容规模（totalPerm=70, transcriptH=20 → maxScroll=50）
+			host.scroll.markContent(70, 20);
 
 			host.startAutoScroll("up");
-			expect((host as any).autoScrollTimer).not.toBeNull();
-			expect((host as any).autoScrollDirection).toBe("up");
+			expect(host.scroll.isAutoScrolling("up")).toBe(true);
 
 			// 停止自动滚屏
 			host.stopAutoScroll();
-			expect((host as any).autoScrollTimer).toBeNull();
-			expect((host as any).autoScrollDirection).toBeNull();
+			expect(host.scroll.isAutoScrolling()).toBe(false);
 
 			// 键盘输入应当立刻打断自动滚屏
 			host.startAutoScroll("up");
-			expect((host as any).autoScrollTimer).not.toBeNull();
+			expect(host.scroll.isAutoScrolling()).toBe(true);
 			(host as any).handleTerminalInput("a");
-			expect((host as any).autoScrollTimer).toBeNull();
+			expect(host.scroll.isAutoScrolling()).toBe(false);
 		});
 
 		it("ScrollbarGutterComponent 非滑块轨道保持纯净空格，绝无杂乱竖线 │", () => {

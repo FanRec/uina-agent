@@ -146,24 +146,23 @@ describe("B1: layout is the single source of truth", () => {
 
 	it("reports the nearest turn above and below the viewport", async () => {
 		const { host } = scrollableHost();
-		const nav = host as unknown as { upTurnUid: number | null; downTurnUid: number | null };
 		host.requestRender();
 		await settle();
 		host.scrollToTop();
 		host.requestRender();
 		await settle();
-		expect(nav.upTurnUid).toBeNull();
-		expect(nav.downTurnUid).toBe(2);
+		expect(host.scroll.getTurnAbove()).toBeNull();
+		expect(host.scroll.getTurnBelow()).toBe(2);
 		host.scrollToBottom();
 		host.requestRender();
 		await settle();
-		expect(nav.upTurnUid).not.toBeNull();
-		expect(nav.downTurnUid).toBeNull();
+		expect(host.scroll.getTurnAbove()).not.toBeNull();
+		expect(host.scroll.getTurnBelow()).toBeNull();
 		host.scrollToTurn(3);
 		host.requestRender();
 		await settle();
-		expect(nav.upTurnUid).toBe(2);
-		expect(nav.downTurnUid).toBe(6);
+		expect(host.scroll.getTurnAbove()).toBe(2);
+		expect(host.scroll.getTurnBelow()).toBe(6);
 	});
 
 	it("scrolls to the asked-for turn when turn numbers collide", async () => {
