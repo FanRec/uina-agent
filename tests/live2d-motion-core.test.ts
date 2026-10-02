@@ -3,8 +3,6 @@ import { BodyDirector } from "../.uina/worlds/live2d/body-director.js";
 import { MotionDirector } from "../.uina/worlds/live2d/motion-director.js";
 import { ReflexDirector } from "../.uina/worlds/live2d/reflex-director.js";
 import {
-	CUE_ALIASES,
-	CANONICAL_CUE_IDS,
 	computeVORCompensation,
 	getChannelsForBeats,
 	resolveBeatToParams,
@@ -12,7 +10,7 @@ import {
 } from "../.uina/worlds/live2d/parameter-mapper.js";
 import { PhysiologicalNoise } from "../.uina/worlds/live2d/physiological-noise.js";
 import { AudioObserver } from "../.uina/worlds/live2d/audio-observer.js";
-import { live2dAffordance, Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
+import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import type { ActionContext } from "../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../src/tools/broker.js";
 import { CHANNEL_PRIORITY } from "../.uina/worlds/live2d/types.js";
@@ -22,16 +20,16 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 	describe("MotionDirector", () => {
 		it("should claim channels and release them cleanly (RAII)", async () => {
 			const arbiter = new MotionDirector();
-			expect(arbiter.isChannelLocked("head")).toBe(false);
+			expect(arbiter.isChannelLocked("head", CHANNEL_PRIORITY.IDLE)).toBe(false);
 
 			const lease = await arbiter.claim(["head", "gaze"]);
-			expect(arbiter.isChannelLocked("head")).toBe(true);
-			expect(arbiter.isChannelLocked("gaze")).toBe(true);
-			expect(arbiter.isChannelLocked("mouth")).toBe(false);
+			expect(arbiter.isChannelLocked("head", CHANNEL_PRIORITY.IDLE)).toBe(true);
+			expect(arbiter.isChannelLocked("gaze", CHANNEL_PRIORITY.IDLE)).toBe(true);
+			expect(arbiter.isChannelLocked("mouth", CHANNEL_PRIORITY.IDLE)).toBe(false);
 
 			arbiter.release(lease);
-			expect(arbiter.isChannelLocked("head")).toBe(false);
-			expect(arbiter.isChannelLocked("gaze")).toBe(false);
+			expect(arbiter.isChannelLocked("head", CHANNEL_PRIORITY.IDLE)).toBe(false);
+			expect(arbiter.isChannelLocked("gaze", CHANNEL_PRIORITY.IDLE)).toBe(false);
 		});
 
 		it("should reject lower or equal priority claims when channel is locked", async () => {
@@ -39,14 +37,14 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 			await arbiter.claim(["head"], { priority: CHANNEL_PRIORITY.ACTION, reason: "task1" });
 
 			// Lower priority rejected
-			await expect(
-				arbiter.claim(["head"], { priority: CHANNEL_PRIORITY.REFLEX }),
-			).rejects.toThrow(/locked by active task/);
+			await expect(arbiter.claim(["head"], { priority: CHANNEL_PRIORITY.REFLEX })).rejects.toThrow(
+				/locked by active task/,
+			);
 
 			// Equal priority also rejected (no silent preemption)
-			await expect(
-				arbiter.claim(["head"], { priority: CHANNEL_PRIORITY.ACTION, reason: "task2" }),
-			).rejects.toThrow(/locked by active task/);
+			await expect(arbiter.claim(["head"], { priority: CHANNEL_PRIORITY.ACTION, reason: "task2" })).rejects.toThrow(
+				/locked by active task/,
+			);
 		});
 
 		it("should allow degradation when requested channel is locked", async () => {
@@ -60,7 +58,7 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 			});
 
 			expect(lease.channels).toEqual(["gaze"]);
-			expect(arbiter.isChannelLocked("gaze")).toBe(true);
+			expect(arbiter.isChannelLocked("gaze", CHANNEL_PRIORITY.IDLE)).toBe(true);
 			lease.release();
 		});
 
@@ -69,10 +67,10 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 			const controller = new AbortController();
 
 			await arbiter.claim(["torso"], { signal: controller.signal });
-			expect(arbiter.isChannelLocked("torso")).toBe(true);
+			expect(arbiter.isChannelLocked("torso", CHANNEL_PRIORITY.IDLE)).toBe(true);
 
 			controller.abort();
-			expect(arbiter.isChannelLocked("torso")).toBe(false);
+			expect(arbiter.isChannelLocked("torso", CHANNEL_PRIORITY.IDLE)).toBe(false);
 		});
 
 		it("should dispatch cues to registered dispatcher", () => {
@@ -95,8 +93,8 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 			expect(active).toContain(lease2);
 
 			arbiter.releaseAll();
-			expect(arbiter.isChannelLocked("head")).toBe(false);
-			expect(arbiter.isChannelLocked("mouth")).toBe(false);
+			expect(arbiter.isChannelLocked("head", CHANNEL_PRIORITY.IDLE)).toBe(false);
+			expect(arbiter.isChannelLocked("mouth", CHANNEL_PRIORITY.IDLE)).toBe(false);
 			expect(arbiter.getActiveLeases().length).toBe(0);
 		});
 	});
@@ -179,7 +177,7 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 			expect(frame.ParamAngleY).toBeGreaterThan(0);
 		});
 
-		it("should transition between active and relaxed poses using smootherstep", () => {
+		it("should transition between active and relaxed poses via damped spring", () => {
 			const director = new BodyDirector();
 			director.applyBasePose("focused", 800);
 
@@ -187,18 +185,18 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 			const start = director.tick(100);
 			expect(start.ParamEyeLOpen).toBeGreaterThan(0);
 
-			// Step to 800ms (completed transition)
-			const end = director.tick(800);
-			expect(end.ParamEyeLOpen).toBeCloseTo(1.0, 2);
-			expect(end.ParamBodyAngleY).toBeCloseTo(8.0, 2);
-			expect(end.ParamAngleY).toBeCloseTo(12.0, 2);
+			// Step to 3100ms (ω=10 欠阻尼收敛：~1.8s 进入 ±0.05，3.1s 残余 <0.01)
+			const end = director.tick(3000);
+			expect(end.ParamEyeLOpen).toBeCloseTo(1.0, 1);
+			expect(end.ParamBodyAngleY).toBeCloseTo(8.0, 1);
+			expect(end.ParamAngleY).toBeCloseTo(12.0, 1);
 
 			// 切换到 relaxed（失焦停靠的物理呈现由上层指定，本层只管姿态切换）
 			director.applyBasePose("relaxed", 800);
-			director.tick(900);
-			expect(director.getParam("ParamEyeLOpen")).toBeCloseTo(0.70, 2);
-			expect(director.getParam("ParamBodyAngleY")).toBeCloseTo(-6.0, 2);
-			expect(director.getParam("ParamAngleY")).toBeCloseTo(-10.0, 2);
+			director.tick(3000);
+			expect(director.getParam("ParamEyeLOpen")).toBeCloseTo(0.7, 1);
+			expect(director.getParam("ParamBodyAngleY")).toBeCloseTo(-6.0, 1);
+			expect(director.getParam("ParamAngleY")).toBeCloseTo(-10.0, 1);
 		});
 
 		it("should hold pose and notify expiry via onBasePoseExpired instead of clearing targets", () => {
@@ -211,13 +209,18 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 			});
 			director.applyBasePose("playful", { transitionMs: 800, holdMs: 3000 });
 
-			// Transition phase (800ms)
+			// Transition phase (弹簧落位 ~450ms @ ω×1.0)
 			director.tick(800);
-			expect(director.getParam("ParamAngleZ")).toBeCloseTo(18.0, 1);
+			// 落位后 living drift（目标 ±10%）开始调制；断言落在漂移带宽内而非精确值
+			const z1 = director.getParam("ParamAngleZ");
+			expect(z1).toBeGreaterThan(16);
+			expect(z1).toBeLessThan(20);
 
 			// Hold phase (2000ms)
 			director.tick(2000);
-			expect(director.getParam("ParamAngleZ")).toBeCloseTo(18.0, 1);
+			const z2 = director.getParam("ParamAngleZ");
+			expect(z2).toBeGreaterThan(16);
+			expect(z2).toBeLessThan(20);
 			expect(expiredCount).toBe(0);
 
 			// Expire hold (remaining 1000ms + margin)：到期回调触发切回 relaxed
@@ -239,7 +242,7 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 
 			// 无关通道（头部俯仰，不属于 playful 基准参数）持续过渡期间，保持计时必须继续走
 			for (let i = 0; i < 30; i++) {
-				director.transitionTargets([{ name: "ParamAngleY", value: -i * 0.5 }], 250);
+				director.setTarget("ParamAngleY", -i * 0.5);
 				director.tick(50);
 			}
 			// 1500ms > 1000ms 保持期：即便该通道从未停止过渡，到期也已触发
@@ -262,7 +265,7 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 		it("should retain base pose targets after dampenToNeutral", () => {
 			const director = new BodyDirector();
 			director.setBasePoseTargets({ ParamAngleZ: 5.0, ParamBodyAngleX: 2.0 });
-			director.tick(900);
+			director.tick(1500); // ω=10 下 95% 收敛 ~0.94s，1.5s 后残差 < ±0.05
 			expect(director.getParam("ParamAngleZ")).toBeCloseTo(5.0, 1);
 
 			// Overlay an expressive transient tilt
@@ -298,12 +301,13 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 			const f1 = director.tick(50);
 			expect(f1.ParamAngleY).toBeLessThan(-2.5);
 
-			// Step to 250ms (300ms total): underdamped rebound creates positive overshoot
-			const f2 = director.tick(250);
+			// Step to 500ms total: underdamped rebound creates positive overshoot
+			// (ω=10 半周期 ~331ms，正峰在 ~3/4 周期 ≈ 500ms 处)
+			const f2 = director.tick(450);
 			expect(f2.ParamAngleY).toBeGreaterThan(0.2);
 
-			// Step to 600ms total: settles back to resting target
-			director.tick(300);
+			// Step to 1500ms total: settles back to resting target (95% 收敛 ~0.94s)
+			director.tick(1000);
 			expect(Math.abs(director.getParam("ParamAngleY"))).toBeLessThan(0.2);
 
 			// Dampen completely to 0 and verify resetVelocity prevents impulse movement
@@ -320,11 +324,14 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 
 	describe("ParameterMapper", () => {
 		it("should resolve semantic beats to Cubism parameters with intensity", () => {
-			const targets = resolveBeatToParams({
-				head: "tilt_right",
-				gaze: "side_peek",
-				face: "shy",
-			}, 0.8);
+			const targets = resolveBeatToParams(
+				{
+					head: "tilt_right",
+					gaze: "side_peek",
+					face: "shy",
+				},
+				0.8,
+			);
 
 			const paramMap = Object.fromEntries(targets.map((t) => [t.name, t.value]));
 			expect(paramMap.ParamAngleZ).toBeCloseTo(-18.0 * 0.8, 2);
@@ -451,7 +458,9 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 		it("should produce dynamic living hold micro-drifts rather than frozen static targets", () => {
 			const director = new BodyDirector();
 			director.applyBasePose("playful", { transitionMs: 100, holdMs: 2000 });
-			director.tick(100); // finish transition
+			// 落位后再采样：18° 位移受速度封顶（MAX_PEAK_SPEED）约束，100ms 快切语义
+			// 被压到 ~0.9s 收敛——封顶是全局物理上限，基准姿态大位移同样不猛冲
+			director.tick(1400);
 
 			// Sample target during hold at different phases
 			const val1 = director.getParam("ParamAngleZ");
@@ -480,44 +489,120 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 			expect(frame.ParamEyeLOpen).toBeLessThanOrEqual(2);
 		});
 
-		it("should trigger physical acoustic velocity impulse and exhibit underdamped bounce", () => {
+		it("activates idle sway after prolonged silence with amplitude above the perception threshold", () => {
 			const composer = new MotionDirector();
-			composer.triggerAcousticImpulse(1.0);
-
-			const f1 = composer.compose(10);
-			expect(f1.ParamAngleY).toBeLessThan(-1.0); // Downward nod impulse
-
-			// Advance by 300ms, impulse should have decayed and bounced past neutral
-			const f2 = composer.compose(300);
-			expect(f2.ParamAngleY).toBeGreaterThan(-0.5);
+			// 静默推进 12s：4s 阈值 + ~3s blend 收敛 + 覆盖至少一个晃动周期
+			for (let i = 0; i < 200; i++) composer.compose(60);
+			const xs: number[] = [];
+			for (let i = 0; i < 70; i++) {
+				xs.push(composer.compose(60).ParamBodyAngleX!);
+			}
+			// ±6.3° 标称幅度，4.2s 采样窗覆盖大半周期：range 必须显著可感知
+			const range = Math.max(...xs) - Math.min(...xs);
+			expect(range).toBeGreaterThan(4);
 		});
 
-		it("should suppress acoustic velocity impulse when head channel is locked by cue or action", async () => {
+		it("keeps a mid-speech pause near-still instead of idling (×0.25 ruling)", () => {
+			const composer = new MotionDirector();
+			for (let i = 0; i < 10; i++) composer.compose(60, { speechEnergy: 0.5 });
+			// 活动度按 250ms 半衰期衰减殆尽（1.8s），此时仍在 idle 阈值（4s）之前：
+			// 语流停顿必须是"归于静止"，不能被 idle 地板顶起来继续晃。
+			// 放宽到 1.5°：body-director 的 living-hold 呼吸漂移（±10%，2s 循环，
+			// 既有特性）贡献 ~0.75°，本断言隔离的是 idle 层不得介入
+			for (let i = 0; i < 30; i++) composer.compose(60);
+			const xs: number[] = [];
+			for (let i = 0; i < 16; i++) {
+				xs.push(composer.compose(60).ParamBodyAngleX!);
+			}
+			expect(Math.max(...xs) - Math.min(...xs)).toBeLessThan(1.5);
+		});
+
+		it("crosses speech → idle → speech without amplitude pops", () => {
+			const composer = new MotionDirector();
+			let prev = composer.compose(60, { speechEnergy: 0.6 }).ParamBodyAngleX!;
+			let maxJump = 0;
+			for (let i = 0; i < 200; i++) {
+				// 2s 说话 → 8s 长静默（idle 接管）→ 2s 说话，逐帧监测幅度跳变
+				const energy = i < 33 ? 0.6 : i < 166 ? 0 : 0.6;
+				const v = composer.compose(60, energy > 0 ? { speechEnergy: energy } : undefined).ParamBodyAngleX!;
+				maxJump = Math.max(maxJump, Math.abs(v - prev));
+				prev = v;
+			}
+			// 语流晃动的物理帧上界 ~1.8°/60ms；idle 切入/切出不得出现超出波形的阶跃
+			expect(maxJump).toBeLessThan(3);
+		});
+
+		it("restarts the silence clock on abort so the body is still before idle sway ramps back", async () => {
+			const composer = new MotionDirector();
+			// 深度 idle（blend≈1）后急停：中断瞬间不得残留满幅晃动
+			for (let i = 0; i < 200; i++) composer.compose(60);
+			composer.abortAllMotions();
+			// 急停后 2.4s（< 4s 阈值）：与停顿同口径，仅剩 spring 层 living-hold 漂移
+			const xs: number[] = [];
+			for (let i = 0; i < 40; i++) {
+				xs.push(composer.compose(60).ParamBodyAngleX!);
+			}
+			expect(Math.max(...xs) - Math.min(...xs)).toBeLessThan(1.5);
+		});
+
+		it("should trigger acoustic pulse on onset and exhibit dive-and-rebound envelope", () => {
+			// 双实例同相位对比：PhysiologicalNoise 的呼吸联动对 ParamAngleY 有 ±1.5°
+			// 确定性叠加，同 deltaMs 序列下两实例噪声完全相同——帧值差即纯脉冲贡献
+			const baseline = new MotionDirector();
+			const pulsed = new MotionDirector();
+			pulsed.triggerAcousticImpulse(1.0);
+
+			// 峰值在 t≈130ms（sin(π/2)），下潜幅度 -3.5×e^-1 ≈ -1.3
+			const f1 = pulsed.compose(130);
+			const b1 = baseline.compose(130);
+			expect(f1.ParamAngleY! - b1.ParamAngleY!).toBeLessThan(-1.0); // Downward nod pulse
+
+			// Advance past the 260ms pulse window: fully rebounded back to baseline
+			const f2 = pulsed.compose(300);
+			const b2 = baseline.compose(300);
+			expect(f2.ParamAngleY! - b2.ParamAngleY!).toBeGreaterThan(-0.5);
+		});
+
+		it("should halve acoustic pulse when head channel is locked by cue instead of dropping it", async () => {
+			// 同相位双实例对比，隔离噪声叠加（见上一用例注释）
 			const arbiter = new MotionDirector();
 			const composer = arbiter;
+			const baseline = new MotionDirector();
 
 			const lease = await arbiter.claim(["head"], { priority: CHANNEL_PRIORITY.CUE });
 			composer.triggerAcousticImpulse(1.0);
 
-			// Because head is locked, impulse should have been ignored
-			expect(composer.bodyDirector.getParam("ParamAngleY")).toBe(0);
+			// Head locked: pulse is halved, not dropped——
+			// 重音点头是语流的一部分，"说话+表情"并存时不应消失
+			const lockedPeak = composer.compose(130);
+			const lockedBase = baseline.compose(130);
+			const lockedDelta = lockedPeak.ParamAngleY! - lockedBase.ParamAngleY!;
+			expect(lockedDelta).toBeLessThan(0);
 
 			lease.release();
 			composer.triggerAcousticImpulse(1.0);
-			const f = composer.compose(10);
-			expect(f.ParamAngleY).toBeLessThan(-1.0);
+			const fullPeak = composer.compose(130);
+			const fullBase = baseline.compose(130);
+			const fullDelta = fullPeak.ParamAngleY! - fullBase.ParamAngleY!;
+
+			// 同相位下确定性：锁定恰为全幅 ×0.5（gate 乘法），且全幅明显可读
+			expect(lockedDelta).toBeCloseTo(fullDelta * 0.5, 5);
+			expect(fullDelta).toBeLessThan(-2.0);
 		});
 
 		it("should play expressive beats sequentially and support abort", async () => {
 			const composer = new MotionDirector();
 			const controller = new AbortController();
 
-			const playPromise = composer.playExpressiveBeats({
-				beats: [
-					{ head: "tilt_left", hold_ms: 200 },
-					{ head: "tilt_right", hold_ms: 200 },
-				],
-			}, controller.signal);
+			const playPromise = composer.playExpressiveBeats(
+				{
+					beats: [
+						{ head: "tilt_left", hold_ms: 200 },
+						{ head: "tilt_right", hold_ms: 200 },
+					],
+				},
+				{ signal: controller.signal },
+			);
 
 			// Abort after 50ms
 			setTimeout(() => controller.abort(), 50);
@@ -800,14 +885,14 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 
 				expect(cueLease.signal!.aborted).toBe(true);
 				expect(abortSpy).toHaveBeenCalled();
-				expect(arbiter.isChannelLocked("head")).toBe(true);
+				expect(arbiter.isChannelLocked("head", CHANNEL_PRIORITY.IDLE)).toBe(true);
 
 				// 3. Releasing preempted lease is a safe no-op
 				cueLease.release();
-				expect(arbiter.isChannelLocked("head")).toBe(true);
+				expect(arbiter.isChannelLocked("head", CHANNEL_PRIORITY.IDLE)).toBe(true);
 
 				actionLease.release();
-				expect(arbiter.isChannelLocked("head")).toBe(false);
+				expect(arbiter.isChannelLocked("head", CHANNEL_PRIORITY.IDLE)).toBe(false);
 			});
 
 			it("should abort all active leases when releaseAll is called", async () => {
@@ -846,10 +931,10 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 				// Earlier cue must be aborted and preempted smoothly
 				expect(cue1Lease.signal?.aborted).toBe(true);
 				expect(cue2Lease.signal?.aborted).toBe(false);
-				expect(arbiter.isChannelLocked("head")).toBe(true);
+				expect(arbiter.isChannelLocked("head", CHANNEL_PRIORITY.IDLE)).toBe(true);
 
 				cue2Lease.release();
-				expect(arbiter.isChannelLocked("head")).toBe(false);
+				expect(arbiter.isChannelLocked("head", CHANNEL_PRIORITY.IDLE)).toBe(false);
 			});
 
 			it("should abort the entire lease when atomic is true and any channel is preempted", async () => {
@@ -863,8 +948,8 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 				});
 
 				expect(atomicLease.signal?.aborted).toBe(false);
-				expect(arbiter.isChannelLocked("head")).toBe(true);
-				expect(arbiter.isChannelLocked("torso")).toBe(true);
+				expect(arbiter.isChannelLocked("head", CHANNEL_PRIORITY.IDLE)).toBe(true);
+				expect(arbiter.isChannelLocked("torso", CHANNEL_PRIORITY.IDLE)).toBe(true);
 
 				// 2. Higher priority preemption only claims 'head'
 				const emergencyLease = await arbiter.claim(["head"], {
@@ -874,12 +959,12 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 
 				// Because atomic was true, the entire atomicLease is aborted and released
 				expect(atomicLease.signal?.aborted).toBe(true);
-				expect(arbiter.isChannelLocked("head")).toBe(true);
+				expect(arbiter.isChannelLocked("head", CHANNEL_PRIORITY.IDLE)).toBe(true);
 				// torso was released because atomic lease was completely aborted
-				expect(arbiter.isChannelLocked("torso")).toBe(false);
+				expect(arbiter.isChannelLocked("torso", CHANNEL_PRIORITY.IDLE)).toBe(false);
 
 				emergencyLease.release();
-				expect(arbiter.isChannelLocked("head")).toBe(false);
+				expect(arbiter.isChannelLocked("head", CHANNEL_PRIORITY.IDLE)).toBe(false);
 			});
 		});
 
@@ -969,7 +1054,7 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 
 				// Set thinking pose
 				reflex.onThinking();
-				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBe(10.0);
+				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBe(14.0);
 
 				// Start playing expressive beats
 				const beatsPromise = composer.playExpressiveBeats({
@@ -981,8 +1066,8 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 				// Turn end arrives while beats are playing
 				reflex.onTurnEnd();
 
-				// ParamAngleZ is active in the beat, so its target is preserved (-18 * 0.6 intensity = -10.8)
-				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBeCloseTo(-18.0 * 0.6, 1);
+				// ParamAngleZ is active in the beat, so its target is preserved (-18 * 默认强度 1.0 = -18.0)
+				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBeCloseTo(-18.0, 1);
 
 				await beatsPromise;
 			});
@@ -1010,7 +1095,7 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 				});
 
 				reflex.onThinking();
-				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBe(10.0);
+				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBe(14.0);
 				expect(composer.bodyDirector.getParamTarget("ParamEyeBallY")).toBe(0.6);
 				expect(composer.bodyDirector.getParamTarget("ParamEyeBallX")).toBe(-0.4);
 
@@ -1029,19 +1114,19 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 				});
 
 				reflex.onThinking();
-				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBe(10.0);
+				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBe(14.0);
 
-				// 头部节拍开始播放：ParamAngleZ 归节拍持有（-18 × 0.6 强度）
+				// 头部节拍开始播放：ParamAngleZ 归节拍持有（-18 × 默认强度 1.0）
 				const beats = composer.playExpressiveBeats(
 					{ beats: [{ head: "tilt_right", hold_ms: 600 }] },
 					{ allowedChannels: ["head"] as const },
 				);
-				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBeCloseTo(-18.0 * 0.6, 2);
+				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBeCloseTo(-18.0, 2);
 
 				reflex.onSpeakingContent();
 
 				// 节拍持有的 ParamAngleZ 不被拽回基准；反射自己占用的视线参数照常回归
-				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBeCloseTo(-18.0 * 0.6, 2);
+				expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBeCloseTo(-18.0, 2);
 				expect(composer.bodyDirector.getParamTarget("ParamEyeBallY")).toBe(0);
 				expect(composer.bodyDirector.getParamTarget("ParamEyeBallX")).toBe(0);
 
@@ -1049,70 +1134,41 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 			});
 		});
 
-		describe("Cue Affordance & Parameter Mapping Invariants", () => {
-			it("每个规范 id 都被声明且附带非空说明", () => {
-				expect(CANONICAL_CUE_IDS.length).toBeGreaterThan(0);
-				expect(live2dAffordance.cues.map((c) => c.id).sort()).toEqual(
-					[...CANONICAL_CUE_IDS].sort(),
-				);
-				for (const cue of live2dAffordance.cues) {
-					expect(cue.description.trim(), `cue "${cue.id}" 缺少说明`).not.toBe("");
-				}
-			});
-
-			it("每条对外声明的 cue id 都能被派发层解析", () => {
-				for (const cue of live2dAffordance.cues) {
-					expect(resolveCueToBeat(cue.id), `规范 id "${cue.id}" 解析失败`).not.toBeNull();
-				}
-			});
-
-			it("声明的别名都能被派发层解析", () => {
-				for (const cue of live2dAffordance.cues) {
-					for (const alias of cue.aliases ?? []) {
-						expect(resolveCueToBeat(alias), `别名 "${alias}"→${cue.id} 解析失败`).not.toBeNull();
-					}
-				}
-			});
-
-			it("别名表无孤儿：每个别名指向的规范 id 都在规范表中", () => {
-				for (const [, canonical] of Object.entries(CUE_ALIASES)) {
-					expect(CANONICAL_CUE_IDS).toContain(canonical);
-				}
-			});
-		});
+		// 注：cue 声明与解析的一致性守卫统一由 tests/live2d-affordance.test.ts 独家持有
+		//（曾在此处维护重复副本，两处同步维护的冗余成本已在实践中兑现）。
 
 		describe("Neuro-sama Dynamic Liveliness & Hardened Motion Mechanics", () => {
 			describe("AudioObserver (Speech Onset Cadence & Refractory Period)", () => {
-				// 测试统一使用生产默认参数域：真实 16-bit PCM 对话 RMS 约 0.008~0.04，
-				// 阈值 0.018 / 起振差 0.008。不再用 0.30/0.15 的旧参数域自欺。
+				// 测试统一使用生产默认参数域（2026-10-02 重标）：TTS 桥侧语音 RMS ≈ 0.0005~0.005，
+				// 阈值 0.0018 / 起振差 0.0008。不再用 0.008~0.04 的旧假设域自欺。
 				it("should trigger acoustic impulse on speech onset spike and suppress jitter during refractory period", () => {
 					const observer = new AudioObserver();
 					const composer = new MotionDirector();
 					const triggerSpy = vi.spyOn(composer, "triggerAcousticImpulse");
 					observer.setDirector(composer);
 
-					// Frame 1: Low background noise (RMS 0.006 < 0.018) -> No trigger
-					observer.processLevel({ rms: 0.006 });
+					// Frame 1: Low background noise (RMS 0.0006 < 0.0018) -> No trigger
+					observer.processLevel({ rms: 0.0006 });
 					expect(triggerSpy).not.toHaveBeenCalled();
 
-					// Frame 2: Loud speech onset (RMS 0.04, delta = 0.034 > 0.008) -> Triggers impulse!
-					observer.processLevel({ rms: 0.04 });
+					// Frame 2: Loud speech onset (RMS 0.004, delta = 0.0034 > 0.0008) -> Triggers impulse!
+					observer.processLevel({ rms: 0.004 });
 					expect(triggerSpy).toHaveBeenCalledTimes(1);
 
-					// Frame 3-5: Sustained loud vowel over next 150ms (RMS remains 0.04) -> Cooldown suppresses repeated impulses!
+					// Frame 3-5: Sustained loud vowel over next 150ms (RMS remains 0.004) -> Cooldown suppresses repeated impulses!
 					observer.tick(50);
-					observer.processLevel({ rms: 0.04 });
+					observer.processLevel({ rms: 0.004 });
 					observer.tick(50);
-					observer.processLevel({ rms: 0.04 });
+					observer.processLevel({ rms: 0.004 });
 					observer.tick(50);
-					observer.processLevel({ rms: 0.04 });
+					observer.processLevel({ rms: 0.004 });
 					expect(triggerSpy).toHaveBeenCalledTimes(1); // Still 1! No continuous jitter or bobblehead nodding!
 
 					// Advance past 220ms refractory period (remaining: 220 - 150 = 70ms; advance 100ms)
 					observer.tick(100);
 					// Now a dip followed by next syllable onset
-					observer.processLevel({ rms: 0.006 });
-					observer.processLevel({ rms: 0.045 }); // delta = 0.039 > 0.008
+					observer.processLevel({ rms: 0.0006 });
+					observer.processLevel({ rms: 0.0045 }); // delta = 0.0039 > 0.0008
 					expect(triggerSpy).toHaveBeenCalledTimes(2); // Second onset cleanly triggered!
 				});
 
@@ -1122,7 +1178,7 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 					const triggerSpy = vi.spyOn(composer, "triggerAcousticImpulse");
 					observer.setDirector(composer);
 
-					observer.processLevel({ rms: 0.04 });
+					observer.processLevel({ rms: 0.004 });
 					expect(triggerSpy).toHaveBeenCalledTimes(1);
 					expect(observer.getMouthOpenY()).toBeGreaterThan(0);
 
@@ -1131,7 +1187,7 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 					expect(observer.getMouthOpenY()).toBe(0);
 
 					// A new onset immediately after reset can trigger without waiting for the old cooldown
-					observer.processLevel({ rms: 0.045 });
+					observer.processLevel({ rms: 0.0045 });
 					expect(triggerSpy).toHaveBeenCalledTimes(2);
 				});
 
@@ -1141,17 +1197,17 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 					const triggerSpy = vi.spyOn(composer, "triggerAcousticImpulse");
 					observer.setDirector(composer);
 
-					// Frame 1: Resting low background (RMS 0.005)
-					observer.processLevel({ rms: 0.005 });
+					// Frame 1: Resting low background (RMS 0.0005)
+					observer.processLevel({ rms: 0.0005 });
 					expect(triggerSpy).not.toHaveBeenCalled();
 
-					// Frame 2: Ramp starts rising (delta = 0.007, below single-frame threshold 0.008)
-					observer.processLevel({ rms: 0.012 });
+					// Frame 2: Ramp starts rising (delta = 0.0007, below single-frame threshold 0.0008)
+					observer.processLevel({ rms: 0.0012 });
 					expect(triggerSpy).not.toHaveBeenCalled();
 
-					// Frame 3: Ramp continues rising (deltaRms = 0.007 still below 0.008, but slow envelope
-					// lags at ~0.0075 so deltaSlow ≈ 0.012 >= 0.008, and rms 0.019 > 0.018) -> triggers
-					observer.processLevel({ rms: 0.019 });
+					// Frame 3: Ramp continues rising (deltaRms = 0.0007 still below 0.0008, but slow envelope
+					// lags at ~0.00075 so deltaSlow ≈ 0.0012 >= 0.0008, and rms 0.0019 > 0.0018) -> triggers
+					observer.processLevel({ rms: 0.0019 });
 					expect(triggerSpy).toHaveBeenCalledTimes(1);
 				});
 
@@ -1162,16 +1218,16 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 					observer.setDirector(composer);
 
 					// Initial onset triggers
-					observer.processLevel({ rms: 0.04 });
+					observer.processLevel({ rms: 0.004 });
 					expect(triggerSpy).toHaveBeenCalledTimes(1);
 
-					// Speaker sustains the exact same vowel (0.04) over multiple frames totaling 200ms
+					// Speaker sustains the exact same vowel (0.004) over multiple frames totaling 200ms
 					for (let i = 0; i < 8; i++) {
 						observer.tick(25);
-						observer.processLevel({ rms: 0.04 });
+						observer.processLevel({ rms: 0.004 });
 					}
 
-					// Cooldown has long expired (200ms > 100ms), but because slow envelope adapted to 0.04,
+					// Cooldown has long expired (200ms > 100ms), but because slow envelope adapted to 0.004,
 					// effectiveOnset is near 0 and no secondary false trigger occurs!
 					expect(triggerSpy).toHaveBeenCalledTimes(1);
 				});
@@ -1238,7 +1294,8 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 					const composer = new MotionDirector();
 					// playful base pose has ParamAngleZ: 18.0
 					composer.bodyDirector.applyBasePose("playful", 50);
-					for (let i = 0; i < 10; i++) {
+					// 30×20ms：头部落位后，被动耦合的躯干滞后量也收敛回基准附近
+					for (let i = 0; i < 30; i++) {
 						composer.compose(20);
 					}
 
@@ -1301,7 +1358,7 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 					expect(map.EyeRightY).toBe(-0.3);
 				});
 
-				it("should map torso angle directly to BodyAngle parameters", () => {
+				it("should map torso angle directly to same-named ParamBodyAngle parameters", () => {
 					const retargeter = new VTSParameterRetargeter();
 					const frame = {
 						ParamBodyAngleX: 16,
@@ -1311,9 +1368,9 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 					const params = retargeter.retarget(frame);
 					const map = Object.fromEntries(params.map((p) => [p.id, p.value]));
 
-					expect(map.BodyAngleX).toBe(16);
-					expect(map.BodyAngleY).toBe(-12);
-					expect(map.BodyAngleZ).toBe(8);
+					expect(map.ParamBodyAngleX).toBe(16);
+					expect(map.ParamBodyAngleY).toBe(-12);
+					expect(map.ParamBodyAngleZ).toBe(8);
 					expect(map.FacePositionX).toBeUndefined();
 					expect(map.FacePositionY).toBeUndefined();
 					expect(map.FacePositionZ).toBeUndefined();
@@ -1325,34 +1382,33 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 					const params = retargeter.retarget(frame);
 					const map = Object.fromEntries(params.map((p) => [p.id, p.value]));
 
-					expect(map.BodyAngleX).toBe(30);
-					expect(map.BodyAngleY).toBe(-30);
+					expect(map.ParamBodyAngleX).toBe(30);
+					expect(map.ParamBodyAngleY).toBe(-30);
 				});
 
-				it("should route EyeSmile correctly to EyeSmileLeft/Right and preserve MouthSmile from ParamMouthForm", () => {
+				it("should route EyeSmile to same-named custom params and preserve MouthSmile from ParamMouthForm", () => {
 					const retargeter = new VTSParameterRetargeter();
 
-					// Case 1: Pout/frown retains negative value, EyeSmile routes to EyeSmileLeft
+					// Case 1: Pout/frown retains negative value, ParamEyeLSmile routes to same-named custom
+					// （VTS 内置清单无 EyeSmile 类输入——探针实锤；同名 custom 是唯一可达通道）
 					const p1 = retargeter.retarget({ ParamMouthForm: -0.7, ParamEyeLSmile: 0.2 });
 					const m1 = Object.fromEntries(p1.map((p) => [p.id, p.value]));
 					expect(m1.MouthSmile).toBe(-0.7);
-					expect(m1.EyeSmileLeft).toBe(0.2);
-					expect(m1.EyeSmile).toBe(0.2);
+					expect(m1.ParamEyeLSmile).toBe(0.2);
 
-					// Case 2: Positive smile routes to MouthSmile and EyeSmileLeft/Right without cross-contamination
+					// Case 2: Positive smile routes to MouthSmile and both eye-smile customs without cross-contamination
 					const p2 = retargeter.retarget({ ParamMouthForm: 0.4, ParamEyeLSmile: 0.9, ParamEyeRSmile: 0.85 });
 					const m2 = Object.fromEntries(p2.map((p) => [p.id, p.value]));
 					expect(m2.MouthSmile).toBe(0.4);
-					expect(m2.EyeSmileLeft).toBe(0.9);
-					expect(m2.EyeSmileRight).toBe(0.85);
-					expect(m2.EyeSmile).toBe(0.9);
+					expect(m2.ParamEyeLSmile).toBe(0.9);
+					expect(m2.ParamEyeRSmile).toBe(0.85);
 
 					// Case 3: When ParamMouthForm is absent, EyeSmile links to MouthSmile to drive crescent eyes on VTS models
 					const p3 = retargeter.retarget({ ParamEyeLSmile: 0.8, ParamEyeRSmile: 0.75 });
 					const m3 = Object.fromEntries(p3.map((p) => [p.id, p.value]));
 					expect(m3.MouthSmile).toBe(0.8);
-					expect(m3.EyeSmileLeft).toBe(0.8);
-					expect(m3.EyeSmileRight).toBe(0.75);
+					expect(m3.ParamEyeLSmile).toBe(0.8);
+					expect(m3.ParamEyeRSmile).toBe(0.75);
 				});
 
 				it("should perform kinematic upper-body fusion into FaceAngleX/Y/Z when ParamBodyAngle is present", () => {
@@ -1362,31 +1418,31 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 					const p1 = retargeter.retarget({ ParamAngleX: 10, ParamBodyAngleX: 8 });
 					const m1 = Object.fromEntries(p1.map((p) => [p.id, p.value]));
 					expect(m1.FaceAngleX).toBe(16); // 10 + 8 * 0.75
-					expect(m1.BodyAngleX).toBe(8);
+					expect(m1.ParamBodyAngleX).toBe(8);
 
 					// Forward lean pitch fusion into FaceAngleY with clamp [-20, 20]
 					const p2 = retargeter.retarget({ ParamAngleY: 10, ParamBodyAngleY: 16 });
 					const m2 = Object.fromEntries(p2.map((p) => [p.id, p.value]));
 					expect(m2.FaceAngleY).toBe(20); // 10 + 16 * 0.75 = 22 -> clamped to 20
-					expect(m2.BodyAngleY).toBe(16);
+					expect(m2.ParamBodyAngleY).toBe(16);
 
 					// Side lean roll fusion into FaceAngleZ with clamp [-25, 25]
 					const p3 = retargeter.retarget({ ParamAngleZ: 14, ParamBodyAngleZ: 6 });
 					const m3 = Object.fromEntries(p3.map((p) => [p.id, p.value]));
 					expect(m3.FaceAngleZ).toBe(18.5); // 14 + 6 * 0.75
-					expect(m3.BodyAngleZ).toBe(6);
+					expect(m3.ParamBodyAngleZ).toBe(6);
 				});
 
-				it("should map ParamBreath directly to Breath without elevator displacement", () => {
+				it("should map ParamBreath to same-named custom param without elevator displacement", () => {
 					const retargeter = new VTSParameterRetargeter();
 					const p1 = retargeter.retarget({ ParamBreath: 1.0 });
 					const m1 = Object.fromEntries(p1.map((p) => [p.id, p.value]));
-					expect(m1.Breath).toBe(1.0);
+					expect(m1.ParamBreath).toBe(1.0);
 					expect(m1.FacePositionY).toBeUndefined();
 
 					const p2 = retargeter.retarget({ ParamBreath: 0.2 });
 					const m2 = Object.fromEntries(p2.map((p) => [p.id, p.value]));
-					expect(m2.Breath).toBe(0.2);
+					expect(m2.ParamBreath).toBe(0.2);
 					expect(m2.FacePositionY).toBeUndefined();
 				});
 
@@ -1531,16 +1587,25 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 					expect(b2![0]?.head).toBe("tilt_left");
 					expect(b2![0]?.face).toBe("tender_smile");
 
+					// 回归钉：复合段第二项带冒号修饰（此前第二段被静默丢弃，只剩 head）
+					const b4 = resolveCueToBeat("tilt_left, smile:0.8");
+					expect(b4).toBeDefined();
+					expect(b4![0]?.head).toBe("tilt_left");
+					expect(b4![0]?.face).toBe("tender_smile");
+					expect(b4![0]?.intensity).toBe(0.8);
+
 					// Key-value syntax
 					const b3 = resolveCueToBeat("head=tilt_right, face=smug, hold=1200, latch=true, intensity=0.75");
-					expect(b3).toEqual([{
-						head: "tilt_right",
-						face: "smug",
-						gaze: "user",
-						hold_ms: 1200,
-						latch: true,
-						intensity: 0.75,
-					}]);
+					expect(b3).toEqual([
+						{
+							head: "tilt_right",
+							face: "smug",
+							gaze: "user",
+							hold_ms: 1200,
+							latch: true,
+							intensity: 0.75,
+						},
+					]);
 				});
 
 				it("should honor beat-level intensity in resolveBeatToParams", () => {
@@ -1567,8 +1632,8 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 					});
 
 					// Transition head to tilt_right (ParamAngleZ = 20)
-					arbiter.bodyDirector.transitionPose({ ParamAngleZ: 20 }, 0);
-					arbiter.bodyDirector.tick(50);
+					arbiter.bodyDirector.setTarget("ParamAngleZ", 20);
+					arbiter.bodyDirector.tick(300);
 
 					// Compose frame
 					const frame = arbiter.compose(50);
@@ -1594,6 +1659,18 @@ describe("Live2DRuntime 姿态权威与 express 诚实性", () => {
 	function fakeCtx(): ActionContext {
 		return { signal: new AbortController().signal } as unknown as ActionContext;
 	}
+
+	it('姿态名 cue 直接切换基准姿态（<cue id="focused"/> ≙ pose 工具）', async () => {
+		const runtime = createOfflineRuntime();
+		expect(runtime.currentBasePose).toBe("relaxed");
+		runtime.director.dispatchCue("focused");
+		await Promise.resolve();
+		expect(runtime.currentBasePose).toBe("focused");
+		// 非 cue 名的未知姿态不误切
+		runtime.director.dispatchCue("not_a_pose");
+		await Promise.resolve();
+		expect(runtime.currentBasePose).toBe("focused");
+	});
 
 	it("express 未知字段显式失败并给出可用值，而非静默无操作谎报成功", async () => {
 		const runtime = createOfflineRuntime();
@@ -1728,5 +1805,3 @@ describe("Live2DRuntime 姿态权威与 express 诚实性", () => {
 		await app.onStop?.(fakeServiceCtx as never);
 	});
 });
-
-
