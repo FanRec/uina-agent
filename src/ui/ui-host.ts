@@ -13,7 +13,7 @@ import { Key, matchesKey } from "./core/keys.js";
 import { MouseSelectionTracker, type InteractiveTarget, type SelectableRegion } from "./core/mouse-selection.js";
 import { decodeHoverTarget, encodeHoverTarget } from "./core/hover-target.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
-import type { ContextSnapshot, RequestUsage, ThinkingLevel } from "../core/types.js";
+import type { ContextSnapshot, RequestUsage, ThinkingLevel, ToolResultStatus } from "../core/types.js";
 import type { SessionEntry } from "../session/types.js";
 import { C, copyToClipboardUnified, visibleWidth, truncateToWidth, stripAnsi, normalizeFrameLine } from "./core/utils.js";
 import {
@@ -666,6 +666,90 @@ export class UIHost implements UIHostContextPort {
 			this.activityLine.reset();
 		}
 		this.markUsageEstimated();
+		this.requestRender();
+	}
+
+	// ── 回合生命周期门面 ──
+	// InteractiveTUI 经这组粗粒度方法驱动转录区与活动行，不再直摸
+	// transcript/activityLine 内部；每帧的状态变更与重绘请求在同一入口收口。
+
+	/** turn_start：开新轮，活动行进入 thinking。 */
+	startTurnCard(turnNumber: number, userText: string, images?: readonly import("../core/content.js").ImageContent[]): void {
+		this.transcript.startTurn(turnNumber, userText, images);
+		this.activityLine.start("thinking", "正在思考与生成回复...");
+		this.requestRender();
+	}
+
+	/** thinking 增量：思考 token 也是生成，必须进活动行解码区间。 */
+	appendThinkingStream(text: string): void {
+		this.transcript.appendThinking(text);
+		this.activityLine.addStreamText(text);
+		this.activityLine.update("thinking", "正在深度推理 (Thinking)...");
+		this.requestRender();
+	}
+
+	/** 正文增量。 */
+	appendAssistantStream(text: string): void {
+		this.transcript.appendToken(text);
+		this.activityLine.addStreamText(text);
+		this.activityLine.update("streaming", "正在输出回复...");
+		this.requestRender();
+	}
+
+	/** usage_update 的服务端 output：活动行按 step 结算。 */
+	addStreamedOutputTokens(tokens: number): void {
+		this.activityLine.addRealOutputTokens(tokens);
+	}
+
+	/** tool_call：结算上一步解码区间，snap 后开运行中工具卡。 */
+	beginToolCard(toolName: string, args?: unknown, callId?: string): void {
+		this.activityLine.endStep();
+		this.transcript.smoothReveal.snapToLatest();
+		this.transcript.startTool(toolName, args, callId);
+		this.activityLine.update("tool", `正在执行工具: ${toolName}`);
+		this.requestRender();
+	}
+
+	/** tool_result：结算工具卡并提示继续生成。 */
+	settleToolCard(
+		toolName: string,
+		result: string,
+		elapsedMs: number,
+		status: ToolResultStatus,
+		callId?: string,
+		args?: unknown,
+		attachments?: { images?: import("../core/content.js").ImageContent[]; details?: unknown },
+	): void {
+		this.transcript.addToolDone(toolName, result, elapsedMs, status, callId, args, attachments);
+		this.activityLine.update("streaming", `工具 ${toolName} 执行完毕，继续生成...`);
+		this.requestRender();
+	}
+
+	/** turn_end：结算转录轮，活动行按"是否被打断"给收尾文案。 */
+	finishTurnCard(): void {
+		this.transcript.finishTurn();
+		const history = this.transcript.getHistory();
+		const lastTurn = history[history.length - 1];
+		const isInterrupted = lastTurn?.items.some((it) => it.kind === "interrupt");
+		const elapsed = this.getLastElapsedMs();
+		this.activityLine.finish(
+			isInterrupted ? "已打断当前轮次" : "本轮已完成",
+			elapsed > 0 ? elapsed : undefined,
+		);
+		this.requestRender();
+	}
+
+	/** turn_aborted：打断态收尾。 */
+	interruptTurnCard(): void {
+		this.transcript.interruptTurn(this.modelName);
+		this.activityLine.finish("已打断当前轮次");
+		this.requestRender();
+	}
+
+	/** error：错误卡 + 活动行复位。 */
+	addErrorCard(text: string): void {
+		this.transcript.addError(text);
+		this.activityLine.reset();
 		this.requestRender();
 	}
 

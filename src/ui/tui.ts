@@ -159,17 +159,15 @@ export class InteractiveTUI {
 				this.host.setProviderRetryMessage();
 				this.host.markUsageEstimated();
 				this.host.setBusy(true);
-				this.host.transcript.startTurn(m.turnNumber, m.userText, m.images);
+				this.host.startTurnCard(m.turnNumber, m.userText, m.images);
 				this.trajectoryProjection.onTurnStart(m.turnNumber, m.userText);
-				this.host.activityLine.start("thinking", "正在思考与生成回复...");
-				this.host.requestRender();
 				break;
 
 			case "usage_update":
 				// Provider usage 描述过去的一次调用，不覆盖当前 RequestProjection 的上下文快照。
 				// 服务端报回的 output 是"本次调用"的输出量（含工具调用参数的分），交给活动行
 				// 按 step 结算：它既是这一步的分子，也是这一步解码区间的右端。
-				if (m.usage.outputTokens !== undefined) this.host.activityLine.addRealOutputTokens(m.usage.outputTokens);
+				if (m.usage.outputTokens !== undefined) this.host.addStreamedOutputTokens(m.usage.outputTokens);
 				this.host.setRequestUsage(m.usage);
 				break;
 
@@ -205,35 +203,23 @@ export class InteractiveTUI {
 					if (!this.currentThinkingId) {
 						this.currentThinkingId = this.trajectoryProjection.onThinkingStart("深度推理");
 					}
-					this.host.transcript.appendThinking(m.text);
-					// 思考 token 也是「生成」，必须进解码区间：服务端报回的 outputTokens 是
-					// completion_tokens，本就含思考 token。此前只有正文增量喂活动行，于是左端要等
-					// 正文首字才起算 —— 分子含思考、分母不含，开思考后读数虚高几十倍。
-					this.host.activityLine.addStreamText(m.text);
-					this.host.activityLine.update("thinking", "正在深度推理 (Thinking)...");
-					this.host.requestRender();
+					// 思考 token 也是「生成」，必须进解码区间（host 内活动行同步喂流）。
+					this.host.appendThinkingStream(m.text);
 					break;
 				}
 				if (m.channel !== "content") break;
 				this.closeThinking();
-				this.host.transcript.appendToken(m.text);
-				this.host.activityLine.addStreamText(m.text);
-				this.host.activityLine.update("streaming", "正在输出回复...");
-				this.host.requestRender();
+				this.host.appendAssistantStream(m.text);
 				break;
 
 			case "tool_call": {
 				// 模型调用到此结束，结算这一步的解码区间与输出量；接下来的工具执行时间不计入生成速度。
-				this.host.activityLine.endStep();
 				this.closeThinking();
 				if (m.callId) this.toolStartedAt.set(m.callId, Date.now());
 				const callId = m.callId ?? `tool-${m.toolName}-${Date.now()}`;
-				this.host.transcript.smoothReveal.snapToLatest();
-				this.host.transcript.startTool(m.toolName, m.args, callId);
+				this.host.beginToolCard(m.toolName, m.args, callId);
 				this.trajectoryProjection.onToolStart(m.toolName, m.args, callId);
-				this.host.activityLine.update("tool", `正在执行工具: ${m.toolName}`);
 				this.notifyToolActivity();
-				this.host.requestRender();
 				break;
 			}
 
@@ -242,11 +228,9 @@ export class InteractiveTUI {
 				const startedAt = m.callId !== undefined ? this.toolStartedAt.get(m.callId) : undefined;
 				if (m.callId !== undefined) this.toolStartedAt.delete(m.callId);
 				const elapsed = startedAt === undefined ? 0 : Date.now() - startedAt;
-				this.host.transcript.addToolDone(m.toolName, m.result, elapsed, m.status, m.callId, m.args, { images: m.images ? [...m.images] : undefined, details: m.details });
+				this.host.settleToolCard(m.toolName, m.result, elapsed, m.status, m.callId, m.args, { images: m.images ? [...m.images] : undefined, details: m.details });
 				this.trajectoryProjection.onToolDone(m.callId ?? "", m.toolName, m.result, elapsed, m.status);
-				this.host.activityLine.update("streaming", `工具 ${m.toolName} 执行完毕，继续生成...`);
 				this.notifyToolActivity();
-				this.host.requestRender();
 				break;
 			}
 
@@ -255,31 +239,19 @@ export class InteractiveTUI {
 				this.closeThinking();
 				this.notifyToolActivity();
 				this.host.setBusy(false);
-				this.host.transcript.finishTurn();
+				this.host.finishTurnCard();
 				this.trajectoryProjection.onTurnEnd(m.turnNumber, m.requestUsage);
 				if (m.requestUsage) {
 					this.host.setRequestUsage(m.requestUsage);
 				}
-				const elapsed = this.host.getLastElapsedMs();
-				const history = this.host.transcript.getHistory();
-				const lastTurn = history[history.length - 1];
-				const isInterrupted = lastTurn?.items.some((it) => it.kind === "interrupt");
-				if (isInterrupted) {
-					this.host.activityLine.finish("已打断当前轮次", elapsed > 0 ? elapsed : undefined);
-				} else {
-					this.host.activityLine.finish("本轮已完成", elapsed > 0 ? elapsed : undefined);
-				}
-				this.host.requestRender();
 				break;
 
 			case "turn_aborted":
 				this.host.setProviderRetryMessage();
 				this.closeThinking();
 				this.notifyToolActivity();
-				this.host.transcript.interruptTurn(this.host.modelName);
+				this.host.interruptTurnCard();
 				this.host.setBusy(false);
-				this.host.activityLine.finish("已打断当前轮次");
-				this.host.requestRender();
 				break;
 
 			case "notice":
@@ -292,10 +264,8 @@ export class InteractiveTUI {
 				this.closeThinking();
 				this.notifyToolActivity();
 				this.host.setBusy(false);
-				this.host.transcript.addError(m.text);
+				this.host.addErrorCard(m.text);
 				this.trajectoryProjection.onError(m.text);
-				this.host.activityLine.reset();
-				this.host.requestRender();
 				break;
 
 			case "queue":
