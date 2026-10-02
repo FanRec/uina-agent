@@ -322,7 +322,19 @@ export class BodyDirector {
 	}
 
 	private applyCoupledTarget(name: string, targetValue: number): void {
+		// 耦合保留 getOrCreate：躯干参数的弹簧状态可以由耦合首次创建（无基准
+		// 姿态时 ParamBodyAngleZ 的 state 不存在，测试与轻量场景依赖此路径）
 		const state = this.getOrCreate(name);
+		// 被动跟随的所有权守卫（与 living-hold 的 isNearBase 同题同构）：target
+		// 贴近基准（无主动意图）或贴近耦合自身输出（跟随连续性）才允许覆写。
+		// 缺此守卫时，idle 躯干换姿的 additive 目标（基准+8°）会在下一帧被
+		// 拉回"基准+0.2×头偏"≈基准，事件整个无效——探针实测实机形态下
+		// 躯干换姿 range 仅 2.4°（应为 ~15°），而旧测试因未设基准姿态、
+		// 耦合从未运行而全绿（形态盲区）。
+		const baseVal = this.getBasePoseTarget(name);
+		const nearBase = Math.abs(state.target - baseVal) <= Math.abs(baseVal * 0.1) + 0.15;
+		const isOwnOutput = Math.abs(state.target - targetValue) <= 1.5;
+		if (!nearBase && !isOwnOutput) return;
 		state.target = clampLive2DParam(name, targetValue);
 	}
 

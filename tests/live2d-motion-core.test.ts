@@ -491,8 +491,19 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 
 		it("fires occasional spring-carried idle posture shifts during prolonged silence with still windows between", () => {
 			// 注入确定性随机（gap 恒 10s、bodyX、offset +8°、hold 2.3s）——时序可精确推演：
-			// 事件在静默 14s（采样 5s 处）触发，弹簧滑入 ~0.8s + 保持 2.3s + 滑回 ~0.8s
+			// 事件在静默 14s（采样 5s 处）触发，弹簧滑入 ~0.8s + 保持 2.3s + 滑回 ~0.8s。
+			// 必须设置基准姿态（实机形态）：头部/躯干参数的弹簧状态存在时被动脊柱
+			// 耦合每帧运行——曾缺所有权守卫，把 idle 躯干 additive 目标逐帧拉回
+			// 基准，实机换姿无效（range 2.4°）而本测试因形态盲区全绿
 			const composer = new MotionDirector(() => 0.5);
+			composer.bodyDirector.setBasePoseTargets({
+				ParamAngleX: 0,
+				ParamAngleY: -10,
+				ParamAngleZ: -8,
+				ParamBodyAngleX: 0,
+				ParamBodyAngleY: -6,
+				ParamBodyAngleZ: 0,
+			});
 			for (let i = 0; i < 150; i++) composer.compose(60); // 9s 静默：跨过 4s 阈值
 			const xs: number[] = [];
 			for (let i = 0; i < 200; i++) xs.push(composer.compose(60).ParamBodyAngleX!);
@@ -514,6 +525,36 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 				maxJump = Math.max(maxJump, Math.abs(xs[i]! - xs[i - 1]!));
 			}
 			expect(maxJump).toBeLessThan(3);
+		});
+
+		it("yields the head-tilt idle shift while a reflex state pose occupies ParamAngleZ", () => {
+			// thinking 反射把 ParamAngleZ 摆到 14° 且不占通道租约——idle 事件
+			// 不得与之互踩：参数目标已有主动意图时歪头事件让位等待。
+			// 证据口径用 target（噪声层 ±3° 头部分量会让合成值波动，不能作判据；
+			// idle 若触发会把 target 从 14 改写为 base+offset=-3.1）
+			const composer = new MotionDirector(() => 0.3); // 强制歪头分支（0.3 < 0.4）
+			composer.bodyDirector.setBasePoseTargets({
+				ParamAngleX: 0,
+				ParamAngleY: -10,
+				ParamAngleZ: -8,
+				ParamBodyAngleX: 0,
+				ParamBodyAngleY: -6,
+				ParamBodyAngleZ: 0,
+			});
+			composer.showStatePose("thinking"); // ParamAngleZ → 14
+			for (let i = 0; i < 150; i++) composer.compose(60);
+			for (let i = 0; i < 200; i++) composer.compose(60);
+			// 21s 静默期（远超 4s 阈值 + 6~14s 间隔）内 target 恒为反射值：idle 让位
+			expect(composer.bodyDirector.getParamTarget("ParamAngleZ")).toBe(14);
+			// 反射清除后（目标回归基准）idle 恢复触发能力：target 被 idle 改写
+			composer.clearStatePose();
+			let fired = false;
+			for (let i = 0; i < 250; i++) {
+				composer.compose(60);
+				const t = composer.bodyDirector.getParamTarget("ParamAngleZ");
+				if (Math.abs(t - -8) > 2) fired = true; // -3.1 = base(-8) + offset(+4.9)
+			}
+			expect(fired).toBe(true);
 		});
 
 		it("keeps a mid-speech pause near-still instead of idling (×0.25 ruling)", () => {
@@ -546,12 +587,19 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 			expect(maxJump).toBeLessThan(3);
 		});
 
-		it("restarts the silence clock on abort so the body is still before idle sway ramps back", async () => {
-			const composer = new MotionDirector();
-			// 深度 idle（blend≈1）后急停：中断瞬间不得残留满幅晃动
-			for (let i = 0; i < 200; i++) composer.compose(60);
+		it("restarts the silence clock on abort so the body is still before idle sway ramps back", () => {
+			// 确定随机 gap=13.2s。初始 gap 硬编码 6s 会让 12s 预热必含在途事件
+			// （10s 触发），其急停收势回程会污染采样窗——先 abort 一次重排间隔，
+			// 使预热与采样两个窗口都确定落在事件间隙内。
+			// 注意：本测试在上一提交（110d18d）的 Math.random 版本下实为必红
+			// （在途换姿回程 range ~9° >> 1.5°），当时"107 全绿"的门禁记录失实
+			const composer = new MotionDirector(() => 0.9);
+			composer.abortAllMotions(); // 重排事件间隔 → 13.2s
+			for (let i = 0; i < 200; i++) composer.compose(60); // 12s 预热：无 idle 事件
 			composer.abortAllMotions();
-			// 急停后 2.4s（< 4s 阈值）：与停顿同口径，仅剩 spring 层 living-hold 漂移
+			// 急停后 2.4s 采样（< 4s 阈值，idle 必然未介入；窗口与停顿测试同量级
+			// ——噪声层底色在 ~4s 满呼吸周期窗口 range 可达 2.4°，1.5° 阈值只对
+			// 短窗口成立）
 			const xs: number[] = [];
 			for (let i = 0; i < 40; i++) {
 				xs.push(composer.compose(60).ParamBodyAngleX!);

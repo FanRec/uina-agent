@@ -274,6 +274,11 @@ export class MotionDirector {
 			this.bodyDirector.setTarget(this.idleShiftParam, 0, true, IDLE_SHIFT_OMEGA_SCALE);
 			this.idleShiftParam = null;
 		}
+		this.rerollIdleGap();
+	}
+
+	/** 重排 idle 事件间隔（重置/急停/触发后统一走此口，避免公式三处重复）。 */
+	private rerollIdleGap(): void {
 		this.idleEventGapMs =
 			IDLE_EVENT_GAP_MIN_MS + this.randomFn() * (IDLE_EVENT_GAP_MAX_MS - IDLE_EVENT_GAP_MIN_MS);
 	}
@@ -447,8 +452,7 @@ export class MotionDirector {
 		this.silenceMs = 0;
 		this.idleShiftParam = null;
 		this.idleShiftHoldRemainingMs = 0;
-		this.idleEventGapMs =
-			IDLE_EVENT_GAP_MIN_MS + this.randomFn() * (IDLE_EVENT_GAP_MAX_MS - IDLE_EVENT_GAP_MIN_MS);
+		this.rerollIdleGap();
 		// 急停语义覆盖思考视线状态：不清会让游移与 VOR 让位残留到下一回合
 		this.thinkingGazeActive = false;
 		this.acousticPulseRemainingMs = 0;
@@ -495,8 +499,9 @@ export class MotionDirector {
 		const merged = this.bodyDirector.tick(deltaMs, { isTorsoLocked });
 
 		// 静默期 idle 微动作：弹簧承载的换姿——触发即 additive 滑入，保持随机时长
-		// 后 additive 归零滑回基准。间隔/参数/方向/幅度/时长全随机；被租约锁定时
-		// 立即让位（跳过归零写，恢复由租约纪律负责），不引爆积压事件。
+		// 后 additive 归零滑回基准。间隔/参数/方向/幅度/时长全随机；所选参数的
+		// 通道被租约锁定、或参数目标已有其他主动意图（如 thinking 反射把
+		// ParamAngleZ 摆到 14°）时让位本帧继续等待，不引爆积压事件。
 		if (this.idleShiftParam) {
 			this.idleShiftHoldRemainingMs -= deltaMs;
 			const locked = this.idleShiftParam === "ParamBodyAngleX" ? isTorsoLocked : isHeadLocked;
@@ -508,19 +513,28 @@ export class MotionDirector {
 			}
 		} else if (this.speechActivity === 0 && this.silenceMs > IDLE_RAMP_DELAY_MS) {
 			this.idleEventGapMs -= deltaMs;
-			if (this.idleEventGapMs <= 0 && !isTorsoLocked && !isHeadLocked) {
-				this.idleEventGapMs =
-					IDLE_EVENT_GAP_MIN_MS +
-					this.randomFn() * (IDLE_EVENT_GAP_MAX_MS - IDLE_EVENT_GAP_MIN_MS);
+			if (this.idleEventGapMs <= 0) {
 				const useHead = this.randomFn() < 0.4;
-				this.idleShiftParam = useHead ? "ParamAngleZ" : "ParamBodyAngleX";
-				const offset =
-					(this.randomFn() < 0.5 ? -1 : 1) *
-					(useHead ? 4 + this.randomFn() * 3 : 6 + this.randomFn() * 4);
-				this.bodyDirector.setTarget(this.idleShiftParam, offset, true, IDLE_SHIFT_OMEGA_SCALE);
-				this.idleShiftHoldRemainingMs =
-					IDLE_SHIFT_HOLD_MIN_MS +
-					this.randomFn() * (IDLE_SHIFT_HOLD_MAX_MS - IDLE_SHIFT_HOLD_MIN_MS);
+				const param: "ParamBodyAngleX" | "ParamAngleZ" = useHead
+					? "ParamAngleZ"
+					: "ParamBodyAngleX";
+				const locked = useHead ? isHeadLocked : isTorsoLocked;
+				// 参数目标偏离基准 >1° 说明已有别的写者（反射姿态/beat 残留），让位
+				const occupied =
+					Math.abs(
+						this.bodyDirector.getParamTarget(param) - this.bodyDirector.getBasePoseTarget(param),
+					) > 1.0;
+				if (!locked && !occupied) {
+					this.rerollIdleGap();
+					const offset =
+						(this.randomFn() < 0.5 ? -1 : 1) *
+						(useHead ? 4 + this.randomFn() * 3 : 6 + this.randomFn() * 4);
+					this.bodyDirector.setTarget(param, offset, true, IDLE_SHIFT_OMEGA_SCALE);
+					this.idleShiftParam = param;
+					this.idleShiftHoldRemainingMs =
+						IDLE_SHIFT_HOLD_MIN_MS +
+						this.randomFn() * (IDLE_SHIFT_HOLD_MAX_MS - IDLE_SHIFT_HOLD_MIN_MS);
+				}
 			}
 		}
 
