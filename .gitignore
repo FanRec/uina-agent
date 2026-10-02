@@ -33,6 +33,6 @@ tests/embodiment-runtime.test.ts
 tests/pacing-ticker-app.test.ts
 tests/pacing-ticker-engine.test.ts
 tests/pacing-ticker-integration.test.ts
-
+.uina/worlds/jukebox/
 
 # Runtime profiles are intentionally versioned for this repository.
