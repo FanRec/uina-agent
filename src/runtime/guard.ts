@@ -82,18 +82,21 @@ function copyPrepare(
 		systemPrompt?: string;
 		model?: import("../core/types.js").Model;
 		thinkingLevel?: import("../core/types.js").ThinkingLevel;
+		injections?: readonly import("./events.js").InjectionProvenance[];
 	}>,
 ): Readonly<{
 	messages?: readonly ChatMsg[];
 	systemPrompt?: string;
 	model?: import("../core/types.js").Model;
 	thinkingLevel?: import("../core/types.js").ThinkingLevel;
+	injections?: readonly import("./events.js").InjectionProvenance[];
 }> {
 	return Object.freeze({
 		...(value.messages ? { messages: copyMessages(value.messages) } : {}),
 		...(value.systemPrompt !== undefined ? { systemPrompt: value.systemPrompt } : {}),
 		...(value.model !== undefined ? { model: clone(value.model) } : {}),
 		...(value.thinkingLevel !== undefined ? { thinkingLevel: value.thinkingLevel } : {}),
+		...(value.injections !== undefined ? { injections: clone(value.injections) } : {}),
 	});
 }
 

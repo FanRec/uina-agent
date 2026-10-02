@@ -49,9 +49,13 @@ import {
 	ScrollbarGutterComponent,
 } from "./components/widgets/index.js";
 import type { QueuedMessage } from "../agent/queue.js";
+import type { HostEvent } from "../host/events.js";
 import { ExtensionRegistry } from "../extensions/renderer-registry.js";
 import { createExtensionUIContext, type UIHostContextPort } from "./extension-ui-context.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
+
+/** 回合边界上下文构成事实（经事实单流到达，UIHost 只缓存最近一条供检视器拉取）。 */
+type ContextPrepareEvent = Extract<HostEvent, { type: "context_prepare" }>;
 
 function overlayCard(baseLine: string, cardLine: string, startCol: number, width: number): string {
 	const leftPart = truncateToWidth(baseLine, startCol, " ");
@@ -142,6 +146,8 @@ export class UIHost implements UIHostContextPort {
 	private cwd: string;
 	private lastUsage?: RequestUsage;
 	private contextSegments?: ContextSegments;
+	/** 最近一次 context_prepare 缓存（上下文检视器数据源之一；无回合运行前为空）。 */
+	private contextPrepare?: ContextPrepareEvent;
 
 	// 运行与动画状态
 	private running = false;
@@ -573,6 +579,17 @@ export class UIHost implements UIHostContextPort {
 		this.contextSegments = snapshot.segments;
 		this.syncContextComponents();
 		this.requestRender();
+	}
+
+	/** 缓存最近一次 context_prepare（检视器数据源）。无条件重绘：关闭态多一帧是噪声级成本，
+	 * 打开态却因此能跟上回合推进——不为省一帧引入两种渲染语义。 */
+	setContextPrepare(event: ContextPrepareEvent): void {
+		this.contextPrepare = event;
+		this.requestRender();
+	}
+
+	getContextPrepare(): ContextPrepareEvent | undefined {
+		return this.contextPrepare;
 	}
 
 	setRequestUsage(usage: RequestUsage): void {

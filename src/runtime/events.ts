@@ -18,6 +18,7 @@ export type RuntimeEvent =
 	| AgentStartEvent
 	| AgentEndEvent
 	| AgentSettledEvent
+	| ContextPrepareEvent
 	| TurnStartEvent
 	| TurnEndEvent
 	| ToolCallEvent
@@ -55,6 +56,41 @@ export interface AgentEndEvent {
 export interface AgentSettledEvent {
 	readonly type: "agent_settled";
 	readonly turnSeq: number;
+}
+
+/**
+ * 单个扩展对回合准备/请求投影的干预贡献记录（观测事实，非干预协议）。
+ *
+ * 登记点在 ExtensionRunner 聚合层（provenance 在逐 handler 聚合时天然存在），
+ * 只描述"谁贡献了什么量级"，不携带贡献正文（正文属投影/提示词本身）。
+ * 来源通道由读取位置决定：prepare 贡献随 turn.prepare 结果/事件返回，
+ * transform 贡献经聚合层拉取——记录内不重复携带通道标识。
+ */
+export interface InjectionProvenance {
+	/** 贡献来源（扩展 activation scope id；宿主内部贡献为 "(internal)"）。 */
+	readonly extension: string;
+	readonly kind: "messages" | "systemPrompt" | "model" | "thinkingLevel" | "projection";
+	/** kind=messages：贡献条数；kind=projection：消息数增量（可负）。 */
+	readonly messageCount?: number;
+	/** 字符量粗估（UTF-16 code unit）；kind=projection 时为增量，可负。 */
+	readonly chars: number;
+	/** 首行截断预览（约 80 字符）或量级变化摘要。 */
+	readonly preview: string;
+}
+
+/**
+ * 回合边界上下文构成事实（每次回合准备恰好一条，紧随 turn.prepare 应用之后、agent_start 之前；
+ * 回合内回溯会再次触发准备，因此一个回合可能出现多条）。
+ *
+ * 回答"这一回合模型会看到什么系统提示词、谁在回合边界注入了什么"。
+ * systemPrompt 是本次准备最终生效全文（prepare 改写已并入）；transformContext 的
+ * 每请求改写高频且属请求粒度，不发事件，经聚合层只读拉取（见 ExtensionRunner.lastTransformInjections）。
+ */
+export interface ContextPrepareEvent {
+	readonly type: "context_prepare";
+	readonly turnNumber: number;
+	readonly systemPrompt: string;
+	readonly injections: readonly InjectionProvenance[];
 }
 export interface TurnStartEvent {
 	readonly type: "turn_start";

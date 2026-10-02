@@ -9,6 +9,7 @@ import { combineQueuedDraft, canEditQueuedDraft } from "./draft.js";
 import { toolResultLines } from "../ui/format.js";
 import { createJobAdapter } from "../ui/adapters/jobs.js";
 import { createSubagentAdapter } from "../ui/adapters/subagents.js";
+import { createContextIntelAdapter } from "../ui/adapters/context-intel.js";
 import { formatHelp, parseArgs, readPipedStdin, UINA_VERSION } from "./args.js";
 import { resolveSessionPath } from "./session-path.js";
 import { resolveProfile, releaseProfileLock } from "../host/profile.js";
@@ -433,6 +434,14 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 					jobPort: createJobAdapter(host.jobs),
 					subagentPort: createSubagentAdapter(host.subagents),
 					sessionPort: host.session,
+					contextIntelPort: createContextIntelAdapter({
+						transformInjections: () => host.transformInjections(),
+						auxiliaryEntries: () =>
+							host.auxiliaryEntries().map((record) => ({
+								kind: record.kind,
+								name: record.kind === "custom_entry" ? record.customType : record.event,
+							})),
+					}),
 				},
 			});
 			host.attachExtensionUI(tui.ctxUI);

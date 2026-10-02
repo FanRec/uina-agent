@@ -11,7 +11,7 @@
 
 import { errorMessage } from "../core/errors.js";
 import type { ChatMsg, RequestProjection } from "../core/types.js";
-import type { DeepReadonly, OutputEvent, RuntimeEvent } from "../runtime/events.js";
+import type { DeepReadonly, InjectionProvenance, OutputEvent, RuntimeEvent } from "../runtime/events.js";
 import {
 	warnIgnoredToolStatus,
 	type HookContributions,
@@ -80,6 +80,74 @@ interface RegisteredHandler {
 
 export type RuntimeScopeFilter = readonly string[] | undefined;
 
+/** provenance 预览截断宽度（首行级，约一屏可读）。 */
+const PREVIEW_LIMIT = 80;
+/** 单次聚合运行登记的 provenance 上限（链长受扩展数约束，此上限只防病态注册）。 */
+const LEDGER_LIMIT = 64;
+
+function firstLinePreview(text: string): string {
+	const line = text.split("\n", 1)[0] ?? "";
+	return line.length > PREVIEW_LIMIT ? `${line.slice(0, PREVIEW_LIMIT)}…` : line;
+}
+
+function messagesCharTotal(messages: readonly ChatMsg[]): number {
+	let total = 0;
+	for (const message of messages) total += message.content.length;
+	return total;
+}
+
+/** 单个 handler 贡献的 provenance 记录组（一 handler 可贡献多种 kind）。 */
+function prepareContributions(extension: string, res: HookContributions["turn.prepare"]): InjectionProvenance[] {
+	const records: InjectionProvenance[] = [];
+	if (res.messages?.length) {
+		records.push({
+			extension,
+			kind: "messages",
+			messageCount: res.messages.length,
+			chars: messagesCharTotal(res.messages as readonly ChatMsg[]),
+			preview: firstLinePreview(res.messages[0].content),
+		});
+	}
+	if (res.systemPrompt !== undefined) {
+		records.push({
+			extension,
+			kind: "systemPrompt",
+			chars: res.systemPrompt.length,
+			preview: firstLinePreview(res.systemPrompt),
+		});
+	}
+	if (res.model !== undefined) {
+		records.push({
+			extension,
+			kind: "model",
+			chars: 0,
+			preview: `${res.model.providerId}/${res.model.id}`,
+		});
+	}
+	if (res.thinkingLevel !== undefined) {
+		records.push({
+			extension,
+			kind: "thinkingLevel",
+			chars: 0,
+			preview: res.thinkingLevel,
+		});
+	}
+	return records;
+}
+
+/** transformContext 单步的量级变化摘要（messages 恒在，tools 有变化时才追加）。 */
+function transformDeltaPreview(prev: RequestProjection, next: RequestProjection): string {
+	const prevCount = prev.messages.length;
+	const nextCount = next.messages.length;
+	const charDelta = messagesCharTotal(next.messages) - messagesCharTotal(prev.messages);
+	const signed = (value: number): string => `${value >= 0 ? "+" : ""}${value}`;
+	let preview = `消息 ${prevCount}→${nextCount} · 字符 ${signed(charDelta)}`;
+	if (next.tools.length !== prev.tools.length) {
+		preview += ` · 工具 ${signed(next.tools.length - prev.tools.length)}`;
+	}
+	return preview;
+}
+
 export class ExtensionHost {
 	private handlers = new Map<string, Set<RegisteredHandler>>();
 	/** 干预注册空间：键是 HookName 词汇，与事实事件名（handlers）分属两个词表。 */
@@ -88,6 +156,15 @@ export class ExtensionHost {
 	private readonly sharedValues = new Map<string, unknown>();
 	private errorListeners = new Set<ExtensionErrorListener>();
 	private observedTail: Promise<void> = Promise.resolve();
+	/** 最近一次 turn.transformContext 聚合运行的逐扩展贡献登记（上下文检视拉取口）。
+	 * prepare 侧不需要字段：贡献随 runTurnPrepare 结果/事件返回，单一事实源。 */
+	private lastTransformLedger: InjectionProvenance[] = [];
+
+	/** 最近一次 turn.transformContext 链的逐扩展贡献（检视器打开时实时读，非事件流——
+	 * transformContext 每请求运行，事件会刷屏；并发 scope 下共享登记，语义为"最近一次"）。 */
+	lastTransformInjections(): readonly InjectionProvenance[] {
+		return [...this.lastTransformLedger];
+	}
 
 	/** 订阅事实事件：只观察"已经发生的"，无返回协议。干预注册请用 onHook。 */
 	on<T extends ExtensionEvent["type"]>(
@@ -265,19 +342,28 @@ export class ExtensionHost {
 	/** turn.transformContext：链式的纯 RequestProjection 变换。 */
 	async runTransformContext(projection: RequestProjection, scope?: RuntimeScopeFilter): Promise<RequestProjection> {
 		const all = this.hookEntriesFor("turn.transformContext", scope);
+		const ledger: InjectionProvenance[] = (this.lastTransformLedger = []);
 		if (all.length === 0) return projection;
-		const handlers = [...all.filter((entry) => !entry.tail), ...all.filter((entry) => entry.tail)].map(
-			(entry) => entry.handler,
-		);
+		const steps = [...all.filter((entry) => !entry.tail), ...all.filter((entry) => entry.tail)];
 
 		let currentProjection: RequestProjection = immutableProjection(projection);
-		for (const handler of handlers) {
+		for (const entry of steps) {
 			try {
-				const res = (await handler(currentProjection as never)) as
+				const res = (await entry.handler(currentProjection as never)) as
 					| HookContributions["turn.transformContext"]
 					| undefined;
 				if (res?.projection) {
-					currentProjection = immutableProjection(res.projection as RequestProjection);
+					const next = immutableProjection(res.projection as RequestProjection);
+					if (ledger.length < LEDGER_LIMIT) {
+						ledger.push({
+							extension: entry.scopeId ?? "(internal)",
+							kind: "projection",
+							messageCount: next.messages.length - currentProjection.messages.length,
+							chars: messagesCharTotal(next.messages) - messagesCharTotal(currentProjection.messages),
+							preview: transformDeltaPreview(currentProjection, next),
+						});
+					}
+					currentProjection = next;
 				}
 			} catch (err) {
 				this.emitError("turn.transformContext", err);
@@ -334,22 +420,27 @@ export class ExtensionHost {
 				systemPrompt?: string;
 				model?: import("../core/types.js").Model;
 				thinkingLevel?: import("../core/types.js").ThinkingLevel;
+				/** 逐扩展贡献 provenance（与合并结果同源登记，随结果单一事实源返回）。 */
+				injections: readonly InjectionProvenance[];
 		  }>
 		| undefined
 	> {
-		const handlers = this.hooksFor("turn.prepare", scope);
+		const entries = this.hookEntriesFor("turn.prepare", scope);
 		const messages: ChatMsg[] = [];
 		let currentPrompt = input.systemPrompt;
 		let currentModel: HookContributions["turn.prepare"]["model"];
 		let currentThinking: HookContributions["turn.prepare"]["thinkingLevel"];
 		let modified = false;
+		const ledger: InjectionProvenance[] = [];
 
-		for (const handler of handlers) {
+		for (const entry of entries) {
 			try {
-				const res = (await handler(Object.freeze({ prompt: input.prompt, systemPrompt: currentPrompt }) as never)) as
-					| HookContributions["turn.prepare"]
-					| undefined;
+				const res = (await entry.handler(
+					Object.freeze({ prompt: input.prompt, systemPrompt: currentPrompt }) as never,
+				)) as HookContributions["turn.prepare"] | undefined;
 				if (res) {
+					const records = prepareContributions(entry.scopeId ?? "(internal)", res);
+					if (records.length > 0 && ledger.length < LEDGER_LIMIT) ledger.push(...records);
 					if (res.messages?.length) {
 						messages.push(...(res.messages as ChatMsg[]));
 						modified = true;
@@ -378,6 +469,7 @@ export class ExtensionHost {
 					systemPrompt: currentPrompt !== input.systemPrompt ? currentPrompt : undefined,
 					...(currentModel !== undefined ? { model: currentModel } : {}),
 					...(currentThinking !== undefined ? { thinkingLevel: currentThinking } : {}),
+					injections: ledger,
 				}
 			: undefined;
 	}

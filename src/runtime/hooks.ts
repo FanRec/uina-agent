@@ -148,10 +148,15 @@ export interface RuntimeHooks {
 		 * 或 thinking 档位（Subject 在安全点以 setModel 的完整纪律应用：失效 usage 锚、
 		 * 广播 model_select）。对应 Pi 的 prepareNextTurn。
 		 */
-		prepare(
-			input: Readonly<{ prompt: string; systemPrompt: string }>,
-		): Promise<
-			Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string; model?: Model; thinkingLevel?: ThinkingLevel }>
+		prepare(input: Readonly<{ prompt: string; systemPrompt: string }>): Promise<
+			Readonly<{
+				messages?: readonly ChatMsg[];
+				systemPrompt?: string;
+				model?: Model;
+				thinkingLevel?: ThinkingLevel;
+				/** 聚合层登记的逐扩展贡献 provenance（观测事实，与合并结果同源，见 InjectionProvenance）。 */
+				injections?: readonly import("./events.js").InjectionProvenance[];
+			}>
 		>;
 		/** Pure projection transform. Handlers must not consume events, persist state or
 		 * perform external effects merely because inspection ran. */

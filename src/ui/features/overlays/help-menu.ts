@@ -66,6 +66,7 @@ export class HelpMenu implements Component, Focusable {
 			["Alt+J", "后台任务看板 (TaskDashboard)"],
 			["Alt+T", "全屏审计轨迹时序 (Trajectory)"],
 			["Alt+H", "会话历史分支检视 (History)"],
+			["Alt+G", "上下文检视器：提示词与注入"],
 			["Alt+↑ / Alt+Q", "待办队列撤回至草稿"],
 			["Ctrl+Enter", "紧急打断并立即插队发送"],
 			["Shift+Tab", "循环切换思考强度 (off/high/max)"],

@@ -172,6 +172,10 @@ export class InteractiveTUI {
 				this.host.setContext(m.snapshot);
 				break;
 
+			case "context_prepare":
+				this.host.setContextPrepare(m);
+				break;
+
 			case "session_compact":
 				if (m.status === "completed") {
 					this.host.addCompaction({

@@ -180,6 +180,15 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		},
 	});
 
+	pi.registerCommand({
+		name: "context",
+		description: "上下文检视器：系统提示词与注入信息 (Alt+G)",
+		keybinding: "alt+g",
+		handler: () => {
+			ui.openFeature?.("context-inspector");
+		},
+	});
+
 	const openHistory = (): void => {
 		if (ui.openFeature?.("history")) return;
 		const nodes = listAllSessionNodes(pi.session, { scope: "all" });
