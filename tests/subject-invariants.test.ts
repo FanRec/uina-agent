@@ -561,3 +561,69 @@ describe("不变量：retry 可观察性全 provider 一致", () => {
 		}
 	});
 });
+
+describe("不变量：失败/打断回合的队列保留与显式投递", () => {
+	it("失败回合不自动续跑队列，补发 agent_settled 且队列保留可显式恢复", async () => {
+		let calls = 0;
+		let release: (() => void) | undefined;
+		const stream: ModelStreamFn = async (_m, _req, onDelta, signal) => {
+			calls++;
+			if (calls === 1) {
+				await new Promise<void>((resolve) => {
+					release = resolve;
+					signal?.addEventListener("abort", () => resolve(), { once: true });
+				});
+				throw new Error("注入的回合失败");
+			}
+			onDelta({ kind: "text", text: "补跑完成" });
+			onDelta({ kind: "finish", reason: "stop" });
+		};
+		const h = SubjectHarness.create({ stream, store: new MemorySessionStore() });
+		const settled: number[] = [];
+		h.subject.subscribe((event) => {
+			if (event.type === "agent_settled") settled.push(event.turnSeq);
+		});
+
+		const first = h.pushInput("首条");
+		await wait();
+		await h.pushInput("排队消息", { mode: "followUp" });
+		expect(h.queuedSnapshot().map((item) => item.text)).toEqual(["排队消息"]);
+		release?.();
+		await first;
+		await h.waitForIdle();
+
+		// 失败回合不自动续跑（避免错误循环），但队列诚实保留、settled 事件不缺席
+		expect(h.queuedSnapshot().map((item) => item.text)).toEqual(["排队消息"]);
+		expect(settled).toHaveLength(1);
+
+		await h.subject.resumePending();
+		await h.waitForIdle();
+		expect(h.queuedSnapshot()).toHaveLength(0);
+		expect(h.history.some((message) => message.role === "user" && message.content === "排队消息")).toBe(true);
+	});
+
+	it("打断回合不自动续跑队列，补发 agent_settled 且队列保留可显式恢复", async () => {
+		const log: string[] = [];
+		const gated = firstCallGatedStream(log);
+		const h = SubjectHarness.create({ stream: gated.stream, store: new MemorySessionStore() });
+		const settled: number[] = [];
+		h.subject.subscribe((event) => {
+			if (event.type === "agent_settled") settled.push(event.turnSeq);
+		});
+
+		const first = h.pushInput("首条");
+		await wait();
+		await h.pushInput("排队消息", { mode: "followUp" });
+		h.subject.interrupt();
+		await first;
+		await h.waitForIdle();
+
+		expect(h.queuedSnapshot().map((item) => item.text)).toEqual(["排队消息"]);
+		expect(settled).toHaveLength(1);
+
+		await h.subject.resumePending();
+		await h.waitForIdle();
+		expect(h.queuedSnapshot()).toHaveLength(0);
+		expect(h.history.some((message) => message.role === "user" && message.content === "排队消息")).toBe(true);
+	});
+});

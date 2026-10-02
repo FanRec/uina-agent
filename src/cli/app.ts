@@ -312,7 +312,8 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 
 	const deliverQueuedNow = (extraText?: string): void => {
 		const token = ++interruptSeq;
-		if (host.isBusy() || (tui && tui.host.isBusy())) host.interrupt();
+		const wasBusy = host.isBusy() || (tui && tui.host.isBusy());
+		if (wasBusy) host.interrupt();
 		if (execRunning) execAbort?.abort();
 		void host
 			.waitForIdle()
@@ -324,7 +325,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				void host.resumePending().catch((error: unknown) => {
 					process.stderr.write("[投递失败] " + String(error) + "\n");
 				});
-				tui?.host.transcript.addNotice("已打断当前回合，" + count + " 条消息立即处理");
+				tui?.host.transcript.addNotice((wasBusy ? "已打断当前回合，" : "") + count + " 条消息立即处理");
 				tui?.host.requestRender();
 			})
 			.catch((error) => {
@@ -333,9 +334,8 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	};
 
 	const handleInterruptAndDeliver = (text: string): void => {
-		const trimmed = text.trim();
-		if (!trimmed) return;
-		deliverQueuedNow(trimmed);
+		// 空文本同样生效：投递持有队列（Ctrl+Enter 空输入"插队"），无队列时 deliverQueuedNow 天然 no-op。
+		deliverQueuedNow(text.trim() || undefined);
 	};
 
 	const handlePullBackQueue = async (): Promise<void> => {

@@ -561,14 +561,15 @@ export class InputLine implements Component, Focusable {
 			return;
 		}
 
-		// 5.1 Ctrl+Enter 即时打断并投递（对齐 dsh-TUI interruptAndDeliver）
+		// 5.1 Ctrl+Enter 即时打断并投递（对齐 dsh-TUI interruptAndDeliver）。
+		// 空输入同样生效：投递持有队列（兑现 pending 卡片"Ctrl+Enter 插队"提示），无队列时上层天然 no-op。
 		if (matchesKey(data, Key.ctrlEnter) || matchesKey(data, Key.ctrl("enter"))) {
 			const submission = this.getText();
 			if (submission.trim()) {
 				this.addHistory(submission);
 				this.clear();
-				this.onSubmitMode?.(submission, "interrupt");
 			}
+			this.onSubmitMode?.(submission, "interrupt");
 			return;
 		}
 

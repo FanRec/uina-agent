@@ -3746,6 +3746,11 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(submittedText).toBe("Stop and Do This");
 				expect(submittedMode).toBe("interrupt");
 				expect(input.getText()).toBe("");
+
+				// 6. 空输入下 Ctrl+Enter 也发出 interrupt 语义（投递持有队列，兑现"插队"提示）
+				input.handleInput("\x1b[13;5u");
+				expect(submittedText).toBe("");
+				expect(submittedMode).toBe("interrupt");
 			});
 
 			it("TranscriptContainer: interruptTurn 会封顶思考、把未确认的运行中工具标为 unknown，并插入暗调打断行", () => {

@@ -209,6 +209,23 @@ export class Subject {
 	}
 
 	/**
+	 * 回合边界上下文构成事实（context_prepare）：prepare 应用后、agent_start 前。
+	 * systemPrompt = 本次准备最终生效全文；注入 provenance 来自聚合层登记（无注入为空数组——
+	 * "零注入"本身是要看到的事实）。必须 await：与 agent_start 的 emit 保持单流时序承诺。
+	 */
+	private async dispatchContextPrepare(
+		turnNumber: number,
+		prepared: Awaited<ReturnType<RuntimeHooks["turn"]["prepare"]>> | undefined,
+	): Promise<void> {
+		await this.dispatch({
+			type: "context_prepare",
+			turnNumber,
+			systemPrompt: prepared?.systemPrompt ?? this.systemPrompt,
+			injections: prepared?.injections ?? [],
+		});
+	}
+
+	/**
 	 * 单次模型调用的真实 usage 到达时立即上报，让底栏不必等 turn_end。
 	 *
 	 * 这里是唯一的写入点，所以历史 usage 与它派发出的 usage_update 永远同源：
@@ -410,6 +427,7 @@ export class Subject {
 				const turn = ++this.turnSeq;
 				const prepared = await this.runtimeHooks.turn.prepare({ prompt: "", systemPrompt: this.systemPrompt });
 				await this.applyPreparedRuntime(prepared);
+				await this.dispatchContextPrepare(turn, prepared);
 				await this.runtimeHooks.events.emit({ type: "agent_start", turnSeq: turn });
 				await this.runTurn(
 					undefined,
@@ -723,6 +741,7 @@ export class Subject {
 
 			const prepared = await this.runtimeHooks.turn.prepare({ prompt: text ?? "", systemPrompt: this.systemPrompt });
 			await this.applyPreparedRuntime(prepared);
+			await this.dispatchContextPrepare(turn, prepared);
 			await this.runtimeHooks.events.emit({ type: "agent_start", turnSeq: turn });
 
 			await this.runTurn(
@@ -865,9 +884,11 @@ export class Subject {
 			} catch (resumeError) {
 				this.reportError(resumeError);
 			}
-		} else if (this.queues.size === 0) {
-			await this.dispatch({ type: "agent_settled", turnSeq: turnNumber });
+			return;
 		}
+		// 失败或被打断的回合不自动续跑队列：失败续跑会错误循环，打断续跑违背用户停止意图。
+		// 队列由 pending 卡片诚实呈现，等待显式投递（Esc+文本 / Ctrl+Enter / Alt+↑ 撤回）。
+		await this.dispatch({ type: "agent_settled", turnSeq: turnNumber });
 	}
 
 	/** Resume original queued records after interruption, preserving identity, source and attachments. */
@@ -932,6 +953,7 @@ export class Subject {
 			if (!(await this.applyPendingRewind())) return false;
 			const prepared = await this.runtimeHooks.turn.prepare({ prompt: "", systemPrompt: this.systemPrompt });
 			await this.applyPreparedRuntime(prepared);
+			await this.dispatchContextPrepare(this.turnSeq, prepared);
 			// 换模型/换档即刻生效于本 decide 循环的下一次请求（安全点已过，口径统一）。
 			model = this.model;
 			systemPrompt = prepared.systemPrompt ?? this.systemPrompt;

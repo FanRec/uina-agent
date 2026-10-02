@@ -2085,8 +2085,11 @@ export class UIHost implements UIHostContextPort {
 				this.activityLine.update("idle", "已打断当前轮次");
 				this.requestRender();
 				this.onInterruptAndDeliver?.(text);
-			} else {
+			} else if (text.trim()) {
 				this.onUserLine?.(text, "direct");
+			} else {
+				// 空输入的 Ctrl+Enter：投递持有队列（"插队"提示语义）；队列空时上层天然 no-op。
+				this.onInterruptAndDeliver?.(text);
 			}
 			return;
 		}
