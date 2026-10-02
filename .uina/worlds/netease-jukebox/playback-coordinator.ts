@@ -61,7 +61,19 @@ export class PlaybackCoordinator {
     return song;
   }
   pause(): Promise<void> { return this.enqueue(async () => { await this.player.pause(); this.position = await this.player.progress(); this.emit(); }); }
-  resume(): Promise<void> { return this.enqueue(async () => { await this.player.resume(); this.position = await this.player.progress(); this.emit(); }); }
+  // "恢复"只有在存在可解除的暂停时才成立：没有在播曲目时，player.resume() 只会把状态位改成
+  // playing（实测 Resume 后 status=playing/currentSong=null），不出声、也不装载队列。
+  // 此时改为装载队列头；队列为空则保持 idle，不谎报 playing。
+  // 注意：playNext 内部会经 loadSong -> enqueue 串行化，因此这里必须在 enqueue 之外调用，
+  // 否则会等待自己入队的那次操作，形成自锁。
+  async resume(): Promise<void> {
+    if (!this.currentSong) {
+      if (this.queue.length === 0) return;
+      await this.playNext();
+      return;
+    }
+    return this.enqueue(async () => { await this.player.resume(); this.position = await this.player.progress(); this.emit(); });
+  }
   stop(clearQueue = false): Promise<void> { this.generation++; if (clearQueue) this.queue = []; return this.enqueue(async () => { await this.player.stop(); this.currentSong = null; this.lastError = null; this.position = { positionMs: 0, durationMs: null }; this.emit(); }); }
   setVolume(volume: number): Promise<void> { return this.enqueue(async () => { await this.player.setVolume(volume); this.emit(); }); }
   async close(): Promise<void> { this.generation++; await this.player.stop().catch(() => undefined); await this.operations.catch(() => undefined); await this.player.close(); this.listeners.clear(); }

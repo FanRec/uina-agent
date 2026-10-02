@@ -186,7 +186,13 @@ export class JukeboxApplication {
     const operation = String(args.operation);
     if (operation === "status") { const state = await this.deps.playback.progress().then(() => this.deps.playback.snapshot()); return `状态：${state.status}\n当前：${state.currentSong?.name ?? "无"}\n音量：${state.volume}%\n队列：${state.queue.length}`; }
     if (operation === "pause") { await this.deps.playback.pause(); return "已暂停播放。"; }
-    if (operation === "resume") { await this.deps.playback.resume(); return "已恢复播放。"; }
+    if (operation === "resume") {
+      await this.deps.playback.resume();
+      const state = this.deps.playback.snapshot();
+      if (state.status === "playing" && state.currentSong) return `已恢复播放：${state.currentSong.name}。`;
+      if (state.queue.length > 0) return `未能恢复播放：仍有 ${state.queue.length} 首待播，但当前无在播曲目。`;
+      return "无需恢复：没有在播曲目或待播队列。";
+    }
     if (operation === "stop") { await this.deps.playback.stop(args.clear_queue === true); return "已停止播放。"; }
     if (operation === "mode") { const mode = String(args.mode); if (!(modes as readonly string[]).includes(mode)) return fail("播放模式无效。", "invalid_mode"); this.deps.playback.setMode(mode as PlaybackMode); return `播放模式已设为 ${mode}。`; }
     if (operation === "volume") { const level = Number(args.level); if (!Number.isFinite(level) || level < 0 || level > 100) return fail("音量必须是 0 到 100。", "invalid_volume"); await this.deps.playback.setVolume(level); return `音量已设置为 ${this.deps.playback.volume}%。`; }
