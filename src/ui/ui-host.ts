@@ -396,7 +396,6 @@ export class UIHost implements UIHostContextPort {
 		});
 
 		this.inputLine = new InputLine();
-		this.inputLine.onSubmit = (text) => this.handleUserSubmit(text);
 		this.inputLine.onSubmitMode = (text, mode) => this.handleUserSubmitMode(text, mode);
 		// Escape 不走 InputLine 回调：语义单点在 UIHost.handleEscapeKey，
 		// handleTerminalInput 在焦点分发之前消费所有 Esc。
@@ -1888,11 +1887,6 @@ export class UIHost implements UIHostContextPort {
 			}
 			this.requestRender();
 		}
-	}
-
-	private handleUserSubmit(text: string): void {
-		const mode = this.busy ? "steer" : "direct";
-		this.handleUserSubmitMode(text, mode);
 	}
 
 	private handleUserSubmitMode(text: string, mode: "direct" | "steer" | "followUp" | "interrupt"): void {

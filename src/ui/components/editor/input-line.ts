@@ -227,7 +227,6 @@ export class InputLine implements Component, Focusable {
 	private isBusy = false;
 
 	// 事件回调
-	public onSubmit?: (text: string) => void;
 	public onSubmitMode?: (text: string, mode: "direct" | "steer" | "followUp" | "interrupt") => void;
 	public onEscape?: () => void;
 
@@ -558,13 +557,8 @@ export class InputLine implements Component, Focusable {
 			const submission = this.getText();
 			if (submission.trim()) {
 				this.addHistory(submission);
-				const toSubmit = submission;
 				this.clear();
-				if (this.onSubmitMode) {
-					this.onSubmitMode(toSubmit, "interrupt");
-				} else {
-					this.onSubmit?.(toSubmit);
-				}
+				this.onSubmitMode?.(submission, "interrupt");
 			}
 			return;
 		}
@@ -574,13 +568,8 @@ export class InputLine implements Component, Focusable {
 			const submission = this.getText();
 			if (submission.trim()) {
 				this.addHistory(submission);
-				const toSubmit = submission;
 				this.clear();
-				if (this.onSubmitMode) {
-					this.onSubmitMode(toSubmit, "followUp");
-				} else {
-					this.onSubmit?.(toSubmit);
-				}
+				this.onSubmitMode?.(submission, "followUp");
 			}
 			return;
 		}
@@ -590,14 +579,8 @@ export class InputLine implements Component, Focusable {
 			const submission = this.getText();
 			if (submission.trim()) {
 				this.addHistory(submission);
-				const toSubmit = submission;
 				this.clear();
-				if (this.onSubmitMode) {
-					const mode = this.isBusy ? "steer" : "direct";
-					this.onSubmitMode(toSubmit, mode);
-				} else {
-					this.onSubmit?.(toSubmit);
-				}
+				this.onSubmitMode?.(submission, this.isBusy ? "steer" : "direct");
 			}
 			return;
 		}
@@ -835,10 +818,6 @@ export class InputLine implements Component, Focusable {
 			const clean = sanitizeText(raw);
 			this.textBuffer.insert(clean);
 		}
-	}
-
-	getExpandedText(): string {
-		return this.getText();
 	}
 
 	setCursorByClick(clickCol: number): void {

@@ -163,10 +163,6 @@ export class MouseSelectionTracker {
 		return this.targets.find((t) => t.id === id);
 	}
 
-	clearTargets(): void {
-		this.targets.length = 0;
-	}
-
 	hasSelection(): boolean {
 		if (!this.anchor || !this.focus) return false;
 		if (this.anchor.contentRow !== undefined && this.focus.contentRow !== undefined) {

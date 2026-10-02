@@ -108,21 +108,21 @@ export function getToolCategory(toolName: string): ToolCategory {
 	return CATEGORY_BY_TOOL[toolName.toLowerCase()] ?? "default";
 }
 
-/** 工具名称在各类别下的品牌主题色 */
+/** 工具名称在各类别下的品牌主题色（C 常量恒真值，不再挂 fallback 死分支） */
 export function getToolCategoryColor(category: ToolCategory): string {
 	switch (category) {
 		case "write":
-			return C.toolDotWrite || "\x1b[38;2;216;178;112m"; // Warm Gold
+			return C.toolDotWrite; // Warm Gold
 		case "exec":
-			return C.toolDotExec || "\x1b[38;2;127;174;153m"; // Mist Cyan
+			return C.toolDotExec; // Mist Cyan
 		case "read":
-			return C.toolDotRead || "\x1b[38;2;130;184;199m"; // Mist Blue
+			return C.toolDotRead; // Mist Blue
 		case "web":
-			return C.toolDotWeb || "\x1b[38;2;125;161;222m"; // Sky/Teal
+			return C.toolDotWeb; // Sky/Teal
 		case "task":
-			return C.toolDotTask || "\x1b[38;2;209;148;174m"; // Violet
+			return C.toolDotTask; // Violet
 		default:
-			return C.iceBlue || "\x1b[38;2;171;194;236m";
+			return C.iceBlue;
 	}
 }
 
