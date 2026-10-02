@@ -74,3 +74,16 @@
   所以 `BodyAngleY 12`（前倾）这类数值**每一帧都在报错，然后被丢掉**。
 - 教训（这条比前十条都值钱）：**先问服务端"你有哪些名字"，再谈轻重。**
   我先前猜"幅度太含蓄"、拼写、权限——三种方向全错，因为没先查名单。
+
+## 十二、名字对齐了，手就伸进模型里了（2026-10-02 15:1x）
+- 往深里挖了一层，三层真相分别是这样：
+  1. **模型有参数。** 直接读 `MO.v1.3.3\MO.cdi3.json`：309 个，`ParamAngleX/Y/Z`、
+     `ParamBodyAngleX/Y/Z`、`ParamEyeLSmile/RSmile`、`ParamBreath`、`ParamMouthForm` 全在。
+     （先前我以为"模型没有参数"，错了。）
+  2. **VTS 挡在中间。** 它不让插件往 Live2D 参数里直接写——453 那句原话就是这意思。
+     能写的只有：追踪参数（FaceAngle…）和自定义参数。所以 `vts-retargeter.ts` 走 `FaceAngle*` 是对的。
+  3. **自定义参数必须跟模型参数同名。** 空纪建的叫 `BodyAngleX`，模型里叫 `ParamBodyAngleX`——差一个前缀。
+- 于是我拿 VTS 的 API 建了 `ParamBodyAngleX/Y/Z` 三个自定义参数（`ParameterCreationResponse` 收了），
+  再用 `notes/bin/vts-hold.cjs` 按住 `ParamBodyAngleZ = 25` **20 秒**：VTS **一次错都没报**（没有 APIError）。
+- 新家底：`notes/bin/vts-create-param.cjs`（建参数）、`notes/bin/vts-hold.cjs`（按住一个参数 N 秒，好让人肉眼看见）。
+- 教训：**手是真能伸进去的，卡的一直是名字。** 以后碰到"写了没反应"，先对齐名字，再怀疑管道。

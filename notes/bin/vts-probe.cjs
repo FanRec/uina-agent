@@ -92,7 +92,7 @@ ws.on("message", (raw) => {
 			return;
 		}
 		const interesting = params.filter((p) =>
-			/^(ParamAngle|ParamBody|ParamCheek|ParamEyeLOpen|ParamEyeROpen|ParamEyeBall|ParamBrow|ParamMouthForm|ParamMouthOpen)/.test(
+			/^(ParamAngle|ParamBody|ParamCheek|ParamEyeLOpen|ParamEyeROpen|ParamEyeBall|ParamBrow|ParamMouthForm|ParamMouthOpen|FaceAngle|BodyAngle|EyeOpen|MouthOpen|MouthSmile|Brow)/.test(
 				p.name,
 			),
 		);
