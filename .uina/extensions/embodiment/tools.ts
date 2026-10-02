@@ -78,12 +78,13 @@ export function createBodyTool(router: BodyRouter, onStateChange?: (reason: stri
             };
           }
           const summary = router.summaryOf(endpoint.bodyId)!;
+          const detailed = endpoint.formatStatus ? `\n\n${endpoint.formatStatus()}` : "";
           return {
-            result: JSON.stringify(
+            result: `${JSON.stringify(
               { ...summary, cues: endpoint.affordance().cues.map((c) => c.id) },
               null,
               2,
-            ),
+            )}${detailed}`,
             status: "succeeded",
           };
         }

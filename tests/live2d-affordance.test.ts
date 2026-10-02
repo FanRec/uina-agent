@@ -38,5 +38,35 @@ describe("Live2D cue 声明与解析单一事实来源一致性", () => {
 			expect(CANONICAL_CUE_IDS).toContain(canonical);
 		}
 	});
+
+	it("BodyRouter 能够通过 supportsCue 或别名匹配成功路由 sparkle、修饰符与复合线索", async () => {
+		const { BodyRouter } = await import("../.uina/extensions/embodiment/body-router.js");
+		const router = new BodyRouter();
+		let deliveredCue = "";
+		const fakeEndpoint = {
+			bodyId: "live2d_mo",
+			bodyType: "avatar_2d" as const,
+			affordance: () => live2dAffordance,
+			state: () => ({ online: true }),
+			emitCue: (id: string) => { deliveredCue = id; },
+			safeStop: async () => {},
+			supportsCue: (id: string) => resolveCueToBeat(id) !== null,
+		};
+		router.registerEndpoint(fakeEndpoint);
+
+		expect(router.dispatchCue("sparkle")).toBe(true);
+		expect(deliveredCue).toBe("sparkle");
+
+		expect(router.dispatchCue("smile:0.8")).toBe(true);
+		expect(deliveredCue).toBe("smile:0.8");
+
+		expect(router.dispatchCue("tilt_left,smile")).toBe(true);
+		expect(deliveredCue).toBe("tilt_left,smile");
+
+		expect(router.dispatchCue("head=tilt_left,face=smug")).toBe(true);
+		expect(deliveredCue).toBe("head=tilt_left,face=smug");
+
+		expect(router.dispatchCue("completely_unknown_action")).toBe(false);
+	});
 });
 

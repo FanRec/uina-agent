@@ -37,6 +37,10 @@ export function createLive2DApp(): WorldDef {
 	description:
 		"控制当前在屏幕上呈现的 Live2D 虚拟二次元立绘形象（Mo）。日常说话时优先在台词中使用 <cue id='...'/> 进行 0 开销的自然肢体伴随（如微笑、点头、歪头）；仅在需要主动调整中长期人设体态、触发装扮、或进行多步显式表演分镜时调用本工具。",
 
+	get environment(): string {
+		return currentRuntime ? currentRuntime.formatStatus() : "Live2D 虚拟形象运行时离线或未就绪";
+	},
+
 	defaultState: {
 		enabled: true,
 	},
@@ -89,6 +93,15 @@ export function createLive2DApp(): WorldDef {
 						maximum: 1.0,
 						description: "情绪力度（0.2=克制小心, 0.6=正常, 1.0=夸张强烈），默认 0.6",
 					},
+					latch_last: {
+						type: "boolean",
+						description: "动作完成后是否留存在最终姿态（true=停留在该体态心境底座上继续互动，false=平滑回落至待机态）",
+					},
+					transition: {
+						type: "string",
+						enum: ["snappy", "smooth", "gentle"],
+						description: "动作缓动节奏风格（snappy=快速卡点 150ms, smooth=标准平滑 250ms, gentle=柔和舒缓 450ms），默认 smooth",
+					},
 					beats: {
 						type: "array",
 						maxItems: 2,
@@ -104,6 +117,10 @@ export function createLive2DApp(): WorldDef {
 									minimum: 200,
 									maximum: 3000,
 									description: "维持时间(毫秒)，超出 200~3000 会被钳制",
+								},
+								latch: {
+									type: "boolean",
+									description: "当前步骤是否留存为后续姿态",
 								},
 							},
 						},
@@ -139,15 +156,25 @@ export function createLive2DApp(): WorldDef {
 
 		pose: {
 			description:
-				"切换全身基准体态与心境氛围（持续循环生效，作为人设底座）：playful（元气调皮大歪头，适合轻松活泼互动）、focused（正坐前倾仰头，适合认真倾听与专注工作）、relaxed（低头微斜闲适放松，适合闲聊待机）、shy_side（娇羞侧身偏头）、confident（自信挺胸昂首）、listening（侧耳前倾倾听）。默认持续常驻生效，直至下次主动切换；若指定了 duration_ms（> 0）则在保持指定时间后自然平滑回正。",
+				"切换全身基准体态与心境氛围（持续循环生效，作为人设底座）：playful（元气调皮大歪头）、focused（正坐前倾仰头）、relaxed（低头微斜闲适待机）、shy_side（娇羞侧身偏头）、confident（自信挺胸昂首）、listening（侧耳前倾倾听）、smug_gremlin（小恶魔得意坏笑）、meek_shy（内向害羞上目线）、streamer_hype（大主播亢奋前倾）。默认持续常驻生效，直至下次主动切换；若指定了 duration_ms（> 0）则在保持指定时间后自然平滑回正。",
 			parameters: {
 				type: "object",
 				properties: {
 					name: {
 						type: "string",
-						enum: ["relaxed", "focused", "playful", "shy_side", "confident", "listening"],
+						enum: [
+							"relaxed",
+							"focused",
+							"playful",
+							"shy_side",
+							"confident",
+							"listening",
+							"smug_gremlin",
+							"meek_shy",
+							"streamer_hype",
+						],
 						description:
-							"基准姿态名称：playful=元气调皮大歪头, focused=专注认真正坐, relaxed=闲适放松待机, shy_side=娇羞侧身偏头, confident=自信挺胸昂首, listening=侧耳前倾倾听",
+							"基准姿态名称：playful=元气调皮大歪头, focused=专注认真正坐, relaxed=闲适放松待机, shy_side=娇羞侧身偏头, confident=自信挺胸昂首, listening=侧耳前倾倾听, smug_gremlin=小恶魔得意坏笑, meek_shy=内向害羞上目线, streamer_hype=大主播亢奋前倾",
 					},
 					duration_ms: {
 						type: "number",
@@ -173,6 +200,16 @@ export function createLive2DApp(): WorldDef {
 				const check = getRuntimeOrError();
 				if ("error" in check) return check.error;
 				return check.runtime.executeFlip(ctx);
+			},
+		},
+
+		status: {
+			description:
+				"查询当前 Live2D 虚拟形象的即时物理与具身状态（包括 VTS 物理在线状态、具身注册、口型通道接线、当前姿态、当前服装、最近线索与可用热键）。当用户询问身体状态、口型是否接通、或排查动作状态时调用。",
+			async run(_args: Record<string, unknown>, _ctx: ActionContext) {
+				const check = getRuntimeOrError();
+				if ("error" in check) return check.error;
+				return check.runtime.formatStatus();
 			},
 		},
 	},

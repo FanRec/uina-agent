@@ -127,11 +127,24 @@ export class BodyRouter {
       if (this.pausedBodies.has(id) || !ep.state().online) {
         continue;
       }
-      // 匹配的是端点**声明的响应集合**（id + 别名）；派发时传原始 cueId，
-      // 别名→规范 id 的归一化由端点自己完成（宿主不解释语义）。
-      const affords = ep.affordance().cues.some(
-        (c) => c.id === cueId || c.aliases?.includes(cueId) === true,
-      );
+      let affords = false;
+      if (typeof ep.supportsCue === "function") {
+        try {
+          affords = ep.supportsCue(cueId);
+        } catch {
+          affords = false;
+        }
+      }
+      if (!affords) {
+        // 退回静态表匹配（剥离冒号等常见参数修饰后进行基础匹配）
+        const baseName = cueId.split(/[:=,;&+]/)[0]?.trim().toLowerCase();
+        affords = ep.affordance().cues.some(
+          (c) =>
+            c.id === cueId ||
+            c.aliases?.includes(cueId) === true ||
+            (baseName ? c.id === baseName || c.aliases?.includes(baseName) === true : false),
+        );
+      }
       if (affords) {
         candidates.push(ep);
       }

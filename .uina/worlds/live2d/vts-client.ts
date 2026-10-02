@@ -283,6 +283,36 @@ export class VTSClient {
 		}
 	}
 
+	private async ensureCustomParameters(existingParams: Set<string>): Promise<void> {
+		const requiredCustomParams: Array<{
+			name: string;
+			explanation: string;
+			min: number;
+			max: number;
+			defaultValue: number;
+		}> = [
+			{ name: "BodyAngleX", explanation: "Uina Torso Yaw", min: -30, max: 30, defaultValue: 0 },
+			{ name: "BodyAngleY", explanation: "Uina Torso Pitch", min: -30, max: 30, defaultValue: 0 },
+			{ name: "BodyAngleZ", explanation: "Uina Torso Roll", min: -30, max: 30, defaultValue: 0 },
+		];
+		for (const param of requiredCustomParams) {
+			if (!existingParams.has(param.name)) {
+				try {
+					await this.sendRequest("ParameterCreationRequest", {
+						parameterName: param.name,
+						explanation: param.explanation,
+						min: param.min,
+						max: param.max,
+						defaultValue: param.defaultValue,
+					});
+					existingParams.add(param.name);
+				} catch {
+					// 忽略已存在或不支持创建的报错
+				}
+			}
+		}
+	}
+
 	private async refreshInjectableParameters(): Promise<void> {
 		try {
 			const res = (await this.sendRequest("InputParameterListRequest", {})) as {
@@ -300,6 +330,7 @@ export class VTSClient {
 					}
 				}
 			}
+			await this.ensureCustomParameters(this.injectableParameters);
 			this.injectableParamsLoaded = true;
 		} catch (err) {
 			// 清单获取失败：标记就绪并退化为不过滤全量注入（空集语义），

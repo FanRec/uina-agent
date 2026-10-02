@@ -9,7 +9,9 @@ export interface BodyEndpoint {
 	state(): BodyState;
 	emitCue(cueId: string): void;
 	safeStop(): Promise<void>;
+	supportsCue?(cueId: string): boolean;
 	onFocus?(isFocused: boolean): void | Promise<void>;
+	formatStatus?(): string;
 }
 export interface VoiceLevelEvent { readonly traceId: string; readonly rms: number; readonly peak: number; readonly timestamp: number; }
 export interface VoiceLevelSink { processLevel(level: { rms: number; peak?: number }): void; reset(): void; }

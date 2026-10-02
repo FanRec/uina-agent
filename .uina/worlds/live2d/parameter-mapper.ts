@@ -47,28 +47,40 @@ const HEAD_TABLE: Record<HeadPose, ParamWeight[]> = {
 const FACE_TABLE: Record<FaceExpression, ParamWeight[]> = {
 	shy: [
 		{ name: "ParamCheek", mult: 0.95, additive: true },
-		{ name: "ParamMouthForm", mult: 0.3, fixed: true },
-		{ name: "ParamEyeLSmile", mult: 0.5, additive: true },
-		{ name: "ParamEyeRSmile", mult: 0.5, additive: true },
-	],
-	smug: [
-		{ name: "ParamMouthForm", mult: 0.9 },
-		{ name: "ParamEyeRSmile", mult: 0.9, additive: true },
-		{ name: "ParamEyeLSmile", mult: 0.3, additive: true },
-		{ name: "ParamBrowRY", mult: 0.5, additive: true },
-	],
-	pout: [
-		{ name: "ParamMouthForm", mult: -0.8 },
-		{ name: "ParamCheek", mult: 0.9, additive: true },
-		{ name: "ParamBrowLY", mult: -0.4, additive: true },
-		{ name: "ParamBrowRY", mult: -0.4, additive: true },
-	],
-	sparkle: [
-		{ name: "ParamEyeLOpen", mult: 1.35, fixed: true },
-		{ name: "ParamEyeROpen", mult: 1.35, fixed: true },
+		{ name: "ParamBrowLY", mult: -0.35, additive: true },
+		{ name: "ParamBrowRY", mult: -0.35, additive: true },
+		{ name: "ParamEyeLOpen", mult: 0.75, fixed: true },
+		{ name: "ParamEyeROpen", mult: 0.75, fixed: true },
 		{ name: "ParamEyeLSmile", mult: 0.7, additive: true },
 		{ name: "ParamEyeRSmile", mult: 0.7, additive: true },
+		{ name: "ParamMouthForm", mult: 0.3, fixed: true },
+	],
+	smug: [
+		{ name: "ParamBrowRY", mult: 0.7, additive: true },
+		{ name: "ParamBrowLY", mult: -0.25, additive: true },
+		{ name: "ParamEyeROpen", mult: 0.85, fixed: true },
+		{ name: "ParamEyeLOpen", mult: 0.75, fixed: true },
+		{ name: "ParamEyeRSmile", mult: 0.9, additive: true },
+		{ name: "ParamEyeLSmile", mult: 0.35, additive: true },
+		{ name: "ParamMouthForm", mult: 0.9 },
+	],
+	pout: [
+		{ name: "ParamBrowLY", mult: -0.65, additive: true },
+		{ name: "ParamBrowRY", mult: -0.65, additive: true },
+		{ name: "ParamEyeLOpen", mult: 0.82, fixed: true },
+		{ name: "ParamEyeROpen", mult: 0.82, fixed: true },
+		{ name: "ParamMouthForm", mult: -0.9 },
+		{ name: "ParamCheek", mult: 0.9, additive: true },
+	],
+	sparkle: [
+		{ name: "ParamBrowLY", mult: 0.75, additive: true },
+		{ name: "ParamBrowRY", mult: 0.75, additive: true },
+		{ name: "ParamEyeLOpen", mult: 1.35, fixed: true },
+		{ name: "ParamEyeROpen", mult: 1.35, fixed: true },
+		{ name: "ParamEyeLSmile", mult: 0.8, additive: true },
+		{ name: "ParamEyeRSmile", mult: 0.8, additive: true },
 		{ name: "ParamCheek", mult: 0.6, additive: true },
+		{ name: "ParamMouthForm", mult: 0.8 },
 	],
 	shocked: [
 		{ name: "ParamEyeLOpen", mult: 1.4, fixed: true },
@@ -78,12 +90,18 @@ const FACE_TABLE: Record<FaceExpression, ParamWeight[]> = {
 		{ name: "ParamBrowRY", mult: 0.9, additive: true },
 	],
 	tender_smile: [
-		{ name: "ParamEyeLSmile", mult: 0.85, additive: true },
-		{ name: "ParamEyeRSmile", mult: 0.85, additive: true },
+		{ name: "ParamEyeLSmile", mult: 0.95, additive: true },
+		{ name: "ParamEyeRSmile", mult: 0.95, additive: true },
+		{ name: "ParamBrowLY", mult: 0.35, additive: true },
+		{ name: "ParamBrowRY", mult: 0.35, additive: true },
+		{ name: "ParamEyeLOpen", mult: 0.88, fixed: true },
+		{ name: "ParamEyeROpen", mult: 0.88, fixed: true },
 		{ name: "ParamMouthForm", mult: 0.85 },
 		{ name: "ParamCheek", mult: 0.4, additive: true },
 	],
 	laugh: [
+		{ name: "ParamBrowLY", mult: 0.55, additive: true },
+		{ name: "ParamBrowRY", mult: 0.55, additive: true },
 		{ name: "ParamEyeLOpen", mult: 0.05, fixed: true },
 		{ name: "ParamEyeROpen", mult: 0.05, fixed: true },
 		{ name: "ParamEyeLSmile", mult: 1.0, fixed: true },
@@ -93,26 +111,31 @@ const FACE_TABLE: Record<FaceExpression, ParamWeight[]> = {
 		{ name: "ParamCheek", mult: 0.6, additive: true },
 	],
 	winking: [
+		{ name: "ParamBrowLY", mult: 0.45, additive: true },
+		{ name: "ParamBrowRY", mult: -0.25, additive: true },
 		{ name: "ParamEyeROpen", mult: 0.05, fixed: true },
 		{ name: "ParamEyeLOpen", mult: 1.15, fixed: true },
 		{ name: "ParamEyeRSmile", mult: 1.0, fixed: true },
-		{ name: "ParamEyeLSmile", mult: 0.4, additive: true },
+		{ name: "ParamEyeLSmile", mult: 0.5, additive: true },
 		{ name: "ParamMouthForm", mult: 0.8 },
 		{ name: "ParamCheek", mult: 0.5, additive: true },
 	],
 	smug_grin: [
-		{ name: "ParamMouthForm", mult: 1.0 },
-		{ name: "ParamEyeRSmile", mult: 0.9, additive: true },
-		{ name: "ParamEyeLSmile", mult: 0.3, additive: true },
-		{ name: "ParamBrowRY", mult: 0.6, additive: true },
+		{ name: "ParamBrowRY", mult: 0.75, additive: true },
+		{ name: "ParamBrowLY", mult: -0.3, additive: true },
+		{ name: "ParamEyeROpen", mult: 0.85, fixed: true },
+		{ name: "ParamEyeLOpen", mult: 0.75, fixed: true },
+		{ name: "ParamEyeRSmile", mult: 0.95, additive: true },
+		{ name: "ParamEyeLSmile", mult: 0.35, additive: true },
 		{ name: "ParamEyeBallY", mult: -0.2 },
+		{ name: "ParamMouthForm", mult: 1.0 },
 	],
 	sleepy_yawn: [
-		{ name: "ParamEyeLOpen", mult: 0.15, fixed: true },
-		{ name: "ParamEyeROpen", mult: 0.15, fixed: true },
+		{ name: "ParamBrowLY", mult: -0.4, additive: true },
+		{ name: "ParamBrowRY", mult: -0.4, additive: true },
+		{ name: "ParamEyeLOpen", mult: 0.2, fixed: true },
+		{ name: "ParamEyeROpen", mult: 0.2, fixed: true },
 		{ name: "ParamMouthOpenY", mult: 0.9 },
-		{ name: "ParamBrowLY", mult: -0.3, additive: true },
-		{ name: "ParamBrowRY", mult: -0.3, additive: true },
 	],
 };
 
@@ -150,7 +173,7 @@ const CUE_BEAT_TABLE: Record<string, ExpressBeat[]> = {
 		{ head: "lifted", face: "laugh", gaze: "user", hold_ms: 450 },
 		{ head: "nod", face: "sparkle", gaze: "user", hold_ms: 650 },
 	],
-	curious_tilt: [{ head: "tilt_right", face: "tender_smile", gaze: "side_peek", hold_ms: 1200 }],
+	curious_tilt: [{ head: "tilt_right", face: "tender_smile", gaze: "user", hold_ms: 1200 }],
 	affirmative_nod: [
 		{ head: "nod", face: "tender_smile", gaze: "user", hold_ms: 300 },
 		{ head: "lifted", face: "tender_smile", gaze: "user", hold_ms: 400 },
@@ -186,6 +209,7 @@ const CUE_BEAT_TABLE: Record<string, ExpressBeat[]> = {
 		{ head: "lifted", face: "sleepy_yawn", gaze: "down", hold_ms: 700 },
 		{ head: "lowered", face: "tender_smile", gaze: "user", hold_ms: 600 },
 	],
+	sparkle: [{ face: "sparkle", gaze: "user", hold_ms: 1000 }],
 };
 
 /**
@@ -216,6 +240,9 @@ export const CUE_ALIASES: Readonly<Record<string, string>> = Object.freeze({
 	wink: "winking",
 	smug: "smug_grin",
 	yawn: "sleepy_yawn",
+	sparkle: "sparkle",
+	star_eyes: "sparkle",
+	excited: "sparkle",
 });
 
 /**
@@ -247,6 +274,7 @@ export const CUE_DESCRIPTIONS: Readonly<Record<string, string>> = Object.freeze(
 	winking: "调皮单眼眨眼",
 	smug_grin: "得意坏笑歪嘴",
 	sleepy_yawn: "犯困打哈欠微仰头",
+	sparkle: "眼眸闪烁兴奋发光",
 });
 
 /**
@@ -294,10 +322,11 @@ export const DEFAULT_EXPRESSIVE_INTENSITY = 0.6;
  */
 export function resolveBeatToParams(
 	beat: ExpressBeat,
-	intensity = DEFAULT_EXPRESSIVE_INTENSITY,
+	defaultIntensity = DEFAULT_EXPRESSIVE_INTENSITY,
 ): Live2DParamTarget[] {
 	const targets: Live2DParamTarget[] = [];
-	const clampedIntensity = Math.max(0.1, Math.min(1.0, intensity));
+	const rawIntensity = beat.intensity !== undefined ? beat.intensity : defaultIntensity;
+	const clampedIntensity = Math.max(0.1, Math.min(1.0, rawIntensity));
 
 	const applyTable = (weights?: ParamWeight[]) => {
 		if (!weights) return;
@@ -321,34 +350,188 @@ export function resolveBeatToParams(
 }
 
 /**
- * 将语义 Cue 映射为对应的 ExpressBeat 节拍序列（支持别名映射与模糊容错）
+ * 前庭-动眼反射 (VOR, Vestibulo-Ocular Reflex) 动态几何代偿计算:
+ * 当头部发生空间转动偏角 (Yaw / Pitch / Roll) 时，眼球局部坐标系产生反向代偿，
+ * 维持视线对镜头/观众 (0, 0) 的精准锁定，消除二次元角色的“歪头即散瞳”感。
  */
-export function resolveCueToBeat(cueId: string): ExpressBeat[] | null {
-	if (!cueId) return null;
-	const normalized = cueId.toLowerCase().trim().replace(/[\s-]+/g, "_");
+export function computeVORCompensation(
+	headAngleX = 0,
+	headAngleY = 0,
+	headAngleZ = 0,
+): { vorX: number; vorY: number } {
+	// headAngleX [-30, 30]: 水平转头反向代偿 (头向右转，眼球左移看镜头)
+	// headAngleZ [-30, 30]: 侧倾歪头向心代偿
+	// headAngleY [-30, 30]: 俯仰点头反向代偿 (低头形成动人上目线看镜头)
+	const rawX = -0.65 * (headAngleX / 30.0) - 0.30 * (headAngleZ / 30.0);
+	const rawY = -0.70 * (headAngleY / 30.0);
+	const vorX = rawX === 0 ? 0 : rawX;
+	const vorY = rawY === 0 ? 0 : rawY;
+	return {
+		vorX: Math.max(-0.6, Math.min(0.6, vorX)),
+		vorY: Math.max(-0.6, Math.min(0.6, vorY)),
+	};
+}
 
-	// 1. 直接精确匹配
-	if (CUE_BEAT_TABLE[normalized]) {
-		return CUE_BEAT_TABLE[normalized]!;
-	}
-
-	// 2. 别名表映射 (如 smile -> warm_smile, nod -> affirmative_nod)
+function findBaseBeats(name: string): readonly ExpressBeat[] | null {
+	const normalized = name.toLowerCase().replace(/[\s-]+/g, "_");
+	if (CUE_BEAT_TABLE[normalized]) return CUE_BEAT_TABLE[normalized]!;
 	const aliased = CUE_ALIASES[normalized];
-	if (aliased && CUE_BEAT_TABLE[aliased]) {
-		return CUE_BEAT_TABLE[aliased]!;
-	}
+	if (aliased && CUE_BEAT_TABLE[aliased]) return CUE_BEAT_TABLE[aliased]!;
 
-	// 3. 去除下划线后的归一化匹配 (如 warmsmile, affirmativenod)
 	const stripped = normalized.replace(/_/g, "");
 	for (const [key, beats] of Object.entries(CUE_BEAT_TABLE)) {
-		if (key.replace(/_/g, "") === stripped) {
-			return beats;
-		}
+		if (key.replace(/_/g, "") === stripped) return beats;
 	}
 	for (const [aliasKey, targetKey] of Object.entries(CUE_ALIASES)) {
 		if (aliasKey.replace(/_/g, "") === stripped && CUE_BEAT_TABLE[targetKey]) {
 			return CUE_BEAT_TABLE[targetKey]!;
 		}
+	}
+	return null;
+}
+
+function parseCueSegment(segment: string): {
+	head?: HeadPose;
+	face?: FaceExpression;
+	gaze?: GazeDirection;
+	hold_ms?: number;
+	intensity?: number;
+	latch?: boolean;
+	rawName?: string;
+} {
+	const sepIdx = segment.indexOf("=");
+	const colonIdx = segment.indexOf(":");
+	let key: string | undefined;
+	let val: string = segment;
+
+	if (sepIdx !== -1) {
+		key = segment.slice(0, sepIdx).trim().toLowerCase();
+		val = segment.slice(sepIdx + 1).trim();
+	} else if (colonIdx !== -1) {
+		const candidateKey = segment.slice(0, colonIdx).trim().toLowerCase();
+		if (["head", "face", "gaze", "hold", "hold_ms", "intensity", "latch"].includes(candidateKey)) {
+			key = candidateKey;
+			val = segment.slice(colonIdx + 1).trim();
+		}
+	}
+
+	if (key) {
+		const lowerVal = val.toLowerCase();
+		if (key === "head" && HEAD_TABLE[lowerVal as HeadPose]) return { head: lowerVal as HeadPose };
+		if (key === "face" && FACE_TABLE[lowerVal as FaceExpression]) return { face: lowerVal as FaceExpression };
+		if (key === "gaze" && GAZE_TABLE[lowerVal as GazeDirection]) return { gaze: lowerVal as GazeDirection };
+		if (key === "hold" || key === "hold_ms") {
+			const n = parseInt(val, 10);
+			if (!isNaN(n)) return { hold_ms: n };
+		}
+		if (key === "intensity") {
+			const n = parseFloat(val);
+			if (!isNaN(n)) return { intensity: n };
+		}
+		if (key === "latch") {
+			return { latch: lowerVal === "true" || lowerVal === "1" };
+		}
+	}
+
+	const lower = segment.toLowerCase();
+	if (lower === "latch") return { latch: true };
+	const num = parseFloat(segment);
+	if (!isNaN(num)) {
+		if (num > 0 && num <= 1.0) return { intensity: num };
+		if (num >= 50) return { hold_ms: Math.round(num) };
+	}
+	return { rawName: lower.replace(/[\s-]+/g, "_") };
+}
+
+/**
+ * 将语义 Cue 映射为对应的 ExpressBeat 节拍序列（支持别名映射、参数修饰、原子组合与模糊容错）
+ */
+export function resolveCueToBeat(cueId: string): ExpressBeat[] | null {
+	if (!cueId) return null;
+	const trimmed = cueId.trim();
+	if (!trimmed) return null;
+
+	// 1. 如果包含多段分隔符 (逗号, 分号, 和号, 加号)，作为多属性复合表达式解析
+	const hasMultiPart = /[,;&+]/.test(trimmed);
+	if (hasMultiPart) {
+		const parts = trimmed.split(/[,;&+]/).map((p) => p.trim()).filter(Boolean);
+		const beat: ExpressBeat = {};
+		for (const part of parts) {
+			const parsed = parseCueSegment(part);
+			if (parsed.head && HEAD_TABLE[parsed.head]) beat.head = parsed.head;
+			if (parsed.gaze && GAZE_TABLE[parsed.gaze]) beat.gaze = parsed.gaze;
+			if (parsed.face && FACE_TABLE[parsed.face]) beat.face = parsed.face;
+			if (parsed.hold_ms !== undefined) beat.hold_ms = parsed.hold_ms;
+			if (parsed.intensity !== undefined) beat.intensity = parsed.intensity;
+			if (parsed.latch !== undefined) beat.latch = parsed.latch;
+
+			// 若子段直接对应别名/完整微表情（如 tilt_left, smile 中的 smile）
+			if (!parsed.head && !parsed.face && !parsed.gaze && parsed.rawName) {
+				const subBeats = findBaseBeats(parsed.rawName);
+				if (subBeats && subBeats.length > 0) {
+					const first = subBeats[0]!;
+					if (first.head && !beat.head) beat.head = first.head;
+					if (first.face && !beat.face) beat.face = first.face;
+					if (first.gaze && !beat.gaze) beat.gaze = first.gaze;
+				} else if (HEAD_TABLE[parsed.rawName as HeadPose]) {
+					beat.head = parsed.rawName as HeadPose;
+				} else if (FACE_TABLE[parsed.rawName as FaceExpression]) {
+					beat.face = parsed.rawName as FaceExpression;
+				} else if (GAZE_TABLE[parsed.rawName as GazeDirection]) {
+					beat.gaze = parsed.rawName as GazeDirection;
+				}
+			}
+		}
+
+		if (beat.head || beat.face || beat.gaze) {
+			if (!beat.gaze && beat.head) beat.gaze = "user";
+			if (!beat.hold_ms) beat.hold_ms = 1000;
+			return [beat];
+		}
+	}
+
+	// 2. 单动作表达式（支持冒号修饰如 smile:0.8 或 warm_smile:1500 或 tilt_right:1200）
+	const colonParts = trimmed.split(":").map((s) => s.trim()).filter(Boolean);
+	const rawName = colonParts[0] ?? "";
+	let customHoldMs: number | undefined;
+	let customIntensity: number | undefined;
+
+	for (let i = 1; i < colonParts.length; i++) {
+		const seg = colonParts[i]!;
+		const num = parseFloat(seg);
+		if (!isNaN(num)) {
+			if (num > 0 && num <= 1.0) {
+				customIntensity = num;
+			} else if (num >= 50) {
+				customHoldMs = Math.round(num);
+			}
+		}
+	}
+
+	const applyModifiers = (beats: readonly ExpressBeat[]): ExpressBeat[] => {
+		return beats.map((b) => ({
+			...b,
+			...(customHoldMs !== undefined ? { hold_ms: customHoldMs } : {}),
+			...(customIntensity !== undefined ? { intensity: customIntensity } : {}),
+		}));
+	};
+
+	// 2.1 检查完整标准 Cue 或别名
+	const baseBeats = findBaseBeats(rawName);
+	if (baseBeats) {
+		return applyModifiers(baseBeats);
+	}
+
+	// 2.2 检查原子动作快捷入口 (头部、面部、视线)
+	const norm = rawName.toLowerCase().replace(/[\s-]+/g, "_");
+	if (HEAD_TABLE[norm as HeadPose]) {
+		return applyModifiers([{ head: norm as HeadPose, gaze: "user", hold_ms: 1000 }]);
+	}
+	if (FACE_TABLE[norm as FaceExpression]) {
+		return applyModifiers([{ face: norm as FaceExpression, gaze: "user", hold_ms: 1000 }]);
+	}
+	if (GAZE_TABLE[norm as GazeDirection]) {
+		return applyModifiers([{ gaze: norm as GazeDirection, hold_ms: 1000 }]);
 	}
 
 	return null;
@@ -359,7 +542,7 @@ const FACE_CHANNELS_MAP: Readonly<Record<FaceExpression, readonly Live2DChannel[
 	shy: ["eyes", "mouth"],
 	smug: ["eyes", "mouth"],
 	pout: ["eyes", "mouth"],
-	sparkle: ["eyes"],
+	sparkle: ["eyes", "mouth"],
 	shocked: ["eyes", "mouth"],
 	tender_smile: ["eyes", "mouth"],
 	laugh: ["eyes", "mouth"],

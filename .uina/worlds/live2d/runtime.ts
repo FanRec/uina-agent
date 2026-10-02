@@ -31,7 +31,7 @@ export const live2dAffordance: BodyAffordance = {
 	bodyId: "live2d_mo",
 	bodyType: "avatar_2d",
 	description:
-		"你当前在屏幕上呈现为 Live2D 虚拟二次元立绘形象（Mo）。可通过 pose 切换全身基准体态（持续循环生效：playful=元气调皮大歪头, focused=专注认真正坐, relaxed=闲适放松待机, shy_side=娇羞侧身偏头, confident=自信挺胸昂首, listening=侧耳前倾倾听），日常说话时优先在台词中嵌入 <cue id='...'/> 伴随丰富自然的微表情与肢体反应。",
+		"你当前在屏幕上呈现为 Live2D 虚拟二次元立绘形象（Mo）。你完全拥有这具身体的自主表现力：可通过 pose 切换全身基准体态与心境底座（持续循环生效：playful=元气调皮大歪头, focused=专注认真正坐, relaxed=闲适放松待机, shy_side=娇羞侧身偏头, confident=自信挺胸昂首, listening=侧耳前倾倾听, smug_gremlin=小恶魔得意坏笑, meek_shy=内向害羞上目线, streamer_hype=大主播亢奋前倾）；日常说话时优先在台词中任意嵌入 <cue id='...'/>（支持别名、参数修饰如 smile:0.8 或原子属性 head=tilt_left,face=tender_smile），视线会自动动眼锁焦注视用户，动作自然流淌。",
 	cues: CANONICAL_CUE_IDS.map((id) => ({
 		id,
 		description: CUE_DESCRIPTIONS[id] ?? "",
@@ -46,6 +46,7 @@ export const live2dAffordance: BodyAffordance = {
  */
 export interface Live2DEndpointHooks {
 	onFocused?: (isFocused: boolean) => void;
+	formatStatus?: () => string;
 }
 
 export class Live2DEndpoint implements BodyEndpoint {
@@ -75,6 +76,14 @@ export class Live2DEndpoint implements BodyEndpoint {
 		if (!this.stateTracker.getState().online) return;
 		this.lastCue = { id: cueId, at: new Date().toLocaleTimeString("zh-CN", { hour12: false }) };
 		this.director.dispatchCue(cueId);
+	}
+
+	supportsCue(cueId: string): boolean {
+		return resolveCueToBeat(cueId) !== null;
+	}
+
+	formatStatus(): string {
+		return this.hooks?.formatStatus?.() ?? "";
 	}
 
 	async safeStop(): Promise<void> {
@@ -134,6 +143,7 @@ export class Live2DRuntime {
 		this.companion = new VTSCompanion(this.director, this.vtsClient, this.audioObserver);
 		this.endpoint = new Live2DEndpoint(this.director, this.companion.stateTracker, {
 			onFocused: (focused) => this.handleFocus(focused),
+			formatStatus: () => this.formatStatus(),
 		});
 		this.reflexDirector = new ReflexDirector(this.director, {
 			getBasePose: () => this.currentBasePose,
@@ -221,6 +231,8 @@ export class Live2DRuntime {
 			allowDegrade?: boolean;
 			preemptSameReason?: boolean;
 			preemptSamePriority?: boolean;
+			latch_last?: boolean;
+			transition?: "snappy" | "smooth" | "gentle";
 		},
 	): Promise<{ ok: true } | { ok: false; claimError: Error }> {
 		let lease;
@@ -239,7 +251,12 @@ export class Live2DRuntime {
 
 		try {
 			await this.director.playExpressiveBeats(
-				{ beats, intensity: options.intensity ?? DEFAULT_EXPRESSIVE_INTENSITY },
+				{
+					beats,
+					intensity: options.intensity ?? DEFAULT_EXPRESSIVE_INTENSITY,
+					latch_last: options.latch_last,
+					transition: options.transition,
+				},
 				{ signal: lease.signal, allowedChannels: lease.channels },
 			);
 		} finally {
@@ -406,6 +423,8 @@ export class Live2DRuntime {
 			allowDegrade: true,
 			signal: ctx.signal,
 			intensity: args.intensity,
+			latch_last: args.latch_last,
+			transition: args.transition,
 		});
 		if (!outcome.ok) {
 			return {

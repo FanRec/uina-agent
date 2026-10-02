@@ -14,6 +14,7 @@ import {
 	DEFAULT_EXPRESSIVE_INTENSITY,
 	REFLEX_POSES,
 	REFLEX_POSE_PARAMS,
+	computeVORCompensation,
 	resolveBeatToParams,
 	type ReflexStateKey,
 } from "./parameter-mapper.js";
@@ -357,6 +358,12 @@ class MotionFrameComposer {
 				: [{ head: params.head, gaze: params.gaze, face: params.face, hold_ms: 1000 }];
 			const intensity = params.intensity ?? DEFAULT_EXPRESSIVE_INTENSITY;
 
+			const durationMs = params.transition === "snappy"
+				? 150
+				: params.transition === "gentle"
+				? 450
+				: 250;
+
 			for (const beat of beats) {
 				if (internalController.signal.aborted) break;
 
@@ -369,14 +376,16 @@ class MotionFrameComposer {
 					: targets;
 
 				if (filtered.length > 0) {
-					this.bodyDirector.transitionTargets(filtered, 250);
+					this.bodyDirector.transitionTargets(filtered, durationMs);
 				}
 
 				const holdMs = Math.max(200, Math.min(3000, beat.hold_ms ?? 800));
 				await abortableDelay(holdMs, internalController.signal);
 			}
 
-			if (!internalController.signal.aborted) {
+			// 检查是否声明姿态留存 (latch)：若声明留存，则停留在最终姿态，不再强行拉回中性位
+			const shouldLatchLast = params.latch_last || beats[beats.length - 1]?.latch;
+			if (!internalController.signal.aborted && !shouldLatchLast) {
 				const neutralTargets: Record<string, number> = {};
 				for (const [name, ch] of Object.entries(PARAM_CHANNEL_MAP)) {
 					if (!allowedChannels || allowedChannels.includes(ch)) {
@@ -384,7 +393,12 @@ class MotionFrameComposer {
 					}
 				}
 				if (Object.keys(neutralTargets).length > 0) {
-					this.bodyDirector.transitionPose(neutralTargets, 400);
+					const settleMs = params.transition === "snappy"
+						? 350
+						: params.transition === "gentle"
+						? 800
+						: 600;
+					this.bodyDirector.transitionPose(neutralTargets, settleMs);
 				}
 			}
 		} finally {
@@ -445,18 +459,31 @@ class MotionFrameComposer {
 			}
 		}
 
+		// 前庭动眼反射 (VOR): 根据头部空间转角，动态计算眼球对镜头 (0, 0) 的反向代偿，
+		// 消除“歪头即散瞳”感，在任意倾斜姿态下均维持对用户的专注眼神交流。
+		// 当 gaze 通道被明确意图 (如 look_away 等 Cue 或 Action) 锁定时，不覆盖角色的主动视线偏转。
+		const isGazeLocked = this.arbiter.isChannelLocked("gaze", CHANNEL_PRIORITY.CUE);
+		if (!isGazeLocked) {
+			const headX = merged.ParamAngleX ?? 0;
+			const headY = merged.ParamAngleY ?? 0;
+			const headZ = merged.ParamAngleZ ?? 0;
+			const { vorX, vorY } = computeVORCompensation(headX, headY, headZ);
+			merged.ParamEyeBallX = clampLive2DParam("ParamEyeBallX", (merged.ParamEyeBallX ?? 0) + vorX);
+			merged.ParamEyeBallY = clampLive2DParam("ParamEyeBallY", (merged.ParamEyeBallY ?? 0) + vorY);
+		}
+
 		// 语流连续律动注入 (当未被高优先级动作锁定通道时，赋予自然说话体态节律)
 		if (this.speechActivity > 0.001) {
 			const p = this.speechPhase;
 			const act = this.speechActivity;
 
 			if (!isTorsoLocked) {
-				// 躯干左右微晃重心游移 (双谐波复合波：主频 ~0.65Hz 对应意群句式周期约 1.5s，次频 ~1.3Hz 对应音节音步)
-				const bodySwayX = (Math.sin(p * 4.1) * 0.72 + Math.sin(p * 2.05 + 0.5) * 0.28) * 6.0 * act;
-				// 胸腔起伏与说话呼吸前倾
-				const bodyPitchY = (Math.sin(p * 3.2 + 1.0) * 0.6 + Math.cos(p * 1.6) * 0.4) * 4.0 * act;
+				// 躯干左右微晃重心游移 (优化双谐波波形，柔和有机)
+				const bodySwayX = (Math.sin(p * 3.8) * 0.72 + Math.sin(p * 1.9 + 0.5) * 0.28) * 5.2 * act;
+				// 胸腔起伏与说话前倾
+				const bodyPitchY = (Math.sin(p * 3.0 + 1.0) * 0.6 + Math.cos(p * 1.5) * 0.4) * 3.5 * act;
 				// 脊柱侧倾配合重心转移
-				const bodyRollZ = Math.cos(p * 4.1 + 0.8) * 3.5 * act;
+				const bodyRollZ = Math.cos(p * 3.8 + 0.8) * 3.0 * act;
 
 				merged.ParamBodyAngleX = clampLive2DParam("ParamBodyAngleX", (merged.ParamBodyAngleX ?? 0) + bodySwayX);
 				merged.ParamBodyAngleY = clampLive2DParam("ParamBodyAngleY", (merged.ParamBodyAngleY ?? 0) + bodyPitchY);
@@ -464,11 +491,11 @@ class MotionFrameComposer {
 			}
 
 			if (!isHeadLocked) {
-				// 头部语流随动轻晃 (与躯干柔和耦合，形成生动的三维二次元律动)
-				const headSwayZ = Math.sin(p * 4.1 + 1.2) * 3.8 * act;
-				const headSwayX = Math.sin(p * 2.05) * 2.8 * act;
+				// 头部语流随动轻晃 (与躯干有机耦合，消除固定时钟发条感)
+				const headSwayZ = Math.sin(p * 3.8 + 1.2) * 3.2 * act;
+				const headSwayX = Math.sin(p * 1.9) * 2.4 * act;
 				// 语流重音微点头律动 (主导节拍随语流起伏，在音步重音处产生自然的下潜微点头)
-				const headNodY = (Math.sin(p * 4.1 - 0.3) * 0.65 + Math.sin(p * 8.2) * 0.35) * -3.2 * act;
+				const headNodY = (Math.sin(p * 3.8 - 0.3) * 0.65 + Math.sin(p * 7.6) * 0.35) * -2.8 * act;
 
 				merged.ParamAngleZ = clampLive2DParam("ParamAngleZ", (merged.ParamAngleZ ?? 0) + headSwayZ);
 				merged.ParamAngleX = clampLive2DParam("ParamAngleX", (merged.ParamAngleX ?? 0) + headSwayX);

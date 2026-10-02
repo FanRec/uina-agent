@@ -5,6 +5,7 @@ import { ReflexDirector } from "../.uina/worlds/live2d/reflex-director.js";
 import {
 	CUE_ALIASES,
 	CANONICAL_CUE_IDS,
+	computeVORCompensation,
 	getChannelsForBeats,
 	resolveBeatToParams,
 	resolveCueToBeat,
@@ -1300,7 +1301,7 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 					expect(map.EyeRightY).toBe(-0.3);
 				});
 
-				it("should map torso angle to micro-displacement FacePosition", () => {
+				it("should map torso angle directly to BodyAngle parameters", () => {
 					const retargeter = new VTSParameterRetargeter();
 					const frame = {
 						ParamBodyAngleX: 16,
@@ -1310,45 +1311,83 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 					const params = retargeter.retarget(frame);
 					const map = Object.fromEntries(params.map((p) => [p.id, p.value]));
 
-					expect(map.FacePositionX).toBeCloseTo(4.0, 2); // 16 * 0.25
-					expect(map.FacePositionY).toBeCloseTo(-3.0, 2); // -12 * 0.25
-					expect(map.FacePositionZ).toBeCloseTo(2.0, 2); // 8 * 0.25
+					expect(map.BodyAngleX).toBe(16);
+					expect(map.BodyAngleY).toBe(-12);
+					expect(map.BodyAngleZ).toBe(8);
+					expect(map.FacePositionX).toBeUndefined();
+					expect(map.FacePositionY).toBeUndefined();
+					expect(map.FacePositionZ).toBeUndefined();
 				});
 
-				it("should clamp extreme body angles in FacePosition to safe bounds [-10, 10]", () => {
+				it("should clamp extreme body angles to safe bounds [-30, 30]", () => {
 					const retargeter = new VTSParameterRetargeter();
-					const frame = { ParamBodyAngleX: 45 };
+					const frame = { ParamBodyAngleX: 45, ParamBodyAngleY: -40 };
 					const params = retargeter.retarget(frame);
 					const map = Object.fromEntries(params.map((p) => [p.id, p.value]));
 
-					expect(map.FacePositionX).toBe(10); // 45 * 0.25 = 11.25 -> clamped to 10
+					expect(map.BodyAngleX).toBe(30);
+					expect(map.BodyAngleY).toBe(-30);
 				});
 
-				it("should fuse MouthSmile correctly for smiles and negative pout/frown", () => {
+				it("should route EyeSmile correctly to EyeSmileLeft/Right and preserve MouthSmile from ParamMouthForm", () => {
 					const retargeter = new VTSParameterRetargeter();
 
-					// Case 1: Pout/frown retains negative value
+					// Case 1: Pout/frown retains negative value, EyeSmile routes to EyeSmileLeft
 					const p1 = retargeter.retarget({ ParamMouthForm: -0.7, ParamEyeLSmile: 0.2 });
 					const m1 = Object.fromEntries(p1.map((p) => [p.id, p.value]));
 					expect(m1.MouthSmile).toBe(-0.7);
+					expect(m1.EyeSmileLeft).toBe(0.2);
+					expect(m1.EyeSmile).toBe(0.2);
 
-					// Case 2: Positive smile takes max of mouth and eye smile
-					const p2 = retargeter.retarget({ ParamMouthForm: 0.4, ParamEyeLSmile: 0.9 });
+					// Case 2: Positive smile routes to MouthSmile and EyeSmileLeft/Right without cross-contamination
+					const p2 = retargeter.retarget({ ParamMouthForm: 0.4, ParamEyeLSmile: 0.9, ParamEyeRSmile: 0.85 });
 					const m2 = Object.fromEntries(p2.map((p) => [p.id, p.value]));
-					expect(m2.MouthSmile).toBe(0.9);
+					expect(m2.MouthSmile).toBe(0.4);
+					expect(m2.EyeSmileLeft).toBe(0.9);
+					expect(m2.EyeSmileRight).toBe(0.85);
+					expect(m2.EyeSmile).toBe(0.9);
+
+					// Case 3: When ParamMouthForm is absent, EyeSmile links to MouthSmile to drive crescent eyes on VTS models
+					const p3 = retargeter.retarget({ ParamEyeLSmile: 0.8, ParamEyeRSmile: 0.75 });
+					const m3 = Object.fromEntries(p3.map((p) => [p.id, p.value]));
+					expect(m3.MouthSmile).toBe(0.8);
+					expect(m3.EyeSmileLeft).toBe(0.8);
+					expect(m3.EyeSmileRight).toBe(0.75);
 				});
 
-				it("should inject breath heave into FacePositionY", () => {
+				it("should perform kinematic upper-body fusion into FaceAngleX/Y/Z when ParamBodyAngle is present", () => {
 					const retargeter = new VTSParameterRetargeter();
-					// Breath at 1.0 (peak inhalation): offset = (1.0 - 0.5) * 0.7 = +0.35
+
+					// Head + Torso yaw fusion
+					const p1 = retargeter.retarget({ ParamAngleX: 10, ParamBodyAngleX: 8 });
+					const m1 = Object.fromEntries(p1.map((p) => [p.id, p.value]));
+					expect(m1.FaceAngleX).toBe(16); // 10 + 8 * 0.75
+					expect(m1.BodyAngleX).toBe(8);
+
+					// Forward lean pitch fusion into FaceAngleY with clamp [-20, 20]
+					const p2 = retargeter.retarget({ ParamAngleY: 10, ParamBodyAngleY: 16 });
+					const m2 = Object.fromEntries(p2.map((p) => [p.id, p.value]));
+					expect(m2.FaceAngleY).toBe(20); // 10 + 16 * 0.75 = 22 -> clamped to 20
+					expect(m2.BodyAngleY).toBe(16);
+
+					// Side lean roll fusion into FaceAngleZ with clamp [-25, 25]
+					const p3 = retargeter.retarget({ ParamAngleZ: 14, ParamBodyAngleZ: 6 });
+					const m3 = Object.fromEntries(p3.map((p) => [p.id, p.value]));
+					expect(m3.FaceAngleZ).toBe(18.5); // 14 + 6 * 0.75
+					expect(m3.BodyAngleZ).toBe(6);
+				});
+
+				it("should map ParamBreath directly to Breath without elevator displacement", () => {
+					const retargeter = new VTSParameterRetargeter();
 					const p1 = retargeter.retarget({ ParamBreath: 1.0 });
 					const m1 = Object.fromEntries(p1.map((p) => [p.id, p.value]));
-					expect(m1.FacePositionY).toBeCloseTo(0.35, 2);
+					expect(m1.Breath).toBe(1.0);
+					expect(m1.FacePositionY).toBeUndefined();
 
-					// Breath at 0.0 (exhalation): offset = (0 - 0.5) * 0.7 = -0.35
-					const p2 = retargeter.retarget({ ParamBreath: 0.0 });
+					const p2 = retargeter.retarget({ ParamBreath: 0.2 });
 					const m2 = Object.fromEntries(p2.map((p) => [p.id, p.value]));
-					expect(m2.FacePositionY).toBeCloseTo(-0.35, 2);
+					expect(m2.Breath).toBe(0.2);
+					expect(m2.FacePositionY).toBeUndefined();
 				});
 
 				it("should prioritize larger audio mouthOpen over resting mouth param", () => {
@@ -1362,6 +1401,184 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 					const p2 = retargeter.retarget({}, 0.65);
 					const m2 = Object.fromEntries(p2.map((p) => [p.id, p.value]));
 					expect(m2.MouthOpen).toBe(0.65);
+				});
+
+				it("should average Brows symmetrically when both ParamBrowLY and ParamBrowRY are present", () => {
+					const retargeter = new VTSParameterRetargeter();
+					const params = retargeter.retarget({ ParamBrowLY: 0.4, ParamBrowRY: 0.8 });
+					const map = Object.fromEntries(params.map((p) => [p.id, p.value]));
+					expect(map.Brows).toBeCloseTo(0.6, 2);
+					expect(map.BrowLeftY).toBe(0.4);
+					expect(map.BrowRightY).toBe(0.8);
+				});
+
+				it("should map ParamCheek to CheekPuff, ParamCheek, Cheek, and Blush aliases", () => {
+					const retargeter = new VTSParameterRetargeter();
+					const params = retargeter.retarget({ ParamCheek: 0.85 });
+					const map = Object.fromEntries(params.map((p) => [p.id, p.value]));
+					expect(map.CheekPuff).toBe(0.85);
+					expect(map.ParamCheek).toBe(0.85);
+					expect(map.Cheek).toBe(0.85);
+					expect(map.Blush).toBe(0.85);
+				});
+
+				it("should generate expressive eyebrows, eyelids, and eye smile for tender_smile, shy, and pout", () => {
+					const smileTargets = resolveBeatToParams({ face: "tender_smile" });
+					const smileMap = Object.fromEntries(smileTargets.map((t) => [t.name, t.value]));
+					expect(smileMap.ParamEyeLSmile).toBeGreaterThan(0.5);
+					expect(smileMap.ParamEyeRSmile).toBeGreaterThan(0.5);
+					expect(smileMap.ParamBrowLY).toBeGreaterThan(0.1);
+					expect(smileMap.ParamBrowRY).toBeGreaterThan(0.1);
+					expect(smileMap.ParamEyeLOpen).toBeLessThan(1.0); // soft smiling eyelid
+
+					const shyTargets = resolveBeatToParams({ face: "shy", intensity: 1.0 });
+					const shyMap = Object.fromEntries(shyTargets.map((t) => [t.name, t.value]));
+					expect(shyMap.ParamBrowLY).toBeLessThan(0); // troubled/shy inner brow tilt
+					expect(shyMap.ParamEyeLOpen).toBeLessThan(0.85); // lowered shy eyes
+					expect(shyMap.ParamCheek).toBeGreaterThan(0.8); // blush
+
+					const poutTargets = resolveBeatToParams({ face: "pout" });
+					const poutMap = Object.fromEntries(poutTargets.map((t) => [t.name, t.value]));
+					expect(poutMap.ParamBrowLY).toBeLessThan(-0.3); // furrowed angry brows
+					expect(poutMap.ParamMouthForm).toBeLessThan(-0.5); // pout mouth
+				});
+			});
+
+			describe("Vestibulo-Ocular Reflex (VOR) & Gaze Locking", () => {
+				it("should compute zero VOR compensation at neutral head angles", () => {
+					const { vorX, vorY } = computeVORCompensation(0, 0, 0);
+					expect(vorX).toBe(0);
+					expect(vorY).toBe(0);
+				});
+
+				it("should compensate yaw counter-rotation and pitch nod accurately", () => {
+					// Head turned right (X = 20): eye moves left (vorX < 0) to maintain eye contact
+					const r1 = computeVORCompensation(20, 0, 0);
+					expect(r1.vorX).toBeLessThan(0);
+					expect(r1.vorY).toBe(0);
+
+					// Head tilted down / nodding (Y = -15): eyes look up (vorY > 0)
+					const r2 = computeVORCompensation(0, -15, 0);
+					expect(r2.vorY).toBeGreaterThan(0);
+				});
+
+				it("should clamp VOR compensation to safe bounds [-0.6, 0.6]", () => {
+					const extreme = computeVORCompensation(100, 100, 100);
+					expect(extreme.vorX).toBe(-0.6);
+					expect(extreme.vorY).toBe(-0.6);
+
+					const extremeOpposite = computeVORCompensation(-100, -100, -100);
+					expect(extremeOpposite.vorX).toBe(0.6);
+					expect(extremeOpposite.vorY).toBe(0.6);
+				});
+			});
+
+			describe("Refactored Cue Expression Parser (resolveCueToBeat)", () => {
+				it("should parse canonical cues and aliases", () => {
+					const b1 = resolveCueToBeat("warm_smile");
+					expect(b1).toBeDefined();
+					expect(b1![0]?.face).toBe("tender_smile");
+
+					const b2 = resolveCueToBeat("smile");
+					expect(b2).toBeDefined();
+					expect(b2![0]?.face).toBe("tender_smile");
+
+					const b3 = resolveCueToBeat("nod");
+					expect(b3).toBeDefined();
+					expect(b3![0]?.head).toBe("nod");
+				});
+
+				it("should parse colon modifiers for intensity and hold_ms", () => {
+					// Intensity modifier: float <= 1.0
+					const b1 = resolveCueToBeat("smile:0.8");
+					expect(b1).toBeDefined();
+					expect(b1![0]?.intensity).toBe(0.8);
+
+					// Hold_ms modifier: integer >= 50
+					const b2 = resolveCueToBeat("warm_smile:1500");
+					expect(b2).toBeDefined();
+					expect(b2![0]?.hold_ms).toBe(1500);
+
+					// Compound modifier: intensity and hold_ms
+					const b3 = resolveCueToBeat("curious_tilt:0.9:1200");
+					expect(b3).toBeDefined();
+					expect(b3![0]?.intensity).toBe(0.9);
+					expect(b3![0]?.hold_ms).toBe(1200);
+				});
+
+				it("should parse atomic poses and shortcuts directly", () => {
+					const b1 = resolveCueToBeat("tilt_left");
+					expect(b1).toEqual([{ head: "tilt_left", gaze: "user", hold_ms: 1000 }]);
+
+					const b2 = resolveCueToBeat("sparkle");
+					expect(b2).toEqual([{ face: "sparkle", gaze: "user", hold_ms: 1000 }]);
+
+					const b3 = resolveCueToBeat("side_peek");
+					expect(b3).toEqual([{ gaze: "side_peek", hold_ms: 1000 }]);
+				});
+
+				it("should parse shorthand and compound multi-token expressions", () => {
+					// Comma separated atomic shortcut: head + face
+					const b1 = resolveCueToBeat("tilt_left, sparkle");
+					expect(b1).toBeDefined();
+					expect(b1![0]?.head).toBe("tilt_left");
+					expect(b1![0]?.face).toBe("sparkle");
+					expect(b1![0]?.gaze).toBe("user");
+
+					// Comma separated shorthand: head + alias
+					const b2 = resolveCueToBeat("tilt_left, smile");
+					expect(b2).toBeDefined();
+					expect(b2![0]?.head).toBe("tilt_left");
+					expect(b2![0]?.face).toBe("tender_smile");
+
+					// Key-value syntax
+					const b3 = resolveCueToBeat("head=tilt_right, face=smug, hold=1200, latch=true, intensity=0.75");
+					expect(b3).toEqual([{
+						head: "tilt_right",
+						face: "smug",
+						gaze: "user",
+						hold_ms: 1200,
+						latch: true,
+						intensity: 0.75,
+					}]);
+				});
+
+				it("should honor beat-level intensity in resolveBeatToParams", () => {
+					const beatWithIntensity = { face: "tender_smile", intensity: 0.2 };
+					const targets = resolveBeatToParams(beatWithIntensity, 0.9); // default 0.9 should be overridden by 0.2
+					const cheek = targets.find((t) => t.name === "ParamCheek");
+					expect(cheek).toBeDefined();
+					// tender_smile ParamCheek mult is 0.4. With intensity 0.2 -> 0.08
+					expect(cheek!.value).toBeCloseTo(0.08, 2);
+				});
+
+				it("should return null for unrecognized invalid cues", () => {
+					expect(resolveCueToBeat("not_a_valid_expression_at_all")).toBeNull();
+				});
+			});
+
+			describe("Channel Arbiter & VOR Interaction in Compose", () => {
+				it("should not apply VOR when gaze channel is claimed by a CUE lease", async () => {
+					const arbiter = new MotionDirector();
+					// Claim gaze with CUE priority (simulating look_away or shy gaze gesture)
+					const lease = await arbiter.claim(["gaze"], {
+						priority: CHANNEL_PRIORITY.CUE,
+						reason: "action:cue:look_away",
+					});
+
+					// Transition head to tilt_right (ParamAngleZ = 20)
+					arbiter.bodyDirector.transitionPose({ ParamAngleZ: 20 }, 0);
+					arbiter.bodyDirector.tick(50);
+
+					// Compose frame
+					const frame = arbiter.compose(50);
+					// Because gaze is locked by CUE, VOR should NOT modify ParamEyeBallX
+					expect(frame.ParamEyeBallX).toBe(0);
+
+					arbiter.release(lease);
+					// Now that lease is released, next compose should apply VOR
+					const frameAfterRelease = arbiter.compose(50);
+					expect(frameAfterRelease.ParamEyeBallX).not.toBe(0);
 				});
 			});
 		});
@@ -1457,6 +1674,58 @@ describe("Live2DRuntime 姿态权威与 express 诚实性", () => {
 		runtime.endpoint.emitCue("warm_smile");
 		expect(runtime.endpoint.lastCue).toBeUndefined();
 		expect(runtime.formatStatus()).toContain("最近线索: 无");
+	});
+
+	it("Live2DEndpoint.supportsCue 准确判断合法与未知线索", () => {
+		const runtime = createOfflineRuntime();
+		expect(runtime.endpoint.supportsCue("sparkle")).toBe(true);
+		expect(runtime.endpoint.supportsCue("warm_smile")).toBe(true);
+		expect(runtime.endpoint.supportsCue("smile:0.8")).toBe(true);
+		expect(runtime.endpoint.supportsCue("tilt_left,smile")).toBe(true);
+		expect(runtime.endpoint.supportsCue("head=tilt_left,face=smug")).toBe(true);
+		expect(runtime.endpoint.supportsCue("completely_invalid_garbage_cue")).toBe(false);
+	});
+
+	it("Live2DEndpoint.formatStatus 成功接通 runtime.formatStatus，live2d 与 body 工具均可查询即时状态", async () => {
+		const { createLive2DApp } = await import("../.uina/worlds/live2d/index.js");
+		const { BodyRouter } = await import("../.uina/extensions/embodiment/body-router.js");
+		const { createBodyTool } = await import("../.uina/extensions/embodiment/tools.js");
+
+		const app = createLive2DApp();
+		const fakeServiceCtx = {
+			signal: new AbortController().signal,
+			expose: vi.fn(),
+		};
+
+		// 1. 未启动时 environment 给出未就绪提示，status 动作报错
+		expect(app.environment).toContain("未就绪");
+		const failedCheck = await app.actions.status.run({}, fakeCtx());
+		expect(failedCheck).toHaveProperty("status", "failed");
+
+		// 2. 启动后 environment 动态返回完整 formatStatus
+		await app.onStart?.(fakeServiceCtx as never);
+		expect(app.environment).toContain("[live2d]");
+		expect(app.environment).toContain("物理状态: 离线(VTS)");
+		expect(app.environment).toContain("口型通道: 已接线");
+		expect(app.environment).toContain("姿态: relaxed");
+
+		// 3. live2d 工具 status 动作成功执行并返回 formatStatus
+		const actionResult = await app.actions.status.run({}, fakeCtx());
+		expect(typeof actionResult).toBe("string");
+		expect(actionResult).toContain("[live2d]");
+		expect(actionResult).toContain("口型通道:");
+
+		// 4. body 工具 status 动作附带 endpoint.formatStatus()
+		const router = new BodyRouter();
+		const runtime = createOfflineRuntime();
+		router.registerEndpoint(runtime.endpoint);
+		const bodyTool = createBodyTool(router);
+		const bodyStatusResult = await bodyTool.run({ action: "status" });
+		expect(bodyStatusResult.status).toBe("succeeded");
+		expect(bodyStatusResult.result).toContain("[live2d]");
+		expect(bodyStatusResult.result).toContain("口型通道:");
+
+		await app.onStop?.(fakeServiceCtx as never);
 	});
 });
 

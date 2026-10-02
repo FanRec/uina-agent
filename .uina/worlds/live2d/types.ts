@@ -87,6 +87,8 @@ export interface ExpressBeat {
 	gaze?: GazeDirection | string;
 	face?: FaceExpression | string;
 	hold_ms?: number;
+	latch?: boolean;
+	intensity?: number;
 }
 
 export interface ExpressParams {
@@ -95,6 +97,8 @@ export interface ExpressParams {
 	face?: FaceExpression | string;
 	intensity?: number;
 	beats?: readonly ExpressBeat[];
+	latch_last?: boolean;
+	transition?: "snappy" | "smooth" | "gentle";
 }
 
 export type BasePoseName =
@@ -103,7 +107,10 @@ export type BasePoseName =
 	| "playful"
 	| "shy_side"
 	| "confident"
-	| "listening";
+	| "listening"
+	| "smug_gremlin"
+	| "meek_shy"
+	| "streamer_hype";
 
 /**
  * 统一规范的 Live2D 硬件参数安全阈值钳位 (Clamp)

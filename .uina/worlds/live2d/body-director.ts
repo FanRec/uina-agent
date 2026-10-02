@@ -83,6 +83,48 @@ export const BASE_POSES: Record<BasePoseName, Record<string, number>> = {
 		ParamEyeLSmile: 0.3,
 		ParamEyeRSmile: 0.3,
 	},
+	smug_gremlin: {
+		ParamAngleY: 8.0,
+		ParamAngleZ: -8.0,
+		ParamAngleX: 3.0,
+		ParamBodyAngleY: 6.0,
+		ParamEyeBallX: 0.1,
+		ParamEyeBallY: -0.15,
+		ParamEyeLOpen: 0.95,
+		ParamEyeROpen: 0.95,
+		ParamMouthForm: 0.95,
+		ParamEyeRSmile: 0.8,
+		ParamEyeLSmile: 0.4,
+		ParamBrowRY: 0.4,
+	},
+	meek_shy: {
+		ParamAngleY: -8.0,
+		ParamAngleZ: 10.0,
+		ParamAngleX: -4.0,
+		ParamBodyAngleY: -4.0,
+		ParamEyeBallX: 0.2,
+		ParamEyeBallY: 0.3,
+		ParamEyeLOpen: 0.9,
+		ParamEyeROpen: 0.9,
+		ParamCheek: 0.8,
+		ParamMouthForm: 0.4,
+		ParamEyeLSmile: 0.5,
+		ParamEyeRSmile: 0.5,
+	},
+	streamer_hype: {
+		ParamAngleY: 10.0,
+		ParamAngleZ: 6.0,
+		ParamAngleX: 0,
+		ParamBodyAngleY: 12.0,
+		ParamEyeBallX: 0,
+		ParamEyeBallY: 0.1,
+		ParamEyeLOpen: 1.15,
+		ParamEyeROpen: 1.15,
+		ParamMouthForm: 0.9,
+		ParamBrowLY: 0.3,
+		ParamBrowRY: 0.3,
+		ParamCheek: 0.4,
+	},
 };
 
 interface SpringParamState {
@@ -168,31 +210,29 @@ export class BodyDirector {
 		}
 	}
 
+	private applyInterpolation(name: string, value: number, durationMs: number, additive?: boolean): void {
+		const state = this.getOrCreate(name);
+		state.startVal = state.current;
+		const baseVal = additive ? this.getBasePoseTarget(name) : 0;
+		state.target = clampLive2DParam(name, additive ? baseVal + value : value);
+		state.tElapsed = 0;
+		state.tDuration = durationMs;
+		state.velocity = 0;
+	}
+
 	transitionPose(
 		targets: Record<string, number>,
 		durationMs = 800,
 		options?: { additive?: boolean },
 	): void {
 		for (const [name, targetVal] of Object.entries(targets)) {
-			const state = this.getOrCreate(name);
-			state.startVal = state.current;
-			const baseVal = options?.additive ? this.getBasePoseTarget(name) : 0;
-			state.target = clampLive2DParam(name, options?.additive ? baseVal + targetVal : targetVal);
-			state.tElapsed = 0;
-			state.tDuration = durationMs;
-			state.velocity = 0;
+			this.applyInterpolation(name, targetVal, durationMs, options?.additive);
 		}
 	}
 
 	transitionTargets(targets: readonly Live2DParamTarget[], durationMs = 250): void {
 		for (const t of targets) {
-			const state = this.getOrCreate(t.name);
-			state.startVal = state.current;
-			const baseVal = t.additive ? this.getBasePoseTarget(t.name) : 0;
-			state.target = clampLive2DParam(t.name, t.additive ? baseVal + t.value : t.value);
-			state.tElapsed = 0;
-			state.tDuration = durationMs;
-			state.velocity = 0;
+			this.applyInterpolation(t.name, t.value, durationMs, t.additive);
 		}
 	}
 
@@ -262,7 +302,7 @@ export class BodyDirector {
 		const result: Record<string, number> = {};
 		for (const [name, state] of this.params.entries()) {
 			if (state.tElapsed !== undefined && state.tDuration !== undefined && state.startVal !== undefined) {
-				this.stepSmootherstep(state, deltaMs);
+				this.stepFastAttack(state, deltaMs);
 			} else {
 				this.stepAnalyticalOscillator(name, state, dt);
 			}
@@ -330,10 +370,13 @@ export class BodyDirector {
 		}
 	}
 
-	private stepSmootherstep(state: SpringParamState, deltaMs: number): void {
+	private stepFastAttack(state: SpringParamState, deltaMs: number): void {
 		state.tElapsed = (state.tElapsed ?? 0) + deltaMs;
 		const t = Math.min(1.0, state.tElapsed / (state.tDuration || 1));
-		const s = t * t * t * (t * (t * 6 - 15) + 10);
+		// 二次元动画核心：非对称快进慢收 (Fast Attack, Gentle Settle - Cubic Out)
+		// 在 t=0 具备瞬态高加速度激发 Live2D 发丝和饰品物理，在 t=1 临界收敛平滑落定
+		const inv = 1 - t;
+		const s = 1 - inv * inv * inv;
 		const start = state.startVal ?? state.current;
 		state.current = start + (state.target - start) * s;
 

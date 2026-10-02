@@ -25,6 +25,9 @@ export function projectEmbodimentContext(router: BodyRouter): string | undefined
       `[body] ${affordance.bodyId}: 在线`,
       `- 伴随动作标签: ${cueList}`,
     );
+    if (primary.formatStatus) {
+      lines.push(primary.formatStatus());
+    }
   } else {
     lines.push(`[body] ${affordance.bodyId}: 离线 (${state.fault ?? "disconnected"})`);
   }

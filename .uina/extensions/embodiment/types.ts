@@ -47,8 +47,14 @@ export interface BodyEndpoint {
   /** 响应打断，安全受控急停 */
   safeStop(): Promise<void>;
 
+  /** 可选: 动态线索响应能力判断（支持参数修饰、原子组合等动态语法时） */
+  supportsCue?(cueId: string): boolean;
+
   /** 可选: 焦点切换通知 (成为主导或退居辅助) */
   onFocus?(isFocused: boolean): void | Promise<void>;
+
+  /** 可选: 具身端点即时物理与配置状态纯文本呈现 */
+  formatStatus?(): string;
 }
 
 export interface ExtractedCue {
