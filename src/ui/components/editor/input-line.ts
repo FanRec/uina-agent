@@ -282,10 +282,15 @@ export class InputLine implements Component, Focusable {
 		return this.text.length > 0;
 	}
 
+	/** 当前注册表内的活芯片：用户手打的同形文本（id 不在 pastes 注册表）
+	 * 不获得芯片语义——跳格、原子删除与渲染全部只认活芯片。 */
+	private findLiveMarkers(): MarkerSpan[] {
+		return findMarkers(this.text).filter((m) => this.pastes.has(m.id));
+	}
+
 	/** 检查光标当前是否紧邻某个粘贴标记 */
 	hasChipAtCursor(): boolean {
-		const markers = findMarkers(this.text);
-		return markers.some((m) => m.end === this.cursorIndex || m.start === this.cursorIndex);
+		return this.findLiveMarkers().some((m) => m.end === this.cursorIndex || m.start === this.cursorIndex);
 	}
 
 	hasSelection(): boolean {
@@ -529,8 +534,7 @@ export class InputLine implements Component, Focusable {
 
 		// 5. Ctrl+O 专门用于展开光标处的粘贴标记
 		if (matchesKey(data, Key.ctrl("o"))) {
-			const markers = findMarkers(this.text);
-			const target = markers.find((m) => m.end === this.cursorIndex || m.start === this.cursorIndex);
+			const target = this.findLiveMarkers().find((m) => m.end === this.cursorIndex || m.start === this.cursorIndex);
 			if (target) {
 				const raw = this.pastes.get(target.id);
 				if (raw !== undefined) {
@@ -585,8 +589,9 @@ export class InputLine implements Component, Focusable {
 			return;
 		}
 
-		// 6. 原子化方向键移动（将 [已粘贴 #ID ...] 作为一个整体跳过）
-		const markers = findMarkers(this.text);
+		// 6. 原子化方向键移动（将 [已粘贴 #ID ...] 作为一个整体跳过）。
+		// 只认 pastes 注册表里的活芯片：用户手打同形文本不获得芯片语义。
+		const markers = this.findLiveMarkers();
 
 		// 6.0 词级移动 (Ctrl+Left / Alt+Left, Ctrl+Right / Alt+Right)
 		if (matchesKey(data, Key.ctrlLeft) || matchesKey(data, Key.altLeft)) {
@@ -878,7 +883,7 @@ export class InputLine implements Component, Focusable {
 		const logicalLines = this.text.split("\n");
 		let globalCharIndex = 0;
 		let cursorHandled = false;
-		const markers = findMarkers(this.text);
+		const markers = this.findLiveMarkers();
 
 		for (let lineIdx = 0; lineIdx < logicalLines.length; lineIdx++) {
 			const lineStr = logicalLines[lineIdx]!;
