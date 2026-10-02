@@ -489,14 +489,14 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 			expect(frame.ParamEyeLOpen).toBeLessThanOrEqual(2);
 		});
 
-		it("fires occasional random idle posture events during prolonged silence with still windows between", () => {
-			// 注入确定性随机（gap 恒 10s、幅度取中、方向恒正）——时序可精确推演
+		it("fires occasional spring-carried idle posture shifts during prolonged silence with still windows between", () => {
+			// 注入确定性随机（gap 恒 10s、bodyX、offset +8°、hold 2.3s）——时序可精确推演：
+			// 事件在静默 14s（采样 5s 处）触发，弹簧滑入 ~0.8s + 保持 2.3s + 滑回 ~0.8s
 			const composer = new MotionDirector(() => 0.5);
 			for (let i = 0; i < 150; i++) composer.compose(60); // 9s 静默：跨过 4s 阈值
 			const xs: number[] = [];
 			for (let i = 0; i < 200; i++) xs.push(composer.compose(60).ParamBodyAngleX!);
-			// 事件性证据：12s 采样内既有含脉冲的动作窗（首事件在静默 14s = 采样 5s 处），
-			// 也有纯 drift 的静止窗（gap 10s > 脉宽 1.4s）——活泼来自事件，不是匀速正弦
+			// 事件性证据：12s 采样内既有含换姿的动作窗（+8° 弹簧滑入），也有纯 drift 静止窗
 			let maxRange = 0;
 			let minRange = Infinity;
 			for (let start = 0; start + 33 <= xs.length; start++) {
@@ -507,6 +507,13 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 			}
 			expect(maxRange).toBeGreaterThan(3);
 			expect(minRange).toBeLessThan(1);
+			// 顺畅度证据：弹簧承载的逐帧变化有上界（峰值速度 ~28°/s → <2°/60ms），
+			// 运动学脉冲/阶跃注入都会被此断言拒绝（"生硬"反馈的回归钉）
+			let maxJump = 0;
+			for (let i = 1; i < xs.length; i++) {
+				maxJump = Math.max(maxJump, Math.abs(xs[i]! - xs[i - 1]!));
+			}
+			expect(maxJump).toBeLessThan(3);
 		});
 
 		it("keeps a mid-speech pause near-still instead of idling (×0.25 ruling)", () => {

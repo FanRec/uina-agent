@@ -20,14 +20,17 @@ import {
 } from "./parameter-mapper.js";
 import { PhysiologicalNoise } from "./physiological-noise.js";
 
-// 静默期 idle 微动作：长静默（> IDLE_RAMP_DELAY_MS）下偶发"换坐姿/歪头"脉冲。
-// 实机裁定（2026-10-02）：第一版的持续正弦地板（±6.3° 匀速晃头）实测为催眠感——
-// 活泼来自事件性（偶发、方向随机、不可预测），不来自持续周期运动；头部恒定
-// 周期摆是眩晕主源。模式与声学重音脉冲同构：onset → 单峰包络 → 输出层叠加。
+// 静默期 idle 微动作：长静默（> IDLE_RAMP_DELAY_MS）下偶发"换坐姿/歪头"。
+// 实机裁定（2026-10-02）：匀速正弦地板实测催眠（第一版）、运动学脉冲叠加实测
+// 生硬不顺畅（第二版）——根因都是绕开弹簧。本版事件 = additive 目标偏移，
+// 由 body-director 弹簧承载滑入/保持/滑回（动量连续、欠阻尼带自然回弹），
+// 参数/方向/幅度/保持时长/间隔全随机。
 const IDLE_RAMP_DELAY_MS = 4000;
 const IDLE_EVENT_GAP_MIN_MS = 6000;
 const IDLE_EVENT_GAP_MAX_MS = 14000;
-const IDLE_PULSE_WINDOW_MS = 1400;
+const IDLE_SHIFT_OMEGA_SCALE = 0.7;
+const IDLE_SHIFT_HOLD_MIN_MS = 1200;
+const IDLE_SHIFT_HOLD_MAX_MS = 3400;
 // 语流停顿相位速率（"近静止"裁定）。已知权衡：极安静语流（活动度 < 语流幅度）
 // 恢复说话的头 ~2s 幅度由衰减残留托底缓降——单调无跳变，裁定为可接受的"收得慢"。
 const PAUSE_PHASE_RATE = 0.25;
@@ -190,13 +193,11 @@ export class MotionDirector {
 	private speechPhase = 0;
 	private speechActivity = 0;
 
-	// idle 微动作状态：事件倒计时（静默越阈后开始计）、脉冲窗与随机方向幅度
+	// idle 微动作状态：事件倒计时（静默越阈后开始计）+ 在途换姿（弹簧 additive 目标）
 	private silenceMs = 0;
 	private idleEventGapMs = IDLE_EVENT_GAP_MIN_MS;
-	private idlePulseRemainingMs = 0;
-	private idlePulseAgeMs = 0;
-	private idlePulseBodyX = 0;
-	private idlePulseHeadZ = 0;
+	private idleShiftParam: "ParamBodyAngleX" | "ParamAngleZ" | null = null;
+	private idleShiftHoldRemainingMs = 0;
 
 	// 思考视线状态：thinking 持续期间 gaze 有"瞟向远方"的声明意图——
 	// VOR 为其让位，并叠加慢速游移；clearStatePose 时一并清零，无残留
@@ -266,10 +267,13 @@ export class MotionDirector {
 	resetSpeechActivity(): void {
 		this.speechActivity = 0;
 		this.speechPhase = 0;
-		// 语义同 abortAllMotions：节奏状态清零后静默计时重新起算，
-		// 在途 idle 脉冲取消，事件间隔重新随机
+		// 语义同 abortAllMotions：节奏状态清零后静默计时重新起算；
+		// 在途换姿立即 additive 归零滑回基准，事件间隔重新随机
 		this.silenceMs = 0;
-		this.idlePulseRemainingMs = 0;
+		if (this.idleShiftParam) {
+			this.bodyDirector.setTarget(this.idleShiftParam, 0, true, IDLE_SHIFT_OMEGA_SCALE);
+			this.idleShiftParam = null;
+		}
 		this.idleEventGapMs =
 			IDLE_EVENT_GAP_MIN_MS + this.randomFn() * (IDLE_EVENT_GAP_MAX_MS - IDLE_EVENT_GAP_MIN_MS);
 	}
@@ -438,9 +442,11 @@ export class MotionDirector {
 		this.currentAllowedChannels = undefined;
 		this.speechActivity = 0;
 		this.speechPhase = 0;
-		// 急停后回归"先静止再偶发微动作"：清零静默计时与在途脉冲，事件间隔重新随机
+		// 急停后回归"先静止再偶发换姿"：清静默计时与在途换姿状态（弹簧目标由
+		// dampenToNeutral 归基准），事件间隔重新随机
 		this.silenceMs = 0;
-		this.idlePulseRemainingMs = 0;
+		this.idleShiftParam = null;
+		this.idleShiftHoldRemainingMs = 0;
 		this.idleEventGapMs =
 			IDLE_EVENT_GAP_MIN_MS + this.randomFn() * (IDLE_EVENT_GAP_MAX_MS - IDLE_EVENT_GAP_MIN_MS);
 		// 急停语义覆盖思考视线状态：不清会让游移与 VOR 让位残留到下一回合
@@ -488,19 +494,33 @@ export class MotionDirector {
 		const noise = this.noise.tick(deltaMs);
 		const merged = this.bodyDirector.tick(deltaMs, { isTorsoLocked });
 
-		// 静默期 idle 微动作调度：长静默下偶发"换坐姿/歪头"。间隔/方向/幅度/脉宽
-		// 全部随机，杜绝固定节拍；通道被租约锁定时跳过本次触发（倒计时继续走）。
-		if (this.speechActivity === 0 && this.silenceMs > IDLE_RAMP_DELAY_MS) {
+		// 静默期 idle 微动作：弹簧承载的换姿——触发即 additive 滑入，保持随机时长
+		// 后 additive 归零滑回基准。间隔/参数/方向/幅度/时长全随机；被租约锁定时
+		// 立即让位（跳过归零写，恢复由租约纪律负责），不引爆积压事件。
+		if (this.idleShiftParam) {
+			this.idleShiftHoldRemainingMs -= deltaMs;
+			const locked = this.idleShiftParam === "ParamBodyAngleX" ? isTorsoLocked : isHeadLocked;
+			if (this.idleShiftHoldRemainingMs <= 0 || locked) {
+				if (!locked) {
+					this.bodyDirector.setTarget(this.idleShiftParam, 0, true, IDLE_SHIFT_OMEGA_SCALE);
+				}
+				this.idleShiftParam = null;
+			}
+		} else if (this.speechActivity === 0 && this.silenceMs > IDLE_RAMP_DELAY_MS) {
 			this.idleEventGapMs -= deltaMs;
 			if (this.idleEventGapMs <= 0 && !isTorsoLocked && !isHeadLocked) {
 				this.idleEventGapMs =
 					IDLE_EVENT_GAP_MIN_MS +
 					this.randomFn() * (IDLE_EVENT_GAP_MAX_MS - IDLE_EVENT_GAP_MIN_MS);
-				this.idlePulseAgeMs = 0;
-				this.idlePulseRemainingMs =
-					IDLE_PULSE_WINDOW_MS * (0.8 + this.randomFn() * 0.4);
-				this.idlePulseBodyX = (this.randomFn() < 0.5 ? -1 : 1) * (4 + this.randomFn() * 3);
-				this.idlePulseHeadZ = (this.randomFn() < 0.5 ? -1 : 1) * (2.5 + this.randomFn() * 1.5);
+				const useHead = this.randomFn() < 0.4;
+				this.idleShiftParam = useHead ? "ParamAngleZ" : "ParamBodyAngleX";
+				const offset =
+					(this.randomFn() < 0.5 ? -1 : 1) *
+					(useHead ? 4 + this.randomFn() * 3 : 6 + this.randomFn() * 4);
+				this.bodyDirector.setTarget(this.idleShiftParam, offset, true, IDLE_SHIFT_OMEGA_SCALE);
+				this.idleShiftHoldRemainingMs =
+					IDLE_SHIFT_HOLD_MIN_MS +
+					this.randomFn() * (IDLE_SHIFT_HOLD_MAX_MS - IDLE_SHIFT_HOLD_MIN_MS);
 			}
 		}
 
@@ -599,26 +619,6 @@ export class MotionDirector {
 			if (!this.arbiter.isChannelLocked("eyes", CHANNEL_PRIORITY.CUE)) {
 				merged.ParamBrowLY = clampLive2DParam("ParamBrowLY", (merged.ParamBrowLY ?? 0) + 0.6 * pulse);
 				merged.ParamBrowRY = clampLive2DParam("ParamBrowRY", (merged.ParamBrowRY ?? 0) + 0.6 * pulse);
-			}
-		}
-
-		// idle 微动作脉冲：慢起慢回单峰（~1.4s），像"换了个坐姿/歪了下头"。
-		// 逐帧检查通道锁定：脉冲进行中被 cue 锁定时让位，解锁后余量自然走完
-		if (this.idlePulseRemainingMs > 0) {
-			this.idlePulseRemainingMs = Math.max(0, this.idlePulseRemainingMs - deltaMs);
-			this.idlePulseAgeMs += deltaMs;
-			const env = Math.sin((this.idlePulseAgeMs / IDLE_PULSE_WINDOW_MS) * Math.PI);
-			if (!isTorsoLocked) {
-				merged.ParamBodyAngleX = clampLive2DParam(
-					"ParamBodyAngleX",
-					(merged.ParamBodyAngleX ?? 0) + this.idlePulseBodyX * env,
-				);
-			}
-			if (!isHeadLocked) {
-				merged.ParamAngleZ = clampLive2DParam(
-					"ParamAngleZ",
-					(merged.ParamAngleZ ?? 0) + this.idlePulseHeadZ * env,
-				);
 			}
 		}
 
