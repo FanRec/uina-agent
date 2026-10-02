@@ -5,7 +5,9 @@ import { ExtensionRunner, type ExtensionAPI } from "../src/extensions/runner.js"
 import { ToolBroker } from "../src/tools/broker.js";
 import activateWorkspaceTools from "../src/extensions/workspace-tools/index.js";
 import { createJsonLineParser, globToRegExp, GitignoreMatcher } from "../src/extensions/workspace-tools/search-core.js";
+import { ensureRg } from "../src/extensions/workspace-tools/rg-installer.js";
 import {
+	createRgMatchSink,
 	formatGrepOutput,
 	runGrep,
 	buildLineMatcher,
@@ -251,5 +253,74 @@ describe("matchLines", () => {
 		const matches = collect();
 		expect(matchLines("x\ny", buildLineMatcher("zzz", true, false), "f", matches, 10)).toBe(false);
 		expect(matches).toHaveLength(0);
+	});
+});
+
+describe("runGrep rg 引擎（JSON 流解析与 limit 截断）", () => {
+	it("rg 可用时走 rg 引擎：limit 截断返回 limitHit 且跨 chunk 行解析正确", async () => {
+		const rgPath = await ensureRg();
+		if (!rgPath) return; // 离线/未装 rg 的环境：降级路径已由其他用例覆盖
+		const env = await IsolatedEnv.create({ prefix: "uina-rggrep-" });
+		envs.push(env);
+		const dir = env.path;
+		// 5 个文件的确定性命中（每文件 2 行），limit=2 时首轮即触发截断杀进程
+		for (let i = 0; i < 5; i++) {
+			await writeFile(join(dir, `f${i}.txt`), "alpha one\nalpha two\n", "utf8");
+		}
+		const outcome = await runGrep({ pattern: "alpha", root: dir, literal: true, limit: 2 });
+		expect(outcome.engine).toBe("rg");
+		expect(outcome.limitHit).toBe(true);
+		expect(outcome.matches).toHaveLength(2);
+		// 跨 chunk 劈开的行不被解析器破坏：match 行号与文本完整对应
+		// （rg 按文件顺序流式产出：limit=2 截到首个文件的前两行）
+		for (const m of outcome.matches) {
+			expect(m.text).toBe(m.line === 1 ? "alpha one" : "alpha two");
+		}
+	});
+});
+
+describe("createRgMatchSink：rg --json 事件收集纯逻辑", () => {
+	const matchEvent = (file: string, line: number, text: string): unknown => ({
+		type: "match",
+		data: { path: { text: file }, line_number: line, lines: { text } },
+	});
+
+	it("match 事件提取 SearchMatch；行尾换行符剥除", () => {
+		const matches: SearchMatch[] = [];
+		const sink = createRgMatchSink(matches, 10, () => {
+			throw new Error("不应触发截断");
+		});
+		sink.push(matchEvent("/r/a.txt", 3, "hello world\n"));
+		sink.push(matchEvent("/r/b.txt", 1, "second\r\n"));
+		expect(matches).toEqual([
+			{ file: "/r/a.txt", line: 3, text: "hello world" },
+			{ file: "/r/b.txt", line: 1, text: "second" },
+		]);
+		expect(sink.full).toBe(false);
+	});
+
+	it("非 match 事件与缺字段载荷被忽略", () => {
+		const matches: SearchMatch[] = [];
+		const sink = createRgMatchSink(matches, 10, () => {});
+		sink.push({ type: "begin", data: {} });
+		sink.push({ type: "match", data: { line_number: 1 } });
+		sink.push({ type: "match", data: { path: { text: "a.txt" } } });
+		sink.push({ type: "match" });
+		expect(matches).toEqual([]);
+	});
+
+	it("达到 limit 触发截断回调一次；满载后 push 静默丢弃", () => {
+		const matches: SearchMatch[] = [];
+		let limitCalls = 0;
+		const sink = createRgMatchSink(matches, 2, () => {
+			limitCalls++;
+		});
+		sink.push(matchEvent("/r/a.txt", 1, "one\n"));
+		sink.push(matchEvent("/r/a.txt", 2, "two\n"));
+		expect(sink.full).toBe(true);
+		expect(limitCalls).toBe(1);
+		sink.push(matchEvent("/r/c.txt", 9, "late\n"));
+		expect(matches).toHaveLength(2);
+		expect(limitCalls).toBe(1);
 	});
 });

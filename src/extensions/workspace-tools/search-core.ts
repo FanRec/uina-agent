@@ -95,6 +95,47 @@ export function createJsonLineParser(): { push: (chunk: string) => unknown[]; fl
 	};
 }
 
+/** rg --json 单个 match 事件的载荷形状（只取消费的字段）。 */
+interface RgMatchEvent {
+	type?: string;
+	data?: { path?: { text?: string }; line_number?: number; lines?: { text?: string } };
+}
+
+/**
+ * rg match 收集器：从 --json 事件流中提取 SearchMatch 并执行 limit 截断。
+ *
+ * 从 grepWithRg 的 stdout 闭包中抽出为纯逻辑单元——不依赖子进程即可
+ * 用合成事件穷举测试（跨 chunk 解析由 createJsonLineParser 负责）。
+ * 调用方持有 matches 数组与截断回调（杀子进程、置 limitHit）。
+ */
+export function createRgMatchSink(
+	matches: SearchMatch[],
+	limit: number,
+	onLimitReached: () => void,
+): { push(event: unknown): void; readonly full: boolean } {
+	let limitNotified = false;
+	return {
+		get full(): boolean {
+			return matches.length >= limit;
+		},
+		push(event: unknown): void {
+			if (matches.length >= limit) return;
+			const e = event as RgMatchEvent;
+			if (e.type !== "match") return;
+			const file = e.data?.path?.text;
+			const lineNo = e.data?.line_number;
+			const text = e.data?.lines?.text;
+			if (file && typeof lineNo === "number") {
+				matches.push({ file, line: lineNo, text: (text ?? "").replace(/\r?\n$/, "") });
+				if (matches.length >= limit && !limitNotified) {
+					limitNotified = true;
+					onLimitReached();
+				}
+			}
+		},
+	};
+}
+
 async function grepWithRg(opts: GrepOptions, rgPath: string): Promise<SearchOutcome> {
 	const args = ["--json", "--line-number", "--color=never", "--hidden", "--glob", "!**/.git/**"];
 	// rg 的 VCS ignore 只在检测到 git 仓库时生效；非 git 目录需显式传 root 的 .gitignore
@@ -127,23 +168,15 @@ async function grepWithRg(opts: GrepOptions, rgPath: string): Promise<SearchOutc
 		opts.signal?.addEventListener("abort", onAbort, { once: true });
 		child.stderr?.on("data", (c) => (stderr += c.toString()));
 		const parser = createJsonLineParser();
+		const sink = createRgMatchSink(matches, limit, () => {
+			limitHit = true;
+			child.kill();
+		});
 		child.stdout?.on("data", (chunk) => {
 			// rg --json 每行一个事件；parser 处理跨 chunk 劈开的行
 			for (const event of parser.push(chunk.toString())) {
-				if (matches.length >= limit) return;
-				if ((event as { type?: string }).type !== "match") continue;
-				const data = (event as { data?: { path?: { text?: string }; line_number?: number; lines?: { text?: string } } })
-					.data;
-				const file = data?.path?.text;
-				const lineNo = data?.line_number;
-				const text = data?.lines?.text;
-				if (file && typeof lineNo === "number") {
-					matches.push({ file, line: lineNo, text: (text ?? "").replace(/\r?\n$/, "") });
-					if (matches.length >= limit) {
-						limitHit = true;
-						child.kill();
-					}
-				}
+				if (sink.full) return;
+				sink.push(event);
 			}
 		});
 		child.on("error", (error) => {

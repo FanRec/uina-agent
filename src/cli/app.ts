@@ -13,6 +13,7 @@ import { formatHelp, parseArgs, readPipedStdin, UINA_VERSION } from "./args.js";
 import { resolveSessionPath } from "./session-path.js";
 import { resolveProfile, releaseProfileLock } from "../host/profile.js";
 import { formatStartupBanner, resolveExitCode, resolveRunMode } from "./run-mode.js";
+import { executeCancelActions, resolveCancelActions } from "./cancel-decision.js";
 import { formatStdioEventLine, formatToolCallLine, formatToolResultBlock } from "./stdio-render.js";
 
 /**
@@ -232,48 +233,34 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	};
 
 	const handleCancel = (source: "escape" | "ctrl+c" = "escape"): void => {
-		if (source === "ctrl+c") {
-			// 工作态：第 1 次打断本轮；若已经在取消流程中再次按 Ctrl+C，则直接强制退出
-			if (host.isBusy()) {
-				if (cancellationPending) {
-					executeExit(true);
-					return;
-				}
-				cancellationPending = true;
-				if (host.snapshot().queue.length > 0) {
+		// 决策与执行序在 cancel-decision.ts（纯函数，可穷举测试）；这里只装配效果回调。
+		executeCancelActions(
+			resolveCancelActions(source, {
+				busy: host.isBusy(),
+				execRunning,
+				cancellationPending,
+				queuedCount: host.snapshot().queue.length,
+			}),
+			{
+				forceExit: () => executeExit(true),
+				gracefulExit: () => executeExit(false),
+				abortExec: () => execAbort?.abort(),
+				interrupt: () => host.interrupt(),
+				deliverQueued: () => deliverQueuedNow(),
+				restoreQueue: () => {
 					void restoreQueueToEditor().catch((error) => {
 						process.stderr.write(`[队列恢复失败] ${String(error)}\n`);
 					});
-				}
-				host.interrupt();
-				return;
-			}
-			if (execRunning) {
-				execAbort?.abort();
-				return;
-			}
-			// 空闲态：防抖 2 秒内再次按下触发退出
-			if (cancellationPending) {
-				executeExit(false);
-				return;
-			}
-			cancellationPending = true;
-			tui?.host.notify("再按一次 Ctrl+C 退出程序", "info", 2000);
-			setTimeout(() => {
-				cancellationPending = false;
-			}, 2000).unref?.();
-			return;
-		}
-
-		if (host.isBusy()) {
-			const queued = host.snapshot().queue;
-			if (queued.length > 0) {
-				deliverQueuedNow();
-				return;
-			}
-			host.interrupt();
-		}
-		if (execRunning) execAbort?.abort();
+				},
+				armPending: (debounceMs) => {
+					cancellationPending = true;
+					setTimeout(() => {
+						cancellationPending = false;
+					}, debounceMs).unref?.();
+				},
+				notify: (text) => tui?.host.notify(text, "info", 2000),
+			},
+		);
 	};
 
 	const handleInterrupt = (force = false): void => {
