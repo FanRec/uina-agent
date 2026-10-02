@@ -89,6 +89,16 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 
 	const earlyEvents: HostEvent[] = [];
 
+	// session_rewind 的压缩装饰在此派生：事件按 1:1 透传纪律不带派生数据，
+	// 装饰取自宿主当前 auxiliary（restoredAuxiliary 是启动快照，覆盖不了恢复后新发生的压缩）。
+	const renderToTui = (message: HostEvent): void => {
+		if (message.type === "session_rewind") {
+			tui!.render(message, compactionDecorations(host.auxiliaryEntries(), message.entries));
+			return;
+		}
+		tui!.render(message);
+	};
+
 	const render = (message: HostEvent): void => {
 		if (message.type === "error") hadError = true;
 		if (message.type === "turn_end" || message.type === "turn_aborted") cancellationPending = false;
@@ -98,7 +108,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				tui.host.setThinkingLevels(snapshot.thinkingLevels);
 				tui.host.setReasoningEffort(snapshot.thinkingLevel);
 			}
-			tui.render(message);
+			renderToTui(message);
 		} else if (shouldRunTUI) {
 			// 在 TUI 实例化与会话加载前到达的事件（如早期模型目录刷新、启动告警）暂存，避免被 stdio 污染后又被 alternate screen 抹除
 			earlyEvents.push(message);

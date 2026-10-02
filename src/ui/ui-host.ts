@@ -343,6 +343,31 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
+	/**
+	 * Escape 语义单点（自外向内逐层退出）：非捕获浮层 > 联想卡片 > 工作态取消回合
+	 * （草稿保留，tests/ui.test.ts 钉住的契约）> 选区 > 草稿 > 空闲取消。
+	 * 捕获浮层在输入分发更早处按模态契约自有关闭，不进入本决策。
+	 * 旧实现存在两套互相漂移的阶梯（handleTerminalInput 的 3.6 与 inputLine.onEscape），
+	 * 本方法按各自已钉住的行为收敛，恒消费事件。
+	 */
+	private handleEscapeKey(): void {
+		if (this.overlayStack.hasVisible) {
+			this.overlayStack.hideTopOverlay();
+		} else if (this.activeSuggestions) {
+			this.activeSuggestions = null;
+		} else if (this.busy) {
+			this.cancelTurn("escape");
+		} else if (this.inputLine.hasSelection()) {
+			this.inputLine.clearSelection();
+		} else if (this.inputLine.hasText()) {
+			// 空闲态：有草稿先清草稿，而不是发送取消意图
+			this.inputLine.clear();
+		} else {
+			this.cancelTurn("escape");
+		}
+		this.requestRender();
+	}
+
 	constructor(options: UIHostOptions = {}) {
 		this.cwd = options.cwd ?? process.cwd();
 		this.modelName = options.modelName;
@@ -379,21 +404,8 @@ export class UIHost implements UIHostContextPort {
 		this.inputLine = new InputLine();
 		this.inputLine.onSubmit = (text) => this.handleUserSubmit(text);
 		this.inputLine.onSubmitMode = (text, mode) => this.handleUserSubmitMode(text, mode);
-		this.inputLine.onEscape = () => {
-			if (this.overlayStack.hasVisible) {
-				this.overlayStack.hideTopOverlay();
-			} else if (this.activeSuggestions) {
-				this.activeSuggestions = null;
-			} else if (this.inputLine.hasSelection()) {
-				this.inputLine.clearSelection();
-			} else if (this.inputLine.hasText()) {
-				// 体验优先级：输入框里有内容时 Escape 先清草稿，而不是打断工作中的回合
-				this.inputLine.clear();
-			} else {
-				this.cancelTurn();
-			}
-			this.requestRender();
-		};
+		// Escape 不走 InputLine 回调：语义单点在 UIHost.handleEscapeKey，
+		// handleTerminalInput 在焦点分发之前消费所有 Esc。
 		this.inputLine.setCwd(this.cwd);
 		this.inputLine.setReasoningEffort(this.reasoningEffort);
 
@@ -440,6 +452,12 @@ export class UIHost implements UIHostContextPort {
 			clearTimeout(this.notificationToast.timer);
 			this.notificationToast = null;
 		}
+		if (this.copyToastTimer) {
+			clearTimeout(this.copyToastTimer);
+			this.copyToastTimer = null;
+		}
+		this.copyToastText = "";
+		this.mouseTracker.clear();
 		this.overlayStack.clear();
 		this.terminal.stop();
 	}
@@ -634,6 +652,27 @@ export class UIHost implements UIHostContextPort {
 		this.transcript.loadSession(entries, decorations);
 		this.scrollOffset = 0;
 		this.lastTotalPerm = 0;
+		this.requestRender();
+	}
+
+	/**
+	 * 会话回溯重放：清空转录区、按 decorations 重建历史，并在引擎给出回溯轮号时
+	 * 重开当前轮。此前这段序列由 InteractiveTUI 直接摸 transcript 内部手搓（且 clear
+	 * 与 loadSession 内部清空重复），现收口为宿主公开入口。
+	 */
+	replayRewind(
+		entries: readonly SessionEntry[],
+		decorations: readonly CompactionReplayDecoration[] = [],
+		turnNumber?: number,
+	): void {
+		this.loadSession(entries, decorations);
+		if (turnNumber !== undefined) {
+			this.transcript.startTurn(turnNumber, "");
+			this.activityLine.start("thinking", "正在思考与生成回复...");
+		} else {
+			this.activityLine.reset();
+		}
+		this.markUsageEstimated();
 		this.requestRender();
 	}
 
@@ -1744,11 +1783,6 @@ export class UIHost implements UIHostContextPort {
 				this.requestRender();
 				return;
 			}
-			if (matchesKey(data, Key.escape)) {
-				this.activeSuggestions = null;
-				this.requestRender();
-				return;
-			}
 			if (matchesKey(data, Key.enter) || matchesKey(data, Key.tab)) {
 				const isTab = matchesKey(data, Key.tab);
 				this.applyActiveSuggestion(isTab);
@@ -1756,22 +1790,10 @@ export class UIHost implements UIHostContextPort {
 			}
 		}
 
-		// 3.6 Esc 阶梯处理（无浮层/菜单时）：工作态打断当前轮；空闲态取消选区或清空草稿（对齐 dsh-TUI）
+		// 3.6 Esc 阶梯：语义单点（浮层 > 联想 > 选区 > 草稿 > 取消回合），恒消费
 		if (matchesKey(data, Key.escape)) {
-			if (this.busy) {
-				this.cancelTurn("escape");
-				return;
-			}
-			if (this.inputLine.hasSelection()) {
-				this.inputLine.clearSelection();
-				this.requestRender();
-				return;
-			}
-			if (this.inputLine.hasText()) {
-				this.inputLine.clear();
-				this.requestRender();
-				return;
-			}
+			this.handleEscapeKey();
+			return;
 		}
 
 		// 4. 输入框严格未输入任何字符时敲 '?' 唤起帮助；若前面有空格则作为普通字符输入

@@ -115,6 +115,13 @@ export class UinaHost {
 		this.abandonedTaskIds = abandonedTaskIds;
 	}
 
+	/** 当前 canonical 会话的 auxiliary 登记（store 活状态的副本）。
+	 * session_rewind 回放装饰等消费者需要的是"现在"的登记；restoredAuxiliary
+	 * 只是启动快照，覆盖不了恢复之后新发生的压缩。 */
+	auxiliaryEntries(): readonly (import("../session/types.js").SessionEventRecord | import("../session/types.js").SessionCustomEntryRecord)[] {
+		return [...this.store.state.auxiliary];
+	}
+
 	static async create(options: UinaHostOptions): Promise<UinaHost> {
 		const config = options.provider === undefined && options.model === undefined ? loadConfig() : undefined;
 		const models = new ModelRegistry(config);

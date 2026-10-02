@@ -25,7 +25,7 @@ export interface InteractiveTUIOptions extends UIHostOptions {
 
 export class InteractiveTUI {
 	readonly host: UIHost;
-	private lineCallback?: (line: string, mode: "steer" | "followUp") => void;
+	private lineCallback?: (line: string, mode: "direct" | "steer" | "followUp") => void;
 	private interactionCallback?: () => void;
 	private cancelCallback?: (source?: "escape" | "ctrl+c") => void;
 	private interruptAndDeliverCallback?: (text: string) => void;
@@ -41,12 +41,9 @@ export class InteractiveTUI {
 	 * 工具运行中的重绘需求已并入 UIHost 统一帧时钟：
 	 * 旧实现是独立的 300ms setInterval；现在只需在工具状态变化时告知宿主，
 	 * 宿主把 hasRunningTools() 作为心跳状态源之一（见 UIHost.updateHeartbeat）。
+	 * （旧 sync/stop 双方法同名同实现，是三定时器方案的化石，已并入本单点。）
 	 */
-	private syncToolAnimationTimer(): void {
-		this.host.notifyToolActivity();
-	}
-
-	private stopToolAnimationTimer(): void {
+	private notifyToolActivity(): void {
 		this.host.notifyToolActivity();
 	}
 
@@ -57,8 +54,9 @@ export class InteractiveTUI {
 		this.featureDisposer = features.dispose;
 
 		this.host.onUserLine = (line, mode) => {
-			const m = mode === "direct" ? "steer" : mode;
-			this.lineCallback?.(line, m);
+			// mode 原样穿透：direct/steer/followUp 的归一单点在 host.submitText，
+			// 门面不改名（旧实现把 direct 改写成 steer，语义误导且被 host 重判兜底）。
+			this.lineCallback?.(line, mode);
 		};
 
 		this.host.onCancel = (source) => {
@@ -89,7 +87,7 @@ export class InteractiveTUI {
 		this.host.start();
 	}
 
-	onLine(cb: (line: string, mode: "steer" | "followUp") => void): void {
+	onLine(cb: (line: string, mode: "direct" | "steer" | "followUp") => void): void {
 		this.lineCallback = cb;
 	}
 
@@ -129,8 +127,12 @@ export class InteractiveTUI {
 		this.host.setPendingQueue(items);
 	}
 
-	render(m: HostEvent): void {
-			switch (m.type) {
+	/**
+ * 宿主事件 → TUI 状态翻译。session_rewind 需要调用方附带压缩回放装饰
+ * （事件按 1:1 透传纪律不携带派生数据，装饰由 cli 从 host 当前 auxiliary 计算）。
+ */
+	render(m: HostEvent, rewindDecorations: readonly CompactionReplayDecoration[] = []): void {
+		switch (m.type) {
 			case "model_select":
 				this.host.setModel(m.model);
 				break;
@@ -141,16 +143,7 @@ export class InteractiveTUI {
 
 			case "session_rewind":
 				this.currentThinkingId = undefined;
-				this.host.transcript.clear();
-				this.host.loadSession(m.entries);
-				if (m.turnNumber !== undefined) {
-					this.host.transcript.startTurn(m.turnNumber, "");
-					this.host.activityLine.start("thinking", "正在思考与生成回复...");
-				} else {
-					this.host.activityLine.reset();
-				}
-				this.host.markUsageEstimated();
-				this.host.requestRender();
+				this.host.replayRewind(m.entries, rewindDecorations, m.turnNumber);
 				break;
 			case "turn_start":
 				this.currentThinkingId = undefined;
@@ -236,7 +229,7 @@ export class InteractiveTUI {
 				this.host.transcript.startTool(m.toolName, m.args, callId);
 				this.trajectoryProjection.onToolStart(m.toolName, m.args, callId);
 				this.host.activityLine.update("tool", `正在执行工具: ${m.toolName}`);
-				this.syncToolAnimationTimer();
+				this.notifyToolActivity();
 				this.host.requestRender();
 				break;
 			}
@@ -249,7 +242,7 @@ export class InteractiveTUI {
 				this.host.transcript.addToolDone(m.toolName, m.result, elapsed, m.status, m.callId, m.args, { images: m.images ? [...m.images] : undefined, details: m.details });
 				this.trajectoryProjection.onToolDone(m.callId ?? "", m.toolName, m.result, elapsed, m.status);
 				this.host.activityLine.update("streaming", `工具 ${m.toolName} 执行完毕，继续生成...`);
-				this.syncToolAnimationTimer();
+				this.notifyToolActivity();
 				this.host.requestRender();
 				break;
 			}
@@ -260,7 +253,7 @@ export class InteractiveTUI {
 					this.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
 				}
-				this.stopToolAnimationTimer();
+				this.notifyToolActivity();
 				this.host.setBusy(false);
 				this.host.transcript.finishTurn();
 				this.trajectoryProjection.onTurnEnd(m.turnNumber, m.requestUsage);
@@ -285,7 +278,7 @@ export class InteractiveTUI {
 					this.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
 				}
-				this.stopToolAnimationTimer();
+				this.notifyToolActivity();
 				this.host.transcript.interruptTurn(this.host.modelName);
 				this.host.setBusy(false);
 				this.host.activityLine.finish("已打断当前轮次");
@@ -303,7 +296,7 @@ export class InteractiveTUI {
 					this.trajectoryProjection.onThinkingDone(this.currentThinkingId);
 					this.currentThinkingId = undefined;
 				}
-				this.stopToolAnimationTimer();
+				this.notifyToolActivity();
 				this.host.setBusy(false);
 				this.host.transcript.addError(m.text);
 				this.trajectoryProjection.onError(m.text);
@@ -318,7 +311,7 @@ export class InteractiveTUI {
 	}
 
 	close(): void {
-		this.stopToolAnimationTimer();
+		this.notifyToolActivity();
 		this.featureDisposer();
 		this.host.stop();
 	}
