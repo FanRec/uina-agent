@@ -184,3 +184,78 @@ describe("TTS delivery hardening", () => {
 		expect(client.test).not.toHaveBeenCalled();
 	});
 });
+
+describe("TTS cue tag stripping before the sentence state machine", () => {
+	// 复现原缺陷：句前文 ≥ maxSentenceChars(20) 时，标签内属性间逗号触发逗号切分，
+	// 旧实现把 "intensity=0.8'/>" 尾巴当台词送进 TTS 与字幕。
+	it("strips a cue tag whose comma attribute lands on a comma sentence split", () => {
+		const parser = new StreamParser();
+		const output = [...parser.feed("这句话已经足够长了，<cue id='smile', intensity=0.8/>好的。"), ...parser.flush()];
+		expect(output.join("")).toBe("这句话已经足够长了，好的。");
+		expect(output.join("")).not.toMatch(/cue|intensity|\/>/i);
+	});
+
+	it("pairs an incomplete tag tail across feed boundaries at every cut point", () => {
+		const input = "前缀文本，<cue id='smile' intensity=0.8/>后缀文本。";
+		for (let cut = 1; cut < input.length; cut++) {
+			const parser = new StreamParser();
+			const output = [...parser.feed(input.slice(0, cut)), ...parser.feed(input.slice(cut)), ...parser.flush()];
+			const joined = output.join("");
+			expect(joined, `split at ${cut}`).not.toMatch(/cue|intensity|\/>|</i);
+			expect(joined, `split at ${cut}`).toContain("前缀文本");
+			expect(joined, `split at ${cut}`).toContain("后缀文本");
+		}
+	});
+
+	it("strips a multi-line cue tag before the newline terminal split can land inside it", () => {
+		const parser = new StreamParser();
+		const output = [...parser.feed("好的。<cue id='smile'\nintensity=0.8/>开始。"), ...parser.flush()];
+		expect(output.join("")).toBe("好的。开始。");
+	});
+
+	it("drops an unclosed tag tail at flush and still speaks the preceding text", () => {
+		const parser = new StreamParser();
+		const output = [...parser.feed("好的。<cue id='smile'"), ...parser.flush()];
+		expect(output).toEqual(["好的。"]);
+	});
+
+	it("keeps prose around angle brackets unchanged (no over-swallowing)", () => {
+		const parser = new StreamParser();
+		const output = [...parser.feed("五小于< 三，大于二。"), ...parser.flush()];
+		expect(output.join("")).toMatch(/五小于\s*<\s*三/);
+	});
+
+	it("releases a pseudo tag tail beyond the bounded hold instead of swallowing it", () => {
+		const parser = new StreamParser();
+		const filler = "a".repeat(250);
+		const output = [...parser.feed(`计数 <cue ${filler} 结束。`), ...parser.flush()];
+		expect(output.join("")).toContain("结束");
+	});
+
+	it("pairs a tag tail split across three feed chunks", () => {
+		const parser = new StreamParser();
+		const output = [
+			...parser.feed("前缀文本，<cue id='sm"),
+			...parser.feed("ile' intensity="),
+			...parser.feed("0.8/>后缀文本。"),
+			...parser.flush(),
+		];
+		expect(output.join("")).not.toMatch(/cue|intensity|\/>|</i);
+		expect(output.join("")).toContain("前缀文本");
+		expect(output.join("")).toContain("后缀文本");
+	});
+
+	it("pairs a tag whose attribute itself contains an angle bracket", () => {
+		const parser = new StreamParser();
+		const output = [...parser.feed("前缀文本，<cue id='a<b'"), ...parser.feed("'/>后缀文本。"), ...parser.flush()];
+		expect(output.join("")).not.toMatch(/\/>|</i);
+		expect(output.join("")).toContain("前缀文本");
+		expect(output.join("")).toContain("后缀文本");
+	});
+
+	it("keeps think-block parsing intact when a cue tag precedes it in the same chunk", () => {
+		const parser = new StreamParser();
+		const output = [...parser.feed("好的。<cue id='smile'/><think>secret</think>可见。"), ...parser.flush()];
+		expect(output.join("")).toBe("好的。可见。");
+	});
+});

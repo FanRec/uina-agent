@@ -6,6 +6,17 @@ const TERMINAL_PUNCTUATIONS = new Set(["。", "！", "？", "；", "\n", "!", "?
 const COMMA_PUNCTUATIONS = new Set(["，", ","]);
 const MAX_SAFE_SENTENCE_CHARS = 1000;
 
+// 具身 cue 标签（<cue id='...'/>）的流式摘除。必须先于句子状态机：断句的四个切分点
+// （\n/逗号/空格/硬切）都可能落在标签内部——一旦在标签内切开，前半段被 cleanSentence
+// 的尾前缀规则剥掉，后半段失去 `<` 开头就永远匹配不到整标签正则，属性尾巴
+// （如 intensity=0.8'/>）会被当台词念出来并进字幕。cleanSentence 里的 cue 规则降为兜底。
+const COMPLETE_CUE_TAG = /<\s*cue\b[^>]*?\/?>/gi;
+// 整串 $ 锚定：从最左能延伸到串尾的标签头取残尾（标签属性里再出现 '<' 时起点仍取对）。
+// 只认自闭合形前缀——闭合形 </cue> 不在任何清洗面的剥离范围内，不做特判。
+const PENDING_CUE_TAIL = /<\s*(?:c(?:u(?:e\b[^>]*)?)?)?$/i;
+// 真 cue 标签远短于此；超限视为正文释放，防伪标签（如正文里写了 "<cue " 后跟普通文字）永久吞词。
+const MAX_PENDING_CUE_TAIL_CHARS = 200;
+
 function graphemeCount(text: string): number {
   const Segmenter = (Intl as typeof Intl & { Segmenter?: new (locales?: string | string[], options?: { granularity?: string }) => { segment(input: string): Iterable<unknown> } }).Segmenter;
   if (Segmenter) return Array.from(new Segmenter(undefined, { granularity: "grapheme" }).segment(text)).length;
@@ -39,12 +50,13 @@ function longestTagPrefixSuffix(text: string, tag: string): string {
  */
 export function cleanSentence(text: string): string {
 	let s = text;
-	// 0. 剥离具身动作线索 <cue id="..."/>，以及跨分块被截断的残缺 cue 前缀。
-	//    它们是大模型给具身系统的旁路信号，不是台词，绝不能送进合成器念出来。
-	//    这里独立清洗而不复用 embodiment 的 StreamingTagStripper.cleanText：voice/tts
-	//    在架构上与具身系统对等（无代理原则），不通过它二手转交正文。
+	// 0. 剥离具身动作线索 <cue id="..."/> 及其残缺尾部。主防线在 StreamParser.feed 的
+	//    预级摘除（完整标签剥除 + 残尾跨 chunk 配对），句子机收不到标签碎片；此处只兜底
+	//    200 字符上限释放路径放进缓冲的伪标签碎片。独立清洗而不复用 embodiment 的
+	//    StreamingTagStripper：voice/tts 在架构上与具身系统对等（无代理原则），
+	//    不通过它二手转交正文。
 	//    注意顺序：必须在下方 Markdown 规则之前，否则下划线规则会先把 id 里的 `_` 吃掉。
-	s = s.replace(/<\s*cue\b[^>]*?\/?>/gi, "");
+	s = s.replace(COMPLETE_CUE_TAG, "");
 	s = s.replace(/<\s*(?:cue\b[^>]*|c(?:u(?:e)?)?)?$/i, "");
 	// 1. 移除 Markdown 图片语法 ![alt](url) -> "" 与独立图片标记 ![alt] -> ""
 	s = s.replace(/!\[([^\]]*)\](?:\([^)]+\))?/g, "");
@@ -52,7 +64,9 @@ export function cleanSentence(text: string): string {
   s = s.replace(/\[([^\]]+)\](?:\([^)]+\))?/g, "$1");
   // 3. 移除行首 Markdown 标记 (#, >, -, *, + 等)
   s = s.replace(/^[#>\s*\-+]+/gm, "");
-  // 3.5 括号标点本身不发音，但括号内容保留（§4.4"不能一律吞掉"）
+  // 3.5 残余括号字符剥除：全角括注（…）内容已在 feed 状态机整体剥离（2026-10-02
+  //     用户裁定，收窄 §4.4——动作/旁白括注是字幕语义不是台词）；此处兜底半角
+  //     括号字符与直发路径漏网的括号（半角 () 内容仍保留）。
   s = s.replace(/[()（）]/g, "");
   // 4. 移除行首数字列表标记 (1. , 2. 等)
   s = s.replace(/^\s*\d+\.\s+/gm, "");
@@ -74,6 +88,15 @@ export function hasPronounceableContent(text: string): boolean {
   return /[\p{sc=Han}\p{sc=Latin}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Hangul}\d]/u.test(text);
 }
 
+/**
+ * 一次性文本的全角括注剥离（无跨 chunk 状态）：供 voice_driver:speak / tts 工具等
+ * 不经 StreamParser 的直发路径使用，与流式状态机同一裁定——全角（…）内容整体不朗读，
+ * 半角 () 仍只剥括号保留内容。未闭合的（按流式语义吞掉尾部（残句不该突然开始念括注）。
+ */
+export function stripParentheticals(text: string): string {
+  return text.replace(/（[^（）]*）/g, "").replace(/（[^）]*$/g, "");
+}
+
 export class StreamParser {
   private readonly maxSentenceChars: number;
 
@@ -82,6 +105,13 @@ export class StreamParser {
   private thinkTagBuffer = "";
   private inCode = false;
   private codeBacktickCount = 0;
+  // 全角括注状态机：（…）内容整体不朗读，跨 chunk 闭合与 <think> 同构；
+  // 吞咽上限防未闭合括号吞掉整轮发言。
+  private inParen = false;
+  private parenSwallowCount = 0;
+
+  // 跨 chunk 暂存的残缺 cue 标签尾部（如 "<cue id='sm"），下个 chunk 拼接后配对摘除。
+  private tagHold = "";
 
   // 待切分文本缓冲
   private sentenceBuffer = "";
@@ -94,6 +124,17 @@ export class StreamParser {
   feed(chunk: string): string[] {
     const sentences: string[] = [];
     let i = 0;
+
+    // 0. cue 标签预级摘除：完整标签在进入句子状态机前剥掉，残缺尾部跨 chunk 配对。
+    //    保证句子机收不到任何标签碎片，四个断句切分点便无从把标签拦腰切断。
+    chunk = this.tagHold + chunk;
+    this.tagHold = "";
+    chunk = chunk.replace(COMPLETE_CUE_TAG, "");
+    const pending = PENDING_CUE_TAIL.exec(chunk);
+    if (pending && pending[0].length <= MAX_PENDING_CUE_TAIL_CHARS) {
+      this.tagHold = pending[0];
+      chunk = chunk.slice(0, pending.index);
+    }
 
     while (i < chunk.length) {
       // 1. 处理 <think>...</think> 状态机
@@ -170,7 +211,29 @@ export class StreamParser {
         continue;
       }
 
-      // 括号标点不发音，但内容照常朗读（§4.4"不能一律吞掉"）。
+      // 全角括注（…）整体不朗读（2026-10-02 裁定，收窄 §4.4）：动作/旁白括注是
+      // "字幕语义"，不是台词。半角 () 不在此列（Markdown 链接与英文语境仍需内容，
+      // 交由 cleanSentence 剥括号）。放在代码块判定之后：代码块内不解析括注。
+      if (this.inParen) {
+        if (ch === "）") {
+          this.inParen = false;
+          this.parenSwallowCount = 0;
+        } else if (++this.parenSwallowCount > 120) {
+          // 未闭合容错：超限视为漏配括号，从当前字符恢复朗读
+          this.inParen = false;
+          this.parenSwallowCount = 0;
+          this.sentenceBuffer += ch;
+        }
+        i++;
+        continue;
+      }
+      if (ch === "（") {
+        this.inParen = true;
+        i++;
+        continue;
+      }
+
+      // 括号标点不发音，但半角内容照常朗读（§4.4"不能一律吞掉"）。
       // 标点剥离放在 cleanSentence 的 Markdown 链接规则之后，避免破坏 [text](url) 的模式匹配。
       this.sentenceBuffer += ch;
 
@@ -232,6 +295,9 @@ export class StreamParser {
 
   flush(): string[] {
     const sentences: string[] = [];
+    // 未闭合的残缺标签尾部按既有裁定吞掉：残句不该突然开始念标签碎片。
+    // 标签头部从未进入 sentenceBuffer，此处只清缓冲里的正文。
+    this.tagHold = "";
     const cleaned = cleanSentence(this.sentenceBuffer);
     if (hasPronounceableContent(cleaned)) {
       sentences.push(cleaned);
@@ -246,5 +312,8 @@ export class StreamParser {
     this.thinkTagBuffer = "";
     this.inCode = false;
     this.codeBacktickCount = 0;
+    this.inParen = false;
+    this.parenSwallowCount = 0;
+    this.tagHold = "";
   }
 }
