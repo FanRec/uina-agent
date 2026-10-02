@@ -6,7 +6,7 @@
  * - 解压依赖系统 tar（Windows 10+ 自带 bsdtar，可直接解 zip），不引解压库；
  * - 并发去重：同一进程内多次调用共享同一次下载。
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { homedir, platform, arch } from "node:os";
 import { join } from "node:path";
@@ -28,9 +28,28 @@ function cachedPath(): string {
 	return join(binDir(), rgBinaryName());
 }
 
-function commandExists(cmd: string): boolean {
-	const result = spawnSync(cmd, ["--version"], { stdio: "pipe", shell: false });
-	return !result.error && result.status === 0;
+/**
+ * 异步探测可执行文件是否可用。
+ * 不用 spawnSync：探测发生在宿主事件循环上，同步等待会卡住整个进程；
+ * Windows 下安全软件实时扫描还会让同步 spawn 间歇性 EBUSY（异步路径不受影响）。
+ */
+async function commandExists(cmd: string): Promise<boolean> {
+	return new Promise((resolve) => {
+		const child = spawn(cmd, ["--version"], { stdio: "ignore", shell: false });
+		const timer = setTimeout(() => {
+			child.kill();
+			resolve(false);
+		}, 10_000);
+		timer.unref?.();
+		child.on("error", () => {
+			clearTimeout(timer);
+			resolve(false);
+		});
+		child.on("close", (code) => {
+			clearTimeout(timer);
+			resolve(code === 0);
+		});
+	});
 }
 
 let inflight: Promise<string | null> | undefined;
@@ -62,8 +81,8 @@ export async function ensureRg(): Promise<string | null> {
 
 async function ensureRgInner(): Promise<string | null> {
 	const local = cachedPath();
-	if (existsSync(local) && commandExists(local)) return local;
-	if (commandExists("rg")) return "rg";
+	if (existsSync(local) && (await commandExists(local))) return local;
+	if (await commandExists("rg")) return "rg";
 	return downloadRg();
 }
 
