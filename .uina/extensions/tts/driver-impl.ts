@@ -1,6 +1,7 @@
 import type { DeliverySnapshot, InterruptResult, PlaybackBreakpoint, VoiceOutputDriver } from "../voice/driver.js";
 import { TtsSpeakError, type TtsBridgeClient } from "./client.js";
 import { summarizeProgress } from "./delivery.js";
+import { stripParentheticals } from "./stream-parser.js";
 
 /** 快照里去掉意志与连接态：那两个事实的拥有者是 `_muted` / `_isOnline` 本身，不存副本。 */
 type DeliveryFacts = Omit<DeliverySnapshot, "online" | "muted">;
@@ -279,7 +280,8 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
 
 
   async speak(text: string, invocationId?: string, replace = false): Promise<{ status: string; task_id?: string; reason?: string }> {
-    const normalized = text.trim();
+    // 直发路径不经 StreamParser 状态机，全角括注在此剥离（与流式路径同一裁定）
+    const normalized = stripParentheticals(text).trim();
     if (!normalized) return { status: "rejected", reason: "台词为空" };
     // 幂等性必须包住 replace：同一调用的重试不得先打断已经存在的声音。
     if (invocationId) {
@@ -295,6 +297,30 @@ export class TtsVoiceOutputDriver implements VoiceOutputDriver {
     }
     if (!this.activeTrace) this.startTurn(++this.manualTraceSeq);
     return await this.submitSegment(normalized, invocationId);
+  }
+
+  /**
+   * 自动恢复探测（turn_start 触发，fire-and-forget）。
+   *
+   * 缺口：一次瞬时网络抖动会置 deliveryBarrier + offline，而全部自动路径
+   * （ensureProgressPolling / probeOnce）都被 offline 短路——没有人工干预 TTS 永久哑。
+   * 修复语义：桥可达 = 连接事实恢复（§4.3：online 是连接事实，不是用户偏好）；
+   * 存在交付缺口时以受管 reset 换新账期收束（§10.2 路径2）——旧 trace 的不确定性
+   * 由 epoch 屏障隔离，新账期从干净状态开始。与手动 recover 的差别只在触发时机。
+   */
+  async attemptAutoRecovery(): Promise<void> {
+    if (this._isOnline && !this.deliveryBarrier) return;
+    try {
+      const health = await this.client.health();
+      if (!health) return; // 桥不可达：这一拍没有新事实，下回合再试
+      if (this.deliveryBarrier) {
+        await this.recover("reset");
+      } else {
+        this._isOnline = true;
+      }
+    } catch {
+      // 探测失败即这一拍没有新事实
+    }
   }
 
   async inspect(): Promise<Record<string, unknown>> {

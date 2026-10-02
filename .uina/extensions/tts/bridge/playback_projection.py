@@ -126,14 +126,29 @@ class PlaybackSnapshotHub:
             self._subscribers.append(queue)
             queue.put_nowait(self._projection.snapshot())
         last_revision = None
+        last_yield_at = time.monotonic()
         try:
             while not self._closed.is_set():
                 try:
-                    item = queue.get(timeout=1.0)
+                    # 0.5s heartbeat keeps client-side stale detection (3s) tolerant
+                    # to bursts of process load instead of a single missed second.
+                    item = queue.get(timeout=0.5)
                 except Empty:
                     item = self._projection.heartbeat()
                 if item is self._end:
                     break
+                now = time.monotonic()
+                gap_s = now - last_yield_at
+                last_yield_at = now
+                if gap_s > 2.0:
+                    # The generator was not scheduled for over 2s: starvation by
+                    # synthesis/playback load (GIL contention). Clients abort the
+                    # stream after 3s of silence, so gaps near 3s are the
+                    # reconnect-storm signature worth surfacing.
+                    print(
+                        f"[TTS][stream-stall] playback snapshot stream gap {gap_s:.2f}s (revision={item.get('revision')})",
+                        flush=True,
+                    )
                 if item["revision"] == last_revision:
                     yield ": heartbeat\n\n"
                 else:

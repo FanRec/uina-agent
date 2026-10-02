@@ -265,7 +265,18 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
       parser.reset();
       driver.startTurn(e.turnNumber);
       // 伴生服务离线时不发无用请求，也就不会每回合刷一条错误
-      if (driver.isOnline) startLevelStream();
+      if (driver.isOnline) {
+        startLevelStream();
+      } else {
+        // 离线自动恢复探测：瞬时网络抖动不该让 TTS 哑到人工干预。
+        // fire-and-forget；恢复成功则本轮后续句子可发声，并补接电平流。
+        void driver
+          .attemptAutoRecovery()
+          .then(() => {
+            if (driver.isOnline) startLevelStream();
+          })
+          .catch(() => undefined);
+      }
     });
 
     const submitTextSegment = async (text: string): Promise<void> => {
