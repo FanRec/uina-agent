@@ -230,8 +230,15 @@ export function globToRegExp(glob: string): RegExp {
 	return new RegExp("^(?:" + globSource(glob) + ")$");
 }
 
+/** grep_file 的文件过滤对齐 rg 的 --glob 语义：不含 "/" 的 glob 按 basename
+ * 匹配（任意深度命中，如 "*.ts" 命中 "src/util.ts"）；含 "/" 的 glob 按相对
+ * 路径全串匹配。与 rg 引擎此前分叉（回退引擎漏子目录命中）；find_file 的
+ * 全串锚定仍走 globToRegExp（被测试单独钉住，勿混用）。 */
 function globFilter(relPath: string, glob: string): boolean {
-	return globToRegExp(glob).test(relPath.split(sep).join("/"));
+	const normalized = relPath.split(sep).join("/");
+	const anchored = glob.includes("/");
+	const source = "^" + (anchored ? "" : "(?:.*/)?") + globSource(glob) + "$";
+	return new RegExp(source).test(normalized);
 }
 
 /* ---------------- 共享遍历 walker（grep 与 find 复用） ---------------- */
