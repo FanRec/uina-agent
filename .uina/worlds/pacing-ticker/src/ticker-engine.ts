@@ -239,7 +239,15 @@ export class TickerEngine {
 		try {
 			await this.host.submitOpportunity(opportunityText);
 		} catch {
-			// 容错：投递失败不崩溃
+			// 投递失败不崩溃，也不把未送达的机会计入日配额。
+			try {
+				await this.saveChange((state) => {
+					const count = state.dailyAttempts.date === today ? state.dailyAttempts.count : 0;
+					return { ...state, dailyAttempts: { date: today, count: Math.max(0, count - 1) } };
+				});
+			} catch {
+				// 保留当前已持久化状态；下一次 status 会暴露仍然消耗的尝试。
+			}
 		}
 
 		// 5. 调度下一次自适应节拍

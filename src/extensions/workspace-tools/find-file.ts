@@ -14,7 +14,7 @@ export function activateFindFile(api: ExtensionAPI): void {
 			function: {
 				name: "find_file",
 				description:
-					'Find files and directories by name glob under the workspace, e.g. "*.test.ts" or "**/README*". Returns relative paths (one per line), capped at 100 entries / 50KB output. .gitignore is respected.',
+					'Find files and directories by name glob under the workspace, e.g. "*.test.ts" or "**/README*". Returns relative paths, capped at 100 entries / 50KB; narrow pattern or path when capped. .gitignore is respected.',
 				parameters: {
 					type: "object",
 					properties: {

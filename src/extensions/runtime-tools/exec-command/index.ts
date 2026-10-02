@@ -120,7 +120,7 @@ export function createExecCommandTool(
 			type: "function",
 			function: {
 				name: "exec_command",
-				description: `执行一条系统命令并返回其输出（stdout、stderr、退出码）。当前平台使用 ${shellDisplayName()}；命令可读写文件、运行脚本和管理进程。输出超过 ${MAX_OUTPUT_BYTES / 1024} KB 或 ${MAX_OUTPUT_LINES} 行时只返回尾部，完整输出写入 fullOutputPath。`,
+				description: `执行开发或系统诊断命令并返回 stdout、stderr、退出码。当前平台使用 ${shellDisplayName()}；已有领域工具时不要绕过它。长任务使用 run_in_background，再用 job_output 读取；输出超过 ${MAX_OUTPUT_BYTES / 1024} KB 或 ${MAX_OUTPUT_LINES} 行时返回尾部并提供 fullOutputPath。`,
 				parameters: {
 					type: "object",
 					properties: {

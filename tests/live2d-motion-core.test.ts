@@ -1850,9 +1850,9 @@ describe("Live2DRuntime 姿态权威与 express 诚实性", () => {
 
 		// 3. live2d 工具 status 动作成功执行并返回 formatStatus
 		const actionResult = await app.actions.status.run({}, fakeCtx());
-		expect(typeof actionResult).toBe("string");
-		expect(actionResult).toContain("[live2d]");
-		expect(actionResult).toContain("口型通道:");
+		expect(typeof actionResult).toBe("object");
+		expect(actionResult.result).toContain("[live2d]");
+		expect(actionResult.result).toContain("口型通道:");
 
 		// 4. body 工具 status 动作附带 endpoint.formatStatus()
 		const router = new BodyRouter();

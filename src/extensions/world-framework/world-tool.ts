@@ -15,17 +15,28 @@ export interface WorldToolOptions {
 }
 
 export function createWorldTool(def: WorldDef, _options: WorldToolOptions): Tool {
+	const closeObjectSchema = (schema: Record<string, unknown>): Record<string, unknown> =>
+		schema.type === "object" && schema.additionalProperties === undefined
+			? { ...schema, additionalProperties: false }
+			: schema;
 	const validators = new Map<string, ValidateFunction>();
 	for (const [name, action] of Object.entries(def.actions))
-		if (action.parameters) validators.set(name, ajv.compile(action.parameters));
+		if (action.parameters) validators.set(name, ajv.compile(closeObjectSchema(action.parameters)));
 	const names = Object.keys(def.actions);
 	const actionSchemas = names.map((name) => {
 		const action = def.actions[name]!;
 		return {
 			type: "object",
+			additionalProperties: false,
 			properties: {
 				action: { type: "string", const: name, description: action.description },
-				params: action.parameters ?? { type: "object", description: "此动作未声明参数 schema；以动作说明为准。" },
+				params: action.parameters
+					? closeObjectSchema(action.parameters)
+					: {
+							type: "object",
+							additionalProperties: false,
+							description: "此动作不接受参数。",
+						},
 			},
 			required: action.parameters ? ["action", "params"] : ["action"],
 		};
@@ -76,9 +87,9 @@ export function createWorldTool(def: WorldDef, _options: WorldToolOptions): Tool
 				const result = await action.run(params, ctx);
 				if (typeof result === "string")
 					return {
-						result,
-						status: "succeeded" as const,
-						details: { operationIdentity: identity, worldName: def.name, action: actionName },
+						result: `【${def.name} 合同错误】动作必须返回结构化工具结果。`,
+						status: "failed" as const,
+						details: { operationIdentity: identity, worldName: def.name, action: actionName, reason: "string_result" },
 					};
 				return {
 					...result,
@@ -90,12 +101,25 @@ export function createWorldTool(def: WorldDef, _options: WorldToolOptions): Tool
 					},
 				};
 			} catch (error) {
+				const effectUnknown = Boolean(
+					error &&
+						typeof error === "object" &&
+						"effectUnknown" in error &&
+						(error as { effectUnknown?: unknown }).effectUnknown === true,
+				);
 				return {
 					result: signal?.aborted
 						? `【${def.name} 已中止】外部副作用状态未知。`
-						: `【${def.name} 执行失败】${error instanceof Error ? error.message : String(error)}`,
-					status: signal?.aborted ? ("unknown" as const) : ("failed" as const),
-					details: { operationIdentity: identity, worldName: def.name, action: actionName },
+						: effectUnknown
+							? `【${def.name} 结果未知】外部副作用可能已经发生，请查询状态后再决定。`
+							: `【${def.name} 执行失败】${error instanceof Error ? error.message : String(error)}`,
+					status: signal?.aborted || effectUnknown ? ("unknown" as const) : ("failed" as const),
+					details: {
+						operationIdentity: identity,
+						worldName: def.name,
+						action: actionName,
+						...(effectUnknown ? { effectStatus: "unknown" } : {}),
+					},
 				};
 			}
 		},

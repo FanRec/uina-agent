@@ -10,6 +10,8 @@ import type { LiveRoomStatus, LiveWorldConfig, LiveWorldState } from "./types.js
 import type { NotificationSettings } from "./types.js";
 import { DEFAULT_NOTIFICATION_SETTINGS, loadNotificationSettings, parseNotificationSettings, saveNotificationSettings } from "./notification-settings.js";
 import { join } from "node:path";
+import { worldFailed, worldSucceeded, worldUnknown } from "../../../../src/extensions/world-framework/result.js";
+import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 
 /**
  * World 运行上下文扩展（支持确定性事件通知）
@@ -20,12 +22,12 @@ export async function handleConnectAction(
   config: ResolvedLiveWorldConfig,
   appState: LiveWorldState,
   initClient: (roomId: number) => LiveClientAdapter
-): Promise<string> {
+): Promise<ToolExecutionResult> {
   const rawRoomId = args.roomId ?? args.room_id ?? config.defaultRoomId;
   const roomId = typeof rawRoomId === "number" ? rawRoomId : parseInt(String(rawRoomId), 10);
 
   if (!roomId || Number.isNaN(roomId) || roomId <= 0) {
-    return "连接失败：必须提供有效的正整数直播间房号。";
+    return worldFailed("连接失败：必须提供有效的正整数直播间房号。", { reason: "invalid_room_id" });
   }
 
   const c = initClient(roomId);
@@ -38,7 +40,7 @@ export async function handleConnectAction(
   c.connect().catch((err: unknown) => {
     console.warn(`[bilibili-live] 直播间 ${roomId} 连接异常:`, err);
   });
-  return `已发起连接B站直播间 ${roomId}。尚未确认连接成功，请查询 status 查看连接状态。`;
+  return worldSucceeded(`已发起连接B站直播间 ${roomId}。尚未确认连接成功，请查询 status 查看连接状态。`, { verify: "bilibili-live/status" }, "accepted");
 }
 
 export async function handleDisconnectAction(
@@ -46,14 +48,14 @@ export async function handleDisconnectAction(
   appState: LiveWorldState,
   client: { disconnect(): Promise<void> } | null,
   clearClient: () => void
-): Promise<string> {
+): Promise<ToolExecutionResult> {
   if (client) {
     await client.disconnect();
     clearClient();
   }
   appState.connectionStatus = "disconnected";
   appState.lastRetryDelaySeconds = null;
-  return "已断开B站直播间连接。";
+  return worldSucceeded("已断开B站直播间连接。", undefined, "applied");
 }
 
 export function applyLiveConnectionUpdate(appState: LiveWorldState, update: LiveConnectionUpdate): void {
@@ -98,9 +100,9 @@ export function applyLiveConnectionUpdate(appState: LiveWorldState, update: Live
 export function handleStatusAction(
   appState: LiveWorldState,
   buffer: LiveEventBuffer
-): string {
+): ToolExecutionResult {
   const pending = buffer.getPendingCounts();
-  return JSON.stringify(
+  return worldSucceeded(JSON.stringify(
     {
       connection: appState.connectionStatus,
       lastConnectionError: appState.lastConnectionError,
@@ -119,29 +121,31 @@ export function handleStatusAction(
     },
     null,
     2
-  );
+  ));
 }
 
 export function handleMarkHandledAction(
   args: Record<string, unknown>,
   buffer: LiveEventBuffer
-): string {
+): ToolExecutionResult {
   const rawId = args.eventId ?? args.id;
   const eventId = String(rawId ?? "").trim();
 
   if (!eventId) {
-    return "参数错误：必须提供待办事件的 eventId（如 sc_1, gd_1, gf_1）。";
+    return worldFailed("参数错误：必须提供待办事件的 eventId（如 sc_1, gd_1, gf_1）。", { reason: "missing_event_id" });
   }
 
   const outcome = buffer.markHandled(eventId);
-  return outcome.message;
+  return outcome.status === "succeeded"
+    ? worldSucceeded(outcome.message, { ...(outcome.data ?? {}) }, "applied")
+    : worldFailed(outcome.message, { reason: "mark_handled_failed" });
 }
 
 export async function handleSendAction(
   args: Record<string, unknown>,
   config: ResolvedLiveWorldConfig,
   appState: LiveWorldState
-): Promise<string> {
+): Promise<ToolExecutionResult> {
   const rawMsg = args.message ?? args.msg ?? args.text;
   const message = String(rawMsg ?? "").trim();
 
@@ -159,19 +163,21 @@ export async function handleSendAction(
     timeoutMs: config.network.requestTimeoutMs,
   });
 
-  return `[${outcome.status}] ${outcome.message}`;
+  if (outcome.status === "unknown") return worldUnknown(`[unknown] ${outcome.message}`, { verify: "bilibili-live/status" });
+  if (outcome.status === "failed") return worldFailed(`[failed] ${outcome.message}`, { reason: "send_failed" });
+  return worldSucceeded(`[succeeded] ${outcome.message}`, undefined, "applied");
 }
 
 export function handleRecentAction(
   args: Record<string, unknown>,
   buffer: LiveEventBuffer
-): string {
+): ToolExecutionResult {
   const rawCount = args.count;
   const count = typeof rawCount === "number" ? rawCount : 10;
   const recentList = buffer.getRecentDanmaku(count);
 
   if (recentList.length === 0) {
-    return "当前缓冲池中暂无弹幕。";
+    return worldSucceeded("当前缓冲池中暂无弹幕。");
   }
 
   const lines = ["最近弹幕记录:"];
@@ -189,7 +195,7 @@ export function handleRecentAction(
     }
   }
 
-  return lines.join("\n");
+  return worldSucceeded(lines.join("\n"));
 }
 
 /**
@@ -308,7 +314,7 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
   return {
     name: "bilibili-live",
     description:
-      "B站直播 World，支持实时弹幕监控、SC/大航海/礼物感知、弹幕发送与待办互动管理。",
+      "B站直播感知与互动。事件会主动唤醒主体；用 status/recent 观察，用 send 回复，用 mark_handled 确认待办；连接或发送未确认时不要重复操作。",
 
     async onStart(ctx: ServiceCompanionContext): Promise<void> {
       emitEvent = ctx.emitEvent;
@@ -344,12 +350,14 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
     },
     actions: {
       connect: {
-        description: "连接指定的B站直播间。如果不传 roomId 则连接默认直播间。",
+        description: "连接直播间；只表示已发起连接，成功与重连状态用 status 确认。",
         parameters: {
           type: "object",
+          additionalProperties: false,
           properties: {
             roomId: {
               type: "number",
+              minimum: 1,
               description: "B站直播间房号（长号或短号均可）",
             },
           },
@@ -358,7 +366,7 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
       },
 
       disconnect: {
-        description: "断开当前B站直播间连接。",
+        description: "断开当前直播连接；需要停止外部感知时调用。",
         run: async (_args, ctx) => {
           worldGeneration++;
           danmakuBatchValidity++;
@@ -371,7 +379,7 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
       },
 
       status: {
-        description: "查看当前B站直播间详细连接状态与待办统计。",
+        description: "查询连接、房间、重连错误、弹幕缓冲和未处理互动；不改变连接。",
         run: async () => handleStatusAction(appState, buffer),
       },
 
@@ -379,6 +387,7 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
         description: "查看或修改主动通知偏好。查看时传 operation='status'；修改时传 operation='update'，并把要改的字段设为 on 或 off。chat_messages 控制普通弹幕批量通知（默认 off）；super_chats、memberships、gifts 分别控制醒目留言、大航海和礼物通知（默认 on）。未列出的设置保持不变。",
         parameters: {
           type: "object",
+          additionalProperties: false,
           properties: {
             operation: { type: "string", enum: ["status", "update"], description: "status 读取当前设置；update 修改下方指定字段。" },
             chat_messages: { type: "string", enum: ["on", "off"], description: "普通弹幕通知；开启后按 2 秒窗口合并推送。" },
@@ -391,12 +400,12 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
         },
         run: async (args) => {
           const operation = String(args.operation ?? "status");
-          if (operation === "status") return JSON.stringify(notificationSettings, null, 2);
-          if (operation !== "update") return "参数错误：operation 必须是 status 或 update。";
+          if (operation === "status") return worldSucceeded(JSON.stringify(notificationSettings, null, 2));
+          if (operation !== "update") return worldFailed("参数错误：operation 必须是 status 或 update。", { reason: "invalid_operation" });
           const next = { ...notificationSettings };
           for (const key of ["chat_messages", "room_status", "super_chats", "memberships", "gifts"] as const) {
             if (args[key] !== undefined) {
-              if (args[key] !== "on" && args[key] !== "off") return `参数错误：${key} 必须是 on 或 off。`;
+              if (args[key] !== "on" && args[key] !== "off") return worldFailed(`参数错误：${key} 必须是 on 或 off。`, { reason: "invalid_setting" });
               next[key] = args[key];
             }
           }
@@ -413,24 +422,25 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
               danmakuBatchStartId = null;
               danmakuBatchEndId = null;
             }
-            return JSON.stringify(notificationSettings, null, 2);
+            return worldSucceeded(JSON.stringify(notificationSettings, null, 2), undefined, "applied");
           } catch (error) {
-            return {
-              result: `通知设置保存失败：${error instanceof Error ? error.message : String(error)}`,
-              status: "failed",
-            };
+            return worldFailed(`通知设置保存失败：${error instanceof Error ? error.message : String(error)}`, {
+              reason: "notification_settings_failed",
+            });
           }
         },
       },
 
       mark_handled: {
         description:
-          "将指定的醒目留言(SC)、大航海或大额礼物待办事件标记为已处理/已感谢。",
+          "确认已处理指定 SC/大航海/礼物待办；只有实际完成感谢或处理后调用，持久化失败会返回失败。",
         parameters: {
           type: "object",
+          additionalProperties: false,
           properties: {
             eventId: {
               type: "string",
+              minLength: 1,
               description: "待办事件短 ID（例如 sc_1, gd_1, gf_1）",
             },
           },
@@ -440,16 +450,20 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
       },
 
       send: {
-        description: "向当前连接的B站直播间发送一条弹幕。",
+        description: "向当前直播间发送弹幕；只在确定要公开回复时调用，超时结果未知，先 status 再决定是否重试。",
         parameters: {
           type: "object",
+          additionalProperties: false,
           properties: {
             message: {
               type: "string",
+              minLength: 1,
+              maxLength: 50,
               description: "弹幕文本（最多 50 字符）",
             },
             roomId: {
               type: "number",
+              minimum: 1,
               description: "可选的目标直播间房号，默认使用当前连接的房间",
             },
           },
@@ -459,12 +473,15 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
       },
 
       recent: {
-        description: "查看最近收到的弹幕列表。",
+        description: "读取最近弹幕感知窗口；用于理解外部事件，不会读取持久待办。",
         parameters: {
           type: "object",
+          additionalProperties: false,
           properties: {
             count: {
-              type: "number",
+              type: "integer",
+              minimum: 1,
+              maximum: 50,
               description: "获取的弹幕条数（1-50，默认 10）",
             },
           },
@@ -473,7 +490,8 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
       },
 
       clear: {
-        description: "清空当前的易失弹幕感知缓冲池（不会清除未处理待办互动）。",
+        description: "清空易失弹幕窗口；不会清除未处理待办，仅在窗口噪声需要丢弃时调用。",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
         run: async () => {
           buffer.clearDanmaku();
           danmakuBatchValidity++;
@@ -481,7 +499,7 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
           danmakuBatchTimer = null;
           danmakuBatchStartId = null;
           danmakuBatchEndId = null;
-          return "已清空易失弹幕缓冲池。";
+          return worldSucceeded("已清空易失弹幕缓冲池。", undefined, "applied");
         },
       },
     },

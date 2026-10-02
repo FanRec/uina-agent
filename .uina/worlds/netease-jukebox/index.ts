@@ -103,7 +103,7 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
 
   const world: WorldDef = {
     name: "jukebox",
-    description: "网易云音乐点歌机：搜索、播放、队列、播放控制、歌词和账号库操作",
+    description: "主体音乐能力：search→play/queue，playback 控制，lyrics 查询。library 是账号/歌单写操作，只有用户明确要求时使用；播放结果需看状态和模拟标记。",
     defaultState: { enabled: true },
     async onStart(ctx) {
       if (hud.isClosed) hud = new BroadcastHudClient(hudOptions);

@@ -72,6 +72,32 @@ describe("M4 工具面：schema 边界", () => {
 		expect(payload.id).toBeTruthy();
 		expect(payload.hash).toBeTruthy();
 	});
+
+	it("child memory writes retain shared-store provenance", async () => {
+		const store = createStore();
+		const childBroker = new ToolBroker({ ownerId: "subagent-1" });
+		for (const tool of createMemoryTools(store)) childBroker.register(tool);
+		const outcome = await childBroker.execute(
+			childBroker.prepare("memory_write", {
+				operation: {
+					op: "create",
+					record: {
+						type: "note",
+						basis: "reported",
+						title: "child fact",
+						body: "fact",
+						scope: {},
+						sources: [{ sessionId: "default" }],
+						pinned: false,
+					},
+				},
+			}),
+		);
+		expect(outcome.status).toBe("succeeded");
+		const hits = await store.search("fact", {});
+		const record = await store.read(hits[0]!.id);
+		expect(record?.sources[0]?.agentId).toBe("subagent-1");
+	});
 });
 
 describe("M4 工具面：五态适配", () => {

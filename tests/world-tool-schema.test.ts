@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { createWorldTool } from "../src/extensions/world-framework/world-tool.js";
+import { worldSucceeded } from "../src/extensions/world-framework/result.js";
 
 const Ajv = createRequire(import.meta.url)("ajv") as new () => {
 	compile: (schema: object) => (value: unknown) => boolean;
@@ -23,9 +24,9 @@ describe("World tool model schema", () => {
 							},
 							required: ["operation"],
 						},
-						run: () => "ok",
+						run: () => worldSucceeded("ok"),
 					},
-					status: { description: "Read status", run: () => "ok" },
+					status: { description: "Read status", run: () => worldSucceeded("ok") },
 				},
 			},
 			{ getRuntime: () => ({ definition: {} as never, enabled: true }) },
@@ -41,5 +42,24 @@ describe("World tool model schema", () => {
 		expect(validate({ action: "notification_settings", params: { operation: "status" } })).toBe(true);
 		expect(validate({ action: "notification_settings", params: { operation: "get" } })).toBe(false);
 		expect(validate({ action: "notification_settings" })).toBe(false);
+	});
+
+	it("preserves an action failure instead of treating every string as success", async () => {
+		const tool = createWorldTool(
+			{
+				name: "status-world",
+				description: "Status world",
+				actions: {
+					fail: {
+						description: "Fail",
+						parameters: { type: "object", additionalProperties: false },
+						run: (async () => "not executed") as any,
+					},
+				},
+			},
+			{ getRuntime: () => ({ definition: {} as never, enabled: true }) },
+		);
+
+		await expect(tool.run({ action: "fail", params: {} })).resolves.toMatchObject({ status: "failed" });
 	});
 });

@@ -1,5 +1,6 @@
 import type { ActionContext, ActionDef } from "../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
+import { worldSucceeded } from "../../../src/extensions/world-framework/result.js";
 import type { NeteaseApiClient } from "./api-client.js";
 import { formatLyrics } from "./lyrics.js";
 import { LiveLyricsTracker } from "./live-lyrics.js";
@@ -51,42 +52,42 @@ export class JukeboxApplication {
     this.lyricsTracker = deps.lyrics ?? new LiveLyricsTracker(deps.api);
     this.actions = {
       search: this.action(
-        "搜索歌曲并返回可引用结果",
+        "搜索歌曲并返回可传给 play/queue 的短期 ref；没有查询词不要调用。",
         { query: { type: "string" }, limit: { type: "number" } },
         ["query"],
         this.search.bind(this),
       ),
       play: this.action(
-        "立即播放歌曲；默认保留待播队列",
+        "播放或入队歌曲；优先使用 search 返回的 ref。返回受理/模拟阶段，不证明用户听见。",
         { ref: { type: "string" }, song_id: { type: "string" }, query: { type: "string" }, replace_queue: { type: "boolean" }, enqueue: { type: "boolean" } },
         [],
         this.play.bind(this),
       ),
       queue: this.action(
-        "管理待播队列：add、list、remove、clear、move、shuffle",
+        "管理待播队列：add/list/remove/clear/move/shuffle；只在需要改变队列时使用。",
         { operation: { type: "string", enum: ["add", "list", "remove", "clear", "move", "shuffle"] }, ref: { type: "string" }, song_id: { type: "string" }, query: { type: "string" }, index: { type: "number" }, from: { type: "number" }, to: { type: "number" } },
         ["operation"],
         this.queue.bind(this),
       ),
       playback: this.action(
-        "控制播放、音量、播放模式或查询状态",
+        "控制播放、音量、播放模式或查询状态；status 只观察，其余操作会改变播放。",
         { operation: { type: "string", enum: ["pause", "resume", "stop", "next", "previous", "status", "mode", "volume"] }, mode: { type: "string", enum: [...modes] }, level: { type: "number" }, clear_queue: { type: "boolean" } },
         ["operation"],
         this.playbackAction.bind(this),
       ),
       lyrics: this.action(
-        "查询完整歌词或当前歌词窗口",
+        "查询歌曲完整歌词或当前歌词窗口；没有当前歌曲时返回可处理的失败。",
         { song_id: { type: "string" }, current: { type: "boolean" } },
         [],
         this.lyrics.bind(this),
       ),
       current_lyrics: this.action(
-        "兼容旧调用：查询当前歌词窗口，请优先使用 lyrics(current=true)",
+        "兼容旧调用：查询当前歌词窗口；新调用优先使用 lyrics(current=true)。",
         {},
         [],
         (args, ctx) => this.lyrics({ ...args, current: true }, ctx),
       ),
-      library: this.action("网易云账号、歌单、收藏和评论操作；写操作需要 confirm=true", {
+      library: this.action("账号/歌单/收藏/评论操作；只有用户明确要求时使用，写操作需要 confirm=true 并核实返回结果。", {
         operation: { type: "string", enum: ["account_status", "login_status", "playlist_list", "playlist_open", "playlist_create", "playlist_update", "playlist_track_add", "playlist_track_remove", "playlist_subscribe", "playlist_unsubscribe", "liked_list", "like", "unlike", "recent_list", "comments_list", "comment_add"] },
         uid: { type: "string" }, playlist_id: { type: "string" }, song_id: { type: "string" }, ref: { type: "string" },
         name: { type: "string" }, description: { type: "string" }, tags: { type: "string" }, content: { type: "string" },
@@ -102,7 +103,14 @@ export class JukeboxApplication {
     required: string[],
     run: (args: Record<string, unknown>, ctx: ActionContext) => Promise<string | ToolExecutionResult>,
   ): ActionDef {
-    return { description, parameters: { type: "object", properties, ...(required.length ? { required } : {}) }, run };
+    return {
+      description,
+      parameters: { type: "object", properties, required, additionalProperties: false },
+      run: async (args, ctx) => {
+        const result = await run(args, ctx);
+        return typeof result === "string" ? worldSucceeded(result) : result;
+      },
+    };
   }
 
   private async requireService(ctx: ActionContext): Promise<ToolExecutionResult | null> {
@@ -147,7 +155,11 @@ export class JukeboxApplication {
     } catch (error) {
       return fail(`无法播放“${song.name}”：${error instanceof Error ? error.message : String(error)}`, "playback_failed");
     }
-    return `正在播放：${song.name} - ${song.artists.join(", ")}${this.deps.playback.isSimulated ? "（模拟模式，无实际声音）" : ""}`;
+    return worldSucceeded(
+      `正在播放：${song.name} - ${song.artists.join(", ")}${this.deps.playback.isSimulated ? "（模拟模式，无实际声音）" : ""}`,
+      { songId: song.id },
+      this.deps.playback.isSimulated ? "simulated" : "accepted",
+    );
   }
 
   private async queue(args: Record<string, unknown>, ctx: ActionContext): Promise<string | ToolExecutionResult> {
@@ -190,7 +202,7 @@ export class JukeboxApplication {
       await this.deps.playback.resume();
       const state = this.deps.playback.snapshot();
       if (state.status === "playing" && state.currentSong) return `已恢复播放：${state.currentSong.name}。`;
-      if (state.queue.length > 0) return `未能恢复播放：仍有 ${state.queue.length} 首待播，但当前无在播曲目。`;
+      if (state.queue.length > 0) return fail(`未能恢复播放：仍有 ${state.queue.length} 首待播，但当前无在播曲目。`, "resume_not_available");
       return "无需恢复：没有在播曲目或待播队列。";
     }
     if (operation === "stop") { await this.deps.playback.stop(args.clear_queue === true); return "已停止播放。"; }
@@ -205,7 +217,7 @@ export class JukeboxApplication {
     try {
       const song = await load();
       if (song) return `已切换到${label}：${song.name}。`;
-      if (label === "下一首") return "队列为空。";
+      if (label === "下一首") return fail("队列为空。", "not_available");
       return fail("没有可返回的上一首。", "not_available");
     }
     catch (error) { return fail(`无法播放${label}：${error instanceof Error ? error.message : String(error)}`, "playback_failed"); }

@@ -23,7 +23,7 @@ export function createJobTools(jobs: JobRegistry, ownerId: string): Tool[] {
 		),
 		tool(
 			"job_output",
-			"读取后台任务的新输出；可等待新输出或任务结束。",
+			"用上次 cursor 增量读取后台任务输出；可等待新输出或终态。任务终态需以返回的 job 状态为准。",
 			{
 				type: "object",
 				properties: {
@@ -47,7 +47,7 @@ export function createJobTools(jobs: JobRegistry, ownerId: string): Tool[] {
 		),
 		tool(
 			"job_kill",
-			"请求取消一个后台任务；任务真正停止后才会进入终态。",
+			"请求取消一个后台任务；返回 cancellation-requested 不等于已停止，需再次用 job_output/job_list 确认终态。",
 			{
 				type: "object",
 				properties: {

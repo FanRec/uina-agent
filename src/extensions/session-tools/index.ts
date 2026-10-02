@@ -10,7 +10,7 @@ export function activateSessionTools(resolve: (ownerId: string) => SessionAccess
 				function: {
 					name: "session_list",
 					description:
-						"List mainline or read-only archived session nodes. Use canRewind to find safe historical targets. Preview is abbreviated; session_read returns full content.",
+						"列出主线或只读历史节点；需要选择回溯目标时使用。返回 preview、canRewind 和分页游标；完整节点用 session_read。",
 					parameters: {
 						type: "object",
 						properties: {
@@ -33,12 +33,17 @@ export function activateSessionTools(resolve: (ownerId: string) => SessionAccess
 				type: "function",
 				function: {
 					name: "session_read",
-					description:
-						"Read one session node by id, including archived history. This does not change context or replay tools.",
+					description: "读取指定会话节点的完整事实，用于核实历史；不会改变当前上下文，也不会重放工具。结果可能较大。",
 					parameters: {
 						type: "object",
 						properties: {
 							id: { type: "string", minLength: 1 },
+							max_chars: {
+								type: "integer",
+								minimum: 1,
+								maximum: 200_000,
+								description: "可选消息正文上限；省略返回完整节点",
+							},
 						},
 						required: ["id"],
 						additionalProperties: false,
@@ -50,9 +55,24 @@ export function activateSessionTools(resolve: (ownerId: string) => SessionAccess
 				if (!id) {
 					throw new Error("session_read 需要提供有效的 id");
 				}
+				const entry = resolve(context?.ownerId ?? "root").read(id);
+				const maxChars = typeof args.max_chars === "number" ? args.max_chars : undefined;
+				if (maxChars === undefined || (entry.kind !== "message" && entry.kind !== "custom_message"))
+					return { status: "succeeded", result: JSON.stringify(entry) };
+				const content = entry.kind === "message" ? entry.message.content : entry.content;
+				if (content.length <= maxChars) return { status: "succeeded", result: JSON.stringify(entry) };
 				return {
 					status: "succeeded",
-					result: JSON.stringify(resolve(context?.ownerId ?? "root").read(id)),
+					result: JSON.stringify({
+						entry: {
+							...entry,
+							...(entry.kind === "message"
+								? { message: { ...entry.message, content: content.slice(0, maxChars) } }
+								: { content: content.slice(0, maxChars) }),
+						},
+						truncated: true,
+						next: { tool: "session_read", id, max_chars: maxChars * 2 },
+					}),
 				};
 			},
 		});
@@ -63,7 +83,7 @@ export function activateSessionTools(resolve: (ownerId: string) => SessionAccess
 				function: {
 					name: "session_rewind",
 					description:
-						"Request context rewind to a safe ancestor on the current mainline when an entire reasoning path is wrong. Provide reason and optional lessons note. The current tool batch settles first; scheduled is not committed. Abandoned paths remain readable. Files, background work and external effects are NOT undone; verify state before repeating actions. Later human inputs remain available.",
+						"整条推理路径错误时请求回溯到当前主线安全祖先。返回 scheduled 或 committed；scheduled 尚未提交。文件、后台任务和外部副作用不会撤销，重试前先核实状态。",
 					parameters: {
 						type: "object",
 						properties: {

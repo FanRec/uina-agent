@@ -30,8 +30,8 @@ export function createSubagentAdapter(registry: SubagentRegistry): SubagentPort 
 		transcript(id: string, ownerId: string): SubagentTranscript {
 			return registry.transcript(id, ownerId);
 		},
-		send(id: string, ownerId: string, text: string): Promise<void> {
-			return registry.send(id, ownerId, text);
+		async send(id: string, ownerId: string, text: string): Promise<void> {
+			await registry.send(id, ownerId, text);
 		},
 		interrupt(id: string, ownerId: string): Promise<"interruption-requested" | "already-finished"> {
 			return registry.interrupt(id, ownerId);

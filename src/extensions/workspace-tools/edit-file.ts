@@ -11,10 +11,11 @@
  * 不做（无第一例真实需求前不造机制）：Unicode 模糊匹配、并发变更队列、
  * TUI 预览渲染。
  */
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ExtensionAPI } from "../index.js";
 import { summarizeEdit } from "./edit-diff.js";
+import { atomicWriteFile } from "./atomic-write.js";
 
 interface Edit {
 	oldText: string;
@@ -92,7 +93,7 @@ export function activateEditFile(api: ExtensionAPI): void {
 			function: {
 				name: "edit_file",
 				description:
-					"Edit a UTF-8 text file by exact text replacement. Each edit's oldText must match exactly one location in the file (unique), matching against the original file content. Use multiple disjoint edits in one call instead of several calls. Line endings (LF/CRLF) are matched tolerantly and preserved.",
+					"Edit a UTF-8 text file by exact unique replacements. Use for known code changes; each oldText must match once, edits must not overlap, and LF/CRLF plus BOM are preserved. The write is atomic and returns a compact diff summary.",
 				parameters: {
 					type: "object",
 					properties: {
@@ -131,7 +132,7 @@ export function activateEditFile(api: ExtensionAPI): void {
 				file,
 			);
 			const updated = restoreLineEndings(applyMatched(normalized, matched), ending);
-			await writeFile(file, bom + updated, { encoding: "utf8", signal });
+			await atomicWriteFile(file, bom + updated, { encoding: "utf8", signal });
 			// LF 视图上的变更摘要：带行号 ± 片段 + 新文件首个变更行，供调用方免全量复读确认
 			const summary = summarizeEdit(normalized, normalizeToLF(updated), matched);
 			return {

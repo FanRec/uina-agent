@@ -1,10 +1,12 @@
 import type { WorldRegistry } from "../world-registry.js";
 import type { WorldDef } from "../types.js";
+import { worldFailed, worldSucceeded } from "../result.js";
 
 export function createWorldStoreWorld(registry: WorldRegistry): WorldDef {
 	return {
 		name: "world_store",
-		description: "查询和管理已安装 World。使用 list/search 查看状态，enable/disable 控制启停。",
+		description:
+			"发现和维护已安装 World；主体已有可用能力时不要调用。list/search 查询，enable/disable 改变能力生命周期并返回启停结果。",
 		environment: "本机已安装 World 的目录；动态状态通过本工具查询。",
 		defaultState: { enabled: true },
 		actions: {
@@ -12,13 +14,16 @@ export function createWorldStoreWorld(registry: WorldRegistry): WorldDef {
 				description: "列出已安装 World 及启用状态",
 				run: () => {
 					const worlds = registry.list();
-					return worlds.length
-						? worlds
-								.map(
-									(w) => `- ${w.definition.name}: ${w.enabled ? "enabled" : "disabled"} - ${w.definition.description}`,
-								)
-								.join("\n")
-						: "当前没有已安装 World。";
+					return worldSucceeded(
+						worlds.length
+							? worlds
+									.map(
+										(w) =>
+											`- ${w.definition.name}: ${w.enabled ? "enabled" : "disabled"} - ${w.definition.description}`,
+									)
+									.join("\n")
+							: "当前没有已安装 World。",
+					);
 				},
 			},
 			search: {
@@ -35,13 +40,16 @@ export function createWorldStoreWorld(registry: WorldRegistry): WorldDef {
 								v.toLowerCase().includes(q),
 							),
 						);
-					return m.length
-						? m
-								.map(
-									(w) => `- ${w.definition.name}: ${w.enabled ? "enabled" : "disabled"} - ${w.definition.description}`,
-								)
-								.join("\n")
-						: `未找到匹配的 World: ${p.query}`;
+					return worldSucceeded(
+						m.length
+							? m
+									.map(
+										(w) =>
+											`- ${w.definition.name}: ${w.enabled ? "enabled" : "disabled"} - ${w.definition.description}`,
+									)
+									.join("\n")
+							: `未找到匹配的 World: ${p.query}`,
+					);
 				},
 			},
 			enable: {
@@ -51,9 +59,9 @@ export function createWorldStoreWorld(registry: WorldRegistry): WorldDef {
 					typeof p?.name === "string" && p.name.trim() ? { valid: true } : { valid: false, error: "name 不能为空" },
 				run: async (p: any) => {
 					const name = String(p.name).trim();
-					if (!registry.has(name)) return `未找到 World: ${name}`;
+					if (!registry.has(name)) return worldFailed(`未找到 World: ${name}`, { reason: "world_not_found" });
 					await registry.enable(name);
-					return `World 已启用: ${name}`;
+					return worldSucceeded(`World 已启用: ${name}`, undefined, "applied");
 				},
 			},
 			disable: {
@@ -63,10 +71,10 @@ export function createWorldStoreWorld(registry: WorldRegistry): WorldDef {
 					typeof p?.name === "string" && p.name.trim() ? { valid: true } : { valid: false, error: "name 不能为空" },
 				run: async (p: any) => {
 					const name = String(p.name).trim();
-					if (name === "world_store") return "不能停用 world_store。";
-					if (!registry.has(name)) return `未找到 World: ${name}`;
+					if (name === "world_store") return worldFailed("不能停用 world_store。", { reason: "protected_world" });
+					if (!registry.has(name)) return worldFailed(`未找到 World: ${name}`, { reason: "world_not_found" });
 					await registry.disable(name);
-					return `World 已停用: ${name}`;
+					return worldSucceeded(`World 已停用: ${name}`, undefined, "applied");
 				},
 			},
 		},

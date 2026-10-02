@@ -14,7 +14,7 @@ export function activateGrepFile(api: ExtensionAPI): void {
 			function: {
 				name: "grep_file",
 				description:
-					"Search file contents in the workspace for a regex (or literal string). Returns matching lines as path:line: text. Respects .gitignore when ripgrep is available. Output is capped at 100 matches / 50KB / 500 chars per line; a notice explains how to page or narrow when a cap is hit.",
+					"Search file contents in the workspace for a regex (or literal string). Returns path:line:text. Respects .gitignore when ripgrep is available. Output is capped at 100 matches / 50KB / 500 chars per line; narrow pattern, path or glob when capped.",
 				parameters: {
 					type: "object",
 					properties: {

@@ -21,27 +21,37 @@ function adaptResult(
 ): { result: string; status: "succeeded" | "failed" } {
 	if (result.status === "committed") {
 		return {
-			result: JSON.stringify(
-				{ status: "committed", id: result.id, hash: result.hash, revision: result.revision },
-				null,
-				"\t",
-			),
+			result: JSON.stringify({ status: "committed", id: result.id, hash: result.hash, revision: result.revision }),
 			status: "succeeded",
 		};
 	}
 	return {
-		result: JSON.stringify(
-			{
-				status: result.status,
-				...(id ? { id } : {}),
-				...(result.status === "conflict" ? { currentHash: result.currentHash } : {}),
-				reason: result.reason,
-			},
-			null,
-			"\t",
-		),
+		result: JSON.stringify({
+			status: result.status,
+			...(id ? { id } : {}),
+			...(result.status === "conflict" ? { currentHash: result.currentHash } : {}),
+			reason: result.reason,
+		}),
 		status: "failed",
 	};
+}
+
+function annotateChildMemoryChange(change: MemoryChange, agentId: string): MemoryChange {
+	if (change.op === "create") {
+		return {
+			...change,
+			record: { ...change.record, sources: change.record.sources.map((source) => ({ ...source, agentId })) },
+		};
+	}
+	if (change.op === "revise") {
+		return {
+			...change,
+			record: change.record.sources
+				? { ...change.record, sources: change.record.sources.map((source) => ({ ...source, agentId })) }
+				: change.record,
+		};
+	}
+	return change;
 }
 
 /**
@@ -64,12 +74,12 @@ export function createMemoryTools(store: MemoryStore): Tool[] {
 			type: "function",
 			function: {
 				name: "memory_search",
-				description:
-					"在当前主体的长期记忆中检索。返回命中的记忆 ID、标题、摘要与版本提示；需要完整内容时用 memory_read。只检索当前绑定主体与作用域，不涉及其他个体。",
+				description: "检索当前主体长期记忆；先用它找 ID/摘要，再用 memory_read 核实完整内容。只读，不修改记忆。",
 				parameters: {
 					type: "object",
 					properties: {
 						query: { type: "string", description: "检索关键词或片段（支持中文，无需分词）" },
+						limit: { type: "integer", minimum: 1, maximum: 100, description: "最多返回的命中数；省略使用默认上限" },
 					},
 					required: ["query"],
 					additionalProperties: false,
@@ -78,24 +88,21 @@ export function createMemoryTools(store: MemoryStore): Tool[] {
 		},
 		async run(args) {
 			const query = String(args.query ?? "");
-			const hits = await store.search(query, {});
+			const limit = typeof args.limit === "number" ? args.limit : 50;
+			const hits = (await store.search(query, {})).slice(0, limit);
 			if (hits.length === 0) {
 				return { result: JSON.stringify({ hits: [] }), status: "succeeded" };
 			}
 			return {
-				result: JSON.stringify(
-					{
-						hits: hits.map((h) => ({
-							id: h.id,
-							title: h.title,
-							excerpt: h.excerpt,
-							revision: h.revision,
-							hash: h.hash,
-						})),
-					},
-					null,
-					"\t",
-				),
+				result: JSON.stringify({
+					hits: hits.map((h) => ({
+						id: h.id,
+						title: h.title,
+						excerpt: h.excerpt,
+						revision: h.revision,
+						hash: h.hash,
+					})),
+				}),
 				status: "succeeded",
 			};
 		},
@@ -107,11 +114,12 @@ export function createMemoryTools(store: MemoryStore): Tool[] {
 			function: {
 				name: "memory_read",
 				description:
-					"读取一条长期记忆的当前完整内容（正文、来源与适用范围）。id 来自 memory_search 或 memory_write 的返回。",
+					"读取 memory_search/memory_write 返回的记忆 ID，核实正文、来源、scope 和当前 hash；不修改记忆。正文很长时使用 max_chars。",
 				parameters: {
 					type: "object",
 					properties: {
 						id: { type: "string", description: "记忆 ID（memory_search 返回的 id）" },
+						max_chars: { type: "integer", minimum: 1, maximum: 200_000, description: "可选正文上限；省略返回完整内容" },
 					},
 					required: ["id"],
 					additionalProperties: false,
@@ -124,23 +132,24 @@ export function createMemoryTools(store: MemoryStore): Tool[] {
 			if (!record) {
 				return { result: JSON.stringify({ error: `记忆不存在或已遗忘：${id}` }), status: "failed" };
 			}
+			const maxChars = typeof args.max_chars === "number" ? args.max_chars : undefined;
+			const body = maxChars === undefined ? record.body : record.body.slice(0, maxChars);
 			return {
-				result: JSON.stringify(
-					{
-						id: record.id,
-						title: record.title,
-						body: record.body,
-						type: record.type,
-						basis: record.basis,
-						scope: record.scope,
-						sources: record.sources,
-						status: record.status,
-						revision: record.revision,
-						hash: record.hash,
-					},
-					null,
-					"\t",
-				),
+				result: JSON.stringify({
+					id: record.id,
+					title: record.title,
+					body,
+					...(maxChars !== undefined && body.length < record.body.length
+						? { truncated: true, next: { tool: "memory_read", id, max_chars: maxChars * 2 } }
+						: {}),
+					type: record.type,
+					basis: record.basis,
+					scope: record.scope,
+					sources: record.sources,
+					status: record.status,
+					revision: record.revision,
+					hash: record.hash,
+				}),
 				status: "succeeded",
 			};
 		},
@@ -152,7 +161,7 @@ export function createMemoryTools(store: MemoryStore): Tool[] {
 			function: {
 				name: "memory_write",
 				description:
-					"写入/修订/退休一条长期记忆。create 需 type/basis/title/body/scope/sources（或 basis=inferred + rationale）；revise/retire 需要当前 hash（从 memory_read 获得）。返回 committed 时携带新 hash——后续修订必须使用新 hash。版本冲突不覆盖：返回 conflict 与当前 hash，需重新读取后决定。",
+					"写入、修订或退休长期记忆。写前先核实来源；revise/retire 必须使用 memory_read 的当前 hash。conflict 不覆盖，重新读取后再决定；异常结果未知时不要盲重试。",
 				parameters: {
 					type: "object",
 					properties: {
@@ -264,14 +273,17 @@ export function createMemoryTools(store: MemoryStore): Tool[] {
 				},
 			},
 		},
-		async run(args) {
+		async run(args, _signal, context) {
 			const operation = args.operation as MemoryChange;
 			if (!operation || typeof operation !== "object" || !("op" in operation)) {
 				return { result: JSON.stringify({ status: "rejected", reason: "缺少 operation" }), status: "failed" };
 			}
 			const id = "id" in operation ? String(operation.id) : undefined;
 			try {
-				const result = await store.write(operation);
+				const ownerId = context?.ownerId;
+				const writeOperation =
+					ownerId && ownerId !== "root" ? annotateChildMemoryChange(operation, ownerId) : operation;
+				const result = await store.write(writeOperation);
 				return adaptResult(id, result);
 			} catch (error) {
 				// writer 内部异常：不猜测结果（unknown），明确上报。

@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { worldSucceeded } from "../src/extensions/world-framework/result.js";
 import { WorldRegistry } from "../src/extensions/world-framework/world-registry.js";
 import { defineWorld } from "../src/extensions/world-framework/index.js";
 import type { ExtensionAPI } from "../src/extensions/runner.js";
@@ -55,7 +56,7 @@ describe("World Framework: Lifecycle & Registry", () => {
 			actions: {
 				play: {
 					description: "播放",
-					run: () => "播放中",
+					run: () => worldSucceeded("播放中"),
 				},
 			},
 		});
@@ -168,7 +169,7 @@ describe("World Framework: Lifecycle & Registry", () => {
 						order.push("started");
 						await released;
 						order.push(ctx.signal.aborted ? "aborted" : "finished");
-						return "done";
+						return worldSucceeded("done");
 					},
 				},
 			},
@@ -236,7 +237,7 @@ describe("World Framework: Lifecycle & Registry", () => {
 			onStop,
 			defaultState: { enabled: false },
 			actions: {
-				do: { description: "执行", parameters: { type: "object" }, run: () => "ok" },
+				do: { description: "执行", parameters: { type: "object" }, run: () => worldSucceeded("ok") },
 			},
 		});
 
@@ -347,7 +348,7 @@ describe("World Framework: Lifecycle & Registry", () => {
 					run: async (_params, ctx) => {
 						aStarted = true;
 						await new Promise<void>((resolve) => ctx.signal.addEventListener("abort", () => resolve(), { once: true }));
-						return "a";
+						return worldSucceeded("a");
 					},
 				},
 			},
@@ -363,7 +364,7 @@ describe("World Framework: Lifecycle & Registry", () => {
 						bStarted = true;
 						await bReleased;
 						bFinished = !ctx.signal.aborted;
-						return "b";
+						return worldSucceeded("b");
 					},
 				},
 			},

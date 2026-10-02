@@ -50,6 +50,22 @@ const deferred = () => {
 };
 
 describe("ticker durable time rules", () => {
+	it("does not consume a daily opportunity when delivery fails", async () => {
+		const clock = new Clock();
+		const host: TickerHostPort = {
+			isBusy: () => false,
+			submitOpportunity: async () => {
+				throw new Error("delivery failed");
+			},
+			saveDurableState: async () => {},
+		};
+		const engine = new TickerEngine(host, { baseIntervalMs: 60_000 }, undefined, clock);
+		engine.start();
+		await clock.advance(60_000);
+		expect(engine.getStatus().dailyAttemptsUsed).toBe(0);
+		engine.stop();
+	});
+
 	it("serializes consecutive changes and exposes each only after its save", async () => {
 		const clock = new Clock();
 		const firstSave = deferred();

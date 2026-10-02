@@ -175,16 +175,21 @@ export class BodyRouter {
       return true;
     }
 
-    const oldEp = this.primaryBodyId ? this.endpoints.get(this.primaryBodyId) : undefined;
-    if (oldEp?.onFocus) {
-      await oldEp.onFocus(false);
+    const oldBodyId = this.primaryBodyId;
+    const oldEp = oldBodyId ? this.endpoints.get(oldBodyId) : undefined;
+    if (newEp.onFocus) await newEp.onFocus(true);
+    try {
+      if (oldEp?.onFocus) await oldEp.onFocus(false);
+    } catch (error) {
+      try {
+        await newEp.onFocus?.(false);
+        await oldEp?.onFocus?.(true);
+      } catch {
+        // The caller receives the original error; physical state is reported unknown upstream.
+      }
+      throw error;
     }
-
     this.primaryBodyId = targetBodyId;
-
-    if (newEp.onFocus) {
-      await newEp.onFocus(true);
-    }
     return true;
   }
 
@@ -197,7 +202,12 @@ export class BodyRouter {
       return false;
     }
     this.pausedBodies.add(bodyId);
-    await ep.safeStop();
+    try {
+      await ep.safeStop();
+    } catch (error) {
+      this.pausedBodies.delete(bodyId);
+      throw error;
+    }
     return true;
   }
 
@@ -215,8 +225,11 @@ export class BodyRouter {
   /**
    * 全身体急停
    */
-  async stopAll(): Promise<void> {
-    const tasks = Array.from(this.endpoints.values()).map((ep) => ep.safeStop());
-    await Promise.allSettled(tasks);
+  async stopAll(): Promise<{ failed: string[] }> {
+    const entries = Array.from(this.endpoints.values());
+    const outcomes = await Promise.allSettled(entries.map((ep) => ep.safeStop()));
+    return {
+      failed: outcomes.flatMap((outcome, index) => (outcome.status === "rejected" ? [entries[index]!.bodyId] : [])),
+    };
   }
 }

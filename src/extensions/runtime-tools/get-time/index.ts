@@ -9,11 +9,23 @@ const getTime: Tool = {
 		type: "function",
 		function: {
 			name: "get_time",
-			description: "获取当前日期和时间",
-			parameters: { type: "object", properties: {} },
+			description: "获取当前时间；用于时间戳、排序和事件标记。返回 ISO/UTC、时区和本地显示。",
+			parameters: { type: "object", properties: {}, additionalProperties: false },
 		},
 	},
-	run: async () => ({ result: new Date().toLocaleString("zh-CN", { hour12: false }), status: "succeeded" }),
+	run: async () => {
+		const now = new Date();
+		const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+		return {
+			result: JSON.stringify({
+				iso: now.toISOString(),
+				utc: now.toUTCString(),
+				timeZone,
+				display: now.toLocaleString("zh-CN", { hour12: false }),
+			}),
+			status: "succeeded",
+		};
+	},
 };
 
 export default getTime;

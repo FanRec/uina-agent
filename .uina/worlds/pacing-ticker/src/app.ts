@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { WorldDef, ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
+import { worldFailed, worldSucceeded } from "../../../../src/extensions/world-framework/result.js";
 import { TickerEngine } from "./ticker-engine.js";
 import type { TickerDurableState, TickerGuardrails } from "./types.js";
 
@@ -75,7 +76,7 @@ export function createPacingTickerWorld(): WorldDef {
   };
   const world: WorldDef = {
     name: "ticker",
-    description: "自主节拍器：提供稀疏、可避让的自主认知机会，感知时间与外部活动",
+    description: "低频自主唤醒调度；主体无需每轮调用。status 查询节拍，set_interval/pause/resume 只在调整自主策略时使用。",
     defaultState: { enabled: false,  },
     async onStart(ctx: ServiceCompanionContext) {
       teardown();
@@ -105,24 +106,24 @@ export function createPacingTickerWorld(): WorldDef {
     },
     async onStop() { teardown(); },
     actions: {
-      set_interval: { description: "调整自主节拍基准周期（单位：分钟，范围 1~120）", parameters: { type: "object", properties: { minutes: { type: "number" } }, required: ["minutes"] }, async run(args: Record<string, unknown>) {
-        if (!engine) return "执行失败：自主节拍器未启动。";
+      set_interval: { description: "仅在调整自主唤醒策略时设置周期（1~120 分钟）；返回持久化后的周期。", parameters: { type: "object", properties: { minutes: { type: "number", minimum: 1, maximum: 120 } }, required: ["minutes"], additionalProperties: false }, async run(args: Record<string, unknown>) {
+        if (!engine) return worldFailed("执行失败：自主节拍器未启动。", { reason: "ticker_not_started" });
         const minutes = typeof args.minutes === "number" ? args.minutes : Number(args.interval ?? args.min ?? args.m);
-        if (!Number.isFinite(minutes) || minutes < 1 || minutes > 120) return "参数错误：节拍基准周期必须是 1 到 120 之间的有限数字。";
-        await engine.setInterval(minutes); return `已将自主节拍基准周期调整为 ${minutes} 分钟。`;
+        if (!Number.isFinite(minutes) || minutes < 1 || minutes > 120) return worldFailed("参数错误：节拍基准周期必须是 1 到 120 之间的有限数字。", { reason: "invalid_interval" });
+        await engine.setInterval(minutes); return worldSucceeded(`已将自主节拍基准周期调整为 ${minutes} 分钟。`, undefined, "applied");
       } },
-      pause: { description: "临时挂起自主唤醒", parameters: { type: "object", properties: { minutes: { type: "number" } }, required: ["minutes"] }, async run(args: Record<string, unknown>) {
-        if (!engine) return "执行失败：自主节拍器未启动。";
+      pause: { description: "临时挂起自主唤醒；仅在需要让主体暂时不产生机会时使用，返回持久化结果。", parameters: { type: "object", properties: { minutes: { type: "number", minimum: 1 } }, required: ["minutes"], additionalProperties: false }, async run(args: Record<string, unknown>) {
+        if (!engine) return worldFailed("执行失败：自主节拍器未启动。", { reason: "ticker_not_started" });
         const minutes = typeof args.minutes === "number" ? args.minutes : Number(args.duration ?? args.m);
-        if (!Number.isFinite(minutes) || minutes < 1) return "参数错误：挂起时长必须是有限的正数。";
-        await engine.pause(minutes); return `自主节拍已挂起 ${minutes} 分钟。`;
+        if (!Number.isFinite(minutes) || minutes < 1) return worldFailed("参数错误：挂起时长必须是有限的正数。", { reason: "invalid_pause" });
+        await engine.pause(minutes); return worldSucceeded(`自主节拍已挂起 ${minutes} 分钟。`, undefined, "applied");
       } },
-      resume: { description: "提前解除挂起", async run(_args: Record<string, unknown>) {
-        if (!engine) return "执行失败：自主节拍器未启动。";
-        if (!engine.getStatus().isPaused) return "自主节拍当前处于运行状态，无需恢复。";
-        await engine.resume(); return "自主节拍已提前解除挂起。";
+      resume: { description: "提前解除自主唤醒挂起；不在暂停状态时返回无需操作。", parameters: { type: "object", properties: {}, additionalProperties: false }, async run(_args: Record<string, unknown>) {
+        if (!engine) return worldFailed("执行失败：自主节拍器未启动。", { reason: "ticker_not_started" });
+        if (!engine.getStatus().isPaused) return worldSucceeded("自主节拍当前处于运行状态，无需恢复。", undefined, "applied");
+        await engine.resume(); return worldSucceeded("自主节拍已提前解除挂起。", undefined, "applied");
       } },
-      status: { description: "查看当前自主节拍器状态", run() { if (!engine) return JSON.stringify({ status: "stopped" }); const s = engine.getStatus(); return JSON.stringify({ status: s.isPaused ? "paused" : "running", baseIntervalMinutes: s.baseIntervalMinutes, effectiveIntervalMinutes: s.effectiveIntervalMinutes, idleMinutes: s.idleMinutes, remainingSeconds: s.remainingSeconds, dailyAttempts: s.dailyAttemptsUsed, dailyAttemptsLimit: s.dailyAttemptsLimit }); } },
+      status: { description: "查询自主节拍器状态；只读，返回暂停、周期、空闲时间和日配额。", parameters: { type: "object", properties: {}, additionalProperties: false }, run() { if (!engine) return worldSucceeded(JSON.stringify({ status: "stopped" })); const s = engine.getStatus(); return worldSucceeded(JSON.stringify({ status: s.isPaused ? "paused" : "running", baseIntervalMinutes: s.baseIntervalMinutes, effectiveIntervalMinutes: s.effectiveIntervalMinutes, idleMinutes: s.idleMinutes, remainingSeconds: s.remainingSeconds, dailyAttempts: s.dailyAttemptsUsed, dailyAttemptsLimit: s.dailyAttemptsLimit })); } },
     },
   };
   return world;

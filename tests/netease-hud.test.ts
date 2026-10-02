@@ -66,7 +66,7 @@ describe("netease jukebox HUD heartbeat", () => {
 			{ song_id: "1" },
 			{ operationIdentity: "world:jukebox/play", signal },
 		);
-		expect(playResult).toContain("正在播放");
+		expect(playResult.result).toContain("正在播放");
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
 		const snapshots = fetchMock.mock.calls

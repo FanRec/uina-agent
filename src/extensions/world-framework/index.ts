@@ -6,6 +6,7 @@ export * from "./types.js";
 export * from "./world-tool.js";
 export * from "./world-activation.js";
 export * from "./world-registry.js";
+export * from "./result.js";
 
 // 单例/共享注册表映射（按 ExtensionAPI 隔离）
 const REGISTRIES = new WeakMap<ExtensionAPI, WorldRegistry>();

@@ -35,7 +35,7 @@ describe("Bilibili live connection status", () => {
 				}) as never,
 		);
 
-		expect(result).toContain("尚未确认连接成功");
+		expect(result.result).toContain("尚未确认连接成功");
 		expect(state.connectionStatus).toBe("connecting");
 	});
 
@@ -70,7 +70,7 @@ describe("Bilibili live connection status", () => {
 			payload: { retryCount: 3, totalRetryCount: 3, delaySeconds: 4 },
 		});
 
-		const status = JSON.parse(handleStatusAction(state, buffer));
+		const status = JSON.parse(handleStatusAction(state, buffer).result);
 		expect(status).toMatchObject({
 			connection: "reconnecting",
 			roomStatus: "online",

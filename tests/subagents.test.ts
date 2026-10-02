@@ -7,6 +7,7 @@ import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import { JobRegistry } from "../src/extensions/jobs/registry.js";
 import { ExtensionRunner } from "../src/extensions/runner.js";
 import { activateRuntimeTools, createChildTools } from "../src/extensions/runtime-tools/index.js";
+import type { RuntimeHooks } from "../src/runtime/hooks.js";
 import { Scenario } from "./harness/index.js";
 
 function providerFor(reply: (prompt: string) => string | Promise<string>): { model: Model; stream: ModelStreamFn } {
@@ -43,6 +44,29 @@ function make(
 }
 
 describe("SubagentRegistry", () => {
+	it("passes the root runtime hooks into every child Subject", () => {
+		const pair = providerFor((prompt) => prompt);
+		const hooks = {} as RuntimeHooks;
+		let received: RuntimeHooks | undefined;
+		const factory: AgentFactory = {
+			create(options) {
+				received = options.runtimeHooks;
+				return new DefaultAgentFactory().create(options);
+			},
+		};
+		const registry = new SubagentRegistry({
+			factory,
+			model: () => pair.model,
+			stream: pair.stream,
+			createTools: () => new ToolBroker(),
+			runtimeHooks: () => hooks,
+		});
+
+		const child = registry.start({ ownerId: "root", label: "hooks", prompt: "start" });
+		expect(received).toBe(hooks);
+		return registry.interrupt(child.id, "root");
+	});
+
 	it("inherits capabilities with child ownership and delivers job completion back to that child", async () => {
 		const root = new ToolBroker({ ownerId: "root" });
 		const children = new Map<string, ToolView>();
@@ -103,7 +127,9 @@ describe("SubagentRegistry", () => {
 					.transcript(child.id, "root")
 					.messages.some((m) => m.role === "custom" && m.customType === "runtime-input"),
 			).toBe(true);
-			const grandchild = JSON.parse(await tools.run("subagent_start", { label: "grandchild", prompt: "grandchild" }));
+			const grandchild = JSON.parse(
+				await tools.run("subagent_start", { label: "grandchild", prompt: "grandchild" }),
+			).subagent;
 			expect(registry.list(child.id).map((c) => c.id)).toEqual([grandchild.id]);
 			expect(registry.get(grandchild.id, child.id).parentId).toBe(child.id);
 		} finally {
@@ -131,6 +157,25 @@ describe("SubagentRegistry", () => {
 			"第一问",
 			"第二问",
 		]);
+		await registry.close();
+	});
+
+	it("reads complete transcript pages without losing the child snapshot", async () => {
+		const registry = make(providerFor((prompt) => `答复:${prompt}`));
+		const started = registry.start({ ownerId: "root", label: "分页", prompt: "第一问" });
+		while (
+			registry.get(started.id, "root").status === "accepted" ||
+			registry.get(started.id, "root").status === "running"
+		)
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		await registry.send(started.id, "root", "第二问");
+		const first = registry.transcript(started.id, "root", 0, 1);
+		const second = registry.transcript(started.id, "root", first.nextCursor!, 1);
+		expect(first.messages).toHaveLength(1);
+		expect(first.nextCursor).toBe(1);
+		expect(second.messages).toHaveLength(1);
+		expect(second.cursor).toBe(1);
+		expect(second.subagent.id).toBe(started.id);
 		await registry.close();
 	});
 

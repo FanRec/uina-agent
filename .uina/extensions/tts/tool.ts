@@ -8,8 +8,8 @@ export function createTtsTool(driver: TtsVoiceOutputDriver): Tool {
     executionMode: "sequential",
     def: { type: "function", function: {
       name: "tts",
-      description: "按需检查和有限维护发声系统；检查、启动和连通不等于声音已恢复。",
-      parameters: { type: "object", additionalProperties: false, properties: { action: { type: "string" }, component: { type: "string" }, operation: { type: "string" }, target: { type: "string" }, scope: { type: "string" }, session_id: { type: "string" } }, oneOf: [
+      description: "发声故障时检查或维护 Bridge/vendor/player；普通发声不要调用。inspect 只证明可观察，test/recover 的结果不等于用户已听见。",
+      parameters: { type: "object", additionalProperties: false, properties: { action: { type: "string" }, component: { type: "string" }, operation: { type: "string" }, target: { type: "string" }, scope: { type: "string" } }, oneOf: [
         { properties: { action: { const: "inspect" }, component: { enum: ["bridge", "vendor", "player", "extension"] } }, required: ["action"] },
         { properties: { action: { const: "recover" }, operation: { enum: ["reconnect", "reset"] } }, required: ["action", "operation"] },
         { properties: { action: { const: "recover" }, operation: { const: "restart" }, target: { enum: ["bridge", "vendor"] } }, required: ["action", "operation", "target"] },

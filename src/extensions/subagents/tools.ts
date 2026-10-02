@@ -8,6 +8,16 @@ const byIdSchema = {
 	required: ["subagent_id"],
 	properties: { subagent_id: { type: "string", minLength: 1 } },
 } as const;
+const transcriptSchema = {
+	type: "object",
+	additionalProperties: false,
+	required: ["subagent_id"],
+	properties: {
+		subagent_id: { type: "string", minLength: 1 },
+		cursor: { type: "integer", minimum: 0 },
+		limit: { type: "integer", minimum: 1, maximum: 500 },
+	},
+} as const;
 
 export function createSubagentTools(registry: SubagentRegistry, ownerId: string): Tool[] {
 	const tool = (
@@ -23,7 +33,8 @@ export function createSubagentTools(registry: SubagentRegistry, ownerId: string)
 				type: "function",
 				function: {
 					name: "subagent_start",
-					description: "启动并派生一个可持久交谈的内部子代理。",
+					description:
+						"为独立上下文、并行或长任务派生子代理；简单工具调用不要使用。返回 subagent_id，随后用 subagent_status/output 跟进。",
 					parameters: {
 						type: "object",
 						additionalProperties: false,
@@ -43,7 +54,7 @@ export function createSubagentTools(registry: SubagentRegistry, ownerId: string)
 				// Generic effect fact: this tool dispatched a background task. The id is the
 				// stable external operation identity; Session Core only records it.
 				return {
-					result: JSON.stringify(snapshot),
+					result: JSON.stringify({ phase: "accepted", subagent: snapshot }),
 					status: "succeeded" as const,
 					details: {
 						effects: [{ effectType: "task.dispatch", externalOperationId: snapshot.id, label: String(args.label) }],
@@ -57,12 +68,12 @@ export function createSubagentTools(registry: SubagentRegistry, ownerId: string)
 			{ type: "object", additionalProperties: false, properties: {} },
 			(_args, caller) => registry.list(caller),
 		),
-		tool("subagent_status", "查看指定内部子代理的实时状态与执行快照。", byIdSchema, (args, caller) =>
+		tool("subagent_status", "查看子代理实时状态、错误和快照；不读取完整输出。", byIdSchema, (args, caller) =>
 			registry.get(args.subagent_id as string, caller),
 		),
 		tool(
 			"subagent_output",
-			"游标增量读取内部子代理的实时输出流。",
+			"用 cursor 增量读取子代理 thinking/text/tool 输出；优先于完整 transcript。",
 			{
 				type: "object",
 				additionalProperties: false,
@@ -71,12 +82,21 @@ export function createSubagentTools(registry: SubagentRegistry, ownerId: string)
 			},
 			(args, caller) => registry.read(args.subagent_id as string, caller, args.cursor as number | undefined),
 		),
-		tool("subagent_messages", "读取指定内部子代理的完整对话轨迹转录记录。", byIdSchema, (args, caller) =>
-			registry.transcript(args.subagent_id as string, caller),
+		tool(
+			"subagent_messages",
+			"按页读取子代理完整对话轨迹；仅在增量输出不足以判断时使用。",
+			transcriptSchema,
+			(args, caller) =>
+				registry.transcript(
+					args.subagent_id as string,
+					caller,
+					args.cursor as number | undefined,
+					args.limit as number | undefined,
+				),
 		),
 		tool(
 			"subagent_send",
-			"向指定的内部子代理追加发送跟进消息。",
+			"向仍可用的子代理追加任务；返回受理/排队事实，随后用 status/output 观察。",
 			{
 				type: "object",
 				additionalProperties: false,
@@ -84,12 +104,17 @@ export function createSubagentTools(registry: SubagentRegistry, ownerId: string)
 				properties: { subagent_id: { type: "string", minLength: 1 }, text: { type: "string", minLength: 1 } },
 			},
 			async (args, caller) => {
-				await registry.send(args.subagent_id as string, caller, args.text as string);
-				return { status: "accepted" };
+				return registry.send(args.subagent_id as string, caller, args.text as string);
 			},
 		),
-		tool("subagent_interrupt", "向指定的内部子代理请求中断并停止执行。", byIdSchema, async (args, caller) => ({
-			status: await registry.interrupt(args.subagent_id as string, caller),
-		})),
+		tool(
+			"subagent_interrupt",
+			"请求中断子代理；返回请求状态，最终是否 settled 需再查 status。",
+			byIdSchema,
+			async (args, caller) => {
+				const phase = await registry.interrupt(args.subagent_id as string, caller);
+				return { phase, subagent: registry.get(args.subagent_id as string, caller) };
+			},
+		),
 	];
 }

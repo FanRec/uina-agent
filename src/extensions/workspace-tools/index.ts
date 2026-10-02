@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { activateEditFile } from "./edit-file.js";
 import { activateFindFile } from "./find-file.js";
 import { activateGrepFile } from "./grep-file.js";
@@ -12,6 +12,7 @@ import {
 } from "./read-truncate.js";
 import { dirname, resolve } from "node:path";
 import type { ExtensionAPI, ImageContent } from "../index.js";
+import { atomicWriteFile } from "./atomic-write.js";
 
 /** Trusted filesystem capabilities; no shell process or Core changes. */
 export default function activate(api: ExtensionAPI): void {
@@ -20,6 +21,13 @@ export default function activate(api: ExtensionAPI): void {
 		properties: { path: { type: "string", minLength: 1 } },
 		required: ["path"],
 		additionalProperties: false,
+	};
+	const imageSchema = {
+		...fileSchema,
+		properties: {
+			...fileSchema.properties,
+			max_bytes: { type: "integer", minimum: 1, description: "可选的图片字节上限；超出时返回元数据而不注入完整图片" },
+		},
 	};
 	api.registerTool({
 		def: {
@@ -87,7 +95,8 @@ export default function activate(api: ExtensionAPI): void {
 			type: "function",
 			function: {
 				name: "write_file",
-				description: "Write a UTF-8 text file.",
+				description:
+					"Overwrite or create a UTF-8 text file under the workspace. Creates parent directories; use read_file afterward when the written content must be verified.",
 				parameters: {
 					type: "object",
 					properties: { path: { type: "string", minLength: 1 }, text: { type: "string" } },
@@ -99,7 +108,7 @@ export default function activate(api: ExtensionAPI): void {
 		run: async (args, signal) => {
 			const file = resolve(api.cwd, String(args.path));
 			await mkdir(dirname(file), { recursive: true });
-			await writeFile(file, String(args.text), { encoding: "utf8", signal });
+			await atomicWriteFile(file, String(args.text), { encoding: "utf8", signal });
 			return {
 				result: "Written " + file,
 				status: "succeeded",
@@ -118,7 +127,7 @@ export default function activate(api: ExtensionAPI): void {
 				name: "read_image",
 				description:
 					"Read a PNG, JPEG, GIF or WebP image into model context. Unknown model capability is attempted; explicitly unsupported models reject image input.",
-				parameters: fileSchema,
+				parameters: imageSchema,
 			},
 		},
 		run: async (args, signal) => {
@@ -126,6 +135,19 @@ export default function activate(api: ExtensionAPI): void {
 			const bytes = await readFile(file, { signal });
 			const mimeType = imageMimeType(bytes);
 			if (!mimeType) throw new Error("Unsupported image data (expected PNG, JPEG, GIF or WebP): " + file);
+			if (typeof args.max_bytes === "number" && bytes.length > args.max_bytes) {
+				return {
+					result: JSON.stringify({
+						path: file,
+						mimeType,
+						bytes: bytes.length,
+						image: "omitted",
+						reason: "over_max_bytes",
+					}),
+					status: "failed" as const,
+					details: { path: file, mimeType, bytes: bytes.length, reason: "over_max_bytes" },
+				};
+			}
 			return {
 				result: "Image: " + file,
 				status: "succeeded",

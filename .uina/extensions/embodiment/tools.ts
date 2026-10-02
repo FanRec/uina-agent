@@ -23,7 +23,7 @@ export function createBodyTool(router: BodyRouter, onStateChange?: (reason: stri
       type: "function",
       function: {
         name: "body",
-        description: "管理数字主体的多具身端点（查看挂载的身体、查询单端点详细状态、切换主导焦点、单独暂停或恢复特定身体的控制）。状态变化会落史（embodiment.state-change）；需要即时真值时用 status 查询。",
+        description: "管理具身路由。list/status 只观察；switch_focus/pause/resume/stop_all 改变或停止身体控制。微表情和姿态用对应 World，不要用 body 代替。状态变化会落史。",
         parameters: {
           type: "object",
           properties: {
@@ -38,6 +38,7 @@ export function createBodyTool(router: BodyRouter, onStateChange?: (reason: stri
             },
           },
           required: ["action"],
+          additionalProperties: false,
         },
       },
     },
@@ -50,7 +51,16 @@ export function createBodyTool(router: BodyRouter, onStateChange?: (reason: stri
         if (!target) {
           return { result: `${action} 失败：必须指定 target (目标 bodyId)`, status: "failed" };
         }
-        const ok = await op.apply(target);
+        let ok: boolean;
+        try {
+          ok = await op.apply(target);
+        } catch (error) {
+          return {
+            result: `${action} 执行过程中出现未确认状态：${error instanceof Error ? error.message : String(error)}。请查询 status。`,
+            status: "unknown",
+            details: { reason: "partial_effect_unknown", target },
+          };
+        }
         if (!ok) {
           return { result: `${action} 失败：未找到有效端点 ${target}`, status: "failed" };
         }
@@ -90,7 +100,14 @@ export function createBodyTool(router: BodyRouter, onStateChange?: (reason: stri
         }
 
         case "stop_all": {
-          await router.stopAll();
+          const outcome = await router.stopAll();
+          if (outcome.failed.length > 0) {
+            return {
+              result: `全身体急停部分失败：${outcome.failed.join(", ")}。物理状态未知，请查询 status。`,
+              status: "unknown",
+              details: { failed: outcome.failed, effectStatus: "unknown" },
+            };
+          }
           onStateChange?.("stop_all: all endpoints");
           return {
             result: "已执行全身体安全急停，所有外壳已静止。",

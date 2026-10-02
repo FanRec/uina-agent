@@ -1,5 +1,6 @@
 import type { ActionContext, WorldDef, ServiceCompanionContext } from "../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
+import { worldSucceeded } from "../../../src/extensions/world-framework/result.js";
 import { Live2DRuntime } from "./runtime.js";
 import type { BasePoseName, ExpressParams } from "./types.js";
 import { FACE_EXPRESSIONS, GAZE_DIRECTIONS, HEAD_POSES } from "./parameter-mapper.js";
@@ -49,6 +50,7 @@ export function createLive2DApp(): WorldDef {
 				"执行两步连贯分镜（beats）或即兴肢体表演（例如先扭头避开视线，再悄悄看回用户）。日常说话中的自然微笑、点头、歪头请直接在回复台词中使用 <cue id='...'/>（0 工具开销）；本工具仅在需要强烈情绪表演或分步连续动作时调用。",
 			parameters: {
 				type: "object",
+				additionalProperties: false,
 				properties: {
 					head: {
 						type: "string",
@@ -86,6 +88,7 @@ export function createLive2DApp(): WorldDef {
 						description: "【高级小巧思】两步连续微动作（例如: 先看向别处，再悄悄看回用户）",
 						items: {
 							type: "object",
+							additionalProperties: false,
 							properties: {
 								head: { type: "string", enum: [...HEAD_POSES] },
 								gaze: { type: "string", enum: [...GAZE_DIRECTIONS] },
@@ -108,7 +111,8 @@ export function createLive2DApp(): WorldDef {
 			async run(args: Record<string, unknown>, ctx: ActionContext) {
 				const runtime = currentRuntime;
 				if (!runtime) return notStarted();
-				return runtime.executeExpress(args as unknown as ExpressParams, ctx);
+				const result = await runtime.executeExpress(args as unknown as ExpressParams, ctx);
+				return typeof result === "string" ? worldSucceeded(result, undefined, "applied") : result;
 			},
 		},
 
@@ -128,7 +132,8 @@ export function createLive2DApp(): WorldDef {
 			async run(args: Record<string, unknown>, ctx: ActionContext) {
 				const runtime = currentRuntime;
 				if (!runtime) return notStarted();
-				return runtime.executeCostume(String(args.item ?? ""), ctx);
+				const result = await runtime.executeCostume(String(args.item ?? ""), ctx);
+				return typeof result === "string" ? worldSucceeded(result, undefined, "applied") : result;
 			},
 		},
 
@@ -167,7 +172,8 @@ export function createLive2DApp(): WorldDef {
 				if (!runtime) return notStarted();
 				const name = String(args.name) as BasePoseName;
 				const durationMs = typeof args.duration_ms === "number" ? args.duration_ms : 0;
-				return runtime.executePose(name, durationMs, ctx);
+				const result = await runtime.executePose(name, durationMs, ctx);
+				return typeof result === "string" ? worldSucceeded(result, undefined, "applied") : result;
 			},
 		},
 
@@ -187,7 +193,7 @@ export function createLive2DApp(): WorldDef {
 			async run(_args: Record<string, unknown>, _ctx: ActionContext) {
 				const runtime = currentRuntime;
 				if (!runtime) return notStarted();
-				return runtime.formatStatus();
+				return worldSucceeded(runtime.formatStatus());
 			},
 		},
 	},

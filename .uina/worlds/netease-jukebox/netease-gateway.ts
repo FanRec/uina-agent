@@ -9,6 +9,14 @@ export interface EditablePlaylist {
   trackIds: readonly string[] | null;
 }
 
+export class NeteaseUncertainWriteError extends Error {
+	readonly effectUnknown = true;
+	constructor(message: string, options?: { cause?: unknown }) {
+		super(message, options);
+		this.name = "NeteaseUncertainWriteError";
+	}
+}
+
 export class NeteaseGateway {
   private readonly gatewayBaseUrl: string;
   private readonly client: NeteaseApiClient;
@@ -85,7 +93,14 @@ export class NeteaseGateway {
         const body = await response.json() as GatewayResult;
         if (typeof body.code === "number" && body.code !== 200) throw new Error(`网易云业务请求失败: code ${body.code}`);
         return body;
-        } catch (error) { lastError = error; if (signal?.aborted || attempt === 1) throw error; }
+        } catch (error) {
+          lastError = error;
+          if (signal?.aborted || attempt === 1) {
+            if (method === "POST" && isUncertainWriteError(error))
+              throw new NeteaseUncertainWriteError(`网易云写请求结果未知：${error instanceof Error ? error.message : String(error)}`, { cause: error });
+            throw error;
+          }
+        }
       }
     } finally {
       clearTimeout(timer); signal?.removeEventListener("abort", abort);
@@ -97,4 +112,9 @@ export class NeteaseGateway {
 function isFallbackEligible(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /HTTP (404|405|501)|HTTP 5\d\d|endpoint|not found|不存在/i.test(message);
+}
+
+function isUncertainWriteError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /HTTP 5\d\d|timeout|超时|fetch failed|network|socket|ECONN|连接/i.test(message);
 }

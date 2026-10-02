@@ -241,12 +241,14 @@ export class UinaHost {
 			const eventFrameProfile = createEventFrameProfile();
 			const resolvedProjection = options.projection ?? eventFrameProfile.projection;
 			const resolvedSystemPrompt = options.systemPrompt ?? eventFrameProfile.systemPrompt;
+			let extensionHost!: ExtensionRunner;
 			const subagents = new SubagentRegistry({
 				factory: new DefaultAgentFactory(),
 				model: () => subject.getModel(),
 				stream: streamFn,
 				measureContext: (model, projection) =>
 					models.getProvider(model.providerId)?.measureContext?.(model, projection),
+				runtimeHooks: () => extensionHost.runtimeHooks(),
 				thinkingLevel,
 				createTools: (ownerId) => createChildTools(tools, { ownerId }),
 				projection: resolvedProjection,
@@ -271,7 +273,7 @@ export class UinaHost {
 				},
 			});
 
-			const extensionHost = new ExtensionRunner({
+			extensionHost = new ExtensionRunner({
 				// 主体绑定（认知阶段 A）：扩展经 pi.subject 拿到绑定的资源根；无 profile 时缺省
 				// undefined——旧扩展与测试零影响。
 				subjectBinding: options.profile

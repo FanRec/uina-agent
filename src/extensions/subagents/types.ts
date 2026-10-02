@@ -35,6 +35,13 @@ export interface SubagentRead {
 export interface SubagentTranscript {
 	subagent: SubagentSnapshot;
 	messages: import("../../core/types.js").AgentMessage[];
+	cursor: number;
+	nextCursor?: number;
+}
+
+export interface SubagentSendResult {
+	phase: "queued" | "accepted" | "completed";
+	subagent: SubagentSnapshot;
 }
 
 export interface SubagentStartOptions {

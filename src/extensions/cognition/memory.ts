@@ -38,6 +38,7 @@ export interface MemorySourceRef {
 	sessionId: string;
 	entryId?: string;
 	note?: string;
+	agentId?: string;
 }
 
 export interface MemoryMeta {

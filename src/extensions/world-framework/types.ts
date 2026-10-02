@@ -42,7 +42,7 @@ export interface ActionDef<TParams = Record<string, unknown>> {
 	 */
 	validate?: (params: unknown) => { valid: boolean; error?: string };
 	/** 动作执行逻辑 */
-	run: (params: TParams, ctx: ActionContext) => Promise<string | ToolExecutionResult> | string | ToolExecutionResult;
+	run: (params: TParams, ctx: ActionContext) => Promise<ToolExecutionResult> | ToolExecutionResult;
 }
 
 /**

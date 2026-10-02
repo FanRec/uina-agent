@@ -10,6 +10,7 @@ import type {
 	SubagentSnapshot,
 	SubagentStartOptions,
 	SubagentTranscript,
+	SubagentSendResult,
 } from "./types.js";
 
 export interface SubagentRegistryOptions {
@@ -18,6 +19,7 @@ export interface SubagentRegistryOptions {
 	model: () => Parameters<AgentFactory["create"]>[0]["model"];
 	stream: Parameters<AgentFactory["create"]>[0]["stream"];
 	measureContext?: Parameters<AgentFactory["create"]>[0]["measureContext"];
+	runtimeHooks?: () => Parameters<AgentFactory["create"]>[0]["runtimeHooks"];
 	createTools: (ownerId: string) => ToolView;
 	thinkingLevel?: Parameters<AgentFactory["create"]>[0]["thinkingLevel"];
 	projection?: Parameters<AgentFactory["create"]>[0]["projection"];
@@ -105,16 +107,27 @@ export class SubagentRegistry {
 		};
 	}
 
-	transcript(id: string, ownerId: string): SubagentTranscript {
+	transcript(id: string, ownerId: string, cursor = 0, limit = 100): SubagentTranscript {
 		const record = this.expect(id, ownerId);
-		return { subagent: this.snapshot(record), messages: record.handle.history() };
+		const messages = record.handle.history();
+		const start = Math.max(0, Math.min(cursor, messages.length));
+		const end = Math.min(messages.length, start + Math.max(1, limit));
+		return {
+			subagent: this.snapshot(record),
+			messages: messages.slice(start, end),
+			cursor: start,
+			...(end < messages.length ? { nextCursor: end } : {}),
+		};
 	}
 
-	async send(id: string, ownerId: string, text: string): Promise<void> {
+	async send(id: string, ownerId: string, text: string): Promise<SubagentSendResult> {
 		const record = this.expect(id, ownerId);
 		if (record.status) throw new Error(`子代理 ${id} 已结算`);
 		if (!text.trim()) throw new Error("子代理消息不能为空");
+		const wasBusy = record.handle.snapshot().busy;
 		await this.run(record, text, "subagent-input", true);
+		const subagent = this.snapshot(record);
+		return { phase: wasBusy ? "queued" : subagent.busy ? "accepted" : "completed", subagent };
 	}
 
 	/** Host delivery to the actual initiating agent, preserving runtime input facts. */
@@ -163,6 +176,7 @@ export class SubagentRegistry {
 			model: this.options.model(),
 			stream: this.options.stream,
 			measureContext: this.options.measureContext,
+			runtimeHooks: this.options.runtimeHooks?.(),
 			tools: this.options.createTools(id),
 			thinkingLevel: this.options.thinkingLevel,
 			projection: this.options.projection,
