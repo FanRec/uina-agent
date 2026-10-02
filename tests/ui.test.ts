@@ -2477,7 +2477,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			// 键盘输入应当立刻打断自动滚屏
 			host.startAutoScroll("up");
 			expect(host.scroll.isAutoScrolling()).toBe(true);
-			(host as any).handleTerminalInput("a");
+			host.handleInput("a");
 			expect(host.scroll.isAutoScrolling()).toBe(false);
 		});
 

@@ -1658,7 +1658,46 @@ export class UIHost implements UIHostContextPort {
 			}
 		}
 
-		// 1.5 鼠标 SGR 与 X10 协议拦截（滚轮视口滚动、划词选区与交互热区）
+		// 1.5 鼠标 SGR 与 X10 协议拦截（滚轮视口滚动、划词选区与交互热区）：
+		// 消费完返回 null，否则返回剥除鼠标序列后待继续分发的剩余字节。
+		const rest = this.dispatchMouseInput(data);
+		if (rest === null) return;
+		data = rest;
+
+		// 2. 捕获浮层持有应用输入（Ctrl+C 安全处理仍在其后可用）
+		if (this.dispatchCapturingOverlay(data)) return;
+
+		// 3. 全局快捷键（非鼠标交互先停自动滚屏）
+		if (this.dispatchGlobalShortcut(data)) return;
+		if (this.dispatchRevealKey(data)) return;
+		if (this.dispatchSuggestionsNav(data)) return;
+
+		// 3.6 Esc 阶梯：语义单点（浮层 > 联想 > 选区 > 草稿 > 取消回合），恒消费
+		if (matchesKey(data, Key.escape)) {
+			this.handleEscapeKey();
+			return;
+		}
+
+		// 4. 输入框严格未输入任何字符时敲 '?' 唤起帮助；若前面有空格则作为普通字符输入
+		if (data === "?" && this.inputLine.getText() === "" && !this.overlayStack.hasVisible) {
+			if (!this.dispatchRegisteredKeybinding("?")) this.openFeature("help");
+			return;
+		}
+
+		// 4.1/4.2 滚轮与键盘视口滚动
+		if (this.dispatchScrollKeys(data)) return;
+
+		// 5. 焦点组件输入处理
+		const focused = this.focusManager.getFocused();
+		if (focused && focused.handleInput) {
+			focused.handleInput(data);
+			this.updateSuggestions();
+			this.requestRender();
+		}
+	}
+
+	/** SGR/X10 鼠标事件：返回 null 表示输入已被完全消费，否则返回剥除鼠标序列后的剩余字节。 */
+	private dispatchMouseInput(data: string): string | null {
 		const sgrPattern = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
 		const sgrMatches = [...data.matchAll(sgrPattern)];
 		if (sgrMatches.length > 0 || data.includes("\x1b[<") || /^\[<\d+;\d+;\d+[Mm]/.test(data)) {
@@ -1768,20 +1807,25 @@ export class UIHost implements UIHostContextPort {
 			// 从输入流中彻底剥除所有 SGR 鼠标序列及其残缺碎片，防止透传到输入框
 			data = data.replace(sgrPattern, "").replace(/\[<\d+;\d+;\d+[Mm]/g, "");
 			if (!data || data.trim() === "" || data.includes("\x1b[<")) {
-				return;
+				return null;
 			}
+			return data;
 		}
+		return data;
+	}
 
-		// A capturing overlay owns application input before global shortcuts.
-		// Safety handling below remains available for Ctrl+C, but feature shortcuts
-		// must never bypass a modal's capture contract.
+	/**
+	 * 捕获浮层在全局快捷键之前持有应用输入；Ctrl+C/Ctrl+C 安全处理仍在其后可用，
+	 * 功能快捷键绝不能绕过模态的捕获契约。返回 true 表示输入已被消费。
+	 */
+	private dispatchCapturingOverlay(data: string): boolean {
 		if (!matchesKey(data, Key.ctrl("c"))) this.onInteraction?.();
 		const capturingOverlay = this.overlayStack.topCapturing;
 		if (capturingOverlay) {
 			if (this.activeModalId && this.isMatchingModalKeybinding(this.activeModalId, data)) {
 				this.closeModal();
 				this.requestRender();
-				return;
+				return true;
 			}
 			if (matchesKey(data, Key.ctrl("c")) || matchesKey(data, Key.escape)) {
 				if (this.activeModalHandle) {
@@ -1790,20 +1834,24 @@ export class UIHost implements UIHostContextPort {
 					this.overlayStack.hideTopOverlay();
 				}
 				this.requestRender();
-				return;
+				return true;
 			}
 			if (capturingOverlay.component.handleInput) {
 				capturingOverlay.component.handleInput(data);
-				return;
+				return true;
 			}
 		}
+		return false;
+	}
 
-		// 2. 全局快捷键拦截（非鼠标交互立即停止自动滚屏）
+	/** 全局快捷键：注册键位、思考档位、Ctrl+C 阶梯与队列拉回。返回 true 表示已消费。 */
+	private dispatchGlobalShortcut(data: string): boolean {
+		// 非鼠标交互立即停止自动滚屏
 		this.stopAutoScroll();
-		if (this.dispatchRegisteredKeybinding(data)) return;
+		if (this.dispatchRegisteredKeybinding(data)) return true;
 		if (data === "\x1b[Z" || matchesKey(data, Key.shiftTab)) {
 			this.onThinkingLevelCycle?.();
-			return;
+			return true;
 		}
 
 		if (matchesKey(data, Key.ctrl("c"))) {
@@ -1813,15 +1861,15 @@ export class UIHost implements UIHostContextPort {
 				this.inputLine.clearSelection();
 				this.notify("已复制输入框内容", "info", 1500);
 				this.requestRender();
-				return;
+				return true;
 			}
 			if (this.inputLine.hasText()) {
 				this.inputLine.clear();
 				this.requestRender();
-				return;
+				return true;
 			}
 			this.cancelTurn("ctrl+c");
-			return;
+			return true;
 		}
 
 		if (
@@ -1831,15 +1879,19 @@ export class UIHost implements UIHostContextPort {
 			matchesKey(data, Key.alt("Q"))
 		) {
 			this.onPullBackQueue?.();
-			return;
+			return true;
 		}
+		return false;
+	}
 
+	/** ctrl+o / alt+o 展开键：粘贴芯片 > hover 工具卡 > hover 压缩卡 > 最近思考块，逐层回退。返回 true 表示已消费。 */
+	private dispatchRevealKey(data: string): boolean {
 		if (matchesKey(data, Key.ctrl("o")) || matchesKey(data, Key.ctrl("O"))) {
 			// 优先展开光标处的粘贴标记
 			if (this.inputLine.hasChipAtCursor()) {
 				this.inputLine.handleInput(data);
 				this.requestRender();
-				return;
+				return true;
 			}
 			const layout = this.lastLayout ?? this.layoutFrame();
 			const { transcriptContentW, bannerCount } = layout;
@@ -1853,7 +1905,7 @@ export class UIHost implements UIHostContextPort {
 					this.transcript.toggleTool(hoveredToolId, transcriptContentW);
 				}, targetAbsLine);
 				this.requestRender();
-				return;
+				return true;
 			}
 
 			// 如果当前悬停在会话压缩卡片上，单卡展开优先
@@ -1867,7 +1919,7 @@ export class UIHost implements UIHostContextPort {
 					this.transcript.toggleCompaction(hoveredCompactionIndex);
 				}, targetAbsLine);
 				this.requestRender();
-				return;
+				return true;
 			}
 
 			const thinkingLocs = this.transcript.getThinkingLineIndices(transcriptContentW);
@@ -1884,7 +1936,7 @@ export class UIHost implements UIHostContextPort {
 				}
 			}, targetAbsLine);
 			this.requestRender();
-			return;
+			return true;
 		}
 
 		if (matchesKey(data, Key.alt("o")) || matchesKey(data, Key.alt("O"))) {
@@ -1893,15 +1945,18 @@ export class UIHost implements UIHostContextPort {
 				this.transcript.toggleAllTools();
 			});
 			this.requestRender();
-			return;
+			return true;
 		}
+		return false;
+	}
 
-		// 3.5 联想卡片键鼠交互（/ 命令或 @ 文件导航与自动补全）
+	/** 联想卡片键鼠交互（/ 命令或 @ 文件导航与自动补全）。返回 true 表示已消费。 */
+	private dispatchSuggestionsNav(data: string): boolean {
 		if (this.activeSuggestions && this.activeSuggestions.items.length > 0) {
 			if (matchesKey(data, Key.up)) {
 				this.activeSuggestions.selectedIndex = Math.max(0, this.activeSuggestions.selectedIndex - 1);
 				this.requestRender();
-				return;
+				return true;
 			}
 			if (matchesKey(data, Key.down)) {
 				this.activeSuggestions.selectedIndex = Math.min(
@@ -1909,28 +1964,20 @@ export class UIHost implements UIHostContextPort {
 					this.activeSuggestions.selectedIndex + 1,
 				);
 				this.requestRender();
-				return;
+				return true;
 			}
 			if (matchesKey(data, Key.enter) || matchesKey(data, Key.tab)) {
 				const isTab = matchesKey(data, Key.tab);
 				this.applyActiveSuggestion(isTab);
-				return;
+				return true;
 			}
 		}
+		return false;
+	}
 
-		// 3.6 Esc 阶梯：语义单点（浮层 > 联想 > 选区 > 草稿 > 取消回合），恒消费
-		if (matchesKey(data, Key.escape)) {
-			this.handleEscapeKey();
-			return;
-		}
-
-		// 4. 输入框严格未输入任何字符时敲 '?' 唤起帮助；若前面有空格则作为普通字符输入
-		if (data === "?" && this.inputLine.getText() === "" && !this.overlayStack.hasVisible) {
-			if (!this.dispatchRegisteredKeybinding("?")) this.openFeature("help");
-			return;
-		}
-
-		// 4.1 X10 鼠标滚轮（SGR 协议已在 1.5 拦截处理，这里只剩 \x1b[M 编码）
+	/** 滚轮（X10）与键盘视口滚动（PageUp/PageDown、修饰方向键、Home/End 变体）。返回 true 表示已消费。 */
+	private dispatchScrollKeys(data: string): boolean {
+		// X10 鼠标滚轮（SGR 协议已在 dispatchMouseInput 拦截处理，这里只剩 \x1b[M 编码）
 		if (data.startsWith("\x1b[M") && data.length >= 6) {
 			let offset = 0;
 			let delta = 0;
@@ -1942,46 +1989,37 @@ export class UIHost implements UIHostContextPort {
 			}
 			if (delta > 0) {
 				this.scrollUp(delta);
-				return;
+				return true;
 			} else if (delta < 0) {
 				this.scrollDown(-delta);
-				return;
+				return true;
 			}
 		}
-
-		// 4.2 键盘视口滚动支持（PageUp / PageDown / Shift+Up/Down / Ctrl+Up/Down / Alt+Up/Down / Home / End）
 		if (matchesKey(data, Key.pageup) || data === "\x1b[5~") {
 			this.scrollUp(Math.max(1, Math.floor(this.terminal.rows / 2)));
-			return;
+			return true;
 		}
 		if (matchesKey(data, Key.pagedown) || data === "\x1b[6~") {
 			this.scrollDown(Math.max(1, Math.floor(this.terminal.rows / 2)));
-			return;
+			return true;
 		}
 		if (data === "\x1b[1;2A" || data === "\x1b[1;5A" || data === "\x1b[1;3A") {
 			this.scrollUp(3);
-			return;
+			return true;
 		}
 		if (data === "\x1b[1;2B" || data === "\x1b[1;5B" || data === "\x1b[1;3B") {
 			this.scrollDown(3);
-			return;
+			return true;
 		}
 		if (data === "\x1b[5;2~" || data === "\x1b[1;5H" || data === "\x1b[1;2H") {
 			this.scrollToTop();
-			return;
+			return true;
 		}
 		if (data === "\x1b[6;2~" || data === "\x1b[1;5F" || data === "\x1b[1;2F") {
 			this.scrollToBottom();
-			return;
+			return true;
 		}
-
-		// 5. 焦点组件输入处理
-		const focused = this.focusManager.getFocused();
-		if (focused && focused.handleInput) {
-			focused.handleInput(data);
-			this.updateSuggestions();
-			this.requestRender();
-		}
+		return false;
 	}
 
 	private applyActiveSuggestion(isTab: boolean): void {
