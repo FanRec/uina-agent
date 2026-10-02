@@ -241,39 +241,7 @@ export class UinaHost {
 			const eventFrameProfile = createEventFrameProfile();
 			const resolvedProjection = options.projection ?? eventFrameProfile.projection;
 			const resolvedSystemPrompt = options.systemPrompt ?? eventFrameProfile.systemPrompt;
-			let extensionHost!: ExtensionRunner;
-			const subagents = new SubagentRegistry({
-				factory: new DefaultAgentFactory(),
-				model: () => subject.getModel(),
-				stream: streamFn,
-				measureContext: (model, projection) =>
-					models.getProvider(model.providerId)?.measureContext?.(model, projection),
-				runtimeHooks: () => extensionHost.runtimeHooks(),
-				thinkingLevel,
-				createTools: (ownerId) => createChildTools(tools, { ownerId }),
-				projection: resolvedProjection,
-				systemPrompt: resolvedSystemPrompt,
-				notify: async (text, data, ownerId) => {
-					if (state.stopping) return;
-					const idStr = String(data.id);
-					const isAbandoned = abandonedTaskIds.has(idStr);
-					const input: AgentInput = {
-						id: `subagent-notice-${idStr}`,
-						mode: "followUp",
-						source: {
-							kind: "runtime",
-							type: "subagent-notice",
-							ref: idStr,
-							...(isAbandoned ? { provenance: { abandoned: true } } : {}),
-						},
-						text: isAbandoned ? `${text}（注意：该子代理来自已回溯放弃的历史分支）` : text,
-						data,
-					};
-					await (ownerId === "root" ? subject.accept(input) : subagents.acceptInput(ownerId, input));
-				},
-			});
-
-			extensionHost = new ExtensionRunner({
+			const extensionHost = new ExtensionRunner({
 				// 主体绑定（认知阶段 A）：扩展经 pi.subject 拿到绑定的资源根；无 profile 时缺省
 				// undefined——旧扩展与测试零影响。
 				subjectBinding: options.profile
@@ -322,6 +290,37 @@ export class UinaHost {
 				onModel: (model, options) => models.registerModel(model, options),
 				onCustomMessage: (message) => subject.appendCustomMessage(message),
 				onCustomEntry: (entry) => subject.appendCustomEntry(entry),
+			});
+
+			const subagents = new SubagentRegistry({
+				factory: new DefaultAgentFactory(),
+				model: () => subject.getModel(),
+				stream: streamFn,
+				measureContext: (model, projection) =>
+					models.getProvider(model.providerId)?.measureContext?.(model, projection),
+				runtimeHooks: () => extensionHost.runtimeHooks(),
+				thinkingLevel,
+				createTools: (ownerId) => createChildTools(tools, { ownerId }),
+				projection: resolvedProjection,
+				systemPrompt: resolvedSystemPrompt,
+				notify: async (text, data, ownerId) => {
+					if (state.stopping) return;
+					const idStr = String(data.id);
+					const isAbandoned = abandonedTaskIds.has(idStr);
+					const input: AgentInput = {
+						id: `subagent-notice-${idStr}`,
+						mode: "followUp",
+						source: {
+							kind: "runtime",
+							type: "subagent-notice",
+							ref: idStr,
+							...(isAbandoned ? { provenance: { abandoned: true } } : {}),
+						},
+						text: isAbandoned ? `${text}（注意：该子代理来自已回溯放弃的历史分支）` : text,
+						data,
+					};
+					await (ownerId === "root" ? subject.accept(input) : subagents.acceptInput(ownerId, input));
+				},
 			});
 
 			// 会话偏好持久化：model_select / thinking_level_select 只经扩展宿主分发

@@ -89,24 +89,30 @@ export class NeteaseGateway {
       for (let attempt = 0; attempt < attempts; attempt++) {
         try {
         const response = await fetch(url, { method, headers: method === "POST" ? { "content-type": "application/x-www-form-urlencoded" } : undefined, body: method === "POST" ? new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)])) : undefined, signal: controller.signal });
-        if (!response.ok) { if (response.status >= 500 && attempt === 0) continue; throw new Error(`网易云请求失败: HTTP ${response.status}`); }
+        if (!response.ok) {
+          const httpError = new Error(`网易云请求失败: HTTP ${response.status}`);
+          if (response.status >= 500 && attempt === 0) { lastError = httpError; continue; }
+          throw httpError;
+        }
         const body = await response.json() as GatewayResult;
         if (typeof body.code === "number" && body.code !== 200) throw new Error(`网易云业务请求失败: code ${body.code}`);
         return body;
         } catch (error) {
           lastError = error;
-          if (signal?.aborted || attempt === 1) {
-            if (method === "POST" && isUncertainWriteError(error))
-              throw new NeteaseUncertainWriteError(`网易云写请求结果未知：${error instanceof Error ? error.message : String(error)}`, { cause: error });
-            throw error;
-          }
+          if (signal?.aborted || attempt === 1) throw wrapUncertainWrite(error, method);
         }
       }
     } finally {
       clearTimeout(timer); signal?.removeEventListener("abort", abort);
     }
-    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+    throw wrapUncertainWrite(lastError instanceof Error ? lastError : new Error(String(lastError)), method);
   }
+}
+
+/** POST 写请求的超时/网络/5xx 属于副作用未确认：包装后由 world-tool 归入 unknown，禁止盲重试。 */
+function wrapUncertainWrite(error: unknown, method: "GET" | "POST"): unknown {
+  if (method !== "POST" || error instanceof NeteaseUncertainWriteError || !isUncertainWriteError(error)) return error;
+  return new NeteaseUncertainWriteError(`网易云写请求结果未知：${error instanceof Error ? error.message : String(error)}`, { cause: error });
 }
 
 function isFallbackEligible(error: unknown): boolean {

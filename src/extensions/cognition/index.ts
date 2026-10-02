@@ -36,22 +36,15 @@ function adaptResult(
 	};
 }
 
+// 只对 create 盖戳：create 的来源集全部由本次写入者提供，语义明确。
+// revise 的 sources 是全量替换集，无法区分「新增来源」与「从 memory_read 回传的旧来源」，
+// 一律盖戳会把旧来源误标为当前写入者——provenance 不撒谎，宁缺毋错。
 function annotateChildMemoryChange(change: MemoryChange, agentId: string): MemoryChange {
-	if (change.op === "create") {
-		return {
-			...change,
-			record: { ...change.record, sources: change.record.sources.map((source) => ({ ...source, agentId })) },
-		};
-	}
-	if (change.op === "revise") {
-		return {
-			...change,
-			record: change.record.sources
-				? { ...change.record, sources: change.record.sources.map((source) => ({ ...source, agentId })) }
-				: change.record,
-		};
-	}
-	return change;
+	if (change.op !== "create") return change;
+	return {
+		...change,
+		record: { ...change.record, sources: change.record.sources.map((source) => ({ ...source, agentId })) },
+	};
 }
 
 /**

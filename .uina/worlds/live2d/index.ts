@@ -112,7 +112,7 @@ export function createLive2DApp(): WorldDef {
 				const runtime = currentRuntime;
 				if (!runtime) return notStarted();
 				const result = await runtime.executeExpress(args as unknown as ExpressParams, ctx);
-				return typeof result === "string" ? worldSucceeded(result, undefined, "applied") : result;
+				return result;
 			},
 		},
 
@@ -133,7 +133,7 @@ export function createLive2DApp(): WorldDef {
 				const runtime = currentRuntime;
 				if (!runtime) return notStarted();
 				const result = await runtime.executeCostume(String(args.item ?? ""), ctx);
-				return typeof result === "string" ? worldSucceeded(result, undefined, "applied") : result;
+				return result;
 			},
 		},
 
@@ -173,7 +173,7 @@ export function createLive2DApp(): WorldDef {
 				const name = String(args.name) as BasePoseName;
 				const durationMs = typeof args.duration_ms === "number" ? args.duration_ms : 0;
 				const result = await runtime.executePose(name, durationMs, ctx);
-				return typeof result === "string" ? worldSucceeded(result, undefined, "applied") : result;
+				return result;
 			},
 		},
 

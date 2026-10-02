@@ -1,6 +1,7 @@
 import type { BodyAffordance, BodyEndpoint, BodyState } from "./contracts.js";
 import { BODY_ENDPOINT_EXPOSED_PREFIX, VOICE_LEVEL_SINK_EXPOSED_PREFIX } from "./contracts.js";
 import type { ActionContext, ServiceCompanionContext } from "../../../src/extensions/world-framework/types.js";
+import { worldSucceeded } from "../../../src/extensions/world-framework/result.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { AudioObserver } from "./audio-observer.js";
 import { Live2DStateTracker, VTSCompanion } from "./companion.js";
@@ -411,7 +412,7 @@ export class Live2DRuntime {
 	/**
 	 * 执行大模型编排的微表情与即兴肢体动作 (express 动作)
 	 */
-	async executeExpress(args: ExpressParams, ctx: ActionContext): Promise<string | ToolExecutionResult> {
+	async executeExpress(args: ExpressParams, ctx: ActionContext): Promise<ToolExecutionResult> {
 		const beats = args.beats && args.beats.length > 0
 			? args.beats
 			: [{ head: args.head, gaze: args.gaze, face: args.face, hold_ms: 1000 }];
@@ -455,13 +456,13 @@ export class Live2DRuntime {
 				},
 			};
 		}
-		return `即兴肢体表情已执行。`;
+		return worldSucceeded(`即兴肢体表情已执行。`, undefined, "applied");
 	}
 
 	/**
 	 * 切换全身基准姿态与心境氛围 (pose 动作)
 	 */
-	async executePose(name: BasePoseName, durationMs: number, ctx: ActionContext): Promise<string | ToolExecutionResult> {
+	async executePose(name: BasePoseName, durationMs: number, ctx: ActionContext): Promise<ToolExecutionResult> {
 		let lease;
 		try {
 			lease = await this.director.claim(["head", "torso"], {
@@ -486,7 +487,7 @@ export class Live2DRuntime {
 				holdMs: durationMs > 0 ? durationMs : undefined,
 			});
 			const returnMsg = durationMs > 0 ? `（保持 ${durationMs}ms 后自然回归 relaxed 待机）` : "（持续生效）";
-			return `基准体态已切换为: ${name} ${returnMsg}`;
+			return worldSucceeded(`基准体态已切换为: ${name} ${returnMsg}`, undefined, "applied");
 		} finally {
 			this.director.release(lease);
 		}
@@ -495,7 +496,7 @@ export class Live2DRuntime {
 	/**
 	 * 触发 VTS 装扮/配饰热键 (costume 动作)
 	 */
-	async executeCostume(item: string, ctx: ActionContext): Promise<string | ToolExecutionResult> {
+	async executeCostume(item: string, ctx: ActionContext): Promise<ToolExecutionResult> {
 		const query = item.trim();
 		if (!this.vtsClient.isConnected()) {
 			return {
@@ -508,10 +509,10 @@ export class Live2DRuntime {
 		const hotkeys = this.vtsClient.getAvailableHotkeys();
 		if (!query || query.toLowerCase() === "list") {
 			if (hotkeys.length === 0) {
-				return "当前加载的模型未检测到任何可用的装扮/道具热键。";
+				return worldSucceeded("当前加载的模型未检测到任何可用的装扮/道具热键。");
 			}
 			const listStr = hotkeys.map((h) => `${h.name} (${h.hotkeyID})`).join(", ");
-			return `当前模型支持的装扮/道具热键: [${listStr}]`;
+			return worldSucceeded(`当前模型支持的装扮/道具热键: [${listStr}]`);
 		}
 
 		const matched = this.vtsClient.findHotkey(query);
