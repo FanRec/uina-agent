@@ -1,37 +1,18 @@
 import type { ActionContext, WorldDef, ServiceCompanionContext } from "../../../src/extensions/world-framework/types.js";
+import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { Live2DRuntime } from "./runtime.js";
-import type { VTSClient } from "./vts-client.js";
 import type { BasePoseName, ExpressParams } from "./types.js";
 import { FACE_EXPRESSIONS, GAZE_DIRECTIONS, HEAD_POSES } from "./parameter-mapper.js";
 
-export * from "./runtime.js";
-
-let lastRuntimeForInspection: Live2DRuntime | null = null;
-
-/**
- * 测试注入缝：替换 VTS 物理传输。
- *
- * 生产路径不需要它——Live2D 自建客户端并连接本机 VTube Studio。测试无法满足
- * "本机运行 VTS 且用户已在弹窗中授权"这一前提，故留一条显式替换口。
- * 传 null 恢复真实客户端。它刻意不是宿主上下文里的字段：宿主从不提供 VTS 客户端，
- * 把它写成 ctx 字段会让读者误以为这是一条已连通的生产接缝。
- */
-let vtsClientOverride: VTSClient | null = null;
-
-export function setVtsClientForTest(client: VTSClient | null): void {
-	vtsClientOverride = client;
-}
-
-export function getLive2DRuntime(): Live2DRuntime | null {
-	return lastRuntimeForInspection;
-}
-
 export function createLive2DApp(): WorldDef {
 	let currentRuntime: Live2DRuntime | null = null;
-	function getRuntimeOrError(): { runtime: Live2DRuntime } | { error: { result: string; status: "failed"; details: Record<string, unknown> } } {
-		if (!currentRuntime) return { error: { result: "执行失败：Live2D 应用尚未启动。", status: "failed", details: { reason: "app_not_started", effectStatus: "not_started" } } };
-		return { runtime: currentRuntime };
-	}
+	// 需要注入测试替身时，直接构造 Live2DRuntime({ vtsClient })；
+	// 本工厂不再提供模块级全局覆写——全局可变单例正是运行时文档声称已消除的东西。
+	const notStarted = (): ToolExecutionResult => ({
+		result: "执行失败：Live2D 应用尚未启动。",
+		status: "failed",
+		details: { reason: "app_not_started", effectStatus: "not_started" },
+	});
 	const app: WorldDef = {
 	name: "live2d",
 	description:
@@ -48,12 +29,10 @@ export function createLive2DApp(): WorldDef {
 	async onStart(ctx: ServiceCompanionContext): Promise<void> {
 		if (currentRuntime) {
 			await currentRuntime.stop();
-			currentRuntime = null;
 		}
 
-		const runtime = new Live2DRuntime(vtsClientOverride ? { vtsClient: vtsClientOverride } : undefined);
+		const runtime = new Live2DRuntime();
 		currentRuntime = runtime;
-		lastRuntimeForInspection = runtime;
 
 		await runtime.start(ctx);
 	},
@@ -62,7 +41,6 @@ export function createLive2DApp(): WorldDef {
 		if (currentRuntime) {
 			await currentRuntime.stop();
 			currentRuntime = null;
-			lastRuntimeForInspection = null;
 		}
 	},
 	actions: {
@@ -91,7 +69,7 @@ export function createLive2DApp(): WorldDef {
 						type: "number",
 						minimum: 0.1,
 						maximum: 1.0,
-						description: "情绪力度（0.2=克制小心, 0.6=正常, 1.0=夸张强烈），默认 0.6",
+						description: "情绪力度（0.3=克制小心, 0.6=收敛, 1.0=满幅生动），默认 1.0",
 					},
 					latch_last: {
 						type: "boolean",
@@ -128,9 +106,9 @@ export function createLive2DApp(): WorldDef {
 				},
 			},
 			async run(args: Record<string, unknown>, ctx: ActionContext) {
-				const check = getRuntimeOrError();
-				if ("error" in check) return check.error;
-				return check.runtime.executeExpress(args as unknown as ExpressParams, ctx);
+				const runtime = currentRuntime;
+				if (!runtime) return notStarted();
+				return runtime.executeExpress(args as unknown as ExpressParams, ctx);
 			},
 		},
 
@@ -148,9 +126,9 @@ export function createLive2DApp(): WorldDef {
 				required: ["item"],
 			},
 			async run(args: Record<string, unknown>, ctx: ActionContext) {
-				const check = getRuntimeOrError();
-				if ("error" in check) return check.error;
-				return check.runtime.executeCostume(String(args.item ?? ""), ctx);
+				const runtime = currentRuntime;
+				if (!runtime) return notStarted();
+				return runtime.executeCostume(String(args.item ?? ""), ctx);
 			},
 		},
 
@@ -185,11 +163,11 @@ export function createLive2DApp(): WorldDef {
 				required: ["name"],
 			},
 			async run(args: Record<string, unknown>, ctx: ActionContext) {
-				const check = getRuntimeOrError();
-				if ("error" in check) return check.error;
+				const runtime = currentRuntime;
+				if (!runtime) return notStarted();
 				const name = String(args.name) as BasePoseName;
 				const durationMs = typeof args.duration_ms === "number" ? args.duration_ms : 0;
-				return check.runtime.executePose(name, durationMs, ctx);
+				return runtime.executePose(name, durationMs, ctx);
 			},
 		},
 
@@ -197,9 +175,9 @@ export function createLive2DApp(): WorldDef {
 			description:
 				"控制模型在屏幕上进行一次 360° 腾空翻转特技跳跃（持续约 1.2 秒）。适合在打招呼、恶作剧成功、庆祝获胜或极其兴奋时使用。",
 			async run(_args: Record<string, unknown>, ctx: ActionContext) {
-				const check = getRuntimeOrError();
-				if ("error" in check) return check.error;
-				return check.runtime.executeFlip(ctx);
+				const runtime = currentRuntime;
+				if (!runtime) return notStarted();
+				return runtime.executeFlip(ctx);
 			},
 		},
 
@@ -207,9 +185,9 @@ export function createLive2DApp(): WorldDef {
 			description:
 				"查询当前 Live2D 虚拟形象的即时物理与具身状态（包括 VTS 物理在线状态、具身注册、口型通道接线、当前姿态、当前服装、最近线索与可用热键）。当用户询问身体状态、口型是否接通、或排查动作状态时调用。",
 			async run(_args: Record<string, unknown>, _ctx: ActionContext) {
-				const check = getRuntimeOrError();
-				if ("error" in check) return check.error;
-				return check.runtime.formatStatus();
+				const runtime = currentRuntime;
+				if (!runtime) return notStarted();
+				return runtime.formatStatus();
 			},
 		},
 	},
@@ -217,5 +195,4 @@ export function createLive2DApp(): WorldDef {
 	return app;
 }
 
-export const live2dApp = createLive2DApp();
-export default live2dApp;
+export default createLive2DApp();

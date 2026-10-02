@@ -7,21 +7,21 @@ export const CUBISM_TO_VTS_MAP: Readonly<Record<string, string | readonly string
 	ParamAngleX: "FaceAngleX",
 	ParamAngleY: "FaceAngleY",
 	ParamAngleZ: "FaceAngleZ",
-	ParamBodyAngleX: "BodyAngleX",
-	ParamBodyAngleY: "BodyAngleY",
-	ParamBodyAngleZ: "BodyAngleZ",
+	ParamBodyAngleX: "ParamBodyAngleX",
+	ParamBodyAngleY: "ParamBodyAngleY",
+	ParamBodyAngleZ: "ParamBodyAngleZ",
 	ParamEyeBallX: ["EyeLeftX", "EyeRightX"],
 	ParamEyeBallY: ["EyeLeftY", "EyeRightY"],
 	ParamEyeLOpen: "EyeOpenLeft",
 	ParamEyeROpen: "EyeOpenRight",
-	ParamEyeLSmile: ["EyeSmileLeft", "EyeSmile"],
-	ParamEyeRSmile: ["EyeSmileRight", "EyeSmile"],
+	ParamEyeLSmile: "ParamEyeLSmile",
+	ParamEyeRSmile: "ParamEyeRSmile",
 	ParamBrowLY: ["Brows", "BrowLeftY"],
 	ParamBrowRY: ["Brows", "BrowRightY"],
 	ParamMouthOpenY: "MouthOpen",
 	ParamMouthForm: "MouthSmile",
 	ParamCheek: ["CheekPuff", "ParamCheek", "Cheek", "Blush"],
-	ParamBreath: "Breath",
+	ParamBreath: "ParamBreath",
 });
 
 /**
@@ -42,14 +42,6 @@ export class VTSParameterRetargeter {
 			if (existing !== undefined && existing < 0) return;
 			this.vtsTargetMap.set("MouthSmile", Math.max(existing ?? 0, value));
 			return;
-		}
-
-		if (targetId === "EyeSmile") {
-			const existing = this.vtsTargetMap.get("EyeSmile");
-			if (existing !== undefined) {
-				this.vtsTargetMap.set("EyeSmile", Math.max(existing, value));
-				return;
-			}
 		}
 
 		if (targetId === "Brows") {
@@ -96,7 +88,8 @@ export class VTSParameterRetargeter {
 		// 动理学融合（Kinematic Upper-Body Fusion）：
 		// VTube Studio 原生模型（包括 MO）普遍将 FaceAngle 作为驱动上半身与面部的统一输入。
 		// 当物理引擎计算出身体倾角时，将其叠加至 FaceAngle 中，确保无需用户配置即可呈现身体动作；
-		// 同时保留独立 BodyAngleX/Y/Z 输出，供高级用户在 VTS 独立绑定。
+		// 同时保留独立 ParamBodyAngleX/Y/Z 输出（自建 custom 参数与模型参数同名），
+		// 供用户在 VTS 绑定界面一一对应地接到模型参数上。
 		if (frame.ParamBodyAngleX !== undefined) {
 			const headX = this.vtsTargetMap.get("FaceAngleX") ?? 0;
 			const bodyX = frame.ParamBodyAngleX;
@@ -140,10 +133,6 @@ export class VTSParameterRetargeter {
 		this.cachedParamValues.length = idx;
 
 		return this.cachedParamValues;
-	}
-
-	getComputedTargetMap(): ReadonlyMap<string, number> {
-		return this.vtsTargetMap;
 	}
 }
 

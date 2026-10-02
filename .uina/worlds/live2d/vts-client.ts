@@ -62,7 +62,6 @@ export class VTSClient {
 	private injectableParamsLoaded = false;
 	private readonly filteredParamBuffer: VTSParamValue[] = [];
 	private availableHotkeys: VTSHotkeyInfo[] = [];
-	private readonly normalizedHotkeyIndex = new Map<string, VTSHotkeyInfo>();
 
 	private requestCounter = 0;
 	private readonly pendingRequests = new Map<
@@ -101,10 +100,6 @@ export class VTSClient {
 		return this.ws !== null && this.ws.readyState === 1 && this.isAuthenticated;
 	}
 
-	getInjectableParameters(): ReadonlySet<string> {
-		return this.injectableParameters;
-	}
-
 	connect(): void {
 		if (this.isDisposed || this.ws !== null || this.isConnecting) return;
 		this.isConnecting = true;
@@ -114,12 +109,12 @@ export class VTSClient {
 			const ws = this.wsFactory(this.url);
 			this.ws = ws;
 
-		ws.onopen = async () => {
-			if (generation !== this.connectionGeneration || this.ws !== ws) return;
-			this.isConnecting = false;
-			try {
-				await this.authenticate();
+			ws.onopen = async () => {
 				if (generation !== this.connectionGeneration || this.ws !== ws) return;
+				this.isConnecting = false;
+				try {
+					await this.authenticate();
+					if (generation !== this.connectionGeneration || this.ws !== ws) return;
 					this.isAuthenticated = true;
 					this.currentReconnectMs = this.baseReconnectMs;
 					this.onConnectionChange?.(true);
@@ -135,27 +130,26 @@ export class VTSClient {
 				}
 			};
 
-		ws.onmessage = (event) => {
-			if (generation !== this.connectionGeneration || this.ws !== ws) return;
-			this.handleMessage(String(event.data));
-		};
-
-		ws.onclose = () => {
-			if (generation !== this.connectionGeneration || this.ws !== ws) return;
-			this.cleanupSocket();
-			this.scheduleReconnect();
-		};
-
-		ws.onerror = () => {
-			if (generation !== this.connectionGeneration || this.ws !== ws) return;
-				// onerror 通常伴随 onclose
+			ws.onmessage = (event) => {
+				if (generation !== this.connectionGeneration || this.ws !== ws) return;
+				this.handleMessage(String(event.data));
 			};
+
+			ws.onclose = () => {
+				if (generation !== this.connectionGeneration || this.ws !== ws) return;
+				this.cleanupSocket();
+				this.scheduleReconnect();
+			};
+
+			// onerror 通常伴随 onclose。空处理器必须保留：'ws' 的 WebSocket 是
+			// EventEmitter，error 事件无监听器时会以未捕获异常的形式炸掉进程。
+			ws.onerror = () => {};
 		} catch (err) {
 			console.error(
 				"[Live2D] VTS 连接初始化异常:",
 				err instanceof Error ? err.message : String(err),
 			);
-				this.cleanupSocket();
+			this.cleanupSocket();
 			this.scheduleReconnect();
 		}
 	}
@@ -167,7 +161,6 @@ export class VTSClient {
 		this.injectableParameters.clear();
 		this.injectableParamsLoaded = false;
 		this.availableHotkeys = [];
-		this.normalizedHotkeyIndex.clear();
 		if (this.ws) {
 			try {
 				this.ws.close();
@@ -284,6 +277,10 @@ export class VTSClient {
 	}
 
 	private async ensureCustomParameters(existingParams: Set<string>): Promise<void> {
+		// custom 参数名与 Live2D 模型参数（ParamBodyAngleX/Y/Z）保持同名：
+		// VTS 的 InjectParameterDataRequest 只接受 default/custom 输入参数，模型参数不可直注，
+		// custom 参数须由用户在 VTS 绑定界面接到模型参数上——同名让"找输入"零歧义。
+		// 命名规则：唯一、字母数字、4~32 字符（16 字符合法；唯一性仅限输入参数命名空间）。
 		const requiredCustomParams: Array<{
 			name: string;
 			explanation: string;
@@ -291,9 +288,16 @@ export class VTSClient {
 			max: number;
 			defaultValue: number;
 		}> = [
-			{ name: "BodyAngleX", explanation: "Uina Torso Yaw", min: -30, max: 30, defaultValue: 0 },
-			{ name: "BodyAngleY", explanation: "Uina Torso Pitch", min: -30, max: 30, defaultValue: 0 },
-			{ name: "BodyAngleZ", explanation: "Uina Torso Roll", min: -30, max: 30, defaultValue: 0 },
+			{ name: "ParamBodyAngleX", explanation: "Uina Torso Yaw", min: -30, max: 30, defaultValue: 0 },
+			{ name: "ParamBodyAngleY", explanation: "Uina Torso Pitch", min: -30, max: 30, defaultValue: 0 },
+			{ name: "ParamBodyAngleZ", explanation: "Uina Torso Roll", min: -30, max: 30, defaultValue: 0 },
+			// Live2D 标准参数的同名 custom：VTS 内置清单里没有眼笑/呼吸/脸颊的输入参数
+			//（探针实锤：127 个 default 全是面部追踪系），retarget 写 EyeSmile/Breath 是
+			// 不存在的名字、注入即被过滤。同名创建后由用户在 VTS 绑定界面接线到模型。
+			{ name: "ParamBreath", explanation: "Uina Breath", min: 0, max: 1, defaultValue: 0 },
+			{ name: "ParamEyeLSmile", explanation: "Uina Eye Smile L", min: 0, max: 1, defaultValue: 0 },
+			{ name: "ParamEyeRSmile", explanation: "Uina Eye Smile R", min: 0, max: 1, defaultValue: 0 },
+			{ name: "ParamCheek", explanation: "Uina Cheek Blush", min: 0, max: 1, defaultValue: 0 },
 		];
 		for (const param of requiredCustomParams) {
 			if (!existingParams.has(param.name)) {
@@ -313,6 +317,28 @@ export class VTSClient {
 		}
 	}
 
+	/**
+	 * 一次性清理历史版本的躯干参数（旧名 BodyAngleX/Y/Z 缺 Param 前缀，
+	 * 与模型参数名对不上，绑定界面里是断链的孤儿输入）。同名同插件可删；
+	 * 仅对清单中真实存在的 legacy 参数发删除请求——不存在即目标状态已达成，
+	 * 不发必败请求（否则 VTS 回 401 且低层日志无法按调用方意图静默）。
+	 * 清单存在但删除失败（如属其他插件）：静默。每次进程生命周期只尝试一轮。
+	 */
+	private legacyTorsoCleanupDone = false;
+
+	private async deleteLegacyTorsoParameters(customNames: ReadonlySet<string>): Promise<void> {
+		if (this.legacyTorsoCleanupDone) return;
+		this.legacyTorsoCleanupDone = true;
+		for (const legacyName of ["BodyAngleX", "BodyAngleY", "BodyAngleZ"]) {
+			if (!customNames.has(legacyName)) continue;
+			try {
+				await this.sendRequest("ParameterDeletionRequest", { parameterName: legacyName });
+			} catch {
+				// 存在但不可删（如属其他插件）：静默，无害
+			}
+		}
+	}
+
 	private async refreshInjectableParameters(): Promise<void> {
 		try {
 			const res = (await this.sendRequest("InputParameterListRequest", {})) as {
@@ -320,18 +346,21 @@ export class VTSClient {
 				customParameters?: Array<{ name?: string }>;
 			};
 			this.injectableParameters.clear();
+			const customNames = new Set<string>();
 			for (const key of ["defaultParameters", "customParameters"] as const) {
 				const list = res?.[key];
 				if (Array.isArray(list)) {
 					for (const item of list) {
 						if (item?.name) {
 							this.injectableParameters.add(item.name);
+							if (key === "customParameters") customNames.add(item.name);
 						}
 					}
 				}
 			}
-			await this.ensureCustomParameters(this.injectableParameters);
-			this.injectableParamsLoaded = true;
+		await this.ensureCustomParameters(this.injectableParameters);
+		void this.deleteLegacyTorsoParameters(customNames);
+		this.injectableParamsLoaded = true;
 		} catch (err) {
 			// 清单获取失败：标记就绪并退化为不过滤全量注入（空集语义），
 			// 避免"永远等不到清单"导致形象彻底僵死。
@@ -350,29 +379,17 @@ export class VTSClient {
 		const q = query.trim();
 		if (!q) return undefined;
 
-		// 1. 精确匹配 hotkeyID 或 name
+		// 两级匹配：精确（hotkeyID / name）→ 大小写不敏感。
+		// 热键表只有个位数条目且不在热路径，归一化索引与模糊包含匹配是过度设计。
 		const exact = this.availableHotkeys.find(
 			(h) => h.hotkeyID === q || h.name === q,
 		);
 		if (exact) return exact;
 
-		// 2. 大小写不敏感匹配
 		const lowerQ = q.toLowerCase();
-		const ci = this.availableHotkeys.find(
+		return this.availableHotkeys.find(
 			(h) => h.hotkeyID.toLowerCase() === lowerQ || h.name.toLowerCase() === lowerQ,
 		);
-		if (ci) return ci;
-
-		// 3. O(1) 预建归一化查表 (消除每次循环正则)
-		const normalizedQ = lowerQ.replace(/[\s_-]+/g, "");
-		const direct = this.normalizedHotkeyIndex.get(normalizedQ);
-		if (direct) return direct;
-
-		// 4. 模糊包含匹配
-		return this.availableHotkeys.find((h) => {
-			const normName = h.name.toLowerCase().replace(/[\s_-]+/g, "");
-			return normName.includes(normalizedQ);
-		});
 	}
 
 	async refreshModelHotkeys(): Promise<readonly VTSHotkeyInfo[]> {
@@ -392,15 +409,8 @@ export class VTSClient {
 					description: h.description,
 					file: h.file,
 				}));
-				this.normalizedHotkeyIndex.clear();
-				for (const h of this.availableHotkeys) {
-					const norm = h.name.toLowerCase().replace(/[\s_-]+/g, "");
-					this.normalizedHotkeyIndex.set(norm, h);
-					this.normalizedHotkeyIndex.set(h.hotkeyID.toLowerCase(), h);
-				}
 			} else {
 				this.availableHotkeys = [];
-				this.normalizedHotkeyIndex.clear();
 			}
 		} catch (err) {
 			if (this.isConnected() && !this.isDisposed) {

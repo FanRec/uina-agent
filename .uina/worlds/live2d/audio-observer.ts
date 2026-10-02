@@ -1,11 +1,19 @@
-import type { VoiceLevelEvent } from "./contracts.js";
+import { appendFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { MotionDirector } from "./motion-director.js";
 
 export interface AudioObserverOptions {
-	gain?: number; // 增益系数 (默认 22.0，匹配真实 16-bit PCM 对话 RMS 0.008~0.04 的电平域)
+	// 电平域标定（2026-10-02，临时标定）：运行期诊断帧反推 TTS 桥侧语音 RMS ≈ 0.0009 量级
+	//（单帧证据，偏薄），旧标定假设的 0.008~0.04 域与实际差约 10 倍——这正是"说话偶发
+	// 才有动作"的根因：能量长期贴地爬不过活动度门限，且包络谷值被旧零值地板（0.0008）
+	// 在 30Hz 事件间隙整体切除。全部阈值按 1/10 域重标。
+	// ⚠ probeSample 探针（%TEMP%/uina-level-probe.log）验证分布前不得视为定案：
+	//   若真实语音域显著高于 0.0036，口型/能量将饱和（恒满幅发条感），需按探针数据回调。
+	gain?: number; // 口型增益 (默认 250.0，满幅对应 RMS ≈ 0.004)
 	releaseMs?: number; // 释音衰减半衰期 (默认 90ms)
-	transientThreshold?: number; // 声学微冲基础触发阈值 (默认 0.018)
-	onsetDeltaThreshold?: number; // 声学微冲起振能量差阈值 (默认 0.008)
+	transientThreshold?: number; // 声学微冲基础触发阈值 (默认 0.0018)
+	onsetDeltaThreshold?: number; // 声学微冲起振能量差阈值 (默认 0.0008)
 	refractoryPeriodMs?: number; // 声学微冲冷却不应期 (默认 220ms，防止持续长元音剧烈抽搐)
 }
 
@@ -34,11 +42,16 @@ export class AudioObserver {
 	private mouthOpenY = 0;
 	private director?: MotionDirector;
 
+	// 【临时标定探针，电平分布确认后整体删除】写文件不进 TUI；写入 300 帧（约 10 分钟）自停。
+	private static readonly PROBE_PATH = join(tmpdir(), "uina-level-probe.log");
+	private probeWritesLeft = 300;
+	private probeWindow = { events: 0, nonZero: 0, sum: 0, max: 0, at: Date.now() };
+
 	constructor(options?: AudioObserverOptions) {
-		this.gain = options?.gain ?? 22.0;
+		this.gain = options?.gain ?? 250.0;
 		this.releaseMs = options?.releaseMs ?? 90;
-		this.transientThreshold = options?.transientThreshold ?? 0.018;
-		this.onsetDeltaThreshold = options?.onsetDeltaThreshold ?? 0.008;
+		this.transientThreshold = options?.transientThreshold ?? 0.0018;
+		this.onsetDeltaThreshold = options?.onsetDeltaThreshold ?? 0.0008;
 		this.refractoryPeriodMs = options?.refractoryPeriodMs ?? 220;
 	}
 
@@ -51,12 +64,12 @@ export class AudioObserver {
 	}
 
 	getSpeechEnergy(): number {
-		// 真实 16-bit PCM 对话 RMS 约为 0.008~0.04，将其平滑归一化至 0.0~1.0
-		return Math.max(0, Math.min(1.0, this.currentEnvelope * 28.0));
+		// TTS 桥侧语音域 RMS ≈ 0.0005~0.003，平滑归一化至 0.0~1.0
+		return Math.max(0, Math.min(1.0, this.currentEnvelope * 280.0));
 	}
 
 	isSpeaking(): boolean {
-		return this.currentEnvelope > 0.003 || this.mouthOpenY > 0.03;
+		return this.currentEnvelope > 0.0003 || this.mouthOpenY > 0.03;
 	}
 
 	/**
@@ -97,7 +110,7 @@ export class AudioObserver {
 		if (this.mouthOpenY < 0.02) {
 			this.mouthOpenY = 0;
 		}
-		if (this.currentEnvelope < 0.0008) {
+		if (this.currentEnvelope < 0.00008) {
 			this.currentEnvelope = 0;
 			this.slowEnvelope = 0;
 		}
@@ -109,7 +122,7 @@ export class AudioObserver {
 	 * 融合单帧瞬态差与慢速背景滑动包络差，既敏锐捕获爆破辅音，又精准检测平缓起振元音，
 	 * 彻底避免持续发音或长元音期间头部被死死按在低位或频繁打桩抽搐。
 	 */
-	processLevel(event: VoiceLevelEvent | { rms: number; peak?: number }): void {
+	processLevel(event: { rms: number; peak?: number }): void {
 		const rawRms = Math.max(0, event?.rms ?? 0);
 		if (rawRms > this.currentEnvelope) {
 			this.currentEnvelope = rawRms;
@@ -121,7 +134,7 @@ export class AudioObserver {
 		const deltaRms = rawRms - this.previousRms;
 		const deltaSlow = rawRms - this.slowEnvelope;
 		const effectiveOnset = Math.max(deltaRms, deltaSlow);
-		const isOnsetSpike = effectiveOnset >= this.onsetDeltaThreshold || rawRms >= 0.70;
+		const isOnsetSpike = effectiveOnset >= this.onsetDeltaThreshold || rawRms >= 0.07;
 
 		if (
 			rawRms > this.transientThreshold &&
@@ -129,8 +142,8 @@ export class AudioObserver {
 			this.cooldownRemainingMs <= 0 &&
 			this.director
 		) {
-			// 真实对话 RMS 域 (0.008~0.04)：阈值 0.018 之上的余量以 0.025 为满幅标尺
-			const magnitude = Math.min(1.0, (rawRms - this.transientThreshold) / 0.025);
+			// 实测语音域（RMS ≈ 0.0005~0.003）：阈值 0.0018 之上的余量以 0.0025 为满幅标尺
+			const magnitude = Math.min(1.0, (rawRms - this.transientThreshold) / 0.0025);
 			this.director.triggerAcousticImpulse(magnitude);
 			this.cooldownRemainingMs = this.refractoryPeriodMs;
 		}
@@ -138,6 +151,42 @@ export class AudioObserver {
 		// 慢速包络平滑跟踪 (EMA 滤波，alpha = 0.35，约 100ms 快速收敛至稳态元音电平)
 		this.slowEnvelope = this.slowEnvelope * 0.65 + rawRms * 0.35;
 		this.previousRms = rawRms;
+
+		this.probeSample(rawRms);
+	}
+
+	/**
+	 * 【临时标定探针，电平分布确认后整体删除】
+	 * 每 2 秒向临时目录追加一行窗口统计：事件到达率、非零占比、RMS 均值/峰值、
+	 * 包络与口型。用于验证 1/10 重标定是否命中真实电平域，以及 rebuffer 断流占比。
+	 */
+	private probeSample(rawRms: number): void {
+		if (this.probeWritesLeft <= 0) return;
+		const w = this.probeWindow;
+		w.events++;
+		if (rawRms > 0) {
+			w.nonZero++;
+			w.sum += rawRms;
+			if (rawRms > w.max) w.max = rawRms;
+		}
+		const now = Date.now();
+		if (now - w.at < 2000) return;
+		w.at = now;
+		this.probeWritesLeft--;
+		const avg = w.nonZero > 0 ? w.sum / w.nonZero : 0;
+		const line =
+			`[probe] rate=${(w.events / 2).toFixed(1)}/s nonZero=${w.nonZero}/${w.events} ` +
+			`avg=${avg.toFixed(5)} max=${w.max.toFixed(5)} env=${this.currentEnvelope.toFixed(5)} ` +
+			`energy=${this.getSpeechEnergy().toFixed(3)} mouth=${this.mouthOpenY.toFixed(3)}\n`;
+		try {
+			appendFileSync(AudioObserver.PROBE_PATH, line);
+		} catch {
+			this.probeWritesLeft = 0;
+		}
+		w.events = 0;
+		w.nonZero = 0;
+		w.sum = 0;
+		w.max = 0;
 	}
 }
 

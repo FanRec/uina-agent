@@ -20,10 +20,13 @@ import {
 import { ReflexDirector } from "./reflex-director.js";
 import {
 	abortableDelay,
+	BASE_POSE_DESCRIPTIONS,
+	BASE_POSE_NAMES,
 	type BasePoseName,
 	CHANNEL_PRIORITY,
 	type ExpressBeat,
 	type ExpressParams,
+	isBasePoseName,
 } from "./types.js";
 import { VTSClient } from "./vts-client.js";
 
@@ -31,13 +34,23 @@ export const live2dAffordance: BodyAffordance = {
 	bodyId: "live2d_mo",
 	bodyType: "avatar_2d",
 	description:
-		"你当前在屏幕上呈现为 Live2D 虚拟二次元立绘形象（Mo）。你完全拥有这具身体的自主表现力：可通过 pose 切换全身基准体态与心境底座（持续循环生效：playful=元气调皮大歪头, focused=专注认真正坐, relaxed=闲适放松待机, shy_side=娇羞侧身偏头, confident=自信挺胸昂首, listening=侧耳前倾倾听, smug_gremlin=小恶魔得意坏笑, meek_shy=内向害羞上目线, streamer_hype=大主播亢奋前倾）；日常说话时优先在台词中任意嵌入 <cue id='...'/>（支持别名、参数修饰如 smile:0.8 或原子属性 head=tilt_left,face=tender_smile），视线会自动动眼锁焦注视用户，动作自然流淌。",
-	cues: CANONICAL_CUE_IDS.map((id) => ({
-		id,
-		description: CUE_DESCRIPTIONS[id] ?? "",
-		// 别名统一取自 parameter-mapper 的 CUE_ALIASES；恒等别名已被过滤。
-		aliases: getCueAliases(id),
-	})),
+		"你当前在屏幕上呈现为 Live2D 虚拟二次元立绘形象（Mo）。你完全拥有这具身体的自主表现力：可通过 pose 切换全身基准体态与心境底座（持续循环生效：playful=元气调皮大歪头, focused=专注认真正坐, relaxed=闲适放松待机, shy_side=娇羞侧身偏头, confident=自信挺胸昂首, listening=侧耳前倾倾听, smug_gremlin=小恶魔得意坏笑, meek_shy=内向害羞上目线, streamer_hype=大主播亢奋前倾）；日常说话时优先在台词中任意嵌入 <cue id='...'/>（支持别名、参数修饰如 smile:0.8 或原子属性 head=tilt_left,face=tender_smile），基准姿态也可直接以姿态名为 cue 切换（如 <cue id='focused'/>，与 pose 工具等效），视线会自动动眼锁焦注视用户，动作自然流淌。",
+	cues: [
+		...CANONICAL_CUE_IDS.map((id) => ({
+			id,
+			description: CUE_DESCRIPTIONS[id] ?? "",
+			// 别名统一取自 parameter-mapper 的 CUE_ALIASES；恒等别名已被过滤。
+			aliases: getCueAliases(id),
+		})),
+		// 姿态名即 cue：<cue id="focused"/> 是零开销姿态切换通道。声明取自
+		// BASE_POSE_NAMES 单一事实来源，派发端特判同一份名单——两处一旦漂移，
+		// 模型按提示词发的 cue 会被 embodiment 判"无人响应"并刷错（2026-09-21 缺陷类型；
+		// 2026-10-02 "focused 未能送达"正是姿态名不在 cue 表内的实例）。
+		...BASE_POSE_NAMES.map((name) => ({
+			id: name,
+			description: `切换基准姿态至「${BASE_POSE_DESCRIPTIONS[name]}」（持续生效，零工具开销）`,
+		})),
+	],
 };
 
 /**
@@ -167,6 +180,12 @@ export class Live2DRuntime {
 		// cue 执行原语统一走 playBeatsWithLease，与 express 工具共用一条路径，
 		// 消除此前散落在 Endpoint 构造器里的第二份"claim→play→release"实现。
 		this.director.setCueDispatcher(async (cueId) => {
+			// 姿态名 cue：与 pose 工具同一权威写入口（setBasePose），默认持续生效。
+			// VTS 离线时 emitCue 已早退，不会走到这里。
+			if (isBasePoseName(cueId)) {
+				this.setBasePose(cueId, { transitionMs: 800 });
+				return;
+			}
 			const beats = resolveCueToBeat(cueId);
 			if (!beats || beats.length === 0) return;
 			const outcome = await this.playBeatsWithLease(beats, {

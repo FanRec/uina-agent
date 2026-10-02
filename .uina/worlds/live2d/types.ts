@@ -64,7 +64,6 @@ export interface ChannelClaimOptions {
 export interface Live2DParamTarget {
 	name: string;
 	value: number;
-	weight?: number;
 	additive?: boolean;
 }
 
@@ -101,16 +100,41 @@ export interface ExpressParams {
 	transition?: "snappy" | "smooth" | "gentle";
 }
 
-export type BasePoseName =
-	| "relaxed"
-	| "focused"
-	| "playful"
-	| "shy_side"
-	| "confident"
-	| "listening"
-	| "smug_gremlin"
-	| "meek_shy"
-	| "streamer_hype";
+/**
+ * 基准姿态名运行时清单（单一事实来源）：<cue id="姿态名"/>（零开销姿态切换）与 pose
+ * 工具共用这一份。BasePoseName 类型由数组派生、body-director 的 BASE_POSES 以
+ * Record<BasePoseName,...> 强制齐名——名单、类型、姿态表三处编译期永不漂移。
+ */
+export const BASE_POSE_NAMES = Object.freeze([
+	"relaxed",
+	"focused",
+	"playful",
+	"shy_side",
+	"confident",
+	"listening",
+	"smug_gremlin",
+	"meek_shy",
+	"streamer_hype",
+] as const);
+
+export type BasePoseName = (typeof BASE_POSE_NAMES)[number];
+
+export const BASE_POSE_DESCRIPTIONS: Readonly<Record<BasePoseName, string>> = Object.freeze({
+	relaxed: "低头微斜闲适待机",
+	focused: "正坐前倾仰头",
+	playful: "元气调皮大歪头",
+	shy_side: "娇羞侧身偏头",
+	confident: "自信挺胸昂首",
+	listening: "侧耳前倾倾听",
+	smug_gremlin: "小恶魔得意坏笑",
+	meek_shy: "内向害羞上目线",
+	streamer_hype: "大主播亢奋前倾",
+});
+
+/** 类型守卫：cue id 是否为姿态名（派发端免断言，收敛唯一一处 readonly 放宽）。 */
+export function isBasePoseName(value: string): value is BasePoseName {
+	return (BASE_POSE_NAMES as readonly string[]).includes(value);
+}
 
 /**
  * 统一规范的 Live2D 硬件参数安全阈值钳位 (Clamp)

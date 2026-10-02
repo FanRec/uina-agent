@@ -13,8 +13,6 @@ export interface BodyEndpoint {
 	onFocus?(isFocused: boolean): void | Promise<void>;
 	formatStatus?(): string;
 }
-export interface VoiceLevelEvent { readonly traceId: string; readonly rms: number; readonly peak: number; readonly timestamp: number; }
-export interface VoiceLevelSink { processLevel(level: { rms: number; peak?: number }): void; reset(): void; }
 export const BODY_ENDPOINT_EXPOSED_PREFIX = "body.endpoint:";
 export const VOICE_LEVEL_SINK_EXPOSED_PREFIX = "voice.levelSink:";
 

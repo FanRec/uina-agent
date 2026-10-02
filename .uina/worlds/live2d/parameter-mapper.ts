@@ -300,8 +300,11 @@ export function getCueAliases(canonicalId: string): readonly string[] {
 export type ReflexStateKey = "thinking";
 
 export const REFLEX_POSES: Readonly<Record<ReflexStateKey, readonly Live2DParamTarget[]>> = Object.freeze({
+	// 歪头 14°（加深）+ 微低头 -5°（nod=-20 同方向）：沉思的立体姿态语言。
+	// 视线斜上方打底由 compose 层的 thinking 游移与 VOR 让位配合生效（见 motion-director）。
 	thinking: Object.freeze([
-		{ name: "ParamAngleZ", value: 10.0 },
+		{ name: "ParamAngleZ", value: 14.0 },
+		{ name: "ParamAngleY", value: -5.0 },
 		{ name: "ParamEyeBallY", value: 0.6 },
 		{ name: "ParamEyeBallX", value: -0.4 },
 	]),
@@ -313,9 +316,11 @@ export const REFLEX_POSE_PARAMS: readonly string[] = Object.freeze(
 );
 
 /**
- * 默认即兴表情与动作表现强度基准 (0.1 ~ 1.0)
+ * 默认即兴表情与动作表现强度基准 (0.1 ~ 1.0)。
+ * 1.0 = 映射表标定的满幅值；cue 通道恒为满幅，express 缺省同口径，
+ * 需要收敛时由调用方显式降档（如 0.6）。
  */
-export const DEFAULT_EXPRESSIVE_INTENSITY = 0.6;
+export const DEFAULT_EXPRESSIVE_INTENSITY = 1.0;
 
 /**
  * 将大模型输入的即兴动作/节拍转换为 Live2D Cubism 目标参数
@@ -373,20 +378,12 @@ export function computeVORCompensation(
 }
 
 function findBaseBeats(name: string): readonly ExpressBeat[] | null {
+	// 两级解析：规范表 → 别名表。不做去下划线模糊匹配——
+	// 调用方（LLM）的可用词表由 affordance 声明，模糊层只会制造"看不懂为何触发"的行为。
 	const normalized = name.toLowerCase().replace(/[\s-]+/g, "_");
 	if (CUE_BEAT_TABLE[normalized]) return CUE_BEAT_TABLE[normalized]!;
 	const aliased = CUE_ALIASES[normalized];
 	if (aliased && CUE_BEAT_TABLE[aliased]) return CUE_BEAT_TABLE[aliased]!;
-
-	const stripped = normalized.replace(/_/g, "");
-	for (const [key, beats] of Object.entries(CUE_BEAT_TABLE)) {
-		if (key.replace(/_/g, "") === stripped) return beats;
-	}
-	for (const [aliasKey, targetKey] of Object.entries(CUE_ALIASES)) {
-		if (aliasKey.replace(/_/g, "") === stripped && CUE_BEAT_TABLE[targetKey]) {
-			return CUE_BEAT_TABLE[targetKey]!;
-		}
-	}
 	return null;
 }
 
@@ -433,14 +430,26 @@ function parseCueSegment(segment: string): {
 		}
 	}
 
-	const lower = segment.toLowerCase();
-	if (lower === "latch") return { latch: true };
-	const num = parseFloat(segment);
-	if (!isNaN(num)) {
-		if (num > 0 && num <= 1.0) return { intensity: num };
-		if (num >= 50) return { hold_ms: Math.round(num) };
+	// 无键段可携带冒号修饰（与单 cue 语法一致）：smile:0.8 / warm_smile:1500。
+	// 此前复合表达式里的修饰段被静默丢弃——"tilt_left, smile:0.8" 的第二段解析不出，真 bug。
+	if (colonIdx !== -1 && !key) {
+		const parts = segment.split(":").map((p) => p.trim()).filter(Boolean);
+		const out: { rawName?: string; intensity?: number; hold_ms?: number } = {
+			rawName: parts[0]!.toLowerCase().replace(/[\s-]+/g, "_"),
+		};
+		for (let i = 1; i < parts.length; i++) {
+			const n = parseFloat(parts[i]!);
+			if (isNaN(n)) continue;
+			if (n > 0 && n <= 1.0) out.intensity = n;
+			else if (n >= 50) out.hold_ms = Math.round(n);
+		}
+		return out;
 	}
-	return { rawName: lower.replace(/[\s-]+/g, "_") };
+
+	// 无键裸段：只作为动作名解析（规范 cue / 别名 / 原子姿态）。
+	// 不再按数量级猜语义（裸 0.5 → intensity、裸 200 → hold_ms）——
+	// 数值修饰必须键控（intensity=0.5 / hold=200）或走冒号修饰（smile:0.8）。
+	return { rawName: segment.toLowerCase().replace(/[\s-]+/g, "_") };
 }
 
 /**
@@ -537,24 +546,11 @@ export function resolveCueToBeat(cueId: string): ExpressBeat[] | null {
 	return null;
 }
 
-// 预先静态映射每个微表情所占据的通道集合（消除 60Hz / 频繁调用时的重复计算与数组分配）
-const FACE_CHANNELS_MAP: Readonly<Record<FaceExpression, readonly Live2DChannel[]>> = Object.freeze({
-	shy: ["eyes", "mouth"],
-	smug: ["eyes", "mouth"],
-	pout: ["eyes", "mouth"],
-	sparkle: ["eyes", "mouth"],
-	shocked: ["eyes", "mouth"],
-	tender_smile: ["eyes", "mouth"],
-	laugh: ["eyes", "mouth"],
-	winking: ["eyes", "mouth"],
-	smug_grin: ["eyes", "mouth", "gaze"],
-	sleepy_yawn: ["eyes", "mouth"],
-});
-
 /**
  * 根据节拍序列推导需要锁定的物理通道集合（最小特权原则）。
- * 调用方（express/cue）均已通过 validateBeats 或内部可信表保证节拍有内容，
- * 无内容时返回空数组——claim([]) 会得到空租约而非谎占通道空转。
+ * 单一事实来源：face 通道由 FACE_TABLE 映射目标派生——此前另有静态 FACE_CHANNELS_MAP
+ * 手抄一份，表情表一改即静默漂移。调用方（express/cue）均已通过 validateBeats
+ * 或内部可信表保证节拍有内容，无内容时返回空数组——claim([]) 会得到空租约而非谎占通道空转。
  */
 export function getChannelsForBeats(beats: readonly ExpressBeat[]): Live2DChannel[] {
 	const channels = new Set<Live2DChannel>();
@@ -562,16 +558,9 @@ export function getChannelsForBeats(beats: readonly ExpressBeat[]): Live2DChanne
 		if (beat.head) channels.add("head");
 		if (beat.gaze) channels.add("gaze");
 		if (beat.face) {
-			const faceChannels = FACE_CHANNELS_MAP[beat.face as FaceExpression];
-			if (faceChannels) {
-				for (const ch of faceChannels) channels.add(ch);
-			} else {
-				// 未知表情回退安全检查
-				const targets = resolveBeatToParams({ face: beat.face });
-				for (const t of targets) {
-					const ch = PARAM_CHANNEL_MAP[t.name];
-					if (ch) channels.add(ch);
-				}
+			for (const target of resolveBeatToParams({ face: beat.face })) {
+				const ch = PARAM_CHANNEL_MAP[target.name];
+				if (ch) channels.add(ch);
 			}
 		}
 	}

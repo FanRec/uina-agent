@@ -1,18 +1,9 @@
 import type { AudioObserver } from "./audio-observer.js";
 import type { MotionDirector } from "./motion-director.js";
 
-
 import { CHANNEL_PRIORITY } from "./types.js";
-import {
-	type VTSClient,
-	type VTSHotkeyInfo,
-} from "./vts-client.js";
-import {
-	CUBISM_TO_VTS_MAP,
-	VTSParameterRetargeter,
-} from "./vts-retargeter.js";
-
-export { CUBISM_TO_VTS_MAP, VTSParameterRetargeter };
+import { type VTSClient, type VTSHotkeyInfo } from "./vts-client.js";
+import { VTSParameterRetargeter } from "./vts-retargeter.js";
 
 export class Live2DStateTracker {
 	private online = false;
@@ -33,7 +24,6 @@ export class Live2DStateTracker {
 
 export interface VTSCompanionOptions {
 	targetFps?: number; // 默认 60
-	idleOfflineFps?: number; // 离线空闲时的帧率，默认 0 (离线无动作时挂起定时器，连接后激活)
 }
 
 /**
@@ -44,7 +34,7 @@ export interface VTSCompanionOptions {
  * 3. 委派 VTSParameterRetargeter 执行语义重定向与表情融合；
  * 4. 向 VTube Studio 注入标准参数；
  * 5. 维护与汇报虚拟形象的真实物理在线状态；
- * 6. 按需时钟治理：当 VTS 离线且无动作时自动休眠，杜绝无意义的 CPU 空转。
+ * 6. 按需时钟治理：VTS 离线时自动休眠定时器，连接恢复后重新激活，杜绝无意义的 CPU 空转。
  */
 export class VTSCompanion {
 	readonly stateTracker = new Live2DStateTracker();
@@ -53,7 +43,6 @@ export class VTSCompanion {
 	private isRunning = false;
 	private lastTickTime = 0;
 	private readonly intervalMs: number;
-	private readonly idleOfflineFps: number;
 
 	constructor(
 		readonly director: MotionDirector,
@@ -63,14 +52,13 @@ export class VTSCompanion {
 	) {
 		const fps = options?.targetFps ?? 60;
 		this.intervalMs = Math.floor(1000 / fps);
-		this.idleOfflineFps = options?.idleOfflineFps ?? 0;
 
 		this.vtsClient.setConnectionChangeListener((connected) => {
 			this.stateTracker.setVtsConnected(connected);
 			if (this.isRunning) {
 				if (connected) {
 					this.ensureTickerRunning();
-				} else if (this.idleOfflineFps === 0) {
+				} else {
 					this.stopTicker();
 				}
 			}
@@ -84,20 +72,17 @@ export class VTSCompanion {
 
 		this.vtsClient.connect();
 
-		// 如果 VTS 已连接或允许离线空转，则启动 ticker；否则等待连接成功后启动
-		if (this.vtsClient.isConnected() || this.idleOfflineFps > 0) {
+		// VTS 已连接才启动 ticker；否则等待连接成功回调再启动
+		if (this.vtsClient.isConnected()) {
 			this.ensureTickerRunning();
 		}
 	}
 
 	private ensureTickerRunning(): void {
 		if (this.tickerTimer) return;
-		const interval = this.vtsClient.isConnected()
-			? this.intervalMs
-			: (this.idleOfflineFps > 0 ? Math.floor(1000 / this.idleOfflineFps) : this.intervalMs);
 		this.tickerTimer = setInterval(() => {
 			this.tick();
-		}, interval);
+		}, this.intervalMs);
 	}
 
 	private stopTicker(): void {
@@ -139,7 +124,10 @@ export class VTSCompanion {
 		// - 躯干/头部律动是装饰性的：在 compose 内按 CUE 级让位，此处不重复门控。
 		const isMouthLocked = this.director.isChannelLocked("mouth", CHANNEL_PRIORITY.ACTION);
 		const mouthOpen = isMouthLocked ? undefined : this.audioObserver.getMouthOpenY();
-		const speechEnergy = isMouthLocked ? 0 : this.audioObserver.getSpeechEnergy();
+		// 语流能量不随嘴锁熄灭：嘴锁只决定口型注入归属（retargeter 已处理优先级）。
+		// 此前用嘴锁归零语流能量，说话期间任何占用嘴的动作都会让全身律动突然消失——
+		// 那是"律动时有时无"的运行不正确来源。
+		const speechEnergy = this.audioObserver.getSpeechEnergy();
 
 		// 3. 合成动效 (传入当前语流能量，自动驱动躯干连续循环律动)
 		const frame = this.director.compose(deltaMs, { speechEnergy });
@@ -147,9 +135,9 @@ export class VTSCompanion {
 		// 4. 重定向与融合为 VTS 参数包 (零分配)
 		const params = this.retargeter.retarget(frame, mouthOpen);
 
-		// 5. 注入 VTube Studio
-		this.vtsClient.injectParameters(params);
-	}
+	// 5. 注入 VTube Studio
+	this.vtsClient.injectParameters(params);
+}
 }
 
 
