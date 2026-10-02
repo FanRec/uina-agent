@@ -489,17 +489,24 @@ describe("Live2D Phase 3: Motion Core & Channel Arbiter", () => {
 			expect(frame.ParamEyeLOpen).toBeLessThanOrEqual(2);
 		});
 
-		it("activates idle sway after prolonged silence with amplitude above the perception threshold", () => {
-			const composer = new MotionDirector();
-			// 静默推进 12s：4s 阈值 + ~3s blend 收敛 + 覆盖至少一个晃动周期
-			for (let i = 0; i < 200; i++) composer.compose(60);
+		it("fires occasional random idle posture events during prolonged silence with still windows between", () => {
+			// 注入确定性随机（gap 恒 10s、幅度取中、方向恒正）——时序可精确推演
+			const composer = new MotionDirector(() => 0.5);
+			for (let i = 0; i < 150; i++) composer.compose(60); // 9s 静默：跨过 4s 阈值
 			const xs: number[] = [];
-			for (let i = 0; i < 70; i++) {
-				xs.push(composer.compose(60).ParamBodyAngleX!);
+			for (let i = 0; i < 200; i++) xs.push(composer.compose(60).ParamBodyAngleX!);
+			// 事件性证据：12s 采样内既有含脉冲的动作窗（首事件在静默 14s = 采样 5s 处），
+			// 也有纯 drift 的静止窗（gap 10s > 脉宽 1.4s）——活泼来自事件，不是匀速正弦
+			let maxRange = 0;
+			let minRange = Infinity;
+			for (let start = 0; start + 33 <= xs.length; start++) {
+				const w = xs.slice(start, start + 33);
+				const range = Math.max(...w) - Math.min(...w);
+				maxRange = Math.max(maxRange, range);
+				minRange = Math.min(minRange, range);
 			}
-			// ±6.3° 标称幅度，4.2s 采样窗覆盖大半周期：range 必须显著可感知
-			const range = Math.max(...xs) - Math.min(...xs);
-			expect(range).toBeGreaterThan(4);
+			expect(maxRange).toBeGreaterThan(3);
+			expect(minRange).toBeLessThan(1);
 		});
 
 		it("keeps a mid-speech pause near-still instead of idling (×0.25 ruling)", () => {
