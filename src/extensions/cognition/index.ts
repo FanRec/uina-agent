@@ -14,6 +14,16 @@ import { createMemoryStore, type MemoryStore, type MemoryStoreOptions, type Memo
 
 export { createMemoryStore, type MemoryStore, type MemoryStoreOptions, type MemoryChange } from "./memory.js";
 
+/** 记忆行为协议（政策层，随 cognition 激活常驻 systemPrompt）。
+ *  机制细节（hash/committed/conflict 返回语义）由三工具的 description 承载，
+ *  两处分工不重复：system 管"何时写、如何对待事实"，工具描述管"怎么调、返回什么"。 */
+export const MEMORY_PROTOCOL_PROMPT = `# 记忆纪律
+长期记忆跨会话存续，只属于你。写入有据：sources 必须来自本会话真实历史，或 basis=inferred 并附依据；不编造来源，不把转述算多份证据。
+你的笔记是可修订的理解，不是已验证事实：basis 如实标注，引用时说明来源。
+修订基于 memory_read 的当前 hash；conflict 表示有并发更新，重读后决定，不覆盖不盲试。
+节制写入：只记值得跨会话保留的（偏好、承诺、修正后的认识、有效方法），没有就正常回答。
+回忆不起就承认回忆不起。彻底遗忘走 retire 加用户确认。`;
+
 /** 服务层三态 → 工具五态的正文承载：JSON 字符串，模型可解析 hash/当前版本。 */
 function adaptResult(
 	id: string | undefined,

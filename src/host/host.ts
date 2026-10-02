@@ -237,10 +237,15 @@ export class UinaHost {
 				createSessionAccess(store, (request, source, signal) => subject.requestRewind(request, source, signal));
 			// Host 默认装配事件帧 profile（外部输入以 external_event_frame 回执呈现，协议校验
 			// 随每请求执行；预算门仍归 Subject）。显式传入 projection/systemPrompt 的装配方
-			// （测试与组合根）完全覆盖默认值，不叠加。
+			// （测试与组合根）完全覆盖默认值，不叠加。profile 存在时把主体 persona 追加为
+			// 身份段（profile 启动时解析一次此后只读，与"systemPrompt 保持完全静态"一致）。
 			const eventFrameProfile = createEventFrameProfile();
 			const resolvedProjection = options.projection ?? eventFrameProfile.projection;
-			const resolvedSystemPrompt = options.systemPrompt ?? eventFrameProfile.systemPrompt;
+			const baseSystemPrompt = eventFrameProfile.systemPrompt;
+			// personaText 已在 resolveProfile 装配点归一化（trim），此处只做 truthy 判断。
+			const personaText = options.profile?.personaText;
+			const resolvedSystemPrompt =
+				options.systemPrompt ?? (personaText ? `${baseSystemPrompt}\n\n${personaText}` : baseSystemPrompt);
 			const extensionHost = new ExtensionRunner({
 				// 主体绑定（认知阶段 A）：扩展经 pi.subject 拿到绑定的资源根；无 profile 时缺省
 				// undefined——旧扩展与测试零影响。

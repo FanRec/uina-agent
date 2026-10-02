@@ -155,7 +155,9 @@ export function resolveProfile(options: ResolveProfileOptions): SubjectProfile |
 	}
 
 	const personaPath = join(root, "persona.md");
-	const personaText = existsSync(personaPath) ? readFileSync(personaPath, "utf8") : "";
+	// 归一化在装配点一次完成：SubjectProfile 承载的是"此后只读"的净文本，
+	// 消费方（host 装配 systemPrompt）无需各自处理空白/BOM。trim 同时剥 UTF-8 BOM。
+	const personaText = existsSync(personaPath) ? readFileSync(personaPath, "utf8").trim() : "";
 
 	// 排他锁：wx 创建失败 = 已有活动进程持有该数据根。
 	const lockPath = join(stateRoot, LOCK_FILE);

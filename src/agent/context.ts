@@ -24,7 +24,7 @@ export interface BuildInput {
 	convertToLlm?: (messages: readonly (AgentMessage | ChatMsg)[], opts?: { includeThinking?: boolean }) => ChatMsg[];
 }
 
-const DEFAULT_SYSTEM_PROMPT = "你是 Uina。你处于一个 harness 中,这是你与世界交互的媒介。";
+const DEFAULT_SYSTEM_PROMPT = "你是 Uina。你处于一个 harness 中，这是你与世界交互的媒介。";
 
 export function defaultSystemPrompt(): string {
 	return DEFAULT_SYSTEM_PROMPT;

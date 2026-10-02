@@ -12,6 +12,8 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveProfile, releaseProfileLock, type SubjectProfile } from "../src/host/profile.js";
+import { createEventFrameProfile } from "../src/extensions/event-frames/index.js";
+import { MEMORY_PROTOCOL_PROMPT } from "../src/extensions/cognition/index.js";
 import { resolveSessionPath } from "../src/cli/session-path.js";
 import { UinaHost } from "../src/host/host.js";
 import { Scenario } from "./harness/provider/scenario.js";
@@ -140,6 +142,79 @@ describe("排他锁：一个数据根一个活动写入进程", () => {
 		expect(a.resources.memoryRoot).not.toBe(b.resources.memoryRoot);
 		await releaseProfileLock(a);
 		await releaseProfileLock(b);
+	});
+});
+
+describe("Host 装配：persona 接线", () => {
+	it("profile 存在时默认 systemPrompt 追加 persona 正文（事件帧基底保持在前）", async () => {
+		await writeProfileDir("alice", validProfileJson, "# Alice 的底色\n自我条款：不当工具。");
+		const profile = resolveProfile({ profileArg: "alice", cwd: root })!;
+
+		const scenario = new Scenario({ id: "mock", name: "mock" });
+		scenario.fallback(() => [
+			{ kind: "text", text: "ok" },
+			{ kind: "finish", reason: "stop" },
+		]);
+
+		const host = await UinaHost.create({
+			cwd: root,
+			sessionPath: profile.sessions.journalPath,
+			profile,
+			model: scenario.model,
+			stream: scenario.stream,
+			workspaceTools: false,
+		});
+		try {
+			await host.start();
+			await host.submitText("ping", "direct");
+
+			const systemMsg = scenario.calls[0]?.messages.find((m) => m.role === "system");
+			expect(systemMsg).toBeDefined();
+			const systemText = String(systemMsg?.content);
+			expect(systemText).toContain("harness");
+			expect(systemText).toContain("# Alice 的底色");
+			expect(systemText).toContain("不当工具");
+			expect(systemText.indexOf("harness")).toBeLessThan(systemText.indexOf("# Alice 的底色"));
+		} finally {
+			await host.dispose();
+		}
+		await releaseProfileLock(profile);
+	});
+
+	it("persona 为空白时不追加身份段（基底原样在前，后接 world 环境段与记忆协议）", async () => {
+		await writeProfileDir("bob", JSON.stringify({ subjectId: "bob" }), "   \n  ");
+		const profile = resolveProfile({ profileArg: "bob", cwd: root })!;
+
+		const scenario = new Scenario({ id: "mock", name: "mock" });
+		scenario.fallback(() => [
+			{ kind: "text", text: "ok" },
+			{ kind: "finish", reason: "stop" },
+		]);
+
+		const host = await UinaHost.create({
+			cwd: root,
+			sessionPath: profile.sessions.journalPath,
+			profile,
+			model: scenario.model,
+			stream: scenario.stream,
+			workspaceTools: false,
+		});
+		try {
+			await host.start();
+			await host.submitText("ping", "direct");
+
+			const systemMsg = scenario.calls[0]?.messages.find((m) => m.role === "system");
+			const systemText = String(systemMsg?.content);
+			// persona 空白 = 不追加身份段：事件帧基底原样在前；profile 模式下 cognition
+			// 已激活，world 环境段与记忆协议段合法存在，协议是最后一段。
+			expect(systemText.startsWith(createEventFrameProfile().systemPrompt)).toBe(true);
+			expect(systemText.endsWith(MEMORY_PROTOCOL_PROMPT)).toBe(true);
+			// 若空白 persona 被错误追加，宿主装配处会留下连续三个以上换行。
+			expect(systemText).not.toContain("\n\n\n");
+		} finally {
+			await host.dispose();
+		}
+		await releaseProfileLock(profile);
 	});
 });
 

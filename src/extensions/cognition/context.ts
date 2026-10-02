@@ -15,7 +15,7 @@
 
 import type { ExtensionAPI } from "../runner.js";
 import { createMemoryStore, type MemoryStore, type MemoryHit } from "./memory.js";
-import { createMemoryTools } from "./index.js";
+import { createMemoryTools, MEMORY_PROTOCOL_PROMPT } from "./index.js";
 
 const RECALL_LABEL = "[记忆线索]";
 export const DEFAULT_MEMORY_BUDGET_TOKENS = 1200;
@@ -123,6 +123,12 @@ export function activateCognition(pi: ExtensionAPI): void {
 
 	// M4：三工具。
 	for (const tool of createMemoryTools(store)) pi.registerTool(tool);
+
+	// 记忆协议常驻：能力激活即注入政策层提示词（读后拼接，不覆盖宿主既有装配；
+	// 与 embodiment/world-framework 同一 turn.prepare 追加模式）。无记忆能力即无协议文本。
+	pi.onHook("turn.prepare", (input) => ({
+		systemPrompt: `${input.systemPrompt}\n\n${MEMORY_PROTOCOL_PROMPT}`,
+	}));
 
 	// M5：非 tail transformContext（默认注册即非 tail；尾相位留给视口/具身瞬态帧）。
 	// injector 在激活时构造一次（闭包只依赖 store/scope，无需每请求重建）；
