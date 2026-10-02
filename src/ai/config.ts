@@ -11,7 +11,7 @@ import type { GeminiThinkingFormat, ThinkingLevel, ThinkingWireFormat } from "..
 export type ProviderKind = "openai-compatible" | "anthropic" | "gemini";
 
 export interface ProviderConfig {
- imageInput?: boolean;
+	imageInput?: boolean;
 	baseUrl: string;
 	apiKey: string;
 	model: string;
@@ -65,7 +65,8 @@ const GEMINI_LEVEL_ENCODABLE: readonly ThinkingLevel[] = ["minimal", "low", "med
  * 在真实 Provider 创建时调用，因此错误发生在启动阶段，且指名 provider 与缺失字段。
  */
 export function assertProviderFacts(conf: ProviderConfig): void {
-	if (conf.imageInput !== undefined && typeof conf.imageInput !== "boolean") throw new Error("imageInput 必须是 boolean");
+	if (conf.imageInput !== undefined && typeof conf.imageInput !== "boolean")
+		throw new Error("imageInput 必须是 boolean");
 	const levels = conf.thinkingLevels;
 	const kind: ProviderKind = conf.type ?? "openai-compatible";
 
@@ -75,10 +76,10 @@ export function assertProviderFacts(conf: ProviderConfig): void {
 		);
 	}
 	if (!levels?.length) return;
-	const encodesThinking = levels.some(level => level !== "off");
+	const encodesThinking = levels.some((level) => level !== "off");
 
 	if (kind === "anthropic" || (kind === "gemini" && conf.geminiThinkingFormat === "budget")) {
-		const missing = levels.filter(level => level !== "off" && conf.thinkingBudgets?.[level] === undefined);
+		const missing = levels.filter((level) => level !== "off" && conf.thinkingBudgets?.[level] === undefined);
 		if (missing.length > 0) {
 			throw new Error(
 				`provider ${conf.model} 的 thinkingBudgets 缺少档位 ${missing.join("/")}；这些数值直接写进 wire，Uina 不发明 thinking 预算`,
@@ -93,7 +94,7 @@ export function assertProviderFacts(conf: ProviderConfig): void {
 		);
 	}
 	if (conf.geminiThinkingFormat === "level") {
-		const unencodable = levels.filter(level => level !== "off" && !GEMINI_LEVEL_ENCODABLE.includes(level));
+		const unencodable = levels.filter((level) => level !== "off" && !GEMINI_LEVEL_ENCODABLE.includes(level));
 		if (unencodable.length > 0) {
 			throw new Error(
 				`provider ${conf.model} 的 geminiThinkingFormat: "level" 无法编码档位 ${unencodable.join("/")}；请改用 "budget" 或修正 thinkingLevels`,
@@ -109,7 +110,8 @@ export interface UinaConfig {
 }
 
 export function effectiveContextWindow(conf: ProviderConfig): number {
-	if (!conf.modelContextWindow) throw new Error(`模型 ${conf.model} 缺少 modelContextWindow；Uina 不会猜测真实上下文上限`);
+	if (!conf.modelContextWindow)
+		throw new Error(`模型 ${conf.model} 缺少 modelContextWindow；Uina 不会猜测真实上下文上限`);
 	return Math.min(conf.modelContextWindow, conf.maxContextWindow ?? conf.modelContextWindow);
 }
 
@@ -155,77 +157,135 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 			throw new Error(`配置 ${path} 的 provider ${name} 必须是对象`);
 		}
 		const provider = value as Record<string, unknown>;
-			const providerType = (provider.type as ProviderKind | undefined) ?? "openai-compatible";
-			if (provider.baseUrl !== undefined && (typeof provider.baseUrl !== "string" || !provider.baseUrl.trim())) {
-				throw new Error(`配置 ${path} 的 provider ${name} 的 baseUrl 无效`);
-			}
-			if (providerType === "openai-compatible" && provider.baseUrl === undefined) {
-				throw new Error(`配置 ${path} 的 provider ${name} 缺少 baseUrl`);
-			}
+		const providerType = (provider.type as ProviderKind | undefined) ?? "openai-compatible";
+		if (provider.baseUrl !== undefined && (typeof provider.baseUrl !== "string" || !provider.baseUrl.trim())) {
+			throw new Error(`配置 ${path} 的 provider ${name} 的 baseUrl 无效`);
+		}
+		if (providerType === "openai-compatible" && provider.baseUrl === undefined) {
+			throw new Error(`配置 ${path} 的 provider ${name} 缺少 baseUrl`);
+		}
 		if (typeof provider.model !== "string" || !provider.model.trim()) {
 			throw new Error(`配置 ${path} 的 provider ${name} 缺少 model`);
 		}
 		if (provider.apiKey !== undefined && typeof provider.apiKey !== "string") {
 			throw new Error(`配置 ${path} 的 provider ${name} 的 apiKey 必须是字符串`);
 		}
-		if (provider.contextWindow !== undefined) throw new Error(`配置 ${path} 的 provider ${name} 使用了已移除的 contextWindow；请改为 modelContextWindow 和可选 maxContextWindow`);
-		if (provider.modelContextWindow !== undefined && (typeof provider.modelContextWindow !== "number" || !Number.isSafeInteger(provider.modelContextWindow) || provider.modelContextWindow <= 0)) throw new Error(`配置 ${path} 的 provider ${name} 的 modelContextWindow 无效`);
-		if (provider.maxContextWindow !== undefined && (!Number.isSafeInteger(provider.maxContextWindow) || (provider.maxContextWindow as number) <= 0)) throw new Error(`配置 ${path} 的 provider ${name} 的 maxContextWindow 无效`);
-			if (provider.maxRetries !== undefined &&
-				(typeof provider.maxRetries !== "number" || !Number.isSafeInteger(provider.maxRetries) || provider.maxRetries < 0)) {
-				throw new Error(`配置 ${path} 的 provider ${name} 的 maxRetries 无效`);
+		if (provider.contextWindow !== undefined)
+			throw new Error(
+				`配置 ${path} 的 provider ${name} 使用了已移除的 contextWindow；请改为 modelContextWindow 和可选 maxContextWindow`,
+			);
+		if (
+			provider.modelContextWindow !== undefined &&
+			(typeof provider.modelContextWindow !== "number" ||
+				!Number.isSafeInteger(provider.modelContextWindow) ||
+				provider.modelContextWindow <= 0)
+		)
+			throw new Error(`配置 ${path} 的 provider ${name} 的 modelContextWindow 无效`);
+		if (
+			provider.maxContextWindow !== undefined &&
+			(!Number.isSafeInteger(provider.maxContextWindow) || (provider.maxContextWindow as number) <= 0)
+		)
+			throw new Error(`配置 ${path} 的 provider ${name} 的 maxContextWindow 无效`);
+		if (
+			provider.maxRetries !== undefined &&
+			(typeof provider.maxRetries !== "number" || !Number.isSafeInteger(provider.maxRetries) || provider.maxRetries < 0)
+		) {
+			throw new Error(`配置 ${path} 的 provider ${name} 的 maxRetries 无效`);
+		}
+		if (provider.geminiToolCallIds !== undefined && typeof provider.geminiToolCallIds !== "boolean") {
+			throw new Error(`配置 ${path} 的 provider ${name} 的 geminiToolCallIds 无效`);
+		}
+		if (
+			provider.maxOutputTokens !== undefined &&
+			(typeof provider.maxOutputTokens !== "number" ||
+				!Number.isSafeInteger(provider.maxOutputTokens) ||
+				provider.maxOutputTokens <= 0)
+		) {
+			throw new Error(`配置 ${path} 的 provider ${name} 的 maxOutputTokens 无效`);
+		}
+		if (provider.thinkingBudgets !== undefined) {
+			if (
+				typeof provider.thinkingBudgets !== "object" ||
+				provider.thinkingBudgets === null ||
+				Array.isArray(provider.thinkingBudgets)
+			) {
+				throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingBudgets 必须是对象`);
 			}
-			if (provider.geminiToolCallIds !== undefined && typeof provider.geminiToolCallIds !== "boolean") {
-				throw new Error(`配置 ${path} 的 provider ${name} 的 geminiToolCallIds 无效`);
-			}
-			if (provider.maxOutputTokens !== undefined && (typeof provider.maxOutputTokens !== "number" || !Number.isSafeInteger(provider.maxOutputTokens) || provider.maxOutputTokens <= 0)) {
-				throw new Error(`配置 ${path} 的 provider ${name} 的 maxOutputTokens 无效`);
-			}
-			if (provider.thinkingBudgets !== undefined) {
-				if (typeof provider.thinkingBudgets !== "object" || provider.thinkingBudgets === null || Array.isArray(provider.thinkingBudgets)) {
-					throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingBudgets 必须是对象`);
+			for (const [level, budget] of Object.entries(provider.thinkingBudgets as Record<string, unknown>)) {
+				if (
+					!["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(level) ||
+					typeof budget !== "number" ||
+					!Number.isSafeInteger(budget) ||
+					budget < 0
+				) {
+					throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingBudgets.${level} 无效`);
 				}
-				for (const [level, budget] of Object.entries(provider.thinkingBudgets as Record<string, unknown>)) {
-					if (!["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(level) || typeof budget !== "number" || !Number.isSafeInteger(budget) || budget < 0) {
-						throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingBudgets.${level} 无效`);
-					}
-				}
 			}
-			if (provider.type !== undefined && provider.type !== "openai-compatible" && provider.type !== "anthropic" && provider.type !== "gemini") {
-				throw new Error(`配置 ${path} 的 provider ${name} 的 type 无效`);
-			}
-			if (provider.thinkingFormat !== undefined && !["openai", "deepseek", "qwen"].includes(provider.thinkingFormat as string)) {
-				throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingFormat 无效`);
-			}
-			if (provider.imageInput !== undefined && typeof provider.imageInput !== "boolean") throw new Error(`配置 ${path} 的 provider ${name} 的 imageInput 必须是 boolean`);
-			if (provider.thinkingLevels !== undefined && (!Array.isArray(provider.thinkingLevels) || provider.thinkingLevels.some((level) => !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(level as string)))) {
-				throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingLevels 无效`);
-			}
-			if (provider.geminiThinkingFormat !== undefined && !["budget", "level"].includes(String(provider.geminiThinkingFormat))) {
-				throw new Error(`配置 ${path} 的 provider ${name} 的 geminiThinkingFormat 无效`);
-			}
-			providers[name] = {
-				...(provider.geminiThinkingFormat === undefined ? {} : { geminiThinkingFormat: provider.geminiThinkingFormat as GeminiThinkingFormat }),
-				apiKey: provider.apiKey ?? "",
-				model: provider.model,
-				...(provider.modelContextWindow === undefined ? {} : { modelContextWindow: provider.modelContextWindow as number }),
-				...(provider.maxContextWindow === undefined ? {} : { maxContextWindow: provider.maxContextWindow as number }),
-				...(provider.maxRetries === undefined ? {} : { maxRetries: provider.maxRetries }),
-				...(provider.geminiToolCallIds === undefined ? {} : { geminiToolCallIds: provider.geminiToolCallIds as boolean }),
-				...(provider.maxOutputTokens === undefined ? {} : { maxOutputTokens: provider.maxOutputTokens as number }),
-				...(provider.thinkingBudgets === undefined ? {} : { thinkingBudgets: provider.thinkingBudgets as Partial<Record<ThinkingLevel, number>> }),
-				baseUrl: typeof provider.baseUrl === "string" ? provider.baseUrl : defaultBaseUrl(providerType),
-				type: providerType,
-				...(provider.thinkingFormat === undefined ? {} : { thinkingFormat: provider.thinkingFormat as ThinkingWireFormat }),
-				...(provider.thinkingLevels === undefined ? {} : { thinkingLevels: provider.thinkingLevels as ThinkingLevel[] }),
-				...(provider.imageInput === undefined ? {} : { imageInput: provider.imageInput as boolean }),
-				...(provider.includeThinking === undefined ? {} : { includeThinking: Boolean(provider.includeThinking) }),
-			};
+		}
+		if (
+			provider.type !== undefined &&
+			provider.type !== "openai-compatible" &&
+			provider.type !== "anthropic" &&
+			provider.type !== "gemini"
+		) {
+			throw new Error(`配置 ${path} 的 provider ${name} 的 type 无效`);
+		}
+		if (
+			provider.thinkingFormat !== undefined &&
+			!["openai", "deepseek", "qwen"].includes(provider.thinkingFormat as string)
+		) {
+			throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingFormat 无效`);
+		}
+		if (provider.imageInput !== undefined && typeof provider.imageInput !== "boolean")
+			throw new Error(`配置 ${path} 的 provider ${name} 的 imageInput 必须是 boolean`);
+		if (
+			provider.thinkingLevels !== undefined &&
+			(!Array.isArray(provider.thinkingLevels) ||
+				provider.thinkingLevels.some(
+					(level) => !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(level as string),
+				))
+		) {
+			throw new Error(`配置 ${path} 的 provider ${name} 的 thinkingLevels 无效`);
+		}
+		if (
+			provider.geminiThinkingFormat !== undefined &&
+			!["budget", "level"].includes(String(provider.geminiThinkingFormat))
+		) {
+			throw new Error(`配置 ${path} 的 provider ${name} 的 geminiThinkingFormat 无效`);
+		}
+		providers[name] = {
+			...(provider.geminiThinkingFormat === undefined
+				? {}
+				: { geminiThinkingFormat: provider.geminiThinkingFormat as GeminiThinkingFormat }),
+			apiKey: provider.apiKey ?? "",
+			model: provider.model,
+			...(provider.modelContextWindow === undefined
+				? {}
+				: { modelContextWindow: provider.modelContextWindow as number }),
+			...(provider.maxContextWindow === undefined ? {} : { maxContextWindow: provider.maxContextWindow as number }),
+			...(provider.maxRetries === undefined ? {} : { maxRetries: provider.maxRetries }),
+			...(provider.geminiToolCallIds === undefined ? {} : { geminiToolCallIds: provider.geminiToolCallIds as boolean }),
+			...(provider.maxOutputTokens === undefined ? {} : { maxOutputTokens: provider.maxOutputTokens as number }),
+			...(provider.thinkingBudgets === undefined
+				? {}
+				: { thinkingBudgets: provider.thinkingBudgets as Partial<Record<ThinkingLevel, number>> }),
+			baseUrl: typeof provider.baseUrl === "string" ? provider.baseUrl : defaultBaseUrl(providerType),
+			type: providerType,
+			...(provider.thinkingFormat === undefined
+				? {}
+				: { thinkingFormat: provider.thinkingFormat as ThinkingWireFormat }),
+			...(provider.thinkingLevels === undefined ? {} : { thinkingLevels: provider.thinkingLevels as ThinkingLevel[] }),
+			...(provider.imageInput === undefined ? {} : { imageInput: provider.imageInput as boolean }),
+			...(provider.includeThinking === undefined ? {} : { includeThinking: Boolean(provider.includeThinking) }),
+		};
 	}
 	if (!providers[raw.default]) {
 		throw new Error(`配置 ${path} 缺少 default 对应的 provider: ${raw.default}`);
 	}
-	if (raw.thinkingLevel !== undefined && !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(raw.thinkingLevel as string)) {
+	if (
+		raw.thinkingLevel !== undefined &&
+		!["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(raw.thinkingLevel as string)
+	) {
 		throw new Error(`配置 ${path} 的 thinkingLevel 无效`);
 	}
 	return { default: raw.default, thinkingLevel: raw.thinkingLevel as ThinkingLevel | undefined, providers };
@@ -237,9 +297,7 @@ function defaultBaseUrl(type: ProviderKind): string {
 	throw new Error("openai-compatible provider 必须配置 baseUrl");
 }
 
-export function activeProvider(
-	cfg: UinaConfig,
-): ProviderConfig & { name: string } {
+export function activeProvider(cfg: UinaConfig): ProviderConfig & { name: string } {
 	const prov = cfg.providers[cfg.default];
 	if (!prov.apiKey) {
 		throw new Error(

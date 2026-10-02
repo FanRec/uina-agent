@@ -5,12 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { MemorySessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
-import {
-	applyRecord,
-	canonicalReplay,
-	planRecovery,
-	projectAgentHistory,
-} from "../src/session/recovery.js";
+import { applyRecord, canonicalReplay, planRecovery, projectAgentHistory } from "../src/session/recovery.js";
 import type { SessionRecord } from "../src/session/types.js";
 import { IsolatedEnv, Scenario, SubjectHarness, mockTool } from "./harness/index.js";
 
@@ -52,7 +47,11 @@ describe("replay ≡ memory invariants", () => {
 		assertReplayEqualsMemory(store);
 		await store.appendEvent("turn_aborted", { turn: 4 });
 		assertReplayEqualsMemory(store);
-		expect(store.state.auxiliary.filter((r): r is import("../src/session/types.js").SessionEventRecord => r.kind === "event").map((record) => record.event)).toEqual(["turn_failed", "turn_aborted"]);
+		expect(
+			store.state.auxiliary
+				.filter((r): r is import("../src/session/types.js").SessionEventRecord => r.kind === "event")
+				.map((record) => record.event),
+		).toEqual(["turn_failed", "turn_aborted"]);
 
 		// 回溯：合法目标 + 增量 safeTargets 查询一致
 		const fromId = store.state.entries.at(-1)!.id;
@@ -101,15 +100,22 @@ describe("replay ≡ memory invariants", () => {
 		const state = canonicalReplay([
 			{ kind: "message", id: "assistant-1", seq: 1, timestamp: "t", message: { role: "user", content: "task" } },
 			{
-				kind: "message", id: "assistant-2", seq: 2, timestamp: "t",
-				message: { role: "assistant", content: "", tool_calls: [{ id: "c1", name: "probe", args: {} }, { id: "c2", name: "probe", args: {} }] },
+				kind: "message",
+				id: "assistant-2",
+				seq: 2,
+				timestamp: "t",
+				message: {
+					role: "assistant",
+					content: "",
+					tool_calls: [
+						{ id: "c1", name: "probe", args: {} },
+						{ id: "c2", name: "probe", args: {} },
+					],
+				},
 			},
 		] satisfies SessionRecord[]);
 		const plan = planRecovery(state);
-		expect(plan.entries.map((entry) => entry.id)).toEqual([
-			"recovered:assistant-2:c1",
-			"recovered:assistant-2:c2",
-		]);
+		expect(plan.entries.map((entry) => entry.id)).toEqual(["recovered:assistant-2:c1", "recovered:assistant-2:c2"]);
 
 		// 任意前缀落盘后再 crash：计划恰好收窄为剩余条目（前缀安全）
 		const first = plan.entries[0]!;
@@ -123,8 +129,10 @@ describe("replay ≡ memory invariants", () => {
 	it("holds for a real subject run: fold equals resident state and projection equals history", async () => {
 		const tool = mockTool("probe", async () => ({ result: "ok", status: "succeeded" }));
 		const scenario = Scenario.create()
-			.when((req) => req.messages.some((message) => message.role === "tool")).reply("done")
-			.when(() => true).replyWithToolCall("call-1", "probe", {});
+			.when((req) => req.messages.some((message) => message.role === "tool"))
+			.reply("done")
+			.when(() => true)
+			.replyWithToolCall("call-1", "probe", {});
 		const store = new MemorySessionStore();
 		const harness = SubjectHarness.create({
 			scenario,
@@ -147,7 +155,11 @@ describe("jsonl durable recovery identity", () => {
 			const path = env.resolve("session.jsonl");
 			const first = await openJsonlSession(path);
 			await first.store.appendMessage({ role: "user", content: "hello" });
-			await first.store.appendMessage({ role: "assistant", content: "", tool_calls: [{ id: "call-1", name: "x", args: {} }] });
+			await first.store.appendMessage({
+				role: "assistant",
+				content: "",
+				tool_calls: [{ id: "call-1", name: "x", args: {} }],
+			});
 			await first.store.close();
 
 			const reopened = await openJsonlSession(path);

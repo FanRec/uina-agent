@@ -10,25 +10,36 @@
  */
 
 import type { Tool } from "../../tools/broker.js";
-import {
-	createMemoryStore,
-	type MemoryStore,
-	type MemoryStoreOptions,
-	type MemoryChange,
-} from "./memory.js";
+import { createMemoryStore, type MemoryStore, type MemoryStoreOptions, type MemoryChange } from "./memory.js";
 
 export { createMemoryStore, type MemoryStore, type MemoryStoreOptions, type MemoryChange } from "./memory.js";
 
 /** 服务层三态 → 工具五态的正文承载：JSON 字符串，模型可解析 hash/当前版本。 */
-function adaptResult(id: string | undefined, result: Awaited<ReturnType<MemoryStore["write"]>>): { result: string; status: "succeeded" | "failed" } {
+function adaptResult(
+	id: string | undefined,
+	result: Awaited<ReturnType<MemoryStore["write"]>>,
+): { result: string; status: "succeeded" | "failed" } {
 	if (result.status === "committed") {
 		return {
-			result: JSON.stringify({ status: "committed", id: result.id, hash: result.hash, revision: result.revision }, null, "\t"),
+			result: JSON.stringify(
+				{ status: "committed", id: result.id, hash: result.hash, revision: result.revision },
+				null,
+				"\t",
+			),
 			status: "succeeded",
 		};
 	}
 	return {
-		result: JSON.stringify({ status: result.status, ...(id ? { id } : {}), ...(result.status === "conflict" ? { currentHash: result.currentHash } : {}), reason: result.reason }, null, "\t"),
+		result: JSON.stringify(
+			{
+				status: result.status,
+				...(id ? { id } : {}),
+				...(result.status === "conflict" ? { currentHash: result.currentHash } : {}),
+				reason: result.reason,
+			},
+			null,
+			"\t",
+		),
 		status: "failed",
 	};
 }
@@ -74,7 +85,13 @@ export function createMemoryTools(store: MemoryStore): Tool[] {
 			return {
 				result: JSON.stringify(
 					{
-						hits: hits.map((h) => ({ id: h.id, title: h.title, excerpt: h.excerpt, revision: h.revision, hash: h.hash })),
+						hits: hits.map((h) => ({
+							id: h.id,
+							title: h.title,
+							excerpt: h.excerpt,
+							revision: h.revision,
+							hash: h.hash,
+						})),
 					},
 					null,
 					"\t",
@@ -89,7 +106,8 @@ export function createMemoryTools(store: MemoryStore): Tool[] {
 			type: "function",
 			function: {
 				name: "memory_read",
-				description: "读取一条长期记忆的当前完整内容（正文、来源与适用范围）。id 来自 memory_search 或 memory_write 的返回。",
+				description:
+					"读取一条长期记忆的当前完整内容（正文、来源与适用范围）。id 来自 memory_search 或 memory_write 的返回。",
 				parameters: {
 					type: "object",
 					properties: {
@@ -153,8 +171,28 @@ export function createMemoryTools(store: MemoryStore): Tool[] {
 												basis: { type: "string", enum: ["observed", "reported", "inferred"] },
 												title: { type: "string" },
 												body: { type: "string" },
-												scope: { type: "object", properties: { spaceId: { type: "string" }, projectId: { type: "string" }, actorId: { type: "string" } }, additionalProperties: false },
-												sources: { type: "array", items: { type: "object", properties: { sessionId: { type: "string" }, entryId: { type: "string" }, note: { type: "string" } }, required: ["sessionId"], additionalProperties: false } },
+												scope: {
+													type: "object",
+													properties: {
+														spaceId: { type: "string" },
+														projectId: { type: "string" },
+														actorId: { type: "string" },
+													},
+													additionalProperties: false,
+												},
+												sources: {
+													type: "array",
+													items: {
+														type: "object",
+														properties: {
+															sessionId: { type: "string" },
+															entryId: { type: "string" },
+															note: { type: "string" },
+														},
+														required: ["sessionId"],
+														additionalProperties: false,
+													},
+												},
 												rationale: { type: "string" },
 												pinned: { type: "boolean" },
 											},
@@ -176,8 +214,28 @@ export function createMemoryTools(store: MemoryStore): Tool[] {
 											properties: {
 												title: { type: "string" },
 												body: { type: "string" },
-												scope: { type: "object", properties: { spaceId: { type: "string" }, projectId: { type: "string" }, actorId: { type: "string" } }, additionalProperties: false },
-												sources: { type: "array", items: { type: "object", properties: { sessionId: { type: "string" }, entryId: { type: "string" }, note: { type: "string" } }, required: ["sessionId"], additionalProperties: false } },
+												scope: {
+													type: "object",
+													properties: {
+														spaceId: { type: "string" },
+														projectId: { type: "string" },
+														actorId: { type: "string" },
+													},
+													additionalProperties: false,
+												},
+												sources: {
+													type: "array",
+													items: {
+														type: "object",
+														properties: {
+															sessionId: { type: "string" },
+															entryId: { type: "string" },
+															note: { type: "string" },
+														},
+														required: ["sessionId"],
+														additionalProperties: false,
+													},
+												},
 												rationale: { type: "string" },
 												pinned: { type: "boolean" },
 											},
@@ -218,7 +276,11 @@ export function createMemoryTools(store: MemoryStore): Tool[] {
 			} catch (error) {
 				// writer 内部异常：不猜测结果（unknown），明确上报。
 				return {
-					result: JSON.stringify({ status: "unknown", ...(id ? { id } : {}), reason: `写入未确认，请用 memory_read 核实后再试：${String(error)}` }),
+					result: JSON.stringify({
+						status: "unknown",
+						...(id ? { id } : {}),
+						reason: `写入未确认，请用 memory_read 核实后再试：${String(error)}`,
+					}),
 					status: "unknown",
 				};
 			}

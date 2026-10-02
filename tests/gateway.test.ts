@@ -28,19 +28,27 @@ async function collect(baseUrl: string, signal?: AbortSignal): Promise<StreamDel
 	const provider = createOpenAIProvider("test-provider", { baseUrl, apiKey: "test" });
 	const model: Model = { id: "m", name: "m", providerId: "test-provider", contextWindow: 4096 };
 	const output: StreamDelta[] = [];
-	await provider.stream(model, { messages: [{ role: "user", content: "hi" }], providerHooks: NO_RUNTIME_HOOKS.provider }, (delta) => output.push(delta), signal);
+	await provider.stream(
+		model,
+		{ messages: [{ role: "user", content: "hi" }], providerHooks: NO_RUNTIME_HOOKS.provider },
+		(delta) => output.push(delta),
+		signal,
+	);
 	return output;
 }
 
 describe("OpenAI gateway", () => {
 	it("parses text, CRLF and finish marker", async () => {
 		const base = await endpoint(
-			sse([
-				JSON.stringify({ choices: [{ delta: { content: "你好" } }] }),
-				JSON.stringify({ choices: [{ delta: { content: "世界" } }] }),
-				JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
-				"[DONE]",
-			], true),
+			sse(
+				[
+					JSON.stringify({ choices: [{ delta: { content: "你好" } }] }),
+					JSON.stringify({ choices: [{ delta: { content: "世界" } }] }),
+					JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+					"[DONE]",
+				],
+				true,
+			),
 		);
 		const output = await collect(base);
 		expect(output.filter((d) => d.kind === "text").map((d) => d.kind === "text" && d.text)).toEqual(["你好", "世界"]);
@@ -54,20 +62,31 @@ describe("OpenAI gateway", () => {
 	});
 
 	it("merges usage chunks without fabricating an empty usage receipt", async () => {
-		const output = await collect(await endpoint(sse([
-			JSON.stringify({ usage: { prompt_tokens: 10, prompt_tokens_details: { cached_tokens: 2 } } }),
-			JSON.stringify({ usage: { completion_tokens: 3, completion_tokens_details: { reasoning_tokens: 1 } } }),
-			JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
-			"[DONE]",
-		])));
+		const output = await collect(
+			await endpoint(
+				sse([
+					JSON.stringify({ usage: { prompt_tokens: 10, prompt_tokens_details: { cached_tokens: 2 } } }),
+					JSON.stringify({ usage: { completion_tokens: 3, completion_tokens_details: { reasoning_tokens: 1 } } }),
+					JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+					"[DONE]",
+				]),
+			),
+		);
 		// No total_tokens on the wire: the adapter must not derive one, because a
 		// derived total would be presented as measured usage downstream.
-		expect(output.filter((delta) => delta.kind === "usage").at(-1)).toEqual({ kind: "usage", usage: { input: 8, output: 3, cacheRead: 2, reasoning: 1 } });
-		const empty = await collect(await endpoint(sse([
-			JSON.stringify({ usage: {} }),
-			JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
-			"[DONE]",
-		])));
+		expect(output.filter((delta) => delta.kind === "usage").at(-1)).toEqual({
+			kind: "usage",
+			usage: { input: 8, output: 3, cacheRead: 2, reasoning: 1 },
+		});
+		const empty = await collect(
+			await endpoint(
+				sse([
+					JSON.stringify({ usage: {} }),
+					JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+					"[DONE]",
+				]),
+			),
+		);
 		expect(empty.some((delta) => delta.kind === "usage")).toBe(false);
 	});
 
@@ -75,8 +94,14 @@ describe("OpenAI gateway", () => {
 		const output = await collect(
 			await endpoint(
 				sse([
-					JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "t1", function: { name: "get_", arguments: '{"a":' } }] } }] }),
-					JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "time", arguments: "1}" } }] } }] }),
+					JSON.stringify({
+						choices: [
+							{ delta: { tool_calls: [{ index: 0, id: "t1", function: { name: "get_", arguments: '{"a":' } }] } },
+						],
+					}),
+					JSON.stringify({
+						choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "time", arguments: "1}" } }] } }],
+					}),
 					JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
 					"[DONE]",
 				]),
@@ -91,22 +116,50 @@ describe("OpenAI gateway", () => {
 
 	it("rejects invalid JSON, missing finish and content filtering", async () => {
 		await expect(collect(await endpoint(sse(["not-json", "[DONE]"])))).rejects.toBeInstanceOf(ProviderProtocolError);
-		await expect(collect(await endpoint(sse([JSON.stringify({ choices: [{ delta: { content: "partial" } }] }), "[DONE]"])))).rejects.toThrow("finish_reason");
-		await expect(collect(await endpoint(sse([JSON.stringify({ choices: [{ delta: {}, finish_reason: "content_filter" }] }), "[DONE]"])))).rejects.toThrow("content_filter");
+		await expect(
+			collect(await endpoint(sse([JSON.stringify({ choices: [{ delta: { content: "partial" } }] }), "[DONE]"]))),
+		).rejects.toThrow("finish_reason");
+		await expect(
+			collect(
+				await endpoint(sse([JSON.stringify({ choices: [{ delta: {}, finish_reason: "content_filter" }] }), "[DONE]"])),
+			),
+		).rejects.toThrow("content_filter");
 	});
 
 	it("rejects an abnormal finish reason and incomplete arguments", async () => {
-		await expect(collect(await endpoint(sse([JSON.stringify({ choices: [{ delta: {}, finish_reason: "provider_magic" }] }), "[DONE]"])))).rejects.toThrow("未知 finish_reason");
-		await expect(collect(await endpoint(sse([
-			JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "t", function: { name: "x", arguments: "{}" } }] } }] }),
-			JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
-			"[DONE]",
-		])))).rejects.toThrow("仍有未完成 tool call");
-		await expect(collect(await endpoint(sse([
-			JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "t", function: { name: "x", arguments: '{"a":' } }] } }] }),
-			JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
-			"[DONE]",
-		])))).rejects.toThrow("完整 JSON");
+		await expect(
+			collect(
+				await endpoint(sse([JSON.stringify({ choices: [{ delta: {}, finish_reason: "provider_magic" }] }), "[DONE]"])),
+			),
+		).rejects.toThrow("未知 finish_reason");
+		await expect(
+			collect(
+				await endpoint(
+					sse([
+						JSON.stringify({
+							choices: [{ delta: { tool_calls: [{ index: 0, id: "t", function: { name: "x", arguments: "{}" } }] } }],
+						}),
+						JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] }),
+						"[DONE]",
+					]),
+				),
+			),
+		).rejects.toThrow("仍有未完成 tool call");
+		await expect(
+			collect(
+				await endpoint(
+					sse([
+						JSON.stringify({
+							choices: [
+								{ delta: { tool_calls: [{ index: 0, id: "t", function: { name: "x", arguments: '{"a":' } }] } },
+							],
+						}),
+						JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] }),
+						"[DONE]",
+					]),
+				),
+			),
+		).rejects.toThrow("完整 JSON");
 	});
 
 	it("propagates abort without fabricating a finish", async () => {
@@ -114,13 +167,24 @@ describe("OpenAI gateway", () => {
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const body = new ReadableStream<Uint8Array>({
 			start(controller) {
-				controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "x" } }] })}\n\n`));
-				timer = setTimeout(() => controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "y" } }] })}\n\n`)), 100);
+				controller.enqueue(
+					new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "x" } }] })}\n\n`),
+				);
+				timer = setTimeout(
+					() =>
+						controller.enqueue(
+							new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "y" } }] })}\n\n`),
+						),
+					100,
+				);
 			},
-   cancel() { clearTimeout(timer); },
+			cancel() {
+				clearTimeout(timer);
+			},
 		});
 		const originalFetch = globalThis.fetch;
-		globalThis.fetch = async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+		globalThis.fetch = async () =>
+			new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
 		try {
 			const promise = collect("http://example/v1", controller.signal);
 			controller.abort();
@@ -132,11 +196,17 @@ describe("OpenAI gateway", () => {
 	});
 
 	it("converts internal tool messages to wire format", () => {
-		expect(toWireMessages([
-			{ role: "assistant", content: "", tool_calls: [{ id: "t1", name: "x", args: { a: 1 } }] },
-			{ role: "tool", tool_call_id: "t1", content: "ok", status: "succeeded" },
-		])).toEqual([
-			{ role: "assistant", content: "", tool_calls: [{ id: "t1", type: "function", function: { name: "x", arguments: '{"a":1}' } }] },
+		expect(
+			toWireMessages([
+				{ role: "assistant", content: "", tool_calls: [{ id: "t1", name: "x", args: { a: 1 } }] },
+				{ role: "tool", tool_call_id: "t1", content: "ok", status: "succeeded" },
+			]),
+		).toEqual([
+			{
+				role: "assistant",
+				content: "",
+				tool_calls: [{ id: "t1", type: "function", function: { name: "x", arguments: '{"a":1}' } }],
+			},
 			{ role: "tool", tool_call_id: "t1", content: "ok" },
 		]);
 	});
@@ -146,7 +216,9 @@ describe("OpenAI gateway", () => {
 		let capturedBody = "";
 		const server = createServer((req, res) => {
 			capturedHeaders = req.headers as Record<string, string>;
-			req.on("data", (chunk) => { capturedBody += String(chunk); });
+			req.on("data", (chunk) => {
+				capturedBody += String(chunk);
+			});
 			req.on("end", () => {
 				res.writeHead(200, { "content-type": "text/event-stream", "x-server-meta": "ok" });
 				res.end("data: ok\n\n");
@@ -218,7 +290,9 @@ describe("OpenAI gateway", () => {
 
 	it("默认无限重试只能由 AbortSignal 终止", async () => {
 		const controller = new AbortController();
-		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("down", { status: 503 }));
+		const fetchMock = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async () => new Response("down", { status: 503 }));
 		const retries: number[] = [];
 		try {
 			const request = sendModelStreamRequest({

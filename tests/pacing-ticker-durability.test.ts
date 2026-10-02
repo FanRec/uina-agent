@@ -8,21 +8,32 @@ class Clock implements ClockSource {
 	private timers = new Map<number, { due: number; run: () => void }>();
 	private nextId = 1;
 	private longestDelay = 0;
-	nowMono() { return this.mono; }
-	nowEpoch() { return this.epoch; }
+	nowMono() {
+		return this.mono;
+	}
+	nowEpoch() {
+		return this.epoch;
+	}
 	setTimeout(run: () => void, delay: number) {
 		this.longestDelay = Math.max(this.longestDelay, delay);
 		const id = this.nextId++;
 		this.timers.set(id, { due: this.mono + delay, run });
 		return id as unknown as NodeJS.Timeout;
 	}
-	clearTimeout(timer: NodeJS.Timeout) { this.timers.delete(Number(timer)); }
-	longestTimerDelay() { return this.longestDelay; }
+	clearTimeout(timer: NodeJS.Timeout) {
+		this.timers.delete(Number(timer));
+	}
+	longestTimerDelay() {
+		return this.longestDelay;
+	}
 	async advance(ms: number) {
 		this.mono += ms;
 		this.epoch += ms;
 		for (const [id, timer] of [...this.timers]) {
-			if (timer.due <= this.mono) { this.timers.delete(id); timer.run(); }
+			if (timer.due <= this.mono) {
+				this.timers.delete(id);
+				timer.run();
+			}
 		}
 		await new Promise<void>((resolve) => setImmediate(resolve));
 	}
@@ -31,7 +42,10 @@ class Clock implements ClockSource {
 const deferred = () => {
 	let resolve!: () => void;
 	let reject!: (error: Error) => void;
-	const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
+	const promise = new Promise<void>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
 	return { promise, resolve, reject };
 };
 
@@ -68,7 +82,9 @@ describe("ticker durable time rules", () => {
 		const host: TickerHostPort = {
 			isBusy: () => false,
 			submitOpportunity: async () => {},
-			saveDurableState: async () => { if (fail) throw new Error("disk full"); },
+			saveDurableState: async () => {
+				if (fail) throw new Error("disk full");
+			},
 		};
 		const engine = new TickerEngine(host, undefined, undefined, clock);
 		engine.start();
@@ -87,7 +103,9 @@ describe("ticker durable time rules", () => {
 		const host: TickerHostPort = {
 			isBusy: () => false,
 			submitOpportunity: async () => {},
-			saveDurableState: async () => { if (fail) throw new Error("disk full"); },
+			saveDurableState: async () => {
+				if (fail) throw new Error("disk full");
+			},
 		};
 		const engine = new TickerEngine(host, undefined, undefined, clock);
 		engine.start();
@@ -109,8 +127,12 @@ describe("ticker durable time rules", () => {
 		};
 		const host: TickerHostPort = {
 			isBusy: () => false,
-			submitOpportunity: async (text) => { submitted.push(text); },
-			saveDurableState: async () => { throw new Error("disk full"); },
+			submitOpportunity: async (text) => {
+				submitted.push(text);
+			},
+			saveDurableState: async () => {
+				throw new Error("disk full");
+			},
 		};
 		const engine = new TickerEngine(host, initial, { maxDailyAttempts: 1 }, clock);
 		engine.start();
@@ -125,7 +147,9 @@ describe("ticker durable time rules", () => {
 		const submitted: string[] = [];
 		const host: TickerHostPort = {
 			isBusy: () => false,
-			submitOpportunity: async (text) => { submitted.push(text); },
+			submitOpportunity: async (text) => {
+				submitted.push(text);
+			},
 			saveDurableState: async () => {},
 		};
 		const engine = new TickerEngine(host, undefined, undefined, clock);
@@ -146,11 +170,16 @@ describe("ticker durable time rules", () => {
 			submitOpportunity: async () => {},
 			saveDurableState: async () => {},
 		};
-		const engine = new TickerEngine(host, {
-			baseIntervalMs: 120_000,
-			pausedUntilEpochMs: null,
-			dailyAttempts: { date: new Date(clock.epoch).toDateString(), count: 3 },
-		}, undefined, clock);
+		const engine = new TickerEngine(
+			host,
+			{
+				baseIntervalMs: 120_000,
+				pausedUntilEpochMs: null,
+				dailyAttempts: { date: new Date(clock.epoch).toDateString(), count: 3 },
+			},
+			undefined,
+			clock,
+		);
 		engine.start();
 		await clock.advance(60_000);
 		expect(engine.getStatus().dailyAttemptsUsed).toBe(0);

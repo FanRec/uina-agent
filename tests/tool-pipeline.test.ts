@@ -7,17 +7,19 @@ import type { ToolResultStatus } from "../src/core/types.js";
 describe("Tool Execution Pipeline", () => {
 	function createTestBroker() {
 		const broker = new ToolBroker();
-		broker.register(mockTool("echo_tool", async (args) => ({ result: `echo:${String(args.msg)}`, status: "succeeded" }), {
-			description: "回显输入",
-			parameters: {
-				type: "object",
-				properties: {
-					msg: { type: "string" },
+		broker.register(
+			mockTool("echo_tool", async (args) => ({ result: `echo:${String(args.msg)}`, status: "succeeded" }), {
+				description: "回显输入",
+				parameters: {
+					type: "object",
+					properties: {
+						msg: { type: "string" },
+					},
+					required: ["msg"],
+					additionalProperties: false,
 				},
-				required: ["msg"],
-				additionalProperties: false,
-			},
-		}));
+			}),
+		);
 		return broker;
 	}
 
@@ -66,7 +68,9 @@ describe("Tool Execution Pipeline", () => {
 
 	test("drops contribution status so execution facts cannot be rewritten (failed stays failed)", async () => {
 		const broker = new ToolBroker();
-		broker.register(mockTool("fail_tool", async () => ({ result: "boom", status: "failed" }), { description: "失败工具" }));
+		broker.register(
+			mockTool("fail_tool", async () => ({ result: "boom", status: "failed" }), { description: "失败工具" }),
+		);
 
 		const outcome = await executeToolPipeline(
 			broker,
@@ -74,7 +78,7 @@ describe("Tool Execution Pipeline", () => {
 			{
 				hooks: {
 					// 模拟 JS 扩展无视类型合同返回 status：流水线必须丢弃，result/details 改写仍生效
-					transformResult: async (input) => ({ result: `[SPUN] ${input.result}`, status: "succeeded" } as never),
+					transformResult: async (input) => ({ result: `[SPUN] ${input.result}`, status: "succeeded" }) as never,
 				},
 			},
 		);
@@ -90,7 +94,7 @@ describe("Tool Execution Pipeline", () => {
 			{ callId: "c-ok", name: "echo_tool", args: { msg: "keep" } },
 			{
 				hooks: {
-					transformResult: async (input) => ({ result: `[AUDITED] ${input.result}`, status: "cancelled" } as never),
+					transformResult: async (input) => ({ result: `[AUDITED] ${input.result}`, status: "cancelled" }) as never,
 				},
 			},
 		);
@@ -160,10 +164,7 @@ describe("Tool Execution Pipeline", () => {
 			},
 		);
 
-		expect(trace).toEqual([
-			"beforeCall",
-			"onDone:not_started:[blocked] 工具执行已被拦截: 安全策略拒绝执行",
-		]);
+		expect(trace).toEqual(["beforeCall", "onDone:not_started:[blocked] 工具执行已被拦截: 安全策略拒绝执行"]);
 		expect(outcome.status).toBe("not_started");
 		expect(outcome.result).toBe("[blocked] 工具执行已被拦截: 安全策略拒绝执行");
 	});
@@ -197,10 +198,7 @@ describe("Tool Execution Pipeline", () => {
 			},
 		);
 
-		expect(trace).toEqual([
-			"beforeCall",
-			"onDone:not_started",
-		]);
+		expect(trace).toEqual(["beforeCall", "onDone:not_started"]);
 		expect(outcome.status).toBe("not_started");
 		expect(outcome.result).toContain("参数校验失败");
 	});
@@ -210,19 +208,25 @@ describe("Tool Execution Pipeline", () => {
 		const controller = new AbortController();
 		const trace: string[] = [];
 
-		broker.register(mockTool("hanging_tool", async (_args, signal) => {
-			return new Promise((_resolve, reject) => {
-				// 已经在执行中触发中断
-				controller.abort();
-				if (signal?.aborted) {
-					reject(new Error("aborted"));
-				} else {
-					signal?.addEventListener("abort", () => {
-						reject(new Error("aborted"));
+		broker.register(
+			mockTool(
+				"hanging_tool",
+				async (_args, signal) => {
+					return new Promise((_resolve, reject) => {
+						// 已经在执行中触发中断
+						controller.abort();
+						if (signal?.aborted) {
+							reject(new Error("aborted"));
+						} else {
+							signal?.addEventListener("abort", () => {
+								reject(new Error("aborted"));
+							});
+						}
 					});
-				}
-			});
-		}, { description: "等待取消" }));
+				},
+				{ description: "等待取消" },
+			),
+		);
 
 		const pipelinePromise = executeToolPipeline(
 			broker,
@@ -247,19 +251,26 @@ describe("Tool Execution Pipeline", () => {
 
 	test("preserves continuation stop from tool outcome", async () => {
 		const broker = new ToolBroker();
-		broker.register(mockTool("stopper", async () => {
-			return { result: "done", status: "succeeded" as ToolResultStatus, continuation: "stop" };
-		}, { description: "请求中断决策" }));
-
-		const outcome = await broker.executePipeline(
-			{ callId: "c-stop", name: "stopper", args: {} },
+		broker.register(
+			mockTool(
+				"stopper",
+				async () => {
+					return { result: "done", status: "succeeded" as ToolResultStatus, continuation: "stop" };
+				},
+				{ description: "请求中断决策" },
+			),
 		);
+
+		const outcome = await broker.executePipeline({ callId: "c-stop", name: "stopper", args: {} });
 
 		expect(outcome.continuation).toBe("stop");
 		expect(outcome.status).toBe("succeeded");
 	});
 
-	test("executes tools directly through Host.runToolDirect with extension hooks and no model history", async ({ uina, env }) => {
+	test("executes tools directly through Host.runToolDirect with extension hooks and no model history", async ({
+		uina,
+		env,
+	}) => {
 		await env.writeExtension(
 			"probe.mjs",
 			`
@@ -294,20 +305,21 @@ export default function activate(uina) {
 	});
 	test("warns when a contribution carries only status and does not flip the execution result", async () => {
 		const broker = new ToolBroker();
-		broker.register(mockTool("fail_tool", async () => ({ result: "boom", status: "failed" }), { description: "失败工具" }));
+		broker.register(
+			mockTool("fail_tool", async () => ({ result: "boom", status: "failed" }), { description: "失败工具" }),
+		);
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
 			const outcome = await executeToolPipeline(
 				broker,
 				{ callId: "c-status", name: "fail_tool", args: {} },
-				{ hooks: { transformResult: async () => ({ status: "succeeded" } as never) } },
+				{ hooks: { transformResult: async () => ({ status: "succeeded" }) as never } },
 			);
 			expect(outcome.status).toBe("failed");
 			expect(outcome.result).toBe("boom");
-			expect(warn.mock.calls.some(call => String(call[0]).includes("status"))).toBe(true);
+			expect(warn.mock.calls.some((call) => String(call[0]).includes("status"))).toBe(true);
 		} finally {
 			warn.mockRestore();
 		}
 	});
-
 });

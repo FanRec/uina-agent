@@ -1,4 +1,4 @@
-﻿import type { ToolResultStatus } from "../../../core/types.js";
+import type { ToolResultStatus } from "../../../core/types.js";
 /**
  * 工具调用状态与结果卡片组件（完美对齐 dsh-TUI / Claude Code 工具呈现规范）。
  *
@@ -230,7 +230,10 @@ export function foldTerminalCommand(cmd: string): { first: string; hidden: numbe
 }
 
 /** 提取参数中的主要指令或文件路径 */
-export function extractSummaryArgs(_name: string, args: unknown): { summary: string; isMultiLine: boolean; full: string } {
+export function extractSummaryArgs(
+	_name: string,
+	args: unknown,
+): { summary: string; isMultiLine: boolean; full: string } {
 	if (!args) return { summary: "", isMultiLine: false, full: "" };
 	let parsedArgs = args;
 	if (typeof args === "string") {
@@ -276,11 +279,15 @@ export function extractSummaryArgs(_name: string, args: unknown): { summary: str
 }
 
 /** 提取结果中的文件 Diff 信息（若存在） */
-function extractDiff(args: unknown, resultObj: Record<string, unknown> | null): { oldText: string; newText: string; filename: string } | null {
+function extractDiff(
+	args: unknown,
+	resultObj: Record<string, unknown> | null,
+): { oldText: string; newText: string; filename: string } | null {
 	// 1. 如果结果对象直接包含了 diff 字段
 	if (resultObj) {
 		if (typeof resultObj.oldText === "string" && typeof resultObj.newText === "string") {
-			const filename = typeof resultObj.filename === "string" ? resultObj.filename : (resultObj.path as string) || "file";
+			const filename =
+				typeof resultObj.filename === "string" ? resultObj.filename : (resultObj.path as string) || "file";
 			return { oldText: resultObj.oldText, newText: resultObj.newText, filename };
 		}
 	}
@@ -319,12 +326,7 @@ function formatStructuredValue(value: unknown): string {
  *    彻底根治“ANSI reset 导致背景断裂成前缀小色块”的终端渲染顽疾；
  * 3. 尊重终端双字节全角字符（CJK）与 Emoji 宽度，绝不产生对齐错位。
  */
-export function applyCardBackground(
-	line: string,
-	bg: string,
-	width: number,
-	opts?: { endBadge?: string },
-): string {
+export function applyCardBackground(line: string, bg: string, width: number, opts?: { endBadge?: string }): string {
 	if (!bg) return line;
 	const curW = visibleWidth(line);
 	const effLine = curW > width ? truncateToWidth(line, width, "…") : line;
@@ -346,9 +348,7 @@ export function applyCardBackground(
 	}
 	const padding = " ".repeat(padLen);
 
-	const patched = effLine
-		.replace(/\x1b\[0?m/g, `\x1b[0m${bg}`)
-		.replace(/\x1b\[49m/g, bg);
+	const patched = effLine.replace(/\x1b\[0?m/g, `\x1b[0m${bg}`).replace(/\x1b\[49m/g, bg);
 
 	return `${bg}${patched}${padding}${badge}${C.reset}`;
 }
@@ -453,7 +453,14 @@ export function formatToolCardLines(
 		elapsedText = ` · ${formatDuration(elapsedMs)}`;
 	}
 
-	const statusSuffix = status === "cancelled" ? " · 已取消" : status === "unknown" ? " · 结果未知" : status === "not_started" ? " · 未执行" : "";
+	const statusSuffix =
+		status === "cancelled"
+			? " · 已取消"
+			: status === "unknown"
+				? " · 结果未知"
+				: status === "not_started"
+					? " · 未执行"
+					: "";
 	const statusColor = isError ? C.error : isUnconfirmed ? C.warning : C.dim;
 	const elapsedColor = isHovered ? C.text : C.dim;
 	// hover 指示符不拼进行内容：多出的可视列会让临界满宽标题行在 hover 态软换行
@@ -478,7 +485,10 @@ export function formatToolCardLines(
 	// 4. 解析结果体 (Body lines)
 	let obj: Record<string, unknown> | null = null;
 	try {
-		obj = typeof result === "string" ? (JSON.parse(result) as Record<string, unknown>) : (result as Record<string, unknown>);
+		obj =
+			typeof result === "string"
+				? (JSON.parse(result) as Record<string, unknown>)
+				: (result as Record<string, unknown>);
 	} catch {
 		obj = null;
 	}
@@ -496,13 +506,7 @@ export function formatToolCardLines(
 	// 6. 检查是否为 Diff 视图
 	const diffInfo = extractDiff(args, obj);
 	if (diffInfo) {
-		const diffLines = formatDiffCardLines(
-			diffInfo.oldText,
-			diffInfo.newText,
-			diffInfo.filename,
-			!isExpanded,
-			maxW - 4,
-		);
+		const diffLines = formatDiffCardLines(diffInfo.oldText, diffInfo.newText, diffInfo.filename, !isExpanded, maxW - 4);
 		for (const dl of diffLines) {
 			cardLines.push(`   ${dl}`);
 		}
@@ -519,12 +523,19 @@ export function formatToolCardLines(
 	}
 
 	const rawError = isError
-		? (obj && typeof obj.error === "string" ? keepSgrOnly(obj.error) : String(result || "执行遇到错误"))
-		: (obj && typeof obj.error === "string" ? keepSgrOnly(obj.error) : "");
+		? obj && typeof obj.error === "string"
+			? keepSgrOnly(obj.error)
+			: String(result || "执行遇到错误")
+		: obj && typeof obj.error === "string"
+			? keepSgrOnly(obj.error)
+			: "";
 
 	if (rawError) {
 		const errClean = resolveCarriageReturns(keepSgrOnly(rawError)).trim();
-		const errLines = errClean.split("\n").map((l) => l.trimEnd()).filter(Boolean);
+		const errLines = errClean
+			.split("\n")
+			.map((l) => l.trimEnd())
+			.filter(Boolean);
 		for (let i = 0; i < errLines.length; i++) {
 			const gutter = i === 0 ? GUTTER_FIRST : GUTTER_REST;
 			cardLines.push(`${C.red}${gutter}${errLines[i]!}${C.reset}`);
@@ -644,4 +655,3 @@ export function formatToolCardLines(
 
 	return finishCard(cardLines, isHovered, maxW, headerBadge);
 }
-

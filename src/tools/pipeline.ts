@@ -5,8 +5,28 @@ import { warnIgnoredToolStatus } from "../runtime/hooks.js";
 import type { PreparedToolCall, ToolExecutionResult, ToolView } from "./broker.js";
 
 export interface ToolPipelineHooks {
-	beforeCall?(input: Readonly<{ callId: string; invocationId: string; name: string; args: DeepReadonly<Record<string, unknown>> }>): Promise<Readonly<{ block?: boolean; reason?: string }>>;
-	transformResult?(input: Readonly<{ callId: string; invocationId: string; name: string; args: DeepReadonly<Record<string, unknown>>; result: string; status: ToolResultStatus; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>): Promise<Readonly<{ result?: string; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>>;
+	beforeCall?(
+		input: Readonly<{
+			callId: string;
+			invocationId: string;
+			name: string;
+			args: DeepReadonly<Record<string, unknown>>;
+		}>,
+	): Promise<Readonly<{ block?: boolean; reason?: string }>>;
+	transformResult?(
+		input: Readonly<{
+			callId: string;
+			invocationId: string;
+			name: string;
+			args: DeepReadonly<Record<string, unknown>>;
+			result: string;
+			status: ToolResultStatus;
+			images?: readonly import("../core/content.js").ImageContent[];
+			details?: unknown;
+		}>,
+	): Promise<
+		Readonly<{ result?: string; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>
+	>;
 }
 
 export interface ToolCallRequest {
@@ -36,7 +56,13 @@ export async function executeToolPipeline(
 	broker: ToolView,
 	call: ToolCallRequest,
 	options: ToolPipelineOptions = {},
-): Promise<ToolExecutionResult & { callId: string; invocationId: string; /** 原始执行结果（阶段 D/M7）：canonical journal 落盘用，未经 transformResult 改写。 */ canonical?: ToolExecutionResult }> {
+): Promise<
+	ToolExecutionResult & {
+		callId: string;
+		invocationId: string /** 原始执行结果（阶段 D/M7）：canonical journal 落盘用，未经 transformResult 改写。 */;
+		canonical?: ToolExecutionResult;
+	}
+> {
 	const { signal, hooks, observers } = options;
 	const invocationId = call.invocationId ?? call.callId;
 	const executionCall: ToolCallRequest = call.invocationId ? call : { ...call, invocationId };

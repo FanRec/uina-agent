@@ -92,11 +92,7 @@ export class OutputCollector {
 	snapshot(): OutputSnapshot {
 		const totalLines = this.totalLines();
 		const truncated = totalLines > MAX_OUTPUT_LINES || this.totalBytes > MAX_OUTPUT_BYTES;
-		const truncatedBy = truncated
-			? this.totalBytes > MAX_OUTPUT_BYTES
-				? "bytes"
-				: "lines"
-			: null;
+		const truncatedBy = truncated ? (this.totalBytes > MAX_OUTPUT_BYTES ? "bytes" : "lines") : null;
 		return {
 			content: truncated ? truncateTail(this.tail) : this.tail,
 			totalBytes: this.totalBytes,
@@ -117,10 +113,7 @@ export class OutputCollector {
 
 	private openTempFile(): void {
 		if (this.tempStream) return;
-		this.fullOutputPath = join(
-			tmpdir(),
-			`uina-exec-${Date.now()}-${randomBytes(6).toString("hex")}.out.txt`,
-		);
+		this.fullOutputPath = join(tmpdir(), `uina-exec-${Date.now()}-${randomBytes(6).toString("hex")}.out.txt`);
 		this.tempStream = createWriteStream(this.fullOutputPath);
 		this.tempStream.on("error", (error) => this.fail(error));
 		for (const chunk of this.rawChunks) this.tempStream.write(chunk);

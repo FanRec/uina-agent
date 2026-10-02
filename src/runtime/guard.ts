@@ -21,9 +21,7 @@ export function readonlySnapshot<T>(value: T): DeepReadonly<T> {
  * AbortSignal lives outside this contract: it is runtime-owned identity that
  * cannot survive structuredClone, so hook inputs carry it through untouched
  * (signals are already immutable). */
-function withSignal<T extends { signal: AbortSignal }>(
-	input: Readonly<T>,
-): DeepReadonly<T> {
+function withSignal<T extends { signal: AbortSignal }>(input: Readonly<T>): DeepReadonly<T> {
 	const { signal, ...data } = input;
 	return Object.freeze({ ...readonlySnapshot(data as Omit<T, "signal">), signal }) as DeepReadonly<T>;
 }
@@ -49,7 +47,8 @@ export function guardRuntimeHooks(hooks: RuntimeHooks): RuntimeHooks {
 	const guarded: RuntimeHooks = {
 		turn: Object.freeze({
 			prepare: async (input) => copyPrepare(await hooks.turn.prepare(readonlySnapshot(input))),
-			transformContext: async (projection) => copyProjection(await hooks.turn.transformContext(readonlySnapshot(projection))),
+			transformContext: async (projection) =>
+				copyProjection(await hooks.turn.transformContext(readonlySnapshot(projection))),
 			preflight: async (input) => Object.freeze({ ...(await hooks.turn.preflight(withSignal(input))) }),
 			afterEnd: async (input) => hooks.turn.afterEnd(withSignal(input)),
 			shouldStop: async (input) => Object.freeze({ ...(await hooks.turn.shouldStop(readonlySnapshot(input))) }),
@@ -59,9 +58,12 @@ export function guardRuntimeHooks(hooks: RuntimeHooks): RuntimeHooks {
 			transformResult: async (input) => copyValue(await hooks.tools.transformResult(readonlySnapshot(input))),
 		}),
 		provider: Object.freeze({
-			transformHeaders: async (provider: string, headers: Readonly<Record<string, string>>) => clone(await hooks.provider.transformHeaders(provider, readonlySnapshot(headers))),
-			transformPayload: async (provider: string, payload: DeepReadonly<unknown>) => clone(await hooks.provider.transformPayload(provider, readonlySnapshot(payload))),
-			observeResponse: async (input: Readonly<{ provider: string; status: number; headers: Record<string, string> }>) => hooks.provider.observeResponse(readonlySnapshot(input)),
+			transformHeaders: async (provider: string, headers: Readonly<Record<string, string>>) =>
+				clone(await hooks.provider.transformHeaders(provider, readonlySnapshot(headers))),
+			transformPayload: async (provider: string, payload: DeepReadonly<unknown>) =>
+				clone(await hooks.provider.transformPayload(provider, readonlySnapshot(payload))),
+			observeResponse: async (input: Readonly<{ provider: string; status: number; headers: Record<string, string> }>) =>
+				hooks.provider.observeResponse(readonlySnapshot(input)),
 		}),
 		events: Object.freeze({
 			// DeepReadonly 视图传给 emit：契约形状是 RuntimeEvent，但只读性由 deepFreeze 保证。
@@ -75,8 +77,18 @@ export function guardRuntimeHooks(hooks: RuntimeHooks): RuntimeHooks {
 }
 
 function copyPrepare(
-	value: Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string; model?: import("../core/types.js").Model; thinkingLevel?: import("../core/types.js").ThinkingLevel }>,
-): Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string; model?: import("../core/types.js").Model; thinkingLevel?: import("../core/types.js").ThinkingLevel }> {
+	value: Readonly<{
+		messages?: readonly ChatMsg[];
+		systemPrompt?: string;
+		model?: import("../core/types.js").Model;
+		thinkingLevel?: import("../core/types.js").ThinkingLevel;
+	}>,
+): Readonly<{
+	messages?: readonly ChatMsg[];
+	systemPrompt?: string;
+	model?: import("../core/types.js").Model;
+	thinkingLevel?: import("../core/types.js").ThinkingLevel;
+}> {
 	return Object.freeze({
 		...(value.messages ? { messages: copyMessages(value.messages) } : {}),
 		...(value.systemPrompt !== undefined ? { systemPrompt: value.systemPrompt } : {}),
@@ -100,8 +112,9 @@ function copyProjection(projection: DeepReadonly<RequestProjection> | RequestPro
 }
 
 function clone<T>(value: T): T {
-	try { return structuredClone(value); }
-	catch {
+	try {
+		return structuredClone(value);
+	} catch {
 		if (Array.isArray(value)) return value.map(clone) as T;
 		if (value && typeof value === "object") return { ...(value as Record<string, unknown>) } as T;
 		return value;

@@ -16,7 +16,9 @@
     "dev": "tsx watch src/main.ts",
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
     "test": "vitest run",
-    "typecheck": "pnpm check:boundaries && tsc --noEmit",
+    "typecheck": "biome format . && pnpm check:boundaries && tsc --noEmit",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
     "dev:baseline": "node dev/baseline.mjs",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "verify:cli": "tsx scripts/verify-built-cli.mts",
@@ -24,6 +26,7 @@
     "diagnose:frames": "tsx scripts/diagnose-frame-log.mts"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
     "@types/node": "^26.4.0",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "4.1.11",

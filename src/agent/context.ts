@@ -1,23 +1,30 @@
-import type { AgentMessage, ChatMsg, ContextSegments, RequestProjection, TokenMeasurement, ToolDef, Usage } from "../core/types.js";
+import type {
+	AgentMessage,
+	ChatMsg,
+	ContextSegments,
+	RequestProjection,
+	TokenMeasurement,
+	ToolDef,
+	Usage,
+} from "../core/types.js";
 
 /** ASCII fallback ratio. Non-ASCII code points are counted separately below. */
 export const CHARS_PER_TOKEN = 4;
 
-export interface ContextEstimate { tokens: number; actual: boolean; }
+export interface ContextEstimate {
+	tokens: number;
+	actual: boolean;
+}
 
 export interface BuildInput {
 	history: readonly (AgentMessage | ChatMsg)[];
 	systemPrompt?: string;
 	includeThinking?: boolean;
 	/** Replacement 缝：memory→provider 形塑（缺省 = convertToLlm 默认实现）。 */
-	convertToLlm?: (
-		messages: readonly (AgentMessage | ChatMsg)[],
-		opts?: { includeThinking?: boolean },
-	) => ChatMsg[];
+	convertToLlm?: (messages: readonly (AgentMessage | ChatMsg)[], opts?: { includeThinking?: boolean }) => ChatMsg[];
 }
 
-const DEFAULT_SYSTEM_PROMPT =
-	"你是 Uina。你处于一个 harness 中,这是你与世界交互的媒介。";
+const DEFAULT_SYSTEM_PROMPT = "你是 Uina。你处于一个 harness 中,这是你与世界交互的媒介。";
 
 export function defaultSystemPrompt(): string {
 	return DEFAULT_SYSTEM_PROMPT;
@@ -58,7 +65,7 @@ export function convertToLlm(
 		const inherited = "context" in msg ? msg.context : "input" in msg && msg.input ? { input: msg.input } : undefined;
 		const entryId = "id" in msg ? msg.id : undefined;
 		const context = inherited || entryId ? { ...inherited, ...(entryId ? { entryId } : {}) } : undefined;
-        const meta = context ? { context } : {};
+		const meta = context ? { context } : {};
 		switch (msg.role) {
 			case "system":
 				result.push({ ...meta, role: "system", content: msg.content, images: msg.images });
@@ -83,7 +90,7 @@ export function convertToLlm(
 				}
 
 				result.push({
-                    ...meta,
+					...meta,
 					role: "assistant",
 					content,
 					thinking,
@@ -98,7 +105,7 @@ export function convertToLlm(
 			case "tool":
 				if (msg.tool_call_id && pairedIds.has(msg.tool_call_id)) {
 					result.push({
-                        ...meta,
+						...meta,
 						role: "tool",
 						tool_call_id: msg.tool_call_id,
 						content: msg.content,
@@ -124,10 +131,7 @@ export function buildContext(b: BuildInput): ChatMsg[] {
 		includeThinking: b.includeThinking,
 	});
 
-	return [
-		{ role: "system", content: systemContent },
-		...cleaned,
-	];
+	return [{ role: "system", content: systemContent }, ...cleaned];
 }
 
 /**
@@ -200,8 +204,12 @@ export function measureRequestContext(
 	}
 	const segments = estimateContextSegments(projection.messages, projection.tools);
 	return {
-		inputTokens: segments.system + segments.prompt + segments.assistant
-			+ (projection.thinkingLevel !== "off" ? segments.thinking : 0) + segments.tools,
+		inputTokens:
+			segments.system +
+			segments.prompt +
+			segments.assistant +
+			(projection.thinkingLevel !== "off" ? segments.thinking : 0) +
+			segments.tools,
 		kind: "approximate",
 		source: "fallback_estimator",
 		segments,
@@ -313,15 +321,21 @@ export function estimateContextSegments(
 	for (const message of messages) {
 		const contentTokens = estimateTextTokens(message.content ?? "") + 4;
 		switch (message.role) {
-			case "system": result.system += contentTokens; break;
+			case "system":
+				result.system += contentTokens;
+				break;
 			case "custom":
-			case "user": result.prompt += contentTokens; break;
+			case "user":
+				result.prompt += contentTokens;
+				break;
 			case "assistant":
 				result.assistant += contentTokens;
 				if (message.thinking) result.thinking += estimateTextTokens(message.thinking) + 4;
 				if (message.tool_calls) result.tools += estimateTextTokens(JSON.stringify(message.tool_calls));
 				break;
-			case "tool": result.tools += contentTokens; break;
+			case "tool":
+				result.tools += contentTokens;
+				break;
 		}
 	}
 	if (tools.length > 0) result.tools += estimateTextTokens(JSON.stringify(tools));

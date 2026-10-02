@@ -6,12 +6,7 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 export type ToolExecutionMode = "parallel" | "sequential";
 export type AssistantStatus = "complete" | "length" | "aborted" | "error";
 export type FinishReason = "stop" | "tool_calls" | "length";
-export type ToolResultStatus =
-	| "succeeded"
-	| "failed"
-	| "cancelled"
-	| "unknown"
-	| "not_started";
+export type ToolResultStatus = "succeeded" | "failed" | "cancelled" | "unknown" | "not_started";
 
 /** ToolResultStatus 的合法值集合（P2-H 单一事实）：broker 的运行时校验与
  * recovery.checkEvent 的 journal 校验共用；第三方 Tool 是不可信边界，两处
@@ -41,19 +36,23 @@ export interface ToolEffect {
 }
 
 export interface InputSource {
- kind: "user" | "runtime" | "agent";
- type: string;
- ref?: string;
- origin?: "external" | "internal";
- channel?: string;
- actor?: { id?: string; label?: string; relation?: "operator" | "participant" | "unknown" };
- provenance?: { branchId?: string; abandoned?: boolean };
+	kind: "user" | "runtime" | "agent";
+	type: string;
+	ref?: string;
+	origin?: "external" | "internal";
+	channel?: string;
+	actor?: { id?: string; label?: string; relation?: "operator" | "participant" | "unknown" };
+	provenance?: { branchId?: string; abandoned?: boolean };
 }
-export interface InputProvenance { eventId: string; source?: InputSource; receivedAt?: string; }
+export interface InputProvenance {
+	eventId: string;
+	source?: InputSource;
+	receivedAt?: string;
+}
 export interface ModelContextMeta {
- input?: InputProvenance;
- group?: { id: string; index: number; size: number };
- kind?: string;
+	input?: InputProvenance;
+	group?: { id: string; index: number; size: number };
+	kind?: string;
 	/** Stable canonical request-bearing entry identity; never serialized to Provider wire. */
 	entryId?: string;
 }
@@ -63,14 +62,17 @@ export interface QueuedMessage {
 	order: number;
 	mode: Exclude<DeliveryMode, "direct">;
 	text: string;
- images?: ImageContent[];
+	images?: ImageContent[];
 	source?: InputSource;
- receivedAt?: string;
+	receivedAt?: string;
 	data?: unknown;
 }
 
 /** Opaque replay content is produced and consumed only by the matching adapter. */
-export interface ProviderReplay { format: string; blocks: unknown[]; }
+export interface ProviderReplay {
+	format: string;
+	blocks: unknown[];
+}
 
 export interface Usage {
 	input?: number;
@@ -90,7 +92,7 @@ export interface ContextSegments {
 }
 
 export interface DiscoveredModel {
- imageInput?: boolean;
+	imageInput?: boolean;
 	id: string;
 	contextWindow?: number;
 	thinkingLevels?: readonly ThinkingLevel[];
@@ -108,7 +110,7 @@ export type StreamDelta =
 	| {
 			kind: "tool_call";
 			call: { id: string; name: string; args: string; argsValid?: boolean; thinkingSignature?: string };
-		}
+	  }
 	| { kind: "finish"; reason: FinishReason };
 
 /** 发给模型的工具声明（OpenAI function calling 形状）。 */
@@ -132,29 +134,29 @@ export interface CompletedToolCall {
 }
 
 export interface SystemAgentMessage {
- input?: InputProvenance;
+	input?: InputProvenance;
 	id?: string;
 	role: "system";
 	content: string;
- images?: ImageContent[];
+	images?: ImageContent[];
 	timestamp?: string;
 }
 
 export interface UserAgentMessage {
- input?: InputProvenance;
+	input?: InputProvenance;
 	id?: string;
 	role: "user";
 	content: string;
- images?: ImageContent[];
+	images?: ImageContent[];
 	timestamp?: string;
 }
 
 export interface AssistantAgentMessage {
- input?: InputProvenance;
+	input?: InputProvenance;
 	id?: string;
 	role: "assistant";
 	content: string;
- images?: ImageContent[];
+	images?: ImageContent[];
 	thinking?: string;
 	thinkingSignature?: string;
 	providerReplay?: ProviderReplay;
@@ -165,25 +167,25 @@ export interface AssistantAgentMessage {
 }
 
 export interface ToolAgentMessage {
- input?: InputProvenance;
- details?: unknown;
+	input?: InputProvenance;
+	details?: unknown;
 	id?: string;
 	role: "tool";
 	tool_call_id: string;
 	name?: string;
 	content: string;
- images?: ImageContent[];
+	images?: ImageContent[];
 	status?: ToolResultStatus;
 	timestamp?: string;
 }
 
 export interface CustomAgentMessage {
- input?: InputProvenance;
+	input?: InputProvenance;
 	id?: string;
 	role: "custom";
 	customType: string;
 	content: string;
- images?: ImageContent[];
+	images?: ImageContent[];
 	display?: boolean;
 	details?: unknown;
 	timestamp?: string;
@@ -201,22 +203,22 @@ export type ChatMsg = { context?: ModelContextMeta } & (
 	| {
 			role: "assistant";
 			content: string;
- images?: ImageContent[];
+			images?: ImageContent[];
 			thinking?: string;
 			thinkingSignature?: string;
 			providerReplay?: ProviderReplay;
 			tool_calls?: CompletedToolCall[];
 			status?: AssistantStatus;
 			usage?: Usage;
-		}
+	  }
 	| {
 			role: "tool";
 			tool_call_id: string;
-   details?: unknown;
+			details?: unknown;
 			content: string;
- images?: ImageContent[];
+			images?: ImageContent[];
 			status?: ToolResultStatus;
-		}
+	  }
 );
 
 export interface ModelRequest {
@@ -291,8 +293,8 @@ export interface ModelCompat {
 
 /** 模型规格：纯数据，不携带端点、凭据与传输方法（对齐 Pi packages/ai/src/types.ts:830） */
 export interface Model {
- /** Explicit catalog/config fact. Missing means unknown. */
- readonly imageInput?: boolean;
+	/** Explicit catalog/config fact. Missing means unknown. */
+	readonly imageInput?: boolean;
 	/** wire 上的模型标识（请求体中的 model 字段） */
 	readonly id: string;
 	/** 显示名称 */
@@ -328,12 +330,7 @@ export interface Provider {
 	 * 以给定 Model 向该端点发起流式对话：逐段回调 onDelta。
 	 * 协议错误、异常断流和不完整响应必须抛错；主动中断通过 signal 传播。
 	 */
-	stream(
-		model: Model,
-		req: ModelRequest,
-		onDelta: (d: StreamDelta) => void,
-		signal?: AbortSignal,
-	): Promise<void>;
+	stream(model: Model, req: ModelRequest, onDelta: (d: StreamDelta) => void, signal?: AbortSignal): Promise<void>;
 }
 
 export type ModelStreamFn = (

@@ -99,8 +99,18 @@ describe("M3 MemoryStore：乐观并发与冲突", () => {
 		const oldHash = created.hash;
 
 		const results = await Promise.all([
-			store.write({ op: "revise", id: created.id, expectedHash: oldHash, record: { body: "修订 A", sources: [{ sessionId: "default", entryId: "e2" }] } }),
-			store.write({ op: "revise", id: created.id, expectedHash: oldHash, record: { body: "修订 B", sources: [{ sessionId: "default", entryId: "e2" }] } }),
+			store.write({
+				op: "revise",
+				id: created.id,
+				expectedHash: oldHash,
+				record: { body: "修订 A", sources: [{ sessionId: "default", entryId: "e2" }] },
+			}),
+			store.write({
+				op: "revise",
+				id: created.id,
+				expectedHash: oldHash,
+				record: { body: "修订 B", sources: [{ sessionId: "default", entryId: "e2" }] },
+			}),
 		]);
 		const committed = results.filter((r) => r.status === "committed");
 		const conflicted = results.filter((r) => r.status === "conflict");
@@ -119,14 +129,24 @@ describe("M3 MemoryStore：乐观并发与冲突", () => {
 		const created = await createRecord();
 		if (created.status !== "committed") throw new Error("expected committed");
 		const before = await store.read(created.id);
-		const result = await store.write({ op: "revise", id: created.id, expectedHash: "deadbeef", record: { body: "错误哈希修订", sources: [] } });
+		const result = await store.write({
+			op: "revise",
+			id: created.id,
+			expectedHash: "deadbeef",
+			record: { body: "错误哈希修订", sources: [] },
+		});
 		expect(result.status).toBe("conflict");
 		const after = await store.read(created.id);
 		expect(after!.body).toBe(before!.body);
 	});
 
 	it("revise 不存在的 id → rejected", async () => {
-		const result = await store.write({ op: "revise", id: "m-nope", expectedHash: "x", record: { body: "y", sources: [] } });
+		const result = await store.write({
+			op: "revise",
+			id: "m-nope",
+			expectedHash: "x",
+			record: { body: "y", sources: [] },
+		});
 		expect(result.status).toBe("rejected");
 	});
 });
@@ -135,7 +155,12 @@ describe("M3 MemoryStore：备份与版本历史", () => {
 	it("revise 成功 → 旧版本进 revisions/<id>/，当前文件更新", async () => {
 		const created = await createRecord();
 		if (created.status !== "committed") throw new Error("expected committed");
-		const revised = await store.write({ op: "revise", id: created.id, expectedHash: created.hash, record: { body: "第二版", sources: [{ sessionId: "default", entryId: "e2" }] } });
+		const revised = await store.write({
+			op: "revise",
+			id: created.id,
+			expectedHash: created.hash,
+			record: { body: "第二版", sources: [{ sessionId: "default", entryId: "e2" }] },
+		});
 		expect(revised.status).toBe("committed");
 		if (revised.status !== "committed") return;
 		expect(revised.revision).toBe(2);
@@ -158,7 +183,12 @@ describe("M3 MemoryStore：备份与版本历史", () => {
 		const before = await store.read(created.id);
 		// validateSource 对 "boom" 抛异常：模拟写中途失败（替换尚未发生）→ 当前文件不受影响。
 		await expect(
-			store.write({ op: "revise", id: created.id, expectedHash: created.hash, record: { body: "x", sources: [{ sessionId: "default", entryId: "boom" }] } }),
+			store.write({
+				op: "revise",
+				id: created.id,
+				expectedHash: created.hash,
+				record: { body: "x", sources: [{ sessionId: "default", entryId: "boom" }] },
+			}),
 		).rejects.toThrow();
 		const after = await store.read(created.id);
 		expect(after!.body).toBe(before!.body);
@@ -215,7 +245,7 @@ describe("M3 MemoryStore：retire 与 forget", () => {
 			sessionId: "default",
 			validateSource: async () => true,
 		});
-		expect((await store2.search("先给结论", { spaceId: "private:alice" }))).toHaveLength(0);
+		expect(await store2.search("先给结论", { spaceId: "private:alice" })).toHaveLength(0);
 		expect((await store2.read(created.id))!.status).toBe("retired");
 	});
 
@@ -227,7 +257,9 @@ describe("M3 MemoryStore：retire 与 forget", () => {
 
 		expect(existsSync(join(root, "memory", "records", `${created.id}.md`))).toBe(false);
 		expect(existsSync(join(root, "memory", "revisions", created.id))).toBe(false);
-		const suppressed = JSON.parse(await readFile(join(root, "state", "cognition.json"), "utf8")) as { forgottenIds?: string[] };
+		const suppressed = JSON.parse(await readFile(join(root, "state", "cognition.json"), "utf8")) as {
+			forgottenIds?: string[];
+		};
 		expect(suppressed.forgottenIds).toContain(created.id);
 
 		const store2 = createMemoryStore({
@@ -238,7 +270,7 @@ describe("M3 MemoryStore：retire 与 forget", () => {
 			validateSource: async () => true,
 		});
 		expect(await store2.read(created.id)).toBeUndefined();
-		expect((await store2.search("先给结论", { spaceId: "private:alice" }))).toHaveLength(0);
+		expect(await store2.search("先给结论", { spaceId: "private:alice" })).toHaveLength(0);
 	});
 });
 

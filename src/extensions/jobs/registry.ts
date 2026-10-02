@@ -185,13 +185,15 @@ export class JobRegistry {
 		};
 	}
 
-	async wait(id: string, ownerId: string | undefined, timeoutMs: number, cursor = 0, signal?: AbortSignal): Promise<JobSnapshot> {
+	async wait(
+		id: string,
+		ownerId: string | undefined,
+		timeoutMs: number,
+		cursor = 0,
+		signal?: AbortSignal,
+	): Promise<JobSnapshot> {
 		const job = this.expect(id, ownerId);
-		await job.buffer.wait(
-			() => isTerminal(job.status) || job.buffer.currentCursor > cursor,
-			timeoutMs,
-			signal,
-		);
+		await job.buffer.wait(() => isTerminal(job.status) || job.buffer.currentCursor > cursor, timeoutMs, signal);
 		return snapshotOf(job);
 	}
 
@@ -260,7 +262,11 @@ export class JobRegistry {
 		job.buffer.notify();
 		this.notifyChanged(job);
 		for (const listener of this.resolved) {
-			try { listener(snapshotOf(job)); } catch { /* observers cannot alter settlement */ }
+			try {
+				listener(snapshotOf(job));
+			} catch {
+				/* observers cannot alter settlement */
+			}
 		}
 	}
 
@@ -286,7 +292,11 @@ export class JobRegistry {
 	private notifyChanged(job: TrackedJob): void {
 		const snapshot = snapshotOf(job);
 		for (const listener of this.changed) {
-			try { listener(snapshot); } catch { /* observers cannot alter lifecycle */ }
+			try {
+				listener(snapshot);
+			} catch {
+				/* observers cannot alter lifecycle */
+			}
 		}
 	}
 
@@ -342,10 +352,11 @@ function formatObservation(observation: ObservationChunk): string {
 	return observation.stream === "stderr" ? `[stderr] ${observation.text}` : observation.text;
 }
 
-
 function isJobHandle(value: unknown): value is JobHandle {
-	return !!value
-		&& typeof value === "object"
-		&& typeof (value as JobHandle).cancel === "function"
-		&& typeof (value as JobHandle).done?.then === "function";
+	return (
+		!!value &&
+		typeof value === "object" &&
+		typeof (value as JobHandle).cancel === "function" &&
+		typeof (value as JobHandle).done?.then === "function"
+	);
 }

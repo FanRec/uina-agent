@@ -11,11 +11,7 @@ import { mkdtemp, rm, readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	resolveProfile,
-	releaseProfileLock,
-	type SubjectProfile,
-} from "../src/host/profile.js";
+import { resolveProfile, releaseProfileLock, type SubjectProfile } from "../src/host/profile.js";
 import { resolveSessionPath } from "../src/cli/session-path.js";
 import { UinaHost } from "../src/host/host.js";
 import { Scenario } from "./harness/provider/scenario.js";
@@ -155,11 +151,28 @@ describe("Host 装配：双 profile 隔离（集成）", () => {
 		const b = resolveProfile({ profileArg: "bob", cwd: root })!;
 
 		const scenario = new Scenario({ id: "mock", name: "mock" });
-		scenario.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
+		scenario.fallback(() => [
+			{ kind: "text", text: "ok" },
+			{ kind: "finish", reason: "stop" },
+		]);
 
-		const hostA = await UinaHost.create({ cwd: root, sessionPath: a.sessions.journalPath, profile: a, model: scenario.model, stream: scenario.stream, workspaceTools: false });
+		const hostA = await UinaHost.create({
+			cwd: root,
+			sessionPath: a.sessions.journalPath,
+			profile: a,
+			model: scenario.model,
+			stream: scenario.stream,
+			workspaceTools: false,
+		});
 		try {
-			const hostB = await UinaHost.create({ cwd: root, sessionPath: b.sessions.journalPath, profile: b, model: scenario.model, stream: scenario.stream, workspaceTools: false });
+			const hostB = await UinaHost.create({
+				cwd: root,
+				sessionPath: b.sessions.journalPath,
+				profile: b,
+				model: scenario.model,
+				stream: scenario.stream,
+				workspaceTools: false,
+			});
 			try {
 				// 双 Host 同时存活：各自 journal 路径不同，状态根不同。
 				expect(a.sessions.journalPath).not.toBe(b.sessions.journalPath);

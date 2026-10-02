@@ -1,11 +1,21 @@
-import type { ChatMsg, FinishReason, Model, RequestProjection, ThinkingLevel, TokenMeasurement, ToolResultStatus } from "../core/types.js";
+import type {
+	ChatMsg,
+	FinishReason,
+	Model,
+	RequestProjection,
+	ThinkingLevel,
+	TokenMeasurement,
+	ToolResultStatus,
+} from "../core/types.js";
 import type { DeepReadonly, OutputEvent, RuntimeEvent } from "./events.js";
 import type { ImageContent } from "../core/content.js";
 
 export interface ProviderHooks {
 	transformHeaders(provider: string, headers: Readonly<Record<string, string>>): Promise<Record<string, string>>;
 	transformPayload(provider: string, payload: DeepReadonly<unknown>): Promise<unknown>;
-	observeResponse(input: Readonly<{ provider: string; status: number; headers: Record<string, string> }>): Promise<void>;
+	observeResponse(
+		input: Readonly<{ provider: string; status: number; headers: Record<string, string> }>,
+	): Promise<void>;
 }
 
 /**
@@ -34,14 +44,47 @@ export interface HookInputs {
 	"turn.transformContext": RequestProjection;
 	/** signal = 当前主体活动的取消信号（preflight 为 turn signal，afterEnd 为 post-turn
 	 * signal）。长 IO 工作必须监听它；它与扩展生命周期信号（pi.signal）正交。 */
-	"turn.preflight": { readonly projection: RequestProjection; readonly measurement: TokenMeasurement; readonly pass: number; readonly signal: AbortSignal };
-	"turn.afterEnd": { readonly turnNumber: number; readonly success: boolean; readonly error?: string; readonly signal: AbortSignal };
-	"turn.shouldStop": { readonly turnNumber: number; readonly finishReason: FinishReason; readonly reply: string; readonly toolCallCount: number };
-	"tools.beforeCall": { readonly callId: string; readonly invocationId?: string; readonly name: string; readonly args: Record<string, unknown> };
-	"tools.transformResult": { readonly callId: string; readonly invocationId?: string; readonly name: string; readonly args: Record<string, unknown>; readonly result: string; readonly status: ToolResultStatus; readonly images?: readonly ImageContent[]; readonly details?: unknown };
+	"turn.preflight": {
+		readonly projection: RequestProjection;
+		readonly measurement: TokenMeasurement;
+		readonly pass: number;
+		readonly signal: AbortSignal;
+	};
+	"turn.afterEnd": {
+		readonly turnNumber: number;
+		readonly success: boolean;
+		readonly error?: string;
+		readonly signal: AbortSignal;
+	};
+	"turn.shouldStop": {
+		readonly turnNumber: number;
+		readonly finishReason: FinishReason;
+		readonly reply: string;
+		readonly toolCallCount: number;
+	};
+	"tools.beforeCall": {
+		readonly callId: string;
+		readonly invocationId?: string;
+		readonly name: string;
+		readonly args: Record<string, unknown>;
+	};
+	"tools.transformResult": {
+		readonly callId: string;
+		readonly invocationId?: string;
+		readonly name: string;
+		readonly args: Record<string, unknown>;
+		readonly result: string;
+		readonly status: ToolResultStatus;
+		readonly images?: readonly ImageContent[];
+		readonly details?: unknown;
+	};
 	"provider.transformHeaders": { readonly provider: string; readonly headers: Readonly<Record<string, string>> };
 	"provider.transformPayload": { readonly provider: string; readonly payload: unknown };
-	"provider.observeResponse": { readonly provider: string; readonly status: number; readonly headers: Record<string, string> };
+	"provider.observeResponse": {
+		readonly provider: string;
+		readonly status: number;
+		readonly headers: Record<string, string>;
+	};
 }
 
 /**
@@ -49,13 +92,22 @@ export interface HookInputs {
  * RuntimeHooks 对应方法的返回值 = 所有扩展贡献按合并规则聚合后的结果。
  */
 export interface HookContributions {
-	"turn.prepare": { readonly messages?: readonly ChatMsg[]; readonly systemPrompt?: string; readonly model?: Model; readonly thinkingLevel?: ThinkingLevel };
+	"turn.prepare": {
+		readonly messages?: readonly ChatMsg[];
+		readonly systemPrompt?: string;
+		readonly model?: Model;
+		readonly thinkingLevel?: ThinkingLevel;
+	};
 	"turn.transformContext": { readonly projection?: RequestProjection | DeepReadonly<RequestProjection> };
 	"turn.preflight": { readonly action?: "send" | "rebuild" | "fail"; readonly reason?: string };
 	"turn.afterEnd": Record<string, never>;
 	"turn.shouldStop": { readonly stop?: boolean };
 	"tools.beforeCall": { readonly block?: boolean; readonly reason?: string };
-	"tools.transformResult": { readonly result?: string; readonly images?: readonly ImageContent[]; readonly details?: unknown };
+	"tools.transformResult": {
+		readonly result?: string;
+		readonly images?: readonly ImageContent[];
+		readonly details?: unknown;
+	};
 	"provider.transformHeaders": { readonly headers?: Record<string, string> };
 	"provider.transformPayload": { readonly payload?: unknown };
 	"provider.observeResponse": void;
@@ -82,7 +134,6 @@ export type HookHandler<K extends HookName> = (
  * | provider.observeResponse    | 观察：无返回值，只多播（响应已发生的审计点）     |
  */
 
-
 /** 贡献合同没有 status。JS 扩展仍可能带回该字段：丢弃前警告，不把笔误升级成整回合失败。 */
 export function warnIgnoredToolStatus(contribution: object | null | undefined): void {
 	if (contribution != null && "status" in contribution && (contribution as { status?: unknown }).status !== undefined) {
@@ -97,23 +148,58 @@ export interface RuntimeHooks {
 		 * 或 thinking 档位（Subject 在安全点以 setModel 的完整纪律应用：失效 usage 锚、
 		 * 广播 model_select）。对应 Pi 的 prepareNextTurn。
 		 */
-		prepare(input: Readonly<{ prompt: string; systemPrompt: string }>): Promise<Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string; model?: Model; thinkingLevel?: ThinkingLevel }>>;
+		prepare(
+			input: Readonly<{ prompt: string; systemPrompt: string }>,
+		): Promise<
+			Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string; model?: Model; thinkingLevel?: ThinkingLevel }>
+		>;
 		/** Pure projection transform. Handlers must not consume events, persist state or
 		 * perform external effects merely because inspection ran. */
 		transformContext(projection: DeepReadonly<RequestProjection>): Promise<RequestProjection>;
 		/** Read-only post-measurement decision. Core applies fail > rebuild > send. */
-		preflight(input: Readonly<{ projection: DeepReadonly<RequestProjection>; measurement: TokenMeasurement; pass: number; readonly signal: AbortSignal }>): Promise<Readonly<{ action?: "send" | "rebuild" | "fail"; reason?: string }>>;
+		preflight(
+			input: Readonly<{
+				projection: DeepReadonly<RequestProjection>;
+				measurement: TokenMeasurement;
+				pass: number;
+				readonly signal: AbortSignal;
+			}>,
+		): Promise<Readonly<{ action?: "send" | "rebuild" | "fail"; reason?: string }>>;
 		/** Awaited safe point after all agent_end observers and before queue resume. */
-		afterEnd(input: Readonly<{ turnNumber: number; success: boolean; error?: string; readonly signal: AbortSignal }>): Promise<void>;
+		afterEnd(
+			input: Readonly<{ turnNumber: number; success: boolean; error?: string; readonly signal: AbortSignal }>,
+		): Promise<void>;
 		/**
 		 * 回合间停止决策：在工具交换后的续跑点询问；返回 stop 时本轮立即收尾，
 		 * 不再发起下一次模型调用。对应 Pi 的 shouldStopAfterTurn。
 		 */
-		shouldStop(input: Readonly<{ turnNumber: number; finishReason: FinishReason; reply: string; toolCallCount: number }>): Promise<Readonly<{ stop?: boolean }>>;
+		shouldStop(
+			input: Readonly<{ turnNumber: number; finishReason: FinishReason; reply: string; toolCallCount: number }>,
+		): Promise<Readonly<{ stop?: boolean }>>;
 	};
 	readonly tools: {
-		beforeCall(input: Readonly<{ callId: string; invocationId: string; name: string; args: DeepReadonly<Record<string, unknown>> }>): Promise<Readonly<{ block?: boolean; reason?: string }>>;
-		transformResult(input: Readonly<{ callId: string; invocationId: string; name: string; args: DeepReadonly<Record<string, unknown>>; result: string; status: ToolResultStatus; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>): Promise<Readonly<{ result?: string; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>>;
+		beforeCall(
+			input: Readonly<{
+				callId: string;
+				invocationId: string;
+				name: string;
+				args: DeepReadonly<Record<string, unknown>>;
+			}>,
+		): Promise<Readonly<{ block?: boolean; reason?: string }>>;
+		transformResult(
+			input: Readonly<{
+				callId: string;
+				invocationId: string;
+				name: string;
+				args: DeepReadonly<Record<string, unknown>>;
+				result: string;
+				status: ToolResultStatus;
+				images?: readonly import("../core/content.js").ImageContent[];
+				details?: unknown;
+			}>,
+		): Promise<
+			Readonly<{ result?: string; images?: readonly import("../core/content.js").ImageContent[]; details?: unknown }>
+		>;
 	};
 	readonly provider: ProviderHooks;
 	readonly events: {

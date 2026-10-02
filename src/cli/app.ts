@@ -128,7 +128,8 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		process.exitCode = 1;
 		return;
 	}
-	const sessionPath = profile?.sessions.journalPath ?? resolveSessionPath({ noSession: args.noSession, cwd: process.cwd() });
+	const sessionPath =
+		profile?.sessions.journalPath ?? resolveSessionPath({ noSession: args.noSession, cwd: process.cwd() });
 	let host: UinaHost;
 	try {
 		host = await UinaHost.create({
@@ -136,7 +137,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			sessionPath,
 			profile,
 			modelName: args.model,
-   extensionPaths: args.extensions,
+			extensionPaths: args.extensions,
 			onError: (text) => render({ type: "error", text }),
 		});
 	} catch (error) {
@@ -177,8 +178,12 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	 */
 	const executeExit = (force = false): void => {
 		uninstallHostGuards();
-		try { tui?.close(); } catch {}
-		try { nonTTY?.close(); } catch {}
+		try {
+			tui?.close();
+		} catch {}
+		try {
+			nonTTY?.close();
+		} catch {}
 
 		if (shuttingDown || force) {
 			process.exit(0);
@@ -195,10 +200,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			}, 800);
 
 			try {
-				await Promise.race([
-					cleanupResources(),
-					new Promise((resolve) => setTimeout(resolve, 600)),
-				]);
+				await Promise.race([cleanupResources(), new Promise((resolve) => setTimeout(resolve, 600))]);
 			} catch {
 				hadError = true;
 			} finally {
@@ -216,7 +218,10 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		}
 		const result = await host.claimAllQueued();
 		if (result.kind === "partial") {
-			tui.host.notify(`队列恢复中断：条目持久化失败（${errorMessage(result.error)}），其余排队消息已保留在队列中`, "warning");
+			tui.host.notify(
+				`队列恢复中断：条目持久化失败（${errorMessage(result.error)}），其余排队消息已保留在队列中`,
+				"warning",
+			);
 		}
 		const items = result.claimed;
 		if (items.length === 0) return 0;
@@ -321,17 +326,22 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		const token = ++interruptSeq;
 		if (host.isBusy() || (tui && tui.host.isBusy())) host.interrupt();
 		if (execRunning) execAbort?.abort();
-		void host.waitForIdle().then(async () => {
-			if (interruptSeq !== token) return;
-   if (extraText?.trim()) await host.pushInput(extraText, 'followUp');
-   const count = host.snapshot().queue.length;
-   if (!count) return;
-   void host.resumePending().catch((error: unknown) => { process.stderr.write('[投递失败] ' + String(error) + '\n'); });
-   tui?.host.transcript.addNotice('已打断当前回合，' + count + ' 条消息立即处理');
-			tui?.host.requestRender();
-		}).catch((error) => {
-			process.stderr.write(`[打断投递失败] ${String(error)}\n`);
-		});
+		void host
+			.waitForIdle()
+			.then(async () => {
+				if (interruptSeq !== token) return;
+				if (extraText?.trim()) await host.pushInput(extraText, "followUp");
+				const count = host.snapshot().queue.length;
+				if (!count) return;
+				void host.resumePending().catch((error: unknown) => {
+					process.stderr.write("[投递失败] " + String(error) + "\n");
+				});
+				tui?.host.transcript.addNotice("已打断当前回合，" + count + " 条消息立即处理");
+				tui?.host.requestRender();
+			})
+			.catch((error) => {
+				process.stderr.write(`[打断投递失败] ${String(error)}\n`);
+			});
 	};
 
 	const handleInterruptAndDeliver = (text: string): void => {
@@ -348,15 +358,22 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			tui.host.notify("排队队列为空，无待办可撤回", "warning", 2000);
 			return;
 		}
-  if (!canEditQueuedDraft([candidate])) { tui.host.notify('该输入包含图片或扩展来源，已保留在队列中', 'info'); return; }
-  const last = await host.claimQueued(candidate.id);
+		if (!canEditQueuedDraft([candidate])) {
+			tui.host.notify("该输入包含图片或扩展来源，已保留在队列中", "info");
+			return;
+		}
+		const last = await host.claimQueued(candidate.id);
 		if (!last) {
 			tui.host.notify("排队队列为空，无待办可撤回", "warning", 2000);
 			return;
 		}
 		tui.replaceInput(combineQueuedDraft([last], tui.host.inputLine.getText()));
 		const remaining = host.snapshot().queue.length;
-		tui.host.notify(`已从队列撤回 1 条消息至输入栏${remaining > 0 ? `（剩余排队：${remaining} 条）` : ""}`, "info", 2000);
+		tui.host.notify(
+			`已从队列撤回 1 条消息至输入栏${remaining > 0 ? `（剩余排队：${remaining} 条）` : ""}`,
+			"info",
+			2000,
+		);
 	};
 
 	const runDirectCommand = async (input: string): Promise<void> => {
@@ -372,7 +389,12 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			const started = Date.now();
 			const outcome = await host.runToolDirect("exec_command", { command }, execAbort.signal);
 			const plain = (value: string): string => value;
-			const lines = toolResultLines(outcome.result, Date.now() - started, { ok: plain, err: plain, warn: plain, dim: plain });
+			const lines = toolResultLines(outcome.result, Date.now() - started, {
+				ok: plain,
+				err: plain,
+				warn: plain,
+				dim: plain,
+			});
 			if (outcome.status !== "succeeded") lines.push(`[${outcome.status}]`);
 			if (lines.length > 0) writeCommandOutput(lines.join("\n"));
 		} finally {
@@ -389,15 +411,20 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			handleInterrupt();
 			return;
 		}
-		if (text.startsWith("/")) { void host.commands.dispatch(text); return; }
+		if (text.startsWith("/")) {
+			void host.commands.dispatch(text);
+			return;
+		}
 		if (text.startsWith("!")) {
 			if (host.isBusy()) {
 				writeCommandOutput("[!] 模型正在处理中，请等待本轮结束后再执行");
 				return;
 			}
-			execTail = execTail.then(() => runDirectCommand(text)).catch((error) => {
-				writeCommandOutput(`[命令错误] ${String(error)}`);
-			});
+			execTail = execTail
+				.then(() => runDirectCommand(text))
+				.catch((error) => {
+					writeCommandOutput(`[命令错误] ${String(error)}`);
+				});
 			return;
 		}
 		void host.submitText(text, mode).catch((error: unknown) => {
@@ -423,7 +450,9 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			});
 			host.attachExtensionUI(tui.ctxUI);
 			tui.onLine(onUserLine);
-			tui.onInteraction(() => { cancellationPending = false; });
+			tui.onInteraction(() => {
+				cancellationPending = false;
+			});
 			tui.onCancel(handleCancel);
 			tui.onInterruptAndDeliver(handleInterruptAndDeliver);
 			tui.onPullBackQueue(() => {
@@ -491,5 +520,3 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		submitInitialPromptInteractive(initialPrompt);
 	}
 }
-
-

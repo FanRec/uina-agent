@@ -10,11 +10,7 @@ import {
 	nextDetailTab,
 	sliceContentWindow,
 } from "../src/ui/features/overlays/subagent-dashboard.js";
-import {
-	confirmChoice,
-	isMouseReport,
-	isToggleKey,
-} from "../src/ui/extension-ui-context.js";
+import { confirmChoice, isMouseReport, isToggleKey } from "../src/ui/extension-ui-context.js";
 
 const ARROW_UP = "\x1b[A";
 const ARROW_DOWN = "\x1b[B";
@@ -141,7 +137,12 @@ describe("ModelPicker 边框闭合与选定行为", () => {
 			name: "deepseek",
 			description: "DeepSeek",
 			models: [
-				{ id: "deepseek/deepseek-flash", name: "deepseek-flash", description: "默认配置模型 · openai-compatible", provider: "deepseek" },
+				{
+					id: "deepseek/deepseek-flash",
+					name: "deepseek-flash",
+					description: "默认配置模型 · openai-compatible",
+					provider: "deepseek",
+				},
 				{ id: "deepseek/deepseek-chat", name: "deepseek-chat", description: "Chat 模型", provider: "deepseek" },
 			],
 		},

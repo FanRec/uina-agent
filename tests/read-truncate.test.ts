@@ -4,7 +4,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ExtensionRunner, type ExtensionAPI } from "../src/extensions/runner.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import activateWorkspaceTools from "../src/extensions/workspace-tools/index.js";
-import { formatSize, READ_MAX_BYTES, READ_MAX_LINES, truncateReadLines } from "../src/extensions/workspace-tools/read-truncate.js";
+import {
+	formatSize,
+	READ_MAX_BYTES,
+	READ_MAX_LINES,
+	truncateReadLines,
+} from "../src/extensions/workspace-tools/read-truncate.js";
 import { IsolatedEnv } from "./harness/index.js";
 
 const runners: ExtensionRunner[] = [];

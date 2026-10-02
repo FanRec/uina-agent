@@ -34,10 +34,7 @@ export function isMarkdownTableSeparator(line: string): boolean {
 	const trimmed = line.trim();
 	if (!isMarkdownTableLine(trimmed)) return false;
 	const parts = splitMarkdownCells(trimmed);
-	return (
-		parts.length > 0 &&
-		parts.every((p) => /^:?-+:?$/.test(p))
-	);
+	return parts.length > 0 && parts.every((p) => /^:?-+:?$/.test(p));
 }
 
 /**
@@ -48,9 +45,7 @@ export function isMarkdownTableSeparator(line: string): boolean {
  */
 export function splitMarkdownCells(row: string): string[] {
 	const trimmed = row.trim();
-	const body = trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.length >= 2
-		? trimmed.slice(1, -1)
-		: trimmed;
+	const body = trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.length >= 2 ? trimmed.slice(1, -1) : trimmed;
 
 	const cells: string[] = [];
 	let current = "";

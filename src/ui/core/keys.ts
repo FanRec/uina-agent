@@ -42,12 +42,7 @@ export function matchesKey(data: string, keyId: string): boolean {
 	switch (keyId) {
 		case "ctrl+enter":
 		case "ctrl+return":
-			if (
-				data === "\x1b[13;5u" ||
-				data === "\x1b[13;1;5u" ||
-				data === "\x1b[27;5;13~" ||
-				data === "\x1b[13;5~"
-			) {
+			if (data === "\x1b[13;5u" || data === "\x1b[13;1;5u" || data === "\x1b[27;5;13~" || data === "\x1b[13;5~") {
 				return true;
 			}
 			if ((data === "\r" || data === "\n" || data === "\r\n") && isCtrlPressed()) {
@@ -74,12 +69,7 @@ export function matchesKey(data: string, keyId: string): boolean {
 		case "shift+return":
 			// Newline editing (Pi: tui.input.newLine default shift+enter / ctrl+j).
 			// Bare ESC+CR is Alt+Enter, handled above.
-			if (
-				data === "\x1b[13;2u" ||
-				data === "\x1b[13;2:1u" ||
-				data === "\x1b[27;2;13~" ||
-				data === "\x1b[13;2~"
-			) {
+			if (data === "\x1b[13;2u" || data === "\x1b[13;2:1u" || data === "\x1b[27;2;13~" || data === "\x1b[13;2~") {
 				return true;
 			}
 			// Windows Terminal / ConPTY 底层修饰键补偿：如果收到回车字符且物理 Shift 处于按下状态
@@ -105,12 +95,7 @@ export function matchesKey(data: string, keyId: string): boolean {
 			return data === "\x7f" || data === "\x08";
 		case "shift+tab":
 		case "backtab":
-			if (
-				data === "\x1b[Z" ||
-				data === "\x1b[9;2u" ||
-				data === "\x1b[9;2:1u" ||
-				data === "\x1b[27;2;9~"
-			) {
+			if (data === "\x1b[Z" || data === "\x1b[9;2u" || data === "\x1b[9;2:1u" || data === "\x1b[27;2;9~") {
 				return true;
 			}
 			if (data === "\t" && isShiftPressed()) {
@@ -181,19 +166,9 @@ export function matchesKey(data: string, keyId: string): boolean {
 				data === "\x1b[1;3O"
 			);
 		case "alt+up":
-			return (
-				data === "\x1b[1;3A" ||
-				data === "\x1b\x1b[A" ||
-				data === "\x1b[1;3;65~" ||
-				data === "\x1bp"
-			);
+			return data === "\x1b[1;3A" || data === "\x1b\x1b[A" || data === "\x1b[1;3;65~" || data === "\x1bp";
 		case "alt+down":
-			return (
-				data === "\x1b[1;3B" ||
-				data === "\x1b\x1b[B" ||
-				data === "\x1b[1;3;66~" ||
-				data === "\x1bn"
-			);
+			return data === "\x1b[1;3B" || data === "\x1b\x1b[B" || data === "\x1b[1;3;66~" || data === "\x1bn";
 		case "alt+q":
 			return (
 				data === "\x1bq" ||

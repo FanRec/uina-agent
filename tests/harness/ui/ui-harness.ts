@@ -140,10 +140,7 @@ export function createTestTUI(options: TestTUIOptions = {}): UITestHarness {
  * 微组件即时渲染辅助器：
  * 快速获取单个 Component 在指定宽度/行数下的渲染行输出。
  */
-export function renderWidget(
-	component: Component,
-	options: { width?: number; height?: number } = {},
-): string[] {
+export function renderWidget(component: Component, options: { width?: number; height?: number } = {}): string[] {
 	const width = options.width ?? 80;
 	return component.render(width);
 }

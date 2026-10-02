@@ -1,10 +1,4 @@
-import type {
-	CompletedToolCall,
-	FinishReason,
-	ProviderReplay,
-	StreamDelta,
-	Usage,
-} from "../core/types.js";
+import type { CompletedToolCall, FinishReason, ProviderReplay, StreamDelta, Usage } from "../core/types.js";
 import type { OutputEvent } from "../runtime/events.js";
 
 export interface StreamCollectorResult {
@@ -62,7 +56,7 @@ export class TurnStreamCollector {
 			throw new Error("模型 finish 后仍返回输出事件");
 		}
 
-		 switch (delta.kind) {
+		switch (delta.kind) {
 			case "provider_retry":
 			case "provider_recovered":
 				this.options?.onRetry?.(delta);
@@ -157,7 +151,7 @@ export class TurnStreamCollector {
 							channel: "content",
 							reason: reason!,
 							spokenUntil: this.textOffset,
-					  },
+						},
 			);
 			this.hasEmittedContentStart = false;
 		}

@@ -6,11 +6,11 @@ import type { ExtensionAPI } from "../../../src/extensions/index.js";
  * 这里不做 LLM 摘要——只折叠中段历史，保留头部任务陈述与最近工作。
  */
 export default function activate(api: ExtensionAPI): void {
-  api.onHook("turn.transformContext", async (projection) => {
+	api.onHook("turn.transformContext", async (projection) => {
 		const KEEP_HEAD = 2;
 		const KEEP_TAIL = 6;
-    if (projection.messages.length <= KEEP_HEAD + KEEP_TAIL) return undefined;
-    const middle = projection.messages.slice(KEEP_HEAD, projection.messages.length - KEEP_TAIL);
+		if (projection.messages.length <= KEEP_HEAD + KEEP_TAIL) return undefined;
+		const middle = projection.messages.slice(KEEP_HEAD, projection.messages.length - KEEP_TAIL);
 		const digest =
 			`[${middle.length} 条早期消息已折叠] ` +
 			middle
@@ -19,14 +19,14 @@ export default function activate(api: ExtensionAPI): void {
 				.map((message) => message.content.slice(0, 80))
 				.join(" / ");
 		return {
-      projection: {
-        ...projection,
-        messages: [
-        ...projection.messages.slice(0, KEEP_HEAD),
-        { role: "user", content: digest },
-        ...projection.messages.slice(-KEEP_TAIL),
-      ],
-      },
+			projection: {
+				...projection,
+				messages: [
+					...projection.messages.slice(0, KEEP_HEAD),
+					{ role: "user", content: digest },
+					...projection.messages.slice(-KEEP_TAIL),
+				],
+			},
 		};
 	});
 }

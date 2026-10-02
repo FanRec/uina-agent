@@ -246,21 +246,32 @@ describe("ScopedToolView", () => {
 });
 
 describe("hover 行数一致性（反抖动）", () => {
-	const LONG = "npx vitest run tests/ui.test.ts -t \"很长的测试名用来撑爆单行宽度让标题必然超过卡片宽度产生软换行\" 2>&1 | Select-String -Pattern \"Tests\" | Select-Object -First 3";
+	const LONG =
+		'npx vitest run tests/ui.test.ts -t "很长的测试名用来撑爆单行宽度让标题必然超过卡片宽度产生软换行" 2>&1 | Select-String -Pattern "Tests" | Select-Object -First 3';
 	const args = { command: LONG };
 	const base = { name: "run_command", result: "", elapsed: 0, width: 90, status: "succeeded" as const, params: args };
 
 	it("hover 与非 hover 行数一致，且不产生 … 截断", () => {
-		const plain = formatToolCardLines(base.name, base.result, base.elapsed, base.width, base.status, base.params, { isExpanded: true });
-		const hovered = formatToolCardLines(base.name, base.result, base.elapsed, base.width, base.status, base.params, { isExpanded: true, isHovered: true });
+		const plain = formatToolCardLines(base.name, base.result, base.elapsed, base.width, base.status, base.params, {
+			isExpanded: true,
+		});
+		const hovered = formatToolCardLines(base.name, base.result, base.elapsed, base.width, base.status, base.params, {
+			isExpanded: true,
+			isHovered: true,
+		});
 		expect(hovered.length).toBe(plain.length);
 		// hover 态不应把软换行内容截成 …
 		expect(hovered.some((l) => l.includes("First 3"))).toBe(true);
 	});
 
 	it("运行中 hover 同样行数一致", () => {
-		const plain = formatToolCardLines(base.name, "", 0, base.width, "running", base.params, { startedAt: Date.now() - 5000 });
-		const hovered = formatToolCardLines(base.name, "", 0, base.width, "running", base.params, { isHovered: true, startedAt: Date.now() - 5000 });
+		const plain = formatToolCardLines(base.name, "", 0, base.width, "running", base.params, {
+			startedAt: Date.now() - 5000,
+		});
+		const hovered = formatToolCardLines(base.name, "", 0, base.width, "running", base.params, {
+			isHovered: true,
+			startedAt: Date.now() - 5000,
+		});
 		expect(hovered.length).toBe(plain.length);
 	});
 	it("标题行满宽时 hover 仍行数恒等（指示符画在底色 padding，不撑行）", () => {
@@ -273,7 +284,10 @@ describe("hover 行数一致性（反抖动）", () => {
 		for (let cut = 0; cut <= 8; cut++) {
 			const argsText = cmd.slice(0, cmd.length - cut);
 			const plain = formatToolCardLines("Exec", result, 8900, 110, "succeeded", argsText, { isExpanded: false });
-			const hovered = formatToolCardLines("Exec", result, 8900, 110, "succeeded", argsText, { isExpanded: false, isHovered: true });
+			const hovered = formatToolCardLines("Exec", result, 8900, 110, "succeeded", argsText, {
+				isExpanded: false,
+				isHovered: true,
+			});
 			expect(hovered.length).toBe(plain.length);
 		}
 	});
@@ -283,7 +297,8 @@ describe("hover 行数一致性（反抖动）", () => {
 		// 默认背景洞（用户截图：Tests 行中部一段没高亮）。锁定不变量：
 		// hover 态每行从首列到末列底色状态机始终开启。
 		const scanHoles = (row: string): number => {
-			let bgOn = false, holes = 0;
+			let bgOn = false,
+				holes = 0;
 			const re = /\x1b\[[0-9;]*m|[\s\S]/gu;
 			let m: RegExpExecArray | null;
 			while ((m = re.exec(row))) {
@@ -309,11 +324,20 @@ describe("hover 行数一致性（反抖动）", () => {
 
 describe("工具输出的颜色与危险序列", () => {
 	const renderBody = (stdout: string): string =>
-		formatToolCardLines("exec_command", JSON.stringify({ code: 0, stdout }), 30, 168, "succeeded", { command: "echo x" }, {})
-			.join("\n");
+		formatToolCardLines(
+			"exec_command",
+			JSON.stringify({ code: 0, stdout }),
+			30,
+			168,
+			"succeeded",
+			{ command: "echo x" },
+			{},
+		).join("\n");
 
 	it("保留 SGR 颜色：绿色的 3 passed 必须还在", () => {
-		const out = renderBody("\u001b[2mTest Files\u001b[22m \u001b[1m\u001b[32m3 passed\u001b[39m\u001b[22m\u001b[90m (3)\u001b[39m\r\n");
+		const out = renderBody(
+			"\u001b[2mTest Files\u001b[22m \u001b[1m\u001b[32m3 passed\u001b[39m\u001b[22m\u001b[90m (3)\u001b[39m\r\n",
+		);
 		expect(out).toContain("\u001b[32m");
 		expect(out).toContain("3 passed");
 		expect(out).not.toContain("\r");

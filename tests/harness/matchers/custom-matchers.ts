@@ -52,9 +52,7 @@ expect.extend({
 	},
 
 	toHaveTurnCompleted(received: UinaTestHarness, turnNumber: number) {
-		const endEvent = received.events.events.find(
-			(e) => e.type === "turn_end" && (e as any).turnNumber === turnNumber,
-		);
+		const endEvent = received.events.events.find((e) => e.type === "turn_end" && (e as any).turnNumber === turnNumber);
 		const pass = Boolean(endEvent);
 		return {
 			pass,

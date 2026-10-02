@@ -10,5 +10,3 @@ describe("Live2D channel ownership", () => {
 		expect(oldLease.channels).toEqual(["gaze"]);
 	});
 });
-
-

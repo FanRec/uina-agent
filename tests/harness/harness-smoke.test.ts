@@ -6,15 +6,15 @@ test("Uina Test Kit: SubjectHarness 裸回路与 mockTool", async () => {
 	let executed = false;
 	const h = SubjectHarness.create({
 		store: new MemorySessionStore(),
-		tools: [mockTool("sample_tool", () => {
-			executed = true;
-			return "sample_ok";
-		})],
+		tools: [
+			mockTool("sample_tool", () => {
+				executed = true;
+				return "sample_ok";
+			}),
+		],
 	});
 
-	h.scenario
-		.replyWithToolCall("c1", "sample_tool", {})
-		.reply("完成");
+	h.scenario.replyWithToolCall("c1", "sample_tool", {}).reply("完成");
 
 	await h.run("执行工具");
 	expect(executed).toBe(true);
@@ -25,9 +25,7 @@ test("Uina Test Kit: SubjectHarness 裸回路与 mockTool", async () => {
 // 2. 验证剧本仿真与核心交互
 test("Uina Test Kit: 声明式剧本多轮交互与 DAG 守卫", async ({ uina, scenario }) => {
 	// 链式声明两轮对话
-	scenario
-		.reply("你好！我是 Uina 数字主体。")
-		.reply("这是第二轮回显。");
+	scenario.reply("你好！我是 Uina 数字主体。").reply("这是第二轮回显。");
 
 	// 第 1 轮
 	await uina.send("你好");

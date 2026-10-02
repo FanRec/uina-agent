@@ -35,17 +35,17 @@ async function setup(): Promise<{ api: ExtensionAPI; dir: string }> {
 }
 
 async function seedProject(dir: string): Promise<void> {
-	await writeFile(join(dir, "app.ts"), "export const alpha = 1;\nexport const beta = 2;\nconst num = 42; // beta 7\n", "utf8");
+	await writeFile(
+		join(dir, "app.ts"),
+		"export const alpha = 1;\nexport const beta = 2;\nconst num = 42; // beta 7\n",
+		"utf8",
+	);
 	await writeFile(join(dir, "readme.md"), "# alpha docs\n", "utf8");
 	await mkdir(join(dir, "src"), { recursive: true });
 	await writeFile(join(dir, "src", "util.ts"), "const alphaHidden = 3;\n", "utf8");
 	await mkdir(join(dir, "node_modules", "pkg"), { recursive: true });
 	await writeFile(join(dir, "node_modules", "pkg", "index.js"), "alpha noise\n", "utf8");
-	await writeFile(
-		join(dir, ".gitignore"),
-		"node_modules/\n*.log\n",
-		"utf8",
-	);
+	await writeFile(join(dir, ".gitignore"), "node_modules/\n*.log\n", "utf8");
 	await writeFile(join(dir, "debug.log"), "alpha in log\n", "utf8");
 	// 模拟 .git 内部文件：文本可匹配，两引擎都不应搜索它
 	await mkdir(join(dir, ".git"), { recursive: true });
@@ -253,4 +253,3 @@ describe("matchLines", () => {
 		expect(matches).toHaveLength(0);
 	});
 });
-

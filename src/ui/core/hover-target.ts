@@ -80,9 +80,7 @@ export function decodeHoverTarget(id: string): HoverTarget | null {
 		const parts = id.split(":");
 		const line = intOrNull(parts[2]);
 		const callId = parts[1];
-		return callId === undefined || callId === "" || line === null
-			? null
-			: { kind: "tool", callId, line };
+		return callId === undefined || callId === "" || line === null ? null : { kind: "tool", callId, line };
 	}
 	if (id.startsWith("compaction:")) {
 		const parts = id.split(":");

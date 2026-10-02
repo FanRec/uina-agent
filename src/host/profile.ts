@@ -62,9 +62,7 @@ const SUBJECT_ID_PATTERN = /^[a-z0-9][a-z0-9-_]{0,63}$/;
 
 function assertValidSubjectId(id: string): void {
 	if (!SUBJECT_ID_PATTERN.test(id)) {
-		throw new Error(
-			`非法 subjectId "${id}"：仅允许小写字母/数字/短横线/下划线，长度 1-64，且以字母或数字开头。`,
-		);
+		throw new Error(`非法 subjectId "${id}"：仅允许小写字母/数字/短横线/下划线，长度 1-64，且以字母或数字开头。`);
 	}
 }
 

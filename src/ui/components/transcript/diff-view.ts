@@ -113,10 +113,7 @@ function tokenizeWords(str: string): string[] {
 /**
  * 行内词级差异高亮比对（提取公共缩进，使用 LCS 标记差异词）
  */
-export function computeWordDiff(
-	oldLine: string,
-	newLine: string,
-): { oldFormatted: string; newFormatted: string } {
+export function computeWordDiff(oldLine: string, newLine: string): { oldFormatted: string; newFormatted: string } {
 	const oldIndent = /^\s*/.exec(oldLine)?.[0] ?? "";
 	const newIndent = /^\s*/.exec(newLine)?.[0] ?? "";
 	const sharedIndent = oldIndent === newIndent ? oldIndent : "";

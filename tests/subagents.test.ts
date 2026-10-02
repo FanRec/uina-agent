@@ -47,23 +47,48 @@ describe("SubagentRegistry", () => {
 		const root = new ToolBroker({ ownerId: "root" });
 		const children = new Map<string, ToolView>();
 		const jobs = new JobRegistry();
-		const rootInputs: unknown[] = [], errors: string[] = [];
+		const rootInputs: unknown[] = [],
+			errors: string[] = [];
 		const scenario = Scenario.create()
-			.when(req => req.messages.some(m => m.content.includes("job-notice"))).reply("received own job")
-			.when(req => req.messages.some(m => m.content === "grandchild")).reply("grandchild ready")
-			.when(req => !req.messages.some(m => m.role === "tool")).replyWithToolCall("start-job", "exec_command", { command: process.platform === "win32" ? "Write-Output child-result" : "echo child-result", run_in_background: true })
-			.when(() => true).reply("waiting");
+			.when((req) => req.messages.some((m) => m.content.includes("job-notice")))
+			.reply("received own job")
+			.when((req) => req.messages.some((m) => m.content === "grandchild"))
+			.reply("grandchild ready")
+			.when((req) => !req.messages.some((m) => m.role === "tool"))
+			.replyWithToolCall("start-job", "exec_command", {
+				command: process.platform === "win32" ? "Write-Output child-result" : "echo child-result",
+				run_in_background: true,
+			})
+			.when(() => true)
+			.reply("waiting");
 		const registry = new SubagentRegistry({
 			factory: new DefaultAgentFactory(),
 			model: () => scenario.model,
 			stream: scenario.stream,
-			createTools: ownerId => { const tools = createChildTools(root, { ownerId }); children.set(ownerId, tools); return tools; },
+			createTools: (ownerId) => {
+				const tools = createChildTools(root, { ownerId });
+				children.set(ownerId, tools);
+				return tools;
+			},
 		});
-		const runner = new ExtensionRunner({ cwd: process.cwd(), tools: root, onInput: async input => { rootInputs.push(input); }, onError: error => errors.push(error) });
+		const runner = new ExtensionRunner({
+			cwd: process.cwd(),
+			tools: root,
+			onInput: async (input) => {
+				rootInputs.push(input);
+			},
+			onError: (error) => errors.push(error),
+		});
 		await runner.activateBuiltin("runtime", activateRuntimeTools({ jobs, subagents: registry }));
 		try {
 			const child = registry.start({ ownerId: "root", label: "child", prompt: "start" });
-			await vi.waitFor(() => expect(registry.transcript(child.id, "root").messages.some(m => m.content.includes("received own job"))).toBe(true), { timeout: 5000 });
+			await vi.waitFor(
+				() =>
+					expect(
+						registry.transcript(child.id, "root").messages.some((m) => m.content.includes("received own job")),
+					).toBe(true),
+				{ timeout: 5000 },
+			);
 			expect(jobs.list(child.id)).toHaveLength(1);
 			expect(jobs.list("root")).toEqual([]);
 			expect(rootInputs).toEqual([]);
@@ -73,17 +98,26 @@ describe("SubagentRegistry", () => {
 			expect(listed[0].ownerId).toBe(child.id);
 			const output = JSON.parse(await tools.run("job_output", { job_id: listed[0].id }));
 			expect(output.result).toContain("child-result");
-			expect(registry.transcript(child.id, "root").messages.some(m => m.role === "custom" && m.customType === "runtime-input")).toBe(true);
+			expect(
+				registry
+					.transcript(child.id, "root")
+					.messages.some((m) => m.role === "custom" && m.customType === "runtime-input"),
+			).toBe(true);
 			const grandchild = JSON.parse(await tools.run("subagent_start", { label: "grandchild", prompt: "grandchild" }));
-			expect(registry.list(child.id).map(c => c.id)).toEqual([grandchild.id]);
+			expect(registry.list(child.id).map((c) => c.id)).toEqual([grandchild.id]);
 			expect(registry.get(grandchild.id, child.id).parentId).toBe(child.id);
-		} finally { await runner.dispose(); }
+		} finally {
+			await runner.dispose();
+		}
 	});
 	it("starts an independent child, keeps transcript local, and reads output by cursor", async () => {
 		const registry = make(providerFor((prompt) => `答复:${prompt}`));
 		const started = registry.start({ ownerId: "root", label: "调查", prompt: "第一问" });
 		expect(started.id).toMatch(/^subagent-/);
-		while (registry.get(started.id, "root").status === "accepted" || registry.get(started.id, "root").status === "running") {
+		while (
+			registry.get(started.id, "root").status === "accepted" ||
+			registry.get(started.id, "root").status === "running"
+		) {
 			await new Promise((resolve) => setTimeout(resolve, 5));
 		}
 		const first = registry.read(started.id, "root");
@@ -93,7 +127,10 @@ describe("SubagentRegistry", () => {
 		expect(second.output).toEqual([]);
 		await registry.send(started.id, "root", "第二问");
 		const transcript = registry.transcript(started.id, "root");
-		expect(transcript.messages.filter((message) => message.role === "user").map((message) => message.content)).toEqual(["第一问", "第二问"]);
+		expect(transcript.messages.filter((message) => message.role === "user").map((message) => message.content)).toEqual([
+			"第一问",
+			"第二问",
+		]);
 		await registry.close();
 	});
 
@@ -103,43 +140,78 @@ describe("SubagentRegistry", () => {
 			create(options) {
 				const handle = new DefaultAgentFactory().create(options);
 				const dispose = handle.dispose.bind(handle);
-				handle.dispose = async () => { disposed = true; await dispose(); };
+				handle.dispose = async () => {
+					disposed = true;
+					await dispose();
+				};
 				return handle;
 			},
 		};
-		const registry = make({
-			model: { id: "blocking-child", name: "blocking-child", providerId: "mock", contextWindow: 128_000, thinkingLevels: ["off"] },
-			stream: async (_m, _request, _emit, signal) => {
-				await new Promise<void>((resolve) => {
-					signal?.addEventListener("abort", () => resolve(), { once: true });
-				});
+		const registry = make(
+			{
+				model: {
+					id: "blocking-child",
+					name: "blocking-child",
+					providerId: "mock",
+					contextWindow: 128_000,
+					thinkingLevels: ["off"],
+				},
+				stream: async (_m, _request, _emit, signal) => {
+					await new Promise<void>((resolve) => {
+						signal?.addEventListener("abort", () => resolve(), { once: true });
+					});
+				},
 			},
-		}, undefined, factory);
+			undefined,
+			factory,
+		);
 		const started = registry.start({ ownerId: "root", label: "等待", prompt: "工作" });
 		expect(() => registry.get(started.id, "other")).toThrow();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		const interrupt = registry.interrupt(started.id, "root");
 		expect(await interrupt).toBe("interruption-requested");
-		expect(registry.get(started.id, "root")).toMatchObject({ status: "settled", terminalStatus: "interrupted", finishedAt: expect.any(Number) });
+		expect(registry.get(started.id, "root")).toMatchObject({
+			status: "settled",
+			terminalStatus: "interrupted",
+			finishedAt: expect.any(Number),
+		});
 		expect(disposed).toBe(true);
 		expect(await registry.interrupt(started.id, "root")).toBe("already-finished");
 	});
 
 	it("rejects new input after interruption admission and settles startup failures", async () => {
 		const failing = make({
-			model: { id: "failing-child", name: "failing-child", providerId: "mock", contextWindow: 128_000, thinkingLevels: ["off"] },
-			stream: async () => { throw new Error("provider down"); },
+			model: {
+				id: "failing-child",
+				name: "failing-child",
+				providerId: "mock",
+				contextWindow: 128_000,
+				thinkingLevels: ["off"],
+			},
+			stream: async () => {
+				throw new Error("provider down");
+			},
 		});
 		const started = failing.start({ ownerId: "root", label: "失败", prompt: "开始" });
 		await new Promise((resolve) => setTimeout(resolve, 10));
-		expect(failing.get(started.id, "root")).toMatchObject({ status: "settled", terminalStatus: "failed", detail: "provider down", finishedAt: expect.any(Number) });
+		expect(failing.get(started.id, "root")).toMatchObject({
+			status: "settled",
+			terminalStatus: "failed",
+			detail: "provider down",
+			finishedAt: expect.any(Number),
+		});
 		await expect(failing.send(started.id, "root", "晚到的消息")).rejects.toThrow("已结算");
 		await failing.close();
 	});
 
 	it("delivers a short settlement notice without making child output part of root history", async () => {
 		const notices: string[] = [];
-		const registry = make(providerFor(() => "完成"), async (text) => { notices.push(text); });
+		const registry = make(
+			providerFor(() => "完成"),
+			async (text) => {
+				notices.push(text);
+			},
+		);
 		const started = registry.start({ ownerId: "root", label: "一次工作", prompt: "开始" });
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(notices).toEqual([]);
@@ -148,12 +220,23 @@ describe("SubagentRegistry", () => {
 	});
 
 	it("records notice delivery failure without replacing the child terminal fact", async () => {
-		const registry = make({
-			model: { id: "failing-child", name: "failing-child", providerId: "mock", contextWindow: 128_000, thinkingLevels: ["off"] },
-			stream: async () => { throw new Error("provider down"); },
-		}, async () => {
-			throw new Error("parent unavailable");
-		});
+		const registry = make(
+			{
+				model: {
+					id: "failing-child",
+					name: "failing-child",
+					providerId: "mock",
+					contextWindow: 128_000,
+					thinkingLevels: ["off"],
+				},
+				stream: async () => {
+					throw new Error("provider down");
+				},
+			},
+			async () => {
+				throw new Error("parent unavailable");
+			},
+		);
 		const started = registry.start({ ownerId: "root", label: "失败", prompt: "开始" });
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(registry.get(started.id, "root")).toMatchObject({
@@ -187,9 +270,17 @@ describe("AgentHandle lifecycle", () => {
 		let closed = false;
 		const store = new MemorySessionStore();
 		const originalClose = store.close.bind(store);
-		store.close = async () => { closed = true; await originalClose(); };
+		store.close = async () => {
+			closed = true;
+			await originalClose();
+		};
 		const pair = providerFor(() => "ok");
-		const handle = new DefaultAgentFactory().create({ model: pair.model, stream: pair.stream, tools: new ToolBroker(), store });
+		const handle = new DefaultAgentFactory().create({
+			model: pair.model,
+			stream: pair.stream,
+			tools: new ToolBroker(),
+			store,
+		});
 		await handle.send({ id: "input", mode: "followUp", source: { kind: "agent", type: "test" }, text: "开始" });
 		await handle.interrupt();
 		expect(handle.snapshot().status).toBe("idle");

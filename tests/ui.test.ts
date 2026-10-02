@@ -1,12 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { createTestTUI, createSilentTerminal, mockModelGroups, renderWidget } from "./harness/index.js";
-import {
-	C,
-	visibleWidth,
-	truncateToWidth,
-	wrapTextWithAnsi,
-	stripAnsi,
-} from "../src/ui/core/utils.js";
+import { C, visibleWidth, truncateToWidth, wrapTextWithAnsi, stripAnsi } from "../src/ui/core/utils.js";
 import { Container } from "../src/ui/core/container.js";
 import { FocusManager } from "../src/ui/core/focus.js";
 import { OverlayStack } from "../src/ui/core/overlay.js";
@@ -14,7 +8,11 @@ import { WidgetSlots } from "../src/ui/core/slots.js";
 import { CURSOR_MARKER } from "../src/ui/core/types.js";
 import { Key, matchesKey } from "../src/ui/core/keys.js";
 import { StreamMarkdownFormatter, formatFullMarkdown } from "../src/ui/components/transcript/stream-markdown.js";
-import { ContextBarComponent, allocateBarColumns, renderSegmentedBar } from "../src/ui/components/widgets/context-bar.js";
+import {
+	ContextBarComponent,
+	allocateBarColumns,
+	renderSegmentedBar,
+} from "../src/ui/components/widgets/context-bar.js";
 import { ScrollbarGutterComponent } from "../src/ui/components/widgets/scrollbar-gutter.js";
 import { TimelineRailComponent } from "../src/ui/components/widgets/timeline-rail.js";
 import { SmoothRevealController, revealStep, safeSliceEnd } from "../src/ui/components/transcript/smooth-reveal.js";
@@ -46,11 +44,7 @@ import {
 	formatTpsGauge,
 	formatTpsSparkline,
 } from "../src/ui/components/widgets/index.js";
-import {
-	InputLine,
-	segmentWithMarkers,
-	snapCursorToMarkerBoundary,
-} from "../src/ui/components/editor/index.js";
+import { InputLine, segmentWithMarkers, snapCursorToMarkerBoundary } from "../src/ui/components/editor/index.js";
 import {
 	TaskDashboard,
 	type JobPort,
@@ -138,7 +132,6 @@ describe("UI Core: Container & Focus & Overlay & Slots", () => {
 		focusManager.setFocus(comp2);
 		expect(comp1.focused).toBe(false);
 		expect(comp2.focused).toBe(true);
-
 	});
 
 	it("OverlayStack 覆盖层管理：堆叠、焦点返还与 renderAbove", () => {
@@ -200,13 +193,17 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 			name: "keybinding-probe",
 			description: "test",
 			keybinding: "alt+j",
-			handler: () => { commandCalls++; },
+			handler: () => {
+				commandCalls++;
+			},
 		} as any);
 		const harness = createTestTUI({ registry });
 		try {
 			harness.tui.host.showOverlay({
 				render: () => [],
-				handleInput: (data) => { overlayInput = data; },
+				handleInput: (data) => {
+					overlayInput = data;
+				},
 			});
 			harness.host.handleInput("\x1bj");
 			expect(overlayInput).toBe("\x1bj");
@@ -518,7 +515,9 @@ describe("UI Components & Visual Rendering", () => {
 			expect(host.getHeartbeatActiveForTest()).toBe(true);
 			host.setBusy(false);
 			expect(host.getHeartbeatActiveForTest()).toBe(true);
-		} finally { host.setWorking("compaction", undefined); }
+		} finally {
+			host.setWorking("compaction", undefined);
+		}
 	});
 
 	it("后台压缩无需鼠标输入也会持续刷新画面上的耗时", async () => {
@@ -598,11 +597,11 @@ describe("UI Components & Visual Rendering", () => {
 			host.activityLine.addStreamText("hello world");
 			host.activityLine.finish("本轮已完成", 1_234);
 			const before = stripAnsi(host.activityLine.getHeaderString(80));
-		host.setWorking("compaction", "正在压缩上下文：生成摘要");
+			host.setWorking("compaction", "正在压缩上下文：生成摘要");
 			await vi.advanceTimersByTimeAsync(1_500);
 			expect(terminal.getVisibleText()).toContain("正在压缩上下文：生成摘要");
 			expect(terminal.getVisibleText()).toContain("1.5s");
-		host.setWorking("compaction", undefined);
+			host.setWorking("compaction", undefined);
 			await vi.advanceTimersByTimeAsync(50);
 			expect(stripAnsi(host.activityLine.getHeaderString(80))).toBe(before);
 			expect(terminal.getVisibleText()).toContain("本轮已完成");
@@ -622,12 +621,12 @@ describe("UI Components & Visual Rendering", () => {
 			host.start();
 			host.setBusy(true);
 			host.activityLine.start("thinking", "正在思考与生成回复...");
-		host.setWorking("compaction", "正在压缩上下文：重建请求");
+			host.setWorking("compaction", "正在压缩上下文：重建请求");
 			host.activityLine.update("tool", "正在执行工具: echo");
 			await vi.advanceTimersByTimeAsync(1_200);
 			expect(terminal.getVisibleText()).toContain("正在压缩上下文：重建请求");
 			expect(terminal.getVisibleText()).not.toContain("正在执行工具: echo");
-		host.setWorking("compaction", undefined);
+			host.setWorking("compaction", undefined);
 			await vi.advanceTimersByTimeAsync(50);
 			expect(terminal.getVisibleText()).toContain("正在执行工具: echo");
 		} finally {
@@ -641,11 +640,13 @@ describe("UI Components & Visual Rendering", () => {
 		try {
 			host.setBusy(true);
 			host.activityLine.start("thinking", "正在思考与生成回复...");
-		host.setWorking("compaction", "正在压缩上下文：写入检查点");
-		host.setWorking("compaction", undefined);
+			host.setWorking("compaction", "正在压缩上下文：写入检查点");
+			host.setWorking("compaction", undefined);
 			expect(stripAnsi(host.activityLine.getHeaderString())).toContain("正在思考与生成回复");
 			expect(host.getHeartbeatActiveForTest()).toBe(true);
-		} finally { host.setBusy(false); }
+		} finally {
+			host.setBusy(false);
+		}
 	});
 
 	it("当前流式思考立即可见，并注册鼠标展开目标", () => {
@@ -654,8 +655,9 @@ describe("UI Components & Visual Rendering", () => {
 		transcript.appendThinking("这是尚未进入工具阶段的实时思考内容");
 
 		expect(transcript.render(60).join("\n")).toContain("实时思考内容");
-		expect(transcript.getThinkingLineIndices(60).map(({ turnN, lineIndex }) => ({ turnN, lineIndex })))
-			.toEqual([{ turnN: 1, lineIndex: 3 }]);
+		expect(transcript.getThinkingLineIndices(60).map(({ turnN, lineIndex }) => ({ turnN, lineIndex }))).toEqual([
+			{ turnN: 1, lineIndex: 3 },
+		]);
 	});
 
 	it("鼠标折叠当前 thinking 时按块对象定位，不会误切同编号的历史轮次", () => {
@@ -721,8 +723,12 @@ describe("UI Components & Visual Rendering", () => {
 		const picker = new ModelPicker("deepseek-v4-flash", groups);
 		let pickedModel = "";
 		let closed = false;
-		picker.onPick = (id) => { pickedModel = id; };
-		picker.onClose = () => { closed = true; };
+		picker.onPick = (id) => {
+			pickedModel = id;
+		};
+		picker.onClose = () => {
+			closed = true;
+		};
 
 		// 第一级视图：展示 Provider 列表，含模型数量统计与展开提示
 		let lines = stripAnsi(picker.render(80).join("\n"));
@@ -759,7 +765,9 @@ describe("UI Components & Visual Rendering", () => {
 
 		// 在第一级按 Esc 关闭选择器
 		const picker2 = new ModelPicker("deepseek-v4-flash", groups);
-		picker2.onClose = () => { closed = true; };
+		picker2.onClose = () => {
+			closed = true;
+		};
 		picker2.handleInput("\x1b");
 		expect(closed).toBe(true);
 	});
@@ -798,7 +806,9 @@ describe("UI Components & Visual Rendering", () => {
 
 		// 确认选择后回传复合键，精确指向 providerB
 		let picked = "";
-		picker.onPick = (id) => { picked = id; };
+		picker.onPick = (id) => {
+			picked = id;
+		};
 		picker.handleInput("\r");
 		expect(picked).toBe("providerB/gpt-x");
 	});
@@ -867,16 +877,27 @@ describe("UI Components & Visual Rendering", () => {
 
 	it("失败的压缩记录不显示为已压缩摘要", async () => {
 		const { formatCompactionCardLines } = await import("../src/ui/components/transcript/cards.js");
-		const rendered = stripAnsi(formatCompactionCardLines({
-			status: "failed", summary: "摘要模型请求终止", retainedTailEntries: 0, tokensBefore: 0, collapsed: false,
-		}, 80).join("\n"));
+		const rendered = stripAnsi(
+			formatCompactionCardLines(
+				{
+					status: "failed",
+					summary: "摘要模型请求终止",
+					retainedTailEntries: 0,
+					tokensBefore: 0,
+					collapsed: false,
+				},
+				80,
+			).join("\n"),
+		);
 		expect(rendered).toContain("压缩失败");
 		expect(rendered).not.toContain("会话已压缩");
 		expect(rendered).not.toContain("完整摘要");
 	});
 
 	it("SyntaxText: 语言名称规范化与轻量语法高亮及降级", async () => {
-		const { normalizeLanguage, highlightCode, highlightLines } = await import("../src/ui/components/primitives/syntax-text.js");
+		const { normalizeLanguage, highlightCode, highlightLines } = await import(
+			"../src/ui/components/primitives/syntax-text.js"
+		);
 
 		expect(normalizeLanguage("ts")).toBe("typescript");
 		expect(normalizeLanguage("PY")).toBe("python");
@@ -925,12 +946,7 @@ describe("UI Components & Visual Rendering", () => {
 		);
 
 		const longText = "这是一段特别长的判断文本用来验证表格单元格在列宽不足时会换行而不是被省略号截断掉";
-		const rawTable = [
-			"| 方案 | 判断 |",
-			"| --- | --- |",
-			`| 方案甲 | 短判断 |`,
-			`| 方案乙 | ${longText} |`,
-		];
+		const rawTable = ["| 方案 | 判断 |", "| --- | --- |", `| 方案甲 | 短判断 |`, `| 方案乙 | ${longText} |`];
 		const parsed = parseMarkdownTable(rawTable);
 		expect(parsed).not.toBeNull();
 
@@ -1009,11 +1025,7 @@ describe("UI Components & Visual Rendering", () => {
 		for (const w of widths) expect(w).toBe(4);
 
 		// 2. 超长表头在降级条目下的响应式换行（终端仅 14 列，平均预算不足进入降级）
-		const longHeaderTable = [
-			"| 极长表头字段名称描述 | 简单值 |",
-			"| --- | --- |",
-			"| 核心架构逻辑实现 | 通过 |",
-		];
+		const longHeaderTable = ["| 极长表头字段名称描述 | 简单值 |", "| --- | --- |", "| 核心架构逻辑实现 | 通过 |"];
 		const parsedLong = parseMarkdownTable(longHeaderTable)!;
 		const fallbackLines = formatMarkdownTableLines(parsedLong, 14);
 		expect(fallbackLines.length).toBeGreaterThan(0);
@@ -1063,11 +1075,7 @@ describe("UI Components & Visual Rendering", () => {
 		}
 
 		// 3. 支持 <br> 显式换行与行内 Markdown 高亮
-		const richTable = [
-			"| 特性 | 说明 |",
-			"| --- | --- |",
-			"| **核心** | 第一行<br>第二行 |",
-		];
+		const richTable = ["| 特性 | 说明 |", "| --- | --- |", "| **核心** | 第一行<br>第二行 |"];
 		const parsedRich = parseMarkdownTable(richTable)!;
 		const richLines = formatMarkdownTableLines(parsedRich, 60);
 		const richStripped = richLines.map(stripAnsi).join("\n");
@@ -1144,9 +1152,22 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 			harness.tui.render({ type: "turn_start", turnNumber: 1, userText: "测试提问" });
 			expect(harness.host.isBusy()).toBe(true);
 
-			harness.tui.render({ type: "output_update", streamId: "s1", offset: 0, channel: "content", text: "模型正在分析..." });
+			harness.tui.render({
+				type: "output_update",
+				streamId: "s1",
+				offset: 0,
+				channel: "content",
+				text: "模型正在分析...",
+			});
 			harness.tui.render({ type: "tool_call", toolName: "list_dir", args: {}, callId: "tool-1" });
-			harness.tui.render({ type: "tool_result", toolName: "list_dir", args: {}, result: "dir output", status: "succeeded", callId: "tool-1" });
+			harness.tui.render({
+				type: "tool_result",
+				toolName: "list_dir",
+				args: {},
+				result: "dir output",
+				status: "succeeded",
+				callId: "tool-1",
+			});
 
 			harness.tui.render({ type: "turn_end", turnNumber: 1, requestUsage: { callId: "call-1", totalTokens: 2048 } });
 			expect(harness.host.isBusy()).toBe(false);
@@ -1391,10 +1412,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		const { MouseSelectionTracker } = await import("../src/ui/core/mouse-selection.js");
 		const tracker = new MouseSelectionTracker();
 
-		const screenRows = [
-			"Hello World Beautiful Day",
-			"Second Line Text",
-		];
+		const screenRows = ["Hello World Beautiful Day", "Second Line Text"];
 
 		let copiedText = "";
 		const onCopy = (text: string) => {
@@ -1421,18 +1439,20 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		const tracker = new MouseSelectionTracker();
 
 		// 模拟输入框渲染帧：芯片在屏上就是标记原文（渲染层不做隐藏）
-		const screenRows = [
-			"│ 检查这段代码 [已粘贴 #1 +20行] 谢谢 │",
-		];
+		const screenRows = ["│ 检查这段代码 [已粘贴 #1 +20行] 谢谢 │"];
 		// 区域判定：整个屏幕第 0 行视作 input 区域（colStart=0, colEnd=行尾）
 		tracker.setSelectableRegions([{ id: "input", startRow: 0, endRow: 0, colStart: 0, colEnd: 60 }]);
 
 		let copied = "";
-		const onCopy = (text: string) => { copied = text; };
+		const onCopy = (text: string) => {
+			copied = text;
+		};
 		// 与 ui-host 接线同构：变换按区域分派，芯片语义不在 tracker 里
 		const copyTransform = (regionId: string, text: string) =>
 			regionId === "input"
-				? text.replace(/\[已粘贴 #(\d+) (\+\d+行|\d+字)\]/g, (_, id) => (id === "1" ? "const a = 1;\nconst b = 2;" : ""))
+				? text.replace(/\[已粘贴 #(\d+) (\+\d+行|\d+字)\]/g, (_, id) =>
+						id === "1" ? "const a = 1;\nconst b = 2;" : "",
+					)
 				: text;
 
 		tracker.handleInput("\x1b[<0;1;1M", screenRows, onCopy, undefined, copyTransform);
@@ -1468,23 +1488,28 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		const { MouseSelectionTracker } = await import("../src/ui/core/mouse-selection.js");
 		const tracker = new MouseSelectionTracker();
 
-		const screenRows = [
-			"● 这是回答内容",
-			"│› 输入框文字      │",
-		];
+		const screenRows = ["● 这是回答内容", "│› 输入框文字      │"];
 
 		// 1. 划选包含 ● 的行，提取时剥离 ●
 		let copied1 = "";
-		tracker.handleInput("\x1b[<0;1;1M", screenRows, (t) => { copied1 = t; });
+		tracker.handleInput("\x1b[<0;1;1M", screenRows, (t) => {
+			copied1 = t;
+		});
 		tracker.handleInput("\x1b[<32;14;1M", screenRows);
-		tracker.handleInput("\x1b[<0;14;1m", screenRows, (t) => { copied1 = t; });
+		tracker.handleInput("\x1b[<0;14;1m", screenRows, (t) => {
+			copied1 = t;
+		});
 		expect(copied1).toBe("这是回答内容");
 
 		// 2. 划选输入框，提取时隔离外框 │
 		let copied2 = "";
-		tracker.handleInput("\x1b[<0;1;2M", screenRows, (t) => { copied2 = t; });
+		tracker.handleInput("\x1b[<0;1;2M", screenRows, (t) => {
+			copied2 = t;
+		});
 		tracker.handleInput("\x1b[<32;20;2M", screenRows);
-		tracker.handleInput("\x1b[<0;20;2m", screenRows, (t) => { copied2 = t; });
+		tracker.handleInput("\x1b[<0;20;2m", screenRows, (t) => {
+			copied2 = t;
+		});
 		expect(copied2).not.toContain("│");
 		expect(copied2).toContain("输入框文字");
 	});
@@ -1576,7 +1601,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 		let copiedText = "";
 		// 在输入框第 2 行（1-indexed: 3），从 col 2（1-indexed: 3）拖拽划选到 col 10（1-indexed: 11）
-		tracker.handleInput("\x1b[<0;3;3M", screenRows, (t) => { copiedText = t; });
+		tracker.handleInput("\x1b[<0;3;3M", screenRows, (t) => {
+			copiedText = t;
+		});
 		tracker.handleInput("\x1b[<32;11;3M", screenRows);
 
 		expect(tracker.hasSelection()).toBe(true);
@@ -1590,7 +1617,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		expect(highlighted[4]).not.toContain("\x1b[48;2;59;74;102m");
 
 		// 释放鼠标，触发复制
-		tracker.handleInput("\x1b[<0;11;3m", screenRows, (t) => { copiedText = t; });
+		tracker.handleInput("\x1b[<0;11;3m", screenRows, (t) => {
+			copiedText = t;
+		});
 		expect(copiedText).toBe("ssssssss");
 		expect(copiedText).not.toContain("│");
 	});
@@ -1644,7 +1673,14 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 		// 6. 松开鼠标左键，验证跨越了多页（0 到 15 行，共 16 行）的全量文本提取与复制
 		let copiedText = "";
-		const releaseRes = tracker.handleInput("\x1b[<0;1;1m", currentScreenRows, (t) => { copiedText = t; }, permanentLines);
+		const releaseRes = tracker.handleInput(
+			"\x1b[<0;1;1m",
+			currentScreenRows,
+			(t) => {
+				copiedText = t;
+			},
+			permanentLines,
+		);
 		expect(releaseRes.handled).toBe(true);
 		expect(copiedText).toContain("这是第 0 行长长长长长的转录历史正文内容");
 		// 起始点击在 col 5，向上选中到第 0 行时，终点行第 15 行精准截断至 anchor col
@@ -1671,10 +1707,13 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 	it("TimelineRail 导航轨刻度与 Hover 气泡卡片生成", async () => {
 		const { TimelineRailComponent } = await import("../src/ui/components/widgets/timeline-rail.js");
 		const rail = new TimelineRailComponent();
-		rail.updateTurns([
-			{ uid: 1, n: 1, userText: "第一轮用户问题" },
-			{ uid: 2, n: 2, userText: "第二轮长问题" },
-		], 1);
+		rail.updateTurns(
+			[
+				{ uid: 1, n: 1, userText: "第一轮用户问题" },
+				{ uid: 2, n: 2, userText: "第二轮长问题" },
+			],
+			1,
+		);
 
 		const geo = rail.getGeometry(10)!;
 		expect(geo).toBeDefined();
@@ -1787,8 +1826,15 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			installUIFeatures(host);
 
 			let changed: string = "";
-			// 模拟 builtin.ts 中执行 /effort 打开滑块传入 declaredLevels 字符串数组			installUIFeatures(host);
-			host.openFeature("effort-slider", { currentLevel: "off", tiers: ["off", "high", "max"], onChange: (level: string) => { changed = level; } });
+			// 模拟 builtin.ts 中执行 /effort 打开滑块传入 declaredLevels 字符串数组
+			installUIFeatures(host);
+			host.openFeature("effort-slider", {
+				currentLevel: "off",
+				tiers: ["off", "high", "max"],
+				onChange: (level: string) => {
+					changed = level;
+				},
+			});
 
 			expect(() => host.handleInput("\x1b[C")).not.toThrow();
 			expect(changed).toBe("high");
@@ -2080,7 +2126,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(liveHeader).toContain("2.5s");
 				expect(liveHeader).toContain("tok"); // 实时 token 计数
 				expect(liveHeader).toContain("tps"); // 实时 TPS
-				expect(liveHeader).toContain("▕");   // 包含仪表盘符号
+				expect(liveHeader).toContain("▕"); // 包含仪表盘符号
 
 				// 3. 窄屏自适应排版：在 45 列窄屏下自适应紧凑数字 TPS，且绝对不超宽
 				const compactHeader = stripAnsi(act.getHeaderString(45));
@@ -2108,14 +2154,19 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			const { formatActivityHeader } = await import("../src/ui/components/widgets/activity-line.js");
 
 			// 1. 宽屏充裕模式（100 列）：完整展现 8 格仪表盘、Token 与秒表
-			const wide = stripAnsi(formatActivityHeader({
-				phase: "streaming",
-				message: "正在输出回复...",
-				elapsedMs: 3500,
-				outputTokens: 140,
-				tps: 40,
-				tpsSamples: [30, 40],
-			}, 100));
+			const wide = stripAnsi(
+				formatActivityHeader(
+					{
+						phase: "streaming",
+						message: "正在输出回复...",
+						elapsedMs: 3500,
+						outputTokens: 140,
+						tps: 40,
+						tpsSamples: [30, 40],
+					},
+					100,
+				),
+			);
 			expect(visibleWidth(wide)).toBeLessThanOrEqual(100);
 			expect(wide).toContain("3.5s");
 			expect(wide).toContain("~140 tok");
@@ -2123,57 +2174,82 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(wide).toContain("▕");
 
 			// 2. 中屏模式（60 列）：4 格紧凑图形仪表盘
-			const mid = stripAnsi(formatActivityHeader({
-				phase: "streaming",
-				message: "正在输出回复...",
-				elapsedMs: 3500,
-				outputTokens: 140,
-				tps: 40,
-			}, 60));
+			const mid = stripAnsi(
+				formatActivityHeader(
+					{
+						phase: "streaming",
+						message: "正在输出回复...",
+						elapsedMs: 3500,
+						outputTokens: 140,
+						tps: 40,
+					},
+					60,
+				),
+			);
 			expect(visibleWidth(mid)).toBeLessThanOrEqual(60);
 			expect(mid).toContain("~40 tps");
 
 			// 3. 窄屏模式（45 列）：纯数字流速
-			const narrow = stripAnsi(formatActivityHeader({
-				phase: "streaming",
-				message: "正在输出回复...",
-				elapsedMs: 3500,
-				outputTokens: 140,
-				tps: 40,
-			}, 45));
+			const narrow = stripAnsi(
+				formatActivityHeader(
+					{
+						phase: "streaming",
+						message: "正在输出回复...",
+						elapsedMs: 3500,
+						outputTokens: 140,
+						tps: 40,
+					},
+					45,
+				),
+			);
 			expect(visibleWidth(narrow)).toBeLessThanOrEqual(45);
 			expect(narrow).toContain("~40 tps");
 
 			// 4. 极窄模式（25 列）：自动舍弃后缀，优先保全核心文案与秒表
-			const extreme = stripAnsi(formatActivityHeader({
-				phase: "streaming",
-				message: "正在输出回复...",
-				elapsedMs: 3500,
-				outputTokens: 140,
-				tps: 40,
-			}, 25));
+			const extreme = stripAnsi(
+				formatActivityHeader(
+					{
+						phase: "streaming",
+						message: "正在输出回复...",
+						elapsedMs: 3500,
+						outputTokens: 140,
+						tps: 40,
+					},
+					25,
+				),
+			);
 			expect(visibleWidth(extreme)).toBeLessThanOrEqual(25);
 			expect(extreme).toContain("3.5s");
 
 			// 5. 工具执行模式：保留已结算的上一步解码生成流速（不被工具执行耗时稀释）
-			const toolLine = stripAnsi(formatActivityHeader({
-				phase: "tool",
-				message: "正在执行工具: bash",
-				elapsedMs: 2400,
-				outputTokens: 140,
-				tps: 40,
-			}, 80));
+			const toolLine = stripAnsi(
+				formatActivityHeader(
+					{
+						phase: "tool",
+						message: "正在执行工具: bash",
+						elapsedMs: 2400,
+						outputTokens: 140,
+						tps: 40,
+					},
+					80,
+				),
+			);
 			expect(toolLine).toContain("2.4s");
 			expect(toolLine).toContain("正在执行工具: bash");
 			expect(toolLine).toContain("~40 tps");
 
 			// 6. 无解码记录时：不渲染虚假的 tps（未知不是 0）
-			const noTpsLine = stripAnsi(formatActivityHeader({
-				phase: "tool",
-				message: "正在执行工具: bash",
-				elapsedMs: 2400,
-				outputTokens: 0,
-			}, 80));
+			const noTpsLine = stripAnsi(
+				formatActivityHeader(
+					{
+						phase: "tool",
+						message: "正在执行工具: bash",
+						elapsedMs: 2400,
+						outputTokens: 0,
+					},
+					80,
+				),
+			);
 			expect(noTpsLine).not.toContain("tps");
 		});
 
@@ -2420,10 +2496,13 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 		it("TimelineRailComponent 严格使用 TrueColor，无纯黑或 dim 字符，正确呈现 ▴ / ▾ 与刻度线", () => {
 			const rail = new TimelineRailComponent();
-			rail.updateTurns([
-				{ uid: 1, n: 1, userText: "问题一" },
-				{ uid: 2, n: 2, userText: "问题二" },
-			], 2);
+			rail.updateTurns(
+				[
+					{ uid: 1, n: 1, userText: "问题一" },
+					{ uid: 2, n: 2, userText: "问题二" },
+				],
+				2,
+			);
 			const res = rail.renderRailRows(20, true, true, false);
 			// 包含顶底小三角 ▴ / ▾
 			expect(res.railGlyphs.some((g) => g.includes("▴"))).toBe(true);
@@ -2487,10 +2566,13 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 		it("TimelineRailComponent 在轮次编号撞号时按 uid 区分刻度", () => {
 			const rail = new TimelineRailComponent();
-			rail.updateTurns([
-				{ uid: 11, n: 1, userText: "第一轮" },
-				{ uid: 12, n: 1, userText: "撞号的第七轮" },
-			], 12);
+			rail.updateTurns(
+				[
+					{ uid: 11, n: 1, userText: "第一轮" },
+					{ uid: 12, n: 1, userText: "撞号的第七轮" },
+				],
+				12,
+			);
 			const geo = rail.getGeometry(10)!;
 			const active = rail.renderRailRows(10);
 			// 活跃刻度只能是 uid=12 那一行；按 n 查找会命中第 0 行。
@@ -2652,7 +2734,10 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		it("HelpMenu 严防超长描述撑破边框，所有渲染行宽度严格一致且包含核心快捷键", () => {
 			const longCommand = {
 				name: "extremely_long_command_name_that_should_not_break_the_ui",
-				description: "这是一个极其漫长并且没有任何换行的超长命令描述，用来测试排版引擎的截断与边界防护能力，绝对不能破坏右侧边框！".repeat(3),
+				description:
+					"这是一个极其漫长并且没有任何换行的超长命令描述，用来测试排版引擎的截断与边界防护能力，绝对不能破坏右侧边框！".repeat(
+						3,
+					),
 			};
 			const menu = new HelpMenu([longCommand]);
 
@@ -2707,8 +2792,12 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			let convertedText = "";
 			let closed = false;
 
-			menu.onConvertToInput = (t) => { convertedText = t; };
-			menu.onClose = () => { closed = true; };
+			menu.onConvertToInput = (t) => {
+				convertedText = t;
+			};
+			menu.onClose = () => {
+				closed = true;
+			};
 
 			menu.handleInput("?");
 			expect(convertedText).toBe("?");
@@ -2716,7 +2805,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			const menu2 = new HelpMenu();
 			let closed2 = false;
-			menu2.onClose = () => { closed2 = true; };
+			menu2.onClose = () => {
+				closed2 = true;
+			};
 			menu2.handleInput("?");
 			expect(closed2).toBe(true);
 		});
@@ -2798,10 +2889,29 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		it("InteractiveTUI 真实事件联动：轨迹收集与 Token 逼真计算", () => {
 			const tui = new InteractiveTUI();
 			tui.render({ type: "turn_start", turnNumber: 1, userText: "你好" });
-			tui.render({ type: "output_update", streamId: "s1", offset: 0, channel: "thinking", text: "正在思考哲学问题..." });
-			tui.render({ type: "output_update", streamId: "s1", offset: 1, channel: "content", text: "这是一段长度为 30 个字符的回复文本用于测试" });
+			tui.render({
+				type: "output_update",
+				streamId: "s1",
+				offset: 0,
+				channel: "thinking",
+				text: "正在思考哲学问题...",
+			});
+			tui.render({
+				type: "output_update",
+				streamId: "s1",
+				offset: 1,
+				channel: "content",
+				text: "这是一段长度为 30 个字符的回复文本用于测试",
+			});
 			tui.render({ type: "tool_call", toolName: "bash", args: { cmd: "ls" }, callId: "tool-1" });
-			tui.render({ type: "tool_result", toolName: "bash", args: { cmd: "ls" }, result: "file.txt", status: "succeeded", callId: "tool-1" });
+			tui.render({
+				type: "tool_result",
+				toolName: "bash",
+				args: { cmd: "ls" },
+				result: "file.txt",
+				status: "succeeded",
+				callId: "tool-1",
+			});
 			tui.render({
 				type: "turn_end",
 				turnNumber: 1,
@@ -2815,7 +2925,14 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(nodes.some((n) => n.kind === "model_stream" && n.status === "completed")).toBe(true);
 
 			// 测试压缩时轨迹同步
-			tui.render({ type: "session_compact", operationId: "compact-test", status: "completed", summary: "历史压缩摘要", retainedTailEntries: 1, tokensBefore: 3000 });
+			tui.render({
+				type: "session_compact",
+				operationId: "compact-test",
+				status: "completed",
+				summary: "历史压缩摘要",
+				retainedTailEntries: 1,
+				tokensBefore: 3000,
+			});
 			const compNode = tui.trajectoryProjection.list().find((n) => n.kind === "compaction");
 			expect(compNode).toBeDefined();
 			expect(compNode?.tokens?.total).toBe(3000);
@@ -2936,11 +3053,20 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					},
 				},
 				models: {
-					current: () => ({ name: "mock-model", providerId: "mock", id: "mock-model", thinkingLevels: ["off", "high", "max"] }),
+					current: () => ({
+						name: "mock-model",
+						providerId: "mock",
+						id: "mock-model",
+						thinkingLevels: ["off", "high", "max"],
+					}),
 					thinkingLevel: () => "off",
 					setThinkingLevel: mockSetThinkingLevel,
 				},
-				usage: () => ({ used: 4200, contextWindow: 124000, segments: { system: 900, prompt: 300, assistant: 1200, thinking: 400, tools: 1400 } }),
+				usage: () => ({
+					used: 4200,
+					contextWindow: 124000,
+					segments: { system: 900, prompt: 300, assistant: 1200, thinking: 400, tools: 1400 },
+				}),
 				isBusy: () => false,
 			};
 
@@ -2964,9 +3090,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(setUsageCalls.length).toBe(0);
 
 			// 3. 失败也由统一 session_compact 终态事件表达
-				compactHandler!({ type: "session_compact", status: "failed", error: "Token limit" });
-				expect(mockNotify).toHaveBeenCalledWith("会话压缩失败：Token limit", "warning", 3000);
-				// 失败/取消/noop 只保留 toast，不污染永久转录卡片。
+			compactHandler!({ type: "session_compact", status: "failed", error: "Token limit" });
+			expect(mockNotify).toHaveBeenCalledWith("会话压缩失败：Token limit", "warning", 3000);
+			// 失败/取消/noop 只保留 toast，不污染永久转录卡片。
 
 			// 4. 触发 thinking_level_select 驱动 Toast 与底栏状态联动
 			const thinkingHandler = handlers.get("thinking_level_select");
@@ -3092,7 +3218,11 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					["subagent_interrupt", "SubagentInterrupt", "task"],
 				];
 				for (const [name, display, category] of expected) {
-					expect({ name, display: displayName(name), category: getToolCategory(name) }).toEqual({ name, display, category });
+					expect({ name, display: displayName(name), category: getToolCategory(name) }).toEqual({
+						name,
+						display,
+						category,
+					});
 				}
 			});
 
@@ -3107,7 +3237,10 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				const listText = stripAnsi(
 					formatToolCardLines(
 						"session_list",
-						JSON.stringify([{ id: "a", source: "main" }, { id: "b", source: "main" }]),
+						JSON.stringify([
+							{ id: "a", source: "main" },
+							{ id: "b", source: "main" },
+						]),
 						10,
 						100,
 						"succeeded",
@@ -3131,7 +3264,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(nestedText).toContain("cancellation-requested");
 
 				// 空数组有明确表示，不退化成「执行完成，无输出」
-				const emptyText = stripAnsi(formatToolCardLines("job_list", JSON.stringify([]), 10, 100, "succeeded").join("\n"));
+				const emptyText = stripAnsi(
+					formatToolCardLines("job_list", JSON.stringify([]), 10, 100, "succeeded").join("\n"),
+				);
 				expect(emptyText).toContain("[]");
 				expect(emptyText).not.toContain("无输出");
 			});
@@ -3199,10 +3334,18 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 			it("运行态 (Running)：600ms 呼吸圆点与实时秒表累加", () => {
 				// now=2400 为偶数周期 (2400/600=4)，显示实心圆
-				const linesEven = formatToolCardLines("bash", "", 0, 80, "running", { command: "ls" }, {
-					startedAt: 1200,
-					now: 2400, // runMs = 1200ms -> 1.2s
-				});
+				const linesEven = formatToolCardLines(
+					"bash",
+					"",
+					0,
+					80,
+					"running",
+					{ command: "ls" },
+					{
+						startedAt: 1200,
+						now: 2400, // runMs = 1200ms -> 1.2s
+					},
+				);
 				const renderedEven = linesEven.join("\n");
 				expect(renderedEven).toContain(BLACK_CIRCLE);
 				expect(stripAnsi(renderedEven)).toContain("Bash(ls)");
@@ -3210,10 +3353,18 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(renderedEven).toContain("Running… (1.2s)");
 
 				// now=1800 为奇数周期 (1800/600=3)，闪烁隐藏
-				const linesOdd = formatToolCardLines("bash", "", 0, 80, "running", { command: "ls" }, {
-					startedAt: 1000,
-					now: 1800,
-				});
+				const linesOdd = formatToolCardLines(
+					"bash",
+					"",
+					0,
+					80,
+					"running",
+					{ command: "ls" },
+					{
+						startedAt: 1000,
+						now: 1800,
+					},
+				);
 				const renderedOdd = linesOdd.join("\n");
 				expect(renderedOdd).not.toContain(BLACK_CIRCLE);
 			});
@@ -3316,7 +3467,8 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			});
 
 			it("展开态显示完整命令：超 120 字符的单行命令与多行命令全文可见", () => {
-				const longCmd = "cd E:\\Uina\\Uina; npx vitest run tests/ui.test.ts -t \"划词复制输入框中的粘贴芯片\" 2>&1 | Select-String -Pattern \"Tests \" | Select-Object -First 4";
+				const longCmd =
+					'cd E:\\Uina\\Uina; npx vitest run tests/ui.test.ts -t "划词复制输入框中的粘贴芯片" 2>&1 | Select-String -Pattern "Tests " | Select-Object -First 4';
 				expect(longCmd.length).toBeGreaterThan(120);
 				const expanded = formatToolCardLines(
 					"run_command",
@@ -3477,7 +3629,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 					// 当前轮次：包含 40 行深度思考
 					host.transcript.startTurn(6, "请详细分析");
-					host.transcript.appendThinking("开始分析思考。\n" + Array.from({ length: 40 }, (_, i) => `思考推导步骤 ${i + 1}`).join("\n"));
+					host.transcript.appendThinking(
+						"开始分析思考。\n" + Array.from({ length: 40 }, (_, i) => `思考推导步骤 ${i + 1}`).join("\n"),
+					);
 					host.transcript.appendToken("这是最终结论。");
 					host.transcript.finishTurn();
 
@@ -3650,19 +3804,20 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					} as any,
 				});
 
-				host.onCancel = (source) => { cancelSources.push(source); };
+				host.onCancel = (source) => {
+					cancelSources.push(source);
+				};
 				host.onInterruptAndDeliver = (text) => {
 					deliveredText = text;
 				};
 
-					// 1. 工作态下按 Esc -> 只发送取消意图；实际 Subject/Host 信号由组合根接管
-					host.setBusy(true);
-					host.handleInput("\x1b"); // Esc
-					expect(cancelSources).toEqual(["escape"]);
-					expect(host.isBusy()).toBe(true);
-					host.setBusy(false);
-					expect(host.isBusy()).toBe(false);
-
+				// 1. 工作态下按 Esc -> 只发送取消意图；实际 Subject/Host 信号由组合根接管
+				host.setBusy(true);
+				host.handleInput("\x1b"); // Esc
+				expect(cancelSources).toEqual(["escape"]);
+				expect(host.isBusy()).toBe(true);
+				host.setBusy(false);
+				expect(host.isBusy()).toBe(false);
 
 				// 2. 空闲态下单按 Esc -> 清空输入框内容
 				host.handleInput("some draft text");
@@ -3670,13 +3825,12 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				host.handleInput("\x1b"); // Esc
 				expect((host as any).inputLine.getText()).toBe("");
 
-					// 3. 工作态下 Ctrl+C -> UI 只发送取消意图，组合根查询 Host 权威忙闲
-					host.setBusy(true);
-					host.handleInput("\x03"); // Ctrl+C
-					expect(cancelSources).toEqual(["escape", "ctrl+c"]);
-					expect(host.isBusy()).toBe(true);
-					host.setBusy(false);
-
+				// 3. 工作态下 Ctrl+C -> UI 只发送取消意图，组合根查询 Host 权威忙闲
+				host.setBusy(true);
+				host.handleInput("\x03"); // Ctrl+C
+				expect(cancelSources).toEqual(["escape", "ctrl+c"]);
+				expect(host.isBusy()).toBe(true);
+				host.setBusy(false);
 
 				// 5. 工作态下按 Ctrl+Enter -> 触发 cancelTurn 且调用 onInterruptAndDeliver
 				host.setBusy(true);
@@ -3706,9 +3860,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				// 触发 Esc
 				host.handleInput("\x1b");
 
-					// UI 只发取消意图，草稿完好保留，绝不被清空
-					expect(host.isBusy()).toBe(true);
-					expect((host as any).inputLine.getText()).toBe("我的临时未发送草稿");
+				// UI 只发取消意图，草稿完好保留，绝不被清空
+				expect(host.isBusy()).toBe(true);
+				expect((host as any).inputLine.getText()).toBe("我的临时未发送草稿");
 			});
 
 			it("InteractiveTUI: 接收到 turn_aborted 事件时自动调用 interruptTurn 并重置状态", () => {
@@ -3741,7 +3895,13 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(history[0]!.items.filter((it) => it.kind === "tool").length).toBe(1);
 
 				// 此时底层子进程退出，迟到收到 addToolDone
-				transcript.addToolDone("bash", "{\"error\":\"工具已返回，但取消时无法确认副作用状态\"}", 200, "unknown", "call-123");
+				transcript.addToolDone(
+					"bash",
+					'{"error":"工具已返回，但取消时无法确认副作用状态"}',
+					200,
+					"unknown",
+					"call-123",
+				);
 
 				// 必须严密保持为 1 轮，且绝不产生重复卡片
 				expect(transcript.getCurrentTurn()).toBeNull();
@@ -3809,7 +3969,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			it("InteractiveTUI: 空闲态下 Ctrl+C 优先清空输入栏草稿，草稿为空时两连击退出", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
 				let cancelCount = 0;
-				tui.onCancel(() => { cancelCount++; });
+				tui.onCancel(() => {
+					cancelCount++;
+				});
 
 				// 输入草稿
 				tui.host.handleInput("草稿文本");
@@ -3820,7 +3982,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(tui.host.inputLine.getText()).toBe("");
 				expect(cancelCount).toBe(0);
 
-					// 草稿为空时 Ctrl+C 也只发送取消意图；退出由组合根查询 Host idle 后决定。
+				// 草稿为空时 Ctrl+C 也只发送取消意图；退出由组合根查询 Host idle 后决定。
 				tui.host.handleInput("\x03");
 				expect(cancelCount).toBe(1);
 			});
@@ -3891,7 +4053,9 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					name: "subagents",
 					description: "Subagents",
 					keybinding: "alt+a",
-					handler: () => { tui.host.openFeature("subagents"); },
+					handler: () => {
+						tui.host.openFeature("subagents");
+					},
 				});
 
 				// 按 Alt+Up (\x1b[1;3A)
@@ -4004,9 +4168,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 					tui.render({
 						type: "queue",
-						items: [
-							{ id: "q-1", text: "排队消息1", mode: "steer", order: 1 },
-						],
+						items: [{ id: "q-1", text: "排队消息1", mode: "steer", order: 1 }],
 					});
 
 					// transcript 历史中绝对不新增 notice，杜绝历史日志被反复刷屏污染
@@ -4063,7 +4225,9 @@ describe("Transcript: 帧内单一行模型（getFrameModel）", () => {
 	it("getFrameModel 与 render 输出恒等，且各索引 lineIndex 落在正确行", () => {
 		const transcript = new TranscriptContainer();
 		transcript.startTurn(1, "第一轮：请介绍你自己");
-		transcript.appendToken("我是助手。\n\n第二段内容，包含一些较长的文本用于产生折行，确保行索引计算覆盖多行段落场景。");
+		transcript.appendToken(
+			"我是助手。\n\n第二段内容，包含一些较长的文本用于产生折行，确保行索引计算覆盖多行段落场景。",
+		);
 		transcript.appendThinking("这是一段思考内容");
 		transcript.appendToken("\n\n思考后的回答正文。");
 		transcript.startTool("bash", { command: "echo hi" }, "call-1");
@@ -4126,7 +4290,10 @@ describe("Transcript: 助手文本分段渲染与全文一次成型逐行等价"
 		const formatted: string[] = [];
 		let isFirst = isFirstParagraph;
 		for (const rawLine of rawLines) {
-			if (!rawLine.trim()) { formatted.push(""); continue; }
+			if (!rawLine.trim()) {
+				formatted.push("");
+				continue;
+			}
 			const clean = stripAnsi(rawLine).trimStart();
 			if (["┌", "│", "└", "├", "┼", "┴", "┬"].some((ch) => clean.startsWith(ch))) {
 				formatted.push(rawLine.trimStart());
@@ -4150,7 +4317,9 @@ describe("Transcript: 助手文本分段渲染与全文一次成型逐行等价"
 	const GNARLY_MD = [
 		"# 主标题",
 		"",
-		"这是开头段落，包含**加粗**、`行内代码`与[链接](https://example.com)的中文文本，足够长以便在窄宽度下发生自动折行测试。".repeat(2),
+		"这是开头段落，包含**加粗**、`行内代码`与[链接](https://example.com)的中文文本，足够长以便在窄宽度下发生自动折行测试。".repeat(
+			2,
+		),
 		"",
 		"- 列表项一",
 		"- 列表项二：带有 `code` 与**强调**",

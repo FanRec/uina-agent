@@ -2,7 +2,14 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { activateEditFile } from "./edit-file.js";
 import { activateFindFile } from "./find-file.js";
 import { activateGrepFile } from "./grep-file.js";
-import { formatSize, looksBinary, READ_MAX_BYTES, READ_MAX_LINE_CHARS, READ_MAX_LINES, truncateReadLines } from "./read-truncate.js";
+import {
+	formatSize,
+	looksBinary,
+	READ_MAX_BYTES,
+	READ_MAX_LINE_CHARS,
+	READ_MAX_LINES,
+	truncateReadLines,
+} from "./read-truncate.js";
 import { dirname, resolve } from "node:path";
 import type { ExtensionAPI, ImageContent } from "../index.js";
 
@@ -17,12 +24,25 @@ export default function activate(api: ExtensionAPI): void {
 	api.registerTool({
 		def: {
 			type: "function",
-			function: { name: "read_file", description: "Read a UTF-8 text file. Optional offset (1-based line) and limit select a line range; omitted reads the entire file. Output is capped at 2000 lines / 50KB (whichever is hit first) with a continuation notice; oversized single lines are clipped. Use offset to page through large files.", parameters: { ...fileSchema, properties: { ...fileSchema.properties, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1 } } } },
+			function: {
+				name: "read_file",
+				description:
+					"Read a UTF-8 text file. Optional offset (1-based line) and limit select a line range; omitted reads the entire file. Output is capped at 2000 lines / 50KB (whichever is hit first) with a continuation notice; oversized single lines are clipped. Use offset to page through large files.",
+				parameters: {
+					...fileSchema,
+					properties: {
+						...fileSchema.properties,
+						offset: { type: "integer", minimum: 1 },
+						limit: { type: "integer", minimum: 1 },
+					},
+				},
+			},
 		},
 		run: async (args, signal) => {
 			const file = resolve(api.cwd, String(args.path));
 			const buffer = await readFile(file, { signal });
-			if (looksBinary(buffer)) throw new Error(`疑似二进制文件，read_file 拒绝读为文本：${file}（用 read_image 或 exec_command 处理）`);
+			if (looksBinary(buffer))
+				throw new Error(`疑似二进制文件，read_file 拒绝读为文本：${file}（用 read_image 或 exec_command 处理）`);
 			const lines = buffer.toString("utf8").split("\n");
 			if (lines.at(-1) === "") lines.pop(); // 结尾换行不产生幽灵空行
 			// CRLF 文件：剥掉每行尾部 \r（只读展示；不碰原文件，edit_file 自行保留行尾）
@@ -32,7 +52,8 @@ export default function activate(api: ExtensionAPI): void {
 			if (start >= lines.length) {
 				throw new Error(`offset ${offset} 超出文件末尾（共 ${lines.length} 行）`);
 			}
-			const end = args.limit === undefined ? cleanLines.length : Math.min(start + Number(args.limit), cleanLines.length);
+			const end =
+				args.limit === undefined ? cleanLines.length : Math.min(start + Number(args.limit), cleanLines.length);
 			const selected = cleanLines.slice(start, end);
 			const trunc = truncateReadLines(selected);
 			let text = trunc.text;
@@ -46,7 +67,19 @@ export default function activate(api: ExtensionAPI): void {
 				// 用户指定 limit 读完了所选段但文件还有后续：同样给出续读提示。
 				text += `\n\n[文件共 ${lines.length} 行，当前显示到第 ${end} 行。用 offset=${end + 1} 继续读。]`;
 			}
-			return { result: text, status: "succeeded", details: { path: file, lines: trunc.outputLines, totalLines: lines.length, offset, truncated: trunc.truncated, truncatedBy: trunc.truncatedBy, ...(trunc.firstLineExceedsLimit ? { firstLineExceedsLimit: true } : {}) } };
+			return {
+				result: text,
+				status: "succeeded",
+				details: {
+					path: file,
+					lines: trunc.outputLines,
+					totalLines: lines.length,
+					offset,
+					truncated: trunc.truncated,
+					truncatedBy: trunc.truncatedBy,
+					...(trunc.firstLineExceedsLimit ? { firstLineExceedsLimit: true } : {}),
+				},
+			};
 		},
 	});
 	api.registerTool({
@@ -74,17 +107,14 @@ export default function activate(api: ExtensionAPI): void {
 			};
 		},
 	});
-		activateEditFile(api);
+	activateEditFile(api);
 	activateGrepFile(api);
 	activateFindFile(api);
-api.registerTool({
-
+	api.registerTool({
 		def: {
-
 			type: "function",
 
 			function: {
-
 				name: "read_image",
 				description:
 					"Read a PNG, JPEG, GIF or WebP image into model context. Unknown model capability is attempted; explicitly unsupported models reject image input.",

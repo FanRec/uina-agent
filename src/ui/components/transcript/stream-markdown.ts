@@ -11,11 +11,7 @@
 import { C, visibleWidth, getContentBoxWidth, wrapTextWithAnsi } from "../../core/utils.js";
 import { highlightCode } from "../primitives/syntax-text.js";
 import { formatInlineMarkdown } from "../primitives/inline-markdown.js";
-import {
-	isMarkdownTableLine,
-	parseMarkdownTable,
-	formatMarkdownTableLines,
-} from "../primitives/markdown-table.js";
+import { isMarkdownTableLine, parseMarkdownTable, formatMarkdownTableLines } from "../primitives/markdown-table.js";
 
 export class StreamMarkdownFormatter {
 	private inCodeBlock = false;
@@ -60,7 +56,12 @@ export class StreamMarkdownFormatter {
 			const innerWidth = boxWidth - 4; // 减去两端 "│ " (2) 与 " │" (2)
 			const highlighted = highlightCode(cleanRaw, this.codeBlockLang);
 			const codeLines = wrapTextWithAnsi(highlighted, innerWidth);
-			return codeLines.map((line) => `${C.promptBorder}│${C.reset} ${line}${" ".repeat(Math.max(0, innerWidth - visibleWidth(line)))} ${C.promptBorder}│${C.reset}`).join("\n");
+			return codeLines
+				.map(
+					(line) =>
+						`${C.promptBorder}│${C.reset} ${line}${" ".repeat(Math.max(0, innerWidth - visibleWidth(line)))} ${C.promptBorder}│${C.reset}`,
+				)
+				.join("\n");
 		}
 
 		// 3. 标题格式化（对标 dsh-TUI: H1 mist blue + 下划线，H2 suggestion 冰蓝，H3 text 粗体）

@@ -16,10 +16,7 @@ import type { SessionAccess, SessionNodeInfo, HydratedSessionEntry } from "../..
  * 把 branchId 编进这个联合后，"模式是分支历史、却没有选中分支"这种组合不再存在，
  * 于是读取节点时不需要任何语义可疑的兜底分支。
  */
-type View =
-	| { mode: "main" }
-	| { mode: "branch-list" }
-	| { mode: "branch-history"; branchId: string };
+type View = { mode: "main" } | { mode: "branch-list" } | { mode: "branch-history"; branchId: string };
 
 /** Visible list rows; combined with the engine budget this matches the other dashboards. */
 const LIST_ROWS = 13;
@@ -45,7 +42,6 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		return listBranchNodes(this.sessionPort.listBranches().branches);
 	}
 
-
 	private moveSelection(delta: number, maxIndex: number): void {
 		this.selectedIndex = Math.max(0, Math.min(maxIndex, this.selectedIndex + delta));
 		this.detailScrollOffset = 0;
@@ -55,8 +51,15 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		const nodes = this.nodes();
 
 		if (matchesKey(data, Key.escape)) {
-			if (this.view.mode === "branch-history") { this.view = { mode: "branch-list" }; this.selectedIndex = 0; this.onRequestRender?.(); return; }
-			this.onClose?.(); this.onRequestRender?.(); return;
+			if (this.view.mode === "branch-history") {
+				this.view = { mode: "branch-list" };
+				this.selectedIndex = 0;
+				this.onRequestRender?.();
+				return;
+			}
+			this.onClose?.();
+			this.onRequestRender?.();
+			return;
 		}
 
 		if (matchesKey(data, Key.tab)) {
@@ -71,7 +74,10 @@ export class BranchInspectorOverlay implements Component, Focusable {
 			const forward = matchesKey(data, Key.right);
 			if (this.focusTarget === "detail") {
 				const maxOffset = Math.max(0, this.detailRowCount() - LIST_ROWS);
-				this.detailScrollOffset = Math.max(0, Math.min(maxOffset, this.detailScrollOffset + (forward ? LIST_ROWS : -LIST_ROWS)));
+				this.detailScrollOffset = Math.max(
+					0,
+					Math.min(maxOffset, this.detailScrollOffset + (forward ? LIST_ROWS : -LIST_ROWS)),
+				);
 			} else {
 				this.view = this.view.mode === "main" ? { mode: "branch-list" } : { mode: "main" };
 				this.selectedIndex = 0;
@@ -83,7 +89,13 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		if (matchesKey(data, Key.enter) && this.view.mode === "branch-list") {
 			// 行 id 就是分支 id（listBranchNodes 建立的投影），不必再查一次分支列表。
 			const row = nodes[this.selectedIndex];
-			if (row) { this.view = { mode: "branch-history", branchId: row.id }; this.selectedIndex = 0; this.detailScrollOffset = 0; this.onRequestRender?.(); return; }
+			if (row) {
+				this.view = { mode: "branch-history", branchId: row.id };
+				this.selectedIndex = 0;
+				this.detailScrollOffset = 0;
+				this.onRequestRender?.();
+				return;
+			}
 		}
 
 		if (matchesKey(data, Key.up)) {
@@ -162,7 +174,9 @@ export class BranchInspectorOverlay implements Component, Focusable {
 			`  ${rule} ${cell(left, leftW)}${cha(colMid)}${rule} ${cell(right, rightW)} ${cha(colRight)}${rule}`;
 
 		const titleTag = `─ 会话历史与分支检视器 [${this.view.mode === "main" ? "主线" : this.view.mode === "branch-list" ? "分支选择 [只读分支]" : "分支历史（只读）"}] `;
-		output.push(`  ${border}╭${titleTag}${"─".repeat(Math.max(1, boxWidth - 4 - visibleWidth(titleTag)))}${cha(colRight)}${border}╮${C.reset}`);
+		output.push(
+			`  ${border}╭${titleTag}${"─".repeat(Math.max(1, boxWidth - 4 - visibleWidth(titleTag)))}${cha(colRight)}${border}╮${C.reset}`,
+		);
 
 		const help = `${this.view.mode === "main" ? "当前主线" : this.view.mode === "branch-list" ? "选择要查看的分支" : "废弃分支（只读）"} · ${nodes.length} 节点 · [←/→] 切换视图 [Tab] 焦点 ${this.focusTarget} [↑/↓] 移动 [Esc] 关闭`;
 		output.push(contentRow(help, C.dim));
@@ -175,10 +189,14 @@ export class BranchInspectorOverlay implements Component, Focusable {
 			const text = truncateToWidth(label, width, "");
 			return `${C.bold}${C.claude}${text}${C.reset}${" ".repeat(Math.max(0, width - visibleWidth(text)))}`;
 		};
-		output.push(`  ${rule} ${paneLabel("会话节点", leftW)}${cha(colMid)}${rule} ${paneLabel("节点详情", rightW)} ${cha(colRight)}${rule}`);
+		output.push(
+			`  ${rule} ${paneLabel("会话节点", leftW)}${cha(colMid)}${rule} ${paneLabel("节点详情", rightW)} ${cha(colRight)}${rule}`,
+		);
 		// The cross must land on the same column as the body separator: the left dash run covers
 		// the pane plus the space before the separator, the right run covers pane plus its space.
-		output.push(`  ${border}├${"─".repeat(leftW + 1)}${cha(colMid)}${border}┼${"─".repeat(rightW + 2)}${cha(colRight)}${border}┤${C.reset}`);
+		output.push(
+			`  ${border}├${"─".repeat(leftW + 1)}${cha(colMid)}${border}┼${"─".repeat(rightW + 2)}${cha(colRight)}${border}┤${C.reset}`,
+		);
 
 		let selectedEntry: HydratedSessionEntry | null = null;
 		// 与 detailRowCount() 走同一个读取路径：X/Y 的分母不能和实际渲染分叉。
@@ -199,14 +217,17 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		// leftW with blanks left the whole left half of the frame with no bottom edge, and the
 		// pane divider is terminated by a "┴" — a full-height "│" crossed the border line and
 		// made it look broken at that column.
-		const hint = rightRows.length > LIST_ROWS
-			? `←→ 翻页详情 ${this.detailScrollOffset + 1}/${maxOffset + 1} · Esc 关闭`
-			: `↑/↓ 移动 · Esc 关闭`;
+		const hint =
+			rightRows.length > LIST_ROWS
+				? `←→ 翻页详情 ${this.detailScrollOffset + 1}/${maxOffset + 1} · Esc 关闭`
+				: `↑/↓ 移动 · Esc 关闭`;
 		// Reserve at least one dash, one space and the corner either side of the junction.
 		const hintText = truncateToWidth(hint, Math.max(1, colMid - 8), "");
 		const leadFill = Math.max(1, colMid - 7 - visibleWidth(hintText));
 		const tailFill = Math.max(1, boxWidth - 1 - colMid);
-		output.push(`  ${border}╰${border}─ ${C.dim}${hintText} ${C.reset}${border}${"─".repeat(leadFill)}${cha(colMid)}${border}┴${border}${"─".repeat(tailFill)}${cha(colRight)}${border}╯${C.reset}`);
+		output.push(
+			`  ${border}╰${border}─ ${C.dim}${hintText} ${C.reset}${border}${"─".repeat(leadFill)}${cha(colMid)}${border}┴${border}${"─".repeat(tailFill)}${cha(colRight)}${border}╯${C.reset}`,
+		);
 		return output;
 	}
 }
@@ -215,25 +236,25 @@ function padTo(text: string, width: number): string {
 	return `${text}${" ".repeat(Math.max(0, width - visibleWidth(text)))}`;
 }
 
-function formatNodeList(
-	nodes: SessionNodeInfo[],
-	selectedIndex: number,
-	width: number,
-): string[] {
+function formatNodeList(nodes: SessionNodeInfo[], selectedIndex: number, width: number): string[] {
 	if (nodes.length === 0) return [`${C.dim}(当前筛选无节点)${C.reset}`];
 
-	const windowStart = Math.max(0, Math.min(selectedIndex - Math.floor(LIST_ROWS / 2), Math.max(0, nodes.length - LIST_ROWS)));
+	const windowStart = Math.max(
+		0,
+		Math.min(selectedIndex - Math.floor(LIST_ROWS / 2), Math.max(0, nodes.length - LIST_ROWS)),
+	);
 	const rows: string[] = [];
 	for (let i = windowStart; i < Math.min(nodes.length, windowStart + LIST_ROWS); i++) {
 		const node = nodes[i]!;
 		const isSelected = i === selectedIndex;
 		const pointer = isSelected ? `${C.bold}${C.cyan}❯${C.reset}` : " ";
 		const dot = node.active ? `${C.green}●${C.reset}` : `${C.dim}○${C.reset}`;
-		const kind = node.kind === "rewind"
-			? `${C.warning}⟲${C.reset}`
-			: node.kind === "input"
-				? `${C.briefLabelYou}▸${C.reset}`
-				: `${C.claude}◆${C.reset}`;
+		const kind =
+			node.kind === "rewind"
+				? `${C.warning}⟲${C.reset}`
+				: node.kind === "input"
+					? `${C.briefLabelYou}▸${C.reset}`
+					: `${C.claude}◆${C.reset}`;
 		// Session content is untrusted for rendering: it carries newlines, ANSI and control
 		// characters. Collapse it to a single line before measuring, or one message destroys
 		// the frame the same way a multi-line label would.
@@ -332,5 +353,3 @@ function wrapPlain(text: string, width: number): string[] {
 	if (rest.length > 0) rows.push("…");
 	return rows;
 }
-
-

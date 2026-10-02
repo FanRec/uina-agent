@@ -132,7 +132,8 @@ async function grepWithRg(opts: GrepOptions, rgPath: string): Promise<SearchOutc
 			for (const event of parser.push(chunk.toString())) {
 				if (matches.length >= limit) return;
 				if ((event as { type?: string }).type !== "match") continue;
-				const data = (event as { data?: { path?: { text?: string }; line_number?: number; lines?: { text?: string } } }).data;
+				const data = (event as { data?: { path?: { text?: string }; line_number?: number; lines?: { text?: string } } })
+					.data;
 				const file = data?.path?.text;
 				const lineNo = data?.line_number;
 				const text = data?.lines?.text;
@@ -394,12 +395,7 @@ export async function runGrep(opts: GrepOptions): Promise<SearchOutcome> {
 }
 
 /** 输出格式化：相对路径 + 行号 + 截断的单行文本 + 尾部提示。 */
-export function formatGrepOutput(
-	matches: SearchMatch[],
-	root: string,
-	limitHit: boolean,
-	limit: number,
-): string {
+export function formatGrepOutput(matches: SearchMatch[], root: string, limitHit: boolean, limit: number): string {
 	if (matches.length === 0) return "No matches found";
 	const lines: string[] = [];
 	let bytes = 0;

@@ -34,7 +34,6 @@ export async function defineWorld(pi: ExtensionAPI, world: WorldDef): Promise<()
 	return unregister;
 }
 
-
 import { createWorldStoreWorld } from "./builtins/world-store.js";
 import { loadExternalWorlds } from "./world-loader.js";
 import { WORLD_EXPOSED_SHARED_NAME } from "./types.js";
@@ -57,7 +56,8 @@ export async function activateWorldFramework(pi: ExtensionAPI): Promise<() => Pr
 	await registry.register(createWorldStoreWorld(registry));
 	const teardownWorlds = await loadExternalWorlds(pi, registry);
 	const unhookEnvironment = pi.onHook("turn.prepare", (input) => {
-		const environments = registry.list()
+		const environments = registry
+			.list()
 			.filter((world) => world.enabled && world.definition.environment?.trim())
 			.map((world) => `- ${world.definition.name}: ${world.definition.environment!.trim()}`);
 		if (environments.length === 0) return undefined;

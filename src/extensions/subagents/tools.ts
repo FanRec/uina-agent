@@ -45,12 +45,21 @@ export function createSubagentTools(registry: SubagentRegistry, ownerId: string)
 				return {
 					result: JSON.stringify(snapshot),
 					status: "succeeded" as const,
-					details: { effects: [{ effectType: "task.dispatch", externalOperationId: snapshot.id, label: String(args.label) }] },
+					details: {
+						effects: [{ effectType: "task.dispatch", externalOperationId: snapshot.id, label: String(args.label) }],
+					},
 				};
 			},
 		},
-		tool("subagent_list", "查看当前调用方拥有的所有内部子代理列表。", { type: "object", additionalProperties: false, properties: {} }, (_args, caller) => registry.list(caller)),
-		tool("subagent_status", "查看指定内部子代理的实时状态与执行快照。", byIdSchema, (args, caller) => registry.get(args.subagent_id as string, caller)),
+		tool(
+			"subagent_list",
+			"查看当前调用方拥有的所有内部子代理列表。",
+			{ type: "object", additionalProperties: false, properties: {} },
+			(_args, caller) => registry.list(caller),
+		),
+		tool("subagent_status", "查看指定内部子代理的实时状态与执行快照。", byIdSchema, (args, caller) =>
+			registry.get(args.subagent_id as string, caller),
+		),
 		tool(
 			"subagent_output",
 			"游标增量读取内部子代理的实时输出流。",
@@ -62,7 +71,9 @@ export function createSubagentTools(registry: SubagentRegistry, ownerId: string)
 			},
 			(args, caller) => registry.read(args.subagent_id as string, caller, args.cursor as number | undefined),
 		),
-		tool("subagent_messages", "读取指定内部子代理的完整对话轨迹转录记录。", byIdSchema, (args, caller) => registry.transcript(args.subagent_id as string, caller)),
+		tool("subagent_messages", "读取指定内部子代理的完整对话轨迹转录记录。", byIdSchema, (args, caller) =>
+			registry.transcript(args.subagent_id as string, caller),
+		),
 		tool(
 			"subagent_send",
 			"向指定的内部子代理追加发送跟进消息。",
@@ -82,5 +93,3 @@ export function createSubagentTools(registry: SubagentRegistry, ownerId: string)
 		})),
 	];
 }
-
-

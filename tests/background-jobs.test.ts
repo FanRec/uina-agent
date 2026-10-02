@@ -22,21 +22,27 @@ function make(): { jobs: JobRegistry; broker: ToolBroker } {
 describe("background jobs", () => {
 	it("publishes a job only after its producer handle is available", () => {
 		const { jobs } = make();
-		expect(() => jobs.start({
-			label: "broken startup",
-			ownerId: "root",
-			source: { extension: "test" },
-			start: () => { throw new Error("producer unavailable"); },
-		})).toThrow("后台任务启动失败：producer unavailable");
+		expect(() =>
+			jobs.start({
+				label: "broken startup",
+				ownerId: "root",
+				source: { extension: "test" },
+				start: () => {
+					throw new Error("producer unavailable");
+				},
+			}),
+		).toThrow("后台任务启动失败：producer unavailable");
 		expect(jobs.list("root")).toEqual([]);
 	});
 
 	it("returns a job id immediately and exposes live output and source", async () => {
 		const { jobs, broker } = make();
-		const started = JSON.parse(await broker.run("exec_command", {
-			command: "node -e \"process.stdout.write('hello')\"",
-			run_in_background: true,
-		}));
+		const started = JSON.parse(
+			await broker.run("exec_command", {
+				command: "node -e \"process.stdout.write('hello')\"",
+				run_in_background: true,
+			}),
+		);
 		expect(started.status).toBe("running");
 		expect(typeof started.jobId).toBe("string");
 		const id = started.jobId as string;
@@ -61,10 +67,15 @@ describe("background jobs", () => {
 			ownerId: "root",
 			source: { extension: "test", operation: "stream" },
 			start: (context) => {
-				const done = new Promise<void>((resolve) => { release = resolve; });
+				const done = new Promise<void>((resolve) => {
+					release = resolve;
+				});
 				context.update({ detail: "working", progress: { current: 1, total: 2 } });
 				context.observe({ stream: "text", text: "one" });
-				return { cancel: () => release(), done: done.then(() => ({ status: "completed" as const, output: { result: "done" } })) };
+				return {
+					cancel: () => release(),
+					done: done.then(() => ({ status: "completed" as const, output: { result: "done" } })),
+				};
 			},
 		});
 		const first = jobs.read(id, "root");
@@ -90,7 +101,9 @@ describe("background jobs", () => {
 			source: { extension: "test" },
 			start: () => ({
 				cancel: () => release(),
-				done: new Promise((resolve) => { release = () => resolve({ status: "killed" as const }); }),
+				done: new Promise((resolve) => {
+					release = () => resolve({ status: "killed" as const });
+				}),
 			}),
 		});
 		expect(() => jobs.get(id, "other")).toThrow();
@@ -127,4 +140,3 @@ describe("background jobs", () => {
 		expect(res4.error).toContain("job_id");
 	});
 });
-

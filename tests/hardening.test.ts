@@ -1,4 +1,4 @@
-﻿import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { open } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { IsolatedEnv, mockTool, SubjectHarness, Scenario } from "./harness/index.js";
@@ -37,17 +37,30 @@ describe("hardening: session write queue", () => {
 			await store.appendMessage({ role: "user", content: "after" });
 			await store.close();
 			const reopened = await openJsonlSession(path);
-			expect(reopened.snapshot.entries.filter(e => e.kind === "message").map(e => e.message.content)).toEqual(["before", "after"]);
+			expect(reopened.snapshot.entries.filter((e) => e.kind === "message").map((e) => e.message.content)).toEqual([
+				"before",
+				"after",
+			]);
 			await reopened.store.close();
-		} finally { await env.cleanup(); }
+		} finally {
+			await env.cleanup();
+		}
 	});
 
 	it("rejects later writes if rollback cannot restore the file boundary", async () => {
 		const write = vi.fn().mockRejectedValue(new Error("partial write"));
-		const store = new JsonlSessionStore(":test:", {
-			stat: async () => ({ size: 0 }), write,
-			truncate: async () => { throw new Error("rollback failed"); }, close: async () => {},
-		} as unknown as FileHandle, 0);
+		const store = new JsonlSessionStore(
+			":test:",
+			{
+				stat: async () => ({ size: 0 }),
+				write,
+				truncate: async () => {
+					throw new Error("rollback failed");
+				},
+				close: async () => {},
+			} as unknown as FileHandle,
+			0,
+		);
 		await expect(store.appendMessage({ role: "user", content: "first" })).rejects.toThrow("追加及回滚失败");
 		await expect(store.appendMessage({ role: "user", content: "second" })).rejects.toThrow("重新打开");
 		expect(write).toHaveBeenCalledTimes(1);
@@ -63,7 +76,10 @@ describe("hardening: job output accounting", () => {
 			ownerId: "root",
 			label: "chatter",
 			source: { extension: "test" },
-			start: (context) => { observe = context.observe; return { cancel() {}, done: new Promise(() => {}) }; },
+			start: (context) => {
+				observe = context.observe;
+				return { cancel() {}, done: new Promise(() => {}) };
+			},
 		});
 		for (let i = 0; i < 40; i++) observe({ text: `chunk-${i}-` + "x".repeat(4096) });
 		const read = jobs.read(id, "root", 0);
@@ -123,16 +139,21 @@ describe("hardening: extension host honesty", () => {
 			if (value === undefined) clears.push(name);
 		};
 		const runner = new ExtensionRunner({ cwd: process.cwd(), tools: new ToolBroker() });
-		runner.attachUI({ ...createPrintUI(() => {}),
-			setStatus: set, setWidget: set,
-			setHeader: value => set("header", value), setFooter: value => set("footer", value),
+		runner.attachUI({
+			...createPrintUI(() => {}),
+			setStatus: set,
+			setWidget: set,
+			setHeader: (value) => set("header", value),
+			setFooter: (value) => set("footer", value),
 		});
-		const first = { render: () => ["first"] }, second = { render: () => ["second"] };
-		await runner.activateBuiltin("slots", pi => {
+		const first = { render: () => ["first"] },
+			second = { render: () => ["second"] };
+		await runner.activateBuiltin("slots", (pi) => {
 			for (const component of [first, second]) {
 				pi.ui.setStatus("status", component.render()[0]);
 				pi.ui.setWidget("widget", component);
-				pi.ui.setHeader(component); pi.ui.setFooter(component);
+				pi.ui.setHeader(component);
+				pi.ui.setFooter(component);
 			}
 		});
 		expect([...slots.values()]).toEqual(["second", second, second, second]);
@@ -157,7 +178,9 @@ describe("hardening: extension host honesty", () => {
 			},
 		});
 		await runner.activateBuiltin("prompt", (pi) => {
-			promptResult = pi.ui.select("pending", []).then(() => { promptSettled = true; });
+			promptResult = pi.ui.select("pending", []).then(() => {
+				promptSettled = true;
+			});
 		});
 
 		await runner.dispose();
@@ -168,7 +191,11 @@ describe("hardening: extension host honesty", () => {
 	it("registerProvider fails loudly when the host has no provider port", async () => {
 		const runner = new ExtensionRunner({ cwd: process.cwd(), tools: new ToolBroker() });
 		const provider = { name: "x", stream: async () => {} };
-		await expect(runner.activateBuiltin("probe", (pi) => { pi.registerProvider("x", provider as never); })).resolves.toBeUndefined();
+		await expect(
+			runner.activateBuiltin("probe", (pi) => {
+				pi.registerProvider("x", provider as never);
+			}),
+		).resolves.toBeUndefined();
 		expect(runner.diagnostics().some((entry) => entry.status === "failed" && entry.id === "builtin:probe")).toBe(true);
 	});
 
@@ -188,7 +215,12 @@ describe("hardening: keyboard and frame invariants", () => {
 
 	it("renderer clamps every emitted row to the terminal width", () => {
 		let written = "";
-		const terminal = { columns: 20, syncWrite: (data: string) => { written = data; } } as unknown as ProcessTerminal;
+		const terminal = {
+			columns: 20,
+			syncWrite: (data: string) => {
+				written = data;
+			},
+		} as unknown as ProcessTerminal;
 		new MainScreenRenderer(terminal).renderFrame(["short", "x".repeat(60)]);
 		// Rows are positioned absolutely rather than CR LF delimited, so writing a row that
 		// fills the terminal never leaves the cursor in a wrap state for the next row.
@@ -202,7 +234,12 @@ describe("hardening: keyboard and frame invariants", () => {
 
 	it("renderer writes only changed rows after the first frame", () => {
 		const writes: string[] = [];
-		const terminal = { columns: 20, syncWrite: (data: string) => { writes.push(data); } } as unknown as ProcessTerminal;
+		const terminal = {
+			columns: 20,
+			syncWrite: (data: string) => {
+				writes.push(data);
+			},
+		} as unknown as ProcessTerminal;
 		const renderer = new MainScreenRenderer(terminal);
 
 		renderer.renderFrame(["same", "first"]);
@@ -215,7 +252,12 @@ describe("hardening: keyboard and frame invariants", () => {
 
 	it("renderer invalidates the physical frame after resize", () => {
 		const writes: string[] = [];
-		const terminal = { columns: 20, syncWrite: (data: string) => { writes.push(data); } } as unknown as ProcessTerminal;
+		const terminal = {
+			columns: 20,
+			syncWrite: (data: string) => {
+				writes.push(data);
+			},
+		} as unknown as ProcessTerminal;
 		const renderer = new MainScreenRenderer(terminal);
 
 		renderer.renderFrame(["same", "first"]);
@@ -230,10 +272,13 @@ describe("hardening: keyboard and frame invariants", () => {
 
 	it("renderer strips non-style terminal controls from frame rows", () => {
 		let written = "";
-		const terminal = { columns: 40, syncWrite: (data: string) => { written = data; } } as unknown as ProcessTerminal;
-		new MainScreenRenderer(terminal).renderFrame([
-			"ok\x1b[31m red\x1b[0m\x1b[2J\x1b]0;bad\x07",
-		]);
+		const terminal = {
+			columns: 40,
+			syncWrite: (data: string) => {
+				written = data;
+			},
+		} as unknown as ProcessTerminal;
+		new MainScreenRenderer(terminal).renderFrame(["ok\x1b[31m red\x1b[0m\x1b[2J\x1b]0;bad\x07"]);
 
 		expect(written).toContain("ok");
 		expect(written).toContain("\x1b[31m");
@@ -252,7 +297,10 @@ describe("hardening: consecutive tool call hard cap", () => {
 		});
 		await harness.subject.pushInput("开始");
 		await harness.subject.waitForIdle();
-		const text = harness.historySnapshot().map((m) => (m.role === "assistant" ? m.content : "")).join("\n");
+		const text = harness
+			.historySnapshot()
+			.map((m) => (m.role === "assistant" ? m.content : ""))
+			.join("\n");
 		expect(text).toContain("将超过上限 2");
 		expect(text).toContain("未正常收敛");
 	});

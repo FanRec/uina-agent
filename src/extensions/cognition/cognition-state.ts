@@ -40,18 +40,20 @@ export function updateCognitionState(
 ): Promise<void> {
 	const path = resolve(join(stateRoot, COGNITION_STATE_FILE));
 	const previous = stateWriteTails.get(path) ?? Promise.resolve();
-	const next = previous.catch(() => undefined).then(async () => {
-		await mkdir(stateRoot, { recursive: true });
-		const current = readCognitionState(stateRoot);
-		const updated = mutate(current);
-		const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-		try {
-			await writeFile(temporary, JSON.stringify(updated, null, "\t"), "utf8");
-			await rename(temporary, path);
-		} finally {
-			await unlink(temporary).catch(() => undefined);
-		}
-	});
+	const next = previous
+		.catch(() => undefined)
+		.then(async () => {
+			await mkdir(stateRoot, { recursive: true });
+			const current = readCognitionState(stateRoot);
+			const updated = mutate(current);
+			const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+			try {
+				await writeFile(temporary, JSON.stringify(updated, null, "\t"), "utf8");
+				await rename(temporary, path);
+			} finally {
+				await unlink(temporary).catch(() => undefined);
+			}
+		});
 	let tracked!: Promise<void>;
 	tracked = next.finally(() => {
 		if (stateWriteTails.get(path) === tracked) stateWriteTails.delete(path);

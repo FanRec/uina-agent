@@ -33,9 +33,7 @@ export interface Focusable {
 }
 
 export function isFocusable(c: unknown): c is Focusable {
-	return (
-		typeof c === "object" && c !== null && "focused" in c && typeof (c as Focusable).focused === "boolean"
-	);
+	return typeof c === "object" && c !== null && "focused" in c && typeof (c as Focusable).focused === "boolean";
 }
 
 /** 浮层锚点定位方式 */

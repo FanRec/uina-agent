@@ -31,7 +31,7 @@ export function createModel(conf: ProviderConfig, providerId: string): Model {
 	const levels = configuredThinkingLevels(conf);
 	return {
 		id: conf.model,
-  imageInput: conf.imageInput,
+		imageInput: conf.imageInput,
 		name: conf.model,
 		providerId,
 		contextWindow: effectiveWindow,
@@ -79,7 +79,7 @@ export function createAnthropicProvider(id: string, conf: ProviderConfig): Provi
 			if (response.status === 404 || response.status === 405 || response.status === 501) return [];
 			if (!response.ok) throw new ProviderHttpError({ provider: id, status: response.status, action: "模型目录请求" });
 			const payload = (await response.json()) as { data?: Array<{ id?: string }> };
-			return (payload.data ?? []).flatMap((model) => typeof model.id === "string" ? [{ id: model.id }] : []);
+			return (payload.data ?? []).flatMap((model) => (typeof model.id === "string" ? [{ id: model.id }] : []));
 		},
 		async stream(model: Model, req: ModelRequest, emit: (d: StreamDelta) => void, signal?: AbortSignal): Promise<void> {
 			assertImageInput(model, req);
@@ -93,7 +93,11 @@ export function createAnthropicProvider(id: string, conf: ProviderConfig): Provi
 				max_tokens: model.maxOutputTokens ?? maxOutputTokens(conf),
 				system: anthropicSystem(req),
 				messages: anthropicMessages(req),
-				tools: req.tools?.map((tool) => ({ name: tool.function.name, description: tool.function.description, input_schema: tool.function.parameters })),
+				tools: req.tools?.map((tool) => ({
+					name: tool.function.name,
+					description: tool.function.description,
+					input_schema: tool.function.parameters,
+				})),
 				stream: true,
 			};
 			if (thinking) body.thinking = { type: "enabled", budget_tokens: thinking };
@@ -131,104 +135,133 @@ export function createAnthropicProvider(id: string, conf: ProviderConfig): Provi
 				emit({ kind: "usage", usage: usageSnapshot(usageState) });
 			};
 
-			await parseSSE(bodyStream, (data, index) => {
-				let event: AnthropicEvent;
-				try {
-					event = JSON.parse(data) as AnthropicEvent;
-				} catch (error) {
-					throw new ProviderProtocolError(`Anthropic ${id} SSE ${index} JSON 无效: ${String(error)}`, index);
-				}
-				if (event.type === "error") {
-					const detail = event.error?.message ?? event.error?.type ?? "未知 provider 错误";
-					throw new ProviderProtocolError(`Anthropic ${id} provider error: ${detail}`, index);
-				}
-				if (sawMessageStop) throw new ProviderProtocolError(`Anthropic ${id} message_stop 后仍收到事件`, index);
-				if (event.type === "message_start") {
-					if (sawMessageStart) throw new ProviderProtocolError(`Anthropic ${id} 重复 message_start`, index);
-					sawMessageStart = true;
-					reportUsage(event.message?.usage, index);
-					return;
-				}
-				if (!sawMessageStart && isAnthropicProtocolEvent(event.type)) throw new ProviderProtocolError(`Anthropic ${id} 在 message_start 前收到 ${event.type}`, index);
-				if (finishReason && event.type !== "message_stop" && event.type !== "message_delta") throw new ProviderProtocolError(`Anthropic ${id} stop_reason 后仍收到 ${event.type}`, index);
+			await parseSSE(
+				bodyStream,
+				(data, index) => {
+					let event: AnthropicEvent;
+					try {
+						event = JSON.parse(data) as AnthropicEvent;
+					} catch (error) {
+						throw new ProviderProtocolError(`Anthropic ${id} SSE ${index} JSON 无效: ${String(error)}`, index);
+					}
+					if (event.type === "error") {
+						const detail = event.error?.message ?? event.error?.type ?? "未知 provider 错误";
+						throw new ProviderProtocolError(`Anthropic ${id} provider error: ${detail}`, index);
+					}
+					if (sawMessageStop) throw new ProviderProtocolError(`Anthropic ${id} message_stop 后仍收到事件`, index);
+					if (event.type === "message_start") {
+						if (sawMessageStart) throw new ProviderProtocolError(`Anthropic ${id} 重复 message_start`, index);
+						sawMessageStart = true;
+						reportUsage(event.message?.usage, index);
+						return;
+					}
+					if (!sawMessageStart && isAnthropicProtocolEvent(event.type))
+						throw new ProviderProtocolError(`Anthropic ${id} 在 message_start 前收到 ${event.type}`, index);
+					if (finishReason && event.type !== "message_stop" && event.type !== "message_delta")
+						throw new ProviderProtocolError(`Anthropic ${id} stop_reason 后仍收到 ${event.type}`, index);
 
-				switch (event.type) {
-					case "content_block_start": {
-						const blockIndex = requireEventIndex(event.index, id, index);
-						if (blocks.has(blockIndex)) throw new ProviderProtocolError(`Anthropic ${id} 重复 content block ${blockIndex}`, index);
-						const block = event.content_block;
-						if (!block?.type) throw new ProviderProtocolError(`Anthropic ${id} content block 缺少 type`, index);
-						replayBlocks.set(blockIndex, structuredClone(block) as Record<string, unknown>);
-						if (block.type === "redacted_thinking") {
-							blocks.set(blockIndex, { kind: "redacted_thinking" });
-						} else if (block.type === "text") {
-							blocks.set(blockIndex, { kind: "text" });
-							if (block.text) emit({ kind: "text", text: block.text });
-						} else if (block.type === "thinking") {
-							blocks.set(blockIndex, { kind: "thinking" });
-							if (block.thinking) emit({ kind: "thinking", text: block.thinking });
-							if (block.signature !== undefined) emit({ kind: "thinking_signature", signature: block.signature });
-						} else if (block.type === "tool_use") {
-							if (!block.id || !block.name) throw new ProviderProtocolError(`Anthropic ${id} tool_use 缺少 id 或 name`, index);
-							blocks.set(blockIndex, { kind: "tool_use", id: block.id, name: block.name, args: "", initialArgs: block.input });
-						} else {
-							throw new ProviderProtocolError(`Anthropic ${id} 不支持 content block ${block.type}`, index);
+					switch (event.type) {
+						case "content_block_start": {
+							const blockIndex = requireEventIndex(event.index, id, index);
+							if (blocks.has(blockIndex))
+								throw new ProviderProtocolError(`Anthropic ${id} 重复 content block ${blockIndex}`, index);
+							const block = event.content_block;
+							if (!block?.type) throw new ProviderProtocolError(`Anthropic ${id} content block 缺少 type`, index);
+							replayBlocks.set(blockIndex, structuredClone(block) as Record<string, unknown>);
+							if (block.type === "redacted_thinking") {
+								blocks.set(blockIndex, { kind: "redacted_thinking" });
+							} else if (block.type === "text") {
+								blocks.set(blockIndex, { kind: "text" });
+								if (block.text) emit({ kind: "text", text: block.text });
+							} else if (block.type === "thinking") {
+								blocks.set(blockIndex, { kind: "thinking" });
+								if (block.thinking) emit({ kind: "thinking", text: block.thinking });
+								if (block.signature !== undefined) emit({ kind: "thinking_signature", signature: block.signature });
+							} else if (block.type === "tool_use") {
+								if (!block.id || !block.name)
+									throw new ProviderProtocolError(`Anthropic ${id} tool_use 缺少 id 或 name`, index);
+								blocks.set(blockIndex, {
+									kind: "tool_use",
+									id: block.id,
+									name: block.name,
+									args: "",
+									initialArgs: block.input,
+								});
+							} else {
+								throw new ProviderProtocolError(`Anthropic ${id} 不支持 content block ${block.type}`, index);
+							}
+							break;
 						}
-						break;
+						case "content_block_delta": {
+							const blockIndex = requireEventIndex(event.index, id, index);
+							const block = blocks.get(blockIndex);
+							if (!block)
+								throw new ProviderProtocolError(`Anthropic ${id} delta 没有对应 content block ${blockIndex}`, index);
+							const delta = event.delta;
+							if (!delta?.type) throw new ProviderProtocolError(`Anthropic ${id} content delta 缺少 type`, index);
+							const replay = replayBlocks.get(blockIndex)!;
+							const field =
+								delta.type === "text_delta"
+									? "text"
+									: delta.type === "thinking_delta"
+										? "thinking"
+										: delta.type === "signature_delta"
+											? "signature"
+											: undefined;
+							if (field) replay[field] = String(replay[field] ?? "") + String(delta[field] ?? "");
+							if (delta.type === "text_delta" && block.kind === "text") {
+								if (delta.text) emit({ kind: "text", text: delta.text });
+							} else if (delta.type === "thinking_delta" && block.kind === "thinking") {
+								if (delta.thinking) emit({ kind: "thinking", text: delta.thinking });
+							} else if (delta.type === "signature_delta" && block.kind === "thinking") {
+								if (delta.signature !== undefined) emit({ kind: "thinking_signature", signature: delta.signature });
+							} else if (delta.type === "input_json_delta" && block.kind === "tool_use") {
+								block.args += delta.partial_json ?? "";
+							} else {
+								throw new ProviderProtocolError(
+									`Anthropic ${id} content delta ${delta.type} 与 block 类型不匹配`,
+									index,
+								);
+							}
+							break;
+						}
+						case "content_block_stop": {
+							const blockIndex = requireEventIndex(event.index, id, index);
+							const block = blocks.get(blockIndex);
+							if (!block)
+								throw new ProviderProtocolError(`Anthropic ${id} 重复或未知 content block stop ${blockIndex}`, index);
+							if (block.kind === "tool_use") {
+								const args = block.args || (block.initialArgs ? JSON.stringify(block.initialArgs) : "{}");
+								if (!isJsonObject(args))
+									throw new ProviderProtocolError(`Anthropic ${id} tool call ${block.name} 参数不是完整 JSON`, index);
+								replayBlocks.get(blockIndex)!.input = JSON.parse(args);
+								emit({ kind: "tool_call", call: { id: block.id, name: block.name, args, argsValid: true } });
+							}
+							blocks.delete(blockIndex);
+							break;
+						}
+						case "message_delta":
+							reportUsage(event.usage, index);
+							if (event.delta?.stop_reason) {
+								if (finishReason) throw new ProviderProtocolError(`Anthropic ${id} 重复 stop_reason`, index);
+								finishReason = mapAnthropicStopReason(event.delta.stop_reason, event.delta.stop_details, id, index);
+							}
+							break;
+						case "message_stop":
+							if (!finishReason)
+								throw new ProviderProtocolError(`Anthropic ${id} message_stop 缺少 stop_reason`, index);
+							if (blocks.size > 0)
+								throw new ProviderProtocolError(`Anthropic ${id} message_stop 前仍有未结束 content block`, index);
+							sawMessageStop = true;
+							emit({ kind: "provider_replay", replay: { format: "anthropic", blocks: [...replayBlocks.values()] } });
+							emit({ kind: "finish", reason: finishReason });
+							break;
+						default:
+							break;
 					}
-					case "content_block_delta": {
-						const blockIndex = requireEventIndex(event.index, id, index);
-						const block = blocks.get(blockIndex);
-						if (!block) throw new ProviderProtocolError(`Anthropic ${id} delta 没有对应 content block ${blockIndex}`, index);
-						const delta = event.delta;
-						if (!delta?.type) throw new ProviderProtocolError(`Anthropic ${id} content delta 缺少 type`, index);
-						const replay = replayBlocks.get(blockIndex)!;
-						const field = delta.type === "text_delta" ? "text" : delta.type === "thinking_delta" ? "thinking" : delta.type === "signature_delta" ? "signature" : undefined;
-						if (field) replay[field] = String(replay[field] ?? "") + String(delta[field] ?? "");
-						if (delta.type === "text_delta" && block.kind === "text") {
-							if (delta.text) emit({ kind: "text", text: delta.text });
-						} else if (delta.type === "thinking_delta" && block.kind === "thinking") {
-							if (delta.thinking) emit({ kind: "thinking", text: delta.thinking });
-						} else if (delta.type === "signature_delta" && block.kind === "thinking") {
-							if (delta.signature !== undefined) emit({ kind: "thinking_signature", signature: delta.signature });
-						} else if (delta.type === "input_json_delta" && block.kind === "tool_use") {
-							block.args += delta.partial_json ?? "";
-						} else {
-							throw new ProviderProtocolError(`Anthropic ${id} content delta ${delta.type} 与 block 类型不匹配`, index);
-						}
-						break;
-					}
-					case "content_block_stop": {
-						const blockIndex = requireEventIndex(event.index, id, index);
-						const block = blocks.get(blockIndex);
-						if (!block) throw new ProviderProtocolError(`Anthropic ${id} 重复或未知 content block stop ${blockIndex}`, index);
-						if (block.kind === "tool_use") {
-							const args = block.args || (block.initialArgs ? JSON.stringify(block.initialArgs) : "{}");
-							if (!isJsonObject(args)) throw new ProviderProtocolError(`Anthropic ${id} tool call ${block.name} 参数不是完整 JSON`, index);
-							replayBlocks.get(blockIndex)!.input = JSON.parse(args);
-							emit({ kind: "tool_call", call: { id: block.id, name: block.name, args, argsValid: true } });
-						}
-						blocks.delete(blockIndex);
-						break;
-					}
-					case "message_delta":
-						reportUsage(event.usage, index);
-						if (event.delta?.stop_reason) {
-							if (finishReason) throw new ProviderProtocolError(`Anthropic ${id} 重复 stop_reason`, index);
-							finishReason = mapAnthropicStopReason(event.delta.stop_reason, event.delta.stop_details, id, index);
-						}
-						break;
-					case "message_stop":
-						if (!finishReason) throw new ProviderProtocolError(`Anthropic ${id} message_stop 缺少 stop_reason`, index);
-						if (blocks.size > 0) throw new ProviderProtocolError(`Anthropic ${id} message_stop 前仍有未结束 content block`, index);
-						sawMessageStop = true;
-						emit({ kind: "provider_replay", replay: { format: "anthropic", blocks: [...replayBlocks.values()] } });
-						emit({ kind: "finish", reason: finishReason });
-						break;
-					default:
-						break;
-				}
-			}, signal);
+				},
+				signal,
+			);
 
 			if (!sawMessageStart) throw new ProviderProtocolError(`Anthropic ${id} 流缺少 message_start`);
 			if (!sawMessageStop) throw new ProviderProtocolError(`Anthropic ${id} 流缺少 message_stop`);
@@ -241,14 +274,36 @@ export function createGeminiProvider(id: string, conf: ProviderConfig): Provider
 		id,
 		baseUrl: conf.baseUrl,
 		async refreshModels() {
-			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, { headers: { "x-goog-api-key": conf.apiKey } });
+			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, {
+				headers: { "x-goog-api-key": conf.apiKey },
+			});
 			if (response.status === 404 || response.status === 405 || response.status === 501) return [];
 			if (!response.ok) throw new ProviderHttpError({ provider: id, status: response.status, action: "模型目录请求" });
-			const payload = (await response.json()) as { models?: Array<{ baseModelId?: string; inputTokenLimit?: number; thinking?: boolean; supportedGenerationMethods?: string[] }> };
+			const payload = (await response.json()) as {
+				models?: Array<{
+					baseModelId?: string;
+					inputTokenLimit?: number;
+					thinking?: boolean;
+					supportedGenerationMethods?: string[];
+				}>;
+			};
 			return (payload.models ?? []).flatMap((model) => {
 				const contextWindow = model.inputTokenLimit;
-				if (!model.supportedGenerationMethods?.includes("generateContent") || !model.baseModelId || typeof contextWindow !== "number" || !Number.isSafeInteger(contextWindow) || contextWindow <= 0) return [];
-				return [{ id: model.baseModelId, contextWindow, thinkingLevels: model.thinking === false ? ["off" as const] : undefined }];
+				if (
+					!model.supportedGenerationMethods?.includes("generateContent") ||
+					!model.baseModelId ||
+					typeof contextWindow !== "number" ||
+					!Number.isSafeInteger(contextWindow) ||
+					contextWindow <= 0
+				)
+					return [];
+				return [
+					{
+						id: model.baseModelId,
+						contextWindow,
+						thinkingLevels: model.thinking === false ? ["off" as const] : undefined,
+					},
+				];
 			});
 		},
 		async stream(model: Model, req: ModelRequest, emit: (d: StreamDelta) => void, signal?: AbortSignal): Promise<void> {
@@ -256,7 +311,7 @@ export function createGeminiProvider(id: string, conf: ProviderConfig): Provider
 				throw new Error(`模型 ${model.id} 的 providerId (${model.providerId}) 与端点 id (${id}) 不匹配`);
 			}
 			const thinkingLevels = model.thinkingLevels ?? levels(conf);
-			const geminiToolCallIds = model.compat?.geminiToolCallIds ?? (conf.geminiToolCallIds === true);
+			const geminiToolCallIds = model.compat?.geminiToolCallIds ?? conf.geminiToolCallIds === true;
 			const geminiThinkingFormat = model.compat?.geminiThinkingFormat ?? conf.geminiThinkingFormat;
 			const thinkingBudgets = model.thinkingBudgets ?? conf.thinkingBudgets;
 
@@ -294,46 +349,75 @@ export function createGeminiProvider(id: string, conf: ProviderConfig): Provider
 				emit({ kind: "usage", usage: usageSnapshot(usageState) });
 			};
 
-			await parseSSE(bodyStream, (data, index) => {
-				if (finished) throw new ProviderProtocolError(`Gemini ${id} finish 后仍收到事件`, index);
-				let chunk: GeminiChunk;
-				try {
-					chunk = JSON.parse(data) as GeminiChunk;
-				} catch (error) {
-					throw new ProviderProtocolError(`Gemini ${id} SSE ${index} JSON 无效: ${String(error)}`, index);
-				}
-				if (chunk.error) throw new ProviderProtocolError(`Gemini ${id} provider error: ${chunk.error.message ?? chunk.error.status ?? "未知错误"}`, index);
-				reportUsage(chunk.usageMetadata, index);
-				if (chunk.candidates && chunk.candidates.length > 1) throw new ProviderProtocolError(`Gemini ${id} 返回多个 candidate，Uina 只支持单一候选`, index);
-				const candidate = chunk.candidates?.[0];
-				for (const part of candidate?.content?.parts ?? []) {
-					replayParts.push(structuredClone(part));
-					if (part.thought && part.text) emit({ kind: "thinking", text: part.text });
-					else if (part.text) emit({ kind: "text", text: part.text });
-					if (part.thoughtSignature && !part.functionCall) emit({ kind: "thinking_signature", signature: part.thoughtSignature });
-					if (part.functionCall) {
-						const functionCall = part.functionCall;
-						if (!functionCall.name?.trim()) throw new ProviderProtocolError(`Gemini ${id} functionCall 缺少 name`, index);
-						if (functionCall.args !== undefined && !isRecord(functionCall.args)) throw new ProviderProtocolError(`Gemini ${id} functionCall ${functionCall.name} 参数不是对象`, index);
-						const providerId = functionCall.id?.trim();
-						if (conf.geminiToolCallIds === true && !providerId) throw new ProviderProtocolError(`Gemini ${id} 已配置要求 tool call id，但响应缺少 id`, index);
-						const callId = providerId || `gemini-call-${nextSyntheticCallId++}`;
-						const previous = calls.get(callId);
-						if (previous && previous.name !== functionCall.name) throw new ProviderProtocolError(`Gemini ${id} tool call id ${callId} 对应多个 name`, index);
-						calls.set(callId, { id: callId, name: functionCall.name, args: { ...(previous?.args ?? {}), ...(functionCall.args ?? {}) }, thinkingSignature: functionCall.thoughtSignature ?? part.thoughtSignature ?? previous?.thinkingSignature });
+			await parseSSE(
+				bodyStream,
+				(data, index) => {
+					if (finished) throw new ProviderProtocolError(`Gemini ${id} finish 后仍收到事件`, index);
+					let chunk: GeminiChunk;
+					try {
+						chunk = JSON.parse(data) as GeminiChunk;
+					} catch (error) {
+						throw new ProviderProtocolError(`Gemini ${id} SSE ${index} JSON 无效: ${String(error)}`, index);
 					}
-				}
-				if (candidate?.finishReason) {
-					if (finishReason) throw new ProviderProtocolError(`Gemini ${id} 重复 finishReason`, index);
-					finishReason = mapGeminiFinishReason(candidate.finishReason, calls.size, id, index);
-					for (const call of calls.values()) {
-						emit({ kind: "tool_call", call: { id: call.id, name: call.name, args: JSON.stringify(call.args), argsValid: true, ...(call.thinkingSignature ? { thinkingSignature: call.thinkingSignature } : {}) } });
+					if (chunk.error)
+						throw new ProviderProtocolError(
+							`Gemini ${id} provider error: ${chunk.error.message ?? chunk.error.status ?? "未知错误"}`,
+							index,
+						);
+					reportUsage(chunk.usageMetadata, index);
+					if (chunk.candidates && chunk.candidates.length > 1)
+						throw new ProviderProtocolError(`Gemini ${id} 返回多个 candidate，Uina 只支持单一候选`, index);
+					const candidate = chunk.candidates?.[0];
+					for (const part of candidate?.content?.parts ?? []) {
+						replayParts.push(structuredClone(part));
+						if (part.thought && part.text) emit({ kind: "thinking", text: part.text });
+						else if (part.text) emit({ kind: "text", text: part.text });
+						if (part.thoughtSignature && !part.functionCall)
+							emit({ kind: "thinking_signature", signature: part.thoughtSignature });
+						if (part.functionCall) {
+							const functionCall = part.functionCall;
+							if (!functionCall.name?.trim())
+								throw new ProviderProtocolError(`Gemini ${id} functionCall 缺少 name`, index);
+							if (functionCall.args !== undefined && !isRecord(functionCall.args))
+								throw new ProviderProtocolError(`Gemini ${id} functionCall ${functionCall.name} 参数不是对象`, index);
+							const providerId = functionCall.id?.trim();
+							if (conf.geminiToolCallIds === true && !providerId)
+								throw new ProviderProtocolError(`Gemini ${id} 已配置要求 tool call id，但响应缺少 id`, index);
+							const callId = providerId || `gemini-call-${nextSyntheticCallId++}`;
+							const previous = calls.get(callId);
+							if (previous && previous.name !== functionCall.name)
+								throw new ProviderProtocolError(`Gemini ${id} tool call id ${callId} 对应多个 name`, index);
+							calls.set(callId, {
+								id: callId,
+								name: functionCall.name,
+								args: { ...(previous?.args ?? {}), ...(functionCall.args ?? {}) },
+								thinkingSignature:
+									functionCall.thoughtSignature ?? part.thoughtSignature ?? previous?.thinkingSignature,
+							});
+						}
 					}
-					finished = true;
-					emit({ kind: "provider_replay", replay: { format: "gemini", blocks: replayParts } });
-					emit({ kind: "finish", reason: finishReason });
-				}
-			}, signal);
+					if (candidate?.finishReason) {
+						if (finishReason) throw new ProviderProtocolError(`Gemini ${id} 重复 finishReason`, index);
+						finishReason = mapGeminiFinishReason(candidate.finishReason, calls.size, id, index);
+						for (const call of calls.values()) {
+							emit({
+								kind: "tool_call",
+								call: {
+									id: call.id,
+									name: call.name,
+									args: JSON.stringify(call.args),
+									argsValid: true,
+									...(call.thinkingSignature ? { thinkingSignature: call.thinkingSignature } : {}),
+								},
+							});
+						}
+						finished = true;
+						emit({ kind: "provider_replay", replay: { format: "gemini", blocks: replayParts } });
+						emit({ kind: "finish", reason: finishReason });
+					}
+				},
+				signal,
+			);
 
 			if (!finished || !finishReason) throw new ProviderProtocolError(`Gemini ${id} 流缺少 finishReason`);
 		},
@@ -341,7 +425,11 @@ export function createGeminiProvider(id: string, conf: ProviderConfig): Provider
 }
 
 function anthropicSystem(req: ModelRequest): string | undefined {
-	const text = req.messages.filter((message) => message.role === "system").map((message) => message.content).filter(Boolean).join("\n\n");
+	const text = req.messages
+		.filter((message) => message.role === "system")
+		.map((message) => message.content)
+		.filter(Boolean)
+		.join("\n\n");
 	return text || undefined;
 }
 
@@ -355,7 +443,15 @@ export function anthropicMessages(req: ModelRequest): unknown[] {
 			const toolBlock = {
 				type: "tool_result",
 				tool_use_id: message.tool_call_id,
-				content: message.images?.length ? [{ type: 'text', text: message.content || '[image]' }, ...message.images.map(image => ({ type: 'image', source: { type: 'base64', media_type: image.mimeType, data: image.data } }))] : message.content,
+				content: message.images?.length
+					? [
+							{ type: "text", text: message.content || "[image]" },
+							...message.images.map((image) => ({
+								type: "image",
+								source: { type: "base64", media_type: image.mimeType, data: image.data },
+							})),
+						]
+					: message.content,
 				is_error: message.status && message.status !== "succeeded",
 			};
 			const previous = out.at(-1);
@@ -368,11 +464,14 @@ export function anthropicMessages(req: ModelRequest): unknown[] {
 		}
 
 		if (message.role === "assistant") {
-			const blocks: unknown[] = message.providerReplay?.format === "anthropic" ? structuredClone(message.providerReplay.blocks) : [];
+			const blocks: unknown[] =
+				message.providerReplay?.format === "anthropic" ? structuredClone(message.providerReplay.blocks) : [];
 			if (message.providerReplay?.format !== "anthropic") {
-				if (message.thinking) blocks.push({ type: "thinking", thinking: message.thinking, signature: message.thinkingSignature ?? "" });
+				if (message.thinking)
+					blocks.push({ type: "thinking", thinking: message.thinking, signature: message.thinkingSignature ?? "" });
 				if (message.content) blocks.push({ type: "text", text: message.content });
-				for (const call of message.tool_calls ?? []) blocks.push({ type: "tool_use", id: call.id, name: call.name, input: call.args });
+				for (const call of message.tool_calls ?? [])
+					blocks.push({ type: "tool_use", id: call.id, name: call.name, input: call.args });
 			}
 			if (blocks.length === 0) continue;
 
@@ -386,13 +485,23 @@ export function anthropicMessages(req: ModelRequest): unknown[] {
 		}
 
 		if (message.role === "user") {
-   if (message.images?.length) {
-    const blocks = [{ type: 'text', text: message.content || '[image]' }, ...message.images.map(image => ({ type: 'image', source: { type: 'base64', media_type: image.mimeType, data: image.data } }))];
-    const previous = out.at(-1);
-    if (previous?.role === 'user') { previous.content = [...(Array.isArray(previous.content) ? previous.content : [{ type: 'text', text: previous.content }]), ...blocks]; }
-    else out.push({ role: 'user', content: blocks });
-    continue;
-   }
+			if (message.images?.length) {
+				const blocks = [
+					{ type: "text", text: message.content || "[image]" },
+					...message.images.map((image) => ({
+						type: "image",
+						source: { type: "base64", media_type: image.mimeType, data: image.data },
+					})),
+				];
+				const previous = out.at(-1);
+				if (previous?.role === "user") {
+					previous.content = [
+						...(Array.isArray(previous.content) ? previous.content : [{ type: "text", text: previous.content }]),
+						...blocks,
+					];
+				} else out.push({ role: "user", content: blocks });
+				continue;
+			}
 			const previous = out.at(-1);
 			if (previous && previous.role === "user") {
 				if (typeof previous.content === "string") {
@@ -410,14 +519,23 @@ export function anthropicMessages(req: ModelRequest): unknown[] {
 	return out;
 }
 
-export function geminiRequest(req: ModelRequest, includeToolCallIds: boolean, thinkingFormat?: "budget" | "level", thinkingBudgets?: Partial<Record<ThinkingLevel, number>>): Record<string, unknown> {
-	const system = req.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
+export function geminiRequest(
+	req: ModelRequest,
+	includeToolCallIds: boolean,
+	thinkingFormat?: "budget" | "level",
+	thinkingBudgets?: Partial<Record<ThinkingLevel, number>>,
+): Record<string, unknown> {
+	const system = req.messages
+		.filter((message) => message.role === "system")
+		.map((message) => message.content)
+		.join("\n\n");
 	const toolNames = new Map<string, string>();
 	for (const message of req.messages) {
 		if (message.role !== "assistant") continue;
 		for (const call of message.tool_calls ?? []) {
 			const previous = toolNames.get(call.id);
-			if (previous && previous !== call.name) throw new ProviderProtocolError(`Gemini tool call id ${call.id} 对应多个 name`);
+			if (previous && previous !== call.name)
+				throw new ProviderProtocolError(`Gemini tool call id ${call.id} 对应多个 name`);
 			toolNames.set(call.id, call.name);
 		}
 	}
@@ -426,18 +544,37 @@ export function geminiRequest(req: ModelRequest, includeToolCallIds: boolean, th
 		if (message.role === "tool") {
 			const name = toolNames.get(message.tool_call_id);
 			if (!name) throw new ProviderProtocolError(`Gemini tool result ${message.tool_call_id} 缺少对应 function call`);
-			const response = message.status && message.status !== "succeeded" ? { error: message.content } : { output: message.content };
-			const functionResponse = { functionResponse: { name, response, ...(includeToolCallIds ? { id: message.tool_call_id } : {}) } };
+			const response =
+				message.status && message.status !== "succeeded" ? { error: message.content } : { output: message.content };
+			const functionResponse = {
+				functionResponse: { name, response, ...(includeToolCallIds ? { id: message.tool_call_id } : {}) },
+			};
 			const previous = contents.at(-1);
-			if (previous?.role === "user" && previous.parts.some((part) => isRecord(part) && "functionResponse" in part)) previous.parts.push(functionResponse, ...(message.images ?? []).map(image => ({ inlineData: { mimeType: image.mimeType, data: image.data } })));
-			else contents.push({ role: "user", parts: [functionResponse, ...(message.images ?? []).map(image => ({ inlineData: { mimeType: image.mimeType, data: image.data } }))] });
+			if (previous?.role === "user" && previous.parts.some((part) => isRecord(part) && "functionResponse" in part))
+				previous.parts.push(
+					functionResponse,
+					...(message.images ?? []).map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } })),
+				);
+			else
+				contents.push({
+					role: "user",
+					parts: [
+						functionResponse,
+						...(message.images ?? []).map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } })),
+					],
+				});
 			continue;
 		}
 		if (message.role === "assistant") {
-			const parts: unknown[] = message.providerReplay?.format === "gemini" ? structuredClone(message.providerReplay.blocks) : [];
+			const parts: unknown[] =
+				message.providerReplay?.format === "gemini" ? structuredClone(message.providerReplay.blocks) : [];
 			if (message.providerReplay?.format !== "gemini") {
 				if (message.content) parts.push({ text: message.content });
-				for (const call of message.tool_calls ?? []) parts.push({ functionCall: { ...(includeToolCallIds ? { id: call.id } : {}), name: call.name, args: call.args }, ...(call.thinkingSignature ? { thoughtSignature: call.thinkingSignature } : {}) });
+				for (const call of message.tool_calls ?? [])
+					parts.push({
+						functionCall: { ...(includeToolCallIds ? { id: call.id } : {}), name: call.name, args: call.args },
+						...(call.thinkingSignature ? { thoughtSignature: call.thinkingSignature } : {}),
+					});
 			}
 			if (parts.length === 0) continue;
 			const previous = contents.at(-1);
@@ -450,16 +587,43 @@ export function geminiRequest(req: ModelRequest, includeToolCallIds: boolean, th
 		}
 		const previous = contents.at(-1);
 		if (previous?.role === "user" && !previous.parts.some((part) => isRecord(part) && "functionResponse" in part)) {
-			previous.parts.push({ text: message.content }, ...(message.images ?? []).map(image => ({ inlineData: { mimeType: image.mimeType, data: image.data } })));
+			previous.parts.push(
+				{ text: message.content },
+				...(message.images ?? []).map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } })),
+			);
 		} else {
-			contents.push({ role: "user", parts: [{ text: message.content }, ...(message.images ?? []).map(image => ({ inlineData: { mimeType: image.mimeType, data: image.data } }))] });
+			contents.push({
+				role: "user",
+				parts: [
+					{ text: message.content },
+					...(message.images ?? []).map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } })),
+				],
+			});
 		}
 	}
 	return {
 		contents,
 		...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
-		...(req.tools?.length ? { tools: [{ functionDeclarations: req.tools.map((tool) => ({ name: tool.function.name, description: tool.function.description, parameters: tool.function.parameters })) }] } : {}),
-		...(req.thinkingLevel ? { generationConfig: { thinkingConfig: geminiThinkingConfig(req.thinkingLevel, thinkingFormat, thinkingBudgets) } } : {}),
+		...(req.tools?.length
+			? {
+					tools: [
+						{
+							functionDeclarations: req.tools.map((tool) => ({
+								name: tool.function.name,
+								description: tool.function.description,
+								parameters: tool.function.parameters,
+							})),
+						},
+					],
+				}
+			: {}),
+		...(req.thinkingLevel
+			? {
+					generationConfig: {
+						thinkingConfig: geminiThinkingConfig(req.thinkingLevel, thinkingFormat, thinkingBudgets),
+					},
+				}
+			: {}),
 	};
 }
 
@@ -467,12 +631,17 @@ export function geminiRequest(req: ModelRequest, includeToolCallIds: boolean, th
 function thinkingBudget(conf: ProviderConfig, level: ThinkingLevel): number {
 	const value = conf.thinkingBudgets?.[level];
 	if (value === undefined) {
-		throw new Error(`provider ${conf.model} 的 thinkingBudgets 缺少档位 ${level}；该数值会写进 Anthropic wire，Uina 不发明 thinking 预算`);
+		throw new Error(
+			`provider ${conf.model} 的 thinkingBudgets 缺少档位 ${level}；该数值会写进 Anthropic wire，Uina 不发明 thinking 预算`,
+		);
 	}
 	return value;
 }
 
-function requireThinkingBudget(budgets: Partial<Record<ThinkingLevel, number>> | undefined, level: ThinkingLevel): number {
+function requireThinkingBudget(
+	budgets: Partial<Record<ThinkingLevel, number>> | undefined,
+	level: ThinkingLevel,
+): number {
 	const value = budgets?.[level];
 	if (value === undefined) {
 		throw new Error(`thinkingBudgets 缺少档位 ${level}；该数值会写进 Gemini wire，Uina 不发明 thinking 预算`);
@@ -502,7 +671,11 @@ function maxOutputTokens(conf: ProviderConfig): number {
 }
 
 function isJsonObject(value: string): boolean {
-	try { return isRecord(JSON.parse(value)); } catch { return false; }
+	try {
+		return isRecord(JSON.parse(value));
+	} catch {
+		return false;
+	}
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -522,7 +695,8 @@ type UsagePatch = Partial<UsageState>;
 
 function mergeUsage(state: UsageState, patch: UsagePatch): UsageState {
 	const next = { ...state };
-	for (const key of ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"] as const) if (patch[key] !== undefined) next[key] = patch[key];
+	for (const key of ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"] as const)
+		if (patch[key] !== undefined) next[key] = patch[key];
 	return next;
 }
 
@@ -532,7 +706,8 @@ function usageSnapshot(state: UsageState): Usage {
 
 function count(value: unknown, provider: string, field: string, index: number): number | undefined {
 	if (value === undefined || value === null) return undefined;
-	if (!Number.isSafeInteger(value) || (value as number) < 0) throw new ProviderProtocolError(`${provider} usage ${field} 不是非负整数`, index);
+	if (!Number.isSafeInteger(value) || (value as number) < 0)
+		throw new ProviderProtocolError(`${provider} usage ${field} 不是非负整数`, index);
 	return value as number;
 }
 
@@ -570,7 +745,8 @@ interface GeminiUsageRaw {
 function geminiUsagePatch(raw: GeminiUsageRaw, provider: string, index: number): UsagePatch {
 	const prompt = count(raw.promptTokenCount, provider, "promptTokenCount", index);
 	const cacheRead = count(raw.cachedContentTokenCount, provider, "cachedContentTokenCount", index);
-	if (prompt !== undefined && cacheRead !== undefined && cacheRead > prompt) throw new ProviderProtocolError(`${provider} usage cachedContentTokenCount 大于 promptTokenCount`, index);
+	if (prompt !== undefined && cacheRead !== undefined && cacheRead > prompt)
+		throw new ProviderProtocolError(`${provider} usage cachedContentTokenCount 大于 promptTokenCount`, index);
 	const candidates = count(raw.candidatesTokenCount, provider, "candidatesTokenCount", index);
 	const thoughts = count(raw.thoughtsTokenCount, provider, "thoughtsTokenCount", index);
 	const patch: UsagePatch = {};
@@ -583,37 +759,69 @@ function geminiUsagePatch(raw: GeminiUsageRaw, provider: string, index: number):
 	return patch;
 }
 
-type AnthropicBlock = { kind: "redacted_thinking" } | { kind: "text" } | { kind: "thinking" } | { kind: "tool_use"; id: string; name: string; args: string; initialArgs?: Record<string, unknown> };
+type AnthropicBlock =
+	| { kind: "redacted_thinking" }
+	| { kind: "text" }
+	| { kind: "thinking" }
+	| { kind: "tool_use"; id: string; name: string; args: string; initialArgs?: Record<string, unknown> };
 
-interface GeminiToolCall { id: string; name: string; args: Record<string, unknown>; thinkingSignature?: string; }
+interface GeminiToolCall {
+	id: string;
+	name: string;
+	args: Record<string, unknown>;
+	thinkingSignature?: string;
+}
 
 function requireEventIndex(value: number | undefined, provider: string, index: number): number {
-	if (!Number.isSafeInteger(value) || (value as number) < 0) throw new ProviderProtocolError(`${provider} content block 缺少有效 index`, index);
+	if (!Number.isSafeInteger(value) || (value as number) < 0)
+		throw new ProviderProtocolError(`${provider} content block 缺少有效 index`, index);
 	return value as number;
 }
 
 function isAnthropicProtocolEvent(type: string | undefined): boolean {
-	return type === "content_block_start" || type === "content_block_delta" || type === "content_block_stop" || type === "message_delta" || type === "message_stop";
+	return (
+		type === "content_block_start" ||
+		type === "content_block_delta" ||
+		type === "content_block_stop" ||
+		type === "message_delta" ||
+		type === "message_stop"
+	);
 }
 
-function mapAnthropicStopReason(reason: string, details: { explanation?: string } | null | undefined, provider: string, index: number): FinishReason {
+function mapAnthropicStopReason(
+	reason: string,
+	details: { explanation?: string } | null | undefined,
+	provider: string,
+	index: number,
+): FinishReason {
 	switch (reason) {
-		case "end_turn": return "stop";
-		case "tool_use": return "tool_calls";
-		case "max_tokens": return "length";
+		case "end_turn":
+			return "stop";
+		case "tool_use":
+			return "tool_calls";
+		case "max_tokens":
+			return "length";
 		case "refusal":
 		case "sensitive":
-			throw new ProviderProtocolError(`${provider} 以 ${reason} 终止${details?.explanation ? `: ${details.explanation}` : ""}`, index);
-		case "pause_turn": throw new ProviderProtocolError(`${provider} 返回 pause_turn；当前运行时没有自动续接语义`, index);
-		case "stop_sequence": throw new ProviderProtocolError(`${provider} 返回 stop_sequence，但 Uina 当前未配置 stop sequence`, index);
-		default: throw new ProviderProtocolError(`${provider} 未知 stop_reason: ${reason}`, index);
+			throw new ProviderProtocolError(
+				`${provider} 以 ${reason} 终止${details?.explanation ? `: ${details.explanation}` : ""}`,
+				index,
+			);
+		case "pause_turn":
+			throw new ProviderProtocolError(`${provider} 返回 pause_turn；当前运行时没有自动续接语义`, index);
+		case "stop_sequence":
+			throw new ProviderProtocolError(`${provider} 返回 stop_sequence，但 Uina 当前未配置 stop sequence`, index);
+		default:
+			throw new ProviderProtocolError(`${provider} 未知 stop_reason: ${reason}`, index);
 	}
 }
 
 function mapGeminiFinishReason(reason: string, callCount: number, provider: string, index: number): FinishReason {
 	switch (reason) {
-		case "STOP": return callCount > 0 ? "tool_calls" : "stop";
-		case "MAX_TOKENS": return "length";
+		case "STOP":
+			return callCount > 0 ? "tool_calls" : "stop";
+		case "MAX_TOKENS":
+			return "length";
 		case "SAFETY":
 		case "BLOCKLIST":
 		case "PROHIBITED_CONTENT":
@@ -623,15 +831,32 @@ function mapGeminiFinishReason(reason: string, callCount: number, provider: stri
 		case "IMAGE_RECITATION":
 		case "RECITATION":
 			throw new ProviderProtocolError(`${provider} 以 ${reason} 终止`, index);
-		default: throw new ProviderProtocolError(`${provider} 未知或不支持 finishReason: ${reason}`, index);
+		default:
+			throw new ProviderProtocolError(`${provider} 未知或不支持 finishReason: ${reason}`, index);
 	}
 }
 
 interface AnthropicEvent {
 	type?: string;
 	index?: number;
-	delta?: { type?: string; thinking?: string; text?: string; partial_json?: string; signature?: string; stop_reason?: string | null; stop_details?: { explanation?: string } | null };
-	content_block?: { type?: string; id?: string; name?: string; text?: string; thinking?: string; signature?: string; input?: Record<string, unknown> };
+	delta?: {
+		type?: string;
+		thinking?: string;
+		text?: string;
+		partial_json?: string;
+		signature?: string;
+		stop_reason?: string | null;
+		stop_details?: { explanation?: string } | null;
+	};
+	content_block?: {
+		type?: string;
+		id?: string;
+		name?: string;
+		text?: string;
+		thinking?: string;
+		signature?: string;
+		input?: Record<string, unknown>;
+	};
 	usage?: AnthropicUsageRaw;
 	message?: { usage?: AnthropicUsageRaw };
 	error?: { type?: string; message?: string };
@@ -640,7 +865,17 @@ interface AnthropicEvent {
 interface GeminiChunk {
 	error?: { code?: number; message?: string; status?: string };
 	usageMetadata?: GeminiUsageRaw;
-	candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ thought?: boolean; text?: string; thoughtSignature?: string; functionCall?: { id?: string; name?: string; args?: Record<string, unknown>; thoughtSignature?: string } }> } }>;
+	candidates?: Array<{
+		finishReason?: string;
+		content?: {
+			parts?: Array<{
+				thought?: boolean;
+				text?: string;
+				thoughtSignature?: string;
+				functionCall?: { id?: string; name?: string; args?: Record<string, unknown>; thoughtSignature?: string };
+			}>;
+		};
+	}>;
 }
 
 /**
@@ -673,7 +908,11 @@ export class ModelRegistry {
 		}
 	}
 
-	listModels(): readonly Model[] { const effective = new Map<string, Model>(); for (const model of this.models.values()) effective.set(modelKey(model), this.getModel(modelKey(model)) ?? model); return [...effective.values()]; }
+	listModels(): readonly Model[] {
+		const effective = new Map<string, Model>();
+		for (const model of this.models.values()) effective.set(modelKey(model), this.getModel(modelKey(model)) ?? model);
+		return [...effective.values()];
+	}
 
 	getProvider(id: string): Provider | undefined {
 		return this.providers.get(id);
@@ -681,7 +920,7 @@ export class ModelRegistry {
 
 	getModel(nameOrKey: string): Model | undefined {
 		const base = this.models.get(nameOrKey) ?? this.defaultModels.get(nameOrKey);
-  return base ? this.models.get(modelKey(base)) ?? base : undefined;
+		return base ? (this.models.get(modelKey(base)) ?? base) : undefined;
 	}
 
 	resolve(modelOrProviderName: string): Model {
@@ -700,11 +939,13 @@ export class ModelRegistry {
 				const kind = base?.type ?? "openai-compatible";
 				const model: Model = {
 					id: modelId,
-     imageInput: discovered.imageInput,
+					imageInput: discovered.imageInput,
 					name: modelId,
 					providerId,
 					contextWindow: Math.min(discovered.contextWindow, base?.maxContextWindow ?? discovered.contextWindow),
-					thinkingLevels: discovered.thinkingLevels?.filter(level => !base?.thinkingLevels || base.thinkingLevels.includes(level)),
+					thinkingLevels: discovered.thinkingLevels?.filter(
+						(level) => !base?.thinkingLevels || base.thinkingLevels.includes(level),
+					),
 					includeThinking: protocolCarriesThinking(kind, base?.thinkingFormat, discovered.thinkingLevels),
 					compat: {
 						thinkingFormat: base?.thinkingFormat,
@@ -720,23 +961,34 @@ export class ModelRegistry {
 	}
 
 	has(name: string): boolean {
-		return this.models.has(name) || this.defaultModels.has(name) || this.providers.has(name) || Boolean(this.config?.providers[name]);
+		return (
+			this.models.has(name) ||
+			this.defaultModels.has(name) ||
+			this.providers.has(name) ||
+			Boolean(this.config?.providers[name])
+		);
 	}
 
- registerProvider(provider: Provider, options?: { replace?: boolean }): () => void {
-  return this.providers.register(provider.id, provider, options);
- }
- registerModel(model: Model, options?: { replace?: boolean }): () => void {
-  const key = modelKey(model);
-  const remove = this.models.register(key, model, options);
-  const alias = this.models.get(model.id);
-  const removeAlias = !alias || alias.providerId === model.providerId ? this.models.register(model.id, model, { replace: true }) : undefined;
-  return () => { removeAlias?.(); remove(); };
- }
- register(name: string, provider: Provider, options?: { replace?: boolean }): () => void {
-  const actualProvider: Provider = provider.id === name ? provider : { ...provider, id: name };
-  return this.registerProvider(actualProvider, options);
- }
+	registerProvider(provider: Provider, options?: { replace?: boolean }): () => void {
+		return this.providers.register(provider.id, provider, options);
+	}
+	registerModel(model: Model, options?: { replace?: boolean }): () => void {
+		const key = modelKey(model);
+		const remove = this.models.register(key, model, options);
+		const alias = this.models.get(model.id);
+		const removeAlias =
+			!alias || alias.providerId === model.providerId
+				? this.models.register(model.id, model, { replace: true })
+				: undefined;
+		return () => {
+			removeAlias?.();
+			remove();
+		};
+	}
+	register(name: string, provider: Provider, options?: { replace?: boolean }): () => void {
+		const actualProvider: Provider = provider.id === name ? provider : { ...provider, id: name };
+		return this.registerProvider(actualProvider, options);
+	}
 
 	groups(): Array<{
 		id: string;
@@ -744,12 +996,15 @@ export class ModelRegistry {
 		description: string;
 		models: Array<{ id: string; name: string; description: string; provider: string }>;
 	}> {
-		const groupMap = new Map<string, {
-			id: string;
-			name: string;
-			description: string;
-			models: Map<string, { id: string; name: string; description: string; provider: string }>;
-		}>();
+		const groupMap = new Map<
+			string,
+			{
+				id: string;
+				name: string;
+				description: string;
+				models: Map<string, { id: string; name: string; description: string; provider: string }>;
+			}
+		>();
 
 		const ensureGroup = (providerId: string) => {
 			let group = groupMap.get(providerId);
@@ -845,7 +1100,7 @@ export class ModelRegistry {
 			if (!provider.refreshModels) continue;
 			attempted += 1;
 			try {
-				this.discovered.set(id, [...await provider.refreshModels()]);
+				this.discovered.set(id, [...(await provider.refreshModels())]);
 			} catch (error) {
 				const msg = errorMessage(error);
 				failures.push(msg.includes(id) ? msg : `${id}: ${msg}`);

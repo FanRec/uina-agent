@@ -2,12 +2,7 @@
 // parseToolResult（解析/分类）与 renderToolResult（样式渲染）分开验证，
 // toolResultLines 保持旧签名的端到端行为由最后一段覆盖。
 import { describe, expect, it } from "vitest";
-import {
-	parseToolResult,
-	renderToolResult,
-	toolResultLines,
-	type ToolResultStyle,
-} from "../src/ui/format.js";
+import { parseToolResult, renderToolResult, toolResultLines, type ToolResultStyle } from "../src/ui/format.js";
 
 const tag = (prefix: string) => (s: string) => `<${prefix}>${s}</${prefix}>`;
 const style: ToolResultStyle = {
@@ -62,22 +57,13 @@ describe("parseToolResult", () => {
 
 describe("renderToolResult / toolResultLines", () => {
 	it("终态行使用 warn 样式与耗时格式（250ms / 1.5s）", () => {
-		expect(renderToolResult({ kind: "cancelled" }, 250, style)).toEqual([
-			"<warn>⚠ 已取消（250ms）</warn>",
-		]);
-		expect(renderToolResult({ kind: "unknown" }, 1500, style)).toEqual([
-			"<warn>⚠ 结果未知（1.5s）</warn>",
-		]);
-		expect(renderToolResult({ kind: "not_started" }, 0, style)).toEqual([
-			"<warn>⚠ 未执行（0ms）</warn>",
-		]);
+		expect(renderToolResult({ kind: "cancelled" }, 250, style)).toEqual(["<warn>⚠ 已取消（250ms）</warn>"]);
+		expect(renderToolResult({ kind: "unknown" }, 1500, style)).toEqual(["<warn>⚠ 结果未知（1.5s）</warn>"]);
+		expect(renderToolResult({ kind: "not_started" }, 0, style)).toEqual(["<warn>⚠ 未执行（0ms）</warn>"]);
 	});
 
 	it("纯文本缩进展示，dim 样式", () => {
-		expect(toolResultLines("a\nb", 100, style)).toEqual([
-			"<dim>a</dim>",
-			"<dim>b</dim>",
-		]);
+		expect(toolResultLines("a\nb", 100, style)).toEqual(["<dim>a</dim>", "<dim>b</dim>"]);
 	});
 
 	it("空文本回退耗时行", () => {
@@ -117,11 +103,7 @@ describe("renderToolResult / toolResultLines", () => {
 
 	it("stderr 无 error：warn 标头 + warn 缩进", () => {
 		const lines = toolResultLines(JSON.stringify({ stderr: "s1\ns2" }), 100, style);
-		expect(lines).toEqual([
-			"<warn>stderr</warn>",
-			"<warn>s1</warn>",
-			"<warn>s2</warn>",
-		]);
+		expect(lines).toEqual(["<warn>stderr</warn>", "<warn>s1</warn>", "<warn>s2</warn>"]);
 	});
 
 	it("stdout 无 error：dim 缩进 + 尾部耗时行", () => {
@@ -130,11 +112,7 @@ describe("renderToolResult / toolResultLines", () => {
 	});
 
 	it("无 error/stdout/stderr 正文：前 3 个键值摘要", () => {
-		const lines = toolResultLines(
-			JSON.stringify({ a: 1, b: "text", c: { deep: true }, d: 4 }),
-			100,
-			style,
-		);
+		const lines = toolResultLines(JSON.stringify({ a: 1, b: "text", c: { deep: true }, d: 4 }), 100, style);
 		expect(lines).toEqual(['<dim>↳ a: 1, b: "text", c: {"deep":true}</dim>']);
 	});
 

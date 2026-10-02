@@ -153,7 +153,10 @@ function parseRecordFile(raw: string, subjectId: string): MemoryRecord | undefin
 	}
 	// 主体绑定校验：他人的记录对当前 store 完全不可见。
 	if (meta.subjectId !== subjectId) return undefined;
-	const body = raw.slice(firstLineEnd + 1).replace(/^# .*\n+/, "").trimEnd();
+	const body = raw
+		.slice(firstLineEnd + 1)
+		.replace(/^# .*\n+/, "")
+		.trimEnd();
 	return { ...meta, body, hash: sha256(raw) };
 }
 
@@ -239,7 +242,11 @@ export function createMemoryStore(options: MemoryStoreOptions): MemoryStore {
 		return score;
 	};
 
-	const validateSources = async (sources: MemorySourceRef[], basis: MemoryBasis, rationale?: string): Promise<string | undefined> => {
+	const validateSources = async (
+		sources: MemorySourceRef[],
+		basis: MemoryBasis,
+		rationale?: string,
+	): Promise<string | undefined> => {
 		if (basis === "inferred") {
 			if (!rationale || !rationale.trim()) return "basis=inferred 必须提供 rationale（依据说明），不能伪造证据";
 		} else {
@@ -382,7 +389,7 @@ export function createMemoryStore(options: MemoryStoreOptions): MemoryStore {
 				// 顺序（备忘 §3.3）：抑制记录先落盘 → 停召回 → 清理副本。
 				await updateCognitionState(stateRoot, (state) => ({
 					...state,
-					forgottenIds: [...new Set([...state.forgottenIds ?? [], id])],
+					forgottenIds: [...new Set([...(state.forgottenIds ?? []), id])],
 				}));
 				index.delete(id);
 				await rm(join(recordsDir, `${id}.md`), { force: true });
@@ -402,7 +409,12 @@ export function createMemoryStore(options: MemoryStoreOptions): MemoryStore {
 
 	/** 统一提交路径：序列化 → hash 单算 → 备份（有旧版时）→ 原子替换 → 更新索引 → 返回。
 	 * 备份失败则不覆盖旧版；替换后索引更新失败以文件为准（下次读回源重建）。 */
-	async function commit(id: string, meta: MemoryMeta, body: string, previous: IndexedRecord | undefined): Promise<MemoryWriteResult> {
+	async function commit(
+		id: string,
+		meta: MemoryMeta,
+		body: string,
+		previous: IndexedRecord | undefined,
+	): Promise<MemoryWriteResult> {
 		const raw = serializeRecord(meta, body);
 		const hash = sha256(raw);
 		if (previous) await backupAndReplace(id, previous, raw);

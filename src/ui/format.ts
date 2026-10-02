@@ -17,7 +17,10 @@ export function formatDuration(ms: number): string {
 }
 
 export function sanitizeTerminalText(value: string): string {
-	return value.replace(/[\u001b\u009b][[\]()#;?]*(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, "");
+	return value.replace(
+		/[\u001b\u009b][[\]()#;?]*(?:(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*)?\u0007|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g,
+		"",
+	);
 }
 
 /** Drop C0 control characters (except tab/newline/CR) and Unicode format
@@ -28,7 +31,10 @@ export function sanitizeBinaryOutput(value: string): string {
 	for (const char of value) {
 		const code = char.codePointAt(0);
 		if (code === undefined) continue;
-		if (code === 0x09 || code === 0x0a || code === 0x0d) { out += char; continue; }
+		if (code === 0x09 || code === 0x0a || code === 0x0d) {
+			out += char;
+			continue;
+		}
 		if (code <= 0x1f) continue;
 		if (code >= 0xfff9 && code <= 0xfffb) continue;
 		out += char;
@@ -135,18 +141,14 @@ type StructuredToolResultView = Extract<ToolResultView, { kind: "structured" }>;
 function tryParseObject(text: string): Record<string, unknown> | null {
 	try {
 		const parsed: unknown = JSON.parse(text);
-		return parsed !== null && typeof parsed === "object"
-			? (parsed as Record<string, unknown>)
-			: null;
+		return parsed !== null && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
 	} catch {
 		return null;
 	}
 }
 
 /** 结构化返回的终态分类：cancelled 优先（obj.cancelled 真值即命中，对齐旧语义）。 */
-function classifyTerminalStatus(
-	obj: Record<string, unknown>,
-): "cancelled" | "unknown" | "not_started" | null {
+function classifyTerminalStatus(obj: Record<string, unknown>): "cancelled" | "unknown" | "not_started" | null {
 	if (obj.cancelled || obj.status === "cancelled") return "cancelled";
 	if (obj.status === "unknown") return "unknown";
 	if (obj.status === "not_started") return "not_started";
@@ -174,11 +176,7 @@ function formatElapsed(ms: number): string {
 }
 
 /** 把中立视图渲染为展示行（样式决策集中于此，解析不参与）。 */
-export function renderToolResult(
-	view: ToolResultView,
-	elapsedMs: number,
-	s: ToolResultStyle,
-): string[] {
+export function renderToolResult(view: ToolResultView, elapsedMs: number, s: ToolResultStyle): string[] {
 	const t = formatElapsed(elapsedMs);
 	switch (view.kind) {
 		case "cancelled":
@@ -194,16 +192,8 @@ export function renderToolResult(
 	}
 }
 
-function structuredResultLines(
-	view: StructuredToolResultView,
-	t: string,
-	s: ToolResultStyle,
-): string[] {
-	const lines = [
-		...errorHeader(view.error, t, s),
-		...stderrSection(view, s),
-		...stdoutSection(view, t, s),
-	];
+function structuredResultLines(view: StructuredToolResultView, t: string, s: ToolResultStyle): string[] {
+	const lines = [...errorHeader(view.error, t, s), ...stderrSection(view, s), ...stdoutSection(view, t, s)];
 	return lines.length > 0 ? lines : otherKeysOrTime(view, t, s);
 }
 
@@ -211,21 +201,14 @@ function errorHeader(error: string, t: string, s: ToolResultStyle): string[] {
 	return error ? [s.err(`✗ ${error.slice(0, 120)}（${t}）`)] : [];
 }
 
-function stderrSection(
-	view: StructuredToolResultView,
-	s: ToolResultStyle,
-): string[] {
+function stderrSection(view: StructuredToolResultView, s: ToolResultStyle): string[] {
 	const stderr = view.stderr;
 	if (!stderr || !stderr.trim()) return [];
 	if (view.error) return indentLines(stderr, s.err);
 	return [s.warn("stderr"), ...indentLines(stderr, s.warn)];
 }
 
-function stdoutSection(
-	view: StructuredToolResultView,
-	t: string,
-	s: ToolResultStyle,
-): string[] {
+function stdoutSection(view: StructuredToolResultView, t: string, s: ToolResultStyle): string[] {
 	const stdout = view.stdout;
 	if (!stdout || !stdout.trim()) return [];
 	const lines = view.error ? [s.err("── stdout ──")] : [];
@@ -236,11 +219,7 @@ function stdoutSection(
 
 /** 无 error/stdout/stderr 正文时的回退：键值摘要一行；有 stderr/stdout 键
  * （但正文为空白）时不得走摘要，退到耗时行——对齐旧实现的存在性判断。 */
-function otherKeysOrTime(
-	view: StructuredToolResultView,
-	t: string,
-	s: ToolResultStyle,
-): string[] {
+function otherKeysOrTime(view: StructuredToolResultView, t: string, s: ToolResultStyle): string[] {
 	if (!view.error && !("stdout" in view.obj) && !("stderr" in view.obj)) {
 		const keys = Object.keys(view.obj)
 			.slice(0, 3)
@@ -256,11 +235,7 @@ function otherKeysOrTime(
  * stdout 摘要几行 + 截断标记；error 红字 / cancelled 黄字 / 普通结果灰字。
  * 解析（parseToolResult）与渲染（renderToolResult）已拆分，本函数保持旧签名。
  */
-export function toolResultLines(
-	result: string,
-	elapsedMs: number,
-	s: ToolResultStyle,
-): string[] {
+export function toolResultLines(result: string, elapsedMs: number, s: ToolResultStyle): string[] {
 	return renderToolResult(parseToolResult(result), elapsedMs, s);
 }
 

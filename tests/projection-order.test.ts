@@ -22,10 +22,15 @@ describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展（
 		scenario
 			.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"))
 			.reply("早期对话围绕长文本输入展开");
-		scenario.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
+		scenario.fallback(() => [
+			{ kind: "text", text: "ok" },
+			{ kind: "finish", reason: "stop" },
+		]);
 
 		// 认知占位扩展：记录收到的消息是否已带摘要/仍含远期历史，并在末尾注入记忆块。
-		await env.writeExtension("memory-standin.mjs", `
+		await env.writeExtension(
+			"memory-standin.mjs",
+			`
 			export default function activate(uina) {
 				uina.onHook("turn.transformContext", (projection) => {
 					const contents = projection.messages.map((m) => String(m.content ?? ""));
@@ -44,7 +49,8 @@ describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展（
 					return { projection: { ...projection, messages: [...projection.messages, { role: "user", content: "[TAIL] 瞬态尾帧占位" }] } };
 				}, { tail: true });
 			}
-		`);
+		`,
+		);
 
 		const history = Array.from({ length: 60 }, (_, index) =>
 			index % 2 === 0
@@ -56,7 +62,6 @@ describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展（
 		await seeded.store.close();
 		const uina = await UinaTestHarness.create({ env, scenario });
 		try {
-
 			await uina.send("跑一轮", "direct");
 			await uina.waitForIdle();
 

@@ -46,7 +46,9 @@ export function createContextInjector(options: ContextInjectorOptions) {
 	const { store, scope } = options;
 	const budget = options.budgetTokens ?? DEFAULT_MEMORY_BUDGET_TOKENS;
 
-	return async function injector(messages: readonly MinimalMessage[]): Promise<{ messages: MinimalMessage[] } | undefined> {
+	return async function injector(
+		messages: readonly MinimalMessage[],
+	): Promise<{ messages: MinimalMessage[] } | undefined> {
 		// 确定性召回输入：最新一条 user 文本。绝不调用模型生成查询。
 		let query = "";
 		for (let i = messages.length - 1; i >= 0; i--) {

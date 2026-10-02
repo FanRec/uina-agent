@@ -17,9 +17,8 @@ export function inputTokenBudget(
 	thinkingLevel?: ThinkingLevel,
 ): number | undefined {
 	if (model.contextWindow === undefined) return undefined;
-	const declaredThinking = thinkingLevel && thinkingLevel !== "off"
-		? model.thinkingBudgets?.[thinkingLevel]
-		: undefined;
+	const declaredThinking =
+		thinkingLevel && thinkingLevel !== "off" ? model.thinkingBudgets?.[thinkingLevel] : undefined;
 	const fallback = Math.min(DEFAULT_OUTPUT_RESERVE_TOKENS, Math.floor(model.contextWindow / 2));
 	const reserved = model.maxOutputTokens ?? declaredThinking ?? fallback;
 	return Math.max(0, model.contextWindow - Math.min(model.contextWindow, reserved));

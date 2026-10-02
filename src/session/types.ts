@@ -17,7 +17,7 @@ export interface SessionCustomMessageRecord {
 	timestamp: string;
 	customType: string;
 	content: string;
- images?: import("../core/content.js").ImageContent[];
+	images?: import("../core/content.js").ImageContent[];
 	display?: boolean;
 	details?: unknown;
 }
@@ -68,20 +68,54 @@ export interface SessionEventRecord {
 	data: Record<string, unknown>;
 }
 
-export interface RewindRequest { targetId: string; reason: string; note?: string; }
-export interface SessionRewindRecord extends RewindRequest {
-	kind: "rewind"; id: string; seq: number; timestamp: string; fromId: string; source: string; requestId: string;
+export interface RewindRequest {
+	targetId: string;
+	reason: string;
+	note?: string;
 }
-export interface RewindResult { requestId: string; status: "scheduled" | "committed"; rewindId?: string; }
-export interface SessionBranchInfo { id: string; targetId: string; fromId: string; headId: string; nodeCount: number; createdAt: string; reason: string; }
+export interface SessionRewindRecord extends RewindRequest {
+	kind: "rewind";
+	id: string;
+	seq: number;
+	timestamp: string;
+	fromId: string;
+	source: string;
+	requestId: string;
+}
+export interface RewindResult {
+	requestId: string;
+	status: "scheduled" | "committed";
+	rewindId?: string;
+}
+export interface SessionBranchInfo {
+	id: string;
+	targetId: string;
+	fromId: string;
+	headId: string;
+	nodeCount: number;
+	createdAt: string;
+	reason: string;
+}
 export interface SessionAccess {
-	list(options?: { scope?: "main" | "all"; after?: string; limit?: number }): { nodes: SessionNodeInfo[]; next?: string; headId?: string };
+	list(options?: { scope?: "main" | "all"; after?: string; limit?: number }): {
+		nodes: SessionNodeInfo[];
+		next?: string;
+		headId?: string;
+	};
 	listBranches(): { branches: SessionBranchInfo[] };
 	readBranch(id: string): { branch: SessionBranchInfo; nodes: SessionNodeInfo[] };
 	read(id: string): HydratedSessionEntry;
 	requestRewind(request: RewindRequest, source: string, signal?: AbortSignal): Promise<RewindResult>;
 }
-export interface SessionNodeInfo { id: string; parentId: string | null; seq: number; kind: SessionEntry["kind"]; active: boolean; canRewind: boolean; preview: string; }
+export interface SessionNodeInfo {
+	id: string;
+	parentId: string | null;
+	seq: number;
+	kind: SessionEntry["kind"];
+	active: boolean;
+	canRewind: boolean;
+	preview: string;
+}
 
 export type SessionRecord =
 	| SessionRewindRecord
@@ -107,7 +141,13 @@ export interface AbandonedEffects {
 }
 
 export type SessionEntryPayload =
-	| { kind: "rewind"; record: SessionRewindRecord; notice: string; carriedInputs: AgentMessage[]; effects?: AbandonedEffects }
+	| {
+			kind: "rewind";
+			record: SessionRewindRecord;
+			notice: string;
+			carriedInputs: AgentMessage[];
+			effects?: AbandonedEffects;
+	  }
 	| { kind: "input"; input: QueuedInput }
 	| { kind: "message"; message: AgentMessage }
 	| {
@@ -148,11 +188,14 @@ export interface SessionStore {
 	appendInput(input: QueuedInput): Promise<void>;
 	/** id 用于恢复事实带稳定身份落盘（planRecovery → recovered:${originId}:${callId}）。 */
 	appendMessage(message: AgentMessage, id?: string): Promise<void>;
-	appendCustomMessage(message: { customType: string; content: string; images?: import("../core/content.js").ImageContent[]; display?: boolean; details?: unknown }): Promise<void>;
+	appendCustomMessage(message: {
+		customType: string;
+		content: string;
+		images?: import("../core/content.js").ImageContent[];
+		display?: boolean;
+		details?: unknown;
+	}): Promise<void>;
 	appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void>;
-	appendEvent(
-		event: SessionEventName,
-		data: Record<string, unknown>,
-	): Promise<void>;
+	appendEvent(event: SessionEventName, data: Record<string, unknown>): Promise<void>;
 	close(): Promise<void>;
 }

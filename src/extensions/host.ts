@@ -11,11 +11,7 @@
 
 import { errorMessage } from "../core/errors.js";
 import type { ChatMsg, RequestProjection } from "../core/types.js";
-import type {
-	DeepReadonly,
-	OutputEvent,
-	RuntimeEvent,
-} from "../runtime/events.js";
+import type { DeepReadonly, OutputEvent, RuntimeEvent } from "../runtime/events.js";
 import {
 	warnIgnoredToolStatus,
 	type HookContributions,
@@ -111,7 +107,10 @@ export class ExtensionHost {
 			set = new Set();
 			this.handlers.set(eventType, set);
 		}
-		const entry: RegisteredHandler = { handler: handler as unknown as RegistryHandler, ...(scopeId === undefined ? {} : { scopeId }) };
+		const entry: RegisteredHandler = {
+			handler: handler as unknown as RegistryHandler,
+			...(scopeId === undefined ? {} : { scopeId }),
+		};
 		set.add(entry);
 		return () => {
 			set?.delete(entry);
@@ -121,13 +120,21 @@ export class ExtensionHost {
 	/** 在干预点注册：返回值按该链的合并规则参与组合（Hook ≠ Event，L1）。
 	 * options.tail 仅对 turn.transformContext 有语义：tail 注册者恒排在非 tail 之后（按各自注册序），
 	 * 用于瞬态尾部注入（视口/具身快照帧）落在一切历史注入之后。其余 hook 忽略该选项。 */
-	onHook<K extends HookName>(hook: K, handler: HookHandler<K>, options?: { scopeId?: string; tail?: boolean }): () => void {
+	onHook<K extends HookName>(
+		hook: K,
+		handler: HookHandler<K>,
+		options?: { scopeId?: string; tail?: boolean },
+	): () => void {
 		let set = this.hookHandlers.get(hook);
 		if (!set) {
 			set = new Set();
 			this.hookHandlers.set(hook, set);
 		}
-		const entry: RegisteredHandler = { handler: handler as unknown as RegistryHandler, ...(options?.scopeId === undefined ? {} : { scopeId: options.scopeId }), ...(options?.tail ? { tail: true } : {}) };
+		const entry: RegisteredHandler = {
+			handler: handler as unknown as RegistryHandler,
+			...(options?.scopeId === undefined ? {} : { scopeId: options.scopeId }),
+			...(options?.tail ? { tail: true } : {}),
+		};
 		set.add(entry);
 		return () => {
 			set?.delete(entry);
@@ -184,19 +191,21 @@ export class ExtensionHost {
 		const handlers = this.handlersFor(event.type, scope);
 		if (handlers.length === 0) return;
 
-	for (const handler of handlers) {
-		try {
-			await handler(event as never);
-		} catch (err) {
-			this.emitError(event.type, err);
+		for (const handler of handlers) {
+			try {
+				await handler(event as never);
+			} catch (err) {
+				this.emitError(event.type, err);
+			}
 		}
-	}
 	}
 
 	/** Queue observational events so stream consumers always observe start → update → end. */
 	emitObserved(event: OutputEvent, scope?: RuntimeScopeFilter): void {
 		if (!this.handlers.has(event.type)) return;
-		this.observedTail = this.observedTail.then(() => this.emit(event, scope)).catch((error) => this.emitError(event.type, error));
+		this.observedTail = this.observedTail
+			.then(() => this.emit(event, scope))
+			.catch((error) => this.emitError(event.type, error));
 	}
 
 	async flush(): Promise<void> {
@@ -205,7 +214,10 @@ export class ExtensionHost {
 
 	/** tools.beforeCall：短路链——任一 block=true 即拦截。
 	 * 纯聚合器：只读不变量由 guard 入侧 clone+freeze 保证（P1-3），此处不再复制。 */
-	async runBeforeCall(input: HookInputs["tools.beforeCall"], scope?: RuntimeScopeFilter): Promise<HookContributions["tools.beforeCall"] | undefined> {
+	async runBeforeCall(
+		input: HookInputs["tools.beforeCall"],
+		scope?: RuntimeScopeFilter,
+	): Promise<HookContributions["tools.beforeCall"] | undefined> {
 		for (const handler of this.hooksFor("tools.beforeCall", scope)) {
 			try {
 				const res = (await handler(input as never)) as HookContributions["tools.beforeCall"] | undefined;
@@ -221,7 +233,10 @@ export class ExtensionHost {
 	 * status 是执行事实，不参与链式覆盖（贡献合同已删除该字段；流水线独占）。
 	 * 纯聚合器（P1-3）：深拷贝只发生在 guard 边界；此处链步间以 shallow rebuild +
 	 * Object.freeze 呈现只读视图（O(1)，零拷贝），返回收口在 guard 一次。 */
-	async runTransformResult(input: HookInputs["tools.transformResult"], scope?: RuntimeScopeFilter): Promise<HookContributions["tools.transformResult"] | undefined> {
+	async runTransformResult(
+		input: HookInputs["tools.transformResult"],
+		scope?: RuntimeScopeFilter,
+	): Promise<HookContributions["tools.transformResult"] | undefined> {
 		let current = input;
 		let modified = false;
 
@@ -251,12 +266,16 @@ export class ExtensionHost {
 	async runTransformContext(projection: RequestProjection, scope?: RuntimeScopeFilter): Promise<RequestProjection> {
 		const all = this.hookEntriesFor("turn.transformContext", scope);
 		if (all.length === 0) return projection;
-		const handlers = [...all.filter((entry) => !entry.tail), ...all.filter((entry) => entry.tail)].map((entry) => entry.handler);
+		const handlers = [...all.filter((entry) => !entry.tail), ...all.filter((entry) => entry.tail)].map(
+			(entry) => entry.handler,
+		);
 
 		let currentProjection: RequestProjection = immutableProjection(projection);
 		for (const handler of handlers) {
 			try {
-				const res = (await handler(currentProjection as never)) as HookContributions["turn.transformContext"] | undefined;
+				const res = (await handler(currentProjection as never)) as
+					| HookContributions["turn.transformContext"]
+					| undefined;
 				if (res?.projection) {
 					currentProjection = immutableProjection(res.projection as RequestProjection);
 				}
@@ -293,8 +312,11 @@ export class ExtensionHost {
 	/** All observers have seen agent_end; queued work has not resumed yet. */
 	async runAfterEnd(input: HookInputs["turn.afterEnd"], scope?: RuntimeScopeFilter): Promise<void> {
 		for (const handler of this.hooksFor("turn.afterEnd", scope)) {
-			try { await handler(input as never); }
-			catch (error) { this.emitError("turn.afterEnd", error); }
+			try {
+				await handler(input as never);
+			} catch (error) {
+				this.emitError("turn.afterEnd", error);
+			}
 		}
 	}
 
@@ -306,7 +328,15 @@ export class ExtensionHost {
 	async runTurnPrepare(
 		input: HookInputs["turn.prepare"],
 		scope?: RuntimeScopeFilter,
-	): Promise<Readonly<{ messages?: readonly ChatMsg[]; systemPrompt?: string; model?: import("../core/types.js").Model; thinkingLevel?: import("../core/types.js").ThinkingLevel }> | undefined> {
+	): Promise<
+		| Readonly<{
+				messages?: readonly ChatMsg[];
+				systemPrompt?: string;
+				model?: import("../core/types.js").Model;
+				thinkingLevel?: import("../core/types.js").ThinkingLevel;
+		  }>
+		| undefined
+	> {
 		const handlers = this.hooksFor("turn.prepare", scope);
 		const messages: ChatMsg[] = [];
 		let currentPrompt = input.systemPrompt;
@@ -316,7 +346,9 @@ export class ExtensionHost {
 
 		for (const handler of handlers) {
 			try {
-				const res = (await handler(Object.freeze({ prompt: input.prompt, systemPrompt: currentPrompt }) as never)) as HookContributions["turn.prepare"] | undefined;
+				const res = (await handler(Object.freeze({ prompt: input.prompt, systemPrompt: currentPrompt }) as never)) as
+					| HookContributions["turn.prepare"]
+					| undefined;
 				if (res) {
 					if (res.messages?.length) {
 						messages.push(...(res.messages as ChatMsg[]));
@@ -351,10 +383,7 @@ export class ExtensionHost {
 	}
 
 	/** turn.shouldStop：短路链——任一 stop=true 即收尾。 */
-	async runShouldStop(
-		input: HookInputs["turn.shouldStop"],
-		scope?: RuntimeScopeFilter,
-	): Promise<boolean> {
+	async runShouldStop(input: HookInputs["turn.shouldStop"], scope?: RuntimeScopeFilter): Promise<boolean> {
 		for (const handler of this.hooksFor("turn.shouldStop", scope)) {
 			try {
 				const res = (await handler(input as never)) as HookContributions["turn.shouldStop"] | undefined;
@@ -378,7 +407,9 @@ export class ExtensionHost {
 		let current = { ...headers };
 		for (const handler of handlers) {
 			try {
-				const res = (await handler({ provider, headers: current } as never)) as HookContributions["provider.transformHeaders"] | undefined;
+				const res = (await handler({ provider, headers: current } as never)) as
+					| HookContributions["provider.transformHeaders"]
+					| undefined;
 				if (res?.headers) current = res.headers;
 			} catch (err) {
 				this.emitError("provider.transformHeaders", err);
@@ -390,14 +421,20 @@ export class ExtensionHost {
 	/** provider.transformPayload：链式——后一个收到前一个的输出，整组替换。 */
 	/** provider.transformPayload：链式——后一个收到前一个的输出，整组替换。
 	 * 纯聚合器（P1-3）：入侧视图已冻结、链步 shallow rebuild + 浅冻，零深拷贝。 */
-	async runTransformPayload(provider: string, payload: DeepReadonly<unknown>, scope?: RuntimeScopeFilter): Promise<unknown> {
+	async runTransformPayload(
+		provider: string,
+		payload: DeepReadonly<unknown>,
+		scope?: RuntimeScopeFilter,
+	): Promise<unknown> {
 		const handlers = this.hooksFor("provider.transformPayload", scope);
 		if (handlers.length === 0) return payload;
 
 		let current = payload;
 		for (const handler of handlers) {
 			try {
-				const res = (await handler(Object.freeze({ provider, payload: current }) as never)) as HookContributions["provider.transformPayload"] | undefined;
+				const res = (await handler(Object.freeze({ provider, payload: current }) as never)) as
+					| HookContributions["provider.transformPayload"]
+					| undefined;
 				if (res !== undefined && res.payload !== undefined) {
 					current = Object.freeze(res.payload) as typeof current;
 				}
@@ -409,10 +446,7 @@ export class ExtensionHost {
 	}
 
 	/** provider.observeResponse：观察点——响应已发生的审计，无返回值。 */
-	async runObserveResponse(
-		input: HookInputs["provider.observeResponse"],
-		scope?: RuntimeScopeFilter,
-	): Promise<void> {
+	async runObserveResponse(input: HookInputs["provider.observeResponse"], scope?: RuntimeScopeFilter): Promise<void> {
 		for (const handler of this.hooksFor("provider.observeResponse", scope)) {
 			try {
 				await handler(input as never);
@@ -439,6 +473,8 @@ export class ExtensionHost {
 		if (!set) return [];
 		if (scope === undefined) return [...set].map((entry) => entry.handler);
 		const visible = new Set(scope);
-		return [...set].filter((entry) => entry.scopeId === undefined || visible.has(entry.scopeId)).map((entry) => entry.handler);
+		return [...set]
+			.filter((entry) => entry.scopeId === undefined || visible.has(entry.scopeId))
+			.map((entry) => entry.handler);
 	}
 }

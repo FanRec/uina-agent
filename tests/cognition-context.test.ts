@@ -65,7 +65,7 @@ describe("M5 召回：相关性与确定性", () => {
 		expect(String(injected.content)).toContain("先给结论");
 		expect(String(injected.content)).toContain("记忆线索");
 		// 带 memoryId/scope 的内部信息块，不拼成 system 事实
-		expect(String(injected.content)).not.toContain("role\": \"system");
+		expect(String(injected.content)).not.toContain('role": "system');
 
 		const unrelated = await injector([
 			{ role: "system", content: "契约" },
@@ -77,7 +77,10 @@ describe("M5 召回：相关性与确定性", () => {
 	it("不修改既有消息数组（纯函数；注入块在末尾）", async () => {
 		await seed();
 		const injector = createContextInjector({ store, scope: { spaceId: "private:alice" } });
-		const original = [{ role: "user", content: "回复偏好" }] as unknown as readonly { role: string; content: unknown }[];
+		const original = [{ role: "user", content: "回复偏好" }] as unknown as readonly {
+			role: string;
+			content: unknown;
+		}[];
 		const snapshot = [...original];
 		const result = await injector(original);
 		expect(result).toBeDefined();
@@ -105,7 +108,15 @@ describe("M5 召回：scope 隔离与版本排除", () => {
 	it("retire/forget 后旧命中被排除", async () => {
 		const created = await store.write({
 			op: "create",
-			record: { type: "note", basis: "reported", title: "旧偏好", body: "曾经喜欢长文", scope: {}, sources: [{ sessionId: "default" }], pinned: false },
+			record: {
+				type: "note",
+				basis: "reported",
+				title: "旧偏好",
+				body: "曾经喜欢长文",
+				scope: {},
+				sources: [{ sessionId: "default" }],
+				pinned: false,
+			},
 		});
 		if (created.status !== "committed") throw new Error("expected committed");
 		const injector = createContextInjector({ store, scope: {} });
@@ -125,11 +136,27 @@ describe("M5 召回：预算", () => {
 		// 两条记录，预算只够一条。
 		await store.write({
 			op: "create",
-			record: { type: "note", basis: "reported", title: "普通记录甲", body: "关于部署流程的说明，内容足够长以占据预算空间。".repeat(6), scope: {}, sources: [{ sessionId: "default" }], pinned: false },
+			record: {
+				type: "note",
+				basis: "reported",
+				title: "普通记录甲",
+				body: "关于部署流程的说明，内容足够长以占据预算空间。".repeat(6),
+				scope: {},
+				sources: [{ sessionId: "default" }],
+				pinned: false,
+			},
 		});
 		await store.write({
 			op: "create",
-			record: { type: "note", basis: "reported", title: "锚点记录乙", body: "乙的锚点内容", scope: {}, sources: [{ sessionId: "default" }], pinned: true },
+			record: {
+				type: "note",
+				basis: "reported",
+				title: "锚点记录乙",
+				body: "乙的锚点内容",
+				scope: {},
+				sources: [{ sessionId: "default" }],
+				pinned: true,
+			},
 		});
 		const injector = createContextInjector({ store, scope: {}, budgetTokens: 60 });
 
@@ -153,7 +180,15 @@ describe("M5 装配：activateCognition（Host 接线）", () => {
 		// activateCognition 第一版绑定主体全局 scope；种子用全局记录验证端到端注入。
 		await store.write({
 			op: "create",
-			record: { type: "note", basis: "reported", title: "Alice 的回复偏好", body: "先给结论，再按需要展开。", scope: {}, sources: [{ sessionId: "default" }], pinned: false },
+			record: {
+				type: "note",
+				basis: "reported",
+				title: "Alice 的回复偏好",
+				body: "先给结论，再按需要展开。",
+				scope: {},
+				sources: [{ sessionId: "default" }],
+				pinned: false,
+			},
 		});
 		const { MemorySessionStore } = await import("../src/session/jsonl-store.js");
 		const { ExtensionRunner } = await import("../src/extensions/runner.js");
@@ -169,7 +204,12 @@ describe("M5 装配：activateCognition（Host 接线）", () => {
 		const runner = new ExtensionRunner({
 			cwd: root,
 			tools: runnerBroker,
-			subjectBinding: { subjectId: "alice", sessionId: "default", memoryRoot: join(root, "memory"), stateRoot: join(root, "state") },
+			subjectBinding: {
+				subjectId: "alice",
+				sessionId: "default",
+				memoryRoot: join(root, "memory"),
+				stateRoot: join(root, "state"),
+			},
 			history: () => sessionStore.state.entries,
 			auxiliary: () => sessionStore.state.auxiliary,
 			emitRuntimeEvent: async () => {},
@@ -188,7 +228,12 @@ describe("M5 装配：activateCognition（Host 接线）", () => {
 			requests.push(req as ModelRequest);
 			return scenario.stream(model, req, onDelta, signal);
 		};
-		const harness = SubjectHarness.create({ model: mockModel(), stream, store: sessionStore, runtimeHooks: createRuntimeHooks(runner) });
+		const harness = SubjectHarness.create({
+			model: mockModel(),
+			stream,
+			store: sessionStore,
+			runtimeHooks: createRuntimeHooks(runner),
+		});
 		// 匹配器合同（§3.4）：无空格中文整串子串匹配，宁可漏；含正文连续片段才能命中。
 		await harness.run("先给结论");
 

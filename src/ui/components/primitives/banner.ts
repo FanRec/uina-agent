@@ -113,10 +113,7 @@ export interface BannerOptions {
 }
 
 /** 生成完整的首屏启动 Banner 行数组（支持自适应终端宽度） */
-export function getStartupBanner(
-	options?: BannerOptions,
-	terminalWidth = 80,
-): string[] {
+export function getStartupBanner(options?: BannerOptions, terminalWidth = 80): string[] {
 	const width = Math.max(24, terminalWidth);
 	const banner: string[] = [];
 
@@ -134,19 +131,13 @@ export function getStartupBanner(
 			"",
 		);
 		const info2 = truncateToWidth(
-			availRight >= 24
-				? `${C.gray}模型: ${C.green}${model}${C.reset}`
-				: `${C.gray}${model}${C.reset}`,
+			availRight >= 24 ? `${C.gray}模型: ${C.green}${model}${C.reset}` : `${C.gray}${model}${C.reset}`,
 			availRight,
 			"",
 		);
 
 		const cwd = options?.cwd ?? process.cwd();
-		const infoCwd = truncateToWidth(
-			`${C.gray}目录: ${C.cyan}${cwd}${C.reset}`,
-			availRight,
-			"",
-		);
+		const infoCwd = truncateToWidth(`${C.gray}目录: ${C.cyan}${cwd}${C.reset}`, availRight, "");
 
 		let rawInfo3 = "";
 		if (availRight >= 56) {
@@ -194,24 +185,21 @@ export function getStartupBanner(
 			banner.push(`${" ".repeat(pad)}${compactTitle}`);
 		}
 
-		const info1 = width >= 34
-			? `${C.bold}${C.white}Uina${C.reset} · ${C.iceBlue}Extensible Agent Runtime${C.reset}`
-			: `${C.bold}${C.white}Uina Agent Core${C.reset}`;
+		const info1 =
+			width >= 34
+				? `${C.bold}${C.white}Uina${C.reset} · ${C.iceBlue}Extensible Agent Runtime${C.reset}`
+				: `${C.bold}${C.white}Uina Agent Core${C.reset}`;
 		const pad1 = Math.max(0, Math.floor((width - visibleWidth(info1)) / 2));
 		banner.push(`${" ".repeat(pad1)}${truncateToWidth(info1, width, "")}`);
 
-		const info2 = width >= 34
-			? `${C.gray}模型: ${model}${C.reset}`
-			: `${C.gray}${model}${C.reset}`;
+		const info2 = width >= 34 ? `${C.gray}模型: ${model}${C.reset}` : `${C.gray}${model}${C.reset}`;
 		const pad2 = Math.max(0, Math.floor((width - visibleWidth(info2)) / 2));
 		banner.push(`${" ".repeat(pad2)}${truncateToWidth(info2, width, "")}`);
 
 		const cwd = options?.cwd ?? process.cwd();
 		const normPath = cwd.replace(/\\/g, "/");
 		const baseCwd = normPath.split("/").filter(Boolean).pop() || cwd;
-		const infoCwd = width >= 40
-			? `${C.gray}目录: ${C.cyan}${cwd}${C.reset}`
-			: `${C.gray}📁 ${baseCwd}${C.reset}`;
+		const infoCwd = width >= 40 ? `${C.gray}目录: ${C.cyan}${cwd}${C.reset}` : `${C.gray}📁 ${baseCwd}${C.reset}`;
 		const padCwd = Math.max(0, Math.floor((width - visibleWidth(infoCwd)) / 2));
 		banner.push(`${" ".repeat(padCwd)}${truncateToWidth(infoCwd, width, "")}`);
 

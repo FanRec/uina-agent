@@ -3,7 +3,10 @@ import { errorMessage } from "../core/errors.js";
 
 /** One command path for terminal UI, pipe/stdin and one-shot execution. */
 export class CommandRouter {
-	constructor(private readonly registry: ExtensionRegistry, private readonly report: (message: string) => void) {}
+	constructor(
+		private readonly registry: ExtensionRegistry,
+		private readonly report: (message: string) => void,
+	) {}
 
 	async dispatch(input: string): Promise<boolean> {
 		if (!input.startsWith("/")) return false;
@@ -14,8 +17,11 @@ export class CommandRouter {
 			this.report(`未知命令: /${name}。输入 /help 查看命令。`);
 			return true;
 		}
-		try { await command.handler(rest.join(" ")); }
-		catch (error) { this.report(`/${name} 执行失败: ${errorMessage(error)}`); }
+		try {
+			await command.handler(rest.join(" "));
+		} catch (error) {
+			this.report(`/${name} 执行失败: ${errorMessage(error)}`);
+		}
 		return true;
 	}
 }

@@ -51,10 +51,7 @@ export function isPathLikeQuery(query: string): boolean {
  * 把候选名按命中的查询前缀拆为三段（用于前缀高亮）：
  * 优先检查整名前缀、最后一个空格后前缀、最后一个 / 后前缀（与 dsh-TUI 完全一致）。
  */
-export function splitQueryMatch(
-	name: string,
-	query: string,
-): { before: string; match: string; after: string } | null {
+export function splitQueryMatch(name: string, query: string): { before: string; match: string; after: string } | null {
 	if (!query) return null;
 	const lower = query.toLowerCase();
 
@@ -126,7 +123,7 @@ export function rankFileCandidates(candidates: FileItem[], query: string, topK =
 			score: fuzzySubsequenceScore(query, `${c.path} ${c.name}`),
 		}))
 		.filter((c) => c.score !== undefined)
-		.sort((a, b) => (b.score! - a.score!) || a.kind.localeCompare(b.kind) || a.path.localeCompare(b.path));
+		.sort((a, b) => b.score! - a.score! || a.kind.localeCompare(b.kind) || a.path.localeCompare(b.path));
 
 	return scored.slice(0, topK);
 }
@@ -167,7 +164,8 @@ export function listPathCandidates(cwd: string, query: string, topK = 50): FileI
 			".turbo",
 		]);
 
-		const rawEntries = fs.readdirSync(expanded, { withFileTypes: true })
+		const rawEntries = fs
+			.readdirSync(expanded, { withFileTypes: true })
 			.slice()
 			.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -208,11 +206,7 @@ const fileCandidateCache = {
  */
 export function listFilesDeepCandidates(root: string): FileItem[] {
 	const now = Date.now();
-	if (
-		fileCandidateCache.cwd === root &&
-		fileCandidateCache.load &&
-		now - fileCandidateCache.timestamp < 10000
-	) {
+	if (fileCandidateCache.cwd === root && fileCandidateCache.load && now - fileCandidateCache.timestamp < 10000) {
 		return fileCandidateCache.load;
 	}
 
@@ -253,7 +247,8 @@ export function listFilesDeepCandidates(root: string): FileItem[] {
 				const fullDir = current.dir;
 				if (visited.has(fullDir)) continue;
 				visited.add(fullDir);
-				const rawEntries = fs.readdirSync(fullDir, { withFileTypes: true })
+				const rawEntries = fs
+					.readdirSync(fullDir, { withFileTypes: true })
 					.slice()
 					.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -331,15 +326,7 @@ export interface SuggestionRenderOptions {
  * 格式化渲染 SuggestionCard 圆角浮层行集合
  */
 export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string[] {
-	const {
-		type,
-		title,
-		query,
-		columns,
-		selectedIndex,
-		items,
-		maxVisible = 5,
-	} = opts;
+	const { type, title, query, columns, selectedIndex, items, maxVisible = 5 } = opts;
 
 	if (items.length === 0) return [];
 
@@ -349,10 +336,7 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 
 	// 1. 视口窗口计算
 	const clampedIndex = Math.max(0, Math.min(selectedIndex, items.length - 1));
-	const startIndex = Math.max(
-		0,
-		Math.min(clampedIndex - Math.floor(maxVisible / 2), items.length - maxVisible),
-	);
+	const startIndex = Math.max(0, Math.min(clampedIndex - Math.floor(maxVisible / 2), items.length - maxVisible));
 	const visibleItems = items.slice(startIndex, startIndex + maxVisible);
 	const above = startIndex;
 	const below = items.length - (startIndex + visibleItems.length);
@@ -387,9 +371,7 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 
 			const descBudget = Math.max(0, usable - 2 - nameColWidth - 2);
 			const truncatedDesc = truncateToWidth(cmd.description, descBudget, "…");
-			const descPart = isSelected
-				? `${C.iceBlue}${truncatedDesc}${C.reset}`
-				: `${C.dim}${truncatedDesc}${C.reset}`;
+			const descPart = isSelected ? `${C.iceBlue}${truncatedDesc}${C.reset}` : `${C.dim}${truncatedDesc}${C.reset}`;
 
 			const rowBody = `${pointer}${namePart}  ${descPart}`;
 			const rowBodyWidth = visibleWidth(rowBody);
@@ -419,9 +401,7 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 
 			const kindBudget = Math.max(0, usable - 2 - 2 - pathColWidth - 2);
 			const kindStr = truncateToWidth(file.kind, kindBudget, "");
-			const kindPart = isSelected
-				? `${C.iceBlue}${kindStr}${C.reset}`
-				: `${C.dim}${kindStr}${C.reset}`;
+			const kindPart = isSelected ? `${C.iceBlue}${kindStr}${C.reset}` : `${C.dim}${kindStr}${C.reset}`;
 
 			const rowBody = `${pointer}${icon}${pathPart}  ${kindPart}`;
 			const rowBodyWidth = visibleWidth(rowBody);

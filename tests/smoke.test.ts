@@ -13,7 +13,11 @@ import { Scenario } from "./harness/provider/scenario.js";
 
 const wait = (ms = 40) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function makeTool(name: string, run: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<string>, executionMode?: Tool["executionMode"]): Tool {
+function makeTool(
+	name: string,
+	run: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<string>,
+	executionMode?: Tool["executionMode"],
+): Tool {
 	return {
 		def: {
 			type: "function",
@@ -37,17 +41,21 @@ describe("ToolBroker", () => {
 	test("validates arguments before execution and serializes arbitrary thrown values", async () => {
 		const broker = new ToolBroker();
 		let executed = false;
-		broker.register(makeTool("typed", async () => {
-			executed = true;
-			return "ok";
-		}));
+		broker.register(
+			makeTool("typed", async () => {
+				executed = true;
+				return "ok";
+			}),
+		);
 		const invalid = JSON.parse(await broker.run("typed", { value: 1 }));
 		expect(invalid.status).toBe("not_started");
 		expect(executed).toBe(false);
 
-		broker.register(makeTool("throws", async () => {
-			throw null;
-		}));
+		broker.register(
+			makeTool("throws", async () => {
+				throw null;
+			}),
+		);
 		const failed = JSON.parse(await broker.run("throws", {}));
 		expect(failed.status).toBe("failed");
 		expect(failed.error).toContain("null");
@@ -60,7 +68,10 @@ describe("Subject", () => {
 		h.scenario
 			.when((req) => !req.messages.some((message) => message.role === "tool"))
 			.replyWithToolCall("t1", "get_time", {});
-		h.scenario.fallback(() => [{ kind: "text", text: "完成" }, { kind: "finish", reason: "stop" }]);
+		h.scenario.fallback(() => [
+			{ kind: "text", text: "完成" },
+			{ kind: "finish", reason: "stop" },
+		]);
 
 		await h.run("几点");
 		expect(h.scenario.calls).toHaveLength(2);
@@ -73,7 +84,10 @@ describe("Subject", () => {
 		h.scenario
 			.when((req) => !req.messages.some((message) => message.role === "tool"))
 			.replyWithToolCall("large-1", "large", {});
-		h.scenario.fallback(() => [{ kind: "text", text: "done" }, { kind: "finish", reason: "stop" }]);
+		h.scenario.fallback(() => [
+			{ kind: "text", text: "done" },
+			{ kind: "finish", reason: "stop" },
+		]);
 
 		await h.run("large");
 		const tool = h.scenario.calls[1].messages.find((message) => message.role === "tool");
@@ -81,10 +95,14 @@ describe("Subject", () => {
 	});
 
 	test("runs independent tools in parallel and returns results in call order", async () => {
-		let active = 0, maxActive = 0;
+		let active = 0,
+			maxActive = 0;
 		const run = async (args: Record<string, unknown>) => {
-			active++; maxActive = Math.max(maxActive, active);
-			await wait(80); active--; return String(args.value);
+			active++;
+			maxActive = Math.max(maxActive, active);
+			await wait(80);
+			active--;
+			return String(args.value);
 		};
 		const h = SubjectHarness.create({ tools: [makeTool("one", run), makeTool("two", run)] });
 		h.scenario
@@ -94,7 +112,10 @@ describe("Subject", () => {
 				{ kind: "tool_call", call: { id: "2", name: "two", args: JSON.stringify({ value: "two" }) } },
 				{ kind: "finish", reason: "tool_calls" },
 			]);
-		h.scenario.fallback(() => [{ kind: "text", text: "done" }, { kind: "finish", reason: "stop" }]);
+		h.scenario.fallback(() => [
+			{ kind: "text", text: "done" },
+			{ kind: "finish", reason: "stop" },
+		]);
 
 		await h.run("run");
 		expect(maxActive).toBe(2);
@@ -110,7 +131,12 @@ describe("Subject", () => {
 			providerId: "mock",
 			contextWindow: 128_000,
 		};
-		const stream: ModelStreamFn = async (_m: Model, req: ModelRequest, onDelta: (delta: StreamDelta) => void, signal?: AbortSignal) => {
+		const stream: ModelStreamFn = async (
+			_m: Model,
+			req: ModelRequest,
+			onDelta: (delta: StreamDelta) => void,
+			signal?: AbortSignal,
+		) => {
 			const lastMsg = [...req.messages].reverse().find((m) => m.role === "user");
 			const input = typeof lastMsg?.content === "string" ? lastMsg.content : "";
 			if (input === "first") {
@@ -138,7 +164,10 @@ describe("Subject", () => {
 		release?.();
 
 		const normal = new Scenario();
-		normal.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
+		normal.fallback(() => [
+			{ kind: "text", text: "ok" },
+			{ kind: "finish", reason: "stop" },
+		]);
 		const h2 = SubjectHarness.create({ scenario: normal, broker });
 		h2.pushInput(editorItems.map((item) => item.text).join("\n\n"));
 		await h2.waitForIdle();
@@ -148,30 +177,70 @@ describe("Subject", () => {
 
 	test("相同来源的连续 World follow-up 在一次模型请求中按顺序消费", async () => {
 		const scenario = new Scenario();
-		scenario.fallback(() => [{ kind: "text", text: "收到" }, { kind: "finish", reason: "stop" }]);
+		scenario.fallback(() => [
+			{ kind: "text", text: "收到" },
+			{ kind: "finish", reason: "stop" },
+		]);
 		const harness = SubjectHarness.create({ scenario });
 		harness.subject.seedQueue([
-			{ id: "world-1", order: 1, mode: "followUp", text: "占位", source: { kind: "runtime", type: "gift", ref: "bilibili-live", origin: "external", channel: "world" } },
-			{ id: "world-2", order: 2, mode: "followUp", text: "占位", source: { kind: "runtime", type: "gift", ref: "bilibili-live", origin: "external", channel: "world" } },
+			{
+				id: "world-1",
+				order: 1,
+				mode: "followUp",
+				text: "占位",
+				source: { kind: "runtime", type: "gift", ref: "bilibili-live", origin: "external", channel: "world" },
+			},
+			{
+				id: "world-2",
+				order: 2,
+				mode: "followUp",
+				text: "占位",
+				source: { kind: "runtime", type: "gift", ref: "bilibili-live", origin: "external", channel: "world" },
+			},
 		]);
 		await harness.subject.resumePending();
 		await harness.waitForIdle();
 		expect(scenario.calls).toHaveLength(1);
-		expect(harness.subject.historySnapshot().filter((message) => message.id === "world-1" || message.id === "world-2").map((message) => message.id)).toEqual(["world-1", "world-2"]);
+		expect(
+			harness.subject
+				.historySnapshot()
+				.filter((message) => message.id === "world-1" || message.id === "world-2")
+				.map((message) => message.id),
+		).toEqual(["world-1", "world-2"]);
 	});
 
 	test("不同来源的连续 World follow-up 分成两次模型请求", async () => {
 		const scenario = new Scenario();
-		scenario.fallback(() => [{ kind: "text", text: "收到" }, { kind: "finish", reason: "stop" }]);
+		scenario.fallback(() => [
+			{ kind: "text", text: "收到" },
+			{ kind: "finish", reason: "stop" },
+		]);
 		const harness = SubjectHarness.create({ scenario });
 		harness.subject.seedQueue([
-			{ id: "external-1", order: 1, mode: "followUp", text: "外部事实", source: { kind: "runtime", type: "gift", ref: "bilibili-live", origin: "external", channel: "world" } },
-			{ id: "internal-1", order: 2, mode: "followUp", text: "自主机会", source: { kind: "runtime", type: "pacing-opportunity", ref: "ticker", origin: "internal", channel: "world" } },
+			{
+				id: "external-1",
+				order: 1,
+				mode: "followUp",
+				text: "外部事实",
+				source: { kind: "runtime", type: "gift", ref: "bilibili-live", origin: "external", channel: "world" },
+			},
+			{
+				id: "internal-1",
+				order: 2,
+				mode: "followUp",
+				text: "自主机会",
+				source: { kind: "runtime", type: "pacing-opportunity", ref: "ticker", origin: "internal", channel: "world" },
+			},
 		]);
 		await harness.subject.resumePending();
 		await harness.waitForIdle();
 		expect(scenario.calls).toHaveLength(2);
-		expect(harness.subject.historySnapshot().filter((message) => message.id === "external-1" || message.id === "internal-1").map((message) => message.id)).toEqual(["external-1", "internal-1"]);
+		expect(
+			harness.subject
+				.historySnapshot()
+				.filter((message) => message.id === "external-1" || message.id === "internal-1")
+				.map((message) => message.id),
+		).toEqual(["external-1", "internal-1"]);
 	});
 
 	test("轮中被消费的排队项必须为每条产生 turn_start（TUI 用户消息渲染依赖它）", async () => {
@@ -182,7 +251,12 @@ describe("Subject", () => {
 			providerId: "mock",
 			contextWindow: 128_000,
 		};
-		const stream: ModelStreamFn = async (_m: Model, req: ModelRequest, onDelta: (delta: StreamDelta) => void, signal?: AbortSignal) => {
+		const stream: ModelStreamFn = async (
+			_m: Model,
+			req: ModelRequest,
+			onDelta: (delta: StreamDelta) => void,
+			signal?: AbortSignal,
+		) => {
 			const lastMsg = [...req.messages].reverse().find((m) => m.role === "user");
 			const input = typeof lastMsg?.content === "string" ? lastMsg.content : "";
 			if (input === "first") {
@@ -223,7 +297,9 @@ describe("Subject", () => {
 			const lastMsg = [...req.messages].reverse().find((m) => m.role === "user");
 			const input = typeof lastMsg?.content === "string" ? lastMsg.content : "";
 			if (input === "first") {
-				await new Promise<void>((resolve) => { release = resolve; });
+				await new Promise<void>((resolve) => {
+					release = resolve;
+				});
 			}
 			onDelta({ kind: "text", text: "done" });
 			onDelta({ kind: "finish", reason: "stop" });
@@ -250,15 +326,25 @@ describe("Subject", () => {
 
 	test("does not execute malformed tool arguments", async () => {
 		let executed = false;
-		const h = SubjectHarness.create({ tools: [makeTool("bad", async () => { executed = true; return "bad"; })] });
+		const h = SubjectHarness.create({
+			tools: [
+				makeTool("bad", async () => {
+					executed = true;
+					return "bad";
+				}),
+			],
+		});
 
 		h.scenario
 			.when((req) => !req.messages.some((message) => message.role === "tool"))
 			.then(() => [
-				{ kind: "tool_call", call: { id: "bad-1", name: "bad", args: "{\"value\":", argsValid: false } },
+				{ kind: "tool_call", call: { id: "bad-1", name: "bad", args: '{"value":', argsValid: false } },
 				{ kind: "finish", reason: "tool_calls" },
 			]);
-		h.scenario.fallback(() => [{ kind: "text", text: "stopped" }, { kind: "finish", reason: "stop" }]);
+		h.scenario.fallback(() => [
+			{ kind: "text", text: "stopped" },
+			{ kind: "finish", reason: "stop" },
+		]);
 
 		await h.run("bad args");
 		expect(executed).toBe(false);
@@ -267,7 +353,14 @@ describe("Subject", () => {
 
 	test("does not execute tool calls when the provider ended on length", async () => {
 		let executed = false;
-		const h = SubjectHarness.create({ tools: [makeTool("length_tool", async () => { executed = true; return "should not run"; })] });
+		const h = SubjectHarness.create({
+			tools: [
+				makeTool("length_tool", async () => {
+					executed = true;
+					return "should not run";
+				}),
+			],
+		});
 
 		h.scenario.fallback(() => [
 			{ kind: "tool_call", call: { id: "length-1", name: "length_tool", args: "{}" } },
@@ -294,7 +387,10 @@ describe("Subject", () => {
 			request++;
 			emit({ kind: "text", text: `reply-${request}` });
 			if (request === 1) {
-				emit({ kind: "usage", usage: { input: 10, output: 5, cacheRead: 7, cacheWrite: 0, reasoning: 0, totalTokens: 22 } });
+				emit({
+					kind: "usage",
+					usage: { input: 10, output: 5, cacheRead: 7, cacheWrite: 0, reasoning: 0, totalTokens: 22 },
+				});
 			}
 			emit({ kind: "finish", reason: "stop" });
 		};
@@ -313,7 +409,10 @@ describe("Subject", () => {
 
 	test("keeps an unknown provider context window unknown and disables automatic compaction", async () => {
 		const h = SubjectHarness.create({ model: { contextWindow: undefined } });
-		h.scenario.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
+		h.scenario.fallback(() => [
+			{ kind: "text", text: "ok" },
+			{ kind: "finish", reason: "stop" },
+		]);
 		h.subject.addHistory([{ role: "user", content: "x".repeat(300_000) }]);
 		await h.run("next");
 		expect(h.subject.getContextWindow()).toBeUndefined();
@@ -322,7 +421,10 @@ describe("Subject", () => {
 
 	test("claims queued items by identity in single LIFO pull-back order (UI peek + claim 组合)", async () => {
 		const h = SubjectHarness.create();
-		h.scenario.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
+		h.scenario.fallback(() => [
+			{ kind: "text", text: "ok" },
+			{ kind: "finish", reason: "stop" },
+		]);
 		h.subject.seedQueue([
 			{ id: "q1", order: 1, text: "task 1", mode: "followUp" },
 			{ id: "q2", order: 2, text: "task 2", mode: "followUp" },
@@ -348,7 +450,10 @@ describe("Subject", () => {
 
 	test("consumes an input enqueued mid-run after the previous turn and replays the full session", async () => {
 		const h = SubjectHarness.create({ store: new MemorySessionStore() });
-		h.scenario.fallback(() => [{ kind: "text", text: "ok" }, { kind: "finish", reason: "stop" }]);
+		h.scenario.fallback(() => [
+			{ kind: "text", text: "ok" },
+			{ kind: "finish", reason: "stop" },
+		]);
 		void h.subject.pushInput("first");
 		await h.subject.pushInput("second", { mode: "followUp" });
 		await h.subject.waitForIdle();
@@ -366,9 +471,13 @@ describe("Subject", () => {
 
 	test("does not consume an input already claimed for the editor while the run is settling", async () => {
 		let releaseModel!: () => void;
-		const modelGate = new Promise<void>((resolve) => { releaseModel = resolve; });
+		const modelGate = new Promise<void>((resolve) => {
+			releaseModel = resolve;
+		});
 		let releaseRestored!: () => void;
-		const restoredGate = new Promise<void>((resolve) => { releaseRestored = resolve; });
+		const restoredGate = new Promise<void>((resolve) => {
+			releaseRestored = resolve;
+		});
 
 		const stream: ModelStreamFn = async (_m: Model, _req: ModelRequest, emit: (delta: StreamDelta) => void) => {
 			await modelGate;
@@ -381,7 +490,10 @@ describe("Subject", () => {
 		const originalAppend = store.appendEvent.bind(store);
 		let gateUsed = false;
 		Object.assign(store, {
-			appendEvent: (event: Parameters<MemorySessionStore["appendEvent"]>[0], data: Record<string, unknown>): Promise<void> => {
+			appendEvent: (
+				event: Parameters<MemorySessionStore["appendEvent"]>[0],
+				data: Record<string, unknown>,
+			): Promise<void> => {
 				const result = originalAppend(event, data);
 				if (!gateUsed && event === "queue_restored") {
 					gateUsed = true;
@@ -433,12 +545,23 @@ describe("JSONL session", () => {
 
 		const completedPath = join(env.cwd, "completed.jsonl");
 		const completed = await openJsonlSession(completedPath);
-		await completed.store.appendMessage({ role: "assistant", content: "", tool_calls: [{ id: "call-2", name: "x", args: {} }] });
+		await completed.store.appendMessage({
+			role: "assistant",
+			content: "",
+			tool_calls: [{ id: "call-2", name: "x", args: {} }],
+		});
 		await completed.store.appendEvent("tool_started", { callId: "call-2", name: "x", args: {} });
-		await completed.store.appendEvent("tool_finished", { callId: "call-2", name: "x", status: "succeeded", result: "ok" });
+		await completed.store.appendEvent("tool_finished", {
+			callId: "call-2",
+			name: "x",
+			status: "succeeded",
+			result: "ok",
+		});
 		await completed.store.close();
 		const completedOpen = await openJsonlSession(completedPath);
-		expect(projectModelHistory(completedOpen.snapshot.entries).find((message) => message.role === "tool")?.status).toBe("succeeded");
+		expect(projectModelHistory(completedOpen.snapshot.entries).find((message) => message.role === "tool")?.status).toBe(
+			"succeeded",
+		);
 		await completedOpen.store.close();
 	});
 
@@ -453,20 +576,30 @@ describe("JSONL session", () => {
 
 		const reopened = await openJsonlSession(path);
 		// custom_entry 是 Auxiliary：journal 序保留，主线 entries 不含。
-		expect(reopened.snapshot.entries.map((entry) => entry.kind)).toEqual([
-			"message",
-			"custom_message",
-			"message",
+		expect(reopened.snapshot.entries.map((entry) => entry.kind)).toEqual(["message", "custom_message", "message"]);
+		expect(reopened.store.state.auxiliary.map((record) => (record as { customType?: string }).customType)).toEqual([
+			"ui-only",
 		]);
-		expect(reopened.store.state.auxiliary.map((record) => (record as { customType?: string }).customType)).toEqual(["ui-only"]);
 		expect(projectModelHistory(reopened.snapshot.entries).map((message) => message.content)).toEqual(["A", "C", "B"]);
 		await reopened.store.close();
 	});
 
 	test("repairs only a torn final line and rejects an invalid middle line", async ({ env }) => {
 		const path = env.sessionPath;
-		const header = JSON.stringify({ kind: "header", version: 3, id: "x", cwd: env.cwd, createdAt: new Date().toISOString() });
-		const message = JSON.stringify({ kind: "message", id: "m", seq: 1, timestamp: new Date().toISOString(), message: { role: "user", content: "ok" } });
+		const header = JSON.stringify({
+			kind: "header",
+			version: 3,
+			id: "x",
+			cwd: env.cwd,
+			createdAt: new Date().toISOString(),
+		});
+		const message = JSON.stringify({
+			kind: "message",
+			id: "m",
+			seq: 1,
+			timestamp: new Date().toISOString(),
+			message: { role: "user", content: "ok" },
+		});
 		writeFileSync(path, `${header}\n${message}\n{"kind":"message"`);
 		const opened = await openJsonlSession(path);
 		expect(opened.snapshot.entries).toHaveLength(1);
@@ -494,7 +627,9 @@ describe("shell output", () => {
 
 	test("keeps a bounded suffix for a single long line", async () => {
 		const quote = String.fromCharCode(34);
-		const result = await execCommandDirect(`node -e ${quote}process.stdout.write(String.fromCharCode(120).repeat(100000))${quote}`);
+		const result = await execCommandDirect(
+			`node -e ${quote}process.stdout.write(String.fromCharCode(120).repeat(100000))${quote}`,
+		);
 		// A single 100k-char line is truncated to the byte budget, not dropped.
 		expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(50 * 1024);
 		expect(result.stdout.length).toBeGreaterThan(49 * 1024);
@@ -521,11 +656,25 @@ describe("shell output", () => {
 describe("模型切换语义", () => {
 	test("工作中切模型后，steer 续跑使用新模型与思考档（下一轮语义）", async () => {
 		type M = import("../src/core/types.js").Model;
-		const modelA: M = { id: "model-a", name: "model-a", providerId: "mock", contextWindow: 128_000, thinkingLevels: ["off", "high"] };
-		const modelB: M = { id: "model-b", name: "model-b", providerId: "mock", contextWindow: 128_000, thinkingLevels: ["off", "high"] };
+		const modelA: M = {
+			id: "model-a",
+			name: "model-a",
+			providerId: "mock",
+			contextWindow: 128_000,
+			thinkingLevels: ["off", "high"],
+		};
+		const modelB: M = {
+			id: "model-b",
+			name: "model-b",
+			providerId: "mock",
+			contextWindow: 128_000,
+			thinkingLevels: ["off", "high"],
+		};
 		const calls: Array<{ model: string; level?: string; user?: string }> = [];
 		let release!: () => void;
-		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		const stream: import("../src/core/types.js").ModelStreamFn = async (m, req, onDelta) => {
 			const lastMsg = [...req.messages].reverse().find((msg) => msg.role === "user");
 			const userText = typeof lastMsg?.content === "string" ? lastMsg.content : "";

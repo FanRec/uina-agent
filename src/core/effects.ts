@@ -18,7 +18,8 @@ function isToolEffect(value: unknown): value is ToolEffect {
 export function readDeclaredEffects(message: AgentMessage | ChatMsg): readonly ToolEffect[] {
 	if (message.role !== "tool") return [];
 	const details = (message as ToolAgentMessage).details as { effects?: unknown } | undefined;
-	const declared = details && typeof details === "object" && Array.isArray(details.effects) ? details.effects : undefined;
+	const declared =
+		details && typeof details === "object" && Array.isArray(details.effects) ? details.effects : undefined;
 	if (!declared) return [];
 	return declared.filter(isToolEffect);
 }

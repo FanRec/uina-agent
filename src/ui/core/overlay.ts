@@ -182,10 +182,7 @@ export class OverlayStack {
 				1,
 				Math.min(
 					available,
-					Math.max(
-						resolveSize(options?.minWidth, available) ?? 1,
-						resolveSize(options?.width, available) ?? available,
-					),
+					Math.max(resolveSize(options?.minWidth, available) ?? 1, resolveSize(options?.width, available) ?? available),
 				),
 			);
 			// An entry is capped by its own maxHeight only; the shared budget is
@@ -221,16 +218,24 @@ function resolveSize(value: number | `${number}%` | undefined, available: number
 	if (value === undefined) return undefined;
 	if (typeof value === "number") return Math.floor(value);
 	const percent = Number.parseFloat(value);
-	return Number.isFinite(percent) ? Math.floor(available * percent / 100) : undefined;
+	return Number.isFinite(percent) ? Math.floor((available * percent) / 100) : undefined;
 }
 
-function normalizeMargin(value: import("./types.js").OverlayMargin | number | undefined): Required<import("./types.js").OverlayMargin> {
+function normalizeMargin(
+	value: import("./types.js").OverlayMargin | number | undefined,
+): Required<import("./types.js").OverlayMargin> {
 	if (typeof value === "number") return { top: value, right: value, bottom: value, left: value };
 	return { top: value?.top ?? 0, right: value?.right ?? 0, bottom: value?.bottom ?? 0, left: value?.left ?? 0 };
 }
 
-function overlayStart(anchor: NonNullable<OverlayOptions["anchor"]>, width: number, overlayWidth: number, margin: Required<import("./types.js").OverlayMargin>): number {
+function overlayStart(
+	anchor: NonNullable<OverlayOptions["anchor"]>,
+	width: number,
+	overlayWidth: number,
+	margin: Required<import("./types.js").OverlayMargin>,
+): number {
 	if (anchor === "top-right" || anchor === "bottom-right") return width - margin.right - overlayWidth;
-	if (anchor === "center" || anchor === "top-center" || anchor === "bottom-center" || anchor === "above-editor") return Math.floor((width - overlayWidth) / 2);
+	if (anchor === "center" || anchor === "top-center" || anchor === "bottom-center" || anchor === "above-editor")
+		return Math.floor((width - overlayWidth) / 2);
 	return margin.left;
 }

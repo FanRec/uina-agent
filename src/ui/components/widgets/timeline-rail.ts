@@ -95,9 +95,7 @@ export class TimelineRailComponent implements Component {
 		let start = 0;
 		if (turnCount > maxTicks) {
 			const tailStart = turnCount - maxTicks;
-			const activeIdx = this.activeTurnUid !== null
-				? this.turns.findIndex((t) => t.uid === this.activeTurnUid)
-				: -1;
+			const activeIdx = this.activeTurnUid !== null ? this.turns.findIndex((t) => t.uid === this.activeTurnUid) : -1;
 			const anchor = activeIdx >= 0 ? activeIdx : turnCount - 1;
 			start = atBottom
 				? Math.min(anchor, tailStart)

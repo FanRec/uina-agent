@@ -56,13 +56,16 @@ class RuntimeAgent implements AgentHandle {
 	readonly subject: Subject;
 	readonly session: SessionAccess;
 
-	constructor(readonly id: string, options: AgentCreateOptions) {
+	constructor(
+		readonly id: string,
+		options: AgentCreateOptions,
+	) {
 		this.store = options.store ?? new MemorySessionStore();
 		this.subject = new Subject(options.model, options.stream, options.tools, {
 			store: this.store,
 			systemPrompt: options.systemPrompt,
 			thinkingLevel: options.thinkingLevel,
-            projection: options.projection,
+			projection: options.projection,
 			runtimeHooks: options.runtimeHooks,
 			measureContext: options.measureContext,
 		});
@@ -88,12 +91,16 @@ class RuntimeAgent implements AgentHandle {
 	}
 
 	waitForIdle(): Promise<void> {
-		return this.subject.waitForIdle().then(() => {
-		});
+		return this.subject.waitForIdle().then(() => {});
 	}
 
 	snapshot(): AgentSnapshot {
-		return { id: this.id, status: this.disposed ? "disposed" : this.subject.isBusy() ? "running" : "idle", busy: this.subject.isBusy(), turn: this.turn };
+		return {
+			id: this.id,
+			status: this.disposed ? "disposed" : this.subject.isBusy() ? "running" : "idle",
+			busy: this.subject.isBusy(),
+			turn: this.turn,
+		};
 	}
 
 	history(): AgentMessage[] {

@@ -31,7 +31,10 @@ describe("RC-1 宿主与消费者分离", () => {
 	test("voice 工具与 TTS 离线解耦，启动后进入模型请求", async ({ env, scenario }) => {
 		const voicePath = fileURLToPath(new URL("../.uina/extensions/voice/index.ts", import.meta.url));
 		const uina = await UinaTestHarness.create({
-			env, scenario, autoStart: false, hostOptions: { extensionPaths: [voicePath] },
+			env,
+			scenario,
+			autoStart: false,
+			hostOptions: { extensionPaths: [voicePath] },
 		});
 		try {
 			expect(uina.host.subject.declaredTools().some((tool) => tool.function.name === "voice")).toBe(false);
@@ -53,9 +56,7 @@ describe("RC-1 宿主与消费者分离", () => {
 		await env.writeExtension("probe.mjs", PROJECT_EXTENSION);
 		await uina.start(); // 激活项目扩展
 
-		scenario
-			.replyWithToolCall("call-1", "probe_echo", { text: "你好" })
-			.reply("工具已返回");
+		scenario.replyWithToolCall("call-1", "probe_echo", { text: "你好" }).reply("工具已返回");
 
 		await uina.send("调用工具");
 		await uina.waitForIdle();
@@ -68,8 +69,11 @@ describe("RC-1 宿主与消费者分离", () => {
 		expect(done).toMatchObject({ toolName: "probe_echo", result: "你好", status: "succeeded" });
 
 		const text = events
-			.filter((e): e is Extract<typeof e, { type: "output_update" }> => e.type === "output_update" && e.channel === "content")
-			.map((e) => e.text).join("");
+			.filter(
+				(e): e is Extract<typeof e, { type: "output_update" }> => e.type === "output_update" && e.channel === "content",
+			)
+			.map((e) => e.text)
+			.join("");
 		expect(text).toContain("工具已返回");
 
 		// 事实单流 1:1 透传后，消费者能看到回合收尾的完整事实序列：turn_end 之后
@@ -80,10 +84,7 @@ describe("RC-1 宿主与消费者分离", () => {
 	});
 
 	test("零消费者状态下主体照常工作，之后接入的观察者能拿到新事件", async ({ uina, scenario }) => {
-		scenario
-			.reply("一")
-			.reply("二")
-			.reply("三");
+		scenario.reply("一").reply("二").reply("三");
 
 		const first: HostEvent[] = [];
 		const unsubscribe = uina.host.subscribe((event) => first.push(event));
@@ -152,13 +153,17 @@ describe("/reload 反馈", () => {
 
 		// 门控 provider：回合卡在 stream 内部，直到测试放行，确保 dispatch 时宿主确实在忙
 		let release: () => void = () => {};
-		const gate = new Promise<void>((resolve) => { release = resolve; });
-
-		scenario.when(() => true).thenStream(async (_m, _req, onDelta) => {
-			await gate;
-			onDelta({ kind: "text", text: "完成" });
-			onDelta({ kind: "finish", reason: "stop" });
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
 		});
+
+		scenario
+			.when(() => true)
+			.thenStream(async (_m, _req, onDelta) => {
+				await gate;
+				onDelta({ kind: "text", text: "完成" });
+				onDelta({ kind: "finish", reason: "stop" });
+			});
 
 		// 让宿主进入忙碌状态（不 await：submitText 会等回合结束，门控下它会一直阻塞）
 		const turnSettled = uina.host.submitText("开始", "direct").catch(() => undefined);

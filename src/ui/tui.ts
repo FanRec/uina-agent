@@ -14,7 +14,6 @@ import type { CompactionReplayDecoration } from "./components/transcript/transcr
 
 import type { HostEvent } from "../host/events.js";
 
-
 export type { HostEvent };
 
 export interface InteractiveTUIOptions extends UIHostOptions {
@@ -84,13 +83,11 @@ export class InteractiveTUI {
 		this.host.onThinkingLevelCycle = () => {
 			this.thinkingLevelCycleCallback?.();
 		};
-
 	}
 
 	get ctxUI(): ExtensionUIContext {
 		return this.host.ctxUI;
 	}
-
 
 	start(): void {
 		this.host.start();
@@ -137,9 +134,9 @@ export class InteractiveTUI {
 	}
 
 	/**
- * 宿主事件 → TUI 状态翻译。session_rewind 需要调用方附带压缩回放装饰
- * （事件按 1:1 透传纪律不携带派生数据，装饰由 cli 从 host 当前 auxiliary 计算）。
- */
+	 * 宿主事件 → TUI 状态翻译。session_rewind 需要调用方附带压缩回放装饰
+	 * （事件按 1:1 透传纪律不携带派生数据，装饰由 cli 从 host 当前 auxiliary 计算）。
+	 */
 	render(m: HostEvent, rewindDecorations: readonly CompactionReplayDecoration[] = []): void {
 		switch (m.type) {
 			case "model_select":
@@ -189,8 +186,14 @@ export class InteractiveTUI {
 				break;
 
 			case "provider_retry":
-				this.host.setProviderRetryMessage(`${m.provider} 连接失败（${m.status === undefined ? m.reason : `HTTP ${m.status}`}），${(m.delayMs / 1000).toFixed(1)} 秒后重试，第 ${m.attempt} 次`);
-				this.host.notify(`正在重试 ${m.provider}（第 ${m.attempt} 次，${(m.delayMs / 1000).toFixed(1)} 秒后）`, "warning", Math.min(3000, Math.max(1000, m.delayMs)));
+				this.host.setProviderRetryMessage(
+					`${m.provider} 连接失败（${m.status === undefined ? m.reason : `HTTP ${m.status}`}），${(m.delayMs / 1000).toFixed(1)} 秒后重试，第 ${m.attempt} 次`,
+				);
+				this.host.notify(
+					`正在重试 ${m.provider}（第 ${m.attempt} 次，${(m.delayMs / 1000).toFixed(1)} 秒后）`,
+					"warning",
+					Math.min(3000, Math.max(1000, m.delayMs)),
+				);
 				break;
 
 			case "provider_recovered":
@@ -228,7 +231,10 @@ export class InteractiveTUI {
 				const startedAt = m.callId !== undefined ? this.toolStartedAt.get(m.callId) : undefined;
 				if (m.callId !== undefined) this.toolStartedAt.delete(m.callId);
 				const elapsed = startedAt === undefined ? 0 : Date.now() - startedAt;
-				this.host.settleToolCard(m.toolName, m.result, elapsed, m.status, m.callId, m.args, { images: m.images ? [...m.images] : undefined, details: m.details });
+				this.host.settleToolCard(m.toolName, m.result, elapsed, m.status, m.callId, m.args, {
+					images: m.images ? [...m.images] : undefined,
+					details: m.details,
+				});
 				this.trajectoryProjection.onToolDone(m.callId ?? "", m.toolName, m.result, elapsed, m.status);
 				this.notifyToolActivity();
 				break;

@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type {
-	DiscoveredModel,
-	Model,
-	ModelRequest,
-	Provider,
-	StreamDelta,
-} from "../src/core/types.js";
+import type { DiscoveredModel, Model, ModelRequest, Provider, StreamDelta } from "../src/core/types.js";
 import { ModelRegistry, createModel } from "../src/ai/providers.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { assertProviderFacts, effectiveContextWindow, protocolCarriesThinking } from "../src/ai/config.js";
@@ -126,36 +120,44 @@ describe("Pi-aligned Model and Provider Decoupling", () => {
 
 	it("preserves all 5 P0 security guarantees", () => {
 		// 1. maxContextWindow 只能收紧有效窗口
-		expect(effectiveContextWindow({
-			baseUrl: "https://test",
-			apiKey: "key",
-			model: "m",
-			modelContextWindow: 100_000,
-			maxContextWindow: 50_000,
-		})).toBe(50_000);
+		expect(
+			effectiveContextWindow({
+				baseUrl: "https://test",
+				apiKey: "key",
+				model: "m",
+				modelContextWindow: 100_000,
+				maxContextWindow: 50_000,
+			}),
+		).toBe(50_000);
 
-		expect(effectiveContextWindow({
-			baseUrl: "https://test",
-			apiKey: "key",
-			model: "m",
-			modelContextWindow: 100_000,
-			maxContextWindow: 200_000, // 超过物理窗口，只能收紧
-		})).toBe(100_000);
+		expect(
+			effectiveContextWindow({
+				baseUrl: "https://test",
+				apiKey: "key",
+				model: "m",
+				modelContextWindow: 100_000,
+				maxContextWindow: 200_000, // 超过物理窗口，只能收紧
+			}),
+		).toBe(100_000);
 
 		// 2. 启动期事实断言：缺失 modelContextWindow 抛出明确配置错误；Anthropic 缺失 maxOutputTokens 抛错
-		expect(() => effectiveContextWindow({
-			baseUrl: "https://test",
-			apiKey: "key",
-			model: "m",
-		})).toThrow("缺少 modelContextWindow");
+		expect(() =>
+			effectiveContextWindow({
+				baseUrl: "https://test",
+				apiKey: "key",
+				model: "m",
+			}),
+		).toThrow("缺少 modelContextWindow");
 
-		expect(() => assertProviderFacts({
-			baseUrl: "https://test",
-			apiKey: "key",
-			model: "m",
-			type: "anthropic",
-			modelContextWindow: 4096,
-		})).toThrow("maxOutputTokens");
+		expect(() =>
+			assertProviderFacts({
+				baseUrl: "https://test",
+				apiKey: "key",
+				model: "m",
+				type: "anthropic",
+				modelContextWindow: 4096,
+			}),
+		).toThrow("maxOutputTokens");
 
 		// 3. protocolCarriesThinking 精准协议推导
 		expect(protocolCarriesThinking("anthropic", undefined, ["off", "high"])).toBe(true);
@@ -164,14 +166,17 @@ describe("Pi-aligned Model and Provider Decoupling", () => {
 		expect(protocolCarriesThinking("openai-compatible", "openai", ["off", "high"])).toBe(false);
 
 		// 4. Model 创建包含完整纯数据事实
-		const created = createModel({
-			baseUrl: "https://test",
-			apiKey: "key",
-			model: "test-model",
-			modelContextWindow: 32_000,
-			maxOutputTokens: 2048,
-			thinkingLevels: ["off", "low"],
-		}, "prov-1");
+		const created = createModel(
+			{
+				baseUrl: "https://test",
+				apiKey: "key",
+				model: "test-model",
+				modelContextWindow: 32_000,
+				maxOutputTokens: 2048,
+				thinkingLevels: ["off", "low"],
+			},
+			"prov-1",
+		);
 		expect(created.id).toBe("test-model");
 		expect(created.providerId).toBe("prov-1");
 		expect(created.contextWindow).toBe(32_000);
@@ -204,4 +209,3 @@ describe("Pi-aligned Model and Provider Decoupling", () => {
 		expect(choices[0]).toEqual({ id: "deepseek/deepseek-v4-flash", name: "deepseek-v4-flash" });
 	});
 });
-

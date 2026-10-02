@@ -5,13 +5,24 @@ import { guardRuntimeHooks } from "../src/runtime/guard.js";
 import type { RuntimeHooks } from "../src/runtime/hooks.js";
 import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { ToolBroker } from "../src/tools/broker.js";
-import type { ChatMsg, Model, ModelRequest, ModelStreamFn, RequestProjection, StreamDelta, ThinkingLevel } from "../src/core/types.js";
+import type {
+	ChatMsg,
+	Model,
+	ModelRequest,
+	ModelStreamFn,
+	RequestProjection,
+	StreamDelta,
+	ThinkingLevel,
+} from "../src/core/types.js";
 import { mockModel, SubjectHarness, createExtensionHarness, mockTool } from "./harness/index.js";
 import { createOpenAIProvider } from "../src/ai/gateway.js";
 import { createServer } from "node:http";
 
 function mockPair(
-	deltas: StreamDelta[] = [{ kind: "text", text: "你好" }, { kind: "finish", reason: "stop" }],
+	deltas: StreamDelta[] = [
+		{ kind: "text", text: "你好" },
+		{ kind: "finish", reason: "stop" },
+	],
 	name = "mock-model",
 	contextWindow = 4096,
 	thinkingLevels: readonly ThinkingLevel[] = ["off", "low", "high"],
@@ -33,7 +44,12 @@ function mockPair(
 	};
 }
 
-const testProjection = (messages: readonly ChatMsg[]): RequestProjection => ({ projectionId: "test", modelKey: "test", messages, tools: [] });
+const testProjection = (messages: readonly ChatMsg[]): RequestProjection => ({
+	projectionId: "test",
+	modelKey: "test",
+	messages,
+	tools: [],
+});
 const mockProvider = mockPair;
 
 describe("ExtensionHost & Hooks Architecture", () => {
@@ -154,7 +170,15 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		});
 
 		const prov1 = mockProvider();
-		const prov2 = mockPair([{ kind: "text", text: "切换成功" }, { kind: "finish", reason: "stop" }], "deepseek-reasoner", 65536, ["off", "high"]);
+		const prov2 = mockPair(
+			[
+				{ kind: "text", text: "切换成功" },
+				{ kind: "finish", reason: "stop" },
+			],
+			"deepseek-reasoner",
+			65536,
+			["off", "high"],
+		);
 
 		const harness = SubjectHarness.create({
 			model: prov1.model,
@@ -214,10 +238,7 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			return {
 				projection: {
 					...projection,
-					messages: [
-					...projection.messages,
-					{ role: "user", content: "【注入感知信息: 阳光明媚】" },
-					],
+					messages: [...projection.messages, { role: "user", content: "【注入感知信息: 阳光明媚】" }],
 				},
 			};
 		});
@@ -248,7 +269,9 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		let nestedFrozen = false;
 		host.onHook("turn.transformContext", (projection) => {
 			nestedFrozen = Object.isFrozen(projection.messages[0]);
-			expect(() => { (projection.messages[0] as { content: string }).content = "mutated"; }).toThrow();
+			expect(() => {
+				(projection.messages[0] as { content: string }).content = "mutated";
+			}).toThrow();
 			return undefined;
 		});
 		const input = testProjection([{ role: "user", content: "original" }]);
@@ -275,7 +298,6 @@ describe("ExtensionHost & Hooks Architecture", () => {
 	});
 
 	it("runs tail-phase transformContext handlers last regardless of registration order", async () => {
-
 		const host = new ExtensionHost();
 		const sequence: string[] = [];
 		const mark = (name: string) => () => {
@@ -297,9 +319,13 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		host2.onHook("turn.transformContext", (projection) => ({
 			projection: { ...projection, messages: [...projection.messages, { role: "user", content: "[normal]" }] },
 		}));
-		host2.onHook("turn.transformContext", (projection) => ({
-			projection: { ...projection, messages: [...projection.messages, { role: "user", content: "[tail]" }] },
-		}), { tail: true });
+		host2.onHook(
+			"turn.transformContext",
+			(projection) => ({
+				projection: { ...projection, messages: [...projection.messages, { role: "user", content: "[tail]" }] },
+			}),
+			{ tail: true },
+		);
 		const hooks2 = guardRuntimeHooks(createRuntimeHooks(host2));
 		const out = await hooks2.turn.transformContext(testProjection([{ role: "user", content: "original" }]));
 		expect(out.messages.map((m) => m.content)).toEqual(["original", "[normal]", "[tail]"]);
@@ -309,8 +335,11 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		const host = new ExtensionHost();
 		let frozen = false;
 		host.onHook("turn.transformContext", (projection) => {
-			frozen = Object.isFrozen(projection) && Object.isFrozen(projection.messages) && Object.isFrozen(projection.messages[0]!);
-			return { projection: { ...projection, messages: [...projection.messages, { role: "user", content: "replacement" }] } };
+			frozen =
+				Object.isFrozen(projection) && Object.isFrozen(projection.messages) && Object.isFrozen(projection.messages[0]!);
+			return {
+				projection: { ...projection, messages: [...projection.messages, { role: "user", content: "replacement" }] },
+			};
 		});
 		// P1-3 规则成文：clone+freeze 只发生在 guard 边界——所有 RuntimeHooks 出口
 		// （含 runner.runtimeHooks 旁路）统一过 guard，host.run* 是纯聚合器。
@@ -324,15 +353,22 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		let inputFrozen = false;
 		let returned: Array<{ role: "user"; content: string }> | undefined;
 		let contextReturned!: () => void;
-		const contextReady = new Promise<void>((resolve) => { contextReturned = resolve; });
+		const contextReady = new Promise<void>((resolve) => {
+			contextReturned = resolve;
+		});
 		let releaseProvider!: () => void;
-		const providerGate = new Promise<void>((resolve) => { releaseProvider = resolve; });
+		const providerGate = new Promise<void>((resolve) => {
+			releaseProvider = resolve;
+		});
 		const runtimeHooks: RuntimeHooks = {
 			...NO_RUNTIME_HOOKS,
 			turn: {
 				...NO_RUNTIME_HOOKS.turn,
 				transformContext: async (projection) => {
-					inputFrozen = Object.isFrozen(projection) && Object.isFrozen(projection.messages) && Object.isFrozen(projection.messages[0]!);
+					inputFrozen =
+						Object.isFrozen(projection) &&
+						Object.isFrozen(projection.messages) &&
+						Object.isFrozen(projection.messages[0]!);
 					returned = [{ role: "user", content: "replacement" }];
 					setTimeout(() => {
 						returned?.push({ role: "user", content: "late mutation" });
@@ -363,7 +399,9 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		const host = new ExtensionHost();
 		const sequence: string[] = [];
 
-		host.onHook("turn.prepare", () => { sequence.push("turn.prepare"); });
+		host.onHook("turn.prepare", () => {
+			sequence.push("turn.prepare");
+		});
 		host.on("agent_start", () => sequence.push("agent_start"));
 		host.on("turn_start", () => sequence.push("turn_start"));
 		host.on("turn_end", () => sequence.push("turn_end"));
@@ -379,22 +417,19 @@ describe("ExtensionHost & Hooks Architecture", () => {
 
 		await harness.run("测试生命周期");
 
-		expect(sequence).toEqual([
-			"turn.prepare",
-			"agent_start",
-			"turn_start",
-			"turn_end",
-			"agent_end",
-			"agent_settled",
-		]);
+		expect(sequence).toEqual(["turn.prepare", "agent_start", "turn_start", "turn_end", "agent_end", "agent_settled"]);
 	});
 
 	it("keeps one active run through agent_end handlers and queues input received during settlement", async () => {
 		const host = new ExtensionHost();
 		let releaseFirstEnd!: () => void;
-		const firstEndReached = new Promise<void>((resolve) => { releaseFirstEnd = resolve; });
+		const firstEndReached = new Promise<void>((resolve) => {
+			releaseFirstEnd = resolve;
+		});
 		let continueFirstEnd!: () => void;
-		const firstEndGate = new Promise<void>((resolve) => { continueFirstEnd = resolve; });
+		const firstEndGate = new Promise<void>((resolve) => {
+			continueFirstEnd = resolve;
+		});
 		let ends = 0;
 		host.on("agent_end", async () => {
 			ends++;
@@ -417,7 +452,9 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		await firstEndReached;
 
 		let idleResolved = false;
-		const idle = harness.waitForIdle().then(() => { idleResolved = true; });
+		const idle = harness.waitForIdle().then(() => {
+			idleResolved = true;
+		});
 		await harness.pushInput("second");
 		await Promise.resolve();
 		expect(harness.isBusy()).toBe(true);
@@ -471,15 +508,24 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		const host = new ExtensionHost();
 		const order: string[] = [];
 		let release!: () => void;
-		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		host.on("output_update", async () => {
 			order.push("output_start");
 			await gate;
 			order.push("output_done");
 		});
 		host.on("turn_end", () => order.push("turn_end"));
-		const pair = mockProvider([{ kind: "text", text: "慢" }, { kind: "finish", reason: "stop" }]);
-		const harness = SubjectHarness.create({ model: pair.model, stream: pair.stream, runtimeHooks: createRuntimeHooks(host) });
+		const pair = mockProvider([
+			{ kind: "text", text: "慢" },
+			{ kind: "finish", reason: "stop" },
+		]);
+		const harness = SubjectHarness.create({
+			model: pair.model,
+			stream: pair.stream,
+			runtimeHooks: createRuntimeHooks(host),
+		});
 		const run = harness.pushInput("顺序");
 		await vi.waitFor(() => expect(order).toContain("output_start"));
 		expect(order).not.toContain("turn_end");
@@ -505,7 +551,11 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			emit({ kind: "text", text: "迟到" });
 			emit({ kind: "finish", reason: "stop" });
 		};
-		const harness = SubjectHarness.create({ model: mockModel({ id: "late-output" }), stream, runtimeHooks: createRuntimeHooks(host) });
+		const harness = SubjectHarness.create({
+			model: mockModel({ id: "late-output" }),
+			stream,
+			runtimeHooks: createRuntimeHooks(host),
+		});
 		const run = harness.pushInput("打断");
 		await vi.waitFor(() => expect(events).toContain("output_update:content"));
 		harness.interrupt();
@@ -516,7 +566,10 @@ describe("ExtensionHost & Hooks Architecture", () => {
 	});
 
 	it("closes every opened output channel exactly once on success, error, and cancellation", async () => {
-		const collect = async (pair: { model: Model; stream: ModelStreamFn }, interruptAfterStart = false): Promise<string[]> => {
+		const collect = async (
+			pair: { model: Model; stream: ModelStreamFn },
+			interruptAfterStart = false,
+		): Promise<string[]> => {
 			const host = new ExtensionHost();
 			const events: string[] = [];
 			for (const type of ["output_start", "output_update", "output_end", "output_interrupted"] as const) {
@@ -524,7 +577,11 @@ describe("ExtensionHost & Hooks Architecture", () => {
 					events.push(`${event.type}:${event.channel}${event.type === "output_interrupted" ? `:${event.reason}` : ""}`);
 				});
 			}
-			const harness = SubjectHarness.create({ model: pair.model, stream: pair.stream, runtimeHooks: createRuntimeHooks(host) });
+			const harness = SubjectHarness.create({
+				model: pair.model,
+				stream: pair.stream,
+				runtimeHooks: createRuntimeHooks(host),
+			});
 			const run = harness.pushInput("probe");
 			if (interruptAfterStart) {
 				await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -535,11 +592,13 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			return events;
 		};
 
-		const normal = await collect(mockProvider([
-			{ kind: "thinking", text: "plan" },
-			{ kind: "text", text: "answer" },
-			{ kind: "finish", reason: "stop" },
-		]));
+		const normal = await collect(
+			mockProvider([
+				{ kind: "thinking", text: "plan" },
+				{ kind: "text", text: "answer" },
+				{ kind: "finish", reason: "stop" },
+			]),
+		);
 		expect(normal).toEqual([
 			"output_start:thinking",
 			"output_update:thinking",
@@ -574,13 +633,18 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			"output_interrupted:content:error",
 		]);
 
-		const contentCancelled = await collect({
-			model: mockModel({ id: "content-cancel" }),
-			stream: async (_m, _request, emit, signal) => {
-				emit({ kind: "text", text: "partial" });
-				await new Promise<void>((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }));
+		const contentCancelled = await collect(
+			{
+				model: mockModel({ id: "content-cancel" }),
+				stream: async (_m, _request, emit, signal) => {
+					emit({ kind: "text", text: "partial" });
+					await new Promise<void>((_resolve, reject) =>
+						signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }),
+					);
+				},
 			},
-		}, true);
+			true,
+		);
 		expect(contentCancelled).toEqual([
 			"output_start:content",
 			"output_update:content",
@@ -591,7 +655,9 @@ describe("ExtensionHost & Hooks Architecture", () => {
 	it("intercepts HTTP requests at provider network level (before_provider_headers, before_provider_request, after_provider_response)", async () => {
 		const host = new ExtensionHost();
 
-		host.onHook("provider.transformHeaders", (input) => ({ headers: { ...input.headers, "X-Custom-Tenant": "tenant-123" } }));
+		host.onHook("provider.transformHeaders", (input) => ({
+			headers: { ...input.headers, "X-Custom-Tenant": "tenant-123" },
+		}));
 		host.onHook("provider.transformPayload", (input) => {
 			return { payload: { ...(input.payload as Record<string, unknown>), custom_tag: "injected" } };
 		});
@@ -659,10 +725,14 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
 			const dropped = await statusOnly.runTransformResult({
-				callId: "c", name: "probe", args: {}, result: "boom", status: "failed",
+				callId: "c",
+				name: "probe",
+				args: {},
+				result: "boom",
+				status: "failed",
 			});
 			expect(dropped).toBeUndefined();
-			expect(warn.mock.calls.some(call => String(call[0]).includes("status"))).toBe(true);
+			expect(warn.mock.calls.some((call) => String(call[0]).includes("status"))).toBe(true);
 		} finally {
 			warn.mockRestore();
 		}
@@ -670,12 +740,15 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		const rewriting = new ExtensionHost();
 		rewriting.onHook("tools.transformResult", () => ({ status: "succeeded", result: "rewritten" }) as never);
 		const rewritten = await rewriting.runTransformResult({
-			callId: "c2", name: "probe", args: {}, result: "boom", status: "failed",
+			callId: "c2",
+			name: "probe",
+			args: {},
+			result: "boom",
+			status: "failed",
 		});
 		expect(rewritten?.result).toBe("rewritten");
 		expect(rewritten).not.toHaveProperty("status");
 	});
-
 });
 
 describe("run-safety seams: prepare model swap and shouldStop", () => {
@@ -718,7 +791,12 @@ describe("run-safety seams: prepare model swap and shouldStop", () => {
 		};
 		const broker = new ToolBroker();
 		broker.register(mockTool("noop", async () => ({ result: "ok", status: "succeeded" as const })));
-		const harness = SubjectHarness.create({ model: mockModel(), stream, broker, runtimeHooks: createRuntimeHooks(host) });
+		const harness = SubjectHarness.create({
+			model: mockModel(),
+			stream,
+			broker,
+			runtimeHooks: createRuntimeHooks(host),
+		});
 		await harness.run("run tool once");
 
 		expect(streamCalls).toBe(1);

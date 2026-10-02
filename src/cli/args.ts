@@ -5,7 +5,7 @@
 export interface ParsedArgs {
 	/** 用户在命令行直接输入的初始任务提示词（拼接所有的 positional 参数） */
 	readonly prompt?: string;
- readonly extensions?: readonly string[];
+	readonly extensions?: readonly string[];
 	/** 是否启用批处理/打印模式（流式输出后立即退出进程，不进入交互 TUI） */
 	readonly print: boolean;
 	/** 临时覆盖当前会话使用的模型（如 openai/gpt-4o、deepseek-r1） */
@@ -29,7 +29,7 @@ export const UINA_VERSION = "0.1.0";
  */
 export function parseArgs(argv: readonly string[]): ParsedArgs {
 	const positionals: string[] = [];
- const extensions: string[] = [];
+	const extensions: string[] = [];
 	let print = false;
 	let model: string | undefined;
 	let noSession = false;
@@ -61,15 +61,19 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 			continue;
 		}
 
-		if (arg === '-e' || arg === '--extension') {
-   const entry = argv[++i];
-   if (!entry || entry.startsWith('-')) throw new Error('--extension 需要文件或目录路径');
-   extensions.push(entry); continue;
-  }
-  if (arg.startsWith('--extension=') || arg.startsWith('-e=')) {
-   const entry = arg.slice(arg.indexOf('=') + 1); if (!entry) throw new Error('--extension 需要路径'); extensions.push(entry); continue;
-  }
-  if (arg === "--no-session") {
+		if (arg === "-e" || arg === "--extension") {
+			const entry = argv[++i];
+			if (!entry || entry.startsWith("-")) throw new Error("--extension 需要文件或目录路径");
+			extensions.push(entry);
+			continue;
+		}
+		if (arg.startsWith("--extension=") || arg.startsWith("-e=")) {
+			const entry = arg.slice(arg.indexOf("=") + 1);
+			if (!entry) throw new Error("--extension 需要路径");
+			extensions.push(entry);
+			continue;
+		}
+		if (arg === "--no-session") {
 			noSession = true;
 			continue;
 		}
@@ -104,7 +108,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 
 	return {
 		prompt: prompt || undefined,
-  ...(extensions.length ? { extensions } : {}),
+		...(extensions.length ? { extensions } : {}),
 		profile,
 		print,
 		model: model?.trim() || undefined,
@@ -140,10 +144,10 @@ export function formatHelp(): string {
 		"",
 		"示例:",
 		"  uina                          直接在当前目录进入交互式 TUI 会话",
-		"  uina \"帮我审查当前目录代码\"    带任务进入交互式 TUI 会话并自动执行",
+		'  uina "帮我审查当前目录代码"    带任务进入交互式 TUI 会话并自动执行',
 		"  uina -m deepseek-r1           指定模型并进入交互式会话",
-		"  uina -p \"生成一个随机密码\"     直接输出结果后退出（批处理脚本适用）",
-		"  git diff | uina \"总结本次修改\"  通过标准输入管道传入上下文",
+		'  uina -p "生成一个随机密码"     直接输出结果后退出（批处理脚本适用）',
+		'  git diff | uina "总结本次修改"  通过标准输入管道传入上下文',
 		"",
 	].join("\n");
 }

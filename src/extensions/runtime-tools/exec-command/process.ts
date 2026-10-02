@@ -24,11 +24,7 @@ export interface ProcessOptions {
 /** A quiet inherited stdio handle must not hold the caller hostage forever. */
 const EXIT_STDIO_GRACE_MS = 100;
 
-import {
-	killTree,
-	trackDetachedChildPid,
-	untrackDetachedChildPid,
-} from "../../../runtime/process-tracker.js";
+import { killTree, trackDetachedChildPid, untrackDetachedChildPid } from "../../../runtime/process-tracker.js";
 
 /** Execute one command through the platform normal shell. */
 export function executeShellProcess(
@@ -175,7 +171,8 @@ function resolveShell(): { shell: string; args: (command: string) => string[] } 
 	if (process.platform !== "win32") {
 		return { shell: "/bin/sh", args: (command) => ["-c", command] };
 	}
-	const utf8Prefix = "$OutputEncoding = [Console]::OutputEncoding = [Console]::InputEncoding = [System.Text.Encoding]::UTF8; ";
+	const utf8Prefix =
+		"$OutputEncoding = [Console]::OutputEncoding = [Console]::InputEncoding = [System.Text.Encoding]::UTF8; ";
 	const exitSuffix = "; if ($LASTEXITCODE) { exit $LASTEXITCODE }";
 	const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
 	const pwsh = join(programFiles, "PowerShell", "7", "pwsh.exe");
@@ -195,6 +192,3 @@ function resolveShell(): { shell: string; args: (command: string) => string[] } 
 	}
 	return { shell: "cmd.exe", args: (command) => ["/d", "/s", "/c", command] };
 }
-
-
-

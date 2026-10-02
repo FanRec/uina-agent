@@ -22,7 +22,12 @@ import { inputTokenBudget, modelKey } from "../core/model.js";
 import type { SessionStore } from "../session/types.js";
 import { projectInputMessage } from "../session/recovery.js";
 import { commitRewindTransition } from "./rewind.js";
-import { requestToolDefs, resolveProjectionPolicy, type ProjectionPolicy, type ResolvedProjection } from "./projection.js";
+import {
+	requestToolDefs,
+	resolveProjectionPolicy,
+	type ProjectionPolicy,
+	type ResolvedProjection,
+} from "./projection.js";
 import { buildContext, defaultSystemPrompt, measureRequestContext } from "./context.js";
 import { InputQueues, type QueuedMessage } from "./queue.js";
 import { TurnStreamCollector, type StreamCollectorResult } from "./stream-collector.js";
@@ -31,7 +36,6 @@ import type { RuntimeHooks } from "../runtime/hooks.js";
 import type { OutputEvent, RuntimeEvent } from "../runtime/events.js";
 import { NO_RUNTIME_HOOKS } from "../runtime/noop.js";
 import { guardRuntimeHooks, immutableProjection } from "../runtime/guard.js";
-
 
 export interface SubjectOptions {
 	store?: SessionStore;
@@ -49,10 +53,7 @@ export interface SubjectOptions {
 	maxConsecutiveToolCalls?: number;
 }
 
-export function clampThinkingLevel(
-	requested: ThinkingLevel,
-	available?: readonly ThinkingLevel[],
-): ThinkingLevel {
+export function clampThinkingLevel(requested: ThinkingLevel, available?: readonly ThinkingLevel[]): ThinkingLevel {
 	if (!available || available.length === 0) return "off";
 	if (available.includes(requested)) return requested;
 	return available[0]!;
@@ -63,9 +64,7 @@ export interface QueueInputOptions {
 	source?: import("../core/types.js").InputSource;
 }
 
-type InputSubmission =
-	| { kind: "start"; promptText?: string }
-	| { kind: "queue"; resumeIfIdle: boolean };
+type InputSubmission = { kind: "start"; promptText?: string } | { kind: "queue"; resumeIfIdle: boolean };
 
 function isWorldInput(item: QueuedMessage): boolean {
 	return item.mode === "followUp" && item.source?.kind === "runtime" && item.source.channel === "world";
@@ -75,7 +74,7 @@ export interface AgentInput {
 	id: string;
 	mode: "steer" | "followUp";
 	source: import("../core/types.js").InputSource;
- receivedAt?: string;
+	receivedAt?: string;
 	text?: string;
 	images?: import("../core/content.js").ImageContent[];
 	data?: unknown;
@@ -109,10 +108,7 @@ type ToolBatchOutcome = {
 class ToolPipelineFailure extends Error {
 	readonly started: boolean;
 	readonly failure: unknown;
-	constructor(
-		started: boolean,
-		failure: unknown,
-	) {
+	constructor(started: boolean, failure: unknown) {
 		super("工具流水线未能完成", { cause: failure });
 		this.started = started;
 		this.failure = failure;
@@ -274,8 +270,16 @@ export class Subject {
 	async inspectRequest(): Promise<RequestInspection> {
 		const model = this.model;
 		const projection = await this.prepareProjection(model, this.systemPrompt, [], true);
-		const measurement = measureRequestContext(projection, this.measureContext ? (value) => this.measureContext!(model, value) : undefined);
-		return { projection, measurement, contextWindow: model.contextWindow, inputBudget: inputTokenBudget(model, projection.thinkingLevel) };
+		const measurement = measureRequestContext(
+			projection,
+			this.measureContext ? (value) => this.measureContext!(model, value) : undefined,
+		);
+		return {
+			projection,
+			measurement,
+			contextWindow: model.contextWindow,
+			inputBudget: inputTokenBudget(model, projection.thinkingLevel),
+		};
 	}
 
 	async getContextSnapshot(basis: ContextSnapshot["basis"] = "idle_baseline"): Promise<ContextSnapshot> {
@@ -493,19 +497,19 @@ export class Subject {
 		const hadQueuedItems = this.queues.size > 0;
 		const queued = this.queues.create(normalized, mode, { source: options.source });
 		const startImmediately = requestedMode === "direct" && !busy && !hadQueuedItems;
-		return this.submitInput(queued, startImmediately
-			? { kind: "start", promptText: normalized }
-			: { kind: "queue", resumeIfIdle: requestedMode === "direct" && !busy && hadQueuedItems });
+		return this.submitInput(
+			queued,
+			startImmediately
+				? { kind: "start", promptText: normalized }
+				: { kind: "queue", resumeIfIdle: requestedMode === "direct" && !busy && hadQueuedItems },
+		);
 	}
 
 	/**
 	 * 规范化后的输入唯一提交路径：直接启动或 queue_enqueued 持久化后入队。
 	 * 调用者在此之前保留各自的输入语义（来源、图片、瞬态快照和 prompt 策略）。
 	 */
-	private submitInput(
-		queued: QueuedMessage,
-		submission: InputSubmission,
-	): Promise<void> {
+	private submitInput(queued: QueuedMessage, submission: InputSubmission): Promise<void> {
 		if (submission.kind === "start") {
 			if (this.isBusy() || this.queues.size > 0) return Promise.reject(new Error("Subject 忙碌，无法直接启动输入"));
 			return this.startRun(submission.promptText, queued, { needsEnqueueEvent: true });
@@ -543,9 +547,12 @@ export class Subject {
 		};
 		if (input.render) this.deferredInputRenders.set(input.id, input.render);
 		const startImmediately = !this.isBusy() && this.queues.size === 0;
-		return this.submitInput(queued, startImmediately
-			? { kind: "start", promptText: queued.source?.kind === "runtime" ? undefined : queued.text }
-			: { kind: "queue", resumeIfIdle: true });
+		return this.submitInput(
+			queued,
+			startImmediately
+				? { kind: "start", promptText: queued.source?.kind === "runtime" ? undefined : queued.text }
+				: { kind: "queue", resumeIfIdle: true },
+		);
 	}
 
 	/** Queue an input for the next model request while the current run is active. */
@@ -608,16 +615,18 @@ export class Subject {
 	addHistory(messages: readonly (AgentMessage | ChatMsg)[]): void {
 		if (this.isBusy()) throw new Error("活动期间不能替换历史");
 		// 仅补进程内事件 id。journal 回放使用条目 id，不把这里的随机 id 写成事实。
-		this.history.push(...messages.map((m) => {
-			const hasId = "id" in m && Boolean((m as { id?: string }).id);
-			const hasInput = "input" in m && Boolean((m as { input?: unknown }).input);
-			// Canonical-boundary capabilities need every in-process message to carry a
-			// stable identity, not only user inputs. This identity is process-local and
-			// never written to the journal by addHistory; restored journal entries already
-			// carry their durable ids.
-			if (!hasId && !hasInput) return { ...structuredClone(m as AgentMessage), id: randomUUID() };
-			return structuredClone(m as AgentMessage);
-		}));
+		this.history.push(
+			...messages.map((m) => {
+				const hasId = "id" in m && Boolean((m as { id?: string }).id);
+				const hasInput = "input" in m && Boolean((m as { input?: unknown }).input);
+				// Canonical-boundary capabilities need every in-process message to carry a
+				// stable identity, not only user inputs. This identity is process-local and
+				// never written to the journal by addHistory; restored journal entries already
+				// carry their durable ids.
+				if (!hasId && !hasInput) return { ...structuredClone(m as AgentMessage), id: randomUUID() };
+				return structuredClone(m as AgentMessage);
+			}),
+		);
 	}
 
 	seedQueue(items: readonly QueuedMessage[]): void {
@@ -723,7 +732,9 @@ export class Subject {
 				prepared.systemPrompt ?? this.systemPrompt,
 				prepared.messages ? [...prepared.messages] : [],
 				queuedInput,
-				() => { if (inputState) inputState.committed = true; },
+				() => {
+					if (inputState) inputState.committed = true;
+				},
 				queuedInputs,
 			);
 		} catch (error) {
@@ -763,14 +774,25 @@ export class Subject {
 					else await this.dispatch({ type: "agent_settled", turnSeq: turn });
 					return;
 				}
-			}
-			else if (text !== undefined)
+			} else if (text !== undefined)
 				await this.appendMessage({ role: "user", content: text, timestamp: new Date().toISOString() });
-			await this.dispatch({ type: "turn_start", turnNumber: currentTurn, userText: text ?? "", inputRefs: queuedInputs.map((item) => item.id), images: queuedInput?.images });
+			await this.dispatch({
+				type: "turn_start",
+				turnNumber: currentTurn,
+				userText: text ?? "",
+				inputRefs: queuedInputs.map((item) => item.id),
+				images: queuedInput?.images,
+			});
 			turnStarted = true;
-			const outcome = await this.decide(model, systemPrompt, beforeMessages, (nextTurn) => {
-				currentTurn = nextTurn;
-			}, () => currentTurn);
+			const outcome = await this.decide(
+				model,
+				systemPrompt,
+				beforeMessages,
+				(nextTurn) => {
+					currentTurn = nextTurn;
+				},
+				() => currentTurn,
+			);
 			if (outcome.kind === "completed") {
 				success = true;
 			} else if (outcome.kind === "terminated") {
@@ -821,7 +843,12 @@ export class Subject {
 		this.abort = new AbortController();
 		const postTurnSignal = this.currentSignal();
 		try {
-			await this.runtimeHooks.turn.afterEnd({ turnNumber, success, ...(error ? { error } : {}), signal: postTurnSignal });
+			await this.runtimeHooks.turn.afterEnd({
+				turnNumber,
+				success,
+				...(error ? { error } : {}),
+				signal: postTurnSignal,
+			});
 		} catch (afterEndError) {
 			this.reportError(afterEndError);
 		}
@@ -883,7 +910,10 @@ export class Subject {
 	private async applyPreparedRuntime(
 		prepared: Readonly<{ model?: Model; thinkingLevel?: ThinkingLevel }>,
 	): Promise<void> {
-		if (prepared.model && !(prepared.model.id === this.model.id && prepared.model.providerId === this.model.providerId)) {
+		if (
+			prepared.model &&
+			!(prepared.model.id === this.model.id && prepared.model.providerId === this.model.providerId)
+		) {
 			await this.setModel(prepared.model);
 		}
 		if (prepared.thinkingLevel !== undefined && prepared.thinkingLevel !== this.preferredThinkingLevel) {
@@ -899,7 +929,7 @@ export class Subject {
 		getCurrentTurn?: () => number,
 	): Promise<DecisionOutcome> {
 		const applyRewind = async (): Promise<boolean> => {
-			if (!await this.applyPendingRewind()) return false;
+			if (!(await this.applyPendingRewind())) return false;
 			const prepared = await this.runtimeHooks.turn.prepare({ prompt: "", systemPrompt: this.systemPrompt });
 			await this.applyPreparedRuntime(prepared);
 			// 换模型/换档即刻生效于本 decide 循环的下一次请求（安全点已过，口径统一）。
@@ -925,16 +955,15 @@ export class Subject {
 			const projection = await this.prepareProjectionForSend(model, systemPrompt, beforeMessages, this.currentSignal());
 			const callId = `stream-${this.turnSeq}-${++this.streamSeq}`;
 			const callSeq = this.streamSeq;
-			const collector = new TurnStreamCollector(
-				callId,
-				(event) => this.dispatch(event),
-				{
-					onUsage: (usage) => void this.publishUsage(usage, callId, projection, callSeq),
-					onRetry: (event) => this.dispatch(event.kind === "provider_retry"
-					? { type: "provider_retry", provider: model.providerId, ...event }
-					: { type: "provider_recovered", provider: model.providerId, attempt: event.attempt }),
-				},
-			);
+			const collector = new TurnStreamCollector(callId, (event) => this.dispatch(event), {
+				onUsage: (usage) => void this.publishUsage(usage, callId, projection, callSeq),
+				onRetry: (event) =>
+					this.dispatch(
+						event.kind === "provider_retry"
+							? { type: "provider_retry", provider: model.providerId, ...event }
+							: { type: "provider_recovered", provider: model.providerId, attempt: event.attempt },
+					),
+			});
 			this.currentCallUsage = undefined;
 			const streamSignal = this.currentSignal();
 
@@ -990,7 +1019,9 @@ export class Subject {
 			const { stopped } = await this.settleToolExchange(streamResult);
 			processedToolCalls += proposedToolCalls;
 			if (processedToolCalls >= 100 && processedToolCalls % 50 === 0) {
-				console.warn(`[Subject:decide] 提示：本回合已处理工具调用 ${processedToolCalls} 次（上限 ${this.maxConsecutiveToolCalls}）`);
+				console.warn(
+					`[Subject:decide] 提示：本回合已处理工具调用 ${processedToolCalls} 次（上限 ${this.maxConsecutiveToolCalls}）`,
+				);
 			}
 			if (this.interrupted || this.currentSignal().aborted) {
 				await this.emitInterrupted("", "", undefined);
@@ -1019,7 +1050,10 @@ export class Subject {
 	): Promise<RequestProjection> {
 		for (let pass = 0; pass <= 1; pass++) {
 			const projection = await this.prepareProjection(model, systemPrompt, beforeMessages, true);
-			const measurement = measureRequestContext(projection, this.measureContext ? (p) => this.measureContext!(model, p) : undefined);
+			const measurement = measureRequestContext(
+				projection,
+				this.measureContext ? (p) => this.measureContext!(model, p) : undefined,
+			);
 			const decision = await this.runtimeHooks.turn.preflight({ projection, measurement, pass, signal: turnSignal });
 			if (decision.action === "fail") throw new Error(decision.reason ?? "请求预检失败");
 			if (decision.action === "rebuild") {
@@ -1035,7 +1069,12 @@ export class Subject {
 			// Otherwise a slower idle measurement can publish after this snapshot and
 			// overwrite the context actually sent to the provider.
 			this.contextInspectionSeq++;
-			this.publishContextSnapshot(this.contextSnapshot({ projection, measurement, contextWindow: model.contextWindow, inputBudget: budget }, "active_request"));
+			this.publishContextSnapshot(
+				this.contextSnapshot(
+					{ projection, measurement, contextWindow: model.contextWindow, inputBudget: budget },
+					"active_request",
+				),
+			);
 			return projection;
 		}
 		throw new Error("请求准备失败");
@@ -1069,7 +1108,11 @@ export class Subject {
 		if (transformed.projectionId !== base.projectionId || transformed.modelKey !== base.modelKey) {
 			throw new Error("turn.transformContext 不得修改 projectionId 或 modelKey");
 		}
-		if (transformed.thinkingLevel !== undefined && transformed.thinkingLevel !== "off" && !model.thinkingLevels?.includes(transformed.thinkingLevel)) {
+		if (
+			transformed.thinkingLevel !== undefined &&
+			transformed.thinkingLevel !== "off" &&
+			!model.thinkingLevels?.includes(transformed.thinkingLevel)
+		) {
 			throw new Error(`turn.transformContext 返回模型不支持的 thinking level: ${transformed.thinkingLevel}`);
 		}
 		return immutableProjection(transformed);
@@ -1127,7 +1170,10 @@ export class Subject {
 				await this.appendMessage({
 					role: "tool",
 					tool_call_id: call.id,
-					content: JSON.stringify({ error: notExecutedReason ?? "工具调用未执行（模型没有以 tool_calls 终止）", status: "not_started" }),
+					content: JSON.stringify({
+						error: notExecutedReason ?? "工具调用未执行（模型没有以 tool_calls 终止）",
+						status: "not_started",
+					}),
 					status: "not_started",
 					timestamp: new Date().toISOString(),
 				});
@@ -1179,10 +1225,20 @@ export class Subject {
 				await this.commitQueueItem(item);
 				if (item.source?.kind !== "runtime") {
 					const previousTurn = getCurrentTurn?.() ?? this.turnSeq;
-					await this.dispatch({ type: "turn_end", turnNumber: previousTurn, requestUsage: this.currentCallUsage ? structuredClone(this.currentCallUsage) : undefined });
+					await this.dispatch({
+						type: "turn_end",
+						turnNumber: previousTurn,
+						requestUsage: this.currentCallUsage ? structuredClone(this.currentCallUsage) : undefined,
+					});
 					const nextTurn = ++this.turnSeq;
 					onTurnTransition?.(nextTurn);
-					await this.dispatch({ type: "turn_start", turnNumber: nextTurn, userText: item.text, inputRefs: [item.id], images: item.images });
+					await this.dispatch({
+						type: "turn_start",
+						turnNumber: nextTurn,
+						userText: item.text,
+						inputRefs: [item.id],
+						images: item.images,
+					});
 				}
 			} catch (error) {
 				// 批量认领路径尚未提交当前项时，当前项和后续项都归还队列。
@@ -1198,19 +1254,26 @@ export class Subject {
 		const prepared: Array<{ call: CompletedToolCall; tool: PreparedToolCall }> = [];
 		for (const call of calls) {
 			const args = isRecord(call.args) ? call.args : {};
-			const tool =
-				this.projection.contextTools.some(t => t.function.name === call.name)
-                    ? { name: call.name, args, error: "该名称仅用于解释上下文，不能主动执行" }
-                : call.argsValid === false
+			const tool = this.projection.contextTools.some((t) => t.function.name === call.name)
+				? { name: call.name, args, error: "该名称仅用于解释上下文，不能主动执行" }
+				: call.argsValid === false
 					? { name: call.name, args, error: "工具参数 JSON 不完整，调用未执行" }
 					: this.tools.prepare(call.name, args);
 			prepared.push({ call, tool });
 		}
 		const sequential = prepared.some(({ call }) => this.tools.getExecutionMode(call.name) === "sequential");
-		const runOne = async ({ call, tool }: { call: CompletedToolCall; tool: PreparedToolCall }): Promise<ToolBatchResult> => {
+		const runOne = async ({
+			call,
+			tool,
+		}: {
+			call: CompletedToolCall;
+			tool: PreparedToolCall;
+		}): Promise<ToolBatchResult> => {
 			let started = false;
 			try {
-				return await this.executeOne(call, tool, () => { started = true; });
+				return await this.executeOne(call, tool, () => {
+					started = true;
+				});
 			} catch (error) {
 				throw new ToolPipelineFailure(started, error);
 			}
@@ -1233,7 +1296,10 @@ export class Subject {
 					halted = true;
 				}
 			}
-			return { results, ...(failures.length > 0 ? { error: new AggregateError(failures, "串行工具批次未完整成功") } : {}) };
+			return {
+				results,
+				...(failures.length > 0 ? { error: new AggregateError(failures, "串行工具批次未完整成功") } : {}),
+			};
 		}
 		const settled = await Promise.allSettled(prepared.map(runOne));
 		const results: ToolBatchResult[] = [];
@@ -1249,7 +1315,10 @@ export class Subject {
 			failures.push(failure.failure);
 			results.push(unresolvedToolResult(item.call, failure.started));
 		}
-		return { results, ...(failures.length > 0 ? { error: new AggregateError(failures, "并行工具批次未完整成功") } : {}) };
+		return {
+			results,
+			...(failures.length > 0 ? { error: new AggregateError(failures, "并行工具批次未完整成功") } : {}),
+		};
 	}
 
 	private async executeOne(
@@ -1411,7 +1480,8 @@ export class Subject {
 
 	private completeActiveRun(): void {
 		if (this.pendingRewind) {
-			const id=this.pendingRewind.requestId;this.pendingRewind=undefined;
+			const id = this.pendingRewind.requestId;
+			this.pendingRewind = undefined;
 			this.reportError(`回溯请求 ${id} 未提交：活动已结束`);
 		}
 		const settle = this.settleActiveRun;
@@ -1428,10 +1498,7 @@ export class Subject {
 	private async emitInterrupted(partial = "", thinking = "", thinkingSignature?: string): Promise<void> {
 		if (partial.trim() || thinking.trim() || thinkingSignature) {
 			await this.appendMessage(
-				this.buildAssistantMessage(
-					{ reply: partial, thinking, thinkingSignature },
-					{ status: "aborted" },
-				),
+				this.buildAssistantMessage({ reply: partial, thinking, thinkingSignature }, { status: "aborted" }),
 			);
 		}
 		await this.storeEvent("turn_aborted", { turnId: this.turnSeq });
@@ -1443,7 +1510,6 @@ export class Subject {
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
-
 
 function eventData(value: object): Record<string, unknown> {
 	return { ...value };

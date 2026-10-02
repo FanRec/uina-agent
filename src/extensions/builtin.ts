@@ -17,19 +17,25 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 	pi.registerCommand({
 		name: "help",
 		description: "查看所有可用命令与快捷键",
-		handler: () => { ui.openFeature?.("help"); },
+		handler: () => {
+			ui.openFeature?.("help");
+		},
 	});
 
 	pi.registerCommand({
 		name: "think",
 		description: "展开或折叠深度思考过程",
-		handler: () => { ui.openFeature?.("toggle-thinking"); },
+		handler: () => {
+			ui.openFeature?.("toggle-thinking");
+		},
 	});
 
 	pi.registerCommand({
 		name: "clear",
 		description: "清空当前屏幕转录流",
-		handler: () => { ui.openFeature?.("clear-transcript"); },
+		handler: () => {
+			ui.openFeature?.("clear-transcript");
+		},
 	});
 
 	pi.registerCommand({
@@ -37,7 +43,9 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		description: "切换右侧导航轨模式与滑块样式 (scrollbar|timeline [slim|block|wide])",
 		hasArgs: true,
 		argumentHint: "[scrollbar|timeline] [slim|block|wide]",
-		handler: (arg) => { ui.openFeature?.("gutter", { arg }); },
+		handler: (arg) => {
+			ui.openFeature?.("gutter", { arg });
+		},
 	});
 
 	pi.registerCommand({
@@ -48,9 +56,12 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 			const snapshot = await pi.context();
 			const used = snapshot.inputTokens;
 			const window = snapshot.contextWindow;
-			const context = used === undefined ? "未知" : window === undefined
-				? `约 ${used}/上限未知`
-				: `约 ${used}/${window} (${Math.round((used / window) * 100)}%)`;
+			const context =
+				used === undefined
+					? "未知"
+					: window === undefined
+						? `约 ${used}/上限未知`
+						: `约 ${used}/${window} (${Math.round((used / window) * 100)}%)`;
 			pi.ui.notify(`会话信息: 模型=${model.name} · Token=${context} · 思考=${pi.models.thinkingLevel()}`);
 		},
 	});
@@ -65,7 +76,11 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 				// 传复合键 providerId/modelId：同 id 模型跨 provider 时选择器才能唯一标定当前项；
 				// onPick 回传复合键，resolve() 精确命中对应 provider（避免假切换到首个同名模型）。
 				const current = pi.models.current();
-				ui.openFeature?.("model-picker", { currentModel: `${current.providerId}/${current.id}`, groups: pi.models.groups(), onPick: (name: string) => selectModel(name) });
+				ui.openFeature?.("model-picker", {
+					currentModel: `${current.providerId}/${current.id}`,
+					groups: pi.models.groups(),
+					onPick: (name: string) => selectModel(name),
+				});
 				return;
 			}
 			await selectModel(arg);
@@ -79,7 +94,6 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		pi.ui.notify(pi.isBusy() ? `已切换至模型: ${model.name}（当前回合结束后生效）` : `已切换至模型: ${model.name}`);
 	};
 
-
 	pi.registerCommand({
 		name: "effort",
 		description: "设置或调整模型思考强度",
@@ -92,7 +106,11 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 					pi.ui.notify("当前 Provider 未提供 thinking 能力元数据；Uina 不会猜测可用档位。", "warning");
 					return;
 				}
-				ui.openFeature?.("effort-slider", { currentLevel: pi.models.thinkingLevel(), tiers: declaredLevels as ThinkingLevel[], onChange: (level: ThinkingLevel) => pi.models.setThinkingLevel(level) });
+				ui.openFeature?.("effort-slider", {
+					currentLevel: pi.models.thinkingLevel(),
+					tiers: declaredLevels as ThinkingLevel[],
+					onChange: (level: ThinkingLevel) => pi.models.setThinkingLevel(level),
+				});
 				return;
 			}
 			const level = arg as ThinkingLevel;
@@ -120,8 +138,17 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 
 	pi.on("session_compact", (e) => {
 		pi.ui.setWorking("compaction", undefined);
-		const message = e.status === "completed" ? "会话已压缩" : e.status === "noop" ? "当前无需压缩" : `会话压缩${e.status === "cancelled" ? "已取消" : "失败"}${e.error ? `：${e.error}` : ""}`;
-		pi.ui.notify(message, e.status === "completed" || e.status === "noop" ? "info" : "warning", e.status === "completed" || e.status === "noop" ? 2500 : 3000);
+		const message =
+			e.status === "completed"
+				? "会话已压缩"
+				: e.status === "noop"
+					? "当前无需压缩"
+					: `会话压缩${e.status === "cancelled" ? "已取消" : "失败"}${e.error ? `：${e.error}` : ""}`;
+		pi.ui.notify(
+			message,
+			e.status === "completed" || e.status === "noop" ? "info" : "warning",
+			e.status === "completed" || e.status === "noop" ? 2500 : 3000,
+		);
 		// 永久转录只记录已提交的压缩事实；失败/取消/noop 是瞬态结果，
 		// 只通知不堆卡片，避免重试把错误状态污染会话阅读流。
 	});
@@ -130,27 +157,35 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		name: "tasks",
 		description: "后台任务与进程看板 (Alt+J)",
 		keybinding: "alt+j",
-		handler: () => { ui.openFeature?.("tasks"); },
+		handler: () => {
+			ui.openFeature?.("tasks");
+		},
 	});
 
 	pi.registerCommand({
 		name: "subagents",
 		description: "多子智能体并行看板 (Alt+A)",
 		keybinding: "alt+a",
-		handler: () => { ui.openFeature?.("subagents"); },
+		handler: () => {
+			ui.openFeature?.("subagents");
+		},
 	});
 
 	pi.registerCommand({
 		name: "trajectory",
 		description: "全屏审计轨迹时序看板 (Alt+T)",
 		keybinding: "alt+t",
-		handler: () => { ui.openFeature?.("trajectory"); },
+		handler: () => {
+			ui.openFeature?.("trajectory");
+		},
 	});
 
 	const openHistory = (): void => {
 		if (ui.openFeature?.("history")) return;
 		const nodes = listAllSessionNodes(pi.session, { scope: "all" });
-		const formatted = nodes.map((n) => `[${n.active ? "主线" : "只读"} #${n.seq} ${n.kind}] ${n.id.slice(0, 8)} ${n.preview}`).join("\n");
+		const formatted = nodes
+			.map((n) => `[${n.active ? "主线" : "只读"} #${n.seq} ${n.kind}] ${n.id.slice(0, 8)} ${n.preview}`)
+			.join("\n");
 		pi.ui.notify(formatted ? `会话历史节点:\n${formatted}` : "暂无历史节点", "info", 8000);
 	};
 
@@ -185,4 +220,3 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		handler: () => pi.shutdown(),
 	});
 }
-

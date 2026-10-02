@@ -41,6 +41,11 @@ export default function activateMemory(pi: ExtensionAPI): void {
 	pi.onHook("turn.transformContext", (projection) => {
 		const facts = readFacts(pi);
 		if (facts.length === 0) return undefined;
-		return { projection: { ...projection, messages: [...projection.messages, { role: "user", content: `[记忆上下文] ${facts.join("；")}` }] } };
+		return {
+			projection: {
+				...projection,
+				messages: [...projection.messages, { role: "user", content: `[记忆上下文] ${facts.join("；")}` }],
+			},
+		};
 	});
 }

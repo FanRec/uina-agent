@@ -12,7 +12,12 @@ import type { RuntimeEvent } from "../src/runtime/events.js";
 const MODEL: Model = mockModel({ id: "mock", name: "mock", contextWindow: 100_000 });
 
 /** 一次调用：先吐文本，再报一条真实 usage。 */
-function streamWithUsage(usage: { input: number; output: number; totalTokens: number; cacheRead?: number }): ModelStreamFn {
+function streamWithUsage(usage: {
+	input: number;
+	output: number;
+	totalTokens: number;
+	cacheRead?: number;
+}): ModelStreamFn {
 	return async (_m: Model, _req: ModelRequest, onDelta: (d: StreamDelta) => void) => {
 		onDelta({ kind: "text", text: "响应体" });
 		onDelta({ kind: "usage", usage });
@@ -32,7 +37,8 @@ function collect(): { events: RuntimeEvent[]; harness: SubjectHarness } {
 	return { events, harness };
 }
 
-const indexOf = (events: RuntimeEvent[], type: RuntimeEvent["type"]): number => events.findIndex((e) => e.type === type);
+const indexOf = (events: RuntimeEvent[], type: RuntimeEvent["type"]): number =>
+	events.findIndex((e) => e.type === type);
 
 describe("usage_update：每次模型调用收尾就上报真实用量", () => {
 	it("在 turn_end 之前就发出 usage_update，且带服务端真实 token 数", async () => {
@@ -75,7 +81,9 @@ describe("usage_update：每次模型调用收尾就上报真实用量", () => {
 		harness.subscribe((event) => events.push(event));
 		await harness.run("跑两轮");
 
-		const updates = events.filter((e): e is Extract<RuntimeEvent, { type: "usage_update" }> => e.type === "usage_update");
+		const updates = events.filter(
+			(e): e is Extract<RuntimeEvent, { type: "usage_update" }> => e.type === "usage_update",
+		);
 		expect(call).toBeGreaterThanOrEqual(2);
 		// 每次调用各自的真实值都要上报，而不是被最后一次覆盖。
 		expect(updates.map((u) => u.usage.totalTokens)).toEqual([11_000, 12_000]);
@@ -87,7 +95,9 @@ describe("usage_update：每次模型调用收尾就上报真实用量", () => {
 		const { events, harness } = collect();
 		await harness.run("你好");
 
-		const usageEvent = events.find((e): e is Extract<RuntimeEvent, { type: "usage_update" }> => e.type === "usage_update")!;
+		const usageEvent = events.find(
+			(e): e is Extract<RuntimeEvent, { type: "usage_update" }> => e.type === "usage_update",
+		)!;
 		const endEvent = events.find((e): e is Extract<RuntimeEvent, { type: "turn_end" }> => e.type === "turn_end")!;
 		expect(endEvent.requestUsage).toEqual(usageEvent.usage);
 	});
@@ -141,7 +151,13 @@ describe("setModel：ContextSnapshot 与历史 RequestUsage 保持分离", () =>
 		// estimateContextTokens 从后往前找，仍会锚到那条 assistant。
 		harness.subject.addHistory([
 			{ role: "user", content: "第一回合" },
-			{ role: "assistant", content: "", tool_calls: [{ id: "c1", name: "read", args: "{}" }], status: "complete", usage: { input: 1, output: 1, totalTokens: 99_999 } },
+			{
+				role: "assistant",
+				content: "",
+				tool_calls: [{ id: "c1", name: "read", args: "{}" }],
+				status: "complete",
+				usage: { input: 1, output: 1, totalTokens: 99_999 },
+			},
 			{ role: "tool", tool_call_id: "c1", content: "结果", status: "succeeded" },
 		] as never);
 		expect((await harness.subject.inspectRequest()).measurement.inputTokens).not.toBe(99_999 + 5);
@@ -184,7 +200,11 @@ describe("setModel：ContextSnapshot 与历史 RequestUsage 保持分离", () =>
 		// 切模型后工具定义估算段必须保持真实，等于工具定义与历史中工具消息的独立字符估算，绝不等于 0 也绝不被消息估算强制压扁
 		expect(segmentsAfter.tools).toBeGreaterThan(100);
 		expect(after.measurement.inputTokens).toBe(
-			segmentsAfter.system + segmentsAfter.prompt + segmentsAfter.assistant + segmentsAfter.thinking + segmentsAfter.tools
+			segmentsAfter.system +
+				segmentsAfter.prompt +
+				segmentsAfter.assistant +
+				segmentsAfter.thinking +
+				segmentsAfter.tools,
 		);
 	});
 });

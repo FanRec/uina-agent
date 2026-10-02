@@ -50,9 +50,19 @@ export class VtScreen {
 	/** 出现过的私有模式 CSI（只记录，不解释） */
 	privateModes = new Set<string>();
 
-	constructor(readonly cols: number, readonly rows: number) {
+	constructor(
+		readonly cols: number,
+		readonly rows: number,
+	) {
 		this.grid = Array.from({ length: rows }, () =>
-			Array.from({ length: cols }, () => ({ ch: " ", fg: "default", bg: "default", touched: false, erased: false, cont: false })),
+			Array.from({ length: cols }, () => ({
+				ch: " ",
+				fg: "default",
+				bg: "default",
+				touched: false,
+				erased: false,
+				cont: false,
+			})),
 		);
 	}
 
@@ -89,7 +99,14 @@ export class VtScreen {
 	private scroll(): void {
 		this.grid.shift();
 		this.grid.push(
-			Array.from({ length: this.cols }, () => ({ ch: " ", fg: "default", bg: "default", touched: false, erased: false, cont: false })),
+			Array.from({ length: this.cols }, () => ({
+				ch: " ",
+				fg: "default",
+				bg: "default",
+				touched: false,
+				erased: false,
+				cont: false,
+			})),
 		);
 		this.row = this.rows - 1;
 		this.scrolled++;
@@ -224,7 +241,12 @@ export class VtScreen {
 
 	/** 每行可见文本（去掉宽字符续格与行尾空白） */
 	lines(): string[] {
-		return this.grid.map((r) => r.map((c) => (c.cont ? "" : c.ch)).join("").replace(/\s+$/, ""));
+		return this.grid.map((r) =>
+			r
+				.map((c) => (c.cont ? "" : c.ch))
+				.join("")
+				.replace(/\s+$/, ""),
+		);
 	}
 
 	rowText(r: number): string {
@@ -326,7 +348,12 @@ export class VtScreen {
 	/** 获取当前屏幕栅格的纯文本表达（逐行拼接，自动去除行尾空白） */
 	getVisibleText(): string {
 		return this.grid
-			.map((row) => row.map((c) => c.ch).join("").trimEnd())
+			.map((row) =>
+				row
+					.map((c) => c.ch)
+					.join("")
+					.trimEnd(),
+			)
 			.join("\n")
 			.trimEnd();
 	}

@@ -22,9 +22,12 @@ export function createRuntimeHooks(host: ExtensionHost, scope?: RuntimeScopeFilt
 			transformResult: async (input) => (await host.runTransformResult(input, scope)) ?? {},
 		},
 		provider: {
-			transformHeaders: (provider: string, headers: Readonly<Record<string, string>>) => host.runTransformHeaders(provider, headers, scope),
-			transformPayload: (provider: string, payload: DeepReadonly<unknown>) => host.runTransformPayload(provider, payload, scope),
-			observeResponse: (input: Readonly<{ provider: string; status: number; headers: Record<string, string> }>) => host.runObserveResponse(input, scope),
+			transformHeaders: (provider: string, headers: Readonly<Record<string, string>>) =>
+				host.runTransformHeaders(provider, headers, scope),
+			transformPayload: (provider: string, payload: DeepReadonly<unknown>) =>
+				host.runTransformPayload(provider, payload, scope),
+			observeResponse: (input: Readonly<{ provider: string; status: number; headers: Record<string, string> }>) =>
+				host.runObserveResponse(input, scope),
 		},
 		events: {
 			emit: (event: RuntimeEvent) => host.emit(event, scope),

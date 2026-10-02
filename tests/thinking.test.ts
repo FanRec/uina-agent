@@ -57,15 +57,26 @@ describe("thinking pipeline", () => {
 		const stream: ModelStreamFn = async (_m, _req, emit, signal) => {
 			emit({ kind: "thinking", text: "未完成分析" });
 			thinkingSeen?.();
-			await new Promise<void>((_resolve, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }));
+			await new Promise<void>((_resolve, reject) =>
+				signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }),
+			);
 		};
 		const harness = SubjectHarness.create({ model, stream, thinkingLevel: "high" });
-		const seen = new Promise<void>((resolve) => { thinkingSeen = resolve; });
+		const seen = new Promise<void>((resolve) => {
+			thinkingSeen = resolve;
+		});
 		harness.pushInput("中断问题");
 		await seen;
 		harness.interrupt();
 		await harness.waitForIdle();
-		expect(harness.historySnapshot().some((message) => message.role === "assistant" && message.thinking === "未完成分析" && message.status === "aborted")).toBe(true);
+		expect(
+			harness
+				.historySnapshot()
+				.some(
+					(message) =>
+						message.role === "assistant" && message.thinking === "未完成分析" && message.status === "aborted",
+				),
+		).toBe(true);
 	});
 
 	it("rejects an unsupported configured level before provider execution", async () => {
@@ -77,9 +88,10 @@ describe("thinking pipeline", () => {
 			contextWindow: 128_000,
 			thinkingLevels: ["off"],
 		};
-		const stream: ModelStreamFn = async () => { called = true; };
-		expect(() => SubjectHarness.create({ model, stream, thinkingLevel: "high" }))
-			.toThrow("未声明支持 thinking level");
+		const stream: ModelStreamFn = async () => {
+			called = true;
+		};
+		expect(() => SubjectHarness.create({ model, stream, thinkingLevel: "high" })).toThrow("未声明支持 thinking level");
 		expect(called).toBe(false);
 	});
 });
@@ -88,10 +100,14 @@ describe("OpenAI-compatible thinking", () => {
 	it("maps reasoning effort and reasoning_content to unified events", async () => {
 		let requestBody = "";
 		const server = createServer((req, res) => {
-			req.on("data", (chunk) => { requestBody += chunk; });
+			req.on("data", (chunk) => {
+				requestBody += chunk;
+			});
 			req.on("end", () => {
 				res.writeHead(200, { "content-type": "text/event-stream" });
-				res.end(`data: {"choices":[{"delta":{"reasoning_content":"思考"}}]}\n\ndata: {"choices":[{"delta":{"content":"答复"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n`);
+				res.end(
+					`data: {"choices":[{"delta":{"reasoning_content":"思考"}}]}\n\ndata: {"choices":[{"delta":{"content":"答复"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n`,
+				);
 			});
 		});
 		servers.push(server);
@@ -109,7 +125,9 @@ describe("OpenAI-compatible thinking", () => {
 		await provider.stream(
 			model,
 			{ messages: [{ role: "user", content: "hi" }], thinkingLevel: "high", providerHooks: NO_RUNTIME_HOOKS.provider },
-			delta => { if (delta.kind === "thinking") events.push(delta.text); },
+			(delta) => {
+				if (delta.kind === "thinking") events.push(delta.text);
+			},
 		);
 		expect(events).toEqual(["思考"]);
 		expect(JSON.parse(requestBody).reasoning_effort).toBe("high");
@@ -117,7 +135,18 @@ describe("OpenAI-compatible thinking", () => {
 
 	it("creates the configured Anthropic and Gemini adapter kinds", () => {
 		const base = { baseUrl: "https://example.test", apiKey: "x", model: "m", modelContextWindow: 4096 };
-		expect(createModel({ ...base, type: "anthropic", thinkingLevels: ["off", "high"], maxOutputTokens: 4096, thinkingBudgets: { high: 2048 } }, "a").thinkingLevels).toEqual(["off", "high"]);
+		expect(
+			createModel(
+				{
+					...base,
+					type: "anthropic",
+					thinkingLevels: ["off", "high"],
+					maxOutputTokens: 4096,
+					thinkingBudgets: { high: 2048 },
+				},
+				"a",
+			).thinkingLevels,
+		).toEqual(["off", "high"]);
 		expect(createModel({ ...base, type: "gemini" }, "g").thinkingLevels).toBeUndefined();
 	});
 });
@@ -127,24 +156,29 @@ describe("deepseek reasoning_content 出站回传", () => {
 	// 缺字段 + thinking enabled + 帧在生成前缀位 ⇒ 400
 	// `reasoning_content` in the thinking mode must be passed back。
 	it("无 thinking 的 assistant 帧补空串 reasoning_content", () => {
-		const wire = toWireMessages([
-			{ role: "user", content: "hi" },
-			{ role: "assistant", content: "", tool_calls: [{ id: "c1", name: "f", args: {}, argsValid: true }] },
-		] as ChatMsg[], "deepseek") as Array<{ role: string; reasoning_content?: unknown }>;
+		const wire = toWireMessages(
+			[
+				{ role: "user", content: "hi" },
+				{ role: "assistant", content: "", tool_calls: [{ id: "c1", name: "f", args: {}, argsValid: true }] },
+			] as ChatMsg[],
+			"deepseek",
+		) as Array<{ role: string; reasoning_content?: unknown }>;
 		expect(wire[1]).toMatchObject({ role: "assistant", reasoning_content: "" });
 	});
 
 	it("保留真实 thinking 原文", () => {
-		const wire = toWireMessages([
-			{ role: "assistant", content: "好", thinking: "分析过程" },
-		] as ChatMsg[], "deepseek") as Array<{ role: string; reasoning_content?: unknown }>;
+		const wire = toWireMessages(
+			[{ role: "assistant", content: "好", thinking: "分析过程" }] as ChatMsg[],
+			"deepseek",
+		) as Array<{ role: string; reasoning_content?: unknown }>;
 		expect(wire[0]).toMatchObject({ reasoning_content: "分析过程" });
 	});
 
 	it("openai 格式不写 reasoning_content", () => {
-		const wire = toWireMessages([
-			{ role: "assistant", content: "好", thinking: "分析过程" },
-		] as ChatMsg[], "openai") as Array<Record<string, unknown>>;
+		const wire = toWireMessages(
+			[{ role: "assistant", content: "好", thinking: "分析过程" }] as ChatMsg[],
+			"openai",
+		) as Array<Record<string, unknown>>;
 		expect("reasoning_content" in wire[0]!).toBe(false);
 	});
 });

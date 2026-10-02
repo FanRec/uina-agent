@@ -105,7 +105,10 @@ export class UinaHost {
 		/** 会话恢复出来的有序条目，交给消费者建立自己的视图。 */
 		readonly restoredEntries: readonly SessionEntry[],
 		/** 会话恢复出来的 auxiliary 登记（capability 私有持久状态），消费者回放装饰用。 */
-		readonly restoredAuxiliary: readonly (import("../session/types.js").SessionEventRecord | import("../session/types.js").SessionCustomEntryRecord)[],
+		readonly restoredAuxiliary: readonly (
+			| import("../session/types.js").SessionEventRecord
+			| import("../session/types.js").SessionCustomEntryRecord
+		)[],
 		listeners: Set<HostEventListener>,
 		/** 共享的关闭标志：钩子与扩展输入入口据此拒绝关闭后的新工作。 */
 		private readonly state: { stopping: boolean },
@@ -118,7 +121,10 @@ export class UinaHost {
 	/** 当前 canonical 会话的 auxiliary 登记（store 活状态的副本）。
 	 * session_rewind 回放装饰等消费者需要的是"现在"的登记；restoredAuxiliary
 	 * 只是启动快照，覆盖不了恢复之后新发生的压缩。 */
-	auxiliaryEntries(): readonly (import("../session/types.js").SessionEventRecord | import("../session/types.js").SessionCustomEntryRecord)[] {
+	auxiliaryEntries(): readonly (
+		| import("../session/types.js").SessionEventRecord
+		| import("../session/types.js").SessionCustomEntryRecord
+	)[] {
 		return [...this.store.state.auxiliary];
 	}
 
@@ -148,24 +154,31 @@ export class UinaHost {
 				restoredModel = undefined; // 上次的模型已不存在（配置变更/下线），落回默认
 			}
 		}
-		const activeModel = options.model ?? restoredModel ?? (() => {
-			if (options.modelName) {
-				return models.resolve(options.modelName);
-			}
-			if (config) {
-				const active = activeProvider(config);
-				return models.resolve(active.name);
-			}
-			if (options.provider) {
-				const candidate = models.getModel(options.provider.id);
-				if (candidate) return candidate;
-			}
-			throw new Error("必须提供 model 或有效的配置文件");
-		})();
-		const thinkingLevel = options.thinkingLevel
-			?? (restoredModel?.thinkingLevels?.includes(settings.thinkingLevel as ThinkingLevel) ? settings.thinkingLevel as ThinkingLevel : undefined)
-			?? config?.thinkingLevel;
-		const streamFn: ModelStreamFn = options.stream ?? ((m, req, onDelta, signal) => models.stream(m, req, onDelta, signal));
+		const activeModel =
+			options.model ??
+			restoredModel ??
+			(() => {
+				if (options.modelName) {
+					return models.resolve(options.modelName);
+				}
+				if (config) {
+					const active = activeProvider(config);
+					return models.resolve(active.name);
+				}
+				if (options.provider) {
+					const candidate = models.getModel(options.provider.id);
+					if (candidate) return candidate;
+				}
+				throw new Error("必须提供 model 或有效的配置文件");
+			})();
+		const thinkingLevel =
+			options.thinkingLevel ??
+			(restoredModel?.thinkingLevels?.includes(settings.thinkingLevel as ThinkingLevel)
+				? (settings.thinkingLevel as ThinkingLevel)
+				: undefined) ??
+			config?.thinkingLevel;
+		const streamFn: ModelStreamFn =
+			options.stream ?? ((m, req, onDelta, signal) => models.stream(m, req, onDelta, signal));
 
 		const tools = new ToolBroker({ ownerId: "root" });
 		const jobs = new JobRegistry();
@@ -185,152 +198,192 @@ export class UinaHost {
 			const listeners = new Set<HostEventListener>();
 			const state = { stopping: false };
 			const abandonedTaskIds = new Set<string>();
-		// Host 装配层消费工具声明的 generic effect facts：只认 task.dispatch 的
-		// 外部操作身份（与 runtime-tools 的声明契约），不认识具体工具。
-		const collectAbandonedTaskIds = (entries: readonly SessionEntry[]): void => {
-			for (const entry of entries) {
-				if (entry.kind !== "rewind" || !entry.effects) continue;
-				for (const effect of entry.effects.effects) {
-					if (effect.effectType === TASK_DISPATCH_EFFECT && effect.externalOperationId) {
-						abandonedTaskIds.add(effect.externalOperationId);
+			// Host 装配层消费工具声明的 generic effect facts：只认 task.dispatch 的
+			// 外部操作身份（与 runtime-tools 的声明契约），不认识具体工具。
+			const collectAbandonedTaskIds = (entries: readonly SessionEntry[]): void => {
+				for (const entry of entries) {
+					if (entry.kind !== "rewind" || !entry.effects) continue;
+					for (const effect of entry.effects.effects) {
+						if (effect.effectType === TASK_DISPATCH_EFFECT && effect.externalOperationId) {
+							abandonedTaskIds.add(effect.externalOperationId);
+						}
 					}
 				}
-			}
-		};
-		collectAbandonedTaskIds(restoredEntries);
-		const emit = (event: HostEvent): void => {
-			for (const listener of [...listeners]) {
-				try { listener(event); }
-				catch (error) { options.onError?.(`消费者处理事件失败: ${errorMessage(error)}`); }
-			}
-		};
+			};
+			collectAbandonedTaskIds(restoredEntries);
+			const emit = (event: HostEvent): void => {
+				for (const listener of [...listeners]) {
+					try {
+						listener(event);
+					} catch (error) {
+						options.onError?.(`消费者处理事件失败: ${errorMessage(error)}`);
+					}
+				}
+			};
 
-		// subagents 与 extensionHost 只捕获 subject 的延迟引用，因此可以先建立。
-		let subject!: Subject;
-		let hostSelf!: UinaHost;
-		// Lazy session view: navigation reads compose from the store, rewind routes
-		// through the Subject's run-safety points. Built lazily because subject is
-		// assigned after the extension host below.
-		const rootSessionView = (): import("../session/types.js").SessionAccess =>
-			createSessionAccess(store, (request, source, signal) => subject.requestRewind(request, source, signal));
-		// Host 默认装配事件帧 profile（外部输入以 external_event_frame 回执呈现，协议校验
-		// 随每请求执行；预算门仍归 Subject）。显式传入 projection/systemPrompt 的装配方
-		// （测试与组合根）完全覆盖默认值，不叠加。
-		const eventFrameProfile = createEventFrameProfile();
-		const resolvedProjection = options.projection ?? eventFrameProfile.projection;
-		const resolvedSystemPrompt = options.systemPrompt ?? eventFrameProfile.systemPrompt;
-		const subagents = new SubagentRegistry({
-			factory: new DefaultAgentFactory(),
-			model: () => subject.getModel(),
-			stream: streamFn,
-			measureContext: (model, projection) => models.getProvider(model.providerId)?.measureContext?.(model, projection),
-			thinkingLevel,
-			createTools: (ownerId) => createChildTools(tools, { ownerId }),
-            projection: resolvedProjection,
-            systemPrompt: resolvedSystemPrompt,
-			notify: async (text, data, ownerId) => {
-				if (state.stopping) return;
-				const idStr = String(data.id);
-				const isAbandoned = abandonedTaskIds.has(idStr);
-				const input: AgentInput = {
-					id: `subagent-notice-${idStr}`,
-					mode: "followUp",
-					source: {
-						kind: "runtime",
-						type: "subagent-notice",
-						ref: idStr,
-						...(isAbandoned ? { provenance: { abandoned: true } } : {}),
-					},
-					text: isAbandoned ? `${text}（注意：该子代理来自已回溯放弃的历史分支）` : text,
-					data,
-				};
-				await (ownerId === "root" ? subject.accept(input) : subagents.acceptInput(ownerId, input));
-			},
-		});
-
-		const extensionHost = new ExtensionRunner({
-			// 主体绑定（认知阶段 A）：扩展经 pi.subject 拿到绑定的资源根；无 profile 时缺省
-			// undefined——旧扩展与测试零影响。
-			subjectBinding: options.profile
-				? { subjectId: options.profile.identity.subjectId, sessionId: options.profile.sessions.sessionId, memoryRoot: options.profile.resources.memoryRoot, stateRoot: options.profile.resources.stateRoot }
-				: undefined,
-			session: {
-				list: options => rootSessionView().list(options),
-				read: id => rootSessionView().read(id),
-				requestRewind: (request, source, signal) => state.stopping ? Promise.reject(new Error("宿主正在关闭")) : rootSessionView().requestRewind(request, source, signal),
-			},
-   cwd: options.cwd,
-   extensionPaths: options.extensionPaths,
-   models: { current: () => subject.getModel(), list: () => models.listModels(), groups: () => models.groups(), resolve: name => models.resolve(name), select: name => subject.setModel(models.resolve(name)), stream: streamFn },
-			context: () => subject.getContextSnapshot(),
-			inspectRequest: () => subject.inspectRequest(),
-			usage: () => subject.getRequestUsage(),
-			thinkingLevel: () => subject.getThinkingLevel(),
-			setThinkingLevel: (level) => subject.setThinkingLevel(level),
-			isBusy: () => subject.isBusy(),
-			runActivity: (fn) => subject.runActivity(fn),
-			history: () => store.state.entries,
-			auxiliary: () => store.state.auxiliary,
-			emitRuntimeEvent: (event) => extensionHost.runtimeHooks().events.emit(event),
-			reload: () => hostSelf.reloadExtensions(),
-			shutdown: () => hostSelf.requestShutdown?.() ?? hostSelf.dispose(),
-			tools,
-			onInput: (input) => state.stopping ? Promise.reject(new Error("宿主正在关闭")) : subject.accept(input),
-			onError: (text) => emit({ type: "error", text }),
-   onNotice: (text) => emit({ type: "notice", text }),
-			onProvider: (name, registered, options) => models.register(name, registered, options),
-   onModel: (model, options) => models.registerModel(model, options),
-			onCustomMessage: (message) => subject.appendCustomMessage(message),
-			onCustomEntry: (entry) => subject.appendCustomEntry(entry),
-		});
-
-		// 会话偏好持久化：model_select / thinking_level_select 只经扩展宿主分发
-		// （Subject 不把它们发给 subscribe 监听者），组合根在此以监听者身份落盘。
-		// 静默失败 —— 偏好落盘失败不值得打断回合，下一次切换会再写。
-		// 写必须串行：两次切换背靠背时，未保序的并发写会让慢的旧快照
-		// rename 覆盖快的新快照，settings.json 停在过期状态。
-		let settingsSaveTail: Promise<void> = Promise.resolve();
-		const settingsHomeForSave = options.profile?.settingsDir;
-		const persistSettings = (): void => {
-			settingsSaveTail = settingsSaveTail.then(() => saveSettings({
-				model: modelKey(subject.getModel()),
-				thinkingLevel: subject.getThinkingLevel(),
-			}, settingsHomeForSave).catch(() => {}));
-		};
-		extensionHost.on("model_select", persistSettings);
-		extensionHost.on("thinking_level_select", persistSettings);
-
-		subject = new Subject(activeModel, streamFn, tools, {
-			store,
-			thinkingLevel,
-            systemPrompt: resolvedSystemPrompt,
-			runtimeHooks: extensionHost.runtimeHooks(),
-			projection: resolvedProjection,
-			measureContext: (model, projection) => models.getProvider(model.providerId)?.measureContext?.(model, projection),
-		});
-
-		subject.subscribe((event) => {
-			// 宿主内部派生状态：回溯后刷新被放弃的任务集合（它只关心 task.dispatch 效果事实，
-			// 不是翻译——事件本身 1:1 透传给消费者）。
-			if (event.type === "session_rewind") {
-				// 被放弃切片直接读常驻 canonical 状态，不再重放 journal。
-				collectAbandonedTaskIds(store.state.allEntries);
-			}
-			// 事实单流 1:1 透传：宿主不翻译字段、不改形状。notice 是宿主域事件，
-			// 主体词汇表不收它，只在此处产生。
-			emit(event);
-		});
-		const commands = new CommandRouter(extensionHost.registry, (text) => emit({ type: "error", text }));
-
-		subject.addHistory(subject.projection.projectHistory(restoredEntries, store.state));
-		if (restoredQueue.length > 0) subject.seedQueue(restoredQueue);
-
-		if (config !== undefined) {
-			void models.refreshModels().catch((error: unknown) => {
-				options.onError?.(`[模型目录] ${errorMessage(error)}`);
+			// subagents 与 extensionHost 只捕获 subject 的延迟引用，因此可以先建立。
+			let subject!: Subject;
+			let hostSelf!: UinaHost;
+			// Lazy session view: navigation reads compose from the store, rewind routes
+			// through the Subject's run-safety points. Built lazily because subject is
+			// assigned after the extension host below.
+			const rootSessionView = (): import("../session/types.js").SessionAccess =>
+				createSessionAccess(store, (request, source, signal) => subject.requestRewind(request, source, signal));
+			// Host 默认装配事件帧 profile（外部输入以 external_event_frame 回执呈现，协议校验
+			// 随每请求执行；预算门仍归 Subject）。显式传入 projection/systemPrompt 的装配方
+			// （测试与组合根）完全覆盖默认值，不叠加。
+			const eventFrameProfile = createEventFrameProfile();
+			const resolvedProjection = options.projection ?? eventFrameProfile.projection;
+			const resolvedSystemPrompt = options.systemPrompt ?? eventFrameProfile.systemPrompt;
+			const subagents = new SubagentRegistry({
+				factory: new DefaultAgentFactory(),
+				model: () => subject.getModel(),
+				stream: streamFn,
+				measureContext: (model, projection) =>
+					models.getProvider(model.providerId)?.measureContext?.(model, projection),
+				thinkingLevel,
+				createTools: (ownerId) => createChildTools(tools, { ownerId }),
+				projection: resolvedProjection,
+				systemPrompt: resolvedSystemPrompt,
+				notify: async (text, data, ownerId) => {
+					if (state.stopping) return;
+					const idStr = String(data.id);
+					const isAbandoned = abandonedTaskIds.has(idStr);
+					const input: AgentInput = {
+						id: `subagent-notice-${idStr}`,
+						mode: "followUp",
+						source: {
+							kind: "runtime",
+							type: "subagent-notice",
+							ref: idStr,
+							...(isAbandoned ? { provenance: { abandoned: true } } : {}),
+						},
+						text: isAbandoned ? `${text}（注意：该子代理来自已回溯放弃的历史分支）` : text,
+						data,
+					};
+					await (ownerId === "root" ? subject.accept(input) : subagents.acceptInput(ownerId, input));
+				},
 			});
-		}
-		return (hostSelf = new UinaHost(options, subject, store, extensionHost, tools, models, jobs, subagents, commands, restoredEntries, [...store.state.auxiliary], listeners, state, abandonedTaskIds));
+
+			const extensionHost = new ExtensionRunner({
+				// 主体绑定（认知阶段 A）：扩展经 pi.subject 拿到绑定的资源根；无 profile 时缺省
+				// undefined——旧扩展与测试零影响。
+				subjectBinding: options.profile
+					? {
+							subjectId: options.profile.identity.subjectId,
+							sessionId: options.profile.sessions.sessionId,
+							memoryRoot: options.profile.resources.memoryRoot,
+							stateRoot: options.profile.resources.stateRoot,
+						}
+					: undefined,
+				session: {
+					list: (options) => rootSessionView().list(options),
+					read: (id) => rootSessionView().read(id),
+					requestRewind: (request, source, signal) =>
+						state.stopping
+							? Promise.reject(new Error("宿主正在关闭"))
+							: rootSessionView().requestRewind(request, source, signal),
+				},
+				cwd: options.cwd,
+				extensionPaths: options.extensionPaths,
+				models: {
+					current: () => subject.getModel(),
+					list: () => models.listModels(),
+					groups: () => models.groups(),
+					resolve: (name) => models.resolve(name),
+					select: (name) => subject.setModel(models.resolve(name)),
+					stream: streamFn,
+				},
+				context: () => subject.getContextSnapshot(),
+				inspectRequest: () => subject.inspectRequest(),
+				usage: () => subject.getRequestUsage(),
+				thinkingLevel: () => subject.getThinkingLevel(),
+				setThinkingLevel: (level) => subject.setThinkingLevel(level),
+				isBusy: () => subject.isBusy(),
+				runActivity: (fn) => subject.runActivity(fn),
+				history: () => store.state.entries,
+				auxiliary: () => store.state.auxiliary,
+				emitRuntimeEvent: (event) => extensionHost.runtimeHooks().events.emit(event),
+				reload: () => hostSelf.reloadExtensions(),
+				shutdown: () => hostSelf.requestShutdown?.() ?? hostSelf.dispose(),
+				tools,
+				onInput: (input) => (state.stopping ? Promise.reject(new Error("宿主正在关闭")) : subject.accept(input)),
+				onError: (text) => emit({ type: "error", text }),
+				onNotice: (text) => emit({ type: "notice", text }),
+				onProvider: (name, registered, options) => models.register(name, registered, options),
+				onModel: (model, options) => models.registerModel(model, options),
+				onCustomMessage: (message) => subject.appendCustomMessage(message),
+				onCustomEntry: (entry) => subject.appendCustomEntry(entry),
+			});
+
+			// 会话偏好持久化：model_select / thinking_level_select 只经扩展宿主分发
+			// （Subject 不把它们发给 subscribe 监听者），组合根在此以监听者身份落盘。
+			// 静默失败 —— 偏好落盘失败不值得打断回合，下一次切换会再写。
+			// 写必须串行：两次切换背靠背时，未保序的并发写会让慢的旧快照
+			// rename 覆盖快的新快照，settings.json 停在过期状态。
+			let settingsSaveTail: Promise<void> = Promise.resolve();
+			const settingsHomeForSave = options.profile?.settingsDir;
+			const persistSettings = (): void => {
+				settingsSaveTail = settingsSaveTail.then(() =>
+					saveSettings(
+						{
+							model: modelKey(subject.getModel()),
+							thinkingLevel: subject.getThinkingLevel(),
+						},
+						settingsHomeForSave,
+					).catch(() => {}),
+				);
+			};
+			extensionHost.on("model_select", persistSettings);
+			extensionHost.on("thinking_level_select", persistSettings);
+
+			subject = new Subject(activeModel, streamFn, tools, {
+				store,
+				thinkingLevel,
+				systemPrompt: resolvedSystemPrompt,
+				runtimeHooks: extensionHost.runtimeHooks(),
+				projection: resolvedProjection,
+				measureContext: (model, projection) =>
+					models.getProvider(model.providerId)?.measureContext?.(model, projection),
+			});
+
+			subject.subscribe((event) => {
+				// 宿主内部派生状态：回溯后刷新被放弃的任务集合（它只关心 task.dispatch 效果事实，
+				// 不是翻译——事件本身 1:1 透传给消费者）。
+				if (event.type === "session_rewind") {
+					// 被放弃切片直接读常驻 canonical 状态，不再重放 journal。
+					collectAbandonedTaskIds(store.state.allEntries);
+				}
+				// 事实单流 1:1 透传：宿主不翻译字段、不改形状。notice 是宿主域事件，
+				// 主体词汇表不收它，只在此处产生。
+				emit(event);
+			});
+			const commands = new CommandRouter(extensionHost.registry, (text) => emit({ type: "error", text }));
+
+			subject.addHistory(subject.projection.projectHistory(restoredEntries, store.state));
+			if (restoredQueue.length > 0) subject.seedQueue(restoredQueue);
+
+			if (config !== undefined) {
+				void models.refreshModels().catch((error: unknown) => {
+					options.onError?.(`[模型目录] ${errorMessage(error)}`);
+				});
+			}
+			return (hostSelf = new UinaHost(
+				options,
+				subject,
+				store,
+				extensionHost,
+				tools,
+				models,
+				jobs,
+				subagents,
+				commands,
+				restoredEntries,
+				[...store.state.auxiliary],
+				listeners,
+				state,
+				abandonedTaskIds,
+			));
 		} catch (error) {
 			await store.close().catch(() => undefined);
 			throw error;
@@ -339,18 +392,26 @@ export class UinaHost {
 
 	subscribe(listener: HostEventListener): () => void {
 		this.listeners.add(listener);
-		return () => { this.listeners.delete(listener); };
+		return () => {
+			this.listeners.delete(listener);
+		};
 	}
 
 	/** 向当前所有消费者广播。单个消费者抛错不影响其它消费者，但错误绝不静默。 */
 	emit(event: HostEvent): void {
 		for (const listener of [...this.listeners]) {
-			try { listener(event); }
-			catch (error) { this.options.onError?.(`消费者处理事件失败: ${errorMessage(error)}`); }
+			try {
+				listener(event);
+			} catch (error) {
+				this.options.onError?.(`消费者处理事件失败: ${errorMessage(error)}`);
+			}
 		}
 	}
 
-	async send(input: AgentInput): Promise<void> { this.assertAccepting(); return this.subject.accept(input); }
+	async send(input: AgentInput): Promise<void> {
+		this.assertAccepting();
+		return this.subject.accept(input);
+	}
 
 	private assertAccepting(): void {
 		if (this.state.stopping) throw new Error("宿主正在关闭");
@@ -369,13 +430,13 @@ export class UinaHost {
 		const hooks = this.extensionHost.runtimeHooks().tools;
 		const callId = "direct-" + randomUUID();
 		const invocationId = `direct:${callId}`;
-		const run = this.tools.executePipeline(
-			{ callId, invocationId, name, args },
-			{ signal: cancellation, hooks },
-		);
+		const run = this.tools.executePipeline({ callId, invocationId, name, args }, { signal: cancellation, hooks });
 		this.directRuns.set(controller, run);
-		try { return await run; }
-		finally { this.directRuns.delete(controller); }
+		try {
+			return await run;
+		} finally {
+			this.directRuns.delete(controller);
+		}
 	}
 
 	/**
@@ -402,20 +463,43 @@ export class UinaHost {
 	}
 
 	/** 当前会话历史的消息条数，供消费者显示恢复信息。 */
-	historyCount(): number { return this.subject.historySnapshot().length; }
+	historyCount(): number {
+		return this.subject.historySnapshot().length;
+	}
 
 	/** 扩展渲染器与命令注册表：消费者据此渲染自定义消息与补全命令。 */
-	get extensionRegistry(): ExtensionRunner["registry"] { return this.extensionHost.registry; }
+	get extensionRegistry(): ExtensionRunner["registry"] {
+		return this.extensionHost.registry;
+	}
 
-	interrupt(): void { this.subject.interrupt(); }
-	isBusy(): boolean { return this.subject.isBusy(); }
-	waitForIdle(): Promise<void> { return this.subject.waitForIdle(); }
- resumePending(): Promise<void> { this.assertAccepting(); return this.subject.resumePending(); }
-	claimAllQueued(): Promise<import("../agent/loop.js").ClaimAllResult> { return this.subject.claimAllQueued(); }
-	claimQueued(id: string): Promise<QueuedMessage | null> { return this.subject.claimQueued(id); }
-	cycleThinkingLevel(): ThinkingLevel { return this.subject.cycleThinkingLevel(); }
-	setThinkingLevel(level: ThinkingLevel): void { this.subject.setThinkingLevel(level); }
-	attachExtensionUI(ui: ExtensionUIContext): void { this.extensionHost.attachUI(ui); }
+	interrupt(): void {
+		this.subject.interrupt();
+	}
+	isBusy(): boolean {
+		return this.subject.isBusy();
+	}
+	waitForIdle(): Promise<void> {
+		return this.subject.waitForIdle();
+	}
+	resumePending(): Promise<void> {
+		this.assertAccepting();
+		return this.subject.resumePending();
+	}
+	claimAllQueued(): Promise<import("../agent/loop.js").ClaimAllResult> {
+		return this.subject.claimAllQueued();
+	}
+	claimQueued(id: string): Promise<QueuedMessage | null> {
+		return this.subject.claimQueued(id);
+	}
+	cycleThinkingLevel(): ThinkingLevel {
+		return this.subject.cycleThinkingLevel();
+	}
+	setThinkingLevel(level: ThinkingLevel): void {
+		this.subject.setThinkingLevel(level);
+	}
+	attachExtensionUI(ui: ExtensionUIContext): void {
+		this.extensionHost.attachUI(ui);
+	}
 
 	/** 消费者渲染所需的全部事实，一次取齐。 */
 	snapshot(): HostSnapshot {
@@ -447,9 +531,20 @@ export class UinaHost {
 		// 预算；尾帧恒在最末尾），由 tests/projection-order.test.ts 持有——重排激活顺序
 		// 或 tail 相位规则而不更新该测试属于破坏性变更。
 		// ────────────────────────────────────────────────────────────────
-		await this.extensionHost.activateBuiltin("session-tools", activateSessionTools(ownerId => ownerId === "root" ? this.rootSession : this.subagents.session(ownerId)));
-		if (this.options.workspaceTools !== false) await this.extensionHost.activateBuiltin("workspace-tools", activateWorkspaceTools);
-		await this.extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools({ jobs: this.jobs, subagents: this.subagents, isTaskAbandoned: (id) => this.abandonedTaskIds.has(id) }));
+		await this.extensionHost.activateBuiltin(
+			"session-tools",
+			activateSessionTools((ownerId) => (ownerId === "root" ? this.rootSession : this.subagents.session(ownerId))),
+		);
+		if (this.options.workspaceTools !== false)
+			await this.extensionHost.activateBuiltin("workspace-tools", activateWorkspaceTools);
+		await this.extensionHost.activateBuiltin(
+			"runtime-tools",
+			activateRuntimeTools({
+				jobs: this.jobs,
+				subagents: this.subagents,
+				isTaskAbandoned: (id) => this.abandonedTaskIds.has(id),
+			}),
+		);
 		await this.extensionHost.activateBuiltin("commands", activateBuiltinCommands);
 		// 压缩预算直接读 Subject 声明的工具。再在宿主里拼一次，以后声明规则一变就会静默分叉。
 		await this.extensionHost.activateBuiltin("compaction", activateCompaction);
@@ -465,12 +560,23 @@ export class UinaHost {
 	}
 
 	get session(): import("../session/types.js").SessionAccess {
-		return { list: options => this.rootSession.list(options), listBranches: () => this.rootSession.listBranches(), readBranch: id => this.rootSession.readBranch(id), read: id => this.rootSession.read(id), requestRewind: (request,source,signal) => { this.assertAccepting(); return this.rootSession.requestRewind(request,source,signal); } };
+		return {
+			list: (options) => this.rootSession.list(options),
+			listBranches: () => this.rootSession.listBranches(),
+			readBranch: (id) => this.rootSession.readBranch(id),
+			read: (id) => this.rootSession.read(id),
+			requestRewind: (request, source, signal) => {
+				this.assertAccepting();
+				return this.rootSession.requestRewind(request, source, signal);
+			},
+		};
 	}
 
 	/** Root session view composed from the store; rewind goes through the Subject. */
 	get rootSession(): import("../session/types.js").SessionAccess {
-		return createSessionAccess(this.store, (request, source, signal) => this.subject.requestRewind(request, source, signal));
+		return createSessionAccess(this.store, (request, source, signal) =>
+			this.subject.requestRewind(request, source, signal),
+		);
 	}
 
 	async reloadExtensions(): Promise<void> {
@@ -478,7 +584,8 @@ export class UinaHost {
 		// 忙时不阻塞命令派发：立即回执受理，等本轮（及队列）排空后后台执行。
 		if (this.subject.isBusy()) {
 			this.emit({ type: "notice", text: "已受理 /reload：本轮结束后自动重新加载项目扩展。" });
-			void this.subject.waitForIdle()
+			void this.subject
+				.waitForIdle()
 				.then(() => this.runReload())
 				.catch(() => undefined);
 			return;
@@ -495,7 +602,9 @@ export class UinaHost {
 			await this.extensionHost.reload();
 			await this.subject.getContextSnapshot("idle_baseline");
 			this.emit({ type: "notice", text: this.reloadSummaryNotice() });
-		} finally { this.reloading--; }
+		} finally {
+			this.reloading--;
+		}
 	}
 
 	/** 重载完成通知：项目扩展激活数 + 失败摘要，让 reload 结果可观测而非一句空话。 */
@@ -519,10 +628,22 @@ export class UinaHost {
 			await Promise.allSettled([...this.directRuns.values()]);
 			await this.subject.waitForIdle();
 			const errors: unknown[] = [];
-			try { await this.extensionHost.dispose(); } catch (error) { errors.push(error); }
-			try { killTrackedDetachedChildren(); } catch (error) { errors.push(error); }
+			try {
+				await this.extensionHost.dispose();
+			} catch (error) {
+				errors.push(error);
+			}
+			try {
+				killTrackedDetachedChildren();
+			} catch (error) {
+				errors.push(error);
+			}
 			await this.subject.waitForIdle();
-			try { await this.store.close(); } catch (error) { errors.push(error); }
+			try {
+				await this.store.close();
+			} catch (error) {
+				errors.push(error);
+			}
 			this.listeners.clear();
 			if (errors.length) throw new AggregateError(errors, "宿主关闭时发生错误");
 		})();

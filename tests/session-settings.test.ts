@@ -16,8 +16,22 @@ import { UinaTestHarness } from "./harness/host/harness.js";
 const AUTH = {
 	default: "alpha",
 	providers: {
-		alpha: { type: "openai-compatible", baseUrl: "http://localhost:1", model: "model-alpha", apiKey: "k", modelContextWindow: 4096, thinkingLevels: ["off", "low", "high"] },
-		beta: { type: "openai-compatible", baseUrl: "http://localhost:1", model: "model-beta", apiKey: "k", modelContextWindow: 4096, thinkingLevels: ["off", "low"] },
+		alpha: {
+			type: "openai-compatible",
+			baseUrl: "http://localhost:1",
+			model: "model-alpha",
+			apiKey: "k",
+			modelContextWindow: 4096,
+			thinkingLevels: ["off", "low", "high"],
+		},
+		beta: {
+			type: "openai-compatible",
+			baseUrl: "http://localhost:1",
+			model: "model-beta",
+			apiKey: "k",
+			modelContextWindow: 4096,
+			thinkingLevels: ["off", "low"],
+		},
 	},
 } as const;
 
@@ -84,7 +98,10 @@ describe("会话偏好持久化", () => {
 
 	test("CLI -m 显式指定赢过 settings.json；陈旧模型名不炸启动", async () => {
 		const home = await useTempHome();
-		await home.writeFile(join(".uina", "settings.json"), JSON.stringify({ model: "ghost-model", thinkingLevel: "high" }));
+		await home.writeFile(
+			join(".uina", "settings.json"),
+			JSON.stringify({ model: "ghost-model", thinkingLevel: "high" }),
+		);
 		const harness = await makeHarness({ modelName: "model-alpha" });
 		expect(harness.host.snapshot().modelName).toBe("model-alpha"); // -m 赢；ghost-model 未解析也不炸
 	});
@@ -109,7 +126,10 @@ describe("会话偏好持久化", () => {
 		expect(second.host.snapshot().thinkingLevel).toBe("low");
 
 		// 再重启但 settings 指向不支持该档位的组合：档位丢弃、模型照常
-		await home.writeFile(join(".uina", "settings.json"), JSON.stringify({ model: "model-beta", thinkingLevel: "xhigh" }));
+		await home.writeFile(
+			join(".uina", "settings.json"),
+			JSON.stringify({ model: "model-beta", thinkingLevel: "xhigh" }),
+		);
 		const third = await makeHarness();
 		expect(third.host.snapshot().modelName).toBe("model-beta");
 		expect(third.host.snapshot().thinkingLevel).toBe("off"); // mock 默认首个档位
@@ -138,8 +158,22 @@ describe("会话偏好持久化", () => {
 		const HOME = {
 			default: "alpha",
 			providers: {
-				alpha: { type: "openai-compatible", baseUrl: "http://localhost:1", model: "shared-model", apiKey: "k", modelContextWindow: 4096, thinkingLevels: ["off", "low", "high"] },
-				beta: { type: "openai-compatible", baseUrl: "http://localhost:1", model: "shared-model", apiKey: "k", modelContextWindow: 8192, thinkingLevels: ["off", "low"] },
+				alpha: {
+					type: "openai-compatible",
+					baseUrl: "http://localhost:1",
+					model: "shared-model",
+					apiKey: "k",
+					modelContextWindow: 4096,
+					thinkingLevels: ["off", "low", "high"],
+				},
+				beta: {
+					type: "openai-compatible",
+					baseUrl: "http://localhost:1",
+					model: "shared-model",
+					apiKey: "k",
+					modelContextWindow: 8192,
+					thinkingLevels: ["off", "low"],
+				},
 			},
 		};
 		await useTempHome(HOME);

@@ -61,12 +61,7 @@ export class SubjectHarness {
 	readonly store?: SessionStore;
 	readonly scenario: Scenario;
 
-	constructor(
-		subject: Subject,
-		broker: ToolBroker,
-		store: SessionStore | undefined,
-		scenario: Scenario,
-	) {
+	constructor(subject: Subject, broker: ToolBroker, store: SessionStore | undefined, scenario: Scenario) {
 		this.subject = subject;
 		this.broker = broker;
 		this.store = store;

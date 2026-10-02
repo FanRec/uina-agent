@@ -125,9 +125,7 @@ export class ModelPicker implements Component, Focusable {
 		const currentGroup = this.groups[this.selectedGroupIndex] ?? this.groups[0];
 
 		const titleTag =
-			this.level === "groups"
-				? `─ 切换模型服务商 (Providers) `
-				: `─ 选择模型 (${currentGroup?.name ?? "未知"}) `;
+			this.level === "groups" ? `─ 切换模型服务商 (Providers) ` : `─ 选择模型 (${currentGroup?.name ?? "未知"}) `;
 		const topFillLen = Math.max(1, boxWidth - 2 - visibleWidth(titleTag));
 		const topLine = `  ${borderCol}╭${titleTag}${"─".repeat(topFillLen)}╮${C.reset}`;
 
@@ -136,16 +134,16 @@ export class ModelPicker implements Component, Focusable {
 		if (this.groups.length === 0) {
 			const empty = `${C.dim}没有来自配置、Provider 或可信目录的可选模型${C.reset}`;
 			const truncated = truncateToWidth(empty, innerW);
-			output.push(`  ${borderCol}│${C.reset} ${truncated}${" ".repeat(Math.max(0, innerW - visibleWidth(truncated)))} ${borderCol}│${C.reset}`);
+			output.push(
+				`  ${borderCol}│${C.reset} ${truncated}${" ".repeat(Math.max(0, innerW - visibleWidth(truncated)))} ${borderCol}│${C.reset}`,
+			);
 		} else if (this.level === "groups") {
 			for (let i = 0; i < this.groups.length; i++) {
 				const grp = this.groups[i]!;
 				const isSelected = i === this.selectedGroupIndex;
 				const hasCurrent = grp.models.some((m) => this.isCurrent(m));
 				const pointer = isSelected ? `${C.bold}${C.cyan}❯${C.reset}` : " ";
-				const nameTag = isSelected
-					? `${C.bold}${C.white}[${grp.name}]${C.reset}`
-					: `${C.gray}[${grp.name}]${C.reset}`;
+				const nameTag = isSelected ? `${C.bold}${C.white}[${grp.name}]${C.reset}` : `${C.gray}[${grp.name}]${C.reset}`;
 				const check = hasCurrent ? ` ${C.green}✓${C.reset}` : "";
 				const desc = `${C.dim}${grp.description} (${grp.models.length} 个模型)${C.reset}`;
 
@@ -160,9 +158,7 @@ export class ModelPicker implements Component, Focusable {
 				const isSelected = i === this.selectedModelIndex;
 				const isCurrentModel = this.isCurrent(model);
 				const pointer = isSelected ? `${C.bold}${C.cyan}❯${C.reset}` : " ";
-				const nameTag = isSelected
-					? `${C.bold}${C.white}${model.name}${C.reset}`
-					: `${C.gray}${model.name}${C.reset}`;
+				const nameTag = isSelected ? `${C.bold}${C.white}${model.name}${C.reset}` : `${C.gray}${model.name}${C.reset}`;
 				const check = isCurrentModel ? ` ${C.green}✓${C.reset}` : "";
 				const desc = `${C.dim}${model.description}${C.reset}`;
 
@@ -173,11 +169,12 @@ export class ModelPicker implements Component, Focusable {
 			}
 		}
 
-		const bottomHint = this.groups.length === 0
-			? `Esc 关闭`
-			: this.level === "groups"
-				? `↑↓ 移动 · Enter 展开 · Esc 关闭`
-				: `↑↓ 移动 · Enter 确认切换 · Esc 返回`;
+		const bottomHint =
+			this.groups.length === 0
+				? `Esc 关闭`
+				: this.level === "groups"
+					? `↑↓ 移动 · Enter 展开 · Esc 关闭`
+					: `↑↓ 移动 · Enter 确认切换 · Esc 返回`;
 		const botFillLen = Math.max(1, boxWidth - visibleWidth(bottomHint) - 5);
 		const botLine = `  ${borderCol}╰─ ${C.dim}${bottomHint}${C.reset} ${borderCol}${"─".repeat(botFillLen)}╯${C.reset}`;
 		output.push(botLine);

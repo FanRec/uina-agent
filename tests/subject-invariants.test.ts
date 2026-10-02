@@ -159,7 +159,10 @@ describe("不变量：accepted input 不得无归属地消失", () => {
 				{ kind: "tool_call" as const, call: { id: "two-call", name: "two", args: JSON.stringify({ value: "fast" }) } },
 				{ kind: "finish" as const, reason: "tool_calls" as const },
 			]);
-		h.scenario.fallback(() => [{ kind: "text" as const, text: "收尾" }, { kind: "finish" as const, reason: "stop" as const }]);
+		h.scenario.fallback(() => [
+			{ kind: "text" as const, text: "收尾" },
+			{ kind: "finish" as const, reason: "stop" as const },
+		]);
 
 		await h.run("并行");
 		expect(maxActive).toBe(2);
@@ -312,7 +315,12 @@ describe("不变量：accepted input 不得无归属地消失", () => {
 				},
 			},
 		};
-		const h = SubjectHarness.create({ stream, store: new MemorySessionStore(), runtimeHooks, tools: [mockTool("echo")] });
+		const h = SubjectHarness.create({
+			stream,
+			store: new MemorySessionStore(),
+			runtimeHooks,
+			tools: [mockTool("echo")],
+		});
 		h.pushInput("first");
 		await wait(20);
 		await h.pushInput("a", { mode: "steer" });
@@ -441,65 +449,71 @@ describe("不变量：终局事实单一（completed / aborted / terminated）",
 	});
 });
 
-	describe("不变量：回合外前台活动与 post-turn 生命周期", () => {
-		it("afterEnd 仍属于 activeRun，interrupt 可取消但不回改已完成回合", async () => {
-			let resolveAfterEnd!: () => void;
-			let afterEndEntered = false;
-			const afterEndStarted = new Promise<void>((resolve) => { resolveAfterEnd = resolve; });
-			let afterEndAborted = false;
-			const runtimeHooks = {
-				...NO_RUNTIME_HOOKS,
-				turn: {
-					...NO_RUNTIME_HOOKS.turn,
-					afterEnd: async ({ signal }: { signal: AbortSignal }) => {
-						afterEndEntered = true;
-						resolveAfterEnd();
-						await new Promise<void>((resolve) => {
-							if (signal.aborted) {
-								afterEndAborted = true;
-								resolve();
-								return;
-							}
-							signal.addEventListener("abort", () => {
-								afterEndAborted = true;
-								resolve();
-							}, { once: true });
-						});
-					},
-				},
-			};
-			const h = SubjectHarness.create({
-				runtimeHooks,
-				stream: async (_model, _request, onDelta) => {
-					onDelta({ kind: "text", text: "done" });
-					onDelta({ kind: "finish", reason: "stop" });
-				},
-			});
-			const run = h.subject.pushInput("go");
-			await afterEndStarted;
-			expect(afterEndEntered).toBe(true);
-			expect(h.subject.isBusy()).toBe(true);
-			h.subject.interrupt();
-			await expect(run).resolves.toBeUndefined();
-			await expect(h.subject.waitForIdle()).resolves.toBeUndefined();
-			expect(afterEndAborted).toBe(true);
-			expect(h.subject.isBusy()).toBe(false);
+describe("不变量：回合外前台活动与 post-turn 生命周期", () => {
+	it("afterEnd 仍属于 activeRun，interrupt 可取消但不回改已完成回合", async () => {
+		let resolveAfterEnd!: () => void;
+		let afterEndEntered = false;
+		const afterEndStarted = new Promise<void>((resolve) => {
+			resolveAfterEnd = resolve;
 		});
-		it("runActivity 独占主体、可中断、waitForIdle 等待且异常释放", async () => {
-			const h = SubjectHarness.create({ store: new MemorySessionStore(), stream: async () => {} });
-			let entered = false;
-			let release!: () => void;
-			const run = h.subject.runActivity(async (signal) => {
-				entered = true;
-				expect(h.subject.isBusy()).toBe(true);
-				await new Promise<void>((resolve) => {
-					release = resolve;
-					signal.addEventListener("abort", () => resolve(), { once: true });
-				});
-			});
-			await vi.waitFor(() => expect(entered).toBe(true));
+		let afterEndAborted = false;
+		const runtimeHooks = {
+			...NO_RUNTIME_HOOKS,
+			turn: {
+				...NO_RUNTIME_HOOKS.turn,
+				afterEnd: async ({ signal }: { signal: AbortSignal }) => {
+					afterEndEntered = true;
+					resolveAfterEnd();
+					await new Promise<void>((resolve) => {
+						if (signal.aborted) {
+							afterEndAborted = true;
+							resolve();
+							return;
+						}
+						signal.addEventListener(
+							"abort",
+							() => {
+								afterEndAborted = true;
+								resolve();
+							},
+							{ once: true },
+						);
+					});
+				},
+			},
+		};
+		const h = SubjectHarness.create({
+			runtimeHooks,
+			stream: async (_model, _request, onDelta) => {
+				onDelta({ kind: "text", text: "done" });
+				onDelta({ kind: "finish", reason: "stop" });
+			},
+		});
+		const run = h.subject.pushInput("go");
+		await afterEndStarted;
+		expect(afterEndEntered).toBe(true);
+		expect(h.subject.isBusy()).toBe(true);
+		h.subject.interrupt();
+		await expect(run).resolves.toBeUndefined();
+		await expect(h.subject.waitForIdle()).resolves.toBeUndefined();
+		expect(afterEndAborted).toBe(true);
+		expect(h.subject.isBusy()).toBe(false);
+	});
+	it("runActivity 独占主体、可中断、waitForIdle 等待且异常释放", async () => {
+		const h = SubjectHarness.create({ store: new MemorySessionStore(), stream: async () => {} });
+		let entered = false;
+		let release!: () => void;
+		const run = h.subject.runActivity(async (signal) => {
+			entered = true;
 			expect(h.subject.isBusy()).toBe(true);
-			await expect(h.subject.runActivity(async () => {})).rejects.toThrow("Subject 忙碌");
+			await new Promise<void>((resolve) => {
+				release = resolve;
+				signal.addEventListener("abort", () => resolve(), { once: true });
+			});
+		});
+		await vi.waitFor(() => expect(entered).toBe(true));
+		expect(h.subject.isBusy()).toBe(true);
+		await expect(h.subject.runActivity(async () => {})).rejects.toThrow("Subject 忙碌");
 		const idle = h.subject.waitForIdle();
 		h.subject.interrupt();
 		await expect(run).resolves.toBeUndefined();
@@ -508,9 +522,9 @@ describe("不变量：终局事实单一（completed / aborted / terminated）",
 		// 释放函数保留在这里仅防止测试 fixture 变成悬挂 Promise；abort 已使主体完成。
 		release?.();
 	});
-	});
+});
 
-	describe("不变量：retry 可观察性全 provider 一致", () => {
+describe("不变量：retry 可观察性全 provider 一致", () => {
 	it("openai-compatible provider 发出 provider_retry / provider_recovered delta", async () => {
 		let calls = 0;
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
@@ -526,7 +540,10 @@ describe("不变量：终局事实单一（completed / aborted / terminated）",
 		try {
 			const provider = createOpenAIProvider("retry-prov", { baseUrl: "http://unavailable.test/v1", apiKey: "k" });
 			const model: Model = { id: "gpt", name: "gpt", providerId: "retry-prov", contextWindow: 1000 };
-			const req = { messages: [{ role: "user" as const, content: "hi" }], providerHooks: NO_RUNTIME_HOOKS.provider } as unknown as ModelRequest;
+			const req = {
+				messages: [{ role: "user" as const, content: "hi" }],
+				providerHooks: NO_RUNTIME_HOOKS.provider,
+			} as unknown as ModelRequest;
 			const deltas: StreamDelta[] = [];
 			await provider.stream(model, req, (d) => deltas.push(d));
 			const retry = deltas.find((d) => d.kind === "provider_retry") as

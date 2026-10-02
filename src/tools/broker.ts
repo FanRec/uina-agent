@@ -3,22 +3,14 @@ import { errorMessage } from "../core/errors.js";
 import { Registrations } from "../core/registrations.js";
 import { createRequire } from "node:module";
 import type { ValidateFunction } from "ajv";
-import type {
-	ToolDef,
-	ToolExecutionMode,
-	ToolResultStatus,
-} from "../core/types.js";
+import type { ToolDef, ToolExecutionMode, ToolResultStatus } from "../core/types.js";
 import { TOOL_RESULT_STATUSES } from "../core/types.js";
-import {
-	executeToolPipeline,
-	type ToolCallRequest,
-	type ToolPipelineOptions,
-} from "./pipeline.js";
+import { executeToolPipeline, type ToolCallRequest, type ToolPipelineOptions } from "./pipeline.js";
 
 /** Identity of the caller, independent of the extension that registered a tool. */
 export interface ToolExecutionContext {
 	readonly ownerId: string;
- readonly callerId?: string;
+	readonly callerId?: string;
 	readonly invocationId?: string;
 }
 
@@ -26,7 +18,11 @@ export interface Tool {
 	def: ToolDef;
 	executionMode?: ToolExecutionMode;
 	/** Execute after the broker has validated the arguments. */
-	run(args: Record<string, unknown>, signal?: AbortSignal, context?: ToolExecutionContext): Promise<ToolExecutionResult>;
+	run(
+		args: Record<string, unknown>,
+		signal?: AbortSignal,
+		context?: ToolExecutionContext,
+	): Promise<ToolExecutionResult>;
 }
 
 export interface PreparedToolCall {
@@ -38,8 +34,8 @@ export interface PreparedToolCall {
 }
 
 export interface ToolExecutionResult {
- images?: import("../core/content.js").ImageContent[];
- details?: unknown;
+	images?: import("../core/content.js").ImageContent[];
+	details?: unknown;
 	result: string;
 	status: ToolResultStatus;
 	/** Ends this decision after recording the result; pending inputs remain queued. */
@@ -50,10 +46,7 @@ interface AjvLike {
 	compile(schema: object): ValidateFunction;
 	errorsText(errors: unknown): string;
 }
-type AjvConstructorType = new (options: {
-	strict: boolean;
-	allErrors: boolean;
-}) => AjvLike;
+type AjvConstructorType = new (options: { strict: boolean; allErrors: boolean }) => AjvLike;
 const AjvConstructor = createRequire(import.meta.url)("ajv") as AjvConstructorType;
 const ajv = new AjvConstructor({ strict: true, allErrors: true });
 
@@ -68,13 +61,19 @@ export interface ToolView {
 	executePipeline(
 		call: ToolCallRequest,
 		options?: ToolPipelineOptions,
-	): Promise<ToolExecutionResult & { callId: string; invocationId: string; /** 原始执行结果（阶段 D/M7）：canonical journal 落盘用，未经 transformResult 改写。 */ canonical?: ToolExecutionResult }>;
+	): Promise<
+		ToolExecutionResult & {
+			callId: string;
+			invocationId: string /** 原始执行结果（阶段 D/M7）：canonical journal 落盘用，未经 transformResult 改写。 */;
+			canonical?: ToolExecutionResult;
+		}
+	>;
 }
 
 export interface ScopedToolOptions {
 	/** Execution identity; inherited implementations run in this caller's context. */
 	readonly ownerId?: string;
- readonly callerId?: string;
+	readonly callerId?: string;
 	/** When present, only these tool names are inherited/visible. */
 	readonly include?: readonly string[];
 	/** Tool names the child must not inherit/visible. */
@@ -92,9 +91,7 @@ export class ToolBroker implements ToolView {
 		return new ScopedToolView(this, options);
 	}
 
-	private readonly tools = new Registrations<
-		{ tool: Tool; validator: ValidateFunction }
-	>();
+	private readonly tools = new Registrations<{ tool: Tool; validator: ValidateFunction }>();
 
 	register(t: Tool, options: { replace?: boolean } = {}): () => void {
 		validateToolDefinition(t);
@@ -139,11 +136,7 @@ export class ToolBroker implements ToolView {
 		return { name, args, tool: entry.tool, validator: entry.validator };
 	}
 
-	async execute(
-		prepared: PreparedToolCall,
-		signal?: AbortSignal,
-		invocationId?: string,
-	): Promise<ToolExecutionResult> {
+	async execute(prepared: PreparedToolCall, signal?: AbortSignal, invocationId?: string): Promise<ToolExecutionResult> {
 		if (prepared.error) {
 			return {
 				result: JSON.stringify({ error: prepared.error, status: "not_started" }),
@@ -160,11 +153,7 @@ export class ToolBroker implements ToolView {
 		return executeToolCore(tool, prepared.name, prepared.args, signal, this.context, invocationId);
 	}
 
-	async run(
-		name: string,
-		args: Record<string, unknown>,
-		signal?: AbortSignal,
-	): Promise<string> {
+	async run(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
 		return (await this.execute(this.prepare(name, args), signal)).result;
 	}
 
@@ -195,11 +184,15 @@ async function executeToolCore(
 		};
 	}
 	try {
-		const result = await tool.run(args, signal, context ? { ...context, ...(invocationId ? { invocationId } : {}) } : undefined);
+		const result = await tool.run(
+			args,
+			signal,
+			context ? { ...context, ...(invocationId ? { invocationId } : {}) } : undefined,
+		);
 		if (
 			!result ||
 			typeof result.result !== "string" ||
-   !validImages(result.images) ||
+			!validImages(result.images) ||
 			!(TOOL_RESULT_STATUSES as readonly unknown[]).includes(result.status)
 		) {
 			throw new Error("工具必须返回 { result: string, status: ToolResultStatus }");
@@ -260,19 +253,13 @@ export class ScopedToolView implements ToolView {
 			return { name, args, error: `工具不可用: ${name} (在宿主中已被卸载或不存在)` };
 		}
 		if (!this.isAllowed(name)) {
-			const reason = this.options.exclude?.includes(name)
-				? "已被当前作用域策略排除"
-				: "未包含在当前作用域允许名单中";
+			const reason = this.options.exclude?.includes(name) ? "已被当前作用域策略排除" : "未包含在当前作用域允许名单中";
 			return { name, args, error: `工具不可用: ${name} (${reason})` };
 		}
 		return this.root.prepare(name, args);
 	}
 
-	async execute(
-		prepared: PreparedToolCall,
-		signal?: AbortSignal,
-		invocationId?: string,
-	): Promise<ToolExecutionResult> {
+	async execute(prepared: PreparedToolCall, signal?: AbortSignal, invocationId?: string): Promise<ToolExecutionResult> {
 		if (prepared.error) {
 			return {
 				result: JSON.stringify({ error: prepared.error, status: "not_started" }),
@@ -295,17 +282,12 @@ export class ScopedToolView implements ToolView {
 				status: "not_started",
 			};
 		}
-		const context: ToolExecutionContext | undefined = this.ownerId !== undefined
-			? { ownerId: this.ownerId, callerId: this.options.callerId }
-			: this.root.getContext();
+		const context: ToolExecutionContext | undefined =
+			this.ownerId !== undefined ? { ownerId: this.ownerId, callerId: this.options.callerId } : this.root.getContext();
 		return executeToolCore(tool, prepared.name, prepared.args, signal, context, invocationId);
 	}
 
-	async run(
-		name: string,
-		args: Record<string, unknown>,
-		signal?: AbortSignal,
-	): Promise<string> {
+	async run(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
 		return (await this.execute(this.prepare(name, args), signal)).result;
 	}
 
@@ -335,7 +317,6 @@ function validateToolDefinition(t: Tool): void {
 	}
 }
 
-
 export {
 	executeToolPipeline,
 	type ToolCallRequest,
@@ -343,4 +324,3 @@ export {
 	type ToolPipelineObservers,
 	type ToolPipelineOptions,
 } from "./pipeline.js";
-

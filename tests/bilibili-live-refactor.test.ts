@@ -3,7 +3,7 @@ import {
 	normalizeOpenGift,
 	normalizeOpenSuperChat,
 	normalizeWebGift,
-	} from "../.uina/worlds/bilibili-live/src/normalize.js";
+} from "../.uina/worlds/bilibili-live/src/normalize.js";
 
 describe("bilibili live canonical event boundary", () => {
 	it("normalizes web and OpenLive gift identities without losing source semantics", () => {

@@ -136,7 +136,9 @@ export class EffortSlider implements Component, Focusable {
 		const sliderLine = `  ${borderCol}│${C.reset} ${sliderEffective}${" ".repeat(sliderPad)} ${borderCol}│${C.reset}`;
 
 		const current = this.getCurrentTier();
-		const descRaw = current.description ? `${C.text}${current.description}${C.reset}` : `${C.inactive}当前档位: ${current.name}${C.reset}`;
+		const descRaw = current.description
+			? `${C.text}${current.description}${C.reset}`
+			: `${C.inactive}当前档位: ${current.name}${C.reset}`;
 		const descEffective = visibleWidth(descRaw) > innerW ? truncateToWidth(descRaw, innerW, "…") : descRaw;
 		const descPad = Math.max(0, innerW - visibleWidth(descEffective));
 		const descLine = `  ${borderCol}│${C.reset} ${descEffective}${" ".repeat(descPad)} ${borderCol}│${C.reset}`;

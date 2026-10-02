@@ -138,11 +138,7 @@ export class TaskWaiters {
 		}
 	}
 
-	async wait(
-		condition: () => boolean,
-		timeoutMs: number,
-		signal?: AbortSignal,
-	): Promise<void> {
+	async wait(condition: () => boolean, timeoutMs: number, signal?: AbortSignal): Promise<void> {
 		if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
 			throw new Error("等待时间无效");
 		}
@@ -180,4 +176,3 @@ export class TaskWaiters {
 		});
 	}
 }
-

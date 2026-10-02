@@ -1,12 +1,5 @@
 import { assertImageInput } from "../core/content.js";
-import type {
-	Model,
-	ModelRequest,
-	Provider,
-	ThinkingLevel,
-	ThinkingWireFormat,
-	Usage,
-} from "../core/types.js";
+import type { Model, ModelRequest, Provider, ThinkingLevel, ThinkingWireFormat, Usage } from "../core/types.js";
 import type { ProviderHooks } from "../runtime/hooks.js";
 import { parseSSE, ProviderProtocolError } from "./sse.js";
 import { copyValue, readonlySnapshot } from "../runtime/guard.js";
@@ -43,11 +36,13 @@ export function createOpenAIProvider(id: string, conf: OpenAIEndpointConf): Prov
 		id,
 		baseUrl: conf.baseUrl,
 		async refreshModels() {
-			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, { headers: { Authorization: `Bearer ${conf.apiKey}` } });
+			const response = await fetch(`${conf.baseUrl.replace(/\/$/, "")}/models`, {
+				headers: { Authorization: `Bearer ${conf.apiKey}` },
+			});
 			if (response.status === 404 || response.status === 405 || response.status === 501) return [];
 			if (!response.ok) throw new ProviderHttpError({ provider: id, status: response.status, action: "模型目录请求" });
-			const payload = await response.json() as { data?: Array<{ id?: string }> };
-			return (payload.data ?? []).flatMap((model) => typeof model.id === "string" ? [{ id: model.id }] : []);
+			const payload = (await response.json()) as { data?: Array<{ id?: string }> };
+			return (payload.data ?? []).flatMap((model) => (typeof model.id === "string" ? [{ id: model.id }] : []));
 		},
 		async stream(model: Model, req, onDelta, signal): Promise<void> {
 			if (model.providerId !== id) {
@@ -93,10 +88,7 @@ export function createOpenAIProvider(id: string, conf: OpenAIEndpointConf): Prov
 					if (data === "[DONE]") {
 						doneMarker = true;
 						if (!finished) {
-							throw new ProviderProtocolError(
-								"模型流在 finish_reason 前结束",
-								index,
-							);
+							throw new ProviderProtocolError("模型流在 finish_reason 前结束", index);
 						}
 						return;
 					}
@@ -105,10 +97,7 @@ export function createOpenAIProvider(id: string, conf: OpenAIEndpointConf): Prov
 					try {
 						chunk = JSON.parse(data) as OpenAIChunk;
 					} catch (error) {
-						throw new ProviderProtocolError(
-							`SSE 第 ${index + 1} 个事件不是合法 JSON: ${String(error)}`,
-							index,
-						);
+						throw new ProviderProtocolError(`SSE 第 ${index + 1} 个事件不是合法 JSON: ${String(error)}`, index);
 					}
 
 					const choice = chunk.choices?.[0];
@@ -159,21 +148,13 @@ export function createOpenAIProvider(id: string, conf: OpenAIEndpointConf): Prov
 						if (choice.finish_reason === "stop" && pending.size > 0) {
 							throw new ProviderProtocolError(`模型 ${model.id} 返回 stop，但仍有未完成 tool call`, index);
 						}
-						for (const [toolIndex, call] of [...pending.entries()].sort(
-							([a], [b]) => a - b,
-						)) {
+						for (const [toolIndex, call] of [...pending.entries()].sort(([a], [b]) => a - b)) {
 							if (!call.id || !call.name) {
-								throw new ProviderProtocolError(
-									`tool call ${toolIndex} 缺少 id 或 name`,
-									index,
-								);
+								throw new ProviderProtocolError(`tool call ${toolIndex} 缺少 id 或 name`, index);
 							}
 							const argsValid = isJsonObject(call.args || "{}");
 							if (!argsValid && choice.finish_reason !== "length") {
-								throw new ProviderProtocolError(
-									`tool call ${call.name} 参数不是完整 JSON`,
-									index,
-								);
+								throw new ProviderProtocolError(`tool call ${call.name} 参数不是完整 JSON`, index);
 							}
 							onDelta({
 								kind: "tool_call",
@@ -189,11 +170,7 @@ export function createOpenAIProvider(id: string, conf: OpenAIEndpointConf): Prov
 			);
 
 			if (!finished || !doneMarker) {
-				throw new ProviderProtocolError(
-					!finished
-						? "模型流结束时缺少 finish_reason"
-						: "模型流结束时缺少 [DONE]",
-				);
+				throw new ProviderProtocolError(!finished ? "模型流结束时缺少 finish_reason" : "模型流结束时缺少 [DONE]");
 			}
 		},
 	};
@@ -211,9 +188,7 @@ export interface ModelStreamRequestOptions {
 	onRecovered?: (attempt: number) => void;
 }
 
-export async function sendModelStreamRequest(
-	options: ModelStreamRequestOptions,
-): Promise<ReadableStream<Uint8Array>> {
+export async function sendModelStreamRequest(options: ModelStreamRequestOptions): Promise<ReadableStream<Uint8Array>> {
 	const headers = copyValue(
 		await options.hooks.transformHeaders(options.providerId, readonlySnapshot(options.headers)),
 	);
@@ -279,7 +254,12 @@ export async function fetchWithRetry(
 			}
 			await response.body?.cancel().catch(() => undefined);
 			const delay = Math.min(retryAfter(response.headers.get("retry-after")) ?? backoffDelay(attempt), 16_000);
-			options.onRetry?.({ attempt: attempt + 1, delayMs: delay, status: response.status, reason: `HTTP ${response.status}` });
+			options.onRetry?.({
+				attempt: attempt + 1,
+				delayMs: delay,
+				status: response.status,
+				reason: `HTTP ${response.status}`,
+			});
 			await abortableDelay(delay, options.signal);
 		} catch (error) {
 			if (options.signal?.aborted || attempt >= options.maxRetries || !isNetworkError(error)) throw error;
@@ -341,12 +321,18 @@ export function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> 
 }
 
 interface OpenAIChunk {
-	usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: number }; completion_tokens_details?: { reasoning_tokens?: number } };
+	usage?: {
+		prompt_tokens?: number;
+		completion_tokens?: number;
+		total_tokens?: number;
+		prompt_tokens_details?: { cached_tokens?: number };
+		completion_tokens_details?: { reasoning_tokens?: number };
+	};
 	choices?: Array<{
-			delta?: {
-				content?: string | null;
-				reasoning_content?: string | null;
-				thinking?: string | null;
+		delta?: {
+			content?: string | null;
+			reasoning_content?: string | null;
+			thinking?: string | null;
 			tool_calls?: Array<{
 				index?: number;
 				id?: string;
@@ -357,12 +343,24 @@ interface OpenAIChunk {
 	}>;
 }
 
-function mergeOpenAIUsage(state: Partial<Usage>, raw: NonNullable<OpenAIChunk["usage"]>, index: number, provider: string): Partial<Usage> | undefined {
-	const values = [raw.prompt_tokens, raw.completion_tokens, raw.total_tokens, raw.prompt_tokens_details?.cached_tokens, raw.completion_tokens_details?.reasoning_tokens];
+function mergeOpenAIUsage(
+	state: Partial<Usage>,
+	raw: NonNullable<OpenAIChunk["usage"]>,
+	index: number,
+	provider: string,
+): Partial<Usage> | undefined {
+	const values = [
+		raw.prompt_tokens,
+		raw.completion_tokens,
+		raw.total_tokens,
+		raw.prompt_tokens_details?.cached_tokens,
+		raw.completion_tokens_details?.reasoning_tokens,
+	];
 	if (!values.some((value) => value !== undefined && value !== null)) return undefined;
 	const count = (value: number | undefined, field: string): number | undefined => {
 		if (value === undefined || value === null) return undefined;
-		if (!Number.isSafeInteger(value) || value < 0) throw new ProviderProtocolError(`模型 ${provider} usage ${field} 不是非负整数`, index);
+		if (!Number.isSafeInteger(value) || value < 0)
+			throw new ProviderProtocolError(`模型 ${provider} usage ${field} 不是非负整数`, index);
 		return value;
 	};
 	const next: Partial<Usage> = { ...state };
@@ -385,22 +383,40 @@ function mergeOpenAIUsage(state: Partial<Usage>, raw: NonNullable<OpenAIChunk["u
 	return next;
 }
 
-function usageSnapshot(state: Partial<Usage>): Usage { return { ...state }; }
+function usageSnapshot(state: Partial<Usage>): Usage {
+	return { ...state };
+}
 
-function thinkingRequest(level: ThinkingLevel | undefined, format: ThinkingWireFormat = "openai"): Record<string, unknown> {
- if (!level) return {};
- if (format === "deepseek") return { thinking: { type: level === "off" ? "disabled" : "enabled" }, ...(level === "off" ? {} : { reasoning_effort: level }) };
- if (format === "qwen") return { enable_thinking: level !== "off" };
- return { reasoning_effort: level === "off" ? "none" : level };
+function thinkingRequest(
+	level: ThinkingLevel | undefined,
+	format: ThinkingWireFormat = "openai",
+): Record<string, unknown> {
+	if (!level) return {};
+	if (format === "deepseek")
+		return {
+			thinking: { type: level === "off" ? "disabled" : "enabled" },
+			...(level === "off" ? {} : { reasoning_effort: level }),
+		};
+	if (format === "qwen") return { enable_thinking: level !== "off" };
+	return { reasoning_effort: level === "off" ? "none" : level };
 }
 
 export function toWireMessages(messages: ModelRequest["messages"], thinkingFormat?: ThinkingWireFormat): unknown[] {
 	const wire: unknown[] = [];
- let toolImages: unknown[] = [];
- const flushImages = () => { if (toolImages.length) { wire.push({ role: 'user', content: toolImages }); toolImages = []; } };
- const imageParts = (images: NonNullable<ModelRequest['messages'][number]['images']>) => images.map(image => ({ type: 'image_url', image_url: { url: 'data:' + image.mimeType + ';base64,' + image.data } }));
+	let toolImages: unknown[] = [];
+	const flushImages = () => {
+		if (toolImages.length) {
+			wire.push({ role: "user", content: toolImages });
+			toolImages = [];
+		}
+	};
+	const imageParts = (images: NonNullable<ModelRequest["messages"][number]["images"]>) =>
+		images.map((image) => ({
+			type: "image_url",
+			image_url: { url: "data:" + image.mimeType + ";base64," + image.data },
+		}));
 	for (const message of messages) {
-  if (message.role !== 'tool') flushImages();
+		if (message.role !== "tool") flushImages();
 		if (message.role === "assistant") {
 			const hasToolCalls = Boolean(message.tool_calls && message.tool_calls.length > 0);
 			const hasThinking = Boolean(message.thinking && thinkingFormat === "deepseek");
@@ -414,9 +430,7 @@ export function toWireMessages(messages: ModelRequest["messages"], thinkingForma
 			// DeepSeek thinking 模式要求 assistant 帧携带 reasoning_content 才能继续生成：
 			// 无推理时发空串（="无推理"，实测放行），缺字段则 400
 			//（`reasoning_content` in the thinking mode must be passed back）。
-			const reasoningField = thinkingFormat === "deepseek"
-				? { reasoning_content: message.thinking ?? "" }
-				: {};
+			const reasoningField = thinkingFormat === "deepseek" ? { reasoning_content: message.thinking ?? "" } : {};
 
 			wire.push({
 				role: "assistant",
@@ -428,20 +442,21 @@ export function toWireMessages(messages: ModelRequest["messages"], thinkingForma
 								type: "function",
 								function: {
 									name: call.name,
-									arguments:
-										typeof call.args === "string"
-											? call.args
-											: JSON.stringify(call.args ?? {}),
+									arguments: typeof call.args === "string" ? call.args : JSON.stringify(call.args ?? {}),
 								},
 							})),
 						}
 					: {}),
-				...(reasoningField),
+				...reasoningField,
 			});
 			continue;
 		}
 		if (message.role === "tool") {
-   if (message.images?.length) toolImages.push({ type: 'text', text: 'Images from tool call ' + message.tool_call_id }, ...imageParts(message.images));
+			if (message.images?.length)
+				toolImages.push(
+					{ type: "text", text: "Images from tool call " + message.tool_call_id },
+					...imageParts(message.images),
+				);
 			wire.push({
 				role: "tool",
 				tool_call_id: message.tool_call_id,
@@ -449,9 +464,14 @@ export function toWireMessages(messages: ModelRequest["messages"], thinkingForma
 			});
 			continue;
 		}
-		wire.push({ role: message.role, content: message.images?.length ? [{ type: "text", text: message.content || "[image]" }, ...imageParts(message.images)] : message.content });
+		wire.push({
+			role: message.role,
+			content: message.images?.length
+				? [{ type: "text", text: message.content || "[image]" }, ...imageParts(message.images)]
+				: message.content,
+		});
 	}
- flushImages();
+	flushImages();
 	return wire;
 }
 

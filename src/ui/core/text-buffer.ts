@@ -5,8 +5,12 @@ export class TextBuffer {
 	private value = "";
 	private position = 0;
 
-	get text(): string { return this.value; }
-	get cursor(): number { return this.position; }
+	get text(): string {
+		return this.value;
+	}
+	get cursor(): number {
+		return this.position;
+	}
 	get cursorGrapheme(): string {
 		for (const segment of graphemeSegmenter.segment(this.value.slice(this.position))) return segment.segment;
 		return "";
@@ -34,7 +38,9 @@ export class TextBuffer {
 		}
 	}
 
-	get length(): number { return this.value.length; }
+	get length(): number {
+		return this.value.length;
+	}
 
 	insert(text: string): void {
 		if (!text) return;
@@ -75,8 +81,16 @@ export class TextBuffer {
 		this.position = 0;
 	}
 
-	moveLeft(): void { this.position = getPrevGraphemeIndex(this.value, this.position); }
-	moveRight(): void { this.position = getNextGraphemeIndex(this.value, this.position); }
-	moveHome(): void { this.position = 0; }
-	moveEnd(): void { this.position = this.value.length; }
+	moveLeft(): void {
+		this.position = getPrevGraphemeIndex(this.value, this.position);
+	}
+	moveRight(): void {
+		this.position = getNextGraphemeIndex(this.value, this.position);
+	}
+	moveHome(): void {
+		this.position = 0;
+	}
+	moveEnd(): void {
+		this.position = this.value.length;
+	}
 }

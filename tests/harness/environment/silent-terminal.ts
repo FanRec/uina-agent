@@ -35,9 +35,7 @@ export function createSilentTerminal(
 	rowsArg = 30,
 ): SilentTerminalResult {
 	const options: SilentTerminalOptions =
-		typeof optionsOrColumns === "number"
-			? { columns: optionsOrColumns, rows: rowsArg }
-			: optionsOrColumns;
+		typeof optionsOrColumns === "number" ? { columns: optionsOrColumns, rows: rowsArg } : optionsOrColumns;
 
 	let columns = options.columns ?? 120;
 	let rows = options.rows ?? 30;

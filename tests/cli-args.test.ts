@@ -20,8 +20,8 @@ describe("CLI Arguments Parser & Session Resolver", () => {
 		expect(parsed1.prompt).toBe("hello world");
 		expect(parsed1.rawPositionals).toEqual(["hello", "world"]);
 
-		const parsed2 = parseArgs(["\"multiple", "words", "in", "quotes\""]);
-		expect(parsed2.prompt).toBe("\"multiple words in quotes\"");
+		const parsed2 = parseArgs(['"multiple', "words", "in", 'quotes"']);
+		expect(parsed2.prompt).toBe('"multiple words in quotes"');
 	});
 
 	it("parses print flags (-p, --print)", () => {

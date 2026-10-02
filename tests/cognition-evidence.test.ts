@@ -15,10 +15,17 @@ import { mockTool } from "./harness/index.js";
 describe("M7 执行证据正文保全", () => {
 	test("transformResult 改写正文后，onDone 收到原始执行正文（journal 权威），返回值为改写投影", async () => {
 		const broker = new ToolBroker();
-		broker.register(mockTool("echo_tool", async (args) => ({ result: `echo:${String(args.msg)}`, status: "succeeded" }), {
-			description: "回显输入",
-			parameters: { type: "object", properties: { msg: { type: "string" } }, required: ["msg"], additionalProperties: false },
-		}));
+		broker.register(
+			mockTool("echo_tool", async (args) => ({ result: `echo:${String(args.msg)}`, status: "succeeded" }), {
+				description: "回显输入",
+				parameters: {
+					type: "object",
+					properties: { msg: { type: "string" } },
+					required: ["msg"],
+					additionalProperties: false,
+				},
+			}),
+		);
 
 		let observedInOnDone: { result: string; status: string } | undefined;
 		const outcome = await executeToolPipeline(
@@ -44,16 +51,24 @@ describe("M7 执行证据正文保全", () => {
 
 	test("无 transformResult 时 onDone 与返回值一致（无改写零差异）", async () => {
 		const broker = new ToolBroker();
-		broker.register(mockTool("plain_tool", async () => ({ result: "raw", status: "succeeded" }), {
-			description: "普通工具",
-			parameters: { type: "object", properties: {}, additionalProperties: false },
-		}));
+		broker.register(
+			mockTool("plain_tool", async () => ({ result: "raw", status: "succeeded" }), {
+				description: "普通工具",
+				parameters: { type: "object", properties: {}, additionalProperties: false },
+			}),
+		);
 
 		const seen: string[] = [];
 		const outcome = await executeToolPipeline(
 			broker,
 			{ callId: "c-2", name: "plain_tool", args: {} },
-			{ observers: { onDone: (res) => { seen.push(res.result); } } },
+			{
+				observers: {
+					onDone: (res) => {
+						seen.push(res.result);
+					},
+				},
+			},
 		);
 		expect(seen).toEqual(["raw"]);
 		expect(outcome.result).toBe("raw");
@@ -61,17 +76,27 @@ describe("M7 执行证据正文保全", () => {
 
 	test("hook 抛异常时 onDone 收到原始结果（钩子异常不丢已执行事实）", async () => {
 		const broker = new ToolBroker();
-		broker.register(mockTool("crash_hook", async () => ({ result: "real", status: "succeeded" }), {
-			description: "hook 崩溃",
-			parameters: { type: "object", properties: {}, additionalProperties: false },
-		}));
+		broker.register(
+			mockTool("crash_hook", async () => ({ result: "real", status: "succeeded" }), {
+				description: "hook 崩溃",
+				parameters: { type: "object", properties: {}, additionalProperties: false },
+			}),
+		);
 		const seen: string[] = [];
 		await executeToolPipeline(
 			broker,
 			{ callId: "c-3", name: "crash_hook", args: {} },
 			{
-				hooks: { transformResult: async () => { throw new Error("hook 崩溃"); } },
-				observers: { onDone: (res) => { seen.push(res.result); } },
+				hooks: {
+					transformResult: async () => {
+						throw new Error("hook 崩溃");
+					},
+				},
+				observers: {
+					onDone: (res) => {
+						seen.push(res.result);
+					},
+				},
 			},
 		);
 		expect(seen).toEqual(["real"]);

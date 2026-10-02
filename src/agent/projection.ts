@@ -18,17 +18,17 @@ export function projectModelHistory(entries: readonly SessionEntry[]): ChatMsg[]
  * 历史/形塑解释"。
  */
 export interface ProjectionPolicy {
- /** Function declarations used by projected history; never executable. */
- contextTools?: readonly import("../core/types.js").ToolDef[];
- /** Final validation after context transformations; does not alter history. */
- validateContext?: (messages: readonly ChatMsg[], request: { model: import("../core/types.js").Model; tools: readonly import("../core/types.js").ToolDef[] }) => void;
+	/** Function declarations used by projected history; never executable. */
+	contextTools?: readonly import("../core/types.js").ToolDef[];
+	/** Final validation after context transformations; does not alter history. */
+	validateContext?: (
+		messages: readonly ChatMsg[],
+		request: { model: import("../core/types.js").Model; tools: readonly import("../core/types.js").ToolDef[] },
+	) => void;
 	/** journal→memory 投影（大半径极少使用；state 供 policy 访问 auxiliary timeline）。 */
 	projectHistory?: (entries: readonly SessionEntry[], state: CanonicalState) => AgentMessage[];
 	/** memory→provider 形塑（provider 边界；每请求态，失败只报 provider 错、不伤 journal）。 */
-	convertToLlm?: (
-		messages: readonly (AgentMessage | ChatMsg)[],
-		opts?: { includeThinking?: boolean },
-	) => ChatMsg[];
+	convertToLlm?: (messages: readonly (AgentMessage | ChatMsg)[], opts?: { includeThinking?: boolean }) => ChatMsg[];
 }
 
 /** 解析后的策略：两个字段均为现役实现（缺省回落默认，无静默空位）。 */
@@ -57,8 +57,8 @@ export function requestToolDefs(executable: readonly ToolDef[], contextTools: re
 /** 默认解析单点：Subject 构造时调用；默认实现即本模块组合的两个自由函数。 */
 export function resolveProjectionPolicy(policy?: ProjectionPolicy): ResolvedProjection {
 	return {
-        contextTools: structuredClone(policy?.contextTools ?? []),
-        validateContext: policy?.validateContext ?? (() => {}),
+		contextTools: structuredClone(policy?.contextTools ?? []),
+		validateContext: policy?.validateContext ?? (() => {}),
 		projectHistory: policy?.projectHistory
 			? protectCanonicalContinuity(policy.projectHistory)
 			: (entries) => projectAgentHistory(entries),

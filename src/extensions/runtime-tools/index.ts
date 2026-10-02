@@ -26,7 +26,7 @@ export function activateRuntimeTools(services: RuntimeToolsServices): ExtensionA
 		pi.registerTool(createExecCommandTool(services.jobs, "root", pi.cwd));
 		for (const tool of createJobTools(services.jobs, "root")) pi.registerTool(tool);
 		for (const tool of createSubagentTools(services.subagents, "root")) pi.registerTool(tool);
-		const unsubscribe = services.jobs.onResolved(job => {
+		const unsubscribe = services.jobs.onResolved((job) => {
 			const abandoned = services.isTaskAbandoned?.(job.id) ?? false;
 			const input = {
 				id: `job-notice-${job.id}`,
@@ -40,8 +40,9 @@ export function activateRuntimeTools(services: RuntimeToolsServices): ExtensionA
 				text: `后台任务 ${job.id} 已结束，状态：${job.status}。任务：${job.label}。${abandoned ? "（注意：该任务由已回溯放弃的旧分支启动）" : ""}按需使用 job_output 读取结果；无需回复时可保持安静。`,
 				data: { status: job.status, source: job.source },
 			};
-			const delivery = job.ownerId === "root" ? pi.submitInput(input) : services.subagents.acceptInput(job.ownerId, input);
-			void delivery.catch(error => pi.ui.notify(`[runtime-tools] 后台结果投递失败：${String(error)}`, "error"));
+			const delivery =
+				job.ownerId === "root" ? pi.submitInput(input) : services.subagents.acceptInput(job.ownerId, input);
+			void delivery.catch((error) => pi.ui.notify(`[runtime-tools] 后台结果投递失败：${String(error)}`, "error"));
 		});
 		return async () => {
 			unsubscribe();

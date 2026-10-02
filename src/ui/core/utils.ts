@@ -89,7 +89,7 @@ export function isFullWidth(cp: number): boolean {
 		cp === 0x2b50 || // ⭐
 		cp === 0x2b55 || // ⭕
 		cp === 0x23f3 || // ⏳
-		cp === 0x231b    // ⌛
+		cp === 0x231b // ⌛
 	);
 }
 
@@ -269,12 +269,11 @@ export function expandTabs(text: string): string {
 /**
  * 从指定位置提取完整的 ANSI 控制码（用于流式扫描）
  */
-export function extractAnsiCode(
-	text: string,
-	index: number,
-): { code: string; length: number } | null {
+export function extractAnsiCode(text: string, index: number): { code: string; length: number } | null {
 	if (text[index] !== "\x1b") return null;
-	const match = text.slice(index).match(/^(?:\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x07\x1b]*(?:\x07|\x1b\\))/);
+	const match = text
+		.slice(index)
+		.match(/^(?:\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x07\x1b]*(?:\x07|\x1b\\))/);
 	if (match && match[0]) {
 		return { code: match[0], length: match[0].length };
 	}
@@ -285,11 +284,7 @@ export function extractAnsiCode(
  * ANSI 安全的字符截断：
  * 绝不在 ANSI 序列中间截断，超出宽度时在末尾附加 ellipsis 并补充 reset 样式。
  */
-export function truncateToWidth(
-	text: string,
-	maxWidth: number,
-	ellipsis = "…",
-): string {
+export function truncateToWidth(text: string, maxWidth: number, ellipsis = "…"): string {
 	if (maxWidth <= 0) return "";
 	if (visibleWidth(text) <= maxWidth) return text;
 

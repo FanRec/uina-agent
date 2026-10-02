@@ -75,7 +75,13 @@ function interpolateColor(a: Rgb, b: Rgb, factor: number): Rgb {
 	};
 }
 
-export function sweep(text: string, timeMs: number, base: Rgb = ICE_RGB, highlight: Rgb = FLASH_RGB, stepMs = 60): string {
+export function sweep(
+	text: string,
+	timeMs: number,
+	base: Rgb = ICE_RGB,
+	highlight: Rgb = FLASH_RGB,
+	stepMs = 60,
+): string {
 	if (!text) return "";
 	const width = visibleWidth(text);
 	const cycle = width + 18;
@@ -205,11 +211,7 @@ export interface ActivityHeaderMetrics {
 /**
  * 纯函数：根据度量快照格式化终端状态行（解耦状态与排版视图）
  */
-export function formatActivityHeader(
-	metrics: ActivityHeaderMetrics,
-	maxWidth = 60,
-	now = Date.now(),
-): string {
+export function formatActivityHeader(metrics: ActivityHeaderMetrics, maxWidth = 60, now = Date.now()): string {
 	if (metrics.phase === "idle" || maxWidth <= 0) return "";
 	const seconds = (Math.max(0, metrics.elapsedMs) / 1000).toFixed(1);
 	const tokens = metrics.outputTokens;
@@ -388,7 +390,10 @@ export class ActivityLineComponent implements Component {
 		// 当前 step 自身跨度 > 500ms → 用「已结算累计 + 当前 step」重算；
 		// 不足 500ms（或处于 tool 阶段）→ 沿用已结算的累计值，不把刚起步的 step 混进分母，工具耗时亦不稀释流速；
 		// 没有任何已结算 step 时 → 保持 0（未知不是 0）。
-		const openMs = this.stepFirstTokenAt === 0 ? 0 : Math.max(0, (this.stepUsageAt > 0 ? this.stepUsageAt : this.stepLastTokenAt) - this.stepFirstTokenAt);
+		const openMs =
+			this.stepFirstTokenAt === 0
+				? 0
+				: Math.max(0, (this.stepUsageAt > 0 ? this.stepUsageAt : this.stepLastTokenAt) - this.stepFirstTokenAt);
 		if (openMs > 500) {
 			const decodeMs = this.decodeMs();
 			if (tokens > 0 && decodeMs > 0) return { tps: Math.round(tokens / (decodeMs / 1000)), avgTps: 0 };

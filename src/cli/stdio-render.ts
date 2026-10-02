@@ -24,7 +24,8 @@ const STDIO_LINES: {
 	turn_end: () => "\n",
 	session_rewind: (m) => `\n[会话回溯] ${m.fromId} → ${m.targetId}；退出路径只读，外部状态未撤销。\n`,
 	notice: (m) => `\n⚠ ${m.text}\n`,
-	provider_retry: (m) => `\n⚠ ${m.provider} 连接失败（${m.status === undefined ? m.reason : `HTTP ${m.status}`}），${(m.delayMs / 1000).toFixed(1)} 秒后重试，第 ${m.attempt} 次\n`,
+	provider_retry: (m) =>
+		`\n⚠ ${m.provider} 连接失败（${m.status === undefined ? m.reason : `HTTP ${m.status}`}），${(m.delayMs / 1000).toFixed(1)} 秒后重试，第 ${m.attempt} 次\n`,
 	provider_recovered: (m) => `\n✓ ${m.provider} 已恢复连接，继续当前请求\n`,
 	turn_aborted: () => "\n[已打断]\n",
 	error: (m) => `[错误] ${m.text}\n`,
@@ -42,10 +43,7 @@ export function formatToolCallLine(message: Extract<HostEvent, { type: "tool_cal
 }
 
 /** 工具结果块：可选图片行 + 状态行 + 折叠结果行（elapsed 由调用方按 startedAt 计）。 */
-export function formatToolResultBlock(
-	message: Extract<HostEvent, { type: "tool_result" }>,
-	elapsedMs: number,
-): string {
+export function formatToolResultBlock(message: Extract<HostEvent, { type: "tool_result" }>, elapsedMs: number): string {
 	const parts: string[] = [];
 	if (message.images?.length) {
 		parts.push("\n  [图片: " + message.images.map((image) => image.alt ?? image.mimeType).join(", ") + "]");

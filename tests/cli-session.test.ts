@@ -33,16 +33,20 @@ describe("CLI session recovery", () => {
 			}
 			let body = "";
 			request.setEncoding("utf8");
-			request.on("data", (chunk: string) => { body += chunk; });
+			request.on("data", (chunk: string) => {
+				body += chunk;
+			});
 			request.on("end", () => {
 				requests.push(JSON.parse(body) as { messages?: Array<{ role?: string; content?: string }> });
 				response.writeHead(200, { "content-type": "text/event-stream" });
-				response.end([
-					'data: {"choices":[{"delta":{"content":"SESSION_ORDER_OK"}}]}',
-					'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
-					"data: [DONE]",
-					"",
-				].join("\n\n"));
+				response.end(
+					[
+						'data: {"choices":[{"delta":{"content":"SESSION_ORDER_OK"}}]}',
+						'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+						"data: [DONE]",
+						"",
+					].join("\n\n"),
+				);
 			});
 		});
 		servers.push(server);
@@ -50,29 +54,41 @@ describe("CLI session recovery", () => {
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("测试 Provider 地址不可用");
 
-		await root.writeFile(join("home", ".uina", "auth.json"), JSON.stringify({
-			default: "audit",
-			thinkingLevel: "off",
-			providers: {
-				audit: {
-					type: "openai-compatible",
-					baseUrl: `http://127.0.0.1:${address.port}/v1`,
-					apiKey: "local-test",
-					model: "audit-model",
-					modelContextWindow: 32768,
-					thinkingLevels: ["off"],
+		await root.writeFile(
+			join("home", ".uina", "auth.json"),
+			JSON.stringify({
+				default: "audit",
+				thinkingLevel: "off",
+				providers: {
+					audit: {
+						type: "openai-compatible",
+						baseUrl: `http://127.0.0.1:${address.port}/v1`,
+						apiKey: "local-test",
+						model: "audit-model",
+						modelContextWindow: 32768,
+						thinkingLevels: ["off"],
+					},
 				},
-			},
-		}));
+			}),
+		);
 
 		const timestamp = new Date(0).toISOString();
-		await root.writeFile(join("work", "data", "session.jsonl"), [
-			JSON.stringify({ kind: "header", version: 3, id: "session", cwd, createdAt: timestamp }),
-			JSON.stringify({ kind: "message", id: "1", seq: 1, timestamp, message: { role: "user", content: "ORDER_A" } }),
-			JSON.stringify({ kind: "custom_message", id: "2", seq: 2, timestamp, customType: "probe", content: "ORDER_C" }),
-			JSON.stringify({ kind: "message", id: "3", seq: 3, timestamp, message: { role: "assistant", content: "ORDER_B" } }),
-			"",
-		].join("\n"));
+		await root.writeFile(
+			join("work", "data", "session.jsonl"),
+			[
+				JSON.stringify({ kind: "header", version: 3, id: "session", cwd, createdAt: timestamp }),
+				JSON.stringify({ kind: "message", id: "1", seq: 1, timestamp, message: { role: "user", content: "ORDER_A" } }),
+				JSON.stringify({ kind: "custom_message", id: "2", seq: 2, timestamp, customType: "probe", content: "ORDER_C" }),
+				JSON.stringify({
+					kind: "message",
+					id: "3",
+					seq: 3,
+					timestamp,
+					message: { role: "assistant", content: "ORDER_B" },
+				}),
+				"",
+			].join("\n"),
+		);
 
 		const child = spawn(
 			process.execPath,
@@ -85,17 +101,27 @@ describe("CLI session recovery", () => {
 		);
 		let stdout = "";
 		let stderr = "";
-		child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-		child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+		child.stdout.on("data", (chunk) => {
+			stdout += String(chunk);
+		});
+		child.stderr.on("data", (chunk) => {
+			stderr += String(chunk);
+		});
 		const exitCode = await new Promise<number | null>((resolve) => child.on("close", resolve));
 
 		expect(exitCode, stderr).toBe(0);
 		expect(stdout).toContain("SESSION_ORDER_OK");
 		// 默认事件帧装配下：外部输入（ORDER_A/ORDER_NEXT）以 external_event_frame 回执呈现，
 		// custom 消息（ORDER_C）带 [内部信息] 来源标注前缀；顺序语义保持 A → C → B → NEXT。
-		const joined = (requests[0]?.messages ?? []).map((message) => message.content).filter((value): value is string => value !== undefined).join("\n---\n");
+		const joined = (requests[0]?.messages ?? [])
+			.map((message) => message.content)
+			.filter((value): value is string => value !== undefined)
+			.join("\n---\n");
 		const order = ["ORDER_A", "ORDER_C", "ORDER_B", "ORDER_NEXT"].map((token) => joined.indexOf(token));
-		expect(order.every((index) => index >= 0), joined).toBe(true);
+		expect(
+			order.every((index) => index >= 0),
+			joined,
+		).toBe(true);
 		expect(order, joined).toEqual([...order].sort((a, b) => a - b));
 		// 外部正文不直接暴露为 user 消息，只存在于帧回执 JSON 内。
 		expect((requests[0]?.messages ?? []).some((message) => message.content === "ORDER_A")).toBe(false);
@@ -121,17 +147,18 @@ describe("CLI session recovery", () => {
 			}
 			chatRequests++;
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			const events = chatRequests === 1
-				? [
-						'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"get_time","arguments":"{}"}}]}}]}',
-						'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
-						"data: [DONE]",
-					]
-				: [
-						'data: {"choices":[{"delta":{"content":"RUNTIME_SCOPE_OK"}}]}',
-						'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
-						"data: [DONE]",
-					];
+			const events =
+				chatRequests === 1
+					? [
+							'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"get_time","arguments":"{}"}}]}}]}',
+							'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+							"data: [DONE]",
+						]
+					: [
+							'data: {"choices":[{"delta":{"content":"RUNTIME_SCOPE_OK"}}]}',
+							'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+							"data: [DONE]",
+						];
 			response.end(`${events.join("\n\n")}\n\n`);
 		});
 		servers.push(server);
@@ -139,20 +166,23 @@ describe("CLI session recovery", () => {
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("测试 Provider 地址不可用");
 
-		await root.writeFile(join("home", ".uina", "auth.json"), JSON.stringify({
-			default: "audit",
-			thinkingLevel: "off",
-			providers: {
-				audit: {
-					type: "openai-compatible",
-					baseUrl: `http://127.0.0.1:${address.port}/v1`,
-					apiKey: "local-test",
-					model: "audit-model",
-					modelContextWindow: 32768,
-					thinkingLevels: ["off"],
+		await root.writeFile(
+			join("home", ".uina", "auth.json"),
+			JSON.stringify({
+				default: "audit",
+				thinkingLevel: "off",
+				providers: {
+					audit: {
+						type: "openai-compatible",
+						baseUrl: `http://127.0.0.1:${address.port}/v1`,
+						apiKey: "local-test",
+						model: "audit-model",
+						modelContextWindow: 32768,
+						thinkingLevels: ["off"],
+					},
 				},
-			},
-		}));
+			}),
+		);
 
 		const child = spawn(
 			process.execPath,
@@ -165,8 +195,12 @@ describe("CLI session recovery", () => {
 		);
 		let stdout = "";
 		let stderr = "";
-		child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-		child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+		child.stdout.on("data", (chunk) => {
+			stdout += String(chunk);
+		});
+		child.stderr.on("data", (chunk) => {
+			stderr += String(chunk);
+		});
 		const exitCode = await new Promise<number | null>((resolve, reject) => {
 			child.on("error", reject);
 			child.on("close", resolve);
@@ -206,52 +240,68 @@ describe("CLI provider protocol closure", () => {
 			}
 			chatRequests++;
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			const events = chatRequests === 1
-				? [
-						{ type: "message_start", message: { usage: { input_tokens: 4 } } },
-						{ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "cli-call", name: "get_time" } },
-						{ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{}" } },
-						{ type: "content_block_stop", index: 0 },
-						{ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 1 } },
-						{ type: "message_stop" },
-					]
-				: [
-						{ type: "message_start", message: { usage: { input_tokens: 7 } } },
-						{ type: "content_block_start", index: 0, content_block: { type: "text", text: "ANTHROPIC_CLI_OK" } },
-						{ type: "content_block_stop", index: 0 },
-						{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } },
-						{ type: "message_stop" },
-					];
+			const events =
+				chatRequests === 1
+					? [
+							{ type: "message_start", message: { usage: { input_tokens: 4 } } },
+							{
+								type: "content_block_start",
+								index: 0,
+								content_block: { type: "tool_use", id: "cli-call", name: "get_time" },
+							},
+							{ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{}" } },
+							{ type: "content_block_stop", index: 0 },
+							{ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 1 } },
+							{ type: "message_stop" },
+						]
+					: [
+							{ type: "message_start", message: { usage: { input_tokens: 7 } } },
+							{ type: "content_block_start", index: 0, content_block: { type: "text", text: "ANTHROPIC_CLI_OK" } },
+							{ type: "content_block_stop", index: 0 },
+							{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } },
+							{ type: "message_stop" },
+						];
 			response.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
 		});
 		servers.push(server);
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("测试 Provider 地址不可用");
-		await root.writeFile(join("home", ".uina", "auth.json"), JSON.stringify({
-			default: "anthropic",
-			thinkingLevel: "off",
-			providers: {
-				anthropic: {
-					type: "anthropic",
-					baseUrl: `http://127.0.0.1:${address.port}/v1`,
-					apiKey: "local-test",
-					model: "anthropic-local",
-					modelContextWindow: 32768,
-					maxOutputTokens: 4096,
-					thinkingLevels: ["off"],
+		await root.writeFile(
+			join("home", ".uina", "auth.json"),
+			JSON.stringify({
+				default: "anthropic",
+				thinkingLevel: "off",
+				providers: {
+					anthropic: {
+						type: "anthropic",
+						baseUrl: `http://127.0.0.1:${address.port}/v1`,
+						apiKey: "local-test",
+						model: "anthropic-local",
+						modelContextWindow: 32768,
+						maxOutputTokens: 4096,
+						thinkingLevels: ["off"],
+					},
 				},
+			}),
+		);
+		const child = spawn(
+			process.execPath,
+			[join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"), join(process.cwd(), "src", "main.ts")],
+			{
+				cwd,
+				env: { ...process.env, UINA_HOME: home, UINA_ONESHOT_MSG: "调用时间工具" },
+				stdio: ["ignore", "pipe", "pipe"],
 			},
-		}));
-		const child = spawn(process.execPath, [join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"), join(process.cwd(), "src", "main.ts")], {
-			cwd,
-			env: { ...process.env, UINA_HOME: home, UINA_ONESHOT_MSG: "调用时间工具" },
-			stdio: ["ignore", "pipe", "pipe"],
-		});
+		);
 		let stdout = "";
 		let stderr = "";
-		child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-		child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+		child.stdout.on("data", (chunk) => {
+			stdout += String(chunk);
+		});
+		child.stderr.on("data", (chunk) => {
+			stderr += String(chunk);
+		});
 		const exitCode = await new Promise<number | null>((resolve, reject) => {
 			child.on("error", reject);
 			child.on("close", resolve);
@@ -271,7 +321,9 @@ describe("CLI provider protocol closure", () => {
 		const server = createServer((request, response) => {
 			if (request.url?.startsWith("/v1beta/models?") || request.url === "/v1beta/models") {
 				response.writeHead(200, { "content-type": "application/json" });
-				response.end('{"models":[{"baseModelId":"gemini-local","inputTokenLimit":4096,"supportedGenerationMethods":["generateContent"]}]}');
+				response.end(
+					'{"models":[{"baseModelId":"gemini-local","inputTokenLimit":4096,"supportedGenerationMethods":["generateContent"]}]}',
+				);
 				return;
 			}
 			if (!request.url?.startsWith("/v1beta/models/gemini-local:streamGenerateContent")) {
@@ -280,45 +332,61 @@ describe("CLI provider protocol closure", () => {
 			}
 			chatRequests++;
 			response.writeHead(200, { "content-type": "text/event-stream" });
-			const events = chatRequests === 1
-				? [
-						{ candidates: [{ content: { parts: [{ functionCall: { id: "gemini-cli-call", name: "get_time", args: {} } }] } }] },
-						{ candidates: [{ finishReason: "STOP" }] },
-					]
-				: [
-						{ candidates: [{ content: { parts: [{ text: "GEMINI_CLI_OK" }] } }] },
-						{ candidates: [{ finishReason: "STOP" }] },
-					];
+			const events =
+				chatRequests === 1
+					? [
+							{
+								candidates: [
+									{ content: { parts: [{ functionCall: { id: "gemini-cli-call", name: "get_time", args: {} } }] } },
+								],
+							},
+							{ candidates: [{ finishReason: "STOP" }] },
+						]
+					: [
+							{ candidates: [{ content: { parts: [{ text: "GEMINI_CLI_OK" }] } }] },
+							{ candidates: [{ finishReason: "STOP" }] },
+						];
 			response.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""));
 		});
 		servers.push(server);
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 		const address = server.address();
 		if (!address || typeof address === "string") throw new Error("测试 Provider 地址不可用");
-		await root.writeFile(join("home", ".uina", "auth.json"), JSON.stringify({
-			default: "gemini",
-			thinkingLevel: "off",
-			providers: {
-				gemini: {
-					type: "gemini",
-					baseUrl: `http://127.0.0.1:${address.port}/v1beta`,
-					apiKey: "local-test",
-					model: "gemini-local",
-					modelContextWindow: 32768,
-					thinkingLevels: ["off"],
-					geminiToolCallIds: true,
+		await root.writeFile(
+			join("home", ".uina", "auth.json"),
+			JSON.stringify({
+				default: "gemini",
+				thinkingLevel: "off",
+				providers: {
+					gemini: {
+						type: "gemini",
+						baseUrl: `http://127.0.0.1:${address.port}/v1beta`,
+						apiKey: "local-test",
+						model: "gemini-local",
+						modelContextWindow: 32768,
+						thinkingLevels: ["off"],
+						geminiToolCallIds: true,
+					},
 				},
+			}),
+		);
+		const child = spawn(
+			process.execPath,
+			[join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"), join(process.cwd(), "src", "main.ts")],
+			{
+				cwd,
+				env: { ...process.env, UINA_HOME: home, UINA_ONESHOT_MSG: "调用时间工具" },
+				stdio: ["ignore", "pipe", "pipe"],
 			},
-		}));
-		const child = spawn(process.execPath, [join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"), join(process.cwd(), "src", "main.ts")], {
-			cwd,
-			env: { ...process.env, UINA_HOME: home, UINA_ONESHOT_MSG: "调用时间工具" },
-			stdio: ["ignore", "pipe", "pipe"],
-		});
+		);
 		let stdout = "";
 		let stderr = "";
-		child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-		child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+		child.stdout.on("data", (chunk) => {
+			stdout += String(chunk);
+		});
+		child.stderr.on("data", (chunk) => {
+			stderr += String(chunk);
+		});
 		const exitCode = await new Promise<number | null>((resolve, reject) => {
 			child.on("error", reject);
 			child.on("close", resolve);

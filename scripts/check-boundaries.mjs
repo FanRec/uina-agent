@@ -15,18 +15,34 @@ const Q = "['\"]";
 function importsSegment(source, segment) {
 	const tail = "/" + segment + "(?:/|" + Q + ")";
 	return new RegExp(
-		"(?:from\\s*" + Q + "[^\"']*" + tail +
-		"|import\\s*\\(\\s*" + Q + "[^\"']*" + tail +
-		"|require\\(\\s*" + Q + "[^\"']*" + tail + ")",
+		"(?:from\\s*" +
+			Q +
+			"[^\"']*" +
+			tail +
+			"|import\\s*\\(\\s*" +
+			Q +
+			"[^\"']*" +
+			tail +
+			"|require\\(\\s*" +
+			Q +
+			"[^\"']*" +
+			tail +
+			")",
 	).test(source);
 }
 
 /** Match an import path ending in `/ui/<not core>/...` — the UI implementation. */
 function importsUiImplementation(source) {
 	return new RegExp(
-		"(?:from\\s*" + Q + "[^\"']*/ui/(?!core/)" +
-		"|import\\s*\\(\\s*" + Q + "[^\"']*/ui/(?!core/)" +
-		"|require\\(\\s*" + Q + "[^\"']*/ui/(?!core/))",
+		"(?:from\\s*" +
+			Q +
+			"[^\"']*/ui/(?!core/)" +
+			"|import\\s*\\(\\s*" +
+			Q +
+			"[^\"']*/ui/(?!core/)" +
+			"|require\\(\\s*" +
+			Q +
+			"[^\"']*/ui/(?!core/))",
 	).test(source);
 }
 
@@ -66,8 +82,7 @@ const rules = [
 		// 宿主装配（host）、UI 实现（ui）与 AI 配置层（ai）一律不可达。
 		name: "kernel must not depend on host, ui or ai config layers",
 		roots: ["src/agent", "src/session", "src/core", "src/tools", "src/runtime"],
-		test: (source) =>
-			["host", "ui", "ai"].some((segment) => importsSegment(source, segment)),
+		test: (source) => ["host", "ui", "ai"].some((segment) => importsSegment(source, segment)),
 	},
 ];
 

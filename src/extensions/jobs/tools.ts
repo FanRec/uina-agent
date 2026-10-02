@@ -66,5 +66,3 @@ export function createJobTools(jobs: JobRegistry, ownerId: string): Tool[] {
 		),
 	];
 }
-
-

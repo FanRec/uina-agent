@@ -58,13 +58,18 @@ export class SubagentRegistry {
 
 	private notifyChanged(): void {
 		for (const listener of this.changed) {
-			try { listener(); } catch { /* observers cannot alter lifecycle */ }
+			try {
+				listener();
+			} catch {
+				/* observers cannot alter lifecycle */
+			}
 		}
 	}
 
 	start(request: SubagentStartOptions): SubagentSnapshot {
 		if (!this.accepting) throw new Error("子代理服务已关闭");
-		if (!request.ownerId || !request.label.trim() || !request.prompt.trim()) throw new Error("子代理需要 ownerId、label 和 prompt");
+		if (!request.ownerId || !request.label.trim() || !request.prompt.trim())
+			throw new Error("子代理需要 ownerId、label 和 prompt");
 		const id = `subagent-${randomUUID()}`;
 		const record = this.makeRecord(id, request);
 		this.records.set(id, record);
@@ -160,8 +165,8 @@ export class SubagentRegistry {
 			measureContext: this.options.measureContext,
 			tools: this.options.createTools(id),
 			thinkingLevel: this.options.thinkingLevel,
-            projection: this.options.projection,
-            systemPrompt: this.options.systemPrompt,
+			projection: this.options.projection,
+			systemPrompt: this.options.systemPrompt,
 		});
 		// record 先于 subscribe 完整构造：回调里引用的对象必须在任何事件可能到达前就绪，
 		// 不依赖"subscribe 与赋值之间没有 await"这类隐式时序。
@@ -195,7 +200,12 @@ export class SubagentRegistry {
 		await this.run(record, prompt, "subagent-start", false);
 	}
 
-	private async run(record: TrackedSubagent, text: string, inputType: "subagent-start" | "subagent-input", propagateFailure: boolean): Promise<void> {
+	private async run(
+		record: TrackedSubagent,
+		text: string,
+		inputType: "subagent-start" | "subagent-input",
+		propagateFailure: boolean,
+	): Promise<void> {
 		try {
 			await record.handle.send({
 				id: `${inputType}-${record.id}-${randomUUID()}`,
@@ -218,7 +228,7 @@ export class SubagentRegistry {
 			record.status = terminalStatus;
 			record.terminalStatus = terminalStatus;
 			try {
-			await record.handle.dispose();
+				await record.handle.dispose();
 			} catch (error) {
 				record.terminalStatus = "failed";
 				record.error = `释放失败：${errorMessage(error)}`;
@@ -263,4 +273,3 @@ export class SubagentRegistry {
 		};
 	}
 }
-

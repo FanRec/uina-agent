@@ -6,7 +6,12 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("BilibiliLiveClient initialization failures", () => {
 	it("preserves the original room API error for the reconnect layer", async () => {
-		vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("room API unavailable"); }));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw new Error("room API unavailable");
+			}),
+		);
 		const client = new BilibiliLiveClient({ roomId: 24194689 });
 
 		await expect(client.initRoom()).rejects.toThrow("room API unavailable");
@@ -15,7 +20,12 @@ describe("BilibiliLiveClient initialization failures", () => {
 
 describe("BilibiliLiveClient WebSocket handshake", () => {
 	it("sends the User-Agent that signs the danmaku token", async () => {
-		vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("room API unavailable"); }));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw new Error("room API unavailable");
+			}),
+		);
 		const client = new BilibiliLiveClient({ roomId: 24194689 });
 		const expectedHeaders = { "User-Agent": USER_AGENT };
 
@@ -37,7 +47,10 @@ describe("BilibiliLiveClient authenticated uid", () => {
 				});
 			}
 			if (url === "https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo") {
-				return response({ code: 0, data: { token: "token", host_list: [{ host: "example", port: 2243, wss_port: 443, ws_port: 2244 }] } });
+				return response({
+					code: 0,
+					data: { token: "token", host_list: [{ host: "example", port: 2243, wss_port: 443, ws_port: 2244 }] },
+				});
 			}
 			return response({ code: 0, data: { room_id: 24194689, short_id: 0, uid: 1, live_status: 0, title: "" } });
 		});
@@ -55,7 +68,10 @@ describe("BilibiliLiveClient authenticated uid", () => {
 	});
 
 	it("falls back to uid 0 when SESSDATA is not logged in", async () => {
-		vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ code: -101 }) })));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ code: -101 }) })),
+		);
 		expect(await fetchUserId()).toBe(0);
 		expect(await fetchUserId("session")).toBe(0);
 	});

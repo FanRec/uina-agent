@@ -280,10 +280,7 @@ function applyRewind(state: CanonicalState, record: SessionRewindRecord): void {
 /** 构造回溯候选 hydrated entry（pure、no mutation）：notice/effects/carriedInputs
  * 的唯一派生点，applyRewind 与 rewind 提交的 candidate 路径共享同一推导，
  * 保证"投影所见 = 落盘后 replay 所得"。要求 record 已通过 checkRecord。 */
-export function buildRewindCandidateEntry(
-	state: CanonicalState,
-	record: SessionRewindRecord,
-): HydratedSessionEntry {
+export function buildRewindCandidateEntry(state: CanonicalState, record: SessionRewindRecord): HydratedSessionEntry {
 	const index = state.entries.findIndex((entry) => entry.id === record.targetId);
 	const abandoned = state.entries.slice(index + 1);
 	const effects = summarizeAbandonedEffects(abandoned);
@@ -338,7 +335,7 @@ function applyEvent(state: CanonicalState, record: SessionEventRecord): void {
 				...(validImages(data.images) && data.images ? { images: data.images } : {}),
 				...(isInputSource(data.source) ? { source: data.source } : {}),
 				...(data.data !== undefined ? { data: data.data } : {}),
-                ...(typeof data.receivedAt === "string" ? { receivedAt: data.receivedAt } : {}),
+				...(typeof data.receivedAt === "string" ? { receivedAt: data.receivedAt } : {}),
 			});
 			return;
 		case "queue_restored":
@@ -469,13 +466,9 @@ export function planRecovery(state: CanonicalState): RecoveryPlan {
 	return { entries };
 }
 
-function recoveredToolMessage(
-	call: PendingCall,
-	finishedEvents: Map<string, ToolResultStatus>,
-): AgentMessage {
+function recoveredToolMessage(call: PendingCall, finishedEvents: Map<string, ToolResultStatus>): AgentMessage {
 	const finished = finishedEvents.get(call.callId);
-	const status: ToolResultStatus =
-		finished ?? (call.started ? "unknown" : "not_started");
+	const status: ToolResultStatus = finished ?? (call.started ? "unknown" : "not_started");
 	// finished 存在 = execution terminal 已是权威事实（含"副作用已发生"的信息量）；
 	// 结果文本未随 message 落盘，content 如实说明未知。
 	const content = JSON.stringify({
@@ -577,21 +570,23 @@ function collectCarriedInputs(abandoned: readonly SessionEntry[]): AgentMessage[
 
 function rewindMessages(entry: Extract<SessionEntry, { kind: "rewind" }>): AgentMessage[] {
 	const content = `${entry.notice}\n[当前主线从此处继续；被放弃分支仅在需要时通过只读历史查询]`;
-	return [{
-		id: `continuity:${entry.id}`,
-		role: "custom",
-		customType: "session-continuity",
-		content,
-		display: true,
-		// renderable 结构：效果事实与回溯身份从散文中独立出来，UI 可据此渲染。
-		details: {
-			rewindId: entry.id,
-			targetId: entry.record.targetId,
-			fromId: entry.record.fromId,
-			source: entry.record.source,
-			...(entry.effects ? { effects: entry.effects.effects } : {}),
+	return [
+		{
+			id: `continuity:${entry.id}`,
+			role: "custom",
+			customType: "session-continuity",
+			content,
+			display: true,
+			// renderable 结构：效果事实与回溯身份从散文中独立出来，UI 可据此渲染。
+			details: {
+				rewindId: entry.id,
+				targetId: entry.record.targetId,
+				fromId: entry.record.fromId,
+				source: entry.record.source,
+				...(entry.effects ? { effects: entry.effects.effects } : {}),
+			},
 		},
-	}];
+	];
 }
 
 /** Projects the ordered journal into the effective AgentMessage history, preserving custom messages. */
@@ -608,7 +603,10 @@ export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMess
 			continue;
 		}
 		if (entry.kind === "message") {
-			messages.push({ ...structuredClone(entry.message as AgentMessage), ...(!entry.message.id ? { id: entry.id } : {}) });
+			messages.push({
+				...structuredClone(entry.message as AgentMessage),
+				...(!entry.message.id ? { id: entry.id } : {}),
+			});
 			continue;
 		}
 		if (entry.kind === "custom_message") {
@@ -629,14 +627,18 @@ export function projectAgentHistory(entries: readonly SessionEntry[]): AgentMess
 
 /** Runtime inputs remain identifiable session facts, not human utterances. */
 export function projectInputMessage(input: QueuedInput): AgentMessage {
- const provenance = { eventId: input.id, ...(input.source ? { source: structuredClone(input.source) } : {}), ...(input.receivedAt ? { receivedAt: input.receivedAt } : {}) };
+	const provenance = {
+		eventId: input.id,
+		...(input.source ? { source: structuredClone(input.source) } : {}),
+		...(input.receivedAt ? { receivedAt: input.receivedAt } : {}),
+	};
 	if (input.source?.kind === "runtime" && input.source.origin !== "external") {
 		const prov = input.source.provenance?.abandoned ? " [来自废弃分支]" : "";
 		return {
 			role: "custom",
 			id: input.id,
 			input: provenance,
-            customType: "runtime-input",
+			customType: "runtime-input",
 			display: false,
 			images: input.images,
 			content: `[运行时事件 ${input.source.type}${input.source.ref ? ` · ${input.source.ref}` : ""}${prov}]\n${input.text}`,
@@ -645,7 +647,7 @@ export function projectInputMessage(input: QueuedInput): AgentMessage {
 	}
 	return {
 		role: "user",
-        input: provenance,
+		input: provenance,
 		id: input.id,
 		content: input.text,
 		images: input.images,
@@ -656,10 +658,14 @@ export function projectInputMessage(input: QueuedInput): AgentMessage {
  * notice is positioned at the head of the effective history, never at the
  * absolute tail where it would masquerade as the newest user prompt. */
 export function protectRewindContext(messages: AgentMessage[], entries: readonly SessionEntry[]): AgentMessage[] {
-	const latest = entries.findLast((entry): entry is Extract<SessionEntry, { kind: "rewind" }> => entry.kind === "rewind");
+	const latest = entries.findLast(
+		(entry): entry is Extract<SessionEntry, { kind: "rewind" }> => entry.kind === "rewind",
+	);
 	if (!latest) return messages;
 	const ids = new Set(messages.map((message) => message.id));
-	const missing = rewindMessages(latest).slice(0, 1).filter((message) => !ids.has(message.id));
+	const missing = rewindMessages(latest)
+		.slice(0, 1)
+		.filter((message) => !ids.has(message.id));
 	if (missing.length === 0) return messages;
 	return [...missing, ...messages];
 }
@@ -671,32 +677,44 @@ export function protectRewindContext(messages: AgentMessage[], entries: readonly
 function isInputSource(value: unknown): value is QueuedInput["source"] {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 	const source = value as Record<string, unknown>;
-	return (source.kind === "user" || source.kind === "runtime" || source.kind === "agent") && typeof source.type === "string"
- && (source.origin === undefined || source.origin === "external" || source.origin === "internal")
- && ["ref", "channel"].every(k => source[k] === undefined || typeof source[k] === "string")
- && (source.actor === undefined || validActor(source.actor))
- && (source.provenance === undefined || validProvenance(source.provenance));
+	return (
+		(source.kind === "user" || source.kind === "runtime" || source.kind === "agent") &&
+		typeof source.type === "string" &&
+		(source.origin === undefined || source.origin === "external" || source.origin === "internal") &&
+		["ref", "channel"].every((k) => source[k] === undefined || typeof source[k] === "string") &&
+		(source.actor === undefined || validActor(source.actor)) &&
+		(source.provenance === undefined || validProvenance(source.provenance))
+	);
 }
 
 function validActor(value: unknown): boolean {
- if (!value || typeof value !== "object" || Array.isArray(value)) return false;
- const a = value as Record<string, unknown>;
- return ["id", "label"].every(k => a[k] === undefined || typeof a[k] === "string")
-  && (a.relation === undefined || ["operator", "participant", "unknown"].includes(a.relation as string));
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const a = value as Record<string, unknown>;
+	return (
+		["id", "label"].every((k) => a[k] === undefined || typeof a[k] === "string") &&
+		(a.relation === undefined || ["operator", "participant", "unknown"].includes(a.relation as string))
+	);
 }
 function validProvenance(value: unknown): boolean {
- if (!value || typeof value !== "object" || Array.isArray(value)) return false;
- const p = value as Record<string, unknown>;
- return (p.branchId === undefined || typeof p.branchId === "string") && (p.abandoned === undefined || typeof p.abandoned === "boolean");
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const p = value as Record<string, unknown>;
+	return (
+		(p.branchId === undefined || typeof p.branchId === "string") &&
+		(p.abandoned === undefined || typeof p.abandoned === "boolean")
+	);
 }
 /** message.input 是输入记录的派生来源；类型非法的 provenance 一律拒绝入库。 */
 function isValidInputProvenance(value: unknown): boolean {
- if (value === undefined) return true;
- if (!value || typeof value !== "object" || Array.isArray(value)) return false;
- const prov = value as Record<string, unknown>;
- if (typeof prov.eventId !== "string" || prov.eventId.length === 0) return false;
- if (prov.receivedAt !== undefined && (typeof prov.receivedAt !== "string" || !Number.isFinite(Date.parse(prov.receivedAt)))) return false;
- return prov.source === undefined || isInputSource(prov.source);
+	if (value === undefined) return true;
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const prov = value as Record<string, unknown>;
+	if (typeof prov.eventId !== "string" || prov.eventId.length === 0) return false;
+	if (
+		prov.receivedAt !== undefined &&
+		(typeof prov.receivedAt !== "string" || !Number.isFinite(Date.parse(prov.receivedAt)))
+	)
+		return false;
+	return prov.source === undefined || isInputSource(prov.source);
 }
 export function isRecord(value: unknown): value is SessionRecord {
 	if (!value || typeof value !== "object") return false;
@@ -720,34 +738,49 @@ export function isRecord(value: unknown): value is SessionRecord {
 	) {
 		return false;
 	}
-	if (record.kind === "rewind") return ["id", "targetId", "fromId", "source", "requestId", "reason"].every(key => typeof record[key] === "string" && (record[key] as string).trim().length > 0) && (record.note === undefined || typeof record.note === "string");
+	if (record.kind === "rewind")
+		return (
+			["id", "targetId", "fromId", "source", "requestId", "reason"].every(
+				(key) => typeof record[key] === "string" && (record[key] as string).trim().length > 0,
+			) &&
+			(record.note === undefined || typeof record.note === "string")
+		);
 	if (record.kind === "input") {
 		if (!record.input || typeof record.input !== "object") return false;
 		const input = record.input as Record<string, unknown>;
-		return typeof input.id === "string" && input.id.length > 0 && Number.isSafeInteger(input.order) && (input.order as number) > 0
-			&& (input.mode === "steer" || input.mode === "followUp") && typeof input.text === "string"
-			&& validImages(input.images) && (input.source === undefined || isInputSource(input.source))
-            && (input.receivedAt === undefined || (typeof input.receivedAt === "string" && Number.isFinite(Date.parse(input.receivedAt))));
+		return (
+			typeof input.id === "string" &&
+			input.id.length > 0 &&
+			Number.isSafeInteger(input.order) &&
+			(input.order as number) > 0 &&
+			(input.mode === "steer" || input.mode === "followUp") &&
+			typeof input.text === "string" &&
+			validImages(input.images) &&
+			(input.source === undefined || isInputSource(input.source)) &&
+			(input.receivedAt === undefined ||
+				(typeof input.receivedAt === "string" && Number.isFinite(Date.parse(input.receivedAt))))
+		);
 	}
 	if (record.kind === "message") {
 		return isAgentMessage(record.message);
 	}
 	if (record.kind === "custom_message") {
-		return validImages(record.images) && typeof record.customType === "string" && record.customType.length > 0 && typeof record.content === "string" && (record.display === undefined || typeof record.display === "boolean");
+		return (
+			validImages(record.images) &&
+			typeof record.customType === "string" &&
+			record.customType.length > 0 &&
+			typeof record.content === "string" &&
+			(record.display === undefined || typeof record.display === "boolean")
+		);
 	}
 	if (record.kind === "custom_entry") {
 		return typeof record.customType === "string" && record.customType.length > 0;
 	}
 	return (
 		typeof record.event === "string" &&
-		[
-			"queue_enqueued",
-			"queue_restored",
-			"tool_started",
-			"tool_finished",
-			"turn_failed",
-			"turn_aborted",
-		].includes(record.event) &&
+		["queue_enqueued", "queue_restored", "tool_started", "tool_finished", "turn_failed", "turn_aborted"].includes(
+			record.event,
+		) &&
 		!!record.data &&
 		typeof record.data === "object" &&
 		!Array.isArray(record.data)
@@ -759,13 +792,16 @@ function isAgentMessage(value: unknown): value is AgentMessage {
 	const message = value as Record<string, unknown>;
 	if (!validImages(message.images)) return false;
 	if (!isValidInputProvenance(message.input)) return false;
-	if (message.role === "custom") return typeof message.content === "string" && typeof message.customType === "string" && message.customType.length > 0 && (message.display === undefined || typeof message.display === "boolean");
+	if (message.role === "custom")
+		return (
+			typeof message.content === "string" &&
+			typeof message.customType === "string" &&
+			message.customType.length > 0 &&
+			(message.display === undefined || typeof message.display === "boolean")
+		);
 	if (
 		typeof message.content !== "string" ||
-		(message.role !== "system" &&
-			message.role !== "user" &&
-			message.role !== "assistant" &&
-			message.role !== "tool")
+		(message.role !== "system" && message.role !== "user" && message.role !== "assistant" && message.role !== "tool")
 	) {
 		return false;
 	}
@@ -775,7 +811,12 @@ function isAgentMessage(value: unknown): value is AgentMessage {
 	if (message.thinkingSignature !== undefined && typeof message.thinkingSignature !== "string") return false;
 	if (message.usage !== undefined) {
 		if (!message.usage || typeof message.usage !== "object") return false;
-		for (const key of ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"]) if ((message.usage as Record<string, unknown>)[key] !== undefined && typeof (message.usage as Record<string, unknown>)[key] !== "number") return false;
+		for (const key of ["input", "output", "cacheRead", "cacheWrite", "reasoning", "totalTokens"])
+			if (
+				(message.usage as Record<string, unknown>)[key] !== undefined &&
+				typeof (message.usage as Record<string, unknown>)[key] !== "number"
+			)
+				return false;
 	}
 	if (message.tool_calls === undefined) return true;
 	return (

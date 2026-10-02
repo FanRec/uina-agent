@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-	TaskOutputBuffer,
-	TaskWaiters,
-	countLines,
-} from "../src/runtime/task-handle.js";
+import { TaskOutputBuffer, TaskWaiters, countLines } from "../src/runtime/task-handle.js";
 
 describe("countLines", () => {
 	it("returns 0 for empty strings and line count for delimited strings", () => {

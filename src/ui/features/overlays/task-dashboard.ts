@@ -150,7 +150,12 @@ export class TaskDashboard implements Component, Focusable {
 				const label = truncateToWidth(t.label, 24);
 				const src = `${t.source.extension}${t.source.operation ? `/${t.source.operation}` : ""}`;
 
-				output.push(panelRow(geo, `${pointer} ${statusIcon} ${C.bold}${label}${C.reset}  ${C.dim}[${src}] · ${duration}${C.reset}`));
+				output.push(
+					panelRow(
+						geo,
+						`${pointer} ${statusIcon} ${C.bold}${label}${C.reset}  ${C.dim}[${src}] · ${duration}${C.reset}`,
+					),
+				);
 			}
 
 			// 分割线

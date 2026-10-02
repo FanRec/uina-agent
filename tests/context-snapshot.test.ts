@@ -9,7 +9,9 @@ import { vi } from "vitest";
 
 describe("ContextSnapshot", () => {
 	test("启动完成后在首条输入前测量完整扩展投影，且不调用 Provider", async ({ env }) => {
-		await env.writeExtension("startup-context.mjs", `
+		await env.writeExtension(
+			"startup-context.mjs",
+			`
 			export default function activate(uina) {
 				uina.onHook("turn.transformContext", (projection) => ({
 					projection: {
@@ -18,7 +20,8 @@ describe("ContextSnapshot", () => {
 					},
 				}));
 			}
-		`);
+		`,
+		);
 		const scenario = new Scenario({ id: "mock", name: "mock", contextWindow: 50_000 });
 		const uina = await UinaTestHarness.create({ env, scenario, autoStart: false });
 		try {
@@ -36,7 +39,12 @@ describe("ContextSnapshot", () => {
 	});
 
 	test("Provider measurer 只校准 ContextSnapshot，不伪装成 RequestUsage", async ({ env }) => {
-		const scenario = new Scenario({ id: "exact-model", name: "exact", providerId: "exact-provider", contextWindow: 50_000 });
+		const scenario = new Scenario({
+			id: "exact-model",
+			name: "exact",
+			providerId: "exact-provider",
+			contextWindow: 50_000,
+		});
 		const provider: Provider = {
 			id: "exact-provider",
 			name: "exact",
@@ -59,9 +67,13 @@ describe("ContextSnapshot", () => {
 
 	test("模型切换时迟到的旧投影测量不能覆盖当前 ContextSnapshot", async () => {
 		let entered!: () => void;
-		const oldEntered = new Promise<void>((resolve) => { entered = resolve; });
+		const oldEntered = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
 		let release!: () => void;
-		const oldRelease = new Promise<void>((resolve) => { release = resolve; });
+		const oldRelease = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		const extensions = new ExtensionHost();
 		extensions.onHook("turn.transformContext", async (projection) => {
 			if (projection.modelKey.endsWith("/old")) {
@@ -83,7 +95,9 @@ describe("ContextSnapshot", () => {
 		release();
 		await stale;
 
-		const updates = events.filter((event): event is Extract<RuntimeEvent, { type: "context_update" }> => event.type === "context_update");
+		const updates = events.filter(
+			(event): event is Extract<RuntimeEvent, { type: "context_update" }> => event.type === "context_update",
+		);
 		expect(updates).toHaveLength(1);
 		expect(updates[0]?.snapshot.modelKey).toMatch(/\/new$/);
 		expect(harness.subject.getCurrentContextSnapshot()?.modelKey).toMatch(/\/new$/);
@@ -91,12 +105,18 @@ describe("ContextSnapshot", () => {
 
 	test("真实请求快照会废弃仍在途的 idle inspection", async () => {
 		let entered!: () => void;
-		const staleEntered = new Promise<void>((resolve) => { entered = resolve; });
+		const staleEntered = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
 		let release!: () => void;
-		const staleRelease = new Promise<void>((resolve) => { release = resolve; });
+		const staleRelease = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 		const extensions = new ExtensionHost();
 		extensions.onHook("turn.transformContext", async (projection) => {
-			const hasUser = projection.messages.some((message) => message.role === "user" && message.content === "active-input");
+			const hasUser = projection.messages.some(
+				(message) => message.role === "user" && message.content === "active-input",
+			);
 			if (!hasUser) {
 				entered();
 				await staleRelease;
@@ -112,14 +132,24 @@ describe("ContextSnapshot", () => {
 		const stale = harness.subject.getContextSnapshot();
 		await staleEntered;
 		const run = harness.pushInput("active-input");
-		await vi.waitFor(() => expect(events.some((event) => event.type === "context_update" && event.snapshot.basis === "active_request")).toBe(true));
+		await vi.waitFor(() =>
+			expect(events.some((event) => event.type === "context_update" && event.snapshot.basis === "active_request")).toBe(
+				true,
+			),
+		);
 		release();
 		await stale;
 		await run;
 		await harness.waitForIdle();
-		const updates = events.filter((event): event is Extract<RuntimeEvent, { type: "context_update" }> => event.type === "context_update");
+		const updates = events.filter(
+			(event): event is Extract<RuntimeEvent, { type: "context_update" }> => event.type === "context_update",
+		);
 		const activeIndex = updates.findIndex((event) => event.snapshot.basis === "active_request");
 		expect(activeIndex).toBeGreaterThanOrEqual(0);
-		expect(updates.slice(activeIndex + 1).every((event) => event.snapshot.inputTokens >= updates[activeIndex]!.snapshot.inputTokens)).toBe(true);
+		expect(
+			updates
+				.slice(activeIndex + 1)
+				.every((event) => event.snapshot.inputTokens >= updates[activeIndex]!.snapshot.inputTokens),
+		).toBe(true);
 	});
 });

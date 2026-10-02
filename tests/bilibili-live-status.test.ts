@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { applyLiveConnectionUpdate, handleConnectAction, handleStatusAction } from "../.uina/worlds/bilibili-live/src/index.js";
+import {
+	applyLiveConnectionUpdate,
+	handleConnectAction,
+	handleStatusAction,
+} from "../.uina/worlds/bilibili-live/src/index.js";
 import { loadConfig } from "../.uina/worlds/bilibili-live/src/config.js";
 import { LiveEventBuffer } from "../.uina/worlds/bilibili-live/src/buffer.js";
 import type { LiveWorldState } from "../.uina/worlds/bilibili-live/src/types.js";
@@ -20,9 +24,16 @@ describe("Bilibili live connection status", () => {
 			popularity: 0,
 			lastHeartbeatTime: 0,
 		};
-		const result = await handleConnectAction({}, {} as never, config, state, () => ({
-			connect: async () => undefined,
-		} as never));
+		const result = await handleConnectAction(
+			{},
+			{} as never,
+			config,
+			state,
+			() =>
+				({
+					connect: async () => undefined,
+				}) as never,
+		);
 
 		expect(result).toContain("尚未确认连接成功");
 		expect(state.connectionStatus).toBe("connecting");
@@ -49,9 +60,15 @@ describe("Bilibili live connection status", () => {
 			popularity: 0,
 			lastHeartbeatTime: 0,
 		} as LiveWorldState;
-		applyLiveConnectionUpdate(state, { type: "roomInfo", payload: { room_id: 24194689, live_status: 1, title: "live" } });
+		applyLiveConnectionUpdate(state, {
+			type: "roomInfo",
+			payload: { room_id: 24194689, live_status: 1, title: "live" },
+		});
 		applyLiveConnectionUpdate(state, { type: "error", payload: new Error("getDanmuInfo HTTP error: 403") });
-		applyLiveConnectionUpdate(state, { type: "reconnecting", payload: { retryCount: 3, totalRetryCount: 3, delaySeconds: 4 } });
+		applyLiveConnectionUpdate(state, {
+			type: "reconnecting",
+			payload: { retryCount: 3, totalRetryCount: 3, delaySeconds: 4 },
+		});
 
 		const status = JSON.parse(handleStatusAction(state, buffer));
 		expect(status).toMatchObject({

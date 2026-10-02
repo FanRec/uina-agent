@@ -127,7 +127,10 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 			{ role: "tool", tool_call_id: "call-2", content: "result 2", status: "succeeded" },
 		];
 
-		const anthropic = anthropicMessages({ messages, providerHooks: {} as any }) as Array<{ role: string; content: unknown }>;
+		const anthropic = anthropicMessages({ messages, providerHooks: {} as any }) as Array<{
+			role: string;
+			content: unknown;
+		}>;
 		// Must strictly alternate user -> assistant -> user (3 messages total, NOT 4)
 		expect(anthropic.length).toBe(3);
 		expect(anthropic[0]?.role).toBe("user");
@@ -148,7 +151,10 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 			{ role: "user", content: "Current question" },
 		];
 
-		const anthropic = anthropicMessages({ messages, providerHooks: {} as any }) as Array<{ role: string; content: unknown }>;
+		const anthropic = anthropicMessages({ messages, providerHooks: {} as any }) as Array<{
+			role: string;
+			content: unknown;
+		}>;
 		expect(anthropic.length).toBe(1);
 		expect(anthropic[0]?.role).toBe("user");
 		expect(anthropic[0]?.content).toBe("[历史摘要] Previous context\n\nCurrent question");
@@ -188,7 +194,9 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 			{ role: "tool", tool_call_id: "call-1", content: "result 1", status: "succeeded" },
 		];
 
-		const gemini = geminiRequest({ messages, providerHooks: {} as any }, true) as { contents: Array<{ role: string; parts: unknown[] }> };
+		const gemini = geminiRequest({ messages, providerHooks: {} as any }, true) as {
+			contents: Array<{ role: string; parts: unknown[] }>;
+		};
 		// Empty assistant must be skipped, tool result wrapped in user
 		const roles = gemini.contents.map((c) => c.role);
 		expect(roles).toEqual(["user", "model", "user"]);
@@ -257,9 +265,32 @@ describe("Context Hygiene & Protocol Sanitization", () => {
 		const base = { kind: "message" as const, id: "m1", seq: 1, timestamp: new Date(0).toISOString() };
 		expect(isRecord({ ...base, message: { role: "user", content: "x", input: { eventId: 42 } } })).toBe(false);
 		expect(isRecord({ ...base, message: { role: "user", content: "x", input: { eventId: "" } } })).toBe(false);
-		expect(isRecord({ ...base, message: { role: "user", content: "x", input: { eventId: "e1", receivedAt: "not-a-date" } } })).toBe(false);
-		expect(isRecord({ ...base, message: { role: "user", content: "x", input: { eventId: "e1", source: { kind: "user", type: "chat", origin: "sideways" } } } })).toBe(false);
+		expect(
+			isRecord({
+				...base,
+				message: { role: "user", content: "x", input: { eventId: "e1", receivedAt: "not-a-date" } },
+			}),
+		).toBe(false);
+		expect(
+			isRecord({
+				...base,
+				message: {
+					role: "user",
+					content: "x",
+					input: { eventId: "e1", source: { kind: "user", type: "chat", origin: "sideways" } },
+				},
+			}),
+		).toBe(false);
 		// 合法 provenance 正常入库
-		expect(isRecord({ ...base, message: { role: "user", content: "x", input: { eventId: "e1", source: { kind: "user", type: "chat", origin: "external" } } } })).toBe(true);
+		expect(
+			isRecord({
+				...base,
+				message: {
+					role: "user",
+					content: "x",
+					input: { eventId: "e1", source: { kind: "user", type: "chat", origin: "external" } },
+				},
+			}),
+		).toBe(true);
 	});
 });

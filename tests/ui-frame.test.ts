@@ -19,7 +19,15 @@ import { describe, expect, it } from "vitest";
 import { UIHost } from "../src/ui/ui-host.js";
 import { MainScreenRenderer } from "../src/ui/core/renderer.js";
 import { CURSOR_MARKER } from "../src/ui/core/types.js";
-import { C, dropStrayControls, expandTabs, extractAnsiCode, normalizeFrameLine, resolveCarriageReturns, visibleWidth } from "../src/ui/core/utils.js";
+import {
+	C,
+	dropStrayControls,
+	expandTabs,
+	extractAnsiCode,
+	normalizeFrameLine,
+	resolveCarriageReturns,
+	visibleWidth,
+} from "../src/ui/core/utils.js";
 import { VtScreen } from "./harness/index.js";
 
 const COLUMNS = 171;
@@ -35,8 +43,13 @@ function declaredTailBg(row: string): string {
 		for (let k = 0; k < codes.length; k++) {
 			const code = codes[k]!;
 			if (code === 0 || code === 49) bg = "default";
-			else if (code === 48 && codes[k + 1] === 2) { bg = `${codes[k + 2]},${codes[k + 3]},${codes[k + 4]}`; k += 4; }
-			else if (code === 48 && codes[k + 1] === 5) { bg = `idx:${codes[k + 2]}`; k += 2; }
+			else if (code === 48 && codes[k + 1] === 2) {
+				bg = `${codes[k + 2]},${codes[k + 3]},${codes[k + 4]}`;
+				k += 4;
+			} else if (code === 48 && codes[k + 1] === 5) {
+				bg = `idx:${codes[k + 2]}`;
+				k += 2;
+			}
 		}
 	}
 	return bg;
@@ -66,8 +79,12 @@ it("full 与 delta 渲染最终产生相同的逐格屏幕和 cursor", () => {
 	}
 
 	expect(deltaTerminal.screen.grid).toEqual(fullTerminal.screen.grid);
-	expect([deltaTerminal.screen.row, deltaTerminal.screen.col, deltaTerminal.screen.fg, deltaTerminal.screen.bg])
-		.toEqual([fullTerminal.screen.row, fullTerminal.screen.col, fullTerminal.screen.fg, fullTerminal.screen.bg]);
+	expect([
+		deltaTerminal.screen.row,
+		deltaTerminal.screen.col,
+		deltaTerminal.screen.fg,
+		deltaTerminal.screen.bg,
+	]).toEqual([fullTerminal.screen.row, fullTerminal.screen.col, fullTerminal.screen.fg, fullTerminal.screen.bg]);
 	expect(deltaTerminal.writes[2]).toMatch(/^\x1b\[2;\d+H\x1b\[\?25h$/);
 	expect(deltaTerminal.writes[3]).toContain("\x1b[J");
 });
@@ -114,7 +131,10 @@ const LONG_COMMAND = [
 	'python -c "print(1)"',
 ].join("\n");
 
-interface Shot { tag: string; frame: string }
+interface Shot {
+	tag: string;
+	frame: string;
+}
 
 /** 覆盖 totalPerm < / == / > transcriptH 三态，以及 折叠/展开/hover 三种视图 */
 async function shots(): Promise<Shot[]> {
@@ -416,7 +436,6 @@ describe("回车（CR）：CRLF 内容不得让终端替我们重写行", () => 
 });
 
 describe("时钟高亮带：覆盖严格等于卡片行集合", () => {
-
 	it("hover 时带子覆盖的行集合恰好是这张卡的行集合，且带内无未涂色格子", async () => {
 		const { terminal, frames } = fakeTerminal();
 		const host = new UIHost({ terminal, modelName: "TestModel" });
@@ -441,8 +460,10 @@ describe("时钟高亮带：覆盖严格等于卡片行集合", () => {
 		const banded = screen.rowsWithBg(card);
 		const loc = host.transcript.getToolLineIndices(CONTENT_W).find((l) => l.callId === "call-1")!;
 		const layout = (host as unknown as { lastLayout: { bannerCount: number; scrollStart: number } }).lastLayout;
-		const expected = Array.from({ length: loc.lineCount }, (_, i) => layout.bannerCount + loc.lineIndex + i - layout.scrollStart)
-			.filter((row) => row >= 0 && row < ROWS);
+		const expected = Array.from(
+			{ length: loc.lineCount },
+			(_, i) => layout.bannerCount + loc.lineIndex + i - layout.scrollStart,
+		).filter((row) => row >= 0 && row < ROWS);
 		expect(
 			banded,
 			`banded=${JSON.stringify(banded)} expected=${JSON.stringify(expected)} loc=${JSON.stringify(loc)} banner=${layout.bannerCount} scrollStart=${layout.scrollStart}`,
@@ -511,9 +532,16 @@ describe("真机工具输出：JSON 解码后才出现的裸 ESC 不得进帧", 
 		host.start();
 		host.transcript.startTurn(1, "Q-REAL");
 		host.transcript.startTool("exec_command", { command: "npx vitest run 2>&1 | Out-File dev\\all.log" }, "call-real");
-		host.transcript.addToolDone("exec_command", JSON.stringify({ code: 0, stdout: REAL_STDOUT }), 30, "succeeded", "call-real", {
-			command: "npx vitest run 2>&1 | Out-File dev\\all.log",
-		});
+		host.transcript.addToolDone(
+			"exec_command",
+			JSON.stringify({ code: 0, stdout: REAL_STDOUT }),
+			30,
+			"succeeded",
+			"call-real",
+			{
+				command: "npx vitest run 2>&1 | Out-File dev\\all.log",
+			},
+		);
 		host.transcript.finishTurn();
 		host.requestRender();
 		await settle();

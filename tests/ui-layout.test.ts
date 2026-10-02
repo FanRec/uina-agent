@@ -9,7 +9,12 @@ import { FocusManager } from "../src/ui/core/focus.js";
 import { visibleWidth, truncateToWidth, wrapTextWithAnsi } from "../src/ui/core/utils.js";
 import { InputLine, snapToGraphemeBoundary } from "../src/ui/components/editor/index.js";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
-import { listSessionBranches, listSessionNodes, readSessionBranch, readSessionNode } from "../src/session/navigation.js";
+import {
+	listSessionBranches,
+	listSessionNodes,
+	readSessionBranch,
+	readSessionNode,
+} from "../src/session/navigation.js";
 
 import { createSilentTerminal } from "./harness/index.js";
 
@@ -29,7 +34,9 @@ function scrollableHost(turns = 6): { host: UIHost; frames: string[] } {
 	host.start();
 	host.transcript.startTurn(1, "USER-TURN-1");
 	host.transcript.startTool("exec_command", { command: "ls -la" }, "call-1");
-	host.transcript.addToolDone("exec_command", JSON.stringify({ stdout: "a\nb\nc" }), 100, "succeeded", "call-1", { command: "ls -la" });
+	host.transcript.addToolDone("exec_command", JSON.stringify({ stdout: "a\nb\nc" }), 100, "succeeded", "call-1", {
+		command: "ls -la",
+	});
 	host.transcript.appendToken("done one");
 	host.transcript.finishTurn();
 	for (let n = 2; n <= turns; n++) {
@@ -48,7 +55,9 @@ describe("B1: transcript line model", () => {
 		// still point at the rows that are actually drawn.
 		transcript.appendToken("x".repeat(4000));
 		transcript.startTool("exec_command", { command: "ls -la" }, "call-1");
-		transcript.addToolDone("exec_command", JSON.stringify({ stdout: "a" }), 120, "succeeded", "call-1", { command: "ls -la" });
+		transcript.addToolDone("exec_command", JSON.stringify({ stdout: "a" }), 120, "succeeded", "call-1", {
+			command: "ls -la",
+		});
 		const lines = transcript.render(80);
 		const location = transcript.getToolLineIndices(80)[0];
 		expect(location).toBeDefined();
@@ -126,7 +135,9 @@ describe("B1: layout is the single source of truth", () => {
 		host.requestRender();
 		await settle();
 		const rows = plainFrame(frames.at(-1)!);
-		const visible = ["USER-TURN-1", "USER-TURN-2", "USER-TURN-3", "USER-TURN-4", "USER-TURN-5", "USER-TURN-6"].filter((turn) => rows.some((row) => row.includes(turn)));
+		const visible = ["USER-TURN-1", "USER-TURN-2", "USER-TURN-3", "USER-TURN-4", "USER-TURN-5", "USER-TURN-6"].filter(
+			(turn) => rows.some((row) => row.includes(turn)),
+		);
 		expect(visible).toContain("USER-TURN-3");
 		expect(visible).not.toContain("USER-TURN-1");
 		expect(visible).not.toContain("USER-TURN-2");
@@ -253,7 +264,11 @@ describe("B1: hover is local", () => {
 		// 身份一旦退回 n，hover 会同时命中多个轮次，hoveredBlockCache 还会把
 		// 一个轮次的块发给另一个轮次，导致内容被顶替、行数突变、视口跳动。
 		const transcript = new TranscriptContainer();
-		for (const [user, think] of [["ALPHA", "THINK-A"], ["BRAVO", "THINK-B"], ["CHARLIE", "THINK-C"]] as const) {
+		for (const [user, think] of [
+			["ALPHA", "THINK-A"],
+			["BRAVO", "THINK-B"],
+			["CHARLIE", "THINK-C"],
+		] as const) {
 			transcript.startTurn(1, user);
 			transcript.appendThinking(think);
 			transcript.appendToken(`BODY-${user.length}`);
@@ -384,7 +399,9 @@ describe("Editor grapheme model", () => {
 	it("treats a ZWJ emoji as one two-column atom", () => {
 		const line = new InputLine();
 		line.setText(`${FAMILY}x`);
-		const layout = (line as unknown as { getVisualLayout(w: number): Array<{ positions: Array<{ charIdx: number; col: number }> }> }).getVisualLayout(80);
+		const layout = (
+			line as unknown as { getVisualLayout(w: number): Array<{ positions: Array<{ charIdx: number; col: number }> }> }
+		).getVisualLayout(80);
 		const positions = layout[0]!.positions;
 		// The cluster starts at 0 and the next atom starts right after it:
 		// col 2 proves the family emoji occupies two columns, not one per code point.
@@ -428,7 +445,9 @@ describe("Incremental layout invalidation", () => {
 		await settle();
 		const spy = vi.spyOn(host.transcript, "getFrameModel");
 		spy.mockClear();
-		host.preserveScrollAnchor(() => { host.transcript.toggleTool("call-1", 77); }, 0);
+		host.preserveScrollAnchor(() => {
+			host.transcript.toggleTool("call-1", 77);
+		}, 0);
 		expect(spy.mock.calls.length).toBe(1);
 		spy.mockRestore();
 	});
@@ -449,18 +468,22 @@ describe("C: overlay frame composition", () => {
 			});
 		}
 		const host = new UIHost({ terminal, modelName: "TestModel", registry });
-		installUIFeatures(host, { sessionPort: {
-			list: (options) => listSessionNodes(store.state, options),
-			listBranches: () => listSessionBranches(store.state),
-			readBranch: (id: string) => readSessionBranch(store.state, id),
-			read: (id) => readSessionNode(store.state, id),
-			requestRewind: async () => ({ requestId: "probe", status: "committed" as const }),
-		} });
+		installUIFeatures(host, {
+			sessionPort: {
+				list: (options) => listSessionNodes(store.state, options),
+				listBranches: () => listSessionBranches(store.state),
+				readBranch: (id: string) => readSessionBranch(store.state, id),
+				read: (id) => readSessionNode(store.state, id),
+				requestRewind: async () => ({ requestId: "probe", status: "committed" as const }),
+			},
+		});
 		registry.registerCommand({
 			name: "history",
 			description: "History",
 			keybinding: "alt+h",
-			handler: () => { host.openFeature("history"); },
+			handler: () => {
+				host.openFeature("history");
+			},
 		});
 		host.start();
 		host.transcript.startTurn(1, "你好");

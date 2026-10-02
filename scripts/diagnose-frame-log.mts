@@ -15,7 +15,14 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { VtScreen, type Run } from "../tests/harness/index.js";
 import { visibleWidth } from "../src/ui/core/utils.js";
 
-interface LoggedFrame { seq: number; t: number; cols: number; rows: number; data: string; kind?: string }
+interface LoggedFrame {
+	seq: number;
+	t: number;
+	cols: number;
+	rows: number;
+	data: string;
+	kind?: string;
+}
 
 const path = process.argv[2] ?? "frame-log.jsonl";
 const all: LoggedFrame[] = readFileSync(path, "utf-8")
@@ -24,17 +31,29 @@ const all: LoggedFrame[] = readFileSync(path, "utf-8")
 	.map((l) => JSON.parse(l) as LoggedFrame);
 
 // (0) 最要紧的一条：Node 自报的终端尺寸 vs 终端自己报告的尺寸
-const nodeSize = all.find((e) => (e as unknown as { kind?: string }).kind === "node-size") as unknown as { cols: number; rows: number; isTTY: boolean } | undefined;
-const sizes = all.filter((e) => (e as unknown as { kind?: string }).kind === "size-report") as unknown as Array<{ cols: number; rows: number; raw: string }>;
+const nodeSize = all.find((e) => (e as unknown as { kind?: string }).kind === "node-size") as unknown as
+	| { cols: number; rows: number; isTTY: boolean }
+	| undefined;
+const sizes = all.filter((e) => (e as unknown as { kind?: string }).kind === "size-report") as unknown as Array<{
+	cols: number;
+	rows: number;
+	raw: string;
+}>;
 console.log(`日志 ${path}：${all.length} 条（帧 ${all.filter((e) => (e.kind ?? "frame") === "frame").length}）`);
 if (nodeSize || sizes.length) {
-	console.log(`\n[终端尺寸] Node 自报：${nodeSize ? `${nodeSize.cols}x${nodeSize.rows} (isTTY=${nodeSize.isTTY})` : "（缺失）"}`);
-	console.log(`          终端回执：${sizes.length ? sizes.map((s) => `${s.cols}x${s.rows}`).join(" , ") : "（无回执：该终端不支持 CSI 18t）"}`);
+	console.log(
+		`\n[终端尺寸] Node 自报：${nodeSize ? `${nodeSize.cols}x${nodeSize.rows} (isTTY=${nodeSize.isTTY})` : "（缺失）"}`,
+	);
+	console.log(
+		`          终端回执：${sizes.length ? sizes.map((s) => `${s.cols}x${s.rows}`).join(" , ") : "（无回执：该终端不支持 CSI 18t）"}`,
+	);
 	const t = sizes.at(-1);
 	if (nodeSize && t) {
-		console.log(nodeSize.cols === t.cols && nodeSize.rows === t.rows
-			? "          → 一致 ✔（帧高/行宽与窗口相符）"
-			: `          → ★ 不一致：Node 以为 ${nodeSize.cols}x${nodeSize.rows}，窗口实际 ${t.cols}x${t.rows} —— 帧会写到可视区之外，终端每帧滚动，整屏行映射错位（残留片段/顶部冒出旧内容/hover 错位都由此而来）`);
+		console.log(
+			nodeSize.cols === t.cols && nodeSize.rows === t.rows
+				? "          → 一致 ✔（帧高/行宽与窗口相符）"
+				: `          → ★ 不一致：Node 以为 ${nodeSize.cols}x${nodeSize.rows}，窗口实际 ${t.cols}x${t.rows} —— 帧会写到可视区之外，终端每帧滚动，整屏行映射错位（残留片段/顶部冒出旧内容/hover 错位都由此而来）`,
+		);
 	}
 } else {
 	console.log(`\n[终端尺寸] 未采集到（日志里没有 node-size/size-report 条目）`);
@@ -67,7 +86,13 @@ for (const f of frames) {
 	if (problems.length) {
 		flagged++;
 		report.push(`#${f.seq} t=${new Date(f.t).toLocaleTimeString()} ${f.cols}x${f.rows} :: ${problems.join(" / ")}`);
-		if (idle.length) report.push(`   ${idle.slice(0, 6).map((r: Run) => `row${r.row} x=${r.start}..${r.end}`).join(" | ")}`);
+		if (idle.length)
+			report.push(
+				`   ${idle
+					.slice(0, 6)
+					.map((r: Run) => `row${r.row} x=${r.start}..${r.end}`)
+					.join(" | ")}`,
+			);
 	}
 	if (flagged <= 3 && problems.length === 0) {
 		report.push(
@@ -91,7 +116,9 @@ for (let i = 1; i < frames.length && shown < 12; i++) {
 		if ((a[r] ?? "") !== (b[r] ?? "")) changed.push(r);
 	}
 	if (changed.length === 0 || changed.length === Math.max(a.length, b.length)) continue;
-	console.log(`  #${frames[i]!.seq} 变了 ${changed.length} 行：${changed.slice(0, 12).join(",")}${changed.length > 12 ? "…" : ""}`);
+	console.log(
+		`  #${frames[i]!.seq} 变了 ${changed.length} 行：${changed.slice(0, 12).join(",")}${changed.length > 12 ? "…" : ""}`,
+	);
 	shown++;
 }
 

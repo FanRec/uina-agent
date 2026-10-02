@@ -7,5 +7,3 @@ describe("Live2D motion director", () => {
 		expect(director.getActiveLeases()).toEqual([]);
 	});
 });
-
-

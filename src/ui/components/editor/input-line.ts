@@ -60,16 +60,15 @@ export interface TextSegment {
 /**
  * 将文本切分为字形簇，并将属于 validIds 的 [已粘贴 #ID ...] 标记合并为单一原子片段（借鉴自 Pi segmentWithMarkers）。
  */
-export function segmentWithMarkers(
-	text: string,
-	validIds?: Set<number> | Map<number, unknown>,
-): TextSegment[] {
+export function segmentWithMarkers(text: string, validIds?: Set<number> | Map<number, unknown>): TextSegment[] {
 	if (!text) return [];
 	if (!text.includes("[已粘贴 #")) {
 		return Array.from(graphemeSegmenter.segment(text), (s) => ({ segment: s.segment, index: s.index }));
 	}
 
-	const markers = findMarkers(text).filter((m) => !validIds || (validIds instanceof Set ? validIds.has(m.id) : validIds.has(m.id)));
+	const markers = findMarkers(text).filter(
+		(m) => !validIds || (validIds instanceof Set ? validIds.has(m.id) : validIds.has(m.id)),
+	);
 	if (markers.length === 0) {
 		return Array.from(graphemeSegmenter.segment(text), (s) => ({ segment: s.segment, index: s.index }));
 	}
@@ -110,7 +109,9 @@ export function snapCursorToMarkerBoundary(
 	text: string,
 	validIds?: Set<number> | Map<number, unknown>,
 ): number {
-	const markers = findMarkers(text).filter((m) => !validIds || (validIds instanceof Set ? validIds.has(m.id) : validIds.has(m.id)));
+	const markers = findMarkers(text).filter(
+		(m) => !validIds || (validIds instanceof Set ? validIds.has(m.id) : validIds.has(m.id)),
+	);
 	for (const m of markers) {
 		if (cursorIndex > m.start && cursorIndex < m.end) {
 			return cursorIndex - m.start < m.end - cursorIndex ? m.start : m.end;
@@ -174,7 +175,7 @@ function sanitizeText(str: string): string {
 		.replace(/\r/g, "\n")
 		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
 }
- 
+
 interface VisualRowPosition {
 	charIdx: number;
 	col: number;
@@ -190,9 +191,15 @@ interface VisualRow {
 export class InputLine implements Component, Focusable {
 	focused = true;
 	private readonly textBuffer = new TextBuffer();
-	private get text(): string { return this.textBuffer.text; }
-	private get cursorIndex(): number { return this.textBuffer.cursor; }
-	private set cursorIndex(value: number) { this.textBuffer.setCursor(value); }
+	private get text(): string {
+		return this.textBuffer.text;
+	}
+	private get cursorIndex(): number {
+		return this.textBuffer.cursor;
+	}
+	private set cursorIndex(value: number) {
+		this.textBuffer.setCursor(value);
+	}
 	private isAllSelected = false; // Ctrl+A 全选状态
 	private scrollOffset = 0; // 多行视口滚动偏移量
 
@@ -221,8 +228,6 @@ export class InputLine implements Component, Focusable {
 	private progressHotspotWidth = 35; // 进度条热区列宽，供鼠标 Hover 检测
 	private lastRenderWidth = 80;
 	private cwd = "";
-
-
 
 	private isBusy = false;
 
@@ -609,7 +614,11 @@ export class InputLine implements Component, Focusable {
 		if (matchesKey(data, Key.ctrl("w")) || matchesKey(data, Key.altBackspace)) {
 			if (this.cursorIndex > 0) {
 				const isCtrlW = matchesKey(data, Key.ctrl("w"));
-				const prev = snapCursorToMarkerBoundary(findPrevWordBoundary(this.text, this.cursorIndex, isCtrlW), this.text, this.pastes);
+				const prev = snapCursorToMarkerBoundary(
+					findPrevWordBoundary(this.text, this.cursorIndex, isCtrlW),
+					this.text,
+					this.pastes,
+				);
 				const deletedMarkers = markers.filter((m) => m.end > prev && m.start < this.cursorIndex);
 				for (const m of deletedMarkers) {
 					this.pastes.delete(m.id);
@@ -862,7 +871,11 @@ export class InputLine implements Component, Focusable {
 				return snapCursorToMarkerBoundary(last.charIdx, this.text, this.pastes);
 			}
 			const segment = Array.from(graphemeSegmenter.segment(this.text)).find((item) => item.index === last.charIdx);
-			return snapCursorToMarkerBoundary(Math.min(this.text.length, last.charIdx + (segment?.segment.length ?? 0)), this.text, this.pastes);
+			return snapCursorToMarkerBoundary(
+				Math.min(this.text.length, last.charIdx + (segment?.segment.length ?? 0)),
+				this.text,
+				this.pastes,
+			);
 		}
 		return snapCursorToMarkerBoundary(closest.charIdx, this.text, this.pastes);
 	}
@@ -911,11 +924,17 @@ export class InputLine implements Component, Focusable {
 					});
 					colInLine += m.tokenText.length;
 				} else {
-					while (clusterCursor < clusters.length && clusters[clusterCursor]!.index + clusters[clusterCursor]!.segment.length <= colInLine) {
+					while (
+						clusterCursor < clusters.length &&
+						clusters[clusterCursor]!.index + clusters[clusterCursor]!.segment.length <= colInLine
+					) {
 						clusterCursor++;
 					}
 					const seg = clusters[clusterCursor];
-					const cluster = seg && seg.index <= colInLine ? lineStr.slice(colInLine, seg.index + seg.segment.length) : lineStr[colInLine]!;
+					const cluster =
+						seg && seg.index <= colInLine
+							? lineStr.slice(colInLine, seg.index + seg.segment.length)
+							: lineStr[colInLine]!;
 					atoms.push({
 						type: "char",
 						raw: cluster,
@@ -1015,9 +1034,7 @@ export class InputLine implements Component, Focusable {
 				const lastRow = visualRows[visualRows.length - 1]!;
 				lastRow.content += `${CURSOR_MARKER}\x1b[7m \x1b[27m`;
 				lastRow.hasCursor = true;
-				lastRow.cursorCol = lastRow.positions.length > 0
-					? lastRow.positions[lastRow.positions.length - 1]!.col
-					: 0;
+				lastRow.cursorCol = lastRow.positions.length > 0 ? lastRow.positions[lastRow.positions.length - 1]!.col : 0;
 			}
 		}
 
@@ -1092,9 +1109,7 @@ export class InputLine implements Component, Focusable {
 		for (let r = 0; r < visibleRows.length; r++) {
 			const vRow = visibleRows[r]!;
 			const isFirstVisibleRow = this.scrollOffset === 0 && r === 0;
-			const prefix = isFirstVisibleRow
-				? `${C.bold}${DSH_PROMPT_POINTER_COLOR}${DSH_PROMPT_POINTER} ${C.reset}`
-				: "  ";
+			const prefix = isFirstVisibleRow ? `${C.bold}${DSH_PROMPT_POINTER_COLOR}${DSH_PROMPT_POINTER} ${C.reset}` : "  ";
 			let contentStr = vRow.content;
 			if (this.isAllSelected) {
 				contentStr = `\x1b[7m${contentStr}\x1b[27m`;
@@ -1115,11 +1130,13 @@ export class InputLine implements Component, Focusable {
 		// 5. 底边框：只展示宿主提供的事实。未知的上下文上限使用
 		//    明确占位，不把空进度条伪装成 0%。
 		// ─────────────────────────────────────────────────────────────
-		const pct = this.contextWindow === undefined || this.usedTokens === undefined
-			? undefined
-			: Math.min(100, Math.max(0, (this.usedTokens / this.contextWindow) * 100));
+		const pct =
+			this.contextWindow === undefined || this.usedTokens === undefined
+				? undefined
+				: Math.min(100, Math.max(0, (this.usedTokens / this.contextWindow) * 100));
 		const pctStr = this.usedTokens === undefined ? "占用未知" : pct === undefined ? "上限未知" : `${pct.toFixed(1)}%`;
-		const measuredUsed = this.usedTokens === undefined ? "未知" : `${this.usageActual ? "" : "~"}${formatTokensCompact(this.usedTokens)}`;
+		const measuredUsed =
+			this.usedTokens === undefined ? "未知" : `${this.usageActual ? "" : "~"}${formatTokensCompact(this.usedTokens)}`;
 		const totalText = this.contextWindow === undefined ? "未知" : formatTokensCompact(this.contextWindow);
 		const fullReadout = `${measuredUsed}/${totalText}${pct === undefined ? "" : ` (${pctStr})`}`;
 		const compactReadout = `${measuredUsed}/${totalText}`;
@@ -1139,14 +1156,11 @@ export class InputLine implements Component, Focusable {
 			: `${C.inactive}思考:未知${C.reset}`;
 		const identityBadge = `${C.inactive}${this.modelName ?? "模型未知"}${C.reset} ${C.subtle}·${C.reset} ${effortBadge}`;
 		const remainingDown = maxScroll - this.scrollOffset;
-		const identityWithScroll = remainingDown > 0
-			? `${C.warning}↓ +${remainingDown}行${C.reset} ${identityBadge}`
-			: identityBadge;
+		const identityWithScroll =
+			remainingDown > 0 ? `${C.warning}↓ +${remainingDown}行${C.reset} ${identityBadge}` : identityBadge;
 
 		// 缓存命中率徽章
-		const cacheBadge = this.cacheRate
-			? `${C.inactive}缓存 ${C.suggestion}${this.cacheRate}${C.reset}`
-			: "";
+		const cacheBadge = this.cacheRate ? `${C.inactive}缓存 ${C.suggestion}${this.cacheRate}${C.reset}` : "";
 
 		const composeBottomLine = (
 			barWidth: number,
@@ -1170,14 +1184,8 @@ export class InputLine implements Component, Focusable {
 				// One flexible dsh-style rule separates the left metrics from the
 				// right-aligned model/effort cluster. Keep the spaces outside the
 				// rule so it reads as one continuous line, not `─ ─`.
-				const identityPrefix = (fillerLen: number): string =>
-					` ${borderCol}${"─".repeat(fillerLen)}${C.reset} `;
-				const fillerLen =
-					boxWidth -
-					visibleWidth(leftBody) -
-					2 -
-					visibleWidth(identity) -
-					visibleWidth(rightTail);
+				const identityPrefix = (fillerLen: number): string => ` ${borderCol}${"─".repeat(fillerLen)}${C.reset} `;
+				const fillerLen = boxWidth - visibleWidth(leftBody) - 2 - visibleWidth(identity) - visibleWidth(rightTail);
 				if (fillerLen < MIN_RIGHT_BORDER_RUN) return undefined;
 				return {
 					line: `${leftBody}${identityPrefix(fillerLen)}${identity}${rightTail}`,
@@ -1218,13 +1226,10 @@ export class InputLine implements Component, Focusable {
 			if (bottomResult) break;
 		}
 
-		const bottomLine = bottomResult?.line ?? `${borderCol}╰${borderCol}${"─".repeat(Math.max(0, boxWidth - 2))}${borderCol}╯`;
+		const bottomLine =
+			bottomResult?.line ?? `${borderCol}╰${borderCol}${"─".repeat(Math.max(0, boxWidth - 2))}${borderCol}╯`;
 		this.progressHotspotWidth = bottomResult?.progressHotspotWidth ?? Math.max(1, boxWidth - 1);
 
-		return [
-			topLine,
-			...middleLines,
-			bottomLine,
-		];
+		return [topLine, ...middleLines, bottomLine];
 	}
 }

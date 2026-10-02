@@ -18,11 +18,18 @@ export function activateGrepFile(api: ExtensionAPI): void {
 				parameters: {
 					type: "object",
 					properties: {
-						pattern: { type: "string", minLength: 1, description: "Regular expression, or literal text when literal=true" },
+						pattern: {
+							type: "string",
+							minLength: 1,
+							description: "Regular expression, or literal text when literal=true",
+						},
 						path: { type: "string", description: "File or directory to search, relative to cwd (default: .)" },
-						glob: { type: "string", description: "Only search files matching this glob, e.g. \"*.ts\"" },
+						glob: { type: "string", description: 'Only search files matching this glob, e.g. "*.ts"' },
 						ignoreCase: { type: "boolean", description: "Case-insensitive search (default false)" },
-						literal: { type: "boolean", description: "Treat pattern as a literal string instead of regex (default false)" },
+						literal: {
+							type: "boolean",
+							description: "Treat pattern as a literal string instead of regex (default false)",
+						},
 						limit: { type: "integer", minimum: 1, description: "Max matches to return (default 100)" },
 					},
 					required: ["pattern"],
@@ -43,7 +50,12 @@ export function activateGrepFile(api: ExtensionAPI): void {
 				limit: args.limit === undefined ? undefined : Number(args.limit),
 				signal,
 			});
-			const text = formatGrepOutput(outcome.matches, root, outcome.limitHit, Math.max(1, args.limit === undefined ? MAX_MATCHES : Number(args.limit)));
+			const text = formatGrepOutput(
+				outcome.matches,
+				root,
+				outcome.limitHit,
+				Math.max(1, args.limit === undefined ? MAX_MATCHES : Number(args.limit)),
+			);
 			return {
 				result: text,
 				status: "succeeded",

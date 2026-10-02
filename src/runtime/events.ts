@@ -15,20 +15,54 @@ export type DeepReadonly<T> = T extends (...args: never[]) => unknown
  */
 export type RuntimeEvent =
 	| SessionRewindEvent
-	| AgentStartEvent | AgentEndEvent | AgentSettledEvent | TurnStartEvent | TurnEndEvent
-	| ToolCallEvent | ToolResultEvent | ModelSelectEvent | ThinkingLevelSelectEvent
-	| SessionCompactStartEvent | SessionCompactProgressEvent | SessionCompactEvent
-	| OutputStartEvent | OutputUpdateEvent | OutputEndEvent | OutputInterruptedEvent
-	| UsageUpdateEvent | ContextUpdateEvent
-	| ProviderRetryEvent | ProviderRecoveredEvent
-	| QueueEvent | TurnAbortedEvent | ErrorEvent
+	| AgentStartEvent
+	| AgentEndEvent
+	| AgentSettledEvent
+	| TurnStartEvent
+	| TurnEndEvent
+	| ToolCallEvent
+	| ToolResultEvent
+	| ModelSelectEvent
+	| ThinkingLevelSelectEvent
+	| SessionCompactStartEvent
+	| SessionCompactProgressEvent
+	| SessionCompactEvent
+	| OutputStartEvent
+	| OutputUpdateEvent
+	| OutputEndEvent
+	| OutputInterruptedEvent
+	| UsageUpdateEvent
+	| ContextUpdateEvent
+	| ProviderRetryEvent
+	| ProviderRecoveredEvent
+	| QueueEvent
+	| TurnAbortedEvent
+	| ErrorEvent
 	| InputAcceptedEvent
-	| CustomMessageEvent | CustomEntryEvent;
+	| CustomMessageEvent
+	| CustomEntryEvent;
 
-export interface AgentStartEvent { readonly type: "agent_start"; readonly turnSeq: number; }
-export interface AgentEndEvent { readonly type: "agent_end"; readonly turnSeq: number; readonly success: boolean; readonly error?: string; }
-export interface AgentSettledEvent { readonly type: "agent_settled"; readonly turnSeq: number; }
-export interface TurnStartEvent { readonly type: "turn_start"; readonly turnNumber: number; readonly userText: string; readonly inputRefs?: readonly string[]; readonly images?: readonly import("../core/content.js").ImageContent[]; }
+export interface AgentStartEvent {
+	readonly type: "agent_start";
+	readonly turnSeq: number;
+}
+export interface AgentEndEvent {
+	readonly type: "agent_end";
+	readonly turnSeq: number;
+	readonly success: boolean;
+	readonly error?: string;
+}
+export interface AgentSettledEvent {
+	readonly type: "agent_settled";
+	readonly turnSeq: number;
+}
+export interface TurnStartEvent {
+	readonly type: "turn_start";
+	readonly turnNumber: number;
+	readonly userText: string;
+	readonly inputRefs?: readonly string[];
+	readonly images?: readonly import("../core/content.js").ImageContent[];
+}
 
 /**
  * 输入已接纳（事实，一次输入恰好一条）。
@@ -83,10 +117,34 @@ export interface ProviderRecoveredEvent {
 	readonly provider: string;
 	readonly attempt: number;
 }
-export interface ToolCallEvent { readonly type: "tool_call"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly callId: string; readonly invocationId?: string; }
-export interface ToolResultEvent { readonly type: "tool_result"; readonly toolName: string; readonly args: DeepReadonly<Record<string, unknown>>; readonly result: string; readonly images?: readonly import("../core/content.js").ImageContent[]; readonly details?: unknown; readonly status: import("../core/types.js").ToolResultStatus; readonly callId: string; readonly invocationId?: string; }
-export interface ModelSelectEvent { readonly type: "model_select"; readonly model: string; readonly previousModel?: string; }
-export interface ThinkingLevelSelectEvent { readonly type: "thinking_level_select"; readonly level: ThinkingLevel; readonly previousLevel?: ThinkingLevel; }
+export interface ToolCallEvent {
+	readonly type: "tool_call";
+	readonly toolName: string;
+	readonly args: DeepReadonly<Record<string, unknown>>;
+	readonly callId: string;
+	readonly invocationId?: string;
+}
+export interface ToolResultEvent {
+	readonly type: "tool_result";
+	readonly toolName: string;
+	readonly args: DeepReadonly<Record<string, unknown>>;
+	readonly result: string;
+	readonly images?: readonly import("../core/content.js").ImageContent[];
+	readonly details?: unknown;
+	readonly status: import("../core/types.js").ToolResultStatus;
+	readonly callId: string;
+	readonly invocationId?: string;
+}
+export interface ModelSelectEvent {
+	readonly type: "model_select";
+	readonly model: string;
+	readonly previousModel?: string;
+}
+export interface ThinkingLevelSelectEvent {
+	readonly type: "thinking_level_select";
+	readonly level: ThinkingLevel;
+	readonly previousLevel?: ThinkingLevel;
+}
 export interface SessionCompactStartEvent {
 	readonly type: "session_compact_start";
 	readonly operationId: string;
@@ -111,21 +169,64 @@ export interface SessionCompactEvent {
 	readonly retainedTailEntries?: number;
 }
 
-export interface OutputStartEvent { readonly type: "output_start"; readonly streamId: string; readonly channel: "content" | "thinking" | "tool"; }
-export interface OutputUpdateEvent { readonly type: "output_update"; readonly streamId: string; readonly offset: number; readonly channel: "content" | "thinking" | "tool"; readonly text: string; }
-export interface OutputEndEvent { readonly type: "output_end"; readonly streamId: string; readonly channel: "content" | "thinking" | "tool"; }
-export interface OutputInterruptedEvent { readonly type: "output_interrupted"; readonly streamId: string; readonly channel: "content" | "thinking" | "tool"; readonly reason: "external" | "self" | "cancelled" | "error"; readonly spokenUntil?: number; }
+export interface OutputStartEvent {
+	readonly type: "output_start";
+	readonly streamId: string;
+	readonly channel: "content" | "thinking" | "tool";
+}
+export interface OutputUpdateEvent {
+	readonly type: "output_update";
+	readonly streamId: string;
+	readonly offset: number;
+	readonly channel: "content" | "thinking" | "tool";
+	readonly text: string;
+}
+export interface OutputEndEvent {
+	readonly type: "output_end";
+	readonly streamId: string;
+	readonly channel: "content" | "thinking" | "tool";
+}
+export interface OutputInterruptedEvent {
+	readonly type: "output_interrupted";
+	readonly streamId: string;
+	readonly channel: "content" | "thinking" | "tool";
+	readonly reason: "external" | "self" | "cancelled" | "error";
+	readonly spokenUntil?: number;
+}
 
-export interface QueueEvent { readonly type: "queue"; readonly items: readonly DeepReadonly<QueuedMessage>[]; }
-export interface TurnAbortedEvent { readonly type: "turn_aborted"; readonly turnNumber: number; }
-export interface ErrorEvent { readonly type: "error"; readonly text: string; }
+export interface QueueEvent {
+	readonly type: "queue";
+	readonly items: readonly DeepReadonly<QueuedMessage>[];
+}
+export interface TurnAbortedEvent {
+	readonly type: "turn_aborted";
+	readonly turnNumber: number;
+}
+export interface ErrorEvent {
+	readonly type: "error";
+	readonly text: string;
+}
 
-export interface SessionRewindEvent { readonly type: "session_rewind"; readonly turnNumber?: number; readonly requestId: string; readonly rewindId: string; readonly fromId: string; readonly targetId: string; readonly entries: readonly import("../session/types.js").SessionEntry[]; }
+export interface SessionRewindEvent {
+	readonly type: "session_rewind";
+	readonly turnNumber?: number;
+	readonly requestId: string;
+	readonly rewindId: string;
+	readonly fromId: string;
+	readonly targetId: string;
+	readonly entries: readonly import("../session/types.js").SessionEntry[];
+}
 
 /** 扩展有意让模型看见的自定义消息（durable：写 journal 后广播）。 */
 export interface CustomMessageEvent {
 	readonly type: "custom_message";
-	readonly message: { readonly customType: string; readonly content: string; readonly images?: readonly import("../core/content.js").ImageContent[]; readonly display?: boolean; readonly details?: unknown };
+	readonly message: {
+		readonly customType: string;
+		readonly content: string;
+		readonly images?: readonly import("../core/content.js").ImageContent[];
+		readonly display?: boolean;
+		readonly details?: unknown;
+	};
 }
 /** 扩展私有持久条目（durable：写 journal 后广播；不进模型上下文）。 */
 export interface CustomEntryEvent {

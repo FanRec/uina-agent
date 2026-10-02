@@ -107,7 +107,9 @@ function extractArchive(archivePath: string, extractDir: string, plat: string): 
 	const tar = plat === "win32" ? join(process.env.SystemRoot ?? "", "System32", "tar.exe") : "tar";
 	const extract = spawnSync(tar, ["xf", archivePath, "-C", extractDir], { stdio: "pipe", shell: false });
 	if (extract.error || extract.status !== 0) {
-		throw new Error(`解压失败：${extract.error?.message ?? extract.stderr?.toString().trim() ?? "tar 退出码 " + extract.status}`);
+		throw new Error(
+			`解压失败：${extract.error?.message ?? extract.stderr?.toString().trim() ?? "tar 退出码 " + extract.status}`,
+		);
 	}
 }
 
@@ -124,8 +126,9 @@ async function downloadRgInner(): Promise<string> {
 	try {
 		extractArchive(archivePath, extractDir, plat);
 		const binaryFileName = rgBinaryName();
-		const binary = binaryCandidates(extractDir, assetName, binaryFileName).find(existsSync)
-			?? findRgRecursively(extractDir, binaryFileName);
+		const binary =
+			binaryCandidates(extractDir, assetName, binaryFileName).find(existsSync) ??
+			findRgRecursively(extractDir, binaryFileName);
 		if (!binary) throw new Error(`压缩包内未找到 ${binaryFileName}`);
 		const target = cachedPath();
 		renameSync(binary, target);

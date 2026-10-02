@@ -20,7 +20,13 @@ describe("pacing ticker opportunity identity", () => {
 				order: order + 1,
 				mode: "followUp" as const,
 				text: "[时钟节拍]",
-				source: { kind: "runtime" as const, type: "pacing-opportunity", ref: "ticker", origin: "internal" as const, channel: "world" as const },
+				source: {
+					kind: "runtime" as const,
+					type: "pacing-opportunity",
+					ref: "ticker",
+					origin: "internal" as const,
+					channel: "world" as const,
+				},
 				receivedAt: new Date().toISOString(),
 			};
 			await store.appendEvent("queue_enqueued", input);

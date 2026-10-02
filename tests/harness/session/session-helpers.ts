@@ -37,9 +37,10 @@ export async function rewindTo(
 		id?: string;
 	} = {},
 ): Promise<string> {
-	const records = ("readRecords" in store && typeof (store as any).readRecords === "function")
-		? (store as MemorySessionStore).readRecords()
-		: (store.state.allEntries as unknown as readonly SessionRecord[]);
+	const records =
+		"readRecords" in store && typeof (store as any).readRecords === "function"
+			? (store as MemorySessionStore).readRecords()
+			: (store.state.allEntries as unknown as readonly SessionRecord[]);
 
 	const fromId = options.fromId ?? records.at(-1)?.id ?? targetId;
 	const id = options.id ?? `r-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;

@@ -71,9 +71,9 @@ export class MainScreenRenderer {
 		const changedRows = fullRender
 			? physicalRows.map((_row, index) => index)
 			: physicalRows.reduce<number[]>((result, row, index) => {
-				if (this.previousPhysicalRows?.[index] !== row) result.push(index);
-				return result;
-			}, []);
+					if (this.previousPhysicalRows?.[index] !== row) result.push(index);
+					return result;
+				}, []);
 		for (const index of changedRows) {
 			const fitted = physicalRows[index]!;
 			const fittedW = visibleWidth(fitted);
@@ -95,7 +95,9 @@ export class MainScreenRenderer {
 		}
 
 		if (frame.length > 0) this.terminal.syncWrite(frame);
-		const snapshotTerminal = this.terminal as ProcessTerminal & { recordLogicalFrameSnapshot?: (frame: string) => void };
+		const snapshotTerminal = this.terminal as ProcessTerminal & {
+			recordLogicalFrameSnapshot?: (frame: string) => void;
+		};
 		if (snapshotTerminal.recordLogicalFrameSnapshot) {
 			let snapshot = "\x1b[H";
 			for (let index = 0; index < physicalRows.length; index++) {

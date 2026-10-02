@@ -84,7 +84,9 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 
 						if (options.length === 0) {
 							const emptyMsg = `${C.dim}（暂无可用选项）${C.reset}`;
-							out.push(`  ${borderCol}│${C.reset} ${emptyMsg}${" ".repeat(Math.max(0, innerW - visibleWidth(emptyMsg)))} ${borderCol}│${C.reset}`);
+							out.push(
+								`  ${borderCol}│${C.reset} ${emptyMsg}${" ".repeat(Math.max(0, innerW - visibleWidth(emptyMsg)))} ${borderCol}│${C.reset}`,
+							);
 						} else {
 							const visibleOptions = options.slice(scrollOffset, scrollOffset + maxVisible);
 							for (let idx = 0; idx < visibleOptions.length; idx++) {
@@ -96,7 +98,9 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 								const safeOpt = truncateToWidth(opt, maxTextW, "…");
 								const text = isSel ? `${C.bold}${C.white}${safeOpt}${C.reset}` : `${C.dim}${safeOpt}${C.reset}`;
 								const line = `${pointer} ${text}`;
-								out.push(`  ${borderCol}│${C.reset} ${line}${" ".repeat(Math.max(0, innerW - visibleWidth(line)))} ${borderCol}│${C.reset}`);
+								out.push(
+									`  ${borderCol}│${C.reset} ${line}${" ".repeat(Math.max(0, innerW - visibleWidth(line)))} ${borderCol}│${C.reset}`,
+								);
 							}
 						}
 
@@ -173,12 +177,16 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 						const out = [top];
 
 						const msgLine = truncateToWidth(message, innerW);
-						out.push(`  ${borderCol}│${C.reset} ${msgLine}${" ".repeat(Math.max(0, innerW - visibleWidth(msgLine)))} ${borderCol}│${C.reset}`);
+						out.push(
+							`  ${borderCol}│${C.reset} ${msgLine}${" ".repeat(Math.max(0, innerW - visibleWidth(msgLine)))} ${borderCol}│${C.reset}`,
+						);
 
 						const btnYes = yesSelected ? `\x1b[7m [ 是 (Y) ] \x1b[0m` : ` [ 是 (Y) ] `;
 						const btnNo = !yesSelected ? `\x1b[7m [ 否 (N) ] \x1b[0m` : ` [ 否 (N) ] `;
 						const btnRow = `  ${btnYes}   ${btnNo}`;
-						out.push(`  ${borderCol}│${C.reset} ${btnRow}${" ".repeat(Math.max(0, innerW - visibleWidth(btnRow)))} ${borderCol}│${C.reset}`);
+						out.push(
+							`  ${borderCol}│${C.reset} ${btnRow}${" ".repeat(Math.max(0, innerW - visibleWidth(btnRow)))} ${borderCol}│${C.reset}`,
+						);
 
 						const bot = `  ${borderCol}╰${"─".repeat(boxW - 2)}╯${C.reset}`;
 						out.push(bot);
@@ -251,7 +259,9 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 						const maxContentW = Math.max(1, innerW - 3);
 						const safeContent = truncateToWidth(content, maxContentW, "");
 						const line = `${C.cyan}❯${C.reset} ${safeContent}`;
-						out.push(`  ${borderCol}│${C.reset} ${line}${" ".repeat(Math.max(0, innerW - visibleWidth(line)))} ${borderCol}│${C.reset}`);
+						out.push(
+							`  ${borderCol}│${C.reset} ${line}${" ".repeat(Math.max(0, innerW - visibleWidth(line)))} ${borderCol}│${C.reset}`,
+						);
 
 						const hint = `Enter 确认 · Esc 取消`;
 						const botFill = Math.max(1, boxW - 2 - visibleWidth(hint) - 2);

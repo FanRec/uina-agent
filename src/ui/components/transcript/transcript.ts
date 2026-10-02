@@ -22,7 +22,12 @@ import {
 	CustomMessageComponent,
 } from "./cards.js";
 import { SmoothRevealController } from "./smooth-reveal.js";
-import type { CustomMessage, MessageRenderer, ToolRenderer, MarkdownTransformer } from "../../../extensions/ui-contract.js";
+import type {
+	CustomMessage,
+	MessageRenderer,
+	ToolRenderer,
+	MarkdownTransformer,
+} from "../../../extensions/ui-contract.js";
 
 export interface ToolRecord {
 	name: string;
@@ -52,8 +57,8 @@ export type TurnItem =
 			name: string;
 			args?: unknown;
 			result?: string;
-   images?: import("../../../core/content.js").ImageContent[];
-   details?: unknown;
+			images?: import("../../../core/content.js").ImageContent[];
+			details?: unknown;
 			status: "running" | ToolResultStatus;
 			elapsedMs?: number;
 			startedAt?: number;
@@ -83,7 +88,7 @@ export interface TurnRecord {
 	 * 用 uid，n 只作为显示用的轮次编号。 */
 	readonly uid: number;
 	userText: string;
- userImages?: readonly import("../../../core/content.js").ImageContent[];
+	userImages?: readonly import("../../../core/content.js").ImageContent[];
 	items: TurnItem[];
 	readonly assistantMarkdown: string;
 	readonly thinkingText?: string;
@@ -163,8 +168,7 @@ export type TimelineItem =
 	| { kind: "notice"; text: string }
 	| { kind: "error"; text: string }
 	| { kind: "compaction"; record: CompactionCardData }
-	| { kind: "customMessage"; message: CustomMessage }
-;
+	| { kind: "customMessage"; message: CustomMessage };
 /** One settled turn rendered as a self-contained block. Location indices are
  * block-relative; the assembler rebases them onto the final line array. */
 interface TurnBlock {
@@ -220,7 +224,12 @@ export class TranscriptContainer implements Component {
 	/** Settled timeline blocks, keyed by width + expansion state only.
 	 * Hover is applied per block at assembly time so a mouse move never
 	 * invalidates every settled turn. */
-	private settledBlocks: { width: number; blocks: SettledBlock[]; staleTurns: Set<number>; staleCompactions: Set<number> } | null = null;
+	private settledBlocks: {
+		width: number;
+		blocks: SettledBlock[];
+		staleTurns: Set<number>;
+		staleCompactions: Set<number>;
+	} | null = null;
 	private hoveredBlockCache = new Map<string, TurnBlock>();
 
 	invalidate(): void {
@@ -312,7 +321,10 @@ export class TranscriptContainer implements Component {
 		return null;
 	}
 
-	toggleTool(targetOrId?: string | Extract<TurnItem, { kind: "tool" }>, width = 80): { toggled: boolean; lineDelta: number } {
+	toggleTool(
+		targetOrId?: string | Extract<TurnItem, { kind: "tool" }>,
+		width = 80,
+	): { toggled: boolean; lineDelta: number } {
 		const allTurns = [...this.historyTurns];
 		if (this.currentTurn) allTurns.push(this.currentTurn);
 
@@ -324,7 +336,8 @@ export class TranscriptContainer implements Component {
 		} else if (typeof targetOrId === "string") {
 			for (const t of allTurns) {
 				const found = t.items.find(
-					(it): it is Extract<TurnItem, { kind: "tool" }> => it.kind === "tool" && (it.callId === targetOrId || it.name === targetOrId),
+					(it): it is Extract<TurnItem, { kind: "tool" }> =>
+						it.kind === "tool" && (it.callId === targetOrId || it.name === targetOrId),
 				);
 				if (found) {
 					targetItem = found;
@@ -334,9 +347,9 @@ export class TranscriptContainer implements Component {
 			}
 		} else {
 			for (let i = allTurns.length - 1; i >= 0; i--) {
-				const found = allTurns[i]!.items.slice().reverse().find(
-					(it): it is Extract<TurnItem, { kind: "tool" }> => it.kind === "tool",
-				);
+				const found = allTurns[i]!.items.slice()
+					.reverse()
+					.find((it): it is Extract<TurnItem, { kind: "tool" }> => it.kind === "tool");
 				if (found) {
 					targetItem = found;
 					ownerTurn = allTurns[i];
@@ -404,29 +417,48 @@ export class TranscriptContainer implements Component {
 	}
 
 	private toolRenderer: (name: string) => ToolRenderer | undefined = () => undefined;
- private markdownTransformer: MarkdownTransformer = text => text;
- private renderTool(item: Extract<TurnItem, { kind: 'tool' }>, width: number, options: import('./tool-view.js').ToolCardRenderOptions): string[] {
-  let failure: string | undefined;
-  try {
-   const component = this.toolRenderer(item.name)?.(structuredClone(item), { width, expanded: options.isExpanded ?? false, hovered: options.isHovered ?? false, elapsedMs: item.elapsedMs ?? 0 });
-   if (component) return component.render(width);
-  } catch (error) { failure = '[tool renderer ' + item.name + ': ' + String(error) + ']'; }
-  const text = item.result ?? '';
-  const lines = formatToolCardLines(item.name, text, item.elapsedMs ?? 0, width, item.status, item.args, options);
-  if (item.images?.length) lines.push('  [图片 ' + item.images.map(image => image.mimeType).join(', ') + '；终端显示元数据]');
-  if (failure) lines.push(failure);
-  return lines;
- }
- private transformMarkdown(text: string, role: 'user' | 'assistant', width: number, streaming: boolean): string {
-  try { return this.markdownTransformer(text, { role, width, streaming }); }
-  catch (error) { return text + '\n[markdown renderer: ' + String(error) + ']'; }
- }
- private messageRenderer: (type: string) => MessageRenderer | undefined = () => undefined;
+	private markdownTransformer: MarkdownTransformer = (text) => text;
+	private renderTool(
+		item: Extract<TurnItem, { kind: "tool" }>,
+		width: number,
+		options: import("./tool-view.js").ToolCardRenderOptions,
+	): string[] {
+		let failure: string | undefined;
+		try {
+			const component = this.toolRenderer(item.name)?.(structuredClone(item), {
+				width,
+				expanded: options.isExpanded ?? false,
+				hovered: options.isHovered ?? false,
+				elapsedMs: item.elapsedMs ?? 0,
+			});
+			if (component) return component.render(width);
+		} catch (error) {
+			failure = "[tool renderer " + item.name + ": " + String(error) + "]";
+		}
+		const text = item.result ?? "";
+		const lines = formatToolCardLines(item.name, text, item.elapsedMs ?? 0, width, item.status, item.args, options);
+		if (item.images?.length)
+			lines.push("  [图片 " + item.images.map((image) => image.mimeType).join(", ") + "；终端显示元数据]");
+		if (failure) lines.push(failure);
+		return lines;
+	}
+	private transformMarkdown(text: string, role: "user" | "assistant", width: number, streaming: boolean): string {
+		try {
+			return this.markdownTransformer(text, { role, width, streaming });
+		} catch (error) {
+			return text + "\n[markdown renderer: " + String(error) + "]";
+		}
+	}
+	private messageRenderer: (type: string) => MessageRenderer | undefined = () => undefined;
 
-	setRendererResolver(resolve: { message(type: string): MessageRenderer | undefined; tool?(name: string): ToolRenderer | undefined; markdown?: MarkdownTransformer }): void {
+	setRendererResolver(resolve: {
+		message(type: string): MessageRenderer | undefined;
+		tool?(name: string): ToolRenderer | undefined;
+		markdown?: MarkdownTransformer;
+	}): void {
 		this.messageRenderer = resolve.message;
-  this.toolRenderer = resolve.tool ?? (() => undefined);
-  this.markdownTransformer = resolve.markdown ?? (text => text);
+		this.toolRenderer = resolve.tool ?? (() => undefined);
+		this.markdownTransformer = resolve.markdown ?? ((text) => text);
 		this.invalidate();
 	}
 
@@ -435,7 +467,7 @@ export class TranscriptContainer implements Component {
 			this.commitCurrentTurn();
 		}
 		this.currentTurn = createTurnRecord(n, ++this.uidSeq, userText);
-  this.currentTurn.userImages = images;
+		this.currentTurn.userImages = images;
 	}
 
 	appendToken(token: string): void {
@@ -475,7 +507,15 @@ export class TranscriptContainer implements Component {
 		this.invalidate();
 	}
 
-	addToolDone(name: string, result: string, elapsedMs = 0, status: ToolResultStatus = "unknown", callId?: string, args?: unknown, attachments?: { images?: import("../../../core/content.js").ImageContent[]; details?: unknown }): void {
+	addToolDone(
+		name: string,
+		result: string,
+		elapsedMs = 0,
+		status: ToolResultStatus = "unknown",
+		callId?: string,
+		args?: unknown,
+		attachments?: { images?: import("../../../core/content.js").ImageContent[]; details?: unknown },
+	): void {
 		result = sanitizeRenderText(result);
 		if (!this.currentTurn) {
 			const lastTurn = this.historyTurns[this.historyTurns.length - 1];
@@ -487,7 +527,7 @@ export class TranscriptContainer implements Component {
 				if (existingTool) {
 					// 该工具属于已结算/打断的上一轮，严禁开辟新轮次或生成重复工具卡
 					Object.assign(existingTool, attachments);
-     existingTool.status = status;
+					existingTool.status = status;
 					existingTool.result = result;
 					existingTool.elapsedMs = elapsedMs;
 					this.invalidate();
@@ -516,7 +556,7 @@ export class TranscriptContainer implements Component {
 
 		if (runningTool) {
 			Object.assign(runningTool, attachments);
-   runningTool.status = status;
+			runningTool.status = status;
 			runningTool.result = result;
 			runningTool.elapsedMs = elapsedMs;
 			if (args !== undefined && runningTool.args === undefined) {
@@ -528,7 +568,7 @@ export class TranscriptContainer implements Component {
 				name,
 				args,
 				result,
-    ...attachments,
+				...attachments,
 				elapsedMs,
 				status: status,
 				callId,
@@ -630,13 +670,18 @@ export class TranscriptContainer implements Component {
 			if (before) {
 				commit();
 				for (const decoration of before) {
-					this.timeline.push({ kind: "compaction", record: {
-						status: "completed",
-						summary: decoration.summary,
-						...(decoration.retainedTailEntries === undefined ? {} : { retainedTailEntries: decoration.retainedTailEntries }),
-						tokensBefore: decoration.tokensBefore ?? 0,
-						collapsed: true,
-					} });
+					this.timeline.push({
+						kind: "compaction",
+						record: {
+							status: "completed",
+							summary: decoration.summary,
+							...(decoration.retainedTailEntries === undefined
+								? {}
+								: { retainedTailEntries: decoration.retainedTailEntries }),
+							tokensBefore: decoration.tokensBefore ?? 0,
+							collapsed: true,
+						},
+					});
 				}
 			}
 			if (entry.kind === "rewind") {
@@ -645,7 +690,8 @@ export class TranscriptContainer implements Component {
 					kind: "customMessage",
 					message: {
 						customType: "session-rewind",
-						content: entry.notice + "\n[当前主线从此处继续]" + (entry.record.note ? `\n[经验附注] ${entry.record.note}` : ""),
+						content:
+							entry.notice + "\n[当前主线从此处继续]" + (entry.record.note ? `\n[经验附注] ${entry.record.note}` : ""),
 						details: { record: entry.record, effects: entry.effects },
 					},
 				});
@@ -665,13 +711,18 @@ export class TranscriptContainer implements Component {
 				continue;
 			}
 
-			const msg = entry.kind === "input" ? projectInputMessage(entry.input) : entry.kind === "message" ? entry.message : undefined;
+			const msg =
+				entry.kind === "input"
+					? projectInputMessage(entry.input)
+					: entry.kind === "message"
+						? entry.message
+						: undefined;
 			if (!msg) continue;
 			if (msg.role === "user") {
 				commit();
 				pendingToolCalls = [];
 				current = createTurn(msg.content);
-    current.userImages = msg.images;
+				current.userImages = msg.images;
 			} else if (msg.role === "assistant") {
 				current ??= createTurn();
 				if (msg.thinking) {
@@ -708,8 +759,8 @@ export class TranscriptContainer implements Component {
 					name: toolName,
 					args: toolArgs,
 					result: msg.content,
-     images: msg.images,
-     details: msg.details,
+					images: msg.images,
+					details: msg.details,
 					elapsedMs,
 					status: msg.status ?? "unknown",
 					callId: msg.tool_call_id,
@@ -812,7 +863,7 @@ export class TranscriptContainer implements Component {
 	}
 
 	private formatUserLine(text: string, width: number): string[] {
-  text = this.transformMarkdown(text, "user", width, false);
+		text = this.transformMarkdown(text, "user", width, false);
 		const lines: string[] = [""];
 		const prefix = `${C.bold}${C.briefLabelYou}❯ ${C.reset}`;
 		const leadW = 2; // "❯ " 占 2 列
@@ -920,8 +971,13 @@ export class TranscriptContainer implements Component {
 			}
 			const clean = stripAnsi(rawLine).trimStart();
 			if (
-				clean.startsWith("┌") || clean.startsWith("│") || clean.startsWith("└") ||
-				clean.startsWith("├") || clean.startsWith("┼") || clean.startsWith("┴") || clean.startsWith("┬")
+				clean.startsWith("┌") ||
+				clean.startsWith("│") ||
+				clean.startsWith("└") ||
+				clean.startsWith("├") ||
+				clean.startsWith("┼") ||
+				clean.startsWith("┴") ||
+				clean.startsWith("┬")
 			) {
 				formatted.push(rawLine.trimStart());
 				continue;
@@ -996,7 +1052,12 @@ export class TranscriptContainer implements Component {
 
 	/** Render one turn exactly once: lines and hit-zone metadata come from the
 	 * same pass, so streaming and settled turns can never disagree. */
-	private buildTurnBlock(turn: TurnRecord, width: number, hover: boolean, latestFailed: Extract<TurnItem, { kind: "tool" }> | null): TurnBlock {
+	private buildTurnBlock(
+		turn: TurnRecord,
+		width: number,
+		hover: boolean,
+		latestFailed: Extract<TurnItem, { kind: "tool" }> | null,
+	): TurnBlock {
 		const lines: string[] = [];
 		const sink: LayoutSink = { thinking: [], tools: [] };
 		this.layoutTurn(turn, width, lines, sink, { hover, latestFailed });
@@ -1014,7 +1075,8 @@ export class TranscriptContainer implements Component {
 		const hover = opts.hover ?? false;
 		const activeFailed = opts.latestFailed !== undefined ? opts.latestFailed : this.getLatestFailedTool();
 
-		if (turn.userText || turn.userImages?.length) out.push(...this.formatUserLine(turn.userText + imageNotice(turn.userImages), width));
+		if (turn.userText || turn.userImages?.length)
+			out.push(...this.formatUserLine(turn.userText + imageNotice(turn.userImages), width));
 
 		let hasRenderedText = false;
 		for (const item of turn.items) {
@@ -1041,7 +1103,15 @@ export class TranscriptContainer implements Component {
 					isNewestFailure,
 					startedAt: item.startedAt,
 				});
-				sink.tools.push({ callId: toolId, lineIndex: out.length, lineCount: lines.length, name: item.name, isExpanded, turn, item });
+				sink.tools.push({
+					callId: toolId,
+					lineIndex: out.length,
+					lineCount: lines.length,
+					name: item.name,
+					isExpanded,
+					turn,
+					item,
+				});
 				out.push(...lines);
 			} else if (item.kind === "diff") {
 				out.push(...formatDiffCardLines(item.oldText, item.newText, item.filename, item.collapsed ?? true, width));
@@ -1056,7 +1126,8 @@ export class TranscriptContainer implements Component {
 		const hoveredThinkingHere =
 			this.hoveredThinkingUid !== null &&
 			base.turn.items.some((it) => it.kind === "thinking" && it.uid === this.hoveredThinkingUid);
-		const hoveredToolHere = this.hoveredToolId !== null && base.tools.some((tool) => tool.callId === this.hoveredToolId);
+		const hoveredToolHere =
+			this.hoveredToolId !== null && base.tools.some((tool) => tool.callId === this.hoveredToolId);
 		if (!hoveredThinkingHere && !hoveredToolHere) return base;
 		const key = `${width}:${base.turn.uid}:${this.hoveredToolId ?? ""}:${this.hoveredThinkingUid ?? ""}`;
 		const cached = this.hoveredBlockCache.get(key);
@@ -1083,8 +1154,16 @@ export class TranscriptContainer implements Component {
 				for (const loc of rendered.thinking) thinkingLocations.push({ ...loc, lineIndex: start + loc.lineIndex });
 				for (const loc of rendered.tools) toolLocations.push({ ...loc, lineIndex: start + loc.lineIndex });
 			} else if (block.kind === "compaction") {
-				const cardLines = this.hoveredCompactionIndex === block.index ? formatCompactionCardLines(block.record, width, true) : block.lines;
-				compactionLocations.push({ index: block.index, lineIndex: start, lineCount: cardLines.length, record: block.record });
+				const cardLines =
+					this.hoveredCompactionIndex === block.index
+						? formatCompactionCardLines(block.record, width, true)
+						: block.lines;
+				compactionLocations.push({
+					index: block.index,
+					lineIndex: start,
+					lineCount: cardLines.length,
+					record: block.record,
+				});
 				lines.push(...cardLines);
 			} else {
 				lines.push(...block.lines);

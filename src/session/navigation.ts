@@ -2,7 +2,6 @@ import type { CanonicalState } from "./recovery.js";
 import type { HydratedSessionEntry, SessionAccess, SessionBranchInfo, SessionEntry, SessionNodeInfo } from "./types.js";
 
 export class SessionNavigationError extends Error {
-
 	constructor(message: string) {
 		super(message);
 		this.name = "SessionNavigationError";
@@ -36,7 +35,7 @@ function formatNodePreview(entry: SessionEntry): string {
 }
 
 /** 全部导航查询直接消费常驻 CanonicalState——journal 的唯一解释点在 reducer，
-	 * 这里禁止再对 records 折叠（禁止第二个 journal walker）。 */
+ * 这里禁止再对 records 折叠（禁止第二个 journal walker）。 */
 export function listSessionNodes(
 	state: CanonicalState,
 	options: Parameters<SessionAccess["list"]>[0] = {},
@@ -78,9 +77,7 @@ export function listSessionNodes(
 		};
 	});
 
-	const nextPageId = source.length > page.length && page.length > 0
-		? page[page.length - 1].id
-		: undefined;
+	const nextPageId = source.length > page.length && page.length > 0 ? page[page.length - 1].id : undefined;
 
 	return {
 		nodes,
@@ -116,7 +113,6 @@ export function readSessionNode(state: CanonicalState, id: string): HydratedSess
 	}
 	return structuredClone(node);
 }
-
 
 /** 一条 rewind 节点；分支信息可直接由它构造，无需重算全部分支。 */
 type RewindNode = Extract<HydratedSessionEntry, { kind: "rewind" }>;
@@ -162,7 +158,10 @@ export function listSessionBranches(state: CanonicalState): { branches: SessionB
 	return { branches };
 }
 
-export function readSessionBranch(state: CanonicalState, id: string): { branch: SessionBranchInfo; nodes: SessionNodeInfo[] } {
+export function readSessionBranch(
+	state: CanonicalState,
+	id: string,
+): { branch: SessionBranchInfo; nodes: SessionNodeInfo[] } {
 	const { allEntries } = state;
 	const rewind = allEntries.find((e) => e.kind === "rewind" && e.id === id);
 	if (rewind?.kind !== "rewind") {

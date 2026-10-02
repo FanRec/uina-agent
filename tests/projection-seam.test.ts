@@ -46,7 +46,9 @@ describe("projection Replacement seam (P3c)", () => {
 		for (const m of seen) expect(m.content).toMatch(/^\[shaped\]/);
 	});
 
-	test("routes journal→memory projection through the injected projectHistory policy on rewind", async ({ scenario }) => {
+	test("routes journal→memory projection through the injected projectHistory policy on rewind", async ({
+		scenario,
+	}) => {
 		const store = new MemorySessionStore();
 		await store.appendMessage({ role: "user", content: "task 1" });
 		await store.appendMessage({ role: "assistant", content: "reply 1" });

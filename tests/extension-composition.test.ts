@@ -33,8 +33,16 @@ const summarizingStream = (summary: string | Error): { stream: ModelStreamFn; su
 const bigHistory = (): import("../src/core/types.js").ChatMsg[] =>
 	Array.from({ length: 30 }, (_, index) =>
 		index % 2 === 0
-			? { role: "user" as const, content: `问${index} ${"词".repeat(3_000)}`, context: { entryId: `entry-${index}`, ...(index === 28 ? { retain: true } : {}) } }
-			: { role: "assistant" as const, content: `答${index} ${"词".repeat(3_000)}`, context: { entryId: `entry-${index}` } },
+			? {
+					role: "user" as const,
+					content: `问${index} ${"词".repeat(3_000)}`,
+					context: { entryId: `entry-${index}`, ...(index === 28 ? { retain: true } : {}) },
+				}
+			: {
+					role: "assistant" as const,
+					content: `答${index} ${"词".repeat(3_000)}`,
+					context: { entryId: `entry-${index}` },
+				},
 	);
 const compactionHost = (
 	cwd: string,
@@ -55,21 +63,59 @@ const compactionHost = (
 			stream: ((model, request, onDelta, signal) => stream(model, request, onDelta, signal)) as ModelStreamFn,
 		} as never,
 		// capability 的 anchorId 取主线头 entry id；无 journal 的纯扩展层测试给一条合成主线头。
-		history: () => bigHistory().map((message, index) => ({ kind: "message", id: `entry-${index}`, seq: index + 1, timestamp: "", message: { ...message, context: undefined } })) as never,
+		history: () =>
+			bigHistory().map((message, index) => ({
+				kind: "message",
+				id: `entry-${index}`,
+				seq: index + 1,
+				timestamp: "",
+				message: { ...message, context: undefined },
+			})) as never,
 		// capability 私有持久状态（uina.compaction.summary）的落点：auxiliary timeline。
 		auxiliary: () => auxiliary,
-			isBusy: () => false,
-			runActivity: async (fn) => { const controller = new AbortController(); await fn(controller.signal); },
-			inspectRequest: async () => {
-			const projection = await value.runTransformContext({ projectionId: "test", modelKey: "mock/mock", messages: bigHistory(), tools: [] });
-			return { projection, measurement: { inputTokens: estimateRequestTokens(projection.messages, projection.tools), kind: "approximate" as const, source: "test" }, contextWindow: 50_000, inputBudget: 33_616 };
+		isBusy: () => false,
+		runActivity: async (fn) => {
+			const controller = new AbortController();
+			await fn(controller.signal);
 		},
-		context: async (): Promise<ContextSnapshot> => ({ projectionId: "test", modelKey: "mock/mock", basis: "idle_baseline", source: "fallback_estimator", measurementKind: "approximate", inputTokens: 0 }),
+		inspectRequest: async () => {
+			const projection = await value.runTransformContext({
+				projectionId: "test",
+				modelKey: "mock/mock",
+				messages: bigHistory(),
+				tools: [],
+			});
+			return {
+				projection,
+				measurement: {
+					inputTokens: estimateRequestTokens(projection.messages, projection.tools),
+					kind: "approximate" as const,
+					source: "test",
+				},
+				contextWindow: 50_000,
+				inputBudget: 33_616,
+			};
+		},
+		context: async (): Promise<ContextSnapshot> => ({
+			projectionId: "test",
+			modelKey: "mock/mock",
+			basis: "idle_baseline",
+			source: "fallback_estimator",
+			measurementKind: "approximate",
+			inputTokens: 0,
+		}),
 		// pi.emitEvent 的装配：capability 事实进扩展事件总线（同宿主真实装配）。
 		emitRuntimeEvent: (event) => value.emit(event),
 		onCustomEntry: async (entry) => {
 			// 模拟宿主 journal 语义：custom_entry 落 auxiliary timeline（非主线）。
-			auxiliary.push({ kind: "custom_entry", id: `aux-${auxiliary.length + 1}`, seq: auxiliary.length + 1, timestamp: "", customType: entry.customType, data: entry.data });
+			auxiliary.push({
+				kind: "custom_entry",
+				id: `aux-${auxiliary.length + 1}`,
+				seq: auxiliary.length + 1,
+				timestamp: "",
+				customType: entry.customType,
+				data: entry.data,
+			});
 		},
 		...overrides,
 	});
@@ -303,7 +349,9 @@ describe("compaction capability event contract", () => {
 
 		const messages = bigHistory();
 		await force?.handler?.("");
-		const trimmed = (await host.runTransformContext({ projectionId: "test", modelKey: "mock/mock", messages, tools: [] })).messages;
+		const trimmed = (
+			await host.runTransformContext({ projectionId: "test", modelKey: "mock/mock", messages, tools: [] })
+		).messages;
 		expect(summaryCalls()).toBeGreaterThanOrEqual(1);
 		// 摘要消息紧随（无 leading system），尾部保留在预算内。
 		expect((trimmed[0] as { content: string }).content).toBe("[历史摘要] 总线摘要");
@@ -315,7 +363,9 @@ describe("compaction capability event contract", () => {
 		const { stream } = summarizingStream(new Error("summary down"));
 		const host = compactionHost(await temp(), stream);
 		const failures: string[] = [];
-		host.on("session_compact", (event) => { if (event.status === "failed") failures.push(event.error ?? ""); });
+		host.on("session_compact", (event) => {
+			if (event.status === "failed") failures.push(event.error ?? "");
+		});
 		await activate(host, "compaction", activateCompaction);
 		const force = host.registry.getCommand("compact");
 		await expect(force?.handler?.("")).resolves.toBeUndefined();
@@ -325,14 +375,21 @@ describe("compaction capability event contract", () => {
 	it("does not activate an unpersisted checkpoint when journal append fails", async () => {
 		const { stream } = summarizingStream("不可提交摘要");
 		const host = compactionHost(await temp(), stream, {
-			onCustomEntry: async () => { throw new Error("journal down"); },
+			onCustomEntry: async () => {
+				throw new Error("journal down");
+			},
 		});
 		const terminal: string[] = [];
 		host.on("session_compact", (event) => terminal.push(event.status));
 		await activate(host, "compaction", activateCompaction);
 
 		await expect(host.registry.getCommand("compact")?.handler?.("")).resolves.toBeUndefined();
-		const projection = await host.runTransformContext({ projectionId: "after-failure", modelKey: "mock/mock", messages: bigHistory(), tools: [] });
+		const projection = await host.runTransformContext({
+			projectionId: "after-failure",
+			modelKey: "mock/mock",
+			messages: bigHistory(),
+			tools: [],
+		});
 
 		expect(terminal).toEqual(["failed"]);
 		expect(projection.messages.some((message) => String(message.content).startsWith("[历史摘要] "))).toBe(false);
@@ -344,9 +401,12 @@ describe("compaction capability event contract", () => {
 		let writes = 0;
 		const terminal: string[] = [];
 		host = compactionHost(await temp(), stream, {
-			onCustomEntry: async () => { writes++; },
+			onCustomEntry: async () => {
+				writes++;
+			},
 			emitRuntimeEvent: async (event) => {
-				if (event.type === "session_compact_progress" && event.detail === "发布压缩结果") throw new Error("progress channel down");
+				if (event.type === "session_compact_progress" && event.detail === "发布压缩结果")
+					throw new Error("progress channel down");
 				await host.emit(event);
 			},
 		});
@@ -354,14 +414,20 @@ describe("compaction capability event contract", () => {
 		await activate(host, "compaction", activateCompaction);
 
 		await host.registry.getCommand("compact")?.handler?.("");
-		const projection = await host.runTransformContext({ projectionId: "after-commit", modelKey: "mock/mock", messages: bigHistory(), tools: [] });
+		const projection = await host.runTransformContext({
+			projectionId: "after-commit",
+			modelKey: "mock/mock",
+			messages: bigHistory(),
+			tools: [],
+		});
 
 		expect(writes).toBe(1);
 		expect(terminal).toEqual(["completed"]);
-		expect(projection.messages.some((message) => String(message.content).startsWith("[历史摘要] 已提交摘要"))).toBe(true);
+		expect(projection.messages.some((message) => String(message.content).startsWith("[历史摘要] 已提交摘要"))).toBe(
+			true,
+		);
 	});
 });
-
 
 it("skills and filesystem extensions compose through services and the existing tool execution pipeline", async () => {
 	const cwd = await temp();
@@ -370,13 +436,14 @@ it("skills and filesystem extensions compose through services and the existing t
 	const tools = new ToolBroker({ ownerId: "root" });
 	const host = runner(cwd, {
 		tools,
-		extensionPaths: [
-			join(process.cwd(), "examples/extensions/skills"),
-		],
+		extensionPaths: [join(process.cwd(), "examples/extensions/skills")],
 	});
 	await host.activateBuiltin("workspace-tools", activateWorkspaceTools);
 	const consumer = await activate(host, "consumer");
-	const undoRead = consumer.registerTool({ ...echo("replacement"), def: { ...echo("").def, function: { ...echo("").def.function, name: "read_file" } } }, { replace: true });
+	const undoRead = consumer.registerTool(
+		{ ...echo("replacement"), def: { ...echo("").def, function: { ...echo("").def.function, name: "read_file" } } },
+		{ replace: true },
+	);
 	expect((await consumer.callTool("read_file", { text: "x" })).result).toBe("replacement");
 	undoRead();
 	await host.load();

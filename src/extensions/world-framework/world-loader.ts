@@ -132,10 +132,7 @@ export async function loadExternalWorlds(
 	registry: WorldRegistry,
 	customSearchDirs?: readonly string[],
 ): Promise<() => Promise<void>> {
-	const searchDirs = customSearchDirs ?? [
-		join(pi.cwd, ".uina", "worlds"),
-		join(homedir(), ".uina", "worlds"),
-	];
+	const searchDirs = customSearchDirs ?? [join(pi.cwd, ".uina", "worlds"), join(homedir(), ".uina", "worlds")];
 
 	const entries = await discoverExternalWorldEntries(searchDirs);
 	const jiti = createJiti(import.meta.url, { moduleCache: false, tryNative: false });
@@ -153,7 +150,9 @@ export async function loadExternalWorlds(
 				pi.reportError(new Error(`外部 World 入口未导出合法的 WorldDef 契约: ${entry}`));
 			}
 		} catch (error) {
-			pi.reportError(new Error(`动态装载外部 World 失败 (${entry}): ${error instanceof Error ? error.message : String(error)}`));
+			pi.reportError(
+				new Error(`动态装载外部 World 失败 (${entry}): ${error instanceof Error ? error.message : String(error)}`),
+			);
 		}
 	}
 

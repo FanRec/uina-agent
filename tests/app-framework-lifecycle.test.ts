@@ -60,7 +60,6 @@ describe("World Framework: Lifecycle & Registry", () => {
 			},
 		});
 
-
 		// 验证工具已被注册
 		expect(mock.pi.registerTool).toHaveBeenCalled();
 		expect(mock.tools.has("jukebox")).toBe(true);
@@ -112,13 +111,25 @@ describe("World Framework: Lifecycle & Registry", () => {
 
 	it("World 事件保留 deferred render，并带来源与投递模式", async () => {
 		const mock = createMockExtensionAPI();
-		let emitEvent: ((event: { id: string; type: string; channel: "world"; delivery: "queued" | "urgent"; render: () => string }) => Promise<void>) | undefined;
+		let emitEvent:
+			| ((event: {
+					id: string;
+					type: string;
+					channel: "world";
+					delivery: "queued" | "urgent";
+					render: () => string;
+			  }) => Promise<void>)
+			| undefined;
 		const inputs: Array<Record<string, unknown>> = [];
-		(mock.pi as any).submitInput = vi.fn(async (input: Record<string, unknown>) => { inputs.push(input); });
+		(mock.pi as any).submitInput = vi.fn(async (input: Record<string, unknown>) => {
+			inputs.push(input);
+		});
 		const unregister = await defineWorld(mock.pi, {
 			name: "event-world",
 			description: "event test",
-			onStart: (ctx) => { emitEvent = ctx.emitEvent as typeof emitEvent; },
+			onStart: (ctx) => {
+				emitEvent = ctx.emitEvent as typeof emitEvent;
+			},
 			actions: {},
 		});
 		let state = "old";
@@ -129,7 +140,7 @@ describe("World Framework: Lifecycle & Registry", () => {
 		expect((inputs[0]?.source as { channel?: string }).channel).toBe("world");
 		expect(state).toBe("old");
 		state = "new";
-		const deferred = inputs[0]?.render as (() => string);
+		const deferred = inputs[0]?.render as () => string;
 		expect(await deferred()).toBe("new");
 		await unregister();
 		expect(await deferred()).toBeNull();
@@ -140,12 +151,16 @@ describe("World Framework: Lifecycle & Registry", () => {
 		const registry = new WorldRegistry(mock.pi);
 		const order: string[] = [];
 		let release!: () => void;
-		const released = new Promise<void>((resolve) => { release = resolve; });
+		const released = new Promise<void>((resolve) => {
+			release = resolve;
+		});
 
 		await registry.register({
 			name: "ordered",
 			description: "ordered",
-			onStop: () => { order.push("stop"); },
+			onStop: () => {
+				order.push("stop");
+			},
 			actions: {
 				wait: {
 					description: "wait",
@@ -318,28 +333,40 @@ describe("World Framework: Lifecycle & Registry", () => {
 		let bStarted = false;
 		let bFinished = false;
 		let releaseB!: () => void;
-		const bReleased = new Promise<void>((resolve) => { releaseB = resolve; });
+		const bReleased = new Promise<void>((resolve) => {
+			releaseB = resolve;
+		});
 
 		await registry.register({
 			name: "a",
 			description: "a",
 			defaultState: { enabled: false },
-			actions: { wait: { description: "wait", run: async (_params, ctx) => {
-				aStarted = true;
-				await new Promise<void>((resolve) => ctx.signal.addEventListener("abort", () => resolve(), { once: true }));
-				return "a";
-			} } },
+			actions: {
+				wait: {
+					description: "wait",
+					run: async (_params, ctx) => {
+						aStarted = true;
+						await new Promise<void>((resolve) => ctx.signal.addEventListener("abort", () => resolve(), { once: true }));
+						return "a";
+					},
+				},
+			},
 		});
 		await registry.register({
 			name: "b",
 			description: "b",
 			defaultState: { enabled: false },
-			actions: { wait: { description: "wait", run: async (_params, ctx) => {
-				bStarted = true;
-				await bReleased;
-				bFinished = !ctx.signal.aborted;
-				return "b";
-			} } },
+			actions: {
+				wait: {
+					description: "wait",
+					run: async (_params, ctx) => {
+						bStarted = true;
+						await bReleased;
+						bFinished = !ctx.signal.aborted;
+						return "b";
+					},
+				},
+			},
 		});
 		await registry.enable("a");
 		await registry.enable("b");
@@ -360,7 +387,9 @@ describe("World Framework: Lifecycle & Registry", () => {
 		await registry.register({
 			name: "broken-stop",
 			description: "broken stop",
-			onStop: () => { throw new Error("stop failed"); },
+			onStop: () => {
+				throw new Error("stop failed");
+			},
 			actions: {},
 		});
 

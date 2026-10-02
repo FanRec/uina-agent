@@ -41,9 +41,7 @@ export function composeInitialPrompt(
 export function resolveRunMode(input: RunModeInput): RunMode {
 	const initialPrompt = composeInitialPrompt(input.piped, input.prompt, input.oneshot);
 	const isPrintMode =
-		input.print === true ||
-		input.oneshot !== undefined ||
-		(!input.stdoutTTY && initialPrompt !== undefined);
+		input.print === true || input.oneshot !== undefined || (!input.stdoutTTY && initialPrompt !== undefined);
 	const shouldRunTUI = input.stdoutTTY === true && input.stdinTTY === true && !isPrintMode;
 	return { initialPrompt, isPrintMode, shouldRunTUI };
 }

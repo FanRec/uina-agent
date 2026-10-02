@@ -56,7 +56,9 @@ export class ProcessTerminal {
 
 	/** 问一次终端真实窗口尺寸（不支持的终端不会回执，行为不变） */
 	private querySize(): void {
-		try { process.stdout.write("\x1b[18t"); } catch {}
+		try {
+			process.stdout.write("\x1b[18t");
+		} catch {}
 	}
 
 	get isTTY(): boolean {
@@ -160,7 +162,6 @@ export class ProcessTerminal {
 	showCursor(): void {
 		process.stdout.write("\x1b[?25h");
 	}
-
 }
 
 function restoreTerminal(): void {
@@ -187,4 +188,3 @@ export function installTerminalGuards(): () => void {
 		process.off("uncaughtExceptionMonitor", onCrash);
 	};
 }
-

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
-import { listAllSessionNodes, listSessionBranches, listSessionNodes, readSessionBranch, readSessionNode } from "../src/session/navigation.js";
+import {
+	listAllSessionNodes,
+	listSessionBranches,
+	listSessionNodes,
+	readSessionBranch,
+	readSessionNode,
+} from "../src/session/navigation.js";
 import { BranchInspectorOverlay } from "../src/ui/features/overlays/branch-inspector.js";
 import { CustomMessageComponent } from "../src/ui/components/transcript/cards.js";
 import { Key, matchesKey } from "../src/ui/core/keys.js";
@@ -10,7 +16,17 @@ import { stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
 // string compare against the escape sequence, so a missing branch silently disables the key.
 describe("Alt+H binding", () => {
 	it("matches every terminal encoding of Alt+H", () => {
-		const encodings = ["\x1bh", "\x1bH", "\x1b\x1bh", "\x1b\x1bH", "\x1b[104;3u", "\x1b[72;3u", "\x1b[27;3;104~", "\x1b[1;3h", "\x1b[1;3H"];
+		const encodings = [
+			"\x1bh",
+			"\x1bH",
+			"\x1b\x1bh",
+			"\x1b\x1bH",
+			"\x1b[104;3u",
+			"\x1b[72;3u",
+			"\x1b[27;3;104~",
+			"\x1b[1;3h",
+			"\x1b[1;3H",
+		];
 		expect(encodings.filter((data) => matchesKey(data, Key.alt("h")))).toEqual(encodings);
 	});
 
@@ -28,7 +44,10 @@ async function seedInspectorStore(): Promise<MemorySessionStore> {
 		});
 	}
 	const targetId = store.readRecords()[30]!.id;
-	await store.appendMessage({ role: "assistant", content: "被放弃的分支回复\n第二行：一段很长的中英混合描述，用于验证详情栏换行不会溢出边框" });
+	await store.appendMessage({
+		role: "assistant",
+		content: "被放弃的分支回复\n第二行：一段很长的中英混合描述，用于验证详情栏换行不会溢出边框",
+	});
 	await store.appendRewind({
 		id: "rewind-node",
 		requestId: "q1",
@@ -111,7 +130,10 @@ describe("BranchInspectorOverlay geometry", () => {
 				const boxWidth = Math.max(54, Math.min(terminalWidth - 6, 96));
 				view.render(terminalWidth).forEach((line, index) => {
 					const width = visibleWidth(stripAnsi(line));
-					if (width !== boxWidth) mismatches.push(`tw=${terminalWidth} detail=${browsingDetail} row=${index} w=${width} expected=${boxWidth}`);
+					if (width !== boxWidth)
+						mismatches.push(
+							`tw=${terminalWidth} detail=${browsingDetail} row=${index} w=${width} expected=${boxWidth}`,
+						);
 				});
 			}
 		}
@@ -130,7 +152,10 @@ describe("BranchInspectorOverlay geometry", () => {
 		for (const terminalWidth of [160, 120, 100, 80, 60]) {
 			const boxWidth = Math.max(54, Math.min(terminalWidth - 6, 96));
 			const rightEdges = view.render(terminalWidth).map((line) => visibleWidth(stripAnsi(line)));
-			expect({ terminalWidth, rightEdges: [...new Set(rightEdges)] }).toEqual({ terminalWidth, rightEdges: [boxWidth] });
+			expect({ terminalWidth, rightEdges: [...new Set(rightEdges)] }).toEqual({
+				terminalWidth,
+				rightEdges: [boxWidth],
+			});
 		}
 	});
 
@@ -383,7 +408,6 @@ describe("BranchInspectorOverlay paging", () => {
 		expect(new Set(drained.map((n) => n.id)).size).toBe(drained.length);
 	});
 
-
 	// list() 的 limit 是分页页大小（默认 50），不是上限。面板若只取首页，第 51 条起
 	// 会静默消失 —— 而标题还会把截断后的条数当作总数印出来，等于对用户撒谎。
 	it("shows every mainline node once the history exceeds one page", async () => {
@@ -442,17 +466,28 @@ describe("BranchInspectorOverlay：CRLF 详情不炸帧", () => {
 		return {
 			list: () => ({
 				nodes: Array.from({ length: 20 }, (_, i) => ({
-					id: `node-${i}`, parentId: null, seq: i + 1, kind: "message" as const,
-					active: true, canRewind: false, preview: `节点 ${i}`,
+					id: `node-${i}`,
+					parentId: null,
+					seq: i + 1,
+					kind: "message" as const,
+					active: true,
+					canRewind: false,
+					preview: `节点 ${i}`,
 				})),
 			}),
 			listBranches: () => ({ branches: [] }),
 			readBranch: () => ({ branch: { id: "b", nodeCount: 0, reason: "" }, nodes: [] }),
 			read: () => ({
-				id: "node-3", parentId: null, seq: 4, timestamp: "t", kind: "message" as const,
+				id: "node-3",
+				parentId: null,
+				seq: 4,
+				timestamp: "t",
+				kind: "message" as const,
 				message: { role: "tool" as const, content },
 			}),
-			requestRewind: () => { throw new Error("not used"); },
+			requestRewind: () => {
+				throw new Error("not used");
+			},
 		} as unknown as import("../src/session/types.js").SessionAccess;
 	}
 
@@ -474,4 +509,3 @@ describe("BranchInspectorOverlay：CRLF 详情不炸帧", () => {
 		expect(rows.length).toBeLessThanOrEqual(20);
 	});
 });
-

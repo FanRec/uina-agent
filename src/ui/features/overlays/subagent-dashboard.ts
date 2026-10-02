@@ -124,7 +124,12 @@ export class SubagentDashboard implements Component, Focusable {
 			const latestOut = readRes.output.at(-1)?.text.replace(/\r?\n/g, " ") ?? "";
 			const liveLine = latestOut ? `${C.dim}末行: ${truncateToWidth(latestOut, 36)}${C.reset}` : "";
 
-			output.push(panelRow(geo, `${pointer} ${statusIcon} ${C.bold}${label}${C.reset}  ${C.dim}[ID: ${a.id.slice(-8)}] · ${duration}${C.reset}`));
+			output.push(
+				panelRow(
+					geo,
+					`${pointer} ${statusIcon} ${C.bold}${label}${C.reset}  ${C.dim}[ID: ${a.id.slice(-8)}] · ${duration}${C.reset}`,
+				),
+			);
 
 			if (liveLine) {
 				output.push(panelRow(geo, `    ${liveLine}`));
@@ -191,17 +196,17 @@ export function detailKeyAction(data: string, status: SubagentStatus): DetailAct
 
 /** 多行文本按前缀拍平成单行数组（\\r\\n 归一为 \\n）。 */
 export function flattenLines(prefix: string, text: string): string[] {
-	return text.replace(/\r\n/g, "\n").split("\n").map((line) => `${prefix}${line}`);
+	return text
+		.replace(/\r\n/g, "\n")
+		.split("\n")
+		.map((line) => `${prefix}${line}`);
 }
 
 /** Tab 栏：激活项反显，按内宽补齐尾随空格（纯函数）。 */
 export function formatDetailTabBar(activeTab: "logs" | "transcript", innerW: number): string {
-	const tab1 = activeTab === "logs"
-		? `\x1b[7m 输出流 (Logs) \x1b[0m`
-		: `${C.dim} 输出流 (Logs) ${C.reset}`;
-	const tab2 = activeTab === "transcript"
-		? `\x1b[7m 对话历史 (Transcript) \x1b[0m`
-		: `${C.dim} 对话历史 (Transcript) ${C.reset}`;
+	const tab1 = activeTab === "logs" ? `\x1b[7m 输出流 (Logs) \x1b[0m` : `${C.dim} 输出流 (Logs) ${C.reset}`;
+	const tab2 =
+		activeTab === "transcript" ? `\x1b[7m 对话历史 (Transcript) \x1b[0m` : `${C.dim} 对话历史 (Transcript) ${C.reset}`;
 	const padTabs = Math.max(0, innerW - visibleWidth(tab1) - visibleWidth(tab2) - 8);
 	return `[Tab] ${tab1}  ${tab2}${" ".repeat(padTabs)}`;
 }
@@ -231,7 +236,7 @@ export class SubagentDetailScene implements Component, Focusable {
 	onRequestRender?: () => void;
 
 	constructor(
-	private readonly subagentId: string,
+		private readonly subagentId: string,
 		private readonly subagentPort: SubagentPort,
 		private readonly ownerId = "root",
 	) {}

@@ -4,11 +4,7 @@ import type { RequestUsage, ToolResultStatus } from "../../core/types.js";
  * 接收 Subject 生命周期 hooks，向 Transcript 分发内容并构建真实时间线时序节点，杜绝任何假数据。
  */
 
-import type {
-	HotspotRow,
-	TrajectoryEventSource,
-	TrajectoryNode,
-} from "../features/overlays/trajectory-scene.js";
+import type { HotspotRow, TrajectoryEventSource, TrajectoryNode } from "../features/overlays/trajectory-scene.js";
 
 export class TrajectoryProjection implements TrajectoryEventSource {
 	private readonly nodes: TrajectoryNode[] = [];
@@ -96,7 +92,8 @@ export class TrajectoryProjection implements TrajectoryEventSource {
 	}
 
 	onToolDone(id: string, name: string, result: string, elapsedMs = 0, status: ToolResultStatus = "unknown"): void {
-		const node = this.nodes.find((n) => n.id === id) ??
+		const node =
+			this.nodes.find((n) => n.id === id) ??
 			[...this.nodes].reverse().find((n) => n.kind === "tool_call" && n.label === name && n.status === "running");
 
 		if (node) {

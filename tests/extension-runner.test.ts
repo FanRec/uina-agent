@@ -21,16 +21,28 @@ async function createEnv(): Promise<IsolatedEnv> {
 describe("project extension runner", () => {
 	it("owns registrations, persists custom records through its ports, and invalidates old ctx on reload", async () => {
 		const env = await createEnv();
-		await env.writeExtension("sample.js", `export default async function(pi) {
+		await env.writeExtension(
+			"sample.js",
+			`export default async function(pi) {
  globalThis.__uinaTestExtension = pi;
  pi.registerCommand({ name: 'hello', description: 'hello' });
  await pi.sendMessage({ customType: 'test.message', content: 'visible to provider' });
  await pi.appendEntry({ customType: 'test.entry', data: { ok: true } });
  return () => { globalThis.__uinaDisposed = true; };
-}`);
+}`,
+		);
 		const messages: unknown[] = [];
 		const entries: unknown[] = [];
-		const runner = new ExtensionRunner({ cwd: env.path, tools: new ToolBroker(), onCustomMessage: async (value) => { messages.push(value); }, onCustomEntry: async (value) => { entries.push(value); } });
+		const runner = new ExtensionRunner({
+			cwd: env.path,
+			tools: new ToolBroker(),
+			onCustomMessage: async (value) => {
+				messages.push(value);
+			},
+			onCustomEntry: async (value) => {
+				entries.push(value);
+			},
+		});
 		await runner.load();
 		expect(runner.registry.getCommand("hello")).toBeDefined();
 		expect(messages).toEqual([{ customType: "test.message", content: "visible to provider" }]);
@@ -53,10 +65,13 @@ describe("project extension runner", () => {
 
 	it("isolates errors across extensions and disposes resources cleanly", async () => {
 		const env = await createEnv();
-		await env.writeExtension("async.js", `export default function(pi) {
+		await env.writeExtension(
+			"async.js",
+			`export default function(pi) {
  pi.on('agent_start', () => { throw new Error('owned handler failure'); });
  return async () => { await Promise.resolve(); globalThis.__uinaAsyncDisposed = true; };
-}`);
+}`,
+		);
 
 		const onError = vi.fn();
 		const tools = new ToolBroker();
@@ -69,7 +84,10 @@ describe("project extension runner", () => {
 		let builtinDisposed = false;
 		await runner.activateBuiltin("scope-test", (pi) => {
 			pi.registerTool(builtinTool);
-			return async () => { await Promise.resolve(); builtinDisposed = true; };
+			return async () => {
+				await Promise.resolve();
+				builtinDisposed = true;
+			};
 		});
 		expect(tools.has("builtin_scope_tool")).toBe(true);
 
@@ -83,8 +101,16 @@ describe("project extension runner", () => {
 		const env = await createEnv();
 		const runner = new ExtensionRunner({ cwd: env.path, tools: new ToolBroker() });
 		const seen: string[] = [];
-		await runner.activateBuiltin("one", (pi) => { pi.on("agent_start", () => { seen.push("one"); }); });
-		await runner.activateBuiltin("two", (pi) => { pi.on("agent_start", () => { seen.push("two"); }); });
+		await runner.activateBuiltin("one", (pi) => {
+			pi.on("agent_start", () => {
+				seen.push("one");
+			});
+		});
+		await runner.activateBuiltin("two", (pi) => {
+			pi.on("agent_start", () => {
+				seen.push("two");
+			});
+		});
 
 		await runner.runtimeHooks(["builtin:one"]).events.emit({ type: "agent_start", turnSeq: 1 });
 		expect(seen).toEqual(["one"]);
@@ -97,7 +123,9 @@ describe("project extension runner", () => {
 		const env = await createEnv();
 		const runner = new ExtensionRunner({ cwd: env.path, tools: new ToolBroker() });
 		await runner.activateBuiltin("root-context", (pi) => {
-			pi.onHook("turn.transformContext", (projection) => ({ projection: { ...projection, messages: [...projection.messages, { role: "user", content: "root-only" }] } }));
+			pi.onHook("turn.transformContext", (projection) => ({
+				projection: { ...projection, messages: [...projection.messages, { role: "user", content: "root-only" }] },
+			}));
 		});
 		let received = "";
 		const model: Model = Scenario.create().model;
@@ -115,14 +143,17 @@ describe("project extension runner", () => {
 
 	it("protects existing extensions when a candidate extension has syntax or export errors during pre-import", async () => {
 		const env = await createEnv();
-		await env.writeExtension("good.js", `export default function(pi) {
+		await env.writeExtension(
+			"good.js",
+			`export default function(pi) {
  pi.registerTool({
   def: { type: 'function', function: { name: 'good_tool', description: 'good', parameters: { type: 'object', properties: {} } } },
   run: async () => ({ result: 'good', status: 'succeeded' })
  });
  pi.registerCommand({ name: 'good_cmd', description: 'good' });
  return () => { globalThis.__goodDisposed = true; };
-}`);
+}`,
+		);
 
 		const tools = new ToolBroker();
 		const runner = new ExtensionRunner({ cwd: env.path, tools });
@@ -130,7 +161,7 @@ describe("project extension runner", () => {
 
 		expect(tools.has("good_tool")).toBe(true);
 		expect(runner.registry.getCommand("good_cmd")).toBeDefined();
-		expect(runner.list().map(e => e.id)).toEqual(["project:.uina/extensions/good.js"]);
+		expect(runner.list().map((e) => e.id)).toEqual(["project:.uina/extensions/good.js"]);
 
 		// 新增一个包含非法导出的文件（预导入阶段拦截）
 		await env.writeExtension("bad_export.js", "export default 'not-a-function';");
@@ -145,8 +176,8 @@ describe("project extension runner", () => {
 
 		// diagnostics 能观测到 active 的旧扩展和 failed 的坏扩展
 		const diags = runner.diagnostics();
-		expect(diags.find(d => d.id === "project:.uina/extensions/good.js")?.status).toBe("active");
-		expect(diags.find(d => d.id === "project:.uina/extensions/bad_export.js")?.status).toBe("failed");
+		expect(diags.find((d) => d.id === "project:.uina/extensions/good.js")?.status).toBe("active");
+		expect(diags.find((d) => d.id === "project:.uina/extensions/bad_export.js")?.status).toBe("failed");
 
 		await runner.dispose();
 	});
@@ -155,16 +186,21 @@ describe("project extension runner", () => {
 		const env = await createEnv();
 
 		let v1Disposed = false;
-		(globalThis as Record<string, unknown>).__disposeV1 = () => { v1Disposed = true; };
+		(globalThis as Record<string, unknown>).__disposeV1 = () => {
+			v1Disposed = true;
+		};
 
-		await env.writeExtension("my_ext.js", `export default function(pi) {
+		await env.writeExtension(
+			"my_ext.js",
+			`export default function(pi) {
  pi.registerTool({
   def: { type: 'function', function: { name: 'v1_tool', description: 'v1', parameters: { type: 'object', properties: {} } } },
   run: async () => ({ result: 'v1', status: 'succeeded' })
  });
  pi.registerCommand({ name: 'v1_cmd', description: 'v1' });
  return () => { globalThis.__disposeV1(); };
-}`);
+}`,
+		);
 
 		const tools = new ToolBroker();
 		const runner = new ExtensionRunner({ cwd: env.path, tools });
@@ -174,13 +210,16 @@ describe("project extension runner", () => {
 		expect(runner.registry.getCommand("v1_cmd")).toBeDefined();
 
 		// 更新扩展为 v2
-		await env.writeExtension("my_ext.js", `export default function(pi) {
+		await env.writeExtension(
+			"my_ext.js",
+			`export default function(pi) {
  pi.registerTool({
   def: { type: 'function', function: { name: 'v2_tool', description: 'v2', parameters: { type: 'object', properties: {} } } },
   run: async () => ({ result: 'v2', status: 'succeeded' })
  });
  pi.registerCommand({ name: 'v2_cmd', description: 'v2' });
-}`);
+}`,
+		);
 
 		await runner.reload();
 
@@ -200,21 +239,27 @@ describe("project extension runner", () => {
 		const env = await createEnv();
 
 		// a.js 正常工作
-		await env.writeExtension("a.js", `export default function(pi) {
+		await env.writeExtension(
+			"a.js",
+			`export default function(pi) {
  pi.registerTool({
   def: { type: 'function', function: { name: 'tool_a', description: 'a', parameters: { type: 'object', properties: {} } } },
   run: async () => ({ result: 'a', status: 'succeeded' })
  });
-}`);
+}`,
+		);
 
 		// b.js 先注册了一个局部工具，然后抛出运行时错误
-		await env.writeExtension("b.js", `export default function(pi) {
+		await env.writeExtension(
+			"b.js",
+			`export default function(pi) {
  pi.registerTool({
   def: { type: 'function', function: { name: 'leaked_tool', description: 'b', parameters: { type: 'object', properties: {} } } },
   run: async () => ({ result: 'b', status: 'succeeded' })
  });
  throw new Error("b crashed in activate");
-}`);
+}`,
+		);
 
 		const tools = new ToolBroker();
 		const onError = vi.fn();
@@ -230,8 +275,8 @@ describe("project extension runner", () => {
 		// 故障可观测：onError 上报，diagnostics 记录
 		expect(onError).toHaveBeenCalledWith(expect.stringContaining("b crashed in activate"));
 		const diags = runner.diagnostics();
-		expect(diags.find(d => d.id === "project:.uina/extensions/a.js")?.status).toBe("active");
-		expect(diags.find(d => d.id === "project:.uina/extensions/b.js")?.status).toBe("failed");
+		expect(diags.find((d) => d.id === "project:.uina/extensions/a.js")?.status).toBe("active");
+		expect(diags.find((d) => d.id === "project:.uina/extensions/b.js")?.status).toBe("failed");
 
 		await runner.dispose();
 	});
@@ -243,7 +288,9 @@ describe("project extension runner", () => {
 		const runner = new ExtensionRunner({
 			cwd: env.path,
 			tools: new ToolBroker(),
-			onInput: async (input) => { submitted.push(input); },
+			onInput: async (input) => {
+				submitted.push(input);
+			},
 		});
 
 		await runner.activateBuiltin("input-boundary", async (pi) => {
@@ -288,12 +335,15 @@ describe("project extension runner", () => {
 			pi.registerTool(mockTool("builtin_tool", async () => ({ result: "builtin", status: "succeeded" })));
 		});
 
-		await env.writeExtension("proj.js", `export default function(pi) {
+		await env.writeExtension(
+			"proj.js",
+			`export default function(pi) {
  pi.registerTool({
   def: { type: 'function', function: { name: 'proj_tool', description: 'proj', parameters: { type: 'object', properties: {} } } },
   run: async () => ({ result: 'proj', status: 'succeeded' })
  });
-}`);
+}`,
+		);
 
 		await runner.load();
 		expect(tools.has("builtin_tool")).toBe(true);

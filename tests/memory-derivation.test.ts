@@ -24,7 +24,15 @@ describe("Memory 派生实验：capability 零内核内碰触", () => {
 			.map((line) => line.trim());
 		expect(importLines).toEqual(['import type { ExtensionAPI } from "../../src/extensions/runner.js";']);
 		// 双保险：整份源码不得出现内核内部词汇。
-		for (const forbidden of ["recovery", "CanonicalState", "canonicalReplay", "Subject", "session/", "store.state", "safeTargets"]) {
+		for (const forbidden of [
+			"recovery",
+			"CanonicalState",
+			"canonicalReplay",
+			"Subject",
+			"session/",
+			"store.state",
+			"safeTargets",
+		]) {
 			expect(capabilitySource, `不得引用 ${forbidden}`).not.toContain(forbidden);
 		}
 	});
@@ -71,13 +79,26 @@ describe("Memory 派生实验：capability 零内核内碰触", () => {
 		await harness.run("你好");
 
 		expect(requests).toHaveLength(1);
-		expect(requests[0]!.messages.some((m) => m.role === "system" && (m.content as string).includes("[已知记忆]"))).toBe(true);
-		expect(requests[0]!.messages.some((m) => m.role === "system" && (m.content as string).includes("用户偏好简洁回复"))).toBe(true);
-		expect(requests[0]!.messages.some((m) => (m.content as string).includes("[记忆上下文] 用户偏好简洁回复"))).toBe(true);
+		expect(requests[0]!.messages.some((m) => m.role === "system" && (m.content as string).includes("[已知记忆]"))).toBe(
+			true,
+		);
+		expect(
+			requests[0]!.messages.some((m) => m.role === "system" && (m.content as string).includes("用户偏好简洁回复")),
+		).toBe(true);
+		expect(requests[0]!.messages.some((m) => (m.content as string).includes("[记忆上下文] 用户偏好简洁回复"))).toBe(
+			true,
+		);
 
 		// 3. 回溯不影响 capability 私有状态：auxiliary 只增不减，重读仍可得。
 		const targetId = store.state.entries[0]!.id;
-		await store.appendRewind({ id: "r1", requestId: "q1", targetId, fromId: store.state.entries.at(-1)!.id, source: "test", reason: "derivation" });
+		await store.appendRewind({
+			id: "r1",
+			requestId: "q1",
+			targetId,
+			fromId: store.state.entries.at(-1)!.id,
+			source: "test",
+			reason: "derivation",
+		});
 		await remember!.handler!("回溯后新增的记忆");
 		expect(store.state.auxiliary).toHaveLength(2);
 		expect(store.state.entries.some((entry) => (entry as { kind: string }).kind === "custom_entry")).toBe(false);

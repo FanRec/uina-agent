@@ -72,9 +72,7 @@ export function allocateBarColumns(values: readonly number[], width: number): nu
 		const rawCols = values.map((v) => Math.max(0, (Math.max(0, v) / total) * width));
 		const allocated = rawCols.map(Math.floor);
 		let rem = width - allocated.reduce((a, b) => a + b, 0);
-		const remainders = rawCols
-			.map((v, i) => ({ i, r: v - Math.floor(v) }))
-			.sort((a, b) => b.r - a.r);
+		const remainders = rawCols.map((v, i) => ({ i, r: v - Math.floor(v) })).sort((a, b) => b.r - a.r);
 		for (const slot of remainders) {
 			if (rem <= 0) break;
 			allocated[slot.i]++;
@@ -90,9 +88,7 @@ export function allocateBarColumns(values: readonly number[], width: number): nu
 	const rawCols = values.map((v) => Math.max(0, (Math.max(0, v) / total) * remainingWidth));
 	const extraCols = rawCols.map(Math.floor);
 	let rem = remainingWidth - extraCols.reduce((a, b) => a + b, 0);
-	const remainders = rawCols
-		.map((v, i) => ({ i, r: v - Math.floor(v) }))
-		.sort((a, b) => b.r - a.r);
+	const remainders = rawCols.map((v, i) => ({ i, r: v - Math.floor(v) })).sort((a, b) => b.r - a.r);
 	for (const slot of remainders) {
 		if (rem <= 0) break;
 		extraCols[slot.i]++;
@@ -151,7 +147,9 @@ export function renderSegmentedBar(
 	}
 
 	// 降级单色条
-	const pct = pctFallback ?? (usedTokens !== undefined && contextWindow && contextWindow > 0 ? (usedTokens / contextWindow) * 100 : undefined);
+	const pct =
+		pctFallback ??
+		(usedTokens !== undefined && contextWindow && contextWindow > 0 ? (usedTokens / contextWindow) * 100 : undefined);
 	if (pct === undefined) {
 		return `${C.subtle}${"?".repeat(width)}${C.reset}`;
 	}
@@ -218,11 +216,16 @@ export class ContextBarComponent implements Component {
 		// 2. 上下文各分段分布情况（系统、提示词、助手、思考链、工具）
 		if (this.segments) {
 			const segTokens: string[] = [];
-			if (this.segments.system > 0) segTokens.push(`${CONTEXT_SEGMENTS[0]!.color}系统 ${formatTokensCompact(this.segments.system)}${C.reset}`);
-			if (this.segments.prompt > 0) segTokens.push(`${CONTEXT_SEGMENTS[1]!.color}提示 ${formatTokensCompact(this.segments.prompt)}${C.reset}`);
-			if (this.segments.assistant > 0) segTokens.push(`${CONTEXT_SEGMENTS[2]!.color}助手 ${formatTokensCompact(this.segments.assistant)}${C.reset}`);
-			if (this.segments.thinking > 0) segTokens.push(`${CONTEXT_SEGMENTS[3]!.color}思考 ${formatTokensCompact(this.segments.thinking)}${C.reset}`);
-			if (this.segments.tools > 0) segTokens.push(`${CONTEXT_SEGMENTS[4]!.color}工具 ${formatTokensCompact(this.segments.tools)}${C.reset}`);
+			if (this.segments.system > 0)
+				segTokens.push(`${CONTEXT_SEGMENTS[0]!.color}系统 ${formatTokensCompact(this.segments.system)}${C.reset}`);
+			if (this.segments.prompt > 0)
+				segTokens.push(`${CONTEXT_SEGMENTS[1]!.color}提示 ${formatTokensCompact(this.segments.prompt)}${C.reset}`);
+			if (this.segments.assistant > 0)
+				segTokens.push(`${CONTEXT_SEGMENTS[2]!.color}助手 ${formatTokensCompact(this.segments.assistant)}${C.reset}`);
+			if (this.segments.thinking > 0)
+				segTokens.push(`${CONTEXT_SEGMENTS[3]!.color}思考 ${formatTokensCompact(this.segments.thinking)}${C.reset}`);
+			if (this.segments.tools > 0)
+				segTokens.push(`${CONTEXT_SEGMENTS[4]!.color}工具 ${formatTokensCompact(this.segments.tools)}${C.reset}`);
 			if (segTokens.length > 0) {
 				parts.push(segTokens.join(` ${C.subtle}·${C.reset} `));
 			}

@@ -213,8 +213,10 @@ export class TrajectoryScene implements Component, Focusable {
 		}
 
 		// 2. Tab 栏
-		const tab1 = this.viewMode === "timeline" ? `\x1b[7m 时间线 (Timeline) \x1b[0m` : `${C.dim} 时间线 (Timeline) ${C.reset}`;
-		const tab2 = this.viewMode === "hotspot" ? `\x1b[7m 性能热点 (Hotspots) \x1b[0m` : `${C.dim} 性能热点 (Hotspots) ${C.reset}`;
+		const tab1 =
+			this.viewMode === "timeline" ? `\x1b[7m 时间线 (Timeline) \x1b[0m` : `${C.dim} 时间线 (Timeline) ${C.reset}`;
+		const tab2 =
+			this.viewMode === "hotspot" ? `\x1b[7m 性能热点 (Hotspots) \x1b[0m` : `${C.dim} 性能热点 (Hotspots) ${C.reset}`;
 		const tabRow = `  ${borderCol}│${C.reset} [Tab] ${tab1}  ${tab2}${" ".repeat(Math.max(0, innerW - visibleWidth(tab1) - visibleWidth(tab2) - 8))} ${borderCol}│${C.reset}`;
 		output.push(tabRow);
 		output.push(`  ${borderCol}├${"─".repeat(boxWidth - 2)}┤${C.reset}`);
@@ -231,28 +233,43 @@ export class TrajectoryScene implements Component, Focusable {
 
 			// 4. 当前选中节点的检查器
 			const current = nodes[this.cursorIndex]!;
-			const statusIcon = current.status === "completed" ? `${C.green}✓${C.reset}` : current.status === "failed" ? `${C.red}✗${C.reset}` : `${C.yellow}●${C.reset}`;
+			const statusIcon =
+				current.status === "completed"
+					? `${C.green}✓${C.reset}`
+					: current.status === "failed"
+						? `${C.red}✗${C.reset}`
+						: `${C.yellow}●${C.reset}`;
 			const timeStr = formatTime(current.startedAt);
 			const durStr = current.durationMs ? formatDuration(current.durationMs) : "";
 
 			const detailHeader = `节点 [${this.cursorIndex + 1}/${nodes.length}] ${statusIcon} ${C.dim}[${current.status}]${C.reset} ${C.bold}${current.label}${C.reset}  ${C.dim}${timeStr} ${durStr}${C.reset}`;
-			output.push(`  ${borderCol}│${C.reset} ${truncateToWidth(detailHeader, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(detailHeader)))} ${borderCol}│${C.reset}`);
+			output.push(
+				`  ${borderCol}│${C.reset} ${truncateToWidth(detailHeader, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(detailHeader)))} ${borderCol}│${C.reset}`,
+			);
 
 			if (current.error) {
 				const errLine = `${C.red}错误: ${current.error}${C.reset}`;
-				output.push(`  ${borderCol}│${C.reset} ${truncateToWidth(errLine, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(errLine)))} ${borderCol}│${C.reset}`);
+				output.push(
+					`  ${borderCol}│${C.reset} ${truncateToWidth(errLine, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(errLine)))} ${borderCol}│${C.reset}`,
+				);
 			} else if (current.argsJson) {
 				const argsHighlight = highlightCode(current.argsJson, "json");
 				const argsLine = `${C.dim}参数:${C.reset} ${argsHighlight}`;
-				output.push(`  ${borderCol}│${C.reset} ${truncateToWidth(argsLine, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(argsLine)))} ${borderCol}│${C.reset}`);
+				output.push(
+					`  ${borderCol}│${C.reset} ${truncateToWidth(argsLine, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(argsLine)))} ${borderCol}│${C.reset}`,
+				);
 			} else if (current.resultPreview) {
 				const preview = `${C.dim}结果:${C.reset} ${current.resultPreview}`;
-				output.push(`  ${borderCol}│${C.reset} ${truncateToWidth(preview, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(preview)))} ${borderCol}│${C.reset}`);
+				output.push(
+					`  ${borderCol}│${C.reset} ${truncateToWidth(preview, innerW)}${" ".repeat(Math.max(0, innerW - visibleWidth(preview)))} ${borderCol}│${C.reset}`,
+				);
 			}
 		} else {
 			// 热点视图
 			const hotspots = this.source.aggregate("duration");
-			output.push(`  ${borderCol}│${C.reset} ${C.bold}类别/操作${" ".repeat(Math.max(1, innerW - 40))}次数    总耗时     平均耗时${C.reset} ${borderCol}│${C.reset}`);
+			output.push(
+				`  ${borderCol}│${C.reset} ${C.bold}类别/操作${" ".repeat(Math.max(1, innerW - 40))}次数    总耗时     平均耗时${C.reset} ${borderCol}│${C.reset}`,
+			);
 			output.push(`  ${borderCol}├${"─".repeat(boxWidth - 2)}┤${C.reset}`);
 
 			const maxRows = Math.min(6, hotspots.length);
@@ -263,7 +280,9 @@ export class TrajectoryScene implements Component, Focusable {
 				const totalDur = formatDuration(h.totalDurationMs).padStart(8);
 				const avgDur = formatDuration(h.avgDurationMs).padStart(8);
 				const row = `${C.cyan}${name}${C.reset}${" ".repeat(Math.max(1, innerW - visibleWidth(name) - 22))}${countStr}  ${totalDur}  ${avgDur}`;
-				output.push(`  ${borderCol}│${C.reset} ${row}${" ".repeat(Math.max(0, innerW - visibleWidth(row)))} ${borderCol}│${C.reset}`);
+				output.push(
+					`  ${borderCol}│${C.reset} ${row}${" ".repeat(Math.max(0, innerW - visibleWidth(row)))} ${borderCol}│${C.reset}`,
+				);
 			}
 		}
 

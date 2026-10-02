@@ -15,7 +15,14 @@ import { decodeHoverTarget, encodeHoverTarget } from "./core/hover-target.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ContextSnapshot, RequestUsage, ThinkingLevel, ToolResultStatus } from "../core/types.js";
 import type { SessionEntry } from "../session/types.js";
-import { C, copyToClipboardUnified, visibleWidth, truncateToWidth, stripAnsi, normalizeFrameLine } from "./core/utils.js";
+import {
+	C,
+	copyToClipboardUnified,
+	visibleWidth,
+	truncateToWidth,
+	stripAnsi,
+	normalizeFrameLine,
+} from "./core/utils.js";
 import {
 	InputLine,
 	formatSuggestionCardLines,
@@ -140,7 +147,7 @@ export class UIHost implements UIHostContextPort {
 
 	// 运行与动画状态
 	private running = false;
- private stopRegistryUpdates?: () => void;
+	private stopRegistryUpdates?: () => void;
 	private busy = false;
 	private turnStartTime = 0;
 
@@ -174,7 +181,6 @@ export class UIHost implements UIHostContextPort {
 	private rawInputListeners = new Set<(data: string) => void>();
 	private readonly statuses = new Map<string, { text: string; sequence: number }>();
 
-
 	private activeModalId: string | null = null;
 	private activeModalHandle: OverlayHandle | null = null;
 
@@ -204,9 +210,7 @@ export class UIHost implements UIHostContextPort {
 		}
 		this.stopAutoScroll();
 		// up = scrollOffset 增（向更早内容），down = 减；到边界即不启动
-		const atEdge = direction === "up"
-			? this.scrollOffset >= this.lastMaxScroll
-			: this.scrollOffset <= 0;
+		const atEdge = direction === "up" ? this.scrollOffset >= this.lastMaxScroll : this.scrollOffset <= 0;
 		if (atEdge) return;
 		this.autoScrollDirection = direction;
 		this.autoScrollTimer = setInterval(() => {
@@ -278,7 +282,6 @@ export class UIHost implements UIHostContextPort {
 			.join("\n");
 	}
 
-
 	// 事件回调
 	onUserLine?: (text: string, mode: "steer" | "followUp" | "direct") => void;
 	onInteraction?: () => void;
@@ -306,9 +309,9 @@ export class UIHost implements UIHostContextPort {
 	private pendingQueue = new PendingQueueComponent();
 
 	private dispatchRegisteredKeybinding(data: string): boolean {
-		const command = this.registry.listCommands().find(
-			(item) => item.keybinding && item.handler && matchesKey(data, item.keybinding),
-		);
+		const command = this.registry
+			.listCommands()
+			.find((item) => item.keybinding && item.handler && matchesKey(data, item.keybinding));
 		if (!command?.handler) return false;
 		void Promise.resolve(command.handler("")).catch((error: unknown) => {
 			this.notify(`命令错误: ${String(error)}`, "error");
@@ -380,13 +383,12 @@ export class UIHost implements UIHostContextPort {
 		this.registry = options.registry ?? new ExtensionRegistry();
 		this.ctxUI = createExtensionUIContext(this);
 
-
 		this.transcript = new TranscriptContainer();
 		this.transcript.smoothReveal.setOnTick(() => this.updateHeartbeat());
 		this.transcript.setRendererResolver({
 			message: (type) => this.registry.getMessageRenderer(type),
-   tool: (name) => this.registry.getToolRenderer(name),
-   markdown: (text, context) => this.registry.transformMarkdown(text, context),
+			tool: (name) => this.registry.getToolRenderer(name),
+			markdown: (text, context) => this.registry.transformMarkdown(text, context),
 		});
 		this.connectRegistry();
 
@@ -411,13 +413,16 @@ export class UIHost implements UIHostContextPort {
 		this.syncContextComponents();
 	}
 
- private connectRegistry(): void {
-  this.stopRegistryUpdates ??= this.registry.onChange(() => { this.transcript.invalidate(); this.requestRender(); });
-  this.transcript.invalidate();
- }
+	private connectRegistry(): void {
+		this.stopRegistryUpdates ??= this.registry.onChange(() => {
+			this.transcript.invalidate();
+			this.requestRender();
+		});
+		this.transcript.invalidate();
+	}
 
 	start(): void {
-  this.connectRegistry();
+		this.connectRegistry();
 		if (this.running) return;
 		this.running = true;
 		this.transcript.smoothReveal.setEnabled(true);
@@ -431,8 +436,8 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	stop(): void {
-  this.stopRegistryUpdates?.();
-  this.stopRegistryUpdates = undefined;
+		this.stopRegistryUpdates?.();
+		this.stopRegistryUpdates = undefined;
 		if (!this.running) return;
 		this.running = false;
 		this.transcript.smoothReveal.setEnabled(false);
@@ -487,7 +492,12 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	setReasoningEffort(effort?: ThinkingLevel | string): void {
-		if (!effort) { this.reasoningEffort = undefined; this.inputLine.setReasoningEffort(undefined); this.requestRender(); return; }
+		if (!effort) {
+			this.reasoningEffort = undefined;
+			this.inputLine.setReasoningEffort(undefined);
+			this.requestRender();
+			return;
+		}
 		const lower = effort.toLowerCase().trim() as ThinkingLevel;
 		if (!this.thinkingLevels.includes(lower)) throw new Error(`当前 Provider 不支持思考等级: ${effort}`);
 		this.reasoningEffort = lower;
@@ -566,8 +576,16 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	private syncContextComponents(): void {
-		this.inputLine.setContextStats(this.modelName, this.usedTokens, this.contextWindow, this.usageActual, this.contextSegments);
-		this.inputLine.setCacheRate(formatCacheHitRate(this.lastUsage?.cacheRead, this.lastUsage?.promptTokens, this.lastUsage?.cacheWrite));
+		this.inputLine.setContextStats(
+			this.modelName,
+			this.usedTokens,
+			this.contextWindow,
+			this.usageActual,
+			this.contextSegments,
+		);
+		this.inputLine.setCacheRate(
+			formatCacheHitRate(this.lastUsage?.cacheRead, this.lastUsage?.promptTokens, this.lastUsage?.cacheWrite),
+		);
 		this.contextBar.update({
 			usedTokens: this.usedTokens,
 			contextWindow: this.contextWindow,
@@ -674,7 +692,11 @@ export class UIHost implements UIHostContextPort {
 	// transcript/activityLine 内部；每帧的状态变更与重绘请求在同一入口收口。
 
 	/** turn_start：开新轮，活动行进入 thinking。 */
-	startTurnCard(turnNumber: number, userText: string, images?: readonly import("../core/content.js").ImageContent[]): void {
+	startTurnCard(
+		turnNumber: number,
+		userText: string,
+		images?: readonly import("../core/content.js").ImageContent[],
+	): void {
 		this.transcript.startTurn(turnNumber, userText, images);
 		this.activityLine.start("thinking", "正在思考与生成回复...");
 		this.requestRender();
@@ -732,10 +754,7 @@ export class UIHost implements UIHostContextPort {
 		const lastTurn = history[history.length - 1];
 		const isInterrupted = lastTurn?.items.some((it) => it.kind === "interrupt");
 		const elapsed = this.getLastElapsedMs();
-		this.activityLine.finish(
-			isInterrupted ? "已打断当前轮次" : "本轮已完成",
-			elapsed > 0 ? elapsed : undefined,
-		);
+		this.activityLine.finish(isInterrupted ? "已打断当前轮次" : "本轮已完成", elapsed > 0 ? elapsed : undefined);
 		this.requestRender();
 	}
 
@@ -1041,17 +1060,23 @@ export class UIHost implements UIHostContextPort {
 		const reservedRight = scrolled ? 36 : 10;
 		const statusWidth = Math.max(24, innerW - reservedRight);
 		const statusHeader = this.providerRetryMessage
-			? formatWorkingHeader(this.providerRetryMessage, this.busy ? Math.max(0, Date.now() - this.turnStartTime) : 0, statusWidth)
+			? formatWorkingHeader(
+					this.providerRetryMessage,
+					this.busy ? Math.max(0, Date.now() - this.turnStartTime) : 0,
+					statusWidth,
+				)
 			: this.workingContributions.size === 0
 				? this.activityLine.getHeaderString(statusWidth)
 				: (() => {
-					const working = [...this.workingContributions.values()].sort((a, b) => b.sequence - a.sequence)[0]!;
-					return formatWorkingHeader(working.message, Date.now() - working.startedAt, statusWidth);
-				})();
+						const working = [...this.workingContributions.values()].sort((a, b) => b.sequence - a.sequence)[0]!;
+						return formatWorkingHeader(working.message, Date.now() - working.startedAt, statusWidth);
+					})();
 		// Show the viewport percentage using the previous frame's geometry; the
 		// current frame's input height is required to compute it, so a one-frame
 		// lag is unavoidable (and previously the header never rendered at all).
-		const percent = scrolled ? Math.round(((this.lastMaxScroll - Math.min(this.scrollOffset, this.lastMaxScroll)) / this.lastMaxScroll) * 100) : 100;
+		const percent = scrolled
+			? Math.round(((this.lastMaxScroll - Math.min(this.scrollOffset, this.lastMaxScroll)) / this.lastMaxScroll) * 100)
+			: 100;
 		// 视口离底指示器：品牌雾蓝（非告警语义），文案告知点击出口；hover 高亮由 viewport-status 热区分派
 		const viewportStatusText = scrolled ? `[视口 ${percent}% · 点击回到最新]` : "";
 		this.viewportStatusText = viewportStatusText;
@@ -1080,11 +1105,7 @@ export class UIHost implements UIHostContextPort {
 		// The footer slot is a real frame region: extensions that call setFooter()
 		// must see it, otherwise the API silently does nothing.
 		const footerLines = this.footerComponent?.render(inputWidth) ?? [];
-		const belowLines = [
-			...contextBarLines,
-			...this.widgetSlots.render("belowEditor", innerW),
-			...footerLines,
-		];
+		const belowLines = [...contextBarLines, ...this.widgetSlots.render("belowEditor", innerW), ...footerLines];
 		const belowH = belowLines.length;
 
 		const aboveEditorWidgets = this.widgetSlots.render("aboveEditor", innerW);
@@ -1129,16 +1150,39 @@ export class UIHost implements UIHostContextPort {
 
 		const effScroll = totalPerm <= transcriptH ? 0 : Math.max(0, Math.min(this.scrollOffset, maxScroll));
 		const scrollStart = totalPerm <= transcriptH ? 0 : totalPerm - transcriptH - effScroll;
-		const visibleTranscript = totalPerm <= transcriptH
-			? [...permanentLines, ...new Array(transcriptH - totalPerm).fill("")]
-			: permanentLines.slice(scrollStart, scrollStart + transcriptH);
+		const visibleTranscript =
+			totalPerm <= transcriptH
+				? [...permanentLines, ...new Array(transcriptH - totalPerm).fill("")]
+				: permanentLines.slice(scrollStart, scrollStart + transcriptH);
 
 		return {
-			width, height, innerW, inputWidth, inputLines, inputH,
-			belowLines, belowH, maxAboveH, overlayLines, suggestionLines, pendingLines,
-			aboveLines, aboveH, bannerLines, bannerCount: bannerLines.length,
-			transcriptLines, permanentLines, totalPerm, safeW, transcriptContentW,
-			transcriptH, maxScroll, effScroll, scrollStart, visibleTranscript, frameModel,
+			width,
+			height,
+			innerW,
+			inputWidth,
+			inputLines,
+			inputH,
+			belowLines,
+			belowH,
+			maxAboveH,
+			overlayLines,
+			suggestionLines,
+			pendingLines,
+			aboveLines,
+			aboveH,
+			bannerLines,
+			bannerCount: bannerLines.length,
+			transcriptLines,
+			permanentLines,
+			totalPerm,
+			safeW,
+			transcriptContentW,
+			transcriptH,
+			maxScroll,
+			effScroll,
+			scrollStart,
+			visibleTranscript,
+			frameModel,
 		};
 	}
 
@@ -1163,9 +1207,25 @@ export class UIHost implements UIHostContextPort {
 		this.lastLayout = layout;
 		this.scrollOffset = layout.effScroll;
 		const {
-			width, height, inputWidth, inputLines, inputH,
-			belowLines, belowH, aboveLines, aboveH, bannerCount, transcriptContentW,
-			safeW, permanentLines, totalPerm, maxScroll, scrollStart, visibleTranscript, frameModel, suggestionLines,
+			width,
+			height,
+			inputWidth,
+			inputLines,
+			inputH,
+			belowLines,
+			belowH,
+			aboveLines,
+			aboveH,
+			bannerCount,
+			transcriptContentW,
+			safeW,
+			permanentLines,
+			totalPerm,
+			maxScroll,
+			scrollStart,
+			visibleTranscript,
+			frameModel,
+			suggestionLines,
 		} = layout;
 
 		// 7.5. 右侧时间线导航轨（TimelineRail，对标图一）合成
@@ -1260,7 +1320,13 @@ export class UIHost implements UIHostContextPort {
 			previewCard = scrollRes.hoverChip;
 		} else {
 			this.timelineRail.updateTurns(timelineTurns, activeTurnUid);
-			const tlRes = this.timelineRail.renderRailRows(chatAreaH, atBottom, upTurnUid !== null, downTurnUid !== null, transcriptContentW);
+			const tlRes = this.timelineRail.renderRailRows(
+				chatAreaH,
+				atBottom,
+				upTurnUid !== null,
+				downTurnUid !== null,
+				transcriptContentW,
+			);
 			railGlyphs = tlRes.railGlyphs;
 			previewCard = tlRes.previewCard;
 		}
@@ -1274,7 +1340,9 @@ export class UIHost implements UIHostContextPort {
 			// transcriptContentW 截止，交界处漏出 2 列默认背景（高亮空缺）。
 			// 闲置刻度轨自带 SGR（▔/─/空格），其 reset 后重新注入 bg 保持连续。
 			if (hoveredToolRowSet.has(r)) {
-				const patchedRail = rail.replace(/\x1b\[0?m/g, `\x1b[0m${C.toolCardBackground}`).replace(/\x1b\[49m/g, C.toolCardBackground);
+				const patchedRail = rail
+					.replace(/\x1b\[0?m/g, `\x1b[0m${C.toolCardBackground}`)
+					.replace(/\x1b\[49m/g, C.toolCardBackground);
 				allChatRows[r] = `${baseLine}${" ".repeat(pad)}${C.toolCardBackground}${patchedRail}${C.reset}`;
 			} else {
 				allChatRows[r] = `${baseLine}${" ".repeat(pad)}${rail}`;
@@ -1296,12 +1364,7 @@ export class UIHost implements UIHostContextPort {
 			}
 		}
 
-		const fullScreenRows: string[] = [
-			...allChatRows,
-			...aboveLines,
-			...inputLines,
-			...belowLines,
-		];
+		const fullScreenRows: string[] = [...allChatRows, ...aboveLines, ...inputLines, ...belowLines];
 
 		// 8.5. 注册全屏鼠标交互热区（Click Targets 与 Hover 探测）
 		const interactiveTargets: InteractiveTarget[] = [];
@@ -1329,43 +1392,49 @@ export class UIHost implements UIHostContextPort {
 			}
 		};
 
-		addBlockTargets(frameModel.thinkingLocations.map((loc) => ({
-			lineIndex: loc.lineIndex,
-			// 块级 id：一个思考块一个 id（块内所有行共享）。逐行不同 id 会被
-			// 当成"目标变了"而触发全量重绘。
-			rowCount: loc.lineCount ?? 1,
-			id: encodeHoverTarget({ kind: "thinking", uid: loc.item.uid }),
-			onClick: () => {
-				this.preserveScrollAnchor(() => {
-					this.transcript.toggleThinking(loc.item, transcriptContentW);
-				}, bannerCount + loc.lineIndex);
-				this.requestRender();
-			},
-		})));
+		addBlockTargets(
+			frameModel.thinkingLocations.map((loc) => ({
+				lineIndex: loc.lineIndex,
+				// 块级 id：一个思考块一个 id（块内所有行共享）。逐行不同 id 会被
+				// 当成"目标变了"而触发全量重绘。
+				rowCount: loc.lineCount ?? 1,
+				id: encodeHoverTarget({ kind: "thinking", uid: loc.item.uid }),
+				onClick: () => {
+					this.preserveScrollAnchor(() => {
+						this.transcript.toggleThinking(loc.item, transcriptContentW);
+					}, bannerCount + loc.lineIndex);
+					this.requestRender();
+				},
+			})),
+		);
 
-		addBlockTargets(frameModel.toolLocations.map((loc) => ({
-			lineIndex: loc.lineIndex,
-			rowCount: loc.lineCount - 1, // 卡片末行是底边框，不参与点击
-			id: encodeHoverTarget({ kind: "tool", callId: loc.callId, line: bannerCount + loc.lineIndex }),
-			onClick: () => {
-				this.preserveScrollAnchor(() => {
-					this.transcript.toggleTool(loc.item, transcriptContentW);
-				}, bannerCount + loc.lineIndex);
-				this.requestRender();
-			},
-		})));
+		addBlockTargets(
+			frameModel.toolLocations.map((loc) => ({
+				lineIndex: loc.lineIndex,
+				rowCount: loc.lineCount - 1, // 卡片末行是底边框，不参与点击
+				id: encodeHoverTarget({ kind: "tool", callId: loc.callId, line: bannerCount + loc.lineIndex }),
+				onClick: () => {
+					this.preserveScrollAnchor(() => {
+						this.transcript.toggleTool(loc.item, transcriptContentW);
+					}, bannerCount + loc.lineIndex);
+					this.requestRender();
+				},
+			})),
+		);
 
-		addBlockTargets(frameModel.compactionLocations.map((loc) => ({
-			lineIndex: loc.lineIndex,
-			rowCount: loc.lineCount,
-			id: encodeHoverTarget({ kind: "compaction", index: loc.index, line: bannerCount + loc.lineIndex }),
-			onClick: () => {
-				this.preserveScrollAnchor(() => {
-					this.transcript.toggleCompaction(loc.index);
-				}, bannerCount + loc.lineIndex);
-				this.requestRender();
-			},
-		})));
+		addBlockTargets(
+			frameModel.compactionLocations.map((loc) => ({
+				lineIndex: loc.lineIndex,
+				rowCount: loc.lineCount,
+				id: encodeHoverTarget({ kind: "compaction", index: loc.index, line: bannerCount + loc.lineIndex }),
+				onClick: () => {
+					this.preserveScrollAnchor(() => {
+						this.transcript.toggleCompaction(loc.index);
+					}, bannerCount + loc.lineIndex);
+					this.requestRender();
+				},
+			})),
+		);
 
 		// (1.9) 注册帮助浮层全域点击收起交互
 		if (this.activeModalId === "help" && aboveH > 0) {
@@ -1451,8 +1520,14 @@ export class UIHost implements UIHostContextPort {
 		// (3.2) 注册联想浮层鼠标点击项
 		if (this.activeSuggestions && suggestionLines.length > 0 && !this.overlayStack.hasVisible) {
 			const maxVisible = 5;
-			const clampedIndex = Math.max(0, Math.min(this.activeSuggestions.selectedIndex, this.activeSuggestions.items.length - 1));
-			const startIndex = Math.max(0, Math.min(clampedIndex - Math.floor(maxVisible / 2), this.activeSuggestions.items.length - maxVisible));
+			const clampedIndex = Math.max(
+				0,
+				Math.min(this.activeSuggestions.selectedIndex, this.activeSuggestions.items.length - 1),
+			);
+			const startIndex = Math.max(
+				0,
+				Math.min(clampedIndex - Math.floor(maxVisible / 2), this.activeSuggestions.items.length - maxVisible),
+			);
 			const visibleCount = Math.min(maxVisible, this.activeSuggestions.items.length - startIndex);
 			const suggStartRow = inputStartRow - suggestionLines.length;
 
@@ -1613,7 +1688,9 @@ export class UIHost implements UIHostContextPort {
 		for (const listener of this.rawInputListeners) {
 			try {
 				listener(data);
-			} catch (error) { this.notify(`终端输入监听器失败: ${String(error)}`, "error"); }
+			} catch (error) {
+				this.notify(`终端输入监听器失败: ${String(error)}`, "error");
+			}
 		}
 
 		// 1.5 鼠标 SGR 与 X10 协议拦截（滚轮视口滚动、划词选区与交互热区）
@@ -1782,7 +1859,12 @@ export class UIHost implements UIHostContextPort {
 			return;
 		}
 
-		if (matchesKey(data, Key.altUp) || matchesKey(data, Key.alt("up")) || matchesKey(data, Key.alt("q")) || matchesKey(data, Key.alt("Q"))) {
+		if (
+			matchesKey(data, Key.altUp) ||
+			matchesKey(data, Key.alt("up")) ||
+			matchesKey(data, Key.alt("q")) ||
+			matchesKey(data, Key.alt("Q"))
+		) {
 			this.onPullBackQueue?.();
 			return;
 		}
@@ -1812,7 +1894,9 @@ export class UIHost implements UIHostContextPort {
 			// 如果当前悬停在会话压缩卡片上，单卡展开优先
 			const hoveredCompactionIndex = this.transcript.getHoveredCompaction();
 			if (hoveredCompactionIndex !== null) {
-				const compactionLoc = this.transcript.getCompactionLineIndices(transcriptContentW).find((l) => l.index === hoveredCompactionIndex);
+				const compactionLoc = this.transcript
+					.getCompactionLineIndices(transcriptContentW)
+					.find((l) => l.index === hoveredCompactionIndex);
 				const targetAbsLine = compactionLoc ? bannerCount + compactionLoc.lineIndex : undefined;
 				this.preserveScrollAnchor(() => {
 					this.transcript.toggleCompaction(hoveredCompactionIndex);
@@ -1958,11 +2042,7 @@ export class UIHost implements UIHostContextPort {
 			const escapedPath = /\s/.test(file.path) ? `"${file.path}"` : file.path;
 			const replacement = isDir ? `@${escapedPath}` : `@${escapedPath} `;
 
-			this.inputLine.replaceRange(
-				this.activeSuggestions.start,
-				this.activeSuggestions.end,
-				replacement,
-			);
+			this.inputLine.replaceRange(this.activeSuggestions.start, this.activeSuggestions.end, replacement);
 
 			if (isDir) {
 				this.updateSuggestions();

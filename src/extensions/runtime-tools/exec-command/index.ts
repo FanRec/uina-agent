@@ -3,12 +3,7 @@ import { errorMessage } from "../../../core/errors.js";
 import type { ToolResultStatus } from "../../../core/types.js";
 import type { JobContext, JobHandle, JobOutcome } from "../../jobs/registry.js";
 import { executeShellProcess, type ProcessResult } from "./process.js";
-import {
-	MAX_OUTPUT_BYTES,
-	MAX_OUTPUT_LINES,
-	OutputCollector,
-	type OutputSnapshot,
-} from "./output.js";
+import { MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, OutputCollector, type OutputSnapshot } from "./output.js";
 
 export interface ShellResult {
 	stdout: string;
@@ -26,7 +21,6 @@ export interface ShellRunOptions {
 	/** Child process working directory. Defaults to `process.cwd()` when omitted. */
 	cwd?: string;
 }
-
 
 /** Human-readable shell name for the current platform (used in the tool description). */
 function shellDisplayName(): string {
@@ -61,14 +55,21 @@ async function runCommand(
 		try {
 			const text = collector.push(chunk);
 			if (text) observe?.({ stream, text });
-		} catch (error) { fail(error); }
+		} catch (error) {
+			fail(error);
+		}
 	};
 	let result: ProcessResult;
 	try {
-		result = await executeShellProcess(command, signal ? AbortSignal.any([signal, local.signal]) : local.signal, {
-			onStdout: (chunk) => collect(stdout, "stdout", chunk),
-			onStderr: (chunk) => collect(stderr, "stderr", chunk),
-		}, options);
+		result = await executeShellProcess(
+			command,
+			signal ? AbortSignal.any([signal, local.signal]) : local.signal,
+			{
+				onStdout: (chunk) => collect(stdout, "stdout", chunk),
+				onStderr: (chunk) => collect(stderr, "stderr", chunk),
+			},
+			options,
+		);
 	} finally {
 		const closed = await Promise.allSettled([stdout.close(), stderr.close()]);
 		for (const outcome of closed) if (outcome.status === "rejected") fail(outcome.reason);
@@ -80,22 +81,32 @@ async function runCommand(
 }
 
 export function startBackgroundCommand(command: string, context: JobContext, options: ShellRunOptions = {}): JobHandle {
-	const done = runCommand(command, context.signal, options, context.observe).then((result): JobOutcome => {
-		const status = result.cancelled ? "killed" : result.timedOut || result.code !== 0 ? "failed" : "completed";
-		return {
-			status,
-			detail: result.timedOut ? "命令超时" : result.code === 0 ? "命令执行完成" : `退出码 ${result.code ?? "unknown"}`,
-			output: {
-				result: JSON.stringify({
-					stdout: result.stdout, stderr: result.stderr, code: result.code, status,
-					truncated: { stdout: result.stdoutMeta?.truncated, stderr: result.stderrMeta?.truncated },
-					fullOutputPath: { stdout: result.stdoutMeta?.fullOutputPath, stderr: result.stderrMeta?.fullOutputPath },
-				}),
-				truncated: result.stdoutMeta?.truncated || result.stderrMeta?.truncated,
-				fullOutputPath: result.stdoutMeta?.fullOutputPath ?? result.stderrMeta?.fullOutputPath,
-			},
-		};
-	}, (error): JobOutcome => ({ status: "failed", detail: `命令执行或输出收集失败：${errorMessage(error)}` }));
+	const done = runCommand(command, context.signal, options, context.observe).then(
+		(result): JobOutcome => {
+			const status = result.cancelled ? "killed" : result.timedOut || result.code !== 0 ? "failed" : "completed";
+			return {
+				status,
+				detail: result.timedOut
+					? "命令超时"
+					: result.code === 0
+						? "命令执行完成"
+						: `退出码 ${result.code ?? "unknown"}`,
+				output: {
+					result: JSON.stringify({
+						stdout: result.stdout,
+						stderr: result.stderr,
+						code: result.code,
+						status,
+						truncated: { stdout: result.stdoutMeta?.truncated, stderr: result.stderrMeta?.truncated },
+						fullOutputPath: { stdout: result.stdoutMeta?.fullOutputPath, stderr: result.stderrMeta?.fullOutputPath },
+					}),
+					truncated: result.stdoutMeta?.truncated || result.stderrMeta?.truncated,
+					fullOutputPath: result.stdoutMeta?.fullOutputPath ?? result.stderrMeta?.fullOutputPath,
+				},
+			};
+		},
+		(error): JobOutcome => ({ status: "failed", detail: `命令执行或输出收集失败：${errorMessage(error)}` }),
+	);
 	return { cancel: (reason) => context.update({ detail: reason ?? "已请求取消" }), done };
 }
 
@@ -109,8 +120,7 @@ export function createExecCommandTool(
 			type: "function",
 			function: {
 				name: "exec_command",
-				description:
-					`执行一条系统命令并返回其输出（stdout、stderr、退出码）。当前平台使用 ${shellDisplayName()}；命令可读写文件、运行脚本和管理进程。输出超过 ${MAX_OUTPUT_BYTES / 1024} KB 或 ${MAX_OUTPUT_LINES} 行时只返回尾部，完整输出写入 fullOutputPath。`,
+				description: `执行一条系统命令并返回其输出（stdout、stderr、退出码）。当前平台使用 ${shellDisplayName()}；命令可读写文件、运行脚本和管理进程。输出超过 ${MAX_OUTPUT_BYTES / 1024} KB 或 ${MAX_OUTPUT_LINES} 行时只返回尾部，完整输出写入 fullOutputPath。`,
 				parameters: {
 					type: "object",
 					properties: {
@@ -144,7 +154,11 @@ export function createExecCommandTool(
 			const result = await execCommandDirect(command, signal, { timeoutMs, cwd });
 			const status: ToolResultStatus = result.cancelled
 				? "cancelled"
-				: result.timedOut ? "failed" : result.code === 0 ? "succeeded" : "failed";
+				: result.timedOut
+					? "failed"
+					: result.code === 0
+						? "succeeded"
+						: "failed";
 			const body: Record<string, unknown> = {
 				code: result.code,
 				stdout: result.stdout,

@@ -9,22 +9,14 @@ import { C, stripAnsi, truncateToWidth, visibleWidth, wrapTextWithAnsi } from ".
 import { sanitizeRenderText } from "../../format.js";
 import { applyCardBackground } from "./tool-view.js";
 import type { Component } from "../../core/types.js";
-import type {
-	CustomMessage,
-	MessageRenderer,
-} from "../../../extensions/ui-contract.js";
+import type { CustomMessage, MessageRenderer } from "../../../extensions/ui-contract.js";
 
 /* ------------------------------------------------------------------ */
 /* 1. 思考链展示卡片                                                    */
 /* ------------------------------------------------------------------ */
 
 /** 格式化对话流内部的思考链块（永久行） */
-export function formatThinkingLines(
-	thinkingText: string,
-	collapsed = true,
-	width = 80,
-	isHovered = false,
-): string[] {
+export function formatThinkingLines(thinkingText: string, collapsed = true, width = 80, isHovered = false): string[] {
 	thinkingText = sanitizeRenderText(thinkingText);
 	if (!thinkingText || !thinkingText.trim()) return [];
 
@@ -73,22 +65,17 @@ export interface CompactionCardData {
 /**
  * 格式化渲染会话压缩卡片行
  */
-export function formatCompactionCardLines(
-	record: CompactionCardData,
-	width = 80,
-	isHovered = false,
-): string[] {
+export function formatCompactionCardLines(record: CompactionCardData, width = 80, isHovered = false): string[] {
 	const boxW = Math.max(20, width);
 	if (record.status && record.status !== "completed") {
-		const title = record.status === "failed" ? "压缩失败" : record.status === "cancelled" ? "压缩已取消" : "当前无需压缩";
+		const title =
+			record.status === "failed" ? "压缩失败" : record.status === "cancelled" ? "压缩已取消" : "当前无需压缩";
 		const header = `${C.subtle}───${C.inactive} ${title} ${C.subtle}${"─".repeat(Math.max(3, boxW - visibleWidth(title) - 5))}${C.reset}`;
 		const detail = truncateToWidth(`  ${record.summary.replace(/\s+/g, " ").trim()}`, boxW, "…");
 		return [header, `${C.inactive}${detail}${C.reset}`, `${C.subtle}${"─".repeat(boxW)}${C.reset}`];
 	}
 	const tokensBeforeStr =
-		record.tokensBefore >= 1000
-			? `${(record.tokensBefore / 1000).toFixed(1)}k`
-			: `${record.tokensBefore}`;
+		record.tokensBefore >= 1000 ? `${(record.tokensBefore / 1000).toFixed(1)}k` : `${record.tokensBefore}`;
 
 	const leftDashes = "───";
 	const leftW = visibleWidth(leftDashes);
@@ -141,9 +128,12 @@ export function formatCompactionCardLines(
 
 	// 底部统计与提示
 	const arrow = `${isHovered ? C.suggestion : C.claude}↳${C.reset}`;
-	const retained = record.retainedTailEntries === undefined ? "保留条目未知" : `保留 ${record.retainedTailEntries} 条主线记录`;
+	const retained =
+		record.retainedTailEntries === undefined ? "保留条目未知" : `保留 ${record.retainedTailEntries} 条主线记录`;
 	const stats = `${C.success}压缩前 ~${tokensBeforeStr} tokens${C.reset} · ${C.inactive}${retained}${C.reset}`;
-	const hint = isHovered ? `${C.suggestion}(点击 / ctrl+o 收起)${C.reset}` : `${C.inactive}(ctrl+o / 点击收起)${C.reset}`;
+	const hint = isHovered
+		? `${C.suggestion}(点击 / ctrl+o 收起)${C.reset}`
+		: `${C.inactive}(ctrl+o / 点击收起)${C.reset}`;
 	const footerRaw = `  ${arrow} ${stats} · ${hint}`;
 	const effFooter = visibleWidth(footerRaw) > boxW ? truncateToWidth(footerRaw, boxW, "…") : footerRaw;
 	output.push(`${effFooter}${" ".repeat(Math.max(0, boxW - visibleWidth(effFooter)))}`);
@@ -214,10 +204,16 @@ export class CustomMessageComponent extends BaseCustomComponent<CustomMessage, M
 			rows.push(`${C.bold}${label}:${C.reset} ${valCol}${sanitizeRenderText(value)}${C.reset}`);
 		};
 
-		const details = this.item.details as {
-			record?: { fromId: string; targetId: string; source: string; reason: string; note?: string };
-			effects?: { modifiedFiles?: readonly string[]; executedCommands?: readonly string[]; dispatchedTasks?: readonly { id: string; type: string; label?: string }[] };
-		} | undefined;
+		const details = this.item.details as
+			| {
+					record?: { fromId: string; targetId: string; source: string; reason: string; note?: string };
+					effects?: {
+						modifiedFiles?: readonly string[];
+						executedCommands?: readonly string[];
+						dispatchedTasks?: readonly { id: string; type: string; label?: string }[];
+					};
+			  }
+			| undefined;
 
 		const record = details?.record;
 		const effects = details?.effects;
@@ -264,7 +260,9 @@ export class CustomMessageComponent extends BaseCustomComponent<CustomMessage, M
 		const tag = `[${this.item.customType}]`;
 		const borderCol = C.blue;
 		const header = `  ${borderCol}╭─ ${C.bold}${tag}${C.reset}${borderCol} ${"─".repeat(Math.max(2, boxW - visibleWidth(tag) - 7))}╮${C.reset}`;
-		const rawLines = sanitizeRenderText(this.item.content + imageNotice(this.item.images)).replace(/\r\n/g, "\n").split("\n");
+		const rawLines = sanitizeRenderText(this.item.content + imageNotice(this.item.images))
+			.replace(/\r\n/g, "\n")
+			.split("\n");
 		const bodyLines = rawLines.map((line) => {
 			const text = truncateToWidth(stripAnsi(line), innerW, "");
 			return `  ${borderCol}│${C.reset} ${text}${" ".repeat(Math.max(0, innerW - visibleWidth(text)))} ${borderCol}│${C.reset}`;
@@ -333,7 +331,10 @@ export function parseDiagnosticMessage(rawText: string): DiagnosticModel {
 
 	// 消除紧跟其后的重复模块名（如 "[模型目录] 模型目录:"）
 	if (tag && text.startsWith(tag)) {
-		text = text.slice(tag.length).replace(/^[:：\s]+/, "").trim();
+		text = text
+			.slice(tag.length)
+			.replace(/^[:：\s]+/, "")
+			.trim();
 	}
 	// 规范化通用后缀（如 "模型目录刷新" -> "模型目录"，"命令错误" -> "命令"）
 	const displayTag = tag.replace(/(?:刷新|错误|异常|失败)$/, "") || tag;
@@ -344,12 +345,21 @@ export function parseDiagnosticMessage(rawText: string): DiagnosticModel {
 
 	if (text.includes("\n")) {
 		// 优先尊重显式换行符
-		const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+		const lines = text
+			.split("\n")
+			.map((l) => l.trim())
+			.filter(Boolean);
 		summary = lines[0] ?? text;
 		details.push(...lines.slice(1));
-	} else if (text.includes("；") && (text.includes("未更新") || text.includes("失败:") || text.includes("失败：") || /\b\d+\/\d+\b/.test(text))) {
+	} else if (
+		text.includes("；") &&
+		(text.includes("未更新") || text.includes("失败:") || text.includes("失败：") || /\b\d+\/\d+\b/.test(text))
+	) {
 		// 优先按中文全角分号精确切分条目（避免误切代码或响应体内的英文分号）
-		const parts = text.split("；").map((p) => p.trim()).filter(Boolean);
+		const parts = text
+			.split("；")
+			.map((p) => p.trim())
+			.filter(Boolean);
 		if (parts.length > 1) {
 			summary = parts[0]!;
 			for (let i = 1; i < parts.length; i++) {
@@ -360,7 +370,10 @@ export function parseDiagnosticMessage(rawText: string): DiagnosticModel {
 		}
 	} else if (text.includes(";") && /(?:;\s*(?:未更新|失败|failed|error))/i.test(text)) {
 		// 英文分号仅在携带明确失败关键词前缀时切分
-		const parts = text.split(";").map((p) => p.trim()).filter(Boolean);
+		const parts = text
+			.split(";")
+			.map((p) => p.trim())
+			.filter(Boolean);
 		if (parts.length > 1) {
 			summary = parts[0]!;
 			for (let i = 1; i < parts.length; i++) {
@@ -372,12 +385,11 @@ export function parseDiagnosticMessage(rawText: string): DiagnosticModel {
 	}
 
 	// 4. 判定严重级别（奥卡姆剃刀与真实事实：全盘失败 0/N 是致命错误，只有真实部分成功才判定为降级告警）
-	const hasPartialSuccess = /\b[1-9]\d*\/\d+\b/.test(summary) || (summary.includes("已更新") && !summary.includes("0 家已更新") && !summary.includes("0/"));
+	const hasPartialSuccess =
+		/\b[1-9]\d*\/\d+\b/.test(summary) ||
+		(summary.includes("已更新") && !summary.includes("0 家已更新") && !summary.includes("0/"));
 	const isDegradedWarning =
-		tag.includes("警告") ||
-		tag.toUpperCase().includes("WARN") ||
-		hasPartialSuccess ||
-		summary.includes("部分");
+		tag.includes("警告") || tag.toUpperCase().includes("WARN") || hasPartialSuccess || summary.includes("部分");
 
 	return {
 		level: isDegradedWarning ? "warning" : "error",

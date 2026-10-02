@@ -53,10 +53,14 @@ function matchEdits(content: string, edits: Edit[], path: string): MatchedEdit[]
 		const { oldText, newText } = edits[i];
 		if (oldText.length === 0) throw new Error(`edit_file：edits[${i}].oldText 不能为空（${path}）。`);
 		const first = content.indexOf(oldText);
-		if (first === -1) throw new Error(`edit_file：edits[${i}].oldText 在 ${path} 中不存在，必须与文件内容逐字符一致（含空白与换行）。`);
+		if (first === -1)
+			throw new Error(`edit_file：edits[${i}].oldText 在 ${path} 中不存在，必须与文件内容逐字符一致（含空白与换行）。`);
 		let occurrences = 1;
 		for (let pos = first + 1; (pos = content.indexOf(oldText, pos)) !== -1; pos++) occurrences++;
-		if (occurrences > 1) throw new Error(`edit_file：edits[${i}].oldText 在 ${path} 中出现 ${occurrences} 次，必须唯一；请补充上下文使其唯一。`);
+		if (occurrences > 1)
+			throw new Error(
+				`edit_file：edits[${i}].oldText 在 ${path} 中出现 ${occurrences} 次，必须唯一；请补充上下文使其唯一。`,
+			);
 		matched.push({ editIndex: i, matchIndex: first, matchLength: oldText.length, newText });
 	}
 	matched.sort((a, b) => a.matchIndex - b.matchIndex);
@@ -64,7 +68,9 @@ function matchEdits(content: string, edits: Edit[], path: string): MatchedEdit[]
 		const prev = matched[i - 1];
 		const cur = matched[i];
 		if (prev.matchIndex + prev.matchLength > cur.matchIndex) {
-			throw new Error(`edit_file：edits[${prev.editIndex}] 与 edits[${cur.editIndex}] 在 ${path} 中重叠；请合并为一个编辑或改为针对不相交区域。`);
+			throw new Error(
+				`edit_file：edits[${prev.editIndex}] 与 edits[${cur.editIndex}] 在 ${path} 中重叠；请合并为一个编辑或改为针对不相交区域。`,
+			);
 		}
 	}
 	return matched;
@@ -119,7 +125,11 @@ export function activateEditFile(api: ExtensionAPI): void {
 			const rawContent = await readFile(file, { encoding: "utf8", signal });
 			const { bom, content, ending } = prepareContent(rawContent);
 			const normalized = normalizeToLF(content);
-			const matched = matchEdits(normalized, edits.map((e) => ({ oldText: normalizeToLF(e.oldText), newText: normalizeToLF(e.newText) })), file);
+			const matched = matchEdits(
+				normalized,
+				edits.map((e) => ({ oldText: normalizeToLF(e.oldText), newText: normalizeToLF(e.newText) })),
+				file,
+			);
 			const updated = restoreLineEndings(applyMatched(normalized, matched), ending);
 			await writeFile(file, bom + updated, { encoding: "utf8", signal });
 			// LF 视图上的变更摘要：带行号 ± 片段 + 新文件首个变更行，供调用方免全量复读确认
@@ -127,7 +137,13 @@ export function activateEditFile(api: ExtensionAPI): void {
 			return {
 				result: `Edited ${file}: ${edits.length} replacement(s).\n${summary.diff}`,
 				status: "succeeded",
-				details: { path: file, edits: edits.length, lineEnding: ending, firstChangedLine: summary.firstChangedLine, effects: [{ effectType: "file.write", label: file }] },
+				details: {
+					path: file,
+					edits: edits.length,
+					lineEnding: ending,
+					firstChangedLine: summary.firstChangedLine,
+					effects: [{ effectType: "file.write", label: file }],
+				},
 			};
 		},
 	});

@@ -121,14 +121,8 @@ export class MouseSelectionTracker {
 	updateFocusContent(contentRow: number, screenRow: number, col?: number): void {
 		if (!this.isDragging || !this.activeRegion || this.activeRegion.id !== "transcript") return;
 		const currentCol = col ?? (this.focus ? this.focus.col : 0);
-		const clampedCol = Math.max(
-			this.activeRegion.colStart,
-			Math.min(currentCol, this.activeRegion.colEnd),
-		);
-		const clampedRow = Math.max(
-			this.activeRegion.startRow,
-			Math.min(screenRow, this.activeRegion.endRow),
-		);
+		const clampedCol = Math.max(this.activeRegion.colStart, Math.min(currentCol, this.activeRegion.colEnd));
+		const clampedRow = Math.max(this.activeRegion.startRow, Math.min(screenRow, this.activeRegion.endRow));
 		this.focus = { col: clampedCol, row: clampedRow, contentRow };
 	}
 
@@ -217,9 +211,7 @@ export class MouseSelectionTracker {
 			);
 			if (matched) {
 				this.activeRegion = matched;
-				const contentRow = matched.id === "transcript"
-					? this.currentScrollStart + (row - matched.startRow)
-					: undefined;
+				const contentRow = matched.id === "transcript" ? this.currentScrollStart + (row - matched.startRow) : undefined;
 				this.anchor = { col, row, contentRow };
 				this.focus = { col, row, contentRow };
 				this.isDragging = true;
@@ -234,17 +226,12 @@ export class MouseSelectionTracker {
 
 		// 3. 左键拖拽（btn 32, action 'M' 且已处于拖拽态）
 		if ((btn === 32 || btn === 0) && action === "M" && this.isDragging && this.activeRegion) {
-			const clampedRow = Math.max(
-				this.activeRegion.startRow,
-				Math.min(row, this.activeRegion.endRow),
-			);
-			const clampedCol = Math.max(
-				this.activeRegion.colStart,
-				Math.min(col, this.activeRegion.colEnd),
-			);
-			const contentRow = this.activeRegion.id === "transcript"
-				? this.currentScrollStart + (clampedRow - this.activeRegion.startRow)
-				: undefined;
+			const clampedRow = Math.max(this.activeRegion.startRow, Math.min(row, this.activeRegion.endRow));
+			const clampedCol = Math.max(this.activeRegion.colStart, Math.min(col, this.activeRegion.colEnd));
+			const contentRow =
+				this.activeRegion.id === "transcript"
+					? this.currentScrollStart + (clampedRow - this.activeRegion.startRow)
+					: undefined;
 			this.focus = { col: clampedCol, row: clampedRow, contentRow };
 
 			let dragEdge: "top" | "bottom" | null = null;
@@ -261,9 +248,7 @@ export class MouseSelectionTracker {
 
 		// 4. 移动悬停（Hover 探测：btn 35 或无按键移动）
 		if (btn === 35 && action === "M" && !this.isDragging) {
-			const target = this.targets.find(
-				(t) => t.row === row && col >= t.colStart && col <= t.colEnd,
-			);
+			const target = this.targets.find((t) => t.row === row && col >= t.colStart && col <= t.colEnd);
 			const newId = target ? target.id : null;
 			if (newId !== this.currentHoverTargetId) {
 				this.currentHoverTargetId = newId;
@@ -276,22 +261,19 @@ export class MouseSelectionTracker {
 		if (action === "m") {
 			const startPos = this.mouseDownPos;
 			const isClick =
-				startPos &&
-				Math.abs(startPos.col - col) <= 1 &&
-				Math.abs(startPos.row - row) === 0 &&
-				!this.hasSelection();
+				startPos && Math.abs(startPos.col - col) <= 1 && Math.abs(startPos.row - row) === 0 && !this.hasSelection();
 
-			const contentRow = this.activeRegion?.id === "transcript"
-				? this.currentScrollStart + (Math.max(this.activeRegion.startRow, Math.min(row, this.activeRegion.endRow)) - this.activeRegion.startRow)
-				: undefined;
+			const contentRow =
+				this.activeRegion?.id === "transcript"
+					? this.currentScrollStart +
+						(Math.max(this.activeRegion.startRow, Math.min(row, this.activeRegion.endRow)) - this.activeRegion.startRow)
+					: undefined;
 			this.focus = { col, row, contentRow };
 			this.isDragging = false;
 
 			// 如果判定为点击（Click）动作，检查是否命中交互热区
 			if (isClick) {
-				const target = this.targets.find(
-					(t) => t.row === row && col >= t.colStart && col <= t.colEnd,
-				);
+				const target = this.targets.find((t) => t.row === row && col >= t.colStart && col <= t.colEnd);
 				this.clear();
 				if (target) {
 					target.onClick?.(col);
@@ -302,7 +284,8 @@ export class MouseSelectionTracker {
 
 			// 如果判定为拖拽选择（Drag Selection），优先从全量永久内容提取，支持跨屏无损拷贝
 			if (this.hasSelection() && onCopy && this.activeRegion) {
-				const selectedText = (permanentLines ? this.extractSelectedContentText(permanentLines) : "") || this.extractSelectedText(rows);
+				const selectedText =
+					(permanentLines ? this.extractSelectedContentText(permanentLines) : "") || this.extractSelectedText(rows);
 				if (selectedText && selectedText.trim()) {
 					onCopy(copyTransform ? copyTransform(this.activeRegion.id, selectedText) : selectedText);
 				}
@@ -347,7 +330,10 @@ export class MouseSelectionTracker {
 				continue;
 			}
 
-			let rowStartCol = r === start.row ? Math.max(this.activeRegion.colStart, Math.min(start.col, contentLen)) : this.activeRegion.colStart;
+			let rowStartCol =
+				r === start.row
+					? Math.max(this.activeRegion.colStart, Math.min(start.col, contentLen))
+					: this.activeRegion.colStart;
 			let rowEndCol = r === end.row ? Math.min(end.col, contentLen) : contentLen;
 
 			const trimmedContent = cleanLine.trimEnd();
@@ -523,12 +509,7 @@ export class MouseSelectionTracker {
 
 		for (let r = 0; r < rows.length; r++) {
 			const line = rows[r]!;
-			if (
-				r < start.row ||
-				r > end.row ||
-				r < this.activeRegion.startRow ||
-				r > this.activeRegion.endRow
-			) {
+			if (r < start.row || r > end.row || r < this.activeRegion.startRow || r > this.activeRegion.endRow) {
 				result.push(line);
 				continue;
 			}
@@ -547,7 +528,10 @@ export class MouseSelectionTracker {
 				continue;
 			}
 
-			let rowStartCol = r === start.row ? Math.max(this.activeRegion.colStart, Math.min(start.col, contentLen)) : this.activeRegion.colStart;
+			let rowStartCol =
+				r === start.row
+					? Math.max(this.activeRegion.colStart, Math.min(start.col, contentLen))
+					: this.activeRegion.colStart;
 			let rowEndCol = r === end.row ? Math.min(end.col, contentLen) : contentLen;
 
 			const trimmedContent = clean.trimEnd();
@@ -583,10 +567,7 @@ export class MouseSelectionTracker {
 			if (ansi) {
 				out += ansi.code;
 				// 如果在选区内遇到了样式重置或背景变动，立即重新附加雾蓝背景，杜绝选区断层或转为黑底
-				if (
-					inHighlight &&
-					(ansi.code === "\x1b[0m" || ansi.code.includes("49m") || ansi.code.includes("48;"))
-				) {
+				if (inHighlight && (ansi.code === "\x1b[0m" || ansi.code.includes("49m") || ansi.code.includes("48;"))) {
 					out += "\x1b[48;2;59;74;102m";
 				}
 				i += ansi.length;

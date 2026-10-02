@@ -81,7 +81,18 @@ describe("M4 工具面：五态适配", () => {
 		for (const tool of createMemoryTools(store)) broker.register(tool);
 
 		const createPrepared = broker.prepare("memory_write", {
-			operation: { op: "create", record: { type: "note", basis: "observed", title: "t", body: "b", scope: {}, sources: [{ sessionId: "default" }], pinned: false } },
+			operation: {
+				op: "create",
+				record: {
+					type: "note",
+					basis: "observed",
+					title: "t",
+					body: "b",
+					scope: {},
+					sources: [{ sessionId: "default" }],
+					pinned: false,
+				},
+			},
 		});
 		const created = JSON.parse((await broker.execute(createPrepared)).result) as { id: string; hash: string };
 
@@ -109,12 +120,27 @@ describe("M4 工具面：五态适配", () => {
 		const store = createStore();
 		for (const tool of createMemoryTools(store)) broker.register(tool);
 
-		await broker.execute(broker.prepare("memory_write", {
-			operation: { op: "create", record: { type: "note", basis: "observed", title: "部署偏好", body: "先跑测试再部署", scope: {}, sources: [{ sessionId: "default" }], pinned: false } },
-		}));
+		await broker.execute(
+			broker.prepare("memory_write", {
+				operation: {
+					op: "create",
+					record: {
+						type: "note",
+						basis: "observed",
+						title: "部署偏好",
+						body: "先跑测试再部署",
+						scope: {},
+						sources: [{ sessionId: "default" }],
+						pinned: false,
+					},
+				},
+			}),
+		);
 		const search = await broker.execute(broker.prepare("memory_search", { query: "部署" }));
 		expect(search.status).toBe("succeeded");
-		const payload = JSON.parse(search.result) as { hits: Array<{ id: string; title: string; excerpt: string; revision: number }> };
+		const payload = JSON.parse(search.result) as {
+			hits: Array<{ id: string; title: string; excerpt: string; revision: number }>;
+		};
 		expect(payload.hits).toHaveLength(1);
 		expect(payload.hits[0]!.title).toBe("部署偏好");
 		expect(payload.hits[0]!.excerpt).toContain("先跑测试");
@@ -139,14 +165,31 @@ describe("M4 工具面：五态适配", () => {
 			(
 				await broker.execute(
 					broker.prepare("memory_write", {
-						operation: { op: "create", record: { type: "note", basis: "observed", title: "秘密", body: "暗号 1234", scope: {}, sources: [{ sessionId: "default" }], pinned: false } },
+						operation: {
+							op: "create",
+							record: {
+								type: "note",
+								basis: "observed",
+								title: "秘密",
+								body: "暗号 1234",
+								scope: {},
+								sources: [{ sessionId: "default" }],
+								pinned: false,
+							},
+						},
 					}),
 				)
 			).result,
 		) as { id: string; hash: string };
 
-		await broker.execute(broker.prepare("memory_write", { operation: { op: "retire", id: created.id, expectedHash: created.hash, reason: "过时" } }));
-		const search = JSON.parse((await broker.execute(broker.prepare("memory_search", { query: "暗号" }))).result) as { hits: unknown[] };
+		await broker.execute(
+			broker.prepare("memory_write", {
+				operation: { op: "retire", id: created.id, expectedHash: created.hash, reason: "过时" },
+			}),
+		);
+		const search = JSON.parse((await broker.execute(broker.prepare("memory_search", { query: "暗号" }))).result) as {
+			hits: unknown[];
+		};
 		expect(search.hits).toHaveLength(0);
 
 		const read = await broker.execute(broker.prepare("memory_read", { id: created.id }));
@@ -157,7 +200,18 @@ describe("M4 工具面：五态适配", () => {
 		// writer 内部抛异常 → unknown：不猜测、不报 succeeded。
 		const boom = await broker.execute(
 			broker.prepare("memory_write", {
-				operation: { op: "create", record: { type: "note", basis: "observed", title: "x", body: "y", scope: {}, sources: [{ sessionId: "default", entryId: "boom" }], pinned: false } },
+				operation: {
+					op: "create",
+					record: {
+						type: "note",
+						basis: "observed",
+						title: "x",
+						body: "y",
+						scope: {},
+						sources: [{ sessionId: "default", entryId: "boom" }],
+						pinned: false,
+					},
+				},
 			}),
 		);
 		expect(boom.status).toBe("unknown");

@@ -20,7 +20,8 @@ const plain = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
 
 import { createSilentTerminal } from "./harness/index.js";
 
-const createTestUI = () => createInteractiveUI({ modelName: "TestModel", terminal: createSilentTerminal(120, 30).terminal });
+const createTestUI = () =>
+	createInteractiveUI({ modelName: "TestModel", terminal: createSilentTerminal(120, 30).terminal });
 
 const headerTokens = (tui: ReturnType<typeof createInteractiveUI>): string =>
 	plain(tui.host.activityLine.render(200).join("\n"));

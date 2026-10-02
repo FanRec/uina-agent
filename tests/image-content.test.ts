@@ -70,7 +70,9 @@ describe("Image Content & Multimodal Tools", () => {
 		).toThrow("无效");
 	});
 
-	test("reads an actual image through the default built-in extension with unknown model capability, sends it on the wire, persists and restores it", async ({ env }) => {
+	test("reads an actual image through the default built-in extension with unknown model capability, sends it on the wire, persists and restores it", async ({
+		env,
+	}) => {
 		await env.writeFile("pixel.png", Buffer.from(png, "base64"));
 		const bodies: Array<Record<string, unknown>> = [];
 		const server = createServer(async (req, res) => {
@@ -183,7 +185,9 @@ describe("Image Content & Multimodal Tools", () => {
 		await restored.store.close();
 	});
 
-	test("resumes queued image events with their original identity and keeps them out of a text-only draft", async ({ env }) => {
+	test("resumes queued image events with their original identity and keeps them out of a text-only draft", async ({
+		env,
+	}) => {
 		const { store } = await openJsonlSession(env.sessionPath);
 		const input = {
 			id: "original-camera-input",
@@ -218,10 +222,17 @@ describe("Image Content & Multimodal Tools", () => {
 		await reopened.store.close();
 	});
 
-	test("default filesystem tools read ranges, preserve full text and identify image bytes independently of filename", async ({ uina, env }) => {
-		expect((await uina.callTool("write_file", { path: "notes.txt", text: "one\ntwo\nthree\n" })).status).toBe("succeeded");
+	test("default filesystem tools read ranges, preserve full text and identify image bytes independently of filename", async ({
+		uina,
+		env,
+	}) => {
+		expect((await uina.callTool("write_file", { path: "notes.txt", text: "one\ntwo\nthree\n" })).status).toBe(
+			"succeeded",
+		);
 		expect((await uina.callTool("read_file", { path: "notes.txt" })).result).toBe("one\ntwo\nthree"); // 结尾换行不产生幽灵空行
-		expect(String((await uina.callTool("read_file", { path: "notes.txt", offset: 2, limit: 1 })).result)).toContain("two");
+		expect(String((await uina.callTool("read_file", { path: "notes.txt", offset: 2, limit: 1 })).result)).toContain(
+			"two",
+		);
 		expect((await uina.callTool("read_file", { path: "notes.txt", offset: 0 })).status).not.toBe("succeeded");
 		expect((await uina.callTool("read_file", { path: "absent" })).status).toBe("failed");
 		await env.writeFile("image.bin", Buffer.from(png, "base64"));

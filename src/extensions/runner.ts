@@ -33,7 +33,10 @@ export interface ExtensionAPI {
 	readonly session: {
 		list: import("../session/types.js").SessionAccess["list"];
 		read: import("../session/types.js").SessionAccess["read"];
-		requestRewind(request: import("../session/types.js").RewindRequest, options?: CallOptions): Promise<import("../session/types.js").RewindResult>;
+		requestRewind(
+			request: import("../session/types.js").RewindRequest,
+			options?: CallOptions,
+		): Promise<import("../session/types.js").RewindResult>;
 	};
 	readonly id: string;
 	readonly path: string;
@@ -46,7 +49,7 @@ export interface ExtensionAPI {
 		handler: ExtensionEventHandler<Extract<ExtensionEvent, { type: T }>>,
 	): () => void;
 	/**
- * 在干预点注册（Hook ≠ Event，L1）：hook 专属词汇（如 "tools.beforeCall"），
+	 * 在干预点注册（Hook ≠ Event，L1）：hook 专属词汇（如 "tools.beforeCall"），
 	 * 返回值按该链的合并规则参与组合。事实观察用 on()。
 	 * options.tail 仅对 turn.transformContext 有语义（尾部相位，见 ExtensionHost.onHook）。
 	 */
@@ -59,7 +62,8 @@ export interface ExtensionAPI {
 	/** auxiliary timeline（仅登记的 records）：capability 读自身私有持久状态的通道——
 	 * 私有状态不进主线（非对话事实、非回溯语义节点），故与 history() 分离。 */
 	auxiliary(): readonly (
-		import("../session/types.js").SessionEventRecord | import("../session/types.js").SessionCustomEntryRecord
+		| import("../session/types.js").SessionEventRecord
+		| import("../session/types.js").SessionCustomEntryRecord
 	)[];
 	/** 事实出口（RuntimeEvent 单流广播）：capability 产生"已发生"的事实（如 session_compact）。 */
 	emitEvent(event: import("../runtime/events.js").RuntimeEvent): Promise<void>;
@@ -178,7 +182,8 @@ export interface ExtensionRunnerOptions {
 	history?: () => readonly import("../session/types.js").HydratedSessionEntry[];
 	/** auxiliary timeline（pi.auxiliary()，仅登记 records）。 */
 	auxiliary?: () => readonly (
-		import("../session/types.js").SessionEventRecord | import("../session/types.js").SessionCustomEntryRecord
+		| import("../session/types.js").SessionEventRecord
+		| import("../session/types.js").SessionCustomEntryRecord
 	)[];
 	/** 事实出口（pi.emitEvent → RuntimeEvent 单流广播）。 */
 	emitRuntimeEvent?: (event: import("../runtime/events.js").RuntimeEvent) => Promise<void>;
@@ -445,16 +450,17 @@ export class ExtensionRunner extends ExtensionHost {
 		};
 		return {
 			session: {
-				list: options => sessionAccess().list(options),
-				read: id => sessionAccess().read(id),
-				requestRewind: (request, options) => scope.run(signal => sessionAccess().requestRewind(request,scope.id,signal),options?.signal),
+				list: (options) => sessionAccess().list(options),
+				read: (id) => sessionAccess().read(id),
+				requestRewind: (request, options) =>
+					scope.run((signal) => sessionAccess().requestRewind(request, scope.id, signal), options?.signal),
 			},
 			id: scope.id,
 			path: scope.path,
 			cwd: this.options.cwd,
 			subject: this.options.subjectBinding ? Object.freeze({ ...this.options.subjectBinding }) : undefined,
 			ui,
-				signal: scope.signal,
+			signal: scope.signal,
 			usage: () => {
 				assertActive();
 				if (!this.options.usage) throw new Error("宿主未提供用量事实入口");
@@ -835,7 +841,6 @@ function ownedUI(
 		},
 	});
 }
-
 
 export function createPrintUI(
 	write: (message: string, type?: "info" | "warning" | "error") => void,

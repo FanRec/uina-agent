@@ -37,7 +37,12 @@ export interface ConsolidationModelInput {
 
 /** 整理输出：仅限 revise/retire（不造新记忆）。 */
 export type ConsolidationPatch =
-	| { op: "revise"; id: string; expectedHash: string; record: { title?: string; body?: string; pinned?: boolean; rationale?: string } }
+	| {
+			op: "revise";
+			id: string;
+			expectedHash: string;
+			record: { title?: string; body?: string; pinned?: boolean; rationale?: string };
+	  }
 	| { op: "retire"; id: string; expectedHash: string; reason: string };
 
 export interface ConsolidationRunResult {
@@ -78,7 +83,12 @@ function asMemoryPatch(patch: unknown): Parameters<MemoryStore["write"]>[0] | nu
 		op: "revise",
 		id: p.id,
 		expectedHash: p.expectedHash,
-		record: { title: r.title as string | undefined, body: r.body as string | undefined, pinned: r.pinned as boolean | undefined, rationale: r.rationale as string | undefined },
+		record: {
+			title: r.title as string | undefined,
+			body: r.body as string | undefined,
+			pinned: r.pinned as boolean | undefined,
+			rationale: r.rationale as string | undefined,
+		},
 	};
 }
 
@@ -93,7 +103,6 @@ export interface ConsolidationWorkerOptions {
 	/** 模型调用前钩子（测试用：注入前台竞争写入）。 */
 	onModelCalled?: () => Promise<void>;
 }
-
 
 export interface ConsolidationWorker {
 	run(): Promise<ConsolidationRunResult>;
@@ -153,10 +162,15 @@ export function createConsolidationWorker(options: ConsolidationWorkerOptions): 
 			}));
 
 			await onModelCalled?.();
-			if (generation.aborted) return { status: "aborted", patchesSubmitted: 0, conflicts: 0, validationRejected: 0, modelCalls: 0 };
+			if (generation.aborted)
+				return { status: "aborted", patchesSubmitted: 0, conflicts: 0, validationRejected: 0, modelCalls: 0 };
 
-			const patches = await runModel({ subjectId: options.subjectId ?? "", evidence: merged, records }, controller.signal);
-			if (generation.aborted) return { status: "aborted", patchesSubmitted: 0, conflicts: 0, validationRejected: 0, modelCalls: 1 };
+			const patches = await runModel(
+				{ subjectId: options.subjectId ?? "", evidence: merged, records },
+				controller.signal,
+			);
+			if (generation.aborted)
+				return { status: "aborted", patchesSubmitted: 0, conflicts: 0, validationRejected: 0, modelCalls: 1 };
 
 			// 逐条独立提交：部分提交有效，失败不重放旧 patch。
 			let patchesSubmitted = 0;

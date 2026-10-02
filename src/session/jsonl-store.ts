@@ -114,13 +114,26 @@ export class JsonlSessionStore implements SessionStore {
 		this.state = canonicalReplay(records);
 	}
 
-	readRecords(): readonly SessionRecord[] { return [...this.records]; }
+	readRecords(): readonly SessionRecord[] {
+		return [...this.records];
+	}
 	appendRewind(record: Omit<import("./types.js").SessionRewindRecord, "kind" | "seq" | "timestamp">): Promise<void> {
-		return this.append({ ...structuredClone(record), kind:"rewind", seq:++this.nextSeq, timestamp:new Date().toISOString() });
+		return this.append({
+			...structuredClone(record),
+			kind: "rewind",
+			seq: ++this.nextSeq,
+			timestamp: new Date().toISOString(),
+		});
 	}
 
 	appendInput(input: QueuedInput): Promise<void> {
-		return this.append({ kind: "input", id: input.id, seq: ++this.nextSeq, timestamp: new Date().toISOString(), input: structuredClone(input) });
+		return this.append({
+			kind: "input",
+			id: input.id,
+			seq: ++this.nextSeq,
+			timestamp: new Date().toISOString(),
+			input: structuredClone(input),
+		});
 	}
 
 	appendMessage(message: AgentMessage | ChatMsg, id?: string): Promise<void> {
@@ -133,18 +146,33 @@ export class JsonlSessionStore implements SessionStore {
 		});
 	}
 
-	appendCustomMessage(message: { customType: string; content: string; images?: import("../core/content.js").ImageContent[]; display?: boolean; details?: unknown }): Promise<void> {
-		return this.append({ kind: "custom_message", id: randomUUID(), seq: ++this.nextSeq, timestamp: new Date().toISOString(), ...structuredClone(message) });
+	appendCustomMessage(message: {
+		customType: string;
+		content: string;
+		images?: import("../core/content.js").ImageContent[];
+		display?: boolean;
+		details?: unknown;
+	}): Promise<void> {
+		return this.append({
+			kind: "custom_message",
+			id: randomUUID(),
+			seq: ++this.nextSeq,
+			timestamp: new Date().toISOString(),
+			...structuredClone(message),
+		});
 	}
 
 	appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void> {
-		return this.append({ kind: "custom_entry", id: randomUUID(), seq: ++this.nextSeq, timestamp: new Date().toISOString(), ...structuredClone(entry) });
+		return this.append({
+			kind: "custom_entry",
+			id: randomUUID(),
+			seq: ++this.nextSeq,
+			timestamp: new Date().toISOString(),
+			...structuredClone(entry),
+		});
 	}
 
-	appendEvent(
-		event: SessionEventName,
-		data: Record<string, unknown>,
-	): Promise<void> {
+	appendEvent(event: SessionEventName, data: Record<string, unknown>): Promise<void> {
 		const record: SessionEventRecord = {
 			kind: "event",
 			id: randomUUID(),
@@ -194,7 +222,10 @@ export class JsonlSessionStore implements SessionStore {
 					await this.handle.truncate(size);
 					await this.handle.sync();
 				} catch (rollbackError) {
-					this.writeFailure = new AggregateError([error, rollbackError], `会话追加及回滚失败，请重新打开会话：${this.path}`);
+					this.writeFailure = new AggregateError(
+						[error, rollbackError],
+						`会话追加及回滚失败，请重新打开会话：${this.path}`,
+					);
 					throw this.writeFailure;
 				}
 				throw error;
@@ -214,11 +245,14 @@ export class MemorySessionStore implements SessionStore {
 	/** 常驻 canonical 状态：与 records 严格同步（append = check → push → apply）。 */
 	readonly state: CanonicalState = initialCanonicalState();
 
-	readRecords(): readonly SessionRecord[] { return [...this.records]; }
+	readRecords(): readonly SessionRecord[] {
+		return [...this.records];
+	}
 
 	/** 单一写入路径：schema 校验 + 语义校验先行，失败即拒绝；成功后 O(1) 增量登记。 */
 	private appendSync(record: SessionRecord): void {
-		if (!isRecord(record)) throw new SessionFormatError(`record schema 无效: ${String((record as { kind?: unknown }).kind)}`);
+		if (!isRecord(record))
+			throw new SessionFormatError(`record schema 无效: ${String((record as { kind?: unknown }).kind)}`);
 		checkRecord(this.state, record);
 		const stored = structuredClone(record);
 		this.records.push(stored);
@@ -226,13 +260,24 @@ export class MemorySessionStore implements SessionStore {
 	}
 
 	appendRewind(record: Omit<import("./types.js").SessionRewindRecord, "kind" | "seq" | "timestamp">): Promise<void> {
-		const next: import("./types.js").SessionRewindRecord = { ...structuredClone(record),kind:"rewind",seq:this.records.length+1,timestamp:new Date().toISOString() };
+		const next: import("./types.js").SessionRewindRecord = {
+			...structuredClone(record),
+			kind: "rewind",
+			seq: this.records.length + 1,
+			timestamp: new Date().toISOString(),
+		};
 		this.appendSync(next);
 		return Promise.resolve();
 	}
 
 	appendInput(input: QueuedInput): Promise<void> {
-		this.appendSync({ kind: "input", id: input.id, seq: this.records.length + 1, timestamp: new Date().toISOString(), input: structuredClone(input) });
+		this.appendSync({
+			kind: "input",
+			id: input.id,
+			seq: this.records.length + 1,
+			timestamp: new Date().toISOString(),
+			input: structuredClone(input),
+		});
 		return Promise.resolve();
 	}
 
@@ -247,20 +292,35 @@ export class MemorySessionStore implements SessionStore {
 		return Promise.resolve();
 	}
 
-	appendCustomMessage(message: { customType: string; content: string; images?: import("../core/content.js").ImageContent[]; display?: boolean; details?: unknown }): Promise<void> {
-		this.appendSync({ kind: "custom_message", id: randomUUID(), seq: this.records.length + 1, timestamp: new Date().toISOString(), ...structuredClone(message) });
+	appendCustomMessage(message: {
+		customType: string;
+		content: string;
+		images?: import("../core/content.js").ImageContent[];
+		display?: boolean;
+		details?: unknown;
+	}): Promise<void> {
+		this.appendSync({
+			kind: "custom_message",
+			id: randomUUID(),
+			seq: this.records.length + 1,
+			timestamp: new Date().toISOString(),
+			...structuredClone(message),
+		});
 		return Promise.resolve();
 	}
 
 	appendCustomEntry(entry: { customType: string; data?: unknown }): Promise<void> {
-		this.appendSync({ kind: "custom_entry", id: randomUUID(), seq: this.records.length + 1, timestamp: new Date().toISOString(), ...structuredClone(entry) });
+		this.appendSync({
+			kind: "custom_entry",
+			id: randomUUID(),
+			seq: this.records.length + 1,
+			timestamp: new Date().toISOString(),
+			...structuredClone(entry),
+		});
 		return Promise.resolve();
 	}
 
-	appendEvent(
-		event: SessionEventName,
-		data: Record<string, unknown>,
-	): Promise<void> {
+	appendEvent(event: SessionEventName, data: Record<string, unknown>): Promise<void> {
 		this.appendSync({
 			kind: "event",
 			id: randomUUID(),
@@ -305,9 +365,7 @@ async function readSnapshot(path: string): Promise<{
 				repairedTail = true;
 				break;
 			}
-			throw new SessionFormatError(
-				`${path}:${i + 1} JSON 无法解析: ${String(error)}`,
-			);
+			throw new SessionFormatError(`${path}:${i + 1} JSON 无法解析: ${String(error)}`);
 		}
 		if (!isRecord(value)) {
 			throw new SessionFormatError(`${path}:${i + 1} record schema 无效`);
@@ -344,15 +402,9 @@ function parseHeader(value: string | undefined, path: string): SessionHeader {
 	}
 	// 版本断代：只接受当前版本。旧版本 journal 明确拒绝，不做内存升级。
 	if (header.version !== JOURNAL_VERSION) {
-		throw new SessionFormatError(
-			`${path}:1 header 版本不支持: ${String(header.version)}（期望 ${JOURNAL_VERSION}）`,
-		);
+		throw new SessionFormatError(`${path}:1 header 版本不支持: ${String(header.version)}（期望 ${JOURNAL_VERSION}）`);
 	}
-	if (
-		typeof header.id !== "string" ||
-		typeof header.cwd !== "string" ||
-		typeof header.createdAt !== "string"
-	) {
+	if (typeof header.id !== "string" || typeof header.cwd !== "string" || typeof header.createdAt !== "string") {
 		throw new SessionFormatError(`${path}:1 header schema 无效`);
 	}
 	return header as SessionHeader;
@@ -375,11 +427,7 @@ async function repairTornTail(path: string, content: string): Promise<void> {
 }
 
 function isTornTail(line: string, error: unknown): boolean {
-	return (
-		line.trimStart().startsWith("{") &&
-		error instanceof SyntaxError &&
-		isUnclosedJson(line)
-	);
+	return line.trimStart().startsWith("{") && error instanceof SyntaxError && isUnclosedJson(line);
 }
 
 function isUnclosedJson(line: string): boolean {
