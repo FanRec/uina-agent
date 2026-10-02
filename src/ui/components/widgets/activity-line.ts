@@ -237,10 +237,9 @@ export function formatActivityHeader(
 	}
 
 	// 2. 组装 TPS 实时流速仪表盘
-	// 严密物理守卫：TPS 仅属于模型活跃解码阶段（thinking / streaming），工具执行（tool）与完成态绝不渲染流速！
+	// 当存在已度量的流速（模型解码阶段或沿用上一步已结算的流速）时渲染仪表盘
 	let tpsStr = "";
-	const isDecodingPhase = metrics.phase === "thinking" || metrics.phase === "streaming";
-	const tps = isDecodingPhase ? (metrics.tps ?? 0) : 0;
+	const tps = metrics.tps ?? 0;
 	if (tps > 0 && maxWidth >= 40) {
 		const peak = Math.max(tps, ...(metrics.tpsSamples ?? []), 0);
 		// 响应式表盘宽度：宽屏 8 格，中屏 4 格，窄屏纯数字
@@ -373,33 +372,39 @@ export class ActivityLineComponent implements Component {
 	}
 
 	/** 提取适用于圆角盒顶边框嵌入的状态文本 */
+	private computeElapsedMs(now: number): number {
+		if (this.phase === "done") return this.elapsedMs;
+		const origin = this.phase === "tool" && this.stepStartedAt > 0 ? this.stepStartedAt : this.startTime;
+		return origin > 0 ? Math.max(0, now - origin) : 0;
+	}
+
+	private computeTps(): { tps: number; avgTps: number } {
+		const tokens = this.outputTokens();
+		if (this.phase === "done") {
+			const avgTps = tokens > 0 && this.settledDecodeMs > 0 ? Math.round(tokens / (this.settledDecodeMs / 1000)) : 0;
+			return { tps: 0, avgTps };
+		}
+		// 门控对齐 dsh-TUI：
+		// 当前 step 自身跨度 > 500ms → 用「已结算累计 + 当前 step」重算；
+		// 不足 500ms（或处于 tool 阶段）→ 沿用已结算的累计值，不把刚起步的 step 混进分母，工具耗时亦不稀释流速；
+		// 没有任何已结算 step 时 → 保持 0（未知不是 0）。
+		const openMs = this.stepFirstTokenAt === 0 ? 0 : Math.max(0, (this.stepUsageAt > 0 ? this.stepUsageAt : this.stepLastTokenAt) - this.stepFirstTokenAt);
+		if (openMs > 500) {
+			const decodeMs = this.decodeMs();
+			if (tokens > 0 && decodeMs > 0) return { tps: Math.round(tokens / (decodeMs / 1000)), avgTps: 0 };
+		} else if (this.settledDecodeMs > 0 && this.settledOutputTokens > 0) {
+			return { tps: Math.round(this.settledOutputTokens / (this.settledDecodeMs / 1000)), avgTps: 0 };
+		}
+		return { tps: 0, avgTps: 0 };
+	}
+
+	/** 提取适用于圆角盒顶边框嵌入的状态文本 */
 	getHeaderString(maxWidth = 60): string {
 		if (this.phase === "idle" || maxWidth <= 0) return "";
 		const now = Date.now();
-		// "耗时"秒表：工具阶段展示当前工具的执行秒数；其余阶段展示整个回合的用户感知等待时长
-		const currentElapsed = this.phase === "done"
-			? this.elapsedMs
-			: this.phase === "tool"
-				? (this.stepStartedAt > 0 ? now - this.stepStartedAt : (this.startTime > 0 ? now - this.startTime : 0))
-				: (this.startTime > 0 ? now - this.startTime : 0);
-
+		const currentElapsed = this.computeElapsedMs(now);
 		const tokens = this.outputTokens();
-		let tps = 0;
-		let avgTps = 0;
-
-		if (this.phase === "done") {
-			if (tokens > 0 && this.settledDecodeMs > 0) {
-				avgTps = Math.round(tokens / (this.settledDecodeMs / 1000));
-			}
-		} else if (this.phase === "thinking" || this.phase === "streaming") {
-			const openMs = this.stepFirstTokenAt === 0 ? 0 : Math.max(0, (this.stepUsageAt > 0 ? this.stepUsageAt : this.stepLastTokenAt) - this.stepFirstTokenAt);
-			if (openMs > 500) {
-				const decodeMs = this.decodeMs();
-				if (tokens > 0 && decodeMs > 0) tps = Math.round(tokens / (decodeMs / 1000));
-			} else if (this.settledDecodeMs > 0 && this.settledOutputTokens > 0) {
-				tps = Math.round(this.settledOutputTokens / (this.settledDecodeMs / 1000));
-			}
-		}
+		const { tps, avgTps } = this.computeTps();
 
 		return formatActivityHeader(
 			{

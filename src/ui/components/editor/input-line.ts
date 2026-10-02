@@ -191,7 +191,6 @@ export class InputLine implements Component, Focusable {
 	focused = true;
 	private readonly textBuffer = new TextBuffer();
 	private get text(): string { return this.textBuffer.text; }
-	private set text(value: string) { this.textBuffer.setText(value); }
 	private get cursorIndex(): number { return this.textBuffer.cursor; }
 	private set cursorIndex(value: number) { this.textBuffer.setCursor(value); }
 	private isAllSelected = false; // Ctrl+A 全选状态
@@ -347,8 +346,7 @@ export class InputLine implements Component, Focusable {
 	}
 
 	clear(): void {
-		this.text = "";
-		this.cursorIndex = 0;
+		this.textBuffer.clear();
 		this.pastes.clear();
 		this.pasteCounter = 0;
 		this.historyIndex = -1;
@@ -359,7 +357,7 @@ export class InputLine implements Component, Focusable {
 	addHistory(item: string): void {
 		const trimmed = item.trim();
 		if (!trimmed) return;
-		if (this.history[this.history.length - 1] !== trimmed) {
+		if (this.history[this.historyIndex ?? -1] !== trimmed && this.history[this.history.length - 1] !== trimmed) {
 			this.history.push(trimmed);
 		}
 		this.historyIndex = -1;
@@ -374,17 +372,14 @@ export class InputLine implements Component, Focusable {
 	}
 
 	setText(newText: string): void {
-		this.text = sanitizeText(newText);
-		this.cursorIndex = this.text.length;
+		const sanitized = sanitizeText(newText);
+		this.textBuffer.setText(sanitized, sanitized.length);
 		this.isAllSelected = false;
 		this.scrollOffset = 0;
 	}
 
 	replaceRange(start: number, end: number, replacement: string): void {
-		const before = this.text.slice(0, Math.max(0, start));
-		const after = this.text.slice(end);
-		this.text = before + replacement + after;
-		this.cursorIndex = start + replacement.length;
+		this.textBuffer.replaceRange(start, end, replacement);
 		this.isAllSelected = false;
 	}
 
@@ -541,8 +536,7 @@ export class InputLine implements Component, Focusable {
 				const raw = this.pastes.get(target.id);
 				if (raw !== undefined) {
 					const cleanRaw = sanitizeText(raw);
-					this.text = this.text.slice(0, target.start) + cleanRaw + this.text.slice(target.end);
-					this.cursorIndex = target.start + cleanRaw.length;
+					this.textBuffer.replaceRange(target.start, target.end, cleanRaw);
 					this.pastes.delete(target.id);
 					return;
 				}
@@ -555,8 +549,7 @@ export class InputLine implements Component, Focusable {
 			matchesKey(data, Key.shift("enter")) ||
 			(matchesKey(data, Key.altEnter) && !this.isBusy)
 		) {
-			this.text = this.text.slice(0, this.cursorIndex) + "\n" + this.text.slice(this.cursorIndex);
-			this.cursorIndex += 1;
+			this.textBuffer.insert("\n");
 			return;
 		}
 
@@ -633,8 +626,7 @@ export class InputLine implements Component, Focusable {
 				for (const m of deletedMarkers) {
 					this.pastes.delete(m.id);
 				}
-				this.text = this.text.slice(0, prev) + this.text.slice(this.cursorIndex);
-				this.cursorIndex = prev;
+				this.textBuffer.deleteRange(prev, this.cursorIndex);
 			}
 			return;
 		}
@@ -711,8 +703,8 @@ export class InputLine implements Component, Focusable {
 			} else if (this.historyIndex > 0) {
 				this.historyIndex--;
 			}
-			this.text = this.history[this.historyIndex] ?? "";
-			this.cursorIndex = this.text.length;
+			const hist = this.history[this.historyIndex] ?? "";
+			this.textBuffer.setText(hist, hist.length);
 			return;
 		}
 
@@ -747,12 +739,12 @@ export class InputLine implements Component, Focusable {
 			if (this.historyIndex === -1) return;
 			if (this.historyIndex < this.history.length - 1) {
 				this.historyIndex++;
-				this.text = this.history[this.historyIndex] ?? "";
+				const nextHist = this.history[this.historyIndex] ?? "";
+				this.textBuffer.setText(nextHist, nextHist.length);
 			} else {
 				this.historyIndex = -1;
-				this.text = this.savedText;
+				this.textBuffer.setText(this.savedText, this.savedText.length);
 			}
-			this.cursorIndex = this.text.length;
 			return;
 		}
 
@@ -770,23 +762,17 @@ export class InputLine implements Component, Focusable {
 		if (matchesKey(data, Key.backspace)) {
 			const markerEndingHere = markers.find((m) => m.end === this.cursorIndex);
 			if (markerEndingHere) {
-				this.text = this.text.slice(0, markerEndingHere.start) + this.text.slice(markerEndingHere.end);
-				this.cursorIndex = markerEndingHere.start;
+				this.textBuffer.deleteRange(markerEndingHere.start, markerEndingHere.end);
 				this.pastes.delete(markerEndingHere.id);
 				return;
 			}
 			const inside = markers.find((m) => this.cursorIndex > m.start && this.cursorIndex < m.end);
 			if (inside) {
-				this.text = this.text.slice(0, inside.start) + this.text.slice(inside.end);
-				this.cursorIndex = inside.start;
+				this.textBuffer.deleteRange(inside.start, inside.end);
 				this.pastes.delete(inside.id);
 				return;
 			}
-			if (this.cursorIndex > 0) {
-				const prev = getPrevGraphemeIndex(this.text, this.cursorIndex);
-				this.text = this.text.slice(0, prev) + this.text.slice(this.cursorIndex);
-				this.cursorIndex = prev;
-			}
+			this.textBuffer.deleteBackward();
 			this.cursorIndex = snapCursorToMarkerBoundary(this.cursorIndex, this.text, this.pastes);
 			return;
 		}
@@ -794,34 +780,28 @@ export class InputLine implements Component, Focusable {
 		if (matchesKey(data, Key.delete)) {
 			const markerStartingHere = markers.find((m) => m.start === this.cursorIndex);
 			if (markerStartingHere) {
-				this.text = this.text.slice(0, markerStartingHere.start) + this.text.slice(markerStartingHere.end);
+				this.textBuffer.deleteRange(markerStartingHere.start, markerStartingHere.end);
 				this.pastes.delete(markerStartingHere.id);
 				return;
 			}
 			const inside = markers.find((m) => this.cursorIndex > m.start && this.cursorIndex < m.end);
 			if (inside) {
-				this.text = this.text.slice(0, inside.start) + this.text.slice(inside.end);
-				this.cursorIndex = inside.start;
+				this.textBuffer.deleteRange(inside.start, inside.end);
 				this.pastes.delete(inside.id);
 				return;
 			}
-			if (this.cursorIndex < this.text.length) {
-				const next = getNextGraphemeIndex(this.text, this.cursorIndex);
-				this.text = this.text.slice(0, this.cursorIndex) + this.text.slice(next);
-			}
+			this.textBuffer.deleteForward();
 			this.cursorIndex = snapCursorToMarkerBoundary(this.cursorIndex, this.text, this.pastes);
 			return;
 		}
 
 		if (matchesKey(data, Key.ctrl("u"))) {
-			this.text = "";
-			this.cursorIndex = 0;
-			this.pastes.clear();
+			this.clear();
 			return;
 		}
 
 		if (matchesKey(data, Key.ctrl("k"))) {
-			this.text = this.text.slice(0, this.cursorIndex);
+			this.textBuffer.deleteRange(this.cursorIndex, this.text.length);
 			return;
 		}
 
@@ -831,8 +811,7 @@ export class InputLine implements Component, Focusable {
 		// 正常打入文本（清洗保留 \n，清除所有 \r，严格防范光标落入标记内部）
 		this.cursorIndex = snapCursorToMarkerBoundary(this.cursorIndex, this.text, this.pastes);
 		const sanitized = sanitizeText(data);
-		this.text = this.text.slice(0, this.cursorIndex) + sanitized + this.text.slice(this.cursorIndex);
-		this.cursorIndex += sanitized.length;
+		this.textBuffer.insert(sanitized);
 	}
 
 	private insertPastedText(raw: string): void {
@@ -845,11 +824,7 @@ export class InputLine implements Component, Focusable {
 
 		const spec = lines.length > 1 ? `+${lines.length}行` : `${cleanRaw.length}字`;
 		const marker = `[已粘贴 #${id} ${spec}]`;
-		const before = this.text.slice(0, this.cursorIndex);
-		const after = this.text.slice(this.cursorIndex);
-
-		this.text = before + marker + after;
-		this.cursorIndex = before.length + marker.length;
+		this.textBuffer.insert(marker);
 	}
 
 	insertText(raw: string): void {
@@ -858,8 +833,7 @@ export class InputLine implements Component, Focusable {
 			this.insertPastedText(raw);
 		} else {
 			const clean = sanitizeText(raw);
-			this.text = this.text.slice(0, this.cursorIndex) + clean + this.text.slice(this.cursorIndex);
-			this.cursorIndex += clean.length;
+			this.textBuffer.insert(clean);
 		}
 	}
 

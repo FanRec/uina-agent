@@ -2091,14 +2091,14 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				const extremeNarrow = stripAnsi(act.getHeaderString(20));
 				expect(visibleWidth(extremeNarrow)).toBeLessThanOrEqual(20);
 
-				// 4. 工具阶段：秒表重置为该工具的独立执行耗时；且严格杜绝伪造模型解码 TPS
+				// 4. 工具阶段：秒表展示为该工具的独立执行耗时；同时保留已结算的上一步解码流速（不被工具耗时稀释）
 				act.endStep();
 				act.update("tool", "正在执行工具: grep");
 				vi.setSystemTime(1_700_000_005_700); // 工具跑了 3.2 秒
 				const toolHeader = stripAnsi(act.getHeaderString(80));
 				expect(toolHeader).toContain("3.2s");
 				expect(toolHeader).toContain("正在执行工具: grep");
-				expect(toolHeader).not.toContain("tps"); // 工具执行态绝不显示假 TPS
+				expect(toolHeader).toContain("~29 tps"); // 保留上一 step 的真实解码流速
 			} finally {
 				vi.useRealTimers();
 			}
@@ -2155,7 +2155,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(visibleWidth(extreme)).toBeLessThanOrEqual(25);
 			expect(extreme).toContain("3.5s");
 
-			// 5. 工具执行模式：无论参数如何，绝不渲染 tps 仪表盘
+			// 5. 工具执行模式：保留已结算的上一步解码生成流速（不被工具执行耗时稀释）
 			const toolLine = stripAnsi(formatActivityHeader({
 				phase: "tool",
 				message: "正在执行工具: bash",
@@ -2165,7 +2165,16 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			}, 80));
 			expect(toolLine).toContain("2.4s");
 			expect(toolLine).toContain("正在执行工具: bash");
-			expect(toolLine).not.toContain("tps");
+			expect(toolLine).toContain("~40 tps");
+
+			// 6. 无解码记录时：不渲染虚假的 tps（未知不是 0）
+			const noTpsLine = stripAnsi(formatActivityHeader({
+				phase: "tool",
+				message: "正在执行工具: bash",
+				elapsedMs: 2400,
+				outputTokens: 0,
+			}, 80));
+			expect(noTpsLine).not.toContain("tps");
 		});
 
 		it("calculateContextSegments 从消息历史与工具定义中计算多段分布并支持比例对齐", () => {
@@ -2221,6 +2230,100 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			// 彻底去除底边框已有的冗余重复数据
 			expect(line).not.toContain("7.7%");
 			expect(line).not.toContain("9.5k/124.0k");
+		});
+
+		it("InputLine 光标移动到前部输入字符、换行或删除时，光标精准跟随就地编辑，绝不跳到行尾", async () => {
+			const { InputLine } = await import("../src/ui/components/editor/input-line.js");
+			const box = new InputLine();
+
+			// 1. 输入基础内容 "hello world"
+			box.handleInput("hello world");
+			expect(box.getText()).toBe("hello world");
+			expect(box.getCursorIndex()).toBe(11);
+
+			// 2. 将光标向左移动 5 次，定位到 "hello " 与 "world" 之间（索引 6）
+			for (let i = 0; i < 5; i++) {
+				box.handleInput("\x1b[D");
+			}
+			expect(box.getCursorIndex()).toBe(6);
+
+			// 3. 在中间输入字符 "x"：文本变为 "hello xworld"，光标应前进一步到达 7，绝不能跳回末尾 12
+			box.handleInput("x");
+			expect(box.getText()).toBe("hello xworld");
+			expect(box.getCursorIndex()).toBe(7);
+
+			// 4. 再次连续输入 "yz"：光标平滑跟进至 9
+			box.handleInput("y");
+			box.handleInput("z");
+			expect(box.getText()).toBe("hello xyzworld");
+			expect(box.getCursorIndex()).toBe(9);
+
+			// 5. 按 Delete 键：删除光标后面的 "w"，光标保持在 9，绝不跳到行尾
+			box.handleInput("\x1b[3~");
+			expect(box.getText()).toBe("hello xyzorld");
+			expect(box.getCursorIndex()).toBe(9);
+
+			// 6. 按 Shift+Enter 换行：插入 \n，光标跳到新行首（索引 10），绝不跳到全文末尾
+			box.handleInput("\x1b[13;2u");
+			expect(box.getText()).toBe("hello xyz\norld");
+			expect(box.getCursorIndex()).toBe(10);
+		});
+
+		it("TextBuffer: 核心文本与光标缓冲区深模块原子契约", async () => {
+			const { TextBuffer } = await import("../src/ui/core/text-buffer.js");
+			const buf = new TextBuffer();
+
+			// 1. 初始化
+			expect(buf.text).toBe("");
+			expect(buf.cursor).toBe(0);
+			expect(buf.length).toBe(0);
+
+			// 2. 插入文本
+			buf.insert("hello world");
+			expect(buf.text).toBe("hello world");
+			expect(buf.cursor).toBe(11);
+			expect(buf.length).toBe(11);
+
+			// 3. 移动光标并就地插入
+			buf.setCursor(5);
+			expect(buf.cursor).toBe(5);
+			buf.insert(" amazing");
+			expect(buf.text).toBe("hello amazing world");
+			expect(buf.cursor).toBe(13);
+
+			// 4. deleteBackward 与 deleteForward
+			buf.deleteBackward(); // 删掉 'g'
+			expect(buf.text).toBe("hello amazin world");
+			expect(buf.cursor).toBe(12);
+
+			buf.deleteForward(); // 删掉 ' '
+			expect(buf.text).toBe("hello amazinworld");
+			expect(buf.cursor).toBe(12);
+
+			// 5. deleteRange 原子范围删除
+			buf.deleteRange(6, 12); // 删掉 'amazin'
+			expect(buf.text).toBe("hello world");
+			expect(buf.cursor).toBe(6);
+
+			// 6. replaceRange 原子范围替换
+			buf.replaceRange(6, 11, "Antigravity");
+			expect(buf.text).toBe("hello Antigravity");
+			expect(buf.cursor).toBe(17);
+
+			// 7. setText 默认保持当前合法光标位置并 clamp
+			buf.setText("hello");
+			expect(buf.text).toBe("hello");
+			expect(buf.cursor).toBe(5); // 17 clamp 到 5
+
+			buf.setCursor(2);
+			buf.setText("hello uina");
+			expect(buf.cursor).toBe(2); // 未超出时保持 2
+
+			// 8. clear 清空
+			buf.clear();
+			expect(buf.text).toBe("");
+			expect(buf.cursor).toBe(0);
+			expect(buf.length).toBe(0);
 		});
 	});
 

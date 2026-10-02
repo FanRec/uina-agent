@@ -12,9 +12,13 @@ export class TextBuffer {
 		return "";
 	}
 
-	setText(text: string): void {
+	setText(text: string, cursor?: number): void {
 		this.value = text;
-		this.position = text.length;
+		if (cursor !== undefined) {
+			this.setCursor(cursor);
+		} else {
+			this.setCursor(this.position);
+		}
 	}
 
 	setCursor(cursor: number): void {
@@ -30,7 +34,10 @@ export class TextBuffer {
 		}
 	}
 
+	get length(): number { return this.value.length; }
+
 	insert(text: string): void {
+		if (!text) return;
 		this.value = this.value.slice(0, this.position) + text + this.value.slice(this.position);
 		this.position += text.length;
 	}
@@ -46,6 +53,26 @@ export class TextBuffer {
 		if (this.position >= this.value.length) return;
 		const end = getNextGraphemeIndex(this.value, this.position);
 		this.value = this.value.slice(0, this.position) + this.value.slice(end);
+	}
+
+	deleteRange(start: number, end: number): void {
+		const s = Math.max(0, Math.min(start, this.value.length));
+		const e = Math.max(s, Math.min(end, this.value.length));
+		if (s === e) return;
+		this.value = this.value.slice(0, s) + this.value.slice(e);
+		this.setCursor(s);
+	}
+
+	replaceRange(start: number, end: number, replacement: string, cursor?: number): void {
+		const s = Math.max(0, Math.min(start, this.value.length));
+		const e = Math.max(s, Math.min(end, this.value.length));
+		this.value = this.value.slice(0, s) + replacement + this.value.slice(e);
+		this.setCursor(cursor !== undefined ? cursor : s + replacement.length);
+	}
+
+	clear(): void {
+		this.value = "";
+		this.position = 0;
 	}
 
 	moveLeft(): void { this.position = getPrevGraphemeIndex(this.value, this.position); }
