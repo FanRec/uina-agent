@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { estimateRequestTokens } from "../../agent/context.js";
+import { CHARS_PER_TOKEN, estimateRequestTokens, estimateTextTokens } from "../../agent/context.js";
 import { inputTokenBudget, modelKey } from "../../core/model.js";
-import type { ChatMsg, RequestInspection, RequestProjection, TokenMeasurement } from "../../core/types.js";
+import type { ChatMsg, RequestInspection, RequestProjection, TokenMeasurement, ToolDef } from "../../core/types.js";
 import type { HydratedSessionEntry } from "../../session/types.js";
 import type { ExtensionAPI } from "../runner.js";
 
@@ -40,7 +40,7 @@ export function isRuntimePerception(message: Pick<StreamMessageView, "context">)
 	return message.context?.kind === "runtime.perception";
 }
 
-export function filterCompactionMessages(messages: readonly StreamMessageView[]): StreamMessageView[] {
+export function filterCompactionMessages<T extends StreamMessageView>(messages: readonly T[]): T[] {
 	return messages.filter((message) => !isRuntimePerception(message));
 }
 
@@ -107,9 +107,21 @@ function renderCheckpoint<T extends StreamMessageView>(
 	while (messages[systemEnd]?.role === "system") systemEnd++;
 	return [
 		...messages.slice(0, systemEnd),
-		{ role: "user", content: `[历史摘要] ${checkpoint.summary}`, context: { kind: SUMMARY_ENTRY_TYPE } },
+		{ ...summaryMessage(checkpoint.summary), context: { kind: SUMMARY_ENTRY_TYPE } },
 		...messages.slice(tailIndex),
 	];
+}
+
+/** 压缩后投影的唯一组装构造：transformContext hook 与 fit 闭环共用，保证
+ * "实际发送的重建请求"与"fit 的测量对象"逐字节同构，口径不可能漂移。 */
+function compactedMessages<T extends StreamMessageView>(
+	source: readonly T[],
+	checkpoint: CompactionCheckpoint,
+): Array<T | { role: "user"; content: string; context: { kind: string } }> | undefined {
+	const perception = source.filter((message) => isRuntimePerception(message)) as T[];
+	const rendered = renderCheckpoint(filterCompactionMessages(source), checkpoint);
+	if (!rendered) return undefined;
+	return [...rendered, ...perception];
 }
 
 function requestBearing(entries: readonly HydratedSessionEntry[]): HydratedSessionEntry[] {
@@ -276,14 +288,17 @@ function summarizeInput(rolling: string, history: string): string {
 	return rolling ? `[已有摘要]\n${rolling}\n${history}` : history;
 }
 
+/** 摘要模型请求消息的唯一构造：测量（summaryRequestTokens）与 IO（summarizeOnce）
+ * 共用，测的输入与发的输入不可能漂移。 */
+function summaryRequestMessages(body: string, focus: string): ChatMsg[] {
+	return [
+		{ role: "system", content: SUMMARY_SYSTEM_PROMPT },
+		{ role: "user", content: body + focus },
+	];
+}
+
 function summaryRequestTokens(body: string, focus: string): number {
-	return estimateRequestTokens(
-		[
-			{ role: "system", content: SUMMARY_SYSTEM_PROMPT },
-			{ role: "user", content: body + focus },
-		],
-		[],
-	);
+	return estimateRequestTokens(summaryRequestMessages(body, focus), []);
 }
 
 function describeSummaryError(error: unknown): string {
@@ -295,31 +310,99 @@ function describeSummaryError(error: unknown): string {
 	return `${error.message}（底层原因：${code ? `${code}: ` : ""}${detail}）`;
 }
 
-async function summarizeOnce(pi: ExtensionAPI, body: string, focus: string, signal: AbortSignal): Promise<string> {
-	let summary = "";
+/** 单轮文本补全的统一 IO 缝：流式收集、trim、空结果与错误包装。摘要与再压缩
+ * 共用，两条模型路径的失败语义同源。
+ * signal = Subject 信号（turn/post-turn/activity）。pi.models.stream 内部经
+ * activation scope 与 pi.signal（扩展卸载）合并，两条取消源都到达 IO。 */
+async function requestTextCompletion(
+	pi: ExtensionAPI,
+	messages: readonly ChatMsg[],
+	label: string,
+	signal: AbortSignal,
+): Promise<string> {
+	let text = "";
 	try {
-		// signal = Subject 信号（turn/post-turn/activity）。pi.models.stream 内部经
-		// activation scope 与 pi.signal（扩展卸载）合并，两条取消源都到达 IO。
 		await pi.models.stream(
 			pi.models.current(),
-			{
-				messages: [
-					{ role: "system", content: SUMMARY_SYSTEM_PROMPT },
-					{ role: "user", content: body + focus },
-				],
-				tools: [],
-			},
+			{ messages: [...messages], tools: [] },
 			(delta) => {
-				if (delta.kind === "text") summary += delta.text;
+				if (delta.kind === "text") text += delta.text;
 			},
 			signal,
 		);
 	} catch (error) {
-		throw new Error(`摘要模型请求失败：${describeSummaryError(error)}`, { cause: error });
+		throw new Error(`${label}失败：${describeSummaryError(error)}`, { cause: error });
 	}
-	const result = summary.trim();
-	if (!result) throw new Error("摘要生成返回空结果");
+	const result = text.trim();
+	if (!result) throw new Error(`${label}返回空结果`);
 	return result;
+}
+
+async function summarizeOnce(pi: ExtensionAPI, body: string, focus: string, signal: AbortSignal): Promise<string> {
+	return requestTextCompletion(pi, summaryRequestMessages(body, focus), "摘要模型请求", signal);
+}
+
+/** 摘要消息的唯一构造（user 角色 + `[历史摘要] ` 前缀）：renderCheckpoint 与
+ * fit 闭环共用，wire 形状与估算口径同源。 */
+function summaryMessage(summary: string): { role: "user"; content: string } {
+	return { role: "user", content: `[历史摘要] ${summary}` };
+}
+
+function summaryMessageTokens(summary: string): number {
+	return estimateRequestTokens([summaryMessage(summary)], []);
+}
+
+const RECOMPRESS_SYSTEM_PROMPT =
+	"你是上下文摘要压缩器。把给定摘要压缩得更短：保留关键事实、决定与未竟事项，不新增内容、不添加评论，直接输出压缩后的摘要正文。";
+
+/** 摘要再压缩：模型侧收缩手段，不保证达标——字符目标按当前字符/token 比例换算，
+ * 只作提示词引导；是否达标由调用方以同一估算口径复验。 */
+async function recompressSummary(
+	pi: ExtensionAPI,
+	summary: string,
+	targetTokens: number,
+	signal: AbortSignal,
+): Promise<string> {
+	const est = estimateTextTokens(summary);
+	const charsPerToken = est > 0 ? summary.length / est : 1;
+	const targetChars = Math.max(1, Math.floor(targetTokens * charsPerToken));
+	return requestTextCompletion(
+		pi,
+		[
+			{ role: "system", content: RECOMPRESS_SYSTEM_PROMPT },
+			{ role: "user", content: `${summary}\n\n（把以上摘要压缩到不超过 ${targetChars} 字符，直接输出正文。）` },
+		],
+		"摘要再压缩",
+		signal,
+	);
+}
+
+const TRUNCATION_MARKER = "……[摘要已截断]";
+const SUMMARY_PREFIX = "[历史摘要] ";
+/** estimateContextSegments 的每消息常数。 */
+const PER_MESSAGE_TOKENS = 4;
+/** 截断保底消息的固定开销（消息常量 + 前缀 + 标记，按估算口径）= 17。
+ * fit 收敛的理论下限：摘要消息目标低于它时截断也无解。 */
+const TRUNCATION_OVERHEAD =
+	PER_MESSAGE_TOKENS + estimateTextTokens(SUMMARY_PREFIX) + estimateTextTokens(TRUNCATION_MARKER);
+
+/** 确定性保底：按估算口径（estimateTextTokens 的 ceil(ascii/4)+nonAscii 公式，此处
+ * 增量镜像逐码点找最大可保留前缀）截断摘要正文。零模型依赖，是 fit 收敛的最后一环。
+ * 预算扣减必须覆盖 TRUNCATION_OVERHEAD 三项（消息常量、前缀、截断标记），缺一即让
+ * 截断后消息恰好越线（实测踩过的坑：漏算前缀导致 commit 仍差 3 token 拒绝）。 */
+function truncateSummary(summary: string, targetMessageTokens: number): string {
+	const contentBudget = targetMessageTokens - TRUNCATION_OVERHEAD;
+	if (contentBudget < 1) return TRUNCATION_MARKER;
+	let ascii = 0;
+	let nonAscii = 0;
+	let end = 0;
+	for (const char of summary) {
+		if (char.codePointAt(0)! <= 0x7f) ascii++;
+		else nonAscii++;
+		if (Math.ceil(ascii / CHARS_PER_TOKEN) + nonAscii > contentBudget) break;
+		end += char.length;
+	}
+	return `${summary.slice(0, end)}${TRUNCATION_MARKER}`;
 }
 
 async function requestSummary(
@@ -418,13 +501,76 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 	const terminal = async (operationId: string, status: "failed" | "cancelled", error: unknown): Promise<void> => {
 		if (terminalOperations.has(operationId)) return;
 		terminalOperations.add(operationId);
-		staged = undefined;
+		// 只清属于本操作的候选：终态化不得误伤时序上更新的 staged。
+		if (staged?.operationId === operationId) staged = undefined;
 		await pi.emitEvent({
 			type: "session_compact",
 			operationId,
 			status,
 			error: String((error as Error)?.message ?? error),
 		});
+	};
+
+	/** 压缩不变式的执行点（measure-then-fit）：staged checkpoint 落地后测量重建请求，
+	 * 超预算则迭代再压缩摘要（至多 2 次模型调用），仍超则确定性截断保底。
+	 *
+	 * 测量口径：compactedMessages（与 transformContext hook 逐字节同构）+ 与
+	 * measureRequestContext fallback 相同的估算函数。刻意不依赖 pi.inspectRequest
+	 * ——该接缝是可选的（裸 ExtensionRunner 不提供），自动压缩路径不得因此崩溃；
+	 * 且本地算术把尾部瞬态注入（beforeMessages 等）计入测量，对 manual commit
+	 * （不含它们）是保守方向：本地 fit ⟹ 两条 commit 路径的实测必 fit。与 commit
+	 * 实测的残差仅剩 stage→重建之间的瞬态漂移（新 perception / 记忆写入，单条
+	 * 量级 ≪ summaryReserve），由预留吸收、由 commit 后背门如实兜底。
+	 * 目标为负（摘要侧无解，如 tail/system/工具本身占满预算）时交还 commit 报真实
+	 * 错误，不伪装成功。 */
+	const fitStagedSummary = async (
+		operationId: string,
+		source: readonly StreamMessageView[],
+		tools: readonly ToolDef[],
+		inputBudget: number,
+		signal?: AbortSignal,
+	): Promise<void> => {
+		const recompressAttempts = 2;
+		const includeThinking = pi.models.current().includeThinking === true;
+		for (let attempt = 0; attempt <= recompressAttempts; attempt++) {
+			signal?.throwIfAborted();
+			const candidate = staged;
+			if (!candidate) return; // 已被终止（abort/卸载）：commit 门兜底
+			const rendered = compactedMessages(source, candidate.checkpoint);
+			if (!rendered) return; // tail 不可渲染：与 hook 返回 undefined 同语义，交还后背门
+			const overflow = estimateRequestTokens(rendered as readonly ChatMsg[], tools, includeThinking) - inputBudget;
+			if (overflow <= 0) return;
+			const summaryEst = summaryMessageTokens(candidate.checkpoint.summary);
+			const targetTokens = summaryEst - overflow; // 摘要消息（含前缀）的目标 token 上限
+			// 目标低于截断保底的固定开销：摘要侧无解，不伪装，交还 commit 报真实错误。
+			if (targetTokens <= TRUNCATION_OVERHEAD) return;
+			let next: string | undefined;
+			if (attempt < recompressAttempts) {
+				await emitProgress(
+					operationId,
+					"summarizing",
+					`压缩后仍超预算 ${overflow} token，第 ${attempt + 1} 次再压缩摘要`,
+				);
+				try {
+					const recompressed = await recompressSummary(
+						pi,
+						candidate.checkpoint.summary,
+						targetTokens,
+						signal ?? pi.signal,
+					);
+					if (summaryMessageTokens(recompressed) < summaryEst) next = recompressed;
+					else await emitProgress(operationId, "summarizing", "再压缩未缩短摘要，改用截断保底");
+				} catch (error) {
+					await emitProgress(operationId, "summarizing", `再压缩失败（${(error as Error).message}），改用截断保底`);
+				}
+			}
+			if (next === undefined) next = truncateSummary(candidate.checkpoint.summary, targetTokens);
+			// 所有权检查：await 期间 abort/卸载可经 onAbort 清空 staged；无条件回写
+			// 会把已终止的操作复活成永久卡死的 staged（/compact 永远报"已有压缩
+			// 操作在进行"）。
+			if (staged !== candidate) return;
+			staged = { ...candidate, checkpoint: { ...candidate.checkpoint, summary: next } };
+		}
 	};
 
 	const stage = async (
@@ -510,6 +656,13 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 			},
 		};
 		await emitProgress(operationId, "measuring", "重建并测量压缩后的请求");
+		await fitStagedSummary(
+			operationId,
+			inspection.projection.messages as readonly StreamMessageView[],
+			inspection.projection.tools,
+			inspection.inputBudget,
+			signal,
+		);
 		return "staged";
 	};
 
@@ -656,11 +809,10 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		const checkpoint = staged?.checkpoint ?? activeCheckpoint();
 		if (!checkpoint) return undefined;
 		if (!staged && !checkpointValid(checkpoint, pi.history())) return undefined;
-		const canonicalSource = filterCompactionMessages(source);
-		const perception = source.filter((message) => isRuntimePerception(message));
-		const messages = renderCheckpoint(canonicalSource, checkpoint);
+		// 与 fit 闭环共用同一组装构造（compactedMessages）：发送与测量不漂移。
+		const messages = compactedMessages(source, checkpoint);
 		if (!messages) return undefined;
-		return { projection: { ...projection, messages: [...messages, ...perception] } as RequestProjection };
+		return { projection: { ...projection, messages: [...messages] } as RequestProjection };
 	});
 
 	pi.onHook("turn.preflight", async ({ projection, measurement, pass, signal }) => {
