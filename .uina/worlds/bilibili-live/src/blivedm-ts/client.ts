@@ -78,6 +78,19 @@ export interface BilibiliLiveClientOptions extends BaseClientOptions {
   buvid?: string;
 }
 
+/** 本体账号近期发送记录：用于把 send 动作经 WS 回传的弹幕识别为回声 */
+interface OwnSendRecord {
+  text: string;
+  at: number;
+}
+
+/**
+ * 回声关联窗口。自有回声必然与发送文本一致；窗口取 15 秒，远大于回传延迟，
+ * 同时把"人类在同一账号手动发出相同文本"的误杀窗口压到最小。
+ * （弹幕 rnd 关联未经线上实证，不作为判定依据。）
+ */
+const OWN_SEND_TTL_MS = 15_000;
+
 /**
  * 获取直播间基础信息与长号
  */
@@ -195,6 +208,7 @@ export class BilibiliLiveClient extends WebSocketClientBase {
   private hostList: DanmakuHostServer[] = [];
   private token = "";
   private uid = 0;
+  private recentOwnSends: OwnSendRecord[] = [];
 
   constructor(options: BilibiliLiveClientOptions) {
     super({
@@ -267,7 +281,11 @@ export class BilibiliLiveClient extends WebSocketClientBase {
 
     const cmd = body.cmd;
     if (cmd === "DANMU_MSG" && Array.isArray(body.info)) {
-      this.emit("danmaku", parseDanmaku(body.info));
+      const event = parseDanmaku(body.info);
+      if (this.isOwnEcho(event)) {
+        return;
+      }
+      this.emit("danmaku", event);
     } else if (cmd === "SEND_GIFT" && body.data) {
       this.emit("gift", parseGift(body.data));
     } else if (cmd === "SUPER_CHAT_MESSAGE" && body.data) {
@@ -279,5 +297,38 @@ export class BilibiliLiveClient extends WebSocketClientBase {
     } else if (cmd === "PREPARING") {
       this.emit("roomStatus", { status: "offline" });
     }
+  }
+
+  /**
+   * 登记 send 动作的成功发送（文本），供回声判定关联。
+   * 同一账号的人类弹幕不会被登记，因此照常被感知。
+   */
+  public noteOwnSend(text: string): void {
+    this.pruneOwnSends();
+    this.recentOwnSends.push({ text: text.trim(), at: Date.now() });
+  }
+
+  /**
+   * 回声判定：发送者必须是登录账号本人，且文本命中窗口内的发送记录。
+   * uid 未知（未登录）时不过滤，避免误杀观众弹幕。
+   */
+  private isOwnEcho(event: DanmakuEvent): boolean {
+    if (this.uid === 0 || event.uid !== this.uid) {
+      return false;
+    }
+    const recent = this.pruneOwnSends();
+    if (recent.length === 0) {
+      return false;
+    }
+    const text = event.text.trim();
+    return recent.some((entry) => entry.text === text);
+  }
+
+  private pruneOwnSends(): OwnSendRecord[] {
+    const now = Date.now();
+    this.recentOwnSends = this.recentOwnSends.filter(
+      (entry) => now - entry.at < OWN_SEND_TTL_MS
+    );
+    return this.recentOwnSends;
   }
 }

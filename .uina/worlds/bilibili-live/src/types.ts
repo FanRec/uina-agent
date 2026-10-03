@@ -76,7 +76,7 @@ export interface GiftRecord extends BasePendingEventRecord {
   readonly kind: "gift";
   readonly giftId: number;           // 礼物 ID
   readonly giftName: string;         // 礼物名称
-  readonly price: number;            // 礼物价值（电池数）
+  readonly price: number;            // 礼物单价（金瓜子，1000 金瓜子 = ￥1）
   count: number;                     // 数量
 }
 
@@ -120,7 +120,7 @@ export interface FilteringConfig {
  * 礼物与待办策略配置
  */
 export interface GiftsConfig {
-  pendingThreshold: number;        // 进入待办队列的礼物价值下限（电池数，默认 1000 即 ￥100）
+  pendingThreshold: number;        // 进入待办队列的礼物价值下限（金瓜子单价，1000 金瓜子 = ￥1，默认 1000 即 ￥1）
   aggregationWindowMs: number;     // 同用户同礼物连击聚合窗口（默认 10000ms）
 }
 
@@ -148,7 +148,7 @@ export interface WakeupConfig {
   wakeOnSuperChat: boolean;        // 收到 SC 时是否唤醒静默中的主体（默认 true）
   superChatMinPrice: number;       // 唤醒的 SC 价格门槛（默认 0 元，即任意 SC 均唤醒）
   wakeOnGuard: boolean;            // 收到上舰时是否唤醒（默认 true）
-  wakeOnGiftThreshold: number;     // 收到大额礼物唤醒的价值下限（电池数，默认 1000）
+  wakeOnGiftThreshold: number;     // 收到大额礼物唤醒的价值下限（金瓜子，1000 金瓜子 = ￥1，默认 1000）
 }
 
 export type NotificationSetting = "on" | "off";

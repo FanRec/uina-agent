@@ -20,6 +20,8 @@ interface BilibiliSendResponse {
   data?: unknown;
 }
 
+export type SendOutcomeData = { code?: number; message?: string };
+
 const DEFAULT_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
@@ -53,7 +55,7 @@ export function validateSendOptions(
 export async function handleSendHttpResponse(
   response: Response,
   trimmedMsg: string
-): Promise<ActionOutcome<{ code?: number; message?: string }>> {
+): Promise<ActionOutcome<SendOutcomeData>> {
   if (!response.ok) {
     if (response.status >= 500) {
       return {
@@ -90,7 +92,7 @@ export async function handleSendHttpResponse(
 export function handleSendError(
   error: unknown,
   timeoutMs: number
-): ActionOutcome<{ code?: number; message?: string }> {
+): ActionOutcome<SendOutcomeData> {
   const isAbort =
     error instanceof Error &&
     (error.name === "AbortError" || error.message.includes("aborted"));
@@ -109,7 +111,7 @@ export function handleSendError(
  */
 export async function sendDanmaku(
   options: SendDanmakuOptions
-): Promise<ActionOutcome<{ code?: number; message?: string }>> {
+): Promise<ActionOutcome<SendOutcomeData>> {
   const {
     roomId,
     message,
@@ -126,13 +128,14 @@ export async function sendDanmaku(
     return { status: "failed", message: validationError };
   }
 
+  const rnd = Math.floor(Date.now() / 1000).toString();
   const bodyParams = new URLSearchParams({
     bubble: "0",
     msg: trimmedMsg,
     color: "16777215",
     mode: "1",
     fontsize: "25",
-    rnd: Math.floor(Date.now() / 1000).toString(),
+    rnd,
     roomid: roomId.toString(),
     csrf: biliJct,
     csrf_token: biliJct,

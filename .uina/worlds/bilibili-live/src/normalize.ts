@@ -69,6 +69,8 @@ export function normalizeWebGift(event: GiftEvent): LiveEvent {
 			giftName: event.giftName,
 			count: event.count,
 			price: event.price,
+			// 与 parseGift 缺省语义一致：仅显式银瓜子视为免费礼物
+			paid: event.coinType !== "silver",
 		},
 	};
 }

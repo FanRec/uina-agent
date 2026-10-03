@@ -251,19 +251,19 @@ export class LiveEventBuffer {
     giftName: string;
     price: number;
     count: number;
+    /** 是否付费礼物（金瓜子）；免费礼物（银瓜子/开放平台 unpaid）永不进入待办，只进小额感知 */
+    paid?: boolean;
     timestamp?: number;
-  }): { record: GiftRecord | null; shouldWake: boolean } {
+  }): { record: GiftRecord | null; shouldWake: boolean; transient?: boolean } {
+    const isPaid = msg.paid ?? true;
     const time = createEventTime(msg.timestamp);
     const windowMs = this.config.gifts.aggregationWindowMs;
     const key = `${msg.uid}:${msg.giftId}`;
 
-    // 1. 检查是否可与已在待办中的礼物聚合
-    const pendingItem = this.findAggregatableGift(
-      msg.uid,
-      msg.giftId,
-      time.monotonicTimeMs,
-      windowMs
-    );
+    // 1. 检查是否可与已在待办中的礼物聚合（待办只可能来自付费礼物）
+    const pendingItem = isPaid
+      ? this.findAggregatableGift(msg.uid, msg.giftId, time.monotonicTimeMs, windowMs)
+      : undefined;
 
     if (pendingItem) {
       const next = { ...pendingItem, count: pendingItem.count + msg.count };
@@ -281,9 +281,9 @@ export class LiveEventBuffer {
       totalCount += transient.count;
     }
 
-    const totalBattery = msg.price * totalCount;
+    const totalBattery = isPaid ? msg.price * totalCount : 0;
 
-    // 3. 未达待办阈值：存入/更新暂态小额礼物池
+    // 3. 未达待办阈值（或免费礼物）：存入/更新暂态小额礼物池，等待批量感知推送
     if (totalBattery < this.config.gifts.pendingThreshold) {
       this.transientGifts.set(key, {
         uid: msg.uid,
@@ -294,7 +294,7 @@ export class LiveEventBuffer {
         count: totalCount,
         time,
       });
-      return { record: null, shouldWake: false };
+      return { record: null, shouldWake: false, transient: true };
     }
 
     // 4. 达到或超过待办阈值：清理暂态缓存，转正为正式待办事件并落盘
@@ -386,6 +386,22 @@ export class LiveEventBuffer {
 
   clearDanmaku(): void {
     this.danmakuRing.length = 0;
+  }
+
+  /**
+   * 排出小额礼物暂态池：返回聚合窗口内的条目文本行并清除，过期条目静默丢弃。
+   * 供 World 层的定时批量感知推送使用；同时回收过期暂态条目，防止无界增长。
+   */
+  drainRecentTransientGifts(): string[] {
+    const now = performance.now();
+    const maxAgeMs = this.config.gifts.aggregationWindowMs;
+    const lines: string[] = [];
+    for (const [key, gift] of this.transientGifts) {
+      this.transientGifts.delete(key);
+      if (now - gift.time.monotonicTimeMs > maxAgeMs) continue;
+      lines.push(`* ${sanitizeUntrustedText(gift.uname)} 赠送 ${sanitizeUntrustedText(gift.giftName)} x${gift.count}`);
+    }
+    return lines;
   }
 
   renderPendingEvent(sourceEventKey: string): string | null {

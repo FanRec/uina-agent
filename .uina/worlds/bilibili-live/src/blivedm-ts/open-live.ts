@@ -30,6 +30,8 @@ const OPEN_EVENT_PARSERS: Record<string, { event: string; parse: (data: any) => 
   LIVE_OPEN_PLATFORM_SUPER_CHAT_DEL: { event: "superChatDel", parse: parseOpenSuperChatDelete },
   LIVE_OPEN_PLATFORM_GUARD: { event: "guardBuy", parse: parseOpenGuardBuy },
   LIVE_OPEN_PLATFORM_LIKE: { event: "like", parse: parseOpenLike },
+  LIVE_OPEN_PLATFORM_LIVE_START: { event: "roomStatus", parse: () => ({ status: "online" }) },
+  LIVE_OPEN_PLATFORM_LIVE_END: { event: "roomStatus", parse: () => ({ status: "offline" }) },
 };
 
 /**
