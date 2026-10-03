@@ -4,8 +4,10 @@ import {
 	calculateContextSegments,
 	estimateRequestTokens,
 	estimateContextTokens,
+	IMAGE_TOKEN_ESTIMATE,
+	measureRequestContext,
 } from "../src/agent/context.js";
-import type { AgentMessage, ChatMsg, ToolDef } from "../src/core/types.js";
+import type { AgentMessage, ChatMsg, RequestProjection, ToolDef } from "../src/core/types.js";
 
 describe("Context Segments & Unified Token Estimation", () => {
 	const sampleTools: ToolDef[] = [
@@ -136,5 +138,47 @@ describe("Context Segments & Unified Token Estimation", () => {
 		const seg = countContextSegmentChars(messages);
 		expect(seg.prompt).toBe(16);
 		expect(seg.assistant).toBe(16);
+	});
+
+	const oneImage = { type: "image" as const, mimeType: "image/png" as const, data: "aGVsbG8=" };
+
+	it("images participate in both the char source and the token estimate", () => {
+		const messages: ChatMsg[] = [
+			{ role: "user", content: "1234", images: [oneImage] }, // 5 tokens text + 1024 tokens image
+			{ role: "tool", tool_call_id: "c1", content: "5678", images: [oneImage, oneImage] }, // 5 + 2048
+		];
+
+		// countContextSegmentChars：图片折算为 IMAGE_TOKEN_ESTIMATE × CHARS_PER_TOKEN 个等效 ASCII 字符。
+		const seg = countContextSegmentChars(messages, []);
+		expect(seg.prompt).toBe(20 + IMAGE_TOKEN_ESTIMATE * 4);
+		expect(seg.tools).toBe(20 + 2 * IMAGE_TOKEN_ESTIMATE * 4);
+
+		// estimateRequestTokens：每张图按 IMAGE_TOKEN_ESTIMATE 计入。
+		const tokens = estimateRequestTokens(messages, [], false);
+		expect(tokens).toBe(5 + IMAGE_TOKEN_ESTIMATE + 5 + 2 * IMAGE_TOKEN_ESTIMATE);
+	});
+
+	it("assistant images are not sent on the wire and stay uncounted", () => {
+		const messages: ChatMsg[] = [{ role: "assistant", content: "5678", images: [oneImage], thinking: "abcd" }];
+		// 5 + thinking 5，图片不计。
+		expect(estimateRequestTokens(messages, [], true)).toBe(10);
+	});
+
+	it("measureRequestContext includeThinking option overrides the thinkingLevel heuristic", () => {
+		const projection: RequestProjection = {
+			projectionId: "p1",
+			modelKey: "mock",
+			messages: [{ role: "assistant", content: "5678", thinking: "abcd" }] as ChatMsg[],
+			tools: [],
+			thinkingLevel: "high",
+		};
+
+		const heuristic = measureRequestContext(projection);
+		const withThinking = measureRequestContext(projection, undefined, { includeThinking: true });
+		const withoutThinking = measureRequestContext(projection, undefined, { includeThinking: false });
+
+		// 缺省回落 thinkingLevel 判据（兼容既有调用方）；显式传入时按 wire 口径。
+		expect(heuristic.inputTokens).toBe(withThinking.inputTokens);
+		expect(withoutThinking.inputTokens).toBe(withThinking.inputTokens - 5);
 	});
 });

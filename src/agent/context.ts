@@ -11,6 +11,13 @@ import type {
 /** ASCII fallback ratio. Non-ASCII code points are counted separately below. */
 export const CHARS_PER_TOKEN = 4;
 
+/** Per-image token estimate for budget arithmetic. Cross-provider middle ground
+ * (Claude ~1600/image at the cap, OpenAI high detail ~1105, Gemini ~258/tile);
+ * intentionally errs slightly low rather than evicting history early. Images
+ * were previously invisible to both the wire measurement and the compaction
+ * estimator, so image-heavy sessions could exceed the provider limit unchecked. */
+export const IMAGE_TOKEN_ESTIMATE = 1024;
+
 export interface ContextEstimate {
 	tokens: number;
 	actual: boolean;
@@ -144,17 +151,20 @@ export function countContextSegmentChars(
 ): ContextSegments {
 	const seg: ContextSegments = { system: 0, prompt: 0, assistant: 0, thinking: 0, tools: 0 };
 	for (const message of messages) {
+		// 图片按 IMAGE_TOKEN_ESTIMATE 折算成等效 ASCII 字符参与统计，与
+		// estimateContextSegments 的图片 token 口径保持同一比例（chars = tokens × 4）。
+		const imageChars = (message.images?.length ?? 0) * IMAGE_TOKEN_ESTIMATE * CHARS_PER_TOKEN;
 		if (message.role === "custom") {
-			seg.prompt += message.content ? message.content.length + 16 : 16;
+			seg.prompt += (message.content ? message.content.length + 16 : 16) + imageChars;
 			continue;
 		}
 		const baseChars = message.content ? message.content.length + 16 : 16;
 		switch (message.role) {
 			case "system":
-				seg.system += baseChars;
+				seg.system += baseChars + imageChars;
 				break;
 			case "user":
-				seg.prompt += baseChars;
+				seg.prompt += baseChars + imageChars;
 				break;
 			case "assistant":
 				seg.assistant += baseChars;
@@ -166,7 +176,7 @@ export function countContextSegmentChars(
 				}
 				break;
 			case "tool":
-				seg.tools += baseChars;
+				seg.tools += baseChars + imageChars;
 				break;
 		}
 	}
@@ -190,10 +200,15 @@ export function estimateRequestTokens(
 
 /** Measure one complete model-semantic projection. Provider-specific exact
  * measurers may be supplied by the caller; the fallback remains explicitly
- * approximate so UI and budget decisions cannot mistake it for server truth. */
+ * approximate so UI and budget decisions cannot mistake it for server truth.
+ *
+ * includeThinking 必须与真实发送口径（loop buildContext 的 model.includeThinking）
+ * 一致：thinking 是否上链路由它决定，而不是 thinkingLevel（那只是生成预算档位）。
+ * 缺省回落 thinkingLevel 判据仅为兼容既有调用方；预算判定方（loop）应显式传入。 */
 export function measureRequestContext(
 	projection: RequestProjection,
 	providerMeasure?: (projection: RequestProjection) => TokenMeasurement | undefined,
+	options?: { includeThinking?: boolean },
 ): TokenMeasurement {
 	const measured = providerMeasure?.(projection);
 	if (measured) {
@@ -202,13 +217,14 @@ export function measureRequestContext(
 		}
 		return measured;
 	}
+	const includeThinking = options?.includeThinking ?? projection.thinkingLevel !== "off";
 	const segments = estimateContextSegments(projection.messages, projection.tools);
 	return {
 		inputTokens:
 			segments.system +
 			segments.prompt +
 			segments.assistant +
-			(projection.thinkingLevel !== "off" ? segments.thinking : 0) +
+			(includeThinking ? segments.thinking : 0) +
 			segments.tools,
 		kind: "approximate",
 		source: "fallback_estimator",
@@ -320,13 +336,15 @@ export function estimateContextSegments(
 	const result: ContextSegments = { system: 0, prompt: 0, assistant: 0, thinking: 0, tools: 0 };
 	for (const message of messages) {
 		const contentTokens = estimateTextTokens(message.content ?? "") + 4;
+		// assistant 变体虽有 images 字段但 convertToLlm 不发送，按 wire 口径不计。
+		const imageTokens = message.role === "assistant" ? 0 : (message.images?.length ?? 0) * IMAGE_TOKEN_ESTIMATE;
 		switch (message.role) {
 			case "system":
-				result.system += contentTokens;
+				result.system += contentTokens + imageTokens;
 				break;
 			case "custom":
 			case "user":
-				result.prompt += contentTokens;
+				result.prompt += contentTokens + imageTokens;
 				break;
 			case "assistant":
 				result.assistant += contentTokens;
@@ -334,7 +352,7 @@ export function estimateContextSegments(
 				if (message.tool_calls) result.tools += estimateTextTokens(JSON.stringify(message.tool_calls));
 				break;
 			case "tool":
-				result.tools += contentTokens;
+				result.tools += contentTokens + imageTokens;
 				break;
 		}
 	}

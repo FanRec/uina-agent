@@ -290,6 +290,7 @@ export class Subject {
 		const measurement = measureRequestContext(
 			projection,
 			this.measureContext ? (value) => this.measureContext!(model, value) : undefined,
+			{ includeThinking: model.includeThinking === true },
 		);
 		return {
 			projection,
@@ -1075,6 +1076,7 @@ export class Subject {
 			const measurement = measureRequestContext(
 				projection,
 				this.measureContext ? (p) => this.measureContext!(model, p) : undefined,
+				{ includeThinking: model.includeThinking === true },
 			);
 			const decision = await this.runtimeHooks.turn.preflight({ projection, measurement, pass, signal: turnSignal });
 			if (decision.action === "fail") throw new Error(decision.reason ?? "请求预检失败");

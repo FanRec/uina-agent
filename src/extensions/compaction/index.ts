@@ -44,12 +44,17 @@ export function filterCompactionMessages(messages: readonly StreamMessageView[])
 	return messages.filter((message) => !isRuntimePerception(message));
 }
 
-export function estimateStreamTokens(messages: readonly StreamMessageView[]): number {
-	return estimateRequestTokens(messages as readonly ChatMsg[], []);
+/** 估算口径必须与 preflight 测量（measureRequestContext）及真实发送（loop buildContext
+ * 的 model.includeThinking）一致。这里曾经硬编码不计 thinking，导致"测量含 thinking 判超
+ * 预算、压缩器不含 thinking 判无需压缩"的分歧窗口：上下文越预算时自动压缩报 noop，
+ * 回合被 preflight 直接杀死（thinking 段越大窗口越宽）。 */
+export function estimateStreamTokens(messages: readonly StreamMessageView[], includeThinking = false): number {
+	return estimateRequestTokens(messages as readonly ChatMsg[], [], includeThinking);
 }
 
 export function semanticUnits(
 	messages: readonly StreamMessageView[],
+	includeThinking = false,
 ): Array<{ start: number; end: number; tokens: number }> {
 	const result: Array<{ start: number; end: number; tokens: number }> = [];
 	for (let start = 0; start < messages.length; ) {
@@ -62,19 +67,23 @@ export function semanticUnits(
 		} else if (message.role === "assistant" && message.tool_calls?.length) {
 			while (end < messages.length && messages[end]!.role === "tool") end++;
 		}
-		result.push({ start, end, tokens: estimateStreamTokens(messages.slice(start, end)) });
+		result.push({ start, end, tokens: estimateStreamTokens(messages.slice(start, end), includeThinking) });
 		start = end;
 	}
 	return result;
 }
 
-export function findTrimBoundary(messages: readonly StreamMessageView[], messageBudget: number): number | null {
-	if (estimateStreamTokens(messages) <= messageBudget) return null;
+export function findTrimBoundary(
+	messages: readonly StreamMessageView[],
+	messageBudget: number,
+	includeThinking = false,
+): number | null {
+	if (estimateStreamTokens(messages, includeThinking) <= messageBudget) return null;
 	let systemEnd = 0;
 	while (messages[systemEnd]?.role === "system") systemEnd++;
-	let remaining = messageBudget - estimateStreamTokens(messages.slice(0, systemEnd));
+	let remaining = messageBudget - estimateStreamTokens(messages.slice(0, systemEnd), includeThinking);
 	let keepFrom = messages.length;
-	for (const unit of semanticUnits(messages).reverse()) {
+	for (const unit of semanticUnits(messages, includeThinking).reverse()) {
 		if (unit.start < systemEnd || unit.tokens > remaining) break;
 		remaining -= unit.tokens;
 		keepFrom = unit.start;
@@ -440,9 +449,13 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		const messageBudget = Math.max(0, inspection.inputBudget - toolCost);
 		const summaryReserve = Math.min(1024, Math.floor(messageBudget / 4));
 		const trimBudget = Math.max(0, messageBudget - summaryReserve);
+		// 与发送口径一致（loop buildContext 用 model.includeThinking 决定 thinking 是否上链路），
+		// 每次现取，容忍模型中途切换。
+		const includeThinking = pi.models.current().includeThinking === true;
 		const boundary = findTrimBoundary(
 			messages,
 			reason === "manual" ? Math.min(MANUAL_KEEP_TOKENS, trimBudget) : trimBudget,
+			includeThinking,
 		);
 		if (boundary === null) {
 			await pi.emitEvent({
@@ -673,7 +686,10 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 			const result = await stage(inspection, "automatic", undefined, operationId, false, signal);
 			return result === "staged"
 				? { action: "rebuild" as const }
-				: { action: "fail" as const, reason: "上下文超过预算且没有可安全压缩的历史边界" };
+				: {
+						action: "fail" as const,
+						reason: "上下文超过预算且没有可安全压缩的历史边界；请运行 /compact 手动压缩，或开启新会话",
+					};
 		} catch (error) {
 			await terminal(operationId, cancelKind(signal), error);
 			return { action: "fail" as const, reason: String((error as Error).message ?? error) };

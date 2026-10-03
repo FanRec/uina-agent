@@ -568,4 +568,55 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 			await uina.dispose();
 		}
 	});
+
+	test("thinking 重量级历史：压缩估算与 preflight 测量同口径，超预算时自动压缩而非 noop-fail", async ({ env }) => {
+		// 回归背景：estimateStreamTokens 曾硬编码不计 thinking，而 preflight 测量在
+		// thinkingLevel≠off 时计入——上下文越预算时压缩器认为"消息本体仍 fit"报 noop，
+		// preflight 直接 fail 杀死回合（真实事故：~108k tokens 的 deepseek 高思考会话）。
+		// 本用例钉住 thinking 必须参与压缩边界估算。
+		const history = Array.from({ length: 12 }, (_, index) =>
+			index % 2 === 0
+				? { role: "user" as const, content: `问${index} ${"词".repeat(100)}` }
+				: {
+						role: "assistant" as const,
+						content: `答${index}`,
+						thinking: `推理${index} ${"思".repeat(2000)}`,
+						status: "complete" as const,
+					},
+		);
+		await persistHistory(env, history);
+
+		const scenario = new Scenario({
+			id: "mock",
+			name: "mock",
+			contextWindow: 12_000,
+			includeThinking: true,
+			thinkingLevels: ["off", "low", "high"],
+		});
+		scenario.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手")).reply("摘".repeat(300));
+		scenario.fallback(() => [
+			{ kind: "text", text: "ok" },
+			{ kind: "finish", reason: "stop" },
+		]);
+
+		const uina = await UinaTestHarness.create({
+			env,
+			scenario,
+			hostOptions: { thinkingLevel: "high", workspaceTools: false },
+		});
+		try {
+			await uina.send("触发预算检查", "direct");
+			await uina.waitForIdle();
+
+			// 自动压缩确实发生：摘要请求出现过，下一次请求以摘要开头，checkpoint 已持久化。
+			expect(scenario.calls.some((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"))).toBe(true);
+			const last = scenario.calls.at(-1);
+			expect(last?.messages.some((m) => (m.content ?? "").startsWith("[历史摘要] "))).toBe(true);
+			const journal = await readFile(env.sessionPath, "utf8");
+			expect(journal).toContain("uina.compaction.summary");
+			expect(journal).not.toContain("turn_failed");
+		} finally {
+			await uina.dispose();
+		}
+	});
 });
