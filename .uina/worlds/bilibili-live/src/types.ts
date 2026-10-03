@@ -76,7 +76,7 @@ export interface GiftRecord extends BasePendingEventRecord {
   readonly kind: "gift";
   readonly giftId: number;           // 礼物 ID
   readonly giftName: string;         // 礼物名称
-  readonly price: number;            // 礼物单价（金瓜子，1000 金瓜子 = ￥1）
+  readonly price: number;            // 礼物单价（瓜子：付费礼物=金瓜子，免费礼物=银瓜子；1000 金瓜子 = ￥1）
   count: number;                     // 数量
 }
 
@@ -120,9 +120,9 @@ export interface FilteringConfig {
  * 礼物与待办策略配置
  */
 export interface GiftsConfig {
-  pendingThreshold: number;        // 进入待办队列的礼物价值下限（金瓜子单价，1000 金瓜子 = ￥1，默认 1000 即 ￥1）
+  pendingThreshold: number;        // 进入待办队列的礼物价值下限（仅付费礼物进入此路径，金瓜子，1000 金瓜子 = ￥1，默认 1000 即 ￥1）
   aggregationWindowMs: number;     // 同用户同礼物连击聚合窗口（默认 10000ms）
-  minReportValue: number;          // 小额感知推送的条目总价值下限（金瓜子，低于此值静默丢弃；默认 0 即不过滤）
+  minReportValue: number;          // 小额感知推送的条目总价值下限（瓜子面值：付费礼物按金瓜子、免费礼物按银瓜子同表比较，低于此值静默丢弃；默认 0 即不过滤）
 }
 
 /**
