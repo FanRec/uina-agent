@@ -281,6 +281,53 @@ export class InteractiveTUI {
 			case "queue":
 				this.host.setPendingQueue(m.items as QueuedMessage[]);
 				break;
+
+			case "custom_message": {
+				// 事件载荷是 readonly 视图（1:1 透传纪律），UI 契约收可变数组：接缝处
+				// 一次性拷贝，罕见路径，分配成本可忽略。
+				const { customType, content, images, display, details } = m.message;
+				this.host.addCustomMessage({
+					customType,
+					content,
+					...(images ? { images: [...images] } : {}),
+					...(display !== undefined ? { display } : {}),
+					...(details !== undefined ? { details } : {}),
+				});
+				break;
+			}
+
+			case "session_compact_start":
+				// 压缩可能耗时数十秒（多块摘要 + 再压缩 + fit 测量），起点给一条提示，
+				// 终点由 session_compact 卡片表达；逐块进度不进转录（会刷屏）。
+				this.host.notify("正在压缩会话历史…", "info", 2500);
+				break;
+
+			// ── 设计内忽略清单：每条忽略都是显式决策，新增事件类型时 default 的
+			// never 断言会编译报错，强迫在此处理或在此登记。 ──
+			case "agent_start":
+			case "agent_end":
+			case "agent_settled":
+				// Subject 步骤生命周期：TUI 消费 turn 粒度（turn_start/turn_end/turn_aborted）。
+				break;
+			case "output_start":
+			case "output_end":
+			case "output_interrupted":
+				// 流式由 output_update 增量驱动，输出生命周期由回合收口表达。
+				break;
+			case "input_accepted":
+				// 输入者已本地回显；runtime 来源的输入按 display 纪律对用户不可见。
+				break;
+			case "custom_entry":
+				// 扩展私有辅助词汇：由域专属表面表达（压缩卡片、/context auxiliary）。
+				break;
+			case "session_compact_progress":
+				// 逐块进度噪声：起点由 session_compact_start 提示，终点由 session_compact 卡片。
+				break;
+			default: {
+				// 穷尽性收口：走到这里说明 RuntimeEvent 有新类型未显式决策。
+				const _exhaustive: never = m;
+				return _exhaustive;
+			}
 		}
 	}
 

@@ -115,6 +115,8 @@ export interface SessionNodeInfo {
 	active: boolean;
 	canRewind: boolean;
 	preview: string;
+	/** runtime 来源的输入（模型可见，转录按 display 纪律隐藏）：供检视面审计。 */
+	runtime?: boolean;
 }
 
 export type SessionRecord =

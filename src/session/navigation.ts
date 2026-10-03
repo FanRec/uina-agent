@@ -74,6 +74,7 @@ export function listSessionNodes(
 			active: isActive,
 			canRewind: isActive && !isHead && safe.has(entry.id),
 			preview: formatNodePreview(entry),
+			...(entry.kind === "input" && entry.input.source?.kind === "runtime" ? { runtime: true } : {}),
 		};
 	});
 

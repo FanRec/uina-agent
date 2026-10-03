@@ -75,6 +75,12 @@ export type TurnItem =
 	| {
 			kind: "interrupt";
 			text: string;
+	  }
+	| {
+			/** 轮内到达的扩展自定义消息：journal 只有 entry 序没有轮归属，live 按时间序
+			 * 归入当前轮，回放路径按轮间独立卡片重建——两者都是 journal 时间序。 */
+			kind: "customMessage";
+			message: CustomMessage;
 	  };
 
 /** 单个思考块。折叠与 hover 的身份单位。 */
@@ -584,7 +590,13 @@ export class TranscriptContainer implements Component {
 
 	addCustomMessage(msg: CustomMessage): void {
 		if (msg.display === false) return;
-		this.timeline.push({ kind: "customMessage", message: msg });
+		// 轮内到达时归入当前轮（时间序）；不能先 commit 当前轮——流式/工具追加都
+		// 依赖现存 currentTurn，切轮会静默丢弃后续增量。
+		if (this.currentTurn) {
+			this.currentTurn.items.push({ kind: "customMessage", message: msg });
+		} else {
+			this.timeline.push({ kind: "customMessage", message: msg });
+		}
 		this.invalidate();
 	}
 
@@ -1117,6 +1129,9 @@ export class TranscriptContainer implements Component {
 				out.push(...formatDiffCardLines(item.oldText, item.newText, item.filename, item.collapsed ?? true, width));
 			} else if (item.kind === "interrupt") {
 				out.push(`  \x1b[2m${item.text}\x1b[0m`);
+			} else if (item.kind === "customMessage") {
+				const comp = new CustomMessageComponent(item.message, this.messageRenderer(item.message.customType));
+				out.push(...comp.render(width));
 			}
 		}
 	}

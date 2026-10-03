@@ -408,6 +408,29 @@ describe("BranchInspectorOverlay paging", () => {
 		expect(new Set(drained.map((n) => n.id)).size).toBe(drained.length);
 	});
 
+	// runtime 标志：runtime 来源的输入（模型可见、转录按 display 纪律隐藏）在节点
+	// 投影上必须可辨识——这是 /context 运行时输入审计段的数据来源。
+	it("flags runtime-originated inputs and leaves user inputs unflagged", async () => {
+		const store = new MemorySessionStore();
+		const userInput = { id: "in-user", order: 1, mode: "followUp" as const, text: "用户输入" };
+		const runtimeInput = {
+			id: "in-runtime",
+			order: 2,
+			mode: "followUp" as const,
+			text: "运行时感知",
+			source: { kind: "runtime" as const, type: "perception", origin: "internal" as const },
+		};
+		// input record 的前置校验要求先入队（checkRecord: state.queued.has(input.id)）。
+		await store.appendEvent("queue_enqueued", { ...userInput });
+		await store.appendEvent("queue_enqueued", { ...runtimeInput });
+		await store.appendInput(userInput);
+		await store.appendInput(runtimeInput);
+		const nodes = listSessionNodes(store.state, { scope: "main" }).nodes;
+		const byId = new Map(nodes.map((n) => [n.id, n]));
+		expect(byId.get("in-user")?.runtime).toBeUndefined();
+		expect(byId.get("in-runtime")?.runtime).toBe(true);
+	});
+
 	// list() 的 limit 是分页页大小（默认 50），不是上限。面板若只取首页，第 51 条起
 	// 会静默消失 —— 而标题还会把截断后的条数当作总数印出来，等于对用户撒谎。
 	it("shows every mainline node once the history exceeds one page", async () => {

@@ -13,6 +13,7 @@ import type { RuntimeHooks } from "../src/runtime/hooks.js";
 import type { RequestProjection } from "../src/core/types.js";
 import type { SessionAccess } from "../src/session/types.js";
 import { ContextInspectorOverlay } from "../src/ui/features/overlays/context-inspector.js";
+import { stripAnsi } from "../src/ui/core/utils.js";
 import { createContextIntelAdapter } from "../src/ui/adapters/context-intel.js";
 
 const envs: IsolatedEnv[] = [];
@@ -216,20 +217,34 @@ describe("context intel adapter", () => {
 });
 
 describe("context inspector overlay", () => {
+	// 分页 stub：list 的 limit 是页大小，检视器必须翻页取全——否则 total 截断、
+	// "最近 3 条"实为最早 3 条（listAllSessionNodes 回归守卫）。
+	const node = (id: string, seq: number, extra: Record<string, unknown>) => ({
+		id,
+		parentId: null,
+		seq,
+		active: true,
+		canRewind: false,
+		...extra,
+	});
 	const sessionStub = {
-		list: () => ({
-			nodes: [
-				{
-					id: "n1",
-					parentId: null,
-					seq: 1,
-					kind: "custom_message",
-					active: true,
-					canRewind: false,
-					preview: "note entry",
-				},
-			],
-		}),
+		list: (options?: { after?: string }) => {
+			const page1 = {
+				nodes: [
+					node("cm1", 1, { kind: "custom_message", preview: "note entry" }),
+					node("cm2", 2, { kind: "custom_message", preview: "最早页内的 custom_message" }),
+					node("u1", 3, { kind: "input", preview: "用户输入" }),
+				],
+				next: "u1",
+			};
+			const page2 = {
+				nodes: [
+					node("cm3", 4, { kind: "custom_message", preview: "真正最新的 custom_message" }),
+					node("r1", 5, { kind: "input", preview: "[运行时事件 perception] 感知内容", runtime: true }),
+				],
+			};
+			return options?.after ? page2 : page1;
+		},
 	} as unknown as SessionAccess;
 
 	const prepare = {
@@ -276,6 +291,15 @@ describe("context inspector overlay", () => {
 		const bottom = overlay.render(100).join("\n");
 		expect(bottom).toContain("持久自定义信息");
 		expect(bottom).toContain("note entry");
+		// 翻页取全：total 横跨两页（3 条 custom_message），"最近 3 条"来自末页
+		// 而非首页末尾（单页调用会静默截断并展示最早的条目）。计数行内嵌 ANSI
+		// reset 码（数字与单位之间），stripAnsi 后断言。
+		const plain = stripAnsi(bottom);
+		expect(plain).toContain("3 条 custom_message");
+		expect(plain).toContain("真正最新的 custom_message");
+		// runtime 来源输入：模型可见、转录隐藏，此处是唯一审计口。
+		expect(plain).toContain("1 条运行时输入");
+		expect(plain).toContain("[运行时事件 perception] 感知内容");
 		// label 与计数之间隔 ANSI reset 码，断言分段匹配。
 		expect(bottom).toContain("custom_entry uina.compaction.summary");
 		expect(bottom).toContain("×2");

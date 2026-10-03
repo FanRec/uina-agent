@@ -12,7 +12,8 @@ import type { Component, Focusable } from "../../core/types.js";
 import { Key, matchesKey } from "../../core/keys.js";
 import { C, truncateToWidth, visibleWidth } from "../../core/utils.js";
 import type { HostEvent, InjectionProvenance } from "../../../host/events.js";
-import type { SessionAccess } from "../../../session/types.js";
+import type { SessionAccess, SessionNodeInfo } from "../../../session/types.js";
+import { listAllSessionNodes } from "../../../session/navigation.js";
 import type { AuxiliaryGroup } from "../../adapters/context-intel.js";
 
 type ContextPrepareEvent = Extract<HostEvent, { type: "context_prepare" }>;
@@ -172,6 +173,13 @@ export class ContextInspectorOverlay implements Component, Focusable {
 				rows.push(`  ${C.inactive}#${item.seq}${C.reset} ${C.dim}${item.preview}${C.reset}`);
 			}
 		}
+		const runtimeInputs = this.runtimeInputSummary();
+		if (runtimeInputs) {
+			rows.push(`${C.text}${runtimeInputs.total}${C.reset} 条运行时输入（模型可见，转录隐藏）`);
+			for (const item of runtimeInputs.latest) {
+				rows.push(`  ${C.inactive}#${item.seq}${C.reset} ${C.dim}${item.preview}${C.reset}`);
+			}
+		}
 		const auxiliary = this.deps.getAuxiliarySummary();
 		if (auxiliary.length === 0) {
 			rows.push(`auxiliary: ${this.empty()}`);
@@ -186,14 +194,28 @@ export class ContextInspectorOverlay implements Component, Focusable {
 		return this.section("持久自定义信息", rows);
 	}
 
-	/** custom_message 清单（主线 canonical）；无 sessionPort 的消费者返回 undefined。 */
-	private customMessageSummary(): { total: number; latest: readonly { seq: number; preview: string }[] } | undefined {
+	/** 节点清单汇总（主线 canonical，listAllSessionNodes 翻页取全——list 的 limit 是
+	 * 页大小不是上限，直接单页调用会静默截断 total 并把最早几条当"最近"展示）；
+	 * 无 sessionPort 的消费者返回 undefined。 */
+	private summarizeNodes(
+		predicate: (node: SessionNodeInfo) => boolean,
+	): { total: number; latest: readonly { seq: number; preview: string }[] } | undefined {
 		if (!this.deps.sessionPort) return undefined;
-		const nodes = this.deps.sessionPort.list({ scope: "main" }).nodes.filter((node) => node.kind === "custom_message");
+		const nodes = listAllSessionNodes(this.deps.sessionPort, { scope: "main" }).filter(predicate);
 		return {
 			total: nodes.length,
 			latest: nodes.slice(-3).map((node) => ({ seq: node.seq, preview: node.preview })),
 		};
+	}
+
+	private customMessageSummary() {
+		return this.summarizeNodes((node) => node.kind === "custom_message");
+	}
+
+	/** runtime 来源的输入清单：模型被告知的运行时事实，转录按 display 纪律隐藏，
+	 * 此处是唯一审计口。 */
+	private runtimeInputSummary() {
+		return this.summarizeNodes((node) => node.runtime === true);
 	}
 }
 

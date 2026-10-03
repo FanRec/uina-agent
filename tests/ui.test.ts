@@ -279,6 +279,29 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 		expect(rendered).not.toContain("MUST_NOT_RENDER");
 	});
 
+	it("live custom_message：轮内到达归入当前轮保时间序，轮外到达为独立卡片，display:false 不渲染", () => {
+		const transcript = new TranscriptContainer();
+
+		// 轮内：startTurn → custom_message → 助手增量，三者按时间序渲染。
+		// 不能先 commit 当前轮再插卡片：流式/工具追加依赖现存 currentTurn。
+		transcript.startTurn(1, "开始任务");
+		transcript.addCustomMessage({ customType: "embodiment", content: "LIVE_IN_TURN" });
+		transcript.appendToken("任务进行中");
+		const liveInTurn = stripAnsi(transcript.render(80).join("\n"));
+		const inTurnPositions = ["开始任务", "LIVE_IN_TURN", "任务进行中"].map((text) => liveInTurn.indexOf(text));
+		expect(inTurnPositions.every((position) => position >= 0)).toBe(true);
+		expect(inTurnPositions).toEqual([...inTurnPositions].sort((a, b) => a - b));
+		transcript.finishTurn();
+
+		// 轮外：无当前轮时作为轮间独立卡片（与回放路径同形状）。
+		transcript.addCustomMessage({ customType: "embodiment", content: "LIVE_IDLE" });
+		expect(stripAnsi(transcript.render(80).join("\n"))).toContain("LIVE_IDLE");
+
+		// display:false 按纪律不渲染。
+		transcript.addCustomMessage({ customType: "hidden", content: "MUST_NOT_RENDER_LIVE", display: false });
+		expect(stripAnsi(transcript.render(80).join("\n"))).not.toContain("MUST_NOT_RENDER_LIVE");
+	});
+
 	it("createExtensionUIContext 调度宿主接口", () => {
 		const hostPort = {
 			notify: vi.fn(),

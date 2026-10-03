@@ -696,6 +696,12 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
+	/** 扩展自定义消息（custom_message 事件）：display:false 由转录区守卫拦截。 */
+	addCustomMessage(message: import("../extensions/ui-contract.js").CustomMessage): void {
+		this.transcript.addCustomMessage(message);
+		this.requestRender();
+	}
+
 	/** 正文增量。 */
 	appendAssistantStream(text: string): void {
 		this.transcript.appendToken(text);
