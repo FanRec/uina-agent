@@ -237,4 +237,42 @@ describe("BatchedNotifier", () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it("supports drain re-arming notify, polling until the pool empties", () => {
+		vi.useFakeTimers();
+		try {
+			// 模拟礼物池：连击跨过一次空 flush 后停手，drain 侧在池非空时续期轮询
+			let hotFlushes = 1;
+			const emissions: string[] = [];
+			const notifier = new BatchedNotifier(
+				2000,
+				"b",
+				() => true,
+				() => {
+					if (hotFlushes > 0) {
+						hotFlushes--;
+						notifier.notify();
+						return null;
+					}
+					// 停手：整批上报，池空不再续期
+					return "combo-total";
+				},
+				(id) => emissions.push(id),
+			);
+			notifier.notify();
+			// 第一次 flush：条目仍热，无产出但续期轮询
+			vi.advanceTimersByTime(2000);
+			expect(emissions).toEqual([]);
+			expect(notifier.pending).toBe(true);
+			// 第二次 flush：连击停手，整批上报
+			vi.advanceTimersByTime(2000);
+			expect(emissions).toEqual(["b:1"]);
+			// 池空后轮询自动停止
+			expect(notifier.pending).toBe(false);
+			vi.advanceTimersByTime(10000);
+			expect(emissions).toEqual(["b:1"]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
