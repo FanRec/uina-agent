@@ -17,7 +17,8 @@
 
   "gifts": {
     "pendingThreshold": 1000,
-    "aggregationWindowMs": 10000
+    "aggregationWindowMs": 10000,
+    "minReportValue": 0
   },
 
   "network": {

@@ -394,12 +394,15 @@ export class LiveEventBuffer {
    * 排出已安静的暂态礼物：距最后一次更新 ≥ quietMs 的条目整批上报并清除。
    * 连击中的条目（quietMs 内有新到达）留在池中继续累积，停手后一次上报总数。
    * quietMs 与推送轮询节拍一致（2s）：单发礼物下个节拍即报，连击停手后 2-4s 内报。
+   * 静默条目总价值低于 gifts.minReportValue 的静默丢弃（连击中的条目不受影响，继续累积）。
    */
   drainQuietTransientGifts(quietMs: number, nowMs: number = performance.now()): string[] {
+    const minReportValue = this.config.gifts.minReportValue;
     const lines: string[] = [];
     for (const [key, gift] of this.transientGifts) {
       if (nowMs - gift.time.monotonicTimeMs < quietMs) continue;
       this.transientGifts.delete(key);
+      if (gift.price * gift.count < minReportValue) continue;
       lines.push(`* ${sanitizeUntrustedText(gift.uname)} 赠送 ${sanitizeUntrustedText(gift.giftName)} x${gift.count}`);
     }
     return lines;

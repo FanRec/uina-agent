@@ -122,6 +122,7 @@ export interface FilteringConfig {
 export interface GiftsConfig {
   pendingThreshold: number;        // 进入待办队列的礼物价值下限（金瓜子单价，1000 金瓜子 = ￥1，默认 1000 即 ￥1）
   aggregationWindowMs: number;     // 同用户同礼物连击聚合窗口（默认 10000ms）
+  minReportValue: number;          // 小额感知推送的条目总价值下限（金瓜子，低于此值静默丢弃；默认 0 即不过滤）
 }
 
 /**

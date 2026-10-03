@@ -331,4 +331,41 @@ describe("LiveEventIngestion", () => {
 		expect(buffer.drainQuietTransientGifts(2000, t0 + 5000)).toHaveLength(1);
 		buffer.dispose();
 	});
+
+	it("drops quiet transient gifts below the configured minReportValue and keeps comboing ones", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "uina-ingestion-"));
+		const config = loadConfig({
+			storage: { dataDir: tempDir },
+			gifts: { minReportValue: 500 },
+		});
+		const buffer = new LiveEventBuffer(config);
+		const send = (count: number, mono: number, uid = 42) =>
+			buffer.ingestGift({
+				uid,
+				uname: "fan",
+				giftId: 1,
+				giftName: "小心心",
+				price: 100,
+				count,
+				monotonicTimeMs: mono,
+			});
+
+		// 300 瓜子 < 500：静默丢弃，不上报
+		send(3, 0);
+		expect(buffer.drainQuietTransientGifts(2000, 5000)).toEqual([]);
+		expect(buffer.hasTransientGifts).toBe(false);
+
+		// 连击中的低价值条目不受过滤影响，继续累积到 500 才上报
+		send(3, 0);
+		send(2, 500);
+		expect(buffer.drainQuietTransientGifts(2000, 1000)).toEqual([]);
+		expect(buffer.hasTransientGifts).toBe(true);
+		const lines = buffer.drainQuietTransientGifts(2000, 5000);
+		expect(lines).toEqual(["* fan 赠送 小心心 x5"]);
+
+		// 不同观众互不影响
+		send(3, 0, 43);
+		expect(buffer.drainQuietTransientGifts(2000, 5000)).toEqual([]);
+		buffer.dispose();
+	});
 });

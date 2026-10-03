@@ -47,6 +47,7 @@ export const DEFAULT_FILTERING_CONFIG: FilteringConfig = {
 export const DEFAULT_GIFTS_CONFIG: GiftsConfig = {
   pendingThreshold: 1000,
   aggregationWindowMs: 10000,
+  minReportValue: 0,
 };
 
 export const DEFAULT_NETWORK_CONFIG: NetworkConfig = {
