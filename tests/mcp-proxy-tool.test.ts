@@ -2,11 +2,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ExtensionAPI, Tool } from "../src/extensions/index.js";
-import { McpCatalog, type CatalogTool } from "../.uina/extensions/mcp/catalog.js";
-import { createMcpProxyTool } from "../.uina/extensions/mcp/proxy-tool.js";
+import { type CatalogTool, McpCatalog } from "../.uina/extensions/mcp/catalog.js";
 import { definitionFingerprint } from "../.uina/extensions/mcp/config.js";
+import { createMcpProxyTool } from "../.uina/extensions/mcp/proxy-tool.js";
 import { McpServerManager } from "../.uina/extensions/mcp/server-manager.js";
+import type { ExtensionAPI, Tool } from "../src/extensions/index.js";
 import { FakeMcpServer } from "./mcp-helpers.js";
 
 interface RunResult {
@@ -373,7 +373,7 @@ describe("call 投影与 Output Guard", () => {
 	});
 
 	it("resource.text 直接进文本；resource.blob 落盘临时文件", async () => {
-		const blob = Buffer.from("hello binary").toString("base64");
+		const blob = Buffer.from("hello binary!").toString("base64");
 		fake.callResult = {
 			content: [
 				{ type: "resource", resource: { uri: "file:///t.txt", text: "plain contents" } },
@@ -386,7 +386,7 @@ describe("call 投影与 Output Guard", () => {
 		const saved = unrendered.find((entry) => entry.kind === "binary_saved");
 		expect(saved?.path).toBeDefined();
 		expect(existsSync(saved!.path!)).toBe(true);
-		expect(saved?.bytes).toBe(12);
+		expect(saved?.bytes).toBe(13);
 	});
 
 	it("超限二进制资源拒绝写入（单文件 10 MiB 上限）", async () => {
@@ -401,6 +401,7 @@ describe("call 投影与 Output Guard", () => {
 	it("文本超 50 KiB 截断并落盘完整输出", async () => {
 		fake.callResult = { content: [{ type: "text", text: "x".repeat(60_000) }] };
 		const out = await run({ action: "call", tool: "srv.echo" });
+		expect(out.result.startsWith("x")).toBe(true);
 		expect(out.result).toContain("[Output truncated. Full output saved to ");
 		const path = out.result.split("[Output truncated. Full output saved to ")[1]?.trimEnd().replace("]", "");
 		expect(existsSync(path!)).toBe(true);

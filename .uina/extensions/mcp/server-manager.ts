@@ -48,6 +48,8 @@ export interface ServerManagerOptions {
 	catalog: McpCatalog;
 	version: string;
 	onError: (message: string) => void;
+	/** 目录持久化时清理已从当前配置移除的 server；管理器不自行读取配置。 */
+	configuredNames?: () => ReadonlySet<string> | undefined;
 	/** 测试接缝：注入后绕过 stdio/http transport 创建（协议测试用 InMemoryTransport）。 */
 	createTransport?: (server: ResolvedServerConfig) => { transport: Transport; kind: ServerConnection["transportKind"] };
 }
@@ -55,6 +57,7 @@ export interface ServerManagerOptions {
 export class McpServerManager {
 	private connections = new Map<string, ServerConnection>();
 	private starting = new Map<string, { fingerprint: string; promise: Promise<ServerConnection> }>();
+	private starts = new Set<Promise<ServerConnection>>();
 	private refreshPromises = new Map<string, Promise<RefreshOutcome>>();
 	private lastErrors = new Map<string, string>();
 	private connectSeq = 0;
@@ -99,27 +102,30 @@ export class McpServerManager {
 			this.starting.delete(name);
 		}
 		const generation = ++this.connectSeq;
-		const promise = this.connect(server, generation, idleTimeoutMs, startupTimeoutMs);
+		const promise = this.connect(server, generation, idleTimeoutMs, startupTimeoutMs)
+			.then(async (connection) => {
+				const current = this.connections.get(name);
+				const pendingAfterConnect = this.starting.get(name);
+				if (
+					this.disposed ||
+					pendingAfterConnect?.promise !== promise ||
+					(current && current.generation >= connection.generation && current !== connection)
+				) {
+					await this.closeConnection(connection);
+					throw new McpSupersededError(`MCP server "${name}" 配置在连接期间已变更`);
+				}
+				this.connections.set(name, connection);
+				this.lastErrors.delete(name);
+				this.armIdleTimer(connection);
+				return connection;
+			})
+			.finally(() => {
+				this.starts.delete(promise);
+				if (this.starting.get(name)?.promise === promise) this.starting.delete(name);
+			});
+		this.starts.add(promise);
 		this.starting.set(name, { fingerprint: server.fingerprint, promise });
-		try {
-			const connection = await promise;
-			// 结算后注册：仅当自己仍是最新一代（并发同指纹共享此 promise，各自到达这里）。
-			const current = this.connections.get(name);
-			const pendingAfterConnect = this.starting.get(name);
-			if (
-				this.disposed ||
-				pendingAfterConnect?.promise !== promise ||
-				(current && current.generation >= connection.generation && current !== connection)
-			) {
-				void this.closeConnection(connection);
-				throw new McpSupersededError(`MCP server "${name}" 配置在连接期间已变更`);
-			}
-			this.connections.set(name, connection);
-			this.armIdleTimer(connection);
-			return connection;
-		} finally {
-			if (this.starting.get(name)?.promise === promise) this.starting.delete(name);
-		}
+		return promise;
 	}
 
 	private async connect(
@@ -295,7 +301,7 @@ export class McpServerManager {
 				...(ttlMs !== undefined ? { expiresAt: Date.now() + ttlMs } : {}),
 				tools,
 			},
-			this.configuredNames?.(),
+			this.options.configuredNames?.(),
 		);
 		return { status: "ok", entry: { tools } };
 	}
@@ -308,11 +314,6 @@ export class McpServerManager {
 		tools: Awaited<ReturnType<Client["listTools"]>>["tools"] | null,
 	): void {
 		if (this.disposed) return;
-		if (error) {
-			this.options.onError(`MCP tools/list_changed 刷新失败: ${errorMessage(error)}`);
-			return;
-		}
-		if (!tools) return;
 		let owner: { name: string; connection: ServerConnection } | undefined;
 		for (const [name, entry] of this.connections) {
 			if (entry.client === client) {
@@ -321,6 +322,13 @@ export class McpServerManager {
 			}
 		}
 		if (!owner || owner.connection.draining || owner.connection.serverFingerprint !== fingerprint) return;
+		// 通知本身已经否定旧快照；刷新失败时也必须留下 stale，不能继续伪装 fresh。
+		this.markCatalogStale(owner.name, owner.connection);
+		if (error) {
+			this.options.onError(`MCP tools/list_changed 刷新失败: ${errorMessage(error)}`);
+			return;
+		}
+		if (!tools) return;
 		void this.refreshCatalog(owner.connection.serverConfig, owner.connection).catch((refreshError) => {
 			this.options.onError(`MCP tools/list_changed 刷新失败: ${errorMessage(refreshError)}`);
 		});
@@ -329,7 +337,7 @@ export class McpServerManager {
 	/** 已发出的调用明确命中不存在的能力：保留旧快照但阻断下一次盲调。 */
 	markCatalogStale(serverName: string, connection: ServerConnection): void {
 		if (this.disposed || connection.draining || this.connections.get(serverName) !== connection) return;
-		this.catalog.markStale(serverName, this.configuredNames?.());
+		this.catalog.markStale(serverName, this.options.configuredNames?.());
 	}
 
 	// ── 工具调用 ─────────────────────────────────────────────────────────
@@ -419,13 +427,11 @@ export class McpServerManager {
 		return undefined;
 	}
 
-	/** persist 时清理 unconfigured 条目所需的名字集合（由装配层注入）。 */
-	configuredNames?: () => ReadonlySet<string> | undefined;
-
 	/** teardown：封锁状态落盘，关闭全部连接（含 draining），清空 timer 与在途刷新。 */
 	async dispose(): Promise<void> {
 		this.disposed = true;
 		this.refreshPromises.clear();
+		const starts = [...this.starts];
 		this.starting.clear();
 		const connections = [...this.connections.values()];
 		this.connections.clear();
@@ -433,6 +439,7 @@ export class McpServerManager {
 			if (connection.idleTimer) clearTimeout(connection.idleTimer);
 			connection.idleTimer = undefined;
 		}
+		await Promise.allSettled(starts);
 		await Promise.all(connections.map((connection) => this.closeConnection(connection)));
 	}
 }

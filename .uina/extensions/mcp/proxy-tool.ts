@@ -1,8 +1,5 @@
 /** mcp 代理工具：五个 action（list/search/describe/call/status）、三元组精确路由、
  * stale 前置校准断路、五态映射、CallToolResult 保真降级投影与 Output Guard。 */
-import { randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
 import type { ExtensionAPI, ImageContent, Tool, ToolResultStatus } from "../../../src/extensions/index.js";
 import type { CatalogEntry, CatalogTool } from "./catalog.js";
 import { classifyEntry, fullName } from "./catalog.js";
@@ -22,17 +19,10 @@ import {
 	McpSupersededError,
 	type ServerConnection,
 } from "./server-manager.js";
+import { McpOutputGuard } from "./output-guard.js";
 
-// Output Guard：数值对齐 Pi 基线；计量窗口 P0 暂按 activation（扩展层尚无 session 生命周期接缝）。
-const MAX_OUTPUT_BYTES = 50 * 1024;
-const MAX_OUTPUT_LINES = 2000;
-const MAX_DETAILS_BYTES = 16 * 1024;
-const MAX_BINARY_FILE_BYTES = 10 * 1024 * 1024;
-const MAX_BINARY_TOTAL_BYTES = 100 * 1024 * 1024;
-const MAX_BINARY_FILES = 10_000;
 const SEARCH_LIMIT = 12;
 const INSTRUCTIONS_PREVIEW_LENGTH = 300;
-const SUPPORTED_IMAGE_MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 interface ProxyToolResult {
 	result: string;
@@ -77,16 +67,7 @@ const PROXY_DESCRIPTION =
 
 export function createMcpProxyTool(deps: McpProxyDeps): Tool {
 	const { api, catalog, manager, tmpDir } = deps;
-	// 计量窗口计数：P0 按 activation 生命周期（reload/重启即重置）。
-	let binaryTotalBytes = 0;
-	let binaryFileCount = 0;
-	manager.configuredNames = () => {
-		try {
-			return new Set(resolveMcpConfig(api.cwd).servers.keys());
-		} catch {
-			return new Set();
-		}
-	};
+	const outputGuard = new McpOutputGuard(tmpDir);
 
 	// ── 通用结果构造 ─────────────────────────────────────────────────────
 
@@ -126,8 +107,11 @@ export function createMcpProxyTool(deps: McpProxyDeps): Tool {
 
 	// ── list ─────────────────────────────────────────────────────────────
 
-	async function executeList(args: Record<string, unknown>, signal: AbortSignal | undefined): Promise<ProxyToolResult> {
-		const snapshot = resolveMcpConfig(api.cwd);
+	async function executeList(
+		snapshot: McpConfigSnapshot,
+		args: Record<string, unknown>,
+		signal: AbortSignal | undefined,
+	): Promise<ProxyToolResult> {
 		const serverName = typeof args.server === "string" ? args.server : undefined;
 		if (serverName === undefined) {
 			const lines: string[] = [];
@@ -365,8 +349,11 @@ export function createMcpProxyTool(deps: McpProxyDeps): Tool {
 
 	// ── call ─────────────────────────────────────────────────────────────
 
-	async function executeCall(args: Record<string, unknown>, signal: AbortSignal | undefined): Promise<ProxyToolResult> {
-		const snapshot = resolveMcpConfig(api.cwd);
+	async function executeCall(
+		snapshot: McpConfigSnapshot,
+		args: Record<string, unknown>,
+		signal: AbortSignal | undefined,
+	): Promise<ProxyToolResult> {
 		const toolName = String(args.tool);
 		const toolArgs = (args.args as Record<string, unknown> | undefined) ?? {};
 		if (typeof toolArgs !== "object" || toolArgs === null || Array.isArray(toolArgs)) {
@@ -457,9 +444,7 @@ export function createMcpProxyTool(deps: McpProxyDeps): Tool {
 		}
 
 		const isError = result.isError === true;
-		const projected = projectCallResult(result, toolName, tmpDir, binaryTotalBytes, binaryFileCount);
-		binaryTotalBytes = projected.binaryBytesUsed;
-		binaryFileCount = projected.binaryFilesUsed;
+		const projected = outputGuard.project(result, toolName);
 
 		return {
 			result: projected.text,
@@ -532,7 +517,7 @@ export function createMcpProxyTool(deps: McpProxyDeps): Tool {
 			}
 			switch (action) {
 				case "list":
-					return executeList(args, signal);
+					return executeList(snapshot, args, signal);
 				case "search": {
 					if (typeof args.query !== "string" || args.query.trim() === "") {
 						return fail("search", "search 需要 query 字段（字符串）");
@@ -547,7 +532,7 @@ export function createMcpProxyTool(deps: McpProxyDeps): Tool {
 				case "call": {
 					if (typeof args.tool !== "string" || args.tool === "")
 						return fail("call", "call 需要 tool 字段（serverName.toolName）");
-					return executeCall(args, signal);
+					return executeCall(snapshot, args, signal);
 				}
 				default:
 					return fail("config", `未知 action: ${action}。可用值: list, search, describe, call, status`);
@@ -556,213 +541,11 @@ export function createMcpProxyTool(deps: McpProxyDeps): Tool {
 	};
 }
 
-// ── CallToolResult 保真降级投影（§8.2）与 Output Guard（D13）──────────────
-
-type McpContentBlock = Record<string, unknown> & { type: string };
-
-interface ProjectionResult {
-	text: string;
-	images: ImageContent[];
-	detailsExtra?: Record<string, unknown>;
-	mcpResult?: unknown;
-	binaryBytesUsed: number;
-	binaryFilesUsed: number;
-}
-
-function projectCallResult(
-	result: Record<string, unknown>,
-	toolName: string,
-	tmpDir: string,
-	usedBinaryBytes: number,
-	usedBinaryFiles: number,
-): ProjectionResult {
-	let binaryBytesUsed = usedBinaryBytes;
-	let binaryFilesUsed = usedBinaryFiles;
-	const images: ImageContent[] = [];
-	const resourceLinks: Record<string, unknown>[] = [];
-	const placeholders: Record<string, unknown>[] = [];
-	const textParts: string[] = [];
-
-	const content = Array.isArray(result.content) ? (result.content as McpContentBlock[]) : [];
-	for (const block of content) {
-		if (block.type === "text" && typeof block.text === "string") {
-			textParts.push(block.text);
-			continue;
-		}
-		if (block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string") {
-			if (SUPPORTED_IMAGE_MIMES.includes(block.mimeType)) {
-				images.push({
-					type: "image",
-					mimeType: block.mimeType as ImageContent["mimeType"],
-					data: block.data,
-					alt: toolName,
-				});
-			} else {
-				textParts.push(`[图片 ${block.mimeType} 未受支持，原始数据见 details]`);
-				placeholders.push({ kind: "unsupported_image", mimeType: block.mimeType, base64Bytes: block.data.length });
-			}
-			continue;
-		}
-		if (block.type === "audio") {
-			const bytes = typeof block.data === "string" ? block.data.length : 0;
-			textParts.push(`[音频 ${bytes} base64 字符]`);
-			placeholders.push({ kind: "audio", mimeType: block.mimeType, base64Bytes: bytes });
-			continue;
-		}
-		if (block.type === "resource_link" && typeof block.uri === "string") {
-			const label = typeof block.name === "string" ? block.name : block.uri;
-			const mime = typeof block.mimeType === "string" ? ` (${block.mimeType})` : "";
-			textParts.push(`Resource link: ${label} (${block.uri})${mime}`);
-			resourceLinks.push({ ...block });
-			continue;
-		}
-		if (block.type === "resource" && typeof block.resource === "object" && block.resource !== null) {
-			const resource = block.resource as { uri?: unknown; mimeType?: unknown; text?: unknown; blob?: unknown };
-			if (typeof resource.text === "string") {
-				textParts.push(resource.text);
-				continue;
-			}
-			if (typeof resource.blob === "string") {
-				const decodedBytes = Math.floor((resource.blob.length * 3) / 4);
-				const mime = typeof resource.mimeType === "string" ? resource.mimeType : "application/octet-stream";
-				if (decodedBytes > MAX_BINARY_FILE_BYTES) {
-					textParts.push(
-						`[二进制资源 ${mime} (${decodedBytes} 字节) 超过单文件 ${MAX_BINARY_FILE_BYTES} 字节上限，未落盘]`,
-					);
-					placeholders.push({ kind: "binary_oversized", uri: resource.uri, mimeType: mime, bytes: decodedBytes });
-					continue;
-				}
-				if (binaryBytesUsed + decodedBytes > MAX_BINARY_TOTAL_BYTES || binaryFilesUsed + 1 > MAX_BINARY_FILES) {
-					textParts.push(
-						`[二进制资源累计配额已用尽（${MAX_BINARY_TOTAL_BYTES / (1024 * 1024)} MiB / ${MAX_BINARY_FILES} files），本次资源写入被拒绝。可通过 reload 重置（P1 起随 session 重置）]`,
-					);
-					placeholders.push({ kind: "binary_quota_exhausted", uri: resource.uri, mimeType: mime, bytes: decodedBytes });
-					continue;
-				}
-				const path = join(tmpDir, `resource-${randomBytes(4).toString("hex")}.bin`);
-				writeFileSync(path, Buffer.from(resource.blob, "base64"));
-				binaryBytesUsed += decodedBytes;
-				binaryFilesUsed += 1;
-				textParts.push(`[二进制资源 ${mime} (${decodedBytes} 字节) 已保存到 ${path}]`);
-				placeholders.push({ kind: "binary_saved", uri: resource.uri, mimeType: mime, bytes: decodedBytes, path });
-				continue;
-			}
-			textParts.push(`[资源内容块（${String(resource.uri ?? "未知 URI")}）]`);
-			placeholders.push({ kind: "resource", ...block });
-			continue;
-		}
-		textParts.push(`[未知内容块类型: ${block.type}]`);
-		placeholders.push({ kind: "unknown_block", ...block });
-	}
-
-	let text = textParts.length > 0 ? textParts.join("\n") : "(empty result)";
-
-	// 文本 Output Guard：50 KiB / 2000 行截断，完整文本落临时文件。
-	const truncated = truncateText(text);
-	if (truncated.truncated) {
-		const path = join(tmpDir, `output-${randomBytes(4).toString("hex")}.txt`);
-		try {
-			writeFileSync(path, text, "utf-8");
-			text = `${truncated.text}\n\n[Output truncated. Full output saved to ${path}]`;
-		} catch (error) {
-			text = `${truncated.text}\n\n[Output truncated. Full output could not be saved: ${errorMessage(error)}]`;
-		}
-	}
-
-	let detailsExtra: Record<string, unknown> | undefined;
-	const structuredContent =
-		result.structuredContent !== undefined ? boundStructuredContent(result.structuredContent) : undefined;
-	if (resourceLinks.length > 0 || placeholders.length > 0 || structuredContent !== undefined) {
-		detailsExtra = {
-			...(resourceLinks.length > 0 ? { resourceLinks } : {}),
-			...(placeholders.length > 0 ? { unrenderedContent: placeholders } : {}),
-			...(structuredContent !== undefined ? { structuredContent } : {}),
-		};
-		// details 有界保护：摘要性 extra 超限则收缩为标记。
-		if (Buffer.byteLength(JSON.stringify(detailsExtra)!, "utf-8") > MAX_DETAILS_BYTES) {
-			detailsExtra = {
-				...(structuredContent !== undefined
-					? { structuredContent: boundStructuredContent(result.structuredContent, 4 * 1024) }
-					: {}),
-				detailsSummaryOmitted: { reason: "details 附加内容超过 16 KiB 上限", blocks: content.length },
-			};
-		}
-	}
-
-	// 原始 MCP result 绑定（boundMcpResult 模式）：16 KiB 内保留，超出换摘要并落盘。
-	const rawJson = safeStringify(result);
-	const mcpResult = Buffer.byteLength(rawJson, "utf-8") <= MAX_DETAILS_BYTES ? result : boundRawResult(rawJson, tmpDir);
-
-	return {
-		text,
-		images,
-		...(detailsExtra !== undefined ? { detailsExtra } : {}),
-		...(mcpResult !== undefined ? { mcpResult } : {}),
-		binaryBytesUsed,
-		binaryFilesUsed,
-	};
-}
-
-/** structuredContent 是外部 server 数据：完整保留时受 details 总预算约束，超限只留有界摘要。 */
-function boundStructuredContent(value: unknown, budget = MAX_DETAILS_BYTES): unknown {
-	const raw = safeStringify(value);
-	if (Buffer.byteLength(raw, "utf-8") <= budget) return value;
-	const record = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
-	const summary: Record<string, unknown> = {
-		omitted: true,
-		rawBytes: Buffer.byteLength(raw, "utf-8"),
-		type: Array.isArray(value) ? "array" : value === null ? "null" : typeof value,
-	};
-	if (record) summary.keys = Object.keys(record).slice(0, 32);
-	return Buffer.byteLength(JSON.stringify(summary), "utf-8") <= budget ? summary : { omitted: true };
-}
-
-function boundRawResult(rawJson: string, tmpDir: string): Record<string, unknown> {
-	const path = join(tmpDir, `mcp-result-${randomBytes(4).toString("hex")}.json`);
-	let fullResultPath: string | undefined;
-	try {
-		writeFileSync(path, rawJson, "utf-8");
-		fullResultPath = path;
-	} catch {
-		// 落盘失败时摘要也必须有界。
-	}
-	return {
-		omitted: true,
-		reason: "原始 MCP result 超过 details 16 KiB 上限，替换为本摘要以保护会话上下文。",
-		rawResultBytes: Buffer.byteLength(rawJson, "utf-8"),
-		...(fullResultPath !== undefined ? { fullResultPath } : {}),
-	};
-}
-
-function truncateText(text: string): { text: string; truncated: boolean } {
-	if (Buffer.byteLength(text, "utf-8") <= MAX_OUTPUT_BYTES && text.split("\n").length <= MAX_OUTPUT_LINES) {
-		return { text, truncated: false };
-	}
-	const lines = text.split("\n");
-	const kept: string[] = [];
-	let bytes = 0;
-	for (const line of lines) {
-		const lineBytes = Buffer.byteLength(line, "utf-8") + 1;
-		if (kept.length >= MAX_OUTPUT_LINES || bytes + lineBytes > MAX_OUTPUT_BYTES) break;
-		kept.push(line);
-		bytes += lineBytes;
-	}
-	return { text: kept.join("\n"), truncated: true };
-}
-
 function truncateAtWord(text: string, target: number): string {
 	if (!text || text.length <= target) return text;
 	const truncated = text.slice(0, target);
 	const lastSpace = truncated.lastIndexOf(" ");
 	return lastSpace > target * 0.6 ? `${truncated.slice(0, lastSpace)}...` : `${truncated}...`;
-}
-
-function safeStringify(value: unknown): string {
-	try {
-		return JSON.stringify(value) ?? "";
-	} catch {
-		return String(value);
-	}
 }
 
 function errorMessage(error: unknown): string {

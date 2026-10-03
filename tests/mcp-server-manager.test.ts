@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SdkHttpError, SdkErrorCode, type Transport } from "@modelcontextprotocol/client";
+import { SdkErrorCode, SdkHttpError, type Transport } from "@modelcontextprotocol/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { McpCatalog } from "../.uina/extensions/mcp/catalog.js";
 import type { ResolvedServerConfig } from "../.uina/extensions/mcp/config.js";
@@ -150,6 +150,37 @@ describe("ensureClient 建连", () => {
 		await manager.dispose();
 	});
 
+	it("成功重连后清除上一代建连错误", async () => {
+		const server = new FakeMcpServer();
+		let attempts = 0;
+		const manager = new McpServerManager({
+			catalog: new McpCatalog(join(dir, "retry-catalog.json")),
+			version: "0.1.0",
+			onError: () => {},
+			createTransport: () => {
+				attempts++;
+				if (attempts === 1) {
+					return {
+						kind: "in-memory",
+						transport: {
+							start: async () => {
+								throw new Error("first start failed");
+							},
+							close: async () => {},
+							send: async () => {},
+						} as unknown as Transport,
+					};
+				}
+				return { transport: server.clientTransport, kind: "in-memory" };
+			},
+		});
+		await expect(manager.ensureClient(makeServer("a"), 600_000, undefined)).rejects.toThrow("first start failed");
+		expect(manager.lastError("a")).toContain("first start failed");
+		await manager.ensureClient(makeServer("a"), 600_000, undefined);
+		expect(manager.lastError("a")).toBeUndefined();
+		await manager.dispose();
+	});
+
 	it("startup 超时参数透传（握手正常完成）", async () => {
 		const { manager } = makeHarness();
 		const connection = await manager.ensureClient(makeServer("a"), 600_000, 10_000);
@@ -266,6 +297,20 @@ describe("refreshCatalog 与 callTool", () => {
 		await manager.dispose();
 	});
 
+	it("tools/list_changed 刷新失败时保留旧快照但标记 stale", async () => {
+		const { catalog, manager, pending, servers } = makeHarness();
+		pending[0]!.listChanged = true;
+		pending[0]!.tools = [{ name: "old", inputSchema: { type: "object" } }];
+		const connection = await manager.ensureClient(makeServer("a"), 600_000, undefined);
+		await manager.refreshCatalog(makeServer("a"), connection);
+		servers[0]!.listError = { code: -32603, message: "list boom" };
+		await servers[0]!.emitToolsChanged([{ name: "new", inputSchema: { type: "object" } }]);
+		await sleep(500);
+		expect(catalog.get("a")?.tools.map((tool) => tool.name)).toEqual(["old"]);
+		expect(catalog.get("a")?.stale).toBe(true);
+		await manager.dispose();
+	});
+
 	it("重复工具名阻断目录提交，而不是写入歧义路由", async () => {
 		const { catalog, manager, pending } = makeHarness();
 		pending[0]!.tools = [
@@ -321,5 +366,22 @@ describe("dispose", () => {
 		await manager.ensureClient(makeServer("a"), 600_000, undefined);
 		await manager.dispose();
 		expect(manager.connectionState("a")).toEqual({ state: "stopped" });
+	});
+
+	it("卸载等待正在进行的握手收口", async () => {
+		const { manager, pending } = makeHarness();
+		const gate = pending[0]!.hold("initialize");
+		const starting = manager.ensureClient(makeServer("a"), 600_000, undefined);
+		await gate.whenCalled;
+		let disposed = false;
+		const disposing = manager.dispose().then(() => {
+			disposed = true;
+		});
+		await sleep(10);
+		expect(disposed).toBe(false);
+		gate.release();
+		await expect(starting).rejects.toBeInstanceOf(McpSupersededError);
+		await disposing;
+		expect(disposed).toBe(true);
 	});
 });

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionTeardown } from "../../../src/extensions/index.js";
 import { McpCatalog } from "./catalog.js";
+import { resolveMcpConfig } from "./config.js";
 import { createMcpProxyTool } from "./proxy-tool.js";
 import { McpServerManager } from "./server-manager.js";
 
@@ -21,6 +22,14 @@ export default function activateMcp(api: ExtensionAPI): ExtensionTeardown {
 		catalog,
 		version: "0.1.0",
 		onError: (message) => api.reportError(new Error(message)),
+		configuredNames: () => {
+			try {
+				return new Set(resolveMcpConfig(api.cwd).servers.keys());
+			} catch {
+				// 配置暂时不可解析时保留咨询性目录，避免错误读盘触发清空。
+				return undefined;
+			}
+		},
 	});
 
 	api.registerTool(createMcpProxyTool({ api, catalog, manager, tmpDir }));
