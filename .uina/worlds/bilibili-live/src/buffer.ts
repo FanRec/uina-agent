@@ -254,9 +254,11 @@ export class LiveEventBuffer {
     /** 是否付费礼物（金瓜子）；免费礼物（银瓜子/开放平台 unpaid）永不进入待办，只进小额感知 */
     paid?: boolean;
     timestamp?: number;
+    /** 可注入单调时钟（默认 performance.now()），供确定性测试使用 */
+    monotonicTimeMs?: number;
   }): { record: GiftRecord | null; shouldWake: boolean; transient?: boolean } {
     const isPaid = msg.paid ?? true;
-    const time = createEventTime(msg.timestamp);
+    const time = createEventTime(msg.timestamp, msg.monotonicTimeMs);
     const windowMs = this.config.gifts.aggregationWindowMs;
     const key = `${msg.uid}:${msg.giftId}`;
 
@@ -389,19 +391,28 @@ export class LiveEventBuffer {
   }
 
   /**
-   * 排出小额礼物暂态池：返回聚合窗口内的条目文本行并清除，过期条目静默丢弃。
-   * 供 World 层的定时批量感知推送使用；同时回收过期暂态条目，防止无界增长。
+   * 排出已安静的暂态礼物：距最后一次更新 ≥ quietMs 的条目整批上报并清除。
+   * 连击中的条目（quietMs 内有新到达）留在池中继续累积，停手后一次上报总数。
+   * quietMs 与推送轮询节拍一致（2s）：单发礼物下个节拍即报，连击停手后 2-4s 内报。
    */
-  drainRecentTransientGifts(): string[] {
-    const now = performance.now();
-    const maxAgeMs = this.config.gifts.aggregationWindowMs;
+  drainQuietTransientGifts(quietMs: number, nowMs: number = performance.now()): string[] {
     const lines: string[] = [];
     for (const [key, gift] of this.transientGifts) {
+      if (nowMs - gift.time.monotonicTimeMs < quietMs) continue;
       this.transientGifts.delete(key);
-      if (now - gift.time.monotonicTimeMs > maxAgeMs) continue;
       lines.push(`* ${sanitizeUntrustedText(gift.uname)} 赠送 ${sanitizeUntrustedText(gift.giftName)} x${gift.count}`);
     }
     return lines;
+  }
+
+  /** 暂态池是否仍有未上报条目（连击进行中） */
+  get hasTransientGifts(): boolean {
+    return this.transientGifts.size > 0;
+  }
+
+  /** 直接丢弃全部暂态礼物（clear 动作用） */
+  clearTransientGifts(): void {
+    this.transientGifts.clear();
   }
 
   renderPendingEvent(sourceEventKey: string): string | null {

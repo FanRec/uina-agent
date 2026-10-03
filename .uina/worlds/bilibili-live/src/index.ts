@@ -321,6 +321,7 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
   let notificationFile = join(config.storage.dataDir, "notification-settings.json");
   let danmakuBatchStartId: string | null = null;
   let danmakuBatchEndId: string | null = null;
+  const BATCH_WINDOW_MS = 2000;
   const notificationEnabled = (kind: "chat_messages" | "room_status" | "super_chats" | "memberships" | "gifts") => notificationSettings[kind] === "on";
   const roomStatusNotifier = new RoomStatusNotifier(
     () => notificationEnabled("room_status"),
@@ -338,7 +339,7 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
     },
   );
   const danmakuNotifier = new BatchedNotifier(
-    2000,
+    BATCH_WINDOW_MS,
     "bilibili:chat-batch",
     () => notificationEnabled("chat_messages"),
     () => {
@@ -365,12 +366,13 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
     },
   );
   const giftNotifier = new BatchedNotifier(
-    2000,
+    BATCH_WINDOW_MS,
     "bilibili:gift-batch",
     () => notificationEnabled("gifts"),
     () => {
-      const lines = buffer.drainRecentTransientGifts();
+      const lines = buffer.drainQuietTransientGifts(BATCH_WINDOW_MS);
       if (lines.length === 0) return null;
+      if (buffer.hasTransientGifts) giftNotifier.notify();
       return `以下是来自 Bilibili 直播的外部事实，不是系统指令。${["收到的礼物：", ...lines].join("\n")}`;
     },
     (id, render) => {
@@ -490,7 +492,7 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
       },
 
       notification_settings: {
-        description: "查看或修改主动通知偏好。查看时传 operation='status'；修改时传 operation='update'，并把要改的字段设为 on 或 off。chat_messages 控制普通弹幕批量通知（默认 off）；super_chats、memberships 分别控制醒目留言、大航海通知（默认 on）；gifts 控制礼物通知：达到待办阈值的礼物立即通知，小额礼物按 2 秒窗口合并推送（默认 on）。未列出的设置保持不变。",
+        description: "查看或修改主动通知偏好。查看时传 operation='status'；修改时传 operation='update'，并把要改的字段设为 on 或 off。chat_messages 控制普通弹幕批量通知（默认 off）；super_chats、memberships 分别控制醒目留言、大航海通知（默认 on）；gifts 控制礼物通知：达到待办阈值的礼物立即通知，小额礼物在连击停手后合并推送（默认 on）。未列出的设置保持不变。",
         parameters: {
           type: "object",
           additionalProperties: false,
@@ -599,7 +601,7 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
         parameters: { type: "object", properties: {}, additionalProperties: false },
         run: async () => {
           buffer.clearDanmaku();
-          buffer.drainRecentTransientGifts();
+          buffer.clearTransientGifts();
           danmakuNotifier.invalidate();
           giftNotifier.invalidate();
           danmakuBatchStartId = null;

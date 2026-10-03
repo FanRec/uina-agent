@@ -229,6 +229,7 @@ describe("LiveEventIngestion", () => {
 			},
 		);
 		ingestion.replace(client);
+		const t0 = performance.now();
 		// 低价付费礼物（100 金瓜子 = ￥0.1 < 1000 门槛）
 		client.emit("gift", {
 			id: "g1",
@@ -256,12 +257,46 @@ describe("LiveEventIngestion", () => {
 		expect(wakes).toEqual([]);
 		expect(smallGiftArrivals).toBe(2);
 		expect(buffer.getPendingCounts().gifts).toBe(0);
-		const lines = buffer.drainRecentTransientGifts();
+		const lines = buffer.drainQuietTransientGifts(2000, t0 + 5000);
 		expect(lines).toHaveLength(2);
 		expect(lines[0]).toContain("小心心");
 		expect(lines[1]).toContain("辣条");
 		// 排出后暂态池清空
-		expect(buffer.drainRecentTransientGifts()).toEqual([]);
+		expect(buffer.hasTransientGifts).toBe(false);
+		expect(buffer.drainQuietTransientGifts(2000, t0 + 9999)).toEqual([]);
+		buffer.dispose();
+	});
+
+	it("keeps comboing gifts in the pool until they go quiet, then reports the merged total", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "uina-ingestion-"));
+		const config = loadConfig({ storage: { dataDir: tempDir } });
+		const buffer = new LiveEventBuffer(config);
+		// 直接以可注入的单调时钟驱动 buffer，确定性模拟连击节奏
+		const combo = (count: number, mono: number) =>
+			buffer.ingestGift({
+				uid: 42,
+				uname: "fan",
+				giftId: 1,
+				giftName: "小心心",
+				price: 100,
+				count,
+				monotonicTimeMs: mono,
+			});
+
+		combo(3, 0);
+		// 连击进行中（静默期内有更新）：不上报，继续累积
+		combo(2, 500);
+		expect(buffer.drainQuietTransientGifts(2000, 1000)).toEqual([]);
+		expect(buffer.hasTransientGifts).toBe(true);
+
+		combo(4, 2500);
+		// 静默期未满：仍不上报
+		expect(buffer.drainQuietTransientGifts(2000, 3000)).toEqual([]);
+
+		// 停手超过静默期：整批上报总数
+		const lines = buffer.drainQuietTransientGifts(2000, 5000);
+		expect(lines).toEqual(["* fan 赠送 小心心 x9"]);
+		expect(buffer.hasTransientGifts).toBe(false);
 		buffer.dispose();
 	});
 
@@ -278,6 +313,7 @@ describe("LiveEventIngestion", () => {
 			(decision) => wakes.push(decision),
 		);
 		ingestion.replace(client);
+		const t0 = performance.now();
 		// 100 金瓜子 × 50 个 = 5000：若是付费礼物必达待办，但银瓜子免费礼物不允许
 		client.emit("gift", {
 			id: "g1",
@@ -292,7 +328,7 @@ describe("LiveEventIngestion", () => {
 		});
 		expect(wakes).toEqual([]);
 		expect(buffer.getPendingCounts().gifts).toBe(0);
-		expect(buffer.drainRecentTransientGifts()).toHaveLength(1);
+		expect(buffer.drainQuietTransientGifts(2000, t0 + 5000)).toHaveLength(1);
 		buffer.dispose();
 	});
 });
