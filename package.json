@@ -35,6 +35,7 @@
     "vitest": "^4.1.11"
   },
   "dependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
     "ajv": "^8.20.0",
     "cli-highlight": "^2.1.11",
     "jiti": "^2.7.0",
