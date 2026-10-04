@@ -31,9 +31,9 @@ export class PromptOverlay implements Component, Focusable {
 				`${C.suggestion}│${C.reset} ${C.inactive}当前还没有模型回合，暂无提示词快照${C.suggestion} │${C.reset}`,
 				`${C.suggestion}╰${"─".repeat(boxWidth - 2)}╯${C.reset}`,
 			];
-		const lines = new ContextCardComponent({ ...this.snapshot, id: this.snapshot.id ?? "prompt-current" }).render(
-			innerWidth,
-		);
+		const card = new ContextCardComponent({ ...this.snapshot, id: this.snapshot.id ?? "prompt-current" });
+		card.toggle();
+		const lines = card.render(innerWidth);
 		const body = lines
 			.slice(1, -1)
 			.map(
