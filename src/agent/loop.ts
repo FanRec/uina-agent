@@ -176,9 +176,7 @@ export class Subject {
 		this.streamFn = streamFn;
 		this.store = options.store;
 		this.systemPrompt = options.systemPrompt ?? defaultSystemPrompt();
-		this.lastPromptFingerprint =
-			listPromptSnapshots(this.store?.state.auxiliary ?? []).at(-1)?.fingerprint ??
-			promptSnapshotFingerprint(this.systemPrompt, []);
+		this.lastPromptFingerprint = listPromptSnapshots(this.store?.state.auxiliary ?? []).at(-1)?.fingerprint;
 		this.projection = resolveProjectionPolicy(options.projection);
 		this.preferredThinkingLevel = options.thinkingLevel ?? model.thinkingLevels?.[0] ?? "off";
 		if (this.preferredThinkingLevel !== "off" && !model.thinkingLevels?.includes(this.preferredThinkingLevel)) {

@@ -64,4 +64,55 @@ describe("提示词与外部注入卡片回放", () => {
 		]);
 		expect(stripAnsi(transcript.render(80).join("\n"))).toContain("image/png");
 	});
+	it("当前回合中插入卡片不会截断后续模型输出", () => {
+		const transcript = new TranscriptContainer();
+		transcript.startTurn(1, "任务");
+		transcript.appendToken("前半段");
+		transcript.addPromptSnapshot({
+			kind: "prompt",
+			turnNumber: 1,
+			systemPrompt: "更新后的提示词",
+			injections: [],
+		});
+		transcript.appendToken("后半段");
+		const rendered = stripAnsi(transcript.render(100).join("\n"));
+		expect(rendered).toContain("前半段");
+		expect(rendered).toContain("后半段");
+	});
+	it("普通用户回合中的快照不会把助手回复拆成空轮次", () => {
+		const transcript = new TranscriptContainer();
+		transcript.loadSession(
+			[
+				{
+					kind: "input",
+					id: "u1",
+					seq: 1,
+					timestamp: "2026-10-04T00:00:00.000Z",
+					input: { id: "u1", order: 1, mode: "followUp", text: "用户问题" },
+				},
+				{
+					kind: "message",
+					id: "a1",
+					seq: 3,
+					timestamp: "2026-10-04T00:00:00.000Z",
+					message: { role: "assistant", content: "助手回答" },
+				},
+			],
+			[],
+			[
+				{
+					id: "snap",
+					seq: 2,
+					timestamp: "2026-10-04T00:00:00.000Z",
+					turnNumber: 1,
+					fingerprint: "fp",
+					systemPrompt: "BASE",
+					injections: [],
+				},
+			],
+		);
+		expect(transcript.getHistory()).toHaveLength(1);
+		expect(transcript.getHistory()[0]?.userText).toBe("用户问题");
+		expect(stripAnsi(transcript.render(100).join("\n"))).toContain("助手回答");
+	});
 });

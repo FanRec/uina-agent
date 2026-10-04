@@ -598,36 +598,39 @@ export class TranscriptContainer implements Component {
 	}
 
 	addPromptSnapshot(snapshot: PromptContextCardData): void {
-		this.commitCurrentTurn();
-		this.timeline.push({ kind: "contextCard", card: snapshot });
+		if (this.currentTurn) this.currentTurn.items.push({ kind: "contextCard", card: snapshot });
+		else this.timeline.push({ kind: "contextCard", card: snapshot });
 		this.invalidate();
 	}
 
 	addExternalInput(input: ExternalContextCardData): void {
-		this.commitCurrentTurn();
-		this.timeline.push({ kind: "contextCard", card: input });
+		if (this.currentTurn) this.currentTurn.items.push({ kind: "contextCard", card: input });
+		else this.timeline.push({ kind: "contextCard", card: input });
 		this.invalidate();
 	}
 
-	toggleContextCard(id: string): boolean {
-		for (const item of this.timeline) {
-			if (item.kind !== "contextCard") continue;
+	toggleContextCard(id?: string): boolean {
+		const matches = (item: Extract<TurnItem, { kind: "contextCard" }>): boolean => {
+			if (id === undefined) return true;
 			const itemId = item.card.kind === "external" ? item.card.inputId : item.card.id;
-			if (itemId === id) {
+			return itemId === id;
+		};
+		for (let index = this.timeline.length - 1; index >= 0; index--) {
+			const item = this.timeline[index]!;
+			if (item.kind !== "contextCard" || !matches(item)) continue;
+			item.expanded = !item.expanded;
+			this.invalidate();
+			return true;
+		}
+		const turns = this.allTurns();
+		for (let turnIndex = turns.length - 1; turnIndex >= 0; turnIndex--) {
+			const items = turns[turnIndex]!.items;
+			for (let itemIndex = items.length - 1; itemIndex >= 0; itemIndex--) {
+				const item = items[itemIndex]!;
+				if (item.kind !== "contextCard" || !matches(item)) continue;
 				item.expanded = !item.expanded;
 				this.invalidate();
 				return true;
-			}
-		}
-		for (const turn of this.allTurns()) {
-			for (const item of turn.items) {
-				if (item.kind !== "contextCard") continue;
-				const itemId = item.card.kind === "external" ? item.card.inputId : item.card.id;
-				if (itemId === id) {
-					item.expanded = !item.expanded;
-					this.invalidate();
-					return true;
-				}
 			}
 		}
 		return false;
@@ -728,8 +731,7 @@ export class TranscriptContainer implements Component {
 		}
 		let promptIndex = 0;
 		const appendPromptSnapshot = (snapshot: PromptSnapshotRecord): void => {
-			commit();
-			this.timeline.push({
+			const item: Extract<TurnItem, { kind: "contextCard" }> = {
 				kind: "contextCard",
 				card: {
 					kind: "prompt",
@@ -738,7 +740,9 @@ export class TranscriptContainer implements Component {
 					systemPrompt: snapshot.systemPrompt,
 					injections: snapshot.injections,
 				},
-			});
+			};
+			if (current) current.items.push(item);
+			else this.timeline.push(item);
 		};
 		for (const entry of entries) {
 			while (
@@ -799,8 +803,7 @@ export class TranscriptContainer implements Component {
 				entry.input.source?.kind === "runtime" &&
 				entry.input.source.origin === "external"
 			) {
-				commit();
-				this.timeline.push({
+				const item: Extract<TurnItem, { kind: "contextCard" }> = {
 					kind: "contextCard",
 					card: {
 						kind: "external",
@@ -810,7 +813,9 @@ export class TranscriptContainer implements Component {
 						text: entry.input.text,
 						...(entry.input.images ? { images: entry.input.images } : {}),
 					},
-				});
+				};
+				if (current) current.items.push(item);
+				else this.timeline.push(item);
 				continue;
 			}
 			const msg =

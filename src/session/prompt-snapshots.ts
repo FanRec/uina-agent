@@ -31,7 +31,7 @@ export function isPromptSnapshotData(value: unknown): value is PromptSnapshotDat
 		!Array.isArray(record.injections)
 	)
 		return false;
-	return record.injections.every((item) => {
+	const validInjections = record.injections.every((item) => {
 		if (!item || typeof item !== "object" || Array.isArray(item)) return false;
 		const contribution = item as Record<string, unknown>;
 		return (
@@ -44,6 +44,11 @@ export function isPromptSnapshotData(value: unknown): value is PromptSnapshotDat
 				(typeof contribution.messageCount === "number" && Number.isFinite(contribution.messageCount)))
 		);
 	});
+	return (
+		validInjections &&
+		record.fingerprint ===
+			promptSnapshotFingerprint(record.systemPrompt, record.injections as readonly InjectionProvenance[])
+	);
 }
 
 export function listPromptSnapshots(

@@ -40,7 +40,6 @@ export class InteractiveTUI {
 	private readonly toolStartedAt = new Map<string, number>();
 	private lastPromptFingerprint?: string;
 	private previousSystemPrompt?: string;
-	private promptSnapshots: readonly PromptSnapshotRecord[] = [];
 
 	/**
 	 * 工具运行中的重绘需求已并入 UIHost 统一帧时钟：
@@ -136,7 +135,6 @@ export class InteractiveTUI {
 		decorations: readonly CompactionReplayDecoration[] = [],
 		promptSnapshots: readonly PromptSnapshotRecord[] = [],
 	): void {
-		this.promptSnapshots = promptSnapshots;
 		const latest = promptSnapshots.at(-1);
 		this.lastPromptFingerprint = latest?.fingerprint;
 		this.previousSystemPrompt = latest?.systemPrompt;
@@ -151,7 +149,11 @@ export class InteractiveTUI {
 	 * 宿主事件 → TUI 状态翻译。session_rewind 需要调用方附带压缩回放装饰
 	 * （事件按 1:1 透传纪律不携带派生数据，装饰由 cli 从 host 当前 auxiliary 计算）。
 	 */
-	render(m: HostEvent, rewindDecorations: readonly CompactionReplayDecoration[] = []): void {
+	render(
+		m: HostEvent,
+		rewindDecorations: readonly CompactionReplayDecoration[] = [],
+		promptSnapshots: readonly PromptSnapshotRecord[] = [],
+	): void {
 		switch (m.type) {
 			case "model_select":
 				this.host.setModel(m.model);
@@ -163,7 +165,7 @@ export class InteractiveTUI {
 
 			case "session_rewind":
 				this.currentThinkingId = undefined;
-				this.host.replayRewind(m.entries, rewindDecorations, m.turnNumber, this.promptSnapshots);
+				this.host.replayRewind(m.entries, rewindDecorations, m.turnNumber, promptSnapshots);
 				break;
 			case "turn_start":
 				this.currentThinkingId = undefined;

@@ -640,15 +640,15 @@ export class UIHost implements UIHostContextPort {
 		promptSnapshots: readonly PromptSnapshotRecord[] = [],
 	): void {
 		const latest = promptSnapshots.at(-1);
-		if (latest) {
-			this.promptSnapshot = {
-				kind: "prompt",
-				id: latest.id,
-				turnNumber: latest.turnNumber,
-				systemPrompt: latest.systemPrompt,
-				injections: latest.injections,
-			};
-		}
+		this.promptSnapshot = latest
+			? {
+					kind: "prompt",
+					id: latest.id,
+					turnNumber: latest.turnNumber,
+					systemPrompt: latest.systemPrompt,
+					injections: latest.injections,
+				}
+			: undefined;
 		this.transcript.loadSession(entries, decorations, promptSnapshots);
 		this.scroll.resetTail();
 		this.requestRender();
@@ -714,7 +714,7 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	toggleContextCard(id: string): boolean {
+	toggleContextCard(id?: string): boolean {
 		const changed = this.transcript.toggleContextCard(id);
 		if (changed) this.requestRender();
 		return changed;
@@ -1977,7 +1977,7 @@ export class UIHost implements UIHostContextPort {
 				const result = this.transcript.toggleThinking(undefined, transcriptContentW);
 				if (!result.toggled) {
 					const toolRes = this.transcript.toggleTool(undefined, transcriptContentW);
-					if (!toolRes.toggled) {
+					if (!toolRes.toggled && !this.transcript.toggleContextCard()) {
 						this.transcript.toggleCompaction();
 					}
 				}

@@ -95,7 +95,11 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	// 装饰取自宿主当前 auxiliary（restoredAuxiliary 是启动快照，覆盖不了恢复后新发生的压缩）。
 	const renderToTui = (message: HostEvent): void => {
 		if (message.type === "session_rewind") {
-			tui!.render(message, compactionDecorations(host.auxiliaryEntries(), message.entries));
+			tui!.render(
+				message,
+				compactionDecorations(host.auxiliaryEntries(), message.entries),
+				listPromptSnapshots(host.auxiliaryEntries()),
+			);
 			return;
 		}
 		tui!.render(message);

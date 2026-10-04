@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { MemorySessionStore } from "../src/session/jsonl-store.js";
+import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
+import { SubjectHarness } from "./harness/core/subject-harness.js";
 import {
 	PROMPT_SNAPSHOT_ENTRY_TYPE,
 	isPromptSnapshotData,
@@ -66,5 +69,26 @@ describe("prompt snapshots", () => {
 			},
 		];
 		expect(listPromptSnapshots(auxiliary).map((entry) => entry.id)).toEqual(["prompt"]);
+	});
+	it("Subject 只在有效提示词构成变化时保存快照", async () => {
+		const store = new MemorySessionStore();
+		let prompt = "BASE";
+		const harness = SubjectHarness.create({
+			store,
+			runtimeHooks: {
+				...NO_RUNTIME_HOOKS,
+				turn: {
+					...NO_RUNTIME_HOOKS.turn,
+					prepare: async () => ({ systemPrompt: prompt, injections: [] }),
+				},
+			},
+		});
+		await harness.run("one");
+		await harness.run("two");
+		prompt = "CHANGED";
+		await harness.run("three");
+		const snapshots = listPromptSnapshots(store.state.auxiliary);
+		expect(snapshots).toHaveLength(2);
+		expect(snapshots.map((entry) => entry.systemPrompt)).toEqual(["BASE", "CHANGED"]);
 	});
 });

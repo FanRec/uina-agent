@@ -64,7 +64,7 @@ export class ContextCardComponent {
 		const data = this.data as PromptContextCardData;
 		const rows = [
 			`${C.text}${data.systemPrompt.length}${C.reset} 字符 · ${data.injections.length} 个来源 · ${this.changeSummary()} ` +
-				`${C.dim}${this.expanded ? "收起" : "输入 /prompt 查看全文"}${C.reset}`,
+				`${C.dim}${this.expanded ? "收起" : "Ctrl+O 或 /prompt 查看全文"}${C.reset}`,
 		];
 		if (data.injections.length === 0) rows.push(`  ${C.inactive}└─ 无额外来源${C.reset}`);
 		else {
