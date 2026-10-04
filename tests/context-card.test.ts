@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
 import { ContextCardComponent, type ContextCardData } from "../src/ui/components/transcript/context-card.js";
+import { PromptOverlay } from "../src/ui/features/overlays/prompt-overlay.js";
 
 const prompt: ContextCardData = {
 	kind: "prompt",
@@ -45,5 +46,10 @@ describe("ContextCardComponent", () => {
 		const card = new ContextCardComponent({ ...prompt, systemPrompt: "中文🙂".repeat(30) });
 		card.toggle();
 		for (const line of card.render(42)) expect(visibleWidth(stripAnsi(line))).toBeLessThanOrEqual(42);
+	});
+	it("/prompt 面板直接展示最终 system prompt 正文", () => {
+		const rendered = new PromptOverlay(prompt).render(100).join("\n");
+		expect(stripAnsi(rendered)).toContain("BASE PROMPT");
+		expect(stripAnsi(rendered)).toContain("keep the user context");
 	});
 });
