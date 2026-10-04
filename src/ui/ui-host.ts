@@ -16,6 +16,7 @@ import { ScrollController } from "./core/scroll-controller.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ContextSnapshot, RequestUsage, ThinkingLevel, ToolResultStatus } from "../core/types.js";
 import type { SessionEntry } from "../session/types.js";
+import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
 import {
 	C,
 	copyToClipboardUnified,
@@ -36,6 +37,8 @@ import {
 	TranscriptContainer,
 	type CompactionCardData,
 	type CompactionReplayDecoration,
+	type ExternalContextCardData,
+	type PromptContextCardData,
 	type LineModel,
 } from "./components/transcript/index.js";
 import {
@@ -49,13 +52,9 @@ import {
 	ScrollbarGutterComponent,
 } from "./components/widgets/index.js";
 import type { QueuedMessage } from "../agent/queue.js";
-import type { HostEvent } from "../host/events.js";
 import { ExtensionRegistry } from "../extensions/renderer-registry.js";
 import { createExtensionUIContext, type UIHostContextPort } from "./extension-ui-context.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
-
-/** 回合边界上下文构成事实（经事实单流到达，UIHost 只缓存最近一条供检视器拉取）。 */
-type ContextPrepareEvent = Extract<HostEvent, { type: "context_prepare" }>;
 
 function overlayCard(baseLine: string, cardLine: string, startCol: number, width: number): string {
 	const leftPart = truncateToWidth(baseLine, startCol, " ");
@@ -146,8 +145,8 @@ export class UIHost implements UIHostContextPort {
 	private cwd: string;
 	private lastUsage?: RequestUsage;
 	private contextSegments?: ContextSegments;
-	/** 最近一次 context_prepare 缓存（上下文检视器数据源之一；无回合运行前为空）。 */
-	private contextPrepare?: ContextPrepareEvent;
+	/** 最近一次有效提示词快照，供对话流与 /prompt 查询共用。 */
+	private promptSnapshot?: PromptContextCardData;
 
 	// 运行与动画状态
 	private running = false;
@@ -581,17 +580,6 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	/** 缓存最近一次 context_prepare（检视器数据源）。无条件重绘：关闭态多一帧是噪声级成本，
-	 * 打开态却因此能跟上回合推进——不为省一帧引入两种渲染语义。 */
-	setContextPrepare(event: ContextPrepareEvent): void {
-		this.contextPrepare = event;
-		this.requestRender();
-	}
-
-	getContextPrepare(): ContextPrepareEvent | undefined {
-		return this.contextPrepare;
-	}
-
 	setRequestUsage(usage: RequestUsage): void {
 		this.lastUsage = usage;
 		this.syncContextComponents();
@@ -646,8 +634,22 @@ export class UIHost implements UIHostContextPort {
 		this.requestRender();
 	}
 
-	loadSession(entries: readonly SessionEntry[], decorations: readonly CompactionReplayDecoration[] = []): void {
-		this.transcript.loadSession(entries, decorations);
+	loadSession(
+		entries: readonly SessionEntry[],
+		decorations: readonly CompactionReplayDecoration[] = [],
+		promptSnapshots: readonly PromptSnapshotRecord[] = [],
+	): void {
+		const latest = promptSnapshots.at(-1);
+		if (latest) {
+			this.promptSnapshot = {
+				kind: "prompt",
+				id: latest.id,
+				turnNumber: latest.turnNumber,
+				systemPrompt: latest.systemPrompt,
+				injections: latest.injections,
+			};
+		}
+		this.transcript.loadSession(entries, decorations, promptSnapshots);
 		this.scroll.resetTail();
 		this.requestRender();
 	}
@@ -661,8 +663,9 @@ export class UIHost implements UIHostContextPort {
 		entries: readonly SessionEntry[],
 		decorations: readonly CompactionReplayDecoration[] = [],
 		turnNumber?: number,
+		promptSnapshots: readonly PromptSnapshotRecord[] = [],
 	): void {
-		this.loadSession(entries, decorations);
+		this.loadSession(entries, decorations, promptSnapshots);
 		if (turnNumber !== undefined) {
 			this.transcript.startTurn(turnNumber, "");
 			this.activityLine.start("thinking", "正在思考与生成回复...");
@@ -694,6 +697,27 @@ export class UIHost implements UIHostContextPort {
 		this.activityLine.addStreamText(text);
 		this.activityLine.update("thinking", "正在深度推理 (Thinking)...");
 		this.requestRender();
+	}
+
+	addPromptSnapshot(snapshot: PromptContextCardData): void {
+		this.promptSnapshot = snapshot;
+		this.transcript.addPromptSnapshot(snapshot);
+		this.requestRender();
+	}
+
+	getPromptSnapshot(): PromptContextCardData | undefined {
+		return this.promptSnapshot;
+	}
+
+	addExternalInput(input: ExternalContextCardData): void {
+		this.transcript.addExternalInput(input);
+		this.requestRender();
+	}
+
+	toggleContextCard(id: string): boolean {
+		const changed = this.transcript.toggleContextCard(id);
+		if (changed) this.requestRender();
+		return changed;
 	}
 
 	/** 扩展自定义消息（custom_message 事件）：display:false 由转录区守卫拦截。 */

@@ -181,11 +181,10 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand({
-		name: "context",
-		description: "上下文检视器：系统提示词与注入信息 (Alt+G)",
-		keybinding: "alt+g",
+		name: "prompt",
+		description: "查看最近一次真正生效的系统提示词与注入来源",
 		handler: () => {
-			ui.openFeature?.("context-inspector");
+			ui.openFeature?.("prompt");
 		},
 	});
 

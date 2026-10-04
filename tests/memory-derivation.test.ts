@@ -100,7 +100,11 @@ describe("Memory 派生实验：capability 零内核内碰触", () => {
 			reason: "derivation",
 		});
 		await remember!.handler!("回溯后新增的记忆");
-		expect(store.state.auxiliary).toHaveLength(2);
+		// 提示词快照也属于 auxiliary：它记录本回合真正生效的 system prompt，供 /prompt 与回放使用。
+		expect(store.state.auxiliary).toHaveLength(3);
+		expect(
+			store.state.auxiliary.filter((record) => (record as { customType?: string }).customType === MEMORY_ENTRY_TYPE),
+		).toHaveLength(2);
 		expect(store.state.entries.some((entry) => (entry as { kind: string }).kind === "custom_entry")).toBe(false);
 
 		// 4. 派生测试的零内碰是文件级断言：memory-capability.ts 的 import 白名单

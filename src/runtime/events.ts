@@ -40,6 +40,7 @@ export type RuntimeEvent =
 	| TurnAbortedEvent
 	| ErrorEvent
 	| InputAcceptedEvent
+	| ExternalInputEvent
 	| CustomMessageEvent
 	| CustomEntryEvent;
 
@@ -115,6 +116,14 @@ export interface InputAcceptedEvent {
 	readonly inputId: string;
 	readonly source?: import("../core/types.js").InputSource;
 	readonly receivedAt: string;
+}
+export interface ExternalInputEvent {
+	readonly type: "external_input";
+	readonly inputId: string;
+	readonly source: import("../core/types.js").InputSource;
+	readonly receivedAt: string;
+	readonly text: string;
+	readonly images?: readonly import("../core/content.js").ImageContent[];
 }
 export interface TurnEndEvent {
 	readonly type: "turn_end";

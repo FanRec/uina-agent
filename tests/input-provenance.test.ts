@@ -19,6 +19,32 @@ describe("input provenance", () => {
 		expect(live?.input).toEqual(replay?.input);
 		expect(live?.input?.receivedAt).toMatch(/^\d{4}-/);
 	});
+	it("emits external_input only for externally sourced runtime inputs", async () => {
+		const externalStore = new MemorySessionStore();
+		const externalHarness = SubjectHarness.create({ store: externalStore });
+		const externalEvents: string[] = [];
+		externalHarness.subject.subscribe((event) => externalEvents.push(event.type));
+		await externalHarness.run({
+			id: "external-event",
+			mode: "followUp",
+			text: "external body",
+			source: { kind: "runtime", type: "file-changed", origin: "external" },
+		});
+		expect(externalEvents).toContain("external_input");
+
+		const internalStore = new MemorySessionStore();
+		const internalHarness = SubjectHarness.create({ store: internalStore });
+		const internalEvents: string[] = [];
+		internalHarness.subject.subscribe((event) => internalEvents.push(event.type));
+		await internalHarness.run({
+			id: "internal-event",
+			mode: "followUp",
+			text: "internal body",
+			source: { kind: "runtime", type: "job-done", origin: "internal" },
+		});
+		expect(internalEvents).not.toContain("external_input");
+	});
+
 	it("commits direct string inputs once as durable inputs with stable IDs", async () => {
 		const store = new MemorySessionStore();
 		const h = SubjectHarness.create({ store });

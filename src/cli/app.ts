@@ -9,13 +9,13 @@ import { combineQueuedDraft, canEditQueuedDraft } from "./draft.js";
 import { toolResultLines } from "../ui/format.js";
 import { createJobAdapter } from "../ui/adapters/jobs.js";
 import { createSubagentAdapter } from "../ui/adapters/subagents.js";
-import { createContextIntelAdapter } from "../ui/adapters/context-intel.js";
 import { formatHelp, parseArgs, readPipedStdin, UINA_VERSION } from "./args.js";
 import { resolveSessionPath } from "./session-path.js";
 import { resolveProfile, releaseProfileLock } from "../host/profile.js";
 import { formatStartupBanner, resolveExitCode, resolveRunMode } from "./run-mode.js";
 import { executeCancelActions, resolveCancelActions } from "./cancel-decision.js";
 import { formatStdioEventLine, formatToolCallLine, formatToolResultBlock } from "./stdio-render.js";
+import { listPromptSnapshots } from "../session/prompt-snapshots.js";
 
 /**
  * 组合根：只做四件事——建宿主、挂一个消费者、装进程级守卫、退出。
@@ -434,14 +434,6 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 					jobPort: createJobAdapter(host.jobs),
 					subagentPort: createSubagentAdapter(host.subagents),
 					sessionPort: host.session,
-					contextIntelPort: createContextIntelAdapter({
-						transformInjections: () => host.transformInjections(),
-						auxiliaryEntries: () =>
-							host.auxiliaryEntries().map((record) => ({
-								kind: record.kind,
-								name: record.kind === "custom_entry" ? record.customType : record.event,
-							})),
-					}),
 				},
 			});
 			host.attachExtensionUI(tui.ctxUI);
@@ -464,7 +456,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 			if (snapshot.context) tui.host.setContext(snapshot.context);
 			if (host.restoredEntries.length > 0) {
 				const decorations = compactionDecorations(host.restoredAuxiliary, host.restoredEntries);
-				tui.loadSession(host.restoredEntries, decorations);
+				tui.loadSession(host.restoredEntries, decorations, listPromptSnapshots(host.restoredAuxiliary));
 			}
 			tui.setPendingQueue(snapshot.queue);
 			for (const event of earlyEvents.splice(0)) {

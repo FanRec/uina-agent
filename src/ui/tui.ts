@@ -10,7 +10,10 @@ import { TrajectoryProjection } from "./adapters/agent-events.js";
 import type { QueuedMessage } from "../agent/queue.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 import type { SessionEntry } from "../session/types.js";
+import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
 import type { CompactionReplayDecoration } from "./components/transcript/transcript.js";
+import type { PromptContextCardData } from "./components/transcript/context-card.js";
+import { promptSnapshotFingerprint } from "../session/prompt-snapshots.js";
 
 import type { HostEvent } from "../host/events.js";
 
@@ -35,6 +38,9 @@ export class InteractiveTUI {
 	private readonly featureDisposer: () => void;
 	/** 工具事实只携带 callId：开始时刻由消费者自记，用于结算耗时。 */
 	private readonly toolStartedAt = new Map<string, number>();
+	private lastPromptFingerprint?: string;
+	private previousSystemPrompt?: string;
+	private promptSnapshots: readonly PromptSnapshotRecord[] = [];
 
 	/**
 	 * 工具运行中的重绘需求已并入 UIHost 统一帧时钟：
@@ -125,8 +131,16 @@ export class InteractiveTUI {
 		this.host.loadHistory(messages);
 	}
 
-	loadSession(entries: readonly SessionEntry[], decorations: readonly CompactionReplayDecoration[] = []): void {
-		this.host.loadSession(entries, decorations);
+	loadSession(
+		entries: readonly SessionEntry[],
+		decorations: readonly CompactionReplayDecoration[] = [],
+		promptSnapshots: readonly PromptSnapshotRecord[] = [],
+	): void {
+		this.promptSnapshots = promptSnapshots;
+		const latest = promptSnapshots.at(-1);
+		this.lastPromptFingerprint = latest?.fingerprint;
+		this.previousSystemPrompt = latest?.systemPrompt;
+		this.host.loadSession(entries, decorations, promptSnapshots);
 	}
 
 	setPendingQueue(items: readonly QueuedMessage[]): void {
@@ -149,7 +163,7 @@ export class InteractiveTUI {
 
 			case "session_rewind":
 				this.currentThinkingId = undefined;
-				this.host.replayRewind(m.entries, rewindDecorations, m.turnNumber);
+				this.host.replayRewind(m.entries, rewindDecorations, m.turnNumber, this.promptSnapshots);
 				break;
 			case "turn_start":
 				this.currentThinkingId = undefined;
@@ -172,8 +186,33 @@ export class InteractiveTUI {
 				this.host.setContext(m.snapshot);
 				break;
 
-			case "context_prepare":
-				this.host.setContextPrepare(m);
+			case "context_prepare": {
+				const fingerprint = promptSnapshotFingerprint(m.systemPrompt, m.injections);
+				if (fingerprint !== this.lastPromptFingerprint) {
+					const snapshot: PromptContextCardData = {
+						kind: "prompt",
+						id: `prompt-${m.turnNumber}-${fingerprint.slice(0, 12)}`,
+						turnNumber: m.turnNumber,
+						systemPrompt: m.systemPrompt,
+						injections: [...m.injections],
+						...(this.previousSystemPrompt === undefined ? {} : { previousSystemPrompt: this.previousSystemPrompt }),
+					};
+					this.host.addPromptSnapshot(snapshot);
+					this.lastPromptFingerprint = fingerprint;
+					this.previousSystemPrompt = m.systemPrompt;
+				}
+				break;
+			}
+
+			case "external_input":
+				this.host.addExternalInput({
+					kind: "external",
+					inputId: m.inputId,
+					source: m.source,
+					receivedAt: m.receivedAt,
+					text: m.text,
+					...(m.images ? { images: [...m.images] } : {}),
+				});
 				break;
 
 			case "session_compact":
@@ -315,10 +354,10 @@ export class InteractiveTUI {
 				// 流式由 output_update 增量驱动，输出生命周期由回合收口表达。
 				break;
 			case "input_accepted":
-				// 输入者已本地回显；runtime 来源的输入按 display 纪律对用户不可见。
+				// 人类输入由 turn_start 回显；外部 runtime 输入由 external_input 卡片表达。
 				break;
 			case "custom_entry":
-				// 扩展私有辅助词汇：由域专属表面表达（压缩卡片、/context auxiliary）。
+				// 扩展私有辅助词汇：由域专属表面表达（压缩卡片与 /prompt 快照）。
 				break;
 			case "session_compact_progress":
 				// 逐块进度噪声：起点由 session_compact_start 提示，终点由 session_compact 卡片。

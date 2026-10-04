@@ -3,12 +3,11 @@ import type { SessionAccess } from "../session/types.js";
 import type { UIHost } from "./ui-host.js";
 import type { JobPort } from "./adapters/jobs.js";
 import type { SubagentPort } from "./adapters/subagents.js";
-import type { ContextIntelPort } from "./adapters/context-intel.js";
 import { TrajectoryProjection } from "./adapters/agent-events.js";
 import { resolveGutterAction } from "./core/gutter.js";
 import {
 	BranchInspectorOverlay,
-	ContextInspectorOverlay,
+	PromptOverlay,
 	DEFAULT_EFFORT_TIERS,
 	EffortSlider,
 	HelpMenu,
@@ -25,7 +24,6 @@ export interface UIFeatureOptions {
 	jobPort?: JobPort;
 	subagentPort?: SubagentPort;
 	sessionPort?: SessionAccess;
-	contextIntelPort?: ContextIntelPort;
 }
 
 export interface ModelPickerRequest {
@@ -163,24 +161,13 @@ export function installUIFeatures(
 			}),
 		);
 
-	register("context-inspector", () => {
-		const intel = options.contextIntelPort;
-		if (!intel) {
-			host.notify("当前消费者未提供上下文检视数据端口", "warning");
-			return;
-		}
-		host.showPanel("context-inspector", (close) => {
-			const view = new ContextInspectorOverlay({
-				getPrepare: () => host.getContextPrepare(),
-				getTransformInjections: () => intel.lastTransformInjections(),
-				getAuxiliarySummary: () => intel.auxiliarySummary(),
-				...(sessionPort ? { sessionPort } : {}),
-			});
+	register("prompt", () =>
+		host.showPanel("prompt", (close) => {
+			const view = new PromptOverlay(host.getPromptSnapshot());
 			view.onClose = close;
-			view.onRequestRender = () => host.requestRender();
 			return view;
-		});
-	});
+		}),
+	);
 
 	return {
 		trajectory,

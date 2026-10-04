@@ -9,3 +9,4 @@ export * from "./tool-view.js";
 export * from "./diff-view.js";
 export * from "./stream-markdown.js";
 export * from "./smooth-reveal.js";
+export * from "./context-card.js";

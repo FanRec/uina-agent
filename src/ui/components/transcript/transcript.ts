@@ -9,6 +9,7 @@ import type { Component } from "../../core/types.js";
 import { projectInputMessage } from "../../../session/recovery.js";
 import type { ChatMsg, ToolResultStatus } from "../../../core/types.js";
 import type { SessionEntry } from "../../../session/types.js";
+import type { PromptSnapshotRecord } from "../../../session/prompt-snapshots.js";
 import { C, wrapTextWithAnsi, stripAnsi } from "../../core/utils.js";
 import { sanitizeRenderText } from "../../format.js";
 import { formatToolCardLines } from "./tool-view.js";
@@ -22,6 +23,12 @@ import {
 	CustomMessageComponent,
 } from "./cards.js";
 import { SmoothRevealController } from "./smooth-reveal.js";
+import {
+	ContextCardComponent,
+	type ContextCardData,
+	type ExternalContextCardData,
+	type PromptContextCardData,
+} from "./context-card.js";
 import type {
 	CustomMessage,
 	MessageRenderer,
@@ -81,7 +88,8 @@ export type TurnItem =
 			 * 归入当前轮，回放路径按轮间独立卡片重建——两者都是 journal 时间序。 */
 			kind: "customMessage";
 			message: CustomMessage;
-	  };
+	  }
+	| { kind: "contextCard"; card: ContextCardData; expanded?: boolean };
 
 /** 单个思考块。折叠与 hover 的身份单位。 */
 export type ThinkingItem = Extract<TurnItem, { kind: "thinking" }>;
@@ -174,7 +182,8 @@ export type TimelineItem =
 	| { kind: "notice"; text: string }
 	| { kind: "error"; text: string }
 	| { kind: "compaction"; record: CompactionCardData }
-	| { kind: "customMessage"; message: CustomMessage };
+	| { kind: "customMessage"; message: CustomMessage }
+	| { kind: "contextCard"; card: ContextCardData; expanded?: boolean };
 /** One settled turn rendered as a self-contained block. Location indices are
  * block-relative; the assembler rebases them onto the final line array. */
 interface TurnBlock {
@@ -588,6 +597,42 @@ export class TranscriptContainer implements Component {
 		this.invalidate();
 	}
 
+	addPromptSnapshot(snapshot: PromptContextCardData): void {
+		this.commitCurrentTurn();
+		this.timeline.push({ kind: "contextCard", card: snapshot });
+		this.invalidate();
+	}
+
+	addExternalInput(input: ExternalContextCardData): void {
+		this.commitCurrentTurn();
+		this.timeline.push({ kind: "contextCard", card: input });
+		this.invalidate();
+	}
+
+	toggleContextCard(id: string): boolean {
+		for (const item of this.timeline) {
+			if (item.kind !== "contextCard") continue;
+			const itemId = item.card.kind === "external" ? item.card.inputId : item.card.id;
+			if (itemId === id) {
+				item.expanded = !item.expanded;
+				this.invalidate();
+				return true;
+			}
+		}
+		for (const turn of this.allTurns()) {
+			for (const item of turn.items) {
+				if (item.kind !== "contextCard") continue;
+				const itemId = item.card.kind === "external" ? item.card.inputId : item.card.id;
+				if (itemId === id) {
+					item.expanded = !item.expanded;
+					this.invalidate();
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
 	addCustomMessage(msg: CustomMessage): void {
 		if (msg.display === false) return;
 		// 轮内到达时归入当前轮（时间序）；不能先 commit 当前轮——流式/工具追加都
@@ -655,7 +700,11 @@ export class TranscriptContainer implements Component {
 
 	/** Restores the display projection from the same ordered entries used to
 	 * build provider history. Operational events never become transcript rows. */
-	loadSession(entries: readonly SessionEntry[], decorations: readonly CompactionReplayDecoration[] = []): void {
+	loadSession(
+		entries: readonly SessionEntry[],
+		decorations: readonly CompactionReplayDecoration[] = [],
+		promptSnapshots: readonly PromptSnapshotRecord[] = [],
+	): void {
 		this.clear();
 		let turnN = 0;
 		let current: TurnRecord | null = null;
@@ -677,7 +726,28 @@ export class TranscriptContainer implements Component {
 			list.push(decoration);
 			decorationsByEntry.set(decoration.beforeEntryId, list);
 		}
+		let promptIndex = 0;
+		const appendPromptSnapshot = (snapshot: PromptSnapshotRecord): void => {
+			commit();
+			this.timeline.push({
+				kind: "contextCard",
+				card: {
+					kind: "prompt",
+					id: snapshot.id,
+					turnNumber: snapshot.turnNumber,
+					systemPrompt: snapshot.systemPrompt,
+					injections: snapshot.injections,
+				},
+			});
+		};
 		for (const entry of entries) {
+			while (
+				promptIndex < promptSnapshots.length &&
+				(entry.seq === undefined || promptSnapshots[promptIndex]!.seq < entry.seq)
+			) {
+				appendPromptSnapshot(promptSnapshots[promptIndex]!);
+				promptIndex++;
+			}
 			const before = entry.id ? decorationsByEntry.get(entry.id) : undefined;
 			if (before) {
 				commit();
@@ -717,12 +787,32 @@ export class TranscriptContainer implements Component {
 					message: {
 						customType: entry.customType,
 						content: entry.content,
+						...(entry.images === undefined ? {} : { images: entry.images }),
 						...(entry.details === undefined ? {} : { details: entry.details }),
 					},
 				});
 				continue;
 			}
 
+			if (
+				entry.kind === "input" &&
+				entry.input.source?.kind === "runtime" &&
+				entry.input.source.origin === "external"
+			) {
+				commit();
+				this.timeline.push({
+					kind: "contextCard",
+					card: {
+						kind: "external",
+						inputId: entry.input.id,
+						source: entry.input.source,
+						receivedAt: entry.input.receivedAt ?? entry.timestamp ?? new Date().toISOString(),
+						text: entry.input.text,
+						...(entry.input.images ? { images: entry.input.images } : {}),
+					},
+				});
+				continue;
+			}
 			const msg =
 				entry.kind === "input"
 					? projectInputMessage(entry.input)
@@ -778,6 +868,10 @@ export class TranscriptContainer implements Component {
 					callId: msg.tool_call_id,
 				});
 			}
+		}
+		while (promptIndex < promptSnapshots.length) {
+			appendPromptSnapshot(promptSnapshots[promptIndex]!);
+			promptIndex++;
 		}
 		commit();
 		this.invalidate();
@@ -1055,6 +1149,12 @@ export class TranscriptContainer implements Component {
 					blocks.push({ kind: "static", lines: comp.render(width) });
 					break;
 				}
+				case "contextCard": {
+					const comp = new ContextCardComponent(item.card);
+					if (item.expanded) comp.toggle();
+					blocks.push({ kind: "static", lines: comp.render(width) });
+					break;
+				}
 			}
 		}
 		this.settledBlocks = { width, blocks, staleTurns: new Set(), staleCompactions: new Set() };
@@ -1131,6 +1231,10 @@ export class TranscriptContainer implements Component {
 				out.push(`  \x1b[2m${item.text}\x1b[0m`);
 			} else if (item.kind === "customMessage") {
 				const comp = new CustomMessageComponent(item.message, this.messageRenderer(item.message.customType));
+				out.push(...comp.render(width));
+			} else if (item.kind === "contextCard") {
+				const comp = new ContextCardComponent(item.card);
+				if (item.expanded) comp.toggle();
 				out.push(...comp.render(width));
 			}
 		}

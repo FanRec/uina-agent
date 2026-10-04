@@ -36,6 +36,11 @@ import type { RuntimeHooks } from "../runtime/hooks.js";
 import type { OutputEvent, RuntimeEvent } from "../runtime/events.js";
 import { NO_RUNTIME_HOOKS } from "../runtime/noop.js";
 import { guardRuntimeHooks, immutableProjection } from "../runtime/guard.js";
+import {
+	PROMPT_SNAPSHOT_ENTRY_TYPE,
+	listPromptSnapshots,
+	promptSnapshotFingerprint,
+} from "../session/prompt-snapshots.js";
 
 export interface SubjectOptions {
 	store?: SessionStore;
@@ -159,6 +164,7 @@ export class Subject {
 	private contextInspectionSeq = 0;
 	private streamSeq = 0;
 	private readonly listeners = new Set<(event: RuntimeEvent) => void>();
+	private lastPromptFingerprint?: string;
 
 	constructor(
 		model: Model,
@@ -170,6 +176,9 @@ export class Subject {
 		this.streamFn = streamFn;
 		this.store = options.store;
 		this.systemPrompt = options.systemPrompt ?? defaultSystemPrompt();
+		this.lastPromptFingerprint =
+			listPromptSnapshots(this.store?.state.auxiliary ?? []).at(-1)?.fingerprint ??
+			promptSnapshotFingerprint(this.systemPrompt, []);
 		this.projection = resolveProjectionPolicy(options.projection);
 		this.preferredThinkingLevel = options.thinkingLevel ?? model.thinkingLevels?.[0] ?? "off";
 		if (this.preferredThinkingLevel !== "off" && !model.thinkingLevels?.includes(this.preferredThinkingLevel)) {
@@ -217,12 +226,21 @@ export class Subject {
 		turnNumber: number,
 		prepared: Awaited<ReturnType<RuntimeHooks["turn"]["prepare"]>> | undefined,
 	): Promise<void> {
-		await this.dispatch({
-			type: "context_prepare",
-			turnNumber,
-			systemPrompt: prepared?.systemPrompt ?? this.systemPrompt,
-			injections: prepared?.injections ?? [],
-		});
+		const systemPrompt = prepared?.systemPrompt ?? this.systemPrompt;
+		const injections = prepared?.injections ?? [];
+		const fingerprint = promptSnapshotFingerprint(systemPrompt, injections);
+		if (fingerprint !== this.lastPromptFingerprint) {
+			try {
+				await this.store?.appendCustomEntry({
+					customType: PROMPT_SNAPSHOT_ENTRY_TYPE,
+					data: { turnNumber, fingerprint, systemPrompt, injections },
+				});
+				this.lastPromptFingerprint = fingerprint;
+			} catch (error) {
+				this.reportError(error);
+			}
+		}
+		await this.dispatch({ type: "context_prepare", turnNumber, systemPrompt, injections });
 	}
 
 	/**
@@ -544,12 +562,23 @@ export class Subject {
 
 	/** 输入受理的唯一事实出口。调用方必须先完成持久化或明确的直接启动准入。 */
 	private publishInputAccepted(queued: QueuedMessage): void {
+		const receivedAt = queued.receivedAt ?? new Date().toISOString();
 		this.dispatch({
 			type: "input_accepted",
 			inputId: queued.id,
 			...(queued.source ? { source: queued.source } : {}),
-			receivedAt: queued.receivedAt ?? new Date().toISOString(),
+			receivedAt,
 		});
+		if (queued.source?.kind === "runtime" && queued.source.origin === "external") {
+			this.dispatch({
+				type: "external_input",
+				inputId: queued.id,
+				source: queued.source,
+				receivedAt,
+				text: queued.text,
+				...(queued.images ? { images: queued.images } : {}),
+			});
+		}
 	}
 	accept(input: AgentInput): Promise<void> {
 		if (!validImages(input.images)) return Promise.reject(new Error("图片内容无效"));
