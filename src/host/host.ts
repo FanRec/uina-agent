@@ -128,12 +128,6 @@ export class UinaHost {
 		return [...this.store.state.auxiliary];
 	}
 
-	/** 最近一次 turn.transformContext 聚合运行的逐扩展贡献 provenance（上下文检视器拉取口）。
-	 * 实时直读聚合层——每请求运行的事实不缓存不过期，检视器打开时读到的就是最近一次。 */
-	transformInjections(): readonly import("../runtime/events.js").InjectionProvenance[] {
-		return this.extensionHost.lastTransformInjections();
-	}
-
 	static async create(options: UinaHostOptions): Promise<UinaHost> {
 		const config = options.provider === undefined && options.model === undefined ? loadConfig() : undefined;
 		const models = new ModelRegistry(config);

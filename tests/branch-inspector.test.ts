@@ -409,7 +409,7 @@ describe("BranchInspectorOverlay paging", () => {
 	});
 
 	// runtime 标志：runtime 来源的输入（模型可见、转录按 display 纪律隐藏）在节点
-	// 投影上必须可辨识——这是 /context 运行时输入审计段的数据来源。
+	// 投影上必须可辨识——这是 /prompt 运行时输入审计段的数据来源。
 	it("flags runtime-originated inputs and leaves user inputs unflagged", async () => {
 		const store = new MemorySessionStore();
 		const userInput = { id: "in-user", order: 1, mode: "followUp" as const, text: "用户输入" };
