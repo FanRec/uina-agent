@@ -123,7 +123,12 @@ export function rankFileCandidates(candidates: FileItem[], query: string, topK =
 			score: fuzzySubsequenceScore(query, `${c.path} ${c.name}`),
 		}))
 		.filter((c) => c.score !== undefined)
-		.sort((a, b) => b.score! - a.score! || a.kind.localeCompare(b.kind) || a.path.localeCompare(b.path));
+		.sort((a, b) => {
+			const normalizedQuery = query.toLocaleLowerCase();
+			const aDirectFile = a.kind === "file" && a.name.toLocaleLowerCase().startsWith(normalizedQuery) ? 1 : 0;
+			const bDirectFile = b.kind === "file" && b.name.toLocaleLowerCase().startsWith(normalizedQuery) ? 1 : 0;
+			return bDirectFile - aDirectFile || b.score! - a.score! || a.kind.localeCompare(b.kind) || a.path.localeCompare(b.path);
+		});
 
 	return scored.slice(0, topK);
 }

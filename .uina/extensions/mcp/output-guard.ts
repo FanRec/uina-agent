@@ -49,8 +49,13 @@ export class McpOutputGuard {
 		text = this.guardText(text);
 
 		const detailsExtra = this.buildDetails(result, content.length, resourceLinks, placeholders);
-		const rawJson = safeStringify(result);
-		const mcpResult = Buffer.byteLength(rawJson, "utf-8") <= MAX_DETAILS_BYTES ? result : boundRawResult(rawJson, this.tmpDir);
+		// The image attachment is already projected into `images` for the model.
+		// Keep that attachment intact, but do not write the same base64 payload a
+		// second time into the bounded diagnostic journal when the raw MCP result
+		// crosses the details budget.
+		const diagnosticResult = projectDiagnosticResult(result);
+		const rawJson = safeStringify(diagnosticResult);
+		const mcpResult = Buffer.byteLength(rawJson, "utf-8") <= MAX_DETAILS_BYTES ? diagnosticResult : boundRawResult(rawJson, this.tmpDir);
 
 		return {
 			text,
@@ -184,6 +189,28 @@ export class McpOutputGuard {
 			detailsSummaryOmitted: { reason: "details 附加内容超过 16 KiB 上限", blocks: contentCount },
 		};
 	}
+}
+
+function projectDiagnosticResult(result: Record<string, unknown>): Record<string, unknown> {
+	if (!Array.isArray(result.content)) return result;
+	const content = (result.content as McpContentBlock[]).map((block) => {
+		if (
+			block.type !== "image" ||
+			typeof block.data !== "string" ||
+			typeof block.mimeType !== "string" ||
+			!SUPPORTED_IMAGE_MIMES.includes(block.mimeType)
+		) {
+			return block;
+		}
+		return {
+			...block,
+			data: undefined,
+			imageDataOmitted: true,
+			decodedBytes: Buffer.byteLength(block.data, "base64"),
+			originalBase64Chars: block.data.length,
+		};
+	});
+	return { ...result, content };
 }
 
 function boundStructuredContent(value: unknown, budget = MAX_DETAILS_BYTES): unknown {

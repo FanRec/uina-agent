@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uina-screen-mcp"
+version = "0.1.0"
+description = "Local Windows desktop observation MCP server for Uina"
+requires-python = ">=3.12"
+dependencies = [
+  "mcp==1.30.0",
+  "Pillow==12.3.0",
+  "jsonschema==4.26.0",
+  "uiautomation==2.0.29; sys_platform == 'win32'",
+  "comtypes==1.4.17; sys_platform == 'win32'",
+]
+
+[project.scripts]
+uina-screen-mcp = "uina_screen_mcp.__main__:main"
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+  "desktop: explicitly authorized real Windows desktop tests",
+  "provider: explicitly authorized real provider tests",
+]
+

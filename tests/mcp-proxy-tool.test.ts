@@ -418,6 +418,23 @@ describe("call 投影与 Output Guard", () => {
 		expect(existsSync(mcpResult.fullResultPath!)).toBe(true);
 	});
 
+	it("大图已进入 images 后，诊断落盘不重复保存 base64", async () => {
+		const image = Buffer.alloc(20_000, 0xab).toString("base64");
+		fake.callResult = {
+			content: [
+				{ type: "text", text: "Observation: PARTIAL" },
+				{ type: "image", data: image, mimeType: "image/png" },
+			],
+		};
+		const out = await run({ action: "call", tool: "srv.echo" });
+		expect(out.images).toHaveLength(1);
+		const mcpResult = out.details?.mcpResult as { content: Array<Record<string, unknown>> };
+		const raw = JSON.stringify(mcpResult);
+		expect(raw).not.toContain(image);
+		expect(raw).toContain("imageDataOmitted");
+		expect(raw).toContain("decodedBytes");
+	});
+
 	it("未发现的工具绝不冷调用 → failed 并指引 list(server)", async () => {
 		const out = await run({ action: "call", tool: "srv.nope" });
 		expect(out.status).toBe("failed");
