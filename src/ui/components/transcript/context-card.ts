@@ -64,7 +64,7 @@ export class ContextCardComponent {
 		const data = this.data as PromptContextCardData;
 		const rows = [
 			`${C.text}${data.systemPrompt.length}${C.reset} 字符 · ${data.injections.length} 个来源 · ${this.changeSummary()} ` +
-				`${C.dim}${this.expanded ? "收起" : "展开查看"}${C.reset}`,
+				`${C.dim}${this.expanded ? "收起" : "输入 /prompt 查看全文"}${C.reset}`,
 		];
 		if (data.injections.length === 0) rows.push(`  ${C.inactive}└─ 无额外来源${C.reset}`);
 		else {
@@ -85,7 +85,7 @@ export class ContextCardComponent {
 		const data = this.data as ExternalContextCardData;
 		const rows = [
 			`${C.text}来源${C.reset} ${data.source.kind}/${data.source.type}${data.source.ref ? ` · ${data.source.ref}` : ""}`,
-			`${C.dim}${data.receivedAt}${C.reset} · ${C.dim}${this.expanded ? "收起" : "展开查看"}${C.reset}`,
+			`${C.dim}${data.receivedAt}${C.reset}${this.expanded ? ` · ${C.dim}收起${C.reset}` : ""}`,
 		];
 		const text = sanitizeRenderText(data.text + imageNotice(data.images));
 		const lines = wrapTextWithAnsi(text, Math.max(1, width - 2));
