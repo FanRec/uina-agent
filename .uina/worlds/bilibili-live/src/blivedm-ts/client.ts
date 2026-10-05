@@ -279,14 +279,15 @@ export class BilibiliLiveClient extends WebSocketClientBase {
 
     this.emit("raw", body);
 
-    const cmd = body.cmd;
+    const rawCmd = typeof body.cmd === "string" ? body.cmd : "";
+    const cmd = rawCmd.split(":")[0];
     if (cmd === "DANMU_MSG" && Array.isArray(body.info)) {
       const event = parseDanmaku(body.info);
       if (this.isOwnEcho(event)) {
         return;
       }
       this.emit("danmaku", event);
-    } else if (cmd === "SEND_GIFT" && body.data) {
+    } else if ((cmd === "SEND_GIFT" || cmd === "SEND_GIFT_V2") && body.data) {
       this.emit("gift", parseGift(body.data));
     } else if (cmd === "SUPER_CHAT_MESSAGE" && body.data) {
       this.emit("superChat", parseSuperChat(body.data));

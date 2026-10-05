@@ -512,15 +512,22 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
           try {
             const checked = parseNotificationSettings(next);
             await saveNotificationSettings(notificationFile, checked);
-            const wasChatEnabled = notificationSettings.chat_messages === "on";
+            const previous = notificationSettings;
             notificationSettings = checked;
-            if (!wasChatEnabled && checked.chat_messages === "on" && buffer.bufferSize > 0) danmakuNotifier.notify();
-            if (notificationSettings.chat_messages === "off") {
+            if (previous.chat_messages === "off" && checked.chat_messages === "on" && buffer.bufferSize > 0) {
+              danmakuNotifier.notify();
+            }
+            if (checked.chat_messages === "off") {
               danmakuNotifier.invalidate();
               danmakuBatchStartId = null;
               danmakuBatchEndId = null;
             }
-            if (notificationSettings.gifts === "on" && checked.gifts === "off") giftNotifier.invalidate();
+            if (previous.gifts === "off" && checked.gifts === "on" && buffer.hasTransientGifts) {
+              giftNotifier.notify();
+            }
+            if (checked.gifts === "off") {
+              giftNotifier.invalidate();
+            }
             return worldSucceeded(JSON.stringify(notificationSettings, null, 2), undefined, "applied");
           } catch (error) {
             return worldFailed(`通知设置保存失败：${error instanceof Error ? error.message : String(error)}`, {

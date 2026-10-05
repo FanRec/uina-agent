@@ -221,6 +221,7 @@ export class LiveEventBuffer {
       price: number;
       count: number;
       time: EventTime;
+      firstSeenMs: number;
     }
   >();
 
@@ -245,6 +246,7 @@ export class LiveEventBuffer {
   }
 
   ingestGift(msg: {
+    id?: string;
     uid: number | string;
     uname: string;
     giftId: number;
@@ -279,14 +281,28 @@ export class LiveEventBuffer {
     // 2. 检查是否可与暂态小额礼物聚合
     const transient = this.transientGifts.get(key);
     let totalCount = msg.count;
+    const firstSeenMs =
+      transient && time.monotonicTimeMs - transient.time.monotonicTimeMs <= windowMs
+        ? transient.firstSeenMs
+        : time.monotonicTimeMs;
+
     if (transient && time.monotonicTimeMs - transient.time.monotonicTimeMs <= windowMs) {
       totalCount += transient.count;
     }
 
-    const totalBattery = isPaid ? msg.price * totalCount : 0;
+    // 统一以金瓜子计算总价值（1000 金瓜子 = 1 元）
+    const totalGoldSeeds = isPaid ? msg.price * totalCount : 0;
+    const threshold = this.config.wakeup.wakeOnGiftThreshold ?? this.config.gifts.pendingThreshold ?? 1000;
 
     // 3. 未达待办阈值（或免费礼物）：存入/更新暂态小额礼物池，等待批量感知推送
-    if (totalBattery < this.config.gifts.pendingThreshold) {
+    if (totalGoldSeeds < threshold || !isPaid) {
+      if (this.transientGifts.size > 200) {
+        for (const [k, g] of this.transientGifts) {
+          if (time.monotonicTimeMs - g.time.monotonicTimeMs > windowMs) {
+            this.transientGifts.delete(k);
+          }
+        }
+      }
       this.transientGifts.set(key, {
         uid: msg.uid,
         uname: msg.uname,
@@ -295,6 +311,7 @@ export class LiveEventBuffer {
         price: msg.price,
         count: totalCount,
         time,
+        firstSeenMs,
       });
       return { record: null, shouldWake: false, transient: true };
     }
@@ -302,7 +319,10 @@ export class LiveEventBuffer {
     // 4. 达到或超过待办阈值：清理暂态缓存，转正为正式待办事件并落盘
     this.transientGifts.delete(key);
 
-    const sourceEventKey = `bilibili:gift:${msg.uid}:${msg.giftId}:${time.wallTimeMs}`;
+    const sourceEventKey = msg.id
+      ? (msg.id.startsWith("bilibili:") ? msg.id : `bilibili:gift:${msg.id}`)
+      : `bilibili:gift:${msg.uid}:${msg.giftId}:${time.wallTimeMs}`;
+
     if (this.journal.hasEventKey(sourceEventKey)) {
       return { record: null, shouldWake: false };
     }
@@ -323,11 +343,15 @@ export class LiveEventBuffer {
       handled: false,
     };
 
-    try { this.journal.recordEvent(record); } catch (error) { this.counters.gf--; throw error; }
+    try {
+      this.journal.recordEvent(record);
+    } catch (error) {
+      this.counters.gf--;
+      throw error;
+    }
     this.pendingEvents.set(alias, record);
 
-    const shouldWake = totalBattery >= this.config.wakeup.wakeOnGiftThreshold;
-    return { record, shouldWake };
+    return { record, shouldWake: true };
   }
 
   markHandled(eventId: string): ActionOutcome<{ eventId: string }> {
@@ -391,16 +415,23 @@ export class LiveEventBuffer {
   }
 
   /**
-   * 排出已安静的暂态礼物：距最后一次更新 ≥ quietMs 的条目整批上报并清除。
-   * 连击中的条目（quietMs 内有新到达）留在池中继续累积，停手后一次上报总数。
-   * quietMs 与推送轮询节拍一致（2s）：单发礼物下个节拍即报，连击停手后 2-4s 内报。
-   * 静默条目总价值低于 gifts.minReportValue 的静默丢弃（连击中的条目不受影响，继续累积）。
+   * 排出已安静或达到最大积压时限的暂态礼物：
+   * - 距最后一次更新 ≥ quietMs（连击停手，静默结算）
+   * - 或距首次到达 ≥ maxAggregationMs（持续连击防饥饿保护，默认 8s）
+   * 整批上报并清除。静默条目总价值低于 gifts.minReportValue 的静默丢弃。
    */
-  drainQuietTransientGifts(quietMs: number, nowMs: number = performance.now()): string[] {
+  drainQuietTransientGifts(
+    quietMs: number,
+    nowMs: number = performance.now(),
+    maxAggregationMs: number = 8000
+  ): string[] {
     const minReportValue = this.config.gifts.minReportValue;
     const lines: string[] = [];
     for (const [key, gift] of this.transientGifts) {
-      if (nowMs - gift.time.monotonicTimeMs < quietMs) continue;
+      const isQuiet = nowMs - gift.time.monotonicTimeMs >= quietMs;
+      const isMaxAgeReached = nowMs - gift.firstSeenMs >= maxAggregationMs;
+      if (!isQuiet && !isMaxAgeReached) continue;
+
       this.transientGifts.delete(key);
       if (gift.price * gift.count < minReportValue) continue;
       lines.push(`* ${sanitizeUntrustedText(gift.uname)} 赠送 ${sanitizeUntrustedText(gift.giftName)} x${gift.count}`);

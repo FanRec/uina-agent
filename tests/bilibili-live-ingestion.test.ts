@@ -368,4 +368,183 @@ describe("LiveEventIngestion", () => {
 		expect(buffer.drainQuietTransientGifts(2000, 5000)).toEqual([]);
 		buffer.dispose();
 	});
+
+	it("prevents starvation by flushing after maxAggregationMs even under continuous combo", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "uina-ingestion-"));
+		const config = loadConfig({ storage: { dataDir: tempDir } });
+		const buffer = new LiveEventBuffer(config);
+
+		// 模拟每隔 1s 连送一次（用户一直在连点，quietMs = 2000 恒不满足）
+		buffer.ingestGift({
+			uid: 42,
+			uname: "fan",
+			giftId: 1,
+			giftName: "小心心",
+			price: 100,
+			count: 1,
+			monotonicTimeMs: 0,
+		});
+		buffer.ingestGift({
+			uid: 42,
+			uname: "fan",
+			giftId: 1,
+			giftName: "小心心",
+			price: 100,
+			count: 1,
+			monotonicTimeMs: 1000,
+		});
+		buffer.ingestGift({
+			uid: 42,
+			uname: "fan",
+			giftId: 1,
+			giftName: "小心心",
+			price: 100,
+			count: 1,
+			monotonicTimeMs: 2000,
+		});
+		buffer.ingestGift({
+			uid: 42,
+			uname: "fan",
+			giftId: 1,
+			giftName: "小心心",
+			price: 100,
+			count: 1,
+			monotonicTimeMs: 3000,
+		});
+
+		// 在 3500ms 时，quietMs = 2000 没满足，maxAggregationMs(8000) 也没满足，不应排空
+		expect(buffer.drainQuietTransientGifts(2000, 3500, 8000)).toEqual([]);
+
+		buffer.ingestGift({
+			uid: 42,
+			uname: "fan",
+			giftId: 1,
+			giftName: "小心心",
+			price: 100,
+			count: 1,
+			monotonicTimeMs: 5000,
+		});
+		buffer.ingestGift({
+			uid: 42,
+			uname: "fan",
+			giftId: 1,
+			giftName: "小心心",
+			price: 100,
+			count: 1,
+			monotonicTimeMs: 7000,
+		});
+		buffer.ingestGift({
+			uid: 42,
+			uname: "fan",
+			giftId: 1,
+			giftName: "小心心",
+			price: 100,
+			count: 1,
+			monotonicTimeMs: 8200,
+		});
+
+		// 在 8300ms 时，虽然最后更新是 8200 (距最后更新只有 100ms < 2000ms)，但距首次到达 (0ms) 已经 8300ms >= 8000ms！
+		// 防饥饿生效，立即排出阶段性汇总！
+		const lines = buffer.drainQuietTransientGifts(2000, 8300, 8000);
+		expect(lines).toEqual(["* fan 赠送 小心心 x7"]);
+		expect(buffer.hasTransientGifts).toBe(false);
+
+		buffer.dispose();
+	});
+
+	it("preserves multiple high-value gifts sent in the same second when distinct transaction id is present", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "uina-ingestion-"));
+		const config = loadConfig({
+			storage: { dataDir: tempDir },
+			wakeup: { wakeOnGiftThreshold: 1000 },
+		});
+		const buffer = new LiveEventBuffer(config);
+		const wakes: unknown[] = [];
+		const client = new FakeClient();
+		const ingestion = new LiveEventIngestion(
+			config,
+			buffer,
+			() => undefined,
+			(decision) => wakes.push(decision),
+		);
+		ingestion.replace(client);
+
+		// 第一个礼物到达并立即被处理 (markHandled)
+		client.emit("gift", {
+			id: "tid_001",
+			uid: 88,
+			uname: "boss",
+			giftId: 99,
+			giftName: "飞机",
+			price: 1000,
+			count: 1,
+			timestamp: 5000,
+		});
+		expect(wakes).toHaveLength(1);
+		buffer.markHandled("gf_1");
+
+		// 同一秒 (timestamp: 5000) 内老板又送了一个新礼物 (tid_002)
+		// 旧代码按秒级时间戳拼 key 导致 hasEventKey 判定为网络重放误杀；新代码按 tid 幂等，正常放行！
+		client.emit("gift", {
+			id: "tid_002",
+			uid: 88,
+			uname: "boss",
+			giftId: 99,
+			giftName: "飞机",
+			price: 1000,
+			count: 1,
+			timestamp: 5000,
+		});
+
+		expect(wakes).toEqual([
+			{ sourceEventKey: "bilibili:gift:tid_001", reason: "gift" },
+			{ sourceEventKey: "bilibili:gift:tid_002", reason: "gift" },
+		]);
+
+		buffer.dispose();
+	});
+
+	it("leaves no dead zone between pendingThreshold and wakeOnGiftThreshold", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "uina-ingestion-"));
+		const config = loadConfig({
+			storage: { dataDir: tempDir },
+			gifts: { pendingThreshold: 500 },
+			wakeup: { wakeOnGiftThreshold: 500 },
+		});
+		const buffer = new LiveEventBuffer(config);
+		const wakes: unknown[] = [];
+		let smallGiftCount = 0;
+		const client = new FakeClient();
+		const ingestion = new LiveEventIngestion(
+			config,
+			buffer,
+			() => undefined,
+			(decision) => wakes.push(decision),
+			undefined,
+			() => {
+				smallGiftCount++;
+			},
+		);
+		ingestion.replace(client);
+
+		// 价值 600 瓜子的礼物，达到 500 阈值
+		client.emit("gift", {
+			id: "tid_mid_1",
+			uid: 99,
+			uname: "viewer",
+			giftId: 10,
+			giftName: "中额礼物",
+			price: 600,
+			count: 1,
+			timestamp: 6000,
+		});
+
+		// 必须触发待办唤醒，不能成为既不唤醒也不进小额推送的幽灵
+		expect(wakes).toHaveLength(1);
+		expect(wakes[0]).toEqual({ sourceEventKey: "bilibili:gift:tid_mid_1", reason: "gift" });
+		expect(smallGiftCount).toBe(0);
+		expect(buffer.getPendingCounts().gifts).toBe(1);
+
+		buffer.dispose();
+	});
 });

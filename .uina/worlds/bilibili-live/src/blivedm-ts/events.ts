@@ -228,20 +228,29 @@ export function parseDanmaku(info: any[]): DanmakuEvent {
 }
 
 export function parseGift(data: any): GiftEvent {
-  const id = String(data.tid || data.rnd || `${data.timestamp || Date.now()}_${data.uid}_${data.giftId}`);
+  const giftId = Number(data.giftId ?? data.gift_id ?? 0);
+  const giftName = String(data.giftName ?? data.gift_name ?? "");
+  const count = Number(data.num ?? data.combo_num ?? data.count ?? 1);
+  const price = Number(data.price ?? (data.total_coin ? Math.round(data.total_coin / count) : 0));
+  const uid = Number(data.uid ?? 0);
+  const uname = String(data.uname ?? "");
+  const timestamp = data.timestamp
+    ? (data.timestamp > 1e11 ? data.timestamp : data.timestamp * 1000)
+    : Date.now();
+  const id = String(data.tid || data.transaction_id || data.rnd || `${timestamp}_${uid}_${giftId}_${count}`);
   const medalInfo = data.medal_info;
 
   return {
     id,
-    uid: data.uid,
-    uname: data.uname,
-    giftId: data.giftId,
-    giftName: data.giftName,
-    count: data.num || 1,
-    price: data.price || 0,
+    uid,
+    uname,
+    giftId,
+    giftName,
+    count,
+    price,
     coinType: data.coin_type === "silver" ? "silver" : "gold",
     action: data.action || "赠送",
-    timestamp: data.timestamp ? data.timestamp * 1000 : Date.now(),
+    timestamp,
     guardLevel: data.guard_level,
     medalName: medalInfo?.medal_name,
     medalLevel: medalInfo?.medal_level,

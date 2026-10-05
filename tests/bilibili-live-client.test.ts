@@ -76,3 +76,67 @@ describe("BilibiliLiveClient authenticated uid", () => {
 		expect(await fetchUserId("session")).toBe(0);
 	});
 });
+
+describe("BilibiliLiveClient handleBusinessMessage command dispatching", () => {
+	it("dispatches SEND_GIFT_V2 and colon-suffixed commands", () => {
+		const client = new BilibiliLiveClient({ roomId: 24194689 });
+		const gifts: any[] = [];
+		const danmakus: any[] = [];
+		client.on("gift", (g) => gifts.push(g));
+		client.on("danmaku", (d) => danmakus.push(d));
+
+		// SEND_GIFT_V2
+		client.handleBusinessMessage({
+			header: {} as any,
+			body: {
+				cmd: "SEND_GIFT_V2",
+				data: {
+					uid: 1001,
+					uname: "测试用户",
+					gift_id: 31036,
+					gift_name: "小花花",
+					num: 5,
+					price: 100,
+					tid: "tid-v2-1",
+				},
+			},
+		});
+
+		// SEND_GIFT:1 (with colon parameter)
+		client.handleBusinessMessage({
+			header: {} as any,
+			body: {
+				cmd: "SEND_GIFT:1",
+				data: {
+					uid: 1002,
+					uname: "老板",
+					giftId: 20001,
+					giftName: "辣条",
+					num: 1,
+					price: 100,
+					tid: "tid-colon-2",
+				},
+			},
+		});
+
+		// DANMU_MSG:4:0:2:2:2:0
+		client.handleBusinessMessage({
+			header: {} as any,
+			body: {
+				cmd: "DANMU_MSG:4:0:2:2:2:0",
+				info: [[0, 1, 25, 16777215, 1728000000, 123456], "这是一条带后缀的弹幕", [1003, "弹幕姬"]],
+			},
+		});
+
+		expect(gifts).toHaveLength(2);
+		expect(gifts[0].giftName).toBe("小花花");
+		expect(gifts[0].count).toBe(5);
+		expect(gifts[0].id).toBe("tid-v2-1");
+		expect(gifts[1].giftName).toBe("辣条");
+		expect(gifts[1].id).toBe("tid-colon-2");
+
+		expect(danmakus).toHaveLength(1);
+		expect(danmakus[0].text).toBe("这是一条带后缀的弹幕");
+		expect(danmakus[0].uname).toBe("弹幕姬");
+	});
+});
