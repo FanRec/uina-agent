@@ -1,61 +1,55 @@
 import type { ChatMsg, RequestProjection } from "../../../src/core/types.js";
 import type { DeepReadonly } from "../../../src/runtime/events.js";
+import {
+  buildEventFrameGroup,
+  appendTailFrame,
+  contentAddressedEventId,
+  snapshotNotice,
+} from "../../../src/extensions/event-frames/index.js";
 
 export type VoiceFact =
   | { readonly kind: "interrupted"; readonly summary: string }
   | { readonly kind: "delivery_failed"; readonly summary: string }
   | { readonly kind: "delivery_unknown"; readonly summary: string };
 
-export type PerceptionCandidate = {
-  readonly causeRef: string;
-  readonly version: number;
-  readonly fact: VoiceFact;
-  readonly deliveredResponseId?: string;
-};
-
 /** Voice-owned, one-shot context projection. It is not session history. */
 export class VoicePerception {
-  private causeRef: string | null = null;
-  private candidate: PerceptionCandidate | null = null;
-  private version = 0;
+  private candidate: VoiceFact | null = null;
 
-  setTurnCause(inputRefs: readonly string[]): void {
-    this.causeRef = inputRefs.length > 0 ? inputRefs.join(",") : null;
+  record(fact: VoiceFact): VoiceFact {
+    this.candidate = fact;
+    return fact;
   }
 
-  record(fact: VoiceFact, causeRef?: string): PerceptionCandidate | null {
-    const cause = causeRef ?? this.causeRef;
-    if (!cause) return null;
-    this.version += 1;
-    this.candidate = { causeRef: cause, version: this.version, fact };
+  peek(): VoiceFact | null {
     return this.candidate;
   }
 
-  peek(): PerceptionCandidate | null {
-    return this.candidate;
-  }
-
-  consume(deliveredResponseId: string): PerceptionCandidate | null {
-    if (!this.candidate) return null;
-    const consumed = { ...this.candidate, deliveredResponseId };
+  clear(): void {
     this.candidate = null;
-    return consumed;
   }
 
   transform(projection: DeepReadonly<RequestProjection>): RequestProjection {
     if (!this.candidate || projection.messages.length === 0) return projection as unknown as RequestProjection;
-    const { fact, causeRef } = this.candidate;
-    const message: ChatMsg = {
-      role: "system",
-      content: `[voice perception cause=${causeRef}] ${fact.summary}`,
-      context: { kind: "runtime.perception" },
-    };
+    const fact = this.candidate;
+    const text = `[语音输出状态] ${fact.summary}`;
+    const eventId = contentAddressedEventId("voice:perception", text);
+    const tailFrames = buildEventFrameGroup({
+      eventId,
+      text,
+      notice: snapshotNotice("语音输出状态"),
+      source: { kind: "runtime", type: "voice-perception", origin: "internal" },
+    });
+    const appended = appendTailFrame(projection.messages, tailFrames);
+    if (!appended) return projection as unknown as RequestProjection;
+
     return {
       projectionId: projection.projectionId,
       modelKey: projection.modelKey,
       thinkingLevel: projection.thinkingLevel,
       tools: structuredClone(projection.tools),
-      messages: [...projection.messages].map((item) => structuredClone(item) as ChatMsg).concat(message),
+      messages: appended.messages as ChatMsg[],
     };
   }
 }
+

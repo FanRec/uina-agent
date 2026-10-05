@@ -424,13 +424,9 @@ export function createGeminiProvider(id: string, conf: ProviderConfig): Provider
 	};
 }
 
-function anthropicSystem(req: ModelRequest): string | undefined {
-	const text = req.messages
-		.filter((message) => message.role === "system")
-		.map((message) => message.content)
-		.filter(Boolean)
-		.join("\n\n");
-	return text || undefined;
+export function anthropicSystem(req: ModelRequest): string | undefined {
+	const first = req.messages[0];
+	return first?.role === "system" && first.content ? first.content : undefined;
 }
 
 export function anthropicMessages(req: ModelRequest): unknown[] {
@@ -525,10 +521,9 @@ export function geminiRequest(
 	thinkingFormat?: "budget" | "level",
 	thinkingBudgets?: Partial<Record<ThinkingLevel, number>>,
 ): Record<string, unknown> {
-	const system = req.messages
-		.filter((message) => message.role === "system")
-		.map((message) => message.content)
-		.join("\n\n");
+	const first = req.messages[0];
+	const system = first?.role === "system" && first.content ? first.content : undefined;
+
 	const toolNames = new Map<string, string>();
 	for (const message of req.messages) {
 		if (message.role !== "assistant") continue;
