@@ -132,6 +132,13 @@ describe("RoomStatusNotifier", () => {
 		notifier.update("round" as never);
 		expect(emissions).toEqual([]);
 	});
+
+	it("notifies online transition when baseline was seeded from round (loop playback)", () => {
+		const { notifier, emissions } = makeNotifier();
+		notifier.seed("round");
+		notifier.update("online");
+		expect(emissions).toEqual([{ previous: "round", status: "online" }]);
+	});
 });
 
 describe("BatchedNotifier", () => {

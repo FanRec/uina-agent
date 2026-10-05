@@ -573,6 +573,22 @@ describe("LiveEventIngestion", () => {
 		expect(renderedGift).toContain('<user name="土豪大哥" uid="10001" identity="提督" medal="牌子Lv20"/>');
 		expect(renderedGift).toContain("「摩天大楼」x2（折合 ￥100）");
 
+		// 验证 SC 携带身份和粉丝牌
+		const scResult = buffer.ingestSuperChat({
+			id: "sc_vip_1",
+			uid: 10000,
+			uname: "尊贵大哥",
+			price: 100,
+			message: "主播好棒",
+			guardLevel: 1,
+			medalName: "铁粉牌",
+			medalLevel: 25,
+		});
+		expect(scResult.record).toBeTruthy();
+		const renderedSc = buffer.renderPendingEvent(scResult.record!.sourceEventKey);
+		expect(renderedSc).toContain('<user name="尊贵大哥" uid="10000" identity="总督" medal="铁粉牌Lv25"/>');
+		expect(renderedSc).toContain("支付 ￥100");
+
 		const guardResult = buffer.ingestGuard({
 			uid: 10002,
 			uname: "支持者",
@@ -584,6 +600,20 @@ describe("LiveEventIngestion", () => {
 		const renderedGuard = buffer.renderPendingEvent(guardResult.record!.sourceEventKey);
 		expect(renderedGuard).toContain('<user name="支持者" uid="10002" identity="舰长"/>');
 		expect(renderedGuard).toContain("开通或续费了舰长");
+
+		// 验证大航海批量月份
+		const guardMonthsResult = buffer.ingestGuard({
+			uid: 10004,
+			uname: "真爱提督",
+			guardLevel: 2,
+			giftName: "提督",
+			count: 3,
+			timestamp: 8000,
+		});
+		expect(guardMonthsResult.record).toBeTruthy();
+		const renderedMonthsGuard = buffer.renderPendingEvent(guardMonthsResult.record!.sourceEventKey);
+		expect(renderedMonthsGuard).toContain('<user name="真爱提督" uid="10004" identity="提督"/>');
+		expect(renderedMonthsGuard).toContain("开通或续费了 3 个月提督");
 
 		// 验证小额礼物合并也带身份和勋章标签
 		buffer.ingestGift({
@@ -600,6 +630,30 @@ describe("LiveEventIngestion", () => {
 		});
 		const quietLines = buffer.drainQuietTransientGifts(2000, 5000);
 		expect(quietLines).toEqual(['* <user name="铁粉" uid="10003" identity="舰长" medal="真爱粉Lv15"/> 赠送 小心心 x3']);
+
+		buffer.dispose();
+	});
+
+	it("drains pending danmaku safely even when repeated messages aggregate into earlier ring slots", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "uina-ingestion-"));
+		const config = loadConfig({ storage: { dataDir: tempDir } });
+		const buffer = new LiveEventBuffer(config);
+
+		// 先收到弹幕 A
+		buffer.addDanmaku(101, "Alice", "第一条弹幕");
+		// 再收到弹幕 B
+		buffer.addDanmaku(102, "Bob", "第二条弹幕");
+		// 再次收到弹幕 A（命中了前面的聚合槽位，产生旧条目引用）
+		buffer.addDanmaku(103, "Charlie", "第一条弹幕");
+
+		// 必须完整排出，不能因为旧条目更新而倒挂吞丢
+		const lines = buffer.drainPendingDanmaku();
+		expect(lines).toHaveLength(2);
+		expect(lines[0]).toContain('<user name="Alice" uid="101"/> 等 2 人: 第一条弹幕 (x2)');
+		expect(lines[1]).toContain('<user name="Bob" uid="102"/>: 第二条弹幕');
+
+		// 排出后清空
+		expect(buffer.drainPendingDanmaku()).toEqual([]);
 
 		buffer.dispose();
 	});

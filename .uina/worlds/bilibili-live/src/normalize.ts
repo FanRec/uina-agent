@@ -9,123 +9,198 @@ import type {
 	SuperChatEvent,
 } from "./blivedm-ts/events.js";
 
-export type LiveActor = {
-	kind: "uid" | "openId";
-	value: string;
-	name: string;
+export type CanonicalLiveDanmaku = {
+	readonly kind: "danmaku";
+	readonly eventId: string;
+	readonly uid: string | number;
+	readonly uname: string;
+	readonly occurredAtMs: number;
+	readonly text: string;
+	readonly guardLevel?: number;
+	readonly medalName?: string;
+	readonly medalLevel?: number;
 };
 
-export type LiveEvent = {
-	protocol: "web" | "openlive";
-	eventId: string;
-	kind: "danmaku" | "gift" | "superChat" | "guard";
-	actor: LiveActor;
-	occurredAtMs: number;
-	payload: Record<string, unknown>;
+export type CanonicalLiveSuperChat = {
+	readonly kind: "superChat";
+	readonly eventId: string;
+	readonly uid: string | number;
+	readonly uname: string;
+	readonly occurredAtMs: number;
+	readonly price: number;
+	readonly message: string;
+	readonly startTimeMs: number;
+	readonly endTimeMs: number;
+	readonly guardLevel?: number;
+	readonly medalName?: string;
+	readonly medalLevel?: number;
 };
 
-export function normalizeWebDanmaku(event: DanmakuEvent): LiveEvent {
-	return {
-		protocol: "web", eventId: event.id, kind: "danmaku",
-		actor: { kind: "uid", value: String(event.uid), name: event.uname },
-		occurredAtMs: event.timestamp, payload: { text: event.text },
-	};
-}
+export type CanonicalLiveGuard = {
+	readonly kind: "guard";
+	readonly eventId: string;
+	readonly uid: string | number;
+	readonly uname: string;
+	readonly occurredAtMs: number;
+	readonly guardLevel: number;
+	readonly giftName: string;
+	readonly count: number;
+	readonly medalName?: string;
+	readonly medalLevel?: number;
+};
 
-export function normalizeOpenDanmaku(event: OpenDanmakuEvent): LiveEvent {
-	return {
-		protocol: "openlive", eventId: event.msgId, kind: "danmaku",
-		actor: { kind: "openId", value: event.openId, name: event.uname },
-		occurredAtMs: event.timestamp * 1000, payload: { text: event.msg },
-	};
-}
+export type CanonicalLiveGift = {
+	readonly kind: "gift";
+	readonly eventId: string;
+	readonly uid: string | number;
+	readonly uname: string;
+	readonly occurredAtMs: number;
+	readonly giftId: number;
+	readonly giftName: string;
+	readonly count: number;
+	readonly price: number;
+	readonly paid: boolean;
+	readonly guardLevel?: number;
+	readonly medalName?: string;
+	readonly medalLevel?: number;
+};
 
-export function normalizeWebGuard(event: GuardBuyEvent): LiveEvent {
-	return {
-		protocol: "web", eventId: `guard:${event.uid}:${event.timestamp}`,
-		kind: "guard", actor: { kind: "uid", value: String(event.uid), name: event.uname },
-		occurredAtMs: event.timestamp, payload: { guardLevel: event.guardLevel, giftName: event.giftName },
-	};
-}
+export type CanonicalLiveEvent =
+	| CanonicalLiveDanmaku
+	| CanonicalLiveSuperChat
+	| CanonicalLiveGuard
+	| CanonicalLiveGift;
 
-export function normalizeOpenGuard(event: OpenGuardBuyEvent): LiveEvent {
-	return {
-		protocol: "openlive", eventId: event.msgId, kind: "guard",
-		actor: { kind: "openId", value: event.userInfo.openId, name: event.userInfo.uname },
-		occurredAtMs: event.timestamp * 1000,
-		payload: { guardLevel: event.guardLevel, giftName: event.guardUnit, count: event.guardNum },
-	};
-}
+export type LiveEvent = CanonicalLiveEvent;
 
-export function normalizeWebGift(event: GiftEvent): LiveEvent {
+export function normalizeWebDanmaku(event: DanmakuEvent): CanonicalLiveDanmaku {
 	return {
-		protocol: "web",
+		kind: "danmaku",
 		eventId: event.id,
-		kind: "gift",
-		actor: { kind: "uid", value: String(event.uid), name: event.uname },
+		uid: event.uid,
+		uname: event.uname,
 		occurredAtMs: event.timestamp,
-		payload: {
-			giftId: event.giftId,
-			giftName: event.giftName,
-			count: event.count,
-			price: event.price,
-			// 与 parseGift 缺省语义一致：仅显式银瓜子视为免费礼物
-			paid: event.coinType !== "silver",
-			guardLevel: event.guardLevel,
-			medalName: event.medalName,
-			medalLevel: event.medalLevel,
-		},
+		text: event.text,
+		guardLevel: event.guardLevel,
+		medalName: event.medalName,
+		medalLevel: event.medalLevel,
 	};
 }
 
-export function normalizeOpenGift(event: OpenGiftEvent): LiveEvent {
+export function normalizeOpenDanmaku(event: OpenDanmakuEvent): CanonicalLiveDanmaku {
 	return {
-		protocol: "openlive",
+		kind: "danmaku",
 		eventId: event.msgId,
-		kind: "gift",
-		actor: { kind: "openId", value: event.openId, name: event.uname },
+		uid: event.openId,
+		uname: event.uname,
 		occurredAtMs: event.timestamp * 1000,
-		payload: {
-			giftId: event.giftId,
-			giftName: event.giftName,
-			count: event.giftNum,
-			price: event.rPrice,
-			paid: event.paid,
-			guardLevel: event.guardLevel,
-			medalName: event.fansMedalName,
-			medalLevel: event.fansMedalLevel,
-		},
+		text: event.msg,
+		guardLevel: event.guardLevel,
+		medalName: event.fansMedalName,
+		medalLevel: event.fansMedalLevel,
 	};
 }
 
-export function normalizeOpenSuperChat(event: OpenSuperChatEvent): LiveEvent {
+export function normalizeWebGuard(event: GuardBuyEvent): CanonicalLiveGuard {
 	return {
-		protocol: "openlive",
-		eventId: event.msgId || String(event.messageId),
-		kind: "superChat",
-		actor: { kind: "openId", value: event.openId, name: event.uname },
-		occurredAtMs: event.timestamp * 1000,
-		payload: {
-			price: event.rmb,
-			message: event.message,
-			startTimeMs: event.startTime * 1000,
-			endTimeMs: event.endTime * 1000,
-		},
-	};
-}
-
-export function normalizeWebSuperChat(event: SuperChatEvent): LiveEvent {
-	return {
-		protocol: "web",
-		eventId: String(event.id),
-		kind: "superChat",
-		actor: { kind: "uid", value: String(event.uid), name: event.uname },
+		kind: "guard",
+		eventId: `${event.uid}:${event.guardLevel}:${event.timestamp}`,
+		uid: event.uid,
+		uname: event.uname,
 		occurredAtMs: event.timestamp,
-		payload: {
-			price: event.price,
-			message: String(event.message),
-			startTimeMs: event.startTime,
-			endTimeMs: event.endTime,
-		},
+		guardLevel: event.guardLevel,
+		giftName: event.giftName,
+		count: event.num ?? 1,
+	};
+}
+
+export function normalizeOpenGuard(event: OpenGuardBuyEvent): CanonicalLiveGuard {
+	const guardTitle =
+		event.guardLevel === 1 ? "总督" : event.guardLevel === 2 ? "提督" : "舰长";
+	return {
+		kind: "guard",
+		eventId: event.msgId,
+		uid: event.userInfo.openId,
+		uname: event.userInfo.uname,
+		occurredAtMs: event.timestamp * 1000,
+		guardLevel: event.guardLevel,
+		giftName: guardTitle,
+		count: event.guardNum ?? 1,
+		medalName: event.fansMedalName,
+		medalLevel: event.fansMedalLevel,
+	};
+}
+
+export function normalizeWebGift(event: GiftEvent): CanonicalLiveGift {
+	return {
+		kind: "gift",
+		eventId: event.id,
+		uid: event.uid,
+		uname: event.uname,
+		occurredAtMs: event.timestamp,
+		giftId: event.giftId,
+		giftName: event.giftName,
+		count: event.count,
+		price: event.price,
+		paid: event.coinType !== "silver",
+		guardLevel: event.guardLevel,
+		medalName: event.medalName,
+		medalLevel: event.medalLevel,
+	};
+}
+
+export function normalizeOpenGift(event: OpenGiftEvent): CanonicalLiveGift {
+	// 领域规范：统一以金瓜子作为礼物面值（1000 瓜子 = ￥1）
+	// 开放平台付费礼物单位为电池（1 电池 = ￥0.1 = 100 金瓜子）
+	// 免费礼物为银瓜子，面值直接按银瓜子计算
+	const normalizedPrice = event.paid ? event.price * 100 : event.rPrice;
+	return {
+		kind: "gift",
+		eventId: event.msgId,
+		uid: event.openId,
+		uname: event.uname,
+		occurredAtMs: event.timestamp * 1000,
+		giftId: event.giftId,
+		giftName: event.giftName,
+		count: event.giftNum,
+		price: normalizedPrice,
+		paid: event.paid,
+		guardLevel: event.guardLevel,
+		medalName: event.fansMedalName,
+		medalLevel: event.fansMedalLevel,
+	};
+}
+
+export function normalizeOpenSuperChat(event: OpenSuperChatEvent): CanonicalLiveSuperChat {
+	return {
+		kind: "superChat",
+		eventId: event.msgId || String(event.messageId),
+		uid: event.openId,
+		uname: event.uname,
+		occurredAtMs: event.timestamp * 1000,
+		price: event.rmb,
+		message: event.message,
+		startTimeMs: event.startTime * 1000,
+		endTimeMs: event.endTime * 1000,
+		guardLevel: event.guardLevel,
+		medalName: event.fansMedalName,
+		medalLevel: event.fansMedalLevel,
+	};
+}
+
+export function normalizeWebSuperChat(event: SuperChatEvent): CanonicalLiveSuperChat {
+	return {
+		kind: "superChat",
+		eventId: String(event.id),
+		uid: event.uid,
+		uname: event.uname,
+		occurredAtMs: event.timestamp,
+		price: event.price,
+		message: String(event.message),
+		startTimeMs: event.startTime,
+		endTimeMs: event.endTime,
+		guardLevel: event.guardLevel,
+		medalName: event.medalName,
+		medalLevel: event.medalLevel,
 	};
 }
