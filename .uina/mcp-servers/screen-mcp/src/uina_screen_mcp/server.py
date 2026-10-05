@@ -156,14 +156,27 @@ class ScreenService:
 
             if name == "Snapshot":
                 semantics_operation = "page" if args.get("scope") == "page" else "semantics"
-                if resolved.get("kind") not in {"window", "active_window"} and semantics_operation == "page":
-                    raise ValueError("scope_requires_window: page scope requires one window target")
-                result = await self.runner.run(semantics_operation, {"hwnd": resolved.get("hwnd"), "bounds": resolved.get("bounds"), "options": args}, 10.0)
-                if result.get("ok") and isinstance(result.get("payload"), dict):
-                    components["semantics"] = {"status": "ok", "valid": True, **result["payload"]}
+                if resolved.get("kind") not in {"window", "active_window"}:
+                    if semantics_operation == "page":
+                        raise ValueError("scope_requires_window: page scope requires one window target")
+                    # Desktop/display/region targets have pixels but no HWND.
+                    # Report the missing semantic component as partial instead of
+                    # passing None into the native worker.
+                    components["semantics"] = {
+                        "status": "unavailable",
+                        "valid": False,
+                        "errors": [{
+                            "code": "semantic_requires_window",
+                            "message": "accessible semantics require a window target",
+                        }],
+                    }
                 else:
-                    error = result.get("error") or {"code": "semantic_unavailable", "message": "accessible tree unavailable"}
-                    components["semantics"] = {"status": "unavailable", "valid": False, "errors": [error]}
+                    result = await self.runner.run(semantics_operation, {"hwnd": resolved.get("hwnd"), "bounds": resolved.get("bounds"), "options": args}, 10.0)
+                    if result.get("ok") and isinstance(result.get("payload"), dict):
+                        components["semantics"] = {"status": "ok", "valid": True, **result["payload"]}
+                    else:
+                        error = result.get("error") or {"code": "semantic_unavailable", "message": "accessible tree unavailable"}
+                        components["semantics"] = {"status": "unavailable", "valid": False, "errors": [error]}
                 observation["semantics"] = components["semantics"]
             else:
                 components["semantics"] = {"status": "not_requested", "valid": False}
