@@ -161,7 +161,7 @@ describe("BatchedNotifier", () => {
 			expect(notifier.pending).toBe(true);
 			vi.advanceTimersByTime(2000);
 			expect(emissions).toHaveLength(1);
-			expect(emissions[0].id).toBe("bilibili:test-batch:1");
+			expect(emissions[0].id).toMatch(/^bilibili:test-batch:\d+:1$/);
 			expect(emissions[0].text).toBe("batch-text");
 			expect(notifier.pending).toBe(false);
 		} finally {
@@ -216,7 +216,7 @@ describe("BatchedNotifier", () => {
 		vi.useFakeTimers();
 		try {
 			let provideText = false;
-			const emissions: unknown[] = [];
+			const emissions: string[] = [];
 			const notifier = new BatchedNotifier(
 				2000,
 				"b",
@@ -231,8 +231,9 @@ describe("BatchedNotifier", () => {
 			provideText = true;
 			notifier.notify();
 			vi.advanceTimersByTime(2000);
-			// 空 drain 不占用序列号，首个真实投递是 b:1
-			expect(emissions).toEqual(["b:1"]);
+			// 空 drain 不占用序列号，首个真实投递是 b:<timestamp>:1
+			expect(emissions).toHaveLength(1);
+			expect(emissions[0]).toMatch(/^b:\d+:1$/);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -266,11 +267,47 @@ describe("BatchedNotifier", () => {
 			expect(notifier.pending).toBe(true);
 			// 第二次 flush：连击停手，整批上报
 			vi.advanceTimersByTime(2000);
-			expect(emissions).toEqual(["b:1"]);
+			expect(emissions).toHaveLength(1);
+			expect(emissions[0]).toMatch(/^b:\d+:1$/);
 			// 池空后轮询自动停止
 			expect(notifier.pending).toBe(false);
 			vi.advanceTimersByTime(10000);
-			expect(emissions).toEqual(["b:1"]);
+			expect(emissions).toHaveLength(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("generates unique IDs across restarts using timestamp and monotonic sequence", () => {
+		vi.useFakeTimers();
+		try {
+			const emissions: string[] = [];
+			vi.setSystemTime(1000);
+			// 运行期 1
+			const run1 = new BatchedNotifier(
+				2000,
+				"bilibili:chat-batch",
+				() => true,
+				() => "batch-1",
+				(id) => emissions.push(id),
+			);
+			run1.notify();
+			vi.advanceTimersByTime(2000);
+
+			// 模拟重启：序列号归零，但时间戳推进
+			vi.setSystemTime(5000);
+			const run2 = new BatchedNotifier(
+				2000,
+				"bilibili:chat-batch",
+				() => true,
+				() => "batch-2",
+				(id) => emissions.push(id),
+			);
+			run2.notify();
+			vi.advanceTimersByTime(2000);
+
+			expect(emissions).toEqual(["bilibili:chat-batch:3000:1", "bilibili:chat-batch:7000:1"]);
+			expect(emissions[0]).not.toBe(emissions[1]);
 		} finally {
 			vi.useRealTimers();
 		}

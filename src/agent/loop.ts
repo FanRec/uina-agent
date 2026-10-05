@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { errorMessage } from "../core/errors.js";
-import type { RewindRequest, RewindResult } from "../session/types.js";
 import { validImages } from "../core/content.js";
+import { errorMessage } from "../core/errors.js";
+import { inputTokenBudget, modelKey } from "../core/model.js";
 import type {
 	AgentMessage,
 	ChatMsg,
@@ -10,37 +10,36 @@ import type {
 	DeliveryMode,
 	Model,
 	ModelStreamFn,
-	RequestProjection,
 	RequestInspection,
+	RequestProjection,
 	RequestUsage,
-	TokenMeasurement,
 	ThinkingLevel,
+	TokenMeasurement,
 	ToolResultStatus,
 	Usage,
 } from "../core/types.js";
-import { inputTokenBudget, modelKey } from "../core/model.js";
-import type { SessionStore } from "../session/types.js";
-import { projectInputMessage } from "../session/recovery.js";
-import { commitRewindTransition } from "./rewind.js";
-import {
-	requestToolDefs,
-	resolveProjectionPolicy,
-	type ProjectionPolicy,
-	type ResolvedProjection,
-} from "./projection.js";
-import { buildContext, defaultSystemPrompt, measureRequestContext } from "./context.js";
-import { InputQueues, type QueuedMessage } from "./queue.js";
-import { TurnStreamCollector, type StreamCollectorResult } from "./stream-collector.js";
-import type { PreparedToolCall, ToolView } from "../tools/broker.js";
-import type { RuntimeHooks } from "../runtime/hooks.js";
 import type { OutputEvent, RuntimeEvent } from "../runtime/events.js";
-import { NO_RUNTIME_HOOKS } from "../runtime/noop.js";
 import { guardRuntimeHooks, immutableProjection } from "../runtime/guard.js";
+import type { RuntimeHooks } from "../runtime/hooks.js";
+import { NO_RUNTIME_HOOKS } from "../runtime/noop.js";
 import {
-	PROMPT_SNAPSHOT_ENTRY_TYPE,
 	listPromptSnapshots,
+	PROMPT_SNAPSHOT_ENTRY_TYPE,
 	promptSnapshotFingerprint,
 } from "../session/prompt-snapshots.js";
+import { projectInputMessage } from "../session/recovery.js";
+import type { RewindRequest, RewindResult, SessionStore } from "../session/types.js";
+import type { PreparedToolCall, ToolView } from "../tools/broker.js";
+import { buildContext, defaultSystemPrompt, measureRequestContext } from "./context.js";
+import {
+	type ProjectionPolicy,
+	type ResolvedProjection,
+	requestToolDefs,
+	resolveProjectionPolicy,
+} from "./projection.js";
+import { InputQueues, type QueuedMessage } from "./queue.js";
+import { commitRewindTransition } from "./rewind.js";
+import { type StreamCollectorResult, TurnStreamCollector } from "./stream-collector.js";
 
 export interface SubjectOptions {
 	store?: SessionStore;
@@ -581,6 +580,9 @@ export class Subject {
 	accept(input: AgentInput): Promise<void> {
 		if (!validImages(input.images)) return Promise.reject(new Error("图片内容无效"));
 		if (!input.id || !input.text?.trim()) return Promise.reject(new Error("AgentInput 必须包含 id 和 text"));
+		if (this.store?.state.recordIds.has(input.id)) {
+			return Promise.reject(new Error(`输入 id 已存在于会话记录中: ${input.id}`));
+		}
 
 		const queued: QueuedMessage = {
 			...this.queues.create(input.text.trim(), input.mode, {
@@ -1497,6 +1499,14 @@ export class Subject {
 	}
 
 	private async commitQueueItem(item: QueuedMessage): Promise<boolean> {
+		if (this.store?.state.recordIds.has(item.id)) {
+			console.warn(`[Subject:Mailbox] 队列条目 ID ${item.id} 已在历史记录中，跳过并退役`);
+			if (this.store.state.queued.has(item.id)) {
+				await this.storeEvent("queue_restored", eventData(item));
+			}
+			this.deferredInputRenders.delete(item.id);
+			return false;
+		}
 		const render = this.deferredInputRenders.get(item.id);
 		if (render) {
 			const rendered = await render();
@@ -1506,6 +1516,12 @@ export class Subject {
 				return false;
 			}
 			item = { ...item, text: rendered.trim() };
+		} else if (item.text === "[deferred world event]") {
+			console.warn(`[Subject:Mailbox] 队列条目 ${item.id} 的延迟渲染函数已丢失，安全退役`);
+			if (this.store?.state.queued.has(item.id)) {
+				await this.storeEvent("queue_restored", eventData(item));
+			}
+			return false;
 		}
 		await this.store?.appendInput(item);
 		const message = projectInputMessage(item);

@@ -117,7 +117,7 @@ export class BatchedNotifier {
     private readonly name: string,
     private readonly isEnabled: () => boolean,
     private readonly drain: () => string | null,
-    private readonly emit: (id: string, render: () => string | null) => void
+    private readonly emit: (id: string, render: () => string | null) => void,
   ) {}
 
   /** 事实到达时调用；窗口期内只保留第一个定时器 */
@@ -129,7 +129,7 @@ export class BatchedNotifier {
       if (validity !== this.validity) return;
       const text = this.drain();
       if (text === null) return;
-      const id = `${this.name}:${++this.sequence}`;
+      const id = `${this.name}:${Date.now()}:${++this.sequence}`;
       this.emit(id, () => (validity === this.validity ? text : null));
     }, this.windowMs);
   }

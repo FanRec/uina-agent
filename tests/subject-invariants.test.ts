@@ -8,14 +8,14 @@
  * 5. retry 可观察性全 provider 一致（openai-compatible 不再漏接）
  */
 import { describe, expect, it, vi } from "vitest";
-import { SubjectHarness, mockTool } from "./harness/index.js";
-import { Scenario } from "./harness/provider/scenario.js";
+import { InputQueues } from "../src/agent/queue.js";
+import { createOpenAIProvider } from "../src/ai/gateway.js";
+import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
+import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import type { SessionEventName } from "../src/session/types.js";
-import { InputQueues } from "../src/agent/queue.js";
-import type { Model, ModelRequest, ModelStreamFn, StreamDelta } from "../src/core/types.js";
-import { createOpenAIProvider } from "../src/ai/gateway.js";
-import { NO_RUNTIME_HOOKS } from "../src/runtime/noop.js";
+import { mockTool, SubjectHarness } from "./harness/index.js";
+import { Scenario } from "./harness/provider/scenario.js";
 
 const wait = (ms = 40) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -625,5 +625,63 @@ describe("不变量：失败/打断回合的队列保留与显式投递", () => 
 		await h.waitForIdle();
 		expect(h.queuedSnapshot()).toHaveLength(0);
 		expect(h.history.some((message) => message.role === "user" && message.content === "排队消息")).toBe(true);
+	});
+
+	it("队列条目 id 若已存在于 store.state.recordIds，自动退役写入 queue_restored 而不抛重复记录错误", async () => {
+		const store = new MemorySessionStore();
+		await store.appendEvent("queue_enqueued", {
+			id: "colliding-id",
+			order: 1,
+			mode: "followUp",
+			text: "已存在记录",
+		});
+		await store.appendInput({
+			id: "colliding-id",
+			order: 1,
+			mode: "followUp",
+			text: "已存在记录",
+		});
+
+		// 模拟重启前：又进来了一条带有重复 ID 的事件记录，以及一条正常记录
+		await store.appendEvent("queue_enqueued", {
+			id: "colliding-id",
+			order: 2,
+			mode: "followUp",
+			text: "[deferred world event]",
+		});
+		await store.appendEvent("queue_enqueued", {
+			id: "fresh-id",
+			order: 3,
+			mode: "followUp",
+			text: "正常的排队消息",
+		});
+
+		const h = SubjectHarness.create({ store });
+		h.subject.seedQueue([
+			{
+				id: "colliding-id",
+				order: 2,
+				mode: "followUp",
+				text: "[deferred world event]",
+			},
+			{
+				id: "fresh-id",
+				order: 3,
+				mode: "followUp",
+				text: "正常的排队消息",
+			},
+		]);
+
+		await h.subject.resumePending();
+		await h.waitForIdle();
+
+		expect(h.queuedSnapshot()).toHaveLength(0);
+		expect(store.state.queued.size).toBe(0);
+		expect(h.history.some((m) => m.role === "user" && m.content === "正常的排队消息")).toBe(true);
+		expect(
+			store.records.some(
+				(r) => r.kind === "event" && r.event === "queue_restored" && (r.data as { id: string }).id === "colliding-id",
+			),
+		).toBe(true);
 	});
 });

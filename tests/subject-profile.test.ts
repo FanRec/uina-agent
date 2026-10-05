@@ -171,10 +171,12 @@ describe("Host 装配：persona 接线", () => {
 			const systemMsg = scenario.calls[0]?.messages.find((m) => m.role === "system");
 			expect(systemMsg).toBeDefined();
 			const systemText = String(systemMsg?.content);
-			expect(systemText).toContain("harness");
+			expect(systemText.startsWith(createEventFrameProfile().systemPrompt)).toBe(true);
 			expect(systemText).toContain("# Alice 的底色");
 			expect(systemText).toContain("不当工具");
-			expect(systemText.indexOf("harness")).toBeLessThan(systemText.indexOf("# Alice 的底色"));
+			expect(systemText.indexOf(createEventFrameProfile().systemPrompt)).toBeLessThan(
+				systemText.indexOf("# Alice 的底色"),
+			);
 		} finally {
 			await host.dispose();
 		}
