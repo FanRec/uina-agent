@@ -225,6 +225,25 @@ describe("ensureClient 建连", () => {
 	});
 });
 
+describe("自动启动与目录预热", () => {
+	it("warmConfigured 启动并发现工具，单个失败不阻断其他 server", async () => {
+		const { catalog, manager, pending, servers, errors } = makeHarness();
+		const broken = new FakeMcpServer();
+		broken.listError = { code: -32603, message: "list boom" };
+		pending[0]!.tools = [{ name: "observe", inputSchema: { type: "object" } }];
+		pending.push(broken);
+
+		await manager.warmConfigured([makeServer("screen"), makeServer("broken")], 600_000, undefined);
+
+		expect(manager.connectionState("screen").state).toBe("running");
+		expect(catalog.get("screen")?.tools.map((tool) => tool.name)).toEqual(["observe"]);
+		expect(manager.connectionState("broken").state).toBe("running");
+		expect(errors.some((message) => message.includes('MCP server "broken" 自动启动失败'))).toBe(true);
+		await manager.dispose();
+		expect(servers).toHaveLength(2);
+	});
+});
+
 describe("refreshCatalog 与 callTool", () => {
 	it("refreshCatalog 拉取工具并 commit 到目录", async () => {
 		const { catalog, manager, pending } = makeHarness();

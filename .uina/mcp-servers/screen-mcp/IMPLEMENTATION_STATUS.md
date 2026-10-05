@@ -13,6 +13,7 @@ Updated 2026-10-05 (Asia/Shanghai).
 - MCP/Uina projection: synthetic partial image roundtrip, structured facts, image preservation, and diagnostic base64 de-duplication.
 - Measurement tooling: Python percentile/criteria gate, TS Uina-side probe/gate script, missing/unapproved criteria rejection.
 - Packaging: uv lock, wheel build, isolated install smoke, stdio discovery.
+- Uina startup integration: global `screen` configuration with explicit `autoStart`; background warm-up discovers tools without blocking host activation, while failures remain observable and project trust is preserved.
 
 ## Intentionally unverified empirical gates
 

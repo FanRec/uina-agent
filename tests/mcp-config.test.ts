@@ -168,10 +168,13 @@ describe("projectConfigPath", () => {
 
 describe("validateServerDefinition", () => {
 	it("stdio 定义放行", () => {
-		expect(validateServerDefinition("s", { command: "npx", args: ["-y", "srv"], inheritEnv: false })).toEqual({
+		expect(
+			validateServerDefinition("s", { command: "npx", args: ["-y", "srv"], inheritEnv: false, autoStart: true }),
+		).toEqual({
 			command: "npx",
 			args: ["-y", "srv"],
 			inheritEnv: false,
+			autoStart: true,
 		});
 	});
 
@@ -189,6 +192,7 @@ describe("validateServerDefinition", () => {
 		expect(validateServerDefinition("s", { url: "https://x", args: ["x"] })).toContain("不能同时声明");
 		expect(validateServerDefinition("s", { command: "a", args: [1] })).toContain("字符串数组");
 		expect(validateServerDefinition("s", { command: "a", env: { K: 1 } })).toContain("字符串映射");
+		expect(validateServerDefinition("s", { command: "a", autoStart: "yes" })).toContain("autoStart");
 		expect(validateServerDefinition("s", { url: "https://x", headers: { K: 1 } })).toContain("字符串映射");
 		expect(validateServerDefinition("s", { url: "https://x", httpTransport: "grpc" })).toContain("httpTransport");
 		expect(validateServerDefinition("s", { command: "a", unknownField: 1 })).toEqual({ command: "a" });

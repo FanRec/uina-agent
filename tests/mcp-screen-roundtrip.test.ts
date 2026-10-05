@@ -30,9 +30,21 @@ describe("screen MCP synthetic protocol roundtrip", () => {
 
 		const fake = new FakeMcpServer();
 		fake.tools = [
-			{ name: "ListTargets", description: "List displays without operating the desktop.", inputSchema: { type: "object" } },
-			{ name: "Screenshot", description: "Capture a fast image without operating the desktop.", inputSchema: { type: "object" } },
-			{ name: "Snapshot", description: "Inspect image and accessible semantics; page is not DOM.", inputSchema: { type: "object" } },
+			{
+				name: "ListTargets",
+				description: "List displays without operating the desktop.",
+				inputSchema: { type: "object" },
+			},
+			{
+				name: "Screenshot",
+				description: "Capture a fast image without operating the desktop.",
+				inputSchema: { type: "object" },
+			},
+			{
+				name: "Snapshot",
+				description: "Inspect image and accessible semantics; page is not DOM.",
+				inputSchema: { type: "object" },
+			},
 		];
 		fake.callResult = {
 			content: [
@@ -40,7 +52,9 @@ describe("screen MCP synthetic protocol roundtrip", () => {
 				{ type: "image", data: png, mimeType: "image/png" },
 			],
 			structuredContent: {
-				kind: "snapshot", status: "partial", image: { status: "ok", source: "fixture" },
+				kind: "snapshot",
+				status: "partial",
+				image: { status: "ok", source: "fixture" },
 				semantics: { status: "unavailable", errors: [{ code: "semantic_unavailable" }] },
 			},
 		};
@@ -51,7 +65,11 @@ describe("screen MCP synthetic protocol roundtrip", () => {
 			onError: () => undefined,
 			createTransport: () => ({ transport: fake.clientTransport, kind: "in-memory" }),
 		});
-		const api = { cwd, reportError: () => undefined, ui: { hasUI: () => false, confirm: async () => true } } as unknown as ExtensionAPI;
+		const api = {
+			cwd,
+			reportError: () => undefined,
+			ui: { hasUI: () => false, confirm: async () => true },
+		} as unknown as ExtensionAPI;
 		const tool = createMcpProxyTool({ api, catalog, manager, tmpDir: join(home, "mcp-out") });
 
 		const listed = (await tool.run({ action: "list", server: "screen" })) as any;

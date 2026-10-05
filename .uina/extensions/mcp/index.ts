@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionTeardown } from "../../../src/extensions/index.js";
 import { McpCatalog } from "./catalog.js";
-import { resolveMcpConfig } from "./config.js";
+import { resolveMcpConfig, type ResolvedServerConfig } from "./config.js";
 import { createMcpProxyTool } from "./proxy-tool.js";
 import { McpServerManager } from "./server-manager.js";
 
@@ -34,8 +34,29 @@ export default function activateMcp(api: ExtensionAPI): ExtensionTeardown {
 
 	api.registerTool(createMcpProxyTool({ api, catalog, manager, tmpDir }));
 
+	// 仅自动启动全局配置中显式 autoStart 的 server：全局配置已获信任，
+	// 项目配置仍保留 UI 信任门并按需启动，避免启动阶段绕过安全确认。
+	const warmup = (async () => {
+		try {
+			const snapshot = resolveMcpConfig(api.cwd);
+			const servers = [...snapshot.servers.values()]
+				.filter(
+					(entry): entry is { kind: "valid"; config: ResolvedServerConfig } =>
+						entry.kind === "valid" &&
+						entry.config.source === "global" &&
+						entry.config.definition.autoStart === true,
+				)
+				.map((entry) => entry.config);
+			await manager.warmConfigured(servers, snapshot.idleTimeoutMs, snapshot.startupTimeoutMs);
+		} catch (error) {
+			api.reportError(error instanceof Error ? error : new Error(String(error)));
+		}
+	})();
+
 	return async () => {
-		await manager.dispose();
+		// 先封锁并关闭 manager，让退出/重载可以打断仍在握手的 warm-up。
+		const disposal = manager.dispose();
+		await Promise.allSettled([warmup, disposal]);
 		try {
 			rmSync(tmpDir, { recursive: true, force: true });
 		} catch {

@@ -128,6 +128,29 @@ export class McpServerManager {
 		return promise;
 	}
 
+	/** 启动并发现一组已获授权的配置；单个 server 失败不阻断其余 server 或宿主启动。 */
+	async warmConfigured(
+		servers: readonly ResolvedServerConfig[],
+		idleTimeoutMs: number,
+		startupTimeoutMs: number | undefined,
+	): Promise<void> {
+		await Promise.all(
+			servers.map(async (server) => {
+				try {
+					const connection = await this.ensureClient(server, idleTimeoutMs, startupTimeoutMs);
+					const outcome = await this.refreshCatalog(server, connection);
+					if (outcome.status === "superseded")
+						throw new McpSupersededError(`MCP server "${server.name}" 自动启动期间配置已变更`);
+				} catch (error) {
+					if (this.disposed) return;
+					const message = errorMessage(error);
+					this.lastErrors.set(server.name, message);
+					this.options.onError(`MCP server "${server.name}" 自动启动失败: ${message}`);
+				}
+			}),
+		);
+	}
+
 	private async connect(
 		server: ResolvedServerConfig,
 		generation: number,

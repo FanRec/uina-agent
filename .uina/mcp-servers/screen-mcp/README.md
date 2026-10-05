@@ -36,6 +36,28 @@ contract tests run without a desktop. Real desktop, application, browser,
 visual-provider, and latency-gate acceptance remain environment-specific and
 must not be inferred from fake fixtures or protocol handshakes.
 
+## Uina startup
+
+Uina launches this server through the global MCP configuration, not by
+scanning this directory as an extension. The configured entry is:
+
+```json
+{
+  "mcpServers": {
+    "screen": {
+      "command": "E:\\Uina\\Uina\\.uina\\mcp-servers\\screen-mcp\\.venv\\Scripts\\uina-screen-mcp.exe",
+      "inheritEnv": true,
+      "autoStart": true
+    }
+  }
+}
+```
+
+`autoStart` is intentionally explicit. At extension activation Uina starts the
+trusted global server and discovers its three tools in the background; a failed
+server reports an error without aborting Uina startup. Project-level servers
+remain behind the existing trust prompt and are still started on demand.
+
 The release gate intentionally requires an approved criteria JSON containing
 the environment, approver, default dimension, sample conditions, and per-
 scenario warm/cold P50/P95/failure thresholds. Probe results never approve

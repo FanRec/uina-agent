@@ -29,6 +29,8 @@ export interface McpServerDefinition {
 	env?: Record<string, string>;
 	/** 缺省 true：继承宿主进程环境；false：仅 SDK 平台最小默认环境 + env。 */
 	inheritEnv?: boolean;
+	/** 全局配置中显式开启时，扩展激活阶段自动建连并发现工具。 */
+	autoStart?: boolean;
 	/** streamable HTTP / SSE 端点。 */
 	url?: string;
 	headers?: Record<string, string>;
@@ -85,7 +87,7 @@ function positiveInt(value: unknown): number | undefined {
 /** 校验单个 server 定义；非法返回错误原因（不抛）。 */
 export function validateServerDefinition(_name: string, value: unknown): McpServerDefinition | string {
 	if (!isRecord(value)) return "必须是对象";
-	const { command, args, env, inheritEnv, url, headers, httpTransport, ...rest } = value;
+	const { command, args, env, inheritEnv, autoStart, url, headers, httpTransport, ...rest } = value;
 	const unknownKeys = Object.keys(rest);
 	const extra = unknownKeys.length > 0 ? `（忽略未知字段: ${unknownKeys.join(", ")}）` : "";
 	if (typeof command === "string") {
@@ -94,11 +96,13 @@ export function validateServerDefinition(_name: string, value: unknown): McpServ
 			return `args 必须是字符串数组${extra}`;
 		if (env !== undefined && !isStringRecord(env)) return `env 必须是字符串映射${extra}`;
 		if (inheritEnv !== undefined && typeof inheritEnv !== "boolean") return `inheritEnv 必须是布尔值${extra}`;
+		if (autoStart !== undefined && typeof autoStart !== "boolean") return `autoStart 必须是布尔值${extra}`;
 		return {
 			command,
 			...(Array.isArray(args) ? { args: args as string[] } : {}),
 			...(isStringRecord(env) ? { env } : {}),
 			...(typeof inheritEnv === "boolean" ? { inheritEnv } : {}),
+			...(typeof autoStart === "boolean" ? { autoStart } : {}),
 		};
 	}
 	if (typeof url === "string") {
@@ -114,8 +118,10 @@ export function validateServerDefinition(_name: string, value: unknown): McpServ
 		if (headers !== undefined && !isStringRecord(headers)) return `headers 必须是字符串映射${extra}`;
 		if (httpTransport !== undefined && !["auto", "streamable-http", "sse"].includes(httpTransport as string))
 			return `httpTransport 必须是 auto / streamable-http / sse${extra}`;
+		if (autoStart !== undefined && typeof autoStart !== "boolean") return `autoStart 必须是布尔值${extra}`;
 		return {
 			url,
+			...(typeof autoStart === "boolean" ? { autoStart } : {}),
 			...(isStringRecord(headers) ? { headers } : {}),
 			...(typeof httpTransport === "string"
 				? { httpTransport: httpTransport as McpServerDefinition["httpTransport"] }
