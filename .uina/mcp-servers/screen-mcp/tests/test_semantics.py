@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from uina_screen_mcp.semantics import collect_semantics
+from uina_screen_mcp.semantics import _control_to_raw, collect_semantics
 
 
 def test_password_guard_precedes_value() -> None:
@@ -44,3 +44,27 @@ def test_partial_property_keeps_node() -> None:
 def test_emoji_serializes() -> None:
     result = collect_semantics({"id": "x", "name": "确认 ✅"})
     assert result["elements"][0]["name"] == "确认 ✅"
+
+
+class Rect:
+    left = 1
+    top = 2
+    right = 30
+    bottom = 40
+
+
+class ControlWithRect:
+    ControlTypeName = "Button"
+    Name = "OK"
+    BoundingRectangle = Rect()
+
+    def GetRuntimeId(self) -> list[int]:
+        return [1, 2]
+
+
+    def GetChildren(self) -> list[object]:
+        return []
+
+
+def test_uia_rect_object_is_normalized_without_iteration() -> None:
+    assert _control_to_raw(ControlWithRect())["bounds"] == [1, 2, 30, 40]

@@ -2,9 +2,53 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Any
+from collections import deque
+from typing import Any, Hashable
 
 from .semantics import collect_semantics
+
+
+def _runtime_identity(control: Any) -> Hashable:
+    try:
+        runtime_id = control.GetRuntimeId()
+        if runtime_id:
+            return ("runtime", tuple(int(part) for part in runtime_id))
+    except Exception:
+        pass
+    return ("object", id(control))
+
+
+def _is_page_root(control: Any) -> bool:
+    class_name = str(getattr(control, "ClassName", "")).casefold()
+    # Chromium/Edge expose the actual web content through this HWND class.
+    # Generic DocumentControl/WebControl nodes also occur in browser chrome.
+    return class_name in {"chrome_renderwidgethosthwnd", "mozaccesstoolkit"}
+
+
+def _discover_page_roots(window: Any) -> list[Any]:
+    """Discover browser page roots with stable UIA identities and strong refs."""
+    roots: list[Any] = []
+    queue: deque[Any] = deque([window])
+    retained: dict[Hashable, Any] = {_runtime_identity(window): window}
+    visited: set[Hashable] = set()
+    while queue:
+        control = queue.popleft()
+        identity = _runtime_identity(control)
+        if identity in visited:
+            continue
+        visited.add(identity)
+        if _is_page_root(control):
+            roots.append(control)
+        try:
+            children = control.GetChildren()
+        except Exception:
+            continue
+        for child in children:
+            child_identity = _runtime_identity(child)
+            if child_identity not in retained:
+                retained[child_identity] = child
+                queue.append(child)
+    return roots
 
 
 def read_page_semantics(hwnd: int, bounds: Any, options: dict[str, Any]) -> dict[str, Any]:
@@ -28,23 +72,7 @@ def read_page_semantics(hwnd: int, bounds: Any, options: dict[str, Any]) -> dict
         raise RuntimeError("page_structure_unavailable: no accessible page root was found") from exc
     if window is None:
         raise RuntimeError("page_structure_unavailable: no browser window root was found")
-    roots: list[Any] = []
-    queue = [window]
-    visited: set[int] = set()
-    while queue:
-        control = queue.pop(0)
-        identity = id(control)
-        if identity in visited:
-            continue
-        visited.add(identity)
-        role = str(getattr(control, "ControlTypeName", ""))
-        class_name = str(getattr(control, "ClassName", ""))
-        if role.casefold() in {"documentcontrol", "webcontrol"} or class_name.casefold() in {"chrome_renderwidgethosthwnd", "mozaccesstoolkit"}:
-            roots.append(control)
-        try:
-            queue.extend(control.GetChildren())
-        except Exception:
-            continue
+    roots = _discover_page_roots(window)
     if len(roots) == 0:
         # Firefox exposes its document through MSAA/IAccessible2 rather than
         # the RootWebArea marker used by Chromium. Keep the import lazy so

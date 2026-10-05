@@ -25,9 +25,10 @@ def test_visible_uses_desktop_pixels_and_reports_unclipped(monkeypatch: pytest.M
     monkeypatch.setattr(capture, "_is_window_minimized", lambda _hwnd: False)
     image = Image.new("RGB", (10, 10))
     monkeypatch.setattr(capture, "capture_pixels", lambda _bounds: image)
-    actual, clipped = capture.capture_window(1, (0, 0, 10, 10), "visible")
+    actual, clipped, source = capture.capture_window(1, (0, 0, 10, 10), "visible")
     assert actual is image
     assert clipped is False
+    assert source == "pillow_imagegrab"
 
 
 def test_minimized_visible_fails(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -52,3 +53,16 @@ def test_active_window_is_resolved_once() -> None:
     inventory = {"foregroundHwnd": 1, "windows": [{"hwnd": 1, "pid": 2, "processCreatedAt": 3, "title": "A", "bounds": [0, 0, 10, 10]}], "displays": [], "virtualBounds": [0, 0, 10, 10]}
     resolved = resolver.resolve({"kind": "active_window"}, inventory)
     assert resolved["hwnd"] == 1
+
+
+def test_black_surface_falls_back_to_visible_pixels(monkeypatch: pytest.MonkeyPatch) -> None:
+    black = Image.new("RGB", (10, 10), (0, 0, 0))
+    visible = Image.new("RGB", (10, 10), (20, 30, 40))
+    monkeypatch.setattr(capture, "_capture_window_surface", lambda *_: black)
+    monkeypatch.setattr(capture, "capture_pixels", lambda _bounds: visible)
+
+    actual, clipped, source = capture.capture_window(1, (0, 0, 10, 10), "surface")
+
+    assert actual is visible
+    assert clipped is False
+    assert source == "pillow_imagegrab_fallback"

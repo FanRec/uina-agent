@@ -78,14 +78,16 @@ def read_page(hwnd: int, bounds: Any, options: dict[str, Any]) -> dict[str, Any]
     root = _acquire(hwnd, iface, oleacc)
     limit = options.get("maxNodes", 1200)
     text_limit = options.get("maxTextChars", 500)
-    queue: deque[tuple[Any, str | None]] = deque([(root, None)])
+    queue: deque[tuple[Any, str | None, bool]] = deque([(root, None, False)])
+    # Keep every COM wrapper alive while traversing: id(obj) is only safe when
+    # wrappers cannot be collected and their addresses reused.
+    retained: list[Any] = [root]
     seen: set[int] = set()
     elements: list[dict[str, Any]] = []
-    document_depth = 0
     truncated = False
     text_truncated = False
     while queue:
-        obj, parent = queue.popleft()
+        obj, parent, in_document = queue.popleft()
         identity = id(obj)
         if identity in seen:
             continue
@@ -99,11 +101,10 @@ def read_page(hwnd: int, bounds: Any, options: dict[str, Any]) -> dict[str, Any]
             continue
         role_label = _role_name(role)
         is_document = role == ROLE_DOCUMENT
-        if is_document:
-            document_depth += 1
+        inside_document = in_document or is_document
         name = str(_value(obj, "accName", "") or "").strip()
         value = str(_value(obj, "accValue", "") or "").strip()
-        if document_depth > 0 and (name or value or role_label in {"document", "link", "button"}):
+        if inside_document and (name or value or role_label in {"document", "link", "button"}):
             item: dict[str, Any] = {"id": str(identity), "parentId": parent, "role": role_label}
             if name:
                 item["name"] = name
@@ -122,11 +123,11 @@ def read_page(hwnd: int, bounds: Any, options: dict[str, Any]) -> dict[str, Any]
             try:
                 child = obj.accChild(index)
                 if child is not None and hasattr(child, "QueryInterface"):
-                    queue.append((child.QueryInterface(iface), str(identity)))
+                    child_object = child.QueryInterface(iface)
+                    retained.append(child_object)
+                    queue.append((child_object, str(identity), inside_document))
             except Exception:
                 continue
-        if is_document:
-            document_depth -= 1
     if not elements:
         raise RuntimeError("page_structure_unavailable: no visible IA2 document nodes were found")
     return {

@@ -19,4 +19,6 @@ if payload.get("hang"):
     time.sleep(60)
 if payload.get("stderr"):
     print(payload["stderr"], file=sys.stderr)
+if payload.get("fail"):
+    raise SystemExit(int(payload["fail"]))
 print(json.dumps({"ok": True, "payload": {"operation": request["operation"], "marker": marker}, "diagnostics": {}, "error": None}))

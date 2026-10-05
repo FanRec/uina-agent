@@ -108,13 +108,36 @@ def _control_password(control: Any) -> bool | None:
         return None
 
 
+def _rect_values(value: Any) -> list[int] | None:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)) and len(value) == 4:
+        return [int(part) for part in value]
+    names = (("left", "top", "right", "bottom"), ("Left", "Top", "Right", "Bottom"))
+    for fields in names:
+        values: list[Any] = []
+        try:
+            for field in fields:
+                part = getattr(value, field)
+                values.append(part() if callable(part) else part)
+            if len(values) == 4 and all(isinstance(part, (int, float)) for part in values):
+                return [int(part) for part in values]
+        except Exception:
+            continue
+    try:
+        values = list(value)
+    except TypeError:
+        return None
+    return [int(part) for part in values] if len(values) == 4 else None
+
+
 def _control_to_raw(control: Any) -> dict[str, Any]:
     password = _control_password(control)
     raw: dict[str, Any] = {
         "id": None,
         "role": getattr(control, "ControlTypeName", None),
         "name": getattr(control, "Name", None),
-        "bounds": list(getattr(control, "BoundingRectangle", ())) or None,
+        "bounds": _rect_values(getattr(control, "BoundingRectangle", None)),
         "isPassword": password,
         "passwordKnown": password is not None,
         "value": _control_value(control, password),

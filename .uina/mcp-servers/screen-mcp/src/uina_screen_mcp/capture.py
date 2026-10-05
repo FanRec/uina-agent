@@ -71,7 +71,7 @@ def _is_window_minimized(hwnd: int) -> bool:
 
 
 def _capture_window_surface(hwnd: int, bounds: tuple[int, int, int, int]) -> Image.Image:
-    """Capture a window surface with PrintWindow; never falls back to desktop pixels."""
+    """Capture a window surface with PrintWindow using the GPU-content flag."""
     if os.name != "nt":
         raise WindowCaptureError("unsupported_platform", "surface capture requires Windows")
     left, top, right, bottom = _validate_bounds(bounds)
@@ -121,7 +121,7 @@ def _capture_window_surface(hwnd: int, bounds: tuple[int, int, int, int]) -> Ima
         if not memory_dc or not bitmap:
             raise WindowCaptureError("window_capture_failed", "GDI bitmap allocation failed")
         old_bitmap = gdi32.SelectObject(memory_dc, bitmap)
-        if not user32.PrintWindow(hwnd, memory_dc, 0):
+        if not user32.PrintWindow(hwnd, memory_dc, 0x00000002):  # PW_RENDERFULLCONTENT
             raise WindowCaptureError("window_capture_failed", "PrintWindow returned false")
         info = BITMAPINFO()
         info.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
@@ -146,15 +146,34 @@ def _capture_window_surface(hwnd: int, bounds: tuple[int, int, int, int]) -> Ima
         user32.ReleaseDC(0, screen_dc)
 
 
-def capture_window(hwnd: int, bounds: tuple[int, int, int, int], capture_mode: str = "surface") -> tuple[Image.Image, bool]:
+def _looks_blank(image: Image.Image) -> bool:
+    sample = image.convert("RGB")
+    sample.thumbnail((64, 64))
+    total = sample.width * sample.height
+    if total == 0:
+        return True
+    visible = 0
+    for y in range(sample.height):
+        for x in range(sample.width):
+            if max(sample.getpixel((x, y))) > 8:
+                visible += 1
+    return visible / total < 0.005
+
+
+def capture_window(hwnd: int, bounds: tuple[int, int, int, int], capture_mode: str = "surface") -> tuple[Image.Image, bool, str]:
     if capture_mode not in {"surface", "visible"}:
         raise WindowCaptureError("invalid_arguments", "captureMode must be surface or visible")
     if capture_mode == "surface":
-        return _capture_window_surface(hwnd, bounds), False
+        image = _capture_window_surface(hwnd, bounds)
+        if not _looks_blank(image):
+            return image, False, "printwindow"
+        # GPU-composited windows may accept PrintWindow yet return an all-black
+        # frame. Preserve the requested target and fall back to visible pixels.
+        return capture_pixels(bounds), False, "pillow_imagegrab_fallback"
     if _is_window_minimized(hwnd):
         raise WindowCaptureError("window_capture_failed", "minimized windows have no visible surface")
     image = capture_pixels(bounds)
-    return image, False
+    return image, False, "pillow_imagegrab"
 
 
 def cursor_draw_position(cursor: tuple[int, int], hotspot: tuple[int, int], capture_bounds: tuple[int, int, int, int]) -> tuple[int, int]:
@@ -263,9 +282,9 @@ def worker_capture(payload: dict[str, object]) -> dict[str, object]:
     bounds = _validate_bounds(tuple(raw_bounds))
     max_dimension = payload.get("maxDimension", 1920)
     if payload.get("hwnd") is not None:
-        image, clipped = capture_window(int(payload["hwnd"]), bounds, str(payload.get("captureMode", "surface")))
+        image, clipped, source = capture_window(int(payload["hwnd"]), bounds, str(payload.get("captureMode", "surface")))
     else:
-        image, clipped = capture_pixels(bounds), False
+        image, clipped, source = capture_pixels(bounds), False, "pillow_imagegrab"
     cursor_included = False
     if payload.get("includeCursor"):
         image, cursor_included = add_cursor(image, bounds)
@@ -278,7 +297,7 @@ def worker_capture(payload: dict[str, object]) -> dict[str, object]:
             "bounds": list(bounds),
             "originalSize": list(image.size),
             "outputSize": list(output_size),
-            "source": "pillow_imagegrab",
+            "source": source,
             "clipped": clipped,
             "cursor": cursor_included,
         },

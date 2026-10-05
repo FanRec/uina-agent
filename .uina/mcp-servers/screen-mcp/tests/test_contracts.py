@@ -50,6 +50,13 @@ def test_validate_arguments_applies_defaults_and_rejects_ambiguous_targets() -> 
         with pytest.raises(ValueError):
             validate_arguments("Screenshot", {"maxDimension": value})
     assert validate_arguments("Screenshot", {"maxDimension": "original"})["maxDimension"] == "original"
+    assert validate_arguments("Screenshot", {"target": {"kind": "desktop"}, "includeCursor": True})["includeCursor"] is True
+    assert validate_arguments(
+        "Screenshot",
+        {"target": {"kind": "active_window"}, "captureMode": "visible", "includeCursor": True},
+    )["includeCursor"] is True
+    with pytest.raises(ValueError, match="surface"):
+        validate_arguments("Screenshot", {"target": {"kind": "active_window"}, "includeCursor": True})
     with pytest.raises(ValueError):
         validate_arguments("Snapshot", {"scope": "page"})
 

@@ -9,13 +9,35 @@ from pathlib import Path
 
 import pytest
 
-from uina_screen_mcp.worker import QueryRunner
+from uina_screen_mcp.worker import QueryRunner, _response_bytes, default_worker_command
 
 FIXTURE = Path(__file__).parent / "fixtures" / "worker_reply.py"
 
 
 def runner() -> QueryRunner:
     return QueryRunner([sys.executable, str(FIXTURE)])
+
+
+def test_worker_response_is_utf8_independent_of_console_code_page() -> None:
+    encoded = _response_bytes({"ok": False, "error": {"message": "不可见字符\u200b"}})
+
+    assert "不可见字符\u200b" in encoded.decode("utf-8")
+
+
+def test_default_worker_command_uses_venv_python_for_console_launcher(tmp_path: Path) -> None:
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    python = scripts / "python.exe"
+    python.write_bytes(b"")
+    launcher = scripts / "uina-screen-mcp.exe"
+
+    assert default_worker_command(str(launcher)) == [str(python), "-m", "uina_screen_mcp.worker"]
+
+
+def test_default_worker_command_keeps_direct_python(tmp_path: Path) -> None:
+    python = tmp_path / "python.exe"
+
+    assert default_worker_command(str(python)) == [str(python), "-m", "uina_screen_mcp.worker"]
 
 
 def assert_process_reaped(pid: int) -> None:
@@ -137,3 +159,13 @@ async def test_stderr_does_not_become_protocol() -> None:
 
 
 
+
+
+@pytest.mark.asyncio
+async def test_nonzero_worker_includes_stderr() -> None:
+    query = runner()
+    result = await query.run("enumerate", {"fail": 7, "stderr": "native launch detail"}, 2)
+    assert result["ok"] is False
+    assert result["error"]["code"] == "worker_failed"
+    assert "native launch detail" in result["error"]["message"]
+    await query.close()

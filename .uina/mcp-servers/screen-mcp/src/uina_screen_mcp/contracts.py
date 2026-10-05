@@ -131,8 +131,6 @@ def _validate(tool_name: str, args: JsonObject, schema: JsonObject) -> JsonObjec
         result.setdefault("includeCursor", False)
         if result.get("includeCursor") and target_kind in ("window", "active_window") and result.get("captureMode", "surface") == "surface":
             raise ValueError("invalid_arguments: captureMode=surface does not support cursor inclusion")
-        if target_kind not in ("window", "active_window") and "includeCursor" in args and args["includeCursor"]:
-            raise ValueError("invalid_arguments: includeCursor is only supported for desktop-pixel capture")
         return result
     result.setdefault("includeImage", True)
     result.setdefault("scope", "window")

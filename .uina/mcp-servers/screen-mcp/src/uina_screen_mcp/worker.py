@@ -13,11 +13,43 @@ from typing import Any, Sequence
 ALLOWED_OPERATIONS = frozenset({"enumerate", "capture", "semantics", "page"})
 
 
+def default_worker_command(executable: str | None = None) -> list[str]:
+    """Resolve the interpreter behind a Python console-script launcher.
+
+    ``sys.executable`` is normally the venv interpreter, but Windows console
+    script launchers can report their own ``.exe`` path. Starting that path
+    with ``-m`` launches the MCP server entry point again instead of this
+    worker module. The sibling ``python.exe`` is the interpreter installed in
+    the same venv and keeps the worker on the server's dependency environment.
+    """
+    current = Path(executable or sys.executable)
+    if current.name.lower() in {"python", "python.exe", "pythonw", "pythonw.exe"}:
+        interpreter = current
+    else:
+        interpreter = current.with_name("python.exe")
+        if not interpreter.is_file():
+            raise RuntimeError(f"cannot resolve Python interpreter for native worker: {current}")
+    return [str(interpreter), "-m", "uina_screen_mcp.worker"]
+
+
+def _stderr_summary(stderr: bytes, limit: int = 1000) -> str:
+    """Keep native launch failures actionable without flooding the MCP result."""
+    text = stderr.decode("utf-8", errors="replace").strip()
+    if len(text) <= limit:
+        return text
+    return f"...{text[-limit:]}"
+
+
+def _response_bytes(response: dict[str, Any]) -> bytes:
+    """Encode the worker protocol independently of the Windows console code page."""
+    return (json.dumps(response, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+
+
 class QueryRunner:
     """Own serialized native worker processes and always reap each child before returning."""
 
     def __init__(self, worker_command: Sequence[str] | None = None) -> None:
-        self._worker_command = list(worker_command) if worker_command else [sys.executable, "-m", "uina_screen_mcp.worker"]
+        self._worker_command = list(worker_command) if worker_command else default_worker_command()
         self._lock = asyncio.Lock()
         self._children: set[asyncio.subprocess.Process] = set()
         self._active_process: asyncio.subprocess.Process | None = None
@@ -65,7 +97,16 @@ class QueryRunner:
                     self._active_communication = None
             elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
             if process.returncode != 0:
-                return {"ok": False, "payload": None, "diagnostics": {"elapsedMs": elapsed_ms, "stderrBytes": len(stderr)}, "error": {"code": "worker_failed", "message": f"Worker exited with code {process.returncode}"}}
+                stderr_text = _stderr_summary(stderr)
+                message = f"Worker exited with code {process.returncode}"
+                if stderr_text:
+                    message = f"{message}: {stderr_text}"
+                return {
+                    "ok": False,
+                    "payload": None,
+                    "diagnostics": {"elapsedMs": elapsed_ms, "stderrBytes": len(stderr)},
+                    "error": {"code": "worker_failed", "message": message},
+                }
             try:
                 lines = [line for line in stdout.splitlines() if line.strip()]
                 if len(lines) != 1:
@@ -295,8 +336,8 @@ def main() -> None:
         response = _execute_worker_request(request)
     except Exception:
         response = {"ok": False, "payload": None, "diagnostics": {}, "error": {"code": "invalid_worker_request", "message": "Worker request could not be processed"}}
-    sys.stdout.write(json.dumps(response, separators=(",", ":"), ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    sys.stdout.buffer.write(_response_bytes(response))
+    sys.stdout.buffer.flush()
 
 
 if __name__ == "__main__":
