@@ -295,7 +295,7 @@ describe("LiveEventIngestion", () => {
 
 		// 停手超过静默期：整批上报总数
 		const lines = buffer.drainQuietTransientGifts(2000, 5000);
-		expect(lines).toEqual(["* fan 赠送 小心心 x9"]);
+		expect(lines).toEqual(['* <user name="fan" uid="42"/> 赠送 小心心 x9']);
 		expect(buffer.hasTransientGifts).toBe(false);
 		buffer.dispose();
 	});
@@ -361,7 +361,7 @@ describe("LiveEventIngestion", () => {
 		expect(buffer.drainQuietTransientGifts(2000, 1000)).toEqual([]);
 		expect(buffer.hasTransientGifts).toBe(true);
 		const lines = buffer.drainQuietTransientGifts(2000, 5000);
-		expect(lines).toEqual(["* fan 赠送 小心心 x5"]);
+		expect(lines).toEqual(['* <user name="fan" uid="42"/> 赠送 小心心 x5']);
 
 		// 不同观众互不影响
 		send(3, 0, 43);
@@ -446,7 +446,7 @@ describe("LiveEventIngestion", () => {
 		// 在 8300ms 时，虽然最后更新是 8200 (距最后更新只有 100ms < 2000ms)，但距首次到达 (0ms) 已经 8300ms >= 8000ms！
 		// 防饥饿生效，立即排出阶段性汇总！
 		const lines = buffer.drainQuietTransientGifts(2000, 8300, 8000);
-		expect(lines).toEqual(["* fan 赠送 小心心 x7"]);
+		expect(lines).toEqual(['* <user name="fan" uid="42"/> 赠送 小心心 x7']);
 		expect(buffer.hasTransientGifts).toBe(false);
 
 		buffer.dispose();
@@ -544,6 +544,62 @@ describe("LiveEventIngestion", () => {
 		expect(wakes[0]).toEqual({ sourceEventKey: "bilibili:gift:tid_mid_1", reason: "gift" });
 		expect(smallGiftCount).toBe(0);
 		expect(buffer.getPendingCounts().gifts).toBe(1);
+
+		buffer.dispose();
+	});
+
+	it("renders high-value gifts and memberships with structured user tag and RMB conversion", () => {
+		tempDir = mkdtempSync(join(tmpdir(), "uina-ingestion-"));
+		const config = loadConfig({
+			storage: { dataDir: tempDir },
+			gifts: { pendingThreshold: 1000 },
+			wakeup: { wakeOnGiftThreshold: 1000, wakeOnGuard: true },
+		});
+		const buffer = new LiveEventBuffer(config);
+		const giftResult = buffer.ingestGift({
+			id: "g_big_1",
+			uid: 10001,
+			uname: "土豪大哥",
+			giftId: 100,
+			giftName: "摩天大楼",
+			price: 50000,
+			count: 2,
+			guardLevel: 2,
+			medalName: "牌子",
+			medalLevel: 20,
+		});
+		expect(giftResult.record).toBeTruthy();
+		const renderedGift = buffer.renderPendingEvent(giftResult.record!.sourceEventKey);
+		expect(renderedGift).toContain('<user name="土豪大哥" uid="10001" identity="提督" medal="牌子Lv20"/>');
+		expect(renderedGift).toContain("「摩天大楼」x2（折合 ￥100）");
+
+		const guardResult = buffer.ingestGuard({
+			uid: 10002,
+			uname: "支持者",
+			guardLevel: 3,
+			giftName: "舰长",
+			timestamp: 7000,
+		});
+		expect(guardResult.record).toBeTruthy();
+		const renderedGuard = buffer.renderPendingEvent(guardResult.record!.sourceEventKey);
+		expect(renderedGuard).toContain('<user name="支持者" uid="10002" identity="舰长"/>');
+		expect(renderedGuard).toContain("开通或续费了舰长");
+
+		// 验证小额礼物合并也带身份和勋章标签
+		buffer.ingestGift({
+			uid: 10003,
+			uname: "铁粉",
+			giftId: 1,
+			giftName: "小心心",
+			price: 100,
+			count: 3,
+			guardLevel: 3,
+			medalName: "真爱粉",
+			medalLevel: 15,
+			monotonicTimeMs: 0,
+		});
+		const quietLines = buffer.drainQuietTransientGifts(2000, 5000);
+		expect(quietLines).toEqual(['* <user name="铁粉" uid="10003" identity="舰长" medal="真爱粉Lv15"/> 赠送 小心心 x3']);
 
 		buffer.dispose();
 	});

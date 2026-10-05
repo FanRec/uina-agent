@@ -71,6 +71,9 @@ export function normalizeWebGift(event: GiftEvent): LiveEvent {
 			price: event.price,
 			// 与 parseGift 缺省语义一致：仅显式银瓜子视为免费礼物
 			paid: event.coinType !== "silver",
+			guardLevel: event.guardLevel,
+			medalName: event.medalName,
+			medalLevel: event.medalLevel,
 		},
 	};
 }
@@ -88,6 +91,9 @@ export function normalizeOpenGift(event: OpenGiftEvent): LiveEvent {
 			count: event.giftNum,
 			price: event.rPrice,
 			paid: event.paid,
+			guardLevel: event.guardLevel,
+			medalName: event.fansMedalName,
+			medalLevel: event.fansMedalLevel,
 		},
 	};
 }

@@ -78,6 +78,9 @@ export interface GiftRecord extends BasePendingEventRecord {
   readonly giftName: string;         // 礼物名称
   readonly price: number;            // 礼物单价（瓜子：付费礼物=金瓜子，免费礼物=银瓜子；1000 金瓜子 = ￥1）
   count: number;                     // 数量
+  readonly guardLevel?: number;      // 舰队等级: 1总督, 2提督, 3舰长
+  readonly medalName?: string;       // 粉丝勋章名
+  readonly medalLevel?: number;      // 粉丝勋章等级
 }
 
 export type PendingEventRecord = SuperChatRecord | GuardRecord | GiftRecord;
