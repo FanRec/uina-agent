@@ -124,4 +124,23 @@ describe("compaction canonical boundary & fingerprint", () => {
 		expect(messages[keepFrom!]!.role).not.toBe("tool");
 		expect(messages[keepFrom!]!.role).toBe("assistant");
 	});
+
+	test("findTrimBoundary 当最新单步超过 targetKeepTokens 但在真实窗口预算内时，保留最新单步且截断历史而非崩溃", () => {
+		const messages = [
+			{ role: "system", content: "系统提示" },
+			{ role: "user", content: "历史提问 1" },
+			{ role: "assistant", content: "历史回答 1" },
+			{ role: "user", content: "历史提问 2" },
+			{ role: "assistant", content: "历史回答 2" },
+			// 当前待发送的新一轮包含大输入（preflight 场景，约 3000 tokens）
+			{ role: "user", content: "大文本内容 ".repeat(500) },
+		];
+
+		// targetKeepTokens 为 1000（最新单步已超此值），但真实窗口预算给 10000
+		const keepFrom = findTrimBoundary(messages, 1000, false, 10000);
+		expect(keepFrom).not.toBeNull();
+		// 应保留最新的当前输入（从 index 5 开始）
+		expect(keepFrom).toBe(5);
+		expect(messages[keepFrom!]!.role).toBe("user");
+	});
 });

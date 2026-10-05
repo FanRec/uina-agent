@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { CHARS_PER_TOKEN, estimateRequestTokens, estimateTextTokens } from "../../agent/context.js";
 import { inputTokenBudget, modelKey } from "../../core/model.js";
-import type { ChatMsg, RequestInspection, RequestProjection, TokenMeasurement, ToolDef } from "../../core/types.js";
+import type { ChatMsg, RequestInspection, RequestProjection, TokenMeasurement } from "../../core/types.js";
 import type { HydratedSessionEntry } from "../../session/types.js";
 import type { ExtensionAPI } from "../runner.js";
 
 const SUMMARY_ENTRY_TYPE = "uina.compaction.summary";
-const MANUAL_KEEP_TOKENS = 20_000;
+export const DEFAULT_KEEP_RECENT_TOKENS = 20_000;
+export const MANUAL_KEEP_TOKENS = DEFAULT_KEEP_RECENT_TOKENS;
 const SUMMARY_VERSION = 1;
 
 export interface CompactionCheckpoint {
@@ -45,9 +46,7 @@ export function filterCompactionMessages<T extends StreamMessageView>(messages: 
 }
 
 /** 估算口径必须与 preflight 测量（measureRequestContext）及真实发送（loop buildContext
- * 的 model.includeThinking）一致。这里曾经硬编码不计 thinking，导致"测量含 thinking 判超
- * 预算、压缩器不含 thinking 判无需压缩"的分歧窗口：上下文越预算时自动压缩报 noop，
- * 回合被 preflight 直接杀死（thinking 段越大窗口越宽）。 */
+ * 的 model.includeThinking）一致。 */
 export function estimateStreamTokens(messages: readonly StreamMessageView[], includeThinking = false): number {
 	return estimateRequestTokens(messages as readonly ChatMsg[], [], includeThinking);
 }
@@ -73,26 +72,51 @@ export function semanticUnits(
 	return result;
 }
 
+/**
+ * 寻找保留尾部的切分边界。
+ * @param messages 过滤掉 runtime perception 的上下文消息序列
+ * @param targetKeepTokens 期望保留的最近历史 token 数（如 20_000，或小窗口下的安全预算）
+ * @param includeThinking 是否包含 thinking token
+ * @param maxTailBudget 尾部单步/结果允许占用的最大上下文上限（防止最新单步超窗口，缺省为 targetKeepTokens）
+ */
 export function findTrimBoundary(
 	messages: readonly StreamMessageView[],
-	messageBudget: number,
+	targetKeepTokens: number,
 	includeThinking = false,
+	maxTailBudget?: number,
 ): number | null {
-	if (estimateStreamTokens(messages, includeThinking) <= messageBudget) return null;
+	if (estimateStreamTokens(messages, includeThinking) <= targetKeepTokens) return null;
 	let systemEnd = 0;
 	while (messages[systemEnd]?.role === "system") systemEnd++;
-	let remaining = messageBudget - estimateStreamTokens(messages.slice(0, systemEnd), includeThinking);
+	const systemTokens = estimateStreamTokens(messages.slice(0, systemEnd), includeThinking);
+
+	const tailCeiling = maxTailBudget ?? targetKeepTokens;
+	let accumulatedTokens = 0;
 	let keepFrom = messages.length;
-	for (const unit of semanticUnits(messages, includeThinking).reverse()) {
-		if (unit.start < systemEnd || unit.tokens > remaining) break;
-		remaining -= unit.tokens;
+	const units = semanticUnits(messages, includeThinking).filter((u) => u.start >= systemEnd);
+
+	for (let i = units.length - 1; i >= 0; i--) {
+		const unit = units[i]!;
+		// 如果最新单步（第一项）本身超过了 targetKeepTokens，只要它仍落在整个上下文可用预算内即可保留
+		if (accumulatedTokens === 0 && unit.tokens > targetKeepTokens) {
+			if (systemTokens + unit.tokens > tailCeiling) {
+				throw new Error(`最新单步上下文或工具结果已超过预算（budget=${tailCeiling}），无法安全截取历史`);
+			}
+			keepFrom = unit.start;
+			break;
+		}
+		if (accumulatedTokens + unit.tokens > targetKeepTokens) {
+			break;
+		}
+		accumulatedTokens += unit.tokens;
 		keepFrom = unit.start;
 	}
+
 	while (keepFrom < messages.length && messages[keepFrom]!.role === "tool") {
 		keepFrom++;
 	}
 	if (keepFrom >= messages.length) {
-		throw new Error(`最新单步上下文或工具结果已超过预算（budget=${messageBudget}），无法安全截取历史`);
+		throw new Error(`最新单步上下文或工具结果已超过预算（budget=${tailCeiling}），无法安全截取历史`);
 	}
 	return keepFrom > systemEnd ? keepFrom : null;
 }
@@ -112,8 +136,6 @@ function renderCheckpoint<T extends StreamMessageView>(
 	];
 }
 
-/** 压缩后投影的唯一组装构造：transformContext hook 与 fit 闭环共用，保证
- * "实际发送的重建请求"与"fit 的测量对象"逐字节同构，口径不可能漂移。 */
 function compactedMessages<T extends StreamMessageView>(
 	source: readonly T[],
 	checkpoint: CompactionCheckpoint,
@@ -214,9 +236,6 @@ export function fingerprintPrefix(
 export function checkpointValid(checkpoint: CompactionCheckpoint, entries: readonly HydratedSessionEntry[]): boolean {
 	const bearing = requestBearing(entries);
 	const covered = bearing.findIndex((entry) => entry.id === checkpoint.coveredThroughEntryId);
-	// 唯一 canonical boundary：covered 必须存在于 requestBearing，且前缀指纹一致。
-	// 投影允许过滤/重组（event frame、扩展 transform），不要求 bearing 邻接；
-	// tail 对本次投影的适配由 renderCheckpoint 负责（找不到 tail 即不适用）。
 	if (covered < 0) return false;
 	return fingerprintPrefix(entries, checkpoint.coveredThroughEntryId) === checkpoint.prefixFingerprint;
 }
@@ -257,16 +276,26 @@ function entryIds(messages: readonly StreamMessageView[], start: number, end: nu
 	return result;
 }
 
+const MAX_TOOL_RESULT_CHARS = 4000;
+
+function truncateToolContent(content: string): string {
+	if (content.length <= MAX_TOOL_RESULT_CHARS) return content;
+	return `${content.slice(0, MAX_TOOL_RESULT_CHARS)}\n...[余下 ${content.length - MAX_TOOL_RESULT_CHARS} 字符已截断]`;
+}
+
 function transcript(messages: readonly StreamMessageView[]): string {
 	const lines: string[] = [];
 	for (const message of messages) {
 		if (message.role === "system") continue;
 		if (message.context?.group && message.context.input) {
-			if (message.role === "tool") lines.push(`[外部事件 ${JSON.stringify(message.context.input)}] ${message.content}`);
+			if (message.role === "tool")
+				lines.push(`[外部事件 ${JSON.stringify(message.context.input)}] ${truncateToolContent(message.content)}`);
 			continue;
 		}
 		if (message.role === "tool") {
-			lines.push(`[工具结果 ${message.tool_call_id} ${message.status ?? "unknown"}] ${message.content}`);
+			lines.push(
+				`[工具结果 ${message.tool_call_id} ${message.status ?? "unknown"}] ${truncateToolContent(message.content)}`,
+			);
 			continue;
 		}
 		const calls = message.tool_calls
@@ -288,8 +317,6 @@ function summarizeInput(rolling: string, history: string): string {
 	return rolling ? `[已有摘要]\n${rolling}\n${history}` : history;
 }
 
-/** 摘要模型请求消息的唯一构造：测量（summaryRequestTokens）与 IO（summarizeOnce）
- * 共用，测的输入与发的输入不可能漂移。 */
 function summaryRequestMessages(body: string, focus: string): ChatMsg[] {
 	return [
 		{ role: "system", content: SUMMARY_SYSTEM_PROMPT },
@@ -310,10 +337,6 @@ function describeSummaryError(error: unknown): string {
 	return `${error.message}（底层原因：${code ? `${code}: ` : ""}${detail}）`;
 }
 
-/** 单轮文本补全的统一 IO 缝：流式收集、trim、空结果与错误包装。摘要与再压缩
- * 共用，两条模型路径的失败语义同源。
- * signal = Subject 信号（turn/post-turn/activity）。pi.models.stream 内部经
- * activation scope 与 pi.signal（扩展卸载）合并，两条取消源都到达 IO。 */
 async function requestTextCompletion(
 	pi: ExtensionAPI,
 	messages: readonly ChatMsg[],
@@ -342,8 +365,6 @@ async function summarizeOnce(pi: ExtensionAPI, body: string, focus: string, sign
 	return requestTextCompletion(pi, summaryRequestMessages(body, focus), "摘要模型请求", signal);
 }
 
-/** 摘要消息的唯一构造（user 角色 + `[历史摘要] ` 前缀）：renderCheckpoint 与
- * fit 闭环共用，wire 形状与估算口径同源。 */
 function summaryMessage(summary: string): { role: "user"; content: string } {
 	return { role: "user", content: `[历史摘要] ${summary}` };
 }
@@ -352,57 +373,37 @@ function summaryMessageTokens(summary: string): number {
 	return estimateRequestTokens([summaryMessage(summary)], []);
 }
 
-const RECOMPRESS_SYSTEM_PROMPT =
-	"你是上下文摘要压缩器。把给定摘要压缩得更短：保留关键事实、决定与未竟事项，不新增内容、不添加评论，直接输出压缩后的摘要正文。";
-
-/** 摘要再压缩：模型侧收缩手段，不保证达标——字符目标按当前字符/token 比例换算，
- * 只作提示词引导；是否达标由调用方以同一估算口径复验。 */
-async function recompressSummary(
-	pi: ExtensionAPI,
-	summary: string,
-	targetTokens: number,
-	signal: AbortSignal,
-): Promise<string> {
-	const est = estimateTextTokens(summary);
-	const charsPerToken = est > 0 ? summary.length / est : 1;
-	const targetChars = Math.max(1, Math.floor(targetTokens * charsPerToken));
-	return requestTextCompletion(
-		pi,
-		[
-			{ role: "system", content: RECOMPRESS_SYSTEM_PROMPT },
-			{ role: "user", content: `${summary}\n\n（把以上摘要压缩到不超过 ${targetChars} 字符，直接输出正文。）` },
-		],
-		"摘要再压缩",
-		signal,
-	);
-}
-
 const TRUNCATION_MARKER = "……[摘要已截断]";
 const SUMMARY_PREFIX = "[历史摘要] ";
-/** estimateContextSegments 的每消息常数。 */
 const PER_MESSAGE_TOKENS = 4;
-/** 截断保底消息的固定开销（消息常量 + 前缀 + 标记，按估算口径）= 17。
- * fit 收敛的理论下限：摘要消息目标低于它时截断也无解。 */
 const TRUNCATION_OVERHEAD =
 	PER_MESSAGE_TOKENS + estimateTextTokens(SUMMARY_PREFIX) + estimateTextTokens(TRUNCATION_MARKER);
 
-/** 确定性保底：按估算口径（estimateTextTokens 的 ceil(ascii/4)+nonAscii 公式，此处
- * 增量镜像逐码点找最大可保留前缀）截断摘要正文。零模型依赖，是 fit 收敛的最后一环。
- * 预算扣减必须覆盖 TRUNCATION_OVERHEAD 三项（消息常量、前缀、截断标记），缺一即让
- * 截断后消息恰好越线（实测踩过的坑：漏算前缀导致 commit 仍差 3 token 拒绝）。 */
-function truncateSummary(summary: string, targetMessageTokens: number): string {
-	const contentBudget = targetMessageTokens - TRUNCATION_OVERHEAD;
-	if (contentBudget < 1) return TRUNCATION_MARKER;
+/**
+ * 确定性字符切片：按 token 预算线性扫描截断，无需昂贵的二分查找。
+ */
+function sliceToTokenBudget(text: string, maxTokens: number): string {
+	if (maxTokens <= 0) return "";
 	let ascii = 0;
 	let nonAscii = 0;
 	let end = 0;
-	for (const char of summary) {
+	for (const char of text) {
 		if (char.codePointAt(0)! <= 0x7f) ascii++;
 		else nonAscii++;
-		if (Math.ceil(ascii / CHARS_PER_TOKEN) + nonAscii > contentBudget) break;
+		if (Math.ceil(ascii / CHARS_PER_TOKEN) + nonAscii > maxTokens) break;
 		end += char.length;
 	}
-	return `${summary.slice(0, end)}${TRUNCATION_MARKER}`;
+	return text.slice(0, end);
+}
+
+/**
+ * 确定性保底：按估算口径截断摘要正文，保证加上前缀与截断标记后严格落在 targetMessageTokens 内。
+ */
+function truncateSummary(summary: string, targetMessageTokens: number): string {
+	const contentBudget = targetMessageTokens - TRUNCATION_OVERHEAD;
+	if (contentBudget < 1) return TRUNCATION_MARKER;
+	const body = sliceToTokenBudget(summary, contentBudget);
+	return `${body}${TRUNCATION_MARKER}`;
 }
 
 async function requestSummary(
@@ -417,16 +418,20 @@ async function requestSummary(
 	const usable = source.filter((message) => message.role !== "system");
 	if (usable.length === 0) throw new Error("没有可摘要的历史内容");
 	if (budget === undefined) throw new Error("当前模型上下文窗口未知，无法安全执行摘要");
+
 	const fits = (rolling: string, history: string): boolean =>
 		summaryRequestTokens(summarizeInput(rolling, history), focus) <= budget;
+
 	const units = semanticUnits(usable)
 		.map((unit) => transcript(usable.slice(unit.start, unit.end)))
 		.filter((value) => value.length > 0);
 	if (units.length === 0) throw new Error("没有可摘要的历史内容");
+
 	const fragmentLabel = "[同一语义单元分片]\n";
 	let rolling = "";
 	let cursor = 0;
 	let completed = 0;
+
 	while (cursor < units.length) {
 		let chunk = "";
 		while (cursor < units.length) {
@@ -439,34 +444,29 @@ async function requestSummary(
 			}
 			if (chunk) break;
 
-			// The old summary can itself consume the room needed for the next
-			// fragment. Reduce it once before trying to partition that unit.
+			// 单个单元或已有摘要加单元超出预算：分片处理
 			const rawUnit = unit.startsWith(fragmentLabel) ? unit.slice(fragmentLabel.length) : unit;
-			const first = [...rawUnit][0]!;
-			if (rolling && !fits(rolling, fragmentLabel + first)) {
-				if (!fits("", `[已有摘要]\n${rolling}`)) throw new Error("已有摘要无法装入摘要模型输入预算");
-				const reduced = await summarizeOnce(pi, `[已有摘要]\n${rolling}`, focus, signal);
-				if (
-					summaryRequestTokens(reduced, focus) >= summaryRequestTokens(rolling, focus) ||
-					!fits(reduced, fragmentLabel + first)
-				) {
-					throw new Error("已有摘要未能缩短到可继续处理历史的大小");
+			const rollingCost = summaryRequestTokens(summarizeInput(rolling, fragmentLabel), focus);
+			const availableTokens = budget - rollingCost;
+			if (availableTokens <= 0) {
+				if (rolling) {
+					rolling = await summarizeOnce(pi, `[已有摘要]\n${rolling}`, focus, signal);
+					continue;
 				}
-				rolling = reduced;
+				throw new Error("单个历史分片也无法装入摘要模型输入预算");
 			}
-			if (!fits(rolling, fragmentLabel + first)) throw new Error("单个历史分片也无法装入摘要模型输入预算");
-			const chars = [...rawUnit];
-			let low = 1;
-			let high = chars.length;
-			while (low < high) {
-				const middle = Math.ceil((low + high) / 2);
-				if (fits(rolling, fragmentLabel + chars.slice(0, middle).join(""))) low = middle;
-				else high = middle - 1;
+
+			// 直接按预算线性切片，完全无需二分查找
+			const slice = sliceToTokenBudget(rawUnit, availableTokens);
+			if (!slice) throw new Error("单个历史分片也无法装入摘要模型输入预算");
+
+			chunk = fragmentLabel + slice;
+			const remainder = rawUnit.slice(slice.length);
+			if (remainder) {
+				units[cursor] = fragmentLabel + remainder;
+			} else {
+				cursor++;
 			}
-			chunk = fragmentLabel + chars.slice(0, low).join("");
-			const remainder = chars.slice(low).join("");
-			if (remainder) units[cursor] = fragmentLabel + remainder;
-			else cursor++;
 			break;
 		}
 		rolling = await summarizeOnce(pi, summarizeInput(rolling, chunk), focus, signal);
@@ -480,7 +480,6 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 	let staged: StagedCompaction | undefined;
 	let pendingManual: { instruction?: string; operationId: string } | undefined;
 	let activeOperation: Promise<"completed" | "noop"> | undefined;
-	const terminalOperations = new Set<string>();
 
 	const emitProgress = (
 		operationId: string,
@@ -488,8 +487,6 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		detail?: string,
 	) => pi.emitEvent({ type: "session_compact_progress", operationId, phase, ...(detail ? { detail } : {}) });
 
-	/** 终态归因：Subject 信号（turn/post-turn/activity）或扩展卸载信号 aborted
-	 * 即 cancelled；否则 failed。两个信号是仅有的取消源。 */
 	const cancelKind = (signal?: AbortSignal): "cancelled" | "failed" =>
 		(signal !== undefined && signal.aborted) || pi.signal.aborted ? "cancelled" : "failed";
 
@@ -499,9 +496,6 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 	};
 
 	const terminal = async (operationId: string, status: "failed" | "cancelled", error: unknown): Promise<void> => {
-		if (terminalOperations.has(operationId)) return;
-		terminalOperations.add(operationId);
-		// 只清属于本操作的候选：终态化不得误伤时序上更新的 staged。
 		if (staged?.operationId === operationId) staged = undefined;
 		await pi.emitEvent({
 			type: "session_compact",
@@ -509,68 +503,6 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 			status,
 			error: String((error as Error)?.message ?? error),
 		});
-	};
-
-	/** 压缩不变式的执行点（measure-then-fit）：staged checkpoint 落地后测量重建请求，
-	 * 超预算则迭代再压缩摘要（至多 2 次模型调用），仍超则确定性截断保底。
-	 *
-	 * 测量口径：compactedMessages（与 transformContext hook 逐字节同构）+ 与
-	 * measureRequestContext fallback 相同的估算函数。刻意不依赖 pi.inspectRequest
-	 * ——该接缝是可选的（裸 ExtensionRunner 不提供），自动压缩路径不得因此崩溃；
-	 * 且本地算术把尾部瞬态注入（beforeMessages 等）计入测量，对 manual commit
-	 * （不含它们）是保守方向：本地 fit ⟹ 两条 commit 路径的实测必 fit。与 commit
-	 * 实测的残差仅剩 stage→重建之间的瞬态漂移（新 perception / 记忆写入，单条
-	 * 量级 ≪ summaryReserve），由预留吸收、由 commit 后背门如实兜底。
-	 * 目标为负（摘要侧无解，如 tail/system/工具本身占满预算）时交还 commit 报真实
-	 * 错误，不伪装成功。 */
-	const fitStagedSummary = async (
-		operationId: string,
-		source: readonly StreamMessageView[],
-		tools: readonly ToolDef[],
-		inputBudget: number,
-		signal?: AbortSignal,
-	): Promise<void> => {
-		const recompressAttempts = 2;
-		const includeThinking = pi.models.current().includeThinking === true;
-		for (let attempt = 0; attempt <= recompressAttempts; attempt++) {
-			signal?.throwIfAborted();
-			const candidate = staged;
-			if (!candidate) return; // 已被终止（abort/卸载）：commit 门兜底
-			const rendered = compactedMessages(source, candidate.checkpoint);
-			if (!rendered) return; // tail 不可渲染：与 hook 返回 undefined 同语义，交还后背门
-			const overflow = estimateRequestTokens(rendered as readonly ChatMsg[], tools, includeThinking) - inputBudget;
-			if (overflow <= 0) return;
-			const summaryEst = summaryMessageTokens(candidate.checkpoint.summary);
-			const targetTokens = summaryEst - overflow; // 摘要消息（含前缀）的目标 token 上限
-			// 目标低于截断保底的固定开销：摘要侧无解，不伪装，交还 commit 报真实错误。
-			if (targetTokens <= TRUNCATION_OVERHEAD) return;
-			let next: string | undefined;
-			if (attempt < recompressAttempts) {
-				await emitProgress(
-					operationId,
-					"summarizing",
-					`压缩后仍超预算 ${overflow} token，第 ${attempt + 1} 次再压缩摘要`,
-				);
-				try {
-					const recompressed = await recompressSummary(
-						pi,
-						candidate.checkpoint.summary,
-						targetTokens,
-						signal ?? pi.signal,
-					);
-					if (summaryMessageTokens(recompressed) < summaryEst) next = recompressed;
-					else await emitProgress(operationId, "summarizing", "再压缩未缩短摘要，改用截断保底");
-				} catch (error) {
-					await emitProgress(operationId, "summarizing", `再压缩失败（${(error as Error).message}），改用截断保底`);
-				}
-			}
-			if (next === undefined) next = truncateSummary(candidate.checkpoint.summary, targetTokens);
-			// 所有权检查：await 期间 abort/卸载可经 onAbort 清空 staged；无条件回写
-			// 会把已终止的操作复活成永久卡死的 staged（/compact 永远报"已有压缩
-			// 操作在进行"）。
-			if (staged !== candidate) return;
-			staged = { ...candidate, checkpoint: { ...candidate.checkpoint, summary: next } };
-		}
 	};
 
 	const stage = async (
@@ -595,14 +527,9 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		const messageBudget = Math.max(0, inspection.inputBudget - toolCost);
 		const summaryReserve = Math.min(1024, Math.floor(messageBudget / 4));
 		const trimBudget = Math.max(0, messageBudget - summaryReserve);
-		// 与发送口径一致（loop buildContext 用 model.includeThinking 决定 thinking 是否上链路），
-		// 每次现取，容忍模型中途切换。
 		const includeThinking = pi.models.current().includeThinking === true;
-		const boundary = findTrimBoundary(
-			messages,
-			reason === "manual" ? Math.min(MANUAL_KEEP_TOKENS, trimBudget) : trimBudget,
-			includeThinking,
-		);
+		const targetKeepTokens = Math.min(DEFAULT_KEEP_RECENT_TOKENS, trimBudget);
+		const boundary = findTrimBoundary(messages, targetKeepTokens, includeThinking, trimBudget);
 		if (boundary === null) {
 			await pi.emitEvent({
 				type: "session_compact",
@@ -610,7 +537,6 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 				status: "noop",
 				tokensBefore: inspection.measurement.inputTokens,
 			});
-			terminalOperations.add(operationId);
 			return "noop";
 		}
 		const coverTarget = boundary;
@@ -620,9 +546,7 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		const coveredThroughEntryId = coveredIds.at(-1) ?? previous?.coveredThroughEntryId;
 		const tailStartsAtEntryId = tailIds[0];
 		if (!coveredThroughEntryId || !tailStartsAtEntryId) throw new Error("无法将压缩边界映射到 canonical history");
-		// 唯一 canonical boundary：压缩边界必须能映射回主线 requestBearing，指纹只算
-		// canonical entries 一种口径。映射不出当场失败，不落一个重启后注定验证失败的
-		// checkpoint（旧消息指纹兜底已删除——那是只隐藏错误的伪容错）。
+
 		const history = pi.history();
 		const tailEntryIndex = history.findIndex((entry) => entry.id === tailStartsAtEntryId);
 		if (tailEntryIndex < 0)
@@ -634,14 +558,30 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 			throw new Error(
 				`无法将压缩边界唯一映射到 canonical history（covered=${coveredThroughEntryId}, tail=${tailStartsAtEntryId}, entries=${history.length}）`,
 			);
+
 		await emitProgress(operationId, "summarizing", "生成历史摘要");
-		const summary = await requestSummary(
-			pi,
-			messages.slice(0, coverTarget),
-			instruction,
-			signal ?? pi.signal,
-			(count) => emitProgress(operationId, "summarizing", `已完成 ${count} 块历史摘要`),
+		let summary = await requestSummary(pi, messages.slice(0, coverTarget), instruction, signal ?? pi.signal, (count) =>
+			emitProgress(operationId, "summarizing", `已完成 ${count} 块历史摘要`),
 		);
+
+		// 计算摘要可用的精确上限，保证重建请求 100% 落入可用预算
+		let systemEnd = 0;
+		while (messages[systemEnd]?.role === "system") systemEnd++;
+		const systemCost = estimateStreamTokens(messages.slice(0, systemEnd), includeThinking);
+		const tailCost = estimateStreamTokens(messages.slice(coverTarget), includeThinking);
+		const perceptionCost = estimateRequestTokens(
+			inspection.projection.messages.filter((m) => isRuntimePerception(m as StreamMessageView)) as readonly ChatMsg[],
+			[],
+			includeThinking,
+		);
+		const maxSummaryMessageTokens = Math.max(
+			TRUNCATION_OVERHEAD,
+			inspection.inputBudget - toolCost - systemCost - tailCost - perceptionCost,
+		);
+		if (summaryMessageTokens(summary) > maxSummaryMessageTokens) {
+			summary = truncateSummary(summary, maxSummaryMessageTokens);
+		}
+
 		staged = {
 			operationId,
 			checkpoint: {
@@ -656,13 +596,6 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 			},
 		};
 		await emitProgress(operationId, "measuring", "重建并测量压缩后的请求");
-		await fitStagedSummary(
-			operationId,
-			inspection.projection.messages as readonly StreamMessageView[],
-			inspection.projection.tools,
-			inspection.inputBudget,
-			signal,
-		);
 		return "staged";
 	};
 
@@ -672,32 +605,22 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		inputBudget?: number,
 		signal?: AbortSignal,
 	): Promise<void> => {
-		// 取消是提交门的一部分：摘要已生成不等于 checkpoint 已授权写入。
-		// 尤其要覆盖 stage → inspectRequest → appendEntry 之间的竞态窗口。
 		signal?.throwIfAborted();
 		const candidate = staged;
 		if (!candidate) throw new Error("没有待验证的压缩候选");
 		if (measurement.inputTokens >= (candidate.checkpoint.tokensBefore ?? Number.POSITIVE_INFINITY)) {
-			const reason = `压缩后上下文没有改善（before=${candidate.checkpoint.tokensBefore ?? "?"}, after=${measurement.inputTokens}）`;
-			await terminal(candidate.operationId, "failed", reason);
-			throw new Error(reason);
+			throw new Error(
+				`压缩后上下文没有改善（before=${candidate.checkpoint.tokensBefore ?? "?"}, after=${measurement.inputTokens}）`,
+			);
 		}
 		if (mustFit && inputBudget !== undefined && measurement.inputTokens > inputBudget) {
-			await terminal(candidate.operationId, "failed", "压缩后上下文仍超过可用预算");
 			throw new Error("压缩后上下文仍超过可用预算");
 		}
 		await emitProgress(candidate.operationId, "applying", "写入压缩检查点");
 		signal?.throwIfAborted();
-		try {
-			await pi.appendEntry({ customType: SUMMARY_ENTRY_TYPE, data: candidate.checkpoint });
-		} catch (error) {
-			await terminal(candidate.operationId, cancelKind(signal), error);
-			throw error;
-		}
+		await pi.appendEntry({ customType: SUMMARY_ENTRY_TYPE, data: candidate.checkpoint });
 		checkpoints.push(candidate.checkpoint);
 		staged = undefined;
-		terminalOperations.add(candidate.operationId);
-		// 持久化是提交点；后续观察者失败不能将已生效的 checkpoint 说成失败。
 		try {
 			await emitProgress(candidate.operationId, "applying", "发布压缩结果");
 		} catch (error) {
@@ -777,15 +700,11 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 			}
 			const operationId = randomUUID();
 			try {
-				// 空闲压缩是回合外排他前台活动：占用 Subject（busy 可见、阻止新 turn）、
-				// 受 interrupt 控制（Esc/Ctrl+C → cancelled）、被 dispose 等待。
 				await pi.runActivity(async (activitySignal) => {
 					await runManual(instruction, operationId, false, activitySignal);
 				});
-			} catch (error) {
-				// The terminal event already owns the user-visible failure. Avoid a
-				// second CommandRouter error for the same operation.
-				if (!terminalOperations.has(operationId)) pi.reportError(error);
+			} catch {
+				// 终态事件 session_compact 已独占并上报错误，命令层无需重复抛出。
 			}
 		},
 	});
@@ -794,12 +713,10 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		const pending = pendingManual;
 		if (!pending || activeOperation) return undefined;
 		pendingManual = undefined;
-		// post-turn 阶段：outcome 已冻结，signal 是全新的 post-turn 信号——原回合被
-		// interrupt 不取消这里，压缩失败/取消也不回改回合结果。
 		try {
 			await runManual(pending.instruction, pending.operationId, true, signal);
-		} catch (error) {
-			if (!terminalOperations.has(pending.operationId)) pi.reportError(error);
+		} catch {
+			// 终态事件 session_compact 已独占并上报错误。
 		}
 		return undefined;
 	});
@@ -809,7 +726,6 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		const checkpoint = staged?.checkpoint ?? activeCheckpoint();
 		if (!checkpoint) return undefined;
 		if (!staged && !checkpointValid(checkpoint, pi.history())) return undefined;
-		// 与 fit 闭环共用同一组装构造（compactedMessages）：发送与测量不漂移。
 		const messages = compactedMessages(source, checkpoint);
 		if (!messages) return undefined;
 		return { projection: { ...projection, messages: [...messages] } as RequestProjection };
@@ -818,10 +734,12 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 	pi.onHook("turn.preflight", async ({ projection, measurement, pass, signal }) => {
 		const budget = inputTokenBudget(pi.models.current(), projection.thinkingLevel);
 		if (pass > 0 && staged) {
+			const candidateId = staged.operationId;
 			try {
 				await commit(measurement, true, budget, signal);
 				return { action: "send" as const };
 			} catch (error) {
+				await terminal(candidateId, cancelKind(signal), error);
 				return { action: "fail" as const, reason: String((error as Error).message ?? error) };
 			}
 		}
@@ -860,10 +778,6 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 	return () => pi.signal.removeEventListener("abort", onAbort);
 }
 
-/** 重启回放的转录装饰：auxiliary checkpoint → UI 卡片投影。能力拥有自己的词汇
- * （uina.compaction.summary），组合根经此把 checkpoint 变成 transcript 装饰，
- * UI 不理解 auxiliary 世界。只保留 tail 仍在当前主线的 checkpoint——tail 已被
- * 回溯放弃的 checkpoint 对模型同样失效，渲染它会撒谎。 */
 export interface CompactionTimelineDecoration {
 	kind: "compaction";
 	beforeEntryId: string;

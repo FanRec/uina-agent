@@ -99,9 +99,7 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 		}
 	});
 
-	// 旧语义（超预算摘要 → 压缩失败、回合被杀）已废除：摘要大小不受控是压缩失败的
-	// 系统性根因，现由 stage 内 measure-then-fit 闭环兜住——先实测、再压缩、截断保底。
-	test("压缩后摘要超预算时迭代再压缩到达标，压缩成功且重建请求落入预算", async ({ env }) => {
+	test("压缩后超长摘要超出可用预算时确定性截断保底，压缩成功且重建请求落入预算", async ({ env }) => {
 		await persistHistory(
 			env,
 			Array.from({ length: 30 }, (_, index) => ({
@@ -110,10 +108,7 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 			})),
 		);
 		const scenario = new Scenario({ id: "mock", name: "mock", contextWindow: 30_000 });
-		// 摘要 3000 token：能通过滚动摘要的输入预算检查，但超出 1024 的 summaryReserve，
-		// 压缩后必然超预算（overflow = S - 1024 - slack > 0）。
 		scenario.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手")).reply("摘".repeat(3_000));
-		scenario.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要压缩器")).reply("短".repeat(100));
 		scenario.fallback(() => [
 			{ kind: "text", text: "ok" },
 			{ kind: "finish", reason: "stop" },
@@ -121,18 +116,15 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 		const uina = await UinaTestHarness.create({ env, scenario, hostOptions: { workspaceTools: false } });
 		try {
 			await uina.host.commands.dispatch("/compact");
-			// 再压缩确实发生，且 checkpoint 采用的是再压缩后的摘要。
-			expect(scenario.calls.some((req) => (req.messages[0]?.content ?? "").includes("上下文摘要压缩器"))).toBe(true);
 			const journal = await readFile(env.sessionPath, "utf8");
 			expect(journal).toContain("uina.compaction.summary");
-			expect(journal).toContain("短".repeat(100));
-			expect(journal).not.toContain("摘".repeat(3_000));
+			expect(journal).toContain("[摘要已截断]");
 			// 重建请求按构造落入预算。
 			await uina.send("压缩后一轮", "direct");
 			await uina.waitForIdle();
 			const last = scenario.calls.at(-1)!;
 			const summaryMessage = last.messages.find((m) => (m.content ?? "").startsWith("[历史摘要] "));
-			expect(summaryMessage?.content).toBe(`[历史摘要] ${"短".repeat(100)}`);
+			expect(summaryMessage?.content).toContain("[摘要已截断]");
 			expect(estimateRequestTokens(last.messages, last.tools ?? [])).toBeLessThanOrEqual(
 				inputTokenBudget(scenario.model)!,
 			);
@@ -141,38 +133,44 @@ describe("自动压缩：capability 经 transformContext 每请求裁剪", () =>
 		}
 	});
 
-	test("再压缩始终不达标时确定性截断保底，压缩仍成功且请求落入预算", async ({ env }) => {
+	test("自动压缩保留目标对齐 20k，释放充裕跑道且后续调用不反复触发压缩", async ({ env }) => {
 		await persistHistory(
 			env,
-			Array.from({ length: 30 }, (_, index) => ({
+			Array.from({ length: 50 }, (_, index) => ({
 				role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
 				content: `历史${index} ${"词".repeat(1_000)}`,
 			})),
 		);
-		const scenario = new Scenario({ id: "mock", name: "mock", contextWindow: 30_000 });
-		scenario.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手")).reply("摘".repeat(3_000));
-		// 再压缩始终返回比当前摘要更长的结果 → 不被采纳 → 走截断保底。
-		scenario.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要压缩器")).reply("摘".repeat(5_000));
+		const scenario = new Scenario({ id: "mock", name: "mock", contextWindow: 60_000 });
+		scenario.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手")).reply("历史摘要内容");
 		scenario.fallback(() => [
 			{ kind: "text", text: "ok" },
 			{ kind: "finish", reason: "stop" },
 		]);
 		const uina = await UinaTestHarness.create({ env, scenario, hostOptions: { workspaceTools: false } });
 		try {
-			await uina.host.commands.dispatch("/compact");
-			const recompressCalls = scenario.calls.filter((req) =>
-				(req.messages[0]?.content ?? "").includes("上下文摘要压缩器"),
-			);
-			expect(recompressCalls.length).toBeGreaterThanOrEqual(1);
-			const journal = await readFile(env.sessionPath, "utf8");
-			expect(journal).toContain("uina.compaction.summary");
-			expect(journal).toContain("[摘要已截断]");
-			await uina.send("截断后一轮", "direct");
+			// 第一轮：历史约 50k tokens，超过 60k - 16k = 44k 预算，触发自动压缩
+			await uina.send("触发自动压缩的第一轮", "direct");
 			await uina.waitForIdle();
-			const last = scenario.calls.at(-1)!;
-			expect(estimateRequestTokens(last.messages, last.tools ?? [])).toBeLessThanOrEqual(
-				inputTokenBudget(scenario.model)!,
+
+			const summaryCallsFirst = scenario.calls.filter((req) =>
+				(req.messages[0]?.content ?? "").includes("上下文摘要助手"),
 			);
+			expect(summaryCallsFirst.length).toBe(1);
+
+			// 自动压缩执行后，保留尾部约为 20k tokens，留出了几十 k 的空余空间。
+			// 连续跑第二轮、第三轮，绝不应再次触发压缩！
+			await uina.send("第二轮", "direct");
+			await uina.waitForIdle();
+
+			await uina.send("第三轮", "direct");
+			await uina.waitForIdle();
+
+			const summaryCallsTotal = scenario.calls.filter((req) =>
+				(req.messages[0]?.content ?? "").includes("上下文摘要助手"),
+			);
+			// 依然只有 1 次摘要调用，彻底消除了过几轮就重复压缩的颠簸
+			expect(summaryCallsTotal.length).toBe(1);
 		} finally {
 			await uina.dispose();
 		}
