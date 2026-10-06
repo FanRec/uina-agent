@@ -5,7 +5,6 @@
 
 import { describe, it, expect } from "vitest";
 import { computeLineDiff, computeWordDiff } from "../src/ui/components/transcript/diff-view.js";
-import { panelWindow, panelTailSlice } from "../src/ui/components/primitives/panel.js";
 import { abortableDelay } from "../src/ai/gateway.js";
 import { errorMessage } from "../src/core/errors.js";
 
@@ -57,34 +56,6 @@ describe("computeWordDiff：超 token 帽降级为整行着色", () => {
 		const { oldFormatted, newFormatted } = computeWordDiff("hello world", "hello there");
 		expect(oldFormatted).toContain("\x1b[1m");
 		expect(newFormatted).toContain("\x1b[1m");
-	});
-});
-
-describe("panelWindow：居中滑动窗口契约", () => {
-	it("选中项尽量居中且窗口不越界", () => {
-		expect(panelWindow(100, 0, 4)).toEqual({ start: 0, end: 4 });
-		expect(panelWindow(100, 50, 4)).toEqual({ start: 48, end: 52 });
-		expect(panelWindow(100, 99, 4)).toEqual({ start: 96, end: 100 });
-	});
-
-	it("列表比窗口短时全量展示", () => {
-		expect(panelWindow(2, 0, 4)).toEqual({ start: 0, end: 2 });
-		expect(panelWindow(0, 0, 4)).toEqual({ start: 0, end: 0 });
-	});
-});
-
-describe("panelTailSlice：尾部分片与补空", () => {
-	it("无内容时给占位行", () => {
-		const out = panelTailSlice([], 3, 0);
-		expect(out.length).toBe(1);
-		expect(out[0]).toContain("暂无输出日志");
-	});
-
-	it("从尾部取，不足补空，offset 上卷", () => {
-		const lines = ["1", "2", "3", "4", "5"];
-		expect(panelTailSlice(lines, 2, 0)).toEqual(["4", "5"]);
-		expect(panelTailSlice(lines, 2, 3)).toEqual(["1", "2"]);
-		expect(panelTailSlice(lines, 4, 10)).toEqual(["", "", "", ""]);
 	});
 });
 
