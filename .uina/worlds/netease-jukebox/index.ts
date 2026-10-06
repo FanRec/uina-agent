@@ -34,7 +34,7 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
   const lyrics = new LiveLyricsTracker(api);
   const spectrum = new SpectrumCapture({ ffmpegPath: merged.ffmpegPath });
   const sourceInstance = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  let preferenceStore: PreferencesStore | null = null;
+  let unsubscribePreferences = (): void => undefined;
   let revision = 0;
   let hudHeartbeat: ReturnType<typeof setInterval> | null = null;
   let selectedLyricsSongId: string | null = null;
@@ -112,10 +112,20 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
         unsubscribe = playback.subscribe(handlePlaybackSnapshot);
         subscribed = true;
       }
-      preferenceStore = new PreferencesStore(ctx.worldDataDir ?? ".uina/world-data/jukebox");
-      const saved = await preferenceStore.load();
+      // 偏好在变更时落盘，而不是依赖退出钩子：非优雅退出（关窗口、强杀、watch 重启）
+      // 不执行 onStop，终点保存会把最近的修改全部丢掉。
+      const store = new PreferencesStore(ctx.worldDataDir ?? ".uina/world-data/jukebox");
+      const saved = await store.load();
       playback.setMode(saved.playMode);
       await playback.setVolume(saved.volume);
+      let persisted = { playMode: saved.playMode, volume: saved.volume };
+      unsubscribePreferences = playback.subscribe((snapshot) => {
+        if (snapshot.playMode === persisted.playMode && snapshot.volume === persisted.volume) return;
+        persisted = { playMode: snapshot.playMode, volume: snapshot.volume };
+        void store.save(persisted).catch((error: unknown) => {
+          process.stderr.write(`[jukebox] 偏好落盘失败：${error instanceof Error ? error.message : String(error)}\n`);
+        });
+      });
       if (merged.broadcastHudMode === "auto") hudConnection = await hudManager.ensureRunning(ctx.signal) ? "connected" : "degraded";
       await publish();
       if (hudHeartbeat === null) hudHeartbeat = setInterval(() => { void publish(); }, 250);
@@ -124,10 +134,10 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
       if (hudHeartbeat !== null) { clearInterval(hudHeartbeat); hudHeartbeat = null; }
       unsubscribe(); unsubscribe = (): void => undefined; subscribed = false;
       worldSignal = undefined;
+      unsubscribePreferences(); unsubscribePreferences = (): void => undefined;
       hudConnection = "connected";
       selectedLyricsSongId = null;
       lyrics.clear();
-      if (preferenceStore) await preferenceStore.save({ playMode: playback.mode, volume: playback.volume, queueLimit: merged.queueLimit ?? 100 });
       try { await playback.stop(); } finally { await spectrum.stop(); await playback.close(); await serviceManager.stop(); await hud.close(); await hudManager.stop(); }
     },
     actions: application.actions,
