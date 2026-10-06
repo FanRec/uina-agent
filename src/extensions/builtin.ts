@@ -154,24 +154,6 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand({
-		name: "tasks",
-		description: "后台任务与进程看板 (Alt+J)",
-		keybinding: "alt+j",
-		handler: () => {
-			ui.openFeature?.("tasks");
-		},
-	});
-
-	pi.registerCommand({
-		name: "subagents",
-		description: "多子智能体并行看板 (Alt+A)",
-		keybinding: "alt+a",
-		handler: () => {
-			ui.openFeature?.("subagents");
-		},
-	});
-
-	pi.registerCommand({
 		name: "trajectory",
 		description: "全屏审计轨迹时序看板 (Alt+T)",
 		keybinding: "alt+t",

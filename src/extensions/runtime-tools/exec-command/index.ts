@@ -1,7 +1,5 @@
 import type { Tool } from "../../../tools/broker.js";
-import { errorMessage } from "../../../core/errors.js";
 import type { ToolResultStatus } from "../../../core/types.js";
-import type { JobContext, JobHandle, JobOutcome } from "../../jobs/registry.js";
 import { executeShellProcess, type ProcessResult } from "./process.js";
 import { MAX_OUTPUT_BYTES, MAX_OUTPUT_LINES, OutputCollector, type OutputSnapshot } from "./output.js";
 
@@ -36,12 +34,11 @@ export async function execCommandDirect(
 	return runCommand(command, signal, options);
 }
 
-/** One process/collector lifecycle for both foreground and background calls. */
+/** One process/collector lifecycle for foreground calls. */
 async function runCommand(
 	command: string,
 	signal: AbortSignal | undefined,
 	options: ShellRunOptions,
-	observe?: JobContext["observe"],
 ): Promise<ShellResult> {
 	const local = new AbortController();
 	let collectorError: unknown;
@@ -51,10 +48,9 @@ async function runCommand(
 	};
 	const stdout = new OutputCollector(fail);
 	const stderr = new OutputCollector(fail);
-	const collect = (collector: OutputCollector, stream: "stdout" | "stderr", chunk: Buffer): void => {
+	const collect = (collector: OutputCollector, chunk: Buffer): void => {
 		try {
-			const text = collector.push(chunk);
-			if (text) observe?.({ stream, text });
+			collector.push(chunk);
 		} catch (error) {
 			fail(error);
 		}
@@ -65,8 +61,8 @@ async function runCommand(
 			command,
 			signal ? AbortSignal.any([signal, local.signal]) : local.signal,
 			{
-				onStdout: (chunk) => collect(stdout, "stdout", chunk),
-				onStderr: (chunk) => collect(stderr, "stderr", chunk),
+				onStdout: (chunk) => collect(stdout, chunk),
+				onStderr: (chunk) => collect(stderr, chunk),
 			},
 			options,
 		);
@@ -80,52 +76,17 @@ async function runCommand(
 	return { ...result, stdout: stdoutMeta.content, stderr: stderrMeta.content, stdoutMeta, stderrMeta };
 }
 
-export function startBackgroundCommand(command: string, context: JobContext, options: ShellRunOptions = {}): JobHandle {
-	const done = runCommand(command, context.signal, options, context.observe).then(
-		(result): JobOutcome => {
-			const status = result.cancelled ? "killed" : result.timedOut || result.code !== 0 ? "failed" : "completed";
-			return {
-				status,
-				detail: result.timedOut
-					? "命令超时"
-					: result.code === 0
-						? "命令执行完成"
-						: `退出码 ${result.code ?? "unknown"}`,
-				output: {
-					result: JSON.stringify({
-						stdout: result.stdout,
-						stderr: result.stderr,
-						code: result.code,
-						status,
-						truncated: { stdout: result.stdoutMeta?.truncated, stderr: result.stderrMeta?.truncated },
-						fullOutputPath: { stdout: result.stdoutMeta?.fullOutputPath, stderr: result.stderrMeta?.fullOutputPath },
-					}),
-					truncated: result.stdoutMeta?.truncated || result.stderrMeta?.truncated,
-					fullOutputPath: result.stdoutMeta?.fullOutputPath ?? result.stderrMeta?.fullOutputPath,
-				},
-			};
-		},
-		(error): JobOutcome => ({ status: "failed", detail: `命令执行或输出收集失败：${errorMessage(error)}` }),
-	);
-	return { cancel: (reason) => context.update({ detail: reason ?? "已请求取消" }), done };
-}
-
-export function createExecCommandTool(
-	jobs?: import("../../jobs/registry.js").JobRegistry,
-	ownerId = "root",
-	cwd?: string,
-): Tool {
+export function createExecCommandTool(cwd?: string): Tool {
 	return {
 		def: {
 			type: "function",
 			function: {
 				name: "exec_command",
-				description: `执行开发或系统诊断命令并返回 stdout、stderr、退出码。当前平台使用 ${shellDisplayName()}；已有领域工具时不要绕过它。长任务使用 run_in_background，再用 job_output 读取；输出超过 ${MAX_OUTPUT_BYTES / 1024} KB 或 ${MAX_OUTPUT_LINES} 行时返回尾部并提供 fullOutputPath。`,
+				description: `执行开发或系统诊断命令并返回 stdout、stderr、退出码。当前平台使用 ${shellDisplayName()}；已有领域工具时不要绕过它。输出超过 ${MAX_OUTPUT_BYTES / 1024} KB 或 ${MAX_OUTPUT_LINES} 行时返回尾部并提供 fullOutputPath。`,
 				parameters: {
 					type: "object",
 					properties: {
 						command: { type: "string" },
-						run_in_background: { type: "boolean" },
 						timeout: { type: "number", description: "超时秒数；省略表示不设超时" },
 					},
 					required: ["command"],
@@ -133,24 +94,10 @@ export function createExecCommandTool(
 				},
 			},
 		},
-		async run(args, signal, context) {
+		async run(args, signal) {
 			const command = typeof args.command === "string" ? args.command.trim() : "";
 			if (!command) return { result: "command 为空", status: "not_started" };
 			const timeoutMs = resolveTimeoutMs(args.timeout);
-			if (args.run_in_background === true) {
-				if (!jobs) throw new Error("后台任务服务未加载");
-				const id = jobs.start({
-					label: command,
-					ownerId: context?.ownerId ?? ownerId,
-					source: { extension: "shell", operation: "exec" },
-					start: (context) => startBackgroundCommand(command, context, { timeoutMs, cwd }),
-				});
-				return {
-					result: JSON.stringify({ jobId: id, source: { extension: "shell", operation: "exec" }, status: "running" }),
-					status: "succeeded",
-					details: { effects: [{ effectType: "task.dispatch", externalOperationId: id, label: command }] },
-				};
-			}
 			const result = await execCommandDirect(command, signal, { timeoutMs, cwd });
 			const status: ToolResultStatus = result.cancelled
 				? "cancelled"

@@ -3,11 +3,7 @@ import { open } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { IsolatedEnv, mockTool, SubjectHarness, Scenario } from "./harness/index.js";
 import { JsonlSessionStore, openJsonlSession } from "../src/session/jsonl-store.js";
-import { JobRegistry } from "../src/extensions/jobs/registry.js";
-import { SubagentRegistry } from "../src/extensions/subagents/registry.js";
-import { DefaultAgentFactory } from "../src/agent/runtime.js";
 import { ToolBroker, type Tool } from "../src/tools/broker.js";
-import { createChildTools } from "../src/extensions/runtime-tools/index.js";
 import { createPrintUI, ExtensionRunner } from "../src/extensions/runner.js";
 import { Key, matchesKey } from "../src/ui/core/keys.js";
 import { MainScreenRenderer } from "../src/ui/core/renderer.js";
@@ -68,65 +64,18 @@ describe("hardening: session write queue", () => {
 	});
 });
 
-describe("hardening: job output accounting", () => {
-	it("reports outputLost on the first read when old chunks were dropped", () => {
-		const jobs = new JobRegistry();
-		let observe!: (chunk: { text: string }) => void;
-		const id = jobs.start({
-			ownerId: "root",
-			label: "chatter",
-			source: { extension: "test" },
-			start: (context) => {
-				observe = context.observe;
-				return { cancel() {}, done: new Promise(() => {}) };
-			},
-		});
-		for (let i = 0; i < 40; i++) observe({ text: `chunk-${i}-` + "x".repeat(4096) });
-		const read = jobs.read(id, "root", 0);
-		expect(read.outputLost).toBe(true);
-		expect(read.text.length).toBeLessThanOrEqual(50 * 1024 + 8192);
-	});
-});
-
-describe("hardening: subagent output budget", () => {
-	it("bounds per-child output and reports loss", async () => {
-		const model = {
-			id: "chatter",
-			name: "chatter",
-			providerId: "mock",
-			contextWindow: 128_000,
-		};
-		const stream = async (_m: unknown, _req: unknown, emit: (d: any) => void) => {
-			for (let i = 0; i < 80; i++) emit({ kind: "text", text: "y".repeat(8192) });
-			emit({ kind: "finish", reason: "stop" });
-		};
-		const registry = new SubagentRegistry({
-			factory: new DefaultAgentFactory(),
-			model: () => model,
-			stream,
-			createTools: () => new ToolBroker(),
-		});
-		const child = registry.start({ ownerId: "root", label: "child", prompt: "talk" });
-		await vi.waitFor(() => expect(registry.get(child.id, "root").busy).toBe(false), { timeout: 5000 });
-		const read = registry.read(child.id, "root", 0);
-		expect(read.outputLost).toBe(true);
-		expect(read.output.reduce((total, item) => total + item.text.length, 0)).toBeLessThan(300 * 1024);
-		await registry.close();
-	});
-});
-
 describe("hardening: child capability inheritance", () => {
 	it("inherits every parent tool except the explicit exclude list", () => {
 		const parent = new ToolBroker();
-		for (const name of ["get_time", "exec_command", "subagent_start", "project_tool"]) parent.register(tool(name));
-		const child = createChildTools(parent, { exclude: ["subagent_start"] });
+		for (const name of ["get_time", "exec_command", "heavy_tool", "project_tool"]) parent.register(tool(name));
+		const child = parent.createScopedView({ ownerId: "child", exclude: ["heavy_tool"] });
 		expect(child.names().sort()).toEqual(["exec_command", "get_time", "project_tool"]);
 	});
 
 	it("supports an explicit include list", () => {
 		const parent = new ToolBroker();
 		for (const name of ["a", "b", "c"]) parent.register(tool(name));
-		expect(createChildTools(parent, { include: ["b"] }).names()).toEqual(["b"]);
+		expect(parent.createScopedView({ ownerId: "child", include: ["b"] }).names()).toEqual(["b"]);
 	});
 });
 

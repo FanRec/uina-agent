@@ -1,6 +1,6 @@
 /** Explicit real-provider acceptance; not part of the offline test command.
  * Local targets: event delivery -> model request < 1s; ordinary first text < 5s;
- * user answer during a 6s background job; shell cancellation settlement < 5s.
+ * foreground exec result lands in history; shell cancellation settlement < 5s.
  */
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
@@ -51,7 +51,7 @@ subject = new Subject(model, stream, tools, {
 	thinkingLevel: "off",
 	runtimeHooks: runner.runtimeHooks(),
 	systemPrompt:
-		"你是 Uina。当前是隔离验收。文件事件不是人类说话。按文件所述使用 watch_exec，长工作必须 run_in_background=true。后台通知回来后用 watch_job_output 读取结果。文件只包含 IGNORE 时，只调用 watch_silence，不输出解释或文字。人类发 hello 时只回复 hello，不要等待后台工作。除需要验收的结果外不寒暄。",
+		"你是 Uina。当前是隔离验收。文件事件不是人类说话。按文件所述使用 watch_exec 同步执行命令，合理设置 timeout。文件只包含 IGNORE 时，只调用 watch_silence，不输出解释或文字。人类发 hello 时只回复 hello。除需要验收的结果外不寒暄。",
 });
 subject.subscribe((e) => {
 	if (e.type === "output_update" && e.channel === "content") {
@@ -80,7 +80,8 @@ async function until(predicate: () => boolean | Promise<boolean>) {
 		await new Promise((r) => setTimeout(r, 25));
 	}
 }
-const jobs = async () => JSON.parse(await tools.run("watch_job_list", {})) as Array<{ id: string; status: string }>;
+const historyHas = (needle: string) =>
+	subject.historySnapshot().some((m) => m.role === "tool" && m.content.includes(needle));
 function begin(name: string) {
 	phase = name;
 	since = performance.now();
@@ -101,23 +102,14 @@ try {
 	await subject.waitForIdle();
 	assert.equal(content.trim(), "hello");
 	assert(Number(timings.find((t) => t.phase === "baseline" && t.event === "first-text")?.atMs) < 5000);
-	begin("file-job");
+	begin("file-exec");
 	await writeFile(
 		watched,
-		"请用 watch_exec 在后台执行这条无害命令：Start-Sleep -Seconds 6; Write-Output S4_RESULT。立即返回，不要同步等待。",
+		"请用 watch_exec 同步执行这条无害命令：Start-Sleep -Seconds 2; Write-Output S4_RESULT。合理设置 timeout，等待结果。",
 	);
-	await until(async () => (await jobs()).length === 1);
-	assert(Number(timings.find((t) => t.phase === "file-job" && t.event === "model-request")?.atMs) < 1000);
-	begin("user-during-job");
-	const delivery = subject.pushInput("hello");
-	await until(() => content.includes("hello"));
-	timings.push({ phase, event: "user-answer", atMs: Math.round(performance.now() - since) });
-	assert(performance.now() - since < 5000);
-	assert.equal((await jobs())[0]?.status, "running");
-	await delivery;
-	verified.push("file-event", "user-during-job");
-	await until(() => subject.historySnapshot().some((m) => m.role === "tool" && m.content.includes("S4_RESULT")));
-	verified.push("background-result");
+	await until(() => historyHas("S4_RESULT"));
+	assert(Number(timings.find((t) => t.phase === "file-exec" && t.event === "model-request")?.atMs) < 1000);
+	verified.push("file-event", "foreground-result");
 	await subject.waitForIdle();
 	begin("silence");
 	const before = timings.length;
@@ -127,21 +119,16 @@ try {
 	assert.equal(content.trim(), "");
 	verified.push("silence");
 	begin("failure");
-	await writeFile(watched, "请用 watch_exec 在后台执行 exit 7，观察失败通知并按需读取结果。");
-	await until(async () => (await jobs()).some((job) => job.status === "failed"));
-	await until(() =>
-		subject
-			.historySnapshot()
-			.some((m) => m.role === "custom" && m.customType === "runtime-input" && m.content.includes("failed")),
-	);
+	await writeFile(watched, "请用 watch_exec 同步执行 exit 7，观察失败结果。");
+	await until(() => historyHas('"code":7'));
 	verified.push("failure");
 	await subject.waitForIdle();
 	begin("cancel");
 	await writeFile(
 		watched,
-		"请用 watch_exec 在后台执行 Start-Sleep -Seconds 60，这是可取消的验收工作，启动后立即结束本轮。",
+		"请用 watch_exec 同步执行 Start-Sleep -Seconds 60，timeout 设为 120。这是可取消的验收工作。",
 	);
-	await until(async () => (await jobs()).length === 3);
+	await until(() => timings.some((t) => t.phase === "cancel" && t.event === "tool-start" && t.name === "watch_exec"));
 	await subject.waitForIdle();
 	const stopHandler = runner.registry.getCommand("watch-stop")?.handler;
 	assert.ok(stopHandler, "watch-stop 命令未注册");
@@ -149,7 +136,7 @@ try {
 	await stopHandler("");
 	const cancellationMs = Math.round(performance.now() - cancelling);
 	assert(cancellationMs < 5000);
-	assert.equal((await jobs())[2]?.status, "killed");
+	await until(() => historyHas("cancelled") || historyHas('"cancelled":true'));
 	verified.push("cancel");
 	const afterStop = timings.length;
 	await runner.disposeProjects();

@@ -17,7 +17,7 @@ const injections = [
 		preview: "[event frame]",
 	},
 	{
-		extension: "builtin:cognition",
+		extension: "builtin:world-framework",
 		kind: "messages" as const,
 		messageCount: 1,
 		chars: 8,

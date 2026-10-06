@@ -7,18 +7,14 @@ import { modelKey, ModelRegistry } from "../ai/providers.js";
 import { ToolBroker, type ToolExecutionResult } from "../tools/broker.js";
 import { Subject, type AgentInput } from "../agent/loop.js";
 import type { QueuedMessage } from "../agent/queue.js";
-import { DefaultAgentFactory } from "../agent/runtime.js";
-import { JobRegistry } from "../extensions/jobs/registry.js";
-import { SubagentRegistry } from "../extensions/subagents/registry.js";
 import { ExtensionRunner } from "../extensions/runner.js";
 import { CommandRouter } from "../extensions/commands.js";
 import { activateBuiltinCommands } from "../extensions/builtin.js";
 import activateCompaction from "../extensions/compaction/index.js";
 import { activateWorldFramework } from "../extensions/world-framework/index.js";
-import { activateRuntimeTools, createChildTools, TASK_DISPATCH_EFFECT } from "../extensions/runtime-tools/index.js";
+import { activateRuntimeTools } from "../extensions/runtime-tools/index.js";
 import { activateSessionTools } from "../extensions/session-tools/index.js";
 import activateWorkspaceTools from "../extensions/workspace-tools/index.js";
-import { activateCognition } from "../extensions/cognition/context.js";
 import { createEventFrameProfile } from "../extensions/event-frames/index.js";
 import type { SubjectProfile } from "./profile.js";
 import { killTrackedDetachedChildren } from "../runtime/process-tracker.js";
@@ -32,7 +28,7 @@ import type { HostEvent, HostEventListener } from "./events.js";
 /**
  * 宿主：主体生命期的所有者。
  *
- * 它拥有 provider、工具、后台任务、子 Agent、扩展宿主、会话存储与唯一的根 Subject，
+ * 它拥有 provider、工具、扩展宿主、会话存储与唯一的根 Subject，
  * 对外只暴露两件事：**一个输入入口**（send / submitText）与**一条有序事件流**
  * （subscribe）。它不引用任何 UI 类型（由 check-boundaries 强制），因此 TUI 关闭、
  * 换成 stdio、或接入第二个观察者，都不影响主体是否继续存活。
@@ -90,7 +86,6 @@ export class UinaHost {
 	private reloading = 0;
 	/** 消费者自定义关闭流程（start 时接入；pi.shutdown 与 /quit 经此关闭）。 */
 	private requestShutdown?: () => Promise<void>;
-	readonly abandonedTaskIds: Set<string>;
 
 	private constructor(
 		private readonly options: UinaHostOptions,
@@ -99,8 +94,6 @@ export class UinaHost {
 		private readonly extensionHost: ExtensionRunner,
 		private readonly tools: ToolBroker,
 		readonly models: ModelRegistry,
-		readonly jobs: JobRegistry,
-		readonly subagents: SubagentRegistry,
 		readonly commands: CommandRouter,
 		/** 会话恢复出来的有序条目，交给消费者建立自己的视图。 */
 		readonly restoredEntries: readonly SessionEntry[],
@@ -112,10 +105,8 @@ export class UinaHost {
 		listeners: Set<HostEventListener>,
 		/** 共享的关闭标志：钩子与扩展输入入口据此拒绝关闭后的新工作。 */
 		private readonly state: { stopping: boolean },
-		abandonedTaskIds: Set<string>,
 	) {
 		this.listeners = listeners;
-		this.abandonedTaskIds = abandonedTaskIds;
 	}
 
 	/** 当前 canonical 会话的 auxiliary 登记（store 活状态的副本）。
@@ -181,7 +172,6 @@ export class UinaHost {
 			options.stream ?? ((m, req, onDelta, signal) => models.stream(m, req, onDelta, signal));
 
 		const tools = new ToolBroker({ ownerId: "root" });
-		const jobs = new JobRegistry();
 
 		let store: SessionStore = new MemorySessionStore();
 		let restoredEntries: readonly SessionEntry[] = [];
@@ -194,23 +184,9 @@ export class UinaHost {
 		}
 
 		try {
-			// 这三个对象在宿主实例之前建立，并被实例与其钩子共享，避免任何后补赋值。
+			// 这些对象在宿主实例之前建立，并被实例与其钩子共享，避免任何后补赋值。
 			const listeners = new Set<HostEventListener>();
 			const state = { stopping: false };
-			const abandonedTaskIds = new Set<string>();
-			// Host 装配层消费工具声明的 generic effect facts：只认 task.dispatch 的
-			// 外部操作身份（与 runtime-tools 的声明契约），不认识具体工具。
-			const collectAbandonedTaskIds = (entries: readonly SessionEntry[]): void => {
-				for (const entry of entries) {
-					if (entry.kind !== "rewind" || !entry.effects) continue;
-					for (const effect of entry.effects.effects) {
-						if (effect.effectType === TASK_DISPATCH_EFFECT && effect.externalOperationId) {
-							abandonedTaskIds.add(effect.externalOperationId);
-						}
-					}
-				}
-			};
-			collectAbandonedTaskIds(restoredEntries);
 			const emit = (event: HostEvent): void => {
 				for (const listener of [...listeners]) {
 					try {
@@ -221,7 +197,7 @@ export class UinaHost {
 				}
 			};
 
-			// subagents 与 extensionHost 只捕获 subject 的延迟引用，因此可以先建立。
+			// extensionHost 只捕获 subject 的延迟引用，因此可以先建立。
 			let subject!: Subject;
 			let hostSelf!: UinaHost;
 			// Lazy session view: navigation reads compose from the store, rewind routes
@@ -291,37 +267,6 @@ export class UinaHost {
 				onCustomEntry: (entry) => subject.appendCustomEntry(entry),
 			});
 
-			const subagents = new SubagentRegistry({
-				factory: new DefaultAgentFactory(),
-				model: () => subject.getModel(),
-				stream: streamFn,
-				measureContext: (model, projection) =>
-					models.getProvider(model.providerId)?.measureContext?.(model, projection),
-				runtimeHooks: () => extensionHost.runtimeHooks(),
-				thinkingLevel,
-				createTools: (ownerId) => createChildTools(tools, { ownerId }),
-				projection: resolvedProjection,
-				systemPrompt: resolvedSystemPrompt,
-				notify: async (text, data, ownerId) => {
-					if (state.stopping) return;
-					const idStr = String(data.id);
-					const isAbandoned = abandonedTaskIds.has(idStr);
-					const input: AgentInput = {
-						id: `subagent-notice-${idStr}`,
-						mode: "followUp",
-						source: {
-							kind: "runtime",
-							type: "subagent-notice",
-							ref: idStr,
-							...(isAbandoned ? { provenance: { abandoned: true } } : {}),
-						},
-						text: isAbandoned ? `${text}（注意：该子代理来自已回溯放弃的历史分支）` : text,
-						data,
-					};
-					await (ownerId === "root" ? subject.accept(input) : subagents.acceptInput(ownerId, input));
-				},
-			});
-
 			// 会话偏好持久化：model_select / thinking_level_select 只经扩展宿主分发
 			// （Subject 不把它们发给 subscribe 监听者），组合根在此以监听者身份落盘。
 			// 静默失败 —— 偏好落盘失败不值得打断回合，下一次切换会再写。
@@ -354,12 +299,6 @@ export class UinaHost {
 			});
 
 			subject.subscribe((event) => {
-				// 宿主内部派生状态：回溯后刷新被放弃的任务集合（它只关心 task.dispatch 效果事实，
-				// 不是翻译——事件本身 1:1 透传给消费者）。
-				if (event.type === "session_rewind") {
-					// 被放弃切片直接读常驻 canonical 状态，不再重放 journal。
-					collectAbandonedTaskIds(store.state.allEntries);
-				}
 				// 事实单流 1:1 透传：宿主不翻译字段、不改形状。notice 是宿主域事件，
 				// 主体词汇表不收它，只在此处产生。
 				emit(event);
@@ -381,14 +320,11 @@ export class UinaHost {
 				extensionHost,
 				tools,
 				models,
-				jobs,
-				subagents,
 				commands,
 				restoredEntries,
 				[...store.state.auxiliary],
 				listeners,
 				state,
-				abandonedTaskIds,
 			));
 		} catch (error) {
 			await store.close().catch(() => undefined);
@@ -539,28 +475,15 @@ export class UinaHost {
 		// ────────────────────────────────────────────────────────────────
 		await this.extensionHost.activateBuiltin(
 			"session-tools",
-			activateSessionTools((ownerId) => (ownerId === "root" ? this.rootSession : this.subagents.session(ownerId))),
+			activateSessionTools(() => this.rootSession),
 		);
 		if (this.options.workspaceTools !== false)
 			await this.extensionHost.activateBuiltin("workspace-tools", activateWorkspaceTools);
-		await this.extensionHost.activateBuiltin(
-			"runtime-tools",
-			activateRuntimeTools({
-				jobs: this.jobs,
-				subagents: this.subagents,
-				isTaskAbandoned: (id) => this.abandonedTaskIds.has(id),
-			}),
-		);
+		await this.extensionHost.activateBuiltin("runtime-tools", activateRuntimeTools());
 		await this.extensionHost.activateBuiltin("commands", activateBuiltinCommands);
 		// 压缩预算直接读 Subject 声明的工具。再在宿主里拼一次，以后声明规则一变就会静默分叉。
 		await this.extensionHost.activateBuiltin("compaction", activateCompaction);
 		await this.extensionHost.activateBuiltin("world-framework", activateWorldFramework);
-		// 认知扩展（阶段 C 接线）：仅 profile 模式激活——pi.subject 存在时注册三工具与
-		// 非 tail transformContext 召回注入；无 profile 时零影响（原路径逐字节不变）。
-		// 层序：cognition 为非 tail，注册顺序在 world-framework 之前/之后不影响（非 tail 恒在尾帧前）。
-		if (this.options.profile) {
-			await this.extensionHost.activateBuiltin("cognition", (pi) => activateCognition(pi));
-		}
 		await this.extensionHost.load();
 		await this.subject.getContextSnapshot("idle_baseline");
 	}

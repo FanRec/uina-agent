@@ -27,9 +27,9 @@
 | `tools/broker.ts` | 工具 schema、校验和执行 | 工具发现或扩展加载 |
 | `runtime/` | 只读 RuntimeHooks 合同与 no-op 实现 | handler、scope、扩展状态或 UI |
 | `extensions/runner.ts` | ResourceScope、项目/builtin 注册、来源诊断、异步 teardown | Agent 决策和工具业务实现 |
-| `extensions/runtime-tools/` | 内置 shell、时间、Job/Subagent 工具实现 | 项目扩展发现 |
+| `extensions/runtime-tools/` | 内置 shell、时间工具实现 | 项目扩展发现 |
 | `ui/` | 展示、输入、焦点、组件组合；作为宿主的一个消费者 | 模型能力事实、Agent 状态转移、主体生命期 |
-| `host/` | 主体生命期、provider/工具/Job/Subagent/扩展/会话的唯一装配、消费者事件流 | 任何 UI 类型（由边界检查强制） |
+| `host/` | 主体生命期、provider/工具/扩展/会话的唯一装配、消费者事件流 | 任何 UI 类型（由边界检查强制） |
 | `cli/app.ts` | 组合根：创建宿主、接入一个消费者、进程级信号与退出码 | 主体装配与 Agent 业务规则 |
 
 ## 宿主与消费者
@@ -64,21 +64,21 @@ header 为 v3，且只接受 v3：v2 及更早版本明确拒绝，没有迁移�
 
 ## 工具结果
 
-`Tool.run` 返回 `{ result: string, status: ToolResultStatus, images?, details? }`。图片以 MIME/base64 附件保留，details 供程序与 UI 使用而不进入模型上下文。内置 shell、时间、Job/Subagent 工具与项目工具共用此合同；旧项目工具需将字符串返回值迁移为该对象。`tool_result` hook 的 `isError` 改为 `status`，正文变换默认保留完整结论。Broker 的 `run()` 仍是仅取正文的便捷方法，执行事实由 `execute()` 返回。
+`Tool.run` 返回 `{ result: string, status: ToolResultStatus, images?, details? }`。图片以 MIME/base64 附件保留，details 供程序与 UI 使用而不进入模型上下文。内置 shell、时间工具与项目工具共用此合同；旧项目工具需将字符串返回值迁移为该对象。`tool_result` hook 的 `isError` 改为 `status`，正文变换默认保留完整结论。Broker 的 `run()` 仍是仅取正文的便捷方法，执行事实由 `execute()` 返回。
 
 World action 也必须返回该结构化合同；字符串结果不再隐式视为成功。外部效果动作在模型可见正文中保留最小的 `effect=accepted|applied|simulated|unknown` 事实，details 保留完整程序诊断与验证入口。
 
 结果可附带 `continuation: "stop"`，在结果记录后结束当前决策，不丢弃其他排队输入。文件扩展用它表达明确的安静决定；UI 不需要过滤生成文本。
 
-shell 非零退出码为 `failed`；后台任务成功创建表示此次工具调用 `succeeded`，正文中的 Job `running` 属于后台任务自身。Broker 接受 producer 已明确返回的结论；启动后遇到取消且工具抛错、无法确认结果时为 `unknown`。JSONL、实时 transcript 和恢复 transcript 保留五种结果状态；旧消息未记录状态时显示未知。UI 收到中断请求不会擅自将运行中工具定为失败，随后确认的结果可以更新已结束轮次中的对应工具卡。
+shell 非零退出码为 `failed`。Broker 接受 producer 已明确返回的结论；启动后遇到取消且工具抛错、无法确认结果时为 `unknown`。JSONL、实时 transcript 和恢复 transcript 保留五种结果状态；旧消息未记录状态时显示未知。UI 收到中断请求不会擅自将运行中工具定为失败，随后确认的结果可以更新已结束轮次中的对应工具卡。
 
 ## 能力注册
 
 所有能力经 ResourceScope 注册：
 
-- `builtin:runtime-tools` 注册 `get_time`、`exec_command`、Job 与 Subagent 工具，并拥有其关闭清理。
+- `builtin:runtime-tools` 注册 `get_time`、`exec_command`。
 - `builtin:workspace-tools` 默认注册 `read_file`、`write_file`、`edit_file`、`read_image` 和文件 renderer；Host 可用 `workspaceTools: false` 禁用，扩展可显式 replace。
-- `builtin:session-tools` 注册历史查询/回溯工具与 `/history`、`/rewind`；继承工具按执行者身份访问自身会话。
+- `builtin:session-tools` 注册历史查询/回溯工具与 `/history`、`/rewind`。
 - `builtin:commands` 注册内置命令；`/session` 仍用于查看会话用量。
 - 项目扩展从 `.uina/extensions/` 的脚本、一级目录入口或 `package.json#uina.extensions` 加载；CLI `-e` 与 Host `extensionPaths` 可指定额外入口。在 `activate(pi)` 中调用 `pi.registerTool()`、`pi.registerCommand()`、`pi.registerProvider()`、renderer 或 hook 注册 API。
 
@@ -104,15 +104,13 @@ Anthropic/Gemini 的 `providerReplay` 保存 adapter 自有的有序块与签名
 
 ## 活动与文件事件扩展
 
-JobRegistry 默认没有活动 Job 数量额度；显式 maxActivePerOwner 仍可配置。取消控制失败保留 stopping 和可定位 detail，producer.done 的真实结论仍被观察；close 等待实际终态。`job_output` 的 `wait` 超过 setTimeout 上限时显式报错，不再静默截断；已结算 Job 的原始输出在总量超过预算后按最旧优先释放，读取方仍会看到 `outputLost`，首次读取也不例外。宿主 UI 按 owner 无关视图读取全部 Job（扩展启动的后台工作同样可见）。
+普通扩展通过 submitInput 进入同一 Subject 输入入口，通过 reportError 报告带扩展来源的外部失败。[文件事件示例](../examples/README.md) 验证文件观察、同步命令、即时结果快照、安静决定与卸载。停止观察后不再启动其新命令，进行中的命令通过自身取消信号结算。
 
-SubagentRegistry 从 AgentHandle 派生运行/空闲状态，只维护关系、输出与释放原因。子 Agent 的 provider 在创建时解析，因此切换模型对之后新建的子 Agent 生效；每个子 Agent 的输出保留在 256 KiB 预算内，超出后最旧的块被释放并通过 `outputLost` 报告。子 Agent 默认继承父级全部工具，由组装层用显式 include/exclude 策略收紧，CLI 不再硬编码禁止递归创建。继承的是工具实现，调用上下文的 `ownerId` 属于实际子代理；内置 Job 与 Subagent 工具据此确定归属，Job 完成通知回到发起它的 Subject。
-
-普通扩展通过 submitInput 进入同一 Subject 输入入口，通过 reportError 报告带扩展来源的外部失败；builtin Job 完成通知也通过这个入口递交。[文件事件示例](../examples/README.md) 验证文件观察、异步命令、即时结果快照、安静决定与卸载。停止观察后不再启动其新命令，producer 通过自身取消信号结算。
+Job/Subagent/Cognition 扩展已于 2026-10-06 应要求整体移除：后台命令执行、子代理与长期记忆工具不复存在，`exec_command` 仅保留前台模式；会话 journal 中历史任务效果事实（task.dispatch）只作为不可解释的聚合事实保留。
 
 ## 进程生命周期与信号
 
-进程级信号由 `cli/app.ts` 安装并在 shutdown 时卸载；`ui/core/terminal.ts` 只提供终端恢复，导入它不会注册任何进程监听器。SIGINT 保持普通中断语义（Node 会把信号名作为监听器首参，因此必须包一层零参闭包，否则信号名会被当成 force 标志）；SIGTERM（以及非 Windows 的 SIGHUP）先执行完整关闭（等待活动轮次、扩展 teardown、Job 关闭、session flush、杀掉已追踪的分离子进程），再以 143/129 退出。stdout/stderr 的 EPIPE 被忽略，其余写错误继续抛出。
+进程级信号由 `cli/app.ts` 安装并在 shutdown 时卸载；`ui/core/terminal.ts` 只提供终端恢复，导入它不会注册任何进程监听器。SIGINT 保持普通中断语义（Node 会把信号名作为监听器首参，因此必须包一层零参闭包，否则信号名会被当成 force 标志）；SIGTERM（以及非 Windows 的 SIGHUP）先执行完整关闭（等待活动轮次、扩展 teardown、session flush、杀掉已追踪的分离子进程），再以 143/129 退出。stdout/stderr 的 EPIPE 被忽略，其余写错误继续抛出。
 
 shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计时 100ms），因此持有继承管道的分离子进程不会让工具永久挂起；子进程 PID 被登记，关闭时统一杀进程树。`exec_command` 的 `timeout`（秒）可省略；非法值直接报错，不做静默截断。
 
@@ -126,7 +124,7 @@ shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计�
 
 当前已通过 `pnpm typecheck`、`pnpm test`、`pnpm build`；测试覆盖本地 OpenAI-compatible、Anthropic、Gemini SSE，三种 Provider 的真实 CLI one-shot 工具回注、SessionEntry 恢复、ResourceScope teardown 和 runtime tool activation。
 
-以下仍未验证或未实现：其余真实 Provider 服务端、真实 TTY IME、ARM native 实际加载、跨平台 shell、实际断电、长期负载、跨重启 Job/Subagent 对账、长期记忆、语音、视觉、感知和分布式运行时。
+以下仍未验证或未实现：其余真实 Provider 服务端、真实 TTY IME、ARM native 实际加载、跨平台 shell、实际断电、长期负载、语音、视觉、感知和分布式运行时。
 
 2026-09-09 硬化与重构后，`pnpm typecheck`（含边界检查）、`pnpm test`（18 文件、281 项）、`pnpm build` 通过。临时 JSONL 验证恢复，UI 验证组件及事件，均不等于实际断电或真实 TTY 操作。
 
@@ -134,4 +132,4 @@ shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计�
 
 真实 DeepSeek v4 Flash 已验证 off/high/max、usage、流式取消及普通文件扩展完整场景。后台运行期间用户答复在 715 ms 到达，安静决定没有回复文本，实际命令失败回注，后台取消在 523 ms 后确认，卸载后不再投递。完整范围、延迟与复现入口见 [交付证据](history/reviews/2026-09-05-plan-delivery.md)。
 
-Job/Subagent 当前是进程内 builtin capability；ResourceScope 只保证其注册与关闭归属，不承诺崩溃后恢复。
+

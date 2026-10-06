@@ -62,8 +62,6 @@ export class HelpMenu implements Component, Focusable {
 
 		// 1. 双栏数据
 		const leftShortcuts: Array<[string, string]> = [
-			["Alt+A", "子智能体看板 (Subagents)"],
-			["Alt+J", "后台任务看板 (TaskDashboard)"],
 			["Alt+T", "全屏审计轨迹时序 (Trajectory)"],
 			["Alt+H", "会话历史分支检视 (History)"],
 			["Alt+↑ / Alt+Q", "待办队列撤回至草稿"],
@@ -88,8 +86,6 @@ export class HelpMenu implements Component, Focusable {
 			["/model", "切换模型或打开模型选择面板"],
 			["/effort", "设置或调整模型思考强度 (滑块/参数)"],
 			["/compact", "会话压缩与释放上下文空间"],
-			["/subagents", "多智能体并行看板 (Alt+A)"],
-			["/tasks", "后台任务与进程看板 (Alt+J)"],
 			["/trajectory", "全屏审计轨迹时序看板 (Alt+T)"],
 			["/gutter", "切换右侧导航轨 (scrollbar/timeline)"],
 			["/clear", "清空当前屏幕转录流"],

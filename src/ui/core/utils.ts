@@ -49,7 +49,6 @@ export const C = {
 	toolDotRead: "\x1b[38;2;130;184;199m", // #82B8C7 青蓝
 	toolDotWrite: "\x1b[38;2;179;160;212m", // #B3A0D4 浅紫
 	toolDotWeb: "\x1b[38;2;125;161;222m", // #7DA1DE 雾蓝
-	toolDotTask: "\x1b[38;2;209;148;174m", // #D194AE 玫瑰粉
 	// 容器与卡片背景色 (TrueColor Background)
 	toolCardBackground: "\x1b[48;2;36;43;58m", // #242B3A 卡片底色
 	toolCardBackgroundDim: "\x1b[48;2;28;35;48m", // #1C2330 深层卡片底色

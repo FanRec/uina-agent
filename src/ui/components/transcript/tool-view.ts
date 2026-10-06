@@ -16,12 +16,11 @@ import type { ToolResultStatus } from "../../../core/types.js";
  *    - 正常退出隐去 exitCode: 0 噪点，非零或异常时显式标红；
  *    - 文本类输出 3 行预算折叠，Diff 代码变更 8 行预算折叠，单行溢出直显不折叠；
  *    - 最新失败单例追加 '⎿ Alt+T 查看轨迹'；
- * 4. 五维工具分类色彩语义学（Category Colors）：
+ * 4. 四维工具分类色彩语义学（Category Colors）：
  *    - write: 暖金 (Warm Gold) —— 写/修改文件
  *    - exec: 雾青 (Mist Cyan) —— 执行命令行
  *    - read: 沉静蓝 (Brand Blue) —— 查看/搜索文件
  *    - web: 天蓝/薄荷绿 (Web Teal) —— 网络请求/浏览器
- *    - task: 紫罗兰 (Violet) —— 子代理/后台任务
  * 5. 交互与双模展开：
  *    - 支持单卡折叠/展开与全局 Ctrl+O 展开；
  *    - 鼠标悬停感知：卡片底色微亮、折叠角标 ▾/▴ 浮现、折叠提示文字由暗淡升格为明亮。
@@ -31,7 +30,7 @@ import { C, resolveCarriageReturns, truncateToWidth, visibleWidth, wrapTextWithA
 import { keepSgrOnly, sanitizeRenderText } from "../../format.js";
 import { formatDiffCardLines } from "./diff-view.js";
 
-export type ToolCategory = "write" | "exec" | "read" | "web" | "task" | "default";
+export type ToolCategory = "write" | "exec" | "read" | "web" | "default";
 
 export const CATEGORY_BY_TOOL: Record<string, ToolCategory> = {
 	// write / mutate (Warm Gold / Amber)
@@ -82,26 +81,6 @@ export const CATEGORY_BY_TOOL: Record<string, ToolCategory> = {
 	web_fetch: "web",
 	browser: "web",
 	fetch: "web",
-
-	// task (Violet / Purple)
-	invoke_subagent: "task",
-	manage_subagents: "task",
-	subagent: "task",
-	manage_task: "task",
-	schedule: "task",
-	define_subagent: "task",
-	job: "task",
-	job_list: "task",
-	job_output: "task",
-	job_kill: "task",
-	subagent_start: "task",
-	subagent_list: "task",
-	subagent_status: "task",
-	subagent_output: "task",
-	subagent_messages: "task",
-	subagent_send: "task",
-	subagent_interrupt: "task",
-	workflow: "task",
 };
 
 export function getToolCategory(toolName: string): ToolCategory {
@@ -119,8 +98,6 @@ export function getToolCategoryColor(category: ToolCategory): string {
 			return C.toolDotRead; // Mist Blue
 		case "web":
 			return C.toolDotWeb; // Sky/Teal
-		case "task":
-			return C.toolDotTask; // Violet
 		default:
 			return C.iceBlue;
 	}
@@ -150,10 +127,6 @@ export function displayName(rawName: string): string {
 		replace_file_content: "Edit",
 		str_replace_editor: "Edit",
 		multiedit: "MultiEdit",
-		subagent: "Task",
-		invoke_subagent: "Subagent",
-		manage_subagents: "Subagents",
-		manage_task: "ManageTask",
 		search_web: "WebSearch",
 		read_url_content: "ReadUrl",
 		schedule: "Schedule",
@@ -163,16 +136,6 @@ export function displayName(rawName: string): string {
 		session_list: "SessionList",
 		session_read: "SessionRead",
 		session_rewind: "SessionRewind",
-		job_list: "JobList",
-		job_output: "JobOutput",
-		job_kill: "JobKill",
-		subagent_start: "SubagentStart",
-		subagent_list: "SubagentList",
-		subagent_status: "SubagentStatus",
-		subagent_output: "SubagentOutput",
-		subagent_messages: "SubagentMessages",
-		subagent_send: "SubagentSend",
-		subagent_interrupt: "SubagentInterrupt",
 	};
 	const mapped = KNOWN[rawName.toLowerCase()];
 	if (mapped) return mapped;
@@ -588,7 +551,7 @@ export function formatToolCardLines(
 		if (!stdout && !output && !stderr && exitCode === 0) {
 			const skipKeys = new Set(["code", "exitCode", "elapsedMs", "status", "cancelled"]);
 			if (Array.isArray(obj)) {
-				// 结构化列表（session_list / job_list / subagent_list …）每项独占一行，
+				// 结构化列表（session_list 这类 JSON 数组结果）每项独占一行，
 				// 交给折叠预算处理，而不是渲染成 "0: [object Object]"。
 				if (obj.length === 0) {
 					bodyLines.push(`${C.dim}[]${C.reset}`);

@@ -13,7 +13,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveProfile, releaseProfileLock, type SubjectProfile } from "../src/host/profile.js";
 import { createEventFrameProfile } from "../src/extensions/event-frames/index.js";
-import { MEMORY_PROTOCOL_PROMPT } from "../src/extensions/cognition/index.js";
 import { resolveSessionPath } from "../src/cli/session-path.js";
 import { UinaHost } from "../src/host/host.js";
 import { Scenario } from "./harness/provider/scenario.js";
@@ -183,7 +182,7 @@ describe("Host 装配：persona 接线", () => {
 		await releaseProfileLock(profile);
 	});
 
-	it("persona 为空白时不追加身份段（基底原样在前，后接 world 环境段与记忆协议）", async () => {
+	it("persona 为空白时不追加身份段（基底原样在前，后接 world 环境段）", async () => {
 		await writeProfileDir("bob", JSON.stringify({ subjectId: "bob" }), "   \n  ");
 		const profile = resolveProfile({ profileArg: "bob", cwd: root })!;
 
@@ -207,10 +206,9 @@ describe("Host 装配：persona 接线", () => {
 
 			const systemMsg = scenario.calls[0]?.messages.find((m) => m.role === "system");
 			const systemText = String(systemMsg?.content);
-			// persona 空白 = 不追加身份段：事件帧基底原样在前；profile 模式下 cognition
-			// 已激活，world 环境段与记忆协议段合法存在，协议是最后一段。
+			// persona 空白 = 不追加身份段：事件帧基底原样在前；cognition 记忆协议已随扩展移除。
 			expect(systemText.startsWith(createEventFrameProfile().systemPrompt)).toBe(true);
-			expect(systemText.endsWith(MEMORY_PROTOCOL_PROMPT)).toBe(true);
+			expect(systemText).not.toContain("记忆纪律");
 			// 若空白 persona 被错误追加，宿主装配处会留下连续三个以上换行。
 			expect(systemText).not.toContain("\n\n\n");
 		} finally {

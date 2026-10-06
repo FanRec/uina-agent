@@ -138,7 +138,7 @@ describe("S1 durable session facts", () => {
 		await harness.subject.accept({
 			id: "idle-input-123",
 			mode: "followUp",
-			source: { kind: "agent", type: "subagent-start", ref: "sub-1" },
+			source: { kind: "agent", type: "worker-start", ref: "sub-1" },
 			text: "task from child",
 			data: { trace: "abc" },
 		});
@@ -159,7 +159,7 @@ describe("S1 durable session facts", () => {
 				order: 1,
 				mode: "followUp",
 				text: "task from child",
-				source: { kind: "agent", type: "subagent-start", ref: "sub-1" },
+				source: { kind: "agent", type: "worker-start", ref: "sub-1" },
 				data: { trace: "abc" },
 			},
 		});

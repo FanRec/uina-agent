@@ -1,8 +1,8 @@
 /**
  * 居中面板（Dashboard / Overlay）共享的框线与列表原语。
  *
- * 之前边框、滑动窗口、尾部分片在 task-dashboard、subagent-dashboard、trajectory-scene
- * 等 7 处各自手写，宽度魔数与补空规则逐份漂移。这里只有一套几何：
+ * 之前边框、滑动窗口、尾部分片在 trajectory-scene、branch-inspector 等多处各自手写，
+ * 宽度魔数与补空规则逐份漂移。这里只有一套几何：
  * 所有函数保证输出逐字节与原实现一致，调用方只提供内容与数据。
  */
 

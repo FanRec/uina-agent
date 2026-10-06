@@ -1,8 +1,6 @@
 import type { ThinkingLevel } from "../core/types.js";
 import type { SessionAccess } from "../session/types.js";
 import type { UIHost } from "./ui-host.js";
-import type { JobPort } from "./adapters/jobs.js";
-import type { SubagentPort } from "./adapters/subagents.js";
 import { TrajectoryProjection } from "./adapters/agent-events.js";
 import { resolveGutterAction } from "./core/gutter.js";
 import {
@@ -12,17 +10,12 @@ import {
 	EffortSlider,
 	HelpMenu,
 	ModelPicker,
-	SubagentDashboard,
-	SubagentDetailScene,
-	TaskDashboard,
 	TrajectoryScene,
 	type EffortTier,
 	type ModelGroup,
 } from "./features/overlays/index.js";
 
 export interface UIFeatureOptions {
-	jobPort?: JobPort;
-	subagentPort?: SubagentPort;
 	sessionPort?: SessionAccess;
 }
 
@@ -107,41 +100,6 @@ export function installUIFeatures(
 		if (action.style) host.setScrollbarThumbStyle(action.style);
 		host.notify(action.message);
 	});
-
-	const jobPort = options.jobPort;
-	if (jobPort)
-		register("tasks", () =>
-			host.showPanel("tasks", (close) => {
-				const view = new TaskDashboard(jobPort);
-				view.onDispose = jobPort.subscribe?.(() => host.requestRender());
-				view.onClose = close;
-				return view;
-			}),
-		);
-
-	const subagentPort = options.subagentPort;
-	if (subagentPort)
-		register("subagents", () =>
-			host.showPanel("subagents", (close, { hide }) => {
-				const view = new SubagentDashboard(subagentPort);
-				view.onDispose = subagentPort.subscribe?.(() => host.requestRender());
-				view.onClose = close;
-				view.onDrilldown = (agent) => {
-					hide();
-					const detail = new SubagentDetailScene(agent.id, subagentPort);
-					let detailHandle: ReturnType<typeof host.overlayStack.showOverlay> | null = null;
-					detail.onClose = () => {
-						detailHandle?.hide();
-						detailHandle = null;
-						close();
-					};
-					detail.onRequestRender = () => host.requestRender();
-					detail.onDispose = subagentPort.subscribe?.(() => host.requestRender());
-					detailHandle = host.overlayStack.showOverlay(detail, { anchor: "center" }, close);
-				};
-				return view;
-			}),
-		);
 
 	register("trajectory", () =>
 		host.showPanel("trajectory", (close) => {

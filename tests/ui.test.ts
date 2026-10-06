@@ -45,23 +45,12 @@ import {
 	formatTpsSparkline,
 } from "../src/ui/components/widgets/index.js";
 import { InputLine, segmentWithMarkers, snapCursorToMarkerBoundary } from "../src/ui/components/editor/index.js";
-import {
-	TaskDashboard,
-	type JobPort,
-	SubagentDashboard,
-	TrajectoryScene,
-	ModelPicker,
-	EffortSlider,
-	HelpMenu,
-} from "../src/ui/features/overlays/index.js";
+import { TrajectoryScene, ModelPicker, EffortSlider, HelpMenu } from "../src/ui/features/overlays/index.js";
 import { getStartupBanner } from "../src/ui/components/primitives/banner.js";
 import { calculateContextSegments } from "../src/agent/context.js";
 import { combineQueuedDraft } from "../src/cli/draft.js";
 import { ExtensionRegistry } from "../src/extensions/renderer-registry.js";
 import { createExtensionUIContext } from "../src/ui/extension-ui-context.js";
-import { JobRegistry, type JobOutcome, type JobSnapshot } from "../src/extensions/jobs/registry.js";
-import { createJobAdapter } from "../src/ui/adapters/jobs.js";
-import { createSubagentAdapter } from "../src/ui/adapters/subagents.js";
 import { TrajectoryProjection } from "../src/ui/adapters/agent-events.js";
 import { createInteractiveUI, InteractiveTUI } from "../src/ui/tui.js";
 import { UIHost } from "../src/ui/ui-host.js";
@@ -333,98 +322,7 @@ describe("UI Extensions: ExtensionRegistry & ExtensionUIContext", () => {
 	});
 });
 
-describe("UI Adapters: Jobs & Subagents & Trajectory", () => {
-	it("createJobAdapter 无状态直连 JobRegistry，取消任务同步生效", async () => {
-		const registry = new JobRegistry();
-		const port = createJobAdapter(registry);
-
-		// 初始列表为空
-		expect(port.list()).toEqual([]);
-
-		// 启动一个真实后台作业
-		const spec = {
-			label: "test-build",
-			ownerId: "root",
-			source: { extension: "build-tool" },
-			start: (ctx: any) => {
-				ctx.observe({ text: "Compiling typescript...\n" });
-				let cancelled = false;
-				return {
-					cancel: () => {
-						cancelled = true;
-					},
-					done: new Promise<JobOutcome>((resolve) => {
-						setTimeout(() => resolve({ status: cancelled ? "killed" : "completed" }), 200);
-					}),
-				};
-			},
-		};
-
-		const jobId = await registry.start(spec);
-		const snapshot = registry.get(jobId, "root");
-		expect(snapshot.label).toBe("test-build");
-
-		// UI Port 直接拉取到该任务
-		const tasks = port.list();
-		expect(tasks.length).toBe(1);
-		expect(tasks[0]!.label).toBe("test-build");
-
-		// 读取日志
-		const readRes = port.read(snapshot.id, 0);
-		expect(readRes.text).toContain("Compiling typescript...");
-
-		// 通过 UI Port 发送取消指令
-		const cancelRes = port.cancel(snapshot.id, "用户终止");
-		expect(cancelRes).toBe(true);
-
-		// Dashboard 无状态渲染
-		const dashboard = new TaskDashboard(port);
-		const lines = dashboard.formatLines(80);
-		expect(lines.join("\n")).toContain("后台任务与进程看板");
-		expect(lines.join("\n")).toContain("test-build");
-
-		await registry.close();
-	});
-
-	it("createSubagentAdapter 无状态直连 SubagentRegistry", async () => {
-		const mockRegistry = {
-			list: vi.fn(() => [
-				{
-					id: "sub-1",
-					ownerId: "root",
-					label: "代码审计子智能体",
-					status: "running" as const,
-					createdAt: Date.now() - 5000,
-					outputCursor: 1,
-					busy: true,
-				},
-			]),
-			read: vi.fn(() => ({
-				cursor: 1,
-				output: [{ cursor: 0, kind: "text" as const, text: "正在分析 AST 节点..." }],
-				outputLost: false,
-				subagent: {} as any,
-			})),
-			transcript: vi.fn(() => ({
-				subagent: {} as any,
-				messages: [],
-			})),
-			send: vi.fn(async () => {}),
-			interrupt: vi.fn(async () => "interruption-requested" as const),
-		};
-
-		const port = createSubagentAdapter(mockRegistry as any);
-		const agents = port.list("root");
-		expect(agents.length).toBe(1);
-		expect(agents[0]!.label).toBe("代码审计子智能体");
-
-		const dashboard = new SubagentDashboard(port, "root");
-		const lines = dashboard.formatLines(80);
-		expect(lines.join("\n")).toContain("多子智能体看板");
-		expect(lines.join("\n")).toContain("代码审计子智能体");
-		expect(lines.join("\n")).toContain("正在分析 AST 节点...");
-	});
-
+describe("UI Adapters: Trajectory", () => {
 	it("TrajectoryProjection 严格从真实运行时事件构建时序与性能热点，杜绝假数据", () => {
 		const proj = new TrajectoryProjection();
 		expect(proj.list()).toEqual([]);
@@ -1949,44 +1847,6 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(rendered).toContain("const a = 1;");
 		});
 
-		it("TaskDashboard 当任务数量超过4个时使用滑动视口平滑滚动", () => {
-			const mockJobs: JobSnapshot[] = [];
-			for (let i = 0; i < 8; i++) {
-				mockJobs.push({
-					id: `job-${i}`,
-					label: `Task ${i}`,
-					status: "running" as const,
-					ownerId: "root",
-					source: { extension: "test" },
-					startedAt: Date.now() - 1000,
-				});
-			}
-			const port: JobPort = {
-				list: () => mockJobs,
-				read: () => ({
-					output: [],
-					text: "",
-					cursor: 0,
-					outputLost: false,
-					finished: false,
-					truncated: false,
-					job: mockJobs[0]!,
-				}),
-				cancel: () => true,
-			};
-			const dash = new TaskDashboard(port);
-			let rendered = dash.render(80).join("\n");
-			expect(rendered).toContain("Task 0");
-			expect(rendered).toContain("(1/8)");
-
-			for (let i = 0; i < 6; i++) {
-				dash.handleInput("\x1b[B");
-			}
-			rendered = dash.render(80).join("\n");
-			expect(rendered).toContain("Task 6");
-			expect(rendered).toContain("(7/8)");
-		});
-
 		it("InputLine Ctrl+A 仅标记全选状态，不篡改系统剪贴板", () => {
 			const box = new InputLine();
 			box.handleInput("重要数据文本");
@@ -2783,20 +2643,17 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		});
 
 		it("HelpMenu 只展示分发表里真实存在的命令，不虚构别名", () => {
-			// CommandRouter 无别名机制：/exit、/agents、/jobs、/traj、/branches
+			// CommandRouter 无别名机制：/exit、/agents、/traj、/branches
 			// 都不是注册表里的名字，面板不得把它们渲染成可用命令。
 			const registered = [
 				{ name: "help", description: "查看所有可用命令与快捷键" },
 				{ name: "model", description: "切换模型或打开模型选择面板" },
-				{ name: "subagents", description: "多智能体并行看板" },
-				{ name: "tasks", description: "后台任务与进程看板" },
+				{ name: "history", description: "会话历史分支检视" },
 				{ name: "trajectory", description: "全屏审计轨迹时序看板" },
 				{ name: "quit", description: "退出控制台" },
 			];
 			const lines = new HelpMenu(registered).render(80).join("\n");
 			expect(lines).toContain("/quit");
-			expect(lines).toContain("/subagents");
-			expect(lines).toContain("/tasks");
 			expect(lines).toContain("/trajectory");
 			// 注意 /trajectory 包含子串 /traj，必须按整词匹配（前后非字母）
 			const stripAnsi = (t: string): string => t.replace(/\x1b\[[0-9;]*m/g, "");
@@ -3174,7 +3031,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 		});
 
 		describe("dsh-TUI Tool Use Parity & Lifecycle", () => {
-			it("正确映射工具五维语义类别与主题色彩", () => {
+			it("正确映射工具四维语义类别与主题色彩", () => {
 				expect(getToolCategory("replace_file_content")).toBe("write");
 				expect(getToolCategory("write_to_file")).toBe("write");
 				expect(getToolCategory("run_command")).toBe("exec");
@@ -3182,14 +3039,12 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(getToolCategory("view_file")).toBe("read");
 				expect(getToolCategory("grep_search")).toBe("read");
 				expect(getToolCategory("search_web")).toBe("web");
-				expect(getToolCategory("invoke_subagent")).toBe("task");
 				expect(getToolCategory("unknown_tool")).toBe("default");
 
 				expect(getToolCategoryColor("write")).toBeDefined();
 				expect(getToolCategoryColor("exec")).toBeDefined();
 				expect(getToolCategoryColor("read")).toBeDefined();
 				expect(getToolCategoryColor("web")).toBeDefined();
-				expect(getToolCategoryColor("task")).toBeDefined();
 			});
 
 			it("displayName 规范化大驼峰工具名称", () => {
@@ -3214,7 +3069,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			it("Uina 自有工具必须有显式类别与显示名，不得依赖兜底", () => {
 				// 回归点：类别表与显示名表是从 Claude Code / dsh-TUI 抄来的别名表，
 				// 长期只覆盖 exec_command / read_file。其余本地工具（write_file、read_image、
-				// get_time、session_*、job_*、subagent_*）全部落到兜底分支：显示成
+				// get_time、session_*）全部落到兜底分支：显示成
 				// "Write_file" / "Get_time" 这类带下划线的名字，颜色也退回 default。
 				// 删掉下表任意一行，都应当因为映射缺失而失败。
 				const expected: Array<[name: string, display: string, category: string]> = [
@@ -3226,16 +3081,6 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					["read_file", "Read", "read"],
 					["read_image", "ReadImage", "read"],
 					["write_file", "Write", "write"],
-					["job_list", "JobList", "task"],
-					["job_output", "JobOutput", "task"],
-					["job_kill", "JobKill", "task"],
-					["subagent_start", "SubagentStart", "task"],
-					["subagent_list", "SubagentList", "task"],
-					["subagent_status", "SubagentStatus", "task"],
-					["subagent_output", "SubagentOutput", "task"],
-					["subagent_messages", "SubagentMessages", "task"],
-					["subagent_send", "SubagentSend", "task"],
-					["subagent_interrupt", "SubagentInterrupt", "task"],
 				];
 				for (const [name, display, category] of expected) {
 					expect({ name, display: displayName(name), category: getToolCategory(name) }).toEqual({
@@ -3253,7 +3098,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			});
 
 			it("结构化结果（数组 / 嵌套对象）不再渲染成 [object Object]", () => {
-				// session_list / job_list / subagent_list 的结果是 JSON 数组
+				// session_list 这类结构化结果是 JSON 数组
 				const listText = stripAnsi(
 					formatToolCardLines(
 						"session_list",
@@ -3270,10 +3115,10 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(listText).toContain(`"id":"a"`);
 				expect(listText).toContain(`"id":"b"`);
 
-				// job_kill 返回嵌套对象：job 字段本身是对象，旧代码会渲染成 [object Object]
+				// 嵌套对象结果：字段本身是对象，旧代码会渲染成 [object Object]
 				const nestedText = stripAnsi(
 					formatToolCardLines(
-						"job_kill",
+						"process_stop",
 						JSON.stringify({ outcome: "cancellation-requested", job: { id: "j1", status: "killed" } }),
 						10,
 						100,
@@ -3285,7 +3130,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 
 				// 空数组有明确表示，不退化成「执行完成，无输出」
 				const emptyText = stripAnsi(
-					formatToolCardLines("job_list", JSON.stringify([]), 10, 100, "succeeded").join("\n"),
+					formatToolCardLines("task_list", JSON.stringify([]), 10, 100, "succeeded").join("\n"),
 				);
 				expect(emptyText).toContain("[]");
 				expect(emptyText).not.toContain("无输出");
@@ -4067,30 +3912,30 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 				expect(matchesKey("\x1bq", Key.alt("q"))).toBe(true);
 			});
 
-			it("InteractiveTUI: 按 Alt+Up 触发 onPullBackQueue 且不误唤起多智能体看板", () => {
+			it("InteractiveTUI: 按 Alt+Up 触发 onPullBackQueue 且不误触 Alt+A 绑定命令", () => {
 				const tui = createInteractiveUI({ modelName: "TestModel" });
 				let pullBackTriggered = false;
 				tui.onPullBackQueue(() => {
 					pullBackTriggered = true;
 				});
-				const openSubagentsSpy = vi.spyOn(tui.host, "openFeature");
+				const openFeatureSpy = vi.spyOn(tui.host, "openFeature");
 				tui.host.registry.registerCommand({
-					name: "subagents",
-					description: "Subagents",
+					name: "board",
+					description: "Board",
 					keybinding: "alt+a",
 					handler: () => {
-						tui.host.openFeature("subagents");
+						tui.host.openFeature("board");
 					},
 				});
 
 				// 按 Alt+Up (\x1b[1;3A)
 				tui.host.handleInput("\x1b[1;3A");
 				expect(pullBackTriggered).toBe(true);
-				expect(openSubagentsSpy).not.toHaveBeenCalled();
+				expect(openFeatureSpy).not.toHaveBeenCalled();
 
-				// 按 Alt+A (\x1ba)：正常唤起多智能体看板
+				// 按 Alt+A (\x1ba)：正常触发绑定命令
 				tui.host.handleInput("\x1ba");
-				expect(openSubagentsSpy).toHaveBeenCalledTimes(1);
+				expect(openFeatureSpy).toHaveBeenCalledTimes(1);
 			});
 
 			describe("PendingQueueComponent & Queue UX", () => {

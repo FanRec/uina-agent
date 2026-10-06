@@ -21,13 +21,13 @@ export const TOOL_RESULT_STATUSES: readonly ToolResultStatus[] = [
 
 /**
  * 一个由工具自行声明的通用外部效果事实。Core 只存储与聚合 effectType/标识，
- * 不理解 "file.write / command.exec / task.dispatch" 等具体语义——那是声明它的
+ * 不理解 "file.write / command.exec" 等具体语义——那是声明它的
  * 工具（Extension 层）与其消费者（如 Host 装配）之间的契约。
  */
 export interface ToolEffect {
 	/** 声明方自定义的效果类型标签（约定用点分小写，如 "file.write"）。 */
 	effectType: string;
-	/** 外部操作的稳定身份（jobId、子代理 id 等），存在时用于跨会话追踪。 */
+	/** 外部操作的稳定身份，存在时用于跨会话追踪。 */
 	externalOperationId?: string;
 	/** 人类可读的摘要行，用于回溯通知等展示面。 */
 	label?: string;

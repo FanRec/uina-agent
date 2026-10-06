@@ -3,7 +3,6 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { readFile, unlink } from "node:fs/promises";
 import { OutputCollector } from "../src/extensions/runtime-tools/exec-command/output.js";
-import { startBackgroundCommand } from "../src/extensions/runtime-tools/exec-command/index.js";
 import { IsolatedEnv } from "./harness/index.js";
 
 describe("shell output lifecycle", () => {
@@ -56,23 +55,5 @@ console.log('failure surfaced');
 		} finally {
 			await env.cleanup();
 		}
-	});
-
-	it("stops the shell before settling a background observation failure", async () => {
-		const startedAt = Date.now();
-		const handle = startBackgroundCommand(
-			process.platform === "win32" ? "Write-Output probe; Start-Sleep -Seconds 20" : "echo probe; sleep 20",
-			{
-				id: "probe",
-				signal: new AbortController().signal,
-				update() {},
-				observe() {
-					throw new Error("observer failed");
-				},
-			},
-		);
-		const result = await handle.done;
-		expect(result).toMatchObject({ status: "failed", detail: expect.stringContaining("observer failed") });
-		expect(Date.now() - startedAt).toBeLessThan(10000);
 	});
 });

@@ -134,7 +134,7 @@ export class BranchInspectorOverlay implements Component, Focusable {
 	invalidate(): void {}
 
 	render(terminalWidth = 80): string[] {
-		// Same frame geometry as the sibling dashboards (trajectory / tasks / subagents).
+		// Same frame geometry as the sibling dashboards (trajectory).
 		this.lastWidth = terminalWidth;
 		const boxWidth = Math.max(54, Math.min(terminalWidth - 6, 96));
 		const innerW = boxWidth - 6;

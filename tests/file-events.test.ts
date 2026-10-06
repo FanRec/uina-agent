@@ -11,9 +11,8 @@ import { EVENT_FRAME_KIND } from "../src/extensions/event-frames/protocol.js";
 // The shell tool uses the platform shell, so the fixture commands must too.
 const IS_WINDOWS = process.platform === "win32";
 const SHORT_JOB = IS_WINDOWS ? "Start-Sleep -Seconds 2; Write-Output JOB_DONE" : "sleep 2; echo JOB_DONE";
-const LONG_JOB = IS_WINDOWS ? "Start-Sleep -Seconds 60" : "sleep 60";
 
-it("ordinary file extension handles real jobs, silence, user input, failure and teardown", async () => {
+it("ordinary file extension handles real commands, silence, user input, failure and teardown", async () => {
 	const env = await IsolatedEnv.create();
 	const file = env.resolve("observed.txt");
 	const session = env.resolve("session.jsonl");
@@ -55,18 +54,11 @@ it("ordinary file extension handles real jobs, silence, user input, failure and 
 	const stream: ModelStreamFn = async (_m: Model, req: ModelRequest, emit: (d: StreamDelta) => void) => {
 		requests++;
 		const content = observedText(req.messages.at(-1));
-		if (content.includes("发生变化") && /RUN|LONG|FAIL/.test(content)) {
-			const command = content.includes("LONG") ? LONG_JOB : content.includes("FAIL") ? "exit 7" : SHORT_JOB;
+		if (content.includes("发生变化") && /RUN|FAIL/.test(content)) {
+			const command = content.includes("FAIL") ? "exit 7" : SHORT_JOB;
 			emit({
 				kind: "tool_call",
-				call: { id: `call-${++call}`, name: "watch_exec", args: JSON.stringify({ command, run_in_background: true }) },
-			});
-			emit({ kind: "finish", reason: "tool_calls" });
-		} else if (content.includes("[运行时事件 watch-job")) {
-			const id = content.match(/job-[\da-f-]+/)?.[0];
-			emit({
-				kind: "tool_call",
-				call: { id: `call-${++call}`, name: "watch_job_output", args: JSON.stringify({ job_id: id }) },
+				call: { id: `call-${++call}`, name: "watch_exec", args: JSON.stringify({ command, timeout: 30 }) },
 			});
 			emit({ kind: "finish", reason: "tool_calls" });
 		} else if (content.includes("IGNORE")) {
@@ -90,40 +82,28 @@ it("ordinary file extension handles real jobs, silence, user input, failure and 
 		if (e.type === "output_update" && e.channel === "content") text.push(e.text);
 		else if (e.type === "error") errors.push(e.text);
 	});
-	const jobs = async () => JSON.parse(await broker.run("watch_job_list", {})) as Array<{ status: string }>;
+	const historyHas = (needle: string) =>
+		subject.historySnapshot().some((m) => m.role === "tool" && m.content.includes(needle));
 	try {
 		await runner.load();
 		expect(errors).toEqual([]);
 		expect(broker.has("watch_exec")).toBe(true);
 		await env.writeFile("observed.txt", "RUN");
-		await vi.waitFor(async () => expect(await jobs()).toHaveLength(1), { timeout: 5000 });
+		await expect.poll(() => historyHas("JOB_DONE"), { timeout: 15000 }).toBe(true);
 		await subject.waitForIdle();
 		await subject.pushInput("hello");
 		await subject.waitForIdle();
 		expect(text).toEqual(["here"]);
-		expect((await jobs())[0]?.status).toBe("running");
-		await vi.waitFor(
-			() =>
-				expect(subject.historySnapshot().some((m) => m.role === "tool" && m.content.includes("JOB_DONE"))).toBe(true),
-			{ timeout: 8000 },
-		);
-		await subject.waitForIdle();
 		const beforeSilent = requests;
 		await env.writeFile("observed.txt", "IGNORE");
 		await vi.waitFor(() => expect(requests).toBeGreaterThan(beforeSilent));
 		await subject.waitForIdle();
 		expect(text).toEqual(["here"]);
 		await env.writeFile("observed.txt", "FAIL");
-		await vi.waitFor(async () => expect((await jobs()).some((j) => j.status === "failed")).toBe(true), {
-			timeout: 5000,
-		});
+		await expect.poll(() => historyHas("exitCode") || historyHas('"code":7'), { timeout: 15000 }).toBe(true);
 		await subject.waitForIdle();
-		await env.writeFile("observed.txt", "LONG");
-		await vi.waitFor(async () => expect(await jobs()).toHaveLength(3), { timeout: 5000 });
-		await subject.waitForIdle();
-		await runner.registry.getCommand("watch-stop")!.handler!("");
-		expect((await jobs())[2]?.status).toBe("killed");
 		const afterStop = requests;
+		await runner.registry.getCommand("watch-stop")!.handler!("");
 		await runner.disposeProjects();
 		await env.writeFile("observed.txt", "RUN again");
 		await new Promise((resolve) => setTimeout(resolve, 100));
@@ -138,7 +118,7 @@ it("ordinary file extension handles real jobs, silence, user input, failure and 
 				(e) => e.kind === "input" && e.input.source?.type === "file-changed" && e.input.source.origin === "external",
 			),
 		).toBe(true);
-		expect((await readFile(session, "utf8")).includes("watch-job")).toBe(true);
+		expect((await readFile(session, "utf8")).includes("JOB_DONE")).toBe(true);
 	} finally {
 		await runner.dispose();
 		subject.interrupt();
@@ -148,4 +128,4 @@ it("ordinary file extension handles real jobs, silence, user input, failure and 
 		else process.env.UINA_WATCH_FILE = previous;
 		await env.cleanup();
 	}
-}, 20000);
+}, 30000);

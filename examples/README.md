@@ -2,7 +2,7 @@
 
 扩展入口与 API 的通用说明见 [扩展开发指南](../docs/extensions-development.md)。
 
-`file-events.mts` 是普通项目扩展：观察文件、提交带来源的输入、注册后台命令与即时输出读取，并允许模型明确选择安静。它使用现有 JobRegistry，不引入独立宿主或事件总线。
+`file-events.mts` 是普通项目扩展：观察文件、提交带来源的输入、注册同步命令执行，并允许模型明确选择安静。它不引入独立宿主或事件总线。
 
 先执行 `pnpm build`。在项目 `.uina/extensions/file-events.mjs` 中写入：
 
@@ -19,9 +19,9 @@ pnpm start:dist
 
 修改该文件后，Uina 收到 `file-changed` 事件。事件作为隐藏的 custom 会话消息保留来源，不显示成人类发言。是否执行命令、读取结果或对外表达由模型决定；文件内容不是固定命令脚本。
 
-`watch_exec` 的长命令使用后台模式，`watch_job_output` 只读即时快照，完成事件再触发后续读取。`watch_silence` 返回 `continuation: "stop"`，记录工具结果后结束当前决策；它不会撤回已经输出的文字。无需表达时，应直接选择该工具。
+`watch_exec` 同步执行命令并返回 stdout、stderr 与退出码，长命令会阻塞本轮，请合理设置 `timeout`。`watch_silence` 返回 `continuation: "stop"`，记录工具结果后结束当前决策；它不会撤回已经输出的文字。无需表达时，应直接选择该工具。
 
-`/watch-stop` 停止观察并请求取消本扩展的工作，等待 Job producer 的实际结论。重新加载扩展可恢复观察；正常卸载使用同一清理路径。不合作的 producer 不会因等待时间长而被伪记为已停止。
+`/watch-stop` 停止观察并取消本扩展进行中的命令。重新加载扩展可恢复观察；正常卸载使用同一清理路径。
 
 离线验收使用真实文件、PowerShell 子进程、临时 JSONL 和确定性 Provider：
 

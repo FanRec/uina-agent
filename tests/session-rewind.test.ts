@@ -105,7 +105,6 @@ describe("session mainline persistence", () => {
 	});
 });
 
-import { UinaHost } from "../src/host/host.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import { mockModel } from "./harness/index.js";
 import { readFile } from "node:fs/promises";
@@ -398,60 +397,6 @@ describe("rewind composition", () => {
 		transcript.loadSession(entries);
 		expect(transcript.render(100).join("\n")).toContain("会话回溯");
 		expect(h.history).toEqual(projectAgentHistory(entries));
-	});
-	test("routes inherited session tools to the executing child, leaving the root mainline untouched", async ({
-		env,
-	}) => {
-		let childCalls = 0,
-			childTarget = "";
-		let childDone!: () => void;
-		const done = new Promise<void>((resolve) => (childDone = resolve));
-		const harness = await UinaTestHarness.create({ env });
-
-		harness.scenario
-			.when((req) => !req.messages.some((m) => String(m.content ?? "").includes("unique child task")))
-			.reply("root answer")
-			.when(() => {
-				childCalls++;
-				return childCalls === 1;
-			})
-			.replyWithToolCall("list-child", "session_list", {})
-			.when(() => childCalls === 2)
-			.then((req) => {
-				const nodeList = JSON.parse(req.messages.find((m) => m.role === "tool")!.content as string);
-				childTarget = nodeList.nodes[0].id;
-				return [
-					{
-						kind: "tool_call",
-						call: {
-							id: "rewind-child",
-							name: "session_rewind",
-							args: JSON.stringify({ targetId: childTarget, reason: "test child scope" }),
-						},
-					},
-					{ kind: "finish", reason: "tool_calls" },
-				];
-			})
-			.fallback((req) => {
-				expect(req.messages.some((m) => String(m.content ?? "").includes("会话回溯"))).toBe(true);
-				childDone();
-				return [
-					{ kind: "text", text: "child corrected" },
-					{ kind: "finish", reason: "stop" },
-				];
-			});
-
-		try {
-			await harness.send("root task");
-			const rootIds = harness.host.session.list().nodes.map((node) => node.id);
-			harness.host.subagents.start({ ownerId: "root", label: "child", prompt: "unique child task" });
-			await done;
-			expect(childCalls).toBe(3);
-			expect(rootIds).not.toContain(childTarget);
-			expect(harness.host.session.list({ scope: "all" }).nodes.some((node) => node.kind === "rewind")).toBe(false);
-		} finally {
-			await harness.dispose();
-		}
 	});
 });
 
@@ -787,7 +732,7 @@ describe("abandoned side-effects extraction (generic effect facts)", () => {
 					content: JSON.stringify({ jobId: "job-bg-99" }),
 					status: "succeeded" as const,
 					details: {
-						effects: [{ effectType: "task.dispatch", externalOperationId: "job-bg-99", label: "pnpm build" }],
+						effects: [{ effectType: "worker.dispatch", externalOperationId: "wk-99", label: "pnpm build" }],
 					},
 				},
 			},
@@ -808,7 +753,7 @@ describe("abandoned side-effects extraction (generic effect facts)", () => {
 					tool_call_id: "c5",
 					content: JSON.stringify({ id: "sub-42" }),
 					status: "unknown" as const,
-					details: { effects: [{ effectType: "task.dispatch", externalOperationId: "sub-42", label: "worker-1" }] },
+					details: { effects: [{ effectType: "worker.dispatch", externalOperationId: "wk-42", label: "worker-1" }] },
 				},
 			},
 		];
@@ -818,8 +763,8 @@ describe("abandoned side-effects extraction (generic effect facts)", () => {
 		expect(effects.effects).toEqual([
 			{ effectType: "file.write", label: "src/index.ts" },
 			{ effectType: "command.exec", label: "npm test" },
-			{ effectType: "task.dispatch", externalOperationId: "job-bg-99", label: "pnpm build" },
-			{ effectType: "task.dispatch", externalOperationId: "sub-42", label: "worker-1" },
+			{ effectType: "worker.dispatch", externalOperationId: "wk-99", label: "pnpm build" },
+			{ effectType: "worker.dispatch", externalOperationId: "wk-42", label: "worker-1" },
 		]);
 	});
 
@@ -911,7 +856,7 @@ describe("provenance tagging for abandoned tasks", () => {
 			order: 1,
 			mode: "followUp" as const,
 			text: "task completed",
-			source: { kind: "runtime" as const, type: "job-notice", ref: "job-1" },
+			source: { kind: "runtime" as const, type: "watch-job", ref: "job-1" },
 		};
 		const projectedNormal = projectInputMessage(inputNormal);
 		expect(projectedNormal.content).not.toContain("来自废弃分支");
@@ -923,59 +868,13 @@ describe("provenance tagging for abandoned tasks", () => {
 			text: "abandoned task completed",
 			source: {
 				kind: "runtime" as const,
-				type: "job-notice",
+				type: "watch-job",
 				ref: "job-2",
 				provenance: { abandoned: true },
 			},
 		};
 		const projectedAbandoned = projectInputMessage(inputAbandoned);
 		expect(projectedAbandoned.content).toContain("[来自废弃分支]");
-	});
-
-	test("tags background job notices when they finish after their originating branch is rewound", async ({ env }) => {
-		const cwd = env.cwd;
-		const host = await UinaHost.create({
-			cwd,
-			model: mockModel(),
-			stream: async () => {},
-		});
-		try {
-			await host.start();
-
-			// Seed a session with a tool call that started a background job
-			await host.submitText("step 1");
-			const targetId = host.session.list().nodes[0].id;
-
-			// Append tool calling background job (the tool itself declares the effect fact)
-			await (host as any).store.appendMessage({
-				role: "assistant",
-				content: "running background job",
-				tool_calls: [{ id: "c-bg", name: "exec_command", args: { command: "sleep 10", run_in_background: true } }],
-			});
-			await (host as any).store.appendMessage({
-				role: "tool",
-				tool_call_id: "c-bg",
-				content: JSON.stringify({ jobId: "job-abandoned-1" }),
-				status: "succeeded",
-				details: {
-					effects: [{ effectType: "task.dispatch", externalOperationId: "job-abandoned-1", label: "sleep 10" }],
-				},
-			});
-
-			// Perform rewind to targetId
-			await host.session.requestRewind(
-				{
-					targetId,
-					reason: "abandoning job branch",
-				},
-				"test",
-			);
-
-			// Verify that host now knows job-abandoned-1 is abandoned
-			expect(host.abandonedTaskIds.has("job-abandoned-1")).toBe(true);
-		} finally {
-			await host.dispose();
-		}
 	});
 });
 

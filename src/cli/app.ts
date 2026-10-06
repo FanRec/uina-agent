@@ -7,8 +7,6 @@ import { createInteractiveUI, type InteractiveTUI } from "../ui/tui.js";
 import { installTerminalGuards } from "../ui/core/terminal.js";
 import { combineQueuedDraft, canEditQueuedDraft } from "./draft.js";
 import { toolResultLines } from "../ui/format.js";
-import { createJobAdapter } from "../ui/adapters/jobs.js";
-import { createSubagentAdapter } from "../ui/adapters/subagents.js";
 import { formatHelp, parseArgs, readPipedStdin, UINA_VERSION } from "./args.js";
 import { resolveSessionPath } from "./session-path.js";
 import { resolveProfile, releaseProfileLock } from "../host/profile.js";
@@ -435,8 +433,6 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				cwd: process.cwd(),
 				registry: host.extensionRegistry,
 				features: {
-					jobPort: createJobAdapter(host.jobs),
-					subagentPort: createSubagentAdapter(host.subagents),
 					sessionPort: host.session,
 				},
 			});

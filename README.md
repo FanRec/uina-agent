@@ -295,8 +295,6 @@ git diff | uina "总结这次改动"          # 管道内容作为上下文
 | 快捷键 | 面板 |
 | --- | --- |
 | `Alt+H` | 会话历史与分支检视 |
-| `Alt+J` | 后台任务与进程 |
-| `Alt+A` | 子智能体 |
 | `Alt+T` | 审计轨迹时序 |
 | `Shift+Tab` | 循环切换思考强度 |
 | `Ctrl+O` | 展开 / 收起光标处内容（粘贴标记、思考、会话卡片） |
@@ -313,10 +311,8 @@ git diff | uina "总结这次改动"          # 管道内容作为上下文
 | `/compact [要求]` | 压缩会话历史，释放上下文空间 |
 | `/session` | 查看用量与上下文构成 |
 | `/history`、`/branches` | 会话历史与分支 |
-| `/tasks` | 后台任务看板 |
-| `/subagents` | 子智能体看板 |
 | `/trajectory` | 审计轨迹时序 |
-| `/rewind <节点 id> <原因>` | 回溯主线（不撤销文件与后台任务） |
+| `/rewind <节点 id> <原因>` | 回溯主线（不撤销文件修改与已发出的外部调用） |
 | `/think` | 展开或折叠深度思考 |
 | `/clear` | 清空屏幕转录 |
 | `/gutter` | 切换右侧导航轨样式 |
@@ -337,8 +333,6 @@ git diff | uina "总结这次改动"          # 管道内容作为上下文
 | `read_image` | 按文件签名读取 PNG / JPEG / GIF / WebP |
 | `exec_command` | 执行系统命令（Windows 走 PowerShell / `cmd`，Unix 走 `/bin/sh`） |
 | `get_time` | 当前日期时间 |
-| `job_list` / `job_output` / `job_kill` | 后台任务：列出、读取增量输出、取消 |
-| `subagent_start` / `subagent_list` / `subagent_status` / `subagent_output` / `subagent_messages` / `subagent_send` / `subagent_interrupt` | 子智能体：启动、观察、追问、中断 |
 | `session_list` / `session_read` / `session_rewind` | 读取历史节点并回溯 |
 
 `exec_command` **没有**审批、沙箱、超时或白名单，权限等同于当前进程账户；请自行判断在什么目录下运行。工具结果必须显式给出 `succeeded` / `failed` / `cancelled` / `unknown` / `not_started`，Uina 不解析正文猜测成败。
@@ -349,7 +343,7 @@ git diff | uina "总结这次改动"          # 管道内容作为上下文
 
 启动时重放日志。末行若是未完成的写入会被原子修复；中间记录损坏则拒绝启动。工具已启动但没有完成记录时，恢复为 `unknown`，不推断为成功。
 
-回溯（`/rewind` 或模型的 `session_rewind`）只改会话主线，**不会**撤销文件修改、后台任务或已发出的外部调用；被放弃分支启动的后台任务完成时会明确标注来源。详见 [docs/session-rewind.md](docs/session-rewind.md)。
+回溯（`/rewind` 或模型的 `session_rewind`）只改会话主线，**不会**撤销文件修改或已发出的外部调用。详见 [docs/session-rewind.md](docs/session-rewind.md)。
 
 ## 扩展
 
@@ -403,7 +397,7 @@ pnpm build          # 构建到 dist/
 
 诚实起见，把「已验证」与「未验证」分开：
 
-- **已验证**：类型检查、全量测试、构建；协议层在 localhost 上覆盖 OpenAI 兼容 / Anthropic / Gemini；真实 DeepSeek 验证过思考控制、usage、取消，以及「文件事件 → 后台任务 → 结果回注」的完整往返。
+- **已验证**：类型检查、全量测试、构建；协议层在 localhost 上覆盖 OpenAI 兼容 / Anthropic / Gemini；真实 DeepSeek 验证过思考控制、usage、取消，以及文件事件驱动回合的完整往返。
 - **未验证**：其他真实服务；真实终端下的 IME 与键位；macOS / Linux 实机。
 - **不在当前范围**：长期记忆、语音、视觉、动态能力筛选、权限审批、RPC。
 

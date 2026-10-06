@@ -64,12 +64,12 @@ describe("external event projection", () => {
 			{
 				role: "custom",
 				customType: "runtime-input",
-				content: "[运行时事件 subagent-notice · ref-1]\nnotify",
-				input: { eventId: "r1", source: { kind: "runtime", type: "subagent-notice" } },
+				content: "[运行时事件 watch-job · ref-1]\nnotify",
+				input: { eventId: "r1", source: { kind: "runtime", type: "watch-job" } },
 			},
 		]);
 		expect(msgs.map((m) => m.role)).toEqual(["user"]);
-		expect(msgs[0]!.content).toContain("[运行时事件 subagent-notice · ref-1]\nnotify");
+		expect(msgs[0]!.content).toContain("[运行时事件 watch-job · ref-1]\nnotify");
 		expect(msgs[0]!.content).not.toContain("[内部信息");
 		expect(() => p.validateContext!(msgs)).not.toThrow();
 	});

@@ -6,7 +6,7 @@ export type RewindEntry = (request: RewindRequest, source: string, signal?: Abor
 
 /**
  * Composes a SessionAccess from a store plus a rewind entry. Session/agent
- * consumers (host assembly, subagent handles) build their view here instead of
+ * consumers (host assembly) build their view here instead of
  * the agent loop implementing session navigation itself.
  */
 export function createSessionAccess(store: SessionStore, requestRewind?: RewindEntry): SessionAccess {
