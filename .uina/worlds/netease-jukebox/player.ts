@@ -61,6 +61,7 @@ export interface MusicPlayer {
   stop(): Promise<void>;
   setVolume(volumePercent: number): Promise<void>;
   progress(): Promise<PlayerProgress>;
+  seek(positionMs: number): Promise<void>;
   close(): Promise<void>;
   on(event: "ended" | "error", listener: (info?: { reason: "eof" | "stop" | "error"; trackId: number } | Error) => void): this;
 }
@@ -149,6 +150,18 @@ export class SimulatedMusicPlayer extends EventEmitter implements MusicPlayer {
     this._volume = Math.min(100, Math.max(0, Math.round(volumePercent)));
   }
 
+  async seek(positionMs: number): Promise<void> {
+    const clamped = this.durationMs === null
+      ? Math.max(0, positionMs)
+      : Math.min(Math.max(0, positionMs), this.durationMs);
+    // pausedAtMs 同时是 resume 偏移与 scheduleEnd 的剩余时长基准，seek 时两处都要对齐。
+    this.pausedAtMs = clamped;
+    if (this._status === "playing") {
+      this.startedAt = Date.now() - clamped;
+      this.scheduleEnd();
+    }
+  }
+
   async progress(): Promise<PlayerProgress> {
     if (this._status === "playing") {
       const positionMs = Math.max(0, Date.now() - this.startedAt);
@@ -201,6 +214,7 @@ export class UnavailableMusicPlayer extends EventEmitter implements MusicPlayer 
   async stop(): Promise<void> {}
   async setVolume(volume: number): Promise<void> { this._volume = Math.min(100, Math.max(0, Math.round(volume))); }
   async progress(): Promise<PlayerProgress> { return { positionMs: 0, durationMs: null }; }
+  async seek(): Promise<void> { throw new Error("未找到 mpv 播放器"); }
   async close(): Promise<void> {}
 }
 
@@ -305,6 +319,11 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
     this._volume = clamped;
   }
 
+  async seek(positionMs: number): Promise<void> {
+    if (!this.socket) throw new Error("mpv 未启动");
+    await this.command(["seek", positionMs / 1000, "absolute"]);
+  }
+
   async progress(): Promise<PlayerProgress> {
     if (this._status === "idle") return { positionMs: 0, durationMs: null };
     if (!this.socket) {
@@ -370,6 +389,7 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
         "--no-video",
         "--input-terminal=no",
         "--really-quiet",
+        `--volume=${this._volume}`,
         `--input-ipc-server=${this.ipcPath}`,
       ]);
     this.process = child;

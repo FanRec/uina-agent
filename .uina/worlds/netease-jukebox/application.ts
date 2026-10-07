@@ -6,16 +6,15 @@ import { formatLyrics } from "./lyrics.js";
 import { LiveLyricsTracker } from "./live-lyrics.js";
 import type { NeteaseGateway, EditablePlaylist } from "./netease-gateway.js";
 import type { PlaybackCoordinator } from "./playback-coordinator.js";
-import type { PlaybackMode } from "./hud-protocol.js";
+import { isPlaybackMode, playbackModes } from "./hud-protocol.js";
 import type { SongInfo } from "./types.js";
 
-const modes = ["single_once", "queue_order", "list_loop", "single_loop", "shuffle"] as const;
 const writeOperations = new Set([
   "playlist_create", "playlist_update", "playlist_track_add", "playlist_track_remove",
   "playlist_subscribe", "playlist_unsubscribe", "like", "unlike", "comment_add",
 ]);
 
-type ServiceStatus = { running: boolean };
+type ServiceStatus = { running: boolean; detail?: string };
 type EnsureService = (ctx: ActionContext) => Promise<ServiceStatus>;
 
 function fail(message: string, reason: string): ToolExecutionResult {
@@ -31,7 +30,7 @@ function formatMs(ms: number | null): string {
   return `${String(Math.floor(ms / 60000)).padStart(2, "0")}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
 }
 
-function isToolResult(value: EditablePlaylist | ToolExecutionResult): value is ToolExecutionResult {
+function isToolResult(value: object): value is ToolExecutionResult {
   return "status" in value;
 }
 
@@ -71,7 +70,7 @@ export class JukeboxApplication {
       ),
       playback: this.action(
         "控制播放、音量、播放模式或查询状态；status 只观察，其余操作会改变播放。",
-        { operation: { type: "string", enum: ["pause", "resume", "stop", "next", "previous", "status", "mode", "volume"] }, mode: { type: "string", enum: [...modes] }, level: { type: "number" }, clear_queue: { type: "boolean" } },
+        { operation: { type: "string", enum: ["pause", "resume", "stop", "next", "previous", "status", "mode", "volume"] }, mode: { type: "string", enum: [...playbackModes] }, level: { type: "number" }, clear_queue: { type: "boolean" } },
         ["operation"],
         this.playbackAction.bind(this),
       ),
@@ -115,7 +114,8 @@ export class JukeboxApplication {
 
   private async requireService(ctx: ActionContext): Promise<ToolExecutionResult | null> {
     const service = await this.deps.ensureService(ctx);
-    return service.running ? null : fail("网易云数据服务不可用。", "service_unavailable");
+    if (service.running) return null;
+    return fail(service.detail ? `网易云数据服务不可用：${service.detail}` : "网易云数据服务不可用。", "service_unavailable");
   }
 
   private async search(args: Record<string, unknown>, ctx: ActionContext): Promise<string | ToolExecutionResult> {
@@ -125,28 +125,39 @@ export class JukeboxApplication {
     if (!query) return fail("缺少搜索关键词。", "invalid_query");
     const limit = Math.min(20, Math.max(1, Number(args.limit ?? 10)));
     const songs = await this.deps.api.searchSongs(query, limit, ctx.signal);
+    this.searchRefs.clear();
     songs.forEach((song, index) => this.searchRefs.set(`search:${index}`, song));
     return songs.length
       ? songs.map((song, index) => `${index + 1}. ref=search:${index} id=${song.id} ${song.name} - ${song.artists.join(", ")} (${formatMs(song.durationMs)})`).join("\n")
       : `未找到与“${query}”相关的歌曲。`;
   }
 
-  private async resolveSong(args: Record<string, unknown>, ctx: ActionContext): Promise<SongInfo | null> {
+  /**
+   * 曲目解析的唯一策略所有者：ref → song_id → query 的优先级和各自的失败原因都在这里，
+   * 调用方只区分"拿到歌"与"拿到现成的失败结果"。不伪造占位歌曲——查不到就如实失败，
+   * 否则"歌曲不存在"会被下游误报成"VIP/版权限制"，甚至拿假 ID 发起歌单写操作。
+   */
+  private async resolveSong(args: Record<string, unknown>, ctx: ActionContext): Promise<SongInfo | ToolExecutionResult> {
     const ref = String(args.ref ?? "").trim();
-    if (ref) return this.searchRefs.get(ref) ?? null;
+    if (ref) {
+      const song = this.searchRefs.get(ref);
+      return song ?? fail(`搜索 ref “${ref}” 不存在或已过期，请重新 search。`, "invalid_ref");
+    }
     const id = String(args.song_id ?? args.id ?? "").trim();
-    if (id) return (await this.deps.api.getSongInfo(id, ctx.signal)) ?? { id, name: `歌曲 #${id}`, artists: ["未知歌手"], durationMs: null };
+    if (id) return (await this.deps.api.getSongInfo(id, ctx.signal)) ?? fail(`歌曲 #${id} 不存在。`, "song_not_found");
     const query = String(args.query ?? args.keyword ?? "").trim();
-    return query ? (await this.deps.api.searchSongs(query, 5, ctx.signal))[0] ?? null : null;
+    if (!query) return fail("必须提供 song_id、ref 或 query。", "invalid_song");
+    const song = (await this.deps.api.searchSongs(query, 5, ctx.signal))[0];
+    return song ?? fail(`未找到与“${query}”相关的歌曲。`, "song_not_found");
   }
 
   private async play(args: Record<string, unknown>, ctx: ActionContext): Promise<string | ToolExecutionResult> {
     const unavailable = await this.requireService(ctx);
     if (unavailable) return unavailable;
     const song = await this.resolveSong(args, ctx);
-    if (!song) return fail("必须提供 song_id、ref 或 query。", "invalid_song");
-    if (args.replace_queue === true) this.deps.playback.clear();
+    if (isToolResult(song)) return song;
     if (args.enqueue === true) {
+      if (args.replace_queue === true) this.deps.playback.clear();
       this.deps.playback.add(song);
       return `已加入队列：${song.name}`;
     }
@@ -155,6 +166,7 @@ export class JukeboxApplication {
     } catch (error) {
       return fail(`无法播放“${song.name}”：${error instanceof Error ? error.message : String(error)}`, "playback_failed");
     }
+    if (args.replace_queue === true) this.deps.playback.clear();
     return worldSucceeded(
       `正在播放：${song.name} - ${song.artists.join(", ")}${this.deps.playback.isSimulated ? "（模拟模式，无实际声音）" : ""}`,
       { songId: song.id },
@@ -189,7 +201,7 @@ export class JukeboxApplication {
     const unavailable = await this.requireService(ctx);
     if (unavailable) return unavailable;
     const song = await this.resolveSong(args, ctx);
-    if (!song) return fail("必须提供 song_id、ref 或 query。", "invalid_song");
+    if (isToolResult(song)) return song;
     this.deps.playback.add(song);
     return `已加入队列：${song.name}`;
   }
@@ -206,19 +218,25 @@ export class JukeboxApplication {
       return "无需恢复：没有在播曲目或待播队列。";
     }
     if (operation === "stop") { await this.deps.playback.stop(args.clear_queue === true); return "已停止播放。"; }
-    if (operation === "mode") { const mode = String(args.mode); if (!(modes as readonly string[]).includes(mode)) return fail("播放模式无效。", "invalid_mode"); this.deps.playback.setMode(mode as PlaybackMode); return `播放模式已设为 ${mode}。`; }
+    if (operation === "mode") { const mode = args.mode; if (!isPlaybackMode(mode)) return fail("播放模式无效。", "invalid_mode"); this.deps.playback.setMode(mode); return `播放模式已设为 ${mode}。`; }
     if (operation === "volume") { const level = Number(args.level); if (!Number.isFinite(level) || level < 0 || level > 100) return fail("音量必须是 0 到 100。", "invalid_volume"); await this.deps.playback.setVolume(level); return `音量已设置为 ${this.deps.playback.volume}%。`; }
-    if (operation === "next") return this.switchTrack(() => this.deps.playback.playNext(ctx.signal), "下一首");
-    if (operation === "previous") return this.switchTrack(() => this.deps.playback.playPrevious(ctx.signal), "上一首");
+    if (operation === "next") return this.switchTrack(() => this.deps.playback.playNext(ctx.signal), "下一首", "队列为空。");
+    if (operation === "previous") {
+      try {
+        const outcome = await this.deps.playback.previous(ctx.signal);
+        if (!outcome) return fail("没有可返回的上一首。", "not_available");
+        return outcome.restarted ? `已回到歌曲开头：${outcome.song.name}。` : `已切换到上一首：${outcome.song.name}。`;
+      } catch (error) {
+        return fail(`无法播放上一首：${error instanceof Error ? error.message : String(error)}`, "playback_failed");
+      }
+    }
     return fail("未知播放操作。", "invalid_operation");
   }
 
-  private async switchTrack(load: () => Promise<SongInfo | null>, label: string): Promise<string | ToolExecutionResult> {
+  private async switchTrack(load: () => Promise<SongInfo | null>, label: string, emptyReason: string): Promise<string | ToolExecutionResult> {
     try {
       const song = await load();
-      if (song) return `已切换到${label}：${song.name}。`;
-      if (label === "下一首") return fail("队列为空。", "not_available");
-      return fail("没有可返回的上一首。", "not_available");
+      return song ? `已切换到${label}：${song.name}。` : fail(emptyReason, "not_available");
     }
     catch (error) { return fail(`无法播放${label}：${error instanceof Error ? error.message : String(error)}`, "playback_failed"); }
   }
@@ -277,7 +295,7 @@ export class JukeboxApplication {
     const before = await this.requireEditablePlaylist(playlistId, uid, ctx);
     if (isToolResult(before)) return before;
     const song = await this.resolveSong(args, ctx);
-    if (!song) return fail("必须提供有效的 song_id 或搜索 ref。", "invalid_song");
+    if (isToolResult(song)) return song;
     if (operation === "playlist_track_add") await this.deps.gateway.addToPlaylist(playlistId, song.id, ctx.signal);
     else await this.deps.gateway.removeFromPlaylist(playlistId, song.id, ctx.signal);
     const after = await this.deps.gateway.playlistForWrite(playlistId, ctx.signal);

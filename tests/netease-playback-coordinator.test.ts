@@ -28,6 +28,7 @@ class EndedPlayer extends EventEmitter implements MusicPlayer {
 	async progress(): Promise<{ positionMs: number; durationMs: number | null }> {
 		return { positionMs: 0, durationMs: null };
 	}
+	async seek(_positionMs: number): Promise<void> {}
 	async close(): Promise<void> {
 		this.status = "idle";
 	}
@@ -94,18 +95,20 @@ describe("PlaybackCoordinator", () => {
 		await coordinator.load("simulated://2", song("2"));
 		coordinator.setLoader(async (track) => ({ url: `simulated://${track.id}`, song: track }));
 		expect(coordinator.snapshot().history.map((item) => item.id)).toEqual(["1"]);
-		expect(await coordinator.playPrevious()).toEqual(song("1"));
+		expect(await coordinator.previous()).toEqual({ song: song("1"), restarted: false });
 		await coordinator.close();
 	});
 
-	it("does not consume a queued song when its loader fails", async () => {
+	it("consumes a queued song when its loader fails so auto-advance is not stuck", async () => {
 		const coordinator = new PlaybackCoordinator(new SimulatedMusicPlayer());
 		coordinator.add(song("next"));
-		coordinator.setLoader(async () => {
-			throw new Error("url unavailable");
+		coordinator.add(song("after"));
+		coordinator.setLoader(async (track) => {
+			if (track.id === "next") throw new Error("url unavailable");
+			return { url: `simulated://${track.id}`, song: track };
 		});
 		await expect(coordinator.playNext()).rejects.toThrow("url unavailable");
-		expect(coordinator.snapshot().queue.map((item) => item.id)).toEqual(["next"]);
+		expect(coordinator.snapshot().queue.map((item) => item.id)).toEqual(["after"]);
 		await coordinator.close();
 	});
 

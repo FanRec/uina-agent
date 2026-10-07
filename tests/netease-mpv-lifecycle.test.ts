@@ -186,6 +186,23 @@ describe("MpvPlayer lifecycle with injected transport", () => {
 		await player.close();
 	});
 
+	it("applies the volume set before mpv starts to the spawned process", async () => {
+		const fake = fakeTransport();
+		const player = new MpvPlayer("fake-mpv", fake.transport);
+		await player.setVolume(40);
+		expect(fake.spawn).not.toHaveBeenCalled();
+
+		const loading = player.load("song://one", null);
+		await vi.waitFor(() => expect(fake.socket.commands[0]?.command[0]).toBe("loadfile"));
+		fake.socket.message({ event: "start-file", playlist_entry_id: 1 });
+		await loading;
+
+		const args = (fake.spawn as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]?.[1] as string[];
+		expect(args).toContain("--volume=40");
+		expect(player.volume).toBe(40);
+		await player.close();
+	});
+
 	it("retains the active entry when mpv rejects stop", async () => {
 		const fake = fakeTransport();
 		const player = new MpvPlayer("fake-mpv", fake.transport);

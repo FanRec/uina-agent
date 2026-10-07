@@ -1,5 +1,11 @@
 export type PlaybackMode = "single_once" | "queue_order" | "list_loop" | "single_loop" | "shuffle";
 
+export const playbackModes = ["single_once", "queue_order", "list_loop", "single_loop", "shuffle"] as const satisfies readonly PlaybackMode[];
+
+export function isPlaybackMode(value: unknown): value is PlaybackMode {
+  return typeof value === "string" && (playbackModes as readonly string[]).includes(value);
+}
+
 export interface HudTrack {
   id: string;
   name: string;

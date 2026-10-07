@@ -41,6 +41,7 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
   let worldSignal: AbortSignal | undefined;
   let hudConnection: "connected" | "degraded" = "connected";
   const spectrumUrls = new Map<string, string>();
+  let spectrumSongId: string | null = null;
 
   const makeSnapshot = (): BroadcastHudSnapshot => {
     const state = playback.snapshot();
@@ -61,11 +62,18 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
       else if (result.reason !== "disabled" && result.reason !== "stale") hudConnection = "degraded";
     });
   };
+  // 只在曲目变化或从非 playing 恢复时重启 ffmpeg：coordinator 在调音量/改队列时也会 emit，
+  // 每次都 kill+respawn 会浪费 CPU 且频谱位置用的是滞后的 progress poll。
   const startSpectrumFor = (snapshot: ReturnType<PlaybackCoordinator["snapshot"]>): void => {
     if (snapshot.status !== "playing" || !snapshot.currentSong) {
-      void spectrum.stop();
+      if (spectrumSongId !== null) {
+        spectrumSongId = null;
+        void spectrum.stop();
+      }
       return;
     }
+    if (spectrumSongId === snapshot.currentSong.id) return;
+    spectrumSongId = snapshot.currentSong.id;
     const url = spectrumUrls.get(snapshot.currentSong.id);
     if (url) spectrum.start(url, snapshot.positionMs);
     else void spectrum.stop();
@@ -93,11 +101,10 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
   const application = new JukeboxApplication({ api, gateway, playback, lyrics, ensureService: async ctx => serviceManager.ensureRunning(api, 10000, ctx.signal) });
   playback.setLoader(async (song, signal) => {
     const url = await api.getSongUrl(song.id, signal);
-    if (url) {
-      spectrumUrls.delete(song.id);
-      spectrumUrls.set(song.id, url);
-      while (spectrumUrls.size > 128) spectrumUrls.delete(spectrumUrls.keys().next().value!);
-    }
+    if (!url) throw new Error("网易云未返回该歌曲的播放地址（通常为 VIP 或版权限制）");
+    spectrumUrls.delete(song.id);
+    spectrumUrls.set(song.id, url);
+    while (spectrumUrls.size > 128) spectrumUrls.delete(spectrumUrls.keys().next().value!);
     return { url, song };
   });
 
@@ -137,6 +144,7 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
       unsubscribePreferences(); unsubscribePreferences = (): void => undefined;
       hudConnection = "connected";
       selectedLyricsSongId = null;
+      spectrumSongId = null;
       lyrics.clear();
       try { await playback.stop(); } finally { await spectrum.stop(); await playback.close(); await serviceManager.stop(); await hud.close(); await hudManager.stop(); }
     },

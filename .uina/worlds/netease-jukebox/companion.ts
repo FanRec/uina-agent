@@ -7,6 +7,8 @@ export interface CompanionStatus {
   readonly running: boolean;
   readonly spawnedByUs: boolean;
   readonly port: number;
+  /** 启动失败时的补充诊断（如端口被其他程序占用），由 requireService 透出。 */
+  readonly detail?: string;
 }
 
 export class CompanionManager {
@@ -41,7 +43,7 @@ export class CompanionManager {
     const healthy = await apiClient.isHealthy(1500, signal);
     signal?.throwIfAborted();
     if (generation !== this.generation) {
-      return { running: false, spawnedByUs: false, port: this.port };
+      return this.unhealthy();
     }
     if (healthy) {
       return { running: true, spawnedByUs: false, port: this.port };
@@ -51,12 +53,14 @@ export class CompanionManager {
     const appJs = join(this.serviceDir, "app.js");
     if (!existsSync(appJs)) {
       // Service directory not found, can't spawn
-      return { running: false, spawnedByUs: false, port: this.port };
+      return this.unhealthy("未找到 api-enhanced 服务目录，无法自动启动。");
     }
 
     // 3. Spawn child process
     try {
-      const child = spawn("node", ["app.js"], {
+      // process.execPath 而非 PATH 里的 "node"：宿主 PATH 缺 node 时 spawn("node") 会发出
+      // 无监听的 'error' 事件并击穿为 uncaughtException。与 HudCompanionManager 保持一致。
+      const child = spawn(process.execPath, ["app.js"], {
         cwd: this.serviceDir,
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
@@ -67,7 +71,16 @@ export class CompanionManager {
       });
       this.childProcess = child;
       this.spawnedByUs = true;
+      // 排空管道：无人读取时子进程日志写满 64KB 缓冲会阻塞在 console.log 上，永远无法 healthy。
+      child.stdout?.resume();
+      child.stderr?.resume();
 
+      child.once("error", () => {
+        if (this.childProcess === child) {
+          this.childProcess = null;
+          this.spawnedByUs = false;
+        }
+      });
       child.once("exit", () => {
         if (this.childProcess === child) {
           this.childProcess = null;
@@ -100,11 +113,30 @@ export class CompanionManager {
       }
 
       this.killChild(child);
-      return { running: false, spawnedByUs: false, port: this.port };
+      // 探测无法区分"外部程序占用"与"刚 kill 的子进程尚未退出"，措辞保持留有余地。
+      return this.unhealthy(
+        await this.portOccupied()
+          ? `端口 ${this.port} 有 HTTP 响应但未提供网易云数据服务（可能被其他程序占用）。`
+          : undefined,
+      );
     } catch (error) {
       if (this.childProcess) this.killChild(this.childProcess);
       if (signal?.aborted) throw error;
-      return { running: false, spawnedByUs: false, port: this.port };
+      return this.unhealthy();
+    }
+  }
+
+  private unhealthy(detail?: string): CompanionStatus {
+    return { running: false, spawnedByUs: false, port: this.port, ...(detail ? { detail } : {}) };
+  }
+
+  /** 端口上是否有"任何"HTTP 服务在响应（无论状态码）：用于区分端口被占与服务未启动。 */
+  private async portOccupied(): Promise<boolean> {
+    try {
+      await fetch(`http://127.0.0.1:${this.port}/login/status`, { signal: AbortSignal.timeout(1500) });
+      return true;
+    } catch {
+      return false;
     }
   }
 

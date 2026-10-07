@@ -21,15 +21,14 @@ export class NeteaseApiClient {
       return [];
     }
 
-    try {
-      const url = new URL(`${this.baseUrl}/cloudsearch`);
-      url.searchParams.set("keywords", trimmed);
-      url.searchParams.set("type", "1");
-      url.searchParams.set("limit", String(limit));
+    const url = new URL(`${this.baseUrl}/cloudsearch`);
+    url.searchParams.set("keywords", trimmed);
+    url.searchParams.set("type", "1");
+    url.searchParams.set("limit", String(limit));
 
-      const data = await this.request(url.toString(), 15_000, signal, async (res) => {
-        if (!res.ok) throw new Error(`网易云搜索失败: HTTP ${res.status}`);
-        return await res.json() as {
+    const data = await this.request(url.toString(), 15_000, signal, async (res) => {
+      if (!res.ok) throw new Error(`网易云搜索失败: HTTP ${res.status}`);
+      return await res.json() as {
         result?: {
           songs?: Array<{
             id: number | string;
@@ -42,43 +41,34 @@ export class NeteaseApiClient {
             album?: { name: string };
           }>;
         };
-        };
-      });
+      };
+    });
 
-      const songs = data.result?.songs;
-      if (!Array.isArray(songs)) throw new Error("网易云搜索响应格式错误");
+    const songs = data.result?.songs;
+    if (!Array.isArray(songs)) throw new Error("网易云搜索响应格式错误");
 
-      return songs.map((s) => ({
-        id: String(s.id),
-        name: s.name ?? "未知曲目",
-        artists: (s.ar ?? s.artists ?? []).map((a) => a.name).filter(Boolean),
-        durationMs: s.dt ?? s.duration ?? null,
-        album: s.al?.name ?? s.album?.name,
-      }));
-    } catch (error) {
-      throw error instanceof Error ? error : new Error(String(error));
-    }
+    return songs.map((s) => ({
+      id: String(s.id),
+      name: s.name ?? "未知曲目",
+      artists: (s.ar ?? s.artists ?? []).map((a) => a.name).filter(Boolean),
+      durationMs: s.dt ?? s.duration ?? null,
+      album: s.al?.name ?? s.album?.name,
+    }));
   }
 
   async getSongUrl(songId: string, signal?: AbortSignal): Promise<string | null> {
-    try {
-      const url = new URL(`${this.baseUrl}/song/url/v1`);
-      url.searchParams.set("id", songId);
-      url.searchParams.set("level", "standard");
+    const url = new URL(`${this.baseUrl}/song/url/v1`);
+    url.searchParams.set("id", songId);
+    url.searchParams.set("level", "standard");
 
-      return await this.request(url.toString(), 15_000, signal, async (res) => {
-        if (res.ok) {
-          const data = (await res.json()) as {
-          data?: Array<{ url?: string; freeTrialInfo?: unknown }>;
-          };
-          const item = data.data?.[0];
-          if (item?.url) return item.url;
-        }
-        return null;
-      });
-    } catch (error) {
-      throw error instanceof Error ? error : new Error(String(error));
-    }
+    return this.request(url.toString(), 15_000, signal, async (res) => {
+      if (!res.ok) throw new Error(`网易云播放地址查询失败: HTTP ${res.status}`);
+      const data = (await res.json()) as {
+        data?: Array<{ url?: string }>;
+      };
+      const item = data.data?.[0];
+      return item?.url ?? null;
+    });
   }
 
   async getLyrics(songId: string, signal?: AbortSignal): Promise<string | null> {

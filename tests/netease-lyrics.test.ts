@@ -29,6 +29,17 @@ describe("netease lyrics", () => {
 		await expect(new NeteaseApiClient("http://netease.test").getLyrics("186017")).resolves.toBeNull();
 	});
 
+	it("distinguishes HTTP failures from missing playback URLs in getSongUrl", async () => {
+		const fetchMock = vi.spyOn(globalThis, "fetch");
+		fetchMock.mockResolvedValueOnce(new Response("server error", { status: 500 }));
+		await expect(new NeteaseApiClient("http://netease.test").getSongUrl("186016")).rejects.toThrow(
+			"网易云播放地址查询失败: HTTP 500",
+		);
+
+		fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ url: null }] }), { status: 200 }));
+		await expect(new NeteaseApiClient("http://netease.test").getSongUrl("186017")).resolves.toBeNull();
+	});
+
 	it("exposes full and current lyric queries through the World tool", async () => {
 		const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
 			const url = String(input);
