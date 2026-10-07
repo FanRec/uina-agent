@@ -4,6 +4,7 @@ import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
+import { trackChildProcess, untrackChildProcess } from "../../../src/extensions/world-framework/child-process-registry.js";
 import type { PlaybackStatus } from "./types.js";
 
 export interface PlayerProgress {
@@ -393,8 +394,14 @@ export class MpvPlayer extends EventEmitter implements MusicPlayer {
         `--input-ipc-server=${this.ipcPath}`,
       ]);
     this.process = child;
+    // 登记到宿主子进程兜底表：优雅关闭走 onStop 的 quit IPC；非优雅退出
+    // （熔断超时/强退/关窗口）时由 process.on("exit") 同步击杀，防止孤儿放歌。
+    if (typeof child.pid === "number") trackChildProcess(child.pid);
 
-    child.once("exit", () => this.failConnection(child, new Error("mpv 进程已退出")));
+    child.once("exit", () => {
+      if (typeof child.pid === "number") untrackChildProcess(child.pid);
+      this.failConnection(child, new Error("mpv 进程已退出"));
+    });
     child.once("error", (error) => this.failConnection(child, error));
 
     try {

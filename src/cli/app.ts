@@ -287,8 +287,10 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	 *   conventional 143/129 codes (Pi: modes/print-mode.ts, modes/rpc/rpc-mode.ts).
 	 */
 	const installHostGuards = (tty: boolean): void => {
-		const signals: NodeJS.Signals[] = ["SIGTERM"];
-		if (process.platform !== "win32") signals.push("SIGHUP");
+		// SIGHUP 在 win32 同样会到达：关闭终端窗口时 Node 收到 SIGHUP。没有监听器时
+		// 进程被直接终止、process.on("exit") 钩子不运行，world spawn 的子进程（如 mpv）
+		// 会变孤儿继续出声。executeExit(true) 立即退出，由子进程兜底表完成击杀。
+		const signals: NodeJS.Signals[] = ["SIGTERM", "SIGHUP"];
 		for (const signal of signals) {
 			const handler = (): void => {
 				executeExit(true);

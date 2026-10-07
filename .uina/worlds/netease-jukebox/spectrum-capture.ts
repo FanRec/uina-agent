@@ -1,4 +1,5 @@
 import { spawn as spawnProcess } from "node:child_process";
+import { trackChildProcess, untrackChildProcess } from "../../../src/extensions/world-framework/child-process-registry.js";
 
 const SAMPLE_RATE = 22050;
 const FRAME_SIZE = 2048;
@@ -10,6 +11,7 @@ const SILENT_BANDS = Array.from({ length: BAND_COUNT }, () => 0);
 export interface SpectrumFrame { source: "audio"; bands: number[]; energy: number; beat: number; }
 
 interface SpectrumChild {
+  readonly pid?: number;
   stdout: { on(event: "data", listener: (chunk: Buffer | string) => void): unknown } | null;
   once(event: "exit" | "error", listener: () => void): unknown;
   kill(): boolean;
@@ -82,8 +84,12 @@ export class SpectrumCapture {
       try {
         const child = this.spawn(this.ffmpegPath, args);
         this.child = child;
+        if (typeof child.pid === "number") trackChildProcess(child.pid);
         child.stdout?.on("data", chunk => { if (this.generation === generation && this.child === child) this.acceptPcm(Buffer.from(chunk)); });
-        const stopped = () => { if (this.child === child) this.child = null; };
+        const stopped = () => {
+          if (typeof child.pid === "number") untrackChildProcess(child.pid);
+          if (this.child === child) this.child = null;
+        };
         child.once("exit", stopped);
         child.once("error", stopped);
       } catch {
