@@ -1,0 +1,10 @@
+{
+  "name": "qq-world",
+  "version": "0.1.0",
+  "description": "QQ World：OneBot v11 账号环境，observe/speak/gesture/attention/follow_up/account",
+  "type": "module",
+  "main": "./src/index.ts",
+  "uina": {
+    "type": "world"
+  }
+}

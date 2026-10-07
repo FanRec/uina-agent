@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# 运行时事实与操作日志：真实聊天记录，不入库
+qq-facts.jsonl
+qq-operations.jsonl
+staging/

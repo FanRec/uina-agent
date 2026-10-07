@@ -1,0 +1,24 @@
+{
+  "connection": {
+    "url": "ws://127.0.0.1:3001",
+    "role": "Universal",
+    "accessToken": "Z7qkRyNcDhycobew7M9m7tjrhpS--N0HM_3L1OnNsLI",
+    "requestTimeoutMs": 10000,
+    "reconnect": {
+      "retries": 0,
+      "minDelayMs": 1000,
+      "maxDelayMs": 30000
+    }
+  },
+  "selfId": 3768832841,
+  "deployment": {
+    "grants": [
+      "observation",
+      "messaging",
+      "interaction",
+      "attention.manage",
+      "follow_up.manage",
+      "requests.respond"
+    ]
+  }
+}
