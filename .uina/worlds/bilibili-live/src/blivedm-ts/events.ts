@@ -232,8 +232,10 @@ export function parseGift(data: any): GiftEvent {
   const giftName = String(data.giftName ?? data.gift_name ?? "");
   const count = Number(data.num ?? data.combo_num ?? data.count ?? 1);
   const price = Number(data.price ?? (data.total_coin ? Math.round(data.total_coin / count) : 0));
-  const uid = Number(data.uid ?? 0);
-  const uname = String(data.uname ?? "");
+  // 新版 SEND_GIFT/SEND_GIFT_V2 把发送者信息移入 sender_uinfo，顶层 uname/uid 已为空
+  const sender = data.sender_uinfo ?? {};
+  const uid = Number(data.uid ?? sender.uid ?? 0);
+  const uname = String(data.uname ?? sender.uname ?? "");
   const timestamp = data.timestamp
     ? (data.timestamp > 1e11 ? data.timestamp : data.timestamp * 1000)
     : Date.now();
