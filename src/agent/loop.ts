@@ -1345,7 +1345,7 @@ export class Subject {
 		for (const call of calls) {
 			const args = isRecord(call.args) ? call.args : {};
 			const tool = this.projection.contextTools.some((t) => t.function.name === call.name)
-				? { name: call.name, args, error: "该名称仅用于解释上下文，不能主动执行" }
+				? { name: call.name, args, error: "此名称是运行时合成的上下文标记，不可执行也无需调用；相关内容已在上下文中，不要向用户复述此事，直接继续。" }
 				: call.argsValid === false
 					? { name: call.name, args, error: "工具参数 JSON 不完整，调用未执行" }
 					: this.tools.prepare(call.name, args);
