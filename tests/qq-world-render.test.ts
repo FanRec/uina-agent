@@ -3,12 +3,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-	checkCursorScope,
 	decodeCursor,
 	encodeCursor,
 	fingerprintCursor,
 	oneBotSenderLabel,
-	pageLocalList,
 	quote,
 	renderBatch,
 	renderConversationPage,
@@ -54,7 +52,7 @@ function candidate(overrides: Partial<PendingCandidate> = {}): PendingCandidate 
 		cls: "ordinary",
 		oldestAt: "2026-10-07T01:00:00Z",
 		count: 1,
-		toSeq: 1,
+		origin: "external",
 		...overrides,
 	};
 }
@@ -81,16 +79,32 @@ describe("quote 转义（引号/换行不破坏行结构）", () => {
 });
 
 describe("renderBatch（首/续场景、去重、预算）", () => {
-	it("首场景：尾部起点 16 条全为新增，coverage 声明完整", () => {
+	it("首场景 ≤16 条：全部为新增，coverage 声明完整", () => {
 		const { journal, control } = makeJournal(
-			Array.from({ length: 18 }, (_, i) => ({ sequence: i + 1, ref: `qq-message:${SELF}:m${i}` })),
+			Array.from({ length: 16 }, (_, i) => ({ sequence: i + 1, ref: `qq-message:${SELF}:m${i}` })),
 		);
-		const text = renderBatch(candidate({ toSeq: 18 }), { journal, control, now: () => "2026-10-07T09:00:00Z" });
+		const text = renderBatch(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
 		expect(text).toContain("[QQ 群聊]");
 		expect(text).toContain("conversationRef=");
 		expect(text).toContain("新增：");
 		expect(text).toContain("coverage=本次新增完整");
 		expect(text).toContain("hasMore=false");
+		expect(text).not.toContain("未呈现");
+		// 尾部 16 条全部出现
+		expect(text).toContain("消息0");
+		expect(text).toContain("消息15");
+	});
+
+	it("首场景 >16 条：只呈现尾部 16，更早部分显式省略且 hasMore=true", () => {
+		const { journal, control } = makeJournal(
+			Array.from({ length: 18 }, (_, i) => ({ sequence: i + 1, ref: `qq-message:${SELF}:m${i}` })),
+		);
+		const text = renderBatch(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
+		// 尾部 16 条（m2..m17）出现，更早 2 条（m0/m1）不出正文
+		expect(text).toContain("消息2");
+		expect(text).toContain("消息17");
+		expect(text).toContain("更早 2 条未呈现");
+		expect(text).toMatch(/coverage=本次呈现尾部 16 条，更早 2 条已省略；hasMore=true/);
 	});
 
 	it("续场景：只呈现新增，reply anchor 进必要前文且正文不重复", () => {
@@ -100,7 +114,7 @@ describe("renderBatch（首/续场景、去重、预算）", () => {
 		]);
 		// 已通知到 seq 1
 		(journal as unknown as { state: { notifiedThrough: Map<string, number> } }).state.notifiedThrough.set(GROUP, 1);
-		const text = renderBatch(candidate({ toSeq: 2 }), { journal, control, now: () => "2026-10-07T09:00:00Z" });
+		const text = renderBatch(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
 		// anchor 正文恰好一次
 		expect(text.split("消息0").length - 1).toBe(1);
 		expect(text).toContain("replyTo=qq-message:10001:own");
@@ -112,7 +126,7 @@ describe("renderBatch（首/续场景、去重、预算）", () => {
 			{ sequence: 1, time: "2026-10-07T01:00:00Z" },
 			{ sequence: 2, time: "2026-10-07T02:00:00Z", segments: [{ type: "text", text: "长".repeat(20000) }] },
 		]);
-		const text = renderBatch(candidate({ toSeq: 2 }), {
+		const text = renderBatch(candidate(), {
 			journal,
 			control,
 			now: () => "2026-10-07T09:00:00Z",
@@ -125,31 +139,16 @@ describe("renderBatch（首/续场景、去重、预算）", () => {
 	});
 });
 
-describe("cursor（绑定过滤/窗口；失效明确）", () => {
-	it("编码往返；签名不符明确失败", () => {
+describe("cursor（编码往返；签名绑定过滤/窗口）", () => {
+	it("编码往返；条件变化 → sig 不同", () => {
 		const sig = fingerprintCursor({ scope: "conversation", conv: GROUP, limit: 20 });
 		const cursor = encodeCursor({ v: 1, source: "platform", scope: "conversation", conv: GROUP, pos: 40, sig });
 		const decoded = decodeCursor(cursor);
 		expect(decoded.ok).toBe(true);
-		if (decoded.ok) {
-			const checked = checkCursorScope(decoded.value, {});
-			// checkCursorScope 只对比传入 sig 与载荷——这里直接验证 sig 不匹配路径
-			void checked;
-			expect(decoded.value.sig).toBe(sig);
-		}
+		if (decoded.ok) expect(decoded.value.sig).toBe(sig);
 		expect(decodeCursor("not-a-cursor").ok).toBe(false);
 		// 条件变化 → sig 不同
 		expect(fingerprintCursor({ scope: "conversation", conv: GROUP, limit: 50 })).not.toBe(sig);
-	});
-
-	it("pageLocalList 分页推进 offset", () => {
-		const items = Array.from({ length: 25 }, (_, i) => i);
-		const first = pageLocalList(items, null, 20);
-		expect(first.page).toHaveLength(20);
-		expect(first.nextPos).toBe(20);
-		const second = pageLocalList(items, { pos: first.nextPos! }, 20);
-		expect(second.page).toHaveLength(5);
-		expect(second.nextPos).toBeNull();
 	});
 });
 

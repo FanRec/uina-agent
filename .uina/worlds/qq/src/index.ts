@@ -8,11 +8,15 @@ import { OneBotTransport, type QqTransport } from "./transport.js";
 import { QqIngestion } from "./ingest.js";
 import { QqScheduler } from "./scheduler.js";
 import { handleQqCall, type QqAppDeps } from "./app.js";
+import { hasGrant } from "./grants.js";
 import * as render from "./render.js";
 import type { EventFact } from "./types.js";
 import { QQ_ACTION_SCHEMAS, QQ_TOOL_DESCRIPTION } from "./tool-schema.js";
 import { join } from "node:path";
 import { MediaStaging } from "./media.js";
+
+/** 连续性交互窗口（合同 §4 初值 30s）：recall 相关性判定用。 */
+const CONTINUITY_WINDOW_MS = 30_000;
 
 /**
  * QQ World 装配：配置 → 存储 → 传输 → 摄取 → 调度 → facade。
@@ -56,6 +60,7 @@ export function createQqWorld(injected?: {
 		ops: ops!,
 		transport: transport!,
 		media,
+		display: requireConfig().display,
 	});
 
 	const actions: WorldDef["actions"] = {};
@@ -102,37 +107,67 @@ export function createQqWorld(injected?: {
 						control: control!,
 						now: () => new Date().toISOString(),
 						display: activeConfig?.display,
+						settledUnknowns: scheduler?.listSettledUnknowns() ?? [],
 					});
 				},
-				emit: async ({ id, text, conversationRef, cls }) => {
+				emit: async ({ id, text, conversationRef, cls, origin }) => {
 					await ctxRef?.emitEvent?.({
 						id,
 						type: cls === "internal" ? "qq-internal" : "qq-batch",
 						channel: "world",
 						delivery: "queued",
-						origin: cls === "internal" ? "internal" : "external",
+						origin,
 						text,
 						data: { conversationRef },
 					});
 				},
 				isBusy: () => context.isBusy?.() ?? false,
+				isRecallRelevant: (fact) => {
+					// 合同 §4：recall 仅当"影响当前交互或事项证据"才提醒。操作化规则：
+					// ①自身发言（out）被撤——发言证据被毁；②open 事项 evidenceRefs 引用被撤；
+					// ③该会话处于连续性交互窗口内（合同初值 30s，最近 committed 批次之后）。
+					if (!fact.messageRef) return false;
+					const recalled = journal!.getMessage(fact.messageRef);
+					if (recalled?.direction === "out") return true;
+					if (control!.listFollowUps({ state: "open" }).some((item) => item.evidenceRefs.includes(fact.messageRef!))) {
+						return true;
+					}
+					const notifiedAt = journal!.snapshot.notifiedAt.get(fact.conversationRef ?? "");
+					return notifiedAt !== undefined && Date.now() - Date.parse(notifiedAt) <= CONTINUITY_WINDOW_MS;
+				},
 			});
 			// 摄取 → 调度：落库即通知（onFact 回调保证顺序）。
-			ingestion = new QqIngestion(config.selfId, journal, (item) => {
-				scheduler?.onFact(item as Parameters<QqScheduler["onFact"]>[0]);
-			});
+			// 未授 observation：平台事实不入库、不进调度（grant 表：observation 覆盖读取与新事实接收）。
+			ingestion = new QqIngestion(
+				config.selfId,
+				journal,
+				(item) => {
+					scheduler?.onFact(item as Parameters<QqScheduler["onFact"]>[0]);
+				},
+				hasGrant(config.grants, "observation"),
+			);
 
 			transport = injected?.transport ?? new OneBotTransport({ connection: config.connection });
 			transport.onEvent((event) => ingestion?.handleEvent(event));
 
 			// 迟到回执归并（G6）：SDK 超时移除 pending 后，回执只剩 raw 可观察；
 			// 凭 echo（=operationRef）升级 unknown，确定结论不被迟到副本覆盖。
+			// 只有"unknown 已交付给工具结果"的操作，其升级才通知主体（在途回执不需要）。
 			transport.onRaw((raw) => {
 				if (typeof raw !== "string") return;
 				try {
 					const parsed = JSON.parse(raw) as { echo?: unknown; status?: unknown; retcode?: unknown; data?: unknown };
 					if (typeof parsed.echo !== "string") return;
-					ops?.settleFromEchoReceipt(parsed.echo, parsed, new Date().toISOString());
+					const before = ops?.getByEcho(parsed.echo);
+					const settled = ops?.settleFromEchoReceipt(parsed.echo, parsed, new Date().toISOString());
+					if (
+						settled &&
+						before?.outcome === "unknown" &&
+						settled.outcome !== "unknown" &&
+						ops?.wasDeliveredUnknown(settled.ref)
+					) {
+						scheduler?.notifyOperationSettled(settled);
+					}
 				} catch {
 					// 非 JSON raw 帧忽略。
 				}
@@ -163,10 +198,12 @@ export function createQqWorld(injected?: {
 				throw new Error(`[qq] 登录身份 ${identity.selfId} 与绑定账号 ${config.selfId} 不符，阻止平台写入；旧引用不转移到新账号。`);
 			}
 
-			// reviewAt 到期轮询（60s 粒度即可：预约是分钟级概念）。
+			// 控制状态 tick（60s 粒度即可：预约是分钟级概念）：follow_up 到期 + 暂停到期积压摘要。
+			// 启动即查一次：离线期间到期的事项不等首个 60s 周期。
 			reviewTimer = setInterval(() => {
-				scheduler?.notifyFollowUpDue();
+				scheduler?.notifyControlTick();
 			}, 60_000);
+			scheduler?.notifyControlTick();
 
 			// Host 事实事件：input_settled 释放占位并记账；agent_settled 驱动 busy recheck。
 			unbindHost =

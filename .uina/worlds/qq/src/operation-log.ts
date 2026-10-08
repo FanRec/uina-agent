@@ -1,7 +1,8 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { OperationRecord, OperationOutcome } from "./types.js";
 import { classifyPlatformReceipt, refBelongsToAccount } from "./types.js";
+import { recoverJsonlLines } from "./jsonl-log.js";
 
 /**
  * QQ 操作日志：外部动作的意图、结论与迟到回执。
@@ -23,6 +24,8 @@ export class OperationLog {
 	private readonly records = new Map<string, OperationRecord>();
 	/** echo → operationRef 索引：迟到回执凭 echo 归并（SDK 回执只带 echo 不带 ref）。 */
 	private readonly byEcho = new Map<string, string>();
+	/** 已把 unknown 结论交付给工具结果的 ref：只有这些操作的迟到回执升级才需要通知主体。 */
+	private readonly deliveredUnknown = new Set<string>();
 
 	constructor(private readonly options: OperationLogOptions) {
 		this.filePath = join(options.dataDir, "qq-operations.jsonl");
@@ -31,34 +34,9 @@ export class OperationLog {
 	/** 启动恢复；尾部 partial 截断语义与 facts journal 一致。 */
 	recover(): { truncatedTailLines: number; count: number } {
 		mkdirSync(this.options.dataDir, { recursive: true });
-		if (!existsSync(this.filePath)) return { truncatedTailLines: 0, count: 0 };
-		const lines = readFileSync(this.filePath, "utf8").split("\n");
-		let end = lines.length;
-		let truncated = 0;
-		if (end > 0 && lines[end - 1]!.trim() !== "") {
-			try {
-				JSON.parse(lines[end - 1]!);
-			} catch {
-				truncated = 1;
-				end -= 1;
-			}
-		}
-		for (let i = 0; i < end; i++) {
-			const line = lines[i]!.trim();
-			if (line === "") continue;
-			let record: LogRecord;
-			try {
-				record = JSON.parse(line) as LogRecord;
-			} catch (error) {
-				throw new Error(`QQ 操作日志第 ${i + 1} 行损坏（非尾部），明确失败`, { cause: error });
-			}
-			this.apply(record);
-		}
-		if (truncated > 0) {
-			const keep = lines.slice(0, end).map((l) => l + "\n").join("");
-			writeFileSync(this.filePath, keep, "utf8");
-		}
-		return { truncatedTailLines: truncated, count: this.records.size };
+		const { records, truncatedTailLines } = recoverJsonlLines<LogRecord>(this.filePath, "QQ 操作日志 ");
+		for (const record of records) this.apply(record);
+		return { truncatedTailLines, count: this.records.size };
 	}
 
 	private apply(record: LogRecord): void {
@@ -109,6 +87,21 @@ export class OperationLog {
 
 	get(ref: string): OperationRecord | null {
 		return this.records.get(ref) ?? null;
+	}
+
+	/** 凭 echo 反查操作记录（index 装配层判断迟到回执是否需要通知主体）。 */
+	getByEcho(echo: string): OperationRecord | null {
+		const ref = this.byEcho.get(echo);
+		return ref ? (this.records.get(ref) ?? null) : null;
+	}
+
+	/** unknown 工具结果已返回给主体；此后该操作的迟到回执升级应通知。 */
+	markDeliveredUnknown(ref: string): void {
+		this.deliveredUnknown.add(ref);
+	}
+
+	wasDeliveredUnknown(ref: string): boolean {
+		return this.deliveredUnknown.has(ref);
 	}
 
 	/**

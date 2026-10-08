@@ -1,8 +1,7 @@
 import type { FactsJournal } from "./facts-journal.js";
 import type { ControlStore } from "./control-store.js";
-import type { MessageFact, MessageSegment } from "./types.js";
+import type { MessageFact, MessageSegment, OperationRecord, RequestFact, FollowUpItem } from "./types.js";
 import type { PendingCandidate } from "./scheduler.js";
-
 /**
  * QQ World 呈现层（唯一 owner，交互合同 §5/§6）。
  * 纯函数：消费规范 facts 与只读快照，产出模型可见正文；不触 transport、不写 store。
@@ -79,6 +78,8 @@ export interface BatchRenderDeps {
 	readonly control: ControlStore;
 	readonly now: () => string;
 	readonly display?: DisplayOptions;
+	/** 迟到回执升级的 unknown 操作（调度层收集；committed 后清理）。 */
+	readonly settledUnknowns?: readonly OperationRecord[];
 }
 
 /** 消息行组：渲染与预算削减的单位。 */
@@ -139,6 +140,8 @@ export function segmentText(segments: readonly MessageSegment[]): string {
 					return cardText(seg.type, seg.data);
 				case "forward":
 					return forwardText(seg.resId);
+				case "unknown":
+					return `[未知分段 type=${seg.rawType}]`;
 				default:
 					return `[${seg.type}${seg.fileName ? ` ${quote(seg.fileName)}` : ""}${seg.mediaRef ? ` ref=${seg.mediaRef}` : ""}${seg.url ? ` url=${quote(seg.url)}` : ""}（未展开）]`;
 			}
@@ -166,6 +169,8 @@ export function looseText(raw: unknown): string {
 }
 
 const MAX_FORWARD_NODES = 30;
+/** 首场景尾部呈现起点（合同 §6 呈现起点，非事实/能力上限）。 */
+const FIRST_SCENE_TAIL = 16;
 
 /** 合并转发节点渲染（呈现层纯函数）；超过上限显式标注截断。 */
 export function renderForwardNodes(nodes: readonly Record<string, unknown>[]): string[] {
@@ -197,23 +202,27 @@ function messageLines(fact: MessageFact, time: TimeView, previousIso: string | u
 export function renderBatch(candidate: PendingCandidate, deps: BatchRenderDeps): string {
 	if (candidate.conversationRef === "qq-follow-ups") return renderFollowUpBatch(deps);
 	if (candidate.conversationRef === "qq-event-account") return renderAccountEventBatch(deps);
+	if (candidate.conversationRef === "qq-backlog") return renderBacklogBatch(deps);
+	if (candidate.conversationRef === "qq-operations") return renderOperationsBatch(deps);
 
 	const time = new TimeView(deps.display?.timezone);
 	const snapshot = deps.journal.snapshot;
 	const conv = candidate.conversationRef;
 	const all = snapshot.messages.get(conv) ?? [];
 	const through = snapshot.notifiedThrough.get(conv);
-	const fresh = all.filter((m) => m.sequence > (through ?? 0));
 
-	// 窗口：首场景（从未通知）尾部起点 16；续场景 = 新增 + reply anchor 前文。
+	// 窗口：首场景（从未通知）尾部起点 FIRST_SCENE_TAIL；续场景 = 新增 + reply anchor 前文。
+	// 首场景超出起点时只呈现尾部，更早部分以显式省略行交付（§4.1"相应正文或明确
+	// 省略说明已交给 canonical 输入"），冻结仍推进到最新序号，不重复投递。
 	const firstScene = through === undefined;
+	const unnotified = all.filter((m) => m.sequence > (through ?? 0));
+	const omittedEarlier = firstScene ? Math.max(0, unnotified.length - FIRST_SCENE_TAIL) : 0;
+	const fresh = omittedEarlier > 0 ? unnotified.slice(-FIRST_SCENE_TAIL) : unnotified;
 	const anchorRefs = new Set(fresh.map((m) => m.replyTo).filter((ref): ref is string => ref !== undefined));
 	const anchorFacts: MessageFact[] = [...anchorRefs]
 		.map((ref: string) => all.find((m) => m.ref === ref))
 		.filter((m): m is MessageFact => m !== undefined && !fresh.includes(m));
-	const windowSize = firstScene ? 16 : fresh.length;
-	const window = firstScene ? all.slice(-windowSize) : fresh;
-	const prefixMessages = firstScene ? window.filter((m) => m.sequence <= (through ?? 0)) : anchorFacts;
+	const prefixMessages = firstScene ? [] : anchorFacts;
 
 	// 行组构建（预算削减的单位）。
 	const lines: string[] = [
@@ -228,14 +237,20 @@ export function renderBatch(candidate: PendingCandidate, deps: BatchRenderDeps):
 
 	const followUps = deps.control.listFollowUps({ targetRef: conv, state: "open" });
 	const backgroundCount = countBackground(deps, candidate);
+	const omittedNote =
+		omittedEarlier > 0
+			? `（更早 ${omittedEarlier} 条未呈现，可用 observe(scope="conversation", conversationRef="${conv}") 读取）`
+			: null;
 
 	const budget = deps.display?.batchBudgetChars ?? 14000;
-	const assembled = assembleBatch(lines, prefixLineGroups, freshLineGroups, followUps, backgroundCount, budget);
+	const assembled = assembleBatch(lines, prefixLineGroups, freshLineGroups, followUps, backgroundCount, budget, omittedNote);
 
 	const truncated = assembled.truncated;
 	const coverage = truncated
 		? `coverage=因预算截断：新增 ${fresh.length} 条中已呈现 ${assembled.freshShown} 条；hasMore=true（用 observe(scope="conversation", conversationRef="${conv}") 继续读取）。`
-		: `coverage=本次新增完整（${fresh.length} 条），前文为必要窗口；hasMore=false`;
+		: omittedNote
+			? `coverage=本次呈现尾部 ${fresh.length} 条，更早 ${omittedEarlier} 条已省略；hasMore=true（用 observe(scope="conversation", conversationRef="${conv}") 继续读取）。`
+			: `coverage=本次新增完整（${fresh.length} 条），前文为必要窗口；hasMore=false`;
 	return [...assembled.lines, coverage].join("\n");
 }
 
@@ -251,10 +266,8 @@ function previousOf(all: readonly MessageFact[], fact: MessageFact): string | un
 
 function countBackground(deps: BatchRenderDeps, candidate: PendingCandidate): number {
 	let total = 0;
-	for (const [conv, list] of deps.journal.snapshot.messages) {
-		if (conv === candidate.conversationRef) continue;
-		const through = deps.journal.snapshot.notifiedThrough.get(conv) ?? 0;
-		total += list.filter((m) => m.sequence > through).length;
+	for (const conv of deps.journal.snapshot.messages.keys()) {
+		if (conv !== candidate.conversationRef) total += deps.journal.unreadCount(conv);
 	}
 	return total;
 }
@@ -273,6 +286,7 @@ function assembleBatch(
 	followUps: { ref: string; note: string }[],
 	backgroundCount: number,
 	budget: number,
+	omittedNote: string | null,
 ): AssembledBatch {
 	let droppedBackground = false;
 	let droppedPrefix = 0;
@@ -294,6 +308,7 @@ function assembleBatch(
 				out.push(...group.lines);
 			}
 		});
+		if (omittedNote) out.push(omittedNote);
 		for (const item of followUps) out.push(`待跟进 ${item.ref}：note=${quote(item.note)}`);
 		if (droppedBackground && backgroundCount > 0) out.push(`背景：${backgroundCount} 条普通事实已省略（可观察获取）。`);
 		else if (backgroundCount > 0) out.push(`背景：另有 ${backgroundCount} 条普通事实待合并（可观察获取）。`);
@@ -343,6 +358,36 @@ function renderAccountEventBatch(deps: BatchRenderDeps): string {
 	return [`[QQ 状态事件] snapshot=${time.header(deps.now())}；source=内部连接/账号状态`, ...lines, `用 observe(scope="status") 核验当前事实。`].join("\n");
 }
 
+/** 迟到回执更新批次（入站表：同 operation 更新，无新派发 | internal）。 */
+function renderOperationsBatch(deps: BatchRenderDeps): string {
+	const time = new TimeView(deps.display?.timezone);
+	const records = deps.settledUnknowns ?? [];
+	const lines = records.map((r) => operationRecordLines(r).join(" | "));
+	return [
+		`[QQ 操作回执更新] snapshot=${time.header(deps.now())}；source=迟到回执归并`,
+		...(lines.length > 0 ? lines : ["无待呈现更新"]),
+		`unknown 已升级为上述结论；查询不重执行，不自动重发。`,
+	].join("\n");
+}
+
+/** 暂停结束积压摘要（合同 §4：一次摘要，允许事实优先；无逐条 replay，不新增主消息计账）。 */
+function renderBacklogBatch(deps: BatchRenderDeps): string {
+	const time = new TimeView(deps.display?.timezone);
+	const lines: string[] = [];
+	for (const conv of deps.journal.snapshot.messages.keys()) {
+		const unread = deps.journal.unreadCount(conv);
+		if (unread > 0) {
+			const earliest = deps.journal.firstUnreadTime(conv);
+			lines.push(`${conv}：${unread} 条未读${earliest ? `（最早 ${time.line(earliest)}）` : ""}`);
+		}
+	}
+	return [
+		`[QQ 暂停结束摘要] snapshot=${time.header(deps.now())}；source=控制状态；暂停已到期恢复原规则`,
+		...(lines.length > 0 ? lines : ["无积压"]),
+		`一次摘要不逐条补发；需要现场用 observe(scope="conversation") 读取。`,
+	].join("\n");
+}
+
 /* ---------- cursor（observe 分页；ToolDef：原样复制且绑定过滤/窗口） ---------- */
 
 /** FNV-1a 指纹：cursor 绑定查询条件，条件变化即失效。 */
@@ -371,23 +416,6 @@ export function decodeCursor(raw: unknown): { ok: true; value: Record<string, un
 	} catch {
 		return { ok: false, error: "cursor 不是合法编码" };
 	}
-}
-
-/** 校验 cursor 与当前查询条件匹配；不匹配明确失败（不返回空页冒充）。 */
-export function checkCursorScope(decoded: Record<string, unknown>, fields: Record<string, unknown>): { ok: true } | { ok: false; error: string } {
-	const expected = fingerprintCursor(fields);
-	if (decoded.sig !== expected) {
-		return { ok: false, error: `cursor 绑定的查询条件已变化（sig ${String(decoded.sig)} ≠ ${expected}）；请用新条件重新发起首页查询` };
-	}
-	return { ok: true };
-}
-
-/** 本地列表分页：offset + limit；返回页与下一页 cursor 载荷（sig 由调用方附加）。 */
-export function pageLocalList<T>(items: readonly T[], cursor: Record<string, unknown> | null, limit: number): { page: T[]; nextPos: number | null; newPos: number } {
-	const start = typeof cursor?.pos === "number" ? cursor.pos : 0;
-	const page = items.slice(start, start + limit);
-	const nextPos = start + limit < items.length ? start + limit : null;
-	return { page, nextPos, newPos: start + page.length };
 }
 
 /* ---------- 会话现场页（observe scope=conversation） ---------- */
@@ -439,4 +467,74 @@ export function renderConversationPage(input: ConversationPageInput): { text: st
 	].join("\n");
 	const lastMessageRef = input.lines.length > 0 ? input.lines[input.lines.length - 1]!.ref : null;
 	return { text, lastMessageRef };
+}
+
+/* ---------- 工具回执正文（唯一 owner：三态头、集合行、指引与注记） ---------- */
+
+/**
+ * 三态回执头：唯一前缀格式（succeeded/failed/unknown + label）。
+ * app.ts 备数据并包 worldSucceeded/Failed/Unknown（结构层），这里只产正文。
+ */
+export const receipt = {
+	ok: (label: string, lines: readonly string[]): string => [`succeeded / ${label}`, ...lines].join("\n"),
+	fail: (label: string, lines: readonly string[]): string => [`failed / ${label}`, ...lines].join("\n"),
+	unknown: (label: string, lines: readonly string[]): string => [`unknown / ${label}`, ...lines].join("\n"),
+};
+
+/** 回执内的标准指引/注记文案（漂移高危集中地，禁止在 app.ts 重写）。 */
+export const RECEIPT_NOTES = {
+	nextStatusCheck: `若持续失败，先 observe(scope="status") 核验连接，再原样重试本查询`,
+	verifyOperation: (operationRef: string): string => `核验：observe(scope="operations", operationRef="${operationRef}")`,
+	capabilitiesHead: `三维能力 supportedByAdapter / allowedByDeployment / availableNow`,
+	capabilitiesCaveat: `探测不证明具体媒体格式或对端呈现；includeMedia=true 时 observe 抓取可靠图片附加 base64，音视频不转写。`,
+	membersCaveat: `source=平台快照；完整覆盖/新鲜度未知`,
+	membersEmpty: `本次未见匹配成员；覆盖未知不推出非成员`,
+	listCaveat: `source=平台快照；完整覆盖未知`,
+	expressionsGuidance: `speak face.faceId 与 gesture.react reactionCode 只接受此处数字编码；非数字（Unicode emoji 形态）不进 face/reaction，改用 text 发送。kind=reaction 与 face 同源数字编码；个别编码可用性由平台回执判断。`,
+	unknownScope: (scope: string): string => `未知 observe scope: ${scope}`,
+};
+
+/** 成员行：nickname/card 显式并列，占位 role 不作真实身份。 */
+export function membersLine(selfId: string, m: { user_id: number; nickname?: string; card?: string; role?: string }): string {
+	return `qq-user:${selfId}:${m.user_id} | nickname="${m.nickname ?? ""}" | card="${m.card ?? ""}" | role=${m.role ?? "member（占位不作真实身份）"}`;
+}
+
+/** 能力行：三维一排，冒号后同排 k=v。 */
+export function capabilityLine(type: string, d: { supportedByAdapter: boolean | null; allowedByDeployment: boolean; availableNow: boolean | null }): string {
+	return `${type}: supportedByAdapter=${d.supportedByAdapter} allowedByDeployment=${d.allowedByDeployment} availableNow=${d.availableNow}`;
+}
+
+/** 操作列表行。 */
+export function operationRow(r: Pick<OperationRecord, "ref" | "action" | "outcome" | "reason">): string {
+	return `${r.ref} | ${r.action} | ${r.outcome}${r.reason ? ` | ${r.reason}` : ""}`;
+}
+
+/** 单条操作记录正文（按行拆分，ref 独占首行）。 */
+export function operationRecordLines(r: Pick<OperationRecord, "ref" | "action" | "target" | "outcome" | "reason" | "settledAt">): string[] {
+	return [
+		`ref=${r.ref}`,
+		`action=${r.action} target=${r.target ?? "-"}`,
+		`outcome=${r.outcome}${r.reason ? ` reason=${r.reason}` : ""}${r.settledAt ? ` settledAt=${r.settledAt}` : ""}`,
+	];
+}
+
+/** 申请行：时间保持原始 UTC（无快照头的回执：程序 UTC 不变）。 */
+export function requestRow(r: RequestFact): string {
+	return `${r.ref} | kind=${r.kind} | requester=${r.requesterRef ?? "?"} | comment="${r.comment ?? ""}" | ${r.time}`;
+}
+
+/** 事项行。 */
+export function followUpRow(item: Pick<FollowUpItem, "ref" | "state" | "targetRef" | "note" | "reviewAt">): string {
+	return `${item.ref} | state=${item.state} | target=${item.targetRef} | note="${item.note}" | reviewAt=${item.reviewAt ?? "null"}`;
+}
+
+/** 表情目录行。 */
+export function expressionLine(face: { q_sid?: unknown; q_des?: unknown; emoji_name_alias?: unknown; is_super?: unknown }): string {
+	const aliases = Array.isArray(face.emoji_name_alias) ? face.emoji_name_alias.filter((a): a is string => typeof a === "string") : [];
+	return `id=${face.q_sid} | ${quote(String(face.q_des ?? ""))}${aliases.length ? ` | 别名=${quote(aliases.join("/"))}` : ""}${face.is_super === true ? " | super" : ""}`;
+}
+
+/** messages 点查行：时间保持原始 UTC（无快照头）。 */
+export function messageRow(fact: MessageFact): string {
+	return `${fact.ref} | ${fact.time} | ${senderLabel(fact)} | ${segmentText(fact.segments)}`;
 }

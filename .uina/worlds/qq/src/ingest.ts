@@ -14,6 +14,8 @@ export interface IngestionCounters {
 	events: number;
 	requests: number;
 	unrecognized: number;
+	/** 部署未授 observation 时被抑制的平台事件数（诊断）。 */
+	suppressedByGrant: number;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -95,7 +97,8 @@ function toSegments(raw: unknown, selfId: string, mintMediaRef: () => string): {
 				break;
 			}
 			default: {
-				segments.push({ type: "text", text: `[未知分段 type=${type ?? "?"}]` });
+				// 未识别分段：事实只存原始类型名，呈现文字由 render 单源（事实/呈现分离）。
+				segments.push({ type: "unknown", rawType: type ?? "?" });
 				break;
 			}
 		}
@@ -104,7 +107,7 @@ function toSegments(raw: unknown, selfId: string, mintMediaRef: () => string): {
 }
 
 export class QqIngestion {
-	private counters: IngestionCounters = { messages: 0, events: 0, requests: 0, unrecognized: 0 };
+	private counters: IngestionCounters = { messages: 0, events: 0, requests: 0, unrecognized: 0, suppressedByGrant: 0 };
 	private eventSeq = 0;
 
 	constructor(
@@ -112,6 +115,12 @@ export class QqIngestion {
 		private readonly journal: FactsJournal,
 		/** 每条事实落库后的通知回调（调度层在此接单）。 */
 		private readonly onFact?: (item: { kind: "message" | "event" | "request"; fact: unknown }) => void,
+		/**
+		 * 部署未授 observation 时平台事实不入库、不进调度（grant 表：observation 覆盖
+		 * "读取与新事实接收、自动场景"；合同：无 observation 不新保存聊天/申请内容）。
+		 * 绑定健康与自身操作回执不经此通道，照常保留。
+		 */
+		private readonly observationAllowed = true,
 	) {}
 
 	get totals(): Readonly<IngestionCounters> {
@@ -127,6 +136,10 @@ export class QqIngestion {
 	/** 处理一条平台事件（transport event/raw 均可进入；raw 里的迟到回执由上层处理）。 */
 	handleEvent(raw: unknown): void {
 		if (!isObject(raw)) return;
+		if (!this.observationAllowed) {
+			this.counters.suppressedByGrant++;
+			return;
+		}
 		const postType = asString(raw.post_type);
 		const time = isoTime(raw.time);
 		const selfIdNum = asNumber(raw.self_id);

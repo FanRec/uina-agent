@@ -76,7 +76,9 @@ export type MessageSegment =
 	/** 卡片原文（ark/json、xml）；不解析语义，只保留原文。 */
 	| { readonly type: "json" | "xml"; readonly data: string }
 	/** 合并转发；resId 经 get_forward_msg 解析，不嵌套展开。 */
-	| { readonly type: "forward"; readonly resId: string };
+	| { readonly type: "forward"; readonly resId: string }
+	/** 未识别分段：只保留原始类型名，呈现文字由 render 单源。 */
+	| { readonly type: "unknown"; readonly rawType: string };
 
 export interface MessageFact {
 	readonly ref: string;

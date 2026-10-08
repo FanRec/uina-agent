@@ -1,6 +1,7 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, truncateSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { refBelongsToAccount, REF_PATTERNS, type EventFact, type MediaFact, type MessageFact, type RequestFact } from "./types.js";
+import { recoverJsonlLines } from "./jsonl-log.js";
 
 /**
  * QQ 平台事实日志：JSONL 追加，进程内同步写（单线程天然串行）。
@@ -26,6 +27,8 @@ export interface FactsSnapshot {
 	accountEvents: EventFact[];
 	requests: Map<string, RequestFact>;
 	notifiedThrough: Map<string, number>;
+	/** 各会话最近一次 committed 通知时刻（recall 连续性窗口判定用）。 */
+	notifiedAt: Map<string, string>;
 	archiveBefore: string | null;
 	/** 恢复期被账号边界排除的记录数（诊断）。 */
 	excludedForeignAccount: number;
@@ -41,6 +44,8 @@ export class FactsJournal {
 	private readonly state: FactsSnapshot;
 	private nextSequence = new Map<string, number>();
 	private readonly mediaIndex = new Map<string, MediaFact>();
+	/** 消息 ref → fact 索引（reply 核验/点查热路径，O(1)）。 */
+	private readonly byMessageRef = new Map<string, MessageFact>();
 	private nextMediaSequence = 0;
 
 	constructor(private readonly options: FactsJournalOptions) {
@@ -51,6 +56,7 @@ export class FactsJournal {
 			accountEvents: [],
 			requests: new Map(),
 			notifiedThrough: new Map(),
+			notifiedAt: new Map(),
 			archiveBefore: null,
 			excludedForeignAccount: 0,
 		};
@@ -63,39 +69,9 @@ export class FactsJournal {
 	/** 启动恢复；返回截断的尾部 partial 行数（诊断，不算错误）。 */
 	recover(): { truncatedTailLines: number } {
 		mkdirSync(this.options.dataDir, { recursive: true });
-		if (!existsSync(this.filePath)) return { truncatedTailLines: 0 };
-		const content = readFileSync(this.filePath, "utf8");
-		const lines = content.split("\n");
-		// 尾部 partial：文件以非空但解析失败的行结尾（崩溃截断），丢弃即可。
-		let end = lines.length;
-		let truncated = 0;
-		if (end > 0 && lines[end - 1]!.trim() !== "") {
-			try {
-				JSON.parse(lines[end - 1]!);
-			} catch {
-				truncated = 1;
-				end -= 1;
-			}
-		}
-		for (let i = 0; i < end; i++) {
-			const line = lines[i]!.trim();
-			if (line === "") continue;
-			let record: FactRecord;
-			try {
-				record = JSON.parse(line) as FactRecord;
-			} catch (error) {
-				throw new Error(`QQ facts journal 第 ${i + 1} 行损坏（非尾部），明确失败不做猜测`, { cause: error });
-			}
-			this.apply(record);
-		}
-		if (truncated > 0) truncateSync(this.filePath, this.byteLengthOf(lines, end));
-		return { truncatedTailLines: truncated };
-	}
-
-	private byteLengthOf(lines: string[], keep: number): number {
-		let size = 0;
-		for (let i = 0; i < keep; i++) size += Buffer.byteLength(lines[i]!, "utf8") + 1;
-		return size;
+		const { records, truncatedTailLines } = recoverJsonlLines<FactRecord>(this.filePath, "QQ facts journal ");
+		for (const record of records) this.apply(record);
+		return { truncatedTailLines };
 	}
 
 	private belongsToAccount(ref: string): boolean {
@@ -113,6 +89,7 @@ export class FactsJournal {
 				const list = this.state.messages.get(fact.conversationRef) ?? [];
 				list.push(fact);
 				this.state.messages.set(fact.conversationRef, list);
+				this.byMessageRef.set(fact.ref, fact);
 				this.indexMedia(fact);
 				const seen = this.nextSequence.get(fact.conversationRef) ?? 0;
 				if (fact.sequence > seen) this.nextSequence.set(fact.conversationRef, fact.sequence);
@@ -145,7 +122,10 @@ export class FactsJournal {
 			case "notified": {
 				if (!this.belongsToAccount(record.conversationRef)) return;
 				const seen = this.state.notifiedThrough.get(record.conversationRef) ?? 0;
-				if (record.throughSequence > seen) this.state.notifiedThrough.set(record.conversationRef, record.throughSequence);
+				if (record.throughSequence > seen) {
+					this.state.notifiedThrough.set(record.conversationRef, record.throughSequence);
+					this.state.notifiedAt.set(record.conversationRef, record.at);
+				}
 				return;
 			}
 			case "archive": {
@@ -161,6 +141,11 @@ export class FactsJournal {
 		appendFileSync(this.filePath, JSON.stringify(record) + "\n", "utf8");
 	}
 
+	/** 会话当前最新入站序号（调度层派发冻结记账用；未知会话为 0）。 */
+	latestSequence(conversationRef: string): number {
+		return this.nextSequence.get(conversationRef) ?? 0;
+	}
+
 	/** 分配会话内入站序号并持久化。 */
 	appendMessage(fact: Omit<MessageFact, "sequence">): MessageFact {
 		const conversationRef = fact.conversationRef;
@@ -174,6 +159,7 @@ export class FactsJournal {
 		const list = this.state.messages.get(conversationRef) ?? [];
 		list.push(complete);
 		this.state.messages.set(conversationRef, list);
+		this.byMessageRef.set(complete.ref, complete);
 		this.indexMedia(complete);
 		return complete;
 	}
@@ -220,10 +206,35 @@ export class FactsJournal {
 		this.appendRequest(fact);
 	}
 
-	/** 按 ref 查消息（reply 属主核验、messages scope 用）。 */
+	/** 按 ref 查消息（reply 属主核验、messages scope 用；索引 O(1)）。 */
 	getMessage(ref: string): MessageFact | null {
-		for (const list of this.state.messages.values()) {
-			for (const fact of list) if (fact.ref === ref) return fact;
+		return this.byMessageRef.get(ref) ?? null;
+	}
+
+	/** 未通知入站消息数（sequence > notifiedThrough；committed 记账后归零）。 */
+	unreadCount(conversationRef: string): number {
+		const through = this.state.notifiedThrough.get(conversationRef) ?? 0;
+		let count = 0;
+		for (const m of this.state.messages.get(conversationRef) ?? []) {
+			if (m.sequence > through) count++;
+		}
+		return count;
+	}
+
+	/** 是否存在任意未通知消息（跨会话单遍；暂停到期摘要资格判定用）。 */
+	hasUnread(): boolean {
+		for (const [conv, list] of this.state.messages) {
+			const through = this.state.notifiedThrough.get(conv) ?? 0;
+			if (list.some((m) => m.sequence > through)) return true;
+		}
+		return false;
+	}
+
+	/** 最早未通知消息时间（无未通知为 null；暂停到期摘要呈现用）。 */
+	firstUnreadTime(conversationRef: string): string | null {
+		const through = this.state.notifiedThrough.get(conversationRef) ?? 0;
+		for (const m of this.state.messages.get(conversationRef) ?? []) {
+			if (m.sequence > through) return m.time;
 		}
 		return null;
 	}

@@ -157,6 +157,21 @@ export class ControlStore {
 		};
 	}
 
+	/** 已到期但尚未恢复处理的暂停目标（到期恢复原规则 + 一次允许的积压摘要；无 backlog 模式参数）。 */
+	expiredPauses(): { target: string; pausedUntil: string }[] {
+		const nowMs = Date.parse(this.nowFn());
+		const out: { target: string; pausedUntil: string }[] = [];
+		if (this.state.accountOverride.pausedUntil != null && Date.parse(this.state.accountOverride.pausedUntil) <= nowMs) {
+			out.push({ target: "account", pausedUntil: this.state.accountOverride.pausedUntil });
+		}
+		for (const [target, override] of Object.entries(this.state.conversationOverrides)) {
+			if (override.pausedUntil != null && Date.parse(override.pausedUntil) <= nowMs) {
+				out.push({ target, pausedUntil: override.pausedUntil });
+			}
+		}
+		return out;
+	}
+
 	/* ---------- follow_up ---------- */
 
 	createFollowUp(input: { targetRef: string; note: string; evidenceRefs?: readonly string[]; reviewAt?: string | null }): FollowUpItem {

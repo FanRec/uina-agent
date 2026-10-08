@@ -211,6 +211,26 @@ describe("QqIngestion（OneBot 事件 → 规范 facts）", () => {
 		});
 	});
 
+	it("未识别分段入库为 unknown 段（只存 rawType），呈现文字由 render 单源", () => {
+		ingestion.handleEvent({
+			post_type: "message",
+			message_type: "group",
+			sub_type: "normal",
+			time: 1791468050,
+			self_id: 10001,
+			message_id: 46,
+			group_id: 30003,
+			user_id: 20013,
+			message: [{ type: "bubble_face", data: { face_id: "x" } }],
+			raw_message: "",
+			font: 0,
+			sender: { user_id: 20013, nickname: "新类型", role: "member" },
+		});
+		const facts = messagesOf("qq-conversation:10001:group:30003");
+		const fact = facts.find((m) => m.ref === "qq-message:10001:46");
+		expect(fact?.segments).toEqual([{ type: "unknown", rawType: "bubble_face" }]);
+	});
+
 	it("json/xml 卡片与 forward 段入库为结构化分段，不再落入未知", () => {
 		ingestion.handleEvent({
 			post_type: "message",

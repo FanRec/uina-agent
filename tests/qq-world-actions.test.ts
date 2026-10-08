@@ -589,3 +589,260 @@ describe("批2 能力：expressions / 卡片与转发展开 / includeMedia", () 
 		}
 	});
 });
+
+describe("平台参数路由修复回归", () => {
+	it("mark_read temp 会话按对端 uin 路由，不透传 NaN", async () => {
+		const ctx = setup();
+		try {
+			const result = await handleQqCall(ctx.deps, "account", {
+				operation: "mark_read",
+				conversationRef: `qq-conversation:${SELF}:temp:20002-g30003`,
+			});
+			expect(result.status).toBe("succeeded");
+			expect(ctx.transport.calls).toHaveLength(1);
+			expect(ctx.transport.calls[0]).toMatchObject({
+				action: "mark_private_msg_as_read",
+				params: { user_id: 20002 },
+			});
+			expect(Number.isFinite(ctx.transport.calls[0]!.params.user_id)).toBe(true);
+		} finally {
+			ctx.close();
+		}
+	});
+
+	it("respond_request 群邀请 sub_type=invite，加群申请 sub_type=add", async () => {
+		const ctx = setup();
+		try {
+			ctx.journal.appendRequest({
+				ref: `qq-request:${SELF}:flag-invite`,
+				kind: "group_invite",
+				state: "pending",
+				requesterRef: `qq-user:${SELF}:20002`,
+				requesterDisplayName: null,
+				targetConversationRef: `qq-conversation:${SELF}:group:30003`,
+				comment: null,
+				time: "2026-10-08T03:00:00Z",
+			});
+			await handleQqCall(ctx.deps, "account", {
+				operation: "respond_request",
+				requestRef: `qq-request:${SELF}:flag-invite`,
+				decision: "accept",
+			});
+			expect(ctx.transport.calls[0]).toMatchObject({
+				action: "set_group_add_request",
+				params: { flag: "flag-invite", approve: true, sub_type: "invite" },
+			});
+			ctx.journal.appendRequest({
+				ref: `qq-request:${SELF}:flag-join`,
+				kind: "group_join_request",
+				state: "pending",
+				requesterRef: `qq-user:${SELF}:20003`,
+				requesterDisplayName: null,
+				targetConversationRef: `qq-conversation:${SELF}:group:30003`,
+				comment: "求加",
+				time: "2026-10-08T03:01:00Z",
+			});
+			await handleQqCall(ctx.deps, "account", {
+				operation: "respond_request",
+				requestRef: `qq-request:${SELF}:flag-join`,
+				decision: "accept",
+			});
+			expect(ctx.transport.calls[1]).toMatchObject({
+				action: "set_group_add_request",
+				params: { sub_type: "add" },
+			});
+		} finally {
+			ctx.close();
+		}
+	});
+
+	it("conversation 平台历史 count 钳制到 SnowLuma 上限 200", async () => {
+		const ctx = setup();
+		try {
+			ctx.transport.script = () => ({ status: "ok", data: { messages: [] } });
+			await handleQqCall(ctx.deps, "observe", {
+				scope: "conversation",
+				conversationRef: `qq-conversation:${SELF}:group:30003`,
+				limit: 5000,
+			});
+			expect(ctx.transport.calls[0]).toMatchObject({
+				action: "get_group_msg_history",
+				params: { count: 200 },
+			});
+		} finally {
+			ctx.close();
+		}
+	});
+});
+
+describe("ToolDef 对齐清理回归（批次6）", () => {
+	it("capabilities.action 过滤：只探测并只返回指定类型的维度", async () => {
+		const ctx = setup();
+		try {
+			ctx.transport.script = () => ({ status: "ok", data: { yes: true } });
+			const result = await handleQqCall(ctx.deps, "observe", { scope: "capabilities", action: "image" });
+			expect(result.status).toBe("succeeded");
+			// 只探测 can_send_image，不碰 can_send_record
+			expect(ctx.transport.calls.map((c) => c.action)).toEqual(["can_send_image"]);
+			expect(String(result.result)).toContain("image:");
+			expect(String(result.result)).not.toContain("audio:");
+		} finally {
+			ctx.close();
+		}
+	});
+
+	it("requests.kind 过滤 + limit 截断（显式 hasMore）", async () => {
+		const ctx = setup();
+		try {
+			ctx.journal.appendRequest({
+				ref: `qq-request:${SELF}:k1`,
+				kind: "friend",
+				state: "pending",
+				requesterRef: `qq-user:${SELF}:20002`,
+				requesterDisplayName: null,
+				comment: null,
+				time: "2026-10-08T03:00:00Z",
+			});
+			ctx.journal.appendRequest({
+				ref: `qq-request:${SELF}:k2`,
+				kind: "group_invite",
+				state: "pending",
+				requesterRef: `qq-user:${SELF}:20003`,
+				requesterDisplayName: null,
+				targetConversationRef: `qq-conversation:${SELF}:group:30003`,
+				comment: null,
+				time: "2026-10-08T03:01:00Z",
+			});
+			const filtered = await handleQqCall(ctx.deps, "observe", { scope: "requests", kind: "group_invite" });
+			expect(String(filtered.result)).toContain("k2");
+			expect(String(filtered.result)).not.toContain("k1");
+			const limited = await handleQqCall(ctx.deps, "observe", { scope: "requests", state: "all", limit: 1 });
+			expect(String(limited.result)).toContain("hasMore=true");
+			expect(String(limited.result)).toContain("（1）");
+		} finally {
+			ctx.close();
+		}
+	});
+
+	it("follow_ups limit 截断（显式 hasMore）", async () => {
+		const ctx = setup();
+		try {
+			for (let i = 1; i <= 3; i++) {
+				ctx.control.createFollowUp({ targetRef: `qq-conversation:${SELF}:private:2000${i}`, note: `事项${i}` });
+			}
+			const result = await handleQqCall(ctx.deps, "observe", { scope: "follow_ups", limit: 2 });
+			expect(String(result.result)).toContain("hasMore=true");
+			expect(String(result.result)).toContain("follow_ups（2）");
+		} finally {
+			ctx.close();
+		}
+	});
+
+	it("contacts limit 截断（显式 hasMore）", async () => {
+		const ctx = setup();
+		try {
+			ctx.transport.script = () => ({
+				status: "ok",
+				data: [
+					{ user_id: 1, nickname: "甲", remark: "" },
+					{ user_id: 2, nickname: "乙", remark: "" },
+					{ user_id: 3, nickname: "丙", remark: "" },
+				],
+			});
+			const result = await handleQqCall(ctx.deps, "observe", { scope: "contacts", limit: 2 });
+			expect(String(result.result)).toContain("hasMore=true");
+			expect(String(result.result)).toContain("匹配 3");
+			expect(String(result.result)).toContain("qq-user:10001:2");
+			expect(String(result.result)).not.toContain("qq-user:10001:3");
+		} finally {
+			ctx.close();
+		}
+	});
+
+	it("set_profile 多字段非原子：第二字段失败保留已确认部分，不整包重试", async () => {
+		const ctx = setup();
+		try {
+			ctx.transport.script = (action) =>
+				action === "set_self_longnick"
+					? { status: "failed", reason: "BAD_REQUEST", kind: "rejected" }
+					: { status: "ok", data: {} };
+			const result = await handleQqCall(ctx.deps, "account", {
+				operation: "set_profile",
+				nickname: "新昵称",
+				signature: "新签名",
+			});
+			expect(result.status).toBe("failed");
+			expect(String(result.result)).toContain("已确认部分：nickname=新昵称");
+			expect(String(result.result)).toContain("不整包重试");
+			// 两次平台调用都发生（nickname 成功、signature 失败），不重发 nickname
+			expect(ctx.transport.calls.map((c) => c.action)).toEqual(["set_qq_profile", "set_self_longnick"]);
+		} finally {
+			ctx.close();
+		}
+	});
+});
+
+describe("审查后清理回归（批次A）：conversations 合同修复", () => {
+	it("conversations = 平台群列表 ∪ 本地保存会话；本地补充项标陈旧，平台群不重复", async () => {
+		const ctx = setup();
+		try {
+			// 本地事实：平台在线列表里的群（应去重）+ 平台列表外的私聊（应补充）。
+			ctx.journal.appendMessage({
+				ref: `qq-message:${SELF}:g1`,
+				conversationRef: `qq-conversation:${SELF}:group:30003`,
+				senderRef: `qq-user:${SELF}:20002`,
+				senderDisplayName: "小明",
+				direction: "in",
+				time: "2026-10-07T15:00:00+08:00",
+				segments: [{ type: "text", text: "群消息" }],
+				source: "platform",
+			});
+			ctx.journal.appendMessage({
+				ref: `qq-message:${SELF}:p1`,
+				conversationRef: `qq-conversation:${SELF}:private:20002`,
+				senderRef: `qq-user:${SELF}:20002`,
+				senderDisplayName: "小明",
+				direction: "in",
+				time: "2026-10-07T15:01:00+08:00",
+				segments: [{ type: "text", text: "私聊消息" }],
+				source: "platform",
+			});
+			ctx.transport.script = (action) =>
+				action === "get_group_list"
+					? { status: "ok", data: [{ group_id: 30003, group_name: "设计组" }] }
+					: { status: "ok", data: {} };
+			const result = await handleQqCall(ctx.deps, "observe", { scope: "conversations" });
+			expect(result.status).toBe("succeeded");
+			const text = String(result.result);
+			expect(text).toContain(`qq-conversation:${SELF}:group:30003`);
+			expect((text.match(new RegExp(`qq-conversation:${SELF}:group:30003`, "g")) ?? []).length).toBe(1);
+			expect(text).toContain(`qq-conversation:${SELF}:private:20002`);
+			expect(text).toContain("本地保存事实");
+		} finally {
+			ctx.close();
+		}
+	});
+
+	it("conversations query 过滤命中私聊 ref", async () => {
+		const ctx = setup();
+		try {
+			ctx.journal.appendMessage({
+				ref: `qq-message:${SELF}:p2`,
+				conversationRef: `qq-conversation:${SELF}:private:20002`,
+				senderRef: `qq-user:${SELF}:20002`,
+				senderDisplayName: "小明",
+				direction: "in",
+				time: "2026-10-07T15:01:00+08:00",
+				segments: [{ type: "text", text: "私聊消息" }],
+				source: "platform",
+			});
+			ctx.transport.script = () => ({ status: "ok", data: [] });
+			const result = await handleQqCall(ctx.deps, "observe", { scope: "conversations", query: "private:20002" });
+			const text = String(result.result);
+			expect(text).toContain(`qq-conversation:${SELF}:private:20002`);
+			expect(text).not.toContain("group:");
+		} finally {
+			ctx.close();
+		}
+	});
+});
