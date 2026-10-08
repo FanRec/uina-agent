@@ -356,6 +356,7 @@ export class InteractiveTUI {
 				// 流式由 output_update 增量驱动，输出生命周期由回合收口表达。
 				break;
 			case "input_accepted":
+			case "input_settled":
 				// 人类输入由 turn_start 回显；外部 runtime 输入由 external_input 卡片表达。
 				break;
 			case "custom_entry":

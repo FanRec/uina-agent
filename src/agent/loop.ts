@@ -551,16 +551,16 @@ export class Subject {
 
 		return this.storeEvent("queue_enqueued", eventData(queued)).then(async () => {
 			this.queues.add(queued);
-			this.publishInputAccepted(queued);
+			await this.publishInputAccepted(queued);
 			this.notifyQueueChanged();
 			if (submission.resumeIfIdle && !this.isBusy()) await this.resumeQueued();
 		});
 	}
 
 	/** 输入受理的唯一事实出口。调用方必须先完成持久化或明确的直接启动准入。 */
-	private publishInputAccepted(queued: QueuedMessage): void {
+	private async publishInputAccepted(queued: QueuedMessage): Promise<void> {
 		const receivedAt = queued.receivedAt ?? new Date().toISOString();
-		this.dispatch({
+		await this.publishInputFact({
 			type: "input_accepted",
 			inputId: queued.id,
 			...(queued.source ? { source: queued.source } : {}),
@@ -577,6 +577,36 @@ export class Subject {
 			});
 		}
 	}
+	/** Fact observers cannot undo committed ownership, even when they reject. */
+	private async publishInputFact(
+		event: import("../runtime/events.js").InputAcceptedEvent | import("../runtime/events.js").InputSettledEvent,
+	): Promise<void> {
+		try {
+			await this.dispatch(event);
+		} catch (error) {
+			try {
+				await this.dispatch({ type: "error", text: errorMessage(error) });
+			} catch (reportError) {
+				console.error("[Subject:input-fact]", reportError);
+			}
+		}
+	}
+
+	private async settleInput(
+		item: QueuedMessage,
+		outcome:
+			| { outcome: "committed" }
+			| { outcome: "retired"; reason: "empty_render" | "claimed" | "already_recorded" | "missing_render" },
+	): Promise<void> {
+		this.deferredInputRenders.delete(item.id);
+		await this.publishInputFact({
+			type: "input_settled",
+			inputId: item.id,
+			...(item.source ? { source: item.source } : {}),
+			...outcome,
+		});
+	}
+
 	accept(input: AgentInput): Promise<void> {
 		if (!validImages(input.images)) return Promise.reject(new Error("图片内容无效"));
 		if (!input.id || !input.text?.trim()) return Promise.reject(new Error("AgentInput 必须包含 id 和 text"));
@@ -600,7 +630,10 @@ export class Subject {
 			startImmediately
 				? { kind: "start", promptText: queued.source?.kind === "runtime" ? undefined : queued.text }
 				: { kind: "queue", resumeIfIdle: true },
-		);
+		).catch((error) => {
+			this.deferredInputRenders.delete(input.id);
+			throw error;
+		});
 	}
 
 	/** Queue an input for the next model request while the current run is active. */
@@ -705,6 +738,7 @@ export class Subject {
 			try {
 				await this.storeEvent("queue_restored", eventData(item));
 				claimed.push(item);
+				await this.settleInput(item, { outcome: "retired", reason: "claimed" });
 			} catch (error) {
 				for (const unclaimed of items.slice(claimed.length)) {
 					this.queues.add(unclaimed);
@@ -729,6 +763,7 @@ export class Subject {
 			this.notifyQueueChanged();
 			throw error;
 		}
+		await this.settleInput(claimed, { outcome: "retired", reason: "claimed" });
 		this.notifyQueueChanged();
 		return claimed;
 	}
@@ -767,7 +802,7 @@ export class Subject {
 				for (const item of queuedInputs) this.queues.remove(item.id);
 				this.notifyQueueChanged();
 			}
-			if (options.needsEnqueueEvent) this.publishInputAccepted(queuedInput!);
+			if (options.needsEnqueueEvent) await this.publishInputAccepted(queuedInput!);
 
 			const prepared = await this.runtimeHooks.turn.prepare({ prompt: text ?? "", systemPrompt: this.systemPrompt });
 			await this.applyPreparedRuntime(prepared);
@@ -787,12 +822,14 @@ export class Subject {
 				queuedInputs,
 			);
 		} catch (error) {
+			const admissionFailed = queuedInput !== undefined && inputState !== undefined && !inputState.durable;
 			if (queuedInput && inputState?.durable && !inputState.committed) {
 				for (const item of queuedInputs) if (!this.queues.has(item.id)) this.queues.add(item);
 				this.notifyQueueChanged();
 			}
 			this.abort = null;
 			this.activity = undefined;
+			if (admissionFailed) throw error;
 			this.reportError(error);
 		} finally {
 			if (isRootRun) this.completeActiveRun();
@@ -1504,7 +1541,7 @@ export class Subject {
 			if (this.store.state.queued.has(item.id)) {
 				await this.storeEvent("queue_restored", eventData(item));
 			}
-			this.deferredInputRenders.delete(item.id);
+			await this.settleInput(item, { outcome: "retired", reason: "already_recorded" });
 			return false;
 		}
 		const render = this.deferredInputRenders.get(item.id);
@@ -1512,7 +1549,7 @@ export class Subject {
 			const rendered = await render();
 			if (!rendered?.trim()) {
 				await this.storeEvent("queue_restored", eventData(item));
-				this.deferredInputRenders.delete(item.id);
+				await this.settleInput(item, { outcome: "retired", reason: "empty_render" });
 				return false;
 			}
 			item = { ...item, text: rendered.trim() };
@@ -1521,12 +1558,13 @@ export class Subject {
 			if (this.store?.state.queued.has(item.id)) {
 				await this.storeEvent("queue_restored", eventData(item));
 			}
+			await this.settleInput(item, { outcome: "retired", reason: "missing_render" });
 			return false;
 		}
 		await this.store?.appendInput(item);
 		const message = projectInputMessage(item);
 		if (message) this.history.push(message);
-		this.deferredInputRenders.delete(item.id);
+		await this.settleInput(item, { outcome: "committed" });
 		return true;
 	}
 

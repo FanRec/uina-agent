@@ -125,13 +125,33 @@ describe("不变量：accepted input 不得无归属地消失", () => {
 		expect(h.history.some((message) => message.role === "user" && message.content === "待恢复")).toBe(true);
 	});
 
+	it("emits input_settled after a deferred world input is committed", async () => {
+		const h = SubjectHarness.create({ store: new MemorySessionStore() });
+		const settled: Array<{ inputId: string; outcome: string }> = [];
+		h.subject.subscribe((event) => {
+			if (event.type === "input_settled") settled.push({ inputId: event.inputId, outcome: event.outcome });
+		});
+		await h.subject.accept({
+			id: "world-input-1",
+			mode: "followUp",
+			source: { kind: "runtime", type: "chat-messages", ref: "bilibili-live", origin: "external", channel: "world" },
+			text: "[deferred world event]",
+			render: () => '[弹幕]\nAlice(1): "hello"',
+		});
+		await h.waitForIdle();
+		expect(settled).toEqual([{ inputId: "world-input-1", outcome: "committed" }]);
+		expect(h.history.some((message) => message.role === "user" && String(message.content).includes("Alice"))).toBe(
+			true,
+		);
+	});
+
 	it("direct 队列持久化失败时不发布 input_accepted", async () => {
 		const h = SubjectHarness.create({ store: new FlakyEnqueueStore() });
 		const accepted: string[] = [];
 		h.subject.subscribe((event) => {
 			if (event.type === "input_accepted") accepted.push(event.inputId);
 		});
-		await h.pushInput("不会接纳");
+		await expect(h.pushInput("不会接纳")).rejects.toThrow();
 		await h.waitForIdle();
 		expect(accepted).toEqual([]);
 		expect(h.queuedSnapshot()).toEqual([]);

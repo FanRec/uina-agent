@@ -46,6 +46,7 @@ export function createWorldTool(def: WorldDef, _options: WorldToolOptions): Tool
 			type: "function",
 			function: { name: def.name, description: def.description, parameters: { type: "object", oneOf: actionSchemas } },
 		},
+		...(def.executionMode ? { executionMode: def.executionMode } : {}),
 		run: async (raw: Record<string, unknown>, signal?: AbortSignal) => {
 			const actionName = typeof raw.action === "string" ? raw.action.trim() : "";
 			const params =

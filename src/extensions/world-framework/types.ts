@@ -118,7 +118,16 @@ export const WORLD_EXPOSED_SHARED_NAME = "world-framework.exposed";
  * 世界侧可观察的宿主事件子集：回合边界 + 输出流（含 thinking 通道）。
  * 刻意不收窄为"全部 RuntimeEvent"——世界只需知道自己与回合并行的时序事实。
  */
-export const WORLD_HOST_EVENT_TYPES = ["turn_start", "output_update", "turn_end", "turn_aborted"] as const;
+export const WORLD_HOST_EVENT_TYPES = [
+	"turn_start",
+	"output_update",
+	"turn_end",
+	"turn_aborted",
+	"input_accepted",
+	"input_settled",
+	"agent_end",
+	"agent_settled",
+] as const;
 
 /**
  * 世界静态契约定义（World Definition）
@@ -144,6 +153,13 @@ export interface WorldDef {
 
 	/** 世界支持的查询与操作动作字典。 */
 	actions: Record<string, ActionDef>;
+
+	/**
+	 * 工具执行模式声明（可选，默认 parallel）。
+	 * 有内部串行状态的世界（如 QQ 的单写方操作日志）声明 sequential，
+	 * 由 Broker 保证同一工具的调用不并发执行。
+	 */
+	executionMode?: "parallel" | "sequential";
 
 	/** 默认启动配置（可选，默认 enabled: true） */
 	defaultState?: {

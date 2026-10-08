@@ -40,6 +40,7 @@ export type RuntimeEvent =
 	| TurnAbortedEvent
 	| ErrorEvent
 	| InputAcceptedEvent
+	| InputSettledEvent
 	| ExternalInputEvent
 	| CustomMessageEvent
 	| CustomEntryEvent;
@@ -117,6 +118,16 @@ export interface InputAcceptedEvent {
 	readonly source?: import("../core/types.js").InputSource;
 	readonly receivedAt: string;
 }
+/** Queue ownership has permanently ended. Commit means canonical input, not model processing or effects. */
+export type InputSettledEvent = {
+	readonly type: "input_settled";
+	readonly inputId: string;
+	readonly source?: import("../core/types.js").InputSource;
+} & (
+	| { readonly outcome: "committed" }
+	| { readonly outcome: "retired"; readonly reason: "empty_render" | "claimed" | "already_recorded" | "missing_render" }
+);
+
 export interface ExternalInputEvent {
 	readonly type: "external_input";
 	readonly inputId: string;
