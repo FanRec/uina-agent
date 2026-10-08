@@ -1,18 +1,25 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { refBelongsToAccount, REF_PATTERNS, type EventFact, type MediaFact, type MessageFact, type RequestFact } from "./types.js";
+import {
+	REF_PATTERNS,
+	type EventFact,
+	type IngestedFact,
+	type MediaFact,
+	type MessageFact,
+	type RequestFact,
+} from "./types.js";
 import { recoverJsonlLines } from "./jsonl-log.js";
 
 /**
  * QQ 平台事实日志：JSONL 追加，进程内同步写（单线程天然串行）。
  * 只记录"外部观察事实"与通知计账；恢复时重建，尾部 partial 行截断，中段损坏明确失败。
- * 账号边界：绑定账号变更后旧记录不迁移，恢复时按账号段过滤。
+ * v2 账号目录与日志所有者保证隔离；错误账号与旧格式明确失败。
  */
 
 export type FactRecord =
-	| { kind: "message"; fact: MessageFact }
-	| { kind: "event"; fact: EventFact }
-	| { kind: "request"; fact: RequestFact }
+	| { kind: "header"; version: 2; selfId: string }
+	| { kind: "counter"; type: "media" | "event" | "request"; sequence: number; platformFlag?: string }
+	| IngestedFact
 	/** input_settled(committed) 后的主场景通知位置；只表示正文已交给 canonical 输入。 */
 	| { kind: "notified"; conversationRef: string; throughSequence: number; inputId: string; at: string }
 	/** retention 归档起点：此时刻之前的事实可能已不可寻址。 */
@@ -30,8 +37,6 @@ export interface FactsSnapshot {
 	/** 各会话最近一次 committed 通知时刻（recall 连续性窗口判定用）。 */
 	notifiedAt: Map<string, string>;
 	archiveBefore: string | null;
-	/** 恢复期被账号边界排除的记录数（诊断）。 */
-	excludedForeignAccount: number;
 }
 
 export interface FactsJournalOptions {
@@ -47,6 +52,9 @@ export class FactsJournal {
 	/** 消息 ref → fact 索引（reply 核验/点查热路径，O(1)）。 */
 	private readonly byMessageRef = new Map<string, MessageFact>();
 	private nextMediaSequence = 0;
+	private nextEventSequence = 0;
+	private nextRequestSequence = 0;
+	private readonly requestByFlag = new Map<string, string>();
 
 	constructor(private readonly options: FactsJournalOptions) {
 		this.filePath = join(options.dataDir, "qq-facts.jsonl");
@@ -58,8 +66,11 @@ export class FactsJournal {
 			notifiedThrough: new Map(),
 			notifiedAt: new Map(),
 			archiveBefore: null,
-			excludedForeignAccount: 0,
 		};
+	}
+
+	get selfId(): string {
+		return this.options.selfId;
 	}
 
 	get snapshot(): FactsSnapshot {
@@ -70,22 +81,34 @@ export class FactsJournal {
 	recover(): { truncatedTailLines: number } {
 		mkdirSync(this.options.dataDir, { recursive: true });
 		const { records, truncatedTailLines } = recoverJsonlLines<FactRecord>(this.filePath, "QQ facts journal ");
-		for (const record of records) this.apply(record);
+		if (records.length > 0) {
+			const header = records[0];
+			if (header?.kind !== "header" || header.version !== 2 || header.selfId !== this.selfId) {
+				throw new Error("QQ facts journal v2 账号元信息不匹配或格式非法");
+			}
+			for (const record of records.slice(1)) this.apply(record);
+		} else this.append({ kind: "header", version: 2, selfId: this.selfId });
 		return { truncatedTailLines };
-	}
-
-	private belongsToAccount(ref: string): boolean {
-		return refBelongsToAccount(ref, this.options.selfId);
 	}
 
 	private apply(record: FactRecord): void {
 		switch (record.kind) {
+			case "header":
+				if (record.version !== 2 || record.selfId !== this.selfId) throw new Error("QQ facts journal 账号不匹配");
+				return;
+			case "counter": {
+				if (!Number.isSafeInteger(record.sequence) || record.sequence < 1) throw new Error("QQ 引用计数非法");
+				if (record.type === "media") this.nextMediaSequence = Math.max(this.nextMediaSequence, record.sequence);
+				else if (record.type === "event") this.nextEventSequence = Math.max(this.nextEventSequence, record.sequence);
+				else if (record.type === "request" && record.platformFlag) {
+					this.nextRequestSequence = Math.max(this.nextRequestSequence, record.sequence);
+					this.requestByFlag.set(record.platformFlag, `r${record.sequence}`);
+				} else throw new Error("QQ 引用计数形状非法");
+				return;
+			}
 			case "message": {
 				const fact = record.fact;
-				if (!this.belongsToAccount(fact.conversationRef)) {
-					this.state.excludedForeignAccount++;
-					return;
-				}
+				if (!REF_PATTERNS.conversation.test(fact.conversationRef)) throw new Error("QQ 会话引用非法");
 				const list = this.state.messages.get(fact.conversationRef) ?? [];
 				list.push(fact);
 				this.state.messages.set(fact.conversationRef, list);
@@ -97,10 +120,8 @@ export class FactsJournal {
 			}
 			case "event": {
 				const fact = record.fact;
-				if (fact.ref.split(":")[1] !== this.options.selfId) {
-					this.state.excludedForeignAccount++;
-					return;
-				}
+				if (!REF_PATTERNS.event.test(fact.ref)) throw new Error("QQ 事件引用非法");
+				this.nextEventSequence = Math.max(this.nextEventSequence, Number(fact.ref.slice(1)));
 				if (fact.conversationRef) {
 					const list = this.state.events.get(fact.conversationRef) ?? [];
 					list.push(fact);
@@ -112,15 +133,14 @@ export class FactsJournal {
 			}
 			case "request": {
 				const fact = record.fact;
-				if (fact.ref.split(":")[1] !== this.options.selfId) {
-					this.state.excludedForeignAccount++;
-					return;
-				}
+				if (!REF_PATTERNS.request.test(fact.ref) || !fact.platformFlag) throw new Error("QQ 请求事实非法");
+				this.nextRequestSequence = Math.max(this.nextRequestSequence, Number(fact.ref.slice(1)));
+				this.requestByFlag.set(fact.platformFlag, fact.ref);
 				this.state.requests.set(fact.ref, fact);
 				return;
 			}
 			case "notified": {
-				if (!this.belongsToAccount(record.conversationRef)) return;
+				if (!REF_PATTERNS.conversation.test(record.conversationRef)) throw new Error("QQ 会话引用非法");
 				const seen = this.state.notifiedThrough.get(record.conversationRef) ?? 0;
 				if (record.throughSequence > seen) {
 					this.state.notifiedThrough.set(record.conversationRef, record.throughSequence);
@@ -139,6 +159,7 @@ export class FactsJournal {
 
 	private append(record: FactRecord): void {
 		appendFileSync(this.filePath, JSON.stringify(record) + "\n", "utf8");
+		this.apply(record);
 	}
 
 	/** 会话当前最新入站序号（调度层派发冻结记账用；未知会话为 0）。 */
@@ -149,32 +170,42 @@ export class FactsJournal {
 	/** 分配会话内入站序号并持久化。 */
 	appendMessage(fact: Omit<MessageFact, "sequence">): MessageFact {
 		const conversationRef = fact.conversationRef;
-		if (!this.belongsToAccount(conversationRef)) {
-			throw new Error(`消息会话 ${conversationRef} 不属于绑定账号 ${this.options.selfId}`);
-		}
+		if (!REF_PATTERNS.conversation.test(conversationRef) || !REF_PATTERNS.message.test(fact.ref))
+			throw new Error("QQ 消息引用非法");
 		const sequence = (this.nextSequence.get(conversationRef) ?? 0) + 1;
-		this.nextSequence.set(conversationRef, sequence);
 		const complete: MessageFact = { ...fact, sequence };
 		this.append({ kind: "message", fact: complete });
-		const list = this.state.messages.get(conversationRef) ?? [];
-		list.push(complete);
-		this.state.messages.set(conversationRef, list);
-		this.byMessageRef.set(complete.ref, complete);
-		this.indexMedia(complete);
 		return complete;
 	}
 
 	private indexMedia(fact: MessageFact): void {
 		for (const seg of fact.segments) {
-			if (!("mediaRef" in seg) || !seg.mediaRef || !REF_PATTERNS.media.test(seg.mediaRef) || !this.belongsToAccount(seg.mediaRef)) continue;
+			if (!("mediaRef" in seg) || !seg.mediaRef || !REF_PATTERNS.media.test(seg.mediaRef)) continue;
 			this.mediaIndex.set(seg.mediaRef, { type: seg.type, url: seg.url, fileName: seg.fileName });
-			const sequence = Number(seg.mediaRef.split(":")[2]);
+			const sequence = Number(seg.mediaRef.slice(1));
 			if (Number.isSafeInteger(sequence) && sequence > this.nextMediaSequence) this.nextMediaSequence = sequence;
 		}
 	}
 
 	mintMediaRef(): string {
-		return `qq-media:${this.options.selfId}:${++this.nextMediaSequence}`;
+		const sequence = this.nextMediaSequence + 1;
+		this.append({ kind: "counter", type: "media", sequence });
+		return `a${sequence}`;
+	}
+
+	mintEventRef(): string {
+		const sequence = this.nextEventSequence + 1;
+		this.append({ kind: "counter", type: "event", sequence });
+		return `e${sequence}`;
+	}
+
+	mintRequestRef(platformFlag: string): string {
+		if (!platformFlag) throw new Error("QQ 请求 flag 不能为空");
+		const existing = this.requestByFlag.get(platformFlag);
+		if (existing) return existing;
+		const sequence = this.nextRequestSequence + 1;
+		this.append({ kind: "counter", type: "request", sequence, platformFlag });
+		return `r${sequence}`;
 	}
 
 	getMedia(ref: string): MediaFact | null {
@@ -182,23 +213,21 @@ export class FactsJournal {
 	}
 
 	appendEvent(fact: EventFact): void {
+		if (!REF_PATTERNS.event.test(fact.ref)) throw new Error("QQ 事件引用非法");
 		this.append({ kind: "event", fact });
-		this.apply({ kind: "event", fact });
 	}
 
 	appendRequest(fact: RequestFact): void {
+		if (!REF_PATTERNS.request.test(fact.ref) || !fact.platformFlag) throw new Error("QQ 请求事实非法");
 		this.append({ kind: "request", fact });
-		this.apply({ kind: "request", fact });
 	}
 
 	recordNotified(conversationRef: string, throughSequence: number, inputId: string, at: string): void {
 		this.append({ kind: "notified", conversationRef, throughSequence, inputId, at });
-		this.apply({ kind: "notified", conversationRef, throughSequence, inputId, at });
 	}
 
 	recordArchive(beforeTime: string): void {
 		this.append({ kind: "archive", beforeTime });
-		this.apply({ kind: "archive", beforeTime });
 	}
 
 	/** request 状态流转（如好友申请被接受）：追加新版本，恢复取最后一条。 */
@@ -241,8 +270,6 @@ export class FactsJournal {
 
 	/** 已知会话 ref 列表（conversations scope 本地兜底）。 */
 	listConversationRefs(): string[] {
-		return [
-			...new Set([...this.state.messages.keys(), ...this.state.events.keys()]),
-		];
+		return [...new Set([...this.state.messages.keys(), ...this.state.events.keys()])];
 	}
 }

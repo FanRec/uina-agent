@@ -9,8 +9,8 @@ import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
 import type { EventFact, MessageFact } from "../.uina/worlds/qq/src/types.js";
 
 const SELF = "10001";
-const GROUP = `qq-conversation:${SELF}:group:30003`;
-const PRIVATE = `qq-conversation:${SELF}:private:20002`;
+const GROUP = `g30003`;
+const PRIVATE = `p20002`;
 
 function setup(options: { isRecallRelevant?: (fact: EventFact) => boolean } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "uina-qq-sched-"));
@@ -47,9 +47,9 @@ function setup(options: { isRecallRelevant?: (fact: EventFact) => boolean } = {}
 		scheduler.onFact({ kind: "event", fact });
 	};
 	const groupFact = (overrides: Partial<Omit<MessageFact, "sequence">> = {}): Omit<MessageFact, "sequence"> => ({
-		ref: `qq-message:${SELF}:g${clock.now}`,
+		ref: `m${clock.now}`,
 		conversationRef: GROUP,
-		senderRef: `qq-user:${SELF}:20002`,
+		senderRef: `u20002`,
 		senderDisplayName: "小明",
 		direction: "in",
 		time: "",
@@ -58,9 +58,9 @@ function setup(options: { isRecallRelevant?: (fact: EventFact) => boolean } = {}
 		...overrides,
 	});
 	const privateFact = (overrides: Partial<Omit<MessageFact, "sequence">> = {}): Omit<MessageFact, "sequence"> => ({
-		ref: `qq-message:${SELF}:p${clock.now}`,
+		ref: `m${clock.now}`,
 		conversationRef: PRIVATE,
-		senderRef: `qq-user:${SELF}:20002`,
+		senderRef: `u20002`,
 		senderDisplayName: "小明",
 		direction: "in",
 		time: "",
@@ -107,6 +107,13 @@ describe("G5 消息/队列", () => {
 		await vi.advanceTimersByTimeAsync(6000);
 		expect(ctx.emitted).toHaveLength(1);
 		expect(ctx.emitted[0]!.text).toContain(`conversationRef=${GROUP}`);
+	});
+
+	it("群内全体提及包含当前账号，走direct窗口", async () => {
+		ctx.pushMessage(ctx.groupFact({ segments: [{ type: "mention_all" }, { type: "text", text: "集合" }] }));
+		await vi.advanceTimersByTimeAsync(1000);
+		expect(ctx.emitted).toHaveLength(1);
+		expect(ctx.emitted[0]!.cls).toBe("direct");
 	});
 
 	it("silent 模式不产生自动机会", async () => {
@@ -169,7 +176,7 @@ describe("G5 消息/队列", () => {
 		ctx.pushMessage(
 			ctx.groupFact({
 				segments: [
-					{ type: "mention", userRef: `qq-user:${SELF}:${SELF}` },
+					{ type: "mention", userRef: `u${SELF}` },
 					{ type: "text", text: "在吗" },
 				],
 			}),
@@ -182,17 +189,17 @@ describe("G5 消息/队列", () => {
 	it("reply 已核验自己的消息走 direct；self 回送本身不唤醒", async () => {
 		ctx.pushMessage(
 			ctx.groupFact({
-				ref: `qq-message:${SELF}:own-1`,
+				ref: `m900`,
 				direction: "out",
-				senderRef: `qq-user:${SELF}:${SELF}`,
+				senderRef: `u${SELF}`,
 				source: "echo",
 			}),
 		);
 		expect(ctx.emitted).toHaveLength(0);
 		ctx.pushMessage(
 			ctx.groupFact({
-				ref: `qq-message:${SELF}:reply-1`,
-				replyTo: `qq-message:${SELF}:own-1`,
+				ref: `m901`,
+				replyTo: `m900`,
 			}),
 		);
 		await vi.advanceTimersByTimeAsync(600);
@@ -202,15 +209,15 @@ describe("G5 消息/队列", () => {
 
 	it("poke 批次捎带的会话正文如实记账，不重复投递", async () => {
 		// 普通群消息先到（ordinary 候选待窗口）
-		ctx.pushMessage(ctx.groupFact({ ref: `qq-message:${SELF}:pk0` }));
+		ctx.pushMessage(ctx.groupFact({ ref: `m902` }));
 		// poke 到自己：direct 候选优先派发，批次渲染该会话全部未通知正文
 		ctx.pushEvent({
-			ref: `qq-event:${SELF}:poke-1`,
+			ref: `e1`,
 			kind: "poke",
 			conversationRef: GROUP,
 			time: new Date(ctx.clock.now).toISOString(),
-			targetRef: `qq-user:${SELF}:${SELF}`,
-			actorRef: `qq-user:${SELF}:20002`,
+			targetRef: `u${SELF}`,
+			actorRef: `u20002`,
 			source: "platform",
 		});
 		await vi.advanceTimersByTimeAsync(2000);
@@ -219,9 +226,7 @@ describe("G5 消息/队列", () => {
 		expect(ctx.emitted[0]!.text).toContain("群消息");
 		ctx.scheduler.onInputSettled(ctx.emitted[0]!.id, true);
 		// 记账推进到派发时最新序号：下一批不再重复呈现该正文
-		ctx.pushMessage(
-			ctx.groupFact({ ref: `qq-message:${SELF}:pk1`, segments: [{ type: "text", text: "poke 后新消息" }] }),
-		);
+		ctx.pushMessage(ctx.groupFact({ ref: `m903`, segments: [{ type: "text", text: "poke 后新消息" }] }));
 		await vi.advanceTimersByTimeAsync(6000);
 		expect(ctx.emitted).toHaveLength(2);
 		expect(ctx.emitted[1]!.text).toContain("poke 后新消息");
@@ -244,7 +249,7 @@ describe("G5 follow_up 到期机会（internal 候选）", () => {
 			ctx.scheduler.notifyFollowUpDue();
 			await vi.advanceTimersByTimeAsync(2000);
 			expect(ctx.emitted).toHaveLength(1);
-			expect(ctx.emitted[0]!.text).toContain("qq-follow-up:");
+			expect(ctx.emitted[0]!.text).toContain("ref=f1");
 			// retired：正文未交付 canonical 输入，不计账——下次轮询重新提醒
 			ctx.scheduler.onInputSettled(ctx.emitted[0]!.id, false);
 			ctx.scheduler.notifyFollowUpDue();
@@ -272,17 +277,17 @@ describe("审查修复回归：窗口/偏置/冻结语义", () => {
 			// 自己发出的消息先入库
 			ctx.pushMessage(
 				ctx.groupFact({
-					ref: `qq-message:${SELF}:own-1`,
+					ref: `m900`,
 					direction: "out",
-					senderRef: `qq-user:${SELF}:${SELF}`,
+					senderRef: `u${SELF}`,
 					source: "echo",
 				}),
 			);
 			// 入站消息带 OneBot reply 分段（ingest 解析后 replyTo 指向自己的消息）
 			ctx.pushMessage(
 				ctx.groupFact({
-					ref: `qq-message:${SELF}:reply-9`,
-					replyTo: `qq-message:${SELF}:own-1`,
+					ref: `m904`,
+					replyTo: `m900`,
 				}),
 			);
 			await vi.advanceTimersByTimeAsync(600);
@@ -296,11 +301,11 @@ describe("审查修复回归：窗口/偏置/冻结语义", () => {
 	it("notifiedThrough 冻结在派发时刻：批次后新到消息不偷记已通知", async () => {
 		const ctx = setup();
 		try {
-			ctx.pushMessage(ctx.groupFact({ ref: `qq-message:${SELF}:f1` }));
+			ctx.pushMessage(ctx.groupFact({ ref: `m905` }));
 			await vi.advanceTimersByTimeAsync(6000);
 			expect(ctx.emitted).toHaveLength(1);
 			// 批次派发后、结算前，新消息到达（不属于本批）
-			ctx.pushMessage(ctx.groupFact({ ref: `qq-message:${SELF}:f2` }));
+			ctx.pushMessage(ctx.groupFact({ ref: `m906` }));
 			ctx.scheduler.onInputSettled(ctx.emitted[0]!.id, true);
 			const through = ctx.journal.snapshot.notifiedThrough.get(GROUP)!;
 			// 冻结值 = 派发时序号（f1），不含 f2
@@ -316,13 +321,13 @@ describe("审查修复回归：窗口/偏置/冻结语义", () => {
 			ctx.control.setAttention(GROUP, { priority: "preferred" });
 			// B 私聊（normal）早 10 秒；A 群@self（preferred）刚到——私聊也是 direct
 			ctx.clock.now -= 10000;
-			ctx.pushMessage(ctx.privateFact({ ref: `qq-message:${SELF}:old-direct` }));
+			ctx.pushMessage(ctx.privateFact({ ref: `m907` }));
 			ctx.clock.now += 10000;
 			ctx.pushMessage(
 				ctx.groupFact({
-					ref: `qq-message:${SELF}:pref-direct`,
+					ref: `m908`,
 					segments: [
-						{ type: "mention", userRef: `qq-user:${SELF}:${SELF}` },
+						{ type: "mention", userRef: `u${SELF}` },
 						{ type: "text", text: "在吗" },
 					],
 				}),
@@ -340,10 +345,10 @@ describe("审查修复回归：窗口/偏置/冻结语义", () => {
 		const ctx = setup();
 		try {
 			// 普通群：quiet=1800，maxWait=5000；每 1000ms 到一条（< quiet，持续重置去抖）
-			ctx.pushMessage(ctx.groupFact({ ref: `qq-message:${SELF}:s1` }));
+			ctx.pushMessage(ctx.groupFact({ ref: `m909` }));
 			for (let i = 2; i <= 6; i++) {
 				await vi.advanceTimersByTimeAsync(1000);
-				ctx.pushMessage(ctx.groupFact({ ref: `qq-message:${SELF}:s${i}` }));
+				ctx.pushMessage(ctx.groupFact({ ref: `m${1000 + i}` }));
 			}
 			// 自首条起 5000ms 内必须派发（尽管去抖一直被重置）
 			expect(ctx.emitted).toHaveLength(1);
@@ -359,7 +364,7 @@ describe("暂停到期积压摘要（notifyControlTick）", () => {
 		const ctx = setup();
 		try {
 			ctx.control.setAttention("account", { pausedUntil: "2026-10-07T09:30:00Z" });
-			ctx.pushMessage(ctx.groupFact({ ref: `qq-message:${SELF}:bp1` }));
+			ctx.pushMessage(ctx.groupFact({ ref: `m910` }));
 			await vi.advanceTimersByTimeAsync(6000);
 			expect(ctx.emitted).toHaveLength(0); // 暂停中：事实保存、不产生自动机会
 			ctx.clock.now = Date.parse("2026-10-07T09:40:00Z");
@@ -389,7 +394,7 @@ describe("暂停到期积压摘要（notifyControlTick）", () => {
 			ctx.scheduler.notifyControlTick(); // 到期处理（无积压不造回合）
 			await vi.advanceTimersByTimeAsync(2000);
 			expect(ctx.emitted).toHaveLength(0);
-			ctx.pushMessage(ctx.groupFact({ ref: `qq-message:${SELF}:after-1` }));
+			ctx.pushMessage(ctx.groupFact({ ref: `m911` }));
 			await vi.advanceTimersByTimeAsync(6000);
 			expect(ctx.emitted).toHaveLength(1); // 恢复 normal：正常批次
 			expect(ctx.emitted[0]!.conversationRef).toBe(GROUP);
@@ -402,12 +407,12 @@ describe("暂停到期积压摘要（notifyControlTick）", () => {
 
 describe("recall 相关性门控（合同：仅影响当前交互或事项证据才提醒）", () => {
 	const recallEvent = (messageRef: string): EventFact => ({
-		ref: `qq-event:${SELF}:recall-${messageRef.split(":").pop()}`,
+		ref: "e1",
 		kind: "recall",
 		conversationRef: GROUP,
 		time: "2026-10-07T09:05:00Z",
 		messageRef,
-		actorRef: `qq-user:${SELF}:20002`,
+		actorRef: `u20002`,
 		source: "platform",
 	});
 
@@ -415,7 +420,7 @@ describe("recall 相关性门控（合同：仅影响当前交互或事项证据
 		vi.useFakeTimers();
 		const ctx = setup();
 		try {
-			ctx.pushEvent(recallEvent(`qq-message:${SELF}:1`));
+			ctx.pushEvent(recallEvent(`m1`));
 			await vi.advanceTimersByTimeAsync(6000);
 			expect(ctx.emitted).toHaveLength(0);
 		} finally {
@@ -427,11 +432,11 @@ describe("recall 相关性门控（合同：仅影响当前交互或事项证据
 	it("判定为相关 → direct 候选唤醒", async () => {
 		vi.useFakeTimers();
 		const ctx = setup({
-			isRecallRelevant: (fact) => fact.messageRef === `qq-message:${SELF}:r1`,
+			isRecallRelevant: (fact) => fact.messageRef === `m912`,
 		});
 		try {
-			ctx.pushMessage(ctx.groupFact({ ref: `qq-message:${SELF}:r1` }));
-			ctx.pushEvent(recallEvent(`qq-message:${SELF}:r1`));
+			ctx.pushMessage(ctx.groupFact({ ref: `m912` }));
+			ctx.pushEvent(recallEvent(`m912`));
 			await vi.advanceTimersByTimeAsync(2000);
 			expect(ctx.emitted).toHaveLength(1);
 			expect(ctx.emitted[0]!.text).toContain("trigger=recall");
@@ -446,7 +451,7 @@ describe("recall 相关性门控（合同：仅影响当前交互或事项证据
 		const ctx = setup();
 		try {
 			ctx.pushEvent({
-				ref: `qq-event:${SELF}:bs-1`,
+				ref: `e1`,
 				kind: "bot_status",
 				time: "2026-10-07T09:06:00Z",
 				source: "platform",
@@ -495,11 +500,11 @@ describe("审查后清理回归（批次A）", () => {
 		const ctx = setup();
 		try {
 			ctx.pushEvent({
-				ref: `qq-event:${SELF}:fp-1`,
+				ref: `e1`,
 				kind: "poke",
 				conversationRef: undefined,
-				actorRef: `qq-user:${SELF}:20002`,
-				targetRef: `qq-user:${SELF}:${SELF}`,
+				actorRef: `u20002`,
+				targetRef: `u${SELF}`,
 				time: "2026-10-07T09:06:00Z",
 				source: "platform",
 			});
@@ -518,11 +523,11 @@ describe("审查后清理回归（批次A）", () => {
 		const ctx = setup();
 		try {
 			ctx.pushEvent({
-				ref: `qq-event:${SELF}:fp-2`,
+				ref: `e1`,
 				kind: "poke",
 				conversationRef: undefined,
-				actorRef: `qq-user:${SELF}:${SELF}`,
-				targetRef: `qq-user:${SELF}:${SELF}`,
+				actorRef: `u${SELF}`,
+				targetRef: `u${SELF}`,
 				time: "2026-10-07T09:06:00Z",
 				source: "platform",
 			});

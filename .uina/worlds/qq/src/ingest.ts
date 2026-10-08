@@ -1,4 +1,13 @@
-import { conversationRef, messageRef, userRef, type EventFact, type MessageFact, type MessageSegment, type QQEventKind, type RequestFact } from "./types.js";
+import { decodeOneBotMessage, decodeOneBotSegments, oneBotId, oneBotTime } from "./message-codec.js";
+import {
+	conversationRef,
+	messageRef,
+	userRef,
+	type EventFact,
+	type IngestedFact,
+	type QQEventKind,
+	type RequestFact,
+} from "./types.js";
 import type { FactsJournal } from "./facts-journal.js";
 
 /**
@@ -26,95 +35,18 @@ function asString(value: unknown): string | null {
 	return typeof value === "string" ? value : null;
 }
 
-function asNumber(value: unknown): number | null {
-	return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
 function isoTime(unixSeconds: unknown): string {
-	const n = asNumber(unixSeconds);
-	return new Date((n && n > 0 ? n * 1000 : Date.now())).toISOString();
-}
-
-/** OneBot 消息数组 → 规范分段 + 回复引用；未识别类型保留说明并标未理解。 */
-function toSegments(raw: unknown, selfId: string, mintMediaRef: () => string): { segments: MessageSegment[]; replyTo?: string } {
-	if (Array.isArray(raw) === false) {
-		const text = asString(raw);
-		return { segments: text ? [{ type: "text", text }] : [] };
-	}
-	const segments: MessageSegment[] = [];
-	let replyTo: string | undefined;
-	for (const item of raw) {
-		if (!isObject(item)) continue;
-		const type = asString(item.type);
-		const data = isObject(item.data) ? item.data : {};
-		switch (type) {
-			case "text": {
-				const text = asString(data.text);
-				if (text) segments.push({ type: "text", text });
-				break;
-			}
-			case "at": {
-				const qq = asNumber(data.qq) ?? asString(data.qq);
-				if (qq !== null) segments.push({ type: "mention", userRef: userRef(selfId, qq), displayName: asString(data.nickname) ?? undefined });
-				break;
-			}
-			case "reply": {
-				// 回复是结构引用不是内容分段：提取 replyTo，不进正文。
-				const id = asNumber(data.id);
-				if (id !== null) replyTo = messageRef(selfId, id);
-				break;
-			}
-			case "face": {
-				const id = asNumber(data.id);
-				if (id !== null) segments.push({ type: "face", faceId: String(id) });
-				break;
-			}
-			case "json":
-			case "xml": {
-				// 卡片原文（SnowLuma: data.data）；保留原文不解析语义。
-				const payload = asString(data.data) ?? asString(data.text);
-				if (payload) segments.push({ type, data: payload });
-				break;
-			}
-			case "forward": {
-				// 合并转发（SnowLuma: data.id）；resId 留给 get_forward_msg 解析。
-				const resId = asString(data.id) ?? asString(data.res_id) ?? asString(data.forward_id);
-				if (resId) segments.push({ type: "forward", resId });
-				break;
-			}
-			case "image":
-			case "record":
-			case "video":
-			case "file": {
-				const mapped = type === "record" ? "audio" : type;
-				segments.push({
-					type: mapped as "image" | "audio" | "video" | "file",
-					mediaRef: mintMediaRef(),
-					url: asString(data.url) ?? undefined,
-					fileName: asString(data.file) ?? undefined,
-					understood: false,
-				});
-				break;
-			}
-			default: {
-				// 未识别分段：事实只存原始类型名，呈现文字由 render 单源（事实/呈现分离）。
-				segments.push({ type: "unknown", rawType: type ?? "?" });
-				break;
-			}
-		}
-	}
-	return { segments, replyTo };
+	return oneBotTime(unixSeconds) ?? new Date().toISOString();
 }
 
 export class QqIngestion {
 	private counters: IngestionCounters = { messages: 0, events: 0, requests: 0, unrecognized: 0, suppressedByGrant: 0 };
-	private eventSeq = 0;
 
 	constructor(
 		private readonly selfId: string,
 		private readonly journal: FactsJournal,
 		/** 每条事实落库后的通知回调（调度层在此接单）。 */
-		private readonly onFact?: (item: { kind: "message" | "event" | "request"; fact: unknown }) => void,
+		private readonly onFact?: (item: IngestedFact) => void,
 		/**
 		 * 部署未授 observation 时平台事实不入库、不进调度（grant 表：observation 覆盖
 		 * "读取与新事实接收、自动场景"；合同：无 observation 不新保存聊天/申请内容）。
@@ -127,12 +59,6 @@ export class QqIngestion {
 		return this.counters;
 	}
 
-	private mintEventRef(time: string): string {
-		this.eventSeq++;
-		const epoch = Number.isFinite(Date.parse(time)) ? Date.parse(time) : Date.now();
-		return `qq-event:${this.selfId}:e-${epoch}-${this.eventSeq}`;
-	}
-
 	/** 处理一条平台事件（transport event/raw 均可进入；raw 里的迟到回执由上层处理）。 */
 	handleEvent(raw: unknown): void {
 		if (!isObject(raw)) return;
@@ -142,8 +68,8 @@ export class QqIngestion {
 		}
 		const postType = asString(raw.post_type);
 		const time = isoTime(raw.time);
-		const selfIdNum = asNumber(raw.self_id);
-		if (selfIdNum !== null && String(selfIdNum) !== this.selfId) {
+		const selfIdValue = oneBotId(raw.self_id);
+		if (raw.self_id !== undefined && selfIdValue !== this.selfId) {
 			// 平台身份与绑定账号不符：不入库（启动时身份核验失败会直接阻止连接）。
 			return;
 		}
@@ -167,82 +93,37 @@ export class QqIngestion {
 	}
 
 	private handleMessage(raw: Record<string, unknown>, time: string, selfSent: boolean): void {
-		const messageType = asString(raw.message_type);
-		const messageId = asNumber(raw.message_id);
-		if (!messageType || messageId === null) {
+		const decoded = decodeOneBotMessage({ ...raw, time }, this.selfId);
+		if (!decoded) {
 			this.counters.unrecognized++;
 			return;
 		}
-		const sender = isObject(raw.sender) ? raw.sender : {};
-		const senderUin = asNumber(sender.user_id) ?? asNumber(raw.user_id);
-		if (senderUin === null) {
-			this.counters.unrecognized++;
-			return;
-		}
-
-		let conversationRefValue: string;
-		if (messageType === "group") {
-			const groupId = asNumber(raw.group_id);
-			if (groupId === null) {
-				this.counters.unrecognized++;
-				return;
-			}
-			conversationRefValue = conversationRef(this.selfId, "group", groupId);
-		} else {
-			const subType = asString(raw.sub_type);
-			if (subType === "group") {
-				// temp 会话：保留源群；sender.group_id 为源群（SnowLuma 事实）。
-				const sourceGroup = asNumber(sender.group_id);
-				conversationRefValue = conversationRef(
-					this.selfId,
-					"temp",
-					sourceGroup !== null ? `${senderUin}-g${sourceGroup}` : String(senderUin),
-				);
-			} else {
-				// friend：self 回送时 user_id 是自己，对方取 target_id（SnowLuma 事实）。
-				const peer = selfSent ? (asNumber(raw.target_id) ?? senderUin) : senderUin;
-				conversationRefValue = conversationRef(this.selfId, "private", peer === Number(this.selfId) ? String(senderUin) : String(peer));
-			}
-		}
-		const senderRef = userRef(this.selfId, senderUin);
-		const direction: "in" | "out" = selfSent ? "out" : "in";
-
-		// 重复平台事件不重复铸造媒体引用；序号从 facts 重建，重启不撞号。
-		if (this.journal.getMessage(messageRef(this.selfId, messageId))) return;
-		const { segments, replyTo } = toSegments(raw.message, this.selfId, () => this.journal.mintMediaRef());
-		const fact: Omit<MessageFact, "sequence"> = {
-			ref: messageRef(this.selfId, messageId),
-			conversationRef: conversationRefValue,
-			senderRef,
-			// 空白群名片/昵称一律回落（"" 非 nullish，?? 不会回落；实证 53/77 条 displayName="" 遮蔽昵称）。
-			senderDisplayName: asString(sender.card)?.trim() || asString(sender.nickname)?.trim() || null,
-			direction,
-			time,
-			segments,
-			replyTo,
+		if (this.journal.getMessage(decoded.ref)) return;
+		const fact = this.journal.appendMessage({
+			...decoded,
+			...decodeOneBotSegments(raw.message ?? raw.raw_message, () => this.journal.mintMediaRef()),
 			source: selfSent ? "echo" : "platform",
-		};
-		const stored = this.journal.appendMessage(fact);
+		});
 		this.counters.messages++;
-		this.onFact?.({ kind: "message", fact: stored });
+		this.onFact?.({ kind: "message", fact });
 	}
 
 	private handleNotice(raw: Record<string, unknown>, time: string): void {
 		const noticeType = asString(raw.notice_type);
 		const subType = asString(raw.sub_type);
-		const groupRef = () => {
-			const groupId = asNumber(raw.group_id);
-			return groupId !== null ? conversationRef(this.selfId, "group", groupId) : undefined;
-		};
-		const uinRef = (key: string) => {
-			const uin = asNumber(raw[key]);
-			return uin !== null ? userRef(this.selfId, uin) : undefined;
+		const groupId = oneBotId(raw.group_id);
+		const mid = oneBotId(raw.message_id, true);
+		const uinRef = (key: string): string | undefined => {
+			const uin = oneBotId(raw[key]);
+			return uin !== null ? userRef(uin) : undefined;
 		};
 
 		let kind: QQEventKind;
 		switch (noticeType) {
 			case "notify":
-				kind = subType === "poke" ? "poke" : "reaction";
+				kind = "other";
+				if (subType === "poke") kind = "poke";
+				else if (subType === "profile_like") kind = "profile_like";
 				break;
 			case "friend_recall":
 			case "group_recall":
@@ -263,6 +144,9 @@ export class QqIngestion {
 			case "bot_status":
 				kind = subType === "offline" ? "bot_offline" : "bot_status";
 				break;
+			case "bot_offline":
+				kind = "bot_offline";
+				break;
 			case "profile_like":
 				kind = "profile_like";
 				break;
@@ -275,18 +159,57 @@ export class QqIngestion {
 				break;
 		}
 
+		let actorRef = uinRef("operator_id") ?? uinRef("user_id");
+		let targetRef = uinRef("target_id") ?? uinRef("invited_id");
+		let authorRef: string | undefined;
+		if (kind === "poke") actorRef = uinRef("sender_id") ?? uinRef("user_id");
+		if (noticeType === "group_recall") {
+			actorRef = uinRef("operator_id");
+			authorRef = uinRef("user_id");
+		}
+		if (noticeType === "friend_recall") {
+			// SnowLuma user_id identifies the peer, not the recall operator.
+			actorRef = uinRef("operator_id");
+			authorRef = mid ? (this.journal.getMessage(messageRef(mid))?.senderRef ?? undefined) : undefined;
+		}
+		if (["member_increase", "member_decrease", "ban", "role_change"].includes(kind)) targetRef = uinRef("user_id");
+		let conv = groupId ? conversationRef("group", groupId) : undefined;
+		const peer = oneBotId(raw.user_id);
+		if (!conv && (kind === "poke" || noticeType === "friend_recall") && peer && peer !== this.selfId)
+			conv = conversationRef("private", peer);
+		if (!conv && noticeType === "friend_recall" && mid)
+			conv = this.journal.getMessage(messageRef(mid))?.conversationRef;
+		const likes = Array.isArray(raw.likes)
+			? raw.likes.flatMap((item) => {
+					if (!isObject(item)) return [];
+					const code =
+						asString(item.emoji_id) ??
+						(typeof item.emoji_id === "number" && Number.isSafeInteger(item.emoji_id) ? String(item.emoji_id) : null);
+					if (!code) return [];
+					return [
+						{
+							code,
+							count:
+								typeof item.count === "number" && Number.isFinite(item.count) && item.count >= 0 ? item.count : null,
+						},
+					];
+				})
+			: [];
 		const fact: EventFact = {
-			ref: this.mintEventRef(time),
+			ref: this.journal.mintEventRef(),
 			kind,
-			conversationRef: groupRef(),
+			conversationRef: conv,
 			time,
-			actorRef: uinRef("user_id") ?? uinRef("operator_id"),
-			targetRef: uinRef("target_id") ?? uinRef("invited_id"),
-			messageRef: (() => {
-				const mid = asNumber(raw.message_id);
-				return mid !== null ? messageRef(this.selfId, mid) : undefined;
-			})(),
-			summary: subType ? `${noticeType}/${subType}` : noticeType ?? undefined,
+			actorRef,
+			targetRef,
+			authorRef,
+			action: asString(raw.action) ?? undefined,
+			suffix: asString(raw.suffix) ?? undefined,
+			...(kind === "reaction"
+				? { reaction: { operation: subType === "add" || subType === "remove" ? subType : null, likes } }
+				: {}),
+			messageRef: mid ? messageRef(mid) : undefined,
+			summary: subType ? `${noticeType}/${subType}` : (noticeType ?? undefined),
 			source: "platform",
 		};
 		this.journal.appendEvent(fact);
@@ -302,19 +225,22 @@ export class QqIngestion {
 			this.counters.unrecognized++;
 			return;
 		}
-		const kind: RequestFact["kind"] =
-			requestType === "friend" ? "friend" : subType === "invite" ? "group_invite" : "group_join_request";
-		const requesterUin = asNumber(raw.user_id);
+		let kind: RequestFact["kind"];
+		if (requestType === "friend") kind = "friend";
+		else if (subType === "invite") kind = "group_invite";
+		else kind = "group_join_request";
+		const requesterUin = oneBotId(raw.user_id);
+		const groupId = oneBotId(raw.group_id);
+		const invitedId = oneBotId(raw.invited_id);
 		const fact: RequestFact = {
-			ref: `qq-request:${this.selfId}:${flag}`,
+			ref: this.journal.mintRequestRef(flag),
+			platformFlag: flag,
 			kind,
 			state: "pending",
-			requesterRef: requesterUin !== null ? userRef(this.selfId, requesterUin) : null,
+			requesterRef: requesterUin !== null ? userRef(requesterUin) : null,
 			requesterDisplayName: null,
-			targetConversationRef: (() => {
-				const groupId = asNumber(raw.group_id);
-				return groupId !== null ? conversationRef(this.selfId, "group", groupId) : undefined;
-			})(),
+			targetConversationRef: groupId !== null ? conversationRef("group", groupId) : undefined,
+			invitedRef: invitedId ? userRef(invitedId) : undefined,
 			comment: asString(raw.comment),
 			time,
 		};

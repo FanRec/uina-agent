@@ -1,4 +1,4 @@
-// 由 docs/proposals/qq-world-tool.json（参数唯一真源）生成 .uina/worlds/qq/src/tool-schema.ts。
+// 由 .uina/worlds/qq/tool.json（参数唯一真源）生成 .uina/worlds/qq/src/tool-schema.ts。
 // 用法：node scripts/generate-qq-tool-schema.mjs
 // ToolDef 与实现 schema 的等价性由 tests/qq-world-contract.test.ts 强制。
 
@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const toolDefPath = join(here, "..", "docs", "proposals", "qq-world-tool.json");
+const toolDefPath = join(here, "..", ".uina", "worlds", "qq", "tool.json");
 const outPath = join(here, "..", ".uina", "worlds", "qq", "src", "tool-schema.ts");
 
 const toolDef = JSON.parse(readFileSync(toolDefPath, "utf8"));
@@ -24,7 +24,7 @@ for (const branch of parameters.oneOf) {
 	};
 }
 
-const file = `// 由 docs/proposals/qq-world-tool.json 生成（参数唯一真源），手工修改会被覆盖。
+const file = `// 由 .uina/worlds/qq/tool.json 生成（参数唯一真源），手工修改会被覆盖。
 // 重新生成：node scripts/generate-qq-tool-schema.mjs
 
 export const QQ_TOOL_NAME = ${JSON.stringify(name)};

@@ -200,14 +200,34 @@ describe("QqIngestion（OneBot 事件 → 规范 facts）", () => {
 			font: 0,
 			sender: { user_id: 20002, nickname: "小明", card: "小明（主持人）", role: "admin" },
 		});
-		const facts = messagesOf("qq-conversation:10001:group:30003");
+		const facts = messagesOf("g30003");
 		expect(facts).toHaveLength(1);
 		expect(facts[0]).toMatchObject({
-			ref: "qq-message:10001:42",
-			senderRef: "qq-user:10001:20002",
+			ref: "m42",
+			senderRef: "u20002",
 			senderDisplayName: "小明（主持人）",
 			direction: "in",
 			sequence: 1,
+		});
+	});
+
+	it("全体提及保留真实含义，不构造用户引用且不丢失正文", () => {
+		ingestion.handleEvent({
+			post_type: "message",
+			message_type: "group",
+			self_id: 10001,
+			message_id: -42,
+			group_id: 30003,
+			user_id: 20002,
+			message: [
+				{ type: "at", data: { qq: "all" } },
+				{ type: "text", data: { text: "大家好" } },
+			],
+			sender: { user_id: 20002 },
+		});
+		expect(messagesOf("g30003")[0]).toMatchObject({
+			ref: "m-42",
+			segments: [{ type: "mention_all" }, { type: "text", text: "大家好" }],
 		});
 	});
 
@@ -226,8 +246,8 @@ describe("QqIngestion（OneBot 事件 → 规范 facts）", () => {
 			font: 0,
 			sender: { user_id: 20013, nickname: "新类型", role: "member" },
 		});
-		const facts = messagesOf("qq-conversation:10001:group:30003");
-		const fact = facts.find((m) => m.ref === "qq-message:10001:46");
+		const facts = messagesOf("g30003");
+		const fact = facts.find((m) => m.ref === "m46");
 		expect(fact?.segments).toEqual([{ type: "unknown", rawType: "bubble_face" }]);
 	});
 
@@ -250,8 +270,8 @@ describe("QqIngestion（OneBot 事件 → 规范 facts）", () => {
 			font: 0,
 			sender: { user_id: 20012, nickname: "卡哥", role: "member" },
 		});
-		const facts = messagesOf("qq-conversation:10001:group:30003");
-		const fact = facts.find((m) => m.ref === "qq-message:10001:45");
+		const facts = messagesOf("g30003");
+		const fact = facts.find((m) => m.ref === "m45");
 		expect(fact?.segments).toEqual([
 			{ type: "json", data: '{"alert":{"title":"分享"}}' },
 			{ type: "xml", data: "<msg>...</msg>" },
@@ -274,8 +294,8 @@ describe("QqIngestion（OneBot 事件 → 规范 facts）", () => {
 			font: 0,
 			sender: { user_id: 20011, nickname: "真实昵称", card: "", role: "member" },
 		});
-		const facts = messagesOf("qq-conversation:10001:group:30003");
-		const fact = facts.find((m) => m.ref === "qq-message:10001:44");
+		const facts = messagesOf("g30003");
+		const fact = facts.find((m) => m.ref === "m44");
 		expect(fact?.senderDisplayName).toBe("真实昵称");
 	});
 
@@ -293,7 +313,7 @@ describe("QqIngestion（OneBot 事件 → 规范 facts）", () => {
 			font: 0,
 			sender: { user_id: 20009, nickname: "陌生人", group_id: 30003 },
 		});
-		expect(messagesOf("qq-conversation:10001:temp:20009-g30003")).toHaveLength(1);
+		expect(messagesOf("t20009-g30003")).toHaveLength(1);
 	});
 
 	it("self 私聊回送指向 target_id 对方，不把 sender 当对方", () => {
@@ -311,8 +331,8 @@ describe("QqIngestion（OneBot 事件 → 规范 facts）", () => {
 			font: 0,
 			sender: { user_id: 10001, nickname: "Uina" },
 		});
-		const facts = messagesOf("qq-conversation:10001:private:20002");
-		expect(facts[0]).toMatchObject({ direction: "out", source: "echo", senderRef: "qq-user:10001:10001" });
+		const facts = messagesOf("p20002");
+		expect(facts[0]).toMatchObject({ direction: "out", source: "echo", senderRef: "u10001" });
 	});
 
 	it("poke/recall/请求事件入库", () => {
@@ -344,14 +364,14 @@ describe("QqIngestion（OneBot 事件 → 规范 facts）", () => {
 			user_id: 20009,
 			comment: "我是读书会的小王",
 		});
-		const events = journal.snapshot.events.get("qq-conversation:10001:group:30003") ?? [];
+		const events = journal.snapshot.events.get("g30003") ?? [];
 		expect(events.map((e) => e.kind)).toContain("poke");
 		expect(events.map((e) => e.kind)).toContain("recall");
-		expect(events.find((e) => e.kind === "recall")?.messageRef).toBe("qq-message:10001:42");
-		expect(journal.snapshot.requests.get("qq-request:10001:flag-1")).toMatchObject({
+		expect(events.find((e) => e.kind === "recall")?.messageRef).toBe("m42");
+		expect(journal.snapshot.requests.get("r1")).toMatchObject({
 			kind: "friend",
 			state: "pending",
-			requesterRef: "qq-user:10001:20009",
+			requesterRef: "u20009",
 			comment: "我是读书会的小王",
 		});
 	});
@@ -406,10 +426,10 @@ describe("审查修复回归：reply 分段解析", () => {
 			raw_message: "",
 			sender: { user_id: 20002, nickname: "小明" },
 		});
-		const fact = journal.snapshot.messages.get("qq-conversation:10001:group:30003")![0]!;
-		expect(fact.replyTo).toBe("qq-message:10001:42");
+		const fact = journal.snapshot.messages.get("g30003")![0]!;
+		expect(fact.replyTo).toBe("m42");
 		expect(fact.segments.map((s) => s.type)).toEqual(["mention", "text"]);
 		// mention 引用带正确账号边界（不是 "?"）
-		expect(fact.segments[0]).toMatchObject({ type: "mention", userRef: "qq-user:10001:10001" });
+		expect(fact.segments[0]).toMatchObject({ type: "mention", userRef: "u10001" });
 	});
 });

@@ -1,5 +1,4 @@
 import type { WorldDef, ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
-import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 import { loadQqWorldConfig, type QqWorldConfig } from "./config.js";
 import { FactsJournal } from "./facts-journal.js";
 import { ControlStore } from "./control-store.js";
@@ -7,7 +6,7 @@ import { OperationLog } from "./operation-log.js";
 import { OneBotTransport, type QqTransport } from "./transport.js";
 import { QqIngestion } from "./ingest.js";
 import { QqScheduler } from "./scheduler.js";
-import { handleQqCall, type QqAppDeps } from "./app.js";
+import { handleQqCall, requestState, type QqAppDeps } from "./app.js";
 import { hasGrant } from "./grants.js";
 import * as render from "./render.js";
 import type { EventFact } from "./types.js";
@@ -33,13 +32,13 @@ export function createQqWorld(injected?: {
 	// 配置在 onStart 校验：工厂阶段绝不抛错，否则 world 在发现期注册失败，
 	// 用户只会看到 world_not_found 而看不到真实原因。
 	let config: QqWorldConfig | null = injected?.config ?? null;
-	const requireConfig = (): QqWorldConfig => {
+	function requireConfig(): QqWorldConfig {
 		if (config) return config;
 		const loaded = loadQqWorldConfig(injected?.configPath);
 		if (!loaded.ok) throw new Error(`[qq] 配置加载失败：${loaded.error}`);
 		config = loaded.config;
 		return config;
-	};
+	}
 
 	let ctxRef: ServiceCompanionContext | null = null;
 	let transport: QqTransport | null = injected?.transport ?? null;
@@ -51,38 +50,53 @@ export function createQqWorld(injected?: {
 	let scheduler: QqScheduler | null = null;
 	let reviewTimer: ReturnType<typeof setInterval> | null = null;
 	let unbindHost: (() => void) | null = null;
+	const faceNames = new Map<string, string>();
+	let lifecycleGeneration = 0;
+	let worldAbort: AbortController | null = null;
+	const unbindTransport: (() => void)[] = [];
 
-	const deps = (): QqAppDeps => ({
-		selfId: requireConfig().selfId,
-		grants: requireConfig().grants,
-		journal: journal!,
-		control: control!,
-		ops: ops!,
-		transport: transport!,
-		media,
-		display: requireConfig().display,
-	});
+	function deps(): QqAppDeps {
+		const activeConfig = requireConfig();
+		return {
+			selfId: activeConfig.selfId,
+			grants: activeConfig.grants,
+			journal: journal!,
+			control: control!,
+			ops: ops!,
+			transport: transport!,
+			media,
+			display: { ...activeConfig.display, faceNames },
+			faceNames,
+		};
+	}
 
 	const actions: WorldDef["actions"] = {};
 	for (const [name, schema] of Object.entries(QQ_ACTION_SCHEMAS)) {
 		actions[name] = {
 			description: schema.description,
 			parameters: schema.parameters as Record<string, unknown>,
-			run: (params, ctx) => handleQqCall(deps(), name, params, ctx.signal) as Promise<ToolExecutionResult>,
+			run: (params, ctx) => handleQqCall(deps(), name, params, ctx.signal),
 		};
 	}
 
-	return {
+	const world: WorldDef = {
 		name: "qq",
 		description: QQ_TOOL_DESCRIPTION,
 		executionMode: "sequential",
 		actions,
 
 		async onStart(context: ServiceCompanionContext): Promise<void> {
+			const generation = ++lifecycleGeneration;
+			worldAbort = new AbortController();
+			const signal = AbortSignal.any([context.signal, worldAbort.signal]);
+			function assertRunning(): void {
+				if (generation !== lifecycleGeneration || signal.aborted) throw new Error("[qq] World 已停止或取消启动");
+			}
 			ctxRef = context;
 			config = requireConfig();
-			const dataDir = context.worldDataDir;
-			if (!dataDir) throw new Error("[qq] 缺少 worldDataDir，无法就绪本地存储");
+			const worldDataDir = context.worldDataDir;
+			if (!worldDataDir) throw new Error("[qq] 缺少 worldDataDir，无法就绪本地存储");
+			const dataDir = join(worldDataDir, "v2", config.selfId);
 
 			journal = new FactsJournal({ dataDir, selfId: config.selfId });
 			journal.recover();
@@ -106,7 +120,7 @@ export function createQqWorld(injected?: {
 						journal: journal!,
 						control: control!,
 						now: () => new Date().toISOString(),
-						display: activeConfig?.display,
+						display: { ...activeConfig?.display, faceNames },
 						settledUnknowns: scheduler?.listSettledUnknowns() ?? [],
 					});
 				},
@@ -122,6 +136,10 @@ export function createQqWorld(injected?: {
 					});
 				},
 				isBusy: () => context.isBusy?.() ?? false,
+				isRequestPending: (ref) => {
+					const fact = journal?.snapshot.requests.get(ref);
+					return !!fact && !!ops && requestState({ ops }, fact).state === "pending";
+				},
 				isRecallRelevant: (fact) => {
 					// 合同 §4：recall 仅当"影响当前交互或事项证据"才提醒。操作化规则：
 					// ①自身发言（out）被撤——发言证据被毁；②open 事项 evidenceRefs 引用被撤；
@@ -142,18 +160,24 @@ export function createQqWorld(injected?: {
 				config.selfId,
 				journal,
 				(item) => {
-					scheduler?.onFact(item as Parameters<QqScheduler["onFact"]>[0]);
+					scheduler?.onFact(item);
 				},
 				hasGrant(config.grants, "observation"),
 			);
 
-			transport = injected?.transport ?? new OneBotTransport({ connection: config.connection });
-			transport.onEvent((event) => ingestion?.handleEvent(event));
+			transport =
+				injected?.transport ?? new OneBotTransport({ connection: config.connection, expectedSelfId: config.selfId });
+			unbindTransport.push(
+				transport.onEvent((event) => {
+					if (generation === lifecycleGeneration) ingestion?.handleEvent(event);
+				}),
+			);
 
 			// 迟到回执归并（G6）：SDK 超时移除 pending 后，回执只剩 raw 可观察；
 			// 凭 echo（=operationRef）升级 unknown，确定结论不被迟到副本覆盖。
 			// 只有"unknown 已交付给工具结果"的操作，其升级才通知主体（在途回执不需要）。
-			transport.onRaw((raw) => {
+			const unbindRaw = transport.onRaw((raw) => {
+				if (generation !== lifecycleGeneration) return;
 				if (typeof raw !== "string") return;
 				try {
 					const parsed = JSON.parse(raw) as { echo?: unknown; status?: unknown; retcode?: unknown; data?: unknown };
@@ -172,16 +196,18 @@ export function createQqWorld(injected?: {
 					// 非 JSON raw 帧忽略。
 				}
 			});
+			unbindTransport.push(unbindRaw);
 
 			// 断线/恢复（internal 事件）：稳定故障提醒一次；恢复只对先前已报过的故障。
 			let reportedDisconnect = false;
-			transport.onStatus((status) => {
+			const unbindStatus = transport.onStatus((status) => {
+				if (generation !== lifecycleGeneration) return;
 				if (!scheduler || !journal || !config) return;
 				const kind = status.connected ? "transport_recovered" : "transport_disconnected";
 				if (status.connected ? !reportedDisconnect : reportedDisconnect) return;
 				reportedDisconnect = !status.connected;
 				const fact: EventFact = {
-					ref: `qq-event:${config.selfId}:t-${Date.now()}`,
+					ref: journal.mintEventRef(),
 					kind,
 					time: new Date().toISOString(),
 					summary: status.error,
@@ -190,20 +216,7 @@ export function createQqWorld(injected?: {
 				journal.appendEvent(fact);
 				scheduler.onFact({ kind: "event", fact });
 			});
-
-			// 身份核验：登录身份不符阻止平台写入（启动失败）。
-			const identity = await transport.start();
-			if (String(identity.selfId) !== config.selfId) {
-				await transport.stop();
-				throw new Error(`[qq] 登录身份 ${identity.selfId} 与绑定账号 ${config.selfId} 不符，阻止平台写入；旧引用不转移到新账号。`);
-			}
-
-			// 控制状态 tick（60s 粒度即可：预约是分钟级概念）：follow_up 到期 + 暂停到期积压摘要。
-			// 启动即查一次：离线期间到期的事项不等首个 60s 周期。
-			reviewTimer = setInterval(() => {
-				scheduler?.notifyControlTick();
-			}, 60_000);
-			scheduler?.notifyControlTick();
+			unbindTransport.push(unbindStatus);
 
 			// Host 事实事件：input_settled 释放占位并记账；agent_settled 驱动 busy recheck。
 			unbindHost =
@@ -217,9 +230,42 @@ export function createQqWorld(injected?: {
 						scheduler?.onAgentSettled();
 					}
 				}) ?? null;
+
+			// 身份核验：登录身份不符阻止平台写入（启动失败）。
+			const identity = await transport.start(signal);
+			assertRunning();
+			if (String(identity.selfId) !== config.selfId) {
+				await transport.stop();
+				throw new Error(
+					`[qq] 登录身份 ${identity.selfId} 与绑定账号 ${config.selfId} 不符，阻止平台写入；旧引用不转移到新账号。`,
+				);
+			}
+
+			world.description = `${QQ_TOOL_DESCRIPTION} 当前 QQ 账号：${config.selfId}。`;
+			if (hasGrant(config.grants, "observation")) {
+				// Optional enrichment; directory failures never prevent the World from starting.
+				await handleQqCall(
+					deps(),
+					"observe",
+					{ account: config.selfId, scope: "expressions", kind: "face" },
+					signal,
+				).catch(() => {});
+			}
+			assertRunning();
+
+			// 控制状态 tick（60s 粒度即可：预约是分钟级概念）：follow_up 到期 + 暂停到期积压摘要。
+			// 启动即查一次：离线期间到期的事项不等首个 60s 周期。
+			reviewTimer = setInterval(() => {
+				scheduler?.notifyControlTick();
+			}, 60_000);
+			scheduler?.notifyControlTick();
 		},
 
 		async onStop(): Promise<void> {
+			lifecycleGeneration++;
+			worldAbort?.abort();
+			worldAbort = null;
+			for (const unsubscribe of unbindTransport.splice(0)) unsubscribe();
 			scheduler?.stop();
 			scheduler = null;
 			if (reviewTimer) {
@@ -236,8 +282,10 @@ export function createQqWorld(injected?: {
 			ops = null;
 			media = undefined;
 			ctxRef = null;
+			faceNames.clear();
 		},
 	};
+	return world;
 }
 
 export default createQqWorld;

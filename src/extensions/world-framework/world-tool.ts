@@ -1,11 +1,11 @@
 import type { ValidateFunction } from "ajv";
 import { createRequire } from "node:module";
 import type { Tool } from "../../tools/broker.js";
+import { formatValidationErrors } from "../../tools/validation-errors.js";
 import type { ActionContext, WorldDef, WorldRuntime, OperationIdentity } from "./types.js";
 
 interface AjvLike {
 	compile(schema: object): ValidateFunction;
-	errorsText(errors: unknown): string;
 }
 type AjvCtor = new (options: { strict: boolean; allErrors: boolean }) => AjvLike;
 const Ajv = createRequire(import.meta.url)("ajv") as AjvCtor;
@@ -62,12 +62,14 @@ export function createWorldTool(def: WorldDef, _options: WorldToolOptions): Tool
 					details: { operationIdentity: identity, worldName: def.name, action: actionName },
 				};
 			const validator = validators.get(actionName);
-			if (validator && !validator(params))
+			if (validator && !validator(params)) {
+				const validationErrors = structuredClone(validator.errors ?? []);
 				return {
-					result: `【${def.name} 参数错误】${ajv.errorsText(validator.errors)}`,
+					result: `【${def.name} 参数错误】${formatValidationErrors(validator.schema, params, validationErrors)}`,
 					status: "failed" as const,
-					details: { operationIdentity: identity, worldName: def.name, action: actionName },
+					details: { operationIdentity: identity, worldName: def.name, action: actionName, validationErrors },
 				};
+			}
 			if (action.validate) {
 				const check = action.validate(params);
 				if (!check.valid)

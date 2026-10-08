@@ -10,7 +10,8 @@ import type { AttentionMode, AttentionOverride, EffectiveAttention, FollowUpItem
  */
 
 interface ControlFileShape {
-	version: 1;
+	version: 2;
+	selfId: string;
 	revision: number;
 	accountOverride: AttentionOverride;
 	conversationOverrides: Record<string, AttentionOverride>;
@@ -33,7 +34,8 @@ export interface ControlStoreOptions {
 export class ControlStore {
 	private readonly filePath: string;
 	private state: ControlFileShape = {
-		version: 1,
+		version: 2,
+		selfId: "",
 		revision: 0,
 		accountOverride: EMPTY_OVERRIDE,
 		conversationOverrides: {},
@@ -42,10 +44,9 @@ export class ControlStore {
 	private followUpCounter = 0;
 	private readonly nowFn: () => string;
 
-	constructor(
-		private readonly options: ControlStoreOptions & { readonly selfId: string },
-	) {
+	constructor(private readonly options: ControlStoreOptions & { readonly selfId: string }) {
 		this.filePath = join(options.dataDir, "qq-control.json");
+		this.state.selfId = options.selfId;
 		this.nowFn = options.now ?? (() => new Date().toISOString());
 	}
 
@@ -61,22 +62,31 @@ export class ControlStore {
 		try {
 			parsed = JSON.parse(readFileSync(this.filePath, "utf8"));
 		} catch (error) {
-			throw new Error(`QQ 控制状态文件损坏，明确失败: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+			throw new Error(`QQ 控制状态文件损坏，明确失败: ${error instanceof Error ? error.message : String(error)}`, {
+				cause: error,
+			});
 		}
 		const shape = parsed as Partial<ControlFileShape>;
-		if (shape.version !== 1 || typeof shape.revision !== "number" || typeof shape.followUps !== "object" || shape.followUps === null) {
-			throw new Error("QQ 控制状态文件形状非法，明确失败");
+		if (
+			shape.version !== 2 ||
+			shape.selfId !== this.options.selfId ||
+			typeof shape.revision !== "number" ||
+			typeof shape.followUps !== "object" ||
+			shape.followUps === null
+		) {
+			throw new Error("QQ 控制状态 v2 账号元信息不匹配或形状非法，明确失败");
 		}
 		this.state = {
-			version: 1,
+			version: 2,
+			selfId: this.options.selfId,
 			revision: shape.revision,
 			accountOverride: shape.accountOverride ?? EMPTY_OVERRIDE,
 			conversationOverrides: shape.conversationOverrides ?? {},
 			followUps: shape.followUps,
 		};
 		for (const ref of Object.keys(this.state.followUps)) {
-			const parts = ref.split(":");
-			const num = Number.parseInt(parts[parts.length - 1] ?? "", 10);
+			if (!/^f[1-9]\d*$/.test(ref)) throw new Error("QQ 事项引用非法");
+			const num = Number(ref.slice(1));
 			if (Number.isInteger(num) && num > this.followUpCounter) this.followUpCounter = num;
 		}
 		return { followUps: Object.keys(this.state.followUps).length };
@@ -99,7 +109,7 @@ export class ControlStore {
 	/**
 	 * attention.set：只修改提供的字段；成功等待持久确认并返回诊断 revision。
 	 */
-	setAttention(target: string, patch: { mode?: AttentionMode; priority?: import("./types.js").AttentionPriority; pausedUntil?: string | null }): number {
+	setAttention(target: string, patch: AttentionOverride): number {
 		if (patch.pausedUntil !== undefined && patch.pausedUntil !== null && !isIsoTime(patch.pausedUntil)) {
 			throw new Error("pausedUntil 必须是带时区的 ISO 时间或 null");
 		}
@@ -124,14 +134,14 @@ export class ControlStore {
 
 	/** attention.clear：清除目标覆盖。 */
 	clearAttention(target: string): number {
-		const next: ControlFileShape =
-			target === "account"
-				? { ...this.state, accountOverride: EMPTY_OVERRIDE, revision: this.state.revision + 1 }
-				: (() => {
-						const overrides = { ...this.state.conversationOverrides };
-						delete overrides[target];
-						return { ...this.state, conversationOverrides: overrides, revision: this.state.revision + 1 };
-					})();
+		let next: ControlFileShape;
+		if (target === "account") {
+			next = { ...this.state, accountOverride: EMPTY_OVERRIDE, revision: this.state.revision + 1 };
+		} else {
+			const overrides = { ...this.state.conversationOverrides };
+			delete overrides[target];
+			next = { ...this.state, conversationOverrides: overrides, revision: this.state.revision + 1 };
+		}
 		this.persist(next);
 		return this.state.revision;
 	}
@@ -149,11 +159,17 @@ export class ControlStore {
 			account.pausedUntil != null && isIsoTime(account.pausedUntil) && Date.parse(account.pausedUntil) > nowMs;
 		const localPaused =
 			local.pausedUntil != null && isIsoTime(local.pausedUntil) && Date.parse(local.pausedUntil) > nowMs;
+		let pausedUntil: string | null = null;
+		if (accountPaused) pausedUntil = account.pausedUntil!;
+		else if (localPaused) pausedUntil = local.pausedUntil!;
 
 		return {
-			mode: accountPaused ? "silent" : (localPaused ? "silent" : (local.mode ?? account.mode ?? this.options.defaultMode ?? "normal")),
+			mode:
+				account.mode === "silent" || accountPaused || localPaused
+					? "silent"
+					: (local.mode ?? account.mode ?? this.options.defaultMode ?? "normal"),
 			priority: local.priority ?? account.priority ?? "normal",
-			pausedUntil: accountPaused ? account.pausedUntil! : localPaused ? local.pausedUntil! : null,
+			pausedUntil,
 		};
 	}
 
@@ -174,13 +190,18 @@ export class ControlStore {
 
 	/* ---------- follow_up ---------- */
 
-	createFollowUp(input: { targetRef: string; note: string; evidenceRefs?: readonly string[]; reviewAt?: string | null }): FollowUpItem {
+	createFollowUp(input: {
+		targetRef: string;
+		note: string;
+		evidenceRefs?: readonly string[];
+		reviewAt?: string | null;
+	}): FollowUpItem {
 		if (input.reviewAt != null && !isIsoTime(input.reviewAt)) {
 			throw new Error("reviewAt 必须是带时区的 ISO 时间或 null");
 		}
 		this.followUpCounter++;
 		const item: FollowUpItem = {
-			ref: `qq-follow-up:${this.options.selfId}:${this.followUpCounter}`,
+			ref: `f${this.followUpCounter}`,
 			targetRef: input.targetRef,
 			note: input.note,
 			evidenceRefs: input.evidenceRefs ?? [],
@@ -189,12 +210,7 @@ export class ControlStore {
 			state: "open",
 			formedAt: this.nowFn(),
 		};
-		this.persist({
-			...this.state,
-			followUps: { ...this.state.followUps, [item.ref]: item },
-			revision: this.state.revision + 1,
-		});
-		return item;
+		return this.persistFollowUp(item);
 	}
 
 	private persistFollowUp(item: FollowUpItem): FollowUpItem {
@@ -219,7 +235,10 @@ export class ControlStore {
 	}
 
 	/** update 修改给定字段；reviewAt=null 清除预约。 */
-	updateFollowUp(ref: string, patch: { note?: string; evidenceRefs?: readonly string[]; reviewAt?: string | null }): FollowUpItem {
+	updateFollowUp(
+		ref: string,
+		patch: { note?: string; evidenceRefs?: readonly string[]; reviewAt?: string | null },
+	): FollowUpItem {
 		const item = this.getFollowUp(ref);
 		if (!item) throw new Error(`follow_up 不存在: ${ref}`);
 		if (item.state !== "open") throw new Error(`follow_up ${ref} 已是 ${item.state}，只能对 open 事项操作`);
@@ -256,7 +275,8 @@ export class ControlStore {
 	dueFollowUps(): FollowUpItem[] {
 		const nowMs = Date.parse(this.nowFn());
 		return Object.values(this.state.followUps).filter(
-			(item) => item.state === "open" && !item.reviewNotified && item.reviewAt != null && Date.parse(item.reviewAt) <= nowMs,
+			(item) =>
+				item.state === "open" && !item.reviewNotified && item.reviewAt != null && Date.parse(item.reviewAt) <= nowMs,
 		);
 	}
 }

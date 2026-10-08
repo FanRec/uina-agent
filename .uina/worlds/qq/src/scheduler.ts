@@ -1,6 +1,7 @@
+import { parseConversationRef, parseUserRef, userRef, conversationRef } from "./types.js";
 import type { FactsJournal } from "./facts-journal.js";
 import type { ControlStore } from "./control-store.js";
-import type { EventFact, MessageFact, OperationRecord, RequestFact } from "./types.js";
+import type { EventFact, IngestedFact, OperationRecord } from "./types.js";
 
 /**
  * 朴素调度（设计 §4.1/4.2）：候选从事实与控制状态派生，单占位，串行选择。
@@ -44,6 +45,8 @@ export interface PendingCandidate {
 	readonly trigger?: "private" | "at_self" | "reply_self" | "poke" | "recall";
 	/** 世界事件 origin（入站表：bot_status/offline 为 external，连接故障与到期事项为 internal）；makeCandidate 保证必填。 */
 	readonly origin: "external" | "internal";
+	readonly eventRefs?: readonly string[];
+	readonly requestRefs?: readonly string[];
 }
 
 export interface SchedulerDeps {
@@ -52,7 +55,13 @@ export interface SchedulerDeps {
 	readonly control: ControlStore;
 	readonly now: () => string;
 	/** 投递世界事件（emitEvent 包装 submitInput）；单占位由 scheduler 保证。 */
-	readonly emit: (input: { id: string; text: string; conversationRef: string; cls: CandidateClass; origin: "external" | "internal" }) => Promise<void>;
+	readonly emit: (input: {
+		id: string;
+		text: string;
+		conversationRef: string;
+		cls: CandidateClass;
+		origin: "external" | "internal";
+	}) => Promise<void>;
 	readonly isBusy?: () => boolean;
 	/** 批次正文渲染（呈现层唯一出口，render.ts 提供）。 */
 	readonly renderBatch: (candidate: PendingCandidate) => string;
@@ -62,11 +71,7 @@ export interface SchedulerDeps {
 	 * 未注入时保守不提醒（事实保存可查）。
 	 */
 	readonly isRecallRelevant?: (fact: EventFact) => boolean;
-}
-
-interface IngestedItem {
-	kind: "message" | "event" | "request";
-	fact: MessageFact | EventFact | RequestFact;
+	readonly isRequestPending?: (ref: string) => boolean;
 }
 
 /** 派发占位：input_settled 后按 committed 结算通知记账。 */
@@ -82,11 +87,12 @@ interface Placeholder {
 }
 
 export class QqScheduler {
+	private stopped = false;
 	private readonly pending = new Map<string, PendingCandidate>();
 	private placeholder: Placeholder | null = null;
-	private timers = new Map<string, ReturnType<typeof setTimeout>>();
+	private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
 	/** 每个候选窗口的首条到达时刻（maxWait 自此起算）。 */
-	private windowStart = new Map<string, number>();
+	private readonly windowStart = new Map<string, number>();
 	private recheckTimer: ReturnType<typeof setTimeout> | null = null;
 	/** 已处理过的暂停到期事件（target:pausedUntil）；进程内存续，重启至多重放一次摘要（偏差登记）。 */
 	private readonly processedPauseExpiries = new Set<string>();
@@ -108,6 +114,7 @@ export class QqScheduler {
 
 	/** World 停止：取消全部窗口与 recheck，不再产生新机会。 */
 	stop(): void {
+		this.stopped = true;
 		for (const timer of this.timers.values()) clearTimeout(timer);
 		this.timers.clear();
 		this.windowStart.clear();
@@ -118,33 +125,33 @@ export class QqScheduler {
 	}
 
 	/** 摄取层每追加一条事实后调用；不等待、不抛错。 */
-	onFact(item: IngestedItem): void {
+	onFact(item: IngestedFact): void {
+		if (this.stopped) return;
 		try {
 			for (const candidate of this.classify(item)) this.offer(candidate);
 		} catch (error) {
 			// 单条事实分类失败不阻断摄取主链，但必须留可见痕迹（静默=永远不提醒）。
-			console.warn(
-				`[qq] 事实分类失败（kind=${item.kind}）:`,
-				error instanceof Error ? error.message : error,
-			);
+			console.warn(`[qq] 事实分类失败（kind=${item.kind}）:`, error instanceof Error ? error.message : error);
 		}
 	}
 
-	private classify(item: IngestedItem): PendingCandidate[] {
+	private classify(item: IngestedFact): PendingCandidate[] {
 		const { selfId, control } = this.deps;
 		if (item.kind === "message") {
-			const fact = item.fact as MessageFact;
+			const fact = item.fact;
 			if (fact.direction === "out") return []; // self 回送：与真实回执归并，不自动唤醒
-			const parsed = /:(private|group|temp):([^\s]+)$/.exec(fact.conversationRef);
+			const parsed = parseConversationRef(fact.conversationRef);
 			if (!parsed) return [];
-			const [, kind] = parsed;
+			const { kind } = parsed;
 			const attention = control.effectiveAttention(fact.conversationRef);
 			if (attention.mode === "silent") return []; // 不提醒；事实仍可查
 			if (kind !== "group") {
 				return [this.makeCandidate(fact.conversationRef, "direct", fact.time, 1, "private")];
 			}
 			// 群：真实 @self / reply 已核验自己的消息 → direct；其余普通合并。
-			const atSelf = fact.segments.some((seg) => seg.type === "mention" && seg.userRef === `qq-user:${selfId}:${selfId}`);
+			const atSelf = fact.segments.some(
+				(seg) => seg.type === "mention_all" || (seg.type === "mention" && seg.userRef === userRef(selfId)),
+			);
 			const replySelf = fact.replyTo !== undefined && this.isOwnMessage(fact.replyTo);
 			if (atSelf || replySelf) {
 				return [this.makeCandidate(fact.conversationRef, "direct", fact.time, 1, atSelf ? "at_self" : "reply_self")];
@@ -153,40 +160,53 @@ export class QqScheduler {
 			return [this.makeCandidate(fact.conversationRef, "ordinary", fact.time, 1)];
 		}
 		if (item.kind === "event") {
-			const fact = item.fact as EventFact;
-			if (fact.kind === "poke" && fact.targetRef === `qq-user:${selfId}:${selfId}`) {
+			const fact = item.fact;
+			if (fact.kind === "poke" && fact.targetRef === userRef(selfId)) {
 				const attention = control.effectiveAttention(fact.conversationRef ?? "account");
 				if (attention.mode === "silent") return [];
 				// 群 poke 携带会话现场；好友 poke 从 actor（对方）推导私聊会话——fact 字段已知，非猜测。
 				const convRef = fact.conversationRef ?? this.privateRefFromActor(fact.actorRef);
 				if (!convRef) return [];
-				return [this.makeCandidate(convRef, "direct", fact.time, 1, "poke")];
+				return [{ ...this.makeCandidate(convRef, "direct", fact.time, 1, "poke"), eventRefs: [fact.ref] }];
 			}
 			if (fact.kind === "recall" && fact.conversationRef) {
 				const attention = control.effectiveAttention(fact.conversationRef);
 				if (attention.mode === "silent") return [];
 				// 合同 §4：仅"影响当前交互或事项证据"的 recall 允许提醒；判定注入，缺省不唤醒。
 				if (!this.deps.isRecallRelevant?.(fact)) return [];
-				return [this.makeCandidate(fact.conversationRef, "direct", fact.time, 1, "recall")];
+				return [
+					{ ...this.makeCandidate(fact.conversationRef, "direct", fact.time, 1, "recall"), eventRefs: [fact.ref] },
+				];
 			}
 			if (fact.kind === "bot_status" || fact.kind === "bot_offline") {
 				// 入站表：bot_status/offline 属平台事实，origin=external；初始化基线由装配层
 				// 首连状态处理（connected 事件不产生候选）。
-				return [this.makeCandidate("qq-event-account", "internal", fact.time, 1, undefined, "external")];
+				return [
+					{
+						...this.makeCandidate("qq-event-account", "internal", fact.time, 1, undefined, "external"),
+						eventRefs: [fact.ref],
+					},
+				];
 			}
 			if (fact.kind === "transport_disconnected" || fact.kind === "transport_recovered") {
 				// 一次性语义（只报一次/恢复只对已报故障）由装配层的 onStatus 状态机保证；
 				// 调度器只负责把已放行的事实变成 internal 候选。
-				return [this.makeCandidate("qq-event-account", "internal", fact.time, 1)];
+				return [{ ...this.makeCandidate("qq-event-account", "internal", fact.time, 1), eventRefs: [fact.ref] }];
 			}
 			return []; // 一般成员变化/reaction/profile_like 保存可查，不默认唤醒
 		}
 		// request：好友申请与已确认目标群邀请允许提醒。
-		const fact = item.fact as RequestFact;
+		const fact = item.fact;
+		if (fact.state !== "pending" || this.deps.isRequestPending?.(fact.ref) === false) return [];
 		if (fact.kind === "friend" || (fact.kind === "group_invite" && fact.targetConversationRef !== undefined)) {
 			const attention = control.effectiveAttention("account");
 			if (attention.mode === "silent") return [];
-			return [this.makeCandidate(fact.targetConversationRef ?? "qq-request-account", "request", fact.time, 1)];
+			return [
+				{
+					...this.makeCandidate(fact.targetConversationRef ?? "qq-request-account", "request", fact.time, 1),
+					requestRefs: [fact.ref],
+				},
+			];
 		}
 		return [];
 	}
@@ -199,13 +219,14 @@ export class QqScheduler {
 	/** 好友 poke 无会话现场：从 actor（对方）推导私聊会话 ref；actor 缺失或是自己则放弃唤醒。 */
 	private privateRefFromActor(actorRef: string | undefined): string | undefined {
 		if (!actorRef) return undefined;
-		const [, account, uin] = actorRef.split(":");
-		if (account !== this.deps.selfId || uin === undefined || uin === this.deps.selfId) return undefined;
-		return `qq-conversation:${this.deps.selfId}:private:${uin}`;
+		const parsed = parseUserRef(actorRef);
+		if (!parsed || parsed.uin === this.deps.selfId) return undefined;
+		return conversationRef("private", parsed.uin);
 	}
 
 	/** 候选是否仅由会话消息派生（无自身载荷，空转即无意义）。 */
 	private isMessageDerived(candidate: PendingCandidate): boolean {
+		if (candidate.eventRefs?.length || candidate.requestRefs?.length) return false;
 		if (candidate.cls === "ordinary") return true;
 		if (candidate.cls === "direct") return candidate.trigger !== "poke" && candidate.trigger !== "recall";
 		return false;
@@ -226,12 +247,13 @@ export class QqScheduler {
 			oldestAt: time,
 			count,
 			trigger,
-			origin: origin ?? (cls === "internal" ? ("internal" as const) : ("external" as const)),
+			origin: origin ?? (cls === "internal" ? "internal" : "external"),
 		};
 	}
 
 	/** 装配层轮询 dueFollowUps 后调用；到期事项走 internal 候选，派发成功即计账。 */
 	notifyFollowUpDue(): void {
+		if (this.stopped) return;
 		const due = this.deps.control.dueFollowUps();
 		if (due.length === 0) return;
 		this.offer(this.makeCandidate("qq-follow-ups", "internal", this.deps.now(), due.length));
@@ -243,6 +265,7 @@ export class QqScheduler {
 	 * 无积压不制造回合，事实优先由 select() 的 direct > internal 顺序天然满足）。
 	 */
 	notifyControlTick(): void {
+		if (this.stopped) return;
 		for (const expiry of this.deps.control.expiredPauses()) {
 			const key = `${expiry.target}:${expiry.pausedUntil}`;
 			if (this.processedPauseExpiries.has(key)) continue;
@@ -256,6 +279,7 @@ export class QqScheduler {
 
 	/** 迟到回执把 unknown 升级为确定结论后调用（入站表：同 operation 更新，无新派发 | internal）。 */
 	notifyOperationSettled(record: OperationRecord): void {
+		if (this.stopped) return;
 		this.settledUnknowns.set(record.ref, record);
 		this.offer(this.makeCandidate("qq-operations", "internal", this.deps.now(), 1));
 	}
@@ -271,12 +295,15 @@ export class QqScheduler {
 	 * 占位占用时不设窗口（候选只保留，结算后统一重选）。
 	 */
 	private offer(candidate: PendingCandidate): void {
+		if (this.stopped) return;
 		const existing = this.pending.get(candidate.key);
 		if (existing) {
 			// 合并：普通候选累加计数；direct 只保留最老到达时间。
 			this.pending.set(candidate.key, {
 				...existing,
 				count: existing.cls === "ordinary" ? existing.count + candidate.count : existing.count,
+				eventRefs: [...new Set([...(existing.eventRefs ?? []), ...(candidate.eventRefs ?? [])])],
+				requestRefs: [...new Set([...(existing.requestRefs ?? []), ...(candidate.requestRefs ?? [])])],
 			});
 		} else {
 			this.pending.set(candidate.key, candidate);
@@ -318,6 +345,7 @@ export class QqScheduler {
 
 	/** input_settled(committed/retired) 回调：释放占位并推进通知位置。 */
 	onInputSettled(inputId: string, committed: boolean): void {
+		if (this.stopped) return;
 		if (!this.placeholder || this.placeholder.inputId !== inputId) return;
 		const { conversationRef, throughSequence, followUpRefs, operationRefs } = this.placeholder;
 		if (committed) {
@@ -340,6 +368,7 @@ export class QqScheduler {
 
 	/** agent_settled 通知：单个可取消 recheck（不 await Subject 空闲）。 */
 	onAgentSettled(): void {
+		if (this.stopped) return;
 		if (this.recheckTimer || this.placeholder) return;
 		this.recheckTimer = setTimeout(() => {
 			this.recheckTimer = null;
@@ -351,10 +380,20 @@ export class QqScheduler {
 
 	/** 选择与派发：串行；占位占用直接返回。 */
 	private async tryDispatch(): Promise<void> {
+		if (this.stopped) return;
 		if (this.placeholder || this.pending.size === 0) return;
 		if (this.deps.isBusy?.() ?? false) return; // 忙时普通活动留在事实存储
-		const candidate = this.select();
+		let candidate = this.select();
 		if (!candidate) return;
+		if (candidate.cls === "request" && candidate.requestRefs?.length) {
+			const requestRefs = candidate.requestRefs.filter((ref) => this.deps.isRequestPending?.(ref) !== false);
+			if (requestRefs.length === 0) {
+				this.pending.delete(candidate.key);
+				void this.tryDispatch();
+				return;
+			}
+			candidate = { ...candidate, requestRefs };
+		}
 		const attention = this.deps.control.effectiveAttention(candidate.conversationRef);
 		if (attention.mode === "silent") {
 			this.pending.delete(candidate.key);
@@ -378,8 +417,11 @@ export class QqScheduler {
 			// follow_up 到期：派发时先捕获渲染的到期列表，committed 结算后才计账——
 			// retired/claimed 不标记，轮询自然重新提醒（合同：记录失败允许以后重复提醒）。
 			const followUpRefs =
-				candidate.conversationRef === "qq-follow-ups" ? this.deps.control.dueFollowUps().map((item) => item.ref) : undefined;
-			const operationRefs = candidate.conversationRef === "qq-operations" ? [...this.settledUnknowns.keys()] : undefined;
+				candidate.conversationRef === "qq-follow-ups"
+					? this.deps.control.dueFollowUps().map((item) => item.ref)
+					: undefined;
+			const operationRefs =
+				candidate.conversationRef === "qq-operations" ? [...this.settledUnknowns.keys()] : undefined;
 			this.placeholder = {
 				inputId,
 				conversationRef: candidate.conversationRef,
@@ -395,9 +437,13 @@ export class QqScheduler {
 				origin: candidate.origin,
 			});
 		} catch (error) {
+			if (this.stopped) return;
 			// 投递/渲染失败：释放占位并恢复候选（合同：允许以后重复提醒）；
 			// 确定性渲染 bug 会以窗口节奏重试并持续留可见痕迹，不静默丢失。
-			console.warn(`[qq] 批次投递失败（${candidate.conversationRef}）:`, error instanceof Error ? error.message : error);
+			console.warn(
+				`[qq] 批次投递失败（${candidate.conversationRef}）:`,
+				error instanceof Error ? error.message : error,
+			);
 			this.placeholder = null;
 			this.offer(candidate);
 		}
@@ -414,15 +460,14 @@ export class QqScheduler {
 			return nowMs - Date.parse(candidate.oldestAt) + bias;
 		};
 		const byAge = (a: PendingCandidate, b: PendingCandidate): number => effectiveAge(b) - effectiveAge(a);
-		const direct = candidates.filter((c) => c.cls === "direct");
-		if (direct.length > 0) return direct.sort(byAge)[0] ?? null;
-		const request = candidates.filter((c) => c.cls === "request");
-		if (request.length > 0) return request.sort(byAge)[0] ?? null;
-		const internal = candidates.filter((c) => c.cls === "internal");
-		if (internal.length > 0) return internal.sort(byAge)[0] ?? null;
-		const ordinary = candidates.filter((c) => c.cls === "ordinary" && this.deps.control.effectiveAttention(c.conversationRef).mode === "normal");
-		if (ordinary.length > 0) return ordinary.sort(byAge)[0] ?? null;
+		for (const cls of ["direct", "request", "internal", "ordinary"] as const) {
+			const matching = candidates.filter(
+				(candidate) =>
+					candidate.cls === cls &&
+					(cls !== "ordinary" || this.deps.control.effectiveAttention(candidate.conversationRef).mode === "normal"),
+			);
+			if (matching.length > 0) return matching.sort(byAge)[0] ?? null;
+		}
 		return null;
 	}
-
 }

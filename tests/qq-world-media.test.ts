@@ -9,15 +9,24 @@ import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import { QqIngestion } from "../.uina/worlds/qq/src/ingest.js";
 import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
-import { handleQqCall, type QqAppDeps } from "../.uina/worlds/qq/src/app.js";
+import { handleQqCall as runQqCall, type QqAppDeps } from "../.uina/worlds/qq/src/app.js";
 import { loadQqWorldConfig } from "../.uina/worlds/qq/src/config.js";
 import { segmentText } from "../.uina/worlds/qq/src/render.js";
 import { createQqWorld } from "../.uina/worlds/qq/src/index.js";
 import type { QqWorldConfig } from "../.uina/worlds/qq/src/config.js";
 import type { QqTransport, TransportCallOutcome } from "../.uina/worlds/qq/src/transport.js";
 
+function handleQqCall(
+	deps: QqAppDeps,
+	action: string,
+	params: Record<string, unknown>,
+	signal?: AbortSignal,
+): ReturnType<typeof runQqCall> {
+	return runQqCall(deps, action, { account: deps.selfId, ...params }, signal);
+}
+
 const SELF = "10001";
-const TARGET = `qq-conversation:${SELF}:private:20002`;
+const TARGET = `p20002`;
 let dir: string;
 let root: string;
 let ops: OperationLog;
@@ -116,7 +125,7 @@ describe("G8 roots/staging", () => {
 			action: "send_private_msg",
 			identity: "test",
 			outcome: "unknown",
-			echo: ref,
+			echo: `${SELF}/${ref}`,
 			startedAt: new Date().toISOString(),
 		});
 		const copy = staging.stage(source, ref);
@@ -125,7 +134,7 @@ describe("G8 roots/staging", () => {
 		const restarted = new MediaStaging({ stagingDir: join(dir, "staging"), ops: recovered });
 		expect(restarted.cleanupSettled()).toMatchObject({ removed: 0, keptUnknown: 1 });
 		expect(existsSync(copy)).toBe(true);
-		recovered.settleFromEchoReceipt(ref, { status: "ok" }, new Date().toISOString());
+		recovered.settleFromEchoReceipt(`${SELF}/${ref}`, { status: "ok" }, new Date().toISOString());
 		expect(restarted.cleanupSettled()).toMatchObject({ removed: 1 });
 		expect(existsSync(copy)).toBe(false);
 		expect(existsSync(source)).toBe(true);
@@ -150,26 +159,29 @@ describe("G8 media facts and action composition", () => {
 		const world = createQqWorld({ config, transport: deps.transport });
 		try {
 			await world.onStart?.(context);
+			const source = join(dir, "v2", SELF, "fixture.wav");
+			writeFileSync(source, "media bytes");
 			const result = await world.actions.speak!.run(
-				{ conversationRef: TARGET, content: [{ type: "audio", resource: resource(file()) }] },
+				{ account: SELF, conversationRef: TARGET, content: [{ type: "audio", resource: resource(source) }] },
 				{ operationIdentity: "world:qq/speak", signal: context.signal },
 			);
 			expect(result.status).toBe("succeeded");
-			const copy = fileURLToPath((calls[0]!.params.message as { data: { file: string } }[])[0]!.data.file);
+			const sent = calls.find((call) => call.action === "send_private_msg")!;
+			const copy = fileURLToPath((sent.params.message as { data: { file: string } }[])[0]!.data.file);
 			expect(existsSync(copy)).toBe(true);
 			await world.onStop?.(context);
 			await world.onStart?.(context);
 			expect(existsSync(copy)).toBe(false);
-			expect(calls).toHaveLength(1);
+			expect(calls.filter((call) => call.action === "send_private_msg")).toHaveLength(1);
 		} finally {
 			await world.onStop?.(context);
 		}
 	});
 	it("durable barrier failure returns not_started without platform dispatch", async () => {
-		const blocked = join(dir, "blocked-log");
-		writeFileSync(blocked, "not a directory");
-		const brokenOps = new OperationLog({ dataDir: blocked, selfId: SELF });
-		const result = await handleQqCall({ ...deps, ops: brokenOps }, "speak", {
+		vi.spyOn(ops, "commitIntent").mockImplementation(() => {
+			throw new Error("intent cannot be durably committed");
+		});
+		const result = await handleQqCall(deps, "speak", {
 			conversationRef: TARGET,
 			content: [{ type: "image", resource: resource(file()) }],
 		});
@@ -177,10 +189,12 @@ describe("G8 media facts and action composition", () => {
 		expect(result.details).toMatchObject({ reason: "intent_commit_failed", effect: "not_started" });
 		expect(calls).toHaveLength(0);
 	});
-	it("successful writes expose operationRef for staging/result verification", async () => {
+	it("successful writes retain operationRef in details and durable log without repeating it in normal text", async () => {
 		const result = await speak([{ type: "image", resource: resource(file()) }]);
-		expect(result.details).toMatchObject({ operationRef: calls[0]!.echo });
-		expect(String(result.result)).toContain(calls[0]!.echo);
+		expect(result.details).toMatchObject({ operationRef: "o1" });
+		expect(String(result.result)).not.toContain("operationRef=o1");
+		expect(ops.get("o1")).toMatchObject({ outcome: "succeeded", messageRef: "m90" });
+		expect(calls[0]!.echo).toBe(`${SELF}/o1`);
 	});
 	it("receipt log failure preserves platform success and staging evidence", async () => {
 		vi.spyOn(ops, "settle").mockImplementation(() => {
@@ -205,26 +219,26 @@ describe("G8 media facts and action composition", () => {
 			segmentText([
 				{
 					type: "image",
-					mediaRef: `qq-media:${SELF}:1`,
+					mediaRef: `a1`,
 					fileName: 'a"b.png',
 					url: "https://example.test/p.png",
 					understood: false,
 				},
 			]),
-		).toContain(`ref=qq-media:${SELF}:1`);
+		).toContain(`ref=a1`);
 	});
 	it("qq_media with local file URL cannot bypass allowed roots", async () => {
 		journal.appendMessage({
-			ref: `qq-message:${SELF}:99`,
+			ref: `m99`,
 			conversationRef: TARGET,
 			senderRef: null,
 			senderDisplayName: null,
 			direction: "in",
 			source: "platform",
 			time: new Date().toISOString(),
-			segments: [{ type: "image", mediaRef: `qq-media:${SELF}:99`, url: "file:///C:/private.png", understood: false }],
+			segments: [{ type: "image", mediaRef: `a99`, url: "file:///C:/private.png", understood: false }],
 		});
-		const result = await speak([{ type: "image", resource: { kind: "qq_media", ref: `qq-media:${SELF}:99` } }]);
+		const result = await speak([{ type: "image", resource: { kind: "qq_media", ref: `a99` } }]);
 		expect(result.status).toBe("failed");
 		expect(calls).toHaveLength(0);
 	});
@@ -239,18 +253,18 @@ describe("G8 media facts and action composition", () => {
 			message: [{ type: "image", data: { url: "https://example.test/a.png", file: "a.png" } }],
 		});
 		new QqIngestion(SELF, journal).handleEvent(event(1, 20002));
-		const seg = journal.getMessage(`qq-message:${SELF}:1`)!.segments[0] as { mediaRef: string };
+		const seg = journal.getMessage(`m1`)!.segments[0] as { mediaRef: string };
 		const restored = new FactsJournal({ dataDir: dir, selfId: SELF });
 		restored.recover();
 		expect(restored.getMedia(seg.mediaRef)).toMatchObject({ type: "image", url: "https://example.test/a.png" });
 		new QqIngestion(SELF, restored).handleEvent(event(2, 30003));
-		const next = restored.getMessage(`qq-message:${SELF}:2`)!.segments[0] as { mediaRef: string };
+		const next = restored.getMessage(`m2`)!.segments[0] as { mediaRef: string };
 		expect(next.mediaRef).not.toBe(seg.mediaRef);
 	});
 	it("text/image/audio stage before durable dispatch and audio uses record", async () => {
 		const path = file();
 		respond = (_action, params, echo) => {
-			expect(ops.get(echo!)).toMatchObject({ outcome: "unknown", echo });
+			expect(ops.get(echo!.split("/")[1]!)).toMatchObject({ outcome: "unknown", echo });
 			const segments = params.message as { type: string; data: { file?: string } }[];
 			expect(segments.map((s) => s.type)).toEqual(["text", "image", "record", "text"]);
 			for (const s of segments.filter((s) => s.data.file)) {
@@ -282,12 +296,12 @@ describe("G8 media facts and action composition", () => {
 	it("ambiguous negative late receipt cannot mark an unknown upload as failed or delete its copy", async () => {
 		respond = () => ({ status: "failed", kind: "timeout", reason: "timeout" });
 		await speak([{ type: "audio", resource: resource(file()) }]);
-		const ref = calls[0]!.echo!;
-		ops.settleFromEchoReceipt(ref, { status: "failed", retcode: 100, data: null }, new Date().toISOString());
-		expect(ops.get(ref)?.outcome).toBe("unknown");
+		const echo = calls[0]!.echo!;
+		ops.settleFromEchoReceipt(echo, { status: "failed", retcode: 100, data: null }, new Date().toISOString());
+		expect(ops.get("o1")?.outcome).toBe("unknown");
 		expect(staging.cleanupSettled().keptUnknown).toBe(1);
-		ops.settleFromEchoReceipt(ref, { status: "failed", retcode: 1400, data: null }, new Date().toISOString());
-		expect(ops.get(ref)?.outcome).toBe("failed");
+		ops.settleFromEchoReceipt(echo, { status: "failed", retcode: 1400, data: null }, new Date().toISOString());
+		expect(ops.get("o1")?.outcome).toBe("failed");
 	});
 	it("file boundaries preserve actual dispatch order and return each confirmed receipt", async () => {
 		const path = file("report.txt");
@@ -325,7 +339,7 @@ describe("G8 media facts and action composition", () => {
 		]);
 		expect(result.status).toBe("failed");
 		expect(result.details).toMatchObject({
-			confirmedParts: [{ from: 0, through: 0, messageRef: `qq-message:${SELF}:101` }],
+			confirmedParts: [{ from: 0, through: 0, messageRef: `m101` }],
 			stoppedAt: 1,
 			remainingFrom: 2,
 		});
@@ -361,24 +375,31 @@ describe("G8 media facts and action composition", () => {
 	});
 	it("qq_media uses replayed URL with account/type/address validation", async () => {
 		journal.appendMessage({
-			ref: `qq-message:${SELF}:4`,
+			ref: `m4`,
 			conversationRef: TARGET,
 			senderRef: null,
 			senderDisplayName: null,
 			direction: "in",
 			source: "platform",
 			time: new Date().toISOString(),
-			segments: [
-				{ type: "image", mediaRef: `qq-media:${SELF}:4`, url: "https://example.test/p.png", understood: false },
-			],
+			segments: [{ type: "image", mediaRef: `a4`, url: "https://example.test/p.png", understood: false }],
 		});
 		const send = (ref: string, type = "image") => speak([{ type, resource: { kind: "qq_media", ref } }]);
-		expect((await send(`qq-media:${SELF}:4`)).status).toBe("succeeded");
+		expect((await send(`a4`)).status).toBe("succeeded");
 		expect(calls[0]!.params.message).toEqual([{ type: "image", data: { file: "https://example.test/p.png" } }]);
+		expect(
+			(
+				await handleQqCall(deps, "speak", {
+					account: "10099",
+					conversationRef: TARGET,
+					content: [{ type: "image", resource: { kind: "qq_media", ref: "a4" } }],
+				})
+			).details,
+		).toMatchObject({ reason: "account_mismatch" });
 		for (const [ref, type] of [
-			["qq-media:10099:4", "image"],
-			[`qq-media:${SELF}:missing`, "image"],
-			[`qq-media:${SELF}:4`, "audio"],
+			["bad-media-ref", "image"],
+			[`a999999`, "image"],
+			[`a4`, "audio"],
 		]) {
 			expect((await send(ref!, type)).status).toBe("failed");
 		}
@@ -434,8 +455,8 @@ describe("G8 media facts and action composition", () => {
 		});
 		expect(result.details).toMatchObject({
 			media: {
-				image: { supportedByAdapter: false, allowedByDeployment: false },
-				audio: { supportedByAdapter: null, allowedByDeployment: false, availableNow: null },
+				image: { supportedByAdapter: true, allowedByDeployment: false, availableNow: false },
+				audio: { supportedByAdapter: true, allowedByDeployment: false, availableNow: null },
 			},
 		});
 		expect(calls.map((c) => c.action)).toEqual(["can_send_image", "can_send_record"]);

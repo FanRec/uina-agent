@@ -9,8 +9,8 @@ import { parseDeploymentGrants } from "../.uina/worlds/qq/src/grants.js";
 import { requiredGrant } from "../.uina/worlds/qq/src/grants-vocabulary.js";
 import { loadQqWorldConfig } from "../.uina/worlds/qq/src/config.js";
 
-const FIXTURE_PATH = join(import.meta.dirname, "..", "docs", "proposals", "qq-world-interaction-examples.json");
-const TOOLDEF_PATH = join(import.meta.dirname, "..", "docs", "proposals", "qq-world-tool.json");
+const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "qq-world-interaction-examples.json");
+const TOOLDEF_PATH = join(import.meta.dirname, "..", ".uina", "worlds", "qq", "tool.json");
 
 interface Fixture {
 	validCalls: { id: string; arguments: Record<string, unknown> }[];

@@ -10,9 +10,9 @@ function pngResponse(headers: Record<string, string> = {}): Response {
 
 function factWithImage(index: number, url: string | undefined): MessageFact {
 	return {
-		ref: `qq-message:10001:${index}`,
-		conversationRef: "qq-conversation:10001:group:30003",
-		senderRef: "qq-user:10001:20002",
+		ref: `m${index}`,
+		conversationRef: "g30003",
+		senderRef: "u20002",
 		senderDisplayName: "小明",
 		direction: "in",
 		sequence: index,
@@ -20,7 +20,7 @@ function factWithImage(index: number, url: string | undefined): MessageFact {
 		segments: [
 			{
 				type: "image",
-				mediaRef: `qq-media:10001:${index}`,
+				mediaRef: `a${index}`,
 				...(url ? { url } : {}),
 				fileName: `img-${index}.png`,
 				understood: false,
@@ -51,18 +51,14 @@ describe("media-fetch 抓取边界", () => {
 					headers: { "content-type": "image/png", "content-length": String(20 * 1024 * 1024) },
 				}),
 		);
-		const { images, failures } = await fetchInboundImages([
-			{ mediaRef: "qq-media:10001:1", url: "https://example.test/big.png" },
-		]);
+		const { images, failures } = await fetchInboundImages([{ mediaRef: "a1", url: "https://example.test/big.png" }]);
 		expect(images).toHaveLength(0);
 		expect(failures[0]?.reason).toContain("大小上限");
 	});
 
 	it("无 content-type 时按魔数嗅探识别格式", async () => {
 		vi.stubGlobal("fetch", async () => new Response(PNG_BYTES, { status: 200 }));
-		const { images, failures } = await fetchInboundImages([
-			{ mediaRef: "qq-media:10001:1", url: "https://example.test/a" },
-		]);
+		const { images, failures } = await fetchInboundImages([{ mediaRef: "a1", url: "https://example.test/a" }]);
 		expect(failures).toHaveLength(0);
 		expect(images[0]?.mimeType).toBe("image/png");
 	});
@@ -70,8 +66,8 @@ describe("media-fetch 抓取边界", () => {
 	it("非 HTTP(S) 地址与失败 URL 逐条进入 failures，不阻断其余", async () => {
 		vi.stubGlobal("fetch", async () => new Response("gone", { status: 404 }));
 		const { images, failures } = await fetchInboundImages([
-			{ mediaRef: "qq-media:10001:1", url: undefined, fileName: "a.png" },
-			{ mediaRef: "qq-media:10001:2", url: "https://example.test/expired.png" },
+			{ mediaRef: "a1", url: undefined, fileName: "a.png" },
+			{ mediaRef: "a2", url: "https://example.test/expired.png" },
 		]);
 		expect(images).toHaveLength(0);
 		expect(failures).toHaveLength(2);

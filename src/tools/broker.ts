@@ -2,10 +2,11 @@ import { validImages } from "../core/content.js";
 import { errorMessage } from "../core/errors.js";
 import { Registrations } from "../core/registrations.js";
 import { createRequire } from "node:module";
-import type { ValidateFunction } from "ajv";
+import type { ErrorObject, ValidateFunction } from "ajv";
 import type { ToolDef, ToolExecutionMode, ToolResultStatus } from "../core/types.js";
 import { TOOL_RESULT_STATUSES } from "../core/types.js";
 import { executeToolPipeline, type ToolCallRequest, type ToolPipelineOptions } from "./pipeline.js";
+import { formatValidationErrors } from "./validation-errors.js";
 
 /** Identity of the caller, independent of the extension that registered a tool. */
 export interface ToolExecutionContext {
@@ -31,6 +32,7 @@ export interface PreparedToolCall {
 	tool?: Tool;
 	validator?: ValidateFunction;
 	error?: string;
+	validationErrors?: ErrorObject[];
 }
 
 export interface ToolExecutionResult {
@@ -44,7 +46,6 @@ export interface ToolExecutionResult {
 
 interface AjvLike {
 	compile(schema: object): ValidateFunction;
-	errorsText(errors: unknown): string;
 }
 type AjvConstructorType = new (options: { strict: boolean; allErrors: boolean }) => AjvLike;
 const AjvConstructor = createRequire(import.meta.url)("ajv") as AjvConstructorType;
@@ -125,12 +126,14 @@ export class ToolBroker implements ToolView {
 		const entry = this.tools.get(name);
 		if (!entry) return { name, args, error: `未知工具 ${name}` };
 		if (!entry.validator(args)) {
+			const validationErrors = structuredClone(entry.validator.errors ?? []);
 			return {
 				name,
 				args,
 				tool: entry.tool,
 				validator: entry.validator,
-				error: `工具 ${name} 参数校验失败: ${ajv.errorsText(entry.validator.errors)}`,
+				validationErrors,
+				error: `工具 ${name} 参数校验失败: ${formatValidationErrors(entry.tool.def.function.parameters, args, validationErrors)}`,
 			};
 		}
 		return { name, args, tool: entry.tool, validator: entry.validator };
@@ -141,6 +144,7 @@ export class ToolBroker implements ToolView {
 			return {
 				result: JSON.stringify({ error: prepared.error, status: "not_started" }),
 				status: "not_started",
+				...(prepared.validationErrors ? { details: { validationErrors: prepared.validationErrors } } : {}),
 			};
 		}
 		const tool = this.tools.get(prepared.name)?.tool;
@@ -264,6 +268,7 @@ export class ScopedToolView implements ToolView {
 			return {
 				result: JSON.stringify({ error: prepared.error, status: "not_started" }),
 				status: "not_started",
+				...(prepared.validationErrors ? { details: { validationErrors: prepared.validationErrors } } : {}),
 			};
 		}
 		if (!this.isAllowed(prepared.name)) {

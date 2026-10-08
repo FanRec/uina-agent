@@ -5,15 +5,23 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
 import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
-import { conversationRef, messageRef, userRef, type MessageFact } from "../.uina/worlds/qq/src/types.js";
+import {
+	conversationRef,
+	messageRef,
+	userRef,
+	parseConversationRef,
+	parseUserRef,
+	parseMessageRef,
+	type MessageFact,
+} from "../.uina/worlds/qq/src/types.js";
 
 const SELF = "10001";
 
 function makeMessage(n: number, overrides: Partial<MessageFact> = {}): Omit<MessageFact, "sequence"> {
 	return {
-		ref: messageRef(SELF, `message-${n}`),
-		conversationRef: conversationRef(SELF, "private", "20002"),
-		senderRef: userRef(SELF, "20002"),
+		ref: messageRef(n),
+		conversationRef: conversationRef("private", "20002"),
+		senderRef: userRef("20002"),
 		senderDisplayName: "小明",
 		direction: "in",
 		time: `2026-10-07T1${n}:00:00+08:00`,
@@ -51,7 +59,7 @@ describe("facts journal（G4 本地连续性 + 恢复）", () => {
 	it("notifiedThrough 跨进程保留且只前进", () => {
 		const first = journal();
 		first.recover();
-		const conv = conversationRef(SELF, "private", "20002");
+		const conv = conversationRef("private", "20002");
 		first.recordNotified(conv, 5, "input-1", "2026-10-07T10:00:00Z");
 		first.recordNotified(conv, 3, "input-2", "2026-10-07T10:01:00Z");
 		const second = journal();
@@ -84,9 +92,7 @@ describe("facts journal（G4 本地连续性 + 恢复）", () => {
 		first.recover();
 		first.appendMessage(makeMessage(1));
 		const second = new FactsJournal({ dataDir: dir, selfId: "99999" });
-		second.recover();
-		expect(second.snapshot.messages.size).toBe(0);
-		expect(second.snapshot.excludedForeignAccount).toBe(1);
+		expect(() => second.recover()).toThrow(/账号/);
 	});
 });
 
@@ -105,24 +111,24 @@ describe("control store（G4 本地连续性 + 单写方语义）", () => {
 		const first = store();
 		first.load();
 		first.setAttention("account", { mode: "direct_only" });
-		const rev = first.setAttention(conversationRef(SELF, "group", "30003"), { mode: "silent", priority: "preferred" });
+		const rev = first.setAttention(conversationRef("group", "30003"), { mode: "silent", priority: "preferred" });
 		expect(rev).toBe(2);
 
 		const second = store();
 		second.load();
 		expect(second.revision).toBe(2);
 		expect(second.effectiveAttention("account").mode).toBe("direct_only");
-		expect(second.effectiveAttention(conversationRef(SELF, "group", "30003")).mode).toBe("silent");
-		second.clearAttention(conversationRef(SELF, "group", "30003"));
-		expect(second.effectiveAttention(conversationRef(SELF, "group", "30003")).mode).toBe("direct_only");
+		expect(second.effectiveAttention(conversationRef("group", "30003")).mode).toBe("silent");
+		second.clearAttention(conversationRef("group", "30003"));
+		expect(second.effectiveAttention(conversationRef("group", "30003")).mode).toBe("direct_only");
 	});
 
 	it("账号级 silent 不被会话覆盖，到期恢复原规则", () => {
 		const s = store("2026-10-07T12:00:00Z");
 		s.load();
 		s.setAttention("account", { pausedUntil: "2026-10-07T13:00:00Z" });
-		s.setAttention(conversationRef(SELF, "group", "30003"), { mode: "normal" });
-		const groupRef = conversationRef(SELF, "group", "30003");
+		s.setAttention(conversationRef("group", "30003"), { mode: "normal" });
+		const groupRef = conversationRef("group", "30003");
 		expect(s.effectiveAttention(groupRef).mode).toBe("silent");
 		expect(s.effectiveAttention(groupRef).pausedUntil).toBe("2026-10-07T13:00:00Z");
 
@@ -156,9 +162,9 @@ describe("control store（G4 本地连续性 + 单写方语义）", () => {
 		const s = store("2026-10-07T08:00:00Z");
 		s.load();
 		const item = s.createFollowUp({
-			targetRef: conversationRef(SELF, "private", "20002"),
+			targetRef: conversationRef("private", "20002"),
 			note: "整理完资料再联系小明",
-			evidenceRefs: [messageRef(SELF, "message-42")],
+			evidenceRefs: [messageRef(42)],
 			reviewAt: "2026-10-07T16:30:00+08:00",
 		});
 		// 08:00Z < reviewAt(08:30Z)：尚未到期
@@ -184,12 +190,12 @@ describe("control store（G4 本地连续性 + 单写方语义）", () => {
 	it("重启后 followUp 计数续起不撞号", () => {
 		const first = store();
 		first.load();
-		const a = first.createFollowUp({ targetRef: conversationRef(SELF, "private", "20002"), note: "a" });
+		const a = first.createFollowUp({ targetRef: conversationRef("private", "20002"), note: "a" });
 		const second = store();
 		second.load();
-		const b = second.createFollowUp({ targetRef: conversationRef(SELF, "private", "20002"), note: "b" });
+		const b = second.createFollowUp({ targetRef: conversationRef("private", "20002"), note: "b" });
 		expect(b.ref).not.toBe(a.ref);
-		expect(b.ref.endsWith(":2")).toBe(true);
+		expect(b.ref.endsWith("2")).toBe(true);
 	});
 });
 
@@ -212,9 +218,9 @@ describe("operation log（G4 + G6 前置）", () => {
 			ref,
 			identity: "world:qq/speak",
 			action: "speak",
-			target: conversationRef(SELF, "private", "20002"),
+			target: conversationRef("private", "20002"),
 			outcome: "unknown",
-			echo: "e-1",
+			echo: `${SELF}/${ref}`,
 			startedAt: "2026-10-07T12:00:00Z",
 		});
 		// 意图已持久化（模拟崩溃后新实例恢复）
@@ -223,11 +229,11 @@ describe("operation log（G4 + G6 前置）", () => {
 		expect(afterCrash.get(ref)?.outcome).toBe("unknown");
 
 		afterCrash.settle(ref, "succeeded", "2026-10-07T12:01:00Z", {
-			messageRef: messageRef(SELF, "message-43"),
-			receipt: { echo: "e-1" },
+			messageRef: messageRef(43),
+			receipt: { echo: `${SELF}/${ref}` },
 		});
 		expect(afterCrash.get(ref)?.outcome).toBe("succeeded");
-		expect(afterCrash.get(ref)?.messageRef).toBe(messageRef(SELF, "message-43"));
+		expect(afterCrash.get(ref)?.messageRef).toBe(messageRef(43));
 		expect(afterCrash.listUnknown()).toEqual([]);
 	});
 
@@ -256,7 +262,7 @@ describe("operation log（G4 + G6 前置）", () => {
 		second.recover();
 		second.seedCounterFromExisting();
 		const r3 = second.newOperationRef();
-		expect(r3.endsWith(":3")).toBe(true);
+		expect(r3.endsWith("3")).toBe(true);
 		expect(second.listUnknown().map((r) => r.ref)).toEqual([r1]);
 		// r3 只铸造了 ref 未提交，不计入日志
 		expect(second.recent(10)).toHaveLength(2);
@@ -297,20 +303,120 @@ describe("迟到回执 echo 归并（G6 接线语义）", () => {
 			identity: "world:qq/speak",
 			action: "send_private_msg",
 			outcome: "unknown",
-			echo: ref,
+			echo: `${SELF}/${ref}`,
 			startedAt: "2026-10-07T12:00:00Z",
 		});
 
-		const upgraded = log.settleFromEchoReceipt(ref, { status: "ok", data: { message_id: 43 } }, "2026-10-07T12:05:00Z");
+		const upgraded = log.settleFromEchoReceipt(
+			`${SELF}/${ref}`,
+			{ status: "ok", data: { message_id: 43 } },
+			"2026-10-07T12:05:00Z",
+		);
 		expect(upgraded?.outcome).toBe("succeeded");
-		expect(upgraded?.messageRef).toBe(messageRef(SELF, 43));
+		expect(upgraded?.messageRef).toBe(messageRef(43));
 
 		// 已确定结论不被迟到副本降级
-		const again = log.settleFromEchoReceipt(ref, { status: "failed", data: null }, "2026-10-07T12:06:00Z");
+		const again = log.settleFromEchoReceipt(`${SELF}/${ref}`, { status: "failed", data: null }, "2026-10-07T12:06:00Z");
 		expect(again?.outcome).toBe("succeeded");
 
 		// 未知 echo 不动任何记录
 		expect(log.settleFromEchoReceipt("no-such-echo", { status: "ok", data: {} }, "2026-10-07T12:07:00Z")).toBeNull();
 		expect(log.get(ref)?.outcome).toBe("succeeded");
+	});
+});
+
+describe("v2 短引用与持久分配", () => {
+	it("实体引用保留真实标识，消息正负ID可往返，旧编码拒绝", () => {
+		expect(userRef("20002")).toBe("u20002");
+		expect(parseUserRef("u20002")).toEqual({ uin: "20002" });
+		expect(conversationRef("temp", "20002-g30003")).toBe("t20002-g30003");
+		expect(parseConversationRef("t20002-g30003")).toEqual({ kind: "temp", key: "20002-g30003" });
+		expect(parseConversationRef("g30003")).toEqual({ kind: "group", key: "30003" });
+		expect(parseConversationRef("p20002")).toEqual({ kind: "private", key: "20002" });
+		expect(messageRef(-42)).toBe("m-42");
+		expect(parseMessageRef("m-42")).toEqual({ messageId: -42 });
+		expect(parseMessageRef("m0")).toBeNull();
+		expect(parseMessageRef("m1.5")).toBeNull();
+		expect(parseUserRef("qq-user:10001:20002")).toBeNull();
+	});
+	it("请求平台flag去重及事件媒体计数在重启后续起", () => {
+		const dir = mkdtempSync(join(tmpdir(), "uina-qq-v2-"));
+		try {
+			const first = new FactsJournal({ dataDir: dir, selfId: SELF });
+			first.recover();
+			expect(first.mintRequestRef("private-platform-flag")).toBe("r1");
+			expect(first.mintEventRef()).toBe("e1");
+			expect(first.mintMediaRef()).toBe("a1");
+			const second = new FactsJournal({ dataDir: dir, selfId: SELF });
+			second.recover();
+			expect(second.mintRequestRef("private-platform-flag")).toBe("r1");
+			expect(second.mintRequestRef("another-flag")).toBe("r2");
+			expect(second.mintEventRef()).toBe("e2");
+			expect(second.mintMediaRef()).toBe("a2");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("v2 存储所有者与操作引用", () => {
+	it("控制与操作恢复拒绝错误账号，旧格式不读取", () => {
+		const dir = mkdtempSync(join(tmpdir(), "uina-qq-owner-"));
+		try {
+			const control = new ControlStore({ dataDir: dir, selfId: SELF });
+			control.load();
+			control.setAttention("account", { mode: "silent" });
+			expect(() => new ControlStore({ dataDir: dir, selfId: "99999" }).load()).toThrow(/账号/);
+			const ops = new OperationLog({ dataDir: dir, selfId: SELF });
+			ops.recover();
+			expect(() => new OperationLog({ dataDir: dir, selfId: "99999" }).recover()).toThrow(/账号/);
+			writeFileSync(
+				join(dir, "qq-facts.jsonl"),
+				JSON.stringify({ kind: "archive", beforeTime: "2026-01-01T00:00:00Z" }) + "\n",
+			);
+			expect(() => new FactsJournal({ dataDir: dir, selfId: SELF }).recover()).toThrow(/v2/);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	it("未提交引用也续计数，完整列表不截断，跨账号echo不结算", () => {
+		const dir = mkdtempSync(join(tmpdir(), "uina-qq-op-counter-"));
+		try {
+			const first = new OperationLog({ dataDir: dir, selfId: SELF });
+			first.recover();
+			expect(first.newOperationRef()).toBe("o1");
+			const second = new OperationLog({ dataDir: dir, selfId: SELF });
+			second.recover();
+			expect(second.newOperationRef()).toBe("o2");
+			second.commitIntent({
+				ref: "o2",
+				identity: "world:qq/speak",
+				action: "speak",
+				outcome: "unknown",
+				echo: "10001/o2",
+				startedAt: "2026-10-07T00:00:00Z",
+			});
+			expect(
+				second.settleFromEchoReceipt("99999/o2", { status: "ok", data: { message_id: -42 } }, "2026-10-07T00:01:00Z"),
+			).toBeNull();
+			expect(second.get("o2")?.outcome).toBe("unknown");
+			expect(
+				second.settleFromEchoReceipt("10001/o2", { status: "ok", data: { message_id: -42 } }, "2026-10-07T00:01:00Z")
+					?.messageRef,
+			).toBe("m-42");
+			for (let i = 3; i <= 57; i++) {
+				const ref = second.newOperationRef();
+				second.commitIntent({
+					ref,
+					identity: "world:qq/speak",
+					action: "speak",
+					outcome: "unknown",
+					startedAt: "2026-10-07T00:02:00Z",
+				});
+			}
+			expect(second.all()).toHaveLength(56);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

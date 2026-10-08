@@ -26,6 +26,7 @@ export const OBSERVATION_SCOPES = [
 	"members",
 	"conversation",
 	"messages",
+	"content",
 	"requests",
 	"self",
 	"expressions",

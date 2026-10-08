@@ -127,13 +127,14 @@ const results = evidence.results as Record<string, unknown>[];
 try {
 	const identity = await transport.start();
 	if (String(identity.selfId) !== config.selfId) throw new Error("QQ login identity mismatch; no writes dispatched");
-	const caps = await handleQqCall(deps, "observe", { scope: "capabilities" });
+	const caps = await handleQqCall(deps, "observe", { account: config.selfId, scope: "capabilities" });
 	evidence.capabilities = caps.details;
 	const version = await transport.call("get_version_info");
 	evidence.version = version.status === "ok" ? version.data : { status: version.status, reason: version.reason };
-	const conversationRef = `qq-conversation:${config.selfId}:private:${target}`;
+	const conversationRef = `p${target}`;
 	if (args.includes("--mixed-only") && !args.includes("--probe-only")) {
 		const result = await handleQqCall(deps, "speak", {
+			account: config.selfId,
 			conversationRef,
 			content: [
 				{ type: "file", name: "uina-p7-order-first.txt", resource: { kind: "file", path: filePath } },
@@ -151,6 +152,7 @@ try {
 		const outsidePath = join(outside, "fixture.txt");
 		writeFileSync(outsidePath, "QQ media outside-root rejection fixture");
 		const rejected = await handleQqCall(deps, "speak", {
+			account: config.selfId,
 			conversationRef,
 			content: [{ type: "file", resource: { kind: "file", path: outsidePath } }],
 		});
@@ -175,7 +177,7 @@ try {
 						},
 					]
 				: [{ type, resource: { kind: "file", path } }];
-		const result = await handleQqCall(deps, "speak", { conversationRef, content });
+		const result = await handleQqCall(deps, "speak", { account: config.selfId, conversationRef, content });
 		const row = { type, status: result.status, result: result.result, details: result.details };
 		results.push(row);
 		console.log(JSON.stringify(row));

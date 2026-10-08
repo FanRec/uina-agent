@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -111,6 +111,28 @@ describe("QQ World 装配与生命周期（G7）", () => {
 		expect(transport.stopped).toBe(1);
 	});
 
+	it("新账号目录隔离旧日志，当前账号写入工具说明且重启不重复", async () => {
+		const transport = new StubTransport(Number(SELF));
+		const world = createQqWorld({ config: makeConfig(), transport });
+		const { ctx, dataDir } = makeContext();
+		const legacyPath = join(dataDir, "qq-facts.jsonl");
+		const legacy = "unreadable legacy data preserved";
+		writeFileSync(legacyPath, legacy);
+		try {
+			await world.onStart?.(ctx);
+			expect(readFileSync(legacyPath, "utf8")).toBe(legacy);
+			expect(existsSync(join(dataDir, "v2", SELF, "qq-facts.jsonl"))).toBe(true);
+			expect(world.description).toContain(SELF);
+			const description = world.description;
+			await world.onStop?.(ctx);
+			await world.onStart?.(ctx);
+			expect(world.description).toBe(description);
+		} finally {
+			await world.onStop?.(ctx);
+			rmSync(dataDir, { recursive: true, force: true });
+		}
+	});
+
 	it("登录身份不符：启动失败且不开放平台写入", async () => {
 		const transport = new StubTransport(99999);
 		const world = createQqWorld({ config: makeConfig(), transport });
@@ -146,7 +168,7 @@ describe("QQ World 装配与生命周期（G7）", () => {
 			// 私聊 quiet 窗口 700ms
 			await vi.advanceTimersByTimeAsync(1000);
 			expect(worldEvents).toHaveLength(1);
-			expect(worldEvents[0]!.text).toContain("qq-conversation:10001:private:20002");
+			expect(worldEvents[0]!.text).toContain("p20002");
 			expect(worldEvents[0]!.origin).toBe("external");
 
 			// 停止后不再派发
@@ -246,10 +268,11 @@ describe("部署边界：grant 过滤下沉摄取层", () => {
 			});
 			expect(worldEvents).toHaveLength(0);
 			expect(existsSync(join(dataDir, "qq-facts.jsonl"))).toBe(false);
+			expect(readFileSync(join(dataDir, "v2", SELF, "qq-facts.jsonl"), "utf8").includes("群消息正文")).toBe(false);
 			// messaging 显式动作不受影响：speak 走 grant 检查并派发平台调用
 			const speak = world.actions.speak!;
 			const result = (await speak.run(
-				{ conversationRef: `qq-conversation:${SELF}:private:20002`, content: [{ type: "text", text: "hi" }] },
+				{ account: SELF, conversationRef: `p20002`, content: [{ type: "text", text: "hi" }] },
 				{ operationIdentity: "world:qq/speak", signal: new AbortController().signal },
 			)) as { status: string };
 			expect(result.status).toBe("succeeded");
@@ -333,16 +356,18 @@ describe("部署边界：grant 过滤下沉摄取层", () => {
 			await world.onStart?.(ctx);
 			const speak = world.actions.speak!;
 			const result = (await speak.run(
-				{ conversationRef: `qq-conversation:${SELF}:private:20002`, content: [{ type: "text", text: "hi" }] },
+				{ account: SELF, conversationRef: `p20002`, content: [{ type: "text", text: "hi" }] },
 				{ operationIdentity: "world:qq/speak", signal: new AbortController().signal },
 			)) as { status: string; result: string };
 			expect(result.status).toBe("unknown");
-			const operationRef = /operationRef=(qq-operation:\S+)/.exec(result.result)?.[1];
+			const operationRef = /operationRef=(o\d+)/.exec(result.result)?.[1];
 			expect(operationRef).toBeDefined();
 			// unknown 交付前无 operations 更新事件
 			expect(worldEvents.filter((e) => e.text?.includes("[QQ 操作回执更新]"))).toHaveLength(0);
 			// 迟到回执凭 echo 升级 → internal 通知
-			transport.emitRaw(JSON.stringify({ echo: operationRef, status: "ok", retcode: 0, data: { message_id: 55 } }));
+			transport.emitRaw(
+				JSON.stringify({ echo: `${SELF}/${operationRef}`, status: "ok", retcode: 0, data: { message_id: 55 } }),
+			);
 			await new Promise((r) => setTimeout(r, 2200));
 			const updates = worldEvents.filter((e) => e.text?.includes("[QQ 操作回执更新]"));
 			expect(updates).toHaveLength(1);

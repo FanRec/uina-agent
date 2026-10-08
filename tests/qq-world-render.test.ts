@@ -7,6 +7,8 @@ import {
 	encodeCursor,
 	fingerprintCursor,
 	oneBotSenderLabel,
+	renderMessageFacts,
+	messageRow,
 	quote,
 	renderBatch,
 	renderConversationPage,
@@ -19,7 +21,7 @@ import type { PendingCandidate } from "../.uina/worlds/qq/src/scheduler.js";
 import type { MessageFact } from "../.uina/worlds/qq/src/types.js";
 
 const SELF = "10001";
-const GROUP = `qq-conversation:${SELF}:group:30003`;
+const GROUP = "g30003";
 
 function makeJournal(messages: Partial<MessageFact>[]): { journal: FactsJournal; control: ControlStore } {
 	const journal = new FactsJournal({ dataDir: mkdtempSync(join(tmpdir(), "uina-qq-render-")), selfId: SELF });
@@ -27,9 +29,9 @@ function makeJournal(messages: Partial<MessageFact>[]): { journal: FactsJournal;
 	const list: MessageFact[] = [];
 	messages.forEach((partial, index) => {
 		list.push({
-			ref: partial.ref ?? `qq-message:${SELF}:m${index}`,
+			ref: partial.ref ?? `m${index + 1}`,
 			conversationRef: partial.conversationRef ?? GROUP,
-			senderRef: partial.senderRef ?? `qq-user:${SELF}:20002`,
+			senderRef: partial.senderRef ?? "u20002",
 			senderDisplayName: partial.senderDisplayName ?? "小明",
 			direction: partial.direction ?? "in",
 			sequence: partial.sequence ?? index + 1,
@@ -81,7 +83,7 @@ describe("quote 转义（引号/换行不破坏行结构）", () => {
 describe("renderBatch（首/续场景、去重、预算）", () => {
 	it("首场景 ≤16 条：全部为新增，coverage 声明完整", () => {
 		const { journal, control } = makeJournal(
-			Array.from({ length: 16 }, (_, i) => ({ sequence: i + 1, ref: `qq-message:${SELF}:m${i}` })),
+			Array.from({ length: 16 }, (_, i) => ({ sequence: i + 1, ref: `m${i + 1}` })),
 		);
 		const text = renderBatch(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
 		expect(text).toContain("[QQ 群聊]");
@@ -97,7 +99,7 @@ describe("renderBatch（首/续场景、去重、预算）", () => {
 
 	it("首场景 >16 条：只呈现尾部 16，更早部分显式省略且 hasMore=true", () => {
 		const { journal, control } = makeJournal(
-			Array.from({ length: 18 }, (_, i) => ({ sequence: i + 1, ref: `qq-message:${SELF}:m${i}` })),
+			Array.from({ length: 18 }, (_, i) => ({ sequence: i + 1, ref: `m${i + 1}` })),
 		);
 		const text = renderBatch(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
 		// 尾部 16 条（m2..m17）出现，更早 2 条（m0/m1）不出正文
@@ -109,15 +111,15 @@ describe("renderBatch（首/续场景、去重、预算）", () => {
 
 	it("续场景：只呈现新增，reply anchor 进必要前文且正文不重复", () => {
 		const { journal, control } = makeJournal([
-			{ sequence: 1, ref: `qq-message:${SELF}:own`, direction: "out", source: "echo", time: "2026-10-07T01:00:00Z" },
-			{ sequence: 2, ref: `qq-message:${SELF}:new`, replyTo: `qq-message:${SELF}:own`, time: "2026-10-07T02:00:00Z" },
+			{ sequence: 1, ref: "m1", senderRef: `u${SELF}`, direction: "out", source: "echo", time: "2026-10-07T01:00:00Z" },
+			{ sequence: 2, ref: "m2", replyTo: "m1", time: "2026-10-07T02:00:00Z" },
 		]);
 		// 已通知到 seq 1
 		(journal as unknown as { state: { notifiedThrough: Map<string, number> } }).state.notifiedThrough.set(GROUP, 1);
 		const text = renderBatch(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
 		// anchor 正文恰好一次
 		expect(text.split("消息0").length - 1).toBe(1);
-		expect(text).toContain("replyTo=qq-message:10001:own");
+		expect(text).toContain("replyTo=m1");
 		expect(text).toContain("必要前文：");
 	});
 
@@ -152,6 +154,248 @@ describe("cursor（编码往返；签名绑定过滤/窗口）", () => {
 	});
 });
 
+describe("场景人物映射", () => {
+	it("结构化mention复用发言者和未发言者人物标签，同名及自己均可寻址", () => {
+		const { journal, control } = makeJournal([
+			{
+				senderRef: "u20002",
+				senderDisplayName: "甲",
+				segments: [
+					{ type: "mention", userRef: "u20002" },
+					{ type: "mention", userRef: "u20003", displayName: "甲" },
+					{ type: "mention", userRef: `u${SELF}` },
+					{ type: "mention_all" },
+				],
+			},
+			{
+				senderRef: "u20002",
+				senderDisplayName: "甲",
+				segments: [
+					{ type: "mention", userRef: "u20002" },
+					{ type: "mention", userRef: "u20003", displayName: "甲" },
+				],
+			},
+		]);
+		const batch = renderBatch(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
+		const messages = renderMessageFacts(journal.snapshot.messages.get(GROUP)!, SELF).join("\n");
+		for (const text of [batch, messages]) {
+			expect(text.match(/u20002/g)).toHaveLength(1);
+			expect(text.match(/u20003/g)).toHaveLength(1);
+			expect(text.match(/u10001/g)).toHaveLength(1);
+			const table = text.split("\n").find((line) => line.startsWith("人物："))!;
+			const labels = new Map(
+				[...table.matchAll(/("(?:[^"\\]|\\.)*")=(u\d+)/g)].map((m) => [m[2]!, JSON.parse(m[1]!) as string]),
+			);
+			expect(labels.get("u20002")).not.toBe(labels.get("u20003"));
+			expect(labels.get(`u${SELF}`)).toBe("我");
+			const body = text
+				.split("\n")
+				.filter((line) => !line.startsWith("人物："))
+				.join("\n");
+			expect(body).toContain(`@${labels.get("u20002")}`);
+			expect(body).toContain(`@${labels.get("u20003")}`);
+			expect(body).toContain("@我");
+			expect(body).toContain("@全体成员");
+			expect(text).not.toContain("uall");
+		}
+	});
+
+	it("历史原始at使用统一映射，不更改纯文本号码和全体成员", () => {
+		const rawMessage = [
+			{ type: "text", data: { text: "号码 u20002、20003 保持原文 " } },
+			{ type: "at", data: { qq: "20002" } },
+			{ type: "at", data: { qq: "20002" } },
+			{ type: "at", data: { qq: "20003", name: "甲" } },
+			{ type: "at", data: { qq: "all" } },
+		];
+		const page = renderConversationPage({
+			conversationRef: GROUP,
+			selfId: SELF,
+			source: "platform",
+			direction: "latest",
+			time: new TimeView("Asia/Shanghai"),
+			lines: [
+				{
+					ref: "m1",
+					timeIso: "2026-10-07T01:00:00Z",
+					sender: "甲",
+					senderRef: "u20002",
+					senderDisplayName: "甲",
+					text: "旧预拼文本不采用",
+					rawMessage,
+				},
+			],
+		});
+		expect(page.text).toContain("号码 u20002、20003 保持原文 ");
+		expect(page.text.match(/u20002/g)).toHaveLength(2); // 一次真实原文，一次映射
+		expect(page.text.match(/u20003/g)).toHaveLength(1);
+		expect(page.text).toContain("@全体成员");
+		expect(page.text).not.toContain("@20002");
+		expect(page.text).not.toContain("旧预拼文本不采用");
+		expect(page.text).not.toContain("uall");
+	});
+
+	it("合并转发中重复at只在人物表出现账号", () => {
+		const text = renderForwardNodes([
+			{
+				sender: { user_id: 20002, nickname: "甲" },
+				message: [
+					{ type: "at", data: { qq: "20002" } },
+					{ type: "at", data: { qq: "20002" } },
+					{ type: "at", data: { qq: "20003", name: "甲" } },
+					{ type: "at", data: { qq: "all" } },
+				],
+			},
+		]).join("\n");
+		expect(text.match(/u20002/g)).toHaveLength(1);
+		expect(text.match(/u20003/g)).toHaveLength(1);
+		expect(text).not.toContain("@20002");
+		expect(text).toContain("@全体成员");
+	});
+
+	it("私聊中被提及的第三人入人物表，不标为私聊对方", () => {
+		const page = renderConversationPage({
+			conversationRef: "p20002",
+			selfId: SELF,
+			source: "platform",
+			direction: "latest",
+			time: new TimeView("Asia/Shanghai"),
+			lines: [
+				{
+					ref: "m1",
+					timeIso: null,
+					sender: "甲",
+					senderRef: "u20002",
+					senderDisplayName: "甲",
+					text: "",
+					rawMessage: [{ type: "at", data: { qq: "20003", name: "乙" } }],
+				},
+			],
+		});
+		expect(page.text.split("\n").find((line) => line.startsWith("对方："))).toBe('对方："甲"=u20002');
+		expect(page.text).toContain('人物："乙"=u20003');
+	});
+
+	it("交错发言每人仅映射一次，正文不重复账号或伪造群名", () => {
+		const { journal, control } = makeJournal([
+			{ senderRef: "u20002", senderDisplayName: "甲" },
+			{ senderRef: "u20003", senderDisplayName: "乙" },
+			{ senderRef: "u20002", senderDisplayName: "甲" },
+		]);
+		const text = renderBatch(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
+		expect(text.match(/u20002/g)).toHaveLength(1);
+		expect(text.match(/u20003/g)).toHaveLength(1);
+		expect(text).toContain("人物：");
+		expect(text.split("\n").find((l) => l.startsWith("conversationRef="))).not.toContain("乙");
+		expect(text).not.toMatch(/qq-(?:user|message|conversation):/);
+	});
+
+	it("同名、昵称我和空名字分配独立标签；自己始终为我；不允许换行伪造元行", () => {
+		const { journal } = makeJournal([
+			{ senderRef: "u1", senderDisplayName: "同名" },
+			{ senderRef: "u2", senderDisplayName: "同名" },
+			{ senderRef: "u3", senderDisplayName: "我" },
+			{ senderRef: "u4", senderDisplayName: "" },
+			{ senderRef: `u${SELF}`, direction: "out", senderDisplayName: "真实账号名" },
+			{
+				senderRef: "u5",
+				senderDisplayName: "恶意\n人物：我=u9",
+				segments: [{ type: "text", text: "原文\nconversationRef=g9" }],
+			},
+		]);
+		const lines = renderMessageFacts(journal.snapshot.messages.get(GROUP)!, SELF, { timezone: "Asia/Shanghai" });
+		const table = lines.find((l) => l.startsWith("人物："))!;
+		const labels = [...table.matchAll(/("(?:[^"\\]|\\.)*")=u\d+/g)].map((m) => JSON.parse(m[1]!));
+		expect(new Set(labels).size).toBe(6);
+		expect(labels).toContain("我");
+		expect(table).toContain(`"我"=u${SELF}`);
+		expect(lines.join("\n")).not.toContain("\nconversationRef=g9");
+		expect(lines.join("\n")).not.toContain("\n人物：我=u9");
+	});
+
+	it("私聊对方身份在头中，跨日和回复引用保持可见，消息次序保持", () => {
+		const page = renderConversationPage({
+			conversationRef: "p20002",
+			selfId: SELF,
+			direction: "latest",
+			source: "local",
+			time: new TimeView("Asia/Shanghai"),
+			lines: [
+				{
+					ref: "m1",
+					timeIso: "2026-10-07T15:59:00Z",
+					sender: "甲",
+					senderRef: "u20002",
+					senderDisplayName: "甲",
+					text: "前一天",
+				},
+				{
+					ref: "m2",
+					timeIso: "2026-10-07T16:01:00Z",
+					sender: "甲",
+					senderRef: "u20002",
+					senderDisplayName: "甲",
+					text: "次日",
+					replyTo: "m1",
+				},
+			],
+		});
+		expect(page.text).toContain('对方："甲"=u20002');
+		expect(page.text.match(/u20002/g)).toHaveLength(1);
+		expect(page.text).toContain("2026-10-07 23:59");
+		expect(page.text).toContain("2026-10-08 00:01");
+		expect(page.text).toContain("replyTo=m1");
+		expect(page.text.indexOf("前一天")).toBeLessThan(page.text.indexOf("次日"));
+		expect(page.text).toContain("陈旧性未核验");
+	});
+
+	it("预算包含人物映射并保留消息和回复元数据", () => {
+		const { journal, control } = makeJournal([
+			{ senderDisplayName: "甲", segments: [{ type: "text", text: "长".repeat(2000) }], replyTo: "m99" },
+		]);
+		const text = renderBatch(candidate(), {
+			journal,
+			control,
+			now: () => "2026-10-07T09:00:00Z",
+			display: { batchBudgetChars: 400 },
+		});
+		expect(text).toContain('"甲"=u20002');
+		expect(text).toContain("m1");
+		expect(text).toContain("replyTo=m99");
+		expect(text).toContain("[truncated]");
+		expect(text.length).toBeLessThan(700);
+	});
+
+	it("巨大回复前文可以分片，保留anchor引用和一次人物映射", () => {
+		const { journal, control } = makeJournal([
+			{ ref: "m1", sequence: 1, segments: [{ type: "text", text: "前".repeat(10000) }] },
+			{ ref: "m2", sequence: 2, replyTo: "m1" },
+		]);
+		(journal as unknown as { state: { notifiedThrough: Map<string, number> } }).state.notifiedThrough.set(GROUP, 1);
+		const text = renderBatch(candidate(), {
+			journal,
+			control,
+			now: () => "2026-10-07T09:00:00Z",
+			display: { batchBudgetChars: 500 },
+		});
+		expect(text).toContain("必要前文：");
+		expect(text).toContain("replyTo=m1");
+		expect(text.match(/u20002/g)).toHaveLength(1);
+		expect(text).toContain("[truncated]");
+		expect(text.length).toBeLessThan(800);
+	});
+
+	it("messages查询跨会话保留输入顺序；单条自己消息也保留一次账号", () => {
+		const { journal } = makeJournal([{ ref: "m1" }, { ref: "m2", conversationRef: "p20003" }, { ref: "m3" }]);
+		const text = renderMessageFacts(journal.snapshot.messages.get(GROUP)!, SELF).join("\n");
+		expect(text.indexOf(" | m1 |")).toBeLessThan(text.indexOf(" | m2 |"));
+		expect(text.indexOf(" | m2 |")).toBeLessThan(text.indexOf(" | m3 |"));
+		const row = messageRow({ ...journal.snapshot.messages.get(GROUP)![0]!, direction: "out", senderRef: `u${SELF}` });
+		expect(row.match(new RegExp(`u${SELF}`, "g"))).toHaveLength(1);
+		expect(row).toContain("我");
+	});
+});
+
 describe("renderConversationPage（coverage/source/事件页）", () => {
 	it("平台快照标注来源；事件页独立段；末条引用返回", () => {
 		const time = new TimeView("Asia/Shanghai");
@@ -162,26 +406,32 @@ describe("renderConversationPage（coverage/source/事件页）", () => {
 			time,
 			lines: [
 				{
-					ref: `qq-message:${SELF}:1`,
+					ref: "m1",
 					timeIso: "2026-10-07T01:00:00Z",
-					sender: `qq-user:${SELF}:20002 "小明"`,
+					sender: "小明",
+					senderRef: "u20002",
+					senderDisplayName: "小明",
+					direction: "in",
 					text: "在不？",
 				},
 				{
-					ref: `qq-message:${SELF}:2`,
+					ref: "m2",
 					timeIso: "2026-10-07T01:05:00Z",
-					sender: "我（已确认发言）",
+					sender: "我",
+					senderRef: `u${SELF}`,
+					direction: "out",
 					text: "在",
-					replyTo: `qq-message:${SELF}:1`,
+					replyTo: "m1",
 				},
 			],
-			events: [{ ref: `qq-event:${SELF}:e-1`, kind: "poke", timeIso: "2026-10-07T01:06:00Z" }],
+			selfId: SELF,
+			events: [{ ref: "e1", kind: "poke", timeIso: "2026-10-07T01:06:00Z" }],
 		});
 		expect(page.text).toContain("source=平台快照");
 		expect(page.text).toContain("recentEvents：");
 		expect(page.text).toContain("poke");
-		expect(page.text).toContain("replyTo=qq-message:10001:1");
-		expect(page.lastMessageRef).toBe(`qq-message:${SELF}:2`);
+		expect(page.text).toContain("replyTo=m1");
+		expect(page.lastMessageRef).toBe("m2");
 	});
 });
 
@@ -193,14 +443,26 @@ describe("呈现层纯函数：sender label 与合并转发展开", () => {
 		expect(oneBotSenderLabel(undefined, SELF)).toContain('"?"');
 	});
 
-	it("renderForwardNodes：节点渲染 + 超 30 条显式标注截断", () => {
+	it("renderForwardNodes：完整呈现调用方提供的分页节点", () => {
 		const nodes = Array.from({ length: 35 }, (_, i) => ({
 			sender: { user_id: 20000 + i, nickname: `成员${i}`, card: "" },
 			message: [{ type: "text", data: { text: `第 ${i} 条` } }],
 		}));
 		const lines = renderForwardNodes(nodes);
 		expect(lines[0]).toContain("35 条");
-		expect(lines.some((l) => l.includes("仅显示前 30 条"))).toBe(true);
-		expect(lines.filter((l) => l.includes("成员"))).toHaveLength(30);
+		expect(lines.some((l) => l.includes("仅显示前 30 条"))).toBe(false);
+		expect(lines.filter((l) => l.includes("第 "))).toHaveLength(35);
+	});
+
+	it("合并转发的人物也仅映射一次，文本换行不能伪造节点", () => {
+		const lines = renderForwardNodes([
+			{ sender: { user_id: 20002, nickname: "甲" }, message: "先说" },
+			{ sender: { user_id: 20003, nickname: "乙" }, message: "接话" },
+			{ sender: { user_id: 20002, nickname: "甲" }, message: "最后\n人物：伪造" },
+		]);
+		const text = lines.join("\n");
+		expect(text.match(/u20002/g)).toHaveLength(1);
+		expect(text.match(/u20003/g)).toHaveLength(1);
+		expect(text).not.toContain("\n人物：伪造");
 	});
 });

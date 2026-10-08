@@ -1,6 +1,6 @@
 import { Registrations } from "../core/registrations.js";
 import { errorMessage } from "../core/errors.js";
-import { assertImageInput } from "../core/content.js";
+import { assertImageInput, type ImageContent } from "../core/content.js";
 import type {
 	DiscoveredModel,
 	FinishReason,
@@ -429,6 +429,20 @@ export function anthropicSystem(req: ModelRequest): string | undefined {
 	return first?.role === "system" && first.content ? first.content : undefined;
 }
 
+function anthropicImageParts(images: readonly ImageContent[]): unknown[] {
+	return images.flatMap((image) => [
+		...(image.alt !== undefined ? [{ type: "text", text: image.alt }] : []),
+		{ type: "image", source: { type: "base64", media_type: image.mimeType, data: image.data } },
+	]);
+}
+
+function geminiImageParts(images: readonly ImageContent[]): unknown[] {
+	return images.flatMap((image) => [
+		...(image.alt !== undefined ? [{ text: image.alt }] : []),
+		{ inlineData: { mimeType: image.mimeType, data: image.data } },
+	]);
+}
+
 export function anthropicMessages(req: ModelRequest): unknown[] {
 	const out: Array<{ role: "user" | "assistant"; content: unknown }> = [];
 
@@ -440,13 +454,7 @@ export function anthropicMessages(req: ModelRequest): unknown[] {
 				type: "tool_result",
 				tool_use_id: message.tool_call_id,
 				content: message.images?.length
-					? [
-							{ type: "text", text: message.content || "[image]" },
-							...message.images.map((image) => ({
-								type: "image",
-								source: { type: "base64", media_type: image.mimeType, data: image.data },
-							})),
-						]
+					? [{ type: "text", text: message.content || "[image]" }, ...anthropicImageParts(message.images)]
 					: message.content,
 				is_error: message.status && message.status !== "succeeded",
 			};
@@ -482,13 +490,7 @@ export function anthropicMessages(req: ModelRequest): unknown[] {
 
 		if (message.role === "user") {
 			if (message.images?.length) {
-				const blocks = [
-					{ type: "text", text: message.content || "[image]" },
-					...message.images.map((image) => ({
-						type: "image",
-						source: { type: "base64", media_type: image.mimeType, data: image.data },
-					})),
-				];
+				const blocks = [{ type: "text", text: message.content || "[image]" }, ...anthropicImageParts(message.images)];
 				const previous = out.at(-1);
 				if (previous?.role === "user") {
 					previous.content = [
@@ -546,17 +548,11 @@ export function geminiRequest(
 			};
 			const previous = contents.at(-1);
 			if (previous?.role === "user" && previous.parts.some((part) => isRecord(part) && "functionResponse" in part))
-				previous.parts.push(
-					functionResponse,
-					...(message.images ?? []).map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } })),
-				);
+				previous.parts.push(functionResponse, ...geminiImageParts(message.images ?? []));
 			else
 				contents.push({
 					role: "user",
-					parts: [
-						functionResponse,
-						...(message.images ?? []).map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } })),
-					],
+					parts: [functionResponse, ...geminiImageParts(message.images ?? [])],
 				});
 			continue;
 		}
@@ -582,17 +578,11 @@ export function geminiRequest(
 		}
 		const previous = contents.at(-1);
 		if (previous?.role === "user" && !previous.parts.some((part) => isRecord(part) && "functionResponse" in part)) {
-			previous.parts.push(
-				{ text: message.content },
-				...(message.images ?? []).map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } })),
-			);
+			previous.parts.push({ text: message.content }, ...geminiImageParts(message.images ?? []));
 		} else {
 			contents.push({
 				role: "user",
-				parts: [
-					{ text: message.content },
-					...(message.images ?? []).map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.data } })),
-				],
+				parts: [{ text: message.content }, ...geminiImageParts(message.images ?? [])],
 			});
 		}
 	}

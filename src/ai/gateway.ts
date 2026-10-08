@@ -411,10 +411,10 @@ export function toWireMessages(messages: ModelRequest["messages"], thinkingForma
 		}
 	};
 	const imageParts = (images: NonNullable<ModelRequest["messages"][number]["images"]>) =>
-		images.map((image) => ({
-			type: "image_url",
-			image_url: { url: "data:" + image.mimeType + ";base64," + image.data },
-		}));
+		images.flatMap((image) => [
+			...(image.alt !== undefined ? [{ type: "text", text: image.alt }] : []),
+			{ type: "image_url", image_url: { url: "data:" + image.mimeType + ";base64," + image.data } },
+		]);
 	for (const message of messages) {
 		if (message.role !== "tool") flushImages();
 		if (message.role === "assistant") {

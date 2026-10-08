@@ -1,61 +1,53 @@
-/**
- * QQ World 领域类型与稳定引用。
- * ref 含账号边界（第二段 = 绑定账号 selfId），全部从实际结果铸造，模型只复制不构造。
- */
-
+/** QQ World 短引用。账号边界由账号数据目录与存储所有者保证。 */
 export const REF_PATTERNS = {
-	user: /^qq-user:(\d+):(\d+)$/,
-	conversation: /^qq-conversation:(\d+):(private|group|temp):([^\s]+)$/,
-	groupConversation: /^qq-conversation:(\d+):group:([^\s]+)$/,
-	message: /^qq-message:(\d+):([^\s]+)$/,
-	event: /^qq-event:(\d+):([^\s]+)$/,
-	request: /^qq-request:(\d+):([^\s]+)$/,
-	followUp: /^qq-follow-up:(\d+):([^\s]+)$/,
-	operation: /^qq-operation:(\d+):([^\s]+)$/,
-	media: /^qq-media:(\d+):([^\s]+)$/,
-	presence: /^qq-presence:(\d+):([^\s]+)$/,
+	user: /^u([1-9]\d*)$/,
+	conversation: /^(?:g[1-9]\d*|p[1-9]\d*|t[1-9]\d*(?:-g[1-9]\d*)?)$/,
+	groupConversation: /^g([1-9]\d*)$/,
+	message: /^m(-?[1-9]\d*)$/,
+	event: /^e([1-9]\d*)$/,
+	request: /^r([1-9]\d*)$/,
+	followUp: /^f([1-9]\d*)$/,
+	operation: /^o([1-9]\d*)$/,
+	media: /^a([1-9]\d*)$/,
 } as const;
-
 export type ConversationKind = "private" | "group" | "temp";
-
 export interface ParsedConversationRef {
-	readonly accountId: string;
 	readonly kind: ConversationKind;
 	readonly key: string;
 }
-
 export function parseConversationRef(ref: string): ParsedConversationRef | null {
-	const match = REF_PATTERNS.conversation.exec(ref);
-	if (!match) return null;
-	return { accountId: match[1]!, kind: match[2] as ConversationKind, key: match[3]! };
+	if (!REF_PATTERNS.conversation.test(ref)) return null;
+	return { kind: ref[0] === "g" ? "group" : ref[0] === "p" ? "private" : "temp", key: ref.slice(1) };
 }
-
-export function parseUserRef(ref: string): { accountId: string; uin: string } | null {
+export function parseUserRef(ref: string): { uin: string } | null {
 	const match = REF_PATTERNS.user.exec(ref);
+	return match ? { uin: match[1]! } : null;
+}
+export function parseMessageRef(ref: string): { messageId: number } | null {
+	const match = REF_PATTERNS.message.exec(ref);
 	if (!match) return null;
-	return { accountId: match[1]!, uin: match[2]! };
+	const messageId = Number(match[1]);
+	return Number.isSafeInteger(messageId) ? { messageId } : null;
 }
-
-/** ref 账号段与绑定账号是否一致（跨账号一律 account_mismatch）。 */
-export function refBelongsToAccount(ref: string, selfId: string): boolean {
-	const parts = ref.split(":");
-	return parts.length >= 2 && parts[1] === selfId;
+export function userRef(uin: string | number): string {
+	const ref = `u${uin}`;
+	if (!REF_PATTERNS.user.test(ref)) throw new Error("非法 QQ 用户标识");
+	return ref;
 }
-
-export function userRef(selfId: string, uin: string | number): string {
-	return `qq-user:${selfId}:${uin}`;
+export function conversationRef(kind: ConversationKind, key: string | number): string {
+	const ref = `${kind === "group" ? "g" : kind === "private" ? "p" : "t"}${key}`;
+	if (!REF_PATTERNS.conversation.test(ref)) throw new Error("非法 QQ 会话标识");
+	return ref;
 }
-
-export function conversationRef(selfId: string, kind: ConversationKind, key: string | number): string {
-	return `qq-conversation:${selfId}:${kind}:${key}`;
+export function messageRef(id: string | number): string {
+	const ref = `m${id}`;
+	if (!parseMessageRef(ref)) throw new Error("非法 QQ 消息标识");
+	return ref;
 }
-
-export function messageRef(selfId: string, id: string | number): string {
-	return `qq-message:${selfId}:${id}`;
-}
-
-export function operationRef(selfId: string, id: string | number): string {
-	return `qq-operation:${selfId}:${id}`;
+export function operationRef(id: string | number): string {
+	const ref = `o${id}`;
+	if (!REF_PATTERNS.operation.test(ref)) throw new Error("非法 QQ 操作标识");
+	return ref;
 }
 
 /* ---------- 平台事实（World 持有的带来源/时间观察） ---------- */
@@ -64,6 +56,8 @@ export function operationRef(selfId: string, id: string | number): string {
 export type MessageSegment =
 	| { readonly type: "text"; readonly text: string }
 	| { readonly type: "mention"; readonly userRef: string; readonly displayName?: string }
+	/** 仅入站：真实全体成员提及，不构造用户引用。 */
+	| { readonly type: "mention_all" }
 	| { readonly type: "face"; readonly faceId: string }
 	| {
 			readonly type: "image" | "audio" | "video" | "file";
@@ -124,7 +118,14 @@ export interface EventFact {
 	readonly conversationRef?: string;
 	readonly time: string;
 	readonly actorRef?: string;
+	readonly authorRef?: string;
 	readonly targetRef?: string;
+	readonly action?: string;
+	readonly suffix?: string;
+	readonly reaction?: {
+		readonly operation: "add" | "remove" | null;
+		readonly likes: readonly { readonly code: string; readonly count: number | null }[];
+	};
 	readonly messageRef?: string;
 	readonly summary?: string;
 	readonly source: "platform" | "internal";
@@ -133,15 +134,24 @@ export interface EventFact {
 export type RequestState = "pending" | "confirmed" | "unknown";
 
 export interface RequestFact {
+	/** 平台申请凭据，仅内部派发使用，不进入呈现。 */
+	readonly platformFlag: string;
 	readonly ref: string;
 	readonly kind: "friend" | "group_invite" | "group_join_request";
 	readonly state: RequestState;
 	readonly requesterRef: string | null;
 	readonly requesterDisplayName: string | null;
 	readonly targetConversationRef?: string;
+	readonly invitedRef?: string;
 	readonly comment: string | null;
 	readonly time: string;
 }
+
+/** 摄取、事实日志与调度共用的带类型事实。 */
+export type IngestedFact =
+	| { kind: "message"; fact: MessageFact }
+	| { kind: "event"; fact: EventFact }
+	| { kind: "request"; fact: RequestFact };
 
 /* ---------- 控制状态（单写方，持久提交成功后才报告成功） ---------- */
 
@@ -193,7 +203,10 @@ export type OperationOutcome = "succeeded" | "failed" | "unknown" | "not_started
  * 固定源码 RETCODE 1400/1404 是参数/动作前置拒绝，其余负回执保持 unknown。
  * 普通调用和迟到 raw 共享分类，避免重启清掉未确认的媒体副本。
  */
-export function classifyPlatformReceipt(response: { status?: unknown; retcode?: unknown }): "succeeded" | "failed" | "unknown" {
+export function classifyPlatformReceipt(response: {
+	status?: unknown;
+	retcode?: unknown;
+}): "succeeded" | "failed" | "unknown" {
 	if (response.status === "ok" && (response.retcode === undefined || response.retcode === 0)) return "succeeded";
 	if (response.status === "failed" && (response.retcode === 1400 || response.retcode === 1404)) return "failed";
 	return "unknown";
@@ -206,6 +219,9 @@ export interface OperationRecord {
 	readonly target?: string;
 	readonly outcome: OperationOutcome;
 	readonly messageRef?: string;
+	readonly replyTo?: string;
+	readonly partRange?: { readonly from: number; readonly through: number };
+	readonly requestDecision?: "accept" | "decline";
 	readonly echo?: string;
 	readonly reason?: string;
 	readonly startedAt: string;
