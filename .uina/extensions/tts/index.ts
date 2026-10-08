@@ -17,6 +17,7 @@ import { StreamParser } from "./stream-parser.js";
 import { TtsVoiceOutputDriver } from "./driver-impl.js";
 
 import { createTtsTool } from "./tool.js";
+import { createTtsGenerateTool } from "./generate.js";
 import { loadVoicePreferences } from "../voice/preferences.js";
 
 export * from "./delivery.js";
@@ -51,7 +52,8 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
   });
   const initialPreferences = await loadVoicePreferences(pi);
   let readAssistantText = initialPreferences.readAssistantText;
-  (pi as ExtensionAPI & { registerTool?: (tool: import("../../../src/tools/broker.js").Tool) => unknown }).registerTool?.(createTtsTool(driver));
+  pi.registerTool(createTtsTool(driver));
+  pi.registerTool(createTtsGenerateTool({ cwd: pi.cwd, client, signal: pi.signal, timeoutMs: config.generationTimeoutMs }));
 
   const recordPerception = async (fact: { kind: "interrupted" | "delivery_failed" | "delivery_unknown"; summary: string }): Promise<void> => {
     if (typeof pi.hasService !== "function" || !pi.hasService("voice_perception:record") || typeof pi.callService !== "function") return;

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
+from fastapi import HTTPException
 import uvicorn
 
 from lifecycle_handlers import TTSBridgeConfig, TTSBridgeConfigError
@@ -15,6 +17,7 @@ from synthesis_handlers import (
     CancelRequest,
     CancelTraceRequest,
     SpeakRequest,
+    GenerateRequest,
     TurnEndRequest,
     ReconnectRequest,
     ResetRequest,
@@ -55,6 +58,20 @@ def build_app(service: Any) -> FastAPI:
     @app.post("/v1/tts/speak", status_code=202)
     def speak(request: SpeakRequest, raw_request: Request) -> dict[str, Any]:
         return service.admit_speak(request, traceparent=raw_request.headers.get("traceparent"))
+
+    @app.post("/v1/tts/generate", response_class=Response)
+    async def generate(request: GenerateRequest, raw_request: Request) -> Response:
+        work = asyncio.create_task(service.generate(request.text, timeout_ms=request.timeout_ms))
+        try:
+            while not work.done():
+                if await raw_request.is_disconnected():
+                    raise HTTPException(status_code=499, detail="generation cancelled")
+                await asyncio.wait({work}, timeout=0.05)
+            return Response(content=await work, media_type="audio/wav")
+        finally:
+            if not work.done():
+                work.cancel()
+            await asyncio.gather(work, return_exceptions=True)
 
     @app.get("/v1/tts/tasks/{task_id}")
     def task_status(task_id: str) -> dict[str, Any]:

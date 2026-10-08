@@ -29,6 +29,10 @@
 }
 ```
 
+## 音频文件工具 (`tts_generate`)
+
+`tts_generate({text})` 将完整台词合成为 WAV 文件，不播放；正文只返回普通文件 `resource` 和实际 `durationMs`。成品及中间件使用项目级 `uina/tmp/`，可把结果直接交给 QQ 的 `audio.resource`。生成独立于静音、字幕、口型和播放任务生命周期。部署可选 `generationTimeoutMs`，默认总期限 120000ms；无需修改模型参数。新接口需要当前 Bridge 源码，旧 Bridge 会明确提示更新重启。完整合同及失败边界见 [TTS 文件生成](../../../docs/tts-file-generation.md)。
+
 ## 门面工具 (`voice`)
 
 大模型与用户可通过 `voice` 工具进行交流控制与查询：

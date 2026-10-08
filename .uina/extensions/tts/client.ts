@@ -13,6 +13,33 @@ export class TtsSpeakError extends Error {
   }
 }
 
+/** Only controlled generation messages may enter the model-visible result. */
+export class TtsGenerationError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "TtsGenerationError";
+  }
+}
+
+function generationHttpError(status: number, body: string): TtsGenerationError {
+  let detail: unknown;
+  try { detail = (JSON.parse(body) as { detail?: unknown })?.detail; } catch { /* raw body remains diagnostic data */ }
+  let message = `TTS 合成失败（HTTP ${status}），请检查 tts inspect`;
+  if (status === 404) message = "Bridge 缺少文件生成接口，需更新并重启 Bridge";
+  else if (status === 504) message = "合成超时";
+  else {
+    const knownReasons = new Map<string, string>([
+      ["503:reference audio is unavailable", "参考音频不可用，请检查 TTS 部署配置"],
+      ["503:bridge is stopping", "Bridge 正在停止，恢复连接后再生成"],
+      ["502:vendor returned invalid or incomplete WAV", "语音模型返回无效或不完整 WAV"],
+      ["502:tts vendor rejected synthesis", "语音模型拒绝合成，请检查模型服务"],
+      ["502:tts vendor request failed", "语音模型无法连接，请检查模型服务"],
+    ]);
+    if (typeof detail === "string") message = knownReasons.get(`${status}:${detail}`) ?? message;
+  }
+  return new TtsGenerationError(message, { cause: body });
+}
+
 export interface SpeakPayload {
   readonly trace_id: string;
   readonly segment_id: string;
@@ -128,6 +155,25 @@ export class TtsBridgeClient {
   constructor(baseUrl = "http://127.0.0.1:8102", timeoutMs = 5000) {
     this.baseUrl = baseUrl.replace(/\/+$/, "");
     this.timeoutMs = timeoutMs;
+  }
+
+  async generate(text: string, timeoutMs: number, signal?: AbortSignal): Promise<Uint8Array> {
+    try {
+      const response = await fetch(`${this.baseUrl}/v1/tts/generate`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, timeout_ms: timeoutMs }), signal,
+      });
+      if (!response.ok) throw generationHttpError(response.status, await response.text());
+      if (response.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "audio/wav") {
+        await response.body?.cancel();
+        throw new TtsGenerationError("Bridge 未返回 WAV 音频");
+      }
+      return new Uint8Array(await response.arrayBuffer());
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason;
+      if (error instanceof TtsGenerationError) throw error;
+      throw new TtsGenerationError("TTS Bridge 连接或音频传输失败，请检查 tts inspect", { cause: error });
+    }
   }
 
   /**

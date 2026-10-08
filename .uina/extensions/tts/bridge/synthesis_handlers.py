@@ -31,6 +31,12 @@ class StreamingSynthesisError(RuntimeError):
         self.fallback_allowed = fallback_allowed
 
 
+class GenerateRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    text: str = Field(min_length=1, pattern=r"\S")
+    timeout_ms: int = Field(default=120000, gt=0, le=2147483647, strict=True)
+
+
 # 流式音频队列无消费空间的停滞阈值。正常背压（播放端短暂慢）在几秒内恢复；
 # 超过该阈值说明播放端已停滞（设备故障等），producer 必须显式失败并释放
 # 合成锁，而不是永久自旋冻结 vendor 推理。失败会明确上报，不静默丢句。

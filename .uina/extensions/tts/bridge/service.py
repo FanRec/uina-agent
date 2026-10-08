@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import struct
 import hashlib
-import io
 import json
 import inspect
 
@@ -21,7 +22,6 @@ try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10 and older GPT-SoVITS runtimes.
     import tomli as tomllib
-import wave
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from queue import Empty, Full, Queue
 from contextlib import asynccontextmanager
@@ -94,6 +94,38 @@ MIN_FIXED_STREAMING_DELIVERY_WORKERS = 2
 MAX_FIXED_STREAMING_DELIVERY_WORKERS = 3
 TERMINAL_TASK_TTL_SECONDS = 3600
 MAX_TERMINAL_TASKS = 1000
+
+
+def _validate_generated_wav(audio: bytes) -> None:
+    """Validate the complete PCM file, including frame alignment and every chunk boundary."""
+    if len(audio) < 44 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE" or int.from_bytes(audio[4:8], "little") + 8 != len(audio):
+        raise ValueError("invalid RIFF/WAVE length")
+    frame_size = 0
+    has_data = False
+    offset = 12
+    while offset < len(audio):
+        if offset + 8 > len(audio):
+            raise ValueError("incomplete chunk header")
+        name = audio[offset:offset + 4]
+        size = int.from_bytes(audio[offset + 4:offset + 8], "little")
+        offset += 8
+        if offset + size > len(audio):
+            raise ValueError("incomplete chunk")
+        if name == b"fmt ":
+            if frame_size or size < 16:
+                raise ValueError("invalid format chunk")
+            encoding, channels, rate, byte_rate, frame_size, bits = struct.unpack_from("<HHIIHH", audio, offset)
+            if encoding != 1 or not channels or not rate or bits not in {8, 16, 24, 32}:
+                raise ValueError("invalid PCM format")
+            if frame_size != channels * bits // 8 or byte_rate != rate * frame_size:
+                raise ValueError("invalid PCM alignment or rate")
+        elif name == b"data":
+            if not frame_size or has_data or not size or size % frame_size:
+                raise ValueError("invalid PCM data")
+            has_data = True
+        offset += size + size % 2
+    if offset != len(audio) or not has_data:
+        raise ValueError("incomplete WAV")
 
 
 
@@ -1516,18 +1548,17 @@ class TTSBridgeService:
             "late_result_discarded": bool(playback_result.get("late_result_discarded", False)),
         }
 
-    def _speak_batch(self, task: BridgeTask, ref_audio_path: Path, timeout_ms: int, *, adaptive_fallback: bool = False) -> dict[str, Any]:
-        """传统批量合成：等完整 WAV 返回后播放。"""
+    def _batch_payload(self, text: str, ref_audio_path: Path | None, *, media_type: str) -> dict[str, Any]:
         preset = self.config.preset
-        payload: dict[str, Any] = {"media_type": preset.media_type}
+        payload: dict[str, Any] = {"media_type": media_type}
         if self.config.vendor.api_style == "legacy":
-            payload.update({"text": task.detail["text"], "text_language": preset.text_lang})
+            payload.update({"text": text, "text_language": preset.text_lang})
         else:
             payload.update({
-                "text": task.detail["text"],
+                "text": text,
                 # 动态语言：纯中文/中文夹英文 → zh（以中文为准，避免 zh/ja 误判）；
                 # 含假名/谚文 → auto（混合语言按段自动识别）
-                "text_lang": _vendor_text_lang_for(task.detail["text"]),
+                "text_lang": _vendor_text_lang_for(text),
                 "ref_audio_path": str(ref_audio_path),
                 "prompt_text": preset.prompt_text,
                 "prompt_lang": preset.prompt_lang,
@@ -1535,6 +1566,65 @@ class TTSBridgeService:
                 "speed_factor": preset.speed_factor,
                 "streaming_mode": False,
             })
+        return payload
+
+    async def generate(self, text: str, *, timeout_ms: int) -> bytes:
+        """Pure synthesis: no task, playback epoch, artifact, subtitle or mouth events."""
+        deadline = time.perf_counter() + timeout_ms / 1000
+
+        def remaining_ms() -> int:
+            if self._closing.is_set():
+                raise HTTPException(status_code=503, detail="bridge is stopping")
+            remaining = int((deadline - time.perf_counter()) * 1000)
+            if remaining <= 0:
+                raise HTTPException(status_code=504, detail="generation timed out")
+            return remaining
+
+        remaining_ms()
+        if not text.strip():
+            raise HTTPException(status_code=422, detail="text is empty")
+        ref_audio_path = self.config.preset.ref_audio_path
+        if self.config.vendor.api_style != "legacy":
+            if ref_audio_path is None or not ref_audio_path.is_file():
+                raise HTTPException(status_code=503, detail="reference audio is unavailable")
+            ref_audio_path = ref_audio_path.resolve()
+        # A disconnected caller can leave the queue without waiting for another synthesis.
+        while not self._synthesis_lock.acquire(blocking=False):
+            await asyncio.sleep(min(0.05, remaining_ms() / 1000))
+        work = None
+        try:
+            remaining = remaining_ms()
+            payload = self._batch_payload(text, ref_audio_path, media_type="wav")
+            try:
+                work = asyncio.create_task(self.vendor_manager.synthesize_file(payload, timeout_ms=remaining))
+                while not work.done():
+                    await asyncio.wait({work}, timeout=min(0.05, remaining_ms() / 1000))
+                response = await work
+            except httpx.TimeoutException as exc:
+                raise HTTPException(status_code=504, detail="tts vendor request timed out") from exc
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=502, detail="tts vendor request failed") from exc
+            remaining_ms()
+            if response.status_code != 200:
+                raise HTTPException(status_code=502, detail="tts vendor rejected synthesis")
+            audio = response.content
+            try:
+                _validate_generated_wav(audio)
+            except ValueError as exc:
+                raise HTTPException(status_code=502, detail="vendor returned invalid or incomplete WAV") from exc
+            return audio
+        finally:
+            try:
+                if work is not None and not work.done():
+                    work.cancel()
+                    await asyncio.gather(work, return_exceptions=True)
+            finally:
+                self._synthesis_lock.release()
+
+    def _speak_batch(self, task: BridgeTask, ref_audio_path: Path, timeout_ms: int, *, adaptive_fallback: bool = False) -> dict[str, Any]:
+        """传统批量合成：等完整 WAV 返回后播放。"""
+        preset = self.config.preset
+        payload = self._batch_payload(task.detail["text"], ref_audio_path, media_type=preset.media_type)
 
         synth = self._synthesize_batch_audio(task, payload=payload, timeout_ms=timeout_ms, media_type=preset.media_type)
         if synth is None:

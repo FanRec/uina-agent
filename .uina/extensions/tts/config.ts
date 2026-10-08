@@ -9,6 +9,7 @@ export interface TtsExtensionConfig {
   readonly bridgeConfig: string;
   readonly startupTimeoutMs: number;
   readonly requestTimeoutMs: number;
+  readonly generationTimeoutMs?: number;
   readonly autoSpawn: boolean;
   readonly maxSentenceChars: number;
   readonly subtitleServiceUrl?: string;
@@ -24,6 +25,7 @@ const DEFAULT_CONFIG = {
   bridgeConfig: "bridge/config/service.toml",
   startupTimeoutMs: 30000,
   requestTimeoutMs: 5000,
+  generationTimeoutMs: 120000,
   autoSpawn: true,
   maxSentenceChars: 20,
   subtitleServiceUrl: "http://127.0.0.1:18140",
@@ -31,6 +33,13 @@ const DEFAULT_CONFIG = {
   subtitleAutoSpawn: true,
   subtitleStartupTimeoutMs: 10000,
 };
+
+export function resolveGenerationTimeout(value: unknown = DEFAULT_CONFIG.generationTimeoutMs): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0 || value > 2_147_483_647) {
+    throw new Error("generationTimeoutMs must be an integer between 1 and 2147483647");
+  }
+  return value;
+}
 
 export function getExtensionDir(): string {
   try {
@@ -92,6 +101,8 @@ export function loadConfig(
     (typeof parsed.requestTimeoutMs === "number" ? parsed.requestTimeoutMs : undefined) ||
     DEFAULT_CONFIG.requestTimeoutMs;
 
+  const generationTimeoutMs = resolveGenerationTimeout(overrides?.generationTimeoutMs ?? parsed.generationTimeoutMs);
+
   const autoSpawn =
     typeof overrides?.autoSpawn === "boolean"
       ? overrides.autoSpawn
@@ -132,6 +143,7 @@ export function loadConfig(
     bridgeConfig,
     startupTimeoutMs,
     requestTimeoutMs,
+    generationTimeoutMs,
     autoSpawn,
     maxSentenceChars,
     subtitleServiceUrl,

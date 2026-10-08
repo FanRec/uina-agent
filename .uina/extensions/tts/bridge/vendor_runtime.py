@@ -166,6 +166,12 @@ class VendorRuntime:
             timeout=max(timeout_ms / 1000, 0.1),
         )
 
+    async def synthesize_file(self, payload: dict[str, Any], *, timeout_ms: int) -> httpx.Response:
+        """A cancellable request to the same model process, independent of playback HTTP."""
+        endpoint = "/" if self.config.vendor.api_style == "legacy" else "/tts"
+        async with httpx.AsyncClient(base_url=self.client.base_url, trust_env=False) as client:
+            return await client.post(endpoint, json=payload, timeout=timeout_ms / 1000)
+
     def synthesize_stream(
         self,
         payload: dict[str, Any],
