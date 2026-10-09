@@ -137,7 +137,6 @@ export interface WorldDef {
 	name: string;
 	/** 世界描述，供大模型在 Tool 列表里判断何时使用 */
 	description: string;
-	environment?: string;
 
 	/**
 	 * 世界启动/启用时的钩子（可选）

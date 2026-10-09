@@ -7,7 +7,6 @@ export function createWorldStoreWorld(registry: WorldRegistry): WorldDef {
 		name: "world_store",
 		description:
 			"发现和维护已安装 World；主体已有可用能力时不要调用。list/search 查询，enable/disable 改变能力生命周期并返回启停结果。",
-		environment: "本机已安装 World 的目录；动态状态通过本工具查询。",
 		defaultState: { enabled: true },
 		actions: {
 			list: {
@@ -27,7 +26,7 @@ export function createWorldStoreWorld(registry: WorldRegistry): WorldDef {
 				},
 			},
 			search: {
-				description: "按名称、描述或环境说明搜索 World",
+				description: "按名称或描述搜索 World",
 				parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] },
 				validate: (p: any) =>
 					typeof p?.query === "string" && p.query.trim() ? { valid: true } : { valid: false, error: "query 不能为空" },
@@ -36,7 +35,7 @@ export function createWorldStoreWorld(registry: WorldRegistry): WorldDef {
 					const m = registry
 						.list()
 						.filter((w) =>
-							[w.definition.name, w.definition.description, w.definition.environment ?? ""].some((v) =>
+							[w.definition.name, w.definition.description].some((v) =>
 								v.toLowerCase().includes(q),
 							),
 						);

@@ -147,7 +147,7 @@ describe("context_prepare event", () => {
 							kind: "messages",
 							messageCount: 2,
 							chars: 20,
-							preview: "[World environment]",
+							preview: "[body 快照]",
 						},
 					],
 				}),

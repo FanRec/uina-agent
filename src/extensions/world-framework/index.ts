@@ -56,17 +56,8 @@ export async function activateWorldFramework(pi: ExtensionAPI): Promise<() => Pr
 	pi.share(WORLD_EXPOSED_SHARED_NAME, registry.exposedRegistry());
 	await registry.register(createWorldStoreWorld(registry));
 	const teardownWorlds = await loadExternalWorlds(pi, registry);
-	const unhookEnvironment = pi.onHook("turn.prepare", (input) => {
-		const environments = registry
-			.list()
-			.filter((world) => world.enabled && world.definition.environment?.trim())
-			.map((world) => `- ${world.definition.name}: ${world.definition.environment!.trim()}`);
-		if (environments.length === 0) return undefined;
-		return { systemPrompt: `${input.systemPrompt}\n\n[World environment]\n${environments.join("\n")}` };
-	});
 	// teardown：统一回收 registry 内全部世界，再摘除外置世界。
 	return async () => {
-		unhookEnvironment();
 		await registry.disposeAll();
 		await teardownWorlds();
 	};

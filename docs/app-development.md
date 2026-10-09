@@ -12,7 +12,6 @@ World 放在 `.uina/worlds/<name>/`，入口默认是 `index.ts`。入口导出 
 
 - `name`：稳定的唯一名称，也用于工具路由。
 - `description`：给模型看的能力概述，不放动态状态。
-- `environment`：稳定说明：这个 World 代表什么环境、模型该用哪些查询工具、哪些事实会主动通知。它不替代工具描述，也不放实时数据。
 - `defaultState.enabled`：默认是否启用。
 - `actions`：模型可以调用的业务动作。建议提供 `status`、`list`、`search` 等查询动作；动作结果就是当前事实的权威来源。
 - `onStart` / `onStop`：后台服务的启动和清理。

@@ -1836,25 +1836,18 @@ describe("Live2DRuntime 姿态权威与 express 诚实性", () => {
 			expose: vi.fn(),
 		};
 
-		// 1. 未启动时 environment 给出未就绪提示，status 动作报错
-		expect(app.environment).toContain("未就绪");
+		// 1. 未启动时 status 动作报错
 		const failedCheck = await app.actions.status.run({}, fakeCtx());
 		expect(failedCheck).toHaveProperty("status", "failed");
 
-		// 2. 启动后 environment 动态返回完整 formatStatus
+		// 2. 启动后 live2d 工具 status 动作成功执行并返回完整 formatStatus
 		await app.onStart?.(fakeServiceCtx as never);
-		expect(app.environment).toContain("[live2d]");
-		expect(app.environment).toContain("物理状态: 离线(VTS)");
-		expect(app.environment).toContain("口型通道: 已接线");
-		expect(app.environment).toContain("姿态: relaxed");
-
-		// 3. live2d 工具 status 动作成功执行并返回 formatStatus
 		const actionResult = await app.actions.status.run({}, fakeCtx());
 		expect(typeof actionResult).toBe("object");
 		expect(actionResult.result).toContain("[live2d]");
 		expect(actionResult.result).toContain("口型通道:");
 
-		// 4. body 工具 status 动作附带 endpoint.formatStatus()
+		// 3. body 工具 status 动作附带 endpoint.formatStatus()
 		const router = new BodyRouter();
 		const runtime = createOfflineRuntime();
 		router.registerEndpoint(runtime.endpoint);

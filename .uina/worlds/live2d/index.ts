@@ -19,10 +19,6 @@ export function createLive2DApp(): WorldDef {
 	description:
 		"控制当前在屏幕上呈现的 Live2D 虚拟二次元立绘形象（Mo）。日常说话时优先在台词中使用 <cue id='...'/> 进行 0 开销的自然肢体伴随（如微笑、点头、歪头）；仅在需要主动调整中长期人设体态、触发装扮、或进行多步显式表演分镜时调用本工具。",
 
-	get environment(): string {
-		return currentRuntime ? currentRuntime.formatStatus() : "Live2D 虚拟形象运行时离线或未就绪";
-	},
-
 	defaultState: {
 		enabled: true,
 	},
