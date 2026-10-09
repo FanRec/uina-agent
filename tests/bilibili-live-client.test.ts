@@ -1,8 +1,28 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { BilibiliLiveClient, fetchUserId } from "../.uina/worlds/bilibili-live/src/blivedm-ts/client.js";
+import type { DanmakuEvent, GiftEvent } from "../.uina/worlds/bilibili-live/src/blivedm-ts/events.js";
+import { loadConfig } from "../.uina/worlds/bilibili-live/src/config.js";
+import { LiveEventBuffer } from "../.uina/worlds/bilibili-live/src/buffer.js";
+import { LiveEventIngestion } from "../.uina/worlds/bilibili-live/src/live-event-ingestion.js";
 import { USER_AGENT } from "../.uina/worlds/bilibili-live/src/blivedm-ts/wbi.js";
 
-afterEach(() => vi.unstubAllGlobals());
+let tempDir: string | undefined;
+
+afterEach(() => {
+	vi.unstubAllGlobals();
+	if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+	tempDir = undefined;
+});
+
+// SendGiftBroadcast: uid 1001, 主播铁粉, 舰长, 真爱粉 Lv15; two gift_list items.
+const SEND_GIFT_V2_PB =
+	"COkHEgzkuLvmkq3pk4HnsokoA0INKA8yCeecn+eIseeyiVI0CAESCeWwj+W/g+W/gxgDKGQ4rAJCBGdvbGRKCWhlYXJ0LXRpZFCA4s+qBpIBBui1oOmAgVIrCAISCeWwj+iKseiKsRgBKGQ4ZEIEZ29sZEoKZmxvd2VyLXRpZFCB4s+qBg==";
+// Same broadcast without price: total_coin / num must still yield a unit price of 100.
+const SEND_GIFT_V2_TOTAL_COIN_PB =
+	"COkHEgzkuLvmkq3pk4HnsokoA0INKA8yCeecn+eIseeyiVIyCAESCeWwj+W/g+W/gxgDOKwCQgRnb2xkSgloZWFydC10aWRQgOLPqgaSAQbotaDpgIFSKQgCEgnlsI/oirHoirEYAThkQgRnb2xkSgpmbG93ZXItdGlkUIHiz6oG";
 
 describe("BilibiliLiveClient initialization failures", () => {
 	it("preserves the original room API error for the reconnect layer", async () => {
@@ -80,8 +100,8 @@ describe("BilibiliLiveClient authenticated uid", () => {
 describe("BilibiliLiveClient handleBusinessMessage command dispatching", () => {
 	it("dispatches SEND_GIFT_V2 and colon-suffixed commands", () => {
 		const client = new BilibiliLiveClient({ roomId: 24194689 });
-		const gifts: any[] = [];
-		const danmakus: any[] = [];
+		const gifts: GiftEvent[] = [];
+		const danmakus: DanmakuEvent[] = [];
 		client.on("gift", (g) => gifts.push(g));
 		client.on("danmaku", (d) => danmakus.push(d));
 
@@ -97,6 +117,7 @@ describe("BilibiliLiveClient handleBusinessMessage command dispatching", () => {
 					gift_name: "小花花",
 					num: 5,
 					price: 100,
+					coin_type: "gold",
 					tid: "tid-v2-1",
 				},
 			},
@@ -114,6 +135,7 @@ describe("BilibiliLiveClient handleBusinessMessage command dispatching", () => {
 					giftName: "辣条",
 					num: 1,
 					price: 100,
+					coin_type: "gold",
 					tid: "tid-colon-2",
 				},
 			},
@@ -138,5 +160,150 @@ describe("BilibiliLiveClient handleBusinessMessage command dispatching", () => {
 		expect(danmakus).toHaveLength(1);
 		expect(danmakus[0].text).toBe("这是一条带后缀的弹幕");
 		expect(danmakus[0].uname).toBe("弹幕姬");
+	});
+
+	it.each([
+		["price", SEND_GIFT_V2_PB],
+		["total_coin", SEND_GIFT_V2_TOTAL_COIN_PB],
+	])("decodes Protobuf SEND_GIFT_V2 with %s and renders its senders", async (_priceSource, pb) => {
+		tempDir = mkdtempSync(join(tmpdir(), "uina-gift-v2-"));
+		const client = new BilibiliLiveClient({ roomId: 24194689 });
+		const config = loadConfig({ storage: { dataDir: tempDir } });
+		const buffer = new LiveEventBuffer(config);
+		const ingestion = new LiveEventIngestion(
+			config,
+			buffer,
+			() => undefined,
+			() => undefined,
+		);
+		const gifts: GiftEvent[] = [];
+		client.on("gift", (gift) => gifts.push(gift));
+		ingestion.replace(client);
+
+		client.handleBusinessMessage({
+			header: {} as any,
+			body: { cmd: "SEND_GIFT_V2", data: { pb } },
+		});
+
+		expect(gifts).toHaveLength(2);
+		expect(gifts[0]).toMatchObject({
+			id: "heart-tid",
+			uid: 1001,
+			uname: "主播铁粉",
+			giftId: 1,
+			giftName: "小心心",
+			count: 3,
+			price: 100,
+			coinType: "gold",
+			timestamp: 1_700_000_000_000,
+		});
+		expect(gifts[1]).toMatchObject({
+			id: "flower-tid",
+			uid: 1001,
+			uname: "主播铁粉",
+			giftId: 2,
+			giftName: "小花花",
+			count: 1,
+			price: 100,
+			coinType: "gold",
+			timestamp: 1_700_000_001_000,
+		});
+		expect(buffer.drainQuietTransientGifts(0, performance.now())).toEqual([
+			'* <user name="主播铁粉" uid="1001" identity="舰长" medal="真爱粉Lv15"/> 赠送 小心心 x3',
+			'* <user name="主播铁粉" uid="1001" identity="舰长" medal="真爱粉Lv15"/> 赠送 小花花 x1',
+		]);
+
+		await ingestion.stop();
+		buffer.dispose();
+	});
+
+	it.each([
+		["invalid base64", "!"],
+		["truncated varint", "CIA="],
+		["truncated gift item", SEND_GIFT_V2_PB.slice(0, -4)],
+		["missing sender uid", Buffer.from(SEND_GIFT_V2_PB, "base64").subarray(3).toString("base64")],
+		["invalid UTF-8", "COkHEgH/"],
+		[
+			"wrong gift_list wire type",
+			Buffer.concat([Buffer.from(SEND_GIFT_V2_PB, "base64"), Buffer.from([0x50, 1])]).toString("base64"),
+		],
+	])("rejects the whole V2 batch with %s", (_reason, pb) => {
+		const client = new BilibiliLiveClient({ roomId: 24194689 });
+		const gifts: GiftEvent[] = [];
+		const errors: Error[] = [];
+		client.on("gift", (gift) => gifts.push(gift));
+		client.on("error", (error) => errors.push(error));
+
+		client.handleBusinessMessage({ header: {} as any, body: { cmd: "SEND_GIFT_V2", data: { pb } } });
+
+		expect(gifts).toEqual([]);
+		expect(errors).toHaveLength(1);
+		expect(errors[0].message).toContain("SEND_GIFT_V2 parse failed");
+	});
+
+	it("propagates gift listener failures without misreporting them as parsing errors", () => {
+		const client = new BilibiliLiveClient({ roomId: 24194689 });
+		const onError = vi.fn();
+		client.on("error", onError);
+		client.on("gift", () => {
+			throw new Error("journal write failed");
+		});
+
+		expect(() =>
+			client.handleBusinessMessage({
+				header: {} as any,
+				body: { cmd: "SEND_GIFT_V2", data: { pb: SEND_GIFT_V2_PB } },
+			}),
+		).toThrow("journal write failed");
+		expect(onError).not.toHaveBeenCalled();
+	});
+
+	it("uses non-empty nested sender_uinfo values when legacy top-level fields are placeholders", () => {
+		const client = new BilibiliLiveClient({ roomId: 24194689 });
+		const gifts: GiftEvent[] = [];
+		client.on("gift", (gift) => gifts.push(gift));
+
+		client.handleBusinessMessage({
+			header: {} as any,
+			body: {
+				cmd: "SEND_GIFT_V2",
+				data: {
+					uid: 0,
+					uname: "",
+					sender_uinfo: { uid: 2002, base: { name: "嵌套昵称" } },
+					gift_id: 7,
+					gift_name: "小花花",
+					num: 2,
+					price: 100,
+					coin_type: "gold",
+					tid: "nested-sender-gift",
+				},
+			},
+		});
+
+		expect(gifts).toHaveLength(1);
+		expect(gifts[0]).toMatchObject({ uid: 2002, uname: "嵌套昵称", giftId: 7, giftName: "小花花", count: 2 });
+	});
+
+	it("rejects malformed gift payloads instead of emitting uid 0 and a fake x1", () => {
+		const client = new BilibiliLiveClient({ roomId: 24194689 });
+		const gifts: GiftEvent[] = [];
+		const errors: Error[] = [];
+		client.on("gift", (gift) => gifts.push(gift));
+		client.on("error", (error) => errors.push(error));
+
+		client.handleBusinessMessage({
+			header: {} as any,
+			body: { cmd: "SEND_GIFT_V2", data: { pb: "AA==" } },
+		});
+		client.handleBusinessMessage({
+			header: {} as any,
+			body: { cmd: "SEND_GIFT", data: { uid: 0, uname: "", gift_id: 0, gift_name: "", num: 0 } },
+		});
+
+		expect(gifts).toEqual([]);
+		expect(errors).toHaveLength(2);
+		expect(errors[0].message).toContain("SEND_GIFT_V2 parse failed");
+		expect(errors[1].message).toContain("SEND_GIFT parse failed");
 	});
 });

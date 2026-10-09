@@ -10,6 +10,7 @@ import {
 import {
   parseDanmaku,
   parseGift,
+  parseGiftV2,
   parseSuperChat,
   parseGuardBuy,
   type DanmakuEvent,
@@ -288,7 +289,16 @@ export class BilibiliLiveClient extends WebSocketClientBase {
       }
       this.emit("danmaku", event);
     } else if ((cmd === "SEND_GIFT" || cmd === "SEND_GIFT_V2") && body.data) {
-      this.emit("gift", parseGift(body.data));
+      let events: GiftEvent[];
+      try {
+        const data = body.data;
+        const hasProtobuf = cmd === "SEND_GIFT_V2" && typeof data === "object" && "pb" in data;
+        events = hasProtobuf ? parseGiftV2(data) : [parseGift(data)];
+      } catch (error) {
+        this.emitError(new Error(`${cmd} parse failed: ${error instanceof Error ? error.message : String(error)}`));
+        return;
+      }
+      for (const event of events) this.emit("gift", event);
     } else if (cmd === "SUPER_CHAT_MESSAGE" && body.data) {
       this.emit("superChat", parseSuperChat(body.data));
     } else if (cmd === "GUARD_BUY" && body.data) {

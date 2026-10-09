@@ -1,3 +1,5 @@
+import { decodeSendGiftV2 } from "./gift-v2-protobuf.js";
+
 /**
  * Web 端弹幕消息事件
  */
@@ -24,7 +26,7 @@ export interface GiftEvent {
   giftId: number;         // 礼物 ID
   giftName: string;       // 礼物名称
   count: number;          // 礼物数量
-  price: number;          // 礼物总价值 (金瓜子/1000 = 元)
+  price: number;          // 单个礼物面值 (金瓜子/1000 = 元)
   coinType: "gold" | "silver"; // 瓜子类型
   action: string;         // 动作 (如 "投喂", "赠送")
   timestamp: number;      // 时间戳
@@ -227,20 +229,72 @@ export function parseDanmaku(info: any[]): DanmakuEvent {
   };
 }
 
-export function parseGift(data: any): GiftEvent {
-  const giftId = Number(data.giftId ?? data.gift_id ?? 0);
-  const giftName = String(data.giftName ?? data.gift_name ?? "");
-  const count = Number(data.num ?? data.combo_num ?? data.count ?? 1);
-  const price = Number(data.price ?? (data.total_coin ? Math.round(data.total_coin / count) : 0));
-  // 新版 SEND_GIFT/SEND_GIFT_V2 把发送者信息移入 sender_uinfo，顶层 uname/uid 已为空
-  const sender = data.sender_uinfo ?? {};
-  const uid = Number(data.uid ?? sender.uid ?? 0);
-  const uname = String(data.uname ?? sender.uname ?? "");
-  const timestamp = data.timestamp
-    ? (data.timestamp > 1e11 ? data.timestamp : data.timestamp * 1000)
-    : Date.now();
-  const id = String(data.tid || data.transaction_id || data.rnd || `${timestamp}_${uid}_${giftId}_${count}`);
-  const medalInfo = data.medal_info;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return undefined;
+}
+
+function firstPositiveInteger(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (value === undefined || value === null || value === "") continue;
+    const number = Number(value);
+    if (Number.isSafeInteger(number) && number > 0) return number;
+  }
+  return undefined;
+}
+
+function timestampInMilliseconds(value: unknown): number {
+  if (value === undefined || value === null || value === "") return Date.now();
+  const timestamp = Number(value);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) throw new Error("gift timestamp is invalid");
+  return timestamp > 1e11 ? timestamp : timestamp * 1000;
+}
+
+function parseGiftPrice(data: Record<string, unknown>, count: number): number {
+  const priceValue = data.price;
+  const totalCoinValue = data.total_coin;
+  const price = priceValue === undefined || priceValue === null || priceValue === "" ? undefined : Number(priceValue);
+  const totalCoin = totalCoinValue === undefined || totalCoinValue === null || totalCoinValue === "" ? undefined : Number(totalCoinValue);
+  const perGift = price ?? (totalCoin === undefined ? undefined : Math.round(totalCoin / count));
+  if (perGift === undefined || !Number.isFinite(perGift) || perGift < 0) {
+    throw new Error("gift is missing a valid price or total_coin");
+  }
+  return perGift;
+}
+
+/** Parse the legacy JSON-shaped SEND_GIFT payload. */
+export function parseGift(input: unknown): GiftEvent {
+  if (!isRecord(input)) throw new Error("SEND_GIFT data is not an object");
+  const sender = isRecord(input.sender_uinfo) ? input.sender_uinfo : {};
+  const senderBase = isRecord(sender.base) ? sender.base : {};
+  const giftInfo = isRecord(input.gift_info) ? input.gift_info : {};
+
+  // 0 and empty strings are placeholders in some payload versions, not usable identities.
+  const uid = firstPositiveInteger(input.uid, sender.uid);
+  const uname = firstNonEmptyString(input.uname, sender.uname, senderBase.name);
+  const giftId = firstPositiveInteger(input.giftId, input.gift_id, giftInfo.giftId, giftInfo.gift_id);
+  const giftName = firstNonEmptyString(input.giftName, input.gift_name, giftInfo.giftName, giftInfo.gift_name);
+  const count = firstPositiveInteger(input.num, input.combo_num, input.count);
+  if (!uid) throw new Error("SEND_GIFT is missing a valid sender uid");
+  if (!uname) throw new Error("SEND_GIFT is missing sender uname");
+  if (!giftId) throw new Error("SEND_GIFT is missing a valid gift id");
+  if (!giftName) throw new Error("SEND_GIFT is missing gift name");
+  if (!count) throw new Error("SEND_GIFT is missing a valid count");
+
+  const coinType = input.coin_type;
+  if (coinType !== "gold" && coinType !== "silver") throw new Error("SEND_GIFT has an unknown coin_type");
+  const timestamp = timestampInMilliseconds(input.timestamp);
+  const id = firstNonEmptyString(input.tid, input.transaction_id, input.rnd) ?? `${timestamp}_${uid}_${giftId}_${count}`;
+  const medalInfo = isRecord(input.medal_info) ? input.medal_info : {};
+  const guardLevel = Number.isSafeInteger(input.guard_level) ? Number(input.guard_level) : undefined;
+  const medalLevel = Number.isSafeInteger(medalInfo.medal_level) ? Number(medalInfo.medal_level) : undefined;
+  const medalName = firstNonEmptyString(medalInfo.medal_name);
 
   return {
     id,
@@ -249,14 +303,37 @@ export function parseGift(data: any): GiftEvent {
     giftId,
     giftName,
     count,
-    price,
-    coinType: data.coin_type === "silver" ? "silver" : "gold",
-    action: data.action || "赠送",
+    price: parseGiftPrice(input, count),
+    coinType,
+    action: firstNonEmptyString(input.action) ?? "赠送",
     timestamp,
-    guardLevel: data.guard_level,
-    medalName: medalInfo?.medal_name,
-    medalLevel: medalInfo?.medal_level,
+    ...(guardLevel === undefined ? {} : { guardLevel }),
+    ...(medalName === undefined ? {} : { medalName }),
+    ...(medalLevel === undefined ? {} : { medalLevel }),
   };
+}
+
+/** Parse SEND_GIFT_V2's Protobuf broadcast, which may contain several gift items. */
+export function parseGiftV2(input: unknown): GiftEvent[] {
+  const broadcast = decodeSendGiftV2(input);
+  return broadcast.gifts.map((gift, index) => {
+    const timestamp = timestampInMilliseconds(gift.timestamp);
+    return {
+      id: gift.id || `${timestamp}_${broadcast.uid}_${gift.giftId}_${gift.count}_${index}`,
+      uid: broadcast.uid,
+      uname: broadcast.uname,
+      giftId: gift.giftId,
+      giftName: gift.giftName,
+      count: gift.count,
+      price: gift.price,
+      coinType: gift.coinType,
+      action: gift.action || "赠送",
+      timestamp,
+      ...(broadcast.guardLevel === undefined ? {} : { guardLevel: broadcast.guardLevel }),
+      ...(broadcast.medalName === undefined ? {} : { medalName: broadcast.medalName }),
+      ...(broadcast.medalLevel === undefined ? {} : { medalLevel: broadcast.medalLevel }),
+    };
+  });
 }
 
 export function parseSuperChat(data: any): SuperChatEvent {
