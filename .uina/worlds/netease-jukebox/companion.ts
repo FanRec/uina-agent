@@ -11,37 +11,63 @@ export interface CompanionStatus {
   readonly detail?: string;
 }
 
+export interface CompanionManagerOptions {
+  readonly spawn?: typeof spawn;
+}
+
+function waitForSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = (): void => signal.removeEventListener("abort", onAbort);
+    const onAbort = (): void => {
+      cleanup();
+      reject(signal.reason instanceof Error ? signal.reason : new Error("网易云服务等待已取消"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => { cleanup(); resolve(value); },
+      (error: unknown) => { cleanup(); reject(error); },
+    );
+    if (signal.aborted) onAbort();
+  });
+}
+
 export class CompanionManager {
   private childProcess: ChildProcess | null = null;
   private spawnedByUs = false;
   private startPromise: Promise<CompanionStatus> | null = null;
   private generation = 0;
+  private childReady = false;
+  private readonly spawnProcess: typeof spawn;
 
   constructor(
     private readonly serviceDir = "E:\\Uina\\ThirdParty\\api-enhanced",
     private readonly port = 3000,
+    options: CompanionManagerOptions = {},
   ) {
+    this.spawnProcess = options.spawn ?? spawn;
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error(`无效的网易云伴生服务端口: ${port}`);
     }
   }
 
   async ensureRunning(apiClient: NeteaseApiClient, maxWaitMs = 10000, signal?: AbortSignal): Promise<CompanionStatus> {
-    if (this.startPromise) return this.startPromise;
-    const generation = ++this.generation;
-    this.startPromise = this.startInternal(apiClient, maxWaitMs, generation, signal);
-    try {
-      return await this.startPromise;
-    } finally {
-      this.startPromise = null;
+    let startPromise = this.startPromise;
+    if (!startPromise) {
+      const generation = ++this.generation;
+      const pending = this.startInternal(apiClient, maxWaitMs, generation);
+      startPromise = pending.finally(() => {
+        if (this.startPromise === startPromise) this.startPromise = null;
+      });
+      this.startPromise = startPromise;
     }
+    return waitForSignal(startPromise, signal);
   }
 
-  private async startInternal(apiClient: NeteaseApiClient, maxWaitMs: number, generation: number, signal?: AbortSignal): Promise<CompanionStatus> {
-    signal?.throwIfAborted();
+  private async startInternal(apiClient: NeteaseApiClient, maxWaitMs: number, generation: number): Promise<CompanionStatus> {
     // 1. Check if already healthy
-    const healthy = await apiClient.isHealthy(1500, signal);
-    signal?.throwIfAborted();
+    const healthy = await apiClient.isHealthy(1500);
     if (generation !== this.generation) {
       return this.unhealthy();
     }
@@ -60,9 +86,9 @@ export class CompanionManager {
     try {
       // process.execPath 而非 PATH 里的 "node"：宿主 PATH 缺 node 时 spawn("node") 会发出
       // 无监听的 'error' 事件并击穿为 uncaughtException。与 HudCompanionManager 保持一致。
-      const child = spawn(process.execPath, ["app.js"], {
+      const child = this.spawnProcess(process.execPath, ["app.js"], {
         cwd: this.serviceDir,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: "ignore",
         windowsHide: true,
         env: {
           ...process.env,
@@ -71,45 +97,43 @@ export class CompanionManager {
       });
       this.childProcess = child;
       this.spawnedByUs = true;
-      // 排空管道：无人读取时子进程日志写满 64KB 缓冲会阻塞在 console.log 上，永远无法 healthy。
-      child.stdout?.resume();
-      child.stderr?.resume();
+      this.childReady = false;
 
-      child.once("error", () => {
+      let processFailure: string | undefined;
+      child.once("error", (error) => {
+        processFailure = `启动网易云数据服务失败：${error.message}`;
         if (this.childProcess === child) {
           this.childProcess = null;
           this.spawnedByUs = false;
+          this.childReady = false;
         }
       });
-      child.once("exit", () => {
+      child.once("exit", (code, signal) => {
+        processFailure = signal
+          ? `网易云数据服务启动后被信号 ${signal} 终止。`
+          : `网易云数据服务启动后退出，退出码 ${code ?? "unknown"}。`;
         if (this.childProcess === child) {
           this.childProcess = null;
           this.spawnedByUs = false;
+          this.childReady = false;
         }
       });
 
       // 4. Poll until healthy
       const start = Date.now();
       while (Date.now() - start < maxWaitMs) {
-        signal?.throwIfAborted();
         if (generation !== this.generation) break;
-        const ready = await apiClient.isHealthy(1000, signal);
-        signal?.throwIfAborted();
+        if (processFailure) return this.unhealthy(processFailure);
+        const ready = await apiClient.isHealthy(1000);
         if (generation !== this.generation) break;
         if (ready) {
+          this.childReady = true;
+          // api-enhanced is a reusable local service and must not keep the host event loop alive.
+          child.unref();
           return { running: true, spawnedByUs: true, port: this.port };
         }
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            signal?.removeEventListener("abort", onAbort);
-            resolve();
-          }, 500);
-          const onAbort = () => {
-            clearTimeout(timer);
-            reject(signal?.reason ?? new Error("伴生服务启动已取消"));
-          };
-          signal?.addEventListener("abort", onAbort, { once: true });
-        });
+        if (processFailure) return this.unhealthy(processFailure);
+        await new Promise<void>((resolve) => setTimeout(resolve, 500));
       }
 
       this.killChild(child);
@@ -117,12 +141,11 @@ export class CompanionManager {
       return this.unhealthy(
         await this.portOccupied()
           ? `端口 ${this.port} 有 HTTP 响应但未提供网易云数据服务（可能被其他程序占用）。`
-          : undefined,
+          : `网易云数据服务在 ${maxWaitMs} 毫秒内未能于端口 ${this.port} 就绪。`,
       );
     } catch (error) {
       if (this.childProcess) this.killChild(this.childProcess);
-      if (signal?.aborted) throw error;
-      return this.unhealthy();
+      return this.unhealthy(`启动网易云数据服务失败：${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -143,15 +166,8 @@ export class CompanionManager {
   async stop(): Promise<void> {
     this.generation++;
     if (this.startPromise) await this.startPromise.catch(() => undefined);
-    if (this.childProcess && this.spawnedByUs) {
-      const proc = this.childProcess;
-      this.childProcess = null;
-      this.spawnedByUs = false;
-      try {
-        proc.kill();
-      } catch {
-        // ignore
-      }
+    if (this.childProcess && this.spawnedByUs && !this.childReady) {
+      this.killChild(this.childProcess);
     }
   }
 
@@ -168,6 +184,7 @@ export class CompanionManager {
     if (this.childProcess === child) {
       this.childProcess = null;
       this.spawnedByUs = false;
+      this.childReady = false;
     }
   }
 }
