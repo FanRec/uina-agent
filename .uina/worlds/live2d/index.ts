@@ -11,7 +11,8 @@ import { loadRig, MO_MODEL_ID } from "./models/rig-loader.js";
  * flip / spatial / status / diagnose / preview / accept / reload。目录是参数的唯一合法
  * 词表来源；引擎接入前所有具身操作统一返回 not_started。
  *
- * P1：VTS 连接、MO rig 与保活时钟已接线——模型身份匹配时注入中性基座流。
+ * P2-3：VTS 连接、MO rig、保活时钟与 director 合成已接线——模型身份匹配时注入
+ * director 合成帧（槽位/动作/自律）；具身工具仍在 P4 接入前统一返回 not_started。
  * 刻意不做（规范修订 A2/A14/A6）：Timeline、Performance 门面、即兴 beats、自由数值轴。
  */
 export function createLive2DApp(): WorldDef {

@@ -102,4 +102,25 @@ describe("live2d 自律发生器（P2-2）", () => {
 		d2.step(800); // 半周期附近幅度显著
 		expect(Math.abs(d2.currentFrame["torso.breath"]! - 0.5)).toBeGreaterThan(0.02);
 	});
+
+	it("眼睑调制（引擎 #3 P2 简化版）：表情把眼压到 0.8，眨眼仍完全闭拢再回 0.8", () => {
+		const controls: Readonly<Record<string, RigControlDef>> = {
+			"eyes.left.open": { min: 0, max: 1, neutral: 1 },
+			"eyes.right.open": { min: 0, max: 1, neutral: 1 },
+		};
+		const d = new MotionDirector(controls, { external: { blink: "uina", breath: "vts" }, rng: () => 0.5 });
+		void d.setExpression({ "eyes.left.open": 0.8, "eyes.right.open": 0.8 });
+		d.step(1000); // 表情过渡完成
+		expect(d.currentFrame["eyes.left.open"]).toBeCloseTo(0.8, 3);
+
+		// rng=0.5 → 首次眨眼于 ~3039.7ms；闭眼 60ms 内 factor 触 0，眼值 = 0.8 × 0 = 0。
+		d.step(2200);
+		let minEye = 1;
+		for (let i = 0; i < 30; i++) minEye = Math.min(minEye, d.step(5)["eyes.left.open"]!);
+		expect(minEye).toBe(0);
+		// 睁眼 120ms 后回到表情保持值 0.8。
+		let maxEye = 0;
+		for (let i = 0; i < 40; i++) maxEye = Math.max(maxEye, d.step(5)["eyes.left.open"]!);
+		expect(maxEye).toBeCloseTo(0.8, 3);
+	});
 });

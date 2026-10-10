@@ -1,26 +1,36 @@
 import type { ServiceCompanionContext } from "../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
-import { buildLive2DEndpoint, type Live2DEndpoint } from "./endpoint.js";
-import { encodeFrame, neutralFrame, validateRig, type ModelRig } from "./adapter/rig.js";
+import { encodeFrame, validateRig, type ModelRig } from "./adapter/rig.js";
 import { VTSClient } from "./adapter/vts-client.js";
+import { MotionDirector } from "./director/director.js";
+import { buildLive2DEndpoint, type Live2DEndpoint } from "./endpoint.js";
 
 /**
  * Live2D 世界运行时。
  *
- * P1-3 范围：生命周期 + VTS 连接 + 保活注入时钟。具身工具在引擎（P2+）接入前
- * 仍如实返回 not_started。保活契约（引擎规范 §3.4）：
- * - 时钟只在连接就绪且模型身份匹配时注入，断线即停、重连即恢复（基座流 = 当前合成帧）；
- * - P1 阶段无 director，合成帧恒为 rig 中性帧；发布门条件（未发布零输出）在 P2-3/P4-6 落地；
- * - faceFound 与单未确认帧背压由 vts-client 承担，时钟不重复实现。
+ * P2-3 范围：生命周期 + VTS 连接 + 保活注入时钟 + director 合成接入。
+ * tick 合约（边界规范 §6）：每帧实测 dt 驱动 director.step → adapter.encode → client.inject；
+ * 断线/身份不匹配/未发布时既不合成也不注入（保持零输出），重连后从当前状态续合成。
+ * - 时钟只在连接就绪且模型身份匹配时运转，断线即停、重连即恢复；
+ * - dt 用单调时钟实测（REVIEW 教训：不信任定时器间隔），钳制 250ms 防休眠/节流大跳；
+ * - faceFound 与单未确认帧背压由 vts-client 承担，时钟不重复实现；
+ * - 发布门的真值来源（acceptance.json + 作者会话）在 P4-6 接入；本阶段恒开放。
  */
 export interface Live2DRuntimeOptions {
 	/** 注入点（测试用）：替换真实 VTS 连接。缺省按世界默认构造（token 存世界根）。 */
 	client?: VTSClient;
-	/** 模型 rig；缺省时无注入（诚实零输出）。rig.json 装配在后续阶段接入。 */
+	/** 模型 rig；缺省时无注入（诚实零输出）。 */
 	rig?: ModelRig;
 	/** 注入时钟步长（缺省 1000/60）。 */
 	tickIntervalMs?: number;
+	/** 注入点（测试用）：director 随机源。缺省 Math.random。 */
+	rng?: () => number;
+	/** 注入点（测试用）：发布门。缺省 true（P4-6 改由验收门驱动）。 */
+	published?: boolean;
 }
+
+/** 单帧合成到注入之间允许的最大时间步（毫秒）：后台节流/休眠恢复时防止动作瞬移。 */
+const MAX_TICK_DT_MS = 250;
 
 export class Live2DRuntime {
 	private started = false;
@@ -28,13 +38,21 @@ export class Live2DRuntime {
 	private readonly client?: VTSClient;
 	private readonly rig?: ModelRig;
 	private readonly tickIntervalMs: number;
+	private readonly published: boolean;
 	private clock: NodeJS.Timeout | null = null;
+	private lastTickAt = 0;
+	/** 引擎句柄：P4 工具面（express/state）在此之上操作；无 rig 时不存在。 */
+	readonly director?: MotionDirector;
 	readonly endpoint: Live2DEndpoint;
 
 	constructor(options: Live2DRuntimeOptions = {}) {
 		this.client = options.client;
 		this.rig = options.rig;
-		if (this.rig) validateRig(this.rig);
+		this.published = options.published ?? true;
+		if (this.rig) {
+			validateRig(this.rig);
+			this.director = new MotionDirector(this.rig.controls, { external: this.rig.external, rng: options.rng });
+		}
 		this.tickIntervalMs = options.tickIntervalMs ?? 1000 / 60;
 		this.endpoint = buildLive2DEndpoint(this);
 	}
@@ -46,7 +64,7 @@ export class Live2DRuntime {
 	/** 引擎未接入前的统一受理语义：诚实声明未开始，不伪装失败原因。 */
 	notStarted(action: string): ToolExecutionResult {
 		return {
-			result: `Live2D 骨架已就绪，但引擎尚未接入，"${action}" 未执行（施工阶段 P2+）。`,
+			result: `Live2D 骨架已就绪，但引擎尚未接入，"${action}" 未执行（施工阶段 P4）。`,
 			status: "not_started",
 		};
 	}
@@ -84,6 +102,7 @@ export class Live2DRuntime {
 
 	private startClock(): void {
 		if (this.clock || !this.client) return;
+		this.lastTickAt = performance.now();
 		this.clock = setInterval(() => this.tick(), this.tickIntervalMs);
 	}
 
@@ -93,14 +112,22 @@ export class Live2DRuntime {
 		this.clock = null;
 	}
 
-	/** 每帧合成 → 编码 → 注入。断线、无 rig、模型身份不匹配时零输出。 */
 	private tick(): void {
-		if (!this.client || !this.rig || !this.client.isConnected()) return;
+		const now = performance.now();
+		const dt = Math.min(Math.max(now - this.lastTickAt, 0), MAX_TICK_DT_MS);
+		this.lastTickAt = now;
+		this.composeTick(dt);
+	}
+
+	/** 合约入口：合成一步并注入。注入时钟与测试共用（合成推进纯函数化，无真实定时器等待）。 */
+	composeTick(dtMs: number): void {
+		if (!this.client || !this.director || !this.rig || !this.published) return;
+		if (!this.client.isConnected()) return;
 		// 身份门：rig 只属于其标定的模型，VTS 当前模型不匹配即零输出，杜绝跨模型误注入。
 		const profile = this.client.getModelProfile();
 		if (!profile || profile.modelID !== this.rig.modelID) return;
-		// P1：无 director，合成帧恒为中性基座流；P2-3 接入后此行替换为 director.compose 输出。
-		this.client.injectParameters(encodeFrame(this.rig, neutralFrame(this.rig)));
+		const frame = this.director.step(dtMs);
+		this.client.injectParameters(encodeFrame(this.rig, frame));
 	}
 
 	formatStatus(): string {
@@ -108,9 +135,10 @@ export class Live2DRuntime {
 		return JSON.stringify(
 			{
 				world: "live2d",
-				build: "P1 keepalive",
+				build: "P2 engine",
 				started: this.started,
-				engine: this.rig ? "keepalive_wired (P1-3)" : "not_wired (P2+)",
+				engine: this.director ? "director_wired (P2-3)" : "not_wired",
+				published: this.published,
 				rig: this.rig ? { modelID: this.rig.modelID, axes: Object.keys(this.rig.controls).length } : null,
 				connection: connection ?? null,
 				endpoint: { bodyId: this.endpoint.bodyId, bodyType: this.endpoint.bodyType },

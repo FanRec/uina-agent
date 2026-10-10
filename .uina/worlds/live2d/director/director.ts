@@ -614,6 +614,13 @@ export class MotionDirector {
 				if (maskPriority !== undefined && CATEGORY_PRIORITY.autonomic < maskPriority) continue;
 				frame[axis] = (frame[axis] ?? this.neutral[axis]!) + delta;
 			}
+			// 眼睑调制（P2 简化版，引擎 #3）：blinkFactor 乘性作用于最终眼开值——
+			// 表情把眼压到 0.8 时眨眼仍能完全闭拢再回 0.8。P3-1 管道化后迁入 pipelines。
+			if (this.autonomicBlinkFactor < 1) {
+				for (const axis of ["eyes.left.open", "eyes.right.open"]) {
+					if (frame[axis] !== undefined) frame[axis] = frame[axis] * this.autonomicBlinkFactor;
+				}
+			}
 		}
 
 		// 7. 范围安全网。

@@ -187,10 +187,11 @@ describe("live2d 保活注入与断线恢复（P1-3）", () => {
 		const frame = device.injections[0]!;
 		expect(frame.data.faceFound).toBe(true);
 		expect(frame.data.mode).toBe("set");
-		expect(frame.data.parameterValues).toEqual([
-			{ id: "FaceAngleX", value: 0 },
-			{ id: "MouthOpen", value: 0 },
-		]);
+		// P2-3 起保活流为 director 合成帧：mouth 轴无自律贡献保持中性；head.yaw 叠加微晃（<1.5°）。
+		const params = frame.data.parameterValues as Array<{ id: string; value: number }>;
+		expect(params).toHaveLength(2);
+		expect(Math.abs(params.find((p) => p.id === "FaceAngleX")!.value)).toBeLessThan(2);
+		expect(params.find((p) => p.id === "MouthOpen")!.value).toBe(0);
 
 		const countAtStop = device.injections.length;
 		await runtime.stop();
