@@ -2,6 +2,7 @@ import type { ServiceCompanionContext, WorldDef } from "../../../src/extensions/
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { Live2DRuntime } from "./runtime.js";
 import { VTSClient } from "./adapter/vts-client.js";
+import { loadRig, MO_MODEL_ID } from "./models/rig-loader.js";
 
 /**
  * Live2D 世界装配。
@@ -10,7 +11,7 @@ import { VTSClient } from "./adapter/vts-client.js";
  * flip / spatial / status / diagnose / preview / accept / reload。目录是参数的唯一合法
  * 词表来源；引擎接入前所有具身操作统一返回 not_started。
  *
- * P1-3：VTS 连接与保活时钟已接线；rig.json 装配（models/mo）落地后中性流注入生效。
+ * P1：VTS 连接、MO rig 与保活时钟已接线——模型身份匹配时注入中性基座流。
  * 刻意不做（规范修订 A2/A14/A6）：Timeline、Performance 门面、即兴 beats、自由数值轴。
  */
 export function createLive2DApp(): WorldDef {
@@ -30,7 +31,12 @@ export function createLive2DApp(): WorldDef {
 		defaultState: { enabled: true },
 		async onStart(ctx: ServiceCompanionContext) {
 			if (runtime) await runtime.stop();
-			runtime = new Live2DRuntime({ client: new VTSClient() });
+			// rig 装配失败不阻断世界启动：诚实降级为零注入，status 中 rig=null 可见。
+			const rig = await loadRig(MO_MODEL_ID).catch((error: unknown) => {
+				console.warn("[Live2D] rig 装配失败，保活注入停用:", error);
+				return undefined;
+			});
+			runtime = new Live2DRuntime({ client: new VTSClient(), rig });
 			await runtime.start(ctx);
 		},
 		async onStop() {

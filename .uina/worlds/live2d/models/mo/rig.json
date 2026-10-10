@@ -1,0 +1,607 @@
+{
+	"version": 3,
+	"modelID": "da0021cd32ee464ca41f980e8c32515b",
+	"controls": {
+		"head.yaw": {
+			"min": -12,
+			"max": 12,
+			"neutral": 0
+		},
+		"head.pitch": {
+			"min": -10,
+			"max": 10,
+			"neutral": 0
+		},
+		"head.roll": {
+			"min": -10,
+			"max": 10,
+			"neutral": 0
+		},
+		"gaze.x": {
+			"min": -1,
+			"max": 1,
+			"neutral": 0
+		},
+		"gaze.y": {
+			"min": -1,
+			"max": 1,
+			"neutral": 0
+		},
+		"mouth.form": {
+			"min": 0,
+			"max": 1,
+			"neutral": 0
+		},
+		"mouth.open": {
+			"min": 0,
+			"max": 1,
+			"neutral": 0
+		},
+		"eyes.left.open": {
+			"min": 0,
+			"max": 1,
+			"neutral": 1
+		},
+		"eyes.right.open": {
+			"min": 0,
+			"max": 1,
+			"neutral": 1
+		}
+	},
+	"bindings": {
+		"head.yaw": [
+			{
+				"parameter": "ParamAngleX",
+				"input": "FaceAngleX",
+				"points": [
+					[
+						-12,
+						-14
+					],
+					[
+						0,
+						0
+					],
+					[
+						12,
+						14
+					]
+				],
+				"followers": [
+					"ParamBodyAngleX"
+				],
+				"physicsFollowers": [
+					"Param10",
+					"Param11",
+					"Param112",
+					"Param113",
+					"Param14",
+					"Param158",
+					"Param159",
+					"Param160",
+					"Param161",
+					"Param162",
+					"Param163",
+					"Param164",
+					"Param168",
+					"Param169",
+					"Param170",
+					"Param171",
+					"Param172",
+					"Param173",
+					"Param174",
+					"Param175",
+					"Param195",
+					"Param197",
+					"Param198",
+					"Param200",
+					"Param201",
+					"Param206",
+					"Param207",
+					"Param21",
+					"Param22",
+					"Param24",
+					"Param25",
+					"Param26",
+					"Param61",
+					"Param62",
+					"Param76",
+					"Param77",
+					"Param84",
+					"Param85",
+					"Param88",
+					"Param89",
+					"Param90",
+					"Param91",
+					"Param92",
+					"Param93",
+					"Param94",
+					"Param95",
+					"ParamHairFront",
+					"ParamHairSide",
+					"Param_Angle_Rotation10a",
+					"Param_Angle_Rotation13a",
+					"Param_Angle_Rotation14a",
+					"Param_Angle_Rotation15a",
+					"Param_Angle_Rotation15b",
+					"Param_Angle_Rotation15v",
+					"Param_Angle_Rotation15w",
+					"Param_Angle_Rotation16b",
+					"Param_Angle_Rotation16v",
+					"Param_Angle_Rotation16w",
+					"Param_Angle_Rotation17b",
+					"Param_Angle_Rotation17v",
+					"Param_Angle_Rotation17w",
+					"Param_Angle_Rotation18b",
+					"Param_Angle_Rotation18q",
+					"Param_Angle_Rotation18v",
+					"Param_Angle_Rotation18w",
+					"Param_Angle_Rotation19",
+					"Param_Angle_Rotation19b",
+					"Param_Angle_Rotation19q",
+					"Param_Angle_Rotation19w",
+					"Param_Angle_Rotation19z",
+					"Param_Angle_Rotation20",
+					"Param_Angle_Rotation20b",
+					"Param_Angle_Rotation20q",
+					"Param_Angle_Rotation20w",
+					"Param_Angle_Rotation20z",
+					"Param_Angle_Rotation21",
+					"Param_Angle_Rotation21b",
+					"Param_Angle_Rotation21q",
+					"Param_Angle_Rotation21w",
+					"Param_Angle_Rotation21z",
+					"Param_Angle_Rotation22",
+					"Param_Angle_Rotation22b",
+					"Param_Angle_Rotation22w",
+					"Param_Angle_Rotation22z",
+					"Param_Angle_Rotation23w",
+					"Param_Angle_Rotation23z",
+					"Param_Angle_Rotation24w",
+					"Param_Angle_Rotation24z",
+					"Param_Angle_Rotation25w",
+					"Param_Angle_Rotation25z",
+					"Param_Angle_Rotation26w",
+					"Param_Angle_Rotation26z",
+					"Param_Angle_Rotation27w",
+					"Param_Angle_Rotation27z",
+					"Param_Angle_Rotation28w",
+					"Param_Angle_Rotation28z",
+					"Param_Angle_Rotation291",
+					"Param_Angle_Rotation29w",
+					"Param_Angle_Rotation301",
+					"Param_Angle_Rotation30w",
+					"Param_Angle_Rotation6a",
+					"Param_Angle_Rotation7a",
+					"Param_Angle_Rotation9a"
+				],
+				"smoothing": 0,
+				"evidence": "calibrated"
+			}
+		],
+		"head.pitch": [
+			{
+				"parameter": "ParamAngleY",
+				"input": "FaceAngleY",
+				"points": [
+					[
+						-10,
+						-10
+					],
+					[
+						0,
+						0
+					],
+					[
+						10,
+						10
+					]
+				],
+				"followers": [
+					"ParamBodyAngleY"
+				],
+				"physicsFollowers": [
+					"Param112",
+					"Param113",
+					"Param12",
+					"Param13",
+					"Param14",
+					"Param15",
+					"Param150",
+					"Param158",
+					"Param159",
+					"Param16",
+					"Param160",
+					"Param161",
+					"Param162",
+					"Param163",
+					"Param164",
+					"Param168",
+					"Param169",
+					"Param170",
+					"Param171",
+					"Param172",
+					"Param173",
+					"Param174",
+					"Param175",
+					"Param195",
+					"Param197",
+					"Param198",
+					"Param202",
+					"Param203",
+					"Param206",
+					"Param207",
+					"Param21",
+					"Param22",
+					"Param24",
+					"Param25",
+					"Param26",
+					"Param53",
+					"Param54",
+					"Param61",
+					"Param62",
+					"Param76",
+					"Param77",
+					"Param88",
+					"Param89",
+					"Param90",
+					"Param91",
+					"Param92",
+					"Param93",
+					"Param94",
+					"Param95",
+					"ParamHairFront",
+					"ParamHairSide",
+					"Param_Angle_Rotation10a",
+					"Param_Angle_Rotation13a",
+					"Param_Angle_Rotation14a",
+					"Param_Angle_Rotation15a",
+					"Param_Angle_Rotation15b",
+					"Param_Angle_Rotation15v",
+					"Param_Angle_Rotation15w",
+					"Param_Angle_Rotation16b",
+					"Param_Angle_Rotation16v",
+					"Param_Angle_Rotation16w",
+					"Param_Angle_Rotation17b",
+					"Param_Angle_Rotation17v",
+					"Param_Angle_Rotation17w",
+					"Param_Angle_Rotation18b",
+					"Param_Angle_Rotation18q",
+					"Param_Angle_Rotation18v",
+					"Param_Angle_Rotation18w",
+					"Param_Angle_Rotation19",
+					"Param_Angle_Rotation19b",
+					"Param_Angle_Rotation19q",
+					"Param_Angle_Rotation19w",
+					"Param_Angle_Rotation19z",
+					"Param_Angle_Rotation20",
+					"Param_Angle_Rotation20b",
+					"Param_Angle_Rotation20q",
+					"Param_Angle_Rotation20w",
+					"Param_Angle_Rotation20z",
+					"Param_Angle_Rotation21",
+					"Param_Angle_Rotation21b",
+					"Param_Angle_Rotation21q",
+					"Param_Angle_Rotation21w",
+					"Param_Angle_Rotation21z",
+					"Param_Angle_Rotation22",
+					"Param_Angle_Rotation22b",
+					"Param_Angle_Rotation22w",
+					"Param_Angle_Rotation22z",
+					"Param_Angle_Rotation23w",
+					"Param_Angle_Rotation23z",
+					"Param_Angle_Rotation24w",
+					"Param_Angle_Rotation24z",
+					"Param_Angle_Rotation25w",
+					"Param_Angle_Rotation25z",
+					"Param_Angle_Rotation26w",
+					"Param_Angle_Rotation26z",
+					"Param_Angle_Rotation27w",
+					"Param_Angle_Rotation27z",
+					"Param_Angle_Rotation28w",
+					"Param_Angle_Rotation28z",
+					"Param_Angle_Rotation291",
+					"Param_Angle_Rotation29w",
+					"Param_Angle_Rotation301",
+					"Param_Angle_Rotation30w",
+					"Param_Angle_Rotation6a",
+					"Param_Angle_Rotation7a",
+					"Param_Angle_Rotation9a"
+				],
+				"smoothing": 0,
+				"evidence": "calibrated"
+			}
+		],
+		"head.roll": [
+			{
+				"parameter": "ParamAngleZ",
+				"input": "FaceAngleZ",
+				"points": [
+					[
+						-10,
+						-10
+					],
+					[
+						0,
+						0
+					],
+					[
+						10,
+						10
+					]
+				],
+				"followers": [
+					"ParamBodyAngleZ"
+				],
+				"physicsFollowers": [
+					"Param10",
+					"Param11",
+					"Param112",
+					"Param113",
+					"Param14",
+					"Param158",
+					"Param159",
+					"Param160",
+					"Param161",
+					"Param162",
+					"Param163",
+					"Param164",
+					"Param168",
+					"Param169",
+					"Param170",
+					"Param171",
+					"Param172",
+					"Param173",
+					"Param174",
+					"Param175",
+					"Param195",
+					"Param197",
+					"Param198",
+					"Param200",
+					"Param201",
+					"Param206",
+					"Param207",
+					"Param21",
+					"Param22",
+					"Param24",
+					"Param25",
+					"Param26",
+					"Param61",
+					"Param62",
+					"Param76",
+					"Param77",
+					"Param84",
+					"Param85",
+					"Param88",
+					"Param89",
+					"Param90",
+					"Param91",
+					"Param92",
+					"Param93",
+					"Param94",
+					"Param95",
+					"ParamHairFront",
+					"ParamHairSide",
+					"Param_Angle_Rotation10a",
+					"Param_Angle_Rotation13a",
+					"Param_Angle_Rotation14a",
+					"Param_Angle_Rotation15a",
+					"Param_Angle_Rotation15b",
+					"Param_Angle_Rotation15v",
+					"Param_Angle_Rotation15w",
+					"Param_Angle_Rotation16b",
+					"Param_Angle_Rotation16v",
+					"Param_Angle_Rotation16w",
+					"Param_Angle_Rotation17b",
+					"Param_Angle_Rotation17v",
+					"Param_Angle_Rotation17w",
+					"Param_Angle_Rotation18b",
+					"Param_Angle_Rotation18q",
+					"Param_Angle_Rotation18v",
+					"Param_Angle_Rotation18w",
+					"Param_Angle_Rotation19",
+					"Param_Angle_Rotation19b",
+					"Param_Angle_Rotation19q",
+					"Param_Angle_Rotation19w",
+					"Param_Angle_Rotation19z",
+					"Param_Angle_Rotation20",
+					"Param_Angle_Rotation20b",
+					"Param_Angle_Rotation20q",
+					"Param_Angle_Rotation20w",
+					"Param_Angle_Rotation20z",
+					"Param_Angle_Rotation21",
+					"Param_Angle_Rotation21b",
+					"Param_Angle_Rotation21q",
+					"Param_Angle_Rotation21w",
+					"Param_Angle_Rotation21z",
+					"Param_Angle_Rotation22",
+					"Param_Angle_Rotation22b",
+					"Param_Angle_Rotation22w",
+					"Param_Angle_Rotation22z",
+					"Param_Angle_Rotation23w",
+					"Param_Angle_Rotation23z",
+					"Param_Angle_Rotation24w",
+					"Param_Angle_Rotation24z",
+					"Param_Angle_Rotation25w",
+					"Param_Angle_Rotation25z",
+					"Param_Angle_Rotation26w",
+					"Param_Angle_Rotation26z",
+					"Param_Angle_Rotation27w",
+					"Param_Angle_Rotation27z",
+					"Param_Angle_Rotation28w",
+					"Param_Angle_Rotation28z",
+					"Param_Angle_Rotation291",
+					"Param_Angle_Rotation29w",
+					"Param_Angle_Rotation301",
+					"Param_Angle_Rotation30w",
+					"Param_Angle_Rotation6a",
+					"Param_Angle_Rotation7a",
+					"Param_Angle_Rotation9a"
+				],
+				"smoothing": 0,
+				"evidence": "calibrated"
+			}
+		],
+		"gaze.x": [
+			{
+				"parameter": "ParamEyeBallX",
+				"input": "EyeRightX",
+				"points": [
+					[
+						-1,
+						-0.65
+					],
+					[
+						0,
+						0
+					],
+					[
+						1,
+						0.65
+					]
+				],
+				"followers": [],
+				"physicsFollowers": [],
+				"smoothing": 0,
+				"evidence": "calibrated"
+			}
+		],
+		"gaze.y": [
+			{
+				"parameter": "ParamEyeBallY",
+				"input": "EyeRightY",
+				"points": [
+					[
+						-1,
+						-0.65
+					],
+					[
+						0,
+						0
+					],
+					[
+						1,
+						0.65
+					]
+				],
+				"followers": [],
+				"physicsFollowers": [],
+				"smoothing": 0,
+				"evidence": "calibrated"
+			}
+		],
+		"mouth.form": [
+			{
+				"parameter": "ParamMouthForm",
+				"input": "MouthSmile",
+				"points": [
+					[
+						0,
+						0
+					],
+					[
+						1,
+						0.65
+					]
+				],
+				"followers": [
+					"ParamEyeLSmile",
+					"ParamEyeRSmile"
+				],
+				"physicsFollowers": [
+					"Param17",
+					"Param18",
+					"Param186",
+					"Param190",
+					"Param191"
+				],
+				"smoothing": 0,
+				"evidence": "calibrated"
+			}
+		],
+		"mouth.open": [
+			{
+				"parameter": "ParamMouthOpenY",
+				"input": "MouthOpen",
+				"points": [
+					[
+						0,
+						0
+					],
+					[
+						1,
+						0.8
+					]
+				],
+				"followers": [],
+				"physicsFollowers": [
+					"Param183"
+				],
+				"smoothing": 0,
+				"evidence": "calibrated"
+			}
+		],
+		"eyes.left.open": [
+			{
+				"parameter": "ParamEyeLOpen",
+				"input": "EyeOpenLeft",
+				"points": [
+					[
+						0,
+						0
+					],
+					[
+						1,
+						1
+					]
+				],
+				"followers": [
+					"Param48"
+				],
+				"physicsFollowers": [
+					"Param184",
+					"Param3",
+					"Param30",
+					"Param88",
+					"Param89",
+					"Param90",
+					"Param92"
+				],
+				"smoothing": 0,
+				"evidence": "calibrated"
+			}
+		],
+		"eyes.right.open": [
+			{
+				"parameter": "ParamEyeROpen",
+				"input": "EyeOpenRight",
+				"points": [
+					[
+						0,
+						0
+					],
+					[
+						1,
+						1
+					]
+				],
+				"followers": [],
+				"physicsFollowers": [
+					"Param185",
+					"Param31",
+					"Param4",
+					"Param91",
+					"Param93",
+					"Param94",
+					"Param95"
+				],
+				"smoothing": 0,
+				"evidence": "calibrated"
+			}
+		]
+	},
+	"external": {
+		"blink": "uina",
+		"breath": "vts"
+	}
+}

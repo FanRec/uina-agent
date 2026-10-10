@@ -81,6 +81,7 @@ const profile: ModelProfile = {
 class Device implements WebSocketLike {
 	readyState = 1;
 	bufferedAmount = 0;
+	modelID = "fixture";
 	onopen: WebSocketLike["onopen"] = null;
 	onclose: WebSocketLike["onclose"] = null;
 	onerror: WebSocketLike["onerror"] = null;
@@ -96,7 +97,7 @@ class Device implements WebSocketLike {
 				data = { authenticated: true };
 				break;
 			case "CurrentModelRequest":
-				data = { modelLoaded: true, modelID: "fixture", timeSinceModelLoaded: 10 };
+				data = { modelLoaded: true, modelID: this.modelID, timeSinceModelLoaded: 10 };
 				break;
 			case "InputParameterListRequest":
 				data = { defaultParameters: profile.inputs };
@@ -128,6 +129,9 @@ class Device implements WebSocketLike {
 	get injections() {
 		return this.requests.filter((r) => r.messageType === "InjectParameterDataRequest");
 	}
+	messages(type: string) {
+		return this.requests.filter((r) => r.messageType === type);
+	}
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -135,12 +139,12 @@ async function flush(): Promise<void> {
 	for (let i = 0; i < 60; i++) await Promise.resolve();
 }
 
-/** 工厂经 getter 取假体：重连时测试换入新 Device。 */
-function makeRuntime(getDevice: () => Device) {
+/** 工厂经 getter 取假体：重连时测试换入新 Device。profileModelID 模拟 profileLoader 从 VTS 上报 modelID 派生。 */
+function makeRuntime(getDevice: () => Device, profileModelID = "fixture") {
 	const client = new VTSClient({
 		token: "fixture",
 		webSocketFactory: () => getDevice(),
-		profileLoader: async () => profile,
+		profileLoader: async () => ({ ...profile, modelID: profileModelID }),
 		reconnectIntervalMs: 10,
 		maxReconnectIntervalMs: 50,
 	});
@@ -264,5 +268,18 @@ describe("live2d 保活注入与断线恢复（P1-3）", () => {
 		// 不触发 onopen：连接未就绪。
 		await sleep(30);
 		expect(device.injections.length).toBe(0);
+	});
+
+	it("身份门：VTS 当前模型与 rig 身份不匹配时零输出", async () => {
+		const device = new Device();
+		device.modelID = "another-model";
+		const { runtime } = makeRuntime(() => device, "another-model"); // profile 由上报 modelID 派生
+		liveRuntimes.push(runtime);
+		await runtime.start({ signal: new AbortController().signal });
+		device.onopen?.({});
+		await flush();
+		await sleep(30);
+		expect(device.injections.length).toBe(0);
+		expect(device.messages("AuthenticationRequest")).toHaveLength(1); // 连接与鉴权正常完成
 	});
 });

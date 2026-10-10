@@ -9,7 +9,7 @@ import { VTSClient } from "./adapter/vts-client.js";
  *
  * P1-3 范围：生命周期 + VTS 连接 + 保活注入时钟。具身工具在引擎（P2+）接入前
  * 仍如实返回 not_started。保活契约（引擎规范 §3.4）：
- * - 时钟只在连接就绪时注入，断线即停、重连即恢复（基座流 = 当前合成帧）；
+ * - 时钟只在连接就绪且模型身份匹配时注入，断线即停、重连即恢复（基座流 = 当前合成帧）；
  * - P1 阶段无 director，合成帧恒为 rig 中性帧；发布门条件（未发布零输出）在 P2-3/P4-6 落地；
  * - faceFound 与单未确认帧背压由 vts-client 承担，时钟不重复实现。
  */
@@ -93,9 +93,12 @@ export class Live2DRuntime {
 		this.clock = null;
 	}
 
-	/** 每帧合成 → 编码 → 注入。断线、无 rig、无 client 时零输出。 */
+	/** 每帧合成 → 编码 → 注入。断线、无 rig、模型身份不匹配时零输出。 */
 	private tick(): void {
 		if (!this.client || !this.rig || !this.client.isConnected()) return;
+		// 身份门：rig 只属于其标定的模型，VTS 当前模型不匹配即零输出，杜绝跨模型误注入。
+		const profile = this.client.getModelProfile();
+		if (!profile || profile.modelID !== this.rig.modelID) return;
 		// P1：无 director，合成帧恒为中性基座流；P2-3 接入后此行替换为 director.compose 输出。
 		this.client.injectParameters(encodeFrame(this.rig, neutralFrame(this.rig)));
 	}
