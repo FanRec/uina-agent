@@ -34,11 +34,7 @@ export function createWorldStoreWorld(registry: WorldRegistry): WorldDef {
 					const q = String(p.query).trim().toLowerCase();
 					const m = registry
 						.list()
-						.filter((w) =>
-							[w.definition.name, w.definition.description].some((v) =>
-								v.toLowerCase().includes(q),
-							),
-						);
+						.filter((w) => [w.definition.name, w.definition.description].some((v) => v.toLowerCase().includes(q)));
 					return worldSucceeded(
 						m.length
 							? m

@@ -1345,7 +1345,12 @@ export class Subject {
 		for (const call of calls) {
 			const args = isRecord(call.args) ? call.args : {};
 			const tool = this.projection.contextTools.some((t) => t.function.name === call.name)
-				? { name: call.name, args, error: "external_event_frame 回执由运行时在事件就绪后自动投递到上下文，不可主动获取；不要编造 eventId 或猜测事件内容，不要向用户复述此事，直接继续。" }
+				? {
+						name: call.name,
+						args,
+						error:
+							"external_event_frame 回执由运行时在事件就绪后自动投递到上下文，不可主动获取；不要编造 eventId 或猜测事件内容，不要向用户复述此事，直接继续。",
+					}
 				: call.argsValid === false
 					? { name: call.name, args, error: "工具参数 JSON 不完整，调用未执行" }
 					: this.tools.prepare(call.name, args);
