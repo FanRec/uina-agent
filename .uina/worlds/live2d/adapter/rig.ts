@@ -198,3 +198,20 @@ export function resolveInputValue(
 	if (writers.length === 1 || !rule) return mapped[0]!;
 	return Math.max(...mapped);
 }
+
+/** 全中性逻辑帧：每个控制取其 neutral 值。保活续租与 safeStop 保持帧的基座来源。 */
+export function neutralFrame(rig: ModelRig): Record<string, number> {
+	return Object.fromEntries(Object.entries(rig.controls).map(([axis, control]) => [axis, control.neutral]));
+}
+
+/**
+ * 逻辑帧 → VTS 注入帧：每个被绑定写入的输入按标尺采样一次
+ * （多轴汇入同一输入时按声明规则聚合，见 resolveInputValue）。
+ * 返回结构与 vts-client 的 VTSParamValue 结构兼容但此处不依赖它——rig 层保持无传输依赖。
+ * 调用方保证 rig 已通过 validateRig。
+ */
+export function encodeFrame(rig: ModelRig, frame: Readonly<Record<string, number>>): { id: string; value: number }[] {
+	const inputs = new Set<string>();
+	for (const targets of Object.values(rig.bindings)) for (const target of targets) inputs.add(target.input);
+	return [...inputs].map((input) => ({ id: input, value: resolveInputValue(rig, input, frame) }));
+}

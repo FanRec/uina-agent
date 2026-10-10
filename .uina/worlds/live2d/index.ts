@@ -1,14 +1,16 @@
 import type { ServiceCompanionContext, WorldDef } from "../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { Live2DRuntime } from "./runtime.js";
+import { VTSClient } from "./adapter/vts-client.js";
 
 /**
- * Live2D 世界装配（P0 骨架）。
+ * Live2D 世界装配。
  *
  * 工具面按《live2d-world-boundary-spec.md》§2 一次性定型：express / state / costume /
  * flip / spatial / status / diagnose / preview / accept / reload。目录是参数的唯一合法
  * 词表来源；引擎接入前所有具身操作统一返回 not_started。
  *
+ * P1-3：VTS 连接与保活时钟已接线；rig.json 装配（models/mo）落地后中性流注入生效。
  * 刻意不做（规范修订 A2/A14/A6）：Timeline、Performance 门面、即兴 beats、自由数值轴。
  */
 export function createLive2DApp(): WorldDef {
@@ -28,7 +30,7 @@ export function createLive2DApp(): WorldDef {
 		defaultState: { enabled: true },
 		async onStart(ctx: ServiceCompanionContext) {
 			if (runtime) await runtime.stop();
-			runtime = new Live2DRuntime();
+			runtime = new Live2DRuntime({ client: new VTSClient() });
 			await runtime.start(ctx);
 		},
 		async onStop() {
