@@ -2,211 +2,31 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, rename, writeFile, realpath, rm } from "node:fs/promises";
 import { dirname, join, relative, isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
-import { AXES, AXIS_NAMES, type MotionAxis } from "./motion-axes.js";
-import { calibrationPoints, type ModelAdapterDefinition } from "./model-adapter.js";
 import { hashContent, modelFilePath, profileFilesUnchanged, type ModelProfile } from "./model-profile.js";
-
-interface InputPreparation {
-	name: string;
-	min: number;
-	max: number;
-	defaultValue: number;
+import { compileModelAdapter, type ModelRig } from "./model-adapter.js";
+export interface FilePatch { path: string; beforeHash: string; afterHash: string; content: string; }
+export interface PreparationPlan { version: 1; modelID: string; directory: string; facts: ModelProfile; patches: readonly FilePatch[]; }
+/** Prepare only explicitly authored active bindings. Preserve follower rows and every physics file. */
+export async function planModelPreparation(profile:ModelProfile,rig:ModelRig):Promise<PreparationPlan> {
+ if(!profile.directory||!profile.configFile||!profile.config||rig.modelID!==profile.modelID)throw new Error("准备需要匹配的真实事实与手工 rig");
+ const config=structuredClone(profile.config) as {ModelID:string;ParameterSettings:Record<string,unknown>[]};
+ if(!Array.isArray(config.ParameterSettings)||config.ModelID!==profile.modelID)throw new Error("配置结构或身份不匹配");
+ for(const targets of Object.values(rig.bindings))for(const t of targets){
+   const rows=config.ParameterSettings.filter(r=>r.OutputLive2D===t.parameter), row=rows.find(r=>r.Input===t.input);
+   if(!row)throw new Error(`手工选择的绑定不存在: ${t.parameter} → ${t.input}`);
+   const range=profile.parameterRanges?.[t.parameter];if(!range)throw new Error(`真实范围未核验: ${t.parameter}`);
+   config.ParameterSettings=config.ParameterSettings.filter(r=>r.OutputLive2D!==t.parameter);
+   config.ParameterSettings.push({...row,UseBlinking:false,UseBreathing:false,Smoothing:t.smoothing,ClampInput:true,ClampOutput:true,
+     OutputRangeLower:Math.max(range.min,Math.min(range.max,Number(row.OutputRangeLower))),OutputRangeUpper:Math.max(range.min,Math.min(range.max,Number(row.OutputRangeUpper)))});
+ }
+ // A pure compile against the planned facts validates all curves and accepted fanout before a write.
+ const mappings=config.ParameterSettings.map((r,index)=>({input:String(r.Input),output:String(r.OutputLive2D),inputMin:Number(r.InputRangeLower),inputMax:Number(r.InputRangeUpper),outputMin:Number(r.OutputRangeLower),outputMax:Number(r.OutputRangeUpper),useBreathing:r.UseBreathing===true,useBlinking:r.UseBlinking===true,smoothing:Number(r.Smoothing),index}));
+ compileModelAdapter({...profile,mappings},rig);
+ const path=await modelFilePath(profile.directory,profile.configFile), original=await readFile(path);
+ const expected=profile.files?.find(f=>resolve(f.path)===resolve(path));if(!expected||expected.hash!==hashContent(original))throw new Error("准备快照已失效");
+ const content=JSON.stringify(config,null,2)+"\n";
+ return {version:1,modelID:profile.modelID,directory:profile.directory,facts:profile,patches:[{path,beforeHash:hashContent(original),afterHash:hashContent(content),content}]};
 }
-interface FilePatch {
-	path: string;
-	beforeHash: string;
-	afterHash: string;
-	content: string;
-}
-export interface PreparationPlan {
-	version: 1;
-	modelID: string;
-	directory: string;
-	facts: ModelProfile;
-	definition: ModelAdapterDefinition;
-	inputs: readonly InputPreparation[];
-	patches: readonly FilePatch[];
-	diagnostics: readonly string[];
-	manualBindings: readonly {
-		axis: MotionAxis;
-		input: string;
-		parameter: string;
-		inputRange: readonly number[];
-		outputRange: readonly number[];
-	}[];
-}
-const inputName = (axis: MotionAxis): string =>
-	"Uina" +
-	axis
-		.split(".")
-		.map((s) => s[0]!.toUpperCase() + s.slice(1))
-		.join("");
-
-/** Pure preparation policy. Disk changes and global input creation are separate operations. */
-export async function planModelPreparation(
-	profile: ModelProfile,
-	definition: ModelAdapterDefinition,
-): Promise<PreparationPlan> {
-	if (
-		definition.version !== 1 ||
-		(definition.modelID && definition.modelID !== profile.modelID) ||
-		!profile.directory ||
-		!profile.configFile ||
-		!profile.config
-	)
-		throw new Error("准备需要匹配身份的完整磁盘快照");
-	for (const axis of Object.keys(definition.axes))
-		if (!Object.hasOwn(AXES, axis)) throw new Error(`未知动作轴: ${axis}`);
-	const config = structuredClone(profile.config) as Record<string, any>;
-	if (!Array.isArray(config.ParameterSettings) || !config.FileReferences?.Model || config.ModelID !== profile.modelID)
-		throw new Error("不支持的 VTS 配置结构；请按手动绑定表准备");
-	const requiredFields = [
-		"Input",
-		"OutputLive2D",
-		"InputRangeLower",
-		"InputRangeUpper",
-		"OutputRangeLower",
-		"OutputRangeUpper",
-		"UseBreathing",
-		"UseBlinking",
-		"ClampInput",
-		"ClampOutput",
-		"Smoothing",
-	];
-	for (const row of config.ParameterSettings)
-		if (!requiredFields.every((key) => Object.hasOwn(row, key))) throw new Error("VTS 绑定结构不匹配，拒绝猜测写入");
-	const targets = new Set<string>();
-	const inputs: InputPreparation[] = [];
-	const manualBindings: PreparationPlan["manualBindings"][number][] = [];
-	const prepared: ModelAdapterDefinition = { version: 1, modelID: profile.modelID, axes: {} };
-	const diagnostics: string[] = [];
-	for (const axis of AXIS_NAMES) {
-		for (const target of definition.axes[axis] ?? []) {
-			if (targets.has(target.parameter)) throw new Error(`多个轴写相同输出: ${target.parameter}`);
-			targets.add(target.parameter);
-			const range = profile.parameterRanges?.[target.parameter];
-			if (
-				!range ||
-				![range.min, range.max, range.defaultValue].every(Number.isFinite) ||
-				range.min >= range.max ||
-				range.defaultValue < range.min ||
-				range.defaultValue > range.max
-			)
-				throw new Error(`真实参数范围尚未核验: ${target.parameter}`);
-			const points = calibrationPoints(axis, target, range);
-			const name = inputName(axis);
-			const metadata = AXES[axis];
-			const p0 = points[0]!,
-				pn = points.at(-1)!;
-			const lo = p0[1],
-				hi = pn[1];
-			if (hi === lo) throw new Error(`校准输出为常量: ${target.parameter}`);
-			// A normalized input shared by models remains neutral at zero.
-			const neutralOutput = points.find((p) => p[0] === metadata.neutral)![1];
-			const lower = (lo - neutralOutput) / Math.abs(hi - lo);
-			const upper = (hi - neutralOutput) / Math.abs(hi - lo);
-			const input = { name, min: -1, max: 1, defaultValue: 0 };
-			if (!inputs.some((i) => i.name === name)) inputs.push(input);
-			if (profile.sources?.some((s) => s.kind === "expression" && s.parameters.includes(target.parameter)))
-				throw new Error(`${target.parameter}: 表情会写入目标，先准备不冲突的表情文件`);
-			if (profile.sources?.some((s) => s.kind === "motion" && s.parameters.includes(target.parameter)))
-				throw new Error(`${target.parameter}: 模型动画会写入目标，先处理相应动画/热键`);
-			const existing = config.ParameterSettings.find((row: any) => row.OutputLive2D === target.parameter);
-			if (!existing) throw new Error(`${target.parameter}: 缺少受支持的绑定模板，请先在 VTS 创建该输出的绑定`);
-			const row = {
-				...existing,
-				Input: name,
-				InputRangeLower: lower,
-				InputRangeUpper: upper,
-				OutputRangeLower: lo,
-				OutputRangeUpper: hi,
-				UseBreathing: false,
-				UseBlinking: false,
-				ClampInput: true,
-				ClampOutput: true,
-				Smoothing: 0,
-			};
-			config.ParameterSettings = config.ParameterSettings.filter((r: any) => r.OutputLive2D !== target.parameter);
-			config.ParameterSettings.push(row);
-			prepared.axes[axis] = [
-				...(prepared.axes[axis] ?? []),
-				{
-					...target,
-					input: name,
-					allowFanout: false,
-					points,
-					provisional: target.provisional === true || !target.points,
-				},
-			];
-			manualBindings.push({
-				axis,
-				input: name,
-				parameter: target.parameter,
-				inputRange: [lower, upper],
-				outputRange: [lo, hi],
-			});
-		}
-	}
-	const patches: FilePatch[] = [];
-	const patch = async (path: string, value: unknown) => {
-		const original = await readFile(path, "utf8");
-		const expected = profile.files?.find((f) => resolve(f.path) === resolve(path));
-		if (!expected || expected.hash !== hashContent(original)) throw new Error(`快照后文件已变化: ${path}`);
-		if (JSON.stringify(JSON.parse(original)) === JSON.stringify(value)) return;
-		const content = JSON.stringify(value, null, 2) + "\n";
-		patches.push({ path, beforeHash: hashContent(original), afterHash: hashContent(content), content });
-	};
-	const modelPath = await modelFilePath(profile.directory, config.FileReferences.Model);
-	const model = JSON.parse(await readFile(modelPath, "utf8"));
-	if (model.FileReferences?.Physics) {
-		const physicsPath = await modelFilePath(
-			profile.directory,
-			join(relative(profile.directory, dirname(modelPath)), model.FileReferences.Physics),
-		);
-		const physics = JSON.parse(await readFile(physicsPath, "utf8"));
-		if (
-			physics.Version !== 3 ||
-			!physics.Meta ||
-			!Array.isArray(physics.PhysicsSettings) ||
-			!Array.isArray(physics.Meta.PhysicsDictionary)
-		)
-			throw new Error("物理格式未识别，不能自动修改");
-		const originalGroups = physics.PhysicsSettings.length;
-		let removed = 0;
-		for (const group of physics.PhysicsSettings) {
-			if (!Array.isArray(group.Output) || !Array.isArray(group.Input) || !Array.isArray(group.Vertices))
-				throw new Error("非法物理组");
-			const before = group.Output.length;
-			group.Output = group.Output.filter((o: any) => !targets.has(o.Destination?.Id));
-			removed += before - group.Output.length;
-		}
-		if (removed) {
-			physics.PhysicsSettings = physics.PhysicsSettings.filter((g: any) => g.Output.length);
-			const ids = new Set(physics.PhysicsSettings.map((g: any) => g.Id));
-			physics.Meta.PhysicsDictionary = physics.Meta.PhysicsDictionary.filter((d: any) => ids.has(d.Id));
-			physics.Meta.PhysicsSettingCount = physics.PhysicsSettings.length;
-			physics.Meta.TotalInputCount = physics.PhysicsSettings.reduce((n: number, g: any) => n + g.Input.length, 0);
-			physics.Meta.TotalOutputCount = physics.PhysicsSettings.reduce((n: number, g: any) => n + g.Output.length, 0);
-			physics.Meta.VertexCount = physics.PhysicsSettings.reduce((n: number, g: any) => n + g.Vertices.length, 0);
-			diagnostics.push(`解除 ${removed} 个物理输出；物理组 ${originalGroups} → ${physics.PhysicsSettings.length}`);
-			await patch(physicsPath, physics);
-		}
-	}
-	await patch(await modelFilePath(profile.directory, profile.configFile), config);
-	diagnostics.push("需先在 VTS 创建/核验输入，再关闭 VTS 应用补丁，重新加载后捕获并验证。未执行视觉验收。");
-	return {
-		version: 1,
-		modelID: profile.modelID,
-		directory: profile.directory,
-		facts: profile,
-		definition: prepared,
-		inputs,
-		patches,
-		diagnostics,
-		manualBindings,
-	};
-}
-
 export async function assertVTSStopped(): Promise<void> {
 	if (process.platform !== "win32") throw new Error("当前离线写入保护只支持 Windows；其他平台使用手动准备");
 	const { stdout } = await promisify(execFile)(

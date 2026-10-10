@@ -1,7 +1,7 @@
 export type BodyType = "avatar_2d" | "avatar_3d" | "robotic_arm" | "quadruped" | "humanoid" | "custom";
 export interface ExpressiveCueDef { id: string; description: string; aliases?: readonly string[]; }
 export interface BodyAffordance { bodyId: string; bodyType: BodyType; description: string; cues: ExpressiveCueDef[]; }
-export interface BodyState { online: boolean; fault?: string; }
+export interface BodyState { online: boolean; paused: boolean; fault?: string; }
 export interface BodyEndpoint {
 	readonly bodyId: string;
 	readonly bodyType: BodyType;
@@ -9,6 +9,7 @@ export interface BodyEndpoint {
 	state(): BodyState;
 	emitCue(cueId: string): void;
 	safeStop(): Promise<void>;
+ resume(): Promise<void>;
 	supportsCue?(cueId: string): boolean;
 	onFocus?(isFocused: boolean): void | Promise<void>;
 	formatStatus?(): string;

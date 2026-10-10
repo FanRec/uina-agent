@@ -22,7 +22,7 @@ function isBodyEndpoint(value: unknown): value is BodyEndpoint {
 		typeof candidate.affordance === "function" &&
 		typeof candidate.state === "function" &&
 		typeof candidate.emitCue === "function" &&
-		typeof candidate.safeStop === "function"
+		typeof candidate.safeStop === "function" && typeof candidate.resume === "function"
 	);
 }
 

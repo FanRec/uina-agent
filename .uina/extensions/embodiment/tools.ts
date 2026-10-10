@@ -110,7 +110,7 @@ export function createBodyTool(router: BodyRouter, onStateChange?: (reason: stri
           }
           onStateChange?.("stop_all: all endpoints");
           return {
-            result: "已执行全身体安全急停，所有外壳已静止。",
+            result: "各端点的 Uina 驱动已暂停；外部物理和来源可能继续运动。",
             status: "succeeded",
           };
         }

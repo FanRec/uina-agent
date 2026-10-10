@@ -1,10 +1,9 @@
-import { loadModelAdapterDefinition, suggestModelAdapter } from "./model-adapter.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import { loadModelProfile, profileFilesUnchanged, type ModelProfile, type ModelInput } from "./model-profile.js";
+import { loadModelProfile, controlFilesUnchanged, type ModelProfile, type ModelInput } from "./model-profile.js";
 
 export interface VTSClientOptions {
 	url?: string;
@@ -44,6 +43,25 @@ export interface VTSHotkeyInfo {
 	file?: string;
 }
 
+export interface MotionInjectionEvidence {
+	generation: number;
+	sent: number;
+	accepted: number;
+	failed: number;
+	dropped: number;
+	filtered: number;
+	pending: number;
+	acceptedInputs: readonly string[];
+}
+interface InjectionObservation extends Omit<MotionInjectionEvidence, "acceptedInputs"> {
+	acceptedInputs: Set<string>;
+	settled?: () => void;
+}
+interface PendingInjection {
+	id: string;
+	observations: readonly { observation: InjectionObservation; inputs: readonly string[] }[];
+}
+
 export class VTSClient {
 	private readonly url: string;
 	private readonly pluginName: string;
@@ -64,6 +82,9 @@ export class VTSClient {
 	private isAuthenticated = false;
 	private ready = false;
 	private connectionGeneration = 0;
+ private modelGeneration = 0;
+ private blockedAt = 0;
+ getModelGeneration(): number { return this.modelGeneration; }
 
 	private readonly injectableParameters = new Set<string>();
 	private readonly filteredParamBuffer: VTSParamValue[] = [];
@@ -79,25 +100,82 @@ export class VTSClient {
 	private inputFacts: ModelInput[] = [];
 	private observationTimer?: NodeJS.Timeout;
 	private blockedModelID?: string;
-	private lastInjectionAttemptAt = 0;
+	private authDenied = false;
 	private validationPending?: Promise<boolean>;
 	private readonly injectionStats = { sent: 0, accepted: 0, failed: 0, dropped: 0, filtered: 0, lastAcceptedAt: 0 };
 	getInjectionStats() {
 		return { ...this.injectionStats, generation: this.connectionGeneration };
+	}
+	private readonly injectionObservations = new Map<string, InjectionObservation>();
+	/** A request captures its contributors at SEND time; a later ACK cannot credit a newer playback. */
+	observeMotionInjections(leaseID: string): {
+		snapshot(): MotionInjectionEvidence;
+		finish(): Promise<MotionInjectionEvidence>;
+		close(): void;
+	} {
+		if (this.injectionObservations.has(leaseID)) throw new Error("Duplicate injection observation: " + leaseID);
+		const observation: InjectionObservation = {
+			generation: this.connectionGeneration,
+			sent: 0,
+			accepted: 0,
+			failed: 0,
+			dropped: 0,
+			filtered: 0,
+			pending: 0,
+			acceptedInputs: new Set(),
+		};
+		this.injectionObservations.set(leaseID, observation);
+		const close = () => this.injectionObservations.delete(leaseID);
+		const snapshot = (): MotionInjectionEvidence => {
+			const { acceptedInputs, settled: _, ...counts } = observation;
+			return { ...counts, acceptedInputs: [...acceptedInputs] };
+		};
+		return {
+			close,
+			snapshot,
+			finish: async () => {
+				close();
+				// Only drain this playback's existing request; its normal injection timeout bounds the wait.
+				if (observation.pending)
+					await new Promise<void>((resolve) => {
+						observation.settled = resolve;
+					});
+				return snapshot();
+			},
+		};
+	}
+	private completeInjection(accepted: boolean): void {
+		const pending = this.injectionPending;
+		if (!pending) return;
+		this.injectionPending = undefined;
+		if (this.injectionTimer) clearTimeout(this.injectionTimer);
+		this.injectionTimer = undefined;
+		if (accepted) {
+			this.injectionStats.accepted++;
+			this.injectionStats.lastAcceptedAt = Date.now();
+		} else this.injectionStats.failed++;
+		for (const { observation, inputs } of pending.observations) {
+			observation.pending--;
+			if (accepted) {
+				observation.accepted++;
+				for (const input of inputs) observation.acceptedInputs.add(input);
+			} else observation.failed++;
+			if (!observation.pending) observation.settled?.();
+		}
 	}
 	async validateModelFiles(): Promise<boolean> {
 		if (!this.modelProfile) return false;
 		if (this.validationPending) return this.validationPending;
 		const profile = this.modelProfile,
 			generation = this.connectionGeneration;
-		this.validationPending = profileFilesUnchanged(profile)
+		this.validationPending = controlFilesUnchanged(profile)
 			.then((ok) => {
 				if (generation !== this.connectionGeneration) return false;
 				if (!ok) {
 					this.blockedModelID = profile.modelID;
-					this.fault = "模型配置已变化，需要重新加载 VTS 模型";
-					this.cleanupSocket();
-					this.scheduleReconnect();
+					this.blockedAt=Date.now();
+ this.fault = "控制配置已变化；请执行 reload，不必等待丢失的事件。";
+ this.ready=false; this.stage="需要重新加载模型"; this.onConnectionChange?.(false);
 				}
 				return ok;
 			})
@@ -118,8 +196,23 @@ export class VTSClient {
 		await this.refreshInjectableParameters();
 	}
 
+ async request(messageType: string, data: Record<string,unknown> = {}): Promise<unknown> {
+  if(!this.isAuthenticated) throw new Error("VTS 未鉴权");
+  return this.sendRequest(messageType,data,5000);
+ }
+ async reloadCurrentModel(): Promise<void> {
+  const id=this.blockedModelID ?? this.modelProfile?.modelID;
+  if(!id) throw new Error("没有可重新加载的模型");
+  // Explicit unload/load crosses a witnessed boundary even when the old event was lost.
+  await this.request("ModelLoadRequest", {modelID:""});
+  await new Promise(resolve=>setTimeout(resolve,2200));
+  const deadline=Date.now()+8000;
+  while(!this.getConnectionStatus().authenticated && Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,50));
+  await this.request("ModelLoadRequest",{modelID:id});
+ }
+
 	private fault?: string;
-	private injectionPending?: string;
+	private injectionPending?: PendingInjection;
 	private injectionTimer?: NodeJS.Timeout;
 	private readonly profileLoader: (modelID: string) => Promise<ModelProfile>;
 	private onConnectionChange?: (connected: boolean) => void;
@@ -215,9 +308,10 @@ export class VTSClient {
 					const model = (await this.sendRequest("CurrentModelRequest", {})) as {
 						modelLoaded?: boolean;
 						modelID?: string;
+ timeSinceModelLoaded?: number;
 					};
 					if (!model.modelLoaded || !model.modelID) throw new Error("VTS 当前未加载模型。");
-					if (this.blockedModelID === model.modelID) {
+					if (this.blockedModelID === model.modelID && !(Number.isFinite(model.timeSinceModelLoaded) && Date.now()-model.timeSinceModelLoaded!*1000 > this.blockedAt+250)) {
 						this.fault = "保存配置已变化，等待 VTS 重新加载模型确认";
 						this.stage = "等待模型重新加载";
 						return;
@@ -244,11 +338,6 @@ export class VTSClient {
 					);
 					if (!Object.keys(parameterRanges).length) throw new Error("VTS 未提供模型真实参数范围。");
 					this.modelProfile = { ...profile, inputs: this.inputFacts, parameterRanges };
-					this.modelProfile.adapterDefinition =
-						profile.adapterDefinition ??
-						(profile.directory
-							? await loadModelAdapterDefinition(this.modelProfile)
-							: suggestModelAdapter(this.modelProfile));
 					if (generation !== this.connectionGeneration || this.ws !== ws) return;
 					await this.refreshModelSources();
 					if (generation !== this.connectionGeneration || this.ws !== ws) return;
@@ -262,7 +351,8 @@ export class VTSClient {
 					await this.refreshModelHotkeys();
 					if (generation !== this.connectionGeneration || this.ws !== ws) return;
 					this.ready = true;
-					this.stage = "可控制";
+					this.stage = "设备事实就绪";
+ this.modelGeneration++;
 					this.onConnectionChange?.(true);
 					let observing = false;
 					this.observationTimer = setInterval(() => {
@@ -322,13 +412,11 @@ export class VTSClient {
 		const wasConnected = this.ready;
 		if (this.observationTimer) clearInterval(this.observationTimer);
 		this.observationTimer = undefined;
-		this.lastInjectionAttemptAt = 0;
 		this.ready = false;
+		this.completeInjection(false);
+		this.injectionObservations.clear();
 		this.connectionGeneration++;
 		this.modelProfile = undefined;
-		this.injectionPending = undefined;
-		if (this.injectionTimer) clearTimeout(this.injectionTimer);
-		this.injectionTimer = undefined;
 		this.isAuthenticated = false;
 		this.injectableParameters.clear();
 		this.inputFacts = [];
@@ -353,6 +441,11 @@ export class VTSClient {
 
 	private scheduleReconnect(): void {
 		if (this.isDisposed || this.reconnectTimer !== null) return;
+		// 授权被用户明确拒绝后不再自动重连：重连只会重新弹窗，恢复需要重启 Live2D 应用。
+		if (this.authDenied) {
+			this.stage = "授权被拒绝，等待手动重启";
+			return;
+		}
 		this.stage = "等待重连";
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = null;
@@ -426,10 +519,21 @@ export class VTSClient {
 		if (generation !== this.connectionGeneration) throw new Error("VTS connection changed");
 		// 请求新 Token（VTS 将弹出确认框）
 		console.log(`[Live2D] 正在向 VTube Studio 请求授权，请在 VTS 软件界面中点击【允许 / Allow】...`);
-		const tokenRes = (await this.sendRequest("AuthenticationTokenRequest", {
-			pluginName: this.pluginName,
-			pluginDeveloper: this.pluginDeveloper,
-		})) as { authenticationToken?: string };
+		let tokenRes: { authenticationToken?: string };
+		try {
+			tokenRes = (await this.sendRequest("AuthenticationTokenRequest", {
+				pluginName: this.pluginName,
+				pluginDeveloper: this.pluginDeveloper,
+			})) as { authenticationToken?: string };
+		} catch (error) {
+			// 用户在 VTS 弹窗拒绝授权：立即停止自动重连，否则退避循环会每隔几秒再次弹窗骚扰用户。
+			if (error instanceof Error && error.message.includes("VTS API Error")) {
+				this.authDenied = true;
+				this.stage = "授权被拒绝";
+				throw new Error("VTS 授权请求被拒绝，已停止自动重连（避免反复弹窗）；重启 Live2D 应用后重试。");
+			}
+			throw error;
+		}
 
 		if (!tokenRes?.authenticationToken) {
 			throw new Error("VTS 未返回有效的授权 Token");
@@ -487,9 +591,10 @@ export class VTSClient {
 					),
 				]
 			: [];
+		// 事实刷新只替换 profile；adapter 由 getAdapter() 按身份惰性重编译，
+		// 不触发 onConnectionChange——那会把"绑定事实变化"误当"重连"，杀掉进行中的表演并重置弹簧。
 		if (JSON.stringify(outputs) !== JSON.stringify(profile.physicsOutputs)) {
 			this.modelProfile = { ...profile, physicsState: physics, physicsOutputs: outputs };
-			if (this.ready) this.onConnectionChange?.(true);
 		} else if (JSON.stringify(profile.physicsState) !== JSON.stringify(physics))
 			this.modelProfile = { ...profile, physicsState: physics };
 		const activeProfile = this.modelProfile;
@@ -518,17 +623,11 @@ export class VTSClient {
 					})),
 				],
 			};
-			if (this.ready) this.onConnectionChange?.(true);
 		}
 	}
 	private async observeModel(): Promise<void> {
 		if (!(await this.validateModelFiles())) return;
-		if (
-			this.lastInjectionAttemptAt &&
-			Date.now() - this.injectionStats.lastAcceptedAt > 1000 &&
-			this.injectionStats.lastAcceptedAt
-		)
-			throw new Error("VTS 输入控制已超时，来源可能已交还");
+		// 注入无响应的传输故障由注入 1s 超时与 socket 生命周期兜底，这里不做 teardown 级回应。
 		await this.refreshModelSources();
 	}
 
@@ -621,20 +720,15 @@ export class VTSClient {
 			};
 
 			if (json.messageType === "ModelLoadedEvent") {
-				this.blockedModelID = undefined;
-				this.fault = "模型已切换，重新读取绑定";
-				this.cleanupSocket();
-				this.scheduleReconnect();
+				this.blockedModelID = undefined; this.modelGeneration++;
+ this.ready=false; this.onConnectionChange?.(false);
+ this.fault = "模型已切换，重新读取绑定";
+ const generation=this.connectionGeneration;
+ setTimeout(()=>{ if(generation===this.connectionGeneration) {this.cleanupSocket();this.scheduleReconnect();}},50);
 				return;
 			}
-			if (this.injectionPending && json.requestID === this.injectionPending) {
-				if (json.messageType === "InjectParameterDataResponse") {
-					this.injectionStats.accepted++;
-					this.injectionStats.lastAcceptedAt = Date.now();
-				} else this.injectionStats.failed++;
-				this.injectionPending = undefined;
-				if (this.injectionTimer) clearTimeout(this.injectionTimer);
-				this.injectionTimer = undefined;
+			if (this.injectionPending && json.requestID === this.injectionPending.id) {
+				this.completeInjection(json.messageType === "InjectParameterDataResponse");
 				if (json.messageType === "APIError") {
 					this.fault = `VTS 参数注入失败: ${JSON.stringify(json.data)}`;
 					this.cleanupSocket();
@@ -674,10 +768,17 @@ export class VTSClient {
 	/**
 	 * 向 VTS 注入合成参数 (非阻塞高频调用，自动过滤未知参数防 453 报错)
 	 */
-	injectParameters(parameters: readonly VTSParamValue[]): void {
-		if (parameters.length) this.lastInjectionAttemptAt = Date.now();
+	injectParameters(
+		parameters: readonly VTSParamValue[],
+		contributions: readonly { leaseID: string; inputs: readonly string[] }[] = [],
+	): void {
+		const observations = contributions.flatMap(({ leaseID, inputs }) => {
+			const observation = this.injectionObservations.get(leaseID);
+			return observation && inputs.length ? [{ observation, inputs }] : [];
+		});
 		if (!this.isConnected() || !this.ws || this.injectionPending || (this.ws.bufferedAmount ?? 0) > 0) {
 			this.injectionStats.dropped++;
+			for (const { observation } of observations) observation.dropped++;
 			return;
 		}
 		// ready 已包含参数清单核验；每帧仍过滤未知输入和非有限值。
@@ -687,6 +788,9 @@ export class VTSClient {
 				this.filteredParamBuffer.push(p);
 			} else this.injectionStats.filtered++;
 		}
+		const injectedInputs = new Set(this.filteredParamBuffer.map((p) => p.id));
+		for (const { observation, inputs } of observations)
+			observation.filtered += inputs.filter((input) => !injectedInputs.has(input)).length;
 		if (this.filteredParamBuffer.length === 0) return;
 
 		const payload = {
@@ -703,17 +807,25 @@ export class VTSClient {
 
 		try {
 			this.injectionStats.sent++;
-			this.injectionPending = payload.requestID;
+			const sentObservations = observations
+				.map(({ observation, inputs }) => ({
+					observation,
+					inputs: inputs.filter((input) => injectedInputs.has(input)),
+				}))
+				.filter(({ inputs }) => inputs.length > 0);
+			for (const { observation } of sentObservations) {
+				observation.sent++;
+				observation.pending++;
+			}
+			this.injectionPending = { id: payload.requestID, observations: sentObservations };
 			this.injectionTimer = setTimeout(() => {
-				this.injectionStats.failed++;
 				this.fault = "VTS 参数注入确认超时";
 				this.cleanupSocket();
 				this.scheduleReconnect();
 			}, 1000);
 			const generation = this.connectionGeneration;
 			this.ws.send(JSON.stringify(payload), (error) => {
-				if (error && generation === this.connectionGeneration) {
-					this.injectionStats.failed++;
+				if (error && generation === this.connectionGeneration && this.injectionPending?.id === payload.requestID) {
 					this.fault = error.message;
 					this.cleanupSocket();
 					this.scheduleReconnect();
@@ -770,10 +882,15 @@ export class VTSClient {
 	 * 触发 VTube Studio 快捷键 (HotkeyTriggerRequest)
 	 */
 	async triggerHotkey(hotkeyID: string, itemInstanceID?: string): Promise<unknown> {
-		return this.sendRequest("HotkeyTriggerRequest", {
-			hotkeyID,
-			...(itemInstanceID ? { itemInstanceID } : {}),
-		});
+		// 热键是本地即时动作，不应携带默认 30s 超时——costume 流程持锁等待会阻塞所有表情通道。
+		return this.sendRequest(
+			"HotkeyTriggerRequest",
+			{
+				hotkeyID,
+				...(itemInstanceID ? { itemInstanceID } : {}),
+			},
+			2000,
+		);
 	}
 
 	disconnect(): void {

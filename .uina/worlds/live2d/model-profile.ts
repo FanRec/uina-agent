@@ -2,7 +2,6 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdir, readFile, realpath } from "node:fs/promises";
 import { dirname, join, relative, resolve, isAbsolute } from "node:path";
-import type { ModelAdapterDefinition } from "./model-adapter.js";
 import { promisify } from "node:util";
 
 export interface ModelMapping {
@@ -45,7 +44,6 @@ export interface ModelFile {
 	hash: string;
 }
 export interface ModelProfile {
-	adapterDefinition?: ModelAdapterDefinition;
 	modelID: string;
 	modelName: string;
 	mappings: readonly ModelMapping[];
@@ -58,6 +56,7 @@ export interface ModelProfile {
 	sources?: readonly ModelSource[];
 	activeExpressions?: readonly string[];
 	fingerprint?: string;
+	controlFingerprint?: string;
 	directory?: string;
 	configFile?: string;
 	files?: readonly ModelFile[];
@@ -220,6 +219,7 @@ export async function loadModelProfile(modelID: string, modelsRoot?: string): Pr
 		sources,
 		assetListing,
 		fingerprint,
+		controlFingerprint: hashContent(JSON.stringify({ mappings, physics: config.PhysicsSettings, files: files.filter(f=>!f.path.endsWith(".vtube.json")).map(f=>({path:relative(directory,f.path),hash:f.hash})) })),
 		directory,
 		configFile: file,
 		files,
@@ -244,4 +244,10 @@ export async function profileFilesUnchanged(profile: ModelProfile): Promise<bool
 		}
 	}
 	return true;
+}
+
+export async function controlFilesUnchanged(profile: ModelProfile): Promise<boolean> {
+ if(!profile.directory || !profile.controlFingerprint) return true;
+ const fresh=await loadModelProfile(profile.modelID,dirname(profile.directory));
+ return fresh.controlFingerprint===profile.controlFingerprint;
 }

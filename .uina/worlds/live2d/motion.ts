@@ -1,4 +1,4 @@
-import { AXES, AXIS_NAMES, NEUTRAL_AXES, isMotionAxis, type AxisValues, type MotionAxis } from "./motion-axes.js";
+import { AXES, NEUTRAL_AXES, type ControlTable, type AxisValues, type MotionAxis } from "./motion-axes.js";
 import type { Live2DChannel, SpeechPolicy } from "./types.js";
 
 export type MotionCurve = "smooth" | "linear" | "hold" | readonly [number, number, number, number];
@@ -14,7 +14,6 @@ export interface MotionTrack {
 	readonly keys: readonly MotionKey[];
 	/** Blend a held pose from the preceding segment; explicit trajectories need no implicit ramp. */
 	readonly blendMs?: number;
-	readonly optional?: boolean;
 }
 export type MotionDefinition =
 	| { readonly kind: "clip"; readonly durationMs: number; readonly tracks: readonly MotionTrack[] }
@@ -68,7 +67,6 @@ export function pose(
 	durationMs: number,
 	values: AxisValues,
 	space: MotionSpace = "absolute",
-	optionalAxes: readonly MotionAxis[] = [],
 ): MotionDefinition {
 	return motion(
 		durationMs,
@@ -82,7 +80,6 @@ export function pose(
 				space,
 			),
 			blendMs: Math.min(180, durationMs * 0.4),
-			optional: optionalAxes.includes(axis as MotionAxis),
 		})),
 	);
 }
@@ -94,13 +91,13 @@ interface CompiledTrack {
 	readonly holdUntilMs: number;
 	readonly keys: readonly MotionKey[];
 	readonly blendMs: number;
-	readonly optional: boolean;
 	readonly entryTracks?: readonly number[];
 	readonly entryWeight?: number;
 	readonly speech?: SpeechPolicy;
 }
 export interface CompiledMotion {
 	readonly durationMs: number;
+	readonly controls: ControlTable;
 	readonly channels: readonly Live2DChannel[];
 	readonly axes: readonly MotionAxis[];
 	readonly tracks: readonly CompiledTrack[];
@@ -141,7 +138,11 @@ function curveAt(curve: MotionCurve, t: number): number {
 }
 
 /** Compiles without a body, lease, clock or connection. Invalid input never reaches playback. */
-export function compileMotion(definition: MotionDefinition): CompiledMotion {
+export function compileMotion(definition: MotionDefinition, metadata: ControlTable = AXES): CompiledMotion {
+ const controls: ControlTable = Object.freeze(Object.fromEntries(Object.entries(metadata).map(([id,m]) => {
+  if (![m.min,m.max,m.neutral].every(Number.isFinite) || m.min >= m.max || m.neutral < m.min || m.neutral > m.max) throw new Error(`Invalid control metadata: ${id}`);
+  return [id,Object.freeze({...m})];
+ })));
 	const tracks: CompiledTrack[] = [];
 	const visiting = new Set<MotionDefinition>();
 	function compile(node: MotionDefinition, startMs: number, timeScale: number, strength: number, path: string): number {
@@ -157,7 +158,7 @@ export function compileMotion(definition: MotionDefinition): CompiledMotion {
 				if (duration <= 0) throw new Error(`${path}: scaled duration must be positive`);
 				for (const [index, source] of node.tracks.entries()) {
 					const label = `${path}.tracks[${index}]`;
-					if (!isMotionAxis(source.axis)) throw new Error(`${label}: unknown axis ${source.axis}`);
+					if (!Object.hasOwn(controls, source.axis)) throw new Error(`${label}: unknown axis ${source.axis}`);
 					const space = source.space ?? "absolute";
 					if (space !== "absolute" && space !== "baseline-offset") throw new Error(`${label}: unknown space ${space}`);
 					if (!source.keys?.length) throw new Error(`${label}: keys must be nonempty`);
@@ -168,7 +169,7 @@ export function compileMotion(definition: MotionDefinition): CompiledMotion {
 						if (key.atMs <= previous || key.atMs < 0 || key.atMs > node.durationMs)
 							throw new Error(`${label}: key times must increase within the clip`);
 						previous = key.atMs;
-						const metadata = AXES[source.axis];
+						const metadata = controls[source.axis]!;
 						const neutral = space === "absolute" ? metadata.neutral : 0;
 						const value = neutral + (key.value - neutral) * strength;
 						finite(value, `${label}.scaledValue`);
@@ -201,7 +202,6 @@ export function compileMotion(definition: MotionDefinition): CompiledMotion {
 							holdUntilMs: startMs + duration,
 							keys: Object.freeze(keys),
 							blendMs,
-							optional: source.optional === true,
 						}),
 					);
 				}
@@ -313,9 +313,9 @@ export function compileMotion(definition: MotionDefinition): CompiledMotion {
 			)
 				throw new Error(`Conflicting parallel targets on ${a.axis}; only explicit offsets may overlap`);
 		}
-	const axes = Object.freeze(AXIS_NAMES.filter((axis) => tracks.some((t) => t.axis === axis)));
-	const channels = Object.freeze([...new Set(axes.map((axis) => AXES[axis].channel))]);
-	const result = Object.freeze({ durationMs, axes, channels, tracks: Object.freeze(tracks) });
+	const axes = Object.freeze([...new Set(tracks.map(t => t.axis))]);
+	const channels = Object.freeze([...new Set(axes.map((axis) => controls[axis]!.channel))]);
+	const result = Object.freeze({ durationMs, controls, axes, channels, tracks: Object.freeze(tracks) });
 	compiledMotions.add(result);
 	return result;
 }
@@ -361,7 +361,7 @@ export function sampleMotion(compiled: CompiledMotion, atMs: number, baseline: A
 	const time = Math.max(0, Math.min(compiled.durationMs, atMs));
 	const values: AxisValues = {};
 	for (const axis of compiled.axes) {
-		const resting = baseline[axis] ?? AXES[axis].neutral;
+		const resting = baseline[axis] ?? compiled.controls[axis]!.neutral;
 		const sampleAxis = (time: number): number => {
 			const selected = selectedTracks(compiled, axis, time);
 			const value = (t: CompiledTrack) => {
@@ -403,33 +403,3 @@ export function sampleLoop(compiled: CompiledMotion, atMs: number): AxisValues {
 	return values;
 }
 
-/** Remove whole optional axes while preserving duration, holds and sequence entry indices. */
-export function projectMotionAxes(compiled: CompiledMotion, axes: readonly MotionAxis[]): CompiledMotion {
-	if (!isCompiledMotion(compiled)) throw new Error("Motion must be compiled");
-	const keep = new Set(axes);
-	const indexed = compiled.tracks.map((track, index) => ({ track, index })).filter((x) => keep.has(x.track.axis));
-	const indices = new Map(indexed.map((x, index) => [x.index, index]));
-	const tracks = indexed.map(({ track }) =>
-		Object.freeze({
-			...track,
-			entryTracks: track.entryTracks
-				? Object.freeze(
-						track.entryTracks.map((i) => {
-							const next = indices.get(i);
-							if (next === undefined) throw new Error("Cannot remove a sequence dependency");
-							return next;
-						}),
-					)
-				: undefined,
-		}),
-	);
-	const retained = Object.freeze(compiled.axes.filter((a) => keep.has(a)));
-	const result = Object.freeze({
-		durationMs: compiled.durationMs,
-		axes: retained,
-		channels: Object.freeze([...new Set(retained.map((a) => AXES[a].channel))]),
-		tracks: Object.freeze(tracks),
-	});
-	compiledMotions.add(result);
-	return result;
-}

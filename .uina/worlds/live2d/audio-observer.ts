@@ -1,76 +1,18 @@
-import type { MotionDirector } from "./motion-director.js";
-
-export interface AudioObserverOptions {
-	gain?: number;
-	releaseMs?: number;
-	transientThreshold?: number;
-	onsetDeltaThreshold?: number;
-	refractoryPeriodMs?: number;
-}
-
-/** Playback samples are held between updates, then released if the stream goes stale. */
+import type { ModelPackage } from "./model-package.js";
+/** Only audio is filtered. RMS response is explicitly authored by the selected model. */
 export class AudioObserver {
-	private rms = 0;
-	private envelope = 0;
-	private slowRms = 0;
-	private previousRms = 0;
-	private ageMs = Infinity;
-	private cooldownMs = 0;
-	private referenceRms = 0.02;
-	private mouthOpenY = 0;
-	private director?: MotionDirector;
-	constructor(private readonly options: AudioObserverOptions = {}) {}
-	setDirector(director: MotionDirector): void {
-		this.director = director;
-	}
-	getMouthOpenY(): number {
-		return this.mouthOpenY;
-	}
-	getSpeechEnergy(): number {
-		return Math.min(1, this.envelope / Math.max(0.002, this.referenceRms));
-	}
-	reset(options?: { immediate?: boolean }): void {
-		this.rms = 0;
-		this.previousRms = 0;
-		this.slowRms = 0;
-		this.ageMs = Infinity;
-		this.cooldownMs = 0;
-		if (options?.immediate) {
-			this.envelope = 0;
-			this.mouthOpenY = 0;
-		}
-		// Keep physical envelope and phase continuous; the next ticks release them.
-	}
-	tick(deltaMs: number): void {
-		const elapsed = Math.max(0, deltaMs);
-		this.cooldownMs = Math.max(0, this.cooldownMs - elapsed);
-		this.ageMs += elapsed;
-		const target = this.ageMs <= 100 ? this.rms : 0;
-		const tau = target > this.envelope ? 25 : (this.options.releaseMs ?? 90);
-		this.envelope += (target - this.envelope) * (1 - Math.exp(-elapsed / tau));
-		if (target > 0.0001) {
-			const reference = Math.max(0.002, target * 1.6);
-			this.referenceRms +=
-				(reference - this.referenceRms) * (1 - Math.exp(-elapsed / (reference > this.referenceRms ? 120 : 1200)));
-		}
-		const gain = this.options.gain ?? 1 / Math.max(0.002, this.referenceRms);
-		this.mouthOpenY = Math.max(0, Math.min(1, this.envelope * gain));
-		if (this.envelope < 0.000001) {
-			this.envelope = 0;
-			this.mouthOpenY = 0;
-		}
-	}
-	processLevel(event: { rms: number; peak?: number }): void {
-		const rms = Number.isFinite(event.rms) ? Math.max(0, Math.min(1, event.rms)) : 0;
-		this.rms = rms;
-		this.ageMs = 0;
-		const onset = Math.max(rms - this.previousRms, rms - this.slowRms);
-		const threshold = this.options.onsetDeltaThreshold ?? Math.max(0.0008, this.referenceRms * 0.15);
-		if (rms > (this.options.transientThreshold ?? 0.0018) && onset >= threshold && this.cooldownMs <= 0) {
-			this.director?.triggerAcousticImpulse(Math.min(1, onset / Math.max(0.0025, this.referenceRms)));
-			this.cooldownMs = this.options.refractoryPeriodMs ?? 220;
-		}
-		this.slowRms += (rms - this.slowRms) * 0.35;
-		this.previousRms = rms;
-	}
+  private level=0;
+  private age=Infinity;
+  private envelope=0;
+  constructor(private readonly config:NonNullable<ModelPackage["speech"]>) {}
+  processLevel(event:{rms:number;peak?:number}):void {this.level=Number.isFinite(event.rms)?Math.max(0,Math.min(1,event.rms)):0;this.age=0;}
+  reset():void {this.level=0;this.age=Infinity;this.envelope=0;}
+  tick(deltaMs:number):number {
+    this.age+=deltaMs;const rms=this.age>this.config.staleMs?0:this.level;const points=this.config.points;
+    let target=points.at(-1)![1];
+    if(rms<=points[0]![0])target=points[0]![1];
+    else for(let i=1;i<points.length;i++){const a=points[i-1]!,b=points[i]!;if(rms<=b[0]){target=a[1]+(b[1]-a[1])*(rms-a[0])/(b[0]-a[0]);break;}}
+    const tau=target>this.envelope?this.config.attackMs:this.config.releaseMs;
+    this.envelope+=(target-this.envelope)*(1-Math.exp(-deltaMs/tau));return this.envelope;
+  }
 }

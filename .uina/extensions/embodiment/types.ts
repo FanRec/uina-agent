@@ -25,6 +25,7 @@ export interface BodyAffordance {
 
 export interface BodyState {
   online: boolean;
+  paused: boolean;
   fault?: string;
 }
 
@@ -40,6 +41,7 @@ export interface BodyEndpoint {
   emitCue(cueId: string): void;
   /** 响应打断，安全受控急停 */
   safeStop(): Promise<void>;
+  resume(): Promise<void>;
 
   /** 可选: 线索有效性判断；提供后其结果对隐式和定向路由均有权威性。 */
   supportsCue?(cueId: string): boolean;

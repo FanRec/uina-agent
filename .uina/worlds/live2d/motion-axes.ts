@@ -28,16 +28,18 @@ export const AXES = Object.freeze({
 	"jaw.open": axis("mouth", 0, 1),
 	"mouth.cheekPuff": axis("mouth", 0, 1),
 });
-export type MotionAxis = keyof typeof AXES;
-export type AxisValues = Partial<Record<MotionAxis, number>>;
+export type MotionAxis = keyof typeof AXES | `${string}.${string}`;
+export interface ControlMetadata { channel: Live2DChannel; min: number; max: number; neutral: number; angular?: boolean; }
+export type ControlTable = Readonly<Record<string, ControlMetadata>>;
+export type AxisValues = Record<string, number>;
 export const AXIS_NAMES = Object.freeze(Object.keys(AXES) as MotionAxis[]);
 export const NEUTRAL_AXES: Readonly<Record<MotionAxis, number>> = Object.freeze(
-	Object.fromEntries(AXIS_NAMES.map((name) => [name, AXES[name].neutral])) as Record<MotionAxis, number>,
+	Object.fromEntries(AXIS_NAMES.map((name) => [name, AXES[name as keyof typeof AXES].neutral])) as Record<MotionAxis, number>,
 );
 export function isMotionAxis(name: string): name is MotionAxis {
 	return Object.hasOwn(AXES, name);
 }
 export function clampAxis(name: string, value: number): number {
 	if (!isMotionAxis(name)) throw new Error(`Unknown motion axis: ${name}`);
-	return Math.max(AXES[name].min, Math.min(AXES[name].max, value));
+	return Math.max(AXES[name as keyof typeof AXES].min, Math.min(AXES[name as keyof typeof AXES].max, value));
 }

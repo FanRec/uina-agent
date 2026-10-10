@@ -17,7 +17,6 @@ export interface EndpointSummary {
  */
 export class BodyRouter {
   private readonly endpoints = new Map<string, BodyEndpoint>();
-  private readonly pausedBodies = new Set<string>();
   private primaryBodyId?: string;
 
   /**
@@ -41,7 +40,6 @@ export class BodyRouter {
       ep.onFocus?.(false);
     }
     this.endpoints.delete(bodyId);
-    this.pausedBodies.delete(bodyId);
 
     if (this.primaryBodyId === bodyId) {
       // 焦点后移至下一个活跃端点
@@ -87,7 +85,7 @@ export class BodyRouter {
       online: state.online,
       fault: state.fault,
       isFocal: this.primaryBodyId === bodyId,
-      isPaused: this.pausedBodies.has(bodyId),
+      isPaused: state.paused,
     };
   }
 
@@ -116,7 +114,7 @@ export class BodyRouter {
     if (target) {
       // 显式定向分发
       const ep = this.endpoints.get(target);
-      if (!ep || this.pausedBodies.has(target) || !ep.state().online) {
+      if (!ep || ep.state().paused || !ep.state().online) {
         return false;
       }
       return deliver(ep);
@@ -124,8 +122,8 @@ export class BodyRouter {
 
     // 隐式语义分发：扫描支持该 cue 的非暂停、在线端点
     const candidates: BodyEndpoint[] = [];
-    for (const [id, ep] of this.endpoints.entries()) {
-      if (this.pausedBodies.has(id) || !ep.state().online) {
+    for (const ep of this.endpoints.values()) {
+      if (ep.state().paused || !ep.state().online) {
         continue;
       }
       let affords = false;
@@ -194,25 +192,16 @@ export class BodyRouter {
     if (!ep) {
       return false;
     }
-    this.pausedBodies.add(bodyId);
-    try {
-      await ep.safeStop();
-    } catch (error) {
-      this.pausedBodies.delete(bodyId);
-      throw error;
-    }
+    await ep.safeStop();
     return true;
   }
 
   /**
    * 恢复特定身体
    */
-  resume(bodyId: string): boolean {
-    if (!this.endpoints.has(bodyId)) {
-      return false;
-    }
-    this.pausedBodies.delete(bodyId);
-    return true;
+  async resume(bodyId: string): Promise<boolean> {
+    const ep=this.endpoints.get(bodyId);if(!ep)return false;
+    await ep.resume();return true;
   }
 
   /**

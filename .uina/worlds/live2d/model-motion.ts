@@ -7,8 +7,8 @@ export async function performModelFlip(
 	signal?: AbortSignal,
 ): Promise<{ aborted: boolean; cleanupFailed: boolean }> {
 	if (signal?.aborted) return { aborted: true, cleanupFailed: false };
-	const profile = client.getModelProfile();
-	const sameModel = () => client.isConnected() && client.getModelProfile() === profile;
+	const generation = client.getModelGeneration();
+	const sameModel = () => client.isConnected() && client.getModelGeneration() === generation;
 	const original = await client.getModelPosition();
 	if (!sameModel()) throw new Error("VTS model changed before flip");
 	const steps = 24;
