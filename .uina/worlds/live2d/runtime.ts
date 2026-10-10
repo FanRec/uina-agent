@@ -4,109 +4,98 @@ import type { ActionContext, ServiceCompanionContext } from "../../../src/extens
 import { worldSucceeded } from "../../../src/extensions/world-framework/result.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { AudioObserver } from "./audio-observer.js";
-import { Live2DStateTracker, VTSCompanion } from "./companion.js";
+import { VTSCompanion } from "./companion.js";
+import { performModelFlip } from "./model-motion.js";
 import { MotionDirector } from "./motion-director.js";
 import {
-	CANONICAL_CUE_IDS,
-	CUE_DESCRIPTIONS,
-	DEFAULT_EXPRESSIVE_INTENSITY,
-	FACE_EXPRESSIONS,
-	GAZE_DIRECTIONS,
-	HEAD_POSES,
-	getChannelsForBeats,
-	getCueAliases,
-	resolveCueToBeat,
-	validateBeats,
-} from "./parameter-mapper.js";
+	BASE_POSES,
+	expressionPolicy,
+	MOTION_LIBRARY,
+	MOTION_NAMES,
+	supportsMotion,
+	namedMotion,
+	compileExpression,
+} from "./motion-library.js";
+import { compileMotion, pose, type CompiledMotion } from "./motion.js";
+import { AXIS_NAMES, NEUTRAL_AXES } from "./motion-axes.js";
 import { ReflexDirector } from "./reflex-director.js";
 import {
-	abortableDelay,
 	BASE_POSE_DESCRIPTIONS,
 	BASE_POSE_NAMES,
 	type BasePoseName,
 	CHANNEL_PRIORITY,
-	type ExpressBeat,
+	type ChannelClaimOptions,
 	type ExpressParams,
+	type MotionTransition,
+	type SpeechPolicy,
 	isBasePoseName,
 } from "./types.js";
 import { VTSClient } from "./vts-client.js";
 
 export const live2dAffordance: BodyAffordance = {
-	bodyId: "live2d_mo",
+	bodyId: "live2d",
 	bodyType: "avatar_2d",
 	description:
-		"你当前在屏幕上呈现为 Live2D 虚拟二次元立绘形象（Mo）。你完全拥有这具身体的自主表现力：可通过 pose 切换全身基准体态与心境底座（持续循环生效：playful=元气调皮大歪头, focused=专注认真正坐, relaxed=闲适放松待机, shy_side=娇羞侧身偏头, confident=自信挺胸昂首, listening=侧耳前倾倾听, smug_gremlin=小恶魔得意坏笑, meek_shy=内向害羞上目线, streamer_hype=大主播亢奋前倾）；日常说话时优先在台词中任意嵌入 <cue id='...'/>（支持别名、参数修饰如 smile:0.8 或原子属性 head=tilt_left,face=tender_smile），基准姿态也可直接以姿态名为 cue 切换（如 <cue id='focused'/>，与 pose 工具等效），视线会自动动眼锁焦注视用户，动作自然流淌。",
+		"屏幕上的 Live2D 形象。日常正文用 <cue id='动作名'/> 调用命名动作；复杂表演用 express 的 motion 或 head/gaze/face 和 beats 即兴组合。pose 设置持续基准姿态。动作能力受真实模型绑定与物理限制。",
 	cues: [
-		...CANONICAL_CUE_IDS.map((id) => ({
-			id,
-			description: CUE_DESCRIPTIONS[id] ?? "",
-			// 别名统一取自 parameter-mapper 的 CUE_ALIASES；恒等别名已被过滤。
-			aliases: getCueAliases(id),
-		})),
-		// 姿态名即 cue：<cue id="focused"/> 是零开销姿态切换通道。声明取自
-		// BASE_POSE_NAMES 单一事实来源，派发端特判同一份名单——两处一旦漂移，
-		// 模型按提示词发的 cue 会被 embodiment 判"无人响应"并刷错（2026-09-21 缺陷类型；
-		// 2026-10-02 "focused 未能送达"正是姿态名不在 cue 表内的实例）。
-		...BASE_POSE_NAMES.map((name) => ({
-			id: name,
-			description: `切换基准姿态至「${BASE_POSE_DESCRIPTIONS[name]}」（持续生效，零工具开销）`,
-		})),
+		...MOTION_NAMES.map((id) => ({ id, description: MOTION_LIBRARY[id as keyof typeof MOTION_LIBRARY].description })),
+		...BASE_POSE_NAMES.map((id) => ({ id, description: "切换持续基准姿态：" + BASE_POSE_DESCRIPTIONS[id] })),
 	],
 };
 
 /**
- * 端点层的可选钩子：把需要"应用级语义"的决策交还给运行时，端点只做协议适配。
+ * 端点将焦点、状态与模型准入决策交还给运行时，只适配具身协议。
  * 焦点语义（停靠/恢复哪个姿态）依赖运行时持有的权威姿态状态，端点不该自己猜。
  */
-export interface Live2DEndpointHooks {
-	onFocused?: (isFocused: boolean) => void;
-	formatStatus?: () => string;
+interface Live2DEndpointHooks {
+	onFocused: (isFocused: boolean) => void;
+	formatStatus: () => string;
+	supportsCue: (cueId: string) => boolean;
 }
 
-export class Live2DEndpoint implements BodyEndpoint {
-	readonly bodyId = "live2d_mo";
+class Live2DEndpoint implements BodyEndpoint {
+	readonly bodyId = live2dAffordance.bodyId;
 	readonly bodyType = "avatar_2d";
 
 	constructor(
 		readonly director: MotionDirector,
-		readonly stateTracker: Live2DStateTracker,
-		private readonly hooks?: Live2DEndpointHooks,
+		private readonly client: VTSClient,
+		private readonly hooks: Live2DEndpointHooks,
 	) {}
 
 	affordance(): BodyAffordance {
-		return live2dAffordance;
+		return { ...live2dAffordance, cues: live2dAffordance.cues.filter((c) => this.supportsCue(c.id)) };
 	}
 
 	state(): BodyState {
-		return this.stateTracker.getState();
+		return { online: this.client.isConnected(), fault: this.client.getFault() };
 	}
 
-	/** 最近一次成功送达并呈现的线索（含时间）——给用户一个"cue 到底通没通"的可见凭据。 */
+	/** 最近一次收到的线索（不是物理呈现确认）（含时间）——给用户一个"cue 到底通没通"的可见凭据。 */
 	lastCue?: { id: string; at: string };
 
 	emitCue(cueId: string): void {
-		// VTS 离线时 cue 无法呈现：既不写"已到达"的凭据（那会让凭据失真），也不做看不见的本地表演。
-		// 与 express 的离线诚实口径保持一致。
-		if (!this.stateTracker.getState().online) return;
+		// VTS 离线时瞬态 cue 无法呈现：既不写"已到达"的凭据（那会让凭据失真），也不做看不见的本地表演。
+		// 姿态名例外：它是本地基准姿态意图，与 pose 工具离线同样生效的口径对齐。
+		if ((!this.client.isConnected() && !isBasePoseName(cueId)) || !this.supportsCue(cueId)) return;
 		this.lastCue = { id: cueId, at: new Date().toLocaleTimeString("zh-CN", { hour12: false }) };
 		this.director.dispatchCue(cueId);
 	}
 
 	supportsCue(cueId: string): boolean {
-		return resolveCueToBeat(cueId) !== null;
+		return this.hooks.supportsCue(cueId);
 	}
 
 	formatStatus(): string {
-		return this.hooks?.formatStatus?.() ?? "";
+		return this.hooks.formatStatus();
 	}
 
 	async safeStop(): Promise<void> {
 		this.director.abortAllMotions();
-		this.director.releaseAll();
 	}
 
 	onFocus(isFocused: boolean): void {
-		this.hooks?.onFocused?.(isFocused);
+		this.hooks.onFocused(isFocused);
 	}
 }
 
@@ -115,7 +104,7 @@ export class Live2DEndpoint implements BodyEndpoint {
  * 职责：
  * 1. 高内聚整合所有子模块（Composer, Arbiter, Companion, Client, Endpoint, Reflex, Audio）；
  * 2. 规范化管理外部服务接入、事件监听与注销清理（生命周期闭环）；
- * 3. 权威维护应用状态（currentCostume, currentBasePose），并与底层动力学回正双向同步；
+ * 3. 维护用户姿态意图和最近装扮热键；动作合成器拥有呈现与到期；
  * 4. 消除散落的模块级单例，提供清晰易测的统一上下文。
  *
  * 与宿主的两个接缝（均由 ServiceCompanionContext 提供，方向相反）：
@@ -142,7 +131,7 @@ export class Live2DRuntime {
 	levelSinkExposed = false;
 	/** 端点当前是否失焦停靠中（物理上呈现 relaxed，但权威姿态仍是用户的选择）。 */
 	private poseParked = false;
-	/** 用户姿态的剩余限时（由运行时独家记账，不借物理层搬运），停靠期间冻结。 */
+	/** 用户姿态的剩余限时（停靠时暂存），停靠期间冻结。 */
 	private poseIntentRemainingMs?: number;
 
 	private readonly cleanupFns: Array<() => void> = [];
@@ -150,61 +139,57 @@ export class Live2DRuntime {
 
 	constructor(options?: { vtsClient?: VTSClient }) {
 		this.director = new MotionDirector();
+		this.director.applyBasePose("relaxed");
 		this.audioObserver = new AudioObserver();
 		this.audioObserver.setDirector(this.director);
 
 		this.vtsClient = options?.vtsClient ?? new VTSClient();
 		this.companion = new VTSCompanion(this.director, this.vtsClient, this.audioObserver);
-		this.endpoint = new Live2DEndpoint(this.director, this.companion.stateTracker, {
+		this.endpoint = new Live2DEndpoint(this.director, this.vtsClient, {
 			onFocused: (focused) => this.handleFocus(focused),
 			formatStatus: () => this.formatStatus(),
+			supportsCue: (id) => {
+				const program = this.companion.getAdapter();
+				if (!program) return isBasePoseName(id);
+				if (isBasePoseName(id)) return program.admit(this.poseMotion(id)).ok;
+				return supportsMotion(id) && program.admit(namedMotion(id)).ok;
+			},
 		});
 		this.reflexDirector = new ReflexDirector(this.director, {
 			getBasePose: () => this.currentBasePose,
 			isPoseParked: () => this.poseParked,
-			// 经权威写入口唤醒。反射从不切换姿态（保持用户的选择），只把当前姿态重新落下，
+			// 经公开的唤醒语义唤醒。反射从不切换姿态（保持用户的选择），只把当前姿态重新落下，
 			// 因此剩余限时恒保留——不保留就会在每次回合开始时静默清掉用户的限时姿态。
-			activateBasePose: (pose) =>
-				this.setBasePose(pose, {
-					transitionMs: 800,
-					holdMs: this.director.bodyDirector.getHoldRemainingMs(),
-				}),
+			activateBasePose: (pose) => this.wakeBasePose(pose),
 		});
 
-		// 限时基准姿态到期：回到 relaxed 待机并同步权威状态。
-		// （此前这里是直接把 currentBasePose 标成 relaxed 而物理参数清零回零位，
-		// 状态与身体各说各话；现在两件事都由 setBasePose 单一入口完成。）
-		this.director.bodyDirector.setOnBasePoseExpired(() => {
-			this.setBasePose("relaxed", { transitionMs: 600 });
+		// 合成器负责到期时的呈现切换；这里只同步用户姿态意图。
+		this.director.setOnBasePoseExpired(() => {
+			this.currentBasePose = "relaxed";
 		});
 
-		// cue 执行原语统一走 playBeatsWithLease，与 express 工具共用一条路径，
-		// 消除此前散落在 Endpoint 构造器里的第二份"claim→play→release"实现。
+		// cue 与 express 共用模型准入、申请、播放与释放路径。
 		this.director.setCueDispatcher(async (cueId) => {
 			// 姿态名 cue：与 pose 工具同一权威写入口（setBasePose），默认持续生效。
-			// VTS 离线时 emitCue 已早退，不会走到这里。
+			// 瞬态节拍 cue 在 VTS 离线时已被 emitCue 早退拦下；姿态名是本地意图，离线也直达这里。
 			if (isBasePoseName(cueId)) {
 				this.setBasePose(cueId, { transitionMs: 800 });
 				return;
 			}
-			const beats = resolveCueToBeat(cueId);
-			if (!beats || beats.length === 0) return;
-			const outcome = await this.playBeatsWithLease(beats, {
+			if (!supportsMotion(cueId)) return;
+			await this.playMotionWithLease(namedMotion(cueId), {
+				...expressionPolicy({ motion: cueId }),
 				priority: CHANNEL_PRIORITY.CUE,
 				reason: `cue:${cueId}`,
-				allowDegrade: true,
 				preemptSamePriority: true,
-				intensity: 1.0,
 			});
-			// cue 是旁路信号：通道被更高优先级动作占用时安静让位，不打断输出流。
-			if (!outcome.ok) return;
 		});
 	}
 
 	/**
 	 * 姿态唯一写入口：权威状态与物理基准目标同源，杜绝两处各说各话。
 	 * 停靠中只更新用户意图（权威姿态与剩余限时），物理继续呈现 relaxed——
-	 * 否则物理层会带上倒计时，到期回调把权威姿态改写成 relaxed，从而吞掉用户姿态意图。
+	 * 否则合成器会带上倒计时，到期回调把权威姿态改写成 relaxed，从而吞掉用户姿态意图。
 	 */
 	private setBasePose(name: BasePoseName, options?: { transitionMs?: number; holdMs?: number }): void {
 		this.currentBasePose = name;
@@ -212,7 +197,7 @@ export class Live2DRuntime {
 			this.poseIntentRemainingMs = options?.holdMs;
 			return;
 		}
-		this.director.bodyDirector.applyBasePose(name, options);
+		this.director.applyBasePose(name, options);
 	}
 
 	/**
@@ -221,19 +206,31 @@ export class Live2DRuntime {
 	 * 回焦后还剩多少就再展示多少——既不吞掉、也不被停靠姿态的倒计时污染。
 	 */
 	private handleFocus(focused: boolean): void {
+		if (focused === !this.poseParked) return;
 		this.poseParked = !focused;
+		this.director.setReflexVisible(focused);
 		if (focused) {
 			const remaining = this.poseIntentRemainingMs;
 			this.poseIntentRemainingMs = undefined;
-			this.director.bodyDirector.applyBasePose(this.currentBasePose, {
+			this.director.applyBasePose(this.currentBasePose, {
 				transitionMs: 800,
 				holdMs: remaining,
 			});
 		} else {
-			this.poseIntentRemainingMs = this.director.bodyDirector.getHoldRemainingMs();
-			// 停靠姿态不携带限时：物理层无倒计时 => 不会触发到期回调污染权威状态
-			this.director.bodyDirector.applyBasePose("relaxed", { transitionMs: 800 });
+			this.poseIntentRemainingMs = this.director.getHoldRemainingMs();
+			// 停靠姿态不携带限时：合成器无倒计时 => 不会触发到期回调污染权威状态
+			this.director.applyBasePose("relaxed", { transitionMs: 800 });
 		}
+	}
+
+	/**
+	 * 唤醒当前基准姿态（不切换）：反射层（回合开始等）把用户选定的姿态重新落下。
+	 * 与 setBasePose 的"切换"语义分离；停靠中早退，物理继续呈现停靠姿态。
+	 * 保留剩余限时（clearLatch=false），避免反射唤醒静默清掉用户的限时姿态。
+	 */
+	wakeBasePose(pose: BasePoseName = this.currentBasePose): void {
+		if (this.poseParked) return;
+		this.director.applyBasePose(pose, { transitionMs: 800, holdMs: this.director.getHoldRemainingMs() }, false);
 	}
 
 	/**
@@ -241,48 +238,50 @@ export class Live2DRuntime {
 	 * claim 失败以 { ok: false } 返回而非抛出，由调用方决定结果语义
 	 * （cue 安静让位 / express 返回结构化失败）；播放中的异常仍然抛出。
 	 */
-	private async playBeatsWithLease(
-		beats: readonly ExpressBeat[],
-		options: {
+	private async playMotionWithLease(
+		motion: CompiledMotion,
+		options: ChannelClaimOptions & {
 			reason: string;
-			priority?: number;
-			signal?: AbortSignal;
-			intensity?: number;
-			allowDegrade?: boolean;
-			preemptSameReason?: boolean;
-			preemptSamePriority?: boolean;
 			latch_last?: boolean;
-			transition?: "snappy" | "smooth" | "gentle";
+			transition?: MotionTransition;
+			speech?: SpeechPolicy;
 		},
-	): Promise<{ ok: true } | { ok: false; claimError: Error }> {
+	): Promise<
+		| { ok: true; cancelled: boolean; omittedChannels: readonly string[]; omittedAxes: readonly string[] }
+		| { ok: false; claimError: Error }
+	> {
+		if (!(await this.vtsClient.validateModelFiles()))
+			return { ok: false, claimError: new Error("模型事实已失效或未就绪") };
+		const program = this.companion.getAdapter();
+		if (!program) return { ok: false, claimError: new Error("模型适配未就绪") };
+		const admission = program.admit(motion);
+		if (!admission.ok) return { ok: false, claimError: new Error(admission.reasons.join("；")) };
+		motion = admission.motion;
+		this.director.setControlGroups(program.controlGroups);
+		const requestedChannels = motion.channels;
 		let lease;
 		try {
-			lease = await this.director.claim(getChannelsForBeats(beats), {
-				priority: options.priority,
-				reason: options.reason,
-				signal: options.signal,
-				allowDegrade: options.allowDegrade,
-				preemptSameReason: options.preemptSameReason,
-				preemptSamePriority: options.preemptSamePriority,
-			});
+			lease = await this.director.claim(requestedChannels, options);
 		} catch (error) {
 			return { ok: false, claimError: error instanceof Error ? error : new Error(String(error)) };
 		}
 
 		try {
-			await this.director.playExpressiveBeats(
-				{
-					beats,
-					intensity: options.intensity ?? DEFAULT_EXPRESSIVE_INTENSITY,
-					latch_last: options.latch_last,
-					transition: options.transition,
-				},
-				{ signal: lease.signal, allowedChannels: lease.channels },
-			);
+			const playback = await this.director.play(motion, {
+				lease,
+				latch: options.latch_last,
+				transition: options.transition,
+				speech: options.speech,
+			});
+			return {
+				ok: true,
+				cancelled: playback.status === "cancelled",
+				omittedAxes: admission.omittedAxes,
+				omittedChannels: requestedChannels.filter((ch) => !lease.channels.includes(ch)),
+			};
 		} finally {
-			this.director.release(lease);
+			lease.release();
 		}
-		return { ok: true };
 	}
 
 	async start(ctx: ServiceCompanionContext): Promise<void> {
@@ -298,9 +297,7 @@ export class Live2DRuntime {
 		//    与闭包（仲裁器的 cueDispatcher、生理底噪的 Math.random），克隆必然抛错。
 		//    消费侧是 embodiment 扩展：它用 pi.shared(APP_EXPOSED_SHARED_NAME) 拉取。
 		if (ctx.expose) {
-			this.cleanupFns.push(
-				ctx.expose(BODY_ENDPOINT_EXPOSED_PREFIX + this.endpoint.bodyId, this.endpoint),
-			);
+			this.cleanupFns.push(ctx.expose(BODY_ENDPOINT_EXPOSED_PREFIX + this.endpoint.bodyId, this.endpoint));
 			// 声学电平接收端：声音生产者（tts）按前缀筛出来推电平，本端只做接收，
 			// 不去读生产者内部状态。口型包络的平滑在本端 tick 里完成。
 			this.cleanupFns.push(
@@ -318,9 +315,7 @@ export class Live2DRuntime {
 		} else {
 			// 宿主未提供同进程出口（非 world-framework 嵌入场景）：端点无法成为具身身体。
 			// 不阻断运行（VTS 直控仍可用），但必须可见——render 会标出该状态。
-			console.warn(
-				"[Live2D] 宿主未提供 expose 通道，端点未注册为具身身体：<cue> 与 body 工具将不可用。",
-			);
+			console.warn("[Live2D] 宿主未提供 expose 通道，端点未注册为具身身体：<cue> 与 body 工具将不可用。");
 		}
 
 		// 3. 订阅宿主事实事件流，驱动回合级反射。
@@ -375,37 +370,64 @@ export class Live2DRuntime {
 		this.cleanupFns.length = 0;
 
 		this.director.abortAllMotions();
-		this.director.releaseAll();
-		// 停靠与限时意图随运行时一起复位；物理层同时落回权威姿态，
-		// 否则"停机时正停靠"会留下权威=playful / 身体=relaxed 的错位，且重启后没有事件会纠正。
+		// 停靠与限时意图随运行时一起复位。此时落回权威姿态的只是内存中的基准目标值——
+		// ticker 已停、VTS 可能已断开，停机期间没有任何物理呈现；
+		// 这一步只为复用 restart 时权威状态与合成起点保持连贯，不重启就不会有事件再纠正它。
 		this.poseParked = false;
+		this.director.setReflexVisible(true);
 		this.poseIntentRemainingMs = undefined;
-		this.director.bodyDirector.applyBasePose(this.currentBasePose, { transitionMs: 800 });
+		this.director.applyBasePose(this.currentBasePose, { transitionMs: 800 });
 	}
 
-	formatStatus() {
-		const isOnline = this.companion.stateTracker.getState().online;
-		const statusStr = isOnline ? "在线(VTS)" : "离线(VTS)";
+	formatStatus(): string {
+		const isOnline = this.vtsClient.isConnected();
+		const profile = this.vtsClient.getModelProfile();
+		const program = this.companion.getAdapter();
+		const limitations = program
+			? Object.values(program.capabilities)
+					.filter((c) => !c.available)
+					.map((c) => `${c.axis}: ${c.reasons.join("、")}`)
+					.join("；")
+			: "模型绑定未就绪";
+		const connection = this.vtsClient.getConnectionStatus();
+		const statusStr = isOnline
+			? program && Object.values(program.capabilities).some((c) => c.available)
+				? "可控制(VTS)"
+				: "API 与模型已核验，暂无可用动作轴"
+			: connection.apiConnected
+				? "API 已连接，控制未就绪"
+				: `${connection.stage}（API 未连接，不代表 VTS 软件未启动）`;
 		const bodyStr = this.bodyRegistered ? "已注册" : "未注册";
 		const levelStr = this.levelSinkExposed ? "已接线" : "未接线";
-		const cueStr = this.endpoint.lastCue
-			? `${this.endpoint.lastCue.id}（${this.endpoint.lastCue.at}）`
-			: "无";
-		const hotkeys = this.companion.getAvailableHotkeys();
+		const cueStr = this.endpoint.lastCue ? `${this.endpoint.lastCue.id}（${this.endpoint.lastCue.at}）` : "无";
+		const hotkeys = this.vtsClient.getAvailableHotkeys();
 		const hotkeyNames = hotkeys.length > 0 ? hotkeys.map((h) => h.name).join(", ") : "无";
 
-		const poseStr = this.poseParked
-			? `${this.currentBasePose}（失焦停靠中，物理呈现 relaxed）`
-			: this.currentBasePose;
+		const poseStr = this.poseParked ? `${this.currentBasePose}（失焦停靠中，物理呈现 relaxed）` : this.currentBasePose;
 
 		return `[live2d]
 物理状态: ${statusStr}
+VTS API: ${connection.endpoint} · ${connection.stage} · ${connection.authenticated ? "已鉴权" : "未鉴权"}
 具身注册: ${bodyStr}
 口型通道: ${levelStr}
-最近线索: ${cueStr}
+最近接收线索: ${cueStr}
 姿态: ${poseStr}
-服装: ${this.currentCostume}
+呈现层: ${JSON.stringify(this.director.getPresentationState())}
+最近装扮热键: ${this.currentCostume}
 热键: ${hotkeyNames}
+模型: ${profile?.modelName ?? "未知"} · ${profile?.fingerprint?.slice(0, 12) ?? "无指纹"}
+模型控制限制: ${limitations}
+最近校准饱和: ${this.companion.lastSaturation.join("、") || "无"}
+适配可用轴: ${
+			program
+				? Object.values(program.capabilities)
+						.filter((c) => c.available)
+						.map((c) => `${c.axis}(${c.mode}/${c.calibration})`)
+						.join(", ")
+				: "无"
+		}
+传输证据: ${JSON.stringify(this.vtsClient.getInjectionStats())}
+连接故障: ${this.vtsClient.getFault() ?? "无"}
 [/live2d]`;
 	}
 
@@ -413,17 +435,14 @@ export class Live2DRuntime {
 	 * 执行大模型编排的微表情与即兴肢体动作 (express 动作)
 	 */
 	async executeExpress(args: ExpressParams, ctx: ActionContext): Promise<ToolExecutionResult> {
-		const beats = args.beats && args.beats.length > 0
-			? args.beats
-			: [{ head: args.head, gaze: args.gaze, face: args.face, hold_ms: 1000 }];
-
-		// 先校验后执行：未知字段必须显式失败并给出可用值，而不是静默无操作后谎报成功
-		const invalid = validateBeats(beats);
-		if (invalid.length > 0) {
+		let motion: CompiledMotion;
+		try {
+			motion = compileExpression(args);
+		} catch (error) {
 			return {
-				result: `未执行即兴表演：无法识别 ${invalid.join("、")}。可用值 — head: [${HEAD_POSES.join(", ")}], gaze: [${GAZE_DIRECTIONS.join(", ")}], face: [${FACE_EXPRESSIONS.join(", ")}]。`,
+				result: "未执行动作：" + (error instanceof Error ? error.message : String(error)),
 				status: "failed",
-				details: { reason: "unknown_beat_field", effectStatus: "not_started", unrecognized: invalid },
+				details: { reason: "invalid_motion", effectStatus: "not_started" },
 			};
 		}
 
@@ -437,13 +456,13 @@ export class Live2DRuntime {
 			};
 		}
 
-		const outcome = await this.playBeatsWithLease(beats, {
+		const before = this.vtsClient.getInjectionStats();
+		const outcome = await this.playMotionWithLease(motion, {
 			reason: "action:express",
 			preemptSameReason: true,
-			allowDegrade: true,
 			signal: ctx.signal,
-			intensity: args.intensity,
-			latch_last: args.latch_last,
+			...expressionPolicy(args),
+			latch_last: args.latch_last ?? args.beats?.at(-1)?.latch,
 			transition: args.transition,
 		});
 		if (!outcome.ok) {
@@ -451,46 +470,88 @@ export class Live2DRuntime {
 				result: `未执行即兴表演：身体通道申请失败（${outcome.claimError.message}）。`,
 				status: ctx.signal.aborted ? "cancelled" : "failed",
 				details: {
-					reason: ctx.signal.aborted ? "cancelled" : "channel_conflict",
+					reason: ctx.signal.aborted ? "cancelled" : "motion_not_admitted",
 					effectStatus: "not_started",
 				},
 			};
 		}
-		return worldSucceeded(`即兴肢体表情已执行。`, undefined, "applied");
+		const after = this.vtsClient.getInjectionStats();
+		if (after.generation !== before.generation)
+			return {
+				result: "播放期间设备或模型变化，呈现状态未知。",
+				status: "unknown",
+				details: { effectStatus: "unknown" },
+			};
+		if (outcome.cancelled)
+			return { result: "即兴表演已被取消或抢占。", status: "cancelled", details: { effectStatus: "cancelled" } };
+		const transmission = {
+			sent: after.sent - before.sent,
+			accepted: after.accepted - before.accepted,
+			failed: after.failed - before.failed,
+			dropped: after.dropped - before.dropped,
+			filtered: after.filtered - before.filtered,
+		};
+		if (
+			transmission.failed ||
+			transmission.filtered ||
+			!transmission.sent ||
+			!transmission.accepted ||
+			after.lastAcceptedAt < Date.now() - 1000
+		)
+			return {
+				result: "动作时间线结束，但设备接受证据不足，呈现未知。",
+				status: "unknown",
+				details: { effectStatus: "unknown", transmission, omittedAxes: outcome.omittedAxes },
+			};
+		const partial =
+			outcome.omittedChannels.length > 0 ? ` 通道 ${outcome.omittedChannels.join("、")} 被占用，相关动作未执行。` : "";
+		return worldSucceeded(
+			`动作时间线完成，VTS 已接受期间的输入请求；未确认视觉效果。${partial}${outcome.omittedAxes.length ? ` 可选轴未执行: ${outcome.omittedAxes.join("、")}` : ""}`,
+			{
+				omittedChannels: outcome.omittedChannels,
+				omittedAxes: outcome.omittedAxes,
+				partial: outcome.omittedAxes.length > 0,
+				transmission,
+				verification: "input_accepted",
+			},
+			"accepted",
+		);
 	}
 
 	/**
 	 * 切换全身基准姿态与心境氛围 (pose 动作)
 	 */
-	async executePose(name: BasePoseName, durationMs: number, ctx: ActionContext): Promise<ToolExecutionResult> {
-		let lease;
-		try {
-			lease = await this.director.claim(["head", "torso"], {
-				reason: "action:pose",
-				preemptSameReason: true,
-				signal: ctx.signal,
-			});
-		} catch (error) {
-			return {
-				result: `未切换基准体态：身体通道申请失败（${error instanceof Error ? error.message : String(error)}）。`,
-				status: ctx.signal.aborted ? "cancelled" : "failed",
-				details: {
-					reason: ctx.signal.aborted ? "cancelled" : "channel_conflict",
-					effectStatus: "not_started",
-				},
-			};
+	private poseMotion(name: BasePoseName): CompiledMotion {
+		return compileMotion(
+			pose(
+				1000,
+				{ ...NEUTRAL_AXES, ...BASE_POSES[name] },
+				"absolute",
+				AXIS_NAMES.filter((a) => (BASE_POSES[name][a] ?? NEUTRAL_AXES[a]) === NEUTRAL_AXES[a]),
+			),
+		);
+	}
+	async executePose(name: BasePoseName, durationMs: number, _ctx: ActionContext): Promise<ToolExecutionResult> {
+		if (this.vtsClient.isConnected()) {
+			const admission = this.companion.getAdapter()?.admit(this.poseMotion(name));
+			if (!admission?.ok)
+				return {
+					result: "未设置姿态：" + (admission?.reasons.join("；") ?? "适配未就绪"),
+					status: "failed",
+					details: { effectStatus: "not_started" },
+				};
 		}
-		try {
-			// 单一写入口：权威状态与物理基准目标同源
-			this.setBasePose(name, {
-				transitionMs: 800,
-				holdMs: durationMs > 0 ? durationMs : undefined,
-			});
-			const returnMsg = durationMs > 0 ? `（保持 ${durationMs}ms 后自然回归 relaxed 待机）` : "（持续生效）";
-			return worldSucceeded(`基准体态已切换为: ${name} ${returnMsg}`, undefined, "applied");
-		} finally {
-			this.director.release(lease);
-		}
+		// 基准姿态不占用动作租约；呈现由合成器按当前所有权应用。
+		this.setBasePose(name, {
+			transitionMs: 800,
+			holdMs: durationMs > 0 ? durationMs : undefined,
+		});
+		const returnMsg = durationMs > 0 ? `（保持 ${durationMs}ms 后自然回归 relaxed 待机）` : "（持续生效）";
+		return worldSucceeded(
+			`本地基准姿态意图已设置为: ${name} ${returnMsg}；呈现受 VTS 在线状态与模型绑定影响。`,
+			undefined,
+			"applied",
+		);
 	}
 
 	/**
@@ -526,7 +587,16 @@ export class Live2DRuntime {
 			};
 		}
 
-		const lease = await this.director.claimAllChannels("costume", ctx.signal);
+		let lease;
+		try {
+			lease = await this.director.claimAllChannels("costume", ctx.signal);
+		} catch (error) {
+			return {
+				result: `未触发装扮热键：${error instanceof Error ? error.message : String(error)}`,
+				status: ctx.signal.aborted ? "cancelled" : "failed",
+				details: { effectStatus: "not_started" },
+			};
+		}
 		try {
 			try {
 				await this.vtsClient.triggerHotkey(matched.hotkeyID);
@@ -540,74 +610,13 @@ export class Live2DRuntime {
 
 			this.currentCostume = matched.name;
 			return {
-				result: `已成功触发装扮/道具热键: ${matched.name}`,
+				result: `VTS 已接受装扮/道具热键: ${matched.name}；实际装扮状态需观察模型。`,
 				status: "succeeded",
-				details: { executionMode: "vts_hotkey", effectStatus: "confirmed", hotkeyID: matched.hotkeyID },
+				details: { executionMode: "vts_hotkey", effectStatus: "accepted", hotkeyID: matched.hotkeyID },
 			};
 		} finally {
-			this.director.release(lease);
+			lease.release();
 		}
-	}
-
-	/**
-	 * 单次 360° 腾空翻转特技的物理位移与旋转解算
-	 */
-	async executePhysicalFlip(signal?: AbortSignal): Promise<{ aborted: boolean; cleanupFailed: boolean }> {
-		const steps = 25;
-		const stepMs = 30;
-		let currentY = 0;
-		let aborted = false;
-		let cleanupFailed = false;
-
-		try {
-			await this.vtsClient.moveModel({
-				positionY: -0.08,
-				timeInSeconds: 0.15,
-				valuesAreRelativeToModel: true,
-			});
-			currentY = -0.08;
-			await abortableDelay(150, signal);
-			for (let i = 0; i < steps; i++) {
-				if (signal?.aborted) {
-					aborted = true;
-					break;
-				}
-				const phase = (i + 1) / steps;
-				const targetY = Math.sin(phase * Math.PI) * 0.22;
-				const deltaY = targetY - currentY;
-				currentY = targetY;
-				const deltaRot = 360 / steps;
-
-				await this.vtsClient.moveModel({
-					positionY: deltaY,
-					rotation: deltaRot,
-					timeInSeconds: (stepMs / 1000) * 1.2,
-					valuesAreRelativeToModel: true,
-				});
-				await abortableDelay(stepMs, signal);
-			}
-		} finally {
-			// 无论何种异常或打断取消，强制落地归位与旋转归零，保证模型绝不留存物理脏状态
-			try {
-				await this.vtsClient.moveModel({
-					positionY: -currentY,
-					timeInSeconds: 0.1,
-					valuesAreRelativeToModel: true,
-				});
-				await new Promise((resolve) => setTimeout(resolve, 100));
-
-				await this.vtsClient.moveModel({
-					rotation: 0,
-					timeInSeconds: 0.1,
-					valuesAreRelativeToModel: false,
-				});
-				await new Promise((resolve) => setTimeout(resolve, 60));
-			} catch {
-				cleanupFailed = true;
-			}
-		}
-
-		return { aborted, cleanupFailed };
 	}
 
 	/**
@@ -640,7 +649,7 @@ export class Live2DRuntime {
 		try {
 			let aborted = false;
 			try {
-				const res = await this.executePhysicalFlip(ctx.signal);
+				const res = await performModelFlip(this.vtsClient, lease.signal);
 				aborted = res.aborted;
 				if (res.cleanupFailed) {
 					return {
@@ -659,29 +668,30 @@ export class Live2DRuntime {
 
 			if (aborted) {
 				return {
-					result: "360° 翻转已被取消，模型高度与旋转均已复位归正。",
+					result: "360° 翻转已被取消，模型原位置、角度与大小已核实恢复。",
 					status: "cancelled",
 					details: { executionMode: "vts_physical", effectStatus: "cancelled" },
 				};
 			}
 
-			await this.director.playExpressiveBeats(
-				{
-					beats: [
-						{ head: "lowered", face: "smug", hold_ms: 200 },
-						{ head: "lifted", face: "sparkle", hold_ms: 700 },
-						{ head: "tilt_left", face: "tender_smile", hold_ms: 350 },
-					],
-				},
-				{ signal: lease.signal, allowedChannels: lease.channels },
-			);
+			const celebrationAdmission = this.companion.getAdapter()?.admit(namedMotion("celebrate"));
+			if (!celebrationAdmission?.ok)
+				return {
+					result: "翻转已归位；当前模型不支持后续庆祝表情，未执行表情。",
+					status: "succeeded",
+					details: { effectStatus: "accepted", restoration: "confirmed", omitted: "celebrate" },
+				};
+			const celebration = await this.director.play(celebrationAdmission.motion, { lease });
 			return {
-				result: "VTS 物理翻转与本地表情动作已完成。",
-				status: "succeeded",
-				details: { executionMode: "vts_physical", effectStatus: "confirmed" },
+				result:
+					celebration.status === "cancelled"
+						? "翻转已归位，后续表情被取消。"
+						: "翻转时间线完成，原位置已核实恢复；表情参数已交给 VTS。",
+				status: celebration.status === "cancelled" ? "cancelled" : "succeeded",
+				details: { executionMode: "vts_physical", effectStatus: "accepted", restoration: "confirmed" },
 			};
 		} finally {
-			this.director.release(lease);
+			lease.release();
 		}
 	}
 }

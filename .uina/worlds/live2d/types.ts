@@ -3,35 +3,9 @@
  */
 
 export type Live2DChannel = "mouth" | "eyes" | "gaze" | "head" | "torso";
+export type SpeechPolicy = "blend" | "exclusive";
 
-export const ALL_CHANNELS: readonly Live2DChannel[] = [
-	"mouth",
-	"eyes",
-	"gaze",
-	"head",
-	"torso",
-] as const;
-
-export const PARAM_CHANNEL_MAP: Readonly<Record<string, Live2DChannel>> = Object.freeze({
-	ParamAngleX: "head",
-	ParamAngleY: "head",
-	ParamAngleZ: "head",
-	ParamBodyAngleX: "torso",
-	ParamBodyAngleY: "torso",
-	ParamBodyAngleZ: "torso",
-	ParamBreath: "torso",
-	ParamEyeBallX: "gaze",
-	ParamEyeBallY: "gaze",
-	ParamEyeLOpen: "eyes",
-	ParamEyeROpen: "eyes",
-	ParamEyeLSmile: "eyes",
-	ParamEyeRSmile: "eyes",
-	ParamBrowLY: "eyes",
-	ParamBrowRY: "eyes",
-	ParamMouthOpenY: "mouth",
-	ParamMouthForm: "mouth",
-	ParamCheek: "eyes",
-});
+export const ALL_CHANNELS: readonly Live2DChannel[] = ["mouth", "eyes", "gaze", "head", "torso"] as const;
 
 export const CHANNEL_PRIORITY = {
 	IDLE: 10,
@@ -46,7 +20,7 @@ export interface ChannelLease {
 	readonly channels: readonly Live2DChannel[];
 	readonly priority: number;
 	readonly reason?: string;
-	readonly signal?: AbortSignal;
+	readonly signal: AbortSignal;
 	readonly atomic?: boolean;
 	release(): void;
 }
@@ -55,54 +29,38 @@ export interface ChannelClaimOptions {
 	priority?: number;
 	reason?: string;
 	signal?: AbortSignal;
-	allowDegrade?: boolean;
 	preemptSameReason?: boolean;
 	preemptSamePriority?: boolean;
 	atomic?: boolean;
 }
 
-export interface Live2DParamTarget {
-	name: string;
-	value: number;
-	additive?: boolean;
-}
-
-export type HeadPose = "tilt_left" | "tilt_right" | "nod" | "shake" | "lowered" | "lifted";
-export type GazeDirection = "user" | "away_left" | "away_right" | "down" | "side_peek";
-export type FaceExpression =
-	| "shy"
-	| "smug"
-	| "pout"
-	| "sparkle"
-	| "shocked"
-	| "tender_smile"
-	| "laugh"
-	| "winking"
-	| "smug_grin"
-	| "sleepy_yawn";
-
 export interface ExpressBeat {
-	head?: HeadPose | string;
-	gaze?: GazeDirection | string;
-	face?: FaceExpression | string;
+	head?: string;
+	gaze?: string;
+	face?: string;
 	hold_ms?: number;
 	latch?: boolean;
 	intensity?: number;
 }
 
+export type MotionTransition = "snappy" | "smooth" | "gentle";
+
 export interface ExpressParams {
-	head?: HeadPose | string;
-	gaze?: GazeDirection | string;
-	face?: FaceExpression | string;
+	motion?: string;
+	atomic?: boolean;
+	head?: string;
+	gaze?: string;
+	face?: string;
 	intensity?: number;
 	beats?: readonly ExpressBeat[];
 	latch_last?: boolean;
-	transition?: "snappy" | "smooth" | "gentle";
+	transition?: MotionTransition;
+	speech?: SpeechPolicy;
 }
 
 /**
  * 基准姿态名运行时清单（单一事实来源）：<cue id="姿态名"/>（零开销姿态切换）与 pose
- * 工具共用这一份。BasePoseName 类型由数组派生、body-director 的 BASE_POSES 以
+ * 工具共用这一份。BasePoseName 类型由数组派生、motion-library 的 BASE_POSES 以
  * Record<BasePoseName,...> 强制齐名——名单、类型、姿态表三处编译期永不漂移。
  */
 export const BASE_POSE_NAMES = Object.freeze([
@@ -120,50 +78,20 @@ export const BASE_POSE_NAMES = Object.freeze([
 export type BasePoseName = (typeof BASE_POSE_NAMES)[number];
 
 export const BASE_POSE_DESCRIPTIONS: Readonly<Record<BasePoseName, string>> = Object.freeze({
-	relaxed: "低头微斜闲适待机",
-	focused: "正坐前倾仰头",
-	playful: "元气调皮大歪头",
+	relaxed: "微低头、轻偏头的放松待机",
+	focused: "轻抬头的专注姿态",
+	playful: "元气微笑、俏皮歪头",
 	shy_side: "娇羞侧身偏头",
-	confident: "自信挺胸昂首",
-	listening: "侧耳前倾倾听",
+	confident: "自信微笑、轻抬下巴",
+	listening: "轻歪头、注视用户地倾听",
 	smug_gremlin: "小恶魔得意坏笑",
 	meek_shy: "内向害羞上目线",
-	streamer_hype: "大主播亢奋前倾",
+	streamer_hype: "抬眉微笑的兴奋姿态",
 });
 
 /** 类型守卫：cue id 是否为姿态名（派发端免断言，收敛唯一一处 readonly 放宽）。 */
 export function isBasePoseName(value: string): value is BasePoseName {
 	return (BASE_POSE_NAMES as readonly string[]).includes(value);
-}
-
-/**
- * 统一规范的 Live2D 硬件参数安全阈值钳位 (Clamp)
- */
-export function clampLive2DParam(name: string, val: number): number {
-	if (name.startsWith("ParamAngle")) {
-		return Math.max(-30, Math.min(30, val));
-	}
-	if (name.startsWith("ParamBodyAngle")) {
-		return Math.max(-15, Math.min(15, val));
-	}
-	if (name.includes("Eye") && name.includes("Open")) {
-		return Math.max(0, Math.min(2, val));
-	}
-	if (name.startsWith("ParamEyeBall")) {
-		return Math.max(-1, Math.min(1, val));
-	}
-	if (
-		name.includes("Smile") ||
-		name === "ParamCheek" ||
-		name === "ParamBreath" ||
-		name === "ParamMouthOpenY"
-	) {
-		return Math.max(0, Math.min(1, val));
-	}
-	if (name === "ParamMouthForm" || name.startsWith("ParamBrow")) {
-		return Math.max(-1, Math.min(1, val));
-	}
-	return val;
 }
 
 /**
@@ -188,5 +116,3 @@ export function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> 
 		if (signal) signal.addEventListener("abort", abortHandler, { once: true });
 	});
 }
-
-

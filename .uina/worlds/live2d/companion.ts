@@ -1,26 +1,9 @@
 import type { AudioObserver } from "./audio-observer.js";
 import type { MotionDirector } from "./motion-director.js";
 
-import { CHANNEL_PRIORITY } from "./types.js";
-import { type VTSClient, type VTSHotkeyInfo } from "./vts-client.js";
-import { VTSParameterRetargeter } from "./vts-retargeter.js";
-
-export class Live2DStateTracker {
-	private online = false;
-	private fault?: string;
-
-	getState(): { online: boolean; fault?: string } {
-		return {
-			online: this.online,
-			fault: this.fault,
-		};
-	}
-
-	setVtsConnected(connected: boolean): void {
-		this.online = connected;
-		this.fault = connected ? undefined : "vts_disconnected";
-	}
-}
+import type { VTSClient } from "./vts-client.js";
+import { compileModelAdapter, type AdapterProgram } from "./model-adapter.js";
+import type { ModelProfile } from "./model-profile.js";
 
 export interface VTSCompanionOptions {
 	targetFps?: number; // 默认 60
@@ -31,18 +14,34 @@ export interface VTSCompanionOptions {
  * 职责：
  * 1. 运行 60Hz 渲染时钟，驱动 MotionDirector 动作合成；
  * 2. 调度 AudioObserver 驱动口型包络平滑衰减与瞬态捕获；
- * 3. 委派 VTSParameterRetargeter 执行语义重定向与表情融合；
- * 4. 向 VTube Studio 注入标准参数；
+ * 3. 委派模型适配程序执行校准与输入转换；
+ * 4. 向 VTube Studio 注入已核验的输入参数；
  * 5. 维护与汇报虚拟形象的真实物理在线状态；
  * 6. 按需时钟治理：VTS 离线时自动休眠定时器，连接恢复后重新激活，杜绝无意义的 CPU 空转。
  */
 export class VTSCompanion {
-	readonly stateTracker = new Live2DStateTracker();
-	readonly retargeter = new VTSParameterRetargeter();
+	private adapterProfile?: ModelProfile;
+	private adapterProgram?: AdapterProgram;
+	lastSaturation: readonly string[] = [];
+	getAdapter(): AdapterProgram | undefined {
+		const profile = this.vtsClient.getModelProfile();
+		if (!profile) {
+			this.adapterProfile = undefined;
+			this.adapterProgram = undefined;
+			return;
+		}
+		if (profile !== this.adapterProfile) {
+			this.adapterProgram = compileModelAdapter(profile);
+			this.adapterProfile = profile;
+		}
+		return this.adapterProgram;
+	}
 	private tickerTimer: NodeJS.Timeout | null = null;
 	private isRunning = false;
 	private lastTickTime = 0;
 	private readonly intervalMs: number;
+	/** 连续 tick 失败计数：成功帧清零；节流告警，防止单帧异常刷屏或无声吞掉。 */
+	private tickFailures = 0;
 
 	constructor(
 		readonly director: MotionDirector,
@@ -51,15 +50,17 @@ export class VTSCompanion {
 		options?: VTSCompanionOptions,
 	) {
 		const fps = options?.targetFps ?? 60;
-		this.intervalMs = Math.floor(1000 / fps);
+		this.intervalMs = 1000 / fps;
 
 		this.vtsClient.setConnectionChangeListener((connected) => {
-			this.stateTracker.setVtsConnected(connected);
+			this.director.abortAllMotions();
+			this.director.resetBody();
 			if (this.isRunning) {
 				if (connected) {
 					this.ensureTickerRunning();
 				} else {
 					this.stopTicker();
+					this.audioObserver.reset({ immediate: true });
 				}
 			}
 		});
@@ -68,7 +69,7 @@ export class VTSCompanion {
 	start(): void {
 		if (this.isRunning) return;
 		this.isRunning = true;
-		this.lastTickTime = Date.now();
+		this.lastTickTime = performance.now();
 
 		this.vtsClient.connect();
 
@@ -80,6 +81,7 @@ export class VTSCompanion {
 
 	private ensureTickerRunning(): void {
 		if (this.tickerTimer) return;
+		this.lastTickTime = performance.now();
 		this.tickerTimer = setInterval(() => {
 			this.tick();
 		}, this.intervalMs);
@@ -96,48 +98,50 @@ export class VTSCompanion {
 		if (!this.isRunning) return;
 		this.isRunning = false;
 		this.stopTicker();
+		this.director.abortAllMotions();
+		this.audioObserver.reset({ immediate: true });
 
 		this.vtsClient.disconnect();
-		this.stateTracker.setVtsConnected(false);
-	}
-
-	getAvailableHotkeys(): readonly VTSHotkeyInfo[] {
-		return this.vtsClient.getAvailableHotkeys();
 	}
 
 	/**
-	 * 单帧驱动 (60Hz 零分配热路径)
+	 * 单帧驱动（单调时钟，按完整经过时间推进）
+	 * tick 体整体受异常防护：单帧抛错只计数告警，不允许炸掉定时器让整个伴生循环静默死亡。
 	 */
 	tick(): void {
-		const now = Date.now();
-		// start() 已保证 lastTickTime 有值；即使冷调用 tick 也被 100ms 上限兜底
-		const deltaMs = Math.min(now - this.lastTickTime, 100);
+		const now = performance.now();
+		// 完整时间推进，避免物理时钟与动作时间线在卡帧后分叉。
+		const deltaMs = this.lastTickTime > 0 ? Math.max(0, now - this.lastTickTime) : 0;
 		this.lastTickTime = now;
 
-		// 1. 驱动音频口型自然平滑衰减
+		try {
+			this.tickInner(deltaMs);
+			this.tickFailures = 0;
+		} catch (error) {
+			this.tickFailures++;
+			// 前 3 次逐帧报告，之后每 60 帧（约 1 秒）报告一次，避免刷屏也不至于无声无息。
+			if (this.tickFailures <= 3 || this.tickFailures % 60 === 0) {
+				console.warn(
+					`[Live2D] tick 连续失败 ${this.tickFailures} 次：`,
+					error instanceof Error ? error.message : error,
+				);
+			}
+		}
+	}
+
+	private tickInner(deltaMs: number): void {
 		this.audioObserver.tick(deltaMs);
 
-		// 2. 提取实时音频口型开度与语流能量
-		// 口型策略（显式化两个不同决策，而非统一阈值）：
-		// - 口型开度归音频驱动：只有 >= ACTION 级的动作才抑制（如 flip 特技期间的统一编排）；
-		//   CUE 级表情经 retargeter 的 max 融合叠加，不会顶掉说话口型。
-		// - 躯干/头部律动是装饰性的：在 compose 内按 CUE 级让位，此处不重复门控。
-		const isMouthLocked = this.director.isChannelLocked("mouth", CHANNEL_PRIORITY.ACTION);
-		const mouthOpen = isMouthLocked ? undefined : this.audioObserver.getMouthOpenY();
-		// 语流能量不随嘴锁熄灭：嘴锁只决定口型注入归属（retargeter 已处理优先级）。
-		// 此前用嘴锁归零语流能量，说话期间任何占用嘴的动作都会让全身律动突然消失——
-		// 那是"律动时有时无"的运行不正确来源。
+		const mouthOpen = this.audioObserver.getMouthOpenY();
 		const speechEnergy = this.audioObserver.getSpeechEnergy();
 
-		// 3. 合成动效 (传入当前语流能量，自动驱动躯干连续循环律动)
-		const frame = this.director.compose(deltaMs, { speechEnergy });
+		const frame = this.director.compose(deltaMs, { speechEnergy, mouthOpen });
 
-		// 4. 重定向与融合为 VTS 参数包 (零分配)
-		const params = this.retargeter.retarget(frame, mouthOpen);
-
-	// 5. 注入 VTube Studio
-	this.vtsClient.injectParameters(params);
+		const program = this.getAdapter();
+		if (!program) return;
+		this.director.setControlGroups(program.controlGroups);
+		const encoded = program.encode(frame);
+		this.lastSaturation = encoded.saturation;
+		this.vtsClient.injectParameters(encoded.values);
+	}
 }
-}
-
-

@@ -1,0 +1,28 @@
+{
+	"version": 1,
+	"modelID": "da0021cd32ee464ca41f980e8c32515b",
+	"axes": {
+		"head.yaw": [{ "parameter": "ParamAngleX" }],
+		"head.pitch": [{ "parameter": "ParamAngleY" }],
+		"head.roll": [{ "parameter": "ParamAngleZ" }],
+		"torso.yaw": [{ "parameter": "ParamBodyAngleX" }],
+		"torso.pitch": [{ "parameter": "ParamBodyAngleY" }],
+		"torso.roll": [{ "parameter": "ParamBodyAngleZ" }],
+		"torso.breath": [{ "parameter": "ParamBreath" }],
+		"gaze.x": [{ "parameter": "ParamEyeBallX" }],
+		"gaze.y": [{ "parameter": "ParamEyeBallY" }],
+		"eyes.left.open": [{ "parameter": "ParamEyeLOpen" }],
+		"eyes.right.open": [{ "parameter": "ParamEyeROpen" }],
+		"eyes.left.smile": [{ "parameter": "ParamEyeLSmile" }],
+		"eyes.right.smile": [{ "parameter": "ParamEyeRSmile" }],
+		"brows.left": [{ "parameter": "ParamBrowLY" }],
+		"brows.right": [{ "parameter": "ParamBrowRY" }],
+		"mouth.open": [{ "parameter": "ParamMouthOpenY" }],
+		"mouth.form": [{ "parameter": "ParamMouthForm" }],
+		"mouth.x": [{ "parameter": "Param122" }],
+		"mouth.pucker": [{ "parameter": "Param123" }],
+		"jaw.shrug": [{ "parameter": "Param124" }],
+		"jaw.open": [{ "parameter": "Param125" }],
+		"mouth.cheekPuff": [{ "parameter": "Param126" }]
+	}
+}
