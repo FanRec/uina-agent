@@ -1,7 +1,7 @@
 import type { ActionContext, ActionDef } from "../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { worldSucceeded } from "../../../src/extensions/world-framework/result.js";
-import type { NeteaseApiClient } from "./api-client.js";
+import { NeteaseRequestError, type NeteaseApiClient } from "./api-client.js";
 import { formatLyrics } from "./lyrics.js";
 import { LiveLyricsTracker } from "./live-lyrics.js";
 import type { NeteaseGateway, EditablePlaylist } from "./netease-gateway.js";
@@ -17,8 +17,8 @@ const writeOperations = new Set([
 type ServiceStatus = { running: boolean; detail?: string };
 type EnsureService = (ctx: ActionContext) => Promise<ServiceStatus>;
 
-function fail(message: string, reason: string): ToolExecutionResult {
-  return { result: message, status: "failed", details: { reason } };
+function fail(message: string, reason: string, details?: Record<string, unknown>): ToolExecutionResult {
+  return { result: message, status: "failed", details: { reason, ...details } };
 }
 
 function unknown(message: string, reason = "external_result_unconfirmed"): ToolExecutionResult {
@@ -51,13 +51,13 @@ export class JukeboxApplication {
     this.lyricsTracker = deps.lyrics ?? new LiveLyricsTracker(deps.api);
     this.actions = {
       search: this.action(
-        "搜索歌曲并返回可传给 play/queue 的短期 ref；没有查询词不要调用。",
+        "搜索歌曲并返回稳定的 ref=song:<网易云歌曲ID>，后续 play/queue 应直接使用该 ref；没有查询词不要调用。",
         { query: { type: "string" }, limit: { type: "number" } },
         ["query"],
         this.search.bind(this),
       ),
       play: this.action(
-        "播放或入队歌曲；优先使用 search 返回的 ref。返回受理/模拟阶段，不证明用户听见。",
+		"播放或入队歌曲；优先使用 search 返回的完整 ref=song:<歌曲ID>。返回受理/模拟阶段，不证明用户听见。",
         { ref: { type: "string" }, song_id: { type: "string" }, query: { type: "string" }, replace_queue: { type: "boolean" }, enqueue: { type: "boolean" } },
         [],
         this.play.bind(this),
@@ -106,10 +106,36 @@ export class JukeboxApplication {
       description,
       parameters: { type: "object", properties, required, additionalProperties: false },
       run: async (args, ctx) => {
-        const result = await run(args, ctx);
-        return typeof result === "string" ? worldSucceeded(result) : result;
+        try {
+          const result = await run(args, ctx);
+          return typeof result === "string" ? worldSucceeded(result) : result;
+        } catch (error) {
+          if (error instanceof NeteaseRequestError) return this.requestFailure(error, ctx.operationIdentity);
+          throw error;
+        }
       },
     };
+  }
+
+  private requestFailure(error: NeteaseRequestError, stage: string): ToolExecutionResult {
+    const retried = error.attempts > 1;
+    let retryNote = "";
+    if (error.retryable && retried) {
+      retryNote = "（已自动重试一次仍失败，请停止本轮重复请求，稍后再试。）";
+    } else if (error.retryable) {
+      retryNote = "（瞬时故障未能在本次请求时限内恢复，请停止本轮重复请求，稍后再试。）";
+    }
+    return fail(
+      `${error.message}${retryNote}`,
+      "upstream_unavailable",
+      {
+        stage,
+        ...(error.status === undefined ? {} : { httpStatus: error.status }),
+        attempts: error.attempts,
+        retryable: error.retryable,
+        retryExhausted: retried && error.retryable,
+      },
+    );
   }
 
   private async requireService(ctx: ActionContext): Promise<ToolExecutionResult | null> {
@@ -125,10 +151,9 @@ export class JukeboxApplication {
     if (!query) return fail("缺少搜索关键词。", "invalid_query");
     const limit = Math.min(20, Math.max(1, Number(args.limit ?? 10)));
     const songs = await this.deps.api.searchSongs(query, limit, ctx.signal);
-    this.searchRefs.clear();
-    songs.forEach((song, index) => this.searchRefs.set(`search:${index}`, song));
+    songs.forEach((song) => this.searchRefs.set(`song:${song.id}`, song));
     return songs.length
-      ? songs.map((song, index) => `${index + 1}. ref=search:${index} id=${song.id} ${song.name} - ${song.artists.join(", ")} (${formatMs(song.durationMs)})`).join("\n")
+      ? songs.map((song, index) => `${index + 1}. ref=song:${song.id} ${song.name} - ${song.artists.join(", ")} (${formatMs(song.durationMs)})`).join("\n")
       : `未找到与“${query}”相关的歌曲。`;
   }
 
@@ -141,14 +166,26 @@ export class JukeboxApplication {
     const ref = String(args.ref ?? "").trim();
     if (ref) {
       const song = this.searchRefs.get(ref);
-      return song ?? fail(`搜索 ref “${ref}” 不存在或已过期，请重新 search。`, "invalid_ref");
+      return song ?? fail(`歌曲 ref “${ref}” 不存在；请使用最近搜索结果中完整的 ref=song:<歌曲ID>。`, "invalid_ref");
     }
     const id = String(args.song_id ?? args.id ?? "").trim();
-    if (id) return (await this.deps.api.getSongInfo(id, ctx.signal)) ?? fail(`歌曲 #${id} 不存在。`, "song_not_found");
+    if (id) {
+      try {
+        return (await this.deps.api.getSongInfo(id, ctx.signal)) ?? fail(`歌曲 #${id} 不存在。`, "song_not_found");
+      } catch (error) {
+        if (error instanceof NeteaseRequestError) return this.requestFailure(error, "song_detail");
+        throw error;
+      }
+    }
     const query = String(args.query ?? args.keyword ?? "").trim();
     if (!query) return fail("必须提供 song_id、ref 或 query。", "invalid_song");
-    const song = (await this.deps.api.searchSongs(query, 5, ctx.signal))[0];
-    return song ?? fail(`未找到与“${query}”相关的歌曲。`, "song_not_found");
+    try {
+      const song = (await this.deps.api.searchSongs(query, 5, ctx.signal))[0];
+      return song ?? fail(`未找到与“${query}”相关的歌曲。`, "song_not_found");
+    } catch (error) {
+      if (error instanceof NeteaseRequestError) return this.requestFailure(error, "song_search");
+      throw error;
+    }
   }
 
   private async play(args: Record<string, unknown>, ctx: ActionContext): Promise<string | ToolExecutionResult> {
@@ -164,6 +201,7 @@ export class JukeboxApplication {
     try {
       await this.deps.playback.loadSong(song, ctx.signal);
     } catch (error) {
+      if (error instanceof NeteaseRequestError) return this.requestFailure(error, "playback_url");
       return fail(`无法播放“${song.name}”：${error instanceof Error ? error.message : String(error)}`, "playback_failed");
     }
     if (args.replace_queue === true) this.deps.playback.clear();

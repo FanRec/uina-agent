@@ -9,6 +9,13 @@ export interface EditablePlaylist {
   trackIds: readonly string[] | null;
 }
 
+class NeteaseGatewayHttpError extends Error {
+	constructor(readonly status: number) {
+		super(`网易云请求失败: HTTP ${status}`);
+		this.name = "NeteaseGatewayHttpError";
+	}
+}
+
 export class NeteaseUncertainWriteError extends Error {
 	readonly effectUnknown = true;
 	constructor(message: string, options?: { cause?: unknown }) {
@@ -78,6 +85,7 @@ export class NeteaseGateway {
     }
   }
   private async request(path: string, params: Record<string, string | number>, signal?: AbortSignal, method: "GET" | "POST" = "GET"): Promise<GatewayResult> {
+    signal?.throwIfAborted();
     const url = new URL(`${this.gatewayBaseUrl}${path}`); if (method === "GET") for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error("网易云请求超时")), 15000);
@@ -90,16 +98,22 @@ export class NeteaseGateway {
         try {
         const response = await fetch(url, { method, headers: method === "POST" ? { "content-type": "application/x-www-form-urlencoded" } : undefined, body: method === "POST" ? new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)])) : undefined, signal: controller.signal });
         if (!response.ok) {
-          const httpError = new Error(`网易云请求失败: HTTP ${response.status}`);
-          if (response.status >= 500 && attempt === 0) { lastError = httpError; continue; }
-          throw httpError;
+          const httpError = new NeteaseGatewayHttpError(response.status);
+          if (method === "GET" && isTransientStatus(response.status) && attempt === 0) {
+            lastError = httpError;
+            await waitForRetry(signal);
+            continue;
+          }
+          throw wrapUncertainWrite(httpError, method);
         }
         const body = await response.json() as GatewayResult;
         if (typeof body.code === "number" && body.code !== 200) throw new Error(`网易云业务请求失败: code ${body.code}`);
         return body;
         } catch (error) {
           lastError = error;
-          if (signal?.aborted || attempt === 1) throw wrapUncertainWrite(error, method);
+          if (signal?.aborted || controller.signal.aborted || attempt === 1 || method !== "GET" || !isTransientNetworkError(error)) {
+            throw wrapUncertainWrite(error, method);
+          }
         }
       }
     } finally {
@@ -116,11 +130,38 @@ function wrapUncertainWrite(error: unknown, method: "GET" | "POST"): unknown {
 }
 
 function isFallbackEligible(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /HTTP (404|405|501)|HTTP 5\d\d|endpoint|not found|不存在/i.test(message);
+  return error instanceof NeteaseGatewayHttpError && [404, 405, 501].includes(error.status);
+}
+
+function isTransientStatus(status: number): boolean {
+	return status === 502 || status === 503 || status === 504;
+}
+
+function waitForRetry(signal?: AbortSignal): Promise<void> {
+	signal?.throwIfAborted();
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, 200);
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(signal?.reason instanceof Error ? signal.reason : new Error("网易云请求已取消"));
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+		if (signal?.aborted) onAbort();
+	});
+}
+
+function isTransientNetworkError(error: unknown): boolean {
+	if (error instanceof NeteaseGatewayHttpError) return false;
+	if (error instanceof DOMException && error.name === "AbortError") return false;
+	const message = error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : String(error);
+	return error instanceof TypeError || /fetch failed|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up/i.test(message);
 }
 
 function isUncertainWriteError(error: unknown): boolean {
+	if (error instanceof NeteaseGatewayHttpError) return [408, 500, 502, 503, 504].includes(error.status);
 	const message = error instanceof Error ? error.message : String(error);
 	return /HTTP 5\d\d|timeout|超时|fetch failed|network|socket|ECONN|连接/i.test(message);
 }

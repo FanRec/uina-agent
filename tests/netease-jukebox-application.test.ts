@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { NeteaseRequestError } from "../.uina/worlds/netease-jukebox/api-client.js";
 import { JukeboxApplication } from "../.uina/worlds/netease-jukebox/application.js";
 import { PlaybackCoordinator } from "../.uina/worlds/netease-jukebox/playback-coordinator.js";
 import { SimulatedMusicPlayer } from "../.uina/worlds/netease-jukebox/player.js";
@@ -52,7 +53,7 @@ describe("JukeboxApplication", () => {
 		const ctx = { operationIdentity: "world:jukebox/library" as const, signal: new AbortController().signal };
 		await application.actions.search.run({ query: "song" }, ctx);
 		const result = await application.actions.library.run(
-			{ operation: "playlist_track_add", playlist_id: "p1", ref: "search:0", confirm: true },
+			{ operation: "playlist_track_add", playlist_id: "p1", ref: "song:1", confirm: true },
 			ctx,
 		);
 		expect(result).toMatchObject({ status: "succeeded" });
@@ -107,22 +108,45 @@ describe("JukeboxApplication", () => {
 		expect(playback.snapshot().queue).toHaveLength(1);
 	});
 
-	it("invalidates stale search refs and reports them explicitly", async () => {
+	it("keeps stable song refs valid across later searches", async () => {
 		const { application, api } = makeApplication();
 		const ctx = { operationIdentity: "world:jukebox/playback" as const, signal: new AbortController().signal };
-		await application.actions.search.run({ query: "song" }, ctx);
-		(api.searchSongs as ReturnType<typeof vi.fn>).mockResolvedValueOnce([]);
-		await application.actions.search.run({ query: "song" }, ctx);
+		const first = await application.actions.search.run({ query: "song one" }, ctx);
+		(api.searchSongs as ReturnType<typeof vi.fn>).mockResolvedValueOnce([{ ...song, id: "2", name: "Song 2" }]);
+		const second = await application.actions.search.run({ query: "song two" }, ctx);
 
-		const stale = await application.actions.play.run({ ref: "search:0" }, ctx);
+		expect(String(first.result)).toContain("ref=song:1");
+		expect(String(second.result)).toContain("ref=song:2");
+		const earlier = await application.actions.play.run({ ref: "song:1" }, ctx);
+		const later = await application.actions.play.run({ ref: "song:2" }, ctx);
 
-		expect(stale).toMatchObject({ status: "failed", details: { reason: "invalid_ref" } });
-		expect(String(stale.result)).toContain("不存在或已过期");
-		expect(String(stale.result)).toContain("search:0");
+		expect(earlier).toMatchObject({ status: "succeeded" });
+		expect(later).toMatchObject({ status: "succeeded" });
+
+		const invalid = await application.actions.play.run({ ref: "song:missing" }, ctx);
+
+		expect(invalid).toMatchObject({ status: "failed", details: { reason: "invalid_ref" } });
+		expect(String(invalid.result)).toContain("song:missing");
 
 		const missing = await application.actions.play.run({}, ctx);
 		expect(missing).toMatchObject({ status: "failed", details: { reason: "invalid_song" } });
 		expect(String(missing.result)).toContain("必须提供 song_id、ref 或 query");
+	});
+
+	it("returns upstream retry exhaustion as structured failure instead of inviting another tool call", async () => {
+		const { application, api } = makeApplication();
+		(api.searchSongs as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+			new NeteaseRequestError("网易云搜索失败: HTTP 502", { status: 502, attempts: 2, retryable: true }),
+		);
+		const ctx = { operationIdentity: "world:jukebox/search" as const, signal: new AbortController().signal };
+
+		const result = await application.actions.search.run({ query: "song" }, ctx);
+
+		expect(result).toMatchObject({
+			status: "failed",
+			details: { reason: "upstream_unavailable", httpStatus: 502, attempts: 2, retryExhausted: true },
+		});
+		expect(String(result.result)).toContain("停止本轮重复请求");
 	});
 
 	it("previous restarts the current song instead of faking a switch after 5 seconds", async () => {

@@ -15,3 +15,5 @@ HUD 发布采用最新快照策略；HUD 服务暂时不可用时不会积压旧
 `library` 提供账号状态、歌单、喜欢、最近播放和评论入口，并支持 `playlist_track_add`、`playlist_track_remove`、`playlist_update` 等歌单写操作。所有写操作必须传入 `confirm: true`；歌单写入前会检查当前账号的可编辑权限，写入后会重新读取歌单验证结果，无法确认时返回 `unknown`。账号库仍依赖本机 loopback `api-enhanced` 的真实登录态。
 
 World 入口只负责资源装配和生命周期；action 参数解析、搜索 ref、歌词缓存与账号库编排位于 `application.ts`。歌单歌曲写入优先使用 api-enhanced 的专用 endpoint，服务不提供时回退到 `playlist_tracks`。
+
+搜索结果使用 `ref=song:<歌曲ID>`，同一 World 生命周期内后续搜索不会让已有 ref 改指其他歌曲。读取请求遇到 HTTP 502/503/504 或瞬时连接错误时最多重试一次，并受原请求总超时与调用取消信号约束；持续失败会返回状态码和尝试次数。歌单写入遇到 5xx、超时或网络错误时结果可能未知，不自动切换到另一条写接口；只有明确的接口不支持响应才使用 `playlist_tracks` fallback。

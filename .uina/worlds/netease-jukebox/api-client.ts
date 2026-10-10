@@ -1,5 +1,59 @@
 import type { SongInfo } from "./types.js";
 
+export class NeteaseRequestError extends Error {
+  readonly status?: number;
+  readonly attempts: number;
+  readonly retryable: boolean;
+
+  constructor(
+    message: string,
+    options: { status?: number; attempts?: number; retryable?: boolean; cause?: unknown } = {},
+  ) {
+    super(message, { cause: options.cause });
+    this.name = "NeteaseRequestError";
+    this.status = options.status;
+    this.attempts = options.attempts ?? 1;
+    this.retryable = options.retryable ?? false;
+  }
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
+
+function ensureSuccessfulResponse(response: Response, operation: string): void {
+  if (response.ok) return;
+  throw new NeteaseRequestError(`${operation}: HTTP ${response.status}`, {
+    status: response.status,
+    retryable: isRetryableStatus(response.status),
+  });
+}
+
+function isRetryableError(error: unknown): boolean {
+  if (error instanceof NeteaseRequestError) return error.retryable;
+  if (error instanceof DOMException && error.name === "AbortError") return false;
+  const message = error instanceof Error ? `${error.message} ${String(error.cause ?? "")}` : String(error);
+  return error instanceof TypeError || /fetch failed|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up/i.test(message);
+}
+
+function waitForRetry(signal: AbortSignal | undefined, deadline: number): Promise<void> {
+  const delayMs = 200;
+  if (deadline - Date.now() <= delayMs) return Promise.reject(new Error("网易云请求总时限已到"));
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason instanceof Error ? signal.reason : new Error("网易云请求已取消"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+  });
+}
+
 export class NeteaseApiClient {
   private readonly baseUrl: string;
 
@@ -27,7 +81,7 @@ export class NeteaseApiClient {
     url.searchParams.set("limit", String(limit));
 
     const data = await this.request(url.toString(), 15_000, signal, async (res) => {
-      if (!res.ok) throw new Error(`网易云搜索失败: HTTP ${res.status}`);
+      ensureSuccessfulResponse(res, "网易云搜索失败");
       return await res.json() as {
         result?: {
           songs?: Array<{
@@ -62,7 +116,7 @@ export class NeteaseApiClient {
     url.searchParams.set("level", "standard");
 
     return this.request(url.toString(), 15_000, signal, async (res) => {
-      if (!res.ok) throw new Error(`网易云播放地址查询失败: HTTP ${res.status}`);
+      ensureSuccessfulResponse(res, "网易云播放地址查询失败");
       const data = (await res.json()) as {
         data?: Array<{ url?: string }>;
       };
@@ -77,7 +131,7 @@ export class NeteaseApiClient {
     const url = new URL(`${this.baseUrl}/lyric`);
     url.searchParams.set("id", id);
     return this.request(url.toString(), 15_000, signal, async (res) => {
-      if (!res.ok) throw new Error(`网易云歌词查询失败: HTTP ${res.status}`);
+      ensureSuccessfulResponse(res, "网易云歌词查询失败");
       const data = await res.json() as { lrc?: { lyric?: unknown } };
       if (data.lrc?.lyric === undefined || data.lrc.lyric === null) return null;
       if (typeof data.lrc.lyric !== "string") throw new Error("网易云歌词响应格式错误");
@@ -91,7 +145,7 @@ export class NeteaseApiClient {
     const url = new URL(`${this.baseUrl}/song/detail`);
     url.searchParams.set("ids", id);
     return this.request(url.toString(), 15_000, signal, async (res) => {
-      if (!res.ok) throw new Error(`网易云歌曲详情查询失败: HTTP ${res.status}`);
+      ensureSuccessfulResponse(res, "网易云歌曲详情查询失败");
       const data = await res.json() as {
         songs?: Array<{
           id: number | string;
@@ -115,26 +169,58 @@ export class NeteaseApiClient {
 
   private async request<T>(url: string, timeoutMs: number, signal: AbortSignal | undefined, read: (response: Response) => T | Promise<T>): Promise<T> {
     signal?.throwIfAborted();
-    const controller = new AbortController();
-    let timer: NodeJS.Timeout;
-    let rejectInterrupted: (reason: Error) => void = () => undefined;
-    const interrupted = new Promise<never>((_resolve, reject) => { rejectInterrupted = reject; });
-    timer = setTimeout(() => {
-      const error = new Error(`网易云请求超时 (${timeoutMs}ms)`);
-      controller.abort(error);
-      rejectInterrupted(error);
-    }, timeoutMs);
-    const onAbort = () => {
-      const error = signal?.reason instanceof Error ? signal.reason : new Error("网易云请求已取消");
-      controller.abort(error);
-      rejectInterrupted(error);
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-    try {
-      return await Promise.race([fetch(url, { signal: controller.signal }).then(read), interrupted]);
-    } finally {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
+    const deadline = Date.now() + timeoutMs;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      signal?.throwIfAborted();
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) throw new NeteaseRequestError(`网易云请求超时 (${timeoutMs}ms)`, { attempts: attempt - 1, cause: lastError });
+
+      const controller = new AbortController();
+      let timer: NodeJS.Timeout;
+      let rejectInterrupted: (reason: Error) => void = () => undefined;
+      const interrupted = new Promise<never>((_resolve, reject) => { rejectInterrupted = reject; });
+      timer = setTimeout(() => {
+        const error = new Error(`网易云请求超时 (${timeoutMs}ms)`);
+        controller.abort(error);
+        rejectInterrupted(error);
+      }, remainingMs);
+      const onAbort = () => {
+        const error = signal?.reason instanceof Error ? signal.reason : new Error("网易云请求已取消");
+        controller.abort(error);
+        rejectInterrupted(error);
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+      try {
+        const response = await Promise.race([fetch(url, { signal: controller.signal }), interrupted]);
+        return await read(response);
+      } catch (error) {
+        if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : error;
+      if (controller.signal.aborted) {
+          throw new NeteaseRequestError(error instanceof Error ? error.message : String(error), { attempts: attempt, cause: error });
+        }
+        const retryable = isRetryableError(error);
+        if (!retryable || attempt === 2) {
+          if (error instanceof NeteaseRequestError) {
+            throw new NeteaseRequestError(error.message, { status: error.status, attempts: attempt, retryable: error.retryable, cause: error });
+          }
+          if (retryable) {
+            throw new NeteaseRequestError(`网易云请求失败: ${error instanceof Error ? error.message : String(error)}`, { attempts: attempt, retryable: true, cause: error });
+          }
+          throw error;
+        }
+        lastError = error;
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      }
+
+      if (deadline - Date.now() <= 200) {
+        throw new NeteaseRequestError(`网易云请求失败: ${lastError instanceof Error ? lastError.message : String(lastError)}`, { attempts: attempt, retryable: true, cause: lastError });
+      }
+      await waitForRetry(signal, deadline);
     }
+    throw lastError;
   }
 }
