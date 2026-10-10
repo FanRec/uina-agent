@@ -84,6 +84,25 @@ const rules = [
 		roots: ["src/agent", "src/session", "src/core", "src/tools", "src/runtime"],
 		test: (source) => ["host", "ui", "ai"].some((segment) => importsSegment(source, segment)),
 	},
+	{
+		// 世界层禁止横向抓取系统扩展：World↔Extension 只经 expose 共享表交互，
+		// 类型词汇一律取自 world-framework/seams。横向 import 会造成接缝双源漂移。
+		name: "worlds must not import sibling system extensions",
+		roots: [".uina/worlds"],
+		test: (source) => /(\.\.\/)+extensions\//.test(source) || /\.uina\/extensions/.test(source),
+	},
+	{
+		// live2d 重写世界的 src 依赖白名单：world-framework（契约与接缝词汇）与
+		// src/tools/broker（ToolExecutionResult 结果形状）。agent/ai/ui/session/host/core/runtime
+		// 一律不可达。其余既有世界不回溯约束。
+		name: "live2d world may import src only via world-framework and broker result types",
+		roots: [".uina/worlds/live2d"],
+		test: (source) =>
+			["/src/agent/", "/src/ai/", "/src/ui/", "/src/session/", "/src/host/", "/src/core/", "/src/runtime/"].some(
+				(segment) => source.includes(segment),
+			) ||
+			(source.includes("/extensions/") && !source.includes("world-framework")),
+	},
 ];
 
 /**
@@ -120,6 +139,16 @@ const selfTestSamples = [
 		rule: 5,
 		bad: 'import { loadConfig } from "../ai/config.js";',
 		good: 'import type { SessionStore } from "../session/types.js";',
+	},
+	{
+		rule: 6,
+		bad: 'import { BodyRouter } from "../../extensions/embodiment/body-router.js";',
+		good: 'import type { BodyEndpoint } from "../../../src/extensions/world-framework/seams.js";',
+	},
+	{
+		rule: 7,
+		bad: 'import { Subject } from "../../../src/agent/loop.js";',
+		good: 'import type { ToolExecutionResult } from "../../../src/tools/broker.js";',
 	},
 ];
 
