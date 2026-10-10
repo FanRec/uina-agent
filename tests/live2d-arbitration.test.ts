@@ -49,7 +49,7 @@ const step = (d: MotionDirector, ms: number, dt = 16): void => {
 describe("live2d MotionDirector（P2-1 仲裁核心）", () => {
 	it("引擎 #19 类别优先级：reflex > voluntary > 槽位，atomic 跨类别抢占，additive 共存", async () => {
 		const d = director();
-		const slot = d.setPosture({ "head.pitch": 5 });
+		const slot = d.setPosture({ "head.pitch": 5 }, { durationMs: 300 }); // 显式时长，与默认解耦
 		step(d, 400);
 		expect(d.currentFrame["head.pitch"]).toBe(5);
 

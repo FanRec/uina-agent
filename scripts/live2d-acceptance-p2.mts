@@ -119,34 +119,35 @@ await wait(800);
 
 // ---------- #6 patch 并发 ----------
 console.log("\n=== #6 姿态 patch / 表情 patch / 手势播放并发，互不干扰 ===");
-await rt.director!.setPosture({ "head.pitch": -5, "head.roll": 3 });
+await rt.director!.setPosture({ "head.pitch": -5, "head.roll": 3 }, { durationMs: 800 });
 rt.director!.play(
 	compileMotion(
 		motion(
-			4000,
+			6000,
 			track("head.yaw", [
 				[0, 0],
-				[1000, 6],
-				[2000, -6],
-				[3000, 3],
-				[4000, 0],
+				[1500, 6],
+				[3000, -6],
+				[4500, 3],
+				[6000, 0],
 			]),
 		),
 		rig.controls,
 	),
 	{
 		category: "voluntary",
+		fadeInMs: 200,
 	},
 );
-await wait(800);
+await wait(1200); // 入槽沉降后再 patch
 await Promise.all([
-	rt.director!.patchPosture({ "head.roll": -3 }),
-	rt.director!.patchExpression({ "mouth.form": 0.5 }),
+	rt.director!.patchPosture({ "head.roll": -3 }, { durationMs: 800 }),
+	rt.director!.patchExpression({ "mouth.form": 0.5 }, { durationMs: 800 }),
 ]);
-console.log("观察 3 秒：head.roll 变向、微笑出现、head.yaw 摆动三者同时进行、互不中断。");
-await wait(3000);
-await rt.director!.setPosture({});
-await rt.director!.setExpression({});
+console.log("观察 4 秒：head.roll 缓慢变向、微笑渐现、head.yaw 摆动三者同时进行、互不中断。");
+await wait(4000);
+await rt.director!.setPosture({}, { durationMs: 800 });
+await rt.director!.setExpression({}, { durationMs: 800 });
 
 await wait(1000);
 clearInterval(ticker);

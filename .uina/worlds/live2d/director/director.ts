@@ -169,7 +169,8 @@ interface InternalClaim {
 	controller: AbortController;
 }
 
-const DEFAULT_SLOT_TRANSITION_MS = 350;
+/** 槽位过渡默认时长：姿态改变应从容（600ms 观感自然）；调用方可经 SlotOptions.durationMs 覆盖。 */
+const DEFAULT_SLOT_TRANSITION_MS = 600;
 
 export class MotionDirector {
 	private readonly controls: Readonly<Record<string, RigControlDef>>;
