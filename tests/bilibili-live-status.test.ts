@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { LiveEventBuffer } from "../.uina/worlds/bilibili-live/src/buffer.js";
 import { loadConfig } from "../.uina/worlds/bilibili-live/src/config.js";
+import { DanmakuWindow } from "../.uina/worlds/bilibili-live/src/danmaku.js";
 import {
 	applyLiveConnectionUpdate,
 	BatchedNotifier,
@@ -72,7 +73,7 @@ describe("Bilibili live connection status", () => {
 			payload: { retryCount: 3, totalRetryCount: 3, delaySeconds: 4 },
 		});
 
-		const status = JSON.parse(handleStatusAction(state, buffer).result);
+		const status = JSON.parse(handleStatusAction(state, buffer, new DanmakuWindow(config)).result);
 		expect(status).toMatchObject({
 			connection: "reconnecting",
 			roomStatus: "online",

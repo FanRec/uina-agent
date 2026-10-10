@@ -7,6 +7,7 @@ import { LiveEventBuffer } from "../.uina/worlds/bilibili-live/src/buffer.js";
 import { loadConfig } from "../.uina/worlds/bilibili-live/src/config.js";
 import type { LiveClientAdapter, LiveClientEvent } from "../.uina/worlds/bilibili-live/src/live-client-adapter.js";
 import { LiveEventIngestion } from "../.uina/worlds/bilibili-live/src/live-event-ingestion.js";
+import { DanmakuWindow } from "../.uina/worlds/bilibili-live/src/danmaku.js";
 
 class FakeClient extends EventEmitter implements LiveClientAdapter {
 	async connect(): Promise<void> {
@@ -139,13 +140,22 @@ describe("LiveEventIngestion", () => {
 		buffer.dispose();
 	});
 
-	it("reads an ordinary danmaku batch by its stable buffer range", () => {
+	it("forwards ordinary danmaku facts without waking the subject", () => {
 		tempDir = mkdtempSync(join(tmpdir(), "uina-ingestion-"));
-		const buffer = new LiveEventBuffer(loadConfig({ storage: { dataDir: tempDir } }));
-		const first = buffer.addDanmaku(1, "one", "first");
-		const second = buffer.addDanmaku(2, "two", "second");
-		expect(first && second).toBeTruthy();
-		expect(buffer.getDanmakuRange(first!.id, second!.id).map((item) => item.text)).toEqual(["first", "second"]);
+		const config = loadConfig({ storage: { dataDir: tempDir } });
+		const buffer = new LiveEventBuffer(config);
+		const received: string[] = [];
+		const client = new FakeClient();
+		const ingestion = new LiveEventIngestion(
+			config,
+			buffer,
+			() => undefined,
+			() => undefined,
+			(event) => received.push(event.text),
+		);
+		ingestion.replace(client);
+		client.emit("danmaku", { id: "dm-1", uid: 42, uname: "user", text: "hello", timestamp: 1000 });
+		expect(received).toEqual(["hello"]);
 		buffer.dispose();
 	});
 
@@ -634,27 +644,13 @@ describe("LiveEventIngestion", () => {
 		buffer.dispose();
 	});
 
-	it("drains pending danmaku safely even when repeated messages aggregate into earlier ring slots", () => {
+	it("does not retain the removed mutable pending-danmaku accumulator", () => {
 		tempDir = mkdtempSync(join(tmpdir(), "uina-ingestion-"));
 		const config = loadConfig({ storage: { dataDir: tempDir } });
-		const buffer = new LiveEventBuffer(config);
-
-		// 先收到弹幕 A
-		buffer.addDanmaku(101, "Alice", "第一条弹幕");
-		// 再收到弹幕 B
-		buffer.addDanmaku(102, "Bob", "第二条弹幕");
-		// 再次收到弹幕 A（命中了前面的聚合槽位，产生旧条目引用）
-		buffer.addDanmaku(103, "Charlie", "第一条弹幕");
-
-		// 必须完整排出，不能因为旧条目更新而倒挂吞丢
-		const lines = buffer.drainPendingDanmaku();
-		expect(lines).toHaveLength(2);
-		expect(lines[0]).toContain('<user name="Alice" uid="101"/> 等 2 人: 第一条弹幕 (x2)');
-		expect(lines[1]).toContain('<user name="Bob" uid="102"/>: 第二条弹幕');
-
-		// 排出后清空
-		expect(buffer.drainPendingDanmaku()).toEqual([]);
-
-		buffer.dispose();
+		const window = new DanmakuWindow(config);
+		window.add({ kind: "danmaku", eventId: "1", uid: 1, uname: "Alice", text: "first", occurredAtMs: 1 });
+		expect(window.recent()).toContain("first");
+		window.reset(123);
+		expect(window.recent()).toContain("暂无弹幕");
 	});
 });

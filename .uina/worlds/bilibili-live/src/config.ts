@@ -34,7 +34,7 @@ export interface ResolvedLiveWorldConfig {
 }
 
 export const DEFAULT_BUFFER_CONFIG: BufferConfig = {
-  maxItems: 20,
+  maxItems: 16,
   aggregationWindowMs: 20000,
 };
 
@@ -109,11 +109,15 @@ export function resolveBufferConfig(
   customConfig?: Partial<LiveWorldConfig>,
   fileConfig: Partial<LiveWorldConfig> = {}
 ): BufferConfig {
-  return {
+  const buffer = {
     ...DEFAULT_BUFFER_CONFIG,
     ...(fileConfig.buffer ?? {}),
     ...(customConfig?.buffer ?? {}),
   };
+  if (!Number.isSafeInteger(buffer.maxItems) || buffer.maxItems <= 0) {
+    throw new Error("buffer.maxItems 必须为正的安全整数");
+  }
+  return buffer;
 }
 
 /**

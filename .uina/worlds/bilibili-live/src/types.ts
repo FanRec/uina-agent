@@ -24,19 +24,6 @@ export function createEventTime(
 }
 
 /**
- * 易失感官弹幕条目（存储完整事实，展示时再截断）
- */
-export interface DanmakuRecord {
-  readonly id: string;            // 短 ID（如 dm_1）
-  readonly uid: number | string;  // Web UID or OpenLive openId
-  readonly uname: string;         // 发送者昵称
-  readonly text: string;          // 原始完整代表文本（全文用于聚合）
-  readonly time: EventTime;       // 到达双时钟
-  count: number;                  // 聚合条数
-  uniqueSenders: Set<number | string>; // 去重发送者身份集合
-}
-
-/**
  * 待办事件公共基类接口
  */
 export interface BasePendingEventRecord {
@@ -110,8 +97,8 @@ export interface LiveWorldState {
  * 易失弹幕缓冲配置
  */
 export interface BufferConfig {
-  maxItems: number;                // 环形缓冲最多保留的代表性条目数
-  aggregationWindowMs: number;     // 相同文本的滑动聚合窗口
+  maxItems: number;                // 最近窗口最多保留的原始弹幕条数（默认 16）
+  aggregationWindowMs: number;     // 展示时连续同用户同文本的最大相邻间隔
 }
 
 /**

@@ -5,7 +5,7 @@
   "buvid3": "581493C9-1F00-4AC4-D232-3991F5EA9C9277886infoc",
 
   "buffer": {
-    "maxItems": 20,
+    "maxItems": 16,
     "aggregationWindowMs": 20000
   },
 

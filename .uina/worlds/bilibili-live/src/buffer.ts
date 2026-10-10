@@ -1,5 +1,4 @@
 import type {
-  DanmakuRecord,
   SuperChatRecord,
   GuardRecord,
   GiftRecord,
@@ -22,26 +21,6 @@ export function sanitizeUntrustedText(text: string): string {
     .replaceAll("\r\n", " ")
     .replaceAll("\n", " ")
     .replaceAll("\r", " ");
-}
-
-/**
- * 校验弹幕是否应当被过滤（关键字、纯表情等）
- */
-export function shouldFilterDanmaku(
-  text: string,
-  filtering: { filterKeywords: string[]; ignoreEmojiOnly: boolean }
-): boolean {
-  if (!text) return true;
-
-  for (const kw of filtering.filterKeywords) {
-    if (text.includes(kw)) return true;
-  }
-
-  if (filtering.ignoreEmojiOnly && /^\[[^\]]+\]$/.test(text)) {
-    return true;
-  }
-
-  return false;
 }
 
 /**
@@ -73,10 +52,7 @@ export function formatUserTag(
 export class LiveEventBuffer {
   private readonly config: ResolvedLiveWorldConfig;
   private readonly journal: LiveEventJournal;
-  private readonly maxRingCapacity: number;
 
-  private readonly danmakuRing: DanmakuRecord[] = [];
-  private readonly pendingDanmakuBatch = new Map<string, DanmakuRecord>();
   private readonly pendingEvents = new Map<string, PendingEventRecord>();
 
   private counters = { sc: 0, gd: 0, gf: 0, dm: 0 };
@@ -84,7 +60,6 @@ export class LiveEventBuffer {
   constructor(config: ResolvedLiveWorldConfig, journal?: LiveEventJournal) {
     this.config = config;
     this.journal = journal ?? new LiveEventJournal(config.storage);
-    this.maxRingCapacity = config.buffer.maxItems * 3;
 
     this.recoverFromJournal();
   }
@@ -100,65 +75,6 @@ export class LiveEventBuffer {
   private nextId(prefix: "dm" | "sc" | "gd" | "gf"): string {
     this.counters[prefix]++;
     return `${prefix}_${this.counters[prefix]}`;
-  }
-
-  addDanmaku(
-    uid: number | string,
-    uname: string,
-    rawText: string,
-    eventTime?: EventTime
-  ): DanmakuRecord | null {
-    const text = rawText.trim();
-    if (shouldFilterDanmaku(text, this.config.filtering)) {
-      return null;
-    }
-
-    const time = eventTime ?? createEventTime();
-    const windowMs = this.config.buffer.aggregationWindowMs;
-    const matchIndex = this.findAggregatableDanmaku(text, time.monotonicTimeMs, windowMs);
-
-    if (matchIndex !== -1) {
-      const existing = this.danmakuRing[matchIndex];
-      existing.count++;
-      existing.uniqueSenders.add(uid);
-      this.pendingDanmakuBatch.set(existing.id, existing);
-      return existing;
-    }
-
-    const record: DanmakuRecord = {
-      id: this.nextId("dm"),
-      uid,
-      uname,
-      text,
-      time,
-      count: 1,
-      uniqueSenders: new Set([uid]),
-    };
-
-    this.danmakuRing.push(record);
-    if (this.danmakuRing.length > this.maxRingCapacity) {
-      this.danmakuRing.shift();
-    }
-    this.pendingDanmakuBatch.set(record.id, record);
-
-    return record;
-  }
-
-  private findAggregatableDanmaku(
-    text: string,
-    currentMonotonic: number,
-    windowMs: number
-  ): number {
-    for (let i = this.danmakuRing.length - 1; i >= 0; i--) {
-      const item = this.danmakuRing[i];
-      if (currentMonotonic - item.time.monotonicTimeMs > windowMs) {
-        break;
-      }
-      if (item.text === text) {
-        return i;
-      }
-    }
-    return -1;
   }
 
   ingestSuperChat(msg: {
@@ -433,57 +349,6 @@ export class LiveEventBuffer {
     };
   }
 
-  getRecentDanmaku(count: number = 10): Array<{ id: string; uid: number | string; text: string; sender: string; count: number; uniqueSenders: number }> {
-    const limit = Math.max(1, Math.min(count, 50));
-    return this.formatDanmaku(this.danmakuRing.slice(-limit));
-  }
-
-  getDanmakuRange(startId: string, endId: string): Array<{ id: string; uid: number | string; text: string; sender: string; count: number; uniqueSenders: number }> {
-    const start = this.danmakuRing.findIndex((item) => item.id === startId);
-    const end = this.danmakuRing.findIndex((item) => item.id === endId);
-    if (start < 0 || end < start) return [];
-    return this.formatDanmaku(this.danmakuRing.slice(start, end + 1));
-  }
-
-  private formatDanmaku(slice: DanmakuRecord[]): Array<{ id: string; uid: number | string; text: string; sender: string; count: number; uniqueSenders: number }> {
-    return slice.map((item) => {
-      const maxLen = this.config.filtering.maxDanmakuLength;
-      const display = item.text.length > maxLen ? item.text.slice(0, maxLen) + "..." : item.text;
-      return {
-        id: item.id,
-        uid: item.uid,
-        text: sanitizeUntrustedText(display),
-        sender: sanitizeUntrustedText(item.uname),
-        count: item.count,
-        uniqueSenders: item.uniqueSenders.size,
-      };
-    });
-  }
-
-  /**
-   * 排出所有未推送的批量弹幕，清空待上报暂态集合，彻底消除区间倒挂和索引丢失风险
-   */
-  drainPendingDanmaku(): string[] {
-    if (this.pendingDanmakuBatch.size === 0) return [];
-    const records = Array.from(this.pendingDanmakuBatch.values());
-    this.pendingDanmakuBatch.clear();
-    return this.formatDanmaku(records).map((item) => {
-      const userTag = formatUserTag(item.sender, item.uid);
-      if (item.uniqueSenders > 1) {
-        return `* [${item.id}] ${userTag} 等 ${item.uniqueSenders} 人: ${item.text} (x${item.count})`;
-      }
-      if (item.count > 1) {
-        return `* [${item.id}] ${userTag}: ${item.text} (连发x${item.count})`;
-      }
-      return `* [${item.id}] ${userTag}: ${item.text}`;
-    });
-  }
-
-  clearDanmaku(): void {
-    this.danmakuRing.length = 0;
-    this.pendingDanmakuBatch.clear();
-  }
-
   /**
    * 排出已安静或达到最大积压时限的暂态礼物：
    * - 距最后一次更新 ≥ quietMs（连击停手，静默结算）
@@ -559,8 +424,5 @@ export class LiveEventBuffer {
     return { superChats, guards, gifts };
   }
 
-  get bufferSize(): number {
-    return this.danmakuRing.length;
-  }
 
 }

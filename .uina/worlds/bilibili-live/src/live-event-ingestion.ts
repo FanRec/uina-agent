@@ -11,7 +11,7 @@ import {
 	normalizeWebSuperChat,
 } from "./normalize.js";
 import type { LiveClientAdapter } from "./live-client-adapter.js";
-import type { DanmakuRecord } from "./types.js";
+import type { CanonicalLiveDanmaku } from "./normalize.js";
 
 export type WakeDecision = {
 	readonly sourceEventKey: string;
@@ -42,7 +42,7 @@ export class LiveEventIngestion {
 		private readonly buffer: LiveEventBuffer,
 		private readonly onUpdate: (update: LiveConnectionUpdate) => void,
 		private readonly onWake: (decision: WakeDecision) => void,
-		private readonly onDanmaku?: (record: DanmakuRecord) => void,
+		private readonly onDanmaku?: (event: CanonicalLiveDanmaku) => void,
 		private readonly onSmallGift?: () => void,
 	) {}
 
@@ -69,16 +69,7 @@ export class LiveEventIngestion {
 		client.on("danmaku", (raw) => {
 			if (generation !== this.generation) return;
 			const event = this.config.openPlatform ? normalizeOpenDanmaku(raw) : normalizeWebDanmaku(raw);
-			const record = this.buffer.addDanmaku(
-				event.uid,
-				event.uname,
-				event.text,
-				{
-					wallTimeMs: event.occurredAtMs,
-					monotonicTimeMs: performance.now(),
-				},
-			);
-			if (record) this.onDanmaku?.(record);
+			this.onDanmaku?.(event);
 		});
 
 		client.on("superChat", (raw) => {
