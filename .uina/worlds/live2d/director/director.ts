@@ -1,5 +1,12 @@
 import { sampleMotion, smooth, type CompiledMotion } from "../authoring/motion.js";
 import type { RigControlDef } from "../adapter/rig.js";
+import { AutonomicGenerator, type AutonomicExternal } from "./autonomic.js";
+
+/** director 构造选项：external 声明自律主来源（缺省不启用自律发生器）；rng 注入（A9）。 */
+export interface DirectorOptions {
+	external?: AutonomicExternal;
+	rng?: () => number;
+}
 
 /**
  * MotionDirector（P2-1）：槽位 Set/Patch、逐轴 Override 仲裁、类别优先级、独占声明。
@@ -179,16 +186,27 @@ export class MotionDirector {
 	private seqCounter = 0;
 	private frozen = false;
 	private frame: Record<string, number>;
+	private readonly autonomic?: AutonomicGenerator;
+	private autonomicBlinkFactor = 1;
 
-	constructor(controls: Readonly<Record<string, RigControlDef>>) {
+	constructor(controls: Readonly<Record<string, RigControlDef>>, options: DirectorOptions = {}) {
 		this.controls = controls;
 		this.neutral = Object.fromEntries(Object.entries(controls).map(([axis, c]) => [axis, c.neutral]));
 		this.frame = { ...this.neutral };
+		if (options.external) {
+			this.autonomic = new AutonomicGenerator({ rng: options.rng });
+			this.autonomic.setExternal(options.external);
+		}
 	}
 
 	/** 最近一帧合成结果（safeStop 保持帧与诊断的事实来源）。 */
 	get currentFrame(): Readonly<Record<string, number>> {
 		return this.frame;
+	}
+
+	/** 眨眼因子（1=全开 0=全闭）；眼睑管道（P3-1）据它做乘法调制。未启用自律时恒 1。 */
+	get blinkFactor(): number {
+		return this.autonomicBlinkFactor;
 	}
 
 	// ---------- 槽位（§2.2 + A11）----------
@@ -579,6 +597,22 @@ export class MotionDirector {
 				if (maskPriority !== undefined && playback.priority < maskPriority) continue;
 				const delta = sampled[axis]! - (playback.baseline[axis] ?? this.neutral[axis]!);
 				frame[axis] = (frame[axis] ?? this.neutral[axis]!) + delta * this.lifeWeight(playback);
+			}
+		}
+
+		// 6.5 自律底座（autonomic，10）：呼吸/微晃/漂移增量 + 眨眼因子（§4.2 第 2 条）。
+		if (this.autonomic) {
+			// 避让规则：存在更高类别主动 Override 时微晃衰减；注视锚定锁定时漂移抑制。
+			const activeMotion = this.playbacks.some((p) => p.state === "playing" && p.priority > CATEGORY_PRIORITY.autonomic);
+			this.autonomic.setSuppression({ sway: activeMotion ? 0 : 1, drift: this.attention ? 0 : 1 });
+			const auto = this.autonomic.step(dt);
+			this.autonomicBlinkFactor = auto.blinkFactor;
+			for (const [axis, delta] of Object.entries(auto.deltas)) {
+				// rig 未声明的轴（如 MO 无 torso.breath）静默丢弃。
+				if (!this.controls[axis]) continue;
+				const maskPriority = inhibitMask.get(axis);
+				if (maskPriority !== undefined && CATEGORY_PRIORITY.autonomic < maskPriority) continue;
+				frame[axis] = (frame[axis] ?? this.neutral[axis]!) + delta;
 			}
 		}
 
