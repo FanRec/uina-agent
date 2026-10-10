@@ -238,10 +238,17 @@ export class MotionDirector {
 		const slot = this.slots[name];
 		this.validateSlotValues(name, values);
 		this.supersedeAll(name);
-		// 整槽替换的作用域 = 新声明轴 ∪ 槽内既有轴（后者归中）。
+		// 整槽替换的作用域 = 新声明轴 ∪ 槽内既有轴（后者平滑归中：未声明轴的目标映射到中性值，
+		// 否则 undefined 参与插值与落库会产生 NaN 帧注入 VTS）。
 		const axes = new Set([...Object.keys(values), ...slot.values.keys(), ...slot.transitions.keys()]);
 		const holdTotalMs = options.holdMs === undefined ? undefined : options.holdMs + (options.durationMs ?? DEFAULT_SLOT_TRANSITION_MS);
-		return this.beginSlotTransitions(name, axes, (axis) => values[axis], options.durationMs ?? DEFAULT_SLOT_TRANSITION_MS, holdTotalMs);
+		return this.beginSlotTransitions(
+			name,
+			axes,
+			(axis) => values[axis] ?? this.neutral[axis]!,
+			options.durationMs ?? DEFAULT_SLOT_TRANSITION_MS,
+			holdTotalMs,
+		);
 	}
 
 	private patchSlot(name: "posture" | "expression", patch: Readonly<Record<string, number>>, options: SlotOptions): Promise<void> {

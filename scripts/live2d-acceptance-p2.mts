@@ -45,27 +45,28 @@ await rt.director!.setPosture({ "head.pitch": -8 });
 await wait(1500);
 const nod = compileMotion(
 	motion(
-		2000,
+		3200,
 		track(
 			"head.pitch",
 			[
 				[0, 0],
-				[300, -2.5],
-				[600, 1.5],
-				[900, -2.5],
-				[1200, 0],
-				[2000, 0],
+				[400, 3],
+				[800, -1.5],
+				[1200, 3],
+				[1600, 0],
+				[3200, 0],
 			],
 			"baseline-offset",
 		),
 	),
 	rig.controls,
 );
-const nodHandle = rt.director!.play(nod, { category: "voluntary", fadeInMs: 100, fadeOutMs: 400 });
+const nodHandle = rt.director!.play(nod, { category: "voluntary", fadeInMs: 150, fadeOutMs: 600 });
 await nodHandle.finished;
 console.log("点头已收势。观察：头部是否回到 -8° 低头位（引擎 #1）。");
 await wait(1000);
 await rt.director!.setPosture({});
+await wait(600); // 槽位归中过渡（350ms）沉降后再切下一项
 
 // ---------- #3 微笑眨眼闭拢 ----------
 console.log("\n=== #3 微笑（mouth.form=0.7）+ 笑眼 0.8，眨眼应完全闭拢再回 0.8 ===");
@@ -73,6 +74,7 @@ await rt.director!.setExpression({ "mouth.form": 0.7, "eyes.left.open": 0.8, "ey
 console.log("观察 8 秒（眨眼间隔约 2~3.5s）：每次眨眼应全闭后回到 0.8 笑眼。");
 await wait(8000);
 await rt.director!.setExpression({});
+await wait(600);
 
 // ---------- #4 惊跳取消冲突手势 ----------
 console.log("\n=== #4 播放手势 1.2s 后惊跳（reflex），手势应整场取消 ===");

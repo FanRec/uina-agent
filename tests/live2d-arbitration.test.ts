@@ -249,4 +249,22 @@ describe("live2d MotionDirector（P2-1 仲裁核心）", () => {
 		voluntary.stop("cut");
 		await voluntary.finished;
 	});
+
+	it("清槽归中：setPosture({}) 过渡全程有限值且终点回中性（NaN 回归）", async () => {
+		const d = director();
+		// 槽位 Promise 仅由 step() 推进（A9）：先步进完成入槽，再测清槽。
+		void d.setPosture({ "head.yaw": 8, "head.pitch": -6 }, { durationMs: 50 });
+		step(d, 100);
+		expect(d.currentFrame["head.yaw"]).toBe(8);
+		const clear = d.setPosture({}, { durationMs: 200 });
+		let allFinite = true;
+		for (let i = 0; i < 20; i++) {
+			const frame = d.step(16);
+			allFinite &&= Number.isFinite(frame["head.yaw"]) && Number.isFinite(frame["head.pitch"]);
+		}
+		await clear;
+		expect(allFinite).toBe(true); // 过渡全程无 NaN（未声明轴目标映射到中性，而非 undefined）
+		expect(d.currentFrame["head.yaw"]).toBe(0);
+		expect(d.currentFrame["head.pitch"]).toBe(0);
+	});
 });
