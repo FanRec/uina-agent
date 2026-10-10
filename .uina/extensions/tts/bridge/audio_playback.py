@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from collections import deque
 import math
 import queue
 import threading
@@ -174,6 +175,7 @@ class AudioPlayback:
         self._buffer_read_pos = 0
         self._buffer_lock = threading.Condition()
         self._streaming = False
+        self._stream_generation = 0
         self._stream_sample_rate = 0
         self._stream_channels = 1
         self._stream_finished = False
@@ -188,10 +190,10 @@ class AudioPlayback:
         # Preallocated mapping from segment samples to output callback/DAC time.
         self._dac_slots = [[0.0, 0.0, 0.0, 0.0] for _ in range(128)]
         self._dac_count = 0
-        # 最近一次喂入音频的电平测量（由 feed 在锁外算出、在锁内落值）。
-        # 只存最近测量：包络平滑由消费端负责，这里不做时间衰减。
-        self._level_rms = 0.0
-        self._level_peak = 0.0
+        # Short-time PCM levels indexed by absolute audio byte position. Feed computes
+        # them outside the real-time lock; snapshots select by the playback/DAC clock.
+        self._level_windows: deque[tuple[int, int, float, float]] = deque()
+        self._received_audio_bytes = 0
         self._underrun_count = 0
         self._tail_padding_count = 0
         self._prebuffer_bytes = 0
@@ -267,8 +269,8 @@ class AudioPlayback:
             self._playback_started_at_ms = None
             self._playback_started = False
             # 新一段音频不得继承上一段的电平，否则首帧口型会先张开
-            self._level_rms = 0.0
-            self._level_peak = 0.0
+            self._level_windows.clear()
+            self._received_audio_bytes = 0
             self._stream_sample_rate = sample_rate
             self._stream_channels = channels
             self._played_bytes = 0
@@ -419,22 +421,30 @@ class AudioPlayback:
     def feed(self, pcm_bytes: bytes) -> None:
         if not self._streaming:
             return
+        generation = self._stream_generation
         # 电平测量在锁外完成：它是 O(样本数) 的工作，绝不允许延长 _buffer_lock 的持有时间。
-        level_rms, level_peak = measure_pcm_level(pcm_bytes)
+        frame_bytes = max(self._stream_channels * 2, 1)
+        window_bytes = max(frame_bytes, pcm_bytes_for_ms(self._stream_sample_rate, self._stream_channels, 20))
+        window_bytes -= window_bytes % frame_bytes
+        levels = []
+        for offset in range(0, len(pcm_bytes), window_bytes):
+            part = pcm_bytes[offset:offset + window_bytes]
+            rms, peak = measure_pcm_level(part)
+            levels.append((offset, offset + len(part), rms, peak))
         data = pcm_bytes
         with self._buffer_lock:
-            self._level_rms = level_rms
-            self._level_peak = level_peak
             self._cancel_idle_stop_locked()
             self._compact_buffer_locked()
             while (
                 self._streaming
+                and generation == self._stream_generation
+                and self._available_bytes_locked() > 0
                 and self._max_buffer_bytes > 0
                 and self._available_bytes_locked() + len(data) > self._max_buffer_bytes
             ):
                 self._buffer_lock.wait(timeout=0.05)
                 self._compact_buffer_locked()
-            if not self._streaming:
+            if not self._streaming or generation != self._stream_generation:
                 return
             if self._first_feed_at_ms is None:
                 self._first_feed_at_ms = round(time.perf_counter() * 1000, 2)
@@ -445,6 +455,9 @@ class AudioPlayback:
                         self._buffer.extend(b"\x00" * warmup_bytes)
                         self._priming_bytes_remaining += warmup_bytes
             self._buffer.extend(data)
+            origin = self._received_audio_bytes
+            self._level_windows.extend((origin + start, origin + end, rms, peak) for start, end, rms, peak in levels)
+            self._received_audio_bytes += len(data)
         if self._mirror is not None:
             try:
                 mirror_data = self._resample_for_mirror(pcm_bytes)
@@ -580,6 +593,7 @@ class AudioPlayback:
             quality = "submitted_samples" if self._stream_sample_rate > 0 else "unknown"
             now = time.perf_counter() * 1000
             tail_pending = False
+            dac_active = False
             if self._dac_count:
                 quality = "dac"
                 played_samples = 0
@@ -587,6 +601,7 @@ class AudioPlayback:
                 for index in range(self._dac_count - 1, max(-1, self._dac_count - len(self._dac_slots) - 1), -1):
                     slot = self._dac_slots[index % len(self._dac_slots)]
                     if now >= slot[0]:
+                        dac_active = now < slot[1]
                         ratio = min(1.0, max(0.0, (now - slot[0]) / max(slot[1] - slot[0], 0.001)))
                         played_samples = int(slot[2] + (slot[3] - slot[2]) * ratio)
                         break
@@ -596,11 +611,22 @@ class AudioPlayback:
             if self._stream_sample_rate > 0 and self._stream_channels > 0:
                 buffered_samples = self._available_bytes_locked() // max(self._stream_channels * 2, 1)
                 buffered_ms = buffered_samples / self._stream_sample_rate * 1000
-            level_active = (
-                self._playback_started
-                and not self._rebuffering
+            level_active = dac_active if self._dac_count else (
+                self._playback_started and played_samples > 0 and not self._rebuffering
                 and not (self._stream_finished and self._drained.is_set() and self._available_bytes_locked() <= 0)
             )
+            position = self._segment_origin_bytes + played_samples * max(self._stream_channels * 2, 1)
+            # Submitted-sample fallback observes the last output sample; DAC observes
+            # the sample currently audible. Keep only one past window and future ones.
+            if not self._dac_count:
+                position = max(0, position - 1)
+            while len(self._level_windows) > 1 and self._level_windows[1][0] <= position:
+                self._level_windows.popleft()
+            level_rms = level_peak = 0.0
+            if level_active and self._level_windows:
+                start, end, rms, peak = self._level_windows[0]
+                if start <= position < end:
+                    level_rms, level_peak = rms, peak
             return PlaybackProgressSnapshot(
                 playback_started=self._playback_started and played_samples > 0,
                 played_ms=min(round(played_ms, 2), float(duration_ms)),
@@ -608,8 +634,8 @@ class AudioPlayback:
                 buffered_ms=round(buffered_ms, 2),
                 segment_finished=bool(self._stream_finished and self._available_bytes_locked() <= 0 and self._drained.is_set() and not tail_pending),
                 duration_ms=duration_ms,
-                rms=self._level_rms if level_active else 0.0,
-                peak=self._level_peak if level_active else 0.0,
+                rms=level_rms,
+                peak=level_peak,
                 state="buffering" if self._rebuffering or not self._playback_started else "playing",
                 clock_quality=quality,
                 playback_id=self._segment_id,
@@ -625,6 +651,7 @@ class AudioPlayback:
         with self._buffer_lock:
             self._cancel_idle_stop_locked()
             self._streaming = False
+            self._stream_generation += 1
             self._stream_finished = True
             self._buffer.clear()
             self._buffer_read_pos = 0
@@ -637,8 +664,8 @@ class AudioPlayback:
             self._stream_sample_rate = 0
             self._stream_channels = 1
             self._max_buffer_bytes = 0
-            self._level_rms = 0.0
-            self._level_peak = 0.0
+            self._level_windows.clear()
+            self._received_audio_bytes = 0
             self._drained.set()
             self._buffer_lock.notify_all()
         if self._stream is not None:

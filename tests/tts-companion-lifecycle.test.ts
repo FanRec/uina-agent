@@ -28,6 +28,7 @@ function api(controller = new AbortController()): ExtensionAPI {
 		registerTool: vi.fn(),
 		signal: controller.signal,
 		registerService: vi.fn(),
+		share: vi.fn(() => () => {}),
 		shared: vi.fn(),
 		reportError: vi.fn(),
 		on: vi.fn(),

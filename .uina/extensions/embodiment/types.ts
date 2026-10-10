@@ -1,10 +1,4 @@
-export type BodyType =
-  | "avatar_2d"
-  | "avatar_3d"
-  | "robotic_arm"
-  | "quadruped"
-  | "humanoid"
-  | "custom";
+export type BodyType = "avatar_2d" | "avatar_3d" | "robotic_arm" | "quadruped" | "humanoid" | "custom";
 
 export interface ExpressiveCueDef {
   /** 纯语义标识，如 "warm_smile", "curious_tilt", "wave_hand", "wag_tail" */
@@ -47,7 +41,7 @@ export interface BodyEndpoint {
   /** 响应打断，安全受控急停 */
   safeStop(): Promise<void>;
 
-  /** 可选: 动态线索响应能力判断（支持参数修饰、原子组合等动态语法时） */
+  /** 可选: 线索有效性判断；提供后其结果对隐式和定向路由均有权威性。 */
   supportsCue?(cueId: string): boolean;
 
   /** 可选: 焦点切换通知 (成为主导或退居辅助) */
@@ -58,9 +52,9 @@ export interface BodyEndpoint {
 }
 
 export interface ExtractedCue {
-	id: string;
-	target?: string;
-	rawTag: string;
+  id: string;
+  target?: string;
+  rawTag: string;
 }
 
 /**

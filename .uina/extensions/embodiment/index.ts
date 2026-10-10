@@ -1,8 +1,6 @@
+import { CUE_DISPATCH_SHARED, CUE_PLAYBACK_OWNER_SHARED, type CuePlaybackOwner } from "./playback-cues.js";
 import type { ExtensionAPI } from "../../../src/extensions/runner.js";
-import {
-	WORLD_EXPOSED_SHARED_NAME,
-	type WorldExposedRegistry,
-} from "../../../src/extensions/world-framework/types.js";
+import { WORLD_EXPOSED_SHARED_NAME, type WorldExposedRegistry } from "../../../src/extensions/world-framework/types.js";
 import { BodyRouter } from "./body-router.js";
 import { StreamingTagStripper } from "./tag-stripper.js";
 import { createBodyTool } from "./tools.js";
@@ -46,9 +44,7 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 	// 空闲时不 submitInput —— 设计 §10：状态变化不值得单独醒一个回合，
 	// 请求级实时性由 tail 帧保证，即时真值由 body status 查询保证。
 	const stateSignature = (): string =>
-		JSON.stringify(
-			router.listEndpoints().map((s) => [s.bodyId, s.bodyType, s.online, s.isFocal, s.isPaused]),
-		);
+		JSON.stringify(router.listEndpoints().map((s) => [s.bodyId, s.bodyType, s.online, s.isFocal, s.isPaused]));
 	let lastStateSignature = stateSignature();
 	const recordStateChange = (reason: string): void => {
 		const current = stateSignature();
@@ -135,7 +131,10 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 		unhandledCues.add(cueId);
 		const primary = router.getPrimaryEndpoint();
 		const known = primary
-			? primary.affordance().cues.map((c) => c.id).join("、")
+			? primary
+					.affordance()
+					.cues.map((c) => c.id)
+					.join("、")
 			: "（当前没有任何已注册端点）";
 		pi.reportError(
 			new Error(
@@ -145,11 +144,17 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 		);
 	};
 
+	const unshareDispatch = pi.share(CUE_DISPATCH_SHARED, {
+		dispatch: (cue: { id: string; target?: string }) => dispatch(cue.id, cue.target),
+	});
+	const playbackOwnsOutput = (event: object) =>
+		(pi.shared(CUE_PLAYBACK_OWNER_SHARED) as CuePlaybackOwner | undefined)?.ownsOutput(event) === true;
+	pi.on("turn_start", () => stripper.reset());
 	pi.on("output_update", (event) => {
 		if (event.channel === "content") {
 			const { cues } = stripper.processChunk(event.text);
 			for (const cue of cues) {
-				dispatch(cue.id, cue.target);
+				if (!playbackOwnsOutput(event)) dispatch(cue.id, cue.target);
 			}
 		}
 	});
@@ -158,21 +163,20 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 		if (event.channel === "content") {
 			const { cues } = stripper.flush();
 			for (const cue of cues) {
-				dispatch(cue.id, cue.target);
+				if (!playbackOwnsOutput(event)) dispatch(cue.id, cue.target);
 			}
 		}
 	});
 
 	// 5. 注册 Markdown 转换器：在渲染层剔除输出中的 <cue id="..."/> 标签，
 	//    确保 TUI / Markdown 渲染视图干净自然，不泄露动作标签代码给终端用户。
-	const unregisterMarkdown = pi.registerMarkdownTransformer?.(
-		"embodiment.strip-cues",
-		(md) => md.replace(/<\s*cue\b[^>]*?\/?>/gi, ""),
+	const unregisterMarkdown = pi.registerMarkdownTransformer?.("embodiment.strip-cues", (md) =>
+		md.replace(/<\s*cue\b[^>]*?\/?>/gi, ""),
 	);
 
 	// 6. 监听打断信号，全身体急停
 	pi.on("turn_aborted", () => {
-		stripper.flush();
+		stripper.reset();
 		void router.stopAll();
 	});
 
@@ -182,6 +186,7 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 	pi.signal.addEventListener("abort", onAbort);
 
 	const dispose = () => {
+		unshareDispatch();
 		unsubscribeExposed?.();
 		for (const endpoint of registered.values()) {
 			router.unregisterEndpoint(endpoint.bodyId);

@@ -1057,6 +1057,7 @@ class TTSBridgeService:
         # 进而触发 vendor 重启（~20s 冷启动）。raw text 仅用于字幕/诊断。
         task.detail["text"] = vendor_text
         task.detail["original_text"] = request.text
+        task.detail["cues"] = request.metadata.get("cues", [])
         task.detail["session_id"] = session_id
         task.detail["epoch"] = epoch
         if request.invocation_id: task.detail["invocation_id"] = request.invocation_id
@@ -2037,6 +2038,8 @@ class TTSBridgeService:
                     return int(dynamic)
             return duration_ms
 
+        emitted_cues: set[int] = set()
+
         def remember_snapshot(snapshot: PlaybackProgressSnapshot) -> PlaybackProgressSnapshot:
             playback_id = task.detail.get("physical_playback_id")
             self._playback_projection.update_progress(snapshot, playback_id=str(playback_id) if playback_id else None)
@@ -2052,6 +2055,15 @@ class TTSBridgeService:
                 )
             else:
                 revealed_count = 0
+            cues = []
+            if snapshot.playback_started and not self._task_cancelled_or_stale(task):
+                for index, cue in enumerate(task.detail.get("cues", [])):
+                    if not isinstance(cue, dict) or not isinstance(cue.get("id"), str): continue
+                    offset = cue.get("offset", 0)
+                    if not isinstance(offset, (int, float)) or not math.isfinite(offset): continue
+                    if index not in emitted_cues and revealed_count >= offset:
+                        emitted_cues.add(index)
+                        cues.append({"id": cue["id"], "target": cue.get("target"), "index": index})
             subtitle_state = {
                 "generation_id": generation_id,
                 "segment_index": segment_index,
@@ -2074,6 +2086,7 @@ class TTSBridgeService:
                     "playback_completed": snapshot.segment_finished,
                     # 声学电平随进度事件一并下发：消费端（口型）不需要第二条通道。
                     # 只给测量值，包络平滑由消费端按自己的渲染节拍做。
+                    "cues": cues,
                     "rms": snapshot.rms,
                     "peak": snapshot.peak,
                 },

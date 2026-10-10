@@ -58,8 +58,7 @@ def test_level_is_silent_before_playback_and_during_rebuffer() -> None:
     player._streaming = True
     player._stream_sample_rate = 1000
     player._stream_channels = 1
-    player._level_rms = 0.5
-    player._level_peak = 0.8
+    player._level_windows.append((0, 100, 0.5, 0.8))
 
     before_start = player.progress_snapshot(duration_ms=1000)
     assert before_start.rms == 0.0
@@ -197,21 +196,96 @@ def test_measure_pcm_level_degrades_instead_of_raising() -> None:
     assert measure_pcm_level(b"\x01\x02\x03") == (0.0, 0.0)
 
 
-def test_feed_updates_level_and_progress_snapshot_carries_it() -> None:
-    from audio_playback import AudioPlayback
-
+def test_levels_wait_for_actual_output_samples() -> None:
     player = AudioPlayback()
     player._streaming = True
     player._stream_channels = 1
-    player._stream_sample_rate = 32000
+    player._stream_sample_rate = 1000
     player._playback_started = True
-
-    player.feed(_pcm_from_amplitude(0.5, 64))
+    player._first_feed_at_ms = 1.0  # no warmup injection in this fixture
+    player.feed(_pcm_from_amplitude(0.5, 100))
+    assert player.progress_snapshot(duration_ms=1000).rms == 0
+    player._audio_callback(bytearray(40), 20, None, None)
     snapshot = player.progress_snapshot(duration_ms=1000)
     assert abs(snapshot.rms - 0.5) < 0.02
     assert abs(snapshot.peak - 0.5) < 0.02
-
-    # 停流必须清零：否则下一段音频的起始口型会先张开
     player.stop_stream()
-    assert player.progress_snapshot(duration_ms=1000).rms == 0.0
-    assert player.progress_snapshot(duration_ms=1000).peak == 0.0
+    assert player.progress_snapshot(duration_ms=1000).rms == 0
+
+
+def test_future_loud_packet_never_drives_current_silent_output() -> None:
+    player = AudioPlayback()
+    player._streaming = True
+    player._stream_sample_rate = 1000
+    player._first_feed_at_ms = 1.0
+    player.feed(b"\x00\x00" * 100)
+    player.feed(_pcm_from_amplitude(0.5, 1900))
+    output = bytearray(200)
+    player._audio_callback(output, 100, None, None)
+    snapshot = player.progress_snapshot(duration_ms=2000)
+    assert output == bytearray(200)
+    assert snapshot.rms == 0
+    assert snapshot.buffered_ms == 1900
+    player._audio_callback(output, 100, None, None)
+    assert abs(player.progress_snapshot(duration_ms=2000).rms - 0.5) < 0.02
+    player.stop_stream()
+
+
+def test_dac_levels_follow_audible_window_including_tail_and_gap(monkeypatch) -> None:
+    clock = [1.0]
+    monkeypatch.setattr("audio_playback.time.perf_counter", lambda: clock[0])
+    player = AudioPlayback()
+    player._streaming = True
+    player._stream_sample_rate = 1000
+    player._first_feed_at_ms = 1.0
+    player.feed(b"\x00\x00" * 100)
+    player.feed(_pcm_from_amplitude(0.5, 100))
+    player._stream_finished = True
+    player._audio_callback(bytearray(400), 200, SimpleNamespace(outputBufferDacTime=1.1, currentTime=1.0), None)
+    assert player.progress_snapshot(duration_ms=200).rms == 0  # hardware has not started
+    clock[0] = 1.15
+    assert player.progress_snapshot(duration_ms=200).rms == 0  # currently silent window
+    clock[0] = 1.25
+    snapshot = player.progress_snapshot(duration_ms=200)
+    assert abs(snapshot.rms - .5) < .02
+    assert not snapshot.segment_finished  # callback submitted tail, DAC still playing
+    clock[0] = 1.31
+    snapshot = player.progress_snapshot(duration_ms=200)
+    assert snapshot.rms == 0
+    assert snapshot.segment_finished
+    player.stop_stream()
+
+
+def test_oversized_packet_can_enter_an_empty_buffer_without_deadlock() -> None:
+    import threading
+    player = AudioPlayback()
+    player._streaming = True
+    player._stream_sample_rate = 1000
+    player._max_buffer_bytes = 100
+    player._first_feed_at_ms = 1.0
+    thread = threading.Thread(target=lambda: player.feed(b"\x00\x00" * 100), daemon=True)
+    thread.start()
+    thread.join(timeout=.5)
+    try:
+        assert not thread.is_alive()
+        assert player._available_bytes_locked() == 200
+    finally:
+        player.stop_stream()
+        thread.join(timeout=.5)
+
+
+def test_level_work_started_before_stop_cannot_contaminate_a_new_stream(monkeypatch) -> None:
+    import audio_playback
+    player = AudioPlayback()
+    player._streaming = True
+    player._stream_sample_rate = 1000
+    def restart_during_measurement(pcm):
+        player.stop_stream()
+        player._streaming = True
+        player._stream_sample_rate = 1000
+        return .5, .5
+    monkeypatch.setattr(audio_playback, "measure_pcm_level", restart_during_measurement)
+    player.feed(b"\x01\x00" * 20)
+    assert player._available_bytes_locked() == 0
+    assert not player._level_windows
+    player.stop_stream()

@@ -98,13 +98,14 @@ export class BodyRouter {
     return Array.from(this.endpoints.keys(), (id) => this.summaryOf(id)!);
   }
 
-	/**
+  /**
    * 分发伴随线索 (Track A)
    */
   dispatchCue(cueId: string, target?: string): boolean {
     // 投递一段并归一化异常：emitCue 抛错按派发失败处理，不让单个端点拖垮整轮。
     const deliver = (ep: BodyEndpoint): boolean => {
       try {
+        if (ep.supportsCue && !ep.supportsCue(cueId)) return false;
         ep.emitCue(cueId);
         return true;
       } catch {
@@ -135,15 +136,9 @@ export class BodyRouter {
           affords = false;
         }
       }
-      if (!affords) {
-        // 退回静态表匹配（剥离冒号等常见参数修饰后进行基础匹配）
-        const baseName = cueId.split(/[:=,;&+]/)[0]?.trim().toLowerCase();
-        affords = ep.affordance().cues.some(
-          (c) =>
-            c.id === cueId ||
-            c.aliases?.includes(cueId) === true ||
-            (baseName ? c.id === baseName || c.aliases?.includes(baseName) === true : false),
-        );
+      if (typeof ep.supportsCue !== "function") {
+        // Without a dynamic validator, only explicitly advertised names and aliases are routable.
+        affords = ep.affordance().cues.some((c) => c.id === cueId || c.aliases?.includes(cueId) === true);
       }
       if (affords) {
         candidates.push(ep);
@@ -155,9 +150,7 @@ export class BodyRouter {
     }
 
     // 优先发给当前主导端点
-    const primary = this.primaryBodyId
-      ? candidates.find((c) => c.bodyId === this.primaryBodyId)
-      : undefined;
+    const primary = this.primaryBodyId ? candidates.find((c) => c.bodyId === this.primaryBodyId) : undefined;
 
     const targetEp = primary ?? candidates[0]!;
     return deliver(targetEp);

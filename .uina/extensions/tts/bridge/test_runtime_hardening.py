@@ -174,3 +174,35 @@ def test_external_vendor_cannot_be_restarted(service):
     result = service.restart("vendor")
     assert result["status"] == "not_started"
     assert result["ownership"] == "external"
+
+
+def test_speech_cues_follow_playback_offsets_once_and_ignore_cancelled_task(service):
+    from subtitle_sync import PlaybackProgressSnapshot
+    service._task_cancelled_or_stale = lambda task: task.cancel_requested
+    snapshots = [
+        PlaybackProgressSnapshot(played_samples=0, playback_started=False, played_ms=0, buffered_ms=1000, segment_finished=False, duration_ms=1000),
+        PlaybackProgressSnapshot(played_samples=0, playback_started=True, played_ms=100, buffered_ms=900, segment_finished=False, duration_ms=1000),
+        PlaybackProgressSnapshot(played_samples=0, playback_started=True, played_ms=600, buffered_ms=400, segment_finished=False, duration_ms=1000),
+        PlaybackProgressSnapshot(played_samples=0, playback_started=True, played_ms=1000, buffered_ms=0, segment_finished=True, duration_ms=1000),
+    ]
+    events = []
+    service._publish_playback_event = lambda kind, **kwargs: events.append(kwargs["detail"])
+    current = [snapshots[0]]
+    service.player.progress_snapshot = lambda **kwargs: current[0]
+    def run_loop(**kwargs):
+        for snapshot in snapshots:
+            current[0] = snapshot
+            kwargs["snapshot_getter"]()
+        return snapshots[-1]
+    service.subtitle_sync.run_progress_loop = run_loop
+    task = BridgeTask(task_id="cue-task", trace_id="cue-trace", state="in_progress", cancel_token="cue")
+    task.detail = {"text": "一二三四", "segment_index": 1, "cues": [{"id": "start", "offset": 0}, {"id": "middle", "offset": 2}]}
+    service._run_subtitle_progress_loop(task=task, duration_ms=1000)
+    assert events[0]["cues"] == []
+    assert [cue["id"] for event in events for cue in event["cues"]] == ["start", "middle"]
+    assert events[1]["cues"][0]["id"] == "start"
+    assert events[2]["cues"][0]["id"] == "middle"
+    events.clear()
+    task.cancel_requested = True
+    service._run_subtitle_progress_loop(task=task, duration_ms=1000)
+    assert all(event["cues"] == [] for event in events)

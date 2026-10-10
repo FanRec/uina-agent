@@ -15,8 +15,7 @@ export class StreamingTagStripper {
 	private inThinkBlock = false;
 
 	// 精准前缀正则：仅当 < 紧跟 c/cu/cue 或 t/th/thi/thin/think 时才可能是未决标签
-	private static readonly PENDING_TAG_PREFIX =
-		/^<\/?(?:c(?:u(?:e(?:\s.*)?)?)?|t(?:h(?:i(?:n(?:k(?:\s.*)?)?)?)?)?)?$/i;
+	private static readonly PENDING_TAG_PREFIX = /^<\/?(?:c(?:u(?:e(?:\s.*)?)?)?|t(?:h(?:i(?:n(?:k(?:\s.*)?)?)?)?)?)?$/i;
 
 	// 缓冲区最大容量保护，防止异常流导致内存无界累积
 	private static readonly MAX_BUFFER_LENGTH = 4096;
@@ -67,7 +66,7 @@ export class StreamingTagStripper {
 				this.inThinkBlock = true;
 				this.buffer = this.buffer.slice(hit.matchLength);
 			} else if (hit.type === "cue") {
-				const cue = this.parseCueTag(hit.match!);
+				const cue = parseCueTag(hit.match![0]);
 				if (cue) cues.push(cue);
 				this.buffer = this.buffer.slice(hit.matchLength);
 			}
@@ -77,11 +76,7 @@ export class StreamingTagStripper {
 	}
 
 	private protectBufferOverflow(onDiscard: (text: string) => void): void {
-		if (
-			this.buffer.length > StreamingTagStripper.MAX_BUFFER_LENGTH &&
-			!this.inCodeBlock &&
-			!this.inThinkBlock
-		) {
+		if (this.buffer.length > StreamingTagStripper.MAX_BUFFER_LENGTH && !this.inCodeBlock && !this.inThinkBlock) {
 			const safeCut = this.buffer.length - 256;
 			onDiscard(this.buffer.slice(0, safeCut));
 			this.buffer = this.buffer.slice(safeCut);
@@ -180,22 +175,6 @@ export class StreamingTagStripper {
 		return output;
 	}
 
-	private parseCueTag(match: RegExpExecArray): ExtractedCue | undefined {
-		const attrs = match[1];
-		if (!attrs) return undefined;
-		const idMatch = /\bid=(["'])(.*?)\1/i.exec(attrs);
-		const targetMatch = /\btarget=(["'])(.*?)\1/i.exec(attrs);
-
-		if (idMatch && idMatch[2]) {
-			return {
-				id: idMatch[2].trim(),
-				target: targetMatch ? targetMatch[2].trim() : undefined,
-				rawTag: match[0],
-			};
-		}
-		return undefined;
-	}
-
 	/**
 	 * 流结束时冲刷剩余缓冲区
 	 */
@@ -217,4 +196,13 @@ export class StreamingTagStripper {
 		this.buffer = "";
 		return { cleanText: flushed, cues: res.cues };
 	}
+}
+
+/** Shared tag syntax; transport and timing remain each consumer's responsibility. */
+export function parseCueTag(tag: string): ExtractedCue | undefined {
+	const attrs = /^<\s*cue\b([^>]*?)\/?>$/i.exec(tag)?.[1];
+	if (!attrs) return undefined;
+	const id = /\bid\s*=\s*(["'])(.*?)\1/i.exec(attrs)?.[2]?.trim();
+	const target = /\btarget\s*=\s*(["'])(.*?)\1/i.exec(attrs)?.[2]?.trim();
+	return id ? { id, target, rawTag: tag } : undefined;
 }
