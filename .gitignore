@@ -20,6 +20,11 @@ notes/
 
 # Project-local generated files and temporary intermediates.
 /uina/tmp/
+/generated/
+/.uina/worlds/bilibili-live/tmp-test/
+
+# QQ World 本地运行状态，不随源码提交。
+/.uina/worlds/qq/v2/
 
 # 本地质量工具与覆盖率产物（不入库；覆盖率生成：
 # npx vitest run --coverage.enabled --coverage.reporter=json --coverage.include="src/**" --coverage.reportsDirectory=coverage-raw）
