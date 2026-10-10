@@ -105,18 +105,19 @@ describe("live2d runtime tick 合成（P2-3）", () => {
 			makeRig().controls,
 		);
 		rt.director!.play(clip, { category: "voluntary", fadeInMs: 0 });
-
-		rt.composeTick(100);
-		expect(state.injected).toHaveLength(1);
-		const frame = state.injected[0]!;
-		// 编码帧以 VTS 输入名注入，覆盖 rig 全部绑定输入，值来自 director 合成。
+		// 骨骼弹簧（ω=15）约 0.6s 收敛到轨迹值：逐 tick 推进 0.64s。
+		for (let i = 0; i < 40; i++) rt.composeTick(16);
+		expect(state.injected).toHaveLength(40);
+		const frame = state.injected.at(-1)!;
+		// 编码帧以 VTS 输入名注入，覆盖 rig 全部绑定输入，值来自 director 合成+管道。
 		expect(frame.map((p) => p.id).sort()).toEqual(["FaceAngY", "FaceAngleX"]);
-		expect(frame.find((p) => p.id === "FaceAngleX")!.value).toBeCloseTo(15, 0); // 标尺：6→15（±微晃残留 <0.5）
+		expect(frame.find((p) => p.id === "FaceAngleX")!.value).toBeCloseTo(15, 0); // 弹簧已收敛；±微晃残留（抑制平滑 640ms 后 ~12%）<0.5
 		expect(frame.find((p) => p.id === "FaceAngY")!.value).toBe(0.5); // breath=vts 静默 → 中性
 
-		// 时间推进由调用方 dt 决定：再推 100ms，动作仍在播放（5s），帧值不变。
+		// 已收敛后再推 100ms，帧值稳定（动作仍在播放，5s；微晃低频变化 <0.3）。
+		const before = frame.find((p) => p.id === "FaceAngleX")!.value;
 		rt.composeTick(100);
-		expect(state.injected).toHaveLength(2);
+		expect(Math.abs(state.injected.at(-1)!.find((p) => p.id === "FaceAngleX")!.value - before)).toBeLessThan(0.3);
 	});
 
 	it("断线零输出：不合成不注入，重连后恢复", () => {

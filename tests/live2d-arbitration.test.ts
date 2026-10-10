@@ -11,7 +11,9 @@ const controls: Readonly<Record<string, RigControlDef>> = {
 	"torso.breath": { min: 0, max: 1, neutral: 0.5 },
 };
 
-const director = () => new MotionDirector(controls);
+/** 仲裁专测：刚性管道（ω=2000 一步内收敛到机器精度、平滑 τ=1ms），使断言与管道动力学解耦。 */
+const STIFF_PIPELINES = { spring: { omega: 2000 }, smoothTauMs: 1 } as const;
+const director = () => new MotionDirector(controls, { pipelines: STIFF_PIPELINES });
 
 /** 恒值 Override 片段。 */
 const hold = (axis: string, value: number, durationMs = 1000): CompiledMotion =>
@@ -162,7 +164,7 @@ describe("live2d MotionDirector（P2-1 仲裁核心）", () => {
 		expect(await cut.finished).toEqual({ status: "cancelled", reason: "stopped" });
 		expect(cut.status).toBe("cancelled");
 		step(d, 16);
-		expect(d.currentFrame["head.pitch"]).toBe(0); // 无淡出，立即回落
+		expect(d.currentFrame["head.pitch"]).toBeCloseTo(0, 6); // 无淡出，立即回落（刚性弹簧残差 ~1e-11）
 
 		const release = d.play(hold("head.pitch", 10, 5000), { category: "voluntary", fadeInMs: 0, fadeOutMs: 200 });
 		step(d, 50);
@@ -172,12 +174,12 @@ describe("live2d MotionDirector（P2-1 仲裁核心）", () => {
 		step(d, 150); // fadeOut(200) 走完
 		expect(await release.finished).toEqual({ status: "cancelled", reason: "released" });
 		step(d, 200);
-		expect(d.currentFrame["head.pitch"]).toBe(0);
+		expect(d.currentFrame["head.pitch"]).toBeCloseTo(0, 6);
 
 		const natural = d.play(hold("head.pitch", 6, 200), { category: "voluntary", fadeInMs: 0, fadeOutMs: 100 });
 		step(d, 400);
 		expect(await natural.finished).toEqual({ status: "completed", reason: undefined });
-		expect(d.currentFrame["head.pitch"]).toBe(0);
+		expect(d.currentFrame["head.pitch"]).toBeCloseTo(0, 6);
 	});
 
 	it("A11 限时槽位：holdMs 到期平滑回中性；冻结期间倒计时暂停", async () => {
@@ -228,8 +230,8 @@ describe("live2d MotionDirector（P2-1 仲裁核心）", () => {
 		expect(await handle.finished).toEqual({ status: "cancelled", reason: "model switched" });
 		await expect(slot).rejects.toBeInstanceOf(SupersededError);
 		step(d, 16);
-		expect(d.currentFrame["head.yaw"]).toBe(0);
-		expect(d.currentFrame["head.pitch"]).toBe(0);
+		expect(d.currentFrame["head.yaw"]).toBeCloseTo(0, 6);
+		expect(d.currentFrame["head.pitch"]).toBeCloseTo(0, 6);
 	});
 
 	it("A1 无优先级旋钮：携带 priority 数值的选项不产生任何越级效果", async () => {
@@ -243,7 +245,7 @@ describe("live2d MotionDirector（P2-1 仲裁核心）", () => {
 		const voluntary = d.play(hold("head.pitch", 0, 5000), { category: "voluntary", fadeInMs: 0 });
 		step(d, 50);
 		// autonomic 被当作 10 级处理：voluntary（30）胜出，且 atomic autonomic 被取消。
-		expect(d.currentFrame["head.pitch"]).toBe(0);
+		expect(d.currentFrame["head.pitch"]).toBeCloseTo(0, 6);
 		step(d, 300); // autonomic 的 fadeOut 收势
 		expect((await autonomic.finished).status).toBe("cancelled");
 		voluntary.stop("cut");
@@ -264,7 +266,7 @@ describe("live2d MotionDirector（P2-1 仲裁核心）", () => {
 		}
 		await clear;
 		expect(allFinite).toBe(true); // 过渡全程无 NaN（未声明轴目标映射到中性，而非 undefined）
-		expect(d.currentFrame["head.yaw"]).toBe(0);
-		expect(d.currentFrame["head.pitch"]).toBe(0);
+		expect(d.currentFrame["head.yaw"]).toBeCloseTo(0, 6);
+		expect(d.currentFrame["head.pitch"]).toBeCloseTo(0, 6);
 	});
 });

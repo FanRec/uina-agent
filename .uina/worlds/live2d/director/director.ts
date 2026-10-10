@@ -1,11 +1,13 @@
-import { sampleMotion, smooth, type CompiledMotion } from "../authoring/motion.js";
+import { sampleMotion, sampleSpeechGain, smooth, type CompiledMotion } from "../authoring/motion.js";
 import type { RigControlDef } from "../adapter/rig.js";
 import { AutonomicGenerator, type AutonomicExternal } from "./autonomic.js";
+import { SomaticPipelines, type PipelineOptions } from "./pipelines.js";
 
-/** director 构造选项：external 声明自律主来源（缺省不启用自律发生器）；rng 注入（A9）。 */
+/** director 构造选项：external 声明自律主来源（缺省不启用自律发生器）；rng 注入（A9）；pipelines 管道参数（A10）。 */
 export interface DirectorOptions {
 	external?: AutonomicExternal;
 	rng?: () => number;
+	pipelines?: PipelineOptions;
 }
 
 /**
@@ -189,11 +191,13 @@ export class MotionDirector {
 	private frame: Record<string, number>;
 	private readonly autonomic?: AutonomicGenerator;
 	private autonomicBlinkFactor = 1;
+	private readonly pipelines: SomaticPipelines;
 
 	constructor(controls: Readonly<Record<string, RigControlDef>>, options: DirectorOptions = {}) {
 		this.controls = controls;
 		this.neutral = Object.fromEntries(Object.entries(controls).map(([axis, c]) => [axis, c.neutral]));
 		this.frame = { ...this.neutral };
+		this.pipelines = new SomaticPipelines(controls, this.neutral, options.pipelines);
 		if (options.external) {
 			this.autonomic = new AutonomicGenerator({ rng: options.rng });
 			this.autonomic.setExternal(options.external);
@@ -205,9 +209,25 @@ export class MotionDirector {
 		return this.frame;
 	}
 
-	/** 眨眼因子（1=全开 0=全闭）；眼睑管道（P3-1）据它做乘法调制。未启用自律时恒 1。 */
+	/** 眨眼因子（1=全开 0=全闭）；眼睑管道据它做乘法调制。未启用自律时恒 1。 */
 	get blinkFactor(): number {
 		return this.autonomicBlinkFactor;
+	}
+
+	/** TTS 语音电平输入（P3-2 接实际音频流；测试直接注入）。 */
+	setSpeechLevel(level: number): void {
+		this.pipelines.setSpeechLevel(level);
+	}
+
+	/** 口型通道的语音增益：认领 mouth.open 的播放中，exclusive → 0，否则取各播放增益最小值。 */
+	private activeSpeechGain(): number {
+		let gain = 1;
+		for (const p of this.playbacks) {
+			if (p.state !== "playing") continue;
+			if (!p.overrideAxes.has("mouth.open") && !p.additiveAxes.has("mouth.open")) continue;
+			gain = Math.min(gain, sampleSpeechGain(p.clip, p.ageMs));
+		}
+		return gain;
 	}
 
 	// ---------- 槽位（§2.2 + A11）----------
@@ -353,6 +373,8 @@ export class MotionDirector {
 			settled: false,
 			handle: undefined as unknown as MotionHandle,
 		};
+		// 剧烈动作（resetVelocity，如惊跳）：骨骼弹簧速度瞬时清零，位置保留（规范 §4.2-1）。
+		if (options.resetVelocity) this.pipelines.resetVelocity(clip.axes);
 		const finished = new Promise<SomaticActionResult>((resolve) => {
 			playback.resolve = resolve;
 		});
@@ -562,7 +584,9 @@ export class MotionDirector {
 		}
 
 		const inhibitMask = new Map<string, number>(); // axis -> 抑制者的优先级
+		const gazeClaimed = new Set<string>(); // 视线补偿让位集：本帧被 Override/槽位认领的视线轴
 		for (const [axis, list] of candidates) {
+			if (axis.startsWith("gaze.")) gazeClaimed.add(axis);
 			list.sort((a, b) => b.priority - a.priority || b.seq - a.seq);
 			const winner = list[0]!;
 			// 被遮蔽者清除入场增益：重新接管时从当前帧值重新淡入（§4.1.3 平滑恢复）。
@@ -622,14 +646,19 @@ export class MotionDirector {
 				if (maskPriority !== undefined && CATEGORY_PRIORITY.autonomic < maskPriority) continue;
 				frame[axis] = (frame[axis] ?? this.neutral[axis]!) + delta;
 			}
-			// 眼睑调制（P2 简化版，引擎 #3）：blinkFactor 乘性作用于最终眼开值——
-			// 表情把眼压到 0.8 时眨眼仍能完全闭拢再回 0.8。P3-1 管道化后迁入 pipelines。
-			if (this.autonomicBlinkFactor < 1) {
-				for (const axis of ["eyes.left.open", "eyes.right.open"]) {
-					if (frame[axis] !== undefined) frame[axis] = frame[axis] * this.autonomicBlinkFactor;
-				}
-			}
 		}
+
+		// 6.6 专用管道（§4.2 阶段 B）：骨骼弹簧 → 面部平滑 → 视线头姿后置补偿 → 开合通道。
+		const attentionTarget = this.attention?.target;
+		const gazeAim =
+			typeof attentionTarget === "string" ? this.pipelines.namedAim(attentionTarget) : (attentionTarget ?? undefined);
+		this.pipelines.process(frame, dt, {
+			gazeAim: gazeAim ?? undefined,
+			gazeClaimed,
+			speechGain: this.activeSpeechGain(),
+			blinkFactor: this.autonomicBlinkFactor,
+			blinkWeight: this.autonomic ? 1 : 0,
+		});
 
 		// 7. 范围安全网。
 		for (const [axis, value] of Object.entries(frame)) {

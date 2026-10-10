@@ -79,7 +79,11 @@ describe("live2d 自律发生器（P2-2）", () => {
 			"head.yaw": { min: -12, max: 12, neutral: 0 },
 		};
 		// breath=vts → 呼吸增量静默，torso.breath 停在中性 0.5。
-		const d = new MotionDirector(controls, { external: { blink: "uina", breath: "vts" }, rng: () => 0.5 });
+		const d = new MotionDirector(controls, {
+			external: { blink: "uina", breath: "vts" },
+			rng: () => 0.5,
+			pipelines: { spring: { omega: 2000 }, smoothTauMs: 1 },
+		});
 		const clip = compileMotion(
 			motion(
 				5000,
@@ -98,7 +102,11 @@ describe("live2d 自律发生器（P2-2）", () => {
 		expect(d.blinkFactor).toBe(1);
 
 		// breath=none + torso.breath 存在 → 正弦增量叠加在中性上。
-		const d2 = new MotionDirector(controls, { external: { blink: "uina", breath: "none" }, rng: () => 0.5 });
+		const d2 = new MotionDirector(controls, {
+			external: { blink: "uina", breath: "none" },
+			rng: () => 0.5,
+			pipelines: { spring: { omega: 2000 }, smoothTauMs: 1 },
+		});
 		d2.step(800); // 半周期附近幅度显著
 		expect(Math.abs(d2.currentFrame["torso.breath"]! - 0.5)).toBeGreaterThan(0.02);
 	});
@@ -108,7 +116,11 @@ describe("live2d 自律发生器（P2-2）", () => {
 			"eyes.left.open": { min: 0, max: 1, neutral: 1 },
 			"eyes.right.open": { min: 0, max: 1, neutral: 1 },
 		};
-		const d = new MotionDirector(controls, { external: { blink: "uina", breath: "vts" }, rng: () => 0.5 });
+		const d = new MotionDirector(controls, {
+			external: { blink: "uina", breath: "vts" },
+			rng: () => 0.5,
+			pipelines: { spring: { omega: 2000 }, smoothTauMs: 1 },
+		});
 		void d.setExpression({ "eyes.left.open": 0.8, "eyes.right.open": 0.8 });
 		d.step(1000); // 表情过渡完成
 		expect(d.currentFrame["eyes.left.open"]).toBeCloseTo(0.8, 3);
