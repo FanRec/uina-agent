@@ -133,11 +133,17 @@ describe("validateRig", () => {
 		expect(() => validateRig(undeclared)).toThrow(/未声明 retargeting 规则: EyeSmile/);
 	});
 
-	it("weighted / primary 声明在绑定期报 not_implemented（修订 A6）", () => {
-		const weighted = baseRig({
+	it("weighted 接受合法权重；拒绝缺失/非法权重；primary 仍报 not_implemented", () => {
+		const validWeighted = baseRig({
+			retargeting: { EyeSmile: { strategy: "weighted", weights: { "eyes.left.smile": 2, "eyes.right.smile": 1 } } },
+		});
+		expect(() => validateRig(validWeighted)).not.toThrow();
+
+		const invalidWeights = baseRig({
 			retargeting: { EyeSmile: { strategy: "weighted", weights: { "eyes.left.smile": 1 } } },
 		});
-		expect(() => validateRig(weighted)).toThrow(/retargeting_not_implemented/);
+		expect(() => validateRig(invalidWeights)).toThrow(/weighted 规则轴权重非法/);
+
 		const primary = baseRig({ retargeting: { EyeSmile: { strategy: "primary", primaryAxis: "eyes.left.smile" } } });
 		expect(() => validateRig(primary)).toThrow(/retargeting_not_implemented/);
 	});
@@ -195,6 +201,19 @@ describe("scaleWithClamp / resolveInputValue", () => {
 		const rig = baseRig();
 		expect(resolveInputValue(rig, "EyeSmile", { "eyes.left.smile": 0.3, "eyes.right.smile": 0.8 })).toBe(0.8);
 		expect(resolveInputValue(rig, "EyeSmile", {})).toBe(0);
+	});
+
+	it("多轴汇入同一输入按 weighted 计算归一化加权和", () => {
+		const rig = baseRig({
+			retargeting: {
+				EyeSmile: {
+					strategy: "weighted",
+					weights: { "eyes.left.smile": 2, "eyes.right.smile": 1 },
+				},
+			},
+		});
+		// (2 * 0.3 + 1 * 0.9) / 3 = 1.5 / 3 = 0.5
+		expect(resolveInputValue(rig, "EyeSmile", { "eyes.left.smile": 0.3, "eyes.right.smile": 0.9 })).toBeCloseTo(0.5);
 	});
 
 	it("没有控制写入该输入时抛错", () => {

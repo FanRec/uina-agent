@@ -163,7 +163,17 @@ describe("live2d 工具面（P4-1）", () => {
 			const res = await run(
 				app,
 				name,
-				name === "express" ? { motion: "nod" } : name === "costume" ? { item: "list" } : {},
+				name === "express"
+					? { motion: "nod" }
+					: name === "posture"
+						? { name: "lean" }
+						: name === "expression"
+							? { name: "brighten" }
+							: name === "attention"
+								? { target: "user" }
+								: name === "costume"
+									? { item: "glasses" }
+									: {},
 				ctx,
 			);
 			expect(res.status).toBe("not_started");
@@ -174,18 +184,20 @@ describe("live2d 工具面（P4-1）", () => {
 	it("边界 #11：启动后九个工具全部返回词汇合法结果", async () => {
 		const { app, runtime, ctx } = await harness();
 		try {
-			// express/state 的终态结算由合成推进驱动：先步进再 await（无真实定时器）。
+			// express/posture/expression 的终态结算由合成推进驱动：先发起，再步进，后 await。
 			const expressP = run(app, "express", { motion: "nod" }, ctx);
+			const postureP = run(app, "posture", { name: "lean" }, ctx);
+			const expressionP = run(app, "expression", { name: "brighten" }, ctx);
 			for (let i = 0; i < 90; i++) runtime.composeTick(16);
 			const results = [
 				await expressP,
-				await run(app, "state", { attention: "user" }, ctx),
-				await run(app, "costume", { item: "list" }, ctx),
-				await run(app, "flip", {}, ctx),
+				await postureP,
+				await expressionP,
+				await run(app, "attention", { target: "user" }, ctx),
+				await run(app, "costume", { item: "glasses" }, ctx),
 				await run(app, "spatial", { x: 1 }, ctx),
 				await run(app, "status", {}, ctx),
 				await run(app, "diagnose", {}, ctx),
-				await run(app, "preview", {}, ctx),
 				await run(app, "reload", {}, ctx),
 			];
 			for (const res of results) expectVocabulary(res);
@@ -223,18 +235,18 @@ describe("live2d 工具面（P4-1）", () => {
 		const { app, ctx } = await harness({ catalog: false });
 		try {
 			expect((await run(app, "express", { motion: "nod" }, ctx)).details).toMatchObject({ reason: "unknown_motion" });
-			expect((await run(app, "state", { posture: "lean" }, ctx)).details).toMatchObject({ reason: "unknown_pose" });
-			expect((await run(app, "state", { expression: "brighten" }, ctx)).details).toMatchObject({
+			expect((await run(app, "posture", { name: "lean" }, ctx)).details).toMatchObject({ reason: "unknown_pose" });
+			expect((await run(app, "expression", { name: "brighten" }, ctx)).details).toMatchObject({
 				reason: "unknown_expression",
 			});
-			expect((await run(app, "state", { attention: "window" }, ctx)).details).toMatchObject({
+			expect((await run(app, "attention", { target: "window" }, ctx)).details).toMatchObject({
 				reason: "unknown_attention",
 			});
 			expect((await run(app, "costume", { item: "glasses" }, ctx)).details).toMatchObject({
 				reason: "unknown_costume",
 			});
 			// 空目录下内置注视词表仍然可达（不受目录空置影响）。
-			expect(await run(app, "state", { attention: "user" }, ctx)).toMatchObject({ status: "succeeded" });
+			expect(await run(app, "attention", { target: "user" }, ctx)).toMatchObject({ status: "succeeded" });
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}
@@ -249,13 +261,15 @@ describe("live2d 工具面（P4-1）", () => {
 			expect((await run(app, "express", { motion: "nod", speech: "loud" }, ctx)).details).toMatchObject({
 				reason: "invalid_motion",
 			});
-			expect((await run(app, "state", { posture: "lean", hold_ms: -5 }, ctx)).details).toMatchObject({
+			expect((await run(app, "posture", { name: "lean", hold_ms: -5 }, ctx)).details).toMatchObject({
 				reason: "invalid_duration",
 			});
-			expect((await run(app, "state", { posture: "lean", hold_ms: "soon" }, ctx)).details).toMatchObject({
+			expect((await run(app, "expression", { name: "brighten", hold_ms: "soon" }, ctx)).details).toMatchObject({
 				reason: "invalid_duration",
 			});
-			expect(await run(app, "state", {}, ctx)).toMatchObject({ status: "succeeded" }); // 空声明 = 无操作
+			expect((await run(app, "attention", { target: "user", hold_ms: -1 }, ctx)).details).toMatchObject({
+				reason: "invalid_duration",
+			});
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}
@@ -295,26 +309,30 @@ describe("live2d 工具面（P4-1）", () => {
 		}
 	});
 
-	it("state：三槽独立生效，hold_ms 到期回 neutral，被取代的旧调用结算 cancelled", async () => {
+	it("posture / expression / attention：正交独立生效，hold_ms 到期回 neutral，被取代的旧调用结算 cancelled", async () => {
 		const { app, runtime, ctx } = await harness();
 		try {
-			// 过渡类 state 的 Promise 由合成推进结算：先发起、步进、后 await。
-			const apply = run(app, "state", { posture: "lean", expression: "brighten", attention: "window" }, ctx);
+			// 三个正交工具并发发起：合成推进结算
+			const pPosture = run(app, "posture", { name: "lean" }, ctx);
+			const pExpression = run(app, "expression", { name: "brighten" }, ctx);
+			const pAttention = run(app, "attention", { target: "window" }, ctx);
 			stepMs(runtime, 800); // 过渡 600ms 收敛
-			expect(await apply).toMatchObject({ status: "succeeded" });
+			expect(await pPosture).toMatchObject({ status: "succeeded" });
+			expect(await pExpression).toMatchObject({ status: "succeeded" });
+			expect(await pAttention).toMatchObject({ status: "succeeded" });
 			// 自律微晃 head.yaw 全幅 ±1.2（DEFAULT_SWAY）+ 弹簧残差，断言按真实行为放宽。
 			expect(Math.abs(runtime.director!.currentFrame["head.yaw"]! - 4)).toBeLessThan(1.5);
 			expect(runtime.director!.currentFrame["torso.breath"]).toBeCloseTo(0.8, 1);
 
-			// hold_ms：holdTotal = holdMs + 过渡 600ms；到期自动回 neutral（多槽独立计时同规则）。
-			const hold = run(app, "state", { posture: "lean", hold_ms: 100 }, ctx);
+			// hold_ms：holdTotal = holdMs + 过渡 600ms；到期自动回 neutral（独立计时）。
+			const hold = run(app, "posture", { name: "lean", hold_ms: 100 }, ctx);
 			stepMs(runtime, 1500);
 			expect(await hold).toMatchObject({ status: "succeeded" });
 			expect(Math.abs(runtime.director!.currentFrame["head.yaw"]! - 0)).toBeLessThan(1.5);
 
 			// 整槽替换竞争：旧 Promise SupersededError → 工具层 cancelled，运动归属新调用。
-			const p1 = run(app, "state", { posture: "lean" }, ctx);
-			const p2 = run(app, "state", { posture: "lean" }, ctx);
+			const p1 = run(app, "posture", { name: "lean" }, ctx);
+			const p2 = run(app, "posture", { name: "lean" }, ctx);
 			stepMs(runtime, 800); // p2 的过渡由合成推进结算
 			const [r1, r2] = await Promise.all([p1, p2]);
 			expect(r1.status).toBe("cancelled");
@@ -324,17 +342,17 @@ describe("live2d 工具面（P4-1）", () => {
 		}
 	});
 
-	it("costume：list 列出登记项；目录命中但 VTS 未登记该热键 → hotkey_missing（P4-5 执行面）", async () => {
+	it("costume：目录命中但 VTS 未登记该热键 → hotkey_missing；不在目录报 unknown_costume 并列出可用项", async () => {
 		const { app, ctx } = await harness();
 		try {
-			const listed = await run(app, "costume", { item: "list" }, ctx);
-			expect(listed.status).toBe("succeeded");
-			expect(listed.result).toContain("glasses");
 			// harness 的 fake client 未登记任何热键 → 执行面如实报 hotkey_missing。
 			expect(await run(app, "costume", { item: "glasses" }, ctx)).toMatchObject({
 				status: "failed",
 				details: { reason: "hotkey_missing" },
 			});
+			const unknown = await run(app, "costume", { item: "hat" }, ctx);
+			expect(unknown.details).toMatchObject({ reason: "unknown_costume" });
+			expect(unknown.result).toContain("glasses");
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}

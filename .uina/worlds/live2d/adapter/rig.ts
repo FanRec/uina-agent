@@ -38,7 +38,7 @@ export interface RigTarget {
 
 /**
  * 多逻辑轴汇入同一 VTS 输入的聚合规则（按输入名声明）。
- * v1 仅实现 max（同向非负量取最大）；weighted/primary 仅保留类型，声明即绑定期报错（修订 A6）。
+ * 实现 max（同向非负量取最大）与 weighted（多轴加权归一化聚合）；primary 仅保留类型，声明即绑定期报错。
  */
 export type RetargetingRule =
 	| { readonly strategy: "max" }
@@ -150,7 +150,22 @@ function validateRetargeting(rig: ModelRig, inputsWritten: Map<string, Set<strin
 		const writers = inputsWritten.get(input);
 		if (!writers) throw new RigValidationError(`retargeting 规则指向未被写入的输入: ${input}`);
 		if (writers.size <= 1) throw new RigValidationError(`单轴汇入无需声明 retargeting 规则: ${input}`);
-		if (rule.strategy !== "max") {
+		if (rule.strategy === "weighted") {
+			if (!rule.weights || typeof rule.weights !== "object") {
+				throw new RigValidationError(`weighted 规则缺少 weights: ${input}`);
+			}
+			let sum = 0;
+			for (const axis of writers) {
+				const w = rule.weights[axis];
+				if (w === undefined || !finite(w) || w < 0) {
+					throw new RigValidationError(`weighted 规则轴权重非法: ${input}.${axis}`);
+				}
+				sum += w;
+			}
+			if (sum <= 0) {
+				throw new RigValidationError(`weighted 规则总权重必须大于 0: ${input}`);
+			}
+		} else if (rule.strategy !== "max") {
 			throw new RigValidationError(`retargeting_not_implemented: ${input} 声明了 ${rule.strategy}，该策略推迟（修订 A6）`);
 		}
 	}
@@ -196,6 +211,18 @@ export function resolveInputValue(
 	});
 	const rule = rig.retargeting?.[input];
 	if (writers.length === 1 || !rule) return mapped[0]!;
+	if (rule.strategy === "weighted") {
+		let totalWeight = 0;
+		let weightedSum = 0;
+		for (const { axis, points } of writers) {
+			const value = frame[axis] ?? rig.controls[axis]!.neutral;
+			const scaled = scaleWithClamp(points, value);
+			const w = rule.weights[axis] ?? 0;
+			weightedSum += scaled * w;
+			totalWeight += w;
+		}
+		return totalWeight > 0 ? weightedSum / totalWeight : mapped[0]!;
+	}
 	return Math.max(...mapped);
 }
 

@@ -4,19 +4,18 @@ import { Live2DRuntime, type Live2DRuntimeOptions } from "./runtime.js";
 import { VTSClient } from "./adapter/vts-client.js";
 import { loadRig, MO_MODEL_ID } from "./models/rig-loader.js";
 import { MO_SPEECH } from "./models/mo/speech.js";
+import { loadCatalog } from "./models/mo/catalog.js";
 
 /**
  * Live2D 世界装配。
  *
- * 工具面按《live2d-world-boundary-spec.md》§2 定型：express / state / costume /
- * flip / spatial / status / diagnose / preview / reload（accept 与发布验收门已按
- * 操作员裁决拆除）；executionMode 显式
- * 固定为 parallel（并发是常态，安全由引擎逐轴仲裁与独占声明保证，工具层不串行化）。
+ * 工具面按《live2d-world-boundary-spec.md》§2 定型：
+ * express / posture / expression / attention / costume / spatial / status / diagnose / reload；
+ * executionMode 显式固定为 parallel（并发是常态，安全由引擎逐轴仲裁与独占声明保证，工具层不串行化）。
  *
- * P4-1：工具结果词汇表 + gate 链（中止 → 暂停 → 连接 → 适配）+ 目录词表解析 +
- * 作者会话标记门已接入；express/state 走引擎映射，costume 支持执行（独占 effect:* +
- * 热键），reload 走 VTS 重载与绑定核验。flip/spatial 走 model:transform 独占声明
- * （P4-5）。preview（作者预览引擎，P5-1 接入）暂以 not_started 如实声明。
+ * 工具结果词汇表 + gate 链（中止 → 暂停 → 连接 → 适配）+ 目录词表解析；
+ * express / posture / expression / attention 走引擎映射，costume 支持执行（独占 effect:* + 热键），
+ * spatial 走 model:transform 独占声明，reload 走 VTS 重载与绑定核验。
  * 刻意不做（规范修订 A2/A14/A6）：Timeline、Performance 门面、即兴 beats、自由数值轴。
  */
 export interface Live2DAppOptions {
@@ -38,7 +37,7 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 	return {
 		name: "live2d",
 		description:
-			"Live2D 具身身体。日常表达使用 <cue id='动作名'/>；持续性状态用 state；命名动作用 express。目录以 status 查询为准。",
+			"Live2D 具身身体。日常表达使用 <cue id='动作名'/>；持续姿态/表情/注视分别用 posture/expression/attention；命名动作用 express。目录以 status 查询为准。",
 		executionMode: "parallel",
 		defaultState: { enabled: true },
 		async onStart(ctx: ServiceCompanionContext) {
@@ -54,9 +53,11 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 						console.warn("[Live2D] rig 装配失败，保活注入停用:", error);
 						return undefined;
 					}));
+				const catalog = options.runtime?.catalog ?? (rig ? loadCatalog(rig.modelID, rig) : undefined);
 				runtime = new Live2DRuntime({
 					client: new VTSClient(),
 					rig,
+					catalog,
 					speech: MO_SPEECH,
 					...options.runtime,
 				});
@@ -83,35 +84,56 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 				},
 				run: call("express", (rt, args, ctx) => rt.express(args, ctx)),
 			},
-			state: {
-				description:
-					"设置持续状态槽：体态 / 神态 / 注视，三槽独立。声明的槽整槽替换，未声明的槽保持不变；hold_ms 到期自动回 neutral。",
+			posture: {
+				description: "设置持续体态槽（整槽替换）。可用姿态见 status；hold_ms 到期自动回 neutral。",
 				parameters: {
 					type: "object",
 					additionalProperties: false,
 					properties: {
-						posture: { type: "string", description: "目录中的命名姿态" },
-						expression: { type: "string", description: "目录中的命名表情" },
-						attention: { type: "string", description: "注视目标（user/screen/avert_* 或目录命名）" },
-						hold_ms: { type: "number", minimum: 0, description: "保持时长；到期回 neutral；省略为持续" },
+						name: { type: "string", description: "目录中的命名姿态" },
+						hold_ms: { type: "number", minimum: 0, description: "保持时长（毫秒）；到期回 neutral；省略为持续" },
 					},
+					required: ["name"],
 				},
-				run: call("state", (rt, args, ctx) => rt.state(args, ctx)),
+				run: call("posture", (rt, args, ctx) => rt.posture(args, ctx)),
 			},
-			costume: {
-				description: "执行模型包登记的外观热键；item='list' 只列出登记项。",
+			expression: {
+				description: "设置持续神态槽（整槽替换）。可用表情见 status；hold_ms 到期自动回 neutral。",
 				parameters: {
 					type: "object",
 					additionalProperties: false,
-					properties: { item: { type: "string" } },
+					properties: {
+						name: { type: "string", description: "目录中的命名表情" },
+						hold_ms: { type: "number", minimum: 0, description: "保持时长（毫秒）；到期回 neutral；省略为持续" },
+					},
+					required: ["name"],
+				},
+				run: call("expression", (rt, args, ctx) => rt.expression(args, ctx)),
+			},
+			attention: {
+				description: "设置注视目标。内置 user/screen/avert_* 或目录命名；hold_ms 到期自动回 neutral。",
+				parameters: {
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						target: { type: "string", description: "注视目标（user/screen/avert_* 或目录命名）" },
+						hold_ms: { type: "number", minimum: 0, description: "保持时长（毫秒）；到期回 neutral；省略为持续" },
+					},
+					required: ["target"],
+				},
+				run: call("attention", (rt, args, ctx) => rt.attention(args, ctx)),
+			},
+			costume: {
+				description: "执行模型包登记的外观热键。可用外观见 status。",
+				parameters: {
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						item: { type: "string", description: "目录中的外观标识" },
+					},
 					required: ["item"],
 				},
 				run: call("costume", (rt, args, ctx) => rt.costume(args, ctx)),
-			},
-			flip: {
-				description: "整模型旋转一圈并核实归位；取消后等待归位清理完成。",
-				parameters: { type: "object", additionalProperties: false, properties: {} },
-				run: call("flip", (rt, args, ctx) => rt.flip(args, ctx)),
 			},
 			spatial: {
 				description: "模型整体位移与缩放（VTS MoveModelRequest）。",
@@ -136,11 +158,6 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 				description: "作者诊断：运行时内部状态只读快照，不修改配置。",
 				parameters: { type: "object", additionalProperties: false, properties: {} },
 				run: call("diagnose", (rt) => Promise.resolve({ result: rt.diagnose(), status: "succeeded" as const })),
-			},
-			preview: {
-				description: "作者预览：假 RMS、单控制关键帧（引擎随 P5-1 接入）。",
-				parameters: { type: "object", additionalProperties: true, properties: {} },
-				run: call("preview", (rt, args, ctx) => rt.preview(args, ctx)),
 			},
 			reload: {
 				description: "显式重新加载当前 VTS 模型并重新核验绑定。",

@@ -9,7 +9,6 @@ import { BODY_ENDPOINT_EXPOSED_PREFIX, type BodyEndpoint } from "./types.js";
 export * from "./types.js";
 export * from "./body-router.js";
 export * from "./tag-stripper.js";
-export * from "./context-projector.js";
 export * from "./tools.js";
 
 /** 结构校验：共享表里的值必须真的满足 BodyEndpoint 行为契约，否则拒绝并报错。 */
@@ -41,8 +40,7 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 	const registered = new Map<string, BodyEndpoint>();
 
 	// 状态变化落史（不唤醒）：摘要变化时 appendCustomEntry，跨回合可见；
-	// 空闲时不 submitInput —— 设计 §10：状态变化不值得单独醒一个回合，
-	// 请求级实时性由 tail 帧保证，即时真值由 body status 查询保证。
+	// 空闲时不 submitInput —— 状态变化不值得单独醒一个回合，即时真值由 body / live2d status 查询保证。
 	const stateSignature = (): string =>
 		JSON.stringify(router.listEndpoints().map((s) => [s.bodyId, s.bodyType, s.online, s.isFocal, s.isPaused]));
 	let lastStateSignature = stateSignature();
@@ -102,19 +100,7 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 	const bodyTool = createBodyTool(router, recordStateChange);
 	const unregisterTool = pi.registerTool(bodyTool);
 
-	// 3. 尾部相位（tail）：具身状态快照以 external_event_frame 三消息组注入完整上下文末尾。
-	//    【不可门控】tail 帧瞬态不落 Session，每请求现做现用——它是"当前状态"的唯一载体，
-	//    若"与上轮相同就不投"，后续请求的上下文里将完全没有具身信息（cue 列表是发动作
-	//    标签的行为必需品）。稳定性由 contentAddressedEventId 承担：内容不变 ⇒ eventId 不变
-	//    ⇒ 逐字节稳定 ⇒ 前缀缓存命中，这才是瞬态层正确的零成本机制。
-	//    行为规范句（"离线时如实告知"等）不在快照内逐轮复读，经 turn.prepare 追加进
-	//    systemPrompt 一次常驻（读后拼接，不覆盖宿主装配的既有提示词；host 链式传入
-	//    累积后的 currentPrompt，安全）。
-	const unhookPrepare = pi.onHook("turn.prepare", async (input) => ({
-		systemPrompt: `${input.systemPrompt}\n[具身规范] 身体离线时，伴随动作自动挂起；被问及身体状态时，如实告知。日常说话中适度自然流露动作即可，请勿在每句话中生硬堆砌动作标签。`,
-	}));
-
-	// 4. 监听输出流，流式剥离并分发 <cue> 标签。
+	// 3. 监听输出流，流式剥离并分发 <cue> 标签。
 	//    只消费 cues：清洗后的正文由 voice/tts 各自的清洗器独立负责，此处不做二手转交。
 	//
 	//    未被任何身体响应的 cue 必须可见——否则「cue 到底通没通」无法判定
@@ -168,13 +154,13 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 		}
 	});
 
-	// 5. 注册 Markdown 转换器：在渲染层剔除输出中的 <cue id="..."/> 标签，
+	// 4. 注册 Markdown 转换器：在渲染层剔除输出中的 <cue id="..."/> 标签，
 	//    确保 TUI / Markdown 渲染视图干净自然，不泄露动作标签代码给终端用户。
 	const unregisterMarkdown = pi.registerMarkdownTransformer?.("embodiment.strip-cues", (md) =>
 		md.replace(/<\s*cue\b[^>]*?\/?>/gi, ""),
 	);
 
-	// 6. 监听打断信号，回合格断：interrupt 取消瞬时动作并保留槽位与自律——
+	// 5. 监听打断信号，回合格断：interrupt 取消瞬时动作并保留槽位与自律——
 	//    不再 safeStop（急停会暂停身体，过度惩罚一次回合打断；边界规范 §5）。
 	//    进程收尾（pi.signal abort）仍走 stopAll 急停，属显式拆除语义。
 	pi.on("turn_aborted", () => {
@@ -196,7 +182,6 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 		registered.clear();
 		unregisterTool?.();
 		unregisterMarkdown?.();
-		unhookPrepare?.();
 		pi.signal.removeEventListener("abort", onAbort);
 		void router.stopAll();
 	};
