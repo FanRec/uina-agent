@@ -16,6 +16,7 @@
 import readline from "node:readline/promises";
 import { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import { compileMotion, motion, track } from "../.uina/worlds/live2d/authoring/motion.js";
+import { MO_SPEECH } from "../.uina/worlds/live2d/models/mo/speech.js";
 import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 
@@ -25,7 +26,7 @@ if (!rig) {
 	process.exit(1);
 }
 
-const rt = new Live2DRuntime({ client: new VTSClient(), rig });
+const rt = new Live2DRuntime({ client: new VTSClient(), rig, speech: MO_SPEECH });
 await rt.start({} as never);
 
 // 与 runtime.tick 相同的合约：实测 dt → composeTick（钳制 250ms）。
