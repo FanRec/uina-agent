@@ -388,6 +388,16 @@ export class Live2DRuntime {
 		this.syncFrozen();
 	}
 
+	/**
+	 * interrupt（§3 回合打断）：取消瞬时动作 + 停 thinking + 口型包络直清；
+	 * 槽位与自律保持，**不进入 paused**（emitCue 仍可受理）。
+	 * 口型直清不经 speech-level 守卫路径（§4 第三层）：envelope cut + 声学输入清零双保险。
+	 */
+	interrupt(): void {
+		this.director?.interruptTransient("turn_aborted");
+		this.speechInput?.reset();
+	}
+
 	async stop(): Promise<void> {
 		if (!this.started) return;
 		this.started = false;

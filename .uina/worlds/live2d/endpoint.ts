@@ -11,7 +11,7 @@ import type { Live2DRuntime } from "./runtime.js";
  * - lastCue 记账：{seq, id, state, reason?, at}，seq 世界内单调递增；迟到回调按自身 seq
  *   定位条目更新，结构上不可能覆盖更大 seq 的记录（边界 #14）；
  * - onFocus 幂等冻结：相同值重复通知不重置 hold 倒计时；失焦冻结、回焦恢复剩余（边界 #5）；
- * - interrupt（回合打断）在 P4-8 接入；缺省回退 safeStop 的语义由契约承担。
+ * - interrupt 回合打断（P4-8）：取消瞬时动作、口型直清、不进入 paused；thinking 停止随 P4-4 宿主事件接入。
  */
 
 export interface CueRecord {
@@ -121,6 +121,8 @@ export function buildLive2DEndpoint(runtime: Live2DRuntime): Live2DEndpoint {
 		},
 		safeStop: () => runtime.safeStop(),
 		resume: () => runtime.resume(),
+		/** 回合打断（§3）：取消瞬时动作、口型直清、不进入 paused；thinking 停止随 P4-4 宿主事件接入。 */
+		interrupt: () => runtime.interrupt(),
 		onFocus: (focused) => runtime.setFocused(focused),
 		formatStatus: () => runtime.formatStatus(),
 		lastCue: () => [...ledger],

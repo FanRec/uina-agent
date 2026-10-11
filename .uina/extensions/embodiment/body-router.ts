@@ -214,4 +214,14 @@ export class BodyRouter {
       failed: outcomes.flatMap((outcome, index) => (outcome.status === "rejected" ? [entries[index]!.bodyId] : [])),
     };
   }
+
+  /**
+   * 回合打断（边界规范 §5）：优先端点 interrupt——取消瞬时动作、保留槽位与自律、不暂停身体；
+   * 端点未实现 interrupt 时回退 safeStop（契约缺省语义）。
+   * turn_aborted 分发走此路径，不再调用 stopAll。
+   */
+  async interruptAll(): Promise<void> {
+    const entries = Array.from(this.endpoints.values());
+    await Promise.allSettled(entries.map((ep) => (ep.interrupt ? Promise.resolve(ep.interrupt()) : ep.safeStop())));
+  }
 }

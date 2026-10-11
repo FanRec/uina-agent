@@ -149,6 +149,8 @@ interface Playback {
 	state: MotionStatus;
 	/** 退出结算状态：自然结束 = completed；release/preempt = cancelled。 */
 	exitStatus: "completed" | "cancelled";
+	/** beginExit 显式给出的结算账因（interrupt 等）；缺省按退场态推导。 */
+	exitReason?: string;
 	/** 退出权重推进起点（自然结束 = durationMs；release/preempt = 进入该态时刻）。 */
 	exitStartMs: number;
 	/** play() 时刻捕获的底座（sequence 片段内 blend 的 resting 事实）。 */
@@ -481,8 +483,23 @@ export class MotionDirector {
 		}
 	}
 
+	/**
+	 * 回合打断（§3 interrupt 语义）：取消全部瞬时主动动作——Voluntary clip 与 Transition 类
+	 * （thinking 背景动作）——经 fade 收势并结算 cancelled；口型包络立即清零（不经 50ms 释放）；
+	 * 槽位、自律与 reflex 播放保持；**不冻结**（区别于 safeStop）。
+	 */
+	interruptTransient(reason = "interrupt"): void {
+		for (const playback of [...this.playbacks]) {
+			if (playback.state !== "playing") continue;
+			if (playback.category !== "voluntary" && playback.category !== "transition") continue;
+			this.beginExit(playback, "cancelled", reason);
+		}
+		this.pipelines.cutSpeech();
+	}
+
 	/** 模型更换/绑定失效：全部活跃 Handle 结算 cancelled，槽位过渡作废（引擎 #11；§3.3.2）。 */
-	invalidateAll(reason = "binding generation changed"): void {		for (const playback of [...this.playbacks]) {
+	invalidateAll(reason = "binding generation changed"): void {
+		for (const playback of [...this.playbacks]) {
 			playback.settled = true;
 			playback.state = "cancelled";
 			const index = this.playbacks.indexOf(playback);
@@ -549,7 +566,9 @@ export class MotionDirector {
 			} else if (playback.state !== "playing" && playback.ageMs >= playback.exitStartMs + playback.fadeOutMs) {
 				this.finishPlayback(playback, {
 					status: playback.exitStatus,
-					reason: playback.state === "releasing" ? "released" : playback.exitStatus === "completed" ? undefined : "preempted",
+					reason:
+						playback.exitReason ??
+						(playback.state === "releasing" ? "released" : playback.exitStatus === "completed" ? undefined : "preempted"),
 				});
 			}
 		}
@@ -680,10 +699,11 @@ export class MotionDirector {
 		return { ...frame };
 	}
 
-	/** A17.2/A17.3：退场统一入口——立即交还控制权，退场轴经 handoff 淡向下一来源，fadeOut 后结算。 */
-	private beginExit(playback: Playback, status: "completed" | "cancelled"): void {
+	/** A17.2/A17.3：退场统一入口——立即交还控制权，退场轴经 handoff 淡向下一来源，fadeOut 后结算。reason 覆写结算账因（缺省按退场态推导）。 */
+	private beginExit(playback: Playback, status: "completed" | "cancelled", reason?: string): void {
 		if (playback.settled || playback.state !== "playing") return;
 		playback.state = status === "completed" ? "cancelling" : "releasing";
+		playback.exitReason = reason;
 		playback.exitStatus = status;
 		playback.exitStartMs = playback.ageMs;
 		this.beginHandoff(playback);

@@ -156,6 +156,13 @@ export class SpeechEnvelope {
 		this.target = Math.max(0, Math.min(1, level));
 	}
 
+	/** 急停/打断语义（§4 reset 第三层）：包络立即清零，不经 50ms 释放——不用陈旧口型包络渲染。 */
+	cut(): void {
+		this.target = 0;
+		this.level = 0;
+		this.releaseElapsedMs = undefined;
+	}
+
 	step(dtMs: number): number {
 		if (dtMs > 0) {
 			if (this.target >= this.level) {
@@ -275,6 +282,11 @@ export class SomaticPipelines {
 
 	setSpeechLevel(level: number): void {
 		this.envelope.setLevel(level);
+	}
+
+	/** 打断/急停的口型直清（§3 interrupt / §4 急停第三层）：当帧起包络为 0，不走 50ms 释放。 */
+	cutSpeech(): void {
+		this.envelope.cut();
 	}
 
 	/** 命名注视目标 → 瞄准；未知名称返回 undefined（诚实不猜）。 */

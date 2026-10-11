@@ -174,10 +174,12 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 		md.replace(/<\s*cue\b[^>]*?\/?>/gi, ""),
 	);
 
-	// 6. 监听打断信号，全身体急停
+	// 6. 监听打断信号，回合格断：interrupt 取消瞬时动作并保留槽位与自律——
+	//    不再 safeStop（急停会暂停身体，过度惩罚一次回合打断；边界规范 §5）。
+	//    进程收尾（pi.signal abort）仍走 stopAll 急停，属显式拆除语义。
 	pi.on("turn_aborted", () => {
 		stripper.reset();
-		void router.stopAll();
+		void router.interruptAll();
 	});
 
 	const onAbort = () => {
