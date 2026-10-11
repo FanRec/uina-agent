@@ -252,18 +252,3 @@ export function recompileWithSpeech(
 ): CompiledMotion {
 	return compileMotion(withSpeech(entry.definition, policy), controls);
 }
-
-/**
- * 格式化目录的紧凑能力摘要（单一真实来源，供事件通知与状态回执复用）。
- */
-export function formatCatalogAffordances(catalog: CatalogSnapshot): {
-	cuesText: string;
-	posturesText: string;
-} {
-	const cueList = [...catalog.motions.entries()].map(([id, m]) => `${id}(${m.description})`);
-	const postureList = [...catalog.postures.entries()].map(([id, p]) => `${id}(${p.description})`);
-	return {
-		cuesText: cueList.length > 0 ? cueList.join(", ") : "无",
-		posturesText: postureList.length > 0 ? postureList.join(", ") : "无",
-	};
-}

@@ -11,17 +11,8 @@ import type { BodyAffordance, BodyState } from "../../../../src/extensions/world
  * 约束：全部载荷 structuredClone 可序列化；行为契约（BodyEndpoint / VoiceLevelSink）
  * 的活引用由主线程 facade 承载（proxy.ts），本协议只承载纯数据。
  * 引擎侧合成/注入语义一行不改——Live2DRuntime 整体作为 worker 内核。
+ * 状态事实经 sync 推送（不产生对话上下文事件，不唤醒回合）。
  */
-
-/** 世界状态事件的跨线程载荷：render 闭包不可克隆，渲染文本在引擎侧求值后传输。 */
-export interface EngineEventPayload {
-	id: string;
-	type: string;
-	channel: "world";
-	delivery?: "queued" | "urgent";
-	text?: string;
-	renderText?: string;
-}
 
 /** 需要结算的调用（result 应答）；fire 为单向投递无需应答。 */
 export type EngineOp =
@@ -58,5 +49,4 @@ export type EngineToMain =
 	| { t: "result"; id: number; ok: false; error: string }
 	| { t: "exposed"; name: string }
 	| { t: "unexposed"; name: string }
-	| { t: "event"; event: EngineEventPayload }
 	| { t: "sync"; state: BodyState; affordance: BodyAffordance };

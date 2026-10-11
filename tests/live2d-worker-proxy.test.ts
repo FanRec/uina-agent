@@ -107,7 +107,6 @@ interface Harness {
 	/** 测试驱动引擎侧合成推进（真实时钟未用 fake timers 的替代）。 */
 	pump: (ms: number) => Promise<void>;
 	stop: () => Promise<void>;
-	events: Array<{ type: string; text?: string; renderText?: string }>;
 }
 
 const harness = async (connected = true): Promise<Harness> => {
@@ -131,16 +130,12 @@ const harness = async (connected = true): Promise<Harness> => {
 	port2.on("message", (msg) => engine.onMessage(msg as never));
 
 	const proxy = new Live2DRuntimeProxy(port1 as never);
-	const events: Harness["events"] = [];
 	const exposed = new Map<string, unknown>();
 	const startCtx = {
 		signal: new AbortController().signal,
 		expose: (name: string, value: unknown) => {
 			exposed.set(name, value);
 			return () => exposed.delete(name);
-		},
-		emitEvent: async (event: { type: string; text?: string; render?: () => string | null }) => {
-			events.push({ type: event.type, text: event.text, renderText: event.render?.() ?? undefined });
 		},
 	} as unknown as ServiceCompanionContext;
 	await proxy.start(startCtx);
@@ -159,7 +154,6 @@ const harness = async (connected = true): Promise<Harness> => {
 		endpoint,
 		sink,
 		pump,
-		events,
 		stop: async () => {
 			await proxy.stop();
 			port1.close();
@@ -203,7 +197,7 @@ describe("live2d 引擎线程隔离接缝（proxy ↔ engine 协议）", () => {
 		}
 	});
 
-	it("hostEvent 转发驱动引擎（emitCue fire-and-forget + turn_aborted interrupt 不炸），世界事件 render 在主线程重建", async () => {
+	it("fire-and-forget 通道（emitCue/interrupt/onFocus/电平）投递后引擎不炸，sync 缓存保持新鲜", async () => {
 		const h = await harness(true);
 		try {
 			h.endpoint.emitCue("nod");
@@ -212,11 +206,8 @@ describe("live2d 引擎线程隔离接缝（proxy ↔ engine 协议）", () => {
 			h.sink.processLevel({ rms: 0.5 });
 			h.sink.reset();
 			await h.pump(80);
+			// 状态事实只经 sync 缓存暴露（不产生对话上下文事件）；fire 批次后连接事实仍然可达。
 			expect(h.endpoint.state().online).toBe(true);
-			// 连接就绪状态事件已跨线程转发且 render 文本可求值（body.ready 或 body.unadapted）。
-			const statusEvent = h.events.find((e) => e.type.startsWith("body."));
-			expect(statusEvent).toBeDefined();
-			expect(statusEvent!.renderText).toBeTruthy();
 		} finally {
 			await h.stop();
 		}

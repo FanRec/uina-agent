@@ -88,17 +88,6 @@ export class Live2DRuntimeProxy implements Live2DWorldRuntime {
 			cleanup?.();
 			return;
 		}
-		if (msg.t === "event") {
-			void this.ctx?.emitEvent?.({
-				id: msg.event.id,
-				type: msg.event.type,
-				channel: "world",
-				...(msg.event.delivery ? { delivery: msg.event.delivery } : {}),
-				...(msg.event.text !== undefined ? { text: msg.event.text } : {}),
-				...(msg.event.renderText !== undefined ? { render: () => msg.event.renderText! } : {}),
-			});
-			return;
-		}
 		if (msg.t === "sync") {
 			this.cachedState = msg.state;
 			this.cachedAffordance = msg.affordance;

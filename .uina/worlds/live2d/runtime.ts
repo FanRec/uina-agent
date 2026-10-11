@@ -6,7 +6,6 @@ import { VTSClient } from "./adapter/vts-client.js";
 import {
 	BUILTIN_ATTENTIONS,
 	emptyCatalog,
-	formatCatalogAffordances,
 	recompileWithSpeech,
 	type AttentionTarget,
 	type CatalogMotionEntry,
@@ -56,6 +55,8 @@ export interface Live2DRuntimeOptions {
 	catalog?: CatalogSnapshot;
 	/** 独占声明清理等待上限（§6.4 safeStop 抛错判定；注入点（测试用），缺省 5000ms）。 */
 	cleanupTimeoutMs?: number;
+	/** 状态事实变化通知（连接/适配/目录代次）。引擎线程以此推送 sync 缓存；状态变化不唤醒对话回合，即时真值由 status/body 查询保证。 */
+	onStatusChange?: () => void;
 }
 
 /** 单帧合成到注入之间允许的最大时间步（毫秒）：后台节流/休眠恢复时防止动作瞬移。 */
@@ -155,8 +156,7 @@ export class Live2DRuntime {
 	readonly levelSink?: VoiceLevelSink;
 	private readonly speechInput?: SpeechInput;
 	readonly endpoint: Live2DEndpoint;
-	private context?: ServiceCompanionContext;
-	private lastEventFingerprint?: string;
+	private readonly onStatusChange?: () => void;
 
 	constructor(options: Live2DRuntimeOptions = {}) {
 		this.client = options.client;
@@ -183,6 +183,7 @@ export class Live2DRuntime {
 		}
 		this.tickIntervalMs = options.tickIntervalMs ?? 1000 / 60;
 		this.cleanupTimeoutMs = options.cleanupTimeoutMs ?? 5000;
+		this.onStatusChange = options.onStatusChange;
 		this.endpoint = buildLive2DEndpoint(this);
 	}
 
@@ -249,7 +250,7 @@ export class Live2DRuntime {
 		this.thinking = false;
 		this.director?.setAuthoredIdle(snapshot.background.idle !== undefined);
 		if (this.connectionOnline) {
-			this.emitStatusEvent();
+			this.onStatusChange?.();
 		}
 	}
 
@@ -572,7 +573,6 @@ export class Live2DRuntime {
 	async start(ctx: ServiceCompanionContext): Promise<void> {
 		if (this.started) return;
 		this.started = true;
-		this.context = ctx;
 		if (ctx.expose) {
 			this.cleanups.push(ctx.expose("body.endpoint:live2d", this.endpoint));
 			if (this.levelSink) {
@@ -596,69 +596,15 @@ export class Live2DRuntime {
 				if (!this.started) return;
 				if (connected) this.startClock();
 				else this.stopClock();
-				this.emitStatusEvent();
+				this.onStatusChange?.();
 			});
 			this.client.connect();
 			// 注入的客户端可能已完成握手，connect() 不会再次发 ready 回调。
 			if (this.client.isConnected()) {
 				this.startClock();
-				this.emitStatusEvent();
+				this.onStatusChange?.();
 			}
 		}
-	}
-
-	formatStatusEventText(): string {
-		const matched = this.identityMatched();
-		const profile = this.client?.getModelProfile();
-		const currentModel = profile?.modelName ?? (this.catalog.modelID !== "unknown" ? this.catalog.modelID : "未知");
-		if (!matched) {
-			return `[身体未适配: live2d] VTS 已连接，但当前模型 (${currentModel}) 尚未在 Uina 适配，动作暂不可用。`;
-		}
-		const { cuesText, posturesText } = formatCatalogAffordances(this.catalog);
-		const posturesFormatted = posturesText !== "无" ? `；姿态: ${posturesText}` : "";
-		return `[身体就绪: live2d] 模型: ${currentModel}。伴随动作: ${cuesText}${posturesFormatted}。持续状态请用 posture/expression/attention。`;
-	}
-
-	private emitStatusEvent(): void {
-		if (!this.started || !this.context?.emitEvent) return;
-		const online = this.connectionOnline;
-		const profile = this.client?.getModelProfile();
-		const matched = this.identityMatched();
-		const currentModel = profile?.modelName ?? (this.catalog.modelID !== "unknown" ? this.catalog.modelID : "未知");
-
-		// 复合指纹去重：连接状态、模型 ID、适配状态或目录代次任何一项变化，均触发真实事件
-		const fingerprint = `${online}:${profile?.modelID ?? "none"}:${matched}:${this.generation}`;
-		if (this.lastEventFingerprint === fingerprint) return;
-		this.lastEventFingerprint = fingerprint;
-
-		let type: string;
-		let text: string;
-		let renderText: string;
-
-		if (!online) {
-			type = "body.offline";
-			text = "[身体离线: live2d] VTS 连接中断，伴随动作已自动挂起。";
-			renderText = "🔴 Live2D 身体离线";
-		} else if (matched) {
-			type = "body.ready";
-			text = this.formatStatusEventText();
-			renderText = `🟢 Live2D 身体就绪 (${currentModel})`;
-		} else {
-			type = "body.unadapted";
-			text = this.formatStatusEventText();
-			renderText = `🟡 Live2D 未适配当前模型 (${currentModel})`;
-		}
-
-		void this.context
-			.emitEvent({
-				channel: "world",
-				type,
-				id: `live2d:status:${Date.now()}`,
-				delivery: "queued",
-				text,
-				render: () => renderText,
-			})
-			.catch(() => {});
 	}
 
 	/**
@@ -833,8 +779,6 @@ export class Live2DRuntime {
 				}
 			}
 			this.client?.disconnect();
-			this.lastEventFingerprint = undefined;
-			this.context = undefined;
 		}
 	}
 
