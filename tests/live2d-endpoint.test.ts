@@ -140,7 +140,7 @@ const harness = async (options: HarnessOptions = {}) => {
 		client: fake.client,
 		rig: makeRig(),
 		catalog: makeCatalog(),
-		published: options.published,
+		published: options.published ?? true,
 		// 作者标定口型映射（恒等映射）：levelSink 存在 = 生产电平链路（P3-2）。
 		speech: {
 			points: [

@@ -88,7 +88,7 @@ const makeFakeClient = (options: { connected?: boolean; modelID?: string } = {})
 };
 
 const makeRuntime = (client: VTSClient, options: Partial<ConstructorParameters<typeof Live2DRuntime>[0]> = {}) =>
-	new Live2DRuntime({ client, rig: makeRig(), ...options });
+	new Live2DRuntime({ client, rig: makeRig(), published: true, ...options });
 
 describe("live2d runtime tick 合成（P2-3）", () => {
 	it("composeTick 驱动 director 合成并注入编码帧（合成推进纯函数化）", () => {

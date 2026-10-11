@@ -116,7 +116,7 @@ describe("live2d 声学电平链路（P3-2）", () => {
 			disconnect: () => {},
 			getConnectionStatus: () => ({ connected: true }),
 		} as unknown as VTSClient;
-		const rt = new Live2DRuntime({ client: fakeClient, rig, speech: SPEECH });
+		const rt = new Live2DRuntime({ client: fakeClient, rig, speech: SPEECH, published: true });
 		expect(rt.levelSink).toBeDefined();
 
 		// TTS 按 ~20ms 窗连续投递（seams 契约）；帧步长 16ms，隔帧投递即维持新鲜。

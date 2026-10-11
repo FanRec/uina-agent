@@ -126,7 +126,7 @@ const harness = async (options: HarnessOptions = {}) => {
 		client: fake.client,
 		rig: makeRig(),
 		catalog: options.catalog === false ? emptyCatalog(MODEL_ID) : makeCatalog(),
-		published: options.published,
+		published: options.published ?? true,
 	});
 	const app = createLive2DApp({ instance: runtime });
 	const startCtx = {
@@ -307,13 +307,17 @@ describe("live2d 工具面（P4-1）", () => {
 		}
 	});
 
-	it("作者会话门：标记文件存在时 preview/accept 通过 gate（引擎在后续批次接入，如实 not_started）", async () => {
+	it("作者会话门：标记文件存在时 preview/accept 通过 gate（preview 引擎 P5-1 接入，如实 not_started）", async () => {
 		scratchDir = mkdtempSync(join(tmpdir(), "live2d-author-"));
 		writeFileSync(join(scratchDir, "author-session"), "");
 		const { app, ctx } = await harness({ worldDataDir: scratchDir });
 		try {
 			expect(await run(app, "preview", {}, ctx)).toMatchObject({ status: "not_started" });
-			expect(await run(app, "accept", { evidence: "说明" }, ctx)).toMatchObject({ status: "not_started" });
+			// P4-6：accept 走真实写入路径——fixture 模型未登记模型包目录，sidecar 无处写入，如实 model_not_ready。
+			expect(await run(app, "accept", { evidence: "说明" }, ctx)).toMatchObject({
+				status: "failed",
+				details: { reason: "model_not_ready" },
+			});
 			const status = JSON.parse((await run(app, "status", {}, ctx)).result) as { authorSession: boolean };
 			expect(status.authorSession).toBe(true);
 		} finally {

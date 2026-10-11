@@ -148,7 +148,7 @@ function makeRuntime(getDevice: () => Device, profileModelID = "fixture") {
 		reconnectIntervalMs: 10,
 		maxReconnectIntervalMs: 50,
 	});
-	const runtime = new Live2DRuntime({ client, rig, tickIntervalMs: 5 });
+	const runtime = new Live2DRuntime({ client, rig, tickIntervalMs: 5, published: true });
 	return { client, runtime };
 }
 

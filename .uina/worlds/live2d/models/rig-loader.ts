@@ -26,3 +26,10 @@ export async function loadRig(modelID: string): Promise<ModelRig | undefined> {
 	if (rig.modelID !== modelID) throw new Error(`rig 身份不匹配: 文件 ${rig.modelID} ≠ 请求 ${modelID}`);
 	return rig;
 }
+
+/** 模型包目录（models/<folder>/）；acceptance.json sidecar 的归属地。未登记模型返回 undefined。 */
+export function modelPackageDir(modelID: string): string | undefined {
+	const folder = MODELS[modelID];
+	if (!folder) return undefined;
+	return resolve(dirname(fileURLToPath(import.meta.url)), folder);
+}
