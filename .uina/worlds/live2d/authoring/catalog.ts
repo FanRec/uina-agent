@@ -33,18 +33,29 @@ export const BUILTIN_ATTENTIONS: readonly Extract<AttentionTarget, string>[] = [
 	"avert_right",
 ];
 
-export interface SpatialStuntDef {
-	/** 相对基线位姿的瞬态偏移量 */
+export interface SpatialSegment {
+	/** 每一段都相对同一开始位姿，不累积前段偏移。 */
 	readonly delta: {
 		readonly x?: number;
 		readonly y?: number;
 		readonly rotation?: number;
 		readonly size?: number;
 	};
-	/** 去程耗时（毫秒） */
-	readonly moveMs: number;
-	/** 停留耗时（毫秒，默认 0） */
+	readonly durationMs: number;
 	readonly holdMs?: number;
+}
+
+export interface SpatialStuntDef {
+	/** 最后一段必须回到零偏移；取消/异常另外执行归位清理。 */
+	readonly segments: readonly SpatialSegment[];
+}
+
+/** 作者配置，不增加工具参数，也不依赖 director。 */
+export interface CatalogPlayback {
+	readonly fadeInMs?: number;
+	readonly fadeOutMs?: number;
+	readonly inhibitAdditives?: boolean | readonly string[];
+	readonly resetVelocity?: boolean;
 }
 
 export interface CatalogMotionEntry {
@@ -55,6 +66,7 @@ export interface CatalogMotionEntry {
 	motion: CompiledMotion;
 	/** 可选的空间位姿特技（执行期间独占 model:transform 并保证自动归位）。 */
 	spatial?: SpatialStuntDef;
+	playback?: CatalogPlayback;
 	/** 命名表演默认 true（边界规范 §2）；目录项可显式声明为 false。 */
 	atomic: boolean;
 	/** cue 别名：affordance 必须显式声明（2026-09-21 别名 cue 静默丢失缺陷的反面）。 */
@@ -65,6 +77,7 @@ export interface CatalogSlotEntry {
 	description: string;
 	/** 轴值必须已声明于 rig.controls 且落在 [min,max]，compileCatalog 校验。 */
 	values: Readonly<Record<string, number>>;
+	transitionMs?: number;
 }
 
 export interface CatalogAttentionEntry {
@@ -115,6 +128,7 @@ export interface CatalogSource {
 				description: string;
 				motion: MotionDefinition;
 				spatial?: SpatialStuntDef;
+				playback?: CatalogPlayback;
 				atomic?: boolean;
 				aliases?: readonly string[];
 			}
@@ -143,31 +157,47 @@ export function compileCatalog(
 	const motions = new Map<string, CatalogMotionEntry>();
 	for (const [name, entry] of Object.entries(source.motions ?? {})) {
 		if (entry.spatial) {
-			const stunt = entry.spatial;
-			if (!Number.isFinite(stunt.moveMs) || stunt.moveMs <= 0)
-				throw new Error(`动作 "${name}" 空间特技 moveMs 必须为正有限数`);
-			if (stunt.holdMs !== undefined && (!Number.isFinite(stunt.holdMs) || stunt.holdMs < 0))
-				throw new Error(`动作 "${name}" 空间特技 holdMs 必须为非负有限数`);
-			if (!stunt.delta || Object.keys(stunt.delta).length === 0)
-				throw new Error(`动作 "${name}" 空间特技 delta 必须声明至少一个位姿轴偏移`);
+			const segments = entry.spatial.segments;
+			if (!segments?.length) throw new Error(`动作 "${name}" 空间轨迹为空`);
 			let hasNonZero = false;
-			for (const [axis, offset] of Object.entries(stunt.delta)) {
-				if (offset === undefined) continue;
-				if (!Number.isFinite(offset)) throw new Error(`动作 "${name}" 空间特技 delta.${axis} 必须为有限数`);
-				if (offset !== 0) hasNonZero = true;
+			for (const segment of segments) {
+				if (!Number.isFinite(segment.durationMs) || segment.durationMs <= 0 || segment.durationMs > 2000)
+					throw new Error(`动作 "${name}" 空间段 durationMs 必须在 (0,2000]`);
+				if (segment.holdMs !== undefined && (!Number.isFinite(segment.holdMs) || segment.holdMs < 0))
+					throw new Error(`动作 "${name}" 空间段 holdMs 必须为非负有限数`);
+				if (!segment.delta || Object.keys(segment.delta).length === 0)
+					throw new Error(`动作 "${name}" 空间段必须声明 delta`);
+				for (const [axis, offset] of Object.entries(segment.delta)) {
+					if (!["x", "y", "rotation", "size"].includes(axis) || !Number.isFinite(offset))
+						throw new Error(`动作 "${name}" 空间偏移非法: ${axis}`);
+					if (offset !== 0) hasNonZero = true;
+				}
 			}
-			if (!hasNonZero) throw new Error(`动作 "${name}" 空间特技 delta 各轴偏移均为 0（无效特技）`);
+			if (!hasNonZero) throw new Error(`动作 "${name}" 空间轨迹无位移`);
+			if (Object.values(segments.at(-1)!.delta).some((offset) => offset !== 0))
+				throw new Error(`动作 "${name}" 空间轨迹末段必须归零`);
+		}
+		for (const value of [entry.playback?.fadeInMs, entry.playback?.fadeOutMs]) {
+			if (value !== undefined && (!Number.isFinite(value) || value < 0))
+				throw new Error(`动作 "${name}" 播放淡入/淡出必须为非负有限数`);
+		}
+		if (Array.isArray(entry.playback?.inhibitAdditives)) {
+			for (const axis of entry.playback.inhibitAdditives)
+				if (!rig.controls[axis]) throw new Error(`动作 "${name}" 抑制未声明轴: ${axis}`);
 		}
 		motions.set(name, {
 			description: entry.description,
 			definition: entry.motion,
 			motion: compileMotion(entry.motion, rig.controls),
 			spatial: entry.spatial,
+			playback: entry.playback,
 			atomic: entry.atomic ?? true,
 			aliases: entry.aliases,
 		});
 	}
 	const validateSlot = (name: string, slot: CatalogSlotEntry, kind: string): void => {
+		if (slot.transitionMs !== undefined && (!Number.isFinite(slot.transitionMs) || slot.transitionMs < 0))
+			throw new Error(`${kind} "${name}" transitionMs 必须为非负有限数`);
 		for (const [axis, value] of Object.entries(slot.values)) {
 			const control = rig.controls[axis];
 			if (!control) throw new Error(`${kind} "${name}" 引用未声明控制: ${axis}`);

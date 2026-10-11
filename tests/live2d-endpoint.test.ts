@@ -1,3 +1,4 @@
+import { unconfirmedInjections } from "./live2d-injection-fixture.js";
 import { describe, expect, it } from "vitest";
 import type { ActionContext, ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../src/tools/broker.js";
@@ -115,6 +116,7 @@ const makeFakeClient = (options: { connected?: boolean; modelID?: string } = {})
 		injected: [] as { id: string; value: number }[][],
 	};
 	const client = {
+		...unconfirmedInjections(),
 		isConnected: () => state.connected,
 		getModelProfile: () => state.profile,
 		injectParameters: (frame: { id: string; value: number }[]) => {
@@ -228,7 +230,7 @@ describe("live2d endpoint（P4-2）", () => {
 			await flush();
 			const record = endpoint.lastCue().at(-1)!;
 			expect(record).toMatchObject({ id: "nod", state: "finished" });
-			expect(record.reason).toBeUndefined();
+			expect(record.reason).toBe("unknown"); // 无协议确认的假体不能证明动作接受。
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}

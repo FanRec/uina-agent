@@ -856,10 +856,16 @@ export class VTSClient {
 	/**
 	 * 控制模型在屏幕上的位移、缩放与 360° 旋转 (MoveModelRequest)
 	 */
-	async getModelPosition(): Promise<{ positionX: number; positionY: number; rotation: number; size: number }> {
+	async getModelPosition(
+		expectedModelID?: string,
+	): Promise<{ positionX: number; positionY: number; rotation: number; size: number }> {
 		const data = (await this.sendRequest("CurrentModelRequest", {}, 3000)) as {
+			modelID?: string;
+			modelLoaded?: boolean;
 			modelPosition?: { positionX: number; positionY: number; rotation: number; size: number };
 		};
+		if (expectedModelID !== undefined && (data.modelLoaded !== true || data.modelID !== expectedModelID))
+			throw new Error("VTS 当前模型身份已变化，拒绝使用旧位姿。");
 		if (
 			!data.modelPosition ||
 			![

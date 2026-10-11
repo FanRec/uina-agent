@@ -1,3 +1,4 @@
+import { unconfirmedInjections } from "./live2d-injection-fixture.js";
 import { describe, expect, it } from "vitest";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
@@ -80,6 +81,7 @@ const headTrack = (durationMs: number, value: number) =>
 
 const makeRuntime = (state: { connected: boolean }) => {
 	const client = {
+		...unconfirmedInjections(),
 		isConnected: () => state.connected,
 		getModelProfile: () => ({ modelID: MODEL_ID }),
 		injectParameters: () => {},

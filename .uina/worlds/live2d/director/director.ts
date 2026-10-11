@@ -92,6 +92,9 @@ export interface PlayOptions {
 	inhibitAdditives?: boolean | readonly string[];
 	/** P3-1 骨骼弹簧消费；director 仅透传存储。 */
 	resetVelocity?: boolean;
+	/** 内部持续背景：一个实例循环有限片段，前景到来时让位。 */
+	loop?: boolean;
+	background?: boolean;
 	signal?: AbortSignal;
 }
 
@@ -136,6 +139,10 @@ interface Playback {
 	category: MotionCategory;
 	priority: number;
 	atomic: boolean;
+	loop: boolean;
+	background: boolean;
+	backgroundWeight: number;
+	onAbort?: () => void;
 	fadeInMs: number;
 	fadeOutMs: number;
 	inhibitAdditives: boolean | readonly string[];
@@ -196,6 +203,7 @@ export class MotionDirector {
 	private readonly autonomic?: AutonomicGenerator;
 	private autonomicBlinkFactor = 1;
 	private readonly pipelines: SomaticPipelines;
+	private readonly contributions = new Map<string, Set<string>>();
 
 	constructor(controls: Readonly<Record<string, RigControlDef>>, options: DirectorOptions = {}) {
 		this.controls = controls;
@@ -211,6 +219,15 @@ export class MotionDirector {
 	/** 最近一帧合成结果（safeStop 保持帧与诊断的事实来源）。 */
 	get currentFrame(): Readonly<Record<string, number>> {
 		return this.frame;
+	}
+
+	/** 最近一次真正参与合成的播放及逻辑轴；不是所有活跃播放名单。 */
+	get frameContributions(): ReadonlyMap<string, ReadonlySet<string>> {
+		return this.contributions;
+	}
+
+	setAuthoredIdle(enabled: boolean): void {
+		this.autonomic?.setSwayEnabled(!enabled);
 	}
 
 	/** 眨眼因子（1=全开 0=全闭）；眼睑管道据它做乘法调制。未启用自律时恒 1。 */
@@ -229,7 +246,7 @@ export class MotionDirector {
 		for (const p of this.playbacks) {
 			if (p.state !== "playing") continue;
 			if (!p.overrideAxes.has("mouth.open") && !p.additiveAxes.has("mouth.open")) continue;
-			gain = Math.min(gain, sampleSpeechGain(p.clip, p.ageMs));
+			gain = Math.min(gain, sampleSpeechGain(p.clip, this.sampleTime(p)));
 		}
 		return gain;
 	}
@@ -378,6 +395,9 @@ export class MotionDirector {
 			category: options.category,
 			priority: CATEGORY_PRIORITY[options.category],
 			atomic: options.atomic ?? true,
+			loop: options.loop ?? false,
+			background: options.background ?? false,
+			backgroundWeight: 1,
 			fadeInMs: options.fadeInMs ?? 120,
 			fadeOutMs: options.fadeOutMs ?? 250,
 			inhibitAdditives: options.inhibitAdditives ?? false,
@@ -406,19 +426,24 @@ export class MotionDirector {
 				return playback.state;
 			},
 			get currentTime(): number {
-				return Math.min(playback.ageMs, playback.clip.durationMs) / 1000;
+				return (
+					(playback.loop
+						? playback.ageMs % playback.clip.durationMs
+						: Math.min(playback.ageMs, playback.clip.durationMs)) / 1000
+				);
 			},
 			get duration(): number {
 				return playback.clip.durationMs / 1000;
 			},
 			finished,
 			stop: (mode: "release" | "cut" = "release") => {
-				if (playback.settled || playback.state === "cancelling") return;
+				if (playback.settled) return;
 				if (mode === "cut") {
 					// §4.1.4：cut 立即清零权重并结算 cancelled，无淡出（引擎 #8）。
 					this.finishPlayback(playback, { status: "cancelled", reason: "stopped" });
 					return;
 				}
+				if (playback.state === "cancelling") return;
 				if (playback.state === "releasing") return;
 				// release：立即交还控制权，fadeOut 收势后结算 cancelled。
 				this.beginExit(playback, "cancelled");
@@ -427,15 +452,38 @@ export class MotionDirector {
 		this.playbacks.push(playback);
 		if (options.signal) {
 			const abort = () => playback.handle.stop("cut");
+			playback.onAbort = abort;
 			if (options.signal.aborted) abort();
 			else options.signal.addEventListener("abort", abort, { once: true });
 		}
 		return playback.handle;
 	}
 
+	private sampleTime(playback: Playback): number {
+		if (!playback.loop) return playback.ageMs;
+		const age = playback.state === "playing" ? playback.ageMs : playback.exitStartMs;
+		return age % playback.clip.durationMs;
+	}
+
+	/** 同比压缩头部增量，保留动作轮廓，不改变绝对眼口目标。 */
+	private headroomScale(clip: CompiledMotion, baseline: Readonly<Record<string, number>>): number {
+		let scale = 1;
+		for (const track of clip.tracks) {
+			if (!track.axis.startsWith("head.") || track.space !== "baseline-offset") continue;
+			const control = this.controls[track.axis]!;
+			const base = baseline[track.axis] ?? control.neutral;
+			for (const key of track.keys) {
+				if (key.value > 0) scale = Math.min(scale, (control.max - base) / key.value);
+				if (key.value < 0) scale = Math.min(scale, (control.min - base) / key.value);
+			}
+		}
+		return Math.max(0, scale);
+	}
+
 	private finishPlayback(playback: Playback, result: SomaticActionResult): void {
 		if (playback.settled) return;
 		playback.settled = true;
+		if (playback.onAbort) playback.signal?.removeEventListener("abort", playback.onAbort);
 		playback.state = result.status === "completed" ? "finished" : "cancelled";
 		const index = this.playbacks.indexOf(playback);
 		if (index >= 0) this.playbacks.splice(index, 1);
@@ -450,7 +498,9 @@ export class MotionDirector {
 	): ExclusiveClaim {
 		if (options.signal?.aborted) throw new Error("动作已取消");
 		const requested = new Set(resources);
-		const conflicts = [...this.claims].filter((claim) => [...requested].some((resource) => claim.resources.has(resource)));
+		const conflicts = [...this.claims].filter((claim) =>
+			[...requested].some((resource) => claim.resources.has(resource)),
+		);
 		for (const existing of conflicts) {
 			if (existing.cleanup) throw new Error("资源冲突：正在执行外部清理");
 			// 幂等重触发：同 reason 的再声明替换旧声明；其余一律 resource_conflict（边界 #9）。
@@ -527,6 +577,8 @@ export class MotionDirector {
 			slot.holdRemainingMs = undefined;
 		}
 		this.attention = undefined;
+		this.contributions.clear();
+		this.pipelines.resetGazeHandoffs();
 	}
 
 	/** A11 冻结规则：任何非播放态（暂停/失焦）下保持倒计时与过渡暂停，恢复后继续剩余。 */
@@ -539,6 +591,7 @@ export class MotionDirector {
 	/** 推进一帧并返回合成逻辑帧。冻结时返回当前帧快照（倒计时与过渡全部暂停）。 */
 	step(deltaMs: number): Readonly<Record<string, number>> {
 		if (!Number.isFinite(deltaMs) || deltaMs < 0) throw new Error("非法渲染时间");
+		this.contributions.clear();
 		if (this.frozen) return { ...this.frame };
 		const dt = deltaMs;
 
@@ -572,7 +625,7 @@ export class MotionDirector {
 		// 2. 播放推进 + 生命周期：自然结束/preempt/release 统一走 handoff 交还（A17.3）。
 		for (const playback of [...this.playbacks]) {
 			playback.ageMs += dt;
-			if (playback.state === "playing" && playback.ageMs >= playback.clip.durationMs) {
+			if (playback.state === "playing" && !playback.loop && playback.ageMs >= playback.clip.durationMs) {
 				// 自然播放完毕：立即交还控制权（下一来源接管），fadeOut 后结算 completed。
 				this.beginExit(playback, "completed");
 			} else if (playback.state !== "playing" && playback.ageMs >= playback.exitStartMs + playback.fadeOutMs) {
@@ -588,6 +641,23 @@ export class MotionDirector {
 			}
 		}
 
+		// 持续背景的时间照常推进；权重在前景进出时独立变化。
+		const foregroundHead = this.playbacks.some(
+			(p) =>
+				!p.background &&
+				p.state === "playing" &&
+				p.priority >= CATEGORY_PRIORITY.voluntary &&
+				p.clip.axes.some((axis) => axis.startsWith("head.")),
+		);
+		const thinking = this.playbacks.some((p) => p.background && p.category === "transition" && p.state === "playing");
+		for (const p of this.playbacks) {
+			if (!p.background) continue;
+			const suppressed = foregroundHead || (p.category === "autonomic" && thinking);
+			p.backgroundWeight = suppressed
+				? Math.max(0, p.backgroundWeight - dt / 200)
+				: Math.min(1, p.backgroundWeight + dt / 450);
+		}
+
 		// 3. 手交淡出推进（A17.3）。
 		for (const [axis, fade] of [...this.handoffs]) {
 			fade.ageMs += dt;
@@ -597,10 +667,6 @@ export class MotionDirector {
 		// 4. 基座帧：中性 + 槽位合成 + 手交混合。
 		const frame: Record<string, number> = { ...this.neutral };
 		for (const [axis, value] of Object.entries(this.slotComposite())) frame[axis] = value;
-		for (const [axis, fade] of this.handoffs) {
-			const weight = fade.durationMs > 0 ? smooth(fade.ageMs / fade.durationMs) : 1;
-			frame[axis] = fade.from + (frame[axis]! - fade.from) * weight;
-		}
 
 		// 5. 逐轴 Override 仲裁：候选 = 槽位轴（transition 级）+ 各播放的 Override 轴。
 		interface Candidate {
@@ -620,7 +686,7 @@ export class MotionDirector {
 		}
 		for (const playback of this.playbacks) {
 			// 退场中（releasing/cancelling）已交还控制权，不再是候选；handoff 淡出负责连续性。
-			if (playback.state !== "playing") continue;
+			if (playback.state !== "playing" || playback.backgroundWeight <= 0) continue;
 			for (const axis of playback.overrideAxes) {
 				const list = candidates.get(axis) ?? [];
 				list.push({ priority: playback.priority, seq: playback.seq, playback });
@@ -630,6 +696,9 @@ export class MotionDirector {
 
 		const inhibitMask = new Map<string, number>(); // axis -> 抑制者的优先级
 		const gazeClaimed = new Set<string>(); // 视线补偿让位集：本帧被 Override/槽位认领的视线轴
+		const gazeWeights = new Map<string, number>();
+		const eyelidClaimed = new Set<string>();
+		const playbackOwned = new Set<string>();
 		for (const [axis, list] of candidates) {
 			if (axis.startsWith("gaze.")) gazeClaimed.add(axis);
 			list.sort((a, b) => b.priority - a.priority || b.seq - a.seq);
@@ -646,17 +715,22 @@ export class MotionDirector {
 			}
 			if (winner.playback) {
 				const p = winner.playback;
+				if (p.state !== "playing") continue;
+				playbackOwned.add(axis);
 				// 首次写入或遮蔽恢复：捕获当前帧值平滑淡入（§4.1.3）；被遮蔽期间增益冻结。
 				let gainState = p.gain.get(axis);
 				if (!gainState) {
-					gainState = { from: frame[axis] ?? this.neutral[axis]!, ageMs: 0 };
+					gainState = { from: this.frame[axis] ?? this.neutral[axis]!, ageMs: 0 };
 					p.gain.set(axis, gainState);
 				}
 				gainState.ageMs += dt;
 				const gain = p.fadeInMs > 0 ? smooth(gainState.ageMs / p.fadeInMs) : 1;
-				const sampled = sampleMotion(p.clip, p.ageMs, p.baseline)[axis] ?? frame[axis]!;
+				const sampled = sampleMotion(p.clip, this.sampleTime(p), p.baseline)[axis] ?? frame[axis]!;
 				// 候选恒为 playing 且 ageMs < durationMs（退场在 §2 已转换并交还），无退出混合项。
 				frame[axis] = gainState.from + (sampled - gainState.from) * gain;
+				if (axis.startsWith("gaze.")) gazeWeights.set(axis, p.backgroundWeight);
+				if (axis.startsWith("eyes.") && !p.background) eyelidClaimed.add(axis);
+				this.recordContribution(p.id, axis);
 				if (p.inhibitAdditives === true || (Array.isArray(p.inhibitAdditives) && p.inhibitAdditives.includes(axis))) {
 					inhibitMask.set(axis, p.priority);
 				}
@@ -664,16 +738,30 @@ export class MotionDirector {
 				frame[axis] = winner.slotValue!;
 			}
 		}
+		// 槽位已更新的目标也经过交还，避免持续半眯表情把眼睑收势直接覆盖。
+		for (const [axis, fade] of this.handoffs) {
+			if (playbackOwned.has(axis)) continue;
+			const weight = fade.durationMs > 0 ? smooth(fade.ageMs / fade.durationMs) : 1;
+			frame[axis] = fade.from + (frame[axis]! - fade.from) * weight;
+		}
 
 		// 6. Additive 层：独立叠加 ΔX，永不抢占（A17.1）；受增量抑制遮罩约束。
+		const posture = this.slotComposite();
 		for (const playback of this.playbacks) {
 			if (!playback.additiveAxes.size) continue;
-			const sampled = sampleMotion(playback.clip, playback.ageMs, playback.baseline);
+			const sampled = sampleMotion(playback.clip, this.sampleTime(playback), playback.baseline);
+			const headScale = this.headroomScale(playback.clip, posture);
 			for (const axis of playback.additiveAxes) {
 				const maskPriority = inhibitMask.get(axis);
 				if (maskPriority !== undefined && playback.priority < maskPriority) continue;
-				const delta = sampled[axis]! - (playback.baseline[axis] ?? this.neutral[axis]!);
-				frame[axis] = (frame[axis] ?? this.neutral[axis]!) + delta * this.lifeWeight(playback);
+				const scale = axis.startsWith("head.") ? headScale : 1;
+				const delta =
+					(sampled[axis]! - (playback.baseline[axis] ?? this.neutral[axis]!)) *
+					scale *
+					this.lifeWeight(playback) *
+					playback.backgroundWeight;
+				frame[axis] = (frame[axis] ?? this.neutral[axis]!) + delta;
+				if (Math.abs(delta) > 1e-8) this.recordContribution(playback.id, axis);
 			}
 		}
 
@@ -684,7 +772,7 @@ export class MotionDirector {
 				(p) => p.state === "playing" && p.priority > CATEGORY_PRIORITY.autonomic,
 			);
 			this.autonomic.setSuppression({ sway: activeMotion ? 0 : 1, drift: this.attention ? 0 : 1 });
-			const auto = this.autonomic.step(dt);
+			const auto = this.autonomic.step(dt, eyelidClaimed.size > 0);
 			this.autonomicBlinkFactor = auto.blinkFactor;
 			for (const [axis, delta] of Object.entries(auto.deltas)) {
 				// rig 未声明的轴（如 MO 无 torso.breath）静默丢弃。
@@ -701,6 +789,7 @@ export class MotionDirector {
 		this.pipelines.process(frame, dt, {
 			gazeAim,
 			gazeClaimed,
+			gazeWeights,
 			speechGain: this.activeSpeechGain(),
 			blinkFactor: this.autonomicBlinkFactor,
 			blinkWeight: this.autonomic ? 1 : 0,
@@ -715,6 +804,12 @@ export class MotionDirector {
 		return { ...frame };
 	}
 
+	private recordContribution(id: string, axis: string): void {
+		let axes = this.contributions.get(id);
+		if (!axes) this.contributions.set(id, (axes = new Set()));
+		axes.add(axis);
+	}
+
 	/** A17.2/A17.3：退场统一入口——立即交还控制权，退场轴经 handoff 淡向下一来源，fadeOut 后结算。reason 覆写结算账因（缺省按退场态推导）。 */
 	private beginExit(playback: Playback, status: "completed" | "cancelled", reason?: string): void {
 		if (playback.settled || playback.state !== "playing") return;
@@ -727,6 +822,7 @@ export class MotionDirector {
 
 	private beginHandoff(playback: Playback): void {
 		for (const axis of playback.overrideAxes) {
+			if (axis.startsWith("gaze.")) continue; // 视线管道交还到当时有效的 attention。
 			this.handoffs.set(axis, {
 				from: this.frame[axis] ?? this.neutral[axis]!,
 				ageMs: 0,
@@ -737,14 +833,16 @@ export class MotionDirector {
 
 	/**
 	 * 生命权重：1 = 动作完全生效，0 = 已完全交还底座。
-	 * 播放中恒为 1；自然结束/releasing/cancelling 后随 fadeOut 平滑衰减到 0。
+	 * 播放中随 fadeIn 入场；自然结束/releasing/cancelling 后随 fadeOut 平滑衰减到 0。
 	 * Override 退出走 handoff（beginExit）；Additive 贡献乘 lifeWeight 平滑收势。
 	 */
 	private lifeWeight(playback: Playback): number {
-		const exitFrom = playback.state === "playing" ? playback.clip.durationMs : playback.exitStartMs;
-		const over = playback.ageMs - exitFrom;
-		if (over <= 0) return 1;
-		return playback.fadeOutMs > 0 ? 1 - smooth(over / playback.fadeOutMs) : 0;
+		const entryAge = playback.state === "playing" ? playback.ageMs : playback.exitStartMs;
+		const entryWeight = playback.fadeInMs > 0 ? smooth(entryAge / playback.fadeInMs) : 1;
+		if (playback.state === "playing") return entryWeight;
+		const over = playback.ageMs - playback.exitStartMs;
+		const exitWeight = playback.fadeOutMs > 0 ? 1 - smooth(over / playback.fadeOutMs) : 0;
+		return entryWeight * exitWeight;
 	}
 
 	private slotComposite(): Record<string, number> {

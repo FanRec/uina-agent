@@ -219,6 +219,8 @@ export interface PipelineFrameContext {
 	gazeAim?: GazeAim;
 	/** 本帧被动作 Override 或槽位认领的视线轴（补偿让位）。 */
 	gazeClaimed: ReadonlySet<string>;
+	/** 背景视线被前景压低时，与有效注视目标混合。 */
+	gazeWeights?: ReadonlyMap<string, number>;
 	/** 语音增益（exclusive → 0）。 */
 	speechGain: number;
 	blinkFactor: number;
@@ -237,6 +239,9 @@ export class SomaticPipelines {
 	private readonly gazeAxes: string[] = [];
 	private readonly eyelidAxes: string[] = [];
 	private readonly halfRanges: Readonly<Record<string, number>>;
+	private readonly gazeValues = new Map<string, number>();
+	private readonly gazeClaims = new Set<string>();
+	private readonly gazeReturns = new Map<string, { from: number; ageMs: number }>();
 
 	constructor(
 		controls: Readonly<Record<string, { min: number; max: number }>>,
@@ -287,6 +292,12 @@ export class SomaticPipelines {
 		return this.namedAims[name];
 	}
 
+	resetGazeHandoffs(): void {
+		this.gazeValues.clear();
+		this.gazeClaims.clear();
+		this.gazeReturns.clear();
+	}
+
 	process(frame: Record<string, number>, dtMs: number, ctx: PipelineFrameContext): void {
 		// 1) 骨骼弹簧：目标是仲裁+自律叠加后的合成帧值。
 		const boneTargets: Record<string, number> = {};
@@ -302,22 +313,39 @@ export class SomaticPipelines {
 
 		// 3) 视线补偿：在头部实际姿态（弹簧输出）确定后结算；被认领的视线轴让位。
 		const aim = ctx.gazeAim;
-		if (aim) {
-			const yawRange = this.halfRanges["head.yaw"] || 1;
-			const pitchRange = this.halfRanges["head.pitch"] || 1;
-			const compensated = gazeCompensation(
-				aim,
-				frame["head.yaw"] ?? 0,
-				frame["head.pitch"] ?? 0,
-				yawRange,
-				pitchRange,
-				this.comfortGaze,
-			);
-			for (const axis of this.gazeAxes) {
-				if (ctx.gazeClaimed.has(axis)) continue;
-				if (axis === "gaze.x") frame[axis] = compensated.x;
-				if (axis === "gaze.y") frame[axis] = compensated.y;
+		const compensated = aim
+			? gazeCompensation(
+					aim,
+					frame["head.yaw"] ?? 0,
+					frame["head.pitch"] ?? 0,
+					this.halfRanges["head.yaw"] || 1,
+					this.halfRanges["head.pitch"] || 1,
+					this.comfortGaze,
+				)
+			: undefined;
+		for (const axis of this.gazeAxes) {
+			const claimed = ctx.gazeClaimed.has(axis);
+			const resting = claimed ? this.neutral[axis]! : (frame[axis] ?? this.neutral[axis]!);
+			const target = (axis === "gaze.x" ? compensated?.x : compensated?.y) ?? resting;
+			if (claimed) {
+				this.gazeClaims.add(axis);
+				this.gazeReturns.delete(axis);
+				const weight = ctx.gazeWeights?.get(axis) ?? 1;
+				frame[axis] = target + (frame[axis]! - target) * weight;
+			} else {
+				if (this.gazeClaims.delete(axis)) {
+					this.gazeReturns.set(axis, { from: this.gazeValues.get(axis) ?? target, ageMs: 0 });
+				}
+				const returning = this.gazeReturns.get(axis);
+				if (returning) {
+					returning.ageMs += dtMs;
+					const phase = Math.min(1, returning.ageMs / 120);
+					const weight = phase * phase * (3 - 2 * phase);
+					frame[axis] = returning.from + (target - returning.from) * weight;
+					if (phase === 1) this.gazeReturns.delete(axis);
+				} else frame[axis] = target;
 			}
+			this.gazeValues.set(axis, frame[axis]!);
 		}
 
 		// 4) 眼睑乘法调制。

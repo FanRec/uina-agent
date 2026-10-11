@@ -70,8 +70,8 @@ describe("Live2D 身体状态事件帧通知 (World Event Frame)", () => {
 		expect(readyEv.channel).toBe("world");
 		expect(readyEv.type).toBe("body.ready");
 		expect(readyEv.text).toContain("[身体就绪: live2d]");
-		expect(readyEv.text).toContain("nod(点头)");
-		expect(readyEv.text).toContain("shake(摇头)");
+		expect(readyEv.text).toContain("nod(点头应声");
+		expect(readyEv.text).toContain("shake(摇头否认");
 		expect(readyEv.text).toContain("MO");
 		expect(await readyEv.render?.()).toBe("🟢 Live2D 身体就绪 (MO)");
 

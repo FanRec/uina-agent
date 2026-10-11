@@ -1,3 +1,4 @@
+import { unconfirmedInjections } from "./live2d-injection-fixture.js";
 import { describe, expect, it } from "vitest";
 import type { BodyEndpoint } from "../src/extensions/world-framework/seams.js";
 import { activateEmbodimentExtension } from "../.uina/extensions/embodiment/index.js";
@@ -97,6 +98,7 @@ interface FakeState {
 
 const makeRuntime = (state: FakeState) => {
 	const client = {
+		...unconfirmedInjections(),
 		isConnected: () => state.connected,
 		getModelProfile: () => ({ modelID: MODEL_ID }),
 		injectParameters: () => {},

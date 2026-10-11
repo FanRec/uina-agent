@@ -114,7 +114,7 @@ export function buildLive2DEndpoint(runtime: Live2DRuntime): Live2DEndpoint {
 				}
 				const posture = runtime.catalogView.postures.get(resolved.name)!;
 				try {
-					await director.setPosture(posture.values);
+					await director.setPosture(posture.values, { durationMs: posture.transitionMs });
 					updateRecord(entry, "finished");
 				} catch (error) {
 					updateRecord(entry, "finished", error instanceof SupersededError ? "superseded" : "failed");

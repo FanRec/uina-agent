@@ -1,3 +1,4 @@
+import { unconfirmedInjections } from "./live2d-injection-fixture.js";
 import { describe, expect, it } from "vitest";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
@@ -82,6 +83,7 @@ interface FakeState {
 const makeFake = (state: FakeState): VTSClient => {
 	let listener: ((connected: boolean) => void) | undefined;
 	return {
+		...unconfirmedInjections(),
 		isConnected: () => state.connected,
 		getModelProfile: () => ({ modelID: MODEL_ID }),
 		injectParameters: () => {},
@@ -142,8 +144,10 @@ const makeRuntime = (state: FakeState, cleanupTimeoutMs?: number) =>
 							]),
 						),
 						spatial: {
-							delta: { rotation: 360 },
-							moveMs: 100,
+							segments: [
+								{ delta: { rotation: 360 }, durationMs: 100 },
+								{ delta: { rotation: 0 }, durationMs: 100 },
+							],
 						},
 					},
 				},
@@ -181,11 +185,12 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			expect(secondResult.status).toBe("failed");
 			expect(secondResult.details).toMatchObject({ reason: "resource_conflict" });
 			const firstResult = await firstP;
-			expect(firstResult.status).toBe("succeeded");
+			expect(firstResult.status).toBe("unknown"); // 假体不确认参数输入。
+			expect(firstResult.details).toMatchObject({ restored: true });
 
 			// 结束后资源可用。
 			const again = await rt.express({ motion: "spin" }, {});
-			expect(again.status).toBe("succeeded");
+			expect(again.status).toBe("unknown");
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}
@@ -236,7 +241,8 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			rt.trackCleanup(new Promise<boolean>(() => {})); // 永不结算的清理
 			await expect(rt.safeStop()).rejects.toThrow("归位清理尚未确认");
 		} finally {
-			await app.onStop?.({} as ServiceCompanionContext);
+			await expect(app.onStop?.({} as ServiceCompanionContext)).rejects.toThrow("归位清理尚未确认");
+			expect(rt.isStarted).toBe(false);
 		}
 	});
 

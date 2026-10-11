@@ -58,6 +58,8 @@ export class AutonomicGenerator {
 	private blinkPhase: BlinkPhase = "idle";
 	private blinkAgeMs = 0;
 	private nextBlinkInMs: number;
+	private swayEnabled = true;
+	private blinkSuppressed = false;
 
 	constructor(options: AutonomicOptions = {}) {
 		this.rng = options.rng ?? Math.random;
@@ -84,7 +86,11 @@ export class AutonomicGenerator {
 		if (targets.drift !== undefined) this.driftTarget = Math.max(0, Math.min(1, targets.drift));
 	}
 
-	step(dtMs: number): AutonomicFrame {
+	setSwayEnabled(enabled: boolean): void {
+		this.swayEnabled = enabled;
+	}
+
+	step(dtMs: number, suppressBlink = false): AutonomicFrame {
 		this.ageMs += dtMs;
 		const deltas: Record<string, number> = {};
 
@@ -101,7 +107,7 @@ export class AutonomicGenerator {
 		this.driftLevel = approach(this.driftLevel, this.driftTarget);
 
 		// 待机微晃：双正弦拟噪声（周期互质避免重合），主动动作期间衰减。
-		if (this.swayLevel > 0.001) {
+		if (this.swayEnabled && this.swayLevel > 0.001) {
 			const yawPhase = (2 * Math.PI * this.ageMs) / 7300;
 			const pitchPhase = (2 * Math.PI * this.ageMs) / 11300 + 1.3;
 			for (const [axis, amplitude] of Object.entries(this.sway)) {
@@ -123,7 +129,13 @@ export class AutonomicGenerator {
 			}
 		}
 
-		return { deltas, blinkFactor: this.stepBlink(dtMs) };
+		if (suppressBlink && !this.blinkSuppressed) {
+			this.blinkPhase = "idle";
+			this.blinkAgeMs = 0;
+			this.nextBlinkInMs = this.sampleBlinkDelay();
+		}
+		this.blinkSuppressed = suppressBlink;
+		return { deltas, blinkFactor: suppressBlink ? 1 : this.stepBlink(dtMs) };
 	}
 
 	/** 冷却锁随机眨眼：基础冷却 + 均值 meanDelay 的指数随机延迟；闭眼 closeMs / 睁眼 openMs。 */

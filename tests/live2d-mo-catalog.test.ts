@@ -12,23 +12,24 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 		expect(catalog.motions.has("nod")).toBe(true);
 		expect(catalog.motions.has("shake")).toBe(true);
 		expect(catalog.motions.has("curious")).toBe(true);
-		expect(catalog.motions.has("greeting")).toBe(true);
-		expect(catalog.motions.get("nod")?.aliases).toContain("dip");
+		expect(catalog.motions.size).toBe(13);
+		for (const removed of ["greeting", "wave", "freeze", "music_groove"])
+			expect(catalog.motions.has(removed)).toBe(false);
 
 		// 核心物理约束校验：伴随动作必须是 baseline-offset（Additive 增量），绝不抢占基础姿态
 		const nodMotion = catalog.motions.get("nod")!.motion;
 		expect(nodMotion.tracks.every((t) => t.space === "baseline-offset")).toBe(true);
 
 		// 校验 postures
-		expect(catalog.postures.has("attentive")).toBe(true);
-		expect(catalog.postures.has("lean")).toBe(true);
+		expect([...catalog.postures.keys()]).toEqual(["rest", "tuck", "head_back"]);
 
 		// 校验 expressions
 		expect(catalog.expressions.has("smile")).toBe(true);
-		expect(catalog.expressions.has("brighten")).toBe(true);
+		expect([...catalog.expressions.keys()]).toEqual(["smile", "smirk", "clear_face"]);
 
 		// 校验 background.thinking
 		expect(catalog.background.thinking).toBeDefined();
+		expect(catalog.background.idle).toBeDefined();
 
 		// loadCatalog 动态解耦验证
 		expect(loadCatalog(MO_MODEL_ID, rig)).toBeDefined();

@@ -1,5 +1,6 @@
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import type { SomaticActionResult } from "./director/director.js";
+import type { MotionInjectionEvidence } from "./adapter/vts-client.js";
 
 /**
  * 工具结果词汇表（P4-1，边界规范 §2.1，normative）。
@@ -70,12 +71,24 @@ export function toolUnknown(message: string, extra?: Record<string, unknown>): T
 
 /**
  * 引擎动作终态 → 工具结果（§2.1 映射，normative）：
- * completed → succeeded；cancelled → cancelled；failed(disconnected) → unknown（网络中断，效果不明）。
+ * completed 仅在本次所需输入接受已确认时 succeeded，否则 unknown；cancelled → cancelled。
+ * failed(disconnected) → unknown（网络中断，效果不明）。
  */
-export function fromEngineResult(engine: SomaticActionResult, label: string): ToolExecutionResult {
+export function fromEngineResult(
+	engine: SomaticActionResult,
+	label: string,
+	evidence?: MotionInjectionEvidence,
+	requiredInputs: readonly string[] = [],
+): ToolExecutionResult {
 	switch (engine.status) {
 		case "completed":
-			return toolSucceeded(`${label}已完成。`, { effectStatus: "applied", verification: "input_accepted" });
+			if (!evidence?.accepted || requiredInputs.some((input) => !evidence.acceptedInputs.includes(input)))
+				return toolUnknown(`${label}本地播放已结束，但本次输入接受未完整确认。`, { injection: evidence });
+			return toolSucceeded(`${label}本地播放已结束，VTS 已接受本次输入。`, {
+				effectStatus: "accepted",
+				verification: "input_accepted",
+				injection: evidence,
+			});
 		case "cancelled":
 			return {
 				result: `${label}已取消${engine.reason ? `（${engine.reason}）` : ""}。`,

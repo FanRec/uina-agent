@@ -12,7 +12,7 @@ import {
 	type CatalogMotionEntry,
 	type CatalogSnapshot,
 } from "./authoring/catalog.js";
-import type { SpeechPolicy } from "./authoring/motion.js";
+import type { CompiledMotion, SpeechPolicy } from "./authoring/motion.js";
 import {
 	MotionDirector,
 	SupersededError,
@@ -81,6 +81,26 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<boolean> =>
 		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 
+/** 取消立即结束调用方等待；已经发出的 VTS 请求仍由客户端结算。 */
+function withCancellation<T>(request: Promise<T>, signal: AbortSignal): Promise<T> {
+	return new Promise((resolve, reject) => {
+		const abort = () => reject(signal.reason);
+		const cleanup = () => signal.removeEventListener("abort", abort);
+		request.then(
+			(value) => {
+				cleanup();
+				resolve(value);
+			},
+			(error) => {
+				cleanup();
+				reject(error);
+			},
+		);
+		if (signal.aborted) abort();
+		else signal.addEventListener("abort", abort, { once: true });
+	});
+}
+
 const wrapDeg = (d: number): number => (((d % 360) + 540) % 360) - 180;
 
 const poseMatches = (now: ModelPose, base: ModelPose): boolean =>
@@ -117,10 +137,13 @@ export class Live2DRuntime {
 	/** thinking 状态（§5 宿主事件）：状态驱动幂等，仅跳变时启/停 background.thinking。 */
 	private thinking = false;
 	private thinkingHandle?: MotionHandle;
+	private idleHandle?: MotionHandle;
 	/** 独占声明 reason 序号：每次声明唯一 reason，重叠声明一律 resource_conflict（不做同 reason 幂等替换）。 */
 	private claimSeq = 0;
-	/** 在途归位清理任务（flip 取消路径注册；safeStop 等待-结算的事实源）。 */
+	private spatialClaim?: ExclusiveClaim;
+	/** 在途归位清理任务；safeStop 等待-结算的事实源。 */
 	private readonly pendingCleanups = new Set<Promise<boolean>>();
+	private cleanupUnconfirmed = false;
 	private readonly cleanupTimeoutMs: number;
 	/** safeStop 保持帧：暂停期间按 tick 节奏持续注入（口型通道已覆写中性值）。 */
 	private keepFrame?: Record<string, number>;
@@ -144,6 +167,7 @@ export class Live2DRuntime {
 		if (this.rig) {
 			validateRig(this.rig);
 			this.director = new MotionDirector(this.rig.controls, { external: this.rig.external, rng: options.rng });
+			this.director.setAuthoredIdle(this.catalog.background.idle !== undefined);
 			if (options.speech) {
 				const input = new SpeechInput(options.speech, this.director);
 				this.speechInput = input;
@@ -217,7 +241,12 @@ export class Live2DRuntime {
 			throw new Error(`目录与 rig 模型身份不符: 目录 ${snapshot.modelID} vs rig ${this.rig.modelID}`);
 		this.catalog = snapshot;
 		this.generation++;
+		this.director?.cancelClaims();
 		this.director?.invalidateAll("catalog changed");
+		this.idleHandle = undefined;
+		this.thinkingHandle = undefined;
+		this.thinking = false;
+		this.director?.setAuthoredIdle(snapshot.background.idle !== undefined);
 		if (this.connectionOnline) {
 			this.emitStatusEvent();
 		}
@@ -256,83 +285,137 @@ export class Live2DRuntime {
 		entry: CatalogMotionEntry,
 		options: { speech?: SpeechPolicy; atomic?: boolean; signal?: AbortSignal } = {},
 	): Promise<ToolExecutionResult> {
-		const director = this.director;
-		if (!director) return toolRejected("unadapted", "引擎未接入（无 rig）。");
-
+		const denied = this.gate(options);
+		if (denied) return denied;
+		const director = this.director!;
+		const client = this.client!;
 		const clip =
 			options.speech === undefined ? entry.motion : recompileWithSpeech(entry, options.speech, this.rig!.controls);
 		const playOptions: PlayOptions = {
+			...entry.playback,
 			category: "voluntary",
 			atomic: options.atomic ?? entry.atomic,
 			signal: options.signal,
 		};
 		const label = `动作 "${entry.description}"`;
-
-		const stunt = entry.spatial;
-		if (!stunt) {
+		if (!entry.spatial) {
 			const handle = director.play(clip, playOptions);
-			return fromEngineResult(await handle.finished, label);
+			return this.settleMotion(handle, clip, label);
 		}
 
-		if (!this.client || !this.client.isConnected()) {
-			return toolRejected("model_not_ready", "VTS 未连接，空间手势不可用。");
-		}
 		const claim = this.acquireClaim(["model:transform"], "motion", options.signal, true);
 		if ("status" in claim) return claim;
-
-		const client = this.client;
+		this.spatialClaim = claim;
+		const generation = this.generation;
+		const modelGeneration = client.getModelGeneration();
+		const connectionGeneration = client.getInjectionStats().generation;
+		const sameModel = () =>
+			generation === this.generation &&
+			this.identityMatched() &&
+			client.isConnected() &&
+			client.getModelGeneration() === modelGeneration &&
+			client.getInjectionStats().generation === connectionGeneration;
+		let completeCleanup: (confirmed: boolean) => void = () => {};
+		this.trackCleanup(
+			new Promise<boolean>((resolve) => {
+				completeCleanup = resolve;
+			}),
+		);
+		let base: ModelPose | undefined;
+		let handle: MotionHandle | undefined;
+		let motionResult: Promise<ToolExecutionResult> | undefined;
+		let moved = false;
+		let restored = true;
+		let restoreAttempted = false;
+		const ensureActive = () => {
+			if (!sameModel() || handle?.status === "releasing" || handle?.status === "cancelled") claim.cancel();
+			claim.signal.throwIfAborted();
+		};
+		const restore = async (): Promise<boolean> => {
+			if (restoreAttempted) return restored;
+			restoreAttempted = true;
+			restored = !moved || (base !== undefined && (await this.restorePose(client, base, sameModel)));
+			return restored;
+		};
 		try {
-			const base = await client.getModelPosition();
-			const moveSec = stunt.moveMs / 1000;
-			const settleMs = stunt.moveMs + SETTLE_MARGIN_MS;
-			const target: ModelPose = {
-				positionX: base.positionX + (stunt.delta.x ?? 0),
-				positionY: base.positionY + (stunt.delta.y ?? 0),
-				rotation: base.rotation + (stunt.delta.rotation ?? 0),
-				size: base.size + (stunt.delta.size ?? 0),
-			};
-
-			const handle = director.play(clip, playOptions);
-
-			await client.moveModel({ timeInSeconds: moveSec, valuesAreRelativeToModel: false, ...target });
-			let aborted = !(await sleep(settleMs, options.signal));
-			if (!aborted && stunt.holdMs !== undefined && stunt.holdMs > 0) {
-				aborted = !(await sleep(stunt.holdMs, options.signal));
-			}
-			await client.moveModel({
-				...base,
-				timeInSeconds: moveSec,
-				valuesAreRelativeToModel: false,
+			base = await withCancellation(client.getModelPosition(this.rig!.modelID), claim.signal);
+			ensureActive();
+			handle = director.play(clip, { ...playOptions, signal: claim.signal });
+			void handle.finished.then((result) => {
+				if (result.status === "cancelled") claim.cancel();
 			});
-			if (!(await sleep(settleMs, options.signal))) aborted = true;
-
-			if (aborted || options.signal?.aborted) {
-				const confirmed = await this.trackCleanup(this.restorePose(client, base));
-				return toolRejected(
-					"cancelled",
-					confirmed ? `${label} 已取消，模型已归位并核实。` : `${label} 已取消，但归位未核实。`,
-					{ effectStatus: confirmed ? "cancelled" : "unknown" },
+			motionResult = this.settleMotion(handle, clip, label);
+			for (const segment of entry.spatial.segments) {
+				ensureActive();
+				await withCancellation(client.getModelPosition(this.rig!.modelID), claim.signal);
+				ensureActive();
+				const startedAt = performance.now();
+				moved = true; // 请求异常也可能已经到达 VTS，因此必须尝试归位。
+				await withCancellation(
+					client.moveModel({
+						timeInSeconds: segment.durationMs / 1000,
+						valuesAreRelativeToModel: false,
+						positionX: base.positionX + (segment.delta.x ?? 0),
+						positionY: base.positionY + (segment.delta.y ?? 0),
+						rotation: base.rotation + (segment.delta.rotation ?? 0),
+						size: base.size + (segment.delta.size ?? 0),
+					}),
+					claim.signal,
 				);
+				const remaining = Math.max(0, segment.durationMs - (performance.now() - startedAt));
+				if (!(await sleep(remaining + (segment.holdMs ?? 0), claim.signal))) break;
 			}
-
-			const now = await client.getModelPosition();
-			if (!poseMatches(now, base)) {
-				return toolUnknown(`${label} 空间特技已执行，但回位未核实（回读与基线不符）。`);
+			ensureActive();
+			await sleep(SETTLE_MARGIN_MS, claim.signal);
+			ensureActive();
+			const now = await withCancellation(client.getModelPosition(this.rig!.modelID), claim.signal);
+			ensureActive();
+			restored = sameModel() && poseMatches(now, base);
+			if (!restored) {
+				handle.stop("cut");
+				await restore();
+				return toolUnknown(`${label} 正常回位未确认。`, { restored });
 			}
-
-			const clipResult = await handle.finished;
-			if (clipResult.status !== "completed") {
-				return fromEngineResult(clipResult, label);
+			// 失联会停止合成时钟；空间表演不能永远等一个不再推进的句柄。
+			let result: ToolExecutionResult | undefined;
+			while (!result) {
+				ensureActive();
+				result = await Promise.race([motionResult, sleep(50).then(() => undefined)]);
 			}
-
-			return toolSucceeded(`${label} 已执行并核实归位。`, {
-				effectStatus: "applied",
-				verification: "input_accepted",
-			});
+			ensureActive();
+			return { ...result, details: { ...(result.details as Record<string, unknown> | undefined), restored: true } };
 		} catch (error) {
-			return toolUnknown(`${label} 空间特技执行异常：${error instanceof Error ? error.message : String(error)}`);
+			const cancelled = claim.signal.aborted || handle?.status === "releasing" || handle?.status === "cancelled";
+			handle?.stop("cut");
+			const confirmed = await restore();
+			if (cancelled && !moved)
+				return toolRejected("cancelled", `${label} 已取消，未发送空间移动。`, { effectStatus: "cancelled" });
+			if (cancelled)
+				return toolRejected("cancelled", confirmed ? `${label} 已取消并核实归位。` : `${label} 已取消，归位未确认。`, {
+					effectStatus: confirmed ? "cancelled" : "unknown",
+					restored: confirmed,
+				});
+			return toolUnknown(`${label} 执行异常：${error instanceof Error ? error.message : String(error)}`, {
+				...(moved ? { restored: confirmed } : {}),
+			});
 		} finally {
+			completeCleanup(restored);
+			if (this.spatialClaim === claim) this.spatialClaim = undefined;
 			claim.release();
+		}
+	}
+
+	private async settleMotion(handle: MotionHandle, clip: CompiledMotion, label: string): Promise<ToolExecutionResult> {
+		const observation = this.client!.observeMotionInjections(handle.id);
+		try {
+			const result = await handle.finished;
+			const evidence = result.status === "completed" ? await observation.finish() : observation.snapshot();
+			const inputs = [
+				...new Set(clip.axes.flatMap((axis) => this.rig!.bindings[axis]!.map((binding) => binding.input))),
+			];
+			return fromEngineResult(result, label, evidence, inputs);
+		} finally {
+			observation.close();
 		}
 	}
 
@@ -392,8 +475,8 @@ export class Live2DRuntime {
 		const slot = entries.get(name);
 		if (!slot) return toolRejected(reason, `${label}不在当前模型目录: "${name}"（可用名称见 status）。`);
 		try {
-			if (kind === "posture") await director.setPosture(slot.values, { holdMs });
-			else await director.setExpression(slot.values, { holdMs });
+			if (kind === "posture") await director.setPosture(slot.values, { holdMs, durationMs: slot.transitionMs });
+			else await director.setExpression(slot.values, { holdMs, durationMs: slot.transitionMs });
 		} catch (error) {
 			if (error instanceof SupersededError) {
 				return {
@@ -404,7 +487,10 @@ export class Live2DRuntime {
 			}
 			throw error;
 		}
-		return toolSucceeded(`${label} "${name}" 已生效。`, { effectStatus: "applied", verification: "input_accepted" });
+		return toolSucceeded(`${label} "${name}" 本地意图已设置。`, {
+			effectStatus: "accepted",
+			verification: "local_intent",
+		});
 	}
 
 	/** attention（§2）：设置注视目标；内置 user/screen/avert_* 或目录命名；hold_ms 到期自动回 neutral。 */
@@ -423,7 +509,10 @@ export class Live2DRuntime {
 		if (target === undefined)
 			return toolRejected("unknown_attention", `注视目标不在词表: "${name}"（内置 user/screen/avert_* 或目录命名）。`);
 		director.setAttention(target, { holdMs });
-		return toolSucceeded(`注视目标 "${name}" 已生效。`, { effectStatus: "applied", verification: "input_accepted" });
+		return toolSucceeded(`注视目标 "${name}" 本地意图已设置。`, {
+			effectStatus: "accepted",
+			verification: "local_intent",
+		});
 	}
 
 	/** state（§2 兼容接口）：三个槽相互独立；声明的槽整槽替换，未声明的槽保持不变；hold_ms 各槽独立计时。 */
@@ -438,13 +527,13 @@ export class Live2DRuntime {
 		if (args.posture !== undefined) {
 			const slot = this.catalog.postures.get(String(args.posture));
 			if (!slot) return toolRejected("unknown_pose", `姿态不在当前模型目录: "${args.posture}"（可用名称见 status）。`);
-			pending.push(director.setPosture(slot.values, { holdMs }));
+			pending.push(director.setPosture(slot.values, { holdMs, durationMs: slot.transitionMs }));
 		}
 		if (args.expression !== undefined) {
 			const slot = this.catalog.expressions.get(String(args.expression));
 			if (!slot)
 				return toolRejected("unknown_expression", `表情不在当前模型目录: "${args.expression}"（可用名称见 status）。`);
-			pending.push(director.setExpression(slot.values, { holdMs }));
+			pending.push(director.setExpression(slot.values, { holdMs, durationMs: slot.transitionMs }));
 		}
 		if (args.attention !== undefined) {
 			const name = String(args.attention);
@@ -471,7 +560,7 @@ export class Live2DRuntime {
 			}
 			throw error;
 		}
-		return toolSucceeded("状态已生效。", { effectStatus: "applied", verification: "input_accepted" });
+		return toolSucceeded("本地状态意图已设置。", { effectStatus: "accepted", verification: "local_intent" });
 	}
 
 	/** costume（§2）：执行模型包登记的外观热键；独占声明（effect:*）+ VTS 热键触发。 */
@@ -554,6 +643,11 @@ export class Live2DRuntime {
 				this.emitStatusEvent();
 			});
 			this.client.connect();
+			// 注入的客户端可能已完成握手，connect() 不会再次发 ready 回调。
+			if (this.client.isConnected()) {
+				this.startClock();
+				this.emitStatusEvent();
+			}
 		}
 	}
 
@@ -620,7 +714,10 @@ export class Live2DRuntime {
 	 * 4. 带清理独占声明的"等待清理完成才结算"依赖 P4-5 独占资源生产者，届时接入。
 	 */
 	async safeStop(): Promise<void> {
-		if (this.paused) return;
+		if (this.paused) {
+			if (!(await this.awaitCleanups())) throw new Error("Uina 已暂停，外部效果或归位清理尚未确认。");
+			return;
+		}
 		this.paused = true;
 		this.syncFrozen();
 		const director = this.director;
@@ -631,10 +728,11 @@ export class Live2DRuntime {
 		}
 		this.keepFrame = frame;
 		director.cancelAllPlaybacks("safestop");
+		this.idleHandle = undefined;
+		this.thinkingHandle = undefined;
 		// §6.2/§6.4：取消全部独占声明；带清理的声明等待归位清理完成，未确认则抛错（调用方得
 		// unknown；拆除不被阻塞——BodyRouter.stopAll 以 allSettled 承接为 failed[]）。
 		director.cancelClaims();
-		await new Promise((r) => setTimeout(r, 0)); // 让 abort 监听器先产生清理任务
 		if (!(await this.awaitCleanups())) throw new Error("Uina 已暂停，外部效果或归位清理尚未确认。");
 	}
 
@@ -659,7 +757,12 @@ export class Live2DRuntime {
 
 	/** 归位清理任务入账（§6.2 safeStop 等待-结算的事实源）。返回原 Promise 供调用方等待。 */
 	trackCleanup(p: Promise<boolean>): Promise<boolean> {
-		const wrapped = p.finally(() => this.pendingCleanups.delete(wrapped));
+		const wrapped = p
+			.then((confirmed) => {
+				if (!confirmed) this.cleanupUnconfirmed = true;
+				return confirmed;
+			})
+			.finally(() => this.pendingCleanups.delete(wrapped));
 		this.pendingCleanups.add(wrapped);
 		return wrapped;
 	}
@@ -671,19 +774,24 @@ export class Live2DRuntime {
 			if (Date.now() > deadline) return false;
 			await Promise.race([Promise.allSettled([...this.pendingCleanups]), sleep(50)]);
 		}
-		return true;
+		return !this.cleanupUnconfirmed;
 	}
 
 	/** 空间特技归位：绝对位姿回基线 → 回读核实。返回是否核实通过（失败也结算，不悬挂声明）。 */
-	private async restorePose(client: VTSClient, base: ModelPose): Promise<boolean> {
+	private async restorePose(client: VTSClient, base: ModelPose, sameModel: () => boolean): Promise<boolean> {
 		try {
+			if (!sameModel()) return false;
+			await client.getModelPosition(this.rig!.modelID);
+			if (!sameModel()) return false;
 			await client.moveModel({
 				...base,
 				timeInSeconds: RESTORE_SECONDS,
 				valuesAreRelativeToModel: false,
 			});
 			await sleep(RESTORE_SECONDS * 1000 + SETTLE_MARGIN_MS);
-			return poseMatches(await client.getModelPosition(), base);
+			if (!sameModel()) return false;
+			const now = await client.getModelPosition(this.rig!.modelID);
+			return sameModel() && poseMatches(now, base);
 		} catch {
 			return false;
 		}
@@ -693,6 +801,7 @@ export class Live2DRuntime {
 	async resume(): Promise<void> {
 		if (!this.paused) return;
 		this.paused = false;
+		this.cleanupUnconfirmed = false;
 		this.keepFrame = undefined;
 		this.speechInput?.reset();
 		this.syncFrozen();
@@ -700,19 +809,41 @@ export class Live2DRuntime {
 
 	/**
 	 * setThinking（§5 宿主事件）：状态驱动入口，幂等——仅在跳变时动作。
-	 * false→true：按目录 background.thinking 启动（Transition 类别）；目录缺失
-	 * （未发布/无定义）即启动失败，不自动重试。true→false：fade 收势停止。
+	 * 一个循环实例贯穿整个思考状态，false 时收势退出。
 	 */
 	setThinking(on: boolean): void {
 		if (on === this.thinking) return;
 		this.thinking = on;
 		if (on) {
-			const clip = this.catalogView.background.thinking;
-			if (!clip) return;
-			this.thinkingHandle = this.director?.play(clip, { category: "transition" });
+			this.syncBackgrounds();
 		} else {
 			this.thinkingHandle?.stop("release");
 			this.thinkingHandle = undefined;
+		}
+	}
+
+	private syncBackgrounds(): void {
+		if (!this.director || this.paused) return;
+		const { idle, thinking } = this.catalog.background;
+		if (idle && !this.idleHandle) {
+			this.idleHandle = this.director.play(idle, {
+				category: "autonomic",
+				loop: true,
+				background: true,
+				atomic: false,
+				fadeInMs: 450,
+				fadeOutMs: 450,
+			});
+		}
+		if (thinking && this.thinking && !this.thinkingHandle) {
+			this.thinkingHandle = this.director.play(thinking, {
+				category: "transition",
+				loop: true,
+				background: true,
+				atomic: false,
+				fadeInMs: 350,
+				fadeOutMs: 450,
+			});
 		}
 	}
 
@@ -726,24 +857,29 @@ export class Live2DRuntime {
 		// 不归零会让下一次 thinking=true 被幂等门吞掉，本回合内再也无法点亮思考态。
 		this.thinking = false;
 		this.thinkingHandle = undefined;
+		this.spatialClaim?.cancel();
 		this.director?.interruptTransient("turn_aborted");
 		this.speechInput?.reset();
 	}
 
 	async stop(): Promise<void> {
 		if (!this.started) return;
-		this.started = false;
 		this.stopClock();
-		for (const cleanup of this.cleanups.splice(0).reverse()) {
-			try {
-				cleanup();
-			} catch {
-				// 拆除路径不因单个清理失败而中断（世界层资源释放无条件执行）。
+		try {
+			await this.safeStop();
+		} finally {
+			this.started = false;
+			for (const cleanup of this.cleanups.splice(0).reverse()) {
+				try {
+					cleanup();
+				} catch {
+					/* 继续拆除其它资源。 */
+				}
 			}
+			this.client?.disconnect();
+			this.lastEventFingerprint = undefined;
+			this.context = undefined;
 		}
-		this.client?.disconnect();
-		this.lastEventFingerprint = undefined;
-		this.context = undefined;
 	}
 
 	private startClock(): void {
@@ -778,9 +914,14 @@ export class Live2DRuntime {
 			return;
 		}
 		// 声学电平推进（失联守卫 + 作者映射）→ 引擎包络目标，先于本帧合成。
+		this.syncBackgrounds();
 		this.speechInput?.tick(dtMs);
 		const frame = this.director.step(dtMs);
-		this.client.injectParameters(encodeFrame(this.rig, frame));
+		const contributions = [...this.director.frameContributions].map(([leaseID, axes]) => ({
+			leaseID,
+			inputs: [...new Set([...axes].flatMap((axis) => this.rig!.bindings[axis]!.map((binding) => binding.input)))],
+		}));
+		this.client.injectParameters(encodeFrame(this.rig, frame), contributions);
 	}
 
 	// ---------- 事实呈现 ----------

@@ -1,3 +1,4 @@
+import { unconfirmedInjections } from "./live2d-injection-fixture.js";
 import { describe, expect, it } from "vitest";
 import type { ActionContext, ServiceCompanionContext, WorldDef } from "../src/extensions/world-framework/types.js";
 import { TOOL_RESULT_STATUSES } from "../src/core/types.js";
@@ -94,6 +95,7 @@ const makeFakeClient = (options: { connected?: boolean; modelID?: string } = {})
 		reloadCalls: 0,
 	};
 	const client = {
+		...unconfirmedInjections(),
 		isConnected: () => state.connected,
 		getModelProfile: () => state.profile,
 		injectParameters: () => {},
@@ -200,9 +202,9 @@ describe("live2d 工具面（P4-1）", () => {
 				await run(app, "reload", {}, ctx),
 			];
 			for (const res of results) expectVocabulary(res);
-			// 目录命名动作播放到终态：succeeded + effectStatus applied（§2.1 引擎终态映射）。
-			expect(results[0]!.status).toBe("succeeded");
-			expect((results[0]!.details as { effectStatus: string }).effectStatus).toBe("applied");
+			// 本地时间线结束不代表 VTS 已接受；此假体没有协议 ACK。
+			expect(results[0]!.status).toBe("unknown");
+			expect((results[0]!.details as { effectStatus: string }).effectStatus).toBe("unknown");
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}
@@ -274,7 +276,7 @@ describe("live2d 工具面（P4-1）", () => {
 		}
 	});
 
-	it("express：命名动作播放至 succeeded，合成帧推进到目标值", async () => {
+	it("express：合成帧推进到目标值，没有协议 ACK 时结果保持 unknown", async () => {
 		const { app, runtime, ctx } = await harness();
 		try {
 			const p = run(app, "express", { motion: "nod" }, ctx);
@@ -285,7 +287,7 @@ describe("live2d 工具面（P4-1）", () => {
 			for (let i = 0; i < 60; i++) runtime.composeTick(16);
 			const res = await p;
 			expectVocabulary(res);
-			expect(res.status).toBe("succeeded");
+			expect(res.status).toBe("unknown");
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}
@@ -379,7 +381,7 @@ describe("live2d 工具面（P4-1）", () => {
 			expect(status).toMatchObject({ world: "live2d" });
 			expect(status.catalog).toMatchObject({ motions: ["nod"], postures: ["lean"], expressions: ["brighten"] });
 			const diag = JSON.parse((await run(app, "diagnose", {}, ctx)).result) as Record<string, unknown>;
-			expect(diag).toMatchObject({ clockRunning: false });
+			expect(diag).toMatchObject({ clockRunning: true });
 			expect(diag.director).toMatchObject({ attention: null });
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
