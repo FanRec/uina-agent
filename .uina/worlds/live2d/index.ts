@@ -1,4 +1,8 @@
-import type { ActionContext, ServiceCompanionContext, WorldDef } from "../../../src/extensions/world-framework/types.js";
+import type {
+	ActionContext,
+	ServiceCompanionContext,
+	WorldDef,
+} from "../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { Live2DRuntime, type Live2DRuntimeOptions } from "./runtime.js";
 import { VTSClient } from "./adapter/vts-client.js";
@@ -9,13 +13,13 @@ import { loadCatalog } from "./models/mo/catalog.js";
 /**
  * Live2D 世界装配。
  *
- * 工具面按《live2d-world-boundary-spec.md》§2 定型：
- * express / posture / expression / attention / costume / spatial / status / diagnose / reload；
+ * 工具面按规范定型：
+ * express / posture / expression / attention / costume / status / diagnose / reload；
  * executionMode 显式固定为 parallel（并发是常态，安全由引擎逐轴仲裁与独占声明保证，工具层不串行化）。
  *
  * 工具结果词汇表 + gate 链（中止 → 暂停 → 连接 → 适配）+ 目录词表解析；
  * express / posture / expression / attention 走引擎映射，costume 支持执行（独占 effect:* + 热键），
- * spatial 走 model:transform 独占声明，reload 走 VTS 重载与绑定核验。
+ * 空间特技统一收拢至 express 动作手势（独占 model:transform），reload 走 VTS 重载与绑定核验。
  * 刻意不做（规范修订 A2/A14/A6）：Timeline、Performance 门面、即兴 beats、自由数值轴。
  */
 export interface Live2DAppOptions {
@@ -29,10 +33,19 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 	let runtime: Live2DRuntime | undefined;
 
 	// 工具入口统一收口：未启动时如实声明，启动后委托运行时（ActionContext.signal 一并透传）。
-	const call =
-		(action: string, run: (rt: Live2DRuntime, args: Record<string, unknown>, ctx: ActionContext) => Promise<ToolExecutionResult>) =>
-		async (args: Record<string, unknown>, ctx: ActionContext): Promise<ToolExecutionResult> =>
-			runtime ? run(runtime, args, ctx) : { result: `Live2D 世界尚未启动，"${action}" 未执行。`, status: "not_started" };
+	function call(
+		action: string,
+		run: (
+			rt: Live2DRuntime,
+			args: Record<string, unknown>,
+			ctx: ActionContext,
+		) => ToolExecutionResult | Promise<ToolExecutionResult>,
+	): (args: Record<string, unknown>, ctx: ActionContext) => Promise<ToolExecutionResult> {
+		return async (args, ctx) =>
+			runtime
+				? run(runtime, args, ctx)
+				: { result: `Live2D 世界尚未启动，"${action}" 未执行。`, status: "not_started" };
+	}
 
 	return {
 		name: "live2d",
@@ -135,29 +148,15 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 				},
 				run: call("costume", (rt, args, ctx) => rt.costume(args, ctx)),
 			},
-			spatial: {
-				description: "模型整体位移与缩放（VTS MoveModelRequest）。",
-				parameters: {
-					type: "object",
-					additionalProperties: false,
-					properties: {
-						x: { type: "number" },
-						y: { type: "number" },
-						size: { type: "number" },
-						duration: { type: "number", minimum: 0, maximum: 2 },
-					},
-				},
-				run: call("spatial", (rt, args, ctx) => rt.spatial(args, ctx)),
-			},
 			status: {
 				description: "读取世界启动状态、连接与适配事实与动作目录。",
 				parameters: { type: "object", additionalProperties: false, properties: {} },
-				run: call("status", (rt) => Promise.resolve({ result: rt.formatStatus(), status: "succeeded" as const })),
+				run: call("status", (rt) => ({ result: rt.formatStatus(), status: "succeeded" })),
 			},
 			diagnose: {
 				description: "作者诊断：运行时内部状态只读快照，不修改配置。",
 				parameters: { type: "object", additionalProperties: false, properties: {} },
-				run: call("diagnose", (rt) => Promise.resolve({ result: rt.diagnose(), status: "succeeded" as const })),
+				run: call("diagnose", (rt) => ({ result: rt.diagnose(), status: "succeeded" })),
 			},
 			reload: {
 				description: "显式重新加载当前 VTS 模型并重新核验绑定。",

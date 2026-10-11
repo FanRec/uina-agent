@@ -82,9 +82,11 @@ export class VTSClient {
 	private isAuthenticated = false;
 	private ready = false;
 	private connectionGeneration = 0;
- private modelGeneration = 0;
- private blockedAt = 0;
- getModelGeneration(): number { return this.modelGeneration; }
+	private modelGeneration = 0;
+	private blockedAt = 0;
+	getModelGeneration(): number {
+		return this.modelGeneration;
+	}
 
 	private readonly injectableParameters = new Set<string>();
 	private readonly filteredParamBuffer: VTSParamValue[] = [];
@@ -173,9 +175,11 @@ export class VTSClient {
 				if (generation !== this.connectionGeneration) return false;
 				if (!ok) {
 					this.blockedModelID = profile.modelID;
-					this.blockedAt=Date.now();
- this.fault = "控制配置已变化；请执行 reload，不必等待丢失的事件。";
- this.ready=false; this.stage="需要重新加载模型"; this.onConnectionChange?.(false);
+					this.blockedAt = Date.now();
+					this.fault = "控制配置已变化；请执行 reload，不必等待丢失的事件。";
+					this.ready = false;
+					this.stage = "需要重新加载模型";
+					this.onConnectionChange?.(false);
 				}
 				return ok;
 			})
@@ -196,20 +200,21 @@ export class VTSClient {
 		await this.refreshInjectableParameters();
 	}
 
- async request(messageType: string, data: Record<string,unknown> = {}): Promise<unknown> {
-  if(!this.isAuthenticated) throw new Error("VTS 未鉴权");
-  return this.sendRequest(messageType,data,5000);
- }
- async reloadCurrentModel(): Promise<void> {
-  const id=this.blockedModelID ?? this.modelProfile?.modelID;
-  if(!id) throw new Error("没有可重新加载的模型");
-  // Explicit unload/load crosses a witnessed boundary even when the old event was lost.
-  await this.request("ModelLoadRequest", {modelID:""});
-  await new Promise(resolve=>setTimeout(resolve,2200));
-  const deadline=Date.now()+8000;
-  while(!this.getConnectionStatus().authenticated && Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,50));
-  await this.request("ModelLoadRequest",{modelID:id});
- }
+	async request(messageType: string, data: Record<string, unknown> = {}): Promise<unknown> {
+		if (!this.isAuthenticated) throw new Error("VTS 未鉴权");
+		return this.sendRequest(messageType, data, 5000);
+	}
+	async reloadCurrentModel(): Promise<void> {
+		const id = this.blockedModelID ?? this.modelProfile?.modelID;
+		if (!id) throw new Error("没有可重新加载的模型");
+		// Explicit unload/load crosses a witnessed boundary even when the old event was lost.
+		await this.request("ModelLoadRequest", { modelID: "" });
+		await new Promise((resolve) => setTimeout(resolve, 2200));
+		const deadline = Date.now() + 8000;
+		while (!this.getConnectionStatus().authenticated && Date.now() < deadline)
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		await this.request("ModelLoadRequest", { modelID: id });
+	}
 
 	private fault?: string;
 	private injectionPending?: PendingInjection;
@@ -309,10 +314,16 @@ export class VTSClient {
 					const model = (await this.sendRequest("CurrentModelRequest", {})) as {
 						modelLoaded?: boolean;
 						modelID?: string;
- timeSinceModelLoaded?: number;
+						timeSinceModelLoaded?: number;
 					};
 					if (!model.modelLoaded || !model.modelID) throw new Error("VTS 当前未加载模型。");
-					if (this.blockedModelID === model.modelID && !(Number.isFinite(model.timeSinceModelLoaded) && Date.now()-model.timeSinceModelLoaded!*1000 > this.blockedAt+250)) {
+					if (
+						this.blockedModelID === model.modelID &&
+						!(
+							Number.isFinite(model.timeSinceModelLoaded) &&
+							Date.now() - model.timeSinceModelLoaded! * 1000 > this.blockedAt + 250
+						)
+					) {
 						this.fault = "保存配置已变化，等待 VTS 重新加载模型确认";
 						this.stage = "等待模型重新加载";
 						return;
@@ -353,7 +364,7 @@ export class VTSClient {
 					if (generation !== this.connectionGeneration || this.ws !== ws) return;
 					this.ready = true;
 					this.stage = "设备事实就绪";
- this.modelGeneration++;
+					this.modelGeneration++;
 					this.onConnectionChange?.(true);
 					let observing = false;
 					this.observationTimer = setInterval(() => {
@@ -458,16 +469,14 @@ export class VTSClient {
 	private loadPersistedToken(): string | undefined {
 		if (this.authToken) return this.authToken;
 		try {
-			if (existsSync(this.tokenPath)) {
-				const content = readFileSync(this.tokenPath, "utf8").trim();
-				if (content) {
-					if (content.startsWith("{")) {
-						const parsed = JSON.parse(content);
-						return parsed.token || parsed.authenticationToken;
-					}
-					return content;
-				}
+			if (!existsSync(this.tokenPath)) return undefined;
+			const content = readFileSync(this.tokenPath, "utf8").trim();
+			if (!content) return undefined;
+			if (content.startsWith("{")) {
+				const parsed = JSON.parse(content);
+				return parsed.token || parsed.authenticationToken;
 			}
+			return content;
 		} catch {
 			// ignore read error
 		}
@@ -502,11 +511,7 @@ export class VTSClient {
 
 		if (token) {
 			try {
-				const authRes = (await this.sendRequest("AuthenticationRequest", {
-					pluginName: this.pluginName,
-					pluginDeveloper: this.pluginDeveloper,
-					authenticationToken: token,
-				})) as { authenticated?: boolean; reason?: string };
+				const authRes = await this.authenticateToken(token);
 
 				if (authRes?.authenticated) {
 					return;
@@ -545,15 +550,19 @@ export class VTSClient {
 		this.savePersistedToken(token);
 
 		// 使用新 Token 鉴权
-		const finalAuthRes = (await this.sendRequest("AuthenticationRequest", {
-			pluginName: this.pluginName,
-			pluginDeveloper: this.pluginDeveloper,
-			authenticationToken: token,
-		})) as { authenticated?: boolean; reason?: string };
+		const finalAuthRes = await this.authenticateToken(token);
 
 		if (!finalAuthRes?.authenticated) {
 			throw new Error(`VTS 鉴权被拒绝: ${finalAuthRes?.reason ?? "未知原因"}`);
 		}
+	}
+
+	private authenticateToken(token: string): Promise<{ authenticated?: boolean; reason?: string }> {
+		return this.sendRequest("AuthenticationRequest", {
+			pluginName: this.pluginName,
+			pluginDeveloper: this.pluginDeveloper,
+			authenticationToken: token,
+		}) as Promise<{ authenticated?: boolean; reason?: string }>;
 	}
 
 	private async refreshInjectableParameters(): Promise<void> {
@@ -592,8 +601,7 @@ export class VTSClient {
 					),
 				]
 			: [];
-		// 事实刷新只替换 profile；adapter 由 getAdapter() 按身份惰性重编译，
-		// 不触发 onConnectionChange——那会把"绑定事实变化"误当"重连"，杀掉进行中的表演并重置弹簧。
+		// 刷新设备事实不触发连接回调，避免把事实变化误当重连。
 		if (JSON.stringify(outputs) !== JSON.stringify(profile.physicsOutputs)) {
 			this.modelProfile = { ...profile, physicsState: physics, physicsOutputs: outputs };
 		} else if (JSON.stringify(profile.physicsState) !== JSON.stringify(physics))
@@ -721,11 +729,18 @@ export class VTSClient {
 			};
 
 			if (json.messageType === "ModelLoadedEvent") {
-				this.blockedModelID = undefined; this.modelGeneration++;
- this.ready=false; this.onConnectionChange?.(false);
- this.fault = "模型已切换，重新读取绑定";
- const generation=this.connectionGeneration;
- setTimeout(()=>{ if(generation===this.connectionGeneration) {this.cleanupSocket();this.scheduleReconnect();}},50);
+				this.blockedModelID = undefined;
+				this.modelGeneration++;
+				this.ready = false;
+				this.onConnectionChange?.(false);
+				this.fault = "模型已切换，重新读取绑定";
+				const generation = this.connectionGeneration;
+				setTimeout(() => {
+					if (generation === this.connectionGeneration) {
+						this.cleanupSocket();
+						this.scheduleReconnect();
+					}
+				}, 50);
 				return;
 			}
 			if (this.injectionPending && json.requestID === this.injectionPending.id) {
@@ -748,16 +763,16 @@ export class VTSClient {
 					console.error(`[Live2D] VTS API 报错 (${errorID}): ${message}`);
 				}
 
-				if (json.requestID && this.pendingRequests.has(json.requestID)) {
-					const req = this.pendingRequests.get(json.requestID)!;
+				const req = json.requestID ? this.pendingRequests.get(json.requestID) : undefined;
+				if (req && json.requestID) {
 					this.pendingRequests.delete(json.requestID);
 					req.reject(new Error(`VTS API Error (${errorID}): ${message}`));
 				}
 				return;
 			}
 
-			if (json.requestID && this.pendingRequests.has(json.requestID)) {
-				const req = this.pendingRequests.get(json.requestID)!;
+			const req = json.requestID ? this.pendingRequests.get(json.requestID) : undefined;
+			if (req && json.requestID) {
 				this.pendingRequests.delete(json.requestID);
 				req.resolve(json.data);
 			}

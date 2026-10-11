@@ -96,18 +96,20 @@ export function buildLive2DEndpoint(runtime: Live2DRuntime): Live2DEndpoint {
 				// 受理时代次绑定：执行前目录已更新的按执行时事实拒绝（§3，支持性守卫——同步启动下窗口趋零）。
 				const generation = runtime.currentGeneration;
 				if (runtime.isPaused) return updateRecord(entry, "rejected", "paused");
-				if (!resolveCue(cueId)) return updateRecord(entry, "rejected", "unknown_cue");
+				const resolved = resolveCue(cueId);
+				if (!resolved) return updateRecord(entry, "rejected", "unknown_cue");
 				if (generation !== runtime.currentGeneration) return updateRecord(entry, "rejected", "stale_catalog");
 				const director = runtime.director;
 				if (!director) return updateRecord(entry, "rejected", "no_engine");
-				const resolved = resolveCue(cueId)!;
 				updateRecord(entry, "started");
 				if (resolved.kind === "motion") {
 					// cue 优先级固定 Voluntary（§3）；atomic 取目录声明（命名表演默认 true）。
 					const motionEntry = runtime.catalogView.motions.get(resolved.name)!;
-					const handle = director.play(motionEntry.motion, { category: "voluntary", atomic: motionEntry.atomic });
-					const result = await handle.finished;
-					updateRecord(entry, "finished", result.status === "completed" ? undefined : (result.reason ?? result.status));
+					const result = await runtime.playMotion(motionEntry);
+					const reason =
+						(result.details as { reason?: string } | undefined)?.reason ??
+						(result.status === "succeeded" ? undefined : result.status);
+					updateRecord(entry, "finished", reason);
 					return;
 				}
 				const posture = runtime.catalogView.postures.get(resolved.name)!;

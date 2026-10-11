@@ -60,8 +60,6 @@ export class RigValidationError extends Error {}
 
 const EVIDENCE: readonly MappingEvidence[] = ["input-only", "declared", "observed", "calibrated"];
 
-const finite = (value: number): boolean => Number.isFinite(value);
-
 /** 校验 ModelRig v3 的模型无关事实。全部通过即返回；任何问题抛 RigValidationError。 */
 export function validateRig(rig: ModelRig): void {
 	if (!rig || typeof rig !== "object") throw new RigValidationError("rig 必须是对象");
@@ -100,7 +98,8 @@ function validateExternal(external: ModelRig["external"]): void {
 }
 
 function validateControl(axis: string, control: RigControlDef): void {
-	if (![control.min, control.max, control.neutral].every(finite)) throw new RigValidationError(`非法控制范围: ${axis}`);
+	if (![control.min, control.max, control.neutral].every(Number.isFinite))
+		throw new RigValidationError(`非法控制范围: ${axis}`);
 	if (control.min >= control.max) throw new RigValidationError(`控制范围倒置: ${axis}`);
 	if (control.neutral < control.min || control.neutral > control.max) {
 		throw new RigValidationError(`中性值越界: ${axis}`);
@@ -110,8 +109,9 @@ function validateControl(axis: string, control: RigControlDef): void {
 function validateTarget(axis: string, control: RigControlDef, target: RigTarget): void {
 	if (!target || typeof target !== "object") throw new RigValidationError(`绑定目标缺失: ${axis}`);
 	if (!target.input || typeof target.input !== "string") throw new RigValidationError(`缺少输入名: ${axis}`);
-	if (!target.parameter || typeof target.parameter !== "string") throw new RigValidationError(`缺少输出参数名: ${axis}`);
-	if (!finite(target.smoothing) || target.smoothing < 0 || target.smoothing > 1) {
+	if (!target.parameter || typeof target.parameter !== "string")
+		throw new RigValidationError(`缺少输出参数名: ${axis}`);
+	if (!Number.isFinite(target.smoothing) || target.smoothing < 0 || target.smoothing > 1) {
 		throw new RigValidationError(`非法平滑系数: ${axis}`);
 	}
 	if (target.evidence !== undefined && !EVIDENCE.includes(target.evidence)) {
@@ -125,7 +125,7 @@ function validateCurve(axis: string, control: RigControlDef, points: unknown): v
 	if (!Array.isArray(points) || points.length < 2) throw new RigValidationError(`缺少完整手工曲线: ${axis}`);
 	const sign = Math.sign((points.at(-1)?.[1] ?? 0) - (points[0]?.[1] ?? 0));
 	for (const [index, point] of points.entries()) {
-		if (!Array.isArray(point) || point.length !== 2 || !point.every(finite)) {
+		if (!Array.isArray(point) || point.length !== 2 || !point.every(Number.isFinite)) {
 			throw new RigValidationError(`非法手工曲线: ${axis}[${index}]`);
 		}
 		const [x, y] = point as [number, number];
@@ -133,7 +133,8 @@ function validateCurve(axis: string, control: RigControlDef, points: unknown): v
 		if (index > 0) {
 			const [previousX, previousY] = points[index - 1] as [number, number];
 			if (x <= previousX) throw new RigValidationError(`曲线 x 非严格递增: ${axis}[${index}]`);
-			if (sign === 0 || sign * (y - previousY) <= 0) throw new RigValidationError(`曲线 y 方向不一致: ${axis}[${index}]`);
+			if (sign === 0 || sign * (y - previousY) <= 0)
+				throw new RigValidationError(`曲线 y 方向不一致: ${axis}[${index}]`);
 		}
 	}
 	if ((points[0] as [number, number])[0] !== control.min || (points.at(-1) as [number, number])[0] !== control.max) {
@@ -157,7 +158,7 @@ function validateRetargeting(rig: ModelRig, inputsWritten: Map<string, Set<strin
 			let sum = 0;
 			for (const axis of writers) {
 				const w = rule.weights[axis];
-				if (w === undefined || !finite(w) || w < 0) {
+				if (w === undefined || !Number.isFinite(w) || w < 0) {
 					throw new RigValidationError(`weighted 规则轴权重非法: ${input}.${axis}`);
 				}
 				sum += w;
@@ -166,7 +167,9 @@ function validateRetargeting(rig: ModelRig, inputsWritten: Map<string, Set<strin
 				throw new RigValidationError(`weighted 规则总权重必须大于 0: ${input}`);
 			}
 		} else if (rule.strategy !== "max") {
-			throw new RigValidationError(`retargeting_not_implemented: ${input} 声明了 ${rule.strategy}，该策略推迟（修订 A6）`);
+			throw new RigValidationError(
+				`retargeting_not_implemented: ${input} 声明了 ${rule.strategy}，该策略推迟（修订 A6）`,
+			);
 		}
 	}
 	for (const [input, writers] of inputsWritten) {
@@ -179,13 +182,14 @@ function validateRetargeting(rig: ModelRig, inputsWritten: Map<string, Set<strin
 /** 分段线性标尺采样：首尾之外强制端点裁剪（Clamp），严禁外推。 */
 export function scaleWithClamp(points: readonly (readonly [number, number])[], value: number): number {
 	if (value <= points[0]![0]) return points[0]![1];
-	if (value >= points.at(-1)![0]) return points.at(-1)![1];
+	const last = points.at(-1)!;
+	if (value >= last[0]) return last[1];
 	for (let index = 1; index < points.length; index++) {
-		const [startX, startY] = points[index - 1] as [number, number];
-		const [endX, endY] = points[index] as [number, number];
+		const [startX, startY] = points[index - 1]!;
+		const [endX, endY] = points[index]!;
 		if (value <= endX) return startY + ((endY - startY) * (value - startX)) / (endX - startX);
 	}
-	return points.at(-1)![1];
+	return last[1];
 }
 
 /**
@@ -193,11 +197,7 @@ export function scaleWithClamp(points: readonly (readonly [number, number])[], v
  * 单轴直写：按该轴标尺缩放；多轴汇入：按声明的 max 规则取缩放值最大（同向非负量契约）。
  * 调用方保证 rig 已通过 validateRig。
  */
-export function resolveInputValue(
-	rig: ModelRig,
-	input: string,
-	frame: Readonly<Record<string, number>>,
-): number {
+export function resolveInputValue(rig: ModelRig, input: string, frame: Readonly<Record<string, number>>): number {
 	const writers: Array<{ axis: string; points: readonly (readonly [number, number])[] }> = [];
 	for (const [axis, targets] of Object.entries(rig.bindings)) {
 		for (const target of targets) {
@@ -214,11 +214,9 @@ export function resolveInputValue(
 	if (rule.strategy === "weighted") {
 		let totalWeight = 0;
 		let weightedSum = 0;
-		for (const { axis, points } of writers) {
-			const value = frame[axis] ?? rig.controls[axis]!.neutral;
-			const scaled = scaleWithClamp(points, value);
+		for (const [index, { axis }] of writers.entries()) {
 			const w = rule.weights[axis] ?? 0;
-			weightedSum += scaled * w;
+			weightedSum += mapped[index]! * w;
 			totalWeight += w;
 		}
 		return totalWeight > 0 ? weightedSum / totalWeight : mapped[0]!;

@@ -3,9 +3,23 @@ import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { VOICE_LEVEL_SINK_EXPOSED_PREFIX, type VoiceLevelSink } from "../../../src/extensions/world-framework/seams.js";
 import { encodeFrame, validateRig, type ModelRig } from "./adapter/rig.js";
 import { VTSClient } from "./adapter/vts-client.js";
-import { emptyCatalog, formatCatalogAffordances, recompileWithSpeech, type AttentionTarget, type CatalogSnapshot } from "./authoring/catalog.js";
+import {
+	BUILTIN_ATTENTIONS,
+	emptyCatalog,
+	formatCatalogAffordances,
+	recompileWithSpeech,
+	type AttentionTarget,
+	type CatalogMotionEntry,
+	type CatalogSnapshot,
+} from "./authoring/catalog.js";
 import type { SpeechPolicy } from "./authoring/motion.js";
-import { MotionDirector, SupersededError, type ExclusiveClaim, type MotionHandle } from "./director/director.js";
+import {
+	MotionDirector,
+	SupersededError,
+	type ExclusiveClaim,
+	type MotionHandle,
+	type PlayOptions,
+} from "./director/director.js";
 import { buildLive2DEndpoint, type Live2DEndpoint } from "./endpoint.js";
 import { fromEngineResult, toolRejected, toolSucceeded, toolUnknown } from "./results.js";
 import { SpeechInput, type SpeechConfig } from "./speech-level.js";
@@ -47,13 +61,12 @@ export interface Live2DRuntimeOptions {
 /** 单帧合成到注入之间允许的最大时间步（毫秒）：后台节流/休眠恢复时防止动作瞬移。 */
 const MAX_TICK_DT_MS = 250;
 
-/** 空间变换常量（§2：回读前留出 VTS 动画结算余量）。 */
-const SETTLE_MARGIN_MS = 250;
+/** 空间变换常量（§2：回读前留出 VTS 动画结算余量；自动归位时间）。 */
+const SETTLE_MARGIN_MS = 60;
+const RESTORE_SECONDS = 0.25;
 
-/** VTS 模型位姿（getModelPosition 返回形态）。 */
 type ModelPose = { positionX: number; positionY: number; rotation: number; size: number };
 
-/** 等待或中止：resolve true=自然到期，false=signal 中止。 */
 const sleep = (ms: number, signal?: AbortSignal): Promise<boolean> =>
 	new Promise((resolve) => {
 		if (signal?.aborted) return resolve(false);
@@ -68,19 +81,25 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<boolean> =>
 		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 
-/** 角度差按 360° 环绕归一到 (-180, 180]——翻转整圈后回读值偏移 360°。 */
 const wrapDeg = (d: number): number => (((d % 360) + 540) % 360) - 180;
 
-/** 位姿回读核实：旋转按环绕差比较，位移/缩放线性容差。 */
-const poseMatches = (now: ModelPose, base: ModelPose, tol = 0.5): boolean =>
-	Math.abs(wrapDeg(now.rotation - base.rotation)) <= tol &&
+const poseMatches = (now: ModelPose, base: ModelPose): boolean =>
+	Math.abs(wrapDeg(now.rotation - base.rotation)) <= 0.5 &&
 	Math.abs(now.positionX - base.positionX) <= 0.01 &&
 	Math.abs(now.positionY - base.positionY) <= 0.01 &&
 	Math.abs(now.size - base.size) <= 0.01;
 
 /** state 注视参数的引擎内置词表成员判定（目录命名优先级低于内置词表）。 */
 const isBuiltinAttention = (value: string): value is Extract<AttentionTarget, string> =>
-	["user", "screen", "avert_down", "avert_left", "avert_right"].includes(value);
+	(BUILTIN_ATTENTIONS as readonly string[]).includes(value);
+
+/** 省略或 0 表示持续；非法时长返回工具拒绝结果。 */
+function parseHoldMs(value: unknown): number | undefined | ToolExecutionResult {
+	if (value === undefined) return undefined;
+	if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
+		return toolRejected("invalid_duration", "hold_ms 必须是非负有限数值。");
+	return value > 0 ? value : undefined;
+}
 
 export class Live2DRuntime {
 	private started = false;
@@ -139,7 +158,7 @@ export class Live2DRuntime {
 			}
 		}
 		this.tickIntervalMs = options.tickIntervalMs ?? 1000 / 60;
-	this.cleanupTimeoutMs = options.cleanupTimeoutMs ?? 5000;
+		this.cleanupTimeoutMs = options.cleanupTimeoutMs ?? 5000;
 		this.endpoint = buildLive2DEndpoint(this);
 	}
 
@@ -220,8 +239,7 @@ export class Live2DRuntime {
 	 */
 	private gate(ctx: { signal?: AbortSignal }): ToolExecutionResult | undefined {
 		if (ctx.signal?.aborted) return toolRejected("cancelled", "调用已中止，未执行。");
-		if (this.paused)
-			return toolRejected("paused", "身体处于 safeStop 暂停，操作被拒绝（resume 后恢复）。");
+		if (this.paused) return toolRejected("paused", "身体处于 safeStop 暂停，操作被拒绝（resume 后恢复）。");
 		if (!this.client || !this.client.isConnected())
 			return toolRejected("model_not_ready", "VTS 未连接（连接建立前所有具身操作不可用）。");
 		const profile = this.client.getModelProfile();
@@ -230,96 +248,163 @@ export class Live2DRuntime {
 		return undefined;
 	}
 
+	/**
+	 * 统一执行手势/动作条目（供 express 工具与 endpoint.emitCue 复用）。
+	 * 纯骨骼手势直接委托 director.play；若含 spatial，声明 model:transform 并在前台推进去程、停留与自动归位。
+	 */
+	async playMotion(
+		entry: CatalogMotionEntry,
+		options: { speech?: SpeechPolicy; atomic?: boolean; signal?: AbortSignal } = {},
+	): Promise<ToolExecutionResult> {
+		const director = this.director;
+		if (!director) return toolRejected("unadapted", "引擎未接入（无 rig）。");
+
+		const clip =
+			options.speech === undefined ? entry.motion : recompileWithSpeech(entry, options.speech, this.rig!.controls);
+		const playOptions: PlayOptions = {
+			category: "voluntary",
+			atomic: options.atomic ?? entry.atomic,
+			signal: options.signal,
+		};
+		const label = `动作 "${entry.description}"`;
+
+		const stunt = entry.spatial;
+		if (!stunt) {
+			const handle = director.play(clip, playOptions);
+			return fromEngineResult(await handle.finished, label);
+		}
+
+		if (!this.client || !this.client.isConnected()) {
+			return toolRejected("model_not_ready", "VTS 未连接，空间手势不可用。");
+		}
+		const claim = this.acquireClaim(["model:transform"], "motion", options.signal, true);
+		if ("status" in claim) return claim;
+
+		const client = this.client;
+		try {
+			const base = await client.getModelPosition();
+			const moveSec = stunt.moveMs / 1000;
+			const settleMs = stunt.moveMs + SETTLE_MARGIN_MS;
+			const target: ModelPose = {
+				positionX: base.positionX + (stunt.delta.x ?? 0),
+				positionY: base.positionY + (stunt.delta.y ?? 0),
+				rotation: base.rotation + (stunt.delta.rotation ?? 0),
+				size: base.size + (stunt.delta.size ?? 0),
+			};
+
+			const handle = director.play(clip, playOptions);
+
+			await client.moveModel({ timeInSeconds: moveSec, valuesAreRelativeToModel: false, ...target });
+			let aborted = !(await sleep(settleMs, options.signal));
+			if (!aborted && stunt.holdMs !== undefined && stunt.holdMs > 0) {
+				aborted = !(await sleep(stunt.holdMs, options.signal));
+			}
+			await client.moveModel({
+				...base,
+				timeInSeconds: moveSec,
+				valuesAreRelativeToModel: false,
+			});
+			if (!(await sleep(settleMs, options.signal))) aborted = true;
+
+			if (aborted || options.signal?.aborted) {
+				const confirmed = await this.trackCleanup(this.restorePose(client, base));
+				return toolRejected(
+					"cancelled",
+					confirmed ? `${label} 已取消，模型已归位并核实。` : `${label} 已取消，但归位未核实。`,
+					{ effectStatus: confirmed ? "cancelled" : "unknown" },
+				);
+			}
+
+			const now = await client.getModelPosition();
+			if (!poseMatches(now, base)) {
+				return toolUnknown(`${label} 空间特技已执行，但回位未核实（回读与基线不符）。`);
+			}
+
+			const clipResult = await handle.finished;
+			if (clipResult.status !== "completed") {
+				return fromEngineResult(clipResult, label);
+			}
+
+			return toolSucceeded(`${label} 已执行并核实归位。`, {
+				effectStatus: "applied",
+				verification: "input_accepted",
+			});
+		} catch (error) {
+			return toolUnknown(`${label} 空间特技执行异常：${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			claim.release();
+		}
+	}
+
 	/** express（§2）：播放目录中的命名动作，Voluntary 类别；await 终态结算。 */
 	async express(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
 		const denied = this.gate(ctx);
 		if (denied) return denied;
-		const director = this.director;
-		if (!director) return toolRejected("unadapted", "引擎未接入（无 rig）。");
 		const name = args.motion;
 		if (typeof name !== "string" || name.length === 0) return toolRejected("invalid_motion", "缺少 motion 参数。");
 		const entry = this.catalog.motions.get(name);
 		if (!entry) {
 			const available = [...this.catalog.motions.keys()].join(", ") || "无";
-			return toolRejected("unknown_motion", `动作不在当前模型目录: "${name}"。当前可用: ${available}（详细见 status）。`);
+			return toolRejected(
+				"unknown_motion",
+				`动作不在当前模型目录: "${name}"。当前可用: ${available}（详细见 status）。`,
+			);
 		}
-		if (args.atomic !== undefined && typeof args.atomic !== "boolean")
+		const { atomic, speech } = args;
+		if (atomic !== undefined && typeof atomic !== "boolean")
 			return toolRejected("invalid_motion", "atomic 必须是布尔值。");
-		if (args.speech !== undefined && args.speech !== "allow" && args.speech !== "exclusive")
+		if (speech !== undefined && speech !== "allow" && speech !== "exclusive")
 			return toolRejected("invalid_motion", 'speech 只接受 "allow" | "exclusive"。');
-		// speech 覆写：外层 withSpeech 节点覆盖作者内层口型策略（含 sequence 时序）。
-		const clip =
-			args.speech === undefined
-				? entry.motion
-				: recompileWithSpeech(entry, args.speech satisfies SpeechPolicy, this.rig!.controls);
-		const handle = director.play(clip, {
-			category: "voluntary",
-			atomic: args.atomic ?? entry.atomic,
+
+		return this.playMotion(entry, {
+			speech,
+			atomic,
 			signal: ctx.signal,
 		});
-		return fromEngineResult(await handle.finished, `动作 "${name}"`);
 	}
 
 	/** posture（§2）：设置持续体态槽（整槽替换）；hold_ms 到期自动回 neutral。 */
 	async posture(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
-		const denied = this.gate(ctx);
-		if (denied) return denied;
-		const director = this.director;
-		if (!director) return toolRejected("unadapted", "引擎未接入（无 rig）。");
-		const name = args.name ?? args.posture;
-		if (typeof name !== "string" || name.length === 0) return toolRejected("unknown_pose", "缺少 name 参数。");
-		if (args.hold_ms !== undefined) {
-			const hold = args.hold_ms;
-			if (typeof hold !== "number" || !Number.isFinite(hold) || hold < 0)
-				return toolRejected("invalid_duration", "hold_ms 必须是非负有限数值。");
-		}
-		const holdMs = typeof args.hold_ms === "number" && args.hold_ms > 0 ? args.hold_ms : undefined;
-		const slot = this.catalog.postures.get(String(name));
-		if (!slot) return toolRejected("unknown_pose", `姿态不在当前模型目录: "${name}"（可用名称见 status）。`);
-		try {
-			await director.setPosture(slot.values, { holdMs });
-		} catch (error) {
-			if (error instanceof SupersededError) {
-				return {
-					result: `姿态设置 "${name}" 已被更新的调用取代。`,
-					status: "cancelled",
-					details: { effectStatus: "cancelled" as const, supersededAxes: error.axes },
-				};
-			}
-			throw error;
-		}
-		return toolSucceeded(`姿态 "${name}" 已生效。`, { effectStatus: "applied", verification: "input_accepted" });
+		return this.setNamedSlot("posture", args, ctx);
 	}
 
 	/** expression（§2）：设置持续神态槽（整槽替换）；hold_ms 到期自动回 neutral。 */
 	async expression(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+		return this.setNamedSlot("expression", args, ctx);
+	}
+
+	private async setNamedSlot(
+		kind: "posture" | "expression",
+		args: Record<string, unknown>,
+		ctx: { signal?: AbortSignal },
+	): Promise<ToolExecutionResult> {
 		const denied = this.gate(ctx);
 		if (denied) return denied;
 		const director = this.director;
 		if (!director) return toolRejected("unadapted", "引擎未接入（无 rig）。");
-		const name = args.name ?? args.expression;
-		if (typeof name !== "string" || name.length === 0) return toolRejected("unknown_expression", "缺少 name 参数。");
-		if (args.hold_ms !== undefined) {
-			const hold = args.hold_ms;
-			if (typeof hold !== "number" || !Number.isFinite(hold) || hold < 0)
-				return toolRejected("invalid_duration", "hold_ms 必须是非负有限数值。");
-		}
-		const holdMs = typeof args.hold_ms === "number" && args.hold_ms > 0 ? args.hold_ms : undefined;
-		const slot = this.catalog.expressions.get(String(name));
-		if (!slot) return toolRejected("unknown_expression", `表情不在当前模型目录: "${name}"（可用名称见 status）。`);
+		const label = kind === "posture" ? "姿态" : "表情";
+		const reason = kind === "posture" ? "unknown_pose" : "unknown_expression";
+		const name = args.name ?? args[kind];
+		if (typeof name !== "string" || name.length === 0) return toolRejected(reason, "缺少 name 参数。");
+		const holdMs = parseHoldMs(args.hold_ms);
+		if (typeof holdMs === "object") return holdMs;
+		const entries = kind === "posture" ? this.catalog.postures : this.catalog.expressions;
+		const slot = entries.get(name);
+		if (!slot) return toolRejected(reason, `${label}不在当前模型目录: "${name}"（可用名称见 status）。`);
 		try {
-			await director.setExpression(slot.values, { holdMs });
+			if (kind === "posture") await director.setPosture(slot.values, { holdMs });
+			else await director.setExpression(slot.values, { holdMs });
 		} catch (error) {
 			if (error instanceof SupersededError) {
 				return {
-					result: `表情设置 "${name}" 已被更新的调用取代。`,
+					result: `${label}设置 "${name}" 已被更新的调用取代。`,
 					status: "cancelled",
 					details: { effectStatus: "cancelled" as const, supersededAxes: error.axes },
 				};
 			}
 			throw error;
 		}
-		return toolSucceeded(`表情 "${name}" 已生效。`, { effectStatus: "applied", verification: "input_accepted" });
+		return toolSucceeded(`${label} "${name}" 已生效。`, { effectStatus: "applied", verification: "input_accepted" });
 	}
 
 	/** attention（§2）：设置注视目标；内置 user/screen/avert_* 或目录命名；hold_ms 到期自动回 neutral。 */
@@ -329,17 +414,12 @@ export class Live2DRuntime {
 		const director = this.director;
 		if (!director) return toolRejected("unadapted", "引擎未接入（无 rig）。");
 		const targetVal = args.target ?? args.attention;
-		if (typeof targetVal !== "string" || targetVal.length === 0) return toolRejected("unknown_attention", "缺少 target 参数。");
-		if (args.hold_ms !== undefined) {
-			const hold = args.hold_ms;
-			if (typeof hold !== "number" || !Number.isFinite(hold) || hold < 0)
-				return toolRejected("invalid_duration", "hold_ms 必须是非负有限数值。");
-		}
-		const holdMs = typeof args.hold_ms === "number" && args.hold_ms > 0 ? args.hold_ms : undefined;
-		const name = String(targetVal);
-		const target = isBuiltinAttention(name)
-			? name
-			: (this.catalog.attentions.get(name)?.target ?? undefined);
+		if (typeof targetVal !== "string" || targetVal.length === 0)
+			return toolRejected("unknown_attention", "缺少 target 参数。");
+		const holdMs = parseHoldMs(args.hold_ms);
+		if (typeof holdMs === "object") return holdMs;
+		const name = targetVal;
+		const target = isBuiltinAttention(name) ? name : this.catalog.attentions.get(name)?.target;
 		if (target === undefined)
 			return toolRejected("unknown_attention", `注视目标不在词表: "${name}"（内置 user/screen/avert_* 或目录命名）。`);
 		director.setAttention(target, { holdMs });
@@ -352,12 +432,8 @@ export class Live2DRuntime {
 		if (denied) return denied;
 		const director = this.director;
 		if (!director) return toolRejected("unadapted", "引擎未接入（无 rig）。");
-		if (args.hold_ms !== undefined) {
-			const hold = args.hold_ms;
-			if (typeof hold !== "number" || !Number.isFinite(hold) || hold < 0)
-				return toolRejected("invalid_duration", "hold_ms 必须是非负有限数值。");
-		}
-		const holdMs = typeof args.hold_ms === "number" && args.hold_ms > 0 ? args.hold_ms : undefined;
+		const holdMs = parseHoldMs(args.hold_ms);
+		if (typeof holdMs === "object") return holdMs;
 		const pending: Promise<void>[] = [];
 		if (args.posture !== undefined) {
 			const slot = this.catalog.postures.get(String(args.posture));
@@ -366,17 +442,18 @@ export class Live2DRuntime {
 		}
 		if (args.expression !== undefined) {
 			const slot = this.catalog.expressions.get(String(args.expression));
-			if (!slot) return toolRejected("unknown_expression", `表情不在当前模型目录: "${args.expression}"（可用名称见 status）。`);
+			if (!slot)
+				return toolRejected("unknown_expression", `表情不在当前模型目录: "${args.expression}"（可用名称见 status）。`);
 			pending.push(director.setExpression(slot.values, { holdMs }));
 		}
 		if (args.attention !== undefined) {
 			const name = String(args.attention);
-			const target = isBuiltinAttention(name)
-				? name
-				: (this.catalog.attentions.get(name)?.target ??
-					undefined);
+			const target = isBuiltinAttention(name) ? name : this.catalog.attentions.get(name)?.target;
 			if (target === undefined)
-				return toolRejected("unknown_attention", `注视目标不在词表: "${name}"（内置 user/screen/avert_* 或目录命名）。`);
+				return toolRejected(
+					"unknown_attention",
+					`注视目标不在词表: "${name}"（内置 user/screen/avert_* 或目录命名）。`,
+				);
 			director.setAttention(target, { holdMs });
 		}
 		if (pending.length === 0 && args.attention === undefined)
@@ -406,10 +483,17 @@ export class Live2DRuntime {
 		const entry = this.catalog.costumes.find((c) => c.id === item);
 		if (!entry) {
 			const available = this.catalog.costumes.map((c) => c.id).join(", ");
-			return toolRejected("unknown_costume", `外观不在当前模型目录: "${item}"（可用外观: ${available || "无"}，见 status）。`);
+			return toolRejected(
+				"unknown_costume",
+				`外观不在当前模型目录: "${item}"（可用外观: ${available || "无"}，见 status）。`,
+			);
 		}
 		const hotkey = this.client?.findHotkey(entry.hotkeyID);
-		if (!hotkey) return toolRejected("hotkey_missing", `热键未在当前 VTS 模型登记: "${entry.hotkeyID}"（模型配置已变更？reload 后重试）。`);
+		if (!hotkey)
+			return toolRejected(
+				"hotkey_missing",
+				`热键未在当前 VTS 模型登记: "${entry.hotkeyID}"（模型配置已变更？reload 后重试）。`,
+			);
 		const claim = this.acquireClaim(["effect:*"], "costume", ctx.signal);
 		if ("status" in claim) return claim;
 		try {
@@ -417,42 +501,6 @@ export class Live2DRuntime {
 			return toolSucceeded(`外观 "${entry.id}" 已触发（热键 ${hotkey.hotkeyID}）。`, { effectStatus: "accepted" });
 		} catch (error) {
 			return toolUnknown(`外观触发结果不明：${error instanceof Error ? error.message : String(error)}`);
-		} finally {
-			claim.release();
-		}
-	}
-
-	/** spatial（§2）：模型整体位移与缩放（绝对位姿，MoveModelRequest 0~2s 调度）+ 回读核实。 */
-	async spatial(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
-		const denied = this.gate(ctx);
-		if (denied) return denied;
-		for (const key of ["x", "y", "size"] as const) {
-			if (args[key] !== undefined && (typeof args[key] !== "number" || !Number.isFinite(args[key])))
-				return toolRejected("invalid_motion", `${key} 必须是有限数值。`);
-		}
-		const duration = args.duration;
-		if (duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration) || duration < 0 || duration > 2))
-			return toolRejected("invalid_duration", "duration 必须在 0~2 秒之间。");
-		const claim = this.acquireClaim(["model:transform"], "spatial", ctx.signal);
-		if ("status" in claim) return claim;
-		const client = this.client!;
-		try {
-			const base = await client.getModelPosition();
-			const target = {
-				positionX: (args.x as number | undefined) ?? base.positionX,
-				positionY: (args.y as number | undefined) ?? base.positionY,
-				rotation: base.rotation,
-				size: (args.size as number | undefined) ?? base.size,
-			};
-			const moveSeconds = (duration as number | undefined) ?? 0.5;
-			await client.moveModel({ timeInSeconds: moveSeconds, valuesAreRelativeToModel: false, ...target });
-			if (!(await sleep(moveSeconds * 1000 + SETTLE_MARGIN_MS, claim.signal)))
-				return toolRejected("cancelled", "位移已取消；VTS 侧动画可能继续至目标位姿（外部效果不回收）。");
-			const now = await client.getModelPosition();
-			if (!poseMatches(now, target)) return toolUnknown("位移已调度但结果未核实（回读与目标不符）。");
-			return toolSucceeded("模型位姿已更新并核实。", { effectStatus: "applied" });
-		} catch (error) {
-			return toolUnknown(`spatial 执行中断：${error instanceof Error ? error.message : String(error)}`);
 		} finally {
 			claim.release();
 		}
@@ -473,7 +521,6 @@ export class Live2DRuntime {
 			return toolRejected("unadapted", "重载后的模型与本地 rig 不符，绑定核验失败。");
 		return toolSucceeded("模型已重载，绑定核验通过。", { effectStatus: "accepted" });
 	}
-
 
 	// ---------- 生命周期 ----------
 
@@ -606,7 +653,7 @@ export class Live2DRuntime {
 		} catch {
 			return signal?.aborted
 				? toolRejected("cancelled", "调用已中止，未执行。")
-				: toolRejected("resource_conflict", "独占资源被占用（spatial/costume 正在进行或清理中）。");
+				: toolRejected("resource_conflict", "独占资源被占用（空间手势/costume 正在进行或清理中）。");
 		}
 	}
 
@@ -625,6 +672,21 @@ export class Live2DRuntime {
 			await Promise.race([Promise.allSettled([...this.pendingCleanups]), sleep(50)]);
 		}
 		return true;
+	}
+
+	/** 空间特技归位：绝对位姿回基线 → 回读核实。返回是否核实通过（失败也结算，不悬挂声明）。 */
+	private async restorePose(client: VTSClient, base: ModelPose): Promise<boolean> {
+		try {
+			await client.moveModel({
+				...base,
+				timeInSeconds: RESTORE_SECONDS,
+				valuesAreRelativeToModel: false,
+			});
+			await sleep(RESTORE_SECONDS * 1000 + SETTLE_MARGIN_MS);
+			return poseMatches(await client.getModelPosition(), base);
+		} catch {
+			return false;
+		}
 	}
 
 	/** resume（§6）：解除暂停、清保持帧、口型包络归零、眨眼与限时状态倒计时恢复剩余。 */

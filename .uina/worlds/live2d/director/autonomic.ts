@@ -105,12 +105,10 @@ export class AutonomicGenerator {
 			const yawPhase = (2 * Math.PI * this.ageMs) / 7300;
 			const pitchPhase = (2 * Math.PI * this.ageMs) / 11300 + 1.3;
 			for (const [axis, amplitude] of Object.entries(this.sway)) {
-				const value =
-					axis === "head.yaw"
-						? amplitude * Math.sin(yawPhase)
-						: axis === "head.pitch"
-							? amplitude * Math.sin(pitchPhase)
-							: amplitude * Math.sin(yawPhase * 0.7 + amplitude);
+				let phase = yawPhase * 0.7 + amplitude;
+				if (axis === "head.yaw") phase = yawPhase;
+				else if (axis === "head.pitch") phase = pitchPhase;
+				const value = amplitude * Math.sin(phase);
 				deltas[axis] = (deltas[axis] ?? 0) + value * this.swayLevel;
 			}
 		}

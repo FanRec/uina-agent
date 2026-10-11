@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readdir, readFile, realpath } from "node:fs/promises";
-import { dirname, join, relative, resolve, isAbsolute } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
 export interface ModelMapping {
@@ -65,6 +65,12 @@ export interface ModelProfile {
 	diagnostics?: readonly string[];
 }
 export const hashContent = (content: string | Buffer): string => createHash("sha256").update(content).digest("hex");
+
+async function listModelAssets(directory: string): Promise<string[]> {
+	return (await readdir(directory, { recursive: true }))
+		.filter((file) => /\.(exp3|motion3|model3|physics3|cdi3)\.json$|\.moc3$|\.png$/i.test(file))
+		.sort();
+}
 
 /** All model references must stay inside the selected model, including through links. */
 export async function modelFilePath(directory: string, reference: string): Promise<string> {
@@ -135,9 +141,7 @@ export async function loadModelProfile(modelID: string, modelsRoot?: string): Pr
 	});
 	const physicsGroups: PhysicsGroup[] = [];
 	const sources: ModelSource[] = [];
-	const assetListing = (await readdir(directory, { recursive: true }))
-		.filter((f) => /\.(exp3|motion3|model3|physics3|cdi3)\.json$|\.moc3$|\.png$/i.test(f))
-		.sort();
+	const assetListing = await listModelAssets(directory);
 	const references = config.FileReferences as { Model?: string } | undefined;
 	if (references?.Model) {
 		const model = await readJSON(references.Model);
@@ -219,7 +223,15 @@ export async function loadModelProfile(modelID: string, modelsRoot?: string): Pr
 		sources,
 		assetListing,
 		fingerprint,
-		controlFingerprint: hashContent(JSON.stringify({ mappings, physics: config.PhysicsSettings, files: files.filter(f=>!f.path.endsWith(".vtube.json")).map(f=>({path:relative(directory,f.path),hash:f.hash})) })),
+		controlFingerprint: hashContent(
+			JSON.stringify({
+				mappings,
+				physics: config.PhysicsSettings,
+				files: files
+					.filter((f) => !f.path.endsWith(".vtube.json"))
+					.map((f) => ({ path: relative(directory, f.path), hash: f.hash })),
+			}),
+		),
 		directory,
 		configFile: file,
 		files,
@@ -231,9 +243,7 @@ export async function loadModelProfile(modelID: string, modelsRoot?: string): Pr
 export async function profileFilesUnchanged(profile: ModelProfile): Promise<boolean> {
 	if (!profile.files) return true;
 	if (profile.directory && profile.assetListing) {
-		const listing = (await readdir(profile.directory, { recursive: true }))
-			.filter((f) => /\.(exp3|motion3|model3|physics3|cdi3)\.json$|\.moc3$|\.png$/i.test(f))
-			.sort();
+		const listing = await listModelAssets(profile.directory);
 		if (JSON.stringify(listing) !== JSON.stringify(profile.assetListing)) return false;
 	}
 	for (const file of profile.files) {
@@ -247,7 +257,7 @@ export async function profileFilesUnchanged(profile: ModelProfile): Promise<bool
 }
 
 export async function controlFilesUnchanged(profile: ModelProfile): Promise<boolean> {
- if(!profile.directory || !profile.controlFingerprint) return true;
- const fresh=await loadModelProfile(profile.modelID,dirname(profile.directory));
- return fresh.controlFingerprint===profile.controlFingerprint;
+	if (!profile.directory || !profile.controlFingerprint) return true;
+	const fresh = await loadModelProfile(profile.modelID, dirname(profile.directory));
+	return fresh.controlFingerprint === profile.controlFingerprint;
 }

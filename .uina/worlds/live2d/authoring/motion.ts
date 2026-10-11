@@ -77,14 +77,22 @@ export const repeat = (count: number, definition: MotionDefinition): MotionDefin
 	if (!Number.isSafeInteger(count) || count < 1) throw new Error("Repeat count must be a positive integer");
 	return sequence(...Array.from({ length: count }, () => definition));
 };
-export function pose(durationMs: number, values: Readonly<Record<string, number>>, space: MotionSpace = "absolute"): MotionDefinition {
+export function pose(
+	durationMs: number,
+	values: Readonly<Record<string, number>>,
+	space: MotionSpace = "absolute",
+): MotionDefinition {
 	return motion(
 		durationMs,
 		...Object.entries(values).map(([axis, value]) => ({
-			...track(axis, [
-				[0, value!],
-				[durationMs, value!],
-			], space),
+			...track(
+				axis,
+				[
+					[0, value],
+					[durationMs, value],
+				],
+				space,
+			),
 			blendMs: Math.min(180, durationMs * 0.4),
 		})),
 	);
@@ -111,9 +119,9 @@ const compiledMotions = new WeakSet<object>();
 export function isCompiledMotion(value: CompiledMotion): boolean {
 	return compiledMotions.has(value);
 }
-const finite = (value: number, label: string) => {
+function finite(value: number, label: string): void {
 	if (!Number.isFinite(value)) throw new Error(`${label} must be finite`);
-};
+}
 export function smooth(phase: number): number {
 	const t = Math.max(0, Math.min(1, phase));
 	return t * t * t * (10 + t * (-15 + 6 * t));
@@ -150,7 +158,12 @@ export function compileMotion(
 	const controls: Readonly<Record<string, RigControlDef>> = Object.freeze(
 		Object.fromEntries(
 			Object.entries(metadata).map(([id, m]) => {
-				if (![m.min, m.max, m.neutral].every(Number.isFinite) || m.min >= m.max || m.neutral < m.min || m.neutral > m.max)
+				if (
+					![m.min, m.max, m.neutral].every(Number.isFinite) ||
+					m.min >= m.max ||
+					m.neutral < m.min ||
+					m.neutral > m.max
+				)
 					throw new Error(`Invalid control metadata: ${id}`);
 				return [id, Object.freeze({ ...m })];
 			}),
@@ -236,12 +249,10 @@ export function compileMotion(
 					);
 					children.push({ from, to: tracks.length });
 					if (node.kind === "sequence" && from > groupFrom) {
-						for (const axis of new Set(tracks.slice(from).map((t) => t.axis))) {
-							const firstStart = Math.min(
-								...tracks.slice(from).filter((t) => t.axis === axis).map((t) => t.startMs),
-							);
-							const first = tracks
-								.slice(from)
+						const childTracks = tracks.slice(from);
+						for (const axis of new Set(childTracks.map((t) => t.axis))) {
+							const firstStart = Math.min(...childTracks.filter((t) => t.axis === axis).map((t) => t.startMs));
+							const first = childTracks
 								.map((t, i) => ({ t, i: i + from }))
 								.filter(({ t }) => t.axis === axis && t.startMs === firstStart);
 							const prior = tracks
@@ -289,15 +300,19 @@ export function compileMotion(
 				finite(node.intensity, `${path}.intensity`);
 				if (node.durationScale <= 0 || node.intensity < 0)
 					throw new Error(`${path}: invalid duration scale or intensity`);
-				return compile(node.motion, startMs, timeScale * node.durationScale, strength * node.intensity, `${path}.transform`);
+				return compile(
+					node.motion,
+					startMs,
+					timeScale * node.durationScale,
+					strength * node.intensity,
+					`${path}.transform`,
+				);
 			}
 			if (node.kind === "delay") {
 				finite(node.delayMs, `${path}.delayMs`);
 				if (node.delayMs < 0) throw new Error(`${path}: delay must be nonnegative`);
-				return (
-					node.delayMs * timeScale +
-					compile(node.motion, startMs + node.delayMs * timeScale, timeScale, strength, `${path}.delay`)
-				);
+				const delayMs = node.delayMs * timeScale;
+				return delayMs + compile(node.motion, startMs + delayMs, timeScale, strength, `${path}.delay`);
 			}
 			throw new Error(`${path}: unknown motion definition kind`);
 		} finally {
@@ -339,8 +354,9 @@ function sampleTrack(track: CompiledTrack, atMs: number): number {
 function selectedTracks(compiled: CompiledMotion, axis: string, time: number): readonly CompiledTrack[] {
 	const authored = compiled.tracks.filter((track) => track.axis === axis && track.startMs <= time);
 	const active = authored.filter((track) => time < track.holdUntilMs);
+	if (active.length) return active;
 	const latestEnd = Math.max(...authored.map((track) => track.holdUntilMs));
-	return active.length ? active : authored.filter((track) => track.holdUntilMs === latestEnd);
+	return authored.filter((track) => track.holdUntilMs === latestEnd);
 }
 
 export function sampleSpeechGain(compiled: CompiledMotion, atMs: number): number {
@@ -369,27 +385,23 @@ export function sampleMotion(
 	const values: Record<string, number> = {};
 	for (const axis of compiled.axes) {
 		const resting = baseline[axis] ?? compiled.controls[axis]!.neutral;
-		const sampleAxis = (time: number): number => {
-			const selected = selectedTracks(compiled, axis, time);
-			const value = (t: CompiledTrack): number => {
-				const target = sampleTrack(t, time);
-				if (!t.blendMs || t.startMs === 0 || time >= t.startMs + t.blendMs) return target;
-				const prior = (t.entryTracks ?? []).map((i) => compiled.tracks[i]!);
-				const priorAbsolute = prior.find((p) => p.space === "absolute");
-				const previous =
-					((priorAbsolute ? sampleTrack(priorAbsolute, t.startMs) : resting) +
-						prior.filter((p) => p.space === "baseline-offset").reduce((sum, p) => sum + sampleTrack(p, t.startMs), 0) -
-						(t.space === "baseline-offset" ? resting : 0)) *
-					(t.entryWeight ?? 1);
-				return previous + (target - previous) * smooth((time - t.startMs) / t.blendMs);
-			};
-			const absolute = selected.find((t) => t.space === "absolute");
-			return (
-				(absolute ? value(absolute) : resting) +
-				selected.filter((t) => t.space === "baseline-offset").reduce((sum, t) => sum + value(t), 0)
-			);
+		const selected = selectedTracks(compiled, axis, time);
+		const value = (t: CompiledTrack): number => {
+			const target = sampleTrack(t, time);
+			if (!t.blendMs || t.startMs === 0 || time >= t.startMs + t.blendMs) return target;
+			const prior = (t.entryTracks ?? []).map((i) => compiled.tracks[i]!);
+			const priorAbsolute = prior.find((p) => p.space === "absolute");
+			const previous =
+				((priorAbsolute ? sampleTrack(priorAbsolute, t.startMs) : resting) +
+					prior.filter((p) => p.space === "baseline-offset").reduce((sum, p) => sum + sampleTrack(p, t.startMs), 0) -
+					(t.space === "baseline-offset" ? resting : 0)) *
+				(t.entryWeight ?? 1);
+			return previous + (target - previous) * smooth((time - t.startMs) / t.blendMs);
 		};
-		values[axis] = sampleAxis(time);
+		const absolute = selected.find((t) => t.space === "absolute");
+		values[axis] =
+			(absolute ? value(absolute) : resting) +
+			selected.filter((t) => t.space === "baseline-offset").reduce((sum, t) => sum + value(t), 0);
 	}
 	return values;
 }

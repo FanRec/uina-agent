@@ -113,12 +113,9 @@ export class SpringFilter {
 
 /** 面部轻量阻尼平滑：一阶指数逼近，敏捷而不拖沓。 */
 export class SmoothFilter {
-	private readonly tauMs: number;
 	private readonly state = new Map<string, number>();
 
-	constructor(tauMs = DEFAULT_SMOOTH_TAU_MS) {
-		this.tauMs = tauMs;
-	}
+	constructor(private readonly tauMs = DEFAULT_SMOOTH_TAU_MS) {}
 
 	ensure(axis: string, x0: number): void {
 		if (!this.state.has(axis)) this.state.set(axis, x0);
@@ -141,15 +138,12 @@ export class SmoothFilter {
 
 /** 口型包络跟随：快攻（目标升高立即跟随）、目标下降/暂停起 50ms 线性释放回零。 */
 export class SpeechEnvelope {
-	private readonly releaseMs: number;
 	private target = 0;
 	private level = 0;
 	private releaseElapsedMs: number | undefined;
 	private releaseFrom = 0;
 
-	constructor(releaseMs = DEFAULT_SPEECH_RELEASE_MS) {
-		this.releaseMs = releaseMs;
-	}
+	constructor(private readonly releaseMs = DEFAULT_SPEECH_RELEASE_MS) {}
 
 	/** TTS 电平输入（P3-2 接 Audio Level / RMS）。 */
 	setLevel(level: number): void {
@@ -206,8 +200,7 @@ export const gazeCompensation = (
 export const eyelidModulation = (eyeOpen: number, factor: number, blinkWeight: number): number =>
 	eyeOpen * (1 - blinkWeight * (1 - factor));
 
-export const speechMouthOpen = (mouthBase: number, level: number): number =>
-	mouthBase + (1 - mouthBase) * level;
+export const speechMouthOpen = (mouthBase: number, level: number): number => mouthBase + (1 - mouthBase) * level;
 
 // ---------- 编排容器 ----------
 

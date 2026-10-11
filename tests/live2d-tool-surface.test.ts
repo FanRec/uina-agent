@@ -195,7 +195,6 @@ describe("live2d 工具面（P4-1）", () => {
 				await expressionP,
 				await run(app, "attention", { target: "user" }, ctx),
 				await run(app, "costume", { item: "glasses" }, ctx),
-				await run(app, "spatial", { x: 1 }, ctx),
 				await run(app, "status", {}, ctx),
 				await run(app, "diagnose", {}, ctx),
 				await run(app, "reload", {}, ctx),

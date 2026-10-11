@@ -36,49 +36,62 @@ export type RejectReason =
 export const EFFECT_STATUSES: readonly EffectStatus[] = ["not_started", "applied", "accepted", "cancelled", "unknown"];
 export const VERIFICATIONS: readonly Verification[] = ["local_intent", "input_accepted"];
 
-const succeeded = (result: string, details?: { effectStatus?: EffectStatus; verification?: Verification; [key: string]: unknown }): ToolExecutionResult => ({
-	result,
-	status: "succeeded",
-	...(details ? { details } : {}),
-});
+export function toolSucceeded(
+	result: string,
+	details?: { effectStatus?: EffectStatus; verification?: Verification; [key: string]: unknown },
+): ToolExecutionResult {
+	return {
+		result,
+		status: "succeeded",
+		...(details ? { details } : {}),
+	};
+}
 
 /** rejected：除 cancelled 走 cancelled 状态外，其余拒绝一律 failed（§2.1：拒绝不是 unknown——事实明确）。 */
-const rejected = (reason: RejectReason, message: string, extra?: Record<string, unknown>): ToolExecutionResult => ({
-	result: message,
-	status: reason === "cancelled" ? ("cancelled" as const) : ("failed" as const),
-	details: { reason, effectStatus: "not_started" satisfies EffectStatus as EffectStatus, ...extra },
-});
+export function toolRejected(
+	reason: RejectReason,
+	message: string,
+	extra?: Record<string, unknown>,
+): ToolExecutionResult {
+	return {
+		result: message,
+		status: reason === "cancelled" ? "cancelled" : "failed",
+		details: { reason, effectStatus: "not_started", ...extra },
+	};
+}
 
-const unknownOutcome = (message: string, extra?: Record<string, unknown>): ToolExecutionResult => ({
-	result: message,
-	status: "unknown",
-	details: { effectStatus: "unknown" satisfies EffectStatus as EffectStatus, ...extra },
-});
+export function toolUnknown(message: string, extra?: Record<string, unknown>): ToolExecutionResult {
+	return {
+		result: message,
+		status: "unknown",
+		details: { effectStatus: "unknown", ...extra },
+	};
+}
 
 /**
  * 引擎动作终态 → 工具结果（§2.1 映射，normative）：
- * completed → succeeded；cancelled → cancelled；failed(disconnected) → unknown（网络中断，效果不明）；
- * unsupported → failed（模型缺必需物理通道，属稳定事实）。
+ * completed → succeeded；cancelled → cancelled；failed(disconnected) → unknown（网络中断，效果不明）。
  */
-export const fromEngineResult = (engine: SomaticActionResult, label: string): ToolExecutionResult => {
+export function fromEngineResult(engine: SomaticActionResult, label: string): ToolExecutionResult {
 	switch (engine.status) {
 		case "completed":
-			return succeeded(`${label}已完成。`, { effectStatus: "applied", verification: "input_accepted" });
+			return toolSucceeded(`${label}已完成。`, { effectStatus: "applied", verification: "input_accepted" });
 		case "cancelled":
 			return {
 				result: `${label}已取消${engine.reason ? `（${engine.reason}）` : ""}。`,
 				status: "cancelled",
-				details: { effectStatus: "cancelled" satisfies EffectStatus as EffectStatus },
+				details: {
+					effectStatus: "cancelled",
+					...(engine.reason ? { reason: engine.reason } : {}),
+				},
 			};
 		case "failed":
-			return engine.reason === "disconnected"
-				? unknownOutcome(`${label}因连接中断结果不明。`, { reason: "disconnected" })
-				: {
-						result: `${label}失败：${engine.reason ?? "未知原因"}。`,
-						status: "failed" as const,
-						details: { effectStatus: "unknown" satisfies EffectStatus as EffectStatus, engineReason: engine.reason },
-					};
+			if (engine.reason === "disconnected")
+				return toolUnknown(`${label}因连接中断结果不明。`, { reason: "disconnected" });
+			return {
+				result: `${label}失败：${engine.reason ?? "未知原因"}。`,
+				status: "failed",
+				details: { effectStatus: "unknown", engineReason: engine.reason },
+			};
 	}
-};
-
-export { succeeded as toolSucceeded, rejected as toolRejected, unknownOutcome as toolUnknown };
+}

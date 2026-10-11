@@ -1,5 +1,5 @@
 import { sampleMotion, sampleSpeechGain, smooth, type CompiledMotion } from "../authoring/motion.js";
-import { type AttentionTarget } from "../authoring/catalog.js";
+import type { AttentionTarget } from "../authoring/catalog.js";
 import type { RigControlDef } from "../adapter/rig.js";
 import { AutonomicGenerator, type AutonomicExternal } from "./autonomic.js";
 import { SomaticPipelines, type PipelineOptions } from "./pipelines.js";
@@ -259,24 +259,33 @@ export class MotionDirector {
 		return this.attention?.target;
 	}
 
-	private setSlot(name: "posture" | "expression", values: Readonly<Record<string, number>>, options: SlotOptions): Promise<void> {
+	private setSlot(
+		name: "posture" | "expression",
+		values: Readonly<Record<string, number>>,
+		options: SlotOptions,
+	): Promise<void> {
 		const slot = this.slots[name];
 		this.validateSlotValues(name, values);
 		this.supersedeAll(name);
 		// 整槽替换的作用域 = 新声明轴 ∪ 槽内既有轴（后者平滑归中：未声明轴的目标映射到中性值，
 		// 否则 undefined 参与插值与落库会产生 NaN 帧注入 VTS）。
 		const axes = new Set([...Object.keys(values), ...slot.values.keys(), ...slot.transitions.keys()]);
-		const holdTotalMs = options.holdMs === undefined ? undefined : options.holdMs + (options.durationMs ?? DEFAULT_SLOT_TRANSITION_MS);
+		const durationMs = options.durationMs ?? DEFAULT_SLOT_TRANSITION_MS;
+		const holdTotalMs = options.holdMs === undefined ? undefined : options.holdMs + durationMs;
 		return this.beginSlotTransitions(
 			name,
 			axes,
 			(axis) => values[axis] ?? this.neutral[axis]!,
-			options.durationMs ?? DEFAULT_SLOT_TRANSITION_MS,
+			durationMs,
 			holdTotalMs,
 		);
 	}
 
-	private patchSlot(name: "posture" | "expression", patch: Readonly<Record<string, number>>, options: SlotOptions): Promise<void> {
+	private patchSlot(
+		name: "posture" | "expression",
+		patch: Readonly<Record<string, number>>,
+		options: SlotOptions,
+	): Promise<void> {
 		this.validateSlotValues(name, patch);
 		const slot = this.slots[name];
 		const axes = new Set(Object.keys(patch));
@@ -291,7 +300,13 @@ export class MotionDirector {
 			op.reject(new SupersededError([...op.axes].filter((axis) => axes.has(axis))));
 			for (const transition of slot.transitions.values()) if (transition.op === op) transition.op = undefined;
 		}
-		return this.beginSlotTransitions(name, axes, (axis) => patch[axis]!, options.durationMs ?? DEFAULT_SLOT_TRANSITION_MS, options.holdMs);
+		return this.beginSlotTransitions(
+			name,
+			axes,
+			(axis) => patch[axis]!,
+			options.durationMs ?? DEFAULT_SLOT_TRANSITION_MS,
+			options.holdMs,
+		);
 	}
 
 	private validateSlotValues(name: string, values: Readonly<Record<string, number>>): void {
@@ -350,7 +365,10 @@ export class MotionDirector {
 	play(clip: CompiledMotion, options: PlayOptions): MotionHandle {
 		const overrideAxes = new Set(clip.tracks.filter((t) => t.space === "absolute").map((t) => t.axis));
 		const additiveAxes = new Set(
-			clip.tracks.filter((t) => t.space === "baseline-offset").map((t) => t.axis).filter((a) => !overrideAxes.has(a)),
+			clip.tracks
+				.filter((t) => t.space === "baseline-offset")
+				.map((t) => t.axis)
+				.filter((a) => !overrideAxes.has(a)),
 		);
 		const baseline: Record<string, number> =
 			options.entry === "neutral" ? { ...this.neutral } : { ...this.slotComposite() };
@@ -403,10 +421,7 @@ export class MotionDirector {
 				}
 				if (playback.state === "releasing") return;
 				// release：立即交还控制权，fadeOut 收势后结算 cancelled。
-				playback.state = "releasing";
-				playback.exitStatus = "cancelled";
-				playback.exitStartMs = playback.ageMs;
-				this.beginHandoff(playback);
+				this.beginExit(playback, "cancelled");
 			},
 		};
 		this.playbacks.push(playback);
@@ -435,15 +450,13 @@ export class MotionDirector {
 	): ExclusiveClaim {
 		if (options.signal?.aborted) throw new Error("动作已取消");
 		const requested = new Set(resources);
-		for (const existing of this.claims) {
-			if (![...requested].some((r) => existing.resources.has(r))) continue;
+		const conflicts = [...this.claims].filter((claim) => [...requested].some((resource) => claim.resources.has(resource)));
+		for (const existing of conflicts) {
 			if (existing.cleanup) throw new Error("资源冲突：正在执行外部清理");
 			// 幂等重触发：同 reason 的再声明替换旧声明；其余一律 resource_conflict（边界 #9）。
 			if (!existing.id.endsWith(`:${options.reason}`)) throw new Error("资源冲突");
 		}
-		for (const existing of [...this.claims]) {
-			if ([...requested].some((r) => existing.resources.has(r))) this.releaseClaim(existing);
-		}
+		for (const existing of conflicts) this.releaseClaim(existing);
 		const controller = new AbortController();
 		const claim: InternalClaim = {
 			id: `claim-${++this.counter}:${options.reason}`,
@@ -504,13 +517,7 @@ export class MotionDirector {
 
 	/** 模型更换/绑定失效：全部活跃 Handle 结算 cancelled，槽位过渡作废（引擎 #11；§3.3.2）。 */
 	invalidateAll(reason = "binding generation changed"): void {
-		for (const playback of [...this.playbacks]) {
-			playback.settled = true;
-			playback.state = "cancelled";
-			const index = this.playbacks.indexOf(playback);
-			if (index >= 0) this.playbacks.splice(index, 1);
-			playback.resolve({ status: "cancelled", reason });
-		}
+		this.cancelAllPlaybacks(reason);
 		this.handoffs.clear();
 		for (const name of ["posture", "expression"] as const) {
 			const slot = this.slots[name];
@@ -569,11 +576,14 @@ export class MotionDirector {
 				// 自然播放完毕：立即交还控制权（下一来源接管），fadeOut 后结算 completed。
 				this.beginExit(playback, "completed");
 			} else if (playback.state !== "playing" && playback.ageMs >= playback.exitStartMs + playback.fadeOutMs) {
+				let reason = playback.exitReason;
+				if (reason === undefined) {
+					if (playback.state === "releasing") reason = "released";
+					else if (playback.exitStatus !== "completed") reason = "preempted";
+				}
 				this.finishPlayback(playback, {
 					status: playback.exitStatus,
-					reason:
-						playback.exitReason ??
-						(playback.state === "releasing" ? "released" : playback.exitStatus === "completed" ? undefined : "preempted"),
+					reason,
 				});
 			}
 		}
@@ -670,7 +680,9 @@ export class MotionDirector {
 		// 6.5 自律底座（autonomic，10）：呼吸/微晃/漂移增量 + 眨眼因子（§4.2 第 2 条）。
 		if (this.autonomic) {
 			// 避让规则：存在更高类别主动 Override 时微晃衰减；注视锚定锁定时漂移抑制。
-			const activeMotion = this.playbacks.some((p) => p.state === "playing" && p.priority > CATEGORY_PRIORITY.autonomic);
+			const activeMotion = this.playbacks.some(
+				(p) => p.state === "playing" && p.priority > CATEGORY_PRIORITY.autonomic,
+			);
 			this.autonomic.setSuppression({ sway: activeMotion ? 0 : 1, drift: this.attention ? 0 : 1 });
 			const auto = this.autonomic.step(dt);
 			this.autonomicBlinkFactor = auto.blinkFactor;
@@ -685,10 +697,9 @@ export class MotionDirector {
 
 		// 6.6 专用管道（§4.2 阶段 B）：骨骼弹簧 → 面部平滑 → 视线头姿后置补偿 → 开合通道。
 		const attentionTarget = this.attention?.target;
-		const gazeAim =
-			typeof attentionTarget === "string" ? this.pipelines.namedAim(attentionTarget) : (attentionTarget ?? undefined);
+		const gazeAim = typeof attentionTarget === "string" ? this.pipelines.namedAim(attentionTarget) : attentionTarget;
 		this.pipelines.process(frame, dt, {
-			gazeAim: gazeAim ?? undefined,
+			gazeAim,
 			gazeClaimed,
 			speechGain: this.activeSpeechGain(),
 			blinkFactor: this.autonomicBlinkFactor,
@@ -716,7 +727,11 @@ export class MotionDirector {
 
 	private beginHandoff(playback: Playback): void {
 		for (const axis of playback.overrideAxes) {
-			this.handoffs.set(axis, { from: this.frame[axis] ?? this.neutral[axis]!, ageMs: 0, durationMs: playback.fadeOutMs });
+			this.handoffs.set(axis, {
+				from: this.frame[axis] ?? this.neutral[axis]!,
+				ageMs: 0,
+				durationMs: playback.fadeOutMs,
+			});
 		}
 	}
 
@@ -737,10 +752,7 @@ export class MotionDirector {
 		for (const name of ["posture", "expression"] as const) {
 			const slot = this.slots[name];
 			for (const [axis, value] of slot.values) result[axis] = value;
-			for (const [axis, transition] of slot.transitions) {
-				const weight = transition.durationMs > 0 ? smooth(transition.ageMs / transition.durationMs) : 1;
-				result[axis] = transition.from + (transition.to - transition.from) * weight;
-			}
+			for (const axis of slot.transitions.keys()) result[axis] = this.slotValue(slot, axis);
 		}
 		return result;
 	}
@@ -758,7 +770,12 @@ export class MotionDirector {
 		const axes = new Set([...slot.values.keys(), ...slot.transitions.keys()]);
 		for (const axis of axes) {
 			const current = this.slotValue(slot, axis);
-			slot.transitions.set(axis, { from: current, to: this.neutral[axis]!, ageMs: 0, durationMs: DEFAULT_SLOT_TRANSITION_MS });
+			slot.transitions.set(axis, {
+				from: current,
+				to: this.neutral[axis]!,
+				ageMs: 0,
+				durationMs: DEFAULT_SLOT_TRANSITION_MS,
+			});
 			slot.values.delete(axis);
 		}
 	}

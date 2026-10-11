@@ -11,6 +11,7 @@
  * - 暂停（paused，P4-6/safeStop）与未发布期间收到的电平由 runtime 侧丢弃，不进本类。
  */
 import type { VoiceLevelSink } from "../../../src/extensions/world-framework/seams.js";
+import { scaleWithClamp } from "./adapter/rig.js";
 import type { MotionDirector } from "./director/director.js";
 
 /** 模型作者标定的口型映射（P5 作者会话逐点重制并登记 evidence）。 */
@@ -48,19 +49,6 @@ export class SpeechInput implements VoiceLevelSink {
 	tick(dtMs: number): void {
 		this.ageMs += dtMs;
 		const rms = this.ageMs > this.config.staleMs ? 0 : this.level;
-		this.director.setSpeechLevel(this.mapPoints(rms));
-	}
-
-	private mapPoints(rms: number): number {
-		const points = this.config.points;
-		if (rms <= points[0]![0]) return points[0]![1];
-		const last = points.at(-1)!;
-		if (rms >= last[0]) return last[1];
-		for (let i = 1; i < points.length; i++) {
-			const a = points[i - 1]!;
-			const b = points[i]!;
-			if (rms <= b[0]) return a[1] + ((b[1] - a[1]) * (rms - a[0])) / (b[0] - a[0]);
-		}
-		return last[1];
+		this.director.setSpeechLevel(scaleWithClamp(this.config.points, rms));
 	}
 }

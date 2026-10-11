@@ -16,7 +16,13 @@ import { compileMotion, withSpeech, type CompiledMotion, type MotionDefinition, 
  */
 
 /** 注视目标：具名方向（引擎内置词表）或作者标定的坐标瞄准点。 */
-export type AttentionTarget = { x: number; y: number } | "user" | "screen" | "avert_down" | "avert_left" | "avert_right";
+export type AttentionTarget =
+	| { x: number; y: number }
+	| "user"
+	| "screen"
+	| "avert_down"
+	| "avert_left"
+	| "avert_right";
 
 /** 内置注视方向词表（引擎具名瞄准，非目录命名）。目录命名不得与之重复。 */
 export const BUILTIN_ATTENTIONS: readonly Extract<AttentionTarget, string>[] = [
@@ -27,12 +33,28 @@ export const BUILTIN_ATTENTIONS: readonly Extract<AttentionTarget, string>[] = [
 	"avert_right",
 ];
 
+export interface SpatialStuntDef {
+	/** 相对基线位姿的瞬态偏移量 */
+	readonly delta: {
+		readonly x?: number;
+		readonly y?: number;
+		readonly rotation?: number;
+		readonly size?: number;
+	};
+	/** 去程耗时（毫秒） */
+	readonly moveMs: number;
+	/** 停留耗时（毫秒，默认 0） */
+	readonly holdMs?: number;
+}
+
 export interface CatalogMotionEntry {
 	description: string;
 	/** 原始定义：express 的 speech 参数覆写时按此重编译（withSpeech 外层节点覆盖内层策略）。 */
 	definition: MotionDefinition;
 	/** 绑定期编译产物：非法定义在此处即失败，不进入运行时。 */
 	motion: CompiledMotion;
+	/** 可选的空间位姿特技（执行期间独占 model:transform 并保证自动归位）。 */
+	spatial?: SpatialStuntDef;
 	/** 命名表演默认 true（边界规范 §2）；目录项可显式声明为 false。 */
 	atomic: boolean;
 	/** cue 别名：affordance 必须显式声明（2026-09-21 别名 cue 静默丢失缺陷的反面）。 */
@@ -92,32 +114,55 @@ export interface CatalogSource {
 			{
 				description: string;
 				motion: MotionDefinition;
+				spatial?: SpatialStuntDef;
 				atomic?: boolean;
 				aliases?: readonly string[];
 			}
 		>
 	>;
-	postures?: Readonly<Record<string, CatalogSlotEntry & { description: string }>>;
-	expressions?: Readonly<Record<string, CatalogSlotEntry & { description: string }>>;
+	postures?: Readonly<Record<string, CatalogSlotEntry>>;
+	expressions?: Readonly<Record<string, CatalogSlotEntry>>;
 	attentions?: Readonly<Record<string, CatalogAttentionEntry>>;
 	costumes?: readonly CatalogCostumeEntry[];
 	background?: { thinking?: MotionDefinition; idle?: MotionDefinition };
 }
 
-const take = <T,>(record: Readonly<Record<string, T>> | undefined): Map<string, T> => new Map(Object.entries(record ?? {}));
+const take = <T>(record: Readonly<Record<string, T>> | undefined): Map<string, T> =>
+	new Map(Object.entries(record ?? {}));
 
 /**
  * 绑定期编译与校验：动作编译（非法定义即抛）、轴值范围核验、全命名空间唯一性
  * （含内置注视词表与别名占用）。任何失败都阻止模型包装配，不带病上线。
  */
-export function compileCatalog(modelID: string, source: CatalogSource, rig: { controls: Readonly<Record<string, RigControlDef>>; modelID: string }): CatalogSnapshot {
+export function compileCatalog(
+	modelID: string,
+	source: CatalogSource,
+	rig: { controls: Readonly<Record<string, RigControlDef>>; modelID: string },
+): CatalogSnapshot {
 	if (rig.modelID !== modelID) throw new Error(`目录模型身份不符: 目录 ${modelID} vs rig ${rig.modelID}`);
 	const motions = new Map<string, CatalogMotionEntry>();
 	for (const [name, entry] of Object.entries(source.motions ?? {})) {
+		if (entry.spatial) {
+			const stunt = entry.spatial;
+			if (!Number.isFinite(stunt.moveMs) || stunt.moveMs <= 0)
+				throw new Error(`动作 "${name}" 空间特技 moveMs 必须为正有限数`);
+			if (stunt.holdMs !== undefined && (!Number.isFinite(stunt.holdMs) || stunt.holdMs < 0))
+				throw new Error(`动作 "${name}" 空间特技 holdMs 必须为非负有限数`);
+			if (!stunt.delta || Object.keys(stunt.delta).length === 0)
+				throw new Error(`动作 "${name}" 空间特技 delta 必须声明至少一个位姿轴偏移`);
+			let hasNonZero = false;
+			for (const [axis, offset] of Object.entries(stunt.delta)) {
+				if (offset === undefined) continue;
+				if (!Number.isFinite(offset)) throw new Error(`动作 "${name}" 空间特技 delta.${axis} 必须为有限数`);
+				if (offset !== 0) hasNonZero = true;
+			}
+			if (!hasNonZero) throw new Error(`动作 "${name}" 空间特技 delta 各轴偏移均为 0（无效特技）`);
+		}
 		motions.set(name, {
 			description: entry.description,
 			definition: entry.motion,
 			motion: compileMotion(entry.motion, rig.controls),
+			spatial: entry.spatial,
 			atomic: entry.atomic ?? true,
 			aliases: entry.aliases,
 		});
@@ -169,7 +214,11 @@ export function compileCatalog(modelID: string, source: CatalogSource, rig: { co
 }
 
 /** express speech 参数覆写：外层 withSpeech 节点在编译时最后写入 mouth 轨道策略，覆盖作者内层声明。 */
-export function recompileWithSpeech(entry: CatalogMotionEntry, policy: SpeechPolicy, controls: Readonly<Record<string, RigControlDef>>): CompiledMotion {
+export function recompileWithSpeech(
+	entry: CatalogMotionEntry,
+	policy: SpeechPolicy,
+	controls: Readonly<Record<string, RigControlDef>>,
+): CompiledMotion {
 	return compileMotion(withSpeech(entry.definition, policy), controls);
 }
 

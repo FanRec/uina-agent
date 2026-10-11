@@ -4,12 +4,13 @@ import type { ServiceCompanionContext } from "../src/extensions/world-framework/
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import { compileCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
+import { motion, track } from "../.uina/worlds/live2d/authoring/motion.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 
 /**
- * P4-5：独占资源工具（边界 #9）。
- * spatial 绝对位姿 + 回读核实；costume 独占 effect:* + 热键触发；
- * model:transform 互斥（spatial 并发冲突）；safeStop 等待清理完成、未确认抛错（§6.2/6.4）。
+ * P4-5：独占资源（边界 #9）。
+ * 空间特技手势（model:transform 独占）+ 回读核实；costume 独占 effect:* + 热键触发；
+ * model:transform 互斥（空间手势并发冲突）；safeStop 等待清理完成、未确认抛错（§6.2/6.4）。
  */
 
 const MODEL_ID = "fixture-model";
@@ -78,14 +79,21 @@ interface FakeState {
 	slowHotkey?: { resolve: () => void };
 }
 
-const makeFake = (state: FakeState): VTSClient =>
-	({
+const makeFake = (state: FakeState): VTSClient => {
+	let listener: ((connected: boolean) => void) | undefined;
+	return {
 		isConnected: () => state.connected,
 		getModelProfile: () => ({ modelID: MODEL_ID }),
 		injectParameters: () => {},
-		setConnectionChangeListener: () => {},
-		connect: () => {},
-		disconnect: () => {},
+		setConnectionChangeListener: (l: (connected: boolean) => void) => {
+			listener = l;
+		},
+		connect: () => {
+			if (state.connected) listener?.(true);
+		},
+		disconnect: () => {
+			listener?.(false);
+		},
 		getConnectionStatus: () => ({ connected: state.connected }),
 		getFault: () => undefined,
 		getModelPosition: async () => ({ ...state.pose }),
@@ -112,7 +120,8 @@ const makeFake = (state: FakeState): VTSClient =>
 			if (exact) return { hotkeyID: exact, name: exact };
 			return state.hotkeyIDs.length ? { hotkeyID: state.hotkeyIDs[0]!, name: state.hotkeyIDs[0]! } : undefined;
 		},
-	}) as unknown as VTSClient;
+	} as unknown as VTSClient;
+};
 
 const makeRuntime = (state: FakeState, cleanupTimeoutMs?: number) =>
 	new Live2DRuntime({
@@ -122,6 +131,22 @@ const makeRuntime = (state: FakeState, cleanupTimeoutMs?: number) =>
 		catalog: compileCatalog(
 			MODEL_ID,
 			{
+				motions: {
+					spin: {
+						description: "旋转特技",
+						motion: motion(
+							100,
+							track("head.yaw", [
+								[0, 0],
+								[100, 0],
+							]),
+						),
+						spatial: {
+							delta: { rotation: 360 },
+							moveMs: 100,
+						},
+					},
+				},
 				costumes: [{ id: "cute", description: "可爱", hotkeyID: "hk-1" }],
 			},
 			makeRig(),
@@ -136,8 +161,8 @@ const startApp = async (rt: Live2DRuntime) => {
 
 const tick = () => new Promise((r) => setTimeout(r, 20));
 
-describe("独占资源工具（P4-5，边界 #9）", () => {
-	it("model:transform 互斥：spatial 进行中另一个 spatial → resource_conflict；结束后可再用", async () => {
+describe("独占资源（P4-5，边界 #9）", () => {
+	it("model:transform 互斥：空间特技手势进行中另一个空间特技 → resource_conflict；结束后可再用", async () => {
 		const state: FakeState = {
 			connected: true,
 			pose: { positionX: 0, positionY: 0, rotation: 10, size: 1 },
@@ -149,9 +174,9 @@ describe("独占资源工具（P4-5，边界 #9）", () => {
 		const rt = makeRuntime(state);
 		const app = await startApp(rt);
 		try {
-			const firstP = rt.spatial({ x: 0.5, duration: 0.8 }, {});
+			const firstP = rt.express({ motion: "spin" }, {});
 			await tick(); // first 已持有声明
-			const secondP = rt.spatial({ x: 0.3 }, {});
+			const secondP = rt.express({ motion: "spin" }, {});
 			const secondResult = await secondP;
 			expect(secondResult.status).toBe("failed");
 			expect(secondResult.details).toMatchObject({ reason: "resource_conflict" });
@@ -159,7 +184,7 @@ describe("独占资源工具（P4-5，边界 #9）", () => {
 			expect(firstResult.status).toBe("succeeded");
 
 			// 结束后资源可用。
-			const again = await rt.spatial({ x: 0.3, duration: 0.1 }, {});
+			const again = await rt.express({ motion: "spin" }, {});
 			expect(again.status).toBe("succeeded");
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
@@ -189,8 +214,8 @@ describe("独占资源工具（P4-5，边界 #9）", () => {
 			finishCleanup(true);
 			await stopP;
 			expect(rt.endpoint.state().paused).toBe(true);
-			const spatialP = await rt.spatial({ x: 0.3 }, {});
-			expect(spatialP.details).toMatchObject({ reason: "paused" });
+			const pausedP = await rt.express({ motion: "spin" }, {});
+			expect(pausedP.details).toMatchObject({ reason: "paused" });
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}
