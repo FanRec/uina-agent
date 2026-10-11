@@ -9,7 +9,7 @@ import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
 import { QqScheduler, type SchedulerDeps } from "../.uina/worlds/qq/src/scheduler.js";
-import { renderBatch, renderReadWindow } from "../.uina/worlds/qq/src/render.js";
+import { renderCandidate as renderTapCandidate, renderReadWindow } from "../.uina/worlds/qq/src/render.js";
 import { createQqWorld } from "../.uina/worlds/qq/src/index.js";
 import { createWorldTool } from "../src/extensions/world-framework/world-tool.js";
 
@@ -38,7 +38,7 @@ beforeEach(() => {
 		control,
 		ops,
 		now: () => NOW,
-		attention: new AttentionModel({ control }),
+		attention: new AttentionModel(),
 		locks: new ConversationLocks(),
 		grants: { grants: ["observation", "attention.manage"] },
 		transport: {
@@ -60,14 +60,13 @@ beforeEach(() => {
 		journal,
 		control,
 		attention: deps.attention,
-		locks: deps.locks,
 		now: () => NOW,
 		emit: async (input) => {
 			inputs.push(input);
 		},
-		renderBatch: (candidate) => renderBatch(candidate, { journal, control, now: () => NOW }),
-		renderReadWindow: (conv) =>
+		renderRingWindow: (conv) =>
 			renderReadWindow(conv, { journal, control, now: () => NOW }, { limit: 30, budgetChars: 14000 }),
+		renderCandidate: (candidate) => renderTapCandidate(candidate, { journal, control, now: () => NOW }),
 	};
 	scheduler = new QqScheduler(scheduled);
 });
@@ -80,54 +79,12 @@ afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
-it.each([
-	[30, 100, true],
-	[31, 100, false],
-	[1, 14000, true],
-	[1, 14001, false],
-])("follow pressure boundary count=%i chars=%i", async (count, chars, delivers) => {
-	focus();
-	for (let index = 0; index < count; index++) arrive("x".repeat(chars));
-	await vi.advanceTimersByTimeAsync(2500);
-	const text = await inputs[0]!.render();
-	expect(text).toBeTruthy();
-	expect(deps.journal.dispatchedThroughOf(CONV) > 0).toBe(delivers);
-});
-
-it("partial follow resumes remaining messages without another arrival", async () => {
-	focus();
-	scheduled.renderReadWindow = (conv) =>
-		renderReadWindow(
-			conv,
-			{ journal: deps.journal, control: deps.control, now: () => NOW },
-			{ limit: 30, budgetChars: 7000 },
-		);
-	for (let index = 0; index < 8; index++) arrive(`body-${index} ${"x".repeat(1700)}`);
-	await vi.advanceTimersByTimeAsync(2500);
-	const first = await inputs[0]!.render();
-	const through = deps.journal.dispatchedThroughOf(CONV);
-	expect(through).toBeGreaterThan(0);
-	expect(through).toBeLessThan(8);
-	expect(first).toContain("body-0");
-	scheduler.onInputSettled(inputs[0]!.id, true);
-	await vi.advanceTimersByTimeAsync(1);
-	expect(inputs).toHaveLength(2);
-	const second = await inputs[1]!.render();
-	expect(second).toContain(`body-${through}`);
-	expect(second).not.toContain("body-0");
-	while (deps.journal.dispatchedThroughOf(CONV) < 8) {
-		scheduler.onInputSettled(inputs.at(-1)!.id, true);
-		await vi.advanceTimersByTimeAsync(1);
-		await inputs.at(-1)!.render();
-	}
-	expect(deps.journal.dispatchedThroughOf(CONV)).toBe(8);
-});
-
 it("settlement accounting retries idempotently and stop cancels late writes", async () => {
+	focus();
 	arrive();
 	await vi.advanceTimersByTimeAsync(2500);
 	await inputs[0]!.render();
-	const write = vi.spyOn(deps.journal, "recordNotified").mockImplementationOnce(() => {
+	const write = vi.spyOn(deps.journal, "recordDispatched").mockImplementationOnce(() => {
 		throw new Error("busy");
 	});
 	scheduler.onInputSettled(inputs[0]!.id, true);
@@ -136,7 +93,7 @@ it("settlement accounting retries idempotently and stop cancels late writes", as
 	expect(write).toHaveBeenCalledTimes(2);
 	scheduler.onInputSettled(inputs[0]!.id, true);
 	expect(write).toHaveBeenCalledTimes(2);
-	arrive("poke", "p40004");
+	arrive("again", CONV, "in");
 	await vi.advanceTimersByTimeAsync(2500);
 	await inputs[1]!.render();
 	write.mockImplementation(() => {
@@ -170,7 +127,7 @@ it("read cancelled during media expansion leaves consumption untouched", async (
 	expect(deps.journal.dispatchedThroughOf(CONV)).toBe(0);
 });
 
-it("enqueue failure after follow materialization retains the constructed body for retry", async () => {
+it("enqueue failure after materialization retains the constructed body for retry", async () => {
 	focus();
 	const bodies: (string | null)[] = [];
 	let attempts = 0;
@@ -184,11 +141,12 @@ it("enqueue failure after follow materialization retains the constructed body fo
 	expect(attempts).toBe(2);
 	expect(bodies).toHaveLength(2);
 	expect(bodies[0]).toContain("retained-body");
-	expect(bodies[1]).toBe(bodies[0]);
+	expect(bodies[1]).toBe(bodies[0]); // 重试复用已构建正文，不重建快照
+	scheduler.onInputSettled(inputs[0]!.id, true);
 	expect(deps.journal.dispatchedThroughOf(CONV)).toBe(1);
 });
 
-it("inbox online directory includes unseen names, paginates while counts change, and fails atomically", async () => {
+it("inbox online directory includes unseen names, paginates while counts change; directory failure is best-effort", async () => {
 	deps.transport.call = async (action) => ({
 		status: "ok",
 		data:
@@ -208,12 +166,12 @@ it("inbox online directory includes unseen names, paginates while counts change,
 	});
 	expect(second.details).toMatchObject({ conversations: [{ name: "unseen group" }] });
 	deps.attention.setFocus([CONV]);
-	const revision = deps.control.revision;
 	deps.transport.call = async () => ({ status: "failed", reason: "offline", kind: "not_connected" });
-	const fail = await handleQqCall(deps, "inbox", { focus: [], push: { target: CONV, mode: "off" } });
-	expect(fail.status).toBe("failed");
-	expect(deps.attention.focusList()).toEqual([CONV]);
-	expect(deps.control.revision).toBe(revision);
+	// v3：在线目录仅补全名称，失败不阻塞红点一瞥；focus/push 照常生效
+	const degraded = await handleQqCall(deps, "inbox", { focus: [], push: { target: CONV, off: true } });
+	expect(degraded.status).toBe("succeeded");
+	expect(deps.attention.focusList()).toEqual([]);
+	expect(deps.control.effectivePush(CONV).off).toBe(true);
 });
 
 it("inbox persistence failure and invalid cursor preserve focus and push", async () => {
@@ -221,15 +179,15 @@ it("inbox persistence failure and invalid cursor preserve focus and push", async
 	const save = vi.spyOn(deps.control, "setPush").mockImplementation(() => {
 		throw new Error("disk busy");
 	});
-	const result = await handleQqCall(deps, "inbox", { focus: [], push: { target: CONV, mode: "off" } });
+	const result = await handleQqCall(deps, "inbox", { focus: [], push: { target: CONV, off: true } });
 	expect(result.status).toBe("failed");
 	expect(deps.attention.focusList()).toEqual([CONV]);
-	expect(deps.control.effectivePush(CONV).mode).toBe("digest");
+	expect(deps.control.effectivePush(CONV).off).toBe(false);
 	save.mockRestore();
-	const invalid = await handleQqCall(deps, "inbox", { focus: [], push: { target: CONV, mode: "off" }, cursor: "bad" });
+	const invalid = await handleQqCall(deps, "inbox", { focus: [], push: { target: CONV, off: true }, cursor: "bad" });
 	expect(invalid.status).toBe("failed");
 	expect(deps.attention.focusList()).toEqual([CONV]);
-	expect(deps.control.effectivePush(CONV).mode).toBe("digest");
+	expect(deps.control.effectivePush(CONV).off).toBe(false);
 });
 
 it("platform around history combines sides without receiving/consuming facts; failure never falls back", async () => {
@@ -341,21 +299,24 @@ it.each([14000, 500])("folded mixed messages retain usable expansion calls with 
 	expect(expanded.result).toContain("second-part");
 });
 
-it("ordinary notification position excludes later own echo", async () => {
+it("ring window excludes later own echo from delivery", async () => {
+	focus();
 	const incoming = arrive();
 	arrive("own echo", CONV, "out");
 	await vi.advanceTimersByTimeAsync(2500);
-	await inputs[0]!.render();
+	const text = await inputs[0]!.render();
+	expect(text).toContain(incoming.ref);
+	expect(text).not.toContain("own echo");
 	scheduler.onInputSettled(inputs[0]!.id, true);
-	expect(deps.journal.snapshot.notifiedThrough.get(CONV)).toBe(incoming.sequence);
-	expect(deps.journal.dispatchedThroughOf(CONV)).toBe(0);
+	expect(deps.journal.dispatchedThroughOf(CONV)).toBe(incoming.sequence);
 });
 
 it("repeated rendering failure logs only a changed failure state", async () => {
 	const diagnostic = vi.spyOn(console, "warn").mockImplementation(() => {});
-	scheduled.renderBatch = () => {
+	scheduled.renderRingWindow = () => {
 		throw new Error("same render failure");
 	};
+	focus();
 	arrive();
 	await vi.advanceTimersByTimeAsync(2500);
 	for (let index = 0; index < 3; index++) {
@@ -365,46 +326,6 @@ it("repeated rendering failure logs only a changed failure state", async () => {
 		await vi.advanceTimersByTimeAsync(2000);
 	}
 	expect(diagnostic).toHaveBeenCalledTimes(1);
-});
-
-it("follow waiting for its consumption lock rechecks stop before writing", async () => {
-	focus();
-	arrive();
-	let release!: () => void;
-	let started!: () => void;
-	const began = new Promise<void>((resolve) => {
-		started = resolve;
-	});
-	const held = deps.locks.run(
-		CONV,
-		() =>
-			new Promise<void>((resolve) => {
-				release = resolve;
-				started();
-			}),
-	);
-	await began;
-	await vi.advanceTimersByTimeAsync(2500);
-	const rendering = inputs[0]!.render();
-	scheduler.stop();
-	release();
-	await held;
-	await expect(rendering).resolves.toBeNull();
-	expect(deps.journal.dispatchedThroughOf(CONV)).toBe(0);
-});
-
-it("suspended follow resumes when a successful read reduces pressure", async () => {
-	focus();
-	deps = { ...deps, onConsumption: (ref) => scheduler.notifyConsumption(ref) };
-	for (let index = 0; index < 31; index++) arrive(`body-${index}`);
-	await vi.advanceTimersByTimeAsync(2500);
-	expect(await inputs[0]!.render()).toContain("自动正文已暂停");
-	scheduler.onInputSettled(inputs[0]!.id, true);
-	await handleQqCall(deps, "read", { conversationRef: CONV, limit: 1 });
-	await vi.advanceTimersByTimeAsync(2500);
-	expect(inputs).toHaveLength(2);
-	expect(await inputs[1]!.render()).toContain("body-30");
-	expect(deps.journal.dispatchedThroughOf(CONV)).toBe(31);
 });
 
 it("local and platform history both expand media without journal writes", async () => {
@@ -466,36 +387,17 @@ function arrive(text = "hello", conversationRef = CONV, direction: "in" | "out" 
 }
 
 function focus() {
-	deps.control.setPush(CONV, { mode: "follow" });
 	deps.attention.setFocus([CONV]);
 }
 
-it("F01 follow 不得丢弃整条正文后推进消费书签", async () => {
-	focus();
-	for (let i = 0; i < 10; i++) arrive(`unique-${i} ${"x".repeat(1900)}`);
+it("F03 响铃排队后静音必须空退役", async () => {
+	arrive("hello", "p20002"); // 私聊默认响铃
 	await vi.advanceTimersByTimeAsync(2500);
-	const text = await inputs[0]!.render();
-	expect(text).toContain("自动正文已暂停");
-	expect(deps.journal.dispatchedThroughOf(CONV)).toBe(0);
+	deps.control.setPush("p20002", { off: true });
+	await expect(inputs[0]!.render()).resolves.toBeNull(); // 派发前重验：静音且未开窗 → 退役
 });
 
-it("F02 follow 排队后 focus=[] 必须阻止正文灌注", async () => {
-	focus();
-	arrive();
-	await vi.advanceTimersByTimeAsync(2500);
-	deps.attention.setFocus([]);
-	const text = await inputs[0]!.render();
-	expect(text ?? "").not.toContain("[QQ 跟读]");
-});
-
-it("F03 通知排队后 mode=off 必须静音", async () => {
-	arrive();
-	await vi.advanceTimersByTimeAsync(2500);
-	deps.control.setPush(CONV, { mode: "off" });
-	await expect(inputs[0]!.render()).resolves.toBeNull();
-});
-
-it("F04 follow 排队后已被 read 消费完应空退役", async () => {
+it("F04 响铃排队后已被 read 消费完应空退役", async () => {
 	focus();
 	arrive();
 	await vi.advanceTimersByTimeAsync(2500);
@@ -503,7 +405,8 @@ it("F04 follow 排队后已被 read 消费完应空退役", async () => {
 	await expect(inputs[0]!.render()).resolves.toBeNull();
 });
 
-it("F05 出站 echo 不得压制第一条入站通知", async () => {
+it("F05 出站 echo 不得压制第一条入站响铃", async () => {
+	focus();
 	arrive("self sent", CONV, "out");
 	arrive("first inbound");
 	await vi.advanceTimersByTimeAsync(2500);
@@ -556,26 +459,31 @@ it("F06 新会话第一次重启不得封存未读", async () => {
 	}
 });
 
-it("F07 渲染暂时失败后恢复，已有首条消息应重新排期", async () => {
-	scheduled.renderBatch = () => {
+it("F07 渲染暂时失败后恢复，候选应重新排期", async () => {
+	focus();
+	scheduled.renderRingWindow = () => {
 		throw new Error("temporary read failure");
 	};
 	arrive();
 	await vi.advanceTimersByTimeAsync(2500);
 	expect(await inputs[0]!.render()).toBeNull();
-	scheduled.renderBatch = (candidate) =>
-		renderBatch(candidate, { journal: deps.journal, control: deps.control, now: () => NOW });
+	scheduled.renderRingWindow = (conv) =>
+		renderReadWindow(
+			conv,
+			{ journal: deps.journal, control: deps.control, now: () => NOW },
+			{ limit: 30, budgetChars: 14000 },
+		);
 	scheduler.onInputSettled(inputs[0]!.id, false);
-	scheduler.notifyControlTick();
 	await vi.advanceTimersByTimeAsync(5000);
 	expect(inputs).toHaveLength(2);
 });
 
-it("F08 通知记账 IO 失败不得锁死占位", async () => {
+it("F08 记账 IO 失败不得锁死占位", async () => {
+	focus();
 	arrive();
 	await vi.advanceTimersByTimeAsync(2500);
 	await inputs[0]!.render();
-	vi.spyOn(deps.journal, "recordNotified").mockImplementation(() => {
+	vi.spyOn(deps.journal, "recordDispatched").mockImplementation(() => {
 		throw new Error("EBUSY");
 	});
 	try {
@@ -612,9 +520,12 @@ it("F09 等待消费锁期间取消 read 不得推进书签", async () => {
 	expect(deps.journal.dispatchedThroughOf(CONV)).toBe(0);
 });
 
-it("F10 跨会话 poke 应升级现有纸条", async () => {
+it("F10 跨会话 poke 独立拍肩，不与会话响铃混批", async () => {
+	focus();
 	arrive();
 	await vi.advanceTimersByTimeAsync(2500);
+	await inputs[0]!.render(); // 完成物化：候选出 pending
+	scheduler.onInputSettled(inputs[0]!.id, true); // 释放占位并记账
 	const fact = {
 		ref: deps.journal.mintEventRef(),
 		kind: "poke" as const,
@@ -626,11 +537,16 @@ it("F10 跨会话 poke 应升级现有纸条", async () => {
 	};
 	deps.journal.appendEvent(fact);
 	scheduler.onFact({ kind: "event", fact });
-	expect(await inputs[0]!.render()).toContain(fact.ref);
+	await vi.advanceTimersByTimeAsync(2500);
+	expect(inputs).toHaveLength(2);
+	expect(inputs[0]!.conversationRef).toBe(CONV);
+	expect(inputs[1]!.conversationRef).toBe("g40004");
+	expect(await inputs[1]!.render()).toContain(fact.ref);
 });
 
 it("F11 busy 时短防抖到期应进入邮箱占位", async () => {
 	// Full busy Subject behavior is covered by qq-world-subject-integration.
+	focus();
 	arrive();
 	await vi.advanceTimersByTimeAsync(2500);
 	expect(inputs).toHaveLength(1);
@@ -660,6 +576,7 @@ it("F12 第21条申请必须有合法的只读续页入口", async () => {
 });
 
 it("F13 富消息的展开指引必须使用存活 action", async () => {
+	focus();
 	const fact = deps.journal.appendMessage({
 		ref: "m55",
 		conversationRef: CONV,
@@ -676,14 +593,6 @@ it("F13 富消息的展开指引必须使用存活 action", async () => {
 	expect(text).not.toMatch(/observe/);
 });
 
-it("F14 单条超长 follow 必须按字符压力退让", async () => {
-	focus();
-	arrive("x".repeat(20000));
-	await vi.advanceTimersByTimeAsync(2500);
-	const text = await inputs[0]!.render();
-	expect(text?.includes("自动正文已暂停灌注")).toBe(true);
-});
-
 it("F15 延迟渲染新增到期提醒不能被再次投递", async () => {
 	deps.control.createFollowUp({ targetRef: CONV, note: "A", reviewAt: NOW });
 	scheduler.notifyControlTick();
@@ -693,15 +602,6 @@ it("F15 延迟渲染新增到期提醒不能被再次投递", async () => {
 	expect(text).toContain(b.ref);
 	scheduler.onInputSettled(inputs[0]!.id, true);
 	expect(deps.control.getFollowUp(b.ref)?.reviewNotified).toBe(true);
-});
-
-it("F16 暂停结束摘要不得把已消费正文统计为未读", async () => {
-	arrive();
-	await handleQqCall(deps, "read", { conversationRef: CONV });
-	deps.control.setPush(CONV, { pausedUntil: NOW });
-	scheduler.notifyControlTick();
-	await vi.advanceTimersByTimeAsync(2500);
-	expect(inputs).toHaveLength(0);
 });
 
 it("F17 browse 点查 includeMedia=true 应展开已有图片", async () => {

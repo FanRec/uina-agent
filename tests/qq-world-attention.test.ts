@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,7 +11,7 @@ const G1 = conversationRef("group", "30003");
 const G2 = conversationRef("group", "30004");
 const P1 = conversationRef("private", "20002");
 
-describe("注意力模型（设计 §1.2 双态在场）", () => {
+describe("注意力模型（v3：focus 集合 + off/pausedUntil 静音偏好）", () => {
 	let dir: string;
 	let control: ControlStore;
 	let attention: AttentionModel;
@@ -20,7 +20,7 @@ describe("注意力模型（设计 §1.2 双态在场）", () => {
 		dir = mkdtempSync(join(tmpdir(), "uina-qq-attention-"));
 		control = new ControlStore({ dataDir: dir, selfId: SELF, now: () => "2026-10-11T12:00:00Z" });
 		control.load();
-		attention = new AttentionModel({ control });
+		attention = new AttentionModel();
 	});
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -34,37 +34,60 @@ describe("注意力模型（设计 §1.2 双态在场）", () => {
 		expect(() => attention.setFocus(["not-a-ref"])).toThrow(/非法会话引用/);
 	});
 
-	it("effectiveFollow = isFocused && resolvedPushMode === follow（缺一不可）", () => {
-		control.setPush(G1, { mode: "follow" });
-		expect(attention.effectiveFollow(G1)).toBe(false); // 有配置无视线
+	it("focus 是内存态：新实例即重启后重置为空（冷启动无焦点）", () => {
 		attention.setFocus([G1]);
-		expect(attention.effectiveFollow(G1)).toBe(true);
-		expect(attention.effectiveFollow(G2)).toBe(false); // 有视线未配置 follow
-	});
-
-	it("inherit 链：会话 inherit 回落账号 follow", () => {
-		control.setPush("account", { mode: "follow" });
-		attention.setFocus([P1]);
-		expect(attention.effectiveFollow(P1)).toBe(true);
-		control.setPush("account", { mode: "digest" });
-		expect(attention.effectiveFollow(P1)).toBe(false);
-	});
-
-	it("focus 是内存态：新实例即重启后重置为空（T14 冷启动无焦点）", () => {
-		control.setPush(G1, { mode: "follow" });
-		attention.setFocus([G1]);
-		expect(attention.effectiveFollow(G1)).toBe(true);
-		const reborn = new AttentionModel({ control });
+		expect(attention.isFocused(G1)).toBe(true);
+		const reborn = new AttentionModel();
 		expect(reborn.focusList()).toEqual([]);
-		expect(reborn.effectiveFollow(G1)).toBe(false);
+		expect(reborn.isFocused(G1)).toBe(false);
 	});
 
-	it("放下视线切断跟读，持久化 push.mode 原封不动（T13）", () => {
-		control.setPush(G1, { mode: "follow" });
-		attention.setFocus([G1]);
-		expect(attention.effectiveFollow(G1)).toBe(true);
-		attention.setFocus([]);
-		expect(attention.effectiveFollow(G1)).toBe(false);
-		expect(control.effectivePush(G1).mode).toBe("follow");
+	it("effectivePush：本地 off 或账号 off 任一即静音", () => {
+		control.setPush(G1, { off: true });
+		expect(control.effectivePush(G1).off).toBe(true);
+		expect(control.effectivePush(G2).off).toBe(false);
+		control.setPush("account", { off: true });
+		expect(control.effectivePush(G2).off).toBe(true);
+	});
+
+	it("pausedUntil 未到期折算为 off，到期自然恢复", () => {
+		control.setPush(G1, { pausedUntil: "2026-10-11T13:00:00Z" });
+		expect(control.effectivePush(G1).off).toBe(true);
+		expect(control.effectivePush(G1).pausedUntil).toBe("2026-10-11T13:00:00Z");
+		control.setPush(G1, { pausedUntil: "2026-10-11T11:00:00Z" }); // 已过期
+		expect(control.effectivePush(G1).off).toBe(false);
+		control.setPush(G1, { pausedUntil: null }); // 显式解除
+		expect(control.effectivePush(G1).pausedUntil).toBeNull();
+	});
+
+	it("setPush 只修改提供字段；clearPush 回落默认响铃", () => {
+		control.setPush(G1, { off: true });
+		control.setPush(G1, { pausedUntil: "2026-10-11T13:00:00Z" });
+		expect(control.effectivePush(G1).off).toBe(true); // off 仍在
+		control.setPush(G1, { off: false });
+		expect(control.effectivePush(G1).off).toBe(true); // pausedUntil 仍在
+		control.clearPush(G1);
+		expect(control.effectivePush(G1)).toEqual({ off: false, pausedUntil: null });
+	});
+
+	it("v2 旧形状一次性迁移：mode off/silent → off:true", () => {
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			join(dir, "qq-control.json"),
+			JSON.stringify({
+				version: 2,
+				selfId: SELF,
+				revision: 3,
+				accountPush: { mode: "digest" },
+				conversationPush: { [G1]: { mode: "off" }, [P1]: { mode: "silent" } },
+				initializationBaseline: {},
+				followUps: {},
+			}),
+			"utf8",
+		);
+		control.load();
+		expect(control.effectivePush("account").off).toBe(false); // digest 不映射静音
+		expect(control.effectivePush(G1).off).toBe(true);
+		expect(control.effectivePush(P1).off).toBe(true);
 	});
 });

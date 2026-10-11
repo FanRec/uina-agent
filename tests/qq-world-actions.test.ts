@@ -94,7 +94,7 @@ function setup(options: SetupOptions = {}) {
 		control,
 		ops,
 		transport,
-		attention: new AttentionModel({ control }),
+		attention: new AttentionModel(),
 		locks: new ConversationLocks(),
 	};
 	const close = () => rmSync(dir, { recursive: true, force: true });

@@ -54,11 +54,10 @@ function makeJournal(messages: Partial<MessageFact>[]): { journal: FactsJournal;
 
 function candidate(overrides: Partial<PendingCandidate> = {}): PendingCandidate {
 	return {
-		key: `ordinary:${GROUP}`,
+		key: `ring:${GROUP}`,
 		conversationRef: GROUP,
-		cls: "ordinary",
+		cls: "ring",
 		oldestAt: "2026-10-07T01:00:00Z",
-		count: 1,
 		origin: "external",
 		...overrides,
 	};

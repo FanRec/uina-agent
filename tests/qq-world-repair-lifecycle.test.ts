@@ -71,7 +71,7 @@ it("startup enrichment cannot miss committed input settlement or strand the sche
 		const started = world.onStart!(context);
 		await vi.advanceTimersByTimeAsync(2500);
 		await started;
-		// msg1 已派发且结算在 enrichment 期间处理（notifiedThrough 推进）
+		// msg1 已派发且结算已推进书签
 		expect(texts).toHaveLength(1);
 		eventHandler(msg(2));
 		await vi.advanceTimersByTimeAsync(2500);

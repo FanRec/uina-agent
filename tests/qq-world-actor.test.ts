@@ -43,7 +43,7 @@ beforeEach(() => {
 		control,
 		ops,
 		now: () => NOW,
-		attention: new AttentionModel({ control }),
+		attention: new AttentionModel(),
 		locks: new ConversationLocks(),
 		grants: {
 			grants: [

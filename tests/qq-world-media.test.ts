@@ -69,7 +69,7 @@ beforeEach(() => {
 		control,
 		ops,
 		transport,
-		attention: new AttentionModel({ control }),
+		attention: new AttentionModel(),
 		locks: new ConversationLocks(),
 		media: { allowedRoots: [root], staging },
 	};

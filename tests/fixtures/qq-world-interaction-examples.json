@@ -23,8 +23,7 @@
 				"params": {
 					"push": {
 						"target": "g30003",
-						"mode": "digest",
-						"filter": "direct"
+						"off": true
 					}
 				}
 			}

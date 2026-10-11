@@ -29,18 +29,18 @@ function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-describe("body_dispatched 书签（R4①：dispatched 记录分轨单调回放）", () => {
+describe("deliveredThrough 书签（Math.max 单调，回放可重建）", () => {
 	let dir: string;
 	beforeEach(() => (dir = mkdtempSync(join(tmpdir(), "uina-qq-dispatched-"))));
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-	it("推进书签并持久化；Math.max 单调，回退写入不生效", () => {
+	it("推进书签并持久化；回退写入不生效", () => {
 		const journal = new FactsJournal({ dataDir: dir, selfId: SELF });
 		journal.recover();
 		const m1 = journal.appendMessage(makeMessage(1));
 		const m2 = journal.appendMessage(makeMessage(2));
 
-		journal.recordDispatched(P1, m2.sequence, "follow", "2026-10-11T10:02:00+08:00", "input-1");
+		journal.recordDispatched(P1, m2.sequence, "ring", "2026-10-11T10:02:00+08:00", "input-1");
 		expect(journal.dispatchedThroughOf(P1)).toBe(2);
 
 		journal.recordDispatched(P1, m1.sequence, "read", "2026-10-11T10:01:00+08:00");
@@ -49,21 +49,10 @@ describe("body_dispatched 书签（R4①：dispatched 记录分轨单调回放�
 		const reborn = new FactsJournal({ dataDir: dir, selfId: SELF });
 		reborn.recover();
 		expect(reborn.dispatchedThroughOf(P1)).toBe(2);
-		expect(journal.snapshot.notifiedThrough.get(P1)).toBeUndefined();
-	});
-
-	it("与 notified 书签分轨互不干扰", () => {
-		const journal = new FactsJournal({ dataDir: dir, selfId: SELF });
-		journal.recover();
-		const m1 = journal.appendMessage(makeMessage(1));
-		journal.recordNotified(P1, m1.sequence, "input-9", "2026-10-11T10:01:00+08:00");
-		journal.recordDispatched(P1, m1.sequence, "read", "2026-10-11T10:01:30+08:00");
-		expect(journal.snapshot.notifiedThrough.get(P1)).toBe(1);
-		expect(journal.dispatchedThroughOf(P1)).toBe(1);
 	});
 });
 
-describe("消息引用解析（R3：platform_id → 本地 sequence 映射）", () => {
+describe("消息引用解析（platform_id → 本地 sequence 映射）", () => {
 	let dir: string;
 	beforeEach(() => (dir = mkdtempSync(join(tmpdir(), "uina-qq-ref-"))));
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -86,7 +75,7 @@ describe("消息引用解析（R3：platform_id → 本地 sequence 映射）", 
 	});
 });
 
-describe("push 偏好与 R5 一次性迁移", () => {
+describe("push 偏好：旧 AttentionOverride 一次性迁移", () => {
 	let dir: string;
 	beforeEach(() => (dir = mkdtempSync(join(tmpdir(), "uina-qq-push-"))));
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -95,71 +84,44 @@ describe("push 偏好与 R5 一次性迁移", () => {
 		return new ControlStore({ dataDir: dir, selfId: SELF, now: () => "2026-10-11T12:00:00Z" });
 	}
 
-	it("旧 AttentionOverride 首次加载映射为 push 字段，旧字段不落盘，二次加载不重复迁移", () => {
+	it("旧 accountOverride/conversationOverrides 首次加载归并为 {off,pausedUntil}，旧字段不落盘", () => {
 		writeFileSync(
 			join(dir, "qq-control.json"),
 			JSON.stringify({
 				version: 2,
 				selfId: SELF,
 				revision: 5,
-				accountOverride: { mode: "silent" },
-				conversationOverrides: { [G1]: { mode: "direct_only", priority: "preferred" }, [P1]: {} },
+				accountOverride: { mode: "digest" },
+				conversationOverrides: {
+					[G1]: { mode: "off", priority: "preferred" },
+					[P1]: { mode: "silent" },
+					[conversationRef("group", "30009")]: { mode: "direct_only" },
+				},
 				followUps: {},
 			}),
 			"utf8",
 		);
 		const first = store();
 		expect(first.load().followUps).toBe(0);
-		expect(first.effectivePush("account").mode).toBe("off");
-		expect(first.effectivePush(G1)).toMatchObject({ mode: "digest", filter: "direct" });
-		expect(first.effectivePush(P1)).toMatchObject({ mode: "off", filter: "all" });
+		expect(first.effectivePush("account").off).toBe(false); // digest 不映射静音
+		expect(first.effectivePush(G1).off).toBe(true); // off → off
+		expect(first.effectivePush(P1).off).toBe(true); // silent → off
+		expect(first.effectivePush(conversationRef("group", "30009")).off).toBe(false); // 其余模式不映射
 
 		const onDisk = JSON.parse(readFileSync(join(dir, "qq-control.json"), "utf8"));
-		expect(onDisk.accountPush).toEqual({ mode: "off" });
-		// 旧 action 退役（P6）：迁移后落盘只保留 push 偏好，不再携带旧覆盖字段
+		expect(onDisk.accountPush).toEqual({});
+		expect(onDisk.conversationPush[G1]).toEqual({ off: true });
+		expect(onDisk.conversationPush[P1]).toEqual({ off: true });
 		expect(onDisk.accountOverride).toBeUndefined();
 		expect(onDisk.conversationOverrides).toBeUndefined();
 
 		const second = store();
 		second.load();
-		expect(second.effectivePush(G1)).toMatchObject({ mode: "digest", filter: "direct" });
-	});
-
-	it("setPush 只改提供字段；clearPush 回落账号继承", () => {
-		const s = store();
-		s.load();
-		s.setPush("account", { mode: "follow" });
-		s.setPush(G1, { filter: "direct" });
-		expect(s.effectivePush(G1)).toMatchObject({ mode: "follow", filter: "direct" });
-		s.clearPush(G1);
-		expect(s.effectivePush(G1)).toMatchObject({ mode: "follow", filter: "all" });
-	});
-
-	it("inherit 链解析；账号 off 只压制 inherit 回落，不压制会话显式选择", () => {
-		const s = store();
-		s.load();
-		s.setPush("account", { mode: "digest", filter: "direct" });
-		s.setPush(G1, { mode: "inherit", filter: "inherit" });
-		expect(s.effectivePush(G1)).toMatchObject({ mode: "digest", filter: "direct" });
-		s.setPush("account", { mode: "off" });
-		expect(s.effectivePush(G1).mode).toBe("off");
-		s.setPush(P1, { mode: "follow" });
-		expect(s.effectivePush(P1).mode).toBe("follow");
-	});
-
-	it("账号暂停压制局部；到期自动恢复", () => {
-		const s = store();
-		s.load();
-		s.setPush("account", { pausedUntil: "2026-10-11T13:00:00Z" });
-		s.setPush(G1, { mode: "follow" });
-		expect(s.effectivePush(G1)).toMatchObject({ mode: "off", pausedUntil: "2026-10-11T13:00:00Z" });
-		const later = new ControlStore({ dataDir: dir, selfId: SELF, now: () => "2026-10-11T14:00:00Z" });
-		later.load();
-		expect(later.effectivePush(G1).mode).toBe("follow");
+		expect(second.effectivePush(G1).off).toBe(true);
 	});
 });
 
-describe("冷启动基线（R4③：按会话封存，首见写入绝不覆盖）", () => {
+describe("冷启动基线（按会话封存，首见写入绝不覆盖）", () => {
 	let dir: string;
 	beforeEach(() => (dir = mkdtempSync(join(tmpdir(), "uina-qq-baseline-"))));
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -179,7 +141,7 @@ describe("冷启动基线（R4③：按会话封存，首见写入绝不覆盖�
 	});
 });
 
-describe("会话级消费串行锁（§2.1）", () => {
+describe("会话级消费串行锁", () => {
 	it("同会话严格串行；异常照常释放且后继执行", async () => {
 		const locks = new ConversationLocks();
 		const order: string[] = [];

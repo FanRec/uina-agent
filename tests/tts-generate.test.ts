@@ -245,7 +245,7 @@ describe("tts_generate file contract", () => {
 			ops,
 			journal,
 			control,
-			attention: new AttentionModel({ control }),
+			attention: new AttentionModel(),
 			locks: new ConversationLocks(),
 			media: { allowedRoots: [cwd], staging: new MediaStaging({ stagingDir: join(cwd, "staging"), ops }) },
 			transport: {

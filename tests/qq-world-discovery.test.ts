@@ -896,7 +896,6 @@ describe("QQ 群目录与资源取得", () => {
 		expect(readFileSync(join(ctx.dir, controlPath))).toEqual(control);
 		expect(readFileSync(join(ctx.dir, "qq-facts.jsonl"))).toEqual(facts);
 		expect(ctx.saved().snapshot.dispatchedThrough.size).toBe(0);
-		expect(ctx.saved().snapshot.notifiedThrough.size).toBe(0);
 	});
 
 	it("D11 定位写盘失败发生在字节拉取前", async () => {

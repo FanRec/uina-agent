@@ -56,15 +56,15 @@ describe("facts journal（G4 本地连续性 + 恢复）", () => {
 		expect(second.snapshot.messages.get(m1.conversationRef)?.map((m) => m.ref)).toEqual([m1.ref, m2.ref, m3.ref]);
 	});
 
-	it("notifiedThrough 跨进程保留且只前进", () => {
+	it("deliveredThrough 跨进程保留且只前进", () => {
 		const first = journal();
 		first.recover();
 		const conv = conversationRef("private", "20002");
-		first.recordNotified(conv, 5, "input-1", "2026-10-07T10:00:00Z");
-		first.recordNotified(conv, 3, "input-2", "2026-10-07T10:01:00Z");
+		first.recordDispatched(conv, 5, "ring", "2026-10-07T10:00:00Z", "input-1");
+		first.recordDispatched(conv, 3, "ring", "2026-10-07T10:01:00Z");
 		const second = journal();
 		second.recover();
-		expect(second.snapshot.notifiedThrough.get(conv)).toBe(5);
+		expect(second.dispatchedThroughOf(conv)).toBe(5);
 	});
 
 	it("尾部 partial 行截断恢复，中段损坏明确失败", () => {
@@ -110,47 +110,48 @@ describe("control store（G4 本地连续性 + 单写方语义）", () => {
 	it("push set/clear 跨进程一致，revision 递增", () => {
 		const first = store();
 		first.load();
-		first.setPush("account", { mode: "off" });
-		const rev = first.setPush(conversationRef("group", "30003"), { mode: "follow", filter: "direct" });
+		first.setPush("account", { off: true });
+		const rev = first.setPush(conversationRef("group", "30003"), { pausedUntil: "2026-10-07T13:00:00Z" });
 		expect(rev).toBe(2);
 
 		const second = store();
 		second.load();
 		expect(second.revision).toBe(2);
-		expect(second.effectivePush("account").mode).toBe("off");
-		expect(second.effectivePush(conversationRef("group", "30003")).mode).toBe("follow");
+		expect(second.effectivePush("account").off).toBe(true);
+		expect(second.effectivePush(conversationRef("group", "30003")).off).toBe(true);
 		second.clearPush(conversationRef("group", "30003"));
-		expect(second.effectivePush(conversationRef("group", "30003")).mode).toBe("off");
+		const afterClear = second.effectivePush(conversationRef("group", "30003"));
+		expect(afterClear.off).toBe(true); // 回落账号静音
+		expect(afterClear.pausedUntil).toBeNull(); // 会话级暂停已清除
 	});
 
-	it("账号级暂停覆盖会话，到期恢复原规则", () => {
+	it("账号级暂停覆盖会话（折算 off），到期自动恢复", () => {
 		const s = store("2026-10-07T12:00:00Z");
 		s.load();
 		s.setPush("account", { pausedUntil: "2026-10-07T13:00:00Z" });
-		s.setPush(conversationRef("group", "30003"), { mode: "follow" });
 		const groupRef = conversationRef("group", "30003");
-		expect(s.effectivePush(groupRef).mode).toBe("off");
+		expect(s.effectivePush(groupRef).off).toBe(true);
 		expect(s.effectivePush(groupRef).pausedUntil).toBe("2026-10-07T13:00:00Z");
 
 		const later = new ControlStore({ dataDir: dir, selfId: SELF, now: () => "2026-10-07T13:00:01Z" });
 		later.load();
-		// 到期恢复：会话显式 follow 生效
-		expect(later.effectivePush(groupRef).mode).toBe("follow");
+		// 到期恢复：门铃自然回归
+		expect(later.effectivePush(groupRef).off).toBe(false);
 		expect(later.effectivePush(groupRef).pausedUntil).toBeNull();
 	});
 
 	it("写失败保留旧控制状态并抛错，不宣称保存", () => {
 		const s = store();
 		s.load();
-		s.setPush("account", { mode: "digest" });
+		s.setPush("account", { off: false });
 		// 用目录占位 tmp 路径制造持久 rename 失败
 		mkdirSync(join(dir, "qq-control.json.tmp"));
-		expect(() => s.setPush("account", { mode: "off" })).toThrow();
+		expect(() => s.setPush("account", { off: true })).toThrow();
 		// 内存态保持旧值
-		expect(s.effectivePush("account").mode).toBe("digest");
+		expect(s.effectivePush("account").off).toBe(false);
 		// 磁盘保持旧值
 		const onDisk = JSON.parse(readFileSync(join(dir, "qq-control.json"), "utf8"));
-		expect(onDisk.accountPush.mode).toBe("digest");
+		expect(onDisk.accountPush.off).toBe(false);
 	});
 
 	it("控制文件损坏明确失败", () => {
@@ -363,7 +364,7 @@ describe("v2 存储所有者与操作引用", () => {
 		try {
 			const control = new ControlStore({ dataDir: dir, selfId: SELF });
 			control.load();
-			control.setPush("account", { mode: "off" });
+			control.setPush("account", { off: true });
 			expect(() => new ControlStore({ dataDir: dir, selfId: "99999" }).load()).toThrow(/账号/);
 			const ops = new OperationLog({ dataDir: dir, selfId: SELF });
 			ops.recover();

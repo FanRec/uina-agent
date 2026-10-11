@@ -41,7 +41,7 @@ beforeEach(() => {
 		control,
 		ops,
 		now: () => NOW,
-		attention: new AttentionModel({ control }),
+		attention: new AttentionModel(),
 		locks: new ConversationLocks(),
 		grants: { grants: ["observation", "attention.manage"] },
 		transport: {
@@ -105,18 +105,20 @@ describe("inbox 读写合一（T06）", () => {
 		expect(deps.attention.focusList()).toEqual([]);
 	});
 
-	it("push 会话级/账号级写入；effectiveFollow 由 focus × push 实时派生", async () => {
+	it("push 会话级/账号级静音写入；effectivePush 实时派生，focus 不改偏好", async () => {
 		await call("inbox", { focus: [P1] });
-		// 会话 inherit + 账号 follow → effectiveFollow 生效。
-		await call("inbox", { push: { target: "account", mode: "follow" } });
-		expect(deps.attention.effectiveFollow(P1)).toBe(true);
+		await call("inbox", { push: { target: "account", off: true } });
+		expect(control.effectivePush("account").off).toBe(true);
+		expect(control.effectivePush(P1).off).toBe(true); // 账号静音传导
 
-		// 会话显式 off 不被账号 follow 压制（§1.2 继承公式）。
-		await call("inbox", { push: { target: P1, mode: "off" } });
-		expect(deps.attention.effectiveFollow(P1)).toBe(false);
-		expect(deps.attention.effectiveFollow(G1)).toBe(false); // 未关注
-		expect(control.effectivePush(P1).mode).toBe("off");
-		expect(control.effectivePush("account").mode).toBe("follow");
+		// 会话显式 off=false 解除不了账号静音；账号解除后回落 on。
+		await call("inbox", { push: { target: P1, off: false } });
+		expect(control.effectivePush(P1).off).toBe(true);
+		expect(control.effectivePush(G1).off).toBe(true);
+		await call("inbox", { push: { target: "account", off: false } });
+		expect(control.effectivePush(P1).off).toBe(false);
+		expect(control.effectivePush(G1).off).toBe(false);
+		expect(deps.attention.focusList()).toEqual([P1]); // 静音操作不动窗口
 	});
 
 	it("行内如实返回待处理/封存/推送/关注字段；pendingOnly 过滤", async () => {
@@ -133,7 +135,8 @@ describe("inbox 读写合一（T06）", () => {
 		expect(text).toContain("待处理 3 条");
 		expect(text).toContain(G1);
 		expect(text).toContain("封存 3 条");
-		expect(text).toContain("follow=否");
+		expect(text).toContain("push=on");
+		expect(text).toContain("窗口=关");
 		// 消费位口径：不因通知位推进而少算待处理。
 		expect(pendingCountOf(journal, control, P1)).toBe(3);
 	});
@@ -206,11 +209,11 @@ describe("read 顺序消费（T03）", () => {
 		expect(ambiguous.status).toBe("failed");
 	});
 
-	it("T07A：follow 已推进书签后，read 只交付增量，绝不重复（共书签）", async () => {
+	it("响铃已推进书签后，read 只交付增量，绝不重复（共书签）", async () => {
 		control.ensureBaseline(P1, 0);
 		const facts = Array.from({ length: 5 }, () => message());
-		// 模拟 follow 自动正文已交付前三条（P3.2 锁内同路径记账）。
-		journal.recordDispatched(P1, facts[2]!.sequence, "follow", NOW);
+		// 模拟响铃自动正文已交付前三条（锁内同路径记账）。
+		journal.recordDispatched(P1, facts[2]!.sequence, "ring", NOW);
 		const result = await call("read", { conversationRef: P1 });
 		const text = String(result.result);
 		expect(text).not.toContain(facts[0]!.ref);
@@ -356,7 +359,7 @@ describe("browse 只读漫游（T05/T15）", () => {
 describe("积木 grant 映射", () => {
 	it("inbox 查询需要 observation，push 还需 attention.manage；skip 本地可用", async () => {
 		deps = { ...deps, grants: { grants: [] } };
-		const pushDenied = await call("inbox", { push: { target: "account", mode: "off" } });
+		const pushDenied = await call("inbox", { push: { target: "account", off: true } });
 		expect(pushDenied.status).toBe("failed");
 		expect(platformCalls).toHaveLength(0);
 		const query = await call("inbox", {});
@@ -398,7 +401,7 @@ describe("skipped 审计回放", () => {
 /* ---------- P4.5 qq_status（内部自检） ---------- */
 
 describe("qqStatusLines 冒烟", () => {
-	it("如实打印消费位/基线/通知位/待处理与跳过审计", async () => {
+	it("如实打印消费位/基线/待处理/push 与跳过审计", async () => {
 		control.ensureBaseline(P1, 0);
 		const facts = Array.from({ length: 3 }, () => message());
 		await call("skip", { conversationRef: P1, throughMessageRef: facts[0]!.ref });

@@ -9,7 +9,7 @@ import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import { MediaStaging } from "../.uina/worlds/qq/src/media.js";
 import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
-import { renderBatch, renderReadWindow } from "../.uina/worlds/qq/src/render.js";
+import { renderCandidate as renderTapCandidate, renderReadWindow } from "../.uina/worlds/qq/src/render.js";
 import { QqScheduler } from "../.uina/worlds/qq/src/scheduler.js";
 import type { TransportCallOutcome } from "../.uina/worlds/qq/src/transport.js";
 import type { MessageFact } from "../.uina/worlds/qq/src/types.js";
@@ -36,7 +36,7 @@ beforeEach(() => {
 		control,
 		ops,
 		now: () => NOW,
-		attention: new AttentionModel({ control }),
+		attention: new AttentionModel(),
 		locks: new ConversationLocks(),
 		grants: { grants: ["observation", "messaging", "requests.respond"] },
 		display: { timezone: "Asia/Shanghai" },
@@ -320,11 +320,10 @@ describe("QQ 修复：触发现场", () => {
 			selfId: SELF,
 			journal: deps.journal,
 			control: deps.control,
-			attention: new AttentionModel({ control: deps.control }),
-			locks: new ConversationLocks(),
+			attention: new AttentionModel(),
 			now: () => NOW,
-			renderBatch: (c) => renderBatch(c, { journal: deps.journal, control: deps.control, now: () => NOW }),
-			renderReadWindow: (conv) =>
+			renderCandidate: (c) => renderTapCandidate(c, { journal: deps.journal, control: deps.control, now: () => NOW }),
+			renderRingWindow: (conv) =>
 				renderReadWindow(
 					conv,
 					{ journal: deps.journal, control: deps.control, now: () => NOW },
@@ -352,13 +351,12 @@ describe("QQ 修复：触发现场", () => {
 			selfId: SELF,
 			journal: deps.journal,
 			control: deps.control,
-			attention: new AttentionModel({ control: deps.control }),
-			locks: new ConversationLocks(),
+			attention: new AttentionModel(),
 			now: () => NOW,
 			isRequestPending: (ref) =>
 				!deps.ops.all().some((op) => op.target === ref && (op.outcome === "succeeded" || op.outcome === "unknown")),
-			renderBatch: (c) => renderBatch(c, { journal: deps.journal, control: deps.control, now: () => NOW }),
-			renderReadWindow: (conv) =>
+			renderCandidate: (c) => renderTapCandidate(c, { journal: deps.journal, control: deps.control, now: () => NOW }),
+			renderRingWindow: (conv) =>
 				renderReadWindow(
 					conv,
 					{ journal: deps.journal, control: deps.control, now: () => NOW },
@@ -386,11 +384,10 @@ describe("QQ 修复：触发现场", () => {
 			selfId: SELF,
 			journal: deps.journal,
 			control: deps.control,
-			attention: new AttentionModel({ control: deps.control }),
-			locks: new ConversationLocks(),
+			attention: new AttentionModel(),
 			now: () => NOW,
-			renderBatch: () => "消息",
-			renderReadWindow: () => ({ text: "消息", delivered: [], deliveredThrough: 0, remaining: 0 }),
+			renderRingWindow: () => ({ text: "消息", delivered: [], deliveredThrough: 0, remaining: 0 }),
+			renderCandidate: () => "消息",
 			emit: async (i) => {
 				emitted.push(i.id);
 				await new Promise<void>((_resolve, reject) => {

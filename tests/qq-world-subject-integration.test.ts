@@ -145,12 +145,12 @@ async function fixture() {
 	};
 }
 
-it("World → Subject FIFO: busy placeholder upgrades across conversations and commits factual summary", async () => {
+it("World → Subject FIFO: 群零注入留红点，poke 拍肩在 busy 下排队并于空闲交付", async () => {
 	const f = await fixture();
 	try {
 		f.arrive("body-first");
 		await vi.advanceTimersByTimeAsync(2500);
-		await vi.waitFor(() => expect(f.store.state.queued.size).toBe(1));
+		expect(f.store.state.queued.size).toBe(0); // 群不在场默认零注入
 		expect(
 			f.store.readRecords().filter((record) => record.kind === "input" && record.input.source?.ref === "qq"),
 		).toHaveLength(0);
@@ -164,6 +164,8 @@ it("World → Subject FIFO: busy placeholder upgrades across conversations and c
 			target_id: 10001,
 			time: Math.floor(Date.now() / 1000),
 		});
+		await vi.advanceTimersByTimeAsync(2500);
+		await vi.waitFor(() => expect(f.store.state.queued.size).toBe(1));
 		await f.finish();
 		const inputs = f.store
 			.readRecords()
@@ -171,19 +173,18 @@ it("World → Subject FIFO: busy placeholder upgrades across conversations and c
 		expect(inputs).toHaveLength(1);
 		const text = inputs[0]!.kind === "input" ? inputs[0]!.input.text : "";
 		expect(text).toContain("poke");
-		expect(text).toContain("g30003");
-		expect(text!.indexOf("g40004")).toBeLessThan(text!.indexOf("g30003"));
-		expect(f.journal().dispatchedThroughOf("g30003")).toBe(0);
+		expect(text).toContain("g40004");
+		expect(f.journal().dispatchedThroughOf("g30003")).toBe(0); // 红点语义：书签不动
 		expect(readFileSync(f.path, "utf8")).not.toContain('"render":');
 	} finally {
 		await f.close();
 	}
 });
 
-it("World → Subject: read/skip racing queued follow retires empty input; later follow persists actual delivery", async () => {
+it("World → Subject: read/skip racing queued ring retires empty input; later ring persists actual delivery", async () => {
 	const f = await fixture();
 	try {
-		await f.tool.run({ action: "inbox", params: { focus: ["g30003"], push: { target: "g30003", mode: "follow" } } });
+		await f.tool.run({ action: "inbox", params: { focus: ["g30003"] } });
 		f.arrive("read-by-tool");
 		f.arrive("skip-by-tool");
 		await vi.advanceTimersByTimeAsync(2500);
@@ -194,24 +195,24 @@ it("World → Subject: read/skip racing queued follow retires empty input; later
 		expect(f.events).toContainEqual(
 			expect.objectContaining({ type: "input_settled", outcome: "retired", reason: "empty_render" }),
 		);
-		f.arrive("delivered-by-follow");
+		f.arrive("delivered-by-ring");
 		await vi.advanceTimersByTimeAsync(2500);
 		await f.harness.waitForIdle();
 		const inputs = f.store
 			.readRecords()
 			.filter((record) => record.kind === "input" && record.input.source?.ref === "qq");
 		expect(inputs).toHaveLength(1);
-		expect(inputs[0]!.kind === "input" && inputs[0]!.input.text).toContain("delivered-by-follow");
+		expect(inputs[0]!.kind === "input" && inputs[0]!.input.text).toContain("delivered-by-ring");
 		expect(f.journal().dispatchedThroughOf("g30003")).toBe(3);
 	} finally {
 		await f.close();
 	}
 });
 
-it("World → Subject: appendInput retry reuses successful follow body across foreground interruption", async () => {
+it("World → Subject: appendInput retry reuses successful ring body across foreground interruption", async () => {
 	const f = await fixture();
 	try {
-		await f.tool.run({ action: "inbox", params: { focus: ["g30003"], push: { target: "g30003", mode: "follow" } } });
+		await f.tool.run({ action: "inbox", params: { focus: ["g30003"] } });
 		f.arrive("must-survive-retry");
 		await vi.advanceTimersByTimeAsync(2500);
 		await vi.waitFor(() => expect(f.store.state.queued.size).toBe(1));

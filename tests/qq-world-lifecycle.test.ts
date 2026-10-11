@@ -291,7 +291,7 @@ describe("部署边界：grant 过滤下沉摄取层", () => {
 		const t = Math.floor(Date.parse("2026-10-08T03:00:00Z") / 1000);
 		try {
 			await world.onStart?.(ctx);
-			// 他人普通群消息 → ordinary 候选（窗口未到，暂不派发）
+			// 他人普通群消息 → 群默认零注入（红点），不派发
 			transport.emit({
 				post_type: "message",
 				message_type: "group",
@@ -326,7 +326,7 @@ describe("部署边界：grant 过滤下沉摄取层", () => {
 				sender: { user_id: Number(SELF), nickname: "我", card: "" },
 				message: [{ type: "text", data: { text: "我的发言" } }],
 			});
-			// 撤回自己的发言 → 唤醒（direct 短窗口）
+			// 撤回自己的发言 → 拍肩唤醒
 			transport.emit({
 				post_type: "notice",
 				notice_type: "group_recall",
@@ -338,7 +338,7 @@ describe("部署边界：grant 过滤下沉摄取层", () => {
 				time: t + 3,
 			});
 			await new Promise((r) => setTimeout(r, 1500));
-			const recalls = worldEvents.filter((e) => e.text?.includes("trigger=recall"));
+			const recalls = worldEvents.filter((e) => e.text?.includes("[QQ 拍肩]"));
 			expect(recalls).toHaveLength(1);
 		} finally {
 			await world.onStop?.(ctx);
