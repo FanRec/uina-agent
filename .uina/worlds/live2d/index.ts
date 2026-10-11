@@ -13,9 +13,9 @@ import { MO_SPEECH } from "./models/mo/speech.js";
  * 固定为 parallel（并发是常态，安全由引擎逐轴仲裁与独占声明保证，工具层不串行化）。
  *
  * P4-1：工具结果词汇表 + gate 链（连接 → 适配 → 发布）+ 目录词表解析 +
- * 作者会话标记门已接入；express/state 走引擎映射，costume 支持 list 与目录拒绝，
- * reload 走 VTS 重载与绑定核验。flip/spatial（独占资源，P4-5）、preview/accept
- * （作者会话引擎与发布门，P4-6/P5-1）暂以 not_started 如实声明。
+ * 作者会话标记门已接入；express/state 走引擎映射，costume 支持执行（独占 effect:* +
+ * 热键），reload 走 VTS 重载与绑定核验。flip/spatial 走 model:transform 独占声明
+ * （P4-5）。preview/accept（作者会话引擎与发布门，P4-6/P5-1）暂以 not_started 如实声明。
  * 刻意不做（规范修订 A2/A14/A6）：Timeline、Performance 门面、即兴 beats、自由数值轴。
  */
 export interface Live2DAppOptions {
@@ -110,7 +110,7 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 			flip: {
 				description: "整模型旋转一圈并核实归位；取消后等待归位清理完成。",
 				parameters: { type: "object", additionalProperties: false, properties: {} },
-				run: call("flip", (rt) => Promise.resolve(rt.notStarted("flip"))),
+				run: call("flip", (rt, args, ctx) => rt.flip(args, ctx)),
 			},
 			spatial: {
 				description: "模型整体位移与缩放（VTS MoveModelRequest）。",
@@ -124,7 +124,7 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 						duration: { type: "number", minimum: 0, maximum: 2 },
 					},
 				},
-				run: call("spatial", (rt) => Promise.resolve(rt.notStarted("spatial"))),
+				run: call("spatial", (rt, args, ctx) => rt.spatial(args, ctx)),
 			},
 			status: {
 				description: "读取世界启动状态、连接与适配事实、作者会话、发布状态与动作目录。",

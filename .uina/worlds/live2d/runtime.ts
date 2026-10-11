@@ -7,7 +7,7 @@ import { encodeFrame, validateRig, type ModelRig } from "./adapter/rig.js";
 import { VTSClient } from "./adapter/vts-client.js";
 import { emptyCatalog, recompileWithSpeech, type AttentionTarget, type CatalogSnapshot } from "./authoring/catalog.js";
 import type { SpeechPolicy } from "./authoring/motion.js";
-import { MotionDirector, SupersededError, type MotionHandle } from "./director/director.js";
+import { MotionDirector, SupersededError, type ExclusiveClaim, type MotionHandle } from "./director/director.js";
 import { buildLive2DEndpoint, type Live2DEndpoint } from "./endpoint.js";
 import { fromEngineResult, toolRejected, toolSucceeded, toolUnknown } from "./results.js";
 import { SpeechInput, type SpeechConfig } from "./speech-level.js";
@@ -42,10 +42,45 @@ export interface Live2DRuntimeOptions {
 	speech?: SpeechConfig;
 	/** 目录快照；缺省空目录（诚实状态：一切命名参数显式拒绝）。 */
 	catalog?: CatalogSnapshot;
+	/** 独占声明清理等待上限（§6.4 safeStop 抛错判定；注入点（测试用），缺省 5000ms）。 */
+	cleanupTimeoutMs?: number;
 }
 
 /** 单帧合成到注入之间允许的最大时间步（毫秒）：后台节流/休眠恢复时防止动作瞬移。 */
 const MAX_TICK_DT_MS = 250;
+
+/** flip 空间变换常量（§2：整圈旋转，绝对轨迹；回读前留出 VTS 动画结算余量）。 */
+const FLIP_MOVE_SECONDS = 0.8;
+const RESTORE_SECONDS = 0.5;
+const SETTLE_MARGIN_MS = 250;
+
+/** VTS 模型位姿（getModelPosition 返回形态）。 */
+type ModelPose = { positionX: number; positionY: number; rotation: number; size: number };
+
+/** 等待或中止：resolve true=自然到期，false=signal 中止。 */
+const sleep = (ms: number, signal?: AbortSignal): Promise<boolean> =>
+	new Promise((resolve) => {
+		if (signal?.aborted) return resolve(false);
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve(true);
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			resolve(false);
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+
+/** 角度差按 360° 环绕归一到 (-180, 180]——翻转整圈后回读值偏移 360°。 */
+const wrapDeg = (d: number): number => (((d % 360) + 540) % 360) - 180;
+
+/** 位姿回读核实：旋转按环绕差比较，位移/缩放线性容差。 */
+const poseMatches = (now: ModelPose, base: ModelPose, tol = 0.5): boolean =>
+	Math.abs(wrapDeg(now.rotation - base.rotation)) <= tol &&
+	Math.abs(now.positionX - base.positionX) <= 0.01 &&
+	Math.abs(now.positionY - base.positionY) <= 0.01 &&
+	Math.abs(now.size - base.size) <= 0.01;
 
 /** state 注视参数的引擎内置词表成员判定（目录命名优先级低于内置词表）。 */
 const isBuiltinAttention = (value: string): value is Extract<AttentionTarget, string> =>
@@ -68,6 +103,11 @@ export class Live2DRuntime {
 	/** thinking 状态（§5 宿主事件）：状态驱动幂等，仅跳变时启/停 background.thinking。 */
 	private thinking = false;
 	private thinkingHandle?: MotionHandle;
+	/** 独占声明 reason 序号：每次声明唯一 reason，重叠声明一律 resource_conflict（不做同 reason 幂等替换）。 */
+	private claimSeq = 0;
+	/** 在途归位清理任务（flip 取消路径注册；safeStop 等待-结算的事实源）。 */
+	private readonly pendingCleanups = new Set<Promise<boolean>>();
+	private readonly cleanupTimeoutMs: number;
 	/** safeStop 保持帧：暂停期间按 tick 节奏持续注入（口型通道已覆写中性值）。 */
 	private keepFrame?: Record<string, number>;
 	private clock: NodeJS.Timeout | null = null;
@@ -105,6 +145,7 @@ export class Live2DRuntime {
 			}
 		}
 		this.tickIntervalMs = options.tickIntervalMs ?? 1000 / 60;
+	this.cleanupTimeoutMs = options.cleanupTimeoutMs ?? 5000;
 		this.endpoint = buildLive2DEndpoint(this);
 	}
 
@@ -283,7 +324,7 @@ export class Live2DRuntime {
 		return toolSucceeded("状态已生效。", { effectStatus: "applied", verification: "input_accepted" });
 	}
 
-	/** costume（§2）：list 只列出登记项；外观执行（独占声明 + 热键）在 P4-5 接入。 */
+	/** costume（§2）：list 只列出登记项；执行走独占声明（effect:*）+ VTS 热键触发。 */
 	async costume(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
 		const denied = this.gate(ctx);
 		if (denied) return denied;
@@ -295,8 +336,94 @@ export class Live2DRuntime {
 		}
 		const entry = this.catalog.costumes.find((c) => c.id === item);
 		if (!entry) return toolRejected("unknown_costume", `外观不在当前模型目录: "${item}"（可用 item="list" 查询）。`);
-		// 命中后的独占声明与热键执行归 P4-5（独占资源工具批）。
-		return this.notStarted("costume");
+		const hotkey = this.client?.findHotkey(entry.hotkeyID);
+		if (!hotkey) return toolRejected("hotkey_missing", `热键未在当前 VTS 模型登记: "${entry.hotkeyID}"（模型配置已变更？reload 后重试）。`);
+		const claim = this.acquireClaim(["effect:*"], "costume", ctx.signal);
+		if ("status" in claim) return claim;
+		try {
+			await this.client!.triggerHotkey(hotkey.hotkeyID);
+			return toolSucceeded(`外观 "${entry.id}" 已触发（热键 ${hotkey.hotkeyID}）。`, { effectStatus: "accepted" });
+		} catch (error) {
+			return toolUnknown(`外观触发结果不明：${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			claim.release();
+		}
+	}
+
+	/**
+	 * flip（§2）：整模型旋转一圈并回读核实归位（绝对轨迹）。独占 model:transform，
+	 * 带清理声明——取消后等待归位清理完成才结算（§9 #9：清理完成前资源不释放）。
+	 */
+	async flip(_args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+		const denied = this.gate(ctx);
+		if (denied) return denied;
+		const claim = this.acquireClaim(["model:transform"], "flip", ctx.signal, true);
+		if ("status" in claim) return claim;
+		const client = this.client!;
+		try {
+			const base = await client.getModelPosition();
+			await client.moveModel({
+				timeInSeconds: FLIP_MOVE_SECONDS,
+				valuesAreRelativeToModel: false,
+				positionX: base.positionX,
+				positionY: base.positionY,
+				rotation: base.rotation + 360,
+				size: base.size,
+			});
+			if (!(await sleep(FLIP_MOVE_SECONDS * 1000 + SETTLE_MARGIN_MS, claim.signal))) {
+				// 取消：归位清理是外部效果——等待清理完成才结算；清理任务入账供 safeStop 等待（§6.2/6.4）。
+				const cleanup = this.trackCleanup(this.restorePose(client, base));
+				const confirmed = await cleanup;
+				return toolRejected(
+					"cancelled",
+					confirmed ? "翻转已取消，模型已归位并核实。" : "翻转已取消，但归位清理未核实（效果不明，资源已释放）。",
+					{ effectStatus: confirmed ? ("cancelled" as const) : ("unknown" as const) },
+				);
+			}
+			const now = await client.getModelPosition();
+			if (!poseMatches(now, base)) return toolUnknown("翻转已执行但归位未核实（回读与基线不符）。");
+			return toolSucceeded("模型已翻转一圈并核实归位。", { effectStatus: "applied" });
+		} catch (error) {
+			return toolUnknown(`flip 执行中断：${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			claim.release();
+		}
+	}
+
+	/** spatial（§2）：模型整体位移与缩放（绝对位姿，MoveModelRequest 0~2s 调度）+ 回读核实。 */
+	async spatial(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+		const denied = this.gate(ctx);
+		if (denied) return denied;
+		for (const key of ["x", "y", "size"] as const) {
+			if (args[key] !== undefined && (typeof args[key] !== "number" || !Number.isFinite(args[key])))
+				return toolRejected("invalid_motion", `${key} 必须是有限数值。`);
+		}
+		const duration = args.duration;
+		if (duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration) || duration < 0 || duration > 2))
+			return toolRejected("invalid_duration", "duration 必须在 0~2 秒之间。");
+		const claim = this.acquireClaim(["model:transform"], "spatial", ctx.signal);
+		if ("status" in claim) return claim;
+		const client = this.client!;
+		try {
+			const base = await client.getModelPosition();
+			const target = {
+				positionX: (args.x as number | undefined) ?? base.positionX,
+				positionY: (args.y as number | undefined) ?? base.positionY,
+				rotation: base.rotation,
+				size: (args.size as number | undefined) ?? base.size,
+			};
+			const moveSeconds = (duration as number | undefined) ?? 0.5;
+			await client.moveModel({ timeInSeconds: moveSeconds, valuesAreRelativeToModel: false, ...target });
+			if (!(await sleep(moveSeconds * 1000 + SETTLE_MARGIN_MS, claim.signal)))
+				return toolRejected("cancelled", "位移已取消；VTS 侧动画可能继续至目标位姿（外部效果不回收）。");
+			const now = await client.getModelPosition();
+			if (!poseMatches(now, target)) return toolUnknown("位移已调度但结果未核实（回读与目标不符）。");
+			return toolSucceeded("模型位姿已更新并核实。", { effectStatus: "applied" });
+		} catch (error) {
+			return toolUnknown(`spatial 执行中断：${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			claim.release();
+		}
 	}
 
 	/** reload（§2）：显式重载当前 VTS 模型并重新核验绑定。 */
@@ -391,6 +518,65 @@ export class Live2DRuntime {
 		}
 		this.keepFrame = frame;
 		director.cancelAllPlaybacks("safestop");
+		// §6.2/§6.4：取消全部独占声明；带清理的声明等待归位清理完成，未确认则抛错（调用方得
+		// unknown；拆除不被阻塞——BodyRouter.stopAll 以 allSettled 承接为 failed[]）。
+		director.cancelClaims();
+		await new Promise((r) => setTimeout(r, 0)); // 让 abort 监听器先产生清理任务
+		if (!(await this.awaitCleanups())) throw new Error("Uina 已暂停，外部效果或归位清理尚未确认。");
+	}
+
+	/**
+	 * 独占声明受理：reason 带调用序号——重叠的同类声明一律 resource_conflict，
+	 * 不走同 reason 幂等替换（独占资源的并发重复触发不是"重触发"而是冲突）。
+	 */
+	private acquireClaim(
+		resources: readonly string[],
+		kind: string,
+		signal?: AbortSignal,
+		cleanup = false,
+	): ExclusiveClaim | ToolExecutionResult {
+		try {
+			return this.director!.claimExclusive(resources, { reason: `${kind}#${++this.claimSeq}`, cleanup, signal });
+		} catch {
+			return signal?.aborted
+				? toolRejected("cancelled", "调用已中止，未执行。")
+				: toolRejected("resource_conflict", "独占资源被占用（flip/spatial/costume 正在进行或清理中）。");
+		}
+	}
+
+	/** 归位清理任务入账（§6.2 safeStop 等待-结算的事实源）。返回原 Promise 供调用方等待。 */
+	private trackCleanup(p: Promise<boolean>): Promise<boolean> {
+		const wrapped = p.finally(() => this.pendingCleanups.delete(wrapped));
+		this.pendingCleanups.add(wrapped);
+		return wrapped;
+	}
+
+	/** §6.2：等待全部在途归位清理完成；超时返回 false（safeStop 据此抛错，§6.4）。 */
+	private async awaitCleanups(): Promise<boolean> {
+		const deadline = Date.now() + this.cleanupTimeoutMs;
+		while (this.pendingCleanups.size > 0) {
+			if (Date.now() > deadline) return false;
+			await Promise.race([Promise.allSettled([...this.pendingCleanups]), sleep(50)]);
+		}
+		return true;
+	}
+
+	/** flip 取消路径：绝对位姿回基线 → 回读核实。返回是否核实通过（失败也结算，不悬挂声明）。 */
+	private async restorePose(client: VTSClient, base: ModelPose): Promise<boolean> {
+		try {
+			await client.moveModel({
+				timeInSeconds: RESTORE_SECONDS,
+				valuesAreRelativeToModel: false,
+				positionX: base.positionX,
+				positionY: base.positionY,
+				rotation: base.rotation,
+				size: base.size,
+			});
+			await sleep(RESTORE_SECONDS * 1000 + SETTLE_MARGIN_MS);
+			return poseMatches(await client.getModelPosition(), base);
+		} catch {
+			return false;
+		}
 	}
 
 	/** resume（§6）：解除暂停、清保持帧、口型包络归零、眨眼与限时状态倒计时恢复剩余。 */

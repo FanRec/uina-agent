@@ -471,6 +471,11 @@ export class MotionDirector {
 		claim.controller.abort();
 	}
 
+	/** §6.2：取消全部独占声明（触发各自信号）。带清理声明的等待-结算由调用方（runtime.safeStop）负责。 */
+	cancelClaims(): void {
+		for (const claim of [...this.claims]) claim.controller.abort();
+	}
+
 	// ---------- 代次失效与暂停 ----------
 
 	/**

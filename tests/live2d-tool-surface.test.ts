@@ -104,6 +104,7 @@ const makeFakeClient = (options: { connected?: boolean; modelID?: string } = {})
 		connect: () => {},
 		disconnect: () => {},
 		getConnectionStatus: () => ({ connected: state.connected }),
+		findHotkey: () => undefined,
 		reloadCurrentModel: async () => {
 			state.reloadCalls++;
 		},
@@ -383,13 +384,17 @@ describe("live2d 工具面（P4-1）", () => {
 		}
 	});
 
-	it("costume：list 列出登记项；目录命中但执行面未接入时如实 not_started", async () => {
+	it("costume：list 列出登记项；目录命中但 VTS 未登记该热键 → hotkey_missing（P4-5 执行面）", async () => {
 		const { app, ctx } = await harness();
 		try {
 			const listed = await run(app, "costume", { item: "list" }, ctx);
 			expect(listed.status).toBe("succeeded");
 			expect(listed.result).toContain("glasses");
-			expect(await run(app, "costume", { item: "glasses" }, ctx)).toMatchObject({ status: "not_started" });
+			// harness 的 fake client 未登记任何热键 → 执行面如实报 hotkey_missing。
+			expect(await run(app, "costume", { item: "glasses" }, ctx)).toMatchObject({
+				status: "failed",
+				details: { reason: "hotkey_missing" },
+			});
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}
