@@ -350,20 +350,25 @@ describe("批2 能力：expressions / 卡片与转发展开 / includeMedia", () 
 	}
 
 	it("expressions：query 走 search_sys_faces，只回数字编码并给出 face/text 指引", async () => {
+		let faces = [
+			{ q_sid: "14", q_des: "微笑", emoji_name_alias: ["呲牙"], is_super: false },
+			{ q_sid: "😀", q_des: "emoji grin", emoji_name_alias: [], is_super: false },
+		];
 		ctx.transport.script = (action) => {
 			if (action === "search_sys_faces") {
 				return {
 					status: "ok",
 					data: {
-						faces: [
-							{ q_sid: "14", q_des: "微笑", emoji_name_alias: ["呲牙"], is_super: false },
-							{ q_sid: "😀", q_des: "emoji grin", emoji_name_alias: [], is_super: false },
-						],
+						faces,
 					},
 				};
 			}
 			return { status: "failed", reason: `unexpected action ${action}`, kind: "rejected" as const };
 		};
+		const malformed = await handleObserve(ctx.deps, { scope: "expressions", kind: "face", query: "微笑" });
+		expect(malformed.status).toBe("failed");
+		expect(malformed.details).toMatchObject({ reason: "malformed_response" });
+		faces = faces.slice(0, 1);
 		const result = await handleObserve(ctx.deps, { scope: "expressions", kind: "face", query: "微笑" });
 		expect(result.status).toBe("succeeded");
 		const text = String(result.result);

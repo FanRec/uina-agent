@@ -9,13 +9,14 @@ import { MO_SPEECH } from "./models/mo/speech.js";
  * Live2D 世界装配。
  *
  * 工具面按《live2d-world-boundary-spec.md》§2 定型：express / state / costume /
- * flip / spatial / status / diagnose / preview / accept / reload；executionMode 显式
+ * flip / spatial / status / diagnose / preview / reload（accept 与发布验收门已按
+ * 操作员裁决拆除）；executionMode 显式
  * 固定为 parallel（并发是常态，安全由引擎逐轴仲裁与独占声明保证，工具层不串行化）。
  *
- * P4-1：工具结果词汇表 + gate 链（连接 → 适配 → 发布）+ 目录词表解析 +
+ * P4-1：工具结果词汇表 + gate 链（中止 → 暂停 → 连接 → 适配）+ 目录词表解析 +
  * 作者会话标记门已接入；express/state 走引擎映射，costume 支持执行（独占 effect:* +
  * 热键），reload 走 VTS 重载与绑定核验。flip/spatial 走 model:transform 独占声明
- * （P4-5）。preview/accept（作者会话引擎与发布门，P4-6/P5-1）暂以 not_started 如实声明。
+ * （P4-5）。preview（作者预览引擎，P5-1 接入）暂以 not_started 如实声明。
  * 刻意不做（规范修订 A2/A14/A6）：Timeline、Performance 门面、即兴 beats、自由数值轴。
  */
 export interface Live2DAppOptions {
@@ -127,7 +128,7 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 				run: call("spatial", (rt, args, ctx) => rt.spatial(args, ctx)),
 			},
 			status: {
-				description: "读取世界启动状态、连接与适配事实、作者会话、发布状态与动作目录。",
+				description: "读取世界启动状态、连接与适配事实与动作目录。",
 				parameters: { type: "object", additionalProperties: false, properties: {} },
 				run: call("status", (rt) => Promise.resolve({ result: rt.formatStatus(), status: "succeeded" as const })),
 			},
@@ -137,19 +138,9 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 				run: call("diagnose", (rt) => Promise.resolve({ result: rt.diagnose(), status: "succeeded" as const })),
 			},
 			preview: {
-				description: "作者会话专用：预览草稿、假 RMS、单控制关键帧。需操作员开启作者会话标记。",
+				description: "作者预览：假 RMS、单控制关键帧（引擎随 P5-1 接入）。",
 				parameters: { type: "object", additionalProperties: true, properties: {} },
 				run: call("preview", (rt, args, ctx) => rt.preview(args, ctx)),
-			},
-			accept: {
-				description: "作者会话专用：把当前草稿的内容摘要与人工验收记录写入 acceptance.json 并发布。",
-				parameters: {
-					type: "object",
-					additionalProperties: false,
-					properties: { evidence: { type: "string", description: "人工画面验收说明" } },
-					required: ["evidence"],
-				},
-				run: call("accept", (rt, args, ctx) => rt.accept(args, ctx)),
 			},
 			reload: {
 				description: "显式重新加载当前 VTS 模型并重新核验绑定。",

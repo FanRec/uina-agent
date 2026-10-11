@@ -119,7 +119,6 @@ const makeRuntime = (state: FakeState, cleanupTimeoutMs?: number) =>
 	new Live2DRuntime({
 		client: makeFake(state),
 		rig: makeRig(),
-		published: true,
 		...(cleanupTimeoutMs !== undefined ? { cleanupTimeoutMs } : {}),
 		catalog: compileCatalog(
 			MODEL_ID,

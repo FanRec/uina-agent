@@ -116,7 +116,7 @@ describe("live2d 声学电平链路（P3-2）", () => {
 			disconnect: () => {},
 			getConnectionStatus: () => ({ connected: true }),
 		} as unknown as VTSClient;
-		const rt = new Live2DRuntime({ client: fakeClient, rig, speech: SPEECH, published: true });
+		const rt = new Live2DRuntime({ client: fakeClient, rig, speech: SPEECH });
 		expect(rt.levelSink).toBeDefined();
 
 		// TTS 按 ~20ms 窗连续投递（seams 契约）；帧步长 16ms，隔帧投递即维持新鲜。
@@ -130,12 +130,5 @@ describe("live2d 声学电平链路（P3-2）", () => {
 		// 停止投递：失联守卫（120ms）+ 引擎释放（50ms）→ 回零，不永久张嘴。
 		for (let i = 0; i < 15; i++) rt.composeTick(16);
 		expect(rt.director!.currentFrame["mouth.open"]).toBe(0);
-
-		// 未发布：电平一律丢弃。
-		const rt2 = new Live2DRuntime({ client: fakeClient, rig, speech: SPEECH, published: false });
-		rt2.levelSink!.processLevel({ rms: 0.06 });
-		for (let i = 0; i < 5; i++) rt2.levelSink!.processLevel({ rms: 0.06 });
-		for (let i = 0; i < 5; i++) rt2.composeTick(16);
-		expect(rt2.director!.currentFrame["mouth.open"]).toBe(0);
 	});
 });

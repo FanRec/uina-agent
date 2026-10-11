@@ -88,7 +88,7 @@ const makeFakeClient = (options: { connected?: boolean; modelID?: string } = {})
 };
 
 const makeRuntime = (client: VTSClient, options: Partial<ConstructorParameters<typeof Live2DRuntime>[0]> = {}) =>
-	new Live2DRuntime({ client, rig: makeRig(), published: true, ...options });
+	new Live2DRuntime({ client, rig: makeRig(), ...options });
 
 describe("live2d runtime tick 合成（P2-3）", () => {
 	it("composeTick 驱动 director 合成并注入编码帧（合成推进纯函数化）", () => {
@@ -134,13 +134,6 @@ describe("live2d runtime tick 合成（P2-3）", () => {
 	it("身份门：VTS 当前模型与 rig 标定模型不匹配时零输出", () => {
 		const { client, state } = makeFakeClient({ modelID: "another-model" });
 		const rt = makeRuntime(client, { rng: () => 0.5 });
-		rt.composeTick(16);
-		expect(state.injected).toHaveLength(0);
-	});
-
-	it("发布门：未发布时不合成不注入（P4-6 接入验收门真值）", () => {
-		const { client, state } = makeFakeClient();
-		const rt = makeRuntime(client, { rng: () => 0.5, published: false });
 		rt.composeTick(16);
 		expect(state.injected).toHaveLength(0);
 	});

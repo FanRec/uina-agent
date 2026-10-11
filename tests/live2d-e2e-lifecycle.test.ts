@@ -124,7 +124,6 @@ const makeRuntime = (state: FakeState, speech?: SpeechConfig) => {
 		client,
 		rig: makeRig(),
 		...(speech ? { speech } : {}),
-		published: true,
 		catalog: makeCatalog({ long: 6 }),
 	});
 };

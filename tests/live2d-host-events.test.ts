@@ -78,7 +78,7 @@ const headTrack = (durationMs: number, value: number) =>
 		]),
 	);
 
-const makeRuntime = (state: { connected: boolean }, published = true) => {
+const makeRuntime = (state: { connected: boolean }) => {
 	const client = {
 		isConnected: () => state.connected,
 		getModelProfile: () => ({ modelID: MODEL_ID }),
@@ -92,7 +92,6 @@ const makeRuntime = (state: { connected: boolean }, published = true) => {
 	return new Live2DRuntime({
 		client,
 		rig: makeRig(),
-		published,
 		catalog: compileCatalog(
 			MODEL_ID,
 			{
@@ -181,22 +180,6 @@ describe("宿主事件消费（P4-4，§5）", () => {
 			fire({ type: "output_update", channel: "thinking" });
 			stepMs(rt, 700);
 			expect(rt.director!.currentFrame["head.yaw"]).toBeGreaterThan(3.5);
-		} finally {
-			await app.onStop?.({} as ServiceCompanionContext);
-		}
-	});
-
-	it("未发布目录：thinking 事件 no-op（catalogView 为空，启动失败不重试）", async () => {
-		const state = { connected: true };
-		const rt = makeRuntime(state, false);
-		const { ctx, fire } = makeCtx();
-		const app = createLive2DApp({ instance: rt });
-		await app.onStart!(ctx);
-		try {
-			fire({ type: "output_update", channel: "thinking" });
-			fire({ type: "turn_end" });
-			stepMs(rt, 600);
-			expect(Math.abs(rt.director!.currentFrame["head.yaw"]!)).toBeLessThan(1.5); // 空闲 sway
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}

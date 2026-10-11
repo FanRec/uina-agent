@@ -382,6 +382,85 @@
 					"avatarPath": "E:/workspace/avatar.png"
 				}
 			}
+		},
+		{
+			"id": "people_friends",
+			"arguments": {
+				"action": "people",
+				"params": {}
+			}
+		},
+		{
+			"id": "people_members",
+			"arguments": {
+				"action": "people",
+				"params": {
+					"scope": "members",
+					"conversationRef": "g1",
+					"query": "王"
+				}
+			}
+		},
+		{
+			"id": "people_person",
+			"arguments": {
+				"action": "people",
+				"params": {
+					"scope": "person",
+					"userRef": "u1"
+				}
+			}
+		},
+		{
+			"id": "files_root",
+			"arguments": {
+				"action": "files",
+				"params": {
+					"conversationRef": "g1"
+				}
+			}
+		},
+		{
+			"id": "fetch_message",
+			"arguments": {
+				"action": "fetch",
+				"params": {
+					"target": {
+						"messageRef": "m1",
+						"segmentIndex": 0
+					}
+				}
+			}
+		},
+		{
+			"id": "fetch_media",
+			"arguments": {
+				"action": "fetch",
+				"params": {
+					"target": {
+						"mediaRef": "a1"
+					}
+				}
+			}
+		},
+		{
+			"id": "search_local",
+			"arguments": {
+				"action": "search",
+				"params": {
+					"query": "会议",
+					"source": "local"
+				}
+			}
+		},
+		{
+			"id": "expressions_face",
+			"arguments": {
+				"action": "expressions",
+				"params": {
+					"query": "微笑"
+				}
+			}
 		}
 	],
 	"invalidCalls": [
@@ -535,6 +614,77 @@
 						"target": "g30003",
 						"mode": "silent"
 					}
+				}
+			}
+		},
+		{
+			"id": "people_missing_group",
+			"arguments": {
+				"action": "people",
+				"params": {
+					"scope": "members"
+				}
+			}
+		},
+		{
+			"id": "files_private",
+			"arguments": {
+				"action": "files",
+				"params": {
+					"conversationRef": "p1"
+				}
+			}
+		},
+		{
+			"id": "files_delete",
+			"arguments": {
+				"action": "files",
+				"params": {
+					"conversationRef": "g1",
+					"action": "delete"
+				}
+			}
+		},
+		{
+			"id": "fetch_url",
+			"arguments": {
+				"action": "fetch",
+				"params": {
+					"target": {
+						"url": "https://example.invalid"
+					}
+				}
+			}
+		},
+		{
+			"id": "fetch_ambiguous",
+			"arguments": {
+				"action": "fetch",
+				"params": {
+					"target": {
+						"messageRef": "m1",
+						"segmentIndex": 0,
+						"mediaRef": "a1"
+					}
+				}
+			}
+		},
+		{
+			"id": "search_platform",
+			"arguments": {
+				"action": "search",
+				"params": {
+					"query": "会议",
+					"source": "platform"
+				}
+			}
+		},
+		{
+			"id": "expressions_custom",
+			"arguments": {
+				"action": "expressions",
+				"params": {
+					"kind": "custom"
 				}
 			}
 		}

@@ -109,7 +109,6 @@ const makeRuntime = (state: FakeState) => {
 	return new Live2DRuntime({
 		client,
 		rig: makeRig(),
-		published: true,
 		catalog: compileCatalog(
 			MODEL_ID,
 			{

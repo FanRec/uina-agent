@@ -131,7 +131,6 @@ const makeFakeClient = (options: { connected?: boolean; modelID?: string } = {})
 
 interface HarnessOptions {
 	connected?: boolean;
-	published?: boolean;
 }
 
 const harness = async (options: HarnessOptions = {}) => {
@@ -140,7 +139,6 @@ const harness = async (options: HarnessOptions = {}) => {
 		client: fake.client,
 		rig: makeRig(),
 		catalog: makeCatalog(),
-		published: options.published ?? true,
 		// 作者标定口型映射（恒等映射）：levelSink 存在 = 生产电平链路（P3-2）。
 		speech: {
 			points: [
@@ -214,17 +212,6 @@ describe("live2d endpoint（P4-2）", () => {
 			expect(endpoint.affordance().cues.map((c) => c.id)).toEqual(["wave"]);
 			expect(endpoint.supportsCue?.("nod")).toBe(false);
 			expect(endpoint.supportsCue?.("wave")).toBe(true);
-		} finally {
-			await app.onStop?.({} as ServiceCompanionContext);
-		}
-	});
-
-	it("边界 #1 未发布：目录视图为空 → affordance 与 supportsCue 双双为空", async () => {
-		const { app, endpoint } = await harness({ published: false });
-		try {
-			expect(endpoint.affordance().cues).toEqual([]);
-			expect(endpoint.supportsCue?.("nod")).toBe(false);
-			expect(endpoint.supportsCue?.("lean")).toBe(false);
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}

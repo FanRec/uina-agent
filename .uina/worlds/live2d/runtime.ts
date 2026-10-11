@@ -1,13 +1,8 @@
-import { existsSync } from "node:fs";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { join } from "node:path";
 import type { ServiceCompanionContext } from "../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { VOICE_LEVEL_SINK_EXPOSED_PREFIX, type VoiceLevelSink } from "../../../src/extensions/world-framework/seams.js";
 import { encodeFrame, validateRig, type ModelRig } from "./adapter/rig.js";
 import { VTSClient } from "./adapter/vts-client.js";
-import { hashContent } from "./adapter/profile.js";
-import { modelPackageDir } from "./models/rig-loader.js";
 import { emptyCatalog, recompileWithSpeech, type AttentionTarget, type CatalogSnapshot } from "./authoring/catalog.js";
 import type { SpeechPolicy } from "./authoring/motion.js";
 import { MotionDirector, SupersededError, type ExclusiveClaim, type MotionHandle } from "./director/director.js";
@@ -20,15 +15,17 @@ import { SpeechInput, type SpeechConfig } from "./speech-level.js";
  *
  * P2-3 范围：生命周期 + VTS 连接 + 保活注入时钟 + director 合成接入。
  * P3-2 增量：voice.levelSink 声学电平接缝（失联守卫 + 作者映射 → 引擎口型包络）。
- * P4-1 增量：工具 gate 链（边界规范 §2.1 词表 + §7 顺序）、目录快照词表解析、
- *           express/state 引擎映射、作者会话标记门、status/diagnose 真实事实。
+ * P4-1 增量：工具 gate 链（边界规范 §2.1 词表）、目录快照词表解析、
+ *           express/state 引擎映射、status/diagnose 真实事实。
+ *
+ * 发布验收门（§7，P4-6 曾实现）已按操作员裁决拆除（ Occam：单人本机场景下
+ * author-session/digest 门防不住也拦不着任何真实威胁，纯属流程仪式）。
  *
  * tick 合约（边界规范 §6）：每帧实测 dt 驱动 director.step → adapter.encode → client.inject；
- * 断线/身份不匹配/未发布时既不合成也不注入（保持零输出），重连后从当前状态续合成。
+ * 断线/身份不匹配/暂停时既不合成也不注入（暂停注入保持帧），重连后从当前状态续合成。
  * - 时钟只在连接就绪且模型身份匹配时运转，断线即停、重连即恢复；
  * - dt 用单调时钟实测（REVIEW 教训：不信任定时器间隔），钳制 250ms 防休眠/节流大跳；
  * - faceFound 与单未确认帧背压由 vts-client 承担，时钟不重复实现；
- * - 发布门的真值来源（acceptance.json + 作者会话）在 P4-6 接入；本阶段由选项注入（缺省恒开放）。
  */
 export interface Live2DRuntimeOptions {
 	/** 注入点（测试用）：替换真实 VTS 连接。缺省按世界默认构造（token 存世界根）。 */
@@ -39,10 +36,6 @@ export interface Live2DRuntimeOptions {
 	tickIntervalMs?: number;
 	/** 注入点（测试用）：director 随机源。缺省 Math.random。 */
 	rng?: () => number;
-	/** 注入点（测试用）：发布门。缺省由 acceptance.json sidecar 驱动（P4-6）。 */
-	published?: boolean;
-	/** 注入点（测试用）：模型包目录（acceptance.json sidecar 归属地）。缺省按 rig-loader 的 models/<folder> 解析。 */
-	packageDir?: string;
 	/** 模型作者标定的口型映射；与 rig 同时存在时暴露 voice.levelSink（P3-2）。 */
 	speech?: SpeechConfig;
 	/** 目录快照；缺省空目录（诚实状态：一切命名参数显式拒绝）。 */
@@ -97,13 +90,6 @@ export class Live2DRuntime {
 	private readonly client?: VTSClient;
 	private readonly rig?: ModelRig;
 	private readonly tickIntervalMs: number;
-	/**
-	 * 发布状态（§7）。显式选项优先（测试注入）；缺省由 acceptance.json 驱动：
-	 * acceptedDigest 存在且与当前内容摘要一致才发布——内容任何改动即回到草稿。
-	 */
-	private published: boolean;
-	private readonly publishedOverride?: boolean;
-	private acceptedDigest?: string;
 	private catalog: CatalogSnapshot;
 	/** 目录代次：目录更新递增；cue 受理绑定受理时代次，执行时校验（§3 目录快照与执行竞态）。 */
 	private generation = 0;
@@ -123,24 +109,16 @@ export class Live2DRuntime {
 	private keepFrame?: Record<string, number>;
 	private clock: NodeJS.Timeout | null = null;
 	private lastTickAt = 0;
-	/** 作者会话数据目录（start 时由 ctx.worldDataDir 注入；author-session 标记文件在其下）。 */
-	private worldDataDir?: string;
 	/** 引擎句柄：P4 工具面（express/state）在此之上操作；无 rig 时不存在。 */
 	readonly director?: MotionDirector;
 	/** 声学电平接收端：rig + speech 配置同时存在时可用，start 时经 expose 登记给 voice 扩展。 */
 	readonly levelSink?: VoiceLevelSink;
 	private readonly speechInput?: SpeechInput;
-	private readonly speech?: SpeechConfig;
-	private readonly packageDir?: string;
 	readonly endpoint: Live2DEndpoint;
 
 	constructor(options: Live2DRuntimeOptions = {}) {
 		this.client = options.client;
 		this.rig = options.rig;
-		this.publishedOverride = options.published;
-		this.published = this.publishedOverride ?? false; // 缺省草稿：start 时由 acceptance.json 判定
-		this.packageDir = options.packageDir;
-		this.speech = options.speech;
 		this.catalog = options.catalog ?? emptyCatalog(options.rig?.modelID ?? "unknown");
 		if (this.rig && this.catalog.modelID !== this.rig.modelID)
 			throw new Error(`目录与 rig 模型身份不符: 目录 ${this.catalog.modelID} vs rig ${this.rig.modelID}`);
@@ -150,10 +128,10 @@ export class Live2DRuntime {
 			if (options.speech) {
 				const input = new SpeechInput(options.speech, this.director);
 				this.speechInput = input;
-				// 未发布/暂停期间电平一律丢弃（边界规范 §4）。
+				// 暂停期间电平一律丢弃（边界规范 §4）。
 				this.levelSink = {
 					processLevel: (level) => {
-						if (!this.published || this.paused) return;
+						if (this.paused) return;
 						input.processLevel(level);
 					},
 					reset: () => input.reset(),
@@ -169,9 +147,9 @@ export class Live2DRuntime {
 		return this.started;
 	}
 
-	/** 目录视图：未发布时目录按空处理（§7：catalog 为空 → cue 全部不可达、命名动作拒绝）。 */
+	/** 目录视图：直接暴露当前目录（命名参数可达性由词表决定）。 */
 	get catalogView(): CatalogSnapshot {
-		return this.published ? this.catalog : emptyCatalog(this.catalog.modelID);
+		return this.catalog;
 	}
 
 	get currentGeneration(): number {
@@ -221,7 +199,6 @@ export class Live2DRuntime {
 		this.catalog = snapshot;
 		this.generation++;
 		this.director?.invalidateAll("catalog changed");
-		this.refreshPublished(); // 内容任何改动即回到草稿（§7）：目录更新后按新摘要重判发布状态
 	}
 
 	/** 引擎未接入前的统一受理语义：诚实声明未开始，不伪装失败原因。 */
@@ -235,88 +212,11 @@ export class Live2DRuntime {
 	// ---------- P4-1：gate 链与工具面 ----------
 
 	/**
-	 * 作者会话标记门（边界规范 §2）：世界数据目录下存在 `author-session` 文件即开启。
-	 * 执行时检查（不缓存），一个文件存在性检查，不引入身份框架。
+	 * 工具 gate 链（边界规范 §2.1）：中止 → 暂停 → 连接 → 适配。
+	 * 返回 undefined 表示通过。发布验收门（§7）已按操作员裁决拆除。
 	 */
-	private authorSessionActive(): boolean {
-		return this.worldDataDir !== undefined && existsSync(join(this.worldDataDir, "author-session"));
-	}
-
-	// ---------- 发布验收门（§7，P4-6） ----------
-
-	/**
-	 * 内容摘要（§7 normative）：只覆盖运行时内容——rig、动作/姿态/表情/注视/背景定义、
-	 * speech 与外观配置，规范化序列化后 sha256。acceptance.json/acceptance.md、构建产物、
-	 * 运行时缓存一律不参与（本摘要输入为纯内存运行时事实，文件系统不触及）。
-	 */
-	private computeContentDigest(): string {
-		const sorted = (map: ReadonlyMap<string, unknown>): unknown =>
-			[...map.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-		const content = {
-			modelID: this.catalog.modelID,
-			rig: this.rig ? { controls: this.rig.controls, bindings: this.rig.bindings, external: this.rig.external } : null,
-			catalog: {
-				motions: sorted(this.catalog.motions),
-				postures: sorted(this.catalog.postures),
-				expressions: sorted(this.catalog.expressions),
-				attentions: sorted(this.catalog.attentions),
-				costumes: this.catalog.costumes,
-				background: {
-					thinking: this.catalog.background.thinking ?? null,
-					idle: this.catalog.background.idle ?? null,
-				},
-			},
-			speech: this.speech ?? null,
-		};
-		return hashContent(JSON.stringify(content));
-	}
-
-	/** acceptance.json sidecar 路径（models/<model>/acceptance.json）；模型包不可解析时 undefined。 */
-	private acceptanceFilePath(): string | undefined {
-		const dir = this.packageDir ?? (this.rig ? modelPackageDir(this.rig.modelID) : undefined);
-		return dir ? join(dir, "acceptance.json") : undefined;
-	}
-
-	/** 发布状态重判：显式选项优先；否则 acceptedDigest 存在且与当前内容摘要一致才发布。 */
-	private refreshPublished(): void {
-		this.published =
-			this.publishedOverride ?? (this.acceptedDigest !== undefined && this.acceptedDigest === this.computeContentDigest());
-	}
-
-	/** accept（§2）：发布门唯一写入路径。作者会话门在此落实。 */
-	async accept(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
-		const denied = this.gate(ctx, { authorOnly: true });
-		if (denied) return denied;
-		if (typeof args.evidence !== "string" || args.evidence.length === 0)
-			return toolRejected("invalid_preview", "缺少 evidence（人工画面验收说明）。");
-		const path = this.acceptanceFilePath();
-		if (!path) return toolRejected("model_not_ready", "当前模型没有已登记的模型包目录，acceptance.json 无处写入。");
-		const contentDigest = this.computeContentDigest();
-		const record = {
-			contentDigest,
-			controlFingerprint: this.client?.getModelProfile()?.controlFingerprint,
-			evidence: args.evidence,
-			acceptedAt: new Date().toISOString(),
-		};
-		try {
-			await mkdir(join(path, ".."), { recursive: true });
-			await writeFile(path, `${JSON.stringify(record, null, 2)}\n`, "utf8");
-		} catch (error) {
-			return toolUnknown(`acceptance.json 写入失败：${error instanceof Error ? error.message : String(error)}`);
-		}
-		this.acceptedDigest = contentDigest;
-		this.refreshPublished();
-		return toolSucceeded("人工验收记录已写入，模型包发布。", { effectStatus: "applied" });
-	}
-
-	/**
-	 * 工具 gate 链（边界规范 §2.1 + §7 gate 顺序：连接 → 适配 → 发布）。
-	 * 返回 undefined 表示通过。authorOnly 工具（preview/accept）先于一切内容判定。
-	 */
-	private gate(ctx: { signal?: AbortSignal }, options: { authorOnly?: boolean } = {}): ToolExecutionResult | undefined {
+	private gate(ctx: { signal?: AbortSignal }): ToolExecutionResult | undefined {
 		if (ctx.signal?.aborted) return toolRejected("cancelled", "调用已中止，未执行。");
-		if (options.authorOnly && !this.authorSessionActive())
-			return toolRejected("author_session_required", "此工具仅作者会话可用：需操作员在世界数据目录创建 author-session 标记。");
 		if (this.paused)
 			return toolRejected("paused", "身体处于 safeStop 暂停，操作被拒绝（resume 后恢复）。");
 		if (!this.client || !this.client.isConnected())
@@ -324,8 +224,6 @@ export class Live2DRuntime {
 		const profile = this.client.getModelProfile();
 		if (!this.rig || !profile || profile.modelID !== this.rig.modelID)
 			return toolRejected("unadapted", "当前模型没有可用的本地适配（rig/目录缺失或绑定核验失败）。");
-		if (!this.published && !options.authorOnly)
-			return toolRejected("draft", "模型包尚未完成当前内容版本的发布验收（作者预览可用）。");
 		return undefined;
 	}
 
@@ -527,11 +425,11 @@ export class Live2DRuntime {
 	}
 
 	/**
-	 * preview（§2）：作者预览与生产同链路。作者会话门在此落实；预览引擎
+	 * preview（§2）：作者预览与生产同链路。预览引擎
 	 * （单控制关键帧 / 假 RMS / repeat）随创作层（P5-1）接入，本阶段如实声明。
 	 */
 	async preview(_args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
-		const denied = this.gate(ctx, { authorOnly: true });
+		const denied = this.gate(ctx);
 		if (denied) return denied;
 		return this.notStarted("preview");
 	}
@@ -541,20 +439,6 @@ export class Live2DRuntime {
 	async start(ctx: ServiceCompanionContext): Promise<void> {
 		if (this.started) return;
 		this.started = true;
-		this.worldDataDir = ctx.worldDataDir;
-		// 发布门真值来源（§7）：无显式选项时读 acceptance.json sidecar，摘要一致才发布。
-		if (this.publishedOverride === undefined) {
-			const path = this.acceptanceFilePath();
-			if (path && existsSync(path)) {
-				try {
-					const record = JSON.parse(await readFile(path, "utf8")) as { contentDigest?: string };
-					this.acceptedDigest = typeof record.contentDigest === "string" ? record.contentDigest : undefined;
-				} catch {
-					this.acceptedDigest = undefined; // sidecar 损坏 = 未验收，诚实草稿
-				}
-			} else this.acceptedDigest = undefined;
-			this.refreshPublished();
-		}
 		if (ctx.expose) {
 			this.cleanups.push(ctx.expose("body.endpoint:live2d", this.endpoint));
 			if (this.levelSink) {
@@ -740,7 +624,7 @@ export class Live2DRuntime {
 
 	/** 合约入口：合成一步并注入。注入时钟与测试共用（合成推进纯函数化，无真实定时器等待）。 */
 	composeTick(dtMs: number): void {
-		if (!this.client || !this.director || !this.rig || !this.published) return;
+		if (!this.client || !this.director || !this.rig) return;
 		if (!this.client.isConnected()) return;
 		// 身份门：rig 只属于其标定的模型，VTS 当前模型不匹配即零输出，杜绝跨模型误注入。
 		const profile = this.client.getModelProfile();
@@ -767,8 +651,6 @@ export class Live2DRuntime {
 				started: this.started,
 				engine: this.director ? "director_wired (P2-3)" : "not_wired",
 				speech: this.levelSink ? "levelSink_wired (P3-2)" : "not_wired",
-				published: this.published,
-				authorSession: this.authorSessionActive(),
 				paused: this.paused,
 				focused: this.focused,
 				generation: this.generation,
@@ -797,8 +679,6 @@ export class Live2DRuntime {
 				tickIntervalMs: this.tickIntervalMs,
 				clockRunning: this.clock !== null,
 				identityMatched: this.identityMatched(),
-				published: this.published,
-				authorSession: this.authorSessionActive(),
 				paused: this.paused,
 				focused: this.focused,
 				generation: this.generation,

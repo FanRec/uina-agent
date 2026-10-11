@@ -1,7 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ActionContext, ServiceCompanionContext, WorldDef } from "../src/extensions/world-framework/types.js";
 import { TOOL_RESULT_STATUSES } from "../src/core/types.js";
 import type { ToolExecutionResult } from "../src/tools/broker.js";
@@ -115,8 +112,6 @@ const makeFakeClient = (options: { connected?: boolean; modelID?: string } = {})
 interface HarnessOptions {
 	connected?: boolean;
 	modelID?: string;
-	published?: boolean;
-	worldDataDir?: string;
 	catalog?: boolean;
 }
 
@@ -126,12 +121,10 @@ const harness = async (options: HarnessOptions = {}) => {
 		client: fake.client,
 		rig: makeRig(),
 		catalog: options.catalog === false ? emptyCatalog(MODEL_ID) : makeCatalog(),
-		published: options.published ?? true,
 	});
 	const app = createLive2DApp({ instance: runtime });
 	const startCtx = {
 		expose: () => () => {},
-		worldDataDir: options.worldDataDir,
 		signal: new AbortController().signal,
 	} as unknown as ServiceCompanionContext;
 	await app.onStart!(startCtx);
@@ -158,18 +151,6 @@ const stepMs = (rt: Live2DRuntime, totalMs: number, stepMs = 16): void => {
 	for (let i = 0; i < Math.ceil(totalMs / stepMs); i++) rt.composeTick(stepMs);
 };
 
-let scratchDir: string | undefined;
-afterEach(() => {
-	if (scratchDir) {
-		try {
-			rmSync(scratchDir, { recursive: true, force: true });
-		} catch {
-			// 清理失败不掩盖断言结果
-		}
-		scratchDir = undefined;
-	}
-});
-
 describe("live2d 工具面（P4-1）", () => {
 	it("WorldDef 显式声明 executionMode parallel（§2：并发是常态，工具层不串行化）", () => {
 		expect(createLive2DApp().executionMode).toBe("parallel");
@@ -190,7 +171,7 @@ describe("live2d 工具面（P4-1）", () => {
 		}
 	});
 
-	it("边界 #11：启动后十个工具全部返回词汇合法结果", async () => {
+	it("边界 #11：启动后九个工具全部返回词汇合法结果", async () => {
 		const { app, runtime, ctx } = await harness();
 		try {
 			// express/state 的终态结算由合成推进驱动：先步进再 await（无真实定时器）。
@@ -205,7 +186,6 @@ describe("live2d 工具面（P4-1）", () => {
 				await run(app, "status", {}, ctx),
 				await run(app, "diagnose", {}, ctx),
 				await run(app, "preview", {}, ctx),
-				await run(app, "accept", { evidence: "人工画面验收说明占位" }, ctx),
 				await run(app, "reload", {}, ctx),
 			];
 			for (const res of results) expectVocabulary(res);
@@ -217,8 +197,8 @@ describe("live2d 工具面（P4-1）", () => {
 		}
 	});
 
-	it("gate 顺序（§7）：断线 + 未发布同时成立时报 model_not_ready 而非 draft", async () => {
-		const { app, ctx } = await harness({ connected: false, published: false });
+	it("gate：断线报 model_not_ready（连接先于适配与内容判定）", async () => {
+		const { app, ctx } = await harness({ connected: false });
 		try {
 			const res = await run(app, "express", { motion: "nod" }, ctx);
 			expect(res.status).toBe("failed");
@@ -234,20 +214,6 @@ describe("live2d 工具面（P4-1）", () => {
 		try {
 			const res = await run(app, "express", { motion: "nod" }, ctx);
 			expect((res.details as { reason: string }).reason).toBe("unadapted");
-		} finally {
-			await app.onStop?.({} as ServiceCompanionContext);
-		}
-	});
-
-	it("gate：未发布报 draft，作者工具不受 draft 之外的额外拒绝", async () => {
-		const { app, ctx } = await harness({ published: false });
-		try {
-			const res = await run(app, "state", { posture: "lean" }, ctx);
-			expect((res.details as { reason: string }).reason).toBe("draft");
-			expectVocabulary(res);
-			// status/diagnose 只读，不设 gate，未发布事实如实可见。
-			const status = JSON.parse((await run(app, "status", {}, ctx)).result) as { published: boolean };
-			expect(status.published).toBe(false);
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}
@@ -290,36 +256,6 @@ describe("live2d 工具面（P4-1）", () => {
 				reason: "invalid_duration",
 			});
 			expect(await run(app, "state", {}, ctx)).toMatchObject({ status: "succeeded" }); // 空声明 = 无操作
-		} finally {
-			await app.onStop?.({} as ServiceCompanionContext);
-		}
-	});
-
-	it("作者会话门：无标记时 preview/accept 得 author_session_required", async () => {
-		const { app, ctx } = await harness();
-		try {
-			expect((await run(app, "preview", {}, ctx)).details).toMatchObject({ reason: "author_session_required" });
-			expect((await run(app, "accept", { evidence: "说明" }, ctx)).details).toMatchObject({
-				reason: "author_session_required",
-			});
-		} finally {
-			await app.onStop?.({} as ServiceCompanionContext);
-		}
-	});
-
-	it("作者会话门：标记文件存在时 preview/accept 通过 gate（preview 引擎 P5-1 接入，如实 not_started）", async () => {
-		scratchDir = mkdtempSync(join(tmpdir(), "live2d-author-"));
-		writeFileSync(join(scratchDir, "author-session"), "");
-		const { app, ctx } = await harness({ worldDataDir: scratchDir });
-		try {
-			expect(await run(app, "preview", {}, ctx)).toMatchObject({ status: "not_started" });
-			// P4-6：accept 走真实写入路径——fixture 模型未登记模型包目录，sidecar 无处写入，如实 model_not_ready。
-			expect(await run(app, "accept", { evidence: "说明" }, ctx)).toMatchObject({
-				status: "failed",
-				details: { reason: "model_not_ready" },
-			});
-			const status = JSON.parse((await run(app, "status", {}, ctx)).result) as { authorSession: boolean };
-			expect(status.authorSession).toBe(true);
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}
@@ -419,14 +355,14 @@ describe("live2d 工具面（P4-1）", () => {
 		}
 	});
 
-	it("status/diagnose：JSON 可解析且包含 P4-1 新事实（published/authorSession/catalog）", async () => {
-		const { app, ctx } = await harness({ published: false });
+	it("status/diagnose：JSON 可解析且包含 P4-1 事实（catalog/身份/暂停）", async () => {
+		const { app, ctx } = await harness();
 		try {
 			const status = JSON.parse((await run(app, "status", {}, ctx)).result) as Record<string, unknown>;
-			expect(status).toMatchObject({ world: "live2d", published: false, authorSession: false });
+			expect(status).toMatchObject({ world: "live2d" });
 			expect(status.catalog).toMatchObject({ motions: ["nod"], postures: ["lean"], expressions: ["brighten"] });
 			const diag = JSON.parse((await run(app, "diagnose", {}, ctx)).result) as Record<string, unknown>;
-			expect(diag).toMatchObject({ published: false, clockRunning: false });
+			expect(diag).toMatchObject({ clockRunning: false });
 			expect(diag.director).toMatchObject({ attention: null });
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
