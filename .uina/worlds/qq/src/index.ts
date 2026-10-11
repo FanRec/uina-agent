@@ -15,6 +15,7 @@ import type { EventFact } from "./types.js";
 import { QQ_ACTION_SCHEMAS, QQ_TOOL_DESCRIPTION } from "./tool-schema.js";
 import { join } from "node:path";
 import { MediaStaging } from "./media.js";
+import { cleanupPartialDownloads } from "./resource-fetch.js";
 
 /** 连续性交互窗口（合同 §4 初值 30s）：recall 相关性判定用。 */
 const CONTINUITY_WINDOW_MS = 30_000;
@@ -75,6 +76,7 @@ export function createQqWorld(injected?: {
 			media,
 			display: { ...activeConfig.display, faceNames },
 			faceNames,
+			requestTimeoutMs: activeConfig.connection.requestTimeoutMs,
 		};
 	}
 
@@ -108,6 +110,7 @@ export function createQqWorld(injected?: {
 
 			journal = new FactsJournal({ dataDir, selfId: config.selfId });
 			journal.recover();
+			cleanupPartialDownloads(dataDir);
 			control = new ControlStore({ dataDir, selfId: config.selfId });
 			control.load();
 			control.initializeReader(journal);

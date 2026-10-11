@@ -103,15 +103,28 @@ export function decodeOneBotSegments(
 			case "image":
 			case "record":
 			case "video":
-			case "file":
+			case "file": {
+				const locator = {
+					file: text(data.file),
+					fileId:
+						text(data.file_id) ??
+						(typeof data.file_id === "number" && Number.isSafeInteger(data.file_id) ? String(data.file_id) : undefined),
+					fileHash: text(data.file_hash),
+					busid:
+						typeof data.busid === "number" && Number.isSafeInteger(data.busid) && data.busid >= 0
+							? data.busid
+							: undefined,
+				};
 				segments.push({
 					type: type === "record" ? "audio" : type,
 					...(mintMediaRef ? { mediaRef: mintMediaRef() } : {}),
 					url: text(data.url),
 					fileName: text(data.name) ?? text(data.file),
+					...(Object.values(locator).some((value) => value !== undefined) ? { locator } : {}),
 					understood: false,
 				});
 				break;
+			}
 			default:
 				segments.push({ type: "unknown", rawType: type });
 		}

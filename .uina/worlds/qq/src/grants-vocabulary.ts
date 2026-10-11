@@ -16,6 +16,7 @@ export const QQ_GRANT_NAMES = [
 
 /** Every platform read requires observation; writes do not imply reads. */
 export function requiredGrants(action: string, params: Record<string, unknown>): import("./grants.js").GrantName[] {
+	if (["people", "files", "fetch", "expressions"].includes(action)) return ["observation"];
 	if (action === "inbox") return params.push !== undefined ? ["observation", "attention.manage"] : ["observation"];
 	if (action === "read") return params.includeMedia === true ? ["observation"] : [];
 	if (action === "browse")

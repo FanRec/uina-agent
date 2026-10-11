@@ -1,7 +1,8 @@
 import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 import { worldFailed, worldSucceeded } from "../../../../src/extensions/world-framework/result.js";
 import type { QqAppDeps } from "./app.js";
-import { decodeOneBotMessage } from "./message-codec.js";
+import { decodeOneBotMessage, decodeOneBotSegments } from "./message-codec.js";
+import { assertQueryActive } from "./platform-query.js";
 import { parseMessageRef, type MessageFact } from "./types.js";
 import { expandImages, imageSourcesFromFacts, imageSourcesFromOneBot, withImages } from "./media-fetch.js";
 import { paginate } from "./pagination.js";
@@ -83,12 +84,44 @@ export async function observeContent(
 			images = expanded.images;
 			if (expanded.note) text += `\n${expanded.note}`;
 		}
+		assertQueryActive(deps, signal);
+		const mediaTargets = page.page.flatMap((node) =>
+			decodeOneBotSegments(node.message ?? node.content).segments.flatMap((seg, nodeSegmentIndex) => {
+				if (!("understood" in seg)) return [];
+				const forwardNodeIndex = nodes.indexOf(node);
+				const mediaRef = deps.journal.saveMediaLocator(undefined, {
+					type: seg.type,
+					url: seg.url,
+					fileName: seg.fileName,
+					locator: seg.locator,
+					origin: {
+						messageRef: ref,
+						conversationRef: fact.conversationRef,
+						segmentIndex: index,
+						forwardNodeIndex,
+						nodeSegmentIndex,
+					},
+				});
+				return [
+					{
+						mediaRef,
+						forwardNodeIndex,
+						nodeSegmentIndex,
+						type: seg.type,
+						nextCall: { action: "fetch", params: { target: { mediaRef } } },
+					},
+				];
+			}),
+		);
+		if (mediaTargets.length)
+			text += `\n${mediaTargets.map((target) => `节点附件：${JSON.stringify(target)}`).join("\n")}`;
 		return withImages(
 			worldSucceeded(text, {
 				total: page.total,
 				count: page.page.length,
 				hasMore: page.hasMore,
 				nextCursor: page.nextCursor,
+				mediaTargets,
 			}),
 			images,
 		);

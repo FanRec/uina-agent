@@ -1,6 +1,6 @@
 # QQ World 重构验收记录
 
-日期：2026-10-11，Asia/Shanghai / GMT+08:00。覆盖本次授权方案 A01～A17。单一 qq facade 与 inbox/read/skip/browse/send/interact/remind/requests/profile 九个领域动作保持不变。
+日期：2026-10-11，Asia/Shanghai / GMT+08:00。原重构覆盖 A01～A17，保留原九个动作合同；后续授权的发现能力扩展新增 people/files/fetch/search/expressions，单一 qq facade 现有十四个领域动作。两轮验证分别记录如下。
 
 ## 修复与证据
 
@@ -51,3 +51,47 @@ pnpm verify:cli
 改动限于 QQ World 非 vendor 源码与 schema、QQ 测试、诊断脚本和文档；Core、vendored SDK、真实配置和数据未修改。并行 embodiment/Live2D 工作由其原任务处理，本次未触碰。Git 提交仅包含本次 QQ 修改；忽略目录中的设计和审查原稿保留本地，当前运行事实与本验收记录随代码提交。未推送。
 
 原报告所称 reader → scheduler → render → scheduler 运行时 import 环不成立：相关引用为 type-only，scheduler 没有运行时 import render。真实问题是消费查询职责位于 scheduler；现已移到 World 的 consumption.ts。设计矩阵 T01A/B、T04A/B、T07A/B 拆分后共 18 行，不能以场景编号或历史 P6 声明代替当前证据。
+
+## 发现能力扩展（2026-10-11）
+
+五个动作通过原 World schema、授权、传输、分页与消息点查接线。仅新增 discovery/resource-fetch 两个局部模块，不引入管理器、缓存、后台下载重试、租约或新 Core 接口。fetch 只读平台资源，search 只检索本地 text/fileName；系统表情不包含自定义贴纸。方案见 `proposals/qq-world-discovery-resource-design-2026-10-11.md`。
+
+正式测试 `tests/qq-world-discovery.test.ts` 共 26 项，使用实际 World 注册、ToolBroker schema 校验、普通文件消费者及隔离传输，覆盖设计 D01～D22：
+
+| 验收项 | 自动化证据 |
+| --- | --- |
+| D01～D03 | 单一 qq / 十四分支；重名保留全部引用；成员数组、未知字段、错误身份、畸形/空列表区分 |
+| D04～D05 | 人物、文件、表情 nextCall 可直接续页；条件变化 invalid、数据变化 stale；无关到达/消费变化不影响列表 |
+| D06～D08 | 文件/文件夹引用绑定账号与群、跨重启解析；目录不递归、不支持的上游续页明确失败；对象消失/同名替换不下载 |
+| D09～D10 | 私聊 file_id/file_hash 保留并回放；过期 URL 最多刷新一次；平台远端路径没有映射时失败 |
+| D11 | 实际本地 HTTP 字节流；长度不符、下载目录、来源元数据和附件定位写盘失败；无半发布资源 |
+| D12～D13 | 查询等待/流式下载中 stop，无迟到定位或发布；并行副本不互删；正常重启保留文件与 mediaRef；只清理自有未发布目录 |
+| D14～D15 | fetch → 实际 read_file/read_image；SILK 原始字节不转码/转写；现有 send 参数合法，显式禁止的出站根仍拒绝；测试没有发送 |
+| D16～D18 | local 来源、字段、Unicode/大小写、方向/发送者/时间过滤；跨分段不假命中；撤回/归档与缺口分别呈现；命中集变化 stale |
+| D19～D20 | 五读取动作不改控制文件、消费位或通知位；系统数字编码与模板合法，畸形/emoji/custom 不伪装为可用目录 |
+| D21～D22 | 平台点查与转发只补定位，不生成 received/dispatched；附件引用重启不串号；授权与绑定身份独立检查，local search 不需在线连接 |
+
+新增调用 fixture 共 8 个合法、7 个非法场景，原表情测试保留数字编码与完整续页断言并新增非法编码明确失败。附件展示同时保留 browse 展开与新增 fetch 入口，混合长消息原回归通过。文件成果只证明实际字节取得及声明的长度/本地摘要证据，不证明完整媒体解码或模型理解。
+
+最终门禁：QQ 与 schema 诊断 24 个文件、444 项通过；全量 163 个文件、1,920 项通过、1 项预期失败；pnpm typecheck（339 个格式检查文件、8 条边界规则、TypeScript）、build、verify:cli 均通过。运行默认池并设 maxWorkers=2。期间并行 Live2D 在途修改曾引发临时类型/格式和 accept 场景失败，最终串行类型检查与全量重跑已通过，本任务未修其代码。QQ status 只读文件字节检查包含在专项回归中。
+
+本轮再次通过 OneBotTransport 只读探测，connectionAvailable=false；未取得真实身份、人物、群文件、资源或表情平台证据。未发送消息、处理申请、修改真实配置或真实 World 数据。未修改 Core、vendored SDK、Pi 或 Live2D 在途文件；本轮 QQ 改动未提交、未推送。
+
+## 发现实现审查与修复（2026-10-11）
+
+情况分析、重构顺序与修复依据见 `qq-world-discovery-review-2026-10-11.md`。本轮保留前述未提交实现和原验收断言，新增十一项审查用例，发现能力测试共 37 项。最初六个反例在原实现上全部失败，修复后通过：覆盖旧 URL 回退、引用串对象、私聊缺 hash 的假兜底、身份校验顺序及真实时间比较。其余用例覆盖目录失败缓存污染、平台拒绝、超时刷新、Unicode 片段和流式 ENOSPC。
+
+`platform-query.ts` 收拢既有查询边界；原 resource-fetch 内的 `publishDownload` 集中拥有完整文件与来源元数据发布；附件身份比较由定位与刷新复用。没有引入新 Core 接口、下载缓存、后台任务或租约。历史上已错误覆盖的附件引用和消费位不自动恢复。
+
+本轮实际验证：
+
+- QQ 与 world-tool-schema 专项 24 个文件、447 项通过，包括 status CLI 的只读文件字节断言。
+- Live2D 新测试加入前，`pnpm typecheck` 通过；`pnpm build`、`pnpm verify:cli` 通过，CLI 四个场景仍包含 Provider 截断的明确失败。最终再次执行 typecheck 被新加入的 `tests/live2d-e2e-lifecycle.test.ts` 格式检查阻止，尚未进入该次命令的 TypeScript/边界阶段；最终独立执行 `pnpm exec tsc --noEmit` 与 `pnpm check:boundaries` 均通过。未修改该文件以绕过门禁。
+- 第一次全量：163 个文件，1,929 项通过、2 项失败、1 项预期失败；两项失败归属未修改的 branch-inspector UI，进入分支后仍显示选择页。该文件单独复跑 20 项通过；第二次全量该文件也通过。未据此推定具体波动根因。
+- 第二次全量：运行期间工作区新增 Live2D 生命周期测试，总数变为 164 个文件；1,932 项通过、2 项失败、1 项预期失败。失败为 `tests/live2d-e2e-lifecycle.test.ts` 的 safeStop 口型恢复及代次 cue finished 状态断言。该文件属于并行 Live2D 在途工作，本任务未修改。当前全量门禁没有通过，不能沿用前轮“全量通过”的记录宣称本轮全绿。
+
+未执行真实平台查询或写操作；各类资源的真实平台证据仍未取得，此前连接不可用不作为当前连接状态结论。本任务保留其他修改，未提交、未推送。
+
+## 提交记录（2026-10-11）
+
+用户随后授权提交发现实现与审查修复。提交前重新运行 QQ 与 world-tool-schema 专项，24 个文件、447 项全部通过。本次提交仅包含 QQ World 源码/schema、发现测试及运行事实、验收和审查文档；其他 Live2D、embodiment 和 profile 在途改动不纳入。未推送；本次专项复跑不替代上文全量门禁和真实平台未验证边界。

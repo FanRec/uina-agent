@@ -332,6 +332,11 @@ function messageLines(
 function contentSelectors(fact: MessageFact): string[] {
 	return fact.segments.flatMap((seg, segmentIndex) => {
 		if (["text", "mention", "mention_all", "face", "unknown"].includes(seg.type)) return [];
+		if (["image", "audio", "video", "file"].includes(seg.type))
+			return [
+				`展开：${JSON.stringify({ action: "browse", params: { contentTarget: { messageRef: fact.ref, segmentIndex } } })}`,
+				`取得文件：${JSON.stringify({ action: "fetch", params: { target: { messageRef: fact.ref, segmentIndex } } })}`,
+			];
 		return [
 			`展开：${JSON.stringify({ action: "browse", params: { contentTarget: { messageRef: fact.ref, segmentIndex } } })}`,
 		];

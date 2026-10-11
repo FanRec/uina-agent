@@ -78,7 +78,13 @@ shell 非零退出码为 `failed`。Broker 接受 producer 已明确返回的结
 
 ## QQ World
 
-QQ World 的模型工具表面是单一 `qq` 工具：`{action, params}` 分发到 9 个积木（inbox / read / skip / browse / send / interact / remind / requests / profile）。绑定账号由 World 注入，模型不再填写 account。工具参数唯一真源是 `.uina/worlds/qq/tool.json`，由 `scripts/generate-qq-tool-schema.mjs` 生成声明；合同 fixture 位于 `tests/fixtures/qq-world-interaction-examples.json`。授权词表仍为 8 个 grant 名，`requiredGrants` 检查所需集合：在线 inbox 需要 observation，同时修改 push 还需要 attention.manage；没有增加授权名称。
+QQ World 的模型工具表面是单一 `qq` 工具：`{action, params}` 分发到 14 个积木（inbox / read / skip / browse / send / interact / remind / requests / profile / people / files / fetch / search / expressions）。绑定账号由 World 注入，模型不再填写 account。工具参数唯一真源是 `.uina/worlds/qq/tool.json`，由 `scripts/generate-qq-tool-schema.mjs` 生成声明；合同 fixture 位于 `tests/fixtures/qq-world-interaction-examples.json`。授权词表仍为 8 个 grant 名，`requiredGrants` 检查所需集合：在线 inbox 需要 observation，同时修改 push 还需要 attention.manage；没有增加授权名称。
+
+发现动作保持只读：people 查好友、群成员与人物资料，重名返回全部候选；expressions 查系统 face/reaction 数字编码并提供现有 send/interact 模板，不支持自定义贴纸。files 浏览一个群文件目录，名称筛选不递归；fileRef/folderRef 绑定账号、群和平台对象，目录畸形或返回未支持的续页信号明确失败。四个在线发现动作 people/files/fetch/expressions 均需要 observation；search 纯本地读取 text/fileName，支持会话、发送者、方向和带时区时间过滤，明确 local、撤回/归档与覆盖风险，平台完整性未知。默认每页 20，返回可直接消费的 nextCall；数据集改变时 cursor_stale，不暗中换来源或跳过。
+
+fetch 接受 mediaRef、fileRef 或 messageRef+segmentIndex，返回 `{kind:"file",path}` 普通文件资源；现有 send 的模型入参为 content 数组中的 path，不把运行时 resource 宽容分支当 schema。附件定位字段随消息保留，平台点查/转发只补 media_locator 证据，不写 received/dispatched。群文件重新核验原目录稳定 ID，URL 过期最多刷新一次；远端平台路径没有共享映射时明确不可用。文件流式取得到当前账号 downloads 根，大小与本地 SHA-256 提供实际证据，平台摘要校验保持未验证；原始编码不转换、不解析、不转写。临时目录中的文件与来源元数据统一发布，正式文件跨调用与重启保留，启动只清理自有未发布目录。下载期限沿用 connection.requestTimeoutMs；取消/停止后无迟到发布。未增加下载缓存、后台重试、任务管理器或租约；显式出站 allowedRoots 策略仍独立检查。
+
+发现实现审查后，消息分段拉取复用同一附件已刷新定位；来源位置与已知平台对象定位共同约束引用复用，转发位置替换对象分配新引用。私聊文件缺少专用 hash 时明确定位不可用，不猜通用 get_file。下载的地址刷新共用取消与期限；发布流程集中拥有字节、元数据和临时目录。表情目录只在载荷与分页成果成功后补呈现名称；本地检索按实际时间排序和标记归档，大小写展开后的片段位置映射回原文。分析与反例见 `qq-world-discovery-review-2026-10-11.md`。
 
 查询与消费解耦：`inbox` 每次请求在线好友、群目录，合并本地消息、事件、关注与偏好会话，返回名字及未知标记。任一路目录失败明确失败，配置不变；参数、游标与查询全部成功后，先持久保存 push，再更新内存 focus。limit/cursor 分页绑定目录身份与查询条件，普通目录分页不因未读计数变化失效。`requests list` 默认每页 20 条，limit/cursor 透传，nextCursor 可直接续页。
 
@@ -92,7 +98,7 @@ QQ World 的模型工具表面是单一 `qq` 工具：`{action, params}` 分发�
 
 覆盖风险来自可回放的显式传输错误、断线与解码失败区间，按查询窗口展示；不从 message_id 猜缺失，不把 archive 当断线。没有风险信号也只表示本地观察，平台完整性保持未知。`scripts/qq-status.mts` 用纯只读解析，支持 --data-root（QQ World 数据根）与 --profile-root（Subject stateRoot），不创建、截断或迁移文件；unknown 操作数来自实际日志，无法读取进程内 focus 时显示 unknown。恢复和迁移仍由 World 生命周期执行。
 
-行动积木复用平台链路，模型表面全换而底层审计语义单源继承（intent 先落盘、unknown 不重发、echo 归并、回执归属核验）：`send` 分段数组与 replyTo 进入真实发送载荷，一次调用拆批保持内容顺序，只给首条可引用的子消息加引用，没有可引用子消息则发送前失败；`interact` 的 retract 经所有权核验；`remind` 仅 list/create/resolve，reviewAt 变更靠 create 新建（follow_up.update 已裁剪，control-store 无 update 入口）；`requests` 的 pending/confirmed/unknown 从关联操作日志派生，已确认或结果未知的申请不盲目再次处理，迟到确定回执不会被本地超时降级，群邀请按 sub_type 裁决；`profile` 承接账号与形象三写。`observe` 不再对模型暴露，仅保留 requests/self/expressions 三个内部入口；expressions 由启动 enrichment 直调，face 数字编码供 send 的 face 段与 interact 的 react 使用（数字编码校验在运行时，schema 无 pattern）。
+行动积木复用平台链路，模型表面全换而底层审计语义单源继承（intent 先落盘、unknown 不重发、echo 归并、回执归属核验）：`send` 分段数组与 replyTo 进入真实发送载荷，一次调用拆批保持内容顺序，只给首条可引用的子消息加引用，没有可引用子消息则发送前失败；`interact` 的 retract 经所有权核验；`remind` 仅 list/create/resolve，reviewAt 变更靠 create 新建（follow_up.update 已裁剪，control-store 无 update 入口）；`requests` 的 pending/confirmed/unknown 从关联操作日志派生，已确认或结果未知的申请不盲目再次处理，迟到确定回执不会被本地超时降级，群邀请按 sub_type 裁决；`profile` 承接账号与形象三写。`observe` 不再对模型暴露，仅保留 requests/self/expressions 三个内部入口；启动 enrichment 与新增 expressions 动作复用系统表情处理函数，face 数字编码供 send 的 face 段与 interact 的 react 使用（数字编码校验在运行时，schema 无 pattern）。
 
 `account.leave_group` / `remove_contact` / `set_presence` 为故意裁剪，链路全删；capability 三维探测退役，媒体可用性由平台回执如实呈现。提醒候选携带实际事件/申请引用，呈现申请对象与说明、戳一戳人物、撤回操作者/作者及消息、reaction 增删/编码/数量。
 

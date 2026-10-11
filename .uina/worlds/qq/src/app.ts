@@ -30,6 +30,9 @@ import {
 } from "./types.js";
 import { paginate } from "./pagination.js";
 import { oneBotId, oneBotObject } from "./message-codec.js";
+import { handlePeople, handleExpressions, handleFiles, handleSearch } from "./discovery.js";
+import { queryFailure } from "./platform-query.js";
+import { handleFetch } from "./resource-fetch.js";
 
 /**
  * QQ 应用层：动作执行、grant 中间件、目标校验与派发屏障。
@@ -53,6 +56,7 @@ export interface QqAppDeps {
 	/** 呈现选项（快照头时区）；批次现场经 scheduler 注入，observe 现场经此注入。 */
 	readonly display?: render.DisplayOptions;
 	readonly faceNames?: Map<string, string>;
+	readonly requestTimeoutMs?: number;
 }
 
 /** temp 会话 key（<uin>-g<groupId>）→ 对端 uin；读回执/历史按对端 user_id 路由，与 speak 共用语义。 */
@@ -114,6 +118,26 @@ export async function handleQqCall(
 		});
 	}
 	if (signal?.aborted) return worldCancelled("cancelled / 未派发", { effect: "not_started" });
+	if (["people", "expressions", "files", "search", "fetch"].includes(rawAction)) {
+		const querySignal = AbortSignal.any([...(signal ? [signal] : []), ...(deps.signal ? [deps.signal] : [])]);
+		try {
+			querySignal.throwIfAborted();
+			switch (rawAction) {
+				case "people":
+					return await handlePeople(deps, params, querySignal);
+				case "expressions":
+					return await handleExpressions(deps, params, querySignal);
+				case "files":
+					return await handleFiles(deps, params, querySignal);
+				case "search":
+					return handleSearch(deps, params);
+				case "fetch":
+					return await handleFetch(deps, params, querySignal);
+			}
+		} catch (error) {
+			return queryFailure(deps, error, querySignal);
+		}
+	}
 
 	switch (rawAction) {
 		case "inbox":
@@ -971,50 +995,14 @@ export async function handleObserve(
 			);
 		}
 		case "expressions":
-			return handleExpressions(deps, params, signal);
+			try {
+				return await handleExpressions(deps, params, signal);
+			} catch (error) {
+				return queryFailure(deps, error, signal);
+			}
 		default:
 			return worldFailed(`未知 observe scope：${scope}`, { reason: "unknown_scope" });
 	}
-}
-
-/**
- * expressions：真实表情编码目录（fetch_sys_faces / search_sys_faces）。
- * faceId/reactionCode 只接受数字编码；非数字（Unicode emoji）不进 face/reaction，用 text 发送。
- */
-async function handleExpressions(
-	deps: QqAppDeps,
-	params: Record<string, unknown>,
-	signal?: AbortSignal,
-): Promise<ToolExecutionResult> {
-	const kind = String(params.kind ?? "face");
-	if (kind !== "face" && kind !== "reaction") {
-		return worldFailed("expressions.kind 必须是 face 或 reaction。", { reason: "invalid_kind" });
-	}
-	const query = typeof params.query === "string" ? params.query.trim() : "";
-	const outcome = query
-		? await deps.transport.call("search_sys_faces", { query }, signal)
-		: await deps.transport.call("fetch_sys_faces", {}, signal);
-	if (signal?.aborted) return worldCancelled("表情目录读取已取消。", { effect: "not_started" });
-	if (outcome.status !== "ok") return queryFailed("expressions", outcome, render.RECEIPT_NOTES.nextStatusCheck);
-
-	interface FaceEntry {
-		q_sid?: unknown;
-		q_des?: unknown;
-		emoji_name_alias?: unknown;
-		is_super?: unknown;
-	}
-	const rawFaces: FaceEntry[] = query
-		? ((outcome.data as { faces?: FaceEntry[] })?.faces ?? [])
-		: ((outcome.data as { packs?: { emojis?: FaceEntry[] }[] })?.packs ?? []).flatMap((pack) => pack.emojis ?? []);
-	const faces = rawFaces.filter((face) => typeof face.q_sid === "string" && /^[0-9]+$/.test(face.q_sid));
-	for (const face of faces) {
-		if (typeof face.q_des === "string" && face.q_des.trim()) deps.faceNames?.set(String(face.q_sid), face.q_des.trim());
-	}
-	faces.sort((a, b) => String(a.q_sid).localeCompare(String(b.q_sid), "en", { numeric: true }));
-	const result = listResult(deps, "expressions", faces, params, render.expressionLine);
-	return result.status === "succeeded"
-		? { ...result, result: `${result.result}\n${render.RECEIPT_NOTES.expressionsGuidance}` }
-		: result;
 }
 
 /* ---------- 行动积木（设计 §4.5~§4.9）：领域选择器，平台派发与审计单源复用 ---------- */

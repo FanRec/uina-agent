@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
 	REF_PATTERNS,
+	sameAttachment,
 	type EventFact,
 	type IngestedFact,
 	type MediaFact,
@@ -20,6 +21,7 @@ export type FactRecord =
 	| { kind: "header"; version: 2; selfId: string }
 	| { kind: "counter"; type: "media" | "event" | "request"; sequence: number; platformFlag?: string }
 	| IngestedFact
+	| { kind: "media_locator"; ref: string; fact: MediaFact }
 	/** input_settled(committed) 后的主场景通知位置；只表示正文已交给 canonical 输入。 */
 	| { kind: "notified"; conversationRef: string; throughSequence: number; inputId: string; at: string }
 	/** body_dispatched 正文派发消费边界（R4①）；与 notified 分轨，单调回放。 */
@@ -93,6 +95,10 @@ export class FactsJournal {
 		return this.options.selfId;
 	}
 
+	get dataDir(): string {
+		return this.options.dataDir;
+	}
+
 	get snapshot(): FactsSnapshot {
 		return this.state;
 	}
@@ -139,6 +145,13 @@ export class FactsJournal {
 				this.indexMedia(fact);
 				const seen = this.nextSequence.get(fact.conversationRef) ?? 0;
 				if (fact.sequence > seen) this.nextSequence.set(fact.conversationRef, fact.sequence);
+				return;
+			}
+			case "media_locator": {
+				if (!REF_PATTERNS.media.test(record.ref) || !["image", "audio", "video", "file"].includes(record.fact.type))
+					throw new Error("QQ 附件定位记录非法");
+				this.mediaIndex.set(record.ref, record.fact);
+				this.nextMediaSequence = Math.max(this.nextMediaSequence, Number(record.ref.slice(1)));
 				return;
 			}
 			case "event": {
@@ -230,9 +243,15 @@ export class FactsJournal {
 	}
 
 	private indexMedia(fact: MessageFact): void {
-		for (const seg of fact.segments) {
+		for (const [segmentIndex, seg] of fact.segments.entries()) {
 			if (!("mediaRef" in seg) || !seg.mediaRef || !REF_PATTERNS.media.test(seg.mediaRef)) continue;
-			this.mediaIndex.set(seg.mediaRef, { type: seg.type, url: seg.url, fileName: seg.fileName });
+			this.mediaIndex.set(seg.mediaRef, {
+				type: seg.type,
+				url: seg.url,
+				fileName: seg.fileName,
+				locator: seg.locator,
+				origin: { messageRef: fact.ref, conversationRef: fact.conversationRef, segmentIndex },
+			});
 			const sequence = Number(seg.mediaRef.slice(1));
 			if (Number.isSafeInteger(sequence) && sequence > this.nextMediaSequence) this.nextMediaSequence = sequence;
 		}
@@ -261,6 +280,17 @@ export class FactsJournal {
 
 	getMedia(ref: string): MediaFact | null {
 		return this.mediaIndex.get(ref) ?? null;
+	}
+
+	/** Read-only platform snapshots may contribute addressing evidence, never arrivals. */
+	saveMediaLocator(ref: string | undefined, fact: MediaFact): string {
+		const saved = ref ? this.mediaIndex.get(ref) : undefined;
+		if (saved && !sameAttachment(saved, fact)) throw new Error("QQ 附件引用不能指向另一个对象");
+		const existing = ref ?? [...this.mediaIndex].find(([, value]) => sameAttachment(value, fact))?.[0];
+		const mediaRef = existing ?? `a${this.nextMediaSequence + 1}`;
+		if (JSON.stringify(this.mediaIndex.get(mediaRef)) !== JSON.stringify(fact))
+			this.append({ kind: "media_locator", ref: mediaRef, fact });
+		return mediaRef;
 	}
 
 	appendEvent(fact: EventFact): void {

@@ -64,6 +64,7 @@ export type MessageSegment =
 			readonly mediaRef?: string;
 			readonly url?: string;
 			readonly fileName?: string;
+			readonly locator?: AttachmentLocator;
 			/** 能力未知保持未知；不伪转写/不伪理解。 */
 			readonly understood: false;
 	  }
@@ -92,6 +93,45 @@ export interface MediaFact {
 	readonly type: "image" | "audio" | "video" | "file";
 	readonly url?: string;
 	readonly fileName?: string;
+	readonly locator?: AttachmentLocator;
+	readonly origin?: {
+		readonly messageRef: string;
+		readonly conversationRef: string;
+		readonly segmentIndex: number;
+		readonly forwardNodeIndex?: number;
+		readonly nodeSegmentIndex?: number;
+	};
+}
+
+/** Only platform addressing fields; never a model-selected local destination. */
+export interface AttachmentLocator {
+	readonly file?: string;
+	readonly fileId?: string;
+	readonly fileHash?: string;
+	readonly busid?: number;
+}
+
+/** A signed URL may change; known source positions and platform object IDs may not. */
+export function sameAttachment(expected: MediaFact, candidate: MediaFact): boolean {
+	const origin = expected.origin;
+	const next = candidate.origin;
+	if (!origin || !next || expected.type !== candidate.type) return false;
+	if (
+		origin.messageRef !== next.messageRef ||
+		origin.conversationRef !== next.conversationRef ||
+		origin.segmentIndex !== next.segmentIndex ||
+		origin.forwardNodeIndex !== next.forwardNodeIndex ||
+		origin.nodeSegmentIndex !== next.nodeSegmentIndex
+	)
+		return false;
+	const locator = expected.locator;
+	if (locator?.fileId && locator.fileId !== candidate.locator?.fileId) return false;
+	if (locator?.fileHash && locator.fileHash !== candidate.locator?.fileHash) return false;
+	if (!locator?.fileId && !locator?.fileHash) {
+		if (locator?.file && locator.file !== candidate.locator?.file) return false;
+		if (expected.fileName && expected.fileName !== candidate.fileName) return false;
+	}
+	return true;
 }
 
 export type QQEventKind =

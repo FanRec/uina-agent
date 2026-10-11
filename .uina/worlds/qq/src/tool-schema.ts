@@ -7,7 +7,7 @@ export const QQ_TOOL_NAME = "qq";
  * 固定认知合同（交互合同 §2 唯一注入面：工具描述只出现一次，不随消息重复）。
  */
 export const QQ_TOOL_DESCRIPTION =
-	"QQ是可主动参与的外部世界；普通回复不外发，用send发送。g<群号>/p<QQ号>/t<QQ号>-g<源群号>是群/私聊/临时会话；u<QQ号>是用户，m消息、a附件、r申请、f事项、o操作。复制返回的短引用，不用名字寻址。\n人物表给出名字与u引用的对应；提醒默认新增，旧消息另标前文。已有现场足够即可行动，不要求例行巡检；合法动作可尝试未知可用性，效果未知则先核验不重发。\n发送成功不代表对方已读。\n消费积木：inbox查收件箱并调整关注/推送（省略参数=不改，focus:[]放下关注）；read顺序消费正文并推进书签；skip放下积压；browse只读历史绝不移动书签。\n行动积木：send发送（可replyTo引用）；interact戳/回应/撤回自身；remind自建提醒到时只给查看机会；requests好友与入群审批；profile群名片与个人资料。";
+	"QQ是可主动参与的外部世界；普通回复不外发，用send发送。g<群号>/p<QQ号>/t<QQ号>-g<源群号>是群/私聊/临时会话；u<QQ号>是用户，m消息、a附件、r申请、f事项、o操作。复制返回的短引用，不用名字寻址。\n人物表给出名字与u引用的对应；提醒默认新增，旧消息另标前文。已有现场足够即可行动，不要求例行巡检；合法动作可尝试未知可用性，效果未知则先核验不重发。\n发送成功不代表对方已读。\n消费积木：inbox查收件箱并调整关注/推送（省略参数=不改，focus:[]放下关注）；read顺序消费正文并推进书签；skip放下积压；browse只读历史绝不移动书签。\n行动积木：send发送（可replyTo引用）；interact戳/回应/撤回自身；remind自建提醒到时只给查看机会；requests好友与入群审批；profile群名片与个人资料。\n发现积木：people查人物；files浏览群文件目录；fetch只读取得附件本地文件；search只检索本地文本/文件名；expressions查系统表情编码。查询不推进正文消费书签。";
 
 export const QQ_ACTION_SCHEMAS = {
 	inbox: {
@@ -385,6 +385,237 @@ export const QQ_ACTION_SCHEMAS = {
 				avatarPath: {
 					type: "string",
 					description: "本地头像图片路径。",
+				},
+			},
+		},
+	},
+	people: {
+		description: "查找好友、群成员或人物资料；重名返回全部候选，缺失资料保持未知，不推断在线。",
+		parameters: {
+			oneOf: [
+				{
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						scope: {
+							const: "friends",
+							default: "friends",
+						},
+						query: {
+							type: "string",
+						},
+						limit: {
+							type: "integer",
+							minimum: 1,
+							default: 20,
+						},
+						cursor: {
+							type: "string",
+							minLength: 1,
+							description: "复制 nextCursor，保持查询条件与 limit 不变。",
+						},
+					},
+				},
+				{
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						scope: {
+							const: "members",
+						},
+						conversationRef: {
+							type: "string",
+							pattern: "^g[1-9][0-9]*$",
+						},
+						query: {
+							type: "string",
+						},
+						limit: {
+							type: "integer",
+							minimum: 1,
+							default: 20,
+						},
+						cursor: {
+							type: "string",
+							minLength: 1,
+							description: "复制 nextCursor，保持查询条件与 limit 不变。",
+						},
+					},
+					required: ["scope", "conversationRef"],
+				},
+				{
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						scope: {
+							const: "person",
+						},
+						userRef: {
+							type: "string",
+							pattern: "^u[1-9][0-9]*$",
+						},
+						conversationRef: {
+							type: "string",
+							pattern: "^g[1-9][0-9]*$",
+						},
+					},
+					required: ["scope", "userRef"],
+				},
+			],
+		},
+	},
+	files: {
+		description: "只读浏览一个群文件目录；query 只筛当前目录，不递归。复制 fileRef 给 fetch，folderRef 给 files。",
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				conversationRef: {
+					type: "string",
+					pattern: "^g[1-9][0-9]*$",
+				},
+				folderRef: {
+					type: "string",
+					pattern: "^qfolder:v1:[A-Za-z0-9_-]+$",
+				},
+				query: {
+					type: "string",
+				},
+				limit: {
+					type: "integer",
+					minimum: 1,
+					default: 20,
+				},
+				cursor: {
+					type: "string",
+					minLength: 1,
+					description: "复制 nextCursor，保持查询条件与 limit 不变。",
+				},
+			},
+			required: ["conversationRef"],
+		},
+	},
+	fetch: {
+		description: "将一个已发现附件只读取得为普通本地文件；不解析、转写、转码或管理群文件，不推进阅读书签。",
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				target: {
+					oneOf: [
+						{
+							type: "object",
+							additionalProperties: false,
+							properties: {
+								mediaRef: {
+									type: "string",
+									pattern: "^a[1-9][0-9]*$",
+								},
+							},
+							required: ["mediaRef"],
+						},
+						{
+							type: "object",
+							additionalProperties: false,
+							properties: {
+								fileRef: {
+									type: "string",
+									pattern: "^qfile:v1:[A-Za-z0-9_-]+$",
+								},
+							},
+							required: ["fileRef"],
+						},
+						{
+							type: "object",
+							additionalProperties: false,
+							properties: {
+								messageRef: {
+									type: "string",
+									pattern: "^m-?[1-9][0-9]*$",
+								},
+								segmentIndex: {
+									type: "integer",
+									minimum: 0,
+								},
+							},
+							required: ["messageRef", "segmentIndex"],
+						},
+					],
+				},
+			},
+			required: ["target"],
+		},
+	},
+	search: {
+		description: "仅检索本地已收录消息的文本与文件名；无命中不代表平台不存在。返回消息引用供 browse，不移动书签。",
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				query: {
+					type: "string",
+					minLength: 1,
+				},
+				source: {
+					const: "local",
+					default: "local",
+				},
+				conversationRef: {
+					type: "string",
+					pattern: "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
+				},
+				senderRef: {
+					type: "string",
+					pattern: "^u[1-9][0-9]*$",
+				},
+				direction: {
+					enum: ["in", "out"],
+				},
+				since: {
+					type: "string",
+					description: "带时区的 ISO 时间，包含起点。",
+				},
+				until: {
+					type: "string",
+					description: "带时区的 ISO 时间，不包含终点。",
+				},
+				limit: {
+					type: "integer",
+					minimum: 1,
+					default: 20,
+				},
+				cursor: {
+					type: "string",
+					minLength: 1,
+					description: "复制 nextCursor，保持查询条件与 limit 不变。",
+				},
+			},
+			required: ["query"],
+		},
+	},
+	expressions: {
+		description:
+			"只读查找系统 face/reaction 数字编码，复制到 send/interact；目标接受性由平台回执确定，不提供自定义贴纸。",
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				kind: {
+					enum: ["face", "reaction"],
+					default: "face",
+				},
+				query: {
+					type: "string",
+				},
+				limit: {
+					type: "integer",
+					minimum: 1,
+					default: 20,
+				},
+				cursor: {
+					type: "string",
+					minLength: 1,
+					description: "复制 nextCursor，保持查询条件与 limit 不变。",
 				},
 			},
 		},
