@@ -124,6 +124,7 @@ function validateTarget(axis: string, control: RigControlDef, target: RigTarget)
 function validateCurve(axis: string, control: RigControlDef, points: unknown): void {
 	if (!Array.isArray(points) || points.length < 2) throw new RigValidationError(`缺少完整手工曲线: ${axis}`);
 	const sign = Math.sign((points.at(-1)?.[1] ?? 0) - (points[0]?.[1] ?? 0));
+	if (sign === 0) throw new RigValidationError(`曲线首尾 y 相同（无变化曲线）: ${axis}`);
 	for (const [index, point] of points.entries()) {
 		if (!Array.isArray(point) || point.length !== 2 || !point.every(Number.isFinite)) {
 			throw new RigValidationError(`非法手工曲线: ${axis}[${index}]`);
@@ -133,14 +134,14 @@ function validateCurve(axis: string, control: RigControlDef, points: unknown): v
 		if (index > 0) {
 			const [previousX, previousY] = points[index - 1] as [number, number];
 			if (x <= previousX) throw new RigValidationError(`曲线 x 非严格递增: ${axis}[${index}]`);
-			if (sign === 0 || sign * (y - previousY) <= 0)
-				throw new RigValidationError(`曲线 y 方向不一致: ${axis}[${index}]`);
+			if (sign * (y - previousY) <= 0) throw new RigValidationError(`曲线 y 方向不一致: ${axis}[${index}]`);
 		}
 	}
 	if ((points[0] as [number, number])[0] !== control.min || (points.at(-1) as [number, number])[0] !== control.max) {
 		throw new RigValidationError(`曲线端点必须覆盖 [min, max]: ${axis}`);
 	}
-	if (!points.some((point) => point[0] === control.neutral)) {
+	// 中性点匹配允许浮点容差，避免 0.3 这类值经序列化后的表示误差导致校验失败。
+	if (!points.some((point) => Math.abs(point[0] - control.neutral) <= 1e-9 * Math.max(1, Math.abs(control.neutral)))) {
 		throw new RigValidationError(`中性点不在曲线上: ${axis}`);
 	}
 }

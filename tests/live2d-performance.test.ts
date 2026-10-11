@@ -321,10 +321,10 @@ describe("MO 表演实际合成与执行", () => {
 		expect(device.moves.at(-1)?.timeInSeconds).toBe(0.25);
 		expect(device.pose).toEqual(base);
 		expect(runtime.director!.currentFrame).toEqual(frame);
-		// 失焦期间新请求也不能发送空间移动。
+		// 失焦期间新请求也不能发送空间移动（unfocused → failed，非 cancelled）。
 		await expect(runtime.express({ motion: "joy_hop" }, {})).resolves.toMatchObject({
-			status: "cancelled",
-			details: { effectStatus: "not_started" },
+			status: "failed",
+			details: { effectStatus: "not_started", reason: "unfocused" },
 		});
 		expect(device.moves).toHaveLength(moves + 1);
 		runtime.setFocused(true);

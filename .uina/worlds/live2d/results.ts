@@ -20,7 +20,6 @@ export type RejectReason =
 	| "paused"
 	| "model_not_ready"
 	| "unadapted"
-	| "draft"
 	| "external_source"
 	| "invalid_motion"
 	| "invalid_duration"
@@ -32,7 +31,7 @@ export type RejectReason =
 	| "unknown_motion"
 	| "resource_conflict"
 	| "hotkey_missing"
-	| "author_session_required";
+	| "unfocused";
 
 export const EFFECT_STATUSES: readonly EffectStatus[] = ["not_started", "applied", "accepted", "cancelled", "unknown"];
 export const VERIFICATIONS: readonly Verification[] = ["local_intent", "input_accepted"];

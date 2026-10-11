@@ -303,7 +303,7 @@ export class Live2DRuntime {
 			const handle = director.play(clip, playOptions);
 			return this.settleMotion(handle, clip, label);
 		}
-		if (!this.focused) return toolRejected("cancelled", `${label} 未执行：身体当前失焦。`);
+		if (!this.focused) return toolRejected("unfocused", `${label} 未执行：身体当前失焦。`);
 
 		const claim = this.acquireClaim(["model:transform"], "motion", options.signal, true);
 		if ("status" in claim) return claim;
@@ -517,54 +517,6 @@ export class Live2DRuntime {
 			effectStatus: "accepted",
 			verification: "local_intent",
 		});
-	}
-
-	/** state（§2 兼容接口）：三个槽相互独立；声明的槽整槽替换，未声明的槽保持不变；hold_ms 各槽独立计时。 */
-	async state(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
-		const denied = this.gate(ctx);
-		if (denied) return denied;
-		const director = this.director;
-		if (!director) return toolRejected("unadapted", "引擎未接入（无 rig）。");
-		const holdMs = parseHoldMs(args.hold_ms);
-		if (typeof holdMs === "object") return holdMs;
-		const pending: Promise<void>[] = [];
-		if (args.posture !== undefined) {
-			const slot = this.catalog.postures.get(String(args.posture));
-			if (!slot) return toolRejected("unknown_pose", `姿态不在当前模型目录: "${args.posture}"（可用名称见 status）。`);
-			pending.push(director.setPosture(slot.values, { holdMs, durationMs: slot.transitionMs }));
-		}
-		if (args.expression !== undefined) {
-			const slot = this.catalog.expressions.get(String(args.expression));
-			if (!slot)
-				return toolRejected("unknown_expression", `表情不在当前模型目录: "${args.expression}"（可用名称见 status）。`);
-			pending.push(director.setExpression(slot.values, { holdMs, durationMs: slot.transitionMs }));
-		}
-		if (args.attention !== undefined) {
-			const name = String(args.attention);
-			const target = isBuiltinAttention(name) ? name : this.catalog.attentions.get(name)?.target;
-			if (target === undefined)
-				return toolRejected(
-					"unknown_attention",
-					`注视目标不在词表: "${name}"（内置 user/screen/avert_* 或目录命名）。`,
-				);
-			director.setAttention(target, { holdMs });
-		}
-		if (pending.length === 0 && args.attention === undefined)
-			return toolSucceeded("未声明任何槽，状态保持不变。", { effectStatus: "not_started" });
-		try {
-			await Promise.all(pending);
-		} catch (error) {
-			// 整槽替换被更新的 state 调用取代：本调用如实结算 cancelled，运动归属新调用。
-			if (error instanceof SupersededError) {
-				return {
-					result: "状态设置已被更新的调用取代。",
-					status: "cancelled",
-					details: { effectStatus: "cancelled" as const, supersededAxes: error.axes },
-				};
-			}
-			throw error;
-		}
-		return toolSucceeded("本地状态意图已设置。", { effectStatus: "accepted", verification: "local_intent" });
 	}
 
 	/** costume（§2）：执行模型包登记的外观热键；独占声明（effect:*）+ VTS 热键触发。 */

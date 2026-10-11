@@ -215,7 +215,8 @@ export function compileCatalog(
 			throw new Error(`注视命名 "${name}" 与引擎内置词表冲突`);
 	}
 	// 全局唯一命名空间（§2）：动作/姿态/表情/注视/外观 + 别名，重复即语义歧义。
-	const owners = new Map<string, string>();
+	// 引擎内置注视（具名瞄准）预占命名空间，目录命名不得与之重复。
+	const owners = new Map<string, string>(BUILTIN_ATTENTIONS.map((name) => [name, `引擎内置注视.${name}`]));
 	const claim = (name: string, owner: string): void => {
 		const existing = owners.get(name);
 		if (existing) throw new Error(`命名冲突: "${name}" 已被 ${existing} 占用（目录命名空间全局唯一）`);
