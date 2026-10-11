@@ -29,13 +29,8 @@ if (!rig) {
 const rt = new Live2DRuntime({ client: new VTSClient(), rig, speech: MO_SPEECH });
 await rt.start({} as never);
 
-// 与 runtime.tick 相同的合约：实测 dt → composeTick（钳制 250ms）。
-let last = performance.now();
-const ticker = setInterval(() => {
-	const now = performance.now();
-	rt.composeTick(Math.min(now - last, 250));
-	last = now;
-}, 1000 / 60);
+// 合成时钟由 runtime 内部 tick 驱动（start 后连接成功自动启泵，实测 dt）。
+// 此前脚本自建 ticker 与内部时钟叠加成双时钟，合成 2 倍速——已移除（2026-10-11 #5 跳变根因）。
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -180,7 +175,6 @@ await rt.director!.setPosture({}, { durationMs: 800 });
 await rt.director!.setExpression({}, { durationMs: 800 });
 
 await wait(1000);
-clearInterval(ticker);
 rl.close();
 await rt.stop();
 console.log("\n验收脚本结束。观察结果请记录到 docs/proposals/live2d-rebuild-checklist.md P2-3 / P3-2 行。");
