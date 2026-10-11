@@ -11,13 +11,21 @@ import {
 	followUpRow,
 	operationRecordLines,
 	receipt,
-	renderBatch,
+	renderReadWindow,
+	type BatchRenderDeps,
 	renderForwardNodes,
 	renderMessageFacts,
 	requestRow,
 	segmentText,
 	TimeView,
 } from "../.uina/worlds/qq/src/render.js";
+
+function readBody(candidate: { conversationRef: string; [key: string]: unknown }, deps: BatchRenderDeps): string {
+	return renderReadWindow(candidate.conversationRef, deps, {
+		limit: 100,
+		budgetChars: deps.display?.batchBudgetChars ?? 14000,
+	}).text;
+}
 
 describe("QQ normalized content and correspondence", () => {
 	let dir: string;
@@ -121,9 +129,9 @@ describe("QQ normalized content and correspondence", () => {
 		]);
 		const text = renderMessageFacts([journal.getMessage("m1")!], "10001").join("\n");
 		expect(text).not.toContain("secret.test");
-		expect(text).toContain('scope="content"');
-		expect(text).toContain("segmentIndex=0");
-		expect(text).toContain("segmentIndex=1");
+		expect(text).toContain('"action":"browse"');
+		expect(text).toContain('"segmentIndex":0');
+		expect(text).toContain('"segmentIndex":1');
 		expect(segmentText([{ type: "face", faceId: "14" }], undefined, new Map([["14", "微笑"]]))).toContain("微笑");
 	});
 	it("forward pages keep every supplied node, its time and reply coordinate", () => {
@@ -252,7 +260,7 @@ describe("QQ normalized content and correspondence", () => {
 		expect(failure.note).toContain("forwardNodeIndex=35");
 		expect(failure.note).toContain("nodeSegmentIndex=1");
 	});
-	it("first scene tail retains an older reply anchor and labels missing originals", () => {
+	it("read window retains an older reply anchor and labels missing originals", () => {
 		message([{ type: "text", data: { text: "被引用的原文" } }], 1);
 		for (let i = 2; i <= 18; i++) message([{ type: "text", data: { text: `新增${i}` } }], i);
 		message(
@@ -264,7 +272,8 @@ describe("QQ normalized content and correspondence", () => {
 		);
 		message([{ type: "reply", data: { id: 999 } }], 20);
 		const control = new ControlStore({ dataDir: dir, selfId: "10001" });
-		const text = renderBatch(
+		journal.snapshot.dispatchedThrough.set("g30003", 18);
+		const text = readBody(
 			{
 				key: "ordinary:g30003",
 				conversationRef: "g30003",
@@ -310,7 +319,7 @@ describe("QQ normalized content and correspondence", () => {
 		message([{ type, data: { data: "x".repeat(300) + "CARD_END" } }], 1);
 		message([{ type: "text", data: { text: "完整文字" } }], 2);
 		const control = new ControlStore({ dataDir: dir, selfId: "10001" });
-		const text = renderBatch(
+		const text = readBody(
 			{
 				key: "ordinary:g30003",
 				conversationRef: "g30003",
@@ -326,6 +335,6 @@ describe("QQ normalized content and correspondence", () => {
 		expect(text).toContain("完整呈现 1 条，部分呈现 1 条");
 		expect(text).toContain("hasMore=true");
 		expect(text).not.toContain("因预算截断");
-		expect(text).toContain('scope="content" messageRef=m1 segmentIndex=0');
+		expect(text).toContain('"contentTarget":{"messageRef":"m1","segmentIndex":0}');
 	});
 });

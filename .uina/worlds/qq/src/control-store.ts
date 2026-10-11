@@ -1,12 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type {
-	AttentionOverride,
-	EffectivePush,
-	FollowUpItem,
-	FollowUpState,
-	PushPreference,
-} from "./types.js";
+import type { AttentionOverride, EffectivePush, FollowUpItem, FollowUpState, PushPreference } from "./types.js";
 
 /**
  * QQ 控制状态：push 偏好（v2）+ 冷启动基线 + follow_up 簿 + 诊断 revision。
@@ -23,6 +17,7 @@ interface ControlFileShape {
 	conversationPush: Record<string, PushPreference>;
 	/** 冷启动基线（R4③）：首见会话时写入当前 latestSequence，绝不覆盖。 */
 	initializationBaseline: Record<string, number>;
+	readerInitialized?: boolean;
 	followUps: Record<string, FollowUpItem>;
 }
 
@@ -74,8 +69,8 @@ export class ControlStore {
 	}
 
 	/** 启动加载；文件损坏明确失败（控制状态不随消息淘汰，损坏不能静默清零）。 */
-	load(): { followUps: number } {
-		mkdirSync(this.options.dataDir, { recursive: true });
+	load(readOnly = false): { followUps: number } {
+		if (!readOnly) mkdirSync(this.options.dataDir, { recursive: true });
 		if (!existsSync(this.filePath)) return { followUps: 0 };
 		let parsed: unknown;
 		try {
@@ -102,8 +97,8 @@ export class ControlStore {
 		const legacy = shape.accountPush === undefined;
 		if (legacy) {
 			const legacyAccount = (parsed as { accountOverride?: AttentionOverride }).accountOverride ?? {};
-			const legacyConversations = (parsed as { conversationOverrides?: Record<string, AttentionOverride> })
-				.conversationOverrides ?? {};
+			const legacyConversations =
+				(parsed as { conversationOverrides?: Record<string, AttentionOverride> }).conversationOverrides ?? {};
 			accountPush = migrateOverride(legacyAccount);
 			conversationPush = Object.fromEntries(
 				Object.entries(legacyConversations).map(([k, v]) => [k, migrateOverride(v)]),
@@ -116,9 +111,10 @@ export class ControlStore {
 			accountPush: accountPush ?? {},
 			conversationPush: conversationPush ?? {},
 			initializationBaseline: shape.initializationBaseline ?? {},
+			readerInitialized: shape.readerInitialized === true,
 			followUps: shape.followUps,
 		};
-		if (legacy) this.persist(this.state);
+		if (legacy && !readOnly) this.persist(this.state);
 		for (const ref of Object.keys(this.state.followUps)) {
 			if (!/^f[1-9]\d*$/.test(ref)) throw new Error("QQ 事项引用非法");
 			const num = Number(ref.slice(1));
@@ -234,7 +230,7 @@ export class ControlStore {
 	ensureBaseline(conversationRef: string, latestSequence: number): number {
 		const existing = this.state.initializationBaseline[conversationRef];
 		if (existing !== undefined) return existing;
-		const baseline = Math.max(0, Math.floor(latestSequence));
+		const baseline = this.state.readerInitialized ? 0 : Math.max(0, Math.floor(latestSequence));
 		this.persist({
 			...this.state,
 			initializationBaseline: { ...this.state.initializationBaseline, [conversationRef]: baseline },
@@ -243,8 +239,24 @@ export class ControlStore {
 		return baseline;
 	}
 
+	initializeReader(journal: import("./facts-journal.js").FactsJournal): void {
+		if (this.state.readerInitialized) return;
+		const baseline = { ...this.state.initializationBaseline };
+		for (const ref of journal.listConversationRefs()) baseline[ref] ??= journal.latestSequence(ref);
+		this.persist({
+			...this.state,
+			initializationBaseline: baseline,
+			readerInitialized: true,
+			revision: this.state.revision + 1,
+		});
+	}
+
+	pushTargets(): string[] {
+		return Object.keys(this.state.conversationPush);
+	}
+
 	baselineOf(conversationRef: string): number | undefined {
-		return this.state.initializationBaseline[conversationRef];
+		return this.state.initializationBaseline[conversationRef] ?? (this.state.readerInitialized ? 0 : undefined);
 	}
 
 	/* ---------- follow_up ---------- */

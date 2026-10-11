@@ -19,8 +19,12 @@ export async function readMessage(deps: QqAppDeps, ref: string, signal?: AbortSi
 	return fact?.ref === ref ? fact : null;
 }
 
-function pageFooter(hasMore: boolean, nextCursor?: string): string {
-	return `hasMore=${hasMore}${nextCursor ? `；nextCursor=${nextCursor}` : ""}`;
+function pageFooter(
+	hasMore: boolean,
+	binding: { messageRef: string; segmentIndex: number; includeMedia: boolean },
+	nextCursor?: string,
+): string {
+	return `hasMore=${hasMore}${nextCursor ? `；续页：${JSON.stringify({ action: "browse", params: { contentTarget: { messageRef: binding.messageRef, segmentIndex: binding.segmentIndex, cursor: nextCursor }, includeMedia: binding.includeMedia } })}` : ""}`;
 }
 
 export async function observeContent(
@@ -61,7 +65,7 @@ export async function observeContent(
 			head,
 			`节点 ${page.page.length}/${page.total}`,
 			...render.renderForwardNodes(page.page, deps.display, startIndex),
-			pageFooter(page.hasMore, page.nextCursor),
+			pageFooter(page.hasMore, binding, page.nextCursor),
 		].join("\n");
 		let images: NonNullable<ToolExecutionResult["images"]> = [];
 		if (params.includeMedia === true) {
@@ -94,7 +98,7 @@ export async function observeContent(
 		const page = paginate(Array.from(text), params, binding, 4096);
 		if (!page.ok) return worldFailed(page.detail, { reason: page.reason });
 		return worldSucceeded(
-			[head, render.quote(page.page.join("")), pageFooter(page.hasMore, page.nextCursor)].join("\n"),
+			[head, render.quote(page.page.join("")), pageFooter(page.hasMore, binding, page.nextCursor)].join("\n"),
 			{ total: page.total, count: page.page.length, hasMore: page.hasMore, nextCursor: page.nextCursor },
 		);
 	}
@@ -110,4 +114,3 @@ export async function observeContent(
 	}
 	return result;
 }
-

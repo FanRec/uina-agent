@@ -6,7 +6,7 @@ import { createWorldTool } from "../src/extensions/world-framework/world-tool.js
 import type { WorldDef } from "../src/extensions/world-framework/types.js";
 import { QQ_ACTION_SCHEMAS, QQ_TOOL_DESCRIPTION, QQ_TOOL_NAME } from "../.uina/worlds/qq/src/tool-schema.js";
 import { parseDeploymentGrants } from "../.uina/worlds/qq/src/grants.js";
-import { requiredGrant } from "../.uina/worlds/qq/src/grants-vocabulary.js";
+import { requiredGrants } from "../.uina/worlds/qq/src/grants-vocabulary.js";
 import { loadQqWorldConfig } from "../.uina/worlds/qq/src/config.js";
 
 const FIXTURE_PATH = join(import.meta.dirname, "fixtures", "qq-world-interaction-examples.json");
@@ -91,40 +91,43 @@ describe("qq world: deployment grants 校验", () => {
 
 describe("qq world: grant 映射", () => {
 	it("退役 action 全部返回 null（unknown 路径由 app 层拒绝）", () => {
-		expect(requiredGrant("observe", { scope: "overview" })).toBeNull();
-		expect(requiredGrant("speak", {})).toBeNull();
-		expect(requiredGrant("gesture", {})).toBeNull();
-		expect(requiredGrant("attention", {})).toBeNull();
-		expect(requiredGrant("follow_up", {})).toBeNull();
-		expect(requiredGrant("account", { operation: "mark_read" })).toBeNull();
+		expect(requiredGrants("observe", { scope: "overview" })).toEqual([]);
+		expect(requiredGrants("speak", {})).toEqual([]);
+		expect(requiredGrants("gesture", {})).toEqual([]);
+		expect(requiredGrants("attention", {})).toEqual([]);
+		expect(requiredGrants("follow_up", {})).toEqual([]);
+		expect(requiredGrants("account", { operation: "mark_read" })).toEqual([]);
 	});
 	it("消费积木：本地消费不需要 grant，push 写入与平台展开需要对应授权", () => {
-		expect(requiredGrant("inbox", {})).toBeNull();
-		expect(requiredGrant("inbox", { focus: [] })).toBeNull();
-		expect(requiredGrant("inbox", { push: { target: "account", mode: "off" } })).toBe("attention.manage");
-		expect(requiredGrant("read", { conversationRef: "p1" })).toBeNull();
-		expect(requiredGrant("read", { conversationRef: "p1", includeMedia: true })).toBe("observation");
-		expect(requiredGrant("skip", { conversationRef: "p1" })).toBeNull();
-		expect(requiredGrant("browse", { conversationRef: "p1", direction: "latest" })).toBeNull();
-		expect(requiredGrant("browse", { messageRefs: ["m1"] })).toBeNull();
-		expect(requiredGrant("browse", { contentTarget: { messageRef: "m1" } })).toBe("observation");
+		expect(requiredGrants("inbox", {})).toEqual(["observation"]);
+		expect(requiredGrants("inbox", { focus: [] })).toEqual(["observation"]);
+		expect(requiredGrants("inbox", { push: { target: "account", mode: "off" } })).toEqual([
+			"observation",
+			"attention.manage",
+		]);
+		expect(requiredGrants("read", { conversationRef: "p1" })).toEqual([]);
+		expect(requiredGrants("read", { conversationRef: "p1", includeMedia: true })).toEqual(["observation"]);
+		expect(requiredGrants("skip", { conversationRef: "p1" })).toEqual([]);
+		expect(requiredGrants("browse", { conversationRef: "p1", direction: "latest" })).toEqual([]);
+		expect(requiredGrants("browse", { messageRefs: ["m1"] })).toEqual(["observation"]);
+		expect(requiredGrants("browse", { contentTarget: { messageRef: "m1" } })).toEqual(["observation"]);
 	});
 	it("行动积木：复用旧链路的 grant 语义", () => {
-		expect(requiredGrant("send", {})).toBe("messaging");
-		expect(requiredGrant("interact", { action: "poke" })).toBe("interaction");
-		expect(requiredGrant("interact", { action: "react" })).toBe("interaction");
-		expect(requiredGrant("interact", { action: "retract" })).toBe("messages.retract");
-		expect(requiredGrant("remind", {})).toBeNull();
-		expect(requiredGrant("remind", { action: "list" })).toBeNull();
-		expect(requiredGrant("remind", { action: "create", targetRef: "p1" })).toBe("follow_up.manage");
-		expect(requiredGrant("remind", { action: "resolve", remindRef: "f1" })).toBe("follow_up.manage");
-		expect(requiredGrant("requests", {})).toBe("observation");
-		expect(requiredGrant("requests", { action: "list" })).toBe("observation");
-		expect(requiredGrant("requests", { action: "respond", requestRef: "r1" })).toBe("requests.respond");
-		expect(requiredGrant("profile", {})).toBe("observation");
-		expect(requiredGrant("profile", { action: "get" })).toBe("observation");
-		expect(requiredGrant("profile", { action: "set_card", conversationRef: "g1" })).toBe("profile.modify");
-		expect(requiredGrant("profile", { action: "set_avatar", avatarPath: "x" })).toBe("profile.modify");
+		expect(requiredGrants("send", {})).toEqual(["messaging"]);
+		expect(requiredGrants("interact", { action: "poke" })).toEqual(["interaction"]);
+		expect(requiredGrants("interact", { action: "react" })).toEqual(["interaction"]);
+		expect(requiredGrants("interact", { action: "retract" })).toEqual(["messages.retract"]);
+		expect(requiredGrants("remind", {})).toEqual([]);
+		expect(requiredGrants("remind", { action: "list" })).toEqual([]);
+		expect(requiredGrants("remind", { action: "create", targetRef: "p1" })).toEqual(["follow_up.manage"]);
+		expect(requiredGrants("remind", { action: "resolve", remindRef: "f1" })).toEqual(["follow_up.manage"]);
+		expect(requiredGrants("requests", {})).toEqual(["observation"]);
+		expect(requiredGrants("requests", { action: "list" })).toEqual(["observation"]);
+		expect(requiredGrants("requests", { action: "respond", requestRef: "r1" })).toEqual(["requests.respond"]);
+		expect(requiredGrants("profile", {})).toEqual(["observation"]);
+		expect(requiredGrants("profile", { action: "get" })).toEqual(["observation"]);
+		expect(requiredGrants("profile", { action: "set_card", conversationRef: "g1" })).toEqual(["profile.modify"]);
+		expect(requiredGrants("profile", { action: "set_avatar", avatarPath: "x" })).toEqual(["profile.modify"]);
 	});
 });
 

@@ -13,7 +13,7 @@
 						"action": {
 							"type": "string",
 							"const": "inbox",
-							"description": "查看当前所有会话的待处理动态；可顺带原子替换置顶关注（省略不动，[] 放下）或调整推送偏好。返回每会话待处理数、封存数、有效推送与 effectiveFollow。"
+							"description": "查询在线好友与群目录并合并本地动态；可修改关注或推送。目录失败不修改配置；返回名称、计数与续页游标。"
 						},
 						"params": {
 							"type": "object",
@@ -37,32 +37,18 @@
 										},
 										"mode": {
 											"type": "string",
-											"enum": [
-												"off",
-												"digest",
-												"follow",
-												"inherit"
-											]
+											"enum": ["off", "digest", "follow", "inherit"]
 										},
 										"filter": {
 											"type": "string",
-											"enum": [
-												"all",
-												"direct",
-												"inherit"
-											]
+											"enum": ["all", "direct", "inherit"]
 										},
 										"pausedUntil": {
-											"type": [
-												"string",
-												"null"
-											],
+											"type": ["string", "null"],
 											"description": "ISO 时间，暂停提醒直至此时刻；null 解除暂停。"
 										}
 									},
-									"required": [
-										"target"
-									],
+									"required": ["target"],
 									"description": "可选。调整推送偏好；省略表示保持不变。"
 								},
 								"pendingOnly": {
@@ -75,14 +61,15 @@
 									"minimum": 1,
 									"maximum": 50,
 									"default": 20
+								},
+								"cursor": {
+									"type": "string",
+									"description": "复制上次返回的 nextCursor 继续查询；保持相同 limit 和查询条件。"
 								}
 							}
 						}
 					},
-					"required": [
-						"action",
-						"params"
-					]
+					"required": ["action", "params"]
 				},
 				{
 					"type": "object",
@@ -122,10 +109,7 @@
 							}
 						}
 					},
-					"required": [
-						"action",
-						"params"
-					]
+					"required": ["action", "params"]
 				},
 				{
 					"type": "object",
@@ -156,15 +140,10 @@
 									"description": "跳过原因，留存审计事实。"
 								}
 							},
-							"required": [
-								"conversationRef"
-							]
+							"required": ["conversationRef"]
 						}
 					},
-					"required": [
-						"action",
-						"params"
-					]
+					"required": ["action", "params"]
 				},
 				{
 					"type": "object",
@@ -186,12 +165,7 @@
 								},
 								"direction": {
 									"type": "string",
-									"enum": [
-										"latest",
-										"before",
-										"after",
-										"around"
-									],
+									"enum": ["latest", "before", "after", "around"],
 									"default": "latest"
 								},
 								"anchorMessageRef": {
@@ -227,9 +201,7 @@
 											"description": "复制同一内容上一页nextCursor；长文/转发续页。"
 										}
 									},
-									"required": [
-										"messageRef"
-									],
+									"required": ["messageRef"],
 									"description": "展开某条长文本分段、多层合并转发节点或指定卡片载荷。"
 								},
 								"includeMedia": {
@@ -241,14 +213,17 @@
 									"minimum": 1,
 									"maximum": 100,
 									"default": 20
+								},
+								"source": {
+									"type": "string",
+									"enum": ["local", "platform"],
+									"default": "local",
+									"description": "历史方向模式来源；platform读取在线历史，失败明确报错；不移动书签。"
 								}
 							}
 						}
 					},
-					"required": [
-						"action",
-						"params"
-					]
+					"required": ["action", "params"]
 				},
 				{
 					"type": "object",
@@ -277,15 +252,7 @@
 										"properties": {
 											"type": {
 												"type": "string",
-												"enum": [
-													"text",
-													"mention",
-													"face",
-													"image",
-													"audio",
-													"video",
-													"file"
-												]
+												"enum": ["text", "mention", "face", "image", "audio", "video", "file"]
 											},
 											"text": {
 												"type": "string"
@@ -302,9 +269,7 @@
 												"description": "媒体分段：本地文件路径（image/audio/video/file）。"
 											}
 										},
-										"required": [
-											"type"
-										]
+										"required": ["type"]
 									},
 									"description": "消息分段数组。"
 								},
@@ -314,16 +279,10 @@
 									"description": "引用的消息引用（如 'm77'）。"
 								}
 							},
-							"required": [
-								"conversationRef",
-								"content"
-							]
+							"required": ["conversationRef", "content"]
 						}
 					},
-					"required": [
-						"action",
-						"params"
-					]
+					"required": ["action", "params"]
 				},
 				{
 					"type": "object",
@@ -340,11 +299,7 @@
 							"properties": {
 								"action": {
 									"type": "string",
-									"enum": [
-										"poke",
-										"react",
-										"retract"
-									]
+									"enum": ["poke", "react", "retract"]
 								},
 								"conversationRef": {
 									"type": "string",
@@ -365,15 +320,10 @@
 									"description": "react 时的数字表情编码（来自 expressions 查询）。"
 								}
 							},
-							"required": [
-								"action"
-							]
+							"required": ["action"]
 						}
 					},
-					"required": [
-						"action",
-						"params"
-					]
+					"required": ["action", "params"]
 				},
 				{
 					"type": "object",
@@ -390,11 +340,7 @@
 							"properties": {
 								"action": {
 									"type": "string",
-									"enum": [
-										"list",
-										"create",
-										"resolve"
-									],
+									"enum": ["list", "create", "resolve"],
 									"default": "list"
 								},
 								"targetRef": {
@@ -422,10 +368,7 @@
 							}
 						}
 					},
-					"required": [
-						"action",
-						"params"
-					]
+					"required": ["action", "params"]
 				},
 				{
 					"type": "object",
@@ -442,10 +385,7 @@
 							"properties": {
 								"action": {
 									"type": "string",
-									"enum": [
-										"list",
-										"respond"
-									],
+									"enum": ["list", "respond"],
 									"default": "list"
 								},
 								"requestRef": {
@@ -455,22 +395,26 @@
 								},
 								"decision": {
 									"type": "string",
-									"enum": [
-										"accept",
-										"decline"
-									]
+									"enum": ["accept", "decline"]
 								},
 								"reason": {
 									"type": "string",
 									"description": "拒绝时的本地备注说明（平台无理由字段，仅留存于回执）。"
+								},
+								"cursor": {
+									"type": "string",
+									"description": "复制上次返回的 nextCursor 继续查询；保持相同 limit 和查询条件。"
+								},
+								"limit": {
+									"type": "integer",
+									"minimum": 1,
+									"default": 20,
+									"description": "每页条数，默认20。"
 								}
 							}
 						}
 					},
-					"required": [
-						"action",
-						"params"
-					]
+					"required": ["action", "params"]
 				},
 				{
 					"type": "object",
@@ -487,12 +431,7 @@
 							"properties": {
 								"action": {
 									"type": "string",
-									"enum": [
-										"get",
-										"set_card",
-										"set_profile",
-										"set_avatar"
-									],
+									"enum": ["get", "set_card", "set_profile", "set_avatar"],
 									"default": "get"
 								},
 								"conversationRef": {
@@ -519,10 +458,7 @@
 							}
 						}
 					},
-					"required": [
-						"action",
-						"params"
-					]
+					"required": ["action", "params"]
 				}
 			]
 		}

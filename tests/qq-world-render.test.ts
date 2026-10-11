@@ -7,7 +7,8 @@ import {
 	renderMessageFacts,
 	messageRow,
 	quote,
-	renderBatch,
+	renderReadWindow,
+	type BatchRenderDeps,
 	renderForwardNodes,
 	TimeView,
 } from "../.uina/worlds/qq/src/render.js";
@@ -63,6 +64,13 @@ function candidate(overrides: Partial<PendingCandidate> = {}): PendingCandidate 
 	};
 }
 
+function readBody(candidate: PendingCandidate, deps: BatchRenderDeps): string {
+	return renderReadWindow(candidate.conversationRef, deps, {
+		limit: 100,
+		budgetChars: deps.display?.batchBudgetChars ?? 14000,
+	}).text;
+}
+
 describe("TimeView（时区仅渲染层转换）", () => {
 	it("快照标题带偏移标注；行内时间同日只显 HH:mm、跨日显日期", () => {
 		const view = new TimeView("Asia/Shanghai");
@@ -84,16 +92,16 @@ describe("quote 转义（引号/换行不破坏行结构）", () => {
 	});
 });
 
-describe("renderBatch（首/续场景、去重、预算）", () => {
-	it("首场景 ≤16 条：全部为新增，coverage 声明完整", () => {
+describe("阅读窗口（顺序、去重、预算）", () => {
+	it("顺序交付16条正文，明确实际交付数", () => {
 		const { journal, control } = makeJournal(
 			Array.from({ length: 16 }, (_, i) => ({ sequence: i + 1, ref: `m${i + 1}` })),
 		);
-		const text = renderBatch(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
-		expect(text).toContain("[QQ 群聊]");
+		const text = readBody(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
+		expect(text).toContain("[QQ 阅读]");
 		expect(text).toContain("conversationRef=");
 		expect(text).toContain("新增：");
-		expect(text).toContain("coverage=本次新增完整");
+		expect(text).toContain("完整呈现 16 条");
 		expect(text).toContain("hasMore=false");
 		expect(text).not.toContain("未呈现");
 		// 尾部 16 条全部出现
@@ -101,16 +109,20 @@ describe("renderBatch（首/续场景、去重、预算）", () => {
 		expect(text).toContain("消息15");
 	});
 
-	it("首场景 >16 条：只呈现尾部 16，更早部分显式省略且 hasMore=true", () => {
+	it("18条正文自最旧起按序完整交付，不从头部丢弃", () => {
 		const { journal, control } = makeJournal(
 			Array.from({ length: 18 }, (_, i) => ({ sequence: i + 1, ref: `m${i + 1}` })),
 		);
-		const text = renderBatch(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
-		// 尾部 16 条（m2..m17）出现，更早 2 条（m0/m1）不出正文
-		expect(text).toContain("消息2");
-		expect(text).toContain("消息17");
-		expect(text).toContain("更早 2 条未呈现");
-		expect(text).toMatch(/coverage=本次呈现尾部 16 条，更早 2 条已省略；hasMore=true/);
+		const window = renderReadWindow(
+			GROUP,
+			{ journal, control, now: () => "2026-10-07T09:00:00Z" },
+			{ limit: 20, budgetChars: 14000 },
+		);
+		expect(window.text).toContain("消息0");
+		expect(window.text).toContain("消息17");
+		expect(window.deliveredThrough).toBe(18);
+		expect(window.delivered).toHaveLength(18);
+		expect(window.remaining).toBe(0);
 	});
 
 	it("续场景：只呈现新增，reply anchor 进必要前文且正文不重复", () => {
@@ -119,29 +131,27 @@ describe("renderBatch（首/续场景、去重、预算）", () => {
 			{ sequence: 2, ref: "m2", replyTo: "m1", time: "2026-10-07T02:00:00Z" },
 		]);
 		// 已通知到 seq 1
-		(journal as unknown as { state: { notifiedThrough: Map<string, number> } }).state.notifiedThrough.set(GROUP, 1);
-		const text = renderBatch(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
+		(journal as unknown as { state: { dispatchedThrough: Map<string, number> } }).state.dispatchedThrough.set(GROUP, 1);
+		const text = readBody(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
 		// anchor 正文恰好一次
 		expect(text.split("消息0").length - 1).toBe(1);
 		expect(text).toContain("replyTo=m1");
 		expect(text).toContain("必要前文：");
 	});
 
-	it("超预算：先丢背景，原文分片显式 truncated，coverage hasMore=true", () => {
+	it("超预算只推迟后续整条消息，交付位置不越过未呈现正文", () => {
 		const { journal, control } = makeJournal([
-			{ sequence: 1, time: "2026-10-07T01:00:00Z" },
-			{ sequence: 2, time: "2026-10-07T02:00:00Z", segments: [{ type: "text", text: "长".repeat(20000) }] },
+			{ sequence: 1 },
+			{ sequence: 2, segments: [{ type: "text", text: "长".repeat(20000) }] },
 		]);
-		const text = renderBatch(candidate(), {
-			journal,
-			control,
-			now: () => "2026-10-07T09:00:00Z",
-			display: { batchBudgetChars: 500 },
-		});
-		expect(text.length).toBeLessThan(500 + 400); // 软预算内（加头部/coverage 余量）
-		expect(text).toContain("[truncated]");
-		expect(text).toMatch(/coverage=因预算截断/);
-		expect(text).toContain("hasMore=true");
+		const window = renderReadWindow(
+			GROUP,
+			{ journal, control, now: () => "2026-10-07T09:00:00Z" },
+			{ limit: 20, budgetChars: 500 },
+		);
+		expect(window.text).toContain("消息0");
+		expect(window.deliveredThrough).toBe(1);
+		expect(window.remaining).toBe(1);
 	});
 });
 
@@ -167,7 +177,7 @@ describe("场景人物映射", () => {
 				],
 			},
 		]);
-		const batch = renderBatch(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
+		const batch = readBody(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
 		const messages = renderMessageFacts(journal.snapshot.messages.get(GROUP)!, SELF).join("\n");
 		for (const text of [batch, messages]) {
 			expect(text.match(/u20002/g)).toHaveLength(1);
@@ -251,7 +261,7 @@ describe("场景人物映射", () => {
 				segments: [{ type: "mention", userRef: "u20003", displayName: "乙" }],
 			},
 		]);
-		const text = renderBatch(
+		const text = readBody(
 			{ ...candidate(), key: "ordinary:p20002", conversationRef: "p20002" },
 			{ journal, control, now: () => "2026-10-07T09:00:00Z" },
 		);
@@ -265,11 +275,11 @@ describe("场景人物映射", () => {
 			{ senderRef: "u20003", senderDisplayName: "乙" },
 			{ senderRef: "u20002", senderDisplayName: "甲" },
 		]);
-		const text = renderBatch(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
+		const text = readBody(candidate(), { journal, control, now: () => "2026-10-07T09:00:00Z" });
 		expect(text.match(/u20002/g)).toHaveLength(1);
 		expect(text.match(/u20003/g)).toHaveLength(1);
 		expect(text).toContain("人物：");
-		expect(text.split("\n").find((l) => l.startsWith("conversationRef="))).not.toContain("乙");
+		expect(text.split("\n")[0]).not.toContain("乙");
 		expect(text).not.toMatch(/qq-(?:user|message|conversation):/);
 	});
 
@@ -314,7 +324,7 @@ describe("场景人物映射", () => {
 				segments: [{ type: "text", text: "次日" }],
 			},
 		]);
-		const text = renderBatch(
+		const text = readBody(
 			{ ...candidate(), key: "ordinary:p20002", conversationRef: "p20002" },
 			{ journal, control, now: () => "2026-10-08T09:00:00Z", display: { timezone: "Asia/Shanghai" } },
 		);
@@ -331,7 +341,7 @@ describe("场景人物映射", () => {
 		const { journal, control } = makeJournal([
 			{ senderDisplayName: "甲", segments: [{ type: "text", text: "长".repeat(2000) }], replyTo: "m99" },
 		]);
-		const text = renderBatch(candidate(), {
+		const text = readBody(candidate(), {
 			journal,
 			control,
 			now: () => "2026-10-07T09:00:00Z",
@@ -349,8 +359,8 @@ describe("场景人物映射", () => {
 			{ ref: "m1", sequence: 1, segments: [{ type: "text", text: "前".repeat(10000) }] },
 			{ ref: "m2", sequence: 2, replyTo: "m1" },
 		]);
-		(journal as unknown as { state: { notifiedThrough: Map<string, number> } }).state.notifiedThrough.set(GROUP, 1);
-		const text = renderBatch(candidate(), {
+		(journal as unknown as { state: { dispatchedThrough: Map<string, number> } }).state.dispatchedThrough.set(GROUP, 1);
+		const text = readBody(candidate(), {
 			journal,
 			control,
 			now: () => "2026-10-07T09:00:00Z",

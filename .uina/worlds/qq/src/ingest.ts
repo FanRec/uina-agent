@@ -96,6 +96,12 @@ export class QqIngestion {
 		const decoded = decodeOneBotMessage({ ...raw, time }, this.selfId);
 		if (!decoded) {
 			this.counters.unrecognized++;
+			this.journal.recordCoverageGap({
+				id: `decode:${this.journal.mintEventRef()}`,
+				from: time,
+				to: time,
+				reason: "message_decode_failed",
+			});
 			return;
 		}
 		if (this.journal.getMessage(decoded.ref)) return;

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QqScheduler, type PendingCandidate } from "../.uina/worlds/qq/src/scheduler.js";
-import { renderBatch, renderFollowBody } from "../.uina/worlds/qq/src/render.js";
+import { renderBatch, renderReadWindow } from "../.uina/worlds/qq/src/render.js";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
 import { AttentionModel } from "../.uina/worlds/qq/src/attention.js";
@@ -23,7 +23,6 @@ function setup(options: { isRecallRelevant?: (fact: EventFact) => boolean } = {}
 	const control = new ControlStore({ dataDir: dir, selfId: SELF, now: NOW });
 	control.load();
 	const emitted: { id: string; text: string; conversationRef: string; cls: string; origin?: string }[] = [];
-	let busy = false;
 	const attention = new AttentionModel({ control });
 	const locks = new ConversationLocks();
 	const deps = {
@@ -35,7 +34,8 @@ function setup(options: { isRecallRelevant?: (fact: EventFact) => boolean } = {}
 		now: NOW,
 		// 真实呈现层（render.ts）：顺带覆盖集成形状
 		renderBatch: (candidate: PendingCandidate) => renderBatch(candidate, { journal, control, now: NOW }),
-		renderFollowBody: (conversationRef: string) => renderFollowBody(conversationRef, { journal, control, now: NOW }),
+		renderReadWindow: (conversationRef: string) =>
+			renderReadWindow(conversationRef, { journal, control, now: NOW }, { limit: 30, budgetChars: 14000 }),
 		emit: async (input: {
 			id: string;
 			conversationRef: string;
@@ -53,7 +53,6 @@ function setup(options: { isRecallRelevant?: (fact: EventFact) => boolean } = {}
 				origin: input.origin,
 			});
 		},
-		isBusy: () => busy,
 		...(options.isRecallRelevant ? { isRecallRelevant: options.isRecallRelevant } : {}),
 	};
 	const scheduler = new QqScheduler(deps);
@@ -105,7 +104,6 @@ function setup(options: { isRecallRelevant?: (fact: EventFact) => boolean } = {}
 		pushEvent,
 		groupFact,
 		privateFact,
-		setBusy: (v: boolean) => (busy = v),
 		close,
 	};
 }
@@ -245,13 +243,10 @@ describe("G5 消息/队列", () => {
 		expect(ctx.journal.snapshot.notifiedThrough.get(GROUP)).toBe(through);
 	});
 
-	it("agent_settled 后不忙才 recheck 派发", async () => {
-		ctx.setBusy(true);
+	it("Subject 忙时也在短防抖后入队，agent_settled 不重复投递", async () => {
 		ctx.pushMessage(ctx.groupFact());
 		await vi.advanceTimersByTimeAsync(6000);
-		expect(ctx.emitted).toHaveLength(0); // 忙时留在事实存储
-		ctx.setBusy(false);
-		ctx.scheduler.onAgentSettled();
+		expect(ctx.emitted).toHaveLength(1); // FIFO 拥有后续时机
 		await vi.advanceTimersByTimeAsync(200);
 		expect(ctx.emitted).toHaveLength(1);
 	});
@@ -595,7 +590,7 @@ describe("审查后清理回归（批次A）", () => {
 			await vi.advanceTimersByTimeAsync(1500);
 			expect(ctx.emitted).toHaveLength(1);
 			expect(ctx.emitted[0]!.conversationRef).toBe(PRIVATE);
-			expect(ctx.emitted[0]!.text).toContain("新增");
+			expect(ctx.emitted[0]!.text).toContain("poke");
 		} finally {
 			ctx.close();
 			vi.useRealTimers();

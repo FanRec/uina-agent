@@ -9,7 +9,7 @@ import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
 import { qqStatusLines } from "../.uina/worlds/qq/src/reader.js";
-import { consumptionThrough, pendingCountOf } from "../.uina/worlds/qq/src/scheduler.js";
+import { consumptionThrough, pendingCountOf } from "../.uina/worlds/qq/src/consumption.js";
 import type { TransportCallOutcome } from "../.uina/worlds/qq/src/transport.js";
 import { conversationRef, messageRef, userRef, type MessageFact } from "../.uina/worlds/qq/src/types.js";
 
@@ -52,6 +52,8 @@ beforeEach(() => {
 			onStatus: () => () => {},
 			call: async (action) => {
 				platformCalls.push(action);
+				if (action === "get_friend_list" || action === "get_group_list")
+					return { status: "ok", data: [] } as TransportCallOutcome;
 				return { status: "failed", kind: "rejected", reason: "test-transport-offline" } as TransportCallOutcome;
 			},
 		},
@@ -168,7 +170,7 @@ describe("read 顺序消费（T03）", () => {
 		const result = await call("read", { conversationRef: P1 });
 		const text = String(result.result);
 		expect(text).toContain("hasMoreSegment: true");
-		expect(text).toContain("contentTarget");
+		expect(text).toContain(JSON.stringify({ action: "browse", params: { messageRefs: [long.ref] } }));
 		expect(journal.dispatchedThroughOf(P1)).toBe(next.sequence); // 折叠不阻塞推进
 		expect((await call("read", { conversationRef: P1 })).result).toMatch(/无未消费正文/);
 		void long;
@@ -333,7 +335,7 @@ describe("browse 只读漫游（T05/T15）", () => {
 		expect(text).toContain(held.ref);
 		expect(text).toContain("m999999 | 本地未持有");
 		expect(text).toContain("coverage=partial");
-		expect(platformCalls).toHaveLength(0); // 点查纯本地
+		expect(platformCalls).toEqual(["get_msg"]); // 缺失点查从平台补取
 	});
 
 	it("锚点不属于会话/缺失显式失败；direction=before 需要锚点", async () => {
@@ -352,13 +354,14 @@ describe("browse 只读漫游（T05/T15）", () => {
 /* ---------- grant 边界 ---------- */
 
 describe("积木 grant 映射", () => {
-	it("inbox.push 需要 attention.manage；inbox 查询与 skip 不需要", async () => {
+	it("inbox 查询需要 observation，push 还需 attention.manage；skip 本地可用", async () => {
 		deps = { ...deps, grants: { grants: [] } };
 		const pushDenied = await call("inbox", { push: { target: "account", mode: "off" } });
 		expect(pushDenied.status).toBe("failed");
 		expect(platformCalls).toHaveLength(0);
 		const query = await call("inbox", {});
-		expect(query.status).toBe("succeeded");
+		expect(query.status).toBe("failed");
+		expect(platformCalls).toHaveLength(0);
 		message();
 		const skip = await call("skip", { conversationRef: P1 });
 		expect(skip.status).toBe("succeeded");

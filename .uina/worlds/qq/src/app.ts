@@ -13,7 +13,7 @@ import type { ControlStore } from "./control-store.js";
 import type { OperationLog } from "./operation-log.js";
 import type { DeploymentGrants } from "./grants.js";
 import { hasGrant } from "./grants.js";
-import { requiredGrant } from "./grants-vocabulary.js";
+import { requiredGrants } from "./grants-vocabulary.js";
 import type { AttentionModel } from "./attention.js";
 import type { ConversationLocks } from "./conversation-lock.js";
 import { handleBrowse, handleInbox, handleRead, handleSkip } from "./reader.js";
@@ -39,6 +39,8 @@ import { oneBotId, oneBotObject } from "./message-codec.js";
 
 export interface QqAppDeps {
 	readonly selfId: string;
+	readonly signal?: AbortSignal;
+	readonly onConsumption?: (conversationRef: string) => void;
 	readonly grants: DeploymentGrants;
 	readonly journal: FactsJournal;
 	readonly control: ControlStore;
@@ -104,8 +106,8 @@ export async function handleQqCall(
 	signal?: AbortSignal,
 ): Promise<ToolExecutionResult> {
 	// ---- grant 中间件（所有入口同一检查；拒绝时平台调用为 0） ----
-	const grant = requiredGrant(rawAction, params);
-	if (grant !== null && !hasGrant(deps.grants, grant)) {
+	const grant = requiredGrants(rawAction, params).find((name) => !hasGrant(deps.grants, name));
+	if (grant) {
 		return worldFailed(`本实例未授 ${grant}；适配器可能有实现，但未调用平台。`, {
 			reason: "grant_denied",
 			effect: "not_started",
@@ -115,11 +117,11 @@ export async function handleQqCall(
 
 	switch (rawAction) {
 		case "inbox":
-			return handleInbox(deps, params);
+			return handleInbox(deps, params, signal);
 		case "read":
 			return handleRead(deps, params, signal);
 		case "skip":
-			return handleSkip(deps, params);
+			return handleSkip(deps, params, signal);
 		case "browse":
 			return handleBrowse(deps, params, signal);
 		case "send":
@@ -139,7 +141,7 @@ export async function handleQqCall(
 
 /* ---------- speak ---------- */
 
-async function handleSpeak(
+async function handleSend(
 	deps: QqAppDeps,
 	params: Record<string, unknown>,
 	signal?: AbortSignal,
@@ -375,7 +377,9 @@ function toOneBotSegments(
 			case "audio":
 			case "video":
 			case "file": {
-				const resource = seg.resource as { kind?: unknown; path?: unknown; ref?: unknown } | undefined;
+				const resource = (typeof seg.path === "string" ? { kind: "file", path: seg.path } : seg.resource) as
+					| { kind?: unknown; path?: unknown; ref?: unknown }
+					| undefined;
 				const type = seg.type === "audio" ? "record" : seg.type;
 				const name = seg.type === "file" && typeof seg.name === "string" ? { name: seg.name } : {};
 				if (resource?.kind === "file" && typeof resource.path === "string") {
@@ -447,7 +451,7 @@ async function handleGesture(
 	params: Record<string, unknown>,
 	signal?: AbortSignal,
 ): Promise<ToolExecutionResult> {
-	if (params.kind === "react") {
+	if (params.action === "react") {
 		const message = checkMessageRef(deps, params.messageRef);
 		if (!("ok" in message)) return message;
 		const code = String(params.reactionCode ?? "");
@@ -476,7 +480,7 @@ async function handleGesture(
 				),
 		);
 	}
-	if (params.kind === "poke") {
+	if (params.action === "poke") {
 		const target = checkConversationRef(deps, params.conversationRef);
 		if (!("ok" in target)) return target;
 		const user = checkUserRef(deps, params.userRef);
@@ -498,14 +502,14 @@ async function handleGesture(
 			),
 		);
 	}
-	return worldFailed("gesture.kind 必须是 react 或 poke。", { reason: "invalid_kind" });
+	return worldFailed("interact.action 必须是 poke/react/retract。", { reason: "invalid_action" });
 }
 
 /* ---------- follow_up ---------- */
 
 function handleFollowUp(deps: QqAppDeps, params: Record<string, unknown>): ToolExecutionResult {
 	try {
-		switch (params.operation) {
+		switch (params.action) {
 			case "create": {
 				const target = checkConversationRef(deps, params.targetRef);
 				if (!("ok" in target)) return target;
@@ -525,21 +529,20 @@ function handleFollowUp(deps: QqAppDeps, params: Record<string, unknown>): ToolE
 					"applied",
 				);
 			}
-			case "close":
-			case "cancel": {
+			case "resolve": {
 				const item = deps.control.settleFollowUp(
-					String(params.ref ?? ""),
+					String(params.remindRef ?? ""),
 					String(params.resolution ?? ""),
-					params.operation === "close" ? "closed" : "cancelled",
+					"closed",
 				);
 				return worldSucceeded(
-					render.receipt.ok(`follow_up.${params.operation}`, [`ref=${item.ref}`, `state=${item.state}`]),
+					render.receipt.ok("follow_up.close", [`ref=${item.ref}`, `state=${item.state}`]),
 					{ ref: item.ref, persisted: true },
 					"applied",
 				);
 			}
 			default:
-				return worldFailed("follow_up.operation 必须是 create/close/cancel。", { reason: "invalid_operation" });
+				return worldFailed("remind.action 必须是 list/create/resolve。", { reason: "invalid_operation" });
 		}
 	} catch (error) {
 		return worldFailed(`follow_up 保存失败，保留旧控制状态：${errorMessage(error)}`, {
@@ -550,140 +553,150 @@ function handleFollowUp(deps: QqAppDeps, params: Record<string, unknown>): ToolE
 
 /* ---------- account ---------- */
 
-async function handleAccount(
+async function handleRequestResponse(
 	deps: QqAppDeps,
 	params: Record<string, unknown>,
 	signal?: AbortSignal,
 ): Promise<ToolExecutionResult> {
-	const operation = String(params.operation ?? "");
-	switch (operation) {
-		case "respond_request": {
-			const requestRef = String(params.requestRef ?? "");
-			if (!REF_PATTERNS.request.test(requestRef)) {
-				return worldFailed(`requestRef 非法：${requestRef}`, { reason: "invalid_target" });
-			}
-			const fact = deps.journal.snapshot.requests.get(requestRef);
-			if (!fact)
-				return worldFailed(`申请 ${requestRef} 未取得，不猜测平台flag。`, {
-					reason: "not_found",
-					effect: "not_started",
-				});
-			const state = requestState(deps, fact).state;
-			if (state !== "pending")
-				return worldFailed(`申请 ${requestRef} 状态为 ${state}；先核验关联操作，不重复处理。`, {
-					reason: "request_already_handled",
-					effect: "not_started",
-				});
-			const flag = fact.platformFlag;
-			const approve = params.decision === "accept";
-			const platformAction = fact?.kind === "friend" ? "set_friend_add_request" : "set_group_add_request";
-			// OneBot v11 语义：群请求 sub_type=invite（邀请）/add（加群申请）是不同处理路径，
-			// 必须按事实 kind 回传，不能一律 add（G9 才会暴露的参数错误）。
-			const extraParams: Record<string, unknown> =
-				platformAction === "set_group_add_request"
-					? { sub_type: fact?.kind === "group_invite" ? "invite" : "add" }
-					: {};
-			return dispatchWrite(
-				deps,
-				`account.${operation}`,
-				platformAction,
-				{ flag, approve, ...extraParams },
-				requestRef,
-				signal,
-				() =>
-					worldSucceeded(
-						render.receipt.ok(`respond_request ${params.decision}`, [`requestRef=${requestRef}`]),
-						{ requestRef },
-						"applied",
-					),
-				undefined,
-				undefined,
-				{ requestDecision: approve ? "accept" : "decline" },
-			);
-		}
-		case "retract": {
-			const message = checkMessageRef(deps, params.messageRef);
-			if (!("ok" in message)) return message;
-			// 合同：确认是自己且可寻址。本地未持有的消息在线核验发送者，不盲发 delete_msg。
-			const own = await isOwnMessageForRetract(deps, message.ref, signal);
-			if (!own.ok) return own.result;
-			return dispatchWrite(
-				deps,
-				`account.${operation}`,
-				"delete_msg",
-				{ message_id: parseMessageRef(message.ref)!.messageId },
-				message.ref,
-				signal,
-				() =>
-					worldSucceeded(
-						render.receipt.ok("retract", [`messageRef=${message.ref}`]),
-						{ messageRef: message.ref },
-						"applied",
-					),
-			);
-		}
-		case "set_profile": {
-			const calls: { name: string; params: Record<string, unknown>; label: string }[] = [];
-			if (typeof params.nickname === "string")
-				calls.push({ name: "set_qq_profile", params: { nickname: params.nickname }, label: "nickname" });
-			if (typeof params.signature === "string")
-				calls.push({ name: "set_self_longnick", params: { longNick: params.signature }, label: "signature" });
-			if (calls.length === 0)
-				return worldFailed("set_profile 至少提供 nickname 或 signature。", { reason: "invalid_params" });
-			const results: string[] = [];
-			for (const call of calls) {
-				const outcome = await dispatchWriteRaw(deps, `account.${operation}`, call.name, call.params, "account", signal);
-				if (!outcome.ok) {
-					// 多字段非原子：返回已确认部分，不整包重发（合同 §3.2"多字段逐项回执"）。
-					const confirmed = results.length > 0 ? `已确认部分：${results.join("；")}；` : "";
-					return {
-						...outcome.result,
-						result: `${outcome.result.result}\n${confirmed}其余字段未执行，不整包重试。`,
-					};
-				}
-				results.push(`${call.label}=${render.quote(String(call.params.nickname ?? call.params.longNick))}`);
-			}
-			return worldSucceeded(render.receipt.ok("set_profile", results), { changed: results }, "applied");
-		}
-		case "set_avatar": {
-			const prepared = toOneBotSegments(deps, [{ type: "image", resource: params.resource }]);
-			if (!prepared.ok) return prepared.result;
-			return dispatchWrite(
-				deps,
-				`account.${operation}`,
-				"set_qq_avatar",
-				{},
-				"account",
-				signal,
-				() => worldSucceeded(render.receipt.ok("set_avatar", []), {}, "applied"),
-				(ref) => ({ file: (prepared.build(ref)[0]!.data as { file: string }).file }),
-			);
-		}
-		case "set_group_card": {
-			const target = checkConversationRef(deps, params.conversationRef);
-			if (!("ok" in target)) return target;
-			const parsed = parseConversationRef(target.ref)!;
-			if (parsed.kind !== "group")
-				return worldFailed("set_group_card 只接受群会话引用。", { reason: "invalid_target" });
-			const card = String(params.card ?? "");
-			return dispatchWrite(
-				deps,
-				`account.${operation}`,
-				"set_group_card",
-				{ group_id: Number(parsed.key), user_id: Number(deps.selfId), card },
-				target.ref,
-				signal,
-				() =>
-					worldSucceeded(
-						render.receipt.ok("set_group_card", [`target=${target.ref}`, `card=${render.quote(card || "(清除)")}`]),
-						{ target: target.ref },
-						"applied",
-					),
-			);
-		}
-		default:
-			return worldFailed(`未知 account.operation: ${operation}`, { reason: "unknown_operation" });
+	const requestRef = String(params.requestRef ?? "");
+	if (!REF_PATTERNS.request.test(requestRef)) {
+		return worldFailed(`requestRef 非法：${requestRef}`, { reason: "invalid_target" });
 	}
+	const fact = deps.journal.snapshot.requests.get(requestRef);
+	if (!fact)
+		return worldFailed(`申请 ${requestRef} 未取得，不猜测平台flag。`, {
+			reason: "not_found",
+			effect: "not_started",
+		});
+	const state = requestState(deps, fact).state;
+	if (state !== "pending")
+		return worldFailed(`申请 ${requestRef} 状态为 ${state}；先核验关联操作，不重复处理。`, {
+			reason: "request_already_handled",
+			effect: "not_started",
+		});
+	const flag = fact.platformFlag;
+	const approve = params.decision === "accept";
+	const platformAction = fact?.kind === "friend" ? "set_friend_add_request" : "set_group_add_request";
+	// OneBot v11 语义：群请求 sub_type=invite（邀请）/add（加群申请）是不同处理路径，
+	// 必须按事实 kind 回传，不能一律 add（G9 才会暴露的参数错误）。
+	const extraParams: Record<string, unknown> =
+		platformAction === "set_group_add_request" ? { sub_type: fact?.kind === "group_invite" ? "invite" : "add" } : {};
+	return dispatchWrite(
+		deps,
+		"account.respond_request",
+		platformAction,
+		{ flag, approve, ...extraParams },
+		requestRef,
+		signal,
+		() =>
+			worldSucceeded(
+				render.receipt.ok(`respond_request ${params.decision}`, [`requestRef=${requestRef}`]),
+				{ requestRef },
+				"applied",
+			),
+		undefined,
+		undefined,
+		{ requestDecision: approve ? "accept" : "decline" },
+	);
+}
+
+async function handleRetract(
+	deps: QqAppDeps,
+	params: Record<string, unknown>,
+	signal?: AbortSignal,
+): Promise<ToolExecutionResult> {
+	const message = checkMessageRef(deps, params.messageRef);
+	if (!("ok" in message)) return message;
+	// 合同：确认是自己且可寻址。本地未持有的消息在线核验发送者，不盲发 delete_msg。
+	const own = await isOwnMessageForRetract(deps, message.ref, signal);
+	if (!own.ok) return own.result;
+	return dispatchWrite(
+		deps,
+		"account.retract",
+		"delete_msg",
+		{ message_id: parseMessageRef(message.ref)!.messageId },
+		message.ref,
+		signal,
+		() =>
+			worldSucceeded(
+				render.receipt.ok("retract", [`messageRef=${message.ref}`]),
+				{ messageRef: message.ref },
+				"applied",
+			),
+	);
+}
+
+async function handleProfileUpdate(
+	deps: QqAppDeps,
+	params: Record<string, unknown>,
+	signal?: AbortSignal,
+): Promise<ToolExecutionResult> {
+	const calls: { name: string; params: Record<string, unknown>; label: string }[] = [];
+	if (typeof params.nickname === "string")
+		calls.push({ name: "set_qq_profile", params: { nickname: params.nickname }, label: "nickname" });
+	if (typeof params.signature === "string")
+		calls.push({ name: "set_self_longnick", params: { longNick: params.signature }, label: "signature" });
+	if (calls.length === 0)
+		return worldFailed("set_profile 至少提供 nickname 或 signature。", { reason: "invalid_params" });
+	const results: string[] = [];
+	for (const call of calls) {
+		const outcome = await dispatchWriteRaw(deps, "account.set_profile", call.name, call.params, "account", signal);
+		if (!outcome.ok) {
+			// 多字段非原子：返回已确认部分，不整包重发（合同 §3.2"多字段逐项回执"）。
+			const confirmed = results.length > 0 ? `已确认部分：${results.join("；")}；` : "";
+			return {
+				...outcome.result,
+				result: `${outcome.result.result}\n${confirmed}其余字段未执行，不整包重试。`,
+			};
+		}
+		results.push(`${call.label}=${render.quote(String(call.params.nickname ?? call.params.longNick))}`);
+	}
+	return worldSucceeded(render.receipt.ok("set_profile", results), { changed: results }, "applied");
+}
+
+async function handleAvatarUpdate(
+	deps: QqAppDeps,
+	params: Record<string, unknown>,
+	signal?: AbortSignal,
+): Promise<ToolExecutionResult> {
+	const prepared = toOneBotSegments(deps, [{ type: "image", path: params.avatarPath }]);
+	if (!prepared.ok) return prepared.result;
+	return dispatchWrite(
+		deps,
+		"account.set_avatar",
+		"set_qq_avatar",
+		{},
+		"account",
+		signal,
+		() => worldSucceeded(render.receipt.ok("set_avatar", []), {}, "applied"),
+		(ref) => ({ file: (prepared.build(ref)[0]!.data as { file: string }).file }),
+	);
+}
+
+async function handleCardUpdate(
+	deps: QqAppDeps,
+	params: Record<string, unknown>,
+	signal?: AbortSignal,
+): Promise<ToolExecutionResult> {
+	const target = checkConversationRef(deps, params.conversationRef);
+	if (!("ok" in target)) return target;
+	const parsed = parseConversationRef(target.ref)!;
+	if (parsed.kind !== "group") return worldFailed("set_group_card 只接受群会话引用。", { reason: "invalid_target" });
+	const card = String(params.card ?? "");
+	return dispatchWrite(
+		deps,
+		"account.set_group_card",
+		"set_group_card",
+		{ group_id: Number(parsed.key), user_id: Number(deps.selfId), card },
+		target.ref,
+		signal,
+		() =>
+			worldSucceeded(
+				render.receipt.ok("set_group_card", [`target=${target.ref}`, `card=${render.quote(card || "(清除)")}`]),
+				{ target: target.ref },
+				"applied",
+			),
+	);
 }
 
 /** 撤回前的所有权核验：本地 out 事实直接通过；否则 get_msg 比对发送者。 */
@@ -913,7 +926,13 @@ function listResult<T>(
 		render.receipt.ok(`${scope}（${result.page.length}/${result.total}）`, [
 			...result.page.map(row),
 			...(result.page.length === 0 ? ["本次未取得匹配条目。"] : []),
-			...(result.nextCursor ? [`nextCursor=${result.nextCursor}`] : []),
+			...(result.nextCursor
+				? [
+						scope === "requests"
+							? `续页：${JSON.stringify({ action: "requests", params: { action: "list", limit: params.limit ?? 20, cursor: result.nextCursor } })}`
+							: `nextCursor=${result.nextCursor}`,
+					]
+				: []),
 		]),
 		{ count: result.page.length, total: result.total, hasMore: result.hasMore, nextCursor: result.nextCursor },
 	);
@@ -998,30 +1017,7 @@ async function handleExpressions(
 		: result;
 }
 
-/* ---------- 行动积木（设计 §4.5~§4.9）：参数映射层，平台链路单源复用 ---------- */
-
-/**
- * qq_send：design 形状 `path` → 旧 `resource:{kind:"file",path}`，其余原样复用 speak
- * 链路（分段批派、replyTo 归属核验、mention 成员核验、operation-log 回执）。
- */
-async function handleSend(
-	deps: QqAppDeps,
-	params: Record<string, unknown>,
-	signal?: AbortSignal,
-): Promise<ToolExecutionResult> {
-	const content = Array.isArray(params.content)
-		? (params.content as unknown[]).map((segment) => {
-				if (typeof segment !== "object" || segment === null) return segment;
-				const mapped = { ...(segment as Record<string, unknown>) };
-				if (typeof mapped.path === "string" && mapped.resource === undefined) {
-					mapped.resource = { kind: "file", path: mapped.path };
-				}
-				delete mapped.path;
-				return mapped;
-			})
-		: params.content;
-	return handleSpeak(deps, { ...params, content }, signal);
-}
+/* ---------- 行动积木（设计 §4.5~§4.9）：领域选择器，平台派发与审计单源复用 ---------- */
 
 /** qq_interact：poke/react 复用 gesture，retract 复用 account.retract（所有权核验同源）。 */
 async function handleInteract(
@@ -1029,24 +1025,8 @@ async function handleInteract(
 	params: Record<string, unknown>,
 	signal?: AbortSignal,
 ): Promise<ToolExecutionResult> {
-	switch (params.action) {
-		case "poke":
-			return handleGesture(
-				deps,
-				{ kind: "poke", conversationRef: params.conversationRef, userRef: params.userRef },
-				signal,
-			);
-		case "react":
-			return handleGesture(
-				deps,
-				{ kind: "react", messageRef: params.messageRef, reactionCode: params.reactionCode, enabled: true },
-				signal,
-			);
-		case "retract":
-			return handleAccount(deps, { operation: "retract", messageRef: params.messageRef }, signal);
-		default:
-			return worldFailed("interact.action 必须是 poke/react/retract。", { reason: "invalid_action" });
-	}
+	if (params.action === "retract") return handleRetract(deps, params, signal);
+	return handleGesture(deps, params, signal);
 }
 
 /** qq_remind：f{n} 空间沿用 follow_up；list 纯本地（open 事项）。 */
@@ -1060,18 +1040,8 @@ function handleRemind(deps: QqAppDeps, params: Record<string, unknown>): ToolExe
 			);
 		}
 		case "create":
-			return handleFollowUp(deps, {
-				operation: "create",
-				targetRef: params.targetRef,
-				note: params.note,
-				reviewAt: params.reviewAt,
-			});
 		case "resolve":
-			return handleFollowUp(deps, {
-				operation: "close",
-				ref: params.remindRef,
-				resolution: params.resolution,
-			});
+			return handleFollowUp(deps, params);
 		default:
 			return worldFailed("remind.action 必须是 list/create/resolve。", { reason: "invalid_action" });
 	}
@@ -1085,20 +1055,19 @@ async function handleRequests(
 ): Promise<ToolExecutionResult> {
 	switch (params.action ?? "list") {
 		case "list":
-			return handleObserve(deps, { scope: "requests" }, signal);
+			return handleObserve(deps, { scope: "requests", limit: params.limit, cursor: params.cursor }, signal);
 		case "respond": {
-			const result = await handleAccount(
-				deps,
-				{ operation: "respond_request", requestRef: params.requestRef, decision: params.decision },
-				signal,
-			);
+			const result = await handleRequestResponse(deps, params, signal);
 			// 拒绝理由平台无对应字段：只做本地备注呈现，不伪装为平台副作用。
 			if (
 				typeof params.reason === "string" &&
 				params.reason !== "" &&
 				(result.status === "succeeded" || result.status === "unknown")
 			) {
-				return { ...result, result: `${result.result}\nreason=${render.quote(params.reason)}（本地备注；平台拒绝无理由字段）` };
+				return {
+					...result,
+					result: `${result.result}\nreason=${render.quote(params.reason)}（本地备注；平台拒绝无理由字段）`,
+				};
 			}
 			return result;
 		}
@@ -1117,23 +1086,11 @@ async function handleProfile(
 		case "get":
 			return handleObserve(deps, { scope: "self" }, signal);
 		case "set_card":
-			return handleAccount(
-				deps,
-				{ operation: "set_group_card", conversationRef: params.conversationRef, card: params.card },
-				signal,
-			);
+			return handleCardUpdate(deps, params, signal);
 		case "set_profile":
-			return handleAccount(
-				deps,
-				{ operation: "set_profile", nickname: params.nickname, signature: params.signature },
-				signal,
-			);
+			return handleProfileUpdate(deps, params, signal);
 		case "set_avatar":
-			return handleAccount(
-				deps,
-				{ operation: "set_avatar", resource: { kind: "file", path: params.avatarPath } },
-				signal,
-			);
+			return handleAvatarUpdate(deps, params, signal);
 		default:
 			return worldFailed("profile.action 必须是 get/set_card/set_profile/set_avatar。", { reason: "invalid_action" });
 	}

@@ -70,6 +70,8 @@ export function createQqWorld(injected?: {
 			transport: transport!,
 			attention: attention!,
 			locks: locks!,
+			signal: worldAbort?.signal,
+			onConsumption: (ref) => scheduler?.notifyConsumption(ref),
 			media,
 			display: { ...activeConfig.display, faceNames },
 			faceNames,
@@ -108,11 +110,7 @@ export function createQqWorld(injected?: {
 			journal.recover();
 			control = new ControlStore({ dataDir, selfId: config.selfId });
 			control.load();
-			// 冷启动封存基线（§6.4/T10）：已知会话首见即以当前 latestSequence 封存，
-			// 基线前历史归入封存积压，通知/阅读只承接基线之后的新鲜消息。
-			for (const convRef of journal.listConversationRefs()) {
-				control.ensureBaseline(convRef, journal.latestSequence(convRef));
-			}
+			control.initializeReader(journal);
 			attention = new AttentionModel({ control });
 			locks = new ConversationLocks();
 			ops = new OperationLog({ dataDir, selfId: config.selfId });
@@ -128,6 +126,7 @@ export function createQqWorld(injected?: {
 				control,
 				attention: attention!,
 				locks: locks!,
+				signal: worldAbort?.signal,
 				now: () => new Date().toISOString(),
 				renderBatch: (candidate) => {
 					const activeConfig = config;
@@ -139,14 +138,18 @@ export function createQqWorld(injected?: {
 						settledUnknowns: scheduler?.listSettledUnknowns() ?? [],
 					});
 				},
-				renderFollowBody: (conversationRef) => {
+				renderReadWindow: (conversationRef) => {
 					const activeConfig = config;
-					return render.renderFollowBody(conversationRef, {
-						journal: journal!,
-						control: control!,
-						now: () => new Date().toISOString(),
-						display: { ...activeConfig?.display, faceNames },
-					});
+					return render.renderReadWindow(
+						conversationRef,
+						{
+							journal: journal!,
+							control: control!,
+							now: () => new Date().toISOString(),
+							display: { ...activeConfig?.display, faceNames },
+						},
+						{ limit: 30, budgetChars: activeConfig?.display?.batchBudgetChars ?? 14000 },
+					);
 				},
 				emit: async ({ id, conversationRef, cls, origin, render }) => {
 					await ctxRef?.emitEvent?.({
@@ -160,7 +163,6 @@ export function createQqWorld(injected?: {
 						render,
 					});
 				},
-				isBusy: () => context.isBusy?.() ?? false,
 				isRequestPending: (ref) => {
 					const fact = journal?.snapshot.requests.get(ref);
 					return !!fact && !!ops && requestState({ ops }, fact).state === "pending";
@@ -185,6 +187,19 @@ export function createQqWorld(injected?: {
 				config.selfId,
 				journal,
 				(item) => {
+					if (item.kind === "event" && item.fact.kind === "bot_offline")
+						journal!.recordCoverageGap({
+							id: `platform-offline:${item.fact.ref}`,
+							from: item.fact.time,
+							to: null,
+							reason: "bot_offline",
+						});
+					if (item.kind === "message" || (item.kind === "event" && item.fact.summary === "bot_status/online")) {
+						for (const gap of journal!.snapshot.coverageGaps.filter(
+							(gap) => gap.id.startsWith("platform-offline:") && gap.to === null,
+						))
+							journal!.recordCoverageGap({ ...gap, to: new Date().toISOString() });
+					}
 					scheduler?.onFact(item);
 				},
 				hasGrant(config.grants, "observation"),
@@ -228,6 +243,21 @@ export function createQqWorld(injected?: {
 			const unbindStatus = transport.onStatus((status) => {
 				if (generation !== lifecycleGeneration) return;
 				if (!scheduler || !journal || !config) return;
+				const now = new Date().toISOString();
+				const openGaps = journal.snapshot.coverageGaps.filter(
+					(gap) => gap.id.startsWith("transport:") && gap.to === null,
+				);
+				if (status.connected && status.error)
+					journal.recordCoverageGap({ id: `transport-error:${now}`, from: now, to: now, reason: status.error });
+				if (status.connected) {
+					for (const gap of openGaps) journal.recordCoverageGap({ ...gap, to: now });
+				} else if (openGaps.length === 0)
+					journal.recordCoverageGap({
+						id: `transport:${now}`,
+						from: now,
+						to: null,
+						reason: status.error ?? "transport_disconnected",
+					});
 				const kind = status.connected ? "transport_recovered" : "transport_disconnected";
 				if (status.connected ? !reportedDisconnect : reportedDisconnect) return;
 				reportedDisconnect = !status.connected;
@@ -243,16 +273,13 @@ export function createQqWorld(injected?: {
 			});
 			unbindTransport.push(unbindStatus);
 
-			// Host 事实事件：input_settled 释放占位并记账；agent_settled 驱动 busy recheck。
+			// Host 结算事实释放占位；World 不接管 Subject 的忙闲时机。
 			unbindHost =
 				context.onHostEvent?.((event) => {
 					if (event.type === "input_settled") {
 						const inputId = (event as unknown as { inputId: string }).inputId;
 						const outcome = (event as { outcome?: string }).outcome;
 						scheduler?.onInputSettled(inputId, outcome === "committed");
-					}
-					if (event.type === "agent_settled") {
-						scheduler?.onAgentSettled();
 					}
 				}) ?? null;
 
@@ -266,6 +293,10 @@ export function createQqWorld(injected?: {
 				);
 			}
 
+			for (const gap of journal.snapshot.coverageGaps.filter(
+				(item) => item.id.startsWith("transport:") && item.to === null,
+			))
+				journal.recordCoverageGap({ ...gap, to: new Date().toISOString() });
 			world.description = `${QQ_TOOL_DESCRIPTION} 当前 QQ 账号：${config.selfId}。`;
 			if (hasGrant(config.grants, "observation")) {
 				// Optional enrichment; directory failures never prevent the World from starting.

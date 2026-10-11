@@ -6,6 +6,18 @@ import { existsSync, readFileSync, truncateSync } from "node:fs";
  * 截断按保留行的字节长度执行，只移除尾部 partial，不动完整记录。
  */
 export function recoverJsonlLines<T>(filePath: string, label: string): { records: T[]; truncatedTailLines: number } {
+	return parseJsonlLines<T>(filePath, label, true);
+}
+
+export function readJsonlLines<T>(filePath: string, label: string): { records: T[]; truncatedTailLines: number } {
+	return parseJsonlLines<T>(filePath, label, false);
+}
+
+function parseJsonlLines<T>(
+	filePath: string,
+	label: string,
+	repair: boolean,
+): { records: T[]; truncatedTailLines: number } {
 	if (!existsSync(filePath)) return { records: [], truncatedTailLines: 0 };
 	const content = readFileSync(filePath, "utf8");
 	const lines = content.split("\n");
@@ -29,7 +41,7 @@ export function recoverJsonlLines<T>(filePath: string, label: string): { records
 			throw new Error(`${label}第 ${i + 1} 行损坏（非尾部），明确失败不做猜测`, { cause: error });
 		}
 	}
-	if (truncated > 0) truncateSync(filePath, byteLengthOf(lines, end));
+	if (repair && truncated > 0) truncateSync(filePath, byteLengthOf(lines, end));
 	return { records, truncatedTailLines: truncated };
 }
 

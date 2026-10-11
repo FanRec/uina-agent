@@ -2,7 +2,7 @@ import { closeSync, fsyncSync, mkdirSync, openSync, appendFileSync, writeFileSyn
 import { join } from "node:path";
 import type { OperationRecord, OperationOutcome } from "./types.js";
 import { classifyPlatformReceipt, REF_PATTERNS, messageRef } from "./types.js";
-import { recoverJsonlLines } from "./jsonl-log.js";
+import { recoverJsonlLines, readJsonlLines } from "./jsonl-log.js";
 
 /**
  * QQ 操作日志：外部动作的意图、结论与迟到回执。
@@ -42,15 +42,18 @@ export class OperationLog {
 	}
 
 	/** 启动恢复；尾部 partial 截断语义与 facts journal 一致。 */
-	recover(): { truncatedTailLines: number; count: number } {
-		mkdirSync(this.options.dataDir, { recursive: true });
-		const { records, truncatedTailLines } = recoverJsonlLines<LogRecord>(this.filePath, "QQ 操作日志 ");
+	recover(readOnly = false): { truncatedTailLines: number; count: number } {
+		if (!readOnly) mkdirSync(this.options.dataDir, { recursive: true });
+		const { records, truncatedTailLines } = (readOnly ? readJsonlLines<LogRecord> : recoverJsonlLines<LogRecord>)(
+			this.filePath,
+			"QQ 操作日志 ",
+		);
 		if (records.length > 0) {
 			const header = records[0];
 			if (header?.kind !== "header" || header.version !== 2 || header.selfId !== this.options.selfId)
 				throw new Error("QQ 操作日志 v2 账号元信息不匹配或格式非法");
 			for (const record of records.slice(1)) this.apply(record);
-		} else this.append({ kind: "header", version: 2, selfId: this.options.selfId });
+		} else if (!readOnly) this.append({ kind: "header", version: 2, selfId: this.options.selfId });
 		this.seedCounterFromExisting();
 		return { truncatedTailLines, count: this.records.size };
 	}
@@ -169,7 +172,7 @@ export class OperationLog {
 		return this.records.get(ref) ?? null;
 	}
 
-	/** 结果仍为 unknown 的操作（observe scope=operations state=unknown）。 */
+	/** 结果仍为 unknown 的操作（只读诊断）。 */
 	listUnknown(): OperationRecord[] {
 		return [...this.records.values()]
 			.filter((record) => record.outcome === "unknown")

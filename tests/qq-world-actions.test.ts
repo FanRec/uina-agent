@@ -473,7 +473,7 @@ describe("批2 能力：expressions / 卡片与转发展开 / includeMedia", () 
 		});
 		const text = String(result.result);
 		expect(text).toContain("20/35");
-		expect(text).toContain("nextCursor=");
+		expect(text).toContain('"cursor":');
 	});
 
 	it("includeMedia：read 抓取 image 段并附加 base64；失败逐条列出不阻断", async () => {
@@ -590,7 +590,7 @@ describe("审查修复回归（批次6）：requests 过滤与分页（内部 ob
 			expect(String(filtered.result)).toContain("r2");
 			expect(String(filtered.result)).not.toContain("r1");
 			const limited = await handleObserve(ctx.deps, { scope: "requests", state: "all", limit: 1 });
-			expect(String(limited.result)).toContain("nextCursor=");
+			expect(String(limited.result)).toContain('"cursor":');
 			const second = await handleObserve(ctx.deps, {
 				scope: "requests",
 				state: "all",

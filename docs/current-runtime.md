@@ -78,9 +78,19 @@ shell 非零退出码为 `failed`。Broker 接受 producer 已明确返回的结
 
 ## QQ World
 
-QQ World 的模型工具表面是单一 `qq` 工具：`{action, params}` 分发到 9 个积木（inbox / read / skip / browse / send / interact / remind / requests / profile）。绑定账号由 World 注入，模型不再填写 account，account_mismatch 检查随绑定注入退役。工具参数唯一真源是 `.uina/worlds/qq/tool.json`，由 `scripts/generate-qq-tool-schema.mjs` 生成声明；合同 fixture 位于 `tests/fixtures/qq-world-interaction-examples.json`，不依赖本地私人规划目录。授权词表为 8 个 grant 名；已退役 action 的 requiredGrant 全部返回 null。
+QQ World 的模型工具表面是单一 `qq` 工具：`{action, params}` 分发到 9 个积木（inbox / read / skip / browse / send / interact / remind / requests / profile）。绑定账号由 World 注入，模型不再填写 account。工具参数唯一真源是 `.uina/worlds/qq/tool.json`，由 `scripts/generate-qq-tool-schema.mjs` 生成声明；合同 fixture 位于 `tests/fixtures/qq-world-interaction-examples.json`。授权词表仍为 8 个 grant 名，`requiredGrants` 检查所需集合：在线 inbox 需要 observation，同时修改 push 还需要 attention.manage；没有增加授权名称。
 
-查询与消费解耦：`read` 无状态重算历史（本地事实库优先，缺失走平台 `get_msg` 点查）；`browse` 承担消息点查与 contentTarget 展开——卡片/文字默认每页 4096 个 Unicode 字符、转发默认每页 20 节点，`contentTarget.cursor` 续页。只读查询不写入新消息、不推进消费位置。旧 `mark_read` 已废除，消费位推进由书签承担；推送偏好持久化为 accountPush/conversationPush（PushPreference），旧 v2 控制文件在 load 时一次性迁移（priority 窗口偏置丢弃，与 R5 映射一致），迁移后落盘不再携带 accountOverride/conversationOverrides 字段。账号 silent 或有效 pause 不被会话覆盖。
+查询与消费解耦：`inbox` 每次请求在线好友、群目录，合并本地消息、事件、关注与偏好会话，返回名字及未知标记。任一路目录失败明确失败，配置不变；参数、游标与查询全部成功后，先持久保存 push，再更新内存 focus。limit/cursor 分页绑定目录身份与查询条件，普通目录分页不因未读计数变化失效。`requests list` 默认每页 20 条，limit/cursor 透传，nextCursor 可直接续页。
+
+`read` 与自动 follow 共用顺序阅读窗口和会话锁，仅消费入站消息；自身发言留在历史中，不参与待处理数或首条提醒资格。窗口返回正文、实际交付消息与位置，媒体展开、取消及生命周期检查完成后，read 才记录 dispatched。skip 也在锁内重验并单调推进，通知位置与消费位置分轨。超长消息允许显式折叠，提供真实 browse 调用及富媒体展开引用；未交付整条消息保持待处理。follow 未派发缓冲超过 30 条或 14,000 字符时退让全局摘要，不推进消费书签；主动 read/skip 降压后可恢复。
+
+冷启动初始化持久记录 readerInitialized：首次迁移保留已有会话基线，仅封存迁移当时的历史；初始化之后新会话基线为 0，正常未读跨重启保留。消费位为 max(dispatched, baseline)，不回退过去错误推进的书签，也不自动批量恢复错误封存内容。推送偏好 accountPush/conversationPush 持久化，focus 只在进程内存在。会话显式模式覆盖账号默认；账号或会话有效暂停均临时关闭推送。旧 v2 控制字段一次性迁移，迁移后不再落盘旧字段。
+
+通知短防抖后直接提交唯一 ID 的延迟唤醒占位，由 Runtime FIFO 决定出队时机。求值时读取当前候选并重验 focus、push、申请、到期事项，跨会话直接互动在纸条内置顶；普通纸条仅含触发事实与全部有效待处理会话概览，预算不足缩短预览，不删会话行。成功求值缓存同一份文本、通知位置和事项/操作引用，用于同输入重试与结算；空内容正常退役，渲染失败保留候选。结算先释放占位，再幂等补账；渲染、投递和补账失败共用可取消的 2 秒重试计时器。Subject 的 canonical input 提交失败仍由现有邮箱恢复机制处理；本地阅读位置与 SessionStore 不构成跨进程原子事务。
+
+`browse` 保持 contentTarget > messageRefs > direction 优先级，三个模式都兑现 includeMedia。点查本地优先，缺失调用 get_msg；历史 source 默认 local，显式 platform 使用 SDK 已有好友/群历史 API，around 合并两侧并去重，平台失败不隐式回落本地。平台只读结果不写 received/dispatched；文字/卡片 contentTarget 默认每页 4096 个 Unicode 字符，转发默认每页 20 节点，contentTarget.cursor 可续页。所有模型指引使用真实 `{action, params}` 形状。
+
+覆盖风险来自可回放的显式传输错误、断线与解码失败区间，按查询窗口展示；不从 message_id 猜缺失，不把 archive 当断线。没有风险信号也只表示本地观察，平台完整性保持未知。`scripts/qq-status.mts` 用纯只读解析，支持 --data-root（QQ World 数据根）与 --profile-root（Subject stateRoot），不创建、截断或迁移文件；unknown 操作数来自实际日志，无法读取进程内 focus 时显示 unknown。恢复和迁移仍由 World 生命周期执行。
 
 行动积木复用平台链路，模型表面全换而底层审计语义单源继承（intent 先落盘、unknown 不重发、echo 归并、回执归属核验）：`send` 分段数组与 replyTo 进入真实发送载荷，一次调用拆批保持内容顺序，只给首条可引用的子消息加引用，没有可引用子消息则发送前失败；`interact` 的 retract 经所有权核验；`remind` 仅 list/create/resolve，reviewAt 变更靠 create 新建（follow_up.update 已裁剪，control-store 无 update 入口）；`requests` 的 pending/confirmed/unknown 从关联操作日志派生，已确认或结果未知的申请不盲目再次处理，迟到确定回执不会被本地超时降级，群邀请按 sub_type 裁决；`profile` 承接账号与形象三写。`observe` 不再对模型暴露，仅保留 requests/self/expressions 三个内部入口；expressions 由启动 enrichment 直调，face 数字编码供 send 的 face 段与 interact 的 react 使用（数字编码校验在运行时，schema 无 pattern）。
 
@@ -90,7 +100,7 @@ QQ World 的模型工具表面是单一 `qq` 工具：`{action, params}` 分发�
 
 QQ World 的平台消息、历史与点查共用 QQ 消息解码器，保留字符串/数字编号、引用回复、提及、表情与附件关系；已撤回消息的保存原文明确标注。附件标签保留消息、分段和转发节点对应，Provider 在对应图片之前运输标签；目录已核验的表情名称可用于呈现，缺失保持未知。普通正文不重复传输 URL，成功操作保留结果和消息引用、诊断数据保留完整操作记录；裁剪区分完整/部分/省略。事实仍为 UTC，日期与时区偏移仅在呈现层按对应时间转换。
 
-工具参数继续由完整 schema 校验；Broker 与 WorldTool 只精简错误说明，按当前选择器报告相关字段，完整 AJV 错误快照在 `details.validationErrors`。上述行为的自动测试使用隔离数据与 fake WebSocket/平台/Provider，不证明真实 QQ 对端呈现或模型理解质量。
+工具参数继续由完整 schema 校验；Broker 与 WorldTool 只精简错误说明，按当前选择器报告相关字段，完整 AJV 错误快照在 `details.validationErrors`。自动验证包含隔离平台测试以及 World → Subject → JsonlSessionStore 集成，不证明真实 QQ 对端呈现或模型理解质量。2026-10-11 真实只读连接探测不可用，身份、在线目录与平台历史仍未获真实服务证据；验收映射与验证命令见 `docs/qq-world-acceptance.md`。
 
 ## 能力注册
 

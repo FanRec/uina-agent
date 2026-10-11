@@ -1,37 +1,43 @@
-// qq_status 诊断命令（设计 §4/§3：仅 CLI/内部自检，不注册为主体模型工具）。
-// 只读装配：加载配置与本地存储（journal recover + control load，与 onStart 同路径），
-// 打印消费位/基线/通知位/待处理/推送偏好与跳过审计；不连接平台，不产生副作用。
-// 用法：pnpm tsx scripts/qq-status.mts [worldDir]（缺省 .uina/worlds/qq）
-
-import { join } from "node:path";
+// Pure local diagnostics. Lifecycle owns recovery and migration.
+// qq-status.mts [worldDir] [--data-root <QQ world data root> | --profile-root <subject state root>]
+import { join, resolve } from "node:path";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
-import { AttentionModel } from "../.uina/worlds/qq/src/attention.js";
-import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
+import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
 import { loadQqWorldConfig } from "../.uina/worlds/qq/src/config.js";
 import { qqStatusLines } from "../.uina/worlds/qq/src/reader.js";
 
-const worldDir = process.argv[2] ?? join(process.cwd(), ".uina", "worlds", "qq");
+const args = process.argv.slice(2);
+let worldDir = join(process.cwd(), ".uina", "worlds", "qq");
+let dataRoot: string | undefined;
+let profileRoot: string | undefined;
+let positional = false;
+for (let index = 0; index < args.length; index++) {
+	const arg = args[index]!;
+	if (arg === "--data-root" || arg === "--profile-root") {
+		const value = args[++index];
+		if (!value || value.startsWith("--")) throw new Error(`${arg} requires a path`);
+		if (arg === "--data-root") dataRoot = resolve(value);
+		else profileRoot = resolve(value);
+	} else if (arg.startsWith("--") || positional) throw new Error(`Unknown argument: ${arg}`);
+	else {
+		worldDir = resolve(arg);
+		positional = true;
+	}
+}
+if (dataRoot && profileRoot) throw new Error("Choose --data-root or --profile-root");
 const loaded = loadQqWorldConfig(join(worldDir, "config.json"));
-if (!loaded.ok) {
-	console.error(`[qq] 配置加载失败：${loaded.error}`);
-	process.exit(1);
-}
-const config = loaded.config;
-const dataDir = join(worldDir, "v2", config.selfId);
-
-const journal = new FactsJournal({ dataDir, selfId: config.selfId });
-journal.recover();
-const control = new ControlStore({ dataDir, selfId: config.selfId });
-control.load();
-const attention = new AttentionModel({ control });
-const locks = new ConversationLocks();
-
-for (const line of qqStatusLines(
-	// CLI 不加载操作日志；unknown 计数以 0 占位（真实口径以运行中 observe scope="operations" 为准）。
-	{ selfId: config.selfId, journal, control, ops: { listUnknown: () => [] } as never },
-	attention,
-	locks,
-)) {
-	console.log(line);
-}
+if (!loaded.ok) throw new Error(`[qq] 配置加载失败：${loaded.error}`);
+const selfId = loaded.config.selfId;
+const root = dataRoot ?? (profileRoot ? join(profileRoot, "world-data", "qq") : worldDir);
+const dataDir = join(root, "v2", selfId);
+const journal = new FactsJournal({ dataDir, selfId });
+const facts = journal.recover(true);
+const control = new ControlStore({ dataDir, selfId });
+control.load(true);
+const ops = new OperationLog({ dataDir, selfId });
+const operations = ops.recover(true);
+console.log(
+	`dataDir=${dataDir}；忽略未完成尾行=${facts.truncatedTailLines + operations.truncatedTailLines}；未修改文件`,
+);
+for (const line of qqStatusLines({ selfId, journal, control, ops })) console.log(line);

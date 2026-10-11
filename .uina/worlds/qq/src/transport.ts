@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { createWebSocketClient, type SnowLumaWebSocketClient, type WebSocketConstructor } from "./vendor/snowluma-sdk/index.js";
+import {
+	createWebSocketClient,
+	type SnowLumaWebSocketClient,
+	type WebSocketConstructor,
+} from "./vendor/snowluma-sdk/index.js";
 import type { QqConnectionConfig } from "./config.js";
 import { classifyPlatformReceipt } from "./types.js";
 import type { WebSocketLike } from "./vendor/snowluma-sdk/client/websocket-types.js";
@@ -38,7 +42,12 @@ export interface TransportConnectionSnapshot {
 export interface QqTransport {
 	start(signal?: AbortSignal): Promise<{ selfId: number }>;
 	stop(): Promise<void>;
-	call(action: string, params?: Record<string, unknown>, signal?: AbortSignal, echo?: string): Promise<TransportCallOutcome>;
+	call(
+		action: string,
+		params?: Record<string, unknown>,
+		signal?: AbortSignal,
+		echo?: string,
+	): Promise<TransportCallOutcome>;
 	onEvent(handler: TransportEventHandler): () => void;
 	onRaw(handler: TransportEventHandler): () => void;
 	onStatus(handler: TransportStatusHandler): () => void;
@@ -64,7 +73,11 @@ function errorMessage(error: unknown): string {
 }
 
 /** One deadline covers connection, identity verification and the request receipt. */
-async function withDeadline<T>(timeoutMs: number, signals: AbortSignal[], operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+async function withDeadline<T>(
+	timeoutMs: number,
+	signals: AbortSignal[],
+	operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
 	const deadline = new AbortController();
 	const timer = setTimeout(() => deadline.abort(new Error(`QQ request timed out after ${timeoutMs}ms`)), timeoutMs);
 	const signal = AbortSignal.any([...signals, deadline.signal]);
@@ -123,7 +136,13 @@ export class OneBotTransport implements QqTransport {
 	snapshot(): TransportConnectionSnapshot {
 		const connected = this.attempt?.client.isConnected === true && this.lifetime?.signal.aborted === false;
 		const identityVerified = connected && this.attempt?.verified === true;
-		return { connected, identityVerified, selfId: this.selfId, observedAt: this.observedAt, lastError: this.lastConnectionError };
+		return {
+			connected,
+			identityVerified,
+			selfId: this.selfId,
+			observedAt: this.observedAt,
+			lastError: this.lastConnectionError,
+		};
 	}
 
 	private publish(connected: boolean, error: string | null = this.lastConnectionError): void {
@@ -168,14 +187,18 @@ export class OneBotTransport implements QqTransport {
 		// cannot silently reconnect and bypass this attempt's identity verification.
 		const webSocket: WebSocketConstructor = class {
 			constructor(url: string, protocols?: string | string[]) {
-				if (socketCreated || abort.signal.aborted || generation !== transport.generation) throw new Error("QQ WebSocket is not open");
+				if (socketCreated || abort.signal.aborted || generation !== transport.generation)
+					throw new Error("QQ WebSocket is not open");
 				socketCreated = true;
 				const socket = new Socket(url, protocols);
 				return {
-					get readyState() { return socket.readyState; },
+					get readyState() {
+						return socket.readyState;
+					},
 					close: (code?: number, reason?: string) => socket.close(code, reason),
 					send: (raw: string) => {
-						if (abort.signal.aborted || generation !== transport.generation || transport.attempt !== attempt) throw new Error("QQ WebSocket is not open");
+						if (abort.signal.aborted || generation !== transport.generation || transport.attempt !== attempt)
+							throw new Error("QQ WebSocket is not open");
 						const frame = JSON.parse(raw) as { echo: string };
 						dispatched.add(frame.echo);
 						socket.send(raw);
@@ -199,7 +222,8 @@ export class OneBotTransport implements QqTransport {
 		});
 		attempt = { client, abort, dispatched, verified: false };
 		this.attempt = attempt;
-		const current = (): boolean => generation === this.generation && this.attempt === attempt && !lifetime.signal.aborted;
+		const current = (): boolean =>
+			generation === this.generation && this.attempt === attempt && !lifetime.signal.aborted;
 		let closeInfo: { code?: number; reason?: string } | null = null;
 		let opened = false;
 
@@ -213,8 +237,7 @@ export class OneBotTransport implements QqTransport {
 		});
 		client.on("error", (error) => {
 			if (!current()) return;
-			this.lastConnectionError = errorMessage(error);
-			this.observedAt = new Date().toISOString();
+			this.publish(attempt.verified && attempt.client.isConnected, errorMessage(error));
 		});
 		client.on("event", (event) => {
 			if (!current() || !attempt.verified) return;
@@ -226,30 +249,35 @@ export class OneBotTransport implements QqTransport {
 		});
 
 		try {
-			return await withDeadline(conn.requestTimeoutMs, [lifetime.signal, abort.signal, ...(externalSignal ? [externalSignal] : [])], async (signal) => {
-				await client.connect();
-				signal.throwIfAborted();
-				opened = true;
-				const login = await client.request("get_login_info", undefined, { signal });
-				signal.throwIfAborted();
-				if (!current() || !client.isConnected) throw new Error("QQ connection changed during identity verification");
-				if (classifyPlatformReceipt(login) !== "succeeded" || typeof login.data !== "object" || login.data === null) {
-					throw new Error(`get_login_info 失败: ${JSON.stringify(login)}`);
-				}
-				const id = (login.data as { user_id?: unknown }).user_id;
-				if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) throw new Error("get_login_info 未返回有效 user_id");
-				const expected = this.options.expectedSelfId ?? this.selfId;
-				if (expected !== null && expected !== undefined && expected !== String(id)) {
-					const error = new Error(`QQ identity mismatch: expected=${expected}, observed=${id}`);
-					lifetime.abort(error);
-					throw error;
-				}
-				this.selfId = String(id);
-				attempt.verified = true;
-				this.reconnectAttempts = 0;
-				this.publish(true, null);
-				return id;
-			});
+			return await withDeadline(
+				conn.requestTimeoutMs,
+				[lifetime.signal, abort.signal, ...(externalSignal ? [externalSignal] : [])],
+				async (signal) => {
+					await client.connect();
+					signal.throwIfAborted();
+					opened = true;
+					const login = await client.request("get_login_info", undefined, { signal });
+					signal.throwIfAborted();
+					if (!current() || !client.isConnected) throw new Error("QQ connection changed during identity verification");
+					if (classifyPlatformReceipt(login) !== "succeeded" || typeof login.data !== "object" || login.data === null) {
+						throw new Error(`get_login_info 失败: ${JSON.stringify(login)}`);
+					}
+					const id = (login.data as { user_id?: unknown }).user_id;
+					if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0)
+						throw new Error("get_login_info 未返回有效 user_id");
+					const expected = this.options.expectedSelfId ?? this.selfId;
+					if (expected !== null && expected !== undefined && expected !== String(id)) {
+						const error = new Error(`QQ identity mismatch: expected=${expected}, observed=${id}`);
+						lifetime.abort(error);
+						throw error;
+					}
+					this.selfId = String(id);
+					attempt.verified = true;
+					this.reconnectAttempts = 0;
+					this.publish(true, null);
+					return id;
+				},
+			);
 		} catch (error) {
 			abort.abort(error);
 			if (this.attempt === attempt) {
@@ -260,7 +288,10 @@ export class OneBotTransport implements QqTransport {
 			if (opened) throw error;
 			const info = closeInfo as { code?: number; reason?: string } | null;
 			const detail = info ? `close code=${info.code ?? "?"} reason="${info.reason ?? ""}"` : "无 close 信息";
-			throw new Error(`[qq] 无法与 SnowLuma 握手（${conn.url}）：${detail}。请核对 SnowLuma OneBot 配置的 wsServers 端口/path/accessToken 与 config.json 一致，且该端点为正向 WebSocket（Uina 作客户端）。原始错误：${errorMessage(error)}`, { cause: error });
+			throw new Error(
+				`[qq] 无法与 SnowLuma 握手（${conn.url}）：${detail}。请核对 SnowLuma OneBot 配置的 wsServers 端口/path/accessToken 与 config.json 一致，且该端点为正向 WebSocket（Uina 作客户端）。原始错误：${errorMessage(error)}`,
+				{ cause: error },
+			);
 		}
 	}
 
@@ -303,23 +334,38 @@ export class OneBotTransport implements QqTransport {
 	 * 调用一个 OneBot action；不抛超时/连接错误，用结果类型表达，由上层映射 unknown。
 	 * echo 可传入自定义关联值（如 operationRef），迟到回执经 raw 观察后凭它归并。
 	 */
-	async call(action: string, params: Record<string, unknown> = {}, signal?: AbortSignal, echo?: string): Promise<TransportCallOutcome> {
+	async call(
+		action: string,
+		params: Record<string, unknown> = {},
+		signal?: AbortSignal,
+		echo?: string,
+	): Promise<TransportCallOutcome> {
 		const lifetime = this.lifetime;
-		if (!lifetime || lifetime.signal.aborted) return { status: "failed", reason: this.lastConnectionError ?? "transport stopped", kind: "not_connected" };
+		if (!lifetime || lifetime.signal.aborted)
+			return { status: "failed", reason: this.lastConnectionError ?? "transport stopped", kind: "not_connected" };
 		let attempt: ConnectionAttempt | null = null;
 		const requestEcho = echo ?? `qq:${this.generation}:${randomUUID()}`;
 		try {
-			const response = await withDeadline(this.options.connection.requestTimeoutMs, [lifetime.signal, ...(signal ? [signal] : [])], async (boundedSignal) => {
-				attempt = await this.waitForReady(boundedSignal);
-				boundedSignal.throwIfAborted();
-				return attempt.client.request(action as never, params as never, { signal: boundedSignal, echo: requestEcho });
-			});
+			const response = await withDeadline(
+				this.options.connection.requestTimeoutMs,
+				[lifetime.signal, ...(signal ? [signal] : [])],
+				async (boundedSignal) => {
+					attempt = await this.waitForReady(boundedSignal);
+					boundedSignal.throwIfAborted();
+					return attempt.client.request(action as never, params as never, { signal: boundedSignal, echo: requestEcho });
+				},
+			);
 			const conclusion = classifyPlatformReceipt(response);
 			if (conclusion === "succeeded") return { status: "ok", data: response.data };
-			return { status: "failed", reason: String(response.wording ?? `retcode=${response.retcode}`), kind: conclusion === "failed" ? "rejected" : "unconfirmed" };
+			return {
+				status: "failed",
+				reason: String(response.wording ?? `retcode=${response.retcode}`),
+				kind: conclusion === "failed" ? "rejected" : "unconfirmed",
+			};
 		} catch (error) {
 			const message = errorMessage(error);
-			if (!(attempt as ConnectionAttempt | null)?.dispatched.has(requestEcho)) return { status: "failed", reason: message, kind: "not_connected" };
+			if (!(attempt as ConnectionAttempt | null)?.dispatched.has(requestEcho))
+				return { status: "failed", reason: message, kind: "not_connected" };
 			const isTimeout = /timed out|timeout/i.test(message);
 			return { status: "failed", reason: message, kind: isTimeout ? "timeout" : "connection" };
 		} finally {

@@ -1,12 +1,14 @@
 import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
-import { worldFailed, worldSucceeded } from "../../../../src/extensions/world-framework/result.js";
+import { worldCancelled, worldFailed, worldSucceeded } from "../../../../src/extensions/world-framework/result.js";
 import type { QqAppDeps } from "./app.js";
 import type { AttentionModel } from "./attention.js";
 import type { ConversationLocks } from "./conversation-lock.js";
-import { consumptionThrough, pendingCountOf } from "./scheduler.js";
+import { consumptionThrough, pendingCountOf, archivedCountOf } from "./consumption.js";
 import { expandImages, imageSourcesFromFacts, withImages } from "./media-fetch.js";
 import type { ImageContent } from "../../../../src/core/content.js";
-import { observeContent } from "./observe.js";
+import { paginate } from "./pagination.js";
+import { decodeOneBotMessage, oneBotId } from "./message-codec.js";
+import { observeContent, readMessage } from "./observe.js";
 import * as render from "./render.js";
 import { parseConversationRef, parseMessageRef, type MessageFact, type MessageSegment } from "./types.js";
 
@@ -53,90 +55,146 @@ function checkConversation(ref: unknown): { ok: true; ref: string } | ToolExecut
 const PUSH_MODES = ["off", "digest", "follow", "inherit"] as const;
 const PUSH_FILTERS = ["all", "direct", "inherit"] as const;
 
-export function handleInbox(deps: QqAppDeps, params: Record<string, unknown>): ToolExecutionResult {
-	// 写入先行（显式参数才修改；省略严格 = 不动）。
-	if (params.focus !== undefined) {
-		const focus = params.focus;
-		if (!Array.isArray(focus) || focus.some((ref) => typeof ref !== "string")) {
-			return worldFailed("focus 必须是会话引用数组；传 [] 放下所有关注。", { reason: "invalid_focus" });
-		}
-		try {
-			deps.attention.setFocus(focus as string[]);
-		} catch (error) {
-			return worldFailed(`focus 保存失败：${error instanceof Error ? error.message : String(error)}`, {
-				reason: "invalid_focus",
-			});
-		}
-	}
-	if (params.push !== undefined) {
-		const push = params.push as Record<string, unknown>;
-		const target = push.target;
-		if (typeof target !== "string" || (target !== "account" && !parseConversationRef(target))) {
-			return worldFailed(`push.target 必须是会话引用或 "account"。`, { reason: "invalid_target" });
-		}
-		const mode = push.mode;
-		if (mode !== undefined && !(PUSH_MODES as readonly unknown[]).includes(mode)) {
-			return worldFailed(`push.mode 必须是 ${PUSH_MODES.join("/")}。`, { reason: "invalid_push_mode" });
-		}
-		const filter = push.filter;
-		if (filter !== undefined && !(PUSH_FILTERS as readonly unknown[]).includes(filter)) {
-			return worldFailed(`push.filter 必须是 ${PUSH_FILTERS.join("/")}。`, { reason: "invalid_push_filter" });
-		}
-		try {
-			deps.control.setPush(target, {
-				...(mode !== undefined ? { mode: mode as (typeof PUSH_MODES)[number] } : {}),
-				...(filter !== undefined ? { filter: filter as (typeof PUSH_FILTERS)[number] } : {}),
-				...(push.pausedUntil !== undefined ? { pausedUntil: push.pausedUntil as string | null } : {}),
-			});
-		} catch (error) {
-			return worldFailed(`push 保存失败，保留旧偏好：${error instanceof Error ? error.message : String(error)}`, {
-				reason: "control_persist_failed",
-			});
-		}
-	}
-
-	// 查询（消费位口径；会话名不在本地事实中，如实只给引用与类型）。
+export async function handleInbox(
+	deps: QqAppDeps,
+	params: Record<string, unknown>,
+	signal?: AbortSignal,
+): Promise<ToolExecutionResult> {
+	signal = activeSignal(deps, signal);
 	const limit = clampInt(params.limit, 20, 1, 50);
 	if (limit === null) return worldFailed("limit 必须是 1~50 的整数。", { reason: "invalid_params" });
-	const pendingOnly = params.pendingOnly === true;
-	const rows = [...deps.journal.snapshot.messages.keys()]
-		.map((conv) => {
-			const list = deps.journal.snapshot.messages.get(conv) ?? [];
-			const last = list.at(-1);
-			const baseline = deps.control.baselineOf(conv) ?? 0;
-			return {
-				conversationRef: conv,
-				kind: KIND_LABELS[parseConversationRef(conv)?.kind ?? ""] ?? "会话",
-				pendingCount: pendingCountOf(deps.journal, deps.control, conv),
-				archivedCount: list.filter((m) => m.sequence <= baseline).length,
-				lastTime: last?.time ?? null,
-				preview: last ? previewOf(last) : null,
-				pushMode: deps.control.effectivePush(conv).mode,
-				focused: deps.attention.isFocused(conv),
-				effectiveFollow: deps.attention.effectiveFollow(conv),
-			};
-		})
-		.filter((row) => (pendingOnly ? row.pendingCount > 0 : true))
-		.sort((a, b) => (b.lastTime ?? "").localeCompare(a.lastTime ?? "") || a.conversationRef.localeCompare(b.conversationRef));
-	const page = rows.slice(0, limit);
-	const accountPush = deps.control.effectivePush("account");
-	const time = new render.TimeView(deps.display?.timezone);
-	const lines = [
-		`收件箱 snapshot=${time.header(nowIso(deps))}；selfId=${deps.selfId}`,
-		`关注=[${deps.attention.focusList().join(", ") || "（无）"}]；账号推送 mode=${accountPush.mode} filter=${accountPush.filter} pausedUntil=${accountPush.pausedUntil ?? "null"}`,
-		...page.map(
-			(row) =>
-				`${row.conversationRef} | ${row.kind} | 待处理 ${row.pendingCount} 条 | 封存 ${row.archivedCount} 条${row.lastTime ? ` | 最后 ${time.line(row.lastTime)}` : ""}${row.preview ? ` | ${render.quote(row.preview)}` : ""} | push=${row.pushMode} | 关注=${row.focused ? "是" : "否"} | follow=${row.effectiveFollow ? "是" : "否"}`,
-		),
-		...(page.length === 0 ? ["（无匹配会话）"] : []),
-		...(rows.length > page.length ? [`（其余 ${rows.length - page.length} 个会话未显示；可用 limit 调整）`] : []),
-	];
-	return worldSucceeded(render.receipt.ok("inbox", lines), {
-		focus: deps.attention.focusList(),
-		accountPush,
-		conversations: page,
-		total: rows.length,
+	const focus = params.focus;
+	if (
+		focus !== undefined &&
+		(!Array.isArray(focus) || focus.some((ref) => typeof ref !== "string" || !parseConversationRef(ref)))
+	) {
+		return worldFailed("focus 必须是合法会话引用数组。", { reason: "invalid_focus" });
+	}
+	const push = params.push as Record<string, unknown> | undefined;
+	if (push !== undefined) {
+		if (
+			!push ||
+			typeof push !== "object" ||
+			typeof push.target !== "string" ||
+			(push.target !== "account" && !parseConversationRef(push.target))
+		)
+			return worldFailed("push.target 必须是会话引用或 account。", { reason: "invalid_target" });
+		if (push.mode !== undefined && !(PUSH_MODES as readonly unknown[]).includes(push.mode))
+			return worldFailed("push.mode 非法。", { reason: "invalid_push_mode" });
+		if (push.filter !== undefined && !(PUSH_FILTERS as readonly unknown[]).includes(push.filter))
+			return worldFailed("push.filter 非法。", { reason: "invalid_push_filter" });
+		if (
+			push.pausedUntil !== undefined &&
+			push.pausedUntil !== null &&
+			(typeof push.pausedUntil !== "string" || !Number.isFinite(Date.parse(push.pausedUntil)))
+		)
+			return worldFailed("pausedUntil 必须是 ISO 时间或 null。", { reason: "invalid_params" });
+	}
+	const names = new Map<string, string | null>();
+	try {
+		const [friends, groups] = await Promise.all([
+			deps.transport.call("get_friend_list", {}, signal),
+			deps.transport.call("get_group_list", {}, signal),
+		]);
+		if (signal?.aborted) return worldCancelled("收件箱查询已取消。", { effect: "not_started" });
+		if (friends.status !== "ok" || groups.status !== "ok")
+			return worldFailed("在线好友/群目录查询失败，收件箱不可用。", {
+				reason: "platform_query_failed",
+				friends,
+				groups,
+			});
+		if (!Array.isArray(friends.data) || !Array.isArray(groups.data))
+			return worldFailed("在线目录响应形状非法。", { reason: "platform_query_failed" });
+		for (const raw of friends.data as Record<string, unknown>[]) {
+			const id = oneBotId(raw.user_id);
+			if (id)
+				names.set(
+					`p${id}`,
+					typeof raw.remark === "string" && raw.remark
+						? raw.remark
+						: typeof raw.nickname === "string"
+							? raw.nickname
+							: null,
+				);
+		}
+		for (const raw of groups.data as Record<string, unknown>[]) {
+			const id = oneBotId(raw.group_id);
+			if (id) names.set(`g${id}`, typeof raw.group_name === "string" ? raw.group_name : null);
+		}
+	} catch (error) {
+		if (signal?.aborted) return worldCancelled("收件箱查询已取消。", { effect: "not_started" });
+		return worldFailed(`在线目录查询失败：${String(error)}`, { reason: "platform_query_failed" });
+	}
+	const refs = new Set([
+		...names.keys(),
+		...deps.journal.listConversationRefs(),
+		...deps.attention.focusList(),
+		...deps.control.pushTargets(),
+		...((focus as string[] | undefined) ?? []),
+	]);
+	if (push?.target !== undefined && push.target !== "account") refs.add(push.target as string);
+	const identities = [...refs]
+		.sort()
+		.filter((ref) => params.pendingOnly !== true || pendingCountOf(deps.journal, deps.control, ref) > 0)
+		.map((ref) => ({ ref, name: names.get(ref) ?? null }));
+	const page = paginate(
+		identities,
+		{ limit, cursor: params.cursor },
+		{ selfId: deps.selfId, scope: "inbox", pendingOnly: params.pendingOnly === true },
+	);
+	if (!page.ok) return worldFailed(page.detail, { reason: page.reason });
+	if (signal?.aborted) return worldCancelled("收件箱查询已取消。", { effect: "not_started" });
+	try {
+		if (push) deps.control.setPush(push.target as string, push as import("./types.js").PushPreference);
+		if (focus !== undefined) deps.attention.setFocus(focus as string[]);
+	} catch (error) {
+		return worldFailed(`配置保存失败，保留旧状态：${String(error)}`, { reason: "control_persist_failed" });
+	}
+	const rows = page.page.map(({ ref, name }) => {
+		const last = (deps.journal.snapshot.messages.get(ref) ?? []).at(-1);
+		return {
+			conversationRef: ref,
+			name,
+			nameKnown: name !== null,
+			kind: KIND_LABELS[parseConversationRef(ref)?.kind ?? ""] ?? "会话",
+			pendingCount: pendingCountOf(deps.journal, deps.control, ref),
+			archivedCount: archivedCountOf(deps.journal, deps.control, ref),
+			lastTime: last?.time ?? null,
+			preview: last ? previewOf(last) : null,
+			pushMode: deps.control.effectivePush(ref).mode,
+			focused: deps.attention.isFocused(ref),
+			effectiveFollow: deps.attention.effectiveFollow(ref),
+		};
 	});
+	const accountPush = deps.control.effectivePush("account");
+	return worldSucceeded(
+		render.receipt.ok("inbox", [
+			`在线收件箱 snapshot=${new render.TimeView(deps.display?.timezone).header(nowIso(deps))}；selfId=${deps.selfId}`,
+			`关注=[${deps.attention.focusList().join(", ")}]；账号推送=${accountPush.mode}/${accountPush.filter}`,
+			...rows.map(
+				(row) =>
+					`${row.conversationRef} | name=${row.name === null ? "unknown" : render.quote(row.name)} | ${row.kind} | 待处理 ${row.pendingCount} 条 | 封存 ${row.archivedCount} 条 | push=${row.pushMode} | 关注=${row.focused ? "是" : "否"} | follow=${row.effectiveFollow ? "是" : "否"}${row.preview ? ` | ${render.quote(row.preview)}` : ""}`,
+			),
+			...(page.nextCursor
+				? [
+						`续页：${JSON.stringify({ action: "inbox", params: { limit, pendingOnly: params.pendingOnly === true, cursor: page.nextCursor } })}`,
+					]
+				: []),
+		]),
+		{
+			focus: deps.attention.focusList(),
+			accountPush,
+			conversations: rows,
+			total: page.total,
+			hasMore: page.hasMore,
+			nextCursor: page.nextCursor,
+		},
+	);
+}
+
+function activeSignal(deps: QqAppDeps, signal?: AbortSignal): AbortSignal | undefined {
+	const signals = [deps.signal, signal].filter((item): item is AbortSignal => item !== undefined);
+	return signals.length > 0 ? AbortSignal.any(signals) : undefined;
 }
 
 /* ---------- P4.2 read ---------- */
@@ -155,12 +213,14 @@ export async function handleRead(
 		// 省略时：恰只关注一个会话才可直读（设计 §4.2）。
 		const focus = deps.attention.focusList();
 		if (focus.length === 0) {
-			return worldFailed("未指定 conversationRef 且当前没有关注会话；请先 qq_inbox 查看或显式指定。", {
+			return worldFailed("未指定 conversationRef 且当前没有关注会话；请先调用 inbox 查看或显式指定。", {
 				reason: "target_required",
 			});
 		}
 		if (focus.length > 1) {
-			return worldFailed(`当前关注 ${focus.length} 个会话，请显式指定 conversationRef。`, { reason: "target_ambiguous" });
+			return worldFailed(`当前关注 ${focus.length} 个会话，请显式指定 conversationRef。`, {
+				reason: "target_ambiguous",
+			});
 		}
 		conv = focus[0]!;
 	}
@@ -168,43 +228,49 @@ export async function handleRead(
 	if (limit === null) return worldFailed("limit 必须是 1~100 的整数。", { reason: "invalid_params" });
 	const budgetChars = clampInt(params.budgetChars, 14000, 512, 32768);
 	if (budgetChars === null) return worldFailed("budgetChars 必须是 512~32768 的整数。", { reason: "invalid_params" });
-	if (signal?.aborted) return worldFailed("已取消。", { reason: "cancelled", effect: "not_started" });
-
-	// 消费锁内：重读最新书签 → 渲染增量 → 成功交付后推进书签（与 follow 共锁同书签，§2.1）。
-	const outcome = await deps.locks.run(conv, async () => {
+	signal = activeSignal(deps, signal);
+	return deps.locks.run(conv, async () => {
+		if (signal?.aborted) return worldCancelled("阅读已取消。", { effect: "not_started" });
 		const window = render.renderReadWindow(conv, renderDeps(deps), { limit, budgetChars });
-		if (window.delivered.length > 0) {
-			deps.journal.recordDispatched(conv, window.deliveredThrough, "read", nowIso(deps));
+		let text = window.text;
+		let images: ImageContent[] = [];
+		if (params.includeMedia === true && window.delivered.length > 0) {
+			const expanded = await expandImages(imageSourcesFromFacts([...window.delivered]), signal);
+			if (expanded.note) text += `\n${expanded.note}`;
+			images = expanded.images;
 		}
-		return window;
+		if (signal?.aborted) return worldCancelled("阅读已取消。", { effect: "not_started" });
+		const result = withImages(
+			worldSucceeded(text, {
+				conversationRef: conv,
+				deliveredCount: window.delivered.length,
+				deliveredThrough: window.delivered.at(-1)?.ref ?? null,
+				remainingPendingCount: window.remaining,
+			}),
+			images,
+		);
+		if (window.delivered.length > 0) deps.journal.recordDispatched(conv, window.deliveredThrough, "read", nowIso(deps));
+		deps.onConsumption?.(conv);
+		return result;
 	});
-	let text = outcome.text;
-	let images: ImageContent[] = [];
-	if (params.includeMedia === true && outcome.delivered.length > 0) {
-		const expanded = await expandImages(imageSourcesFromFacts([...outcome.delivered]), signal);
-		if (expanded.note) text += `\n${expanded.note}`;
-		images = expanded.images;
-	}
-	return withImages(
-		worldSucceeded(text, {
-			conversationRef: conv,
-			deliveredCount: outcome.delivered.length,
-			deliveredThrough: outcome.delivered.at(-1)?.ref ?? null,
-			remainingPendingCount: outcome.remaining,
-		}),
-		images,
-	);
 }
 
 /* ---------- P4.3 skip ---------- */
 
-export async function handleSkip(deps: QqAppDeps, params: Record<string, unknown>): Promise<ToolExecutionResult> {
+export async function handleSkip(
+	deps: QqAppDeps,
+	params: Record<string, unknown>,
+	signal?: AbortSignal,
+): Promise<ToolExecutionResult> {
 	const checked = checkConversation(params.conversationRef);
 	if (!("ok" in checked)) return checked;
 	const conv = checked.ref;
 	const reason = typeof params.reason === "string" && params.reason ? params.reason : "主动放下积压";
 	const rawThrough = params.throughMessageRef;
-	if (rawThrough !== undefined && (typeof rawThrough !== "string" || (rawThrough !== "latest" && !parseMessageRef(rawThrough)))) {
+	if (
+		rawThrough !== undefined &&
+		(typeof rawThrough !== "string" || (rawThrough !== "latest" && !parseMessageRef(rawThrough)))
+	) {
 		return worldFailed(`throughMessageRef 必须是消息引用或 "latest"。`, { reason: "invalid_target" });
 	}
 
@@ -217,16 +283,20 @@ export async function handleSkip(deps: QqAppDeps, params: Record<string, unknown
 		}
 		anchorSeq = fact.sequence;
 	}
+	signal = activeSignal(deps, signal);
 	const outcome = await deps.locks.run(conv, async () => {
+		if (signal?.aborted) return null;
 		const through = consumptionThrough(deps.journal, deps.control, conv);
 		const targetSeq = anchorSeq ?? deps.journal.latestSequence(conv);
 		const newBookmark = Math.max(through, targetSeq);
 		const skippedCount =
 			targetSeq > through
-				? (deps.journal.snapshot.messages.get(conv) ?? []).filter((m) => m.sequence > through && m.sequence <= targetSeq)
-						.length
+				? (deps.journal.snapshot.messages.get(conv) ?? []).filter(
+						(m) => m.direction === "in" && m.sequence > through && m.sequence <= targetSeq,
+					).length
 				: 0;
 		if (newBookmark > through) deps.journal.recordSkipped(conv, newBookmark, reason, nowIso(deps));
+		deps.onConsumption?.(conv);
 		const bookmarkFact = (deps.journal.snapshot.messages.get(conv) ?? []).find((m) => m.sequence === newBookmark);
 		return {
 			skippedCount,
@@ -235,6 +305,7 @@ export async function handleSkip(deps: QqAppDeps, params: Record<string, unknown
 			bookmarkRef: bookmarkFact?.ref ?? null,
 		};
 	});
+	if (!outcome) return worldCancelled("跳过已取消。", { effect: "not_started" });
 	return worldSucceeded(
 		render.receipt.ok("skip", [
 			`skippedCount=${outcome.skippedCount}`,
@@ -257,6 +328,7 @@ export async function handleBrowse(
 	params: Record<string, unknown>,
 	signal?: AbortSignal,
 ): Promise<ToolExecutionResult> {
+	signal = activeSignal(deps, signal);
 	// 三级优先级裁决（§4.4）：contentTarget > messageRefs > direction+anchor。
 	if (params.contentTarget !== undefined) {
 		const target = params.contentTarget as Record<string, unknown>;
@@ -273,9 +345,8 @@ export async function handleBrowse(
 			},
 			signal,
 		);
-		return result.status === "succeeded"
-			? { ...result, result: `${result.result}\n（历史浏览；书签未移动）` }
-			: result;
+		if (signal?.aborted) return worldCancelled("浏览已取消。", { effect: "not_started" });
+		return result.status === "succeeded" ? { ...result, result: `${result.result}\n（历史浏览；书签未移动）` } : result;
 	}
 
 	const refs = params.messageRefs;
@@ -286,7 +357,8 @@ export async function handleBrowse(
 			if (typeof ref !== "string" || !parseMessageRef(ref)) {
 				return worldFailed(`消息引用非法：${String(ref)}`, { reason: "invalid_target" });
 			}
-			const fact = deps.journal.getMessage(ref);
+			const fact = await readMessage(deps, ref, signal);
+			if (signal?.aborted) return worldCancelled("浏览已取消。", { effect: "not_started" });
 			if (fact) found.push(fact);
 			else missing.push(ref);
 		}
@@ -294,10 +366,17 @@ export async function handleBrowse(
 		const text = [
 			`[QQ 点查] snapshot=${new render.TimeView(deps.display?.timezone).header(nowIso(deps))}`,
 			...body,
-			...missing.map((ref) => `${ref} | 本地未持有（不伪造内容；本地事实库无此消息）`),
-			`coverage=${missing.length === 0 ? "continuous" : "partial"}；历史浏览；书签未移动`,
+			...missing.map((ref) => `${ref} | 本地未持有，平台亦未取得（不伪造内容）`),
+			`coverage=${missing.length === 0 ? "local_or_platform_observed" : "partial"}；历史浏览；书签未移动`,
 		].join("\n");
-		return worldSucceeded(text, { found: found.map((f) => f.ref), missing, bookmarkMoved: false });
+		return browseResult(
+			deps,
+			found,
+			text,
+			{ found: found.map((f) => f.ref), missing, bookmarkMoved: false },
+			params.includeMedia === true,
+			signal,
+		);
 	}
 
 	// direction + anchor 时空漫游（纯本地只读；绝对不移动书签）。
@@ -314,6 +393,19 @@ export async function handleBrowse(
 	if (anchorRefRaw !== undefined && (typeof anchorRefRaw !== "string" || !parseMessageRef(anchorRefRaw))) {
 		return worldFailed(`anchorMessageRef 非法：${String(anchorRefRaw)}`, { reason: "invalid_target" });
 	}
+	const source = params.source ?? "local";
+	if (source !== "local" && source !== "platform")
+		return worldFailed("source 必须是 local/platform。", { reason: "invalid_params" });
+	if (source === "platform")
+		return platformHistory(
+			deps,
+			conv,
+			direction,
+			anchorRefRaw as string | undefined,
+			limit,
+			params.includeMedia === true,
+			signal,
+		);
 	let anchorSeq: number | null = null;
 	if (typeof anchorRefRaw === "string") {
 		const anchor = deps.journal.getMessage(anchorRefRaw);
@@ -335,11 +427,16 @@ export async function handleBrowse(
 		const after = list.filter((m) => m.sequence > anchorSeq!).slice(0, Math.max(0, limit - before.length - 1));
 		window = [...before, list.find((m) => m.sequence === anchorSeq!)!, ...after];
 	}
-	const archiveBefore = deps.journal.snapshot.archiveBefore;
-	const gapDetected = archiveBefore !== null && window.some((m) => m.time < archiveBefore);
-	const body = window.length > 0 ? render.renderMessageFacts(window, deps.selfId, deps.display, deps.journal) : ["（窗口内无本地消息）"];
+	const coverage = coverageOf(deps, conv, window);
+	const body =
+		window.length > 0
+			? render.renderMessageFacts(window, deps.selfId, deps.display, deps.journal)
+			: ["（窗口内无本地消息）"];
 	const edgeNote =
-		direction !== "after" && window.length > 0 && window[0]!.ref === list[0]?.ref && (direction !== "latest" || list.length >= limit)
+		direction !== "after" &&
+		window.length > 0 &&
+		window[0]!.ref === list[0]?.ref &&
+		(direction !== "latest" || list.length >= limit)
 			? "（本地最早持有至此；更早历史未持有，可能已归档）"
 			: null;
 	const text = [
@@ -348,19 +445,158 @@ export async function handleBrowse(
 		...(edgeNote ? [edgeNote] : []),
 		...(window.length > 0
 			? [
-					`翻页线索：最旧 ${window[0]!.ref} / 最新 ${window.at(-1)!.ref}；before/after 以消息引用为锚继续翻页。`,
+					`续页：${JSON.stringify({ action: "browse", params: { conversationRef: conv, source: "local", direction: "before", anchorMessageRef: window[0]!.ref, limit } })}；向后：${JSON.stringify({ action: "browse", params: { conversationRef: conv, source: "local", direction: "after", anchorMessageRef: window.at(-1)!.ref, limit } })}`,
 				]
 			: []),
-		`coverage=${gapDetected ? "gap_detected（区间存在归档/断线缺口，非平台无损历史）" : "continuous"}；历史浏览；书签未移动`,
+		`coverage=${coverage.gaps.length > 0 ? "gap_detected" : "local_observed"}；archived=${coverage.archived}；平台完整性未知；历史浏览；书签未移动`,
 	].join("\n");
-	return worldSucceeded(text, {
+	return browseResult(
+		deps,
+		window,
+		text,
+		{
+			conversationRef: conv,
+			count: window.length,
+			coverage: coverage.gaps.length > 0 ? "gap_detected" : "local_observed",
+			coverageGaps: coverage.gaps,
+			archived: coverage.archived,
+			oldest: window[0]?.ref ?? null,
+			newest: window.at(-1)?.ref ?? null,
+			bookmarkMoved: false,
+		},
+		params.includeMedia === true,
+		signal,
+	);
+}
+
+function coverageOf(
+	deps: QqAppDeps,
+	conv: string,
+	facts: readonly MessageFact[],
+): { gaps: import("./facts-journal.js").FactsSnapshot["coverageGaps"]; archived: boolean } {
+	const times = facts.map((fact) => Date.parse(fact.time)).sort((a, b) => a - b);
+	const first = times[0] ?? Date.parse(nowIso(deps));
+	const last = times.at(-1) ?? first;
+	const gaps = deps.journal.snapshot.coverageGaps.filter(
+		(gap) =>
+			(!gap.conversationRef || gap.conversationRef === conv) &&
+			Date.parse(gap.from) <= last &&
+			(gap.to === null || Date.parse(gap.to) >= first),
+	);
+	return {
+		gaps,
+		archived: deps.journal.snapshot.archiveBefore !== null && first < Date.parse(deps.journal.snapshot.archiveBefore),
+	};
+}
+
+async function browseResult(
+	deps: QqAppDeps,
+	facts: MessageFact[],
+	text: string,
+	details: Record<string, unknown>,
+	includeMedia: boolean,
+	signal?: AbortSignal,
+): Promise<ToolExecutionResult> {
+	const scopes = [...new Set(facts.map((fact) => fact.conversationRef))].map((conv) => ({
 		conversationRef: conv,
-		count: window.length,
-		coverage: gapDetected ? "gap_detected" : "continuous",
-		oldest: window[0]?.ref ?? null,
-		newest: window.at(-1)?.ref ?? null,
-		bookmarkMoved: false,
-	});
+		...coverageOf(
+			deps,
+			conv,
+			facts.filter((fact) => fact.conversationRef === conv),
+		),
+	}));
+	const gaps = scopes.flatMap((scope) => scope.gaps);
+	if (gaps.length > 0) text += `\n覆盖风险：${JSON.stringify(gaps)}`;
+	text += "\n覆盖范围仅限本次窗口；平台完整性未知。";
+	if (signal?.aborted) return worldCancelled("浏览已取消。", { effect: "not_started" });
+	if (!includeMedia) return worldSucceeded(text, { ...details, coverageScopes: scopes });
+	const expanded = await expandImages(imageSourcesFromFacts(facts), signal);
+	if (signal?.aborted) return worldCancelled("浏览已取消。", { effect: "not_started" });
+	return withImages(
+		worldSucceeded(`${text}${expanded.note ? `\n${expanded.note}` : ""}`, { ...details, coverageScopes: scopes }),
+		expanded.images,
+	);
+}
+
+async function platformHistory(
+	deps: QqAppDeps,
+	conv: string,
+	direction: string,
+	anchor: string | undefined,
+	limit: number,
+	includeMedia: boolean,
+	signal?: AbortSignal,
+): Promise<ToolExecutionResult> {
+	if (direction !== "latest" && !anchor)
+		return worldFailed("此方向需要 anchorMessageRef。", { reason: "anchor_required" });
+	const parsed = parseConversationRef(conv)!;
+	const action = parsed.kind === "group" ? "get_group_msg_history" : "get_friend_msg_history";
+	const target =
+		parsed.kind === "group"
+			? { group_id: Number(parsed.key) }
+			: { user_id: Number(/^(\d+)-g/.exec(parsed.key)?.[1] ?? parsed.key) };
+	async function fetchSide(older: boolean): Promise<MessageFact[]> {
+		const outcome = await deps.transport.call(
+			action,
+			{
+				...target,
+				message_id: anchor ? parseMessageRef(anchor)!.messageId : 0,
+				count: limit + (anchor ? 1 : 0),
+				reverse_order: older,
+			},
+			signal,
+		);
+		if (outcome.status !== "ok") throw new Error(outcome.reason);
+		const raw = (outcome.data as { messages?: unknown } | null)?.messages;
+		if (!Array.isArray(raw)) throw new Error("平台历史响应形状非法");
+		const decoded = raw.map((item) => decodeOneBotMessage(item, deps.selfId, conv));
+		if (decoded.some((item) => item === null)) throw new Error("平台历史含不可核验的消息");
+		return [...new Map((decoded as MessageFact[]).map((fact) => [fact.ref, fact])).values()].sort((a, b) =>
+			a.time.localeCompare(b.time),
+		);
+	}
+	try {
+		let facts: MessageFact[];
+		if (direction === "around") {
+			const [older, newer] = await Promise.all([fetchSide(true), fetchSide(false)]);
+			const center = older.find((fact) => fact.ref === anchor) ?? newer.find((fact) => fact.ref === anchor);
+			if (!center) return worldFailed("平台未返回锚点。", { reason: "anchor_unavailable" });
+			const before = older.filter((fact) => fact.ref !== anchor).slice(-Math.floor(limit / 2));
+			const after = newer.filter((fact) => fact.ref !== anchor).slice(0, limit - before.length - 1);
+			facts = [...new Map([...before, center, ...after].map((fact) => [fact.ref, fact])).values()];
+		} else {
+			facts = await fetchSide(direction !== "after");
+			if (anchor) facts = facts.filter((fact) => fact.ref !== anchor);
+			facts = direction === "after" ? facts.slice(0, limit) : facts.slice(-limit);
+		}
+		return browseResult(
+			deps,
+			facts,
+			[
+				`[QQ 平台历史] conversationRef=${conv}；direction=${direction}`,
+				...render.renderMessageFacts(facts, deps.selfId, deps.display, deps.journal),
+				"source=platform；历史浏览；书签未移动",
+				...(facts.length > 0
+					? [
+							`续页：${JSON.stringify({ action: "browse", params: { conversationRef: conv, source: "platform", direction: "before", anchorMessageRef: facts[0]!.ref, limit } })}；向后：${JSON.stringify({ action: "browse", params: { conversationRef: conv, source: "platform", direction: "after", anchorMessageRef: facts.at(-1)!.ref, limit } })}`,
+						]
+					: []),
+			].join("\n"),
+			{
+				conversationRef: conv,
+				source: "platform",
+				count: facts.length,
+				oldest: facts[0]?.ref ?? null,
+				newest: facts.at(-1)?.ref ?? null,
+				bookmarkMoved: false,
+			},
+			includeMedia,
+			signal,
+		);
+	} catch (error) {
+		if (signal?.aborted) return worldCancelled("平台历史查询已取消。", { effect: "not_started" });
+		return worldFailed(`平台历史查询失败：${String(error)}`, { reason: "platform_query_failed" });
+	}
 }
 
 /* ---------- P4.5 qq_status（仅 CLI/内部自检；不注册模型工具） ---------- */
@@ -372,7 +608,7 @@ export function qqStatusLines(
 ): string[] {
 	const lines = [
 		`selfId=${deps.selfId}；unknown 操作数=${deps.ops.listUnknown().length}`,
-		`关注=[${attention?.focusList().join(", ") || "（无）"}]；消费锁=${locks ? "就绪" : "未就绪"}`,
+		`关注=[${attention ? attention.focusList().join(", ") || "（无）" : "unknown"}]；消费锁=${locks ? "就绪" : "未就绪"}`,
 	];
 	for (const conv of deps.journal.listConversationRefs()) {
 		const baseline = deps.control.baselineOf(conv) ?? "?";
@@ -383,7 +619,10 @@ export function qqStatusLines(
 	const skips = deps.journal.skipRecords().slice(-5);
 	if (skips.length > 0) {
 		lines.push("最近跳过审计：");
-		for (const skip of skips) lines.push(`  ${skip.at} | ${skip.conversationRef} | through=${skip.throughSequence} | ${render.quote(skip.reason)}`);
+		for (const skip of skips)
+			lines.push(
+				`  ${skip.at} | ${skip.conversationRef} | through=${skip.throughSequence} | ${render.quote(skip.reason)}`,
+			);
 	}
 	return lines;
 }

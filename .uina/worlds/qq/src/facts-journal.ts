@@ -8,7 +8,7 @@ import {
 	type MessageFact,
 	type RequestFact,
 } from "./types.js";
-import { recoverJsonlLines } from "./jsonl-log.js";
+import { recoverJsonlLines, readJsonlLines } from "./jsonl-log.js";
 
 /**
  * QQ 平台事实日志：JSONL 追加，进程内同步写（单线程天然串行）。
@@ -30,11 +30,12 @@ export type FactRecord =
 			source: "read" | "follow";
 			inputId?: string;
 			at: string;
-		}
+	  }
 	/** backlog_skipped 主动放下事实（§2）：跳过区间审计 + 消费位推进（Math.max 单调）。 */
 	| { kind: "skipped"; conversationRef: string; throughSequence: number; reason: string; at: string }
 	/** retention 归档起点：此时刻之前的事实可能已不可寻址。 */
-	| { kind: "archive"; beforeTime: string };
+	| { kind: "archive"; beforeTime: string }
+	| { kind: "coverage_gap"; id: string; from: string; to: string | null; reason: string; conversationRef?: string };
 
 export interface FactsSnapshot {
 	/** 按会话组织、按 sequence 升序的入站消息。 */
@@ -50,6 +51,7 @@ export interface FactsSnapshot {
 	/** body_dispatched 正文派发消费边界（per-conversation，单调不减）。 */
 	dispatchedThrough: Map<string, number>;
 	archiveBefore: string | null;
+	coverageGaps: { id: string; from: string; to: string | null; reason: string; conversationRef?: string }[];
 	/** backlog_skipped 审计（追加序）；qq_status 呈现，消费位本身见 dispatchedThrough。 */
 	skips: { conversationRef: string; throughSequence: number; reason: string; at: string }[];
 }
@@ -82,6 +84,7 @@ export class FactsJournal {
 			notifiedAt: new Map(),
 			dispatchedThrough: new Map(),
 			archiveBefore: null,
+			coverageGaps: [],
 			skips: [],
 		};
 	}
@@ -95,16 +98,19 @@ export class FactsJournal {
 	}
 
 	/** 启动恢复；返回截断的尾部 partial 行数（诊断，不算错误）。 */
-	recover(): { truncatedTailLines: number } {
-		mkdirSync(this.options.dataDir, { recursive: true });
-		const { records, truncatedTailLines } = recoverJsonlLines<FactRecord>(this.filePath, "QQ facts journal ");
+	recover(readOnly = false): { truncatedTailLines: number } {
+		if (!readOnly) mkdirSync(this.options.dataDir, { recursive: true });
+		const { records, truncatedTailLines } = (readOnly ? readJsonlLines<FactRecord> : recoverJsonlLines<FactRecord>)(
+			this.filePath,
+			"QQ facts journal ",
+		);
 		if (records.length > 0) {
 			const header = records[0];
 			if (header?.kind !== "header" || header.version !== 2 || header.selfId !== this.selfId) {
 				throw new Error("QQ facts journal v2 账号元信息不匹配或格式非法");
 			}
 			for (const record of records.slice(1)) this.apply(record);
-		} else this.append({ kind: "header", version: 2, selfId: this.selfId });
+		} else if (!readOnly) this.append({ kind: "header", version: 2, selfId: this.selfId });
 		return { truncatedTailLines };
 	}
 
@@ -165,28 +171,34 @@ export class FactsJournal {
 				}
 				return;
 			}
-		case "dispatched": {
-			if (!REF_PATTERNS.conversation.test(record.conversationRef)) throw new Error("QQ 会话引用非法");
-			const seen = this.state.dispatchedThrough.get(record.conversationRef) ?? 0;
-			if (record.throughSequence > seen) {
-				this.state.dispatchedThrough.set(record.conversationRef, record.throughSequence);
+			case "dispatched": {
+				if (!REF_PATTERNS.conversation.test(record.conversationRef)) throw new Error("QQ 会话引用非法");
+				const seen = this.state.dispatchedThrough.get(record.conversationRef) ?? 0;
+				if (record.throughSequence > seen) {
+					this.state.dispatchedThrough.set(record.conversationRef, record.throughSequence);
+				}
+				return;
 			}
-			return;
-		}
-		case "skipped": {
-			if (!REF_PATTERNS.conversation.test(record.conversationRef)) throw new Error("QQ 会话引用非法");
-			const seen = this.state.dispatchedThrough.get(record.conversationRef) ?? 0;
-			if (record.throughSequence > seen) {
-				this.state.dispatchedThrough.set(record.conversationRef, record.throughSequence);
+			case "skipped": {
+				if (!REF_PATTERNS.conversation.test(record.conversationRef)) throw new Error("QQ 会话引用非法");
+				const seen = this.state.dispatchedThrough.get(record.conversationRef) ?? 0;
+				if (record.throughSequence > seen) {
+					this.state.dispatchedThrough.set(record.conversationRef, record.throughSequence);
+				}
+				this.state.skips.push({
+					conversationRef: record.conversationRef,
+					throughSequence: record.throughSequence,
+					reason: record.reason,
+					at: record.at,
+				});
+				return;
 			}
-			this.state.skips.push({
-				conversationRef: record.conversationRef,
-				throughSequence: record.throughSequence,
-				reason: record.reason,
-				at: record.at,
-			});
-			return;
-		}
+			case "coverage_gap": {
+				const index = this.state.coverageGaps.findIndex((gap) => gap.id === record.id);
+				if (index < 0) this.state.coverageGaps.push(record);
+				else this.state.coverageGaps[index] = record;
+				return;
+			}
 			case "archive": {
 				if (!this.state.archiveBefore || record.beforeTime > this.state.archiveBefore) {
 					this.state.archiveBefore = record.beforeTime;
@@ -297,8 +309,12 @@ export class FactsJournal {
 	}
 
 	/** 跳过审计（追加序）；conversationRef 缺省返回全部。 */
-	skipRecords(conversationRef?: string): readonly { conversationRef: string; throughSequence: number; reason: string; at: string }[] {
-		return conversationRef === undefined ? this.state.skips : this.state.skips.filter((s) => s.conversationRef === conversationRef);
+	skipRecords(
+		conversationRef?: string,
+	): readonly { conversationRef: string; throughSequence: number; reason: string; at: string }[] {
+		return conversationRef === undefined
+			? this.state.skips
+			: this.state.skips.filter((s) => s.conversationRef === conversationRef);
 	}
 
 	/**
@@ -313,6 +329,10 @@ export class FactsJournal {
 		return fact.sequence;
 	}
 
+	recordCoverageGap(gap: FactsSnapshot["coverageGaps"][number]): void {
+		this.append({ kind: "coverage_gap", ...gap });
+	}
+
 	recordArchive(beforeTime: string): void {
 		this.append({ kind: "archive", beforeTime });
 	}
@@ -325,34 +345,6 @@ export class FactsJournal {
 	/** 按 ref 查消息（reply 属主核验、messages scope 用；索引 O(1)）。 */
 	getMessage(ref: string): MessageFact | null {
 		return this.byMessageRef.get(ref) ?? null;
-	}
-
-	/** 未通知入站消息数（sequence > notifiedThrough；committed 记账后归零）。 */
-	unreadCount(conversationRef: string): number {
-		const through = this.state.notifiedThrough.get(conversationRef) ?? 0;
-		let count = 0;
-		for (const m of this.state.messages.get(conversationRef) ?? []) {
-			if (m.sequence > through) count++;
-		}
-		return count;
-	}
-
-	/** 是否存在任意未通知消息（跨会话单遍；暂停到期摘要资格判定用）。 */
-	hasUnread(): boolean {
-		for (const [conv, list] of this.state.messages) {
-			const through = this.state.notifiedThrough.get(conv) ?? 0;
-			if (list.some((m) => m.sequence > through)) return true;
-		}
-		return false;
-	}
-
-	/** 最早未通知消息时间（无未通知为 null；暂停到期摘要呈现用）。 */
-	firstUnreadTime(conversationRef: string): string | null {
-		const through = this.state.notifiedThrough.get(conversationRef) ?? 0;
-		for (const m of this.state.messages.get(conversationRef) ?? []) {
-			if (m.sequence > through) return m.time;
-		}
-		return null;
 	}
 
 	/** 已知会话 ref 列表（conversations scope 本地兜底）。 */

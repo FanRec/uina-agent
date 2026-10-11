@@ -6,417 +6,387 @@ export const QQ_TOOL_NAME = "qq";
 /**
  * 固定认知合同（交互合同 §2 唯一注入面：工具描述只出现一次，不随消息重复）。
  */
-export const QQ_TOOL_DESCRIPTION = "QQ是可主动参与的外部世界；普通回复不外发，用send发送。g<群号>/p<QQ号>/t<QQ号>-g<源群号>是群/私聊/临时会话；u<QQ号>是用户，m消息、a附件、r申请、f事项、o操作。复制返回的短引用，不用名字寻址。\n人物表给出名字与u引用的对应；提醒默认新增，旧消息另标前文。已有现场足够即可行动，不要求例行巡检；合法动作可尝试未知可用性，效果未知则先核验不重发。\n发送成功不代表对方已读。\n消费积木：inbox查收件箱并调整关注/推送（省略参数=不改，focus:[]放下关注）；read顺序消费正文并推进书签；skip放下积压；browse只读历史绝不移动书签。\n行动积木：send发送（可replyTo引用）；interact戳/回应/撤回自身；remind自建提醒到时只给查看机会；requests好友与入群审批；profile群名片与个人资料。";
+export const QQ_TOOL_DESCRIPTION =
+	"QQ是可主动参与的外部世界；普通回复不外发，用send发送。g<群号>/p<QQ号>/t<QQ号>-g<源群号>是群/私聊/临时会话；u<QQ号>是用户，m消息、a附件、r申请、f事项、o操作。复制返回的短引用，不用名字寻址。\n人物表给出名字与u引用的对应；提醒默认新增，旧消息另标前文。已有现场足够即可行动，不要求例行巡检；合法动作可尝试未知可用性，效果未知则先核验不重发。\n发送成功不代表对方已读。\n消费积木：inbox查收件箱并调整关注/推送（省略参数=不改，focus:[]放下关注）；read顺序消费正文并推进书签；skip放下积压；browse只读历史绝不移动书签。\n行动积木：send发送（可replyTo引用）；interact戳/回应/撤回自身；remind自建提醒到时只给查看机会；requests好友与入群审批；profile群名片与个人资料。";
 
 export const QQ_ACTION_SCHEMAS = {
-	"inbox": {
-		"description": "查看当前所有会话的待处理动态；可顺带原子替换置顶关注（省略不动，[] 放下）或调整推送偏好。返回每会话待处理数、封存数、有效推送与 effectiveFollow。",
-		"parameters": {
-			"type": "object",
-			"additionalProperties": false,
-			"properties": {
-				"focus": {
-					"type": "array",
-					"items": {
-						"type": "string",
-						"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
+	inbox: {
+		description: "查询在线好友与群目录并合并本地动态；可修改关注或推送。目录失败不修改配置；返回名称、计数与续页游标。",
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				focus: {
+					type: "array",
+					items: {
+						type: "string",
+						pattern: "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
 					},
-					"description": "可选。原子替换当前置顶关注会话列表；传空数组 [] 表示放下所有关注；省略表示保持不变。"
+					description: "可选。原子替换当前置顶关注会话列表；传空数组 [] 表示放下所有关注；省略表示保持不变。",
 				},
-				"push": {
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"target": {
-							"type": "string",
-							"description": "会话引用或 'account'（全局）。"
+				push: {
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						target: {
+							type: "string",
+							description: "会话引用或 'account'（全局）。",
 						},
-						"mode": {
-							"type": "string",
-							"enum": [
-								"off",
-								"digest",
-								"follow",
-								"inherit"
-							]
+						mode: {
+							type: "string",
+							enum: ["off", "digest", "follow", "inherit"],
 						},
-						"filter": {
-							"type": "string",
-							"enum": [
-								"all",
-								"direct",
-								"inherit"
-							]
+						filter: {
+							type: "string",
+							enum: ["all", "direct", "inherit"],
 						},
-						"pausedUntil": {
-							"type": [
-								"string",
-								"null"
-							],
-							"description": "ISO 时间，暂停提醒直至此时刻；null 解除暂停。"
-						}
+						pausedUntil: {
+							type: ["string", "null"],
+							description: "ISO 时间，暂停提醒直至此时刻；null 解除暂停。",
+						},
 					},
-					"required": [
-						"target"
-					],
-					"description": "可选。调整推送偏好；省略表示保持不变。"
+					required: ["target"],
+					description: "可选。调整推送偏好；省略表示保持不变。",
 				},
-				"pendingOnly": {
-					"type": "boolean",
-					"default": false,
-					"description": "仅查看有新待处理消息的会话。"
+				pendingOnly: {
+					type: "boolean",
+					default: false,
+					description: "仅查看有新待处理消息的会话。",
 				},
-				"limit": {
-					"type": "integer",
-					"minimum": 1,
-					"maximum": 50,
-					"default": 20
-				}
-			}
-		}
-	},
-	"read": {
-		"description": "从上次阅读位置接续往下读一屏消息；消费锁内串行执行，成功交付后推进消费书签（与跟读共用）。超长文本折叠为 hasMoreSegment 不阻塞推进。省略 conversationRef 时仅在恰关注一个会话时生效。",
-		"parameters": {
-			"type": "object",
-			"additionalProperties": false,
-			"properties": {
-				"conversationRef": {
-					"type": "string",
-					"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
-					"description": "目标会话。若当前仅关注了一个会话，可省略此参数直接读该会话。"
+				limit: {
+					type: "integer",
+					minimum: 1,
+					maximum: 50,
+					default: 20,
 				},
-				"limit": {
-					"type": "integer",
-					"minimum": 1,
-					"maximum": 100,
-					"default": 20
+				cursor: {
+					type: "string",
+					description: "复制上次返回的 nextCursor 继续查询；保持相同 limit 和查询条件。",
 				},
-				"budgetChars": {
-					"type": "integer",
-					"minimum": 512,
-					"maximum": 32768,
-					"default": 14000
-				},
-				"includeMedia": {
-					"type": "boolean",
-					"default": false,
-					"description": "是否随消息内联展开可读图片。"
-				}
-			}
-		}
-	},
-	"skip": {
-		"description": "放下指定区间的未读积压：throughMessageRef 缺省 'latest' 一键抹平到当下；部分跳过重算剩余待处理。记录跳过审计并单调推进消费书签。",
-		"parameters": {
-			"type": "object",
-			"additionalProperties": false,
-			"properties": {
-				"conversationRef": {
-					"type": "string",
-					"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
-				},
-				"throughMessageRef": {
-					"type": "string",
-					"default": "latest",
-					"pattern": "^(latest|m-?[1-9][0-9]*)$",
-					"description": "跳过截至的消息引用（如 'm77'），省略或传 'latest' 表示一键抹平截至最新到达的消息。"
-				},
-				"reason": {
-					"type": "string",
-					"default": "主动放下积压",
-					"description": "跳过原因，留存审计事实。"
-				}
 			},
-			"required": [
-				"conversationRef"
-			]
-		}
+		},
 	},
-	"browse": {
-		"description": "纯只读历史探索：contentTarget 展开单条长文/转发/卡片 > messageRefs 点查 > direction+anchor 时空翻页。绝不移动阅读书签；断线缺口如实标注 gap_detected。",
-		"parameters": {
-			"type": "object",
-			"additionalProperties": false,
-			"properties": {
-				"conversationRef": {
-					"type": "string",
-					"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
-					"description": "浏览指定会话的历史时必填。"
+	read: {
+		description:
+			"从上次阅读位置接续往下读一屏消息；消费锁内串行执行，成功交付后推进消费书签（与跟读共用）。超长文本折叠为 hasMoreSegment 不阻塞推进。省略 conversationRef 时仅在恰关注一个会话时生效。",
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				conversationRef: {
+					type: "string",
+					pattern: "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
+					description: "目标会话。若当前仅关注了一个会话，可省略此参数直接读该会话。",
 				},
-				"direction": {
-					"type": "string",
-					"enum": [
-						"latest",
-						"before",
-						"after",
-						"around"
-					],
-					"default": "latest"
+				limit: {
+					type: "integer",
+					minimum: 1,
+					maximum: 100,
+					default: 20,
 				},
-				"anchorMessageRef": {
-					"type": "string",
-					"pattern": "^m-?[1-9][0-9]*$",
-					"description": "历史定位锚点消息引用（如 'm77'）。"
+				budgetChars: {
+					type: "integer",
+					minimum: 512,
+					maximum: 32768,
+					default: 14000,
 				},
-				"messageRefs": {
-					"type": "array",
-					"items": {
-						"type": "string",
-						"pattern": "^m-?[1-9][0-9]*$"
-					},
-					"minItems": 1,
-					"description": "点查指定的一组消息引用（如 ['m12', 'm15']）。"
+				includeMedia: {
+					type: "boolean",
+					default: false,
+					description: "是否随消息内联展开可读图片。",
 				},
-				"contentTarget": {
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"messageRef": {
-							"type": "string",
-							"pattern": "^m-?[1-9][0-9]*$"
-						},
-						"segmentIndex": {
-							"type": "integer",
-							"minimum": 0,
-							"default": 0
-						},
-						"cursor": {
-							"type": "string",
-							"minLength": 1,
-							"description": "复制同一内容上一页nextCursor；长文/转发续页。"
-						}
-					},
-					"required": [
-						"messageRef"
-					],
-					"description": "展开某条长文本分段、多层合并转发节点或指定卡片载荷。"
-				},
-				"includeMedia": {
-					"type": "boolean",
-					"default": false
-				},
-				"limit": {
-					"type": "integer",
-					"minimum": 1,
-					"maximum": 100,
-					"default": 20
-				}
-			}
-		}
-	},
-	"send": {
-		"description": "向目标会话发送消息分段数组（文本/@/表情/媒体），可 replyTo 引用回复；分段批派与逐批回执由平台链路保证。",
-		"parameters": {
-			"type": "object",
-			"additionalProperties": false,
-			"properties": {
-				"conversationRef": {
-					"type": "string",
-					"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
-					"description": "目标群或私聊。"
-				},
-				"content": {
-					"type": "array",
-					"minItems": 1,
-					"items": {
-						"type": "object",
-						"additionalProperties": false,
-						"properties": {
-							"type": {
-								"type": "string",
-								"enum": [
-									"text",
-									"mention",
-									"face",
-									"image",
-									"audio",
-									"video",
-									"file"
-								]
-							},
-							"text": {
-								"type": "string"
-							},
-							"userRef": {
-								"type": "string",
-								"pattern": "^u[1-9][0-9]*$"
-							},
-							"faceId": {
-								"type": "string"
-							},
-							"path": {
-								"type": "string",
-								"description": "媒体分段：本地文件路径（image/audio/video/file）。"
-							}
-						},
-						"required": [
-							"type"
-						]
-					},
-					"description": "消息分段数组。"
-				},
-				"replyTo": {
-					"type": "string",
-					"pattern": "^m-?[1-9][0-9]*$",
-					"description": "引用的消息引用（如 'm77'）。"
-				}
 			},
-			"required": [
-				"conversationRef",
-				"content"
-			]
-		}
+		},
 	},
-	"interact": {
-		"description": "轻量互动：poke 戳一戳 / react 群消息表情回应 / retract 撤回自身消息。",
-		"parameters": {
-			"type": "object",
-			"additionalProperties": false,
-			"properties": {
-				"action": {
-					"type": "string",
-					"enum": [
-						"poke",
-						"react",
-						"retract"
-					]
+	skip: {
+		description:
+			"放下指定区间的未读积压：throughMessageRef 缺省 'latest' 一键抹平到当下；部分跳过重算剩余待处理。记录跳过审计并单调推进消费书签。",
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				conversationRef: {
+					type: "string",
+					pattern: "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
 				},
-				"conversationRef": {
-					"type": "string",
-					"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
+				throughMessageRef: {
+					type: "string",
+					default: "latest",
+					pattern: "^(latest|m-?[1-9][0-9]*)$",
+					description: "跳过截至的消息引用（如 'm77'），省略或传 'latest' 表示一键抹平截至最新到达的消息。",
 				},
-				"userRef": {
-					"type": "string",
-					"pattern": "^u[1-9][0-9]*$",
-					"description": "poke 时必填的目标用户。"
+				reason: {
+					type: "string",
+					default: "主动放下积压",
+					description: "跳过原因，留存审计事实。",
 				},
-				"messageRef": {
-					"type": "string",
-					"pattern": "^m-?[1-9][0-9]*$",
-					"description": "react 或 retract 时必填的目标消息。"
-				},
-				"reactionCode": {
-					"type": "string",
-					"description": "react 时的数字表情编码（来自 expressions 查询）。"
-				}
 			},
-			"required": [
-				"action"
-			]
-		}
+			required: ["conversationRef"],
+		},
 	},
-	"remind": {
-		"description": "管理主体自己的稍后查看承诺：list 查看 open 事项；create 新建预约提醒；resolve 结项。到期只给查看机会，不自动执行外部动作。",
-		"parameters": {
-			"type": "object",
-			"additionalProperties": false,
-			"properties": {
-				"action": {
-					"type": "string",
-					"enum": [
-						"list",
-						"create",
-						"resolve"
-					],
-					"default": "list"
+	browse: {
+		description:
+			"纯只读历史探索：contentTarget 展开单条长文/转发/卡片 > messageRefs 点查 > direction+anchor 时空翻页。绝不移动阅读书签；断线缺口如实标注 gap_detected。",
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				conversationRef: {
+					type: "string",
+					pattern: "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
+					description: "浏览指定会话的历史时必填。",
 				},
-				"targetRef": {
-					"type": "string",
-					"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
-					"description": "create 时必填：关联的会话引用。"
+				direction: {
+					type: "string",
+					enum: ["latest", "before", "after", "around"],
+					default: "latest",
 				},
-				"note": {
-					"type": "string",
-					"description": "备忘说明或查看意图。"
+				anchorMessageRef: {
+					type: "string",
+					pattern: "^m-?[1-9][0-9]*$",
+					description: "历史定位锚点消息引用（如 'm77'）。",
 				},
-				"reviewAt": {
-					"type": "string",
-					"description": "ISO 时间格式的到期提醒时间。"
+				messageRefs: {
+					type: "array",
+					items: {
+						type: "string",
+						pattern: "^m-?[1-9][0-9]*$",
+					},
+					minItems: 1,
+					description: "点查指定的一组消息引用（如 ['m12', 'm15']）。",
 				},
-				"remindRef": {
-					"type": "string",
-					"pattern": "^f[1-9][0-9]*$",
-					"description": "resolve 时的待办引用编号（如 'f1'）。"
+				contentTarget: {
+					type: "object",
+					additionalProperties: false,
+					properties: {
+						messageRef: {
+							type: "string",
+							pattern: "^m-?[1-9][0-9]*$",
+						},
+						segmentIndex: {
+							type: "integer",
+							minimum: 0,
+							default: 0,
+						},
+						cursor: {
+							type: "string",
+							minLength: 1,
+							description: "复制同一内容上一页nextCursor；长文/转发续页。",
+						},
+					},
+					required: ["messageRef"],
+					description: "展开某条长文本分段、多层合并转发节点或指定卡片载荷。",
 				},
-				"resolution": {
-					"type": "string",
-					"description": "结项的结论说明。"
-				}
-			}
-		}
+				includeMedia: {
+					type: "boolean",
+					default: false,
+				},
+				limit: {
+					type: "integer",
+					minimum: 1,
+					maximum: 100,
+					default: 20,
+				},
+				source: {
+					type: "string",
+					enum: ["local", "platform"],
+					default: "local",
+					description: "历史方向模式来源；platform读取在线历史，失败明确报错；不移动书签。",
+				},
+			},
+		},
 	},
-	"requests": {
-		"description": "好友申请与群邀请审批：list 待处理清单；respond accept/decline。绝不与资料修改混杂。",
-		"parameters": {
-			"type": "object",
-			"additionalProperties": false,
-			"properties": {
-				"action": {
-					"type": "string",
-					"enum": [
-						"list",
-						"respond"
-					],
-					"default": "list"
+	send: {
+		description:
+			"向目标会话发送消息分段数组（文本/@/表情/媒体），可 replyTo 引用回复；分段批派与逐批回执由平台链路保证。",
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				conversationRef: {
+					type: "string",
+					pattern: "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
+					description: "目标群或私聊。",
 				},
-				"requestRef": {
-					"type": "string",
-					"pattern": "^r[1-9][0-9]*$",
-					"description": "审批时的申请引用编号（如 'r1'）。"
+				content: {
+					type: "array",
+					minItems: 1,
+					items: {
+						type: "object",
+						additionalProperties: false,
+						properties: {
+							type: {
+								type: "string",
+								enum: ["text", "mention", "face", "image", "audio", "video", "file"],
+							},
+							text: {
+								type: "string",
+							},
+							userRef: {
+								type: "string",
+								pattern: "^u[1-9][0-9]*$",
+							},
+							faceId: {
+								type: "string",
+							},
+							path: {
+								type: "string",
+								description: "媒体分段：本地文件路径（image/audio/video/file）。",
+							},
+						},
+						required: ["type"],
+					},
+					description: "消息分段数组。",
 				},
-				"decision": {
-					"type": "string",
-					"enum": [
-						"accept",
-						"decline"
-					]
+				replyTo: {
+					type: "string",
+					pattern: "^m-?[1-9][0-9]*$",
+					description: "引用的消息引用（如 'm77'）。",
 				},
-				"reason": {
-					"type": "string",
-					"description": "拒绝时的本地备注说明（平台无理由字段，仅留存于回执）。"
-				}
-			}
-		}
+			},
+			required: ["conversationRef", "content"],
+		},
 	},
-	"profile": {
-		"description": "自我形象维护：get 当前资料；set_card 群名片；set_profile 全局昵称/签名；set_avatar 头像（本地路径）。",
-		"parameters": {
-			"type": "object",
-			"additionalProperties": false,
-			"properties": {
-				"action": {
-					"type": "string",
-					"enum": [
-						"get",
-						"set_card",
-						"set_profile",
-						"set_avatar"
-					],
-					"default": "get"
+	interact: {
+		description: "轻量互动：poke 戳一戳 / react 群消息表情回应 / retract 撤回自身消息。",
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				action: {
+					type: "string",
+					enum: ["poke", "react", "retract"],
 				},
-				"conversationRef": {
-					"type": "string",
-					"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
-					"description": "set_card 时必填的目标群。"
+				conversationRef: {
+					type: "string",
+					pattern: "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
 				},
-				"card": {
-					"type": "string",
-					"description": "群名片内容（空串表示清除名片）。"
+				userRef: {
+					type: "string",
+					pattern: "^u[1-9][0-9]*$",
+					description: "poke 时必填的目标用户。",
 				},
-				"nickname": {
-					"type": "string",
-					"description": "修改自身全局昵称。"
+				messageRef: {
+					type: "string",
+					pattern: "^m-?[1-9][0-9]*$",
+					description: "react 或 retract 时必填的目标消息。",
 				},
-				"signature": {
-					"type": "string",
-					"description": "修改自身全局签名（空串表示清空）。"
+				reactionCode: {
+					type: "string",
+					description: "react 时的数字表情编码（来自 expressions 查询）。",
 				},
-				"avatarPath": {
-					"type": "string",
-					"description": "本地头像图片路径。"
-				}
-			}
-		}
-	}
+			},
+			required: ["action"],
+		},
+	},
+	remind: {
+		description:
+			"管理主体自己的稍后查看承诺：list 查看 open 事项；create 新建预约提醒；resolve 结项。到期只给查看机会，不自动执行外部动作。",
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				action: {
+					type: "string",
+					enum: ["list", "create", "resolve"],
+					default: "list",
+				},
+				targetRef: {
+					type: "string",
+					pattern: "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
+					description: "create 时必填：关联的会话引用。",
+				},
+				note: {
+					type: "string",
+					description: "备忘说明或查看意图。",
+				},
+				reviewAt: {
+					type: "string",
+					description: "ISO 时间格式的到期提醒时间。",
+				},
+				remindRef: {
+					type: "string",
+					pattern: "^f[1-9][0-9]*$",
+					description: "resolve 时的待办引用编号（如 'f1'）。",
+				},
+				resolution: {
+					type: "string",
+					description: "结项的结论说明。",
+				},
+			},
+		},
+	},
+	requests: {
+		description: "好友申请与群邀请审批：list 待处理清单；respond accept/decline。绝不与资料修改混杂。",
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				action: {
+					type: "string",
+					enum: ["list", "respond"],
+					default: "list",
+				},
+				requestRef: {
+					type: "string",
+					pattern: "^r[1-9][0-9]*$",
+					description: "审批时的申请引用编号（如 'r1'）。",
+				},
+				decision: {
+					type: "string",
+					enum: ["accept", "decline"],
+				},
+				reason: {
+					type: "string",
+					description: "拒绝时的本地备注说明（平台无理由字段，仅留存于回执）。",
+				},
+				cursor: {
+					type: "string",
+					description: "复制上次返回的 nextCursor 继续查询；保持相同 limit 和查询条件。",
+				},
+				limit: {
+					type: "integer",
+					minimum: 1,
+					default: 20,
+					description: "每页条数，默认20。",
+				},
+			},
+		},
+	},
+	profile: {
+		description:
+			"自我形象维护：get 当前资料；set_card 群名片；set_profile 全局昵称/签名；set_avatar 头像（本地路径）。",
+		parameters: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				action: {
+					type: "string",
+					enum: ["get", "set_card", "set_profile", "set_avatar"],
+					default: "get",
+				},
+				conversationRef: {
+					type: "string",
+					pattern: "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
+					description: "set_card 时必填的目标群。",
+				},
+				card: {
+					type: "string",
+					description: "群名片内容（空串表示清除名片）。",
+				},
+				nickname: {
+					type: "string",
+					description: "修改自身全局昵称。",
+				},
+				signature: {
+					type: "string",
+					description: "修改自身全局签名（空串表示清空）。",
+				},
+				avatarPath: {
+					type: "string",
+					description: "本地头像图片路径。",
+				},
+			},
+		},
+	},
 } as const;

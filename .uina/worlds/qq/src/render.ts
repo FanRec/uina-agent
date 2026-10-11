@@ -3,7 +3,8 @@ import type { ControlStore } from "./control-store.js";
 import type { MessageFact, MessageSegment, OperationRecord, RequestFact, FollowUpItem, EventFact } from "./types.js";
 import { parseConversationRef } from "./types.js";
 import { decodeOneBotSegments, oneBotTime } from "./message-codec.js";
-import { consumptionThrough, pendingCountOf, type PendingCandidate } from "./scheduler.js";
+import type { PendingCandidate } from "./scheduler.js";
+import { consumptionThrough, pendingCountOf, pendingFacts, pendingConversations } from "./consumption.js";
 /**
  * QQ World 呈现层（唯一 owner，交互合同 §5/§6）。
  * 纯函数：消费规范 facts 与只读快照，产出模型可见正文；不触 transport、不写 store。
@@ -269,9 +270,6 @@ export function looseText(raw: unknown, mentionLabel?: PersonLookup, faceNames?:
 	return segmentText(decodeOneBotSegments(raw).segments, mentionLabel, faceNames);
 }
 
-/** 首场景尾部呈现起点（合同 §6 呈现起点，非事实/能力上限）。 */
-const FIRST_SCENE_TAIL = 16;
-
 /** 显式合并转发内容页：完整呈现本页节点载荷，仅一层，不递归展开。 */
 export function renderForwardNodes(
 	nodes: readonly Record<string, unknown>[],
@@ -335,7 +333,7 @@ function contentSelectors(fact: MessageFact): string[] {
 	return fact.segments.flatMap((seg, segmentIndex) => {
 		if (["text", "mention", "mention_all", "face", "unknown"].includes(seg.type)) return [];
 		return [
-			`content：observe scope="content" messageRef=${fact.ref} segmentIndex=${segmentIndex}${"mediaRef" in seg && seg.mediaRef ? ` mediaRef=${seg.mediaRef}` : ""}`,
+			`展开：${JSON.stringify({ action: "browse", params: { contentTarget: { messageRef: fact.ref, segmentIndex } } })}`,
 		];
 	});
 }
@@ -377,106 +375,37 @@ export function renderRequestFact(fact: RequestFact, display?: DisplayOptions): 
 	return `${time.line(fact.time)} | ${fact.ref} | kind=${fact.kind} | state=${fact.state} | requester=${fact.requesterRef ?? "unknown"}${fact.requesterDisplayName ? ` name=${quote(fact.requesterDisplayName)}` : ""}${fact.targetConversationRef ? ` | targetConversationRef=${fact.targetConversationRef}` : ""}${fact.invitedRef ? ` | invited=${fact.invitedRef}` : ""} | comment=${fact.comment === null ? "null" : quote(fact.comment)}`;
 }
 
-/** 批次正文：首场景尾部起点 16；续场景新增 + reply anchor 必要前文；预算削减显式标注。 */
+/** Ordinary notifications carry facts and references; read/follow own body delivery. */
 export function renderBatch(candidate: PendingCandidate, deps: BatchRenderDeps): string {
-	if (candidate.conversationRef === "qq-follow-ups") return renderFollowUpBatch(deps);
-	if (candidate.conversationRef === "qq-event-account") return renderAccountEventBatch(deps, candidate);
-	if (candidate.conversationRef === "qq-request-account") return renderRequestBatch(deps, candidate);
-	if (candidate.conversationRef === "qq-backlog") return renderBacklogBatch(deps);
-	if (candidate.conversationRef === "qq-operations") return renderOperationsBatch(deps);
-
-	const time = new TimeView(deps.display?.timezone);
-	const snapshot = deps.journal.snapshot;
-	const conv = candidate.conversationRef;
-	const all = snapshot.messages.get(conv) ?? [];
-	// 呈现新鲜度（§6.4）：max(lastNotifiedSeq, 冷启动基线)。基线前历史为封存积压，
-	// 不作为"新增"重复呈现；真实待处理消费位另由 throughSeq 书签管理（§2 分轨）。
-	const notified = snapshot.notifiedThrough.get(conv);
-	const baseline = deps.control.baselineOf(conv) ?? 0;
-	const through = Math.max(notified ?? 0, baseline);
-
-	// 窗口：首场景（从未通知）尾部起点 FIRST_SCENE_TAIL；续场景 = 新增 + reply anchor 前文。
-	// 首场景超出起点时只呈现尾部，更早部分以显式省略行交付（§4.1"相应正文或明确
-	// 省略说明已交给 canonical 输入"），冻结仍推进到最新序号，不重复投递。
-	const firstScene = notified === undefined && baseline === 0;
-	const unnotified = all.filter((m) => m.sequence > through);
-	let omittedEarlier = firstScene ? Math.max(0, unnotified.length - FIRST_SCENE_TAIL) : 0;
-	const fresh = omittedEarlier > 0 ? unnotified.slice(-FIRST_SCENE_TAIL) : unnotified;
-	const anchorRefs = new Set(fresh.map((m) => m.replyTo).filter((ref): ref is string => ref !== undefined));
-	const anchorFacts: MessageFact[] = [...anchorRefs]
-		.map((ref: string) => all.find((m) => m.ref === ref))
-		.filter((m): m is MessageFact => m !== undefined && !fresh.includes(m));
-	const prefixMessages = anchorFacts;
-	if (firstScene)
-		omittedEarlier = Math.max(0, omittedEarlier - anchorFacts.filter((m) => unnotified.includes(m)).length);
-	const missingAnchors = [...anchorRefs].filter((ref) => !all.some((m) => m.ref === ref));
-
-	// 行组构建（预算削减的单位）。
-	const people = scenePeople([...prefixMessages, ...fresh], deps.journal.selfId);
-	const lines: string[] = [
-		`[${conversationKindLabel(conv)}] snapshot=${time.header(deps.now())}`,
-		`conversationRef=${conv}；trigger=${candidate.trigger ?? candidate.cls}`,
+	const candidates = candidate.related ?? [candidate];
+	const facts = candidates.flatMap((item) => {
+		switch (item.conversationRef) {
+			case "qq-follow-ups":
+				return [renderFollowUpBatch(deps)];
+			case "qq-event-account":
+				return [renderAccountEventBatch(deps, item)];
+			case "qq-request-account":
+				return [renderRequestBatch(deps, item)];
+			case "qq-backlog":
+				return [renderBacklogBatch(deps)];
+			case "qq-operations":
+				return [renderOperationsBatch(deps)];
+			default:
+				return [
+					`${conversationKindLabel(item.conversationRef)} conversationRef=${item.conversationRef}；trigger=${item.trigger ?? item.cls}`,
+					...candidateFacts(item, deps),
+					...(item.messageRefs ?? []).map((ref) => {
+						const fact = deps.journal.getMessage(ref);
+						return `触发 messageRef=${ref}${fact ? ` | sender=${fact.senderRef ?? "unknown"} | ${quote(segmentText(fact.segments, undefined, deps.display?.faceNames).slice(0, 60))}` : ""}`;
+					}),
+				];
+		}
+	});
+	return [
+		`[QQ 动态提示] snapshot=${new TimeView(deps.display?.timezone).header(deps.now())}`,
+		...facts,
 		...situationalOverview(deps),
-		...people.lines(conv),
-		...candidateFacts(candidate, deps),
-		...missingAnchors.map((ref) => `必要前文：replyTo=${ref}（原文不可用）`),
-	];
-	const prefixLineGroups = prefixMessages.map((m) => ({
-		...messageLines(
-			m,
-			time,
-			previousOf([...prefixMessages, ...fresh], m),
-			"必要前文",
-			people.label(m),
-			people.mention,
-			deps.display,
-			isWithdrawn(m, deps.journal),
-		),
-		isAnchor: anchorRefs.has(m.ref),
-	}));
-	const freshLineGroups = fresh.map((m) =>
-		messageLines(
-			m,
-			time,
-			previousOf([...prefixMessages, ...fresh], m),
-			"新增",
-			people.label(m),
-			people.mention,
-			deps.display,
-			isWithdrawn(m, deps.journal),
-		),
-	);
-
-	const followUps = deps.control.listFollowUps({ targetRef: conv, state: "open" });
-	const backgroundCount = countBackground(deps, candidate);
-	const omittedNote =
-		omittedEarlier > 0
-			? `（更早 ${omittedEarlier} 条未呈现，可用 observe(scope="conversation", conversationRef="${conv}") 读取）`
-			: null;
-
-	const budget = deps.display?.batchBudgetChars ?? 14000;
-	const assembled = assembleBatch(
-		lines,
-		prefixLineGroups,
-		freshLineGroups,
-		followUps,
-		backgroundCount,
-		Math.max(0, budget - 180),
-		omittedNote,
-	);
-
-	let coverage: string;
-	if (assembled.truncated || assembled.previewPartial) {
-		let reason = assembled.truncated ? "因预算截断" : "卡片原文仅呈现预览";
-		if (assembled.truncated && assembled.previewPartial) reason += "，且卡片原文仅呈现预览";
-		const cardGuidance = assembled.previewPartial ? "卡片完整原文请按上方 content 入口读取；" : "";
-		coverage = `coverage=${reason}：新增 ${fresh.length} 条中完整呈现 ${assembled.freshShown} 条，部分呈现 ${assembled.freshPartial} 条；hasMore=true（${cardGuidance}用 observe(scope="conversation", conversationRef="${conv}") 继续读取）。`;
-	} else if (omittedNote) {
-		coverage = `coverage=本次呈现尾部 ${fresh.length} 条，更早 ${omittedEarlier} 条已省略；hasMore=true（用 observe(scope="conversation", conversationRef="${conv}") 继续读取）。`;
-	} else {
-		coverage = `coverage=本次新增完整（${fresh.length} 条），前文为必要窗口；hasMore=false`;
-	}
-	return [...assembled.lines, coverage].join("\n");
+	].join("\n");
 }
 
 function previousOf(all: readonly MessageFact[], fact: MessageFact): string | undefined {
@@ -490,74 +419,19 @@ function previousOf(all: readonly MessageFact[], fact: MessageFact): string | un
  * 免去额外查询轮次。
  */
 function situationalOverview(deps: BatchRenderDeps): string[] {
-	const entries: string[] = [];
-	for (const conv of deps.journal.snapshot.messages.keys()) {
-		const pending = pendingCountOf(deps.journal, deps.control, conv);
-		if (pending === 0) continue;
-		const last = (deps.journal.snapshot.messages.get(conv) ?? []).at(-1)!;
-		const textSeg = last.segments.find((s): s is Extract<MessageSegment, { type: "text" }> => s.type === "text");
-		const raw = textSeg?.text ?? `（${last.segments[0]?.type ?? "message"}）`;
-		const preview = raw.length > 40 ? `${raw.slice(0, 39)}…` : raw;
-		entries.push(`• ${conv} ｜ 待处理 ${pending} 条 ｜ ${last.senderDisplayName ?? last.senderRef ?? "?"}：${preview}`);
-	}
-	if (entries.length === 0) return [];
-	// 自适应预算：概览是纸条头部（不可削减区），极小预算下收缩行数，永不挤占正文削减空间。
+	const refs = pendingConversations(deps.journal, deps.control);
+	if (refs.length === 0) return [];
 	const budget = deps.display?.batchBudgetChars ?? 14000;
-	const maxChars = Math.max(160, Math.min(600, Math.floor(budget / 3)));
-	const lines: string[] = [];
-	let used = 0;
-	for (const entry of entries) {
-		if (used > 0 && used + entry.length > maxChars) {
-			lines.push(`（其余 ${entries.length - lines.length} 个会话有待处理内容）`);
-			return ["当前待处理概览：", ...lines];
-		}
-		lines.push(entry);
-		used += entry.length;
-	}
-	lines.push(`（共 ${entries.length} 个会话有待处理内容；可用 qq_read 查看，或 qq_skip 放下）`);
-	return ["当前待处理概览：", ...lines];
-}
-
-/**
- * 跟读正文流（设计 §1.2 动·专注在场 / §5.4）：effectiveFollow 命中时新消息
- * 以连续正文交付，消费位（max(throughSeq, 基线)）之后的全部未消费消息一次呈现；
- * 超单屏预算从最旧开始削减并显式标注（正文消费书签由调度层在锁内推进）。
- */
-export function renderFollowBody(conversationRef: string, deps: BatchRenderDeps): string {
-	const time = new TimeView(deps.display?.timezone);
-	const snapshot = deps.journal.snapshot;
-	const all = snapshot.messages.get(conversationRef) ?? [];
-	const through = consumptionThrough(deps.journal, deps.control, conversationRef);
-	const fresh = all.filter((m) => m.sequence > through);
-	if (fresh.length === 0) return `[QQ 跟读] conversationRef=${conversationRef}\n（无未消费正文）`;
-	const people = scenePeople(fresh, deps.journal.selfId);
-	const groups = fresh.map((m) =>
-		messageLines(
-			m,
-			time,
-			previousOf(fresh, m),
-			"新增",
-			people.label(m),
-			people.mention,
-			deps.display,
-			isWithdrawn(m, deps.journal),
-		),
-	);
-	const budget = deps.display?.batchBudgetChars ?? 14000;
-	let shown = groups;
-	const body = (): string =>
-		[
-			`[QQ 跟读] conversationRef=${conversationRef}`,
-			"新增：",
-			...shown.flatMap((group) => group.lines),
-		].join("\n");
-	let dropped = 0;
-	while (body().length > budget && shown.length > 1) {
-		shown = shown.slice(1);
-		dropped++;
-	}
-	const note = dropped > 0 ? `（更早 ${dropped} 条超出单屏预算未呈现；历史随时可用 qq_browse 回看）` : null;
-	return note ? `${body()}\n${note}` : body();
+	const previewLimit = Math.max(0, Math.min(40, Math.floor(budget / refs.length) - 70));
+	return [
+		"当前待处理概览：",
+		...refs.map((ref) => {
+			const last = pendingFacts(deps.journal, deps.control, ref).at(-1)!;
+			const preview = last.segments.find((segment) => segment.type === "text")?.text ?? "";
+			return `• ${ref} ｜ 待处理 ${pendingCountOf(deps.journal, deps.control, ref)} 条${previewLimit > 0 ? ` ｜ ${quote(preview.slice(0, previewLimit))}` : ""}`;
+		}),
+		`正文按会话读取：${JSON.stringify({ action: "read", params: { conversationRef: refs[0] } })}；放下积压使用 skip。`,
+	];
 }
 
 /* ---------- 顺序正文消费渲染（设计 §4.2 qq_read） ---------- */
@@ -586,9 +460,8 @@ export function renderReadWindow(
 	opts: { readonly limit: number; readonly budgetChars: number },
 ): ReadWindowResult {
 	const time = new TimeView(deps.display?.timezone);
-	const all = deps.journal.snapshot.messages.get(conversationRef) ?? [];
 	const through = consumptionThrough(deps.journal, deps.control, conversationRef);
-	const fresh = all.filter((m) => m.sequence > through);
+	const fresh = pendingFacts(deps.journal, deps.control, conversationRef);
 	const remainingOf = (count: number): number => fresh.length - count;
 	if (fresh.length === 0) {
 		return {
@@ -599,22 +472,42 @@ export function renderReadWindow(
 		};
 	}
 	const window = fresh.slice(0, opts.limit);
-	const people = scenePeople(window, deps.journal.selfId);
+	const all = deps.journal.snapshot.messages.get(conversationRef) ?? [];
+	const anchorRefs = [...new Set(window.flatMap((fact) => (fact.replyTo ? [fact.replyTo] : [])))].filter(
+		(ref) => !window.some((fact) => fact.ref === ref),
+	);
+	const anchors = anchorRefs.flatMap((ref) => all.find((fact) => fact.ref === ref) ?? []);
+	const people = scenePeople([...anchors, ...window], deps.journal.selfId);
+	const anchorLines = anchorRefs.map((ref) => {
+		const fact = anchors.find((item) => item.ref === ref);
+		if (!fact) return `必要前文：replyTo=${ref}（原文不可用）`;
+		const text = segmentText(fact.segments, people.mention, deps.display?.faceNames);
+		const max = Math.min(200, Math.floor(opts.budgetChars / 8));
+		return `必要前文：replyTo=${ref} | ${people.label(fact)}：${quote(text.slice(0, max))}${text.length > max ? ` [truncated]；${JSON.stringify({ action: "browse", params: { messageRefs: [ref] } })}` : ""}`;
+	});
 	const groups = window.map((m) =>
-		messageLines(m, time, previousOf(window, m), "新增", people.label(m), people.mention, deps.display, isWithdrawn(m, deps.journal)),
+		messageLines(
+			m,
+			time,
+			previousOf(window, m),
+			"新增",
+			people.label(m),
+			people.mention,
+			deps.display,
+			isWithdrawn(m, deps.journal),
+		),
 	);
 	// 超长折叠：> READ_FOLD_THRESHOLD 的文本保留首尾，中段显式省略（完整原文可点查展开）。
 	const folded = new Map<MessageLines, string[]>();
 	for (const group of groups) {
 		if (group.text.length <= READ_FOLD_THRESHOLD) continue;
-		const fact = window.find((m) => m.ref === group.ref)!;
-		const segmentIndex = fact.segments.findIndex((s) => s.type === "text");
 		const keep = Math.floor((READ_FOLD_THRESHOLD - 60) / 2);
 		const foldedText = `${group.text.slice(0, keep)}\n…（中段折叠 ${group.text.length - keep * 2} 字）…\n${group.text.slice(-keep)}`;
 		folded.set(group, [
 			group.lines[0]!,
 			quote(foldedText),
-			`hasMoreSegment: true（qq_browse contentTarget messageRef=${group.ref}${segmentIndex >= 0 ? ` segmentIndex=${segmentIndex}` : ""} 展开全文）`,
+			`hasMoreSegment: true（${JSON.stringify({ action: "browse", params: { messageRefs: [group.ref] } })} 查看完整消息）`,
+			...group.lines.slice(2),
 		]);
 	}
 	const lineOf = (group: MessageLines): string[] => folded.get(group) ?? group.lines;
@@ -624,7 +517,7 @@ export function renderReadWindow(
 	];
 	// 软预算：至少交付一条；单条自身超预算时硬截断文本并标注（该条仍算已交付）。
 	const body = (): string[] => {
-		const out = [...head, "新增："];
+		const out = [...head, ...anchorLines, "新增："];
 		for (const group of shown) out.push(...lineOf(group));
 		return out;
 	};
@@ -638,7 +531,8 @@ export function renderReadWindow(
 		folded.set(group, [
 			group.lines[0]!,
 			quote(`${text.slice(0, keep)}…[truncated]`),
-			`hasMoreSegment: true（qq_browse contentTarget messageRef=${group.ref} 展开全文）`,
+			`hasMoreSegment: true（${JSON.stringify({ action: "browse", params: { messageRefs: [group.ref] } })} 查看完整消息）`,
+			...group.lines.slice(2),
 		]);
 	}
 	const delivered = shown.map((group) => window[groups.indexOf(group)]!);
@@ -646,99 +540,15 @@ export function renderReadWindow(
 	const omitted = remainingOf(delivered.length);
 	const note =
 		omitted > 0
-			? `（余下 ${omitted} 条未交付；再次调用 qq_read 接续）`
+			? `（余下 ${omitted} 条未交付；调用 ${JSON.stringify({ action: "read", params: { conversationRef } })} 接续）`
 			: null;
 	const text = [
 		...body(),
 		...(note ? [note] : []),
+		`coverage=顺序交付；完整呈现 ${shown.filter((group) => !group.partial && !folded.has(group)).length} 条，部分呈现 ${shown.filter((group) => group.partial || folded.has(group)).length} 条；hasMore=${omitted > 0 || shown.some((group) => group.partial || folded.has(group))}`,
 		`deliveredThrough=${delivered.at(-1)!.ref}（seq ${deliveredThrough}）；本次交付 ${delivered.length} 条；剩余待处理 ${omitted} 条`,
 	].join("\n");
 	return { text, deliveredThrough, delivered, remaining: omitted };
-}
-
-function countBackground(deps: BatchRenderDeps, candidate: PendingCandidate): number {
-	let total = 0;
-	for (const conv of deps.journal.snapshot.messages.keys()) {
-		if (conv !== candidate.conversationRef) total += deps.journal.unreadCount(conv);
-	}
-	return total;
-}
-
-interface AssembledBatch {
-	readonly lines: string[];
-	readonly truncated: boolean;
-	readonly freshShown: number;
-	readonly freshPartial: number;
-	readonly previewPartial: boolean;
-}
-
-/** 组装 + 软预算：削减顺序 = 背景 → 前文（最旧非 anchor 优先）→ 超长原文分片。 */
-function assembleBatch(
-	header: string[],
-	prefixGroups: MessageLines[],
-	freshGroups: MessageLines[],
-	followUps: { ref: string; note: string }[],
-	backgroundCount: number,
-	budget: number,
-	omittedNote: string | null,
-): AssembledBatch {
-	let droppedBackground = false;
-	let droppedPrefix = 0;
-	const truncatedTexts = new Map<MessageLines, string>();
-	const appendGroup = (out: string[], group: MessageLines): void => {
-		const truncatedText = truncatedTexts.get(group);
-		if (truncatedText !== undefined) out.push(group.lines[0]!, quote(truncatedText), ...group.lines.slice(2));
-		else out.push(...group.lines);
-	};
-
-	const buildAll = (): string[] => {
-		const out: string[] = [];
-		if (prefixGroups.length - droppedPrefix > 0) {
-			out.push(`必要前文：`);
-			for (const group of prefixGroups.slice(droppedPrefix)) appendGroup(out, group);
-		}
-		out.push(`新增：`);
-		for (const group of freshGroups) appendGroup(out, group);
-		if (omittedNote) out.push(omittedNote);
-		for (const item of followUps) out.push(`待跟进 ${item.ref}：note=${quote(item.note)}`);
-		if (droppedBackground && backgroundCount > 0) out.push(`背景：${backgroundCount} 条普通事实已省略（可观察获取）。`);
-		else if (backgroundCount > 0) out.push(`背景：另有 ${backgroundCount} 条普通事实待合并（可观察获取）。`);
-		return out;
-	};
-
-	const totalSize = (): number => [...header, ...buildAll()].join("\n").length;
-	droppedBackground = totalSize() > budget;
-	// 前文按最旧优先丢弃，但 reply anchor（isAnchor）保留到最后一刻。
-	while (totalSize() > budget && droppedPrefix < prefixGroups.length && !prefixGroups[droppedPrefix]!.isAnchor)
-		droppedPrefix++;
-	// 原文分片：每轮挑最长的未截断文本，按"超出量"精确截断，直到入预算或无可截。
-	let truncated = false;
-	while (totalSize() > budget) {
-		let longestGroup: MessageLines | undefined;
-		let longestLen = 0;
-		[...prefixGroups.slice(droppedPrefix), ...freshGroups].forEach((group) => {
-			if (truncatedTexts.has(group) || !group.isText) return;
-			const len = quote(group.text).length;
-			if (len > longestLen) {
-				longestLen = len;
-				longestGroup = group;
-			}
-		});
-		if (!longestGroup) break;
-		const text = longestGroup.text;
-		const excess = totalSize() - budget;
-		let keep = Math.max(0, text.length - excess - "[truncated]…".length - 8);
-		while (keep > 0 && quote(text.slice(0, keep) + "…[truncated]").length > Math.max(0, longestLen - excess)) keep--;
-		truncatedTexts.set(longestGroup, text.slice(0, keep) + "…[truncated]");
-		truncated = true;
-	}
-	return {
-		lines: [...header, ...buildAll()],
-		truncated,
-		freshShown: freshGroups.filter((group) => !group.partial && !truncatedTexts.has(group)).length,
-		freshPartial: freshGroups.filter((group) => group.partial || truncatedTexts.has(group)).length,
-		previewPartial: [...prefixGroups.slice(droppedPrefix), ...freshGroups].some((group) => group.partial),
-	};
 }
 
 function renderFollowUpBatch(deps: BatchRenderDeps): string {
@@ -805,10 +615,10 @@ function renderOperationsBatch(deps: BatchRenderDeps): string {
 function renderBacklogBatch(deps: BatchRenderDeps): string {
 	const time = new TimeView(deps.display?.timezone);
 	const lines: string[] = [];
-	for (const conv of deps.journal.snapshot.messages.keys()) {
-		const unread = deps.journal.unreadCount(conv);
+	for (const conv of pendingConversations(deps.journal, deps.control)) {
+		const unread = pendingCountOf(deps.journal, deps.control, conv);
 		if (unread > 0) {
-			const earliest = deps.journal.firstUnreadTime(conv);
+			const earliest = pendingFacts(deps.journal, deps.control, conv)[0]?.time;
 			lines.push(`${conv}：${unread} 条未读${earliest ? `（最早 ${time.line(earliest)}）` : ""}`);
 		}
 	}
@@ -856,8 +666,7 @@ export const receipt = {
 /** 回执内的标准指引/注记文案（漂移高危集中地，禁止在 app.ts 重写）。 */
 export const RECEIPT_NOTES = {
 	nextStatusCheck: `若持续失败，先核验连接与登录状态，再原样重试本查询`,
-	verifyOperation: (operationRef: string): string =>
-		`核验：operationRef=${operationRef}；操作日志保留派发与回执全记录`,
+	verifyOperation: (operationRef: string): string => `核验：operationRef=${operationRef}；操作日志保留派发与回执全记录`,
 	expressionsGuidance: `send 的 face 段与 interact 的 react 只接受此处数字编码；非数字（Unicode emoji 形态）不进 face/react，改用 text 发送。react 与 face 同源数字编码；个别编码可用性由平台回执判断。`,
 };
 

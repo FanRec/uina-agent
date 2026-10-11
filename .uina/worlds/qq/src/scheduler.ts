@@ -5,46 +5,18 @@ import type { AttentionModel } from "./attention.js";
 import type { ConversationLocks } from "./conversation-lock.js";
 import type { EventFact, IngestedFact, MessageFact, OperationRecord } from "./types.js";
 
-/**
- * 通知与跟读调度（设计 §5.1/§5.3/§5.4）：
- * - 统一 1~2s 短脉冲防抖（打字喘气合并）；request/internal 保留独立窗口。
- * - 触发判定（纯物理事实）：① 首次未读 0→1（消费位口径）；② 直接互动（@/戳/引用自身/相关 recall）特许穿透；
- *   ③ 私聊沉寂复苏（与上一条消息间隔 ≥10min）；④ 群聊增量闲聊静默记账绝不催更。
- * - 跟读（follow）：effectiveFollow 命中走正文直读派发，与通知轨分轨；锁内渲染并推进
- *   dispatchedThrough 书签；缓冲超预算自动退让为降压摘要并挂起（R1，唯一权威 = 消费位缓冲深度）。
- * - 延迟渲染（§5.3）：派发只投唤醒占位 + render 闭包；出队时才求值最新快照，已清空返回 null
- *   由 Core empty_render 退役（T12）；闭包永不抛出（R7）。
- * - 通知路径只消费 push 偏好（R5：不双读旧 attention 字段）；mode off / 暂停即静默，
- *   filter "direct" 只放行直接互动类。
- * - 通知基准 = max(lastNotifiedSeq, 冷启动基线)；消费位 = max(dispatchedThrough, 基线)。两轨分离（§2）。
- * - 单占位串行；飞行期间到达的消息不补发纸条（群静默/私聊靠复苏穿透，T01A 规则的必然推论）。
- */
+import {
+	pendingCountOf,
+	consumptionThrough,
+	followPressure,
+	pendingConversations,
+	pendingFacts,
+} from "./consumption.js";
+import type { ReadWindowResult } from "./render.js";
+import { randomUUID } from "node:crypto";
 
-/** 私聊沉寂复苏间隔（设计 §5.1：客观时间阈值，摒弃意图分析）。 */
+/** One deferred mailbox input; runtime FIFO owns timing. Payload and accounting share a snapshot. */
 export const REVIVAL_SILENCE_MS = 600_000;
-/** R1 过载退让阈值：未消费缓冲条数上限（约 14,000 字符或 30 条取先到）。 */
-export const FOLLOW_BACKLOG_LIMIT = 30;
-
-/* ---------- 消费位（§6.4 单一事实源：调度器、呈现层与消费工具共用） ---------- */
-
-/** 消费位置 = max(throughSeq 正文派发书签, 冷启动基线)。基线即书签的初始对齐值。 */
-export function consumptionThrough(
-	journal: Pick<FactsJournal, "dispatchedThroughOf">,
-	control: Pick<ControlStore, "baselineOf">,
-	conversationRef: string,
-): number {
-	return Math.max(journal.dispatchedThroughOf(conversationRef), control.baselineOf(conversationRef) ?? 0);
-}
-
-/** 待处理条数（消费位口径）：通知纸条只呈现态势、不推进消费位——两轨分离（§2）。 */
-export function pendingCountOf(
-	journal: Pick<FactsJournal, "dispatchedThroughOf" | "snapshot">,
-	control: Pick<ControlStore, "baselineOf">,
-	conversationRef: string,
-): number {
-	const through = consumptionThrough(journal, control, conversationRef);
-	return (journal.snapshot.messages.get(conversationRef) ?? []).filter((m) => m.sequence > through).length;
-}
 
 export interface TimingWindows {
 	/** 消息类统一短脉冲 [去抖 quiet, 自首条起算上限 maxWait]。 */
@@ -76,11 +48,14 @@ export interface PendingCandidate {
 	/** 世界事件 origin（入站表：bot_status/offline 为 external，连接故障与到期事项为 internal）；makeCandidate 保证必填。 */
 	readonly origin: "external" | "internal";
 	readonly eventRefs?: readonly string[];
+	readonly messageRefs?: readonly string[];
 	readonly requestRefs?: readonly string[];
+	readonly related?: readonly PendingCandidate[];
 }
 
 export interface SchedulerDeps {
 	readonly selfId: string;
+	readonly signal?: AbortSignal;
 	readonly journal: FactsJournal;
 	readonly control: ControlStore;
 	readonly attention: AttentionModel;
@@ -98,11 +73,10 @@ export interface SchedulerDeps {
 		origin: "external" | "internal";
 		render: () => Promise<string | null>;
 	}) => Promise<void>;
-	readonly isBusy?: () => boolean;
 	/** 通知批次正文渲染（呈现层唯一出口，render.ts 提供）。 */
 	readonly renderBatch: (candidate: PendingCandidate) => string;
 	/** 跟读正文流渲染（cls=follow 派发用；render.ts 提供）。 */
-	readonly renderFollowBody: (conversationRef: string) => string;
+	readonly renderReadWindow: (conversationRef: string) => ReadWindowResult;
 	/**
 	 * recall 是否"影响当前交互或事项证据"（合同 §4 只允许此类 recall 提醒）。
 	 * 判定语义由装配层注入（自身发言被撤 / open 事项证据被撤 / 连续性窗口内最近批次）；
@@ -113,28 +87,31 @@ export interface SchedulerDeps {
 }
 
 /** 派发占位：input_settled 后按 committed 结算通知记账。 */
+interface Materialization {
+	readonly text: string;
+	readonly notified: ReadonlyMap<string, number>;
+	readonly followUpRefs: readonly string[];
+	readonly operationRefs: readonly string[];
+}
+
 interface Placeholder {
 	readonly inputId: string;
-	readonly conversationRef: string;
-	/**
-	 * 冻结槽位：render 闭包求值成功时写入本批交付到的会话序号（§5.3 延迟渲染下
-	 * 冻结点从 emit 时刻移至 render 求值时刻）；retired/未求值则保持 null 不记账。
-	 */
-	readonly throughSlot: { value: number } | null;
-	/** follow_up 批次派发时渲染的到期事项；committed 后才计账（retired 允许重提醒）。 */
-	readonly followUpRefs?: readonly string[];
-	/** 迟到回执更新批次派发时呈现的操作；committed 后清理。 */
-	readonly operationRefs?: readonly string[];
+	result: Materialization | null;
+	failed: boolean;
+	settled: boolean;
 }
 
 export class QqScheduler {
 	private stopped = false;
 	private readonly pending = new Map<string, PendingCandidate>();
 	private placeholder: Placeholder | null = null;
+	private retryDelivery: { candidate: PendingCandidate; result: Materialization } | null = null;
 	private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
 	/** 每个候选窗口的首条到达时刻（maxWait 自此起算）。 */
 	private readonly windowStart = new Map<string, number>();
 	private recheckTimer: ReturnType<typeof setTimeout> | null = null;
+	private readonly accounting = new Map<string, Materialization>();
+	private failure: string | null = null;
 	/** 已处理过的暂停到期事件（target:pausedUntil）；进程内存续，重启至多重放一次摘要（偏差登记）。 */
 	private readonly processedPauseExpiries = new Set<string>();
 	/** R1 退让后挂起跟读的会话：待处理缓冲回落预算内自动解除。 */
@@ -164,15 +141,18 @@ export class QqScheduler {
 		if (this.recheckTimer) clearTimeout(this.recheckTimer);
 		this.recheckTimer = null;
 		this.pending.clear();
+		this.accounting.clear();
 		this.suspendedFollow.clear();
 		this.placeholder = null;
+		this.retryDelivery = null;
 	}
 
 	/** 摄取层每追加一条事实后调用；不等待、不抛错。 */
 	onFact(item: IngestedFact): void {
 		if (this.stopped) return;
 		try {
-			for (const candidate of this.classify(item)) this.offer(candidate);
+			for (const candidate of this.classify(item))
+				this.offer(item.kind === "message" ? { ...candidate, messageRefs: [item.fact.ref] } : candidate);
 		} catch (error) {
 			// 单条事实分类失败不阻断摄取主链，但必须留可见痕迹（静默=永远不提醒）。
 			console.warn(`[qq] 事实分类失败（kind=${item.kind}）:`, error instanceof Error ? error.message : error);
@@ -193,7 +173,7 @@ export class QqScheduler {
 			// R1 退让挂起中且缓冲仍超预算 → 静默记账；回落预算内自动解除挂起。
 			if (this.deps.attention.effectiveFollow(fact.conversationRef)) {
 				if (this.suspendedFollow.has(fact.conversationRef)) {
-					if (this.pendingCount(fact.conversationRef) <= FOLLOW_BACKLOG_LIMIT) {
+					if (!followPressure(this.deps.journal, control, fact.conversationRef)) {
 						this.suspendedFollow.delete(fact.conversationRef);
 					} else return [];
 				}
@@ -288,7 +268,11 @@ export class QqScheduler {
 		const through = Math.max(this.deps.journal.snapshot.notifiedThrough.get(conversationRef) ?? 0, baseline);
 		let count = 0;
 		for (const m of this.deps.journal.snapshot.messages.get(conversationRef) ?? []) {
-			if (m.sequence > through) count++;
+			if (
+				m.direction === "in" &&
+				m.sequence > Math.max(through, consumptionThrough(this.deps.journal, this.deps.control, conversationRef))
+			)
+				count++;
 		}
 		return count;
 	}
@@ -317,7 +301,7 @@ export class QqScheduler {
 	/** 候选是否仅由会话消息派生（无自身载荷，空转即无意义）。 */
 	private isMessageDerived(candidate: PendingCandidate): boolean {
 		if (candidate.eventRefs?.length || candidate.requestRefs?.length) return false;
-		if (candidate.cls === "ordinary") return true;
+		if (candidate.cls === "ordinary" || candidate.cls === "follow") return true;
 		if (candidate.cls === "direct") return candidate.trigger !== "poke" && candidate.trigger !== "recall";
 		return false;
 	}
@@ -341,6 +325,14 @@ export class QqScheduler {
 		};
 	}
 
+	notifyConsumption(conversationRef: string): void {
+		if (this.stopped || followPressure(this.deps.journal, this.deps.control, conversationRef)) return;
+		this.suspendedFollow.delete(conversationRef);
+		if (this.deps.attention.effectiveFollow(conversationRef) && this.pendingCount(conversationRef) > 0) {
+			this.offer(this.makeCandidate(conversationRef, "follow", this.deps.now(), this.pendingCount(conversationRef)));
+		}
+	}
+
 	/** 装配层轮询 dueFollowUps 后调用；到期事项走 internal 候选，派发成功即计账。 */
 	notifyFollowUpDue(): void {
 		if (this.stopped) return;
@@ -360,7 +352,11 @@ export class QqScheduler {
 			const key = `${expiry.target}:${expiry.pausedUntil}`;
 			if (this.processedPauseExpiries.has(key)) continue;
 			this.processedPauseExpiries.add(key);
-			if (this.deps.journal.hasUnread()) {
+			if (
+				pendingConversations(this.deps.journal, this.deps.control).some(
+					(ref) => expiry.target === "account" || ref === expiry.target,
+				)
+			) {
 				this.offer(this.makeCandidate("qq-backlog", "internal", this.deps.now(), 1));
 			}
 		}
@@ -393,6 +389,7 @@ export class QqScheduler {
 				...existing,
 				count: existing.cls === "ordinary" ? existing.count + candidate.count : existing.count,
 				eventRefs: [...new Set([...(existing.eventRefs ?? []), ...(candidate.eventRefs ?? [])])],
+				messageRefs: [...new Set([...(existing.messageRefs ?? []), ...(candidate.messageRefs ?? [])])],
 				requestRefs: [...new Set([...(existing.requestRefs ?? []), ...(candidate.requestRefs ?? [])])],
 			});
 		} else {
@@ -433,144 +430,205 @@ export class QqScheduler {
 		this.timers.set(key, timer);
 	}
 
-	/** input_settled(committed/retired) 回调：释放占位并按冻结槽位推进通知位置。 */
+	/** Release first: a failed local append must never hold the mailbox placeholder. */
 	onInputSettled(inputId: string, committed: boolean): void {
-		if (this.stopped) return;
-		if (!this.placeholder || this.placeholder.inputId !== inputId) return;
-		const { conversationRef, throughSlot, followUpRefs, operationRefs } = this.placeholder;
-		if (committed && throughSlot) {
-			// 只冻结在 render 求值时已交付的序号；出队后新到消息留给下一批，不偷记已通知。
-			const through = this.deps.journal.snapshot.notifiedThrough.get(conversationRef) ?? 0;
-			if (throughSlot.value > through) {
-				this.deps.journal.recordNotified(conversationRef, throughSlot.value, inputId, this.deps.now());
-			}
-		}
-		if (committed) {
-			// follow_up 通知计账：committed 才算"已交给 canonical 输入"。
-			for (const ref of followUpRefs ?? []) {
-				const item = this.deps.control.getFollowUp(ref);
-				if (item?.state === "open") this.deps.control.markReviewNotified(ref);
-			}
-			// 迟到回执更新：committed 后清理，retired 保留待重提醒。
-			for (const ref of operationRefs ?? []) this.settledUnknowns.delete(ref);
-		}
+		if (this.stopped || this.placeholder?.inputId !== inputId) return;
+		const slot = this.placeholder;
+		slot.settled = true;
 		this.placeholder = null;
-		void this.tryDispatch();
+		if (committed && slot.result) this.accounting.set(inputId, slot.result);
+		this.flushAccounting();
+		if (slot.failed || this.accounting.size > 0) this.retry(this.failure ?? "notification accounting/render");
+		else void this.tryDispatch();
 	}
 
-	/** agent_settled 通知：单个可取消 recheck（不 await Subject 空闲）。 */
-	onAgentSettled(): void {
+	private retry(reason: string): void {
 		if (this.stopped) return;
-		if (this.recheckTimer || this.placeholder) return;
+		if (this.failure !== reason) console.warn(`[qq] 通知待重试：${reason}`);
+		this.failure = reason;
+		if (this.recheckTimer) return;
 		this.recheckTimer = setTimeout(() => {
 			this.recheckTimer = null;
-			if (!this.placeholder && this.pending.size > 0 && !(this.deps.isBusy?.() ?? false)) {
+			if (this.stopped) return;
+			this.flushAccounting();
+			if (this.accounting.size > 0) this.retry(this.failure ?? "notification accounting");
+			else {
 				void this.tryDispatch();
 			}
-		}, 50);
+		}, 2000);
 	}
 
-	/** 选择与派发：串行；占位占用直接返回。 */
-	private async tryDispatch(): Promise<void> {
-		if (this.stopped) return;
-		if (this.placeholder || this.pending.size === 0) return;
-		if (this.deps.isBusy?.() ?? false) return; // 忙时普通活动留在事实存储
-		let candidate = this.select();
-		if (!candidate) return;
-		if (candidate.cls === "request" && candidate.requestRefs?.length) {
-			const requestRefs = candidate.requestRefs.filter((ref) => this.deps.isRequestPending?.(ref) !== false);
-			if (requestRefs.length === 0) {
-				this.pending.delete(candidate.key);
-				void this.tryDispatch();
-				return;
-			}
-			candidate = { ...candidate, requestRefs };
-		}
-		const push = this.deps.control.effectivePush(candidate.conversationRef);
-		if (push.mode === "off") {
-			this.pending.delete(candidate.key);
-			return;
-		}
-		// 消息派生候选派发前重验（消费位/呈现位双口径）：正文若已被其他批次交付并推进
-		// 相应书签，空转候选直接退役，不产生空批次（poke/recall/request/internal 携带自身
-		// 载荷，不受此限；follow 只看消费位——呈现位可能已被旧纸条推进但正文未消费）。
-		if (this.isMessageDerived(candidate)) {
-			const stale =
-				candidate.cls === "follow"
-					? this.pendingCount(candidate.conversationRef) === 0
-					: this.pendingCount(candidate.conversationRef) === 0 ||
-						this.noticeFreshCount(candidate.conversationRef) === 0;
-			if (stale) {
-				this.pending.delete(candidate.key);
-				return;
-			}
-		}
-		const inputId = `qq:${candidate.cls}:${candidate.conversationRef}:${this.deps.now()}`;
-		const conv = candidate.conversationRef;
-		this.pending.delete(candidate.key);
-		// §5.3 延迟渲染：派发只投唤醒占位 + render 闭包；冻结槽位由闭包求值成功时写入，
-		// retired/未求值不记账（T12 空退役、排队期间消费清空均落在同一条路径）。
-		const throughSlot: { value: number } | null = conv.startsWith("qq-") ? null : { value: 0 };
-		const render = async (): Promise<string | null> => {
+	private flushAccounting(): void {
+		const hadAccounting = this.accounting.size > 0;
+		for (const [inputId, result] of this.accounting) {
 			try {
-				// 出队时刻新鲜度重验（T12）：排队期间已被 read/skip 消费或呈现完毕 → 空退役。
-				if (this.isMessageDerived(candidate)) {
-					const stale =
-						candidate.cls === "follow"
-							? this.pendingCount(conv) === 0
-							: this.pendingCount(conv) === 0 || this.noticeFreshCount(conv) === 0;
-					if (stale) return null;
+				for (const [conv, through] of result.notified) {
+					if (through > (this.deps.journal.snapshot.notifiedThrough.get(conv) ?? 0)) {
+						this.deps.journal.recordNotified(conv, through, inputId, this.deps.now());
+					}
 				}
-				if (candidate.cls === "follow") {
-					// 锁内渲染 + 书签推进（§2.1）：与后续 qq_read/qq_skip 串行互斥，根绝重复派发。
-					return await this.deps.locks.run(conv, async () => {
-						const pending = this.pendingCount(conv);
-						if (pending > FOLLOW_BACKLOG_LIMIT) {
-							// R1 过载退让：切断连续正文灌注，转降压摘要；不动书签、不冻结槽位
-							// （未交付的消息保持 pending 且未通知，恢复后仍可完整呈现）。
-							this.suspendedFollow.add(conv);
-							return `[QQ 动态提示] 关注会话 ${conv} 出现高频积压（${pending} 条未消费）；自动正文已暂停灌注。你可以主动调用 qq_read 阅读，或调用 qq_skip 放下积压。`;
-						}
-						const body = this.deps.renderFollowBody(conv);
-						const through = this.deps.journal.latestSequence(conv);
-						this.deps.journal.recordDispatched(conv, through, "follow", this.deps.now(), inputId);
-						if (throughSlot) throughSlot.value = through;
-						return body;
-					});
+				for (const ref of result.followUpRefs) {
+					const item = this.deps.control.getFollowUp(ref);
+					if (item?.state === "open" && !item.reviewNotified) this.deps.control.markReviewNotified(ref);
 				}
-				const text = this.deps.renderBatch(candidate);
-				if (throughSlot) throughSlot.value = this.deps.journal.latestSequence(conv);
-				return text;
+				for (const ref of result.operationRefs) this.settledUnknowns.delete(ref);
+				this.accounting.delete(inputId);
 			} catch (error) {
-				// R7：render 闭包永不向上抛（Core 对抛错的处理是条目回退邮箱无限重试）。
-				console.warn(`[qq] 延迟渲染失败（${conv}）:`, error instanceof Error ? error.message : error);
-				return null;
+				this.retry(error instanceof Error ? error.message : String(error));
 			}
-		};
-		try {
-			// follow_up 到期：派发时先捕获渲染的到期列表，committed 结算后才计账——
-			// retired/claimed 不标记，轮询自然重新提醒（合同：记录失败允许以后重复提醒）。
-			const followUpRefs =
-				conv === "qq-follow-ups" ? this.deps.control.dueFollowUps().map((item) => item.ref) : undefined;
-			const operationRefs = conv === "qq-operations" ? [...this.settledUnknowns.keys()] : undefined;
-			this.placeholder = {
-				inputId,
-				conversationRef: conv,
-				throughSlot,
-				...(followUpRefs ? { followUpRefs } : {}),
-				...(operationRefs ? { operationRefs } : {}),
-			};
-			await this.deps.emit({ id: inputId, conversationRef: conv, cls: candidate.cls, origin: candidate.origin, render });
-		} catch (error) {
-			if (this.stopped) return;
-			// 投递/渲染失败：释放占位并恢复候选（合同：允许以后重复提醒）；
-			// 确定性渲染 bug 会以窗口节奏重试并持续留可见痕迹，不静默丢失。
-			console.warn(
-				`[qq] 批次投递失败（${candidate.conversationRef}）:`,
-				error instanceof Error ? error.message : error,
+		}
+		if (hadAccounting && this.accounting.size === 0) this.failure = null;
+	}
+
+	private current(candidate: PendingCandidate): PendingCandidate | null {
+		const conv = candidate.conversationRef;
+		const push = this.deps.control.effectivePush(conv);
+		if (push.mode === "off") return null;
+		if (candidate.cls === "follow" && !this.deps.attention.effectiveFollow(conv)) return null;
+		if (candidate.cls === "ordinary" && push.filter === "direct") return null;
+		if (
+			candidate.cls === "direct" &&
+			push.filter === "direct" &&
+			(candidate.trigger === "private" || candidate.trigger === "revival")
+		)
+			return null;
+		if (conv === "qq-follow-ups" && this.deps.control.dueFollowUps().length === 0) return null;
+		if (conv === "qq-operations" && this.settledUnknowns.size === 0) return null;
+		if (conv === "qq-backlog" && pendingConversations(this.deps.journal, this.deps.control).length === 0) return null;
+		if (candidate.requestRefs?.length) {
+			const refs = candidate.requestRefs.filter((ref) => this.deps.isRequestPending?.(ref) !== false);
+			return refs.length > 0 ? { ...candidate, requestRefs: refs } : null;
+		}
+		if (
+			this.isMessageDerived(candidate) &&
+			(this.pendingCount(conv) === 0 || (candidate.cls !== "follow" && this.noticeFreshCount(conv) === 0))
+		)
+			return null;
+		return candidate;
+	}
+
+	private async materialize(slot: Placeholder): Promise<string | null> {
+		if (this.stopped || this.deps.signal?.aborted) return null;
+		if (slot.result) return slot.result.text;
+		const follow = [...this.pending.values()].find(
+			(candidate) => candidate.cls === "follow" && this.current(candidate),
+		);
+		if (follow)
+			return this.deps.locks.run(follow.conversationRef, async () =>
+				this.buildMaterialization(slot, follow.conversationRef),
 			);
-			this.placeholder = null;
-			this.offer(candidate);
+		return this.buildMaterialization(slot);
+	}
+
+	/** No awaits: the payload and accounting references come from the same snapshot. */
+	private buildMaterialization(slot: Placeholder, lockedConversation?: string): string | null {
+		if (this.stopped || this.deps.signal?.aborted) return null;
+		if (slot.result) return slot.result.text;
+		const captured = [...this.pending.values()];
+		const current = captured.flatMap((candidate) => {
+			const valid = this.current(candidate);
+			if (!valid && this.pending.get(candidate.key) === candidate) this.pending.delete(candidate.key);
+			return valid ? [valid] : [];
+		});
+		const notices = current.filter((candidate) => candidate.cls !== "follow");
+		notices.sort(
+			(a, b) => Number(b.cls === "direct") - Number(a.cls === "direct") || a.oldestAt.localeCompare(b.oldestAt),
+		);
+		const follow = current.find(
+			(candidate) => candidate.cls === "follow" && candidate.conversationRef === lockedConversation,
+		);
+		const handled = new Set(notices.map((candidate) => candidate.key));
+		const notified = new Map<string, number>();
+		const parts: string[] = [];
+		if (notices.length > 0) {
+			parts.push(this.deps.renderBatch({ ...notices[0]!, related: notices }));
+			for (const conv of pendingConversations(this.deps.journal, this.deps.control)) {
+				const last = pendingFacts(this.deps.journal, this.deps.control, conv).at(-1);
+				if (last) notified.set(conv, last.sequence);
+			}
+		}
+		const followUpRefs = notices.some((candidate) => candidate.conversationRef === "qq-follow-ups")
+			? this.deps.control.dueFollowUps().map((item) => item.ref)
+			: [];
+		const operationRefs = notices.some((candidate) => candidate.conversationRef === "qq-operations")
+			? [...this.settledUnknowns.keys()]
+			: [];
+		let window: ReadWindowResult | undefined;
+		if (follow) {
+			const conv = follow.conversationRef;
+			if (followPressure(this.deps.journal, this.deps.control, conv)) {
+				this.suspendedFollow.add(conv);
+				parts.push(
+					`[QQ 动态提示] ${conv} 缓冲超过 30 条或 14,000 字符；自动正文已暂停灌注。主动阅读：${JSON.stringify({ action: "read", params: { conversationRef: conv } })}`,
+				);
+				if (notices.length === 0) parts.push(this.deps.renderBatch({ ...follow, cls: "ordinary" }));
+			} else {
+				this.suspendedFollow.delete(conv);
+				window = this.deps.renderReadWindow(conv);
+				if (window.delivered.length > 0) {
+					parts.push(window.text.replace("[QQ 阅读]", "[QQ 跟读]"));
+					notified.set(conv, window.deliveredThrough);
+				}
+			}
+			handled.add(follow.key);
+		}
+		if (parts.length === 0) return null;
+		const result: Materialization = { text: parts.join("\n"), notified, followUpRefs, operationRefs };
+		if (follow && window && window.delivered.length > 0) {
+			this.deps.journal.recordDispatched(
+				follow.conversationRef,
+				window.deliveredThrough,
+				"follow",
+				this.deps.now(),
+				slot.inputId,
+			);
+			if (window.remaining > 0)
+				this.pending.set(follow.key, { ...follow, count: window.remaining, oldestAt: this.deps.now() });
+		}
+		slot.result = result;
+		for (const candidate of captured) {
+			if (handled.has(candidate.key) && this.pending.get(candidate.key) === candidate)
+				this.pending.delete(candidate.key);
+		}
+		return result.text;
+	}
+
+	private async tryDispatch(): Promise<void> {
+		if (this.stopped || this.placeholder || this.recheckTimer || (this.pending.size === 0 && !this.retryDelivery))
+			return;
+		for (const candidate of this.pending.values()) if (!this.current(candidate)) this.pending.delete(candidate.key);
+		const replay = this.retryDelivery;
+		const candidate = replay?.candidate ?? this.select();
+		if (!candidate) return;
+		const slot: Placeholder = {
+			inputId: `qq:${randomUUID()}`,
+			result: replay?.result ?? null,
+			failed: false,
+			settled: false,
+		};
+		this.retryDelivery = null;
+		this.placeholder = slot;
+		try {
+			await this.deps.emit({
+				id: slot.inputId,
+				conversationRef: candidate.conversationRef,
+				cls: candidate.cls,
+				origin: candidate.origin,
+				render: async () => {
+					try {
+						return await this.materialize(slot);
+					} catch (error) {
+						slot.failed = true;
+						this.retry(error instanceof Error ? error.message : String(error));
+						return null;
+					}
+				},
+			});
+		} catch (error) {
+			if (this.stopped || slot.settled) return;
+			if (this.placeholder === slot) this.placeholder = null;
+			if (slot.result) this.retryDelivery = { candidate, result: slot.result };
+			this.retry(error instanceof Error ? error.message : String(error));
 		}
 	}
 

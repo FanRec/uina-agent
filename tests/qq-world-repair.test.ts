@@ -9,7 +9,7 @@ import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import { MediaStaging } from "../.uina/worlds/qq/src/media.js";
 import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
-import { renderBatch, renderFollowBody } from "../.uina/worlds/qq/src/render.js";
+import { renderBatch, renderReadWindow } from "../.uina/worlds/qq/src/render.js";
 import { QqScheduler } from "../.uina/worlds/qq/src/scheduler.js";
 import type { TransportCallOutcome } from "../.uina/worlds/qq/src/transport.js";
 import type { MessageFact } from "../.uina/worlds/qq/src/types.js";
@@ -324,8 +324,12 @@ describe("QQ 修复：触发现场", () => {
 			locks: new ConversationLocks(),
 			now: () => NOW,
 			renderBatch: (c) => renderBatch(c, { journal: deps.journal, control: deps.control, now: () => NOW }),
-			renderFollowBody: (conv) =>
-				renderFollowBody(conv, { journal: deps.journal, control: deps.control, now: () => NOW }),
+			renderReadWindow: (conv) =>
+				renderReadWindow(
+					conv,
+					{ journal: deps.journal, control: deps.control, now: () => NOW },
+					{ limit: 30, budgetChars: 14000 },
+				),
 			emit: async (i) => {
 				emitted.push((await i.render()) ?? "");
 			},
@@ -354,8 +358,12 @@ describe("QQ 修复：触发现场", () => {
 			isRequestPending: (ref) =>
 				!deps.ops.all().some((op) => op.target === ref && (op.outcome === "succeeded" || op.outcome === "unknown")),
 			renderBatch: (c) => renderBatch(c, { journal: deps.journal, control: deps.control, now: () => NOW }),
-			renderFollowBody: (conv) =>
-				renderFollowBody(conv, { journal: deps.journal, control: deps.control, now: () => NOW }),
+			renderReadWindow: (conv) =>
+				renderReadWindow(
+					conv,
+					{ journal: deps.journal, control: deps.control, now: () => NOW },
+					{ limit: 30, budgetChars: 14000 },
+				),
 			emit: async (i) => {
 				emitted.push((await i.render()) ?? "");
 			},
@@ -382,7 +390,7 @@ describe("QQ 修复：触发现场", () => {
 			locks: new ConversationLocks(),
 			now: () => NOW,
 			renderBatch: () => "消息",
-			renderFollowBody: () => "消息",
+			renderReadWindow: () => ({ text: "消息", delivered: [], deliveredThrough: 0, remaining: 0 }),
 			emit: async (i) => {
 				emitted.push(i.id);
 				await new Promise<void>((_resolve, reject) => {
