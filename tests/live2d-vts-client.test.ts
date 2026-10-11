@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VTSClient, type VTSParamValue, type WebSocketLike } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 
@@ -184,20 +184,20 @@ describe("live2d vts-client（移植行为验证）", () => {
 		client.disconnect();
 	});
 
-	it("单未确认帧 + 背压：pending 未结算或 bufferedAmount>0 时注入被丢弃", async () => {
+	it("在途积压 + 背压：在途达上限或 bufferedAmount>0 时注入被丢弃", async () => {
 		const device = new Device();
-		device.silentInject = true; // 第一帧不回包 → injectionPending 挂起
-		const { client } = await readyClient(device);
+		device.silentInject = true; // 第一帧不回包 → inFlight 达到上限
+		const { client } = await readyClient(device, { maxInFlight: 1 });
 		const lease = client.observeMotionInjections("lease-2");
 		const frame: VTSParamValue[] = [{ id: "drive:x", value: 1 }];
 		client.injectParameters(frame, [{ leaseID: "lease-2", inputs: ["drive:x"] }]);
 		expect(client.getInjectionStats().sent).toBe(1);
 
-		// 单未确认帧：第二帧丢弃。
+		// 在途达上限：第二帧丢弃。
 		client.injectParameters(frame, [{ leaseID: "lease-2", inputs: ["drive:x"] }]);
 		expect(client.getInjectionStats().dropped).toBe(1);
 
-		// 结算第一帧后，背压（bufferedAmount>0）同样丢弃。
+		// 结算第一帧后，底层背压（bufferedAmount>0）同样丢弃。
 		device.silentInject = false;
 		device.reply(device.messages("InjectParameterDataRequest")[0]!.requestID, "InjectParameterDataResponse", {});
 		await lease.finish();
@@ -242,5 +242,40 @@ describe("live2d vts-client（移植行为验证）", () => {
 		expect(client.isConnected()).toBe(false);
 		expect(client.getFault()).toContain("未加载模型");
 		client.disconnect();
+	});
+
+	it("注入超时不销毁连接：ACK 超时结算当前在途为 failed，保持 Socket 连通并允许下一帧继续注入", async () => {
+		vi.useFakeTimers();
+		try {
+			const device = new Device();
+			device.silentInject = true;
+			const { client, events } = await readyClient(device);
+			expect(client.isConnected()).toBe(true);
+
+			const lease = client.observeMotionInjections("lease-timeout");
+			const frame: VTSParamValue[] = [{ id: "drive:x", value: 1 }];
+			client.injectParameters(frame, [{ leaseID: "lease-timeout", inputs: ["drive:x"] }]);
+			expect(client.getInjectionStats().sent).toBe(1);
+
+			await vi.advanceTimersByTimeAsync(2600);
+
+			expect(client.isConnected()).toBe(true);
+			expect(events).toEqual([true]);
+			expect(client.getFault()).toContain("参数注入确认超时");
+
+			const evidence = await lease.finish();
+			expect(evidence.failed).toBe(1);
+
+			device.silentInject = false;
+			const lease2 = client.observeMotionInjections("lease-recovery");
+			client.injectParameters(frame, [{ leaseID: "lease-recovery", inputs: ["drive:x"] }]);
+			const evidence2 = await lease2.finish();
+			expect(evidence2.sent).toBe(1);
+			expect(evidence2.accepted).toBe(1);
+
+			client.disconnect();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
