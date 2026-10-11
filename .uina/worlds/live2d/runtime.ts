@@ -7,7 +7,7 @@ import { encodeFrame, validateRig, type ModelRig } from "./adapter/rig.js";
 import { VTSClient } from "./adapter/vts-client.js";
 import { emptyCatalog, recompileWithSpeech, type AttentionTarget, type CatalogSnapshot } from "./authoring/catalog.js";
 import type { SpeechPolicy } from "./authoring/motion.js";
-import { MotionDirector, SupersededError } from "./director/director.js";
+import { MotionDirector, SupersededError, type MotionHandle } from "./director/director.js";
 import { buildLive2DEndpoint, type Live2DEndpoint } from "./endpoint.js";
 import { fromEngineResult, toolRejected, toolSucceeded, toolUnknown } from "./results.js";
 import { SpeechInput, type SpeechConfig } from "./speech-level.js";
@@ -65,6 +65,9 @@ export class Live2DRuntime {
 	private paused = false;
 	/** 焦点状态（BodyRouter onFocus 通知）；幂等去重在本方法内完成（边界 #5）。 */
 	private focused = true;
+	/** thinking 状态（§5 宿主事件）：状态驱动幂等，仅跳变时启/停 background.thinking。 */
+	private thinking = false;
+	private thinkingHandle?: MotionHandle;
 	/** safeStop 保持帧：暂停期间按 tick 节奏持续注入（口型通道已覆写中性值）。 */
 	private keepFrame?: Record<string, number>;
 	private clock: NodeJS.Timeout | null = null;
@@ -346,6 +349,17 @@ export class Live2DRuntime {
 				this.cleanups.push(ctx.expose(VOICE_LEVEL_SINK_EXPOSED_PREFIX + this.endpoint.bodyId, this.levelSink));
 			}
 		}
+		// 宿主事件订阅（§5 最小消费集）：thinking 状态驱动 / turn 边界 / turn_aborted → interrupt。
+		// 无用途的事件（input_accepted 等）随监听器一并到达但被忽略——框架按类型批量订阅，无法只订子集。
+		if (ctx.onHostEvent) {
+			this.cleanups.push(
+				ctx.onHostEvent((event) => {
+					if (event.type === "output_update" && event.channel === "thinking") this.setThinking(true);
+					else if (event.type === "turn_start" || event.type === "turn_end") this.setThinking(false);
+					else if (event.type === "turn_aborted") this.interrupt();
+				}),
+			);
+		}
 		if (this.client) {
 			// 监听必须先于 connect 注册：ready 回调在 connect 流程内同步链上触发。
 			this.client.setConnectionChangeListener((connected) => {
@@ -389,11 +403,33 @@ export class Live2DRuntime {
 	}
 
 	/**
+	 * setThinking（§5 宿主事件）：状态驱动入口，幂等——仅在跳变时动作。
+	 * false→true：按目录 background.thinking 启动（Transition 类别）；目录缺失
+	 * （未发布/无定义）即启动失败，不自动重试。true→false：fade 收势停止。
+	 */
+	setThinking(on: boolean): void {
+		if (on === this.thinking) return;
+		this.thinking = on;
+		if (on) {
+			const clip = this.catalogView.background.thinking;
+			if (!clip) return;
+			this.thinkingHandle = this.director?.play(clip, { category: "transition" });
+		} else {
+			this.thinkingHandle?.stop("release");
+			this.thinkingHandle = undefined;
+		}
+	}
+
+	/**
 	 * interrupt（§3 回合打断）：取消瞬时动作 + 停 thinking + 口型包络直清；
 	 * 槽位与自律保持，**不进入 paused**（emitCue 仍可受理）。
 	 * 口型直清不经 speech-level 守卫路径（§4 第三层）：envelope cut + 声学输入清零双保险。
 	 */
 	interrupt(): void {
+		// thinking 状态同步归零：interruptTransient 已对 transition 类（含 thinking 播放）fade 收势。
+		// 不归零会让下一次 thinking=true 被幂等门吞掉，本回合内再也无法点亮思考态。
+		this.thinking = false;
+		this.thinkingHandle = undefined;
 		this.director?.interruptTransient("turn_aborted");
 		this.speechInput?.reset();
 	}
