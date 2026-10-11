@@ -43,7 +43,6 @@ import { handleFetch } from "./resource-fetch.js";
 export interface QqAppDeps {
 	readonly selfId: string;
 	readonly signal?: AbortSignal;
-	readonly onConsumption?: (conversationRef: string) => void;
 	readonly grants: DeploymentGrants;
 	readonly journal: FactsJournal;
 	readonly control: ControlStore;
@@ -53,7 +52,7 @@ export interface QqAppDeps {
 	readonly locks: ConversationLocks;
 	readonly now?: () => string;
 	readonly media?: { readonly allowedRoots: readonly string[]; readonly staging: MediaStaging };
-	/** 呈现选项（快照头时区）；批次现场经 scheduler 注入，observe 现场经此注入。 */
+	/** 呈现选项（快照头时区）；批次现场经调度器注入，observe 现场经此注入。 */
 	readonly display?: render.DisplayOptions;
 	readonly faceNames?: Map<string, string>;
 	readonly requestTimeoutMs?: number;

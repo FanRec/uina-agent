@@ -48,7 +48,7 @@ const deps: QqAppDeps = {
 	control,
 	ops,
 	transport,
-	attention: new AttentionModel({ control }),
+	attention: new AttentionModel(),
 	locks: new ConversationLocks(),
 	media: { allowedRoots: config.media?.allowedRoots ?? [process.cwd(), dataDir], staging },
 };

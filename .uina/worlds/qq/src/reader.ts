@@ -13,12 +13,12 @@ import * as render from "./render.js";
 import { parseConversationRef, parseMessageRef, type MessageFact, type MessageSegment } from "./types.js";
 
 /**
- * 查询与消费积木（设计 §4.1~§4.4，P4）：
- * - inbox：读写合一——focus/push 显式才修改（省略严格不动），查询如实返回 effectiveFollow；
- * - read：消费锁内顺序消费，成功交付后推进 body_dispatched 书签（与 follow 共锁同书签）；
- * - skip：锁内放下积压，审计记录 + Math.max 单调推进消费位；
- * - browse：纯只读（contentTarget > messageRefs > direction 三级裁决），绝不移动书签。
- * 绑定账号由 World 运行时注入（设计 §4：积木不再要求模型重复填写 account）。
+ * 查询与消费积木（v3 哑手机）：
+ * - inbox：看手机（红点列表 + 会话设置）——focus（开窗）与 push（静音）显式才修改，省略严格不动；
+ * - read：点开聊天——消费锁内顺序消费，成功交付后推进书签；
+ * - skip：已读不看——锁内放下积压，审计记录 + Math.max 单调推进消费位；
+ * - browse：翻历史（contentTarget > messageRefs > direction 三级裁决），绝不移动书签。
+ * 绑定账号由 World 运行时注入（积木不要求模型重复填写 account）。
  */
 
 const KIND_LABELS: Record<string, string> = { group: "群聊", private: "私聊", temp: "临时会话" };
@@ -50,10 +50,7 @@ function checkConversation(ref: unknown): { ok: true; ref: string } | ToolExecut
 	return { ok: true, ref };
 }
 
-/* ---------- P4.1 inbox ---------- */
-
-const PUSH_MODES = ["off", "digest", "follow", "inherit"] as const;
-const PUSH_FILTERS = ["all", "direct", "inherit"] as const;
+/* ---------- inbox ---------- */
 
 export async function handleInbox(
 	deps: QqAppDeps,
@@ -79,10 +76,9 @@ export async function handleInbox(
 			(push.target !== "account" && !parseConversationRef(push.target))
 		)
 			return worldFailed("push.target 必须是会话引用或 account。", { reason: "invalid_target" });
-		if (push.mode !== undefined && !(PUSH_MODES as readonly unknown[]).includes(push.mode))
-			return worldFailed("push.mode 非法。", { reason: "invalid_push_mode" });
-		if (push.filter !== undefined && !(PUSH_FILTERS as readonly unknown[]).includes(push.filter))
-			return worldFailed("push.filter 非法。", { reason: "invalid_push_filter" });
+		if (push.off !== undefined && typeof push.off !== "boolean") {
+			return worldFailed("off 必须是布尔值。", { reason: "invalid_params" });
+		}
 		if (
 			push.pausedUntil !== undefined &&
 			push.pausedUntil !== null &&
@@ -90,40 +86,41 @@ export async function handleInbox(
 		)
 			return worldFailed("pausedUntil 必须是 ISO 时间或 null。", { reason: "invalid_params" });
 	}
+	// 在线目录 best-effort：名称未知保持 unknown，不阻塞红点一瞥（瞥一眼必须廉价）。
 	const names = new Map<string, string | null>();
+	let directoryOnline = true;
 	try {
 		const [friends, groups] = await Promise.all([
 			deps.transport.call("get_friend_list", {}, signal),
 			deps.transport.call("get_group_list", {}, signal),
 		]);
 		if (signal?.aborted) return worldCancelled("收件箱查询已取消。", { effect: "not_started" });
-		if (friends.status !== "ok" || groups.status !== "ok")
-			return worldFailed("在线好友/群目录查询失败，收件箱不可用。", {
-				reason: "platform_query_failed",
-				friends,
-				groups,
-			});
-		if (!Array.isArray(friends.data) || !Array.isArray(groups.data))
-			return worldFailed("在线目录响应形状非法。", { reason: "platform_query_failed" });
-		for (const raw of friends.data as Record<string, unknown>[]) {
-			const id = oneBotId(raw.user_id);
-			if (id)
-				names.set(
-					`p${id}`,
-					typeof raw.remark === "string" && raw.remark
-						? raw.remark
-						: typeof raw.nickname === "string"
-							? raw.nickname
-							: null,
-				);
-		}
-		for (const raw of groups.data as Record<string, unknown>[]) {
-			const id = oneBotId(raw.group_id);
-			if (id) names.set(`g${id}`, typeof raw.group_name === "string" ? raw.group_name : null);
-		}
+		if (
+			friends.status === "ok" &&
+			groups.status === "ok" &&
+			Array.isArray(friends.data) &&
+			Array.isArray(groups.data)
+		) {
+			for (const raw of friends.data as Record<string, unknown>[]) {
+				const id = oneBotId(raw.user_id);
+				if (id)
+					names.set(
+						`p${id}`,
+						typeof raw.remark === "string" && raw.remark
+							? raw.remark
+							: typeof raw.nickname === "string"
+								? raw.nickname
+								: null,
+					);
+			}
+			for (const raw of groups.data as Record<string, unknown>[]) {
+				const id = oneBotId(raw.group_id);
+				if (id) names.set(`g${id}`, typeof raw.group_name === "string" ? raw.group_name : null);
+			}
+		} else directoryOnline = false;
 	} catch (error) {
 		if (signal?.aborted) return worldCancelled("收件箱查询已取消。", { effect: "not_started" });
-		return worldFailed(`在线目录查询失败：${String(error)}`, { reason: "platform_query_failed" });
+		directoryOnline = false;
 	}
 	const refs = new Set([
 		...names.keys(),
@@ -161,19 +158,18 @@ export async function handleInbox(
 			archivedCount: archivedCountOf(deps.journal, deps.control, ref),
 			lastTime: last?.time ?? null,
 			preview: last ? previewOf(last) : null,
-			pushMode: deps.control.effectivePush(ref).mode,
+			pushOff: deps.control.effectivePush(ref).off,
 			focused: deps.attention.isFocused(ref),
-			effectiveFollow: deps.attention.effectiveFollow(ref),
 		};
 	});
 	const accountPush = deps.control.effectivePush("account");
 	return worldSucceeded(
 		render.receipt.ok("inbox", [
-			`在线收件箱 snapshot=${new render.TimeView(deps.display?.timezone).header(nowIso(deps))}；selfId=${deps.selfId}`,
-			`关注=[${deps.attention.focusList().join(", ")}]；账号推送=${accountPush.mode}/${accountPush.filter}`,
+			`在线收件箱 snapshot=${new render.TimeView(deps.display?.timezone).header(nowIso(deps))}；selfId=${deps.selfId}${directoryOnline ? "" : "；在线目录不可用，名称以本地为准"}`,
+			`关注=[${deps.attention.focusList().join(", ")}]；账号静音=${accountPush.off ? "是" : "否"}`,
 			...rows.map(
 				(row) =>
-					`${row.conversationRef} | name=${row.name === null ? "unknown" : render.quote(row.name)} | ${row.kind} | 待处理 ${row.pendingCount} 条 | 封存 ${row.archivedCount} 条 | push=${row.pushMode} | 关注=${row.focused ? "是" : "否"} | follow=${row.effectiveFollow ? "是" : "否"}${row.preview ? ` | ${render.quote(row.preview)}` : ""}`,
+					`${row.conversationRef} | name=${row.name === null ? "unknown" : render.quote(row.name)} | ${row.kind} | 待处理 ${row.pendingCount} 条 | 封存 ${row.archivedCount} 条 | push=${row.pushOff ? "off" : "on"} | 窗口=${row.focused ? "开" : "关"}${row.preview ? ` | ${render.quote(row.preview)}` : ""}`,
 			),
 			...(page.nextCursor
 				? [
@@ -250,7 +246,6 @@ export async function handleRead(
 			images,
 		);
 		if (window.delivered.length > 0) deps.journal.recordDispatched(conv, window.deliveredThrough, "read", nowIso(deps));
-		deps.onConsumption?.(conv);
 		return result;
 	});
 }
@@ -296,7 +291,6 @@ export async function handleSkip(
 					).length
 				: 0;
 		if (newBookmark > through) deps.journal.recordSkipped(conv, newBookmark, reason, nowIso(deps));
-		deps.onConsumption?.(conv);
 		const bookmarkFact = (deps.journal.snapshot.messages.get(conv) ?? []).find((m) => m.sequence === newBookmark);
 		return {
 			skippedCount,
@@ -613,7 +607,7 @@ export function qqStatusLines(
 	for (const conv of deps.journal.listConversationRefs()) {
 		const baseline = deps.control.baselineOf(conv) ?? "?";
 		lines.push(
-			`${conv} | 消费位=${deps.journal.dispatchedThroughOf(conv)} | 基线=${baseline} | 通知位=${deps.journal.snapshot.notifiedThrough.get(conv) ?? "无"} | 待处理=${pendingCountOf(deps.journal, deps.control, conv)} | 最新seq=${deps.journal.latestSequence(conv)} | push=${deps.control.effectivePush(conv).mode}`,
+			`${conv} | 消费位=${deps.journal.dispatchedThroughOf(conv)} | 基线=${baseline} | 待处理=${pendingCountOf(deps.journal, deps.control, conv)} | 最新seq=${deps.journal.latestSequence(conv)} | push=${deps.control.effectivePush(conv).off ? "off" : "on"}`,
 		);
 	}
 	const skips = deps.journal.skipRecords().slice(-5);

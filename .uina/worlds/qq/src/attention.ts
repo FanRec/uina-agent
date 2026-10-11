@@ -1,19 +1,16 @@
 import { REF_PATTERNS } from "./types.js";
-import type { ControlStore } from "./control-store.js";
 
 /**
- * 注意力模型（设计 §1.2 双态在场）：
- * - focus 是会话期内存注意力状态：进程重启后重置为空（T14 冷启动无焦点），
- *   绝不持久化、绝不隐式修改 push.mode。
- * - effectiveFollow = isFocused(target) && resolvedPushMode(target) === "follow"。
+ * 注意力模型（v3 哑手机）：focus = 打开的聊天窗口。
+ * - focus 是会话期内存状态：进程重启后重置为空（在场是行为状态，重启重新声明），
+ *   绝不持久化、绝不隐式修改静音偏好。
+ * - focus 流式无视静音：开着窗口 = 看得到，门铃（off/pausedUntil）只管不在场时。
  * - setFocus 原子替换；传空数组即放下所有关注；会话引用非法显式失败。
  */
 export class AttentionModel {
 	private readonly focus = new Set<string>();
 
-	constructor(private readonly deps: { readonly control: ControlStore }) {}
-
-	/** 原子替换当前置顶关注会话列表；传空数组 = 放下所有关注。 */
+	/** 原子替换当前打开窗口的会话列表；传空数组 = 放下所有关注。 */
 	setFocus(conversationRefs: readonly string[]): void {
 		const next = new Set<string>();
 		for (const ref of conversationRefs) {
@@ -30,10 +27,5 @@ export class AttentionModel {
 
 	isFocused(conversationRef: string): boolean {
 		return this.focus.has(conversationRef);
-	}
-
-	/** 有效跟读派生公式（§1.2）：视线在该会话 且 解析后 push.mode === "follow"。 */
-	effectiveFollow(conversationRef: string): boolean {
-		return this.focus.has(conversationRef) && this.deps.control.effectivePush(conversationRef).mode === "follow";
 	}
 }

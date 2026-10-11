@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AttentionOverride, EffectivePush, FollowUpItem, FollowUpState, PushPreference } from "./types.js";
+import type { EffectivePush, FollowUpItem, FollowUpState, PushPreference } from "./types.js";
 
 /**
- * QQ 控制状态：push 偏好（v2）+ 冷启动基线 + follow_up 簿 + 诊断 revision。
+ * QQ 控制状态：静音偏好（v3 哑手机）+ 冷启动基线 + follow_up 簿 + 诊断 revision。
  * 单写方；写入直接修改执行时的当前状态，持久确认（tmp+rename）成功后才返回，
  * IO 失败保留旧状态并抛错（调用方报 failed，不宣称保存）。
  * 没有 expectedRevision/条件比较；revision 只是诊断计数，不参与提醒资格。
@@ -25,17 +25,17 @@ function isIsoTime(value: unknown): value is string {
 	return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
 
-/** R5 迁移映射：silent→off、direct_only→digest+direct、normal→digest+all；priority 丢弃。 */
-function migrateOverride(override: AttentionOverride): PushPreference {
+/** v3 一次性迁移：任意历史偏好形状（AttentionOverride / v2 mode+filter）归并为 {off, pausedUntil}。 */
+function normalizePush(raw: unknown): PushPreference {
+	const value = (raw ?? {}) as {
+		off?: unknown;
+		mode?: unknown;
+		pausedUntil?: unknown;
+	};
+	const off = value.off === true || value.mode === "off" || value.mode === "silent";
 	return {
-		...(override.mode === "silent"
-			? { mode: "off" as const }
-			: override.mode === "direct_only"
-				? { mode: "digest" as const, filter: "direct" as const }
-				: override.mode === "normal"
-					? { mode: "digest" as const, filter: "all" as const }
-					: {}),
-		...(override.pausedUntil !== undefined ? { pausedUntil: override.pausedUntil } : {}),
+		...(off ? { off: true } : {}),
+		...(value.pausedUntil !== undefined ? { pausedUntil: value.pausedUntil as string | null } : {}),
 	};
 }
 
@@ -90,18 +90,20 @@ export class ControlStore {
 		) {
 			throw new Error("QQ 控制状态 v2 账号元信息不匹配或形状非法，明确失败");
 		}
-		// R5 一次性迁移：旧 v2 文件中的 AttentionOverride → push 偏好（priority 丢弃）。
-		// 迁移后持久化文件不再携带旧字段；新写路径只有 push 偏好。
+		// v3 一次性迁移：任意历史偏好形状归并为 {off, pausedUntil}；迁移后持久化文件不再携带旧字段。
 		let accountPush = shape.accountPush;
 		let conversationPush = shape.conversationPush;
-		const legacy = shape.accountPush === undefined;
+		const legacy = (parsed as { accountOverride?: unknown }).accountOverride !== undefined;
 		if (legacy) {
-			const legacyAccount = (parsed as { accountOverride?: AttentionOverride }).accountOverride ?? {};
+			const legacyAccount = (parsed as { accountOverride?: unknown }).accountOverride;
 			const legacyConversations =
-				(parsed as { conversationOverrides?: Record<string, AttentionOverride> }).conversationOverrides ?? {};
-			accountPush = migrateOverride(legacyAccount);
+				(parsed as { conversationOverrides?: Record<string, unknown> }).conversationOverrides ?? {};
+			accountPush = normalizePush(legacyAccount);
+			conversationPush = Object.fromEntries(Object.entries(legacyConversations).map(([k, v]) => [k, normalizePush(v)]));
+		} else if (accountPush !== undefined) {
+			accountPush = normalizePush(accountPush);
 			conversationPush = Object.fromEntries(
-				Object.entries(legacyConversations).map(([k, v]) => [k, migrateOverride(v)]),
+				Object.entries(conversationPush ?? {}).map(([k, v]) => [k, normalizePush(v)]),
 			);
 		}
 		this.state = {
@@ -132,23 +134,7 @@ export class ControlStore {
 		this.state = next;
 	}
 
-	/** 已到期但尚未恢复处理的暂停目标（push 偏好口径；到期恢复原规则 + 一次允许的积压摘要）。 */
-	expiredPauses(): { target: string; pausedUntil: string }[] {
-		const nowMs = Date.parse(this.nowFn());
-		const out: { target: string; pausedUntil: string }[] = [];
-		const account = this.state.accountPush;
-		if (account.pausedUntil != null && Date.parse(account.pausedUntil) <= nowMs) {
-			out.push({ target: "account", pausedUntil: account.pausedUntil });
-		}
-		for (const [target, pref] of Object.entries(this.state.conversationPush)) {
-			if (pref.pausedUntil != null && Date.parse(pref.pausedUntil) <= nowMs) {
-				out.push({ target, pausedUntil: pref.pausedUntil });
-			}
-		}
-		return out;
-	}
-
-	/* ---------- push 偏好（v2 阅读重构；语义见设计文档 §1.2/§3/§9） ---------- */
+	/* ---------- 静音偏好（v3 哑手机；off 是唯一持久配置） ---------- */
 
 	private pushFor(target: string): PushPreference {
 		if (target === "account") return { ...this.state.accountPush };
@@ -157,14 +143,16 @@ export class ControlStore {
 
 	/** setPush：只修改提供的字段；省略 = 不修改；pausedUntil null = 解除暂停。 */
 	setPush(target: string, patch: PushPreference): number {
+		if (patch.off !== undefined && typeof patch.off !== "boolean") {
+			throw new Error("off 必须是布尔值");
+		}
 		if (patch.pausedUntil !== undefined && patch.pausedUntil !== null && !isIsoTime(patch.pausedUntil)) {
 			throw new Error("pausedUntil 必须是带时区的 ISO 时间或 null");
 		}
 		const current = this.pushFor(target);
 		const nextPref: PushPreference = {
 			...current,
-			...(patch.mode !== undefined ? { mode: patch.mode } : {}),
-			...(patch.filter !== undefined ? { filter: patch.filter } : {}),
+			...(patch.off !== undefined ? { off: patch.off } : {}),
 			...(patch.pausedUntil !== undefined ? { pausedUntil: patch.pausedUntil } : {}),
 		};
 		const next: ControlFileShape =
@@ -179,7 +167,7 @@ export class ControlStore {
 		return this.state.revision;
 	}
 
-	/** 清除目标推送偏好（回落账号继承/默认）。 */
+	/** 清除目标静音偏好（回落账号继承/默认响铃）。 */
 	clearPush(target: string): number {
 		const next: ControlFileShape =
 			target === "account"
@@ -194,32 +182,18 @@ export class ControlStore {
 	}
 
 	/**
-	 * 继承解析（设计文档 §1.2 公式）：resolved = 会话显式值优先，inherit/缺省回落账号；
-	 * 账号回落默认 digest/all。账号级 off 只是账号默认值，不压制会话显式选择（§1.1 选择权）。
-	 * 暂停（账号或局部）视作临时 off，到期自动恢复。
+	 * 生效静音状态：本地显式值或账号值任一 off 即静音；暂停（账号或局部）折算为 off。
+	 * focus（在场）不经过此处——开着窗口无视门铃，由调度层直接判定。
 	 */
 	effectivePush(target: string): EffectivePush {
 		const nowMs = Date.parse(this.nowFn());
 		const account = this.pushFor("account");
 		const local = target === "account" ? {} : this.pushFor(target);
-		const accountPaused =
-			account.pausedUntil != null && isIsoTime(account.pausedUntil) && Date.parse(account.pausedUntil) > nowMs;
-		const localPaused =
-			local.pausedUntil != null && isIsoTime(local.pausedUntil) && Date.parse(local.pausedUntil) > nowMs;
-		let pausedUntil: string | null = null;
-		if (accountPaused) pausedUntil = account.pausedUntil!;
-		else if (localPaused) pausedUntil = local.pausedUntil!;
-		const resolveMode = (): Exclude<import("./types.js").PushMode, "inherit"> => {
-			const m = local.mode !== "inherit" && local.mode !== undefined ? local.mode : (account.mode ?? "digest");
-			return m === "inherit" ? "digest" : m;
-		};
-		const resolveFilter = (): Exclude<import("./types.js").PushFilter, "inherit"> => {
-			const f = local.filter !== "inherit" && local.filter !== undefined ? local.filter : (account.filter ?? "all");
-			return f === "inherit" ? "all" : f;
-		};
+		const accountPaused = account.pausedUntil != null && isIsoTime(account.pausedUntil) && Date.parse(account.pausedUntil) > nowMs;
+		const localPaused = local.pausedUntil != null && isIsoTime(local.pausedUntil) && Date.parse(local.pausedUntil) > nowMs;
+		const pausedUntil = accountPaused ? account.pausedUntil! : localPaused ? local.pausedUntil! : null;
 		return {
-			mode: accountPaused || localPaused ? "off" : resolveMode(),
-			filter: resolveFilter(),
+			off: local.off === true || account.off === true || accountPaused || localPaused,
 			pausedUntil,
 		};
 	}

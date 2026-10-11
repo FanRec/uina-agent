@@ -4,7 +4,7 @@ import type { MessageFact, MessageSegment, OperationRecord, RequestFact, FollowU
 import { parseConversationRef } from "./types.js";
 import { decodeOneBotSegments, oneBotTime } from "./message-codec.js";
 import type { PendingCandidate } from "./scheduler.js";
-import { consumptionThrough, pendingCountOf, pendingFacts, pendingConversations } from "./consumption.js";
+import { consumptionThrough, pendingFacts } from "./consumption.js";
 /**
  * QQ World 呈现层（唯一 owner，交互合同 §5/§6）。
  * 纯函数：消费规范 facts 与只读快照，产出模型可见正文；不触 transport、不写 store。
@@ -380,68 +380,56 @@ export function renderRequestFact(fact: RequestFact, display?: DisplayOptions): 
 	return `${time.line(fact.time)} | ${fact.ref} | kind=${fact.kind} | state=${fact.state} | requester=${fact.requesterRef ?? "unknown"}${fact.requesterDisplayName ? ` name=${quote(fact.requesterDisplayName)}` : ""}${fact.targetConversationRef ? ` | targetConversationRef=${fact.targetConversationRef}` : ""}${fact.invitedRef ? ` | invited=${fact.invitedRef}` : ""} | comment=${fact.comment === null ? "null" : quote(fact.comment)}`;
 }
 
-/** Ordinary notifications carry facts and references; read/follow own body delivery. */
-export function renderBatch(candidate: PendingCandidate, deps: BatchRenderDeps): string {
-	const candidates = candidate.related ?? [candidate];
-	const facts = candidates.flatMap((item) => {
-		switch (item.conversationRef) {
-			case "qq-follow-ups":
-				return [renderFollowUpBatch(deps)];
-			case "qq-event-account":
-				return [renderAccountEventBatch(deps, item)];
-			case "qq-request-account":
-				return [renderRequestBatch(deps, item)];
-			case "qq-backlog":
-				return [renderBacklogBatch(deps)];
-			case "qq-operations":
-				return [renderOperationsBatch(deps)];
-			default:
-				return [
-					`${conversationKindLabel(item.conversationRef)} conversationRef=${item.conversationRef}；trigger=${item.trigger ?? item.cls}`,
-					...candidateFacts(item, deps),
-					...(item.messageRefs ?? []).map((ref) => {
-						const fact = deps.journal.getMessage(ref);
-						return `触发 messageRef=${ref}${fact ? ` | sender=${fact.senderRef ?? "unknown"} | ${quote(segmentText(fact.segments, undefined, deps.display?.faceNames).slice(0, 60))}` : ""}`;
-					}),
-				];
-		}
-	});
-	return [
-		`[QQ 动态提示] snapshot=${new TimeView(deps.display?.timezone).header(deps.now())}`,
-		...facts,
-		...situationalOverview(deps),
-	].join("\n");
-}
-
 function previousOf(all: readonly MessageFact[], fact: MessageFact): string | undefined {
 	const index = all.indexOf(fact);
 	return index > 0 ? all[index - 1]!.time : undefined;
 }
 
+/* ---------- 拍肩与内部事件渲染（书签不动；响铃窗口正文见 renderReadWindow） ---------- */
+
 /**
- * 全局待处理概览（设计 §5.2 一瞥态势）：所有有待处理消息的会话一行一条，
- * 待处理数以消费位（max(throughSeq, 基线)）为准。纸条让主体当场做出全局裁决，
- * 免去额外查询轮次。
+ * v3 单一渲染入口：follow-ups / account events / operations 走专属批头，
+ * 其余（群拍肩消息、poke/recall 事件、好友申请）走单条拍肩正文。
  */
-function situationalOverview(deps: BatchRenderDeps): string[] {
-	const refs = pendingConversations(deps.journal, deps.control);
-	if (refs.length === 0) return [];
-	const budget = deps.display?.batchBudgetChars ?? 14000;
-	const previewLimit = Math.max(0, Math.min(40, Math.floor(budget / refs.length) - 70));
-	return [
-		"当前待处理概览：",
-		...refs.map((ref) => {
-			const last = pendingFacts(deps.journal, deps.control, ref).at(-1)!;
-			const preview = last.segments.find((segment) => segment.type === "text")?.text ?? "";
-			return `• ${ref} ｜ 待处理 ${pendingCountOf(deps.journal, deps.control, ref)} 条${previewLimit > 0 ? ` ｜ ${quote(preview.slice(0, previewLimit))}` : ""}`;
-		}),
-		`正文按会话读取：${JSON.stringify({ action: "read", params: { conversationRef: refs[0] } })}；放下积压使用 skip。`,
-	];
+export function renderCandidate(candidate: PendingCandidate, deps: BatchRenderDeps): string {
+	switch (candidate.conversationRef) {
+		case "qq-follow-ups":
+			return renderFollowUpBatch(deps);
+		case "qq-event-account":
+			return renderAccountEventBatch(deps, candidate);
+		case "qq-operations":
+			return renderOperationsBatch(deps);
+		default:
+			return renderTapBody(candidate, deps);
+	}
 }
 
-/* ---------- 顺序正文消费渲染（设计 §4.2 qq_read） ---------- */
+function renderTapBody(candidate: PendingCandidate, deps: BatchRenderDeps): string {
+	const time = new TimeView(deps.display?.timezone);
+	const lines = [`[QQ 拍肩] conversationRef=${candidate.conversationRef}；snapshot=${time.header(deps.now())}`];
+	for (const ref of candidate.messageRefs ?? []) {
+		const fact = deps.journal.getMessage(ref);
+		if (!fact) {
+			lines.push(`messageRef=${ref}（事实不可用）`);
+			continue;
+		}
+		lines.push(...renderMessageFacts([fact], deps.journal.selfId, deps.display, deps.journal));
+		if (fact.replyTo) {
+			const original = deps.journal.getMessage(fact.replyTo);
+			lines.push(
+				original
+					? `必要前文：replyTo=${fact.replyTo} | ${quote(segmentText(original.segments, undefined, deps.display?.faceNames))}`
+					: `必要前文：replyTo=${fact.replyTo}（原文不可用）`,
+			);
+		}
+	}
+	lines.push(...candidateFacts(candidate, deps));
+	return lines.join("\n");
+}
 
-/** 单条超长文本折叠阈值（设计 §4.2：>2,000 字折叠首尾，不阻塞书签推进）。 */
+/* ---------- 顺序正文消费渲染（v3 响铃窗口与 read 共用） ---------- */
+
+/** 单条超长文本折叠阈值：>2,000 字折叠首尾，不阻塞书签推进。 */
 export const READ_FOLD_THRESHOLD = 2000;
 
 export interface ReadWindowResult {
@@ -585,13 +573,6 @@ function candidateFacts(candidate: PendingCandidate, deps: BatchRenderDeps): str
 	];
 }
 
-function renderRequestBatch(deps: BatchRenderDeps, candidate: PendingCandidate): string {
-	const time = new TimeView(deps.display?.timezone);
-	return [`[QQ 申请] snapshot=${time.header(deps.now())}；source=平台申请`, ...candidateFacts(candidate, deps)].join(
-		"\n",
-	);
-}
-
 function renderAccountEventBatch(deps: BatchRenderDeps, candidate: PendingCandidate): string {
 	const time = new TimeView(deps.display?.timezone);
 	const lines = candidate.eventRefs?.length
@@ -613,24 +594,6 @@ function renderOperationsBatch(deps: BatchRenderDeps): string {
 		`[QQ 操作回执更新] snapshot=${time.header(deps.now())}；source=迟到回执归并`,
 		...(lines.length > 0 ? lines : ["无待呈现更新"]),
 		`unknown 已升级为上述结论；查询不重执行，不自动重发。`,
-	].join("\n");
-}
-
-/** 暂停结束积压摘要（合同 §4：一次摘要，允许事实优先；无逐条 replay，不新增主消息计账）。 */
-function renderBacklogBatch(deps: BatchRenderDeps): string {
-	const time = new TimeView(deps.display?.timezone);
-	const lines: string[] = [];
-	for (const conv of pendingConversations(deps.journal, deps.control)) {
-		const unread = pendingCountOf(deps.journal, deps.control, conv);
-		if (unread > 0) {
-			const earliest = pendingFacts(deps.journal, deps.control, conv)[0]?.time;
-			lines.push(`${conv}：${unread} 条未读${earliest ? `（最早 ${time.line(earliest)}）` : ""}`);
-		}
-	}
-	return [
-		`[QQ 暂停结束摘要] snapshot=${time.header(deps.now())}；source=控制状态；暂停已到期恢复原规则`,
-		...(lines.length > 0 ? lines : ["无积压"]),
-		`一次摘要不逐条补发；需要现场用 qq 工具 read/browse 读取。`,
 	].join("\n");
 }
 

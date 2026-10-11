@@ -22,14 +22,14 @@ export type FactRecord =
 	| { kind: "counter"; type: "media" | "event" | "request"; sequence: number; platformFlag?: string }
 	| IngestedFact
 	| { kind: "media_locator"; ref: string; fact: MediaFact }
-	/** input_settled(committed) 后的主场景通知位置；只表示正文已交给 canonical 输入。 */
+	/** v3 前的通知账本行：恢复时忽略（单书签 dispatchedThrough 已取代），保证旧日志可回放。 */
 	| { kind: "notified"; conversationRef: string; throughSequence: number; inputId: string; at: string }
-	/** body_dispatched 正文派发消费边界（R4①）；与 notified 分轨，单调回放。 */
+	/** body_dispatched 正文派发消费边界（单书签）；单调回放。 */
 	| {
 			kind: "dispatched";
 			conversationRef: string;
 			throughSequence: number;
-			source: "read" | "follow";
+			source: "read" | "ring";
 			inputId?: string;
 			at: string;
 	  }
@@ -47,9 +47,6 @@ export interface FactsSnapshot {
 	/** 账号级事件（无会话归属）。 */
 	accountEvents: EventFact[];
 	requests: Map<string, RequestFact>;
-	notifiedThrough: Map<string, number>;
-	/** 各会话最近一次 committed 通知时刻（recall 连续性窗口判定用）。 */
-	notifiedAt: Map<string, string>;
 	/** body_dispatched 正文派发消费边界（per-conversation，单调不减）。 */
 	dispatchedThrough: Map<string, number>;
 	archiveBefore: string | null;
@@ -82,8 +79,6 @@ export class FactsJournal {
 			events: new Map(),
 			accountEvents: [],
 			requests: new Map(),
-			notifiedThrough: new Map(),
-			notifiedAt: new Map(),
 			dispatchedThrough: new Map(),
 			archiveBefore: null,
 			coverageGaps: [],
@@ -175,15 +170,9 @@ export class FactsJournal {
 				this.state.requests.set(fact.ref, fact);
 				return;
 			}
-			case "notified": {
-				if (!REF_PATTERNS.conversation.test(record.conversationRef)) throw new Error("QQ 会话引用非法");
-				const seen = this.state.notifiedThrough.get(record.conversationRef) ?? 0;
-				if (record.throughSequence > seen) {
-					this.state.notifiedThrough.set(record.conversationRef, record.throughSequence);
-					this.state.notifiedAt.set(record.conversationRef, record.at);
-				}
+			case "notified":
+				// v3 之前的通知账本行：恢复时忽略（单书签 dispatchedThrough 已取代）。
 				return;
-			}
 			case "dispatched": {
 				if (!REF_PATTERNS.conversation.test(record.conversationRef)) throw new Error("QQ 会话引用非法");
 				const seen = this.state.dispatchedThrough.get(record.conversationRef) ?? 0;
@@ -303,15 +292,11 @@ export class FactsJournal {
 		this.append({ kind: "request", fact });
 	}
 
-	recordNotified(conversationRef: string, throughSequence: number, inputId: string, at: string): void {
-		this.append({ kind: "notified", conversationRef, throughSequence, inputId, at });
-	}
-
-	/** body_dispatched 书签推进（R4①）；Math.max 单调回放，绝不向后倒退。 */
+	/** body_dispatched 书签推进；Math.max 单调回放，绝不向后倒退。 */
 	recordDispatched(
 		conversationRef: string,
 		throughSequence: number,
-		source: "read" | "follow",
+		source: "read" | "ring",
 		at: string,
 		inputId?: string,
 	): void {

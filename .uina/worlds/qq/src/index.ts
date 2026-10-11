@@ -17,9 +17,6 @@ import { join } from "node:path";
 import { MediaStaging } from "./media.js";
 import { cleanupPartialDownloads } from "./resource-fetch.js";
 
-/** 连续性交互窗口（合同 §4 初值 30s）：recall 相关性判定用。 */
-const CONTINUITY_WINDOW_MS = 30_000;
-
 /**
  * QQ World 装配：配置 → 存储 → 传输 → 摄取 → 调度 → facade。
  * 启动在绑定、grant、本地存储就绪后注册工具；登录身份与绑定账号不符则启动失败，
@@ -72,7 +69,6 @@ export function createQqWorld(injected?: {
 			attention: attention!,
 			locks: locks!,
 			signal: worldAbort?.signal,
-			onConsumption: (ref) => scheduler?.notifyConsumption(ref),
 			media,
 			display: { ...activeConfig.display, faceNames },
 			faceNames,
@@ -114,7 +110,7 @@ export function createQqWorld(injected?: {
 			control = new ControlStore({ dataDir, selfId: config.selfId });
 			control.load();
 			control.initializeReader(journal);
-			attention = new AttentionModel({ control });
+			attention = new AttentionModel();
 			locks = new ConversationLocks();
 			ops = new OperationLog({ dataDir, selfId: config.selfId });
 			ops.recover();
@@ -128,20 +124,9 @@ export function createQqWorld(injected?: {
 				journal,
 				control,
 				attention: attention!,
-				locks: locks!,
 				signal: worldAbort?.signal,
 				now: () => new Date().toISOString(),
-				renderBatch: (candidate) => {
-					const activeConfig = config;
-					return render.renderBatch(candidate, {
-						journal: journal!,
-						control: control!,
-						now: () => new Date().toISOString(),
-						display: { ...activeConfig?.display, faceNames },
-						settledUnknowns: scheduler?.listSettledUnknowns() ?? [],
-					});
-				},
-				renderReadWindow: (conversationRef) => {
+				renderRingWindow: (conversationRef) => {
 					const activeConfig = config;
 					return render.renderReadWindow(
 						conversationRef,
@@ -154,10 +139,20 @@ export function createQqWorld(injected?: {
 						{ limit: 30, budgetChars: activeConfig?.display?.batchBudgetChars ?? 14000 },
 					);
 				},
+				renderCandidate: (candidate) => {
+					const activeConfig = config;
+					return render.renderCandidate(candidate, {
+						journal: journal!,
+						control: control!,
+						now: () => new Date().toISOString(),
+						display: { ...activeConfig?.display, faceNames },
+						settledUnknowns: scheduler?.listSettledUnknowns() ?? [],
+					});
+				},
 				emit: async ({ id, conversationRef, cls, origin, render }) => {
 					await ctxRef?.emitEvent?.({
 						id,
-						type: cls === "internal" ? "qq-internal" : cls === "follow" ? "qq-follow" : "qq-batch",
+						type: cls === "internal" ? "qq-internal" : "qq-batch",
 						channel: "world",
 						delivery: "queued",
 						origin,
@@ -171,17 +166,16 @@ export function createQqWorld(injected?: {
 					return !!fact && !!ops && requestState({ ops }, fact).state === "pending";
 				},
 				isRecallRelevant: (fact) => {
-					// 合同 §4：recall 仅当"影响当前交互或事项证据"才提醒。操作化规则：
-					// ①自身发言（out）被撤——发言证据被毁；②open 事项 evidenceRefs 引用被撤；
-					// ③该会话处于连续性交互窗口内（合同初值 30s，最近 committed 批次之后）。
+					// 确定性判定：自身发言被撤 / open 事项证据被撤 / 被撤消息已交付给主体（其余不提醒）。
 					if (!fact.messageRef) return false;
 					const recalled = journal!.getMessage(fact.messageRef);
 					if (recalled?.direction === "out") return true;
 					if (control!.listFollowUps({ state: "open" }).some((item) => item.evidenceRefs.includes(fact.messageRef!))) {
 						return true;
 					}
-					const notifiedAt = journal!.snapshot.notifiedAt.get(fact.conversationRef ?? "");
-					return notifiedAt !== undefined && Date.now() - Date.parse(notifiedAt) <= CONTINUITY_WINDOW_MS;
+					const conversationRef = fact.conversationRef;
+					if (!conversationRef || recalled === null) return false;
+					return recalled.sequence <= journal!.dispatchedThroughOf(conversationRef);
 				},
 			});
 			// 摄取 → 调度：落库即通知（onFact 回调保证顺序）。
@@ -307,7 +301,7 @@ export function createQqWorld(injected?: {
 			}
 			assertRunning();
 
-			// 控制状态 tick（60s 粒度即可：预约是分钟级概念）：follow_up 到期 + 暂停到期积压摘要。
+			// 控制状态 tick（60s 粒度即可：预约是分钟级概念）：follow_up 到期。
 			// 启动即查一次：离线期间到期的事项不等首个 60s 周期。
 			reviewTimer = setInterval(() => {
 				scheduler?.notifyControlTick();
