@@ -1,10 +1,15 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { ServiceCompanionContext } from "../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { VOICE_LEVEL_SINK_EXPOSED_PREFIX, type VoiceLevelSink } from "../../../src/extensions/world-framework/seams.js";
 import { encodeFrame, validateRig, type ModelRig } from "./adapter/rig.js";
 import { VTSClient } from "./adapter/vts-client.js";
-import { MotionDirector } from "./director/director.js";
+import { emptyCatalog, recompileWithSpeech, type AttentionTarget, type CatalogSnapshot } from "./authoring/catalog.js";
+import type { SpeechPolicy } from "./authoring/motion.js";
+import { MotionDirector, SupersededError } from "./director/director.js";
 import { buildLive2DEndpoint, type Live2DEndpoint } from "./endpoint.js";
+import { fromEngineResult, toolRejected, toolSucceeded, toolUnknown } from "./results.js";
 import { SpeechInput, type SpeechConfig } from "./speech-level.js";
 
 /**
@@ -12,12 +17,15 @@ import { SpeechInput, type SpeechConfig } from "./speech-level.js";
  *
  * P2-3 范围：生命周期 + VTS 连接 + 保活注入时钟 + director 合成接入。
  * P3-2 增量：voice.levelSink 声学电平接缝（失联守卫 + 作者映射 → 引擎口型包络）。
+ * P4-1 增量：工具 gate 链（边界规范 §2.1 词表 + §7 顺序）、目录快照词表解析、
+ *           express/state 引擎映射、作者会话标记门、status/diagnose 真实事实。
+ *
  * tick 合约（边界规范 §6）：每帧实测 dt 驱动 director.step → adapter.encode → client.inject；
  * 断线/身份不匹配/未发布时既不合成也不注入（保持零输出），重连后从当前状态续合成。
  * - 时钟只在连接就绪且模型身份匹配时运转，断线即停、重连即恢复；
  * - dt 用单调时钟实测（REVIEW 教训：不信任定时器间隔），钳制 250ms 防休眠/节流大跳；
  * - faceFound 与单未确认帧背压由 vts-client 承担，时钟不重复实现；
- * - 发布门的真值来源（acceptance.json + 作者会话）在 P4-6 接入；本阶段恒开放。
+ * - 发布门的真值来源（acceptance.json + 作者会话）在 P4-6 接入；本阶段由选项注入（缺省恒开放）。
  */
 export interface Live2DRuntimeOptions {
 	/** 注入点（测试用）：替换真实 VTS 连接。缺省按世界默认构造（token 存世界根）。 */
@@ -32,10 +40,16 @@ export interface Live2DRuntimeOptions {
 	published?: boolean;
 	/** 模型作者标定的口型映射；与 rig 同时存在时暴露 voice.levelSink（P3-2）。 */
 	speech?: SpeechConfig;
+	/** 目录快照；缺省空目录（诚实状态：一切命名参数显式拒绝）。 */
+	catalog?: CatalogSnapshot;
 }
 
 /** 单帧合成到注入之间允许的最大时间步（毫秒）：后台节流/休眠恢复时防止动作瞬移。 */
 const MAX_TICK_DT_MS = 250;
+
+/** state 注视参数的引擎内置词表成员判定（目录命名优先级低于内置词表）。 */
+const isBuiltinAttention = (value: string): value is Extract<AttentionTarget, string> =>
+	["user", "screen", "avert_down", "avert_left", "avert_right"].includes(value);
 
 export class Live2DRuntime {
 	private started = false;
@@ -44,8 +58,11 @@ export class Live2DRuntime {
 	private readonly rig?: ModelRig;
 	private readonly tickIntervalMs: number;
 	private readonly published: boolean;
+	private readonly catalog: CatalogSnapshot;
 	private clock: NodeJS.Timeout | null = null;
 	private lastTickAt = 0;
+	/** 作者会话数据目录（start 时由 ctx.worldDataDir 注入；author-session 标记文件在其下）。 */
+	private worldDataDir?: string;
 	/** 引擎句柄：P4 工具面（express/state）在此之上操作；无 rig 时不存在。 */
 	readonly director?: MotionDirector;
 	/** 声学电平接收端：rig + speech 配置同时存在时可用，start 时经 expose 登记给 voice 扩展。 */
@@ -57,13 +74,16 @@ export class Live2DRuntime {
 		this.client = options.client;
 		this.rig = options.rig;
 		this.published = options.published ?? true;
+		this.catalog = options.catalog ?? emptyCatalog(options.rig?.modelID ?? "unknown");
+		if (this.rig && this.catalog.modelID !== this.rig.modelID)
+			throw new Error(`目录与 rig 模型身份不符: 目录 ${this.catalog.modelID} vs rig ${this.rig.modelID}`);
 		if (this.rig) {
 			validateRig(this.rig);
 			this.director = new MotionDirector(this.rig.controls, { external: this.rig.external, rng: options.rng });
 			if (options.speech) {
 				const input = new SpeechInput(options.speech, this.director);
 				this.speechInput = input;
-				// 未发布/暂停期间电平一律丢弃（边界规范 §4）；paused 标志随 P4-6/safeStop 接入。
+				// 未发布/暂停期间电平一律丢弃（边界规范 §4）；paused 标志随 safeStop（P4-2/B2）接入。
 				this.levelSink = {
 					processLevel: (level) => {
 						if (!this.published) return;
@@ -89,9 +109,173 @@ export class Live2DRuntime {
 		};
 	}
 
+	// ---------- P4-1：gate 链与工具面 ----------
+
+	/**
+	 * 作者会话标记门（边界规范 §2）：世界数据目录下存在 `author-session` 文件即开启。
+	 * 执行时检查（不缓存），一个文件存在性检查，不引入身份框架。
+	 */
+	private authorSessionActive(): boolean {
+		return this.worldDataDir !== undefined && existsSync(join(this.worldDataDir, "author-session"));
+	}
+
+	/**
+	 * 工具 gate 链（边界规范 §2.1 + §7 gate 顺序：连接 → 适配 → 发布）。
+	 * 返回 undefined 表示通过。authorOnly 工具（preview/accept）先于一切内容判定。
+	 */
+	private gate(ctx: { signal?: AbortSignal }, options: { authorOnly?: boolean } = {}): ToolExecutionResult | undefined {
+		if (ctx.signal?.aborted) return toolRejected("cancelled", "调用已中止，未执行。");
+		if (options.authorOnly && !this.authorSessionActive())
+			return toolRejected("author_session_required", "此工具仅作者会话可用：需操作员在世界数据目录创建 author-session 标记。");
+		if (!this.client || !this.client.isConnected())
+			return toolRejected("model_not_ready", "VTS 未连接（连接建立前所有具身操作不可用）。");
+		const profile = this.client.getModelProfile();
+		if (!this.rig || !profile || profile.modelID !== this.rig.modelID)
+			return toolRejected("unadapted", "当前模型没有可用的本地适配（rig/目录缺失或绑定核验失败）。");
+		if (!this.published)
+			return toolRejected("draft", "模型包尚未完成当前内容版本的发布验收（作者预览可用）。");
+		return undefined;
+	}
+
+	/** express（§2）：播放目录中的命名动作，Voluntary 类别；await 终态结算。 */
+	async express(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+		const denied = this.gate(ctx);
+		if (denied) return denied;
+		const director = this.director;
+		if (!director) return toolRejected("unadapted", "引擎未接入（无 rig）。");
+		const name = args.motion;
+		if (typeof name !== "string" || name.length === 0) return toolRejected("invalid_motion", "缺少 motion 参数。");
+		const entry = this.catalog.motions.get(name);
+		if (!entry)
+			return toolRejected("unknown_motion", `动作不在当前模型目录: "${name}"（可用名称见 status）。`);
+		if (args.atomic !== undefined && typeof args.atomic !== "boolean")
+			return toolRejected("invalid_motion", "atomic 必须是布尔值。");
+		if (args.speech !== undefined && args.speech !== "allow" && args.speech !== "exclusive")
+			return toolRejected("invalid_motion", 'speech 只接受 "allow" | "exclusive"。');
+		// speech 覆写：外层 withSpeech 节点覆盖作者内层口型策略（含 sequence 时序）。
+		const clip =
+			args.speech === undefined
+				? entry.motion
+				: recompileWithSpeech(entry, args.speech satisfies SpeechPolicy, this.rig!.controls);
+		const handle = director.play(clip, {
+			category: "voluntary",
+			atomic: args.atomic ?? entry.atomic,
+			signal: ctx.signal,
+		});
+		return fromEngineResult(await handle.finished, `动作 "${name}"`);
+	}
+
+	/** state（§2）：三个槽相互独立；声明的槽整槽替换，未声明的槽保持不变；hold_ms 各槽独立计时。 */
+	async state(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+		const denied = this.gate(ctx);
+		if (denied) return denied;
+		const director = this.director;
+		if (!director) return toolRejected("unadapted", "引擎未接入（无 rig）。");
+		if (args.hold_ms !== undefined) {
+			const hold = args.hold_ms;
+			if (typeof hold !== "number" || !Number.isFinite(hold) || hold < 0)
+				return toolRejected("invalid_duration", "hold_ms 必须是非负有限数值。");
+		}
+		const holdMs = typeof args.hold_ms === "number" && args.hold_ms > 0 ? args.hold_ms : undefined;
+		const pending: Promise<void>[] = [];
+		if (args.posture !== undefined) {
+			const slot = this.catalog.postures.get(String(args.posture));
+			if (!slot) return toolRejected("unknown_pose", `姿态不在当前模型目录: "${args.posture}"（可用名称见 status）。`);
+			pending.push(director.setPosture(slot.values, { holdMs }));
+		}
+		if (args.expression !== undefined) {
+			const slot = this.catalog.expressions.get(String(args.expression));
+			if (!slot) return toolRejected("unknown_expression", `表情不在当前模型目录: "${args.expression}"（可用名称见 status）。`);
+			pending.push(director.setExpression(slot.values, { holdMs }));
+		}
+		if (args.attention !== undefined) {
+			const name = String(args.attention);
+			const target = isBuiltinAttention(name)
+				? name
+				: (this.catalog.attentions.get(name)?.target ??
+					undefined);
+			if (target === undefined)
+				return toolRejected("unknown_attention", `注视目标不在词表: "${name}"（内置 user/screen/avert_* 或目录命名）。`);
+			director.setAttention(target, { holdMs });
+		}
+		if (pending.length === 0 && args.attention === undefined)
+			return toolSucceeded("未声明任何槽，状态保持不变。", { effectStatus: "not_started" });
+		try {
+			await Promise.all(pending);
+		} catch (error) {
+			// 整槽替换被更新的 state 调用取代：本调用如实结算 cancelled，运动归属新调用。
+			if (error instanceof SupersededError) {
+				return {
+					result: "状态设置已被更新的调用取代。",
+					status: "cancelled",
+					details: { effectStatus: "cancelled" as const, supersededAxes: error.axes },
+				};
+			}
+			throw error;
+		}
+		return toolSucceeded("状态已生效。", { effectStatus: "applied", verification: "input_accepted" });
+	}
+
+	/** costume（§2）：list 只列出登记项；外观执行（独占声明 + 热键）在 P4-5 接入。 */
+	async costume(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+		const denied = this.gate(ctx);
+		if (denied) return denied;
+		const item = args.item;
+		if (typeof item !== "string" || item.length === 0) return toolRejected("unknown_costume", "缺少 item 参数。");
+		if (item === "list") {
+			const registered = this.catalog.costumes.map((c) => `${c.id}（${c.description}，热键 ${c.hotkeyID}）`);
+			return toolSucceeded(registered.length ? `已登记外观:\n${registered.join("\n")}` : "当前模型没有登记任何外观。");
+		}
+		const entry = this.catalog.costumes.find((c) => c.id === item);
+		if (!entry) return toolRejected("unknown_costume", `外观不在当前模型目录: "${item}"（可用 item="list" 查询）。`);
+		// 命中后的独占声明与热键执行归 P4-5（独占资源工具批）。
+		return this.notStarted("costume");
+	}
+
+	/** reload（§2）：显式重载当前 VTS 模型并重新核验绑定。 */
+	async reload(ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+		const denied = this.gate(ctx);
+		if (denied) return denied;
+		try {
+			await this.client!.reloadCurrentModel();
+		} catch (error) {
+			return toolUnknown(`模型重载失败：${error instanceof Error ? error.message : String(error)}`);
+		}
+		// 重新核验绑定：重载后的模型身份必须与本地 rig 一致（tick 侧身份门独立逐帧生效）。
+		const profile = this.client!.getModelProfile();
+		if (!profile || profile.modelID !== this.rig!.modelID)
+			return toolRejected("unadapted", "重载后的模型与本地 rig 不符，绑定核验失败。");
+		return toolSucceeded("模型已重载，绑定核验通过。", { effectStatus: "accepted" });
+	}
+
+	/**
+	 * preview（§2）：作者预览与生产同链路。作者会话门在此落实；预览引擎
+	 * （单控制关键帧 / 假 RMS / repeat）随创作层（P5-1）接入，本阶段如实声明。
+	 */
+	async preview(_args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+		const denied = this.gate(ctx, { authorOnly: true });
+		if (denied) return denied;
+		return this.notStarted("preview");
+	}
+
+	/**
+	 * accept（§2）：发布门唯一写入路径。作者会话门在此落实；内容摘要与
+	 * acceptance.json 写入在 P4-6 发布验收门批接入，本阶段如实声明。
+	 */
+	async accept(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+		const denied = this.gate(ctx, { authorOnly: true });
+		if (denied) return denied;
+		if (typeof args.evidence !== "string" || args.evidence.length === 0)
+			return toolRejected("invalid_preview", "缺少 evidence（人工画面验收说明）。");
+		return this.notStarted("accept");
+	}
+
+	// ---------- 生命周期 ----------
+
 	async start(ctx: ServiceCompanionContext): Promise<void> {
 		if (this.started) return;
 		this.started = true;
+		this.worldDataDir = ctx.worldDataDir;
 		if (ctx.expose) {
 			this.cleanups.push(ctx.expose("body.endpoint:live2d", this.endpoint));
 			if (this.levelSink) {
@@ -155,19 +339,65 @@ export class Live2DRuntime {
 		this.client.injectParameters(encodeFrame(this.rig, frame));
 	}
 
+	// ---------- 事实呈现 ----------
+
+	private identityMatched(): boolean {
+		const profile = this.client?.getModelProfile();
+		return this.rig !== undefined && profile !== undefined && profile.modelID === this.rig.modelID;
+	}
+
 	formatStatus(): string {
 		const connection = this.client?.getConnectionStatus();
 		return JSON.stringify(
 			{
 				world: "live2d",
-				build: "P2 engine",
+				build: "P4 tools",
 				started: this.started,
 				engine: this.director ? "director_wired (P2-3)" : "not_wired",
 				speech: this.levelSink ? "levelSink_wired (P3-2)" : "not_wired",
 				published: this.published,
+				authorSession: this.authorSessionActive(),
 				rig: this.rig ? { modelID: this.rig.modelID, axes: Object.keys(this.rig.controls).length } : null,
+				identityMatched: this.identityMatched(),
 				connection: connection ?? null,
+				catalog: {
+					motions: [...this.catalog.motions.keys()],
+					postures: [...this.catalog.postures.keys()],
+					expressions: [...this.catalog.expressions.keys()],
+					attentions: [...this.catalog.attentions.keys()],
+					costumes: this.catalog.costumes.map((c) => c.id),
+				},
 				endpoint: { bodyId: this.endpoint.bodyId, bodyType: this.endpoint.bodyType },
+			},
+			null,
+			2,
+		);
+	}
+
+	/** 作者诊断：运行时内部状态只读快照（三层遥测在 P6-1 接入）。 */
+	diagnose(): string {
+		return JSON.stringify(
+			{
+				tickIntervalMs: this.tickIntervalMs,
+				clockRunning: this.clock !== null,
+				identityMatched: this.identityMatched(),
+				published: this.published,
+				authorSession: this.authorSessionActive(),
+				director: this.director
+					? {
+							attention: this.director.getAttention() ?? null,
+							blinkFactor: this.director.blinkFactor,
+							frameAxes: Object.keys(this.director.currentFrame).length,
+						}
+					: null,
+				catalog: {
+					modelID: this.catalog.modelID,
+					motions: this.catalog.motions.size,
+					postures: this.catalog.postures.size,
+					expressions: this.catalog.expressions.size,
+					attentions: this.catalog.attentions.size,
+					costumes: this.catalog.costumes.length,
+				},
 			},
 			null,
 			2,

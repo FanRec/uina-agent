@@ -1,6 +1,6 @@
-import type { ServiceCompanionContext, WorldDef } from "../../../src/extensions/world-framework/types.js";
+import type { ActionContext, ServiceCompanionContext, WorldDef } from "../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
-import { Live2DRuntime } from "./runtime.js";
+import { Live2DRuntime, type Live2DRuntimeOptions } from "./runtime.js";
 import { VTSClient } from "./adapter/vts-client.js";
 import { loadRig, MO_MODEL_ID } from "./models/rig-loader.js";
 import { MO_SPEECH } from "./models/mo/speech.js";
@@ -8,22 +8,31 @@ import { MO_SPEECH } from "./models/mo/speech.js";
 /**
  * Live2D 世界装配。
  *
- * 工具面按《live2d-world-boundary-spec.md》§2 一次性定型：express / state / costume /
- * flip / spatial / status / diagnose / preview / accept / reload。目录是参数的唯一合法
- * 词表来源；引擎接入前所有具身操作统一返回 not_started。
+ * 工具面按《live2d-world-boundary-spec.md》§2 定型：express / state / costume /
+ * flip / spatial / status / diagnose / preview / accept / reload；executionMode 显式
+ * 固定为 parallel（并发是常态，安全由引擎逐轴仲裁与独占声明保证，工具层不串行化）。
  *
- * P2-3：VTS 连接、MO rig、保活时钟与 director 合成已接线——模型身份匹配时注入
- * director 合成帧（槽位/动作/自律）；具身工具仍在 P4 接入前统一返回 not_started。
+ * P4-1：工具结果词汇表 + gate 链（连接 → 适配 → 发布）+ 目录词表解析 +
+ * 作者会话标记门已接入；express/state 走引擎映射，costume 支持 list 与目录拒绝，
+ * reload 走 VTS 重载与绑定核验。flip/spatial（独占资源，P4-5）、preview/accept
+ * （作者会话引擎与发布门，P4-6/P5-1）暂以 not_started 如实声明。
  * 刻意不做（规范修订 A2/A14/A6）：Timeline、Performance 门面、即兴 beats、自由数值轴。
  */
-export function createLive2DApp(): WorldDef {
+export interface Live2DAppOptions {
+	/** 注入点（测试用）：替换默认的 rig/catalog/client 装配。 */
+	runtime?: Live2DRuntimeOptions;
+	/** 注入点（测试用）：直接使用预构建的运行时实例（跳过默认装配与 rig 加载）。 */
+	instance?: Live2DRuntime;
+}
+
+export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 	let runtime: Live2DRuntime | undefined;
 
-	// 工具入口统一收口：未启动时如实声明，启动后委托运行时。
+	// 工具入口统一收口：未启动时如实声明，启动后委托运行时（ActionContext.signal 一并透传）。
 	const call =
-		(action: string, run: (rt: Live2DRuntime, args: Record<string, unknown>) => Promise<ToolExecutionResult>) =>
-		async (args: Record<string, unknown>): Promise<ToolExecutionResult> =>
-			runtime ? run(runtime, args) : { result: `Live2D 世界尚未启动，"${action}" 未执行。`, status: "not_started" };
+		(action: string, run: (rt: Live2DRuntime, args: Record<string, unknown>, ctx: ActionContext) => Promise<ToolExecutionResult>) =>
+		async (args: Record<string, unknown>, ctx: ActionContext): Promise<ToolExecutionResult> =>
+			runtime ? run(runtime, args, ctx) : { result: `Live2D 世界尚未启动，"${action}" 未执行。`, status: "not_started" };
 
 	return {
 		name: "live2d",
@@ -33,12 +42,24 @@ export function createLive2DApp(): WorldDef {
 		defaultState: { enabled: true },
 		async onStart(ctx: ServiceCompanionContext) {
 			if (runtime) await runtime.stop();
-			// rig 装配失败不阻断世界启动：诚实降级为零注入，status 中 rig=null 可见。
-			const rig = await loadRig(MO_MODEL_ID).catch((error: unknown) => {
-				console.warn("[Live2D] rig 装配失败，保活注入停用:", error);
-				return undefined;
-			});
-			runtime = new Live2DRuntime({ client: new VTSClient(), rig, speech: MO_SPEECH });
+			if (options.instance) {
+				runtime = options.instance;
+			} else {
+				// rig 装配失败不阻断世界启动：诚实降级为零注入，status 中 rig=null 可见。
+				// 测试注入完整 runtime 装配时跳过真实 rig 装配（不依赖磁盘模型文件）。
+				const rig =
+					options.runtime?.rig ??
+					(await loadRig(MO_MODEL_ID).catch((error: unknown) => {
+						console.warn("[Live2D] rig 装配失败，保活注入停用:", error);
+						return undefined;
+					}));
+				runtime = new Live2DRuntime({
+					client: new VTSClient(),
+					rig,
+					speech: MO_SPEECH,
+					...options.runtime,
+				});
+			}
 			await runtime.start(ctx);
 		},
 		async onStop() {
@@ -48,7 +69,7 @@ export function createLive2DApp(): WorldDef {
 		},
 		actions: {
 			express: {
-				description: "播放当前模型目录中的命名动作。名称来自 status；未接入引擎前不可用。",
+				description: "播放当前模型目录中的命名动作。名称来自 status；atomic=true 时任一轴被抢占即整场取消。",
 				parameters: {
 					type: "object",
 					additionalProperties: false,
@@ -59,7 +80,7 @@ export function createLive2DApp(): WorldDef {
 					},
 					required: ["motion"],
 				},
-				run: call("express", (rt) => Promise.resolve(rt.notStarted("express"))),
+				run: call("express", (rt, args, ctx) => rt.express(args, ctx)),
 			},
 			state: {
 				description:
@@ -74,7 +95,7 @@ export function createLive2DApp(): WorldDef {
 						hold_ms: { type: "number", minimum: 0, description: "保持时长；到期回 neutral；省略为持续" },
 					},
 				},
-				run: call("state", (rt) => Promise.resolve(rt.notStarted("state"))),
+				run: call("state", (rt, args, ctx) => rt.state(args, ctx)),
 			},
 			costume: {
 				description: "执行模型包登记的外观热键；item='list' 只列出登记项。",
@@ -84,7 +105,7 @@ export function createLive2DApp(): WorldDef {
 					properties: { item: { type: "string" } },
 					required: ["item"],
 				},
-				run: call("costume", (rt) => Promise.resolve(rt.notStarted("costume"))),
+				run: call("costume", (rt, args, ctx) => rt.costume(args, ctx)),
 			},
 			flip: {
 				description: "整模型旋转一圈并核实归位；取消后等待归位清理完成。",
@@ -106,19 +127,19 @@ export function createLive2DApp(): WorldDef {
 				run: call("spatial", (rt) => Promise.resolve(rt.notStarted("spatial"))),
 			},
 			status: {
-				description: "读取世界启动状态、引擎接入进度、端点事实与动作目录。",
+				description: "读取世界启动状态、连接与适配事实、作者会话、发布状态与动作目录。",
 				parameters: { type: "object", additionalProperties: false, properties: {} },
 				run: call("status", (rt) => Promise.resolve({ result: rt.formatStatus(), status: "succeeded" as const })),
 			},
 			diagnose: {
-				description: "作者诊断：三层遥测与运行时内部状态，不修改配置。",
+				description: "作者诊断：运行时内部状态只读快照，不修改配置。",
 				parameters: { type: "object", additionalProperties: false, properties: {} },
-				run: call("diagnose", (rt) => Promise.resolve(rt.notStarted("diagnose"))),
+				run: call("diagnose", (rt) => Promise.resolve({ result: rt.diagnose(), status: "succeeded" as const })),
 			},
 			preview: {
 				description: "作者会话专用：预览草稿、假 RMS、单控制关键帧。需操作员开启作者会话标记。",
 				parameters: { type: "object", additionalProperties: true, properties: {} },
-				run: call("preview", (rt) => Promise.resolve(rt.notStarted("preview"))),
+				run: call("preview", (rt, args, ctx) => rt.preview(args, ctx)),
 			},
 			accept: {
 				description: "作者会话专用：把当前草稿的内容摘要与人工验收记录写入 acceptance.json 并发布。",
@@ -128,12 +149,12 @@ export function createLive2DApp(): WorldDef {
 					properties: { evidence: { type: "string", description: "人工画面验收说明" } },
 					required: ["evidence"],
 				},
-				run: call("accept", (rt) => Promise.resolve(rt.notStarted("accept"))),
+				run: call("accept", (rt, args, ctx) => rt.accept(args, ctx)),
 			},
 			reload: {
 				description: "显式重新加载当前 VTS 模型并重新核验绑定。",
 				parameters: { type: "object", additionalProperties: false, properties: {} },
-				run: call("reload", (rt) => Promise.resolve(rt.notStarted("reload"))),
+				run: call("reload", (rt, _args, ctx) => rt.reload(ctx)),
 			},
 		},
 	};

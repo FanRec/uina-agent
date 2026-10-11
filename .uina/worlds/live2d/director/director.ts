@@ -1,7 +1,11 @@
 import { sampleMotion, sampleSpeechGain, smooth, type CompiledMotion } from "../authoring/motion.js";
+import { type AttentionTarget } from "../authoring/catalog.js";
 import type { RigControlDef } from "../adapter/rig.js";
 import { AutonomicGenerator, type AutonomicExternal } from "./autonomic.js";
 import { SomaticPipelines, type PipelineOptions } from "./pipelines.js";
+
+/** 注视目标词汇单源在 authoring/catalog（models/authoring 层共享）；此处 re-export 保持既有 import 路径。 */
+export type { AttentionTarget };
 
 /** director 构造选项：external 声明自律主来源（缺省不启用自律发生器）；rng 注入（A9）；pipelines 管道参数（A10）。 */
 export interface DirectorOptions {
@@ -99,8 +103,6 @@ export interface ExclusiveClaim {
 	cancel(): void;
 	readonly signal: AbortSignal;
 }
-
-export type AttentionTarget = { x: number; y: number } | "user" | "screen" | "avert_down" | "avert_left" | "avert_right";
 
 /** 槽位过渡组：一组同批声明的轴过渡，共享一个 Promise；同轴竞争时整组拒绝但运动继续。 */
 interface SlotOp {
