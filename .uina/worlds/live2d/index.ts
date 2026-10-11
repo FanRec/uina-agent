@@ -1,3 +1,4 @@
+import { Worker } from "node:worker_threads";
 import type {
 	ActionContext,
 	ServiceCompanionContext,
@@ -9,6 +10,7 @@ import { VTSClient } from "./adapter/vts-client.js";
 import { loadRig, MO_MODEL_ID } from "./models/rig-loader.js";
 import { MO_SPEECH } from "./models/mo/speech.js";
 import { loadCatalog } from "./models/mo/catalog.js";
+import { Live2DRuntimeProxy, type Live2DWorldRuntime } from "./worker/proxy.js";
 
 /**
  * Live2D 世界装配。
@@ -30,13 +32,13 @@ export interface Live2DAppOptions {
 }
 
 export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
-	let runtime: Live2DRuntime | undefined;
+	let runtime: Live2DWorldRuntime | undefined;
 
 	// 工具入口统一收口：未启动时如实声明，启动后委托运行时（ActionContext.signal 一并透传）。
 	function call(
 		action: string,
 		run: (
-			rt: Live2DRuntime,
+			rt: Live2DWorldRuntime,
 			args: Record<string, unknown>,
 			ctx: ActionContext,
 		) => ToolExecutionResult | Promise<ToolExecutionResult>,
@@ -57,16 +59,16 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 			if (runtime) await runtime.stop();
 			if (options.instance) {
 				runtime = options.instance;
-			} else {
+			} else if (options.runtime) {
 				// rig 装配失败不阻断世界启动：诚实降级为零注入，status 中 rig=null 可见。
 				// 测试注入完整 runtime 装配时跳过真实 rig 装配（不依赖磁盘模型文件）。
 				const rig =
-					options.runtime?.rig ??
+					options.runtime.rig ??
 					(await loadRig(MO_MODEL_ID).catch((error: unknown) => {
 						console.warn("[Live2D] rig 装配失败，保活注入停用:", error);
 						return undefined;
 					}));
-				const catalog = options.runtime?.catalog ?? (rig ? loadCatalog(rig.modelID, rig) : undefined);
+				const catalog = options.runtime.catalog ?? (rig ? loadCatalog(rig.modelID, rig) : undefined);
 				runtime = new Live2DRuntime({
 					client: new VTSClient(),
 					rig,
@@ -74,6 +76,14 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 					speech: MO_SPEECH,
 					...options.runtime,
 				});
+			} else {
+				// 生产装配：引擎移入专用 worker 线程——合成时钟与 ws 刷写独立于宿主主事件循环，
+				// 主循环阻塞（LLM/TTS/GC）不再把 60fps 注入塌缩成稀疏帧（关键帧卡顿根因）。
+				// 入口是纯 JS（engine-entry.mjs）：tsx loader 线程局部，worker 内 .js→.ts 映射失效。
+				const worker = new Worker(new URL("./worker/engine-entry.mjs", import.meta.url), {
+					name: "live2d-engine",
+				});
+				runtime = new Live2DRuntimeProxy(worker, (cb) => worker.once("exit", cb));
 			}
 			await runtime.start(ctx);
 		},
@@ -151,12 +161,12 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 			status: {
 				description: "读取世界启动状态、连接与适配事实与动作目录。",
 				parameters: { type: "object", additionalProperties: false, properties: {} },
-				run: call("status", (rt) => ({ result: rt.formatStatus(), status: "succeeded" })),
+				run: call("status", async (rt) => ({ result: await rt.formatStatus(), status: "succeeded" })),
 			},
 			diagnose: {
 				description: "作者诊断：运行时内部状态只读快照，不修改配置。",
 				parameters: { type: "object", additionalProperties: false, properties: {} },
-				run: call("diagnose", (rt) => ({ result: rt.diagnose(), status: "succeeded" })),
+				run: call("diagnose", async (rt) => ({ result: await rt.diagnose(), status: "succeeded" })),
 			},
 			reload: {
 				description: "显式重新加载当前 VTS 模型并重新核验绑定。",
