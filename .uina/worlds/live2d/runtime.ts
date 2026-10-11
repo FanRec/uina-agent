@@ -58,7 +58,15 @@ export class Live2DRuntime {
 	private readonly rig?: ModelRig;
 	private readonly tickIntervalMs: number;
 	private readonly published: boolean;
-	private readonly catalog: CatalogSnapshot;
+	private catalog: CatalogSnapshot;
+	/** 目录代次：目录更新递增；cue 受理绑定受理时代次，执行时校验（§3 目录快照与执行竞态）。 */
+	private generation = 0;
+	/** safeStop 暂停标志：工具 gate、电平丢弃、tick 保持帧分支的统一事实。 */
+	private paused = false;
+	/** 焦点状态（BodyRouter onFocus 通知）；幂等去重在本方法内完成（边界 #5）。 */
+	private focused = true;
+	/** safeStop 保持帧：暂停期间按 tick 节奏持续注入（口型通道已覆写中性值）。 */
+	private keepFrame?: Record<string, number>;
 	private clock: NodeJS.Timeout | null = null;
 	private lastTickAt = 0;
 	/** 作者会话数据目录（start 时由 ctx.worldDataDir 注入；author-session 标记文件在其下）。 */
@@ -83,10 +91,10 @@ export class Live2DRuntime {
 			if (options.speech) {
 				const input = new SpeechInput(options.speech, this.director);
 				this.speechInput = input;
-				// 未发布/暂停期间电平一律丢弃（边界规范 §4）；paused 标志随 safeStop（P4-2/B2）接入。
+				// 未发布/暂停期间电平一律丢弃（边界规范 §4）。
 				this.levelSink = {
 					processLevel: (level) => {
-						if (!this.published) return;
+						if (!this.published || this.paused) return;
 						input.processLevel(level);
 					},
 					reset: () => input.reset(),
@@ -99,6 +107,60 @@ export class Live2DRuntime {
 
 	get isStarted(): boolean {
 		return this.started;
+	}
+
+	/** 目录视图：未发布时目录按空处理（§7：catalog 为空 → cue 全部不可达、命名动作拒绝）。 */
+	get catalogView(): CatalogSnapshot {
+		return this.published ? this.catalog : emptyCatalog(this.catalog.modelID);
+	}
+
+	get currentGeneration(): number {
+		return this.generation;
+	}
+
+	get isPaused(): boolean {
+		return this.paused;
+	}
+
+	/** 连接事实（endpoint state() 的 online 输入）。 */
+	get connectionOnline(): boolean {
+		return this.client?.isConnected() ?? false;
+	}
+
+	get fault(): string | undefined {
+		return this.client?.getFault();
+	}
+
+	/** 身份事实：rig 存在且 VTS 当前模型与其标定身份一致。 */
+	identityMatched(): boolean {
+		const profile = this.client?.getModelProfile();
+		return this.rig !== undefined && profile !== undefined && profile.modelID === this.rig.modelID;
+	}
+
+	/**
+	 * 焦点通知（幂等）：相同值的重复通知直接忽略，不重置任何倒计时（边界 #5）。
+	 * A11 统一规则：任何非播放态（safeStop 暂停/失焦）冻结倒计时与过渡，回焦恢复剩余。
+	 */
+	setFocused(focused: boolean): void {
+		if (this.focused === focused) return;
+		this.focused = focused;
+		this.syncFrozen();
+	}
+
+	private syncFrozen(): void {
+		this.director?.setFrozen(this.paused || !this.focused);
+	}
+
+	/**
+	 * 目录更新（模型切换/重绑/发布状态变化）：新快照 + 递增代次 + 旧代次执行全部失效。
+	 * 槽位/注视/播放按跨模型事实清理（invalidateAll），绝不把旧目录的解释结果施加到新目录。
+	 */
+	setCatalog(snapshot: CatalogSnapshot): void {
+		if (this.rig && snapshot.modelID !== this.rig.modelID)
+			throw new Error(`目录与 rig 模型身份不符: 目录 ${snapshot.modelID} vs rig ${this.rig.modelID}`);
+		this.catalog = snapshot;
+		this.generation++;
+		this.director?.invalidateAll("catalog changed");
 	}
 
 	/** 引擎未接入前的统一受理语义：诚实声明未开始，不伪装失败原因。 */
@@ -127,6 +189,8 @@ export class Live2DRuntime {
 		if (ctx.signal?.aborted) return toolRejected("cancelled", "调用已中止，未执行。");
 		if (options.authorOnly && !this.authorSessionActive())
 			return toolRejected("author_session_required", "此工具仅作者会话可用：需操作员在世界数据目录创建 author-session 标记。");
+		if (this.paused)
+			return toolRejected("paused", "身体处于 safeStop 暂停，操作被拒绝（resume 后恢复）。");
 		if (!this.client || !this.client.isConnected())
 			return toolRejected("model_not_ready", "VTS 未连接（连接建立前所有具身操作不可用）。");
 		const profile = this.client.getModelProfile();
@@ -293,6 +357,37 @@ export class Live2DRuntime {
 		}
 	}
 
+	/**
+	 * safeStop（§6 生命周期）：显式全局暂停。
+	 * 1. paused=true，捕获当前合成帧为保持帧，口型开合通道（mouth.*）覆写中性值——
+	 *    暂停瞬间的张嘴是声学瞬态，不是值得保持的姿态；
+	 * 2. 全部活跃播放 cut 结算（冻结帧下 fade 永不推进，release 会悬挂 finished）；
+	 * 3. 注入不停止：composeTick 暂停分支持续注入保持帧——控制权与口型归零优先于视觉静止；
+	 * 4. 带清理独占声明的"等待清理完成才结算"依赖 P4-5 独占资源生产者，届时接入。
+	 */
+	async safeStop(): Promise<void> {
+		if (this.paused) return;
+		this.paused = true;
+		this.syncFrozen();
+		const director = this.director;
+		if (!director) return;
+		const frame: Record<string, number> = { ...director.currentFrame };
+		for (const axis of Object.keys(frame)) {
+			if (axis.startsWith("mouth.")) frame[axis] = this.rig!.controls[axis]?.neutral ?? frame[axis]!;
+		}
+		this.keepFrame = frame;
+		director.cancelAllPlaybacks("safestop");
+	}
+
+	/** resume（§6）：解除暂停、清保持帧、口型包络归零、眨眼与限时状态倒计时恢复剩余。 */
+	async resume(): Promise<void> {
+		if (!this.paused) return;
+		this.paused = false;
+		this.keepFrame = undefined;
+		this.speechInput?.reset();
+		this.syncFrozen();
+	}
+
 	async stop(): Promise<void> {
 		if (!this.started) return;
 		this.started = false;
@@ -333,6 +428,11 @@ export class Live2DRuntime {
 		// 身份门：rig 只属于其标定的模型，VTS 当前模型不匹配即零输出，杜绝跨模型误注入。
 		const profile = this.client.getModelProfile();
 		if (!profile || profile.modelID !== this.rig.modelID) return;
+		// §6 暂停分支：不合成、不推进倒计时，按 tick 节奏持续注入保持帧。
+		if (this.paused) {
+			if (this.keepFrame) this.client.injectParameters(encodeFrame(this.rig, this.keepFrame));
+			return;
+		}
 		// 声学电平推进（失联守卫 + 作者映射）→ 引擎包络目标，先于本帧合成。
 		this.speechInput?.tick(dtMs);
 		const frame = this.director.step(dtMs);
@@ -340,11 +440,6 @@ export class Live2DRuntime {
 	}
 
 	// ---------- 事实呈现 ----------
-
-	private identityMatched(): boolean {
-		const profile = this.client?.getModelProfile();
-		return this.rig !== undefined && profile !== undefined && profile.modelID === this.rig.modelID;
-	}
 
 	formatStatus(): string {
 		const connection = this.client?.getConnectionStatus();
@@ -357,6 +452,9 @@ export class Live2DRuntime {
 				speech: this.levelSink ? "levelSink_wired (P3-2)" : "not_wired",
 				published: this.published,
 				authorSession: this.authorSessionActive(),
+				paused: this.paused,
+				focused: this.focused,
+				generation: this.generation,
 				rig: this.rig ? { modelID: this.rig.modelID, axes: Object.keys(this.rig.controls).length } : null,
 				identityMatched: this.identityMatched(),
 				connection: connection ?? null,
@@ -367,6 +465,7 @@ export class Live2DRuntime {
 					attentions: [...this.catalog.attentions.keys()],
 					costumes: this.catalog.costumes.map((c) => c.id),
 				},
+				lastCue: this.endpoint.lastCue(),
 				endpoint: { bodyId: this.endpoint.bodyId, bodyType: this.endpoint.bodyType },
 			},
 			null,
@@ -383,6 +482,10 @@ export class Live2DRuntime {
 				identityMatched: this.identityMatched(),
 				published: this.published,
 				authorSession: this.authorSessionActive(),
+				paused: this.paused,
+				focused: this.focused,
+				generation: this.generation,
+				lastCue: this.endpoint.lastCue(),
 				director: this.director
 					? {
 							attention: this.director.getAttention() ?? null,

@@ -471,9 +471,18 @@ export class MotionDirector {
 
 	// ---------- 代次失效与暂停 ----------
 
-	/** 模型更换/绑定失效：全部活跃 Handle 结算 cancelled，槽位过渡作废（引擎 #11；§3.3.2）。 */
-	invalidateAll(reason = "binding generation changed"): void {
+	/**
+	 * safeStop 语义（§6）：全部活跃播放立即 cut 结算 cancelled，无淡出。
+	 * 必须用 cut 而非 release——暂停后 step 返回冻结快照，fadeOut 永不推进，release 会悬挂 finished。
+	 */
+	cancelAllPlaybacks(reason = "safestop"): void {
 		for (const playback of [...this.playbacks]) {
+			this.finishPlayback(playback, { status: "cancelled", reason });
+		}
+	}
+
+	/** 模型更换/绑定失效：全部活跃 Handle 结算 cancelled，槽位过渡作废（引擎 #11；§3.3.2）。 */
+	invalidateAll(reason = "binding generation changed"): void {		for (const playback of [...this.playbacks]) {
 			playback.settled = true;
 			playback.state = "cancelled";
 			const index = this.playbacks.indexOf(playback);
