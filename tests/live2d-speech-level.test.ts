@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
@@ -70,6 +70,18 @@ describe("live2d 声学电平链路（P3-2）", () => {
 		expect(d.currentFrame["mouth.open"]).toBeLessThan(1);
 		for (let i = 0; i < 6; i++) d.step(10);
 		expect(d.currentFrame["mouth.open"]).toBe(0);
+	});
+
+	it("边界 #6 口型兜底：reset 后下一合成帧的包络目标即 0（50ms 释放的规范依据，§4 reset 三层语义第一层）", () => {
+		const d = new MotionDirector({ "mouth.open": { min: 0, max: 1, neutral: 0 } });
+		const spy = vi.spyOn(d, "setSpeechLevel");
+		const input = new SpeechInput(SPEECH, d);
+		input.processLevel({ rms: 0.15 });
+		input.tick(16);
+		expect(spy).toHaveBeenLastCalledWith(1);
+		input.reset();
+		input.tick(16); // 下一帧：目标 0——包络不再有任何声学输入支撑
+		expect(spy).toHaveBeenLastCalledWith(0);
 	});
 
 	it("runtime 集成：电平按 20ms 窗连续投递驱动张嘴；未发布时电平丢弃", () => {
