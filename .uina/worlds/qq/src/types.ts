@@ -153,28 +153,35 @@ export type IngestedFact =
 	| { kind: "event"; fact: EventFact }
 	| { kind: "request"; fact: RequestFact };
 
-/* ---------- 控制状态（单写方，持久提交成功后才报告成功） ---------- */
+/* ---------- 旧 attention 覆盖（仅迁移读取；现行推送偏好见下节） ---------- */
 
 export type AttentionMode = "normal" | "direct_only" | "silent";
-export type AttentionPriority = "normal" | "preferred";
 
-/** 单一目标的显式覆盖；attention.set 只改提供的字段。 */
+/** 旧版单一目标覆盖；随旧 action 退役（R2），仅在 ControlStore.load 一次性迁移为 PushPreference。 */
 export interface AttentionOverride {
 	readonly mode?: AttentionMode;
-	readonly priority?: AttentionPriority;
 	/** 带时区 ISO 时间规范化 UTC；null = 提前恢复。 */
 	readonly pausedUntil?: string | null;
 }
 
-export interface AttentionRule {
-	readonly target: string;
-	readonly override: AttentionOverride;
+/* ---------- 推送偏好（阅读/关注重构 v2；R5 一次性迁移自 AttentionOverride） ---------- */
+
+/** 推送模式：off 静默 / digest 摘要纸条 / follow 正文跟读 / inherit 继承账号。 */
+export type PushMode = "off" | "digest" | "follow" | "inherit";
+/** 提醒过滤：all 全部 / direct 仅直接互动 / inherit 继承账号。 */
+export type PushFilter = "all" | "direct" | "inherit";
+
+/** 单一目标的推送偏好；setPush 只改提供的字段。省略字段 = 不修改。 */
+export interface PushPreference {
+	readonly mode?: PushMode;
+	readonly filter?: PushFilter;
+	readonly pausedUntil?: string | null;
 }
 
-/** 从安装初值 + 账号覆盖 + 会话覆盖计算的当前生效规则（非存储态）。 */
-export interface EffectiveAttention {
-	readonly mode: AttentionMode;
-	readonly priority: AttentionPriority;
+/** 继承解析后的生效推送偏好（mode/filter 不含 inherit；非存储态）。 */
+export interface EffectivePush {
+	readonly mode: Exclude<PushMode, "inherit">;
+	readonly filter: Exclude<PushFilter, "inherit">;
 	readonly pausedUntil: string | null;
 }
 

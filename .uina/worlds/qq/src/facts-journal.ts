@@ -22,6 +22,17 @@ export type FactRecord =
 	| IngestedFact
 	/** input_settled(committed) 后的主场景通知位置；只表示正文已交给 canonical 输入。 */
 	| { kind: "notified"; conversationRef: string; throughSequence: number; inputId: string; at: string }
+	/** body_dispatched 正文派发消费边界（R4①）；与 notified 分轨，单调回放。 */
+	| {
+			kind: "dispatched";
+			conversationRef: string;
+			throughSequence: number;
+			source: "read" | "follow";
+			inputId?: string;
+			at: string;
+		}
+	/** backlog_skipped 主动放下事实（§2）：跳过区间审计 + 消费位推进（Math.max 单调）。 */
+	| { kind: "skipped"; conversationRef: string; throughSequence: number; reason: string; at: string }
 	/** retention 归档起点：此时刻之前的事实可能已不可寻址。 */
 	| { kind: "archive"; beforeTime: string };
 
@@ -36,7 +47,11 @@ export interface FactsSnapshot {
 	notifiedThrough: Map<string, number>;
 	/** 各会话最近一次 committed 通知时刻（recall 连续性窗口判定用）。 */
 	notifiedAt: Map<string, string>;
+	/** body_dispatched 正文派发消费边界（per-conversation，单调不减）。 */
+	dispatchedThrough: Map<string, number>;
 	archiveBefore: string | null;
+	/** backlog_skipped 审计（追加序）；qq_status 呈现，消费位本身见 dispatchedThrough。 */
+	skips: { conversationRef: string; throughSequence: number; reason: string; at: string }[];
 }
 
 export interface FactsJournalOptions {
@@ -65,7 +80,9 @@ export class FactsJournal {
 			requests: new Map(),
 			notifiedThrough: new Map(),
 			notifiedAt: new Map(),
+			dispatchedThrough: new Map(),
 			archiveBefore: null,
+			skips: [],
 		};
 	}
 
@@ -148,6 +165,28 @@ export class FactsJournal {
 				}
 				return;
 			}
+		case "dispatched": {
+			if (!REF_PATTERNS.conversation.test(record.conversationRef)) throw new Error("QQ 会话引用非法");
+			const seen = this.state.dispatchedThrough.get(record.conversationRef) ?? 0;
+			if (record.throughSequence > seen) {
+				this.state.dispatchedThrough.set(record.conversationRef, record.throughSequence);
+			}
+			return;
+		}
+		case "skipped": {
+			if (!REF_PATTERNS.conversation.test(record.conversationRef)) throw new Error("QQ 会话引用非法");
+			const seen = this.state.dispatchedThrough.get(record.conversationRef) ?? 0;
+			if (record.throughSequence > seen) {
+				this.state.dispatchedThrough.set(record.conversationRef, record.throughSequence);
+			}
+			this.state.skips.push({
+				conversationRef: record.conversationRef,
+				throughSequence: record.throughSequence,
+				reason: record.reason,
+				at: record.at,
+			});
+			return;
+		}
 			case "archive": {
 				if (!this.state.archiveBefore || record.beforeTime > this.state.archiveBefore) {
 					this.state.archiveBefore = record.beforeTime;
@@ -224,6 +263,54 @@ export class FactsJournal {
 
 	recordNotified(conversationRef: string, throughSequence: number, inputId: string, at: string): void {
 		this.append({ kind: "notified", conversationRef, throughSequence, inputId, at });
+	}
+
+	/** body_dispatched 书签推进（R4①）；Math.max 单调回放，绝不向后倒退。 */
+	recordDispatched(
+		conversationRef: string,
+		throughSequence: number,
+		source: "read" | "follow",
+		at: string,
+		inputId?: string,
+	): void {
+		this.append({
+			kind: "dispatched",
+			conversationRef,
+			throughSequence,
+			source,
+			...(inputId ? { inputId } : {}),
+			at,
+		});
+	}
+
+	/** 会话当前 body_dispatched 消费边界（未知会话为 0）。 */
+	dispatchedThroughOf(conversationRef: string): number {
+		return this.state.dispatchedThrough.get(conversationRef) ?? 0;
+	}
+
+	/**
+	 * backlog_skipped（§2/T04）：审计记录 + 消费位推进；Math.max 单调，绝不向后倒退。
+	 * 无实际推进（throughSequence ≤ 当前消费位）由调用方判定，不落记录。
+	 */
+	recordSkipped(conversationRef: string, throughSequence: number, reason: string, at: string): void {
+		this.append({ kind: "skipped", conversationRef, throughSequence, reason, at });
+	}
+
+	/** 跳过审计（追加序）；conversationRef 缺省返回全部。 */
+	skipRecords(conversationRef?: string): readonly { conversationRef: string; throughSequence: number; reason: string; at: string }[] {
+		return conversationRef === undefined ? this.state.skips : this.state.skips.filter((s) => s.conversationRef === conversationRef);
+	}
+
+	/**
+	 * 消息引用 → 本地 sequence（R3）：`m<platform_id>` 直引经事实索引映射；
+	 * 引用不存在或不属目标会话均显式失败，绝不靠字符串字典序推导先后。
+	 */
+	resolveMessageSequence(conversationRef: string, messageRef: string): number {
+		const fact = this.byMessageRef.get(messageRef);
+		if (!fact || fact.conversationRef !== conversationRef) {
+			throw new Error(`消息引用不存在或不属目标会话: ${messageRef} @ ${conversationRef}`);
+		}
+		return fact.sequence;
 	}
 
 	recordArchive(beforeTime: string): void {

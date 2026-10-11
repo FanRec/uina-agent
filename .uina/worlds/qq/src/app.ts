@@ -14,24 +14,21 @@ import type { OperationLog } from "./operation-log.js";
 import type { DeploymentGrants } from "./grants.js";
 import { hasGrant } from "./grants.js";
 import { requiredGrant } from "./grants-vocabulary.js";
+import type { AttentionModel } from "./attention.js";
+import type { ConversationLocks } from "./conversation-lock.js";
+import { handleBrowse, handleInbox, handleRead, handleSkip } from "./reader.js";
 import * as render from "./render.js";
 import {
 	messageRef,
 	parseConversationRef,
 	parseUserRef,
 	parseMessageRef,
-	conversationRef,
 	REF_PATTERNS,
 	userRef,
-	type CapabilityDimension,
-	type MessageFact,
 	type OperationRecord,
 	type RequestFact,
 } from "./types.js";
-import { expandImages, imageSourcesFromFacts, withImages } from "./media-fetch.js";
-import type { ImageContent } from "../../../../src/core/content.js";
 import { paginate } from "./pagination.js";
-import { observeContent, observeConversation, readMessage } from "./observe.js";
 import { oneBotId, oneBotObject } from "./message-codec.js";
 
 /**
@@ -47,6 +44,8 @@ export interface QqAppDeps {
 	readonly control: ControlStore;
 	readonly ops: OperationLog;
 	readonly transport: QqTransport;
+	readonly attention: AttentionModel;
+	readonly locks: ConversationLocks;
 	readonly now?: () => string;
 	readonly media?: { readonly allowedRoots: readonly string[]; readonly staging: MediaStaging };
 	/** 呈现选项（快照头时区）；批次现场经 scheduler 注入，observe 现场经此注入。 */
@@ -104,12 +103,6 @@ export async function handleQqCall(
 	params: Record<string, unknown>,
 	signal?: AbortSignal,
 ): Promise<ToolExecutionResult> {
-	if (params.account !== deps.selfId) {
-		return worldFailed(`account必须是当前绑定账号 ${deps.selfId}。`, {
-			reason: "account_mismatch",
-			effect: "not_started",
-		});
-	}
 	// ---- grant 中间件（所有入口同一检查；拒绝时平台调用为 0） ----
 	const grant = requiredGrant(rawAction, params);
 	if (grant !== null && !hasGrant(deps.grants, grant)) {
@@ -121,18 +114,24 @@ export async function handleQqCall(
 	if (signal?.aborted) return worldCancelled("cancelled / 未派发", { effect: "not_started" });
 
 	switch (rawAction) {
-		case "observe":
-			return handleObserve(deps, params, signal);
-		case "speak":
-			return handleSpeak(deps, params, signal);
-		case "gesture":
-			return handleGesture(deps, params, signal);
-		case "attention":
-			return handleAttention(deps, params);
-		case "follow_up":
-			return handleFollowUp(deps, params);
-		case "account":
-			return handleAccount(deps, params, signal);
+		case "inbox":
+			return handleInbox(deps, params);
+		case "read":
+			return handleRead(deps, params, signal);
+		case "skip":
+			return handleSkip(deps, params);
+		case "browse":
+			return handleBrowse(deps, params, signal);
+		case "send":
+			return handleSend(deps, params, signal);
+		case "interact":
+			return handleInteract(deps, params, signal);
+		case "remind":
+			return handleRemind(deps, params);
+		case "requests":
+			return handleRequests(deps, params, signal);
+		case "profile":
+			return handleProfile(deps, params, signal);
 		default:
 			return worldFailed(`未知动作：${rawAction}`, { reason: "unknown_action" });
 	}
@@ -502,46 +501,7 @@ async function handleGesture(
 	return worldFailed("gesture.kind 必须是 react 或 poke。", { reason: "invalid_kind" });
 }
 
-/* ---------- attention / follow_up ---------- */
-
-function handleAttention(deps: QqAppDeps, params: Record<string, unknown>): ToolExecutionResult {
-	const targetRaw = params.target;
-	let target: string;
-	if (targetRaw === "account") {
-		target = "account";
-	} else {
-		const checked = checkConversationRef(deps, targetRaw);
-		if (!("ok" in checked)) return checked;
-		target = checked.ref;
-	}
-	try {
-		if (params.operation === "clear") {
-			const revision = deps.control.clearAttention(target);
-			return worldSucceeded(
-				render.receipt.ok("attention.clear", [`target=${target}`, `revision=${revision}；persisted=true`]),
-				{ target, revision, persisted: true },
-				"applied",
-			);
-		}
-		if (params.operation === "set") {
-			const patch: Record<string, unknown> = {};
-			if (params.mode !== undefined) patch.mode = params.mode;
-			if (params.priority !== undefined) patch.priority = params.priority;
-			if (params.pausedUntil !== undefined) patch.pausedUntil = params.pausedUntil;
-			const revision = deps.control.setAttention(target, patch);
-			return worldSucceeded(
-				render.receipt.ok("attention.set", [`target=${target}`, `revision=${revision}；persisted=true`]),
-				{ target, revision, persisted: true },
-				"applied",
-			);
-		}
-		return worldFailed("attention.operation 必须是 set 或 clear。", { reason: "invalid_operation" });
-	} catch (error) {
-		return worldFailed(`attention 保存失败，保留旧控制状态：${errorMessage(error)}`, {
-			reason: "control_persist_failed",
-		});
-	}
-}
+/* ---------- follow_up ---------- */
 
 function handleFollowUp(deps: QqAppDeps, params: Record<string, unknown>): ToolExecutionResult {
 	try {
@@ -565,18 +525,6 @@ function handleFollowUp(deps: QqAppDeps, params: Record<string, unknown>): ToolE
 					"applied",
 				);
 			}
-			case "update": {
-				const item = deps.control.updateFollowUp(String(params.ref ?? ""), {
-					note: params.note === undefined ? undefined : String(params.note),
-					evidenceRefs: params.evidenceRefs === undefined ? undefined : (params.evidenceRefs as string[]),
-					reviewAt: params.reviewAt === undefined ? undefined : (params.reviewAt as string | null),
-				});
-				return worldSucceeded(
-					render.receipt.ok("follow_up.update", [`ref=${item.ref}`, `reviewAt=${item.reviewAt ?? "null"}`]),
-					{ ref: item.ref, persisted: true },
-					"applied",
-				);
-			}
 			case "close":
 			case "cancel": {
 				const item = deps.control.settleFollowUp(
@@ -591,7 +539,7 @@ function handleFollowUp(deps: QqAppDeps, params: Record<string, unknown>): ToolE
 				);
 			}
 			default:
-				return worldFailed("follow_up.operation 必须是 create/update/close/cancel。", { reason: "invalid_operation" });
+				return worldFailed("follow_up.operation 必须是 create/close/cancel。", { reason: "invalid_operation" });
 		}
 	} catch (error) {
 		return worldFailed(`follow_up 保存失败，保留旧控制状态：${errorMessage(error)}`, {
@@ -674,58 +622,6 @@ async function handleAccount(
 					),
 			);
 		}
-		case "mark_read": {
-			const target = checkConversationRef(deps, params.conversationRef);
-			if (!("ok" in target)) return target;
-			const parsed = parseConversationRef(target.ref)!;
-			// temp 会话对端是 uin（key 形如 <uin>-g<groupId>）；读回执按对端 user_id 提交，不透传 NaN
-			const platformAction = parsed.kind === "group" ? "mark_group_msg_as_read" : "mark_private_msg_as_read";
-			const platformParams: Record<string, unknown> =
-				parsed.kind === "group" ? { group_id: Number(parsed.key) } : { user_id: Number(tempPeerUin(parsed.key)) };
-			return dispatchWrite(deps, `account.${operation}`, platformAction, platformParams, target.ref, signal, () =>
-				worldSucceeded(
-					render.receipt.ok("mark_read", [`target=${target.ref}（会话级，不承诺只读冻结范围）`]),
-					{ target: target.ref },
-					"applied",
-				),
-			);
-		}
-		case "leave_group": {
-			const target = checkConversationRef(deps, params.conversationRef);
-			if (!("ok" in target)) return target;
-			const parsed = parseConversationRef(target.ref)!;
-			if (parsed.kind !== "group") {
-				return worldFailed("leave_group 只接受群会话引用。", { reason: "invalid_target" });
-			}
-			return dispatchWrite(
-				deps,
-				`account.${operation}`,
-				"set_group_leave",
-				{ group_id: Number(parsed.key) },
-				target.ref,
-				signal,
-				() =>
-					worldSucceeded(render.receipt.ok("leave_group", [`target=${target.ref}`]), { target: target.ref }, "applied"),
-			);
-		}
-		case "remove_contact": {
-			const user = checkUserRef(deps, params.userRef);
-			if (!("ok" in user)) return user;
-			return dispatchWrite(
-				deps,
-				`account.${operation}`,
-				"delete_friend",
-				{ friend_id: Number(user.uin), block: Boolean(params.block ?? false), temp_block: 0 },
-				user.ref,
-				signal,
-				() =>
-					worldSucceeded(
-						render.receipt.ok("remove_contact", [`userRef=${user.ref}（本地过去事实保留）`]),
-						{ userRef: user.ref },
-						"applied",
-					),
-			);
-		}
 		case "set_profile": {
 			const calls: { name: string; params: Record<string, unknown>; label: string }[] = [];
 			if (typeof params.nickname === "string")
@@ -762,12 +658,6 @@ async function handleAccount(
 				() => worldSucceeded(render.receipt.ok("set_avatar", []), {}, "applied"),
 				(ref) => ({ file: (prepared.build(ref)[0]!.data as { file: string }).file }),
 			);
-		}
-		case "set_presence": {
-			return worldFailed("presenceRef 无已核实映射；不猜数字状态值。", {
-				reason: "presence_mapping_unverified",
-				effect: "not_started",
-			});
 		}
 		case "set_group_card": {
 			const target = checkConversationRef(deps, params.conversationRef);
@@ -835,17 +725,6 @@ function queryFailed(label: string, outcome: TransportCallOutcome, next: string)
 		reason: "platform_query_failed",
 		outcome,
 	});
-}
-
-/* ---------- includeMedia 装配（收集/抓取/附加在 media-fetch.ts） ---------- */
-
-/** 合并转发一层展开：get_forward_msg 取节点；节点渲染归呈现层（render.ts）。 */
-async function expandForward(deps: QqAppDeps, fact: MessageFact, lines: string[], signal?: AbortSignal): Promise<void> {
-	for (const [index, seg] of fact.segments.entries()) {
-		if (seg.type !== "forward") continue;
-		const result = await observeContent(deps, { messageRef: fact.ref, segmentIndex: index }, signal);
-		lines.push(result.result);
-	}
 }
 
 /* ---------- 派发屏障 ---------- */
@@ -1042,93 +921,18 @@ function listResult<T>(
 
 /* ---------- observe ---------- */
 
-async function handleObserve(
+/**
+ * 查询内部入口（不再直接对外暴露）：
+ * requests（requests 积木 list）、self（profile 积木 get）、expressions（启动目录 enrichment）。
+ * 历史 observe scope 随旧 action 退役（R2 裁剪清单）。
+ */
+export async function handleObserve(
 	deps: QqAppDeps,
 	params: Record<string, unknown>,
 	signal?: AbortSignal,
 ): Promise<ToolExecutionResult> {
 	const scope = String(params.scope ?? "");
 	switch (scope) {
-		case "status":
-			const connection = deps.transport.snapshot?.();
-			return worldSucceeded(
-				render.receipt.ok("status", [
-					`selfId=${deps.selfId}`,
-					`connected=${connection?.connected ?? "unknown"} identityVerified=${connection?.identityVerified ?? "unknown"}`,
-					`verifiedAccount=${connection?.selfId ?? "unknown"} observedAt=${connection?.observedAt ?? "unknown"}`,
-					...(connection?.lastError ? [`lastError=${render.quote(connection.lastError)}`] : []),
-					`grants=[${deps.grants.grants.join(", ") || "（空）"}]`,
-					`事实会话数=${deps.journal.snapshot.messages.size}`,
-					`unknown 操作数=${deps.ops.listUnknown().length}`,
-				]),
-				{},
-			);
-		case "capabilities": {
-			const actionFilter = typeof params.action === "string" && params.action ? params.action : null;
-			const media: Record<string, CapabilityDimension> = {};
-			const probeTargets: [string, string][] = [
-				["image", "can_send_image"],
-				["audio", "can_send_record"],
-			];
-			for (const [type, action] of actionFilter ? probeTargets.filter(([t]) => t === actionFilter) : probeTargets) {
-				const probe = await deps.transport.call(action, {}, signal);
-				const yes = probe.status === "ok" ? (probe.data as { yes?: unknown } | null)?.yes : undefined;
-				media[type] = {
-					supportedByAdapter: true,
-					allowedByDeployment: hasGrant(deps.grants, "messaging"),
-					availableNow:
-						deps.transport.snapshot?.().identityVerified === false ? false : typeof yes === "boolean" ? yes : null,
-				};
-			}
-			for (const type of actionFilter ? ["video", "file"].filter((t) => t === actionFilter) : ["video", "file"]) {
-				media[type] = {
-					supportedByAdapter: true,
-					allowedByDeployment: hasGrant(deps.grants, "messaging"),
-					availableNow: deps.transport.snapshot?.().identityVerified === false ? false : null,
-				};
-			}
-			return worldSucceeded(
-				render.receipt.ok("capabilities", [
-					render.RECEIPT_NOTES.capabilitiesHead,
-					`本实例 grants=[${deps.grants.grants.join(", ") || "（空）"}]`,
-					...Object.entries(media).map(([type, d]) => render.capabilityLine(type, d)),
-					render.RECEIPT_NOTES.capabilitiesCaveat,
-				]),
-				{ media },
-			);
-		}
-		case "attention": {
-			const targetRaw = params.target === undefined || params.target === "account" ? "account" : String(params.target);
-			const effective = deps.control.effectiveAttention(targetRaw);
-			return worldSucceeded(
-				render.receipt.ok("attention", [
-					`target=${targetRaw}`,
-					`mode=${effective.mode} priority=${effective.priority} pausedUntil=${effective.pausedUntil ?? "null"}`,
-				]),
-				{},
-			);
-		}
-		case "follow_ups": {
-			const items = deps.control.listFollowUps({
-				targetRef: params.targetRef === undefined ? undefined : String(params.targetRef),
-				state: (params.state as never) ?? "open",
-			});
-			return listResult(deps, scope, items, params, render.followUpRow);
-		}
-		case "operations": {
-			if (typeof params.operationRef === "string") {
-				if (!REF_PATTERNS.operation.test(params.operationRef))
-					return worldFailed("操作引用格式非法。", { reason: "invalid_target" });
-				const record = deps.ops.get(params.operationRef);
-				if (!record) return worldFailed("操作记录未取得。", { reason: "not_found" });
-				return worldSucceeded(render.receipt.ok("operations", render.operationRecordLines(record)), { record });
-			}
-			const state = String(params.state ?? "unknown");
-			const records = (state === "unknown" ? deps.ops.listUnknown() : deps.ops.all()).sort(
-				(a, b) => b.startedAt.localeCompare(a.startedAt) || a.ref.localeCompare(b.ref, "en", { numeric: true }),
-			);
-			return listResult(deps, scope, records, params, render.operationRow);
-		}
 		case "requests": {
 			const state = String(params.state ?? "pending");
 			const kindFilter = typeof params.kind === "string" ? params.kind : undefined;
@@ -1138,188 +942,14 @@ async function handleObserve(
 				.sort((a, b) => a.time.localeCompare(b.time) || a.ref.localeCompare(b.ref, "en", { numeric: true }));
 			return listResult(deps, scope, items, params, render.requestRow);
 		}
-		case "overview": {
-			const snapshot = deps.journal.snapshot;
-			const pendingRequests = [...snapshot.requests.values()].filter(
-				(r) => requestState(deps, r).state === "pending",
-			).length;
-			return worldSucceeded(
-				render.receipt.ok("overview", [
-					`selfId=${deps.selfId}`,
-					`已知会话=${snapshot.messages.size}`,
-					`pending 申请=${pendingRequests}`,
-					`open follow_up=${deps.control.listFollowUps({ state: "open" }).length}`,
-					`unknown 操作=${deps.ops.listUnknown().length}`,
-					`近期账号事件=${
-						snapshot.accountEvents
-							.slice(-5)
-							.map((e) => `${e.kind}@${e.time}`)
-							.join(", ") || "（无）"
-					}`,
-				]),
-				{},
-			);
-		}
-		case "messages": {
-			const refs = Array.isArray(params.messageRefs) ? (params.messageRefs as string[]) : [];
-			const lines: string[] = [];
-			const foundFacts: MessageFact[] = [];
-			for (const ref of refs) {
-				const checked = checkMessageRef(deps, ref);
-				if (!("ok" in checked)) return checked;
-				const fact = await readMessage(deps, checked.ref, signal);
-				if (fact) foundFacts.push(fact);
-				else lines.push(`${checked.ref} | 本地及平台不可用；不伪造内容`);
-			}
-			lines.unshift(...render.renderMessageFacts(foundFacts, deps.selfId, deps.display, deps.journal));
-			// 合并转发一层展开（转文本；不递归）。
-			for (const fact of foundFacts) await expandForward(deps, fact, lines, signal);
-			// includeMedia：抓取 image 段为 base64 附加（runtime tool-role 图片通道）。
-			let images: ImageContent[] = [];
-			if (params.includeMedia === true) {
-				const expanded = await expandImages(imageSourcesFromFacts(foundFacts), signal);
-				if (expanded.note) lines.push(expanded.note);
-				images = expanded.images;
-			}
-			return withImages(worldSucceeded(render.receipt.ok("messages", lines), {}), images);
-		}
-		case "content":
-			return observeContent(deps, params, signal);
-		case "conversation":
-		case "members":
-		case "contacts":
-		case "groups":
-		case "conversations":
-		case "self":
-		case "expressions":
-			return observeOnline(deps, params, scope, signal);
-		default:
-			return worldFailed(`未知 observe scope：${scope}`, { reason: "unknown_scope" });
-	}
-}
-
-/** 需要平台在线读取的 scope：在线尝试，失败如实说明，不伪造覆盖。 */
-async function observeOnline(
-	deps: QqAppDeps,
-	params: Record<string, unknown>,
-	scope: string,
-	signal?: AbortSignal,
-): Promise<ToolExecutionResult> {
-	switch (scope) {
-		case "members": {
-			const target = checkConversationRef(deps, params.conversationRef);
-			if (!("ok" in target)) return target;
-			const parsed = parseConversationRef(target.ref)!;
-			if (parsed.kind !== "group") return worldFailed("members 只接受群会话引用。", { reason: "invalid_target" });
-			const outcome = await deps.transport.call("get_group_member_list", { group_id: Number(parsed.key) }, signal);
-			if (outcome.status !== "ok") {
-				return queryFailed("members", outcome, render.RECEIPT_NOTES.nextStatusCheck);
-			}
-			// SnowLuma 返回裸成员数组（group-info.ts returnsSchema type:'array'）；兼容 {member_list} 包装形状。
-			const rawData: unknown = outcome.data;
-			const members = Array.isArray(rawData)
-				? rawData
-				: ((rawData as { member_list?: unknown[] } | null)?.member_list ?? []);
-			const query = typeof params.query === "string" ? params.query : "";
-			const matched = members
-				.map((m) => m as { user_id: number; nickname?: string; card?: string; role?: string })
-				.filter((m) => !query || [m.nickname, m.card, String(m.user_id)].some((v) => v?.includes(query)));
-			matched.sort((a, b) => String(a.user_id).localeCompare(String(b.user_id), "en", { numeric: true }));
-			return listResult(deps, scope, matched, params, (member) => render.membersLine(deps.selfId, member));
-		}
-		case "conversation":
-			return observeConversation(deps, params, signal);
-		case "contacts":
-		case "groups":
-		case "conversations": {
-			const platformAction = scope === "contacts" ? "get_friend_list" : "get_group_list";
-			const outcome = await deps.transport.call(platformAction, {}, signal);
-			if (outcome.status !== "ok") {
-				return queryFailed(scope, outcome, render.RECEIPT_NOTES.nextStatusCheck);
-			}
-			const list = (outcome.data as unknown[]) ?? [];
-			// conversations（合同：包括 silent/temp/历史会话）= 平台群列表 ∪ 本地保存会话；
-			// 本地补充项显式标陈旧性，不冒充平台快照。
-			const rows: { ref: string; detail: string; local: boolean }[] = list
-				.map((item) => item as Record<string, unknown>)
-				.map((item) =>
-					scope === "contacts"
-						? {
-								ref: userRef(String(item.user_id)),
-								detail: `${render.quote(String(item.nickname ?? ""))} | remark=${render.quote(String(item.remark ?? ""))}`,
-								local: false,
-							}
-						: {
-								ref: conversationRef("group", String(item.group_id)),
-								detail: render.quote(String(item.group_name ?? "")),
-								local: false,
-							},
-				);
-			if (scope === "conversations") {
-				const seen = new Set(rows.map((row) => row.ref));
-				for (const ref of deps.journal.listConversationRefs()) {
-					if (!seen.has(ref)) {
-						seen.add(ref);
-						rows.push({ ref, detail: "", local: true });
-					}
-				}
-			}
-			const query = typeof params.query === "string" ? params.query : "";
-			const kind = typeof params.kind === "string" ? params.kind : undefined;
-			const matched = rows
-				.filter(
-					(row) =>
-						(!query || row.ref.includes(query) || row.detail.includes(query)) &&
-						(!kind || parseConversationRef(row.ref)?.kind === kind),
-				)
-				.sort((a, b) => a.ref.localeCompare(b.ref, "en", { numeric: true }));
-			return listResult(
-				deps,
-				scope,
-				matched,
-				params,
-				(row) => row.ref + (row.detail ? " | " + row.detail : "") + (row.local ? " | 本地保存（陈旧性未核验）" : ""),
-			);
-		}
 		case "self": {
 			const outcome = await deps.transport.call("get_login_info", {}, signal);
 			if (outcome.status !== "ok") return queryFailed("self", outcome, render.RECEIPT_NOTES.nextStatusCheck);
 			const data = outcome.data as { user_id: number; nickname: string };
-			const lines = [`${userRef(data.user_id)} | nickname=${render.quote(data.nickname)}`];
-			// includeGroups：所在群列表；groupConversationRef：自己在该群的名片与角色（get_group_member_info）。
-			const groupRefRaw = typeof params.groupConversationRef === "string" ? params.groupConversationRef : undefined;
-			if (groupRefRaw !== undefined) {
-				const checked = checkConversationRef(deps, groupRefRaw);
-				if (!("ok" in checked)) return checked;
-				const parsed = parseConversationRef(checked.ref)!;
-				if (parsed.kind !== "group")
-					return worldFailed("groupConversationRef 只接受群会话引用。", { reason: "invalid_target" });
-				const member = await deps.transport.call(
-					"get_group_member_info",
-					{ group_id: Number(parsed.key), user_id: Number(deps.selfId) },
-					signal,
-				);
-				if (member.status !== "ok") return queryFailed("self", member, render.RECEIPT_NOTES.nextStatusCheck);
-				const info = member.data as { card?: unknown; nickname?: unknown; role?: unknown };
-				lines.push(
-					`${checked.ref} | card=${render.quote(String(info.card ?? ""))} | nickname=${render.quote(String(info.nickname ?? ""))} | role=${render.quote(String(info.role ?? "member"))}（占位不作真实身份）`,
-				);
-			} else if (params.includeGroups === true) {
-				const groups = await deps.transport.call("get_group_list", {}, signal);
-				if (groups.status !== "ok") return queryFailed("self", groups, render.RECEIPT_NOTES.nextStatusCheck);
-				const list = ((groups.data as unknown[]) ?? [])
-					.map((item) => item as { group_id?: unknown; group_name?: unknown })
-					.sort((a, b) => String(a.group_id).localeCompare(String(b.group_id), "en", { numeric: true }));
-				const result = listResult(
-					deps,
-					"self.groups",
-					list,
-					params,
-					(g) => conversationRef("group", String(g.group_id)) + " | " + render.quote(String(g.group_name ?? "")),
-				);
-				return { ...result, result: lines.join("\n") + "\n" + result.result };
-			}
-			return worldSucceeded(render.receipt.ok("self", lines), {});
+			return worldSucceeded(
+				render.receipt.ok("self", [`${userRef(data.user_id)} | nickname=${render.quote(data.nickname)}`]),
+				{},
+			);
 		}
 		case "expressions":
 			return handleExpressions(deps, params, signal);
@@ -1366,4 +996,145 @@ async function handleExpressions(
 	return result.status === "succeeded"
 		? { ...result, result: `${result.result}\n${render.RECEIPT_NOTES.expressionsGuidance}` }
 		: result;
+}
+
+/* ---------- 行动积木（设计 §4.5~§4.9）：参数映射层，平台链路单源复用 ---------- */
+
+/**
+ * qq_send：design 形状 `path` → 旧 `resource:{kind:"file",path}`，其余原样复用 speak
+ * 链路（分段批派、replyTo 归属核验、mention 成员核验、operation-log 回执）。
+ */
+async function handleSend(
+	deps: QqAppDeps,
+	params: Record<string, unknown>,
+	signal?: AbortSignal,
+): Promise<ToolExecutionResult> {
+	const content = Array.isArray(params.content)
+		? (params.content as unknown[]).map((segment) => {
+				if (typeof segment !== "object" || segment === null) return segment;
+				const mapped = { ...(segment as Record<string, unknown>) };
+				if (typeof mapped.path === "string" && mapped.resource === undefined) {
+					mapped.resource = { kind: "file", path: mapped.path };
+				}
+				delete mapped.path;
+				return mapped;
+			})
+		: params.content;
+	return handleSpeak(deps, { ...params, content }, signal);
+}
+
+/** qq_interact：poke/react 复用 gesture，retract 复用 account.retract（所有权核验同源）。 */
+async function handleInteract(
+	deps: QqAppDeps,
+	params: Record<string, unknown>,
+	signal?: AbortSignal,
+): Promise<ToolExecutionResult> {
+	switch (params.action) {
+		case "poke":
+			return handleGesture(
+				deps,
+				{ kind: "poke", conversationRef: params.conversationRef, userRef: params.userRef },
+				signal,
+			);
+		case "react":
+			return handleGesture(
+				deps,
+				{ kind: "react", messageRef: params.messageRef, reactionCode: params.reactionCode, enabled: true },
+				signal,
+			);
+		case "retract":
+			return handleAccount(deps, { operation: "retract", messageRef: params.messageRef }, signal);
+		default:
+			return worldFailed("interact.action 必须是 poke/react/retract。", { reason: "invalid_action" });
+	}
+}
+
+/** qq_remind：f{n} 空间沿用 follow_up；list 纯本地（open 事项）。 */
+function handleRemind(deps: QqAppDeps, params: Record<string, unknown>): ToolExecutionResult {
+	switch (params.action ?? "list") {
+		case "list": {
+			const items = deps.control.listFollowUps({ state: "open" });
+			return worldSucceeded(
+				render.receipt.ok("remind", items.length > 0 ? items.map(render.followUpRow) : ["（无 open 事项）"]),
+				{ count: items.length, items },
+			);
+		}
+		case "create":
+			return handleFollowUp(deps, {
+				operation: "create",
+				targetRef: params.targetRef,
+				note: params.note,
+				reviewAt: params.reviewAt,
+			});
+		case "resolve":
+			return handleFollowUp(deps, {
+				operation: "close",
+				ref: params.remindRef,
+				resolution: params.resolution,
+			});
+		default:
+			return worldFailed("remind.action 必须是 list/create/resolve。", { reason: "invalid_action" });
+	}
+}
+
+/** qq_requests：list 复用 observe requests（平台快照口径）；respond 复用 respond_request 链路。 */
+async function handleRequests(
+	deps: QqAppDeps,
+	params: Record<string, unknown>,
+	signal?: AbortSignal,
+): Promise<ToolExecutionResult> {
+	switch (params.action ?? "list") {
+		case "list":
+			return handleObserve(deps, { scope: "requests" }, signal);
+		case "respond": {
+			const result = await handleAccount(
+				deps,
+				{ operation: "respond_request", requestRef: params.requestRef, decision: params.decision },
+				signal,
+			);
+			// 拒绝理由平台无对应字段：只做本地备注呈现，不伪装为平台副作用。
+			if (
+				typeof params.reason === "string" &&
+				params.reason !== "" &&
+				(result.status === "succeeded" || result.status === "unknown")
+			) {
+				return { ...result, result: `${result.result}\nreason=${render.quote(params.reason)}（本地备注；平台拒绝无理由字段）` };
+			}
+			return result;
+		}
+		default:
+			return worldFailed("requests.action 必须是 list/respond。", { reason: "invalid_action" });
+	}
+}
+
+/** qq_profile：get 复用 observe self；三个写操作复用 account 对应链路。 */
+async function handleProfile(
+	deps: QqAppDeps,
+	params: Record<string, unknown>,
+	signal?: AbortSignal,
+): Promise<ToolExecutionResult> {
+	switch (params.action ?? "get") {
+		case "get":
+			return handleObserve(deps, { scope: "self" }, signal);
+		case "set_card":
+			return handleAccount(
+				deps,
+				{ operation: "set_group_card", conversationRef: params.conversationRef, card: params.card },
+				signal,
+			);
+		case "set_profile":
+			return handleAccount(
+				deps,
+				{ operation: "set_profile", nickname: params.nickname, signature: params.signature },
+				signal,
+			);
+		case "set_avatar":
+			return handleAccount(
+				deps,
+				{ operation: "set_avatar", resource: { kind: "file", path: params.avatarPath } },
+				signal,
+			);
+		default:
+			return worldFailed("profile.action 必须是 get/set_card/set_profile/set_avatar。", { reason: "invalid_action" });
+	}
 }

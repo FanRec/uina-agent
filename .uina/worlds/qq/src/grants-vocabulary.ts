@@ -12,71 +12,26 @@ export const QQ_GRANT_NAMES = [
 	"requests.respond",
 	"profile.modify",
 	"messages.retract",
-	"messages.mark_read",
-	"groups.leave",
-	"contacts.remove",
 ] as const;
-
-/** observe scope 是否属于平台读取（observation grant 覆盖）。 */
-export const OBSERVATION_SCOPES = [
-	"overview",
-	"contacts",
-	"groups",
-	"conversations",
-	"members",
-	"conversation",
-	"messages",
-	"content",
-	"requests",
-	"self",
-	"expressions",
-] as const;
-
-/** 无需 observation 即可查询的本地事实/诊断 scope。 */
-export const LOCAL_OBSERVE_SCOPES = [
-	"attention",
-	"follow_ups",
-	"operations",
-	"status",
-	"capabilities",
-] as const;
-
-/** account.operation → 必需 grant。 */
-export const ACCOUNT_OPERATION_GRANTS: Record<string, import("./grants.js").GrantName> = {
-	respond_request: "requests.respond",
-	retract: "messages.retract",
-	mark_read: "messages.mark_read",
-	leave_group: "groups.leave",
-	remove_contact: "contacts.remove",
-	set_profile: "profile.modify",
-	set_avatar: "profile.modify",
-	set_presence: "profile.modify",
-	set_group_card: "profile.modify",
-};
-
-/** 顶层 action → 必需 grant（observe 的 scope 维度另行判定）。 */
-export const ACTION_GRANTS: Record<string, import("./grants.js").GrantName> = {
-	speak: "messaging",
-	gesture: "interaction",
-	attention: "attention.manage",
-	follow_up: "follow_up.manage",
-};
 
 /**
  * 一次调用所需的 grant；返回 null 表示不需要平台授权（本地事实查询/诊断）。
  * grant=false 拒绝；unknown（平台映射未核实）不是拒绝，由动作层另行处理。
  */
 export function requiredGrant(action: string, params: Record<string, unknown>): import("./grants.js").GrantName | null {
-	const byAction = ACTION_GRANTS[action];
-	if (byAction) return byAction;
-	if (action === "account") {
-		const operation = typeof params.operation === "string" ? params.operation : "";
-		return ACCOUNT_OPERATION_GRANTS[operation] ?? null;
+	// 消费积木（§4）：本地事实消费不需要 grant；触及平台读取（展开/抓取）需要 observation。
+	if (action === "inbox") return params.push !== undefined ? "attention.manage" : null;
+	if (action === "read") return params.includeMedia === true ? "observation" : null;
+	if (action === "browse") {
+		return params.contentTarget !== undefined || params.includeMedia === true ? "observation" : null;
 	}
-	if (action === "observe") {
-		const scope = typeof params.scope === "string" ? params.scope : "";
-		if ((OBSERVATION_SCOPES as readonly string[]).includes(scope)) return "observation";
-		return null;
+	// 行动积木（§4.5~§4.9）：复用旧链路的 grant 语义。
+	if (action === "send") return "messaging";
+	if (action === "interact") return params.action === "retract" ? "messages.retract" : "interaction";
+	if (action === "remind") return params.action === undefined || params.action === "list" ? null : "follow_up.manage";
+	if (action === "requests") return params.action === "respond" ? "requests.respond" : "observation";
+	if (action === "profile") {
+		return params.action === undefined || params.action === "get" ? "observation" : "profile.modify";
 	}
-	return null;
+	return null; // skip / 本地 browse：纯本地消费决策
 }

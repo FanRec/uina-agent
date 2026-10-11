@@ -6,955 +6,46 @@ export const QQ_TOOL_NAME = "qq";
 /**
  * 固定认知合同（交互合同 §2 唯一注入面：工具描述只出现一次，不随消息重复）。
  */
-export const QQ_TOOL_DESCRIPTION = "QQ是可主动参与的外部世界；普通回复不外发，用speak发送。\n每次调用填写当前account。g<群号>/p<QQ号>/t<QQ号>-g<源群号>是群/私聊/临时会话；u<QQ号>是用户，m消息、a附件、r申请、f事项、o操作。复制返回的短引用，不用名字寻址。\n人物表给出名字与u引用的对应；提醒默认新增，旧消息另标前文。已有现场足够即可行动，不要求例行巡检；合法动作可尝试未知可用性，效果未知则先核验不重发。\nattention只调整提醒，follow_up到期只给查看机会；发送成功不代表对方已读。";
+export const QQ_TOOL_DESCRIPTION = "QQ是可主动参与的外部世界；普通回复不外发，用send发送。g<群号>/p<QQ号>/t<QQ号>-g<源群号>是群/私聊/临时会话；u<QQ号>是用户，m消息、a附件、r申请、f事项、o操作。复制返回的短引用，不用名字寻址。\n人物表给出名字与u引用的对应；提醒默认新增，旧消息另标前文。已有现场足够即可行动，不要求例行巡检；合法动作可尝试未知可用性，效果未知则先核验不重发。\n发送成功不代表对方已读。\n消费积木：inbox查收件箱并调整关注/推送（省略参数=不改，focus:[]放下关注）；read顺序消费正文并推进书签；skip放下积压；browse只读历史绝不移动书签。\n行动积木：send发送（可replyTo引用）；interact戳/回应/撤回自身；remind自建提醒到时只给查看机会；requests好友与入群审批；profile群名片与个人资料。";
 
 export const QQ_ACTION_SCHEMAS = {
-	"observe": {
-		"description": "读取缺少的现场、目标或附件；按scope选择内容。",
-		"parameters": {
-			"oneOf": [
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "overview"
-						},
-						"account": {}
-					},
-					"required": [
-						"scope"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "contacts"
-						},
-						"query": {
-							"type": "string",
-							"description": "按昵称、备注或用户引用搜索。",
-							"minLength": 1
-						},
-						"limit": {},
-						"account": {},
-						"cursor": {}
-					},
-					"required": [
-						"scope"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "groups"
-						},
-						"query": {
-							"type": "string",
-							"description": "按群名或群会话引用搜索。",
-							"minLength": 1
-						},
-						"limit": {},
-						"account": {},
-						"cursor": {}
-					},
-					"required": [
-						"scope"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "conversations"
-						},
-						"query": {
-							"type": "string",
-							"description": "按名称或会话引用搜索；本地条目可能只有引用。",
-							"minLength": 1
-						},
-						"limit": {},
-						"kind": {
-							"type": "string",
-							"enum": [
-								"private",
-								"group",
-								"temp"
-							],
-							"description": "仅返回指定会话类型；缺省包含全部已知类型。"
-						},
-						"account": {},
-						"cursor": {}
-					},
-					"required": [
-						"scope"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "conversation"
-						},
-						"conversationRef": {
-							"type": "string",
-							"description": "目标会话；复制现场或查询返回的引用。",
-							"minLength": 1,
-							"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
-						},
-						"direction": {
-							"type": "string",
-							"const": "latest",
-							"default": "latest"
-						},
-						"includeMedia": {
-							"type": "boolean",
-							"default": false
-						},
-						"limit": {},
-						"cursor": {},
-						"includeEvents": {},
-						"account": {}
-					},
-					"required": [
-						"scope",
-						"conversationRef"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "conversation"
-						},
-						"conversationRef": {
-							"type": "string",
-							"description": "目标会话；复制现场或查询返回的引用。",
-							"minLength": 1,
-							"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
-						},
-						"direction": {
-							"type": "string",
-							"const": "before"
-						},
-						"anchorMessageRef": {},
-						"includeMedia": {
-							"type": "boolean",
-							"default": false
-						},
-						"limit": {},
-						"cursor": {},
-						"includeEvents": {},
-						"account": {}
-					},
-					"required": [
-						"scope",
-						"conversationRef",
-						"direction",
-						"anchorMessageRef"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "conversation"
-						},
-						"conversationRef": {
-							"type": "string",
-							"description": "目标会话；复制现场或查询返回的引用。",
-							"minLength": 1,
-							"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
-						},
-						"direction": {
-							"type": "string",
-							"const": "after"
-						},
-						"anchorMessageRef": {},
-						"includeMedia": {
-							"type": "boolean",
-							"default": false
-						},
-						"limit": {},
-						"cursor": {},
-						"includeEvents": {},
-						"account": {}
-					},
-					"required": [
-						"scope",
-						"conversationRef",
-						"direction",
-						"anchorMessageRef"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "conversation"
-						},
-						"conversationRef": {
-							"type": "string",
-							"description": "目标会话；复制现场或查询返回的引用。",
-							"minLength": 1,
-							"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
-						},
-						"direction": {
-							"type": "string",
-							"const": "around"
-						},
-						"anchorMessageRef": {},
-						"includeMedia": {
-							"type": "boolean",
-							"default": false
-						},
-						"limit": {},
-						"cursor": {},
-						"includeEvents": {},
-						"account": {}
-					},
-					"required": [
-						"scope",
-						"conversationRef",
-						"direction",
-						"anchorMessageRef"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "messages"
-						},
-						"messageRefs": {
-							"type": "array",
-							"items": {
-								"type": "string",
-								"description": "目标消息；复制返回的消息引用。",
-								"minLength": 1,
-								"pattern": "^m-?[1-9][0-9]*$"
-							},
-							"minItems": 1
-						},
-						"includeMedia": {
-							"type": "boolean",
-							"default": false
-						},
-						"account": {}
-					},
-					"required": [
-						"scope",
-						"messageRefs"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "requests"
-						},
-						"kind": {
-							"type": "string",
-							"enum": [
-								"friend",
-								"group_invite",
-								"group_join_request"
-							]
-						},
-						"state": {
-							"type": "string",
-							"enum": [
-								"pending",
-								"confirmed",
-								"unknown",
-								"all"
-							],
-							"default": "pending"
-						},
-						"limit": {},
-						"account": {},
-						"cursor": {}
-					},
-					"required": [
-						"scope"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "attention"
-						},
-						"target": {
-							"oneOf": [
-								{
-									"type": "string",
-									"const": "account"
-								},
-								{
-									"type": "string",
-									"description": "目标会话；复制现场或查询返回的引用。",
-									"minLength": 1,
-									"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
-								}
-							]
-						},
-						"account": {}
-					},
-					"required": [
-						"scope"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "follow_ups"
-						},
-						"targetRef": {
-							"type": "string",
-							"description": "目标会话；复制现场或查询返回的引用。",
-							"minLength": 1,
-							"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
-						},
-						"state": {
-							"type": "string",
-							"enum": [
-								"open",
-								"closed",
-								"cancelled",
-								"all"
-							],
-							"default": "open"
-						},
-						"limit": {},
-						"account": {},
-						"cursor": {}
-					},
-					"required": [
-						"scope"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "operations"
-						},
-						"operationRef": {
-							"type": "string",
-							"description": "已发生操作的引用；查询不会重执行。",
-							"minLength": 1,
-							"pattern": "^o[1-9][0-9]*$"
-						},
-						"account": {}
-					},
-					"required": [
-						"scope",
-						"operationRef"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "operations"
-						},
-						"state": {
-							"type": "string",
-							"enum": [
-								"unknown",
-								"recent"
-							],
-							"default": "unknown"
-						},
-						"limit": {},
-						"cursor": {},
-						"account": {}
-					},
-					"required": [
-						"scope"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "self"
-						},
-						"includeGroups": {
-							"type": "boolean",
-							"const": false,
-							"default": false
-						},
-						"account": {}
-					},
-					"required": [
-						"scope"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "status"
-						},
-						"account": {}
-					},
-					"required": [
-						"scope"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "capabilities"
-						},
-						"action": {
-							"type": "string",
-							"enum": [
-								"observe",
-								"speak",
-								"gesture",
-								"attention",
-								"follow_up",
-								"account"
-							]
-						},
-						"account": {}
-					},
-					"required": [
-						"scope"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "expressions"
-						},
-						"kind": {
-							"type": "string",
-							"enum": [
-								"face",
-								"reaction"
-							]
-						},
-						"query": {
-							"type": "string",
-							"description": "例如：微笑、赞；只返回有真实来源的标识和可用性。",
-							"minLength": 1
-						},
-						"limit": {},
-						"cursor": {},
-						"account": {}
-					},
-					"required": [
-						"scope",
-						"kind"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "self"
-						},
-						"includeGroups": {
-							"type": "boolean",
-							"const": true
-						},
-						"account": {},
-						"limit": {},
-						"cursor": {}
-					},
-					"required": [
-						"scope",
-						"includeGroups"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "self"
-						},
-						"groupConversationRef": {
-							"type": "string",
-							"minLength": 1,
-							"pattern": "^g[1-9][0-9]*$",
-							"description": "指定群会话，仅查询自己在该群的名片与角色。"
-						},
-						"account": {}
-					},
-					"required": [
-						"scope",
-						"groupConversationRef"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "members"
-						},
-						"conversationRef": {
-							"type": "string",
-							"minLength": 1,
-							"pattern": "^g[1-9][0-9]*$",
-							"description": "明确的群会话引用；查询该群成员，不从好友关系推断群成员。"
-						},
-						"query": {
-							"type": "string",
-							"description": "按昵称、群名片或QQ号搜索。",
-							"minLength": 1
-						},
-						"limit": {},
-						"cursor": {},
-						"account": {}
-					},
-					"required": [
-						"scope",
-						"conversationRef"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"scope": {
-							"type": "string",
-							"const": "content"
-						},
-						"messageRef": {
-							"type": "string",
-							"pattern": "^m-?[1-9][0-9]*$",
-							"description": "复制消息引用。"
-						},
-						"segmentIndex": {
-							"type": "integer",
-							"minimum": 0,
-							"description": "现场返回的正文分段位置；从0开始，引用段不计入。"
-						},
-						"limit": {
-							"type": "integer",
-							"minimum": 1,
-							"description": "卡片/正文按Unicode字符分页默认4096；转发按节点分页默认20。"
-						},
-						"cursor": {
-							"type": "string",
-							"minLength": 1,
-							"description": "复制同一内容上一页nextCursor。"
-						},
-						"includeMedia": {
-							"type": "boolean",
-							"default": false
-						},
-						"account": {}
-					},
-					"required": [
-						"scope",
-						"messageRef",
-						"segmentIndex"
-					]
-				}
-			],
-			"type": "object",
-			"additionalProperties": true,
-			"properties": {
-				"limit": {
-					"type": "integer",
-					"minimum": 1,
-					"default": 20,
-					"description": "页面条数，默认20；conversation单次平台读取最多200，不限制总可读量。"
-				},
-				"cursor": {
-					"type": "string",
-					"description": "复制上一页nextCursor；查询条件不变。列表变化时重新查询首页。",
-					"minLength": 1
-				},
-				"includeEvents": {
-					"type": "boolean",
-					"default": false,
-					"description": "同时读取该会话保存的近期事件；不额外触发思考或标记已读。"
-				},
-				"anchorMessageRef": {
-					"type": "string",
-					"description": "目标消息；复制返回的消息引用。",
-					"minLength": 1,
-					"pattern": "^m-?[1-9][0-9]*$"
-				},
-				"account": {
-					"type": "string",
-					"pattern": "^[1-9][0-9]*$",
-					"description": "当前QQ账号；使用工具说明或现场页首给出的账号。"
-				}
-			},
-			"description": "接不上话题或需核对原文时，可读conversation/messages；图片影响理解时可带includeMedia，查看互动记录可带includeEvents；要@或区分同名成员可查members；想用表情或回应但不确定编码时查expressions；动作效果未知或需核对过去操作时查operations；连接或读取持续异常时查status/capabilities。",
-			"required": [
-				"account"
-			]
-		}
-	},
-	"speak": {
-		"description": "向conversationRef发送文字或已有媒体；replyTo指定同会话引用回复。",
+	"inbox": {
+		"description": "查看当前所有会话的待处理动态；可顺带原子替换置顶关注（省略不动，[] 放下）或调整推送偏好。返回每会话待处理数、封存数、有效推送与 effectiveFollow。",
 		"parameters": {
 			"type": "object",
 			"additionalProperties": false,
 			"properties": {
-				"conversationRef": {
-					"type": "string",
-					"description": "目标会话；复制现场或查询返回的引用。",
-					"minLength": 1,
-					"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
-				},
-				"replyTo": {
-					"type": "string",
-					"description": "同会话引用；拆批时只给首条可引用消息加引用，纯文件组合不支持。",
-					"minLength": 1,
-					"pattern": "^m-?[1-9][0-9]*$"
-				},
-				"content": {
+				"focus": {
 					"type": "array",
 					"items": {
-						"oneOf": [
-							{
-								"type": "object",
-								"additionalProperties": false,
-								"properties": {
-									"type": {
-										"type": "string",
-										"const": "text"
-									},
-									"text": {
-										"type": "string",
-										"description": "按原文发送；不解析文本里的 CQ 码。",
-										"minLength": 1
-									}
-								},
-								"required": [
-									"type",
-									"text"
-								]
-							},
-							{
-								"type": "object",
-								"additionalProperties": false,
-								"properties": {
-									"type": {
-										"type": "string",
-										"const": "mention"
-									},
-									"userRef": {
-										"type": "string",
-										"description": "目标用户；末段为QQ号，不能代替会话引用。",
-										"minLength": 1,
-										"pattern": "^u[1-9][0-9]*$"
-									}
-								},
-								"required": [
-									"type",
-									"userRef"
-								]
-							},
-							{
-								"type": "object",
-								"additionalProperties": false,
-								"properties": {
-									"type": {
-										"type": "string",
-										"const": "face"
-									},
-									"faceId": {
-										"type": "string",
-										"description": "复制expressions返回的数字id。",
-										"minLength": 1,
-										"pattern": "^[0-9]+$"
-									}
-								},
-								"required": [
-									"type",
-									"faceId"
-								]
-							},
-							{
-								"type": "object",
-								"additionalProperties": false,
-								"properties": {
-									"type": {
-										"type": "string",
-										"const": "image"
-									},
-									"resource": {}
-								},
-								"required": [
-									"type",
-									"resource"
-								]
-							},
-							{
-								"type": "object",
-								"additionalProperties": false,
-								"properties": {
-									"type": {
-										"type": "string",
-										"const": "audio"
-									},
-									"resource": {}
-								},
-								"required": [
-									"type",
-									"resource"
-								]
-							},
-							{
-								"type": "object",
-								"additionalProperties": false,
-								"properties": {
-									"type": {
-										"type": "string",
-										"const": "video"
-									},
-									"resource": {}
-								},
-								"required": [
-									"type",
-									"resource"
-								]
-							},
-							{
-								"type": "object",
-								"additionalProperties": false,
-								"properties": {
-									"type": {
-										"type": "string",
-										"const": "file"
-									},
-									"resource": {},
-									"name": {
-										"type": "string",
-										"description": "可选平台展示文件名，不是本地路径。",
-										"minLength": 1
-									}
-								},
-								"required": [
-									"type",
-									"resource"
-								]
-							}
-						],
-						"type": "object",
-						"additionalProperties": true,
-						"properties": {
-							"resource": {
-								"oneOf": [
-									{
-										"type": "object",
-										"additionalProperties": false,
-										"properties": {
-											"kind": {
-												"type": "string",
-												"const": "file"
-											},
-											"path": {
-												"type": "string",
-												"description": "工具返回的文件路径；须在允许资源根内。",
-												"minLength": 1
-											}
-										},
-										"required": [
-											"kind",
-											"path"
-										]
-									},
-									{
-										"type": "object",
-										"additionalProperties": false,
-										"properties": {
-											"kind": {
-												"type": "string",
-												"const": "qq_media"
-											},
-											"ref": {
-												"type": "string",
-												"description": "当前账号拥有的 QQ 媒体引用。",
-												"minLength": 1,
-												"pattern": "^a[1-9][0-9]*$"
-											}
-										},
-										"required": [
-											"kind",
-											"ref"
-										]
-									}
-								]
-							}
-						}
+						"type": "string",
+						"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
 					},
-					"minItems": 1
+					"description": "可选。原子替换当前置顶关注会话列表；传空数组 [] 表示放下所有关注；省略表示保持不变。"
 				},
-				"account": {
-					"type": "string",
-					"pattern": "^[1-9][0-9]*$",
-					"description": "当前QQ账号；使用工具说明或现场页首给出的账号。"
-				}
-			},
-			"required": [
-				"conversationRef",
-				"content",
-				"account"
-			]
-		}
-	},
-	"gesture": {
-		"description": "简短互动：react回应指定群消息；poke戳指定会话中的用户。",
-		"parameters": {
-			"oneOf": [
-				{
+				"push": {
 					"type": "object",
 					"additionalProperties": false,
 					"properties": {
-						"kind": {
+						"target": {
 							"type": "string",
-							"const": "react"
+							"description": "会话引用或 'account'（全局）。"
 						},
-						"messageRef": {
-							"type": "string",
-							"description": "目标消息；复制返回的消息引用。",
-							"minLength": 1,
-							"pattern": "^m-?[1-9][0-9]*$"
-						},
-						"reactionCode": {
-							"type": "string",
-							"description": "复制expressions返回的数字id，不用文字或Unicode猜编码。",
-							"minLength": 1,
-							"pattern": "^[0-9]+$"
-						},
-						"enabled": {
-							"type": "boolean",
-							"default": true
-						},
-						"account": {}
-					},
-					"required": [
-						"kind",
-						"messageRef",
-						"reactionCode"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"kind": {
-							"type": "string",
-							"const": "poke"
-						},
-						"conversationRef": {
-							"type": "string",
-							"description": "目标会话；复制现场或查询返回的引用。",
-							"minLength": 1,
-							"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
-						},
-						"userRef": {
-							"type": "string",
-							"description": "目标用户；末段为QQ号，不能代替会话引用。",
-							"minLength": 1,
-							"pattern": "^u[1-9][0-9]*$"
-						},
-						"account": {}
-					},
-					"required": [
-						"kind",
-						"conversationRef",
-						"userRef"
-					]
-				}
-			],
-			"properties": {
-				"account": {
-					"type": "string",
-					"pattern": "^[1-9][0-9]*$",
-					"description": "当前QQ账号；使用工具说明或现场页首给出的账号。"
-				}
-			},
-			"required": [
-				"account"
-			],
-			"type": "object",
-			"additionalProperties": true
-		}
-	},
-	"attention": {
-		"description": "会话太吵或暂不想被提醒时，可调整后续提醒；不限制主动查看。",
-		"parameters": {
-			"oneOf": [
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"operation": {
-							"type": "string",
-							"const": "set"
-						},
-						"target": {},
 						"mode": {
 							"type": "string",
 							"enum": [
-								"normal",
-								"direct_only",
-								"silent"
+								"off",
+								"digest",
+								"follow",
+								"inherit"
 							]
 						},
-						"priority": {
+						"filter": {
 							"type": "string",
 							"enum": [
-								"normal",
-								"preferred"
+								"all",
+								"direct",
+								"inherit"
 							]
 						},
 						"pausedUntil": {
@@ -962,524 +53,370 @@ export const QQ_ACTION_SCHEMAS = {
 								"string",
 								"null"
 							],
-							"pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$",
-							"description": "带时区ISO时间；null清除，缺省保持。"
-						},
-						"account": {}
+							"description": "ISO 时间，暂停提醒直至此时刻；null 解除暂停。"
+						}
 					},
 					"required": [
-						"operation",
 						"target"
 					],
-					"anyOf": [
-						{
-							"type": "object",
-							"properties": {
-								"mode": {}
-							},
-							"required": [
-								"mode"
-							]
-						},
-						{
-							"type": "object",
-							"properties": {
-								"priority": {}
-							},
-							"required": [
-								"priority"
-							]
-						},
-						{
-							"type": "object",
-							"properties": {
-								"pausedUntil": {}
-							},
-							"required": [
-								"pausedUntil"
-							]
-						}
-					]
+					"description": "可选。调整推送偏好；省略表示保持不变。"
 				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"operation": {
-							"type": "string",
-							"const": "clear"
-						},
-						"target": {},
-						"account": {}
-					},
-					"required": [
-						"operation",
-						"target"
-					]
-				}
-			],
-			"type": "object",
-			"additionalProperties": true,
-			"properties": {
-				"target": {
-					"oneOf": [
-						{
-							"type": "string",
-							"const": "account"
-						},
-						{
-							"type": "string",
-							"description": "目标会话；复制现场或查询返回的引用。",
-							"minLength": 1,
-							"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
-						}
-					]
+				"pendingOnly": {
+					"type": "boolean",
+					"default": false,
+					"description": "仅查看有新待处理消息的会话。"
 				},
-				"account": {
-					"type": "string",
-					"pattern": "^[1-9][0-9]*$",
-					"description": "当前QQ账号；使用工具说明或现场页首给出的账号。"
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 50,
+					"default": 20
 				}
-			},
-			"required": [
-				"account"
-			]
+			}
 		}
 	},
-	"follow_up": {
-		"description": "想稍后回到某个话题或事项时保存；reviewAt到期只提醒，不自动执行。",
+	"read": {
+		"description": "从上次阅读位置接续往下读一屏消息；消费锁内串行执行，成功交付后推进消费书签（与跟读共用）。超长文本折叠为 hasMoreSegment 不阻塞推进。省略 conversationRef 时仅在恰关注一个会话时生效。",
 		"parameters": {
-			"oneOf": [
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"operation": {
-							"type": "string",
-							"const": "create"
-						},
-						"targetRef": {
-							"type": "string",
-							"description": "目标会话；复制现场或查询返回的引用。",
-							"minLength": 1,
-							"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
-						},
-						"note": {},
-						"evidenceRefs": {},
-						"reviewAt": {},
-						"account": {}
-					},
-					"required": [
-						"operation",
-						"targetRef",
-						"note"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"operation": {
-							"type": "string",
-							"const": "update"
-						},
-						"ref": {},
-						"note": {},
-						"evidenceRefs": {},
-						"reviewAt": {},
-						"account": {}
-					},
-					"required": [
-						"operation",
-						"ref"
-					],
-					"anyOf": [
-						{
-							"type": "object",
-							"properties": {
-								"note": {}
-							},
-							"required": [
-								"note"
-							]
-						},
-						{
-							"type": "object",
-							"properties": {
-								"evidenceRefs": {}
-							},
-							"required": [
-								"evidenceRefs"
-							]
-						},
-						{
-							"type": "object",
-							"properties": {
-								"reviewAt": {}
-							},
-							"required": [
-								"reviewAt"
-							]
-						}
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"operation": {
-							"type": "string",
-							"const": "close"
-						},
-						"ref": {},
-						"resolution": {},
-						"account": {}
-					},
-					"required": [
-						"operation",
-						"ref",
-						"resolution"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"operation": {
-							"type": "string",
-							"const": "cancel"
-						},
-						"ref": {},
-						"resolution": {},
-						"account": {}
-					},
-					"required": [
-						"operation",
-						"ref",
-						"resolution"
-					]
-				}
-			],
 			"type": "object",
-			"additionalProperties": true,
-			"properties": {
-				"note": {
-					"type": "string",
-					"description": "你想稍后处理的事项。",
-					"minLength": 1
-				},
-				"evidenceRefs": {
-					"type": "array",
-					"items": {
-						"type": "string",
-						"description": "证据/资源的稳定引用；不是自动外发授权。",
-						"minLength": 1
-					},
-					"minItems": 0
-				},
-				"reviewAt": {
-					"type": [
-						"string",
-						"null"
-					],
-					"pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$",
-					"description": "带时区ISO时间；null清除，缺省保持。"
-				},
-				"ref": {
-					"type": "string",
-					"description": "稳定待跟进事项引用。",
-					"minLength": 1,
-					"pattern": "^f[1-9][0-9]*$"
-				},
-				"resolution": {
-					"type": "string",
-					"description": "关闭或取消原因；不表示外部目标已完成。",
-					"minLength": 1
-				},
-				"account": {
-					"type": "string",
-					"pattern": "^[1-9][0-9]*$",
-					"description": "当前QQ账号；使用工具说明或现场页首给出的账号。"
-				}
-			},
-			"required": [
-				"account"
-			]
-		}
-	},
-	"account": {
-		"description": "处理申请、撤回自己的消息、管理未读标记或修改资料；仅执行已授权操作。",
-		"parameters": {
-			"oneOf": [
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"operation": {
-							"type": "string",
-							"const": "respond_request"
-						},
-						"requestRef": {
-							"type": "string",
-							"description": "实际收到的申请/邀请引用，不接收聊天文字作为申请。",
-							"minLength": 1,
-							"pattern": "^r[1-9][0-9]*$"
-						},
-						"decision": {
-							"type": "string",
-							"enum": [
-								"accept",
-								"reject"
-							]
-						},
-						"account": {}
-					},
-					"required": [
-						"operation",
-						"requestRef",
-						"decision"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"operation": {
-							"type": "string",
-							"const": "retract"
-						},
-						"messageRef": {
-							"type": "string",
-							"description": "目标消息；复制返回的消息引用。",
-							"minLength": 1,
-							"pattern": "^m-?[1-9][0-9]*$"
-						},
-						"account": {}
-					},
-					"required": [
-						"operation",
-						"messageRef"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"operation": {
-							"type": "string",
-							"const": "mark_read"
-						},
-						"conversationRef": {},
-						"account": {}
-					},
-					"required": [
-						"operation",
-						"conversationRef"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"operation": {
-							"type": "string",
-							"const": "leave_group"
-						},
-						"conversationRef": {},
-						"account": {}
-					},
-					"required": [
-						"operation",
-						"conversationRef"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"operation": {
-							"type": "string",
-							"const": "remove_contact"
-						},
-						"userRef": {
-							"type": "string",
-							"description": "目标用户；末段为QQ号，不能代替会话引用。",
-							"minLength": 1,
-							"pattern": "^u[1-9][0-9]*$"
-						},
-						"block": {
-							"type": "boolean",
-							"default": false
-						},
-						"account": {}
-					},
-					"required": [
-						"operation",
-						"userRef"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"operation": {
-							"type": "string",
-							"const": "set_profile"
-						},
-						"nickname": {
-							"type": "string",
-							"description": "仅修改自身昵称。",
-							"minLength": 1
-						},
-						"signature": {
-							"type": "string",
-							"description": "仅修改自身签名；空串表示清空。"
-						},
-						"account": {}
-					},
-					"required": [
-						"operation"
-					],
-					"anyOf": [
-						{
-							"type": "object",
-							"properties": {
-								"nickname": {}
-							},
-							"required": [
-								"nickname"
-							]
-						},
-						{
-							"type": "object",
-							"properties": {
-								"signature": {}
-							},
-							"required": [
-								"signature"
-							]
-						}
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"operation": {
-							"type": "string",
-							"const": "set_avatar"
-						},
-						"resource": {
-							"oneOf": [
-								{
-									"type": "object",
-									"additionalProperties": false,
-									"properties": {
-										"kind": {
-											"type": "string",
-											"const": "file"
-										},
-										"path": {
-											"type": "string",
-											"description": "工具返回的文件路径；须在允许资源根内。",
-											"minLength": 1
-										}
-									},
-									"required": [
-										"kind",
-										"path"
-									]
-								},
-								{
-									"type": "object",
-									"additionalProperties": false,
-									"properties": {
-										"kind": {
-											"type": "string",
-											"const": "qq_media"
-										},
-										"ref": {
-											"type": "string",
-											"description": "当前账号拥有的 QQ 媒体引用。",
-											"minLength": 1,
-											"pattern": "^a[1-9][0-9]*$"
-										}
-									},
-									"required": [
-										"kind",
-										"ref"
-									]
-								}
-							]
-						},
-						"account": {}
-					},
-					"required": [
-						"operation",
-						"resource"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"operation": {
-							"type": "string",
-							"const": "set_presence"
-						},
-						"presenceRef": {
-							"type": "string",
-							"description": "当前未提供映射，set_presence不可用。",
-							"minLength": 1,
-							"pattern": "^s[1-9][0-9]*$"
-						},
-						"account": {}
-					},
-					"required": [
-						"operation",
-						"presenceRef"
-					]
-				},
-				{
-					"type": "object",
-					"additionalProperties": false,
-					"properties": {
-						"operation": {
-							"type": "string",
-							"const": "set_group_card"
-						},
-						"conversationRef": {},
-						"card": {
-							"type": "string",
-							"description": "仅设置自己在该群的名片；空串清空。"
-						},
-						"account": {}
-					},
-					"required": [
-						"operation",
-						"conversationRef",
-						"card"
-					]
-				}
-			],
-			"type": "object",
-			"additionalProperties": true,
+			"additionalProperties": false,
 			"properties": {
 				"conversationRef": {
 					"type": "string",
-					"description": "目标会话；复制现场或查询返回的引用。",
-					"minLength": 1,
+					"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
+					"description": "目标会话。若当前仅关注了一个会话，可省略此参数直接读该会话。"
+				},
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 100,
+					"default": 20
+				},
+				"budgetChars": {
+					"type": "integer",
+					"minimum": 512,
+					"maximum": 32768,
+					"default": 14000
+				},
+				"includeMedia": {
+					"type": "boolean",
+					"default": false,
+					"description": "是否随消息内联展开可读图片。"
+				}
+			}
+		}
+	},
+	"skip": {
+		"description": "放下指定区间的未读积压：throughMessageRef 缺省 'latest' 一键抹平到当下；部分跳过重算剩余待处理。记录跳过审计并单调推进消费书签。",
+		"parameters": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"conversationRef": {
+					"type": "string",
 					"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
 				},
-				"account": {
+				"throughMessageRef": {
 					"type": "string",
-					"pattern": "^[1-9][0-9]*$",
-					"description": "当前QQ账号；使用工具说明或现场页首给出的账号。"
+					"default": "latest",
+					"pattern": "^(latest|m-?[1-9][0-9]*)$",
+					"description": "跳过截至的消息引用（如 'm77'），省略或传 'latest' 表示一键抹平截至最新到达的消息。"
+				},
+				"reason": {
+					"type": "string",
+					"default": "主动放下积压",
+					"description": "跳过原因，留存审计事实。"
 				}
 			},
 			"required": [
-				"account"
+				"conversationRef"
 			]
+		}
+	},
+	"browse": {
+		"description": "纯只读历史探索：contentTarget 展开单条长文/转发/卡片 > messageRefs 点查 > direction+anchor 时空翻页。绝不移动阅读书签；断线缺口如实标注 gap_detected。",
+		"parameters": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"conversationRef": {
+					"type": "string",
+					"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
+					"description": "浏览指定会话的历史时必填。"
+				},
+				"direction": {
+					"type": "string",
+					"enum": [
+						"latest",
+						"before",
+						"after",
+						"around"
+					],
+					"default": "latest"
+				},
+				"anchorMessageRef": {
+					"type": "string",
+					"pattern": "^m-?[1-9][0-9]*$",
+					"description": "历史定位锚点消息引用（如 'm77'）。"
+				},
+				"messageRefs": {
+					"type": "array",
+					"items": {
+						"type": "string",
+						"pattern": "^m-?[1-9][0-9]*$"
+					},
+					"minItems": 1,
+					"description": "点查指定的一组消息引用（如 ['m12', 'm15']）。"
+				},
+				"contentTarget": {
+					"type": "object",
+					"additionalProperties": false,
+					"properties": {
+						"messageRef": {
+							"type": "string",
+							"pattern": "^m-?[1-9][0-9]*$"
+						},
+						"segmentIndex": {
+							"type": "integer",
+							"minimum": 0,
+							"default": 0
+						},
+						"cursor": {
+							"type": "string",
+							"minLength": 1,
+							"description": "复制同一内容上一页nextCursor；长文/转发续页。"
+						}
+					},
+					"required": [
+						"messageRef"
+					],
+					"description": "展开某条长文本分段、多层合并转发节点或指定卡片载荷。"
+				},
+				"includeMedia": {
+					"type": "boolean",
+					"default": false
+				},
+				"limit": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 100,
+					"default": 20
+				}
+			}
+		}
+	},
+	"send": {
+		"description": "向目标会话发送消息分段数组（文本/@/表情/媒体），可 replyTo 引用回复；分段批派与逐批回执由平台链路保证。",
+		"parameters": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"conversationRef": {
+					"type": "string",
+					"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
+					"description": "目标群或私聊。"
+				},
+				"content": {
+					"type": "array",
+					"minItems": 1,
+					"items": {
+						"type": "object",
+						"additionalProperties": false,
+						"properties": {
+							"type": {
+								"type": "string",
+								"enum": [
+									"text",
+									"mention",
+									"face",
+									"image",
+									"audio",
+									"video",
+									"file"
+								]
+							},
+							"text": {
+								"type": "string"
+							},
+							"userRef": {
+								"type": "string",
+								"pattern": "^u[1-9][0-9]*$"
+							},
+							"faceId": {
+								"type": "string"
+							},
+							"path": {
+								"type": "string",
+								"description": "媒体分段：本地文件路径（image/audio/video/file）。"
+							}
+						},
+						"required": [
+							"type"
+						]
+					},
+					"description": "消息分段数组。"
+				},
+				"replyTo": {
+					"type": "string",
+					"pattern": "^m-?[1-9][0-9]*$",
+					"description": "引用的消息引用（如 'm77'）。"
+				}
+			},
+			"required": [
+				"conversationRef",
+				"content"
+			]
+		}
+	},
+	"interact": {
+		"description": "轻量互动：poke 戳一戳 / react 群消息表情回应 / retract 撤回自身消息。",
+		"parameters": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"action": {
+					"type": "string",
+					"enum": [
+						"poke",
+						"react",
+						"retract"
+					]
+				},
+				"conversationRef": {
+					"type": "string",
+					"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$"
+				},
+				"userRef": {
+					"type": "string",
+					"pattern": "^u[1-9][0-9]*$",
+					"description": "poke 时必填的目标用户。"
+				},
+				"messageRef": {
+					"type": "string",
+					"pattern": "^m-?[1-9][0-9]*$",
+					"description": "react 或 retract 时必填的目标消息。"
+				},
+				"reactionCode": {
+					"type": "string",
+					"description": "react 时的数字表情编码（来自 expressions 查询）。"
+				}
+			},
+			"required": [
+				"action"
+			]
+		}
+	},
+	"remind": {
+		"description": "管理主体自己的稍后查看承诺：list 查看 open 事项；create 新建预约提醒；resolve 结项。到期只给查看机会，不自动执行外部动作。",
+		"parameters": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"action": {
+					"type": "string",
+					"enum": [
+						"list",
+						"create",
+						"resolve"
+					],
+					"default": "list"
+				},
+				"targetRef": {
+					"type": "string",
+					"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
+					"description": "create 时必填：关联的会话引用。"
+				},
+				"note": {
+					"type": "string",
+					"description": "备忘说明或查看意图。"
+				},
+				"reviewAt": {
+					"type": "string",
+					"description": "ISO 时间格式的到期提醒时间。"
+				},
+				"remindRef": {
+					"type": "string",
+					"pattern": "^f[1-9][0-9]*$",
+					"description": "resolve 时的待办引用编号（如 'f1'）。"
+				},
+				"resolution": {
+					"type": "string",
+					"description": "结项的结论说明。"
+				}
+			}
+		}
+	},
+	"requests": {
+		"description": "好友申请与群邀请审批：list 待处理清单；respond accept/decline。绝不与资料修改混杂。",
+		"parameters": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"action": {
+					"type": "string",
+					"enum": [
+						"list",
+						"respond"
+					],
+					"default": "list"
+				},
+				"requestRef": {
+					"type": "string",
+					"pattern": "^r[1-9][0-9]*$",
+					"description": "审批时的申请引用编号（如 'r1'）。"
+				},
+				"decision": {
+					"type": "string",
+					"enum": [
+						"accept",
+						"decline"
+					]
+				},
+				"reason": {
+					"type": "string",
+					"description": "拒绝时的本地备注说明（平台无理由字段，仅留存于回执）。"
+				}
+			}
+		}
+	},
+	"profile": {
+		"description": "自我形象维护：get 当前资料；set_card 群名片；set_profile 全局昵称/签名；set_avatar 头像（本地路径）。",
+		"parameters": {
+			"type": "object",
+			"additionalProperties": false,
+			"properties": {
+				"action": {
+					"type": "string",
+					"enum": [
+						"get",
+						"set_card",
+						"set_profile",
+						"set_avatar"
+					],
+					"default": "get"
+				},
+				"conversationRef": {
+					"type": "string",
+					"pattern": "^(g[1-9][0-9]*|p[1-9][0-9]*|t[1-9][0-9]*(?:-g[1-9][0-9]*)?)$",
+					"description": "set_card 时必填的目标群。"
+				},
+				"card": {
+					"type": "string",
+					"description": "群名片内容（空串表示清除名片）。"
+				},
+				"nickname": {
+					"type": "string",
+					"description": "修改自身全局昵称。"
+				},
+				"signature": {
+					"type": "string",
+					"description": "修改自身全局签名（空串表示清空）。"
+				},
+				"avatarPath": {
+					"type": "string",
+					"description": "本地头像图片路径。"
+				}
+			}
 		}
 	}
 } as const;

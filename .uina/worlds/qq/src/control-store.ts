@@ -1,9 +1,15 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AttentionMode, AttentionOverride, EffectiveAttention, FollowUpItem, FollowUpState } from "./types.js";
+import type {
+	AttentionOverride,
+	EffectivePush,
+	FollowUpItem,
+	FollowUpState,
+	PushPreference,
+} from "./types.js";
 
 /**
- * QQ 控制状态：attention 覆盖 + follow_up 簿 + 诊断 revision。
+ * QQ 控制状态：push 偏好（v2）+ 冷启动基线 + follow_up 簿 + 诊断 revision。
  * 单写方；写入直接修改执行时的当前状态，持久确认（tmp+rename）成功后才返回，
  * IO 失败保留旧状态并抛错（调用方报 failed，不宣称保存）。
  * 没有 expectedRevision/条件比较；revision 只是诊断计数，不参与提醒资格。
@@ -13,21 +19,33 @@ interface ControlFileShape {
 	version: 2;
 	selfId: string;
 	revision: number;
-	accountOverride: AttentionOverride;
-	conversationOverrides: Record<string, AttentionOverride>;
+	accountPush: PushPreference;
+	conversationPush: Record<string, PushPreference>;
+	/** 冷启动基线（R4③）：首见会话时写入当前 latestSequence，绝不覆盖。 */
+	initializationBaseline: Record<string, number>;
 	followUps: Record<string, FollowUpItem>;
 }
-
-const EMPTY_OVERRIDE: AttentionOverride = {};
 
 function isIsoTime(value: unknown): value is string {
 	return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
 
+/** R5 迁移映射：silent→off、direct_only→digest+direct、normal→digest+all；priority 丢弃。 */
+function migrateOverride(override: AttentionOverride): PushPreference {
+	return {
+		...(override.mode === "silent"
+			? { mode: "off" as const }
+			: override.mode === "direct_only"
+				? { mode: "digest" as const, filter: "direct" as const }
+				: override.mode === "normal"
+					? { mode: "digest" as const, filter: "all" as const }
+					: {}),
+		...(override.pausedUntil !== undefined ? { pausedUntil: override.pausedUntil } : {}),
+	};
+}
+
 export interface ControlStoreOptions {
 	readonly dataDir: string;
-	/** 安装初值（部署配置可覆盖；缺省 normal/normal）。 */
-	readonly defaultMode?: AttentionMode;
 	readonly now?: () => string;
 }
 
@@ -37,8 +55,9 @@ export class ControlStore {
 		version: 2,
 		selfId: "",
 		revision: 0,
-		accountOverride: EMPTY_OVERRIDE,
-		conversationOverrides: {},
+		accountPush: {},
+		conversationPush: {},
+		initializationBaseline: {},
 		followUps: {},
 	};
 	private followUpCounter = 0;
@@ -76,14 +95,30 @@ export class ControlStore {
 		) {
 			throw new Error("QQ 控制状态 v2 账号元信息不匹配或形状非法，明确失败");
 		}
+		// R5 一次性迁移：旧 v2 文件中的 AttentionOverride → push 偏好（priority 丢弃）。
+		// 迁移后持久化文件不再携带旧字段；新写路径只有 push 偏好。
+		let accountPush = shape.accountPush;
+		let conversationPush = shape.conversationPush;
+		const legacy = shape.accountPush === undefined;
+		if (legacy) {
+			const legacyAccount = (parsed as { accountOverride?: AttentionOverride }).accountOverride ?? {};
+			const legacyConversations = (parsed as { conversationOverrides?: Record<string, AttentionOverride> })
+				.conversationOverrides ?? {};
+			accountPush = migrateOverride(legacyAccount);
+			conversationPush = Object.fromEntries(
+				Object.entries(legacyConversations).map(([k, v]) => [k, migrateOverride(v)]),
+			);
+		}
 		this.state = {
 			version: 2,
 			selfId: this.options.selfId,
 			revision: shape.revision,
-			accountOverride: shape.accountOverride ?? EMPTY_OVERRIDE,
-			conversationOverrides: shape.conversationOverrides ?? {},
+			accountPush: accountPush ?? {},
+			conversationPush: conversationPush ?? {},
+			initializationBaseline: shape.initializationBaseline ?? {},
 			followUps: shape.followUps,
 		};
+		if (legacy) this.persist(this.state);
 		for (const ref of Object.keys(this.state.followUps)) {
 			if (!/^f[1-9]\d*$/.test(ref)) throw new Error("QQ 事项引用非法");
 			const num = Number(ref.slice(1));
@@ -101,60 +136,76 @@ export class ControlStore {
 		this.state = next;
 	}
 
-	private overrideFor(target: string): AttentionOverride {
-		if (target === "account") return { ...this.state.accountOverride };
-		return { ...(this.state.conversationOverrides[target] ?? EMPTY_OVERRIDE) };
+	/** 已到期但尚未恢复处理的暂停目标（push 偏好口径；到期恢复原规则 + 一次允许的积压摘要）。 */
+	expiredPauses(): { target: string; pausedUntil: string }[] {
+		const nowMs = Date.parse(this.nowFn());
+		const out: { target: string; pausedUntil: string }[] = [];
+		const account = this.state.accountPush;
+		if (account.pausedUntil != null && Date.parse(account.pausedUntil) <= nowMs) {
+			out.push({ target: "account", pausedUntil: account.pausedUntil });
+		}
+		for (const [target, pref] of Object.entries(this.state.conversationPush)) {
+			if (pref.pausedUntil != null && Date.parse(pref.pausedUntil) <= nowMs) {
+				out.push({ target, pausedUntil: pref.pausedUntil });
+			}
+		}
+		return out;
 	}
 
-	/**
-	 * attention.set：只修改提供的字段；成功等待持久确认并返回诊断 revision。
-	 */
-	setAttention(target: string, patch: AttentionOverride): number {
+	/* ---------- push 偏好（v2 阅读重构；语义见设计文档 §1.2/§3/§9） ---------- */
+
+	private pushFor(target: string): PushPreference {
+		if (target === "account") return { ...this.state.accountPush };
+		return { ...(this.state.conversationPush[target] ?? {}) };
+	}
+
+	/** setPush：只修改提供的字段；省略 = 不修改；pausedUntil null = 解除暂停。 */
+	setPush(target: string, patch: PushPreference): number {
 		if (patch.pausedUntil !== undefined && patch.pausedUntil !== null && !isIsoTime(patch.pausedUntil)) {
 			throw new Error("pausedUntil 必须是带时区的 ISO 时间或 null");
 		}
-		const current = this.overrideFor(target);
-		const nextOverride: AttentionOverride = {
+		const current = this.pushFor(target);
+		const nextPref: PushPreference = {
 			...current,
 			...(patch.mode !== undefined ? { mode: patch.mode } : {}),
-			...(patch.priority !== undefined ? { priority: patch.priority } : {}),
+			...(patch.filter !== undefined ? { filter: patch.filter } : {}),
 			...(patch.pausedUntil !== undefined ? { pausedUntil: patch.pausedUntil } : {}),
 		};
 		const next: ControlFileShape =
 			target === "account"
-				? { ...this.state, accountOverride: nextOverride, revision: this.state.revision + 1 }
+				? { ...this.state, accountPush: nextPref, revision: this.state.revision + 1 }
 				: {
 						...this.state,
-						conversationOverrides: { ...this.state.conversationOverrides, [target]: nextOverride },
+						conversationPush: { ...this.state.conversationPush, [target]: nextPref },
 						revision: this.state.revision + 1,
 					};
 		this.persist(next);
 		return this.state.revision;
 	}
 
-	/** attention.clear：清除目标覆盖。 */
-	clearAttention(target: string): number {
-		let next: ControlFileShape;
-		if (target === "account") {
-			next = { ...this.state, accountOverride: EMPTY_OVERRIDE, revision: this.state.revision + 1 };
-		} else {
-			const overrides = { ...this.state.conversationOverrides };
-			delete overrides[target];
-			next = { ...this.state, conversationOverrides: overrides, revision: this.state.revision + 1 };
-		}
+	/** 清除目标推送偏好（回落账号继承/默认）。 */
+	clearPush(target: string): number {
+		const next: ControlFileShape =
+			target === "account"
+				? { ...this.state, accountPush: {}, revision: this.state.revision + 1 }
+				: (() => {
+						const push = { ...this.state.conversationPush };
+						delete push[target];
+						return { ...this.state, conversationPush: push, revision: this.state.revision + 1 };
+					})();
 		this.persist(next);
 		return this.state.revision;
 	}
 
 	/**
-	 * 生效规则：安装初值 ← 账号覆盖 ← 会话覆盖；账号级 silent/pause 不被局部覆盖。
-	 * 已到期的 pause 视为未暂停（到期恢复原规则）。
+	 * 继承解析（设计文档 §1.2 公式）：resolved = 会话显式值优先，inherit/缺省回落账号；
+	 * 账号回落默认 digest/all。账号级 off 只是账号默认值，不压制会话显式选择（§1.1 选择权）。
+	 * 暂停（账号或局部）视作临时 off，到期自动恢复。
 	 */
-	effectiveAttention(target: string): EffectiveAttention {
+	effectivePush(target: string): EffectivePush {
 		const nowMs = Date.parse(this.nowFn());
-		const account = this.overrideFor("account");
-		const local = target === "account" ? EMPTY_OVERRIDE : this.overrideFor(target);
-
+		const account = this.pushFor("account");
+		const local = target === "account" ? {} : this.pushFor(target);
 		const accountPaused =
 			account.pausedUntil != null && isIsoTime(account.pausedUntil) && Date.parse(account.pausedUntil) > nowMs;
 		const localPaused =
@@ -162,30 +213,38 @@ export class ControlStore {
 		let pausedUntil: string | null = null;
 		if (accountPaused) pausedUntil = account.pausedUntil!;
 		else if (localPaused) pausedUntil = local.pausedUntil!;
-
+		const resolveMode = (): Exclude<import("./types.js").PushMode, "inherit"> => {
+			const m = local.mode !== "inherit" && local.mode !== undefined ? local.mode : (account.mode ?? "digest");
+			return m === "inherit" ? "digest" : m;
+		};
+		const resolveFilter = (): Exclude<import("./types.js").PushFilter, "inherit"> => {
+			const f = local.filter !== "inherit" && local.filter !== undefined ? local.filter : (account.filter ?? "all");
+			return f === "inherit" ? "all" : f;
+		};
 		return {
-			mode:
-				account.mode === "silent" || accountPaused || localPaused
-					? "silent"
-					: (local.mode ?? account.mode ?? this.options.defaultMode ?? "normal"),
-			priority: local.priority ?? account.priority ?? "normal",
+			mode: accountPaused || localPaused ? "off" : resolveMode(),
+			filter: resolveFilter(),
 			pausedUntil,
 		};
 	}
 
-	/** 已到期但尚未恢复处理的暂停目标（到期恢复原规则 + 一次允许的积压摘要；无 backlog 模式参数）。 */
-	expiredPauses(): { target: string; pausedUntil: string }[] {
-		const nowMs = Date.parse(this.nowFn());
-		const out: { target: string; pausedUntil: string }[] = [];
-		if (this.state.accountOverride.pausedUntil != null && Date.parse(this.state.accountOverride.pausedUntil) <= nowMs) {
-			out.push({ target: "account", pausedUntil: this.state.accountOverride.pausedUntil });
-		}
-		for (const [target, override] of Object.entries(this.state.conversationOverrides)) {
-			if (override.pausedUntil != null && Date.parse(override.pausedUntil) <= nowMs) {
-				out.push({ target, pausedUntil: override.pausedUntil });
-			}
-		}
-		return out;
+	/* ---------- 冷启动基线（R4③，按会话） ---------- */
+
+	/** 首见会话封存基线；已存在绝不覆盖（诚实冷启动只发生一次）。 */
+	ensureBaseline(conversationRef: string, latestSequence: number): number {
+		const existing = this.state.initializationBaseline[conversationRef];
+		if (existing !== undefined) return existing;
+		const baseline = Math.max(0, Math.floor(latestSequence));
+		this.persist({
+			...this.state,
+			initializationBaseline: { ...this.state.initializationBaseline, [conversationRef]: baseline },
+			revision: this.state.revision + 1,
+		});
+		return baseline;
+	}
+
+	baselineOf(conversationRef: string): number | undefined {
+		return this.state.initializationBaseline[conversationRef];
 	}
 
 	/* ---------- follow_up ---------- */
@@ -234,27 +293,6 @@ export class ControlStore {
 			.sort((a, b) => a.formedAt.localeCompare(b.formedAt));
 	}
 
-	/** update 修改给定字段；reviewAt=null 清除预约。 */
-	updateFollowUp(
-		ref: string,
-		patch: { note?: string; evidenceRefs?: readonly string[]; reviewAt?: string | null },
-	): FollowUpItem {
-		const item = this.getFollowUp(ref);
-		if (!item) throw new Error(`follow_up 不存在: ${ref}`);
-		if (item.state !== "open") throw new Error(`follow_up ${ref} 已是 ${item.state}，只能对 open 事项操作`);
-		if (patch.reviewAt !== undefined && patch.reviewAt !== null && !isIsoTime(patch.reviewAt)) {
-			throw new Error("reviewAt 必须是带时区的 ISO 时间或 null");
-		}
-		return this.persistFollowUp({
-			...item,
-			...(patch.note !== undefined ? { note: patch.note } : {}),
-			...(patch.evidenceRefs !== undefined ? { evidenceRefs: [...patch.evidenceRefs] } : {}),
-			...(patch.reviewAt !== undefined
-				? { reviewAt: patch.reviewAt, reviewNotified: patch.reviewAt !== item.reviewAt ? false : item.reviewNotified }
-				: {}),
-		});
-	}
-
 	settleFollowUp(ref: string, resolution: string, state: "closed" | "cancelled"): FollowUpItem {
 		const item = this.getFollowUp(ref);
 		if (!item) throw new Error(`follow_up 不存在: ${ref}`);
@@ -263,7 +301,7 @@ export class ControlStore {
 		return this.persistFollowUp({ ...item, state, resolution, settledAt: this.nowFn() });
 	}
 
-	/** 到期提醒计账：通知过就不因只改 note 再提醒；改变 reviewAt 才重建预约（update 已处理）。 */
+	/** 到期提醒计账：通知过就不重复提醒。 */
 	markReviewNotified(ref: string): FollowUpItem {
 		const item = this.getFollowUp(ref);
 		if (!item) throw new Error(`follow_up 不存在: ${ref}`);

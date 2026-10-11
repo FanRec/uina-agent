@@ -3,7 +3,7 @@ import type { ControlStore } from "./control-store.js";
 import type { MessageFact, MessageSegment, OperationRecord, RequestFact, FollowUpItem, EventFact } from "./types.js";
 import { parseConversationRef } from "./types.js";
 import { decodeOneBotSegments, oneBotTime } from "./message-codec.js";
-import type { PendingCandidate } from "./scheduler.js";
+import { consumptionThrough, pendingCountOf, type PendingCandidate } from "./scheduler.js";
 /**
  * QQ World 呈现层（唯一 owner，交互合同 §5/§6）。
  * 纯函数：消费规范 facts 与只读快照，产出模型可见正文；不触 transport、不写 store。
@@ -212,7 +212,7 @@ function cardText(type: "json" | "xml", data: string, limit: number | null): str
 
 /** 合并转发段展示（单源格式）。 */
 function forwardText(resId: string): string {
-	return `[合并转发 resId=${resId}（observe scope="messages" 用 messageRef 展开）]`;
+	return `[合并转发 resId=${resId}（browse contentTarget 展开）]`;
 }
 
 /** OneBot sender → 稳定 ref + 展示名；空白群名片/昵称回落（与 ingest 入库规则一致）。 */
@@ -389,13 +389,17 @@ export function renderBatch(candidate: PendingCandidate, deps: BatchRenderDeps):
 	const snapshot = deps.journal.snapshot;
 	const conv = candidate.conversationRef;
 	const all = snapshot.messages.get(conv) ?? [];
-	const through = snapshot.notifiedThrough.get(conv);
+	// 呈现新鲜度（§6.4）：max(lastNotifiedSeq, 冷启动基线)。基线前历史为封存积压，
+	// 不作为"新增"重复呈现；真实待处理消费位另由 throughSeq 书签管理（§2 分轨）。
+	const notified = snapshot.notifiedThrough.get(conv);
+	const baseline = deps.control.baselineOf(conv) ?? 0;
+	const through = Math.max(notified ?? 0, baseline);
 
 	// 窗口：首场景（从未通知）尾部起点 FIRST_SCENE_TAIL；续场景 = 新增 + reply anchor 前文。
 	// 首场景超出起点时只呈现尾部，更早部分以显式省略行交付（§4.1"相应正文或明确
 	// 省略说明已交给 canonical 输入"），冻结仍推进到最新序号，不重复投递。
-	const firstScene = through === undefined;
-	const unnotified = all.filter((m) => m.sequence > (through ?? 0));
+	const firstScene = notified === undefined && baseline === 0;
+	const unnotified = all.filter((m) => m.sequence > through);
 	let omittedEarlier = firstScene ? Math.max(0, unnotified.length - FIRST_SCENE_TAIL) : 0;
 	const fresh = omittedEarlier > 0 ? unnotified.slice(-FIRST_SCENE_TAIL) : unnotified;
 	const anchorRefs = new Set(fresh.map((m) => m.replyTo).filter((ref): ref is string => ref !== undefined));
@@ -412,6 +416,7 @@ export function renderBatch(candidate: PendingCandidate, deps: BatchRenderDeps):
 	const lines: string[] = [
 		`[${conversationKindLabel(conv)}] snapshot=${time.header(deps.now())}`,
 		`conversationRef=${conv}；trigger=${candidate.trigger ?? candidate.cls}`,
+		...situationalOverview(deps),
 		...people.lines(conv),
 		...candidateFacts(candidate, deps),
 		...missingAnchors.map((ref) => `必要前文：replyTo=${ref}（原文不可用）`),
@@ -477,6 +482,178 @@ export function renderBatch(candidate: PendingCandidate, deps: BatchRenderDeps):
 function previousOf(all: readonly MessageFact[], fact: MessageFact): string | undefined {
 	const index = all.indexOf(fact);
 	return index > 0 ? all[index - 1]!.time : undefined;
+}
+
+/**
+ * 全局待处理概览（设计 §5.2 一瞥态势）：所有有待处理消息的会话一行一条，
+ * 待处理数以消费位（max(throughSeq, 基线)）为准。纸条让主体当场做出全局裁决，
+ * 免去额外查询轮次。
+ */
+function situationalOverview(deps: BatchRenderDeps): string[] {
+	const entries: string[] = [];
+	for (const conv of deps.journal.snapshot.messages.keys()) {
+		const pending = pendingCountOf(deps.journal, deps.control, conv);
+		if (pending === 0) continue;
+		const last = (deps.journal.snapshot.messages.get(conv) ?? []).at(-1)!;
+		const textSeg = last.segments.find((s): s is Extract<MessageSegment, { type: "text" }> => s.type === "text");
+		const raw = textSeg?.text ?? `（${last.segments[0]?.type ?? "message"}）`;
+		const preview = raw.length > 40 ? `${raw.slice(0, 39)}…` : raw;
+		entries.push(`• ${conv} ｜ 待处理 ${pending} 条 ｜ ${last.senderDisplayName ?? last.senderRef ?? "?"}：${preview}`);
+	}
+	if (entries.length === 0) return [];
+	// 自适应预算：概览是纸条头部（不可削减区），极小预算下收缩行数，永不挤占正文削减空间。
+	const budget = deps.display?.batchBudgetChars ?? 14000;
+	const maxChars = Math.max(160, Math.min(600, Math.floor(budget / 3)));
+	const lines: string[] = [];
+	let used = 0;
+	for (const entry of entries) {
+		if (used > 0 && used + entry.length > maxChars) {
+			lines.push(`（其余 ${entries.length - lines.length} 个会话有待处理内容）`);
+			return ["当前待处理概览：", ...lines];
+		}
+		lines.push(entry);
+		used += entry.length;
+	}
+	lines.push(`（共 ${entries.length} 个会话有待处理内容；可用 qq_read 查看，或 qq_skip 放下）`);
+	return ["当前待处理概览：", ...lines];
+}
+
+/**
+ * 跟读正文流（设计 §1.2 动·专注在场 / §5.4）：effectiveFollow 命中时新消息
+ * 以连续正文交付，消费位（max(throughSeq, 基线)）之后的全部未消费消息一次呈现；
+ * 超单屏预算从最旧开始削减并显式标注（正文消费书签由调度层在锁内推进）。
+ */
+export function renderFollowBody(conversationRef: string, deps: BatchRenderDeps): string {
+	const time = new TimeView(deps.display?.timezone);
+	const snapshot = deps.journal.snapshot;
+	const all = snapshot.messages.get(conversationRef) ?? [];
+	const through = consumptionThrough(deps.journal, deps.control, conversationRef);
+	const fresh = all.filter((m) => m.sequence > through);
+	if (fresh.length === 0) return `[QQ 跟读] conversationRef=${conversationRef}\n（无未消费正文）`;
+	const people = scenePeople(fresh, deps.journal.selfId);
+	const groups = fresh.map((m) =>
+		messageLines(
+			m,
+			time,
+			previousOf(fresh, m),
+			"新增",
+			people.label(m),
+			people.mention,
+			deps.display,
+			isWithdrawn(m, deps.journal),
+		),
+	);
+	const budget = deps.display?.batchBudgetChars ?? 14000;
+	let shown = groups;
+	const body = (): string =>
+		[
+			`[QQ 跟读] conversationRef=${conversationRef}`,
+			"新增：",
+			...shown.flatMap((group) => group.lines),
+		].join("\n");
+	let dropped = 0;
+	while (body().length > budget && shown.length > 1) {
+		shown = shown.slice(1);
+		dropped++;
+	}
+	const note = dropped > 0 ? `（更早 ${dropped} 条超出单屏预算未呈现；历史随时可用 qq_browse 回看）` : null;
+	return note ? `${body()}\n${note}` : body();
+}
+
+/* ---------- 顺序正文消费渲染（设计 §4.2 qq_read） ---------- */
+
+/** 单条超长文本折叠阈值（设计 §4.2：>2,000 字折叠首尾，不阻塞书签推进）。 */
+export const READ_FOLD_THRESHOLD = 2000;
+
+export interface ReadWindowResult {
+	readonly text: string;
+	/** 本次完整交付到的会话序号（书签推进依据；无可读为当前消费位）。 */
+	readonly deliveredThrough: number;
+	readonly delivered: readonly MessageFact[];
+	/** 本次消费后剩余待处理条数。 */
+	readonly remaining: number;
+}
+
+/**
+ * 顺序正文窗口（§4.2）：自消费位起按序取 limit 条，软预算内整条交付，
+ * 超预算从"下一条"截断（已呈现才算交付——书签只推进到最后一条完整交付的消息）；
+ * 单条超长文本折叠首尾并标注 hasMoreSegment（完整原文经 qq_browse contentTarget 展开），
+ * 不阻塞书签推进。空窗口诚实返回，不伪造正文。
+ */
+export function renderReadWindow(
+	conversationRef: string,
+	deps: BatchRenderDeps,
+	opts: { readonly limit: number; readonly budgetChars: number },
+): ReadWindowResult {
+	const time = new TimeView(deps.display?.timezone);
+	const all = deps.journal.snapshot.messages.get(conversationRef) ?? [];
+	const through = consumptionThrough(deps.journal, deps.control, conversationRef);
+	const fresh = all.filter((m) => m.sequence > through);
+	const remainingOf = (count: number): number => fresh.length - count;
+	if (fresh.length === 0) {
+		return {
+			text: `[QQ 阅读] conversationRef=${conversationRef}\n（无未消费正文；consumedThrough=${through}）`,
+			deliveredThrough: through,
+			delivered: [],
+			remaining: 0,
+		};
+	}
+	const window = fresh.slice(0, opts.limit);
+	const people = scenePeople(window, deps.journal.selfId);
+	const groups = window.map((m) =>
+		messageLines(m, time, previousOf(window, m), "新增", people.label(m), people.mention, deps.display, isWithdrawn(m, deps.journal)),
+	);
+	// 超长折叠：> READ_FOLD_THRESHOLD 的文本保留首尾，中段显式省略（完整原文可点查展开）。
+	const folded = new Map<MessageLines, string[]>();
+	for (const group of groups) {
+		if (group.text.length <= READ_FOLD_THRESHOLD) continue;
+		const fact = window.find((m) => m.ref === group.ref)!;
+		const segmentIndex = fact.segments.findIndex((s) => s.type === "text");
+		const keep = Math.floor((READ_FOLD_THRESHOLD - 60) / 2);
+		const foldedText = `${group.text.slice(0, keep)}\n…（中段折叠 ${group.text.length - keep * 2} 字）…\n${group.text.slice(-keep)}`;
+		folded.set(group, [
+			group.lines[0]!,
+			quote(foldedText),
+			`hasMoreSegment: true（qq_browse contentTarget messageRef=${group.ref}${segmentIndex >= 0 ? ` segmentIndex=${segmentIndex}` : ""} 展开全文）`,
+		]);
+	}
+	const lineOf = (group: MessageLines): string[] => folded.get(group) ?? group.lines;
+	const head = [
+		`[QQ 阅读] conversationRef=${conversationRef}；snapshot=${time.header(deps.now())}`,
+		...people.lines(conversationRef),
+	];
+	// 软预算：至少交付一条；单条自身超预算时硬截断文本并标注（该条仍算已交付）。
+	const body = (): string[] => {
+		const out = [...head, "新增："];
+		for (const group of shown) out.push(...lineOf(group));
+		return out;
+	};
+	let shown = groups;
+	while (shown.length > 1 && body().join("\n").length > opts.budgetChars) shown = shown.slice(0, -1);
+	if (shown.length === 1 && body().join("\n").length > opts.budgetChars) {
+		const group = shown[0]!;
+		const excess = body().join("\n").length - opts.budgetChars;
+		const text = group.text;
+		const keep = Math.max(0, text.length - excess - "[truncated]".length - 20);
+		folded.set(group, [
+			group.lines[0]!,
+			quote(`${text.slice(0, keep)}…[truncated]`),
+			`hasMoreSegment: true（qq_browse contentTarget messageRef=${group.ref} 展开全文）`,
+		]);
+	}
+	const delivered = shown.map((group) => window[groups.indexOf(group)]!);
+	const deliveredThrough = delivered.at(-1)!.sequence;
+	const omitted = remainingOf(delivered.length);
+	const note =
+		omitted > 0
+			? `（余下 ${omitted} 条未交付；再次调用 qq_read 接续）`
+			: null;
+	const text = [
+		...body(),
+		...(note ? [note] : []),
+		`deliveredThrough=${delivered.at(-1)!.ref}（seq ${deliveredThrough}）；本次交付 ${delivered.length} 条；剩余待处理 ${omitted} 条`,
+	].join("\n");
+	return { text, deliveredThrough, delivered, remaining: omitted };
 }
 
 function countBackground(deps: BatchRenderDeps, candidate: PendingCandidate): number {
@@ -608,7 +785,7 @@ function renderAccountEventBatch(deps: BatchRenderDeps, candidate: PendingCandid
 	return [
 		`[QQ 状态事件] snapshot=${time.header(deps.now())}；source=内部连接/账号状态`,
 		...lines,
-		`用 observe(scope="status") 核验当前事实。`,
+		`连接与账号事实由 World 状态与 scripts/qq-status.mts（只读）核验。`,
 	].join("\n");
 }
 
@@ -638,128 +815,8 @@ function renderBacklogBatch(deps: BatchRenderDeps): string {
 	return [
 		`[QQ 暂停结束摘要] snapshot=${time.header(deps.now())}；source=控制状态；暂停已到期恢复原规则`,
 		...(lines.length > 0 ? lines : ["无积压"]),
-		`一次摘要不逐条补发；需要现场用 observe(scope="conversation") 读取。`,
+		`一次摘要不逐条补发；需要现场用 qq 工具 read/browse 读取。`,
 	].join("\n");
-}
-
-/* ---------- cursor（observe 分页；ToolDef：原样复制且绑定过滤/窗口） ---------- */
-
-/** FNV-1a 指纹：cursor 绑定查询条件，条件变化即失效。 */
-export function fingerprintCursor(fields: Record<string, unknown>): string {
-	const json = JSON.stringify(fields);
-	let hash = 0x811c9dc5;
-	for (let i = 0; i < json.length; i++) {
-		hash ^= json.charCodeAt(i);
-		hash = Math.imul(hash, 0x01000193);
-	}
-	return (hash >>> 0).toString(16).padStart(8, "0");
-}
-
-export function encodeCursor(payload: Record<string, unknown>): string {
-	return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
-}
-
-export function decodeCursor(
-	raw: unknown,
-): { ok: true; value: Record<string, unknown> } | { ok: false; error: string } {
-	if (typeof raw !== "string" || raw === "") return { ok: false, error: "cursor 缺失或非字符串" };
-	try {
-		const parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as unknown;
-		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-			return { ok: false, error: "cursor 载荷非法" };
-		}
-		return { ok: true, value: parsed as Record<string, unknown> };
-	} catch {
-		return { ok: false, error: "cursor 不是合法编码" };
-	}
-}
-
-/* ---------- 会话现场页（observe scope=conversation） ---------- */
-
-export interface ConversationPageLine {
-	readonly ref: string;
-	readonly timeIso: string | null;
-	readonly sender: string;
-	readonly senderRef?: string | null;
-	readonly senderDisplayName?: string | null;
-	readonly direction?: "in" | "out";
-	readonly text: string;
-	readonly rawMessage?: unknown;
-	readonly segments?: readonly MessageSegment[];
-	readonly replyTo?: string;
-}
-
-export interface ConversationPageInput {
-	readonly conversationRef: string;
-	readonly selfId?: string;
-	readonly direction: string;
-	/** platform=在线历史；local=离线保存事实（标陈旧）。 */
-	readonly source: "platform" | "local";
-	readonly lines: readonly ConversationPageLine[];
-	readonly events?: readonly (Omit<Partial<EventFact>, "kind"> & {
-		ref: string;
-		kind: string;
-		timeIso?: string;
-		time?: string;
-	})[];
-	readonly time: TimeView;
-	readonly display?: DisplayOptions;
-	readonly journal?: FactsJournal;
-}
-
-/** 会话现场：快照头 + 消息行 + 可选事件页 + coverage/hasMore。返回正文与末条引用（cursor 用）。 */
-export function renderConversationPage(input: ConversationPageInput): { text: string; lastMessageRef: string | null } {
-	const kindLabel = conversationKindLabel(input.conversationRef);
-	const sourceNote = input.source === "local" ? "；source=离线保存事实（陈旧性未核验）" : "；source=平台快照";
-	const people = scenePeople(input.lines, input.selfId ?? "");
-	const head = [
-		`[${kindLabel}现场] snapshot=${input.time.header(new Date().toISOString())}${sourceNote}`,
-		`conversationRef=${input.conversationRef}；direction=${input.direction}`,
-		...people.lines(input.conversationRef),
-	];
-	let previousIso: string | undefined;
-	const body = input.lines.map((line) => {
-		const time = line.timeIso ? input.time.line(line.timeIso, previousIso) : "?";
-		if (line.timeIso) previousIso = line.timeIso;
-		const decoded = line.rawMessage === undefined ? undefined : decodeOneBotSegments(line.rawMessage);
-		const replyTo = line.replyTo ?? decoded?.replyTo;
-		const reply = replyTo ? ` | replyTo=${replyTo}` : "";
-		const segments = line.segments ?? decoded?.segments;
-		const text = segments ? segmentText(segments, people.mention, input.display?.faceNames) : line.text;
-		const content = text !== "" ? `\n${quote(text)}` : "";
-		const label = line.senderRef || line.direction === "out" ? people.label(line) : line.sender;
-		const withdrawn =
-			input.events?.some((e) => e.kind === "recall" && e.messageRef === line.ref) ||
-			(input.journal?.snapshot.events.get(input.conversationRef) ?? []).some(
-				(e) => e.kind === "recall" && e.messageRef === line.ref,
-			);
-		const selectors = segments ? contentSelectors({ ref: line.ref, segments } as MessageFact).join("\n") : "";
-		return `${time} | ${line.ref} | ${quote(label)}${reply}${withdrawn ? " | 已撤回（保存原文）" : ""}${content}${selectors ? `\n${selectors}` : ""}`;
-	});
-	const eventLines: string[] = [];
-	if (input.events && input.events.length > 0) {
-		eventLines.push(`recentEvents：`);
-		for (const e of input.events) {
-			const iso = e.time ?? e.timeIso;
-			if (iso)
-				eventLines.push(
-					renderEventFact(
-						{ ...e, time: iso, kind: e.kind as EventFact["kind"], source: e.source ?? "platform" },
-						input.journal,
-						{ ...input.display, timezone: input.time.timezone },
-					),
-				);
-			else eventLines.push(`time=unknown | ${e.ref} | ${e.kind}${e.summary ? ` | ${quote(e.summary)}` : ""}`);
-		}
-	}
-	const text = [
-		...head,
-		...(body.length > 0 ? body : ["（无记录）"]),
-		...eventLines,
-		`coverage=${input.source === "platform" ? "平台快照" : "本地事实窗口"} ${input.direction}；完整覆盖未知`,
-	].join("\n");
-	const lastMessageRef = input.lines.length > 0 ? input.lines[input.lines.length - 1]!.ref : null;
-	return { text, lastMessageRef };
 }
 
 /* ---------- 工具回执正文（唯一 owner：三态头、集合行、指引与注记） ---------- */
@@ -773,31 +830,15 @@ function successLabel(label: string): string {
 		sent: "已发送",
 		poke: "已戳一戳",
 		retract: "已撤回",
-		mark_read: "已标记已读",
-		"attention.clear": "已清除关注覆盖",
-		"attention.set": "已更新关注规则",
 		"follow_up.create": "已保存待跟进事项",
-		"follow_up.update": "已更新待跟进事项",
 		"follow_up.close": "已关闭待跟进事项",
 		"follow_up.cancel": "已取消待跟进事项",
-		leave_group: "已退出群聊",
-		remove_contact: "已移除联系人",
 		set_profile: "已更新个人资料",
 		set_avatar: "已更新头像",
 		set_group_card: "已更新群名片",
-		status: "QQ 状态",
-		capabilities: "QQ 能力",
-		attention: "关注规则",
-		operations: "操作记录",
-		overview: "QQ 概览",
-		messages: "消息",
 		self: "我的资料",
 		requests: "申请",
-		members: "群成员",
-		contacts: "联系人",
-		groups: "群聊",
 		expressions: "表情目录",
-		follow_ups: "待跟进事项",
 	};
 	if (label.startsWith("respond_request ")) return label.endsWith("accept") ? "已接受申请" : "已拒绝申请";
 	if (label.startsWith("react set ")) return `已添加表情回应 ${label.slice(10)}`;
@@ -814,38 +855,11 @@ export const receipt = {
 
 /** 回执内的标准指引/注记文案（漂移高危集中地，禁止在 app.ts 重写）。 */
 export const RECEIPT_NOTES = {
-	nextStatusCheck: `若持续失败，先 observe(scope="status") 核验连接，再原样重试本查询`,
+	nextStatusCheck: `若持续失败，先核验连接与登录状态，再原样重试本查询`,
 	verifyOperation: (operationRef: string): string =>
-		`核验：observe(scope="operations", operationRef="${operationRef}")`,
-	capabilitiesHead: `三维能力 supportedByAdapter / allowedByDeployment / availableNow`,
-	capabilitiesCaveat: `探测不证明具体媒体格式或对端呈现；includeMedia=true 时 observe 抓取可靠图片附加 base64，音视频不转写。`,
-	membersCaveat: `source=平台快照；完整覆盖/新鲜度未知`,
-	membersEmpty: `本次未见匹配成员；覆盖未知不推出非成员`,
-	listCaveat: `source=平台快照；完整覆盖未知`,
-	expressionsGuidance: `speak face.faceId 与 gesture.react reactionCode 只接受此处数字编码；非数字（Unicode emoji 形态）不进 face/reaction，改用 text 发送。kind=reaction 与 face 同源数字编码；个别编码可用性由平台回执判断。`,
-	unknownScope: (scope: string): string => `未知 observe scope: ${scope}`,
+		`核验：operationRef=${operationRef}；操作日志保留派发与回执全记录`,
+	expressionsGuidance: `send 的 face 段与 interact 的 react 只接受此处数字编码；非数字（Unicode emoji 形态）不进 face/react，改用 text 发送。react 与 face 同源数字编码；个别编码可用性由平台回执判断。`,
 };
-
-/** 成员行：nickname/card 显式并列，占位 role 不作真实身份。 */
-export function membersLine(
-	selfId: string,
-	m: { user_id: number; nickname?: string; card?: string; role?: string },
-): string {
-	return `u${m.user_id}${String(m.user_id) === selfId ? " | 我" : ""} | nickname=${quote(m.nickname ?? "")} | card=${quote(m.card ?? "")} | role=${quote(m.role ?? "member（占位不作真实身份）")}`;
-}
-
-/** 能力行：三维一排，冒号后同排 k=v。 */
-export function capabilityLine(
-	type: string,
-	d: { supportedByAdapter: boolean | null; allowedByDeployment: boolean; availableNow: boolean | null },
-): string {
-	return `${type}: supportedByAdapter=${d.supportedByAdapter} allowedByDeployment=${d.allowedByDeployment} availableNow=${d.availableNow}`;
-}
-
-/** 操作列表行。 */
-export function operationRow(r: Pick<OperationRecord, "ref" | "action" | "outcome" | "reason">): string {
-	return `${r.ref} | ${r.action} | ${r.outcome}${r.reason ? ` | ${quote(r.reason)}` : ""}`;
-}
 
 /** 单条操作记录正文（按行拆分，ref 独占首行）。 */
 export function operationRecordLines(

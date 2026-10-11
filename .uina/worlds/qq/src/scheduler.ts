@@ -1,23 +1,54 @@
 import { parseConversationRef, parseUserRef, userRef, conversationRef } from "./types.js";
 import type { FactsJournal } from "./facts-journal.js";
 import type { ControlStore } from "./control-store.js";
-import type { EventFact, IngestedFact, OperationRecord } from "./types.js";
+import type { AttentionModel } from "./attention.js";
+import type { ConversationLocks } from "./conversation-lock.js";
+import type { EventFact, IngestedFact, MessageFact, OperationRecord } from "./types.js";
 
 /**
- * 朴素调度（设计 §4.1/4.2）：候选从事实与控制状态派生，单占位，串行选择。
- * - 同一会话普通事实合并为普通候选；direct 类候选不合并计数但同类按等待年龄排序。
- * - silent/pause 禁止自动机会（显式工具不受限）；direct_only 只允许 direct。
- * - preferred 只获得"提前一个普通合并窗口"的有限偏置；没有轮转或概率。
- * - ordinary A 已排队（占位）时新 Direct B 只保留候选，A 结算后下一提交优先 B。
- * - busy recheck：agent_settled 只通知待检查；在派发之外用单个可取消 recheck，
- *   绝不在回调内等待 Subject 空闲。
+ * 通知与跟读调度（设计 §5.1/§5.3/§5.4）：
+ * - 统一 1~2s 短脉冲防抖（打字喘气合并）；request/internal 保留独立窗口。
+ * - 触发判定（纯物理事实）：① 首次未读 0→1（消费位口径）；② 直接互动（@/戳/引用自身/相关 recall）特许穿透；
+ *   ③ 私聊沉寂复苏（与上一条消息间隔 ≥10min）；④ 群聊增量闲聊静默记账绝不催更。
+ * - 跟读（follow）：effectiveFollow 命中走正文直读派发，与通知轨分轨；锁内渲染并推进
+ *   dispatchedThrough 书签；缓冲超预算自动退让为降压摘要并挂起（R1，唯一权威 = 消费位缓冲深度）。
+ * - 延迟渲染（§5.3）：派发只投唤醒占位 + render 闭包；出队时才求值最新快照，已清空返回 null
+ *   由 Core empty_render 退役（T12）；闭包永不抛出（R7）。
+ * - 通知路径只消费 push 偏好（R5：不双读旧 attention 字段）；mode off / 暂停即静默，
+ *   filter "direct" 只放行直接互动类。
+ * - 通知基准 = max(lastNotifiedSeq, 冷启动基线)；消费位 = max(dispatchedThrough, 基线)。两轨分离（§2）。
+ * - 单占位串行；飞行期间到达的消息不补发纸条（群静默/私聊靠复苏穿透，T01A 规则的必然推论）。
  */
 
+/** 私聊沉寂复苏间隔（设计 §5.1：客观时间阈值，摒弃意图分析）。 */
+export const REVIVAL_SILENCE_MS = 600_000;
+/** R1 过载退让阈值：未消费缓冲条数上限（约 14,000 字符或 30 条取先到）。 */
+export const FOLLOW_BACKLOG_LIMIT = 30;
+
+/* ---------- 消费位（§6.4 单一事实源：调度器、呈现层与消费工具共用） ---------- */
+
+/** 消费位置 = max(throughSeq 正文派发书签, 冷启动基线)。基线即书签的初始对齐值。 */
+export function consumptionThrough(
+	journal: Pick<FactsJournal, "dispatchedThroughOf">,
+	control: Pick<ControlStore, "baselineOf">,
+	conversationRef: string,
+): number {
+	return Math.max(journal.dispatchedThroughOf(conversationRef), control.baselineOf(conversationRef) ?? 0);
+}
+
+/** 待处理条数（消费位口径）：通知纸条只呈现态势、不推进消费位——两轨分离（§2）。 */
+export function pendingCountOf(
+	journal: Pick<FactsJournal, "dispatchedThroughOf" | "snapshot">,
+	control: Pick<ControlStore, "baselineOf">,
+	conversationRef: string,
+): number {
+	const through = consumptionThrough(journal, control, conversationRef);
+	return (journal.snapshot.messages.get(conversationRef) ?? []).filter((m) => m.sequence > through).length;
+}
+
 export interface TimingWindows {
-	/** direct 候选（私聊/temp/群 @/reply/poke/recall）。 */
-	readonly direct: readonly [number, number];
-	/** 普通群合并。 */
-	readonly ordinary: readonly [number, number];
+	/** 消息类统一短脉冲 [去抖 quiet, 自首条起算上限 maxWait]。 */
+	readonly pulse: readonly [number, number];
 	/** 好友申请/群邀请。 */
 	readonly request: readonly [number, number];
 	/** internal 候选（连接状态/到期事项/迟到回执/暂停摘要）。 */
@@ -25,13 +56,12 @@ export interface TimingWindows {
 }
 
 export const DEFAULT_TIMING: TimingWindows = {
-	direct: [250, 1000],
-	ordinary: [1800, 5000],
+	pulse: [1200, 2000],
 	request: [500, 1500],
 	internal: [700, 2000],
 };
 
-export type CandidateClass = "direct" | "ordinary" | "request" | "internal";
+export type CandidateClass = "follow" | "direct" | "ordinary" | "request" | "internal";
 
 export interface PendingCandidate {
 	readonly key: string;
@@ -42,7 +72,7 @@ export interface PendingCandidate {
 	/** 普通候选合并计数。 */
 	readonly count: number;
 	/** direct 候选的触发原因。 */
-	readonly trigger?: "private" | "at_self" | "reply_self" | "poke" | "recall";
+	readonly trigger?: "private" | "at_self" | "reply_self" | "poke" | "recall" | "revival";
 	/** 世界事件 origin（入站表：bot_status/offline 为 external，连接故障与到期事项为 internal）；makeCandidate 保证必填。 */
 	readonly origin: "external" | "internal";
 	readonly eventRefs?: readonly string[];
@@ -53,18 +83,26 @@ export interface SchedulerDeps {
 	readonly selfId: string;
 	readonly journal: FactsJournal;
 	readonly control: ControlStore;
+	readonly attention: AttentionModel;
+	readonly locks: ConversationLocks;
 	readonly now: () => string;
-	/** 投递世界事件（emitEvent 包装 submitInput）；单占位由 scheduler 保证。 */
+	/**
+	 * 投递世界事件（emitEvent 包装 submitInput）；单占位由 scheduler 保证。
+	 * render 为延迟求值闭包（§5.3）：Core 出队提交前才调用，never journaled；
+	 * 返回 null 触发 empty_render 退役。调度器保证闭包永不抛出（R7）。
+	 */
 	readonly emit: (input: {
 		id: string;
-		text: string;
 		conversationRef: string;
 		cls: CandidateClass;
 		origin: "external" | "internal";
+		render: () => Promise<string | null>;
 	}) => Promise<void>;
 	readonly isBusy?: () => boolean;
-	/** 批次正文渲染（呈现层唯一出口，render.ts 提供）。 */
+	/** 通知批次正文渲染（呈现层唯一出口，render.ts 提供）。 */
 	readonly renderBatch: (candidate: PendingCandidate) => string;
+	/** 跟读正文流渲染（cls=follow 派发用；render.ts 提供）。 */
+	readonly renderFollowBody: (conversationRef: string) => string;
 	/**
 	 * recall 是否"影响当前交互或事项证据"（合同 §4 只允许此类 recall 提醒）。
 	 * 判定语义由装配层注入（自身发言被撤 / open 事项证据被撤 / 连续性窗口内最近批次）；
@@ -78,8 +116,11 @@ export interface SchedulerDeps {
 interface Placeholder {
 	readonly inputId: string;
 	readonly conversationRef: string;
-	/** 派发时刻该会话最新序号（render 与冻结同步执行）；非会话批次为 0。 */
-	readonly throughSequence: number;
+	/**
+	 * 冻结槽位：render 闭包求值成功时写入本批交付到的会话序号（§5.3 延迟渲染下
+	 * 冻结点从 emit 时刻移至 render 求值时刻）；retired/未求值则保持 null 不记账。
+	 */
+	readonly throughSlot: { value: number } | null;
 	/** follow_up 批次派发时渲染的到期事项；committed 后才计账（retired 允许重提醒）。 */
 	readonly followUpRefs?: readonly string[];
 	/** 迟到回执更新批次派发时呈现的操作；committed 后清理。 */
@@ -96,6 +137,8 @@ export class QqScheduler {
 	private recheckTimer: ReturnType<typeof setTimeout> | null = null;
 	/** 已处理过的暂停到期事件（target:pausedUntil）；进程内存续，重启至多重放一次摘要（偏差登记）。 */
 	private readonly processedPauseExpiries = new Set<string>();
+	/** R1 退让后挂起跟读的会话：待处理缓冲回落预算内自动解除。 */
+	private readonly suspendedFollow = new Set<string>();
 	/** 迟到回执升级的 unknown 操作（ref → record）；committed 后清理，retired 保留待重提醒。 */
 	private readonly settledUnknowns = new Map<string, OperationRecord>();
 
@@ -121,6 +164,7 @@ export class QqScheduler {
 		if (this.recheckTimer) clearTimeout(this.recheckTimer);
 		this.recheckTimer = null;
 		this.pending.clear();
+		this.suspendedFollow.clear();
 		this.placeholder = null;
 	}
 
@@ -143,35 +187,55 @@ export class QqScheduler {
 			const parsed = parseConversationRef(fact.conversationRef);
 			if (!parsed) return [];
 			const { kind } = parsed;
-			const attention = control.effectiveAttention(fact.conversationRef);
-			if (attention.mode === "silent") return []; // 不提醒；事实仍可查
-			if (kind !== "group") {
-				return [this.makeCandidate(fact.conversationRef, "direct", fact.time, 1, "private")];
+			const push = control.effectivePush(fact.conversationRef);
+			if (push.mode === "off") return []; // 静默/暂停：事实仍可查
+			// 跟读直读（§5.4）：effectiveFollow 命中 → 正文流派发（与通知轨分轨）。
+			// R1 退让挂起中且缓冲仍超预算 → 静默记账；回落预算内自动解除挂起。
+			if (this.deps.attention.effectiveFollow(fact.conversationRef)) {
+				if (this.suspendedFollow.has(fact.conversationRef)) {
+					if (this.pendingCount(fact.conversationRef) <= FOLLOW_BACKLOG_LIMIT) {
+						this.suspendedFollow.delete(fact.conversationRef);
+					} else return [];
+				}
+				return [this.makeCandidate(fact.conversationRef, "follow", fact.time, 1)];
 			}
-			// 群：真实 @self / reply 已核验自己的消息 → direct；其余普通合并。
+			const replySelf = fact.replyTo !== undefined && this.isOwnMessage(fact.replyTo);
+			const pendingBefore = this.pendingCount(fact.conversationRef) - 1;
+			if (kind !== "group") {
+				// 私聊/temp：0→1 或 沉寂复苏 穿透；持续闲聊静默记账（§5.1 规则②③）。
+				if (replySelf) return [this.makeCandidate(fact.conversationRef, "direct", fact.time, 1, "reply_self")];
+				if (push.filter === "direct") return []; // filter=direct：仅直接互动（复苏亦不放行，偏差登记）
+				if (pendingBefore === 0) return [this.makeCandidate(fact.conversationRef, "direct", fact.time, 1, "private")];
+				if (this.isRevival(fact)) {
+					return [this.makeCandidate(fact.conversationRef, "direct", fact.time, 1, "revival")];
+				}
+				return [];
+			}
+			// 群：@self / 引用自身 → 直接互动特许穿透，无视 filter（§5.1 规则②）。
 			const atSelf = fact.segments.some(
 				(seg) => seg.type === "mention_all" || (seg.type === "mention" && seg.userRef === userRef(selfId)),
 			);
-			const replySelf = fact.replyTo !== undefined && this.isOwnMessage(fact.replyTo);
 			if (atSelf || replySelf) {
 				return [this.makeCandidate(fact.conversationRef, "direct", fact.time, 1, atSelf ? "at_self" : "reply_self")];
 			}
-			if (attention.mode === "direct_only") return []; // 普通群消息只在 normal 模式合并
-			return [this.makeCandidate(fact.conversationRef, "ordinary", fact.time, 1)];
+			// 群聊仅 0→1 触发一次全局态势纸条；增量闲聊静默记账（§5.1 规则④）。
+			if (push.filter === "direct") return [];
+			if (pendingBefore === 0) return [this.makeCandidate(fact.conversationRef, "ordinary", fact.time, 1)];
+			return [];
 		}
 		if (item.kind === "event") {
 			const fact = item.fact;
 			if (fact.kind === "poke" && fact.targetRef === userRef(selfId)) {
-				const attention = control.effectiveAttention(fact.conversationRef ?? "account");
-				if (attention.mode === "silent") return [];
+				const push = control.effectivePush(fact.conversationRef ?? "account");
+				if (push.mode === "off") return [];
 				// 群 poke 携带会话现场；好友 poke 从 actor（对方）推导私聊会话——fact 字段已知，非猜测。
 				const convRef = fact.conversationRef ?? this.privateRefFromActor(fact.actorRef);
 				if (!convRef) return [];
 				return [{ ...this.makeCandidate(convRef, "direct", fact.time, 1, "poke"), eventRefs: [fact.ref] }];
 			}
 			if (fact.kind === "recall" && fact.conversationRef) {
-				const attention = control.effectiveAttention(fact.conversationRef);
-				if (attention.mode === "silent") return [];
+				const push = control.effectivePush(fact.conversationRef);
+				if (push.mode === "off") return [];
 				// 合同 §4：仅"影响当前交互或事项证据"的 recall 允许提醒；判定注入，缺省不唤醒。
 				if (!this.deps.isRecallRelevant?.(fact)) return [];
 				return [
@@ -179,8 +243,7 @@ export class QqScheduler {
 				];
 			}
 			if (fact.kind === "bot_status" || fact.kind === "bot_offline") {
-				// 入站表：bot_status/offline 属平台事实，origin=external；初始化基线由装配层
-				// 首连状态处理（connected 事件不产生候选）。
+				// 入站表：bot_status/offline 属平台事实，origin=external；连接故障与恢复由装配层状态机放行。
 				return [
 					{
 						...this.makeCandidate("qq-event-account", "internal", fact.time, 1, undefined, "external"),
@@ -199,8 +262,7 @@ export class QqScheduler {
 		const fact = item.fact;
 		if (fact.state !== "pending" || this.deps.isRequestPending?.(fact.ref) === false) return [];
 		if (fact.kind === "friend" || (fact.kind === "group_invite" && fact.targetConversationRef !== undefined)) {
-			const attention = control.effectiveAttention("account");
-			if (attention.mode === "silent") return [];
+			if (control.effectivePush("account").mode === "off") return [];
 			return [
 				{
 					...this.makeCandidate(fact.targetConversationRef ?? "qq-request-account", "request", fact.time, 1),
@@ -209,6 +271,34 @@ export class QqScheduler {
 			];
 		}
 		return [];
+	}
+
+	/**
+	 * 消费位置（§6.4）：max(throughSeq 正文派发书签, 冷启动基线)。基线即书签的初始对齐值；
+	 * 通知纸条只呈现态势、不推进消费位——通知轨与消费轨严格分轨（§2）。
+	 * 0→1 触发以此为准：会话此前待处理清空（pendingCount-1===0）才触发首批纸条。
+	 */
+	private pendingCount(conversationRef: string): number {
+		return pendingCountOf(this.deps.journal, this.deps.control, conversationRef);
+	}
+
+	/** 通知呈现新鲜度（lastNotifiedSeq 口径）：派发前重验"还有没有可呈现的新内容"。 */
+	private noticeFreshCount(conversationRef: string): number {
+		const baseline = this.deps.control.baselineOf(conversationRef) ?? 0;
+		const through = Math.max(this.deps.journal.snapshot.notifiedThrough.get(conversationRef) ?? 0, baseline);
+		let count = 0;
+		for (const m of this.deps.journal.snapshot.messages.get(conversationRef) ?? []) {
+			if (m.sequence > through) count++;
+		}
+		return count;
+	}
+
+	/** 私聊沉寂复苏（§5.1 规则③）：当前消息与上一条消息间隔 ≥ REVIVAL_SILENCE_MS。 */
+	private isRevival(fact: MessageFact): boolean {
+		const list = this.deps.journal.snapshot.messages.get(fact.conversationRef) ?? [];
+		const prev = list.length >= 2 ? list[list.length - 2] : undefined;
+		if (!prev) return false;
+		return Date.parse(fact.time) - Date.parse(prev.time) >= REVIVAL_SILENCE_MS;
 	}
 
 	private isOwnMessage(ref: string): boolean {
@@ -313,12 +403,12 @@ export class QqScheduler {
 
 	private windowFor(candidate: PendingCandidate): readonly [number, number] {
 		switch (candidate.cls) {
+			case "follow":
 			case "direct":
-				return this.timing.direct;
+			case "ordinary":
+				return this.timing.pulse;
 			case "request":
 				return this.timing.request;
-			case "ordinary":
-				return this.timing.ordinary;
 			case "internal":
 				return this.timing.internal;
 		}
@@ -343,17 +433,19 @@ export class QqScheduler {
 		this.timers.set(key, timer);
 	}
 
-	/** input_settled(committed/retired) 回调：释放占位并推进通知位置。 */
+	/** input_settled(committed/retired) 回调：释放占位并按冻结槽位推进通知位置。 */
 	onInputSettled(inputId: string, committed: boolean): void {
 		if (this.stopped) return;
 		if (!this.placeholder || this.placeholder.inputId !== inputId) return;
-		const { conversationRef, throughSequence, followUpRefs, operationRefs } = this.placeholder;
-		if (committed) {
-			// 只冻结在派发时已交付的序号；派发后新到消息留给下一批，不偷记已通知。
+		const { conversationRef, throughSlot, followUpRefs, operationRefs } = this.placeholder;
+		if (committed && throughSlot) {
+			// 只冻结在 render 求值时已交付的序号；出队后新到消息留给下一批，不偷记已通知。
 			const through = this.deps.journal.snapshot.notifiedThrough.get(conversationRef) ?? 0;
-			if (throughSequence > through) {
-				this.deps.journal.recordNotified(conversationRef, throughSequence, inputId, this.deps.now());
+			if (throughSlot.value > through) {
+				this.deps.journal.recordNotified(conversationRef, throughSlot.value, inputId, this.deps.now());
 			}
+		}
+		if (committed) {
 			// follow_up 通知计账：committed 才算"已交给 canonical 输入"。
 			for (const ref of followUpRefs ?? []) {
 				const item = this.deps.control.getFollowUp(ref);
@@ -394,48 +486,81 @@ export class QqScheduler {
 			}
 			candidate = { ...candidate, requestRefs };
 		}
-		const attention = this.deps.control.effectiveAttention(candidate.conversationRef);
-		if (attention.mode === "silent") {
+		const push = this.deps.control.effectivePush(candidate.conversationRef);
+		if (push.mode === "off") {
 			this.pending.delete(candidate.key);
 			return;
 		}
-		// 消息派生候选派发前重验新鲜度：正文若已被其他批次（如更早的 direct/poke 批）
-		// 交付并记账，空转候选直接退役，不产生空批次（poke/recall/request/internal
-		// 携带自身载荷，不受此限）。
-		if (this.isMessageDerived(candidate) && this.deps.journal.unreadCount(candidate.conversationRef) === 0) {
-			this.pending.delete(candidate.key);
-			return;
+		// 消息派生候选派发前重验（消费位/呈现位双口径）：正文若已被其他批次交付并推进
+		// 相应书签，空转候选直接退役，不产生空批次（poke/recall/request/internal 携带自身
+		// 载荷，不受此限；follow 只看消费位——呈现位可能已被旧纸条推进但正文未消费）。
+		if (this.isMessageDerived(candidate)) {
+			const stale =
+				candidate.cls === "follow"
+					? this.pendingCount(candidate.conversationRef) === 0
+					: this.pendingCount(candidate.conversationRef) === 0 ||
+						this.noticeFreshCount(candidate.conversationRef) === 0;
+			if (stale) {
+				this.pending.delete(candidate.key);
+				return;
+			}
 		}
 		const inputId = `qq:${candidate.cls}:${candidate.conversationRef}:${this.deps.now()}`;
+		const conv = candidate.conversationRef;
 		this.pending.delete(candidate.key);
+		// §5.3 延迟渲染：派发只投唤醒占位 + render 闭包；冻结槽位由闭包求值成功时写入，
+		// retired/未求值不记账（T12 空退役、排队期间消费清空均落在同一条路径）。
+		const throughSlot: { value: number } | null = conv.startsWith("qq-") ? null : { value: 0 };
+		const render = async (): Promise<string | null> => {
+			try {
+				// 出队时刻新鲜度重验（T12）：排队期间已被 read/skip 消费或呈现完毕 → 空退役。
+				if (this.isMessageDerived(candidate)) {
+					const stale =
+						candidate.cls === "follow"
+							? this.pendingCount(conv) === 0
+							: this.pendingCount(conv) === 0 || this.noticeFreshCount(conv) === 0;
+					if (stale) return null;
+				}
+				if (candidate.cls === "follow") {
+					// 锁内渲染 + 书签推进（§2.1）：与后续 qq_read/qq_skip 串行互斥，根绝重复派发。
+					return await this.deps.locks.run(conv, async () => {
+						const pending = this.pendingCount(conv);
+						if (pending > FOLLOW_BACKLOG_LIMIT) {
+							// R1 过载退让：切断连续正文灌注，转降压摘要；不动书签、不冻结槽位
+							// （未交付的消息保持 pending 且未通知，恢复后仍可完整呈现）。
+							this.suspendedFollow.add(conv);
+							return `[QQ 动态提示] 关注会话 ${conv} 出现高频积压（${pending} 条未消费）；自动正文已暂停灌注。你可以主动调用 qq_read 阅读，或调用 qq_skip 放下积压。`;
+						}
+						const body = this.deps.renderFollowBody(conv);
+						const through = this.deps.journal.latestSequence(conv);
+						this.deps.journal.recordDispatched(conv, through, "follow", this.deps.now(), inputId);
+						if (throughSlot) throughSlot.value = through;
+						return body;
+					});
+				}
+				const text = this.deps.renderBatch(candidate);
+				if (throughSlot) throughSlot.value = this.deps.journal.latestSequence(conv);
+				return text;
+			} catch (error) {
+				// R7：render 闭包永不向上抛（Core 对抛错的处理是条目回退邮箱无限重试）。
+				console.warn(`[qq] 延迟渲染失败（${conv}）:`, error instanceof Error ? error.message : error);
+				return null;
+			}
+		};
 		try {
-			const text = this.deps.renderBatch(candidate);
-			// 冻结本批交付到的会话序号：render 同步执行完取当刻最新序号，批次内渲染的
-			// fresh（含事件候选捎带的会话正文）全部如实记账；非会话批次（follow-ups/
-			// account 事件）无消息序号，latestSequence 自然为 0 不推进。
-			const throughSequence = this.deps.journal.latestSequence(candidate.conversationRef);
 			// follow_up 到期：派发时先捕获渲染的到期列表，committed 结算后才计账——
 			// retired/claimed 不标记，轮询自然重新提醒（合同：记录失败允许以后重复提醒）。
 			const followUpRefs =
-				candidate.conversationRef === "qq-follow-ups"
-					? this.deps.control.dueFollowUps().map((item) => item.ref)
-					: undefined;
-			const operationRefs =
-				candidate.conversationRef === "qq-operations" ? [...this.settledUnknowns.keys()] : undefined;
+				conv === "qq-follow-ups" ? this.deps.control.dueFollowUps().map((item) => item.ref) : undefined;
+			const operationRefs = conv === "qq-operations" ? [...this.settledUnknowns.keys()] : undefined;
 			this.placeholder = {
 				inputId,
-				conversationRef: candidate.conversationRef,
-				throughSequence,
+				conversationRef: conv,
+				throughSlot,
 				...(followUpRefs ? { followUpRefs } : {}),
 				...(operationRefs ? { operationRefs } : {}),
 			};
-			await this.deps.emit({
-				id: inputId,
-				text,
-				conversationRef: candidate.conversationRef,
-				cls: candidate.cls,
-				origin: candidate.origin,
-			});
+			await this.deps.emit({ id: inputId, conversationRef: conv, cls: candidate.cls, origin: candidate.origin, render });
 		} catch (error) {
 			if (this.stopped) return;
 			// 投递/渲染失败：释放占位并恢复候选（合同：允许以后重复提醒）；
@@ -449,23 +574,12 @@ export class QqScheduler {
 		}
 	}
 
-	/** 选择：direct 优先，同类按等待年龄；preferred 偏置 = 视作提前一个普通合并窗口（1800ms），有限。 */
+	/** 选择：跟读（主体正注视的窗口）> direct > request > internal > ordinary；同类按等待年龄。 */
 	private select(): PendingCandidate | null {
-		const nowMs = Date.parse(this.deps.now());
-		const preferredBiasMs = this.timing.ordinary[0];
 		const candidates = this.pendingCandidates;
-		const effectiveAge = (candidate: PendingCandidate): number => {
-			const attention = this.deps.control.effectiveAttention(candidate.conversationRef);
-			const bias = attention.priority === "preferred" ? preferredBiasMs : 0;
-			return nowMs - Date.parse(candidate.oldestAt) + bias;
-		};
-		const byAge = (a: PendingCandidate, b: PendingCandidate): number => effectiveAge(b) - effectiveAge(a);
-		for (const cls of ["direct", "request", "internal", "ordinary"] as const) {
-			const matching = candidates.filter(
-				(candidate) =>
-					candidate.cls === cls &&
-					(cls !== "ordinary" || this.deps.control.effectiveAttention(candidate.conversationRef).mode === "normal"),
-			);
+		const byAge = (a: PendingCandidate, b: PendingCandidate): number => a.oldestAt.localeCompare(b.oldestAt);
+		for (const cls of ["follow", "direct", "request", "internal", "ordinary"] as const) {
+			const matching = candidates.filter((candidate) => candidate.cls === cls);
 			if (matching.length > 0) return matching.sort(byAge)[0] ?? null;
 		}
 		return null;

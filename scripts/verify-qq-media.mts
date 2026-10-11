@@ -7,6 +7,8 @@ import { loadQqWorldConfig } from "../.uina/worlds/qq/src/config.js";
 import { OneBotTransport } from "../.uina/worlds/qq/src/transport.js";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
+import { AttentionModel } from "../.uina/worlds/qq/src/attention.js";
+import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
 import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
 import { MediaStaging } from "../.uina/worlds/qq/src/media.js";
 import { handleQqCall, type QqAppDeps } from "../.uina/worlds/qq/src/app.js";
@@ -46,6 +48,8 @@ const deps: QqAppDeps = {
 	control,
 	ops,
 	transport,
+	attention: new AttentionModel({ control }),
+	locks: new ConversationLocks(),
 	media: { allowedRoots: config.media?.allowedRoots ?? [process.cwd(), dataDir], staging },
 };
 

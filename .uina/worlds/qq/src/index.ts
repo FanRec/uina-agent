@@ -6,7 +6,9 @@ import { OperationLog } from "./operation-log.js";
 import { OneBotTransport, type QqTransport } from "./transport.js";
 import { QqIngestion } from "./ingest.js";
 import { QqScheduler } from "./scheduler.js";
-import { handleQqCall, requestState, type QqAppDeps } from "./app.js";
+import { AttentionModel } from "./attention.js";
+import { ConversationLocks } from "./conversation-lock.js";
+import { handleObserve, handleQqCall, requestState, type QqAppDeps } from "./app.js";
 import { hasGrant } from "./grants.js";
 import * as render from "./render.js";
 import type { EventFact } from "./types.js";
@@ -48,6 +50,8 @@ export function createQqWorld(injected?: {
 	let media: QqAppDeps["media"];
 	let ingestion: QqIngestion | null = null;
 	let scheduler: QqScheduler | null = null;
+	let attention: AttentionModel | null = null;
+	let locks: ConversationLocks | null = null;
 	let reviewTimer: ReturnType<typeof setInterval> | null = null;
 	let unbindHost: (() => void) | null = null;
 	const faceNames = new Map<string, string>();
@@ -64,6 +68,8 @@ export function createQqWorld(injected?: {
 			control: control!,
 			ops: ops!,
 			transport: transport!,
+			attention: attention!,
+			locks: locks!,
 			media,
 			display: { ...activeConfig.display, faceNames },
 			faceNames,
@@ -102,6 +108,13 @@ export function createQqWorld(injected?: {
 			journal.recover();
 			control = new ControlStore({ dataDir, selfId: config.selfId });
 			control.load();
+			// 冷启动封存基线（§6.4/T10）：已知会话首见即以当前 latestSequence 封存，
+			// 基线前历史归入封存积压，通知/阅读只承接基线之后的新鲜消息。
+			for (const convRef of journal.listConversationRefs()) {
+				control.ensureBaseline(convRef, journal.latestSequence(convRef));
+			}
+			attention = new AttentionModel({ control });
+			locks = new ConversationLocks();
 			ops = new OperationLog({ dataDir, selfId: config.selfId });
 			ops.recover();
 			ops.seedCounterFromExisting();
@@ -113,6 +126,8 @@ export function createQqWorld(injected?: {
 				selfId: config.selfId,
 				journal,
 				control,
+				attention: attention!,
+				locks: locks!,
 				now: () => new Date().toISOString(),
 				renderBatch: (candidate) => {
 					const activeConfig = config;
@@ -124,15 +139,25 @@ export function createQqWorld(injected?: {
 						settledUnknowns: scheduler?.listSettledUnknowns() ?? [],
 					});
 				},
-				emit: async ({ id, text, conversationRef, cls, origin }) => {
+				renderFollowBody: (conversationRef) => {
+					const activeConfig = config;
+					return render.renderFollowBody(conversationRef, {
+						journal: journal!,
+						control: control!,
+						now: () => new Date().toISOString(),
+						display: { ...activeConfig?.display, faceNames },
+					});
+				},
+				emit: async ({ id, conversationRef, cls, origin, render }) => {
 					await ctxRef?.emitEvent?.({
 						id,
-						type: cls === "internal" ? "qq-internal" : "qq-batch",
+						type: cls === "internal" ? "qq-internal" : cls === "follow" ? "qq-follow" : "qq-batch",
 						channel: "world",
 						delivery: "queued",
 						origin,
-						text,
+						text: "[qq deferred]",
 						data: { conversationRef },
+						render,
 					});
 				},
 				isBusy: () => context.isBusy?.() ?? false,
@@ -244,12 +269,7 @@ export function createQqWorld(injected?: {
 			world.description = `${QQ_TOOL_DESCRIPTION} 当前 QQ 账号：${config.selfId}。`;
 			if (hasGrant(config.grants, "observation")) {
 				// Optional enrichment; directory failures never prevent the World from starting.
-				await handleQqCall(
-					deps(),
-					"observe",
-					{ account: config.selfId, scope: "expressions", kind: "face" },
-					signal,
-				).catch(() => {});
+				await handleObserve(deps(), { scope: "expressions", kind: "face" }, signal).catch(() => {});
 			}
 			assertRunning();
 
@@ -277,6 +297,9 @@ export function createQqWorld(injected?: {
 			await transport?.stop();
 			transport = null;
 			ingestion = null;
+			scheduler = null;
+			attention = null;
+			locks = null;
 			journal = null;
 			control = null;
 			ops = null;
