@@ -242,6 +242,8 @@ export class SomaticPipelines {
 	private readonly gazeValues = new Map<string, number>();
 	private readonly gazeClaims = new Set<string>();
 	private readonly gazeReturns = new Map<string, { from: number; ageMs: number }>();
+	/** 上一帧是否有效注视锚定；aim 消失（holdMs 到期/清除）时经 gazeReturns 渐变回自然位，不帧级跳变。 */
+	private gazeAnchored = false;
 
 	constructor(
 		controls: Readonly<Record<string, { min: number; max: number }>>,
@@ -301,6 +303,7 @@ export class SomaticPipelines {
 		this.gazeValues.clear();
 		this.gazeClaims.clear();
 		this.gazeReturns.clear();
+		this.gazeAnchored = false;
 	}
 
 	process(frame: Record<string, number>, dtMs: number, ctx: PipelineFrameContext): void {
@@ -328,6 +331,16 @@ export class SomaticPipelines {
 					this.comfortGaze,
 				)
 			: undefined;
+		// 锚定消失（holdMs 到期/清除）：从最后补偿值经 gazeReturns 渐变回自然位——
+		// 补偿是即时计算，无渐变则锚定消失瞬间注入帧级跳变（2026-10-11 审查 P1）。
+		if (!compensated && this.gazeAnchored) {
+			this.gazeAnchored = false;
+			for (const axis of this.gazeAxes) {
+				if (!ctx.gazeClaimed.has(axis) && !this.gazeReturns.has(axis))
+					this.gazeReturns.set(axis, { from: this.gazeValues.get(axis) ?? (frame[axis] ?? this.neutral[axis]!), ageMs: 0 });
+			}
+		}
+		this.gazeAnchored = compensated !== undefined;
 		for (const axis of this.gazeAxes) {
 			const claimed = ctx.gazeClaimed.has(axis);
 			const resting = claimed ? this.neutral[axis]! : (frame[axis] ?? this.neutral[axis]!);

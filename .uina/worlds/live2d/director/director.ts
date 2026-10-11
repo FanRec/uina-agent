@@ -317,13 +317,10 @@ export class MotionDirector {
 			op.reject(new SupersededError([...op.axes].filter((axis) => axes.has(axis))));
 			for (const transition of slot.transitions.values()) if (transition.op === op) transition.op = undefined;
 		}
-		return this.beginSlotTransitions(
-			name,
-			axes,
-			(axis) => patch[axis]!,
-			options.durationMs ?? DEFAULT_SLOT_TRANSITION_MS,
-			options.holdMs,
-		);
+		// hold 计时与 setSlot 同语义：到位后方起算（holdMs + 过渡时长）。
+		const durationMs = options.durationMs ?? DEFAULT_SLOT_TRANSITION_MS;
+		const holdTotalMs = options.holdMs === undefined ? undefined : options.holdMs + durationMs;
+		return this.beginSlotTransitions(name, axes, (axis) => patch[axis]!, durationMs, holdTotalMs);
 	}
 
 	private validateSlotValues(name: string, values: Readonly<Record<string, number>>): void {
