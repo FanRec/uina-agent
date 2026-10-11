@@ -1,13 +1,15 @@
 /**
- * P2-3 画面验收脚本（本机 VTS + MO 模型）。
+ * P2-3 + P3-2 画面验收脚本（本机 VTS + MO 模型）。
  *
  * 运行：npx tsx scripts/live2d-acceptance-p2.mts（需 VTS Desktop 运行且已加载 MO 模型）
  *
- * 覆盖清单 P2-3 的四个人工画面项：
+ * 覆盖清单项：
  * - #1 低头姿态叠加点头手势（baseline-offset），手势收势后回归 -8° 低头位；
  * - #3 微笑 + 笑眼 0.8，自律眨眼仍完全闭拢再回 0.8（眼睑调制）；
  * - #4 惊跳（reflex）取消冲突手势：voluntary atomic 整场 cancelled；
- * - #6 patch 并发：姿态 patch / 表情 patch / 手势播放三者互不干扰。
+ * - #6 patch 并发：姿态 patch / 表情 patch / 手势播放三者互不干扰；
+ * - #5 视线锚定头动补偿（P3-2）：attention 锚定 user，头左右转时 gaze 反向补偿保持看向锚点；
+ * - #2 语音电平张嘴（P3-2）：levelSink 按 20ms 窗投递 rms → 张嘴起伏；停止后失联守卫 + 50ms 释放回零。
  *
  * 脚本只驱动 director + composeTick 合成链，与生产 tick 合约同一路径。
  */
@@ -117,6 +119,28 @@ const waveResult = await waveHandle.finished;
 console.log(`手势结算: ${waveResult.status}（期望 cancelled）；惊跳后头部平滑回位。`);
 await wait(800);
 
+// ---------- #5 视线锚定头动补偿 ----------
+console.log("\n=== #5 attention 锚定 user，头部左右慢转，gaze 应反向补偿保持看向锚点 ===");
+rt.director!.setAttention("user", { holdMs: 9000 });
+await rt.director!.setPosture({ "head.yaw": 12 }, { durationMs: 2000 });
+await wait(2400);
+await rt.director!.setPosture({ "head.yaw": -12 }, { durationMs: 2000 });
+await wait(2400);
+await rt.director!.setPosture({}, { durationMs: 1500 });
+await wait(2200); // holdMs 9000 覆盖全程，此后 attention 自动清除、gaze 回中
+console.log("观察要点：头转向期间眼球反向偏移（视线不离锚点），头回正后眼睛回中。");
+await wait(800);
+
+// ---------- #2 语音电平张嘴 ----------
+console.log("\n=== #2 语音电平张嘴：levelSink 按 20ms 窗投递 rms，张嘴随音量起伏 ===");
+const speakTimer = setInterval(() => {
+	rt.levelSink!.processLevel({ rms: 0.01 + Math.random() * 0.12 });
+}, 20);
+await wait(4000);
+clearInterval(speakTimer);
+console.log("语音结束。观察：嘴在 ~0.2s 内闭合（失联守卫 120ms + 引擎释放 50ms），不永久张嘴。");
+await wait(1500);
+
 // ---------- #6 patch 并发 ----------
 console.log("\n=== #6 姿态 patch / 表情 patch / 手势播放并发，互不干扰 ===");
 await rt.director!.setPosture({ "head.pitch": -5, "head.roll": 3 }, { durationMs: 800 });
@@ -153,4 +177,4 @@ await wait(1000);
 clearInterval(ticker);
 rl.close();
 await rt.stop();
-console.log("\n验收脚本结束。四项观察结果请记录到 docs/proposals/live2d-rebuild-checklist.md P2-3 行。");
+console.log("\n验收脚本结束。观察结果请记录到 docs/proposals/live2d-rebuild-checklist.md P2-3 / P3-2 行。");
