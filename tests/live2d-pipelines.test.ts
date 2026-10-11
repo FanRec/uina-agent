@@ -92,14 +92,10 @@ describe("live2d 专用管道（P3-1，引擎规范 §4.2 阶段 B）", () => {
 		step(d, 800);
 		expect(d.currentFrame["gaze.x"]).toBeCloseTo(-0.5, 3);
 
-		// 命名目标与未知名称（诚实不猜）。
+		// 命名目标：词表是类型层联合（未知名称由 P4-1 工具词汇校验拒绝，不进引擎）。
 		d.setAttention("screen");
 		step(d, 100);
 		expect(d.currentFrame["gaze.x"]).toBeCloseTo(-1, 3); // aim 0 − 12/12 = −1
-		d.setAttention("不存在的目标");
-		step(d, 100);
-		// 未知名称不产生瞄准 → 注视解除，视线回中性（帧每步从中性重算，无历史状态）。
-		expect(d.currentFrame["gaze.x"]).toBe(0);
 	});
 
 	it("引擎 #5 视线让位：动作 Override 认领的视线轴不被补偿覆写", () => {
