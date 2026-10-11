@@ -449,7 +449,7 @@
 				"points": [
 					[
 						-1,
-						-0.65
+						0.52
 					],
 					[
 						0,
@@ -457,13 +457,13 @@
 					],
 					[
 						1,
-						0.65
+						-0.52
 					]
 				],
 				"followers": [],
 				"physicsFollowers": [],
 				"smoothing": 0,
-				"evidence": "calibrated"
+				"evidence": "observed"
 			}
 		],
 		"gaze.y": [
@@ -473,7 +473,7 @@
 				"points": [
 					[
 						-1,
-						-0.65
+						-0.52
 					],
 					[
 						0,
@@ -481,13 +481,13 @@
 					],
 					[
 						1,
-						0.65
+						0.52
 					]
 				],
 				"followers": [],
 				"physicsFollowers": [],
 				"smoothing": 0,
-				"evidence": "calibrated"
+				"evidence": "observed"
 			}
 		],
 		"mouth.form": [
