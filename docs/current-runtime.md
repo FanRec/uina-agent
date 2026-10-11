@@ -78,19 +78,17 @@ shell 非零退出码为 `failed`。Broker 接受 producer 已明确返回的结
 
 ## QQ World
 
-工具参数唯一真源是 `.uina/worlds/qq/tool.json`，由 `scripts/generate-qq-tool-schema.mjs` 生成声明；合同 fixture 位于 `tests/fixtures/qq-world-interaction-examples.json`，不依赖本地私人规划目录。
+QQ World 的模型工具表面是单一 `qq` 工具：`{action, params}` 分发到 9 个积木（inbox / read / skip / browse / send / interact / remind / requests / profile）。绑定账号由 World 注入，模型不再填写 account，account_mismatch 检查随绑定注入退役。工具参数唯一真源是 `.uina/worlds/qq/tool.json`，由 `scripts/generate-qq-tool-schema.mjs` 生成声明；合同 fixture 位于 `tests/fixtures/qq-world-interaction-examples.json`，不依赖本地私人规划目录。授权词表为 8 个 grant 名；已退役 action 的 requiredGrant 全部返回 null。
 
-QQ World 的平台消息、历史与点查共用 QQ 消息解码器，保留字符串/数字编号、引用回复、提及、表情与附件关系。只读查询不写入新消息、不推进提醒位置；本地缺失时可通过平台 `get_msg` 查询。首场景保留必要引用前文，已撤回消息的保存原文明确标注。
+查询与消费解耦：`read` 无状态重算历史（本地事实库优先，缺失走平台 `get_msg` 点查）；`browse` 承担消息点查与 contentTarget 展开——卡片/文字默认每页 4096 个 Unicode 字符、转发默认每页 20 节点，`contentTarget.cursor` 续页。只读查询不写入新消息、不推进消费位置。旧 `mark_read` 已废除，消费位推进由书签承担；推送偏好持久化为 accountPush/conversationPush（PushPreference），旧 v2 控制文件在 load 时一次性迁移（priority 窗口偏置丢弃，与 R5 映射一致），迁移后落盘不再携带 accountOverride/conversationOverrides 字段。账号 silent 或有效 pause 不被会话覆盖。
 
-`speak.replyTo` 进入真实发送载荷；一次调用拆批时保持内容顺序，只给首条可引用的子消息加引用，没有可引用子消息则发送前失败。操作日志保留分段范围、引用与回执消息引用。申请的 pending/confirmed/unknown 从关联操作日志派生，已确认或结果未知的申请不盲目再次处理；迟到确定回执不会被本地超时降级。
+行动积木复用平台链路，模型表面全换而底层审计语义单源继承（intent 先落盘、unknown 不重发、echo 归并、回执归属核验）：`send` 分段数组与 replyTo 进入真实发送载荷，一次调用拆批保持内容顺序，只给首条可引用的子消息加引用，没有可引用子消息则发送前失败；`interact` 的 retract 经所有权核验；`remind` 仅 list/create/resolve，reviewAt 变更靠 create 新建（follow_up.update 已裁剪，control-store 无 update 入口）；`requests` 的 pending/confirmed/unknown 从关联操作日志派生，已确认或结果未知的申请不盲目再次处理，迟到确定回执不会被本地超时降级，群邀请按 sub_type 裁决；`profile` 承接账号与形象三写。`observe` 不再对模型暴露，仅保留 requests/self/expressions 三个内部入口；expressions 由启动 enrichment 直调，face 数字编码供 send 的 face 段与 interact 的 react 使用（数字编码校验在运行时，schema 无 pattern）。
 
-账号 silent 或有效 pause 不被会话覆盖。提醒候选携带实际事件/申请引用，呈现申请对象与说明、戳一戳人物、撤回操作者/作者及消息、reaction 增删/编码/数量。World 停止后取消调度并释放传输/Host 订阅，迟到投递失败不能重新排期。
+`account.leave_group` / `remove_contact` / `set_presence` 为故意裁剪，链路全删；capability 三维探测退役，媒体可用性由平台回执如实呈现。提醒候选携带实际事件/申请引用，呈现申请对象与说明、戳一戳人物、撤回操作者/作者及消息、reaction 增删/编码/数量。
 
-每次传输恢复都先核验绑定身份，再开放动作并通知恢复。连接、身份核验及动作等待有期限和取消边界；确定未派发与派发后未知分别表达，不自动重发。`observe.status` 展示物理连接、身份核验、已核验账号、观察时间及最近错误；`capabilities` 的适配器支持、部署授权和平台探测互不替代。
+每次传输恢复都先核验绑定身份，再开放动作并通知恢复。连接、身份核验及动作等待有期限和取消边界；确定未派发与派发后未知分别表达，不自动重发。连接与账号状态由 World 状态与 `scripts/qq-status.mts`（只读）核验——`observe.status`/`capabilities` 工具表面已退役。操作日志内部 identity（`world:qq/speak`、`account.set_profile` 等）保留为审计锚点，非工具表面。World 停止后取消调度并释放传输/Host 订阅，迟到投递失败不能重新排期。
 
-`observe(scope="content", messageRef, segmentIndex, cursor?, limit?, includeMedia?)` 按规范正文分段位置读取完整内容：卡片/文字默认每页 4096 个 Unicode 字符，转发默认每页 20 节点，单层展开并提供续页。转发节点卡片完整呈现。会话 v2 游标分别记录消息边界和事件位置，本地窗口冻结上界；平台续页失败不切源重播，旧游标明确失效。历史短页只代表本次可读快照，整体覆盖仍未知。
-
-附件标签保留消息、分段和转发节点对应，Provider 在对应图片之前运输标签；目录已核验的表情名称可用于呈现，缺失保持未知。普通正文不重复传输 URL，成功操作保留结果和消息引用、诊断数据保留完整操作记录；裁剪区分完整/部分/省略。事实仍为 UTC，日期与时区偏移仅在呈现层按对应时间转换。
+QQ World 的平台消息、历史与点查共用 QQ 消息解码器，保留字符串/数字编号、引用回复、提及、表情与附件关系；已撤回消息的保存原文明确标注。附件标签保留消息、分段和转发节点对应，Provider 在对应图片之前运输标签；目录已核验的表情名称可用于呈现，缺失保持未知。普通正文不重复传输 URL，成功操作保留结果和消息引用、诊断数据保留完整操作记录；裁剪区分完整/部分/省略。事实仍为 UTC，日期与时区偏移仅在呈现层按对应时间转换。
 
 工具参数继续由完整 schema 校验；Broker 与 WorldTool 只精简错误说明，按当前选择器报告相关字段，完整 AJV 错误快照在 `details.validationErrors`。上述行为的自动测试使用隔离数据与 fake WebSocket/平台/Provider，不证明真实 QQ 对端呈现或模型理解质量。
 
