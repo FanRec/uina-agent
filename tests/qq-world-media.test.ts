@@ -3,17 +3,19 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { checkMediaPath, toFileUri } from "../.uina/worlds/qq/src/media-root.js";
-import { MediaStaging } from "../.uina/worlds/qq/src/media.js";
-import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
-import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
-import { QqIngestion } from "../.uina/worlds/qq/src/ingest.js";
-import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
-import { handleQqCall as runQqCall, type QqAppDeps } from "../.uina/worlds/qq/src/app.js";
-import { loadQqWorldConfig } from "../.uina/worlds/qq/src/config.js";
-import { segmentText } from "../.uina/worlds/qq/src/render.js";
-import { createQqWorld } from "../.uina/worlds/qq/src/index.js";
+import { type QqAppDeps, handleQqCall as runQqCall } from "../.uina/worlds/qq/src/app.js";
+import { AttentionModel } from "../.uina/worlds/qq/src/attention.js";
 import type { QqWorldConfig } from "../.uina/worlds/qq/src/config.js";
+import { loadQqWorldConfig } from "../.uina/worlds/qq/src/config.js";
+import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
+import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
+import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
+import { createQqWorld } from "../.uina/worlds/qq/src/index.js";
+import { QqIngestion } from "../.uina/worlds/qq/src/ingest.js";
+import { MediaStaging } from "../.uina/worlds/qq/src/media.js";
+import { checkMediaPath, toFileUri } from "../.uina/worlds/qq/src/media-root.js";
+import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
+import { segmentText } from "../.uina/worlds/qq/src/render.js";
 import type { QqTransport, TransportCallOutcome } from "../.uina/worlds/qq/src/transport.js";
 
 function handleQqCall(
@@ -67,6 +69,8 @@ beforeEach(() => {
 		control,
 		ops,
 		transport,
+		attention: new AttentionModel({ control }),
+		locks: new ConversationLocks(),
 		media: { allowedRoots: [root], staging },
 	};
 });
@@ -79,7 +83,7 @@ function file(name = "voice.wav", body = "media bytes") {
 	return path;
 }
 function speak(content: Record<string, unknown>[], signal?: AbortSignal) {
-	return handleQqCall(deps, "speak", { conversationRef: TARGET, content }, signal);
+	return handleQqCall(deps, "send", { conversationRef: TARGET, content }, signal);
 }
 function resource(path: string) {
 	return { kind: "file", path };
@@ -161,9 +165,9 @@ describe("G8 media facts and action composition", () => {
 			await world.onStart?.(context);
 			const source = join(dir, "v2", SELF, "fixture.wav");
 			writeFileSync(source, "media bytes");
-			const result = await world.actions.speak!.run(
-				{ account: SELF, conversationRef: TARGET, content: [{ type: "audio", resource: resource(source) }] },
-				{ operationIdentity: "world:qq/speak", signal: context.signal },
+			const result = await world.actions.send!.run(
+				{ conversationRef: TARGET, content: [{ type: "audio", path: source }] },
+				{ operationIdentity: "world:qq/send", signal: context.signal },
 			);
 			expect(result.status).toBe("succeeded");
 			const sent = calls.find((call) => call.action === "send_private_msg")!;
@@ -181,7 +185,7 @@ describe("G8 media facts and action composition", () => {
 		vi.spyOn(ops, "commitIntent").mockImplementation(() => {
 			throw new Error("intent cannot be durably committed");
 		});
-		const result = await handleQqCall(deps, "speak", {
+		const result = await handleQqCall(deps, "send", {
 			conversationRef: TARGET,
 			content: [{ type: "image", resource: resource(file()) }],
 		});
@@ -366,7 +370,7 @@ describe("G8 media facts and action composition", () => {
 		writeFileSync(path, "private");
 		for (const result of [
 			await speak([{ type: "image", resource: resource(path) }]),
-			await handleQqCall(deps, "account", { operation: "set_avatar", resource: resource(path) }),
+			await handleQqCall(deps, "profile", { action: "set_avatar", avatarPath: path }),
 		]) {
 			expect(result.status).toBe("failed");
 			expect(result.details).toMatchObject({ effect: "not_started" });
@@ -387,15 +391,6 @@ describe("G8 media facts and action composition", () => {
 		const send = (ref: string, type = "image") => speak([{ type, resource: { kind: "qq_media", ref } }]);
 		expect((await send(`a4`)).status).toBe("succeeded");
 		expect(calls[0]!.params.message).toEqual([{ type: "image", data: { file: "https://example.test/p.png" } }]);
-		expect(
-			(
-				await handleQqCall(deps, "speak", {
-					account: "10099",
-					conversationRef: TARGET,
-					content: [{ type: "image", resource: { kind: "qq_media", ref: "a4" } }],
-				})
-			).details,
-		).toMatchObject({ reason: "account_mismatch" });
 		for (const [ref, type] of [
 			["bad-media-ref", "image"],
 			[`a999999`, "image"],
@@ -425,7 +420,7 @@ describe("G8 media facts and action composition", () => {
 			...deps,
 			media: { allowedRoots: [root], staging: new MediaStaging({ stagingDir: join(dir, "blocked"), ops }) },
 		};
-		const result = await handleQqCall(broken, "speak", {
+		const result = await handleQqCall(broken, "send", {
 			conversationRef: TARGET,
 			content: [{ type: "image", resource: resource(path) }],
 		});
@@ -438,28 +433,12 @@ describe("G8 media facts and action composition", () => {
 	});
 	it("avatar uses own staged file and durable operation", async () => {
 		const path = file("avatar.png");
-		const result = await handleQqCall(deps, "account", { operation: "set_avatar", resource: resource(path) });
+		const result = await handleQqCall(deps, "profile", { action: "set_avatar", avatarPath: path });
 		expect(result.status).toBe("succeeded");
 		expect(calls[0]!.action).toBe("set_qq_avatar");
 		const copy = fileURLToPath(calls[0]!.params.file as string);
 		expect(copy).not.toBe(path);
 		expect(readFileSync(copy, "utf8")).toBe("media bytes");
-	});
-	it("capability probes preserve unsupported and unknown facts independently of grants", async () => {
-		respond = (action) =>
-			action === "can_send_image"
-				? { status: "ok", data: { yes: false } }
-				: { status: "failed", kind: "timeout", reason: "offline" };
-		const result = await handleQqCall({ ...deps, grants: { grants: ["observation"] } }, "observe", {
-			scope: "capabilities",
-		});
-		expect(result.details).toMatchObject({
-			media: {
-				image: { supportedByAdapter: true, allowedByDeployment: false, availableNow: false },
-				audio: { supportedByAdapter: true, allowedByDeployment: false, availableNow: null },
-			},
-		});
-		expect(calls.map((c) => c.action)).toEqual(["can_send_image", "can_send_record"]);
 	});
 	it("config accepts absolute roots and rejects malformed media roots", () => {
 		const configPath = join(dir, "config.json");

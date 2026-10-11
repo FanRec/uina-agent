@@ -1,16 +1,18 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { handleQqCall, type QqAppDeps } from "../.uina/worlds/qq/src/app.js";
-import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
+import { handleObserve, handleQqCall, type QqAppDeps } from "../.uina/worlds/qq/src/app.js";
+import { AttentionModel } from "../.uina/worlds/qq/src/attention.js";
 import { ControlStore } from "../.uina/worlds/qq/src/control-store.js";
-import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
+import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
+import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
 import { MediaStaging } from "../.uina/worlds/qq/src/media.js";
+import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
+import { renderBatch, renderFollowBody } from "../.uina/worlds/qq/src/render.js";
 import { QqScheduler } from "../.uina/worlds/qq/src/scheduler.js";
-import { renderBatch } from "../.uina/worlds/qq/src/render.js";
-import type { MessageFact } from "../.uina/worlds/qq/src/types.js";
 import type { TransportCallOutcome } from "../.uina/worlds/qq/src/transport.js";
+import type { MessageFact } from "../.uina/worlds/qq/src/types.js";
 
 const SELF = "10001",
 	GROUP = "g30003",
@@ -34,6 +36,8 @@ beforeEach(() => {
 		control,
 		ops,
 		now: () => NOW,
+		attention: new AttentionModel({ control }),
+		locks: new ConversationLocks(),
 		grants: { grants: ["observation", "messaging", "requests.respond"] },
 		display: { timezone: "Asia/Shanghai" },
 		media: { allowedRoots: [dir], staging: new MediaStaging({ stagingDir: join(dir, "staging"), ops }) },
@@ -55,7 +59,7 @@ afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 function call(action: string, params: Record<string, unknown>) {
-	return handleQqCall(deps, action, { account: SELF, ...params });
+	return handleQqCall(deps, action, params);
 }
 function message(
 	ref = "m42",
@@ -109,7 +113,7 @@ function history(mid: number) {
 describe("QQ 修复：外部行为与操作事实", () => {
 	it("replyTo 到达真实发送载荷及操作记录", async () => {
 		message();
-		const result = await call("speak", {
+		const result = await call("send", {
 			conversationRef: GROUP,
 			replyTo: "m42",
 			content: [{ type: "text", text: "收到" }],
@@ -125,7 +129,7 @@ describe("QQ 修复：外部行为与操作事实", () => {
 		message();
 		const path = join(dir, "f.txt");
 		writeFileSync(path, "test");
-		await call("speak", {
+		await call("send", {
 			conversationRef: GROUP,
 			replyTo: "m42",
 			content: [
@@ -142,7 +146,7 @@ describe("QQ 修复：外部行为与操作事实", () => {
 		message();
 		const path = join(dir, "f.txt");
 		writeFileSync(path, "test");
-		const result = await call("speak", {
+		const result = await call("send", {
 			conversationRef: GROUP,
 			replyTo: "m42",
 			content: [{ type: "file", resource: { kind: "file", path } }],
@@ -168,7 +172,7 @@ describe("QQ 修复：外部行为与操作事实", () => {
 				: { status: "ok", data: { message_id: 90 } };
 		expect(
 			(
-				await call("speak", {
+				await call("send", {
 					conversationRef: "t20002-g30003",
 					replyTo: "m42",
 					content: [{ type: "text", text: "收到" }],
@@ -193,50 +197,39 @@ describe("QQ 修复：外部行为与操作事实", () => {
 					}
 				: { status: "ok", data: { message_id: 90 } };
 		const params = { conversationRef: "t20002-g30003", replyTo: "m42", content: [{ type: "text", text: "收到" }] };
-		expect((await call("speak", params)).status).toBe("succeeded");
+		expect((await call("send", params)).status).toBe("succeeded");
 		for (const invalid of [
 			{ message_id: 99, group_id: 30003 },
 			{ message_id: 42, group_id: 30003, self_id: 99999 },
 		]) {
 			calls = [];
 			respond = () => ({ status: "ok", data: invalid });
-			expect((await call("speak", { ...params, conversationRef: GROUP })).status).toBe("failed");
+			expect((await call("send", { ...params, conversationRef: GROUP })).status).toBe("failed");
 			expect(calls.map((c) => c.action)).toEqual(["get_msg"]);
 		}
 	});
-	it("账号 silent 不被 normal/direct_only 会话覆盖", () => {
-		deps.control.setAttention("account", { mode: "silent" });
-		for (const mode of ["normal", "direct_only"] as const) {
-			deps.control.setAttention(GROUP, { mode });
-			expect(deps.control.effectiveAttention(GROUP).mode).toBe("silent");
-		}
-		deps.control.clearAttention("account");
-		expect(deps.control.effectiveAttention(GROUP).mode).toBe("direct_only");
-	});
 	it("申请状态由操作日志派生，成功后不会重复派发且重启可恢复", async () => {
 		request();
-		await call("account", { operation: "respond_request", requestRef: "r1", decision: "accept" });
-		const pending = await call("observe", { scope: "requests" });
+		await call("requests", { action: "respond", requestRef: "r1", decision: "accept" });
+		const pending = await handleObserve(deps, { scope: "requests" });
 		expect(pending.result).not.toContain("r1 |");
-		expect((await call("account", { operation: "respond_request", requestRef: "r1", decision: "accept" })).status).toBe(
-			"failed",
-		);
+		expect((await call("requests", { action: "respond", requestRef: "r1", decision: "accept" })).status).toBe("failed");
 		expect(calls).toHaveLength(1);
 		const recovered = new OperationLog({ dataDir: dir, selfId: SELF });
 		recovered.recover();
 		deps = { ...deps, ops: recovered };
-		expect((await call("observe", { scope: "requests", state: "all" })).result).toContain("confirmed");
+		expect((await handleObserve(deps, { scope: "requests", state: "all" })).result).toContain("confirmed");
 	});
 	it("未知申请不重复发送，迟到回执升级后呈现 confirmed", async () => {
 		request();
 		respond = () => ({ status: "failed", kind: "timeout", reason: "timeout" });
-		const result = await call("account", { operation: "respond_request", requestRef: "r1", decision: "decline" });
+		const result = await call("requests", { action: "respond", requestRef: "r1", decision: "decline" });
 		expect(result.status).toBe("unknown");
-		await call("account", { operation: "respond_request", requestRef: "r1", decision: "decline" });
+		await call("requests", { action: "respond", requestRef: "r1", decision: "decline" });
 		expect(calls).toHaveLength(1);
 		const op = deps.ops.all()[0]!;
 		deps.ops.settleFromEchoReceipt(op.echo!, { status: "ok", retcode: 0 }, NOW);
-		expect((await call("observe", { scope: "requests", state: "all" })).result).toContain("confirmed");
+		expect((await handleObserve(deps, { scope: "requests", state: "all" })).result).toContain("confirmed");
 	});
 	it("已确认迟到回执不会被随后到达的本地超时降级", () => {
 		const ref = deps.ops.newOperationRef();
@@ -260,10 +253,10 @@ describe("QQ 修复：外部行为与操作事实", () => {
 			deps.ops.settleFromEchoReceipt(op.echo!, { status: "ok", retcode: 0 }, NOW);
 			return { status: "failed", kind: "timeout", reason: "timeout" };
 		};
-		expect((await call("account", { operation: "respond_request", requestRef: "r1", decision: "accept" })).status).toBe(
+		expect((await call("requests", { action: "respond", requestRef: "r1", decision: "accept" })).status).toBe(
 			"succeeded",
 		);
-		expect((await call("observe", { scope: "requests", state: "all" })).result).toContain("confirmed");
+		expect((await handleObserve(deps, { scope: "requests", state: "all" })).result).toContain("confirmed");
 	});
 	it("echo 已确定拒绝时不把结果夸大为未知", async () => {
 		request();
@@ -272,27 +265,27 @@ describe("QQ 修复：外部行为与操作事实", () => {
 			deps.ops.settleFromEchoReceipt(op.echo!, { status: "failed", retcode: 1400 }, NOW);
 			return { status: "failed", kind: "timeout", reason: "timeout" };
 		};
-		expect((await call("account", { operation: "respond_request", requestRef: "r1", decision: "accept" })).status).toBe(
-			"failed",
-		);
+		expect((await call("requests", { action: "respond", requestRef: "r1", decision: "accept" })).status).toBe("failed");
 		expect(deps.ops.wasDeliveredUnknown("o1")).toBe(false);
 	});
 });
 
 describe("QQ 修复：完整内容与历史分页", () => {
-	it("平台历史保留引用，点查缺本地消息时读取平台且不写入 journal", async () => {
+	it("点查缺本地消息时经 contentTarget 读取平台且不写入 journal", async () => {
 		respond = (action) => ({ status: "ok", data: action === "get_msg" ? history(77) : { messages: [history(77)] } });
-		expect((await call("observe", { scope: "conversation", conversationRef: GROUP })).result).toContain("replyTo=m42");
-		expect((await call("observe", { scope: "messages", messageRefs: ["m77"] })).result).toContain("内容77");
+		expect((await call("browse", { contentTarget: { messageRef: "m77", segmentIndex: 0 } })).result).toContain(
+			"内容77",
+		);
 		expect(deps.journal.getMessage("m77")).toBeNull();
 	});
 	it("Unicode 卡片续页可以读取完整原文", async () => {
 		message("m43", [{ type: "json", data: "🙂".repeat(4100) + "末尾" }]);
-		const params = { scope: "content", messageRef: "m43", segmentIndex: 0 };
-		const first = await call("observe", params);
+		const first = await call("browse", { contentTarget: { messageRef: "m43", segmentIndex: 0 } });
 		expect(first.status).toBe("succeeded");
 		expect(cursor(first)).not.toBe("");
-		const second = await call("observe", { ...params, cursor: cursor(first) });
+		const second = await call("browse", {
+			contentTarget: { messageRef: "m43", segmentIndex: 0, cursor: cursor(first) },
+		});
 		expect(second.result).toContain("末尾");
 		expect(second.result).not.toContain("�");
 	});
@@ -308,129 +301,13 @@ describe("QQ 修复：完整内容与历史分页", () => {
 				})),
 			},
 		});
-		const params = { scope: "content", messageRef: "m44", segmentIndex: 0 };
-		const first = await call("observe", params);
+		const first = await call("browse", { contentTarget: { messageRef: "m44", segmentIndex: 0 } });
 		expect(first.status).toBe("succeeded");
 		expect(first.result).not.toContain("节点31");
-		const second = await call("observe", { ...params, cursor: cursor(first) });
+		const second = await call("browse", {
+			contentTarget: { messageRef: "m44", segmentIndex: 0, cursor: cursor(first) },
+		});
 		expect(second.result).toContain("节点31");
-	});
-	it("倒查正序历史连续三页推进，排除已交付边界", async () => {
-		const rows = Array.from({ length: 7 }, (_, i) => history(i + 1));
-		respond = (_action, p) => ({
-			status: "ok",
-			data: {
-				messages: rows.filter((m) => !p.message_id || m.message_id <= Number(p.message_id)).slice(-Number(p.count)),
-			},
-		});
-		const params = { scope: "conversation", conversationRef: GROUP, limit: 2 };
-		const first = await call("observe", params),
-			second = await call("observe", { ...params, cursor: cursor(first) }),
-			third = await call("observe", { ...params, cursor: cursor(second) });
-		expect(first.result).toContain("内容7");
-		expect(second.result).toContain("内容5");
-		expect(third.result).toContain("内容3");
-		expect(second.result).not.toContain("内容6");
-		expect(third.result).not.toContain("内容4");
-	});
-	it("平台忽略锚点时不会混入已交付的新消息或循环续页", async () => {
-		const rows = [history(1), history(2), history(3)];
-		respond = (_action, p) => ({ status: "ok", data: { messages: rows.slice(-Number(p.count)) } });
-		const params = { scope: "conversation", conversationRef: GROUP, limit: 2 };
-		const first = await call("observe", params),
-			second = await call("observe", { ...params, cursor: cursor(first) });
-		expect(second.result).toContain("内容1");
-		expect(second.result).not.toContain("内容3");
-		const third = await call("observe", { ...params, cursor: cursor(second) });
-		expect(third.status).toBe("failed");
-	});
-	it("恰好整页结束时仅返回边界的下一页正常结束", async () => {
-		const rows = [history(1), history(2), history(3), history(4)];
-		respond = (_action, p) => ({
-			status: "ok",
-			data: {
-				messages: rows.filter((m) => !p.message_id || m.message_id <= Number(p.message_id)).slice(-Number(p.count)),
-			},
-		});
-		const params = { scope: "conversation", conversationRef: GROUP, limit: 2 };
-		const first = await call("observe", params),
-			second = await call("observe", { ...params, cursor: cursor(first) }),
-			end = await call("observe", { ...params, cursor: cursor(second) });
-		expect(end.status).toBe("succeeded");
-		expect(end.details).toMatchObject({ count: 0, hasMore: false });
-	});
-	it("after 首次读取不重复锚点，平台和本地规则一致", async () => {
-		const rows = [history(1), history(2), history(3), history(4)];
-		for (let i = 1; i <= 4; i++) message(`m${i}`, [{ type: "text", text: `内容${i}` }]);
-		const params = {
-			scope: "conversation",
-			conversationRef: GROUP,
-			direction: "after",
-			anchorMessageRef: "m2",
-			limit: 2,
-		};
-		respond = (_action, p) => ({
-			status: "ok",
-			data: { messages: rows.filter((m) => m.message_id >= Number(p.message_id)).slice(0, Number(p.count)) },
-		});
-		const online = await call("observe", params);
-		expect(online.result).toContain("内容4");
-		expect(online.result).not.toContain("内容2");
-		respond = () => ({ status: "failed", kind: "timeout", reason: "offline" });
-		const offline = await call("observe", params);
-		expect(offline.result).toContain("内容4");
-		expect(offline.result).not.toContain("内容2");
-	});
-	it("平台续页失败不悄悄重播本地首页", async () => {
-		message();
-		respond = () => ({ status: "ok", data: { messages: [history(3), history(4)] } });
-		const params = { scope: "conversation", conversationRef: GROUP, limit: 2 };
-		const first = await call("observe", params);
-		respond = () => ({ status: "failed", kind: "timeout", reason: "offline" });
-		const result = await call("observe", { ...params, cursor: cursor(first) });
-		expect(result.status).toBe("failed");
-		expect(result.result).not.toContain("原文");
-	});
-	it("事件拥有独立续页位置，没有消息也能读取后续事件", async () => {
-		for (let i = 1; i <= 5; i++)
-			deps.journal.appendEvent({
-				ref: `e${i}`,
-				kind: "poke",
-				conversationRef: GROUP,
-				actorRef: "u20002",
-				targetRef: "u10001",
-				time: NOW,
-				source: "platform",
-			});
-		respond = () => ({ status: "ok", data: { messages: [] } });
-		const params = { scope: "conversation", conversationRef: GROUP, includeEvents: true, limit: 2 };
-		const first = await call("observe", params),
-			second = await call("observe", { ...params, cursor: cursor(first) });
-		expect(first.result).toContain("e5");
-		expect(second.result).toContain("e3");
-		expect(second.result).not.toContain("e5");
-	});
-	it("status 使用连接事实，能力支持不随平台探测变成 false", async () => {
-		deps = {
-			...deps,
-			transport: {
-				...deps.transport,
-				snapshot: () => ({
-					connected: false,
-					identityVerified: false,
-					selfId: SELF,
-					observedAt: NOW,
-					lastError: "offline",
-				}),
-			},
-		};
-		const status = await call("observe", { scope: "status" });
-		expect(status.result).toContain("connected=false");
-		expect(status.result).toContain("offline");
-		respond = () => ({ status: "ok", data: { yes: false } });
-		expect((await call("observe", { scope: "capabilities", action: "image" })).details).toMatchObject({
-			media: { image: { supportedByAdapter: true, availableNow: false } },
-		});
 	});
 });
 
@@ -443,10 +320,14 @@ describe("QQ 修复：触发现场", () => {
 			selfId: SELF,
 			journal: deps.journal,
 			control: deps.control,
+			attention: new AttentionModel({ control: deps.control }),
+			locks: new ConversationLocks(),
 			now: () => NOW,
 			renderBatch: (c) => renderBatch(c, { journal: deps.journal, control: deps.control, now: () => NOW }),
+			renderFollowBody: (conv) =>
+				renderFollowBody(conv, { journal: deps.journal, control: deps.control, now: () => NOW }),
 			emit: async (i) => {
-				emitted.push(i.text);
+				emitted.push((await i.render()) ?? "");
 			},
 		});
 		try {
@@ -467,17 +348,21 @@ describe("QQ 修复：触发现场", () => {
 			selfId: SELF,
 			journal: deps.journal,
 			control: deps.control,
+			attention: new AttentionModel({ control: deps.control }),
+			locks: new ConversationLocks(),
 			now: () => NOW,
 			isRequestPending: (ref) =>
 				!deps.ops.all().some((op) => op.target === ref && (op.outcome === "succeeded" || op.outcome === "unknown")),
 			renderBatch: (c) => renderBatch(c, { journal: deps.journal, control: deps.control, now: () => NOW }),
+			renderFollowBody: (conv) =>
+				renderFollowBody(conv, { journal: deps.journal, control: deps.control, now: () => NOW }),
 			emit: async (i) => {
-				emitted.push(i.text);
+				emitted.push((await i.render()) ?? "");
 			},
 		});
 		try {
 			scheduler.onFact({ kind: "request", fact: deps.journal.snapshot.requests.get("r1")! });
-			await call("account", { operation: "respond_request", requestRef: "r1", decision: "accept" });
+			await call("requests", { action: "respond", requestRef: "r1", decision: "accept" });
 			await vi.advanceTimersByTimeAsync(2000);
 			expect(emitted).toEqual([]);
 		} finally {
@@ -493,8 +378,11 @@ describe("QQ 修复：触发现场", () => {
 			selfId: SELF,
 			journal: deps.journal,
 			control: deps.control,
+			attention: new AttentionModel({ control: deps.control }),
+			locks: new ConversationLocks(),
 			now: () => NOW,
 			renderBatch: () => "消息",
+			renderFollowBody: () => "消息",
 			emit: async (i) => {
 				emitted.push(i.id);
 				await new Promise<void>((_resolve, reject) => {
@@ -503,7 +391,8 @@ describe("QQ 修复：触发现场", () => {
 			},
 		});
 		scheduler.onFact({ kind: "message", fact });
-		await vi.advanceTimersByTimeAsync(1000);
+		// pulse 去抖 1200ms：等待首次派发挂起（占位成立）后再 stop
+		await vi.advanceTimersByTimeAsync(2500);
 		scheduler.stop();
 		rejectEmit(new Error("late failure"));
 		await vi.advanceTimersByTimeAsync(2000);

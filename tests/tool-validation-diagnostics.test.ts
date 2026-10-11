@@ -28,27 +28,26 @@ function broker() {
 }
 
 describe("selected schema branch diagnostics", () => {
-	it("reports only the faceId failure instead of unrelated action/scope alternatives", async () => {
+	it("reports only the userRef failure instead of unrelated action alternatives", async () => {
 		const tools = broker();
 		const prepared = tools.prepare("qq", {
-			action: "speak",
+			action: "send",
 			params: {
-				account: "10001",
 				conversationRef: "p10002",
-				content: [{ type: "face", faceId: "face-14" }],
+				content: [{ type: "mention", userRef: "小明" }],
 			},
 		});
 		const result = await tools.execute(prepared);
 		expect(result.status).toBe("not_started");
 		const message = JSON.parse(result.result).error;
-		expect(message).toContain("/params/content/0/faceId");
-		expect(message).toContain("^[0-9]+$");
+		expect(message).toContain("/params/content/0/userRef");
+		expect(message).toContain("^u[1-9]");
 		expect(message).not.toContain("scope");
 		expect(message).not.toContain("oneOf");
 		expect(message.length).toBeLessThan(220);
 		expect(result.details).toMatchObject({
 			validationErrors: expect.arrayContaining([
-				expect.objectContaining({ keyword: "pattern", instancePath: "/params/content/0/faceId" }),
+				expect.objectContaining({ keyword: "pattern", instancePath: "/params/content/0/userRef" }),
 				expect.objectContaining({ keyword: "const", instancePath: "/action" }),
 			]),
 		});
@@ -57,7 +56,7 @@ describe("selected schema branch diagnostics", () => {
 	it("shows the required field of the selected action", async () => {
 		const tools = broker();
 		const result = await tools.execute(
-			tools.prepare("qq", { action: "speak", params: { account: "10001", content: [{ type: "text", text: "hi" }] } }),
+			tools.prepare("qq", { action: "send", params: { content: [{ type: "text", text: "hi" }] } }),
 		);
 		expect(JSON.parse(result.result).error).toContain("conversationRef");
 		expect(JSON.parse(result.result).error).not.toContain("scope");
@@ -158,24 +157,19 @@ describe("selected schema branch diagnostics", () => {
 	});
 
 	it.each([
-		[{ params: {} }, "/action", ["observe", "speak", "gesture"]],
-		[
-			{ action: "observe", params: { account: "10001", scope: "bad" } },
-			"/params/scope",
-			["overview", "contacts", "conversation"],
-		],
-		[{ action: "observe", params: { account: "10001" } }, "/params/scope", ["overview", "contacts", "conversation"]],
+		[{ params: {} }, "/action", ["send", "read", "interact"]],
+		[{ action: "interact", params: { action: "bad" } }, "/params/action", ["poke", "react", "retract"]],
+		[{ action: "interact", params: {} }, "/params/action", []],
 		[
 			{
-				action: "speak",
+				action: "send",
 				params: {
-					account: "10001",
 					conversationRef: "p10002",
-					content: [{ type: "image", resource: { kind: "bad" } }],
+					content: [{ type: "sticker" }],
 				},
 			},
-			"/params/content/0/resource/kind",
-			["file", "qq_media"],
+			"/params/content/0/type",
+			["text", "mention", "face"],
 		],
 	])("offers valid selector choices without unrelated branch errors: %j", async (args, path, choices) => {
 		const tools = broker();
@@ -189,35 +183,34 @@ describe("selected schema branch diagnostics", () => {
 
 	it("keeps the full error snapshot after the same validator is reused, including scoped execution", async () => {
 		const tools = broker();
-		const prepared = tools.prepare("qq", { action: "observe", params: { scope: "bad", account: "10001" } });
+		const prepared = tools.prepare("qq", { action: "interact", params: { action: "bad" } });
 		tools.prepare("qq", {
-			action: "speak",
-			params: { account: "10001", conversationRef: "p10002", content: [{ type: "text", text: "hi" }] },
+			action: "send",
+			params: { conversationRef: "p10002", content: [{ type: "text", text: "hi" }] },
 		});
 		const result = await tools.createScopedView().execute(prepared);
 		expect(result.details).toMatchObject({
 			validationErrors: expect.arrayContaining([
-				expect.objectContaining({ instancePath: "/params/scope", keyword: "const" }),
+				expect.objectContaining({ instancePath: "/params/action", keyword: "enum" }),
 			]),
 		});
 	});
 
 	it("uses the same concise formatter and full details in the WorldTool direct path", async () => {
 		const result = await qqTool().run({
-			action: "speak",
+			action: "send",
 			params: {
-				account: "10001",
 				conversationRef: "p10002",
-				content: [{ type: "face", faceId: "face-14" }],
+				content: [{ type: "mention", userRef: "小明" }],
 			},
 		});
 		expect(result.status).toBe("failed");
-		expect(result.result).toContain("/content/0/faceId");
+		expect(result.result).toContain("/content/0/userRef");
 		expect(result.result).not.toContain("oneOf");
 		expect(result.details).toMatchObject({
-			action: "speak",
+			action: "send",
 			validationErrors: expect.arrayContaining([
-				expect.objectContaining({ keyword: "const", instancePath: "/content/0/type" }),
+				expect.objectContaining({ keyword: "pattern", instancePath: "/content/0/userRef" }),
 			]),
 		});
 	});

@@ -90,24 +90,41 @@ describe("qq world: deployment grants 校验", () => {
 });
 
 describe("qq world: grant 映射", () => {
-	it("写动作映射到对应 grant", () => {
-		expect(requiredGrant("speak", {})).toBe("messaging");
-		expect(requiredGrant("gesture", {})).toBe("interaction");
-		expect(requiredGrant("attention", {})).toBe("attention.manage");
-		expect(requiredGrant("follow_up", {})).toBe("follow_up.manage");
-		expect(requiredGrant("account", { operation: "remove_contact" })).toBe("contacts.remove");
-		expect(requiredGrant("account", { operation: "set_group_card" })).toBe("profile.modify");
-		expect(requiredGrant("account", { operation: "mark_read" })).toBe("messages.mark_read");
+	it("退役 action 全部返回 null（unknown 路径由 app 层拒绝）", () => {
+		expect(requiredGrant("observe", { scope: "overview" })).toBeNull();
+		expect(requiredGrant("speak", {})).toBeNull();
+		expect(requiredGrant("gesture", {})).toBeNull();
+		expect(requiredGrant("attention", {})).toBeNull();
+		expect(requiredGrant("follow_up", {})).toBeNull();
+		expect(requiredGrant("account", { operation: "mark_read" })).toBeNull();
 	});
-	it("平台读取 scope 需要 observation；本地事实/诊断不需要", () => {
-		expect(requiredGrant("observe", { scope: "overview" })).toBe("observation");
-		expect(requiredGrant("observe", { scope: "members" })).toBe("observation");
-		expect(requiredGrant("observe", { scope: "self" })).toBe("observation");
-		expect(requiredGrant("observe", { scope: "status" })).toBeNull();
-		expect(requiredGrant("observe", { scope: "capabilities" })).toBeNull();
-		expect(requiredGrant("observe", { scope: "operations" })).toBeNull();
-		expect(requiredGrant("observe", { scope: "attention" })).toBeNull();
-		expect(requiredGrant("observe", { scope: "follow_ups" })).toBeNull();
+	it("消费积木：本地消费不需要 grant，push 写入与平台展开需要对应授权", () => {
+		expect(requiredGrant("inbox", {})).toBeNull();
+		expect(requiredGrant("inbox", { focus: [] })).toBeNull();
+		expect(requiredGrant("inbox", { push: { target: "account", mode: "off" } })).toBe("attention.manage");
+		expect(requiredGrant("read", { conversationRef: "p1" })).toBeNull();
+		expect(requiredGrant("read", { conversationRef: "p1", includeMedia: true })).toBe("observation");
+		expect(requiredGrant("skip", { conversationRef: "p1" })).toBeNull();
+		expect(requiredGrant("browse", { conversationRef: "p1", direction: "latest" })).toBeNull();
+		expect(requiredGrant("browse", { messageRefs: ["m1"] })).toBeNull();
+		expect(requiredGrant("browse", { contentTarget: { messageRef: "m1" } })).toBe("observation");
+	});
+	it("行动积木：复用旧链路的 grant 语义", () => {
+		expect(requiredGrant("send", {})).toBe("messaging");
+		expect(requiredGrant("interact", { action: "poke" })).toBe("interaction");
+		expect(requiredGrant("interact", { action: "react" })).toBe("interaction");
+		expect(requiredGrant("interact", { action: "retract" })).toBe("messages.retract");
+		expect(requiredGrant("remind", {})).toBeNull();
+		expect(requiredGrant("remind", { action: "list" })).toBeNull();
+		expect(requiredGrant("remind", { action: "create", targetRef: "p1" })).toBe("follow_up.manage");
+		expect(requiredGrant("remind", { action: "resolve", remindRef: "f1" })).toBe("follow_up.manage");
+		expect(requiredGrant("requests", {})).toBe("observation");
+		expect(requiredGrant("requests", { action: "list" })).toBe("observation");
+		expect(requiredGrant("requests", { action: "respond", requestRef: "r1" })).toBe("requests.respond");
+		expect(requiredGrant("profile", {})).toBe("observation");
+		expect(requiredGrant("profile", { action: "get" })).toBe("observation");
+		expect(requiredGrant("profile", { action: "set_card", conversationRef: "g1" })).toBe("profile.modify");
+		expect(requiredGrant("profile", { action: "set_avatar", avatarPath: "x" })).toBe("profile.modify");
 	});
 });
 

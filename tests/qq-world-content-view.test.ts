@@ -12,7 +12,6 @@ import {
 	operationRecordLines,
 	receipt,
 	renderBatch,
-	renderConversationPage,
 	renderForwardNodes,
 	renderMessageFacts,
 	requestRow,
@@ -279,19 +278,6 @@ describe("QQ normalized content and correspondence", () => {
 		expect(text).toContain("被引用的原文");
 		expect(text).toContain("必要前文");
 		expect(text).toContain("replyTo=m999（原文不可用）");
-	});
-	it("conversation events use the same explicit timezone as message rows", () => {
-		const page = renderConversationPage({
-			conversationRef: "g30003",
-			source: "local",
-			direction: "latest",
-			time: new TimeView("America/New_York"),
-			lines: [],
-			events: [{ ref: "e1", kind: "poke", timeIso: "2026-01-01T12:00:00Z", actorRef: "u2", targetRef: "u3" }],
-		});
-		expect(page.text).toContain("2026-01-01 07:00 | e1");
-		expect(page.text).toContain("actor=u2");
-		expect(page.text).toContain("target=u3");
 	});
 	it("successful receipts state the result in plain language without a duplicate status header", () => {
 		const text = receipt.ok("sent", ["messageRef=m1"]);

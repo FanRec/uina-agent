@@ -9,6 +9,8 @@ import { TtsBridgeClient } from "../.uina/extensions/tts/client.js";
 import { ToolBroker } from "../src/tools/broker.js";
 import { ExtensionRunner } from "../src/extensions/runner.js";
 import { handleQqCall, type QqAppDeps } from "../.uina/worlds/qq/src/app.js";
+import { AttentionModel } from "../.uina/worlds/qq/src/attention.js";
+import { ConversationLocks } from "../.uina/worlds/qq/src/conversation-lock.js";
 import { MediaStaging } from "../.uina/worlds/qq/src/media.js";
 import { OperationLog } from "../.uina/worlds/qq/src/operation-log.js";
 import { FactsJournal } from "../.uina/worlds/qq/src/facts-journal.js";
@@ -243,6 +245,8 @@ describe("tts_generate file contract", () => {
 			ops,
 			journal,
 			control,
+			attention: new AttentionModel({ control }),
+			locks: new ConversationLocks(),
 			media: { allowedRoots: [cwd], staging: new MediaStaging({ stagingDir: join(cwd, "staging"), ops }) },
 			transport: {
 				start: async () => ({ selfId: 10001 }),
@@ -253,8 +257,7 @@ describe("tts_generate file contract", () => {
 				call,
 			},
 		};
-		const result = await handleQqCall(deps, "speak", {
-			account: "10001",
+		const result = await handleQqCall(deps, "send", {
 			conversationRef: "p20002",
 			content: [{ type: "audio", resource }],
 		});

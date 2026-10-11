@@ -81,7 +81,8 @@ function makeContext(): { ctx: ServiceCompanionContext; worldEvents: WorldEvent[
 		signal: new AbortController().signal,
 		submitInput: async () => {},
 		emitEvent: async (event) => {
-			worldEvents.push(event);
+			// 延迟渲染（§5.3）：投递为占位 + render 闭包；测试在 emitEvent 内求值，近似出队
+			worldEvents.push({ ...event, text: (await event.render?.()) ?? event.text });
 		},
 		isBusy: () => false,
 		worldDataDir: dataDir,
@@ -101,8 +102,8 @@ describe("QQ World 装配与生命周期（G7）", () => {
 		try {
 			await world.onStart?.(ctx);
 			expect(transport.started).toBe(1);
-			expect(world.actions.observe).toBeDefined();
-			expect(world.actions.speak).toBeDefined();
+			expect(world.actions.send).toBeDefined();
+			expect(world.actions.read).toBeDefined();
 			expect(world.executionMode).toBe("sequential");
 		} finally {
 			await world.onStop?.(ctx);
@@ -165,10 +166,10 @@ describe("QQ World 装配与生命周期（G7）", () => {
 				font: 0,
 				sender: { user_id: 20002, nickname: "小明" },
 			});
-			// 私聊 quiet 窗口 700ms
-			await vi.advanceTimersByTimeAsync(1000);
+			// 私聊 pulse 去抖 1200ms
+			await vi.advanceTimersByTimeAsync(2500);
 			expect(worldEvents).toHaveLength(1);
-			expect(worldEvents[0]!.text).toContain("p20002");
+			expect(await worldEvents[0]!.render?.()).toContain("p20002");
 			expect(worldEvents[0]!.origin).toBe("external");
 
 			// 停止后不再派发
@@ -269,11 +270,11 @@ describe("部署边界：grant 过滤下沉摄取层", () => {
 			expect(worldEvents).toHaveLength(0);
 			expect(existsSync(join(dataDir, "qq-facts.jsonl"))).toBe(false);
 			expect(readFileSync(join(dataDir, "v2", SELF, "qq-facts.jsonl"), "utf8").includes("群消息正文")).toBe(false);
-			// messaging 显式动作不受影响：speak 走 grant 检查并派发平台调用
-			const speak = world.actions.speak!;
-			const result = (await speak.run(
-				{ account: SELF, conversationRef: `p20002`, content: [{ type: "text", text: "hi" }] },
-				{ operationIdentity: "world:qq/speak", signal: new AbortController().signal },
+			// messaging 显式动作不受影响：send 走 grant 检查并派发平台调用
+			const send = world.actions.send!;
+			const result = (await send.run(
+				{ conversationRef: `p20002`, content: [{ type: "text", text: "hi" }] },
+				{ operationIdentity: "world:qq/send", signal: new AbortController().signal },
 			)) as { status: string };
 			expect(result.status).toBe("succeeded");
 			expect(transport.calls.some((c) => c.action === "send_private_msg")).toBe(true);
@@ -354,10 +355,10 @@ describe("部署边界：grant 过滤下沉摄取层", () => {
 		const { ctx, worldEvents, dataDir } = makeContext();
 		try {
 			await world.onStart?.(ctx);
-			const speak = world.actions.speak!;
-			const result = (await speak.run(
-				{ account: SELF, conversationRef: `p20002`, content: [{ type: "text", text: "hi" }] },
-				{ operationIdentity: "world:qq/speak", signal: new AbortController().signal },
+			const send = world.actions.send!;
+			const result = (await send.run(
+				{ conversationRef: `p20002`, content: [{ type: "text", text: "hi" }] },
+				{ operationIdentity: "world:qq/send", signal: new AbortController().signal },
 			)) as { status: string; result: string };
 			expect(result.status).toBe("unknown");
 			const operationRef = /operationRef=(o\d+)/.exec(result.result)?.[1];

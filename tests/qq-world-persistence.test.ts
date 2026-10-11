@@ -107,50 +107,50 @@ describe("control store（G4 本地连续性 + 单写方语义）", () => {
 		return new ControlStore({ dataDir: dir, selfId: SELF, now: () => now });
 	}
 
-	it("attention set/clear 跨进程一致，revision 递增", () => {
+	it("push set/clear 跨进程一致，revision 递增", () => {
 		const first = store();
 		first.load();
-		first.setAttention("account", { mode: "direct_only" });
-		const rev = first.setAttention(conversationRef("group", "30003"), { mode: "silent", priority: "preferred" });
+		first.setPush("account", { mode: "off" });
+		const rev = first.setPush(conversationRef("group", "30003"), { mode: "follow", filter: "direct" });
 		expect(rev).toBe(2);
 
 		const second = store();
 		second.load();
 		expect(second.revision).toBe(2);
-		expect(second.effectiveAttention("account").mode).toBe("direct_only");
-		expect(second.effectiveAttention(conversationRef("group", "30003")).mode).toBe("silent");
-		second.clearAttention(conversationRef("group", "30003"));
-		expect(second.effectiveAttention(conversationRef("group", "30003")).mode).toBe("direct_only");
+		expect(second.effectivePush("account").mode).toBe("off");
+		expect(second.effectivePush(conversationRef("group", "30003")).mode).toBe("follow");
+		second.clearPush(conversationRef("group", "30003"));
+		expect(second.effectivePush(conversationRef("group", "30003")).mode).toBe("off");
 	});
 
-	it("账号级 silent 不被会话覆盖，到期恢复原规则", () => {
+	it("账号级暂停覆盖会话，到期恢复原规则", () => {
 		const s = store("2026-10-07T12:00:00Z");
 		s.load();
-		s.setAttention("account", { pausedUntil: "2026-10-07T13:00:00Z" });
-		s.setAttention(conversationRef("group", "30003"), { mode: "normal" });
+		s.setPush("account", { pausedUntil: "2026-10-07T13:00:00Z" });
+		s.setPush(conversationRef("group", "30003"), { mode: "follow" });
 		const groupRef = conversationRef("group", "30003");
-		expect(s.effectiveAttention(groupRef).mode).toBe("silent");
-		expect(s.effectiveAttention(groupRef).pausedUntil).toBe("2026-10-07T13:00:00Z");
+		expect(s.effectivePush(groupRef).mode).toBe("off");
+		expect(s.effectivePush(groupRef).pausedUntil).toBe("2026-10-07T13:00:00Z");
 
 		const later = new ControlStore({ dataDir: dir, selfId: SELF, now: () => "2026-10-07T13:00:01Z" });
 		later.load();
-		// 到期恢复：账号无显式 mode，会话覆盖 normal 生效
-		expect(later.effectiveAttention(groupRef).mode).toBe("normal");
-		expect(later.effectiveAttention(groupRef).pausedUntil).toBeNull();
+		// 到期恢复：会话显式 follow 生效
+		expect(later.effectivePush(groupRef).mode).toBe("follow");
+		expect(later.effectivePush(groupRef).pausedUntil).toBeNull();
 	});
 
 	it("写失败保留旧控制状态并抛错，不宣称保存", () => {
 		const s = store();
 		s.load();
-		s.setAttention("account", { mode: "normal" });
+		s.setPush("account", { mode: "digest" });
 		// 用目录占位 tmp 路径制造持久 rename 失败
 		mkdirSync(join(dir, "qq-control.json.tmp"));
-		expect(() => s.setAttention("account", { mode: "silent" })).toThrow();
+		expect(() => s.setPush("account", { mode: "off" })).toThrow();
 		// 内存态保持旧值
-		expect(s.effectiveAttention("account").mode).toBe("normal");
+		expect(s.effectivePush("account").mode).toBe("digest");
 		// 磁盘保持旧值
 		const onDisk = JSON.parse(readFileSync(join(dir, "qq-control.json"), "utf8"));
-		expect(onDisk.accountOverride.mode).toBe("normal");
+		expect(onDisk.accountPush.mode).toBe("digest");
 	});
 
 	it("控制文件损坏明确失败", () => {
@@ -176,15 +176,13 @@ describe("control store（G4 本地连续性 + 单写方语义）", () => {
 
 		later.markReviewNotified(item.ref);
 		expect(later.dueFollowUps()).toEqual([]);
-		// 只改 note 不重建预约
-		later.updateFollowUp(item.ref, { note: "明天再看看对话。" });
-		expect(later.getFollowUp(item.ref)?.reviewNotified).toBe(true);
-		// 改 reviewAt 建立新预约
-		later.updateFollowUp(item.ref, { reviewAt: "2026-10-08T09:00:00Z" });
-		expect(later.getFollowUp(item.ref)?.reviewNotified).toBe(false);
-		// close 后不可再 update
-		later.settleFollowUp(item.ref, "完成", "closed");
-		expect(() => later.updateFollowUp(item.ref, { note: "x" })).toThrow(/open/);
+		// 通知计账持久化：重启后不重复提醒
+		const reloaded = new ControlStore({ dataDir: dir, selfId: SELF, now: () => "2026-10-07T09:00:00Z" });
+		reloaded.load();
+		expect(reloaded.getFollowUp(item.ref)?.reviewNotified).toBe(true);
+		// close 后不可再 settle
+		reloaded.settleFollowUp(item.ref, "完成", "closed");
+		expect(() => reloaded.settleFollowUp(item.ref, "再次", "closed")).toThrow(/open/);
 	});
 
 	it("重启后 followUp 计数续起不撞号", () => {
@@ -365,7 +363,7 @@ describe("v2 存储所有者与操作引用", () => {
 		try {
 			const control = new ControlStore({ dataDir: dir, selfId: SELF });
 			control.load();
-			control.setAttention("account", { mode: "silent" });
+			control.setPush("account", { mode: "off" });
 			expect(() => new ControlStore({ dataDir: dir, selfId: "99999" }).load()).toThrow(/账号/);
 			const ops = new OperationLog({ dataDir: dir, selfId: SELF });
 			ops.recover();

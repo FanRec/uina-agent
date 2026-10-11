@@ -19,7 +19,8 @@ it("startup enrichment cannot miss committed input settlement or strand the sche
 		self_id: 10001,
 		user_id: 20002,
 		message_id: id,
-		time: 1791453600,
+		// 每条间隔 601s：msg2 走私聊沉寂复苏穿透（§5.1 规则③），兼作"调度器未被搁浅"探针
+		time: 1791453600 + (id - 1) * 601,
 		sender: { user_id: 20002, nickname: "甲" },
 		message: [{ type: "text", data: { text: `消息${id}` } }],
 	});
@@ -59,8 +60,9 @@ it("startup enrichment cannot miss committed input settlement or strand the sche
 			hostHandlers.push(h);
 			return () => {};
 		},
-		emitEvent: async (e: { id: string; text: string }) => {
-			texts.push(e.text);
+		emitEvent: async (e: { id: string; text: string; render?: () => Promise<string | null> }) => {
+			// 延迟渲染（§5.3）：真实投递为占位 + render 闭包，测试在 emitEvent 内求值近似出队
+			texts.push((await e.render?.()) ?? e.text ?? "");
 			for (const h of hostHandlers) h({ type: "input_settled", inputId: e.id, outcome: "committed" });
 		},
 	} as unknown as ServiceCompanionContext;
@@ -69,8 +71,11 @@ it("startup enrichment cannot miss committed input settlement or strand the sche
 		const started = world.onStart!(context);
 		await vi.advanceTimersByTimeAsync(2500);
 		await started;
+		// msg1 已派发且结算在 enrichment 期间处理（notifiedThrough 推进）
+		expect(texts).toHaveLength(1);
 		eventHandler(msg(2));
 		await vi.advanceTimersByTimeAsync(2500);
+		// msg2 复苏穿透派发；不含消息1 恰好证明结算已推进（否则会作为新鲜正文重复呈现）
 		expect(texts).toHaveLength(2);
 		expect(texts[1]).toContain("消息2");
 		expect(texts[1]).not.toContain("消息1");
