@@ -121,21 +121,26 @@ console.log(`手势结算: ${waveResult.status}（期望 cancelled）；惊跳�
 await wait(800);
 
 // ---------- #5 视线锚定头动补偿 ----------
-console.log("\n=== #5 attention 锚定 user，头部左右慢转，gaze 应反向补偿保持看向锚点 ===");
-rt.director!.setAttention("user", { holdMs: 9000 });
-await rt.director!.setPosture({ "head.yaw": 12 }, { durationMs: 2000 });
+console.log("\n=== #5 attention 锚定 user，头部左右慢转（±6°/3s），gaze 应反向补偿保持看向锚点 ===");
+console.log("若某侧头部到位后眼球才'突然回正'，而另一侧全程锁定 → 疑似模型内部 EyeBall 物理不对称（P5 校准项）。");
+rt.director!.setAttention("user", { holdMs: 13000 });
+await rt.director!.setPosture({ "head.yaw": 6 }, { durationMs: 3000 });
 await wait(2400);
-await rt.director!.setPosture({ "head.yaw": -12 }, { durationMs: 2000 });
+await rt.director!.setPosture({ "head.yaw": -6 }, { durationMs: 3000 });
 await wait(2400);
 await rt.director!.setPosture({}, { durationMs: 1500 });
-await wait(2200); // holdMs 9000 覆盖全程，此后 attention 自动清除、gaze 回中
+await wait(2700); // holdMs 13000 覆盖全程，此后 attention 自动清除、gaze 回中
 console.log("观察要点：头转向期间眼球反向偏移（视线不离锚点），头回正后眼睛回中。");
 await wait(800);
 
 // ---------- #2 语音电平张嘴 ----------
-console.log("\n=== #2 语音电平张嘴：levelSink 按 20ms 窗投递 rms，张嘴随音量起伏 ===");
+console.log("\n=== #2 语音电平张嘴：levelSink 按 20ms 窗投递 rms（音节节奏慢包络），张嘴随语音起伏 ===");
+const t0 = performance.now();
 const speakTimer = setInterval(() => {
-	rt.levelSink!.processLevel({ rms: 0.01 + Math.random() * 0.12 });
+	const s = (performance.now() - t0) / 1000;
+	// 音节节奏 ~3Hz 包络 + 慢调制，模拟自然语音起伏（白噪声观感过快，非链路问题）。
+	const env = 0.5 + 0.5 * Math.sin(2 * Math.PI * 3 * s + 2 * Math.sin(2 * Math.PI * 0.6 * s));
+	rt.levelSink!.processLevel({ rms: 0.01 + env * 0.12 });
 }, 20);
 await wait(4000);
 clearInterval(speakTimer);
