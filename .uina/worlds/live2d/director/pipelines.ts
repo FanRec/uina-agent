@@ -282,6 +282,11 @@ export class SomaticPipelines {
 		this.envelope.setLevel(level);
 	}
 
+	/** 平滑后的作者嘴部开度，尚未混入语音；供动作接管与交还捕获起点。 */
+	get mouthBase(): number | undefined {
+		return this.smooth.get("mouth.open");
+	}
+
 	/** 打断/急停的口型直清（§3 interrupt / §4 急停第三层）：当帧起包络为 0，不走 50ms 释放。 */
 	cutSpeech(): void {
 		this.envelope.cut();

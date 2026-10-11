@@ -220,11 +220,12 @@ export class Live2DRuntime {
 
 	/**
 	 * 焦点通知（幂等）：相同值的重复通知直接忽略，不重置任何倒计时（边界 #5）。
-	 * A11 统一规则：任何非播放态（safeStop 暂停/失焦）冻结倒计时与过渡，回焦恢复剩余。
+	 * 参数倒计时与过渡失焦冻结；空间移动无法冻结，取消并归位，回焦不续播旧空间表演。
 	 */
 	setFocused(focused: boolean): void {
 		if (this.focused === focused) return;
 		this.focused = focused;
+		if (!focused) this.spatialClaim?.cancel();
 		this.syncFrozen();
 	}
 
@@ -302,6 +303,7 @@ export class Live2DRuntime {
 			const handle = director.play(clip, playOptions);
 			return this.settleMotion(handle, clip, label);
 		}
+		if (!this.focused) return toolRejected("cancelled", `${label} 未执行：身体当前失焦。`);
 
 		const claim = this.acquireClaim(["model:transform"], "motion", options.signal, true);
 		if ("status" in claim) return claim;
@@ -328,7 +330,8 @@ export class Live2DRuntime {
 		let restored = true;
 		let restoreAttempted = false;
 		const ensureActive = () => {
-			if (!sameModel() || handle?.status === "releasing" || handle?.status === "cancelled") claim.cancel();
+			if (!this.focused || !sameModel() || handle?.status === "releasing" || handle?.status === "cancelled")
+				claim.cancel();
 			claim.signal.throwIfAborted();
 		};
 		const restore = async (): Promise<boolean> => {
@@ -338,6 +341,7 @@ export class Live2DRuntime {
 			return restored;
 		};
 		try {
+			ensureActive();
 			base = await withCancellation(client.getModelPosition(this.rig!.modelID), claim.signal);
 			ensureActive();
 			handle = director.play(clip, { ...playOptions, signal: claim.signal });

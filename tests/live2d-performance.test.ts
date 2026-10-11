@@ -215,6 +215,30 @@ describe("MO 表演实际合成与执行", () => {
 		expect(director.currentFrame["mouth.open"]).toBeGreaterThan(0.8);
 	});
 
+	it.each(["surprise", "startle"])("%s 入场与收势只混合一次语音口型", async (name) => {
+		const { director, catalog } = await authored();
+		director.setSpeechLevel(0.65);
+		advance(director, 300);
+		const entry = catalog.motions.get(name)!;
+		const handle = director.play(entry.motion, { category: "voluntary", ...entry.playback });
+		// 两个动作在最初 150ms 都没有作者张嘴，输出应保持语音开度。
+		for (let elapsed = 0; elapsed < 150; elapsed += 10) {
+			director.step(10);
+			expect(director.currentFrame["mouth.open"]).toBeCloseTo(0.65, 10);
+		}
+		advance(director, entry.motion.durationMs - 160);
+		let previous = director.currentFrame["mouth.open"]!;
+		// 作者张嘴已经归零：自然退场不能再次增加开度。
+		for (let elapsed = 0; elapsed < 500; elapsed += 10) {
+			director.step(10);
+			const current = director.currentFrame["mouth.open"]!;
+			expect(current).toBeLessThanOrEqual(previous + 1e-10);
+			previous = current;
+		}
+		await handle.finished;
+		expect(previous).toBeCloseTo(0.65, 3);
+	});
+
 	it("真实注入观察器按本次贡献结算；前次接受不能证明完全遮挡的新动作", async () => {
 		const { runtime, catalog } = await connected();
 		const entry = catalog.motions.get("wink")!;
@@ -271,6 +295,45 @@ describe("MO 表演实际合成与执行", () => {
 			expect.closeTo(-0.08),
 			expect.closeTo(-0.1),
 		]);
+		expect(device.pose).toEqual(base);
+	});
+
+	it.each(["moving", "pending_ack", "settling"] as const)("雀跃 %s 时失焦取消并归位，回焦可再次执行", async (phase) => {
+		vi.useFakeTimers();
+		const { runtime, device } = await connected();
+		const base = { ...device.pose };
+		device.holdMoveAck = phase === "pending_ack";
+		const run = runtime.express({ motion: "joy_hop" }, {});
+		const elapsedMs = phase === "settling" ? 1200 : 30;
+		for (let elapsed = 0; elapsed < elapsedMs; elapsed += 10) {
+			await vi.advanceTimersByTimeAsync(10);
+			runtime.composeTick(10);
+		}
+		const moves = device.moves.length;
+		runtime.setFocused(false);
+		const frame = { ...runtime.director!.currentFrame };
+		for (let elapsed = 0; elapsed < 400; elapsed += 10) {
+			await vi.advanceTimersByTimeAsync(10);
+			runtime.composeTick(10);
+		}
+		await expect(run).resolves.toMatchObject({ status: "cancelled", details: { restored: true } });
+		expect(device.moves).toHaveLength(moves + 1);
+		expect(device.moves.at(-1)?.timeInSeconds).toBe(0.25);
+		expect(device.pose).toEqual(base);
+		expect(runtime.director!.currentFrame).toEqual(frame);
+		// 失焦期间新请求也不能发送空间移动。
+		await expect(runtime.express({ motion: "joy_hop" }, {})).resolves.toMatchObject({
+			status: "cancelled",
+			details: { effectStatus: "not_started" },
+		});
+		expect(device.moves).toHaveLength(moves + 1);
+		runtime.setFocused(true);
+		const next = runtime.express({ motion: "joy_hop" }, {});
+		for (let elapsed = 0; elapsed < 1400; elapsed += 10) {
+			await vi.advanceTimersByTimeAsync(10);
+			runtime.composeTick(10);
+		}
+		await expect(next).resolves.toMatchObject({ status: "succeeded", details: { restored: true } });
 		expect(device.pose).toEqual(base);
 	});
 

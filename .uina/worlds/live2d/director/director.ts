@@ -720,7 +720,7 @@ export class MotionDirector {
 				// 首次写入或遮蔽恢复：捕获当前帧值平滑淡入（§4.1.3）；被遮蔽期间增益冻结。
 				let gainState = p.gain.get(axis);
 				if (!gainState) {
-					gainState = { from: this.frame[axis] ?? this.neutral[axis]!, ageMs: 0 };
+					gainState = { from: this.transitionOrigin(axis), ageMs: 0 };
 					p.gain.set(axis, gainState);
 				}
 				gainState.ageMs += dt;
@@ -824,11 +824,16 @@ export class MotionDirector {
 		for (const axis of playback.overrideAxes) {
 			if (axis.startsWith("gaze.")) continue; // 视线管道交还到当时有效的 attention。
 			this.handoffs.set(axis, {
-				from: this.frame[axis] ?? this.neutral[axis]!,
+				from: this.transitionOrigin(axis),
 				ageMs: 0,
 				durationMs: playback.fadeOutMs,
 			});
 		}
+	}
+
+	private transitionOrigin(axis: string): number {
+		// 嘴部过渡仍会经过语音管道，不能把已经混入语音的输出再作为作者开度。
+		return (axis === "mouth.open" ? this.pipelines.mouthBase : this.frame[axis]) ?? this.neutral[axis]!;
 	}
 
 	/**

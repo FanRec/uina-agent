@@ -10,7 +10,7 @@ import type { Live2DRuntime } from "./runtime.js";
  * - emitCue void、fire-and-forget：受理同步记账并启动执行，终态回调异步落账；
  * - lastCue 记账：{seq, id, state, reason?, at}，seq 世界内单调递增；迟到回调按自身 seq
  *   定位条目更新，结构上不可能覆盖更大 seq 的记录（边界 #14）；
- * - onFocus 幂等冻结：相同值重复通知不重置 hold 倒计时；失焦冻结、回焦恢复剩余（边界 #5）；
+ * - onFocus 幂等：参数失焦冻结、回焦恢复剩余；空间表演失焦取消并归位（边界 #5）；
  * - interrupt 回合打断（P4-8）：取消瞬时动作、口型直清、不进入 paused；thinking 停止随 P4-4 宿主事件接入。
  */
 
