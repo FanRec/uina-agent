@@ -3,6 +3,7 @@ import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { Live2DRuntime } from "./runtime.js";
 import { VTSClient } from "./adapter/vts-client.js";
 import { loadRig, MO_MODEL_ID } from "./models/rig-loader.js";
+import { MO_SPEECH } from "./models/mo/speech.js";
 
 /**
  * Live2D 世界装配。
@@ -37,7 +38,7 @@ export function createLive2DApp(): WorldDef {
 				console.warn("[Live2D] rig 装配失败，保活注入停用:", error);
 				return undefined;
 			});
-			runtime = new Live2DRuntime({ client: new VTSClient(), rig });
+			runtime = new Live2DRuntime({ client: new VTSClient(), rig, speech: MO_SPEECH });
 			await runtime.start(ctx);
 		},
 		async onStop() {

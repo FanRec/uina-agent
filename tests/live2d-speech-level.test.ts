@@ -1,0 +1,129 @@
+import { describe, expect, it } from "vitest";
+import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
+import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
+import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
+import { SpeechInput, type SpeechConfig } from "../.uina/worlds/live2d/speech-level.js";
+import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
+
+const SPEECH: SpeechConfig = {
+	points: [
+		[0, 0],
+		[0.02, 0.25],
+		[0.06, 0.7],
+		[0.15, 1],
+	],
+	staleMs: 120,
+};
+
+describe("live2d 声学电平链路（P3-2）", () => {
+	it("作者映射：rms 0.06 → 0.7；分段线性内插与端点钳制正确", () => {
+		const d = new MotionDirector({ "mouth.open": { min: 0, max: 1, neutral: 0 } });
+		const input = new SpeechInput(SPEECH, d);
+		input.processLevel({ rms: 0.06 });
+		input.tick(16);
+		d.step(16);
+		expect(d.currentFrame["mouth.open"]).toBe(0.7); // 引擎包络快攻：立即跟随
+
+		input.processLevel({ rms: 0.04 }); // 0.02~0.06 段线性内插 → 0.475；电平下降经引擎包络短滞回
+		input.tick(16);
+		d.step(16);
+		expect(d.currentFrame["mouth.open"]).toBeCloseTo(0.475, 1);
+
+		input.processLevel({ rms: 0.9 }); // 升高立即跟随；超出末端 → 钳制 1
+		input.tick(16);
+		d.step(16);
+		expect(d.currentFrame["mouth.open"]).toBe(1);
+	});
+
+	it("失联守卫：超过 staleMs 无新测量即视为静音，经引擎包络 50ms 释放回零", () => {
+		const d = new MotionDirector({ "mouth.open": { min: 0, max: 1, neutral: 0 } });
+		const input = new SpeechInput(SPEECH, d);
+		input.processLevel({ rms: 0.15 });
+		input.tick(16);
+		d.step(16);
+		expect(d.currentFrame["mouth.open"]).toBe(1);
+
+		// 静默：stale 120ms 内目标保持；越线后目标归零 → 引擎 50ms 线性释放。
+		// 首次 tick 后 age=16，再 6 次 → age=112，恰好仍未失联（守卫条件为 age > 120）。
+		for (let i = 0; i < 6; i++) {
+			input.tick(16);
+			d.step(16);
+		}
+		expect(d.currentFrame["mouth.open"]).toBe(1); // age=112 仍未失联
+		input.tick(16); // age=128 > 120 → 目标 0
+		const samples: number[] = [];
+		for (let i = 0; i < 6; i++) samples.push(d.step(10)["mouth.open"]!);
+		expect(samples[0]!).toBeLessThan(1);
+		expect(samples.every((v, i) => i === 0 || v <= samples[i - 1]!)).toBe(true); // 单调下降
+		expect(d.currentFrame["mouth.open"]).toBe(0); // 60ms > 50ms 释放完成
+	});
+
+	it("reset()：声学输入立即清零，口型经引擎 50ms 释放回零（不永久张嘴）", () => {
+		const d = new MotionDirector({ "mouth.open": { min: 0, max: 1, neutral: 0 } });
+		const input = new SpeechInput(SPEECH, d);
+		input.processLevel({ rms: 0.15 });
+		input.tick(16);
+		d.step(16);
+		input.reset();
+		input.tick(16); // age=∞ → 目标 0
+		d.step(16);
+		expect(d.currentFrame["mouth.open"]).toBeLessThan(1);
+		for (let i = 0; i < 6; i++) d.step(10);
+		expect(d.currentFrame["mouth.open"]).toBe(0);
+	});
+
+	it("runtime 集成：电平按 20ms 窗连续投递驱动张嘴；未发布时电平丢弃", () => {
+		const rig: ModelRig = {
+			version: 3,
+			modelID: "fixture",
+			controls: { "mouth.open": { min: 0, max: 1, neutral: 0 } },
+			bindings: {
+				"mouth.open": [
+					{
+						parameter: "ParamMouthOpenY",
+						input: "MouthOpen",
+						points: [
+							[0, 0],
+							[0.5, 0.5],
+							[1, 1],
+						],
+						followers: [],
+						physicsFollowers: [],
+						smoothing: 0,
+					},
+				],
+			},
+			external: { blink: "uina", breath: "vts" },
+		};
+		const fakeClient = {
+			isConnected: () => true,
+			getModelProfile: () => ({ modelID: "fixture" }),
+			injectParameters: () => {},
+			setConnectionChangeListener: () => {},
+			connect: () => {},
+			disconnect: () => {},
+			getConnectionStatus: () => ({ connected: true }),
+		} as unknown as VTSClient;
+		const rt = new Live2DRuntime({ client: fakeClient, rig, speech: SPEECH });
+		expect(rt.levelSink).toBeDefined();
+
+		// TTS 按 ~20ms 窗连续投递（seams 契约）；帧步长 16ms，隔帧投递即维持新鲜。
+		rt.levelSink!.processLevel({ rms: 0.06 });
+		for (let i = 0; i < 40; i++) {
+			if (i % 2 === 1) rt.levelSink!.processLevel({ rms: 0.06 });
+			rt.composeTick(16);
+		}
+		expect(rt.director!.currentFrame["mouth.open"]).toBeCloseTo(0.7, 1);
+
+		// 停止投递：失联守卫（120ms）+ 引擎释放（50ms）→ 回零，不永久张嘴。
+		for (let i = 0; i < 15; i++) rt.composeTick(16);
+		expect(rt.director!.currentFrame["mouth.open"]).toBe(0);
+
+		// 未发布：电平一律丢弃。
+		const rt2 = new Live2DRuntime({ client: fakeClient, rig, speech: SPEECH, published: false });
+		rt2.levelSink!.processLevel({ rms: 0.06 });
+		for (let i = 0; i < 5; i++) rt2.levelSink!.processLevel({ rms: 0.06 });
+		for (let i = 0; i < 5; i++) rt2.composeTick(16);
+		expect(rt2.director!.currentFrame["mouth.open"]).toBe(0);
+	});
+});
