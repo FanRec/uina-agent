@@ -34,7 +34,11 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 		expect(catalog.motions.has("nod")).toBe(true);
 		expect(catalog.motions.has("shake")).toBe(true);
 		expect(catalog.motions.has("curious")).toBe(true);
-		expect(catalog.motions.size).toBe(13);
+		expect(catalog.motions.has("petrify")).toBe(true);
+		expect(catalog.motions.has("close_up")).toBe(true);
+		expect(catalog.motions.has("edge_peek")).toBe(true);
+		expect(catalog.motions.has("spin")).toBe(true);
+		expect(catalog.motions.size).toBe(17);
 		for (const removed of ["greeting", "wave", "freeze", "music_groove"])
 			expect(catalog.motions.has(removed)).toBe(false);
 
@@ -68,6 +72,8 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 		// 动作别名
 		expect(catalog.findMotion("点头")).toBe(catalog.motions.get("nod"));
 		expect(catalog.findMotion("nod")).toBe(catalog.motions.get("nod"));
+		expect(catalog.findMotion("石化")).toBe(catalog.motions.get("petrify"));
+		expect(catalog.findMotion("转圈")).toBe(catalog.motions.get("spin"));
 		expect(catalog.findMotion("摇摇头")).toBeUndefined();
 
 		// 姿态别名
@@ -103,6 +109,10 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 
 		expect(endpoint.supportsCue?.("点头")).toBe(true);
 		expect(endpoint.supportsCue?.("nod")).toBe(true);
+		expect(endpoint.supportsCue?.("石化")).toBe(true);
+		expect(endpoint.supportsCue?.("转圈圈")).toBe(true);
+		expect(endpoint.supportsCue?.("凑近")).toBe(true);
+		expect(endpoint.supportsCue?.("探头")).toBe(true);
 		expect(endpoint.supportsCue?.("低头")).toBe(true);
 		expect(endpoint.supportsCue?.("tuck")).toBe(true);
 		expect(endpoint.supportsCue?.("微笑")).toBe(false); // 表情走工具，不是伴随 cue
