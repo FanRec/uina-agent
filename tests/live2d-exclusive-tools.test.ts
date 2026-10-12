@@ -82,7 +82,7 @@ interface FakeState {
 	tintDelayMs?: number;
 	/** 可用后处理预设清单（模拟 VTS Effects 环境文件；undefined = 清单未知，核验放行）。 */
 	presets?: string[];
-	updatePostCalls: number[];
+	updatePostCalls: Array<Record<string, unknown> | undefined>;
 	/** 每次 moveModel / getModelPosition 的 performance.now() 时间戳，用于段间等待时序断言。 */
 	moveTimes: number[];
 	readTimes: number[];
@@ -134,8 +134,8 @@ const makeFake = (state: FakeState): VTSClient => {
 			if (state.tintDelayMs) await new Promise((r) => setTimeout(r, state.tintDelayMs));
 			return tint;
 		},
-		updatePostProcessing: async () => {
-			state.updatePostCalls.push(performance.now());
+		updatePostProcessing: async (opts?: Record<string, unknown>) => {
+			state.updatePostCalls.push(opts);
 		},
 		readPostProcessing: async () => ({ active: false, activePreset: null }),
 		getPostProcessingPresets: () => state.presets ?? [],
@@ -213,6 +213,50 @@ const presetRuntime = (state: FakeState, preset: string) =>
 									delta: { rotation: 200 },
 									durationMs: 100,
 									effects: { postProcessing: { on: true, preset, fadeTime: 0.15 } },
+								},
+								{ delta: { rotation: 0 }, durationMs: 200 },
+							],
+						},
+					},
+				},
+			},
+			makeRig(),
+		),
+	});
+
+/** 段[0] 携带 postProcessing 直接效果值（灰度）的 spin 目录：values 模式专用。 */
+const valuesRuntime = (state: FakeState) =>
+	new Live2DRuntime({
+		client: makeFake(state),
+		rig: makeRig(),
+		catalog: compileCatalog(
+			MODEL_ID,
+			{
+				motions: {
+					spin: {
+						description: "石化特技",
+						motion: motion(
+							100,
+							track("head.yaw", [
+								[0, 0],
+								[100, 0],
+							]),
+						),
+						spatial: {
+							segments: [
+								{
+									delta: { rotation: 200 },
+									durationMs: 100,
+									effects: {
+										postProcessing: {
+											on: true,
+											values: [
+												{ id: "ColorGrading_Strength", value: 1 },
+												{ id: "ColorGrading_Saturation", value: -100 },
+											],
+											fadeTime: 0.15,
+										},
+									},
 								},
 								{ delta: { rotation: 0 }, durationMs: 200 },
 							],
@@ -503,6 +547,82 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		} finally {
 			await app2.onStop?.({} as ServiceCompanionContext);
 		}
+	});
+
+	it("后处理直接效果值（values）：段进入时实发 setPostProcessingValues 灰度 config，恢复走 setAllOtherValuesToDefault", async () => {
+		const state: FakeState = {
+			connected: true,
+			pose: { positionX: 0, positionY: 0, rotation: 10, size: 1 },
+			hotkeyIDs: [],
+			triggered: [],
+			moveCalls: [],
+			hangMove: false,
+			moveTimes: [],
+			readTimes: [],
+			updatePostCalls: [],
+			moved: false,
+		};
+		const rt = valuesRuntime(state);
+		const app = await startApp(rt);
+		try {
+			const result = await rt.express({ motion: "spin" }, {});
+			expect(result.status).toBe("unknown"); // 假体不确认参数输入（既有语义）
+			// 段[0] 进入：灰度 config 直接下发（目录值原样透传）
+			expect(state.updatePostCalls[0]).toMatchObject({
+				on: true,
+				values: [
+					{ id: "ColorGrading_Strength", value: 1 },
+					{ id: "ColorGrading_Saturation", value: -100 },
+				],
+				fadeTime: 0.15,
+			});
+			// 守护复位：on=false（baseline 关闭态），全效果回默认
+			const restore = state.updatePostCalls.at(-1);
+			expect(restore).toMatchObject({ on: false });
+		} finally {
+			await app.onStop?.({} as ServiceCompanionContext);
+		}
+	});
+
+	it("compileCatalog：后处理 values 与 preset 互斥、values 非空、项形状校验", () => {
+		// 故意传非法形状做 lint 断言：post 以 as never 注入字段位（运行时校验是被测对象）
+		const base = (post: { on: boolean; values?: unknown; preset?: string; fadeTime?: number }): CatalogSource => ({
+			motions: {
+				spin: {
+					description: "石化特技",
+					motion: motion(
+						100,
+						track("head.yaw", [
+							[0, 0],
+							[100, 0],
+						]),
+					),
+					spatial: {
+						segments: [
+							{ delta: { rotation: 200 }, durationMs: 100, effects: { postProcessing: post as never } },
+							{ delta: { rotation: 0 }, durationMs: 100 },
+						],
+					},
+				},
+			},
+		});
+		expect(() =>
+			compileCatalog(
+				MODEL_ID,
+				base({ on: true, values: [{ id: "ColorGrading_Strength", value: 1 }], preset: "Grayscale" }),
+				makeRig(),
+			),
+		).toThrow(/values 与 preset 互斥/);
+		expect(() => compileCatalog(MODEL_ID, base({ on: true, values: [] }), makeRig())).toThrow(/非空数组/);
+		expect(() => compileCatalog(MODEL_ID, base({ on: true, values: [{ id: "", value: 1 }] }), makeRig())).toThrow(
+			/缺少 configID/,
+		);
+		expect(() => compileCatalog(MODEL_ID, base({ on: true, values: [{ id: "X", value: null }] }), makeRig())).toThrow(
+			/必须是 number 或 string/,
+		);
+		expect(() =>
+			compileCatalog(MODEL_ID, base({ on: true, values: [{ id: "ColorGrading_Strength", value: 1 }] }), makeRig()),
+		).not.toThrow();
 	});
 
 	it("safeStop 期间等待在途归位清理完成，完成后暂停生效；此后工具 paused 拒绝", async () => {

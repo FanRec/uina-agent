@@ -324,6 +324,29 @@ describe("live2d vts-client（移植行为验证）", () => {
 		});
 		await expect(client.updatePostProcessing({ on: true, fadeTime: 2.5 })).rejects.toThrow("0-2 秒");
 
+		// 直接效果值：setPostProcessingValues + configID/configValue 字符串化；与 preset 协议互斥。
+		await client.updatePostProcessing({
+			on: true,
+			values: [
+				{ id: "ColorGrading_Strength", value: 1 },
+				{ id: "ColorGrading_Saturation", value: -100 },
+			],
+			fadeTime: 0.15,
+		});
+		expect(device.messages("PostProcessingUpdateRequest")[2]?.data).toEqual({
+			postProcessingOn: true,
+			setPostProcessingValues: true,
+			postProcessingValues: [
+				{ configID: "ColorGrading_Strength", configValue: "1" },
+				{ configID: "ColorGrading_Saturation", configValue: "-100" },
+			],
+			postProcessingFadeTime: 0.15,
+			setAllOtherValuesToDefault: true,
+		});
+		await expect(
+			client.updatePostProcessing({ on: true, preset: "A", values: [{ id: "X", value: 1 }] }),
+		).rejects.toThrow("互斥");
+
 		device.postProcessingState = { active: true, activePreset: "user_fx", canUpdateRightNow: true };
 		expect(await client.readPostProcessing()).toEqual({
 			active: true,
