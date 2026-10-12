@@ -61,6 +61,9 @@ const MAX_TICK_DT_MS = 250;
 
 /** 空间变换常量（§2：回读前留出 VTS 动画结算余量；自动归位时间）。 */
 const SETTLE_MARGIN_MS = 60;
+/** 回读核实重试：VTS 插值结算存在滞后，失败再等 SETTLE_RETRY_MS 重读，重试用尽才如实判未确认。 */
+const SETTLE_RETRIES = 2;
+const SETTLE_RETRY_MS = 250;
 const RESTORE_SECONDS = 0.25;
 
 /**
@@ -471,7 +474,6 @@ export class Live2DRuntime {
 				ensureActive();
 				await withCancellation(client.getModelPosition(this.rig!.modelID), claim.signal);
 				ensureActive();
-				const startedAt = performance.now();
 				moved = true; // 请求异常也可能已经到达 VTS，因此必须尝试归位。
 				// 效果与位姿同段顺序派发：先等效果请求落地（allSettled，失败仅记录继续），再发位姿移动。
 				// 位姿失败沿用既有语义：中止后续段并走归位守护；结算如实呈现。
@@ -502,21 +504,29 @@ export class Live2DRuntime {
 						}),
 						claim.signal,
 					);
-				const remaining = Math.max(0, segment.durationMs - (performance.now() - startedAt));
-				if (!(await sleep(remaining + (segment.holdMs ?? 0), claim.signal))) break;
+				// 动画从 VTS 收到请求起跑 timeInSeconds；ACK 后全额等待，宁过勿欠——
+				// 旧实现从效果派发前计时扣除，每段被抢跑"派发+往返"时长，末段插值未落地
+				// 即回读到中间值（close_up"正常回位未确认"根因）。
+				if (!(await sleep(segment.durationMs + (segment.holdMs ?? 0), claim.signal))) break;
 			}
 			ensureActive();
 			// 末段不得携带 effects（编译期禁止）：效果复位由守护在此统一执行，作者不写重置值。
 			const restoredEffects = await restoreEffects();
-			await sleep(SETTLE_MARGIN_MS, claim.signal);
-			ensureActive();
-			const now = await withCancellation(client.getModelPosition(this.rig!.modelID), claim.signal);
-			ensureActive();
-			restored = sameModel() && poseMatches(now, base);
+			restored = false;
+			for (let attempt = 0; attempt <= SETTLE_RETRIES && !restored; attempt++) {
+				ensureActive();
+				await sleep(attempt === 0 ? SETTLE_MARGIN_MS : SETTLE_RETRY_MS, claim.signal);
+				ensureActive();
+				const now = await withCancellation(client.getModelPosition(this.rig!.modelID), claim.signal);
+				ensureActive();
+				restored = sameModel() && poseMatches(now, base);
+			}
 			if (!restored) {
 				handle.stop("cut");
-				await restore();
-				return toolUnknown(`${label} 正常回位未确认。`, { restored, restoredEffects });
+				// restore() 内部自行等待 RESTORE_SECONDS 并回读确认；此处取其确认值如实上报，
+				// 不能复用回读前的判定（陈旧 false 会把"实际已归位"报成"未确认"）。
+				const confirmed = await restore();
+				return toolUnknown(`${label} 正常回位未确认。`, { restored: confirmed, restoredEffects });
 			}
 			if (dispatchFailures.length > 0 || restoredEffects.tint === false || restoredEffects.post === false) {
 				const problems = [...dispatchFailures];
