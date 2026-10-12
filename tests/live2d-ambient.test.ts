@@ -217,4 +217,59 @@ describe("live2d ambient 环境循环", () => {
 		h.runtime.setCatalog(makeCatalog({ motions: {}, background: { idle: swayLoop(3) } }));
 		expect((await h.status()).catalog.ambient.current).toBeNull();
 	});
+
+	it("thinking 与 ambient 共存：思考循环在选中 sway 期间照常叠加（transition 层不受影响）", async () => {
+		const source = makeCatalogSource();
+		source.background!.thinking = motion(
+			3600,
+			track("head.yaw", [
+				[0, 2],
+				[2400, 2],
+				[3600, 2],
+			]),
+		);
+		const a = await harness();
+		const b = await harness(makeCatalog(source));
+		await a.run("ambient", { name: "sway" });
+		await b.run("ambient", { name: "sway" });
+		a.stepMs(1200); // sway fade-in + 弹簧收敛，两侧对齐
+		b.stepMs(1200);
+		b.runtime.setThinking(true);
+		a.stepMs(1000); // thinking fade-in 350ms 完成，恒定 +2 增量
+		b.stepMs(1000);
+		const seq = (h: Awaited<ReturnType<typeof harness>>) =>
+			h.fake.state.injected
+				.slice(-40)
+				.flatMap((frame) => frame.filter((p) => p.id === "FaceAngleX").map((p) => p.value));
+		const [sa, sb] = [seq(a), seq(b)];
+		expect(sb.some((v, i) => Math.abs(v - sa[i]!) > 1)).toBe(true); // thinking 增量经注入映射 ~+5
+		expect((await b.status()).catalog.ambient.current).toBe("sway");
+	});
+
+	it("safeStop → resume 后环境循环续播（暂停期保持帧静止，恢复后 tick 重建背景）", async () => {
+		const h = await harness();
+		await h.run("ambient", { name: "sway" });
+		h.stepMs(600);
+		await h.runtime.safeStop();
+		h.stepMs(320);
+		const frozenFrom = h.fake.state.injected
+			.slice(-20)
+			.flatMap((frame) => frame.filter((p) => p.id === "FaceAngleX").map((p) => p.value));
+		expect(new Set(frozenFrom).size).toBe(1); // 暂停期注入保持帧，值恒定
+		await h.runtime.resume();
+		h.stepMs(1200);
+		expect(h.yawAmplitude()).toBeGreaterThan(10); // sway 幅值 8 → 注入 ~20，恢复后重新活跃
+		expect((await h.status()).catalog.ambient.current).toBe("sway");
+	});
+
+	it("失焦不影响环境循环（失焦只取消空间特技独占）", async () => {
+		const h = await harness();
+		await h.run("ambient", { name: "sway" });
+		h.stepMs(600);
+		const before = h.fake.state.injected.length;
+		h.runtime.setFocused(false);
+		h.stepMs(400);
+		expect(h.fake.state.injected.length).toBeGreaterThan(before + 20); // 持续注入
+		expect((await h.status()).catalog.ambient.current).toBe("sway");
+	});
 });

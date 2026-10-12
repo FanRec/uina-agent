@@ -76,6 +76,23 @@ const makeCatalogSource = (): CatalogSource => ({
 	},
 	postures: { lean: { description: "侧倾", values: { "head.yaw": 4 } } },
 	expressions: {},
+	background: {
+		ambient: {
+			sway: {
+				description: "左右摇摆",
+				motion: motion(
+					3200,
+					track("head.yaw", [
+						[0, 0],
+						[800, 8],
+						[1600, 0],
+						[2400, -8],
+						[3200, 0],
+					]),
+				),
+			},
+		},
+	},
 });
 
 const makeFakeClient = (connected = true) => {
@@ -192,6 +209,21 @@ describe("live2d 引擎线程隔离接缝（proxy ↔ engine 协议）", () => {
 			const aborted = h.proxy.express({ motion: "nod" }, { signal: controller.signal });
 			controller.abort();
 			await expect(aborted).rejects.toThrow();
+		} finally {
+			await h.stop();
+		}
+	});
+
+	it("ambient 走 RPC 结算：选择/清除/未知名字往返闭环（engine calls 表 key 正确性）", async () => {
+		const h = await harness(true);
+		try {
+			const selected = await h.proxy.ambient({ name: "sway" }, { signal: new AbortController().signal });
+			expect(selected.status).toBe("succeeded");
+			const cleared = await h.proxy.ambient({}, { signal: new AbortController().signal });
+			expect(cleared.status).toBe("succeeded");
+			const unknown = await h.proxy.ambient({ name: "groove" }, { signal: new AbortController().signal });
+			expect(unknown.status).toBe("failed");
+			expect(unknown.result).toContain("sway");
 		} finally {
 			await h.stop();
 		}
