@@ -78,6 +78,14 @@ interface FakeState {
 	moveCalls: Array<Record<string, unknown>>;
 	hangMove: boolean;
 	slowHotkey?: { resolve: () => void };
+	/** tintModel 派发延迟（ms）：模拟效果请求往返耗时。 */
+	tintDelayMs?: number;
+	/** 每次 moveModel / getModelPosition 的 performance.now() 时间戳，用于段间等待时序断言。 */
+	moveTimes: number[];
+	readTimes: number[];
+	/** 回读不结算次数：前 N 次发生在 moveModel 之后的回读返回扰动位姿（模拟 VTS 插值未落地）。 */
+	unsettledReads?: number;
+	moved?: boolean;
 }
 
 const makeFake = (state: FakeState): VTSClient => {
@@ -98,9 +106,19 @@ const makeFake = (state: FakeState): VTSClient => {
 		},
 		getConnectionStatus: () => ({ connected: state.connected }),
 		getFault: () => undefined,
-		getModelPosition: async () => ({ ...state.pose }),
+		getModelPosition: async () => {
+			state.readTimes.push(performance.now());
+			// 模拟 VTS 插值未落地：移动发出后的前 N 次回读返回偏移位姿，之后如实结算。
+			if (state.moved && (state.unsettledReads ?? 0) > 0) {
+				state.unsettledReads = (state.unsettledReads ?? 0) - 1;
+				return { ...state.pose, rotation: state.pose.rotation + 5 };
+			}
+			return { ...state.pose };
+		},
 		moveModel: async (options: Record<string, unknown>) => {
 			state.moveCalls.push(options);
+			state.moveTimes.push(performance.now());
+			state.moved = true;
 			if (state.hangMove) return new Promise(() => {});
 			if (options.valuesAreRelativeToModel === false) {
 				if (options.positionX !== undefined) state.pose.positionX = options.positionX as number;
@@ -109,6 +127,12 @@ const makeFake = (state: FakeState): VTSClient => {
 				if (options.size !== undefined) state.pose.size = options.size as number;
 			}
 		},
+		tintModel: async (tint: Record<string, unknown>) => {
+			if (state.tintDelayMs) await new Promise((r) => setTimeout(r, state.tintDelayMs));
+			return tint;
+		},
+		updatePostProcessing: async () => {},
+		readPostProcessing: async () => ({ active: false, activePreset: null }),
 		triggerHotkey: async (hotkeyID: string) => {
 			if (state.slowHotkey) {
 				await new Promise<void>((resolve) => {
@@ -175,6 +199,9 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			triggered: [],
 			moveCalls: [],
 			hangMove: false,
+			moveTimes: [],
+			readTimes: [],
+			moved: false,
 		};
 		const rt = makeRuntime(state);
 		const app = await startApp(rt);
@@ -206,6 +233,9 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			triggered: [],
 			moveCalls: [],
 			hangMove: false,
+			moveTimes: [],
+			readTimes: [],
+			moved: false,
 		};
 		const rt = makeRuntime(state);
 		const app = await startApp(rt);
@@ -229,6 +259,9 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			triggered: [],
 			moveCalls: [],
 			hangMove: false,
+			moveTimes: [],
+			readTimes: [],
+			moved: false,
 		};
 		const rt = makeRuntime(state);
 		const app = await startApp(rt);
@@ -269,6 +302,84 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		expect(() => compileCatalog(MODEL_ID, source({ y: 0.09, rotation: 359 }), makeRig())).not.toThrow();
 	});
 
+	it("段间等待不被效果派发抢跑：带效果段 sleep 全额等待 durationMs 后才发下一段 moveModel", async () => {
+		const state: FakeState = {
+			connected: true,
+			pose: { positionX: 0, positionY: 0, rotation: 10, size: 1 },
+			hotkeyIDs: [],
+			triggered: [],
+			moveCalls: [],
+			hangMove: false,
+			moveTimes: [],
+			readTimes: [],
+			moved: false,
+			tintDelayMs: 150,
+		};
+		// 段[0] 带效果且派发耗时（150ms）超过段时长（100ms）：旧实现从派发前计时扣除，
+		// sleep 被抢跑至 0，两段 moveModel 几乎同时发出；修复后段间至少等满 100ms。
+		const rt = new Live2DRuntime({
+			client: makeFake(state),
+			rig: makeRig(),
+			catalog: compileCatalog(
+				MODEL_ID,
+				{
+					motions: {
+						spin: {
+							description: "旋转特技",
+							motion: motion(
+								100,
+								track("head.yaw", [
+									[0, 0],
+									[100, 0],
+								]),
+							),
+							spatial: {
+								segments: [
+									{ delta: { rotation: 200 }, durationMs: 100, effects: { tint: { r: 120, g: 120, b: 128 } } },
+									{ delta: { rotation: 0 }, durationMs: 200 },
+								],
+							},
+						},
+					},
+				},
+				makeRig(),
+			),
+		});
+		const app = await startApp(rt);
+		try {
+			await rt.express({ motion: "spin" }, {});
+			expect(state.moveTimes.length).toBe(2);
+			expect(state.moveTimes[1]! - state.moveTimes[0]!).toBeGreaterThanOrEqual(100);
+		} finally {
+			await app.onStop?.({} as ServiceCompanionContext);
+		}
+	});
+
+	it("回读重试缓冲：VTS 插值未落地时首次回读不匹配，重试后结算匹配 → 如实判 restored", async () => {
+		const state: FakeState = {
+			connected: true,
+			pose: { positionX: 0, positionY: 0, rotation: 10, size: 1 },
+			hotkeyIDs: [],
+			triggered: [],
+			moveCalls: [],
+			hangMove: false,
+			moveTimes: [],
+			readTimes: [],
+			moved: false,
+			unsettledReads: 1, // 移动后的首次回读返回扰动位姿（+5°），模拟插值未落地
+		};
+		const rt = makeRuntime(state);
+		const app = await startApp(rt);
+		try {
+			const result = await rt.express({ motion: "spin" }, {});
+			// 旧实现单次回读即判"正常回位未确认"且详情报陈旧 false；重试后如实结算。
+			expect(result.status).toBe("unknown"); // 假体不确认参数输入（既有语义）
+			expect(result.details).toMatchObject({ restored: true });
+		} finally {
+			await app.onStop?.({} as ServiceCompanionContext);
+		}
+	});
+
 	it("safeStop 期间等待在途归位清理完成，完成后暂停生效；此后工具 paused 拒绝", async () => {
 		const state: FakeState = {
 			connected: true,
@@ -277,6 +388,9 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			triggered: [],
 			moveCalls: [],
 			hangMove: false,
+			moveTimes: [],
+			readTimes: [],
+			moved: false,
 		};
 		const rt = makeRuntime(state);
 		const app = await startApp(rt);
@@ -307,6 +421,9 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			triggered: [],
 			moveCalls: [],
 			hangMove: false,
+			moveTimes: [],
+			readTimes: [],
+			moved: false,
 		};
 		const rt = makeRuntime(state, 50);
 		const app = await startApp(rt);
@@ -327,6 +444,9 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			triggered: [],
 			moveCalls: [],
 			hangMove: false,
+			moveTimes: [],
+			readTimes: [],
+			moved: false,
 		};
 		const rt = makeRuntime(state);
 		const app = await startApp(rt);
@@ -355,6 +475,9 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			triggered: [],
 			moveCalls: [],
 			hangMove: false,
+			moveTimes: [],
+			readTimes: [],
+			moved: false,
 			slowHotkey: { resolve: () => {} },
 		};
 		const rt = makeRuntime(state);
