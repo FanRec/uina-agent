@@ -33,11 +33,8 @@ export interface Live2DWorldRuntime {
 	start(ctx: ServiceCompanionContext): Promise<void>;
 	stop(): Promise<void>;
 	express(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
-	posture(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
-	expression(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
-	attention(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
+	state(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
 	costume(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
-	ambient(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
 	reload(ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
 	formatStatus(): string | Promise<string>;
 	diagnose(): string | Promise<string>;
@@ -172,20 +169,11 @@ export class Live2DRuntimeProxy implements Live2DWorldRuntime {
 	express(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
 		return this.call("express", args, ctx?.signal) as Promise<ToolExecutionResult>;
 	}
-	posture(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
-		return this.call("posture", args, ctx?.signal) as Promise<ToolExecutionResult>;
-	}
-	expression(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
-		return this.call("expression", args, ctx?.signal) as Promise<ToolExecutionResult>;
-	}
-	attention(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
-		return this.call("attention", args, ctx?.signal) as Promise<ToolExecutionResult>;
+	state(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+		return this.call("state", args, ctx?.signal) as Promise<ToolExecutionResult>;
 	}
 	costume(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
 		return this.call("costume", args, ctx?.signal) as Promise<ToolExecutionResult>;
-	}
-	ambient(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
-		return this.call("ambient", args, ctx?.signal) as Promise<ToolExecutionResult>;
 	}
 	reload(ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
 		return this.call("reload", undefined, ctx?.signal) as Promise<ToolExecutionResult>;

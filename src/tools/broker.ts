@@ -205,16 +205,15 @@ async function executeToolCore(
 	} catch (error) {
 		if (signal?.aborted) {
 			return {
-				result: JSON.stringify({ error: "工具已启动，但取消时结果未知", status: "unknown" }),
+				result: "工具已启动，但取消时结果未知。",
 				status: "unknown",
+				details: { reason: "tool_cancelled" },
 			};
 		}
 		return {
-			result: JSON.stringify({
-				error: `${name} 执行失败: ${errorMessage(error)}`,
-				status: "failed",
-			}),
+			result: `${name} 执行失败: ${errorMessage(error)}`,
 			status: "failed",
+			details: { reason: "tool_error" },
 		};
 	}
 }

@@ -15,12 +15,12 @@ import { Live2DRuntimeProxy, type Live2DWorldRuntime } from "./worker/proxy.js";
 /**
  * Live2D 世界装配。
  *
- * 工具面按规范定型：
- * express / posture / expression / attention / costume / ambient / status / diagnose / reload；
+ * 工具面按规范定型（收敛后 5 个）：
+ * express / state（姿势·表情·视线·环境循环合并槽位面）/ costume / status（含 detail 诊断档）/ reload；
  * executionMode 显式固定为 parallel（并发是常态，安全由引擎逐轴仲裁与独占声明保证，工具层不串行化）。
  *
  * 工具结果词汇表 + gate 链（中止 → 暂停 → 连接 → 适配）+ 目录词表解析；
- * express / posture / expression / attention 走引擎映射，costume 支持执行（独占 effect:* + 热键），
+ * express 走引擎映射，costume 支持执行（独占 effect:* + 热键），
  * 空间特技统一收拢至 express 动作手势（独占 model:transform），reload 走 VTS 重载与绑定核验。
  * 刻意不做（规范修订 A2/A14/A6）：Timeline、Performance 门面、即兴 beats、自由数值轴。
  */
@@ -52,7 +52,7 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 	return {
 		name: "live2d",
 		description:
-			"Live2D 身体。说话时伴随的小动作（如点头、眨眼、歪头）直接在文字里写 <cue id='动作名'/>；需要主动调整身体姿势、表情、视线或做独立大幅动作时，才调用本工具。",
+			"Live2D 身体。说话时的小动作（点头、眨眼）直接在文字里写 <cue id='动作名'/>；需要主动动身体时才调用本工具。拿不准动作名先调 status。",
 		executionMode: "parallel",
 		defaultState: { enabled: true },
 		async onStart(ctx: ServiceCompanionContext) {
@@ -94,12 +94,12 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 		},
 		actions: {
 			express: {
-				description: "做一段独立的大幅动作（非说话伴随动作）。",
+				description: "做一个完整的大动作，比如转身、凑近、挥手。说话时的小动作不要调这个。",
 				parameters: {
 					type: "object",
 					additionalProperties: false,
 					properties: {
-						motion: { type: "string", description: "动作名称。来自当前模型的动作目录（具体见 status 或报错提示）" },
+						motion: { type: "string", description: "动作名称，来自当前模型的动作目录（见 status 或报错提示）" },
 						atomic: { type: "boolean", description: "被抢占时是否整场取消，默认 true" },
 						speech: { type: "string", enum: ["allow", "exclusive"], description: "exclusive 时在播放期间压制说话口型" },
 					},
@@ -107,84 +107,60 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 				},
 				run: call("express", (rt, args, ctx) => rt.express(args, ctx)),
 			},
-			posture: {
-				description: "调整身体姿势（站姿/坐姿）。",
+			state: {
+				description:
+					"调整持续的身体状态：姿势、表情、视线、背景小动作。可一次组合设置（如坐下+微笑+看对方），没传的项保持不变；姿势表情会一直保持到下次更换。",
 				parameters: {
 					type: "object",
 					additionalProperties: false,
 					properties: {
-						name: { type: "string", description: "姿势名称。来自当前模型的姿势目录（如 rest, tuck 等，具体见 status 或报错提示）" },
-						hold_ms: { type: "number", minimum: 0, description: "保持时长（毫秒，不填则一直保持）" },
+						posture: { type: "string", description: "姿势名，如 rest、tuck（见 status）" },
+						expression: { type: "string", description: "表情名，如 smile、smirk（见 status）" },
+						attention: {
+							type: "string",
+							description: "看向哪里：user(看对方)、screen(看屏幕)、avert_down/left/right(移开视线)，或模型自定义目标",
+						},
+						ambient: {
+							type: ["string", "null"],
+							description: "背景小动作名（如 sway）；传 null 停止并回到默认静止态",
+						},
+						hold_ms: {
+							type: "number",
+							minimum: 0,
+							description: "本调用的姿势/表情/视线保持多久（毫秒），到期自动回正；不填则一直保持",
+						},
 					},
-					required: ["name"],
 				},
-				run: call("posture", (rt, args, ctx) => rt.posture(args, ctx)),
-			},
-			expression: {
-				description: "调整脸部表情。",
-				parameters: {
-					type: "object",
-					additionalProperties: false,
-					properties: {
-						name: { type: "string", description: "表情名称。来自当前模型的表情目录（如 smile, smirk 等，具体见 status 或报错提示）" },
-						hold_ms: { type: "number", minimum: 0, description: "保持时长（毫秒，不填则一直保持）" },
-					},
-					required: ["name"],
-				},
-				run: call("expression", (rt, args, ctx) => rt.expression(args, ctx)),
-			},
-			attention: {
-				description: "调整视线方向。",
-				parameters: {
-					type: "object",
-					additionalProperties: false,
-					properties: {
-						target: { type: "string", description: "视线目标。内置: user(看对方), screen(看屏幕), avert_down(看下方), avert_left/right(避开视线)，或当前模型的自定义目标" },
-						hold_ms: { type: "number", minimum: 0, description: "保持时长（毫秒，不填则一直保持）" },
-					},
-					required: ["target"],
-				},
-				run: call("attention", (rt, args, ctx) => rt.attention(args, ctx)),
+				run: call("state", (rt, args, ctx) => rt.state(args, ctx)),
 			},
 			costume: {
-				description: "切换外观或配件（如戴眼镜/脱外套）。",
+				description: "穿脱外观，比如戴上眼镜、脱掉外套。",
 				parameters: {
 					type: "object",
 					additionalProperties: false,
 					properties: {
-						item: { type: "string", description: "外观标识。来自当前模型的外观目录（见 status）" },
+						item: { type: "string", description: "外观标识，来自当前模型的外观目录（见 status）" },
 					},
 					required: ["item"],
 				},
 				run: call("costume", (rt, args, ctx) => rt.costume(args, ctx)),
 			},
-			ambient: {
-				description:
-					"选择持续的环境身体循环（如摇摆晃动），选中后一直保持，与说话/表情/视线并存；再次调用可替换，不传 name 则停止并回到默认静止态。",
+			status: {
+				description: "看身体现在的状态和能做的所有动作。拿不准名字时先调这个。",
 				parameters: {
 					type: "object",
 					additionalProperties: false,
 					properties: {
-						name: {
-							type: "string",
-							description: "环境循环名称。来自当前模型的环境循环目录（如 sway，具体见 status 或报错提示）",
-						},
+						detail: { type: "boolean", description: "true 返回底层诊断快照（引擎内部状态，平时不用）" },
 					},
 				},
-				run: call("ambient", (rt, args, ctx) => rt.ambient(args, ctx)),
-			},
-			status: {
-				description: "查看当前身体状态和可用动作列表。",
-				parameters: { type: "object", additionalProperties: false, properties: {} },
-				run: call("status", async (rt) => ({ result: await rt.formatStatus(), status: "succeeded" })),
-			},
-			diagnose: {
-				description: "底层诊断快照（仅供技术排查，通常无需调用）。",
-				parameters: { type: "object", additionalProperties: false, properties: {} },
-				run: call("diagnose", async (rt) => ({ result: await rt.diagnose(), status: "succeeded" })),
+				run: call("status", async (rt, args) => ({
+					result: args.detail === true ? await rt.diagnose() : await rt.formatStatus(),
+					status: "succeeded",
+				})),
 			},
 			reload: {
-				description: "重新加载模型并核验（仅供技术排查，通常无需调用）。",
+				description: "重载模型并核验绑定。改了模型配置后用。",
 				parameters: { type: "object", additionalProperties: false, properties: {} },
 				run: call("reload", (rt, _args, ctx) => rt.reload(ctx)),
 			},

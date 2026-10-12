@@ -64,8 +64,12 @@ export function createWorldTool(def: WorldDef, _options: WorldToolOptions): Tool
 			const validator = validators.get(actionName);
 			if (validator && !validator(params)) {
 				const validationErrors = structuredClone(validator.errors ?? []);
+				// 自愈提示：附上该操作的合法参数名清单，调用方一轮即可修正拼写/缺参。
+				const schema = action.parameters as { properties?: Record<string, unknown> } | undefined;
+				const available = schema?.properties ? Object.keys(schema.properties).join(", ") : "";
+				const hint = available ? `。可用参数: ${available}` : "";
 				return {
-					result: `【${def.name} 参数错误】${formatValidationErrors(validator.schema, params, validationErrors)}`,
+					result: `【${def.name} 参数错误】${formatValidationErrors(validator.schema, params, validationErrors)}${hint}`,
 					status: "failed" as const,
 					details: { operationIdentity: identity, worldName: def.name, action: actionName, validationErrors },
 				};

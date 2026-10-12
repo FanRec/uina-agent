@@ -117,13 +117,19 @@ const poseMatches = (now: ModelPose, base: ModelPose): boolean =>
 	Math.abs(now.size - base.size) <= 0.01;
 
 
-/** 省略或 0 表示持续；非法时长返回工具拒绝结果。 */
-function parseHoldMs(value: unknown): number | undefined | ToolExecutionResult {
-	if (value === undefined) return undefined;
-	if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
-		return toolRejected("invalid_duration", "hold_ms 必须是非负有限数值。");
-	return value > 0 ? value : undefined;
-}
+	/** 省略或 0 表示持续；非法时长返回工具拒绝结果。 */
+	function parseHoldMs(value: unknown): number | undefined | ToolExecutionResult {
+		if (value === undefined) return undefined;
+		if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
+			return toolRejected("invalid_duration", "hold_ms 必须是非负有限数值。");
+		return value > 0 ? value : undefined;
+	}
+
+	/** 非空字符串参数校验；不合格返回工具拒绝结果。 */
+	const requireWord = (value: unknown, label: string): string | ToolExecutionResult =>
+		typeof value === "string" && value.length > 0
+			? value
+			: toolRejected("invalid_params", `缺少 ${label} 参数。`);
 
 /** 格式化目录条目名称与别名列表。 */
 const formatCatalogEntries = (map: ReadonlyMap<string, { aliases?: readonly string[] }>): string[] =>
@@ -287,14 +293,6 @@ export class Live2DRuntime {
 		}
 	}
 
-	/** 引擎未接入前的统一受理语义：诚实声明未开始，不伪装失败原因。 */
-	notStarted(action: string): ToolExecutionResult {
-		return {
-			result: `Live2D 骨架已就绪，但引擎尚未接入，"${action}" 未执行（施工阶段 P4）。`,
-			status: "not_started",
-		};
-	}
-
 	// ---------- P4-1：gate 链与工具面 ----------
 
 	/**
@@ -337,7 +335,7 @@ export class Live2DRuntime {
 	 */
 	async playMotion(
 		entry: CatalogMotionEntry,
-		options: { speech?: SpeechPolicy; atomic?: boolean; signal?: AbortSignal } = {},
+		options: { speech?: SpeechPolicy; atomic?: boolean; signal?: AbortSignal; callName?: string } = {},
 	): Promise<ToolExecutionResult> {
 		const denied = this.gate(options);
 		if (denied) return denied;
@@ -353,7 +351,7 @@ export class Live2DRuntime {
 		const label = `动作 "${entry.description}"`;
 		if (!entry.spatial) {
 			const handle = director.play(clip, playOptions);
-			return this.settleMotion(handle, clip, label);
+			return this.settleMotion(handle, clip, label, options.callName);
 		}
 		if (!this.focused) return toolRejected("unfocused", `${label} 未执行：身体当前失焦。`);
 
@@ -471,11 +469,11 @@ export class Live2DRuntime {
 					),
 				].filter((p) => !presets.includes(p));
 				if (missing.length > 0)
-					return toolRejected(
-						"invalid_motion",
-						`${label} 引用的后处理预设不存在于 VTS，未发送：${missing.join("、")}。可用预设: ${presets.join("、")}。`,
-						{ missingPresets: missing, availablePresets: presets },
-					);
+				return toolRejected(
+					"preset_missing",
+					`${label} 引用的后处理预设不存在于 VTS，未发送：${missing.join("、")}。可用预设: ${presets.join("、")}。`,
+					{ missingPresets: missing, availablePresets: presets },
+				);
 			}
 			try {
 				postBaseline = await withCancellation(client.readPostProcessing(), claim.signal);
@@ -488,7 +486,7 @@ export class Live2DRuntime {
 			void handle.finished.then((result) => {
 				if (result.status === "cancelled") claim.cancel();
 			});
-			motionResult = this.settleMotion(handle, clip, label);
+			motionResult = this.settleMotion(handle, clip, label, options.callName);
 			for (const [index, segment] of entry.spatial.segments.entries()) {
 				ensureActive();
 				await withCancellation(client.getModelPosition(this.rig!.modelID), claim.signal);
@@ -591,7 +589,12 @@ export class Live2DRuntime {
 		}
 	}
 
-	private async settleMotion(handle: MotionHandle, clip: CompiledMotion, label: string): Promise<ToolExecutionResult> {
+	private async settleMotion(
+		handle: MotionHandle,
+		clip: CompiledMotion,
+		label: string,
+		callName?: string,
+	): Promise<ToolExecutionResult> {
 		const observation = this.client!.observeMotionInjections(handle.id);
 		try {
 			const result = await handle.finished;
@@ -599,7 +602,7 @@ export class Live2DRuntime {
 			const inputs = [
 				...new Set(clip.axes.flatMap((axis) => this.rig!.bindings[axis]!.map((binding) => binding.input))),
 			];
-			return fromEngineResult(result, label, evidence, inputs);
+			return fromEngineResult(result, label, evidence, inputs, callName);
 		} finally {
 			observation.close();
 		}
@@ -609,8 +612,8 @@ export class Live2DRuntime {
 	async express(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
 		const denied = this.gate(ctx);
 		if (denied) return denied;
-		const name = args.motion;
-		if (typeof name !== "string" || name.length === 0) return toolRejected("invalid_motion", "缺少 motion 参数。");
+		const name = requireWord(args.motion, "motion");
+		if (typeof name === "object") return name;
 		const entry = this.catalog.findMotion(name);
 		if (!entry) {
 			const available = formatMotionEntries(this.catalog.motions).join(", ") || "无";
@@ -618,14 +621,15 @@ export class Live2DRuntime {
 		}
 		const { atomic, speech } = args;
 		if (atomic !== undefined && typeof atomic !== "boolean")
-			return toolRejected("invalid_motion", "atomic 必须是布尔值。");
+			return toolRejected("invalid_params", "atomic 必须是布尔值。");
 		if (speech !== undefined && speech !== "allow" && speech !== "exclusive")
-			return toolRejected("invalid_motion", 'speech 只接受 "allow" | "exclusive"。');
+			return toolRejected("invalid_params", 'speech 只接受 "allow" | "exclusive"。');
 
 		return this.playMotion(entry, {
 			speech,
 			atomic,
 			signal: ctx.signal,
+			callName: name,
 		});
 	}
 
@@ -651,14 +655,15 @@ export class Live2DRuntime {
 		const label = kind === "posture" ? "姿态" : "表情";
 		const reason = kind === "posture" ? "unknown_pose" : "unknown_expression";
 		const name = args.name ?? args[kind];
-		if (typeof name !== "string" || name.length === 0) return toolRejected(reason, "缺少 name 参数。");
+		const checked = requireWord(name, "name");
+		if (typeof checked === "object") return checked;
 		const holdMs = parseHoldMs(args.hold_ms);
 		if (typeof holdMs === "object") return holdMs;
-		const slot = this.catalog.findSlot(kind, name);
+		const slot = this.catalog.findSlot(kind, checked);
 		if (!slot) {
 			const entries = kind === "posture" ? this.catalog.postures : this.catalog.expressions;
 			const available = formatCatalogEntries(entries).join(", ") || "无";
-			return toolRejected(reason, `${label}不在当前模型目录: "${name}"。当前可用${label}: ${available}。`);
+			return toolRejected(reason, `${label}不在当前模型目录: "${checked}"。当前可用${label}: ${available}。`);
 		}
 		try {
 			if (kind === "posture") await director.setPosture(slot.values, { holdMs, durationMs: slot.transitionMs });
@@ -673,7 +678,7 @@ export class Live2DRuntime {
 			}
 			throw error;
 		}
-		return toolSucceeded(kind === "posture" ? `已切换姿势: ${name}。` : `已切换表情: ${name}。`, {
+		return toolSucceeded(`${name} OK`, {
 			effectStatus: "accepted",
 			verification: "local_intent",
 		});
@@ -686,11 +691,11 @@ export class Live2DRuntime {
 		const director = this.director;
 		if (!director) return toolRejected("unadapted", "引擎未接入（无 rig）。");
 		const targetVal = args.target ?? args.attention;
-		if (typeof targetVal !== "string" || targetVal.length === 0)
-			return toolRejected("unknown_attention", "缺少 target 参数。");
+		const checked = requireWord(targetVal, "target");
+		if (typeof checked === "object") return checked;
 		const holdMs = parseHoldMs(args.hold_ms);
 		if (typeof holdMs === "object") return holdMs;
-		const target = this.catalog.resolveAttention(targetVal);
+		const target = this.catalog.resolveAttention(checked);
 		if (target === undefined) {
 			const custom = [...this.catalog.attentions.keys()];
 			const available = [
@@ -701,10 +706,10 @@ export class Live2DRuntime {
 				"看右侧/avert_right",
 				...custom,
 			].join(", ");
-			return toolRejected("unknown_attention", `注视目标不在词表: "${targetVal}"。可用注视: ${available}。`);
+			return toolRejected("unknown_attention", `注视目标不在词表: "${checked}"。可用注视: ${available}。`);
 		}
 		director.setAttention(target, { holdMs });
-		return toolSucceeded(`视线已转向: ${targetVal}。`, {
+		return toolSucceeded(`${checked} OK`, {
 			effectStatus: "accepted",
 			verification: "local_intent",
 		});
@@ -714,8 +719,8 @@ export class Live2DRuntime {
 	async costume(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
 		const denied = this.gate(ctx);
 		if (denied) return denied;
-		const item = args.item;
-		if (typeof item !== "string" || item.length === 0) return toolRejected("unknown_costume", "缺少 item 参数。");
+		const item = requireWord(args.item, "item");
+		if (typeof item === "object") return item;
 		const entry = this.catalog.costumes.find((c) => c.id === item);
 		if (!entry) {
 			const available = this.catalog.costumes.map((c) => c.id).join(", ") || "无";
@@ -731,7 +736,10 @@ export class Live2DRuntime {
 		if ("status" in claim) return claim;
 		try {
 			await this.client!.triggerHotkey(hotkey.hotkeyID);
-			return toolSucceeded(`外观 "${entry.id}" 已触发（热键 ${hotkey.hotkeyID}）。`, { effectStatus: "accepted" });
+			return toolSucceeded(`${entry.id} OK`, {
+				effectStatus: "accepted",
+				verification: "local_intent",
+			});
 		} catch (error) {
 			return toolUnknown(`外观触发结果不明：${error instanceof Error ? error.message : String(error)}`);
 		} finally {
@@ -747,18 +755,24 @@ export class Live2DRuntime {
 	async ambient(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
 		const denied = this.gate(ctx);
 		if (denied) return denied;
-		if (!this.director) return toolRejected("unadapted", "引擎未接入（无 rig）。");
-		const name = args.name;
+		const raw = args.name;
+		// 清除词表：null / "none" / "stop" / "clear" 与省略同义——停止不靠猜。
+		const CLEAR_WORDS = new Set(["none", "stop", "clear"]);
+		const name =
+			raw === null || (typeof raw === "string" && CLEAR_WORDS.has(raw))
+				? undefined
+				: raw;
 		if (name !== undefined && (typeof name !== "string" || name.length === 0))
-			return toolRejected("unknown_ambient", "name 必须是非空字符串（不传 name 即清除当前环境循环）。");
+			return toolRejected("invalid_params", "name 必须是非空字符串（传 null 或不传即清除当前环境循环）。");
 		const ambient = this.catalog.background.ambient;
 		if (typeof name === "string" && !ambient?.has(name)) {
 			const available = [...(ambient?.keys() ?? [])].join(", ");
-			return toolRejected("unknown_ambient", `环境循环不在当前模型目录: "${name}"。当前可用: ${available || "无"}。`);
+			return toolRejected("unknown_ambient", `环境循环不在当前模型目录: "${name}"。当前可用: ${available || "无"}。停止请传 {"name": null}。`);
 		}
 		const next = typeof name === "string" ? name : undefined;
+		// 幂等与清除不区分措辞：是否"新设置"不由 result 声称，status/details 承载语义。
 		if (next === this.ambientName)
-			return toolSucceeded(next ? `环境循环 "${next}" 已在选择中。` : "当前无环境循环。", {
+			return toolSucceeded(next ? `${next} OK` : "cleared OK", {
 				effectStatus: "accepted",
 				verification: "local_intent",
 			});
@@ -768,10 +782,99 @@ export class Live2DRuntime {
 		this.restHandle = undefined;
 		this.syncSwaySuppression();
 		this.syncBackgrounds();
-		return toolSucceeded(
-			next ? `环境循环已选择: ${next}。` : "环境循环已清除，回到默认静止态。",
-			{ effectStatus: "accepted", verification: "local_intent" },
-		);
+		return toolSucceeded(next ? `${next} OK` : "cleared OK", {
+			effectStatus: "accepted",
+			verification: "local_intent",
+		});
+	}
+
+	/**
+	 * state（工具面收敛）：一次调用设置任意组合的持续槽位。
+	 * posture/expression/attention 任选，ambient 可同时选择/清除；hold_ms 统一作用于本调用的限时槽位。
+	 * 词表预校验先行：任一名字未知即整体拒绝（零半程状态），施加阶段复用各槽位既有语义。
+	 */
+	async state(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+		const denied = this.gate(ctx);
+		if (denied) return denied;
+		if (!this.director) return toolRejected("unadapted", "引擎未接入（无 rig）。");
+		const holdMs = parseHoldMs(args.hold_ms);
+		if (typeof holdMs === "object") return holdMs;
+		// ---------- 预校验（纯目录查询，零副作用） ----------
+		const wanted: Array<{ kind: "posture" | "expression"; name: string }> = [];
+		for (const kind of ["posture", "expression"] as const) {
+			const value = args[kind];
+			if (value === undefined) continue;
+			const checked = requireWord(value, kind);
+			if (typeof checked === "object") return checked;
+			if (!this.catalog.findSlot(kind, checked))
+				return toolRejected(
+					kind === "posture" ? "unknown_pose" : "unknown_expression",
+					`${kind === "posture" ? "姿势" : "表情"}不在当前模型目录: "${checked}"。当前可用: ${
+						formatCatalogEntries(kind === "posture" ? this.catalog.postures : this.catalog.expressions).join(", ") || "无"
+					}。`,
+				);
+			wanted.push({ kind, name: checked });
+		}
+		let attentionTarget: string | undefined;
+		if (args.attention !== undefined) {
+			const checked = requireWord(args.attention, "attention");
+			if (typeof checked === "object") return checked;
+			if (this.catalog.resolveAttention(checked) === undefined) {
+				const custom = [...this.catalog.attentions.keys()];
+				const available = [
+					"看对方/user",
+					"看屏幕/screen",
+					"垂眸/看下方/avert_down",
+					"看左侧/avert_left",
+					"看右侧/avert_right",
+					...custom,
+				].join(", ");
+				return toolRejected("unknown_attention", `注视目标不在词表: "${checked}"。可用注视: ${available}。`);
+			}
+			attentionTarget = checked;
+		}
+		let ambientName: string | null | undefined;
+		if (args.ambient !== undefined) {
+			const raw = args.ambient;
+			if (raw !== null && (typeof raw !== "string" || raw.length === 0))
+				return toolRejected("invalid_params", "ambient 必须是非空字符串或 null（null 即清除）。");
+			const cleared = raw === null || raw === "none" || raw === "stop" || raw === "clear";
+			const name = cleared ? undefined : (raw as string);
+			if (name !== undefined && !this.catalog.background.ambient?.has(name)) {
+				const available = [...(this.catalog.background.ambient?.keys() ?? [])].join(", ");
+				return toolRejected("unknown_ambient", `环境循环不在当前模型目录: "${name}"。当前可用: ${available || "无"}。`);
+			}
+			ambientName = name ?? null;
+		}
+		// ---------- 施加（按 姿势→表情→视线→环境 顺序；中途被取代即如实结算） ----------
+		const applies: Array<{ label: string; run: () => Promise<ToolExecutionResult> }> = [];
+		for (const slot of wanted)
+			applies.push({
+				label: slot.name,
+				run: () => this.setNamedSlot(slot.kind, { name: slot.name, hold_ms: holdMs }, ctx),
+			});
+		if (attentionTarget !== undefined)
+			applies.push({
+				label: attentionTarget,
+				run: () => this.attention({ target: attentionTarget, hold_ms: holdMs }, ctx),
+			});
+		if (ambientName !== undefined)
+			applies.push({
+				label: ambientName ?? "cleared",
+				run: () => this.ambient({ name: ambientName }, ctx),
+			});
+		if (applies.length === 0)
+			return toolSucceeded("未指定任何槽位，状态未变。", { effectStatus: "accepted", verification: "local_intent" });
+		// 单槽直通：保留内层回执（"<名字> OK"）；多槽聚合为 "<名1, 名2, …> OK"。
+		if (applies.length === 1) return applies[0]!.run();
+		const labels: string[] = [];
+		for (const apply of applies) {
+			const res = await apply.run();
+			if (res.status !== "succeeded")
+				return { ...res, result: `${res.result}（此前已生效: ${labels.join("、") || "无"}）` };
+			labels.push(apply.label);
+		}
+		return toolSucceeded(`${labels.join(", ")} OK`, { effectStatus: "accepted", verification: "local_intent" });
 	}
 
 	/** reload（§2）：显式重载当前 VTS 模型并重新核验绑定。 */
@@ -787,7 +890,7 @@ export class Live2DRuntime {
 		const profile = this.client!.getModelProfile();
 		if (!profile || profile.modelID !== this.rig!.modelID)
 			return toolRejected("unadapted", "重载后的模型与本地 rig 不符，绑定核验失败。");
-		return toolSucceeded("模型已重载，绑定核验通过。", { effectStatus: "accepted" });
+		return toolSucceeded("OK", { effectStatus: "accepted", verification: "local_intent" });
 	}
 
 	// ---------- 生命周期 ----------
@@ -1070,6 +1173,7 @@ export class Live2DRuntime {
 				connected,
 				modelID: this.rig?.modelID ?? null,
 				paused: this.paused,
+				focused: this.focused,
 				catalog: {
 					motions: formatMotionEntries(this.catalog.motions),
 					postures: formatCatalogEntries(this.catalog.postures),

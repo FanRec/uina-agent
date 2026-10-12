@@ -111,7 +111,7 @@ export function buildLive2DEndpoint(runtime: Live2DRuntime): Live2DEndpoint {
 				if (resolved.kind === "motion") {
 					// cue 优先级固定 Voluntary（§3）；atomic 取目录声明（命名表演默认 true）。
 					const motionEntry = runtime.catalogView.motions.get(resolved.name)!;
-					const result = await runtime.playMotion(motionEntry);
+					const result = await runtime.playMotion(motionEntry, { callName: cueId });
 					const detailReason = (result.details as { reason?: string } | undefined)?.reason;
 					if (result.status === "failed" && detailReason) {
 						// 工具层拒绝（paused/model_not_ready 等）：执行未开始，记 rejected 而非 finished。

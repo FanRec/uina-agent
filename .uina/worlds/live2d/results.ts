@@ -14,16 +14,18 @@ import type { MotionInjectionEvidence } from "./adapter/vts-client.js";
 export type EffectStatus = "not_started" | "applied" | "accepted" | "cancelled" | "unknown";
 export type Verification = "local_intent" | "input_accepted";
 
-/** 拒绝原因词表（§2.1 表格，normative）。 */
+/** 拒绝原因词表（§2.1 表格，normative）。
+ *  分类规则：调用方格式错误（缺参/类型错）→ invalid_*；环境/词表事实不满足 → unknown_* / 专属词。 */
 export type RejectReason =
 	| "cancelled"
 	| "paused"
 	| "model_not_ready"
 	| "unadapted"
 	| "external_source"
-	| "invalid_motion"
+	| "invalid_params"
 	| "invalid_duration"
-	| "invalid_preview"
+	| "invalid_motion"
+	| "preset_missing"
 	| "unknown_pose"
 	| "unknown_expression"
 	| "unknown_attention"
@@ -79,12 +81,14 @@ export function fromEngineResult(
 	label: string,
 	evidence?: MotionInjectionEvidence,
 	requiredInputs: readonly string[] = [],
+	callName?: string,
 ): ToolExecutionResult {
 	switch (engine.status) {
 		case "completed":
 			if (!evidence?.accepted || requiredInputs.some((input) => !evidence.acceptedInputs.includes(input)))
 				return toolUnknown(`${label}已播放，但状态未完整确认。`, { injection: evidence });
-			return toolSucceeded(`${label}执行完成。`, {
+			// 成功回执回显调用名（不是作者描述）：闭环调用方自己的符号，语义由 details 承载。
+			return toolSucceeded(`${callName ?? label} OK`, {
 				effectStatus: "accepted",
 				verification: "input_accepted",
 				injection: evidence,
