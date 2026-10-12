@@ -18,6 +18,8 @@ class Device implements WebSocketLike {
 	silentInject = false;
 	tokenToIssue = "issued-token";
 	authDenied = false;
+	postProcessingState = { active: false, activePreset: null as string | null, canUpdateRightNow: true };
+	postUpdateError = false;
 
 	send(raw: string, cb?: (err?: Error) => void): void {
 		const r = JSON.parse(raw);
@@ -38,6 +40,21 @@ class Device implements WebSocketLike {
 				break;
 			case "CurrentModelRequest":
 				data = { modelLoaded: true, modelID: "fixture", timeSinceModelLoaded: 10 };
+				break;
+			case "PostProcessingListRequest":
+				data = {
+					postProcessingActive: this.postProcessingState.active,
+					...(this.postProcessingState.activePreset !== null
+						? { activePreset: this.postProcessingState.activePreset }
+						: {}),
+					canSendPostProcessingUpdateRequestRightNow: this.postProcessingState.canUpdateRightNow,
+				};
+				break;
+			case "PostProcessingUpdateRequest":
+				if (this.postUpdateError) {
+					this.reply(r.requestID, "APIError", { errorID: 229, message: "CannotUpdateRightNow" });
+					return;
+				}
 				break;
 			case "InputParameterListRequest":
 				data = { defaultParameters: [{ name: "drive:x", min: -1, max: 1, defaultValue: 0 }] };
@@ -277,5 +294,45 @@ describe("live2d vts-client（移植行为验证）", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it("tintModel/updatePostProcessing/readPostProcessing：序列化、非法拒绝与协议错误透传", async () => {
+		const device = new Device();
+		const { client } = await readyClient(device);
+
+		await client.tintModel({ r: 120, g: 120, b: 128 });
+		expect(device.messages("ColorTintRequest")[0]?.data).toEqual({
+			colorTint: { colorR: 120, colorG: 120, colorB: 128, colorA: 255 },
+			artMeshMatcher: { tintAll: true },
+		});
+		await expect(client.tintModel({ r: 256, g: 0, b: 0 })).rejects.toThrow("0-255");
+		await expect(client.tintModel({ r: 1.5, g: 0, b: 0 })).rejects.toThrow("0-255");
+
+		await client.updatePostProcessing({ on: true, preset: "Grayscale", fadeTime: 0.25 });
+		expect(device.messages("PostProcessingUpdateRequest")[0]?.data).toEqual({
+			postProcessingOn: true,
+			setPostProcessingPreset: true,
+			presetToSet: "Grayscale",
+			postProcessingFadeTime: 0.25,
+			setAllOtherValuesToDefault: true,
+		});
+		await client.updatePostProcessing({ on: false });
+		expect(device.messages("PostProcessingUpdateRequest")[1]?.data).toEqual({
+			postProcessingOn: false,
+			postProcessingFadeTime: 0,
+			setAllOtherValuesToDefault: true,
+		});
+		await expect(client.updatePostProcessing({ on: true, fadeTime: 2.5 })).rejects.toThrow("0-2 秒");
+
+		device.postProcessingState = { active: true, activePreset: "user_fx", canUpdateRightNow: true };
+		expect(await client.readPostProcessing()).toEqual({
+			active: true,
+			activePreset: "user_fx",
+			canUpdateRightNow: true,
+		});
+
+		device.postUpdateError = true;
+		await expect(client.updatePostProcessing({ on: false })).rejects.toThrow("CannotUpdateRightNow");
+		client.disconnect();
 	});
 });

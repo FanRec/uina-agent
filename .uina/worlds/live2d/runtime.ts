@@ -284,6 +284,7 @@ export class Live2DRuntime {
 	/**
 	 * 统一执行手势/动作条目（供 express 工具与 endpoint.emitCue 复用）。
 	 * 纯骨骼手势直接委托 director.play；若含 spatial，声明 model:transform 并在前台推进去程、停留与自动归位。
+	 * 分段可携带 effects（染色/后处理）与位姿并行分发；归位守护覆盖位姿、染色与后处理三项。
 	 */
 	async playMotion(
 		entry: CatalogMotionEntry,
@@ -332,6 +333,12 @@ export class Live2DRuntime {
 		let moved = false;
 		let restored = true;
 		let restoreAttempted = false;
+		/** 进入时捕获的后处理状态（读失败为 undefined → 归位目标按"关闭"）。tint 协议无读 API，按所有权模型恢复为白。 */
+		let postBaseline: { active: boolean; activePreset: string | null } | undefined;
+		/** 只有特技真的分发过效果才做效果归位——否则白/关复位会踩掉用户自己的染色与滤镜。 */
+		let effectsSent = false;
+		let effectsRestored: { tint: boolean; post: boolean } | undefined;
+		const dispatchFailures: string[] = [];
 		const ensureActive = () => {
 			if (!this.focused || !sameModel() || handle?.status === "releasing" || handle?.status === "cancelled")
 				claim.cancel();
@@ -343,36 +350,87 @@ export class Live2DRuntime {
 			restored = !moved || (base !== undefined && (await this.restorePose(client, base, sameModel)));
 			return restored;
 		};
+		/** 三位一体归位的效果侧：染色刷白 + 后处理恢复进入时状态（无捕获则关闭），逐项如实结算。 */
+		const restoreEffects = async (): Promise<{ tint: boolean; post: boolean }> => {
+			if (effectsRestored) return effectsRestored;
+			if (!effectsSent) return { tint: true, post: true };
+			const settled = await Promise.allSettled([
+				client.tintModel({ r: 255, g: 255, b: 255, a: 255 }),
+				(async () => {
+					await client.updatePostProcessing({
+						on: postBaseline?.active ?? false,
+						...(postBaseline?.active && postBaseline.activePreset
+							? { preset: postBaseline.activePreset }
+							: {}),
+						fadeTime: 0.25,
+					});
+					return client.readPostProcessing();
+				})(),
+			]);
+			const postNow = settled[1].status === "fulfilled" ? await settled[1].value : undefined;
+			effectsRestored = {
+				tint: settled[0].status === "fulfilled",
+				post: postNow !== undefined && postNow.active === (postBaseline?.active ?? false),
+			};
+			return effectsRestored;
+		};
 		try {
 			ensureActive();
 			base = await withCancellation(client.getModelPosition(this.rig!.modelID), claim.signal);
+			ensureActive();
+			try {
+				postBaseline = await withCancellation(client.readPostProcessing(), claim.signal);
+			} catch {
+				// 捕获失败不阻断特技：归位目标按"关闭"回退，恢复结果仍逐项如实结算。
+				postBaseline = undefined;
+			}
 			ensureActive();
 			handle = director.play(clip, { ...playOptions, signal: claim.signal });
 			void handle.finished.then((result) => {
 				if (result.status === "cancelled") claim.cancel();
 			});
 			motionResult = this.settleMotion(handle, clip, label);
-			for (const segment of entry.spatial.segments) {
+			for (const [index, segment] of entry.spatial.segments.entries()) {
 				ensureActive();
 				await withCancellation(client.getModelPosition(this.rig!.modelID), claim.signal);
 				ensureActive();
 				const startedAt = performance.now();
 				moved = true; // 请求异常也可能已经到达 VTS，因此必须尝试归位。
-				await withCancellation(
-					client.moveModel({
-						timeInSeconds: segment.durationMs / 1000,
-						valuesAreRelativeToModel: false,
-						positionX: base.positionX + (segment.delta.x ?? 0),
-						positionY: base.positionY + (segment.delta.y ?? 0),
-						rotation: base.rotation + (segment.delta.rotation ?? 0),
-						size: base.size + (segment.delta.size ?? 0),
-					}),
-					claim.signal,
-				);
+				// 效果与位姿同段并行派发。位姿失败沿用既有语义：中止后续段并走归位守护；
+				// 效果失败仅记录（后续段与归位继续），结算如实呈现。
+				const effectDispatches: Promise<unknown>[] = [];
+				if (segment.effects?.tint) {
+					effectsSent = true;
+					effectDispatches.push(client.tintModel(segment.effects.tint));
+				}
+				if (segment.effects?.postProcessing) {
+					effectsSent = true;
+					effectDispatches.push(client.updatePostProcessing(segment.effects.postProcessing));
+				}
+				const dispatched = await withCancellation(Promise.allSettled(effectDispatches), claim.signal);
+				for (const [slot, outcome] of dispatched.entries())
+					if (outcome.status === "rejected")
+						dispatchFailures.push(
+							`段[${index}]分发[${slot}]: ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`,
+						);
+				if (segment.delta && Object.keys(segment.delta).length > 0)
+					await withCancellation(
+						client.moveModel({
+							timeInSeconds: segment.durationMs / 1000,
+							valuesAreRelativeToModel: false,
+							positionX: base.positionX + (segment.delta.x ?? 0),
+							positionY: base.positionY + (segment.delta.y ?? 0),
+							rotation: base.rotation + (segment.delta.rotation ?? 0),
+							size: base.size + (segment.delta.size ?? 0),
+						}),
+						claim.signal,
+					);
 				const remaining = Math.max(0, segment.durationMs - (performance.now() - startedAt));
 				if (!(await sleep(remaining + (segment.holdMs ?? 0), claim.signal))) break;
 			}
 			ensureActive();
+			// 末段不得携带 effects（编译期禁止）：效果复位由守护在此统一执行，作者不写重置值。
+			const restoredEffects = await restoreEffects();
 			await sleep(SETTLE_MARGIN_MS, claim.signal);
 			ensureActive();
 			const now = await withCancellation(client.getModelPosition(this.rig!.modelID), claim.signal);
@@ -381,7 +439,16 @@ export class Live2DRuntime {
 			if (!restored) {
 				handle.stop("cut");
 				await restore();
-				return toolUnknown(`${label} 正常回位未确认。`, { restored });
+				return toolUnknown(`${label} 正常回位未确认。`, { restored, restoredEffects });
+			}
+			if (dispatchFailures.length > 0 || restoredEffects.tint === false || restoredEffects.post === false) {
+				const problems = [...dispatchFailures];
+				if (restoredEffects.tint === false) problems.push("染色归位未确认");
+				if (restoredEffects.post === false) problems.push("滤镜归位未确认");
+				return toolUnknown(`${label} 部分外部效果未完整：${problems.join("；")}`, {
+					restored: true,
+					restoredEffects,
+				});
 			}
 			// 失联会停止合成时钟；空间表演不能永远等一个不再推进的句柄。
 			let result: ToolExecutionResult | undefined;
@@ -390,20 +457,26 @@ export class Live2DRuntime {
 				result = await Promise.race([motionResult, sleep(50).then(() => undefined)]);
 			}
 			ensureActive();
-			return { ...result, details: { ...(result.details as Record<string, unknown> | undefined), restored: true } };
+			return {
+				...result,
+				details: { ...(result.details as Record<string, unknown> | undefined), restored: true, restoredEffects },
+			};
 		} catch (error) {
 			const cancelled = claim.signal.aborted || handle?.status === "releasing" || handle?.status === "cancelled";
 			handle?.stop("cut");
 			const confirmed = await restore();
+			const restoredEffects = await restoreEffects();
 			if (cancelled && !moved)
 				return toolRejected("cancelled", `${label} 已取消，未发送空间移动。`, { effectStatus: "cancelled" });
 			if (cancelled)
 				return toolRejected("cancelled", confirmed ? `${label} 已取消并核实归位。` : `${label} 已取消，归位未确认。`, {
 					effectStatus: confirmed ? "cancelled" : "unknown",
 					restored: confirmed,
+					restoredEffects,
 				});
 			return toolUnknown(`${label} 执行异常：${error instanceof Error ? error.message : String(error)}`, {
 				...(moved ? { restored: confirmed } : {}),
+				restoredEffects,
 			});
 		} finally {
 			completeCleanup(restored);

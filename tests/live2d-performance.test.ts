@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import { VTSClient, type WebSocketLike } from "../.uina/worlds/live2d/adapter/vts-client.js";
+import { compileCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
+import { motion, track } from "../.uina/worlds/live2d/authoring/motion.js";
 import { compileMOCatalog } from "../.uina/worlds/live2d/models/mo/catalog.js";
 import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
@@ -28,9 +30,15 @@ class Device implements WebSocketLike {
 	onmessage: WebSocketLike["onmessage"] = null;
 	pose = { positionX: 0.2, positionY: -0.1, rotation: 10, size: -30 };
 	moves: Record<string, number>[] = [];
+	tints: Record<string, number>[] = [];
+	postProcessings: Record<string, unknown>[] = [];
 	ack = true;
 	failMove = false;
+	failTint = false;
 	holdMoveAck = false;
+	/** 模拟用户在 VTS 打开特效配置窗口：期间 PostProcessingUpdateRequest 一律被协议拒绝。 */
+	windowOpen = false;
+	postProcessingState = { active: false, activePreset: null as string | null };
 	modelID = MO_MODEL_ID;
 	inputs: { name: string; min: number; max: number; defaultValue: number }[] = [];
 	close(): void {
@@ -56,6 +64,32 @@ class Device implements WebSocketLike {
 			case "InjectParameterDataRequest":
 				if (!this.ack) return;
 				break;
+			case "ColorTintRequest": {
+				this.tints.push(request.data.colorTint);
+				if (this.failTint) {
+					this.failTint = false;
+					this.reply(request.requestID, "APIError", { errorID: 1, message: "tint failed" });
+					return;
+				}
+				break;
+			}
+			case "PostProcessingListRequest":
+				data = {
+					postProcessingActive: this.postProcessingState.active,
+					...(this.postProcessingState.activePreset !== null
+						? { activePreset: this.postProcessingState.activePreset }
+						: {}),
+					canSendPostProcessingUpdateRequestRightNow: !this.windowOpen,
+				};
+				break;
+			case "PostProcessingUpdateRequest": {
+				this.postProcessings.push(request.data);
+				if (this.windowOpen) {
+					this.reply(request.requestID, "APIError", { errorID: 229, message: "CannotUpdateRightNow" });
+					return;
+				}
+				break;
+			}
 			case "MoveModelRequest": {
 				this.moves.push(request.data);
 				if (this.failMove) {
@@ -83,6 +117,72 @@ afterEach(() => {
 	for (const client of clients.splice(0)) client.disconnect();
 	vi.useRealTimers();
 });
+
+/**
+ * 特效框架探针夹具：临时测试用 stunt（不依赖 MO 目录动作），两段时间轴——
+ * 段1 位移+染色+滤镜进入并保持，段2 纯位移归零；效果复位由运行时守护执行。
+ */
+async function connectedEffects() {
+	const rig = (await loadRig(MO_MODEL_ID))!;
+	const catalog = compileCatalog(
+		MO_MODEL_ID,
+		{
+			motions: {
+				fx_probe: {
+					description: "特效框架探针",
+					motion: motion(
+						620,
+						track("head.yaw", [
+							[0, 2],
+							[620, 2],
+						]),
+					),
+					spatial: {
+						segments: [
+							{
+								durationMs: 120,
+								holdMs: 200,
+								delta: { y: 0.05 },
+								effects: {
+									tint: { r: 120, g: 120, b: 128 },
+									postProcessing: { on: true, preset: "Grayscale", fadeTime: 0.1 },
+								},
+							},
+							{ durationMs: 300, delta: { y: 0 } },
+						],
+					},
+				},
+			},
+		},
+		rig,
+	);
+	const device = new Device();
+	device.inputs = [...new Set(Object.values(rig.bindings).flatMap((bindings) => bindings.map((b) => b.input)))].map(
+		(name) => ({ name, min: -100, max: 100, defaultValue: 0 }),
+	);
+	const profile: ModelProfile = {
+		modelID: rig.modelID,
+		modelName: "MO fixture",
+		mappings: [],
+		inputs: [],
+		parameterRanges: {},
+		physicsOutputs: [],
+		sources: [],
+		activeExpressions: [],
+	};
+	const client = new VTSClient({
+		token: "fixture",
+		webSocketFactory: () => device,
+		profileLoader: async () => profile,
+	});
+	clients.push(client);
+	client.connect();
+	device.onopen?.({});
+	for (let i = 0; i < 60; i++) await Promise.resolve();
+	expect(client.isConnected()).toBe(true);
+	const runtime = new Live2DRuntime({ rig, catalog, client, rng: () => 0 });
+	return { runtime, device, client, rig, catalog };
+}
 
 async function connected() {
 	const { rig, catalog } = await authored();
@@ -401,5 +501,104 @@ describe("MO 表演实际合成与执行", () => {
 		await vi.advanceTimersByTimeAsync(1500);
 		await expect(switched).resolves.toMatchObject({ status: "unknown", details: { restored: false } });
 		expect(device.moves).toHaveLength(3);
+	});
+
+	it("特效用例 A：染色与滤镜按段生效，播完归位白并恢复进入时滤镜状态", async () => {
+		vi.useFakeTimers();
+		const { runtime, device } = await connectedEffects();
+		// 用户进入前已开启自己的滤镜：归位必须恢复该状态而非无脑关闭。
+		device.postProcessingState = { active: true, activePreset: "user_fx" };
+		const run = runtime.express({ motion: "fx_probe" }, {});
+		for (let elapsed = 0; elapsed < 200; elapsed += 10) {
+			await vi.advanceTimersByTimeAsync(10);
+			runtime.composeTick(10);
+		}
+		expect(device.tints).toEqual([{ colorR: 120, colorG: 120, colorB: 128, colorA: 255 }]);
+		expect(device.postProcessings[0]).toMatchObject({
+			postProcessingOn: true,
+			setPostProcessingPreset: true,
+			presetToSet: "Grayscale",
+		});
+		for (let elapsed = 0; elapsed < 1500; elapsed += 10) {
+			await vi.advanceTimersByTimeAsync(10);
+			runtime.composeTick(10);
+		}
+		await expect(run).resolves.toMatchObject({
+			status: "succeeded",
+			details: { restored: true, restoredEffects: { tint: true, post: true } },
+		});
+		expect(device.tints.at(-1)).toEqual({ colorR: 255, colorG: 255, colorB: 255, colorA: 255 });
+		expect(device.postProcessings.at(-1)).toMatchObject({
+			postProcessingOn: true,
+			setPostProcessingPreset: true,
+			presetToSet: "user_fx",
+		});
+		expect(device.pose).toEqual({ positionX: 0.2, positionY: -0.1, rotation: 10, size: -30 });
+	});
+
+	it("特效用例 B：中途取消立即三路归位，后续段与残留效果为零", async () => {
+		vi.useFakeTimers();
+		const { runtime, device } = await connectedEffects();
+		const run = runtime.express({ motion: "fx_probe" }, {});
+		for (let elapsed = 0; elapsed < 150; elapsed += 10) {
+			await vi.advanceTimersByTimeAsync(10);
+			runtime.composeTick(10);
+		}
+		expect(device.tints).toHaveLength(1);
+		runtime.setFocused(false);
+		for (let elapsed = 0; elapsed < 600; elapsed += 10) {
+			await vi.advanceTimersByTimeAsync(10);
+			runtime.composeTick(10);
+		}
+		await expect(run).resolves.toMatchObject({
+			status: "cancelled",
+			details: { restored: true, restoredEffects: { tint: true, post: true } },
+		});
+		// 段2 未派发；效果归位恰为一次白 + 一次滤镜恢复。
+		expect(device.tints).toHaveLength(2);
+		expect(device.tints.at(-1)).toEqual({ colorR: 255, colorG: 255, colorB: 255, colorA: 255 });
+		expect(device.postProcessings).toHaveLength(2);
+		expect(device.postProcessings.at(-1)?.postProcessingOn).toBe(false);
+		expect(device.moves.at(-1)?.timeInSeconds).toBe(0.25);
+		expect(device.pose).toEqual({ positionX: 0.2, positionY: -0.1, rotation: 10, size: -30 });
+	});
+
+	it("特效用例 C：染色分发失败如实 unknown，段序列与全量归位仍继续", async () => {
+		vi.useFakeTimers();
+		const { runtime, device } = await connectedEffects();
+		device.failTint = true; // 仅段1 染色请求报错
+		const run = runtime.express({ motion: "fx_probe" }, {});
+		for (let elapsed = 0; elapsed < 1800; elapsed += 10) {
+			await vi.advanceTimersByTimeAsync(10);
+			runtime.composeTick(10);
+		}
+		const result = await run;
+		expect(result.status).toBe("unknown");
+		expect(result.result).toContain("未完整");
+		expect(result.result).toContain("tint failed");
+		expect(result.details).toMatchObject({ restored: true, restoredEffects: { tint: true, post: true } });
+		// 失败的染色请求之后，段2 照常派发，归位白仍执行。
+		expect(device.postProcessings.at(-1)?.postProcessingOn).toBe(false);
+		expect(device.tints.at(-1)).toEqual({ colorR: 255, colorG: 255, colorB: 255, colorA: 255 });
+	});
+
+	it("特效用例 D：VTS 特效窗口打开时恢复被拒，restoredEffects 分项如实 unknown", async () => {
+		vi.useFakeTimers();
+		const { runtime, device } = await connectedEffects();
+		device.postProcessingState = { active: true, activePreset: "user_fx" };
+		const run = runtime.express({ motion: "fx_probe" }, {});
+		for (let elapsed = 0; elapsed < 150; elapsed += 10) {
+			await vi.advanceTimersByTimeAsync(10);
+			runtime.composeTick(10);
+		}
+		device.windowOpen = true; // 恢复窗口期协议拒绝
+		for (let elapsed = 0; elapsed < 1800; elapsed += 10) {
+			await vi.advanceTimersByTimeAsync(10);
+			runtime.composeTick(10);
+		}
+		const result = await run;
+		expect(result.status).toBe("unknown");
+		expect(result.result).toContain("滤镜归位未确认");
+		expect(result.details).toMatchObject({ restored: true, restoredEffects: { tint: true, post: false } });
 	});
 });

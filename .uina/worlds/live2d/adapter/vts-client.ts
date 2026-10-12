@@ -944,6 +944,75 @@ export class VTSClient {
 	}
 
 	/**
+	 * 全模型染色 (ColorTintRequest)。协议无过渡时间参数，即时生效；
+	 * 白 (255,255,255,255) 是官方重置语义；会话断开时 VTS 自动重置本会话染色。
+	 * 颜色值缺失或越界协议直接报错——此处拒绝非 0-255 整数而非静默钳制，非法定义在绑定期就该失败。
+	 */
+	async tintModel(options: { r: number; g: number; b: number; a?: number }): Promise<unknown> {
+		const channels = [
+			["colorR", options.r],
+			["colorG", options.g],
+			["colorB", options.b],
+			["colorA", options.a ?? 255],
+		] as const;
+		for (const [name, value] of channels)
+			if (!Number.isInteger(value) || value < 0 || value > 255)
+				throw new Error(`染色通道 ${name} 必须是 0-255 整数: ${value}`);
+		return this.sendRequest(
+			"ColorTintRequest",
+			{
+				colorTint: {
+					colorR: options.r,
+					colorG: options.g,
+					colorB: options.b,
+					colorA: options.a ?? 255,
+				},
+				artMeshMatcher: { tintAll: true },
+			},
+			1000,
+		);
+	}
+
+	/**
+	 * 场景后处理控制 (PostProcessingUpdateRequest)。滤镜是 VTS 全局场景级效果（影响整个输出而非仅模型）。
+	 * preset 变更原生支持 0-2 秒平滑渐变（postProcessingFadeTime，秒，越界协议报错）。
+	 * VTS 后处理配置窗口打开时更新被拒（CannotUpdateRightNow），调用方须处理该失败形态。
+	 */
+	async updatePostProcessing(options: { on: boolean; preset?: string; fadeTime?: number }): Promise<unknown> {
+		const fadeTime = options.fadeTime ?? 0;
+		if (!Number.isFinite(fadeTime) || fadeTime < 0 || fadeTime > 2)
+			throw new Error(`后处理渐变时间必须是 0-2 秒: ${fadeTime}`);
+		return this.sendRequest(
+			"PostProcessingUpdateRequest",
+			{
+				postProcessingOn: options.on,
+				...(options.preset !== undefined ? { setPostProcessingPreset: true, presetToSet: options.preset } : {}),
+				postProcessingFadeTime: fadeTime,
+				setAllOtherValuesToDefault: true,
+			},
+			1000,
+		);
+	}
+
+	/** 读取后处理当前状态（进入捕获用）：不请求 effects/presets 数组，只取顶部状态字段。 */
+	async readPostProcessing(): Promise<{ active: boolean; activePreset: string | null; canUpdateRightNow: boolean }> {
+		const data = (await this.sendRequest(
+			"PostProcessingListRequest",
+			{ fillPostProcessingPresetsArray: false, fillPostProcessingEffectsArray: false, effectIDFilter: [] },
+			1000,
+		)) as {
+			postProcessingActive?: boolean;
+			activePreset?: string;
+			canSendPostProcessingUpdateRequestRightNow?: boolean;
+		};
+		return {
+			active: data.postProcessingActive ?? false,
+			activePreset: data.activePreset ?? null,
+			canUpdateRightNow: data.canSendPostProcessingUpdateRequestRightNow ?? false,
+		};
+	}
+
+	/**
 	 * 触发 VTube Studio 快捷键 (HotkeyTriggerRequest)
 	 */
 	async triggerHotkey(hotkeyID: string, itemInstanceID?: string): Promise<unknown> {
