@@ -258,10 +258,15 @@ export function compileCatalog(
 				if (segment.holdMs !== undefined && (!Number.isFinite(segment.holdMs) || segment.holdMs < 0))
 					throw new Error(`动作 "${name}" 空间段 holdMs 必须为非负有限数`);
 				if (segment.delta) {
+					// delta 数值域 lint（弱校验）：超出 VTS 字段值域的偏移按作者笔误提前拒绝；
+					// 真约束在运行时——实发绝对值 = base + delta，base 只有运行时可知（VTS_MOVE_LIMITS）。
+					const deltaLimits: Record<string, number> = { x: 1000, y: 1000, rotation: 360, size: 100 };
 					for (const [axis, offset] of Object.entries(segment.delta)) {
 						if (!["x", "y", "rotation", "size"].includes(axis) || !Number.isFinite(offset))
 							throw new Error(`动作 "${name}" 空间偏移非法: ${axis}`);
 						if (offset !== 0) hasPayload = true;
+						if (Math.abs(offset) > deltaLimits[axis]!)
+							throw new Error(`动作 "${name}" 空间偏移超出 VTS 值域: ${axis}=${offset}（±${deltaLimits[axis]}）`);
 					}
 				}
 				const hasEffects = segment.effects !== undefined && Object.keys(segment.effects).length > 0;

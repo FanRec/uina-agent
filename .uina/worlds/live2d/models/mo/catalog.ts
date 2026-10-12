@@ -869,7 +869,8 @@ export const MO_CATALOG_SOURCE: CatalogSource = {
 			spatial: {
 				segments: [
 					{ durationMs: 200, delta: { y: -0.015, rotation: -12 } },
-					{ durationMs: 700, delta: { y: 0.09, rotation: 360 } },
+					// 359 而非 360：VTS rotation 硬边界 ±360，整圈留 1° 余量（边界值实测被 302 拒绝）
+					{ durationMs: 700, delta: { y: 0.09, rotation: 359 } },
 					{ durationMs: 400, delta: { y: 0, rotation: 0 } },
 					{ durationMs: 1000, delta: { y: 0, rotation: 0 } },
 				],

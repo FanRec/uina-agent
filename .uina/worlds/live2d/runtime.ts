@@ -63,6 +63,12 @@ const MAX_TICK_DT_MS = 250;
 const SETTLE_MARGIN_MS = 60;
 const RESTORE_SECONDS = 0.25;
 
+/**
+ * VTS MoveModelRequest 硬边界（官方规格）：越界请求被整体拒绝（302）。
+ * positionX/Y ∈ ±1000（±1=窗口四边）、rotation ∈ ±360、size ∈ ±100、timeInSeconds ∈ 0..2。
+ */
+const VTS_MOVE_LIMITS = { position: 1000, rotation: 360, size: 100 } as const;
+
 type ModelPose = { positionX: number; positionY: number; rotation: number; size: number };
 
 const sleep = (ms: number, signal?: AbortSignal): Promise<boolean> =>
@@ -422,6 +428,33 @@ export class Live2DRuntime {
 			ensureActive();
 			base = await withCancellation(client.getModelPosition(this.rig!.modelID), claim.signal);
 			ensureActive();
+			// 组合值前瞻校验（302 根因修复）：实发绝对值 = base + delta，base 此刻已知——任一段越界
+			// 即在发送前整体失败，不发半程特技。回读 rotation 为正表示法（-12 回读 348），合成前
+			// 须 wrapDeg 归一化，否则正 delta 会越过 360（spin 的 rotation:360 恰好压边界即被拒）。
+			const rotationBase = wrapDeg(base.rotation);
+			const violations: string[] = [];
+			for (const [index, segment] of entry.spatial.segments.entries()) {
+				const target = {
+					positionX: base.positionX + (segment.delta.x ?? 0),
+					positionY: base.positionY + (segment.delta.y ?? 0),
+					rotation: rotationBase + (segment.delta.rotation ?? 0),
+					size: base.size + (segment.delta.size ?? 0),
+				};
+				if (Math.abs(target.positionX) > VTS_MOVE_LIMITS.position || Math.abs(target.positionY) > VTS_MOVE_LIMITS.position)
+					violations.push(
+						`段[${index}] position=(${target.positionX}, ${target.positionY}) 超出 ±${VTS_MOVE_LIMITS.position}`,
+					);
+				if (Math.abs(target.rotation) > VTS_MOVE_LIMITS.rotation)
+					violations.push(`段[${index}] rotation=${target.rotation} 超出 ±${VTS_MOVE_LIMITS.rotation}`);
+				if (Math.abs(target.size) > VTS_MOVE_LIMITS.size)
+					violations.push(`段[${index}] size=${target.size} 超出 ±${VTS_MOVE_LIMITS.size}`);
+			}
+			if (violations.length > 0)
+				return toolRejected(
+					"invalid_motion",
+					`${label} 空间轨迹与当前模型位姿组合后越界，未发送：${violations.join("；")}。`,
+					{ violations },
+				);
 			try {
 				postBaseline = await withCancellation(client.readPostProcessing(), claim.signal);
 			} catch {
@@ -464,7 +497,7 @@ export class Live2DRuntime {
 							valuesAreRelativeToModel: false,
 							positionX: base.positionX + (segment.delta.x ?? 0),
 							positionY: base.positionY + (segment.delta.y ?? 0),
-							rotation: base.rotation + (segment.delta.rotation ?? 0),
+							rotation: rotationBase + (segment.delta.rotation ?? 0),
 							size: base.size + (segment.delta.size ?? 0),
 						}),
 						claim.signal,
