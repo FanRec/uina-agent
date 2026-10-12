@@ -1008,15 +1008,29 @@ export class VTSClient {
 	 * preset 变更原生支持 0-2 秒平滑渐变（postProcessingFadeTime，秒，越界协议报错）。
 	 * VTS 后处理配置窗口打开时更新被拒（CannotUpdateRightNow），调用方须处理该失败形态。
 	 */
-	async updatePostProcessing(options: { on: boolean; preset?: string; fadeTime?: number }): Promise<unknown> {
+	async updatePostProcessing(options: {
+		on: boolean;
+		preset?: string;
+		/** 直接效果 config 值（setPostProcessingValues）；configID 大小写不敏感，值域外协议自动 clamp。 */
+		values?: readonly { readonly id: string; readonly value: number | string }[];
+		fadeTime?: number;
+	}): Promise<unknown> {
 		const fadeTime = options.fadeTime ?? 0;
 		if (!Number.isFinite(fadeTime) || fadeTime < 0 || fadeTime > 2)
 			throw new Error(`后处理渐变时间必须是 0-2 秒: ${fadeTime}`);
+		if (options.preset !== undefined && options.values !== undefined)
+			throw new Error("后处理 preset 与 values 互斥（协议错误 PostProcessingUpdateRequestLoadingPresetAndValues）");
 		return this.sendRequest(
 			"PostProcessingUpdateRequest",
 			{
 				postProcessingOn: options.on,
 				...(options.preset !== undefined ? { setPostProcessingPreset: true, presetToSet: options.preset } : {}),
+				...(options.values !== undefined
+					? {
+							setPostProcessingValues: true,
+							postProcessingValues: options.values.map((v) => ({ configID: v.id, configValue: String(v.value) })),
+						}
+					: {}),
 				postProcessingFadeTime: fadeTime,
 				setAllOtherValuesToDefault: true,
 			},

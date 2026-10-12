@@ -55,9 +55,17 @@ export interface SegmentEffects {
 	readonly tint?: { readonly r: number; readonly g: number; readonly b: number; readonly a?: number };
 	/**
 	 * 场景后处理（PostProcessingUpdateRequest）。滤镜是 VTS 全局场景级效果（影响整个输出而非仅模型）；
-	 * preset 变更原生支持 0-2 秒渐变（fadeTime，秒）。preset 是否存在由运行期发送前前瞻核验（VTS 可枚举预设清单）。
+	 * 原生支持 0-2 秒渐变（fadeTime，秒）。效果表达二选一（协议互斥，编译期校验）：
+	 * - values：直接效果 config 值（如灰度 = ColorGrading_Strength 1 + ColorGrading_Saturation -100），
+	 *   纯 API 值表达，零环境文件依赖，值域外协议自动 clamp；
+	 * - preset：VTS Effects 环境文件名，由运行期发送前前瞻核验（VTS 可枚举预设清单）。
 	 */
-	readonly postProcessing?: { readonly on: boolean; readonly preset?: string; readonly fadeTime?: number };
+	readonly postProcessing?: {
+		readonly on: boolean;
+		readonly values?: readonly { readonly id: string; readonly value: number | string }[];
+		readonly preset?: string;
+		readonly fadeTime?: number;
+	};
 }
 
 export interface SpatialSegment {
@@ -247,9 +255,22 @@ export function compileCatalog(
 				if (effects.postProcessing !== undefined) {
 					if (typeof effects.postProcessing.on !== "boolean")
 						throw new Error(`${label} 后处理 on 必须是布尔值`);
-					const { fadeTime } = effects.postProcessing;
+					const { fadeTime, values, preset } = effects.postProcessing;
 					if (fadeTime !== undefined && (!Number.isFinite(fadeTime) || fadeTime < 0 || fadeTime > 2))
 						throw new Error(`${label} 后处理渐变时间必须是 0-2 秒: ${fadeTime}`);
+					// 效果表达二选一：values（直接 config 值）与 preset（环境文件名）协议互斥。
+					if (values !== undefined && preset !== undefined)
+						throw new Error(`${label} 后处理 values 与 preset 互斥，只能二选一`);
+					if (values !== undefined) {
+						if (!Array.isArray(values) || values.length === 0)
+							throw new Error(`${label} 后处理 values 必须是非空数组`);
+						for (const item of values) {
+							if (typeof item?.id !== "string" || item.id.length === 0)
+								throw new Error(`${label} 后处理 values 项缺少 configID: ${JSON.stringify(item)}`);
+							if (!["number", "string"].includes(typeof item.value))
+								throw new Error(`${label} 后处理 config "${item.id}" 的值必须是 number 或 string: ${JSON.stringify(item)}`);
+						}
+					}
 				}
 			};
 			for (const [index, segment] of segments.entries()) {

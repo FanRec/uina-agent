@@ -685,7 +685,15 @@ export const MO_CATALOG_SOURCE: CatalogSource = {
 						delta: { y: 0 },
 						effects: {
 							tint: { r: 120, g: 120, b: 128 },
-							postProcessing: { on: true, preset: "Grayscale", fadeTime: 0.15 },
+							// 灰度直接效果值（环境无已存预设，preset 路线不可用；纯 API 值零环境依赖）
+							postProcessing: {
+								on: true,
+								values: [
+									{ id: "ColorGrading_Strength", value: 1 },
+									{ id: "ColorGrading_Saturation", value: -100 },
+								],
+								fadeTime: 0.15,
+							},
 						},
 					},
 					{
