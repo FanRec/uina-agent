@@ -113,6 +113,39 @@ describe("CompanionManager", () => {
 		}
 	});
 
+	it("passes a file-descriptor stdio and creates the daily log file when logDir is set", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "uina-netease-companion-"));
+		const logDir = join(directory, "logs");
+		try {
+			await writeFile(join(directory, "app.js"), "");
+			const child = Object.assign(new EventEmitter(), { killed: false, kill: vi.fn(), unref: vi.fn() });
+			const api = {
+				isHealthy: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true),
+			} as unknown as NeteaseApiClient;
+			let spawnOptions: { stdio?: unknown } | undefined;
+			const manager = new CompanionManager(directory, 19307, {
+				spawn: ((_path: unknown, _args: unknown, options: { stdio?: unknown }) => {
+					spawnOptions = options;
+					return child as never;
+				}) as never,
+				logDir,
+			});
+
+			await expect(manager.ensureRunning(api)).resolves.toMatchObject({ running: true, spawnedByUs: true });
+
+			expect(Array.isArray(spawnOptions?.stdio)).toBe(true);
+			const [stdin, stdout, stderr] = spawnOptions?.stdio as unknown[];
+			expect(stdin).toBe("ignore");
+			expect(typeof stdout).toBe("number");
+			expect(stderr).toBe(stdout);
+			const { readdir } = await import("node:fs/promises");
+			expect(await readdir(logDir)).toEqual([expect.stringMatching(/^api-enhanced-\d{4}-\d{2}-\d{2}\.log$/)]);
+		} finally {
+			vi.restoreAllMocks();
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
 	it("kills an unready child when the World stops during startup", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "uina-netease-companion-"));
 		try {

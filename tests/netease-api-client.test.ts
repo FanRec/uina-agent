@@ -70,3 +70,34 @@ describe("NeteaseApiClient transient read failures", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 });
+
+describe("NeteaseApiClient 404 semantics", () => {
+	afterEach(() => vi.restoreAllMocks());
+
+	it("retries a synthesized {code:404,msg:'Not Found'} playback 404 once and recovers", async () => {
+		const fetchMock = vi
+			.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(new Response(JSON.stringify({ code: 404, msg: "Not Found" }), { status: 404 }))
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ data: [{ url: "https://audio.test/song" }] }), { status: 200 }),
+			);
+
+		await expect(new NeteaseApiClient("http://netease.test").getSongUrl("42")).resolves.toBe("https://audio.test/song");
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not retry an upstream 404 and surfaces the upstream message", async () => {
+		const fetchMock = vi
+			.spyOn(globalThis, "fetch")
+			.mockResolvedValue(new Response(JSON.stringify({ code: 404, msg: "歌曲不存在" }), { status: 404 }));
+
+		await expect(new NeteaseApiClient("http://netease.test").getSongUrl("42")).rejects.toMatchObject({
+			name: "NeteaseRequestError",
+			status: 404,
+			attempts: 1,
+			retryable: false,
+			message: expect.stringContaining("歌曲不存在"),
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+});
