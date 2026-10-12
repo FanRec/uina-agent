@@ -160,16 +160,16 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 		for (let i = 0; i < 60; i++) runtime.composeTick(16);
 		const okPosture = await pPosture;
 		expect(okPosture.status).toBe("succeeded");
-		expect(okPosture.result).toBe("已切换姿势: 低头。");
+		expect(okPosture.result).toBe("低头 OK");
 
 		const pExp = runtime.expression({ name: "微笑" }, ctx);
 		for (let i = 0; i < 60; i++) runtime.composeTick(16);
 		const okExp = await pExp;
 		expect(okExp.status).toBe("succeeded");
-		expect(okExp.result).toBe("已切换表情: 微笑。");
+		expect(okExp.result).toBe("微笑 OK");
 
 		const okAtt = await runtime.attention({ target: "看对方" }, ctx);
 		expect(okAtt.status).toBe("succeeded");
-		expect(okAtt.result).toBe("视线已转向: 看对方。");
+		expect(okAtt.result).toBe("看对方 OK");
 	});
 });

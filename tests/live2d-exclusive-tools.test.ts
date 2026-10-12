@@ -490,7 +490,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		try {
 			const result = await rt.express({ motion: "spin" }, {});
 			expect(result.status).toBe("failed");
-			expect(result.details).toMatchObject({ reason: "invalid_motion" });
+			expect(result.details).toMatchObject({ reason: "preset_missing" });
 			const details = result.details as { missingPresets: string[]; availablePresets: string[] };
 			expect(details.missingPresets).toEqual(["Grayscale"]);
 			expect(details.availablePresets).toEqual(["Sepia", "Vintage"]);

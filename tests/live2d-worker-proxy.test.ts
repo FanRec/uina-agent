@@ -214,14 +214,14 @@ describe("live2d 引擎线程隔离接缝（proxy ↔ engine 协议）", () => {
 		}
 	});
 
-	it("ambient 走 RPC 结算：选择/清除/未知名字往返闭环（engine calls 表 key 正确性）", async () => {
+	it("state 走 RPC 结算：ambient 选择/清除/未知名字往返闭环（engine calls 表 key 正确性）", async () => {
 		const h = await harness(true);
 		try {
-			const selected = await h.proxy.ambient({ name: "sway" }, { signal: new AbortController().signal });
+			const selected = await h.proxy.state({ ambient: "sway" }, { signal: new AbortController().signal });
 			expect(selected.status).toBe("succeeded");
-			const cleared = await h.proxy.ambient({}, { signal: new AbortController().signal });
+			const cleared = await h.proxy.state({ ambient: null }, { signal: new AbortController().signal });
 			expect(cleared.status).toBe("succeeded");
-			const unknown = await h.proxy.ambient({ name: "groove" }, { signal: new AbortController().signal });
+			const unknown = await h.proxy.state({ ambient: "groove" }, { signal: new AbortController().signal });
 			expect(unknown.status).toBe("failed");
 			expect(unknown.result).toContain("sway");
 		} finally {

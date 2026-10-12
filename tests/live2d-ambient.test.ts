@@ -158,7 +158,7 @@ describe("live2d ambient 环境循环", () => {
 		const h = await harness();
 		h.stepMs(1200); // idle 已在播（fade 450ms + 弹簧收敛）
 		const idleAmplitude = h.yawAmplitude();
-		const selected = await h.run("ambient", { name: "sway" });
+		const selected = await h.run("state", { ambient: "sway" });
 		expect(selected.status).toBe("succeeded");
 		expect((await h.status()).catalog.ambient.current).toBe("sway");
 		h.stepMs(1200); // 换播 fade-in + 弹簧收敛
@@ -167,10 +167,10 @@ describe("live2d ambient 环境循环", () => {
 
 	it("清除后回落 idle；status 词表列出可用环境循环", async () => {
 		const h = await harness();
-		await h.run("ambient", { name: "sway" });
+		await h.run("state", { ambient: "sway" });
 		h.stepMs(1200);
 		const swayAmplitude = h.yawAmplitude();
-		const cleared = await h.run("ambient", {});
+		const cleared = await h.run("state", { ambient: null });
 		expect(cleared.status).toBe("succeeded");
 		expect((await h.status()).catalog.ambient.current).toBeNull();
 		h.stepMs(1200);
@@ -181,7 +181,7 @@ describe("live2d ambient 环境循环", () => {
 
 	it("interrupt 不影响持续环境循环（与姿态同级的持续状态）", async () => {
 		const h = await harness();
-		await h.run("ambient", { name: "sway" });
+		await h.run("state", { ambient: "sway" });
 		h.stepMs(1200);
 		h.runtime.interrupt();
 		expect((await h.status()).catalog.ambient.current).toBe("sway");
@@ -191,28 +191,28 @@ describe("live2d ambient 环境循环", () => {
 
 	it("幂等：重复选择同名不重建，重复清除同样幂等", async () => {
 		const h = await harness();
-		await h.run("ambient", { name: "sway" });
-		const again = await h.run("ambient", { name: "sway" });
-		expect(again.result).toContain("已在选择中");
-		const clear = await h.run("ambient", {});
+		await h.run("state", { ambient: "sway" });
+		const again = await h.run("state", { ambient: "sway" });
+		expect(again.result).toBe("sway OK");
+		const clear = await h.run("state", { ambient: null });
 		expect(clear.status).toBe("succeeded");
-		const clearAgain = await h.run("ambient", {});
-		expect(clearAgain.result).toContain("无环境循环");
+		const clearAgain = await h.run("state", { ambient: null });
+		expect(clearAgain.result).toBe("cleared OK");
 	});
 
 	it("未知名字拒绝并列出可用词表；非法参数拒绝", async () => {
 		const h = await harness();
-		const unknown = await h.run("ambient", { name: "groove" });
+		const unknown = await h.run("state", { ambient: "groove" });
 		expect(unknown.status).toBe("failed");
 		expect(unknown.result).toContain("groove");
 		expect(unknown.result).toContain("sway");
-		const invalid = await h.run("ambient", { name: "" });
+		const invalid = await h.run("state", { ambient: "" });
 		expect(invalid.status).toBe("failed");
 	});
 
 	it("目录更替清空选中（新快照可能无同名项，诚实回落 idle）", async () => {
 		const h = await harness();
-		await h.run("ambient", { name: "sway" });
+		await h.run("state", { ambient: "sway" });
 		expect((await h.status()).catalog.ambient.current).toBe("sway");
 		h.runtime.setCatalog(makeCatalog({ motions: {}, background: { idle: swayLoop(3) } }));
 		expect((await h.status()).catalog.ambient.current).toBeNull();
@@ -230,8 +230,8 @@ describe("live2d ambient 环境循环", () => {
 		);
 		const a = await harness();
 		const b = await harness(makeCatalog(source));
-		await a.run("ambient", { name: "sway" });
-		await b.run("ambient", { name: "sway" });
+		await a.run("state", { ambient: "sway" });
+		await b.run("state", { ambient: "sway" });
 		a.stepMs(1200); // sway fade-in + 弹簧收敛，两侧对齐
 		b.stepMs(1200);
 		b.runtime.setThinking(true);
@@ -248,7 +248,7 @@ describe("live2d ambient 环境循环", () => {
 
 	it("safeStop → resume 后环境循环续播（暂停期保持帧静止，恢复后 tick 重建背景）", async () => {
 		const h = await harness();
-		await h.run("ambient", { name: "sway" });
+		await h.run("state", { ambient: "sway" });
 		h.stepMs(600);
 		await h.runtime.safeStop();
 		h.stepMs(320);
@@ -264,7 +264,7 @@ describe("live2d ambient 环境循环", () => {
 
 	it("失焦不影响环境循环（失焦只取消空间特技独占）", async () => {
 		const h = await harness();
-		await h.run("ambient", { name: "sway" });
+		await h.run("state", { ambient: "sway" });
 		h.stepMs(600);
 		const before = h.fake.state.injected.length;
 		h.runtime.setFocused(false);

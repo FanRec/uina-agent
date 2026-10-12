@@ -168,15 +168,11 @@ describe("live2d 工具面（P4-1）", () => {
 				name,
 				name === "express"
 					? { motion: "nod" }
-					: name === "posture"
-						? { name: "lean" }
-						: name === "expression"
-							? { name: "brighten" }
-							: name === "attention"
-								? { target: "user" }
-								: name === "costume"
-									? { item: "glasses" }
-									: {},
+					: name === "state"
+						? { posture: "lean" }
+						: name === "costume"
+							? { item: "glasses" }
+							: {},
 				ctx,
 			);
 			expect(res.status).toBe("not_started");
@@ -184,22 +180,18 @@ describe("live2d 工具面（P4-1）", () => {
 		}
 	});
 
-	it("边界 #11：启动后九个工具全部返回词汇合法结果", async () => {
+	it("边界 #11：启动后五个工具全部返回词汇合法结果", async () => {
 		const { app, runtime, ctx } = await harness();
 		try {
-			// express/posture/expression 的终态结算由合成推进驱动：先发起，再步进，后 await。
+			// express/state 的终态结算由合成推进驱动：先发起，再步进，后 await。
 			const expressP = run(app, "express", { motion: "nod" }, ctx);
-			const postureP = run(app, "posture", { name: "lean" }, ctx);
-			const expressionP = run(app, "expression", { name: "brighten" }, ctx);
+			const stateP = run(app, "state", { posture: "lean", expression: "brighten" }, ctx);
 			for (let i = 0; i < 90; i++) runtime.composeTick(16);
 			const results = [
 				await expressP,
-				await postureP,
-				await expressionP,
-				await run(app, "attention", { target: "user" }, ctx),
+				await stateP,
 				await run(app, "costume", { item: "glasses" }, ctx),
 				await run(app, "status", {}, ctx),
-				await run(app, "diagnose", {}, ctx),
 				await run(app, "reload", {}, ctx),
 			];
 			for (const res of results) expectVocabulary(res);
@@ -237,39 +229,39 @@ describe("live2d 工具面（P4-1）", () => {
 		const { app, ctx } = await harness({ catalog: false });
 		try {
 			expect((await run(app, "express", { motion: "nod" }, ctx)).details).toMatchObject({ reason: "unknown_motion" });
-			expect((await run(app, "posture", { name: "lean" }, ctx)).details).toMatchObject({ reason: "unknown_pose" });
-			expect((await run(app, "expression", { name: "brighten" }, ctx)).details).toMatchObject({
+			expect((await run(app, "state", { posture: "lean" }, ctx)).details).toMatchObject({ reason: "unknown_pose" });
+			expect((await run(app, "state", { expression: "brighten" }, ctx)).details).toMatchObject({
 				reason: "unknown_expression",
 			});
-			expect((await run(app, "attention", { target: "window" }, ctx)).details).toMatchObject({
+			expect((await run(app, "state", { attention: "window" }, ctx)).details).toMatchObject({
 				reason: "unknown_attention",
 			});
 			expect((await run(app, "costume", { item: "glasses" }, ctx)).details).toMatchObject({
 				reason: "unknown_costume",
 			});
 			// 空目录下内置注视词表仍然可达（不受目录空置影响）。
-			expect(await run(app, "attention", { target: "user" }, ctx)).toMatchObject({ status: "succeeded" });
+			expect(await run(app, "state", { attention: "user" }, ctx)).toMatchObject({ status: "succeeded" });
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}
 	});
 
-	it("参数非法：invalid_motion / invalid_duration", async () => {
+	it("参数非法：invalid_params / invalid_duration", async () => {
 		const { app, ctx } = await harness();
 		try {
 			expect((await run(app, "express", { motion: "nod", atomic: "yes" }, ctx)).details).toMatchObject({
-				reason: "invalid_motion",
+				reason: "invalid_params",
 			});
 			expect((await run(app, "express", { motion: "nod", speech: "loud" }, ctx)).details).toMatchObject({
-				reason: "invalid_motion",
+				reason: "invalid_params",
 			});
-			expect((await run(app, "posture", { name: "lean", hold_ms: -5 }, ctx)).details).toMatchObject({
+			expect((await run(app, "state", { posture: "lean", hold_ms: -5 }, ctx)).details).toMatchObject({
 				reason: "invalid_duration",
 			});
-			expect((await run(app, "expression", { name: "brighten", hold_ms: "soon" }, ctx)).details).toMatchObject({
+			expect((await run(app, "state", { expression: "brighten", hold_ms: "soon" }, ctx)).details).toMatchObject({
 				reason: "invalid_duration",
 			});
-			expect((await run(app, "attention", { target: "user", hold_ms: -1 }, ctx)).details).toMatchObject({
+			expect((await run(app, "state", { attention: "user", hold_ms: -1 }, ctx)).details).toMatchObject({
 				reason: "invalid_duration",
 			});
 		} finally {
@@ -311,13 +303,13 @@ describe("live2d 工具面（P4-1）", () => {
 		}
 	});
 
-	it("posture / expression / attention：正交独立生效，hold_ms 到期回 neutral，被取代的旧调用结算 cancelled", async () => {
+	it("state：姿势/表情/视线正交独立生效，hold_ms 到期回 neutral，被取代的旧调用结算 cancelled", async () => {
 		const { app, runtime, ctx } = await harness();
 		try {
-			// 三个正交工具并发发起：合成推进结算
-			const pPosture = run(app, "posture", { name: "lean" }, ctx);
-			const pExpression = run(app, "expression", { name: "brighten" }, ctx);
-			const pAttention = run(app, "attention", { target: "window" }, ctx);
+			// 三个正交槽位并发发起：合成推进结算
+			const pPosture = run(app, "state", { posture: "lean" }, ctx);
+			const pExpression = run(app, "state", { expression: "brighten" }, ctx);
+			const pAttention = run(app, "state", { attention: "window" }, ctx);
 			stepMs(runtime, 800); // 过渡 600ms 收敛
 			expect(await pPosture).toMatchObject({ status: "succeeded" });
 			expect(await pExpression).toMatchObject({ status: "succeeded" });
@@ -326,15 +318,21 @@ describe("live2d 工具面（P4-1）", () => {
 			expect(Math.abs(runtime.director!.currentFrame["head.yaw"]! - 4)).toBeLessThan(1.5);
 			expect(runtime.director!.currentFrame["torso.breath"]).toBeCloseTo(0.8, 1);
 
+			// 组合设置：一次调用多槽位同时生效。
+			const combo = await run(app, "state", { posture: "lean", expression: "brighten", attention: "user" }, ctx);
+			stepMs(runtime, 800);
+			expect(combo).toMatchObject({ status: "succeeded" });
+			expect(combo.result).toBe("lean, brighten, user OK");
+
 			// hold_ms：holdTotal = holdMs + 过渡 600ms；到期自动回 neutral（独立计时）。
-			const hold = run(app, "posture", { name: "lean", hold_ms: 100 }, ctx);
+			const hold = run(app, "state", { posture: "lean", hold_ms: 100 }, ctx);
 			stepMs(runtime, 1500);
 			expect(await hold).toMatchObject({ status: "succeeded" });
 			expect(Math.abs(runtime.director!.currentFrame["head.yaw"]! - 0)).toBeLessThan(1.5);
 
 			// 整槽替换竞争：旧 Promise SupersededError → 工具层 cancelled，运动归属新调用。
-			const p1 = run(app, "posture", { name: "lean" }, ctx);
-			const p2 = run(app, "posture", { name: "lean" }, ctx);
+			const p1 = run(app, "state", { posture: "lean" }, ctx);
+			const p2 = run(app, "state", { posture: "lean" }, ctx);
 			stepMs(runtime, 800); // p2 的过渡由合成推进结算
 			const [r1, r2] = await Promise.all([p1, p2]);
 			expect(r1.status).toBe("cancelled");
@@ -375,13 +373,13 @@ describe("live2d 工具面（P4-1）", () => {
 		}
 	});
 
-	it("status/diagnose：JSON 可解析且包含 P4-1 事实（catalog/身份/暂停）", async () => {
+	it("status（含 detail 诊断档）：JSON 可解析且包含事实（catalog/身份/暂停/焦点）", async () => {
 		const { app, ctx } = await harness();
 		try {
 			const status = JSON.parse((await run(app, "status", {}, ctx)).result) as Record<string, unknown>;
-			expect(status).toMatchObject({ world: "live2d" });
+			expect(status).toMatchObject({ world: "live2d", focused: true });
 			expect(status.catalog).toMatchObject({ motions: ["nod"], postures: ["lean"], expressions: ["brighten"] });
-			const diag = JSON.parse((await run(app, "diagnose", {}, ctx)).result) as Record<string, unknown>;
+			const diag = JSON.parse((await run(app, "status", { detail: true }, ctx)).result) as Record<string, unknown>;
 			expect(diag).toMatchObject({ clockRunning: true });
 			expect(diag.director).toMatchObject({ attention: null });
 		} finally {

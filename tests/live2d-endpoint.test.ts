@@ -325,7 +325,7 @@ describe("live2d endpoint（P4-2）", () => {
 		const { app, runtime, endpoint, ctx } = await harness();
 		try {
 			// 过渡类 posture 的 Promise 由合成推进结算：先发起、步进、后 await。
-			const stateP = run(app, "posture", { name: "lean", hold_ms: 100 }, ctx);
+			const stateP = run(app, "state", { posture: "lean", hold_ms: 100 }, ctx);
 			stepMs(runtime, 600); // 过渡完成（holdTotal = 100 + 600 = 700，自受理起算）
 			await stateP;
 			// 剩余保持 = 100ms。
