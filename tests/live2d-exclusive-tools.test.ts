@@ -80,6 +80,9 @@ interface FakeState {
 	slowHotkey?: { resolve: () => void };
 	/** tintModel 派发延迟（ms）：模拟效果请求往返耗时。 */
 	tintDelayMs?: number;
+	/** 可用后处理预设清单（模拟 VTS Effects 环境文件；undefined = 清单未知，核验放行）。 */
+	presets?: string[];
+	updatePostCalls: number[];
 	/** 每次 moveModel / getModelPosition 的 performance.now() 时间戳，用于段间等待时序断言。 */
 	moveTimes: number[];
 	readTimes: number[];
@@ -131,8 +134,12 @@ const makeFake = (state: FakeState): VTSClient => {
 			if (state.tintDelayMs) await new Promise((r) => setTimeout(r, state.tintDelayMs));
 			return tint;
 		},
-		updatePostProcessing: async () => {},
+		updatePostProcessing: async () => {
+			state.updatePostCalls.push(performance.now());
+		},
 		readPostProcessing: async () => ({ active: false, activePreset: null }),
+		getPostProcessingPresets: () => state.presets ?? [],
+		refreshPostProcessingPresets: async () => {},
 		triggerHotkey: async (hotkeyID: string) => {
 			if (state.slowHotkey) {
 				await new Promise<void>((resolve) => {
@@ -182,6 +189,41 @@ const makeRuntime = (state: FakeState, cleanupTimeoutMs?: number) =>
 		),
 	});
 
+/** 段[0] 携带 postProcessing 预设引用的 spin 目录：预设前瞻校验专用。 */
+const presetRuntime = (state: FakeState, preset: string) =>
+	new Live2DRuntime({
+		client: makeFake(state),
+		rig: makeRig(),
+		catalog: compileCatalog(
+			MODEL_ID,
+			{
+				motions: {
+					spin: {
+						description: "石化特技",
+						motion: motion(
+							100,
+							track("head.yaw", [
+								[0, 0],
+								[100, 0],
+							]),
+						),
+						spatial: {
+							segments: [
+								{
+									delta: { rotation: 200 },
+									durationMs: 100,
+									effects: { postProcessing: { on: true, preset, fadeTime: 0.15 } },
+								},
+								{ delta: { rotation: 0 }, durationMs: 200 },
+							],
+						},
+					},
+				},
+			},
+			makeRig(),
+		),
+	});
+
 const startApp = async (rt: Live2DRuntime) => {
 	const app = createLive2DApp({ instance: rt });
 	await app.onStart!({ expose: () => () => {} } as unknown as ServiceCompanionContext);
@@ -201,6 +243,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			hangMove: false,
 			moveTimes: [],
 			readTimes: [],
+			updatePostCalls: [],
 			moved: false,
 		};
 		const rt = makeRuntime(state);
@@ -235,6 +278,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			hangMove: false,
 			moveTimes: [],
 			readTimes: [],
+			updatePostCalls: [],
 			moved: false,
 		};
 		const rt = makeRuntime(state);
@@ -261,6 +305,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			hangMove: false,
 			moveTimes: [],
 			readTimes: [],
+			updatePostCalls: [],
 			moved: false,
 		};
 		const rt = makeRuntime(state);
@@ -312,6 +357,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			hangMove: false,
 			moveTimes: [],
 			readTimes: [],
+			updatePostCalls: [],
 			moved: false,
 			tintDelayMs: 150,
 		};
@@ -365,6 +411,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			hangMove: false,
 			moveTimes: [],
 			readTimes: [],
+			updatePostCalls: [],
 			moved: false,
 			unsettledReads: 1, // 移动后的首次回读返回扰动位姿（+5°），模拟插值未落地
 		};
@@ -380,6 +427,84 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		}
 	});
 
+	it("预设前瞻校验：preset 不在 VTS 可用清单 → 发送前整体拒绝，零 moveModel、零效果请求", async () => {
+		const state: FakeState = {
+			connected: true,
+			pose: { positionX: 0, positionY: 0, rotation: 10, size: 1 },
+			hotkeyIDs: [],
+			triggered: [],
+			moveCalls: [],
+			hangMove: false,
+			moveTimes: [],
+			readTimes: [],
+			updatePostCalls: [],
+			moved: false,
+			presets: ["Sepia", "Vintage"], // 环境里没有 Grayscale（petrify 1203 场景）
+		};
+		const rt = presetRuntime(state, "Grayscale");
+		const app = await startApp(rt);
+		try {
+			const result = await rt.express({ motion: "spin" }, {});
+			expect(result.status).toBe("failed");
+			expect(result.details).toMatchObject({ reason: "invalid_motion" });
+			const details = result.details as { missingPresets: string[]; availablePresets: string[] };
+			expect(details.missingPresets).toEqual(["Grayscale"]);
+			expect(details.availablePresets).toEqual(["Sepia", "Vintage"]);
+			expect(result.result).toContain("Sepia"); // 错误信息带可用清单，可直接照单改 catalog 或建预设
+			expect(state.moveCalls).toEqual([]); // 未发送任何移动
+			expect(state.updatePostCalls).toEqual([]); // 未发送任何效果请求（零半程特效）
+		} finally {
+			await app.onStop?.({} as ServiceCompanionContext);
+		}
+	});
+
+	it("预设前瞻校验：preset 在清单内正常放行；清单未知（空）时核验放行走运行时裁决", async () => {
+		const withPreset: FakeState = {
+			connected: true,
+			pose: { positionX: 0, positionY: 0, rotation: 10, size: 1 },
+			hotkeyIDs: [],
+			triggered: [],
+			moveCalls: [],
+			hangMove: false,
+			moveTimes: [],
+			readTimes: [],
+			updatePostCalls: [],
+			moved: false,
+			presets: ["Grayscale"],
+		};
+		const rt1 = presetRuntime(withPreset, "Grayscale");
+		const app1 = await startApp(rt1);
+		try {
+			const r1 = await rt1.express({ motion: "spin" }, {});
+			expect(r1.status).toBe("unknown"); // 通过核验，正常执行到终点（假体不确认注入）
+			expect(withPreset.moveCalls.length).toBe(2);
+		} finally {
+			await app1.onStop?.({} as ServiceCompanionContext);
+		}
+		const unknown: FakeState = {
+			connected: true,
+			pose: { positionX: 0, positionY: 0, rotation: 10, size: 1 },
+			hotkeyIDs: [],
+			triggered: [],
+			moveCalls: [],
+			hangMove: false,
+			moveTimes: [],
+			readTimes: [],
+			updatePostCalls: [],
+			moved: false,
+			presets: [], // 清单未知 → 核验放行，交运行时裁决（兼容旧版 VTS）
+		};
+		const rt2 = presetRuntime(unknown, "Grayscale");
+		const app2 = await startApp(rt2);
+		try {
+			const r2 = await rt2.express({ motion: "spin" }, {});
+			expect(r2.status).toBe("unknown");
+			expect(unknown.moveCalls.length).toBe(2);
+		} finally {
+			await app2.onStop?.({} as ServiceCompanionContext);
+		}
+	});
+
 	it("safeStop 期间等待在途归位清理完成，完成后暂停生效；此后工具 paused 拒绝", async () => {
 		const state: FakeState = {
 			connected: true,
@@ -390,6 +515,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			hangMove: false,
 			moveTimes: [],
 			readTimes: [],
+			updatePostCalls: [],
 			moved: false,
 		};
 		const rt = makeRuntime(state);
@@ -423,6 +549,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			hangMove: false,
 			moveTimes: [],
 			readTimes: [],
+			updatePostCalls: [],
 			moved: false,
 		};
 		const rt = makeRuntime(state, 50);
@@ -446,6 +573,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			hangMove: false,
 			moveTimes: [],
 			readTimes: [],
+			updatePostCalls: [],
 			moved: false,
 		};
 		const rt = makeRuntime(state);
@@ -477,6 +605,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			hangMove: false,
 			moveTimes: [],
 			readTimes: [],
+			updatePostCalls: [],
 			moved: false,
 			slowHotkey: { resolve: () => {} },
 		};
