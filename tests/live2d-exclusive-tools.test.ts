@@ -4,7 +4,7 @@ import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
-import { compileCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
+import { compileCatalog, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
 import { motion, track } from "../.uina/worlds/live2d/authoring/motion.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 
@@ -145,7 +145,8 @@ const makeRuntime = (state: FakeState, cleanupTimeoutMs?: number) =>
 						),
 						spatial: {
 							segments: [
-								{ delta: { rotation: 360 }, durationMs: 100 },
+								// base.rotation=10 + 200 = 210 ∈ ±360（组合前瞻校验会拒绝越界值）
+								{ delta: { rotation: 200 }, durationMs: 100 },
 								{ delta: { rotation: 0 }, durationMs: 100 },
 							],
 						},
@@ -194,6 +195,78 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}
+	});
+
+	it("组合前瞻校验：位姿组合越界在发送前整体失败，零 moveModel、零归位", async () => {
+		const state: FakeState = {
+			connected: true,
+			// wrapDeg(170)=170（正表示法下不折绕），170+200=370 > 360 → 越界
+			pose: { positionX: 0, positionY: 0, rotation: 170, size: 1 },
+			hotkeyIDs: [],
+			triggered: [],
+			moveCalls: [],
+			hangMove: false,
+		};
+		const rt = makeRuntime(state);
+		const app = await startApp(rt);
+		try {
+			const result = await rt.express({ motion: "spin" }, {});
+			expect(result.status).toBe("failed");
+			expect(result.details).toMatchObject({ reason: "invalid_motion", effectStatus: "not_started" });
+			expect((result.details as { violations: string[] }).violations[0]).toContain("rotation=370");
+			expect((result.details as { violations: string[] }).violations[0]).toContain("段[0]");
+			expect(state.moveCalls).toEqual([]); // 未发送任何移动，无需归位
+		} finally {
+			await app.onStop?.({} as ServiceCompanionContext);
+		}
+	});
+
+	it("正表示法归一化：回读 rotation 348（= -12）合成前 wrapDeg，实发 188 而非 548", async () => {
+		const state: FakeState = {
+			connected: true,
+			pose: { positionX: 0, positionY: 0, rotation: 348, size: 1 },
+			hotkeyIDs: [],
+			triggered: [],
+			moveCalls: [],
+			hangMove: false,
+		};
+		const rt = makeRuntime(state);
+		const app = await startApp(rt);
+		try {
+			const result = await rt.express({ motion: "spin" }, {});
+			expect(result.status).toBe("unknown"); // 假体不确认参数输入（既有语义）
+			expect(state.moveCalls[0]).toMatchObject({ rotation: 188 }); // wrapDeg(348)=-12, -12+200=188
+		} finally {
+			await app.onStop?.({} as ServiceCompanionContext);
+		}
+	});
+
+	it("compileCatalog：delta 数值域 lint——超出 VTS 值域的偏移绑定期即拒", () => {
+		const source = (delta: Record<string, number>): CatalogSource => ({
+			motions: {
+				spin: {
+					description: "旋转特技",
+					motion: motion(
+						100,
+						track("head.yaw", [
+							[0, 0],
+							[100, 0],
+						]),
+					),
+					spatial: {
+						segments: [
+							{ delta, durationMs: 100 },
+							{ delta: { rotation: 0 }, durationMs: 100 },
+						],
+					},
+				},
+			},
+		});
+		expect(() => compileCatalog(MODEL_ID, source({ rotation: 400, y: 0 }), makeRig())).toThrow(
+			/VTS 值域.*rotation=400/,
+		);
+		expect(() => compileCatalog(MODEL_ID, source({ size: 150, y: 0 }), makeRig())).toThrow(/VTS 值域.*size=150/);
+		expect(() => compileCatalog(MODEL_ID, source({ y: 0.09, rotation: 359 }), makeRig())).not.toThrow();
 	});
 
 	it("safeStop 期间等待在途归位清理完成，完成后暂停生效；此后工具 paused 拒绝", async () => {
