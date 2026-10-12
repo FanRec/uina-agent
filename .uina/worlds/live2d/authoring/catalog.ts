@@ -55,7 +55,7 @@ export interface SegmentEffects {
 	readonly tint?: { readonly r: number; readonly g: number; readonly b: number; readonly a?: number };
 	/**
 	 * 场景后处理（PostProcessingUpdateRequest）。滤镜是 VTS 全局场景级效果（影响整个输出而非仅模型）；
-	 * preset 变更原生支持 0-2 秒渐变（fadeTime，秒）。preset 是否存在由 VTS 侧运行时裁决，绑定期不校验词表。
+	 * preset 变更原生支持 0-2 秒渐变（fadeTime，秒）。preset 是否存在由运行期发送前前瞻核验（VTS 可枚举预设清单）。
 	 */
 	readonly postProcessing?: { readonly on: boolean; readonly preset?: string; readonly fadeTime?: number };
 }

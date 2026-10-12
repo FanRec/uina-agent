@@ -458,6 +458,25 @@ export class Live2DRuntime {
 					`${label} 空间轨迹与当前模型位姿组合后越界，未发送：${violations.join("；")}。`,
 					{ violations },
 				);
+			// 预设前瞻校验（1203 根因修复）：preset 是 VTS Effects 环境文件名，不可假设存在；
+			// 可用清单可枚举（PostProcessingListRequest），任一段引用缺失即发送前整体拒绝，零半程特效。
+			// 空清单（旧版 VTS / 刷新失败）= 未知，放行走运行时裁决。
+			const presets = client.getPostProcessingPresets();
+			if (presets.length > 0) {
+				const missing = [
+					...new Set(
+						entry.spatial.segments.flatMap((s) =>
+							s.effects?.postProcessing?.preset ? [s.effects.postProcessing.preset] : [],
+						),
+					),
+				].filter((p) => !presets.includes(p));
+				if (missing.length > 0)
+					return toolRejected(
+						"invalid_motion",
+						`${label} 引用的后处理预设不存在于 VTS，未发送：${missing.join("、")}。可用预设: ${presets.join("、")}。`,
+						{ missingPresets: missing, availablePresets: presets },
+					);
+			}
 			try {
 				postBaseline = await withCancellation(client.readPostProcessing(), claim.signal);
 			} catch {

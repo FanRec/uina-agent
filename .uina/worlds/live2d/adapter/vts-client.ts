@@ -88,6 +88,8 @@ export class VTSClient {
 	private readonly injectableParameters = new Set<string>();
 	private readonly filteredParamBuffer: VTSParamValue[] = [];
 	private availableHotkeys: VTSHotkeyInfo[] = [];
+	/** 可用后处理预设（连接就绪时刷新一次；空清单 = 未知，调用方核验须放行）。 */
+	private availablePresets: string[] = [];
 
 	private requestCounter = 0;
 	private readonly pendingRequests = new Map<
@@ -340,6 +342,14 @@ export class VTSClient {
 					this.stage = "读取输入参数";
 					await this.refreshInjectableParameters();
 					if (generation !== this.connectionGeneration || this.ws !== ws) return;
+					// 预设清单尽力刷新：旧版 VTS 无此请求或暂不可读时留空（= 未知，前置校验放行），不阻断就绪。
+					this.stage = "读取后处理预设";
+					try {
+						await this.refreshPostProcessingPresets();
+					} catch {
+						// ignore
+					}
+					if (generation !== this.connectionGeneration || this.ws !== ws) return;
 					this.stage = "读取当前模型";
 					const model = (await this.sendRequest("CurrentModelRequest", {})) as {
 						modelLoaded?: boolean;
@@ -462,6 +472,7 @@ export class VTSClient {
 		this.injectableParameters.clear();
 		this.inputFacts = [];
 		this.availableHotkeys = [];
+		this.availablePresets = [];
 		const socket = this.ws;
 		this.ws = null;
 		if (socket) {
@@ -597,6 +608,25 @@ export class VTSClient {
 			pluginDeveloper: this.pluginDeveloper,
 			authenticationToken: token,
 		}) as Promise<{ authenticated?: boolean; reason?: string }>;
+	}
+
+	/**
+	 * 刷新可用后处理预设清单（PostProcessingListRequest，fillPostProcessingPresetsArray: true）。
+	 * preset 是 VTS Effects 环境文件名，不可假设存在；清单供空间特技发送前前瞻核验。
+	 */
+	async refreshPostProcessingPresets(): Promise<void> {
+		const res = (await this.sendRequest(
+			"PostProcessingListRequest",
+			{ fillPostProcessingPresetsArray: true, fillPostProcessingEffectsArray: false, effectIDFilter: [] },
+			1000,
+		)) as { postProcessingPresets?: unknown };
+		const raw = Array.isArray(res.postProcessingPresets) ? res.postProcessingPresets : [];
+		this.availablePresets = raw
+			.map((p) => (typeof p === "string" ? p : (p as { name?: string })?.name))
+			.filter((n): n is string => typeof n === "string" && n.length > 0);
+	}
+	getPostProcessingPresets(): readonly string[] {
+		return this.availablePresets;
 	}
 
 	private async refreshInjectableParameters(): Promise<void> {
