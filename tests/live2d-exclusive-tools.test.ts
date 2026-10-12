@@ -677,9 +677,9 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			state.hotkeyIDs = ["hk-1"]; state.slowHotkey = { resolve: () => {} };
    void rt.costume({ item: "cute" }, {});
    await tick();
-			await expect(rt.safeStop()).rejects.toThrow("归位清理尚未确认");
+			await expect(rt.safeStop()).rejects.toThrow("尚未确认");
 		} finally {
-			await expect(app.onStop?.({} as ServiceCompanionContext)).rejects.toThrow("归位清理尚未确认");
+			await expect(app.onStop?.({} as ServiceCompanionContext)).rejects.toThrow("尚未确认");
 			expect(rt.isStarted).toBe(false);
  state.slowHotkey?.resolve();
 		}

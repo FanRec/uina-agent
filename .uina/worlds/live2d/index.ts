@@ -5,11 +5,8 @@ import type {
 	WorldDef,
 } from "../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
-import { Live2DRuntime, type Live2DRuntimeOptions } from "./runtime.js";
-import { VTSClient } from "./adapter/vts-client.js";
-import { loadRig, MO_MODEL_ID } from "./models/rig-loader.js";
-import { MO_SPEECH } from "./models/mo/speech.js";
-import { loadCatalog } from "./models/mo/catalog.js";
+import { type Live2DRuntimeOptions } from "./runtime.js";
+import { createLive2DRuntime } from "./assembly.js";
 import { Live2DRuntimeProxy, type Live2DWorldRuntime } from "./worker/proxy.js";
 
 /**
@@ -28,7 +25,7 @@ export interface Live2DAppOptions {
 	/** 注入点（测试用）：替换默认的 rig/catalog/client 装配。 */
 	runtime?: Live2DRuntimeOptions;
 	/** 注入点（测试用）：直接使用预构建的运行时实例（跳过默认装配与 rig 加载）。 */
-	instance?: Live2DRuntime;
+	instance?: Live2DWorldRuntime;
 }
 
 export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
@@ -60,22 +57,7 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 			if (options.instance) {
 				runtime = options.instance;
 			} else if (options.runtime) {
-				// rig 装配失败不阻断世界启动：诚实降级为零注入，status 中 rig=null 可见。
-				// 测试注入完整 runtime 装配时跳过真实 rig 装配（不依赖磁盘模型文件）。
-				const rig =
-					options.runtime.rig ??
-					(await loadRig(MO_MODEL_ID).catch((error: unknown) => {
-						console.warn("[Live2D] rig 装配失败，保活注入停用:", error);
-						return undefined;
-					}));
-				const catalog = options.runtime.catalog ?? (rig ? loadCatalog(rig.modelID, rig) : undefined);
-				runtime = new Live2DRuntime({
-					client: new VTSClient(),
-					rig,
-					catalog,
-					speech: MO_SPEECH,
-					...options.runtime,
-				});
+				runtime = await createLive2DRuntime(options.runtime);
 			} else {
 				// 生产装配：引擎移入专用 worker 线程——合成时钟与 ws 刷写独立于宿主主事件循环，
 				// 主循环阻塞（LLM/TTS/GC）不再把 60fps 注入塌缩成稀疏帧（关键帧卡顿根因）。
@@ -83,7 +65,7 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 				const worker = new Worker(new URL("./worker/engine-entry.mjs", import.meta.url), {
 					name: "live2d-engine",
 				});
-				runtime = new Live2DRuntimeProxy(worker, (cb) => worker.once("exit", cb));
+				runtime = new Live2DRuntimeProxy(worker);
 			}
 			await runtime.start(ctx);
 		},
@@ -154,10 +136,10 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 						detail: { type: "boolean", description: "true 返回底层诊断快照（引擎内部状态，平时不用）" },
 					},
 				},
-				run: call("status", async (rt, args) => ({
-					result: args.detail === true ? await rt.diagnose() : await rt.formatStatus(),
-					status: "succeeded",
-				})),
+				run: call("status", async (rt, args) => {
+     try { return { result: args.detail === true ? await rt.diagnose() : await rt.formatStatus(), status: "succeeded" }; }
+     catch (error) { return { result: `Live2D 状态读取失败：${error instanceof Error ? error.message : String(error)}`, status: "failed", details: { reason: (error as { reason?: string }).reason ?? "engine_error" } }; }
+    }),
 			},
 			reload: {
 				description: "重载模型并核验绑定。改了模型配置后用。",

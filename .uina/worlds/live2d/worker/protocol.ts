@@ -1,50 +1,41 @@
 import type { BodyAffordance, BodyState } from "../../../../src/extensions/world-framework/seams.js";
-
-/**
- * 引擎线程消息协议（Live2D 世界线程隔离接缝）。
- *
- * 为何隔离：合成时钟 setInterval(1000/60) 与注入 ws 刷写都依赖事件循环空闲；
- * world 由宿主 jiti 进程内加载，主循环与 agent/LLM/TTS 共享，阻塞即 tick 合并、
- * 注入塌缩成稀疏帧（VTS set 模式无帧间插值 → 关键帧观感）。worker 线程提供
- * 独立事件循环，时钟与刷写不再受主循环负载影响。
- *
- * 约束：全部载荷 structuredClone 可序列化；行为契约（BodyEndpoint / VoiceLevelSink）
- * 的活引用由主线程 facade 承载（proxy.ts），本协议只承载纯数据。
- * 引擎侧合成/注入语义一行不改——Live2DRuntime 整体作为 worker 内核。
- * 状态事实经 sync 推送（不产生对话上下文事件，不唤醒回合）。
- */
-
-/** 需要结算的调用（result 应答）；fire 为单向投递无需应答。 */
-export type EngineOp =
-	| "start"
-	| "stop"
-	| "express"
-	| "state"
-	| "costume"
-	| "reload"
-	| "formatStatus"
-	| "diagnose"
-	| "endpoint.safeStop"
-	| "endpoint.resume";
-
-export type EngineFireOp =
-	| "endpoint.emitCue"
-	| "endpoint.interrupt"
-	| "endpoint.onFocus"
-	| "level.process"
-	| "level.reset";
-
-/** 主线程 → 引擎。signalId 对应一次携带取消信号的调用，abort 单独投递（AbortSignal 不可克隆）。 */
+import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
+import type { ExternalSettlementSummary } from "../external-actions.js";
+/** Live2D 内部线程 seam：数据可克隆，行为引用留在主线程 adapter。 */
+export interface EngineCalls {
+ start: { args: undefined; result: null }; stop: { args: undefined; result: null };
+ express: { args: Record<string, unknown>; result: ToolExecutionResult };
+ state: { args: Record<string, unknown>; result: ToolExecutionResult };
+ costume: { args: Record<string, unknown>; result: ToolExecutionResult };
+ reload: { args: undefined; result: ToolExecutionResult };
+ formatStatus: { args: undefined; result: string }; diagnose: { args: undefined; result: string };
+ "endpoint.safeStop": { args: undefined; result: null }; "endpoint.resume": { args: undefined; result: null };
+}
+export interface EngineFires {
+ "endpoint.emitCue": { cueId: string }; "endpoint.interrupt": undefined;
+ "endpoint.onFocus": { focused: boolean }; "level.process": { rms: number; peak?: number }; "level.reset": undefined;
+}
+export type EngineOp = keyof EngineCalls;
+export type EngineFireOp = keyof EngineFires;
+export type EngineCall<K extends EngineOp = EngineOp> = { t: "call"; id: number; op: K; args: EngineCalls[K]["args"]; signalId?: string };
+export type EngineFire<K extends EngineFireOp = EngineFireOp> = { t: "fire"; op: K; args: EngineFires[K] };
 export type MainToEngine =
-	| { t: "call"; id: number; op: EngineOp; args?: unknown; signalId?: string }
-	| { t: "fire"; op: EngineFireOp; args?: unknown }
-	| { t: "hostEvent"; event: { type: string; channel?: string } }
-	| { t: "abort"; signalId: string };
-
-/** 引擎 → 主线程。sync 为 state/affordance 缓存推送（主线程 facade 同步应答的事实源）。 */
+ | { [K in EngineOp]: EngineCall<K> }[EngineOp]
+ | { [K in EngineFireOp]: EngineFire<K> }[EngineFireOp]
+ | { t: "hostEvent"; event: { type: string; channel?: string } }
+ | { t: "abort"; signalId: string }
+ | { t: "worldAbort"; reason: string };
+export interface WireError { name: string; message: string; reason?: string; cleanup?: ExternalSettlementSummary; causes?: readonly WireError[]; }
 export type EngineToMain =
-	| { t: "result"; id: number; ok: true; value: unknown }
-	| { t: "result"; id: number; ok: false; error: string }
-	| { t: "exposed"; name: string }
-	| { t: "unexposed"; name: string }
-	| { t: "sync"; state: BodyState; affordance: BodyAffordance };
+ | { [K in EngineOp]: { t: "result"; id: number; op: K; ok: true; value: EngineCalls[K]["result"] } }[EngineOp]
+ | { t: "result"; id: number; op: EngineOp; ok: false; error: WireError }
+ | { t: "exposed"; name: string } | { t: "unexposed"; name: string }
+ | { t: "sync"; state: BodyState; affordance: BodyAffordance };
+export function serializeError(cause: unknown): WireError {
+ const error = cause instanceof Error ? cause : new Error(String(cause));
+ const facts = error as Error & { reason?: string; cleanup?: ExternalSettlementSummary };
+ return { name: error.name, message: error.message, ...(facts.reason ? { reason: facts.reason } : {}), ...(facts.cleanup ? { cleanup: facts.cleanup } : {}), ...(error instanceof AggregateError ? { causes: error.errors.map(serializeError) } : {}) };
+}
+export function deserializeError(error: WireError): Error {
+ return Object.assign(error.causes ? new AggregateError(error.causes.map(deserializeError), error.message) : new Error(error.message), { name: error.name, ...(error.reason ? { reason: error.reason } : {}), ...(error.cleanup ? { cleanup: error.cleanup } : {}) });
+}

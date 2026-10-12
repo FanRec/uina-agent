@@ -1,155 +1,98 @@
 import type { ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
-import { VTSClient } from "../adapter/vts-client.js";
-import { loadCatalog } from "../models/mo/catalog.js";
-import { MO_SPEECH } from "../models/mo/speech.js";
-import { loadRig, MO_MODEL_ID } from "../models/rig-loader.js";
-import { Live2DRuntime } from "../runtime.js";
-import type { EngineToMain, MainToEngine } from "./protocol.js";
-
-/**
- * 引擎线程入口：持有 VTSClient + Live2DRuntime + 合成时钟，处理主线程 RPC。
- *
- * runtime.start 的 ServiceCompanionContext 在线程边界由 fakeCtx 适配：
- * - expose → 通知主线程登记 facade（端点/电平接缝是行为契约，活引用只存在于主线程侧）；
- * - onHostEvent → 主线程经 hostEvent 消息喂入（事件在主线程产生）。
- * 状态事实（endpoint state/affordance）经 onStatusChange → sync 消息推送缓存；
- * 状态变化不再产生对话上下文事件——不唤醒回合，即时真值由 status/body 查询保证。
- */
-
-/** 引擎装配注入点（测试用）：缺省按世界默认装配真实 rig + VTSClient。 */
-export interface EngineOptions {
-	runtimeFactory?: () => Live2DRuntime;
+import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
+import { createLive2DRuntime } from "../assembly.js";
+import type { Live2DRuntime } from "../runtime.js";
+import { serializeError, type EngineCalls, type EngineCall, type EngineFires, type EngineFire, type EngineFireOp, type EngineOp, type EngineToMain, type MainToEngine } from "./protocol.js";
+export interface EngineOptions { runtimeFactory?: (onStatusChange: () => void) => Live2DRuntime | Promise<Live2DRuntime>; }
+type Calls = { [K in EngineOp]: (args: EngineCalls[K]["args"], signal?: AbortSignal) => Promise<EngineCalls[K]["result"]> };
+type Fires = { [K in EngineFireOp]: (args: EngineFires[K]) => void };
+/** 引擎持有 runtime 与取消域；World 关闭仍等待在途结构化结算。 */
+export function attachEngine(post: (message: EngineToMain) => void, options: EngineOptions = {}): { onMessage(message: MainToEngine): void } {
+ let runtime: Live2DRuntime | undefined;
+ let phase: "new" | "starting" | "running" | "closing" | "dead" = "new";
+ let onHostEvent: ((event: { type: string; channel?: string }) => void) | undefined;
+ const lifecycle = new AbortController();
+ const signals = new Map<string, AbortController>();
+ const pending = new Map<number, { op: EngineOp; task: Promise<void>; settled: boolean }>();
+ let startPromise: Promise<null> | undefined, stopPromise: Promise<null> | undefined;
+ const sync = () => {
+  if (runtime && phase !== "dead") post({ t: "sync", state: runtime.endpoint.state(), affordance: runtime.endpoint.affordance() });
+ };
+ const context = { signal: lifecycle.signal,
+  expose: (name: string) => { post({ t: "exposed", name }); return () => post({ t: "unexposed", name }); },
+  onHostEvent: (listener: typeof onHostEvent) => { onHostEvent = listener; return () => { onHostEvent = undefined; }; },
+ } as unknown as ServiceCompanionContext;
+ const requireRuntime = () => { if (!runtime) throw new Error("Live2D 引擎尚未启动"); return runtime; };
+ const actionUnavailable = (): ToolExecutionResult => ({ result: "Live2D 引擎已关闭受理，未执行。", status: "not_started", details: { reason: "not_started", effectStatus: "not_started" } });
+ const beginClosing = (reason: string) => {
+  if (phase === "dead") return;
+  phase = "closing";
+  if (!lifecycle.signal.aborted) lifecycle.abort(new Error(reason));
+ };
+ const calls: Calls = {
+  start: () => {
+   if (startPromise) return startPromise;
+   if (phase !== "new") return Promise.reject(new Error("Live2D 引擎已关闭受理"));
+   phase = "starting";
+   return startPromise = (async () => {
+    runtime = options.runtimeFactory ? await options.runtimeFactory(sync) : await createLive2DRuntime({ onStatusChange: sync });
+    await runtime.start(context);
+    if (lifecycle.signal.aborted) throw lifecycle.signal.reason;
+    phase = "running"; sync(); return null;
+   })();
+  },
+  stop: () => stopPromise ??= (async () => {
+   beginClosing("Live2D World 停用");
+   const errors: unknown[] = [];
+   if (startPromise) { try { await startPromise; } catch { /* start 的应答保存启动原因；只等待其回滚，不当作 stop 清理错误。 */ } }
+   try { await runtime?.stop(); } catch (error) { errors.push(error); }
+   // runtime 的现有清理预算耗尽时，剩余调用明确 unknown；不额外无期限等待。
+   if (errors.length) {
+    for (const [id, entry] of pending) if (entry.op !== "stop" && !entry.settled) {
+     entry.settled = true;
+     if (["express", "state", "costume", "reload"].includes(entry.op)) {
+      post({ t: "result", id, op: entry.op, ok: true, value: { result: "停用清理未确认，执行结果未知。", status: "unknown", details: { reason: "cleanup_unconfirmed", effectStatus: "unknown" } } } as EngineToMain);
+     } else post({ t: "result", id, op: entry.op, ok: false, error: serializeError(errors[0]) });
+    }
+   } else {
+    await Promise.allSettled([...pending.values()].filter((entry) => entry.op !== "stop").map((entry) => entry.task));
+   }
+   onHostEvent = undefined; runtime = undefined; phase = "dead";
+   if (errors.length) throw new AggregateError(errors, "Live2D 引擎停用清理未确认");
+   return null;
+  })(),
+  express: async (args, signal) => phase === "running" ? requireRuntime().express(args, { signal }) : actionUnavailable(),
+  state: async (args, signal) => phase === "running" ? requireRuntime().state(args, { signal }) : actionUnavailable(),
+  costume: async (args, signal) => phase === "running" ? requireRuntime().costume(args, { signal }) : actionUnavailable(),
+  reload: async (_args, signal) => phase === "running" ? requireRuntime().reload({ signal }) : actionUnavailable(),
+  formatStatus: async () => requireRuntime().formatStatus(), diagnose: async () => requireRuntime().diagnose(),
+  "endpoint.safeStop": async () => { try { await requireRuntime().safeStop(); return null; } finally { sync(); } },
+  "endpoint.resume": async () => { await requireRuntime().resume(); sync(); return null; },
+ };
+ const fires: Fires = {
+  "endpoint.emitCue": ({ cueId }) => requireRuntime().endpoint.emitCue(cueId),
+  "endpoint.interrupt": () => requireRuntime().interrupt(),
+  "endpoint.onFocus": ({ focused }) => requireRuntime().setFocused(focused),
+  "level.process": (level) => requireRuntime().levelSink?.processLevel(level),
+  "level.reset": () => requireRuntime().levelSink?.reset(),
+ };
+ function dispatch<K extends EngineOp>(message: EngineCall<K>, signal?: AbortSignal) { return calls[message.op](message.args, signal); }
+ function fire<K extends EngineFireOp>(message: EngineFire<K>) { fires[message.op](message.args); }
+ return { onMessage(message) {
+  if (message.t === "call") {
+   if (!(message.op in calls)) { post({ t: "result", id: message.id, op: message.op, ok: false, error: serializeError(new Error("未知引擎操作")) }); return; }
+   const controller = message.signalId ? new AbortController() : undefined;
+   if (controller) signals.set(message.signalId!, controller);
+   const entry = { op: message.op, task: Promise.resolve(), settled: false };
+   pending.set(message.id, entry);
+   entry.task = Promise.resolve().then(() => dispatch(message, controller ? AbortSignal.any([controller.signal, lifecycle.signal]) : lifecycle.signal)).then((value) => {
+    if (!entry.settled) { entry.settled = true; post({ t: "result", id: message.id, op: message.op, ok: true, value } as EngineToMain); }
+   }, (error) => { if (!entry.settled) { entry.settled = true; post({ t: "result", id: message.id, op: message.op, ok: false, error: serializeError(error) }); } }).finally(() => {
+    pending.delete(message.id); if (message.signalId) signals.delete(message.signalId);
+   });
+  } else if (message.t === "abort") signals.get(message.signalId)?.abort();
+  else if (message.t === "worldAbort") beginClosing(message.reason);
+  else if (message.t === "hostEvent") { if (phase === "running") onHostEvent?.(message.event); }
+  else if (message.t === "fire" && (phase === "running" || (phase === "starting" && message.op === "endpoint.onFocus" && runtime))) fire(message);
+ } };
 }
-
-export function attachEngine(post: (msg: EngineToMain) => void, options: EngineOptions = {}): {
-	onMessage: (msg: MainToEngine) => void;
-} {
-	let runtime: Live2DRuntime | undefined;
-	let onHostEvent: ((event: { readonly type: string; readonly channel?: string }) => void) | undefined;
-	const signals = new Map<string, AbortController>();
-
-	/** 主线程同步应答事实的缓存推送：state/affordance 严格取自端点单一事实源。 */
-	const sync = (): void => {
-		if (!runtime) return;
-		post({ t: "sync", state: runtime.endpoint.state(), affordance: runtime.endpoint.affordance() });
-	};
-
-	// 结构适配：只实现 runtime.start 实际消费的两个可选能力，signal 恒新置（worker 生命周期即信号域）。
-	const fakeCtx = {
-		signal: new AbortController().signal,
-		expose: (name: string) => {
-			post({ t: "exposed", name });
-			return () => post({ t: "unexposed", name });
-		},
-		onHostEvent: (listener: (event: { readonly type: string; readonly channel?: string }) => void) => {
-			onHostEvent = listener;
-			return () => {
-				onHostEvent = undefined;
-			};
-		},
-	} as unknown as ServiceCompanionContext;
-
-	const settle = async (id: number, run: () => Promise<unknown>): Promise<void> => {
-		try {
-			post({ t: "result", id, ok: true, value: await run() });
-		} catch (error) {
-			post({ t: "result", id, ok: false, error: error instanceof Error ? error.message : String(error) });
-		}
-	};
-
-	const requireRuntime = (): Live2DRuntime => {
-		if (!runtime) throw new Error("Live2D 引擎尚未启动");
-		return runtime;
-	};
-
-	const calls: Record<string, (args: unknown, signal?: AbortSignal) => Promise<unknown>> = {
-		start: async () => {
-			if (runtime) return null;
-			runtime =
-				options.runtimeFactory?.() ??
-				(await (async () => {
-					// rig 装配失败不阻断引擎启动：诚实降级为零注入（与进程内装配同语义）。
-					const rig = await loadRig(MO_MODEL_ID).catch(() => undefined);
-					return new Live2DRuntime({
-						client: new VTSClient(),
-						rig,
-						catalog: rig ? loadCatalog(rig.modelID, rig) : undefined,
-						speech: MO_SPEECH,
-						onStatusChange: sync,
-					});
-				})());
-			await runtime.start(fakeCtx);
-			sync();
-			return null;
-		},
-		stop: async () => {
-			const old = runtime;
-			runtime = undefined;
-			onHostEvent = undefined;
-			await old?.stop();
-			return null;
-		},
-		express: (args, signal) => requireRuntime().express(args as Record<string, unknown>, { signal }),
-		state: (args, signal) => requireRuntime().state(args as Record<string, unknown>, { signal }),
-		costume: (args, signal) => requireRuntime().costume(args as Record<string, unknown>, { signal }),
-		reload: (_args, signal) => requireRuntime().reload({ signal }),
-		formatStatus: async () => requireRuntime().formatStatus(),
-		diagnose: async () => requireRuntime().diagnose(),
-		"endpoint.safeStop": async () => {
-			const value = await requireRuntime().safeStop();
-			sync();
-			return value;
-		},
-		"endpoint.resume": async () => {
-			const value = await requireRuntime().resume();
-			sync();
-			return value;
-		},
-	};
-
-	const fires: Record<string, (args: unknown) => void> = {
-		"endpoint.emitCue": (args) => requireRuntime().endpoint.emitCue((args as { cueId: string }).cueId),
-		"endpoint.interrupt": () => requireRuntime().interrupt(),
-		"endpoint.onFocus": (args) => requireRuntime().setFocused((args as { focused: boolean }).focused),
-		"level.process": (args) => requireRuntime().levelSink?.processLevel(args as { rms: number; peak?: number }),
-		"level.reset": () => requireRuntime().levelSink?.reset(),
-	};
-
-	return {
-		onMessage: (msg: MainToEngine): void => {
-			if (msg.t === "call") {
-				const run = calls[msg.op];
-				if (!run) {
-					void settle(msg.id, async () => {
-						throw new Error(`未知引擎操作: ${msg.op}`);
-					});
-					return;
-				}
-				let controller: AbortController | undefined;
-				if (msg.signalId) {
-					controller = new AbortController();
-					signals.set(msg.signalId, controller);
-				}
-				void settle(msg.id, () => run(msg.args, controller?.signal)).finally(() => {
-					if (msg.signalId) signals.delete(msg.signalId);
-				});
-				return;
-			}
-			if (msg.t === "fire") {
-				fires[msg.op]?.(msg.args);
-				return;
-			}
-			if (msg.t === "hostEvent") {
-				onHostEvent?.(msg.event);
-				return;
-			}
-			if (msg.t === "abort") {
-				signals.get(msg.signalId)?.abort();
-				return;
-			}
-		},
-	};
-}
-
-// 线程自举在 engine-entry.mjs（纯 JS）：tsx loader 线程局部，worker 内 .js→.ts 映射失效，
-// 由入口以 jiti 加载本模块后调用 attachEngine 接线 parentPort。

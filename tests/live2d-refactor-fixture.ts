@@ -43,6 +43,16 @@ export function refactorClient() {
 
 export const fixtureMotion = () => motion(5, track("head.yaw", [[0, 0], [5, 0]]));
 
+/** 真实线程测试在 Worker 内创建这些函数，绝不构造默认 VTSClient。 */
+export function refactorWorkerRuntime(onStatusChange: () => void) {
+	const rig = refactorRig(); const fake = refactorClient();
+	const runtime = new Live2DRuntime({ rig, client: fake.client, onStatusChange, catalog: compileCatalog(rig.modelID, {
+		motions: { nod: { description: "nod", motion: fixtureMotion() }, stunt: { description: "stunt", motion: fixtureMotion(), spatial: { segments: [{ delta: { x: 0.1 }, durationMs: 10, effects: { tint: { r: 200, g: 200, b: 200 } } }, { delta: { x: 0 }, durationMs: 10 }] } } },
+		postures: { lean: { description: "lean", values: { "head.yaw": 4 }, transitionMs: 10 } },
+	}, rig) });
+	return { runtime, ...fake };
+}
+
 export async function refactorRuntime(source: CatalogSource, options: { cleanupTimeoutMs?: number; context?: Partial<ServiceCompanionContext> } = {}) {
 	const rig = refactorRig();
 	const fake = refactorClient();

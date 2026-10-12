@@ -128,6 +128,7 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 			catalog,
 		});
 		const ctx = { signal: new AbortController().signal };
+ await runtime.start({} as never);
 
 		// 动作传错自愈
 		const motionRes = await runtime.express({ motion: "invalid_dance" }, ctx);
@@ -171,5 +172,6 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 		const okAtt = await runtime.state({ attention: "看对方" }, ctx);
 		expect(okAtt.status).toBe("succeeded");
 		expect(okAtt.result).toBe("看对方 OK");
+ await runtime.stop();
 	});
 });

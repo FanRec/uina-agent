@@ -55,7 +55,7 @@ export function buildLive2DEndpoint(runtime: Live2DRuntime): Live2DEndpoint {
 	const resolveCue = (id: string) => runtime.catalogView.resolveCue(id);
 
 	const state = (): BodyState => ({
-		online: runtime.connectionOnline && runtime.identityMatched(),
+		online: runtime.isStarted && runtime.connectionOnline && runtime.identityMatched(),
 		paused: runtime.isPaused,
 		...(runtime.fault ? { fault: runtime.fault } : {}),
 	});

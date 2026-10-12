@@ -130,9 +130,10 @@ const harness = async (connected = true): Promise<Harness> => {
 	const { port1, port2 } = new MessageChannel();
 	const fake = makeFakeClient(connected);
 	const engine = attachEngine((msg) => port2.postMessage(msg), {
-		runtimeFactory: () =>
+		runtimeFactory: (onStatusChange) =>
 			new Live2DRuntime({
 				client: fake.client,
+ onStatusChange,
 				rig: makeRig(),
 				catalog: compileCatalog(MODEL_ID, makeCatalogSource(), makeRig()),
 				speech: {
@@ -208,7 +209,7 @@ describe("live2d 引擎线程隔离接缝（proxy ↔ engine 协议）", () => {
 			const controller = new AbortController();
 			const aborted = h.proxy.express({ motion: "nod" }, { signal: controller.signal });
 			controller.abort();
-			await expect(aborted).rejects.toThrow();
+			await expect(aborted).resolves.toMatchObject({ status: "cancelled" });
 		} finally {
 			await h.stop();
 		}

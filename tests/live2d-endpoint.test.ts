@@ -345,14 +345,16 @@ describe("live2d endpoint（P4-2）", () => {
 		}
 	});
 
-	it("边界 #5 初始焦点幂等：构造后首个 onFocus(true) 不构成状态跳变", () => {
+	it("边界 #5 初始焦点幂等：启动后首个 onFocus(true) 不构成状态跳变", async () => {
 		const fake = makeFakeClient();
 		const runtime = new Live2DRuntime({ client: fake.client, rig: makeRig(), catalog: makeCatalog() });
+ await runtime.start({} as never);
 		const endpoint = runtime.endpoint;
 		expect(endpoint.state()).toMatchObject({ paused: false, online: true });
 		// router 注册期会调用 onFocus(true)：与初始 focused 一致 → 幂等无跳变。
 		endpoint.onFocus?.(true);
 		expect(runtime.isPaused).toBe(false);
+ await runtime.stop();
 	});
 
 	it("§6 safeStop：保持帧口型覆写中性、注入不断、动作立即结算、工具 paused 拒绝、resume 恢复", async () => {

@@ -84,7 +84,7 @@ describe("live2d 声学电平链路（P3-2）", () => {
 		expect(spy).toHaveBeenLastCalledWith(0);
 	});
 
-	it("runtime 集成：电平按 20ms 窗连续投递驱动张嘴；未发布时电平丢弃", () => {
+	it("runtime 集成：电平按 20ms 窗连续投递驱动张嘴；未发布时电平丢弃", async () => {
 		const rig: ModelRig = {
 			version: 3,
 			modelID: "fixture",
@@ -116,7 +116,8 @@ describe("live2d 声学电平链路（P3-2）", () => {
 			disconnect: () => {},
 			getConnectionStatus: () => ({ connected: true }),
 		} as unknown as VTSClient;
-		const rt = new Live2DRuntime({ client: fakeClient, rig, speech: SPEECH });
+		const rt = new Live2DRuntime({ client: fakeClient, rig, speech: SPEECH, tickIntervalMs: 1_000_000 });
+ await rt.start({} as never);
 		expect(rt.levelSink).toBeDefined();
 
 		// TTS 按 ~20ms 窗连续投递（seams 契约）；帧步长 16ms，隔帧投递即维持新鲜。
@@ -130,5 +131,6 @@ describe("live2d 声学电平链路（P3-2）", () => {
 		// 停止投递：失联守卫（120ms）+ 引擎释放（50ms）→ 回零，不永久张嘴。
 		for (let i = 0; i < 15; i++) rt.composeTick(16);
 		expect(rt.director!.currentFrame["mouth.open"]).toBe(0);
+ await rt.stop();
 	});
 });

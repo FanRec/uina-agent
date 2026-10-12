@@ -1,11 +1,46 @@
 import { describe, expect, it } from "vitest";
-import { compileCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
+import { compileCatalog, emptyCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
 import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import { loadCatalog } from "../.uina/worlds/live2d/models/mo/catalog.js";
 import { fixtureMotion, refactorClient, refactorRig, refactorRuntime } from "./live2d-refactor-fixture.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 
 describe("Live2D 架构缺口正式回归", () => {
+	it("safeStop 结束持续状态等待，resume 保留已接受的姿态", async () => {
+		const { runtime } = await refactorRuntime({ postures: { lean: { description: "lean", values: { "head.yaw": 4 }, transitionMs: 200 } } });
+		let status: string | undefined;
+		void runtime.state({ posture: "lean" }, {}).then((result) => { status = result.status; });
+		try {
+			await runtime.safeStop(); for (let i = 0; i < 8; i++) await Promise.resolve();
+			expect(status).toBe("cancelled");
+			await runtime.resume(); for (let i = 0; i < 50; i++) runtime.composeTick(16);
+			expect(runtime.director!.currentFrame["head.yaw"]).toBeGreaterThan(3);
+		} finally { await runtime.stop(); }
+	});
+	it("safeStop 后姿态 cue 也结束账本等待，不永久 started", async () => {
+		const { runtime } = await refactorRuntime({ postures: { lean: { description: "lean", values: { "head.yaw": 4 }, transitionMs: 200 } } });
+		try {
+			runtime.endpoint.emitCue("lean"); await runtime.safeStop(); for (let i = 0; i < 8; i++) await Promise.resolve();
+			expect(runtime.endpoint.lastCue().at(-1)).toMatchObject({ state: "finished", reason: "cancelled" });
+		} finally { await runtime.stop(); }
+	});
+	it("未启动和已停止的保留引用都不接受意图、不报告在线", async () => {
+		const rig = refactorRig(); const { client } = refactorClient();
+		const runtime = new Live2DRuntime({ rig, client, catalog: emptyCatalog(rig.modelID) });
+		expect(runtime.endpoint.state().online).toBe(false);
+		expect((await runtime.state({}, {})).status).toBe("not_started");
+		await runtime.start({} as never); await runtime.stop();
+		expect(runtime.endpoint.state().online).toBe(false);
+		expect((await runtime.state({}, {})).status).toBe("not_started");
+	});
+	it("启动连接抛错回滚登记和订阅，保留启动原因", async () => {
+		const rig = refactorRig(); const { client, state } = refactorClient(); const exposed = new Set<string>(); let off = 0;
+		client.connect = () => { throw new Error("connect failed"); };
+		const runtime = new Live2DRuntime({ rig, client, catalog: emptyCatalog(rig.modelID) });
+		await expect(runtime.start({ expose(name: string) { exposed.add(name); return () => { exposed.delete(name); }; }, onHostEvent() { return () => { off++; }; } } as never)).rejects.toThrow("connect failed");
+		expect(exposed.size).toBe(0); expect(off).toBe(1); expect(state.disconnects).toBe(1);
+		expect(runtime.endpoint.state().online).toBe(false);
+	});
 	it("编译后修改作者值和别名不改变快照", () => {
 		const rig = refactorRig();
 		const source = { postures: { lean: { description: "lean", values: { "head.yaw": 4 }, aliases: ["initial"] } } };

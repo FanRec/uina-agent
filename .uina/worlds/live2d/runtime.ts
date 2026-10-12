@@ -96,6 +96,10 @@ export const pickVariantIndex = (poolSize: number, lastPick: number | undefined,
 
 export class Live2DRuntime {
 	private started = false;
+ private phase: "new" | "starting" | "running" | "closing" | "dead" = "new";
+ private stopPromise?: Promise<void>;
+ private executionController = new AbortController();
+ private lifecycleFault?: string;
 	private readonly cleanups: Array<() => void> = [];
 	private readonly client?: VTSClient;
 	private readonly rig?: ModelRig;
@@ -146,7 +150,7 @@ export class Live2DRuntime {
 				// 暂停期间电平一律丢弃（边界规范 §4）。
 				this.levelSink = {
 					processLevel: (level) => {
-						if (this.paused) return;
+						if (this.paused || !this.isStarted) return;
 						input.processLevel(level);
 					},
 					reset: () => input.reset(),
@@ -162,7 +166,7 @@ export class Live2DRuntime {
 	}
 
 	get isStarted(): boolean {
-		return this.started;
+		return this.started && this.phase === "running";
 	}
 
 	/** 目录视图：直接暴露当前目录（命名参数可达性由词表决定）。 */
@@ -184,7 +188,7 @@ export class Live2DRuntime {
 	}
 
 	get fault(): string | undefined {
-		return this.client?.getFault();
+		return this.lifecycleFault ?? this.client?.getFault();
 	}
 
 	/** 身份事实：rig 存在且 VTS 当前模型与其标定身份一致。 */
@@ -237,6 +241,7 @@ export class Live2DRuntime {
 	 */
 	private gate(ctx: { signal?: AbortSignal }): ToolExecutionResult | undefined {
 		if (ctx.signal?.aborted) return toolRejected("cancelled", "调用已中止，未执行。");
+		if (!this.isStarted) return { result: "Live2D 世界未启动或正在停用，未执行。", status: "not_started", details: { reason: "not_started", effectStatus: "not_started" } };
 		if (this.paused) return toolRejected("paused", "身体处于 safeStop 暂停，操作被拒绝（resume 后恢复）。");
 		if (!this.client || !this.client.isConnected())
 			return toolRejected("model_not_ready", "VTS 未连接（连接建立前所有具身操作不可用）。");
@@ -269,12 +274,13 @@ export class Live2DRuntime {
 	 * 纯骨骼手势直接委托 director.play；若含 spatial，声明 model:transform 并在前台推进去程、停留与自动归位。
 	 * 分段可携带 effects（染色/后处理），与位姿同段顺序派发（先等效果落地再发移动）；归位守护覆盖位姿、染色与后处理三项。
 	 */
-	async playMotion(
+	private async playMotion(
 		entry: CatalogMotionEntry,
 		options: { speech?: SpeechPolicy; atomic?: boolean; signal?: AbortSignal; callName?: string; onStarted?: () => void } = {},
 	): Promise<ToolExecutionResult> {
 		const denied = this.gate(options);
 		if (denied) return denied;
+ options = { ...options, signal: options.signal ? AbortSignal.any([options.signal, this.executionController.signal]) : this.executionController.signal };
 		const director = this.director!;
 		const clip = this.pickMotionClip(entry, options.speech);
 		const playOptions: PlayOptions = {
@@ -332,6 +338,7 @@ export class Live2DRuntime {
  }
  private async applyState(args: Record<string, unknown>, ctx: { signal?: AbortSignal }, onStarted?: () => void): Promise<ToolExecutionResult> {
   const denied = this.gate(ctx); if (denied) return denied;
+ ctx = { signal: ctx.signal ? AbortSignal.any([ctx.signal, this.executionController.signal]) : this.executionController.signal };
   const catalog = this.catalog, generation = this.generation, director = this.director!;
   const holdMs = parseHoldMs(args.hold_ms); if (typeof holdMs === "object") return holdMs;
   const changes: { label: string; run: () => void | Promise<void> }[] = [];
@@ -413,8 +420,12 @@ export class Live2DRuntime {
 	// ---------- 生命周期 ----------
 
 	async start(ctx: ServiceCompanionContext): Promise<void> {
-		if (this.started) return;
+		if (this.phase === "running") return;
+ if (this.phase !== "new") throw new Error("Live2D 生命周期已结束；请创建新实例。");
+ ctx.signal?.throwIfAborted();
+ this.phase = "starting";
 		this.started = true;
+ try {
 		if (ctx.expose) {
 			this.cleanups.push(ctx.expose("body.endpoint:live2d", this.endpoint));
 			if (this.levelSink) {
@@ -426,6 +437,7 @@ export class Live2DRuntime {
 		if (ctx.onHostEvent) {
 			this.cleanups.push(
 				ctx.onHostEvent((event) => {
+					if (this.phase !== "running") return;
 					if (event.type === "output_update" && event.channel === "thinking") this.setThinking(true);
 					else if (event.type === "turn_start" || event.type === "turn_end") this.setThinking(false);
 					else if (event.type === "turn_aborted") this.interrupt();
@@ -447,7 +459,22 @@ export class Live2DRuntime {
 				this.onStatusChange?.();
 			}
 		}
-	}
+  const onAbort = () => {
+   if (this.phase !== "running") return;
+   this.phase = "closing";
+   void this.safeStop().catch((error) => { this.lifecycleFault = error instanceof Error ? error.message : String(error); }).finally(() => this.onStatusChange?.());
+   this.onStatusChange?.();
+  };
+  this.phase = "running";
+  if (ctx.signal) { ctx.signal.addEventListener("abort", onAbort, { once: true }); this.cleanups.push(() => ctx.signal.removeEventListener("abort", onAbort)); }
+  if (ctx.signal?.aborted) onAbort();
+  this.onStatusChange?.();
+ } catch (cause) {
+  const errors: unknown[] = [cause];
+  try { await this.stop(); } catch (error) { errors.push(error); }
+  throw new AggregateError(errors, `Live2D 启动失败：${cause instanceof Error ? cause.message : String(cause)}`);
+ }
+ }
 
 	/**
 	 * safeStop（§6 生命周期）：显式全局暂停。
@@ -459,10 +486,11 @@ export class Live2DRuntime {
 	 */
 	async safeStop(): Promise<void> {
 		if (this.paused) {
-			if (!((await this.externalActions?.settlePending())?.complete ?? true)) throw new Error("Uina 已暂停，外部效果或归位清理尚未确认。");
+			if (!((await this.externalActions?.settlePending())?.complete ?? true)) throw Object.assign(new Error("Uina 已暂停，外部效果或归位清理尚未确认。"), { reason: "cleanup_unconfirmed", cleanup: this.externalActions?.snapshot() });
 			return;
 		}
 		this.paused = true;
+ this.executionController.abort(new Error("safestop"));
 		this.syncFrozen();
 		const director = this.director;
 		if (!director) return;
@@ -477,13 +505,15 @@ export class Live2DRuntime {
 		// §6.2/§6.4：取消全部独占声明；带清理的声明等待归位清理完成，未确认则抛错（调用方得
 		// unknown；拆除不被阻塞——BodyRouter.stopAll 以 allSettled 承接为 failed[]）。
 		this.externalActions?.cancelAll();
-		if (!((await this.externalActions?.settlePending())?.complete ?? true)) throw new Error("Uina 已暂停，外部效果或归位清理尚未确认。");
+		if (!((await this.externalActions?.settlePending())?.complete ?? true)) throw Object.assign(new Error("Uina 已暂停，外部效果或归位清理尚未确认。"), { reason: "cleanup_unconfirmed", cleanup: this.externalActions?.snapshot() });
 	}
 
 	/** resume（§6）：解除暂停、清保持帧、口型包络归零、眨眼与限时状态倒计时恢复剩余。 */
 	async resume(): Promise<void> {
+ if (!this.isStarted) throw Object.assign(new Error("Live2D 生命周期已关闭，不能恢复。"), { reason: "not_started" });
 		if (!this.paused) return;
 		this.paused = false;
+ this.executionController = new AbortController();
 		this.externalActions?.acknowledgeUnconfirmed();
 		this.keepFrame = undefined;
 		this.speechInput?.reset();
@@ -559,23 +589,25 @@ export class Live2DRuntime {
 		this.speechInput?.reset();
 	}
 
-	async stop(): Promise<void> {
-		if (!this.started) return;
-		this.stopClock();
-		try {
-			await this.safeStop();
-		} finally {
-			this.started = false;
-			for (const cleanup of this.cleanups.splice(0).reverse()) {
-				try {
-					cleanup();
-				} catch {
-					/* 继续拆除其它资源。 */
-				}
-			}
-			this.client?.disconnect();
-		}
-	}
+ stop(): Promise<void> {
+  if (this.stopPromise) return this.stopPromise;
+  this.phase = "closing";
+  this.stopPromise = this.closeResources();
+  return this.stopPromise;
+ }
+ private async closeResources(): Promise<void> {
+  const errors: unknown[] = [];
+  this.stopClock();
+  try { if (this.started) await this.safeStop(); } catch (error) { errors.push(error); }
+  this.started = false;
+ try { this.director?.invalidateAll("world stopped"); } catch (error) { errors.push(error); }
+  for (const cleanup of this.cleanups.splice(0).reverse()) { try { cleanup(); } catch (error) { errors.push(error); } }
+  try { this.client?.disconnect(); } catch (error) { errors.push(error); }
+  this.phase = "dead";
+  if (errors.length) this.lifecycleFault = "Live2D 停用清理失败";
+  try { this.onStatusChange?.(); } catch (error) { errors.push(error); }
+  if (errors.length) throw new AggregateError(errors, "Live2D 停用失败：资源已释放，清理或归位尚未确认。");
+ }
 
 	private startClock(): void {
 		if (this.clock || !this.client) return;
@@ -598,7 +630,7 @@ export class Live2DRuntime {
 
 	/** 合约入口：合成一步并注入。注入时钟与测试共用（合成推进纯函数化，无真实定时器等待）。 */
 	composeTick(dtMs: number): void {
-		if (!this.client || !this.director || !this.rig) return;
+		if (!this.started || !this.client || !this.director || !this.rig) return;
 		if (!this.client.isConnected()) return;
 		// 身份门：rig 只属于其标定的模型，VTS 当前模型不匹配即零输出，杜绝跨模型误注入。
 		const profile = this.client.getModelProfile();
@@ -655,7 +687,8 @@ export class Live2DRuntime {
 	diagnose(): string {
 		return JSON.stringify(
 			{
-				tickIntervalMs: this.tickIntervalMs,
+				phase: this.phase,
+ tickIntervalMs: this.tickIntervalMs,
 				clockRunning: this.clock !== null,
 				identityMatched: this.identityMatched(),
 				paused: this.paused,

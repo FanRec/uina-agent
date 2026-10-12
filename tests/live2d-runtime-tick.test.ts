@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
@@ -87,13 +87,17 @@ const makeFakeClient = (options: { connected?: boolean; modelID?: string } = {})
 	return { client, state };
 };
 
-const makeRuntime = (client: VTSClient, options: Partial<ConstructorParameters<typeof Live2DRuntime>[0]> = {}) =>
-	new Live2DRuntime({ client, rig: makeRig(), ...options });
+const runtimes: Live2DRuntime[] = [];
+afterEach(async () => { await Promise.allSettled(runtimes.splice(0).map((rt) => rt.stop())); });
+const makeRuntime = async (client: VTSClient, options: Partial<ConstructorParameters<typeof Live2DRuntime>[0]> = {}) => {
+ const rt = new Live2DRuntime({ client, rig: makeRig(), tickIntervalMs: 1_000_000, ...options });
+ await rt.start({} as never); runtimes.push(rt); return rt;
+};
 
-describe("live2d runtime tick 合成（P2-3）", () => {
-	it("composeTick 驱动 director 合成并注入编码帧（合成推进纯函数化）", () => {
+describe("live2d runtime tick 合成（P2-3）", async () => {
+	it("composeTick 驱动 director 合成并注入编码帧（合成推进纯函数化）", async () => {
 		const { client, state } = makeFakeClient();
-		const rt = makeRuntime(client, { rng: () => 0.5 });
+		const rt = await makeRuntime(client, { rng: () => 0.5 });
 		const clip = compileMotion(
 			motion(
 				5000,
@@ -120,9 +124,9 @@ describe("live2d runtime tick 合成（P2-3）", () => {
 		expect(Math.abs(state.injected.at(-1)!.find((p) => p.id === "FaceAngleX")!.value - before)).toBeLessThan(0.3);
 	});
 
-	it("断线零输出：不合成不注入，重连后恢复", () => {
+	it("断线零输出：不合成不注入，重连后恢复", async () => {
 		const { client, state } = makeFakeClient({ connected: false });
-		const rt = makeRuntime(client, { rng: () => 0.5 });
+		const rt = await makeRuntime(client, { rng: () => 0.5 });
 		rt.composeTick(16);
 		expect(state.injected).toHaveLength(0);
 
@@ -131,16 +135,17 @@ describe("live2d runtime tick 合成（P2-3）", () => {
 		expect(state.injected).toHaveLength(1);
 	});
 
-	it("身份门：VTS 当前模型与 rig 标定模型不匹配时零输出", () => {
+	it("身份门：VTS 当前模型与 rig 标定模型不匹配时零输出", async () => {
 		const { client, state } = makeFakeClient({ modelID: "another-model" });
-		const rt = makeRuntime(client, { rng: () => 0.5 });
+		const rt = await makeRuntime(client, { rng: () => 0.5 });
 		rt.composeTick(16);
 		expect(state.injected).toHaveLength(0);
 	});
 
-	it("无 rig（装配失败降级）时零输出且 director 不存在", () => {
+	it("无 rig（装配失败降级）时零输出且 director 不存在", async () => {
 		const { client, state } = makeFakeClient();
-		const rt = new Live2DRuntime({ client });
+		const rt = new Live2DRuntime({ client, tickIntervalMs: 1_000_000 });
+ await rt.start({} as never); runtimes.push(rt);
 		expect(rt.director).toBeUndefined();
 		rt.composeTick(16);
 		expect(state.injected).toHaveLength(0);

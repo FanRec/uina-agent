@@ -115,7 +115,9 @@ class Device implements WebSocketLike {
 }
 
 const clients: VTSClient[] = [];
-afterEach(() => {
+const runtimes: Live2DRuntime[] = [];
+afterEach(async () => {
+ await Promise.allSettled(runtimes.splice(0).map((runtime) => runtime.stop()));
 	for (const client of clients.splice(0)) client.disconnect();
 	vi.useRealTimers();
 });
@@ -198,11 +200,12 @@ async function connectedEffects() {
 	device.onopen?.({});
 	for (let i = 0; i < 60; i++) await Promise.resolve();
 	expect(client.isConnected()).toBe(true);
-	const runtime = new Live2DRuntime({ rig, catalog, client, rng: () => 0 });
+	const runtime = new Live2DRuntime({ rig, catalog, client, rng: () => 0, tickIntervalMs: 1_000_000 });
+ await runtime.start({} as never); runtimes.push(runtime);
 	return { runtime, device, client, rig, catalog };
 }
 
-async function connected() {
+async function connected(tickIntervalMs = 1_000_000) {
 	const { rig, catalog } = await authored();
 	const device = new Device();
 	device.inputs = [...new Set(Object.values(rig.bindings).flatMap((bindings) => bindings.map((b) => b.input)))].map(
@@ -228,7 +231,8 @@ async function connected() {
 	device.onopen?.({});
 	for (let i = 0; i < 60; i++) await Promise.resolve();
 	expect(client.isConnected()).toBe(true);
-	const runtime = new Live2DRuntime({ rig, catalog, client, rng: () => 0 });
+	const runtime = new Live2DRuntime({ rig, catalog, client, rng: () => 0, tickIntervalMs });
+ await runtime.start({} as never); runtimes.push(runtime);
 	return { runtime, device, client, rig, catalog };
 }
 
@@ -360,10 +364,10 @@ describe("MO 表演实际合成与执行", () => {
 	it("真实注入观察器按本次贡献结算；前次接受不能证明完全遮挡的新动作", async () => {
 		const { runtime, catalog } = await connected();
 		const entry = catalog.resolve("motion", "wink")!.entry;
-		const first = runtime.playMotion(entry);
+		const first = runtime.express({ motion: "wink" }, {});
 		for (let i = 0; i < 100; i++) runtime.composeTick(10);
 		await expect(first).resolves.toMatchObject({ status: "succeeded", details: { verification: "input_accepted" } });
-		const newer = runtime.playMotion(entry, { atomic: false });
+		const newer = runtime.express({ motion: "wink", atomic: false }, {});
 		runtime.director!.play(entry.motion, { category: "reflex", inhibitAdditives: true });
 		for (let i = 0; i < 100; i++) runtime.composeTick(10);
 		await expect(newer).resolves.toMatchObject({ status: "unknown" });
@@ -480,7 +484,7 @@ describe("MO 表演实际合成与执行", () => {
 
 	it("已连接客户端启动后会驱动实际注入时钟", async () => {
 		vi.useFakeTimers();
-		const { runtime } = await connected();
+		const { runtime } = await connected(1000 / 60);
 		await runtime.start({ expose: () => () => {} } as never);
 		const run = runtime.express({ motion: "nod" }, {});
 		await vi.advanceTimersByTimeAsync(1200);
