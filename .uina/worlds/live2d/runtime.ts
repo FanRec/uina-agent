@@ -13,12 +13,12 @@ import { compileMotion, withSpeech, type CompiledMotion, type SpeechPolicy } fro
 import {
 	MotionDirector,
 	SupersededError,
-	type ExclusiveClaim,
 	type MotionHandle,
 	type PlayOptions,
 } from "./director/director.js";
 import { buildLive2DEndpoint, type Live2DEndpoint } from "./endpoint.js";
-import { fromEngineResult, toolRejected, toolSucceeded, toolUnknown } from "./results.js";
+import { settleMotion, withCancellation, toolRejected, toolSucceeded, toolUnknown } from "./results.js";
+import { ExternalActions } from "./external-actions.js";
 import { SpeechInput, type SpeechConfig } from "./speech-level.js";
 
 /**
@@ -59,64 +59,6 @@ export interface Live2DRuntimeOptions {
 
 /** 单帧合成到注入之间允许的最大时间步（毫秒）：后台节流/休眠恢复时防止动作瞬移。 */
 const MAX_TICK_DT_MS = 250;
-
-/** 空间变换常量（§2：回读前留出 VTS 动画结算余量；自动归位时间）。 */
-const SETTLE_MARGIN_MS = 60;
-/** 回读核实重试：VTS 插值结算存在滞后，失败再等 SETTLE_RETRY_MS 重读，重试用尽才如实判未确认。 */
-const SETTLE_RETRIES = 2;
-const SETTLE_RETRY_MS = 250;
-const RESTORE_SECONDS = 0.25;
-
-/**
- * VTS MoveModelRequest 硬边界（官方规格）：越界请求被整体拒绝（302）。
- * positionX/Y ∈ ±1000（±1=窗口四边）、rotation ∈ ±360、size ∈ ±100、timeInSeconds ∈ 0..2。
- */
-const VTS_MOVE_LIMITS = { position: 1000, rotation: 360, size: 100 } as const;
-
-type ModelPose = { positionX: number; positionY: number; rotation: number; size: number };
-
-const sleep = (ms: number, signal?: AbortSignal): Promise<boolean> =>
-	new Promise((resolve) => {
-		if (signal?.aborted) return resolve(false);
-		const timer = setTimeout(() => {
-			signal?.removeEventListener("abort", onAbort);
-			resolve(true);
-		}, ms);
-		const onAbort = () => {
-			clearTimeout(timer);
-			resolve(false);
-		};
-		signal?.addEventListener("abort", onAbort, { once: true });
-	});
-
-/** 取消立即结束调用方等待；已经发出的 VTS 请求仍由客户端结算。 */
-function withCancellation<T>(request: Promise<T>, signal: AbortSignal): Promise<T> {
-	return new Promise((resolve, reject) => {
-		const abort = () => reject(signal.reason);
-		const cleanup = () => signal.removeEventListener("abort", abort);
-		request.then(
-			(value) => {
-				cleanup();
-				resolve(value);
-			},
-			(error) => {
-				cleanup();
-				reject(error);
-			},
-		);
-		if (signal.aborted) abort();
-		else signal.addEventListener("abort", abort, { once: true });
-	});
-}
-
-const wrapDeg = (d: number): number => (((d % 360) + 540) % 360) - 180;
-
-const poseMatches = (now: ModelPose, base: ModelPose): boolean =>
-	Math.abs(wrapDeg(now.rotation - base.rotation)) <= 0.5 &&
-	Math.abs(now.positionX - base.positionX) <= 0.01 &&
-	Math.abs(now.positionY - base.positionY) <= 0.01 &&
-	Math.abs(now.size - base.size) <= 0.01;
-
 
 	/** 省略或 0 表示持续；非法时长返回工具拒绝结果。 */
 	function parseHoldMs(value: unknown): number | undefined | ToolExecutionResult {
@@ -175,13 +117,7 @@ export class Live2DRuntime {
 	private readonly lastVariantPick = new WeakMap<CatalogMotionEntry, number>();
 	/** 变体轮换随机源（A9 注入点）：缺省 Math.random。 */
 	private readonly pickRandom: () => number;
-	/** 独占声明 reason 序号：每次声明唯一 reason，重叠声明一律 resource_conflict（不做同 reason 幂等替换）。 */
-	private claimSeq = 0;
-	private spatialClaim?: ExclusiveClaim;
-	/** 在途归位清理任务；safeStop 等待-结算的事实源。 */
-	private readonly pendingCleanups = new Set<Promise<boolean>>();
-	private cleanupUnconfirmed = false;
-	private readonly cleanupTimeoutMs: number;
+	private readonly externalActions?: ExternalActions;
 	/** safeStop 保持帧：暂停期间按 tick 节奏持续注入（口型通道已覆写中性值）。 */
 	private keepFrame?: Record<string, number>;
 	private clock: NodeJS.Timeout | null = null;
@@ -218,10 +154,11 @@ export class Live2DRuntime {
 			}
 		}
 	this.tickIntervalMs = options.tickIntervalMs ?? 1000 / 60;
-	this.cleanupTimeoutMs = options.cleanupTimeoutMs ?? 5000;
+
 	this.pickRandom = options.rng ?? Math.random;
 	this.onStatusChange = options.onStatusChange;
 		this.endpoint = buildLive2DEndpoint(this);
+ if (this.client && this.rig && this.director) this.externalActions = new ExternalActions({ client: this.client, rig: this.rig, director: this.director, getCatalogGeneration: () => this.generation, isFocused: () => this.focused, cleanupTimeoutMs: options.cleanupTimeoutMs ?? 5000 });
 	}
 
 	get isStarted(): boolean {
@@ -263,7 +200,7 @@ export class Live2DRuntime {
 	setFocused(focused: boolean): void {
 		if (this.focused === focused) return;
 		this.focused = focused;
-		if (!focused) this.spatialClaim?.cancel();
+		if (!focused) this.externalActions?.cancelSpatial();
 		this.syncFrozen();
 	}
 
@@ -280,7 +217,7 @@ export class Live2DRuntime {
 			throw new Error(`目录与 rig 模型身份不符: 目录 ${snapshot.modelID} vs rig ${this.rig.modelID}`);
 		this.catalog = snapshot;
 		this.generation++;
-		this.director?.cancelClaims();
+		this.externalActions?.cancelAll();
 		this.director?.invalidateAll("catalog changed");
 		this.restHandle = undefined;
 		this.ambientName = undefined;
@@ -339,7 +276,6 @@ export class Live2DRuntime {
 		const denied = this.gate(options);
 		if (denied) return denied;
 		const director = this.director!;
-		const client = this.client!;
 		const clip = this.pickMotionClip(entry, options.speech);
 		const playOptions: PlayOptions = {
 			...entry.playback,
@@ -351,263 +287,12 @@ export class Live2DRuntime {
 		if (!entry.spatial) {
 			const handle = director.play(clip, playOptions);
  options.onStarted?.();
-			return this.settleMotion(handle, clip, label, options.callName);
+			return settleMotion(this.client!, this.rig!, handle, clip, label, options.callName);
 		}
 		if (!this.focused) return toolRejected("unfocused", `${label} 未执行：身体当前失焦。`);
 
-		const claim = this.acquireClaim(["model:transform"], "motion", options.signal, true);
-		if ("status" in claim) return claim;
-		this.spatialClaim = claim;
-		const generation = this.generation;
-		const modelGeneration = client.getModelGeneration();
-		const connectionGeneration = client.getInjectionStats().generation;
-		const sameModel = () =>
-			generation === this.generation &&
-			this.identityMatched() &&
-			client.isConnected() &&
-			client.getModelGeneration() === modelGeneration &&
-			client.getInjectionStats().generation === connectionGeneration;
-		let completeCleanup: (confirmed: boolean) => void = () => {};
-		this.trackCleanup(
-			new Promise<boolean>((resolve) => {
-				completeCleanup = resolve;
-			}),
-		);
-		let base: ModelPose | undefined;
-		let handle: MotionHandle | undefined;
-		let motionResult: Promise<ToolExecutionResult> | undefined;
-		let moved = false;
-		let restored = true;
-		let restoreAttempted = false;
-		/** 进入时捕获的后处理状态（读失败为 undefined → 归位目标按"关闭"）。tint 协议无读 API，按所有权模型恢复为白。 */
-		let postBaseline: { active: boolean; activePreset: string | null } | undefined;
-		/** 只有特技真的分发过效果才做效果归位——否则白/关复位会踩掉用户自己的染色与滤镜。 */
-		let effectsSent = false;
-		let effectsRestored: { tint: boolean; post: boolean } | undefined;
-		const dispatchFailures: string[] = [];
-		const ensureActive = () => {
-			if (!this.focused || !sameModel() || handle?.status === "releasing" || handle?.status === "cancelled")
-				claim.cancel();
-			claim.signal.throwIfAborted();
-		};
-		const restore = async (): Promise<boolean> => {
-			if (restoreAttempted) return restored;
-			restoreAttempted = true;
-			restored = !moved || (base !== undefined && (await this.restorePose(client, base, sameModel)));
-			return restored;
-		};
-		/** 三位一体归位的效果侧：染色刷白 + 后处理恢复进入时开关与具名 preset（无捕获则关闭；其余滤镜参数经 setAllOtherValuesToDefault 重置为默认，不逐项保真），逐项如实结算。 */
-		const restoreEffects = async (): Promise<{ tint: boolean; post: boolean }> => {
-			if (effectsRestored) return effectsRestored;
-			if (!effectsSent) return { tint: true, post: true };
-			const settled = await Promise.allSettled([
-				client.tintModel({ r: 255, g: 255, b: 255, a: 255 }),
-				(async () => {
-					await client.updatePostProcessing({
-						on: postBaseline?.active ?? false,
-						...(postBaseline?.active && postBaseline.activePreset
-							? { preset: postBaseline.activePreset }
-							: {}),
-						fadeTime: 0.25,
-					});
-					return client.readPostProcessing();
-				})(),
-			]);
-			const postNow = settled[1].status === "fulfilled" ? await settled[1].value : undefined;
-			effectsRestored = {
-				tint: settled[0].status === "fulfilled",
-				post:
-					postNow !== undefined &&
-					postNow.active === (postBaseline?.active ?? false) &&
-					// 基线带具名 preset 时读回必须一致；无具名 preset（null）只核对开关——协议未定义默认 preset 名。
-					(!(postBaseline?.active && postBaseline.activePreset) ||
-						postNow.activePreset === postBaseline.activePreset),
-			};
-			return effectsRestored;
-		};
-		try {
-			ensureActive();
-			base = await withCancellation(client.getModelPosition(this.rig!.modelID), claim.signal);
-			ensureActive();
-			// 组合值前瞻校验（302 根因修复）：实发绝对值 = base + delta，base 此刻已知——任一段越界
-			// 即在发送前整体失败，不发半程特技。回读 rotation 为正表示法（-12 回读 348），合成前
-			// 须 wrapDeg 归一化，否则正 delta 会越过 360（spin 的 rotation:360 恰好压边界即被拒）。
-			const rotationBase = wrapDeg(base.rotation);
-			const violations: string[] = [];
-			for (const [index, segment] of entry.spatial.segments.entries()) {
-				const target = {
-					positionX: base.positionX + (segment.delta.x ?? 0),
-					positionY: base.positionY + (segment.delta.y ?? 0),
-					rotation: rotationBase + (segment.delta.rotation ?? 0),
-					size: base.size + (segment.delta.size ?? 0),
-				};
-				if (Math.abs(target.positionX) > VTS_MOVE_LIMITS.position || Math.abs(target.positionY) > VTS_MOVE_LIMITS.position)
-					violations.push(
-						`段[${index}] position=(${target.positionX}, ${target.positionY}) 超出 ±${VTS_MOVE_LIMITS.position}`,
-					);
-				if (Math.abs(target.rotation) > VTS_MOVE_LIMITS.rotation)
-					violations.push(`段[${index}] rotation=${target.rotation} 超出 ±${VTS_MOVE_LIMITS.rotation}`);
-				if (Math.abs(target.size) > VTS_MOVE_LIMITS.size)
-					violations.push(`段[${index}] size=${target.size} 超出 ±${VTS_MOVE_LIMITS.size}`);
-			}
-			if (violations.length > 0)
-				return toolRejected(
-					"invalid_motion",
-					`${label} 空间轨迹与当前模型位姿组合后越界，未发送：${violations.join("；")}。`,
-					{ violations },
-				);
-			// 预设前瞻校验（1203 根因修复）：preset 是 VTS Effects 环境文件名，不可假设存在；
-			// 可用清单可枚举（PostProcessingListRequest），任一段引用缺失即发送前整体拒绝，零半程特效。
-			// 空清单（旧版 VTS / 刷新失败）= 未知，放行走运行时裁决。
-			const presets = client.getPostProcessingPresets();
-			if (presets.length > 0) {
-				const missing = [
-					...new Set(
-						entry.spatial.segments.flatMap((s) =>
-							s.effects?.postProcessing?.preset ? [s.effects.postProcessing.preset] : [],
-						),
-					),
-				].filter((p) => !presets.includes(p));
-				if (missing.length > 0)
-				return toolRejected(
-					"preset_missing",
-					`${label} 引用的后处理预设不存在于 VTS，未发送：${missing.join("、")}。可用预设: ${presets.join("、")}。`,
-					{ missingPresets: missing, availablePresets: presets },
-				);
-			}
-			try {
-				postBaseline = await withCancellation(client.readPostProcessing(), claim.signal);
-			} catch {
-				// 捕获失败不阻断特技：归位目标按"关闭"回退，恢复结果仍逐项如实结算。
-				postBaseline = undefined;
-			}
-			ensureActive();
-			handle = director.play(clip, { ...playOptions, signal: claim.signal });
- options.onStarted?.();
-			void handle.finished.then((result) => {
-				if (result.status === "cancelled") claim.cancel();
-			});
-			motionResult = this.settleMotion(handle, clip, label, options.callName);
-			for (const [index, segment] of entry.spatial.segments.entries()) {
-				ensureActive();
-				await withCancellation(client.getModelPosition(this.rig!.modelID), claim.signal);
-				ensureActive();
-				moved = true; // 请求异常也可能已经到达 VTS，因此必须尝试归位。
-				// 效果与位姿同段顺序派发：先等效果请求落地（allSettled，失败仅记录继续），再发位姿移动。
-				// 位姿失败沿用既有语义：中止后续段并走归位守护；结算如实呈现。
-				const effectDispatches: Promise<unknown>[] = [];
-				if (segment.effects?.tint) {
-					effectsSent = true;
-					effectDispatches.push(client.tintModel(segment.effects.tint));
-				}
-				if (segment.effects?.postProcessing) {
-					effectsSent = true;
-					effectDispatches.push(client.updatePostProcessing(segment.effects.postProcessing));
-				}
-				const dispatched = await withCancellation(Promise.allSettled(effectDispatches), claim.signal);
-				for (const [slot, outcome] of dispatched.entries())
-					if (outcome.status === "rejected")
-						dispatchFailures.push(
-							`段[${index}]分发[${slot}]: ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`,
-						);
-				if (segment.delta && Object.keys(segment.delta).length > 0)
-					await withCancellation(
-						client.moveModel({
-							timeInSeconds: segment.durationMs / 1000,
-							valuesAreRelativeToModel: false,
-							positionX: base.positionX + (segment.delta.x ?? 0),
-							positionY: base.positionY + (segment.delta.y ?? 0),
-							rotation: rotationBase + (segment.delta.rotation ?? 0),
-							size: base.size + (segment.delta.size ?? 0),
-						}),
-						claim.signal,
-					);
-				// 动画从 VTS 收到请求起跑 timeInSeconds；ACK 后全额等待，宁过勿欠——
-				// 旧实现从效果派发前计时扣除，每段被抢跑"派发+往返"时长，末段插值未落地
-				// 即回读到中间值（close_up"正常回位未确认"根因）。
-				if (!(await sleep(segment.durationMs + (segment.holdMs ?? 0), claim.signal))) break;
-			}
-			ensureActive();
-			// 末段不得携带 effects（编译期禁止）：效果复位由守护在此统一执行，作者不写重置值。
-			const restoredEffects = await restoreEffects();
-			restored = false;
-			for (let attempt = 0; attempt <= SETTLE_RETRIES && !restored; attempt++) {
-				ensureActive();
-				await sleep(attempt === 0 ? SETTLE_MARGIN_MS : SETTLE_RETRY_MS, claim.signal);
-				ensureActive();
-				const now = await withCancellation(client.getModelPosition(this.rig!.modelID), claim.signal);
-				ensureActive();
-				restored = sameModel() && poseMatches(now, base);
-			}
-			if (!restored) {
-				handle.stop("cut");
-				// restore() 内部自行等待 RESTORE_SECONDS 并回读确认；此处取其确认值如实上报，
-				// 不能复用回读前的判定（陈旧 false 会把"实际已归位"报成"未确认"）。
-				const confirmed = await restore();
-				return toolUnknown(`${label} 正常回位未确认。`, { restored: confirmed, restoredEffects });
-			}
-			if (dispatchFailures.length > 0 || restoredEffects.tint === false || restoredEffects.post === false) {
-				const problems = [...dispatchFailures];
-				if (restoredEffects.tint === false) problems.push("染色归位未确认");
-				if (restoredEffects.post === false) problems.push("滤镜归位未确认");
-				return toolUnknown(`${label} 部分外部效果未完整：${problems.join("；")}`, {
-					restored: true,
-					restoredEffects,
-				});
-			}
-			// 失联会停止合成时钟；空间表演不能永远等一个不再推进的句柄。
-			let result: ToolExecutionResult | undefined;
-			while (!result) {
-				ensureActive();
-				result = await Promise.race([motionResult, sleep(50).then(() => undefined)]);
-			}
-			ensureActive();
-			return {
-				...result,
-				details: { ...(result.details as Record<string, unknown> | undefined), restored: true, restoredEffects },
-			};
-		} catch (error) {
-			const cancelled = claim.signal.aborted || handle?.status === "releasing" || handle?.status === "cancelled";
-			handle?.stop("cut");
-			const confirmed = await restore();
-			const restoredEffects = await restoreEffects();
-			if (cancelled && !moved)
-				return toolRejected("cancelled", `${label} 已取消，未发送空间移动。`, { effectStatus: "cancelled" });
-			if (cancelled)
-				return toolRejected("cancelled", confirmed ? `${label} 已取消并核实归位。` : `${label} 已取消，归位未确认。`, {
-					effectStatus: confirmed ? "cancelled" : "unknown",
-					restored: confirmed,
-					restoredEffects,
-				});
-			return toolUnknown(`${label} 执行异常：${error instanceof Error ? error.message : String(error)}`, {
-				...(moved ? { restored: confirmed } : {}),
-				restoredEffects,
-			});
-		} finally {
-			completeCleanup(restored);
-			if (this.spatialClaim === claim) this.spatialClaim = undefined;
-			claim.release();
-		}
-	}
-
-	private async settleMotion(
-		handle: MotionHandle,
-		clip: CompiledMotion,
-		label: string,
-		callName?: string,
-	): Promise<ToolExecutionResult> {
-		const observation = this.client!.observeMotionInjections(handle.id);
-		try {
-			const result = await handle.finished;
-			const evidence = result.status === "completed" ? await observation.finish() : observation.snapshot();
-			const inputs = [
-				...new Set(clip.axes.flatMap((axis) => this.rig!.bindings[axis]!.map((binding) => binding.input))),
-			];
-			return fromEngineResult(result, label, evidence, inputs, callName);
-		} finally {
-			observation.close();
-		}
-	}
+  return this.externalActions!.runSpatial(entry, clip, { ...playOptions, callName: options.callName, onStarted: options.onStarted });
+ }
 
 	/** express（§2）：播放目录中的命名动作，Voluntary 类别；await 终态结算。 */
 	async express(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
@@ -706,25 +391,7 @@ export class Live2DRuntime {
 			const available = this.catalog.list("costume").map((c) => c.name).join(", ") || "无";
 			return toolRejected("unknown_costume", `外观不在当前模型目录: "${item}"。当前可用外观: ${available}。`);
 		}
-		const hotkey = this.client?.findHotkey(entry.hotkeyID);
-		if (!hotkey)
-			return toolRejected(
-				"hotkey_missing",
-				`热键未在当前 VTS 模型登记: "${entry.hotkeyID}"（模型配置已变更？reload 后重试）。`,
-			);
-		const claim = this.acquireClaim(["effect:*"], "costume", ctx.signal);
-		if ("status" in claim) return claim;
-		try {
-			await this.client!.triggerHotkey(hotkey.hotkeyID);
-			return toolSucceeded(`${entry.id} OK`, {
-				effectStatus: "accepted",
-				verification: "local_intent",
-			});
-		} catch (error) {
-			return toolUnknown(`外观触发结果不明：${error instanceof Error ? error.message : String(error)}`);
-		} finally {
-			claim.release();
-		}
+		return this.externalActions!.runCostume(entry, ctx.signal);
 	}
 
 	/** reload（§2）：显式重载当前 VTS 模型并重新核验绑定。 */
@@ -792,7 +459,7 @@ export class Live2DRuntime {
 	 */
 	async safeStop(): Promise<void> {
 		if (this.paused) {
-			if (!(await this.awaitCleanups())) throw new Error("Uina 已暂停，外部效果或归位清理尚未确认。");
+			if (!((await this.externalActions?.settlePending())?.complete ?? true)) throw new Error("Uina 已暂停，外部效果或归位清理尚未确认。");
 			return;
 		}
 		this.paused = true;
@@ -809,76 +476,15 @@ export class Live2DRuntime {
 		this.thinkingHandle = undefined;
 		// §6.2/§6.4：取消全部独占声明；带清理的声明等待归位清理完成，未确认则抛错（调用方得
 		// unknown；拆除不被阻塞——BodyRouter.stopAll 以 allSettled 承接为 failed[]）。
-		director.cancelClaims();
-		if (!(await this.awaitCleanups())) throw new Error("Uina 已暂停，外部效果或归位清理尚未确认。");
-	}
-
-	/**
-	 * 独占声明受理：reason 带调用序号——重叠的同类声明一律 resource_conflict，
-	 * 不走同 reason 幂等替换（独占资源的并发重复触发不是"重触发"而是冲突）。
-	 */
-	private acquireClaim(
-		resources: readonly string[],
-		kind: string,
-		signal?: AbortSignal,
-		cleanup = false,
-	): ExclusiveClaim | ToolExecutionResult {
-		try {
-			return this.director!.claimExclusive(resources, { reason: `${kind}#${++this.claimSeq}`, cleanup, signal });
-		} catch {
-			return signal?.aborted
-				? toolRejected("cancelled", "调用已中止，未执行。")
-				: toolRejected("resource_conflict", "独占资源被占用（空间手势/costume 正在进行或清理中）。");
-		}
-	}
-
-	/** 归位清理任务入账（§6.2 safeStop 等待-结算的事实源）。返回原 Promise 供调用方等待。 */
-	trackCleanup(p: Promise<boolean>): Promise<boolean> {
-		const wrapped = p
-			.then((confirmed) => {
-				if (!confirmed) this.cleanupUnconfirmed = true;
-				return confirmed;
-			})
-			.finally(() => this.pendingCleanups.delete(wrapped));
-		this.pendingCleanups.add(wrapped);
-		return wrapped;
-	}
-
-	/** §6.2：等待全部在途归位清理完成；超时返回 false（safeStop 据此抛错，§6.4）。 */
-	private async awaitCleanups(): Promise<boolean> {
-		const deadline = Date.now() + this.cleanupTimeoutMs;
-		while (this.pendingCleanups.size > 0) {
-			if (Date.now() > deadline) return false;
-			await Promise.race([Promise.allSettled([...this.pendingCleanups]), sleep(50)]);
-		}
-		return !this.cleanupUnconfirmed;
-	}
-
-	/** 空间特技归位：绝对位姿回基线 → 回读核实。返回是否核实通过（失败也结算，不悬挂声明）。 */
-	private async restorePose(client: VTSClient, base: ModelPose, sameModel: () => boolean): Promise<boolean> {
-		try {
-			if (!sameModel()) return false;
-			await client.getModelPosition(this.rig!.modelID);
-			if (!sameModel()) return false;
-			await client.moveModel({
-				...base,
-				timeInSeconds: RESTORE_SECONDS,
-				valuesAreRelativeToModel: false,
-			});
-			await sleep(RESTORE_SECONDS * 1000 + SETTLE_MARGIN_MS);
-			if (!sameModel()) return false;
-			const now = await client.getModelPosition(this.rig!.modelID);
-			return sameModel() && poseMatches(now, base);
-		} catch {
-			return false;
-		}
+		this.externalActions?.cancelAll();
+		if (!((await this.externalActions?.settlePending())?.complete ?? true)) throw new Error("Uina 已暂停，外部效果或归位清理尚未确认。");
 	}
 
 	/** resume（§6）：解除暂停、清保持帧、口型包络归零、眨眼与限时状态倒计时恢复剩余。 */
 	async resume(): Promise<void> {
 		if (!this.paused) return;
 		this.paused = false;
-		this.cleanupUnconfirmed = false;
+		this.externalActions?.acknowledgeUnconfirmed();
 		this.keepFrame = undefined;
 		this.speechInput?.reset();
 		this.syncFrozen();
@@ -948,7 +554,7 @@ export class Live2DRuntime {
 		// 不归零会让下一次 thinking=true 被幂等门吞掉，本回合内再也无法点亮思考态。
 		this.thinking = false;
 		this.thinkingHandle = undefined;
-		this.spatialClaim?.cancel();
+		this.externalActions?.cancelSpatial();
 		this.director?.interruptTransient("turn_aborted");
 		this.speechInput?.reset();
 	}
@@ -1056,6 +662,7 @@ export class Live2DRuntime {
 				focused: this.focused,
 				generation: this.generation,
 				lastCue: this.endpoint.lastCue(),
+ externalActions: this.externalActions?.snapshot() ?? null,
 				director: this.director
 					? {
 							attention: this.director.getAttention() ?? null,

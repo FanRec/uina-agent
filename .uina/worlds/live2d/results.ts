@@ -1,6 +1,6 @@
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import type { SomaticActionResult } from "./director/director.js";
-import type { MotionInjectionEvidence } from "./adapter/vts-client.js";
+import type { MotionInjectionEvidence, VTSClient } from "./adapter/vts-client.js";
 
 /**
  * 工具结果词汇表（P4-1，边界规范 §2.1，normative）。
@@ -114,3 +114,46 @@ export function fromEngineResult(
 			};
 	}
 }
+
+import type { ModelRig } from "./adapter/rig.js";
+import type { MotionHandle } from "./director/director.js";
+import type { CompiledMotion } from "./authoring/motion.js";
+export function withCancellation<T>(request: Promise<T>, signal: AbortSignal): Promise<T> {
+	return new Promise((resolve, reject) => {
+		const abort = () => reject(signal.reason);
+		const cleanup = () => signal.removeEventListener("abort", abort);
+		request.then(
+			(value) => {
+				cleanup();
+				resolve(value);
+			},
+			(error) => {
+				cleanup();
+				reject(error);
+			},
+		);
+		if (signal.aborted) abort();
+		else signal.addEventListener("abort", abort, { once: true });
+	});
+}
+
+export async function settleMotion(
+ client: VTSClient, rig: ModelRig,
+		handle: MotionHandle,
+		clip: CompiledMotion,
+		label: string,
+		callName?: string,
+	): Promise<ToolExecutionResult> {
+		const observation = client.observeMotionInjections(handle.id);
+		try {
+			const result = await handle.finished;
+			const evidence = result.status === "completed" ? await observation.finish() : observation.snapshot();
+			const inputs = [
+				...new Set(clip.axes.flatMap((axis) => rig.bindings[axis]!.map((binding) => binding.input))),
+			];
+			return fromEngineResult(result, label, evidence, inputs, callName);
+		} finally {
+			observation.close();
+		}
+	}
+
