@@ -5,11 +5,10 @@ import { encodeFrame, validateRig, type ModelRig } from "./adapter/rig.js";
 import { VTSClient } from "./adapter/vts-client.js";
 import {
 	emptyCatalog,
-	recompileWithSpeech,
 	type CatalogMotionEntry,
 	type CatalogSnapshot,
 } from "./authoring/catalog.js";
-import type { CompiledMotion, SpeechPolicy } from "./authoring/motion.js";
+import { compileMotion, withSpeech, type CompiledMotion, type SpeechPolicy } from "./authoring/motion.js";
 import {
 	MotionDirector,
 	SupersededError,
@@ -121,6 +120,24 @@ function parseHoldMs(value: unknown): number | undefined | ToolExecutionResult {
 const formatCatalogEntries = (map: ReadonlyMap<string, { aliases?: readonly string[] }>): string[] =>
 	[...map.entries()].map(([k, v]) => (v.aliases?.length ? `${k}(${v.aliases.join("/")})` : k));
 
+/** 格式化动作条目（词表面）：别名之外追加变体池总数，让调用方知道重复 cue 不会重样。 */
+const formatMotionEntries = (map: ReadonlyMap<string, CatalogMotionEntry>): string[] =>
+	[...map.entries()].map(([k, v]) => {
+		const base = v.aliases?.length ? `${k}(${v.aliases.join("/")})` : k;
+		return v.variants?.length ? `${base}[${v.variants.length + 1}变体]` : base;
+	});
+
+/**
+ * 变体轮换择一（纯函数，随机源注入）：池 N 取 N-1 均匀随机，越过 lastPick 偏移——
+ * 排除上次选中，保证连播不重样；N ≤ 1 恒 0。
+ */
+export const pickVariantIndex = (poolSize: number, lastPick: number | undefined, random: () => number): number => {
+	if (poolSize <= 1) return 0;
+	let index = Math.floor(random() * (poolSize - 1));
+	if (lastPick !== undefined && index >= lastPick) index += 1;
+	return index;
+};
+
 export class Live2DRuntime {
 	private started = false;
 	private readonly cleanups: Array<() => void> = [];
@@ -140,6 +157,10 @@ export class Live2DRuntime {
 	/** 环境循环选中名：uina 经 ambient 工具选择/清除，选中时替换 idle 成为静止态背景。 */
 	private ambientName?: string;
 	private restHandle?: MotionHandle;
+	/** 变体轮换状态：按条目对象身份存 WeakMap——目录快照换代产生新条目对象，轮换自然归零。 */
+	private readonly lastVariantPick = new WeakMap<CatalogMotionEntry, number>();
+	/** 变体轮换随机源（A9 注入点）：缺省 Math.random。 */
+	private readonly pickRandom: () => number;
 	/** 独占声明 reason 序号：每次声明唯一 reason，重叠声明一律 resource_conflict（不做同 reason 幂等替换）。 */
 	private claimSeq = 0;
 	private spatialClaim?: ExclusiveClaim;
@@ -182,9 +203,10 @@ export class Live2DRuntime {
 				};
 			}
 		}
-		this.tickIntervalMs = options.tickIntervalMs ?? 1000 / 60;
-		this.cleanupTimeoutMs = options.cleanupTimeoutMs ?? 5000;
-		this.onStatusChange = options.onStatusChange;
+	this.tickIntervalMs = options.tickIntervalMs ?? 1000 / 60;
+	this.cleanupTimeoutMs = options.cleanupTimeoutMs ?? 5000;
+	this.pickRandom = options.rng ?? Math.random;
+	this.onStatusChange = options.onStatusChange;
 		this.endpoint = buildLive2DEndpoint(this);
 	}
 
@@ -282,6 +304,24 @@ export class Live2DRuntime {
 	}
 
 	/**
+	 * 动作 clip 择一（变体轮换机制的唯一咽喉）：主定义 + variants 构成池，均匀随机排除
+	 * 上次选中（连播不重样）。express 工具与 endpoint.emitCue 复用 playMotion，两路自动轮换。
+	 * speech 覆写按选中变体的原始定义重编译——外层 withSpeech 覆盖作者内层策略，合同同主定义路径。
+	 */
+	private pickMotionClip(entry: CatalogMotionEntry, speech: SpeechPolicy | undefined): CompiledMotion {
+		const variants = entry.variants;
+		if (!variants?.length)
+			return speech === undefined
+				? entry.motion
+				: compileMotion(withSpeech(entry.definition, speech), this.rig!.controls);
+		const index = pickVariantIndex(variants.length + 1, this.lastVariantPick.get(entry), this.pickRandom);
+		this.lastVariantPick.set(entry, index);
+		const variant = index === 0 ? undefined : variants[index - 1]!;
+		if (speech === undefined) return variant?.motion ?? entry.motion;
+		return compileMotion(withSpeech(variant?.definition ?? entry.definition, speech), this.rig!.controls);
+	}
+
+	/**
 	 * 统一执行手势/动作条目（供 express 工具与 endpoint.emitCue 复用）。
 	 * 纯骨骼手势直接委托 director.play；若含 spatial，声明 model:transform 并在前台推进去程、停留与自动归位。
 	 * 分段可携带 effects（染色/后处理），与位姿同段顺序派发（先等效果落地再发移动）；归位守护覆盖位姿、染色与后处理三项。
@@ -294,8 +334,7 @@ export class Live2DRuntime {
 		if (denied) return denied;
 		const director = this.director!;
 		const client = this.client!;
-		const clip =
-			options.speech === undefined ? entry.motion : recompileWithSpeech(entry, options.speech, this.rig!.controls);
+		const clip = this.pickMotionClip(entry, options.speech);
 		const playOptions: PlayOptions = {
 			...entry.playback,
 			category: "voluntary",
@@ -512,7 +551,7 @@ export class Live2DRuntime {
 		if (typeof name !== "string" || name.length === 0) return toolRejected("invalid_motion", "缺少 motion 参数。");
 		const entry = this.catalog.findMotion(name);
 		if (!entry) {
-			const available = formatCatalogEntries(this.catalog.motions).join(", ") || "无";
+			const available = formatMotionEntries(this.catalog.motions).join(", ") || "无";
 			return toolRejected("unknown_motion", `动作不在当前模型目录: "${name}"。当前可用动作: ${available}。`);
 		}
 		const { atomic, speech } = args;
@@ -970,7 +1009,7 @@ export class Live2DRuntime {
 				modelID: this.rig?.modelID ?? null,
 				paused: this.paused,
 				catalog: {
-					motions: formatCatalogEntries(this.catalog.motions),
+					motions: formatMotionEntries(this.catalog.motions),
 					postures: formatCatalogEntries(this.catalog.postures),
 					expressions: formatCatalogEntries(this.catalog.expressions),
 					attentions: [...this.catalog.attentions.keys()],

@@ -1,5 +1,5 @@
 import type { RigControlDef } from "../adapter/rig.js";
-import { compileMotion, withSpeech, type CompiledMotion, type MotionDefinition, type SpeechPolicy } from "./motion.js";
+import { compileMotion, type CompiledMotion, type MotionDefinition } from "./motion.js";
 
 /**
  * 模型目录（P4-1，边界规范 §2）。
@@ -87,12 +87,27 @@ export interface CatalogPlayback {
 	readonly resetVelocity?: boolean;
 }
 
+/**
+ * 同义纹理变体：与主定义（池成员 0）构成随机轮换池，连播不重样（表演规范 §3：
+ * 重复时允许有界的轻重/时长/方向变化，不改变关键姿势）。
+ * 不入全局命名空间、不可独立寻址——agent 仍 cue 单一动作名；某变体需要被语义选择时，
+ * 晋升路径是移出 variants 升为独立命名条目。
+ */
+export interface MotionVariant {
+	/** 原始定义：express 的 speech 覆写按选中变体重编译。 */
+	definition: MotionDefinition;
+	/** 绑定期编译产物。 */
+	motion: CompiledMotion;
+}
+
 export interface CatalogMotionEntry {
 	description: string;
 	/** 原始定义：express 的 speech 参数覆写时按此重编译（withSpeech 外层节点覆盖内层策略）。 */
 	definition: MotionDefinition;
 	/** 绑定期编译产物：非法定义在此处即失败，不进入运行时。 */
 	motion: CompiledMotion;
+	/** 附加变体（不含主定义）；主定义 + variants 构成轮换池，运行时均匀随机排除上次选中。 */
+	variants?: readonly MotionVariant[];
 	/** 可选的空间位姿特技（执行期间独占 model:transform 并保证自动归位）。 */
 	spatial?: SpatialStuntDef;
 	playback?: CatalogPlayback;
@@ -177,6 +192,8 @@ export interface CatalogSource {
 			{
 				description: string;
 				motion: MotionDefinition;
+				/** 附加变体原始定义（不含主定义）；绑定期逐个编译，非法即抛。 */
+				variants?: readonly MotionDefinition[];
 				spatial?: SpatialStuntDef;
 				playback?: CatalogPlayback;
 				atomic?: boolean;
@@ -270,10 +287,15 @@ export function compileCatalog(
 			for (const axis of entry.playback.inhibitAdditives)
 				if (!rig.controls[axis]) throw new Error(`动作 "${name}" 抑制未声明轴: ${axis}`);
 		}
+		// 变体池：附加变体逐个编译（非法定义即抛）；池总数 ≥ 2 才构成轮换，空池拒绝。
+		const variants = entry.variants?.map((definition) => ({ definition, motion: compileMotion(definition, rig.controls) }));
+		if (entry.variants !== undefined && (variants?.length ?? 0) < 1)
+			throw new Error(`动作 "${name}" 变体池为空：主定义 + 变体必须 ≥ 2 才构成轮换`);
 		motions.set(name, {
 			description: entry.description,
 			definition: entry.motion,
 			motion: compileMotion(entry.motion, rig.controls),
+			variants,
 			spatial: entry.spatial,
 			playback: entry.playback,
 			atomic: entry.atomic ?? true,
@@ -377,13 +399,4 @@ export function compileCatalog(
 		findSlot,
 		resolveAttention,
 	};
-}
-
-/** express speech 参数覆写：外层 withSpeech 节点在编译时最后写入 mouth 轨道策略，覆盖作者内层声明。 */
-export function recompileWithSpeech(
-	entry: CatalogMotionEntry,
-	policy: SpeechPolicy,
-	controls: Readonly<Record<string, RigControlDef>>,
-): CompiledMotion {
-	return compileMotion(withSpeech(entry.definition, policy), controls);
 }
