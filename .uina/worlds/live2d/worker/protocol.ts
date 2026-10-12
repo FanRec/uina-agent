@@ -23,6 +23,7 @@ export type EngineOp =
 	| "expression"
 	| "attention"
 	| "costume"
+	| "ambient"
 	| "reload"
 	| "formatStatus"
 	| "diagnose"

@@ -37,6 +37,7 @@ export interface Live2DWorldRuntime {
 	expression(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
 	attention(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
 	costume(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
+	ambient(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
 	reload(ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
 	formatStatus(): string | Promise<string>;
 	diagnose(): string | Promise<string>;
@@ -182,6 +183,9 @@ export class Live2DRuntimeProxy implements Live2DWorldRuntime {
 	}
 	costume(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
 		return this.call("costume", args, ctx?.signal) as Promise<ToolExecutionResult>;
+	}
+	ambient(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+		return this.call("ambient", args, ctx?.signal) as Promise<ToolExecutionResult>;
 	}
 	reload(ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
 		return this.call("reload", undefined, ctx?.signal) as Promise<ToolExecutionResult>;

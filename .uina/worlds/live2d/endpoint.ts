@@ -58,7 +58,9 @@ export function buildLive2DEndpoint(runtime: Live2DRuntime): Live2DEndpoint {
 		for (const [name, motion] of view.motions) {
 			if (name === cueId || motion.aliases?.includes(cueId)) return { kind: "motion", name };
 		}
-		if (view.postures.has(cueId)) return { kind: "posture", name: cueId };
+		for (const [name, posture] of view.postures) {
+			if (name === cueId || posture.aliases?.includes(cueId)) return { kind: "posture", name };
+		}
 		return undefined;
 	};
 
@@ -79,7 +81,11 @@ export function buildLive2DEndpoint(runtime: Live2DRuntime): Live2DEndpoint {
 					description: motion.description,
 					...(motion.aliases?.length ? { aliases: motion.aliases } : {}),
 				})),
-				...[...view.postures.entries()].map(([id, posture]) => ({ id, description: `[姿态] ${posture.description}` })),
+				...[...view.postures.entries()].map(([id, posture]) => ({
+					id,
+					description: `[姿态] ${posture.description}`,
+					...(posture.aliases?.length ? { aliases: posture.aliases } : {}),
+				})),
 			];
 			return {
 				bodyId: "live2d",

@@ -94,6 +94,7 @@ export function attachEngine(post: (msg: EngineToMain) => void, options: EngineO
 		expression: (args, signal) => requireRuntime().expression(args as Record<string, unknown>, { signal }),
 		attention: (args, signal) => requireRuntime().attention(args as Record<string, unknown>, { signal }),
 		costume: (args, signal) => requireRuntime().costume(args as Record<string, unknown>, { signal }),
+		ambient: (args, signal) => requireRuntime().ambient(args as Record<string, unknown>, { signal }),
 		reload: (_args, signal) => requireRuntime().reload({ signal }),
 		formatStatus: async () => requireRuntime().formatStatus(),
 		diagnose: async () => requireRuntime().diagnose(),

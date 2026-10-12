@@ -33,6 +33,19 @@ export const BUILTIN_ATTENTIONS: readonly Extract<AttentionTarget, string>[] = [
 	"avert_right",
 ];
 
+/** 内置注视的中文朴素别名映射。 */
+export const BUILTIN_ATTENTION_ALIASES: Readonly<Record<string, Extract<AttentionTarget, string>>> = {
+	"看对方": "user",
+	"用户": "user",
+	"看用户": "user",
+	"看屏幕": "screen",
+	"屏幕": "screen",
+	"看下方": "avert_down",
+	"垂眸": "avert_down",
+	"看左侧": "avert_left",
+	"看右侧": "avert_right",
+};
+
 export interface SpatialSegment {
 	/** 每一段都相对同一开始位姿，不累积前段偏移。 */
 	readonly delta: {
@@ -78,6 +91,7 @@ export interface CatalogSlotEntry {
 	/** 轴值必须已声明于 rig.controls 且落在 [min,max]，compileCatalog 校验。 */
 	values: Readonly<Record<string, number>>;
 	transitionMs?: number;
+	aliases?: readonly string[];
 }
 
 export interface CatalogAttentionEntry {
@@ -91,10 +105,18 @@ export interface CatalogCostumeEntry {
 	hotkeyID: string;
 }
 
+/** 环境循环条目：uina 经 ambient 工具按名选择；描述进入 status 词表，别名入全局命名空间。 */
+export interface CatalogAmbientEntry {
+	description: string;
+	motion: CompiledMotion;
+}
+
 /** 背景循环/思考动作（引擎类别 transition；P4-4 thinking 状态驱动消费）。 */
 export interface CatalogBackground {
 	thinking?: CompiledMotion;
 	idle?: CompiledMotion;
+	/** 环境循环词表：uina 经 ambient 工具选择/清除，选中时替换 idle 成为静止态背景。 */
+	ambient?: ReadonlyMap<string, CatalogAmbientEntry>;
 }
 
 /** 不可变目录快照：世界工具词表、endpoint affordance/supportsCue 的同源事实。 */
@@ -106,6 +128,15 @@ export interface CatalogSnapshot {
 	readonly attentions: ReadonlyMap<string, CatalogAttentionEntry>;
 	readonly costumes: readonly CatalogCostumeEntry[];
 	readonly background: CatalogBackground;
+	findMotion(nameOrAlias: string): CatalogMotionEntry | undefined;
+	findSlot(kind: "posture" | "expression", nameOrAlias: string): CatalogSlotEntry | undefined;
+	resolveAttention(nameOrAlias: string): AttentionTarget | undefined;
+}
+
+/** 解析引擎内置注视（原生目标或中文朴素别名）。 */
+export function resolveBuiltinAttention(nameOrAlias: string): AttentionTarget | undefined {
+	if ((BUILTIN_ATTENTIONS as readonly string[]).includes(nameOrAlias)) return nameOrAlias as AttentionTarget;
+	return BUILTIN_ATTENTION_ALIASES[nameOrAlias];
 }
 
 /** 空目录是诚实状态：引擎接入而作者目录未产出时，一切命名参数显式拒绝。 */
@@ -117,6 +148,9 @@ export const emptyCatalog = (modelID: string): CatalogSnapshot => ({
 	attentions: new Map(),
 	costumes: [],
 	background: {},
+	findMotion: () => undefined,
+	findSlot: () => undefined,
+	resolveAttention: resolveBuiltinAttention,
 });
 
 export interface CatalogSource {
@@ -138,7 +172,11 @@ export interface CatalogSource {
 	expressions?: Readonly<Record<string, CatalogSlotEntry>>;
 	attentions?: Readonly<Record<string, CatalogAttentionEntry>>;
 	costumes?: readonly CatalogCostumeEntry[];
-	background?: { thinking?: MotionDefinition; idle?: MotionDefinition };
+	background?: {
+		thinking?: MotionDefinition;
+		idle?: MotionDefinition;
+		ambient?: Record<string, { description: string; aliases?: readonly string[]; motion: MotionDefinition }>;
+	};
 }
 
 const take = <T>(record: Readonly<Record<string, T>> | undefined): Map<string, T> =>
@@ -209,27 +247,71 @@ export function compileCatalog(
 	for (const [name, slot] of postures) validateSlot(name, slot, "姿态");
 	const expressions = take(source.expressions);
 	for (const [name, slot] of expressions) validateSlot(name, slot, "表情");
+	// 环境循环：绑定期编译（非法定义即抛），命名与别名同受全局唯一命名空间约束。
+	const ambientSource = new Map<string, { description: string; aliases?: readonly string[]; motion: CompiledMotion }>();
+	for (const [name, entry] of Object.entries(source.background?.ambient ?? {}))
+		ambientSource.set(name, { description: entry.description, aliases: entry.aliases, motion: compileMotion(entry.motion, rig.controls) });
 	const attentions = take(source.attentions);
 	for (const name of attentions.keys()) {
 		if ((BUILTIN_ATTENTIONS as readonly string[]).includes(name))
 			throw new Error(`注视命名 "${name}" 与引擎内置词表冲突`);
 	}
 	// 全局唯一命名空间（§2）：动作/姿态/表情/注视/外观 + 别名，重复即语义歧义。
-	// 引擎内置注视（具名瞄准）预占命名空间，目录命名不得与之重复。
-	const owners = new Map<string, string>(BUILTIN_ATTENTIONS.map((name) => [name, `引擎内置注视.${name}`]));
+	// 引擎内置注视（具名瞄准）与内置中文别名预占命名空间，目录命名不得与之重复。
+	const owners = new Map<string, string>();
+	for (const name of BUILTIN_ATTENTIONS) owners.set(name, `引擎内置注视.${name}`);
+	for (const [alias, target] of Object.entries(BUILTIN_ATTENTION_ALIASES)) {
+		owners.set(alias, `引擎内置注视.${target}.别名`);
+	}
 	const claim = (name: string, owner: string): void => {
 		const existing = owners.get(name);
 		if (existing) throw new Error(`命名冲突: "${name}" 已被 ${existing} 占用（目录命名空间全局唯一）`);
 		owners.set(name, owner);
 	};
+
+	const motionAliasMap = new Map<string, CatalogMotionEntry>();
 	for (const [name, entry] of motions) {
 		claim(name, `动作.${name}`);
-		for (const alias of entry.aliases ?? []) claim(alias, `动作.${name}.别名`);
+		motionAliasMap.set(name, entry);
+		for (const alias of entry.aliases ?? []) {
+			claim(alias, `动作.${name}.别名`);
+			motionAliasMap.set(alias, entry);
+		}
 	}
-	for (const name of postures.keys()) claim(name, `姿态.${name}`);
-	for (const name of expressions.keys()) claim(name, `表情.${name}`);
+
+	const postureAliasMap = new Map<string, CatalogSlotEntry>();
+	for (const [name, slot] of postures) {
+		claim(name, `姿态.${name}`);
+		postureAliasMap.set(name, slot);
+		for (const alias of slot.aliases ?? []) {
+			claim(alias, `姿态.${name}.别名`);
+			postureAliasMap.set(alias, slot);
+		}
+	}
+
+	const expressionAliasMap = new Map<string, CatalogSlotEntry>();
+	for (const [name, slot] of expressions) {
+		claim(name, `表情.${name}`);
+		expressionAliasMap.set(name, slot);
+		for (const alias of slot.aliases ?? []) {
+			claim(alias, `表情.${name}.别名`);
+			expressionAliasMap.set(alias, slot);
+		}
+	}
+
 	for (const name of attentions.keys()) claim(name, `注视.${name}`);
+	for (const [name, entry] of ambientSource) {
+		claim(name, `环境循环.${name}`);
+		for (const alias of entry.aliases ?? []) claim(alias, `环境循环.${name}.别名`);
+	}
 	for (const costume of source.costumes ?? []) claim(costume.id, `外观.${costume.id}`);
+
+	const findMotion = (nameOrAlias: string) => motionAliasMap.get(nameOrAlias);
+	const findSlot = (kind: "posture" | "expression", nameOrAlias: string) =>
+		kind === "posture" ? postureAliasMap.get(nameOrAlias) : expressionAliasMap.get(nameOrAlias);
+	const resolveAttention = (nameOrAlias: string): AttentionTarget | undefined =>
+		resolveBuiltinAttention(nameOrAlias) ?? attentions.get(nameOrAlias)?.target;
+
 	return {
 		modelID,
 		motions,
@@ -240,7 +322,13 @@ export function compileCatalog(
 		background: {
 			thinking: source.background?.thinking ? compileMotion(source.background.thinking, rig.controls) : undefined,
 			idle: source.background?.idle ? compileMotion(source.background.idle, rig.controls) : undefined,
+			ambient: new Map(
+				[...ambientSource].map(([name, entry]) => [name, { description: entry.description, motion: entry.motion }]),
+			),
 		},
+		findMotion,
+		findSlot,
+		resolveAttention,
 	};
 }
 

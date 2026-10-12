@@ -4,10 +4,8 @@ import { VOICE_LEVEL_SINK_EXPOSED_PREFIX, type VoiceLevelSink } from "../../../s
 import { encodeFrame, validateRig, type ModelRig } from "./adapter/rig.js";
 import { VTSClient } from "./adapter/vts-client.js";
 import {
-	BUILTIN_ATTENTIONS,
 	emptyCatalog,
 	recompileWithSpeech,
-	type AttentionTarget,
 	type CatalogMotionEntry,
 	type CatalogSnapshot,
 } from "./authoring/catalog.js";
@@ -110,9 +108,6 @@ const poseMatches = (now: ModelPose, base: ModelPose): boolean =>
 	Math.abs(now.positionY - base.positionY) <= 0.01 &&
 	Math.abs(now.size - base.size) <= 0.01;
 
-/** state 注视参数的引擎内置词表成员判定（目录命名优先级低于内置词表）。 */
-const isBuiltinAttention = (value: string): value is Extract<AttentionTarget, string> =>
-	(BUILTIN_ATTENTIONS as readonly string[]).includes(value);
 
 /** 省略或 0 表示持续；非法时长返回工具拒绝结果。 */
 function parseHoldMs(value: unknown): number | undefined | ToolExecutionResult {
@@ -121,6 +116,10 @@ function parseHoldMs(value: unknown): number | undefined | ToolExecutionResult {
 		return toolRejected("invalid_duration", "hold_ms 必须是非负有限数值。");
 	return value > 0 ? value : undefined;
 }
+
+/** 格式化目录条目名称与别名列表。 */
+const formatCatalogEntries = (map: ReadonlyMap<string, { aliases?: readonly string[] }>): string[] =>
+	[...map.entries()].map(([k, v]) => (v.aliases?.length ? `${k}(${v.aliases.join("/")})` : k));
 
 export class Live2DRuntime {
 	private started = false;
@@ -138,7 +137,9 @@ export class Live2DRuntime {
 	/** thinking 状态（§5 宿主事件）：状态驱动幂等，仅跳变时启/停 background.thinking。 */
 	private thinking = false;
 	private thinkingHandle?: MotionHandle;
-	private idleHandle?: MotionHandle;
+	/** 环境循环选中名：uina 经 ambient 工具选择/清除，选中时替换 idle 成为静止态背景。 */
+	private ambientName?: string;
+	private restHandle?: MotionHandle;
 	/** 独占声明 reason 序号：每次声明唯一 reason，重叠声明一律 resource_conflict（不做同 reason 幂等替换）。 */
 	private claimSeq = 0;
 	private spatialClaim?: ExclusiveClaim;
@@ -167,7 +168,7 @@ export class Live2DRuntime {
 		if (this.rig) {
 			validateRig(this.rig);
 			this.director = new MotionDirector(this.rig.controls, { external: this.rig.external, rng: options.rng });
-			this.director.setAuthoredIdle(this.catalog.background.idle !== undefined);
+			this.syncSwaySuppression();
 			if (options.speech) {
 				const input = new SpeechInput(options.speech, this.director);
 				this.speechInput = input;
@@ -245,10 +246,11 @@ export class Live2DRuntime {
 		this.generation++;
 		this.director?.cancelClaims();
 		this.director?.invalidateAll("catalog changed");
-		this.idleHandle = undefined;
+		this.restHandle = undefined;
+		this.ambientName = undefined;
 		this.thinkingHandle = undefined;
 		this.thinking = false;
-		this.director?.setAuthoredIdle(snapshot.background.idle !== undefined);
+		this.syncSwaySuppression();
 		if (this.connectionOnline) {
 			this.onStatusChange?.();
 		}
@@ -430,13 +432,10 @@ export class Live2DRuntime {
 		if (denied) return denied;
 		const name = args.motion;
 		if (typeof name !== "string" || name.length === 0) return toolRejected("invalid_motion", "缺少 motion 参数。");
-		const entry = this.catalog.motions.get(name);
+		const entry = this.catalog.findMotion(name);
 		if (!entry) {
-			const available = [...this.catalog.motions.keys()].join(", ") || "无";
-			return toolRejected(
-				"unknown_motion",
-				`动作不在当前模型目录: "${name}"。当前可用: ${available}（详细见 status）。`,
-			);
+			const available = formatCatalogEntries(this.catalog.motions).join(", ") || "无";
+			return toolRejected("unknown_motion", `动作不在当前模型目录: "${name}"。当前可用动作: ${available}。`);
 		}
 		const { atomic, speech } = args;
 		if (atomic !== undefined && typeof atomic !== "boolean")
@@ -476,9 +475,12 @@ export class Live2DRuntime {
 		if (typeof name !== "string" || name.length === 0) return toolRejected(reason, "缺少 name 参数。");
 		const holdMs = parseHoldMs(args.hold_ms);
 		if (typeof holdMs === "object") return holdMs;
-		const entries = kind === "posture" ? this.catalog.postures : this.catalog.expressions;
-		const slot = entries.get(name);
-		if (!slot) return toolRejected(reason, `${label}不在当前模型目录: "${name}"（可用名称见 status）。`);
+		const slot = this.catalog.findSlot(kind, name);
+		if (!slot) {
+			const entries = kind === "posture" ? this.catalog.postures : this.catalog.expressions;
+			const available = formatCatalogEntries(entries).join(", ") || "无";
+			return toolRejected(reason, `${label}不在当前模型目录: "${name}"。当前可用${label}: ${available}。`);
+		}
 		try {
 			if (kind === "posture") await director.setPosture(slot.values, { holdMs, durationMs: slot.transitionMs });
 			else await director.setExpression(slot.values, { holdMs, durationMs: slot.transitionMs });
@@ -492,7 +494,7 @@ export class Live2DRuntime {
 			}
 			throw error;
 		}
-		return toolSucceeded(`${label} "${name}" 本地意图已设置。`, {
+		return toolSucceeded(kind === "posture" ? `已切换姿势: ${name}。` : `已切换表情: ${name}。`, {
 			effectStatus: "accepted",
 			verification: "local_intent",
 		});
@@ -509,12 +511,21 @@ export class Live2DRuntime {
 			return toolRejected("unknown_attention", "缺少 target 参数。");
 		const holdMs = parseHoldMs(args.hold_ms);
 		if (typeof holdMs === "object") return holdMs;
-		const name = targetVal;
-		const target = isBuiltinAttention(name) ? name : this.catalog.attentions.get(name)?.target;
-		if (target === undefined)
-			return toolRejected("unknown_attention", `注视目标不在词表: "${name}"（内置 user/screen/avert_* 或目录命名）。`);
+		const target = this.catalog.resolveAttention(targetVal);
+		if (target === undefined) {
+			const custom = [...this.catalog.attentions.keys()];
+			const available = [
+				"看对方/user",
+				"看屏幕/screen",
+				"垂眸/看下方/avert_down",
+				"看左侧/avert_left",
+				"看右侧/avert_right",
+				...custom,
+			].join(", ");
+			return toolRejected("unknown_attention", `注视目标不在词表: "${targetVal}"。可用注视: ${available}。`);
+		}
 		director.setAttention(target, { holdMs });
-		return toolSucceeded(`注视目标 "${name}" 本地意图已设置。`, {
+		return toolSucceeded(`视线已转向: ${targetVal}。`, {
 			effectStatus: "accepted",
 			verification: "local_intent",
 		});
@@ -528,11 +539,8 @@ export class Live2DRuntime {
 		if (typeof item !== "string" || item.length === 0) return toolRejected("unknown_costume", "缺少 item 参数。");
 		const entry = this.catalog.costumes.find((c) => c.id === item);
 		if (!entry) {
-			const available = this.catalog.costumes.map((c) => c.id).join(", ");
-			return toolRejected(
-				"unknown_costume",
-				`外观不在当前模型目录: "${item}"（可用外观: ${available || "无"}，见 status）。`,
-			);
+			const available = this.catalog.costumes.map((c) => c.id).join(", ") || "无";
+			return toolRejected("unknown_costume", `外观不在当前模型目录: "${item}"。当前可用外观: ${available}。`);
 		}
 		const hotkey = this.client?.findHotkey(entry.hotkeyID);
 		if (!hotkey)
@@ -550,6 +558,41 @@ export class Live2DRuntime {
 		} finally {
 			claim.release();
 		}
+	}
+
+	/**
+	 * ambient（§2）：选择/清除持续环境循环（如摇摆）；不传 name 即清除并回落默认静止态。
+	 * 选中项替换 idle 占据静止态背景槽（同一 director 播放参数），thinking 照旧叠加；
+	 * 与姿态/表情同属持续性状态——不受回合打断影响。
+	 */
+	async ambient(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+		const denied = this.gate(ctx);
+		if (denied) return denied;
+		if (!this.director) return toolRejected("unadapted", "引擎未接入（无 rig）。");
+		const name = args.name;
+		if (name !== undefined && (typeof name !== "string" || name.length === 0))
+			return toolRejected("unknown_ambient", "name 必须是非空字符串（不传 name 即清除当前环境循环）。");
+		const ambient = this.catalog.background.ambient;
+		if (typeof name === "string" && !ambient?.has(name)) {
+			const available = [...(ambient?.keys() ?? [])].join(", ");
+			return toolRejected("unknown_ambient", `环境循环不在当前模型目录: "${name}"。当前可用: ${available || "无"}。`);
+		}
+		const next = typeof name === "string" ? name : undefined;
+		if (next === this.ambientName)
+			return toolSucceeded(next ? `环境循环 "${next}" 已在选择中。` : "当前无环境循环。", {
+				effectStatus: "accepted",
+				verification: "local_intent",
+			});
+		this.ambientName = next;
+		// 静止态槽位换人：停旧实例（fade 收势），syncBackgrounds 以新选择续播（暂停期间由恢复后的 tick 补齐）。
+		this.restHandle?.stop("release");
+		this.restHandle = undefined;
+		this.syncSwaySuppression();
+		this.syncBackgrounds();
+		return toolSucceeded(
+			next ? `环境循环已选择: ${next}。` : "环境循环已清除，回到默认静止态。",
+			{ effectStatus: "accepted", verification: "local_intent" },
+		);
 	}
 
 	/** reload（§2）：显式重载当前 VTS 模型并重新核验绑定。 */
@@ -630,7 +673,7 @@ export class Live2DRuntime {
 		}
 		this.keepFrame = frame;
 		director.cancelAllPlaybacks("safestop");
-		this.idleHandle = undefined;
+		this.restHandle = undefined;
 		this.thinkingHandle = undefined;
 		// §6.2/§6.4：取消全部独占声明；带清理的声明等待归位清理完成，未确认则抛错（调用方得
 		// unknown；拆除不被阻塞——BodyRouter.stopAll 以 allSettled 承接为 failed[]）。
@@ -726,9 +769,13 @@ export class Live2DRuntime {
 
 	private syncBackgrounds(): void {
 		if (!this.director || this.paused) return;
-		const { idle, thinking } = this.catalog.background;
-		if (idle && !this.idleHandle) {
-			this.idleHandle = this.director.play(idle, {
+		const { idle, thinking, ambient } = this.catalog.background;
+		// 选中项不在当前快照（目录更替残留）：诚实回落 idle。
+		if (this.ambientName !== undefined && !ambient?.has(this.ambientName)) this.ambientName = undefined;
+		const restLoop =
+			this.ambientName !== undefined ? ambient?.get(this.ambientName)!.motion : idle;
+		if (restLoop && !this.restHandle) {
+			this.restHandle = this.director.play(restLoop, {
 				category: "autonomic",
 				loop: true,
 				background: true,
@@ -747,6 +794,16 @@ export class Live2DRuntime {
 				fadeOutMs: 450,
 			});
 		}
+	}
+
+	/**
+	 * 内置微晃抑制事实：作者提供了 idle 或 uina 选中环境循环时禁用，
+	 * 避免内置摆动与目录编排的背景循环叠加成双重晃动。
+	 */
+	private syncSwaySuppression(): void {
+		this.director?.setAuthoredIdle(
+			this.catalog.background.idle !== undefined || this.ambientName !== undefined,
+		);
 	}
 
 	/**
@@ -827,29 +884,27 @@ export class Live2DRuntime {
 	// ---------- 事实呈现 ----------
 
 	formatStatus(): string {
-		const connection = this.client?.getConnectionStatus();
+		const connected = this.client?.isConnected() ?? false;
 		return JSON.stringify(
 			{
 				world: "live2d",
-				build: "P4 tools",
-				started: this.started,
-				engine: this.director ? "director_wired (P2-3)" : "not_wired",
-				speech: this.levelSink ? "levelSink_wired (P3-2)" : "not_wired",
+				connected,
+				modelID: this.rig?.modelID ?? null,
 				paused: this.paused,
-				focused: this.focused,
-				generation: this.generation,
-				rig: this.rig ? { modelID: this.rig.modelID, axes: Object.keys(this.rig.controls).length } : null,
-				identityMatched: this.identityMatched(),
-				connection: connection ?? null,
 				catalog: {
-					motions: [...this.catalog.motions.keys()],
-					postures: [...this.catalog.postures.keys()],
-					expressions: [...this.catalog.expressions.keys()],
+					motions: formatCatalogEntries(this.catalog.motions),
+					postures: formatCatalogEntries(this.catalog.postures),
+					expressions: formatCatalogEntries(this.catalog.expressions),
 					attentions: [...this.catalog.attentions.keys()],
 					costumes: this.catalog.costumes.map((c) => c.id),
+					ambient: {
+						available: [...(this.catalog.background.ambient?.entries() ?? [])].map(([id, entry]) => ({
+							id,
+							description: entry.description,
+						})),
+						current: this.ambientName ?? null,
+					},
 				},
-				lastCue: this.endpoint.lastCue(),
-				endpoint: { bodyId: this.endpoint.bodyId, bodyType: this.endpoint.bodyType },
 			},
 			null,
 			2,

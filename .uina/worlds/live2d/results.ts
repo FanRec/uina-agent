@@ -29,6 +29,7 @@ export type RejectReason =
 	| "unknown_attention"
 	| "unknown_costume"
 	| "unknown_motion"
+	| "unknown_ambient"
 	| "resource_conflict"
 	| "hotkey_missing"
 	| "unfocused";
@@ -82,8 +83,8 @@ export function fromEngineResult(
 	switch (engine.status) {
 		case "completed":
 			if (!evidence?.accepted || requiredInputs.some((input) => !evidence.acceptedInputs.includes(input)))
-				return toolUnknown(`${label}本地播放已结束，但本次输入接受未完整确认。`, { injection: evidence });
-			return toolSucceeded(`${label}本地播放已结束，VTS 已接受本次输入。`, {
+				return toolUnknown(`${label}已播放，但状态未完整确认。`, { injection: evidence });
+			return toolSucceeded(`${label}执行完成。`, {
 				effectStatus: "accepted",
 				verification: "input_accepted",
 				injection: evidence,
