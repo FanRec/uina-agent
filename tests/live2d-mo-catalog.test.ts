@@ -57,8 +57,9 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 		expect(catalog.background.thinking).toBeDefined();
 		expect(catalog.background.idle).toBeDefined();
 
-		// 校验 ambient 环境循环（皮套式摇摆）
+		// 校验 ambient 环境循环（皮套式摇摆已升级为 2000ms 黄金节奏闭环）
 		expect(catalog.background.ambient?.get("sway")).toMatchObject({ description: expect.stringContaining("摇摆") });
+		expect(catalog.background.ambient?.get("sway")!.motion.durationMs).toBe(2000);
 
 		// loadCatalog 动态解耦验证
 		expect(loadCatalog(MO_MODEL_ID, rig)).toBeDefined();
