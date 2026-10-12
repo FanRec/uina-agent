@@ -139,7 +139,7 @@ const harness = async (catalog: CatalogSnapshot = makeCatalog()) => {
 describe("live2d ambient 环境循环", () => {
 	it("compileCatalog：ambient 条目编译入快照并保留描述", () => {
 		const catalog = makeCatalog();
-		expect(catalog.background.ambient?.get("sway")).toMatchObject({ description: "左右摇摆" });
+		expect(catalog.resolve("ambient", "sway")?.entry).toMatchObject({ description: "左右摇摆" });
 	});
 
 	it("compileCatalog：ambient 命名与动作冲突即拒绝（全局唯一命名空间）", () => {
@@ -176,7 +176,7 @@ describe("live2d ambient 环境循环", () => {
 		h.stepMs(1200);
 		expect(h.yawAmplitude()).toBeLessThan(swayAmplitude / 1.5);
 		const { catalog } = await h.status();
-		expect(catalog.ambient.available).toEqual([{ id: "sway", description: "左右摇摆" }]);
+		expect(catalog.ambient.available).toEqual([{ id: "sway", description: "左右摇摆", aliases: ["摇摆"] }]);
 	});
 
 	it("interrupt 不影响持续环境循环（与姿态同级的持续状态）", async () => {

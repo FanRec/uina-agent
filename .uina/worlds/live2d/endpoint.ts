@@ -1,5 +1,4 @@
 import type { BodyEndpoint, BodyState, ExpressiveCueDef } from "../../../src/extensions/world-framework/seams.js";
-import { SupersededError } from "./director/director.js";
 import type { Live2DRuntime } from "./runtime.js";
 
 /**
@@ -53,16 +52,7 @@ export function buildLive2DEndpoint(runtime: Live2DRuntime): Live2DEndpoint {
 	 * cue 解析：affordance 与 supportsCue 的唯一判定源——与目录视图（含别名）同源。
 	 * cue 命中：已发布命名动作（含别名）与姿态；表情/注视不是 cue（走 state 工具）。
 	 */
-	const resolveCue = (cueId: string): { kind: "motion" | "posture"; name: string } | undefined => {
-		const view = runtime.catalogView;
-		for (const [name, motion] of view.motions) {
-			if (name === cueId || motion.aliases?.includes(cueId)) return { kind: "motion", name };
-		}
-		for (const [name, posture] of view.postures) {
-			if (name === cueId || posture.aliases?.includes(cueId)) return { kind: "posture", name };
-		}
-		return undefined;
-	};
+	const resolveCue = (id: string) => runtime.catalogView.resolveCue(id);
 
 	const state = (): BodyState => ({
 		online: runtime.connectionOnline && runtime.identityMatched(),
@@ -75,18 +65,7 @@ export function buildLive2DEndpoint(runtime: Live2DRuntime): Live2DEndpoint {
 		bodyType: "avatar_2d",
 		affordance: () => {
 			const view = runtime.catalogView;
-			const cues: ExpressiveCueDef[] = [
-				...[...view.motions.entries()].map(([id, motion]) => ({
-					id,
-					description: motion.description,
-					...(motion.aliases?.length ? { aliases: motion.aliases } : {}),
-				})),
-				...[...view.postures.entries()].map(([id, posture]) => ({
-					id,
-					description: `[姿态] ${posture.description}`,
-					...(posture.aliases?.length ? { aliases: posture.aliases } : {}),
-				})),
-			];
+   const cues: ExpressiveCueDef[] = [...view.list("motion"), ...view.list("posture")].map(({ name: id, entry, aliases, kind }) => ({ id, description: kind === "posture" ? `[姿态] ${entry.description}` : entry.description, ...(aliases.length ? { aliases } : {}) }));
 			return {
 				bodyId: "live2d",
 				bodyType: "avatar_2d",
@@ -96,41 +75,13 @@ export function buildLive2DEndpoint(runtime: Live2DRuntime): Live2DEndpoint {
 		},
 		state,
 		supportsCue: (cueId) => resolveCue(cueId) !== undefined,
-		emitCue: (cueId) => {
-			const entry = emitRecord(cueId);
-			void (async () => {
-				// 受理时代次绑定：执行前目录已更新的按执行时事实拒绝（§3，支持性守卫——同步启动下窗口趋零）。
-				const generation = runtime.currentGeneration;
-				if (runtime.isPaused) return updateRecord(entry, "rejected", "paused");
-				const resolved = resolveCue(cueId);
-				if (!resolved) return updateRecord(entry, "rejected", "unknown_cue");
-				if (generation !== runtime.currentGeneration) return updateRecord(entry, "rejected", "stale_catalog");
-				const director = runtime.director;
-				if (!director) return updateRecord(entry, "rejected", "no_engine");
-				updateRecord(entry, "started");
-				if (resolved.kind === "motion") {
-					// cue 优先级固定 Voluntary（§3）；atomic 取目录声明（命名表演默认 true）。
-					const motionEntry = runtime.catalogView.motions.get(resolved.name)!;
-					const result = await runtime.playMotion(motionEntry, { callName: cueId });
-					const detailReason = (result.details as { reason?: string } | undefined)?.reason;
-					if (result.status === "failed" && detailReason) {
-						// 工具层拒绝（paused/model_not_ready 等）：执行未开始，记 rejected 而非 finished。
-						updateRecord(entry, "rejected", detailReason);
-						return;
-					}
-					const reason = detailReason ?? (result.status === "succeeded" ? undefined : result.status);
-					updateRecord(entry, "finished", reason);
-					return;
-				}
-				const posture = runtime.catalogView.postures.get(resolved.name)!;
-				try {
-					await director.setPosture(posture.values, { durationMs: posture.transitionMs });
-					updateRecord(entry, "finished");
-				} catch (error) {
-					updateRecord(entry, "finished", error instanceof SupersededError ? "superseded" : "failed");
-				}
-			})();
-		},
+  emitCue: (id) => {
+   const entry = emitRecord(id);
+   void runtime.executeCue(id, () => updateRecord(entry, "started")).then((result) => {
+    const reason = (result.details as { reason?: string } | undefined)?.reason ?? (result.status === "succeeded" ? undefined : result.status);
+    updateRecord(entry, entry.state === "received" ? "rejected" : "finished", reason);
+   }).catch(() => updateRecord(entry, entry.state === "received" ? "rejected" : "finished", "execution_failed"));
+  },
 		safeStop: () => runtime.safeStop(),
 		resume: () => runtime.resume(),
 		/** 回合打断（§3）：取消瞬时动作、口型直清、不进入 paused；thinking 停止随 P4-4 宿主事件接入。 */

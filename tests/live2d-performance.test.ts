@@ -235,11 +235,11 @@ async function connected() {
 describe("MO 表演实际合成与执行", () => {
 	it("Wink 在生理眨眼到点时仍单侧闭合，结束回到半眯表情且恢复眨眼", async () => {
 		const { director, catalog } = await authored();
-		const smirk = catalog.expressions.get("smirk")!;
+		const smirk = catalog.resolve("expression", "smirk")!.entry;
 		const setting = director.setExpression(smirk.values, { durationMs: 0 });
 		advance(director, 1900);
 		await setting;
-		const wink = catalog.motions.get("wink")!;
+		const wink = catalog.resolve("motion", "wink")!.entry;
 		const handle = director.play(wink.motion, { category: "voluntary", ...wink.playback });
 		advance(director, 210);
 		expect(director.currentFrame["eyes.left.open"]).toBe(0);
@@ -263,7 +263,7 @@ describe("MO 表演实际合成与执行", () => {
 	it("偷瞄退出从当前眼球平滑交还，使用动作期间新设置的目标", async () => {
 		const { director, catalog } = await authored();
 		director.setAttention("user");
-		director.play(catalog.motions.get("glance")!.motion, { category: "voluntary" });
+		director.play(catalog.resolve("motion", "glance")!.entry.motion, { category: "voluntary" });
 		advance(director, 790);
 		const before = director.currentFrame["gaze.x"]!;
 		director.setAttention("avert_left");
@@ -290,7 +290,7 @@ describe("MO 表演实际合成与执行", () => {
 		advance(director, 1000);
 		expect(idle.currentTime).toBe(phase);
 		director.setFrozen(false);
-		director.play(catalog.motions.get("curious")!.motion, { category: "voluntary" });
+		director.play(catalog.resolve("motion", "curious")!.entry.motion, { category: "voluntary" });
 		advance(director, 600);
 		expect(director.frameContributions.has(idle.id)).toBe(false);
 		advance(director, 1300);
@@ -323,12 +323,12 @@ describe("MO 表演实际合成与执行", () => {
 		const setting = director.setPosture({ "head.pitch": -8 }, { durationMs: 0 });
 		advance(director, 800);
 		await setting;
-		director.play(catalog.motions.get("nod")!.motion, { category: "voluntary" });
+		director.play(catalog.resolve("motion", "nod")!.entry.motion, { category: "voluntary" });
 		advance(director, 330);
 		expect(director.currentFrame["head.pitch"]).toBeGreaterThanOrEqual(-10);
 		advance(director, 800);
 		director.setSpeechLevel(0.8);
-		director.play(catalog.motions.get("surprise")!.motion, { category: "voluntary" });
+		director.play(catalog.resolve("motion", "surprise")!.entry.motion, { category: "voluntary" });
 		advance(director, 500);
 		expect(director.currentFrame["mouth.open"]).toBeGreaterThan(0.8);
 	});
@@ -337,7 +337,7 @@ describe("MO 表演实际合成与执行", () => {
 		const { director, catalog } = await authored();
 		director.setSpeechLevel(0.65);
 		advance(director, 300);
-		const entry = catalog.motions.get(name)!;
+		const entry = catalog.resolve("motion", name)!.entry;
 		const handle = director.play(entry.motion, { category: "voluntary", ...entry.playback });
 		// 两个动作在最初 150ms 都没有作者张嘴，输出应保持语音开度。
 		for (let elapsed = 0; elapsed < 150; elapsed += 10) {
@@ -359,7 +359,7 @@ describe("MO 表演实际合成与执行", () => {
 
 	it("真实注入观察器按本次贡献结算；前次接受不能证明完全遮挡的新动作", async () => {
 		const { runtime, catalog } = await connected();
-		const entry = catalog.motions.get("wink")!;
+		const entry = catalog.resolve("motion", "wink")!.entry;
 		const first = runtime.playMotion(entry);
 		for (let i = 0; i < 100; i++) runtime.composeTick(10);
 		await expect(first).resolves.toMatchObject({ status: "succeeded", details: { verification: "input_accepted" } });

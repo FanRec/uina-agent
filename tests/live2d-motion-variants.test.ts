@@ -167,7 +167,7 @@ describe("live2d 动作变体轮换", () => {
 	});
 
 	it("compileCatalog：附加变体逐个编译入条目（池 = 主定义 + 变体）", () => {
-		const entry = makeCatalog().motions.get("nod")!;
+		const entry = makeCatalog().resolve("motion", "nod")!.entry;
 		expect(entry.variants).toHaveLength(1);
 		expect(entry.variants![0]!.motion).toMatchObject({ durationMs: 400 });
 		expect(entry.variants![0]!.definition).toBeDefined();
