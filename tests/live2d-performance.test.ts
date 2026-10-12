@@ -88,6 +88,8 @@ class Device implements WebSocketLike {
 					this.reply(request.requestID, "APIError", { errorID: 229, message: "CannotUpdateRightNow" });
 					return;
 				}
+				this.postProcessingState.active = request.data.postProcessingOn;
+				if (request.data.setPostProcessingPreset) this.postProcessingState.activePreset = request.data.presetToSet;
 				break;
 			}
 			case "MoveModelRequest": {
@@ -148,6 +150,22 @@ async function connectedEffects() {
 									postProcessing: { on: true, preset: "Grayscale", fadeTime: 0.1 },
 								},
 							},
+							{ durationMs: 300, delta: { y: 0 } },
+						],
+					},
+				},
+				fx_plain: {
+					description: "无效果对照探针",
+					motion: motion(
+						620,
+						track("head.yaw", [
+							[0, 2],
+							[620, 2],
+						]),
+					),
+					spatial: {
+						segments: [
+							{ durationMs: 120, holdMs: 200, delta: { y: 0.05 } },
 							{ durationMs: 300, delta: { y: 0 } },
 						],
 					},
@@ -600,5 +618,23 @@ describe("MO 表演实际合成与执行", () => {
 		expect(result.status).toBe("unknown");
 		expect(result.result).toContain("滤镜归位未确认");
 		expect(result.details).toMatchObject({ restored: true, restoredEffects: { tint: true, post: false } });
+	});
+
+	it("特效用例 E：无 effects 的空间特技不触碰用户染色与滤镜（所有权守护）", async () => {
+		vi.useFakeTimers();
+		const { runtime, device } = await connectedEffects();
+		device.postProcessingState = { active: true, activePreset: "user_fx" };
+		const run = runtime.express({ motion: "fx_plain" }, {});
+		for (let elapsed = 0; elapsed < 1800; elapsed += 10) {
+			await vi.advanceTimersByTimeAsync(10);
+			runtime.composeTick(10);
+		}
+		await expect(run).resolves.toMatchObject({
+			status: "succeeded",
+			details: { restored: true, restoredEffects: { tint: true, post: true } },
+		});
+		// 守护缺位时这里会多出白染色与滤镜复位请求，踩掉用户自有特效状态。
+		expect(device.tints).toHaveLength(0);
+		expect(device.postProcessings).toHaveLength(0);
 	});
 });
