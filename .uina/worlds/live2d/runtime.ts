@@ -284,7 +284,7 @@ export class Live2DRuntime {
 	/**
 	 * 统一执行手势/动作条目（供 express 工具与 endpoint.emitCue 复用）。
 	 * 纯骨骼手势直接委托 director.play；若含 spatial，声明 model:transform 并在前台推进去程、停留与自动归位。
-	 * 分段可携带 effects（染色/后处理）与位姿并行分发；归位守护覆盖位姿、染色与后处理三项。
+	 * 分段可携带 effects（染色/后处理），与位姿同段顺序派发（先等效果落地再发移动）；归位守护覆盖位姿、染色与后处理三项。
 	 */
 	async playMotion(
 		entry: CatalogMotionEntry,
@@ -350,7 +350,7 @@ export class Live2DRuntime {
 			restored = !moved || (base !== undefined && (await this.restorePose(client, base, sameModel)));
 			return restored;
 		};
-		/** 三位一体归位的效果侧：染色刷白 + 后处理恢复进入时状态（无捕获则关闭），逐项如实结算。 */
+		/** 三位一体归位的效果侧：染色刷白 + 后处理恢复进入时开关与具名 preset（无捕获则关闭；其余滤镜参数经 setAllOtherValuesToDefault 重置为默认，不逐项保真），逐项如实结算。 */
 		const restoreEffects = async (): Promise<{ tint: boolean; post: boolean }> => {
 			if (effectsRestored) return effectsRestored;
 			if (!effectsSent) return { tint: true, post: true };
@@ -370,7 +370,12 @@ export class Live2DRuntime {
 			const postNow = settled[1].status === "fulfilled" ? await settled[1].value : undefined;
 			effectsRestored = {
 				tint: settled[0].status === "fulfilled",
-				post: postNow !== undefined && postNow.active === (postBaseline?.active ?? false),
+				post:
+					postNow !== undefined &&
+					postNow.active === (postBaseline?.active ?? false) &&
+					// 基线带具名 preset 时读回必须一致；无具名 preset（null）只核对开关——协议未定义默认 preset 名。
+					(!(postBaseline?.active && postBaseline.activePreset) ||
+						postNow.activePreset === postBaseline.activePreset),
 			};
 			return effectsRestored;
 		};
@@ -396,8 +401,8 @@ export class Live2DRuntime {
 				ensureActive();
 				const startedAt = performance.now();
 				moved = true; // 请求异常也可能已经到达 VTS，因此必须尝试归位。
-				// 效果与位姿同段并行派发。位姿失败沿用既有语义：中止后续段并走归位守护；
-				// 效果失败仅记录（后续段与归位继续），结算如实呈现。
+				// 效果与位姿同段顺序派发：先等效果请求落地（allSettled，失败仅记录继续），再发位姿移动。
+				// 位姿失败沿用既有语义：中止后续段并走归位守护；结算如实呈现。
 				const effectDispatches: Promise<unknown>[] = [];
 				if (segment.effects?.tint) {
 					effectsSent = true;

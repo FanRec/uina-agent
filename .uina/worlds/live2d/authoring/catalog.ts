@@ -210,58 +210,58 @@ export function compileCatalog(
 	if (rig.modelID !== modelID) throw new Error(`目录模型身份不符: 目录 ${modelID} vs rig ${rig.modelID}`);
 	const motions = new Map<string, CatalogMotionEntry>();
 	for (const [name, entry] of Object.entries(source.motions ?? {})) {
-	if (entry.spatial) {
-		const segments = entry.spatial.segments;
-		if (!segments?.length) throw new Error(`动作 "${name}" 空间轨迹为空`);
-		let hasPayload = false;
-		const validateEffects = (effects: SegmentEffects, index: number): void => {
-			const label = `动作 "${name}" 空间段[${index}]`;
-			if (effects.tint !== undefined) {
-				const { r, g, b, a } = effects.tint;
-				for (const [channel, value] of [
-					["r", r],
-					["g", g],
-					["b", b],
-					["a", a ?? 255],
-				] as const)
-					if (!Number.isInteger(value) || value < 0 || value > 255)
-						throw new Error(`${label} 染色通道 ${channel} 必须是 0-255 整数: ${value}`);
-			}
-			if (effects.postProcessing !== undefined) {
-				if (typeof effects.postProcessing.on !== "boolean")
-					throw new Error(`${label} 后处理 on 必须是布尔值`);
-				const { fadeTime } = effects.postProcessing;
-				if (fadeTime !== undefined && (!Number.isFinite(fadeTime) || fadeTime < 0 || fadeTime > 2))
-					throw new Error(`${label} 后处理渐变时间必须是 0-2 秒: ${fadeTime}`);
-			}
-		};
-		for (const [index, segment] of segments.entries()) {
-			if (!Number.isFinite(segment.durationMs) || segment.durationMs <= 0 || segment.durationMs > 2000)
-				throw new Error(`动作 "${name}" 空间段 durationMs 必须在 (0,2000]`);
-			if (segment.holdMs !== undefined && (!Number.isFinite(segment.holdMs) || segment.holdMs < 0))
-				throw new Error(`动作 "${name}" 空间段 holdMs 必须为非负有限数`);
-			if (segment.delta) {
-				for (const [axis, offset] of Object.entries(segment.delta)) {
-					if (!["x", "y", "rotation", "size"].includes(axis) || !Number.isFinite(offset))
-						throw new Error(`动作 "${name}" 空间偏移非法: ${axis}`);
-					if (offset !== 0) hasPayload = true;
+		if (entry.spatial) {
+			const segments = entry.spatial.segments;
+			if (!segments?.length) throw new Error(`动作 "${name}" 空间轨迹为空`);
+			let hasPayload = false;
+			const validateEffects = (effects: SegmentEffects, index: number): void => {
+				const label = `动作 "${name}" 空间段[${index}]`;
+				if (effects.tint !== undefined) {
+					const { r, g, b, a } = effects.tint;
+					for (const [channel, value] of [
+						["r", r],
+						["g", g],
+						["b", b],
+						["a", a ?? 255],
+					] as const)
+						if (!Number.isInteger(value) || value < 0 || value > 255)
+							throw new Error(`${label} 染色通道 ${channel} 必须是 0-255 整数: ${value}`);
+				}
+				if (effects.postProcessing !== undefined) {
+					if (typeof effects.postProcessing.on !== "boolean")
+						throw new Error(`${label} 后处理 on 必须是布尔值`);
+					const { fadeTime } = effects.postProcessing;
+					if (fadeTime !== undefined && (!Number.isFinite(fadeTime) || fadeTime < 0 || fadeTime > 2))
+						throw new Error(`${label} 后处理渐变时间必须是 0-2 秒: ${fadeTime}`);
+				}
+			};
+			for (const [index, segment] of segments.entries()) {
+				if (!Number.isFinite(segment.durationMs) || segment.durationMs <= 0 || segment.durationMs > 2000)
+					throw new Error(`动作 "${name}" 空间段 durationMs 必须在 (0,2000]`);
+				if (segment.holdMs !== undefined && (!Number.isFinite(segment.holdMs) || segment.holdMs < 0))
+					throw new Error(`动作 "${name}" 空间段 holdMs 必须为非负有限数`);
+				if (segment.delta) {
+					for (const [axis, offset] of Object.entries(segment.delta)) {
+						if (!["x", "y", "rotation", "size"].includes(axis) || !Number.isFinite(offset))
+							throw new Error(`动作 "${name}" 空间偏移非法: ${axis}`);
+						if (offset !== 0) hasPayload = true;
+					}
+				}
+				const hasEffects = segment.effects !== undefined && Object.keys(segment.effects).length > 0;
+				if (!hasEffects && (!segment.delta || Object.keys(segment.delta).length === 0))
+					throw new Error(`动作 "${name}" 空间段必须声明 delta 或 effects`);
+				if (hasEffects) {
+					hasPayload = true;
+					validateEffects(segment.effects!, index);
 				}
 			}
-			const hasEffects = segment.effects !== undefined && Object.keys(segment.effects).length > 0;
-			if (!hasEffects && (!segment.delta || Object.keys(segment.delta).length === 0))
-				throw new Error(`动作 "${name}" 空间段必须声明 delta 或 effects`);
-			if (hasEffects) {
-				hasPayload = true;
-				validateEffects(segment.effects!, index);
-			}
+			if (!hasPayload) throw new Error(`动作 "${name}" 空间轨迹无载荷`);
+			const last = segments.at(-1)!;
+			if (Object.values(last.delta).some((offset) => offset !== 0))
+				throw new Error(`动作 "${name}" 空间轨迹末段必须归零`);
+			if (last.effects !== undefined && Object.keys(last.effects).length > 0)
+				throw new Error(`动作 "${name}" 空间轨迹末段不得携带 effects——恢复由运行时守护统一执行`);
 		}
-		if (!hasPayload) throw new Error(`动作 "${name}" 空间轨迹无载荷`);
-		const last = segments.at(-1)!;
-		if (Object.values(last.delta ?? {}).some((offset) => offset !== 0))
-			throw new Error(`动作 "${name}" 空间轨迹末段必须归零`);
-		if (last.effects !== undefined && Object.keys(last.effects).length > 0)
-			throw new Error(`动作 "${name}" 空间轨迹末段不得携带 effects——恢复由运行时守护统一执行`);
-	}
 		for (const value of [entry.playback?.fadeInMs, entry.playback?.fadeOutMs]) {
 			if (value !== undefined && (!Number.isFinite(value) || value < 0))
 				throw new Error(`动作 "${name}" 播放淡入/淡出必须为非负有限数`);
