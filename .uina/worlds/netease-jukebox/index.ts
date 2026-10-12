@@ -24,7 +24,10 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
   const merged = { ...loadJukeboxConfig(), ...config };
   const api = new NeteaseApiClient(merged.apiBaseUrl ?? "http://127.0.0.1:3000");
   const gateway = new NeteaseGateway(merged.apiBaseUrl ?? "http://127.0.0.1:3000");
-  const serviceManager = new CompanionManager(merged.apiEnhancedDir ?? "E:\\Uina\\ThirdParty\\api-enhanced", merged.apiPort ?? 3000);
+  // 子进程日志落到 world-data：服务端 [ERR] 现场是排查瞬态 404 的唯一证据来源。
+  const serviceManager = new CompanionManager(merged.apiEnhancedDir ?? "E:\\Uina\\ThirdParty\\api-enhanced", merged.apiPort ?? 3000, {
+    logDir: ".uina/world-data/jukebox/logs",
+  });
   const mpvPath = resolveMpvPath(merged.mpvPath);
   const player = createPlayer(merged, mpvPath);
   const playback = new PlaybackCoordinator(player, merged.queueLimit ?? 100);

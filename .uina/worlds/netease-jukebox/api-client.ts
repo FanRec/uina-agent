@@ -21,11 +21,33 @@ function isRetryableStatus(status: number): boolean {
   return status === 502 || status === 503 || status === 504;
 }
 
-function ensureSuccessfulResponse(response: Response, operation: string): void {
+/**
+ * 非 2xx 时的错误分类：
+ * - api-enhanced 服务端把"模块 handler 抛出的无 body 裸异常"统一合成为 {code:404, msg:'Not Found'}（server.js catch 分支），
+ *   这类 404 与真实上游 404 语义完全不同，属服务端内部故障，标记为可重试；
+ * - 其余 4xx 保持不可重试；5xx 瞬态照旧。
+ * 响应体中的 msg 会拼入错误消息，让调用方无需看服务端日志即可定性。
+ */
+async function ensureSuccessfulResponse(response: Response, operation: string): Promise<void> {
   if (response.ok) return;
-  throw new NeteaseRequestError(`${operation}: HTTP ${response.status}`, {
+  let detail = "";
+  let synthesized404 = false;
+  try {
+    const text = (await response.text()).slice(0, 400);
+    try {
+      const body = JSON.parse(text) as { code?: unknown; msg?: unknown; message?: unknown };
+      if (body.code === 404 && body.msg === "Not Found") synthesized404 = true;
+      const message = typeof body.msg === "string" ? body.msg : typeof body.message === "string" ? body.message : "";
+      detail = message || text;
+    } catch {
+      detail = text;
+    }
+  } catch {
+    // 响应体不可读时退化为仅报告状态码
+  }
+  throw new NeteaseRequestError(`${operation}: HTTP ${response.status}${detail ? `: ${detail}` : ""}`, {
     status: response.status,
-    retryable: isRetryableStatus(response.status),
+    retryable: synthesized404 || isRetryableStatus(response.status),
   });
 }
 
@@ -81,7 +103,7 @@ export class NeteaseApiClient {
     url.searchParams.set("limit", String(limit));
 
     const data = await this.request(url.toString(), 15_000, signal, async (res) => {
-      ensureSuccessfulResponse(res, "网易云搜索失败");
+      await ensureSuccessfulResponse(res, "网易云搜索失败");
       return await res.json() as {
         result?: {
           songs?: Array<{
@@ -116,7 +138,7 @@ export class NeteaseApiClient {
     url.searchParams.set("level", "standard");
 
     return this.request(url.toString(), 15_000, signal, async (res) => {
-      ensureSuccessfulResponse(res, "网易云播放地址查询失败");
+      await ensureSuccessfulResponse(res, "网易云播放地址查询失败");
       const data = (await res.json()) as {
         data?: Array<{ url?: string }>;
       };
@@ -131,7 +153,7 @@ export class NeteaseApiClient {
     const url = new URL(`${this.baseUrl}/lyric`);
     url.searchParams.set("id", id);
     return this.request(url.toString(), 15_000, signal, async (res) => {
-      ensureSuccessfulResponse(res, "网易云歌词查询失败");
+      await ensureSuccessfulResponse(res, "网易云歌词查询失败");
       const data = await res.json() as { lrc?: { lyric?: unknown } };
       if (data.lrc?.lyric === undefined || data.lrc.lyric === null) return null;
       if (typeof data.lrc.lyric !== "string") throw new Error("网易云歌词响应格式错误");
@@ -145,7 +167,7 @@ export class NeteaseApiClient {
     const url = new URL(`${this.baseUrl}/song/detail`);
     url.searchParams.set("ids", id);
     return this.request(url.toString(), 15_000, signal, async (res) => {
-      ensureSuccessfulResponse(res, "网易云歌曲详情查询失败");
+      await ensureSuccessfulResponse(res, "网易云歌曲详情查询失败");
       const data = await res.json() as {
         songs?: Array<{
           id: number | string;

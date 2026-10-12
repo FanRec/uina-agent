@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { NeteaseApiClient } from "./api-client.js";
 
@@ -13,6 +13,17 @@ export interface CompanionStatus {
 
 export interface CompanionManagerOptions {
   readonly spawn?: typeof spawn;
+  /**
+   * 子进程日志目录（按天分文件）。设置后以 fd 直传方式把子进程 stdout/stderr 落盘，
+   * 服务端的 [ERR] 现场不再丢失。不设置时保持 stdio: "ignore"。
+   */
+  readonly logDir?: string;
+}
+
+/** 本地日期戳（YYYY-MM-DD）：日志按天分文件必须跟用户时钟一致，UTC 会让本地 0-8 点的错误落进"昨天"。 */
+function localDateStamp(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
 function waitForSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -40,6 +51,7 @@ export class CompanionManager {
   private generation = 0;
   private childReady = false;
   private readonly spawnProcess: typeof spawn;
+  private readonly logDir: string | undefined;
 
   constructor(
     private readonly serviceDir = "E:\\Uina\\ThirdParty\\api-enhanced",
@@ -47,6 +59,7 @@ export class CompanionManager {
     options: CompanionManagerOptions = {},
   ) {
     this.spawnProcess = options.spawn ?? spawn;
+    this.logDir = options.logDir;
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error(`无效的网易云伴生服务端口: ${port}`);
     }
@@ -84,17 +97,34 @@ export class CompanionManager {
 
     // 3. Spawn child process
     try {
-      // process.execPath 而非 PATH 里的 "node"：宿主 PATH 缺 node 时 spawn("node") 会发出
-      // 无监听的 'error' 事件并击穿为 uncaughtException。与 HudCompanionManager 保持一致。
-      const child = this.spawnProcess(process.execPath, ["app.js"], {
-        cwd: this.serviceDir,
-        stdio: "ignore",
-        windowsHide: true,
-        env: {
-          ...process.env,
-          PORT: String(this.port),
-        },
-      });
+      // 日志落盘：用 openSync 的 fd 直接作为子进程 stdio，父进程随即 close。
+      // 不用 "pipe"——服务是被 unref 留存的常驻进程，父进程退出后 pipe 断裂会让
+      // 服务端 console.log 触发 EPIPE 甚至崩溃；fd 直传由 OS 落盘，零父进程参与。
+      let outputFd: number | null = null;
+      let child: ChildProcess;
+      try {
+        if (this.logDir) {
+          try {
+            mkdirSync(this.logDir, { recursive: true });
+            outputFd = openSync(join(this.logDir, `api-enhanced-${localDateStamp()}.log`), "a");
+          } catch {
+            outputFd = null;
+          }
+        }
+        // process.execPath 而非 PATH 里的 "node"：宿主 PATH 缺 node 时 spawn("node") 会发出
+        // 无监听的 'error' 事件并击穿为 uncaughtException。与 HudCompanionManager 保持一致。
+        child = this.spawnProcess(process.execPath, ["app.js"], {
+          cwd: this.serviceDir,
+          stdio: outputFd === null ? "ignore" : ["ignore", outputFd, outputFd],
+          windowsHide: true,
+          env: {
+            ...process.env,
+            PORT: String(this.port),
+          },
+        });
+      } finally {
+        if (outputFd !== null) closeSync(outputFd);
+      }
       this.childProcess = child;
       this.spawnedByUs = true;
       this.childReady = false;
