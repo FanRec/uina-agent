@@ -4,7 +4,7 @@ World 是一个有生命周期、工具动作和可选后台服务的外部环�
 
 ## 入口和生命周期
 
-World 放在 `.uina/worlds/<name>/`，入口默认是 `index.ts`。入口导出 `WorldDef` 或返回它的工厂函数。框架负责扫描、启用、停用、注册工具和释放资源。
+World 放在 `.uina/worlds/<name>/`，入口默认是 `index.ts`。入口导出 `WorldDef` 或返回它的工厂函数；工厂必须无参调用，宿主注入只发生在 `onStart` 的 ctx（工厂阶段绝不读宿主参数或抛配置错误，否则 world 只会显示发现失败而看不到真实原因）。框架负责扫描、启用、停用、注册工具和释放资源。
 
 `activateWorldFramework` 负责启用框架；`WorldRuntime` 管理单个 World 的运行资源；`world-store` 管理启停状态，保存到 `.uina/worlds.json`。停用后工具、监听器、共享引用和事件出口都必须释放。
 
@@ -38,17 +38,19 @@ ctx.emitEvent({
 - `urgent`：使用 steer 尽快交给主体；只用于必须立即处理的事件。
 - `origin` 使用 `external` 或 `internal`，事件正文必须明确来源是数据而非系统指令。
 - `render` 可替代固定 `text`。事件排队时不生成正文，真正提交给主体前才调用；返回空值则丢弃本次事件。适合等待期间仍会变化的状态。
-- 事件 ID 必须可去重。不要为每次心跳、进度、音量或普通日志启动模型回合。
+- 事件 ID 语义分两种：来源事实用稳定去重 ID（如 `sourceEventKey`，同一事实重发会去重）；新生成的机会用唯一 ID（UUID）。两者不得混用。不要为每次心跳、进度、音量或普通日志启动模型回合。
 
 ## 查询和事件的边界
 
 查询工具适合实时状态、列表、搜索、历史和高频变化；事件适合错过后可能失去行动机会的低频事实。工具刚刚返回的结果无需再重复发送事件。World 不判断主体是否感兴趣，也不维护白板、上下文快照、模型档位或自动尾帧。
 
-外部文本（弹幕、网页、平台消息）必须作为不可信数据隔离，不能伪装成系统指令。工具结果要如实区分成功、失败和未知。
+外部文本（弹幕、网页、平台消息）必须作为不可信数据隔离，不能伪装成系统指令。工具结果使用五态词汇如实报告：`succeeded` / `failed` / `cancelled` / `unknown` / `not_started`——外部效果未确认时报 `unknown`，未进入执行路径报 `not_started`，禁止推断成功。`ActionContext.signal` 必须透传到底层异步操作，中止后结果同样按未知或未开始报告。
 
 ## 资源和数据目录
 
-运行时向 World 提供 `worldDataDir`，用于日志、缓存和持久状态。不要把动态状态写入 `WorldDef` 或稳定环境说明。连接、文件监听、定时器和子进程都必须绑定 `ctx.signal`，并在停用时结束。
+运行时向 World 提供 `worldDataDir`，用于日志、缓存和持久状态；缺失时显式失败，禁止回退到源码安装目录。持久 JSON 一律用框架的 `writeJsonAtomic`（`world-framework/json-file.ts`），不要手写 tmp+rename。子进程登记、mpv 定位等共用机制从 `world-framework` 引入（`child-process-registry`、`mpv-path`），不在 World 内复制。不要把动态状态写入 `WorldDef` 或稳定环境说明。连接、文件监听、定时器和子进程都必须绑定 `ctx.signal`，并在停用时结束。
+
+soundboard 是上述合同（数据目录、进程登记、取消透传）的参照实现。
 
 ## 不再存在的机制
 
