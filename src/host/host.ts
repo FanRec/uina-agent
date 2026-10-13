@@ -467,8 +467,9 @@ export class UinaHost {
 		// 激活顺序：compaction → world-framework（tail 尾帧）→ 项目扩展；其中 tail 相位
 		// 注册者（world-framework 视口帧、具身状态帧）无论注册先后恒排在非 tail 之后——
 		// 完整层序：帧投影(convertToLlm) → compaction 裁剪 → 项目扩展注入 → tail 尾帧 →
-		// 请求级预算门(Subject) → 协议校验(validateContext)。systemPrompt 保持完全静态，
-		// 可变世界状态（视口/具身快照）只经尾部帧注入，不进系统提示（前缀缓存合同）。
+		// 请求级预算门(Subject) → 协议校验(validateContext)。基础 systemPrompt 保持静态；
+		// 扩展可在回合边界通过 turn.prepare 添加稳定说明，可变世界状态只经尾部帧注入，
+		// 不进系统提示（前缀缓存合同）。
 		// 该顺序是能力语义依赖的硬合同（compaction 必须先裁剪、为后注入的记忆块留出
 		// 预算；尾帧恒在最末尾），由 tests/projection-order.test.ts 持有——重排激活顺序
 		// 或 tail 相位规则而不更新该测试属于破坏性变更。

@@ -118,6 +118,7 @@ QQ World 的平台消息、历史与点查共用 QQ 消息解码器，保留字�
 - `builtin:workspace-tools` 默认注册 `read_file`、`write_file`、`edit_file`、`read_image` 和文件 renderer；Host 可用 `workspaceTools: false` 禁用，扩展可显式 replace。
 - `builtin:session-tools` 注册历史查询/回溯工具与 `/history`、`/rewind`。
 - `builtin:commands` 注册内置命令；`/session` 仍用于查看会话用量。
+- 项目 MCP 扩展注册单个 `mcp` 代理工具。全局 MCP 配置的 `uina.mcpPurposes` 为已配置的全局 server 提供用途索引，通过 `turn.prepare` 加入 system prompt；`/reload` 后重建。索引不保证服务在线或远端工具目录最新；远端能力仍由 MCP 目录发现与校准。
 - 项目扩展从 `.uina/extensions/` 的脚本、一级目录入口或 `package.json#uina.extensions` 加载；CLI `-e` 与 Host `extensionPaths` 可指定额外入口。在 `activate(pi)` 中调用 `pi.registerTool()`、`pi.registerCommand()`、`pi.registerProvider()`、renderer 或 hook 注册 API。
 
 没有独立的 `tools/` 扫描或执行旁路。脚本加载使用 jiti，并刷新本地子模块；导入预检失败保留旧 activation，激活失败回收局部注册。ResourceScope 发出取消、执行 teardown、等待公共 API 在途调用并释放自己的注册。

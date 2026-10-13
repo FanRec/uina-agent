@@ -73,6 +73,33 @@ describe("resolveMcpConfig 两层发现", () => {
 		expect(resolved.config.fingerprint).toBe(definitionFingerprint({ command: "echo", args: ["hi"] }));
 	});
 
+	it("全局 Uina MCP 用途说明单独解析，不进入 server 指纹", () => {
+		const definition = { command: "echo", args: ["hi"] };
+		writeGlobalConfig({
+			mcpServers: { srv: definition },
+			uina: { mcpPurposes: { srv: "用于测试场景", orphan: "未配置服务" } },
+		});
+
+		const snapshot = resolveMcpConfig(cwd);
+		const resolved = snapshot.servers.get("srv");
+		expect(snapshot.mcpPurposes).toEqual({ srv: "用于测试场景", orphan: "未配置服务" });
+		expect(resolved?.kind).toBe("valid");
+		if (resolved?.kind !== "valid") return;
+		expect(resolved.config.fingerprint).toBe(definitionFingerprint(definition));
+	});
+
+	it("项目配置里的 MCP 用途说明不会成为 system prompt 的来源", () => {
+		writeGlobalConfig({ mcpServers: { global: { command: "global" } }, uina: { mcpPurposes: { global: "可信用途" } } });
+		writeProjectConfig(cwd, {
+			mcpServers: { project: { command: "project" } },
+			uina: { mcpPurposes: { project: "项目文本" } },
+		});
+
+		const snapshot = resolveMcpConfig(cwd);
+		expect(snapshot.mcpPurposes).toEqual({ global: "可信用途" });
+		expect(snapshot.servers.has("project")).toBe(true);
+	});
+
 	it("项目级同名 server 原子替换全局定义，绝不 deep merge", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "uina-mcp-proj-"));
 		try {

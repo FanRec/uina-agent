@@ -61,6 +61,8 @@ export type ResolvedServer = { kind: "valid"; config: ResolvedServerConfig } | I
 
 export interface McpConfigSnapshot {
 	servers: Map<string, ResolvedServer>;
+	/** 用户级 Uina 专属用途说明；与 MCP server 定义及其指纹分离。 */
+	mcpPurposes?: Record<string, string>;
 	/** 无活动协议交互持续闲置的倒计时预算，默认 10 分钟。 */
 	idleTimeoutMs: number;
 	/** 默认不设置：交 SDK 默认 request timeout（60s）。 */
@@ -82,6 +84,16 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 function positiveInt(value: unknown): number | undefined {
 	if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value <= 0) return undefined;
 	return value;
+}
+
+function parseMcpPurposes(raw: Record<string, unknown>): Record<string, string> | undefined {
+	if (!isRecord(raw.uina) || !isRecord(raw.uina.mcpPurposes)) return undefined;
+	const purposes = Object.fromEntries(
+		Object.entries(raw.uina.mcpPurposes)
+			.filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].trim().length > 0)
+			.map(([name, purpose]) => [name, purpose.trim()]),
+	);
+	return Object.keys(purposes).length > 0 ? purposes : undefined;
 }
 
 /** 校验单个 server 定义；非法返回错误原因（不抛）。 */
@@ -153,6 +165,7 @@ function parseConfigFile(
 	label: string,
 ): {
 	mcpServers: Record<string, unknown>;
+	mcpPurposes?: Record<string, string>;
 	tuning: Partial<Pick<McpConfigSnapshot, "idleTimeoutMs" | "callTimeoutMs" | "startupTimeoutMs">>;
 } {
 	let raw: unknown;
@@ -178,7 +191,8 @@ function parseConfigFile(
 			throw new McpConfigError(`${label} 的 ${key} 必须是正整数: ${path}`);
 		if (parsed !== undefined) tuning[key] = parsed;
 	}
-	return { mcpServers: servers, tuning };
+	const mcpPurposes = parseMcpPurposes(raw);
+	return { mcpServers: servers, ...(mcpPurposes ? { mcpPurposes } : {}), tuning };
 }
 
 function resolveLayer(
@@ -225,11 +239,13 @@ export function resolveMcpConfig(cwd: string): McpConfigSnapshot {
 	let idleTimeoutMs = 600_000;
 	let callTimeoutMs: number | undefined;
 	let startupTimeoutMs: number | undefined;
+	let mcpPurposes: Record<string, string> | undefined;
 
 	const globalPath = globalConfigPath();
 	if (existsSync(globalPath)) {
 		const loaded = parseConfigFile(globalPath, "全局 MCP 配置");
 		resolveLayer({ source: "global", path: globalPath, label: "全局 MCP 配置" }, loaded.mcpServers, servers);
+		mcpPurposes = loaded.mcpPurposes;
 		if (loaded.tuning.idleTimeoutMs !== undefined) idleTimeoutMs = loaded.tuning.idleTimeoutMs;
 		if (loaded.tuning.callTimeoutMs !== undefined) callTimeoutMs = loaded.tuning.callTimeoutMs;
 		if (loaded.tuning.startupTimeoutMs !== undefined) startupTimeoutMs = loaded.tuning.startupTimeoutMs;
@@ -247,6 +263,7 @@ export function resolveMcpConfig(cwd: string): McpConfigSnapshot {
 
 	return {
 		servers,
+		...(mcpPurposes ? { mcpPurposes } : {}),
 		idleTimeoutMs,
 		...(callTimeoutMs !== undefined ? { callTimeoutMs } : {}),
 		...(startupTimeoutMs !== undefined ? { startupTimeoutMs } : {}),
