@@ -3,10 +3,9 @@ import {
   mkdirSync,
   readFileSync,
   appendFileSync,
-  writeFileSync,
-  renameSync,
 } from "node:fs";
 import { join } from "node:path";
+import { writeTextAtomicSync } from "../../../../src/extensions/world-framework/json-file.js";
 import type {
   SuperChatRecord,
   GuardRecord,
@@ -271,7 +270,6 @@ export class LiveEventJournal {
     currentCounters: Record<string, number>
   ): void {
     this.ensureDataDir();
-    const tmpPath = `${this.filePath}.tmp`;
 
     const lines: string[] = [];
     const recentKeys = Array.from(this.knownEventKeys).slice(-500);
@@ -290,8 +288,7 @@ export class LiveEventJournal {
       }
     }
 
-    writeFileSync(tmpPath, lines.join("\n") + (lines.length > 0 ? "\n" : ""), "utf-8");
-    renameSync(tmpPath, this.filePath);
+    writeTextAtomicSync(this.filePath, lines.join("\n") + (lines.length > 0 ? "\n" : ""));
     this.entriesCount = lines.length;
   }
 

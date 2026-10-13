@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { WorldDef, ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
+import { writeJsonAtomic } from "../../../../src/extensions/world-framework/json-file.js";
 import { worldFailed, worldSucceeded } from "../../../../src/extensions/world-framework/result.js";
 import { TickerEngine } from "./ticker-engine.js";
 import type { TickerDurableState, TickerGuardrails } from "./types.js";
@@ -40,14 +41,7 @@ async function loadState(filePath: string): Promise<TickerDurableState | undefin
 }
 
 async function saveState(filePath: string, state: TickerDurableState): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true });
-  const temp = `${filePath}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temp, JSON.stringify(state, null, 2), "utf8");
-    await rename(temp, filePath);
-  } finally {
-    await rm(temp, { force: true });
-  }
+  await writeJsonAtomic(filePath, state);
 }
 
 async function loadGuardrails(filePath: string): Promise<TickerGuardrails> {

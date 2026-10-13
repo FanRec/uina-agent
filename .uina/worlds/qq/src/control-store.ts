@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeJsonAtomicSync } from "../../../../src/extensions/world-framework/json-file.js";
 import type { EffectivePush, FollowUpItem, FollowUpState, PushPreference } from "./types.js";
 
 /**
@@ -127,10 +128,7 @@ export class ControlStore {
 
 	private persist(next: ControlFileShape): void {
 		// 先持久化后提交内存：IO 失败时旧状态原样保留（内存与磁盘一致）。
-		mkdirSync(this.options.dataDir, { recursive: true });
-		const tmp = `${this.filePath}.tmp`;
-		writeFileSync(tmp, JSON.stringify(next, null, "\t") + "\n", "utf8");
-		renameSync(tmp, this.filePath);
+		writeJsonAtomicSync(this.filePath, next);
 		this.state = next;
 	}
 

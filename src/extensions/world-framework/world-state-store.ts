@@ -1,6 +1,6 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { errorMessage } from "../../core/errors.js";
+import { writeJsonAtomic } from "./json-file.js";
 
 export interface WorldStateStore {
 	load(): Promise<Record<string, boolean>>;
@@ -49,10 +49,7 @@ export function createFileWorldStateStore(
 		},
 		async save(state: Record<string, boolean>): Promise<void> {
 			if (!filePath) return;
-			await mkdir(dirname(filePath), { recursive: true });
-			const temp = `${filePath}.tmp`;
-			await writeFile(temp, `${JSON.stringify(state, null, "\t")}\n`, "utf8");
-			await rename(temp, filePath);
+			await writeJsonAtomic(filePath, state);
 		},
 	};
 }

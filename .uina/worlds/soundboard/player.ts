@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
 import { trackChildProcess, untrackChildProcess } from "../../../src/extensions/world-framework/child-process-registry.js";
+
+export { resolveMpvPath } from "../../../src/extensions/world-framework/mpv-path.js";
 
 export interface SoundPlayer {
   readonly isSimulated: boolean;
@@ -8,34 +9,6 @@ export interface SoundPlayer {
   play(filepath: string, volume: number): Promise<void>;
   stop(): Promise<void>;
   close(): Promise<void>;
-}
-
-export function resolveMpvPath(customPath?: string): string | null {
-  if (customPath && existsSync(customPath)) {
-    return customPath;
-  }
-  if (process.env.MPV_PATH && existsSync(process.env.MPV_PATH)) {
-    return process.env.MPV_PATH;
-  }
-  if (process.platform === "win32") {
-    const candidates = [
-      "C:\\Program Files\\MPV Player\\mpv.com",
-      "C:\\Program Files\\MPV Player\\mpv.exe",
-      "C:\\Program Files\\mpv\\mpv.com",
-      "C:\\Program Files\\mpv\\mpv.exe",
-      "C:\\Program Files (x86)\\mpv\\mpv.com",
-      "C:\\Program Files (x86)\\mpv\\mpv.exe",
-      "C:\\tools\\mpv\\mpv.com",
-      "C:\\tools\\mpv\\mpv.exe",
-      "E:\\Uina_Core\\tools\\mpv.exe",
-    ];
-    for (const c of candidates) {
-      if (existsSync(c)) {
-        return c;
-      }
-    }
-  }
-  return null;
 }
 
 export class MpvSoundPlayer implements SoundPlayer {

@@ -1,5 +1,6 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { writeJsonAtomic } from "../../../src/extensions/world-framework/json-file.js";
 import { isPlaybackMode, type PlaybackMode } from "./hud-protocol.js";
 
 export interface JukeboxPreferences { schemaVersion: 1; playMode: PlaybackMode; volume: number; }
@@ -23,5 +24,5 @@ export class PreferencesStore {
       return { ...defaults };
     }
   }
-  async save(value: Partial<JukeboxPreferences>): Promise<void> { await mkdir(this.directory, { recursive: true }); await writeFile(join(this.directory, "preferences.json"), JSON.stringify({ ...defaults, ...value, schemaVersion: 1 }, null, 2), "utf8"); }
+  async save(value: Partial<JukeboxPreferences>): Promise<void> { await writeJsonAtomic(join(this.directory, "preferences.json"), { ...defaults, ...value, schemaVersion: 1 }); }
 }

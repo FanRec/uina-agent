@@ -1,6 +1,5 @@
-import { readFile, writeFile, mkdir, rename, rm } from "node:fs/promises";
-import { dirname } from "node:path";
-import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { writeJsonAtomic } from "../../../../src/extensions/world-framework/json-file.js";
 import type { NotificationSetting, NotificationSettings } from "./types.js";
 
 export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
@@ -43,12 +42,5 @@ export async function loadNotificationSettings(path: string): Promise<Notificati
 }
 
 export async function saveNotificationSettings(path: string, settings: NotificationSettings): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const temp = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temp, JSON.stringify(settings, null, 2), "utf8");
-    await rename(temp, path);
-  } finally {
-    await rm(temp, { force: true });
-  }
+  await writeJsonAtomic(path, settings);
 }
