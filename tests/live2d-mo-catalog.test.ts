@@ -174,4 +174,51 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 		expect(okAtt.result).toBe("看对方 OK");
 		await runtime.stop();
 	});
+
+	it("空间特技关键动作契约：石化无背景滤镜、特写包含负向Y轴补偿、探头包含大倾角与边缘位移", async () => {
+		const rig = (await loadRig(MO_MODEL_ID))!;
+		const catalog = compileMOCatalog(rig);
+
+		// 1. 石化 (petrify)：不污染背景（无 postProcessing），仅对模型 tint，且抑制自律增量，定格充分
+		const petrify = catalog.resolve("motion", "petrify")!.entry;
+		expect(petrify.playback?.inhibitAdditives).toBe(true);
+		expect(petrify.spatial).toBeDefined();
+		expect(petrify.spatial!.segments[0]?.holdMs).toBeGreaterThan(3000);
+		for (const seg of petrify.spatial!.segments) {
+			expect(seg.effects?.postProcessing).toBeUndefined();
+		}
+		expect(petrify.spatial!.segments[0]?.effects?.tint).toMatchObject({
+			r: expect.any(Number),
+			g: expect.any(Number),
+			b: expect.any(Number),
+		});
+
+		// 2. 贴脸特写 (close_up)：放大时必须包含大幅负向 Y 轴补偿（对准脸部而非身体），定格充分且含摆头
+		const closeUp = catalog.resolve("motion", "close_up")!.entry;
+		expect(closeUp.spatial).toBeDefined();
+		const closeUpHoldSeg = closeUp.spatial!.segments.find((s) => (s.delta.size ?? 0) > 30);
+		expect(closeUpHoldSeg).toBeDefined();
+		expect(closeUpHoldSeg!.delta.y).toBeLessThan(-1.0); // 必须大幅向下沉对准脸部
+		expect(closeUpHoldSeg!.holdMs).toBeGreaterThanOrEqual(2500); // 贴脸停留时长充分
+		expect(closeUp.motion.tracks.some((t) => t.axis === "head.roll")).toBe(true); // 包含可爱摆头轨道
+
+		// 3. 探头 (edge_peek)：消除抽搐折返（2段式），身体大倾角倾斜，移动到边缘，定格窥视充分
+		const edgePeek = catalog.resolve("motion", "edge_peek")!.entry;
+		expect(edgePeek.spatial).toBeDefined();
+		expect(edgePeek.spatial!.segments.length).toBe(2);
+		const peekSeg = edgePeek.spatial!.segments[0]!;
+		expect(peekSeg.holdMs).toBeGreaterThan(3000);
+		expect(peekSeg.delta.x).toBeLessThanOrEqual(-0.7); // 移动到左侧边缘
+		expect(peekSeg.delta.rotation).toBeGreaterThanOrEqual(15); // 身体明显倾斜
+
+		// 4. 转圈 (spin)：极简三段等分圆周飞旋（120°/240°/0°），彻底消灭多段停顿，起手纯下蹲无反转
+		const spin = catalog.resolve("motion", "spin")!.entry;
+		expect(spin.spatial).toBeDefined();
+		const rotSegments = spin.spatial!.segments.filter((s) => (s.delta.rotation ?? 0) > 0);
+		expect(rotSegments.length).toBe(2); // 120° 与 240° 两段顺时针中继，末段归0
+		expect(rotSegments.map((s) => s.delta.rotation)).toEqual([120, 240]);
+		expect(spin.spatial!.segments[0]?.delta.rotation).toBeUndefined(); // 起手纯下蹲，无反向旋转破坏连贯性
+	});
 });
+
+
