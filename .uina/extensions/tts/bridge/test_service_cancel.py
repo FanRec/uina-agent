@@ -406,7 +406,7 @@ class TTSBridgeCancelTraceTest(unittest.TestCase):
         self.assertFalse(service.player.cancelled)
         self.assertTrue(result["cutoff_segments"][0]["playback_completed"])
 
-    def test_task_failure_releases_play_window_without_abandoning_generation(self) -> None:
+    def test_task_failure_closes_source_and_cancels_later_segments(self) -> None:
         service = _service_with_admitted_task()
         condition = threading.Condition(service._lock)
         service._sessions_by_trace = {
@@ -445,11 +445,11 @@ class TTSBridgeCancelTraceTest(unittest.TestCase):
         service._mark_task_failed_and_release_window(task=failed, reason="vendor_stream_failed")
 
         session = service._sessions_by_trace["trace_1"]
-        self.assertFalse(session.closed)
+        self.assertTrue(session.closed)
         self.assertEqual(session.segments[1].state, "failed")
         self.assertEqual(session.segments[1].detail["failure_reason"], "vendor_stream_failed")
         self.assertEqual(session.next_play_index, 2)
-        self.assertEqual(service._tasks["task_2"].state, "pending")
+        self.assertEqual(service._tasks["task_2"].state, "cancelled")
         self.assertIn("task_1", service._admitted_tasks)
         self.assertFalse(service.player.cancelled)
         self.assertEqual(service.subtitle_sync.clear_events, [])
@@ -513,7 +513,7 @@ class TTSBridgeCancelTraceTest(unittest.TestCase):
         service._first_chunk_events = {}
         service._last_delivery_error = None
         service._ensure_delivery_worker = lambda: None
-        service._should_reject_admission = lambda: True
+        service._should_reject_admission = lambda candidate=None: True
         service._publish_playback_event = lambda *args, **kwargs: None
         task = BridgeTask(task_id="reject-1", trace_id="trace-reject", state="pending", cancel_token="cancel")
         task.detail.update({"generation_id": 1, "segment_index": 1, "original_text": "拒绝"})
@@ -648,6 +648,7 @@ class TTSBridgeCancelTraceTest(unittest.TestCase):
         service._admitted_tasks["task_1"] = template
         for index in range(2, 34):
             service._admitted_tasks[f"task_{index}"] = replace(template, task_id=f"task_{index}")
+            service._tasks[f"task_{index}"] = BridgeTask(task_id=f"task_{index}", trace_id="trace_1", state="pending", cancel_token="cancel")
 
         self.assertTrue(service._should_reject_admission())
 
@@ -748,7 +749,7 @@ class TTSBridgeTextSanitizationTest(unittest.TestCase):
 
     def test_prepare_speak_task_sends_sanitized_text(self) -> None:
         service = TTSBridgeService.__new__(TTSBridgeService)
-        service._lock = threading.Lock()
+        service._lock = threading.RLock()
         service._synthesis_lock = threading.Lock()
         service._tasks: dict[str, object] = {}
         service.config = type(
@@ -775,6 +776,8 @@ class TTSBridgeTextSanitizationTest(unittest.TestCase):
             },
         )()
         service.vendor_manager = _IdleVendor()
+        service._sessions_by_trace = {}
+        service._playback = type("Coordinator", (), {"register_source": lambda self, trace: None})()
         service._sliding_window = SlidingWindowState(
             lock=service._lock,
             sessions_by_trace={},
@@ -1136,6 +1139,7 @@ class PlaybackCoordinatorTest(unittest.TestCase):
 
             def cancel_all(self) -> None:
                 self.cancelled = True
+                coordinator._active_lease = None
 
         player = Player()
         coordinator = PlaybackCoordinator(
@@ -1146,7 +1150,7 @@ class PlaybackCoordinatorTest(unittest.TestCase):
         )
         coordinator._active_lease = PlaybackLease("trace_b", 2, 1)
 
-        self.assertFalse(coordinator.cancel_if_owner(PlaybackLease("trace_a", 1, 1)))
+        self.assertTrue(coordinator.cancel_if_owner(PlaybackLease("trace_a", 1, 1)))
         self.assertFalse(player.cancelled)
         self.assertTrue(coordinator.cancel_if_owner(PlaybackLease("trace_b", 2, 1)))
         self.assertTrue(player.cancelled)

@@ -21,6 +21,11 @@ class PlaybackCoordinator:
         self._playback_lock = threading.Lock()
         self._trace_playback_order: list[str] = []
         self._active_lease: PlaybackLease | None = None
+        self._stop_lock = threading.Lock()
+
+    def register_source(self, trace_id: str) -> None:
+        with self._lock:
+            self._register_trace_locked(trace_id)
 
     def _register_trace_locked(self, trace_id: str) -> None:
         if trace_id not in self._trace_playback_order:
@@ -47,10 +52,14 @@ class PlaybackCoordinator:
 
     def cancel_if_owner(self, lease: PlaybackLease) -> bool:
         """Stop the physical player only when the requested lease owns it."""
-        with self._lock:
-            if self._active_lease != lease:
-                return False
+        with self._stop_lock:
+            with self._lock:
+                if self._active_lease != lease:
+                    return True
             self._player.cancel_all()
+            with self._lock:
+                if self._active_lease == lease:
+                    self._active_lease = None
             return True
 
     def finish_trace(self, trace_id: str) -> None:
@@ -153,7 +162,7 @@ class PlaybackCoordinator:
             elif asset.artifact_path is None:
                 result = {"playback_started": False, "playback_completed": False}
                 playback_failed = True
-            elif callable(getattr(self._player, "play_file_as_pcm_and_wait", None)):
+            else:
                 completed = self._player.play_file_as_pcm_and_wait(
                     path=asset.artifact_path,
                     timeout_ms=timeout,
@@ -161,13 +170,7 @@ class PlaybackCoordinator:
                     rebuffer_ms=rebuffer_ms,
                 )
                 result["playback_completed"] = completed
-            else:
-                completed = self._player.enqueue_and_wait(
-                    asset.artifact_path,
-                    wait=True,
-                    timeout_ms=timeout,
-                )
-                result["playback_completed"] = completed
+            playback_failed = result.get("playback_completed") is not True
         except Exception as exc:
             playback_failed = True
             result = {
@@ -195,6 +198,11 @@ class PlaybackCoordinator:
                     record.state = "failed" if playback_failed else "completed"
                     if playback_failed and error_msg:
                         record.detail = {**record.detail, "playback_error": error_msg}
+                if playback_failed:
+                    session.closed = True
+                    for other in session.segments.values():
+                        if other is not record and other.state not in {"completed", "failed", "cancelled", "obsolete"}:
+                            other.state = "cancelled"
                 if session.next_play_index == segment_index:
                     session.next_play_index += 1
                 if session.expected_end_index is not None and session.next_play_index > session.expected_end_index:
@@ -232,13 +240,28 @@ class PlaybackCoordinator:
                 if record is None or record.state != "playing":
                     return {"playback_started": False, "playback_completed": False, "late_result_discarded": True}
 
-            with self._lock:
-                self._active_lease = PlaybackLease(trace_id, generation_id, segment_index)
+            with self._stop_lock:
+                with self._lock:
+                    if session.closed or self._active_lease is not None:
+                        return {"playback_started": False, "playback_completed": False, "late_result_discarded": True}
+                    self._active_lease = PlaybackLease(trace_id, generation_id, segment_index)
+                arm = getattr(self._player, "arm_playback", None)
+                if callable(arm):
+                    arm(lambda: session.closed)
+            stopped = True
             try:
                 result, playback_failed = self._dispatch_playback_execution(asset, playback_runner)
+                if playback_failed:
+                    try:
+                        self._player.cancel_all()
+                        result["stop_outcome"] = "stopped"
+                    except Exception as exc:
+                        stopped = False
+                        result["stop_outcome"] = "unknown"
+                        result["playback_error"] = f"停止未确认: {exc}"
             finally:
                 with self._lock:
-                    if self._active_lease == PlaybackLease(trace_id, generation_id, segment_index):
+                    if stopped and self._active_lease == PlaybackLease(trace_id, generation_id, segment_index):
                         self._active_lease = None
 
             self._finalize_playback_turn(

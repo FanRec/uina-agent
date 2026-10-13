@@ -38,6 +38,18 @@ function api(controller = new AbortController()): ExtensionAPI {
 
 describe("TTS companion lifecycle", () => {
 	beforeEach(() => vi.resetAllMocks());
+	it("applies stored mute before exposing the driver", async () => {
+		mocks.bridge.mockResolvedValue({ didSpawn: false, stop: async () => {} });
+		mocks.subtitle.mockResolvedValue({ didSpawn: false, stop: async () => {} });
+		const pi = api();
+		const cleanup = await activate(pi);
+		try {
+			const snapshot = vi.mocked(pi.registerService).mock.calls.find(([name]) => name === "voice_driver:snapshot")![1];
+			expect(await snapshot(undefined, { callerId: "test", signal: pi.signal })).toMatchObject({ muted: true });
+		} finally {
+			if (cleanup) await cleanup();
+		}
+	});
 
 	it("cleans both owned processes when registration fails", async () => {
 		const bridgeStop = vi.fn(async () => {});

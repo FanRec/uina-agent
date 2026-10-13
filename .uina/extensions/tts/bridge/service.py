@@ -147,6 +147,7 @@ class TTSBridgeService:
         self.lipsync_bridge = LipsyncBridgeClient(config.lipsync_bridge)
         self._lock = threading.RLock()
         self._admission_lock = threading.Lock()
+        self._reset_lock = threading.Lock()
         self._closing = threading.Event()
         self._delivery_futures: set[Future[Any]] = set()
         self._warmup_thread: threading.Thread | None = None
@@ -158,6 +159,8 @@ class TTSBridgeService:
         self._real_adaptive_engine = AdaptiveStrategyEngine(self.config.streaming)
         self._sessions_by_trace: dict[str, GenerationSession] = {}
         self._epoch_by_session: dict[str, str] = {}
+        self._blocked_sessions: set[str] = set()
+        self._closed_traces: dict[str, str] = {}
         self._reset_results: dict[str, dict[str, Any]] = {}
         self._next_generation_id_by_trace: dict[str, int] = {}
         self._first_chunk_events: dict[tuple[str, int], threading.Event] = {}
@@ -165,6 +168,8 @@ class TTSBridgeService:
         self._delivery_queue: Queue[str | object] = Queue()
         self._delivery_stop = threading.Event()
         self._delivery_thread: threading.Thread | None = None
+        self._playback_thread: threading.Thread | None = None
+        self._pending_playbacks: dict[str, tuple[Any, Any]] = {}
         self._active_delivery_tasks: set[str] = set()
         self._last_delivery_error: dict[str, Any] | None = None
         self._warmup_status: dict[str, Any] = {"status": "not_started"}
@@ -307,6 +312,7 @@ class TTSBridgeService:
         vendor_ownership = str(getattr(self.vendor_manager, "ownership", "unknown"))
         return {
             "service_ready": True,
+            "voice_protocol_version": 2,
             "bridge_ready": True,
             # The HTTP endpoint cannot prove who owns the enclosing Bridge process.
             # Companion supplies that separate fact; do not infer it from reachability.
@@ -545,6 +551,12 @@ class TTSBridgeService:
         self._delivery_queue.put(_DELIVERY_STOP)
         if self._delivery_thread is not None:
             self._delivery_thread.join(timeout=2.0)
+        if self._playback_thread is not None:
+            self._playback_thread.join(timeout=2.0)
+        for _, cleanup in list(self._pending_playbacks.values()):
+            if cleanup is not None:
+                cleanup()
+        self._pending_playbacks.clear()
         warmup_thread = getattr(self, "_warmup_thread", None)
         if warmup_thread is not None and warmup_thread.is_alive():
             warmup_thread.join(timeout=0.5)
@@ -560,6 +572,9 @@ class TTSBridgeService:
         if self._delivery_thread is not None and self._delivery_thread.is_alive():
             return
         self._delivery_stop.clear()
+        if self._playback_thread is None or not self._playback_thread.is_alive():
+            self._playback_thread = threading.Thread(target=self._run_playback_worker, name="tts-bridge-playback", daemon=True)
+            self._playback_thread.start()
         self._delivery_thread = threading.Thread(target=self._run_delivery_worker, name="tts-bridge-delivery", daemon=True)
         self._delivery_thread.start()
 
@@ -576,10 +591,95 @@ class TTSBridgeService:
             if item is _DELIVERY_STOP:
                 break
             task_id = str(item)
+            with self._lock:
+                task = self._tasks.get(task_id)
+                session = self._sessions_by_trace.get(task.trace_id) if task is not None else None
+                index = int(task.detail.get("segment_index", 1)) if task is not None else 1
+                eligible = session is None or session.closed or index < session.next_play_index + self._scheduler.window_size + 1
+                head = self._playback.current_playback_trace_locked()
+                head_session = self._sessions_by_trace.get(head) if head else None
+                if task is not None and head_session is not None and head != task.trace_id:
+                    producers_done = all(record.asset is None or record.asset.kind != "pcm" or record.asset.metrics.get("pcm_buffer_done", threading.Event()).is_set()
+                        for record in head_session.segments.values() if record.state not in {"completed", "failed", "cancelled", "obsolete"})
+                    eligible = eligible and head_session.submission_closed and producers_done and all(
+                        record.state not in {"pending", "synthesizing"} for record in head_session.segments.values())
+                    if task.detail.get("test_scope") == "playback":
+                        eligible = False
+            if not eligible:
+                self._delivery_queue.put(item)
+                self._delivery_stop.wait(0.01)
+                continue
             admitted = self._admitted_tasks.pop(task_id, None)
             if admitted is None:
                 continue
             active_futures.add(self._delivery_executor.submit(self._deliver_admitted_task, admitted))
+
+    def _queue_playback(self, task, callback, cleanup=None) -> None:
+        with self._lock:
+            if task.cancel_requested or task.state in {"cancelled", "failed", "obsolete"}:
+                cancelled = True
+            else:
+                cancelled = False
+                self._pending_playbacks[task.task_id] = (callback, cleanup)
+        if cancelled and cleanup is not None:
+            cleanup()
+
+    def _run_playback_worker(self) -> None:
+        while not self._delivery_stop.is_set():
+            work = None
+            abandoned = []
+            with self._lock:
+                for task_id in list(self._pending_playbacks):
+                    task = self._tasks.get(task_id)
+                    session = self._sessions_by_trace.get(task.trace_id) if task is not None else None
+                    if task is None or task.cancel_requested or session is None or session.closed:
+                        abandoned.append(self._pending_playbacks.pop(task_id))
+                trace = self._playback.current_playback_trace_locked()
+                session = self._sessions_by_trace.get(trace) if trace else None
+                record = session.segments.get(session.next_play_index) if session else None
+                if record is not None and record.state == "ready" and record.task_id in self._pending_playbacks:
+                    work = (self._tasks[record.task_id], self._pending_playbacks.pop(record.task_id))
+            for _, cleanup in abandoned:
+                if cleanup is not None:
+                    cleanup()
+            if work is None:
+                self._delivery_stop.wait(0.01)
+                continue
+            task, (callback, cleanup) = work
+            try:
+                result = callback()
+                task.detail["delivery_result"] = result
+                if result.get("status") == "failed":
+                    self._poison_source(task)
+            except Exception as exc:
+                if cleanup is not None:
+                    cleanup()
+                self._fail_delivery(task, exc)
+
+    def _poison_source(self, task) -> None:
+        with self._lock:
+            session = self._sessions_by_trace.get(task.trace_id)
+            if session is not None:
+                session.closed = True
+                for record in session.segments.values():
+                    if record.task_id != task.task_id and record.state not in {"completed", "failed", "cancelled", "obsolete"}:
+                        record.state = "cancelled"
+            for other in self._tasks.values():
+                if other.trace_id == task.trace_id and other is not task and other.state not in {"completed", "failed", "cancelled", "obsolete"}:
+                    other.cancel_requested = True
+                    other.state = "cancelled"
+                    other.completed_at = time.time()
+                    if other.stream_cancel_event is not None:
+                        other.stream_cancel_event.set()
+        self._sliding_window.close_trace(task.trace_id)
+
+    def _fail_delivery(self, task, error) -> None:
+        task.state = "failed"
+        task.completed_at = time.time()
+        task.error = str(error.detail) if isinstance(error, HTTPException) else str(error)
+        self._last_delivery_error = {"task_id": task.task_id, "trace_id": task.trace_id, "error": task.error, "at": time.time()}
+        self._poison_source(task)
+        self._publish_playback_event("failed", task=task, detail={"error": task.error, "playback_completed": False})
 
     def _deliver_admitted_task(self, admitted: _AdmittedSpeakTask) -> None:
         task_id = admitted.task_id
@@ -592,6 +692,7 @@ class TTSBridgeService:
 
             return
         try:
+            task.detail["defer_playback"] = True
             self._ensure_vendor_ready(wait_for_ready=True)
             self._active_delivery_tasks.add(task_id)
             self._deliver_prepared_task(
@@ -602,6 +703,7 @@ class TTSBridgeService:
                 use_batch_only=admitted.use_batch_only,
             )
         except Exception as exc:
+            self._poison_source(task)
             task.state = "failed"
             task.completed_at = time.time()
             if isinstance(exc, HTTPException):
@@ -629,6 +731,10 @@ class TTSBridgeService:
             existing = self._tasks.get(request.segment_id)
             if existing is None:
                 return None
+            if request.session_id is not None and request.session_id != existing.session_id:
+                raise HTTPException(status_code=409, detail="任务属于另一发声会话")
+            if request.epoch is not None and request.epoch != self._epoch_by_session.get(existing.session_id):
+                raise HTTPException(status_code=409, detail="epoch 已失效")
             same_request = (
                 existing.trace_id == request.trace_id
                 and int(existing.detail.get("segment_index", request.index) or request.index) == int(request.index)
@@ -665,7 +771,7 @@ class TTSBridgeService:
             return duplicate
         task, ref_audio_path, timeout, profile, use_batch_only = self._prepare_speak_task(request, wait_for_vendor_ready=False, traceparent=traceparent)
         self._ensure_delivery_worker()
-        if self._should_reject_admission():
+        if self._should_reject_admission(task):
             task.state = "failed"
             task.completed_at = time.time()
             task.error = "tts delivery worker is not accepting new tasks"
@@ -726,7 +832,7 @@ class TTSBridgeService:
             generation_id=generation_id,
             segment_index=segment_index,
             task_id=task_id,
-            detail=detail,
+            detail={**(detail or {}), **({"stop_outcome": task.detail["stop_outcome"]} if task is not None and task.detail.get("stop_outcome") else {})},
         )
 
     def playback_events(self, trace_id: str | None = None):
@@ -736,27 +842,34 @@ class TTSBridgeService:
         yield from self._playback_snapshot_hub.stream()
 
     def reconnect(self, session_id: str) -> dict[str, Any]:
-        epoch = self._epoch_by_session.get(session_id)
-        if epoch is None:
-            epoch = uuid4().hex
-            self._epoch_by_session[session_id] = epoch
+        with self._lock:
+            epoch = self._epoch_by_session.setdefault(session_id, uuid4().hex)
         return {"status": "reconnected", "session_id": session_id, "epoch": epoch, "health": self.health()}
 
     def reset(self, session_id: str, expected_epoch: str | None = None, new_epoch: str | None = None, invocation_id: str | None = None) -> dict[str, Any]:
+        with self._reset_lock:
+            return self._reset_epoch(session_id, expected_epoch, new_epoch, invocation_id)
+
+    def _reset_epoch(self, session_id: str, expected_epoch: str | None = None, new_epoch: str | None = None, invocation_id: str | None = None) -> dict[str, Any]:
         key = invocation_id or f"reset:{session_id}:{expected_epoch or ''}:{new_epoch or ''}"
         if key in self._reset_results:
             return dict(self._reset_results[key])
         current = self._epoch_by_session.get(session_id)
         if expected_epoch is not None and current is not None and current != expected_epoch:
             result = {"status": "failed", "reason": "expected_epoch 不匹配", "session_id": session_id, "epoch": current}
-            self._reset_results[key] = result
             return result
-        trace_ids = [trace for trace, session in self._sessions_by_trace.items() if trace == session_id or trace.startswith(session_id + ":")]
+        with self._lock:
+            self._blocked_sessions = getattr(self, "_blocked_sessions", set())
+            self._blocked_sessions.add(session_id)
+            trace_ids = list(dict.fromkeys(
+                [trace for trace in self._sessions_by_trace if trace == session_id or trace.startswith(session_id + ":")]
+                + [task.trace_id for task in self._tasks.values() if task.session_id == session_id]
+            ))
         stop_failures: list[str] = []
         for trace_id in trace_ids:
             try:
                 cancelled = self.cancel_trace(CancelTraceRequest(trace_id=trace_id, mode="immediate"))
-                if cancelled.get("status") != "cancelled":
+                if cancelled.get("status") != "cancelled" or cancelled.get("stop_outcome") not in {"stopped", "not_playing"}:
                     stop_failures.append(f"{trace_id}: {cancelled.get('status')}")
             except Exception as exc:
                 stop_failures.append(f"{trace_id}: {type(exc).__name__}: {exc}")
@@ -767,89 +880,105 @@ class TTSBridgeService:
                 "stopped_traces": trace_ids, "stop_failures": stop_failures,
                 "reason": "旧 epoch 的停止未全部确认，new epoch 未启用",
             }
-            self._reset_results[key] = result
             return result
         epoch = new_epoch or uuid4().hex
-        self._epoch_by_session[session_id] = epoch
+        with self._lock:
+            self._epoch_by_session[session_id] = epoch
+            self._blocked_sessions.discard(session_id)
+            for trace in [trace for trace, owner in getattr(self, "_closed_traces", {}).items() if owner == session_id]:
+                self._closed_traces.pop(trace, None)
         result = {"status": "reset", "session_id": session_id, "previous_epoch": current, "epoch": epoch, "stopped_traces": trace_ids}
         self._reset_results[key] = result
         return result
 
-    def test(self, scope: str, session_id: str | None = None) -> dict[str, Any]:
-        """Run one bounded real verification path; readiness alone never passes it."""
+    def test(self, scope: str, session_id: str | None = None, timeout_ms: int = 120000, cancellation=None, expected_epoch: str | None = None, trace_id: str | None = None) -> dict[str, Any]:
         if scope not in {"synthesis", "playback"}:
-            return {"status": "failed", "scope": scope, "reason": "不支持的测试范围"}
-        started_at = time.perf_counter()
-        text = "语音测试。"
+            return {"status": "not_started", "scope": scope, "reason": "不支持的测试范围"}
+        started = time.monotonic()
+        deadline = started + max(timeout_ms, 1) / 1000
+        cancel = cancellation or threading.Event()
         sid = session_id or "uina-test"
-        try:
-            self._ensure_vendor_ready(wait_for_ready=True)
-            ref_audio_path = self._resolve_ref_audio_path()
-            preset = self.config.preset
-            payload: dict[str, Any] = {
-                "text": text,
-                "media_type": preset.media_type,
-                "text_lang": _vendor_text_lang_for(text),
-                "ref_audio_path": str(ref_audio_path),
-                "prompt_text": preset.prompt_text,
-                "prompt_lang": preset.prompt_lang,
-                "text_split_method": preset.text_split_method,
-                "speed_factor": preset.speed_factor,
-                "streaming_mode": False,
-            }
-            if self.config.vendor.api_style == "legacy":
-                payload = {"text": text, "text_language": preset.text_lang, "media_type": preset.media_type}
-            response = self.vendor_manager.synthesize(payload, timeout_ms=self.config.request_timeout_ms)
-            if response.status_code != 200:
-                result = {"status": "failed", "scope": scope, "reason": self._vendor_failure_detail(response), "vendor_status": response.status_code}
-                self._last_verification = {**result, "verified_at": time.time()}
-                return result
-            duration_ms, sample_rate = _wav_metadata(response.content)
-            if not response.content or duration_ms is None or sample_rate is None or duration_ms <= 0:
-                result = {"status": "failed", "scope": scope, "reason": "Vendor 返回了空音频或不可解析音频"}
-                self._last_verification = {**result, "verified_at": time.time()}
-                return result
-            synthesis = {
-                "status": "succeeded", "scope": scope, "vendor_ready": True,
-                "audio_bytes": len(response.content), "duration_ms": duration_ms,
-                "sample_rate": sample_rate,
-                "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 2),
-            }
-            if scope == "synthesis" or not self.config.playback_enabled:
-                if scope == "playback" and not self.config.playback_enabled:
-                    synthesis = {**synthesis, "status": "not_started", "reason": "播放器在配置中被禁用"}
-                self._last_verification = {**synthesis, "verified_at": time.time()}
-                return synthesis
+        trace = trace_id or sid + ":test-" + uuid4().hex
+        if not trace.startswith(sid + ":"):
+            return {"status": "not_started", "scope": scope, "reason": "播放测试来源不属于当前会话"}
+        task = None
+        stream = None
 
-            trace_id = f"__test__:{sid}:{uuid4().hex}"
-            task = BridgeTask(
-                task_id=f"test:{uuid4().hex}", trace_id=trace_id, state="pending",
-                cancel_token=uuid4().hex, session_id=sid, source_id=trace_id, epoch=self._epoch_by_session.setdefault(sid, uuid4().hex),
-            )
-            task.detail.update({"text": text, "generation_id": 1, "segment_index": 1})
-            condition = threading.Condition(self._lock)
-            with self._lock:
-                self._sessions_by_trace[trace_id] = GenerationSession(trace_id=trace_id, generation_id=1, condition=condition)
-                self._tasks[task.task_id] = task
-            self._register_segment(trace_id=trace_id, generation_id=1, segment_index=1, task_id=task.task_id, text=text, state="pending")
-            artifact = self._write_audio_artifact(task_id=task.task_id, audio_id=hashlib.sha1(response.content).hexdigest()[:16], audio_bytes=response.content, media_type=preset.media_type)
-            playback = self._play_batch_artifact(task, synth={"audio_id": hashlib.sha1(response.content).hexdigest()[:16], "artifact_path": artifact, "duration_ms": duration_ms, "sample_rate": sample_rate, "latency_ms": synthesis["elapsed_ms"]}, adaptive_fallback=False)
-            result = {**synthesis, **{k: v for k, v in playback.items() if k in {"playback_started", "playback_completed", "played_ms", "buffered_ms"}}}
-            result["status"] = "succeeded" if result.get("playback_completed") is True else "failed"
-            if result["status"] == "failed": result["reason"] = playback.get("playback_error", "播放器未确认完成")
-            self._last_verification = {**result, "verified_at": time.time()}
-            return result
-        except Exception as exc:
-            result = {"status": "unknown", "scope": scope, "reason": f"真实测试未取得完整证据：{type(exc).__name__}: {exc}"}
-            self._last_verification = {**result, "verified_at": time.time()}
-            return result
+        def remaining():
+            if cancel.is_set():
+                raise RuntimeError("测试已取消")
+            budget = int((deadline - time.monotonic()) * 1000)
+            if budget <= 0:
+                raise TimeoutError("测试超时")
+            return budget
+
+        try:
+            if scope == "playback":
+                if not self.config.playback_enabled:
+                    return {"status": "not_started", "scope": scope, "reason": "播放器已禁用，未播放测试音"}
+                receipt = self.admit_speak(SpeakRequest(trace_id=trace, session_id=sid, source_id=trace,
+                    epoch=expected_epoch or self.reconnect(sid)["epoch"], segment_id=trace + ":1", index=1, text="语音测试。", timeout_ms=remaining(), metadata={"test_scope": "playback"}))
+                task = self._tasks[receipt["task_id"]]
+                task.detail["deadline"] = deadline
+                self.mark_turn_end(TurnEndRequest(trace_id=trace, last_segment_index=1))
+                while task.state not in {"completed", "failed", "cancelled", "obsolete"}:
+                    remaining()
+                    cancel.wait(0.01)
+                result = {"status": "unknown" if task.detail.get("stop_outcome") == "unknown" else "succeeded" if task.state == "completed" else "cancelled" if task.state in {"cancelled", "obsolete"} else "failed", "scope": scope,
+                    "playback_started": bool(task.detail.get("playback_started")),
+                    "playback_completed": bool(task.detail.get("playback_completed")),
+                    "duration_ms": task.detail.get("duration_ms"),
+                    "sample_rate": task.detail.get("sample_rate"),
+                    "path": "streaming" if task.detail.get("streaming_mode") else "batch"}
+                if result["status"] != "succeeded":
+                    result["reason"] = task.error or "播放没有完成"
+            else:
+                self._ensure_vendor_ready(wait_for_ready=True, timeout_ms=remaining())
+                ref = self._resolve_ref_audio_path()
+                if self.config.streaming.enabled:
+                    task = BridgeTask(task_id=trace, trace_id=trace, state="pending", cancel_token=uuid4().hex)
+                    task.detail["text"] = "语音测试。"
+                    profile = self._streaming_profile_for_request(trace, first_chunk_priority=True, segment_index=1, text="语音测试。")
+                    stream = self.streaming_engine.start_stream(task=task, ref_audio_path=ref, timeout_ms=remaining(),
+                        profile=profile, estimated_duration_ms=1000, on_first_chunk=lambda: None,
+                        is_cancelled=lambda: cancel.is_set() or time.monotonic() >= deadline)
+                    total = 0
+                    for chunk in stream.asset.pcm_stream:
+                        remaining()
+                        total += len(chunk)
+                    stream.wait_for_producer(timeout=min(1.0, remaining() / 1000))
+                    if stream.producer_error or total == 0 or total % 2:
+                        raise RuntimeError(str(stream.producer_error or "模型没有返回有效 PCM"))
+                    rate = self.config.streaming.sample_rate
+                    result = {"status": "succeeded", "scope": scope, "audio_bytes": total, "sample_rate": rate,
+                        "duration_ms": total / 2 / rate * 1000, "path": "streaming", "playback_started": False}
+                else:
+                    payload = self._batch_payload("语音测试。", ref, media_type=self.config.preset.media_type)
+                    if not self._synthesis_lock.acquire(timeout=remaining() / 1000):
+                        raise TimeoutError("等待模型超时")
+                    try:
+                        response = self.vendor_manager.synthesize(payload, timeout_ms=remaining())
+                    finally:
+                        self._synthesis_lock.release()
+                    if response.status_code != 200:
+                        raise RuntimeError(self._vendor_failure_detail(response))
+                    _validate_generated_wav(response.content)
+                    duration, rate = _wav_metadata(response.content)
+                    result = {"status": "succeeded", "scope": scope, "audio_bytes": len(response.content),
+                        "duration_ms": duration, "sample_rate": rate, "path": "batch", "playback_started": False}
+                remaining()
+            result["elapsed_ms"] = round((time.monotonic() - started) * 1000, 2)
+        except Exception as error:
+            result = {"status": "cancelled" if cancel.is_set() else "failed", "scope": scope, "reason": str(error)}
+            if scope == "playback" and task is not None:
+                stopped = self.cancel_trace(CancelTraceRequest(trace_id=trace))
+                if stopped.get("stop_outcome") not in {"stopped", "not_playing"}:
+                    result = {"status": "unknown", "scope": scope, "reason": "测试已取消或超时，但停止尚未确认"}
         finally:
-            # Test traces are disposable and must never become replayable speech.
-            for trace_id in list(getattr(self, "_sessions_by_trace", {})):
-                if trace_id.startswith(f"__test__:{sid}:"):
-                    with self._lock:
-                        session = self._sessions_by_trace.pop(trace_id, None)
-                        if session is not None: session.closed = True
+            if stream is not None:
+                stream.close()
+        self._last_verification = {**result, "verified_at": time.time()}
+        return result
 
     def restart(self, target: str) -> dict[str, Any]:
         if target != "vendor":
@@ -915,7 +1044,7 @@ class TTSBridgeService:
         oldest = min(item.admitted_at for item in self._admitted_tasks.values())
         return round(max(time.perf_counter() - oldest, 0.0) * 1000, 2)
 
-    def _should_reject_admission(self) -> bool:
+    def _should_reject_admission(self, candidate: BridgeTask | None = None) -> bool:
         worker_dead = self._delivery_thread is None or not self._delivery_thread.is_alive()
         if worker_dead:
             return True
@@ -947,12 +1076,19 @@ class TTSBridgeService:
             for task_id in stale_ids:
                 task = self._tasks.get(task_id)
                 if task is not None:
+                    self._poison_source(task)
                     self._publish_playback_event(
                         "failed",
                         task=task,
                         detail={"error": task.error, "reason": "admission_expired"},
                     )
-        return admitted_count >= max(max_workers * 16, 32)
+        with self._lock:
+            outstanding = sum(task.state in {"pending", "in_progress"} for task in self._tasks.values())
+            head = self._playback.current_playback_trace_locked()
+        limit = max(max_workers * 16, 32)
+        if candidate is not None:
+            return outstanding > (limit if candidate.trace_id == head else limit - 1)
+        return outstanding >= limit
 
     def _prune_terminal_state(self) -> None:
         now = time.time()
@@ -982,6 +1118,7 @@ class TTSBridgeService:
                     record.state not in {"completed", "failed", "cancelled", "obsolete"}
                     for record in session.segments.values()
                 )
+                active = active or any(task.trace_id == trace_id and task.state not in {"completed", "failed", "cancelled", "obsolete"} for task in self._tasks.values())
                 ended = session.expected_end_index is not None and session.next_play_index > session.expected_end_index
                 if not active and (session.closed or ended):
                     for record in session.segments.values():
@@ -1036,7 +1173,6 @@ class TTSBridgeService:
         print(f"[TTS] speak: text={vendor_text[:40]!r} vendor_ready={vendor_ready} streaming={streaming.enabled}", flush=True)
         self._ensure_vendor_ready(wait_for_ready=wait_for_vendor_ready)
 
-        generation_id = self._resolve_generation_id(request)
         task_id = request.segment_id
         cancel_token = f"cancel_{uuid4().hex[:16]}"
         session_id = request.session_id or request.trace_id
@@ -1044,12 +1180,25 @@ class TTSBridgeService:
         if epoch_map is None:
             epoch_map = {}
             self._epoch_by_session = epoch_map
-        epoch = epoch_map.setdefault(session_id, uuid4().hex)
-        if request.epoch is not None and request.epoch != epoch:
-            raise HTTPException(status_code=409, detail={"reason": "epoch 已失效", "session_id": session_id, "expected_epoch": epoch, "received_epoch": request.epoch})
-        task = BridgeTask(task_id=task_id, trace_id=request.trace_id, state="pending", cancel_token=cancel_token, session_id=session_id, invocation_id=request.invocation_id, source_id=request.source_id or request.trace_id, epoch=epoch)
         with self._lock:
+            if session_id in getattr(self, "_blocked_sessions", set()):
+                raise HTTPException(status_code=409, detail="正在停止旧声音，未受理新台词")
+            epoch = epoch_map.setdefault(session_id, uuid4().hex)
+            if request.session_id is not None and request.epoch is None:
+                raise HTTPException(status_code=409, detail="缺少本次会话的执行身份")
+            if request.epoch is not None and request.epoch != epoch:
+                raise HTTPException(status_code=409, detail={"reason": "epoch 已失效", "session_id": session_id})
+            session = self._sessions_by_trace.get(request.trace_id)
+            if request.trace_id in getattr(self, "_closed_traces", {}):
+                raise HTTPException(status_code=409, detail="来源已经取消，未受理晚到台词")
+            if session is not None and (session.closed or session.submission_closed):
+                raise HTTPException(status_code=409, detail="发声来源已封闭")
+            if request.index < 1 or ((session is None or not session.segments) and request.index != 1):
+                raise HTTPException(status_code=409, detail="新发声来源必须从第 1 段开始")
+            generation_id = self._resolve_generation_id(request)
+            task = BridgeTask(task_id=task_id, trace_id=request.trace_id, state="pending", cancel_token=cancel_token, session_id=session_id, invocation_id=request.invocation_id, source_id=request.source_id or request.trace_id, epoch=epoch)
             self._tasks[task_id] = task
+        self._playback.register_source(request.trace_id)
 
         # 发送给 vendor 的文本必须经过 sanitize：原始文本可能含换行、零宽字符、
         # emoji 或非 GBK 符号，vendor 的 filter_text 对切分后全空白/异常字符的
@@ -1068,14 +1217,13 @@ class TTSBridgeService:
         if traceparent:
             task.detail["traceparent"] = traceparent
         task.detail["first_chunk_priority"] = bool(request.metadata.get("first_chunk_priority", False))
-        self._register_segment(
-            trace_id=request.trace_id,
-            generation_id=generation_id,
-            segment_index=int(request.index),
-            task_id=task_id,
-            text=request.text,
-            state="pending",
-        )
+        with self._lock:
+            if task.cancel_requested or epoch_map.get(session_id) != epoch or session_id in getattr(self, "_blocked_sessions", set()):
+                task.state = "cancelled"
+                task.completed_at = time.time()
+                raise HTTPException(status_code=409, detail="来源在受理期间已取消")
+            self._register_segment(trace_id=request.trace_id, generation_id=generation_id,
+                segment_index=int(request.index), task_id=task_id, text=request.text, state="pending")
         profile = self._streaming_profile_for_request(
             request.trace_id,
             first_chunk_priority=bool(request.metadata.get("first_chunk_priority", False)),
@@ -1136,14 +1284,14 @@ class TTSBridgeService:
             raise HTTPException(status_code=500, detail=f"tts preset ref audio not found: {ref_audio_path}")
         return ref_audio_path
 
-    def _ensure_vendor_ready(self, *, wait_for_ready: bool) -> None:
+    def _ensure_vendor_ready(self, *, wait_for_ready: bool, timeout_ms: int | None = None) -> None:
         vendor_ready = self.vendor_manager.ready()
         if vendor_ready:
             return
         started = self.vendor_manager.ensure_running()
         if not wait_for_ready:
             return
-        if not self.vendor_manager.wait_until_ready(self.config.startup_timeout_ms):
+        if not self.vendor_manager.wait_until_ready(min(self.config.startup_timeout_ms, timeout_ms) if timeout_ms is not None else self.config.startup_timeout_ms):
             print(f"[TTS] vendor NOT ready after wait", flush=True)
             raise HTTPException(status_code=503, detail="vendor tts is not ready")
         if started:
@@ -1170,13 +1318,15 @@ class TTSBridgeService:
             player_is_playing=self.player.is_playing,
             trace_force_batch=trace_force_batch,
         )
+        if task.detail.get("test_scope") == "playback":
+            prefer_batch_prefetch = False
         use_batch_only = bool(use_batch_only and not prefer_batch_prefetch)
-        self._sliding_window.wait_for_issue_window(
-            trace_id=task.trace_id,
-            generation_id=generation_id,
-            segment_index=segment_index,
-            window_size=self._scheduler.window_size + (1 if prefer_batch_prefetch else 0),
-        )
+        if not task.detail.get("defer_playback"):
+            self._sliding_window.wait_for_issue_window(trace_id=task.trace_id, generation_id=generation_id,
+                segment_index=segment_index, window_size=self._scheduler.window_size + (1 if prefer_batch_prefetch else 0))
+        with self._lock:
+            if self._playback.current_playback_trace_locked() != task.trace_id:
+                use_batch_only = True
         with self._lock:
             session = self._sessions_by_trace.get(task.trace_id)
             if session is not None and session.generation_id == generation_id:
@@ -1266,6 +1416,7 @@ class TTSBridgeService:
     def _speak_streaming(self, task: BridgeTask, ref_audio_path: Path, timeout_ms: int, *, profile: StreamingProfile) -> dict[str, Any]:
         """流式合成 + 实时播放：边合成边播，最低延迟。"""
         streaming = self.config.streaming
+        task.detail["streaming_mode"] = True
         preset = self.config.preset
         text_for_duration = str(task.detail.get("text", ""))
         estimated_duration_ms = self._estimate_stream_duration_ms(text_for_duration, speed_factor=preset.speed_factor)
@@ -1316,6 +1467,17 @@ class TTSBridgeService:
                 "late_result_discarded": True,
             }
 
+        if task.detail.get("defer_playback"):
+            self._queue_playback(task, lambda: self._finish_streaming(task, stream_session, profile), stream_session.close)
+            return {"status": "ready", "task_id": task.task_id}
+        return self._finish_streaming(task, stream_session, profile)
+
+    def _finish_streaming(self, task, stream_session, profile):
+        streaming = self.config.streaming
+        preset = self.config.preset
+        text_for_duration = str(task.detail.get("text", ""))
+        generation_id = int(task.detail.get("generation_id", 1) or 1)
+        segment_index = int(task.detail.get("segment_index", 0) or 0)
         try:
             playback_result = self._play_ready_segment(trace_id=task.trace_id, generation_id=generation_id, segment_index=segment_index)
         except Exception:
@@ -1334,6 +1496,11 @@ class TTSBridgeService:
             is_current_generation=self._sliding_window.is_current_generation(trace_id=task.trace_id, generation_id=generation_id),
             playback_result=playback_result,
         )
+        if task.cancel_requested or playback_result.get("late_result_discarded"):
+            stream_session.close()
+            task.state = "cancelled"
+            task.completed_at = time.time()
+            return {"status": "unknown" if task.detail.get("stop_outcome") == "unknown" else "cancelled", "task_id": task.task_id, "playback_started": bool(task.detail.get("playback_started")), "playback_completed": False}
         playback_start_latency_ms = playback_result.get("playback_start_latency_ms")
         if playback_start_latency_ms is not None:
             playback_start_latency_ms = float(playback_start_latency_ms)
@@ -1623,6 +1790,7 @@ class TTSBridgeService:
                 self._synthesis_lock.release()
 
     def _speak_batch(self, task: BridgeTask, ref_audio_path: Path, timeout_ms: int, *, adaptive_fallback: bool = False) -> dict[str, Any]:
+        task.detail["streaming_mode"] = False
         """传统批量合成：等完整 WAV 返回后播放。"""
         preset = self.config.preset
         payload = self._batch_payload(task.detail["text"], ref_audio_path, media_type=preset.media_type)
@@ -1753,11 +1921,23 @@ class TTSBridgeService:
                 "adaptive_fallback": adaptive_fallback,
                 "late_result_discarded": True,
             }
+        if task.detail.get("defer_playback"):
+            self._queue_playback(task, lambda: self._finish_batch_artifact(task, synth, adaptive_fallback))
+            return {"status": "ready", "task_id": task.task_id}
+        return self._finish_batch_artifact(task, synth, adaptive_fallback)
+
+    def _finish_batch_artifact(self, task, synth, adaptive_fallback):
+        generation_id = int(task.detail.get("generation_id", 1) or 1)
+        segment_index = int(task.detail.get("segment_index", 0) or 0)
         playback_result = self._play_ready_segment(trace_id=task.trace_id, generation_id=generation_id, segment_index=segment_index)
         playback_result = self._playback.finalize_late_result(
             is_current_generation=self._sliding_window.is_current_generation(trace_id=task.trace_id, generation_id=generation_id),
             playback_result=playback_result,
         )
+        if task.cancel_requested or playback_result.get("late_result_discarded"):
+            task.state = "cancelled"
+            task.completed_at = time.time()
+            return {"status": "unknown" if task.detail.get("stop_outcome") == "unknown" else "cancelled", "task_id": task.task_id, "playback_started": bool(task.detail.get("playback_started")), "playback_completed": False}
         task.completed_at = time.time()
         task.audio_id = str(synth["audio_id"])
         task.artifact_path = str(synth["artifact_path"])
@@ -1985,16 +2165,6 @@ class TTSBridgeService:
     def _play_file_asset(self, *, task: BridgeTask, asset: AudioAsset) -> dict[str, Any]:
         if asset.artifact_path is None:
             return {"playback_started": False, "playback_completed": False}
-        if not callable(getattr(self.player, "progress_snapshot", None)):
-            timeout_ms = playback_timeout_ms(asset.duration_ms, self.config.streaming.drain_timeout_ms)
-            playback_completed = self.player.enqueue_and_wait(asset.artifact_path, wait=True, timeout_ms=timeout_ms)
-            snapshot = self._run_subtitle_progress_loop(task=task, duration_ms=asset.duration_ms)
-            return {
-                "playback_started": bool(snapshot.playback_started or playback_completed),
-                "playback_completed": playback_completed,
-                "played_ms": snapshot.played_ms,
-                "buffered_ms": snapshot.buffered_ms,
-            }
         timeout_ms = playback_timeout_ms(asset.duration_ms, self.config.streaming.drain_timeout_ms)
         snapshot_box: dict[str, PlaybackProgressSnapshot] = {}
         progress_thread = threading.Thread(
@@ -2209,6 +2379,15 @@ class TTSBridgeService:
         immediate_cutoff_segments: list[dict[str, Any]] = []
         active_lease: PlaybackLease | None = None
         with self._lock:
+            if request.session_id is not None:
+                matching = [task for task in self._tasks.values() if task.trace_id == request.trace_id]
+                if any(task.session_id != request.session_id for task in matching):
+                    raise HTTPException(status_code=409, detail="不能取消另一会话的来源")
+                if request.expected_epoch is not None and self._epoch_by_session.get(request.session_id) != request.expected_epoch:
+                    raise HTTPException(status_code=409, detail="取消对象的 epoch 已失效")
+            self._closed_traces = getattr(self, "_closed_traces", {})
+            owner = request.session_id or next((task.session_id for task in self._tasks.values() if task.trace_id == request.trace_id), None) or request.trace_id
+            self._closed_traces[request.trace_id] = owner
             if request.mode == "immediate":
                 immediate_cutoff_segments = self._cutoff_segments_for_trace_locked(request.trace_id)
             session = self._sessions_by_trace.get(request.trace_id)
@@ -2219,6 +2398,9 @@ class TTSBridgeService:
                 )
                 if active is not None:
                     active_lease = PlaybackLease(request.trace_id, session.generation_id, active.key.segment_index)
+            physical = getattr(self._playback, "_active_lease", None)
+            if physical is not None and physical.trace_id == request.trace_id:
+                active_lease = physical
             playing_task_ids = {
                 record.task_id
                 for record in (session.segments.values() if session is not None else [])
@@ -2284,6 +2466,7 @@ class TTSBridgeService:
             "mode": request.mode,
             "cancelled_task_count": len(cancelled_tasks),
             "playback_stopped": playback_stopped,
+            "stop_outcome": "stopped" if playback_stopped else "not_playing" if active_lease is None else "unknown",
             "cutoff_segments": (
                 immediate_cutoff_segments
                 if request.mode == "immediate"
@@ -2322,6 +2505,7 @@ class TTSBridgeService:
             if request.generation_id is not None and session.generation_id != int(request.generation_id):
                 return {"status": "stale", "trace_id": request.trace_id, "generation_id": session.generation_id}
             had_segments = bool(session.segments)
+            session.submission_closed = True
             if request.last_segment_index is not None:
                 session.expected_end_index = max(int(request.last_segment_index), 1)
             elif session.expected_end_index is None:
@@ -2364,6 +2548,7 @@ class TTSBridgeService:
 
 
     def _mark_task_failed_and_release_window(self, *, task: BridgeTask, reason: str) -> None:
+        self._poison_source(task)
         generation_id = int(task.detail.get("generation_id", 1) or 1)
         with self._lock:
             session = self._sessions_by_trace.get(task.trace_id)
@@ -2418,8 +2603,16 @@ class TTSBridgeService:
                 sub_state.setdefault("generation_id", int(task.detail.get("generation_id", 1) or 1))
                 sub_state.setdefault("segment_index", seg_idx)
                 sub_state.setdefault("text", text)
+                sub_state["state"] = rec_state
+                if task.detail.get("stop_outcome"):
+                    sub_state["stop_outcome"] = task.detail["stop_outcome"]
+                if task.error:
+                    sub_state["error"] = task.error
 
-                is_completed = bool(sub_state.get("playback_completed")) or rec_state == "completed" or task.state == "completed"
+                terminal_failure = rec_state in {"failed", "cancelled", "obsolete"} or task.state in {"failed", "cancelled", "obsolete"}
+                if terminal_failure:
+                    sub_state["playback_completed"] = False
+                is_completed = not terminal_failure and (bool(sub_state.get("playback_completed")) or rec_state == "completed" or task.state == "completed")
                 is_started = bool(sub_state.get("playback_started")) or rec_state in {"playing", "completed"}
 
                 if is_completed:
@@ -2428,7 +2621,7 @@ class TTSBridgeService:
                     sub_state.setdefault("revealed_text", text)
                     sub_state.setdefault("revealed_count", len(text))
                     completed_segments.append({"index": seg_idx, "text": text})
-                elif is_started or rec_state == "playing":
+                elif not terminal_failure and (is_started or rec_state == "playing"):
                     sub_state["playback_started"] = True
                     sub_state["playback_completed"] = False
                     revealed = str(sub_state.get("revealed_text", ""))
@@ -2645,7 +2838,7 @@ class TTSBridgeService:
     def _play_ready_segment(self, *, trace_id: str, generation_id: int, segment_index: int) -> dict[str, Any]:
         if not self.config.playback_enabled:
             return {"playback_started": False, "playback_completed": False}
-        return self._playback.play_ready_segment(
+        result = self._playback.play_ready_segment(
             trace_id=trace_id,
             generation_id=generation_id,
             segment_index=segment_index,
@@ -2656,6 +2849,14 @@ class TTSBridgeService:
                 asset=asset,
             ),
         )
+        with self._lock:
+            session = self._sessions_by_trace.get(trace_id)
+            record = session.segments.get(segment_index) if session is not None else None
+            if record is not None:
+                task = self._tasks.get(record.task_id)
+                if task is not None and result.get("stop_outcome"):
+                    task.detail["stop_outcome"] = result["stop_outcome"]
+        return result
 
     def _mark_segment_completed(self, *, trace_id: str, generation_id: int, segment_index: int, detail: dict[str, Any]) -> None:
         self._sliding_window.mark_segment_completed(

@@ -10,14 +10,14 @@ export interface CuePlaybackOwner {
 }
 
 /** Both consumers make the same decision even when an earlier handler changes voice health. */
-export function createCueOutputOwnership(eligible: () => boolean): CuePlaybackOwner {
+export function createCueOutputOwnership(eligible: (event?: object) => boolean): CuePlaybackOwner {
 	const decisions = new WeakMap<object, boolean>();
 	return {
 		ownsOutput(event) {
 			if (!event) return eligible();
 			const previous = decisions.get(event);
 			if (previous !== undefined) return previous;
-			const owned = eligible();
+      const owned = eligible(event);
 			decisions.set(event, owned);
 			return owned;
 		},

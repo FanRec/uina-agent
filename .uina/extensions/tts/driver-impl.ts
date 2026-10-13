@@ -1,489 +1,736 @@
+import { randomUUID } from "node:crypto";
 import type { DeliverySnapshot, InterruptResult, PlaybackBreakpoint, VoiceOutputDriver } from "../voice/driver.js";
-import { TtsSpeakError, type TtsBridgeClient } from "./client.js";
-import { summarizeProgress } from "./delivery.js";
-import { stripParentheticals } from "./stream-parser.js";
+import { TtsSpeakError, type PlaybackEvent, type TtsBridgeClient } from "./client.js";
+import { hasPronounceableContent, StreamParser } from "./stream-parser.js";
 
-/** 快照里去掉意志与连接态：那两个事实的拥有者是 `_muted` / `_isOnline` 本身，不存副本。 */
-type DeliveryFacts = Omit<DeliverySnapshot, "online" | "muted">;
-
-const EMPTY_FACTS: DeliveryFacts = {
-	submittedSegments: 0,
-	spokenSegments: 0,
-	pendingSegments: 0,
-	currentSegmentIndex: null,
+type Outcome = { status: string; task_id?: string; reason?: string };
+type Segment = { text: string; state: string; revealed?: number; uncertain?: boolean };
+type Source = {
+	id: string;
+	seq: number;
+	nextIndex: number;
+	closed: boolean;
+	sealed: boolean;
+	cancelled: boolean;
+	stopUnconfirmed?: boolean;
+	sealUnconfirmed?: boolean;
+	generation?: number;
+	segments: Map<number, Segment>;
 };
+const TERMINAL = new Set(["completed", "failed", "cancelled", "obsolete", "rejected"]);
 
-/**
- * TTS 侧发声驱动。
- *
- * 两条账各归其主：`submitted` 与 `segmentTexts` 是作者侧记账（谁提交谁记），
- * 桥侧只回答"播到哪了"。快照是两者的合并结果，`probe()` 是唯一的 IO 读点。
- *
- * 轮次交接不是"清零"，而是"开新账期"：上一轮的音频可能还在响，
- * 新轮第一次提交时才切换账期，这样新一轮开头仍能读到上一轮的真实交付状态。
- */
+/** Submission identities and receipts belong here; playback belongs to the Bridge. */
 export class TtsVoiceOutputDriver implements VoiceOutputDriver {
-	private readonly client: TtsBridgeClient;
+	readonly sessionId = "voice-" + randomUUID();
 	private _muted = false;
 	private _isOnline = true;
 	private activeTrace: string | null = null;
-	/** 尚有音频在路上的 trace（跨轮次存活，直到被本轮提交顶替） */
-	private deliveryTrace: string | null = null;
-	private deliveryRevision = 0;
-	private probeInFlight: Promise<void> | null = null;
-	private epochDirty = false;
-	private epoch: string | undefined;
-	private submitted = 0;
-	private readonly segmentTexts = new Map<number, string>();
-	/** 桥侧物理事实（不含意志与连接态） */
-	private facts: DeliveryFacts = EMPTY_FACTS;
-	/** 桥侧说它正在出声 —— 队列算术说不出的"在途尾巴" */
-	private speaking = false;
-	private readonly invocationResults = new Map<string, { status: string; task_id?: string }>();
-	private manualTraceSeq = 0;
-	private restartBridge?: () => Promise<Record<string, unknown>>;
-	private bridgeOwnership: "owned" | "external" | "unknown" = "unknown";
-	/** 确定性失败的来源封闭：只拒绝同一 trace 的后续句子，不扩大到新来源（§8.4）。 */
-	private poisonedTrace: string | null = null;
-	/** 未确认缺口的全局屏障：只有 interrupt 确认停止、epoch reset 或受管重启能解除（§10.2）。 */
-	private deliveryBarrier = false;
-
-	constructor(client: TtsBridgeClient) {
-		this.client = client;
+	private sourceSeq = 0;
+	private epoch?: string;
+	private readonly sources = new Map<string, Source>();
+	private readonly invocationResults = new Map<string, Outcome>();
+	private readonly barrierKinds = new Set<"admission" | "seal" | "stop">();
+	private get deliveryBarrier(): boolean {
+		return this.barrierKinds.size > 0;
 	}
+	private maintenance = false;
+	private probeInFlight?: Promise<void>;
+	private restartBridge?: (signal?: AbortSignal, timeoutMs?: number) => Promise<Record<string, unknown>>;
+	private reconnectFeed?: (signal?: AbortSignal) => Promise<boolean>;
+	private bridgeOwnership: "owned" | "external" | "unknown" = "unknown";
+	private observedAt?: number;
+	private lastError?: { stage: string; reason: string; observedAt: number };
+	private admissionTail: Promise<void> = Promise.resolve();
+	private onFact?: (fact: {
+		kind: "delivery_failed" | "delivery_unknown" | "interrupted";
+		summary: string;
+		causeRef: string;
+	}) => void;
+	private onResolution?: (causeRef: string) => void;
 
-	setRestartBridge(handler: () => Promise<Record<string, unknown>>): void {
+	constructor(
+		private readonly client: TtsBridgeClient,
+		private readonly longTimeoutMs = 120_000,
+	) {}
+	setRestartBridge(handler: NonNullable<TtsVoiceOutputDriver["restartBridge"]>): void {
 		this.restartBridge = handler;
 	}
-
-	setBridgeOwnership(ownership: "owned" | "external" | "unknown"): void {
-		this.bridgeOwnership = ownership;
+	setReconnectFeed(handler: (signal?: AbortSignal) => Promise<boolean>): void {
+		this.reconnectFeed = handler;
 	}
-
+	setBridgeOwnership(value: "owned" | "external" | "unknown"): void {
+		this.bridgeOwnership = value;
+	}
+	setFactListener(handler: NonNullable<TtsVoiceOutputDriver["onFact"]>): void {
+		this.onFact = handler;
+	}
+	setResolutionListener(handler: (causeRef: string) => void): void {
+		this.onResolution = handler;
+	}
 	get isMuted(): boolean {
 		return this._muted;
 	}
-
 	get isOnline(): boolean {
 		return this._isOnline;
 	}
-
 	get currentTraceId(): string | null {
 		return this.activeTrace;
 	}
-
+	ownsSource(traceId: string): boolean {
+		return this.sources.has(traceId);
+	}
+	acceptsSource(traceId: string): boolean {
+		return this.sources.get(traceId)?.closed === false;
+	}
 	get currentSubmittedSegments(): number {
-		return this.activeTrace === this.deliveryTrace ? this.submitted : 0;
+		return this.activeTrace ? (this.sources.get(this.activeTrace)?.segments.size ?? 0) : 0;
 	}
-
+	submittedSegments(traceId: string): number {
+		return this.sources.get(traceId)?.segments.size ?? 0;
+	}
 	get deliveryTraceId(): string | null {
-		return this.deliveryTrace;
+		return (
+			[...this.sources.values()].find((s) => [...s.segments.values()].some((v) => !TERMINAL.has(v.state)))?.id ??
+			this.activeTrace
+		);
 	}
-
-	/** 是否还有交付未收束 —— 进度探测的存续条件。 */
 	get isDelivering(): boolean {
-		return this.speaking || this.facts.pendingSegments > 0;
+		return this.snapshot().pendingSegments > 0 || this.deliveryBarrier;
 	}
-
-	setOnline(online: boolean): void {
-		this._isOnline = online;
+	setOnline(value: boolean): void {
+		this._isOnline = value;
 	}
-
-	startTurn(turnNumber: number): string {
-		this.activeTrace = `turn_${turnNumber}_${Date.now()}`;
-		this.deliveryRevision++;
-		// 刻意不清账：上一轮可能还在念。账期切换推迟到本轮首次提交。
-		this.epochDirty = true;
+	private newSource(): Source {
+		this.pruneSources();
+		const seq = ++this.sourceSeq;
+		const source: Source = {
+			id: this.sessionId + ":source-" + seq,
+			seq,
+			nextIndex: 1,
+			closed: false,
+			sealed: false,
+			cancelled: false,
+			segments: new Map(),
+		};
+		this.sources.set(source.id, source);
+		return source;
+	}
+	private pruneSources(): void {
+		const latest = [...this.sources.values()].filter((source) => source.segments.size).at(-1)?.id;
+		for (const [id, source] of this.sources) {
+			if (
+				id !== latest &&
+				id !== this.activeTrace &&
+				!source.stopUnconfirmed &&
+				!source.sealUnconfirmed &&
+				source.closed &&
+				[...source.segments.values()].every((segment) => TERMINAL.has(segment.state))
+			)
+				this.sources.delete(id);
+		}
+	}
+	startTurn(_turnNumber: number): string {
+		return this.beginSource();
+	}
+	beginSource(_streamId?: string): string {
+		this.activeTrace = this.newSource().id;
 		return this.activeTrace;
 	}
-
-	/**
-	 * 提交一句并落账。调用方负责把投递失败翻译成静音降级。
-	 */
+	async endSource(traceId = this.activeTrace): Promise<void> {
+		if (!traceId) return;
+		const source = this.sources.get(traceId);
+		if (!source || source.sealed || source.cancelled) return;
+		source.closed = true;
+		try {
+			const submitted = [...source.segments.entries()]
+				.filter(([, segment]) => segment.state !== "rejected")
+				.map(([index]) => index);
+			if (submitted.length)
+				await this.client.turnEnd(source.id, source.generation, Math.max(...submitted), this.sessionId, this.epoch);
+			source.sealed = true;
+			source.sealUnconfirmed = false;
+		} catch (error) {
+			if (!source.cancelled) {
+				source.sealUnconfirmed = true;
+				this.barrierKinds.add("seal");
+				throw error;
+			}
+		}
+	}
 	async submitSegment(
 		text: string,
 		invocationId?: string,
 		metadata?: Record<string, unknown>,
-	): Promise<{ status: string; task_id?: string; reason?: string }> {
-		const traceId = this.activeTrace;
-		if (this.deliveryBarrier)
+		traceId = this.activeTrace,
+	): Promise<Outcome> {
+		const source = traceId ? this.sources.get(traceId) : undefined;
+		if (!source) return { status: "not_started", reason: "当前没有正文来源" };
+		return this.submit(source, text, invocationId, metadata);
+	}
+	private async submit(
+		source: Source,
+		text: string,
+		invocationId?: string,
+		metadata?: Record<string, unknown>,
+		signal?: AbortSignal,
+	): Promise<Outcome> {
+		if (this.maintenance || this._muted)
 			return {
-				status: "unknown",
-				task_id: `${traceId ?? "none"}:barrier`,
-				reason: "存在未确认的交付缺口，新来源不能越过屏障播放",
+				status: "not_started",
+				reason: this.maintenance ? "正在恢复或测试声音，台词未提交" : "当前已静音，台词未提交",
 			};
-		if (traceId !== null && this.poisonedTrace === traceId)
-			return { status: "rejected", task_id: `${traceId}:poisoned`, reason: "当前来源已被失败封闭，后续句子不再朗读" };
-		if (invocationId) {
-			const previous = this.invocationResults.get(invocationId);
-			if (previous) return previous;
-		}
-		if (!traceId) {
-			return { status: "skipped", task_id: undefined };
-		}
-
-		this.rotateEpochIfDirty(traceId);
-		const index = ++this.submitted;
-		this.segmentTexts.set(index, text);
-
-		// 提交即视为"在途"：桥侧还没回话之前，队列里已经有它了。
-		this.facts = {
-			...this.facts,
-			submittedSegments: this.submitted,
-			pendingSegments: this.facts.pendingSegments + 1,
-		};
-
-		const rollbackRejected = (): { status: string; task_id: string } => {
-			// A late response belongs to its captured trace, never to a newer delivery ledger.
-			if (this.deliveryTrace !== traceId) return { status: "rejected", task_id: `${traceId}:${index}` };
-			// 明确 HTTP/业务拒绝：回滚作者侧 pending 与文本账，避免状态栏永久卡在“待播”。
-			this.segmentTexts.delete(index);
-			this.submitted = Math.max(0, this.submitted - 1);
-			this.facts = {
-				...this.facts,
-				submittedSegments: this.submitted,
-				pendingSegments: Math.max(0, this.facts.pendingSegments - 1),
-				currentSegmentIndex: null,
-				currentSegmentText: undefined,
+		const result = this.admissionTail.then(() => this.performSubmit(source, text, invocationId, metadata, signal));
+		this.admissionTail = result.then(
+			() => undefined,
+			() => undefined,
+		);
+		return result;
+	}
+	private async performSubmit(
+		source: Source,
+		text: string,
+		invocationId?: string,
+		metadata?: Record<string, unknown>,
+		signal?: AbortSignal,
+	): Promise<Outcome> {
+		signal?.throwIfAborted();
+		if (invocationId && this.invocationResults.has(invocationId)) return this.invocationResults.get(invocationId)!;
+		if (this.maintenance || this._muted)
+			return {
+				status: "not_started",
+				reason: this.maintenance ? "正在恢复或测试声音，台词未提交" : "当前已静音，台词未提交",
 			};
-			this.deliveryRevision++;
-			return { status: "rejected", task_id: `${traceId}:${index}` };
-		};
-
+		if (this.deliveryBarrier)
+			return { status: "unknown", reason: "此前发声存在未确认缺口，台词未提交；可恢复声音或确认停止后改口" };
+		if (source.closed) return { status: "rejected", reason: "这段发声已经结束，后续内容未提交" };
+		if (!this.epoch) {
+			let connected: Record<string, unknown>;
+			try {
+				connected = await this.client.reconnect(this.sessionId);
+			} catch (error) {
+				source.closed = true;
+				this._isOnline = false;
+				this.lastError = { stage: "连接", reason: String(error), observedAt: Date.now() };
+				return { status: "not_started", reason: "连接发声服务失败，台词未提交：" + String(error) };
+			}
+			if (connected.status !== "reconnected" || typeof connected.epoch !== "string")
+				return { status: "not_started", reason: "没有取得本次发声的执行身份" };
+			signal?.throwIfAborted();
+			if (source.closed || this.maintenance || this._muted)
+				return { status: "not_started", reason: "台词在提交前已取消" };
+			this.epoch ??= connected.epoch;
+		}
+		const index = source.nextIndex++;
+		const taskId = source.id + ":" + index;
+		const segment: Segment = { text, state: "pending" };
+		source.segments.set(index, segment);
+		let outcome: Outcome;
 		try {
-			const result = await this.client.speak({
-				trace_id: traceId,
-				segment_id: `${traceId}:${index}`,
+			const payload = {
+				trace_id: source.id,
+				source_id: source.id,
+				source_seq: source.seq,
+				session_id: this.sessionId,
+				epoch: this.epoch,
+				segment_id: taskId,
 				index,
 				text,
 				invocation_id: invocationId,
 				metadata,
-				source_id: traceId,
-				epoch: this.epoch,
-			});
-			if (["failed", "rejected"].includes(result.status)) {
-				// 确定性失败：只 poison 本来源，后续独立来源可按顺序继续（§8.4）。
-				if (this.activeTrace === traceId) this.poisonedTrace = traceId;
-				const rejected = rollbackRejected();
-				if (invocationId) this.invocationResults.set(invocationId, rejected);
-				return rejected;
-			}
-			if (invocationId) this.invocationResults.set(invocationId, result);
-			return result;
-		} catch (error) {
-			if (!(error instanceof TtsSpeakError) || error.kind === "unknown") {
-				// 网络结果未知：保留 pending，在后续 probe 中等待物理事实；
-				// 全局屏障直到 interrupt 确认停止、epoch reset 或受管重启才解除（§10.2）。
-				this.deliveryBarrier = true;
-				const uncertain = {
-					status: "uncertain",
-					task_id: `${traceId}:${index}`,
-					reason: "提交结果未知，新来源不能越过缺口",
+				timeout_ms: this.longTimeoutMs,
+			};
+			const result = signal ? await this.client.speak(payload, signal) : await this.client.speak(payload);
+			if (result.status !== "accepted") {
+				segment.state = "rejected";
+				source.closed = true;
+				outcome = { status: "rejected", task_id: taskId, reason: result.reason ?? "Bridge 返回 " + result.status };
+			} else {
+				if (result.generation_id && !source.cancelled) source.generation = result.generation_id;
+				if (!TERMINAL.has(segment.state)) segment.state = "pending";
+				outcome = {
+					status: segment.state === "cancelled" || segment.state === "obsolete" ? "cancelled" : "accepted",
+					task_id: taskId,
 				};
-				if (invocationId) this.invocationResults.set(invocationId, uncertain);
-				return uncertain;
 			}
-			if (this.activeTrace === traceId) this.poisonedTrace = traceId;
-			return rollbackRejected();
+		} catch (error) {
+			if (TERMINAL.has(segment.state)) {
+				const settled = { status: segment.state === "completed" ? "accepted" : "cancelled", task_id: taskId };
+				if (invocationId) this.invocationResults.set(invocationId, settled);
+				return settled;
+			}
+			const rejected = error instanceof TtsSpeakError && error.kind === "rejected";
+			segment.state = rejected ? "rejected" : "unknown";
+			segment.uncertain = !rejected;
+			source.closed = true;
+			if (!rejected) this.barrierKinds.add("admission");
+			outcome = {
+				status: rejected ? "rejected" : "uncertain",
+				task_id: taskId,
+				reason: error instanceof Error ? error.message : String(error),
+			};
+			this.lastError = { stage: "提交", reason: outcome.reason!, observedAt: Date.now() };
 		}
+		if (invocationId) this.invocationResults.set(invocationId, outcome);
+		this.pruneSources();
+		return outcome;
 	}
-
-	/**
-	 * 唯一 IO 读点：把桥侧物理事实收回快照。
-	 * 探测失败时保留上一份已观测事实（陈旧但真实），不臆造"已停"或"已播完"。
-	 */
-	async probe(): Promise<void> {
-		if (this.probeInFlight) return this.probeInFlight;
-		const task = this.probeOnce();
-		this.probeInFlight = task;
-		try {
-			await task;
-		} finally {
-			if (this.probeInFlight === task) this.probeInFlight = null;
-		}
-	}
-
-	private async probeOnce(): Promise<void> {
-		const trace = this.deliveryTrace;
-		if (!this._isOnline || !trace) return;
-		const revision = this.deliveryRevision;
-
-		const state = await this.client.getSubtitleState(trace);
-		if (!state) return;
-		if (revision !== this.deliveryRevision || trace !== this.deliveryTrace) return;
-
-		// 归纳结果是**完整**的事实集（含作者侧句数），直接替换；
-		// 片段式合并才是那个让人漏字段的写法。
-		const { speaking, ...facts } = summarizeProgress(state, this.submitted, this.segmentTexts);
-		this.speaking = speaking;
-		this.facts = facts;
-	}
-
-	snapshot(): DeliverySnapshot {
-		return { online: this._isOnline, muted: this._muted, ...this.facts };
-	}
-
-	async setMuted(muted: boolean): Promise<{ success: boolean; isOnline?: boolean; reason?: string }> {
-		if (!muted) {
-			// unmute 顺带探活：不可用是连接事实，不能写进静音意志（§4.3）。
+	async speak(text: string, invocationId?: string, replace = false, signal?: AbortSignal): Promise<Outcome> {
+		signal?.throwIfAborted();
+		const parser = new StreamParser();
+		const normalized = [...parser.feed(text), ...parser.flush()].join("").trim();
+		if (!hasPronounceableContent(normalized)) return { status: "not_started", reason: "台词没有可朗读内容" };
+		if (invocationId && this.invocationResults.has(invocationId)) return this.invocationResults.get(invocationId)!;
+		if (this.maintenance || this._muted)
+			return {
+				status: "not_started",
+				reason: this.maintenance ? "正在恢复或测试声音，台词未提交" : "当前已静音，台词未提交",
+			};
+		if (!this._isOnline) {
 			const readiness = await this.client.compatibility();
-			if (!readiness.compatible) {
-				this._isOnline = false;
+			if (!readiness.compatible)
+				return { status: "not_started", reason: readiness.reason ?? "发声服务不可用，台词未提交" };
+			this._isOnline = true;
+		}
+		if (replace) {
+			const stopped = await this.interrupt();
+			if (stopped.outcome === "unknown" || stopped.outcome === "failed")
+				return { status: stopped.outcome, reason: stopped.reason };
+		}
+		signal?.throwIfAborted();
+		const source = this.newSource();
+		const result = await this.submit(source, normalized, invocationId, undefined, signal);
+		if (result.status === "accepted" || result.status === "uncertain" || result.status === "unknown") {
+			try {
+				await this.endSource(source.id);
+			} catch (error) {
+				this.barrierKinds.add("seal");
+				const unknown = {
+					status: "unknown",
+					task_id: result.task_id,
+					reason:
+						(result.status === "accepted" ? "台词已受理，结束确认失败：" : "台词的提交与结束结果尚未确认：") +
+						String(error),
+				};
+				if (invocationId) this.invocationResults.set(invocationId, unknown);
+				return unknown;
+			}
+		}
+		return result;
+	}
+	snapshot(): DeliverySnapshot {
+		const entries = [...this.sources.values()].flatMap((s) =>
+			[...s.segments.entries()].map(([index, segment]) => ({ index, segment })),
+		);
+		const playing = entries.find((v) => v.segment.state === "playing");
+		return {
+			online: this._isOnline,
+			muted: this._muted,
+			submittedSegments: entries.length,
+			spokenSegments: entries.filter((v) => v.segment.state === "completed").length,
+			pendingSegments: entries.filter((v) => !TERMINAL.has(v.segment.state) && v.segment.state !== "unknown").length,
+			failedSegments: entries.filter((v) => v.segment.state === "failed" || v.segment.state === "rejected").length,
+			cancelledSegments: entries.filter((v) => v.segment.state === "cancelled" || v.segment.state === "obsolete")
+				.length,
+			unknownSegments: entries.filter((v) => v.segment.state === "unknown").length,
+			currentSegmentIndex: playing?.index ?? null,
+			currentSegmentText: playing?.segment.text,
+			committedCharEnd: playing?.segment.revealed,
+			observedAt: this.observedAt,
+			stopUnconfirmed: this.barrierKinds.has("stop"),
+		};
+	}
+	receive(event: PlaybackEvent): void {
+		const source = this.sources.get(event.trace_id);
+		if (!source || (source.generation && event.generation_id && source.generation !== event.generation_id)) return;
+		const segment = source.segments.get(event.segment_index ?? 0);
+		if (!segment || TERMINAL.has(segment.state)) return;
+		const detail = event.detail ?? {};
+		if (detail.stop_outcome === "unknown") {
+			source.stopUnconfirmed = true;
+			this.barrierKinds.add("stop");
+		}
+		if (typeof detail.revealed_count === "number") segment.revealed = detail.revealed_count;
+		if (event.kind === "failed" || event.kind === "cancelled") {
+			segment.state = event.kind === "failed" ? "failed" : "cancelled";
+			source.closed = true;
+			for (const other of source.segments.values())
+				if (other !== segment && !TERMINAL.has(other.state)) other.state = "cancelled";
+			if (event.kind === "failed") {
+				this.lastError = { stage: "合成或播放", reason: String(detail.error ?? "失败"), observedAt: Date.now() };
+				this.onFact?.({
+					kind: "delivery_failed",
+					causeRef: source.id,
+					summary: "这段发声未完成：" + this.lastError.reason,
+				});
+			}
+		} else if (detail.playback_completed === true || event.kind === "completed") segment.state = "completed";
+		else if (detail.playback_started === true || event.kind === "playback_started") segment.state = "playing";
+		else if (event.kind === "synthesizing") segment.state = "synthesizing";
+		this.observedAt = Date.now();
+		if (TERMINAL.has(segment.state)) this.updateReceipt(source, event.segment_index ?? 0, segment);
+		if (source.sealed && [...source.segments.values()].every((s) => s.state === "completed"))
+			this.onResolution?.(source.id);
+	}
+	private updateReceipt(source: Source, index: number, segment: Segment): void {
+		const taskId = source.id + ":" + index;
+		for (const [invocation, receipt] of this.invocationResults) {
+			if (receipt.task_id !== taskId) continue;
+			if (segment.state === "completed")
+				this.invocationResults.set(invocation, { status: "completed", task_id: taskId });
+			else if (segment.state === "failed")
+				this.invocationResults.set(invocation, { status: "failed", task_id: taskId, reason: "这次调用的台词未能播完" });
+			else if (segment.state === "cancelled" || segment.state === "obsolete")
+				this.invocationResults.set(invocation, {
+					status: "cancelled",
+					task_id: taskId,
+					reason: segment.uncertain ? "剩余发声已取消，此前是否完整播放未确认" : "剩余发声已取消",
+				});
+		}
+	}
+	async probe(signal?: AbortSignal): Promise<void> {
+		if (signal) return this.probeOnce(signal);
+		if (this.probeInFlight) return this.probeInFlight;
+		this.probeInFlight = this.probeOnce();
+		try {
+			await this.probeInFlight;
+		} finally {
+			this.probeInFlight = undefined;
+		}
+	}
+	private async probeOnce(signal?: AbortSignal): Promise<void> {
+		for (const source of this.sources.values()) {
+			if (![...source.segments.values()].some((s) => !TERMINAL.has(s.state))) continue;
+			signal?.throwIfAborted();
+			const state = await this.client.getSubtitleState(source.id, signal);
+			signal?.throwIfAborted();
+			if (!state || state.trace_id !== source.id) continue;
+			for (const [index, segment] of source.segments) {
+				if (TERMINAL.has(segment.state)) continue;
+				const observed = state.segments.find((s) => s.segment_index === index);
+				if (!observed) continue;
+				if (observed.stop_outcome === "unknown") {
+					source.stopUnconfirmed = true;
+					this.barrierKinds.add("stop");
+				}
+				if (observed.state && TERMINAL.has(observed.state)) {
+					segment.state = observed.state;
+					if (observed.state === "failed") {
+						source.closed = true;
+						this.lastError = { stage: "合成或播放", reason: observed.error ?? "失败", observedAt: Date.now() };
+						this.onFact?.({
+							kind: "delivery_failed",
+							causeRef: source.id,
+							summary: "这段发声未完成：" + (observed.error ?? "合成或播放失败"),
+						});
+					}
+				} else if (observed.playback_completed || state.completed_segments?.some((s) => s.index === index))
+					segment.state = "completed";
+				else if (observed.playback_started || state.current_speaking?.index === index) segment.state = "playing";
+				segment.revealed = observed.revealed_count;
+				if (TERMINAL.has(segment.state)) this.updateReceipt(source, index, segment);
+			}
+			this.observedAt = Date.now();
+			if (source.sealed && [...source.segments.values()].every((s) => s.state === "completed"))
+				this.onResolution?.(source.id);
+		}
+		if (![...this.sources.values()].some((s) => [...s.segments.values()].some((v) => v.state === "unknown")))
+			this.barrierKinds.delete("admission");
+	}
+	async interrupt(expectedTraceId?: string): Promise<InterruptResult> {
+		const targets = [...this.sources.values()].filter(
+			(s) =>
+				(!expectedTraceId || s.id === expectedTraceId) &&
+				(!s.closed ||
+					s.stopUnconfirmed ||
+					s.sealUnconfirmed ||
+					[...s.segments.values()].some((v) => !TERMINAL.has(v.state))),
+		);
+		if (!targets.length)
+			return !expectedTraceId && this.barrierKinds.has("stop")
+				? { outcome: "unknown", breakpoint: null, reason: "此前停止尚未确认，不能确认当前已经无声" }
+				: { outcome: "no_op", breakpoint: null, reason: "当前没有属于这个来源的声音" };
+		for (const source of targets) {
+			source.closed = true;
+			source.cancelled = true;
+		}
+		let breakpoint: PlaybackBreakpoint | null = null;
+		const unknown: string[] = [];
+		const failed: string[] = [];
+		for (const source of targets) {
+			if (!source.segments.size) continue;
+			try {
+				const result = await this.client.cancelTrace(source.id, "immediate", this.sessionId, this.epoch);
+				if (result.stop_outcome !== "not_playing" && result.playback_stopped !== true) {
+					source.stopUnconfirmed = true;
+					this.barrierKinds.add("stop");
+					unknown.push("取消已请求，但这段声音是否停止尚未确认");
+					continue;
+				}
+				if (result.status !== "cancelled") {
+					this.barrierKinds.add("stop");
+					failed.push("停止请求被拒绝");
+					continue;
+				}
+				const active = [...source.segments.entries()].find(([, s]) => s.state === "playing");
+				source.stopUnconfirmed = false;
+				source.sealUnconfirmed = false;
+				if (active)
+					breakpoint = {
+						traceId: source.id,
+						segmentIndex: active[0],
+						committedCharEnd: active[1].revealed ?? 0,
+						segmentText: active[1].text,
+					};
+				for (const [index, segment] of source.segments) {
+					if (!TERMINAL.has(segment.state)) segment.state = "cancelled";
+					this.updateReceipt(source, index, segment);
+				}
+			} catch (error) {
+				source.stopUnconfirmed = true;
+				this.barrierKinds.add("stop");
+				unknown.push(String(error));
+			}
+		}
+		if (unknown.length) return { outcome: "unknown", breakpoint: null, reason: unknown.join("；") };
+		if (failed.length) return { outcome: "failed", breakpoint: null, reason: failed.join("；") };
+		if (!expectedTraceId) this.barrierKinds.delete("stop");
+		if (![...this.sources.values()].some((source) => source.sealUnconfirmed)) this.barrierKinds.delete("seal");
+		if (![...this.sources.values()].some((s) => [...s.segments.values()].some((v) => v.state === "unknown")))
+			this.barrierKinds.delete("admission");
+		return targets.some((source) => source.segments.size > 0)
+			? { outcome: "interrupted", breakpoint }
+			: { outcome: "no_op", breakpoint: null, reason: "当前没有声音需要停止" };
+	}
+	async setMuted(muted: boolean): Promise<{ success: boolean; isOnline?: boolean; reason?: string; status?: string }> {
+		this._muted = muted;
+		if (muted) {
+			const result = await this.interrupt();
+			return {
+				success: result.outcome !== "unknown" && result.outcome !== "failed",
+				isOnline: this._isOnline,
+				status: result.outcome === "unknown" || result.outcome === "failed" ? result.outcome : "succeeded",
+				...(result.outcome === "unknown" || result.outcome === "failed" ? { reason: result.reason } : {}),
+			};
+		}
+		const readiness = await this.client.compatibility();
+		this._isOnline = readiness.compatible;
+		return { success: readiness.compatible, isOnline: readiness.compatible, reason: readiness.reason };
+	}
+	async attemptAutoRecovery(): Promise<void> {
+		if (this._isOnline) return;
+		const readiness = await this.client.compatibility();
+		this._isOnline = readiness.compatible;
+		if (readiness.compatible) await this.probe();
+	}
+	async inspect(): Promise<Record<string, unknown>> {
+		const [health, compatibility] = await Promise.all([this.client.health(), this.client.compatibility()]);
+		return {
+			status: health ? "observed" : "unknown",
+			reachable: !!health,
+			compatible: compatibility.compatible,
+			ownership: { bridge: this.bridgeOwnership, vendor: health?.vendor_ownership ?? "unknown" },
+			health,
+			driver: {
+				...this.snapshot(),
+				barrier: this.deliveryBarrier,
+				maintenance: this.maintenance,
+				lastError: this.lastError,
+			},
+			availableActions: [
+				...(compatibility.compatible ? [{ action: "recover" }] : []),
+				...(compatibility.compatible
+					? [
+							{ action: "test", scope: "synthesis" },
+							...(!this._muted && health?.player_ready === true ? [{ action: "test", scope: "playback" }] : []),
+						]
+					: []),
+				...(this.bridgeOwnership === "owned" ? [{ action: "recover", operation: "restart", target: "bridge" }] : []),
+				...(health?.vendor_ownership === "owned"
+					? [{ action: "recover", operation: "restart", target: "vendor" }]
+					: []),
+			],
+			reason: compatibility.reason,
+		};
+	}
+	async recover(
+		operation: "auto" | "reconnect" | "reset" | "restart" = "auto",
+		invocationId?: string,
+		target?: "bridge" | "vendor",
+		signal?: AbortSignal,
+	): Promise<Record<string, unknown>> {
+		signal = signal
+			? AbortSignal.any([signal, AbortSignal.timeout(this.longTimeoutMs)])
+			: AbortSignal.timeout(this.longTimeoutMs);
+		signal?.throwIfAborted();
+		if (this.maintenance) return { status: "not_started", reason: "已有声音维护正在执行" };
+		this.maintenance = true;
+		const deadline = Date.now() + this.longTimeoutMs;
+		const remaining = () => {
+			signal?.throwIfAborted();
+			const budget = deadline - Date.now();
+			if (budget <= 0) throw new Error("声音维护超时");
+			return budget;
+		};
+		let stoppedOldWork = false;
+		let controlAttempted = false;
+		let ownedBridgeRestarted = false;
+		try {
+			if (operation === "restart") {
+				controlAttempted = true;
+				const result =
+					target === "vendor"
+						? await this.client.restartVendor(remaining(), signal)
+						: this.restartBridge
+							? await this.restartBridge(signal, remaining())
+							: { status: "not_started", reason: "没有这项服务的进程管理句柄，请由启动它的程序重启" };
+				if (result.status !== "succeeded" && result.status !== "restarted") {
+					if (result.status === "unknown") this.barrierKinds.add("stop");
+					return { operation, target, ...result };
+				}
+				ownedBridgeRestarted = target === "bridge";
+			}
+			const readiness = await this.client.compatibility(signal);
+			signal?.throwIfAborted();
+			if (!readiness.compatible) return { operation, status: "not_started", reason: readiness.reason };
+			const connected = await this.client.reconnect(this.sessionId, signal);
+			if (connected.status !== "reconnected" || typeof connected.epoch !== "string")
+				return { operation, status: "unknown", reason: "重新连接后没有取得执行身份" };
+			if (this.epoch && this.epoch !== connected.epoch && !ownedBridgeRestarted) {
+				this.barrierKinds.add("stop");
 				return {
-					success: false,
-					isOnline: false,
-					reason: readiness.reachable
-						? `伴生服务协议不兼容：${readiness.reason ?? "能力握手失败"}`
-						: "伴生服务未连接（端口 8102 无响应）",
+					operation,
+					status: "unknown",
+					reason: "服务的执行身份发生变化；旧服务的停止和旧台词结果尚未确认，请由启动它的程序确认旧进程已退出",
 				};
 			}
 			this._isOnline = true;
-			this._muted = false;
-			return { success: true, isOnline: true };
+			this.epoch = connected.epoch;
+			const subscribed = this.reconnectFeed ? await this.reconnectFeed(signal) : undefined;
+			await this.probe(signal);
+			if (operation === "reset" || this.deliveryBarrier || operation === "restart") {
+				controlAttempted = true;
+				const reset = await this.client.reset(this.sessionId, this.epoch, undefined, invocationId, remaining(), signal);
+				if (reset.status !== "reset" || typeof reset.epoch !== "string") {
+					if (reset.status !== "failed" && reset.status !== "not_started") this.barrierKinds.add("stop");
+					return { operation, ...reset };
+				}
+				this.epoch = reset.epoch;
+				this.barrierKinds.clear();
+				stoppedOldWork = true;
+				for (const source of this.sources.values()) {
+					source.closed = true;
+					source.cancelled = true;
+					source.stopUnconfirmed = false;
+					source.sealUnconfirmed = false;
+					for (const [index, segment] of source.segments) {
+						if (!TERMINAL.has(segment.state)) segment.state = "cancelled";
+						this.updateReceipt(source, index, segment);
+					}
+				}
+			}
+			return {
+				operation,
+				status: "succeeded",
+				connection: "connected",
+				stoppedOldWork,
+				feedback: subscribed === false ? "polling" : subscribed === true ? "subscribed" : "not_attached",
+				delivery: this.deliveryBarrier ? "unknown" : "reconciled",
+				verification: "not_tested",
+			};
+		} catch (error) {
+			if (controlAttempted) this.barrierKinds.add("stop");
+			return { operation, status: "unknown", reason: String(error) };
+		} finally {
+			this.maintenance = false;
 		}
-
+	}
+	async test(scope: "synthesis" | "playback", signal?: AbortSignal): Promise<Record<string, unknown>> {
+		const callerSignal = signal;
+		signal = signal
+			? AbortSignal.any([signal, AbortSignal.timeout(this.longTimeoutMs)])
+			: AbortSignal.timeout(this.longTimeoutMs);
+		if (this.maintenance || (scope === "playback" && this._muted))
+			return {
+				scope,
+				status: "not_started",
+				reason: this._muted ? "当前已静音，未播放测试音" : "已有声音维护正在执行",
+			};
+		this.maintenance = true;
+		const deadline = Date.now() + this.longTimeoutMs;
+		const source = scope === "playback" ? this.newSource() : undefined;
+		try {
+			const compatibility = await this.client.compatibility(signal);
+			signal.throwIfAborted();
+			if (!compatibility.compatible) return { scope, status: "not_started", reason: compatibility.reason };
+			signal?.throwIfAborted();
+			if (source?.cancelled || (scope === "playback" && this._muted))
+				return { scope, status: "not_started", reason: "当前已静音或测试已取消，未播放测试音" };
+			if (source && !this.epoch) {
+				const connected = await this.client.reconnect(this.sessionId, signal);
+				if (source.cancelled || this._muted) return { scope, status: "not_started", reason: "测试在提交前已取消" };
+				if (typeof connected.epoch !== "string")
+					return { scope, status: "not_started", reason: "未取得播放测试的执行身份" };
+				this.epoch ??= connected.epoch;
+			}
+			const budget = deadline - Date.now();
+			if (budget <= 0) return { scope, status: "failed", reason: "测试超时" };
+			if (source) {
+				source.segments.set(1, { text: "语音测试。", state: "pending" });
+				source.nextIndex = 2;
+				source.sealed = true;
+			}
+			const result = await this.client.test(scope, this.sessionId, budget, signal, this.epoch, source?.id);
+			if (source) {
+				source.closed = true;
+				if (!source.cancelled)
+					source.segments.get(1)!.state =
+						result.status === "succeeded"
+							? "completed"
+							: result.status === "cancelled"
+								? "cancelled"
+								: result.status === "not_started"
+									? "rejected"
+									: result.status === "failed"
+										? "failed"
+										: "unknown";
+				if (result.status === "unknown") {
+					source.stopUnconfirmed = true;
+					this.barrierKinds.add("stop");
+				}
+			}
+			if (!["succeeded", "failed", "cancelled", "unknown", "not_started"].includes(String(result.status)))
+				return { scope, status: "unknown", reason: "服务没有返回可识别的测试结论" };
+			if (
+				result.status === "succeeded" &&
+				((scope === "playback" && result.playback_completed !== true) ||
+					(scope === "synthesis" && !(typeof result.audio_bytes === "number" && result.audio_bytes > 0)))
+			)
+				return { scope, status: "unknown", reason: "服务返回了成功，但缺少这项测试的完成证据" };
+			return { scope, ...result };
+		} catch (error) {
+			if (source?.segments.size) {
+				const stopped = await this.interrupt(source.id);
+				return {
+					scope,
+					status:
+						stopped.outcome === "unknown" || stopped.outcome === "failed"
+							? "unknown"
+							: callerSignal?.aborted
+								? "cancelled"
+								: "failed",
+					reason: String(error) + ("reason" in stopped && stopped.reason ? "；" + stopped.reason : ""),
+				};
+			}
+			return { scope, status: callerSignal?.aborted ? "cancelled" : "unknown", reason: String(error) };
+		} finally {
+			if (source) source.closed = true;
+			this.maintenance = false;
+		}
+	}
+	async dispose(): Promise<void> {
 		this._muted = true;
-		return { success: true, isOnline: this._isOnline };
-	}
-
-	async interrupt(expectedTraceId?: string): Promise<InterruptResult> {
-		// expectedTraceId 的语义是物理播放身份，不是当前正在生成文本的 activeTrace。
-		const currentPlaybackTarget = this.deliveryTrace ?? this.activeTrace;
-		if (expectedTraceId && currentPlaybackTarget !== expectedTraceId) {
-			return { outcome: "no_op", breakpoint: null, reason: "目标播放轮次已不是当前交付轮次" };
-		}
-
-		const traceToCancel = expectedTraceId ?? this.deliveryTrace ?? this.activeTrace;
-		if (!traceToCancel) {
-			return { outcome: "no_op", breakpoint: null, reason: "当前没有可打断的语音" };
-		}
-		this.deliveryRevision++;
-
-		try {
-			const cancellation = await this.client.cancelTrace(traceToCancel, "immediate");
-			if (cancellation.status !== "cancelled") {
-				return { outcome: "failed", breakpoint: null, reason: `Bridge 拒绝打断: ${cancellation.status}` };
-			}
-			if (cancellation.playback_stopped === false) {
-				if (cancellation.cancelled_task_count === 0) {
-					return { outcome: "no_op", breakpoint: null, reason: "当前没有可打断的语音" };
-				}
-				// 任务已取消但声卡停止未确认：不能把受理当作停止（§10.1）。
-				return { outcome: "unknown", breakpoint: null, reason: "任务已取消，但声卡停止未获确认" };
-			}
-			const state = await this.client.getSubtitleState(traceToCancel);
-			if (!state && cancellation.playback_stopped) {
-				return { outcome: "unknown", breakpoint: null, reason: "声卡停止已请求，但无法读取播放断点" };
-			}
-
-			const interrupted = this.resolveBreakpoint(traceToCancel, state);
-			// 掐断即清空在途：队列事实归零，但要如实标明这次是"被打断"而不是"播完"。
-			// 桥确认了停止：本来源封闭、屏障解除，新来源可以从干净状态开始（§10.2 路径1）。
-			this.speaking = false;
-			this.poisonedTrace = null;
-			this.deliveryBarrier = false;
-			this.facts = {
-				...this.facts,
-				pendingSegments: 0,
-				currentSegmentIndex: null,
-				currentSegmentText: undefined,
-				committedCharEnd: interrupted?.committedCharEnd,
-			};
-			return { outcome: "interrupted", breakpoint: interrupted };
-		} catch (error) {
-			return {
-				outcome: "unknown",
-				breakpoint: null,
-				reason: error instanceof Error ? error.message : String(error),
-			};
-		}
-	}
-
-	async speak(
-		text: string,
-		invocationId?: string,
-		replace = false,
-	): Promise<{ status: string; task_id?: string; reason?: string }> {
-		// 直发路径不经 StreamParser 状态机，全角括注在此剥离（与流式路径同一裁定）
-		const normalized = stripParentheticals(text).trim();
-		if (!normalized) return { status: "rejected", reason: "台词为空" };
-		// 幂等性必须包住 replace：同一调用的重试不得先打断已经存在的声音。
-		if (invocationId) {
-			const previous = this.invocationResults.get(invocationId);
-			if (previous) return previous;
-		}
-		if (this._muted) return { status: "rejected", reason: "当前已静音" };
-		if (!this._isOnline) return { status: "unknown", reason: "发声驱动离线" };
-		if (replace) {
-			const interrupted = await this.interrupt();
-			if (interrupted.outcome === "unknown") return { status: "unknown", reason: interrupted.reason };
-			if (interrupted.outcome === "failed") return { status: "failed", reason: interrupted.reason };
-		}
-		if (!this.activeTrace) this.startTurn(++this.manualTraceSeq);
-		return await this.submitSegment(normalized, invocationId);
-	}
-
-	/**
-	 * 自动恢复探测（turn_start 触发，fire-and-forget）。
-	 *
-	 * 缺口：一次瞬时网络抖动会置 deliveryBarrier + offline，而全部自动路径
-	 * （ensureProgressPolling / probeOnce）都被 offline 短路——没有人工干预 TTS 永久哑。
-	 * 修复语义：桥可达 = 连接事实恢复（§4.3：online 是连接事实，不是用户偏好）；
-	 * 存在交付缺口时以受管 reset 换新账期收束（§10.2 路径2）——旧 trace 的不确定性
-	 * 由 epoch 屏障隔离，新账期从干净状态开始。与手动 recover 的差别只在触发时机。
-	 */
-	async attemptAutoRecovery(): Promise<void> {
-		if (this._isOnline && !this.deliveryBarrier) return;
-		try {
-			const health = await this.client.health();
-			if (!health) return; // 桥不可达：这一拍没有新事实，下回合再试
-			if (this.deliveryBarrier) {
-				await this.recover("reset");
-			} else {
-				this._isOnline = true;
-			}
-		} catch {
-			// 探测失败即这一拍没有新事实
-		}
-	}
-
-	async inspect(): Promise<Record<string, unknown>> {
-		const [health, compatibility] = await Promise.all([this.client.health(), this.client.compatibility()]);
-		if (!health) {
-			return {
-				status: "unknown",
-				reachable: false,
-				ownership: { bridge: this.bridgeOwnership, vendor: "unknown" },
-				reason: "Bridge health 不可达",
-			};
-		}
-		return {
-			status: compatibility.compatible ? "observed" : "unknown",
-			reachable: true,
-			compatible: compatibility.compatible,
-			missingPaths: compatibility.missingPaths,
-			ownership: { bridge: this.bridgeOwnership, vendor: health.vendor_ownership ?? "unknown" },
-			health,
-			...(compatibility.compatible ? {} : { reason: compatibility.reason ?? "Bridge 协议不兼容" }),
-		};
-	}
-
-	async recover(
-		operation: "reconnect" | "reset" | "restart",
-		invocationId?: string,
-		target?: "bridge" | "vendor",
-	): Promise<Record<string, unknown>> {
-		const sessionId = this.deliveryTrace ?? this.activeTrace ?? "uina-default";
-		try {
-			if (operation === "reconnect") {
-				const result = await this.client.reconnect(sessionId);
-				if (typeof result.epoch === "string") this.epoch = result.epoch;
-				// 重连成功即恢复连接事实：离线降级由此解除，无需用户重新 unmute（§7.3）。
-				this._isOnline = true;
-				return { operation, ...result };
-			}
-			if (operation === "restart") {
-				if (target === "vendor") return { operation, target, ...(await this.client.restartVendor()) };
-				if (!this.restartBridge) {
-					const ownership = this.bridgeOwnership;
-					return {
-						operation,
-						target,
-						status: "not_started",
-						ownership,
-						reason:
-							ownership === "external" ? "Bridge 不是当前扩展明确拥有的进程" : "Bridge 所有权未确认，不能尝试重启",
-					};
-				}
-				const restarted = await this.restartBridge();
-				if (restarted.status !== "succeeded") {
-					this.epochDirty = true;
-					return { operation, target, ...restarted };
-				}
-				// Bridge 进程重建后，旧 session/epoch 不能直接复用；先重新协商，
-				// 再允许下一次提交跨过新 epoch 屏障。
-				const reconnected = await this.client.reconnect(sessionId);
-				if (reconnected.status !== "reconnected" || typeof reconnected.epoch !== "string") {
-					this.epochDirty = true;
-					return {
-						operation,
-						target,
-						status: "unknown",
-						restart: restarted,
-						reconnect: reconnected,
-						reason: "Bridge 已重启，但新 epoch 未确认",
-					};
-				}
-				this.epoch = reconnected.epoch;
-				this.epochDirty = true;
-				this.poisonedTrace = null;
-				this.deliveryBarrier = false;
-				this._isOnline = true;
-				return { operation, target, ...restarted, reconnect: reconnected };
-			}
-			const result = await this.client.reset(sessionId, this.epoch, undefined, invocationId);
-			if (result.status === "unknown" || result.status === "failed") this.epochDirty = true;
-			if (typeof result.epoch === "string" && result.status === "reset") {
-				this.epoch = result.epoch;
-				this.poisonedTrace = null;
-				// epoch reset 是 unknown 屏障的解除路径之一（§10.2 路径2）。
-				this.deliveryBarrier = false;
-				this._isOnline = true;
-			}
-			return { operation, ...result };
-		} catch (error) {
-			if (operation === "restart") this.epochDirty = true;
-			return { operation, status: "unknown", reason: error instanceof Error ? error.message : String(error) };
-		}
-	}
-
-	async test(scope: "synthesis" | "playback"): Promise<Record<string, unknown>> {
-		if (scope === "playback" && this._muted)
-			return { scope, status: "not_started", reason: "当前已静音；不会自动解除静音执行播放测试" };
-		try {
-			return { scope, ...(await this.client.test(scope, this.deliveryTrace ?? this.activeTrace ?? "uina-default")) };
-		} catch (error) {
-			return { scope, status: "unknown", reason: error instanceof Error ? error.message : String(error) };
-		}
-	}
-
-	/** 从字幕状态里认出"停在哪一句的哪个字"，并把作者侧文本补回去。 */
-	private resolveBreakpoint(
-		traceId: string,
-		state: Awaited<ReturnType<TtsBridgeClient["getSubtitleState"]>>,
-	): PlaybackBreakpoint | null {
-		const segments = state?.segments ?? [];
-		if (segments.length === 0) return null;
-
-		const activeSeg =
-			segments.find((s) => s.playback_started === true && s.playback_completed !== true) ??
-			[...segments].reverse().find((s) => (s.revealed_text?.length ?? 0) > 0);
-
-		if (!activeSeg) return null;
-
-		const index = activeSeg.segment_index ?? 0;
-		const committed = activeSeg.revealed_count ?? activeSeg.revealed_text?.length ?? 0;
-		const segmentText = this.segmentTexts.get(index);
-
-		return {
-			traceId,
-			segmentIndex: index,
-			committedCharEnd: committed,
-			...(segmentText !== undefined ? { segmentText } : {}),
-		};
-	}
-
-	/** 新账期：把作者侧计数与在途队列交给本轮。 */
-	private rotateEpochIfDirty(traceId: string): void {
-		if (!this.epochDirty) {
-			this.deliveryTrace = traceId;
-			return;
-		}
-		this.epochDirty = false;
-		this.submitted = 0;
-		this.segmentTexts.clear();
-		this.deliveryTrace = traceId;
-		this.speaking = false;
-		this.facts = EMPTY_FACTS;
+		const stopped = await this.interrupt();
+		await this.admissionTail;
+		if (stopped.outcome === "unknown" || stopped.outcome === "failed") throw new Error(stopped.reason);
 	}
 }

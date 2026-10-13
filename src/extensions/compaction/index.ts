@@ -38,7 +38,11 @@ interface StreamMessageView {
 }
 
 export function isRuntimePerception(message: Pick<StreamMessageView, "context">): boolean {
-	return message.context?.kind === "runtime.perception";
+	const source = message.context?.input?.source;
+	return (
+		message.context?.kind === "runtime.perception" ||
+		(source?.kind === "runtime" && source.origin === "internal" && source.type === "runtime.perception")
+	);
 }
 
 export function filterCompactionMessages<T extends StreamMessageView>(messages: readonly T[]): T[] {

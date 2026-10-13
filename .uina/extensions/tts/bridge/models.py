@@ -187,6 +187,7 @@ class SegmentRecord:
 class GenerationSession:
     trace_id: str
     generation_id: int
+    submission_closed: bool = False
     next_play_index: int = 1
     next_issue_index: int = 1
     expected_end_index: int | None = None

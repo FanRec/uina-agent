@@ -11,29 +11,37 @@ export * from "./perception.js";
 export * from "./preferences.js";
 
 export default function activate(pi: ExtensionAPI): void {
-  const session = new VoiceSession(pi);
-  const perception = new VoicePerception();
+	const session = new VoiceSession(pi);
+	const perception = new VoicePerception();
 
-  (pi as ExtensionAPI & { registerService?: ExtensionAPI["registerService"] }).registerService?.("voice_perception:record", async (input: { fact?: unknown }) => {
-    const fact = input?.fact as import("./perception.js").VoiceFact | undefined;
-    if (!fact || typeof fact.summary !== "string") return { status: "not_started" };
-    return { status: "recorded", candidate: perception.record(fact) };
-  });
+	(pi as ExtensionAPI & { registerService?: ExtensionAPI["registerService"] }).registerService?.(
+		"voice_perception:record",
+		async (input: { fact?: unknown; causeRef?: string; resolved?: boolean }) => {
+			if (input?.resolved && input.causeRef) {
+				perception.resolve(input.causeRef);
+				return { status: "resolved" };
+			}
+			const fact = input?.fact as import("./perception.js").VoiceFact | undefined;
+			if (!fact || typeof fact.summary !== "string") return { status: "not_started" };
+			return { status: "recorded", candidate: perception.record(fact, input.causeRef) };
+		},
+	);
 
-  // 大模型门面工具：Uina 调用 voice action（speak/interrupt/status/manage）的唯一入口。
-  pi.registerTool(createVoiceTool(session));
+	// 大模型门面工具：Uina 调用 voice action（speak/interrupt/status/manage）的唯一入口。
+	pi.registerTool(createVoiceTool(session));
 
-  pi.onHook("turn.transformContext", (projection) => ({ projection: perception.transform(projection) }), {
-    tail: true,
-  });
+	pi.onHook("turn.transformContext", (projection) => ({ projection: perception.transform(projection) }), {
+		tail: true,
+	});
 
-  pi.on("turn_end", () => {
-    perception.clear();
-  });
-
-  pi.on("turn_aborted", () => {
-    perception.clear();
-    void session.interrupt();
-  });
+	pi.onHook("turn.preflight", ({ projection }) => {
+		perception.prepare(projection);
+		return {};
+	});
+	pi.on("output_start", () => {
+		perception.consume();
+	});
+	pi.on("tool_call", () => {
+		perception.consume();
+	});
 }
-

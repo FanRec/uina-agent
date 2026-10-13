@@ -34,6 +34,13 @@ class Player:
     def start(self): pass
     def stop(self): pass
     def cancel_all(self): pass
+    def start_stream(self, **kwargs): self.is_playing = True
+    resume_or_start_stream = start_stream
+    def feed(self, data): pass
+    def finish_stream(self): self.is_playing = False
+    def wait_until_drained(self, timeout): return True
+    def stream_stats(self): return {"playback_started": True, "playback_completed": True}
+    def play_file_as_pcm_and_wait(self, **kwargs): return True
 
 
 @pytest.fixture
@@ -156,13 +163,13 @@ def test_synthesis_test_executes_vendor_and_validates_audio(service):
     result = service.test("synthesis", "test-session")
     assert result["status"] == "succeeded"
     assert result["duration_ms"] > 0
-    assert result["sample_rate"] == 8000
+    assert result["sample_rate"] == service.config.streaming.sample_rate
+    assert result["path"] == "streaming"
     assert service.health()["last_verification"]["scope"] == "synthesis"
 
 
 def test_playback_test_uses_real_player_path_without_unmuting(service):
     service.vendor_manager = SynthVendor()
-    service.player.enqueue_and_wait = lambda *args, **kwargs: True
     result = service.test("playback", "test-session")
     assert result["status"] == "succeeded"
     assert result["playback_started"] is True

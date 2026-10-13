@@ -48,6 +48,8 @@
 - `Bridge /health`、端口可达、OpenAPI 可达或任务已受理，都不等于合成完成、设备播放完成或用户听见。
 - 复用外部 Bridge 前必须通过协议能力握手；旧协议只会被报告为可达但不兼容，不会被扩展自动杀死。
 - `tts.inspect` 观察物理事实，`tts.recover` 只执行一次有限维修，`tts.test` 才执行真实 synthesis/playback 验证路径。
+- 默认 `tts.recover({action:"recover"})` 对连接、订阅和原任务进行有限恢复；只有存在未确认缺口时才尝试一次停止确认与 reset。模型接口不再暴露手动 reconnect/reset；重启仍需明确指定自有目标。
+- 每次激活有固定控制会话，正文流与显式 speak 各有独立来源和从 1 开始的编号。声音协议版本为 2。正文提交未知不等于服务离线；新回合不覆盖旧声音，恢复不重播旧台词，静音立即停止并保留偏好。详见 [当前合同](../../../docs/voice-tts-runtime.md)。
 - `runtime.perception` 是 Voice 的一次性瞬态投影，不进入 canonical history 或 compaction；正常进度、idle 和排空不会生成感知候选。
 - 真实 Vendor、声卡、外部进程退出和用户是否听见，必须在对应环境现场验证，不能由 mock 或 HTTP ready 代替。
 

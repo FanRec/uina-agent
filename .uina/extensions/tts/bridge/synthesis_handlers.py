@@ -237,6 +237,7 @@ class SpeakRequest(BaseModel):
     session_id: Optional[str] = None
     invocation_id: Optional[str] = None
     source_id: Optional[str] = None
+    source_seq: Optional[int] = None
     epoch: Optional[str] = None
 
 
@@ -272,8 +273,11 @@ class ResetRequest(BaseModel):
 
 
 class TestRequest(BaseModel):
+    expected_epoch: Optional[str] = None
+    trace_id: Optional[str] = None
     scope: Literal["synthesis", "playback"] = "synthesis"
     session_id: Optional[str] = None
+    timeout_ms: int = 120000
 
 
 class RestartRequest(BaseModel):

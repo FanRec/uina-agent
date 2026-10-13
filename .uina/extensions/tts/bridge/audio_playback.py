@@ -8,7 +8,6 @@ import threading
 import time
 import wave
 from pathlib import Path
-from queue import Queue
 from typing import Any, Callable, TypeVar
 
 from models import PlaybackProgressSnapshot
@@ -164,12 +163,14 @@ class AudioPlayback:
 
     两种模式：
     - 流式模式（sounddevice）：声卡立即启动，预填静音，feed() 到了就播。
-    - 文件模式（winsound 回退）：enqueue(path) 排队播放完整 WAV 文件。
+    - 文件与流式音频都经过同一条可取消 PCM 播放路径。
     """
 
     def __init__(self, device: str | None = None, *, mirror_device: str | int | None = None) -> None:
         self._device = device
         self._sd = None
+        self._control_lock = threading.RLock()
+        self._playback_cancelled = lambda: False
         self._stream = None
         self._buffer: bytearray = bytearray()
         self._buffer_read_pos = 0
@@ -207,14 +208,7 @@ class AudioPlayback:
         self._max_buffer_bytes = 0
         self._silence_buffer = bytearray(65536)
         self._drained = threading.Event()
-        self._queue: Queue[tuple[Path, threading.Event | None]] = Queue()
-        self._file_lock = threading.Lock()
-        self._wake = threading.Event()
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._current_file: Path | None = None
         self._sd_available = self._check_sounddevice()
-        self._winsound_available = self._check_winsound()
         # 镜像输出：同一路 PCM 同时送往副设备（如虚拟声卡），用于嘴型同步。
         # 主/镜像实例共享进程级音频线程，保证 PortAudio 单线程。
         self._mirror: AudioPlayback | None = None
@@ -233,16 +227,18 @@ class AudioPlayback:
         except (ImportError, ValueError):
             return False
 
-    @staticmethod
-    def _check_winsound() -> bool:
-        try:
-            import winsound  # noqa: F401
+    def arm_playback(self, is_cancelled) -> None:
+        with self._control_lock:
+            self._playback_cancelled = is_cancelled
 
-            return True
-        except ImportError:
-            return False
+    def start_stream(self, sample_rate: int, channels: int = 1, *, prebuffer_ms: int = 160, rebuffer_ms: int = 220) -> None:
+        # Device opening and cancellation share one gate: a stopped lease cannot reopen it.
+        with self._control_lock:
+            if self._playback_cancelled():
+                raise RuntimeError("播放在启动前已取消")
+            self._start_stream(sample_rate, channels, prebuffer_ms=prebuffer_ms, rebuffer_ms=rebuffer_ms)
 
-    def start_stream(
+    def _start_stream(
         self,
         sample_rate: int,
         channels: int = 1,
@@ -496,10 +492,11 @@ class AudioPlayback:
             self._idle_timer = None
 
     def _on_idle_timeout(self) -> None:
-        with self._buffer_lock:
-            if not self._streaming or not self._stream_finished or self._available_bytes_locked() > 0:
-                return
-        self.stop_stream()
+        with self._control_lock:
+            with self._buffer_lock:
+                if not self._streaming or not self._stream_finished or self._available_bytes_locked() > 0:
+                    return
+            self._stop_stream()
 
     def finish_stream(self) -> None:
         with self._buffer_lock:
@@ -536,6 +533,12 @@ class AudioPlayback:
         prebuffer_ms: int = 160,
         rebuffer_ms: int = 220,
     ) -> None:
+        with self._control_lock:
+            if self._playback_cancelled():
+                raise RuntimeError("播放在启动前已取消")
+            self._resume_or_start_stream(sample_rate, channels, prebuffer_ms=prebuffer_ms, rebuffer_ms=rebuffer_ms)
+
+    def _resume_or_start_stream(self, sample_rate: int, channels: int = 1, *, prebuffer_ms: int = 160, rebuffer_ms: int = 220) -> None:
         """连续 segment：已 streaming 且采样率一致时只 resume，否则 stop+start 重建流。"""
         if (
             self._streaming
@@ -554,6 +557,9 @@ class AudioPlayback:
 
     def wait_until_drained(self, timeout_ms: int) -> bool:
         ok = self._drained.wait(timeout=max(timeout_ms / 1000, 0.0))
+        if not ok:
+            self.cancel_all()
+            return False
         if ok and self._streaming:
             # 硬件声卡 WASAPI DMA 环形缓冲排空保护：
             # _drained 在 Python 内存缓冲消费完时触发，此时驱动缓冲区仍有 50-100ms 音频在排队发往 DAC。
@@ -648,6 +654,10 @@ class AudioPlayback:
             self._dac_count = 0
 
     def stop_stream(self) -> None:
+        with self._control_lock:
+            self._stop_stream()
+
+    def _stop_stream(self) -> None:
         with self._buffer_lock:
             self._cancel_idle_stop_locked()
             self._streaming = False
@@ -674,11 +684,8 @@ class AudioPlayback:
             self._mirror.stop_stream()
 
     def _close_sounddevice_stream(self) -> None:
-        try:
-            self._stream.stop()
-            self._stream.close()
-        except Exception:
-            pass
+        self._stream.stop()
+        self._stream.close()
         self._stream = None
 
     @property
@@ -690,35 +697,11 @@ class AudioPlayback:
         return self._sd_available
 
     def start(self) -> None:
-        if not self._winsound_available:
-            return
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="tts-audio-player", daemon=True)
-        self._thread.start()
+        # PCM devices open lazily when a source actually starts playback.
+        pass
 
     def stop(self) -> None:
-        self._stop.set()
-        self._wake.set()
         self.stop_stream()
-        if self._thread is not None:
-            self._thread.join(timeout=2)
-            self._thread = None
-
-    def enqueue(self, path: Path) -> None:
-        self.enqueue_and_wait(path, wait=False)
-
-    def enqueue_and_wait(self, path: Path, *, wait: bool = True, timeout_ms: int | None = None) -> bool:
-        if not self._winsound_available:
-            return False
-        completed = threading.Event() if wait else None
-        self._queue.put((path, completed))
-        self._wake.set()
-        if completed is None:
-            return True
-        timeout_seconds = None if timeout_ms is None else max(timeout_ms / 1000, 0.0)
-        return completed.wait(timeout=timeout_seconds)
 
     def play_pcm_and_wait(
         self,
@@ -781,15 +764,9 @@ class AudioPlayback:
         return self.wait_until_drained(timeout_ms)
 
     def cancel_all(self) -> None:
-        with self._file_lock:
-            while not self._queue.empty():
-                try:
-                    _, completed = self._queue.get_nowait()
-                except Exception:
-                    break
-                if completed is not None:
-                    completed.set()
-        self.stop_stream()
+        with self._control_lock:
+            self._playback_cancelled = lambda: True
+            self._stop_stream()
 
     def _available_bytes_locked(self) -> int:
         return max(len(self._buffer) - self._buffer_read_pos, 0)
@@ -838,28 +815,8 @@ class AudioPlayback:
 
     @property
     def is_playing(self) -> bool:
-        return self._current_file is not None or self._streaming
+        return self._streaming
 
     @property
     def ready(self) -> bool:
-        return self._sd_available or self._winsound_available
-
-    def _run(self) -> None:
-        import winsound
-
-        while not self._stop.is_set():
-            self._wake.wait(timeout=0.1)
-            self._wake.clear()
-            while not self._stop.is_set():
-                if self._queue.empty():
-                    break
-                path, completed = self._queue.get()
-                self._current_file = path
-                try:
-                    winsound.PlaySound(str(path), winsound.SND_FILENAME)
-                except Exception:
-                    pass
-                finally:
-                    self._current_file = None
-                    if completed is not None:
-                        completed.set()
+        return self._sd_available

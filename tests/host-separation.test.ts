@@ -41,7 +41,7 @@ describe("RC-1 宿主与消费者分离", () => {
 			await uina.start();
 			const status = await uina.callTool("voice", { action: "status" });
 			expect(status.status).toBe("succeeded");
-			expect(status.result).toContain("离线 (纯打字)");
+			expect(status.result).toContain("发声服务未连接");
 			expect(status.result).not.toContain("开麦中");
 			expect(status.result).not.toContain("已连接");
 			await uina.send("测试工具声明");

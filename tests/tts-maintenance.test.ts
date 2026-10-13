@@ -11,7 +11,7 @@ describe("TTS maintenance contract", () => {
 		};
 		const result = await createTtsTool(driver as never).run({ action: "inspect" });
 		expect(result.status).toBe("succeeded");
-		expect(result.result).toContain("尚未由此证明模型可合成");
+		expect(result.result).toContain("接口可达不代表能发声");
 	});
 
 	it("does not fake restart ownership when the bridge refuses an external vendor", async () => {

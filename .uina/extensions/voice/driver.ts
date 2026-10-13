@@ -10,52 +10,57 @@
  */
 
 export interface PlaybackBreakpoint {
-  readonly traceId: string;
-  readonly segmentIndex: number;
-  readonly committedCharEnd: number; // 音频播放头已越过的文本物理字符边界
-  /** 被打断那一句的文本（作者侧记账；无记账时缺席，不臆造） */
-  readonly segmentText?: string;
+	readonly traceId: string;
+	readonly segmentIndex: number;
+	readonly committedCharEnd: number; // 音频播放头已越过的文本物理字符边界
+	/** 被打断那一句的文本（作者侧记账；无记账时缺席，不臆造） */
+	readonly segmentText?: string;
 }
 
 export type InterruptResult =
-  | { readonly outcome: "interrupted"; readonly breakpoint: PlaybackBreakpoint | null }
-  | { readonly outcome: "no_op"; readonly breakpoint: null; readonly reason?: string }
-  | { readonly outcome: "failed"; readonly breakpoint: null; readonly reason: string }
-  | { readonly outcome: "unknown"; readonly breakpoint: null; readonly reason: string };
+	| { readonly outcome: "interrupted"; readonly breakpoint: PlaybackBreakpoint | null }
+	| { readonly outcome: "no_op"; readonly breakpoint: null; readonly reason?: string }
+	| { readonly outcome: "failed"; readonly breakpoint: null; readonly reason: string }
+	| { readonly outcome: "unknown"; readonly breakpoint: null; readonly reason: string };
 
 /**
  * 交付快照：某一时刻"我说到哪了"的全部已知事实。
  * 每个字段都是已归零的观测；读取不触发任何 IO。
  */
 export interface DeliverySnapshot {
-  readonly online: boolean;
-  readonly muted: boolean;
-  /** 本轮已提交句数（作者侧记账） */
-  readonly submittedSegments: number;
-  /** 已播完句数（桥侧物理事实） */
-  readonly spokenSegments: number;
-  /** 尚未播完的句数，**含正在播的那句** */
-  readonly pendingSegments: number;
-  /** 正在播的那句序号（1 起）；无在播时为 null */
-  readonly currentSegmentIndex: number | null;
-  /** 正在播的那句文本（作者侧记账） */
-  readonly currentSegmentText?: string;
-  /** 播放头已越过的字符边界 */
-  readonly committedCharEnd?: number;
+	readonly online: boolean;
+	readonly muted: boolean;
+	/** 本轮已提交句数（作者侧记账） */
+	readonly submittedSegments: number;
+	/** 已播完句数（桥侧物理事实） */
+	readonly spokenSegments: number;
+	/** 尚未播完的句数，**含正在播的那句** */
+	readonly pendingSegments: number;
+	/** 正在播的那句序号（1 起）；无在播时为 null */
+	readonly currentSegmentIndex: number | null;
+	/** 正在播的那句文本（作者侧记账） */
+	readonly currentSegmentText?: string;
+	/** 播放头已越过的字符边界 */
+	readonly committedCharEnd?: number;
+	readonly failedSegments?: number;
+	readonly cancelledSegments?: number;
+	readonly unknownSegments?: number;
+	readonly observedAt?: number;
+	readonly stopUnconfirmed?: boolean;
 }
 
 export interface VoiceOutputDriver {
-  /** 物理静音开闭（底层声卡静音或跳过发声投递）；开麦时顺手探活 */
-  setMuted(muted: boolean): Promise<{ success: boolean; isOnline?: boolean; reason?: string }>;
+	/** 物理静音开闭（底层声卡静音或跳过发声投递）；开麦时顺手探活 */
+	setMuted(muted: boolean): Promise<{ success: boolean; isOnline?: boolean; reason?: string }>;
 
-  /**
-   * 立即掐断物理声音并返回基于字幕/播放时钟的估计断点
-   * @param expectedTraceId 可选。若指定，则仅当当前播放 trace 与之一致时才掐断（消除异步竞态误杀下一轮）
-   */
-  interrupt(expectedTraceId?: string): Promise<InterruptResult>;
+	/**
+	 * 立即掐断物理声音并返回基于字幕/播放时钟的估计断点
+	 * @param expectedTraceId 可选。若指定，则仅当当前播放 trace 与之一致时才掐断（消除异步竞态误杀下一轮）
+	 */
+	interrupt(expectedTraceId?: string): Promise<InterruptResult>;
 
-  /** 同步读交付快照。渲染路径唯一允许的读取方式。 */
-  snapshot(): DeliverySnapshot;
+	/** 同步读交付快照。渲染路径唯一允许的读取方式。 */
+	snapshot(): DeliverySnapshot;
 }
 
 /**
@@ -68,16 +73,22 @@ export interface VoiceOutputDriver {
  * 措辞上刻意不含糊：在播的那句还没念完，它算在"未播完"里，不写成"排队"。
  */
 export function describeDelivery(snapshot: DeliverySnapshot): string {
-  if (!snapshot.online) return "离线 (纯打字)";
-  if (snapshot.muted) return "已静音";
-  if (snapshot.submittedSegments === 0) return "空闲 (本轮还没说话)";
+	if (snapshot.stopUnconfirmed)
+		return snapshot.muted ? "已设置静音，但当前声音是否停止未确认" : "当前声音是否停止未确认";
+	if (!snapshot.online) return "发声服务未连接";
+	if (snapshot.muted) return "已静音";
+	if (snapshot.unknownSegments)
+		return `${snapshot.currentSegmentIndex !== null ? "仍有声音在播放；" : ""}有 ${snapshot.unknownSegments} 句播放结果无法确认`;
+	if (snapshot.failedSegments && snapshot.pendingSegments === 0) return `有 ${snapshot.failedSegments} 句未能播完`;
+	if (snapshot.cancelledSegments && snapshot.pendingSegments === 0) return "未播完的内容已取消";
+	if (snapshot.submittedSegments === 0) return "空闲 (本轮还没说话)";
 
-  const total = snapshot.submittedSegments;
-  if (snapshot.currentSegmentIndex !== null) {
-    return snapshot.pendingSegments > 1
-      ? `播放 第 ${snapshot.currentSegmentIndex}/${total} 句（未播完 ${snapshot.pendingSegments} 句）`
-      : `播放 第 ${snapshot.currentSegmentIndex}/${total} 句（最后一句）`;
-  }
-  if (snapshot.pendingSegments > 0) return `待播 ${snapshot.pendingSegments}/${total} 句`;
-  return `已播完 ${total} 句`;
+	const total = snapshot.submittedSegments;
+	if (snapshot.currentSegmentIndex !== null) {
+		return snapshot.pendingSegments > 1
+			? `播放 第 ${snapshot.currentSegmentIndex}/${total} 句（未播完 ${snapshot.pendingSegments} 句）`
+			: `播放 第 ${snapshot.currentSegmentIndex}/${total} 句（最后一句）`;
+	}
+	if (snapshot.pendingSegments > 0) return `待播 ${snapshot.pendingSegments}/${total} 句`;
+	return `已播完 ${total} 句`;
 }

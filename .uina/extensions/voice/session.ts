@@ -4,10 +4,10 @@ import type { DeliverySnapshot, InterruptResult } from "./driver.js";
 import { loadVoicePreferences, saveVoicePreferences, type VoicePreferences } from "./preferences.js";
 
 export interface VoiceStatus {
-  readonly voiceState: "enabled" | "muted";
-  readonly readAssistantText: boolean;
-  readonly hasDriver: boolean;
-  readonly snapshot: DeliverySnapshot;
+	readonly voiceState: "enabled" | "muted";
+	readonly readAssistantText: boolean;
+	readonly hasDriver: boolean;
+	readonly snapshot: DeliverySnapshot;
 }
 
 const SET_MUTED_SERVICE = "voice_driver:set_muted";
@@ -17,83 +17,133 @@ const INTERRUPT_SERVICE = "voice_driver:interrupt";
 const SNAPSHOT_SERVICE = "voice_driver:snapshot";
 
 export function emptySnapshot(muted: boolean): DeliverySnapshot {
-  return { online: false, muted, submittedSegments: 0, spokenSegments: 0, pendingSegments: 0, currentSegmentIndex: null };
+	return {
+		online: false,
+		muted,
+		submittedSegments: 0,
+		spokenSegments: 0,
+		pendingSegments: 0,
+		currentSegmentIndex: null,
+	};
 }
 
 export class VoiceSession {
-  private _voiceState: "enabled" | "muted" = "enabled";
-  private _readAssistantText = true;
-  private readonly pi?: ExtensionAPI;
-  private preferences: VoicePreferences = { muted: false, readAssistantText: true };
-  private readonly preferencesReady: Promise<void>;
+	private _voiceState: "enabled" | "muted" = "enabled";
+	private _readAssistantText = true;
+	private readonly pi?: ExtensionAPI;
+	private preferences: VoicePreferences = { muted: false, readAssistantText: true };
+	private readonly preferencesReady: Promise<void>;
 
-  constructor(pi?: ExtensionAPI) {
-    this.pi = pi;
-    this.preferencesReady = loadVoicePreferences(pi).then((value) => {
-      this.preferences = value;
-      this._voiceState = value.muted ? "muted" : "enabled";
-      this._readAssistantText = value.readAssistantText;
-    });
-  }
-  get voiceState(): "enabled" | "muted" { return this._voiceState; }
-  get readAssistantText(): boolean { return this._readAssistantText; }
-  get hasDriver(): boolean { return Boolean(this.pi?.hasService?.(SNAPSHOT_SERVICE)); }
+	constructor(pi?: ExtensionAPI) {
+		this.pi = pi;
+		this.preferencesReady = loadVoicePreferences(pi).then((value) => {
+			this.preferences = value;
+			this._voiceState = value.muted ? "muted" : "enabled";
+			this._readAssistantText = value.readAssistantText;
+		});
+	}
+	get voiceState(): "enabled" | "muted" {
+		return this._voiceState;
+	}
+	get readAssistantText(): boolean {
+		return this._readAssistantText;
+	}
+	get hasDriver(): boolean {
+		return Boolean(this.pi?.hasService?.(SNAPSHOT_SERVICE));
+	}
 
-  private async call<T>(name: string, input?: unknown): Promise<T | undefined> {
-    // Driver 可以部分挂载（例如升级过程中只注册了 snapshot）。
-    // 逐服务检查，避免把“服务不存在”冒泡成未捕获异常。
-    if (typeof this.pi?.hasService !== "function" || !this.pi.hasService(name) || typeof this.pi.callService !== "function") return undefined;
-    return await this.pi.callService<T>(name, input);
-  }
+	private async call<T>(name: string, input?: unknown, signal?: AbortSignal): Promise<T | undefined> {
+		// Driver 可以部分挂载（例如升级过程中只注册了 snapshot）。
+		// 逐服务检查，避免把“服务不存在”冒泡成未捕获异常。
+		if (
+			typeof this.pi?.hasService !== "function" ||
+			!this.pi.hasService(name) ||
+			typeof this.pi.callService !== "function"
+		)
+			return undefined;
+		return await this.pi.callService<T>(name, input, signal ? { signal } : undefined);
+	}
 
-  /**
-   * 偏好转换与物理结果是两件事（§6.2）：偏好转到哪由用户决定、总是落账并持久化；
-   * 驱动是否在线、物理静音是否生效，另行说明。不把"不可用"写回用户偏好。
-   */
-  async setMuted(muted: boolean): Promise<{ success: boolean; isOnline?: boolean; persisted?: boolean; reason?: string }> {
-    await this.preferencesReady;
-    this._voiceState = muted ? "muted" : "enabled";
-    this.preferences = { ...this.preferences, muted };
-    const result = await this.call<{ success: boolean; isOnline?: boolean; reason?: string }>(SET_MUTED_SERVICE, { muted });
-    const physical = result
-      ? { ok: result.success, ...(result.isOnline !== undefined ? { isOnline: result.isOnline } : {}), ...(result.reason ? { reason: result.reason } : {}) }
-      : { ok: false, reason: "发声驱动未挂载" };
-    try {
-      await saveVoicePreferences(this.pi, this.preferences);
-      return { success: true, persisted: true, ...physical };
-    } catch {
-      const { reason: physicalReason, ...rest } = physical;
-      const reason = [physicalReason, "偏好已在内存生效但持久化失败"].filter(Boolean).join("；");
-      return { success: true, persisted: false, ...rest, reason };
-    }
-  }
+	/**
+	 * 偏好转换与物理结果是两件事（§6.2）：偏好转到哪由用户决定、总是落账并持久化；
+	 * 驱动是否在线、物理静音是否生效，另行说明。不把"不可用"写回用户偏好。
+	 */
+	async setMuted(
+		muted: boolean,
+	): Promise<{ success: boolean; isOnline?: boolean; persisted?: boolean; reason?: string; status?: string }> {
+		await this.preferencesReady;
+		this._voiceState = muted ? "muted" : "enabled";
+		this.preferences = { ...this.preferences, muted };
+		const stopping = this.call<{ success: boolean; isOnline?: boolean; reason?: string; status?: string }>(
+			SET_MUTED_SERVICE,
+			{ muted },
+		).catch((error) => ({
+			success: false,
+			isOnline: undefined,
+			status: "unknown",
+			reason: "声音控制结果未确认：" + String(error),
+		}));
+		let persisted = true;
+		try {
+			await saveVoicePreferences(this.pi, this.preferences);
+		} catch {
+			persisted = false;
+		}
+		const result = await stopping;
+		const physical = result
+			? {
+					ok: result.success,
+					status: result.status,
+					...(result.isOnline !== undefined ? { isOnline: result.isOnline } : {}),
+					...(result.reason ? { reason: result.reason } : {}),
+				}
+			: { ok: false, reason: "发声驱动未挂载" };
+		if (persisted) return { success: true, persisted: true, ...physical };
+		else {
+			const { reason: physicalReason, ...rest } = physical;
+			const reason = [physicalReason, "偏好已在内存生效但持久化失败"].filter(Boolean).join("；");
+			return { success: true, persisted: false, ...rest, reason };
+		}
+	}
 
-  async setTextReading(enabled: boolean): Promise<{ success: boolean; persisted?: boolean; reason?: string }> {
-    await this.preferencesReady;
-    this._readAssistantText = enabled;
-    this.preferences = { ...this.preferences, readAssistantText: enabled };
-    const result = await this.call<{ success: boolean; reason?: string }>(SET_TEXT_READING_SERVICE, { enabled });
-    const driverNote = result?.reason ?? (result ? undefined : "发声驱动未挂载");
-    try {
-      await saveVoicePreferences(this.pi, this.preferences);
-      return { success: true, persisted: true, ...(driverNote ? { reason: driverNote } : {}) };
-    } catch {
-      const reason = [driverNote, "偏好已在内存生效但持久化失败"].filter(Boolean).join("；");
-      return { success: true, persisted: false, reason };
-    }
-  }
+	async setTextReading(enabled: boolean): Promise<{ success: boolean; persisted?: boolean; reason?: string }> {
+		await this.preferencesReady;
+		this._readAssistantText = enabled;
+		this.preferences = { ...this.preferences, readAssistantText: enabled };
+		const result = await this.call<{ success: boolean; reason?: string }>(SET_TEXT_READING_SERVICE, { enabled });
+		const driverNote = result?.reason ?? (result ? undefined : "发声驱动未挂载");
+		try {
+			await saveVoicePreferences(this.pi, this.preferences);
+			return { success: true, persisted: true, ...(driverNote ? { reason: driverNote } : {}) };
+		} catch {
+			const reason = [driverNote, "偏好已在内存生效但持久化失败"].filter(Boolean).join("；");
+			return { success: true, persisted: false, reason };
+		}
+	}
 
-  async speak(text: string, replace: boolean, context?: ToolExecutionContext): Promise<unknown> {
-    return await this.call(SPEAK_SERVICE, { text, replace, invocationId: context?.invocationId });
-  }
+	async speak(text: string, replace: boolean, context?: ToolExecutionContext, signal?: AbortSignal): Promise<unknown> {
+		return await this.call(SPEAK_SERVICE, { text, replace, invocationId: context?.invocationId }, signal);
+	}
 
-  async interrupt(expectedTraceId?: string): Promise<InterruptResult> {
-    return (await this.call<InterruptResult>(INTERRUPT_SERVICE, { expectedTraceId })) ?? { outcome: "failed", breakpoint: null, reason: "发声驱动未挂载" };
-  }
+	async interrupt(expectedTraceId?: string): Promise<InterruptResult> {
+		return (
+			(await this.call<InterruptResult>(INTERRUPT_SERVICE, { expectedTraceId })) ?? {
+				outcome: "failed",
+				breakpoint: null,
+				reason: "发声驱动未挂载",
+			}
+		);
+	}
 
-  async getStatus(): Promise<VoiceStatus> {
-    await this.preferencesReady;
-    const snapshot = (await this.call<DeliverySnapshot>(SNAPSHOT_SERVICE)) ?? emptySnapshot(this._voiceState === "muted");
-    return { voiceState: this._voiceState, readAssistantText: this._readAssistantText, hasDriver: this.hasDriver, snapshot };
-  }
+	async getStatus(): Promise<VoiceStatus> {
+		await this.preferencesReady;
+		const snapshot =
+			(await this.call<DeliverySnapshot>(SNAPSHOT_SERVICE)) ?? emptySnapshot(this._voiceState === "muted");
+		return {
+			voiceState: this._voiceState,
+			readAssistantText: this._readAssistantText,
+			hasDriver: this.hasDriver,
+			snapshot,
+		};
+	}
 }

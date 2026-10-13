@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -106,8 +107,17 @@ def build_app(service: Any) -> FastAPI:
         return service.reset(request.session_id, request.expected_epoch, request.new_epoch, request.invocation_id)
 
     @app.post("/v1/tts/test")
-    def test(request: TestRequest) -> dict[str, Any]:
-        return service.test(request.scope, request.session_id)
+    async def test(request: TestRequest, raw_request: Request) -> dict[str, Any]:
+        cancelled = threading.Event()
+        work = asyncio.create_task(asyncio.to_thread(service.test, request.scope, request.session_id, request.timeout_ms, cancelled, request.expected_epoch, request.trace_id))
+        try:
+            while not work.done():
+                if await raw_request.is_disconnected():
+                    cancelled.set()
+                await asyncio.wait({work}, timeout=0.02)
+            return await work
+        finally:
+            cancelled.set()
 
     @app.post("/v1/tts/restart")
     def restart(request: RestartRequest) -> dict[str, Any]:

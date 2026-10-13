@@ -51,6 +51,7 @@ describe("speech cue positioning and playback delivery", () => {
 	});
 	it("passes structured cue metadata through the actual voice-driver submission", async () => {
 		const client = new TtsBridgeClient("http://fixture");
+		vi.spyOn(client, "reconnect").mockResolvedValue({ status: "reconnected", epoch: "fixture" });
 		const speak = vi.spyOn(client, "speak").mockResolvedValue({ status: "accepted", task_id: "task" });
 		const driver = new TtsVoiceOutputDriver(client);
 		driver.startTurn(1);
@@ -118,6 +119,7 @@ describe("second review: speech boundaries", () => {
 	});
 	it("a new turn's submission count is zero while the previous turn's delivery snapshot is still pending", async () => {
 		const client = new TtsBridgeClient("http://fixture");
+		vi.spyOn(client, "reconnect").mockResolvedValue({ status: "reconnected", epoch: "fixture" });
 		vi.spyOn(client, "speak").mockResolvedValue({ status: "accepted", task_id: "old-task" });
 		const driver = new TtsVoiceOutputDriver(client);
 		driver.startTurn(1);
@@ -173,7 +175,10 @@ describe("real extension event flow with a deferred bridge", () => {
 				await tailReady;
 				return Response.json({ status: "accepted", task_id: "tail" }, { status: 202 });
 			}
-			return Response.json({ status: "ok", bridge_ready: true });
+			if (url.endsWith("/v1/tts/reconnect")) return Response.json({ status: "reconnected", epoch: "fixture" });
+			if (url.endsWith("/v1/tts/cancel-trace"))
+				return Response.json({ status: "cancelled", stop_outcome: "not_playing" });
+			return Response.json({ status: "ok", bridge_ready: true, voice_protocol_version: 2 });
 		}) as typeof fetch;
 		let teardown: void | (() => Promise<void>);
 		try {
@@ -184,7 +189,7 @@ describe("real extension event flow with a deferred bridge", () => {
 			const outputEnd = handlers.get("output_end")!({ type: "output_end", channel: "content" }).then(() => {
 				ended = true;
 			});
-			for (let i = 0; i < 10; i++) await Promise.resolve();
+			await vi.waitFor(() => expect(calls.some((c) => c.url.endsWith("/v1/tts/speak"))).toBe(true));
 			expect(calls.filter((c) => c.url.endsWith("/v1/tts/speak"))).toHaveLength(1);
 			expect(ended).toBe(false);
 			acceptTail();
@@ -205,6 +210,7 @@ describe("real extension event flow with a deferred bridge", () => {
 describe("late speech responses retain their trace identity", () => {
 	it("an old rejected submission cannot roll back the next turn's accepted segment", async () => {
 		const client = new TtsBridgeClient("http://fixture");
+		vi.spyOn(client, "reconnect").mockResolvedValue({ status: "reconnected", epoch: "fixture" });
 		let rejectOld!: (value: { status: string; task_id: string }) => void;
 		vi.spyOn(client, "speak")
 			.mockImplementationOnce(
@@ -217,10 +223,12 @@ describe("late speech responses retain their trace identity", () => {
 		const driver = new TtsVoiceOutputDriver(client);
 		driver.startTurn(1);
 		const old = driver.submitSegment("旧来源。");
+		await vi.waitFor(() => expect(rejectOld).toBeTypeOf("function"));
 		driver.startTurn(2);
-		await driver.submitSegment("新来源。");
+		const next = driver.submitSegment("新来源。");
 		rejectOld({ status: "rejected", task_id: "old" });
 		await old;
+		await next;
 		expect(driver.currentSubmittedSegments).toBe(1);
 		expect(driver.snapshot().pendingSegments).toBe(1);
 		await expect(driver.submitSegment("新来源第二句。")).resolves.toMatchObject({ status: "accepted" });

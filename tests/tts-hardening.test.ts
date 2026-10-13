@@ -43,14 +43,17 @@ describe("TTS delivery hardening", () => {
 			getSubtitleState: vi.fn().mockResolvedValue({ trace_id: "turn_1", segments: [] }),
 			isHealthy: vi.fn().mockResolvedValue(true),
 		};
-		const driver = new TtsVoiceOutputDriver(client as never);
+		const driver = new TtsVoiceOutputDriver({
+			reconnect: vi.fn().mockResolvedValue({ status: "reconnected", epoch: "epoch-new" }),
+			...client,
+		} as never);
 		const first = driver.startTurn(1);
 		await driver.submitSegment("第一句。");
 		const second = driver.startTurn(2);
 
 		await expect(driver.interrupt(second)).resolves.toMatchObject({ outcome: "no_op" });
 		await expect(driver.interrupt(first)).resolves.toMatchObject({ outcome: "interrupted" });
-		expect(client.cancelTrace).toHaveBeenCalledWith(first, "immediate");
+		expect(client.cancelTrace).toHaveBeenCalledWith(first, "immediate", driver.sessionId, "epoch-new");
 	});
 
 	it("uses grapheme clusters and clamps unsafe sentence limits", () => {
@@ -79,7 +82,10 @@ describe("TTS delivery hardening", () => {
 			getSubtitleState: vi.fn(),
 			isHealthy: vi.fn().mockResolvedValue(true),
 		};
-		const driver = new TtsVoiceOutputDriver(client as never);
+		const driver = new TtsVoiceOutputDriver({
+			reconnect: vi.fn().mockResolvedValue({ status: "reconnected", epoch: "epoch-new" }),
+			...client,
+		} as never);
 		driver.startTurn(1);
 		await expect(driver.submitSegment("第一句。")).resolves.toMatchObject({ status: "accepted" });
 		await expect(driver.submitSegment("第二句。")).resolves.toMatchObject({ status: "uncertain" });
@@ -98,7 +104,10 @@ describe("TTS delivery hardening", () => {
 			getSubtitleState: vi.fn(),
 			isHealthy: vi.fn().mockResolvedValue(true),
 		};
-		const driver = new TtsVoiceOutputDriver(client as never);
+		const driver = new TtsVoiceOutputDriver({
+			reconnect: vi.fn().mockResolvedValue({ status: "reconnected", epoch: "epoch-new" }),
+			...client,
+		} as never);
 		driver.startTurn(1);
 		await expect(driver.submitSegment("第一句。")).resolves.toMatchObject({ status: "accepted" });
 		await expect(driver.submitSegment("第二句。")).resolves.toMatchObject({ status: "rejected" });
@@ -115,7 +124,6 @@ describe("TTS delivery hardening", () => {
 
 		await expect(driver.recover("restart", "inv-restart", "bridge")).resolves.toMatchObject({
 			status: "not_started",
-			ownership: "unknown",
 		});
 	});
 
@@ -123,15 +131,20 @@ describe("TTS delivery hardening", () => {
 		const client = {
 			speak: vi.fn().mockResolvedValue({ status: "accepted", task_id: "t1" }),
 			reconnect: vi.fn().mockResolvedValue({ status: "reconnected", epoch: "epoch-new" }),
+			compatibility: vi.fn().mockResolvedValue({ compatible: true }),
+			reset: vi.fn().mockResolvedValue({ status: "reset", epoch: "epoch-new" }),
+			turnEnd: vi.fn().mockResolvedValue({ status: "ended" }),
+			getSubtitleState: vi.fn().mockResolvedValue(null),
 			isHealthy: vi.fn().mockResolvedValue(true),
 		};
 		const driver = new TtsVoiceOutputDriver(client as never);
+		driver.startTurn(1);
 		driver.setRestartBridge(vi.fn().mockResolvedValue({ status: "succeeded", ownership: "owned", ready: true }));
 
 		await expect(driver.recover("restart", "inv-restart", "bridge")).resolves.toMatchObject({ status: "succeeded" });
 		await expect(driver.speak("重启后发声", "inv-speak", false)).resolves.toMatchObject({ status: "accepted" });
 
-		expect(client.reconnect).toHaveBeenCalledWith("uina-default");
+		expect(client.reconnect).toHaveBeenCalledWith(driver.sessionId, expect.any(AbortSignal));
 		expect(client.speak).toHaveBeenCalledWith(expect.objectContaining({ epoch: "epoch-new" }));
 	});
 
@@ -141,8 +154,12 @@ describe("TTS delivery hardening", () => {
 			cancelTrace: vi.fn().mockResolvedValue({ status: "cancelled", playback_stopped: true }),
 			getSubtitleState: vi.fn().mockResolvedValue({ trace_id: "trace", segments: [] }),
 			isHealthy: vi.fn().mockResolvedValue(true),
+			turnEnd: vi.fn().mockResolvedValue({ status: "ended" }),
 		};
-		const driver = new TtsVoiceOutputDriver(client as never);
+		const driver = new TtsVoiceOutputDriver({
+			reconnect: vi.fn().mockResolvedValue({ status: "reconnected", epoch: "epoch-new" }),
+			...client,
+		} as never);
 
 		await expect(driver.speak("第一句", "inv-1", false)).resolves.toMatchObject({ status: "accepted" });
 		await expect(driver.speak("第一句", "inv-1", true)).resolves.toMatchObject({ status: "accepted" });
@@ -161,12 +178,15 @@ describe("TTS delivery hardening", () => {
 				reason: "缺少协议路径：/v1/tts/reset",
 			}),
 		};
-		const driver = new TtsVoiceOutputDriver(client as never);
+		const driver = new TtsVoiceOutputDriver({
+			reconnect: vi.fn().mockResolvedValue({ status: "reconnected", epoch: "epoch-new" }),
+			...client,
+		} as never);
 
 		await expect(driver.setMuted(false)).resolves.toMatchObject({
 			success: false,
 			isOnline: false,
-			reason: expect.stringContaining("协议不兼容"),
+			reason: expect.stringContaining("缺少协议路径"),
 		});
 	});
 
@@ -178,7 +198,10 @@ describe("TTS delivery hardening", () => {
 			isHealthy: vi.fn().mockResolvedValue(true),
 			test: vi.fn(),
 		};
-		const driver = new TtsVoiceOutputDriver(client as never);
+		const driver = new TtsVoiceOutputDriver({
+			reconnect: vi.fn().mockResolvedValue({ status: "reconnected", epoch: "epoch-new" }),
+			...client,
+		} as never);
 		await driver.setMuted(true);
 		await expect(driver.test("playback")).resolves.toMatchObject({ status: "not_started" });
 		expect(client.test).not.toHaveBeenCalled();
