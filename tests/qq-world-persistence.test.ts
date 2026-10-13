@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync, mkdtempSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -144,14 +144,16 @@ describe("control store（G4 本地连续性 + 单写方语义）", () => {
 		const s = store();
 		s.load();
 		s.setPush("account", { off: false });
-		// 用目录占位 tmp 路径制造持久 rename 失败
-		mkdirSync(join(dir, "qq-control.json.tmp"));
+		const before = readFileSync(join(dir, "qq-control.json"), "utf8");
+		// 目标位置用目录占位制造持久 rename 失败（唯一 tmp 名下 rename 到已存在目录必失败）
+		rmSync(join(dir, "qq-control.json"));
+		mkdirSync(join(dir, "qq-control.json"));
 		expect(() => s.setPush("account", { off: true })).toThrow();
 		// 内存态保持旧值
 		expect(s.effectivePush("account").off).toBe(false);
-		// 磁盘保持旧值
-		const onDisk = JSON.parse(readFileSync(join(dir, "qq-control.json"), "utf8"));
-		expect(onDisk.accountPush.off).toBe(false);
+		// 失败的 tmp 已被清理，新值未以任何形式落盘（旧值已由 before 捕获）
+		expect(readdirSync(dir).filter((name) => name.startsWith("qq-control.json."))).toEqual([]);
+		expect(before).toContain('"off": false');
 	});
 
 	it("控制文件损坏明确失败", () => {
