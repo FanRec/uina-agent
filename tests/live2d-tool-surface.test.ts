@@ -503,7 +503,7 @@ describe("compileCatalog 绑定期校验", () => {
 			),
 		).toThrow(/末段不得携带/);
 		expect(() => compileCatalog(MODEL_ID, source([{ durationMs: 100, delta: {} }, last]), rig)).toThrow(
-			/必须声明 delta 或 effects/,
+			/必须声明 delta、relativeRotation 或 effects/,
 		);
 		expect(() => compileCatalog(MODEL_ID, source([last, { ...last }]), rig)).toThrow(/无载荷/);
 		expect(() =>

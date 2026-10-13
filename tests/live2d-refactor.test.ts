@@ -92,7 +92,7 @@ describe("Live2D 架构缺口正式回归", () => {
 			sampleMotion(compileMotion(withSpeech(act.variants![0]!.definition, "exclusive"), rig.controls), 5)["head.yaw"],
 		).toBe(0);
 		expect(Reflect.set(catalog.list("motion"), "0", undefined)).toBe(false);
-		expect(Reflect.set(act.spatial!.segments[0]!.delta, "x", 99)).toBe(false);
+		expect(Reflect.set(act.spatial!.segments[0]!.delta!, "x", 99)).toBe(false);
 	});
 	it("组合 state 全部名字预校验，途中取消不施加余项也不回滚姿态", async () => {
 		const { runtime } = await refactorRuntime({

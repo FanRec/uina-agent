@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
+import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
+import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import { compileMOCatalog, loadCatalog } from "../.uina/worlds/live2d/models/mo/catalog.js";
+import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import { unconfirmedInjections } from "./live2d-injection-fixture.js";
-import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
-import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 
 const makeFakeClient = (modelID = MO_MODEL_ID) => {
 	const state = {
@@ -196,9 +196,9 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 		// 2. 贴脸特写 (close_up)：放大时必须包含大幅负向 Y 轴补偿（对准脸部而非身体），定格充分且含摆头
 		const closeUp = catalog.resolve("motion", "close_up")!.entry;
 		expect(closeUp.spatial).toBeDefined();
-		const closeUpHoldSeg = closeUp.spatial!.segments.find((s) => (s.delta.size ?? 0) > 30);
+		const closeUpHoldSeg = closeUp.spatial!.segments.find((s) => (s.delta?.size ?? 0) > 30);
 		expect(closeUpHoldSeg).toBeDefined();
-		expect(closeUpHoldSeg!.delta.y).toBeLessThan(-1.0); // 必须大幅向下沉对准脸部
+		expect(closeUpHoldSeg!.delta!.y).toBeLessThan(-1.0); // 必须大幅向下沉对准脸部
 		expect(closeUpHoldSeg!.holdMs).toBeGreaterThanOrEqual(2500); // 贴脸停留时长充分
 		expect(closeUp.motion.tracks.some((t) => t.axis === "head.roll")).toBe(true); // 包含可爱摆头轨道
 
@@ -208,17 +208,17 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 		expect(edgePeek.spatial!.segments.length).toBe(2);
 		const peekSeg = edgePeek.spatial!.segments[0]!;
 		expect(peekSeg.holdMs).toBeGreaterThan(3000);
-		expect(peekSeg.delta.x).toBeLessThanOrEqual(-0.7); // 移动到左侧边缘
-		expect(peekSeg.delta.rotation).toBeGreaterThanOrEqual(15); // 身体明显倾斜
+		expect(peekSeg.delta!.x).toBeLessThanOrEqual(-0.7); // 移动到左侧边缘
+		expect(peekSeg.delta!.rotation).toBeGreaterThanOrEqual(15); // 身体明显倾斜
 
-		// 4. 转圈 (spin)：极简三段等分圆周飞旋（120°/240°/0°），彻底消灭多段停顿，起手纯下蹲无反转
+		// 4. 转圈 (spin)：单段 relative 整圈一次缓动（absolute ±360 双表示等价必最短弧折返，禁走三段等分）
 		const spin = catalog.resolve("motion", "spin")!.entry;
 		expect(spin.spatial).toBeDefined();
-		const rotSegments = spin.spatial!.segments.filter((s) => (s.delta.rotation ?? 0) > 0);
-		expect(rotSegments.length).toBe(2); // 120° 与 240° 两段顺时针中继，末段归0
-		expect(rotSegments.map((s) => s.delta.rotation)).toEqual([120, 240]);
-		expect(spin.spatial!.segments[0]?.delta.rotation).toBeUndefined(); // 起手纯下蹲，无反向旋转破坏连贯性
+		const relativeSegs = spin.spatial!.segments.filter((s) => s.relativeRotation !== undefined);
+		expect(relativeSegs.length).toBe(1); // 唯一整圈段
+		expect(relativeSegs[0]!.relativeRotation).toBe(359); // VTS ±360 硬边界且边界值实测被拒，留 1° 余量
+		expect(relativeSegs[0]!.delta).toBeUndefined(); // relative 与 delta 互斥：整圈段不改 y/size，浮空贯穿
+		expect(spin.spatial!.segments.at(-1)!.relativeRotation).toBeUndefined(); // 末段必须是 delta 归零段（1° 回正）
+		expect(spin.spatial!.segments[0]?.delta?.rotation).toBeUndefined(); // 起手纯下蹲，无反向旋转破坏连贯性
 	});
 });
-
-

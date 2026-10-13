@@ -1,12 +1,12 @@
-import { unconfirmedInjections } from "./live2d-injection-fixture.js";
 import { describe, expect, it } from "vitest";
-import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
-import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
-import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
-import { compileCatalog, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
+import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
+import { type CatalogSource, compileCatalog, type SpatialSegment } from "../.uina/worlds/live2d/authoring/catalog.js";
 import { motion, track } from "../.uina/worlds/live2d/authoring/motion.js";
+import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
+import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
+import { unconfirmedInjections } from "./live2d-injection-fixture.js";
 
 /**
  * P4-5：独占资源（边界 #9）。
@@ -128,6 +128,9 @@ const makeFake = (state: FakeState): VTSClient => {
 				if (options.positionY !== undefined) state.pose.positionY = options.positionY as number;
 				if (options.rotation !== undefined) state.pose.rotation = options.rotation as number;
 				if (options.size !== undefined) state.pose.size = options.size as number;
+			} else if (options.valuesAreRelativeToModel === true && options.rotation !== undefined) {
+				// relative 语义：仅旋转，值为相对当前朝向的顺时针增量（自当前位置续动）。
+				state.pose.rotation += options.rotation as number;
 			}
 		},
 		tintModel: async (tint: Record<string, unknown>) => {
@@ -391,6 +394,194 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		expect(() => compileCatalog(MODEL_ID, source({ y: 0.09, rotation: 359 }), makeRig())).not.toThrow();
 	});
 
+	it("compileCatalog：relativeRotation 校验——值域 (0,359]、与 delta 互斥、末段禁用", () => {
+		const build = (segments: readonly SpatialSegment[]): CatalogSource => ({
+			motions: {
+				spin: {
+					description: "旋转特技",
+					motion: motion(
+						100,
+						track("head.yaw", [
+							[0, 0],
+							[100, 0],
+						]),
+					),
+					spatial: { segments },
+				},
+			},
+		});
+		expect(() =>
+			compileCatalog(
+				MODEL_ID,
+				build([
+					{ relativeRotation: 360, durationMs: 100 },
+					{ delta: { rotation: 0 }, durationMs: 100 },
+				]),
+				makeRig(),
+			),
+		).toThrow(/relativeRotation 必须在 \(0,359\]/);
+		expect(() =>
+			compileCatalog(
+				MODEL_ID,
+				build([
+					{ relativeRotation: 0, durationMs: 100 },
+					{ delta: { rotation: 0 }, durationMs: 100 },
+				]),
+				makeRig(),
+			),
+		).toThrow(/relativeRotation 必须在 \(0,359\]/);
+		expect(() =>
+			compileCatalog(
+				MODEL_ID,
+				build([
+					{ relativeRotation: 359, delta: { y: 0.05 }, durationMs: 100 },
+					{ delta: { rotation: 0 }, durationMs: 100 },
+				]),
+				makeRig(),
+			),
+		).toThrow(/relativeRotation 与 delta 互斥/);
+		expect(() => compileCatalog(MODEL_ID, build([{ relativeRotation: 359, durationMs: 100 }]), makeRig())).toThrow(
+			/末段不得是 relativeRotation/,
+		);
+		expect(() =>
+			compileCatalog(
+				MODEL_ID,
+				build([
+					{ relativeRotation: 359, durationMs: 100 },
+					{ delta: { rotation: 0, y: 0 }, durationMs: 100 },
+				]),
+				makeRig(),
+			),
+		).not.toThrow();
+	});
+
+	it("relative 旋转段逐帧驱动：全零时长增量闭环覆盖整圈，终值精确，后继 delta 段回正", async () => {
+		const state: FakeState = {
+			connected: true,
+			pose: { positionX: 0, positionY: 0, rotation: 10, size: 1 },
+			hotkeyIDs: [],
+			triggered: [],
+			moveCalls: [],
+			hangMove: false,
+			moveTimes: [],
+			readTimes: [],
+			updatePostCalls: [],
+			moved: false,
+		};
+		const rt = new Live2DRuntime({
+			client: makeFake(state),
+			rig: makeRig(),
+			catalog: compileCatalog(
+				MODEL_ID,
+				{
+					motions: {
+						spin: {
+							description: "整圈旋转特技",
+							motion: motion(
+								100,
+								track("head.yaw", [
+									[0, 0],
+									[100, 0],
+								]),
+							),
+							spatial: {
+								segments: [
+									{ relativeRotation: 359, durationMs: 100 },
+									{ delta: { rotation: 0 }, durationMs: 100 },
+								],
+							},
+						},
+					},
+				},
+				makeRig(),
+			),
+		});
+		const app = await startApp(rt);
+		try {
+			const result = await rt.express({ motion: "spin" }, {});
+			expect(result.status).toBe("unknown"); // 假体不确认参数输入（既有语义）
+			// 整圈段：全部为逐帧驱动请求（timeInSeconds=0 + 请求级 relative 开关 + 仅 rotation）
+			const driveCalls = state.moveCalls.slice(0, -1);
+			expect(driveCalls.length).toBeGreaterThanOrEqual(3);
+			for (const call of driveCalls) {
+				expect(call).toMatchObject({ timeInSeconds: 0, valuesAreRelativeToModel: true });
+				expect(call).not.toHaveProperty("positionX");
+				expect(call).not.toHaveProperty("positionY");
+				expect(call).not.toHaveProperty("size");
+			}
+			// 闭环终值精确：增量之和 = 目标角（smooth 终值 = 全角），无欠旋
+			const driven = driveCalls.reduce((sum, call) => sum + (call.rotation as number), 0);
+			expect(driven).toBeCloseTo(359, 6);
+			// 增量单调（缓入缓出）且单帧增量远小于 180°——免疫 VTS 最短弧折返
+			const deltas = driveCalls.map((call) => call.rotation as number);
+			for (const delta of deltas) expect(Math.abs(delta)).toBeLessThan(180);
+			// 回正段：absolute 目标 = 基准朝向（10），吸收驱动结束的朝向余量
+			expect(state.moveCalls.at(-1)).toMatchObject({ valuesAreRelativeToModel: false, rotation: 10 });
+			expect(result.details).toMatchObject({ restored: true });
+		} finally {
+			await app.onStop?.({} as ServiceCompanionContext);
+		}
+	});
+
+	it("relative 旋转段驱动可中止：中止后不再派发增量，归位覆盖在途旋转", async () => {
+		const state: FakeState = {
+			connected: true,
+			pose: { positionX: 0, positionY: 0, rotation: 10, size: 1 },
+			hotkeyIDs: [],
+			triggered: [],
+			moveCalls: [],
+			hangMove: false,
+			moveTimes: [],
+			readTimes: [],
+			updatePostCalls: [],
+			moved: false,
+		};
+		const rt = new Live2DRuntime({
+			client: makeFake(state),
+			rig: makeRig(),
+			catalog: compileCatalog(
+				MODEL_ID,
+				{
+					motions: {
+						spin: {
+							description: "整圈旋转特技",
+							motion: motion(
+								2000,
+								track("head.yaw", [
+									[0, 0],
+									[2000, 0],
+								]),
+							),
+							spatial: {
+								segments: [
+									{ relativeRotation: 359, durationMs: 2000 },
+									{ delta: { rotation: 0, y: 0 }, durationMs: 100 },
+								],
+							},
+						},
+					},
+				},
+				makeRig(),
+			),
+		});
+		const app = await startApp(rt);
+		try {
+			const run = rt.express({ motion: "spin" }, {});
+			await new Promise((resolve) => setTimeout(resolve, 80));
+			rt.interrupt();
+			const result = await run;
+			expect(result.status).toBe("cancelled");
+			const driveCount = state.moveCalls.filter((call) => call.valuesAreRelativeToModel === true).length;
+			const countAfterCancel = state.moveCalls.length - driveCount; // 中止后仅剩归位移动
+			await new Promise((resolve) => setTimeout(resolve, 60));
+			expect(state.moveCalls.filter((call) => call.valuesAreRelativeToModel === true).length).toBe(driveCount);
+			expect(countAfterCancel).toBeLessThanOrEqual(2); // 归位（restore）至多一次 moveModel
+			expect(state.moveTimes.at(-1)! - state.moveTimes.at(-2)!).toBeLessThan(1000); // 归位及时，未拖满 2s
+		} finally {
+			await app.onStop?.({} as ServiceCompanionContext);
+		}
+	});
+
 	it("段间等待不被效果派发抢跑：带效果段 sleep 全额等待 durationMs 后才发下一段 moveModel", async () => {
 		const state: FakeState = {
 			connected: true,
@@ -439,7 +630,10 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		try {
 			await rt.express({ motion: "spin" }, {});
 			expect(state.moveTimes.length).toBe(2);
-			expect(state.moveTimes[1]! - state.moveTimes[0]!).toBeGreaterThanOrEqual(100);
+			// 修复语义：效果派发不计入段等待（动画尚未起跑），sleep 从位姿请求发送时刻起算。
+			// 假体 moveModel 往返耗时 ≈ 0，段间间隔应等满 durationMs；留 5ms 容差吸收
+			// 生产语义中扣除位姿请求往返的合法提前（真实 VTS 往返以毫秒计）。
+			expect(state.moveTimes[1]! - state.moveTimes[0]!).toBeGreaterThanOrEqual(95);
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}
