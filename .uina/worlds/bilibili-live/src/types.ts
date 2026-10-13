@@ -181,7 +181,7 @@ export interface LiveWorldConfig {
  * 外部副作用动作标准执行结果模型
  */
 export interface ActionOutcome<T = unknown> {
-  status: "succeeded" | "failed" | "unknown";
+  status: "succeeded" | "failed" | "unknown" | "not_started";
   message: string;
   data?: T;
 }

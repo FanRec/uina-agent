@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { discoverExternalWorldEntries, extractWorldDef } from "../src/extensions/world-framework/world-loader.js";
-import type { ExtensionAPI } from "../src/extensions/runner.js";
 
 const tempRoots: string[] = [];
 
@@ -75,26 +74,34 @@ describe("discoverExternalWorldEntries：目录入口解析（resolveDirectoryEn
 });
 
 describe("extractWorldDef：WorldDef 提取契约", () => {
-	const pi = {} as ExtensionAPI;
 	const def = { name: "w", description: "d", actions: {} };
 
 	it("对象本身即是 WorldDef：原样返回", async () => {
-		expect(await extractWorldDef(def, pi)).toBe(def);
+		expect(await extractWorldDef(def)).toBe(def);
 	});
 
-	it("default 导出为工厂函数：以 pi 调用并校验产物", async () => {
-		expect(await extractWorldDef(() => def, pi)).toBe(def);
+	it("default 导出为无参工厂：调用并校验产物", async () => {
+		expect(await extractWorldDef(() => def)).toBe(def);
 	});
 
-	it("命名空间导出：worldDef 键与 default 键都能命中", async () => {
-		expect(await extractWorldDef({ worldDef: def }, pi)).toBe(def);
-		expect(await extractWorldDef({ default: def }, pi)).toBe(def);
+	it("工厂不得读取宿主参数（无参调用，收不到注入）", async () => {
+		expect(
+			await extractWorldDef((...args: unknown[]) => {
+				expect(args).toHaveLength(0);
+				return def;
+			}),
+		).toBe(def);
+	});
+
+	it("命名空间导出（worldDef/default 键）不属于入口合同：返回 null", async () => {
+		expect(await extractWorldDef({ worldDef: def })).toBeNull();
+		expect(await extractWorldDef({ default: def })).toBeNull();
 	});
 
 	it("产物不是 WorldDef / 形状不齐 / 非对象非函数：返回 null", async () => {
-		expect(await extractWorldDef(() => ({ name: "" }), pi)).toBeNull();
-		expect(await extractWorldDef({ name: "w", description: "d" }, pi)).toBeNull();
-		expect(await extractWorldDef("text", pi)).toBeNull();
-		expect(await extractWorldDef(null, pi)).toBeNull();
+		expect(await extractWorldDef(() => ({ name: "" }))).toBeNull();
+		expect(await extractWorldDef({ name: "w", description: "d" })).toBeNull();
+		expect(await extractWorldDef("text")).toBeNull();
+		expect(await extractWorldDef(null)).toBeNull();
 	});
 });

@@ -99,23 +99,20 @@ export function isWorldDef(obj: unknown): obj is WorldDef {
 }
 
 /**
- * 从导入的模块中提取 WorldDef 契约对象
+ * 从导入的模块中提取 WorldDef 契约对象。
+ *
+ * 入口合同：默认导出为 WorldDef 实例，或**无参**工厂函数。
+ * 工厂不得读取宿主参数——需要宿主能力放在 onStart 的 ctx 里；参数化注入仅用于测试直接调用工厂。
  */
-export async function extractWorldDef(moduleExport: unknown, pi: ExtensionAPI): Promise<WorldDef | null> {
+export async function extractWorldDef(moduleExport: unknown): Promise<WorldDef | null> {
 	if (isWorldDef(moduleExport)) {
 		return moduleExport;
 	}
 	if (typeof moduleExport === "function") {
-		// 支持导出工厂函数：export default createMyWorld() 或 export default () => worldDef
-		const result = await (moduleExport as (pi?: ExtensionAPI) => unknown)(pi);
+		const result = await (moduleExport as () => unknown)();
 		if (isWorldDef(result)) {
 			return result;
 		}
-	}
-	if (typeof moduleExport === "object" && moduleExport !== null) {
-		const record = moduleExport as Record<string, unknown>;
-		if (isWorldDef(record.worldDef)) return record.worldDef;
-		if (isWorldDef(record.default)) return record.default;
 	}
 	return null;
 }
@@ -141,7 +138,7 @@ export async function loadExternalWorlds(
 	for (const entry of entries) {
 		try {
 			const moduleExport = (await jiti.import(entry, { default: true })) as unknown;
-			const worldDef = await extractWorldDef(moduleExport, pi);
+			const worldDef = await extractWorldDef(moduleExport);
 
 			if (worldDef) {
 				const unregister = await registry.register(worldDef);

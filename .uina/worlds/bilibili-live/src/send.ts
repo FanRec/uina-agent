@@ -10,6 +10,8 @@ export interface SendDanmakuOptions {
   biliJct: string;
   buvid3?: string;
   timeoutMs?: number;
+  /** 外部取消信号（工具取消）。中止后弹幕是否送达未知，结果如实报告 unknown。 */
+  signal?: AbortSignal;
   fetchFn?: typeof fetch;
 }
 
@@ -152,6 +154,15 @@ export async function sendDanmaku(
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const externalSignal = options.signal;
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      clearTimeout(timer);
+      return { status: "not_started", message: "外部已取消，弹幕未发送。" };
+    }
+    externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+  }
 
   try {
     const response = await fetchFn("https://api.live.bilibili.com/msg/send", {
@@ -160,10 +171,14 @@ export async function sendDanmaku(
       body: bodyParams.toString(),
       signal: controller.signal,
     });
-    clearTimeout(timer);
     return await handleSendHttpResponse(response, trimmedMsg);
   } catch (error) {
-    clearTimeout(timer);
+    if (externalSignal?.aborted) {
+      return { status: "unknown", message: "已取消等待发送结果，弹幕是否送达未知。" };
+    }
     return handleSendError(error, timeoutMs);
+  } finally {
+    clearTimeout(timer);
+    if (externalSignal) externalSignal.removeEventListener("abort", onExternalAbort);
   }
 }

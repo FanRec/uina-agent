@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
+import { trackChildProcess, untrackChildProcess } from "../../../src/extensions/world-framework/child-process-registry.js";
 
 export interface SoundPlayer {
   readonly isSimulated: boolean;
@@ -59,8 +60,10 @@ export class MpvSoundPlayer implements SoundPlayer {
     );
 
     this.activeProcesses.add(proc);
+    trackChildProcess(proc.pid);
     const cleanup = () => {
       this.activeProcesses.delete(proc);
+      untrackChildProcess(proc.pid);
     };
 
     proc.once("exit", cleanup);

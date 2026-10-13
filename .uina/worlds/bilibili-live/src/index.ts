@@ -11,7 +11,7 @@ import type { LiveRoomStatus, LiveWorldConfig, LiveWorldState } from "./types.js
 import type { NotificationSettings } from "./types.js";
 import { DEFAULT_NOTIFICATION_SETTINGS, loadNotificationSettings, parseNotificationSettings, saveNotificationSettings } from "./notification-settings.js";
 import { join } from "node:path";
-import { worldFailed, worldSucceeded, worldUnknown } from "../../../../src/extensions/world-framework/result.js";
+import { worldFailed, worldNotStarted, worldSucceeded, worldUnknown } from "../../../../src/extensions/world-framework/result.js";
 import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 
 /**
@@ -222,7 +222,7 @@ export function handleMarkHandledAction(
   args: Record<string, unknown>,
   buffer: LiveEventBuffer
 ): ToolExecutionResult {
-  const rawId = args.eventId ?? args.id;
+  const rawId = args.eventId;
   const eventId = String(rawId ?? "").trim();
 
   if (!eventId) {
@@ -239,10 +239,10 @@ export async function handleSendAction(
   args: Record<string, unknown>,
   config: ResolvedLiveWorldConfig,
   appState: LiveWorldState,
-  onSent?: (text: string) => void
+  onSent?: (text: string) => void,
+  signal?: AbortSignal
 ): Promise<ToolExecutionResult> {
-  const rawMsg = args.message ?? args.msg ?? args.text;
-  const message = String(rawMsg ?? "").trim();
+  const message = String(args.message ?? "").trim();
 
   const targetRoomId =
     (typeof args.roomId === "number" ? args.roomId : undefined) ??
@@ -256,8 +256,10 @@ export async function handleSendAction(
     biliJct: config.biliJct,
     buvid3: config.buvid3,
     timeoutMs: config.network.requestTimeoutMs,
+    signal,
   });
 
+  if (outcome.status === "not_started") return worldNotStarted(outcome.message);
   if (outcome.status === "unknown") return worldUnknown(`[unknown] ${outcome.message}`, { verify: "bilibili-live/status" });
   if (outcome.status === "failed") return worldFailed(`[failed] ${outcome.message}`, { reason: "send_failed" });
   onSent?.(message);
@@ -525,7 +527,7 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
           },
           required: ["message"],
         },
-        run: (args) => handleSendAction(args, config, appState, (text) => ingestion.noteOwnSend(text)),
+        run: (args, ctx) => handleSendAction(args, config, appState, (text) => ingestion.noteOwnSend(text), ctx.signal),
       },
 
       recent: {

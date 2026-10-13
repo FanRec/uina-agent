@@ -105,7 +105,7 @@ export class WorldActivation {
 				? async (event: WorldEvent) => {
 						if (!this.scope.active) return;
 						if (event.channel !== "world") throw new Error("World 事件必须使用 channel: world");
-						if (!event.text && !event.render) return;
+						if (!event.text && !event.render) throw new Error("World 事件必须提供 text 或 render，拒绝静默丢弃");
 						const render = event.render ? async () => (this.scope.active ? await event.render!() : null) : undefined;
 						await pi.submitInput!({
 							id: event.id,
@@ -114,7 +114,7 @@ export class WorldActivation {
 								kind: "runtime",
 								type: event.type,
 								ref: this.definition.name,
-								origin: event.origin ?? "external",
+								origin: event.origin,
 								channel: event.channel,
 							},
 							text: event.text ?? "[deferred world event]",

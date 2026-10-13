@@ -179,7 +179,8 @@ export interface WorldEvent {
 	type: string;
 	channel: "world";
 	delivery?: "queued" | "urgent";
-	origin?: "external" | "internal";
+	/** 来源归属。来源事实事件用稳定去重 id；新生成机会用唯一 id，两者不得混用。 */
+	origin: "external" | "internal";
 	text?: string;
 	render?: () => string | null | Promise<string | null>;
 	data?: unknown;

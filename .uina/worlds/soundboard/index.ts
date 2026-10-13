@@ -13,7 +13,7 @@ export function createSoundboardWorld(config?: SoundboardWorldConfig): WorldDef 
   const player: SoundPlayer = mpvPath ? new MpvSoundPlayer(mpvPath) : new SimulatedSoundPlayer();
 
   let lastPlayed: SoundItem | null = null;
-  let volume = mergedConfig.defaultVolume ?? 80;
+  const defaultVolume = mergedConfig.defaultVolume ?? 80;
 
   return {
     name: "soundboard",
@@ -39,8 +39,7 @@ export function createSoundboardWorld(config?: SoundboardWorldConfig): WorldDef 
           required: ["sound"],
         },
         async run(args: Record<string, unknown>) {
-          const raw = args.sound ?? args.name ?? args.sfx ?? args.id;
-          const query = String(raw ?? "").trim();
+          const query = String(args.sound ?? "").trim();
           if (!query) {
             return worldFailed("参数错误：缺少音效名称。请传入 { sound: '音效ID或中文名' }。", { reason: "missing_sound" });
           }
@@ -59,7 +58,7 @@ export function createSoundboardWorld(config?: SoundboardWorldConfig): WorldDef 
           }
 
           const targetSound = matchResult.sound;
-          const customVol = typeof args.volume === "number" ? args.volume : volume;
+          const customVol = typeof args.volume === "number" ? args.volume : defaultVolume;
           const effectiveVol = Math.max(0, Math.min(100, customVol + (targetSound.gainOffset ?? 0)));
 
           await player.play(targetSound.filepath, effectiveVol);
@@ -115,7 +114,7 @@ export function createSoundboardWorld(config?: SoundboardWorldConfig): WorldDef 
             `播放内核: ${player.isSimulated ? "⚠️ 静音模拟器 (未找到 mpv)" : "🔊 MPV 硬件播放器"}`,
             `音效总数: ${catalog.size}`,
             `活跃播放数: ${player.activeCount}`,
-            `全局音量: ${volume}%`,
+            `全局音量: ${defaultVolume}%`,
             `最近播放: ${lastPlayed ? `${lastPlayed.name} [ID: ${lastPlayed.id}]` : "无"}`,
           ];
           return worldSucceeded(lines.join("\n"));

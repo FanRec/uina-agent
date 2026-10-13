@@ -6,6 +6,7 @@ import type {
 } from "../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { type Live2DRuntimeOptions } from "./runtime.js";
+import { toolNotStarted, toolRejected, toolSucceeded } from "./results.js";
 import { createLive2DRuntime } from "./assembly.js";
 import { Live2DRuntimeProxy, type Live2DWorldRuntime } from "./worker/proxy.js";
 
@@ -41,9 +42,7 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 		) => ToolExecutionResult | Promise<ToolExecutionResult>,
 	): (args: Record<string, unknown>, ctx: ActionContext) => Promise<ToolExecutionResult> {
 		return async (args, ctx) =>
-			runtime
-				? run(runtime, args, ctx)
-				: { result: `Live2D 世界尚未启动，"${action}" 未执行。`, status: "not_started" };
+			runtime ? run(runtime, args, ctx) : toolNotStarted(`Live2D 世界尚未启动，"${action}" 未执行。`);
 	}
 
 	return {
@@ -138,16 +137,12 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 				},
 				run: call("status", async (rt, args) => {
 					try {
-						return {
-							result: args.detail === true ? await rt.diagnose() : await rt.formatStatus(),
-							status: "succeeded",
-						};
+						return toolSucceeded(args.detail === true ? await rt.diagnose() : await rt.formatStatus());
 					} catch (error) {
-						return {
-							result: `Live2D 状态读取失败：${error instanceof Error ? error.message : String(error)}`,
-							status: "failed",
-							details: { reason: (error as { reason?: string }).reason ?? "engine_error" },
-						};
+						return toolRejected(
+							"engine_error",
+							`Live2D 状态读取失败：${error instanceof Error ? error.message : String(error)}`,
+						);
 					}
 				}),
 			},

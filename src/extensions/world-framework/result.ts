@@ -2,6 +2,9 @@ import type { ToolExecutionResult } from "../../tools/broker.js";
 
 export type WorldEffectStatus = "accepted" | "applied" | "simulated" | "unknown" | "not_started";
 
+/** succeeded 结果允许的外部效果值。unknown 归 worldUnknown，not_started 归框架层，禁止与 succeeded 组合。 */
+export type WorldAppliedEffect = Exclude<WorldEffectStatus, "unknown" | "not_started">;
+
 /** 把结构化标记以统一 [k=v] 形式追加到模型可见文本；同一事实同时写入 details 供程序消费。 */
 function tagged(result: string, tags: string[]): string {
 	return tags.length ? `${result} [${tags.join(" ")}]` : result;
@@ -10,7 +13,7 @@ function tagged(result: string, tags: string[]): string {
 export function worldSucceeded(
 	result: string,
 	details?: Record<string, unknown>,
-	effect?: WorldEffectStatus,
+	effect?: WorldAppliedEffect,
 ): ToolExecutionResult {
 	const tags: string[] = [];
 	if (effect) tags.push(`effect=${effect}`);

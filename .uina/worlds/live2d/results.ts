@@ -39,7 +39,8 @@ export type RejectReason =
 	| "unknown_ambient"
 	| "resource_conflict"
 	| "hotkey_missing"
-	| "unfocused";
+	| "unfocused"
+	| "engine_error";
 
 export const EFFECT_STATUSES: readonly EffectStatus[] = ["not_started", "applied", "accepted", "cancelled", "unknown"];
 export const VERIFICATIONS: readonly Verification[] = ["local_intent", "input_accepted"];
@@ -73,6 +74,15 @@ export function toolUnknown(message: string, extra?: Record<string, unknown>): T
 		result: message,
 		status: "unknown",
 		details: { effectStatus: "unknown", ...extra },
+	};
+}
+
+/** not_started：世界尚未启动，动作未进入执行路径。 */
+export function toolNotStarted(result: string, extra?: Record<string, unknown>): ToolExecutionResult {
+	return {
+		result,
+		status: "not_started",
+		details: { effectStatus: "not_started", ...extra },
 	};
 }
 

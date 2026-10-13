@@ -6,6 +6,7 @@ import { worldSucceeded } from "../src/extensions/world-framework/result.js";
 import { WorldRegistry } from "../src/extensions/world-framework/world-registry.js";
 import { defineWorld } from "../src/extensions/world-framework/index.js";
 import type { ExtensionAPI } from "../src/extensions/runner.js";
+import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
 import type { Tool } from "../src/tools/broker.js";
 
 describe("World Framework: Lifecycle & Registry", () => {
@@ -118,6 +119,7 @@ describe("World Framework: Lifecycle & Registry", () => {
 					type: string;
 					channel: "world";
 					delivery: "queued" | "urgent";
+					origin: "external" | "internal";
 					render: () => string;
 			  }) => Promise<void>)
 			| undefined;
@@ -134,7 +136,14 @@ describe("World Framework: Lifecycle & Registry", () => {
 			actions: {},
 		});
 		let state = "old";
-		await emitEvent!({ id: "event-1", type: "changed", channel: "world", delivery: "queued", render: () => state });
+		await emitEvent!({
+			id: "event-1",
+			type: "changed",
+			channel: "world",
+			delivery: "queued",
+			origin: "external",
+			render: () => state,
+		});
 		expect(inputs).toHaveLength(1);
 		expect(inputs[0]?.mode).toBe("followUp");
 		expect((inputs[0]?.source as { origin?: string }).origin).toBe("external");
@@ -145,6 +154,28 @@ describe("World Framework: Lifecycle & Registry", () => {
 		expect(await deferred()).toBe("new");
 		await unregister();
 		expect(await deferred()).toBeNull();
+	});
+
+	it("emitEvent：既无 text 也无 render 的事件显式抛错，不静默丢弃", async () => {
+		const mock = createMockExtensionAPI();
+		let emitEvent: NonNullable<ServiceCompanionContext["emitEvent"]> | undefined;
+		const inputs: Array<Record<string, unknown>> = [];
+		(mock.pi as any).submitInput = vi.fn(async (input: Record<string, unknown>) => {
+			inputs.push(input);
+		});
+		const unregister = await defineWorld(mock.pi, {
+			name: "invalid-event-world",
+			description: "invalid event test",
+			onStart: (ctx) => {
+				emitEvent = ctx.emitEvent;
+			},
+			actions: {},
+		});
+		await expect(emitEvent!({ id: "bad-1", type: "changed", channel: "world", origin: "external" })).rejects.toThrow(
+			"必须提供 text 或 render",
+		);
+		expect(inputs).toHaveLength(0);
+		await unregister();
 	});
 
 	it("disable：先取消并等待动作，再执行 onStop", async () => {
