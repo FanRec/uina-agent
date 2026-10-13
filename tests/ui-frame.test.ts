@@ -28,7 +28,7 @@ import {
 	resolveCarriageReturns,
 	visibleWidth,
 } from "../src/ui/core/utils.js";
-import { VtScreen } from "./harness/index.js";
+import { VtScreen, dispatchUIHostInput } from "./harness/index.js";
 
 const COLUMNS = 171;
 const ROWS = 30;
@@ -344,9 +344,9 @@ describe("边界态：内容刚好压在视口高度附近时展开", () => {
 		host.transcript.setHoveredToolId("call-big");
 		await snap("折叠+hover");
 		// 走真机按键路径（ctrl+o）：展开/收起必须经过 preserveScrollAnchor
-		host.handleInput("\x0f");
+		dispatchUIHostInput(host, "\x0f");
 		await snap("展开+hover");
-		host.handleInput("\x0f");
+		dispatchUIHostInput(host, "\x0f");
 		await snap("收起+hover");
 		return { host, taken };
 	}

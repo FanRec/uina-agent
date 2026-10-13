@@ -7,7 +7,6 @@ import { UIHost, type UIHostOptions } from "./ui-host.js";
 import { installUIFeatures, type UIFeatureOptions } from "./features.js";
 import { TrajectoryProjection } from "./adapters/agent-events.js";
 
-import type { QueuedMessage } from "../agent/queue.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
 import type { SessionEntry } from "../session/types.js";
 import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
@@ -15,26 +14,20 @@ import type { CompactionReplayDecoration } from "./components/transcript/transcr
 import type { PromptContextCardData } from "./components/transcript/context-card.js";
 import { promptSnapshotFingerprint } from "../session/prompt-snapshots.js";
 
-import type { HostEvent } from "../host/events.js";
+import type { HostEvent, HostSnapshot } from "../host/events.js";
+import type { TuiIntent } from "./intents.js";
 
 export type { HostEvent };
 
 export interface InteractiveTUIOptions extends UIHostOptions {
 	features?: UIFeatureOptions;
-	onDirectCommand?: (cmd: string) => void | Promise<void>;
-	onCompactRequest?: (instruction?: string) => void | Promise<void>;
 }
 
 export class InteractiveTUI {
-	readonly host: UIHost;
-	private lineCallback?: (line: string, mode: "direct" | "steer" | "followUp") => void;
-	private interactionCallback?: () => void;
-	private cancelCallback?: (source?: "escape" | "ctrl+c") => void;
-	private interruptAndDeliverCallback?: (text: string) => void;
-	private pullBackQueueCallback?: () => void;
-	private thinkingLevelCycleCallback?: () => void;
+	private readonly host: UIHost;
+	private intentCallback?: (intent: TuiIntent) => void;
 	private currentThinkingId?: string;
-	readonly trajectoryProjection: TrajectoryProjection;
+	private readonly trajectoryProjection: TrajectoryProjection;
 	private readonly featureDisposer: () => void;
 	/** 工具事实只携带 callId：开始时刻由消费者自记，用于结算耗时。 */
 	private readonly toolStartedAt = new Map<string, number>();
@@ -69,28 +62,32 @@ export class InteractiveTUI {
 		this.host.onUserLine = (line, mode) => {
 			// mode 原样穿透：direct/steer/followUp 的归一单点在 host.submitText，
 			// 门面不改名（旧实现把 direct 改写成 steer，语义误导且被 host 重判兜底）。
-			this.lineCallback?.(line, mode);
+			this.emitIntent({ type: "submit", text: line, mode });
 		};
 
 		this.host.onCancel = (source) => {
-			this.cancelCallback?.(source);
+			this.emitIntent({ type: "cancel", source });
 		};
-		this.host.onInteraction = () => this.interactionCallback?.();
+		this.host.onInteraction = () => this.emitIntent({ type: "interaction" });
 
 		this.host.onInterruptAndDeliver = (text) => {
-			this.interruptAndDeliverCallback?.(text);
+			this.emitIntent({ type: "interrupt-and-deliver", text });
 		};
 
 		this.host.onPullBackQueue = () => {
-			this.pullBackQueueCallback?.();
+			this.emitIntent({ type: "pull-back-queue" });
 		};
 
 		this.host.onThinkingLevelCycle = () => {
-			this.thinkingLevelCycleCallback?.();
+			this.emitIntent({ type: "cycle-thinking-level" });
 		};
 	}
 
-	get ctxUI(): ExtensionUIContext {
+	private emitIntent(intent: TuiIntent): void {
+		this.intentCallback?.(intent);
+	}
+
+	get extensionUI(): ExtensionUIContext {
 		return this.host.ctxUI;
 	}
 
@@ -98,39 +95,43 @@ export class InteractiveTUI {
 		this.host.start();
 	}
 
-	onLine(cb: (line: string, mode: "direct" | "steer" | "followUp") => void): void {
-		this.lineCallback = cb;
+	onIntent(cb: (intent: TuiIntent) => void): void {
+		this.intentCallback = cb;
 	}
 
-	onInteraction(cb: () => void): void {
-		this.interactionCallback = cb;
+	initialize(snapshot: HostSnapshot): void {
+		this.updateSnapshot(snapshot);
 	}
 
-	onCancel(cb: (source?: "escape" | "ctrl+c") => void): void {
-		this.cancelCallback = cb;
+	updateSnapshot(snapshot: HostSnapshot): void {
+		if (this.host.modelName !== snapshot.modelName) this.host.setModel(snapshot.modelName);
+		this.host.setThinkingLevels(snapshot.thinkingLevels);
+		if (this.host.getReasoningEffort() !== snapshot.thinkingLevel) {
+			this.host.setReasoningEffort(snapshot.thinkingLevel);
+		}
+		if (snapshot.context) this.host.setContext(snapshot.context);
+		if (this.host.isBusy() !== snapshot.busy) this.host.setBusy(snapshot.busy);
+		this.host.setPendingQueue(snapshot.queue);
 	}
 
-	onInterruptAndDeliver(cb: (text: string) => void): void {
-		this.interruptAndDeliverCallback = cb;
+	getDraft(): string {
+		return this.host.inputLine.getText();
 	}
 
-	onPullBackQueue(cb: () => void): void {
-		this.pullBackQueueCallback = cb;
-	}
-
-	onThinkingLevelCycle(cb: () => void): void {
-		this.thinkingLevelCycleCallback = cb;
-	}
-
-	replaceInput(text: string): void {
+	setDraft(text: string): void {
 		this.host.replaceInput(text);
 	}
 
-	loadHistory(messages: readonly import("../core/types.js").ChatMsg[]): void {
-		this.host.loadHistory(messages);
+	addNotice(text: string): void {
+		this.host.transcript.addNotice(text);
+		this.host.requestRender();
 	}
 
-	loadSession(
+	notify(message: string, type: "info" | "warning" | "error" = "info", timeoutMs?: number): void {
+		this.host.notify(message, type, timeoutMs);
+	}
+
+	restoreSession(
 		entries: readonly SessionEntry[],
 		decorations: readonly CompactionReplayDecoration[] = [],
 		promptSnapshots: readonly PromptSnapshotRecord[] = [],
@@ -141,22 +142,18 @@ export class InteractiveTUI {
 		this.host.loadSession(entries, decorations, promptSnapshots);
 	}
 
-	setPendingQueue(items: readonly QueuedMessage[]): void {
-		this.host.setPendingQueue(items);
-	}
-
 	/**
 	 * 宿主事件 → TUI 状态翻译。session_rewind 需要调用方附带压缩回放装饰
 	 * （事件按 1:1 透传纪律不携带派生数据，装饰由 cli 从 host 当前 auxiliary 计算）。
 	 */
-	render(
+	consume(
 		m: HostEvent,
 		rewindDecorations: readonly CompactionReplayDecoration[] = [],
 		promptSnapshots: readonly PromptSnapshotRecord[] = [],
 	): void {
 		switch (m.type) {
 			case "model_select":
-				this.host.setModel(m.model);
+				if (this.host.modelName !== m.model) this.host.setModel(m.model);
 				break;
 
 			case "thinking_level_select":
@@ -320,7 +317,7 @@ export class InteractiveTUI {
 				break;
 
 			case "queue":
-				this.host.setPendingQueue(m.items as QueuedMessage[]);
+				this.host.setPendingQueue(m.items);
 				break;
 
 			case "custom_message": {
@@ -381,7 +378,5 @@ export class InteractiveTUI {
 }
 
 export function createInteractiveUI(options: InteractiveTUIOptions = {}): InteractiveTUI {
-	const tui = new InteractiveTUI(options);
-	tui.start();
-	return tui;
+	return new InteractiveTUI(options);
 }

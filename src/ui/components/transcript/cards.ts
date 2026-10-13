@@ -153,6 +153,11 @@ abstract class BaseCustomComponent<
 	constructor(
 		protected readonly item: T,
 		protected readonly renderer?: R,
+		private readonly renderComponent: (component: Component, width: number, height?: number) => string[] = (
+			component,
+			width,
+			height,
+		) => component.render(width, height),
 	) {
 		super();
 		this.rebuild();
@@ -171,7 +176,10 @@ abstract class BaseCustomComponent<
 			try {
 				const c = this.renderer(this.item, { expanded: false });
 				if (c) {
-					this.addChild(c);
+					this.addChild({
+						render: (width, height) => this.renderComponent(c, width, height),
+						invalidate: () => c.invalidate?.(),
+					});
 					return;
 				}
 			} catch (err) {

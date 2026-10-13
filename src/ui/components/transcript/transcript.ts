@@ -433,6 +433,11 @@ export class TranscriptContainer implements Component {
 
 	private toolRenderer: (name: string) => ToolRenderer | undefined = () => undefined;
 	private markdownTransformer: MarkdownTransformer = (text) => text;
+	private renderComponent: (component: Component, width: number, height?: number) => string[] = (
+		component,
+		width,
+		height,
+	) => component.render(width, height);
 	private renderTool(
 		item: Extract<TurnItem, { kind: "tool" }>,
 		width: number,
@@ -446,7 +451,7 @@ export class TranscriptContainer implements Component {
 				hovered: options.isHovered ?? false,
 				elapsedMs: item.elapsedMs ?? 0,
 			});
-			if (component) return component.render(width);
+			if (component) return this.renderComponent(component, width);
 		} catch (error) {
 			failure = "[tool renderer " + item.name + ": " + String(error) + "]";
 		}
@@ -470,10 +475,12 @@ export class TranscriptContainer implements Component {
 		message(type: string): MessageRenderer | undefined;
 		tool?(name: string): ToolRenderer | undefined;
 		markdown?: MarkdownTransformer;
+		componentRenderer?: (component: Component, width: number, height?: number) => string[];
 	}): void {
 		this.messageRenderer = resolve.message;
 		this.toolRenderer = resolve.tool ?? (() => undefined);
 		this.markdownTransformer = resolve.markdown ?? ((text) => text);
+		this.renderComponent = resolve.componentRenderer ?? ((component, width, height) => component.render(width, height));
 		this.invalidate();
 	}
 
@@ -1150,7 +1157,11 @@ export class TranscriptContainer implements Component {
 					blocks.push(this.buildTurnBlock(item.turn, width, false, latestFailed));
 					break;
 				case "customMessage": {
-					const comp = new CustomMessageComponent(item.message, this.messageRenderer(item.message.customType));
+					const comp = new CustomMessageComponent(
+						item.message,
+						this.messageRenderer(item.message.customType),
+						this.renderComponent,
+					);
 					blocks.push({ kind: "static", lines: comp.render(width) });
 					break;
 				}
@@ -1235,7 +1246,11 @@ export class TranscriptContainer implements Component {
 			} else if (item.kind === "interrupt") {
 				out.push(`  \x1b[2m${item.text}\x1b[0m`);
 			} else if (item.kind === "customMessage") {
-				const comp = new CustomMessageComponent(item.message, this.messageRenderer(item.message.customType));
+				const comp = new CustomMessageComponent(
+					item.message,
+					this.messageRenderer(item.message.customType),
+					this.renderComponent,
+				);
 				out.push(...comp.render(width));
 			} else if (item.kind === "contextCard") {
 				const comp = new ContextCardComponent(item.card);

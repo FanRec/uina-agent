@@ -14,6 +14,7 @@ import { formatStartupBanner, resolveExitCode, resolveRunMode } from "./run-mode
 import { executeCancelActions, resolveCancelActions } from "./cancel-decision.js";
 import { formatStdioEventLine, formatToolCallLine, formatToolResultBlock } from "./stdio-render.js";
 import { listPromptSnapshots } from "../session/prompt-snapshots.js";
+import { routeTuiIntent } from "./tui-intents.js";
 
 /**
  * 组合根：只做四件事——建宿主、挂一个消费者、装进程级守卫、退出。
@@ -80,8 +81,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 
 	const writeCommandOutput = (text: string): void => {
 		if (tui) {
-			tui.host.transcript.addNotice(text);
-			tui.host.requestRender();
+			tui.addNotice(text);
 			return;
 		}
 		process.stdout.write(`${text}\n`);
@@ -93,14 +93,14 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	// 装饰取自宿主当前 auxiliary（restoredAuxiliary 是启动快照，覆盖不了恢复后新发生的压缩）。
 	const renderToTui = (message: HostEvent): void => {
 		if (message.type === "session_rewind") {
-			tui!.render(
+			tui!.consume(
 				message,
 				compactionDecorations(host.auxiliaryEntries(), message.entries),
 				listPromptSnapshots(host.auxiliaryEntries()),
 			);
 			return;
 		}
-		tui!.render(message);
+		tui!.consume(message);
 	};
 
 	const render = (message: HostEvent): void => {
@@ -108,9 +108,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		if (message.type === "turn_end" || message.type === "turn_aborted") cancellationPending = false;
 		if (tui) {
 			if (message.type === "model_select") {
-				const snapshot = host.snapshot();
-				tui.host.setThinkingLevels(snapshot.thinkingLevels);
-				tui.host.setReasoningEffort(snapshot.thinkingLevel);
+				tui.updateSnapshot(host.snapshot());
 			}
 			renderToTui(message);
 		} else if (shouldRunTUI) {
@@ -217,21 +215,20 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	const restoreQueueToEditor = async (): Promise<number> => {
 		if (!tui) return 0;
 		if (!canEditQueuedDraft(host.snapshot().queue)) {
-			tui.host.notify("队列包含图片或扩展事件，已保留；可按 Esc 继续处理", "info");
+			tui.notify("队列包含图片或扩展事件，已保留；可按 Esc 继续处理", "info");
 			return 0;
 		}
 		const result = await host.claimAllQueued();
 		if (result.kind === "partial") {
-			tui.host.notify(
+			tui.notify(
 				`队列恢复中断：条目持久化失败（${errorMessage(result.error)}），其余排队消息已保留在队列中`,
 				"warning",
 			);
 		}
 		const items = result.claimed;
 		if (items.length === 0) return 0;
-		tui.replaceInput(combineQueuedDraft(items, tui.host.inputLine.getText()));
-		tui.host.transcript.addNotice(`已打断当前轮次，已将 ${items.length} 条排队消息退回输入栏`);
-		tui.host.requestRender();
+		tui.setDraft(combineQueuedDraft(items, tui.getDraft()));
+		tui.addNotice(`已打断当前轮次，已将 ${items.length} 条排队消息退回输入栏`);
 		return items.length;
 	};
 
@@ -261,7 +258,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 						cancellationPending = false;
 					}, debounceMs).unref?.();
 				},
-				notify: (text) => tui?.host.notify(text, "info", 2000),
+				notify: (text) => tui?.notify(text, "info", 2000),
 			},
 		);
 	};
@@ -316,7 +313,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 
 	const deliverQueuedNow = (extraText?: string): void => {
 		const token = ++interruptSeq;
-		const wasBusy = host.isBusy() || (tui && tui.host.isBusy());
+		const wasBusy = host.isBusy();
 		if (wasBusy) host.interrupt();
 		if (execRunning) execAbort?.abort();
 		void host
@@ -329,8 +326,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 				void host.resumePending().catch((error: unknown) => {
 					process.stderr.write("[投递失败] " + String(error) + "\n");
 				});
-				tui?.host.transcript.addNotice((wasBusy ? "已打断当前回合，" : "") + count + " 条消息立即处理");
-				tui?.host.requestRender();
+				tui?.addNotice((wasBusy ? "已打断当前回合，" : "") + count + " 条消息立即处理");
 			})
 			.catch((error) => {
 				process.stderr.write(`[打断投递失败] ${String(error)}\n`);
@@ -347,25 +343,21 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		// UI 组合：peek（快照）选目标，claim（mailbox 原语）领取。Subject 不懂"编辑器"语义。
 		const candidate = host.snapshot().queue.at(-1);
 		if (!candidate) {
-			tui.host.notify("排队队列为空，无待办可撤回", "warning", 2000);
+			tui.notify("排队队列为空，无待办可撤回", "warning", 2000);
 			return;
 		}
 		if (!canEditQueuedDraft([candidate])) {
-			tui.host.notify("该输入包含图片或扩展来源，已保留在队列中", "info");
+			tui.notify("该输入包含图片或扩展来源，已保留在队列中", "info");
 			return;
 		}
 		const last = await host.claimQueued(candidate.id);
 		if (!last) {
-			tui.host.notify("排队队列为空，无待办可撤回", "warning", 2000);
+			tui.notify("排队队列为空，无待办可撤回", "warning", 2000);
 			return;
 		}
-		tui.replaceInput(combineQueuedDraft([last], tui.host.inputLine.getText()));
+		tui.setDraft(combineQueuedDraft([last], tui.getDraft()));
 		const remaining = host.snapshot().queue.length;
-		tui.host.notify(
-			`已从队列撤回 1 条消息至输入栏${remaining > 0 ? `（剩余排队：${remaining} 条）` : ""}`,
-			"info",
-			2000,
-		);
+		tui.notify(`已从队列撤回 1 条消息至输入栏${remaining > 0 ? `（剩余排队：${remaining} 条）` : ""}`, "info", 2000);
 	};
 
 	const runDirectCommand = async (input: string): Promise<void> => {
@@ -429,38 +421,39 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 		if (shouldRunTUI) {
 			const snapshot = host.snapshot();
 			tui = createInteractiveUI({
-				modelName: snapshot.modelName,
-				thinkingLevels: snapshot.thinkingLevels,
-				thinkingLevel: snapshot.thinkingLevel,
 				cwd: process.cwd(),
 				registry: host.extensionRegistry,
 				features: {
 					sessionPort: host.session,
 				},
 			});
-			host.attachExtensionUI(tui.ctxUI);
-			tui.onLine(onUserLine);
-			tui.onInteraction(() => {
-				cancellationPending = false;
-			});
-			tui.onCancel(handleCancel);
-			tui.onInterruptAndDeliver(handleInterruptAndDeliver);
-			tui.onPullBackQueue(() => {
-				void handlePullBackQueue();
-			});
-			tui.onThinkingLevelCycle(() => {
-				if (!host.snapshot().thinkingLevels?.length) {
-					tui?.host.notify("当前 Provider 未提供 thinking 能力元数据；无法循环档位。", "warning", 2500);
-					return;
-				}
-				host.cycleThinkingLevel();
-			});
-			if (snapshot.context) tui.host.setContext(snapshot.context);
+			tui.initialize(snapshot);
 			if (host.restoredEntries.length > 0) {
 				const decorations = compactionDecorations(host.restoredAuxiliary, host.restoredEntries);
-				tui.loadSession(host.restoredEntries, decorations, listPromptSnapshots(host.restoredAuxiliary));
+				tui.restoreSession(host.restoredEntries, decorations, listPromptSnapshots(host.restoredAuxiliary));
 			}
-			tui.setPendingQueue(snapshot.queue);
+			host.attachExtensionUI(tui.extensionUI);
+			tui.onIntent((intent) =>
+				routeTuiIntent(intent, {
+					submit: onUserLine,
+					interaction: () => {
+						cancellationPending = false;
+					},
+					cancel: handleCancel,
+					interruptAndDeliver: handleInterruptAndDeliver,
+					pullBackQueue: () => {
+						void handlePullBackQueue();
+					},
+					cycleThinkingLevel: () => {
+						if (!host.snapshot().thinkingLevels?.length) {
+							tui?.notify("当前 Provider 未提供 thinking 能力元数据；无法循环档位。", "warning", 2500);
+							return;
+						}
+						host.cycleThinkingLevel();
+					},
+				}),
+			);
+			tui.start();
 			for (const event of earlyEvents.splice(0)) {
 				render(event);
 			}

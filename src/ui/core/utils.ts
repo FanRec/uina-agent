@@ -43,7 +43,6 @@ export const C = {
 	error: "\x1b[38;2;218;138;147m", // #DA8A93 柔和粉红
 	warning: "\x1b[38;2;216;178;112m", // #D8B270 柔和暖琥珀
 	briefLabelYou: "\x1b[38;2;255;223;128m", // #FFDF80 用户输入提示暖金
-	briefLabelClaude: "\x1b[38;2;125;161;222m", // #7DA1DE 助手标签雾蓝
 	// 工具圆点指示色
 	toolDotExec: "\x1b[38;2;127;174;153m", // #7FAE99 鼠尾草绿
 	toolDotRead: "\x1b[38;2;130;184;199m", // #82B8C7 青蓝
@@ -53,11 +52,8 @@ export const C = {
 	toolCardBackground: "\x1b[48;2;36;43;58m", // #242B3A 卡片底色
 	toolCardBackgroundDim: "\x1b[48;2;28;35;48m", // #1C2330 深层卡片底色
 	selectionBg: "\x1b[48;2;59;74;102m", // #3B4A66 选区高亮色
-	// 经典兼容器
-	iceBlue: "\x1b[38;2;171;194;236m", // 映射到 suggestion 冰蓝
-	brandBlue: "\x1b[38;2;125;161;222m", // 映射到 claude 雾蓝
+	// 清晰高亮与卡片背景
 	glowWhite: "\x1b[38;2;255;255;255m",
-	darkBg: "\x1b[48;2;36;43;58m",
 };
 
 /** 剥离所有 ANSI 转义控制码 */

@@ -80,14 +80,15 @@ describe("EffortSlider.formatLines", () => {
 		expect(plain).toContain("✓");
 	});
 
-	it("盒体行宽自洽：所有行同宽 = boxWidth+2（前导缩进独立于盒宽），盒宽夹取 [56,76]", () => {
+	it("窄屏面板填满可用宽度，宽屏面板夹取到最大宽度", () => {
 		const slider = new EffortSlider("medium");
-		// [终端宽, 期望盒体总宽]：boxWidth=max(56,min(w-6,76))，行宽=boxWidth+2
+		// 紧凑布局与宽屏布局共享一套行宽合同：窄屏填满，高于最大宽度后居中收窄。
 		const cases: [number, number][] = [
-			[40, 58], // 下限夹取 56
-			[60, 58], // min(54,76)=54 → 下限夹取 56
-			[64, 60], // min(58,76)=58 → 恰好 58+2
-			[100, 78], // min(94,76)=76 → 上限夹取
+			[40, 40],
+			[50, 50],
+			[60, 60],
+			[64, 64],
+			[100, 78],
 			[200, 78],
 		];
 		for (const [terminalWidth, expected] of cases) {

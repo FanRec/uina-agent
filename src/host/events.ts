@@ -1,4 +1,6 @@
 import type { RuntimeEvent } from "../runtime/events.js";
+import type { ContextSnapshot, ThinkingLevel } from "../core/types.js";
+import type { QueuedMessage } from "../agent/queue.js";
 
 /** 上下文构成 provenance（context_prepare 事件载荷成员；UI 消费者经本模块取型）。 */
 export type { InjectionProvenance } from "../runtime/events.js";
@@ -20,3 +22,15 @@ export interface HostNoticeEvent {
 }
 
 export type HostEventListener = (event: HostEvent) => void;
+
+/** Consumer snapshot: stable Host facts, independent of any UI implementation. */
+export interface HostSnapshot {
+	readonly modelName: string;
+	readonly thinkingLevels?: readonly ThinkingLevel[];
+	readonly thinkingLevel?: ThinkingLevel;
+	readonly context?: ContextSnapshot;
+	readonly busy: boolean;
+	readonly queue: readonly QueuedMessage[];
+	readonly queueDepth: number;
+	readonly queueOldestAgeMs?: number;
+}

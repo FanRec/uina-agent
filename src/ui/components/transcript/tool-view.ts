@@ -99,7 +99,7 @@ export function getToolCategoryColor(category: ToolCategory): string {
 		case "web":
 			return C.toolDotWeb; // Sky/Teal
 		default:
-			return C.iceBlue;
+			return C.suggestion;
 	}
 }
 
@@ -385,7 +385,8 @@ export function formatToolCardLines(
 		const char = isBlinkVisible ? BLACK_CIRCLE : " ";
 		iconStr = `${C.dim}${char}${C.reset} `;
 	} else {
-		iconStr = `${catColor}${BULLET}${C.reset} `;
+		// Category colors style the operation name; the result marker communicates outcome.
+		iconStr = `${C.success}${BULLET}${C.reset} `;
 	}
 
 	// 2. 标题行参数解析与多行折叠

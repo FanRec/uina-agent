@@ -1,6 +1,10 @@
 // 覆盖层按键决策的纯内核钉住：isMouseReport / isToggleKey / confirmChoice。
 import { describe, expect, it } from "vitest";
 import { confirmChoice, isMouseReport, isToggleKey } from "../src/ui/extension-ui-context.js";
+import { FocusManager } from "../src/ui/core/focus.js";
+import { OverlayStack } from "../src/ui/core/overlay.js";
+import { Key, matchesKey } from "../src/ui/core/keys.js";
+import { stripAnsi, visibleWidth } from "../src/ui/core/utils.js";
 
 const ARROW_LEFT = "\x1b[D";
 const ARROW_RIGHT = "\x1b[C";
@@ -8,6 +12,10 @@ const ENTER = "\r";
 const ESCAPE = "\x1b";
 
 describe("isMouseReport / isToggleKey", () => {
+	it("Ctrl+L is a real terminal key for the context details affordance", () => {
+		expect(matchesKey("\x0c", Key.ctrl("l"))).toBe(true);
+	});
+
 	it("鼠标上报前缀", () => {
 		expect(isMouseReport("\x1b[<0;1;1M")).toBe(true);
 		expect(isMouseReport("\x1b[M !!")).toBe(true);
@@ -92,6 +100,37 @@ describe("ModelPicker 边框闭合与选定行为", () => {
 				expect(visibleWidth(lines[i]!), `Width ${width} line ${i} mismatch`).toBe(expectedW);
 			}
 		}
+	});
+
+	it("窄终端不截断模型选择边框", async () => {
+		const { ModelPicker } = await import("../src/ui/features/overlays/model-picker.js");
+		const picker = new ModelPicker("deepseek/deepseek-flash", sampleGroups);
+
+		for (const width of [36, 40, 50]) {
+			for (const [index, line] of picker.formatLines(width).entries()) {
+				expect(visibleWidth(line), `width=${width} row=${index}`).toBeLessThanOrEqual(width);
+			}
+		}
+	});
+
+	it("短视口保持当前分组可见并标出滚动余量", async () => {
+		const { ModelPicker } = await import("../src/ui/features/overlays/model-picker.js");
+		const groups = Array.from({ length: 12 }, (_, index) => ({
+			id: `provider-${index}`,
+			name: `provider-${index}`,
+			description: `Provider ${index}`,
+			models: [{ id: `provider-${index}/model`, name: "model", description: "model", provider: `provider-${index}` }],
+		}));
+		const picker = new ModelPicker("provider-0/model", groups);
+		for (let index = 0; index < 5; index++) picker.navigateDown();
+
+		const stack = new OverlayStack(new FocusManager(), () => {});
+		stack.showOverlay(picker);
+		const rendered = stripAnsi(stack.renderAbove(60, 6).join("\n"));
+
+		expect(rendered).toContain("provider-5");
+		expect(rendered).toContain("↑");
+		expect(rendered).toContain("↓");
 	});
 
 	it("Enter 选定模型触发 onPick", async () => {

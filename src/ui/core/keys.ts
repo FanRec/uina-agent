@@ -136,6 +136,8 @@ export function matchesKey(data: string, keyId: string): boolean {
 			return data === "\x05";
 		case "ctrl+k":
 			return data === "\x0b";
+		case "ctrl+l":
+			return data === "\x0c";
 		case "ctrl+o":
 			return data === "\x0f";
 		case "ctrl+u":

@@ -12,10 +12,11 @@ export const CURSOR_MARKER = "\x1b_pi:c\x07";
 /** 原子可渲染组件契约（零 Virtual DOM，只产出行数组） */
 export interface Component {
 	/**
-	 * 接收当前可用字符宽度，返回渲染后的行数组。
+	 * 接收当前可用字符宽度和可选行高，返回渲染后的行数组。
 	 * 铁律：返回的每一行实际可见宽度不得超过 width。
+	 * Overlay 组件应按 height 组织可视窗口；普通组件可以忽略它。
 	 */
-	render(width: number): string[];
+	render(width: number, height?: number): string[];
 
 	/** 键盘/终端输入处理（若组件获取焦点） */
 	handleInput?(data: string): void;

@@ -183,13 +183,15 @@ export class TrajectoryScene implements Component, Focusable {
 		}
 	}
 
-	render(terminalWidth = 80): string[] {
-		return this.formatLines(terminalWidth, 24);
+	render(terminalWidth = 80, availableHeight = 24): string[] {
+		return this.formatLines(terminalWidth, availableHeight);
 	}
 
 	invalidate(): void {}
 
-	formatLines(terminalWidth = 80, _terminalHeight = 24): string[] {
+	formatLines(terminalWidth = 80, terminalHeight = 24): string[] {
+		if (terminalWidth <= 0 || terminalHeight <= 0) return [];
+		if (terminalWidth < 64 || terminalHeight < 12) return this.formatCompactLines(terminalWidth, terminalHeight);
 		const boxWidth = Math.max(56, Math.min(terminalWidth - 6, 96));
 		const innerW = boxWidth - 4;
 		const borderCol = C.gray;
@@ -292,5 +294,37 @@ export class TrajectoryScene implements Component, Focusable {
 		output.push(`  ${borderCol}╰─ ${C.dim}${hint}${C.reset} ${borderCol}${"─".repeat(botFill)}╯${C.reset}`);
 
 		return output;
+	}
+
+	private formatCompactLines(terminalWidth: number, terminalHeight: number): string[] {
+		const nodes = this.source.list();
+		if (this.cursorIndex >= nodes.length) this.cursorIndex = Math.max(0, nodes.length - 1);
+		const leftPad = terminalWidth >= 64 ? 2 : 0;
+		const boxWidth = Math.max(1, Math.min(terminalWidth - leftPad, 96));
+		const innerW = Math.max(1, boxWidth - 4);
+		const border = C.gray;
+		const pad = " ".repeat(leftPad);
+		const title = truncateToWidth(`事件轨迹 · ${nodes.length} 节点`, Math.max(1, boxWidth - 6), "…");
+		const tag = `─ ${title} `;
+		const frame = (content: string): string => {
+			const safe = truncateToWidth(content, innerW, "…");
+			return `${pad}${border}│${C.reset} ${safe}${" ".repeat(Math.max(0, innerW - visibleWidth(safe)))} ${border}│${C.reset}`;
+		};
+		const output = [
+			`${pad}${border}╭${tag}${border}${"─".repeat(Math.max(0, boxWidth - 2 - visibleWidth(tag)))}╮${C.reset}`,
+		];
+		if (nodes.length === 0) {
+			output.push(frame("当前会话暂无运行生命周期事件记录"));
+		} else {
+			const node = nodes[this.cursorIndex]!;
+			const status = node.status === "completed" ? "✓" : node.status === "failed" ? "✗" : "●";
+			output.push(frame(`[${this.cursorIndex + 1}/${nodes.length}] ${status} ${node.label} · ${node.status}`));
+			if (node.error) output.push(frame(`错误: ${node.error}`));
+			else if (node.resultPreview) output.push(frame(`结果: ${node.resultPreview}`));
+			else if (node.argsJson) output.push(frame(`参数: ${node.argsJson}`));
+		}
+		if (terminalHeight >= 3) output.push(frame("←/→ 移动 · Tab 热点 · Esc 关闭"));
+		output.push(`${pad}${border}╰${"─".repeat(Math.max(0, boxWidth - 2))}╯${C.reset}`);
+		return output.slice(0, Math.max(1, Math.floor(terminalHeight)));
 	}
 }

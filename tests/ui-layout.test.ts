@@ -16,7 +16,7 @@ import {
 	readSessionNode,
 } from "../src/session/navigation.js";
 
-import { createSilentTerminal } from "./harness/index.js";
+import { createSilentTerminal, dispatchUIHostInput, isHeartbeatActive } from "./harness/index.js";
 
 const fakeTerminal = (columns = 80, rows = 24) => createSilentTerminal(columns, rows);
 
@@ -127,6 +127,52 @@ describe("B1: transcript line model", () => {
 });
 
 describe("B1: layout is the single source of truth", () => {
+	it("shows the ContextBar details shortcut and opens details with Ctrl+L", async () => {
+		const { terminal, frames } = fakeTerminal(80, 24);
+		const host = new UIHost({ terminal });
+		host.setContext({
+			projectionId: "context-test",
+			modelKey: "test-model",
+			basis: "active_request",
+			source: "test",
+			inputTokens: 1000,
+			contextWindow: 5000,
+			measurementKind: "exact",
+		});
+		host.start();
+		await settle();
+		expect(frames.at(-1)).toContain("Ctrl+L");
+		dispatchUIHostInput(host, "\x0c");
+		await settle();
+		expect(frames.at(-1)).toContain("剩余");
+		host.stop();
+	});
+
+	it("reclaims the timeline gutter when a single turn has no history navigation", async () => {
+		const { terminal, frames } = fakeTerminal(80, 24);
+		const host = new UIHost({ terminal });
+		host.start();
+		host.transcript.startTurn(1, "one turn");
+		host.transcript.appendToken("short answer");
+		host.transcript.finishTurn();
+		await settle();
+
+		const layout = (host as unknown as { lastLayout: { hasGutter: boolean; transcriptContentW: number } }).lastLayout;
+		expect(layout.hasGutter).toBe(false);
+		expect(layout.transcriptContentW).toBe(79);
+		expect(frames.at(-1)).not.toContain("▴");
+		host.stop();
+	});
+
+	it("keeps a timeline gutter when multiple turns are scrollable", async () => {
+		const { host } = scrollableHost();
+		host.requestRender();
+		await settle();
+		const layout = (host as unknown as { lastLayout: { hasGutter: boolean } }).lastLayout;
+		expect(layout.hasGutter).toBe(true);
+		host.stop();
+	});
+
 	it("scrollToTurn pins the target turn at the top of the viewport", async () => {
 		const { host, frames } = scrollableHost();
 		host.requestRender();
@@ -213,7 +259,7 @@ describe("B1: layout is the single source of truth", () => {
 		const oneRow = rows().findIndex((row) => row.includes("THINK-ONE"));
 		expect(oneRow).toBeGreaterThan(0);
 		// 真实鼠标移动（SGR：btn=35 为无按键移动，col/row 均为 1 基）
-		host.handleInput(`\x1b[<35;10;${oneRow + 1}M`);
+		dispatchUIHostInput(host, `\x1b[<35;10;${oneRow + 1}M`);
 		host.requestRender();
 		await settle();
 
@@ -222,9 +268,9 @@ describe("B1: layout is the single source of truth", () => {
 		expect(rows().some((row) => row.includes("THINK-ONE") && row.includes("点击"))).toBe(true);
 
 		// 点击只展开被点的那个块，同轮的另一个块必须保持折叠
-		host.handleInput(`\x1b[<0;10;${oneRow + 1}M`);
+		dispatchUIHostInput(host, `\x1b[<0;10;${oneRow + 1}M`);
 		await settle();
-		host.handleInput(`\x1b[<0;10;${oneRow + 1}m`);
+		dispatchUIHostInput(host, `\x1b[<0;10;${oneRow + 1}m`);
 		host.requestRender();
 		await settle();
 
@@ -297,6 +343,46 @@ describe("B1: hover is local", () => {
 describe("B3: overlay geometry", () => {
 	const comp = (lines: string[]) => ({ render: () => lines });
 
+	it("isolates a broken overlay renderer and key handler inside the component boundary", async () => {
+		const { terminal, frames } = fakeTerminal(80, 24);
+		const host = new UIHost({ terminal });
+		host.start();
+		host.showOverlay({
+			render: () => {
+				throw new Error("render fault");
+			},
+			handleInput: () => {
+				throw new Error("input fault");
+			},
+		});
+		await settle();
+		expect(frames.at(-1)).toContain("渲染失败");
+		expect(() => dispatchUIHostInput(host, "x")).not.toThrow();
+		await settle();
+		expect(frames.at(-1)).toContain("输入处理失败");
+		host.stop();
+	});
+
+	it("a removed overlay handle is terminal and cannot reclaim focus", () => {
+		const focus = new FocusManager();
+		const base = { handleInput: () => {}, render: () => ["base"] };
+		const overlay = { focused: true, handleInput: () => {}, render: () => ["overlay"] };
+		const stack = new OverlayStack(focus, () => {});
+		focus.setFocus(base);
+
+		const handle = stack.showOverlay(overlay);
+		handle.hide();
+
+		expect(focus.getFocused()).toBe(base);
+		expect(handle.isHidden()).toBe(true);
+		handle.focus();
+		handle.setHidden(false);
+		handle.requestRender();
+		expect(focus.getFocused()).toBe(base);
+		expect(handle.isFocused()).toBe(false);
+		expect(stack.entries).toHaveLength(0);
+	});
+
 	it("resolves percentage height against the available rows, including zero", () => {
 		const stack = new OverlayStack(new FocusManager(), () => {});
 		stack.showOverlay(comp(Array.from({ length: 10 }, (_, i) => String(i))), { maxHeight: "50%" });
@@ -318,6 +404,20 @@ describe("B3: overlay geometry", () => {
 		const stack = new OverlayStack(new FocusManager(), () => {});
 		stack.showOverlay(comp(["a", "b", "c", "d"]), { maxHeight: 2 });
 		expect(stack.renderAbove(80, 10)).toHaveLength(2);
+	});
+
+	it("passes the available viewport height to responsive overlays", () => {
+		let receivedHeight: number | undefined;
+		const stack = new OverlayStack(new FocusManager(), () => {});
+		stack.showOverlay({
+			render: (_width: number, height?: number) => {
+				receivedHeight = height;
+				return ["body"];
+			},
+		});
+
+		stack.renderAbove(80, 7);
+		expect(receivedHeight).toBe(7);
 	});
 
 	it("offsetY moves the block away from the editor and negative values trim it", () => {
@@ -453,6 +553,23 @@ describe("Incremental layout invalidation", () => {
 });
 
 describe("C: overlay frame composition", () => {
+	it("keeps composed frames inside 40/50/80/120-column and 8/12/24-row terminals", async () => {
+		for (const width of [40, 50, 80, 120]) {
+			for (const height of [8, 12, 24]) {
+				const { terminal, screen } = fakeTerminal(width, height);
+				const host = new UIHost({ terminal, modelName: "matrix-test" });
+				host.start();
+				host.transcript.startTurn(1, "matrix prompt");
+				host.transcript.appendToken("response body");
+				host.transcript.finishTurn();
+				await settle();
+				expect(screen.wrapped, `${width}x${height} wrapped`).toBe(0);
+				expect(screen.scrolled, `${width}x${height} scrolled`).toBe(0);
+				host.stop();
+			}
+		}
+	});
+
 	// A panel row wider than its declared box is wrapped by the terminal, which pushed the
 	// bottom-pinned editor into the middle of the panel. The composed frame must never
 	// contain a row wider than the terminal, and the panel must cover its own region.
@@ -490,12 +607,12 @@ describe("C: overlay frame composition", () => {
 		host.transcript.finishTurn();
 		await settle();
 
-		host.handleInput("\x1bh");
+		dispatchUIHostInput(host, "\x1bh");
 		await settle();
 		expect(plainFrame(frames.at(-1) ?? "").some((line) => line.includes("会话历史与分支检视器"))).toBe(true);
 
 		// Walk to the bottom of the list, where the earlier breakage was reported.
-		for (let step = 0; step < 80; step++) host.handleInput("\x1b[B");
+		for (let step = 0; step < 80; step++) dispatchUIHostInput(host, "\x1b[B");
 		await settle();
 
 		const lines = plainFrame(frames.at(-1) ?? "");
@@ -556,15 +673,15 @@ describe("B1: 视口主权（提交不拽视口 + 视口指示器交互）", () 
 		const sgrRow = labelRowIdx + 1; // SGR 1 基
 
 		// hover：无按键移动（btn=35）——热区第 0 列（1 基 col=1），避开 ❯ 提示符的 cursor 列
-		host.handleInput(`\x1b[<35;1;${sgrRow}M`);
+		dispatchUIHostInput(host, `\x1b[<35;1;${sgrRow}M`);
 		host.requestRender();
 		await settle();
 		expect(frames.at(-1)).toContain("\x1b[1m\x1b[38;2;125;161;222m[视口");
 
 		// 点击：按下 + 抬起（热区第 0 列）
-		host.handleInput(`\x1b[<0;1;${sgrRow}M`);
+		dispatchUIHostInput(host, `\x1b[<0;1;${sgrRow}M`);
 		await settle();
-		host.handleInput(`\x1b[<0;1;${sgrRow}m`);
+		dispatchUIHostInput(host, `\x1b[<0;1;${sgrRow}m`);
 		host.requestRender();
 		await settle();
 
@@ -584,13 +701,13 @@ describe("UIHost: 统一帧时钟（heartbeat）", () => {
 			renderSpy.mockClear();
 
 			host.setBusy(true);
-			expect(host.getHeartbeatActiveForTest()).toBe(true);
+			expect(isHeartbeatActive(host)).toBe(true);
 			renderSpy.mockClear();
 			vi.advanceTimersByTime(160); // ~3 个 50ms tick
 			expect(renderSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
 
 			host.setBusy(false);
-			expect(host.getHeartbeatActiveForTest()).toBe(false);
+			expect(isHeartbeatActive(host)).toBe(false);
 			renderSpy.mockClear();
 			vi.advanceTimersByTime(200);
 			expect(renderSpy.mock.calls.length).toBe(0);
@@ -607,9 +724,9 @@ describe("UIHost: 统一帧时钟（heartbeat）", () => {
 			host.transcript.smoothReveal.setEnabled(true);
 			host.transcript.startTurn(9, "流式");
 			host.transcript.appendToken("这是一段足够长的流式文本，用于保证揭示游标跨越多个心跳周期。".repeat(3));
-			expect(host.getHeartbeatActiveForTest()).toBe(true);
+			expect(isHeartbeatActive(host)).toBe(true);
 			vi.advanceTimersByTime(5000);
-			expect(host.getHeartbeatActiveForTest()).toBe(false);
+			expect(isHeartbeatActive(host)).toBe(false);
 			host.stop();
 		} finally {
 			vi.useRealTimers();

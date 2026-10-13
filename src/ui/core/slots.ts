@@ -4,11 +4,15 @@
  */
 
 import type { Component, WidgetItem, WidgetPlacement } from "./types.js";
+import type { ComponentBoundary } from "./component-boundary.js";
 
 export class WidgetSlots {
 	private widgets = new Map<string, WidgetItem>();
 
-	constructor(private readonly onRequestRender: () => void) {}
+	constructor(
+		private readonly onRequestRender: () => void,
+		private readonly boundary?: ComponentBoundary,
+	) {}
 
 	setWidget(
 		id: string,
@@ -50,7 +54,7 @@ export class WidgetSlots {
 		const list = this.getWidgets(placement);
 		const lines: string[] = [];
 		for (const item of list) {
-			const itemLines = item.component.render(width);
+			const itemLines = this.boundary ? this.boundary.render(item.component, width) : item.component.render(width);
 			for (const line of itemLines) {
 				lines.push(line);
 			}

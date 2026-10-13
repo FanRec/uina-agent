@@ -363,13 +363,13 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 
 		commands.forEach((cmd, idx) => {
 			const isSelected = startIndex + idx === clampedIndex;
-			const pointer = isSelected ? `${C.iceBlue}${C.bold}❯${C.reset} ` : "  ";
+			const pointer = isSelected ? `${C.suggestion}${C.bold}❯${C.reset} ` : "  ";
 			const parts = splitQueryMatch(cmd.name, query);
 
 			const padAfter = Math.max(0, nameColWidth - visibleWidth(cmd.name));
 			let namePart = "";
 			if (isSelected) {
-				namePart = `${C.iceBlue}${C.bold}${cmd.name}${C.reset}${" ".repeat(padAfter)}`;
+				namePart = `${C.suggestion}${C.bold}${cmd.name}${C.reset}${" ".repeat(padAfter)}`;
 			} else if (parts) {
 				namePart = `${C.dim}${parts.before}${C.cyan}${C.bold}${parts.match}${C.reset}${C.dim}${parts.after}${" ".repeat(padAfter)}${C.reset}`;
 			} else {
@@ -378,7 +378,7 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 
 			const descBudget = Math.max(0, usable - 2 - nameColWidth - 2);
 			const truncatedDesc = truncateToWidth(cmd.description, descBudget, "…");
-			const descPart = isSelected ? `${C.iceBlue}${truncatedDesc}${C.reset}` : `${C.dim}${truncatedDesc}${C.reset}`;
+			const descPart = isSelected ? `${C.suggestion}${truncatedDesc}${C.reset}` : `${C.dim}${truncatedDesc}${C.reset}`;
 
 			const rowBody = `${pointer}${namePart}  ${descPart}`;
 			const rowBodyWidth = visibleWidth(rowBody);
@@ -392,14 +392,14 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 
 		files.forEach((file, idx) => {
 			const isSelected = startIndex + idx === clampedIndex;
-			const pointer = isSelected ? `${C.iceBlue}${C.bold}❯${C.reset} ` : "  ";
+			const pointer = isSelected ? `${C.suggestion}${C.bold}❯${C.reset} ` : "  ";
 			const icon = file.kind === "directory" ? `${C.cyan}▸${C.reset} ` : `${C.gray}+${C.reset} `;
 			const parts = splitQueryMatch(file.path, query);
 
 			const padAfter = Math.max(0, pathColWidth - visibleWidth(file.path));
 			let pathPart = "";
 			if (isSelected) {
-				pathPart = `${C.iceBlue}${C.bold}${file.path}${C.reset}${" ".repeat(padAfter)}`;
+				pathPart = `${C.suggestion}${C.bold}${file.path}${C.reset}${" ".repeat(padAfter)}`;
 			} else if (parts) {
 				pathPart = `${C.dim}${parts.before}${C.cyan}${C.bold}${parts.match}${C.reset}${C.dim}${parts.after}${" ".repeat(padAfter)}${C.reset}`;
 			} else {
@@ -408,7 +408,7 @@ export function formatSuggestionCardLines(opts: SuggestionRenderOptions): string
 
 			const kindBudget = Math.max(0, usable - 2 - 2 - pathColWidth - 2);
 			const kindStr = truncateToWidth(file.kind, kindBudget, "");
-			const kindPart = isSelected ? `${C.iceBlue}${kindStr}${C.reset}` : `${C.dim}${kindStr}${C.reset}`;
+			const kindPart = isSelected ? `${C.suggestion}${kindStr}${C.reset}` : `${C.dim}${kindStr}${C.reset}`;
 
 			const rowBody = `${pointer}${icon}${pathPart}  ${kindPart}`;
 			const rowBodyWidth = visibleWidth(rowBody);

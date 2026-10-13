@@ -23,7 +23,7 @@ import { createSessionAccess } from "../session/access.js";
 import type { ProjectionPolicy } from "../agent/projection.js";
 import type { SessionEntry, SessionStore } from "../session/types.js";
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
-import type { HostEvent, HostEventListener } from "./events.js";
+import type { HostEvent, HostEventListener, HostSnapshot } from "./events.js";
 
 /**
  * 宿主：主体生命期的所有者。
@@ -60,18 +60,6 @@ export interface UinaHostOptions {
 	profile?: SubjectProfile;
 	/** 诊断出口：消费者尚未接入时也必须可见，绝不静默吞掉。 */
 	onError?: (text: string) => void;
-}
-
-/** 消费者渲染所需的事实快照。消费者据此渲染，而不是伸手进 Subject。 */
-export interface HostSnapshot {
-	readonly modelName: string;
-	readonly thinkingLevels?: readonly ThinkingLevel[];
-	readonly thinkingLevel?: ThinkingLevel;
-	readonly context?: import("../core/types.js").ContextSnapshot;
-	readonly busy: boolean;
-	readonly queue: readonly QueuedMessage[];
-	readonly queueDepth: number;
-	readonly queueOldestAgeMs?: number;
 }
 
 export interface HostStartOptions {

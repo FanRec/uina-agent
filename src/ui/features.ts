@@ -1,8 +1,7 @@
-import type { ThinkingLevel } from "../core/types.js";
 import type { SessionAccess } from "../session/types.js";
 import type { UIHost } from "./ui-host.js";
+import type { BuiltinUIActions } from "../extensions/ui-contract.js";
 import { TrajectoryProjection } from "./adapters/agent-events.js";
-import { resolveGutterAction } from "./core/gutter.js";
 import {
 	BranchInspectorOverlay,
 	PromptOverlay,
@@ -11,24 +10,10 @@ import {
 	HelpMenu,
 	ModelPicker,
 	TrajectoryScene,
-	type EffortTier,
-	type ModelGroup,
 } from "./features/overlays/index.js";
 
 export interface UIFeatureOptions {
 	sessionPort?: SessionAccess;
-}
-
-export interface ModelPickerRequest {
-	currentModel: string;
-	groups: ModelGroup[];
-	onPick: (name: string) => Promise<void> | void;
-}
-
-export interface EffortSliderRequest {
-	currentLevel?: ThinkingLevel;
-	tiers: readonly (EffortTier | ThinkingLevel)[];
-	onChange: (level: ThinkingLevel) => void;
 }
 
 export function installUIFeatures(
@@ -37,7 +22,10 @@ export function installUIFeatures(
 ): { trajectory: TrajectoryProjection; dispose: () => void } {
 	const trajectory = new TrajectoryProjection();
 	const disposers: Array<() => void> = [];
-	const register = (name: string, handler: (payload?: unknown) => void): void => {
+	const register = <Name extends keyof BuiltinUIActions>(
+		name: Name,
+		handler: (payload: BuiltinUIActions[Name]) => void,
+	): void => {
 		disposers.push(host.registerFeature(name, handler));
 	};
 
@@ -54,9 +42,7 @@ export function installUIFeatures(
 		}),
 	);
 
-	register("model-picker", (payload) => {
-		const request = payload as ModelPickerRequest | undefined;
-		if (!request) return;
+	register("model-picker", (request) => {
 		host.showPanel("model", (close) => {
 			const picker = new ModelPicker(request.currentModel, request.groups);
 			picker.onPick = (name) => {
@@ -68,9 +54,7 @@ export function installUIFeatures(
 		});
 	});
 
-	register("effort-slider", (payload) => {
-		const request = payload as EffortSliderRequest | undefined;
-		if (!request) return;
+	register("effort-slider", (request) => {
 		const levels = host.getThinkingLevels();
 		if (!levels.length) {
 			host.notify("当前模型未声明思考档位", "info");
@@ -93,14 +77,6 @@ export function installUIFeatures(
 
 	register("toggle-thinking", () => host.toggleThinking());
 	register("clear-transcript", () => host.clearTranscript());
-	register("gutter", (payload) => {
-		const arg = (payload as { arg?: string } | undefined)?.arg;
-		const action = resolveGutterAction(arg, host.getGutterMode());
-		host.setGutterMode(action.mode);
-		if (action.style) host.setScrollbarThumbStyle(action.style);
-		host.notify(action.message);
-	});
-
 	register("trajectory", () =>
 		host.showPanel("trajectory", (close) => {
 			const scene = new TrajectoryScene(trajectory);

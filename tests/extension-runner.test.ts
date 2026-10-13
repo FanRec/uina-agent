@@ -47,10 +47,12 @@ describe("project extension runner", () => {
 		expect(runner.registry.getCommand("hello")).toBeDefined();
 		expect(messages).toEqual([{ customType: "test.message", content: "visible to provider" }]);
 		expect(entries).toEqual([{ customType: "test.entry", data: { ok: true } }]);
-		const old = (globalThis as Record<string, unknown>).__uinaTestExtension as { ui: { getEditorText(): string } };
+		const old = (globalThis as Record<string, unknown>).__uinaTestExtension as {
+			ui: { terminal: { getEditorText(): string } };
+		};
 		await runner.reload();
 		expect((globalThis as Record<string, unknown>).__uinaDisposed).toBe(true);
-		expect(() => old.ui.getEditorText()).toThrow(/已失效/);
+		expect(() => old.ui.terminal.getEditorText()).toThrow(/已失效/);
 		await runner.dispose();
 	});
 

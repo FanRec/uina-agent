@@ -246,7 +246,7 @@ describe("turn_aborted → interruptAll 分发（embodiment 集成）", () => {
 				shared: () => sharedFeed,
 				share: () => () => {},
 				registerTool: () => () => {},
-				registerMarkdownTransformer: () => () => {},
+				ui: { terminal: { registerMarkdownTransformer: () => () => {} } },
 				signal: new AbortController().signal,
 				appendEntry: async () => {},
 				reportError: () => {},

@@ -168,7 +168,7 @@ export class ContextBarComponent implements Component {
 	private inputTokens?: number;
 	private segments?: ContextSegments;
 	private isHovered = false;
-	private visible = true;
+	private expanded = false;
 
 	update(data: ContextUsageData): void {
 		this.usedTokens = data.usedTokens;
@@ -178,7 +178,6 @@ export class ContextBarComponent implements Component {
 		this.cacheWrite = data.cacheWrite;
 		this.inputTokens = data.inputTokens;
 		this.segments = data.segments;
-		this.visible = true;
 	}
 
 	setHovered(hovered: boolean): boolean {
@@ -193,15 +192,26 @@ export class ContextBarComponent implements Component {
 		return this.isHovered;
 	}
 
-	render(width: number): string[] {
-		if (!this.visible || width <= 0) return [""];
+	setExpanded(expanded: boolean): boolean {
+		if (this.expanded === expanded) return false;
+		this.expanded = expanded;
+		return true;
+	}
 
-		if (!this.isHovered) {
-			return [""];
+	toggleExpanded(): boolean {
+		this.expanded = !this.expanded;
+		return true;
+	}
+
+	render(width: number): string[] {
+		if (width <= 0 || !this.hasDetails()) return [];
+
+		if (!this.isHovered && !this.expanded) {
+			return [truncateToWidth(`${C.inactive}Ctrl+L 查看上下文详情${C.reset}`, width, "")];
 		}
 
 		// 鼠标悬停时：渲染隐藏明细（工作目录 + 剩余容量 + 分段分布 + 缓存与输入）
-		const cwdLabel = this.cwd ? `${C.gray}🗀 ${C.dim}${this.cwd}${C.reset}` : "";
+		const cwdLabel = this.cwd ? `${C.gray}目录 ${C.dim}${this.cwd}${C.reset}` : "";
 
 		const parts: string[] = [];
 
@@ -256,6 +266,18 @@ export class ContextBarComponent implements Component {
 		}
 
 		return [truncateToWidth(line, width, "")];
+	}
+
+	private hasDetails(): boolean {
+		return (
+			this.cwd.length > 0 ||
+			this.usedTokens !== undefined ||
+			this.contextWindow !== undefined ||
+			this.cacheRead !== undefined ||
+			this.cacheWrite !== undefined ||
+			this.inputTokens !== undefined ||
+			this.segments !== undefined
+		);
 	}
 
 	invalidate(): void {}

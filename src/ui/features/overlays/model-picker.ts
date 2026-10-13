@@ -111,74 +111,94 @@ export class ModelPicker implements Component, Focusable {
 		}
 	}
 
-	render(terminalWidth = 80): string[] {
-		return this.formatLines(terminalWidth);
+	render(terminalWidth = 80, availableHeight = Number.MAX_SAFE_INTEGER): string[] {
+		return this.formatLines(terminalWidth, availableHeight);
 	}
 
 	invalidate(): void {}
 
-	formatLines(terminalWidth = 80): string[] {
-		const boxWidth = Math.max(44, Math.min(terminalWidth - 6, 78));
-		const innerW = boxWidth - 4;
+	formatLines(terminalWidth = 80, availableHeight = Number.MAX_SAFE_INTEGER): string[] {
+		if (terminalWidth <= 0 || availableHeight <= 0) return [];
+		if (terminalWidth < 5) return [truncateToWidth("模型", terminalWidth, "")];
+		const leftPad = terminalWidth >= 48 ? 2 : 0;
+		const boxWidth = Math.max(1, Math.min(terminalWidth - leftPad, 78));
+		const innerW = Math.max(1, boxWidth - 4);
 		const borderCol = C.gray;
-
 		const currentGroup = this.groups[this.selectedGroupIndex] ?? this.groups[0];
+		const title = this.level === "groups" ? "切换模型服务商 (Providers)" : `选择模型 (${currentGroup?.name ?? "未知"})`;
+		const safeTitle = truncateToWidth(title, Math.max(1, boxWidth - 6), "…");
+		const topTag = `─ ${safeTitle} `;
+		const topFill = Math.max(0, boxWidth - 2 - visibleWidth(topTag));
+		const pad = " ".repeat(leftPad);
+		const topLine = `${pad}${borderCol}╭${topTag}${borderCol}${"─".repeat(topFill)}╮${C.reset}`;
+		const frameLine = (content: string): string => {
+			const safe = truncateToWidth(content, innerW, "…");
+			return `${pad}${borderCol}│${C.reset} ${safe}${" ".repeat(Math.max(0, innerW - visibleWidth(safe)))} ${borderCol}│${C.reset}`;
+		};
+		const items = this.level === "groups" ? this.groups : (currentGroup?.models ?? []);
+		const selectedIndex =
+			items.length === 0
+				? 0
+				: Math.min(
+						Math.max(0, this.level === "groups" ? this.selectedGroupIndex : this.selectedModelIndex),
+						items.length - 1,
+					);
+		const height = Number.isFinite(availableHeight)
+			? Math.max(1, Math.floor(availableHeight))
+			: Number.MAX_SAFE_INTEGER;
+		if (height === 1) return [topLine];
+		if (height === 2) {
+			const selectedItem = items[selectedIndex];
+			const label =
+				this.level === "groups" ? this.groups[selectedIndex]?.name : (selectedItem as ModelItem | undefined)?.name;
+			const remaining = Math.max(0, items.length - selectedIndex - 1);
+			return [topLine, frameLine(`❯ ${label ?? "暂无可用模型"} · ↑${selectedIndex} ↓${remaining}`)];
+		}
+		const rowBudget = Number.isFinite(availableHeight)
+			? Math.max(1, Math.floor(availableHeight) - 2)
+			: Math.max(1, items.length);
+		const visibleCount = Math.min(Math.max(1, items.length), rowBudget);
+		const startIndex = Math.max(0, Math.min(selectedIndex - Math.floor(visibleCount / 2), items.length - visibleCount));
+		const endIndex = startIndex + visibleCount;
+		const output = [topLine];
 
-		const titleTag =
-			this.level === "groups" ? `─ 切换模型服务商 (Providers) ` : `─ 选择模型 (${currentGroup?.name ?? "未知"}) `;
-		const topFillLen = Math.max(1, boxWidth - 2 - visibleWidth(titleTag));
-		const topLine = `  ${borderCol}╭${titleTag}${"─".repeat(topFillLen)}╮${C.reset}`;
-
-		const output: string[] = [topLine];
-
-		if (this.groups.length === 0) {
-			const empty = `${C.dim}没有来自配置、Provider 或可信目录的可选模型${C.reset}`;
-			const truncated = truncateToWidth(empty, innerW);
-			output.push(
-				`  ${borderCol}│${C.reset} ${truncated}${" ".repeat(Math.max(0, innerW - visibleWidth(truncated)))} ${borderCol}│${C.reset}`,
-			);
+		if (items.length === 0) {
+			output.push(frameLine("没有来自配置、Provider 或可信目录的可选模型"));
 		} else if (this.level === "groups") {
-			for (let i = 0; i < this.groups.length; i++) {
-				const grp = this.groups[i]!;
-				const isSelected = i === this.selectedGroupIndex;
-				const hasCurrent = grp.models.some((m) => this.isCurrent(m));
-				const pointer = isSelected ? `${C.bold}${C.cyan}❯${C.reset}` : " ";
-				const nameTag = isSelected ? `${C.bold}${C.white}[${grp.name}]${C.reset}` : `${C.gray}[${grp.name}]${C.reset}`;
+			for (let i = startIndex; i < endIndex; i++) {
+				const group = this.groups[i]!;
+				const selected = i === selectedIndex;
+				const hasCurrent = group.models.some((model) => this.isCurrent(model));
+				const pointer = selected ? `${C.bold}${C.cyan}❯${C.reset}` : " ";
+				const name = selected ? `${C.bold}${C.white}[${group.name}]${C.reset}` : `${C.gray}[${group.name}]${C.reset}`;
 				const check = hasCurrent ? ` ${C.green}✓${C.reset}` : "";
-				const desc = `${C.dim}${grp.description} (${grp.models.length} 个模型)${C.reset}`;
-
-				const content = `${pointer} ${nameTag}${check}  ${desc}`;
-				const truncated = truncateToWidth(content, innerW);
-				const padLen = Math.max(0, innerW - visibleWidth(truncated));
-				output.push(`  ${borderCol}│${C.reset} ${truncated}${" ".repeat(padLen)} ${borderCol}│${C.reset}`);
+				const description = `${C.dim}${group.description} (${group.models.length} 个模型)${C.reset}`;
+				output.push(frameLine(`${pointer} ${name}${check}  ${description}`));
 			}
 		} else {
-			for (let i = 0; i < (currentGroup?.models.length ?? 0); i++) {
-				const model = currentGroup.models[i]!;
-				const isSelected = i === this.selectedModelIndex;
-				const isCurrentModel = this.isCurrent(model);
-				const pointer = isSelected ? `${C.bold}${C.cyan}❯${C.reset}` : " ";
-				const nameTag = isSelected ? `${C.bold}${C.white}${model.name}${C.reset}` : `${C.gray}${model.name}${C.reset}`;
-				const check = isCurrentModel ? ` ${C.green}✓${C.reset}` : "";
-				const desc = `${C.dim}${model.description}${C.reset}`;
-
-				const content = `${pointer} ${nameTag}${check}  ${desc}`;
-				const truncated = truncateToWidth(content, innerW);
-				const padLen = Math.max(0, innerW - visibleWidth(truncated));
-				output.push(`  ${borderCol}│${C.reset} ${truncated}${" ".repeat(padLen)} ${borderCol}│${C.reset}`);
+			for (let i = startIndex; i < endIndex; i++) {
+				const model = currentGroup!.models[i]!;
+				const selected = i === selectedIndex;
+				const pointer = selected ? `${C.bold}${C.cyan}❯${C.reset}` : " ";
+				const name = selected ? `${C.bold}${C.white}${model.name}${C.reset}` : `${C.gray}${model.name}${C.reset}`;
+				const check = this.isCurrent(model) ? ` ${C.green}✓${C.reset}` : "";
+				output.push(frameLine(`${pointer} ${name}${check}  ${C.dim}${model.description}${C.reset}`));
 			}
 		}
 
-		const bottomHint =
-			this.groups.length === 0
-				? `Esc 关闭`
+		const above = startIndex;
+		const below = Math.max(0, items.length - endIndex);
+		const scrollHint = above > 0 || below > 0 ? `↑${above} ↓${below} · ` : "";
+		const actionHint =
+			items.length === 0
+				? "Esc 关闭"
 				: this.level === "groups"
-					? `↑↓ 移动 · Enter 展开 · Esc 关闭`
-					: `↑↓ 移动 · Enter 确认切换 · Esc 返回`;
-		const botFillLen = Math.max(1, boxWidth - visibleWidth(bottomHint) - 5);
-		const botLine = `  ${borderCol}╰─ ${C.dim}${bottomHint}${C.reset} ${borderCol}${"─".repeat(botFillLen)}╯${C.reset}`;
-		output.push(botLine);
-
+					? "↑↓ 移动 · Enter 展开 · Esc 关闭"
+					: "↑↓ 移动 · Enter 确认切换 · Esc 返回";
+		const bottomHint = truncateToWidth(`${scrollHint}${actionHint}`, Math.max(1, innerW), "…");
+		const bottomTag = `─ ${bottomHint} `;
+		const bottomFill = Math.max(0, boxWidth - 2 - visibleWidth(bottomTag));
+		output.push(`${pad}${borderCol}╰${bottomTag}${borderCol}${"─".repeat(bottomFill)}╯${C.reset}`);
 		return output;
 	}
 }

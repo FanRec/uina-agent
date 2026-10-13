@@ -156,7 +156,7 @@ export function activateEmbodimentExtension(pi: ExtensionAPI): { router: BodyRou
 
 	// 4. 注册 Markdown 转换器：在渲染层剔除输出中的 <cue id="..."/> 标签，
 	//    确保 TUI / Markdown 渲染视图干净自然，不泄露动作标签代码给终端用户。
-	const unregisterMarkdown = pi.registerMarkdownTransformer?.("embodiment.strip-cues", (md) =>
+	const unregisterMarkdown = pi.ui.terminal.registerMarkdownTransformer("embodiment.strip-cues", (md) =>
 		md.replace(/<\s*cue\b[^>]*?\/?>/gi, ""),
 	);
 

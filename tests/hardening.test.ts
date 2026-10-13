@@ -91,18 +91,21 @@ describe("hardening: extension host honesty", () => {
 		runner.attachUI({
 			...createPrintUI(() => {}),
 			setStatus: set,
-			setWidget: set,
-			setHeader: (value) => set("header", value),
-			setFooter: (value) => set("footer", value),
+			terminal: {
+				...createPrintUI(() => {}).terminal,
+				setWidget: set,
+				setHeader: (value) => set("header", value),
+				setFooter: (value) => set("footer", value),
+			},
 		});
 		const first = { render: () => ["first"] },
 			second = { render: () => ["second"] };
 		await runner.activateBuiltin("slots", (pi) => {
 			for (const component of [first, second]) {
 				pi.ui.setStatus("status", component.render()[0]);
-				pi.ui.setWidget("widget", component);
-				pi.ui.setHeader(component);
-				pi.ui.setFooter(component);
+				pi.ui.terminal.setWidget("widget", component);
+				pi.ui.terminal.setHeader(component);
+				pi.ui.terminal.setFooter(component);
 			}
 		});
 		expect([...slots.values()]).toEqual(["second", second, second, second]);

@@ -275,17 +275,20 @@ describe("extension composition", () => {
 		await mkdir(dir, { recursive: true });
 		await writeFile(
 			join(dir, "header.ts"),
-			'export default api => { api.ui.setHeader({ render: () => ["A"] }); api.ui.setFooter({ render: () => ["A"] }); };',
+			'export default api => { api.ui.terminal.setHeader({ render: () => ["A"] }); api.ui.terminal.setFooter({ render: () => ["A"] }); };',
 		);
 		const host = runner(cwd);
 		const ui = createPrintUI(() => {});
 		const header = vi.fn();
 		const footer = vi.fn();
-		host.attachUI({ ...ui, setHeader: header, setFooter: footer });
+		host.attachUI({
+			...ui,
+			terminal: { ...ui.terminal, setHeader: header, setFooter: footer },
+		});
 		await host.load();
 		await activate(host, "later", (api) => {
-			api.ui.setHeader({ render: () => ["B"] });
-			api.ui.setFooter({ render: () => ["B"] });
+			api.ui.terminal.setHeader({ render: () => ["B"] });
+			api.ui.terminal.setFooter({ render: () => ["B"] });
 		});
 		await host.disposeProjects();
 		expect(header.mock.lastCall?.[0].render(80)).toEqual(["B"]);
@@ -314,7 +317,7 @@ describe("extension composition", () => {
 			markdown: (text, ctx) => host.registry.transformMarkdown(text, ctx),
 		});
 		host.registry.onChange(() => transcript.invalidate());
-		const remove = api.registerToolRenderer("echo", (tool, options) => ({
+		const remove = api.ui.terminal.registerToolRenderer("echo", (tool, options) => ({
 			render: () => [options.expanded ? "expanded" : "custom:" + JSON.stringify(tool.details)],
 		}));
 		transcript.startTurn(1, "user");
@@ -323,7 +326,7 @@ describe("extension composition", () => {
 		expect(transcript.render(80).join("")).toContain('custom:{"count":3}');
 		remove();
 		expect(transcript.render(80).join("")).not.toContain("custom:");
-		api.registerMarkdownTransformer("replace", (text) => text.replace("user", "transformed"));
+		api.ui.terminal.registerMarkdownTransformer("replace", (text) => text.replace("user", "transformed"));
 		expect(transcript.render(80).join("")).toContain("transformed");
 	});
 	it("accepts explicit CLI extension paths and rejects an absent path", () => {

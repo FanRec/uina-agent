@@ -9,7 +9,6 @@
 
 import type { Component } from "../../core/types.js";
 import { C, charWidth, truncateToWidth, visibleWidth } from "../../core/utils.js";
-import type { QueuedMessage } from "../../../agent/queue.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -116,7 +115,7 @@ export type ActivityPhase = "idle" | "thinking" | "streaming" | "tool" | "done";
 
 function animatedHeader(message: string, elapsedMs: number, now: number, maxWidth: number, suffix = ""): string {
 	if (maxWidth <= 0) return "";
-	const spinner = `${C.iceBlue}${SPINNER_FRAMES[Math.floor(now / 80) % SPINNER_FRAMES.length]}${C.reset} `;
+	const spinner = `${C.suggestion}${SPINNER_FRAMES[Math.floor(now / 80) % SPINNER_FRAMES.length]}${C.reset} `;
 	const seconds = (Math.max(0, elapsedMs) / 1000).toFixed(1);
 	const secStr = `${C.gray}· ${seconds}s${C.reset}`;
 
@@ -155,8 +154,12 @@ const TRACK = "·";
 
 /**
  * 实时 1/8 字符水平仪表盘：`▕██████▋···▏`
- * 依据当前速率 tps 相对于 targetPeak 映射，并按速度区间着色（≥50 绿、≥20 黄、<20 红）。
+ * 依据当前速率 tps 相对于 targetPeak 映射，并按速度区间使用快/中/慢信息色。
  */
+function tpsColor(tps: number): string {
+	return tps >= 50 ? C.success : tps >= 20 ? C.warning : C.inactive;
+}
+
 export function formatTpsGauge(tps: number, targetPeak = 60, gaugeWidth = 8): string {
 	if (gaugeWidth <= 0) return "";
 	const safeTps = Math.max(0, tps);
@@ -172,7 +175,7 @@ export function formatTpsGauge(tps: number, targetPeak = 60, gaugeWidth = 8): st
 	const emptyLen = Math.max(0, gaugeWidth - visibleWidth(fill));
 	const track = TRACK.repeat(emptyLen);
 
-	const color = safeTps >= 50 ? C.green : safeTps >= 20 ? C.yellow : C.red;
+	const color = tpsColor(safeTps);
 	return `▕${color}${fill}${C.reset}${C.dim}${track}${C.reset}▏`;
 }
 
@@ -223,7 +226,7 @@ export function formatActivityHeader(metrics: ActivityHeaderMetrics, maxWidth = 
 			const avgTps = metrics.avgTps;
 			const samples = metrics.tpsSamples ?? [];
 			const spark = formatTpsSparkline(samples.slice(-12));
-			const sparkColor = avgTps >= 50 ? C.green : avgTps >= 20 ? C.yellow : C.red;
+			const sparkColor = tpsColor(avgTps);
 			sparkStr = spark ? ` · ${sparkColor}${spark}${C.reset} ~${avgTps} tps` : ` · ~${avgTps} tps`;
 		}
 		const text = `${C.gray}${metrics.message} · 耗时 ${seconds}s${tokens > 0 ? ` · ~${tokens} tokens` : ""}${sparkStr}${C.reset}`;
@@ -247,8 +250,8 @@ export function formatActivityHeader(metrics: ActivityHeaderMetrics, maxWidth = 
 		// 响应式表盘宽度：宽屏 8 格，中屏 4 格，窄屏纯数字
 		const gaugeWidth = maxWidth >= 75 ? 8 : maxWidth >= 58 ? 4 : 0;
 		const gauge = gaugeWidth > 0 ? `${formatTpsGauge(tps, peak, gaugeWidth)} ` : "";
-		const tpsColor = tps >= 50 ? C.green : tps >= 20 ? C.yellow : C.red;
-		tpsStr = ` · ${gauge}${tpsColor}~${tps} tps${C.reset}`;
+		const speedColor = tpsColor(tps);
+		tpsStr = ` · ${gauge}${speedColor}~${tps} tps${C.reset}`;
 	}
 
 	const suffix = `${tokenStr}${tpsStr}`;
@@ -444,19 +447,24 @@ export interface PendingQueueOptions {
 	maxVisible?: number;
 }
 
+export interface PendingQueueItem {
+	readonly mode: "steer" | "followUp";
+	readonly text: string;
+}
+
 export class PendingQueueComponent {
-	private items: readonly QueuedMessage[] = [];
+	private items: readonly PendingQueueItem[] = [];
 	private readonly maxVisible: number;
 
 	constructor(options: PendingQueueOptions = {}) {
 		this.maxVisible = options.maxVisible ?? 3;
 	}
 
-	setItems(items: readonly QueuedMessage[]): void {
+	setItems(items: readonly PendingQueueItem[]): void {
 		this.items = items;
 	}
 
-	getItems(): readonly QueuedMessage[] {
+	getItems(): readonly PendingQueueItem[] {
 		return this.items;
 	}
 

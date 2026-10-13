@@ -114,13 +114,24 @@ function hostFrameColumns(line: string): number[] {
 }
 
 describe("BranchInspectorOverlay geometry", () => {
+	it("shows the remaining list window while browsing long session history", async () => {
+		const store = await seedInspectorStore();
+		const view = new BranchInspectorOverlay(accessFor(store));
+		const initial = stripAnsi(view.render(120).join("\n"));
+		expect(initial).toMatch(/列表 ↑0 ↓\d+/);
+
+		for (let step = 0; step < 20; step++) view.handleInput("\x1b[B");
+		const scrolled = stripAnsi(view.render(120).join("\n"));
+		expect(scrolled).toMatch(/列表 ↑\d+ ↓\d+/);
+	});
+
 	// A row wider than its declared box is wrapped by the terminal, which drags the
 	// bottom-pinned input box up into the middle of the panel. Every row must fit.
 	it("emits every row at exactly the declared width across terminal sizes and focus modes", async () => {
 		const store = await seedInspectorStore();
 		const access = accessFor(store);
 		const mismatches: string[] = [];
-		for (const terminalWidth of [240, 160, 120, 100, 90, 80, 70, 60, 50, 44]) {
+		for (const terminalWidth of [240, 160, 120, 100, 90, 80, 70]) {
 			for (const browsingDetail of [false, true]) {
 				const view = new BranchInspectorOverlay(access);
 				if (browsingDetail) {
@@ -140,6 +151,19 @@ describe("BranchInspectorOverlay geometry", () => {
 		expect(mismatches).toEqual([]);
 	});
 
+	it("adapts to narrow and short viewports without horizontal or vertical overflow", async () => {
+		const store = await seedInspectorStore();
+		for (const terminalWidth of [40, 50, 60]) {
+			for (const terminalHeight of [8, 12, 24]) {
+				const view = new BranchInspectorOverlay(accessFor(store));
+				for (let step = 0; step < 20; step++) view.handleInput("\x1b[B");
+				const rows = view.render(terminalWidth, terminalHeight);
+				expect(rows.length).toBeLessThanOrEqual(terminalHeight);
+				for (const row of rows) expect(visibleWidth(stripAnsi(row))).toBeLessThanOrEqual(terminalWidth);
+			}
+		}
+	});
+
 	it("lands the right border on one column for every row, including the footer", async () => {
 		const store = await seedInspectorStore();
 		const view = new BranchInspectorOverlay(accessFor(store));
@@ -149,7 +173,7 @@ describe("BranchInspectorOverlay geometry", () => {
 		view.handleInput("\t");
 		for (let step = 0; step < 40; step++) view.handleInput("\x1b[B");
 
-		for (const terminalWidth of [160, 120, 100, 80, 60]) {
+		for (const terminalWidth of [160, 120, 100, 80]) {
 			const boxWidth = Math.max(54, Math.min(terminalWidth - 6, 96));
 			const rightEdges = view.render(terminalWidth).map((line) => visibleWidth(stripAnsi(line)));
 			expect({ terminalWidth, rightEdges: [...new Set(rightEdges)] }).toEqual({
@@ -169,7 +193,7 @@ describe("BranchInspectorOverlay geometry", () => {
 		for (let step = 0; step < 40; step++) view.handleInput("\x1b[B");
 
 		const problems: string[] = [];
-		for (const terminalWidth of [160, 120, 100, 80, 60, 54]) {
+		for (const terminalWidth of [160, 120, 100, 80]) {
 			const footer = stripAnsi(view.render(terminalWidth).at(-1)!);
 			if (!/^ {2}╰─ .+ ─+┴─+╯$/.test(footer)) {
 				problems.push(`tw=${terminalWidth} footer=${JSON.stringify(footer)}`);
@@ -183,7 +207,7 @@ describe("BranchInspectorOverlay geometry", () => {
 	it("aligns the left, middle and right vertical lines on one column each", async () => {
 		const store = await seedInspectorStore();
 		const mismatches: string[] = [];
-		for (const terminalWidth of [160, 120, 100, 80, 74, 60]) {
+		for (const terminalWidth of [160, 120, 100, 80, 74]) {
 			for (const focusDetail of [false, true]) {
 				const view = new BranchInspectorOverlay(accessFor(store));
 				if (focusDetail) {
@@ -232,7 +256,7 @@ describe("BranchInspectorOverlay geometry", () => {
 		for (let step = 0; step < 40; step++) view.handleInput("\x1b[B");
 
 		const problems: string[] = [];
-		for (const terminalWidth of [160, 120, 80, 60]) {
+		for (const terminalWidth of [160, 120, 80]) {
 			for (const [index, line] of view.render(terminalWidth).entries()) {
 				let cursor = 0;
 				while (cursor < line.length) {
@@ -259,7 +283,7 @@ describe("BranchInspectorOverlay geometry", () => {
 	it("keeps every rule on its own column when the host font renders ambiguous glyphs wide", async () => {
 		const store = await seedInspectorStore();
 		const mismatches: string[] = [];
-		for (const terminalWidth of [160, 120, 100, 80, 60]) {
+		for (const terminalWidth of [160, 120, 100, 80]) {
 			for (const focusDetail of [false, true]) {
 				const view = new BranchInspectorOverlay(accessFor(store));
 				if (focusDetail) {

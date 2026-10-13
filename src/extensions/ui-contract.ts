@@ -3,6 +3,7 @@
  */
 
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "../ui/core/types.js";
+import type { ThinkingLevel } from "../core/types.js";
 export type { Component, OverlayHandle, OverlayOptions, WidgetPlacement };
 
 /** 模型选择器的一组条目（provider 分组）。官方 /model 命令与选择器共享此形状。 */
@@ -58,6 +59,61 @@ export interface PromptOptions {
 	signal?: AbortSignal;
 }
 
+export interface ModelPickerAction {
+	currentModel: string;
+	groups: ModelPickerGroup[];
+	onPick: (name: string) => Promise<void> | void;
+}
+
+export interface EffortSliderAction {
+	currentLevel?: ThinkingLevel;
+	tiers: readonly (ThinkingLevel | { id: ThinkingLevel; name: string; description: string })[];
+	onChange: (level: ThinkingLevel) => void;
+}
+
+/** Actions the shared application can express independently of terminal layout. */
+export interface BuiltinUIActions {
+	help: undefined;
+	"toggle-thinking": undefined;
+	"clear-transcript": undefined;
+	"model-picker": ModelPickerAction;
+	"effort-slider": EffortSliderAction;
+	trajectory: undefined;
+	history: undefined;
+	prompt: undefined;
+}
+
+export type BuiltinUIActionArgs<Name extends keyof BuiltinUIActions> = BuiltinUIActions[Name] extends undefined
+	? [payload?: undefined]
+	: [payload: BuiltinUIActions[Name]];
+
+/** Terminal-only component lifecycle and renderer registration facet. */
+export interface TerminalUIContext {
+	setWidget(
+		key: string,
+		component: Component | undefined,
+		options?: { placement?: WidgetPlacement; priority?: number },
+	): void;
+	setHeader(component: Component | undefined): void;
+	setFooter(component: Component | undefined): void;
+	showOverlay(component: Component, options?: OverlayOptions): OverlayHandle;
+	openGutter(argument?: string): boolean;
+	pasteToEditor(text: string): void;
+	setEditorText(text: string): void;
+	getEditorText(): string;
+	registerMessageRenderer<T = unknown>(
+		customType: string,
+		renderer: MessageRenderer<T>,
+		options?: { replace?: boolean },
+	): () => void;
+	registerToolRenderer(name: string, renderer: ToolRenderer, options?: { replace?: boolean }): () => void;
+	registerMarkdownTransformer(
+		name: string,
+		transformer: MarkdownTransformer,
+		options?: { replace?: boolean },
+	): () => void;
+}
+
 /** 扩展可访问的窄 UI 接口 */
 export interface ExtensionUIContext {
 	/** 显示选择器对话框并返回用户选择项 */
@@ -81,39 +137,15 @@ export interface ExtensionUIContext {
 	/** 设置由当前扩展拥有的原子工作指示器；undefined 删除该指示器。 */
 	setWorking(key: string, message: string | undefined): void;
 
-	/** 挂载或更新小部件 */
-	setWidget(
-		key: string,
-		component: Component | undefined,
-		options?: { placement?: WidgetPlacement; priority?: number },
-	): void;
-
-	/** 设置自定义顶部组件（传 undefined 恢复默认 Banner） */
-	setHeader(component: Component | undefined): void;
-
-	/** 设置自定义底部组件 */
-	setFooter(component: Component | undefined): void;
-
-	/** 打开通用覆盖层 */
-	showOverlay(component: Component, options?: OverlayOptions): OverlayHandle;
-
-	/** 向编辑器粘贴文本（支持折叠芯片） */
-	pasteToEditor(text: string): void;
-
-	/** 设置编辑器文本 */
-	setEditorText(text: string): void;
-
-	/** 获取编辑器当前文本 */
-	getEditorText(): string;
-
-	/** 监听终端原生键盘输入（返回取消监听函数） */
-	onTerminalInput(handler: (data: string) => void): () => void;
-
 	/** 是否存在真实交互式 UI。非 TTY 兜底实现返回 false，扩展据此分支，
 	 * 而不是把 undefined/false 当成用户的选择（Pi: ExtensionUIContext.hasUI）。 */
 	hasUI(): boolean;
 
-	openFeature?(name: string, payload?: unknown): boolean;
+	/** Open a typed application action without exposing terminal panel geometry. */
+	openFeature<Name extends keyof BuiltinUIActions>(name: Name, ...args: BuiltinUIActionArgs<Name>): boolean;
+
+	/** Terminal components, overlays, editor control and terminal renderers. */
+	readonly terminal: TerminalUIContext;
 }
 
 /** A pure view of one tool invocation; execution and persisted facts remain outside UI. */

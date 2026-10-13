@@ -17,9 +17,7 @@ import type {
 	CustomEntry,
 	CustomMessage,
 	LocalCommand,
-	MessageRenderer,
-	ToolRenderer,
-	MarkdownTransformer,
+	TerminalUIContext,
 } from "./ui-contract.js";
 import { ExtensionRegistry } from "./renderer-registry.js";
 import { ExtensionHost, type ExtensionEvent, type ExtensionEventHandler, type HookHandler } from "./host.js";
@@ -125,17 +123,6 @@ export interface ExtensionAPI {
 	readonly signal: AbortSignal;
 	registerCommand(command: LocalCommand, options?: { replace?: boolean }): () => void;
 	listCommands(): readonly LocalCommand[];
-	registerMessageRenderer<T = unknown>(
-		customType: string,
-		renderer: MessageRenderer<T>,
-		options?: { replace?: boolean },
-	): () => void;
-	registerToolRenderer(name: string, renderer: ToolRenderer, options?: { replace?: boolean }): () => void;
-	registerMarkdownTransformer(
-		name: string,
-		transformer: MarkdownTransformer,
-		options?: { replace?: boolean },
-	): () => void;
 	registerProvider(name: string, provider: Provider, options?: { replace?: boolean }): () => void;
 	registerModel(model: import("../core/types.js").Model, options?: { replace?: boolean }): () => void;
 	sendMessage(message: CustomMessage): Promise<void>;
@@ -197,7 +184,10 @@ export class ExtensionRunner extends ExtensionHost {
 	private lifecycleTail: Promise<void> = Promise.resolve();
 	private closed = false;
 	private readonly services = new Registrations<ServiceHandler>();
-	private readonly sharedUI = new Map<string, Map<string, Parameters<ExtensionUIContext["setHeader"]>[0]>>();
+	private readonly sharedUI = new Map<
+		string,
+		Map<string, Parameters<ExtensionUIContext["terminal"]["setHeader"]>[0]>
+	>();
 	private readonly extensions = new Map<string, ResourceScope>();
 	private readonly failures = new Map<string, { id: string; path: string; error: string }>();
 	private ui: ExtensionUIContext;
@@ -218,8 +208,8 @@ export class ExtensionRunner extends ExtensionHost {
 		this.ui = ui;
 		for (const [slot, entries] of this.sharedUI) {
 			const current = [...entries.values()].at(-1);
-			if (slot === "header") ui.setHeader(current);
-			else ui.setFooter(current);
+			if (slot === "header") ui.terminal.setHeader(current);
+			else ui.terminal.setFooter(current);
 		}
 	}
 
@@ -234,15 +224,15 @@ export class ExtensionRunner extends ExtensionHost {
 	private setSharedUI(
 		slot: "header" | "footer",
 		owner: string,
-		component: Parameters<ExtensionUIContext["setHeader"]>[0],
+		component: Parameters<ExtensionUIContext["terminal"]["setHeader"]>[0],
 	): void {
 		const entries = this.sharedUI.get(slot) ?? new Map();
 		entries.delete(owner);
 		if (component !== undefined) entries.set(owner, component);
 		this.sharedUI.set(slot, entries);
 		const current = [...entries.values()].at(-1);
-		if (slot === "header") this.ui.setHeader(current);
-		else this.ui.setFooter(current);
+		if (slot === "header") this.ui.terminal.setHeader(current);
+		else this.ui.terminal.setFooter(current);
 	}
 
 	load(): Promise<void> {
@@ -427,6 +417,7 @@ export class ExtensionRunner extends ExtensionHost {
 		};
 		const ui = ownedUI(
 			dynamicUI(() => this.ui),
+			this.registry,
 			scope.id,
 			assertActive,
 			own,
@@ -661,18 +652,6 @@ export class ExtensionRunner extends ExtensionHost {
 				);
 			},
 			listCommands: () => this.registry.listCommands(),
-			registerMessageRenderer: (type, renderer, options) => {
-				assertActive();
-				return ownRegistration(this.registry.registerMessageRenderer(type, renderer, options));
-			},
-			registerToolRenderer: (name, renderer, options) => {
-				assertActive();
-				return ownRegistration(this.registry.registerToolRenderer(name, renderer, options));
-			},
-			registerMarkdownTransformer: (name, transformer, options) => {
-				assertActive();
-				return ownRegistration(this.registry.registerMarkdownTransformer(name, transformer, options));
-			},
 			registerModel: (model, options) => {
 				assertActive();
 				if (!this.options.onModel) throw new Error("宿主未提供模型注册入口");
@@ -763,18 +742,72 @@ function dynamicUI(get: () => ExtensionUIContext): ExtensionUIContext {
  * slots are namespaced per extension and cleaned up on deactivate. */
 function ownedUI(
 	base: ExtensionUIContext,
+	registry: ExtensionRegistry,
 	id: string,
 	assertActive: () => void,
 	own: (dispose: ExtensionTeardown) => void,
 	ownKeyed: (key: string, dispose: ExtensionTeardown) => void,
-	setShared: (slot: "header" | "footer", component: Parameters<ExtensionUIContext["setHeader"]>[0]) => void,
+	setShared: (slot: "header" | "footer", component: Parameters<ExtensionUIContext["terminal"]["setHeader"]>[0]) => void,
 	scopeSignal: AbortSignal,
 ): ExtensionUIContext {
 	const key = (value: string) => `${id}:${value}`;
 	const withScopeSignal = (options?: PromptOptions): PromptOptions => ({
 		signal: options?.signal ? AbortSignal.any([scopeSignal, options.signal]) : scopeSignal,
 	});
+	const ownRegistration = (dispose: () => void): (() => void) => {
+		own(dispose);
+		return dispose;
+	};
+	const terminalOverrides: Partial<TerminalUIContext> = {
+		setWidget: (name, component, options) => {
+			assertActive();
+			const scoped = key(name);
+			base.terminal.setWidget(scoped, component, options);
+			ownKeyed(`widget:${name}`, () => base.terminal.setWidget(scoped, undefined));
+		},
+		setHeader: (component) => {
+			assertActive();
+			setShared("header", component);
+			ownKeyed("header", () => setShared("header", undefined));
+		},
+		setFooter: (component) => {
+			assertActive();
+			setShared("footer", component);
+			ownKeyed("footer", () => setShared("footer", undefined));
+		},
+		showOverlay: (component, options) => {
+			assertActive();
+			const handle = base.terminal.showOverlay(component, options);
+			own(() => handle.hide());
+			return handle;
+		},
+		registerMessageRenderer: (type, renderer, options) => {
+			assertActive();
+			return ownRegistration(registry.registerMessageRenderer(type, renderer, options));
+		},
+		registerToolRenderer: (name, renderer, options) => {
+			assertActive();
+			return ownRegistration(registry.registerToolRenderer(name, renderer, options));
+		},
+		registerMarkdownTransformer: (name, transformer, options) => {
+			assertActive();
+			return ownRegistration(registry.registerMarkdownTransformer(name, transformer, options));
+		},
+	};
+	const terminal = new Proxy(base.terminal, {
+		get: (target, property) => {
+			const override = Reflect.get(terminalOverrides as object, property) as unknown;
+			if (override !== undefined) return override;
+			const value = Reflect.get(target as object, property) as unknown;
+			if (typeof value !== "function") return value;
+			return (...args: unknown[]) => {
+				assertActive();
+				return (value as (...inner: unknown[]) => unknown).apply(target, args);
+			};
+		},
+	});
 	const overrides: Partial<ExtensionUIContext> = {
+		terminal,
 		select: (title, options, promptOptions) => {
 			assertActive();
 			return base.select(title, options, withScopeSignal(promptOptions));
@@ -798,34 +831,6 @@ function ownedUI(
 			const scoped = key(name);
 			base.setWorking(scoped, message);
 			ownKeyed(`working:${name}`, () => base.setWorking(scoped, undefined));
-		},
-		setWidget: (name, component, options) => {
-			assertActive();
-			const scoped = key(name);
-			base.setWidget(scoped, component, options);
-			ownKeyed(`widget:${name}`, () => base.setWidget(scoped, undefined));
-		},
-		setHeader: (component) => {
-			assertActive();
-			setShared("header", component);
-			ownKeyed("header", () => setShared("header", undefined));
-		},
-		setFooter: (component) => {
-			assertActive();
-			setShared("footer", component);
-			ownKeyed("footer", () => setShared("footer", undefined));
-		},
-		showOverlay: (component, options) => {
-			assertActive();
-			const handle = base.showOverlay(component, options);
-			own(() => handle.hide());
-			return handle;
-		},
-		onTerminalInput: (handler) => {
-			assertActive();
-			const dispose = base.onTerminalInput(handler);
-			own(dispose);
-			return dispose;
 		},
 	};
 	return new Proxy(base, {
@@ -853,22 +858,28 @@ export function createPrintUI(
 		clearNotification: () => {},
 		setStatus: () => {},
 		setWorking: () => {},
-		setWidget: () => {},
-		setHeader: () => {},
-		setFooter: () => {},
 		hasUI: () => false,
-		showOverlay: () => ({
-			hide() {},
-			setHidden() {},
-			requestRender() {},
-			isHidden: () => true,
-			focus() {},
-			unfocus() {},
-			isFocused: () => false,
-		}),
-		pasteToEditor: () => {},
-		setEditorText: () => {},
-		getEditorText: () => "",
-		onTerminalInput: () => () => {},
+		openFeature: () => false,
+		terminal: {
+			setWidget: () => {},
+			setHeader: () => {},
+			setFooter: () => {},
+			showOverlay: () => ({
+				hide() {},
+				setHidden() {},
+				requestRender() {},
+				isHidden: () => true,
+				focus() {},
+				unfocus() {},
+				isFocused: () => false,
+			}),
+			openGutter: () => false,
+			pasteToEditor: () => {},
+			setEditorText: () => {},
+			getEditorText: () => "",
+			registerMessageRenderer: () => () => {},
+			registerToolRenderer: () => () => {},
+			registerMarkdownTransformer: () => () => {},
+		},
 	};
 }

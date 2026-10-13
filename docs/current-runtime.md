@@ -40,6 +40,16 @@
 
 投递模式规则（忙时 direct 升级为 steer、空闲时一律 direct）归属于宿主，不再由 UI 决定。
 
+## TUI 消费者与扩展接缝
+
+交互启动顺序为：读取 `HostSnapshot`、恢复 TUI 会话与草稿状态、接入扩展 UI、启动终端消费者，随后才启动 `Host`。`HostSnapshot` 与 `HostEvent` 位于 `host/events.ts`；UI 不持有可供 CLI 操作的 Host 引用。Host 事件到 transcript/activity/trajectory 的投影集中在 `InteractiveTUI.consume()`，CLI 只提供回溯装饰等宿主派生数据。运行中晚接入的订阅者只收到后续事件，不重建既有 transcript。
+
+TUI 向 CLI 发出的动作是 `TuiIntent` 联合（提交、取消、插队递送、撤回队列、切换思考档位）；CLI 路由后调用 Host。忙闲决策使用 Host 快照/查询，TUI 的 busy 值只是事件驱动的显示状态。草稿读写、通知和会话恢复通过 TUI 门面操作；提示词面板通过类型化 `openFeature("prompt")` UI action 打开。
+
+扩展的 `pi.ui` 只提供通知、确认/选择/输入、状态和类型化应用动作；ANSI 组件、overlay、widget、编辑器控制、页眉页脚、gutter 与组件渲染器注册位于 `pi.ui.terminal`。renderer 注册由扩展 `ResourceScope` 管理，终端未接入时也注册到共享 renderer registry。没有预建 Web/GUI 布局层。
+
+组件异常在组件边界内报告并隔离。弹窗按收到的宽高组织可见内容；空 ContextBar 不占行，存在上下文事实时提供 Ctrl+L 入口。时间线轨只在有多轮导航且历史可滚动时出现，无可滚动内容时不保留 gutter。布局与鼠标热区共用 `FrameLayout`。这些约束由 fake terminal 覆盖 40/50/80/120 列与 8/12/24 行；真实终端字体、配色观感和 IME 仍需现场验收。
+
 ## Agent lifecycle
 
 `Subject` 对外以 `activeRun` 表示完整运行。`waitForIdle()` 会等待 turn 结束、extension handler、队列续跑和 observed output flush 全部结算。

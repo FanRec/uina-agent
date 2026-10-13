@@ -36,7 +36,16 @@ export type { VtCell, Run } from "./environment/vt-screen.js";
 
 export { assertDAGInvariants, assertNoResourceLeaks } from "./matchers/invariants.js";
 
-export { UITestHarness, createTestTUI, renderWidget, mockModelGroups } from "./ui/ui-harness.js";
+export {
+	UITestHarness,
+	createTestTUI,
+	getTestUIHost,
+	getTestTrajectoryProjection,
+	dispatchUIHostInput,
+	isHeartbeatActive,
+	renderWidget,
+	mockModelGroups,
+} from "./ui/ui-harness.js";
 export type { TestTUIOptions } from "./ui/ui-harness.js";
 
 export { ExtensionHarness, createExtensionHarness } from "./extensions/extension-harness.js";

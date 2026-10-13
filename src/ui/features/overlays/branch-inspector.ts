@@ -133,9 +133,13 @@ export class BranchInspectorOverlay implements Component, Focusable {
 
 	invalidate(): void {}
 
-	render(terminalWidth = 80): string[] {
+	render(terminalWidth = 80, availableHeight = 24): string[] {
+		if (terminalWidth <= 0 || availableHeight <= 0) return [];
 		// Same frame geometry as the sibling dashboards (trajectory).
 		this.lastWidth = terminalWidth;
+		if (terminalWidth < 64 || availableHeight < 20) {
+			return this.formatCompactLines(terminalWidth, availableHeight);
+		}
 		const boxWidth = Math.max(54, Math.min(terminalWidth - 6, 96));
 		const innerW = boxWidth - 6;
 		const border = C.gray;
@@ -178,7 +182,11 @@ export class BranchInspectorOverlay implements Component, Focusable {
 			`  ${border}╭${titleTag}${"─".repeat(Math.max(1, boxWidth - 4 - visibleWidth(titleTag)))}${cha(colRight)}${border}╮${C.reset}`,
 		);
 
-		const help = `${this.view.mode === "main" ? "当前主线" : this.view.mode === "branch-list" ? "选择要查看的分支" : "废弃分支（只读）"} · ${nodes.length} 节点 · [←/→] 切换视图 [Tab] 焦点 ${this.focusTarget} [↑/↓] 移动 [Esc] 关闭`;
+		const listWindowStart = getListWindowStart(nodes.length, selectedIndex, LIST_ROWS);
+		const listWindowEnd = Math.min(nodes.length, listWindowStart + LIST_ROWS);
+		const listScrollHint =
+			nodes.length > LIST_ROWS ? ` · 列表 ↑${listWindowStart} ↓${Math.max(0, nodes.length - listWindowEnd)}` : "";
+		const help = `${this.view.mode === "main" ? "当前主线" : this.view.mode === "branch-list" ? "选择要查看的分支" : "废弃分支（只读）"} · ${nodes.length} 节点${listScrollHint} · [←/→] 切换视图 [Tab] 焦点 ${this.focusTarget} [↑/↓] 移动 [Esc] 关闭`;
 		output.push(contentRow(help, C.dim));
 		output.push(`  ${border}├${"─".repeat(boxWidth - 4)}${cha(colRight)}${border}┤${C.reset}`);
 
@@ -230,21 +238,47 @@ export class BranchInspectorOverlay implements Component, Focusable {
 		);
 		return output;
 	}
+
+	private formatCompactLines(terminalWidth: number, availableHeight: number): string[] {
+		const nodes = this.nodes();
+		const selectedIndex = nodes.length === 0 ? -1 : Math.min(Math.max(0, this.selectedIndex), nodes.length - 1);
+		const leftPad = terminalWidth >= 64 ? 2 : 0;
+		const boxWidth = Math.max(1, Math.min(terminalWidth - leftPad, 96));
+		const innerW = Math.max(1, boxWidth - 4);
+		const border = C.gray;
+		const pad = " ".repeat(leftPad);
+		const title = truncateToWidth("会话历史 · 分支检视", Math.max(1, boxWidth - 6), "…");
+		const tag = `─ ${title} `;
+		const frame = (content: string): string => {
+			const safe = truncateToWidth(content, innerW, "…");
+			return `${pad}${border}│${C.reset} ${safe}${" ".repeat(Math.max(0, innerW - visibleWidth(safe)))} ${border}│${C.reset}`;
+		};
+		const rowsBudget = Math.max(0, Math.floor(availableHeight) - 4);
+		const list = formatNodeList(nodes, selectedIndex, innerW, rowsBudget);
+		const windowStart = getListWindowStart(nodes.length, selectedIndex, rowsBudget);
+		const windowEnd = windowStart + list.length;
+		const output = [
+			`${pad}${border}╭${tag}${border}${"─".repeat(Math.max(0, boxWidth - 2 - visibleWidth(tag)))}╮${C.reset}`,
+			frame(`${nodes.length} 个节点 · ↑↓ 移动 · Enter 选择分支`),
+			...list.map(frame),
+			frame(`↑${windowStart} ↓${Math.max(0, nodes.length - windowEnd)} · Esc 关闭`),
+			`${pad}${border}╰${"─".repeat(Math.max(0, boxWidth - 2))}╯${C.reset}`,
+		];
+		return output.slice(0, Math.max(1, Math.floor(availableHeight)));
+	}
 }
 
 function padTo(text: string, width: number): string {
 	return `${text}${" ".repeat(Math.max(0, width - visibleWidth(text)))}`;
 }
 
-function formatNodeList(nodes: SessionNodeInfo[], selectedIndex: number, width: number): string[] {
+function formatNodeList(nodes: SessionNodeInfo[], selectedIndex: number, width: number, maxRows = LIST_ROWS): string[] {
 	if (nodes.length === 0) return [`${C.dim}(当前筛选无节点)${C.reset}`];
+	if (maxRows <= 0) return [];
 
-	const windowStart = Math.max(
-		0,
-		Math.min(selectedIndex - Math.floor(LIST_ROWS / 2), Math.max(0, nodes.length - LIST_ROWS)),
-	);
+	const windowStart = getListWindowStart(nodes.length, selectedIndex, maxRows);
 	const rows: string[] = [];
-	for (let i = windowStart; i < Math.min(nodes.length, windowStart + LIST_ROWS); i++) {
+	for (let i = windowStart; i < Math.min(nodes.length, windowStart + maxRows); i++) {
 		const node = nodes[i]!;
 		const isSelected = i === selectedIndex;
 		const pointer = isSelected ? `${C.bold}${C.cyan}❯${C.reset}` : " ";
@@ -264,6 +298,11 @@ function formatNodeList(nodes: SessionNodeInfo[], selectedIndex: number, width: 
 		rows.push(`${prefix}${truncateToWidth(stripAnsi(body), width - visibleWidth(prefix), "")}`);
 	}
 	return rows;
+}
+
+function getListWindowStart(itemCount: number, selectedIndex: number, visibleRows: number): number {
+	if (visibleRows <= 0) return 0;
+	return Math.max(0, Math.min(selectedIndex - Math.floor(visibleRows / 2), Math.max(0, itemCount - visibleRows)));
 }
 
 function formatNodeDetails(entry: HydratedSessionEntry | null, width: number): string[] {

@@ -13,6 +13,8 @@ import { Key, matchesKey } from "./core/keys.js";
 import { MouseSelectionTracker, type InteractiveTarget, type SelectableRegion } from "./core/mouse-selection.js";
 import { decodeHoverTarget, encodeHoverTarget } from "./core/hover-target.js";
 import { ScrollController } from "./core/scroll-controller.js";
+import { ComponentBoundary } from "./core/component-boundary.js";
+import { resolveGutterAction } from "./core/gutter.js";
 import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ContextSnapshot, RequestUsage, ThinkingLevel, ToolResultStatus } from "../core/types.js";
 import type { SessionEntry } from "../session/types.js";
@@ -48,13 +50,18 @@ import {
 	ContextBarComponent,
 	formatCacheHitRate,
 	type ContextSegments,
+	type PendingQueueItem,
 	TimelineRailComponent,
 	ScrollbarGutterComponent,
 } from "./components/widgets/index.js";
-import type { QueuedMessage } from "../agent/queue.js";
 import { ExtensionRegistry } from "../extensions/renderer-registry.js";
 import { createExtensionUIContext, type UIHostContextPort } from "./extension-ui-context.js";
-import type { ExtensionUIContext } from "../extensions/ui-contract.js";
+import type {
+	BuiltinUIActionArgs,
+	BuiltinUIActions,
+	ExtensionUIContext,
+	TerminalUIContext,
+} from "../extensions/ui-contract.js";
 
 function overlayCard(baseLine: string, cardLine: string, startCol: number, width: number): string {
 	const leftPart = truncateToWidth(baseLine, startCol, " ");
@@ -79,6 +86,7 @@ export interface UIHostOptions {
 interface FrameLayout {
 	width: number;
 	height: number;
+	hasGutter: boolean;
 	innerW: number;
 	inputWidth: number;
 	inputLines: string[];
@@ -120,6 +128,7 @@ export class UIHost implements UIHostContextPort {
 	readonly focusManager: FocusManager;
 	readonly overlayStack: OverlayStack;
 	readonly widgetSlots: WidgetSlots;
+	private readonly componentBoundary: ComponentBoundary;
 	readonly registry: ExtensionRegistry;
 	readonly ctxUI: ExtensionUIContext;
 
@@ -179,7 +188,6 @@ export class UIHost implements UIHostContextPort {
 		selectedIndex: number;
 	} | null = null;
 
-	private rawInputListeners = new Set<(data: string) => void>();
 	private readonly statuses = new Map<string, { text: string; sequence: number }>();
 
 	private activeModalId: string | null = null;
@@ -264,21 +272,42 @@ export class UIHost implements UIHostContextPort {
 	onPullBackQueue?: () => void;
 	onThinkingLevelCycle?: () => void;
 
-	private readonly features = new Map<string, (payload?: unknown) => void>();
+	private readonly features = new Map<keyof BuiltinUIActions, (payload: unknown) => void>();
 
-	registerFeature(name: string, handler: (payload?: unknown) => void): () => void {
-		this.features.set(name, handler);
+	registerFeature<Name extends keyof BuiltinUIActions>(
+		name: Name,
+		handler: (payload: BuiltinUIActions[Name]) => void,
+	): () => void {
+		const wrapped = handler as (payload: unknown) => void;
+		this.features.set(name, wrapped);
 		return () => {
-			if (this.features.get(name) === handler) this.features.delete(name);
+			if (this.features.get(name) === wrapped) this.features.delete(name);
 		};
 	}
 
-	openFeature(name: string, payload?: unknown): boolean {
+	openFeature<Name extends keyof BuiltinUIActions>(name: Name, ...args: BuiltinUIActionArgs<Name>): boolean {
 		const handler = this.features.get(name);
 		if (!handler) return false;
-		handler(payload);
+		handler(args[0]);
 		return true;
 	}
+
+	openGutter(argument?: string): boolean {
+		const action = resolveGutterAction(argument, this.gutterMode);
+		this.setGutterMode(action.mode);
+		if (action.style) this.setScrollbarThumbStyle(action.style);
+		this.notify(action.message);
+		return true;
+	}
+
+	registerMessageRenderer: TerminalUIContext["registerMessageRenderer"] = (type, renderer, options) =>
+		this.registry.registerMessageRenderer(type, renderer, options);
+
+	registerToolRenderer: TerminalUIContext["registerToolRenderer"] = (name, renderer, options) =>
+		this.registry.registerToolRenderer(name, renderer, options);
+
+	registerMarkdownTransformer: TerminalUIContext["registerMarkdownTransformer"] = (name, transformer, options) =>
+		this.registry.registerMarkdownTransformer(name, transformer, options);
 
 	private pendingQueue = new PendingQueueComponent();
 
@@ -298,7 +327,7 @@ export class UIHost implements UIHostContextPort {
 		return Boolean(command?.keybinding && matchesKey(data, command.keybinding));
 	}
 
-	setPendingQueue(items: readonly QueuedMessage[]): void {
+	setPendingQueue(items: readonly PendingQueueItem[]): void {
 		this.pendingQueue.setItems(items);
 		this.requestRender();
 	}
@@ -351,9 +380,13 @@ export class UIHost implements UIHostContextPort {
 		this.terminal = options.terminal ?? new ProcessTerminal();
 		this.renderer = new MainScreenRenderer(this.terminal);
 		this.focusManager = new FocusManager();
+		this.componentBoundary = new ComponentBoundary((component, operation, error) => {
+			const name = component.constructor?.name || "TUI 组件";
+			this.notify(`${name} ${operation === "render" ? "渲染" : "输入处理"}失败: ${String(error)}`, "error");
+		});
 
-		this.overlayStack = new OverlayStack(this.focusManager, () => this.requestRender());
-		this.widgetSlots = new WidgetSlots(() => this.requestRender());
+		this.overlayStack = new OverlayStack(this.focusManager, () => this.requestRender(), this.componentBoundary);
+		this.widgetSlots = new WidgetSlots(() => this.requestRender(), this.componentBoundary);
 		this.registry = options.registry ?? new ExtensionRegistry();
 		this.ctxUI = createExtensionUIContext(this);
 
@@ -363,13 +396,11 @@ export class UIHost implements UIHostContextPort {
 			message: (type) => this.registry.getMessageRenderer(type),
 			tool: (name) => this.registry.getToolRenderer(name),
 			markdown: (text, context) => this.registry.transformMarkdown(text, context),
+			componentRenderer: (component, width, height) => this.componentBoundary.render(component, width, height),
 		});
 		this.connectRegistry();
 
-		this.banner = new BannerComponent({
-			modelName: this.modelName,
-			cwd: this.cwd,
-		});
+		this.banner = new BannerComponent({ cwd: this.cwd });
 
 		this.inputLine = new InputLine();
 		this.inputLine.onSubmitMode = (text, mode) => this.handleUserSubmitMode(text, mode);
@@ -449,14 +480,9 @@ export class UIHost implements UIHostContextPort {
 	 * through ProcessTerminal, while headless callers can feed the same raw
 	 * key protocol without reaching into the private dispatcher.
 	 */
-	handleInput(data: string): void {
-		this.handleTerminalInput(data);
-	}
-
 	setModel(model: string): void {
 		this.modelName = model;
 		this.syncContextComponents();
-		this.banner.setOptions({ modelName: this.modelName, cwd: this.cwd });
 		this.requestRender();
 	}
 
@@ -833,8 +859,7 @@ export class UIHost implements UIHostContextPort {
 
 		action();
 
-		const after = this.computeLayout();
-		this.scroll.markContent(after.totalPerm, after.transcriptH);
+		const after = this.layoutFrame();
 		if (after.totalPerm <= after.transcriptH) {
 			this.scroll.setOffset(0);
 			return;
@@ -999,11 +1024,6 @@ export class UIHost implements UIHostContextPort {
 		return this.inputLine.getText();
 	}
 
-	onTerminalInput(handler: (data: string) => void): () => void {
-		this.rawInputListeners.add(handler);
-		return () => this.rawInputListeners.delete(handler);
-	}
-
 	toggleModal(id: string, opener: (close: () => void) => OverlayHandle): void {
 		if (this.activeModalId === id) {
 			this.closeModal();
@@ -1112,7 +1132,7 @@ export class UIHost implements UIHostContextPort {
 	 * `scrollOffset`: it reports the clamped value instead of writing it, so
 	 * rendering, scrollToTurn, preserveScrollAnchor and hit zones cannot drift.
 	 */
-	private computeLayout(): FrameLayout {
+	private computeLayout(reserveGutter: boolean): FrameLayout {
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
 		const innerW = width;
@@ -1125,7 +1145,7 @@ export class UIHost implements UIHostContextPort {
 		const contextBarLines = this.contextBar.render(inputWidth);
 		// The footer slot is a real frame region: extensions that call setFooter()
 		// must see it, otherwise the API silently does nothing.
-		const footerLines = this.footerComponent?.render(inputWidth) ?? [];
+		const footerLines = this.footerComponent ? this.componentBoundary.render(this.footerComponent, inputWidth) : [];
 		const belowLines = [...contextBarLines, ...this.widgetSlots.render("belowEditor", innerW), ...footerLines];
 		const belowH = belowLines.length;
 
@@ -1159,9 +1179,9 @@ export class UIHost implements UIHostContextPort {
 
 		const breathingGap = 1;
 		const transcriptH = Math.max(0, height - inputH - belowH - aboveH - breathingGap);
-		const safeW = Math.max(20, innerW - 1);
-		const transcriptContentW = Math.max(18, safeW - 2);
-		const bannerLines = (this.headerComponent ?? this.banner).render(transcriptContentW);
+		const safeW = reserveGutter ? Math.max(20, innerW - 1) : innerW;
+		const transcriptContentW = Math.max(18, reserveGutter ? safeW - 2 : innerW - 1);
+		const bannerLines = this.componentBoundary.render(this.headerComponent ?? this.banner, transcriptContentW);
 		// 帧内单一行模型：一次 ensureModel，行序列与四个热区索引全部同源（旧写法各取各的，assemble 重复 5 次）
 		const frameModel = this.transcript.getFrameModel(transcriptContentW);
 		const transcriptLines = frameModel.lines;
@@ -1179,6 +1199,7 @@ export class UIHost implements UIHostContextPort {
 		return {
 			width,
 			height,
+			hasGutter: reserveGutter && maxScroll > 0,
 			innerW,
 			inputWidth,
 			inputLines,
@@ -1208,9 +1229,16 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	private layoutFrame(): FrameLayout {
-		const provisional = this.computeLayout();
-		this.scroll.markContent(provisional.totalPerm, provisional.transcriptH);
-		return this.computeLayout();
+		const canNavigateTurns = this.transcript.getTimelineTurns().length > 1;
+		let reserveGutter = this.gutterMode === "scrollbar" || canNavigateTurns;
+		let layout = this.computeLayout(reserveGutter);
+		if (layout.maxScroll === 0) {
+			reserveGutter = false;
+			layout = this.computeLayout(false);
+		}
+		const previousOffset = this.scroll.getOffset();
+		this.scroll.markContent(layout.totalPerm, layout.transcriptH);
+		return this.scroll.getOffset() === previousOffset ? layout : this.computeLayout(reserveGutter);
 	}
 
 	private renderCurrentFrame(): void {
@@ -1277,7 +1305,7 @@ export class UIHost implements UIHostContextPort {
 		// 8. 组装整屏行数组（转录区 + 填充空白 + 提示条）
 		let toastStr = "";
 		if (this.copyToastText) {
-			toastStr = `${C.iceBlue}${this.copyToastText}${C.reset}`;
+			toastStr = `${C.suggestion}${this.copyToastText}${C.reset}`;
 		} else if (this.notificationToast) {
 			const col =
 				this.notificationToast.type === "error"
@@ -1326,7 +1354,9 @@ export class UIHost implements UIHostContextPort {
 		}
 		let previewCard: { topRow: number; lines: string[] } | undefined;
 
-		if (this.gutterMode === "scrollbar") {
+		if (!layout.hasGutter) {
+			railGlyphs = [];
+		} else if (this.gutterMode === "scrollbar") {
 			const scrollRes = this.scrollbarGutter.renderGutterRows(chatAreaH, totalPerm, scrollStart);
 			railGlyphs = scrollRes.gutterGlyphs;
 			previewCard = scrollRes.hoverChip;
@@ -1347,7 +1377,7 @@ export class UIHost implements UIHostContextPort {
 			const rawLine = allChatRows[r] ?? "";
 			const baseLine = truncateToWidth(rawLine, transcriptContentW, " ");
 			const pad = Math.max(0, transcriptContentW - visibleWidth(baseLine));
-			const rail = railGlyphs[r] ?? "  ";
+			const rail = layout.hasGutter ? (railGlyphs[r] ?? "  ") : "";
 			// hover 中的工具卡行：底色延伸覆盖 rail 交界 2 列，否则卡片底色到
 			// transcriptContentW 截止，交界处漏出 2 列默认背景（高亮空缺）。
 			// 闲置刻度轨自带 SGR（▔/─/空格），其 reset 后重新注入 bg 保持连续。
@@ -1466,7 +1496,7 @@ export class UIHost implements UIHostContextPort {
 		}
 
 		// (2) 注册右侧 Gutter 交互（ScrollbarGutter 或 TimelineRail）
-		if (this.gutterMode === "scrollbar") {
+		if (layout.hasGutter && this.gutterMode === "scrollbar") {
 			for (let r = 0; r < chatAreaH; r++) {
 				interactiveTargets.push({
 					id: encodeHoverTarget({ kind: "scrollbar-row", row: r }),
@@ -1484,7 +1514,7 @@ export class UIHost implements UIHostContextPort {
 					},
 				});
 			}
-		} else {
+		} else if (layout.hasGutter) {
 			const railGeo = this.timelineRail.getGeometry(chatAreaH, atBottom);
 			if (railGeo && timelineTurns.length > 0) {
 				interactiveTargets.push({
@@ -1670,10 +1700,6 @@ export class UIHost implements UIHostContextPort {
 		}
 	}
 
-	getHeartbeatActiveForTest(): boolean {
-		return this.heartbeatTimer !== null;
-	}
-
 	/** 工具状态变化（开始/结束）时由 tui 门面调用：重新评估心跳需求。 */
 	notifyToolActivity(): void {
 		this.updateHeartbeat();
@@ -1696,15 +1722,6 @@ export class UIHost implements UIHostContextPort {
 	// =========================================================================
 
 	private handleTerminalInput(data: string): void {
-		// 1. 原生监听器优先
-		for (const listener of this.rawInputListeners) {
-			try {
-				listener(data);
-			} catch (error) {
-				this.notify(`终端输入监听器失败: ${String(error)}`, "error");
-			}
-		}
-
 		// 1.5 鼠标 SGR 与 X10 协议拦截（滚轮视口滚动、划词选区与交互热区）：
 		// 消费完返回 null，否则返回剥除鼠标序列后待继续分发的剩余字节。
 		const rest = this.dispatchMouseInput(data);
@@ -1736,8 +1753,8 @@ export class UIHost implements UIHostContextPort {
 
 		// 5. 焦点组件输入处理
 		const focused = this.focusManager.getFocused();
-		if (focused && focused.handleInput) {
-			focused.handleInput(data);
+		if (focused?.handleInput) {
+			this.componentBoundary.handleInput(focused, data);
 			this.updateSuggestions();
 			this.requestRender();
 		}
@@ -1884,7 +1901,7 @@ export class UIHost implements UIHostContextPort {
 				return true;
 			}
 			if (capturingOverlay.component.handleInput) {
-				capturingOverlay.component.handleInput(data);
+				this.componentBoundary.handleInput(capturingOverlay.component, data);
 				return true;
 			}
 		}
@@ -1896,6 +1913,10 @@ export class UIHost implements UIHostContextPort {
 		// 非鼠标交互立即停止自动滚屏
 		this.stopAutoScroll();
 		if (this.dispatchRegisteredKeybinding(data)) return true;
+		if (matchesKey(data, Key.ctrl("l"))) {
+			if (this.contextBar.toggleExpanded()) this.requestRender();
+			return true;
+		}
 		if (data === "\x1b[Z" || matchesKey(data, Key.shiftTab)) {
 			this.onThinkingLevelCycle?.();
 			return true;

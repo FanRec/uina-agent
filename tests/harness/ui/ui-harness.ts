@@ -2,6 +2,7 @@ import { createInteractiveUI, InteractiveTUI, type InteractiveTUIOptions } from 
 import { UIHost } from "../../../src/ui/ui-host.js";
 import { createSilentTerminal, type SilentTerminalResult } from "../environment/silent-terminal.js";
 import type { Component } from "../../../src/ui/core/types.js";
+import type { TrajectoryProjection } from "../../../src/ui/adapters/agent-events.js";
 import type { ModelGroup } from "../../../src/ui/features/overlays/index.js";
 import type { VtScreen } from "../environment/vt-screen.js";
 
@@ -44,7 +45,7 @@ export class UITestHarness {
 	}
 
 	get host(): UIHost {
-		return this.tui.host;
+		return getTestUIHost(this.tui);
 	}
 
 	get screen(): VtScreen {
@@ -136,13 +137,32 @@ export function createTestTUI(options: TestTUIOptions = {}): UITestHarness {
 	return new UITestHarness(tui, terminal);
 }
 
+/** Deliberate white-box access for tests whose subject is UIHost internals. */
+export function getTestUIHost(tui: InteractiveTUI): UIHost {
+	return (tui as unknown as { host: UIHost }).host;
+}
+
+export function getTestTrajectoryProjection(tui: InteractiveTUI): TrajectoryProjection {
+	return (tui as unknown as { trajectoryProjection: TrajectoryProjection }).trajectoryProjection;
+}
+
+/** Deliver a decoded terminal chunk directly at UIHost's terminal-input boundary. */
+export function dispatchUIHostInput(host: UIHost, data: string): void {
+	(host as unknown as { handleTerminalInput(data: string): void }).handleTerminalInput(data);
+}
+
+/** Observe the private frame clock without adding a production test-only getter. */
+export function isHeartbeatActive(host: UIHost): boolean {
+	return (host as unknown as { heartbeatTimer: NodeJS.Timeout | null }).heartbeatTimer !== null;
+}
+
 /**
  * 微组件即时渲染辅助器：
  * 快速获取单个 Component 在指定宽度/行数下的渲染行输出。
  */
 export function renderWidget(component: Component, options: { width?: number; height?: number } = {}): string[] {
 	const width = options.width ?? 80;
-	return component.render(width);
+	return component.render(width, options.height);
 }
 
 /**

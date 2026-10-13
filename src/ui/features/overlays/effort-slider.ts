@@ -24,6 +24,10 @@ export const DEFAULT_EFFORT_TIERS: EffortTier[] = [
 ];
 
 export function normalizeEffortId(id: string): ThinkingLevel {
+	return knownEffortId(id) ?? "medium";
+}
+
+function knownEffortId(id: string): ThinkingLevel | undefined {
 	const lower = id.toLowerCase().trim();
 	if (lower === "none" || lower === "off" || lower === "0") return "off";
 	if (lower === "minimal") return "minimal";
@@ -32,7 +36,7 @@ export function normalizeEffortId(id: string): ThinkingLevel {
 	if (lower === "high" || lower === "3") return "high";
 	if (lower === "xhigh") return "xhigh";
 	if (lower === "max" || lower === "maximum" || lower === "4") return "max";
-	return "medium";
+	return undefined;
 }
 
 export function toEffortTier(item: EffortTier | ThinkingLevel | string): EffortTier {
@@ -49,7 +53,7 @@ export function toEffortTier(item: EffortTier | ThinkingLevel | string): EffortT
 export class EffortSlider implements Component, Focusable {
 	focused = true;
 	private tiers: EffortTier[];
-	private activeTierId: ThinkingLevel;
+	private activeTierId: ThinkingLevel | undefined;
 	private focusIndex = 0;
 
 	onChange?: (tierId: ThinkingLevel) => void;
@@ -62,10 +66,10 @@ export class EffortSlider implements Component, Focusable {
 	) {
 		const resolvedTiers = (tiers.length > 0 ? tiers : DEFAULT_EFFORT_TIERS).map(toEffortTier);
 		this.tiers = resolvedTiers.length > 0 ? resolvedTiers : DEFAULT_EFFORT_TIERS;
-		this.activeTierId = normalizeEffortId(activeTierId);
-		const found = this.tiers.findIndex((t) => t.id === this.activeTierId);
+		const normalized = knownEffortId(activeTierId);
+		const found = normalized ? this.tiers.findIndex((t) => t.id === normalized) : -1;
 		this.focusIndex = Math.max(0, Math.min(found >= 0 ? found : 0, this.tiers.length - 1));
-		this.activeTierId = this.tiers[this.focusIndex]?.id ?? "off";
+		this.activeTierId = normalized !== undefined && found >= 0 ? normalized : undefined;
 	}
 
 	navigateLeft(): EffortTier {
@@ -100,64 +104,64 @@ export class EffortSlider implements Component, Focusable {
 		}
 	}
 
-	render(width = 80): string[] {
-		return this.formatLines(width);
+	render(width = 80, height = Number.MAX_SAFE_INTEGER): string[] {
+		return this.formatLines(width, height);
 	}
 
 	invalidate(): void {}
 
-	formatLines(terminalWidth = 80): string[] {
-		const boxWidth = Math.max(56, Math.min(terminalWidth - 6, 76));
-		const innerW = boxWidth - 4;
+	formatLines(terminalWidth = 80, availableHeight = Number.MAX_SAFE_INTEGER): string[] {
+		if (terminalWidth <= 0 || availableHeight <= 0) return [];
+		const leftPad = terminalWidth >= 64 ? 2 : 0;
+		const boxWidth = Math.max(1, Math.min(terminalWidth - leftPad, 76));
+		const innerW = Math.max(1, boxWidth - 4);
 		const borderCol = C.subtle;
 
-		const titleTag = `─ 推理强度 (Reasoning effort) `;
-		const topFillLen = Math.max(1, boxWidth - 2 - visibleWidth(titleTag));
-		const topLine = `  ${borderCol}╭${C.inactive}${titleTag}${borderCol}${"─".repeat(topFillLen)}╮${C.reset}`;
+		const title = truncateToWidth("推理强度 (Reasoning effort)", Math.max(1, boxWidth - 6), "…");
+		const titleTag = `─ ${title} `;
+		const topFillLen = Math.max(0, boxWidth - 2 - visibleWidth(titleTag));
+		const pad = " ".repeat(leftPad);
+		const topLine = `${pad}${borderCol}╭${C.inactive}${titleTag}${borderCol}${"─".repeat(topFillLen)}╮${C.reset}`;
+		const frameLine = (content: string): string => {
+			const safe = truncateToWidth(content, innerW, "…");
+			return `${pad}${borderCol}│${C.reset} ${safe}${" ".repeat(Math.max(0, innerW - visibleWidth(safe)))} ${borderCol}│${C.reset}`;
+		};
 
-		const segments: string[] = [];
-		for (let i = 0; i < this.tiers.length; i++) {
-			const tier = this.tiers[i]!;
-			const isFocused = i === this.focusIndex;
-			const isCurrent = tier.id === this.activeTierId;
-			const checkmark = isCurrent ? `${C.suggestion}✓${C.reset}` : "";
-
-			if (isFocused) {
-				const label = ` ${tier.name}${isCurrent ? "✓" : ""} `;
-				segments.push(`\x1b[7m\x1b[1m${label}\x1b[0m`);
-			} else {
-				segments.push(`${C.inactive}${tier.name}${checkmark}${C.reset}`);
-			}
+		const renderSliderWindow = (visibleTiers: readonly EffortTier[]): string => {
+			const segments = visibleTiers.map((tier) => {
+				const index = this.tiers.indexOf(tier);
+				const current = this.activeTierId === tier.id ? `${C.suggestion}✓${C.reset}` : "";
+				const label = `${tier.name}${current}`;
+				return index === this.focusIndex ? `\x1b[7m\x1b[1m${label}\x1b[0m` : `${C.inactive}${label}${C.reset}`;
+			});
+			const leftHint = this.focusIndex > 0 ? `${C.inactive}←${this.focusIndex} ${C.reset}` : "";
+			const shownThrough = this.focusIndex + visibleTiers.length;
+			const remaining = Math.max(0, this.tiers.length - shownThrough);
+			const rightHint = remaining > 0 ? ` ${C.inactive}→${remaining}${C.reset}` : "";
+			return `${leftHint}${segments.join(` ${borderCol}·${C.reset} `)}${rightHint}`;
+		};
+		const availableTiers = [this.tiers[this.focusIndex]!];
+		for (let index = this.focusIndex + 1; index < this.tiers.length; index++) {
+			const candidate = [...availableTiers, this.tiers[index]!];
+			if (visibleWidth(renderSliderWindow(candidate)) > innerW) break;
+			availableTiers.push(this.tiers[index]!);
 		}
-
-		const sliderBar = segments.join(` ${borderCol}──${C.reset} `);
-		const sliderEffective = visibleWidth(sliderBar) > innerW ? truncateToWidth(sliderBar, innerW) : sliderBar;
-		const sliderPad = Math.max(0, innerW - visibleWidth(sliderEffective));
-		const sliderLine = `  ${borderCol}│${C.reset} ${sliderEffective}${" ".repeat(sliderPad)} ${borderCol}│${C.reset}`;
+		const focusedTier = this.tiers[this.focusIndex];
+		const sliderBar = focusedTier
+			? renderSliderWindow(availableTiers)
+			: `${C.inactive}当前模型未声明可用档位${C.reset}`;
 
 		const current = this.getCurrentTier();
 		const descRaw = current.description
 			? `${C.text}${current.description}${C.reset}`
 			: `${C.inactive}当前档位: ${current.name}${C.reset}`;
-		const descEffective = visibleWidth(descRaw) > innerW ? truncateToWidth(descRaw, innerW, "…") : descRaw;
-		const descPad = Math.max(0, innerW - visibleWidth(descEffective));
-		const descLine = `  ${borderCol}│${C.reset} ${descEffective}${" ".repeat(descPad)} ${borderCol}│${C.reset}`;
+		const descEffective = truncateToWidth(descRaw, innerW, "…");
 
 		const hintText = `${C.inactive}\x1b[3m${C.suggestion}←/→${C.inactive} 调整 · ${C.suggestion}Enter/Esc${C.inactive} 完成${C.reset}`;
-		const hintEffective = visibleWidth(hintText) > innerW ? truncateToWidth(hintText, innerW, "…") : hintText;
-		const hintPad = Math.max(0, innerW - visibleWidth(hintEffective));
-		const hintLine = `  ${borderCol}│${C.reset} ${hintEffective}${" ".repeat(hintPad)} ${borderCol}│${C.reset}`;
+		const hintEffective = truncateToWidth(hintText, innerW, "…");
 
-		const botLine = `  ${borderCol}╰${"─".repeat(boxWidth - 2)}╯${C.reset}`;
-
-		return [
-			topLine,
-			`  ${borderCol}│${" ".repeat(innerW + 2)}│${C.reset}`,
-			sliderLine,
-			`  ${borderCol}│${" ".repeat(innerW + 2)}│${C.reset}`,
-			descLine,
-			hintLine,
-			botLine,
-		];
+		const botLine = `${pad}${borderCol}╰${"─".repeat(Math.max(0, boxWidth - 2))}╯${C.reset}`;
+		const rows = [topLine, frameLine(sliderBar), frameLine(descEffective), frameLine(hintEffective), botLine];
+		return rows.slice(0, Math.max(1, Math.floor(availableHeight)));
 	}
 }

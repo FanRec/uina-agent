@@ -6,6 +6,7 @@
 
 import type { Component, OverlayHandle, OverlayOptions } from "./types.js";
 import type { FocusManager } from "./focus.js";
+import type { ComponentBoundary } from "./component-boundary.js";
 import { visibleWidth, truncateToWidth } from "./utils.js";
 
 /**
@@ -31,6 +32,7 @@ export interface OverlayStackEntry {
 	component: Component;
 	options?: OverlayOptions;
 	hidden: boolean;
+	removed: boolean;
 	preFocus: Component | null;
 	dispose?: () => void;
 }
@@ -41,6 +43,7 @@ export class OverlayStack {
 	constructor(
 		private readonly focusManager: FocusManager,
 		private readonly onRequestRender: () => void,
+		private readonly boundary?: ComponentBoundary,
 	) {}
 
 	get entries(): readonly OverlayStackEntry[] {
@@ -67,6 +70,7 @@ export class OverlayStack {
 			component,
 			options,
 			hidden: false,
+			removed: false,
 			preFocus,
 			dispose,
 		};
@@ -85,10 +89,10 @@ export class OverlayStack {
 				this.removeEntry(entry);
 			},
 			requestRender: () => {
-				if (this.stack.includes(entry) && !entry.hidden) this.onRequestRender();
+				if (this.isLive(entry) && !entry.hidden) this.onRequestRender();
 			},
 			setHidden: (hidden: boolean) => {
-				if (entry.hidden === hidden) return;
+				if (!this.isLive(entry) || entry.hidden === hidden) return;
 				entry.hidden = hidden;
 				if (hidden && this.focusManager.getFocused() === component) {
 					// 隐藏时退还焦点
@@ -98,20 +102,20 @@ export class OverlayStack {
 				}
 				this.onRequestRender();
 			},
-			isHidden: () => entry.hidden,
+			isHidden: () => entry.removed || entry.hidden,
 			focus: () => {
-				if (!entry.hidden) {
+				if (this.isLive(entry) && !entry.hidden) {
 					this.focusManager.setFocus(component);
 					this.onRequestRender();
 				}
 			},
 			unfocus: () => {
-				if (this.focusManager.getFocused() === component) {
+				if (this.isLive(entry) && this.focusManager.getFocused() === component) {
 					this.restoreFocus(entry);
 					this.onRequestRender();
 				}
 			},
-			isFocused: () => this.focusManager.getFocused() === component,
+			isFocused: () => this.isLive(entry) && this.focusManager.getFocused() === component,
 		};
 
 		return handle;
@@ -125,20 +129,31 @@ export class OverlayStack {
 	}
 
 	clear(): void {
+		let restore: Component | null = null;
 		while (this.stack.length > 0) {
 			const top = this.stack.pop()!;
+			top.removed = true;
+			restore = top.preFocus;
 			try {
 				top.dispose?.();
 			} catch {}
 		}
+		this.focusManager.setFocus(restore);
 		this.onRequestRender();
 	}
 
 	private removeEntry(entry: OverlayStackEntry): void {
 		const index = this.stack.indexOf(entry);
-		if (index === -1) return;
+		if (index === -1 || entry.removed) return;
 
 		this.stack.splice(index, 1);
+		entry.removed = true;
+
+		// If a lower overlay disappears first, later overlays must not restore
+		// focus to that detached component when they eventually close.
+		for (const remaining of this.stack) {
+			if (remaining.preFocus === entry.component) remaining.preFocus = entry.preFocus;
+		}
 
 		if (this.focusManager.getFocused() === entry.component) {
 			this.restoreFocus(entry);
@@ -149,6 +164,10 @@ export class OverlayStack {
 		} catch {}
 
 		this.onRequestRender();
+	}
+
+	private isLive(entry: OverlayStackEntry): boolean {
+		return !entry.removed && this.stack.includes(entry);
 	}
 
 	private restoreFocus(entry: OverlayStackEntry): void {
@@ -188,8 +207,16 @@ export class OverlayStack {
 			// An entry is capped by its own maxHeight only; the shared budget is
 			// applied to the whole stack afterwards, so the rows nearest the
 			// editor survive instead of every entry being cut to the budget.
-			const maxEntryHeight = Math.max(0, resolveSize(options?.maxHeight, budget) ?? Number.MAX_SAFE_INTEGER);
-			const rendered = entry.component.render(overlayWidth).slice(0, maxEntryHeight);
+			const maxEntryHeight = Math.max(0, resolveSize(options?.maxHeight, budget) ?? budget);
+			const componentHeight = Math.max(0, Math.min(budget, maxEntryHeight) - margin.top - margin.bottom);
+			const componentRows = this.boundary
+				? this.boundary.render(entry.component, overlayWidth, componentHeight)
+				: entry.component.render(overlayWidth, componentHeight);
+			let rendered: string[];
+			if (componentHeight === 0) rendered = [];
+			else if (componentRows.length > componentHeight)
+				rendered = componentRows.slice(componentRows.length - componentHeight);
+			else rendered = componentRows;
 			const start =
 				overlayStart(options?.anchor ?? "above-editor", width, overlayWidth, margin) + (options?.offsetX ?? 0);
 

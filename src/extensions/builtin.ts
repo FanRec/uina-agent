@@ -44,7 +44,7 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		hasArgs: true,
 		argumentHint: "[scrollbar|timeline] [slim|block|wide]",
 		handler: (arg) => {
-			ui.openFeature?.("gutter", { arg });
+			ui.terminal.openGutter(arg);
 		},
 	});
 
