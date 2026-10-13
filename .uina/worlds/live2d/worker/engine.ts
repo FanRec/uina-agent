@@ -100,7 +100,7 @@ export function attachEngine(
 					for (const [id, entry] of pending)
 						if (entry.op !== "stop" && !entry.settled) {
 							entry.settled = true;
-							if (["express", "state", "costume", "reload"].includes(entry.op)) {
+							if (["express", "state", "costume", "reload", "prepareBody"].includes(entry.op)) {
 								post({
 									t: "result",
 									id,
@@ -132,6 +132,8 @@ export function attachEngine(
 		costume: async (args, signal) =>
 			phase === "running" ? requireRuntime().costume(args, { signal }) : actionUnavailable(),
 		reload: async (_args, signal) => (phase === "running" ? requireRuntime().reload({ signal }) : actionUnavailable()),
+		prepareBody: async (_args, signal) =>
+			phase === "running" ? requireRuntime().prepareBody({ signal }) : actionUnavailable(),
 		formatStatus: async () => requireRuntime().formatStatus(),
 		diagnose: async () => requireRuntime().diagnose(),
 		"endpoint.safeStop": async () => {

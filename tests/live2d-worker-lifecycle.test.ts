@@ -37,7 +37,7 @@ class FixturePort extends EventEmitter {
 				});
 				return;
 			}
-			if (this.holdActions && message.op === "express") return;
+			if (this.holdActions && (message.op === "express" || message.op === "prepareBody")) return;
 			this.emit("message", { t: "result", id: message.id, op: message.op, ok: true, value: null });
 		});
 	}
@@ -128,6 +128,22 @@ describe("Live2D Worker 生命周期事实", () => {
 			value: { status: "cancelled", result: "cancelled", details: { restored: true } },
 		} satisfies EngineToMain);
 		await expected;
+		await h.proxy.stop();
+	});
+	it("prepare_body 通过 Worker RPC 并保留结构化结果", async () => {
+		const h = await harness();
+		h.port.holdActions = true;
+		const result = h.proxy.prepareBody({});
+		const call = h.port.sent.findLast((message) => message.t === "call" && message.op === "prepareBody");
+		expect(call).toMatchObject({ op: "prepareBody", args: undefined });
+		h.port.emit("message", {
+			t: "result",
+			id: (call as { id: number }).id,
+			op: "prepareBody",
+			ok: true,
+			value: { status: "succeeded", result: "inputs prepared", details: { effectStatus: "applied" } },
+		} satisfies EngineToMain);
+		await expect(result).resolves.toMatchObject({ status: "succeeded", details: { effectStatus: "applied" } });
 		await h.proxy.stop();
 	});
 	it("投递后线程死亡返回 unknown，死后新调用 not_started", async () => {

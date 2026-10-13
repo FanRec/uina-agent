@@ -1,5 +1,5 @@
 import { unconfirmedInjections } from "./live2d-injection-fixture.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { ActionContext, ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../src/tools/broker.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
@@ -105,9 +105,9 @@ const makeFakeClient = (options: { connected?: boolean; modelID?: string } = {})
 	return { client, state };
 };
 
-const harness = async (catalog: CatalogSnapshot = makeCatalog()) => {
+const harness = async (catalog: CatalogSnapshot = makeCatalog(), rng: () => number = () => 0.5) => {
 	const fake = makeFakeClient();
-	const runtime = new Live2DRuntime({ client: fake.client, rig: makeRig(), catalog, rng: () => 0.5 });
+	const runtime = new Live2DRuntime({ client: fake.client, rig: makeRig(), catalog, rng });
 	const app = createLive2DApp({ instance: runtime });
 	const startCtx = {
 		expose: () => () => {},
@@ -198,6 +198,40 @@ describe("live2d ambient 环境循环", () => {
 		expect(clear.status).toBe("succeeded");
 		const clearAgain = await h.run("state", { ambient: null });
 		expect(clearAgain.result).toBe("cleared OK");
+	});
+
+	it("短 sway 动作组在片段边界选不同轨迹，不连续重复上一段", async () => {
+		const phrase = (value: number) =>
+			motion(
+				100,
+				track("head.yaw", [
+					[0, value],
+					[100, value],
+				]),
+			);
+		const phrases = [phrase(2), phrase(5), phrase(8)];
+		const catalog = makeCatalog({
+			background: {
+				ambient: {
+					sway: {
+						description: "短动作组",
+						motion: phrases[0]!,
+						variants: phrases.slice(1),
+					},
+				},
+			},
+		});
+		const h = await harness(catalog, () => 0);
+		const play = vi.spyOn(h.runtime.director!, "play");
+		await h.run("state", { ambient: "sway" });
+		const first = play.mock.calls.at(-1)?.[0];
+		h.stepMs(180);
+		const second = play.mock.calls.at(-1)?.[0];
+		expect(first).toBeDefined();
+		expect(second).toBeDefined();
+		expect(second).not.toBe(first);
+		expect(first?.durationMs).toBe(100);
+		expect(second?.durationMs).toBe(100);
 	});
 
 	it("未知名字拒绝并列出可用词表；非法参数拒绝", async () => {

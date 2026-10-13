@@ -17,6 +17,21 @@
 			"max": 10,
 			"neutral": 0
 		},
+		"torso.yaw": {
+			"min": -12,
+			"max": 12,
+			"neutral": 0
+		},
+		"torso.pitch": {
+			"min": -10,
+			"max": 10,
+			"neutral": 0
+		},
+		"torso.roll": {
+			"min": -10,
+			"max": 10,
+			"neutral": 0
+		},
 		"gaze.x": {
 			"min": -1,
 			"max": 1,
@@ -67,9 +82,7 @@
 						14
 					]
 				],
-				"followers": [
-					"ParamBodyAngleX"
-				],
+				"followers": [],
 				"physicsFollowers": [
 					"Param10",
 					"Param11",
@@ -197,9 +210,7 @@
 						10
 					]
 				],
-				"followers": [
-					"ParamBodyAngleY"
-				],
+				"followers": [],
 				"physicsFollowers": [
 					"Param112",
 					"Param113",
@@ -330,9 +341,7 @@
 						10
 					]
 				],
-				"followers": [
-					"ParamBodyAngleZ"
-				],
+				"followers": [],
 				"physicsFollowers": [
 					"Param10",
 					"Param11",
@@ -440,6 +449,39 @@
 				],
 				"smoothing": 0,
 				"evidence": "calibrated"
+			}
+		],
+		"torso.yaw": [
+			{
+				"parameter": "ParamBodyAngleX",
+				"input": "UinaBodyc85f9ec5b52eYaw",
+				"points": [[-12, -12], [0, 0], [12, 12]],
+				"followers": [],
+				"physicsFollowers": [],
+				"smoothing": 0.15,
+				"evidence": "declared"
+			}
+		],
+		"torso.pitch": [
+			{
+				"parameter": "ParamBodyAngleY",
+				"input": "UinaBodyc85f9ec5b52ePitch",
+				"points": [[-10, -10], [0, 0], [10, 10]],
+				"followers": [],
+				"physicsFollowers": [],
+				"smoothing": 0.15,
+				"evidence": "declared"
+			}
+		],
+		"torso.roll": [
+			{
+				"parameter": "ParamBodyAngleZ",
+				"input": "UinaBodyc85f9ec5b52eRoll",
+				"points": [[-10, -10], [0, 0], [10, 10]],
+				"followers": [],
+				"physicsFollowers": [],
+				"smoothing": 0.15,
+				"evidence": "declared"
 			}
 		],
 		"gaze.x": [

@@ -13,8 +13,8 @@ import { Live2DRuntimeProxy, type Live2DWorldRuntime } from "./worker/proxy.js";
 /**
  * Live2D 世界装配。
  *
- * 工具面按规范定型（收敛后 5 个）：
- * express / state（姿势·表情·视线·环境循环合并槽位面）/ costume / status（含 detail 诊断档）/ reload；
+ * 工具面按规范定型：
+ * express / state（姿势·表情·视线·环境动作组）/ costume / prepare_body / status（含 detail 诊断档）/ reload；
  * executionMode 显式固定为 parallel（并发是常态，安全由引擎逐轴仲裁与独占声明保证，工具层不串行化）。
  *
  * 工具结果词汇表 + gate 链（中止 → 暂停 → 连接 → 适配）+ 目录词表解析；
@@ -150,6 +150,12 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 				description: "重载模型并核验绑定。改了模型配置后用。",
 				parameters: { type: "object", additionalProperties: false, properties: {} },
 				run: call("reload", (rt, _args, ctx) => rt.reload(ctx)),
+			},
+			prepare_body: {
+				description:
+					"显式准备当前模型的三个 Uina 躯干输入，并返回在 VTube Studio 中手动映射到身体 yaw/pitch/roll 的步骤。",
+				parameters: { type: "object", additionalProperties: false, properties: {} },
+				run: call("prepare_body", (rt, _args, ctx) => rt.prepareBody(ctx)),
 			},
 		},
 	};

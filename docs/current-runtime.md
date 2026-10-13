@@ -175,7 +175,7 @@ shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计�
 
 ## Live2D 动作与语音播放
 
-当前 World 位于 `.uina/worlds/live2d`。2026-10-11 首批 MO 表演使用既有头、眼、嘴绑定；内容单源为 [MO 目录](../.uina/worlds/live2d/models/mo/catalog.ts)，目录同时提供 status 与 cue 能力。
+当前 World 位于 `.uina/worlds/live2d`。首批 MO 表演使用既有头、眼、嘴绑定；当前 rig 还提供独立的躯干 yaw/pitch/roll。头部是身体默认跟随底动，显式 torso 轨迹可以错拍、偏移或单独接管；不控制手臂，也不平移整个模型。内容单源为 [MO 目录](../.uina/worlds/live2d/models/mo/catalog.ts)，目录同时提供 status 与 cue 能力。
 
 | 入口 | 当前名称与表现 |
 | --- | --- |
@@ -185,16 +185,16 @@ shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计�
 | state.posture | `rest` 自然站定、`tuck` 垂头收起、`head_back` 仰头放松，仅控制头部 |
 | state.expression | `smile` 明朗笑、`smirk` 半眯坏笑、`clear_face` 清除表情；smirk 嘴形与双眼开度均约 0.55，无偏嘴承诺 |
 | state.attention | `user`、`screen`、`avert_down`、`avert_left`、`avert_right` 或既有坐标目标 |
-| state.ambient | `sway` 左右摇摆（皮套式循环晃动，头部增量经 followers 带动身体）：选择后持续保持并与说话/表情/视线并存，替换内部轻晃成为静止态背景；再次调用可替换，不传 name 清除回落 |
+| state.ambient | `sway` 头身错拍动作组：短片段轮换躯干倾斜、头部反应、视线转移和眨眼，片段边界避免立即重复；选择后持续运行并与说话/表情/视线并存，传 null 清除并回落 |
 | 内部背景 | 3.8 秒不对称轻晃；思考时持续上侧目光与歪头，每约 3.6 秒轻微重新定向 |
 
-`greeting/lean/brighten` 和 `wave` 别名已从 MO 目录删除，不保留兼容层；打招呼可组合点头与笑。工具已收敛为 express/state/costume/status/reload；姿态、表情、注视、环境通过 state 分别持有持续意图，express/cue 播放有限动作。音乐、气鼓鼓和偏嘴未发布；本次重构未修改模型资源、VTS 保存绑定或动作内容。
+`greeting/lean/brighten` 和 `wave` 别名已从 MO 目录删除，不保留兼容层；打招呼可组合点头与笑。工具为 express/state/costume/prepare_body/status/reload；姿态、表情、注视、环境通过 state 分别持有持续意图，express/cue 播放有限动作。`prepare_body` 创建按模型隔离的 Uina VTS 输入，不改写 `.vtube.json`；操作者需在 VTS 把三项分别映射到 `ParamBodyAngleX/Y/Z`，再 reload 并用 status detail 检查。音乐、气鼓鼓和偏嘴未发布。
 
 头部手势为姿态增量，按当前姿态剩余范围同比缩小；普通手势不写入持续表情。作者关键帧分别设计快慢、停顿、眼先头后与回弹，惊吓透传短入场和弹簧速度重置。临时眼睑控制暂停自动眨眼，退出平滑交还最新表情；持续半眯仍正常眨眼。临时视线退出从当前眼球输出在约 120ms 内交还最新有效 attention。惊吓、惊讶的短暂张嘴与既有语音口型混合；嘴部接管与交还使用语音混合前的平滑开度作为起点，语音只混合一次。
 
-背景由同一 director 实例循环有限片段，遮挡期间相位仍推进；前景头部动作约 200ms 压低背景，约 450ms 恢复。思考约 350ms 入场、450ms 收势。失焦冻结；safeStop 取消实例并保留有效状态，resume 重建背景。MO 原有头部正弦微晃已被作者轻晃替代，呼吸仍由 VTS 提供。
+背景由同一 director 仲裁；idle 和单片段 ambient 循环，MO sway 每段有限播放并在边界换选不同短动作。头部或躯干前景动作都会压低背景，完成后恢复。思考仍由 Host 事件驱动。失焦冻结；safeStop 取消实例并保留有效状态，resume 重建背景。MO 原有头部正弦微晃已被作者轻晃替代，呼吸仍由 VTS 提供。
 
-state.ambient 是静止态背景的可选形态：与 idle 互斥占据同一槽位（autonomic 类别、loop、background、atomic:false，播放参数与 idle 一致），选中时停旧实例换播、清除后回落 idle；thinking（transition 类）照旧叠加。选中项不在当前目录快照时诚实回落 idle。环境循环命名与别名纳入目录全局唯一命名空间，与动作/姿态/表情/注视/外观冲突即在绑定期拒绝。回合打断与 safeStop 不清除选中（与姿态同级的持续意图）；内置微晃在 idle 有定义或 ambient 选中期间禁用，避免双重摆动。
+state.ambient 是静止态背景的可选形态：与 idle 互斥；带 variants 的 sway 由 autonomic 背景动作逐段交接，清除后回落 idle；thinking（transition 类）照旧叠加。选中项不在当前目录快照时诚实回落 idle。环境动作命名与别名纳入目录全局唯一命名空间，与动作/姿态/表情/注视/外观冲突即在绑定期拒绝。回合打断与 safeStop 不清除选中；内置微晃在 idle 有定义或 ambient 选中期间禁用，避免双重摆动。
 
 雀跃独占 `model:transform`，以五次 VTS 原生分段移动推进，不发送逐帧空间请求。取消、失焦、回合打断或异常切断关联参数动作并执行归位清理，清理结算后释放占用；失焦期间新空间请求以 cancelled / not_started 返回，回焦不会续播旧空间表演。每段与归位前校验设备模型身份、目录代次、连接代次和模型代次，避免把旧位姿写给新模型。归位回读失败或失联保留未知。参数反馈复用客户端逐播放注入观察，只计入本次真实合成贡献；完成时仅等待已发请求，取消不等待确认。没有本次所需输入接受证据即返回 unknown；姿态、表情、注视只报告 local_intent。`restored` 单独描述空间归位。
 

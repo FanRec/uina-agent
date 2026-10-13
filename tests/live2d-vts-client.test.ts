@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VTSClient, type VTSParamValue, type WebSocketLike } from "../.uina/worlds/live2d/adapter/vts-client.js";
+import { VTSInputSetupError } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 
 /** 独立 WebSocketLike 假体：按请求类型同步回包，记录全部上行帧。 */
@@ -21,6 +22,8 @@ class Device implements WebSocketLike {
 	postProcessingState = { active: false, activePreset: null as string | null, canUpdateRightNow: true };
 	postUpdateError = false;
 	omitPostStatus = false;
+	omitCreatedInput = false;
+	createdInputs: { name: string; min: number; max: number; defaultValue: number; custom: true; addedBy: string }[] = [];
 
 	send(raw: string, cb?: (err?: Error) => void): void {
 		const r = JSON.parse(raw);
@@ -58,7 +61,21 @@ class Device implements WebSocketLike {
 				}
 				break;
 			case "InputParameterListRequest":
-				data = { defaultParameters: [{ name: "drive:x", min: -1, max: 1, defaultValue: 0 }] };
+				data = {
+					defaultParameters: [{ name: "drive:x", min: -1, max: 1, defaultValue: 0 }],
+					customParameters: this.createdInputs,
+				};
+				break;
+			case "ParameterCreationRequest":
+				if (!this.omitCreatedInput)
+					this.createdInputs.push({
+						name: String(r.data.parameterName),
+						min: Number(r.data.min),
+						max: Number(r.data.max),
+						defaultValue: Number(r.data.defaultValue),
+						custom: true,
+						addedBy: "Uina Live2D VTS",
+					});
 				break;
 			case "Live2DParameterListRequest":
 				data = { parameters: [{ name: "drive:x", min: -1, max: 1, defaultValue: 0 }] };
@@ -143,6 +160,42 @@ describe("live2d vts-client（移植行为验证）", () => {
 		]);
 		expect(device.messages("HotkeysInCurrentModelRequest")).toHaveLength(1);
 		expect(client.findHotkey("wave")?.hotkeyID).toBe("hk_1");
+		client.disconnect();
+	});
+
+	it("ensureInput 把 API 确认但清单未回显的输入报告为 unknown", async () => {
+		const device = new Device();
+		device.omitCreatedInput = true;
+		const { client } = await readyClient(device);
+		const error = await client.ensureInput({ name: "UinaBodyFixtureRoll", min: -10, max: 10, defaultValue: 0 }).then(
+			() => undefined,
+			(cause: unknown) => cause,
+		);
+		expect(error).toBeInstanceOf(VTSInputSetupError);
+		expect(error).toMatchObject({ reason: "input_unconfirmed", outcome: "unknown" });
+		client.disconnect();
+	});
+
+	it("ensureInput 幂等创建 Uina 自定义输入，并拒绝重名但范围不匹配的输入", async () => {
+		const device = new Device();
+		const { client } = await readyClient(device);
+		const bodyYaw = { name: "UinaBodyfixtureYaw", min: -12, max: 12, defaultValue: 0 };
+		expect(await client.ensureInput(bodyYaw)).toBe("created");
+		expect(await client.ensureInput(bodyYaw)).toBe("existing");
+		expect(device.messages("ParameterCreationRequest")).toHaveLength(1);
+		const conflict = await client.ensureInput({ ...bodyYaw, max: 10 }).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		expect(conflict).toBeInstanceOf(VTSInputSetupError);
+		expect(conflict).toMatchObject({ reason: "input_conflict", outcome: "failed" });
+		const invalidName = await client.ensureInput({ ...bodyYaw, name: "bad_name" }).then(
+			() => undefined,
+			(error: unknown) => error,
+		);
+		expect(invalidName).toBeInstanceOf(VTSInputSetupError);
+		expect(invalidName).toMatchObject({ reason: "invalid_input", outcome: "failed" });
+		expect(device.messages("ParameterCreationRequest")).toHaveLength(1);
 		client.disconnect();
 	});
 

@@ -185,6 +185,7 @@ interface InternalClaim {
 
 /** 槽位过渡默认时长：姿态改变应从容（600ms 观感自然）；调用方可经 SlotOptions.durationMs 覆盖。 */
 const DEFAULT_SLOT_TRANSITION_MS = 600;
+const ROTATION_DIRECTIONS = ["yaw", "pitch", "roll"] as const;
 
 export class MotionDirector {
 	private readonly controls: Readonly<Record<string, RigControlDef>>;
@@ -644,17 +645,17 @@ export class MotionDirector {
 		}
 
 		// 持续背景的时间照常推进；权重在前景进出时独立变化。
-		const foregroundHead = this.playbacks.some(
+		const foregroundBodyMotion = this.playbacks.some(
 			(p) =>
 				!p.background &&
 				p.state === "playing" &&
 				p.priority >= CATEGORY_PRIORITY.voluntary &&
-				p.clip.axes.some((axis) => axis.startsWith("head.")),
+				p.clip.axes.some((axis) => axis.startsWith("head.") || axis.startsWith("torso.")),
 		);
 		const thinking = this.playbacks.some((p) => p.background && p.category === "transition" && p.state === "playing");
 		for (const p of this.playbacks) {
 			if (!p.background) continue;
-			const suppressed = foregroundHead || (p.category === "autonomic" && thinking);
+			const suppressed = foregroundBodyMotion || (p.category === "autonomic" && thinking);
 			p.backgroundWeight = suppressed
 				? Math.max(0, p.backgroundWeight - dt / 200)
 				: Math.min(1, p.backgroundWeight + dt / 450);
@@ -697,6 +698,8 @@ export class MotionDirector {
 		}
 
 		const inhibitMask = new Map<string, number>(); // axis -> 抑制者的优先级
+		const torsoAxes = ROTATION_DIRECTIONS.map((direction) => `torso.${direction}`);
+		const explicitlyDrivenTorso = new Set(torsoAxes.filter((axis) => candidates.has(axis)));
 		const gazeClaimed = new Set<string>(); // 视线补偿让位集：本帧被 Override/槽位认领的视线轴
 		const gazeWeights = new Map<string, number>();
 		const eyelidClaimed = new Set<string>();
@@ -749,6 +752,7 @@ export class MotionDirector {
 
 		// 6. Additive 层：独立叠加 ΔX，永不抢占（A17.1）；受增量抑制遮罩约束。
 		const posture = this.slotComposite();
+		const torsoOffsets = new Map<string, number>();
 		for (const playback of this.playbacks) {
 			if (!playback.additiveAxes.size) continue;
 			const sampled = sampleMotion(playback.clip, this.sampleTime(playback), playback.baseline);
@@ -763,6 +767,7 @@ export class MotionDirector {
 					this.lifeWeight(playback) *
 					playback.backgroundWeight;
 				frame[axis] = (frame[axis] ?? this.neutral[axis]!) + delta;
+				if (axis.startsWith("torso.")) torsoOffsets.set(axis, (torsoOffsets.get(axis) ?? 0) + delta);
 				if (Math.abs(delta) > 1e-8) this.recordContribution(playback.id, axis);
 			}
 		}
@@ -782,7 +787,16 @@ export class MotionDirector {
 				const maskPriority = inhibitMask.get(axis);
 				if (maskPriority !== undefined && CATEGORY_PRIORITY.autonomic < maskPriority) continue;
 				frame[axis] = (frame[axis] ?? this.neutral[axis]!) + delta;
+				if (axis.startsWith("torso.")) torsoOffsets.set(axis, (torsoOffsets.get(axis) ?? 0) + delta);
 			}
+		}
+		// Default upper-body articulation follows the head's composed target. Authored absolute torso
+		// tracks and slot values claim their own axis; baseline-offset torso tracks remain offsets from
+		// the head-follow target, so head-only legacy gestures keep moving the body naturally.
+		for (const torsoAxis of torsoAxes) {
+			const headAxis = `head.${torsoAxis.slice("torso.".length)}`;
+			if (explicitlyDrivenTorso.has(torsoAxis) || !this.controls[torsoAxis] || !this.controls[headAxis]) continue;
+			frame[torsoAxis] = (frame[headAxis] ?? this.neutral[headAxis]!) + (torsoOffsets.get(torsoAxis) ?? 0);
 		}
 
 		// 6.6 专用管道（§4.2 阶段 B）：骨骼弹簧 → 面部平滑 → 视线头姿后置补偿 → 开合通道。

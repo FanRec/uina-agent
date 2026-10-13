@@ -9,6 +9,7 @@ export interface EngineCalls {
 	state: { args: Record<string, unknown>; result: ToolExecutionResult };
 	costume: { args: Record<string, unknown>; result: ToolExecutionResult };
 	reload: { args: undefined; result: ToolExecutionResult };
+	prepareBody: { args: undefined; result: ToolExecutionResult };
 	formatStatus: { args: undefined; result: string };
 	diagnose: { args: undefined; result: string };
 	"endpoint.safeStop": { args: undefined; result: null };

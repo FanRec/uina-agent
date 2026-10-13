@@ -57,9 +57,12 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 		expect(catalog.background.thinking).toBeDefined();
 		expect(catalog.background.idle).toBeDefined();
 
-		// 校验 ambient 环境循环（皮套式摇摆已升级为 2000ms 黄金节奏闭环）
-		expect(catalog.resolve("ambient", "sway")?.entry).toMatchObject({ description: expect.stringContaining("摇摆") });
-		expect(catalog.resolve("ambient", "sway")!.entry.motion.durationMs).toBe(2000);
+		// sway 由四段短动作组成：头身错拍、视线变化和眨眼，并在边界换选下一段。
+		expect(catalog.resolve("ambient", "sway")?.entry).toMatchObject({
+			description: expect.stringContaining("短动作组"),
+		});
+		expect(catalog.resolve("ambient", "sway")!.entry.motion.durationMs).toBeGreaterThan(2000);
+		expect(catalog.resolve("ambient", "sway")!.entry.variants).toHaveLength(3);
 
 		// loadCatalog 动态解耦验证
 		expect(loadCatalog(MO_MODEL_ID, rig)).toBeDefined();

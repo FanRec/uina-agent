@@ -1,16 +1,17 @@
 # Live2D World 当前运行合同
 
-2026-10-13。实现位于 `.uina/worlds/live2d`，身体策略不进入 Subject/Core。
+2026-10-14。实现位于 `.uina/worlds/live2d`，身体策略不进入 Subject/Core。
 
 ## 工具与意图
 
-模型看到一个 `live2d({action, params})`，五种 action：
+模型看到一个 `live2d({action, params})`，六种 action：
 
 | action | 参数 | 结算 |
 | --- | --- | --- |
 | express | motion、atomic?、speech? | 等待命名动作与外部清理；输入接受不等于画面确认 |
 | state | posture?、expression?、attention?、ambient?、hold_ms? | 持续意图；没传的字段保持，ambient=null 清除 |
 | costume | item | 等待热键请求接受；不能推断实际外观状态 |
+| prepare_body | 无 | 按当前模型创建或复用三个 Uina VTS 自定义输入，返回手动映射步骤；不改写 `.vtube.json` |
 | status | detail? | 默认目录与状态；detail 返回生命周期、近期 cue、外部结算及引擎诊断 |
 | reload | 无 | 显式重载并核验绑定 |
 
@@ -18,11 +19,15 @@
 
 cue 只命中动作与姿态，通过 runtime 的同一执行路径准入与结算；endpoint 只提供能力查询与异步账本。拒绝不记 started；异常必落账；旧回调只更新自己的记录。伴随 cue 仍由 embodiment/voice 拥有输出时序，World 不读取它们的内部状态。
 
+MO 的 `head.yaw/pitch/roll` 与 `torso.yaw/pitch/roll` 是独立逻辑轴。没有显式躯干轨迹时，躯干目标跟随头部合成结果；`torso.*` 的绝对轨迹可单独接管，`baseline-offset` 轨迹则叠加在头部跟随目标上。头部旧动作因此仍能自然带动身体。该 rig 不声明手臂逻辑轴，也不通过移动整个模型制造上下弹跳。
+
+首次接入 MO 时调用 `prepare_body`。它按模型 ID 生成稳定隔离的三个 VTS 输入名并幂等创建，随后由操作者在 VTube Studio 的模型参数设置中按工具结果分别映射到 rig 声明的身体输出。映射仍由 VTS 管理；Uina 不编辑模型保存配置。完成映射后执行 `reload`，再查 `status(detail=true)` 的 `bodyMapping`：每个轴会报告输入缺失、输入范围不符、未映射、映射到错误输出、映射歧义或 ready。躯干未 ready 时，头部和眼睛通道仍可用。
+
 ## 固定模型目录
 
 compileCatalog 隔离作者输入，再校验、编译和冻结定义、变体、轨迹、效果、别名及槽位。索引私有，消费者通过 resolve/list/resolveCue 获得冻结记录，无公开 Map 或旧反查入口。内置注视和中文别名同源，所有名称全局唯一；动作变体不能独立寻址。
 
-status、错误候选项和 affordance 使用同一快照。环境别名“摇摆／晃动／摇”都解析为 sway；持续环境选择保存规范名。目录更新递增代次并使旧执行失效；消费者与原作者对象都不能绕过代次修改内容。
+status、错误候选项和 affordance 使用同一快照。环境别名“摇摆／晃动／摇”都解析为 sway；持续环境选择保存规范名。sway 是由多个有限短片段组成的动作组，每段完成后在片段池中选择下一段并排除刚播放的上一段。目录更新递增代次并使旧执行失效；消费者与原作者对象都不能绕过代次修改内容。
 
 ## 外部动作与恢复
 
@@ -50,11 +55,19 @@ proxy/engine 使用 new、starting、running、closing、dead。停止与 Worker
 
 ## 验证边界
 
-定向测试覆盖模型目录、工具/cue、实际合成与假 VTS 协议、外部恢复、MessageChannel、真实 Worker 自举及 WorldActivation 停用。真实 Worker 使用线程内创建的假设备，不读取或改写真实认证，不证明真实 VTS/MO、GPU 或视觉自然度。
+定向测试覆盖模型目录、工具/cue、身体跟随与躯干覆盖/恢复、VTS 输入准备与映射诊断、环境片段轮换、实际合成与假 VTS 协议、外部恢复、MessageChannel、真实 Worker 自举及 WorldActivation 停用。真实 Worker 使用线程内创建的假设备，不读取或改写真实认证，不证明真实 VTS/MO、GPU 或视觉自然度。
 
 执行命令：`pnpm exec vitest run tests/live2d-*.test.ts`、`pnpm check:boundaries`、`pnpm exec tsc --noEmit`、`pnpm typecheck`、`pnpm test`。Windows PowerShell 用 rg 枚举测试路径再展开参数。依赖已安装时，pnpm 11 可逐命令传 `--config.verify-deps-before-run=false`，避免共享依赖工作树的自动安装；不修改用户配置。
 
 整仓格式基线、其他扩展失败和真实设备验收必须分别记录，不以定向通过冒充整仓或设备通过。
+
+### 2026-10-14 躯干控制与 sway 动作组
+
+- MO rig 新增独立 torso yaw/pitch/roll 输入；头部作为默认跟随目标，显式躯干轨迹可偏移或接管。`prepare_body` 幂等准备模型隔离的 VTS 输入，模型输出映射仍需在 VTS 手动配置；`status(detail=true)` 暴露逐轴映射事实。
+- `sway` 改为四段头身、注视与眼睑组合短动作，片段间不立即重复。思考继续由 Host 事件驱动。
+- 最新 Live2D 完整跑批：24 文件、218 项通过。此前两次整套跑批中，空间旋转时序用例曾单项越过 180°；独立测试通过，最终整套复跑也通过，仍记录为调度负载下的时序敏感项。
+- `pnpm typecheck`（385 文件格式、8 条边界、TypeScript）和 `git diff --check` 通过。
+- 本轮未在真实 VTS/MO 上创建输入或手动映射，未验证最终视觉幅度与自然度。
 
 ### 2026-10-13 自动验证（原工作区集成后）
 

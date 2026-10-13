@@ -151,6 +151,8 @@ export interface CatalogCostumeEntry {
 export interface CatalogAmbientEntry {
 	description: string;
 	motion: CompiledMotion;
+	/** Finite phrase pool: each completed clip advances without immediately replaying its predecessor. */
+	variants?: readonly CompiledMotion[];
 }
 
 /** 背景循环/思考动作（引擎类别 transition；P4-4 thinking 状态驱动消费）。 */
@@ -267,7 +269,15 @@ export interface CatalogSource {
 	background?: {
 		thinking?: MotionDefinition;
 		idle?: MotionDefinition;
-		ambient?: Record<string, { description: string; aliases?: readonly string[]; motion: MotionDefinition }>;
+		ambient?: Record<
+			string,
+			{
+				description: string;
+				aliases?: readonly string[];
+				motion: MotionDefinition;
+				variants?: readonly MotionDefinition[];
+			}
+		>;
 	};
 }
 
@@ -421,12 +431,16 @@ export function compileCatalog(
 	const expressions = take(source.expressions);
 	for (const [name, slot] of expressions) validateSlot(name, slot, "表情");
 	// 环境循环：绑定期编译（非法定义即抛），命名与别名同受全局唯一命名空间约束。
-	const ambientSource = new Map<string, { description: string; aliases?: readonly string[]; motion: CompiledMotion }>();
+	const ambientSource = new Map<
+		string,
+		{ description: string; aliases?: readonly string[]; motion: CompiledMotion; variants?: readonly CompiledMotion[] }
+	>();
 	for (const [name, entry] of Object.entries(source.background?.ambient ?? {}))
 		ambientSource.set(name, {
 			description: entry.description,
 			aliases: entry.aliases,
 			motion: compileMotion(entry.motion, rig.controls),
+			variants: entry.variants?.map((variant) => compileMotion(variant, rig.controls)),
 		});
 	const attentions = take(source.attentions);
 	for (const name of attentions.keys()) {

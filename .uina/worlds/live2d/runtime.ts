@@ -1,10 +1,12 @@
 import type { ServiceCompanionContext } from "../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { VOICE_LEVEL_SINK_EXPOSED_PREFIX, type VoiceLevelSink } from "../../../src/extensions/world-framework/seams.js";
+import { inspectBodyMapping, prepareBodyInputs } from "./adapter/body-inputs.js";
 import { encodeFrame, validateRig, type ModelRig } from "./adapter/rig.js";
 import { VTSClient } from "./adapter/vts-client.js";
 import {
 	emptyCatalog,
+	type CatalogAmbientEntry,
 	type CatalogMotionEntry,
 	type CatalogSnapshot,
 	type CatalogResolved,
@@ -101,6 +103,8 @@ export class Live2DRuntime {
 	private restHandle?: MotionHandle;
 	/** 变体轮换状态：按条目对象身份存 WeakMap——目录快照换代产生新条目对象，轮换自然归零。 */
 	private readonly lastVariantPick = new WeakMap<CatalogMotionEntry, number>();
+	/** Ambient phrase rotation is keyed by immutable catalog entry, so catalog replacement resets it. */
+	private readonly lastAmbientPhrasePick = new WeakMap<CatalogAmbientEntry, number>();
 	/** 变体轮换随机源（A9 注入点）：缺省 Math.random。 */
 	private readonly pickRandom: () => number;
 	private readonly externalActions?: ExternalActions;
@@ -260,6 +264,13 @@ export class Live2DRuntime {
 		const variant = index === 0 ? undefined : variants[index - 1]!;
 		if (speech === undefined) return variant?.motion ?? entry.motion;
 		return compileMotion(withSpeech(variant?.definition ?? entry.definition, speech), this.rig!.controls);
+	}
+
+	private pickAmbientPhrase(entry: CatalogAmbientEntry): CompiledMotion {
+		const pool = [entry.motion, ...(entry.variants ?? [])];
+		const index = pickVariantIndex(pool.length, this.lastAmbientPhrasePick.get(entry), this.pickRandom);
+		this.lastAmbientPhrasePick.set(entry, index);
+		return pool[index]!;
 	}
 
 	/**
@@ -486,6 +497,40 @@ export class Live2DRuntime {
 		return this.externalActions!.runCostume(entry, ctx.signal);
 	}
 
+	/** Explicit setup: create the rig-declared Uina inputs, then return the matching model outputs. */
+	async prepareBody(ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+		const denied = this.gate(ctx);
+		if (denied) return denied;
+		const modelName = this.client!.getModelProfile()?.modelName ?? "当前模型";
+		let preparation: Awaited<ReturnType<typeof prepareBodyInputs>>;
+		try {
+			preparation = await prepareBodyInputs(this.rig!, this.client!, ctx.signal);
+		} catch (error) {
+			this.onStatusChange?.();
+			return toolUnknown(`VTS 身体输入准备未能完整确认：${error instanceof Error ? error.message : String(error)}`);
+		}
+		this.onStatusChange?.();
+		if (preparation.status !== "prepared") {
+			const details = {
+				reason: preparation.reason,
+				effectStatus: preparation.inputs.length ? "applied" : "not_started",
+				confirmedInputs: preparation.inputs,
+			};
+			if (preparation.status === "cancelled") return { result: preparation.message, status: "cancelled", details };
+			if (preparation.status === "failed") return { result: preparation.message, status: "failed", details };
+			return toolUnknown(`${preparation.message}；可重试准备剩余输入。`, {
+				reason: preparation.reason,
+				confirmedInputs: preparation.inputs,
+				expectedInputs: preparation.expectedInputs,
+			});
+		}
+		const mapping = preparation.inputs.map(({ input, output }) => `${input} → ${output}`).join("；");
+		return toolSucceeded(
+			`三项 VTS 自定义输入已准备。请在 VTube Studio 的 ${modelName} 模型设置中手动映射：${mapping}。完成后执行 Live2D reload，再用 status(detail=true) 核对。`,
+			{ effectStatus: "applied", inputs: preparation.inputs },
+		);
+	}
+
 	/** reload（§2）：显式重载当前 VTS 模型并重新核验绑定。 */
 	async reload(ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
 		const denied = this.gate(ctx);
@@ -637,9 +682,21 @@ export class Live2DRuntime {
 		// 选中项不在当前快照（目录更替残留）：诚实回落 idle。
 		if (this.ambientName !== undefined && !this.catalog.resolve("ambient", this.ambientName))
 			this.ambientName = undefined;
-		const restLoop =
-			this.ambientName !== undefined ? this.catalog.resolve("ambient", this.ambientName)!.entry.motion : idle;
-		if (restLoop && !this.restHandle) {
+		const ambient =
+			this.ambientName !== undefined ? this.catalog.resolve("ambient", this.ambientName)?.entry : undefined;
+		const restLoop = ambient?.motion ?? idle;
+		if (ambient?.variants?.length) {
+			// Phrase pools are finite: let the outgoing clip hand off while the next, nonrepeating phrase enters.
+			if (!this.restHandle || ["cancelling", "finished"].includes(this.restHandle.status)) {
+				this.restHandle = this.director.play(this.pickAmbientPhrase(ambient), {
+					category: "autonomic",
+					background: true,
+					atomic: false,
+					fadeInMs: 180,
+					fadeOutMs: 220,
+				});
+			}
+		} else if (restLoop && (!this.restHandle || this.restHandle.status === "finished")) {
 			this.restHandle = this.director.play(restLoop, {
 				category: "autonomic",
 				loop: true,
@@ -803,6 +860,7 @@ export class Live2DRuntime {
 
 	/** 作者诊断：运行时内部状态只读快照（三层遥测在 P6-1 接入）。 */
 	diagnose(): string {
+		const bodyMapping = inspectBodyMapping(this.rig, this.client?.getModelProfile());
 		return JSON.stringify(
 			{
 				phase: this.phase,
@@ -814,6 +872,7 @@ export class Live2DRuntime {
 				generation: this.generation,
 				lastCue: this.endpoint.lastCue(),
 				externalActions: this.externalActions?.snapshot() ?? null,
+				bodyMapping,
 				director: this.director
 					? {
 							attention: this.director.getAttention() ?? null,

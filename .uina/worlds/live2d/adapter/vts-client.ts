@@ -54,6 +54,17 @@ export interface MotionInjectionEvidence {
 	pending: number;
 	acceptedInputs: readonly string[];
 }
+
+export class VTSInputSetupError extends Error {
+	constructor(
+		readonly reason: "invalid_input" | "input_conflict" | "input_unconfirmed",
+		readonly outcome: "failed" | "unknown",
+		message: string,
+	) {
+		super(message);
+	}
+}
+
 interface InjectionObservation extends Omit<MotionInjectionEvidence, "acceptedInputs"> {
 	acceptedInputs: Set<string>;
 	settled?: () => void;
@@ -215,7 +226,38 @@ export class VTSClient {
 		return this.validationPending;
 	}
 	async createInput(input: { name: string; min: number; max: number; defaultValue: number }): Promise<void> {
+		await this.ensureInput(input);
+	}
+	/** Create a Uina-owned VTS input once, verifying existing facts before treating retries as idempotent. */
+	async ensureInput(input: {
+		name: string;
+		min: number;
+		max: number;
+		defaultValue: number;
+	}): Promise<"created" | "existing"> {
+		if (!/^[A-Za-z0-9]{4,32}$/.test(input.name))
+			throw new VTSInputSetupError("invalid_input", "failed", "VTS 自定义输入名必须为 4-32 位英数字符");
+		if (
+			![input.min, input.max, input.defaultValue].every(
+				(value) => Number.isFinite(value) && Math.abs(value) <= 1_000_000,
+			) ||
+			input.min >= input.max
+		)
+			throw new VTSInputSetupError("invalid_input", "failed", `VTS 自定义输入范围非法: ${input.name}`);
 		if (!this.isAuthenticated) throw new Error("VTS 未鉴权");
+		await this.refreshInjectableParameters();
+		const existing = this.inputFacts.find((item) => item.name === input.name);
+		if (existing) {
+			const matches =
+				existing.custom === true &&
+				(!existing.addedBy || existing.addedBy === this.pluginName) &&
+				[existing.min, existing.max, existing.defaultValue].every(
+					(value, index) =>
+						Number.isFinite(value) && Math.abs(value - [input.min, input.max, input.defaultValue][index]!) < 1e-9,
+				);
+			if (!matches) throw new VTSInputSetupError("input_conflict", "failed", `VTS 输入名或范围冲突: ${input.name}`);
+			return "existing";
+		}
 		await this.sendRequest("ParameterCreationRequest", {
 			parameterName: input.name,
 			explanation: "Uina declarative motion input",
@@ -224,6 +266,19 @@ export class VTSClient {
 			defaultValue: input.defaultValue,
 		});
 		await this.refreshInjectableParameters();
+		const created = this.inputFacts.find((item) => item.name === input.name);
+		if (!created)
+			throw new VTSInputSetupError("input_unconfirmed", "unknown", `VTS 未确认 Uina 自定义输入创建: ${input.name}`);
+		if (!created.custom || (created.addedBy && created.addedBy !== this.pluginName))
+			throw new VTSInputSetupError("input_unconfirmed", "unknown", `VTS 未确认当前 Uina 输入: ${input.name}`);
+		if (
+			![created.min, created.max, created.defaultValue].every(
+				(value, index) =>
+					Number.isFinite(value) && Math.abs(value - [input.min, input.max, input.defaultValue][index]!) < 1e-9,
+			)
+		)
+			throw new VTSInputSetupError("input_unconfirmed", "unknown", `VTS 创建输入范围未确认: ${input.name}`);
+		return "created";
 	}
 
 	async request(messageType: string, data: Record<string, unknown> = {}): Promise<unknown> {
@@ -640,6 +695,7 @@ export class VTSClient {
 			...(result.defaultParameters ?? []).map((i) => ({ ...i, custom: false })),
 			...(result.customParameters ?? []).map((i) => ({ ...i, custom: true })),
 		];
+		if (this.modelProfile) this.modelProfile = { ...this.modelProfile, inputs: this.inputFacts };
 		this.injectableParameters.clear();
 		for (const item of this.inputFacts) if (item.name) this.injectableParameters.add(item.name);
 

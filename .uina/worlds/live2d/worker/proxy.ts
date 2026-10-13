@@ -35,6 +35,7 @@ export interface Live2DWorldRuntime {
 	state(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
 	costume(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
 	reload(ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
+	prepareBody(ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult>;
 	formatStatus(): string | Promise<string>;
 	diagnose(): string | Promise<string>;
 }
@@ -276,7 +277,7 @@ export class Live2DRuntimeProxy implements Live2DWorldRuntime {
 				`Live2D 停用失败：${errors.map((error) => (error instanceof Error ? error.message : String(error))).join("；")}`,
 			);
 	}
-	private async action<K extends "express" | "state" | "costume" | "reload">(
+	private async action<K extends "express" | "state" | "costume" | "reload" | "prepareBody">(
 		op: K,
 		args: EngineCalls[K]["args"],
 		signal?: AbortSignal,
@@ -312,6 +313,9 @@ export class Live2DRuntimeProxy implements Live2DWorldRuntime {
 	}
 	reload(ctx: { signal?: AbortSignal }) {
 		return this.action("reload", undefined, ctx.signal);
+	}
+	prepareBody(ctx: { signal?: AbortSignal }) {
+		return this.action("prepareBody", undefined, ctx.signal);
 	}
 	formatStatus() {
 		return this.call("formatStatus", undefined);
