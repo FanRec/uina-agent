@@ -8,3 +8,7 @@
 *.ico binary
 *.webp binary
 *.onnx binary
+
+# 模型权重走 LFS。
+*.ckpt filter=lfs diff=lfs merge=lfs -text
+*.pth filter=lfs diff=lfs merge=lfs -text

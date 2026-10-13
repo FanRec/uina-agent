@@ -29,7 +29,8 @@ if (dataRoot && profileRoot) throw new Error("Choose --data-root or --profile-ro
 const loaded = loadQqWorldConfig(join(worldDir, "config.json"));
 if (!loaded.ok) throw new Error(`[qq] 配置加载失败：${loaded.error}`);
 const selfId = loaded.config.selfId;
-const root = dataRoot ?? (profileRoot ? join(profileRoot, "world-data", "qq") : worldDir);
+const root =
+	dataRoot ?? (profileRoot ? join(profileRoot, "world-data", "qq") : join(process.cwd(), ".uina", "world-data", "qq"));
 const dataDir = join(root, "v2", selfId);
 const journal = new FactsJournal({ dataDir, selfId });
 const facts = journal.recover(true);
