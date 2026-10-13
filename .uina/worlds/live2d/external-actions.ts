@@ -1,10 +1,11 @@
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import type { ModelRig } from "./adapter/rig.js";
 import { VTSClient } from "./adapter/vts-client.js";
-import type { CatalogMotionEntry, CatalogCostumeEntry } from "./authoring/catalog.js";
+import type { CatalogCostumeEntry, CatalogMotionEntry } from "./authoring/catalog.js";
 import type { CompiledMotion } from "./authoring/motion.js";
-import { MotionDirector, type PlayOptions, type MotionHandle, type ExclusiveClaim } from "./director/director.js";
-import { toolRejected, toolSucceeded, toolUnknown, withCancellation, settleMotion } from "./results.js";
+import { smooth } from "./authoring/motion.js";
+import { type ExclusiveClaim, MotionDirector, type MotionHandle, type PlayOptions } from "./director/director.js";
+import { settleMotion, toolRejected, toolSucceeded, toolUnknown, withCancellation } from "./results.js";
 export type CleanupState = "not_needed" | "confirmed" | "unknown";
 export interface CleanupFacts {
 	readonly pose: CleanupState;
@@ -36,6 +37,10 @@ const SETTLE_MARGIN_MS = 60;
 const SETTLE_RETRIES = 2;
 const SETTLE_RETRY_MS = 250;
 const RESTORE_SECONDS = 0.25;
+/** relative 旋转段的逐帧驱动节拍（~60fps，对齐 VTS 渲染帧率）。 */
+const DRIVE_INTERVAL_MS = 16;
+/** 逐帧驱动的事件阈值（°）：低于它不发空转请求。 */
+const DRIVE_MIN_DELTA_DEG = 0.01;
 
 const VTS_MOVE_LIMITS = { position: 1000, rotation: 360, size: 100 } as const;
 
@@ -147,7 +152,10 @@ export class ExternalActions {
 		if (!spatial) return toolRejected("invalid_motion", "缺少空间特技定义。");
 		const hasEffects = spatial.segments.some((segment) => segment.effects?.tint || segment.effects?.postProcessing);
 		const hasPost = spatial.segments.some((segment) => segment.effects?.postProcessing);
-		const hasTransform = spatial.segments.some((segment) => Object.values(segment.delta).some((value) => value !== 0));
+		const hasTransform = spatial.segments.some(
+			(segment) =>
+				segment.relativeRotation !== undefined || Object.values(segment.delta ?? {}).some((value) => value !== 0),
+		);
 		const claim = this.acquireClaim(
 			["model:transform", ...(hasEffects ? ["effect:*"] : [])],
 			"motion",
@@ -249,11 +257,19 @@ export class ExternalActions {
 				const rotationBase = wrapDeg(base.rotation);
 				const violations: string[] = [];
 				for (const [index, segment] of spatial.segments.entries()) {
+					// 相对旋转段：请求值是增量而非绝对朝向，不受 base 影响，只校验 VTS 字段值域。
+					if (segment.relativeRotation !== undefined) {
+						if (Math.abs(segment.relativeRotation) > VTS_MOVE_LIMITS.rotation)
+							violations.push(
+								`段[${index}] relativeRotation=${segment.relativeRotation} 超出 ±${VTS_MOVE_LIMITS.rotation}`,
+							);
+						continue;
+					}
 					const target = {
-						positionX: base.positionX + (segment.delta.x ?? 0),
-						positionY: base.positionY + (segment.delta.y ?? 0),
-						rotation: rotationBase + (segment.delta.rotation ?? 0),
-						size: base.size + (segment.delta.size ?? 0),
+						positionX: base.positionX + (segment.delta?.x ?? 0),
+						positionY: base.positionY + (segment.delta?.y ?? 0),
+						rotation: rotationBase + (segment.delta?.rotation ?? 0),
+						size: base.size + (segment.delta?.size ?? 0),
 					};
 					if (
 						Math.abs(target.positionX) > VTS_MOVE_LIMITS.position ||
@@ -314,6 +330,8 @@ export class ExternalActions {
 				motionResult = settleMotion(client, this.rig, handle, clip, label, options.callName);
 				for (const [index, segment] of spatial.segments.entries()) {
 					ensureActive();
+					// 每段身份探活：回读会校验当前模型身份，缓存代次未覆盖的模型切换在此被拦下
+					//（回执本身无消费者，抛错即守卫）——严禁移除，见 performance 用例"不向新模型归位"。
 					await withCancellation(client.getModelPosition(this.rig.modelID), claim.signal);
 					ensureActive();
 
@@ -337,7 +355,48 @@ export class ExternalActions {
 							dispatchFailures.push(
 								`段[${index}]分发[${slot}]: ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`,
 							);
-					if (hasTransform && segment.delta && Object.keys(segment.delta).length > 0) {
+					// 计时起点 = 位姿请求发送时刻：VTS 动画时钟在收到请求即起跑（先于 ACK 往返），
+					// ACK 后全额等待会把每段过等一个往返（段边界定格的直接来源）。只扣除位姿请求
+					// 自身的派发耗时，效果派发不计入（尚未起跑，无动画可抢）；末段结算另有
+					// SETTLE_MARGIN + 重试 + 归位守护兜底，中继段的小幅提前恰是流水线衔接
+					//（VTS 官方语义：进行中的 MoveModelRequest 被新请求打断替换，自当前位置续动）。
+					const sentAt = Date.now();
+					if (segment.relativeRotation !== undefined) {
+						// 逐帧驱动（官方背书"每帧发一个 timeInSeconds=0 的请求完全接管运动"）：
+						// 真机实验证实 VTS 对 rotation 一律按最短弧插值，relative 单请求 359 同样折返为
+						// -1°，单请求无法表达 >180° 的旋转。闭环对齐时间轴目标角 targetAngle =
+						// R·smooth(elapsed/duration)，delta = target − 已发送；派发迟到/抖动被下一帧
+						// 目标角自校正吸收，整圈丝滑且终值精确（末尾补发残余）。
+						moved = true;
+						cleanup.pose = "unknown";
+						const total = segment.relativeRotation;
+						let sentAngle = 0;
+						for (;;) {
+							const elapsed = Date.now() - sentAt;
+							const targetAngle = total * smooth(elapsed / segment.durationMs);
+							const delta = targetAngle - sentAngle;
+							if (Math.abs(delta) >= DRIVE_MIN_DELTA_DEG) {
+								await withCancellation(
+									client.moveModel({
+										timeInSeconds: 0,
+										valuesAreRelativeToModel: true,
+										rotation: delta,
+									}),
+									claim.signal,
+								);
+								sentAngle = targetAngle;
+							}
+							if (elapsed >= segment.durationMs) break;
+							if (!(await sleep(Math.min(DRIVE_INTERVAL_MS, segment.durationMs - elapsed), claim.signal))) break;
+						}
+						// 终值补发：末拍与曲线终点间的残余角差一次补齐，保证整圈精确到位（已中止则跳过）。
+						const residual = total - sentAngle;
+						if (Math.abs(residual) >= DRIVE_MIN_DELTA_DEG && !claim.signal.aborted)
+							await withCancellation(
+								client.moveModel({ timeInSeconds: 0, valuesAreRelativeToModel: true, rotation: residual }),
+								claim.signal,
+							);
+					} else if (hasTransform && segment.delta && Object.keys(segment.delta).length > 0) {
 						moved = true;
 						cleanup.pose = "unknown";
 						await withCancellation(
@@ -352,10 +411,8 @@ export class ExternalActions {
 							claim.signal,
 						);
 					}
-					// 动画从 VTS 收到请求起跑 timeInSeconds；ACK 后全额等待，宁过勿欠——
-					// 旧实现从效果派发前计时扣除，每段被抢跑"派发+往返"时长，末段插值未落地
-					// 即回读到中间值（close_up"正常回位未确认"根因）。
-					if (!(await sleep(segment.durationMs + (segment.holdMs ?? 0), claim.signal))) break;
+					const waitMs = Math.max(0, segment.durationMs + (segment.holdMs ?? 0) - (Date.now() - sentAt));
+					if (!(await sleep(waitMs, claim.signal))) break;
 				}
 				ensureActive();
 				// 末段不得携带 effects（编译期禁止）：效果复位由守护在此统一执行，作者不写重置值。

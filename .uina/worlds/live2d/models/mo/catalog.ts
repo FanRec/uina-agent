@@ -1,7 +1,7 @@
+import type { ModelRig } from "../../adapter/rig.js";
 import type { CatalogSnapshot, CatalogSource } from "../../authoring/catalog.js";
 import { compileCatalog } from "../../authoring/catalog.js";
-import { motion, track, type MotionTrack } from "../../authoring/motion.js";
-import type { ModelRig } from "../../adapter/rig.js";
+import { type MotionTrack, motion, track } from "../../authoring/motion.js";
 import { MO_MODEL_ID } from "../rig-loader.js";
 
 type Keys = readonly (readonly [number, number])[];
@@ -854,7 +854,7 @@ export const MO_CATALOG_SOURCE: CatalogSource = {
 			},
 		},
 		spin: {
-			description: "华丽自转一圈：屈膝下蹲垂直蓄力、极简三段等分圆周飞旋与落地轻巧缓冲",
+			description: "华丽自转一圈：屈膝下蹲垂直蓄力、单次缓动整圆飞旋与落地轻巧缓冲",
 			aliases: ["转圈", "转个圈", "转圈圈", "旋转"],
 			motion: motion(
 				1700,
@@ -900,11 +900,16 @@ export const MO_CATALOG_SOURCE: CatalogSource = {
 				segments: [
 					// 1. 蓄力段：纯垂直下蹲微屈膝，不预加反向旋转，杜绝起手顿挫
 					{ durationMs: 180, delta: { y: -0.02 } },
-					// 2~4. 极简腾空三段等分圆周（120° / 240° / 0°），旋转阶段恒定微浮空 y: 0.05，单步 220ms 连贯衔接
-					{ durationMs: 220, delta: { y: 0.05, rotation: 120 } },
-					{ durationMs: 220, delta: { y: 0.05, rotation: 240 } },
-					{ durationMs: 220, delta: { y: 0, rotation: 0 } },
-					// 5. 轻巧落地缓冲
+					// 2. 腾空浮起
+					{ durationMs: 160, delta: { y: 0.05 } },
+					// 3. 整圈自转：逐帧驱动的 relative 旋转 359°，运行时按 smooth 曲线 ~60fps 发
+					//    timeInSeconds=0 增量（VTS 对 rotation 一律最短弧插值，真机实验 relative 单请求
+					//    359 折返 -1°，三段等分方案则每段缓动+段间往返死区必顿挫）。不声明 delta 即不改
+					//    y/size，浮空贯穿整圈。
+					{ durationMs: 1200, relativeRotation: 359 },
+					// 4. 落地缓冲 + 1° 回正（relative 359 距整圈差 1°，absolute rotation:0 目标即基准朝向）
+					{ durationMs: 420, delta: { y: 0, rotation: 0 } },
+					// 5. 长定格展示段
 					{ durationMs: 600, delta: { y: 0, rotation: 0 } },
 				],
 			},

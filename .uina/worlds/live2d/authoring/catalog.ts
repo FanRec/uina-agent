@@ -1,5 +1,5 @@
 import type { RigControlDef } from "../adapter/rig.js";
-import { compileMotion, type CompiledMotion, type MotionDefinition } from "./motion.js";
+import { type CompiledMotion, compileMotion, type MotionDefinition } from "./motion.js";
 
 /**
  * 模型目录（P4-1，边界规范 §2）。
@@ -66,12 +66,19 @@ export interface SegmentEffects {
 
 export interface SpatialSegment {
 	/** 每一段都相对同一开始位姿，不累积前段偏移。 */
-	readonly delta: {
+	readonly delta?: {
 		readonly x?: number;
 		readonly y?: number;
 		readonly rotation?: number;
 		readonly size?: number;
 	};
+	/**
+	 * 相对旋转段：仅旋转，值为相对当前朝向的顺时针增量（VTS valuesAreRelativeToModel=true 的
+	 * rotation 语义）。与 delta 互斥（编译期校验）。执行由运行时逐帧驱动（timeInSeconds=0，
+	 * 官方背书），目标角 = 本值·smooth(elapsed/duration)——VTS 对 rotation 一律按最短弧插值
+	 * （真机实验：relative 单请求 359 同样折返为 -1°），>180° 的整圈旋转必须走本段。
+	 */
+	readonly relativeRotation?: number;
 	/** 段级外部效果（绝对状态）。 */
 	readonly effects?: SegmentEffects;
 	readonly durationMs: number;
@@ -323,6 +330,21 @@ export function compileCatalog(
 					throw new Error(`动作 "${name}" 空间段 durationMs 必须在 (0,2000]`);
 				if (segment.holdMs !== undefined && (!Number.isFinite(segment.holdMs) || segment.holdMs < 0))
 					throw new Error(`动作 "${name}" 空间段 holdMs 必须为非负有限数`);
+				if (segment.relativeRotation !== undefined) {
+					if (
+						!Number.isFinite(segment.relativeRotation) ||
+						segment.relativeRotation <= 0 ||
+						segment.relativeRotation > 359
+					)
+						throw new Error(
+							`动作 "${name}" 空间段[${index}] relativeRotation 必须在 (0,359]：VTS rotation 硬边界 ±360 且边界值实测被拒`,
+						);
+					if (segment.delta && Object.keys(segment.delta).length > 0)
+						throw new Error(
+							`动作 "${name}" 空间段[${index}] relativeRotation 与 delta 互斥（valuesAreRelativeToModel 是请求级开关）`,
+						);
+					hasPayload = true;
+				}
 				if (segment.delta) {
 					// delta 数值域 lint（弱校验）：超出 VTS 字段值域的偏移按作者笔误提前拒绝；
 					// 真约束在运行时——实发绝对值 = base + delta，base 只有运行时可知（VTS_MOVE_LIMITS）。
@@ -336,8 +358,12 @@ export function compileCatalog(
 					}
 				}
 				const hasEffects = segment.effects !== undefined && Object.keys(segment.effects).length > 0;
-				if (!hasEffects && (!segment.delta || Object.keys(segment.delta).length === 0))
-					throw new Error(`动作 "${name}" 空间段必须声明 delta 或 effects`);
+				if (
+					!hasEffects &&
+					(!segment.delta || Object.keys(segment.delta).length === 0) &&
+					segment.relativeRotation === undefined
+				)
+					throw new Error(`动作 "${name}" 空间段必须声明 delta、relativeRotation 或 effects`);
 				if (hasEffects) {
 					hasPayload = true;
 					validateEffects(segment.effects!, index);
@@ -345,7 +371,11 @@ export function compileCatalog(
 			}
 			if (!hasPayload) throw new Error(`动作 "${name}" 空间轨迹无载荷`);
 			const last = segments.at(-1)!;
-			if (Object.values(last.delta).some((offset) => offset !== 0))
+			if (last.relativeRotation !== undefined)
+				throw new Error(
+					`动作 "${name}" 空间轨迹末段不得是 relativeRotation——相对整圈结束时朝向留有余量，必须由后继 delta 段归零`,
+				);
+			if (Object.values(last.delta ?? {}).some((offset) => offset !== 0))
 				throw new Error(`动作 "${name}" 空间轨迹末段必须归零`);
 			if (last.effects !== undefined && Object.keys(last.effects).length > 0)
 				throw new Error(`动作 "${name}" 空间轨迹末段不得携带 effects——恢复由运行时守护统一执行`);
