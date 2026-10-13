@@ -6,6 +6,7 @@ import { defaultSystemPrompt } from "../src/agent/context.js";
 import { requestToolDefs } from "../src/agent/projection.js";
 import { createEventFrameProfile, EVENT_FRAME_PROMPT } from "../src/extensions/event-frames/index.js";
 import { EVENT_FRAME_TOOL } from "../src/extensions/event-frames/protocol.js";
+import { projectInputMessage } from "../src/session/recovery.js";
 
 const external = (id = "e1"): AgentMessage => ({
 	role: "user",
@@ -72,6 +73,34 @@ describe("external event projection", () => {
 		expect(msgs[0]!.content).toContain("[运行时事件 watch-job · ref-1]\nnotify");
 		expect(msgs[0]!.content).not.toContain("[内部信息");
 		expect(() => p.validateContext!(msgs)).not.toThrow();
+	});
+	it("presents ticker reminders as their own natural event text", () => {
+		const text = "[提醒到期 r1]\n看看窗边的植物";
+		const message = projectInputMessage({
+			id: "reminder-due:1",
+			order: 1,
+			mode: "followUp",
+			text,
+			source: { kind: "runtime", type: "reminder-due", ref: "ticker", origin: "internal", channel: "world" },
+		} as import("../src/session/types.js").QueuedInput);
+		const projected = createEventFrameProfile().projection.convertToLlm!([message]);
+
+		expect(projected).toHaveLength(1);
+		expect(projected[0]!.content).toBe(text);
+		expect(projected[0]!.content).not.toContain("[运行时事件");
+	});
+	it("does not add a runtime source label when an internal event already has a heading", () => {
+		const text = "[状态已更新]\n新的状态内容";
+		const message = projectInputMessage({
+			id: "world-event-1",
+			order: 1,
+			mode: "followUp",
+			text,
+			source: { kind: "runtime", type: "status-changed", ref: "another-world", origin: "internal", channel: "world" },
+		} as import("../src/session/types.js").QueuedInput);
+		const projected = createEventFrameProfile().projection.convertToLlm!([message]);
+
+		expect(projected[0]!.content).toBe(text);
 	});
 	it("still labels non-runtime internal inputs", () => {
 		const p = createEventFrameProfile().projection;

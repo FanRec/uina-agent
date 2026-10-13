@@ -35,7 +35,12 @@ describe("pacing ticker state boundaries", () => {
 	it("rejects non-finite pauses", async () => {
 		const clock = new Clock();
 		const engine = new TickerEngine(
-			{ isBusy: () => false, submitOpportunity: async () => {}, saveDurableState: async () => {} },
+			{
+				isBusy: () => false,
+				submitOpportunity: async () => {},
+				submitReminder: async () => {},
+				saveDurableState: async () => {},
+			},
 			undefined,
 			undefined,
 			clock,
@@ -57,6 +62,7 @@ describe("pacing ticker state boundaries", () => {
 					submitted++;
 					await pending;
 				},
+				submitReminder: async () => {},
 				saveDurableState: async () => {},
 			},
 			{ baseIntervalMs: 1 },

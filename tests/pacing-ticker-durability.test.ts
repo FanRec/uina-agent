@@ -57,6 +57,7 @@ describe("ticker durable time rules", () => {
 			submitOpportunity: async () => {
 				throw new Error("delivery failed");
 			},
+			submitReminder: async () => {},
 			saveDurableState: async () => {},
 		};
 		const engine = new TickerEngine(host, { baseIntervalMs: 60_000 }, undefined, clock);
@@ -66,6 +67,37 @@ describe("ticker durable time rules", () => {
 		engine.stop();
 	});
 
+	it("retries the scheduler after a host busy check throws", async () => {
+		const clock = new Clock();
+		let busyChecks = 0;
+		let submitted = 0;
+		const engine = new TickerEngine(
+			{
+				isBusy: () => {
+					busyChecks++;
+					if (busyChecks === 1) throw new Error("host temporarily unavailable");
+					return false;
+				},
+				submitOpportunity: async () => {
+					submitted++;
+				},
+				submitReminder: async () => {},
+				saveDurableState: async () => {},
+			},
+			{ baseIntervalMs: 60_000 },
+			undefined,
+			clock,
+		);
+		engine.start();
+		await clock.advance(60_000);
+		expect(submitted).toBe(0);
+		await clock.advance(14_999);
+		expect(submitted).toBe(0);
+		await clock.advance(1);
+		expect(submitted).toBe(1);
+		await engine.stop();
+	});
+
 	it("serializes consecutive changes and exposes each only after its save", async () => {
 		const clock = new Clock();
 		const firstSave = deferred();
@@ -73,6 +105,7 @@ describe("ticker durable time rules", () => {
 		const host: TickerHostPort = {
 			isBusy: () => false,
 			submitOpportunity: async () => {},
+			submitReminder: async () => {},
 			saveDurableState: async (state) => {
 				saved.push(state.baseIntervalMs);
 				if (saved.length === 1) await firstSave.promise;
@@ -98,6 +131,7 @@ describe("ticker durable time rules", () => {
 		const host: TickerHostPort = {
 			isBusy: () => false,
 			submitOpportunity: async () => {},
+			submitReminder: async () => {},
 			saveDurableState: async () => {
 				if (fail) throw new Error("disk full");
 			},
@@ -119,6 +153,7 @@ describe("ticker durable time rules", () => {
 		const host: TickerHostPort = {
 			isBusy: () => false,
 			submitOpportunity: async () => {},
+			submitReminder: async () => {},
 			saveDurableState: async () => {
 				if (fail) throw new Error("disk full");
 			},
@@ -132,6 +167,28 @@ describe("ticker durable time rules", () => {
 		engine.stop();
 	});
 
+	it("does not retain a temporary pause when concurrent pause writes all fail", async () => {
+		const clock = new Clock();
+		const engine = new TickerEngine(
+			{
+				isBusy: () => false,
+				submitOpportunity: async () => {},
+				submitReminder: async () => {},
+				saveDurableState: async () => {
+					throw new Error("disk full");
+				},
+			},
+			undefined,
+			undefined,
+			clock,
+		);
+		engine.start();
+		const pauses = await Promise.allSettled([engine.pause(10), engine.pause(20)]);
+		expect(pauses.every((result) => result.status === "rejected")).toBe(true);
+		expect(engine.getStatus().isPaused).toBe(false);
+		engine.stop();
+	});
+
 	it("does not submit an opportunity when the day reset cannot be saved", async () => {
 		const clock = new Clock();
 		const submitted: string[] = [];
@@ -140,12 +197,15 @@ describe("ticker durable time rules", () => {
 			baseIntervalMs: 60_000,
 			pausedUntilEpochMs: null,
 			dailyAttempts: { date: today, count: 1 },
+			reminders: [],
+			nextReminderSequence: 1,
 		};
 		const host: TickerHostPort = {
 			isBusy: () => false,
 			submitOpportunity: async (text) => {
 				submitted.push(text);
 			},
+			submitReminder: async () => {},
 			saveDurableState: async () => {
 				throw new Error("disk full");
 			},
@@ -166,6 +226,7 @@ describe("ticker durable time rules", () => {
 			submitOpportunity: async (text) => {
 				submitted.push(text);
 			},
+			submitReminder: async () => {},
 			saveDurableState: async () => {},
 		};
 		const engine = new TickerEngine(host, undefined, undefined, clock);
@@ -184,6 +245,7 @@ describe("ticker durable time rules", () => {
 		const host: TickerHostPort = {
 			isBusy: () => false,
 			submitOpportunity: async () => {},
+			submitReminder: async () => {},
 			saveDurableState: async () => {},
 		};
 		const engine = new TickerEngine(

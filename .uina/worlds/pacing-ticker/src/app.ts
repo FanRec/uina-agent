@@ -6,7 +6,7 @@ import type { WorldDef, ServiceCompanionContext } from "../../../../src/extensio
 import { writeJsonAtomic } from "../../../../src/extensions/world-framework/json-file.js";
 import { worldFailed, worldSucceeded } from "../../../../src/extensions/world-framework/result.js";
 import { TickerEngine } from "./ticker-engine.js";
-import type { TickerDurableState, TickerGuardrails } from "./types.js";
+import type { TickerDurableState, TickerGuardrails, TickerReminder } from "./types.js";
 
 
 function installDir(): string {
@@ -18,6 +18,39 @@ function installDir(): string {
  */
 export function createPacingOpportunityId(): string {
   return `pacing-opportunity:${randomUUID()}`;
+}
+
+export function createReminderDueId(): string {
+  return `reminder-due:${randomUUID()}`;
+}
+
+function reminderSequence(reminderRef: string): number {
+  const match = /^r([1-9]\d*)$/.exec(reminderRef);
+  const sequence = match ? Number(match[1]) : NaN;
+  if (!Number.isSafeInteger(sequence)) throw new Error("Ticker 提醒引用无效");
+  return sequence;
+}
+
+function parseReminders(value: unknown): TickerReminder[] {
+  if (!Array.isArray(value)) throw new Error("Ticker 提醒状态无效");
+  const seen = new Set<string>();
+  return value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Ticker 提醒状态无效");
+    const reminder = item as Record<string, unknown>;
+    if (
+      typeof reminder.reminderRef !== "string" ||
+      typeof reminder.message !== "string" || reminder.message.trim().length === 0 ||
+      !Number.isSafeInteger(reminder.dueAtEpochMs) || new Date(reminder.dueAtEpochMs as number).getTime() !== reminder.dueAtEpochMs
+    ) throw new Error("Ticker 提醒状态无效");
+    reminderSequence(reminder.reminderRef);
+    if (seen.has(reminder.reminderRef)) throw new Error("Ticker 提醒引用重复");
+    seen.add(reminder.reminderRef);
+    return {
+      reminderRef: reminder.reminderRef,
+      message: reminder.message,
+      dueAtEpochMs: reminder.dueAtEpochMs as number,
+    };
+  });
 }
 
 async function loadState(filePath: string): Promise<TickerDurableState | undefined> {
@@ -37,7 +70,17 @@ async function loadState(filePath: string): Promise<TickerDurableState | undefin
   if (!usage || typeof usage !== "object" || Array.isArray(usage)) throw new Error("Ticker 用量状态无效");
   const attempts = usage as Record<string, unknown>;
   if (typeof attempts.date !== "string" || new Date(attempts.date).toDateString() !== attempts.date || !Number.isSafeInteger(attempts.count) || (attempts.count as number) < 0) throw new Error("Ticker 用量状态无效");
-  return { baseIntervalMs: state.baseIntervalMs as number, pausedUntilEpochMs: state.pausedUntilEpochMs as number | null, dailyAttempts: { date: attempts.date, count: attempts.count as number } };
+  const reminders = state.reminders === undefined ? [] : parseReminders(state.reminders);
+  const minimumSequence = reminders.reduce((max, reminder) => Math.max(max, reminderSequence(reminder.reminderRef)), 0) + 1;
+  const nextReminderSequence = state.nextReminderSequence === undefined ? minimumSequence : state.nextReminderSequence;
+  if (!Number.isSafeInteger(nextReminderSequence) || (nextReminderSequence as number) < minimumSequence || (nextReminderSequence as number) < 1) throw new Error("Ticker 下一个提醒引用序号无效");
+  return {
+    baseIntervalMs: state.baseIntervalMs as number,
+    pausedUntilEpochMs: state.pausedUntilEpochMs as number | null,
+    dailyAttempts: { date: attempts.date, count: attempts.count as number },
+    reminders,
+    nextReminderSequence: nextReminderSequence as number,
+  };
 }
 
 async function saveState(filePath: string, state: TickerDurableState): Promise<void> {
@@ -54,22 +97,58 @@ async function loadGuardrails(filePath: string): Promise<TickerGuardrails> {
   }
 }
 
+function formatDueAt(epochMs: number): { dueAt: string; dueAtLocal: string; timeZone: "Asia/Shanghai" } {
+  return {
+    dueAt: new Date(epochMs).toISOString(),
+    dueAtLocal: new Intl.DateTimeFormat("zh-CN", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    }).format(new Date(epochMs)),
+    timeZone: "Asia/Shanghai",
+  };
+}
+
+function formatDelay(afterSeconds: number): string {
+  let remaining = afterSeconds;
+  const parts: string[] = [];
+  const hours = Math.floor(remaining / 3600);
+  remaining %= 3600;
+  const minutes = Math.floor(remaining / 60);
+  const seconds = remaining % 60;
+  if (hours) parts.push(`${hours} 小时`);
+  if (minutes) parts.push(`${minutes} 分钟`);
+  if (seconds || parts.length === 0) parts.push(`${seconds} 秒`);
+  return `${parts.join("")}后到期`;
+}
+
+function hasRepresentableDeadline(afterSeconds: number): boolean {
+  const dueAtEpochMs = Date.now() + afterSeconds * 1000;
+  return Number.isSafeInteger(dueAtEpochMs) && new Date(dueAtEpochMs).getTime() === dueAtEpochMs;
+}
+
+function formatReminderLine(reminder: TickerReminder): string {
+  const due = formatDueAt(reminder.dueAtEpochMs);
+  return `${reminder.reminderRef} · ${due.dueAt} · ${due.dueAtLocal}（${due.timeZone}） · ${reminder.message}`;
+}
+
 export function createPacingTickerWorld(): WorldDef {
   let engine: TickerEngine | null = null;
   let unbind: (() => void) | null = null;
 
-  const teardown = () => {
+  const teardown = async () => {
     unbind?.();
     unbind = null;
-    engine?.stop();
+    const previousEngine = engine;
     engine = null;
+    await previousEngine?.stop();
   };
   const world: WorldDef = {
     name: "ticker",
-    description: "低频自主唤醒调度；主体无需每轮调用。status 查询节拍，set_interval/pause/resume 只在调整自主策略时使用。",
+    description: "自主节拍与一次性提醒；到期时再次呈现提醒内容，由你决定如何处理。",
     defaultState: { enabled: false,  },
     async onStart(ctx: ServiceCompanionContext) {
-      teardown();
+      await teardown();
       // 状态是持久数据，必须落在宿主数据目录；缺失时明确失败而不是写进源码安装目录。
       if (!ctx.worldDataDir) throw new Error("[ticker] 缺少 worldDataDir，无法持久化节拍状态");
       const stateFile = join(ctx.worldDataDir, "state.json");
@@ -88,14 +167,92 @@ export function createPacingTickerWorld(): WorldDef {
             text,
           });
         },
+        submitReminder: async (reminder: TickerReminder) => {
+          if (ctx.signal.aborted) throw new Error("Ticker 世界已停用，提醒仍待投递");
+          if (!ctx.emitEvent) throw new Error("宿主未提供 emitEvent");
+          await ctx.emitEvent({
+            id: createReminderDueId(),
+            type: "reminder-due",
+            channel: "world",
+            delivery: "queued",
+            origin: "internal",
+            text: `[提醒到期 ${reminder.reminderRef}]\n${reminder.message}`,
+            data: { reminderRef: reminder.reminderRef, dueAtEpochMs: reminder.dueAtEpochMs },
+          });
+        },
         saveDurableState: (next: TickerDurableState) => saveState(stateFile, next),
       };
       engine = new TickerEngine(host, initial, guardrails);
       engine.start();
       unbind = ctx.onActivity?.((event) => engine?.notifyActivity(event)) ?? null;
     },
-    async onStop() { teardown(); },
+    async onStop() { await teardown(); },
     actions: {
+      set_reminder: {
+        description: "设置一次性提醒；到期时再次呈现提醒内容，由你决定如何处理。",
+        parameters: {
+          type: "object",
+          properties: {
+            afterSeconds: { type: "integer", minimum: 1 },
+            message: { type: "string", minLength: 1 },
+          },
+          required: ["afterSeconds", "message"],
+          additionalProperties: false,
+        },
+        async run(args: Record<string, unknown>) {
+          if (!engine) return worldFailed("执行失败：自主节拍器未启动。", { reason: "ticker_not_started" });
+          if (!Number.isSafeInteger(args.afterSeconds) || (args.afterSeconds as number) < 1 || !hasRepresentableDeadline(args.afterSeconds as number) || typeof args.message !== "string" || args.message.trim().length === 0) {
+            return worldFailed("参数错误：afterSeconds 必须是至少 1 秒的正整数，message 不能为空。", { reason: "invalid_reminder" });
+          }
+          try {
+            const afterSeconds = args.afterSeconds as number;
+            const reminder = await engine.setReminder(afterSeconds, args.message as string);
+            const due = formatDueAt(reminder.dueAtEpochMs);
+            return worldSucceeded(`已设提醒 ${reminder.reminderRef}：${formatDelay(afterSeconds)}。`, {
+              reminderRef: reminder.reminderRef,
+              afterSeconds,
+              ...due,
+            }, "applied");
+          } catch (error) {
+            return worldFailed("保存提醒失败。", { reason: "reminder_save_failed", error: error instanceof Error ? error.message : String(error) });
+          }
+        },
+      },
+      list_reminders: {
+        description: "查看尚未触发的提醒及到期时间。",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        run() {
+          if (!engine) return worldFailed("执行失败：自主节拍器未启动。", { reason: "ticker_not_started" });
+          const reminders = engine.listReminders();
+          if (reminders.length === 0) return worldSucceeded("没有待触发的提醒。", { reminders: [] });
+          return worldSucceeded(reminders.map(formatReminderLine).join("\n"), {
+            reminders: reminders.map((reminder) => ({ ...reminder, ...formatDueAt(reminder.dueAtEpochMs) })),
+          });
+        },
+      },
+      cancel_reminder: {
+        description: "取消尚未触发的提醒；已入队的提醒不能撤回。",
+        parameters: {
+          type: "object",
+          properties: { reminderRef: { type: "string", pattern: "^r[1-9]\\d*$" } },
+          required: ["reminderRef"],
+          additionalProperties: false,
+        },
+        async run(args: Record<string, unknown>) {
+          if (!engine) return worldFailed("执行失败：自主节拍器未启动。", { reason: "ticker_not_started" });
+          if (typeof args.reminderRef !== "string" || !/^r[1-9]\d*$/.test(args.reminderRef)) {
+            return worldFailed("参数错误：reminderRef 必须是有效的提醒引用。", { reason: "invalid_reminder_ref" });
+          }
+          try {
+            const status = await engine.cancelReminder(args.reminderRef);
+            if (status === "cancelled") return worldSucceeded(`已取消提醒 ${args.reminderRef}。`, { reminderRef: args.reminderRef }, "applied");
+            if (status === "already_due") return worldFailed(`提醒 ${args.reminderRef} 已到期，无法取消。`, { reason: "reminder_already_due", reminderRef: args.reminderRef });
+            return worldFailed(`找不到待触发的提醒 ${args.reminderRef}。`, { reason: "reminder_not_found", reminderRef: args.reminderRef });
+          } catch (error) {
+            return worldFailed("取消提醒失败，提醒仍保留。", { reason: "reminder_save_failed", reminderRef: args.reminderRef, error: error instanceof Error ? error.message : String(error) });
+          }
+        },
+      },
       set_interval: { description: "仅在调整自主唤醒策略时设置周期（1~120 分钟）；返回持久化后的周期。", parameters: { type: "object", properties: { minutes: { type: "number", minimum: 1, maximum: 120 } }, required: ["minutes"], additionalProperties: false }, async run(args: Record<string, unknown>) {
         if (!engine) return worldFailed("执行失败：自主节拍器未启动。", { reason: "ticker_not_started" });
         const minutes = typeof args.minutes === "number" ? args.minutes : Number(args.interval ?? args.min ?? args.m);
@@ -113,7 +270,7 @@ export function createPacingTickerWorld(): WorldDef {
         if (!engine.getStatus().isPaused) return worldSucceeded("自主节拍当前处于运行状态，无需恢复。", undefined, "applied");
         await engine.resume(); return worldSucceeded("自主节拍已提前解除挂起。", undefined, "applied");
       } },
-      status: { description: "查询自主节拍器状态；只读，返回暂停、周期、空闲时间和日配额。", parameters: { type: "object", properties: {}, additionalProperties: false }, run() { if (!engine) return worldSucceeded(JSON.stringify({ status: "stopped" })); const s = engine.getStatus(); return worldSucceeded(JSON.stringify({ status: s.isPaused ? "paused" : "running", baseIntervalMinutes: s.baseIntervalMinutes, effectiveIntervalMinutes: s.effectiveIntervalMinutes, idleMinutes: s.idleMinutes, remainingSeconds: s.remainingSeconds, dailyAttempts: s.dailyAttemptsUsed, dailyAttemptsLimit: s.dailyAttemptsLimit })); } },
+      status: { description: "查询自主节拍状态；暂停只影响周期，remainingSeconds 表示周期与提醒中的下一次唤醒。", parameters: { type: "object", properties: {}, additionalProperties: false }, run() { if (!engine) return worldSucceeded(JSON.stringify({ status: "stopped" })); const s = engine.getStatus(); return worldSucceeded(JSON.stringify({ status: s.isPaused ? "paused" : "running", baseIntervalMinutes: s.baseIntervalMinutes, effectiveIntervalMinutes: s.effectiveIntervalMinutes, idleMinutes: s.idleMinutes, remainingSeconds: s.remainingSeconds, dailyAttempts: s.dailyAttemptsUsed, dailyAttemptsLimit: s.dailyAttemptsLimit })); } },
     },
   };
   return world;

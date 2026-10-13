@@ -141,8 +141,7 @@ export function projectEventFrames(
 		} else if (m.role === "user" || m.role === "custom") {
 			const input = provenance(m);
 			const kind = m.role === "custom" ? m.customType : "internal-input";
-			// runtime-input 正文在接入层（projectInputMessage）已带 [运行时事件 …] 标注，
-			// 且已落盘的旧 journal 同样如此；此处不再叠加 [内部信息] 前缀，避免双重标签浪费预算。
+			// runtime-input 正文的来源标题已由 session 投影处理；此处不再叠加 [内部信息] 前缀。
 			const content =
 				kind === "runtime-input"
 					? m.content

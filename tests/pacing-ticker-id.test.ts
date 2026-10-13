@@ -19,7 +19,7 @@ describe("pacing ticker opportunity identity", () => {
 				id,
 				order: order + 1,
 				mode: "followUp" as const,
-				text: "[时钟节拍]",
+				text: "[自主机会]",
 				source: {
 					kind: "runtime" as const,
 					type: "pacing-opportunity",

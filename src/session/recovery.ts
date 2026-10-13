@@ -634,6 +634,11 @@ export function projectInputMessage(input: QueuedInput): AgentMessage {
 	};
 	if (input.source?.kind === "runtime" && input.source.origin !== "external") {
 		const prov = input.source.provenance?.abandoned ? " [来自废弃分支]" : "";
+		// A body with its own heading does not need a second, machine-generated source heading.
+		const selfLabeled = !prov && /^\[[^\]\r\n]+\]\r?\n/.test(input.text);
+		const content = selfLabeled
+			? input.text
+			: `[运行时事件 ${input.source.type}${input.source.ref ? ` · ${input.source.ref}` : ""}${prov}]\n${input.text}`;
 		return {
 			role: "custom",
 			id: input.id,
@@ -641,7 +646,7 @@ export function projectInputMessage(input: QueuedInput): AgentMessage {
 			customType: "runtime-input",
 			display: false,
 			images: input.images,
-			content: `[运行时事件 ${input.source.type}${input.source.ref ? ` · ${input.source.ref}` : ""}${prov}]\n${input.text}`,
+			content,
 			details: { source: input.source, data: input.data },
 		};
 	}

@@ -38,6 +38,16 @@ export interface TickerDurableState {
 		date: string;
 		count: number;
 	};
+	/** 尚未成功入队的一次性提醒 */
+	reminders: TickerReminder[];
+	/** 下一个持久引用序号，生成 r1、r2…… */
+	nextReminderSequence: number;
+}
+
+export interface TickerReminder {
+	readonly reminderRef: string;
+	readonly message: string;
+	readonly dueAtEpochMs: number;
 }
 
 /**
@@ -55,6 +65,8 @@ export interface TickerHostPort {
 	isBusy(): boolean;
 	/** 向主脑投递自主认知机会 */
 	submitOpportunity(text: string): Promise<void>;
+	/** 将到期提醒作为独立的内部队列事件投递 */
+	submitReminder(reminder: TickerReminder): Promise<void>;
 	/** 保存持久状态 */
 	saveDurableState(state: TickerDurableState): Promise<void>;
 }
