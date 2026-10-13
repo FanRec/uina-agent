@@ -6,7 +6,7 @@ import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import { compileCatalog, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { motion, track } from "../.uina/worlds/live2d/authoring/motion.js";
+import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 
@@ -80,24 +80,26 @@ const makeCatalogSource = (): CatalogSource => ({
 			description: "点头",
 			atomic: true,
 			aliases: ["dip"],
-			motion: motion(
-				500,
-				track("head.yaw", [
-					[0, 6],
-					[500, 6],
-				]),
-			),
+			motion: motion(500, {
+				"head.yaw": absolute(
+					keys([
+						[0, 6],
+						[500, 6],
+					]),
+				),
+			}),
 		},
 		long: {
 			description: "长动作",
 			atomic: false,
-			motion: motion(
-				2000,
-				track("head.yaw", [
-					[0, 3],
-					[2000, 3],
-				]),
-			),
+			motion: motion(2000, {
+				"head.yaw": absolute(
+					keys([
+						[0, 3],
+						[2000, 3],
+					]),
+				),
+			}),
 		},
 	},
 	postures: { lean: { description: "侧倾", values: { "head.yaw": 4 } } },
@@ -198,13 +200,14 @@ describe("live2d endpoint（P4-2）", () => {
 					motions: {
 						wave: {
 							description: "挥手",
-							motion: motion(
-								300,
-								track("head.yaw", [
-									[0, 2],
-									[300, 2],
-								]),
-							),
+							motion: motion(300, {
+								"head.yaw": absolute(
+									keys([
+										[0, 2],
+										[300, 2],
+									]),
+								),
+							}),
 						},
 					},
 				},

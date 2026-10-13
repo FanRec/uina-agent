@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AutonomicGenerator } from "../.uina/worlds/live2d/director/autonomic.js";
 import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
-import { compileMotion, motion, track } from "../.uina/worlds/live2d/authoring/motion.js";
+import { compileMotion, motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
 import type { RigControlDef } from "../.uina/worlds/live2d/adapter/rig.js";
 
 const step = <T extends { step(dtMs: number): unknown }>(g: T, ms: number, dt = 16): void => {
@@ -85,13 +85,14 @@ describe("live2d 自律发生器（P2-2）", () => {
 			pipelines: { spring: { omega: 2000 }, smoothTauMs: 1 },
 		});
 		const clip = compileMotion(
-			motion(
-				5000,
-				track("head.yaw", [
-					[0, 6],
-					[5000, 6],
-				]),
-			),
+			motion(5000, {
+				"head.yaw": absolute(
+					keys([
+						[0, 6],
+						[5000, 6],
+					]),
+				),
+			}),
 			controls,
 		);
 		d.play(clip, { category: "voluntary", fadeInMs: 0 });

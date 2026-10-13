@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { bodyInputName } from "../.uina/worlds/live2d/adapter/body-inputs.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
-import { compileMotion, motion, track } from "../.uina/worlds/live2d/authoring/motion.js";
+import { compileMotion, motion, keys, offset, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
@@ -48,49 +48,50 @@ describe("Live2D 躯干通道", () => {
 			for (let elapsed = 0; elapsed < durationMs; elapsed += 20) director.step(20);
 		};
 		const headOnly = compileMotion(
-			motion(
-				4000,
-				track("head.yaw", [
-					[0, 5],
-					[4000, 5],
-				]),
-			),
+			motion(4000, {
+				"head.yaw": absolute(
+					keys([
+						[0, 5],
+						[4000, 5],
+					]),
+				),
+			}),
 			rig.controls,
 		);
 		director.play(headOnly, { category: "voluntary", fadeInMs: 0, fadeOutMs: 0, atomic: false, loop: true });
 		stepFor(1400);
 		expect(director.currentFrame["torso.yaw"]).toBeCloseTo(director.currentFrame["head.yaw"]!, 1);
 
-		const offset = compileMotion(
-			motion(
-				1200,
-				track("head.yaw", [
-					[0, -3],
-					[1200, -3],
-				]),
-				track(
-					"torso.yaw",
-					[
+		const pairClip = compileMotion(
+			motion(1200, {
+				"head.yaw": absolute(
+					keys([
+						[0, -3],
+						[1200, -3],
+					]),
+				),
+				"torso.yaw": offset(
+					keys([
 						[0, 2],
 						[1200, 2],
-					],
-					"baseline-offset",
+					]),
 				),
-			),
+			}),
 			rig.controls,
 		);
-		director.play(offset, { category: "voluntary", fadeInMs: 0, fadeOutMs: 0, atomic: false });
+		director.play(pairClip, { category: "voluntary", fadeInMs: 0, fadeOutMs: 0, atomic: false });
 		stepFor(500);
 		expect(director.currentFrame["torso.yaw"]! - director.currentFrame["head.yaw"]!).toBeCloseTo(2, 0);
 
 		const bodyOnly = compileMotion(
-			motion(
-				1200,
-				track("torso.yaw", [
-					[0, -7],
-					[1200, -7],
-				]),
-			),
+			motion(1200, {
+				"torso.yaw": absolute(
+					keys([
+						[0, -7],
+						[1200, -7],
+					]),
+				),
+			}),
 			rig.controls,
 		);
 		director.play(bodyOnly, { category: "voluntary", fadeInMs: 0, fadeOutMs: 0, atomic: false });

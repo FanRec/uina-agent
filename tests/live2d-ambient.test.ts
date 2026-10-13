@@ -6,7 +6,7 @@ import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import { compileCatalog, type CatalogSnapshot, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { motion, track } from "../.uina/worlds/live2d/authoring/motion.js";
+import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 
@@ -45,28 +45,30 @@ const makeRig = (): ModelRig => ({
 });
 
 const swayLoop = (amplitude: number) =>
-	motion(
-		3200,
-		track("head.yaw", [
-			[0, 0],
-			[800, amplitude],
-			[1600, 0],
-			[2400, -amplitude],
-			[3200, 0],
-		]),
-	);
+	motion(3200, {
+		"head.yaw": absolute(
+			keys([
+				[0, 0],
+				[800, amplitude],
+				[1600, 0],
+				[2400, -amplitude],
+				[3200, 0],
+			]),
+		),
+	});
 
 const makeCatalogSource = (): CatalogSource => ({
 	motions: {
 		nod: {
 			description: "点头",
-			motion: motion(
-				500,
-				track("head.yaw", [
-					[0, 6],
-					[500, 6],
-				]),
-			),
+			motion: motion(500, {
+				"head.yaw": absolute(
+					keys([
+						[0, 6],
+						[500, 6],
+					]),
+				),
+			}),
 		},
 	},
 	background: {
@@ -202,13 +204,14 @@ describe("live2d ambient 环境循环", () => {
 
 	it("短 sway 动作组在片段边界选不同轨迹，不连续重复上一段", async () => {
 		const phrase = (value: number) =>
-			motion(
-				100,
-				track("head.yaw", [
-					[0, value],
-					[100, value],
-				]),
-			);
+			motion(100, {
+				"head.yaw": absolute(
+					keys([
+						[0, value],
+						[100, value],
+					]),
+				),
+			});
 		const phrases = [phrase(2), phrase(5), phrase(8)];
 		const catalog = makeCatalog({
 			background: {
@@ -254,14 +257,15 @@ describe("live2d ambient 环境循环", () => {
 
 	it("thinking 与 ambient 共存：思考循环在选中 sway 期间照常叠加（transition 层不受影响）", async () => {
 		const source = makeCatalogSource();
-		source.background!.thinking = motion(
-			3600,
-			track("head.yaw", [
-				[0, 2],
-				[2400, 2],
-				[3600, 2],
-			]),
-		);
+		source.background!.thinking = motion(3600, {
+			"head.yaw": absolute(
+				keys([
+					[0, 2],
+					[2400, 2],
+					[3600, 2],
+				]),
+			),
+		});
 		const a = await harness();
 		const b = await harness(makeCatalog(source));
 		await a.run("state", { ambient: "sway" });

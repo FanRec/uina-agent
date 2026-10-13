@@ -6,7 +6,7 @@ import type { ToolExecutionResult } from "../src/tools/broker.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import { compileCatalog, emptyCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
 import type { CatalogSource, SpatialSegment } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { motion, track } from "../.uina/worlds/live2d/authoring/motion.js";
+import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
@@ -69,13 +69,14 @@ const makeCatalog = () =>
 				nod: {
 					description: "点头",
 					atomic: true,
-					motion: motion(
-						500,
-						track("head.yaw", [
-							[0, 6],
-							[500, 6],
-						]),
-					),
+					motion: motion(500, {
+						"head.yaw": absolute(
+							keys([
+								[0, 6],
+								[500, 6],
+							]),
+						),
+					}),
 				},
 			},
 			postures: { lean: { description: "侧倾", values: { "head.yaw": 4 } } },
@@ -398,13 +399,14 @@ describe("compileCatalog 绑定期校验", () => {
 					motions: {
 						lean: {
 							description: "a",
-							motion: motion(
-								100,
-								track("head.yaw", [
-									[0, 1],
-									[100, 1],
-								]),
-							),
+							motion: motion(100, {
+								"head.yaw": absolute(
+									keys([
+										[0, 1],
+										[100, 1],
+									]),
+								),
+							}),
 						},
 					},
 					postures: { lean: { description: "b", values: { "head.yaw": 2 } } },
@@ -420,13 +422,14 @@ describe("compileCatalog 绑定期校验", () => {
 						nod: {
 							description: "a",
 							aliases: ["nod2"],
-							motion: motion(
-								100,
-								track("head.yaw", [
-									[0, 1],
-									[100, 1],
-								]),
-							),
+							motion: motion(100, {
+								"head.yaw": absolute(
+									keys([
+										[0, 1],
+										[100, 1],
+									]),
+								),
+							}),
 						},
 					},
 					expressions: { nod2: { description: "b", values: { "head.yaw": 2 } } },
@@ -456,13 +459,14 @@ describe("compileCatalog 绑定期校验", () => {
 			motions: {
 				fx: {
 					description: "a",
-					motion: motion(
-						100,
-						track("head.yaw", [
-							[0, 1],
-							[100, 1],
-						]),
-					),
+					motion: motion(100, {
+						"head.yaw": absolute(
+							keys([
+								[0, 1],
+								[100, 1],
+							]),
+						),
+					}),
 					spatial: { segments },
 				},
 			},

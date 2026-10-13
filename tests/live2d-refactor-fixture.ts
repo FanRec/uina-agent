@@ -1,7 +1,7 @@
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import { compileCatalog, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { motion, track } from "../.uina/worlds/live2d/authoring/motion.js";
+import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
 
@@ -91,13 +91,14 @@ export function refactorClient() {
 }
 
 export const fixtureMotion = () =>
-	motion(
-		5,
-		track("head.yaw", [
-			[0, 0],
-			[5, 0],
-		]),
-	);
+	motion(5, {
+		"head.yaw": absolute(
+			keys([
+				[0, 0],
+				[5, 0],
+			]),
+		),
+	});
 
 /** 真实线程测试在 Worker 内创建这些函数，绝不构造默认 VTSClient。 */
 export function refactorWorkerRuntime(onStatusChange: () => void) {

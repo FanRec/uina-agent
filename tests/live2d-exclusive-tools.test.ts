@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import { type CatalogSource, compileCatalog, type SpatialSegment } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { motion, track } from "../.uina/worlds/live2d/authoring/motion.js";
+import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
@@ -170,13 +170,14 @@ const makeRuntime = (state: FakeState, cleanupTimeoutMs?: number) =>
 				motions: {
 					spin: {
 						description: "旋转特技",
-						motion: motion(
-							100,
-							track("head.yaw", [
-								[0, 0],
-								[100, 0],
-							]),
-						),
+						motion: motion(100, {
+							"head.yaw": absolute(
+								keys([
+									[0, 0],
+									[100, 0],
+								]),
+							),
+						}),
 						spatial: {
 							segments: [
 								// base.rotation=10 + 200 = 210 ∈ ±360（组合前瞻校验会拒绝越界值）
@@ -203,13 +204,14 @@ const presetRuntime = (state: FakeState, preset: string) =>
 				motions: {
 					spin: {
 						description: "石化特技",
-						motion: motion(
-							100,
-							track("head.yaw", [
-								[0, 0],
-								[100, 0],
-							]),
-						),
+						motion: motion(100, {
+							"head.yaw": absolute(
+								keys([
+									[0, 0],
+									[100, 0],
+								]),
+							),
+						}),
 						spatial: {
 							segments: [
 								{
@@ -238,13 +240,14 @@ const valuesRuntime = (state: FakeState) =>
 				motions: {
 					spin: {
 						description: "石化特技",
-						motion: motion(
-							100,
-							track("head.yaw", [
-								[0, 0],
-								[100, 0],
-							]),
-						),
+						motion: motion(100, {
+							"head.yaw": absolute(
+								keys([
+									[0, 0],
+									[100, 0],
+								]),
+							),
+						}),
 						spatial: {
 							segments: [
 								{
@@ -371,13 +374,14 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			motions: {
 				spin: {
 					description: "旋转特技",
-					motion: motion(
-						100,
-						track("head.yaw", [
-							[0, 0],
-							[100, 0],
-						]),
-					),
+					motion: motion(100, {
+						"head.yaw": absolute(
+							keys([
+								[0, 0],
+								[100, 0],
+							]),
+						),
+					}),
 					spatial: {
 						segments: [
 							{ delta, durationMs: 100 },
@@ -399,13 +403,14 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			motions: {
 				spin: {
 					description: "旋转特技",
-					motion: motion(
-						100,
-						track("head.yaw", [
-							[0, 0],
-							[100, 0],
-						]),
-					),
+					motion: motion(100, {
+						"head.yaw": absolute(
+							keys([
+								[0, 0],
+								[100, 0],
+							]),
+						),
+					}),
 					spatial: { segments },
 				},
 			},
@@ -477,13 +482,14 @@ describe("独占资源（P4-5，边界 #9）", () => {
 					motions: {
 						spin: {
 							description: "整圈旋转特技",
-							motion: motion(
-								100,
-								track("head.yaw", [
-									[0, 0],
-									[100, 0],
-								]),
-							),
+							motion: motion(100, {
+								"head.yaw": absolute(
+									keys([
+										[0, 0],
+										[100, 0],
+									]),
+								),
+							}),
 							spatial: {
 								segments: [
 									{ relativeRotation: 359, durationMs: 100 },
@@ -545,13 +551,14 @@ describe("独占资源（P4-5，边界 #9）", () => {
 					motions: {
 						spin: {
 							description: "整圈旋转特技",
-							motion: motion(
-								2000,
-								track("head.yaw", [
-									[0, 0],
-									[2000, 0],
-								]),
-							),
+							motion: motion(2000, {
+								"head.yaw": absolute(
+									keys([
+										[0, 0],
+										[2000, 0],
+									]),
+								),
+							}),
 							spatial: {
 								segments: [
 									{ relativeRotation: 359, durationMs: 2000 },
@@ -607,13 +614,14 @@ describe("独占资源（P4-5，边界 #9）", () => {
 					motions: {
 						spin: {
 							description: "旋转特技",
-							motion: motion(
-								100,
-								track("head.yaw", [
-									[0, 0],
-									[100, 0],
-								]),
-							),
+							motion: motion(100, {
+								"head.yaw": absolute(
+									keys([
+										[0, 0],
+										[100, 0],
+									]),
+								),
+							}),
 							spatial: {
 								segments: [
 									{ delta: { rotation: 200 }, durationMs: 100, effects: { tint: { r: 120, g: 120, b: 128 } } },
@@ -784,13 +792,14 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			motions: {
 				spin: {
 					description: "石化特技",
-					motion: motion(
-						100,
-						track("head.yaw", [
-							[0, 0],
-							[100, 0],
-						]),
-					),
+					motion: motion(100, {
+						"head.yaw": absolute(
+							keys([
+								[0, 0],
+								[100, 0],
+							]),
+						),
+					}),
 					spatial: {
 						segments: [
 							{ delta: { rotation: 200 }, durationMs: 100, effects: { postProcessing: post as never } },

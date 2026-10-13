@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { encodeFrame, validateRig, type ModelRig, type RigControlDef } from "../.uina/worlds/live2d/adapter/rig.js";
-import { compileMotion, motion, track, withSpeech } from "../.uina/worlds/live2d/authoring/motion.js";
+import { compileMotion, motion, withSpeech, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
 import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
 import { gazeCompensation, SpeechEnvelope, SpringFilter } from "../.uina/worlds/live2d/director/pipelines.js";
 
@@ -10,13 +10,14 @@ const step = (d: MotionDirector, ms: number, dt = 16): void => {
 
 const hold = (axis: string, value: number, durationMs = 8000) =>
 	compileMotion(
-		motion(
-			durationMs,
-			track(axis, [
-				[0, value],
-				[durationMs, value],
-			]),
-		),
+		motion(durationMs, {
+			[axis]: absolute(
+				keys([
+					[0, value],
+					[durationMs, value],
+				]),
+			),
+		}),
 		controls,
 	);
 
@@ -58,13 +59,14 @@ describe("live2d 专用管道（P3-1，引擎规范 §4.2 阶段 B）", () => {
 		// withSpeech 是定义级包装，必须先包再编译。
 		const clip = compileMotion(
 			withSpeech(
-				motion(
-					3000,
-					track("mouth.open", [
-						[0, 0.2],
-						[3000, 0.2],
-					]),
-				),
+				motion(3000, {
+					"mouth.open": absolute(
+						keys([
+							[0, 0.2],
+							[3000, 0.2],
+						]),
+					),
+				}),
 				"exclusive",
 			),
 			controls,
@@ -116,13 +118,14 @@ describe("live2d 专用管道（P3-1，引擎规范 §4.2 阶段 B）", () => {
 		// reflex 遮蔽（临时）→ 自然结束 → 被遮蔽的 low 阴影恢复（不做任何显式 stop）。
 		d.play(
 			compileMotion(
-				motion(
-					400,
-					track("head.yaw", [
-						[0, -6],
-						[400, -6],
-					]),
-				),
+				motion(400, {
+					"head.yaw": absolute(
+						keys([
+							[0, -6],
+							[400, -6],
+						]),
+					),
+				}),
 				controls,
 			),
 			{

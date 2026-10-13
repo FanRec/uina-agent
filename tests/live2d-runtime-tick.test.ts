@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
-import { compileMotion, motion, track } from "../.uina/worlds/live2d/authoring/motion.js";
+import { compileMotion, motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 
 /**
@@ -106,13 +106,14 @@ describe("live2d runtime tick 合成（P2-3）", async () => {
 		const { client, state } = makeFakeClient();
 		const rt = await makeRuntime(client, { rng: () => 0.5 });
 		const clip = compileMotion(
-			motion(
-				5000,
-				track("head.yaw", [
-					[0, 6],
-					[5000, 6],
-				]),
-			),
+			motion(5000, {
+				"head.yaw": absolute(
+					keys([
+						[0, 6],
+						[5000, 6],
+					]),
+				),
+			}),
 			makeRig().controls,
 		);
 		rt.director!.play(clip, { category: "voluntary", fadeInMs: 0 });

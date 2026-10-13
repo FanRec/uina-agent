@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { compileMotion, motion, track, type CompiledMotion } from "../.uina/worlds/live2d/authoring/motion.js";
+import {
+	compileMotion,
+	motion,
+	type CompiledMotion,
+	keys,
+	absolute,
+	offset as offsetChannel,
+} from "../.uina/worlds/live2d/authoring/motion.js";
 import { MotionDirector, SupersededError } from "../.uina/worlds/live2d/director/director.js";
 import type { RigControlDef } from "../.uina/worlds/live2d/adapter/rig.js";
 
@@ -18,29 +25,27 @@ const director = () => new MotionDirector(controls, { pipelines: STIFF_PIPELINES
 /** 恒值 Override 片段。 */
 const hold = (axis: string, value: number, durationMs = 1000): CompiledMotion =>
 	compileMotion(
-		motion(
-			durationMs,
-			track(axis, [
-				[0, value],
-				[durationMs, value],
-			]),
-		),
+		motion(durationMs, {
+			[axis]: absolute(
+				keys([
+					[0, value],
+					[durationMs, value],
+				]),
+			),
+		}),
 		controls,
 	);
 /** 恒值 Additive 片段（baseline-offset，ΔX 相对量）。 */
 const offset = (axis: string, delta: number, durationMs = 1000): CompiledMotion =>
 	compileMotion(
-		motion(
-			durationMs,
-			track(
-				axis,
-				[
+		motion(durationMs, {
+			[axis]: offsetChannel(
+				keys([
 					[0, delta],
 					[durationMs, delta],
-				],
-				"baseline-offset",
+				]),
 			),
-		),
+		}),
 		controls,
 	);
 
@@ -92,24 +97,29 @@ describe("live2d MotionDirector（P2-1 仲裁核心）", () => {
 		const d = director();
 		// 害羞复合（voluntary）：低头 + 脸红 + 微笑。
 		const shy = compileMotion(
-			motion(
-				2000,
-				track("head.pitch", [
-					[0, 0],
-					[200, 8],
-					[2000, 8],
-				]),
-				track("face.blush", [
-					[0, 0],
-					[200, 0.6],
-					[2000, 0.6],
-				]),
-				track("mouth.form", [
-					[0, 0],
-					[200, 0.5],
-					[2000, 0.5],
-				]),
-			),
+			motion(2000, {
+				"head.pitch": absolute(
+					keys([
+						[0, 0],
+						[200, 8],
+						[2000, 8],
+					]),
+				),
+				"face.blush": absolute(
+					keys([
+						[0, 0],
+						[200, 0.6],
+						[2000, 0.6],
+					]),
+				),
+				"mouth.form": absolute(
+					keys([
+						[0, 0],
+						[200, 0.5],
+						[2000, 0.5],
+					]),
+				),
+			}),
 			controls,
 		);
 		const handle = d.play(shy, { category: "voluntary", atomic: false, fadeInMs: 0 });

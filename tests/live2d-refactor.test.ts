@@ -1,10 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { compileCatalog, emptyCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
 import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
-import { loadCatalog } from "../.uina/worlds/live2d/models/mo/catalog.js";
 import { fixtureMotion, refactorClient, refactorRig, refactorRuntime } from "./live2d-refactor-fixture.js";
+import { perfCatalogSource } from "./live2d-mo-fixture.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
-import { compileMotion, sampleMotion, withSpeech } from "../.uina/worlds/live2d/authoring/motion.js";
+import {
+	compileMotion,
+	keys,
+	motion,
+	absolute,
+	sampleMotion,
+	withSpeech,
+} from "../.uina/worlds/live2d/authoring/motion.js";
 
 describe("Live2D 架构缺口正式回归", () => {
 	it("state 最后一项等待后换代也不能报告旧意图成功", async () => {
@@ -45,19 +52,14 @@ describe("Live2D 架构缺口正式回归", () => {
 	});
 	it("全部作者嵌套内容隔离，消费者修改被拒绝，语音覆写仍读固定定义", () => {
 		const rig = refactorRig();
-		const definition = {
-			kind: "clip" as const,
-			durationMs: 5,
-			tracks: [
-				{
-					axis: "head.yaw",
-					keys: [
-						{ atMs: 0, value: 0 },
-						{ atMs: 5, value: 0 },
-					],
-				},
-			],
-		};
+		const definition = motion(5, {
+			"head.yaw": absolute(
+				keys([
+					[0, 0],
+					[5, 0],
+				]),
+			),
+		});
 		const source = {
 			motions: {
 				act: {
@@ -77,7 +79,6 @@ describe("Live2D 架构缺口正式回归", () => {
 			costumes: [{ id: "glasses", description: "glasses", hotkeyID: "old" }],
 		};
 		const catalog = compileCatalog(rig.modelID, source, rig);
-		definition.tracks[0]!.keys[1]!.value = 9;
 		source.motions.act.playback.fadeInMs = 999;
 		source.motions.act.spatial.segments[0]!.delta.x = 9;
 		source.motions.act.spatial.segments[0]!.effects!.tint.r = 0;
@@ -88,9 +89,9 @@ describe("Live2D 架构缺口正式回归", () => {
 		expect(act.playback!.fadeInMs).toBe(10);
 		expect(catalog.resolve("attention", "window")!.entry.target).toEqual({ x: 0.2, y: 0.1 });
 		expect(catalog.resolve("costume", "glasses")!.entry.hotkeyID).toBe("old");
-		expect(
-			sampleMotion(compileMotion(withSpeech(act.variants![0]!.definition, "exclusive"), rig.controls), 5)["head.yaw"],
-		).toBe(0);
+		expect(sampleMotion(compileMotion(withSpeech(act.variants![0]!, "exclusive"), rig.controls), 5)["head.yaw"]).toBe(
+			0,
+		);
 		expect(Reflect.set(catalog.list("motion"), "0", undefined)).toBe(false);
 		expect(Reflect.set(act.spatial!.segments[0]!.delta!, "x", 99)).toBe(false);
 	});
@@ -212,11 +213,12 @@ describe("Live2D 架构缺口正式回归", () => {
 		expect(catalog.resolve("posture", "lean")?.entry.values["head.yaw"]).toBe(4);
 		expect(catalog.resolve("posture", "lean")?.entry.aliases).toEqual(["initial"]);
 	});
-	it("实际 MO 的 sway 中文别名均可执行", async () => {
+	it("夹具目录的 sway 中文别名均可执行（别名解析 → ambient 选择）", async () => {
 		const rig = (await loadRig(MO_MODEL_ID))!;
 		const { client, state } = refactorClient();
 		state.modelID = MO_MODEL_ID;
-		const runtime = new Live2DRuntime({ rig, client, catalog: loadCatalog(MO_MODEL_ID, rig) });
+		const catalog = compileCatalog(MO_MODEL_ID, perfCatalogSource(), rig);
+		const runtime = new Live2DRuntime({ rig, client, catalog });
 		await runtime.start({} as never);
 		try {
 			for (const ambient of ["摇摆", "晃动", "摇"])

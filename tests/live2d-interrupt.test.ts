@@ -4,7 +4,7 @@ import type { BodyEndpoint } from "../src/extensions/world-framework/seams.js";
 import { activateEmbodimentExtension } from "../.uina/extensions/embodiment/index.js";
 import { BodyRouter } from "../.uina/extensions/embodiment/body-router.js";
 import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
-import { compileMotion, motion, track, type CompiledMotion } from "../.uina/worlds/live2d/authoring/motion.js";
+import { compileMotion, motion, type CompiledMotion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
 import { compileCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
@@ -76,13 +76,14 @@ const makeRig = (): ModelRig => ({
 
 /** 原始定义（CatalogSource 输入用）。 */
 const headTrack = (durationMs: number, value: number) =>
-	motion(
-		durationMs,
-		track("head.yaw", [
-			[0, value],
-			[durationMs, value],
-		]),
-	);
+	motion(durationMs, {
+		"head.yaw": absolute(
+			keys([
+				[0, value],
+				[durationMs, value],
+			]),
+		),
+	});
 
 /** 编译产物（director.play 直播用）。 */
 const compile = (durationMs: number, value: number): CompiledMotion =>

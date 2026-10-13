@@ -6,7 +6,7 @@ import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import { compileCatalog, type CatalogSnapshot, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { motion, track } from "../.uina/worlds/live2d/authoring/motion.js";
+import { compileMotion, motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import { Live2DRuntime, pickVariantIndex } from "../.uina/worlds/live2d/runtime.js";
 
@@ -49,13 +49,14 @@ const makeRig = (): ModelRig => ({
 /** 主定义持 6、变体持 2：FaceAngleX 峰值 ≈15 vs ≈6（rig 映射 ×2.5 + 弹簧动态），间隔远超 idle 微晃。
  * idle 0.1 仅用于禁用内置 ±1.2 微晃；幅值断言用相对阈值（主 >10 / 变体 <10），不耦合映射常数。 */
 const holdYaw = (value: number) =>
-	motion(
-		400,
-		track("head.yaw", [
-			[0, value],
-			[400, value],
-		]),
-	);
+	motion(400, {
+		"head.yaw": absolute(
+			keys([
+				[0, value],
+				[400, value],
+			]),
+		),
+	});
 
 const makeSource = (): CatalogSource => ({
 	motions: {
@@ -70,16 +71,17 @@ const makeSource = (): CatalogSource => ({
 		},
 	},
 	background: {
-		idle: motion(
-			3200,
-			track("head.yaw", [
-				[0, 0],
-				[800, 0.1],
-				[1600, 0],
-				[2400, -0.1],
-				[3200, 0],
-			]),
-		),
+		idle: motion(3200, {
+			"head.yaw": absolute(
+				keys([
+					[0, 0],
+					[800, 0.1],
+					[1600, 0],
+					[2400, -0.1],
+					[3200, 0],
+				]),
+			),
+		}),
 	},
 });
 
@@ -166,12 +168,11 @@ describe("live2d 动作变体轮换", () => {
 		}
 	});
 
-	it("compileCatalog：附加变体逐个编译入条目（池 = 主定义 + 变体）", () => {
+	it("compileCatalog：附加变体入条目（池 = 主定义 + 变体），可被 bake", () => {
 		const entry = makeCatalog().resolve("motion", "nod")!.entry;
 		expect(entry.variants).toHaveLength(1);
-		expect(entry.variants![0]!.motion).toMatchObject({ durationMs: 400 });
-		expect(entry.variants![0]!.definition).toBeDefined();
-		expect(entry.motion).toMatchObject({ durationMs: 400 });
+		expect(compileMotion(entry.variants![0]!, makeRig().controls).durationMs).toBe(400);
+		expect(compileMotion(entry.definition, makeRig().controls).durationMs).toBe(400);
 	});
 
 	it("compileCatalog：空变体池拒绝（主定义 + 变体 ≥ 2 才构成轮换）", () => {
@@ -183,15 +184,16 @@ describe("live2d 动作变体轮换", () => {
 	it("compileCatalog：非法定义变体绑定期即抛（非法轴）", () => {
 		const source = makeSource();
 		source.motions!.nod.variants = [
-			motion(
-				400,
-				track("nope.x", [
-					[0, 1],
-					[400, 1],
-				]),
-			),
+			motion(400, {
+				"nope.x": absolute(
+					keys([
+						[0, 1],
+						[400, 1],
+					]),
+				),
+			}),
 		];
-		expect(() => makeCatalog(source)).toThrow(/unknown axis nope\.x/);
+		expect(() => makeCatalog(source)).toThrow(/未知轴: nope.x/);
 	});
 
 	it("express：三连播幅值 6 → 2 → 6 交替（均匀随机排除上次选中）", async () => {
