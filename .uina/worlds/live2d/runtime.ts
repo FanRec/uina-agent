@@ -442,6 +442,8 @@ export class Live2DRuntime {
 				if (!applied.length) onStarted?.();
 				applied.push(change.label);
 				await (ctx.signal ? withCancellation(waiting, ctx.signal) : waiting);
+				ctx.signal?.throwIfAborted();
+				if (generation !== this.generation) throw new Error("目录已更换");
 			}
 		} catch (error) {
 			const cancelled = ctx.signal?.aborted || error instanceof SupersededError || generation !== this.generation;

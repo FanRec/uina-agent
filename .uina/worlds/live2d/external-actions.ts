@@ -331,6 +331,7 @@ export class ExternalActions {
 						effectDispatches.push(client.updatePostProcessing(segment.effects.postProcessing));
 					}
 					const dispatched = await withCancellation(Promise.allSettled(effectDispatches), claim.signal);
+					ensureActive();
 					for (const [slot, outcome] of dispatched.entries())
 						if (outcome.status === "rejected")
 							dispatchFailures.push(

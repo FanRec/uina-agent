@@ -7,6 +7,20 @@ import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import { compileMotion, sampleMotion, withSpeech } from "../.uina/worlds/live2d/authoring/motion.js";
 
 describe("Live2D 架构缺口正式回归", () => {
+	it("state 最后一项等待后换代也不能报告旧意图成功", async () => {
+		const { runtime } = await refactorRuntime({});
+		try {
+			const pending = runtime.state({ attention: "screen" }, {});
+			runtime.setCatalog(emptyCatalog(refactorRig().modelID));
+			await expect(pending).resolves.toMatchObject({
+				status: "cancelled",
+				details: { reason: "stale_catalog", applied: ["screen"] },
+			});
+			expect(runtime.director!.getAttention()).toBeUndefined();
+		} finally {
+			await runtime.stop();
+		}
+	});
 	it("停止等待中迟到的 ready 回调不能遗留注入时钟", async () => {
 		vi.useFakeTimers();
 		const { runtime, client, state } = await refactorRuntime({
@@ -321,12 +335,14 @@ describe("Live2D 架构缺口正式回归", () => {
 		client.tintModel = async (value) => {
 			const result = await tint(value);
 			state.modelGeneration++;
+			state.modelID = "replacement";
 			return result;
 		};
 		try {
 			const result = await runtime.express({ motion: "tint" }, {});
 			expect(state.tints).toHaveLength(1);
 			expect(state.posts).toHaveLength(0);
+			expect(state.moves).toHaveLength(0);
 			expect(result.details).toMatchObject({ cleanup: { tint: "unknown" } });
 		} finally {
 			await runtime.stop().catch(() => {});
