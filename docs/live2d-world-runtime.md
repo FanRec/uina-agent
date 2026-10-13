@@ -56,12 +56,14 @@ proxy/engine 使用 new、starting、running、closing、dead。停止与 Worker
 
 整仓格式基线、其他扩展失败和真实设备验收必须分别记录，不以定向通过冒充整仓或设备通过。
 
-### 2026-10-13 自动验证
+### 2026-10-13 自动验证（原工作区集成后）
 
 - 定向 Live2D：23 个文件、207 项通过，包括真实 Worker 假设备及 WorldActivation 链路。
-- 8 条依赖检查及 TypeScript 独立检查通过；本次 38 个源码/测试文件的格式检查通过。
-- 工作树整仓：1865 通过、1 项预期失败、2 失败（当次共 1868 项）。smoke 的旧 JSON 结果断言在原检出同样失败；UI 缓存用例只在长工作树目录被截断，原检出通过，相关 UI/Core 源码未改。
-- 整体 typecheck 在格式阶段失败（工作树 322 项诊断，多为既有 CRLF；本次范围已通过）。此结果不能报告为整仓类型门通过。
+- 8 条依赖检查及 TypeScript 独立检查通过；全部 48 个 Live2D TS/MJS 源码、测试及 fixture 的格式检查通过，git diff --check 通过。
+- 原工作区整仓（包含同期已合入的 Voice/TTS 工作）：169 个文件通过、2 个文件失败；1998 项通过、1 项预期失败、2 项失败，共 2001 项。smoke 的旧断言对非 JSON 失败正文调用 JSON.parse，稳定失败；session-settings 等待“写盘 low”超时，独立复跑该文件 7 项全部通过，超时未稳定复现。两者所属源码与测试均不在本次修改范围，未为其调整实现或等待预算。UI 缓存测试在此原工作区通过。
+- 整体 pnpm typecheck 在格式阶段失败：262 项诊断，本次 Live2D 范围格式通过。边界及 tsc 另行执行通过，不能据此报告完整 typecheck 通过。合入时遗留的本次范围 CRLF 已按既有 LF 属性校正，未产生 Git 内容差异，未改用户 Git 配置。
 - 本轮未进行真实 VTS/MO 或视觉自然度验收。
+
+原工作区日志保存在忽略目录 generated/live2d-refactor：current-live2d.log、current-boundaries.log、current-types.log、final-original-format.log、final-original-typecheck.log、final-original-tests.log、final-unrelated-retest.log。失败用例保留在整仓日志中；单独复跑结果不替代那次全量失败。
 
 独立全分支审查提出两项重要验收缺口，均以 RED→GREEN 修复：效果 ACK 返回后重核执行代次，防止向新模型发送旧位姿；持续状态最后一次等待后重核代次/取消，不报告已失效的成功。
