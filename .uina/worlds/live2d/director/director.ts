@@ -1,4 +1,4 @@
-import { sampleMotion, sampleSpeechGain, smooth, type CompiledMotion } from "../authoring/motion.js";
+import { curveExtents, sampleMotion, sampleSpeechGain, smooth, type CompiledMotion } from "../authoring/motion.js";
 import type { AttentionTarget } from "../authoring/catalog.js";
 import type { RigControlDef } from "../adapter/rig.js";
 import { AutonomicGenerator, type AutonomicExternal } from "./autonomic.js";
@@ -379,13 +379,9 @@ export class MotionDirector {
 	// ---------- 播放（§4.1 + §5.2）----------
 
 	play(clip: CompiledMotion, options: PlayOptions): MotionHandle {
-		const overrideAxes = new Set(clip.tracks.filter((t) => t.space === "absolute").map((t) => t.axis));
-		const additiveAxes = new Set(
-			clip.tracks
-				.filter((t) => t.space === "baseline-offset")
-				.map((t) => t.axis)
-				.filter((a) => !overrideAxes.has(a)),
-		);
+		// 每轴恰一条通道：absolute = Override 轴；baseline-offset = Additive 轴（A17.1）。
+		const overrideAxes = new Set(clip.channels.filter((c) => c.space === "absolute").map((c) => c.axis));
+		const additiveAxes = new Set(clip.channels.filter((c) => c.space === "baseline-offset").map((c) => c.axis));
 		const baseline: Record<string, number> =
 			options.entry === "neutral" ? { ...this.neutral } : { ...this.slotComposite() };
 		const playback: Playback = {
@@ -464,17 +460,16 @@ export class MotionDirector {
 		return age % playback.clip.durationMs;
 	}
 
-	/** 同比压缩头部增量，保留动作轮廓，不改变绝对眼口目标。 */
+	/** 同比压缩头部增量，保留动作轮廓，不改变绝对眼口目标。增量极值由曲线域探测取得。 */
 	private headroomScale(clip: CompiledMotion, baseline: Readonly<Record<string, number>>): number {
 		let scale = 1;
-		for (const track of clip.tracks) {
-			if (!track.axis.startsWith("head.") || track.space !== "baseline-offset") continue;
-			const control = this.controls[track.axis]!;
-			const base = baseline[track.axis] ?? control.neutral;
-			for (const key of track.keys) {
-				if (key.value > 0) scale = Math.min(scale, (control.max - base) / key.value);
-				if (key.value < 0) scale = Math.min(scale, (control.min - base) / key.value);
-			}
+		for (const channel of clip.channels) {
+			if (!channel.axis.startsWith("head.") || channel.space !== "baseline-offset") continue;
+			const control = this.controls[channel.axis]!;
+			const base = baseline[channel.axis] ?? control.neutral;
+			const extents = curveExtents(channel.curve, clip.durationMs);
+			if (extents.max > 0) scale = Math.min(scale, (control.max - base) / extents.max);
+			if (extents.min < 0) scale = Math.min(scale, (control.min - base) / extents.min);
 		}
 		return Math.max(0, scale);
 	}

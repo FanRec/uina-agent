@@ -1,5 +1,5 @@
 import type { RigControlDef } from "../adapter/rig.js";
-import { type CompiledMotion, compileMotion, type MotionDefinition } from "./motion.js";
+import { compileMotion, type MotionAuthoring } from "./motion.js";
 
 /**
  * 模型目录（P4-1，边界规范 §2）。
@@ -104,21 +104,12 @@ export interface CatalogPlayback {
  * 不入全局命名空间、不可独立寻址——agent 仍 cue 单一动作名；某变体需要被语义选择时，
  * 晋升路径是移出 variants 升为独立命名条目。
  */
-export interface MotionVariant {
-	/** 原始定义：express 的 speech 覆写按选中变体重编译。 */
-	definition: MotionDefinition;
-	/** 绑定期编译产物。 */
-	motion: CompiledMotion;
-}
-
 export interface CatalogMotionEntry {
 	description: string;
-	/** 原始定义：express 的 speech 参数覆写时按此重编译（withSpeech 外层节点覆盖内层策略）。 */
-	definition: MotionDefinition;
-	/** 绑定期编译产物：非法定义在此处即失败，不进入运行时。 */
-	motion: CompiledMotion;
+	/** 原始定义（曲线函数工厂）：express 的 speech 覆写时按此重编译（withSpeech 外层覆盖内层策略）。 */
+	definition: MotionAuthoring;
 	/** 附加变体（不含主定义）；主定义 + variants 构成轮换池，运行时均匀随机排除上次选中。 */
-	variants?: readonly MotionVariant[];
+	variants?: readonly MotionAuthoring[];
 	/** 可选的空间位姿特技（执行期间独占 model:transform 并保证自动归位）。 */
 	spatial?: SpatialStuntDef;
 	playback?: CatalogPlayback;
@@ -150,15 +141,15 @@ export interface CatalogCostumeEntry {
 /** 环境循环条目：uina 经 ambient 工具按名选择；描述进入 status 词表，别名入全局命名空间。 */
 export interface CatalogAmbientEntry {
 	description: string;
-	motion: CompiledMotion;
+	motion: MotionAuthoring;
 	/** Finite phrase pool: each completed clip advances without immediately replaying its predecessor. */
-	variants?: readonly CompiledMotion[];
+	variants?: readonly MotionAuthoring[];
 }
 
 /** 背景循环/思考动作（引擎类别 transition；P4-4 thinking 状态驱动消费）。 */
 export interface CatalogBackground {
-	thinking?: CompiledMotion;
-	idle?: CompiledMotion;
+	thinking?: MotionAuthoring;
+	idle?: MotionAuthoring;
 	/** 环境循环词表：uina 经 ambient 工具选择/清除，选中时替换 idle 成为静止态背景。 */
 	ambient?: ReadonlyMap<string, CatalogAmbientEntry>;
 }
@@ -181,7 +172,7 @@ export interface CatalogResolved<K extends CatalogKind> {
 /** 索引私有，消费者只获得冻结记录；不能通过 Map.set 或原始作者对象修改快照。 */
 export interface CatalogSnapshot {
 	readonly modelID: string;
-	readonly background: Readonly<{ idle?: CompiledMotion; thinking?: CompiledMotion }>;
+	readonly background: Readonly<{ idle?: MotionAuthoring; thinking?: MotionAuthoring }>;
 	resolve<K extends CatalogKind>(kind: K, nameOrAlias: string): CatalogResolved<K> | undefined;
 	list<K extends CatalogKind>(kind: K): readonly CatalogResolved<K>[];
 	resolveCue(nameOrAlias: string): CatalogResolved<"motion"> | CatalogResolved<"posture"> | undefined;
@@ -246,15 +237,15 @@ function catalogBuilder(modelID: string) {
 export const emptyCatalog = (modelID: string): CatalogSnapshot => catalogBuilder(modelID).finish({});
 
 export interface CatalogSource {
-	/** 动作输入：definition 即 motion 原始定义（编译产物由 compileCatalog 生成，不进输入）。 */
+	/** 动作输入：definition 即曲线函数工厂（bake 由 runtime per-play 执行，此处仅校验性探测）。 */
 	motions?: Readonly<
 		Record<
 			string,
 			{
 				description: string;
-				motion: MotionDefinition;
-				/** 附加变体原始定义（不含主定义）；绑定期逐个编译，非法即抛。 */
-				variants?: readonly MotionDefinition[];
+				motion: MotionAuthoring;
+				/** 附加变体原始定义（不含主定义）；绑定期逐个校验，非法即抛。 */
+				variants?: readonly MotionAuthoring[];
 				spatial?: SpatialStuntDef;
 				playback?: CatalogPlayback;
 				atomic?: boolean;
@@ -267,15 +258,15 @@ export interface CatalogSource {
 	attentions?: Readonly<Record<string, CatalogAttentionEntry>>;
 	costumes?: readonly CatalogCostumeEntry[];
 	background?: {
-		thinking?: MotionDefinition;
-		idle?: MotionDefinition;
+		thinking?: MotionAuthoring;
+		idle?: MotionAuthoring;
 		ambient?: Record<
 			string,
 			{
 				description: string;
 				aliases?: readonly string[];
-				motion: MotionDefinition;
-				variants?: readonly MotionDefinition[];
+				motion: MotionAuthoring;
+				variants?: readonly MotionAuthoring[];
 			}
 		>;
 	};
@@ -284,16 +275,36 @@ export interface CatalogSource {
 const take = <T>(record: Readonly<Record<string, T>> | undefined): Map<string, T> =>
 	new Map(Object.entries(record ?? {}));
 
+/** 校验性探测用的桩随机源：绑定期只验证结构合法性，随机量在运行期 bake 时才结清。 */
+const STUB_RNG = (): number => 0;
+
+/** 数据深克隆，函数按引用透传（MotionAuthoring 是函数，structuredClone 不可用）。 */
+function cloneAuthoring<T>(value: T, seen = new WeakMap<object, unknown>()): T {
+	if (value === null || typeof value !== "object") return value;
+	if (seen.has(value)) return seen.get(value) as T;
+	if (Array.isArray(value)) {
+		const copy: unknown[] = [];
+		seen.set(value, copy);
+		for (const item of value) copy.push(cloneAuthoring(item, seen));
+		return copy as unknown as T;
+	}
+	const copy: Record<string, unknown> = {};
+	seen.set(value, copy);
+	for (const [key, child] of Object.entries(value)) copy[key] = cloneAuthoring(child, seen);
+	return copy as unknown as T;
+}
+
 /**
- * 绑定期编译与校验：动作编译（非法定义即抛）、轴值范围核验、全命名空间唯一性
- * （含内置注视词表与别名占用）。任何失败都阻止模型包装配，不带病上线。
+ * 绑定期校验：动作校验性 bake（结构非法即抛，产物丢弃——目录不持有编译产物，
+ * runtime 是唯一 bake 点）、轴值范围核验、全命名空间唯一性（含内置注视词表与别名占用）。
+ * 任何失败都阻止模型包装配，不带病上线。
  */
 export function compileCatalog(
 	modelID: string,
 	source: CatalogSource,
 	rig: { controls: Readonly<Record<string, RigControlDef>>; modelID: string },
 ): CatalogSnapshot {
-	source = structuredClone(source);
+	source = cloneAuthoring(source);
 	if (rig.modelID !== modelID) throw new Error(`目录模型身份不符: 目录 ${modelID} vs rig ${rig.modelID}`);
 	const motions = new Map<string, CatalogMotionEntry>();
 	for (const [name, entry] of Object.entries(source.motions ?? {})) {
@@ -398,18 +409,16 @@ export function compileCatalog(
 			for (const axis of entry.playback.inhibitAdditives)
 				if (!rig.controls[axis]) throw new Error(`动作 "${name}" 抑制未声明轴: ${axis}`);
 		}
-		// 变体池：附加变体逐个编译（非法定义即抛）；池总数 ≥ 2 才构成轮换，空池拒绝。
-		const variants = entry.variants?.map((definition) => ({
-			definition,
-			motion: compileMotion(definition, rig.controls),
-		}));
-		if (entry.variants !== undefined && (variants?.length ?? 0) < 1)
-			throw new Error(`动作 "${name}" 变体池为空：主定义 + 变体必须 ≥ 2 才构成轮换`);
+		// 变体池：附加变体逐个校验（非法定义即抛）；池总数 ≥ 2 才构成轮换，空池拒绝。
+		if (entry.variants !== undefined) {
+			if (entry.variants.length < 1) throw new Error(`动作 "${name}" 变体池为空：主定义 + 变体必须 ≥ 2 才构成轮换`);
+			for (const variant of entry.variants) compileMotion(variant, rig.controls, STUB_RNG);
+		}
+		compileMotion(entry.motion, rig.controls, STUB_RNG);
 		motions.set(name, {
 			description: entry.description,
 			definition: entry.motion,
-			motion: compileMotion(entry.motion, rig.controls),
-			variants,
+			variants: entry.variants,
 			spatial: entry.spatial,
 			playback: entry.playback,
 			atomic: entry.atomic ?? true,
@@ -430,18 +439,21 @@ export function compileCatalog(
 	for (const [name, slot] of postures) validateSlot(name, slot, "姿态");
 	const expressions = take(source.expressions);
 	for (const [name, slot] of expressions) validateSlot(name, slot, "表情");
-	// 环境循环：绑定期编译（非法定义即抛），命名与别名同受全局唯一命名空间约束。
+	// 环境循环：绑定期逐个校验（非法定义即抛），命名与别名同受全局唯一命名空间约束。
 	const ambientSource = new Map<
 		string,
-		{ description: string; aliases?: readonly string[]; motion: CompiledMotion; variants?: readonly CompiledMotion[] }
+		{ description: string; aliases?: readonly string[]; motion: MotionAuthoring; variants?: readonly MotionAuthoring[] }
 	>();
-	for (const [name, entry] of Object.entries(source.background?.ambient ?? {}))
+	for (const [name, entry] of Object.entries(source.background?.ambient ?? {})) {
+		compileMotion(entry.motion, rig.controls, STUB_RNG);
+		for (const variant of entry.variants ?? []) compileMotion(variant, rig.controls, STUB_RNG);
 		ambientSource.set(name, {
 			description: entry.description,
 			aliases: entry.aliases,
-			motion: compileMotion(entry.motion, rig.controls),
-			variants: entry.variants?.map((variant) => compileMotion(variant, rig.controls)),
+			motion: entry.motion,
+			variants: entry.variants,
 		});
+	}
 	const attentions = take(source.attentions);
 	for (const name of attentions.keys()) {
 		if ((BUILTIN_ATTENTIONS as readonly string[]).includes(name))
@@ -455,7 +467,7 @@ export function compileCatalog(
 	for (const [name, entry] of ambientSource) builder.add("ambient", name, entry, entry.aliases);
 	for (const entry of source.costumes ?? []) builder.add("costume", entry.id, entry);
 	return builder.finish({
-		thinking: source.background?.thinking ? compileMotion(source.background.thinking, rig.controls) : undefined,
-		idle: source.background?.idle ? compileMotion(source.background.idle, rig.controls) : undefined,
+		thinking: source.background?.thinking,
+		idle: source.background?.idle,
 	});
 }

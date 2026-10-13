@@ -12,7 +12,13 @@ import {
 	type CatalogResolved,
 	type CatalogKind,
 } from "./authoring/catalog.js";
-import { compileMotion, withSpeech, type CompiledMotion, type SpeechPolicy } from "./authoring/motion.js";
+import {
+	compileMotion,
+	withSpeech,
+	type CompiledMotion,
+	type MotionAuthoring,
+	type SpeechPolicy,
+} from "./authoring/motion.js";
 import { MotionDirector, SupersededError, type MotionHandle, type PlayOptions } from "./director/director.js";
 import { buildLive2DEndpoint, type Live2DEndpoint } from "./endpoint.js";
 import { settleMotion, withCancellation, toolRejected, toolSucceeded, toolUnknown } from "./results.js";
@@ -249,28 +255,35 @@ export class Live2DRuntime {
 	}
 
 	/**
-	 * 动作 clip 择一（变体轮换机制的唯一咽喉）：主定义 + variants 构成池，均匀随机排除
-	 * 上次选中（连播不重样）。express 工具与 endpoint.emitCue 复用 playMotion，两路自动轮换。
-	 * speech 覆写按选中变体的原始定义重编译——外层 withSpeech 覆盖作者内层策略，合同同主定义路径。
+	 * per-play bake：目录不持有编译产物，runtime 是唯一 bake 点；rng 注入闭包，
+	 * 随机量在播放受理时结清（A9 可 seek/确定性）。非法曲线在此失败，不进入播放。
+	 */
+	private bake(definition: MotionAuthoring, speech?: SpeechPolicy): CompiledMotion {
+		return compileMotion(
+			speech === undefined ? definition : withSpeech(definition, speech),
+			this.rig!.controls,
+			this.pickRandom,
+		);
+	}
+
+	/**
+	 * 动作 clip 择一（变体轮换机制的唯一咽喉）+ per-play bake。
+	 * 变体轮换：主定义 + variants 构成池，均匀随机排除上次选中（连播不重样）；
+	 * speech 覆写按选中定义经 withSpeech 重编译——外层策略覆盖作者内层策略。
 	 */
 	private pickMotionClip(entry: CatalogMotionEntry, speech: SpeechPolicy | undefined): CompiledMotion {
 		const variants = entry.variants;
-		if (!variants?.length)
-			return speech === undefined
-				? entry.motion
-				: compileMotion(withSpeech(entry.definition, speech), this.rig!.controls);
+		if (!variants?.length) return this.bake(entry.definition, speech);
 		const index = pickVariantIndex(variants.length + 1, this.lastVariantPick.get(entry), this.pickRandom);
 		this.lastVariantPick.set(entry, index);
-		const variant = index === 0 ? undefined : variants[index - 1]!;
-		if (speech === undefined) return variant?.motion ?? entry.motion;
-		return compileMotion(withSpeech(variant?.definition ?? entry.definition, speech), this.rig!.controls);
+		return this.bake(index === 0 ? entry.definition : variants[index - 1]!, speech);
 	}
 
 	private pickAmbientPhrase(entry: CatalogAmbientEntry): CompiledMotion {
 		const pool = [entry.motion, ...(entry.variants ?? [])];
 		const index = pickVariantIndex(pool.length, this.lastAmbientPhrasePick.get(entry), this.pickRandom);
 		this.lastAmbientPhrasePick.set(entry, index);
-		return pool[index]!;
+		return compileMotion(pool[index]!, this.rig!.controls, this.pickRandom);
 	}
 
 	/**
@@ -697,7 +710,7 @@ export class Live2DRuntime {
 				});
 			}
 		} else if (restLoop && (!this.restHandle || this.restHandle.status === "finished")) {
-			this.restHandle = this.director.play(restLoop, {
+			this.restHandle = this.director.play(compileMotion(restLoop, this.rig!.controls, this.pickRandom), {
 				category: "autonomic",
 				loop: true,
 				background: true,
@@ -707,7 +720,7 @@ export class Live2DRuntime {
 			});
 		}
 		if (thinking && this.thinking && !this.thinkingHandle) {
-			this.thinkingHandle = this.director.play(thinking, {
+			this.thinkingHandle = this.director.play(compileMotion(thinking, this.rig!.controls, this.pickRandom), {
 				category: "transition",
 				loop: true,
 				background: true,
