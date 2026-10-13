@@ -194,6 +194,65 @@ describe("QQ World 装配与生命周期（G7）", () => {
 			rmSync(dataDir, { recursive: true, force: true });
 		}
 	});
+
+	it("enable→disable→enable 快速循环：簿记重置正确，旧代次失效且新一轮独立工作", async () => {
+		vi.useFakeTimers();
+		const transport = new StubTransport(Number(SELF));
+		const world = createQqWorld({ config: makeConfig(), transport });
+		const first = makeContext();
+		const second = makeContext();
+		try {
+			await world.onStart?.(first.ctx);
+			await world.onStop?.(first.ctx);
+			// 快速循环：不等待、立即重启。lifecycleGeneration/worldAbort/unbindTransport 必须全部重置。
+			await world.onStart?.(second.ctx);
+			expect(transport.started).toBe(2);
+			expect(transport.stopped).toBe(1);
+
+			// 第一轮停用后的消息不投递（transport 解绑 + 代次拦截双保险）
+			transport.emit({
+				post_type: "message",
+				message_type: "private",
+				sub_type: "friend",
+				time: 1791469000,
+				self_id: 10001,
+				message_id: 43,
+				user_id: 20002,
+				message: [],
+				raw_message: "",
+				font: 0,
+				sender: { user_id: 20002, nickname: "小明" },
+			});
+			// 第二轮独立接收新消息
+			transport.emit({
+				post_type: "message",
+				message_type: "private",
+				sub_type: "friend",
+				time: 1791469500,
+				self_id: 10001,
+				message_id: 44,
+				user_id: 20002,
+				message: [{ type: "text", data: { text: "第二轮" } }],
+				raw_message: "第二轮",
+				font: 0,
+				sender: { user_id: 20002, nickname: "小明" },
+			});
+			await vi.advanceTimersByTimeAsync(2500);
+			expect(second.worldEvents).toHaveLength(1);
+			expect(await second.worldEvents[0]!.render?.()).toContain("p20002");
+
+			// 第二轮工具调用不受旧 worldAbort 残留影响（signal 必须是新一轮的未中止信号）
+			const outcome = (await world.actions.requests!.run({}, { signal: new AbortController().signal } as never)) as {
+				status: string;
+			};
+			expect(outcome.status).toBe("succeeded");
+		} finally {
+			await world.onStop?.(second.ctx);
+			rmSync(first.dataDir, { recursive: true, force: true });
+			rmSync(second.dataDir, { recursive: true, force: true });
+		}
+		expect(transport.stopped).toBe(2);
+	});
 });
 
 describe("QQ World 发现与配置失败可见性", () => {
