@@ -1,9 +1,10 @@
-*.ckpt filter=lfs diff=lfs merge=lfs -text
-*.pth filter=lfs diff=lfs merge=lfs -text
-
-# Live2D formatter scope must remain LF even with user core.autocrlf=true.
-/.uina/worlds/live2d/**/*.ts text eol=lf
-/.uina/worlds/live2d/**/*.mjs text eol=lf
-/tests/live2d-*.ts text eol=lf
-/tests/fixtures/live2d-worker.mjs text eol=lf
-/biome.json text eol=lf
+# 统一 LF：biome 与工具链要求 LF，autocrlf 转换会制造幻影改动。
+# 二进制文件由 Git 自动检测（text=auto 不作用于二进制）。
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.onnx binary

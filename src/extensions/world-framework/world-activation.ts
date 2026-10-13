@@ -99,7 +99,7 @@ export class WorldActivation {
 			worldDataDir: pi.subject
 				? join(pi.subject.stateRoot, "world-data", this.definition.name)
 				: pi.cwd
-					? join(pi.cwd, ".uina/worlds", this.definition.name)
+					? join(pi.cwd, ".uina/world-data", this.definition.name)
 					: undefined,
 			emitEvent: pi.submitInput
 				? async (event: WorldEvent) => {

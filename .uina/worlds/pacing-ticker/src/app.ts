@@ -7,10 +7,6 @@ import { worldFailed, worldSucceeded } from "../../../../src/extensions/world-fr
 import { TickerEngine } from "./ticker-engine.js";
 import type { TickerDurableState, TickerGuardrails } from "./types.js";
 
-export interface TickerCompanionContext extends ServiceCompanionContext {
-  worldDataDir?: string;
-}
-
 
 function installDir(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
@@ -80,16 +76,16 @@ export function createPacingTickerWorld(): WorldDef {
     defaultState: { enabled: false,  },
     async onStart(ctx: ServiceCompanionContext) {
       teardown();
-      const c = ctx as TickerCompanionContext;
-      const stateDir = c.worldDataDir ?? join(installDir(), "data");
-      const stateFile = join(stateDir, "state.json");
+      // 状态是持久数据，必须落在宿主数据目录；缺失时明确失败而不是写进源码安装目录。
+      if (!ctx.worldDataDir) throw new Error("[ticker] 缺少 worldDataDir，无法持久化节拍状态");
+      const stateFile = join(ctx.worldDataDir, "state.json");
       const configFile = join(installDir(), "config.json");
       const [initial, guardrails] = await Promise.all([loadState(stateFile), loadGuardrails(configFile)]);
       const host = {
-        isBusy: () => c.isBusy?.() ?? false,
+        isBusy: () => ctx.isBusy?.() ?? false,
         submitOpportunity: async (text: string) => {
-          if (!c.emitEvent) throw new Error("宿主未提供 emitEvent");
-          await c.emitEvent({
+          if (!ctx.emitEvent) throw new Error("宿主未提供 emitEvent");
+          await ctx.emitEvent({
             id: createPacingOpportunityId(),
             type: "pacing-opportunity",
             channel: "world",
@@ -102,7 +98,7 @@ export function createPacingTickerWorld(): WorldDef {
       };
       engine = new TickerEngine(host, initial, guardrails);
       engine.start();
-      unbind = c.onActivity?.((event) => engine?.notifyActivity(event)) ?? null;
+      unbind = ctx.onActivity?.((event) => engine?.notifyActivity(event)) ?? null;
     },
     async onStop() { teardown(); },
     actions: {

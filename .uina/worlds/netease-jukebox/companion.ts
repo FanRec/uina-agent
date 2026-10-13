@@ -51,7 +51,7 @@ export class CompanionManager {
   private generation = 0;
   private childReady = false;
   private readonly spawnProcess: typeof spawn;
-  private readonly logDir: string | undefined;
+  private logDir: string | undefined;
 
   constructor(
     private readonly serviceDir = "E:\\Uina\\ThirdParty\\api-enhanced",
@@ -63,6 +63,14 @@ export class CompanionManager {
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error(`无效的网易云伴生服务端口: ${port}`);
     }
+  }
+
+  /**
+   * 设置子进程日志目录。数据目录由宿主在 onStart 注入（worldDataDir），
+   * 因此允许启动后补设；仅影响之后 spawn 的子进程。
+   */
+  setLogDir(dir: string | undefined): void {
+    this.logDir = dir;
   }
 
   async ensureRunning(apiClient: NeteaseApiClient, maxWaitMs = 10000, signal?: AbortSignal): Promise<CompanionStatus> {

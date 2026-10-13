@@ -124,8 +124,8 @@ export function applyJournalEntry(
  * B站直播待办事件持久化日志（World Durable Journal）
  */
 export class LiveEventJournal {
-  private readonly filePath: string;
-  private readonly dataDir: string;
+  private filePath: string;
+  private dataDir: string;
   private readonly compactionThreshold: number;
   private readonly knownEventKeys = new Set<string>();
   private entriesCount = 0;
@@ -135,6 +135,23 @@ export class LiveEventJournal {
     this.compactionThreshold = storageConfig.journalCompactionThreshold;
     this.filePath = join(this.dataDir, "events.jsonl");
     this.ensureDataDir();
+  }
+
+  /** 当前数据目录（宿主 onStart 重定位后与构造值不同）。 */
+  get directory(): string {
+    return this.dataDir;
+  }
+
+  /**
+   * 迁移数据目录：宿主在 onStart 注入 worldDataDir 后重定位 journal。
+   * 旧位置文件不动；内存索引清空，调用方必须随后重新 recover 对齐快照。
+   */
+  relocate(dataDir: string): void {
+    this.dataDir = dataDir;
+    this.filePath = join(dataDir, "events.jsonl");
+    this.ensureDataDir();
+    this.knownEventKeys.clear();
+    this.entriesCount = 0;
   }
 
   private ensureDataDir(): void {

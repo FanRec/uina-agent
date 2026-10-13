@@ -72,6 +72,12 @@ export class LiveEventBuffer {
     this.counters = { ...snapshot.counters };
   }
 
+  /** 重新从 journal 恢复状态：journal 迁移数据目录（relocate）后调用。 */
+  reloadFromJournal(): void {
+    this.pendingEvents.clear();
+    this.recoverFromJournal();
+  }
+
   private nextId(prefix: "dm" | "sc" | "gd" | "gf"): string {
     this.counters[prefix]++;
     return `${prefix}_${this.counters[prefix]}`;

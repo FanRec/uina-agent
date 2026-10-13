@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type { WorldDef } from "../../../src/extensions/world-framework/types.js";
 import { NeteaseApiClient } from "./api-client.js";
 import { JukeboxApplication } from "./application.js";
@@ -25,9 +26,8 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
   const api = new NeteaseApiClient(merged.apiBaseUrl ?? "http://127.0.0.1:3000");
   const gateway = new NeteaseGateway(merged.apiBaseUrl ?? "http://127.0.0.1:3000");
   // 子进程日志落到 world-data：服务端 [ERR] 现场是排查瞬态 404 的唯一证据来源。
-  const serviceManager = new CompanionManager(merged.apiEnhancedDir ?? "E:\\Uina\\ThirdParty\\api-enhanced", merged.apiPort ?? 3000, {
-    logDir: ".uina/world-data/jukebox/logs",
-  });
+  // 具体目录在 onStart 从 ctx.worldDataDir 派生（宿主注入，避免硬编码）。
+  const serviceManager = new CompanionManager(merged.apiEnhancedDir ?? "E:\\Uina\\ThirdParty\\api-enhanced", merged.apiPort ?? 3000);
   const mpvPath = resolveMpvPath(merged.mpvPath);
   const player = createPlayer(merged, mpvPath);
   const playback = new PlaybackCoordinator(player, merged.queueLimit ?? 100);
@@ -118,6 +118,7 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
     async onStart(ctx) {
       if (hud.isClosed) hud = new BroadcastHudClient(hudOptions);
       worldSignal = ctx.signal;
+      serviceManager.setLogDir(ctx.worldDataDir ? join(ctx.worldDataDir, "logs") : undefined);
       if (!subscribed) {
         unsubscribe = playback.subscribe(handlePlaybackSnapshot);
         subscribed = true;

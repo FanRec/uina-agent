@@ -385,6 +385,14 @@ export function createBilibiliLiveWorld(userConfig?: Partial<LiveWorldConfig>): 
       roomStatusNotifier.reset();
       danmaku.start(ctx);
       giftNotifier.invalidate();
+      // journal 落宿主数据目录：storage.dataDir 仅作 worldDataDir 缺失时的回退。
+      if (ctx.worldDataDir) {
+        const journalDir = join(ctx.worldDataDir, "journal");
+        if (journal.directory !== journalDir) {
+          journal.relocate(journalDir);
+          buffer.reloadFromJournal();
+        }
+      }
       notificationFile = join(ctx.worldDataDir ?? config.storage.dataDir, "notification-settings.json");
       try {
         notificationSettings = await loadNotificationSettings(notificationFile);
