@@ -3,7 +3,7 @@
 	"version": "2.0.0",
 	"type": "module",
 	"main": "./index.ts",
-	"description": "Live2D 具身世界（重写版）：工具面、端点契约与发布门就位；引擎按施工方案 P1+ 分阶段接入",
+	"description": "Live2D 具身世界：固定模型目录、统一身体意图、外部动作结算与独立 Worker 生命周期",
 	"uina": {
 		"type": "world"
 	}

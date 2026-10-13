@@ -337,7 +337,10 @@ export class SomaticPipelines {
 			this.gazeAnchored = false;
 			for (const axis of this.gazeAxes) {
 				if (!ctx.gazeClaimed.has(axis) && !this.gazeReturns.has(axis))
-					this.gazeReturns.set(axis, { from: this.gazeValues.get(axis) ?? (frame[axis] ?? this.neutral[axis]!), ageMs: 0 });
+					this.gazeReturns.set(axis, {
+						from: this.gazeValues.get(axis) ?? frame[axis] ?? this.neutral[axis]!,
+						ageMs: 0,
+					});
 			}
 		}
 		this.gazeAnchored = compensated !== undefined;

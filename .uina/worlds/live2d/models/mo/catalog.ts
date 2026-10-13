@@ -1045,12 +1045,12 @@ export const MO_CATALOG_SOURCE: CatalogSource = {
 				[3600, 0.32],
 			]),
 			track("eyes.left.open", [
-				[0, 0.80],
-				[3600, 0.80],
+				[0, 0.8],
+				[3600, 0.8],
 			]),
 			track("eyes.right.open", [
-				[0, 0.80],
-				[3600, 0.80],
+				[0, 0.8],
+				[3600, 0.8],
 			]),
 			track("mouth.form", [
 				[0, 0.24],

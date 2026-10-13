@@ -7,39 +7,23 @@ import {
 	emptyCatalog,
 	type CatalogMotionEntry,
 	type CatalogSnapshot,
- type CatalogResolved, type CatalogKind,
+	type CatalogResolved,
+	type CatalogKind,
 } from "./authoring/catalog.js";
 import { compileMotion, withSpeech, type CompiledMotion, type SpeechPolicy } from "./authoring/motion.js";
-import {
-	MotionDirector,
-	SupersededError,
-	type MotionHandle,
-	type PlayOptions,
-} from "./director/director.js";
+import { MotionDirector, SupersededError, type MotionHandle, type PlayOptions } from "./director/director.js";
 import { buildLive2DEndpoint, type Live2DEndpoint } from "./endpoint.js";
 import { settleMotion, withCancellation, toolRejected, toolSucceeded, toolUnknown } from "./results.js";
 import { ExternalActions } from "./external-actions.js";
 import { SpeechInput, type SpeechConfig } from "./speech-level.js";
 
 /**
- * Live2D 世界运行时。
- *
- * P2-3 范围：生命周期 + VTS 连接 + 保活注入时钟 + director 合成接入。
- * P3-2 增量：voice.levelSink 声学电平接缝（失联守卫 + 作者映射 → 引擎口型包络）。
- * P4-1 增量：工具 gate 链（边界规范 §2.1 词表）、目录快照词表解析、
- *           express/state 引擎映射、status/diagnose 真实事实。
- *
- * 发布验收门（§7，P4-6 曾实现）已按操作员裁决拆除（ Occam：单人本机场景下
- * author-session/digest 门防不住也拦不着任何真实威胁，纯属流程仪式）。
- *
- * tick 合约（边界规范 §6）：每帧实测 dt 驱动 director.step → adapter.encode → client.inject；
- * 断线/身份不匹配/暂停时既不合成也不注入（暂停注入保持帧），重连后从当前状态续合成。
- * - 时钟只在连接就绪且模型身份匹配时运转，断线即停、重连即恢复；
- * - dt 用单调时钟实测（REVIEW 教训：不信任定时器间隔），钳制 250ms 防休眠/节流大跳；
- * - faceFound 与单未确认帧背压由 vts-client 承担，时钟不重复实现；
+ * World 拥有生命周期、目录代次、持续意图与合成时钟。
+ * director 独占合成/仲裁，external-actions 独占外部请求与清理；endpoint 仅适配。
+ * 断线/身份不符零输出；暂停不合成，继续注入中性口型保持帧；实测 dt 最大 250ms。
  */
 export interface Live2DRuntimeOptions {
-	/** 注入点（测试用）：替换真实 VTS 连接。缺省按世界默认构造（token 存世界根）。 */
+	/** 注入点（测试用）：替换真实 VTS 连接。默认装配由 assembly 负责；直接运行时不猜测设备。 */
 	client?: VTSClient;
 	/** 模型 rig；缺省时无注入（诚实零输出）。 */
 	rig?: ModelRig;
@@ -60,28 +44,26 @@ export interface Live2DRuntimeOptions {
 /** 单帧合成到注入之间允许的最大时间步（毫秒）：后台节流/休眠恢复时防止动作瞬移。 */
 const MAX_TICK_DT_MS = 250;
 
-	/** 省略或 0 表示持续；非法时长返回工具拒绝结果。 */
-	function parseHoldMs(value: unknown): number | undefined | ToolExecutionResult {
-		if (value === undefined) return undefined;
-		if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
-			return toolRejected("invalid_duration", "hold_ms 必须是非负有限数值。");
-		return value > 0 ? value : undefined;
-	}
+/** 省略或 0 表示持续；非法时长返回工具拒绝结果。 */
+function parseHoldMs(value: unknown): number | undefined | ToolExecutionResult {
+	if (value === undefined) return undefined;
+	if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
+		return toolRejected("invalid_duration", "hold_ms 必须是非负有限数值。");
+	return value > 0 ? value : undefined;
+}
 
-	/** 非空字符串参数校验；不合格返回工具拒绝结果。 */
-	const requireWord = (value: unknown, label: string): string | ToolExecutionResult =>
-		typeof value === "string" && value.length > 0
-			? value
-			: toolRejected("invalid_params", `缺少 ${label} 参数。`);
+/** 非空字符串参数校验；不合格返回工具拒绝结果。 */
+const requireWord = (value: unknown, label: string): string | ToolExecutionResult =>
+	typeof value === "string" && value.length > 0 ? value : toolRejected("invalid_params", `缺少 ${label} 参数。`);
 
 /** 格式化目录条目名称与别名列表。 */
 const formatCatalogEntries = (records: readonly CatalogResolved<CatalogKind>[]): string[] =>
- records.map(({ name, aliases }) => aliases.length ? `${name}(${aliases.join("/")})` : name);
+	records.map(({ name, aliases }) => (aliases.length ? `${name}(${aliases.join("/")})` : name));
 const formatMotionEntries = (records: readonly CatalogResolved<"motion">[]): string[] =>
- records.map(({ name, aliases, entry }) => {
-  const base = aliases.length ? `${name}(${aliases.join("/")})` : name;
-  return entry.variants?.length ? `${base}[${entry.variants.length + 1}变体]` : base;
- });
+	records.map(({ name, aliases, entry }) => {
+		const base = aliases.length ? `${name}(${aliases.join("/")})` : name;
+		return entry.variants?.length ? `${base}[${entry.variants.length + 1}变体]` : base;
+	});
 
 /**
  * 变体轮换择一（纯函数，随机源注入）：池 N 取 N-1 均匀随机，越过 lastPick 偏移——
@@ -96,10 +78,10 @@ export const pickVariantIndex = (poolSize: number, lastPick: number | undefined,
 
 export class Live2DRuntime {
 	private started = false;
- private phase: "new" | "starting" | "running" | "closing" | "dead" = "new";
- private stopPromise?: Promise<void>;
- private executionController = new AbortController();
- private lifecycleFault?: string;
+	private phase: "new" | "starting" | "running" | "closing" | "dead" = "new";
+	private stopPromise?: Promise<void>;
+	private executionController = new AbortController();
+	private lifecycleFault?: string;
 	private readonly cleanups: Array<() => void> = [];
 	private readonly client?: VTSClient;
 	private readonly rig?: ModelRig;
@@ -157,12 +139,20 @@ export class Live2DRuntime {
 				};
 			}
 		}
-	this.tickIntervalMs = options.tickIntervalMs ?? 1000 / 60;
+		this.tickIntervalMs = options.tickIntervalMs ?? 1000 / 60;
 
-	this.pickRandom = options.rng ?? Math.random;
-	this.onStatusChange = options.onStatusChange;
+		this.pickRandom = options.rng ?? Math.random;
+		this.onStatusChange = options.onStatusChange;
 		this.endpoint = buildLive2DEndpoint(this);
- if (this.client && this.rig && this.director) this.externalActions = new ExternalActions({ client: this.client, rig: this.rig, director: this.director, getCatalogGeneration: () => this.generation, isFocused: () => this.focused, cleanupTimeoutMs: options.cleanupTimeoutMs ?? 5000 });
+		if (this.client && this.rig && this.director)
+			this.externalActions = new ExternalActions({
+				client: this.client,
+				rig: this.rig,
+				director: this.director,
+				getCatalogGeneration: () => this.generation,
+				isFocused: () => this.focused,
+				cleanupTimeoutMs: options.cleanupTimeoutMs ?? 5000,
+			});
 	}
 
 	get isStarted(): boolean {
@@ -228,9 +218,7 @@ export class Live2DRuntime {
 		this.thinkingHandle = undefined;
 		this.thinking = false;
 		this.syncSwaySuppression();
-		if (this.connectionOnline) {
-			this.onStatusChange?.();
-		}
+		this.onStatusChange?.();
 	}
 
 	// ---------- P4-1：gate 链与工具面 ----------
@@ -241,7 +229,12 @@ export class Live2DRuntime {
 	 */
 	private gate(ctx: { signal?: AbortSignal }): ToolExecutionResult | undefined {
 		if (ctx.signal?.aborted) return toolRejected("cancelled", "调用已中止，未执行。");
-		if (!this.isStarted) return { result: "Live2D 世界未启动或正在停用，未执行。", status: "not_started", details: { reason: "not_started", effectStatus: "not_started" } };
+		if (!this.isStarted)
+			return {
+				result: "Live2D 世界未启动或正在停用，未执行。",
+				status: "not_started",
+				details: { reason: "not_started", effectStatus: "not_started" },
+			};
 		if (this.paused) return toolRejected("paused", "身体处于 safeStop 暂停，操作被拒绝（resume 后恢复）。");
 		if (!this.client || !this.client.isConnected())
 			return toolRejected("model_not_ready", "VTS 未连接（连接建立前所有具身操作不可用）。");
@@ -276,11 +269,22 @@ export class Live2DRuntime {
 	 */
 	private async playMotion(
 		entry: CatalogMotionEntry,
-		options: { speech?: SpeechPolicy; atomic?: boolean; signal?: AbortSignal; callName?: string; onStarted?: () => void } = {},
+		options: {
+			speech?: SpeechPolicy;
+			atomic?: boolean;
+			signal?: AbortSignal;
+			callName?: string;
+			onStarted?: () => void;
+		} = {},
 	): Promise<ToolExecutionResult> {
 		const denied = this.gate(options);
 		if (denied) return denied;
- options = { ...options, signal: options.signal ? AbortSignal.any([options.signal, this.executionController.signal]) : this.executionController.signal };
+		options = {
+			...options,
+			signal: options.signal
+				? AbortSignal.any([options.signal, this.executionController.signal])
+				: this.executionController.signal,
+		};
 		const director = this.director!;
 		const clip = this.pickMotionClip(entry, options.speech);
 		const playOptions: PlayOptions = {
@@ -292,13 +296,17 @@ export class Live2DRuntime {
 		const label = `动作 "${entry.description}"`;
 		if (!entry.spatial) {
 			const handle = director.play(clip, playOptions);
- options.onStarted?.();
+			options.onStarted?.();
 			return settleMotion(this.client!, this.rig!, handle, clip, label, options.callName);
 		}
 		if (!this.focused) return toolRejected("unfocused", `${label} 未执行：身体当前失焦。`);
 
-  return this.externalActions!.runSpatial(entry, clip, { ...playOptions, callName: options.callName, onStarted: options.onStarted });
- }
+		return this.externalActions!.runSpatial(entry, clip, {
+			...playOptions,
+			callName: options.callName,
+			onStarted: options.onStarted,
+		});
+	}
 
 	/** express（§2）：播放目录中的命名动作，Voluntary 类别；await 终态结算。 */
 	async express(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
@@ -325,67 +333,138 @@ export class Live2DRuntime {
 		});
 	}
 
- /** 工具与 cue 共享已经解析的持续意图执行；只在真实施加时通知 started。 */
- async executeCue(id: string, onStarted: () => void): Promise<ToolExecutionResult> {
-  const denied = this.gate({}); if (denied) return denied;
-  const cue = this.catalog.resolveCue(id);
-  if (!cue) return toolRejected("unknown_cue", `未知 cue: "${id}"。`);
-  if (cue.kind === "posture") return this.applyState({ posture: id }, {}, onStarted);
-  return this.playMotion(cue.entry, { callName: id, onStarted });
- }
- async state(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
-  return this.applyState(args, ctx);
- }
- private async applyState(args: Record<string, unknown>, ctx: { signal?: AbortSignal }, onStarted?: () => void): Promise<ToolExecutionResult> {
-  const denied = this.gate(ctx); if (denied) return denied;
- ctx = { signal: ctx.signal ? AbortSignal.any([ctx.signal, this.executionController.signal]) : this.executionController.signal };
-  const catalog = this.catalog, generation = this.generation, director = this.director!;
-  const holdMs = parseHoldMs(args.hold_ms); if (typeof holdMs === "object") return holdMs;
-  const changes: { label: string; run: () => void | Promise<void> }[] = [];
-  for (const kind of ["posture", "expression"] as const) {
-   if (args[kind] === undefined) continue;
-   const name = requireWord(args[kind], kind); if (typeof name === "object") return name;
-   const slot = catalog.resolve(kind, name);
-   if (!slot) return toolRejected(kind === "posture" ? "unknown_pose" : "unknown_expression", `${kind === "posture" ? "姿态" : "表情"}不在当前模型目录: "${name}"。当前可用: ${formatCatalogEntries(catalog.list(kind)).join(", ") || "无"}。`);
-   changes.push({ label: name, run: () => kind === "posture" ? director.setPosture(slot.entry.values, { holdMs, durationMs: slot.entry.transitionMs }) : director.setExpression(slot.entry.values, { holdMs, durationMs: slot.entry.transitionMs }) });
-  }
-  if (args.attention !== undefined) {
-   const name = requireWord(args.attention, "attention"); if (typeof name === "object") return name;
-   const attention = catalog.resolve("attention", name);
-   if (!attention) return toolRejected("unknown_attention", `注视目标不在词表: "${name}"。可用注视: ${formatCatalogEntries(catalog.list("attention")).join(", ")}。`);
-   changes.push({ label: name, run: () => director.setAttention(attention.entry.target, { holdMs }) });
-  }
-  if (args.ambient !== undefined) {
-   const raw = args.ambient;
-   if (raw !== null && (typeof raw !== "string" || !raw.length)) return toolRejected("invalid_params", "ambient 必须是非空字符串或 null（null 即清除）。");
-   const clear = raw === null || raw === "none" || raw === "stop" || raw === "clear";
-   const ambient = clear ? undefined : catalog.resolve("ambient", raw as string);
-   if (!clear && !ambient) return toolRejected("unknown_ambient", `环境循环不在当前模型目录: "${raw}"。当前可用: ${formatCatalogEntries(catalog.list("ambient")).join(", ") || "无"}。`);
-   changes.push({ label: clear ? "cleared" : raw as string, run: () => {
-    const next = ambient?.name;
-    if (next === this.ambientName) return;
-    this.ambientName = next; this.restHandle?.stop("release"); this.restHandle = undefined;
-    this.syncSwaySuppression(); this.syncBackgrounds();
-   } });
-  }
-  if (!changes.length) return toolSucceeded("未指定任何槽位，状态未变。", { effectStatus: "accepted", verification: "local_intent" });
-  const applied: string[] = [];
-  try {
-   for (const change of changes) {
-    if (generation !== this.generation) return { result: `目录已更换（此前已生效: ${applied.join("、") || "无"}）。`, status: "cancelled", details: { reason: "stale_catalog", effectStatus: applied.length ? "accepted" : "not_started", applied } };
-    const rejected = this.gate(ctx);
-    if (rejected) return { ...rejected, result: `${rejected.result}（此前已生效: ${applied.join("、") || "无"}）`, details: { ...rejected.details as object, ...(applied.length ? { effectStatus: "accepted", verification: "local_intent" } : {}), applied } };
-    const waiting = Promise.resolve(change.run());
-    if (!applied.length) onStarted?.();
-    applied.push(change.label);
-    await (ctx.signal ? withCancellation(waiting, ctx.signal) : waiting);
-   }
-  } catch (error) {
-   const cancelled = ctx.signal?.aborted || error instanceof SupersededError || generation !== this.generation;
-   return { result: `${cancelled ? "状态设置已取消或被取代" : "状态设置失败"}（此前已生效: ${applied.join("、") || "无"}）。`, status: cancelled ? "cancelled" : "failed", details: { reason: generation !== this.generation ? "stale_catalog" : ctx.signal?.aborted ? "cancelled" : error instanceof SupersededError ? "superseded" : "execution_failed", effectStatus: applied.length ? "accepted" : "not_started", verification: "local_intent", applied } };
-  }
-  return toolSucceeded(`${applied.join(", ")} OK`, { effectStatus: "accepted", verification: "local_intent" });
- }
+	/** 工具与 cue 共享已经解析的持续意图执行；只在真实施加时通知 started。 */
+	async executeCue(id: string, onStarted: () => void): Promise<ToolExecutionResult> {
+		const denied = this.gate({});
+		if (denied) return denied;
+		const cue = this.catalog.resolveCue(id);
+		if (!cue) return toolRejected("unknown_cue", `未知 cue: "${id}"。`);
+		if (cue.kind === "posture") return this.applyState({ posture: id }, {}, onStarted);
+		return this.playMotion(cue.entry, { callName: id, onStarted });
+	}
+	async state(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
+		return this.applyState(args, ctx);
+	}
+	private async applyState(
+		args: Record<string, unknown>,
+		ctx: { signal?: AbortSignal },
+		onStarted?: () => void,
+	): Promise<ToolExecutionResult> {
+		const denied = this.gate(ctx);
+		if (denied) return denied;
+		ctx = {
+			signal: ctx.signal
+				? AbortSignal.any([ctx.signal, this.executionController.signal])
+				: this.executionController.signal,
+		};
+		const catalog = this.catalog,
+			generation = this.generation,
+			director = this.director!;
+		const holdMs = parseHoldMs(args.hold_ms);
+		if (typeof holdMs === "object") return holdMs;
+		const changes: { label: string; run: () => void | Promise<void> }[] = [];
+		for (const kind of ["posture", "expression"] as const) {
+			if (args[kind] === undefined) continue;
+			const name = requireWord(args[kind], kind);
+			if (typeof name === "object") return name;
+			const slot = catalog.resolve(kind, name);
+			if (!slot)
+				return toolRejected(
+					kind === "posture" ? "unknown_pose" : "unknown_expression",
+					`${kind === "posture" ? "姿态" : "表情"}不在当前模型目录: "${name}"。当前可用: ${formatCatalogEntries(catalog.list(kind)).join(", ") || "无"}。`,
+				);
+			changes.push({
+				label: name,
+				run: () =>
+					kind === "posture"
+						? director.setPosture(slot.entry.values, { holdMs, durationMs: slot.entry.transitionMs })
+						: director.setExpression(slot.entry.values, { holdMs, durationMs: slot.entry.transitionMs }),
+			});
+		}
+		if (args.attention !== undefined) {
+			const name = requireWord(args.attention, "attention");
+			if (typeof name === "object") return name;
+			const attention = catalog.resolve("attention", name);
+			if (!attention)
+				return toolRejected(
+					"unknown_attention",
+					`注视目标不在词表: "${name}"。可用注视: ${formatCatalogEntries(catalog.list("attention")).join(", ")}。`,
+				);
+			changes.push({ label: name, run: () => director.setAttention(attention.entry.target, { holdMs }) });
+		}
+		if (args.ambient !== undefined) {
+			const raw = args.ambient;
+			if (raw !== null && (typeof raw !== "string" || !raw.length))
+				return toolRejected("invalid_params", "ambient 必须是非空字符串或 null（null 即清除）。");
+			const clear = raw === null || raw === "none" || raw === "stop" || raw === "clear";
+			const ambient = clear ? undefined : catalog.resolve("ambient", raw as string);
+			if (!clear && !ambient)
+				return toolRejected(
+					"unknown_ambient",
+					`环境循环不在当前模型目录: "${raw}"。当前可用: ${formatCatalogEntries(catalog.list("ambient")).join(", ") || "无"}。`,
+				);
+			changes.push({
+				label: clear ? "cleared" : (raw as string),
+				run: () => {
+					const next = ambient?.name;
+					if (next === this.ambientName) return;
+					this.ambientName = next;
+					this.restHandle?.stop("release");
+					this.restHandle = undefined;
+					this.syncSwaySuppression();
+					this.syncBackgrounds();
+				},
+			});
+		}
+		if (!changes.length)
+			return toolSucceeded("未指定任何槽位，状态未变。", { effectStatus: "accepted", verification: "local_intent" });
+		const applied: string[] = [];
+		try {
+			for (const change of changes) {
+				if (generation !== this.generation)
+					return {
+						result: `目录已更换（此前已生效: ${applied.join("、") || "无"}）。`,
+						status: "cancelled",
+						details: { reason: "stale_catalog", effectStatus: applied.length ? "accepted" : "not_started", applied },
+					};
+				const rejected = this.gate(ctx);
+				if (rejected)
+					return {
+						...rejected,
+						result: `${rejected.result}（此前已生效: ${applied.join("、") || "无"}）`,
+						details: {
+							...(rejected.details as object),
+							...(applied.length ? { effectStatus: "accepted", verification: "local_intent" } : {}),
+							applied,
+						},
+					};
+				const waiting = Promise.resolve(change.run());
+				if (!applied.length) onStarted?.();
+				applied.push(change.label);
+				await (ctx.signal ? withCancellation(waiting, ctx.signal) : waiting);
+			}
+		} catch (error) {
+			const cancelled = ctx.signal?.aborted || error instanceof SupersededError || generation !== this.generation;
+			return {
+				result: `${cancelled ? "状态设置已取消或被取代" : "状态设置失败"}（此前已生效: ${applied.join("、") || "无"}）。`,
+				status: cancelled ? "cancelled" : "failed",
+				details: {
+					reason:
+						generation !== this.generation
+							? "stale_catalog"
+							: ctx.signal?.aborted
+								? "cancelled"
+								: error instanceof SupersededError
+									? "superseded"
+									: "execution_failed",
+					effectStatus: applied.length ? "accepted" : "not_started",
+					verification: "local_intent",
+					applied,
+				},
+			};
+		}
+		return toolSucceeded(`${applied.join(", ")} OK`, { effectStatus: "accepted", verification: "local_intent" });
+	}
 
 	/** costume（§2）：执行模型包登记的外观热键；独占声明（effect:*）+ VTS 热键触发。 */
 	async costume(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
@@ -395,7 +474,11 @@ export class Live2DRuntime {
 		if (typeof item === "object") return item;
 		const entry = this.catalog.resolve("costume", item)?.entry;
 		if (!entry) {
-			const available = this.catalog.list("costume").map((c) => c.name).join(", ") || "无";
+			const available =
+				this.catalog
+					.list("costume")
+					.map((c) => c.name)
+					.join(", ") || "无";
 			return toolRejected("unknown_costume", `外观不在当前模型目录: "${item}"。当前可用外观: ${available}。`);
 		}
 		return this.externalActions!.runCostume(entry, ctx.signal);
@@ -421,76 +504,84 @@ export class Live2DRuntime {
 
 	async start(ctx: ServiceCompanionContext): Promise<void> {
 		if (this.phase === "running") return;
- if (this.phase !== "new") throw new Error("Live2D 生命周期已结束；请创建新实例。");
- ctx.signal?.throwIfAborted();
- this.phase = "starting";
+		if (this.phase !== "new") throw new Error("Live2D 生命周期已结束；请创建新实例。");
+		ctx.signal?.throwIfAborted();
+		this.phase = "starting";
 		this.started = true;
- try {
-		if (ctx.expose) {
-			this.cleanups.push(ctx.expose("body.endpoint:live2d", this.endpoint));
-			if (this.levelSink) {
-				this.cleanups.push(ctx.expose(VOICE_LEVEL_SINK_EXPOSED_PREFIX + this.endpoint.bodyId, this.levelSink));
+		try {
+			if (ctx.expose) {
+				this.cleanups.push(ctx.expose("body.endpoint:live2d", this.endpoint));
+				if (this.levelSink) {
+					this.cleanups.push(ctx.expose(VOICE_LEVEL_SINK_EXPOSED_PREFIX + this.endpoint.bodyId, this.levelSink));
+				}
 			}
-		}
-		// 宿主事件订阅（§5 最小消费集）：thinking 状态驱动 / turn 边界 / turn_aborted → interrupt。
-		// 无用途的事件（input_accepted 等）随监听器一并到达但被忽略——框架按类型批量订阅，无法只订子集。
-		if (ctx.onHostEvent) {
-			this.cleanups.push(
-				ctx.onHostEvent((event) => {
-					if (this.phase !== "running") return;
-					if (event.type === "output_update" && event.channel === "thinking") this.setThinking(true);
-					else if (event.type === "turn_start" || event.type === "turn_end") this.setThinking(false);
-					else if (event.type === "turn_aborted") this.interrupt();
-				}),
-			);
-		}
-		if (this.client) {
-			// 监听必须先于 connect 注册：ready 回调在 connect 流程内同步链上触发。
-			this.client.setConnectionChangeListener((connected) => {
-				if (!this.started) return;
-				if (connected) this.startClock();
-				else this.stopClock();
-				this.onStatusChange?.();
-			});
-			this.client.connect();
-			// 注入的客户端可能已完成握手，connect() 不会再次发 ready 回调。
-			if (this.client.isConnected()) {
-				this.startClock();
-				this.onStatusChange?.();
+			// 宿主事件订阅（§5 最小消费集）：thinking 状态驱动 / turn 边界 / turn_aborted → interrupt。
+			// 无用途的事件（input_accepted 等）随监听器一并到达但被忽略——框架按类型批量订阅，无法只订子集。
+			if (ctx.onHostEvent) {
+				this.cleanups.push(
+					ctx.onHostEvent((event) => {
+						if (this.phase !== "running") return;
+						if (event.type === "output_update" && event.channel === "thinking") this.setThinking(true);
+						else if (event.type === "turn_start" || event.type === "turn_end") this.setThinking(false);
+						else if (event.type === "turn_aborted") this.interrupt();
+					}),
+				);
 			}
+			if (this.client) {
+				// 监听必须先于 connect 注册：ready 回调在 connect 流程内同步链上触发。
+				this.client.setConnectionChangeListener((connected) => {
+					if (!this.started) return;
+					if (connected) this.startClock();
+					else this.stopClock();
+					this.onStatusChange?.();
+				});
+				this.client.connect();
+				// 注入的客户端可能已完成握手，connect() 不会再次发 ready 回调。
+				if (this.client.isConnected()) {
+					this.startClock();
+					this.onStatusChange?.();
+				}
+			}
+			const onAbort = () => {
+				if (this.phase !== "running") return;
+				this.phase = "closing";
+				void this.safeStop()
+					.catch((error) => {
+						this.lifecycleFault = error instanceof Error ? error.message : String(error);
+					})
+					.finally(() => this.onStatusChange?.());
+				this.onStatusChange?.();
+			};
+			this.phase = "running";
+			if (ctx.signal) {
+				ctx.signal.addEventListener("abort", onAbort, { once: true });
+				this.cleanups.push(() => ctx.signal.removeEventListener("abort", onAbort));
+			}
+			if (ctx.signal?.aborted) onAbort();
+			this.onStatusChange?.();
+		} catch (cause) {
+			const errors: unknown[] = [cause];
+			try {
+				await this.stop();
+			} catch (error) {
+				errors.push(error);
+			}
+			throw new AggregateError(errors, `Live2D 启动失败：${cause instanceof Error ? cause.message : String(cause)}`);
 		}
-  const onAbort = () => {
-   if (this.phase !== "running") return;
-   this.phase = "closing";
-   void this.safeStop().catch((error) => { this.lifecycleFault = error instanceof Error ? error.message : String(error); }).finally(() => this.onStatusChange?.());
-   this.onStatusChange?.();
-  };
-  this.phase = "running";
-  if (ctx.signal) { ctx.signal.addEventListener("abort", onAbort, { once: true }); this.cleanups.push(() => ctx.signal.removeEventListener("abort", onAbort)); }
-  if (ctx.signal?.aborted) onAbort();
-  this.onStatusChange?.();
- } catch (cause) {
-  const errors: unknown[] = [cause];
-  try { await this.stop(); } catch (error) { errors.push(error); }
-  throw new AggregateError(errors, `Live2D 启动失败：${cause instanceof Error ? cause.message : String(cause)}`);
- }
- }
+	}
 
-	/**
-	 * safeStop（§6 生命周期）：显式全局暂停。
-	 * 1. paused=true，捕获当前合成帧为保持帧，口型开合通道（mouth.*）覆写中性值——
-	 *    暂停瞬间的张嘴是声学瞬态，不是值得保持的姿态；
-	 * 2. 全部活跃播放 cut 结算（冻结帧下 fade 永不推进，release 会悬挂 finished）；
-	 * 3. 注入不停止：composeTick 暂停分支持续注入保持帧——控制权与口型归零优先于视觉静止；
-	 * 4. 带清理独占声明的"等待清理完成才结算"依赖 P4-5 独占资源生产者，届时接入。
-	 */
+	/** 全局暂停：保留持续意图，取消等待与播放，保持中性口型注入，等待分项外部结算。 */
 	async safeStop(): Promise<void> {
 		if (this.paused) {
-			if (!((await this.externalActions?.settlePending())?.complete ?? true)) throw Object.assign(new Error("Uina 已暂停，外部效果或归位清理尚未确认。"), { reason: "cleanup_unconfirmed", cleanup: this.externalActions?.snapshot() });
+			if (!((await this.externalActions?.settlePending())?.complete ?? true))
+				throw Object.assign(new Error("Uina 已暂停，外部效果或归位清理尚未确认。"), {
+					reason: "cleanup_unconfirmed",
+					cleanup: this.externalActions?.snapshot(),
+				});
 			return;
 		}
 		this.paused = true;
- this.executionController.abort(new Error("safestop"));
+		this.executionController.abort(new Error("safestop"));
 		this.syncFrozen();
 		const director = this.director;
 		if (!director) return;
@@ -502,18 +593,21 @@ export class Live2DRuntime {
 		director.cancelAllPlaybacks("safestop");
 		this.restHandle = undefined;
 		this.thinkingHandle = undefined;
-		// §6.2/§6.4：取消全部独占声明；带清理的声明等待归位清理完成，未确认则抛错（调用方得
-		// unknown；拆除不被阻塞——BodyRouter.stopAll 以 allSettled 承接为 failed[]）。
+		// 外部声明在清理结算前持锁；必要项未知或预算耗尽使暂停返回失败。
 		this.externalActions?.cancelAll();
-		if (!((await this.externalActions?.settlePending())?.complete ?? true)) throw Object.assign(new Error("Uina 已暂停，外部效果或归位清理尚未确认。"), { reason: "cleanup_unconfirmed", cleanup: this.externalActions?.snapshot() });
+		if (!((await this.externalActions?.settlePending())?.complete ?? true))
+			throw Object.assign(new Error("Uina 已暂停，外部效果或归位清理尚未确认。"), {
+				reason: "cleanup_unconfirmed",
+				cleanup: this.externalActions?.snapshot(),
+			});
 	}
 
 	/** resume（§6）：解除暂停、清保持帧、口型包络归零、眨眼与限时状态倒计时恢复剩余。 */
 	async resume(): Promise<void> {
- if (!this.isStarted) throw Object.assign(new Error("Live2D 生命周期已关闭，不能恢复。"), { reason: "not_started" });
+		if (!this.isStarted) throw Object.assign(new Error("Live2D 生命周期已关闭，不能恢复。"), { reason: "not_started" });
 		if (!this.paused) return;
 		this.paused = false;
- this.executionController = new AbortController();
+		this.executionController = new AbortController();
 		this.externalActions?.acknowledgeUnconfirmed();
 		this.keepFrame = undefined;
 		this.speechInput?.reset();
@@ -539,7 +633,8 @@ export class Live2DRuntime {
 		if (!this.director || this.paused) return;
 		const { idle, thinking } = this.catalog.background;
 		// 选中项不在当前快照（目录更替残留）：诚实回落 idle。
-		if (this.ambientName !== undefined && !this.catalog.resolve("ambient", this.ambientName)) this.ambientName = undefined;
+		if (this.ambientName !== undefined && !this.catalog.resolve("ambient", this.ambientName))
+			this.ambientName = undefined;
 		const restLoop =
 			this.ambientName !== undefined ? this.catalog.resolve("ambient", this.ambientName)!.entry.motion : idle;
 		if (restLoop && !this.restHandle) {
@@ -569,9 +664,7 @@ export class Live2DRuntime {
 	 * 避免内置摆动与目录编排的背景循环叠加成双重晃动。
 	 */
 	private syncSwaySuppression(): void {
-		this.director?.setAuthoredIdle(
-			this.catalog.background.idle !== undefined || this.ambientName !== undefined,
-		);
+		this.director?.setAuthoredIdle(this.catalog.background.idle !== undefined || this.ambientName !== undefined);
 	}
 
 	/**
@@ -589,25 +682,48 @@ export class Live2DRuntime {
 		this.speechInput?.reset();
 	}
 
- stop(): Promise<void> {
-  if (this.stopPromise) return this.stopPromise;
-  this.phase = "closing";
-  this.stopPromise = this.closeResources();
-  return this.stopPromise;
- }
- private async closeResources(): Promise<void> {
-  const errors: unknown[] = [];
-  this.stopClock();
-  try { if (this.started) await this.safeStop(); } catch (error) { errors.push(error); }
-  this.started = false;
- try { this.director?.invalidateAll("world stopped"); } catch (error) { errors.push(error); }
-  for (const cleanup of this.cleanups.splice(0).reverse()) { try { cleanup(); } catch (error) { errors.push(error); } }
-  try { this.client?.disconnect(); } catch (error) { errors.push(error); }
-  this.phase = "dead";
-  if (errors.length) this.lifecycleFault = "Live2D 停用清理失败";
-  try { this.onStatusChange?.(); } catch (error) { errors.push(error); }
-  if (errors.length) throw new AggregateError(errors, "Live2D 停用失败：资源已释放，清理或归位尚未确认。");
- }
+	stop(): Promise<void> {
+		if (this.stopPromise) return this.stopPromise;
+		this.phase = "closing";
+		this.stopPromise = this.closeResources();
+		return this.stopPromise;
+	}
+	private async closeResources(): Promise<void> {
+		const errors: unknown[] = [];
+		this.stopClock();
+		try {
+			if (this.started) await this.safeStop();
+		} catch (error) {
+			errors.push(error);
+		}
+		this.started = false;
+		this.stopClock();
+		try {
+			this.director?.invalidateAll("world stopped");
+		} catch (error) {
+			errors.push(error);
+		}
+		for (const cleanup of this.cleanups.splice(0).reverse()) {
+			try {
+				cleanup();
+			} catch (error) {
+				errors.push(error);
+			}
+		}
+		try {
+			this.client?.disconnect();
+		} catch (error) {
+			errors.push(error);
+		}
+		this.phase = "dead";
+		if (errors.length) this.lifecycleFault = "Live2D 停用清理失败";
+		try {
+			this.onStatusChange?.();
+		} catch (error) {
+			errors.push(error);
+		}
+		if (errors.length) throw new AggregateError(errors, "Live2D 停用失败：资源已释放，清理或归位尚未确认。");
+	}
 
 	private startClock(): void {
 		if (this.clock || !this.client) return;
@@ -670,7 +786,7 @@ export class Live2DRuntime {
 					costumes: this.catalog.list("costume").map((c) => c.name),
 					ambient: {
 						available: this.catalog.list("ambient").map(({ name: id, entry, aliases }) => ({
- aliases,
+							aliases,
 							id,
 							description: entry.description,
 						})),
@@ -688,14 +804,14 @@ export class Live2DRuntime {
 		return JSON.stringify(
 			{
 				phase: this.phase,
- tickIntervalMs: this.tickIntervalMs,
+				tickIntervalMs: this.tickIntervalMs,
 				clockRunning: this.clock !== null,
 				identityMatched: this.identityMatched(),
 				paused: this.paused,
 				focused: this.focused,
 				generation: this.generation,
 				lastCue: this.endpoint.lastCue(),
- externalActions: this.externalActions?.snapshot() ?? null,
+				externalActions: this.externalActions?.snapshot() ?? null,
 				director: this.director
 					? {
 							attention: this.director.getAttention() ?? null,

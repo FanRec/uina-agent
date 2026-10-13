@@ -31,16 +31,16 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 
 		expect(catalog.modelID).toBe(MO_MODEL_ID);
 		// 校验 motions 存在与别名
-		expect((catalog.resolve("motion", "nod") !== undefined)).toBe(true);
-		expect((catalog.resolve("motion", "shake") !== undefined)).toBe(true);
-		expect((catalog.resolve("motion", "curious") !== undefined)).toBe(true);
-		expect((catalog.resolve("motion", "petrify") !== undefined)).toBe(true);
-		expect((catalog.resolve("motion", "close_up") !== undefined)).toBe(true);
-		expect((catalog.resolve("motion", "edge_peek") !== undefined)).toBe(true);
-		expect((catalog.resolve("motion", "spin") !== undefined)).toBe(true);
+		expect(catalog.resolve("motion", "nod") !== undefined).toBe(true);
+		expect(catalog.resolve("motion", "shake") !== undefined).toBe(true);
+		expect(catalog.resolve("motion", "curious") !== undefined).toBe(true);
+		expect(catalog.resolve("motion", "petrify") !== undefined).toBe(true);
+		expect(catalog.resolve("motion", "close_up") !== undefined).toBe(true);
+		expect(catalog.resolve("motion", "edge_peek") !== undefined).toBe(true);
+		expect(catalog.resolve("motion", "spin") !== undefined).toBe(true);
 		expect(catalog.list("motion").length).toBe(17);
 		for (const removed of ["greeting", "wave", "freeze", "music_groove"])
-			expect((catalog.resolve("motion", removed) !== undefined)).toBe(false);
+			expect(catalog.resolve("motion", removed) !== undefined).toBe(false);
 
 		// 核心物理约束校验：伴随动作必须是 baseline-offset（Additive 增量），绝不抢占基础姿态
 		const nodMotion = catalog.resolve("motion", "nod")!.entry.motion;
@@ -50,7 +50,7 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 		expect(catalog.list("posture").map((record) => record.name)).toEqual(["rest", "tuck", "head_back"]);
 
 		// 校验 expressions
-		expect((catalog.resolve("expression", "smile") !== undefined)).toBe(true);
+		expect(catalog.resolve("expression", "smile") !== undefined).toBe(true);
 		expect(catalog.list("expression").map((record) => record.name)).toEqual(["smile", "smirk", "clear_face"]);
 
 		// 校验 background.thinking
@@ -128,7 +128,7 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 			catalog,
 		});
 		const ctx = { signal: new AbortController().signal };
- await runtime.start({} as never);
+		await runtime.start({} as never);
 
 		// 动作传错自愈
 		const motionRes = await runtime.express({ motion: "invalid_dance" }, ctx);
@@ -172,6 +172,6 @@ describe("MO 动作目录装配 (compileMOCatalog & loadCatalog)", () => {
 		const okAtt = await runtime.state({ attention: "看对方" }, ctx);
 		expect(okAtt.status).toBe("succeeded");
 		expect(okAtt.result).toBe("看对方 OK");
- await runtime.stop();
+		await runtime.stop();
 	});
 });

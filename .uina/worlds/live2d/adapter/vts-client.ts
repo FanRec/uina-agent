@@ -1049,8 +1049,12 @@ export class VTSClient {
 			activePreset?: string;
 			canSendPostProcessingUpdateRequestRightNow?: boolean;
 		};
+		if (typeof data.postProcessingActive !== "boolean")
+			throw new Error("VTS 未提供有效的后处理开关状态，无法捕获基线。");
+		if (data.activePreset !== undefined && data.activePreset !== null && typeof data.activePreset !== "string")
+			throw new Error("VTS 后处理预设状态非法，无法捕获基线。");
 		return {
-			active: data.postProcessingActive ?? false,
+			active: data.postProcessingActive,
 			activePreset: data.activePreset ?? null,
 			canUpdateRightNow: data.canSendPostProcessingUpdateRequestRightNow ?? false,
 		};

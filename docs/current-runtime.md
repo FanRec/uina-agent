@@ -180,24 +180,26 @@ shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计�
 | --- | --- |
 | express / cue 短手势 | `nod` 点头应声、`shake` 摇头否认、`wink` 左眼俏皮眨眼、`curious` 侧歪打量、`chin_up` 得意昂头、`head_toss` 哼一下 |
 | express / cue 反应与视线 | `alert` 凝神警觉、`startle` 吓一跳、`surprise` 惊讶一顿、`glance` 偷瞄一眼、`eye_roll` 无语望天、`double_take` 再看一眼 |
-| express / cue 空间手势 | `joy_hop` 雀跃一弹：预备下沉、主弹、落点、小余弹、归位 |
-| posture | `rest` 自然站定、`tuck` 垂头收起、`head_back` 仰头放松，仅控制头部 |
-| expression | `smile` 明朗笑、`smirk` 半眯坏笑、`clear_face` 清除表情；smirk 嘴形与双眼开度均约 0.55，无偏嘴承诺 |
-| attention | `user`、`screen`、`avert_down`、`avert_left`、`avert_right` 或既有坐标目标 |
-| ambient | `sway` 左右摇摆（皮套式循环晃动，头部增量经 followers 带动身体）：选择后持续保持并与说话/表情/视线并存，替换内部轻晃成为静止态背景；再次调用可替换，不传 name 清除回落 |
+| express / cue 空间手势 | `joy_hop` 雀跃一弹、`petrify` 石化、`close_up` 贴脸、`edge_peek` 边缘探头、`spin` 转圈（目录已装配，真实视觉验收分别确认） |
+| state.posture | `rest` 自然站定、`tuck` 垂头收起、`head_back` 仰头放松，仅控制头部 |
+| state.expression | `smile` 明朗笑、`smirk` 半眯坏笑、`clear_face` 清除表情；smirk 嘴形与双眼开度均约 0.55，无偏嘴承诺 |
+| state.attention | `user`、`screen`、`avert_down`、`avert_left`、`avert_right` 或既有坐标目标 |
+| state.ambient | `sway` 左右摇摆（皮套式循环晃动，头部增量经 followers 带动身体）：选择后持续保持并与说话/表情/视线并存，替换内部轻晃成为静止态背景；再次调用可替换，不传 name 清除回落 |
 | 内部背景 | 3.8 秒不对称轻晃；思考时持续上侧目光与歪头，每约 3.6 秒轻微重新定向 |
 
-`greeting/lean/brighten` 和 `wave` 别名已从 MO 目录删除，不保留兼容层；打招呼可组合点头与笑。工具职责和参数形状不变，姿态、表情、注视分别持有持续意图，express/cue 播放有限动作。音乐、freeze、气鼓鼓、偏嘴、贴脸、边缘探头和转圈未发布；模型资源、VTS 保存绑定未修改。
+`greeting/lean/brighten` 和 `wave` 别名已从 MO 目录删除，不保留兼容层；打招呼可组合点头与笑。工具已收敛为 express/state/costume/status/reload；姿态、表情、注视、环境通过 state 分别持有持续意图，express/cue 播放有限动作。音乐、气鼓鼓和偏嘴未发布；本次重构未修改模型资源、VTS 保存绑定或动作内容。
 
 头部手势为姿态增量，按当前姿态剩余范围同比缩小；普通手势不写入持续表情。作者关键帧分别设计快慢、停顿、眼先头后与回弹，惊吓透传短入场和弹簧速度重置。临时眼睑控制暂停自动眨眼，退出平滑交还最新表情；持续半眯仍正常眨眼。临时视线退出从当前眼球输出在约 120ms 内交还最新有效 attention。惊吓、惊讶的短暂张嘴与既有语音口型混合；嘴部接管与交还使用语音混合前的平滑开度作为起点，语音只混合一次。
 
 背景由同一 director 实例循环有限片段，遮挡期间相位仍推进；前景头部动作约 200ms 压低背景，约 450ms 恢复。思考约 350ms 入场、450ms 收势。失焦冻结；safeStop 取消实例并保留有效状态，resume 重建背景。MO 原有头部正弦微晃已被作者轻晃替代，呼吸仍由 VTS 提供。
 
-ambient 是静止态背景的可选形态：与 idle 互斥占据同一槽位（autonomic 类别、loop、background、atomic:false，播放参数与 idle 一致），选中时停旧实例换播、清除后回落 idle；thinking（transition 类）照旧叠加。选中项不在当前目录快照时诚实回落 idle。环境循环命名与别名纳入目录全局唯一命名空间，与动作/姿态/表情/注视/外观冲突即在绑定期拒绝。回合打断与 safeStop 不清除选中（与姿态同级的持续意图）；内置微晃在 idle 有定义或 ambient 选中期间禁用，避免双重摆动。
+state.ambient 是静止态背景的可选形态：与 idle 互斥占据同一槽位（autonomic 类别、loop、background、atomic:false，播放参数与 idle 一致），选中时停旧实例换播、清除后回落 idle；thinking（transition 类）照旧叠加。选中项不在当前目录快照时诚实回落 idle。环境循环命名与别名纳入目录全局唯一命名空间，与动作/姿态/表情/注视/外观冲突即在绑定期拒绝。回合打断与 safeStop 不清除选中（与姿态同级的持续意图）；内置微晃在 idle 有定义或 ambient 选中期间禁用，避免双重摆动。
 
 雀跃独占 `model:transform`，以五次 VTS 原生分段移动推进，不发送逐帧空间请求。取消、失焦、回合打断或异常切断关联参数动作并执行归位清理，清理结算后释放占用；失焦期间新空间请求以 cancelled / not_started 返回，回焦不会续播旧空间表演。每段与归位前校验设备模型身份、目录代次、连接代次和模型代次，避免把旧位姿写给新模型。归位回读失败或失联保留未知。参数反馈复用客户端逐播放注入观察，只计入本次真实合成贡献；完成时仅等待已发请求，取消不等待确认。没有本次所需输入接受证据即返回 unknown；姿态、表情、注视只报告 local_intent。`restored` 单独描述空间归位。
 
-空间特技分段可携带段级 effects（染色/后处理，绝对状态，与 delta 正交）：进入段即派发，染色为即时全模型（白为官方重置，协议无读回），后处理为场景级滤镜（preset 渐变 0-2 秒，VTS 配置窗口打开时 CannotUpdateRightNow 拒绝透传）。效果与位姿同段顺序派发，效果失败仅记录继续，位姿失败沿用中止语义。效果归位由运行时守护统一执行（仅特技分发过效果才触发，不踩用户自有染色/滤镜）：染色刷白、后处理恢复进入时开关与具名 preset（无捕获按关闭），保真仅此两项——其余滤镜参数经 setAllOtherValuesToDefault 重置为默认，不逐项保真；恢复读回核对开关（基线带具名 preset 时连 preset 一并核对），分发失败或恢复不完整即分项如实 unknown（`restoredEffects: {tint, post}`）。末段不得携带 effects（编译期拒绝），作者不书写重置值。
+空间特技分段可携带段级 effects（染色/后处理）。external-actions 统一拥有位姿、效果和外观请求的执行及清理：只恢复自己尝试发送的项，纯效果不移动模型，效果动作与外观请求共享 effect:* 独占。需要 post 时先捕获有效开关/preset 基线，读取失败或开关字段缺失即发送前 failed/not_started；仅 tint 不读写 post。恢复前后核验模型、连接与目录代次，失效后不向新环境写旧状态；位姿读回、tint 白色请求接受、post 开关及具名 preset 分别核验，不保证所有滤镜值逐项保真。details.cleanup 为 not_needed/confirmed/unknown，restored/restoredEffects 由它派生。必要清理未知时普通完成 unknown，取消保留 cancelled 并明确未知。safeStop 等待外部请求与完整分项事实，清理未知不再漏报；暂停取消持续状态的等待而保留意图，resume 继续剩余过渡并允许新执行，不自动重发或恢复，最近未知诊断保留。
+
+2026-10-13 架构重构：目录编译前隔离作者数据，提供 resolve/list/resolveCue 冻结记录，无公开 Map 或重复解释器；MO sway 中文别名可执行。state 一次预校验并绑定目录代次，cue 复用同一准入与执行，拒绝不记 started。生产 Worker 与进程内装配同源；预取消零投递，运行取消等待结构化清理结论，线程退出撤销全部登记与订阅并使保留引用离线，迟到 sync 不复活。启动回滚及正常停止聚合错误而释放资源，context abort 与 onStop 保留在途结果。当前完整合同见 [Live2D World 运行合同](live2d-world-runtime.md)。以下历史验证记录仅证明对应当次运行，不代替重构后的自动验证或真实设备验收。
 
 2026-10-11 验证边界：`pnpm typecheck`（格式、8 条依赖边界、TypeScript）通过；16 个相关 Live2D 测试文件、108 项通过，未运行全仓、Provider 或音乐集成。定向回归覆盖实际 director → 弹簧/平滑/补偿 → 注入观察链，包括 Wink/自动眨眼、最新 attention 交还、背景跨周期/冻结/恢复、讲话口型混合、雀跃取消/异常/未到 ACK/模型更换、旧 ACK 不计入新播放，以及已连接客户端启动时钟。真实 VTS/MO 已检查 Wink、两种笑容与部分头部/反应关键姿势；雀跃完整执行取得本次输入接受与归位回读证据，预览结束后原构图误差小于 0.000001，并恢复原输入。关键姿势截图不能证明完整节奏的自然度；完整静音三组对照及真实讲话状态的视觉验收仍未完成。后续调节继续只针对幅度、停顿、先后和收势。
 

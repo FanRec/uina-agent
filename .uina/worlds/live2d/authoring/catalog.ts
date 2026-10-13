@@ -25,26 +25,22 @@ export type AttentionTarget =
 	| "avert_right";
 
 /** 内置注视方向词表（引擎具名瞄准，非目录命名）。目录命名不得与之重复。 */
-export const BUILTIN_ATTENTIONS: readonly Extract<AttentionTarget, string>[] = [
-	"user",
-	"screen",
-	"avert_down",
-	"avert_left",
-	"avert_right",
-];
+export const BUILTIN_ATTENTIONS: readonly Extract<AttentionTarget, string>[] = Object.freeze<
+	Extract<AttentionTarget, string>[]
+>(["user", "screen", "avert_down", "avert_left", "avert_right"]);
 
 /** 内置注视的中文朴素别名映射。 */
-export const BUILTIN_ATTENTION_ALIASES: Readonly<Record<string, Extract<AttentionTarget, string>>> = {
-	"看对方": "user",
-	"用户": "user",
-	"看用户": "user",
-	"看屏幕": "screen",
-	"屏幕": "screen",
-	"看下方": "avert_down",
-	"垂眸": "avert_down",
-	"看左侧": "avert_left",
-	"看右侧": "avert_right",
-};
+export const BUILTIN_ATTENTION_ALIASES: Readonly<Record<string, Extract<AttentionTarget, string>>> = Object.freeze({
+	看对方: "user",
+	用户: "user",
+	看用户: "user",
+	看屏幕: "screen",
+	屏幕: "screen",
+	看下方: "avert_down",
+	垂眸: "avert_down",
+	看左侧: "avert_left",
+	看右侧: "avert_right",
+});
 
 /**
  * 段级外部效果（绝对状态，进入段即生效）：与 delta（相对基准的数值偏移）正交。
@@ -160,55 +156,83 @@ export interface CatalogBackground {
 
 export type CatalogKind = "motion" | "posture" | "expression" | "attention" | "ambient" | "costume";
 export interface CatalogEntries {
- motion: CatalogMotionEntry; posture: CatalogSlotEntry; expression: CatalogSlotEntry;
- attention: CatalogAttentionEntry; ambient: CatalogAmbientEntry; costume: CatalogCostumeEntry;
+	motion: CatalogMotionEntry;
+	posture: CatalogSlotEntry;
+	expression: CatalogSlotEntry;
+	attention: CatalogAttentionEntry;
+	ambient: CatalogAmbientEntry;
+	costume: CatalogCostumeEntry;
 }
 export interface CatalogResolved<K extends CatalogKind> {
- readonly kind: K; readonly name: string; readonly aliases: readonly string[]; readonly entry: Readonly<CatalogEntries[K]>;
+	readonly kind: K;
+	readonly name: string;
+	readonly aliases: readonly string[];
+	readonly entry: Readonly<CatalogEntries[K]>;
 }
 /** 索引私有，消费者只获得冻结记录；不能通过 Map.set 或原始作者对象修改快照。 */
 export interface CatalogSnapshot {
- readonly modelID: string;
- readonly background: Readonly<{ idle?: CompiledMotion; thinking?: CompiledMotion }>;
- resolve<K extends CatalogKind>(kind: K, nameOrAlias: string): CatalogResolved<K> | undefined;
- list<K extends CatalogKind>(kind: K): readonly CatalogResolved<K>[];
- resolveCue(nameOrAlias: string): CatalogResolved<"motion"> | CatalogResolved<"posture"> | undefined;
+	readonly modelID: string;
+	readonly background: Readonly<{ idle?: CompiledMotion; thinking?: CompiledMotion }>;
+	resolve<K extends CatalogKind>(kind: K, nameOrAlias: string): CatalogResolved<K> | undefined;
+	list<K extends CatalogKind>(kind: K): readonly CatalogResolved<K>[];
+	resolveCue(nameOrAlias: string): CatalogResolved<"motion"> | CatalogResolved<"posture"> | undefined;
 }
 function freezeContent<T>(value: T, seen = new WeakSet<object>()): T {
- if (value && typeof value === "object" && !seen.has(value)) {
-  seen.add(value);
-  for (const child of Object.values(value)) freezeContent(child, seen);
-  Object.freeze(value);
- }
- return value;
+	if (value && typeof value === "object" && !seen.has(value)) {
+		seen.add(value);
+		for (const child of Object.values(value)) freezeContent(child, seen);
+		Object.freeze(value);
+	}
+	return value;
 }
 function catalogBuilder(modelID: string) {
- const owners = new Map<string, string>();
- const records = new Map<CatalogKind, CatalogResolved<CatalogKind>[]>();
- const indexes = new Map<CatalogKind, Map<string, CatalogResolved<CatalogKind>>>();
- const add = <K extends CatalogKind>(kind: K, name: string, entry: CatalogEntries[K], aliases: readonly string[] = []) => {
-  const record = freezeContent({ kind, name, aliases, entry });
-  const list = records.get(kind) ?? []; const index = indexes.get(kind) ?? new Map();
-  for (const word of [name, ...aliases]) {
-   const owner = owners.get(word);
-   if (owner) throw new Error(`命名冲突: "${word}" 已被 ${owner} 占用（目录命名空间全局唯一）`);
-   owners.set(word, `${kind}.${name}`); index.set(word, record);
-  }
-  list.push(record); records.set(kind, list); indexes.set(kind, index);
- };
- for (const name of BUILTIN_ATTENTIONS) add("attention", name, { description: name, target: name }, Object.entries(BUILTIN_ATTENTION_ALIASES).filter(([, target]) => target === name).map(([alias]) => alias));
- const resolve = <K extends CatalogKind>(kind: K, word: string): CatalogResolved<K> | undefined => indexes.get(kind)?.get(word) as CatalogResolved<K> | undefined;
- return {
-  add,
-  finish(background: CatalogSnapshot["background"]): CatalogSnapshot {
-   for (const list of records.values()) Object.freeze(list);
-   const empty = Object.freeze([]);
-   return Object.freeze({ modelID, background: freezeContent(background), resolve,
-    list: <K extends CatalogKind>(kind: K) => (records.get(kind) ?? empty) as readonly CatalogResolved<K>[],
-    resolveCue: (word: string) => resolve("motion", word) ?? resolve("posture", word),
-   });
-  }
- };
+	const owners = new Map<string, string>();
+	const records = new Map<CatalogKind, CatalogResolved<CatalogKind>[]>();
+	const indexes = new Map<CatalogKind, Map<string, CatalogResolved<CatalogKind>>>();
+	const add = <K extends CatalogKind>(
+		kind: K,
+		name: string,
+		entry: CatalogEntries[K],
+		aliases: readonly string[] = [],
+	) => {
+		const record = freezeContent({ kind, name, aliases, entry });
+		const list = records.get(kind) ?? [];
+		const index = indexes.get(kind) ?? new Map();
+		for (const word of [name, ...aliases]) {
+			const owner = owners.get(word);
+			if (owner) throw new Error(`命名冲突: "${word}" 已被 ${owner} 占用（目录命名空间全局唯一）`);
+			owners.set(word, `${kind}.${name}`);
+			index.set(word, record);
+		}
+		list.push(record);
+		records.set(kind, list);
+		indexes.set(kind, index);
+	};
+	for (const name of BUILTIN_ATTENTIONS)
+		add(
+			"attention",
+			name,
+			{ description: name, target: name },
+			Object.entries(BUILTIN_ATTENTION_ALIASES)
+				.filter(([, target]) => target === name)
+				.map(([alias]) => alias),
+		);
+	const resolve = <K extends CatalogKind>(kind: K, word: string): CatalogResolved<K> | undefined =>
+		indexes.get(kind)?.get(word) as CatalogResolved<K> | undefined;
+	return {
+		add,
+		finish(background: CatalogSnapshot["background"]): CatalogSnapshot {
+			for (const list of records.values()) Object.freeze(list);
+			const empty = Object.freeze([]);
+			return Object.freeze({
+				modelID,
+				background: freezeContent(background),
+				resolve,
+				list: <K extends CatalogKind>(kind: K) => (records.get(kind) ?? empty) as readonly CatalogResolved<K>[],
+				resolveCue: (word: string) => resolve("motion", word) ?? resolve("posture", word),
+			});
+		},
+	};
 }
 export const emptyCatalog = (modelID: string): CatalogSnapshot => catalogBuilder(modelID).finish({});
 
@@ -274,8 +298,7 @@ export function compileCatalog(
 							throw new Error(`${label} 染色通道 ${channel} 必须是 0-255 整数: ${value}`);
 				}
 				if (effects.postProcessing !== undefined) {
-					if (typeof effects.postProcessing.on !== "boolean")
-						throw new Error(`${label} 后处理 on 必须是布尔值`);
+					if (typeof effects.postProcessing.on !== "boolean") throw new Error(`${label} 后处理 on 必须是布尔值`);
 					const { fadeTime, values, preset } = effects.postProcessing;
 					if (fadeTime !== undefined && (!Number.isFinite(fadeTime) || fadeTime < 0 || fadeTime > 2))
 						throw new Error(`${label} 后处理渐变时间必须是 0-2 秒: ${fadeTime}`);
@@ -283,13 +306,14 @@ export function compileCatalog(
 					if (values !== undefined && preset !== undefined)
 						throw new Error(`${label} 后处理 values 与 preset 互斥，只能二选一`);
 					if (values !== undefined) {
-						if (!Array.isArray(values) || values.length === 0)
-							throw new Error(`${label} 后处理 values 必须是非空数组`);
+						if (!Array.isArray(values) || values.length === 0) throw new Error(`${label} 后处理 values 必须是非空数组`);
 						for (const item of values) {
 							if (typeof item?.id !== "string" || item.id.length === 0)
 								throw new Error(`${label} 后处理 values 项缺少 configID: ${JSON.stringify(item)}`);
 							if (!["number", "string"].includes(typeof item.value))
-								throw new Error(`${label} 后处理 config "${item.id}" 的值必须是 number 或 string: ${JSON.stringify(item)}`);
+								throw new Error(
+									`${label} 后处理 config "${item.id}" 的值必须是 number 或 string: ${JSON.stringify(item)}`,
+								);
 						}
 					}
 				}
@@ -335,7 +359,10 @@ export function compileCatalog(
 				if (!rig.controls[axis]) throw new Error(`动作 "${name}" 抑制未声明轴: ${axis}`);
 		}
 		// 变体池：附加变体逐个编译（非法定义即抛）；池总数 ≥ 2 才构成轮换，空池拒绝。
-		const variants = entry.variants?.map((definition) => ({ definition, motion: compileMotion(definition, rig.controls) }));
+		const variants = entry.variants?.map((definition) => ({
+			definition,
+			motion: compileMotion(definition, rig.controls),
+		}));
 		if (entry.variants !== undefined && (variants?.length ?? 0) < 1)
 			throw new Error(`动作 "${name}" 变体池为空：主定义 + 变体必须 ≥ 2 才构成轮换`);
 		motions.set(name, {
@@ -366,21 +393,25 @@ export function compileCatalog(
 	// 环境循环：绑定期编译（非法定义即抛），命名与别名同受全局唯一命名空间约束。
 	const ambientSource = new Map<string, { description: string; aliases?: readonly string[]; motion: CompiledMotion }>();
 	for (const [name, entry] of Object.entries(source.background?.ambient ?? {}))
-		ambientSource.set(name, { description: entry.description, aliases: entry.aliases, motion: compileMotion(entry.motion, rig.controls) });
+		ambientSource.set(name, {
+			description: entry.description,
+			aliases: entry.aliases,
+			motion: compileMotion(entry.motion, rig.controls),
+		});
 	const attentions = take(source.attentions);
 	for (const name of attentions.keys()) {
 		if ((BUILTIN_ATTENTIONS as readonly string[]).includes(name))
 			throw new Error(`注视命名 "${name}" 与引擎内置词表冲突`);
 	}
- const builder = catalogBuilder(modelID);
- for (const [name, entry] of motions) builder.add("motion", name, entry, entry.aliases);
- for (const [name, entry] of postures) builder.add("posture", name, entry, entry.aliases);
- for (const [name, entry] of expressions) builder.add("expression", name, entry, entry.aliases);
- for (const [name, entry] of attentions) builder.add("attention", name, entry);
- for (const [name, entry] of ambientSource) builder.add("ambient", name, entry, entry.aliases);
- for (const entry of source.costumes ?? []) builder.add("costume", entry.id, entry);
- return builder.finish({
-  thinking: source.background?.thinking ? compileMotion(source.background.thinking, rig.controls) : undefined,
-  idle: source.background?.idle ? compileMotion(source.background.idle, rig.controls) : undefined,
- });
+	const builder = catalogBuilder(modelID);
+	for (const [name, entry] of motions) builder.add("motion", name, entry, entry.aliases);
+	for (const [name, entry] of postures) builder.add("posture", name, entry, entry.aliases);
+	for (const [name, entry] of expressions) builder.add("expression", name, entry, entry.aliases);
+	for (const [name, entry] of attentions) builder.add("attention", name, entry);
+	for (const [name, entry] of ambientSource) builder.add("ambient", name, entry, entry.aliases);
+	for (const entry of source.costumes ?? []) builder.add("costume", entry.id, entry);
+	return builder.finish({
+		thinking: source.background?.thinking ? compileMotion(source.background.thinking, rig.controls) : undefined,
+		idle: source.background?.idle ? compileMotion(source.background.idle, rig.controls) : undefined,
+	});
 }

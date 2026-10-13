@@ -1,2 +1,9 @@
 *.ckpt filter=lfs diff=lfs merge=lfs -text
 *.pth filter=lfs diff=lfs merge=lfs -text
+
+# Live2D formatter scope must remain LF even with user core.autocrlf=true.
+/.uina/worlds/live2d/**/*.ts text eol=lf
+/.uina/worlds/live2d/**/*.mjs text eol=lf
+/tests/live2d-*.ts text eol=lf
+/tests/fixtures/live2d-worker.mjs text eol=lf
+/biome.json text eol=lf

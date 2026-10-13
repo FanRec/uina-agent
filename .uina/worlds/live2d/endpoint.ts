@@ -65,7 +65,13 @@ export function buildLive2DEndpoint(runtime: Live2DRuntime): Live2DEndpoint {
 		bodyType: "avatar_2d",
 		affordance: () => {
 			const view = runtime.catalogView;
-   const cues: ExpressiveCueDef[] = [...view.list("motion"), ...view.list("posture")].map(({ name: id, entry, aliases, kind }) => ({ id, description: kind === "posture" ? `[姿态] ${entry.description}` : entry.description, ...(aliases.length ? { aliases } : {}) }));
+			const cues: ExpressiveCueDef[] = [...view.list("motion"), ...view.list("posture")].map(
+				({ name: id, entry, aliases, kind }) => ({
+					id,
+					description: kind === "posture" ? `[姿态] ${entry.description}` : entry.description,
+					...(aliases.length ? { aliases } : {}),
+				}),
+			);
 			return {
 				bodyId: "live2d",
 				bodyType: "avatar_2d",
@@ -75,13 +81,18 @@ export function buildLive2DEndpoint(runtime: Live2DRuntime): Live2DEndpoint {
 		},
 		state,
 		supportsCue: (cueId) => resolveCue(cueId) !== undefined,
-  emitCue: (id) => {
-   const entry = emitRecord(id);
-   void runtime.executeCue(id, () => updateRecord(entry, "started")).then((result) => {
-    const reason = (result.details as { reason?: string } | undefined)?.reason ?? (result.status === "succeeded" ? undefined : result.status);
-    updateRecord(entry, entry.state === "received" ? "rejected" : "finished", reason);
-   }).catch(() => updateRecord(entry, entry.state === "received" ? "rejected" : "finished", "execution_failed"));
-  },
+		emitCue: (id) => {
+			const entry = emitRecord(id);
+			void runtime
+				.executeCue(id, () => updateRecord(entry, "started"))
+				.then((result) => {
+					const reason =
+						(result.details as { reason?: string } | undefined)?.reason ??
+						(result.status === "succeeded" ? undefined : result.status);
+					updateRecord(entry, entry.state === "received" ? "rejected" : "finished", reason);
+				})
+				.catch(() => updateRecord(entry, entry.state === "received" ? "rejected" : "finished", "execution_failed"));
+		},
 		safeStop: () => runtime.safeStop(),
 		resume: () => runtime.resume(),
 		/** 回合打断（§3）：取消瞬时动作、口型直清、不进入 paused；thinking 停止随 P4-4 宿主事件接入。 */

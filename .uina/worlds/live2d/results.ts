@@ -1,3 +1,6 @@
+import type { ModelRig } from "./adapter/rig.js";
+import type { MotionHandle } from "./director/director.js";
+import type { CompiledMotion } from "./authoring/motion.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import type { SomaticActionResult } from "./director/director.js";
 import type { MotionInjectionEvidence, VTSClient } from "./adapter/vts-client.js";
@@ -18,8 +21,8 @@ export type Verification = "local_intent" | "input_accepted";
  *  分类规则：调用方格式错误（缺参/类型错）→ invalid_*；环境/词表事实不满足 → unknown_* / 专属词。 */
 export type RejectReason =
 	| "cancelled"
- | "unknown_cue"
- | "effect_baseline_unavailable"
+	| "unknown_cue"
+	| "effect_baseline_unavailable"
 	| "paused"
 	| "model_not_ready"
 	| "unadapted"
@@ -115,13 +118,13 @@ export function fromEngineResult(
 	}
 }
 
-import type { ModelRig } from "./adapter/rig.js";
-import type { MotionHandle } from "./director/director.js";
-import type { CompiledMotion } from "./authoring/motion.js";
 export function withCancellation<T>(request: Promise<T>, signal: AbortSignal): Promise<T> {
 	return new Promise((resolve, reject) => {
-		const abort = () => reject(signal.reason);
 		const cleanup = () => signal.removeEventListener("abort", abort);
+		const abort = () => {
+			cleanup();
+			reject(signal.reason);
+		};
 		request.then(
 			(value) => {
 				cleanup();
@@ -138,22 +141,20 @@ export function withCancellation<T>(request: Promise<T>, signal: AbortSignal): P
 }
 
 export async function settleMotion(
- client: VTSClient, rig: ModelRig,
-		handle: MotionHandle,
-		clip: CompiledMotion,
-		label: string,
-		callName?: string,
-	): Promise<ToolExecutionResult> {
-		const observation = client.observeMotionInjections(handle.id);
-		try {
-			const result = await handle.finished;
-			const evidence = result.status === "completed" ? await observation.finish() : observation.snapshot();
-			const inputs = [
-				...new Set(clip.axes.flatMap((axis) => rig.bindings[axis]!.map((binding) => binding.input))),
-			];
-			return fromEngineResult(result, label, evidence, inputs, callName);
-		} finally {
-			observation.close();
-		}
+	client: VTSClient,
+	rig: ModelRig,
+	handle: MotionHandle,
+	clip: CompiledMotion,
+	label: string,
+	callName?: string,
+): Promise<ToolExecutionResult> {
+	const observation = client.observeMotionInjections(handle.id);
+	try {
+		const result = await handle.finished;
+		const evidence = result.status === "completed" ? await observation.finish() : observation.snapshot();
+		const inputs = [...new Set(clip.axes.flatMap((axis) => rig.bindings[axis]!.map((binding) => binding.input)))];
+		return fromEngineResult(result, label, evidence, inputs, callName);
+	} finally {
+		observation.close();
 	}
-
+}

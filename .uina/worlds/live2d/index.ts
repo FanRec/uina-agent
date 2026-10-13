@@ -137,9 +137,19 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 					},
 				},
 				run: call("status", async (rt, args) => {
-     try { return { result: args.detail === true ? await rt.diagnose() : await rt.formatStatus(), status: "succeeded" }; }
-     catch (error) { return { result: `Live2D 状态读取失败：${error instanceof Error ? error.message : String(error)}`, status: "failed", details: { reason: (error as { reason?: string }).reason ?? "engine_error" } }; }
-    }),
+					try {
+						return {
+							result: args.detail === true ? await rt.diagnose() : await rt.formatStatus(),
+							status: "succeeded",
+						};
+					} catch (error) {
+						return {
+							result: `Live2D 状态读取失败：${error instanceof Error ? error.message : String(error)}`,
+							status: "failed",
+							details: { reason: (error as { reason?: string }).reason ?? "engine_error" },
+						};
+					}
+				}),
 			},
 			reload: {
 				description: "重载模型并核验绑定。改了模型配置后用。",

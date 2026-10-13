@@ -1,7 +1,15 @@
 {
 	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
 	"files": {
-		"includes": ["src/**", "tests/**", "scripts/**", "examples/**", "vitest.config.ts"]
+		"includes": [
+			"src/**",
+			"tests/**",
+			"scripts/**",
+			"examples/**",
+			"vitest.config.ts",
+			".uina/worlds/live2d/**/*.ts",
+			".uina/worlds/live2d/**/*.mjs"
+		]
 	},
 	"formatter": {
 		"enabled": true,

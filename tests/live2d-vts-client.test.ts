@@ -20,6 +20,7 @@ class Device implements WebSocketLike {
 	authDenied = false;
 	postProcessingState = { active: false, activePreset: null as string | null, canUpdateRightNow: true };
 	postUpdateError = false;
+	omitPostStatus = false;
 
 	send(raw: string, cb?: (err?: Error) => void): void {
 		const r = JSON.parse(raw);
@@ -43,7 +44,7 @@ class Device implements WebSocketLike {
 				break;
 			case "PostProcessingListRequest":
 				data = {
-					postProcessingActive: this.postProcessingState.active,
+					...(this.omitPostStatus ? {} : { postProcessingActive: this.postProcessingState.active }),
 					...(this.postProcessingState.activePreset !== null
 						? { activePreset: this.postProcessingState.activePreset }
 						: {}),
@@ -296,6 +297,16 @@ describe("live2d vts-client（移植行为验证）", () => {
 		}
 	});
 
+	it("缺失后处理开关字段不能被猜成关闭基线", async () => {
+		const device = new Device();
+		const { client } = await readyClient(device);
+		device.omitPostStatus = true;
+		try {
+			await expect(client.readPostProcessing()).rejects.toThrow("后处理");
+		} finally {
+			client.disconnect();
+		}
+	});
 	it("tintModel/updatePostProcessing/readPostProcessing：序列化、非法拒绝与协议错误透传", async () => {
 		const device = new Device();
 		const { client } = await readyClient(device);

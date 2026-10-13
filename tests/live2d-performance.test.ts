@@ -117,7 +117,7 @@ class Device implements WebSocketLike {
 const clients: VTSClient[] = [];
 const runtimes: Live2DRuntime[] = [];
 afterEach(async () => {
- await Promise.allSettled(runtimes.splice(0).map((runtime) => runtime.stop()));
+	await Promise.allSettled(runtimes.splice(0).map((runtime) => runtime.stop()));
 	for (const client of clients.splice(0)) client.disconnect();
 	vi.useRealTimers();
 });
@@ -201,7 +201,8 @@ async function connectedEffects() {
 	for (let i = 0; i < 60; i++) await Promise.resolve();
 	expect(client.isConnected()).toBe(true);
 	const runtime = new Live2DRuntime({ rig, catalog, client, rng: () => 0, tickIntervalMs: 1_000_000 });
- await runtime.start({} as never); runtimes.push(runtime);
+	await runtime.start({} as never);
+	runtimes.push(runtime);
 	return { runtime, device, client, rig, catalog };
 }
 
@@ -232,7 +233,8 @@ async function connected(tickIntervalMs = 1_000_000) {
 	for (let i = 0; i < 60; i++) await Promise.resolve();
 	expect(client.isConnected()).toBe(true);
 	const runtime = new Live2DRuntime({ rig, catalog, client, rng: () => 0, tickIntervalMs });
- await runtime.start({} as never); runtimes.push(runtime);
+	await runtime.start({} as never);
+	runtimes.push(runtime);
 	return { runtime, device, client, rig, catalog };
 }
 

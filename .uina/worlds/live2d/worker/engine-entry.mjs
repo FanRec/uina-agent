@@ -12,9 +12,10 @@ import { parentPort } from "node:worker_threads";
 if (!parentPort) throw new Error("engine-entry.mjs 只能作为 worker_threads 入口运行");
 
 const jiti = createJiti(import.meta.url, { moduleCache: false, tryNative: false });
-const engineModule = /** @type {{ attachEngine: (post: (msg: unknown) => void) => { onMessage: (msg: unknown) => void } }} */ (
-	await jiti.import("./engine.ts")
-);
+const engineModule =
+	/** @type {{ attachEngine: (post: (msg: unknown) => void) => { onMessage: (msg: unknown) => void } }} */ (
+		await jiti.import("./engine.ts")
+	);
 
 const port = parentPort;
 const engine = engineModule.attachEngine((msg) => port.postMessage(msg));

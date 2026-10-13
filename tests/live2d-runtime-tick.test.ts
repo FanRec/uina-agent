@@ -88,10 +88,17 @@ const makeFakeClient = (options: { connected?: boolean; modelID?: string } = {})
 };
 
 const runtimes: Live2DRuntime[] = [];
-afterEach(async () => { await Promise.allSettled(runtimes.splice(0).map((rt) => rt.stop())); });
-const makeRuntime = async (client: VTSClient, options: Partial<ConstructorParameters<typeof Live2DRuntime>[0]> = {}) => {
- const rt = new Live2DRuntime({ client, rig: makeRig(), tickIntervalMs: 1_000_000, ...options });
- await rt.start({} as never); runtimes.push(rt); return rt;
+afterEach(async () => {
+	await Promise.allSettled(runtimes.splice(0).map((rt) => rt.stop()));
+});
+const makeRuntime = async (
+	client: VTSClient,
+	options: Partial<ConstructorParameters<typeof Live2DRuntime>[0]> = {},
+) => {
+	const rt = new Live2DRuntime({ client, rig: makeRig(), tickIntervalMs: 1_000_000, ...options });
+	await rt.start({} as never);
+	runtimes.push(rt);
+	return rt;
 };
 
 describe("live2d runtime tick 合成（P2-3）", async () => {
@@ -145,7 +152,8 @@ describe("live2d runtime tick 合成（P2-3）", async () => {
 	it("无 rig（装配失败降级）时零输出且 director 不存在", async () => {
 		const { client, state } = makeFakeClient();
 		const rt = new Live2DRuntime({ client, tickIntervalMs: 1_000_000 });
- await rt.start({} as never); runtimes.push(rt);
+		await rt.start({} as never);
+		runtimes.push(rt);
 		expect(rt.director).toBeUndefined();
 		rt.composeTick(16);
 		expect(state.injected).toHaveLength(0);

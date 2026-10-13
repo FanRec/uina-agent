@@ -176,7 +176,7 @@ interface HandoffFade {
 }
 
 interface InternalClaim {
- offAbort?: () => void;
+	offAbort?: () => void;
 	id: string;
 	resources: Set<string>;
 	cleanup: boolean;
@@ -516,7 +516,10 @@ export class MotionDirector {
 		if (options.signal) {
 			const abort = () => controller.abort();
 			if (options.signal.aborted) abort();
-			else { options.signal.addEventListener("abort", abort, { once: true }); claim.offAbort = () => options.signal!.removeEventListener("abort", abort); }
+			else {
+				options.signal.addEventListener("abort", abort, { once: true });
+				claim.offAbort = () => options.signal!.removeEventListener("abort", abort);
+			}
 		}
 		return {
 			id: claim.id,
@@ -529,7 +532,7 @@ export class MotionDirector {
 
 	private releaseClaim(claim: InternalClaim): void {
 		if (!this.claims.delete(claim)) return;
- claim.offAbort?.();
+		claim.offAbort?.();
 		claim.controller.abort();
 	}
 

@@ -133,7 +133,7 @@ const harness = async (connected = true): Promise<Harness> => {
 		runtimeFactory: (onStatusChange) =>
 			new Live2DRuntime({
 				client: fake.client,
- onStatusChange,
+				onStatusChange,
 				rig: makeRig(),
 				catalog: compileCatalog(MODEL_ID, makeCatalogSource(), makeRig()),
 				speech: {
