@@ -20,6 +20,7 @@
     "format": "biome format --write .",
     "format:check": "biome format .",
     "dev:baseline": "node dev/baseline.mjs",
+    "mo:preview": "tsx scripts/mo-preview.mts",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "verify:cli": "tsx scripts/verify-built-cli.mts",
     "verify:file-events": "tsx scripts/verify-file-events.mts",

@@ -28,6 +28,7 @@
 | `offset` | `(curve) => Channel` | baseline-offset 增量通道 |
 | `withSpeech` | `(authoring, policy) => MotionAuthoring` | express 的 speech 覆写（mouth.open 通道策略改写） |
 | `keys` | `(points, curve? = "smooth") => Curve` | 测量/标定型关键帧 → 分段插值曲线（域外 clamp，不外推） |
+| `elastic` | `(ms, peak, bounces? = 2) => Curve` | Q 弹振荡：冲出 peak 后对称衰减回零（首尾无条件归零）。中点幅度恰为 peak，符号随 bounces 奇偶；需要前偏单主峰等不对称形状时用 keys 手绘 |
 | `smooth` | `(phase) => number` | 五次 smootherstep（0..1 → 0..1），与旧默认曲线手感一致 |
 
 新助手准入：rule of three——第三个手写重复出现时才提取。
@@ -46,8 +47,11 @@
   （f(durationMs) = f(0)），不加检测机制。
 - **语音**：`mouth.open` 通道的 `speech: "exclusive"` 压制 TTS 口型包络（gain=0）；
   段间平滑由作者曲线本身负责。
-- **采样期 NaN = 响亮失败**：异常沿 tick 上抛，worker 线程死亡、world 离线可见。
-  不做静默跳帧——单人项目，响亮优于自欺；dev 阶段的动作测试负责拦截。
+- **采样期 NaN = 故障停车**：bake 探测网格（16ms，≤512 点）可能漏掉网格间隙内的病态分支；
+  运行期采样异常在 composeTick 捕获——fault 登记、时钟停止、口型中性单帧注入、播放结算
+  cancelled、工具以 `fault` 拒绝（恢复 = 重载 world）。**不**静默跳帧：失败必须可见；
+  也**不**让异常杀死 worker——线程死亡会连带摧毁在途 spatial 清理能力。
+  dev 阶段的动作测试负责在故障停车之前拦截病态曲线。
 
 ## 示例
 
@@ -59,12 +63,15 @@ const nod = motion(950, {
 	"head.pitch": offset((t) => -9.8 * Math.sin((Math.PI * Math.min(t / 950, 1)) ** 2)),
 });
 
-// 关键帧标定 + bake 期随机幅值（每次播放微变，连播不重样）
+// 关键帧标定（扁平 x/y 速记，MO 目录惯例）+ bake 期随机幅值（每次播放微变，连播不重样）
 const sway = motion(2600, (rng) => ({
-	"torso.roll": offset(keys([[0, 0], [450, 3.6 + rng() * 0.8], [1200, 4.2], [2600, 0]])),
+	"torso.roll": offset(keys(pts(0, 0, 450, 3.6 + rng() * 0.8, 1200, 4.2, 2600, 0))),
 	"gaze.x": offset((t) => 0.5 * Math.sin((t / 2600) * Math.PI)),
-	"eyes.left.open": keys([[0, 1], [1670, 1], [1780, 0.08], [2020, 1], [2600, 1]]),
+	"eyes.left.open": keys(pts(0, 1, 1670, 1, 1780, 0.08, 2020, 1, 2600, 1)),
 }));
+
+// elastic 生成器：一条参数化的 Q 弹曲线替代 5-8 个手绘反弹关键点
+const hop = motion(1100, { "head.pitch": offset(elastic(1100, -5.2, 2)) });
 
 // 语义变体（手写互异短语，轮换池）仍是目录层的 variants 字段，与函数内随机正交
 ```
