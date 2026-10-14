@@ -1,13 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { UIHost } from "../src/ui/ui-host.js";
-import { installUIFeatures } from "../src/ui/features.js";
 import { ExtensionRegistry } from "../src/extensions/renderer-registry.js";
-import { TranscriptContainer } from "../src/ui/components/transcript/index.js";
-import { stripAnsi } from "../src/ui/core/utils.js";
-import { OverlayStack } from "../src/ui/core/overlay.js";
-import { FocusManager } from "../src/ui/core/focus.js";
-import { visibleWidth, truncateToWidth, wrapTextWithAnsi } from "../src/ui/core/utils.js";
-import { InputLine, snapToGraphemeBoundary } from "../src/ui/components/editor/index.js";
 import { MemorySessionStore } from "../src/session/jsonl-store.js";
 import {
 	listSessionBranches,
@@ -15,6 +7,13 @@ import {
 	readSessionBranch,
 	readSessionNode,
 } from "../src/session/navigation.js";
+import { InputLine, snapToGraphemeBoundary } from "../src/ui/components/editor/index.js";
+import { TranscriptContainer } from "../src/ui/components/transcript/index.js";
+import { FocusManager } from "../src/ui/core/focus.js";
+import { OverlayStack } from "../src/ui/core/overlay.js";
+import { stripAnsi, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../src/ui/core/utils.js";
+import { installUIFeatures } from "../src/ui/features.js";
+import { UIHost } from "../src/ui/ui-host.js";
 
 import { createSilentTerminal, dispatchUIHostInput, isHeartbeatActive } from "./harness/index.js";
 
@@ -598,7 +597,7 @@ describe("C: overlay frame composition", () => {
 			description: "History",
 			keybinding: "alt+h",
 			handler: () => {
-				host.openFeature("history");
+				host.openFeature({ name: "history" });
 			},
 		});
 		host.start();

@@ -1,31 +1,30 @@
 /** Project-local, trusted extension runtime. It deliberately mirrors Pi's
  * lifecycle model: registrations are owned by an activation and become stale
  * on reload/dispose instead of leaking into the next runtime. */
-import { errorMessage } from "../core/errors.js";
 import { randomUUID } from "node:crypto";
-import { Registrations } from "../core/registrations.js";
-import { discoverExtensions, importExtension } from "./loader.js";
-import type { CallOptions, ServiceHandler, ExtensionModelAccess, ExtensionModelRequest } from "./services.js";
 import { relative } from "node:path";
-
 import type { AgentInput } from "../agent/loop.js";
+import { errorMessage } from "../core/errors.js";
+import { Registrations } from "../core/registrations.js";
 import type { ContextSnapshot, Provider, RequestInspection, RequestUsage } from "../core/types.js";
-import type { ToolBroker, Tool, ToolExecutionResult } from "../tools/broker.js";
+import { guardRuntimeHooks } from "../runtime/guard.js";
+import type { HookName, RuntimeHooks } from "../runtime/hooks.js";
+import type { Tool, ToolBroker, ToolExecutionResult } from "../tools/broker.js";
+import { type ExtensionEvent, type ExtensionEventHandler, ExtensionHost, type HookHandler } from "./host.js";
+import { ResourceScope } from "./lifecycle-scope.js";
+import { discoverExtensions, importExtension } from "./loader.js";
+import { ExtensionRegistry } from "./renderer-registry.js";
+import { createRuntimeHooks } from "./runtime-hooks.js";
+import type { CallOptions, ExtensionModelAccess, ExtensionModelRequest, ServiceHandler } from "./services.js";
 import type {
-	ExtensionUIContext,
-	PromptOptions,
+	BuiltinUIActionRequest,
 	CustomEntry,
 	CustomMessage,
+	ExtensionUIContext,
 	LocalCommand,
+	PromptOptions,
 	TerminalUIContext,
 } from "./ui-contract.js";
-import { ExtensionRegistry } from "./renderer-registry.js";
-import { ExtensionHost, type ExtensionEvent, type ExtensionEventHandler, type HookHandler } from "./host.js";
-import type { HookName } from "../runtime/hooks.js";
-import { createRuntimeHooks } from "./runtime-hooks.js";
-import { guardRuntimeHooks } from "../runtime/guard.js";
-import type { RuntimeHooks } from "../runtime/hooks.js";
-import { ResourceScope } from "./lifecycle-scope.js";
 
 export interface ExtensionAPI {
 	readonly session: {
@@ -424,6 +423,7 @@ export class ExtensionRunner extends ExtensionHost {
 			ownKeyed,
 			(slot, component) => this.setSharedUI(slot, scope.id, component),
 			scope.signal,
+			<T>(work: (signal: AbortSignal) => T | Promise<T>, signal?: AbortSignal) => scope.run(work, signal),
 		);
 		const ownRegistration = (dispose: () => void): (() => void) => {
 			own(dispose);
@@ -749,6 +749,7 @@ function ownedUI(
 	ownKeyed: (key: string, dispose: ExtensionTeardown) => void,
 	setShared: (slot: "header" | "footer", component: Parameters<ExtensionUIContext["terminal"]["setHeader"]>[0]) => void,
 	scopeSignal: AbortSignal,
+	runScoped: <T>(work: (signal: AbortSignal) => T | Promise<T>, signal?: AbortSignal) => Promise<T>,
 ): ExtensionUIContext {
 	const key = (value: string) => `${id}:${value}`;
 	const withScopeSignal = (options?: PromptOptions): PromptOptions => ({
@@ -819,6 +820,39 @@ function ownedUI(
 		input: (title, placeholder, promptOptions) => {
 			assertActive();
 			return base.input(title, placeholder, withScopeSignal(promptOptions));
+		},
+		openFeature: (action: BuiltinUIActionRequest) => {
+			assertActive();
+			const signal = action.signal ? AbortSignal.any([scopeSignal, action.signal]) : scopeSignal;
+			if (action.name === "model-picker") {
+				const payload = action.payload;
+				return base.openFeature({
+					...action,
+					signal,
+					payload: {
+						...payload,
+						onPick: (name) =>
+							runScoped((callbackSignal) => {
+								if (callbackSignal.aborted) throw callbackSignal.reason;
+								return payload.onPick(name, callbackSignal);
+							}, action.signal),
+					},
+				});
+			}
+			if (action.name === "effort-slider") {
+				const payload = action.payload;
+				return base.openFeature({
+					...action,
+					signal,
+					payload: {
+						...payload,
+						onChange: (level) => {
+							if (!signal.aborted) payload.onChange(level);
+						},
+					},
+				});
+			}
+			return base.openFeature({ ...action, signal });
 		},
 		setStatus: (name, text) => {
 			assertActive();

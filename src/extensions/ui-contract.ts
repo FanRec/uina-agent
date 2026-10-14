@@ -2,8 +2,9 @@
  * 扩展体系核心契约与渲染器类型定义（对齐 Pi ExtensionUIContext 规范）。
  */
 
-import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "../ui/core/types.js";
 import type { ThinkingLevel } from "../core/types.js";
+import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "../ui/core/types.js";
+
 export type { Component, OverlayHandle, OverlayOptions, WidgetPlacement };
 
 /** 模型选择器的一组条目（provider 分组）。官方 /model 命令与选择器共享此形状。 */
@@ -62,7 +63,7 @@ export interface PromptOptions {
 export interface ModelPickerAction {
 	currentModel: string;
 	groups: ModelPickerGroup[];
-	onPick: (name: string) => Promise<void> | void;
+	onPick: (name: string, signal?: AbortSignal) => Promise<void> | void;
 }
 
 export interface EffortSliderAction {
@@ -83,9 +84,12 @@ export interface BuiltinUIActions {
 	prompt: undefined;
 }
 
-export type BuiltinUIActionArgs<Name extends keyof BuiltinUIActions> = BuiltinUIActions[Name] extends undefined
-	? [payload?: undefined]
-	: [payload: BuiltinUIActions[Name]];
+/** A complete typed application action, including the lifetime of any UI it opens. */
+export type BuiltinUIActionRequest<Name extends keyof BuiltinUIActions = keyof BuiltinUIActions> = {
+	[Action in Name]: BuiltinUIActions[Action] extends undefined
+		? { readonly name: Action; readonly signal?: AbortSignal }
+		: { readonly name: Action; readonly payload: BuiltinUIActions[Action]; readonly signal?: AbortSignal };
+}[Name];
 
 /** Terminal-only component lifecycle and renderer registration facet. */
 export interface TerminalUIContext {
@@ -142,7 +146,7 @@ export interface ExtensionUIContext {
 	hasUI(): boolean;
 
 	/** Open a typed application action without exposing terminal panel geometry. */
-	openFeature<Name extends keyof BuiltinUIActions>(name: Name, ...args: BuiltinUIActionArgs<Name>): boolean;
+	openFeature(action: BuiltinUIActionRequest): boolean;
 
 	/** Terminal components, overlays, editor control and terminal renderers. */
 	readonly terminal: TerminalUIContext;

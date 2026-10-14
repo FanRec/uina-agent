@@ -1,69 +1,69 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { calculateContextSegments } from "../src/agent/context.js";
+import { combineQueuedDraft } from "../src/cli/draft.js";
+import { ExtensionRegistry } from "../src/extensions/renderer-registry.js";
+import { TrajectoryProjection } from "../src/ui/adapters/agent-events.js";
+import { InputLine, segmentWithMarkers, snapCursorToMarkerBoundary } from "../src/ui/components/editor/index.js";
+import { getStartupBanner } from "../src/ui/components/primitives/banner.js";
 import {
-	createTestTUI,
+	alignSplitDiff,
+	applyCardBackground,
+	BLACK_CIRCLE,
+	BULLET,
+	CustomMessageComponent,
+	computeWordDiff,
+	displayName,
+	extractSummaryArgs,
+	foldTerminalCommand,
+	formatDiffCardLines,
+	formatDuration,
+	formatErrorCardLines,
+	formatSplitDiffCardLines,
+	formatToolCardLines,
+	GUTTER_FIRST,
+	GUTTER_REST,
+	getToolCategory,
+	getToolCategoryColor,
+	MULTIPLICATION_X,
+	TranscriptContainer,
+} from "../src/ui/components/transcript/index.js";
+import { revealStep, SmoothRevealController, safeSliceEnd } from "../src/ui/components/transcript/smooth-reveal.js";
+import { formatFullMarkdown, StreamMarkdownFormatter } from "../src/ui/components/transcript/stream-markdown.js";
+import {
+	allocateBarColumns,
+	ContextBarComponent,
+	renderSegmentedBar,
+} from "../src/ui/components/widgets/context-bar.js";
+import {
+	ActivityLineComponent,
+	formatActivityHeader,
+	formatTpsGauge,
+	formatTpsSparkline,
+	PendingQueueComponent,
+} from "../src/ui/components/widgets/index.js";
+import { ScrollbarGutterComponent } from "../src/ui/components/widgets/scrollbar-gutter.js";
+import { TimelineRailComponent } from "../src/ui/components/widgets/timeline-rail.js";
+import { Container } from "../src/ui/core/container.js";
+import { FocusManager } from "../src/ui/core/focus.js";
+import { Key, matchesKey } from "../src/ui/core/keys.js";
+import { OverlayStack } from "../src/ui/core/overlay.js";
+import { WidgetSlots } from "../src/ui/core/slots.js";
+import { C, stripAnsi, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../src/ui/core/utils.js";
+import { createExtensionUIContext } from "../src/ui/extension-ui-context.js";
+import { EffortSlider, HelpMenu, ModelPicker, TrajectoryScene } from "../src/ui/features/overlays/index.js";
+import { installUIFeatures } from "../src/ui/features.js";
+import { createInteractiveUI, InteractiveTUI } from "../src/ui/tui.js";
+import { UIHost } from "../src/ui/ui-host.js";
+import {
 	createSilentTerminal,
-	getTestUIHost,
-	getTestTrajectoryProjection,
+	createTestTUI,
 	dispatchUIHostInput,
+	getTestTrajectoryProjection,
+	getTestUIHost,
 	isHeartbeatActive,
 	mockModelGroups,
 	renderWidget,
 } from "./harness/index.js";
-import { C, visibleWidth, truncateToWidth, wrapTextWithAnsi, stripAnsi } from "../src/ui/core/utils.js";
-import { Container } from "../src/ui/core/container.js";
-import { FocusManager } from "../src/ui/core/focus.js";
-import { OverlayStack } from "../src/ui/core/overlay.js";
-import { WidgetSlots } from "../src/ui/core/slots.js";
-import { Key, matchesKey } from "../src/ui/core/keys.js";
-import { StreamMarkdownFormatter, formatFullMarkdown } from "../src/ui/components/transcript/stream-markdown.js";
-import {
-	ContextBarComponent,
-	allocateBarColumns,
-	renderSegmentedBar,
-} from "../src/ui/components/widgets/context-bar.js";
-import { ScrollbarGutterComponent } from "../src/ui/components/widgets/scrollbar-gutter.js";
-import { TimelineRailComponent } from "../src/ui/components/widgets/timeline-rail.js";
-import { SmoothRevealController, revealStep, safeSliceEnd } from "../src/ui/components/transcript/smooth-reveal.js";
-import {
-	computeWordDiff,
-	alignSplitDiff,
-	formatSplitDiffCardLines,
-	formatDiffCardLines,
-	formatErrorCardLines,
-	formatToolCardLines,
-	getToolCategory,
-	getToolCategoryColor,
-	displayName,
-	foldTerminalCommand,
-	formatDuration,
-	applyCardBackground,
-	extractSummaryArgs,
-	BLACK_CIRCLE,
-	BULLET,
-	MULTIPLICATION_X,
-	GUTTER_FIRST,
-	GUTTER_REST,
-	CustomMessageComponent,
-	TranscriptContainer,
-} from "../src/ui/components/transcript/index.js";
-import {
-	ActivityLineComponent,
-	PendingQueueComponent,
-	formatActivityHeader,
-	formatTpsGauge,
-	formatTpsSparkline,
-} from "../src/ui/components/widgets/index.js";
-import { InputLine, segmentWithMarkers, snapCursorToMarkerBoundary } from "../src/ui/components/editor/index.js";
-import { TrajectoryScene, ModelPicker, EffortSlider, HelpMenu } from "../src/ui/features/overlays/index.js";
-import { getStartupBanner } from "../src/ui/components/primitives/banner.js";
-import { calculateContextSegments } from "../src/agent/context.js";
-import { combineQueuedDraft } from "../src/cli/draft.js";
-import { ExtensionRegistry } from "../src/extensions/renderer-registry.js";
-import { createExtensionUIContext } from "../src/ui/extension-ui-context.js";
-import { TrajectoryProjection } from "../src/ui/adapters/agent-events.js";
-import { createInteractiveUI, InteractiveTUI } from "../src/ui/tui.js";
-import { UIHost } from "../src/ui/ui-host.js";
-import { installUIFeatures } from "../src/ui/features.js";
 
 describe("UI Core: Utils", () => {
 	it("正确计算包含中文与 ANSI 样式的可见字符宽度", () => {
@@ -1257,7 +1257,7 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 		}
 	});
 
-	it("支持 / 命令与 @ 文件输入联想浮层与 Tab 补全", () => {
+	it("支持 / 命令与 @ 文件输入联想浮层与 Tab 补全", async () => {
 		const harness = createTestTUI({
 			modelName: "test-model",
 			cwd: process.cwd(),
@@ -1284,6 +1284,7 @@ describe("InteractiveTUI & UIHost Lifecycle", () => {
 			harness.type("@pack");
 
 			expect(harness.host.inputLine.getText()).toBe("@pack");
+			await vi.waitFor(() => expect(harness.visibleText).toContain("package.json"));
 
 			// 按 Tab 自动补全
 			harness.press("tab");
@@ -1758,11 +1759,14 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			let changed: string = "";
 			// 模拟 builtin.ts 中执行 /effort 打开滑块传入 declaredLevels 字符串数组
 			installUIFeatures(host);
-			host.openFeature("effort-slider", {
-				currentLevel: "off",
-				tiers: ["off", "high", "max"],
-				onChange: (level: string) => {
-					changed = level;
+			host.openFeature({
+				name: "effort-slider",
+				payload: {
+					currentLevel: "off",
+					tiers: ["off", "high", "max"],
+					onChange: (level: string) => {
+						changed = level;
+					},
 				},
 			});
 
@@ -1770,6 +1774,25 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			expect(changed).toBe("high");
 			expect(host.getReasoningEffort()).toBe("high");
 			expect(() => host.setReasoningEffort(undefined)).not.toThrow();
+		});
+
+		it("openFeature signal 只关闭所属面板并在普通关闭时移除监听", () => {
+			const harness = createTestTUI();
+			try {
+				const signal = new AbortController();
+				expect(harness.host.openFeature({ name: "prompt", signal: signal.signal })).toBe(true);
+				expect(harness.hasOverlay).toBe(true);
+
+				harness.host.closeModal();
+				expect(harness.hasOverlay).toBe(false);
+				expect(harness.host.openFeature({ name: "prompt" })).toBe(true);
+				signal.abort();
+				expect(harness.hasOverlay).toBe(true);
+				harness.host.closeModal();
+				expect(harness.hasOverlay).toBe(false);
+			} finally {
+				harness.dispose();
+			}
 		});
 
 		it("InteractiveTUI 从 RuntimeEvent 投影模型、思考档位和压缩事实", () => {
@@ -3872,7 +3895,7 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 					description: "Board",
 					keybinding: "alt+a",
 					handler: () => {
-						getTestUIHost(tui).openFeature("help");
+						getTestUIHost(tui).openFeature({ name: "help" });
 					},
 				});
 

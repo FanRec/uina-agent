@@ -1,18 +1,19 @@
-import activateWorkspaceTools from "../src/extensions/workspace-tools/index.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ExtensionRunner, createPrintUI, type ExtensionAPI } from "../src/extensions/runner.js";
-import { ToolBroker, type Tool } from "../src/tools/broker.js";
-import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
-import { parseArgs } from "../src/cli/args.js";
-import activateCompaction from "../src/extensions/compaction/index.js";
 import { estimateRequestTokens } from "../src/agent/context.js";
+import { parseArgs } from "../src/cli/args.js";
 import type { ContextSnapshot, Model, ModelStreamFn } from "../src/core/types.js";
-import { IsolatedEnv, mockModel } from "./harness/index.js";
+import activateCompaction from "../src/extensions/compaction/index.js";
+import { createPrintUI, type ExtensionAPI, ExtensionRunner } from "../src/extensions/runner.js";
+import activateWorkspaceTools from "../src/extensions/workspace-tools/index.js";
+import { type Tool, ToolBroker } from "../src/tools/broker.js";
+import { TranscriptContainer } from "../src/ui/components/transcript/transcript.js";
+import { createTestTUI, dispatchUIHostInput, IsolatedEnv, mockModel } from "./harness/index.js";
 
 const envs: IsolatedEnv[] = [];
 const runners: ExtensionRunner[] = [];
+const tuis: ReturnType<typeof createTestTUI>[] = [];
 
 /** compaction capability 的 /compact 事实出口测试的模型装配。 */
 const compactionModel = (): Model => mockModel({ id: "mock", name: "mock", contextWindow: 50_000 });
@@ -124,6 +125,7 @@ const compactionHost = (
 
 afterEach(async () => {
 	for (const runner of runners.splice(0)) await runner.dispose();
+	for (const tui of tuis.splice(0)) tui.dispose();
 	await Promise.all(envs.splice(0).map((env) => env.cleanup()));
 });
 async function temp() {
@@ -295,6 +297,144 @@ describe("extension composition", () => {
 		expect(footer.mock.lastCall?.[0].render(80)).toEqual(["B"]);
 		await host.dispose();
 		expect(header.mock.lastCall?.[0]).toBeUndefined();
+	});
+	it("closes a feature panel on extension unload and restores its prior focus", async () => {
+		const host = runner(await temp());
+		const tui = createTestTUI();
+		tuis.push(tui);
+		host.attachUI(tui.tui.extensionUI);
+		const input = tui.host.focusManager.getFocused();
+		const onPick = vi.fn();
+		await activate(host, "picker", (api) => {
+			expect(
+				api.ui.openFeature({
+					name: "model-picker",
+					payload: {
+						currentModel: "model",
+						groups: [{ id: "provider", name: "Provider", description: "", models: [] }],
+						onPick,
+					},
+				}),
+			).toBe(true);
+		});
+
+		expect(tui.hasOverlay).toBe(true);
+		await host.dispose();
+		expect(tui.hasOverlay).toBe(false);
+		expect(tui.host.focusManager.getFocused()).toBe(input);
+		dispatchUIHostInput(tui.host, "\r");
+		expect(onPick).not.toHaveBeenCalled();
+	});
+	it("combines caller cancellation with extension-owned panel lifetime", async () => {
+		const host = runner(await temp());
+		const tui = createTestTUI();
+		tuis.push(tui);
+		host.attachUI(tui.tui.extensionUI);
+		const caller = new AbortController();
+		let api!: ExtensionAPI;
+		await activate(host, "picker", (value) => {
+			api = value;
+			expect(api.ui.openFeature({ name: "prompt", signal: caller.signal })).toBe(true);
+		});
+
+		expect(tui.hasOverlay).toBe(true);
+		caller.abort();
+		expect(tui.hasOverlay).toBe(false);
+		expect(api.ui.openFeature({ name: "prompt" })).toBe(true);
+		expect(tui.hasOverlay).toBe(true);
+		await host.dispose();
+		expect(tui.hasOverlay).toBe(false);
+	});
+	it("settles a feature selection already in flight when its extension unloads", async () => {
+		const host = runner(await temp());
+		const tui = createTestTUI();
+		tuis.push(tui);
+		host.attachUI(tui.tui.extensionUI);
+		let resolvePick!: () => void;
+		let markStarted!: () => void;
+		let callbackSignal: AbortSignal | undefined;
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve;
+		});
+		const pick = new Promise<void>((resolve) => {
+			resolvePick = resolve;
+		});
+		await activate(host, "picker", (api) => {
+			expect(
+				api.ui.openFeature({
+					name: "model-picker",
+					payload: {
+						currentModel: "model",
+						groups: [
+							{
+								id: "provider",
+								name: "Provider",
+								description: "",
+								models: [{ id: "model", name: "Model", description: "", provider: "provider" }],
+							},
+						],
+						onPick: ((_: string, signal?: AbortSignal) => {
+							callbackSignal = signal;
+							markStarted();
+							return pick;
+						}) as (name: string) => Promise<void>,
+					},
+				}),
+			).toBe(true);
+		});
+		expect(tui.hasOverlay).toBe(true);
+
+		dispatchUIHostInput(tui.host, "\r");
+		dispatchUIHostInput(tui.host, "\r");
+		await started;
+		let disposed = false;
+		const disposing = host.dispose().then(() => {
+			disposed = true;
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(tui.hasOverlay).toBe(false);
+		expect(disposed).toBe(false);
+		try {
+			expect(callbackSignal?.aborted).toBe(true);
+		} finally {
+			resolvePick();
+		}
+		await disposing;
+		expect(disposed).toBe(true);
+	});
+	it("reports a rejected model-picker callback instead of leaving an unhandled rejection", async () => {
+		const host = runner(await temp());
+		const tui = createTestTUI();
+		tuis.push(tui);
+		host.attachUI(tui.tui.extensionUI);
+		await activate(host, "picker", (api) => {
+			expect(
+				api.ui.openFeature({
+					name: "model-picker",
+					payload: {
+						currentModel: "model",
+						groups: [
+							{
+								id: "provider",
+								name: "Provider",
+								description: "",
+								models: [{ id: "model", name: "Model", description: "", provider: "provider" }],
+							},
+						],
+						onPick: async () => {
+							throw new Error("model selection failed");
+						},
+					},
+				}),
+			).toBe(true);
+		});
+
+		dispatchUIHostInput(tui.host, "\r");
+		dispatchUIHostInput(tui.host, "\r");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		expect(tui.visibleText).toContain("模型切换失败");
+		expect(tui.visibleText).toContain("model selection failed");
 	});
 	it("collects independent context contributions after prompt transforms", async () => {
 		const host = runner(await temp());

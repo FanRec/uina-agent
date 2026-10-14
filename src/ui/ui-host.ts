@@ -4,64 +4,59 @@
  * 调度原子全帧差量渲染与键盘输入分发。
  */
 
-import { FocusManager } from "./core/focus.js";
-import { OverlayStack } from "./core/overlay.js";
-import { WidgetSlots } from "./core/slots.js";
-import { ProcessTerminal } from "./core/terminal.js";
-import { MainScreenRenderer } from "./core/renderer.js";
-import { Key, matchesKey } from "./core/keys.js";
-import { MouseSelectionTracker, type InteractiveTarget, type SelectableRegion } from "./core/mouse-selection.js";
-import { decodeHoverTarget, encodeHoverTarget } from "./core/hover-target.js";
-import { ScrollController } from "./core/scroll-controller.js";
-import { ComponentBoundary } from "./core/component-boundary.js";
-import { resolveGutterAction } from "./core/gutter.js";
-import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
 import type { ContextSnapshot, RequestUsage, ThinkingLevel, ToolResultStatus } from "../core/types.js";
-import type { SessionEntry } from "../session/types.js";
-import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
-import {
-	C,
-	copyToClipboardUnified,
-	visibleWidth,
-	truncateToWidth,
-	stripAnsi,
-	normalizeFrameLine,
-} from "./core/utils.js";
-import {
-	InputLine,
-	formatSuggestionCardLines,
-	getFileCandidates,
-	type CommandItem,
-	type FileItem,
-} from "./components/editor/index.js";
-import { BannerComponent } from "./components/primitives/banner.js";
-import {
-	TranscriptContainer,
-	type CompactionCardData,
-	type CompactionReplayDecoration,
-	type ExternalContextCardData,
-	type PromptContextCardData,
-	type LineModel,
-} from "./components/transcript/index.js";
-import {
-	ActivityLineComponent,
-	formatWorkingHeader,
-	PendingQueueComponent,
-	ContextBarComponent,
-	formatCacheHitRate,
-	type ContextSegments,
-	type PendingQueueItem,
-	TimelineRailComponent,
-	ScrollbarGutterComponent,
-} from "./components/widgets/index.js";
 import { ExtensionRegistry } from "../extensions/renderer-registry.js";
-import { createExtensionUIContext, type UIHostContextPort } from "./extension-ui-context.js";
 import type {
-	BuiltinUIActionArgs,
+	BuiltinUIActionRequest,
 	BuiltinUIActions,
 	ExtensionUIContext,
 	TerminalUIContext,
 } from "../extensions/ui-contract.js";
+import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
+import type { SessionEntry } from "../session/types.js";
+import { type FileItem, searchFileCandidates } from "./components/editor/file-candidates.js";
+import { type CommandItem, formatSuggestionCardLines, InputLine } from "./components/editor/index.js";
+import { BannerComponent } from "./components/primitives/banner.js";
+import {
+	type CompactionCardData,
+	type CompactionReplayDecoration,
+	type ExternalContextCardData,
+	type LineModel,
+	type PromptContextCardData,
+	TranscriptContainer,
+} from "./components/transcript/index.js";
+import {
+	ActivityLineComponent,
+	ContextBarComponent,
+	type ContextSegments,
+	formatCacheHitRate,
+	formatWorkingHeader,
+	PendingQueueComponent,
+	type PendingQueueItem,
+	ScrollbarGutterComponent,
+	TimelineRailComponent,
+} from "./components/widgets/index.js";
+import { ComponentBoundary } from "./core/component-boundary.js";
+import { FocusManager } from "./core/focus.js";
+import { resolveGutterAction } from "./core/gutter.js";
+import { decodeHoverTarget, encodeHoverTarget } from "./core/hover-target.js";
+import { Key, matchesKey } from "./core/keys.js";
+import { type InteractiveTarget, MouseSelectionTracker, type SelectableRegion } from "./core/mouse-selection.js";
+import { OverlayStack } from "./core/overlay.js";
+import { MainScreenRenderer } from "./core/renderer.js";
+import { ScrollController } from "./core/scroll-controller.js";
+import { WidgetSlots } from "./core/slots.js";
+import { ProcessTerminal } from "./core/terminal.js";
+import type { Component, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
+import {
+	C,
+	copyToClipboardUnified,
+	normalizeFrameLine,
+	stripAnsi,
+	truncateToWidth,
+	visibleWidth,
+} from "./core/utils.js";
+import { createExtensionUIContext, type UIHostContextPort } from "./extension-ui-context.js";
 
 function overlayCard(baseLine: string, cardLine: string, startCol: number, width: number): string {
 	const leftPart = truncateToWidth(baseLine, startCol, " ");
@@ -186,7 +181,9 @@ export class UIHost implements UIHostContextPort {
 		end: number;
 		items: (CommandItem | FileItem)[];
 		selectedIndex: number;
+		loading: boolean;
 	} | null = null;
+	private suggestionGeneration = 0;
 
 	private readonly statuses = new Map<string, { text: string; sequence: number }>();
 
@@ -272,23 +269,23 @@ export class UIHost implements UIHostContextPort {
 	onPullBackQueue?: () => void;
 	onThinkingLevelCycle?: () => void;
 
-	private readonly features = new Map<keyof BuiltinUIActions, (payload: unknown) => void>();
+	private readonly features = new Map<keyof BuiltinUIActions, (action: BuiltinUIActionRequest) => void>();
 
 	registerFeature<Name extends keyof BuiltinUIActions>(
 		name: Name,
-		handler: (payload: BuiltinUIActions[Name]) => void,
+		handler: (action: Extract<BuiltinUIActionRequest, { name: Name }>) => void,
 	): () => void {
-		const wrapped = handler as (payload: unknown) => void;
+		const wrapped = handler as (action: BuiltinUIActionRequest) => void;
 		this.features.set(name, wrapped);
 		return () => {
 			if (this.features.get(name) === wrapped) this.features.delete(name);
 		};
 	}
 
-	openFeature<Name extends keyof BuiltinUIActions>(name: Name, ...args: BuiltinUIActionArgs<Name>): boolean {
-		const handler = this.features.get(name);
+	openFeature(action: BuiltinUIActionRequest): boolean {
+		const handler = this.features.get(action.name);
 		if (!handler) return false;
-		handler(args[0]);
+		if (!action.signal?.aborted) handler(action);
 		return true;
 	}
 
@@ -354,7 +351,7 @@ export class UIHost implements UIHostContextPort {
 		if (this.overlayStack.hasVisible) {
 			this.overlayStack.hideTopOverlay();
 		} else if (this.activeSuggestions) {
-			this.activeSuggestions = null;
+			this.clearSuggestions();
 		} else if (this.busy) {
 			this.cancelTurn("escape");
 		} else if (this.inputLine.hasSelection()) {
@@ -462,6 +459,7 @@ export class UIHost implements UIHostContextPort {
 		this.copyToastText = "";
 		this.mouseTracker.clear();
 		this.overlayStack.clear();
+		this.clearSuggestions();
 		this.terminal.stop();
 	}
 
@@ -650,6 +648,7 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	replaceInput(text: string): void {
+		this.clearSuggestions();
 		this.inputLine.setText(text);
 		this.requestRender();
 	}
@@ -879,9 +878,20 @@ export class UIHost implements UIHostContextPort {
 	private updateSuggestions(): void {
 		const detection = this.inputLine.detectSuggestionQuery();
 		if (!detection) {
-			this.activeSuggestions = null;
+			this.clearSuggestions();
 			return;
 		}
+		const previous = this.activeSuggestions;
+		if (
+			detection.type === "file" &&
+			previous?.type === "file" &&
+			previous.query === detection.query &&
+			previous.start === detection.start &&
+			previous.end === detection.end
+		) {
+			return;
+		}
+		const generation = ++this.suggestionGeneration;
 
 		if (detection.type === "command") {
 			const query = detection.query.toLowerCase();
@@ -891,9 +901,7 @@ export class UIHost implements UIHostContextPort {
 			);
 			if (filtered.length > 0) {
 				const prevSelected =
-					this.activeSuggestions?.type === "command"
-						? (this.activeSuggestions.items[this.activeSuggestions.selectedIndex] as CommandItem)?.name
-						: undefined;
+					previous?.type === "command" ? (previous.items[previous.selectedIndex] as CommandItem)?.name : undefined;
 				let newIndex = 0;
 				if (prevSelected) {
 					const found = filtered.findIndex((c) => c.name === prevSelected);
@@ -910,25 +918,70 @@ export class UIHost implements UIHostContextPort {
 						hasArgs: Boolean(c.hasArgs),
 					})),
 					selectedIndex: newIndex,
+					loading: false,
 				};
 			} else {
 				this.activeSuggestions = null;
 			}
 		} else if (detection.type === "file") {
-			const candidates = getFileCandidates(this.cwd, detection.query, 40);
-			if (candidates.length > 0) {
-				this.activeSuggestions = {
-					type: "file",
-					query: detection.query,
-					start: detection.start,
-					end: detection.end,
-					items: candidates,
-					selectedIndex: 0,
-				};
-			} else {
-				this.activeSuggestions = null;
-			}
+			this.activeSuggestions = {
+				type: "file",
+				query: detection.query,
+				start: detection.start,
+				end: detection.end,
+				items: [],
+				selectedIndex: 0,
+				loading: true,
+			};
+			const isCurrentFileQuery = (): boolean => {
+				const current = this.inputLine.detectSuggestionQuery();
+				return (
+					current?.type === "file" &&
+					current.query === detection.query &&
+					current.start === detection.start &&
+					current.end === detection.end
+				);
+			};
+			void searchFileCandidates(this.cwd, detection.query, 40).then(
+				(candidates) => {
+					if (generation !== this.suggestionGeneration) return;
+					if (!isCurrentFileQuery()) {
+						this.clearSuggestions();
+						this.requestRender();
+						return;
+					}
+					this.activeSuggestions =
+						candidates.length > 0
+							? {
+									type: "file",
+									query: detection.query,
+									start: detection.start,
+									end: detection.end,
+									items: candidates,
+									selectedIndex: 0,
+									loading: false,
+								}
+							: null;
+					this.requestRender();
+				},
+				(error: unknown) => {
+					if (generation !== this.suggestionGeneration) return;
+					if (!isCurrentFileQuery()) {
+						this.clearSuggestions();
+						this.requestRender();
+						return;
+					}
+					this.activeSuggestions = null;
+					this.requestRender();
+					this.notify(`文件候选查询失败：${String(error)}`, "warning", 2500);
+				},
+			);
 		}
+	}
+
+	private clearSuggestions(): void {
+		this.suggestionGeneration++;
+		this.activeSuggestions = null;
 	}
 
 	// =========================================================================
@@ -1011,11 +1064,13 @@ export class UIHost implements UIHostContextPort {
 	}
 
 	pasteToEditor(text: string): void {
+		this.clearSuggestions();
 		this.inputLine.insertText(text);
 		this.requestRender();
 	}
 
 	setEditorText(text: string): void {
+		this.clearSuggestions();
 		this.inputLine.setText(text);
 		this.requestRender();
 	}
@@ -1057,9 +1112,15 @@ export class UIHost implements UIHostContextPort {
 	 * toggleModal + showOverlay 的唯一接线点：close()/hide()/onClose 三者互相唤醒的
 	 * 顺序在这里只写一次，7 个面板不可能再各自漂移出不同的关闭语义。
 	 */
-	showPanel(id: string, build: (close: () => void, api: { hide: () => void }) => PanelComponent): void {
+	showPanel(
+		id: string,
+		build: (close: () => void, api: { hide: () => void }) => PanelComponent,
+		signal?: AbortSignal,
+	): void {
+		if (signal?.aborted) return;
 		this.toggleModal(id, (closeModalState) => {
 			let handle: OverlayHandle | null = null;
+			const onAbort = () => doClose();
 			const doClose = () => {
 				closeModalState();
 				handle?.hide();
@@ -1071,6 +1132,7 @@ export class UIHost implements UIHostContextPort {
 			const disposeOnce = () => {
 				if (disposed) return;
 				disposed = true;
+				signal?.removeEventListener("abort", onAbort);
 				dispose?.();
 			};
 			const userOnClose = panel.onClose;
@@ -1082,6 +1144,8 @@ export class UIHost implements UIHostContextPort {
 				disposeOnce();
 				closeModalState();
 			});
+			signal?.addEventListener("abort", onAbort, { once: true });
+			if (signal?.aborted) onAbort();
 			return handle;
 		});
 	}
@@ -1154,7 +1218,11 @@ export class UIHost implements UIHostContextPort {
 		const overlayLines = this.overlayStack.renderAbove(innerW, maxAboveH);
 
 		let suggestionLines: string[] = [];
-		if (this.activeSuggestions && this.activeSuggestions.items.length > 0 && !this.overlayStack.hasVisible) {
+		if (
+			this.activeSuggestions &&
+			(this.activeSuggestions.items.length > 0 || this.activeSuggestions.loading) &&
+			!this.overlayStack.hasVisible
+		) {
 			suggestionLines = formatSuggestionCardLines({
 				type: this.activeSuggestions.type,
 				title: this.activeSuggestions.type === "command" ? "命令" : "文件",
@@ -1162,12 +1230,14 @@ export class UIHost implements UIHostContextPort {
 				columns: inputWidth,
 				selectedIndex: this.activeSuggestions.selectedIndex,
 				items: this.activeSuggestions.items,
+				loading: this.activeSuggestions.loading,
 				maxVisible: 5,
 			});
 		}
 
 		const pendingLines =
-			(!this.activeSuggestions || this.activeSuggestions.items.length === 0) && !this.overlayStack.hasVisible
+			(!this.activeSuggestions || (this.activeSuggestions.items.length === 0 && !this.activeSuggestions.loading)) &&
+			!this.overlayStack.hasVisible
 				? this.pendingQueue.render(innerW)
 				: [];
 
@@ -1560,7 +1630,7 @@ export class UIHost implements UIHostContextPort {
 		});
 
 		// (3.2) 注册联想浮层鼠标点击项
-		if (this.activeSuggestions && suggestionLines.length > 0 && !this.overlayStack.hasVisible) {
+		if (this.activeSuggestions?.items.length && suggestionLines.length > 0 && !this.overlayStack.hasVisible) {
 			const maxVisible = 5;
 			const clampedIndex = Math.max(
 				0,
@@ -1744,7 +1814,7 @@ export class UIHost implements UIHostContextPort {
 
 		// 4. 输入框严格未输入任何字符时敲 '?' 唤起帮助；若前面有空格则作为普通字符输入
 		if (data === "?" && this.inputLine.getText() === "" && !this.overlayStack.hasVisible) {
-			if (!this.dispatchRegisteredKeybinding("?")) this.openFeature("help");
+			if (!this.dispatchRegisteredKeybinding("?")) this.openFeature({ name: "help" });
 			return;
 		}
 
@@ -1932,6 +2002,7 @@ export class UIHost implements UIHostContextPort {
 				return true;
 			}
 			if (this.inputLine.hasText()) {
+				this.clearSuggestions();
 				this.inputLine.clear();
 				this.requestRender();
 				return true;
@@ -2020,6 +2091,7 @@ export class UIHost implements UIHostContextPort {
 
 	/** 联想卡片键鼠交互（/ 命令或 @ 文件导航与自动补全）。返回 true 表示已消费。 */
 	private dispatchSuggestionsNav(data: string): boolean {
+		if (this.activeSuggestions?.loading && !this.busy && matchesKey(data, Key.tab)) return true;
 		if (this.activeSuggestions && this.activeSuggestions.items.length > 0) {
 			if (matchesKey(data, Key.up)) {
 				this.activeSuggestions.selectedIndex = Math.max(0, this.activeSuggestions.selectedIndex - 1);
@@ -2099,11 +2171,11 @@ export class UIHost implements UIHostContextPort {
 			const cmd = selected as CommandItem;
 			if (isTab || cmd.hasArgs) {
 				this.inputLine.setText(`/${cmd.name} `);
-				this.activeSuggestions = null;
+				this.clearSuggestions();
 				this.requestRender();
 			} else {
 				this.inputLine.clear();
-				this.activeSuggestions = null;
+				this.clearSuggestions();
 				this.executeCommand(cmd.name, "");
 				this.requestRender();
 			}
@@ -2118,7 +2190,7 @@ export class UIHost implements UIHostContextPort {
 			if (isDir) {
 				this.updateSuggestions();
 			} else {
-				this.activeSuggestions = null;
+				this.clearSuggestions();
 			}
 			this.requestRender();
 		}
@@ -2127,7 +2199,7 @@ export class UIHost implements UIHostContextPort {
 	private handleUserSubmitMode(text: string, mode: "direct" | "steer" | "followUp" | "interrupt"): void {
 		// 不强制回底：视口主权归用户。在底部时 bottom-pinned 引擎自动跟随新内容；
 		// 在历史位置时 computeLayout 的锚定机制保持视口绝对行号不变。
-		this.activeSuggestions = null;
+		this.clearSuggestions();
 		this.inputLine.clear();
 
 		if (mode === "interrupt") {

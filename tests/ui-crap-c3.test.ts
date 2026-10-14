@@ -1,15 +1,15 @@
 /**
- * CRAP 存量债务 C3：suggestions.listPathCandidates（路径模式文件发现）与
+ * CRAP 存量债务 C3：editor.file-candidates（路径模式文件发现）与
  * input-line.hitTest（点击→光标索引映射）的覆盖补齐（两者此前 comp≥8 且 0% 覆盖）。
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { searchFileCandidates } from "../src/ui/components/editor/file-candidates.js";
 import { InputLine } from "../src/ui/components/editor/input-line.js";
-import { listPathCandidates } from "../src/ui/components/editor/suggestions.js";
 
-describe("listPathCandidates 路径模式文件发现", () => {
+describe("searchFileCandidates 路径模式文件发现", () => {
 	let root: string;
 
 	beforeEach(() => {
@@ -30,8 +30,8 @@ describe("listPathCandidates 路径模式文件发现", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
-	it("空 query 列出根目录直接子项，跳过 SKIP 目录", () => {
-		const items = listPathCandidates(root, "");
+	it("空 query 列出根目录直接子项，跳过 SKIP 目录", async () => {
+		const items = await searchFileCandidates(root, "");
 		const names = items.map((i) => i.name);
 		expect(names).toContain("readme.md");
 		expect(names).toContain("notes.txt");
@@ -40,46 +40,46 @@ describe("listPathCandidates 路径模式文件发现", () => {
 		expect(names).not.toContain("tmp"); // tmp 也在 SKIP 集内
 	});
 
-	it("目录后缀穿梭：@src/ 列出 src 子项，路径带目录前缀", () => {
-		const items = listPathCandidates(root, "src/");
+	it("目录后缀穿梭：@src/ 列出 src 子项，路径带目录前缀", async () => {
+		const items = await searchFileCandidates(root, "src/");
 		expect(items.map((i) => i.path)).toContain("src/index.ts");
 		expect(items.map((i) => i.path)).toContain("src/components/");
 		// nameQuery 为空时不去重排序门槛
 		expect(items.length).toBeGreaterThan(0);
 	});
 
-	it("目录前缀 + 名字过滤：@src/in 命中 index.ts", () => {
-		const items = listPathCandidates(root, "src/in");
+	it("目录前缀 + 名字过滤：@src/in 命中 index.ts", async () => {
+		const items = await searchFileCandidates(root, "src/in");
 		expect(items).toHaveLength(1);
 		expect(items[0]).toMatchObject({ path: "src/index.ts", kind: "file" });
 	});
 
-	it("目录里的 SKIP 项在目录前缀明确指向时可被发现", () => {
-		const items = listPathCandidates(root, "tmp/");
+	it("目录里的 SKIP 项在目录前缀明确指向时可被发现", async () => {
+		const items = await searchFileCandidates(root, "tmp/");
 		expect(items.map((i) => i.name)).toContain("scratch.txt");
 	});
 
-	it("点号开头的 nameQuery 放行 SKIP 项过滤逻辑", () => {
+	it("点号开头的 nameQuery 放行 SKIP 项过滤逻辑", async () => {
 		// nameQuery ".gi" 以 . 开头 → SKIP 集合放行判定路径
-		const items = listPathCandidates(root, "src/.gi");
+		const items = await searchFileCandidates(root, "src/.gi");
 		expect(items).toEqual([]);
 	});
 
-	it("不存在的目录返回空数组而不抛错", () => {
-		expect(listPathCandidates(root, "no-such-dir/")).toEqual([]);
+	it("不存在的目录返回空数组而不抛错", async () => {
+		expect(await searchFileCandidates(root, "no-such-dir/")).toEqual([]);
 	});
 
-	it("bare 目录别名（. 与 ..）可解析", () => {
+	it("bare 目录别名（. 与 ..）可解析", async () => {
 		// "." → 根目录自身
-		const items = listPathCandidates(root, ".");
+		const items = await searchFileCandidates(root, ".");
 		expect(items.map((i) => i.name)).toContain("src");
 		// ".." 相对 root 的父目录（tmpdir）——只要不炸且返回数组
-		const parent = listPathCandidates(root, "..");
+		const parent = await searchFileCandidates(root, "..");
 		expect(Array.isArray(parent)).toBe(true);
 	});
 
-	it("topK 限制返回数量", () => {
-		const items = listPathCandidates(root, "", 2);
+	it("topK 限制返回数量", async () => {
+		const items = await searchFileCandidates(root, "", 2);
 		expect(items.length).toBeLessThanOrEqual(2);
 	});
 });

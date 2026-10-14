@@ -3,18 +3,17 @@
  * 将扩展的狭窄接口调用映射到底层 UIHost 的 Container、OverlayStack、WidgetSlots 与输入层。
  */
 
-import type { Component, Focusable, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
-import { CURSOR_MARKER } from "./core/types.js";
-import { Key, matchesKey } from "./core/keys.js";
-import { C, graphemeSegmenter, visibleWidth, truncateToWidth, wrapTextWithAnsi } from "./core/utils.js";
-import { TextBuffer } from "./core/text-buffer.js";
 import type {
-	BuiltinUIActions,
-	BuiltinUIActionArgs,
+	BuiltinUIActionRequest,
 	ExtensionUIContext,
 	PromptOptions,
 	TerminalUIContext,
 } from "../extensions/ui-contract.js";
+import { Key, matchesKey } from "./core/keys.js";
+import { TextBuffer } from "./core/text-buffer.js";
+import type { Component, Focusable, OverlayHandle, OverlayOptions, WidgetPlacement } from "./core/types.js";
+import { CURSOR_MARKER } from "./core/types.js";
+import { C, graphemeSegmenter, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "./core/utils.js";
 
 export interface UIHostContextPort {
 	notify(message: string, type?: "info" | "warning" | "error", timeoutMs?: number): void;
@@ -33,7 +32,7 @@ export interface UIHostContextPort {
 	registerMessageRenderer?: TerminalUIContext["registerMessageRenderer"];
 	registerToolRenderer?: TerminalUIContext["registerToolRenderer"];
 	registerMarkdownTransformer?: TerminalUIContext["registerMarkdownTransformer"];
-	openFeature?<Name extends keyof BuiltinUIActions>(name: Name, ...args: BuiltinUIActionArgs<Name>): boolean;
+	openFeature?(action: BuiltinUIActionRequest): boolean;
 }
 
 /** 终端鼠标上报前缀（覆盖层统一忽略，避免吞掉后续按键字节）。 */
@@ -468,8 +467,8 @@ export function createExtensionUIContext(host: UIHostContextPort): ExtensionUICo
 			host.setWorking(key, message);
 		},
 
-		openFeature<Name extends keyof BuiltinUIActions>(name: Name, ...args: BuiltinUIActionArgs<Name>): boolean {
-			return host.openFeature?.(name, ...args) ?? false;
+		openFeature(action: BuiltinUIActionRequest): boolean {
+			return host.openFeature?.(action) ?? false;
 		},
 
 		hasUI(): boolean {

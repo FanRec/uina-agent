@@ -1,6 +1,7 @@
-import type { ExtensionAPI } from "./runner.js";
 import type { ThinkingLevel } from "../core/types.js";
 import { listAllSessionNodes } from "../session/navigation.js";
+import type { ExtensionAPI } from "./runner.js";
+
 export { resolveGutterAction } from "../ui/core/gutter.js";
 
 /** 右侧导航轨模式与滑块样式（与 ui-contract 的成员签名一致）。 */
@@ -18,7 +19,7 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		name: "help",
 		description: "查看所有可用命令与快捷键",
 		handler: () => {
-			ui.openFeature?.("help");
+			ui.openFeature?.({ name: "help" });
 		},
 	});
 
@@ -26,7 +27,7 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		name: "think",
 		description: "展开或折叠深度思考过程",
 		handler: () => {
-			ui.openFeature?.("toggle-thinking");
+			ui.openFeature?.({ name: "toggle-thinking" });
 		},
 	});
 
@@ -34,7 +35,7 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		name: "clear",
 		description: "清空当前屏幕转录流",
 		handler: () => {
-			ui.openFeature?.("clear-transcript");
+			ui.openFeature?.({ name: "clear-transcript" });
 		},
 	});
 
@@ -76,10 +77,13 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 				// 传复合键 providerId/modelId：同 id 模型跨 provider 时选择器才能唯一标定当前项；
 				// onPick 回传复合键，resolve() 精确命中对应 provider（避免假切换到首个同名模型）。
 				const current = pi.models.current();
-				ui.openFeature?.("model-picker", {
-					currentModel: `${current.providerId}/${current.id}`,
-					groups: pi.models.groups(),
-					onPick: (name: string) => selectModel(name),
+				ui.openFeature?.({
+					name: "model-picker",
+					payload: {
+						currentModel: `${current.providerId}/${current.id}`,
+						groups: pi.models.groups(),
+						onPick: (name: string) => selectModel(name),
+					},
 				});
 				return;
 			}
@@ -106,10 +110,13 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 					pi.ui.notify("当前 Provider 未提供 thinking 能力元数据；Uina 不会猜测可用档位。", "warning");
 					return;
 				}
-				ui.openFeature?.("effort-slider", {
-					currentLevel: pi.models.thinkingLevel(),
-					tiers: declaredLevels as ThinkingLevel[],
-					onChange: (level: ThinkingLevel) => pi.models.setThinkingLevel(level),
+				ui.openFeature?.({
+					name: "effort-slider",
+					payload: {
+						currentLevel: pi.models.thinkingLevel(),
+						tiers: declaredLevels as ThinkingLevel[],
+						onChange: (level: ThinkingLevel) => pi.models.setThinkingLevel(level),
+					},
 				});
 				return;
 			}
@@ -158,7 +165,7 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		description: "全屏审计轨迹时序看板 (Alt+T)",
 		keybinding: "alt+t",
 		handler: () => {
-			ui.openFeature?.("trajectory");
+			ui.openFeature?.({ name: "trajectory" });
 		},
 	});
 
@@ -166,12 +173,12 @@ export function activateBuiltinCommands(pi: ExtensionAPI): void {
 		name: "prompt",
 		description: "查看最近一次真正生效的系统提示词与注入来源",
 		handler: () => {
-			ui.openFeature?.("prompt");
+			ui.openFeature?.({ name: "prompt" });
 		},
 	});
 
 	const openHistory = (): void => {
-		if (ui.openFeature?.("history")) return;
+		if (ui.openFeature?.({ name: "history" })) return;
 		const nodes = listAllSessionNodes(pi.session, { scope: "all" });
 		const formatted = nodes
 			.map((n) => `[${n.active ? "主线" : "只读"} #${n.seq} ${n.kind}] ${n.id.slice(0, 8)} ${n.preview}`)
