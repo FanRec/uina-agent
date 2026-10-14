@@ -8,7 +8,7 @@
 
 **动作 = 时间的函数。** 一条曲线就是一个普通的 TypeScript 函数 `(t) => number`，
 `t` 是动作内的毫秒（定义域 `[0, durationMs]`，域外自动夹紧到端点时刻的值）。
-数学、缓动、闭包、随机——全部 TS 原生写法，没有中间件、没有格式解析器、没有插件机制。
+数学、缓动、闭包、随机——全部 TS 原生写法，没有中间件、没有格式解析器、没有插件机制。相关轴可以共享同一组 bake 参数，再用相位差表达头身跟随与动作层次。
 
 一条动作声明两件事：
 
@@ -56,22 +56,39 @@
 ## 示例
 
 ```ts
-import { absolute, keys, motion, offset } from "./authoring/motion.js";
+import { absolute, elastic, keys, motion, offset, smooth } from "./authoring/motion.js";
 
 // 数学直写：Q 弹点头（head.pitch 为增量空间，相对当前姿态）
 const nod = motion(950, {
 	"head.pitch": offset((t) => -9.8 * Math.sin((Math.PI * Math.min(t / 950, 1)) ** 2)),
 });
 
-// 关键帧标定（扁平 x/y 速记，MO 目录惯例）+ bake 期随机幅值（每次播放微变，连播不重样）
-const sway = motion(2600, (rng) => ({
-	"torso.roll": offset(keys(pts(0, 0, 450, 3.6 + rng() * 0.8, 1200, 4.2, 2600, 0))),
-	"gaze.x": offset((t) => 0.5 * Math.sin((t / 2600) * Math.PI)),
-	"eyes.left.open": keys(pts(0, 1, 1670, 1, 1780, 0.08, 2020, 1, 2600, 1)),
-}));
+// 程序化头身摆动：共享强度和相位，头部延迟躯干；眨眼仍按明确表演节奏标定
+const sway = motion(2600, (rng) => {
+	const strength = 0.94 + rng() * 0.12;
+	const phase = (rng() - 0.5) * 0.14;
+	const travel = (t: number, lag: number) => {
+		const u = Math.max(0, Math.min(1, t / 2600));
+		const window = smooth(u / 0.08) * (1 - smooth((u - 0.78) / 0.22));
+		return window * Math.sin(2 * Math.PI * 1.15 * u + phase + lag) * Math.exp(-0.45 * u);
+	};
+	return {
+		"torso.roll": offset((t) => 4.2 * strength * travel(t, 0)),
+		"head.roll": offset((t) => -2.1 * strength * travel(t, 0.8)),
+		"gaze.x": absolute((t) => 0.5 * travel(t, 1.8)),
+		"eyes.left.open": keys([
+			[0, 1],
+			[1670, 1],
+			[1780, 0.08],
+			[1900, 0.08],
+			[2020, 1],
+			[2600, 1],
+		]),
+	};
+});
 
-// elastic 生成器：一条参数化的 Q 弹曲线替代 5-8 个手绘反弹关键点
-const hop = motion(1100, { "head.pitch": offset(elastic(1100, -5.2, 2)) });
+// elastic 生成器：弹跳/回弹可直接用参数描述
+const hop = motion(1100, { "head.pitch": offset(elastic(640, 9.8, 1)) });
 
 // 语义变体（手写互异短语，轮换池）仍是目录层的 variants 字段，与函数内随机正交
 ```

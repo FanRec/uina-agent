@@ -1,8 +1,9 @@
 /**
  * MO 动作预览脚本（本机 VTS + MO 模型）——作者迭代回路工具。
  *
- * 用法：pnpm mo:preview <动作名> [更多动作名...]
+ * 用法：pnpm run mo:preview -- [--seed <0..4294967295>] <动作名> [更多动作名...]
  *   - 动作名支持目录内的规范名与中文别名（nod / 点头 / 转圈圈 …）；
+ *   - 可选 seed 固定变体与幅度纹理的随机序列，便于复播比较；
  *   - 多个动作按顺序轮播，每次播放重新 bake（幅度纹理每次不同，可观察连播变化）；
  *   - 走 runtime.express 与主脑完全相同的执行路径（gate / 变体轮换 / spatial 归位 / 结算）；
  *   - Ctrl-C 优雅停车（safeStop → 在途 spatial 清理结算）后再退出，再按一次硬退。
@@ -13,9 +14,33 @@ import { MO_SPEECH } from "../.uina/worlds/live2d/models/mo/speech.js";
 import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 
-const names = process.argv.slice(2);
+const args = process.argv.slice(2);
+const names: string[] = [];
+let seed: number | undefined;
+for (let index = 0; index < args.length; index++) {
+	const arg = args[index]!;
+	if (arg === "--seed") {
+		const raw = args[index + 1];
+		const parsed = raw && /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+		if (seed !== undefined || !Number.isSafeInteger(parsed) || parsed < 0 || parsed > 0xffff_ffff) {
+			console.error(
+				"[预览] --seed 只接受一个 0-4294967295 的整数。用法: pnpm run mo:preview -- [--seed <seed>] <动作名>...",
+			);
+			process.exit(1);
+		}
+		seed = parsed;
+		index++;
+	} else if (arg.startsWith("--")) {
+		console.error(`[预览] 未知参数: ${arg}`);
+		process.exit(1);
+	} else {
+		names.push(arg);
+	}
+}
 if (names.length === 0) {
-	console.error("用法: pnpm mo:preview <动作名> [更多动作名...]   例: pnpm mo:preview nod 点头 wink");
+	console.error(
+		"用法: pnpm run mo:preview -- [--seed <seed>] <动作名> [更多动作名...]   例: pnpm run mo:preview -- --seed 42 nod 点头 wink",
+	);
 	process.exit(1);
 }
 
@@ -48,9 +73,19 @@ for (const name of names) {
 	}
 }
 
-const runtime = new Live2DRuntime({ client: new VTSClient(), rig, catalog, speech: MO_SPEECH });
+let rng: () => number = Math.random;
+if (seed !== undefined) {
+	let state = seed >>> 0;
+	rng = () => {
+		state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+		return state / 0x1_0000_0000;
+	};
+}
+const runtime = new Live2DRuntime({ client: new VTSClient(), rig, catalog, speech: MO_SPEECH, rng });
 await runtime.start({} as never);
-console.log(`[预览] 轮播: ${names.join(" → ")}（每次播放重新 bake；Ctrl-C 停车退出）`);
+console.log(
+	`[预览] 轮播: ${names.join(" → ")}（${seed === undefined ? "随机" : `seed=${seed}`}；每次播放重新 bake；Ctrl-C 停车退出）`,
+);
 
 let stopping = false;
 const controller = new AbortController();

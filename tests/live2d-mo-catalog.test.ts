@@ -3,10 +3,7 @@ import { compileMotion, sampleMotion } from "../.uina/worlds/live2d/authoring/mo
 import { compileMOCatalog, loadCatalog, MO_CATALOG_SOURCE } from "../.uina/worlds/live2d/models/mo/catalog.js";
 import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 
-/**
- * MO 目录装配（曲线函数模型重建版）。
- * 数值基准 = catalog-bak.ts.txt 逐键保真；增强 = bake 期幅度纹理（rng=0.5 增益恰为 1）。
- */
+/** MO 目录装配；nod 保留标定峰值，其幅度纹理在 bake 时由共享参数决定。 */
 const MOTION_NAMES = [
 	"nod",
 	"shake",

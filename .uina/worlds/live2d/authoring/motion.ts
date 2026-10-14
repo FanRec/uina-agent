@@ -99,18 +99,20 @@ export function elastic(ms: number, peak: number, bounces = 2): Curve {
  */
 export function keys(points: readonly (readonly [number, number])[], curve: KeyCurve = "smooth"): Curve {
 	if (!Array.isArray(points) || points.length < 2) throw new Error("keys 需要至少两个关键点");
+	const stablePoints: (readonly [number, number])[] = [];
 	for (const [index, point] of points.entries()) {
 		if (!Array.isArray(point) || point.length !== 2 || !point.every(Number.isFinite))
 			throw new Error(`非法关键点: keys[${index}]`);
-		if (index > 0 && point[0]! <= points[index - 1]![0]!) throw new Error(`关键点 x 必须严格递增: keys[${index}]`);
+		if (index > 0 && point[0]! <= stablePoints[index - 1]![0]) throw new Error(`关键点 x 必须严格递增: keys[${index}]`);
+		stablePoints.push([point[0]!, point[1]!]);
 	}
 	return (t) => {
-		if (t <= points[0]![0]!) return points[0]![1]!;
-		const last = points.at(-1)!;
+		if (t <= stablePoints[0]![0]) return stablePoints[0]![1];
+		const last = stablePoints.at(-1)!;
 		if (t >= last[0]!) return last[1]!;
-		for (let index = 1; index < points.length; index++) {
-			const [x1, y1] = points[index - 1]!;
-			const [x2, y2] = points[index]!;
+		for (let index = 1; index < stablePoints.length; index++) {
+			const [x1, y1] = stablePoints[index - 1]!;
+			const [x2, y2] = stablePoints[index]!;
 			if (t <= x2) {
 				const phase = (t - x1) / (x2 - x1);
 				const weight = curve === "linear" ? phase : curve === "hold" ? 0 : smooth(phase);
