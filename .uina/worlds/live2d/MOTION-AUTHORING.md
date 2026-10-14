@@ -1,6 +1,6 @@
 # Live2D Action 作者合同
 
-动作作者入口位于 `authoring/index.ts`。动作是普通 TypeScript 工厂：Bake 时读取一次 RNG，生成纯函数身体通道与有序空间事件；播放时只读取冻结后的 `CompiledAction`。本轮没有迁移旧 MO 动作、ambient 或 idle/thinking 曲线，MO 当前动作目录为空。
+动画从分类到设备验收的完整工作流见 [动画开发最佳实践](ANIMATION-AUTHORING-GUIDE.md)。本文是 ActionAuthoring API 合同：作者入口位于 `authoring/index.ts`。动作是普通 TypeScript 工厂：Bake 时读取一次 RNG，生成纯函数身体通道与有序空间事件；播放时只读取冻结后的 `CompiledAction`。MO 当前动作、姿态、表情和背景内容均为空；没有迁移旧定义。
 
 ## 作者类型
 

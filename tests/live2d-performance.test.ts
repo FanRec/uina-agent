@@ -192,10 +192,10 @@ async function connected(tickIntervalMs = 1_000_000) {
 }
 
 describe("MO 表演实际合成与执行", () => {
-	it("Wink 在生理眨眼到点时仍单侧闭合，结束回到半眯表情且恢复眨眼", async () => {
+	it("Wink 在生理眨眼到点时仍单侧闭合，结束回到当前表情且恢复眨眼", async () => {
 		const { rig, director, catalog } = await authored();
-		const smirk = catalog.resolve("expression", "smirk")!.entry;
-		const setting = director.setExpression(smirk.values, { durationMs: 0 });
+		const expression = { "mouth.form": 0.42, "eyes.left.open": 0.62, "eyes.right.open": 0.62 };
+		const setting = director.setExpression(expression, { durationMs: 0 });
 		advance(director, 1900);
 		await setting;
 		const wink = catalog.resolve("motion", "wink")!.entry;
@@ -210,8 +210,8 @@ describe("MO 表演实际合成与执行", () => {
 		expect(Math.abs(director.currentFrame["eyes.right.open"]! - beforeRelease)).toBeLessThan(0.03);
 		advance(director, 500);
 		await handle.finished;
-		expect(director.currentFrame["eyes.left.open"]).toBeCloseTo(0.55);
-		expect(director.currentFrame["eyes.right.open"]).toBeCloseTo(0.55);
+		expect(director.currentFrame["eyes.left.open"]).toBeCloseTo(0.62);
+		expect(director.currentFrame["eyes.right.open"]).toBeCloseTo(0.62);
 		let blink = false;
 		for (let i = 0; i < 300; i++) {
 			director.step(10);

@@ -228,9 +228,9 @@ export function perfCatalogSource(): CatalogSource {
 			},
 		},
 		expressions: {
-			smirk: {
-				description: "test-only expression slot",
-				values: { "mouth.form": 0.65, "eyes.left.open": 0.55, "eyes.right.open": 0.55 },
+			test_expression: {
+				description: "Synthetic expression fixture",
+				values: { "mouth.form": 0.42, "eyes.left.open": 0.62, "eyes.right.open": 0.62 },
 				transitionMs: 0,
 			},
 		},

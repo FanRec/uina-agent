@@ -1,6 +1,6 @@
 # Live2D World 当前运行合同
 
-2026-10-14。实现位于 `.uina/worlds/live2d`，身体策略不进入 Subject/Core。
+2026-10-15。实现位于 `.uina/worlds/live2d`，身体策略不进入 Subject/Core。
 
 本轮实现合同见“Action 作者层与播放时钟”。自动测试使用合成作者、假 VTS 与真实 Worker 隔离夹具；不能证明真实 MO/VTS 观感或调度阈值已经校准。完整 Live2D 定向结果以本次开发记录为准，不把本文的历史测试数字当作当前验收。
 
@@ -29,7 +29,7 @@ MO 的 `head.yaw/pitch/roll` 与 `torso.yaw/pitch/roll` 是独立逻辑轴。没
 
 目录只保存动作工厂、静态姿态/表情、别名和其它模型专属能力，不缓存编译动作。`compileCatalog` 隔离作者输入并以固定 seed 校验结构、轴、曲线和空间载荷，校验性 Bake 的结果会丢弃；Runtime 每次播放按动作名、播放序号与用途派生随机流并重新 Bake。目录索引私有，消费者通过 `resolve/list/resolveCue` 获取冻结记录；内置注视词表与别名同源，名称全局唯一。
 
-本轮按用户要求清空 MO 的旧动作内容，没有搬运动作、环境片段或 idle/thinking 曲线。当前 MO `motion` 与 `ambient` 列表为空，`background.idle/thinking` 未设置；原 `rest/tuck/head_back` 姿态与 `smile/smirk/clear_face` 表情、rig 标定和内置注视保留。`express` 对动作返回目录为空/未知动作，`state.ambient` 不会回退到旧目录。目录换代仍递增代次并使旧执行失效。
+按用户要求，MO 的动作、姿态、表情和背景内容均为空；没有迁移旧条目。rig 标定与内置注视保留。`express` 对动作返回目录为空/未知动作，`state.ambient` 不会回退到其它目录。目录换代仍递增代次并使旧执行失效。
 
 ## Action 作者层与播放时钟
 

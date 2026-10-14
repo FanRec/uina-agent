@@ -90,20 +90,20 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 			},
 			state: {
 				description:
-					"调整持续的身体状态：姿势、表情、视线、背景小动作。可一次组合设置（如坐下+微笑+看对方），没传的项保持不变；姿势表情会一直保持到下次更换。",
+					"调整持续的身体状态：姿势、表情、视线、背景小动作。可一次组合设置多个状态项，未传的项保持不变；姿势表情会一直保持到下次更换。",
 				parameters: {
 					type: "object",
 					additionalProperties: false,
 					properties: {
-						posture: { type: "string", description: "姿势名，如 rest、tuck（见 status）" },
-						expression: { type: "string", description: "表情名，如 smile、smirk（见 status）" },
+						posture: { type: "string", description: "姿势名，来自当前模型目录（见 status）" },
+						expression: { type: "string", description: "表情名，来自当前模型目录（见 status）" },
 						attention: {
 							type: "string",
 							description: "看向哪里：user(看对方)、screen(看屏幕)、avert_down/left/right(移开视线)，或模型自定义目标",
 						},
 						ambient: {
 							type: ["string", "null"],
-							description: "背景小动作名（如 sway）；传 null 停止并回到默认静止态",
+							description: "背景小动作名，来自当前模型目录（见 status）；传 null 清除",
 						},
 						hold_ms: {
 							type: "number",

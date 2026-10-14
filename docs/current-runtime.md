@@ -192,13 +192,13 @@ shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计�
 
 ## Live2D 动作与语音播放
 
-当前 World 位于 `.uina/worlds/live2d`。MO rig 保留头、眼、嘴与躯干 yaw/pitch/roll 标定；头部是默认身体跟随目标，显式 torso 通道可错拍、偏移或接管。不控制手臂，也不靠平移模型制作身体动画。静态姿态/表情词表仍在 [MO 目录](../.uina/worlds/live2d/models/mo/catalog.ts)；旧动画内容已清除，本轮没有迁移。
+当前 World 位于 `.uina/worlds/live2d`。MO rig 保留头、眼、嘴与躯干 yaw/pitch/roll 标定；头部是默认身体跟随目标，显式 torso 通道可错拍、偏移或接管。不控制手臂，也不靠平移模型制作身体动画。MO 动作、姿态、表情和背景目录目前均为空；没有迁移旧内容。
 
 | 入口 | 当前名称与表现 |
 | --- | --- |
 | express / cue 动作 | 当前 MO 动作与 cue 列表为空；按用户决定，后续直接重建，不迁移旧动作 |
-| state.posture | `rest` 自然站定、`tuck` 垂头收起、`head_back` 仰头放松，仅控制头部 |
-| state.expression | `smile` 明朗笑、`smirk` 半眯坏笑、`clear_face` 清除表情；smirk 嘴形约 0.65、双眼开度约 0.55，无偏嘴承诺 |
+| state.posture | 当前 MO 姿态目录为空 |
+| state.expression | 当前 MO 表情目录为空 |
 | state.attention | `user`、`screen`、`avert_down`、`avert_left`、`avert_right` 或既有坐标目标 |
 | state.ambient | MO 没有 ambient 条目；接口保留，目录不会回退到备份 |
 | 内部背景 | MO 没有 idle/thinking 动作工厂；自律通道按 rig 的 VTS/Uina 来源声明独立工作 |
@@ -216,6 +216,8 @@ MO 当前没有环境片段或 idle/thinking 作者定义。Host thinking 事件
 空间特技分段可携带段级 effects（染色/后处理）。external-actions 统一拥有位姿、效果和外观请求的执行及清理：只恢复自己尝试发送的项，纯效果不移动模型，效果动作与外观请求共享 effect:* 独占。需要 post 时先捕获有效开关/preset 基线，读取失败或开关字段缺失即发送前 failed/not_started；仅 tint 不读写 post。恢复前后核验模型、连接与目录代次，失效后不向新环境写旧状态；位姿读回、tint 白色请求接受、post 开关及具名 preset 分别核验，不保证所有滤镜值逐项保真。details.cleanup 为 not_needed/confirmed/unknown，restored/restoredEffects 由它派生。必要清理未知时普通完成 unknown，取消保留 cancelled 并明确未知。safeStop 等待外部请求与完整分项事实，清理未知不再漏报；暂停取消持续状态的等待而保留意图，resume 继续剩余过渡并允许新执行，不自动重发或恢复，最近未知诊断保留。
 
 2026-10-14 Action 作者层重构与审查收口：以命名 Timeline、ActionPlan、纯函数曲线与 Bake 编译器替代旧 MotionPlan；Director 与 ExternalActions 共用编译动作、有效时钟与共同 t0，自然结束按标称 wall end 退场，handoff 输出和 handle 结算共用进度；Runtime 使用 selection/performance/autonomic 隔离随机流。旧作者 API、MO 动作备份和复制夹具已删除；动画内容未迁移，MO motion/ambient/idle/thinking 为空。mo:preview 支持连续、单次、固定次数、seed、离线采样及真实空间请求追踪。作者输入快照、数值边界、空间窗口、同模型位姿所有权和在途 VTS 插值归位由回归覆盖；真实 VTS/MO 观感和 100ms 位姿阈值校准未完成。定向 Live2D 31 个测试文件、294 项通过；`pnpm typecheck`、8 条边界检查、`git diff --check` 通过；`mo:preview --list` 显示当前动作目录为空。
+
+2026-10-15 按用户要求清空 MO 姿态与表情目录中的旧预设；当前动作、姿态、表情、ambient、idle 和 thinking 目录均为空。通用状态接口保留，后续重建时再登记模型内容。
 
 2026-10-13 架构重构：目录编译前隔离作者数据，提供 resolve/list/resolveCue 冻结记录，无公开 Map 或重复解释器；MO sway 中文别名可执行。state 一次预校验并绑定目录代次，cue 复用同一准入与执行，拒绝不记 started。生产 Worker 与进程内装配同源；预取消零投递，运行取消等待结构化清理结论，线程退出撤销全部登记与订阅并使保留引用离线，迟到 sync 不复活。启动回滚及正常停止聚合错误而释放资源，context abort 与 onStop 保留在途结果。当前完整合同见 [Live2D World 运行合同](live2d/live2d-world-runtime.md)。以下历史验证记录仅证明对应当次运行，不代替重构后的自动验证或真实设备验收。
 
