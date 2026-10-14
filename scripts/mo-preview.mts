@@ -46,7 +46,31 @@ console.log(`[预览] 轮播: ${names.join(" → ")}（每次播放重新 bake�
 
 let stopping = false;
 const controller = new AbortController();
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * 就绪等待：VTS 连接、API 授权（首连需在 VTS 界面点击允许）与模型绑定都是异步事实，
+ * 就绪前 express 会被 gate 以 model_not_ready/unadapted 秒拒——等就绪再开播，杜绝拒绝洪水。
+ */
+const waitReady = async (): Promise<void> => {
+	const deadline = Date.now() + 60_000;
+	while (!(runtime.connectionOnline && runtime.identityMatched())) {
+		if (stopping) return;
+		if (Date.now() > deadline) {
+			console.error(
+				"[预览] 等待 VTS 连接/模型绑定超时（60s）。请确认 VTube Studio 已启动、API 插件已授权（首次连接需在 VTS 界面点击允许）、当前已加载 MO 模型。",
+			);
+			process.exit(1);
+		}
+		process.stdout.write("[预览] 等待 VTS 连接与模型绑定…\r");
+		await sleep(250);
+	}
+	console.log("[预览] 已就绪（VTS 已连接，模型绑定核验通过）。");
+};
+
 const loop = async (): Promise<void> => {
+	await waitReady();
+	if (stopping) return;
 	let index = 0;
 	while (!stopping) {
 		const name = names[index % names.length]!;
@@ -54,7 +78,14 @@ const loop = async (): Promise<void> => {
 		const started = Date.now();
 		const result = await runtime.express({ motion: name }, { signal: controller.signal });
 		const seconds = ((Date.now() - started) / 1000).toFixed(1);
-		if (!stopping) console.log(`[${new Date().toLocaleTimeString()}] ${name}: ${result.status}（${seconds}s）`);
+		const details = result.details as { reason?: string } | undefined;
+		const reason = details?.reason ? `（${details.reason}）` : "";
+		if (!stopping)
+			console.log(
+				`[${new Date().toLocaleTimeString()}] ${name}: ${result.status}${reason}（${seconds}s）${result.status === "succeeded" ? "" : ` — ${result.result}`}`,
+			);
+		// 失败退避：gate/执行拒绝时等待后重试（连接抖动/暂停等瞬态），绝不高速重试洪水
+		if (result.status !== "succeeded") await sleep(2000);
 	}
 };
 
