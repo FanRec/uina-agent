@@ -6,7 +6,7 @@ World 是一个有生命周期、工具动作和可选后台服务的外部环�
 
 World 放在 `.uina/worlds/<name>/`，入口默认是 `index.ts`。入口导出 `WorldDef` 或返回它的工厂函数；工厂必须无参调用，宿主注入只发生在 `onStart` 的 ctx（工厂阶段绝不读宿主参数或抛配置错误，否则 world 只会显示发现失败而看不到真实原因）。框架负责扫描、启用、停用、注册工具和释放资源。
 
-`activateWorldFramework` 负责启用框架；`WorldRuntime` 管理单个 World 的运行资源；`world-store` 管理启停状态，保存到 `.uina/worlds.json`。停用后工具、监听器、共享引用和事件出口都必须释放。
+`activateWorldFramework` 负责启用框架；`WorldRuntime` 管理单个 World 的运行资源；`world-store` 管理启停状态并持久化到 `worlds.json`：有主体绑定时写入 `<subject.stateRoot>/worlds.json`，否则写入 `<cwd>/.uina/worlds.json`。停用后工具、监听器、共享引用和事件出口都必须释放。
 
 ## WorldDef 主要字段
 

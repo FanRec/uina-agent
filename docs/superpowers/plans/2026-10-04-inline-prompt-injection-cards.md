@@ -1,6 +1,6 @@
 # 对话流提示词与注入卡片实施计划
 
-> **给执行代理：** 按任务逐项执行。每个任务先写失败测试、确认失败，再写最小实现；不要把已有脏文件加入提交。
+> **状态（2026-10-14 复核）：** 该计划的提示词快照、外部输入卡片、转录回放与 `/prompt` 面板已在当前源码实现；下方任务框保留原计划记录，不代表当前待办。本轮相关定向测试 7 个文件、50 项通过。一次较宽的 `tests/ui.test.ts` 运行中，提示词相关检查通过；另有一项文件联想用例因 `getFileCandidates is not a function` 失败，与本计划功能无关。未验证真实 TTY/IME。源码和验收测试见 `src/session/prompt-snapshots.ts`、`src/ui/components/transcript/context-card.ts`、`tests/context-card.test.ts`、`tests/prompt-card-replay.test.ts`。
 
 **目标：** 将上下文注入从难读的 `/context` 诊断面板改成对话流中的可读卡片，保留一个简洁的 `/prompt` 查询入口，并修复外部输入回放与 custom message 图片丢失问题。
 

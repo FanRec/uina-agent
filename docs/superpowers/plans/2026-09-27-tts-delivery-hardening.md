@@ -1,6 +1,6 @@
 # TTS Delivery Hardening Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+> **状态（2026-10-14 复核）：** 计划中的解析、PCM 完成/取消、播放租约、Voice 结果和订阅清理能力均可在当前代码中找到；这里的未勾选框是原执行清单，不表示它们仍是当前待办。当前合同见 [Voice/TTS 运行合同](../../voice-tts/voice-tts-runtime.md)，历史设备/整仓结果与本轮离线复核见 [Voice/TTS 验证记录](../../voice-tts/voice-tts-verification.md)。本轮额外通过 `tests/tts-hardening.test.ts` 和 Bridge `test_service_cancel.py`、`test_review_races.py`（49 项）；未连接真实 Vendor、Bridge 或设备。
 
 **Goal:** 修复 TTS 文本、PCM、物理播放取消、进度、口型订阅和 Voice 结果契约中的已确认一致性缺陷，同时保持 Core、Voice、TTS、Bridge 的现有职责边界。
 

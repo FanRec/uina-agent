@@ -98,6 +98,8 @@ registerProvider 与 registerModel 分别提供端点和能力事实；models.cu
 
 registerToolRenderer 与 registerMarkdownTransformer 只控制显示。widget、header/footer、overlay、输入对话框和编辑器操作通过 api.ui 使用。先判断 ui.hasUI()，无 UI 时不能把 select/input 的 undefined 或 confirm 的 false 当成人类答复。
 
+应用面板通过判别联合动作请求打开，例如 `api.ui.openFeature({ name: "prompt" })`，或 `api.ui.openFeature({ name: "model-picker", payload })`。可附带 `signal` 取消单次面板；运行时会与扩展激活作用域合并，扩展卸载时关闭所属面板并结算已启动的模型选择回调。
+
 ## Hook 与贡献
 
 干预用 onHook(hookName, handler)，观察用 on(event, handler)——Hook 与 Event 各一词表、各一出口。现役干预点：turn.prepare；纯 RequestProjection 链 turn.transformContext；只读决策 turn.preflight（fail > rebuild > send）；安全点 turn.afterEnd；turn.shouldStop；tools.beforeCall / transformResult；provider.transformHeaders / transformPayload / observeResponse。完整类型见 [hooks](../src/runtime/hooks.ts)。
@@ -114,7 +116,7 @@ registerToolRenderer 与 registerMarkdownTransformer 只控制显示。widget、
 
 ## 默认文件与图片工具
 
-`builtin:workspace-tools` 随 Host 启动；无需加载原 workspace-tools 示例。`read_file` 读 UTF-8 文本，可传 `offset`（从 1 开始）与 `limit` 选择行；输出上限 2000 行 / 50KB（先命中者生效），截断时在尾部附续读 offset 提示，单行超限则截前 2000 字符并给 exec_command 兕底；前 8KB 含 NUL 字节按二进制拒读。`write_file` 覆盖 UTF-8 文件，父目录须存在。`read_image` 按文件签名识别 PNG/JPEG/GIF/WebP，传递原始字节；签名识别不等于完整图片解码校验。路径相对 `api.cwd` 解析，绝对路径可用。
+`builtin:workspace-tools` 随 Host 启动；无需加载原 workspace-tools 示例。`read_file` 读 UTF-8 文本，可传 `offset`（从 1 开始）与 `limit` 选择行；输出上限 2000 行 / 50KB（先命中者生效），截断时在尾部附续读 offset 提示，单行超限则截前 2000 字符；确需读取行内更多字节时可用 `exec_command` 按字节取片段。前 8KB 含 NUL 字节按二进制拒读。`write_file` 覆盖 UTF-8 文件，父目录须存在。`read_image` 按文件签名识别 PNG/JPEG/GIF/WebP，传递原始字节；签名识别不等于完整图片解码校验。路径相对 `api.cwd` 解析，绝对路径可用。
 
 Host 可用 `workspaceTools: false` 关闭这组默认能力。项目扩展通过 `registerTool(..., { replace: true })` 与 `registerToolRenderer(..., { replace: true })` 分别替换行为和展示，释放注册后恢复前一个存活实现。
 

@@ -44,9 +44,11 @@
 
 交互启动顺序为：读取 `HostSnapshot`、恢复 TUI 会话与草稿状态、接入扩展 UI、启动终端消费者，随后才启动 `Host`。`HostSnapshot` 与 `HostEvent` 位于 `host/events.ts`；UI 不持有可供 CLI 操作的 Host 引用。Host 事件到 transcript/activity/trajectory 的投影集中在 `InteractiveTUI.consume()`，CLI 只提供回溯装饰等宿主派生数据。运行中晚接入的订阅者只收到后续事件，不重建既有 transcript。
 
-TUI 向 CLI 发出的动作是 `TuiIntent` 联合（提交、取消、插队递送、撤回队列、切换思考档位）；CLI 路由后调用 Host。忙闲决策使用 Host 快照/查询，TUI 的 busy 值只是事件驱动的显示状态。草稿读写、通知和会话恢复通过 TUI 门面操作；提示词面板通过类型化 `openFeature("prompt")` UI action 打开。
+TUI 向 CLI 发出的动作是 `TuiIntent` 联合（提交、取消、插队递送、撤回队列、切换思考档位）；CLI 路由后调用 Host。忙闲决策使用 Host 快照/查询，TUI 的 busy 值只是事件驱动的显示状态。草稿读写、通知和会话恢复通过 TUI 门面操作。应用 UI 动作使用判别联合请求 `{ name, payload?, signal? }`；扩展的作用域信号与调用者信号合并，作用域结束会关闭该调用打开的面板。模型选择回调纳入 ResourceScope 在途工作结算。
 
 扩展的 `pi.ui` 只提供通知、确认/选择/输入、状态和类型化应用动作；ANSI 组件、overlay、widget、编辑器控制、页眉页脚、gutter 与组件渲染器注册位于 `pi.ui.terminal`。renderer 注册由扩展 `ResourceScope` 管理，终端未接入时也注册到共享 renderer registry。没有预建 Web/GUI 布局层。
+
+`@` 文件路径联想使用异步目录遍历，候选加载时显示“扫描中”；输入查询变化后，迟到的搜索结果不会覆盖当前输入或候选。
 
 组件异常在组件边界内报告并隔离。弹窗按收到的宽高组织可见内容；空 ContextBar 不占行，存在上下文事实时提供 Ctrl+L 入口。时间线轨只在有多轮导航且历史可滚动时出现，无可滚动内容时不保留 gutter。布局与鼠标热区共用 `FrameLayout`。这些约束由 fake terminal 覆盖 40/50/80/120 列与 8/12/24 行；真实终端字体、配色观感和 IME 仍需现场验收。
 
@@ -68,7 +70,7 @@ TUI 向 CLI 发出的动作是 `TuiIntent` 联合（提交、取消、插队递�
 
 队列移交通过一条携带输入 ID、内容和来源的 `input` 记录提交：提交前归队列，提交后归会话。用户输入投影为 user message，runtime 来源投影为隐藏 custom 消息，标明运行时来源，重开后仍可进入上下文，不伪装成人类发言。提交失败报告错误并保留待处理队列，失败轮次不自动续跑。这里保证输入归属，不保证外部副作用恰好执行一次或跨重启 producer 对账。`input_accepted` 表示已受理进入直接启动或队列；`input_settled` 表示输入已进入 canonical history 或永久退役（不表示模型已回复或外部副作用成功）。World 可用该事实回收 deferred 输入占位，避免把 render 当作提交确认。
 
-Host 默认装配事件帧 profile：未显式传入 `projection`/`systemPrompt` 时，模型请求中的外部输入（用户输入、runtime 来源且 `origin: external` 的观察）以 `external_event_frame` 三消息组（通知、合成调用、回执）呈现，内部 runtime 消息以带来源标注的 user 消息呈现且不重复加内部分类前缀；每请求执行帧协议校验，请求级预算门仍归 Subject。`examples/file-events.mts` 的文件变化观察标 `origin: external`。设计见 [外部事件帧设计](proposals/external-event-frame-design.md)。
+Host 默认装配事件帧 profile：未显式传入 `projection`/`systemPrompt` 时，模型请求中的外部输入（用户输入、runtime 来源且 `origin: external` 的观察）以 `external_event_frame` 三消息组（通知、合成调用、回执）呈现，内部 runtime 消息以带来源标注的 user 消息呈现且不重复加内部分类前缀；每请求执行帧协议校验，请求级预算门仍归 Subject。`examples/file-events.mts` 的文件变化观察标 `origin: external`。设计见 [外部事件帧设计](proposals/runtime/external-event-frame-design.md)。
 
 header 为 v3，且只接受 v3：v2 及更早版本明确拒绝，没有迁移链，也没有旧版本 reader——旧 journal 直接开新会话。不会自动猜测修复非法生命周期记录，也无法补回已丢失的输入。
 
@@ -84,9 +86,11 @@ shell 非零退出码为 `failed`。Broker 接受 producer 已明确返回的结
 
 ## TTS 文件生成
 
-Voice/TTS 的来源顺序、立即静音、确认停止、有限恢复、诊断输出和瞬态上下文合同见 [Voice/TTS 当前合同](voice-tts-runtime.md)。声音协议版本为 2；外部旧 Bridge 需要由启动方更新重启。自动化与真实设备验证边界分别记录，不把受理或健康接口当成实际播放。
+Voice/TTS 的来源顺序、立即静音、确认停止、有限恢复、诊断输出和瞬态上下文合同见 [Voice/TTS 当前合同](voice-tts/voice-tts-runtime.md)。声音协议版本为 2；外部旧 Bridge 需要由启动方更新重启。自动化与真实设备验证边界分别记录，不把受理或健康接口当成实际播放。
 
-项目 TTS 扩展注册独立 `tts_generate({text})`：原样提交完整文本，使用部署中的 Vendor/语音预设与共享合成锁，等待完整 PCM WAV 后保存到 `<pi.cwd>/uina/tmp/`。成功模型正文只含普通文件 `resource` 和采样计算的 `durationMs`；失败不返回文件引用。临时件同目录独占写入并在校验后原子发布，不覆盖已有文件。生成不播放、不驱动字幕或口型，已发布文件不随回合结束、静音或扩展卸载清理。详见 [TTS 文件生成](tts-file-generation.md)。
+实时字幕伴生服务由 TTS 扩展通过 `subtitle-companion.ts` 探测/启动；其独立实现位于 ThirdParty `realtime-subtitles` 项目。源码与模拟测试覆盖本地连接、队列和呈现逻辑，不证明 OBS、实际声卡时间同步或真实直播画面已验收；当前设计状态见 [实时字幕服务设计](proposals/voice/realtime-subtitle-service-design.md)。
+
+项目 TTS 扩展注册独立 `tts_generate({text})`：原样提交完整文本，使用部署中的 Vendor/语音预设与共享合成锁，等待完整 PCM WAV 后保存到 `<pi.cwd>/uina/tmp/`。成功模型正文只含普通文件 `resource` 和采样计算的 `durationMs`；失败不返回文件引用。临时件同目录独占写入并在校验后原子发布，不覆盖已有文件。生成不播放、不驱动字幕或口型，已发布文件不随回合结束、静音或扩展卸载清理。详见 [TTS 文件生成](voice-tts/tts-file-generation.md)。
 
 ## QQ World
 
@@ -96,11 +100,11 @@ QQ World 的模型工具表面是单一 `qq` 工具：`{action, params}` 分发�
 
 fetch 接受 mediaRef、fileRef 或 messageRef+segmentIndex，返回 `{kind:"file",path}` 普通文件资源；现有 send 的模型入参为 content 数组中的 path，不把运行时 resource 宽容分支当 schema。附件定位字段随消息保留，平台点查/转发只补 media_locator 证据，不写 received/dispatched。群文件重新核验原目录稳定 ID，URL 过期最多刷新一次；远端平台路径没有共享映射时明确不可用。文件流式取得到当前账号 downloads 根，大小与本地 SHA-256 提供实际证据，平台摘要校验保持未验证；原始编码不转换、不解析、不转写。临时目录中的文件与来源元数据统一发布，正式文件跨调用与重启保留，启动只清理自有未发布目录。下载期限沿用 connection.requestTimeoutMs；取消/停止后无迟到发布。未增加下载缓存、后台重试、任务管理器或租约；显式出站 allowedRoots 策略仍独立检查。
 
-发现实现审查后，消息分段拉取复用同一附件已刷新定位；来源位置与已知平台对象定位共同约束引用复用，转发位置替换对象分配新引用。私聊文件缺少专用 hash 时明确定位不可用，不猜通用 get_file。下载的地址刷新共用取消与期限；发布流程集中拥有字节、元数据和临时目录。表情目录只在载荷与分页成果成功后补呈现名称；本地检索按实际时间排序和标记归档，大小写展开后的片段位置映射回原文。分析与反例见 `qq-world-discovery-review-2026-10-11.md`。
+发现实现审查后，消息分段拉取复用同一附件已刷新定位；来源位置与已知平台对象定位共同约束引用复用，转发位置替换对象分配新引用。私聊文件缺少专用 hash 时明确定位不可用，不猜通用 get_file。下载的地址刷新共用取消与期限；发布流程集中拥有字节、元数据和临时目录。表情目录只在载荷与分页成果成功后补呈现名称；本地检索按实际时间排序和标记归档，大小写展开后的片段位置映射回原文。分析与反例见 [QQ 发现审查](qq/qq-world-discovery-review-2026-10-11.md)。
 
 查询与消费解耦：`inbox` 每次请求在线好友、群目录（best-effort，仅补全名称，失败不阻塞红点一瞥），合并本地消息、事件、关注与偏好会话，返回名字及未知标记。参数、游标与查询全部成功后，先持久保存 push，再更新内存 focus。limit/cursor 分页绑定目录身份与查询条件，普通目录分页不因未读计数变化失效。`requests list` 默认每页 20 条，limit/cursor 透传，nextCursor 可直接续页。
 
-`read` 与响铃窗口共用顺序阅读窗口和会话锁，仅消费入站消息；自身发言留在历史中，不参与待处理数。窗口返回正文、实际交付消息与位置，媒体展开、取消及生命周期检查完成后，read 才记录 dispatched。skip 也在锁内重验并单调推进消费书签（单书签，旧通知账本已并入）。超长消息允许显式折叠，提供真实 browse 调用及富媒体展开引用；未交付整条消息保持待处理。
+`read` 与响铃窗口共用顺序阅读窗口和会话锁，仅消费入站消息；自身发言留在历史中，不参与待处理数。窗口返回正文、实际交付消息与位置，媒体展开、取消及生命周期检查完成后，read 才记录 dispatched。响铃窗口最多 30 条/14,000 字符；手动 `read` 默认 20 条、最多 100 条，两个上限分别约束自动交付和显式阅读。skip 也在锁内重验并单调推进消费书签（单书签，旧通知账本已并入）。超长消息允许显式折叠，提供真实 browse 调用及富媒体展开引用；未交付整条消息保持待处理。
 
 冷启动初始化持久记录 readerInitialized：首次迁移保留已有会话基线，仅封存迁移当时的历史；初始化之后新会话基线为 0，正常未读跨重启保留。消费位为 max(dispatched, baseline)，不回退过去错误推进的书签，也不自动批量恢复错误封存内容。推送偏好 accountPush/conversationPush 只含 `{off, pausedUntil}` 并持久化，focus 只在进程内存在且开窗无视静音；账号或会话任一静音、任一未到期暂停即静音。旧控制字段（AttentionOverride 与 v2 mode/filter）一次性归并为 `{off, pausedUntil}`，迁移后不再落盘旧字段。
 
@@ -118,7 +122,7 @@ fetch 接受 mediaRef、fileRef 或 messageRef+segmentIndex，返回 `{kind:"fil
 
 QQ World 的平台消息、历史与点查共用 QQ 消息解码器，保留字符串/数字编号、引用回复、提及、表情与附件关系；已撤回消息的保存原文明确标注。附件标签保留消息、分段和转发节点对应，Provider 在对应图片之前运输标签；目录已核验的表情名称可用于呈现，缺失保持未知。普通正文不重复传输 URL，成功操作保留结果和消息引用、诊断数据保留完整操作记录；裁剪区分完整/部分/省略。事实仍为 UTC，日期与时区偏移仅在呈现层按对应时间转换。
 
-工具参数继续由完整 schema 校验；Broker 与 WorldTool 只精简错误说明，按当前选择器报告相关字段，完整 AJV 错误快照在 `details.validationErrors`。自动验证包含隔离平台测试以及 World → Subject → JsonlSessionStore 集成，不证明真实 QQ 对端呈现或模型理解质量。2026-10-11 真实只读连接探测不可用，身份、在线目录与平台历史仍未获真实服务证据；验收映射与验证命令见 `docs/qq-world-acceptance.md`。
+工具参数继续由完整 schema 校验；Broker 与 WorldTool 只精简错误说明，按当前选择器报告相关字段，完整 AJV 错误快照在 `details.validationErrors`。自动验证包含隔离平台测试以及 World → Subject → JsonlSessionStore 集成，不证明真实 QQ 对端呈现或模型理解质量。2026-10-11 真实只读连接探测不可用，身份、在线目录与平台历史仍未获真实服务证据；验收映射与验证命令见 [QQ World 验收](qq/qq-world-acceptance.md)。
 
 ## 能力注册
 
@@ -129,6 +133,7 @@ QQ World 的平台消息、历史与点查共用 QQ 消息解码器，保留字�
 - `builtin:session-tools` 注册历史查询/回溯工具与 `/history`、`/rewind`。
 - `builtin:commands` 注册内置命令；`/session` 仍用于查看会话用量。
 - 项目 MCP 扩展注册单个 `mcp` 代理工具。全局 MCP 配置的 `uina.mcpPurposes` 为已配置的全局 server 提供用途索引，通过 `turn.prepare` 加入 system prompt；`/reload` 后重建。索引不保证服务在线或远端工具目录最新；远端能力仍由 MCP 目录发现与校准。
+- Screen MCP 服务实现位于 `.uina/mcp-servers/screen-mcp/`，当前源码状态见 [IMPLEMENTATION_STATUS.md](../.uina/mcp-servers/screen-mcp/IMPLEMENTATION_STATUS.md)。仓内有合成协议和桌面接口测试；真实桌面采集、真实视觉 Provider、默认尺寸与实际延迟门仍未验收。
 - 项目扩展从 `.uina/extensions/` 的脚本、一级目录入口或 `package.json#uina.extensions` 加载；CLI `-e` 与 Host `extensionPaths` 可指定额外入口。在 `activate(pi)` 中调用 `pi.registerTool()`、`pi.registerCommand()`、`pi.registerProvider()`、renderer 或 hook 注册 API。
 
 没有独立的 `tools/` 扫描或执行旁路。脚本加载使用 jiti，并刷新本地子模块；导入预检失败保留旧 activation，激活失败回收局部注册。ResourceScope 发出取消、执行 teardown、等待公共 API 在途调用并释放自己的注册。
@@ -165,13 +170,15 @@ shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计�
 
 ## 已验证与未验证
 
+本节中带日期的测试与设备结果是各自工作树的历史快照，不代表当前 checkout。2026-10-14 文档审阅期间重新运行了 `pnpm typecheck` 和若干离线定向测试；具体范围与结果见[逐篇审阅台账](document-audit-register.md)。本轮没有运行全量测试，也没有连接真实 Provider、QQ、VTS 或设备。
+
 会话回溯实现：类型与 5 条边界检查、28 文件 406 项测试通过；`pnpm dev:baseline --quick` 通过。隔离构建和编译 CLI 四组探针通过，包括三次 localhost 请求完成查询、回溯和继续。增强后新增：被放弃切片的外部操作清单、跨压缩点回溯、回溯重展开超限时的自适应压缩、废弃分支任务结果的来源标记、只读历史检视器（/history、/branches、Alt+H）与专用回溯卡片。详细分阶段结果及证据边界见 [会话设计](session-rewind.md)。
 
 2026-09-13 文件/图片转正：`pnpm typecheck` 和全量 27 文件、377 项测试通过；隔离目录执行相同 build 与 verify:cli 脚本通过，Windows x64 native 已加载。localhost 编译 CLI 无需 `-e` 或 imageInput 声明即可完成图片工具回注；文件范围读取、格式签名、禁用装配及显式替换恢复已测试。这些结果不代表真实视觉服务端接受或识图质量。
 
 本次扩展组合实现：类型/边界检查、27 个测试文件共 375 项通过；隔离目录完成相同 package build 脚本、Windows native 加载及编译 CLI 验证，包括 `-e` 加载 TS 目录扩展后的 PNG 工具回注。原目录 clean build 受正在运行的 Uina native 文件锁影响，隔离构建复用已安装依赖，以 npm run 执行相同脚本，未中断该进程。真实 DeepSeek 文件事件验收通过；视觉服务端接受与识图质量仍未验证。新增范围见 [扩展契约](extensions.md)。
 
-当前已通过 `pnpm typecheck`、`pnpm test`、`pnpm build`；测试覆盖本地 OpenAI-compatible、Anthropic、Gemini SSE，三种 Provider 的真实 CLI one-shot 工具回注、SessionEntry 恢复、ResourceScope teardown 和 runtime tool activation。
+历史检查曾通过 `pnpm typecheck`、`pnpm test`、`pnpm build`；测试覆盖本地 OpenAI-compatible、Anthropic、Gemini SSE，三种 Provider 的编译 CLI one-shot 工具回注、SessionEntry 恢复、ResourceScope teardown 和 runtime tool activation。该记录未给出可对应当前 checkout 的基线，不作为本轮全量验证结论。
 
 以下仍未验证或未实现：其余真实 Provider 服务端、真实 TTY IME、ARM native 实际加载、跨平台 shell、实际断电、长期负载、语音、视觉、感知和分布式运行时。
 
@@ -191,7 +198,7 @@ shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计�
 | --- | --- |
 | express / cue 短手势 | `nod` 点头应声、`shake` 摇头否认、`wink` 左眼俏皮眨眼、`curious` 侧歪打量、`chin_up` 得意昂头、`head_toss` 哼一下 |
 | express / cue 反应与视线 | `alert` 凝神警觉、`startle` 吓一跳、`surprise` 惊讶一顿、`glance` 偷瞄一眼、`eye_roll` 无语望天、`double_take` 再看一眼 |
-| express / cue 空间手势 | `joy_hop` 雀跃一弹、`petrify` 石化、`close_up` 贴脸、`edge_peek` 边缘探头、`spin` 转圈（目录已装配，真实视觉验收分别确认） |
+| express / cue 空间手势 | `joy_hop` 雀跃一弹、`petrify` 石化、`close_up` 贴脸、`edge_peek` 边缘探头、`spin` 转圈（目录已装配；既往视觉结果只适用于当时的动作内容，不验证 2026-10-14 的曲线重写） |
 | state.posture | `rest` 自然站定、`tuck` 垂头收起、`head_back` 仰头放松，仅控制头部 |
 | state.expression | `smile` 明朗笑、`smirk` 半眯坏笑、`clear_face` 清除表情；smirk 嘴形与双眼开度均约 0.55，无偏嘴承诺 |
 | state.attention | `user`、`screen`、`avert_down`、`avert_left`、`avert_right` 或既有坐标目标 |
@@ -200,9 +207,9 @@ shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计�
 
 `greeting/lean/brighten` 和 `wave` 别名已从 MO 目录删除，不保留兼容层；打招呼可组合点头与笑。工具为 express/state/costume/prepare_body/status/reload；姿态、表情、注视、环境通过 state 分别持有持续意图，express/cue 播放有限动作。`prepare_body` 创建按模型隔离的 Uina VTS 输入，不改写 `.vtube.json`；操作者需在 VTS 把三项分别映射到 `ParamBodyAngleX/Y/Z`，再 reload 并用 status detail 检查。音乐、气鼓鼓和偏嘴未发布。
 
-头部手势为姿态增量，按当前姿态剩余范围同比缩小；普通手势不写入持续表情。作者以关键帧速记（`pts`）与曲线函数（数学直写、`elastic` 生成器）设计快慢、停顿、眼先头后与回弹，惊吓透传短入场和弹簧速度重置。临时眼睑控制暂停自动眨眼，退出平滑交还最新表情；持续半眯仍正常眨眼。临时视线退出从当前眼球输出在约 120ms 内交还最新有效 attention。惊吓、惊讶的短暂张嘴与既有语音口型混合；嘴部接管与交还使用语音混合前的平滑开度作为起点，语音只混合一次。
+头部手势为姿态增量，按当前姿态剩余范围同比缩小；普通手势不写入持续表情。作者用曲线函数、弹簧响应、姿势起落窗口和共享相位生成连续头身运动；`pts` 保留给眨眼、眼神路线与明确表演落点。相关轴在 bake 时共享轻量强度/相位变化，动作仍可用精确眼睑和语音节奏作锚点。惊吓透传短入场和弹簧速度重置。临时眼睑控制暂停自动眨眼，退出平滑交还最新表情；持续半眯仍正常眨眼。临时视线退出从当前眼球输出在约 120ms 内交还最新有效 attention。惊吓、惊讶的短暂张嘴与既有语音口型混合；嘴部接管与交还使用语音混合前的平滑开度作为起点，语音只混合一次。
 
-背景由同一 director 仲裁；idle 和单片段 ambient 循环，MO sway 每段有限播放并在边界换选不同短动作。头部或躯干前景动作都会压低背景，完成后恢复。思考仍由 Host 事件驱动。失焦冻结；safeStop 取消实例并保留有效状态，resume 重建背景。MO 原有头部正弦微晃已被作者轻晃替代，呼吸仍由 VTS 提供。
+背景由同一 director 仲裁；idle 和单片段 ambient 循环，MO sway 每段有限播放并在边界换选不同短动作。头部或躯干前景动作都会压低背景，完成后恢复。思考仍由 Host 事件驱动。失焦冻结；safeStop 取消实例并保留有效状态，resume 重建背景。MO idle/thinking 使用闭合周期曲线；sway 使用共享相位与强度的有限振荡短句并在片段边界收束，呼吸仍由 VTS 提供。
 
 state.ambient 是静止态背景的可选形态：与 idle 互斥；带 variants 的 sway 由 autonomic 背景动作逐段交接，清除后回落 idle；thinking（transition 类）照旧叠加。选中项不在当前目录快照时诚实回落 idle。环境动作命名与别名纳入目录全局唯一命名空间，与动作/姿态/表情/注视/外观冲突即在绑定期拒绝。回合打断与 safeStop 不清除选中；内置微晃在 idle 有定义或 ambient 选中期间禁用，避免双重摆动。
 
@@ -210,9 +217,11 @@ state.ambient 是静止态背景的可选形态：与 idle 互斥；带 variants
 
 空间特技分段可携带段级 effects（染色/后处理）。external-actions 统一拥有位姿、效果和外观请求的执行及清理：只恢复自己尝试发送的项，纯效果不移动模型，效果动作与外观请求共享 effect:* 独占。需要 post 时先捕获有效开关/preset 基线，读取失败或开关字段缺失即发送前 failed/not_started；仅 tint 不读写 post。恢复前后核验模型、连接与目录代次，失效后不向新环境写旧状态；位姿读回、tint 白色请求接受、post 开关及具名 preset 分别核验，不保证所有滤镜值逐项保真。details.cleanup 为 not_needed/confirmed/unknown，restored/restoredEffects 由它派生。必要清理未知时普通完成 unknown，取消保留 cancelled 并明确未知。safeStop 等待外部请求与完整分项事实，清理未知不再漏报；暂停取消持续状态的等待而保留意图，resume 继续剩余过渡并允许新执行，不自动重发或恢复，最近未知诊断保留。
 
-2026-10-14 曲线函数创作模型落地：动作定义改为 `(rng) => MotionPlan` 工厂（每轴单通道 absolute/offset，曲线即函数），compileMotion = 校验 + 域探测 + 冻结，sampleMotion 纯采样合同不变；目录只存词表与定义，runtime 独占 per-play bake（随机幅度纹理逐播结清）。MO 目录按新模型重建（17 动作 + sway 短语逐键保真，`pts` 扁平速记 + `elastic` 生成器 + 双侧眼睑共享曲线）。新增合成故障停车（composeTick 捕获采样异常 → fault 登记/时钟停止/播放结算/工具 `fault` 拒绝，在途 spatial 清理不受影响）与 `pnpm mo:preview` 预览轮播（express 主脑同路径，就绪等待 + 失败退避）。`pnpm typecheck` 全绿；live2d 定向 235/235（旋转驱动时序用例仍为已登记调度敏感项）。真实 VTS/MO 视觉验收（纹理观感、`mo:preview` 真机复跑）未做。
+2026-10-14 曲线函数创作模型落地：动作定义改为 `(rng) => MotionPlan` 工厂（每轴单通道 absolute/offset，曲线即函数），compileMotion = 校验 + 域探测 + 冻结，sampleMotion 纯采样合同不变；目录只存词表与定义，runtime 独占 per-play bake（随机幅度纹理逐播结清）。MO 目录按新模型重建（17 动作 + sway 短语，`pts` 扁平速记 + `elastic` 生成器 + 双侧眼睑共享曲线）。新增合成故障停车（composeTick 捕获采样异常 → fault 登记/时钟停止/播放结算/工具 `fault` 拒绝，在途 spatial 清理不受影响）与 `pnpm run mo:preview -- [--seed <seed>] ...` 预览轮播（express 主脑同路径，就绪等待 + 失败退避）。`pnpm typecheck` 全绿；live2d 定向 235/235（旋转驱动时序用例仍为已登记调度敏感项）。真实 VTS/MO 视觉验收（纹理观感、`mo:preview` 真机复跑）未做。
 
-2026-10-13 架构重构：目录编译前隔离作者数据，提供 resolve/list/resolveCue 冻结记录，无公开 Map 或重复解释器；MO sway 中文别名可执行。state 一次预校验并绑定目录代次，cue 复用同一准入与执行，拒绝不记 started。生产 Worker 与进程内装配同源；预取消零投递，运行取消等待结构化清理结论，线程退出撤销全部登记与订阅并使保留引用离线，迟到 sync 不复活。启动回滚及正常停止聚合错误而释放资源，context abort 与 onStop 保留在途结果。当前完整合同见 [Live2D World 运行合同](live2d-world-runtime.md)。以下历史验证记录仅证明对应当次运行，不代替重构后的自动验证或真实设备验收。
+2026-10-14 MO 动作程序化再创作：idle/thinking 使用闭合周期曲线；sway 由四个有限振荡短句组成，各轴共享片段强度与相位偏移，并在句尾收束。nod、shake、wink、curious、chin_up、head_toss、alert、startle、surprise、glance、eye_roll、double_take、joy_hop、petrify、close_up、edge_peek 的头身运动使用弹簧、姿势窗口或阻尼摆动，相关轴共享 bake 强度。眨眼、特定眼神路线及 spin 的空间阶段保留精确关键点。本轮完成格式与类型检查；目录定向测试已通过，真实 MO/VTS 视觉自然度尚未验收。
+
+2026-10-13 架构重构：目录编译前隔离作者数据，提供 resolve/list/resolveCue 冻结记录，无公开 Map 或重复解释器；MO sway 中文别名可执行。state 一次预校验并绑定目录代次，cue 复用同一准入与执行，拒绝不记 started。生产 Worker 与进程内装配同源；预取消零投递，运行取消等待结构化清理结论，线程退出撤销全部登记与订阅并使保留引用离线，迟到 sync 不复活。启动回滚及正常停止聚合错误而释放资源，context abort 与 onStop 保留在途结果。当前完整合同见 [Live2D World 运行合同](live2d/live2d-world-runtime.md)。以下历史验证记录仅证明对应当次运行，不代替重构后的自动验证或真实设备验收。
 
 2026-10-13 集成验收：Live2D 23 文件、207 项通过，48 个源码/测试文件格式通过，8 条边界及独立 TypeScript 检查通过。原工作区全量 1998 通过、2 失败、1 项预期失败；失败为 smoke 旧 JSON 断言和 session-settings 写盘等待超时（后者独立复跑 7 项通过，暂未稳定复现）。完整 typecheck 仍被 262 项范围外格式诊断阻断，未改写全仓。真实 VTS/MO 的本轮空间/效果恢复、取消失焦及重启验收尚未进行，详细日志与证据边界见运行合同。
 
@@ -224,22 +233,4 @@ state.ambient 是静止态背景的可选形态：与 idle 互斥；带 variants
 
 2026-10-12 特效框架（染色/后处理）：协议层 tintModel/updatePostProcessing/readPostProcessing、段级 effects 契约与运行时捕获-分发-三向归位落地（a2ca3b8）。审查修复补齐：目录 effects 绑定期校验回归（非法通道/渐变、末段携带、空载荷、纯效果段合法）、所有权守护用例 E（无 effects 特技零 tint/post 请求）、假设备后处理状态模拟使恢复读回真实核对、恢复结算增加具名 preset 一致性核对、效果派发措辞纠正为同段顺序派发、catalog 空间校验块缩进归位。19 个 Live2D 测试文件、157 项全部通过，`pnpm typecheck` 通过；CRAP gate 未取得 coverage（沙箱全量跑批有既有失败），真实 VTS 视觉验收未做。注意：`.uina/**` 在 biome format 门禁之外（files.includes 未纳入），live2d 代码格式依赖手工纪律。
 
-以下 2026-10-10 记录对应 `.uina/legacy/live2d` 历史实现，不代表当前 World 目录或当前设备验收状态。
-
-2026-10-10 适配与执行审查：express 的输入确认按播放租约及实际合成帧归属，不再相减全局注入计数；共享合成帧可计入多个真实贡献者，待机/旧播放确认不混入新动作。正常完成先释放租约、再结算本场已有请求；取消不等待确认。可选省略包含原因，局部抢占报告 interruptedChannels 并正确标记 partial；姿态设置核验当前文件，仅报告 local_intent。多目标模型配方准备为每目标创建独立输入，避免不同校准曲线争用同一输入；自动与作者校准共用单调性校验。未应用真实 MO 模型配置，未做本次视觉验收。分析与后续顺序见 [适配与执行审查](../.uina/legacy/live2d/ADAPTER-REVIEW.md)。
-
-2026-10-10 合成深化：基准过渡与思考入场由动作库编译，分部位时序从当前呈现基准绑定；思考状态不因通道遮挡丢失，结束从当前贡献渐隐。命名表演默认 atomic，即兴片段默认局部让位。接管保留最新旧轨迹继续采样，更早交接合并为当前残余；退出融回持续运行的底层而非先回基准。物理独占释放与留存替换也有交接；急停/换模型清空尾段。音频嘴型进入统一合成与动力学，withSpeech 策略随轨道编译、分镜保持与模型投影，哈欠默认保护嘴部。设计取舍及验证边界见 [合成设计](../.uina/legacy/live2d/COMPOSITION.md)。真实模型画面未在本轮验收。
-
-2026-10-10 程序动作补全：原 18 个命名表演均有新定义（部分使用已确定的新名称），加 celebrate 共 19 个。补齐 shrug、head_bop、look_away、thinking_deep、smug_grin、sleepy_yawn、sparkle；双点头有轻重/时长变化，wink 在结束前重新睁眼。单/双眨眼波形与阶段时长从同一动作库编译采样，删除生理层独立余弦波形；触发、准入和慢帧推进仍归生理机制。没有新增肩部、手部或特效轴，描述按实际能力收敛。操作与迁移对照见 [Live2D 手册](../.uina/legacy/live2d/README.md)。模型资产保留不表示旧程序链路仍在；真实画面仍需验收。
-
-2026-10-10 清理：具身端点 ID 统一为 `live2d`（定向 cue 使用 `target='live2d'`）。移除未启用的通道降级选项、状态转发类、单用途适配缓存类、重复释放入口和闲置生理/音频方法。启动申请保持全通道核验，播放中的局部让位与 atomic 整场取消保留；端点能力查询必须经过运行时模型准入。模型程序仍按事实快照缓存，旧快照失效后不可复用。
-
-2026-10-10 模型适配实现：固定输出名单与头优先 retargeter 已删除。`model-profile.ts` 保留内置来源、重复/零宽绑定、完整物理图和递归动画/表情事实；`model-adapter.ts` 编译任意输出 ID、校准、多目标配方与实际能力。cue/affordance/express 共用能力准入；必需轴缺失在租约前拒绝，可选完整轴省略保留时序。原子播放仍只保证资源整体申请/取消，不保证模型额外自由度或画面回滚。单请求注入记录接受/失败/过滤/丢弃，时间线完成无接受证据时返回 unknown。配置指纹变化会停止旧动作并等待 VTS 模型重载，物理/活动表情低频观察；不保证逐帧同步外部 UI 改动。配置准备工具实现专用输入计划、定向物理输出移除、备份/恢复和后续修改保护。真实 MO/VTS 文件尚未修改，未完成跨真实模型视觉验收；使用和剩余项见 [模型适配](../.uina/legacy/live2d/MODEL-ADAPTATION.md)，原始根因证据见 [MO 比较](../.uina/legacy/live2d/MO-MODEL-COMPARISON.md)。
-
-Live2D World 的动作以 TypeScript 声明式定义创作：关键帧、曲线、顺序、并行、延时、重复与时长/强度变换统一经过 `motion.ts` 编译和采样。内容集中在 `motion-library.ts`，逻辑轴由 `motion-axes.ts` 定义，仅输出 adapter 使用 Cubism 参数名。新增命名动作自动进入 cue 声明与工具枚举；cue 使用精确目录名，旧别名、冒号和逗号语法已删除。命名动作与 head/gaze/face、beats 走同一编译入口；非法组合在申请租约前失败。编译轨道与源对象隔离、冻结。创作示例见 [动作创作](../.uina/legacy/live2d/MOTION-AUTHORING.md)。
-
-播放、姿态限时与租约由 `MotionDirector` 管理，参数动力学由其私有 `BodyDirector` 执行；意图入口不直接写底层状态。三重实极点响应保留位置、速度、加速度，动作与动力学共用渲染时钟，正常退出后释放租约。顺序分支保持未写的轴，短并行分支保持终值；绝对目标重叠编译失败，明确偏移允许相加。独立动作可并行；命名表演默认原子，即兴片段默认按通道让位，可显式覆盖。呼吸、语流、重音和待机轨迹从同一目录采样，随前台权重渐进让位与恢复；普通眨眼仍独立准入并自然完成。全量基准与面部定义防止旧参数残留，播放器不依赖具体动作名分支。
-
-status 直接读取客户端就绪状态，区分 API 连接、鉴权、模型初始化与可控制；API 未连接不被说成软件未启动，握手卡住会超时重试并保留故障。VTS 注入同时读取保存绑定与 API 的真实 Cubism 范围/默认值，再反算输入；模型配置或参数清单/范围未读取时不进入就绪。默认 relaxed 正常睁眼，保存映射端点不被误认作正常眼睑值。Windows 可自动定位运行中的 VTS；其他位置通过 `UINA_VTS_MODELS_DIR` 指定。共用输入、未绑定参数、映射范围与物理覆盖通过 status 展示，不创建猜测绑定的自定义参数。翻转由独立物理移动模块发送有序小角度目标并使用 VTS 原生插值，慢确认时延长动作；结束或取消后恢复并回读原位置。2026-10-10 在真实 MO 上采到 45 个位置样本、累计正向 360°并核实归位；请求/数值确认仍不等于视觉流畅验收。
-
-TTS Bridge 电平来自当前播放采样位置的短时 PCM 窗口。正文朗读期间的 cue 随段内字素偏移在播放进度事件中触发，无朗读时仍按文本触发。流尾句投递被等待，各输出的尾部 cue 保留自己的完成边界，来源计数不混用上一轮交付状态，旧投递拒绝不回滚新轮次。字素比例定位不等于词级音频对齐。实现与真实设备验证边界见 [Live2D 当前设计](../.uina/legacy/live2d/DESIGN.md) 和 [过渡审查](../.uina/legacy/live2d/PRESENTATION-REVIEW.md)。
+旧版 2026-10-10 Live2D 实施与验证记录已归档至 [Live2D 旧实现记录](archive/live2d-legacy-implementation-notes-2026-10-10.md)；当前合同与未验证边界见 [Live2D World 运行合同](live2d/live2d-world-runtime.md)。
