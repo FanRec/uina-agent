@@ -21,6 +21,7 @@ export type Verification = "local_intent" | "input_accepted";
  *  分类规则：调用方格式错误（缺参/类型错）→ invalid_*；环境/词表事实不满足 → unknown_* / 专属词。 */
 export type RejectReason =
 	| "cancelled"
+	| "fault"
 	| "unknown_cue"
 	| "effect_baseline_unavailable"
 	| "paused"

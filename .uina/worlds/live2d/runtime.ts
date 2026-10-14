@@ -234,7 +234,7 @@ export class Live2DRuntime {
 	// ---------- P4-1：gate 链与工具面 ----------
 
 	/**
-	 * 工具 gate 链（边界规范 §2.1）：中止 → 暂停 → 连接 → 适配。
+	 * 工具 gate 链（边界规范 §2.1）：中止 → 生命周期 → 故障 → 暂停 → 连接 → 适配。
 	 * 返回 undefined 表示通过。发布验收门（§7）已按操作员裁决拆除。
 	 */
 	private gate(ctx: { signal?: AbortSignal }): ToolExecutionResult | undefined {
@@ -245,6 +245,9 @@ export class Live2DRuntime {
 				status: "not_started",
 				details: { reason: "not_started", effectStatus: "not_started" },
 			};
+		// 合成故障停车后身体不再受信：继续受理会制造永不结算的播放（时钟已停）。
+		if (this.lifecycleFault)
+			return toolRejected("fault", `身体合成已停车（${this.lifecycleFault}），操作被拒绝；请重载 Live2D world。`);
 		if (this.paused) return toolRejected("paused", "身体处于 safeStop 暂停，操作被拒绝（resume 后恢复）。");
 		if (!this.client || !this.client.isConnected())
 			return toolRejected("model_not_ready", "VTS 未连接（连接建立前所有具身操作不可用）。");
@@ -816,9 +819,38 @@ export class Live2DRuntime {
 		this.composeTick(dt);
 	}
 
+	/**
+	 * 合成故障停车（2026-10-14 审查裁决）：采样期不可恢复异常（bake 探测网格漏掉的病态分支）
+	 * 不允许沿 setInterval 上抛杀死 worker——线程死亡会连带杀死在途 spatial 清理能力
+	 * （归位/染色复位随线程蒸发，违背"外部副作用未确认时不得推断成功"边界）。
+	 * 故障在 world 级响亮可见：fault 登记、时钟停止、口型中性单帧注入、全部播放有限结算、
+	 * 工具经 gate 以 fault 拒绝。恢复 = 重载 world（生产每激活新实例），不设自动恢复。
+	 */
+	private haltSynthesis(cause: unknown): void {
+		if (this.lifecycleFault) return;
+		const message = cause instanceof Error ? cause.message : String(cause);
+		this.lifecycleFault = `身体合成失败，已停车: ${message}`;
+		this.stopClock();
+		try {
+			const frame: Record<string, number> = { ...this.director!.currentFrame };
+			for (const axis of Object.keys(frame))
+				if (axis.startsWith("mouth.")) frame[axis] = this.rig!.controls[axis]?.neutral ?? frame[axis]!;
+			this.client!.injectParameters(encodeFrame(this.rig!, frame));
+		} catch {
+			/* 停车注入失败不掩盖首错 */
+		}
+		try {
+			this.director?.cancelAllPlaybacks("synthesis fault");
+		} catch {
+			/* 结算失败不掩盖首错 */
+		}
+		this.onStatusChange?.();
+	}
+
 	/** 合约入口：合成一步并注入。注入时钟与测试共用（合成推进纯函数化，无真实定时器等待）。 */
 	composeTick(dtMs: number): void {
 		if (!this.started || !this.client || !this.director || !this.rig) return;
+		if (this.lifecycleFault) return;
 		if (!this.client.isConnected()) return;
 		// 身份门：rig 只属于其标定的模型，VTS 当前模型不匹配即零输出，杜绝跨模型误注入。
 		const profile = this.client.getModelProfile();
@@ -828,15 +860,19 @@ export class Live2DRuntime {
 			if (this.keepFrame) this.client.injectParameters(encodeFrame(this.rig, this.keepFrame));
 			return;
 		}
-		// 声学电平推进（失联守卫 + 作者映射）→ 引擎包络目标，先于本帧合成。
-		this.syncBackgrounds();
-		this.speechInput?.tick(dtMs);
-		const frame = this.director.step(dtMs);
-		const contributions = [...this.director.frameContributions].map(([leaseID, axes]) => ({
-			leaseID,
-			inputs: [...new Set([...axes].flatMap((axis) => this.rig!.bindings[axis]!.map((binding) => binding.input)))],
-		}));
-		this.client.injectParameters(encodeFrame(this.rig, frame), contributions);
+		try {
+			// 声学电平推进（失联守卫 + 作者映射）→ 引擎包络目标，先于本帧合成。
+			this.syncBackgrounds();
+			this.speechInput?.tick(dtMs);
+			const frame = this.director.step(dtMs);
+			const contributions = [...this.director.frameContributions].map(([leaseID, axes]) => ({
+				leaseID,
+				inputs: [...new Set([...axes].flatMap((axis) => this.rig!.bindings[axis]!.map((binding) => binding.input)))],
+			}));
+			this.client.injectParameters(encodeFrame(this.rig, frame), contributions);
+		} catch (cause) {
+			this.haltSynthesis(cause);
+		}
 	}
 
 	// ---------- 事实呈现 ----------
