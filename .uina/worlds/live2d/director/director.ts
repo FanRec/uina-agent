@@ -1,4 +1,4 @@
-import { curveExtents, sampleMotion, sampleSpeechGain, smooth, type CompiledMotion } from "../authoring/motion.js";
+import { sampleMotion, sampleSpeechGain, smooth, type CompiledMotion } from "../authoring/motion.js";
 import type { AttentionTarget } from "../authoring/catalog.js";
 import type { RigControlDef } from "../adapter/rig.js";
 import { AutonomicGenerator, type AutonomicExternal } from "./autonomic.js";
@@ -460,16 +460,15 @@ export class MotionDirector {
 		return age % playback.clip.durationMs;
 	}
 
-	/** 同比压缩头部增量，保留动作轮廓，不改变绝对眼口目标。增量极值由曲线域探测取得。 */
+	/** 同比压缩头部增量，保留动作轮廓，不改变绝对眼口目标。增量值域取 bake 期冻结的探针结果。 */
 	private headroomScale(clip: CompiledMotion, baseline: Readonly<Record<string, number>>): number {
 		let scale = 1;
 		for (const channel of clip.channels) {
-			if (!channel.axis.startsWith("head.") || channel.space !== "baseline-offset") continue;
+			if (!channel.axis.startsWith("head.") || channel.space !== "baseline-offset" || !channel.extents) continue;
 			const control = this.controls[channel.axis]!;
 			const base = baseline[channel.axis] ?? control.neutral;
-			const extents = curveExtents(channel.curve, clip.durationMs);
-			if (extents.max > 0) scale = Math.min(scale, (control.max - base) / extents.max);
-			if (extents.min < 0) scale = Math.min(scale, (control.min - base) / extents.min);
+			if (channel.extents.max > 0) scale = Math.min(scale, (control.max - base) / channel.extents.max);
+			if (channel.extents.min < 0) scale = Math.min(scale, (control.min - base) / channel.extents.min);
 		}
 		return Math.max(0, scale);
 	}

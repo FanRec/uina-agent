@@ -106,6 +106,12 @@ export interface CompiledChannel {
 	readonly space: MotionSpace;
 	readonly curve: Curve;
 	readonly speech?: SpeechPolicy;
+	/**
+	 * 仅 baseline-offset 通道：bake 期值域探针（网格与校验探测一致，单次求值两用），
+	 * 供 director 头部余量压缩在合成帧内直接取用——值域是编译产物的不变量，
+	 * 严禁在逐帧路径上重新探测（60fps 下每帧 O(durationMs/16) 次曲线调用）。
+	 */
+	readonly extents?: { readonly min: number; readonly max: number };
 }
 export interface CompiledMotion {
 	readonly durationMs: number;
@@ -137,13 +143,23 @@ function probeCurve(curve: Curve, durationMs: number, label: string): void {
 	}
 }
 
-/** 曲线值域探针（供 director 的头部余量压缩使用）；网格与 probeCurve 一致。 */
-export function curveExtents(curve: Curve, durationMs: number): { min: number; max: number } {
+/**
+ * offset 通道的校验+值域合并探测：[0, durationMs] 网格逐点求值，
+ * 非有限值或抛错即拒绝；有限值同时聚合成 min/max（bake 一次，合成期零成本取用）。
+ */
+function probeExtents(curve: Curve, durationMs: number, label: string): { min: number; max: number } {
 	const steps = Math.max(8, Math.min(PROBE_MAX_POINTS, Math.ceil(durationMs / PROBE_STEP_MS)));
 	let min = Number.POSITIVE_INFINITY;
 	let max = Number.NEGATIVE_INFINITY;
 	for (let index = 0; index <= steps; index++) {
-		const value = curve((durationMs * index) / steps);
+		const t = (durationMs * index) / steps;
+		let value: number;
+		try {
+			value = curve(t);
+		} catch (cause) {
+			throw new Error(`${label}: 曲线在 t=${t} 抛错: ${cause instanceof Error ? cause.message : String(cause)}`);
+		}
+		if (!Number.isFinite(value)) throw new Error(`${label}: 曲线在 t=${t} 产生非有限值`);
 		if (value < min) min = value;
 		if (value > max) max = value;
 	}
@@ -193,8 +209,15 @@ export function compileMotion(
 		const control = controls[axis];
 		if (!control) throw new Error(`未知轴: ${axis}（rig.controls 未声明）`);
 		const channel = normalizeChannel(axis, input);
-		probeCurve(channel.curve, durationMs, `通道 ${axis}`);
-		compiled.push(Object.freeze({ axis, space: channel.space, curve: channel.curve, speech: channel.speech }));
+		if (channel.space === "baseline-offset") {
+			const extents = probeExtents(channel.curve, durationMs, `通道 ${axis}`);
+			compiled.push(
+				Object.freeze({ axis, space: channel.space, curve: channel.curve, speech: channel.speech, extents }),
+			);
+		} else {
+			probeCurve(channel.curve, durationMs, `通道 ${axis}`);
+			compiled.push(Object.freeze({ axis, space: channel.space, curve: channel.curve, speech: channel.speech }));
+		}
 	}
 	const axes = Object.freeze(compiled.map((channel) => channel.axis));
 	const result = Object.freeze({ durationMs, controls, axes, channels: Object.freeze(compiled) });

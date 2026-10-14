@@ -281,6 +281,10 @@ const STUB_RNG = (): number => 0;
 /** 数据深克隆，函数按引用透传（MotionAuthoring 是函数，structuredClone 不可用）。 */
 function cloneAuthoring<T>(value: T, seen = new WeakMap<object, unknown>()): T {
 	if (value === null || typeof value !== "object") return value;
+	// Map/Set/Date 经 Object.entries 会静默丢失全部内容（Map 克隆成空对象）——
+	// 宁可绑定期响亮失败，也不让目录带残缺数据上线。
+	if (value instanceof Map || value instanceof Set || value instanceof Date)
+		throw new Error("CatalogSource 含不支持的结构（Map/Set/Date）：请使用普通对象与数组");
 	if (seen.has(value)) return seen.get(value) as T;
 	if (Array.isArray(value)) {
 		const copy: unknown[] = [];
