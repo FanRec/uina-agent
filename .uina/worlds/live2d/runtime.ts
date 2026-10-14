@@ -801,7 +801,8 @@ export class Live2DRuntime {
 	}
 
 	private startClock(): void {
-		if (this.clock || !this.client) return;
+		// 合成故障停车后不允许重连时钟复活合成——fault 是本实例的终态
+		if (this.clock || this.lifecycleFault || !this.client) return;
 		this.lastTickAt = performance.now();
 		this.clock = setInterval(() => this.tick(), this.tickIntervalMs);
 	}

@@ -200,7 +200,7 @@ shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计�
 
 `greeting/lean/brighten` 和 `wave` 别名已从 MO 目录删除，不保留兼容层；打招呼可组合点头与笑。工具为 express/state/costume/prepare_body/status/reload；姿态、表情、注视、环境通过 state 分别持有持续意图，express/cue 播放有限动作。`prepare_body` 创建按模型隔离的 Uina VTS 输入，不改写 `.vtube.json`；操作者需在 VTS 把三项分别映射到 `ParamBodyAngleX/Y/Z`，再 reload 并用 status detail 检查。音乐、气鼓鼓和偏嘴未发布。
 
-头部手势为姿态增量，按当前姿态剩余范围同比缩小；普通手势不写入持续表情。作者关键帧分别设计快慢、停顿、眼先头后与回弹，惊吓透传短入场和弹簧速度重置。临时眼睑控制暂停自动眨眼，退出平滑交还最新表情；持续半眯仍正常眨眼。临时视线退出从当前眼球输出在约 120ms 内交还最新有效 attention。惊吓、惊讶的短暂张嘴与既有语音口型混合；嘴部接管与交还使用语音混合前的平滑开度作为起点，语音只混合一次。
+头部手势为姿态增量，按当前姿态剩余范围同比缩小；普通手势不写入持续表情。作者以关键帧速记（`pts`）与曲线函数（数学直写、`elastic` 生成器）设计快慢、停顿、眼先头后与回弹，惊吓透传短入场和弹簧速度重置。临时眼睑控制暂停自动眨眼，退出平滑交还最新表情；持续半眯仍正常眨眼。临时视线退出从当前眼球输出在约 120ms 内交还最新有效 attention。惊吓、惊讶的短暂张嘴与既有语音口型混合；嘴部接管与交还使用语音混合前的平滑开度作为起点，语音只混合一次。
 
 背景由同一 director 仲裁；idle 和单片段 ambient 循环，MO sway 每段有限播放并在边界换选不同短动作。头部或躯干前景动作都会压低背景，完成后恢复。思考仍由 Host 事件驱动。失焦冻结；safeStop 取消实例并保留有效状态，resume 重建背景。MO 原有头部正弦微晃已被作者轻晃替代，呼吸仍由 VTS 提供。
 
@@ -209,6 +209,8 @@ state.ambient 是静止态背景的可选形态：与 idle 互斥；带 variants
 雀跃独占 `model:transform`，以五次 VTS 原生分段移动推进，不发送逐帧空间请求。取消、失焦、回合打断或异常切断关联参数动作并执行归位清理，清理结算后释放占用；失焦期间新空间请求以 cancelled / not_started 返回，回焦不会续播旧空间表演。每段与归位前校验设备模型身份、目录代次、连接代次和模型代次，避免把旧位姿写给新模型。归位回读失败或失联保留未知。参数反馈复用客户端逐播放注入观察，只计入本次真实合成贡献；完成时仅等待已发请求，取消不等待确认。没有本次所需输入接受证据即返回 unknown；姿态、表情、注视只报告 local_intent。`restored` 单独描述空间归位。
 
 空间特技分段可携带段级 effects（染色/后处理）。external-actions 统一拥有位姿、效果和外观请求的执行及清理：只恢复自己尝试发送的项，纯效果不移动模型，效果动作与外观请求共享 effect:* 独占。需要 post 时先捕获有效开关/preset 基线，读取失败或开关字段缺失即发送前 failed/not_started；仅 tint 不读写 post。恢复前后核验模型、连接与目录代次，失效后不向新环境写旧状态；位姿读回、tint 白色请求接受、post 开关及具名 preset 分别核验，不保证所有滤镜值逐项保真。details.cleanup 为 not_needed/confirmed/unknown，restored/restoredEffects 由它派生。必要清理未知时普通完成 unknown，取消保留 cancelled 并明确未知。safeStop 等待外部请求与完整分项事实，清理未知不再漏报；暂停取消持续状态的等待而保留意图，resume 继续剩余过渡并允许新执行，不自动重发或恢复，最近未知诊断保留。
+
+2026-10-14 曲线函数创作模型落地：动作定义改为 `(rng) => MotionPlan` 工厂（每轴单通道 absolute/offset，曲线即函数），compileMotion = 校验 + 域探测 + 冻结，sampleMotion 纯采样合同不变；目录只存词表与定义，runtime 独占 per-play bake（随机幅度纹理逐播结清）。MO 目录按新模型重建（17 动作 + sway 短语逐键保真，`pts` 扁平速记 + `elastic` 生成器 + 双侧眼睑共享曲线）。新增合成故障停车（composeTick 捕获采样异常 → fault 登记/时钟停止/播放结算/工具 `fault` 拒绝，在途 spatial 清理不受影响）与 `pnpm mo:preview` 预览轮播（express 主脑同路径，就绪等待 + 失败退避）。`pnpm typecheck` 全绿；live2d 定向 235/235（旋转驱动时序用例仍为已登记调度敏感项）。真实 VTS/MO 视觉验收（纹理观感、`mo:preview` 真机复跑）未做。
 
 2026-10-13 架构重构：目录编译前隔离作者数据，提供 resolve/list/resolveCue 冻结记录，无公开 Map 或重复解释器；MO sway 中文别名可执行。state 一次预校验并绑定目录代次，cue 复用同一准入与执行，拒绝不记 started。生产 Worker 与进程内装配同源；预取消零投递，运行取消等待结构化清理结论，线程退出撤销全部登记与订阅并使保留引用离线，迟到 sync 不复活。启动回滚及正常停止聚合错误而释放资源，context abort 与 onStop 保留在途结果。当前完整合同见 [Live2D World 运行合同](live2d-world-runtime.md)。以下历史验证记录仅证明对应当次运行，不代替重构后的自动验证或真实设备验收。
 

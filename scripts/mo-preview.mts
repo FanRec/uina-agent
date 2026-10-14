@@ -29,13 +29,21 @@ if (!catalog) {
 	console.error("[预览] 目录装配失败，无法预览。");
 	process.exit(1);
 }
-// 词表预检：未知名字 fail fast，不等播放时逐个报错。
+// 词表预检：只接受动作（resolveCue 也命中姿态/表情，但 express 只吃动作——提前给出准确错误）。
 for (const name of names) {
-	if (!catalog.resolveCue(name)) {
-		const available = catalog
-			.list("motion")
-			.map(({ name: n, aliases }) => (aliases.length ? `${n}(${aliases.join("/")})` : n));
-		console.error(`[预览] 动作不在目录: "${name}"。可用: ${available.join(", ")}`);
+	const motion = catalog.resolve("motion", name);
+	if (!motion) {
+		const posture = catalog.resolveCue(name);
+		if (posture) {
+			console.error(
+				`[预览] "${name}" 是${posture.kind === "posture" ? "姿态" : "表情"}条目，预览只支持动作。用 state 工具施加: state({ ${posture.kind}: "${name}" })`,
+			);
+		} else {
+			const available = catalog
+				.list("motion")
+				.map(({ name: n, aliases }) => (aliases.length ? `${n}(${aliases.join("/")})` : n));
+			console.error(`[预览] 动作不在目录: "${name}"。可用: ${available.join(", ")}`);
+		}
 		process.exit(1);
 	}
 }

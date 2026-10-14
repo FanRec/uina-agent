@@ -25,7 +25,7 @@ MO 的 `head.yaw/pitch/roll` 与 `torso.yaw/pitch/roll` 是独立逻辑轴。没
 
 ## 固定模型目录
 
-compileCatalog 隔离作者输入，再校验、编译和冻结定义、变体、轨迹、效果、别名及槽位。索引私有，消费者通过 resolve/list/resolveCue 获得冻结记录，无公开 Map 或旧反查入口。内置注视和中文别名同源，所有名称全局唯一；动作变体不能独立寻址。
+目录只保存词表与曲线函数定义（MotionAuthoring 工厂），不做编译产物缓存：compileCatalog 隔离作者输入并校验（结构、轴、spatial/effects、词表唯一性，校验性 bake 后丢弃产物），runtime 在每次播放时重新 bake——随机纹理因此逐播结清。索引私有，消费者通过 resolve/list/resolveCue 获得冻结记录，无公开 Map 或旧反查入口。内置注视和中文别名同源，所有名称全局唯一；动作变体不能独立寻址。
 
 status、错误候选项和 affordance 使用同一快照。环境别名“摇摆／晃动／摇”都解析为 sway；持续环境选择保存规范名。sway 是由多个有限短片段组成的动作组，每段完成后在片段池中选择下一段并排除刚播放的上一段。目录更新递增代次并使旧执行失效；消费者与原作者对象都不能绕过代次修改内容。
 
@@ -42,6 +42,8 @@ pose、tint、post 各自记录发送尝试，只恢复自己修改过的项。�
 details.cleanup 逐项为 not_needed / confirmed / unknown。restored/restoredEffects 从这些事实派生：true 表示清理义务已完成或无需清理，不是画面确认。热键单独记录 accepted / unknown；接受不能证明外观可见。
 
 safeStop 暂停合成、保持中性口型注入，取消动作与持续状态的等待，但保留持续意图供 resume 继续；等待外部请求与分项清理。任何必要项未确认或预算耗尽均抛错。resume 允许继续并确认已知未确认屏障，不自动重发或重试恢复；最近未知诊断保留，在途请求仍持锁。
+
+**合成故障停车**：动作曲线的病态分支若逃过 bake 探测网格，运行期采样异常由 composeTick 捕获——fault 登记、时钟停止、口型中性单帧注入、全部播放结算 cancelled，后续工具调用以 `fault` 拒绝。此设计保证在途 spatial 清理（归位/染色复位）不受影响；恢复 = 重载 world（生产每激活创建新实例），不设自动恢复。
 
 ## 生命周期与线程
 
@@ -60,6 +62,14 @@ proxy/engine 使用 new、starting、running、closing、dead。停止与 Worker
 执行命令：`pnpm exec vitest run tests/live2d-*.test.ts`、`pnpm check:boundaries`、`pnpm exec tsc --noEmit`、`pnpm typecheck`、`pnpm test`。Windows PowerShell 用 rg 枚举测试路径再展开参数。依赖已安装时，pnpm 11 可逐命令传 `--config.verify-deps-before-run=false`，避免共享依赖工作树的自动安装；不修改用户配置。
 
 整仓格式基线、其他扩展失败和真实设备验收必须分别记录，不以定向通过冒充整仓或设备通过。
+
+### 2026-10-14 曲线函数创作模型与 MO 目录重建
+
+- 动作定义从 keyframe 定义树改为曲线函数工厂（`(rng) => MotionPlan`，每轴单通道 absolute/offset）：`compileMotion` = 结构校验 + 曲线域探测（16ms 网格）+ 冻结；`sampleMotion` 纯采样合同不变。树 kinds、bezier 求解器、sequence hold/entryTracks 混合数学整体删除。
+- 目录只存词表与定义，runtime 独占 per-play bake（随机纹理逐播结清）；变体池保留。gate 链新增 `fault` 档（合成故障停车，见上）。
+- MO 目录按新模型重建（catalog-bak.ts.txt 退役为参考）：17 动作 + sway 四短语 + 姿态/表情/background 逐键保真；增强 = head/torso 增量通道 bake 期幅度纹理（±6%，rng=0.5 复现标定值）、双侧眼睑曲线共享、absolute 通道逐字标定不参与纹理。
+- 作者工具：`pnpm mo:preview <动作名>...` 预览轮播（express 主脑同路径）；`elastic(ms, peak, bounces)` 生成器；`pts(x0, y0, …)` 扁平关键帧速记（biome 对二维数组实参结构性展开，与宽度无关——扁平参数稳定单行，formatter override 320）。
+- 定向验证：live2d 套件 235/235（沙箱内旋转驱动时序用例仍为已登记的调度敏感项）；`pnpm typecheck` 全绿。真实 VTS/MO 视觉验收（含纹理观感与 `mo:preview` 真机复跑）未做。
 
 ### 2026-10-14 躯干控制与 sway 动作组
 
