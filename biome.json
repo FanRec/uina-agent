@@ -16,6 +16,14 @@
 		"indentStyle": "tab",
 		"lineWidth": 120
 	},
+	"overrides": [
+		{
+			"includes": ["**/models/mo/**"],
+			"formatter": {
+				"lineWidth": 320
+			}
+		}
+	],
 	"linter": {
 		"enabled": false
 	}

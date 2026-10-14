@@ -73,6 +73,26 @@ export function smooth(phase: number): number {
 export type KeyCurve = "smooth" | "linear" | "hold";
 
 /**
+ * Q 弹振荡曲线生成器：冲出 peak 后衰减振荡、首尾无条件归零（窗函数 sin(πu) 保证，
+ * 无 exp 拖尾不归零的陷阱）。bounces=1 即单次过冲（冲过头再回来）。
+ *
+ * 形状是对称的：主峰在动作中点，两端柔。需要"前偏单主峰"等不对称形状时用 keys 手绘
+ * ——两种工具各司其职：elastic 管参数化的对称振荡，keys 管手绘的任意标定形状。
+ */
+export function elastic(ms: number, peak: number, bounces = 2): Curve {
+	if (!Number.isFinite(ms) || ms <= 0) throw new Error(`elastic 时长必须为正有限数: ${String(ms)}`);
+	if (!Number.isFinite(peak)) throw new Error(`elastic 峰值必须有限: ${String(peak)}`);
+	if (!Number.isSafeInteger(bounces) || bounces < 1)
+		throw new Error(`elastic 振荡次数必须是正整数: ${String(bounces)}`);
+	const cycles = 2 * bounces + 1;
+	return (t) => {
+		const u = Math.max(0, Math.min(1, t / ms));
+		if (u <= 0 || u >= 1) return 0;
+		return peak * Math.sin(Math.PI * u) * Math.sin(cycles * Math.PI * u);
+	};
+}
+
+/**
  * 测量/标定型关键帧的创作形态保留：分段插值曲线，域外强制端点值（Clamp，严禁外推），
  * 每段默认五次 smootherstep（与旧轨道默认曲线手感一致）。
  * 这是产生曲线函数的普通助手，不是格式解析器。
