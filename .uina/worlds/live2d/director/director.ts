@@ -1,4 +1,5 @@
-import { sampleMotion, sampleSpeechGain, smooth, type CompiledMotion } from "../authoring/motion.js";
+import { sampleAction, sampleSpeechGain, type ActionSample, type CompiledAction } from "../authoring/action.js";
+import { smooth } from "../authoring/curves.js";
 import type { AttentionTarget } from "../authoring/catalog.js";
 import type { RigControlDef } from "../adapter/rig.js";
 import { AutonomicGenerator, type AutonomicExternal } from "./autonomic.js";
@@ -12,6 +13,33 @@ export interface DirectorOptions {
 	external?: AutonomicExternal;
 	rng?: () => number;
 	pipelines?: PipelineOptions;
+	/** Enables author-target/composition/clamp snapshots for the local authoring preview. */
+	diagnostics?: boolean;
+}
+
+export interface AuthoredAxisTarget {
+	readonly playbackId: string;
+	readonly axis: string;
+	readonly space: "absolute" | "baseline-offset";
+	readonly curveValue: number;
+	readonly targetValue: number;
+}
+
+export interface ActionClampHit {
+	readonly axis: string;
+	readonly requested: number;
+	readonly value: number;
+	readonly min: number;
+	readonly max: number;
+}
+
+export interface MotionDirectorActionDiagnostics {
+	readonly clockMs: number;
+	readonly authoredTargets: readonly AuthoredAxisTarget[];
+	readonly composedFrame: Readonly<Record<string, number>>;
+	readonly contributions: readonly { readonly playbackId: string; readonly axes: readonly string[] }[];
+	readonly clampHits: readonly ActionClampHit[];
+	readonly handoffs: readonly { readonly playbackId: string; readonly axis: string; readonly progress: number }[];
 }
 
 /**
@@ -135,7 +163,7 @@ interface SlotState {
 
 interface Playback {
 	id: string;
-	clip: CompiledMotion;
+	clip: CompiledAction;
 	category: MotionCategory;
 	priority: number;
 	atomic: boolean;
@@ -170,6 +198,7 @@ interface Playback {
 }
 
 interface HandoffFade {
+	playbackId: string;
 	from: number;
 	ageMs: number;
 	durationMs: number;
@@ -201,17 +230,21 @@ export class MotionDirector {
 	private counter = 0;
 	private seqCounter = 0;
 	private frozen = false;
+	private effectiveClockMs = 0;
 	private frame: Record<string, number>;
 	private readonly autonomic?: AutonomicGenerator;
 	private autonomicBlinkFactor = 1;
 	private readonly pipelines: SomaticPipelines;
 	private readonly contributions = new Map<string, Set<string>>();
+	private readonly diagnosticsEnabled: boolean;
+	private actionDiagnostics?: MotionDirectorActionDiagnostics;
 
 	constructor(controls: Readonly<Record<string, RigControlDef>>, options: DirectorOptions = {}) {
 		this.controls = controls;
 		this.neutral = Object.fromEntries(Object.entries(controls).map(([axis, c]) => [axis, c.neutral]));
 		this.frame = { ...this.neutral };
 		this.pipelines = new SomaticPipelines(controls, this.neutral, options.pipelines);
+		this.diagnosticsEnabled = options.diagnostics ?? false;
 		if (options.external) {
 			this.autonomic = new AutonomicGenerator({ rng: options.rng });
 			this.autonomic.setExternal(options.external);
@@ -221,6 +254,16 @@ export class MotionDirector {
 	/** 最近一帧合成结果（safeStop 保持帧与诊断的事实来源）。 */
 	get currentFrame(): Readonly<Record<string, number>> {
 		return this.frame;
+	}
+
+	/** Effective monotonic action clock; it advances only while the director is unfrozen. */
+	get clockMs(): number {
+		return this.effectiveClockMs;
+	}
+
+	/** Last local-authoring diagnostic snapshot. Production instances leave collection disabled. */
+	getActionDiagnostics(): MotionDirectorActionDiagnostics | undefined {
+		return this.actionDiagnostics;
 	}
 
 	/** 最近一次真正参与合成的播放及逻辑轴；不是所有活跃播放名单。 */
@@ -378,7 +421,7 @@ export class MotionDirector {
 
 	// ---------- 播放（§4.1 + §5.2）----------
 
-	play(clip: CompiledMotion, options: PlayOptions): MotionHandle {
+	play(clip: CompiledAction, options: PlayOptions): MotionHandle {
 		// 每轴恰一条通道：absolute = Override 轴；baseline-offset = Additive 轴（A17.1）。
 		const overrideAxes = new Set(clip.channels.filter((c) => c.space === "absolute").map((c) => c.axis));
 		const additiveAxes = new Set(clip.channels.filter((c) => c.space === "baseline-offset").map((c) => c.axis));
@@ -403,7 +446,7 @@ export class MotionDirector {
 			seq: ++this.seqCounter,
 			state: "playing",
 			exitStatus: "completed",
-			exitStartMs: clip.durationMs,
+			exitStartMs: clip.durationMs / clip.speed,
 			baseline,
 			gain: new Map(),
 			resolve: () => {},
@@ -421,14 +464,11 @@ export class MotionDirector {
 				return playback.state;
 			},
 			get currentTime(): number {
-				return (
-					(playback.loop
-						? playback.ageMs % playback.clip.durationMs
-						: Math.min(playback.ageMs, playback.clip.durationMs)) / 1000
-				);
+				const wallDurationMs = playback.clip.durationMs / playback.clip.speed;
+				return (playback.loop ? playback.ageMs % wallDurationMs : Math.min(playback.ageMs, wallDurationMs)) / 1000;
 			},
 			get duration(): number {
-				return playback.clip.durationMs / 1000;
+				return playback.clip.durationMs / playback.clip.speed / 1000;
 			},
 			finished,
 			stop: (mode: "release" | "cut" = "release") => {
@@ -455,13 +495,14 @@ export class MotionDirector {
 	}
 
 	private sampleTime(playback: Playback): number {
-		if (!playback.loop) return playback.ageMs;
-		const age = playback.state === "playing" ? playback.ageMs : playback.exitStartMs;
-		return age % playback.clip.durationMs;
+		const wallAge = playback.state === "playing" ? playback.ageMs : playback.exitStartMs;
+		const wallDurationMs = playback.clip.durationMs / playback.clip.speed;
+		const sampleWallAge = playback.loop ? wallAge % wallDurationMs : Math.min(wallAge, wallDurationMs);
+		return Math.min(sampleWallAge * playback.clip.speed, playback.clip.durationMs);
 	}
 
 	/** 同比压缩头部增量，保留动作轮廓，不改变绝对眼口目标。增量值域取 bake 期冻结的探针结果。 */
-	private headroomScale(clip: CompiledMotion, baseline: Readonly<Record<string, number>>): number {
+	private headroomScale(clip: CompiledAction, baseline: Readonly<Record<string, number>>): number {
 		let scale = 1;
 		for (const channel of clip.channels) {
 			if (!channel.axis.startsWith("head.") || channel.space !== "baseline-offset" || !channel.extents) continue;
@@ -575,6 +616,7 @@ export class MotionDirector {
 		}
 		this.attention = undefined;
 		this.contributions.clear();
+		this.actionDiagnostics = undefined;
 		this.pipelines.resetGazeHandoffs();
 	}
 
@@ -586,11 +628,31 @@ export class MotionDirector {
 	// ---------- 合成（A9：显式步进）----------
 
 	/** 推进一帧并返回合成逻辑帧。冻结时返回当前帧快照（倒计时与过渡全部暂停）。 */
-	step(deltaMs: number): Readonly<Record<string, number>> {
-		if (!Number.isFinite(deltaMs) || deltaMs < 0) throw new Error("非法渲染时间");
+	step(deltaMs: number, effectiveElapsedMs = deltaMs): Readonly<Record<string, number>> {
+		if (!Number.isFinite(deltaMs) || deltaMs < 0 || !Number.isFinite(effectiveElapsedMs) || effectiveElapsedMs < 0)
+			throw new Error("非法渲染时间");
+		if (this.frozen) {
+			this.contributions.clear();
+			return { ...this.frame };
+		}
+		const nextEffectiveClockMs = this.effectiveClockMs + effectiveElapsedMs;
+		if (
+			!Number.isFinite(nextEffectiveClockMs) ||
+			(effectiveElapsedMs > 0 && nextEffectiveClockMs <= this.effectiveClockMs)
+		)
+			throw new RangeError("累计时钟不可表示");
 		this.contributions.clear();
-		if (this.frozen) return { ...this.frame };
+		this.effectiveClockMs = nextEffectiveClockMs;
 		const dt = deltaMs;
+		const authoredTargets: AuthoredAxisTarget[] | undefined = this.diagnosticsEnabled ? [] : undefined;
+		const sampledActions = new Map<Playback, ActionSample>();
+
+		// Playback exits and handoffs share the effective action clock. Physical filters below still
+		// receive the bounded render delta (`dt`) so one delayed frame cannot destabilize them.
+		for (const [axis, fade] of [...this.handoffs]) {
+			fade.ageMs += effectiveElapsedMs;
+			if (fade.durationMs <= 0 || fade.ageMs >= fade.durationMs) this.handoffs.delete(axis);
+		}
 
 		// 1. 槽位过渡推进 + 保持倒计时（多槽独立计时，A11）。
 		for (const name of ["posture", "expression"] as const) {
@@ -621,11 +683,31 @@ export class MotionDirector {
 
 		// 2. 播放推进 + 生命周期：自然结束/preempt/release 统一走 handoff 交还（A17.3）。
 		for (const playback of [...this.playbacks]) {
-			playback.ageMs += dt;
-			if (playback.state === "playing" && !playback.loop && playback.ageMs >= playback.clip.durationMs) {
+			playback.ageMs += effectiveElapsedMs;
+			const wallDurationMs = playback.clip.durationMs / playback.clip.speed;
+			if (playback.state === "playing" && !playback.loop && playback.ageMs >= wallDurationMs) {
 				// 自然播放完毕：立即交还控制权（下一来源接管），fadeOut 后结算 completed。
-				this.beginExit(playback, "completed");
-			} else if (playback.state !== "playing" && playback.ageMs >= playback.exitStartMs + playback.fadeOutMs) {
+				const exitElapsedMs = playback.ageMs - wallDurationMs;
+				let handoffOrigins: Readonly<Record<string, number>> | undefined;
+				if (exitElapsedMs < playback.fadeOutMs && playback.overrideAxes.size > 0) {
+					const endpoint = sampleAction(playback.clip, playback.clip.durationMs, playback.baseline);
+					sampledActions.set(playback, endpoint);
+					const origins: Record<string, number> = {};
+					for (const axis of playback.overrideAxes) {
+						const gainState = playback.gain.get(axis);
+						if (!gainState) {
+							origins[axis] = this.transitionOrigin(axis);
+							continue;
+						}
+						const gainAgeMs = gainState.ageMs + dt;
+						const gain = playback.fadeInMs > 0 ? smooth(gainAgeMs / playback.fadeInMs) : 1;
+						origins[axis] = gainState.from + (endpoint[axis]! - gainState.from) * gain;
+					}
+					handoffOrigins = origins;
+				}
+				this.beginExit(playback, "completed", undefined, wallDurationMs, handoffOrigins);
+			}
+			if (playback.state !== "playing" && playback.ageMs - playback.exitStartMs >= playback.fadeOutMs) {
 				let reason = playback.exitReason;
 				if (reason === undefined) {
 					if (playback.state === "releasing") reason = "released";
@@ -635,6 +717,28 @@ export class MotionDirector {
 					status: playback.exitStatus,
 					reason,
 				});
+			}
+		}
+		for (const playback of this.playbacks) {
+			if ((playback.state === "playing" || playback.additiveAxes.size > 0) && !sampledActions.has(playback)) {
+				sampledActions.set(playback, sampleAction(playback.clip, this.sampleTime(playback), playback.baseline));
+			}
+		}
+		if (authoredTargets) {
+			for (const playback of this.playbacks) {
+				if (playback.state !== "playing") continue;
+				const sampled = sampledActions.get(playback)!;
+				for (const channel of playback.clip.channels) {
+					const baseline = playback.baseline[channel.axis] ?? this.neutral[channel.axis]!;
+					const targetValue = sampled[channel.axis]!;
+					authoredTargets.push({
+						playbackId: playback.id,
+						axis: channel.axis,
+						space: channel.space,
+						curveValue: channel.space === "absolute" ? targetValue : targetValue - baseline,
+						targetValue,
+					});
+				}
 			}
 		}
 
@@ -653,12 +757,6 @@ export class MotionDirector {
 			p.backgroundWeight = suppressed
 				? Math.max(0, p.backgroundWeight - dt / 200)
 				: Math.min(1, p.backgroundWeight + dt / 450);
-		}
-
-		// 3. 手交淡出推进（A17.3）。
-		for (const [axis, fade] of [...this.handoffs]) {
-			fade.ageMs += dt;
-			if (fade.durationMs <= 0 || fade.ageMs >= fade.durationMs) this.handoffs.delete(axis);
 		}
 
 		// 4. 基座帧：中性 + 槽位合成 + 手交混合。
@@ -724,7 +822,7 @@ export class MotionDirector {
 				}
 				gainState.ageMs += dt;
 				const gain = p.fadeInMs > 0 ? smooth(gainState.ageMs / p.fadeInMs) : 1;
-				const sampled = sampleMotion(p.clip, this.sampleTime(p), p.baseline)[axis] ?? frame[axis]!;
+				const sampled = sampledActions.get(p)?.[axis] ?? frame[axis]!;
 				// 候选恒为 playing 且 ageMs < durationMs（退场在 §2 已转换并交还），无退出混合项。
 				frame[axis] = gainState.from + (sampled - gainState.from) * gain;
 				if (axis.startsWith("gaze.")) gazeWeights.set(axis, p.backgroundWeight);
@@ -749,7 +847,7 @@ export class MotionDirector {
 		const torsoOffsets = new Map<string, number>();
 		for (const playback of this.playbacks) {
 			if (!playback.additiveAxes.size) continue;
-			const sampled = sampleMotion(playback.clip, this.sampleTime(playback), playback.baseline);
+			const sampled = sampledActions.get(playback)!;
 			const headScale = this.headroomScale(playback.clip, posture);
 			for (const axis of playback.additiveAxes) {
 				const maskPriority = inhibitMask.get(axis);
@@ -806,11 +904,37 @@ export class MotionDirector {
 		});
 
 		// 7. 范围安全网。
+		const clampHits: ActionClampHit[] | undefined = this.diagnosticsEnabled ? [] : undefined;
 		for (const [axis, value] of Object.entries(frame)) {
 			const control = this.controls[axis];
-			frame[axis] = control ? Math.max(control.min, Math.min(control.max, value)) : value;
+			const clamped = control ? Math.max(control.min, Math.min(control.max, value)) : value;
+			if (control && clamped !== value && clampHits)
+				clampHits.push({ axis, requested: value, value: clamped, min: control.min, max: control.max });
+			frame[axis] = clamped;
 		}
 		this.frame = frame;
+		if (this.diagnosticsEnabled) {
+			this.actionDiagnostics = Object.freeze({
+				clockMs: this.effectiveClockMs,
+				authoredTargets: Object.freeze(authoredTargets!.map((target) => Object.freeze(target))),
+				composedFrame: Object.freeze({ ...frame }),
+				contributions: Object.freeze(
+					[...this.contributions].map(([playbackId, axes]) =>
+						Object.freeze({ playbackId, axes: Object.freeze([...axes]) }),
+					),
+				),
+				clampHits: Object.freeze(clampHits!.map((hit) => Object.freeze(hit))),
+				handoffs: Object.freeze(
+					[...this.handoffs].map(([axis, fade]) =>
+						Object.freeze({
+							playbackId: fade.playbackId,
+							axis,
+							progress: fade.durationMs > 0 ? Math.min(1, fade.ageMs / fade.durationMs) : 1,
+						}),
+					),
+				),
+			});
+		}
 		return { ...frame };
 	}
 
@@ -821,21 +945,32 @@ export class MotionDirector {
 	}
 
 	/** A17.2/A17.3：退场统一入口——立即交还控制权，退场轴经 handoff 淡向下一来源，fadeOut 后结算。reason 覆写结算账因（缺省按退场态推导）。 */
-	private beginExit(playback: Playback, status: "completed" | "cancelled", reason?: string): void {
+	private beginExit(
+		playback: Playback,
+		status: "completed" | "cancelled",
+		reason?: string,
+		exitStartMs = playback.ageMs,
+		handoffOrigins?: Readonly<Record<string, number>>,
+	): void {
 		if (playback.settled || playback.state !== "playing") return;
 		playback.state = status === "completed" ? "cancelling" : "releasing";
 		playback.exitReason = reason;
 		playback.exitStatus = status;
-		playback.exitStartMs = playback.ageMs;
-		this.beginHandoff(playback);
+		playback.exitStartMs = exitStartMs;
+		this.beginHandoff(playback, Math.max(0, playback.ageMs - exitStartMs), handoffOrigins);
 	}
 
-	private beginHandoff(playback: Playback): void {
+	private beginHandoff(playback: Playback, elapsedMs = 0, origins?: Readonly<Record<string, number>>): void {
 		for (const axis of playback.overrideAxes) {
 			if (axis.startsWith("gaze.")) continue; // 视线管道交还到当时有效的 attention。
+			if (playback.fadeOutMs <= elapsedMs) {
+				this.handoffs.delete(axis);
+				continue;
+			}
 			this.handoffs.set(axis, {
-				from: this.transitionOrigin(axis),
-				ageMs: 0,
+				playbackId: playback.id,
+				from: origins?.[axis] ?? this.transitionOrigin(axis),
+				ageMs: elapsedMs,
 				durationMs: playback.fadeOutMs,
 			});
 		}

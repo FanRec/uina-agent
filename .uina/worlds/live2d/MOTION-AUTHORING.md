@@ -1,107 +1,86 @@
-# Live2D 动作创作说明（曲线函数模型）
+# Live2D Action 作者合同
 
-状态：已实施（2026-10-14 重写，替代 keyframe 定义树）。设计依据与裁决记录见
-`docs/proposals/live2d-curve-authoring-design.md`；旧目录的数值与命名参考见
-`models/mo/catalog-bak.ts.txt`。
+动作作者入口位于 `authoring/index.ts`。动作是普通 TypeScript 工厂：Bake 时读取一次 RNG，生成纯函数身体通道与有序空间事件；播放时只读取冻结后的 `CompiledAction`。本轮没有迁移旧 MO 动作、ambient 或 idle/thinking 曲线，MO 当前动作目录为空。
 
-## 核心心智模型
+## 作者类型
 
-**动作 = 时间的函数。** 一条曲线就是一个普通的 TypeScript 函数 `(t) => number`，
-`t` 是动作内的毫秒（定义域 `[0, durationMs]`，域外自动夹紧到端点时刻的值）。
-数学、缓动、闭包、随机——全部 TS 原生写法，没有中间件、没有格式解析器、没有插件机制。相关轴可以共享同一组 bake 参数，再用相位差表达头身跟随与动作层次。
+    type LocalCurve = (localMs: number) => number;
+    type ActionCurve = (actionMs: number) => number;
+    type ActionAuthoring = (rng: () => number) => ActionPlan;
 
-一条动作声明两件事：
+    interface ActionPlan {
+      timeline: Timeline;
+      channels: ActionChannels;
+      spatial?: readonly SpatialEvent[];
+      speed?: number;
+    }
 
-1. **合同（显式声明，不可省略）**：`durationMs` 与每个轴的通道 `{axis, space, curve}`。
-   - `absolute`（可省略包装 = 裸函数）：Override 目标值，构成抢占轴；
-   - `baseline-offset`：相对当前基准的增量，永不抢占（Additive，A17.1）。
-2. **表达（完全自由）**：曲线函数体。随机量只能来自 bake 时注入的 `rng`（闭包结清），
-   函数体内禁止 `Date.now()` / 裸 `Math.random()` / 任何外部可变状态——
-   这是可 seek、可复现、暂停恢复不漂移的代价，也是唯一的纪律。
+两种曲线在 TypeScript 中保持相同函数形状。形状 helper 返回 `LocalCurve`；`during` 和 `track` 将其放到 ActionPlan 的绝对动作时间轴。`ActionPlan.channels` 接受 `ActionCurve`，裸函数表示 `absolute(curve)`。
 
-## 创作面 API（authoring/motion.ts）
+    const greet: ActionAuthoring = (rng) => {
+      const time = timeline(900, { look: 120, head: 260, returnStart: 560 });
+      const lookSpan = time.span("start", "look");
+      const headSpan = time.span("look", "head");
+      const returnSpan = time.span("returnStart", "end");
+      const gain = 0.9 + rng() * 0.2;
 
-| 助手 | 签名 | 用途 |
-| --- | --- | --- |
-| `motion` | `(durationMs, channels \| ((rng) => Channels)) => MotionAuthoring` | 定义一条动作；channels 为 `Record<axis, curve \| channel>` |
-| `absolute` | `(curve, speech?) => Channel` | Override 通道；`speech` 仅 `mouth.open` 轴合法 |
-| `offset` | `(curve) => Channel` | baseline-offset 增量通道 |
-| `withSpeech` | `(authoring, policy) => MotionAuthoring` | express 的 speech 覆写（mouth.open 通道策略改写） |
-| `keys` | `(points, curve? = "smooth") => Curve` | 测量/标定型关键帧 → 分段插值曲线（域外 clamp，不外推） |
-| `elastic` | `(ms, peak, bounces? = 2) => Curve` | Q 弹振荡：冲出 peak 后对称衰减回零（首尾无条件归零）。中点幅度恰为 peak，符号随 bounces 奇偶；需要前偏单主峰等不对称形状时用 keys 手绘 |
-| `smooth` | `(phase) => number` | 五次 smootherstep（0..1 → 0..1），与旧默认曲线手感一致 |
+      return {
+        timeline: time,
+        channels: {
+          "gaze.x": offset(track([
+            { span: lookSpan, curve: spring(lookSpan, { from: 0, to: -0.8 * gain, peak: 0.1, bounces: 1 }) },
+            { span: returnSpan, curve: spring(returnSpan, { from: -0.8 * gain, to: 0, peak: 0, bounces: 1 }) },
+          ], { before: 0, gap: "hold", after: 0 })),
+          "head.yaw": offset(during(
+            headSpan,
+            poseWindow(headSpan, { from: 0, pose: 7 * gain, to: 0, enterMs: 70, exitMs: 90 }),
+          )),
+        },
+      };
+    };
 
-新助手准入：rule of three——第三个手写重复出现时才提取。
+`motion(durationMs, localChannels)` 是单段快捷方式；它把局部曲线铺满整个 ActionPlan 时间线。复杂动作使用 `timeline()`、`during()`、`track()` 直接表达错拍阶段。
 
-## 语义要点
+## 时间线与通道组合
 
-- **每轴至多一个通道**。同轴多增量求和、绝对+增量混同，直接写成单个函数：
-  `offset(t => sway(t) + breath(t))`。冲突检测因此不存在——Record 键天然唯一。
-- **采样合同**：`sampleMotion(compiled, atMs, baseline)` 纯函数。absolute 通道返回目标值；
-  offset 通道返回 `(baseline[axis] ?? neutral) + curve(t)`。director 的增量公式不感知变化。
-- **bake（编译）**：`compileMotion(authoring, controls, rng?)` = 结构校验 + 曲线域探测
-  （[0, durationMs] 上 ~16ms 网格逐点求值）+ 冻结。非法定义（NaN、未知轴、speech 轴非法、
-  非正时长）在此失败，绝不进入播放。**目录不持有编译产物，runtime 是唯一 bake 点，
-  每次播放重新编译**——随机纹理因此每次播放重新结清。
-- **循环**：`loop: true` 的背景曲线（idle/thinking/ambient）作者自备首尾衔接
-  （f(durationMs) = f(0)），不加检测机制。
-- **语音**：`mouth.open` 通道的 `speech: "exclusive"` 压制 TTS 口型包络（gain=0）；
-  段间平滑由作者曲线本身负责。
-- **采样期 NaN = 故障停车**：bake 探测网格（16ms，≤512 点）可能漏掉网格间隙内的病态分支；
-  运行期采样异常在 composeTick 捕获——fault 登记、时钟停止、口型中性单帧注入、播放结算
-  cancelled、工具以 `fault` 拒绝（恢复 = 重载 world）。**不**静默跳帧：失败必须可见；
-  也**不**让异常杀死 worker——线程死亡会连带摧毁在途 spatial 清理能力。
-  dev 阶段的动作测试负责在故障停车之前拦截病态曲线。
+- `timeline(durationMs, markers)` 要求正有限总时长。`start=0`、`end=durationMs` 为保留 marker；`at(name)` 读取 marker，`span(from,to)` 生成正时长区间。marker 可同刻。
+- `keys(points, curve?)` 返回 `LocalCurve`；插值类型为 `smooth`、`linear`、`hold`，点必须有限且时间严格递增，区间外夹紧到端点。
+- `poseWindow(spanOrDuration, options)` 构造进场、停留、退场曲线；`spring()` 构造有阻尼回弹；`oscillate()` 构造有限周期振荡。三者都返回 `LocalCurve`，调用时夹紧到本地时长。
+- `during(span, curve, {before, after})` 按 `span.startMs` 放置一条曲线。`during` 和 `track` 在创建时复制 span 坐标；之后修改调用方对象不会改变曲线或编译校验。省略首尾值时取曲线端点。
+- `track(parts, {before, gap, after})` 接受按开始时间排序且互不重叠的 span；声明时长必须与起止时间差相符，gap 可为 `"hold"` 或有限常数，不自动交叉淡化。
+- `absolute(curve, speech?)` 表示覆盖目标；`offset(curve)` 表示相对播放时基线的增量。每个 ActionPlan 每轴恰有一个通道。
+- `sumOffsets(...)` 是同轴增量显式求和入口；`mergeChannels(...)` 合并通道表并对重复轴报错。不要用对象展开静默覆盖通道。
+- `speech: "exclusive"` 仅允许 `mouth.open`，播放时将该轴的语音 gain 置零；其它轴保持语音策略不变。`withSpeech()` 可为目录动作覆盖此策略。
 
-## 示例
+## Bake 与随机性
 
-```ts
-import { absolute, elastic, keys, motion, offset, smooth } from "./authoring/motion.js";
+`compileAction(authoring, rig.controls, rng?)` 只调用作者工厂一次，检查时间线、speed、轴声明、通道域、曲线有限值、helper span 与空间事件，并冻结编译产物。曲线以最多 512 点的采样网格探测；网格间的病态分支由运行期故障停车兜底。`sampleAction(compiled, actionMs, baseline)` 是纯函数，输入时间会夹紧到动作范围。
 
-// 数学直写：Q 弹点头（head.pitch 为增量空间，相对当前姿态）
-const nod = motion(950, {
-	"head.pitch": offset((t) => -9.8 * Math.sin((Math.PI * Math.min(t / 950, 1)) ** 2)),
-});
+- 根 seed 缺省由 `node:crypto` 生成 uint32。Runtime 按稳定动作名、用途与零起始播放序号派生 `selection`、`performance` 随机流；自律运动使用独立 `autonomic` 流。
+- 每次播放重新 Bake。变体选择和作者幅度采样使用不同流，一个作者改变 RNG 消耗次数不会改写其它动作或自律序列。
+- Catalog 用固定 0 探测流做绑定期验证并丢弃编译结果。独立调用 `compileAction()` 若不传 RNG，使用固定 0.5 中点流；Runtime 和预览显式传入派生流。
+- 作者曲线只在 Bake 时消费 RNG。采样函数不得读 `Date.now()`、调用裸 `Math.random()` 或依赖外部可变状态。
 
-// 程序化头身摆动：共享强度和相位，头部延迟躯干；眨眼仍按明确表演节奏标定
-const sway = motion(2600, (rng) => {
-	const strength = 0.94 + rng() * 0.12;
-	const phase = (rng() - 0.5) * 0.14;
-	const travel = (t: number, lag: number) => {
-		const u = Math.max(0, Math.min(1, t / 2600));
-		const window = smooth(u / 0.08) * (1 - smooth((u - 0.78) / 0.22));
-		return window * Math.sin(2 * Math.PI * 1.15 * u + phase + lag) * Math.exp(-0.45 * u);
-	};
-	return {
-		"torso.roll": offset((t) => 4.2 * strength * travel(t, 0)),
-		"head.roll": offset((t) => -2.1 * strength * travel(t, 0.8)),
-		"gaze.x": absolute((t) => 0.5 * travel(t, 1.8)),
-		"eyes.left.open": keys([
-			[0, 1],
-			[1670, 1],
-			[1780, 0.08],
-			[1900, 0.08],
-			[2020, 1],
-			[2600, 1],
-		]),
-	};
-});
+## 空间事件与时钟
 
-// elastic 生成器：弹跳/回弹可直接用参数描述
-const hop = motion(1100, { "head.pitch": offset(elastic(640, 9.8, 1)) });
+空间效果 marker 写为 `{ at: time.at("marker"), effects }`；位姿事件写为 `{ during: time.span(...), transform, effects? }`。效果 payload 会复制并冻结。marker 必须早于动作结束；位姿 span 必须在时间线内、互不重叠，并且按 speed 缩放后不超过 VTS 单请求 2 秒上限。
 
-// 语义变体（手写互异短语，轮换池）仍是目录层的 variants 字段，与函数内随机正交
-```
+Director 和 ExternalActions 消费同一个编译动作。资源声明与基线读取在共同 `t0` 前完成；之后身体采样和空间调度都读取 Director 的单调有效时钟。`speed` 只在采样时钟与空间 wall-time 换算中应用一次，动作本身的时间坐标不变。暂停或失焦冻结 Director 时钟。编译会拒绝换算后非有限或为零的 wall duration；不限制有限动作的最大时长。
 
-## 与目录的关系
+空间事件按绝对 `atMs` 排序，同刻保留作者声明顺序。纯效果 marker 到时即可发送；含位姿 span 的事件先确认位姿窗口仍有至少 100ms，再发送效果并等待 ACK，ACK 后重查位姿窗口和模型位姿，然后才移动。ACK 耗用动作窗口，不会把后续时间重新归零；100ms 是未连接真实 VTS 的初始内部阈值。逐帧相对旋转每个请求不超过 90°，结束时最多补发 2° 的小尾差；更大的尾差按 `spatial_window_missed` 取消并清理。相对旋转只在事件边界和归位前读回位姿；不为每帧请求轮询 VTS。发现同模型位姿已被手动改变时，中止后续空间事件，不写回旧基线，位姿清理记为 `unknown`；仍可安全恢复本动作修改的效果。
 
-目录（`authoring/catalog.ts`）只负责三件事：**词表**（六类命名字空间 + 别名，全局唯一）、
-**绑定期校验**（校验性 bake 后丢弃产物 + spatial/effects 轴值校验）、**变体池**
-（池成员是 `MotionAuthoring`，轮换状态机不变）。变体解决"手写互异短语"；
-函数内随机解决"纹理级微变"——两者正交。
+正常播放中，空间计划跑完后仍等待整个 ActionPlan 的身体播放结束，再归位位姿和恢复效果。效果值保持到下一个对应效果事件或 ActionPlan 结束。动作取消、位姿失败或错过位姿窗口会立即清理；单次效果派发失败则记录为 `unknown`，继续身体播放和剩余计划，最终再结算。
 
-## 明确不做
+## 预览
 
-插件注册、沙箱、函数运行时、keyframe 解析器、采样期随机（clips）、采样期 NaN 兜底、
-旧树格式兼容层。链式编程：不预置；未来若引入须遵守设计文档 §2.1.1 三约束
-（包装即函数 / 值域可链时域不链 / 不建 builder）。
+    pnpm mo:preview -- --list
+    pnpm mo:preview -- --sample <动作名> <actionMs> [--seed <seed>]
+    pnpm mo:preview -- --once <动作名> [--seed <seed>]
+    pnpm mo:preview -- --repeat <次数> <动作名> [--seed <seed>]
+    pnpm mo:preview -- [--seed <seed>] <动作名...>
+
+`--sample` 不构造 VTS 客户端、不连接设备、不产生外部副作用。它报告编译计划、精确作者目标、按 rig 范围裁剪后的值，以及用生产 `MotionDirector` 在中性状态下计算的合成帧、贡献来源与 clamp。Director 合成按虚拟 60Hz 步进；动作终点使用最靠近终点且仍处于播放态的一帧，并单列精确终点作者值。点采样会按请求时间逐帧重放，耗时随时长线性增长；没有人为工作量上限，无法表示的时间换算会在编译时拒绝。
+
+真实模式走 `Live2DRuntime.express` 同一路径。计划、作者/合成诊断、读取的模型基线、作者空间请求 dispatch/ACK/调度迟到和最终 settlement 只写预览进程输出，不改变模型可见工具结果。清理请求与 ACK 汇总在结构化 settlement 中；空间追踪不重复建立清理审计流。固定 seed 用于重现派生序列，不承诺真实设备的精确时序重放、暂停或 seek。当前 MO 动作目录为空；`--list` 会如实显示空数组，动作名无效时提示“当前模型没有可用动作”。
+
+机制回归使用合成作者与隔离假 VTS；它们不证明 MO 动作观感、VTS ACK 延迟分布或 100ms 阈值已在设备校准。

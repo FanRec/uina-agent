@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { bodyInputName } from "../.uina/worlds/live2d/adapter/body-inputs.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
-import { compileMotion, motion, keys, offset, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
+import { compileAction, motion, keys, offset, absolute } from "../.uina/worlds/live2d/authoring/index.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
@@ -47,7 +47,7 @@ describe("Live2D 躯干通道", () => {
 		const stepFor = (durationMs: number) => {
 			for (let elapsed = 0; elapsed < durationMs; elapsed += 20) director.step(20);
 		};
-		const headOnly = compileMotion(
+		const headOnly = compileAction(
 			motion(4000, {
 				"head.yaw": absolute(
 					keys([
@@ -62,7 +62,7 @@ describe("Live2D 躯干通道", () => {
 		stepFor(1400);
 		expect(director.currentFrame["torso.yaw"]).toBeCloseTo(director.currentFrame["head.yaw"]!, 1);
 
-		const pairClip = compileMotion(
+		const pairClip = compileAction(
 			motion(1200, {
 				"head.yaw": absolute(
 					keys([
@@ -83,7 +83,7 @@ describe("Live2D 躯干通道", () => {
 		stepFor(500);
 		expect(director.currentFrame["torso.yaw"]! - director.currentFrame["head.yaw"]!).toBeCloseTo(2, 0);
 
-		const bodyOnly = compileMotion(
+		const bodyOnly = compileAction(
 			motion(1200, {
 				"torso.yaw": absolute(
 					keys([

@@ -192,34 +192,30 @@ shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计�
 
 ## Live2D 动作与语音播放
 
-当前 World 位于 `.uina/worlds/live2d`。首批 MO 表演使用既有头、眼、嘴绑定；当前 rig 还提供独立的躯干 yaw/pitch/roll。头部是身体默认跟随底动，显式 torso 轨迹可以错拍、偏移或单独接管；不控制手臂，也不平移整个模型。内容单源为 [MO 目录](../.uina/worlds/live2d/models/mo/catalog.ts)，目录同时提供 status 与 cue 能力。
+当前 World 位于 `.uina/worlds/live2d`。MO rig 保留头、眼、嘴与躯干 yaw/pitch/roll 标定；头部是默认身体跟随目标，显式 torso 通道可错拍、偏移或接管。不控制手臂，也不靠平移模型制作身体动画。静态姿态/表情词表仍在 [MO 目录](../.uina/worlds/live2d/models/mo/catalog.ts)；旧动画内容已清除，本轮没有迁移。
 
 | 入口 | 当前名称与表现 |
 | --- | --- |
-| express / cue 短手势 | `nod` 点头应声、`shake` 摇头否认、`wink` 左眼俏皮眨眼、`curious` 侧歪打量、`chin_up` 得意昂头、`head_toss` 哼一下 |
-| express / cue 反应与视线 | `alert` 凝神警觉、`startle` 吓一跳、`surprise` 惊讶一顿、`glance` 偷瞄一眼、`eye_roll` 无语望天、`double_take` 再看一眼 |
-| express / cue 空间手势 | `joy_hop` 雀跃一弹、`petrify` 石化、`close_up` 贴脸、`edge_peek` 边缘探头、`spin` 转圈（目录已装配；既往视觉结果只适用于当时的动作内容，不验证 2026-10-14 的曲线重写） |
+| express / cue 动作 | 当前 MO 动作与 cue 列表为空；按用户决定，后续直接重建，不迁移旧动作 |
 | state.posture | `rest` 自然站定、`tuck` 垂头收起、`head_back` 仰头放松，仅控制头部 |
-| state.expression | `smile` 明朗笑、`smirk` 半眯坏笑、`clear_face` 清除表情；smirk 嘴形与双眼开度均约 0.55，无偏嘴承诺 |
+| state.expression | `smile` 明朗笑、`smirk` 半眯坏笑、`clear_face` 清除表情；smirk 嘴形约 0.65、双眼开度约 0.55，无偏嘴承诺 |
 | state.attention | `user`、`screen`、`avert_down`、`avert_left`、`avert_right` 或既有坐标目标 |
-| state.ambient | `sway` 头身错拍动作组：短片段轮换躯干倾斜、头部反应、视线转移和眨眼，片段边界避免立即重复；选择后持续运行并与说话/表情/视线并存，传 null 清除并回落 |
-| 内部背景 | 3.8 秒不对称轻晃；思考时持续上侧目光与歪头，每约 3.6 秒轻微重新定向 |
+| state.ambient | MO 没有 ambient 条目；接口保留，目录不会回退到备份 |
+| 内部背景 | MO 没有 idle/thinking 动作工厂；自律通道按 rig 的 VTS/Uina 来源声明独立工作 |
 
-`greeting/lean/brighten` 和 `wave` 别名已从 MO 目录删除，不保留兼容层；打招呼可组合点头与笑。工具为 express/state/costume/prepare_body/status/reload；姿态、表情、注视、环境通过 state 分别持有持续意图，express/cue 播放有限动作。`prepare_body` 创建按模型隔离的 Uina VTS 输入，不改写 `.vtube.json`；操作者需在 VTS 把三项分别映射到 `ParamBodyAngleX/Y/Z`，再 reload 并用 status detail 检查。音乐、气鼓鼓和偏嘴未发布。
+工具 schema 仍是 express/state/costume/prepare_body/status/reload；state 负责持续姿态、表情和注视，express/cue 消费有限动作目录。动作重建后无需迁移入口或旧格式适配。`prepare_body` 创建按模型隔离的 Uina VTS 输入，不改写 `.vtube.json`；操作者需在 VTS 把三项分别映射到 `ParamBodyAngleX/Y/Z`，再 reload 并用 status detail 检查。
 
-头部手势为姿态增量，按当前姿态剩余范围同比缩小；普通手势不写入持续表情。作者用曲线函数、弹簧响应、姿势起落窗口和共享相位生成连续头身运动；`pts` 保留给眨眼、眼神路线与明确表演落点。相关轴在 bake 时共享轻量强度/相位变化，动作仍可用精确眼睑和语音节奏作锚点。惊吓透传短入场和弹簧速度重置。临时眼睑控制暂停自动眨眼，退出平滑交还最新表情；持续半眯仍正常眨眼。临时视线退出从当前眼球输出在约 120ms 内交还最新有效 attention。惊吓、惊讶的短暂张嘴与既有语音口型混合；嘴部接管与交还使用语音混合前的平滑开度作为起点，语音只混合一次。
+身体动作作者合同为 `ActionPlan`、命名 Timeline、局部曲线组合器、空间事件与 seed 派生随机流，详见 [Action 作者合同](../.uina/worlds/live2d/MOTION-AUTHORING.md)。Director 每帧分别记录作者采样目标、最终合成帧、来源贡献与 clamp hit；这些本地诊断仅由预览启用，不改变模型可见工具结果。作者机制目前由合成目录测试覆盖，不代表已重建任何 MO 动画或完成视觉验收。
 
-背景由同一 director 仲裁；idle 和单片段 ambient 循环，MO sway 每段有限播放并在边界换选不同短动作。头部或躯干前景动作都会压低背景，完成后恢复。思考仍由 Host 事件驱动。失焦冻结；safeStop 取消实例并保留有效状态，resume 重建背景。MO idle/thinking 使用闭合周期曲线；sway 使用共享相位与强度的有限振荡短句并在片段边界收束，呼吸仍由 VTS 提供。
+MO 当前没有环境片段或 idle/thinking 作者定义。Host thinking 事件处理、暂停/失焦时钟冻结、safeStop 与恢复生命周期保留；将来重建动作内容时仍沿用同一 Director 与状态归属。
 
-state.ambient 是静止态背景的可选形态：与 idle 互斥；带 variants 的 sway 由 autonomic 背景动作逐段交接，清除后回落 idle；thinking（transition 类）照旧叠加。选中项不在当前目录快照时诚实回落 idle。环境动作命名与别名纳入目录全局唯一命名空间，与动作/姿态/表情/注视/外观冲突即在绑定期拒绝。回合打断与 safeStop 不清除选中；内置微晃在 idle 有定义或 ambient 选中期间禁用，避免双重摆动。
+`state.ambient` schema 保留；当前 MO 不提供 ambient 工厂，调用不会自动回落旧目录或生成动作。
 
-雀跃独占 `model:transform`，以五次 VTS 原生分段移动推进，不发送逐帧空间请求。取消、失焦、回合打断或异常切断关联参数动作并执行归位清理，清理结算后释放占用；失焦期间新空间请求以 cancelled / not_started 返回，回焦不会续播旧空间表演。每段与归位前校验设备模型身份、目录代次、连接代次和模型代次，避免把旧位姿写给新模型。归位回读失败或失联保留未知。参数反馈复用客户端逐播放注入观察，只计入本次真实合成贡献；完成时仅等待已发请求，取消不等待确认。没有本次所需输入接受证据即返回 unknown；姿态、表情、注视只报告 local_intent。`restored` 单独描述空间归位。
+若后续目录动作声明空间事件，ExternalActions 以 `model:transform` 与 `effect:*` 独占资源，在预检后与 Director 同步 `t0` 调度。纯效果 marker 到时即可发送；含位姿 span 的事件先确认至少剩 100ms，再发效果，ACK 后再次确认窗口和当前模型位姿才移动。ACK 消耗位姿窗口，不重置时钟或重发请求。位姿窗口不足时取消并立即清理；正常路径等完整身体 ActionPlan 结束后再恢复位姿和效果，效果状态持续到下一同类效果事件或动作结束。取消、位姿失败和错过窗口立即清理；单次效果分发失败会继续身体播放与剩余计划，最终记为 unknown。相对旋转只在事件边界与归位前读取位姿；发现同模型被手动移动时中止后续空间事件，不写回旧基线，并将位姿清理记为 unknown。清理请求由结构化分项结算记录，空间追踪覆盖作者请求的 dispatch/ACK 和调度迟到。100ms 尚未真实 VTS 校准。当前这些机制由合成空间动作和假设备覆盖，没有 MO 生产动作触发它们。
 
 空间特技分段可携带段级 effects（染色/后处理）。external-actions 统一拥有位姿、效果和外观请求的执行及清理：只恢复自己尝试发送的项，纯效果不移动模型，效果动作与外观请求共享 effect:* 独占。需要 post 时先捕获有效开关/preset 基线，读取失败或开关字段缺失即发送前 failed/not_started；仅 tint 不读写 post。恢复前后核验模型、连接与目录代次，失效后不向新环境写旧状态；位姿读回、tint 白色请求接受、post 开关及具名 preset 分别核验，不保证所有滤镜值逐项保真。details.cleanup 为 not_needed/confirmed/unknown，restored/restoredEffects 由它派生。必要清理未知时普通完成 unknown，取消保留 cancelled 并明确未知。safeStop 等待外部请求与完整分项事实，清理未知不再漏报；暂停取消持续状态的等待而保留意图，resume 继续剩余过渡并允许新执行，不自动重发或恢复，最近未知诊断保留。
 
-2026-10-14 曲线函数创作模型落地：动作定义改为 `(rng) => MotionPlan` 工厂（每轴单通道 absolute/offset，曲线即函数），compileMotion = 校验 + 域探测 + 冻结，sampleMotion 纯采样合同不变；目录只存词表与定义，runtime 独占 per-play bake（随机幅度纹理逐播结清）。MO 目录按新模型重建（17 动作 + sway 短语，`pts` 扁平速记 + `elastic` 生成器 + 双侧眼睑共享曲线）。新增合成故障停车（composeTick 捕获采样异常 → fault 登记/时钟停止/播放结算/工具 `fault` 拒绝，在途 spatial 清理不受影响）与 `pnpm run mo:preview -- [--seed <seed>] ...` 预览轮播（express 主脑同路径，就绪等待 + 失败退避）。`pnpm typecheck` 全绿；live2d 定向 235/235（旋转驱动时序用例仍为已登记调度敏感项）。真实 VTS/MO 视觉验收（纹理观感、`mo:preview` 真机复跑）未做。
-
-2026-10-14 MO 动作程序化再创作：idle/thinking 使用闭合周期曲线；sway 由四个有限振荡短句组成，各轴共享片段强度与相位偏移，并在句尾收束。nod、shake、wink、curious、chin_up、head_toss、alert、startle、surprise、glance、eye_roll、double_take、joy_hop、petrify、close_up、edge_peek 的头身运动使用弹簧、姿势窗口或阻尼摆动，相关轴共享 bake 强度。眨眼、特定眼神路线及 spin 的空间阶段保留精确关键点。本轮完成格式与类型检查；目录定向测试已通过，真实 MO/VTS 视觉自然度尚未验收。
+2026-10-14 Action 作者层重构与审查收口：以命名 Timeline、ActionPlan、纯函数曲线与 Bake 编译器替代旧 MotionPlan；Director 与 ExternalActions 共用编译动作、有效时钟与共同 t0，自然结束按标称 wall end 退场，handoff 输出和 handle 结算共用进度；Runtime 使用 selection/performance/autonomic 隔离随机流。旧作者 API、MO 动作备份和复制夹具已删除；动画内容未迁移，MO motion/ambient/idle/thinking 为空。mo:preview 支持连续、单次、固定次数、seed、离线采样及真实空间请求追踪。作者输入快照、数值边界、空间窗口、同模型位姿所有权和在途 VTS 插值归位由回归覆盖；真实 VTS/MO 观感和 100ms 位姿阈值校准未完成。定向 Live2D 31 个测试文件、294 项通过；`pnpm typecheck`、8 条边界检查、`git diff --check` 通过；`mo:preview --list` 显示当前动作目录为空。
 
 2026-10-13 架构重构：目录编译前隔离作者数据，提供 resolve/list/resolveCue 冻结记录，无公开 Map 或重复解释器；MO sway 中文别名可执行。state 一次预校验并绑定目录代次，cue 复用同一准入与执行，拒绝不记 started。生产 Worker 与进程内装配同源；预取消零投递，运行取消等待结构化清理结论，线程退出撤销全部登记与订阅并使保留引用离线，迟到 sync 不复活。启动回滚及正常停止聚合错误而释放资源，context abort 与 onStop 保留在途结果。当前完整合同见 [Live2D World 运行合同](live2d/live2d-world-runtime.md)。以下历史验证记录仅证明对应当次运行，不代替重构后的自动验证或真实设备验收。
 

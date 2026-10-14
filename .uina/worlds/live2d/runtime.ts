@@ -13,13 +13,20 @@ import {
 	type CatalogKind,
 } from "./authoring/catalog.js";
 import {
-	compileMotion,
+	compileAction,
 	withSpeech,
-	type CompiledMotion,
-	type MotionAuthoring,
+	type CompiledAction,
+	type ActionAuthoring,
 	type SpeechPolicy,
-} from "./authoring/motion.js";
-import { MotionDirector, SupersededError, type MotionHandle, type PlayOptions } from "./director/director.js";
+} from "./authoring/action.js";
+import { createRootSeed, deriveRandom } from "./authoring/random.js";
+import {
+	MotionDirector,
+	SupersededError,
+	type MotionDirectorActionDiagnostics,
+	type MotionHandle,
+	type PlayOptions,
+} from "./director/director.js";
 import { buildLive2DEndpoint, type Live2DEndpoint } from "./endpoint.js";
 import { settleMotion, withCancellation, toolRejected, toolSucceeded, toolUnknown } from "./results.js";
 import { ExternalActions } from "./external-actions.js";
@@ -37,8 +44,16 @@ export interface Live2DRuntimeOptions {
 	rig?: ModelRig;
 	/** 注入时钟步长（缺省 1000/60）。 */
 	tickIntervalMs?: number;
-	/** 注入点（测试用）：director 随机源。缺省 Math.random。 */
-	rng?: () => number;
+	/** 可重现的 uint32 根 seed；缺省使用 node:crypto 生成。 */
+	seed?: number;
+	/** 启用只供本地 authoring preview 消费的合成诊断。 */
+	diagnostics?: boolean;
+	/** 开发预览可接收 spatial request trace；不进入工具结果协议。 */
+	onSpatialTrace?: (trace: import("./external-actions.js").SpatialRequestTrace) => void;
+	/** 开发预览接收逐播编译结果；不进入工具结果协议。 */
+	onActionCompiled?: (event: { actionName: string; playIndex: number; clip: CompiledAction }) => void;
+	/** 开发预览接收 Director 合成诊断；生产默认关闭且不采集。 */
+	onActionDiagnostics?: (diagnostics: MotionDirectorActionDiagnostics) => void;
 	/** 模型作者标定的口型映射；与 rig 同时存在时暴露 voice.levelSink（P3-2）。 */
 	speech?: SpeechConfig;
 	/** 目录快照；缺省空目录（诚实状态：一切命名参数显式拒绝）。 */
@@ -107,12 +122,14 @@ export class Live2DRuntime {
 	/** 环境循环选中名：uina 经 ambient 工具选择/清除，选中时替换 idle 成为静止态背景。 */
 	private ambientName?: string;
 	private restHandle?: MotionHandle;
-	/** 变体轮换状态：按条目对象身份存 WeakMap——目录快照换代产生新条目对象，轮换自然归零。 */
-	private readonly lastVariantPick = new WeakMap<CatalogMotionEntry, number>();
+	/** 变体轮换状态：按条目对象身份存 WeakMap。 */
+	private lastVariantPick = new WeakMap<CatalogMotionEntry, number>();
 	/** Ambient phrase rotation is keyed by immutable catalog entry, so catalog replacement resets it. */
-	private readonly lastAmbientPhrasePick = new WeakMap<CatalogAmbientEntry, number>();
-	/** 变体轮换随机源（A9 注入点）：缺省 Math.random。 */
-	private readonly pickRandom: () => number;
+	private lastAmbientPhrasePick = new WeakMap<CatalogAmbientEntry, number>();
+	private readonly rootSeed: number;
+	private readonly onActionCompiled?: Live2DRuntimeOptions["onActionCompiled"];
+	private readonly onActionDiagnostics?: Live2DRuntimeOptions["onActionDiagnostics"];
+	private readonly actionPlayCounts = new Map<string, number>();
 	private readonly externalActions?: ExternalActions;
 	/** safeStop 保持帧：暂停期间按 tick 节奏持续注入（口型通道已覆写中性值）。 */
 	private keepFrame?: Record<string, number>;
@@ -129,12 +146,19 @@ export class Live2DRuntime {
 	constructor(options: Live2DRuntimeOptions = {}) {
 		this.client = options.client;
 		this.rig = options.rig;
+		this.rootSeed = options.seed ?? createRootSeed();
+		this.onActionCompiled = options.onActionCompiled;
+		this.onActionDiagnostics = options.onActionDiagnostics;
 		this.catalog = options.catalog ?? emptyCatalog(options.rig?.modelID ?? "unknown");
 		if (this.rig && this.catalog.modelID !== this.rig.modelID)
 			throw new Error(`目录与 rig 模型身份不符: 目录 ${this.catalog.modelID} vs rig ${this.rig.modelID}`);
 		if (this.rig) {
 			validateRig(this.rig);
-			this.director = new MotionDirector(this.rig.controls, { external: this.rig.external, rng: options.rng });
+			this.director = new MotionDirector(this.rig.controls, {
+				external: this.rig.external,
+				rng: deriveRandom(this.rootSeed, "autonomic", "world", 0),
+				diagnostics: options.diagnostics,
+			});
 			this.syncSwaySuppression();
 			if (options.speech) {
 				const input = new SpeechInput(options.speech, this.director);
@@ -151,7 +175,6 @@ export class Live2DRuntime {
 		}
 		this.tickIntervalMs = options.tickIntervalMs ?? 1000 / 60;
 
-		this.pickRandom = options.rng ?? Math.random;
 		this.onStatusChange = options.onStatusChange;
 		this.endpoint = buildLive2DEndpoint(this);
 		if (this.client && this.rig && this.director)
@@ -162,6 +185,7 @@ export class Live2DRuntime {
 				getCatalogGeneration: () => this.generation,
 				isFocused: () => this.focused,
 				cleanupTimeoutMs: options.cleanupTimeoutMs ?? 5000,
+				onSpatialTrace: options.onSpatialTrace,
 			});
 	}
 
@@ -221,6 +245,9 @@ export class Live2DRuntime {
 			throw new Error(`目录与 rig 模型身份不符: 目录 ${snapshot.modelID} vs rig ${this.rig.modelID}`);
 		this.catalog = snapshot;
 		this.generation++;
+		this.lastVariantPick = new WeakMap<CatalogMotionEntry, number>();
+		this.lastAmbientPhrasePick = new WeakMap<CatalogAmbientEntry, number>();
+		this.actionPlayCounts.clear();
 		this.externalActions?.cancelAll();
 		this.director?.invalidateAll("catalog changed");
 		this.restHandle = undefined;
@@ -257,16 +284,30 @@ export class Live2DRuntime {
 		return undefined;
 	}
 
-	/**
-	 * per-play bake：目录不持有编译产物，runtime 是唯一 bake 点；rng 注入闭包，
-	 * 随机量在播放受理时结清（A9 可 seek/确定性）。非法曲线在此失败，不进入播放。
-	 */
-	private bake(definition: MotionAuthoring, speech?: SpeechPolicy): CompiledMotion {
-		return compileMotion(
+	private nextActionPlayIndex(actionName: string): number {
+		const index = this.actionPlayCounts.get(actionName) ?? 0;
+		this.actionPlayCounts.set(actionName, index + 1);
+		return index;
+	}
+
+	/** Per-play Bake: Catalog retains only the authoring function, never random compiled output. */
+	private bake(
+		definition: ActionAuthoring,
+		actionName: string,
+		playIndex: number,
+		speech?: SpeechPolicy,
+	): CompiledAction {
+		const clip = compileAction(
 			speech === undefined ? definition : withSpeech(definition, speech),
 			this.rig!.controls,
-			this.pickRandom,
+			deriveRandom(this.rootSeed, "performance", actionName, playIndex),
 		);
+		try {
+			this.onActionCompiled?.({ actionName, playIndex, clip });
+		} catch {
+			/* local preview callbacks cannot interrupt a world action */
+		}
+		return clip;
 	}
 
 	/**
@@ -274,19 +315,36 @@ export class Live2DRuntime {
 	 * 变体轮换：主定义 + variants 构成池，均匀随机排除上次选中（连播不重样）；
 	 * speech 覆写按选中定义经 withSpeech 重编译——外层策略覆盖作者内层策略。
 	 */
-	private pickMotionClip(entry: CatalogMotionEntry, speech: SpeechPolicy | undefined): CompiledMotion {
+	private pickMotionClip(
+		entry: CatalogMotionEntry,
+		actionName: string,
+		playIndex: number,
+		speech: SpeechPolicy | undefined,
+	): CompiledAction {
 		const variants = entry.variants;
-		if (!variants?.length) return this.bake(entry.definition, speech);
-		const index = pickVariantIndex(variants.length + 1, this.lastVariantPick.get(entry), this.pickRandom);
+		if (!variants?.length) return this.bake(entry.definition, actionName, playIndex, speech);
+		const index = pickVariantIndex(
+			variants.length + 1,
+			this.lastVariantPick.get(entry),
+			deriveRandom(this.rootSeed, "selection", actionName, playIndex),
+		);
 		this.lastVariantPick.set(entry, index);
-		return this.bake(index === 0 ? entry.definition : variants[index - 1]!, speech);
+		return this.bake(index === 0 ? entry.definition : variants[index - 1]!, actionName, playIndex, speech);
 	}
 
-	private pickAmbientPhrase(entry: CatalogAmbientEntry): CompiledMotion {
+	private pickAmbientPhrase(entry: CatalogAmbientEntry, actionName: string, playIndex: number): CompiledAction {
 		const pool = [entry.motion, ...(entry.variants ?? [])];
-		const index = pickVariantIndex(pool.length, this.lastAmbientPhrasePick.get(entry), this.pickRandom);
+		const index = pickVariantIndex(
+			pool.length,
+			this.lastAmbientPhrasePick.get(entry),
+			deriveRandom(this.rootSeed, "selection", actionName, playIndex),
+		);
 		this.lastAmbientPhrasePick.set(entry, index);
-		return compileMotion(pool[index]!, this.rig!.controls, this.pickRandom);
+		return compileAction(
+			pool[index]!,
+			this.rig!.controls,
+			deriveRandom(this.rootSeed, "performance", actionName, playIndex),
+		);
 	}
 
 	/**
@@ -301,6 +359,7 @@ export class Live2DRuntime {
 			atomic?: boolean;
 			signal?: AbortSignal;
 			callName?: string;
+			actionName?: string;
 			onStarted?: () => void;
 		} = {},
 	): Promise<ToolExecutionResult> {
@@ -313,7 +372,9 @@ export class Live2DRuntime {
 				: this.executionController.signal,
 		};
 		const director = this.director!;
-		const clip = this.pickMotionClip(entry, options.speech);
+		const actionName = options.actionName ?? entry.description;
+		const playIndex = this.nextActionPlayIndex(actionName);
+		const clip = this.pickMotionClip(entry, actionName, playIndex, options.speech);
 		const playOptions: PlayOptions = {
 			...entry.playback,
 			category: "voluntary",
@@ -321,15 +382,16 @@ export class Live2DRuntime {
 			signal: options.signal,
 		};
 		const label = `动作 "${entry.description}"`;
-		if (!entry.spatial) {
+		if (clip.spatial.length === 0) {
 			const handle = director.play(clip, playOptions);
 			options.onStarted?.();
 			return settleMotion(this.client!, this.rig!, handle, clip, label, options.callName);
 		}
 		if (!this.focused) return toolRejected("unfocused", `${label} 未执行：身体当前失焦。`);
 
-		return this.externalActions!.runSpatial(entry, clip, {
+		return this.externalActions!.runSpatial(clip, {
 			...playOptions,
+			description: entry.description,
 			callName: options.callName,
 			onStarted: options.onStarted,
 		});
@@ -341,11 +403,12 @@ export class Live2DRuntime {
 		if (denied) return denied;
 		const name = requireWord(args.motion, "motion");
 		if (typeof name === "object") return name;
-		const entry = this.catalog.resolve("motion", name)?.entry;
-		if (!entry) {
+		const resolved = this.catalog.resolve("motion", name);
+		if (!resolved) {
 			const available = formatMotionEntries(this.catalog.list("motion")).join(", ") || "无";
 			return toolRejected("unknown_motion", `动作不在当前模型目录: "${name}"。当前可用动作: ${available}。`);
 		}
+		const entry = resolved.entry;
 		const { atomic, speech } = args;
 		if (atomic !== undefined && typeof atomic !== "boolean")
 			return toolRejected("invalid_params", "atomic 必须是布尔值。");
@@ -355,6 +418,7 @@ export class Live2DRuntime {
 		return this.playMotion(entry, {
 			speech,
 			atomic,
+			actionName: resolved.name,
 			signal: ctx.signal,
 			callName: name,
 		});
@@ -367,7 +431,7 @@ export class Live2DRuntime {
 		const cue = this.catalog.resolveCue(id);
 		if (!cue) return toolRejected("unknown_cue", `未知 cue: "${id}"。`);
 		if (cue.kind === "posture") return this.applyState({ posture: id }, {}, onStarted);
-		return this.playMotion(cue.entry, { callName: id, onStarted });
+		return this.playMotion(cue.entry, { actionName: cue.name, callName: id, onStarted });
 	}
 	async state(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
 		return this.applyState(args, ctx);
@@ -704,7 +768,9 @@ export class Live2DRuntime {
 		if (ambient?.variants?.length) {
 			// Phrase pools are finite: let the outgoing clip hand off while the next, nonrepeating phrase enters.
 			if (!this.restHandle || ["cancelling", "finished"].includes(this.restHandle.status)) {
-				this.restHandle = this.director.play(this.pickAmbientPhrase(ambient), {
+				const actionName = `ambient:${this.ambientName}`;
+				const playIndex = this.nextActionPlayIndex(actionName);
+				this.restHandle = this.director.play(this.pickAmbientPhrase(ambient, actionName, playIndex), {
 					category: "autonomic",
 					background: true,
 					atomic: false,
@@ -713,24 +779,34 @@ export class Live2DRuntime {
 				});
 			}
 		} else if (restLoop && (!this.restHandle || this.restHandle.status === "finished")) {
-			this.restHandle = this.director.play(compileMotion(restLoop, this.rig!.controls, this.pickRandom), {
-				category: "autonomic",
-				loop: true,
-				background: true,
-				atomic: false,
-				fadeInMs: 450,
-				fadeOutMs: 450,
-			});
+			const actionName = ambient ? `ambient:${this.ambientName}` : "background:idle";
+			const playIndex = this.nextActionPlayIndex(actionName);
+			this.restHandle = this.director.play(
+				compileAction(restLoop, this.rig!.controls, deriveRandom(this.rootSeed, "performance", actionName, playIndex)),
+				{
+					category: "autonomic",
+					loop: true,
+					background: true,
+					atomic: false,
+					fadeInMs: 450,
+					fadeOutMs: 450,
+				},
+			);
 		}
 		if (thinking && this.thinking && !this.thinkingHandle) {
-			this.thinkingHandle = this.director.play(compileMotion(thinking, this.rig!.controls, this.pickRandom), {
-				category: "transition",
-				loop: true,
-				background: true,
-				atomic: false,
-				fadeInMs: 350,
-				fadeOutMs: 450,
-			});
+			const actionName = "background:thinking";
+			const playIndex = this.nextActionPlayIndex(actionName);
+			this.thinkingHandle = this.director.play(
+				compileAction(thinking, this.rig!.controls, deriveRandom(this.rootSeed, "performance", actionName, playIndex)),
+				{
+					category: "transition",
+					loop: true,
+					background: true,
+					atomic: false,
+					fadeInMs: 350,
+					fadeOutMs: 450,
+				},
+			);
 		}
 	}
 
@@ -815,9 +891,10 @@ export class Live2DRuntime {
 
 	private tick(): void {
 		const now = performance.now();
-		const dt = Math.min(Math.max(now - this.lastTickAt, 0), MAX_TICK_DT_MS);
+		const elapsed = Math.max(now - this.lastTickAt, 0);
+		const dt = Math.min(elapsed, MAX_TICK_DT_MS);
 		this.lastTickAt = now;
-		this.composeTick(dt);
+		this.composeTick(dt, elapsed);
 	}
 
 	/**
@@ -849,7 +926,7 @@ export class Live2DRuntime {
 	}
 
 	/** 合约入口：合成一步并注入。注入时钟与测试共用（合成推进纯函数化，无真实定时器等待）。 */
-	composeTick(dtMs: number): void {
+	composeTick(dtMs: number, effectiveElapsedMs = dtMs): void {
 		if (!this.started || !this.client || !this.director || !this.rig) return;
 		if (this.lifecycleFault) return;
 		if (!this.client.isConnected()) return;
@@ -865,7 +942,15 @@ export class Live2DRuntime {
 			// 声学电平推进（失联守卫 + 作者映射）→ 引擎包络目标，先于本帧合成。
 			this.syncBackgrounds();
 			this.speechInput?.tick(dtMs);
-			const frame = this.director.step(dtMs);
+			const frame = this.director.step(dtMs, effectiveElapsedMs);
+			const diagnostics = this.director.getActionDiagnostics();
+			if (diagnostics) {
+				try {
+					this.onActionDiagnostics?.(diagnostics);
+				} catch {
+					/* local preview callbacks cannot interrupt a world tick */
+				}
+			}
 			const contributions = [...this.director.frameContributions].map(([leaseID, axes]) => ({
 				leaseID,
 				inputs: [...new Set([...axes].flatMap((axis) => this.rig!.bindings[axis]!.map((binding) => binding.input)))],
@@ -928,6 +1013,7 @@ export class Live2DRuntime {
 							attention: this.director.getAttention() ?? null,
 							blinkFactor: this.director.blinkFactor,
 							frameAxes: Object.keys(this.director.currentFrame).length,
+							actionDiagnostics: this.director.getActionDiagnostics() ?? null,
 						}
 					: null,
 				catalog: {

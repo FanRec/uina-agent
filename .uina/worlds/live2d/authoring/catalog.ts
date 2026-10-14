@@ -1,21 +1,7 @@
 import type { RigControlDef } from "../adapter/rig.js";
-import { compileMotion, type MotionAuthoring } from "./motion.js";
+import { compileAction, type ActionAuthoring } from "./action.js";
 
-/**
- * 模型目录（P4-1，边界规范 §2）。
- *
- * 目录是工具参数的唯一合法词表来源：任何命名参数（动作/姿态/表情/注视/外观）不存在
- * 于当前目录时一律显式拒绝，不做模糊匹配。所有命名共享同一命名空间且全局唯一
- * （cue 派发按名字命中，命名冲突即语义歧义），compileCatalog 在绑定期拒绝重复。
- *
- * 快照不可变：runtime 持有 `(catalogSnapshot, generation)` 配对（边界规范 §3），
- * 目录更新产生新快照并递增代次；名字在调用受理时绑定到当时快照，执行时校验代次。
- *
- * 本模块属于 authoring 层（规范 §8：models/* → authoring + adapter），
- * 不依赖 director；AttentionTarget 是注视目标词汇，自本文件单源。
- */
-
-/** 注视目标：具名方向（引擎内置词表）或作者标定的坐标瞄准点。 */
+/** Named catalog is the sole source of model-specific affordances. */
 export type AttentionTarget =
 	| { x: number; y: number }
 	| "user"
@@ -24,12 +10,14 @@ export type AttentionTarget =
 	| "avert_left"
 	| "avert_right";
 
-/** 内置注视方向词表（引擎具名瞄准，非目录命名）。目录命名不得与之重复。 */
-export const BUILTIN_ATTENTIONS: readonly Extract<AttentionTarget, string>[] = Object.freeze<
-	Extract<AttentionTarget, string>[]
->(["user", "screen", "avert_down", "avert_left", "avert_right"]);
+export const BUILTIN_ATTENTIONS: readonly Extract<AttentionTarget, string>[] = Object.freeze([
+	"user",
+	"screen",
+	"avert_down",
+	"avert_left",
+	"avert_right",
+]);
 
-/** 内置注视的中文朴素别名映射。 */
 export const BUILTIN_ATTENTION_ALIASES: Readonly<Record<string, Extract<AttentionTarget, string>>> = Object.freeze({
 	看对方: "user",
 	用户: "user",
@@ -42,55 +30,6 @@ export const BUILTIN_ATTENTION_ALIASES: Readonly<Record<string, Extract<Attentio
 	看右侧: "avert_right",
 });
 
-/**
- * 段级外部效果（绝对状态，进入段即生效）：与 delta（相对基准的数值偏移）正交。
- * 恢复由运行时守护统一执行——作者不书写任何重置值，末段携带 effects 在编译期拒绝。
- */
-export interface SegmentEffects {
-	/** 全模型染色。协议（ColorTintRequest）无过渡时间参数，进入即生效；白 (255,255,255,255) 为官方重置语义。 */
-	readonly tint?: { readonly r: number; readonly g: number; readonly b: number; readonly a?: number };
-	/**
-	 * 场景后处理（PostProcessingUpdateRequest）。滤镜是 VTS 全局场景级效果（影响整个输出而非仅模型）；
-	 * 原生支持 0-2 秒渐变（fadeTime，秒）。效果表达二选一（协议互斥，编译期校验）：
-	 * - values：直接效果 config 值（如灰度 = ColorGrading_Strength 1 + ColorGrading_Saturation -100），
-	 *   纯 API 值表达，零环境文件依赖，值域外协议自动 clamp；
-	 * - preset：VTS Effects 环境文件名，由运行期发送前前瞻核验（VTS 可枚举预设清单）。
-	 */
-	readonly postProcessing?: {
-		readonly on: boolean;
-		readonly values?: readonly { readonly id: string; readonly value: number | string }[];
-		readonly preset?: string;
-		readonly fadeTime?: number;
-	};
-}
-
-export interface SpatialSegment {
-	/** 每一段都相对同一开始位姿，不累积前段偏移。 */
-	readonly delta?: {
-		readonly x?: number;
-		readonly y?: number;
-		readonly rotation?: number;
-		readonly size?: number;
-	};
-	/**
-	 * 相对旋转段：仅旋转，值为相对当前朝向的顺时针增量（VTS valuesAreRelativeToModel=true 的
-	 * rotation 语义）。与 delta 互斥（编译期校验）。执行由运行时逐帧驱动（timeInSeconds=0，
-	 * 官方背书），目标角 = 本值·smooth(elapsed/duration)——VTS 对 rotation 一律按最短弧插值
-	 * （真机实验：relative 单请求 359 同样折返为 -1°），>180° 的整圈旋转必须走本段。
-	 */
-	readonly relativeRotation?: number;
-	/** 段级外部效果（绝对状态）。 */
-	readonly effects?: SegmentEffects;
-	readonly durationMs: number;
-	readonly holdMs?: number;
-}
-
-export interface SpatialStuntDef {
-	/** 最后一段必须回到零偏移；取消/异常另外执行归位清理。 */
-	readonly segments: readonly SpatialSegment[];
-}
-
-/** 作者配置，不增加工具参数，也不依赖 director。 */
 export interface CatalogPlayback {
 	readonly fadeInMs?: number;
 	readonly fadeOutMs?: number;
@@ -98,30 +37,17 @@ export interface CatalogPlayback {
 	readonly resetVelocity?: boolean;
 }
 
-/**
- * 同义纹理变体：与主定义（池成员 0）构成随机轮换池，连播不重样（表演规范 §3：
- * 重复时允许有界的轻重/时长/方向变化，不改变关键姿势）。
- * 不入全局命名空间、不可独立寻址——agent 仍 cue 单一动作名；某变体需要被语义选择时，
- * 晋升路径是移出 variants 升为独立命名条目。
- */
 export interface CatalogMotionEntry {
 	description: string;
-	/** 原始定义（曲线函数工厂）：express 的 speech 覆写时按此重编译（withSpeech 外层覆盖内层策略）。 */
-	definition: MotionAuthoring;
-	/** 附加变体（不含主定义）；主定义 + variants 构成轮换池，运行时均匀随机排除上次选中。 */
-	variants?: readonly MotionAuthoring[];
-	/** 可选的空间位姿特技（执行期间独占 model:transform 并保证自动归位）。 */
-	spatial?: SpatialStuntDef;
+	definition: ActionAuthoring;
+	variants?: readonly ActionAuthoring[];
 	playback?: CatalogPlayback;
-	/** 命名表演默认 true（边界规范 §2）；目录项可显式声明为 false。 */
 	atomic: boolean;
-	/** cue 别名：affordance 必须显式声明（2026-09-21 别名 cue 静默丢失缺陷的反面）。 */
 	aliases?: readonly string[];
 }
 
 export interface CatalogSlotEntry {
 	description: string;
-	/** 轴值必须已声明于 rig.controls 且落在 [min,max]，compileCatalog 校验。 */
 	values: Readonly<Record<string, number>>;
 	transitionMs?: number;
 	aliases?: readonly string[];
@@ -138,19 +64,16 @@ export interface CatalogCostumeEntry {
 	hotkeyID: string;
 }
 
-/** 环境循环条目：uina 经 ambient 工具按名选择；描述进入 status 词表，别名入全局命名空间。 */
 export interface CatalogAmbientEntry {
 	description: string;
-	motion: MotionAuthoring;
-	/** Finite phrase pool: each completed clip advances without immediately replaying its predecessor. */
-	variants?: readonly MotionAuthoring[];
+	motion: ActionAuthoring;
+	variants?: readonly ActionAuthoring[];
+	aliases?: readonly string[];
 }
 
-/** 背景循环/思考动作（引擎类别 transition；P4-4 thinking 状态驱动消费）。 */
 export interface CatalogBackground {
-	thinking?: MotionAuthoring;
-	idle?: MotionAuthoring;
-	/** 环境循环词表：uina 经 ambient 工具选择/清除，选中时替换 idle 成为静止态背景。 */
+	thinking?: ActionAuthoring;
+	idle?: ActionAuthoring;
 	ambient?: ReadonlyMap<string, CatalogAmbientEntry>;
 }
 
@@ -163,20 +86,22 @@ export interface CatalogEntries {
 	ambient: CatalogAmbientEntry;
 	costume: CatalogCostumeEntry;
 }
+
 export interface CatalogResolved<K extends CatalogKind> {
 	readonly kind: K;
 	readonly name: string;
 	readonly aliases: readonly string[];
 	readonly entry: Readonly<CatalogEntries[K]>;
 }
-/** 索引私有，消费者只获得冻结记录；不能通过 Map.set 或原始作者对象修改快照。 */
+
 export interface CatalogSnapshot {
 	readonly modelID: string;
-	readonly background: Readonly<{ idle?: MotionAuthoring; thinking?: MotionAuthoring }>;
+	readonly background: Readonly<{ idle?: ActionAuthoring; thinking?: ActionAuthoring }>;
 	resolve<K extends CatalogKind>(kind: K, nameOrAlias: string): CatalogResolved<K> | undefined;
 	list<K extends CatalogKind>(kind: K): readonly CatalogResolved<K>[];
 	resolveCue(nameOrAlias: string): CatalogResolved<"motion"> | CatalogResolved<"posture"> | undefined;
 }
+
 function freezeContent<T>(value: T, seen = new WeakSet<object>()): T {
 	if (value && typeof value === "object" && !seen.has(value)) {
 		seen.add(value);
@@ -185,6 +110,7 @@ function freezeContent<T>(value: T, seen = new WeakSet<object>()): T {
 	}
 	return value;
 }
+
 function catalogBuilder(modelID: string) {
 	const owners = new Map<string, string>();
 	const records = new Map<CatalogKind, CatalogResolved<CatalogKind>[]>();
@@ -199,6 +125,7 @@ function catalogBuilder(modelID: string) {
 		const list = records.get(kind) ?? [];
 		const index = indexes.get(kind) ?? new Map();
 		for (const word of [name, ...aliases]) {
+			if (typeof word !== "string" || word.length === 0) throw new Error(`${kind} 名称与别名必须是非空字符串`);
 			const owner = owners.get(word);
 			if (owner) throw new Error(`命名冲突: "${word}" 已被 ${owner} 占用（目录命名空间全局唯一）`);
 			owners.set(word, `${kind}.${name}`);
@@ -234,19 +161,17 @@ function catalogBuilder(modelID: string) {
 		},
 	};
 }
+
 export const emptyCatalog = (modelID: string): CatalogSnapshot => catalogBuilder(modelID).finish({});
 
 export interface CatalogSource {
-	/** 动作输入：definition 即曲线函数工厂（bake 由 runtime per-play 执行，此处仅校验性探测）。 */
 	motions?: Readonly<
 		Record<
 			string,
 			{
 				description: string;
-				motion: MotionAuthoring;
-				/** 附加变体原始定义（不含主定义）；绑定期逐个校验，非法即抛。 */
-				variants?: readonly MotionAuthoring[];
-				spatial?: SpatialStuntDef;
+				motion: ActionAuthoring;
+				variants?: readonly ActionAuthoring[];
 				playback?: CatalogPlayback;
 				atomic?: boolean;
 				aliases?: readonly string[];
@@ -258,15 +183,15 @@ export interface CatalogSource {
 	attentions?: Readonly<Record<string, CatalogAttentionEntry>>;
 	costumes?: readonly CatalogCostumeEntry[];
 	background?: {
-		thinking?: MotionAuthoring;
-		idle?: MotionAuthoring;
+		thinking?: ActionAuthoring;
+		idle?: ActionAuthoring;
 		ambient?: Record<
 			string,
 			{
 				description: string;
 				aliases?: readonly string[];
-				motion: MotionAuthoring;
-				variants?: readonly MotionAuthoring[];
+				motion: ActionAuthoring;
+				variants?: readonly ActionAuthoring[];
 			}
 		>;
 	};
@@ -274,15 +199,10 @@ export interface CatalogSource {
 
 const take = <T>(record: Readonly<Record<string, T>> | undefined): Map<string, T> =>
 	new Map(Object.entries(record ?? {}));
-
-/** 校验性探测用的桩随机源：绑定期只验证结构合法性，随机量在运行期 bake 时才结清。 */
 const STUB_RNG = (): number => 0;
 
-/** 数据深克隆，函数按引用透传（MotionAuthoring 是函数，structuredClone 不可用）。 */
 function cloneAuthoring<T>(value: T, seen = new WeakMap<object, unknown>()): T {
 	if (value === null || typeof value !== "object") return value;
-	// Map/Set/Date 经 Object.entries 会静默丢失全部内容（Map 克隆成空对象）——
-	// 宁可绑定期响亮失败，也不让目录带残缺数据上线。
 	if (value instanceof Map || value instanceof Set || value instanceof Date)
 		throw new Error("CatalogSource 含不支持的结构（Map/Set/Date）：请使用普通对象与数组");
 	if (seen.has(value)) return seen.get(value) as T;
@@ -295,14 +215,10 @@ function cloneAuthoring<T>(value: T, seen = new WeakMap<object, unknown>()): T {
 	const copy: Record<string, unknown> = {};
 	seen.set(value, copy);
 	for (const [key, child] of Object.entries(value)) copy[key] = cloneAuthoring(child, seen);
-	return copy as unknown as T;
+	return copy as T;
 }
 
-/**
- * 绑定期校验：动作校验性 bake（结构非法即抛，产物丢弃——目录不持有编译产物，
- * runtime 是唯一 bake 点）、轴值范围核验、全命名空间唯一性（含内置注视词表与别名占用）。
- * 任何失败都阻止模型包装配，不带病上线。
- */
+/** Validate ActionAuthoring with a fixed probe stream, discard the result, and store only the factory. */
 export function compileCatalog(
 	modelID: string,
 	source: CatalogSource,
@@ -312,118 +228,21 @@ export function compileCatalog(
 	if (rig.modelID !== modelID) throw new Error(`目录模型身份不符: 目录 ${modelID} vs rig ${rig.modelID}`);
 	const motions = new Map<string, CatalogMotionEntry>();
 	for (const [name, entry] of Object.entries(source.motions ?? {})) {
-		if (entry.spatial) {
-			const segments = entry.spatial.segments;
-			if (!segments?.length) throw new Error(`动作 "${name}" 空间轨迹为空`);
-			let hasPayload = false;
-			const validateEffects = (effects: SegmentEffects, index: number): void => {
-				const label = `动作 "${name}" 空间段[${index}]`;
-				if (effects.tint !== undefined) {
-					const { r, g, b, a } = effects.tint;
-					for (const [channel, value] of [
-						["r", r],
-						["g", g],
-						["b", b],
-						["a", a ?? 255],
-					] as const)
-						if (!Number.isInteger(value) || value < 0 || value > 255)
-							throw new Error(`${label} 染色通道 ${channel} 必须是 0-255 整数: ${value}`);
-				}
-				if (effects.postProcessing !== undefined) {
-					if (typeof effects.postProcessing.on !== "boolean") throw new Error(`${label} 后处理 on 必须是布尔值`);
-					const { fadeTime, values, preset } = effects.postProcessing;
-					if (fadeTime !== undefined && (!Number.isFinite(fadeTime) || fadeTime < 0 || fadeTime > 2))
-						throw new Error(`${label} 后处理渐变时间必须是 0-2 秒: ${fadeTime}`);
-					// 效果表达二选一：values（直接 config 值）与 preset（环境文件名）协议互斥。
-					if (values !== undefined && preset !== undefined)
-						throw new Error(`${label} 后处理 values 与 preset 互斥，只能二选一`);
-					if (values !== undefined) {
-						if (!Array.isArray(values) || values.length === 0) throw new Error(`${label} 后处理 values 必须是非空数组`);
-						for (const item of values) {
-							if (typeof item?.id !== "string" || item.id.length === 0)
-								throw new Error(`${label} 后处理 values 项缺少 configID: ${JSON.stringify(item)}`);
-							if (!["number", "string"].includes(typeof item.value))
-								throw new Error(
-									`${label} 后处理 config "${item.id}" 的值必须是 number 或 string: ${JSON.stringify(item)}`,
-								);
-						}
-					}
-				}
-			};
-			for (const [index, segment] of segments.entries()) {
-				if (!Number.isFinite(segment.durationMs) || segment.durationMs <= 0 || segment.durationMs > 2000)
-					throw new Error(`动作 "${name}" 空间段 durationMs 必须在 (0,2000]`);
-				if (segment.holdMs !== undefined && (!Number.isFinite(segment.holdMs) || segment.holdMs < 0))
-					throw new Error(`动作 "${name}" 空间段 holdMs 必须为非负有限数`);
-				if (segment.relativeRotation !== undefined) {
-					if (
-						!Number.isFinite(segment.relativeRotation) ||
-						segment.relativeRotation <= 0 ||
-						segment.relativeRotation > 359
-					)
-						throw new Error(
-							`动作 "${name}" 空间段[${index}] relativeRotation 必须在 (0,359]：VTS rotation 硬边界 ±360 且边界值实测被拒`,
-						);
-					if (segment.delta && Object.keys(segment.delta).length > 0)
-						throw new Error(
-							`动作 "${name}" 空间段[${index}] relativeRotation 与 delta 互斥（valuesAreRelativeToModel 是请求级开关）`,
-						);
-					hasPayload = true;
-				}
-				if (segment.delta) {
-					// delta 数值域 lint（弱校验）：超出 VTS 字段值域的偏移按作者笔误提前拒绝；
-					// 真约束在运行时——实发绝对值 = base + delta，base 只有运行时可知（VTS_MOVE_LIMITS）。
-					const deltaLimits: Record<string, number> = { x: 1000, y: 1000, rotation: 360, size: 100 };
-					for (const [axis, offset] of Object.entries(segment.delta)) {
-						if (!["x", "y", "rotation", "size"].includes(axis) || !Number.isFinite(offset))
-							throw new Error(`动作 "${name}" 空间偏移非法: ${axis}`);
-						if (offset !== 0) hasPayload = true;
-						if (Math.abs(offset) > deltaLimits[axis]!)
-							throw new Error(`动作 "${name}" 空间偏移超出 VTS 值域: ${axis}=${offset}（±${deltaLimits[axis]}）`);
-					}
-				}
-				const hasEffects = segment.effects !== undefined && Object.keys(segment.effects).length > 0;
-				if (
-					!hasEffects &&
-					(!segment.delta || Object.keys(segment.delta).length === 0) &&
-					segment.relativeRotation === undefined
-				)
-					throw new Error(`动作 "${name}" 空间段必须声明 delta、relativeRotation 或 effects`);
-				if (hasEffects) {
-					hasPayload = true;
-					validateEffects(segment.effects!, index);
-				}
-			}
-			if (!hasPayload) throw new Error(`动作 "${name}" 空间轨迹无载荷`);
-			const last = segments.at(-1)!;
-			if (last.relativeRotation !== undefined)
-				throw new Error(
-					`动作 "${name}" 空间轨迹末段不得是 relativeRotation——相对整圈结束时朝向留有余量，必须由后继 delta 段归零`,
-				);
-			if (Object.values(last.delta ?? {}).some((offset) => offset !== 0))
-				throw new Error(`动作 "${name}" 空间轨迹末段必须归零`);
-			if (last.effects !== undefined && Object.keys(last.effects).length > 0)
-				throw new Error(`动作 "${name}" 空间轨迹末段不得携带 effects——恢复由运行时守护统一执行`);
-		}
-		for (const value of [entry.playback?.fadeInMs, entry.playback?.fadeOutMs]) {
+		for (const value of [entry.playback?.fadeInMs, entry.playback?.fadeOutMs])
 			if (value !== undefined && (!Number.isFinite(value) || value < 0))
 				throw new Error(`动作 "${name}" 播放淡入/淡出必须为非负有限数`);
-		}
-		if (Array.isArray(entry.playback?.inhibitAdditives)) {
+		if (Array.isArray(entry.playback?.inhibitAdditives))
 			for (const axis of entry.playback.inhibitAdditives)
 				if (!rig.controls[axis]) throw new Error(`动作 "${name}" 抑制未声明轴: ${axis}`);
-		}
-		// 变体池：附加变体逐个校验（非法定义即抛）；池总数 ≥ 2 才构成轮换，空池拒绝。
 		if (entry.variants !== undefined) {
-			if (entry.variants.length < 1) throw new Error(`动作 "${name}" 变体池为空：主定义 + 变体必须 ≥ 2 才构成轮换`);
-			for (const variant of entry.variants) compileMotion(variant, rig.controls, STUB_RNG);
+			if (entry.variants.length < 1) throw new Error(`动作 "${name}" 变体池为空：主定义 + 变体必须至少有两个成员`);
+			for (const variant of entry.variants) compileAction(variant, rig.controls, STUB_RNG);
 		}
-		compileMotion(entry.motion, rig.controls, STUB_RNG);
+		compileAction(entry.motion, rig.controls, STUB_RNG);
 		motions.set(name, {
 			description: entry.description,
 			definition: entry.motion,
 			variants: entry.variants,
-			spatial: entry.spatial,
 			playback: entry.playback,
 			atomic: entry.atomic ?? true,
 			aliases: entry.aliases,
@@ -443,14 +262,10 @@ export function compileCatalog(
 	for (const [name, slot] of postures) validateSlot(name, slot, "姿态");
 	const expressions = take(source.expressions);
 	for (const [name, slot] of expressions) validateSlot(name, slot, "表情");
-	// 环境循环：绑定期逐个校验（非法定义即抛），命名与别名同受全局唯一命名空间约束。
-	const ambientSource = new Map<
-		string,
-		{ description: string; aliases?: readonly string[]; motion: MotionAuthoring; variants?: readonly MotionAuthoring[] }
-	>();
+	const ambientSource = new Map<string, CatalogAmbientEntry>();
 	for (const [name, entry] of Object.entries(source.background?.ambient ?? {})) {
-		compileMotion(entry.motion, rig.controls, STUB_RNG);
-		for (const variant of entry.variants ?? []) compileMotion(variant, rig.controls, STUB_RNG);
+		compileAction(entry.motion, rig.controls, STUB_RNG);
+		for (const variant of entry.variants ?? []) compileAction(variant, rig.controls, STUB_RNG);
 		ambientSource.set(name, {
 			description: entry.description,
 			aliases: entry.aliases,
@@ -458,11 +273,12 @@ export function compileCatalog(
 			variants: entry.variants,
 		});
 	}
+	if (source.background?.idle) compileAction(source.background.idle, rig.controls, STUB_RNG);
+	if (source.background?.thinking) compileAction(source.background.thinking, rig.controls, STUB_RNG);
 	const attentions = take(source.attentions);
-	for (const name of attentions.keys()) {
+	for (const name of attentions.keys())
 		if ((BUILTIN_ATTENTIONS as readonly string[]).includes(name))
 			throw new Error(`注视命名 "${name}" 与引擎内置词表冲突`);
-	}
 	const builder = catalogBuilder(modelID);
 	for (const [name, entry] of motions) builder.add("motion", name, entry, entry.aliases);
 	for (const [name, entry] of postures) builder.add("posture", name, entry, entry.aliases);
@@ -470,8 +286,5 @@ export function compileCatalog(
 	for (const [name, entry] of attentions) builder.add("attention", name, entry);
 	for (const [name, entry] of ambientSource) builder.add("ambient", name, entry, entry.aliases);
 	for (const entry of source.costumes ?? []) builder.add("costume", entry.id, entry);
-	return builder.finish({
-		thinking: source.background?.thinking,
-		idle: source.background?.idle,
-	});
+	return builder.finish({ thinking: source.background?.thinking, idle: source.background?.idle });
 }

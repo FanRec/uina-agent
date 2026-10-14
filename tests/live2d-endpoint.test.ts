@@ -6,7 +6,7 @@ import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import { compileCatalog, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
+import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/index.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 

@@ -1,9 +1,10 @@
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import type { ModelRig } from "./adapter/rig.js";
 import { VTSClient } from "./adapter/vts-client.js";
-import type { CatalogCostumeEntry, CatalogMotionEntry } from "./authoring/catalog.js";
-import type { CompiledMotion } from "./authoring/motion.js";
-import { smooth } from "./authoring/motion.js";
+import type { CatalogCostumeEntry } from "./authoring/catalog.js";
+import type { CompiledAction } from "./authoring/action.js";
+import type { CompiledSpatialEvent } from "./authoring/spatial.js";
+import { smooth } from "./authoring/curves.js";
 import { type ExclusiveClaim, MotionDirector, type MotionHandle, type PlayOptions } from "./director/director.js";
 import { settleMotion, toolRejected, toolSucceeded, toolUnknown, withCancellation } from "./results.js";
 export type CleanupState = "not_needed" | "confirmed" | "unknown";
@@ -30,8 +31,33 @@ interface ExternalActionOptions {
 	getCatalogGeneration: () => number;
 	isFocused: () => boolean;
 	cleanupTimeoutMs: number;
+	onSpatialTrace?: (trace: SpatialRequestTrace) => void;
 }
-export type SpatialOptions = PlayOptions & { callName?: string; onStarted?: () => void };
+export type SpatialRequestTrace =
+	| {
+			readonly phase: "baseline";
+			readonly modelID: string;
+			readonly basePose: Readonly<{ positionX: number; positionY: number; rotation: number; size: number }>;
+			readonly clockAtMs: number;
+	  }
+	| {
+			readonly phase: "dispatch" | "ack";
+			readonly eventIndex: number;
+			readonly request: "moveModel" | "tintModel" | "updatePostProcessing";
+			readonly plannedAtMs: number;
+			readonly clockAtMs: number;
+			readonly actionAtMs: number;
+			readonly lateByMs: number;
+			readonly eventLateByMs?: number;
+			readonly estimatedEndAtMs?: number;
+			readonly outcome?: "confirmed" | "failed" | "unknown";
+	  };
+export type SpatialOptions = PlayOptions & {
+	callName?: string;
+	description?: string;
+	onStarted?: () => void;
+	onTrace?: (trace: SpatialRequestTrace) => void;
+};
 const SETTLE_MARGIN_MS = 60;
 /** 回读核实重试：VTS 插值结算存在滞后，失败再等 SETTLE_RETRY_MS 重读，重试用尽才如实判未确认。 */
 const SETTLE_RETRIES = 2;
@@ -41,10 +67,31 @@ const RESTORE_SECONDS = 0.25;
 const DRIVE_INTERVAL_MS = 16;
 /** 逐帧驱动的事件阈值（°）：低于它不发空转请求。 */
 const DRIVE_MIN_DELTA_DEG = 0.01;
+/** Per-request relative rotation cap prevents shortest-arc wrap after a slow ACK. */
+const MAX_RELATIVE_STEP_DEG = 90;
+/** Allow only the small tail left by tick/ACK scheduling; larger residuals mean the authored window was missed. */
+const MAX_ENDPOINT_RESIDUAL_DEG = 2;
+/** Initial conservative movement window; requires later live-VTS calibration. */
+const MIN_USEFUL_MOVE_MS = 100;
 
 const VTS_MOVE_LIMITS = { position: 1000, rotation: 360, size: 100 } as const;
 
 type ModelPose = { positionX: number; positionY: number; rotation: number; size: number };
+type PoseTransition = { from: ModelPose; to: ModelPose };
+
+class SpatialWindowMissedError extends Error {
+	constructor() {
+		super("spatial_window_missed");
+		this.name = "SpatialWindowMissedError";
+	}
+}
+
+class ExternalPoseChangedError extends Error {
+	constructor() {
+		super("external_pose_changed");
+		this.name = "ExternalPoseChangedError";
+	}
+}
 
 const sleep = (ms: number, signal?: AbortSignal): Promise<boolean> =>
 	new Promise((resolve) => {
@@ -67,6 +114,39 @@ const poseMatches = (now: ModelPose, base: ModelPose): boolean =>
 	Math.abs(now.positionX - base.positionX) <= 0.01 &&
 	Math.abs(now.positionY - base.positionY) <= 0.01 &&
 	Math.abs(now.size - base.size) <= 0.01;
+
+const poseWithinTransition = (now: ModelPose, transition: PoseTransition): boolean => {
+	const { from, to } = transition;
+	const positionAxes = [
+		{ now: now.positionX, from: from.positionX, to: to.positionX, tolerance: 0.01 },
+		{ now: now.positionY, from: from.positionY, to: to.positionY, tolerance: 0.01 },
+		{ now: now.size, from: from.size, to: to.size, tolerance: 0.01 },
+	];
+	const movingAxis = positionAxes.find(({ from: start, to: end, tolerance }) => Math.abs(end - start) > tolerance);
+	const rotationDelta = wrapDeg(to.rotation - from.rotation);
+	const halfTurn = Math.abs(rotationDelta) === 180;
+	let progress: number;
+	if (movingAxis) progress = (movingAxis.now - movingAxis.from) / (movingAxis.to - movingAxis.from);
+	else if (Math.abs(rotationDelta) > 0.5)
+		progress = halfTurn
+			? Math.abs(wrapDeg(now.rotation - from.rotation)) / 180
+			: wrapDeg(now.rotation - from.rotation) / rotationDelta;
+	else return poseMatches(now, from);
+	progress = Math.max(0, Math.min(1, progress));
+	const rotationAtProgress = wrapDeg(from.rotation + rotationDelta * progress);
+	const rotationMatches = halfTurn
+		? Math.min(
+				Math.abs(wrapDeg(now.rotation - wrapDeg(from.rotation + 180 * progress))),
+				Math.abs(wrapDeg(now.rotation - wrapDeg(from.rotation - 180 * progress))),
+			) <= 0.5
+		: Math.abs(wrapDeg(now.rotation - rotationAtProgress)) <= 0.5;
+	return (
+		positionAxes.every(
+			({ now: value, from: start, to: end, tolerance }) =>
+				Math.abs(value - (start + (end - start) * progress)) <= tolerance,
+		) && rotationMatches
+	);
+};
 /** 一次外部动作拥有请求、清理及资源释放；暂停只消费它的分项事实。 */
 export class ExternalActions {
 	private readonly client: VTSClient;
@@ -139,29 +219,17 @@ export class ExternalActions {
 			]);
 		return this.snapshot();
 	}
-	async runSpatial(
-		entry: CatalogMotionEntry,
-		clip: CompiledMotion,
-		options: SpatialOptions,
-	): Promise<ToolExecutionResult> {
-		const director = this.director,
-			client = this.client,
-			playOptions = options;
-		const label = `动作 "${entry.description}"`;
-		const spatial = entry.spatial;
-		if (!spatial) return toolRejected("invalid_motion", "缺少空间特技定义。");
-		const hasEffects = spatial.segments.some((segment) => segment.effects?.tint || segment.effects?.postProcessing);
-		const hasPost = spatial.segments.some((segment) => segment.effects?.postProcessing);
-		const hasTransform = spatial.segments.some(
-			(segment) =>
-				segment.relativeRotation !== undefined || Object.values(segment.delta ?? {}).some((value) => value !== 0),
-		);
-		const claim = this.acquireClaim(
-			["model:transform", ...(hasEffects ? ["effect:*"] : [])],
-			"motion",
-			options.signal,
-			true,
-		);
+	async runSpatial(clip: CompiledAction, options: SpatialOptions): Promise<ToolExecutionResult> {
+		const director = this.director;
+		const client = this.client;
+		const spatial = clip.spatial;
+		const label = `动作 "${options.description ?? options.callName ?? "未命名"}"`;
+		if (spatial.length === 0) return toolRejected("invalid_motion", `${label} 缺少空间事件。`);
+		const hasEffects = spatial.some((event) => event.effects !== undefined);
+		const hasPost = spatial.some((event) => event.effects?.postProcessing !== undefined);
+		const hasTransform = spatial.some((event) => event.transform !== undefined);
+		const resources = [...(hasTransform ? ["model:transform"] : []), ...(hasEffects ? ["effect:*"] : [])];
+		const claim = this.acquireClaim(resources, "action", options.signal, true);
 		if ("status" in claim) return claim;
 		this.spatialClaim = claim;
 		const generation = this.options.getCatalogGeneration();
@@ -180,31 +248,101 @@ export class ExternalActions {
 			}),
 		);
 		let base: ModelPose | undefined;
+		let expectedPose: ModelPose | undefined;
+		let pendingPose: ModelPose | undefined;
+		let poseTransition: PoseTransition | undefined;
+		let baseCapturedAtMs: number | undefined;
 		let handle: MotionHandle | undefined;
 		let motionResult: Promise<ToolExecutionResult> | undefined;
 		let moved = false;
 		let restored = true;
 		let restoreAttempted = false;
-		/** 进入时捕获的后处理状态（缺失则在副作用前拒绝）。tint 协议无读 API，按所有权模型恢复为白。 */
+		let poseOwnershipLost = false;
 		let postBaseline: { active: boolean; activePreset: string | null } | undefined;
-		/** 只有特技真的分发过效果才做效果归位——否则白/关复位会踩掉用户自己的染色与滤镜。 */
-		let tintSent = false,
-			postSent = false;
+		let tintSent = false;
+		let postSent = false;
 		const cleanup: MutableCleanup = { pose: "not_needed", tint: "not_needed", post: "not_needed" };
 		let effectsRestored: { tint: boolean; post: boolean } | undefined;
 		const dispatchFailures: string[] = [];
+		const emitTrace =
+			options.onTrace || this.options.onSpatialTrace
+				? (trace: SpatialRequestTrace) => {
+						const frozen = Object.freeze(trace);
+						try {
+							options.onTrace?.(frozen);
+						} catch {
+							/* local diagnostic callbacks cannot interrupt an external action */
+						}
+						try {
+							this.options.onSpatialTrace?.(frozen);
+						} catch {
+							/* local diagnostic callbacks cannot interrupt an external action */
+						}
+					}
+				: undefined;
 		const ensureActive = () => {
 			if (!this.focused || !sameModel() || handle?.status === "releasing" || handle?.status === "cancelled")
 				claim.cancel();
 			claim.signal.throwIfAborted();
 		};
+		const confirmPoseOwnership = async (observed: ModelPose, active: boolean): Promise<ModelPose | undefined> => {
+			if (!expectedPose) return observed;
+			let current = observed;
+			for (let attempt = 0; attempt <= SETTLE_RETRIES; attempt++) {
+				if (active) ensureActive();
+				if (!sameModel()) {
+					if (active) ensureActive();
+					return undefined;
+				}
+				if (
+					poseMatches(current, expectedPose) ||
+					(pendingPose && poseMatches(current, pendingPose)) ||
+					(poseTransition && poseWithinTransition(current, poseTransition))
+				)
+					return current;
+				if (attempt === SETTLE_RETRIES) break;
+				await sleep(attempt === 0 ? SETTLE_MARGIN_MS : SETTLE_RETRY_MS, active ? claim.signal : undefined);
+				if (active) ensureActive();
+				if (!sameModel()) {
+					if (active) ensureActive();
+					return undefined;
+				}
+				current = await client.getModelPosition(this.rig.modelID);
+			}
+			poseOwnershipLost = true;
+			cleanup.pose = "unknown";
+			return undefined;
+		};
 		const restore = async (): Promise<boolean> => {
 			if (restoreAttempted) return restored;
 			restoreAttempted = true;
-			restored = !moved || (base !== undefined && (await this.restorePose(client, base, sameModel)));
+			if (!moved) return (restored = true);
+			if (!base || !expectedPose || poseOwnershipLost || !sameModel()) return (restored = false);
+			try {
+				const current = await client.getModelPosition(this.rig.modelID);
+				const confirmedPose = await confirmPoseOwnership(current, false);
+				if (!sameModel() || !confirmedPose) return (restored = false);
+				if (!sameModel()) return (restored = false);
+				if (!pendingPose && !poseTransition && poseMatches(confirmedPose, base)) return (restored = true);
+				pendingPose = { ...base };
+				poseTransition = { from: { ...current }, to: { ...base } };
+				await client.moveModel({
+					...base,
+					timeInSeconds: RESTORE_SECONDS,
+					valuesAreRelativeToModel: false,
+				});
+				expectedPose = { ...base };
+				pendingPose = undefined;
+				await sleep(RESTORE_SECONDS * 1000 + SETTLE_MARGIN_MS);
+				poseTransition = undefined;
+				if (!sameModel()) return (restored = false);
+				const now = await client.getModelPosition(this.rig.modelID);
+				restored = sameModel() && poseMatches(now, base);
+			} catch {
+				restored = false;
+			}
 			return restored;
 		};
-		/** 三位一体归位的效果侧：染色刷白 + 后处理恢复进入时开关与具名 preset（无捕获则关闭；其余滤镜参数经 setAllOtherValuesToDefault 重置为默认，不逐项保真），逐项如实结算。 */
 		const restoreEffects = async (): Promise<{ tint: boolean; post: boolean }> => {
 			if (effectsRestored) return effectsRestored;
 			const restoreTint = async () => {
@@ -249,63 +387,70 @@ export class ExternalActions {
 		const execute = async (): Promise<ToolExecutionResult> => {
 			try {
 				ensureActive();
-				base = await withCancellation(client.getModelPosition(this.rig.modelID), claim.signal);
-				ensureActive();
-				// 组合值前瞻校验（302 根因修复）：实发绝对值 = base + delta，base 此刻已知——任一段越界
-				// 即在发送前整体失败，不发半程特技。回读 rotation 为正表示法（-12 回读 348），合成前
-				// 须 wrapDeg 归一化，否则正 delta 会越过 360（spin 的 rotation:360 恰好压边界即被拒）。
-				const rotationBase = wrapDeg(base.rotation);
-				const violations: string[] = [];
-				for (const [index, segment] of spatial.segments.entries()) {
-					// 相对旋转段：请求值是增量而非绝对朝向，不受 base 影响，只校验 VTS 字段值域。
-					if (segment.relativeRotation !== undefined) {
-						if (Math.abs(segment.relativeRotation) > VTS_MOVE_LIMITS.rotation)
+				if (hasTransform) {
+					base = await withCancellation(client.getModelPosition(this.rig.modelID), claim.signal);
+					ensureActive();
+					baseCapturedAtMs = director.clockMs;
+					if (![base.positionX, base.positionY, base.rotation, base.size].every(Number.isFinite))
+						return toolRejected("invalid_motion", `${label} 无法读取有限的模型位姿，未发送。`);
+					expectedPose = { ...base };
+					const rotationBase = wrapDeg(base.rotation);
+					const violations: string[] = [];
+					for (const [index, event] of spatial.entries()) {
+						const transform = event.transform;
+						if (!transform) continue;
+						if (transform.relativeRotation !== undefined) {
+							if (Math.abs(transform.relativeRotation) > VTS_MOVE_LIMITS.rotation)
+								violations.push(
+									`事件[${index}] relativeRotation=${transform.relativeRotation} 超出 ±${VTS_MOVE_LIMITS.rotation}`,
+								);
+							continue;
+						}
+						const delta = transform.delta ?? {};
+						const target = {
+							positionX: base.positionX + (delta.x ?? 0),
+							positionY: base.positionY + (delta.y ?? 0),
+							rotation: rotationBase + (delta.rotation ?? 0),
+							size: base.size + (delta.size ?? 0),
+						};
+						if (
+							Math.abs(target.positionX) > VTS_MOVE_LIMITS.position ||
+							Math.abs(target.positionY) > VTS_MOVE_LIMITS.position
+						)
 							violations.push(
-								`段[${index}] relativeRotation=${segment.relativeRotation} 超出 ±${VTS_MOVE_LIMITS.rotation}`,
+								`事件[${index}] position=(${target.positionX}, ${target.positionY}) 超出 ±${VTS_MOVE_LIMITS.position}`,
 							);
-						continue;
+						if (Math.abs(target.rotation) > VTS_MOVE_LIMITS.rotation)
+							violations.push(`事件[${index}] rotation=${target.rotation} 超出 ±${VTS_MOVE_LIMITS.rotation}`);
+						if (Math.abs(target.size) > VTS_MOVE_LIMITS.size)
+							violations.push(`事件[${index}] size=${target.size} 超出 ±${VTS_MOVE_LIMITS.size}`);
 					}
-					const target = {
-						positionX: base.positionX + (segment.delta?.x ?? 0),
-						positionY: base.positionY + (segment.delta?.y ?? 0),
-						rotation: rotationBase + (segment.delta?.rotation ?? 0),
-						size: base.size + (segment.delta?.size ?? 0),
-					};
-					if (
-						Math.abs(target.positionX) > VTS_MOVE_LIMITS.position ||
-						Math.abs(target.positionY) > VTS_MOVE_LIMITS.position
-					)
-						violations.push(
-							`段[${index}] position=(${target.positionX}, ${target.positionY}) 超出 ±${VTS_MOVE_LIMITS.position}`,
+					if (violations.length > 0)
+						return toolRejected(
+							"invalid_motion",
+							`${label} 空间计划与当前模型位姿组合后越界，未发送：${violations.join("；")}`,
+							{
+								violations,
+							},
 						);
-					if (Math.abs(target.rotation) > VTS_MOVE_LIMITS.rotation)
-						violations.push(`段[${index}] rotation=${target.rotation} 超出 ±${VTS_MOVE_LIMITS.rotation}`);
-					if (Math.abs(target.size) > VTS_MOVE_LIMITS.size)
-						violations.push(`段[${index}] size=${target.size} 超出 ±${VTS_MOVE_LIMITS.size}`);
 				}
-				if (violations.length > 0)
-					return toolRejected(
-						"invalid_motion",
-						`${label} 空间轨迹与当前模型位姿组合后越界，未发送：${violations.join("；")}。`,
-						{ violations },
-					);
-				// 预设前瞻校验（1203 根因修复）：preset 是 VTS Effects 环境文件名，不可假设存在；
-				// 可用清单可枚举（PostProcessingListRequest），任一段引用缺失即发送前整体拒绝，零半程特效。
-				// 空清单（旧版 VTS / 刷新失败）= 未知，放行走运行时裁决。
 				const presets = client.getPostProcessingPresets();
 				if (presets.length > 0) {
 					const missing = [
 						...new Set(
-							spatial.segments.flatMap((s) =>
-								s.effects?.postProcessing?.preset ? [s.effects.postProcessing.preset] : [],
+							spatial.flatMap((event) =>
+								event.effects?.postProcessing?.preset ? [event.effects.postProcessing.preset] : [],
 							),
 						),
-					].filter((p) => !presets.includes(p));
+					].filter((preset) => !presets.includes(preset));
 					if (missing.length > 0)
 						return toolRejected(
 							"preset_missing",
-							`${label} 引用的后处理预设不存在于 VTS，未发送：${missing.join("、")}。可用预设: ${presets.join("、")}。`,
-							{ missingPresets: missing, availablePresets: presets },
+							`${label} 引用的后处理预设不存在于 VTS，未发送：${missing.join("、")}。可用预设: ${presets.join("、")}`,
+							{
+								missingPresets: missing,
+								availablePresets: presets,
+							},
 						);
 				}
 				if (hasPost) {
@@ -322,161 +467,302 @@ export class ExternalActions {
 					}
 				}
 				ensureActive();
-				handle = director.play(clip, { ...playOptions, signal: claim.signal });
+				if (emitTrace && base && baseCapturedAtMs !== undefined) {
+					emitTrace({
+						phase: "baseline",
+						modelID: this.rig.modelID,
+						basePose: Object.freeze({ ...base }),
+						clockAtMs: baseCapturedAtMs,
+					});
+				}
+				const t0 = director.clockMs;
+				const actionNowMs = () => Math.max(0, (director.clockMs - t0) * clip.speed);
+				const traceRequest = (
+					phase: "dispatch" | "ack",
+					eventIndex: number,
+					request: "moveModel" | "tintModel" | "updatePostProcessing",
+					plannedAtMs: number,
+					clockAtMs: number,
+					extra: {
+						eventLateByMs?: number;
+						estimatedEndAtMs?: number;
+						outcome?: "confirmed" | "failed" | "unknown";
+					} = {},
+				) => {
+					if (!emitTrace) return;
+					emitTrace({
+						phase,
+						eventIndex,
+						request,
+						plannedAtMs,
+						clockAtMs,
+						actionAtMs: actionNowMs(),
+						lateByMs: Math.max(0, actionNowMs() - plannedAtMs),
+						...extra,
+					});
+				};
+				const waitUntilActionMs = async (targetMs: number) => {
+					while (actionNowMs() < targetMs) {
+						ensureActive();
+						const remainingWallMs = (targetMs - actionNowMs()) / clip.speed;
+						if (!(await sleep(Math.min(DRIVE_INTERVAL_MS, Math.max(1, remainingWallMs)), claim.signal))) ensureActive();
+					}
+				};
+				const sendEffect = async (
+					event: CompiledSpatialEvent,
+					request: "tintModel" | "updatePostProcessing",
+					dispatch: () => Promise<unknown>,
+				) => {
+					const clockAtMs = director.clockMs;
+					traceRequest("dispatch", event.order, request, event.atMs, clockAtMs);
+					try {
+						await withCancellation(Promise.resolve().then(dispatch), claim.signal);
+						ensureActive();
+						traceRequest("ack", event.order, request, event.atMs, director.clockMs, { outcome: "confirmed" });
+					} catch (error) {
+						if (claim.signal.aborted) throw error;
+						dispatchFailures.push(
+							`事件[${event.order}]分发 ${request}: ${error instanceof Error ? error.message : String(error)}`,
+						);
+						traceRequest("ack", event.order, request, event.atMs, director.clockMs, { outcome: "failed" });
+					}
+				};
+				const sendEffects = async (event: CompiledSpatialEvent) => {
+					const jobs: Promise<void>[] = [];
+					if (event.effects?.tint) {
+						tintSent = true;
+						cleanup.tint = "unknown";
+						jobs.push(sendEffect(event, "tintModel", () => client.tintModel(event.effects!.tint!)));
+					}
+					if (event.effects?.postProcessing) {
+						postSent = true;
+						cleanup.post = "unknown";
+						jobs.push(
+							sendEffect(event, "updatePostProcessing", () =>
+								client.updatePostProcessing(event.effects!.postProcessing!),
+							),
+						);
+					}
+					await Promise.all(jobs);
+				};
+				const ensureUsefulWindow = (event: CompiledSpatialEvent): void => {
+					const span = event.span!;
+					const remainingActionMs = span.endMs - actionNowMs();
+					if (remainingActionMs <= 0 || remainingActionMs / clip.speed < MIN_USEFUL_MOVE_MS)
+						throw new SpatialWindowMissedError();
+				};
+				handle = director.play(clip, { ...options, signal: claim.signal });
 				options.onStarted?.();
 				void handle.finished.then((result) => {
 					if (result.status === "cancelled") claim.cancel();
 				});
 				motionResult = settleMotion(client, this.rig, handle, clip, label, options.callName);
-				for (const [index, segment] of spatial.segments.entries()) {
+				for (const event of spatial) {
+					await waitUntilActionMs(event.atMs);
 					ensureActive();
-					// 每段身份探活：回读会校验当前模型身份，缓存代次未覆盖的模型切换在此被拦下
-					//（回执本身无消费者，抛错即守卫）——严禁移除，见 performance 用例"不向新模型归位"。
-					await withCancellation(client.getModelPosition(this.rig.modelID), claim.signal);
+					// Per-event VTS read validates model identity even when cached generations lag a model switch.
+					const observedPose = await withCancellation(client.getModelPosition(this.rig.modelID), claim.signal);
 					ensureActive();
-
-					// 效果与位姿同段顺序派发：先等效果请求落地（allSettled，失败仅记录继续），再发位姿移动。
-					// 位姿失败沿用既有语义：中止后续段并走归位守护；结算如实呈现。
-					const effectDispatches: Promise<unknown>[] = [];
-					if (segment.effects?.tint) {
-						tintSent = true;
-						cleanup.tint = "unknown";
-						effectDispatches.push(client.tintModel(segment.effects.tint));
+					if (!(await confirmPoseOwnership(observedPose, true))) {
+						if (poseOwnershipLost) throw new ExternalPoseChangedError();
+						ensureActive();
 					}
-					if (segment.effects?.postProcessing) {
-						postSent = true;
-						cleanup.post = "unknown";
-						effectDispatches.push(client.updatePostProcessing(segment.effects.postProcessing));
+					if (!event.span && actionNowMs() >= clip.durationMs) {
+						dispatchFailures.push(`事件[${event.order}] marker 已过期`);
+						continue;
 					}
-					const dispatched = await withCancellation(Promise.allSettled(effectDispatches), claim.signal);
-					ensureActive();
-					for (const [slot, outcome] of dispatched.entries())
-						if (outcome.status === "rejected")
-							dispatchFailures.push(
-								`段[${index}]分发[${slot}]: ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`,
-							);
-					// 计时起点 = 位姿请求发送时刻：VTS 动画时钟在收到请求即起跑（先于 ACK 往返），
-					// ACK 后全额等待会把每段过等一个往返（段边界定格的直接来源）。只扣除位姿请求
-					// 自身的派发耗时，效果派发不计入（尚未起跑，无动画可抢）；末段结算另有
-					// SETTLE_MARGIN + 重试 + 归位守护兜底，中继段的小幅提前恰是流水线衔接
-					//（VTS 官方语义：进行中的 MoveModelRequest 被新请求打断替换，自当前位置续动）。
-					const sentAt = Date.now();
-					if (segment.relativeRotation !== undefined) {
-						// 逐帧驱动（官方背书"每帧发一个 timeInSeconds=0 的请求完全接管运动"）：
-						// 真机实验证实 VTS 对 rotation 一律按最短弧插值，relative 单请求 359 同样折返为
-						// -1°，单请求无法表达 >180° 的旋转。闭环对齐时间轴目标角 targetAngle =
-						// R·smooth(elapsed/duration)，delta = target − 已发送；派发迟到/抖动被下一帧
-						// 目标角自校正吸收，整圈丝滑且终值精确（末尾补发残余）。
+					const eventLateByMs = Math.max(0, actionNowMs() - event.atMs);
+					if (event.transform) ensureUsefulWindow(event);
+					if (event.effects) {
+						await sendEffects(event);
+						if (event.transform) {
+							const poseAfterEffects = await withCancellation(client.getModelPosition(this.rig.modelID), claim.signal);
+							ensureActive();
+							if (!(await confirmPoseOwnership(poseAfterEffects, true))) {
+								if (poseOwnershipLost) throw new ExternalPoseChangedError();
+								ensureActive();
+							}
+							ensureUsefulWindow(event);
+						}
+					}
+					if (!event.transform) continue;
+					const span = event.span!;
+					if (event.transform.relativeRotation !== undefined) {
 						moved = true;
 						cleanup.pose = "unknown";
-						const total = segment.relativeRotation;
+						const total = event.transform.relativeRotation;
 						let sentAngle = 0;
-						for (;;) {
-							const elapsed = Date.now() - sentAt;
-							const targetAngle = total * smooth(elapsed / segment.durationMs);
-							const delta = targetAngle - sentAngle;
-							if (Math.abs(delta) >= DRIVE_MIN_DELTA_DEG) {
-								await withCancellation(
-									client.moveModel({
-										timeInSeconds: 0,
-										valuesAreRelativeToModel: true,
-										rotation: delta,
-									}),
-									claim.signal,
-								);
-								sentAngle = targetAngle;
+						while (actionNowMs() < span.endMs) {
+							ensureActive();
+							const elapsedActionMs = Math.max(0, actionNowMs() - span.startMs);
+							const targetAngle = total * smooth(elapsedActionMs / span.durationMs);
+							let delta = targetAngle - sentAngle;
+							if (Math.abs(delta) < DRIVE_MIN_DELTA_DEG) {
+								const remainingWallMs = (span.endMs - actionNowMs()) / clip.speed;
+								if (!(await sleep(Math.min(DRIVE_INTERVAL_MS, Math.max(1, remainingWallMs)), claim.signal)))
+									ensureActive();
+								continue;
 							}
-							if (elapsed >= segment.durationMs) break;
-							if (!(await sleep(Math.min(DRIVE_INTERVAL_MS, segment.durationMs - elapsed), claim.signal))) break;
+							delta = Math.sign(delta) * Math.min(Math.abs(delta), MAX_RELATIVE_STEP_DEG);
+							const plannedAtMs = actionNowMs();
+							const clockAtMs = director.clockMs;
+							pendingPose = { ...expectedPose!, rotation: expectedPose!.rotation + delta };
+							traceRequest("dispatch", event.order, "moveModel", plannedAtMs, clockAtMs, {
+								eventLateByMs,
+								estimatedEndAtMs: span.endMs,
+							});
+							await withCancellation(
+								client.moveModel({ timeInSeconds: 0, valuesAreRelativeToModel: true, rotation: delta }),
+								claim.signal,
+							);
+							sentAngle += delta;
+							expectedPose = pendingPose;
+							pendingPose = undefined;
+							ensureActive();
+							traceRequest("ack", event.order, "moveModel", plannedAtMs, director.clockMs, {
+								eventLateByMs,
+								estimatedEndAtMs: span.endMs,
+								outcome: "confirmed",
+							});
 						}
-						// 终值补发：末拍与曲线终点间的残余角差一次补齐，保证整圈精确到位（已中止则跳过）。
 						const residual = total - sentAngle;
-						if (Math.abs(residual) >= DRIVE_MIN_DELTA_DEG && !claim.signal.aborted)
+						if (Math.abs(residual) > MAX_ENDPOINT_RESIDUAL_DEG) throw new SpatialWindowMissedError();
+						if (Math.abs(residual) >= DRIVE_MIN_DELTA_DEG) {
+							ensureActive();
+							const plannedAtMs = actionNowMs();
+							const clockAtMs = director.clockMs;
+							pendingPose = { ...expectedPose!, rotation: expectedPose!.rotation + residual };
+							traceRequest("dispatch", event.order, "moveModel", plannedAtMs, clockAtMs, {
+								eventLateByMs,
+								estimatedEndAtMs: span.endMs,
+							});
 							await withCancellation(
 								client.moveModel({ timeInSeconds: 0, valuesAreRelativeToModel: true, rotation: residual }),
 								claim.signal,
 							);
-					} else if (hasTransform && segment.delta && Object.keys(segment.delta).length > 0) {
+							sentAngle += residual;
+							expectedPose = pendingPose;
+							pendingPose = undefined;
+							ensureActive();
+							traceRequest("ack", event.order, "moveModel", plannedAtMs, director.clockMs, {
+								eventLateByMs,
+								estimatedEndAtMs: span.endMs,
+								outcome: "confirmed",
+							});
+						}
+					} else {
+						const rotationBase = wrapDeg(base!.rotation);
+						const delta = event.transform.delta ?? {};
+						const request = {
+							timeInSeconds: (span.endMs - actionNowMs()) / clip.speed / 1000,
+							valuesAreRelativeToModel: false,
+							positionX: base!.positionX + (delta.x ?? 0),
+							positionY: base!.positionY + (delta.y ?? 0),
+							rotation: rotationBase + (delta.rotation ?? 0),
+							size: base!.size + (delta.size ?? 0),
+						};
+						if (request.timeInSeconds <= 0) throw new SpatialWindowMissedError();
 						moved = true;
 						cleanup.pose = "unknown";
-						await withCancellation(
-							client.moveModel({
-								timeInSeconds: segment.durationMs / 1000,
-								valuesAreRelativeToModel: false,
-								positionX: base.positionX + (segment.delta.x ?? 0),
-								positionY: base.positionY + (segment.delta.y ?? 0),
-								rotation: rotationBase + (segment.delta.rotation ?? 0),
-								size: base.size + (segment.delta.size ?? 0),
-							}),
-							claim.signal,
-						);
+						pendingPose = {
+							positionX: request.positionX,
+							positionY: request.positionY,
+							rotation: request.rotation,
+							size: request.size,
+						};
+						poseTransition = { from: { ...expectedPose! }, to: { ...pendingPose } };
+						const clockAtMs = director.clockMs;
+						traceRequest("dispatch", event.order, "moveModel", span.startMs, clockAtMs, {
+							estimatedEndAtMs: span.endMs,
+						});
+						await withCancellation(client.moveModel(request), claim.signal);
+						expectedPose = pendingPose;
+						pendingPose = undefined;
+						ensureActive();
+						traceRequest("ack", event.order, "moveModel", span.startMs, director.clockMs, {
+							estimatedEndAtMs: span.endMs,
+							outcome: "confirmed",
+						});
+						await waitUntilActionMs(span.endMs);
+						poseTransition = undefined;
 					}
-					const waitMs = Math.max(0, segment.durationMs + (segment.holdMs ?? 0) - (Date.now() - sentAt));
-					if (!(await sleep(waitMs, claim.signal))) break;
 				}
 				ensureActive();
-				// 末段不得携带 effects（编译期禁止）：效果复位由守护在此统一执行，作者不写重置值。
-				const restoredEffects = await restoreEffects();
-				restored = !moved;
-				for (let attempt = 0; attempt <= SETTLE_RETRIES && !restored; attempt++) {
+				let result: ToolExecutionResult | undefined;
+				while (!result) {
 					ensureActive();
-					await sleep(attempt === 0 ? SETTLE_MARGIN_MS : SETTLE_RETRY_MS, claim.signal);
-					ensureActive();
-					const now = await withCancellation(client.getModelPosition(this.rig.modelID), claim.signal);
-					ensureActive();
-					restored = sameModel() && poseMatches(now, base);
+					result = await Promise.race([motionResult!, sleep(50).then(() => undefined)]);
 				}
-				if (!restored) {
-					handle.stop("cut");
-					// restore() 内部自行等待 RESTORE_SECONDS 并回读确认；此处取其确认值如实上报，
-					// 不能复用回读前的判定（陈旧 false 会把"实际已归位"报成"未确认"）。
-					const confirmed = await restore();
-					return toolUnknown(`${label} 正常回位未确认。`, { restored: confirmed, restoredEffects });
-				}
-				if (dispatchFailures.length > 0 || restoredEffects.tint === false || restoredEffects.post === false) {
+				ensureActive();
+				const [poseRestored, restoredEffects] = await Promise.all([
+					moved ? restore() : Promise.resolve(true),
+					restoreEffects(),
+				]);
+				restored = poseRestored;
+				if (poseOwnershipLost)
+					return toolUnknown(`${label} 执行期间检测到模型位姿被手动修改，已保留当前位姿。`, {
+						reason: "external_pose_changed",
+						restored: false,
+						restoredEffects,
+					});
+				if (!restored)
+					return toolUnknown(`${label} 正常回位未确认。`, {
+						reason: "spatial_pose_unconfirmed",
+						restored: false,
+						restoredEffects,
+					});
+				if (dispatchFailures.length > 0 || !restoredEffects.tint || !restoredEffects.post) {
 					const problems = [...dispatchFailures];
-					if (restoredEffects.tint === false) problems.push("染色归位未确认");
-					if (restoredEffects.post === false) problems.push("滤镜归位未确认");
+					if (!restoredEffects.tint) problems.push("染色归位未确认");
+					if (!restoredEffects.post) problems.push("滤镜归位未确认");
 					return toolUnknown(`${label} 部分外部效果未完整：${problems.join("；")}`, {
+						reason: "spatial_effect_unconfirmed",
 						restored: true,
 						restoredEffects,
 					});
 				}
-				// 失联会停止合成时钟；空间表演不能永远等一个不再推进的句柄。
-				let result: ToolExecutionResult | undefined;
-				while (!result) {
-					ensureActive();
-					result = await Promise.race([motionResult, sleep(50).then(() => undefined)]);
-				}
-				ensureActive();
 				return {
 					...result,
 					details: { ...(result.details as Record<string, unknown> | undefined), restored: true, restoredEffects },
 				};
 			} catch (error) {
-				const cancelled = claim.signal.aborted || handle?.status === "releasing" || handle?.status === "cancelled";
+				const missedWindow = error instanceof SpatialWindowMissedError;
+				const cancelled =
+					missedWindow || claim.signal.aborted || handle?.status === "releasing" || handle?.status === "cancelled";
+				if (missedWindow) claim.cancel();
 				handle?.stop("cut");
-				const confirmed = await restore();
-				const restoredEffects = await restoreEffects();
+				const [confirmed, restoredEffects] = await Promise.all([restore(), restoreEffects()]);
+				if (poseOwnershipLost || error instanceof ExternalPoseChangedError)
+					return toolUnknown(`${label} 执行期间检测到模型位姿被手动修改，已保留当前位姿。`, {
+						reason: "external_pose_changed",
+						restored: false,
+						restoredEffects,
+					});
 				if (cancelled) {
 					const clean = confirmed && restoredEffects.tint && restoredEffects.post;
 					return {
-						result: clean ? `${label} 已取消并完成清理。` : `${label} 已取消，外部清理未确认。`,
-						status: "cancelled",
+						result: missedWindow
+							? `${label} 空间位姿窗口已错过，动作已取消并清理。`
+							: clean
+								? `${label} 已取消并完成清理。`
+								: `${label} 已取消，外部清理未确认。`,
+						status: missedWindow ? "unknown" : "cancelled",
 						details: {
-							reason: "cancelled",
-							effectStatus: clean ? "cancelled" : "unknown",
+							reason: missedWindow ? "spatial_window_missed" : "cancelled",
+							effectStatus: clean ? (missedWindow ? "unknown" : "cancelled") : "unknown",
 							restored: confirmed,
 							restoredEffects,
 						},
 					};
 				}
 				return toolUnknown(`${label} 执行异常：${error instanceof Error ? error.message : String(error)}`, {
+					reason: "spatial_execution_failed",
 					...(moved ? { restored: confirmed } : {}),
 					restoredEffects,
 				});
 			} finally {
-				cleanup.pose = moved ? (restored ? "confirmed" : "unknown") : "not_needed";
+				if (poseOwnershipLost) cleanup.pose = "unknown";
+				else if (moved) cleanup.pose = restored ? "confirmed" : "unknown";
 				completeCleanup({ kind: "spatial", ...cleanup, hotkey: "not_needed" });
 				handle?.stop("cut");
 				if (this.spatialClaim === claim) this.spatialClaim = undefined;
@@ -533,24 +819,6 @@ export class ExternalActions {
 				hotkey: accepted ? "accepted" : "unknown",
 			});
 			claim.release();
-		}
-	}
-	private async restorePose(client: VTSClient, base: ModelPose, sameModel: () => boolean): Promise<boolean> {
-		try {
-			if (!sameModel()) return false;
-			await client.getModelPosition(this.rig.modelID);
-			if (!sameModel()) return false;
-			await client.moveModel({
-				...base,
-				timeInSeconds: RESTORE_SECONDS,
-				valuesAreRelativeToModel: false,
-			});
-			await sleep(RESTORE_SECONDS * 1000 + SETTLE_MARGIN_MS);
-			if (!sameModel()) return false;
-			const now = await client.getModelPosition(this.rig.modelID);
-			return sameModel() && poseMatches(now, base);
-		} catch {
-			return false;
 		}
 	}
 }

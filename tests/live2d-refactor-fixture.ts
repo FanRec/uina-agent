@@ -1,7 +1,8 @@
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import { compileCatalog, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
+import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/index.js";
+import type { SpatialEffects } from "../.uina/worlds/live2d/authoring/spatial.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
 
@@ -100,6 +101,40 @@ export const fixtureMotion = () =>
 		),
 	});
 
+export const fixtureSpatialMotion = () => {
+	const body = motion(1000, {
+		"head.yaw": absolute(
+			keys([
+				[0, 0],
+				[1000, 0],
+			]),
+		),
+	});
+	return (rng: () => number) => ({
+		...body(rng),
+		spatial: [
+			{
+				during: { startMs: 0, endMs: 200, durationMs: 200 },
+				transform: { delta: { x: 0.1 } },
+				effects: { tint: { r: 200, g: 200, b: 200 } },
+			},
+			{ during: { startMs: 200, endMs: 500, durationMs: 300 }, transform: { delta: { x: 0 } } },
+		],
+	});
+};
+
+export const fixtureEffectMotion = (effects: SpatialEffects) => {
+	const body = motion(1000, {
+		"head.yaw": absolute(
+			keys([
+				[0, 0],
+				[1000, 0],
+			]),
+		),
+	});
+	return (rng: () => number) => ({ ...body(rng), spatial: [{ at: 0, effects }] });
+};
+
 /** 真实线程测试在 Worker 内创建这些函数，绝不构造默认 VTSClient。 */
 export function refactorWorkerRuntime(onStatusChange: () => void) {
 	const rig = refactorRig();
@@ -113,16 +148,7 @@ export function refactorWorkerRuntime(onStatusChange: () => void) {
 			{
 				motions: {
 					nod: { description: "nod", motion: fixtureMotion() },
-					stunt: {
-						description: "stunt",
-						motion: fixtureMotion(),
-						spatial: {
-							segments: [
-								{ delta: { x: 0.1 }, durationMs: 10, effects: { tint: { r: 200, g: 200, b: 200 } } },
-								{ delta: { x: 0 }, durationMs: 10 },
-							],
-						},
-					},
+					stunt: { description: "stunt", motion: fixtureSpatialMotion() },
 				},
 				postures: { lean: { description: "lean", values: { "head.yaw": 4 }, transitionMs: 10 } },
 			},
@@ -142,7 +168,7 @@ export async function refactorRuntime(
 		rig,
 		client: fake.client,
 		catalog: compileCatalog(rig.modelID, source, rig),
-		rng: () => 0,
+		seed: 0,
 		cleanupTimeoutMs: options.cleanupTimeoutMs,
 	});
 	await runtime.start((options.context as ServiceCompanionContext) ?? ({} as ServiceCompanionContext));

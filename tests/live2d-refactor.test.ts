@@ -1,17 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { compileCatalog, emptyCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
 import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
-import { fixtureMotion, refactorClient, refactorRig, refactorRuntime } from "./live2d-refactor-fixture.js";
-import { perfCatalogSource } from "./live2d-mo-fixture.js";
+import { fixtureEffectMotion, refactorClient, refactorRig, refactorRuntime } from "./live2d-refactor-fixture.js";
+import { perfCatalogSource } from "./live2d-action-fixture.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import {
-	compileMotion,
+	compileAction,
 	keys,
 	motion,
 	absolute,
-	sampleMotion,
+	sampleAction,
 	withSpeech,
-} from "../.uina/worlds/live2d/authoring/motion.js";
+} from "../.uina/worlds/live2d/authoring/index.js";
 
 describe("Live2D 架构缺口正式回归", () => {
 	it("state 最后一项等待后换代也不能报告旧意图成功", async () => {
@@ -52,7 +52,15 @@ describe("Live2D 架构缺口正式回归", () => {
 	});
 	it("全部作者嵌套内容隔离，消费者修改被拒绝，语音覆写仍读固定定义", () => {
 		const rig = refactorRig();
-		const definition = motion(5, {
+		const spatial = [
+			{
+				during: { startMs: 0, endMs: 2, durationMs: 2 },
+				transform: { delta: { x: 0.1 } },
+				effects: { tint: { r: 200, g: 200, b: 200 } },
+			},
+			{ during: { startMs: 2, endMs: 5, durationMs: 3 }, transform: { delta: { x: 0 } } },
+		];
+		const body = motion(5, {
 			"head.yaw": absolute(
 				keys([
 					[0, 0],
@@ -60,6 +68,7 @@ describe("Live2D 架构缺口正式回归", () => {
 				]),
 			),
 		});
+		const definition = (rng: () => number) => ({ ...body(rng), spatial });
 		const source = {
 			motions: {
 				act: {
@@ -67,33 +76,28 @@ describe("Live2D 架构缺口正式回归", () => {
 					motion: definition,
 					variants: [definition],
 					playback: { fadeInMs: 10 },
-					spatial: {
-						segments: [
-							{ delta: { x: 0.1 }, durationMs: 1, effects: { tint: { r: 200, g: 200, b: 200 } } },
-							{ delta: { x: 0 }, durationMs: 1 },
-						],
-					},
 				},
 			},
 			attentions: { window: { description: "window", target: { x: 0.2, y: 0.1 } } },
 			costumes: [{ id: "glasses", description: "glasses", hotkeyID: "old" }],
 		};
 		const catalog = compileCatalog(rig.modelID, source, rig);
+		const compiled = compileAction(catalog.resolve("motion", "act")!.entry.definition, rig.controls);
 		source.motions.act.playback.fadeInMs = 999;
-		source.motions.act.spatial.segments[0]!.delta.x = 9;
-		source.motions.act.spatial.segments[0]!.effects!.tint.r = 0;
+		spatial[0]!.transform.delta!.x = 9;
+		spatial[0]!.effects!.tint!.r = 0;
 		source.attentions.window.target.x = 9;
 		source.costumes[0]!.hotkeyID = "new";
 		const act = catalog.resolve("motion", "act")!.entry;
-		expect(act.spatial!.segments[0]).toMatchObject({ delta: { x: 0.1 }, effects: { tint: { r: 200 } } });
+		expect(compiled.spatial[0]).toMatchObject({ transform: { delta: { x: 0.1 } }, effects: { tint: { r: 200 } } });
 		expect(act.playback!.fadeInMs).toBe(10);
 		expect(catalog.resolve("attention", "window")!.entry.target).toEqual({ x: 0.2, y: 0.1 });
 		expect(catalog.resolve("costume", "glasses")!.entry.hotkeyID).toBe("old");
-		expect(sampleMotion(compileMotion(withSpeech(act.variants![0]!, "exclusive"), rig.controls), 5)["head.yaw"]).toBe(
+		expect(sampleAction(compileAction(withSpeech(act.variants![0]!, "exclusive"), rig.controls), 5)["head.yaw"]).toBe(
 			0,
 		);
 		expect(Reflect.set(catalog.list("motion"), "0", undefined)).toBe(false);
-		expect(Reflect.set(act.spatial!.segments[0]!.delta!, "x", 99)).toBe(false);
+		expect(Reflect.set(compiled.spatial[0]!.transform!.delta!, "x", 99)).toBe(false);
 	});
 	it("组合 state 全部名字预校验，途中取消不施加余项也不回滚姿态", async () => {
 		const { runtime } = await refactorRuntime({
@@ -221,8 +225,7 @@ describe("Live2D 架构缺口正式回归", () => {
 		const runtime = new Live2DRuntime({ rig, client, catalog });
 		await runtime.start({} as never);
 		try {
-			for (const ambient of ["摇摆", "晃动", "摇"])
-				expect((await runtime.state({ ambient }, {})).status).toBe("succeeded");
+			expect((await runtime.state({ ambient: "test摇摆" }, {})).status).toBe("succeeded");
 		} finally {
 			await runtime.stop();
 		}
@@ -247,13 +250,7 @@ describe("Live2D 架构缺口正式回归", () => {
 			motions: {
 				stunt: {
 					description: "stunt",
-					motion: fixtureMotion(),
-					spatial: {
-						segments: [
-							{ delta: { x: 0.1 }, durationMs: 1, effects: { tint: { r: 200, g: 200, b: 200 } } },
-							{ delta: { x: 0 }, durationMs: 1 },
-						],
-					},
+					motion: fixtureEffectMotion({ tint: { r: 200, g: 200, b: 200 } }),
 				},
 			},
 		});
@@ -271,13 +268,7 @@ describe("Live2D 架构缺口正式回归", () => {
 			motions: {
 				stunt: {
 					description: "stunt",
-					motion: fixtureMotion(),
-					spatial: {
-						segments: [
-							{ delta: { x: 0.1 }, durationMs: 1, effects: { postProcessing: { on: true } } },
-							{ delta: { x: 0 }, durationMs: 1 },
-						],
-					},
+					motion: fixtureEffectMotion({ postProcessing: { on: true } }),
 				},
 			},
 		});
@@ -298,13 +289,7 @@ describe("Live2D 架构缺口正式回归", () => {
 			motions: {
 				tint: {
 					description: "tint",
-					motion: fixtureMotion(),
-					spatial: {
-						segments: [
-							{ delta: {}, durationMs: 1, effects: { tint: { r: 200, g: 200, b: 200 } } },
-							{ delta: { x: 0 }, durationMs: 1 },
-						],
-					},
+					motion: fixtureEffectMotion({ tint: { r: 200, g: 200, b: 200 } }),
 				},
 			},
 		});
@@ -323,13 +308,7 @@ describe("Live2D 架构缺口正式回归", () => {
 			motions: {
 				tint: {
 					description: "tint",
-					motion: fixtureMotion(),
-					spatial: {
-						segments: [
-							{ delta: { x: 0.1 }, durationMs: 1, effects: { tint: { r: 200, g: 200, b: 200 } } },
-							{ delta: { x: 0 }, durationMs: 1 },
-						],
-					},
+					motion: fixtureEffectMotion({ tint: { r: 200, g: 200, b: 200 } }),
 				},
 			},
 		});

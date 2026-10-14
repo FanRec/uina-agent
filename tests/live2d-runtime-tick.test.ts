@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
-import { compileMotion, motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
+import { compileAction, motion, keys, absolute } from "../.uina/worlds/live2d/authoring/index.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 
 /**
@@ -105,8 +105,8 @@ const makeRuntime = async (
 describe("live2d runtime tick 合成（P2-3）", async () => {
 	it("composeTick 驱动 director 合成并注入编码帧（合成推进纯函数化）", async () => {
 		const { client, state } = makeFakeClient();
-		const rt = await makeRuntime(client, { rng: () => 0.5 });
-		const clip = compileMotion(
+		const rt = await makeRuntime(client, { seed: 0 });
+		const clip = compileAction(
 			motion(5000, {
 				"head.yaw": absolute(
 					keys([
@@ -135,7 +135,7 @@ describe("live2d runtime tick 合成（P2-3）", async () => {
 
 	it("断线零输出：不合成不注入，重连后恢复", async () => {
 		const { client, state } = makeFakeClient({ connected: false });
-		const rt = await makeRuntime(client, { rng: () => 0.5 });
+		const rt = await makeRuntime(client, { seed: 0 });
 		rt.composeTick(16);
 		expect(state.injected).toHaveLength(0);
 
@@ -146,16 +146,16 @@ describe("live2d runtime tick 合成（P2-3）", async () => {
 
 	it("身份门：VTS 当前模型与 rig 标定模型不匹配时零输出", async () => {
 		const { client, state } = makeFakeClient({ modelID: "another-model" });
-		const rt = await makeRuntime(client, { rng: () => 0.5 });
+		const rt = await makeRuntime(client, { seed: 0 });
 		rt.composeTick(16);
 		expect(state.injected).toHaveLength(0);
 	});
 
 	it("合成故障停车：网格漏检的病态曲线在运行期 NaN 时，fault 登记、播放有限结算、注入停止、工具拒绝", async () => {
 		const { client, state } = makeFakeClient();
-		const rt = await makeRuntime(client, { rng: () => 0.5 });
+		const rt = await makeRuntime(client, { seed: 0 });
 		// 病态窗口 (493,507) 恰落在 bake 探测网格点（步进 15.87ms：…492.06, 507.94…）之间——模拟网格漏检
-		const clip = compileMotion(
+		const clip = compileAction(
 			motion(1000, {
 				"head.yaw": absolute((t) => (t > 493 && t < 507 ? Number.NaN : 0)),
 			}),

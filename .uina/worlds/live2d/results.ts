@@ -1,6 +1,6 @@
 import type { ModelRig } from "./adapter/rig.js";
 import type { MotionHandle } from "./director/director.js";
-import type { CompiledMotion } from "./authoring/motion.js";
+import type { CompiledAction } from "./authoring/action.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import type { SomaticActionResult } from "./director/director.js";
 import type { MotionInjectionEvidence, VTSClient } from "./adapter/vts-client.js";
@@ -155,7 +155,7 @@ export async function settleMotion(
 	client: VTSClient,
 	rig: ModelRig,
 	handle: MotionHandle,
-	clip: CompiledMotion,
+	clip: CompiledAction,
 	label: string,
 	callName?: string,
 ): Promise<ToolExecutionResult> {

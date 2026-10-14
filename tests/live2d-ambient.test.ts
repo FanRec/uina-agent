@@ -6,7 +6,7 @@ import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import { compileCatalog, type CatalogSnapshot, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
+import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/index.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 
@@ -107,9 +107,9 @@ const makeFakeClient = (options: { connected?: boolean; modelID?: string } = {})
 	return { client, state };
 };
 
-const harness = async (catalog: CatalogSnapshot = makeCatalog(), rng: () => number = () => 0.5) => {
+const harness = async (catalog: CatalogSnapshot = makeCatalog(), seed = 0) => {
 	const fake = makeFakeClient();
-	const runtime = new Live2DRuntime({ client: fake.client, rig: makeRig(), catalog, rng });
+	const runtime = new Live2DRuntime({ client: fake.client, rig: makeRig(), catalog, seed });
 	const app = createLive2DApp({ instance: runtime });
 	const startCtx = {
 		expose: () => () => {},
@@ -224,7 +224,7 @@ describe("live2d ambient 环境循环", () => {
 				},
 			},
 		});
-		const h = await harness(catalog, () => 0);
+		const h = await harness(catalog, 0);
 		const play = vi.spyOn(h.runtime.director!, "play");
 		await h.run("state", { ambient: "sway" });
 		const first = play.mock.calls.at(-1)?.[0];

@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-	compileMotion,
+	compileAction,
 	motion,
-	type CompiledMotion,
+	type CompiledAction,
 	keys,
 	absolute,
 	offset as offsetChannel,
-} from "../.uina/worlds/live2d/authoring/motion.js";
+} from "../.uina/worlds/live2d/authoring/index.js";
 import { MotionDirector, SupersededError } from "../.uina/worlds/live2d/director/director.js";
 import type { RigControlDef } from "../.uina/worlds/live2d/adapter/rig.js";
 
@@ -23,8 +23,8 @@ const STIFF_PIPELINES = { spring: { omega: 2000 }, smoothTauMs: 1 } as const;
 const director = () => new MotionDirector(controls, { pipelines: STIFF_PIPELINES });
 
 /** 恒值 Override 片段。 */
-const hold = (axis: string, value: number, durationMs = 1000): CompiledMotion =>
-	compileMotion(
+const hold = (axis: string, value: number, durationMs = 1000): CompiledAction =>
+	compileAction(
 		motion(durationMs, {
 			[axis]: absolute(
 				keys([
@@ -36,8 +36,8 @@ const hold = (axis: string, value: number, durationMs = 1000): CompiledMotion =>
 		controls,
 	);
 /** 恒值 Additive 片段（baseline-offset，ΔX 相对量）。 */
-const offset = (axis: string, delta: number, durationMs = 1000): CompiledMotion =>
-	compileMotion(
+const offset = (axis: string, delta: number, durationMs = 1000): CompiledAction =>
+	compileAction(
 		motion(durationMs, {
 			[axis]: offsetChannel(
 				keys([
@@ -96,7 +96,7 @@ describe("live2d MotionDirector（P2-1 仲裁核心）", () => {
 	it("引擎 #9 复合动作局部覆盖：同类别点头只遮蔽 head.pitch，脸红微笑保持", async () => {
 		const d = director();
 		// 害羞复合（voluntary）：低头 + 脸红 + 微笑。
-		const shy = compileMotion(
+		const shy = compileAction(
 			motion(2000, {
 				"head.pitch": absolute(
 					keys([

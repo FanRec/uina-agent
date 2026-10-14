@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import { VTSClient, type WebSocketLike } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import { compileCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { compileMotion, motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
-import { perfCatalogSource } from "./live2d-mo-fixture.js";
+import { absolute, compileAction, keys, motion } from "../.uina/worlds/live2d/authoring/index.js";
+import { perfCatalogSource } from "./live2d-action-fixture.js";
 import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
@@ -128,56 +128,7 @@ afterEach(async () => {
  */
 async function connectedEffects() {
 	const rig = (await loadRig(MO_MODEL_ID))!;
-	const catalog = compileCatalog(
-		MO_MODEL_ID,
-		{
-			motions: {
-				fx_probe: {
-					description: "特效框架探针",
-					motion: motion(620, {
-						"head.yaw": absolute(
-							keys([
-								[0, 2],
-								[620, 2],
-							]),
-						),
-					}),
-					spatial: {
-						segments: [
-							{
-								durationMs: 120,
-								holdMs: 200,
-								delta: { y: 0.05 },
-								effects: {
-									tint: { r: 120, g: 120, b: 128 },
-									postProcessing: { on: true, preset: "Grayscale", fadeTime: 0.1 },
-								},
-							},
-							{ durationMs: 300, delta: { y: 0 } },
-						],
-					},
-				},
-				fx_plain: {
-					description: "无效果对照探针",
-					motion: motion(620, {
-						"head.yaw": absolute(
-							keys([
-								[0, 2],
-								[620, 2],
-							]),
-						),
-					}),
-					spatial: {
-						segments: [
-							{ durationMs: 120, holdMs: 200, delta: { y: 0.05 } },
-							{ durationMs: 300, delta: { y: 0 } },
-						],
-					},
-				},
-			},
-		},
-		rig,
-	);
+	const catalog = compileCatalog(MO_MODEL_ID, perfCatalogSource(), rig);
 	const device = new Device();
 	device.inputs = [...new Set(Object.values(rig.bindings).flatMap((bindings) => bindings.map((b) => b.input)))].map(
 		(name) => ({ name, min: -100, max: 100, defaultValue: 0 }),
@@ -202,7 +153,7 @@ async function connectedEffects() {
 	device.onopen?.({});
 	for (let i = 0; i < 60; i++) await Promise.resolve();
 	expect(client.isConnected()).toBe(true);
-	const runtime = new Live2DRuntime({ rig, catalog, client, rng: () => 0, tickIntervalMs: 1_000_000 });
+	const runtime = new Live2DRuntime({ rig, catalog, client, seed: 0, tickIntervalMs: 1_000_000 });
 	await runtime.start({} as never);
 	runtimes.push(runtime);
 	return { runtime, device, client, rig, catalog };
@@ -234,7 +185,7 @@ async function connected(tickIntervalMs = 1_000_000) {
 	device.onopen?.({});
 	for (let i = 0; i < 60; i++) await Promise.resolve();
 	expect(client.isConnected()).toBe(true);
-	const runtime = new Live2DRuntime({ rig, catalog, client, rng: () => 0, tickIntervalMs });
+	const runtime = new Live2DRuntime({ rig, catalog, client, seed: 0, tickIntervalMs });
 	await runtime.start({} as never);
 	runtimes.push(runtime);
 	return { runtime, device, client, rig, catalog };
@@ -248,7 +199,7 @@ describe("MO 表演实际合成与执行", () => {
 		advance(director, 1900);
 		await setting;
 		const wink = catalog.resolve("motion", "wink")!.entry;
-		const winkClip = compileMotion(wink.definition, rig.controls);
+		const winkClip = compileAction(wink.definition, rig.controls);
 		const handle = director.play(winkClip, { category: "voluntary", ...wink.playback });
 		advance(director, 210);
 		expect(director.currentFrame["eyes.left.open"]).toBe(0);
@@ -272,7 +223,7 @@ describe("MO 表演实际合成与执行", () => {
 	it("偷瞄退出从当前眼球平滑交还，使用动作期间新设置的目标", async () => {
 		const { rig, director, catalog } = await authored();
 		director.setAttention("user");
-		director.play(compileMotion(catalog.resolve("motion", "glance")!.entry.definition, rig.controls), {
+		director.play(compileAction(catalog.resolve("motion", "glance")!.entry.definition, rig.controls), {
 			category: "voluntary",
 		});
 		advance(director, 790);
@@ -287,7 +238,7 @@ describe("MO 表演实际合成与执行", () => {
 
 	it("背景跨周期、冻结、遮挡和恢复保持同一实例与连续相位", async () => {
 		const { rig, director, catalog } = await authored();
-		const idle = director.play(compileMotion(catalog.background.idle!, rig.controls), {
+		const idle = director.play(compileAction(catalog.background.idle!, rig.controls), {
 			category: "autonomic",
 			loop: true,
 			background: true,
@@ -301,7 +252,7 @@ describe("MO 表演实际合成与执行", () => {
 		advance(director, 1000);
 		expect(idle.currentTime).toBe(phase);
 		director.setFrozen(false);
-		director.play(compileMotion(catalog.resolve("motion", "curious")!.entry.definition, rig.controls), {
+		director.play(compileAction(catalog.resolve("motion", "curious")!.entry.definition, rig.controls), {
 			category: "voluntary",
 		});
 		advance(director, 600);
@@ -316,7 +267,7 @@ describe("MO 表演实际合成与执行", () => {
 
 	it("思考入场被迅速结束时从当前贡献收势，不跳到完整姿势", async () => {
 		const { rig, director, catalog } = await authored();
-		const thinking = director.play(compileMotion(catalog.background.thinking!, rig.controls), {
+		const thinking = director.play(compileAction(catalog.background.thinking!, rig.controls), {
 			category: "transition",
 			loop: true,
 			background: true,
@@ -336,14 +287,25 @@ describe("MO 表演实际合成与执行", () => {
 		const setting = director.setPosture({ "head.pitch": -8 }, { durationMs: 0 });
 		advance(director, 800);
 		await setting;
-		director.play(compileMotion(catalog.resolve("motion", "nod")!.entry.definition, rig.controls), {
+		director.play(compileAction(catalog.resolve("motion", "nod")!.entry.definition, rig.controls), {
 			category: "voluntary",
 		});
 		advance(director, 330);
 		expect(director.currentFrame["head.pitch"]).toBeGreaterThanOrEqual(-10);
 		advance(director, 800);
 		director.setSpeechLevel(0.8);
-		director.play(compileMotion(catalog.resolve("motion", "surprise")!.entry.definition, rig.controls), {
+		const mouthOpen = compileAction(
+			motion(1000, {
+				"mouth.open": absolute(
+					keys([
+						[0, 0],
+						[1000, 0.2],
+					]),
+				),
+			}),
+			rig.controls,
+		);
+		director.play(mouthOpen, {
 			category: "voluntary",
 		});
 		advance(director, 500);
@@ -355,7 +317,7 @@ describe("MO 表演实际合成与执行", () => {
 		director.setSpeechLevel(0.65);
 		advance(director, 300);
 		const entry = catalog.resolve("motion", name)!.entry;
-		const clip = compileMotion(entry.definition, rig.controls);
+		const clip = compileAction(entry.definition, rig.controls);
 		const handle = director.play(clip, { category: "voluntary", ...entry.playback });
 		// 两个动作在最初 150ms 都没有作者张嘴，输出应保持语音开度。
 		for (let elapsed = 0; elapsed < 150; elapsed += 10) {
@@ -382,7 +344,7 @@ describe("MO 表演实际合成与执行", () => {
 		for (let i = 0; i < 100; i++) runtime.composeTick(10);
 		await expect(first).resolves.toMatchObject({ status: "succeeded", details: { verification: "input_accepted" } });
 		const newer = runtime.express({ motion: "wink", atomic: false }, {});
-		runtime.director!.play(compileMotion(entry.definition, rig.controls), {
+		runtime.director!.play(compileAction(entry.definition, rig.controls), {
 			category: "reflex",
 			inhibitAdditives: true,
 		});
@@ -428,10 +390,10 @@ describe("MO 表演实际合成与执行", () => {
 			details: { restored: true, verification: "input_accepted" },
 		});
 		expect(device.moves.map((m) => m.positionY)).toEqual([
-			expect.closeTo(-0.115),
-			expect.closeTo(-0.02),
+			expect.closeTo(-0.15),
+			expect.closeTo(0.02),
 			expect.closeTo(-0.1),
-			expect.closeTo(-0.08),
+			expect.closeTo(-0.07),
 			expect.closeTo(-0.1),
 		]);
 		expect(device.pose).toEqual(base);
@@ -449,6 +411,7 @@ describe("MO 表演实际合成与执行", () => {
 			runtime.composeTick(10);
 		}
 		const moves = device.moves.length;
+		if (phase === "settling") expect(device.pose).toEqual(base);
 		runtime.setFocused(false);
 		const frame = { ...runtime.director!.currentFrame };
 		for (let elapsed = 0; elapsed < 400; elapsed += 10) {
@@ -456,8 +419,9 @@ describe("MO 表演实际合成与执行", () => {
 			runtime.composeTick(10);
 		}
 		await expect(run).resolves.toMatchObject({ status: "cancelled", details: { restored: true } });
-		expect(device.moves).toHaveLength(moves + 1);
-		expect(device.moves.at(-1)?.timeInSeconds).toBe(0.25);
+		const poseWasAlreadyRestored = phase === "settling";
+		expect(device.moves).toHaveLength(moves + (poseWasAlreadyRestored ? 0 : 1));
+		if (!poseWasAlreadyRestored) expect(device.moves.at(-1)?.timeInSeconds).toBe(0.25);
 		expect(device.pose).toEqual(base);
 		expect(runtime.director!.currentFrame).toEqual(frame);
 		// 失焦期间新请求也不能发送空间移动（unfocused → failed，非 cancelled）。
@@ -465,7 +429,7 @@ describe("MO 表演实际合成与执行", () => {
 			status: "failed",
 			details: { effectStatus: "not_started", reason: "unfocused" },
 		});
-		expect(device.moves).toHaveLength(moves + 1);
+		expect(device.moves).toHaveLength(moves + (poseWasAlreadyRestored ? 0 : 1));
 		runtime.setFocused(true);
 		const next = runtime.express({ motion: "joy_hop" }, {});
 		for (let elapsed = 0; elapsed < 1400; elapsed += 10) {
@@ -481,14 +445,20 @@ describe("MO 表演实际合成与执行", () => {
 		const { runtime, device, client } = await connected();
 		const base = { ...device.pose };
 		const run = runtime.express({ motion: "joy_hop" }, {});
-		await vi.advanceTimersByTimeAsync(30);
+		const advance = async (ms: number) => {
+			for (let elapsed = 0; elapsed < ms; elapsed += 10) {
+				await vi.advanceTimersByTimeAsync(10);
+				runtime.composeTick(10);
+			}
+		};
+		await advance(30);
 		if (mode === "error") device.failMove = true;
 		if (mode === "model") {
 			device.modelID = "another-model";
 			vi.spyOn(client, "getModelProfile").mockReturnValue({ ...client.getModelProfile()!, modelID: device.modelID });
 		}
 		const stopped = mode === "cancel" ? runtime.safeStop() : undefined;
-		await vi.advanceTimersByTimeAsync(1500);
+		await advance(1500);
 		const result = await run;
 		if (stopped) await stopped;
 		expect(result.status).toBe(mode === "error" ? "unknown" : "cancelled");
@@ -528,16 +498,22 @@ describe("MO 表演实际合成与执行", () => {
 		vi.useFakeTimers();
 		const { runtime, device } = await connected();
 		const run = runtime.express({ motion: "joy_hop" }, {});
-		await vi.advanceTimersByTimeAsync(30);
+		const advance = async (ms: number) => {
+			for (let elapsed = 0; elapsed < ms; elapsed += 10) {
+				await vi.advanceTimersByTimeAsync(10);
+				runtime.composeTick(10);
+			}
+		};
+		await advance(30);
 		runtime.interrupt();
-		await vi.advanceTimersByTimeAsync(400);
+		await advance(400);
 		await expect(run).resolves.toMatchObject({ status: "cancelled", details: { restored: true } });
 		expect(device.moves).toHaveLength(2);
 
 		const switched = runtime.express({ motion: "joy_hop" }, {});
-		await vi.advanceTimersByTimeAsync(30);
+		await advance(30);
 		device.modelID = "new-device-model";
-		await vi.advanceTimersByTimeAsync(1500);
+		await advance(1500);
 		await expect(switched).resolves.toMatchObject({ status: "unknown", details: { restored: false } });
 		expect(device.moves).toHaveLength(3);
 	});
@@ -552,7 +528,7 @@ describe("MO 表演实际合成与执行", () => {
 			await vi.advanceTimersByTimeAsync(10);
 			runtime.composeTick(10);
 		}
-		expect(device.tints).toEqual([{ colorR: 120, colorG: 120, colorB: 128, colorA: 255 }]);
+		expect(device.tints).toEqual([{ colorR: 135, colorG: 125, colorB: 120, colorA: 255 }]);
 		expect(device.postProcessings[0]).toMatchObject({
 			postProcessingOn: true,
 			setPostProcessingPreset: true,

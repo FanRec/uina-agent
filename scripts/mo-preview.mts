@@ -1,158 +1,336 @@
 /**
- * MO 动作预览脚本（本机 VTS + MO 模型）——作者迭代回路工具。
+ * Local MO action authoring preview. Offline sampling never creates a VTS client.
  *
- * 用法：pnpm run mo:preview -- [--seed <0..4294967295>] <动作名> [更多动作名...]
- *   - 动作名支持目录内的规范名与中文别名（nod / 点头 / 转圈圈 …）；
- *   - 可选 seed 固定变体与幅度纹理的随机序列，便于复播比较；
- *   - 多个动作按顺序轮播，每次播放重新 bake（幅度纹理每次不同，可观察连播变化）；
- *   - 走 runtime.express 与主脑完全相同的执行路径（gate / 变体轮换 / spatial 归位 / 结算）；
- *   - Ctrl-C 优雅停车（safeStop → 在途 spatial 清理结算）后再退出，再按一次硬退。
+ *   pnpm mo:preview -- [--seed N] <action...>       continuous live preview
+ *   pnpm mo:preview -- --once [--seed N] <action>  live preview once
+ *   pnpm mo:preview -- --repeat N [--seed S] <action>
+ *   pnpm mo:preview -- --sample [--seed S] <action> <actionMs>
+ *   pnpm mo:preview -- --list | --help
  */
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
+import { compileAction, sampleAction, type CompiledAction } from "../.uina/worlds/live2d/authoring/action.js";
+import type { CatalogSnapshot, CatalogResolved } from "../.uina/worlds/live2d/authoring/catalog.js";
+import { deriveRandom, createRootSeed } from "../.uina/worlds/live2d/authoring/random.js";
+import { MotionDirector, type MotionDirectorActionDiagnostics } from "../.uina/worlds/live2d/director/director.js";
+import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import { loadCatalog } from "../.uina/worlds/live2d/models/mo/catalog.js";
 import { MO_SPEECH } from "../.uina/worlds/live2d/models/mo/speech.js";
 import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
-import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
+import { Live2DRuntime, pickVariantIndex } from "../.uina/worlds/live2d/runtime.js";
 
-const args = process.argv.slice(2);
-const names: string[] = [];
-let seed: number | undefined;
-for (let index = 0; index < args.length; index++) {
-	const arg = args[index]!;
-	if (arg === "--seed") {
-		const raw = args[index + 1];
-		const parsed = raw && /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
-		if (seed !== undefined || !Number.isSafeInteger(parsed) || parsed < 0 || parsed > 0xffff_ffff) {
-			console.error(
-				"[预览] --seed 只接受一个 0-4294967295 的整数。用法: pnpm run mo:preview -- [--seed <seed>] <动作名>...",
-			);
-			process.exit(1);
+export interface PreviewArguments {
+	readonly mode: "continuous" | "once" | "repeat" | "sample" | "list" | "help";
+	readonly names: readonly string[];
+	readonly seed?: number;
+	readonly repeatCount?: number;
+	readonly actionMs?: number;
+}
+
+const USAGE = [
+	"用法:",
+	"  pnpm mo:preview -- [--seed N] <动作名...>          连续轮播",
+	"  pnpm mo:preview -- --once [--seed N] <动作名>      单次执行",
+	"  pnpm mo:preview -- --repeat N [--seed S] <动作名>  固定 seed 重复 N 次",
+	"  pnpm mo:preview -- --sample [--seed S] <动作名> <actionMs>  离线采样，不连接 VTS",
+	"  pnpm mo:preview -- --list | --help",
+].join("\n");
+
+export function parsePreviewArguments(args: readonly string[]): PreviewArguments {
+	let seed: number | undefined;
+	let mode: PreviewArguments["mode"] = "continuous";
+	let modeValue: number | undefined;
+	const names: string[] = [];
+	for (let index = 0; index < args.length; index++) {
+		const arg = args[index]!;
+		if (arg === "--seed") {
+			const raw = args[index + 1];
+			const parsed = raw && /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+			if (seed !== undefined || !Number.isSafeInteger(parsed) || parsed < 0 || parsed > 0xffff_ffff)
+				throw new Error("--seed 只接受一个 0-4294967295 的整数。");
+			seed = parsed;
+			index++;
+			continue;
 		}
-		seed = parsed;
-		index++;
-	} else if (arg.startsWith("--")) {
-		console.error(`[预览] 未知参数: ${arg}`);
-		process.exit(1);
-	} else {
+		if (arg === "--once" || arg === "--repeat" || arg === "--sample" || arg === "--list" || arg === "--help") {
+			if (mode !== "continuous" || names.length || modeValue !== undefined)
+				throw new Error("预览模式只能指定一次，且不能混用多个模式。");
+			if (arg === "--once") mode = "once";
+			else if (arg === "--repeat") {
+				mode = "repeat";
+				const raw = args[++index];
+				const count = raw && /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+				if (!Number.isSafeInteger(count) || count <= 0) throw new Error("--repeat 次数必须是正安全整数。");
+				modeValue = count;
+			} else if (arg === "--sample") mode = "sample";
+			else mode = arg === "--list" ? "list" : "help";
+			continue;
+		}
+		if (arg.startsWith("--")) throw new Error("未知参数: " + arg);
 		names.push(arg);
 	}
-}
-if (names.length === 0) {
-	console.error(
-		"用法: pnpm run mo:preview -- [--seed <seed>] <动作名> [更多动作名...]   例: pnpm run mo:preview -- --seed 42 nod 点头 wink",
-	);
-	process.exit(1);
-}
-
-const rig = await loadRig(MO_MODEL_ID);
-if (!rig) {
-	console.error("[预览] rig 装配失败，无法预览。");
-	process.exit(1);
-}
-const catalog = loadCatalog(MO_MODEL_ID, rig);
-if (!catalog) {
-	console.error("[预览] 目录装配失败，无法预览。");
-	process.exit(1);
-}
-// 词表预检：只接受动作（resolveCue 也命中姿态/表情，但 express 只吃动作——提前给出准确错误）。
-for (const name of names) {
-	const motion = catalog.resolve("motion", name);
-	if (!motion) {
-		const posture = catalog.resolveCue(name);
-		if (posture) {
-			console.error(
-				`[预览] "${name}" 是${posture.kind === "posture" ? "姿态" : "表情"}条目，预览只支持动作。用 state 工具施加: state({ ${posture.kind}: "${name}" })`,
-			);
-		} else {
-			const available = catalog
-				.list("motion")
-				.map(({ name: n, aliases }) => (aliases.length ? `${n}(${aliases.join("/")})` : n));
-			console.error(`[预览] 动作不在目录: "${name}"。可用: ${available.join(", ")}`);
-		}
-		process.exit(1);
+	if (mode === "help") return { mode, names, ...(seed === undefined ? {} : { seed }) };
+	if (mode === "list" && names.length) throw new Error("--list 不接受动作名。");
+	if (mode === "once" && names.length !== 1) throw new Error("--once 必须且只能指定一个动作名。");
+	if (mode === "repeat" && names.length !== 1) throw new Error("--repeat 必须且只能指定一个动作名。");
+	if (mode === "sample") {
+		if (names.length !== 2) throw new Error("--sample 需要一个动作名和一个 actionMs。");
+		const parsed = Number(names[1]);
+		if (!Number.isFinite(parsed) || parsed < 0) throw new Error("actionMs 必须是非负有限毫秒数。");
+		modeValue = parsed;
+		names.length = 1;
 	}
-}
-
-let rng: () => number = Math.random;
-if (seed !== undefined) {
-	let state = seed >>> 0;
-	rng = () => {
-		state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-		return state / 0x1_0000_0000;
+	if ((mode === "continuous" || mode === "once" || mode === "repeat") && names.length === 0)
+		throw new Error("至少指定一个动作名。");
+	return {
+		mode,
+		names: Object.freeze(names),
+		...(seed === undefined ? {} : { seed }),
+		...(mode === "repeat" ? { repeatCount: modeValue! } : {}),
+		...(mode === "sample" ? { actionMs: modeValue! } : {}),
 	};
 }
-const runtime = new Live2DRuntime({ client: new VTSClient(), rig, catalog, speech: MO_SPEECH, rng });
-await runtime.start({} as never);
-console.log(
-	`[预览] 轮播: ${names.join(" → ")}（${seed === undefined ? "随机" : `seed=${seed}`}；每次播放重新 bake；Ctrl-C 停车退出）`,
-);
 
-let stopping = false;
-const controller = new AbortController();
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+function resolveAction(catalog: CatalogSnapshot, name: string): CatalogResolved<"motion"> {
+	const resolved = catalog.resolve("motion", name);
+	if (!resolved) {
+		const available = catalog
+			.list("motion")
+			.map(({ name: actionName, aliases }) =>
+				aliases.length ? actionName + "(" + aliases.join("/") + ")" : actionName,
+			);
+		throw new Error(
+			available.length === 0
+				? "当前模型没有可用动作（动作目录为空）。"
+				: '动作不在当前模型目录: "' + name + '"。可用动作: ' + available.join(", "),
+		);
+	}
+	return resolved;
+}
 
-/**
- * 就绪等待：VTS 连接、API 授权（首连需在 VTS 界面点击允许）与模型绑定都是异步事实，
- * 就绪前 express 会被 gate 以 model_not_ready/unadapted 秒拒——等就绪再开播，杜绝拒绝洪水。
- */
-const waitReady = async (): Promise<void> => {
+function compileFirstPlay(
+	rig: ModelRig,
+	entry: CatalogResolved<"motion">,
+	seed: number,
+	playIndex = 0,
+): { clip: CompiledAction; variantIndex: number } {
+	const variants = entry.entry.variants ?? [];
+	const variantIndex = variants.length
+		? pickVariantIndex(variants.length + 1, undefined, deriveRandom(seed, "selection", entry.name, playIndex))
+		: 0;
+	const authoring = variantIndex === 0 ? entry.entry.definition : variants[variantIndex - 1]!;
+	const clip = compileAction(authoring, rig.controls, deriveRandom(seed, "performance", entry.name, playIndex));
+	return { clip, variantIndex };
+}
+
+function summarizeClip(clip: CompiledAction) {
+	return {
+		durationMs: clip.durationMs,
+		speed: clip.speed,
+		wallDurationMs: clip.durationMs / clip.speed,
+		channels: clip.channels.map(({ axis, space, speech, extents }) => ({
+			axis,
+			space,
+			...(speech === undefined ? {} : { speech }),
+			...(extents === undefined ? {} : { extents }),
+		})),
+		spatial: clip.spatial,
+	};
+}
+
+/** Compile and evaluate one action without constructing a VTS client or issuing external requests. */
+export function buildOfflinePreviewSnapshot(
+	rig: ModelRig,
+	catalog: CatalogSnapshot,
+	actionName: string,
+	seed: number,
+	requestedActionMs: number,
+) {
+	if (!Number.isFinite(requestedActionMs) || requestedActionMs < 0) throw new Error("actionMs 必须是非负有限毫秒数。");
+	const resolved = resolveAction(catalog, actionName);
+	const { clip, variantIndex } = compileFirstPlay(rig, resolved, seed);
+	const actionMs = Math.min(requestedActionMs, clip.durationMs);
+	const baseline = Object.fromEntries(Object.entries(rig.controls).map(([axis, control]) => [axis, control.neutral]));
+	const rawTargets = sampleAction(clip, actionMs, baseline);
+	const actionTargets = Object.entries(rawTargets).map(([axis, requested]) => {
+		const control = rig.controls[axis]!;
+		return {
+			axis,
+			requested,
+			value: Math.max(control.min, Math.min(control.max, requested)),
+			min: control.min,
+			max: control.max,
+			clamped: requested < control.min || requested > control.max,
+		};
+	});
+
+	const director = new MotionDirector(rig.controls, {
+		external: rig.external,
+		rng: deriveRandom(seed, "autonomic", "world", 0),
+		diagnostics: true,
+	});
+	director.play(clip, {
+		...resolved.entry.playback,
+		category: "voluntary",
+		atomic: resolved.entry.atomic,
+	});
+	// Natural completion starts a handoff at duration; sample the final composed frame immediately before it.
+	const directorActionMs = Math.min(actionMs, Math.max(0, clip.durationMs - 0.000001));
+	const targetWallMs = directorActionMs / clip.speed;
+	let elapsedWallMs = 0;
+	if (targetWallMs === 0) director.step(0, 0);
+	while (elapsedWallMs < targetWallMs) {
+		const stepMs = Math.min(1000 / 60, targetWallMs - elapsedWallMs);
+		director.step(stepMs, stepMs);
+		elapsedWallMs += stepMs;
+	}
+	const diagnostics = director.getActionDiagnostics();
+	return {
+		mode: "offline-sample",
+		modelID: rig.modelID,
+		seed,
+		action: resolved.name,
+		playIndex: 0,
+		variantIndex,
+		requestedActionMs,
+		actionMs,
+		directorActionMs,
+		plan: summarizeClip(clip),
+		actionTargets,
+		composition: diagnostics
+			? {
+					clockMs: diagnostics.clockMs,
+					authoredTargets: diagnostics.authoredTargets,
+					composedFrame: diagnostics.composedFrame,
+					contributions: diagnostics.contributions,
+					clampHits: diagnostics.clampHits,
+				}
+			: null,
+	};
+}
+
+function printJson(label: string, value: unknown): void {
+	console.log(label + " " + JSON.stringify(value));
+}
+
+async function waitReady(runtime: Live2DRuntime, stopping: () => boolean): Promise<void> {
 	const deadline = Date.now() + 60_000;
 	while (!(runtime.connectionOnline && runtime.identityMatched())) {
-		if (stopping) return;
-		if (Date.now() > deadline) {
-			console.error(
-				"[预览] 等待 VTS 连接/模型绑定超时（60s）。请确认 VTube Studio 已启动、API 插件已授权（首次连接需在 VTS 界面点击允许）、当前已加载 MO 模型。",
-			);
-			process.exit(1);
-		}
+		if (stopping()) return;
+		if (Date.now() > deadline)
+			throw new Error("等待 VTS 连接/模型绑定超时；请确认 VTube Studio 已启动、API 已授权且加载 MO 模型。");
 		process.stdout.write("[预览] 等待 VTS 连接与模型绑定…\r");
-		await sleep(250);
+		await new Promise((resolve) => setTimeout(resolve, 250));
 	}
 	console.log("[预览] 已就绪（VTS 已连接，模型绑定核验通过）。");
-};
+}
 
-const loop = async (): Promise<void> => {
-	await waitReady();
-	if (stopping) return;
-	let index = 0;
-	while (!stopping) {
-		const name = names[index % names.length]!;
-		index += 1;
-		const started = Date.now();
-		const result = await runtime.express({ motion: name }, { signal: controller.signal });
-		const seconds = ((Date.now() - started) / 1000).toFixed(1);
-		const details = result.details as { reason?: string } | undefined;
-		const reason = details?.reason ? `（${details.reason}）` : "";
-		if (!stopping)
-			console.log(
-				`[${new Date().toLocaleTimeString()}] ${name}: ${result.status}${reason}（${seconds}s）${result.status === "succeeded" ? "" : ` — ${result.result}`}`,
-			);
-		// 失败退避：gate/执行拒绝时等待后重试（连接抖动/暂停等瞬态），绝不高速重试洪水
-		if (result.status !== "succeeded") await sleep(2000);
-	}
-};
-
-const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
-	if (stopping) {
-		console.error("[预览] 再按一次强制退出。");
-		process.exit(1);
-	}
-	stopping = true;
-	console.log(`\n[预览] 收到 ${signal}，safeStop 停车中…（再按一次强制退出）`);
-	controller.abort(new Error("preview stop"));
+export async function main(args = process.argv.slice(2)): Promise<void> {
+	let parsed: PreviewArguments;
 	try {
-		await runtime.stop();
+		parsed = parsePreviewArguments(args);
 	} catch (error) {
-		console.error("[预览] 停车清理未完全确认:", error instanceof Error ? error.message : String(error));
+		console.error("[预览] " + (error instanceof Error ? error.message : String(error)) + "\n" + USAGE);
+		process.exitCode = 1;
+		return;
 	}
-	process.exit(0);
-};
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+	if (parsed.mode === "help") {
+		console.log(USAGE);
+		return;
+	}
+	const rig = await loadRig(MO_MODEL_ID);
+	if (!rig) throw new Error("MO rig 装配失败，无法预览。");
+	const catalog = loadCatalog(MO_MODEL_ID, rig);
+	if (!catalog) throw new Error("MO 目录装配失败，无法预览。");
+	if (parsed.mode === "list") {
+		const actions = catalog
+			.list("motion")
+			.map(({ name, aliases, entry }) => ({ name, aliases, description: entry.description }));
+		printJson("[预览] 动作目录", { modelID: catalog.modelID, actions, empty: actions.length === 0 });
+		return;
+	}
+	const seed = parsed.seed ?? createRootSeed();
+	if (parsed.mode === "sample") {
+		const snapshot = buildOfflinePreviewSnapshot(rig, catalog, parsed.names[0]!, seed, parsed.actionMs!);
+		printJson("[预览] 离线采样（未连接 VTS、未产生外部副作用）", snapshot);
+		return;
+	}
+	for (const name of parsed.names) resolveAction(catalog, name);
 
-try {
-	await loop();
-} catch (error) {
-	console.error("[预览] 执行异常:", error instanceof Error ? error.message : String(error));
-	await shutdown("SIGTERM").catch(() => process.exit(1));
+	let lastDiagnosticClock = Number.NEGATIVE_INFINITY;
+	const runtime = new Live2DRuntime({
+		client: new VTSClient(),
+		rig,
+		catalog,
+		speech: MO_SPEECH,
+		seed,
+		diagnostics: true,
+		onActionCompiled: ({ actionName, playIndex, clip }) =>
+			printJson("[计划]", { actionName, playIndex, ...summarizeClip(clip) }),
+		onSpatialTrace: (trace) => printJson("[空间追踪]", trace),
+		onActionDiagnostics: (diagnostics: MotionDirectorActionDiagnostics) => {
+			if (diagnostics.clockMs - lastDiagnosticClock < 250 && diagnostics.clockMs !== 0) return;
+			lastDiagnosticClock = diagnostics.clockMs;
+			printJson("[合成诊断]", diagnostics);
+		},
+	});
+	const controller = new AbortController();
+	let stopping = false;
+	let stopPromise: Promise<void> | undefined;
+	const shutdown = (): Promise<void> => {
+		if (stopPromise) return stopPromise;
+		stopping = true;
+		controller.abort(new Error("preview stop"));
+		stopPromise = runtime.stop();
+		return stopPromise;
+	};
+	const onInterrupt = () => {
+		console.log("\n[预览] 收到中断，safeStop 正在结算在途动作与空间清理…");
+		void shutdown().then(
+			() => process.exit(0),
+			(error) => {
+				console.error("[预览] 停车清理未完全确认:", error instanceof Error ? error.message : String(error));
+				process.exit(1);
+			},
+		);
+	};
+	process.on("SIGINT", onInterrupt);
+	process.on("SIGTERM", onInterrupt);
+	try {
+		await runtime.start({} as never);
+		console.log("[预览] mode=" + parsed.mode + " seed=" + seed + "；停止时会调用 safeStop 并核验清理。");
+		await waitReady(runtime, () => stopping);
+		if (stopping) return;
+		const count =
+			parsed.mode === "once" ? 1 : parsed.mode === "repeat" ? parsed.repeatCount! : Number.POSITIVE_INFINITY;
+		let index = 0;
+		while (!stopping && index < count) {
+			const name = parsed.names[parsed.mode === "continuous" ? index % parsed.names.length : 0]!;
+			const started = Date.now();
+			const result = await runtime.express({ motion: name }, { signal: controller.signal });
+			index++;
+			printJson("[结算]", {
+				action: name,
+				iteration: index,
+				status: result.status,
+				durationMs: Date.now() - started,
+				result: result.result,
+				details: result.details,
+			});
+			if (parsed.mode === "continuous" && result.status !== "succeeded" && !stopping)
+				await new Promise((resolve) => setTimeout(resolve, 2000));
+		}
+	} finally {
+		process.off("SIGINT", onInterrupt);
+		process.off("SIGTERM", onInterrupt);
+		if (!stopping) await shutdown();
+	}
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	void main().catch((error) => {
+		console.error("[预览] 执行失败:", error instanceof Error ? error.message : String(error));
+		process.exitCode = 1;
+	});
 }

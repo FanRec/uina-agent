@@ -2,7 +2,7 @@
 
 2026-10-14。实现位于 `.uina/worlds/live2d`，身体策略不进入 Subject/Core。
 
-本次文档复核：`pnpm typecheck` 通过，`tests/live2d-mo-catalog.test.ts` 6 项通过；该目录测试不验证此次动作曲线的节奏或视觉自然度。文内 235 项、24 文件等数字是各自历史运行快照，本轮未重跑完整 Live2D 套件，也未连接真实 VTS/MO。
+本轮实现合同见“Action 作者层与播放时钟”。自动测试使用合成作者、假 VTS 与真实 Worker 隔离夹具；不能证明真实 MO/VTS 观感或调度阈值已经校准。完整 Live2D 定向结果以本次开发记录为准，不把本文的历史测试数字当作当前验收。
 
 ## 工具与意图
 
@@ -27,15 +27,29 @@ MO 的 `head.yaw/pitch/roll` 与 `torso.yaw/pitch/roll` 是独立逻辑轴。没
 
 ## 固定模型目录
 
-目录只保存词表与曲线函数定义（MotionAuthoring 工厂），不做编译产物缓存：compileCatalog 隔离作者输入并校验（结构、轴、spatial/effects、词表唯一性，校验性 bake 后丢弃产物），runtime 在每次播放时重新 bake——随机纹理因此逐播结清。索引私有，消费者通过 resolve/list/resolveCue 获得冻结记录，无公开 Map 或旧反查入口。内置注视和中文别名同源，所有名称全局唯一；动作变体不能独立寻址。
+目录只保存动作工厂、静态姿态/表情、别名和其它模型专属能力，不缓存编译动作。`compileCatalog` 隔离作者输入并以固定 seed 校验结构、轴、曲线和空间载荷，校验性 Bake 的结果会丢弃；Runtime 每次播放按动作名、播放序号与用途派生随机流并重新 Bake。目录索引私有，消费者通过 `resolve/list/resolveCue` 获取冻结记录；内置注视词表与别名同源，名称全局唯一。
 
-status、错误候选项和 affordance 使用同一快照。环境别名“摇摆／晃动／摇”都解析为 sway；持续环境选择保存规范名。sway 是由多个有限短片段组成的动作组，每段完成后在片段池中选择下一段并排除刚播放的上一段。目录更新递增代次并使旧执行失效；消费者与原作者对象都不能绕过代次修改内容。
+本轮按用户要求清空 MO 的旧动作内容，没有搬运动作、环境片段或 idle/thinking 曲线。当前 MO `motion` 与 `ambient` 列表为空，`background.idle/thinking` 未设置；原 `rest/tuck/head_back` 姿态与 `smile/smirk/clear_face` 表情、rig 标定和内置注视保留。`express` 对动作返回目录为空/未知动作，`state.ambient` 不会回退到旧目录。目录换代仍递增代次并使旧执行失效。
+
+## Action 作者层与播放时钟
+
+作者合同详见 `.uina/worlds/live2d/MOTION-AUTHORING.md`。动作工厂产出 `ActionPlan { timeline, channels, spatial?, speed? }`；`timeline` 提供命名 marker 和正时长 span。`keys`、`poseWindow`、`spring`、`oscillate` 构造局部曲线；`during`、`track` 放置到动作时间；`absolute`、`offset`、`sumOffsets`、`mergeChannels` 明确通道空间与同轴规则。`compileAction` 校验并冻结身体通道、空间事件与 speed；独立编译缺省使用固定 0.5 随机流。
+
+Runtime 分开派生 selection、performance、autonomic 随机流。每次播放只 Bake 一次，身体和空间共享同一 `CompiledAction`。Director 负责身体仲裁与采样，ExternalActions 负责 VTS 请求、独占声明和清理；预检完成后两者以同一 Director 有效时钟确定共同 `t0`。`speed` 只做一次时间换算，暂停或失焦冻结有效时钟。
+
+自然完成的退场起点是作者动作的标称 wall end，长帧会计入终点后的淡出进度；release/preempt 从调用时的有效播放年龄开始。handoff 输出与 handle 结算共用退场进度，物理滤波仍按受限的帧间 `dt` 前进。
+
+空间 marker 按绝对动作时间稳定排序；纯效果 marker 到时即可发送。含位姿 span 的事件先检查至少 100ms 的位姿窗口，再发同段效果并等待 ACK，ACK 后再检查窗口并移动。ACK 等待继续消耗窗口，不重置时钟、不重发未知请求。位姿窗口不足时取消动作并清理，原因 `spatial_window_missed`；100ms 是待真实 VTS 校准的内部起始值。正常播放等待完整 ActionPlan 身体结束后再恢复基线，效果保留到下一个对应效果事件或动作结束。取消、失败和错过窗口立即清理。
+
+含位姿 span 的事件在附着效果 ACK 后再次核对窗口和同一模型位姿，再发送变换。相对旋转只在作者空间事件边界及归位前核对位姿，不逐帧读取 VTS。若同一模型在动作期间被手动移动，后续空间请求中止，不向它写回进入时的旧位姿，位姿清理记为 `unknown`；仍安全时恢复本动作拥有的效果。空间追踪描述作者请求 dispatch/ACK 与调度迟到，清理请求和 ACK 由最终分项 settlement 说明。资源所有权、模型/目录/连接代次核验及结构化终态仍归 ExternalActions。
+
+开发诊断可分别读取作者目标、最终合成帧、来源贡献与 clamp hit；诊断仅通过本地预览选项开启，不进入模型可见工具结果。
 
 ## 外部动作与恢复
 
-external-actions 拥有空间特技与外观热键的执行、资源、取消和结算。空间动作独占 model:transform，带效果同时独占 effect:*，与外观请求互斥；清理等待期间不释放资源，未知结算后释放，不永久持锁。
+含空间事件的目录动作由 external-actions 拥有 VTS 位姿/效果与外观热键的执行、资源、取消和结算。空间动作独占 model:transform，带效果同时独占 effect:*，与外观请求互斥；清理等待期间不释放资源，未知结算后释放，不永久持锁。当前 MO 没有空间动作条目。
 
-空间段先派发效果，再发移动；移动 ACK 后完整等待段时长。效果分发失败记录后继续，移动失败切断后续段。位姿组合越界和已知缺失 preset 在发送前拒绝。
+空间事件按 `atMs` 等待；含位姿 span 的事件先检查窗口，再派发效果并等待 ACK，ACK 后重查窗口，再按 span 绝对终点执行移动。纯效果 marker 不受位姿窗口门槛限制。ACK 返回不改变共同动作时钟。效果分发失败记录后继续剩余计划和身体播放，但最终状态为 unknown；位姿失败或时间窗错过会取消后续事件并立即清理。无错误的正常路径等身体 ActionPlan 结束后才恢复效果和位姿。位姿组合越界和已知缺失 preset 在发送前拒绝。
 
 含后处理的动作必须先读取有效基线；缺失或错误开关字段、读取失败都得到 failed / effectStatus=not_started / reason=effect_baseline_unavailable。只有 tint 时不读取或修改 post。没有非零空间偏移的纯效果动作不移动或恢复模型位置。
 
@@ -59,28 +73,20 @@ proxy/engine 使用 new、starting、running、closing、dead。停止与 Worker
 
 ## 验证边界
 
-定向测试覆盖模型目录、工具/cue、身体跟随与躯干覆盖/恢复、VTS 输入准备与映射诊断、环境片段轮换、实际合成与假 VTS 协议、外部恢复、MessageChannel、真实 Worker 自举及 WorldActivation 停用。真实 Worker 使用线程内创建的假设备，不读取或改写真实认证，不证明真实 VTS/MO、GPU 或视觉自然度。
+定向测试覆盖模型目录、工具/cue、身体跟随与躯干覆盖/恢复、VTS 输入准备与映射诊断、合成目录中的环境片段轮换、Action 时间线与随机隔离、实际合成与假 VTS 协议、外部恢复、MessageChannel、真实 Worker 自举及 WorldActivation 停用。真实 Worker 使用线程内创建的假设备，不读取或改写真实认证，不证明真实 VTS/MO、GPU 或视觉自然度。
 
 执行命令：`pnpm exec vitest run tests/live2d-*.test.ts`、`pnpm check:boundaries`、`pnpm exec tsc --noEmit`、`pnpm typecheck`、`pnpm test`。Windows PowerShell 用 rg 枚举测试路径再展开参数。依赖已安装时，pnpm 11 可逐命令传 `--config.verify-deps-before-run=false`，避免共享依赖工作树的自动安装；不修改用户配置。
 
 整仓格式基线、其他扩展失败和真实设备验收必须分别记录，不以定向通过冒充整仓或设备通过。
 
-### 2026-10-14 曲线函数创作模型与 MO 目录重建
+### 2026-10-14 Action 作者层重构
 
-- 动作定义从 keyframe 定义树改为曲线函数工厂（`(rng) => MotionPlan`，每轴单通道 absolute/offset）：`compileMotion` = 结构校验 + 曲线域探测（16ms 网格）+ 冻结；`sampleMotion` 纯采样合同不变。树 kinds、bezier 求解器、sequence hold/entryTracks 混合数学整体删除。
-- 目录只存词表与定义，runtime 独占 per-play bake（随机纹理逐播结清）；变体池保留。gate 链新增 `fault` 档（合成故障停车，见上）。
-- MO 目录按新模型重建（catalog-bak.ts.txt 退役为参考）：17 动作 + sway 四短语 + 姿态/表情/background 逐键保真；增强 = head/torso 增量通道 bake 期幅度纹理（±6%，rng=0.5 复现标定值）、双侧眼睑曲线共享、absolute 通道逐字标定不参与纹理。
-- 随后对运动内容做程序化再创作：idle/thinking 使用闭合周期；sway 由四个有限振荡短句组成，共享片段强度与相位偏移并在句尾收束。nod、shake、startle、glance、double_take、joy_hop、petrify、close_up 等采用弹簧、姿势窗口或阻尼摆动。精确表情、眨眼、特定视线路径和空间动作阶段继续用关键点。此轮未做真实 VTS/MO 视觉验收。
-- 作者工具：`pnpm run mo:preview -- [--seed <seed>] <动作名>...` 预览轮播（express 主脑同路径；固定 seed 可复播随机序列）；`elastic(ms, peak, bounces)` 生成器；`pts(x0, y0, …)` 扁平关键帧速记（biome 对二维数组实参结构性展开，与宽度无关——扁平参数稳定单行，formatter override 320）。
-- 定向验证：live2d 套件 235/235（沙箱内旋转驱动时序用例仍为已登记的调度敏感项）；`pnpm typecheck` 全绿。真实 VTS/MO 视觉验收（含纹理观感与 `mo:preview` 真机复跑）未做。
-
-### 2026-10-14 躯干控制与 sway 动作组
-
-- MO rig 新增独立 torso yaw/pitch/roll 输入；头部作为默认跟随目标，显式躯干轨迹可偏移或接管。`prepare_body` 幂等准备模型隔离的 VTS 输入，模型输出映射仍需在 VTS 手动配置；`status(detail=true)` 暴露逐轴映射事实。
-- `sway` 改为四段头身、注视与眼睑组合短动作，片段间不立即重复。思考继续由 Host 事件驱动。
-- 最新 Live2D 完整跑批：24 文件、218 项通过。此前两次整套跑批中，空间旋转时序用例曾单项越过 180°；独立测试通过，最终整套复跑也通过，仍记录为调度负载下的时序敏感项。
-- `pnpm typecheck`（385 文件格式、8 条边界、TypeScript）和 `git diff --check` 通过。
-- 本轮未在真实 VTS/MO 上创建输入或手动映射，未验证最终视觉幅度与自然度。
+- 本轮移除旧 `MotionPlan`/`compileMotion` 作者 API、MO 动作备份文本与复制测试夹具；未迁移动作内容。MO 当前只有静态姿态/表情和 rig 标定，动作目录为空。
+- 新作者面为 `ActionPlan`、Timeline、曲线组合器和 Bake 编译器；Director 与 ExternalActions 共用 CompiledAction 和有效时钟；Runtime 按动作名/播放序号隔离三类随机流。
+- `mo:preview` 保留连续轮播，增加单次、固定次数重播、seed、离线任意时刻采样、真实空间请求追踪。离线预览不创建 VTS 客户端；真实模式沿 `express` 生产路径。
+- 修复长 tick 退场进度、Bake 数值与 span 快照边界；空间位姿窗口在效果 ACK 前后检查，同模型漂移会保留用户位姿；正常动作等待身体结束后才恢复 effects/pose，清理前已确认回到基线时跳过重复移动。VTS 在途绝对插值的取消归位由单一进度轨迹判定，并用假 VTS 回归覆盖。
+- 定向 Live2D：31 个文件、294 项通过。`pnpm typecheck`（格式、8 条边界、TypeScript）、独立 `pnpm check:boundaries` 与 `git diff --check` 通过。`mo:preview --list` 确认 MO 动作目录为空；离线合成目录采样由 `tests/live2d-preview.test.ts` 覆盖。
+- 真实 VTS/MO 视觉观感、ACK 延迟分布与 100ms 位姿阈值仍未验收；自动化合同测试不替代设备验收。
 
 ### 2026-10-13 自动验证（原工作区集成后）
 

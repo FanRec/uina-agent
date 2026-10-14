@@ -5,8 +5,7 @@ import { TOOL_RESULT_STATUSES } from "../src/core/types.js";
 import type { ToolExecutionResult } from "../src/tools/broker.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import { compileCatalog, emptyCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
-import type { CatalogSource, SpatialSegment } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
+import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/index.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
@@ -451,71 +450,5 @@ describe("compileCatalog 绑定期校验", () => {
 			compileCatalog(MODEL_ID, { postures: { bad: { description: "x", values: { "arm.lift": 1 } } } }, rig),
 		).toThrow(/未声明控制/);
 		expect(() => compileCatalog("other-model", {}, rig)).toThrow(/身份不符/);
-	});
-
-	it("空间段 effects 校验：非法通道/渐变、末段携带、空载荷即抛，纯效果段合法", () => {
-		const rig = makeRig();
-		const source = (segments: SpatialSegment[]): CatalogSource => ({
-			motions: {
-				fx: {
-					description: "a",
-					motion: motion(100, {
-						"head.yaw": absolute(
-							keys([
-								[0, 1],
-								[100, 1],
-							]),
-						),
-					}),
-					spatial: { segments },
-				},
-			},
-		});
-		const last = { durationMs: 100, delta: { y: 0 } } satisfies SpatialSegment;
-		expect(() =>
-			compileCatalog(
-				MODEL_ID,
-				source([{ durationMs: 100, delta: { y: 0.1 }, effects: { tint: { r: 256, g: 0, b: 0 } } }, last]),
-				rig,
-			),
-		).toThrow(/染色通道/);
-		expect(() =>
-			compileCatalog(
-				MODEL_ID,
-				source([{ durationMs: 100, delta: { y: 0.1 }, effects: { tint: { r: 1.5, g: 0, b: 0 } } }, last]),
-				rig,
-			),
-		).toThrow(/染色通道/);
-		expect(() =>
-			compileCatalog(
-				MODEL_ID,
-				source([
-					{ durationMs: 100, delta: { y: 0.1 }, effects: { postProcessing: { on: true, fadeTime: 2.5 } } },
-					last,
-				]),
-				rig,
-			),
-		).toThrow(/渐变时间/);
-		expect(() =>
-			compileCatalog(
-				MODEL_ID,
-				source([
-					{ durationMs: 100, delta: { y: 0.1 } },
-					{ durationMs: 100, delta: { y: 0 }, effects: { tint: { r: 255, g: 255, b: 255 } } },
-				]),
-				rig,
-			),
-		).toThrow(/末段不得携带/);
-		expect(() => compileCatalog(MODEL_ID, source([{ durationMs: 100, delta: {} }, last]), rig)).toThrow(
-			/必须声明 delta、relativeRotation 或 effects/,
-		);
-		expect(() => compileCatalog(MODEL_ID, source([last, { ...last }]), rig)).toThrow(/无载荷/);
-		expect(() =>
-			compileCatalog(
-				MODEL_ID,
-				source([{ durationMs: 100, delta: {}, effects: { tint: { r: 120, g: 120, b: 128 } } }, last]),
-				rig,
-			),
-		).not.toThrow();
 	});
 });

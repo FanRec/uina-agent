@@ -6,7 +6,7 @@ import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
 import { compileCatalog, type CatalogSnapshot, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { compileMotion, motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
+import { compileAction, motion, keys, absolute } from "../.uina/worlds/live2d/authoring/index.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import { Live2DRuntime, pickVariantIndex } from "../.uina/worlds/live2d/runtime.js";
 
@@ -15,8 +15,7 @@ import { Live2DRuntime, pickVariantIndex } from "../.uina/worlds/live2d/runtime.
  * （连播不重样）、express 与 endpoint.emitCue 双路轮换、speech 覆写按选中变体重编译、
  * 快照换代轮换归零、无变体动作逐比特回归、status 变体数量暴露。
  *
- * 合成推进纯函数化：composeTick 手工步进；客户端用鸭子类型假体；rng 注入恒 0.5
- * ——池 2 时严格交替（首播主定义 → 变体 → 主定义），幅值断言因此完全确定。
+ * 合成推进纯函数化：composeTick 手工步进；客户端用鸭子类型假体；固定 seed 驱动独立的选择流。
  */
 
 const MODEL_ID = "fixture-model";
@@ -118,9 +117,9 @@ const flush = async (): Promise<void> => {
 	for (let i = 0; i < 3; i++) await new Promise((resolve) => setImmediate(resolve));
 };
 
-const harness = async (catalog: CatalogSnapshot = makeCatalog(), rng: () => number = () => 0.5) => {
+const harness = async (catalog: CatalogSnapshot = makeCatalog(), seed = 7) => {
 	const fake = makeFakeClient();
-	const runtime = new Live2DRuntime({ client: fake.client, rig: makeRig(), catalog, rng });
+	const runtime = new Live2DRuntime({ client: fake.client, rig: makeRig(), catalog, seed });
 	const app = createLive2DApp({ instance: runtime });
 	const startCtx = {
 		expose: () => () => {},
@@ -171,8 +170,8 @@ describe("live2d 动作变体轮换", () => {
 	it("compileCatalog：附加变体入条目（池 = 主定义 + 变体），可被 bake", () => {
 		const entry = makeCatalog().resolve("motion", "nod")!.entry;
 		expect(entry.variants).toHaveLength(1);
-		expect(compileMotion(entry.variants![0]!, makeRig().controls).durationMs).toBe(400);
-		expect(compileMotion(entry.definition, makeRig().controls).durationMs).toBe(400);
+		expect(compileAction(entry.variants![0]!, makeRig().controls).durationMs).toBe(400);
+		expect(compileAction(entry.definition, makeRig().controls).durationMs).toBe(400);
 	});
 
 	it("compileCatalog：空变体池拒绝（主定义 + 变体 ≥ 2 才构成轮换）", () => {

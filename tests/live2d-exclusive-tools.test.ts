@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
-import { type CatalogSource, compileCatalog, type SpatialSegment } from "../.uina/worlds/live2d/authoring/catalog.js";
-import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/motion.js";
+import { type CatalogSource, compileCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
+import type { SpatialEvent } from "../.uina/worlds/live2d/authoring/spatial.js";
+import { motion, keys, absolute } from "../.uina/worlds/live2d/authoring/index.js";
 import { createLive2DApp } from "../.uina/worlds/live2d/index.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import type { ServiceCompanionContext } from "../src/extensions/world-framework/types.js";
@@ -69,6 +70,18 @@ const makeRig = (): ModelRig => ({
 	},
 	external: { blink: "uina", breath: "vts" },
 });
+
+const spatialAction = (durationMs: number, spatial: readonly SpatialEvent[]) => {
+	const body = motion(durationMs, {
+		"head.yaw": absolute(
+			keys([
+				[0, 0],
+				[durationMs, 0],
+			]),
+		),
+	});
+	return (rng: () => number) => ({ ...body(rng), spatial });
+};
 
 interface FakeState {
 	connected: boolean;
@@ -168,23 +181,12 @@ const makeRuntime = (state: FakeState, cleanupTimeoutMs?: number) =>
 			MODEL_ID,
 			{
 				motions: {
-					spin: {
-						description: "旋转特技",
-						motion: motion(100, {
-							"head.yaw": absolute(
-								keys([
-									[0, 0],
-									[100, 0],
-								]),
-							),
-						}),
-						spatial: {
-							segments: [
-								// base.rotation=10 + 200 = 210 ∈ ±360（组合前瞻校验会拒绝越界值）
-								{ delta: { rotation: 200 }, durationMs: 100 },
-								{ delta: { rotation: 0 }, durationMs: 100 },
-							],
-						},
+					spatial: {
+						description: "test spatial",
+						motion: spatialAction(400, [
+							{ during: { startMs: 0, endMs: 200, durationMs: 200 }, transform: { delta: { rotation: 200 } } },
+							{ during: { startMs: 200, endMs: 400, durationMs: 200 }, transform: { delta: { rotation: 0 } } },
+						]),
 					},
 				},
 				costumes: [{ id: "cute", description: "可爱", hotkeyID: "hk-1" }],
@@ -193,7 +195,6 @@ const makeRuntime = (state: FakeState, cleanupTimeoutMs?: number) =>
 		),
 	});
 
-/** 段[0] 携带 postProcessing 预设引用的 spin 目录：预设前瞻校验专用。 */
 const presetRuntime = (state: FakeState, preset: string) =>
 	new Live2DRuntime({
 		client: makeFake(state),
@@ -202,26 +203,16 @@ const presetRuntime = (state: FakeState, preset: string) =>
 			MODEL_ID,
 			{
 				motions: {
-					spin: {
-						description: "石化特技",
-						motion: motion(100, {
-							"head.yaw": absolute(
-								keys([
-									[0, 0],
-									[100, 0],
-								]),
-							),
-						}),
-						spatial: {
-							segments: [
-								{
-									delta: { rotation: 200 },
-									durationMs: 100,
-									effects: { postProcessing: { on: true, preset, fadeTime: 0.15 } },
-								},
-								{ delta: { rotation: 0 }, durationMs: 200 },
-							],
-						},
+					spatial: {
+						description: "test post preset",
+						motion: spatialAction(400, [
+							{
+								during: { startMs: 0, endMs: 200, durationMs: 200 },
+								transform: { delta: { rotation: 200 } },
+								effects: { postProcessing: { on: true, preset, fadeTime: 0.15 } },
+							},
+							{ during: { startMs: 200, endMs: 400, durationMs: 200 }, transform: { delta: { rotation: 0 } } },
+						]),
 					},
 				},
 			},
@@ -229,7 +220,6 @@ const presetRuntime = (state: FakeState, preset: string) =>
 		),
 	});
 
-/** 段[0] 携带 postProcessing 直接效果值（灰度）的 spin 目录：values 模式专用。 */
 const valuesRuntime = (state: FakeState) =>
 	new Live2DRuntime({
 		client: makeFake(state),
@@ -238,42 +228,31 @@ const valuesRuntime = (state: FakeState) =>
 			MODEL_ID,
 			{
 				motions: {
-					spin: {
-						description: "石化特技",
-						motion: motion(100, {
-							"head.yaw": absolute(
-								keys([
-									[0, 0],
-									[100, 0],
-								]),
-							),
-						}),
-						spatial: {
-							segments: [
-								{
-									delta: { rotation: 200 },
-									durationMs: 100,
-									effects: {
-										postProcessing: {
-											on: true,
-											values: [
-												{ id: "ColorGrading_Strength", value: 1 },
-												{ id: "ColorGrading_Saturation", value: -100 },
-											],
-											fadeTime: 0.15,
-										},
+					spatial: {
+						description: "test post values",
+						motion: spatialAction(400, [
+							{
+								during: { startMs: 0, endMs: 200, durationMs: 200 },
+								transform: { delta: { rotation: 200 } },
+								effects: {
+									postProcessing: {
+										on: true,
+										values: [
+											{ id: "ColorGrading_Strength", value: 1 },
+											{ id: "ColorGrading_Saturation", value: -100 },
+										],
+										fadeTime: 0.15,
 									},
 								},
-								{ delta: { rotation: 0 }, durationMs: 200 },
-							],
-						},
+							},
+							{ during: { startMs: 200, endMs: 400, durationMs: 200 }, transform: { delta: { rotation: 0 } } },
+						]),
 					},
 				},
 			},
 			makeRig(),
 		),
 	});
-
 const startApp = async (rt: Live2DRuntime) => {
 	const app = createLive2DApp({ instance: rt });
 	await app.onStart!({ expose: () => () => {} } as unknown as ServiceCompanionContext);
@@ -299,9 +278,9 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		const rt = makeRuntime(state);
 		const app = await startApp(rt);
 		try {
-			const firstP = rt.express({ motion: "spin" }, {});
+			const firstP = rt.express({ motion: "spatial" }, {});
 			await tick(); // first 已持有声明
-			const secondP = rt.express({ motion: "spin" }, {});
+			const secondP = rt.express({ motion: "spatial" }, {});
 			const secondResult = await secondP;
 			expect(secondResult.status).toBe("failed");
 			expect(secondResult.details).toMatchObject({ reason: "resource_conflict" });
@@ -310,7 +289,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			expect(firstResult.details).toMatchObject({ restored: true });
 
 			// 结束后资源可用。
-			const again = await rt.express({ motion: "spin" }, {});
+			const again = await rt.express({ motion: "spatial" }, {});
 			expect(again.status).toBe("unknown");
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
@@ -334,11 +313,11 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		const rt = makeRuntime(state);
 		const app = await startApp(rt);
 		try {
-			const result = await rt.express({ motion: "spin" }, {});
+			const result = await rt.express({ motion: "spatial" }, {});
 			expect(result.status).toBe("failed");
 			expect(result.details).toMatchObject({ reason: "invalid_motion", effectStatus: "not_started" });
 			expect((result.details as { violations: string[] }).violations[0]).toContain("rotation=370");
-			expect((result.details as { violations: string[] }).violations[0]).toContain("段[0]");
+			expect((result.details as { violations: string[] }).violations[0]).toContain("事件[0]");
 			expect(state.moveCalls).toEqual([]); // 未发送任何移动，无需归位
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
@@ -361,103 +340,12 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		const rt = makeRuntime(state);
 		const app = await startApp(rt);
 		try {
-			const result = await rt.express({ motion: "spin" }, {});
+			const result = await rt.express({ motion: "spatial" }, {});
 			expect(result.status).toBe("unknown"); // 假体不确认参数输入（既有语义）
 			expect(state.moveCalls[0]).toMatchObject({ rotation: 188 }); // wrapDeg(348)=-12, -12+200=188
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}
-	});
-
-	it("compileCatalog：delta 数值域 lint——超出 VTS 值域的偏移绑定期即拒", () => {
-		const source = (delta: Record<string, number>): CatalogSource => ({
-			motions: {
-				spin: {
-					description: "旋转特技",
-					motion: motion(100, {
-						"head.yaw": absolute(
-							keys([
-								[0, 0],
-								[100, 0],
-							]),
-						),
-					}),
-					spatial: {
-						segments: [
-							{ delta, durationMs: 100 },
-							{ delta: { rotation: 0 }, durationMs: 100 },
-						],
-					},
-				},
-			},
-		});
-		expect(() => compileCatalog(MODEL_ID, source({ rotation: 400, y: 0 }), makeRig())).toThrow(
-			/VTS 值域.*rotation=400/,
-		);
-		expect(() => compileCatalog(MODEL_ID, source({ size: 150, y: 0 }), makeRig())).toThrow(/VTS 值域.*size=150/);
-		expect(() => compileCatalog(MODEL_ID, source({ y: 0.09, rotation: 359 }), makeRig())).not.toThrow();
-	});
-
-	it("compileCatalog：relativeRotation 校验——值域 (0,359]、与 delta 互斥、末段禁用", () => {
-		const build = (segments: readonly SpatialSegment[]): CatalogSource => ({
-			motions: {
-				spin: {
-					description: "旋转特技",
-					motion: motion(100, {
-						"head.yaw": absolute(
-							keys([
-								[0, 0],
-								[100, 0],
-							]),
-						),
-					}),
-					spatial: { segments },
-				},
-			},
-		});
-		expect(() =>
-			compileCatalog(
-				MODEL_ID,
-				build([
-					{ relativeRotation: 360, durationMs: 100 },
-					{ delta: { rotation: 0 }, durationMs: 100 },
-				]),
-				makeRig(),
-			),
-		).toThrow(/relativeRotation 必须在 \(0,359\]/);
-		expect(() =>
-			compileCatalog(
-				MODEL_ID,
-				build([
-					{ relativeRotation: 0, durationMs: 100 },
-					{ delta: { rotation: 0 }, durationMs: 100 },
-				]),
-				makeRig(),
-			),
-		).toThrow(/relativeRotation 必须在 \(0,359\]/);
-		expect(() =>
-			compileCatalog(
-				MODEL_ID,
-				build([
-					{ relativeRotation: 359, delta: { y: 0.05 }, durationMs: 100 },
-					{ delta: { rotation: 0 }, durationMs: 100 },
-				]),
-				makeRig(),
-			),
-		).toThrow(/relativeRotation 与 delta 互斥/);
-		expect(() => compileCatalog(MODEL_ID, build([{ relativeRotation: 359, durationMs: 100 }]), makeRig())).toThrow(
-			/末段不得是 relativeRotation/,
-		);
-		expect(() =>
-			compileCatalog(
-				MODEL_ID,
-				build([
-					{ relativeRotation: 359, durationMs: 100 },
-					{ delta: { rotation: 0, y: 0 }, durationMs: 100 },
-				]),
-				makeRig(),
-			),
-		).not.toThrow();
 	});
 
 	it("relative 旋转段逐帧驱动：全零时长增量闭环覆盖整圈，终值精确，后继 delta 段回正", async () => {
@@ -480,22 +368,12 @@ describe("独占资源（P4-5，边界 #9）", () => {
 				MODEL_ID,
 				{
 					motions: {
-						spin: {
+						spatial: {
 							description: "整圈旋转特技",
-							motion: motion(100, {
-								"head.yaw": absolute(
-									keys([
-										[0, 0],
-										[100, 0],
-									]),
-								),
-							}),
-							spatial: {
-								segments: [
-									{ relativeRotation: 359, durationMs: 100 },
-									{ delta: { rotation: 0 }, durationMs: 100 },
-								],
-							},
+							motion: spatialAction(800, [
+								{ during: { startMs: 0, endMs: 600, durationMs: 600 }, transform: { relativeRotation: 359 } },
+								{ during: { startMs: 600, endMs: 800, durationMs: 200 }, transform: { delta: { rotation: 0 } } },
+							]),
 						},
 					},
 				},
@@ -504,7 +382,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		});
 		const app = await startApp(rt);
 		try {
-			const result = await rt.express({ motion: "spin" }, {});
+			const result = await rt.express({ motion: "spatial" }, {});
 			expect(result.status).toBe("unknown"); // 假体不确认参数输入（既有语义）
 			// 整圈段：全部为逐帧驱动请求（timeInSeconds=0 + 请求级 relative 开关 + 仅 rotation）
 			const driveCalls = state.moveCalls.slice(0, -1);
@@ -515,9 +393,9 @@ describe("独占资源（P4-5，边界 #9）", () => {
 				expect(call).not.toHaveProperty("positionY");
 				expect(call).not.toHaveProperty("size");
 			}
-			// 闭环终值精确：增量之和 = 目标角（smooth 终值 = 全角），无欠旋
+			// 闭环终值精确到最小驱动步长：更小尾差不再发请求，避免无意义微动
 			const driven = driveCalls.reduce((sum, call) => sum + (call.rotation as number), 0);
-			expect(driven).toBeCloseTo(359, 6);
+			expect(Math.abs(359 - driven)).toBeLessThan(0.01);
 			// 增量单调（缓入缓出）且单帧增量远小于 180°——免疫 VTS 最短弧折返
 			const deltas = driveCalls.map((call) => call.rotation as number);
 			for (const delta of deltas) expect(Math.abs(delta)).toBeLessThan(180);
@@ -549,22 +427,15 @@ describe("独占资源（P4-5，边界 #9）", () => {
 				MODEL_ID,
 				{
 					motions: {
-						spin: {
+						spatial: {
 							description: "整圈旋转特技",
-							motion: motion(2000, {
-								"head.yaw": absolute(
-									keys([
-										[0, 0],
-										[2000, 0],
-									]),
-								),
-							}),
-							spatial: {
-								segments: [
-									{ relativeRotation: 359, durationMs: 2000 },
-									{ delta: { rotation: 0, y: 0 }, durationMs: 100 },
-								],
-							},
+							motion: spatialAction(2100, [
+								{ during: { startMs: 0, endMs: 2000, durationMs: 2000 }, transform: { relativeRotation: 359 } },
+								{
+									during: { startMs: 2000, endMs: 2100, durationMs: 100 },
+									transform: { delta: { rotation: 0, y: 0 } },
+								},
+							]),
 						},
 					},
 				},
@@ -573,7 +444,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		});
 		const app = await startApp(rt);
 		try {
-			const run = rt.express({ motion: "spin" }, {});
+			const run = rt.express({ motion: "spatial" }, {});
 			await new Promise((resolve) => setTimeout(resolve, 80));
 			rt.interrupt();
 			const result = await run;
@@ -584,64 +455,6 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			expect(state.moveCalls.filter((call) => call.valuesAreRelativeToModel === true).length).toBe(driveCount);
 			expect(countAfterCancel).toBeLessThanOrEqual(2); // 归位（restore）至多一次 moveModel
 			expect(state.moveTimes.at(-1)! - state.moveTimes.at(-2)!).toBeLessThan(1000); // 归位及时，未拖满 2s
-		} finally {
-			await app.onStop?.({} as ServiceCompanionContext);
-		}
-	});
-
-	it("段间等待不被效果派发抢跑：带效果段 sleep 全额等待 durationMs 后才发下一段 moveModel", async () => {
-		const state: FakeState = {
-			connected: true,
-			pose: { positionX: 0, positionY: 0, rotation: 10, size: 1 },
-			hotkeyIDs: [],
-			triggered: [],
-			moveCalls: [],
-			hangMove: false,
-			moveTimes: [],
-			readTimes: [],
-			updatePostCalls: [],
-			moved: false,
-			tintDelayMs: 150,
-		};
-		// 段[0] 带效果且派发耗时（150ms）超过段时长（100ms）：旧实现从派发前计时扣除，
-		// sleep 被抢跑至 0，两段 moveModel 几乎同时发出；修复后段间至少等满 100ms。
-		const rt = new Live2DRuntime({
-			client: makeFake(state),
-			rig: makeRig(),
-			catalog: compileCatalog(
-				MODEL_ID,
-				{
-					motions: {
-						spin: {
-							description: "旋转特技",
-							motion: motion(100, {
-								"head.yaw": absolute(
-									keys([
-										[0, 0],
-										[100, 0],
-									]),
-								),
-							}),
-							spatial: {
-								segments: [
-									{ delta: { rotation: 200 }, durationMs: 100, effects: { tint: { r: 120, g: 120, b: 128 } } },
-									{ delta: { rotation: 0 }, durationMs: 200 },
-								],
-							},
-						},
-					},
-				},
-				makeRig(),
-			),
-		});
-		const app = await startApp(rt);
-		try {
-			await rt.express({ motion: "spin" }, {});
-			expect(state.moveTimes.length).toBe(2);
-			// 修复语义：效果派发不计入段等待（动画尚未起跑），sleep 从位姿请求发送时刻起算。
-			// 假体 moveModel 往返耗时 ≈ 0，段间间隔应等满 durationMs；留 5ms 容差吸收
-			// 生产语义中扣除位姿请求往返的合法提前（真实 VTS 往返以毫秒计）。
-			expect(state.moveTimes[1]! - state.moveTimes[0]!).toBeGreaterThanOrEqual(95);
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}
@@ -664,7 +477,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		const rt = makeRuntime(state);
 		const app = await startApp(rt);
 		try {
-			const result = await rt.express({ motion: "spin" }, {});
+			const result = await rt.express({ motion: "spatial" }, {});
 			// 旧实现单次回读即判"正常回位未确认"且详情报陈旧 false；重试后如实结算。
 			expect(result.status).toBe("unknown"); // 假体不确认参数输入（既有语义）
 			expect(result.details).toMatchObject({ restored: true });
@@ -690,7 +503,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		const rt = presetRuntime(state, "Grayscale");
 		const app = await startApp(rt);
 		try {
-			const result = await rt.express({ motion: "spin" }, {});
+			const result = await rt.express({ motion: "spatial" }, {});
 			expect(result.status).toBe("failed");
 			expect(result.details).toMatchObject({ reason: "preset_missing" });
 			const details = result.details as { missingPresets: string[]; availablePresets: string[] };
@@ -721,7 +534,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		const rt1 = presetRuntime(withPreset, "Grayscale");
 		const app1 = await startApp(rt1);
 		try {
-			const r1 = await rt1.express({ motion: "spin" }, {});
+			const r1 = await rt1.express({ motion: "spatial" }, {});
 			expect(r1.status).toBe("unknown"); // 通过核验，正常执行到终点（假体不确认注入）
 			expect(withPreset.moveCalls.length).toBe(2);
 		} finally {
@@ -743,7 +556,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		const rt2 = presetRuntime(unknown, "Grayscale");
 		const app2 = await startApp(rt2);
 		try {
-			const r2 = await rt2.express({ motion: "spin" }, {});
+			const r2 = await rt2.express({ motion: "spatial" }, {});
 			expect(r2.status).toBe("unknown");
 			expect(unknown.moveCalls.length).toBe(2);
 		} finally {
@@ -767,7 +580,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		const rt = valuesRuntime(state);
 		const app = await startApp(rt);
 		try {
-			const result = await rt.express({ motion: "spin" }, {});
+			const result = await rt.express({ motion: "spatial" }, {});
 			expect(result.status).toBe("unknown"); // 假体不确认参数输入（既有语义）
 			// 段[0] 进入：灰度 config 直接下发（目录值原样透传）
 			expect(state.updatePostCalls[0]).toMatchObject({
@@ -787,25 +600,18 @@ describe("独占资源（P4-5，边界 #9）", () => {
 	});
 
 	it("compileCatalog：后处理 values 与 preset 互斥、values 非空、项形状校验", () => {
-		// 故意传非法形状做 lint 断言：post 以 as never 注入字段位（运行时校验是被测对象）
 		const base = (post: { on: boolean; values?: unknown; preset?: string; fadeTime?: number }): CatalogSource => ({
 			motions: {
-				spin: {
-					description: "石化特技",
-					motion: motion(100, {
-						"head.yaw": absolute(
-							keys([
-								[0, 0],
-								[100, 0],
-							]),
-						),
-					}),
-					spatial: {
-						segments: [
-							{ delta: { rotation: 200 }, durationMs: 100, effects: { postProcessing: post as never } },
-							{ delta: { rotation: 0 }, durationMs: 100 },
-						],
-					},
+				spatial: {
+					description: "post-processing payload test",
+					motion: spatialAction(400, [
+						{
+							during: { startMs: 0, endMs: 200, durationMs: 200 },
+							transform: { delta: { rotation: 200 } },
+							effects: { postProcessing: post as never },
+						},
+						{ during: { startMs: 200, endMs: 400, durationMs: 200 }, transform: { delta: { rotation: 0 } } },
+					]),
 				},
 			},
 		});
@@ -818,16 +624,15 @@ describe("独占资源（P4-5，边界 #9）", () => {
 		).toThrow(/values 与 preset 互斥/);
 		expect(() => compileCatalog(MODEL_ID, base({ on: true, values: [] }), makeRig())).toThrow(/非空数组/);
 		expect(() => compileCatalog(MODEL_ID, base({ on: true, values: [{ id: "", value: 1 }] }), makeRig())).toThrow(
-			/缺少 configID/,
+			/configID 不能为空/,
 		);
 		expect(() => compileCatalog(MODEL_ID, base({ on: true, values: [{ id: "X", value: null }] }), makeRig())).toThrow(
-			/必须是 number 或 string/,
+			/有限 number 或 string/,
 		);
 		expect(() =>
 			compileCatalog(MODEL_ID, base({ on: true, values: [{ id: "ColorGrading_Strength", value: 1 }] }), makeRig()),
 		).not.toThrow();
 	});
-
 	it("safeStop 期间等待在途归位清理完成，完成后暂停生效；此后工具 paused 拒绝", async () => {
 		const state: FakeState = {
 			connected: true,
@@ -855,7 +660,7 @@ describe("独占资源（P4-5，边界 #9）", () => {
 			await pendingCostume;
 			await stopP;
 			expect(rt.endpoint.state().paused).toBe(true);
-			const pausedP = await rt.express({ motion: "spin" }, {});
+			const pausedP = await rt.express({ motion: "spatial" }, {});
 			expect(pausedP.details).toMatchObject({ reason: "paused" });
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
