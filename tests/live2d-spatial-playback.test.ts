@@ -151,7 +151,7 @@ describe("ExternalActions absolute spatial schedule", () => {
 				category: "voluntary",
 				fadeInMs: 0,
 				fadeOutMs: 0,
-				description: "timed movement",
+				motionName: "timed_movement",
 				onTrace: (event) => trace.push(event),
 			});
 			expect(result.status).toBe("unknown"); // fake VTS never confirms parameter injection
@@ -185,7 +185,7 @@ describe("ExternalActions absolute spatial schedule", () => {
 			},
 		]);
 		try {
-			const result = await h.actions.runSpatial(clip, { category: "voluntary", description: "late effect" });
+			const result = await h.actions.runSpatial(clip, { category: "voluntary", motionName: "late_effect" });
 			expect(result.status).toBe("unknown");
 			expect((result.details as { reason?: string } | undefined)?.reason).toBe("spatial_window_missed");
 			expect(h.state.moveRequests).toEqual([]);
@@ -204,7 +204,7 @@ describe("ExternalActions absolute spatial schedule", () => {
 			},
 		]);
 		try {
-			const result = await h.actions.runSpatial(clip, { category: "voluntary", description: "short pose window" });
+			const result = await h.actions.runSpatial(clip, { category: "voluntary", motionName: "short_pose_window" });
 			expect(result.status).toBe("unknown");
 			expect((result.details as { reason?: string } | undefined)?.reason).toBe("spatial_window_missed");
 			expect(h.state.tintRequests).toEqual([]);
@@ -225,7 +225,7 @@ describe("ExternalActions absolute spatial schedule", () => {
 		let finished = false;
 		try {
 			const running = h.actions
-				.runSpatial(clip, { category: "voluntary", description: "persistent marker effect" })
+				.runSpatial(clip, { category: "voluntary", motionName: "persistent_marker_effect" })
 				.then((result) => {
 					finished = true;
 					return result;
@@ -263,7 +263,7 @@ describe("ExternalActions absolute spatial schedule", () => {
 		let finished = false;
 		try {
 			const running = h.actions
-				.runSpatial(clip, { category: "voluntary", description: "attached effect lifetime" })
+				.runSpatial(clip, { category: "voluntary", motionName: "attached_effect_lifetime" })
 				.then((result) => {
 					finished = true;
 					return result;
@@ -295,7 +295,7 @@ describe("ExternalActions absolute spatial schedule", () => {
 			{ during: { startMs: 300, endMs: 500, durationMs: 200 }, transform: { delta: { x: 0.7 } } },
 		]);
 		try {
-			const result = await h.actions.runSpatial(clip, { category: "voluntary", description: "manual pose change" });
+			const result = await h.actions.runSpatial(clip, { category: "voluntary", motionName: "manual_pose_change" });
 			expect(result.status).toBe("unknown");
 			expect((result.details as { reason?: string } | undefined)?.reason).toBe("external_pose_changed");
 			expect((result.details as { cleanup?: { pose?: string } } | undefined)?.cleanup?.pose).toBe("unknown");
@@ -326,7 +326,7 @@ describe("ExternalActions absolute spatial schedule", () => {
 		try {
 			const result = await h.actions.runSpatial(clip, {
 				category: "voluntary",
-				description: "pose changed during tint ACK",
+				motionName: "pose_changed_during_tint_ack",
 			});
 			expect(result.status).toBe("unknown");
 			expect((result.details as { reason?: string } | undefined)?.reason).toBe("external_pose_changed");
@@ -350,7 +350,7 @@ describe("ExternalActions absolute spatial schedule", () => {
 			},
 		]);
 		try {
-			const result = await h.actions.runSpatial(clip, { category: "voluntary", description: "initial boundary drift" });
+			const result = await h.actions.runSpatial(clip, { category: "voluntary", motionName: "initial_boundary_drift" });
 			expect(result.status).toBe("unknown");
 			expect((result.details as { reason?: string } | undefined)?.reason).toBe("external_pose_changed");
 			expect((result.details as { cleanup?: { pose?: string } } | undefined)?.cleanup?.pose).toBe("unknown");
@@ -372,7 +372,7 @@ describe("ExternalActions absolute spatial schedule", () => {
 		);
 		const startedAt = Date.now();
 		try {
-			const result = await h.actions.runSpatial(clip, { category: "voluntary", description: "effect failure" });
+			const result = await h.actions.runSpatial(clip, { category: "voluntary", motionName: "effect_failure" });
 			expect(Date.now() - startedAt).toBeGreaterThanOrEqual(450);
 			expect(h.state.tintRequests).toEqual([
 				{ r: 50, g: 30, b: 20 },
@@ -394,7 +394,7 @@ describe("ExternalActions absolute spatial schedule", () => {
 		try {
 			const running = h.actions.runSpatial(clip, {
 				category: "voluntary",
-				description: "cancelled effect",
+				motionName: "cancelled_effect",
 				signal: controller.signal,
 			});
 			await new Promise((resolve) => setTimeout(resolve, 100));
@@ -421,7 +421,7 @@ describe("ExternalActions absolute spatial schedule", () => {
 		try {
 			const running = h.actions.runSpatial(clip, {
 				category: "voluntary",
-				description: "cancelled interpolation",
+				motionName: "cancelled_interpolation",
 				signal: controller.signal,
 			});
 			await new Promise((resolve) => setTimeout(resolve, 80));
@@ -452,7 +452,7 @@ describe("ExternalActions absolute spatial schedule", () => {
 		try {
 			const running = h.actions.runSpatial(clip, {
 				category: "voluntary",
-				description: "off-path manual pose",
+				motionName: "off_path_manual_pose",
 				signal: controller.signal,
 			});
 			await new Promise((resolve) => setTimeout(resolve, 80));
@@ -478,7 +478,7 @@ describe("ExternalActions absolute spatial schedule", () => {
 		try {
 			const running = h.actions.runSpatial(clip, {
 				category: "voluntary",
-				description: "half turn interpolation",
+				motionName: "half_turn_interpolation",
 				signal: controller.signal,
 			});
 			await new Promise((resolve) => setTimeout(resolve, 80));
@@ -502,7 +502,7 @@ describe("ExternalActions absolute spatial schedule", () => {
 			{ durationMs: 700 },
 		);
 		try {
-			const result = await h.actions.runSpatial(clip, { category: "voluntary", description: "settled baseline" });
+			const result = await h.actions.runSpatial(clip, { category: "voluntary", motionName: "settled_baseline" });
 			expect(result.status).toBe("unknown");
 			expect((result.details as { restored?: boolean } | undefined)?.restored).toBe(true);
 			expect(h.state.pose.positionX).toBe(0);
@@ -522,7 +522,7 @@ describe("ExternalActions absolute spatial schedule", () => {
 		try {
 			await h.actions.runSpatial(clip, {
 				category: "voluntary",
-				description: "relative rotation",
+				motionName: "relative_rotation",
 				onTrace: (event) => trace.push(event as unknown as Record<string, unknown>),
 			});
 			const increments = h.state.moveRequests

@@ -17,6 +17,8 @@
 | status | detail? | 默认目录与状态；detail 返回生命周期、近期 cue、外部结算及引擎诊断 |
 | reload | 无 | 显式重载并核验绑定 |
 
+命名动作、外观热键与持续状态的终态回执使用目录规范名和短状态码，例如 `nod OK`、`nod UNKNOWN: input_unconfirmed`、`nod CANCELLED: preempted`。spatial 动作沿用同一格式；ACK、失败、位姿归位和清理证据保留在结构化 `details`。别名触发时仍回显规范名；空 state 调用返回 `state NOOP`。目录名错误和可恢复的预检拒绝保留可操作原因及可用选项；`prepare_body` 保留所需的 VTS 手动映射步骤。
+
 执行仍为 parallel，通道与外部资源由 director 仲裁。state 先校验整组参数，再按姿态、表情、视线、环境顺序施加。等待中被取代、取消或目录更换后不再施加余项，返回已接受的部分事实；不回滚持续意图。hold_ms=0 或省略持续保持，正数在过渡到位后计时，暂停或失焦冻结剩余时间。
 
 cue 只命中动作与姿态，通过 runtime 的同一执行路径准入与结算；endpoint 只提供能力查询与异步账本。拒绝不记 started；异常必落账；旧回调只更新自己的记录。伴随 cue 仍由 embodiment/voice 拥有输出时序，World 不读取它们的内部状态。

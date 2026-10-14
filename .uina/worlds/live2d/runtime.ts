@@ -28,7 +28,7 @@ import {
 	type PlayOptions,
 } from "./director/director.js";
 import { buildLive2DEndpoint, type Live2DEndpoint } from "./endpoint.js";
-import { settleMotion, withCancellation, toolRejected, toolSucceeded, toolUnknown } from "./results.js";
+import { actionReceipt, settleMotion, toolRejected, toolSucceeded, toolUnknown, withCancellation } from "./results.js";
 import { ExternalActions } from "./external-actions.js";
 import { SpeechInput, type SpeechConfig } from "./speech-level.js";
 
@@ -355,13 +355,12 @@ export class Live2DRuntime {
 	private async playMotion(
 		entry: CatalogMotionEntry,
 		options: {
+			actionName: string;
 			speech?: SpeechPolicy;
 			atomic?: boolean;
 			signal?: AbortSignal;
-			callName?: string;
-			actionName?: string;
 			onStarted?: () => void;
-		} = {},
+		},
 	): Promise<ToolExecutionResult> {
 		const denied = this.gate(options);
 		if (denied) return denied;
@@ -372,7 +371,7 @@ export class Live2DRuntime {
 				: this.executionController.signal,
 		};
 		const director = this.director!;
-		const actionName = options.actionName ?? entry.description;
+		const actionName = options.actionName;
 		const playIndex = this.nextActionPlayIndex(actionName);
 		const clip = this.pickMotionClip(entry, actionName, playIndex, options.speech);
 		const playOptions: PlayOptions = {
@@ -381,18 +380,16 @@ export class Live2DRuntime {
 			atomic: options.atomic ?? entry.atomic,
 			signal: options.signal,
 		};
-		const label = `动作 "${entry.description}"`;
 		if (clip.spatial.length === 0) {
 			const handle = director.play(clip, playOptions);
 			options.onStarted?.();
-			return settleMotion(this.client!, this.rig!, handle, clip, label, options.callName);
+			return settleMotion(this.client!, this.rig!, handle, clip, actionName);
 		}
-		if (!this.focused) return toolRejected("unfocused", `${label} 未执行：身体当前失焦。`);
+		if (!this.focused) return toolRejected("unfocused", actionReceipt(actionName, "FAILED", "unfocused"));
 
 		return this.externalActions!.runSpatial(clip, {
 			...playOptions,
-			description: entry.description,
-			callName: options.callName,
+			motionName: actionName,
 			onStarted: options.onStarted,
 		});
 	}
@@ -420,7 +417,6 @@ export class Live2DRuntime {
 			atomic,
 			actionName: resolved.name,
 			signal: ctx.signal,
-			callName: name,
 		});
 	}
 
@@ -431,7 +427,7 @@ export class Live2DRuntime {
 		const cue = this.catalog.resolveCue(id);
 		if (!cue) return toolRejected("unknown_cue", `未知 cue: "${id}"。`);
 		if (cue.kind === "posture") return this.applyState({ posture: id }, {}, onStarted);
-		return this.playMotion(cue.entry, { actionName: cue.name, callName: id, onStarted });
+		return this.playMotion(cue.entry, { actionName: cue.name, onStarted });
 	}
 	async state(args: Record<string, unknown>, ctx: { signal?: AbortSignal }): Promise<ToolExecutionResult> {
 		return this.applyState(args, ctx);
@@ -465,7 +461,7 @@ export class Live2DRuntime {
 					`${kind === "posture" ? "姿态" : "表情"}不在当前模型目录: "${name}"。当前可用: ${formatCatalogEntries(catalog.list(kind)).join(", ") || "无"}。`,
 				);
 			changes.push({
-				label: name,
+				label: slot.name,
 				run: () =>
 					kind === "posture"
 						? director.setPosture(slot.entry.values, { holdMs, durationMs: slot.entry.transitionMs })
@@ -481,7 +477,7 @@ export class Live2DRuntime {
 					"unknown_attention",
 					`注视目标不在词表: "${name}"。可用注视: ${formatCatalogEntries(catalog.list("attention")).join(", ")}。`,
 				);
-			changes.push({ label: name, run: () => director.setAttention(attention.entry.target, { holdMs }) });
+			changes.push({ label: attention.name, run: () => director.setAttention(attention.entry.target, { holdMs }) });
 		}
 		if (args.ambient !== undefined) {
 			const raw = args.ambient;
@@ -495,7 +491,7 @@ export class Live2DRuntime {
 					`环境循环不在当前模型目录: "${raw}"。当前可用: ${formatCatalogEntries(catalog.list("ambient")).join(", ") || "无"}。`,
 				);
 			changes.push({
-				label: clear ? "cleared" : (raw as string),
+				label: clear ? "cleared" : ambient!.name,
 				run: () => {
 					const next = ambient?.name;
 					if (next === this.ambientName) return;
@@ -508,7 +504,11 @@ export class Live2DRuntime {
 			});
 		}
 		if (!changes.length)
-			return toolSucceeded("未指定任何槽位，状态未变。", { effectStatus: "accepted", verification: "local_intent" });
+			return toolSucceeded("state NOOP", {
+				effectStatus: "accepted",
+				verification: "local_intent",
+				reason: "no_changes",
+			});
 		const applied: string[] = [];
 		try {
 			for (const change of changes) {
@@ -538,18 +538,21 @@ export class Live2DRuntime {
 			}
 		} catch (error) {
 			const cancelled = ctx.signal?.aborted || error instanceof SupersededError || generation !== this.generation;
+			const reason =
+				generation !== this.generation
+					? "stale_catalog"
+					: ctx.signal?.aborted
+						? "cancelled"
+						: error instanceof SupersededError
+							? "superseded"
+							: "execution_failed";
 			return {
-				result: `${cancelled ? "状态设置已取消或被取代" : "状态设置失败"}（此前已生效: ${applied.join("、") || "无"}）。`,
+				result: `${actionReceipt("state", cancelled ? "CANCELLED" : "FAILED", reason)}${
+					applied.length ? ` (applied: ${applied.join(", ")})` : ""
+				}`,
 				status: cancelled ? "cancelled" : "failed",
 				details: {
-					reason:
-						generation !== this.generation
-							? "stale_catalog"
-							: ctx.signal?.aborted
-								? "cancelled"
-								: error instanceof SupersededError
-									? "superseded"
-									: "execution_failed",
+					reason,
 					effectStatus: applied.length ? "accepted" : "not_started",
 					verification: "local_intent",
 					applied,
@@ -618,13 +621,19 @@ export class Live2DRuntime {
 		try {
 			await this.client!.reloadCurrentModel();
 		} catch (error) {
-			return toolUnknown(`模型重载失败：${error instanceof Error ? error.message : String(error)}`);
+			return toolUnknown(actionReceipt("reload", "UNKNOWN", "model_reload_failed"), {
+				reason: "model_reload_failed",
+				cause: error instanceof Error ? error.message : String(error),
+			});
 		}
 		// 重新核验绑定：重载后的模型身份必须与本地 rig 一致（tick 侧身份门独立逐帧生效）。
 		const profile = this.client!.getModelProfile();
 		if (!profile || profile.modelID !== this.rig!.modelID)
-			return toolRejected("unadapted", "重载后的模型与本地 rig 不符，绑定核验失败。");
-		return toolSucceeded("OK", { effectStatus: "accepted", verification: "local_intent" });
+			return toolRejected("unadapted", actionReceipt("reload", "FAILED", "model_mismatch"), {
+				expectedModelID: this.rig!.modelID,
+				actualModelID: profile?.modelID ?? null,
+			});
+		return toolSucceeded(actionReceipt("reload", "OK"), { effectStatus: "accepted", verification: "local_intent" });
 	}
 
 	// ---------- 生命周期 ----------

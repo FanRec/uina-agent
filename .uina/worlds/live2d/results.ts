@@ -16,6 +16,13 @@ import type { MotionInjectionEvidence, VTSClient } from "./adapter/vts-client.js
 
 export type EffectStatus = "not_started" | "applied" | "accepted" | "cancelled" | "unknown";
 export type Verification = "local_intent" | "input_accepted";
+export type ActionReceiptOutcome = "OK" | "UNKNOWN" | "CANCELLED" | "FAILED";
+
+/** Compact model-facing action receipt; structured evidence stays in details. */
+export function actionReceipt(name: string, outcome: ActionReceiptOutcome, reason?: string): string {
+	const suffix = reason && reason.toUpperCase() !== outcome ? `: ${reason}` : "";
+	return `${name} ${outcome}${suffix}`;
+}
 
 /** 拒绝原因词表（§2.1 表格，normative）。
  *  分类规则：调用方格式错误（缺参/类型错）→ invalid_*；环境/词表事实不满足 → unknown_* / 专属词。 */
@@ -94,24 +101,25 @@ export function toolNotStarted(result: string, extra?: Record<string, unknown>):
  */
 export function fromEngineResult(
 	engine: SomaticActionResult,
-	label: string,
+	motionName: string,
 	evidence?: MotionInjectionEvidence,
 	requiredInputs: readonly string[] = [],
-	callName?: string,
 ): ToolExecutionResult {
 	switch (engine.status) {
 		case "completed":
 			if (!evidence?.accepted || requiredInputs.some((input) => !evidence.acceptedInputs.includes(input)))
-				return toolUnknown(`${label}已播放，但状态未完整确认。`, { injection: evidence });
-			// 成功回执回显调用名（不是作者描述）：闭环调用方自己的符号，语义由 details 承载。
-			return toolSucceeded(`${callName ?? label} OK`, {
+				return toolUnknown(actionReceipt(motionName, "UNKNOWN", "input_unconfirmed"), {
+					reason: "input_unconfirmed",
+					injection: evidence,
+				});
+			return toolSucceeded(actionReceipt(motionName, "OK"), {
 				effectStatus: "accepted",
 				verification: "input_accepted",
 				injection: evidence,
 			});
 		case "cancelled":
 			return {
-				result: `${label}已取消${engine.reason ? `（${engine.reason}）` : ""}。`,
+				result: actionReceipt(motionName, "CANCELLED", engine.reason),
 				status: "cancelled",
 				details: {
 					effectStatus: "cancelled",
@@ -120,11 +128,11 @@ export function fromEngineResult(
 			};
 		case "failed":
 			if (engine.reason === "disconnected")
-				return toolUnknown(`${label}因连接中断结果不明。`, { reason: "disconnected" });
+				return toolUnknown(actionReceipt(motionName, "UNKNOWN", "disconnected"), { reason: "disconnected" });
 			return {
-				result: `${label}失败：${engine.reason ?? "未知原因"}。`,
+				result: actionReceipt(motionName, "FAILED", "engine_error"),
 				status: "failed",
-				details: { effectStatus: "unknown", engineReason: engine.reason },
+				details: { effectStatus: "unknown", reason: "engine_error", engineReason: engine.reason },
 			};
 	}
 }
@@ -156,15 +164,14 @@ export async function settleMotion(
 	rig: ModelRig,
 	handle: MotionHandle,
 	clip: CompiledAction,
-	label: string,
-	callName?: string,
+	motionName: string,
 ): Promise<ToolExecutionResult> {
 	const observation = client.observeMotionInjections(handle.id);
 	try {
 		const result = await handle.finished;
 		const evidence = result.status === "completed" ? await observation.finish() : observation.snapshot();
 		const inputs = [...new Set(clip.axes.flatMap((axis) => rig.bindings[axis]!.map((binding) => binding.input)))];
-		return fromEngineResult(result, label, evidence, inputs, callName);
+		return fromEngineResult(result, motionName, evidence, inputs);
 	} finally {
 		observation.close();
 	}

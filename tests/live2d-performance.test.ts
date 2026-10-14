@@ -589,8 +589,10 @@ describe("MO 表演实际合成与执行", () => {
 		}
 		const result = await run;
 		expect(result.status).toBe("unknown");
-		expect(result.result).toContain("未完整");
-		expect(result.result).toContain("tint failed");
+		expect(result.result).toBe("fx_probe UNKNOWN: spatial_effect_unconfirmed");
+		expect(result.details).toMatchObject({
+			effectIssues: expect.arrayContaining([expect.stringContaining("tint failed")]),
+		});
 		expect(result.details).toMatchObject({ restored: true, restoredEffects: { tint: true, post: true } });
 		// 失败的染色请求之后，段2 照常派发，归位白仍执行。
 		expect(device.postProcessings.at(-1)?.postProcessingOn).toBe(false);
@@ -613,7 +615,7 @@ describe("MO 表演实际合成与执行", () => {
 		}
 		const result = await run;
 		expect(result.status).toBe("unknown");
-		expect(result.result).toContain("滤镜归位未确认");
+		expect(result.result).toBe("fx_probe UNKNOWN: spatial_effect_unconfirmed");
 		expect(result.details).toMatchObject({ restored: true, restoredEffects: { tint: true, post: false } });
 	});
 

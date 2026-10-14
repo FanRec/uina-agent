@@ -6,7 +6,7 @@ import type { CompiledAction } from "./authoring/action.js";
 import type { CompiledSpatialEvent } from "./authoring/spatial.js";
 import { smooth } from "./authoring/curves.js";
 import { type ExclusiveClaim, MotionDirector, type MotionHandle, type PlayOptions } from "./director/director.js";
-import { settleMotion, toolRejected, toolSucceeded, toolUnknown, withCancellation } from "./results.js";
+import { actionReceipt, settleMotion, toolRejected, toolSucceeded, toolUnknown, withCancellation } from "./results.js";
 export type CleanupState = "not_needed" | "confirmed" | "unknown";
 export interface CleanupFacts {
 	readonly pose: CleanupState;
@@ -53,8 +53,7 @@ export type SpatialRequestTrace =
 			readonly outcome?: "confirmed" | "failed" | "unknown";
 	  };
 export type SpatialOptions = PlayOptions & {
-	callName?: string;
-	description?: string;
+	motionName: string;
 	onStarted?: () => void;
 	onTrace?: (trace: SpatialRequestTrace) => void;
 };
@@ -223,8 +222,9 @@ export class ExternalActions {
 		const director = this.director;
 		const client = this.client;
 		const spatial = clip.spatial;
-		const label = `动作 "${options.description ?? options.callName ?? "未命名"}"`;
-		if (spatial.length === 0) return toolRejected("invalid_motion", `${label} 缺少空间事件。`);
+		const motionName = options.motionName;
+		if (spatial.length === 0)
+			return toolRejected("invalid_motion", actionReceipt(motionName, "FAILED", "missing_spatial_events"));
 		const hasEffects = spatial.some((event) => event.effects !== undefined);
 		const hasPost = spatial.some((event) => event.effects?.postProcessing !== undefined);
 		const hasTransform = spatial.some((event) => event.transform !== undefined);
@@ -392,7 +392,7 @@ export class ExternalActions {
 					ensureActive();
 					baseCapturedAtMs = director.clockMs;
 					if (![base.positionX, base.positionY, base.rotation, base.size].every(Number.isFinite))
-						return toolRejected("invalid_motion", `${label} 无法读取有限的模型位姿，未发送。`);
+						return toolRejected("invalid_motion", actionReceipt(motionName, "FAILED", "pose_unavailable"));
 					expectedPose = { ...base };
 					const rotationBase = wrapDeg(base.rotation);
 					const violations: string[] = [];
@@ -428,7 +428,7 @@ export class ExternalActions {
 					if (violations.length > 0)
 						return toolRejected(
 							"invalid_motion",
-							`${label} 空间计划与当前模型位姿组合后越界，未发送：${violations.join("；")}`,
+							`${actionReceipt(motionName, "FAILED", "spatial_plan_out_of_range")} (${violations.join("; ")})`,
 							{
 								violations,
 							},
@@ -446,7 +446,7 @@ export class ExternalActions {
 					if (missing.length > 0)
 						return toolRejected(
 							"preset_missing",
-							`${label} 引用的后处理预设不存在于 VTS，未发送：${missing.join("、")}。可用预设: ${presets.join("、")}`,
+							`${actionReceipt(motionName, "FAILED", "preset_missing")} (missing: ${missing.join(", ")}; available: ${presets.join(", ")})`,
 							{
 								missingPresets: missing,
 								availablePresets: presets,
@@ -463,7 +463,10 @@ export class ExternalActions {
 							throw new Error("Invalid post-processing baseline");
 					} catch (error) {
 						if (claim.signal.aborted) throw error;
-						return toolRejected("effect_baseline_unavailable", `${label} 未执行：无法捕获后处理基线。`);
+						return toolRejected(
+							"effect_baseline_unavailable",
+							actionReceipt(motionName, "FAILED", "effect_baseline_unavailable"),
+						);
 					}
 				}
 				ensureActive();
@@ -556,7 +559,7 @@ export class ExternalActions {
 				void handle.finished.then((result) => {
 					if (result.status === "cancelled") claim.cancel();
 				});
-				motionResult = settleMotion(client, this.rig, handle, clip, label, options.callName);
+				motionResult = settleMotion(client, this.rig, handle, clip, motionName);
 				for (const event of spatial) {
 					await waitUntilActionMs(event.atMs);
 					ensureActive();
@@ -700,25 +703,26 @@ export class ExternalActions {
 				]);
 				restored = poseRestored;
 				if (poseOwnershipLost)
-					return toolUnknown(`${label} 执行期间检测到模型位姿被手动修改，已保留当前位姿。`, {
+					return toolUnknown(actionReceipt(motionName, "UNKNOWN", "external_pose_changed"), {
 						reason: "external_pose_changed",
 						restored: false,
 						restoredEffects,
 					});
 				if (!restored)
-					return toolUnknown(`${label} 正常回位未确认。`, {
+					return toolUnknown(actionReceipt(motionName, "UNKNOWN", "spatial_pose_unconfirmed"), {
 						reason: "spatial_pose_unconfirmed",
 						restored: false,
 						restoredEffects,
 					});
 				if (dispatchFailures.length > 0 || !restoredEffects.tint || !restoredEffects.post) {
-					const problems = [...dispatchFailures];
-					if (!restoredEffects.tint) problems.push("染色归位未确认");
-					if (!restoredEffects.post) problems.push("滤镜归位未确认");
-					return toolUnknown(`${label} 部分外部效果未完整：${problems.join("；")}`, {
+					const effectIssues = [...dispatchFailures];
+					if (!restoredEffects.tint) effectIssues.push("染色归位未确认");
+					if (!restoredEffects.post) effectIssues.push("滤镜归位未确认");
+					return toolUnknown(actionReceipt(motionName, "UNKNOWN", "spatial_effect_unconfirmed"), {
 						reason: "spatial_effect_unconfirmed",
 						restored: true,
 						restoredEffects,
+						effectIssues,
 					});
 				}
 				return {
@@ -733,19 +737,18 @@ export class ExternalActions {
 				handle?.stop("cut");
 				const [confirmed, restoredEffects] = await Promise.all([restore(), restoreEffects()]);
 				if (poseOwnershipLost || error instanceof ExternalPoseChangedError)
-					return toolUnknown(`${label} 执行期间检测到模型位姿被手动修改，已保留当前位姿。`, {
+					return toolUnknown(actionReceipt(motionName, "UNKNOWN", "external_pose_changed"), {
 						reason: "external_pose_changed",
 						restored: false,
 						restoredEffects,
 					});
 				if (cancelled) {
 					const clean = confirmed && restoredEffects.tint && restoredEffects.post;
+					const result = missedWindow
+						? actionReceipt(motionName, "UNKNOWN", "spatial_window_missed")
+						: actionReceipt(motionName, "CANCELLED", clean ? undefined : "cleanup_unconfirmed");
 					return {
-						result: missedWindow
-							? `${label} 空间位姿窗口已错过，动作已取消并清理。`
-							: clean
-								? `${label} 已取消并完成清理。`
-								: `${label} 已取消，外部清理未确认。`,
+						result,
 						status: missedWindow ? "unknown" : "cancelled",
 						details: {
 							reason: missedWindow ? "spatial_window_missed" : "cancelled",
@@ -755,8 +758,9 @@ export class ExternalActions {
 						},
 					};
 				}
-				return toolUnknown(`${label} 执行异常：${error instanceof Error ? error.message : String(error)}`, {
+				return toolUnknown(actionReceipt(motionName, "UNKNOWN", "spatial_execution_failed"), {
 					reason: "spatial_execution_failed",
+					cause: error instanceof Error ? error.message : String(error),
 					...(moved ? { restored: confirmed } : {}),
 					restoredEffects,
 				});
@@ -774,7 +778,12 @@ export class ExternalActions {
 	}
 	async runCostume(entry: CatalogCostumeEntry, signal?: AbortSignal): Promise<ToolExecutionResult> {
 		const hotkey = this.client.findHotkey(entry.hotkeyID);
-		if (!hotkey) return toolRejected("hotkey_missing", `热键未在当前 VTS 模型登记: "${entry.hotkeyID}"。`);
+		if (!hotkey)
+			return toolRejected(
+				"hotkey_missing",
+				`${actionReceipt(entry.id, "FAILED", "hotkey_missing")} (${entry.hotkeyID})`,
+				{ hotkeyID: entry.hotkeyID },
+			);
 		const claim = this.acquireClaim(["effect:*"], "costume", signal);
 		if ("status" in claim) return claim;
 		const modelGeneration = this.client.getModelGeneration(),
@@ -796,20 +805,26 @@ export class ExternalActions {
 				modelGeneration === this.client.getModelGeneration() &&
 				connectionGeneration === this.client.getInjectionStats().generation &&
 				catalogGeneration === this.options.getCatalogGeneration();
-			if (!accepted) return toolUnknown("外观请求返回时执行环境已变化，效果未知。");
+			if (!accepted)
+				return toolUnknown(actionReceipt(entry.id, "UNKNOWN", "environment_changed"), {
+					reason: "environment_changed",
+				});
 			if (claim.signal.aborted)
 				return {
-					result: "外观请求已接受；调用已取消。",
+					result: actionReceipt(entry.id, "CANCELLED", "accepted_before_cancel"),
 					status: "cancelled",
 					details: { effectStatus: "accepted", hotkey: "accepted", verification: "local_intent" },
 				};
-			return toolSucceeded(`${entry.id} OK`, {
+			return toolSucceeded(actionReceipt(entry.id, "OK"), {
 				effectStatus: "accepted",
 				verification: "local_intent",
 				hotkey: "accepted",
 			});
 		} catch (error) {
-			return toolUnknown(`外观触发结果不明：${error instanceof Error ? error.message : String(error)}`);
+			return toolUnknown(actionReceipt(entry.id, "UNKNOWN", "hotkey_result_unconfirmed"), {
+				reason: "hotkey_result_unconfirmed",
+				cause: error instanceof Error ? error.message : String(error),
+			});
 		} finally {
 			finish({
 				kind: "costume",
