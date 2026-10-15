@@ -194,6 +194,8 @@ class AudioPlayback:
         # Short-time PCM levels indexed by absolute audio byte position. Feed computes
         # them outside the real-time lock; snapshots select by the playback/DAC clock.
         self._level_windows: deque[tuple[int, int, float, float]] = deque()
+        self._level_position = 0
+        self._last_level = (0.0, 0.0)
         self._received_audio_bytes = 0
         self._underrun_count = 0
         self._tail_padding_count = 0
@@ -266,6 +268,8 @@ class AudioPlayback:
             self._playback_started = False
             # 新一段音频不得继承上一段的电平，否则首帧口型会先张开
             self._level_windows.clear()
+            self._level_position = 0
+            self._last_level = (0.0, 0.0)
             self._received_audio_bytes = 0
             self._stream_sample_rate = sample_rate
             self._stream_channels = channels
@@ -623,16 +627,27 @@ class AudioPlayback:
             )
             position = self._segment_origin_bytes + played_samples * max(self._stream_channels * 2, 1)
             # Submitted-sample fallback observes the last output sample; DAC observes
-            # the sample currently audible. Keep only one past window and future ones.
+            # the sample currently audible. Progress polling can skip entire 20ms
+            # windows: retain the strongest already-played window since the last
+            # read, without admitting queued/future audio or adding envelope smoothing.
             if not self._dac_count:
                 position = max(0, position - 1)
-            while len(self._level_windows) > 1 and self._level_windows[1][0] <= position:
-                self._level_windows.popleft()
             level_rms = level_peak = 0.0
+            if level_active and position == self._level_position:
+                level_rms, level_peak = self._last_level
+            while len(self._level_windows) > 1 and self._level_windows[1][0] <= position:
+                start, end, rms, peak = self._level_windows.popleft()
+                if level_active and end > self._level_position:
+                    level_rms = max(level_rms, rms)
+                    level_peak = max(level_peak, peak)
             if level_active and self._level_windows:
                 start, end, rms, peak = self._level_windows[0]
                 if start <= position < end:
-                    level_rms, level_peak = rms, peak
+                    level_rms = max(level_rms, rms)
+                    level_peak = max(level_peak, peak)
+            # The fallback's final-sample offset must not cross into the previous segment.
+            self._level_position = max(position, self._segment_origin_bytes)
+            self._last_level = (level_rms, level_peak)
             return PlaybackProgressSnapshot(
                 playback_started=self._playback_started and played_samples > 0,
                 played_ms=min(round(played_ms, 2), float(duration_ms)),
@@ -652,6 +667,8 @@ class AudioPlayback:
             self._segment_id = playback_id
             self._segment_origin_bytes = self._played_bytes
             self._dac_count = 0
+            self._level_position = self._segment_origin_bytes
+            self._last_level = (0.0, 0.0)
 
     def stop_stream(self) -> None:
         with self._control_lock:
@@ -675,6 +692,8 @@ class AudioPlayback:
             self._stream_channels = 1
             self._max_buffer_bytes = 0
             self._level_windows.clear()
+            self._level_position = 0
+            self._last_level = (0.0, 0.0)
             self._received_audio_bytes = 0
             self._drained.set()
             self._buffer_lock.notify_all()

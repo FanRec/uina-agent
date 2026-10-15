@@ -256,6 +256,81 @@ def test_dac_levels_follow_audible_window_including_tail_and_gap(monkeypatch) ->
     player.stop_stream()
 
 
+def test_short_voiced_window_between_progress_polls_is_delivered_once(monkeypatch) -> None:
+    clock = [1.0]
+    monkeypatch.setattr("audio_playback.time.perf_counter", lambda: clock[0])
+    player = AudioPlayback()
+    player._streaming = True
+    player._stream_sample_rate = 1000
+    player._first_feed_at_ms = 1.0
+    # 40–60ms is voiced, between the 33ms and 66ms progress polls.
+    pcm = b"\x00\x00" * 40 + _pcm_from_amplitude(0.5, 20) + b"\x00\x00" * 140
+    player.feed(pcm)
+    player._stream_finished = True
+    output = bytearray(400)
+    player._audio_callback(output, 200, SimpleNamespace(outputBufferDacTime=1.1, currentTime=1.0), None)
+    assert bytes(output) == pcm
+    try:
+        clock[0] = 1.133
+        assert player.progress_snapshot(duration_ms=200).rms == 0
+        clock[0] = 1.166
+        voiced = player.progress_snapshot(duration_ms=200)
+        assert abs(voiced.rms - 0.5) < 0.02
+        assert abs(voiced.peak - 0.5) < 0.02
+        # Duplicate reads cannot consume the transient before its publication.
+        assert player.progress_snapshot(duration_ms=200).rms == voiced.rms
+        clock[0] = 1.199
+        assert player.progress_snapshot(duration_ms=200).rms == 0
+        clock[0] = 1.31
+        assert player.progress_snapshot(duration_ms=200).rms == 0
+    finally:
+        player.stop_stream()
+
+
+def test_submitted_sample_levels_preserve_missed_weak_and_strong_windows() -> None:
+    player = AudioPlayback()
+    player._streaming = True
+    player._stream_sample_rate = 1000
+    player._first_feed_at_ms = 1.0
+    player._playback_started = True
+    # Each callback ends in silence; sampling just its final window loses both bursts.
+    player.feed(_pcm_from_amplitude(0.25, 20) + b"\x00\x00" * 40
+                + _pcm_from_amplitude(0.5, 20) + b"\x00\x00" * 120)
+    try:
+        player._audio_callback(bytearray(80), 40, None, None)
+        assert abs(player.progress_snapshot(duration_ms=200).rms - 0.25) < 0.02
+        player._audio_callback(bytearray(120), 60, None, None)
+        assert abs(player.progress_snapshot(duration_ms=200).rms - 0.5) < 0.02
+        player._audio_callback(bytearray(80), 40, None, None)
+        assert player.progress_snapshot(duration_ms=200).rms == 0
+        player.cancel_all()
+        assert player.progress_snapshot(duration_ms=200).rms == 0
+    finally:
+        player.stop_stream()
+
+
+def test_continuous_segment_does_not_inherit_previous_voiced_window() -> None:
+    player = AudioPlayback()
+    player._streaming = True
+    player._stream_sample_rate = 1000
+    player._first_feed_at_ms = 1.0
+    player._playback_started = True
+    player.feed(_pcm_from_amplitude(0.8, 20))
+    try:
+        player._audio_callback(bytearray(40), 20, None, None)
+        assert player.progress_snapshot(duration_ms=20).rms > 0.75
+        player.bind_segment("second")
+        assert player.progress_snapshot(duration_ms=100).rms == 0
+        player.feed(b"\x00\x00" * 100)
+        player._audio_callback(bytearray(80), 40, None, None)
+        second = player.progress_snapshot(duration_ms=100)
+        assert second.playback_id == "second"
+        assert second.rms == 0
+        assert second.peak == 0
+    finally:
+        player.stop_stream()
+
+
 def test_oversized_packet_can_enter_an_empty_buffer_without_deadlock() -> None:
     import threading
     player = AudioPlayback()
