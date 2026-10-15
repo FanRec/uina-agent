@@ -49,7 +49,7 @@ export function createBodyTool(router: BodyRouter, onStateChange?: (reason: stri
       const op = targetedOps[action];
       if (op) {
         if (!target) {
-          return { result: `${action} 失败：必须指定 target (目标 bodyId)`, status: "failed" };
+          return { result: `${action} 失败：必须指定 target (目标 bodyId)`, status: "failed", details: { reason: "missing_target" } };
         }
         let ok: boolean;
         try {
@@ -62,7 +62,7 @@ export function createBodyTool(router: BodyRouter, onStateChange?: (reason: stri
           };
         }
         if (!ok) {
-          return { result: `${action} 失败：未找到有效端点 ${target}`, status: "failed" };
+          return { result: `${action} 失败：未找到有效端点 ${target}`, status: "failed", details: { reason: "endpoint_not_found", target } };
         }
         onStateChange?.(`${action}: ${target}`);
         return { result: `已${op.label}: ${target}`, status: "succeeded" };
@@ -85,6 +85,7 @@ export function createBodyTool(router: BodyRouter, onStateChange?: (reason: stri
                 ? `状态查询失败：未找到端点 ${target}`
                 : "状态查询失败：当前没有任何已注册端点",
               status: "failed",
+              details: target ? { reason: "endpoint_not_found", target } : { reason: "no_endpoints" },
             };
           }
           const summary = router.summaryOf(endpoint.bodyId)!;

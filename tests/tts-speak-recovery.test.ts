@@ -112,7 +112,7 @@ describe("speak recovery through the HTTP client and Voice tool", () => {
 			expect(requests.map((request) => request.text)).toEqual(["Hello!"]);
 			expect(await services.get("voice_driver:snapshot")!()).toMatchObject({ online: true, unknownSegments: 1 });
 			const voice = createVoiceTool(new VoiceSession(pi));
-			expect((await voice.run({ action: "speak", text: "Replacement.", replace: true })).status).toBe("succeeded");
+			expect((await voice.run({ action: "speak", text: "Replacement.", replace: true })).status).toBe("unknown");
 			expect(requests.map((request) => request.text)).toEqual(["Hello!", "Replacement."]);
 		} finally {
 			if (stop) await stop();
@@ -123,7 +123,7 @@ describe("speak recovery through the HTTP client and Voice tool", () => {
 		const { driver, voice, accepted } = setup();
 		driver.startTurn(1);
 		driver.setOnline(false);
-		expect((await voice.run({ action: "speak", text: "new speech" })).status).toBe("succeeded");
+		expect((await voice.run({ action: "speak", text: "new speech" })).status).toBe("unknown");
 		expect([...accepted.values()]).toEqual(["new speech"]);
 	});
 
@@ -135,7 +135,7 @@ describe("speak recovery through the HTTP client and Voice tool", () => {
 		expect(unknown.status).toBe("uncertain");
 		expect(unknown.reason).toContain("reply connection reset after admission");
 		driver.setOnline(false);
-		expect((await voice.run({ action: "speak", text: "replacement", replace: true })).status).toBe("succeeded");
+		expect((await voice.run({ action: "speak", text: "replacement", replace: true })).status).toBe("unknown");
 		expect(requests.map((request) => request.text)).toEqual(["already admitted prose", "replacement"]);
 	});
 
@@ -168,7 +168,7 @@ describe("speak recovery through the HTTP client and Voice tool", () => {
 			driver.startTurn(1);
 			await driver.recover(operation);
 			driver.startTurn(2);
-			expect((await voice.run({ action: "speak", text: "new turn" })).status).toBe("succeeded");
+			expect((await voice.run({ action: "speak", text: "new turn" })).status).toBe("unknown");
 			expect([...accepted.values()]).toEqual(["new turn"]);
 		},
 	);
@@ -179,7 +179,7 @@ describe("speak recovery through the HTTP client and Voice tool", () => {
 		await driver.speak("first");
 		state.failReset = true;
 		expect((await driver.recover("reset")).status).toBe("failed");
-		expect((await voice.run({ action: "speak", text: "second" })).status).toBe("succeeded");
+		expect((await voice.run({ action: "speak", text: "second" })).status).toBe("unknown");
 		expect([...accepted.values()]).toEqual(["first", "second"]);
 	});
 

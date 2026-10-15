@@ -18,6 +18,8 @@ export function createSoundboardWorld(config?: SoundboardWorldConfig): WorldDef 
   return {
     name: "soundboard",
     description: "主体的短时音效反应能力。需要具体音效时 play；名称不确定先 list；status 查看真实或模拟播放状态。",
+    // play/stop 驱动外部 mpv 进程，串行避免并发播放互相打断。
+    executionMode: "sequential",
 
     async onStart(): Promise<void> {
       await catalog.scan(mergedConfig.soundsDir ?? "./sounds", mergedConfig.soundOverrides);

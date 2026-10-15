@@ -114,6 +114,8 @@ export function createJukeboxWorld(config?: JukeboxWorldConfig): WorldDef {
   const world: WorldDef = {
     name: "jukebox",
     description: "主体音乐能力：search→play/queue，playback 控制，lyrics 查询。library 是账号/歌单写操作，只有用户明确要求时使用；播放结果需看状态和模拟标记。",
+    // 播放器与队列是共享可变状态，串行避免并发写互相覆盖。
+    executionMode: "sequential",
     defaultState: { enabled: true },
     async onStart(ctx) {
       if (hud.isClosed) hud = new BroadcastHudClient(hudOptions);

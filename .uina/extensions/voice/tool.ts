@@ -101,7 +101,7 @@ export function createVoiceTool(session: VoiceSession): Tool {
 						details: result,
 					};
 				if (outcome.status === "accepted")
-					return { result: "台词已受理，尚未确认播放完成。", status: "succeeded", details: result };
+					return { result: "台词已受理，尚未确认播放完成；未自动重播。", status: "unknown", details: result };
 				return { result: "服务未返回可识别的发声结论，播放结果未知；未自动重播。", status: "unknown", details: result };
 			}
 			if (action === "interrupt")

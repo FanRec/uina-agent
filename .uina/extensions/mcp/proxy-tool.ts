@@ -1,6 +1,9 @@
 /** mcp 代理工具：五个 action（list/search/describe/call/status）、三元组精确路由、
  * stale 前置校准断路、五态映射、CallToolResult 保真降级投影与 Output Guard。 */
+import { createRequire } from "node:module";
+import type { ErrorObject } from "ajv";
 import type { ExtensionAPI, ImageContent, Tool, ToolResultStatus } from "../../../src/extensions/index.js";
+import { formatValidationErrors } from "../../../src/tools/validation-errors.js";
 import type { CatalogEntry, CatalogTool } from "./catalog.js";
 import { classifyEntry, fullName } from "./catalog.js";
 import {
@@ -23,6 +26,14 @@ import { McpOutputGuard } from "./output-guard.js";
 
 const SEARCH_LIMIT = 12;
 const INSTRUCTIONS_PREVIEW_LENGTH = 300;
+
+interface AjvLike {
+	compile(schema: object): { (data: unknown): boolean; errors: ErrorObject[] | null };
+}
+type AjvCtor = new (options: { strict: boolean; allErrors: boolean }) => AjvLike;
+const Ajv = createRequire(import.meta.url)("ajv") as AjvCtor;
+// 远端 MCP server 自报的 inputSchema 草稿版本与关键词不可控，strict 必须关闭。
+const ajv = new Ajv({ strict: false, allErrors: true });
 
 interface ProxyToolResult {
 	result: string;
@@ -382,6 +393,26 @@ export function createMcpProxyTool(deps: McpProxyDeps): Tool {
 
 		// dispatch 前的取消是可确认事实：cancelled（请求从未离开本机）。
 		if (signal?.aborted) return cancelled("call", "工具调用已取消（请求未发出）");
+
+		// 远端调用前的本地 schema 校验：错参在冷启动 server 之前拦截，一轮拿到精确字段错误。
+		// 第三方 schema 本身非法（编译失败）时不拦截，交由远端返回原始错误。
+		const inputSchema = match.tool.inputSchema;
+		if (typeof inputSchema === "object" && inputSchema !== null && !Array.isArray(inputSchema)) {
+			try {
+				const validate = ajv.compile(inputSchema);
+				if (!validate(toolArgs)) {
+					const validationErrors = structuredClone(validate.errors ?? []);
+					return fail(
+						"call",
+						`工具 ${toolName} 参数未通过其 inputSchema 校验：${formatValidationErrors(inputSchema, toolArgs, validationErrors)}。可用 describe 查看完整 schema。`,
+						{ server: match.serverName, tool: toolName, reason: "invalid_args", validationErrors },
+					);
+				}
+			} catch {
+				// schema 编译失败：跳过本地校验。
+			}
+		}
+
 		const trust = await ensureTrusted(match.config);
 		if (!trust.ok) return notStarted("call", trust.message);
 		if (signal?.aborted) return cancelled("call", "工具调用已取消（请求未发出）");

@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { WorldDef, ServiceCompanionContext } from "../../../../src/extensions/world-framework/types.js";
 import { writeJsonAtomic } from "../../../../src/extensions/world-framework/json-file.js";
-import { worldFailed, worldSucceeded } from "../../../../src/extensions/world-framework/result.js";
+import { worldFailed, worldNotStarted, worldSucceeded } from "../../../../src/extensions/world-framework/result.js";
 import { TickerEngine } from "./ticker-engine.js";
 import type { TickerDurableState, TickerGuardrails, TickerReminder } from "./types.js";
 
@@ -146,6 +146,8 @@ export function createPacingTickerWorld(): WorldDef {
   const world: WorldDef = {
     name: "ticker",
     description: "自主节拍与一次性提醒；到期时再次呈现提醒内容，由你决定如何处理。",
+    // 写路径全部是持久状态变更，显式串行避免并发调用在持久化完成顺序上互踩。
+    executionMode: "sequential",
     defaultState: { enabled: false,  },
     async onStart(ctx: ServiceCompanionContext) {
       await teardown();
@@ -200,7 +202,7 @@ export function createPacingTickerWorld(): WorldDef {
           additionalProperties: false,
         },
         async run(args: Record<string, unknown>) {
-          if (!engine) return worldFailed("执行失败：自主节拍器未启动。", { reason: "ticker_not_started" });
+          if (!engine) return worldNotStarted("自主节拍器未启动。", { reason: "ticker_not_started" });
           if (!Number.isSafeInteger(args.afterSeconds) || (args.afterSeconds as number) < 1 || !hasRepresentableDeadline(args.afterSeconds as number) || typeof args.message !== "string" || args.message.trim().length === 0) {
             return worldFailed("参数错误：afterSeconds 必须是至少 1 秒的正整数，message 不能为空。", { reason: "invalid_reminder" });
           }
@@ -222,7 +224,7 @@ export function createPacingTickerWorld(): WorldDef {
         description: "查看尚未触发的提醒及到期时间。",
         parameters: { type: "object", properties: {}, additionalProperties: false },
         run() {
-          if (!engine) return worldFailed("执行失败：自主节拍器未启动。", { reason: "ticker_not_started" });
+          if (!engine) return worldNotStarted("自主节拍器未启动。", { reason: "ticker_not_started" });
           const reminders = engine.listReminders();
           if (reminders.length === 0) return worldSucceeded("没有待触发的提醒。", { reminders: [] });
           return worldSucceeded(reminders.map(formatReminderLine).join("\n"), {
@@ -239,7 +241,7 @@ export function createPacingTickerWorld(): WorldDef {
           additionalProperties: false,
         },
         async run(args: Record<string, unknown>) {
-          if (!engine) return worldFailed("执行失败：自主节拍器未启动。", { reason: "ticker_not_started" });
+          if (!engine) return worldNotStarted("自主节拍器未启动。", { reason: "ticker_not_started" });
           if (typeof args.reminderRef !== "string" || !/^r[1-9]\d*$/.test(args.reminderRef)) {
             return worldFailed("参数错误：reminderRef 必须是有效的提醒引用。", { reason: "invalid_reminder_ref" });
           }
@@ -253,24 +255,66 @@ export function createPacingTickerWorld(): WorldDef {
           }
         },
       },
-      set_interval: { description: "仅在调整自主唤醒策略时设置周期（1~120 分钟）；返回持久化后的周期。", parameters: { type: "object", properties: { minutes: { type: "number", minimum: 1, maximum: 120 } }, required: ["minutes"], additionalProperties: false }, async run(args: Record<string, unknown>) {
-        if (!engine) return worldFailed("执行失败：自主节拍器未启动。", { reason: "ticker_not_started" });
-        const minutes = typeof args.minutes === "number" ? args.minutes : Number(args.interval ?? args.min ?? args.m);
-        if (!Number.isFinite(minutes) || minutes < 1 || minutes > 120) return worldFailed("参数错误：节拍基准周期必须是 1 到 120 之间的有限数字。", { reason: "invalid_interval" });
-        await engine.setInterval(minutes); return worldSucceeded(`已将自主节拍基准周期调整为 ${minutes} 分钟。`, undefined, "applied");
-      } },
-      pause: { description: "临时挂起自主唤醒；仅在需要让主体暂时不产生机会时使用，返回持久化结果。", parameters: { type: "object", properties: { minutes: { type: "number", minimum: 1 } }, required: ["minutes"], additionalProperties: false }, async run(args: Record<string, unknown>) {
-        if (!engine) return worldFailed("执行失败：自主节拍器未启动。", { reason: "ticker_not_started" });
-        const minutes = typeof args.minutes === "number" ? args.minutes : Number(args.duration ?? args.m);
-        if (!Number.isFinite(minutes) || minutes < 1) return worldFailed("参数错误：挂起时长必须是有限的正数。", { reason: "invalid_pause" });
-        await engine.pause(minutes); return worldSucceeded(`自主节拍已挂起 ${minutes} 分钟。`, undefined, "applied");
-      } },
-      resume: { description: "提前解除自主唤醒挂起；不在暂停状态时返回无需操作。", parameters: { type: "object", properties: {}, additionalProperties: false }, async run(_args: Record<string, unknown>) {
-        if (!engine) return worldFailed("执行失败：自主节拍器未启动。", { reason: "ticker_not_started" });
-        if (!engine.getStatus().isPaused) return worldSucceeded("自主节拍当前处于运行状态，无需恢复。", undefined, "applied");
-        await engine.resume(); return worldSucceeded("自主节拍已提前解除挂起。", undefined, "applied");
-      } },
-      status: { description: "查询自主节拍状态；暂停只影响周期，remainingSeconds 表示周期与提醒中的下一次唤醒。", parameters: { type: "object", properties: {}, additionalProperties: false }, run() { if (!engine) return worldSucceeded(JSON.stringify({ status: "stopped" })); const s = engine.getStatus(); return worldSucceeded(JSON.stringify({ status: s.isPaused ? "paused" : "running", baseIntervalMinutes: s.baseIntervalMinutes, effectiveIntervalMinutes: s.effectiveIntervalMinutes, idleMinutes: s.idleMinutes, remainingSeconds: s.remainingSeconds, dailyAttempts: s.dailyAttemptsUsed, dailyAttemptsLimit: s.dailyAttemptsLimit })); } },
+      set_interval: {
+        description: "仅在调整自主唤醒策略时设置周期（1~120 分钟）；返回持久化后的周期。",
+        parameters: {
+          type: "object",
+          properties: { minutes: { type: "number", minimum: 1, maximum: 120 } },
+          required: ["minutes"],
+          additionalProperties: false,
+        },
+        async run(args: Record<string, unknown>) {
+          if (!engine) return worldNotStarted("自主节拍器未启动。", { reason: "ticker_not_started" });
+          const minutes = args.minutes as number;
+          await engine.setInterval(minutes);
+          return worldSucceeded(`已将自主节拍基准周期调整为 ${minutes} 分钟。`, undefined, "applied");
+        },
+      },
+      pause: {
+        description: "临时挂起自主唤醒；仅在需要让主体暂时不产生机会时使用，返回持久化结果。",
+        parameters: {
+          type: "object",
+          properties: { minutes: { type: "number", minimum: 1 } },
+          required: ["minutes"],
+          additionalProperties: false,
+        },
+        async run(args: Record<string, unknown>) {
+          if (!engine) return worldNotStarted("自主节拍器未启动。", { reason: "ticker_not_started" });
+          const minutes = args.minutes as number;
+          await engine.pause(minutes);
+          return worldSucceeded(`自主节拍已挂起 ${minutes} 分钟。`, undefined, "applied");
+        },
+      },
+      resume: {
+        description: "提前解除自主唤醒挂起；不在暂停状态时返回无需操作。",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        async run(_args: Record<string, unknown>) {
+          if (!engine) return worldNotStarted("自主节拍器未启动。", { reason: "ticker_not_started" });
+          if (!engine.getStatus().isPaused) return worldSucceeded("自主节拍当前处于运行状态，无需恢复。");
+          await engine.resume();
+          return worldSucceeded("自主节拍已提前解除挂起。", undefined, "applied");
+        },
+      },
+      status: {
+        description: "查询自主节拍状态；暂停只影响周期，remainingSeconds 表示周期与提醒中的下一次唤醒。",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+        run() {
+          if (!engine) return worldNotStarted("自主节拍器未启动。", { reason: "ticker_not_started" });
+          const s = engine.getStatus();
+          return worldSucceeded(
+            `自主节拍${s.isPaused ? "已挂起" : "运行中"}：基准 ${s.baseIntervalMinutes} 分钟，有效 ${s.effectiveIntervalMinutes} 分钟，空闲 ${s.idleMinutes} 分钟，下次唤醒约 ${s.remainingSeconds} 秒后。`,
+            {
+              status: s.isPaused ? "paused" : "running",
+              baseIntervalMinutes: s.baseIntervalMinutes,
+              effectiveIntervalMinutes: s.effectiveIntervalMinutes,
+              idleMinutes: s.idleMinutes,
+              remainingSeconds: s.remainingSeconds,
+              dailyAttempts: s.dailyAttemptsUsed,
+              dailyAttemptsLimit: s.dailyAttemptsLimit,
+            },
+          );
+        },
+      },
     },
   };
   return world;

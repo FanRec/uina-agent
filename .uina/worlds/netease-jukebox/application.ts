@@ -52,7 +52,7 @@ export class JukeboxApplication {
     this.actions = {
       search: this.action(
         "搜索歌曲并返回稳定的 ref=song:<网易云歌曲ID>，后续 play/queue 应直接使用该 ref；没有查询词不要调用。",
-        { query: { type: "string" }, limit: { type: "number" } },
+        { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 20, default: 10, description: "返回条数上限。" } },
         ["query"],
         this.search.bind(this),
       ),
@@ -64,13 +64,13 @@ export class JukeboxApplication {
       ),
       queue: this.action(
         "管理待播队列：add/list/remove/clear/move/shuffle；只在需要改变队列时使用。",
-        { operation: { type: "string", enum: ["add", "list", "remove", "clear", "move", "shuffle"] }, ref: { type: "string" }, song_id: { type: "string" }, query: { type: "string" }, index: { type: "number" }, from: { type: "number" }, to: { type: "number" } },
+        { operation: { type: "string", enum: ["add", "list", "remove", "clear", "move", "shuffle"] }, ref: { type: "string" }, song_id: { type: "string" }, query: { type: "string" }, index: { type: "integer", minimum: 0, description: "remove 时：待移除的队列位置。" }, from: { type: "integer", minimum: 0, description: "move 时：原位置。" }, to: { type: "integer", minimum: 0, description: "move 时：目标位置。" } },
         ["operation"],
         this.queue.bind(this),
       ),
       playback: this.action(
         "控制播放、音量、播放模式或查询状态；status 只观察，其余操作会改变播放。",
-        { operation: { type: "string", enum: ["pause", "resume", "stop", "next", "previous", "status", "mode", "volume"] }, mode: { type: "string", enum: [...playbackModes] }, level: { type: "number" }, clear_queue: { type: "boolean" } },
+        { operation: { type: "string", enum: ["pause", "resume", "stop", "next", "previous", "status", "mode", "volume"] }, mode: { type: "string", enum: [...playbackModes] }, level: { type: "number", minimum: 0, maximum: 100, description: "volume 时：音量百分比。" }, clear_queue: { type: "boolean" } },
         ["operation"],
         this.playbackAction.bind(this),
       ),
@@ -80,19 +80,7 @@ export class JukeboxApplication {
         [],
         this.lyrics.bind(this),
       ),
-      current_lyrics: this.action(
-        "兼容旧调用：查询当前歌词窗口；新调用优先使用 lyrics(current=true)。",
-        {},
-        [],
-        (args, ctx) => this.lyrics({ ...args, current: true }, ctx),
-      ),
-      library: this.action("账号/歌单/收藏/评论操作；只有用户明确要求时使用，写操作需要 confirm=true 并核实返回结果。", {
-        operation: { type: "string", enum: ["account_status", "login_status", "playlist_list", "playlist_open", "playlist_create", "playlist_update", "playlist_track_add", "playlist_track_remove", "playlist_subscribe", "playlist_unsubscribe", "liked_list", "like", "unlike", "recent_list", "comments_list", "comment_add"] },
-        uid: { type: "string" }, playlist_id: { type: "string" }, song_id: { type: "string" }, ref: { type: "string" },
-        name: { type: "string" }, description: { type: "string" }, tags: { type: "string" }, content: { type: "string" },
-        kind: { type: "string", enum: ["song", "playlist"] }, limit: { type: "number" }, confirm: { type: "boolean" },
-        privacy: { type: "string", enum: ["public", "private"] },
-      }, ["operation"], this.library.bind(this)),
+      library: this.libraryAction(),
     };
   }
 
@@ -102,18 +90,82 @@ export class JukeboxApplication {
     required: string[],
     run: (args: Record<string, unknown>, ctx: ActionContext) => Promise<string | ToolExecutionResult>,
   ): ActionDef {
+    return { description, parameters: { type: "object", properties, required, additionalProperties: false }, run: this.guardedRun(run) };
+  }
+
+  /** 统一的字符串归一与上游错误包装；action 与 libraryAction 共用。 */
+  private guardedRun(run: (args: Record<string, unknown>, ctx: ActionContext) => Promise<string | ToolExecutionResult>): ActionDef["run"] {
+    return async (args, ctx) => {
+      try {
+        const result = await run(args, ctx);
+        return typeof result === "string" ? worldSucceeded(result) : result;
+      } catch (error) {
+        if (error instanceof NeteaseRequestError) return this.requestFailure(error, ctx.operationIdentity);
+        throw error;
+      }
+    };
+  }
+
+  /**
+   * library 的 16 个 operation 拆成 per-op schema 分支：模型拿到"按操作的精确字段菜单"，
+   * 非法组合在 Ajv 门前被拦，不再依赖 handler 散落的校验。confirm 不进 required——
+   * 它是政策门（需用户明确要求），由 handler 的专用文案解释；schema 只管格式。
+   */
+  private libraryAction(): ActionDef {
+    const fields: Record<string, Record<string, unknown>> = {
+      uid: { type: "string", description: "目标用户 uid；缺省用登录账号。" },
+      playlist_id: { type: "string", description: "歌单 ID。" },
+      song_id: { type: "string", description: "歌曲 ID。" },
+      ref: { type: "string", description: "search 返回的 ref=song:<歌曲ID>。" },
+      query: { type: "string", description: "歌曲关键词；ref/song_id 都没有时用于搜索解析。" },
+      name: { type: "string", description: "歌单名。" },
+      description: { type: "string", description: "歌单描述。" },
+      tags: { type: "string", description: "歌单标签。" },
+      content: { type: "string", description: "评论内容。" },
+      kind: { type: "string", enum: ["song", "playlist"], description: "目标类型。" },
+      limit: { type: "integer", minimum: 1, description: "返回条数上限。" },
+      privacy: { type: "string", enum: ["public", "private"], description: "新建歌单可见性。" },
+    };
+    const ops: Array<{ op: string; note: string; fields: string[]; require?: string[]; either?: [string, string] }> = [
+      { op: "account_status", note: "查看账号与登录状态。", fields: [] },
+      { op: "login_status", note: "查看登录状态。", fields: [] },
+      { op: "playlist_list", note: "列出歌单；uid 缺省用登录账号。", fields: ["uid"] },
+      { op: "liked_list", note: "列出红心歌曲；uid 缺省用登录账号。", fields: ["uid"] },
+      { op: "recent_list", note: "列出最近播放。", fields: ["limit"] },
+      { op: "playlist_open", note: "打开歌单详情。", fields: [], require: ["playlist_id"] },
+      { op: "comments_list", note: "读评论；song_id 或 playlist_id 至少给一个。", fields: ["kind", "limit", "song_id", "playlist_id"], either: ["song_id", "playlist_id"] },
+      { op: "playlist_create", note: "创建歌单。", fields: ["privacy"], require: ["name"] },
+      { op: "playlist_update", note: "更新歌单名/描述/标签。", fields: ["name", "description", "tags"], require: ["playlist_id"] },
+      { op: "playlist_track_add", note: "加歌曲进歌单；ref/song_id/query 三选一。", fields: ["ref", "song_id", "query"], require: ["playlist_id"] },
+      { op: "playlist_track_remove", note: "从歌单移除歌曲；ref/song_id/query 三选一。", fields: ["ref", "song_id", "query"], require: ["playlist_id"] },
+      { op: "playlist_subscribe", note: "收藏歌单。", fields: [], require: ["playlist_id"] },
+      { op: "playlist_unsubscribe", note: "取消收藏歌单。", fields: [], require: ["playlist_id"] },
+      { op: "like", note: "红心歌曲。", fields: [], require: ["song_id"] },
+      { op: "unlike", note: "取消红心。", fields: [], require: ["song_id"] },
+      { op: "comment_add", note: "发评论；song_id 或 playlist_id 至少给一个。", fields: ["kind", "song_id", "playlist_id"], require: ["content"], either: ["song_id", "playlist_id"] },
+    ];
+    const branches = ops.map(({ op, note, fields: optionalFields, require, either }): Record<string, unknown> => {
+      const requireList = require ?? [];
+      // strict Ajv 要求 required 中的每个字段都在 properties 里声明。
+      const propKeys = [...new Set([...optionalFields, ...requireList])];
+      return {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          operation: { type: "string", const: op, description: note },
+          confirm: { type: "boolean", description: "写操作必须传 true；需用户明确要求。" },
+          ...Object.fromEntries(propKeys.map((key) => [key, fields[key]])),
+        },
+        required: ["operation", ...requireList],
+        ...(either ? { anyOf: either.map((key) => ({ required: [key], properties: { [key]: fields[key] } })) } : {}),
+      };
+    });
     return {
-      description,
-      parameters: { type: "object", properties, required, additionalProperties: false },
-      run: async (args, ctx) => {
-        try {
-          const result = await run(args, ctx);
-          return typeof result === "string" ? worldSucceeded(result) : result;
-        } catch (error) {
-          if (error instanceof NeteaseRequestError) return this.requestFailure(error, ctx.operationIdentity);
-          throw error;
-        }
-      },
+      description: "账号/歌单/收藏/评论操作；只有用户明确要求时使用，写操作需要 confirm=true 并核实返回结果。",
+      // 顶层不能声明 type:"object"：world-tool 的 closeObjectSchema 会给它补 additionalProperties:false，
+      // 与 oneOf 分支的属性声明冲突导致一切调用被拒。分支各自已闭合。
+      parameters: { oneOf: branches },
+      run: this.guardedRun((args, ctx) => this.library(args, ctx)),
     };
   }
 
@@ -149,7 +201,7 @@ export class JukeboxApplication {
     if (unavailable) return unavailable;
     const query = String(args.query ?? "").trim();
     if (!query) return fail("缺少搜索关键词。", "invalid_query");
-    const limit = Math.min(20, Math.max(1, Number(args.limit ?? 10)));
+    const limit = typeof args.limit === "number" ? args.limit : 10;
     const songs = await this.deps.api.searchSongs(query, limit, ctx.signal);
     songs.forEach((song) => this.searchRefs.set(`song:${song.id}`, song));
     return songs.length
@@ -168,7 +220,7 @@ export class JukeboxApplication {
       const song = this.searchRefs.get(ref);
       return song ?? fail(`歌曲 ref “${ref}” 不存在；请使用最近搜索结果中完整的 ref=song:<歌曲ID>。`, "invalid_ref");
     }
-    const id = String(args.song_id ?? args.id ?? "").trim();
+    const id = String(args.song_id ?? "").trim();
     if (id) {
       try {
         return (await this.deps.api.getSongInfo(id, ctx.signal)) ?? fail(`歌曲 #${id} 不存在。`, "song_not_found");
@@ -177,7 +229,7 @@ export class JukeboxApplication {
         throw error;
       }
     }
-    const query = String(args.query ?? args.keyword ?? "").trim();
+    const query = String(args.query ?? "").trim();
     if (!query) return fail("必须提供 song_id、ref 或 query。", "invalid_song");
     try {
       const song = (await this.deps.api.searchSongs(query, 5, ctx.signal))[0];

@@ -67,7 +67,7 @@ describe("netease lyrics", () => {
 
 		const played = await tool.run({ action: "play", params: { song_id: "186016" } });
 		expect(played.status).toBe("succeeded");
-		const current = await tool.run({ action: "current_lyrics", params: {} });
+		const current = await tool.run({ action: "lyrics", params: { current: true } });
 		expect(current.status).toBe("succeeded");
 		expect(current.result).toContain("当前歌曲");
 		expect(current.result).toContain("第一句");

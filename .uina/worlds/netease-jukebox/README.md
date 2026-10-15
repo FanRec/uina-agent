@@ -6,7 +6,7 @@
 
 队列默认上限 100，历史仅保留本次运行最近 50 首。播放模式支持 `single_once`、`queue_order`、`list_loop`、`single_loop` 和 `shuffle`。`previous` 在当前曲目已播放超过 5 秒时回到曲目开头，否则回退历史。自动续播遇到加载失败的曲目会将其移出队列并跳过，连续失败 3 次后停止并保留剩余队列。播放模式与音量写入 World 的 `preferences.json`，不恢复外部播放器位置或音频队列；旧配置中的 `list_order` 会按 `queue_order` 读取。
 
-`lyrics` 查询完整歌词；设置 `current: true` 时返回当前句窗口。`current_lyrics` 作为旧调用的兼容别名保留。歌词按歌曲 ID 做本次进程内缓存，不处理翻译歌词、逐字歌词或跨进程缓存。
+`lyrics` 查询完整歌词；设置 `current: true` 时返回当前句窗口。歌词按歌曲 ID 做本次进程内缓存，不处理翻译歌词、逐字歌词或跨进程缓存。
 
 HUD 播放真实 mpv 音频时会让 FFmpeg 解码同一个播放 URL，使用其 PCM 数据计算频谱，因此不会混入浏览器、通知或其他系统声音。需要可执行的 `ffmpeg`，可用 `FFMPEG_PATH` 或 `ffmpegPath` 配置路径；依赖不可用时 HUD 保留播放与歌词状态，频谱显示为 silent。频谱仍是歌曲 URL 的解码分析，不代表 mpv 输出设备的最终混音。
 
