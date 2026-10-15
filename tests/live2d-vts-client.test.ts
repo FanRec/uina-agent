@@ -176,6 +176,30 @@ describe("live2d vts-client（移植行为验证）", () => {
 		client.disconnect();
 	});
 
+	it("注入观察只对实际发出的输入记账：过滤输入与未携带输入不进 sentInputs", async () => {
+		const device = new Device();
+		const { client } = await readyClient(device);
+		const observation = client.observeMotionInjections("lease-1");
+		client.injectParameters(
+			[
+				{ id: "drive:x", value: 0.5 },
+				{ id: "drive:y", value: 0.5 },
+			],
+			[
+				{ leaseID: "lease-1", inputs: ["drive:x", "drive:y", "drive:z"] },
+				{ leaseID: "lease-2", inputs: ["drive:x"] },
+			],
+		);
+		const evidence = await observation.finish();
+		expect(evidence.sent).toBe(1);
+		expect(evidence.accepted).toBe(1);
+		// drive:y 不可注入被过滤、drive:z 未随帧注入均计入 filtered；两者都不进 sentInputs；lease-2 无观察不记账
+		expect(evidence.filtered).toBe(2);
+		expect(evidence.sentInputs).toEqual(["drive:x"]);
+		expect(evidence.acceptedInputs).toEqual(["drive:x"]);
+		client.disconnect();
+	});
+
 	it("ensureInput 幂等创建 Uina 自定义输入，并拒绝重名但范围不匹配的输入", async () => {
 		const device = new Device();
 		const { client } = await readyClient(device);

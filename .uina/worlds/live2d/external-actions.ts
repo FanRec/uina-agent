@@ -559,7 +559,7 @@ export class ExternalActions {
 				void handle.finished.then((result) => {
 					if (result.status === "cancelled") claim.cancel();
 				});
-				motionResult = settleMotion(client, this.rig, handle, clip, motionName);
+				motionResult = settleMotion(client, handle, motionName);
 				for (const event of spatial) {
 					await waitUntilActionMs(event.atMs);
 					ensureActive();

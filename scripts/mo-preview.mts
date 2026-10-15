@@ -10,7 +10,7 @@
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { compileAction, sampleAction, type CompiledAction } from "../.uina/worlds/live2d/authoring/action.js";
-import type { CatalogSnapshot, CatalogResolved } from "../.uina/worlds/live2d/authoring/catalog.js";
+import type { CatalogSnapshot, CatalogResolved, CatalogKind } from "../.uina/worlds/live2d/authoring/catalog.js";
 import { deriveRandom, createRootSeed } from "../.uina/worlds/live2d/authoring/random.js";
 import { MotionDirector, type MotionDirectorActionDiagnostics } from "../.uina/worlds/live2d/director/director.js";
 import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
@@ -30,7 +30,7 @@ export interface PreviewArguments {
 
 const USAGE = [
 	"用法:",
-	"  pnpm mo:preview -- [--seed N] <动作名...>          连续轮播",
+	"  pnpm mo:preview -- [--seed N] <动作名...>          连续轮播（支持动作如 nod, sway 或背景如 idle, thinking）",
 	"  pnpm mo:preview -- --once [--seed N] <动作名>      单次执行",
 	"  pnpm mo:preview -- --repeat N [--seed S] <动作名>  固定 seed 重复 N 次",
 	"  pnpm mo:preview -- --sample [--seed S] <动作名> <actionMs>  离线采样，不连接 VTS",
@@ -92,21 +92,92 @@ export function parsePreviewArguments(args: readonly string[]): PreviewArguments
 	};
 }
 
-function resolveAction(catalog: CatalogSnapshot, name: string): CatalogResolved<"motion"> {
+export function resolveAction(catalog: CatalogSnapshot, name: string): CatalogResolved<"motion"> {
 	const resolved = catalog.resolve("motion", name);
-	if (!resolved) {
-		const available = catalog
-			.list("motion")
-			.map(({ name: actionName, aliases }) =>
-				aliases.length ? actionName + "(" + aliases.join("/") + ")" : actionName,
-			);
-		throw new Error(
-			available.length === 0
-				? "当前模型没有可用动作（动作目录为空）。"
-				: '动作不在当前模型目录: "' + name + '"。可用动作: ' + available.join(", "),
-		);
+	if (resolved) return resolved;
+
+	const lower = name.toLowerCase();
+	if (
+		(lower === "idle" || lower === "待机" || lower === "呼吸" || lower === "background:idle") &&
+		catalog.background.idle
+	) {
+		return {
+			kind: "motion",
+			name: "idle",
+			aliases: ["background:idle", "待机", "呼吸"],
+			entry: {
+				description: "后台拟真呼吸待机循环（12s 周期）",
+				definition: catalog.background.idle,
+				atomic: false,
+				playback: { fadeInMs: 450, fadeOutMs: 450 },
+			},
+		};
 	}
-	return resolved;
+
+	if (
+		(lower === "thinking" || lower === "思考" || lower === "沉思" || lower === "background:thinking") &&
+		catalog.background.thinking
+	) {
+		return {
+			kind: "motion",
+			name: "thinking",
+			aliases: ["background:thinking", "思考", "沉思"],
+			entry: {
+				description: "后台专注倾听思考循环（4s 周期）",
+				definition: catalog.background.thinking,
+				atomic: false,
+				playback: { fadeInMs: 350, fadeOutMs: 450 },
+			},
+		};
+	}
+
+	const ambientResolved = catalog.resolve("ambient", name);
+	if (ambientResolved) {
+		return {
+			kind: "motion",
+			name: ambientResolved.name,
+			aliases: ambientResolved.aliases,
+			entry: {
+				description: ambientResolved.entry.description,
+				definition: ambientResolved.entry.motion,
+				variants: ambientResolved.entry.variants,
+				atomic: false,
+			},
+		};
+	}
+
+	const availableMotions = catalog
+		.list("motion")
+		.map(({ name: actionName, aliases }) => (aliases.length ? actionName + "(" + aliases.join("/") + ")" : actionName));
+	const availableBackgrounds = [
+		...(catalog.background.idle ? ["idle(background:idle/待机/呼吸)"] : []),
+		...(catalog.background.thinking ? ["thinking(background:thinking/思考)"] : []),
+	];
+	const available = [...availableMotions, ...availableBackgrounds];
+	throw new Error(
+		available.length === 0
+			? "当前模型没有可用动作（动作目录为空）。"
+			: '动作不在当前模型目录: "' + name + '"。可用动作: ' + available.join(", "),
+	);
+}
+
+export function wrapCatalogForPreview(catalog: CatalogSnapshot): CatalogSnapshot {
+	return {
+		modelID: catalog.modelID,
+		background: catalog.background,
+		resolveCue: (word) => catalog.resolveCue(word),
+		list: (kind) => catalog.list(kind),
+		resolve: <K extends CatalogKind>(kind: K, nameOrAlias: string): CatalogResolved<K> | undefined => {
+			if (kind === "motion") {
+				try {
+					return resolveAction(catalog, nameOrAlias) as CatalogResolved<K>;
+				} catch {
+					return undefined;
+				}
+			}
+			return catalog.resolve(kind, nameOrAlias);
+		},
+	};
 }
 
 function compileFirstPlay(
@@ -247,7 +318,37 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 		const actions = catalog
 			.list("motion")
 			.map(({ name, aliases, entry }) => ({ name, aliases, description: entry.description }));
-		printJson("[预览] 动作目录", { modelID: catalog.modelID, actions, empty: actions.length === 0 });
+		const backgrounds = [
+			...(catalog.background.idle
+				? [
+						{
+							name: "idle",
+							aliases: ["background:idle", "待机", "呼吸"],
+							description: "后台拟真呼吸待机循环（12s 周期）",
+						},
+					]
+				: []),
+			...(catalog.background.thinking
+				? [
+						{
+							name: "thinking",
+							aliases: ["background:thinking", "思考", "沉思"],
+							description: "后台专注倾听思考循环（4s 周期）",
+						},
+					]
+				: []),
+			...catalog.list("ambient").map(({ name, aliases, entry }) => ({
+				name,
+				aliases,
+				description: entry.description,
+			})),
+		];
+		printJson("[预览] 动作目录", {
+			modelID: catalog.modelID,
+			actions,
+			backgrounds,
+			empty: actions.length === 0 && backgrounds.length === 0,
+		});
 		return;
 	}
 	const seed = parsed.seed ?? createRootSeed();
@@ -256,13 +357,14 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 		printJson("[预览] 离线采样（未连接 VTS、未产生外部副作用）", snapshot);
 		return;
 	}
-	for (const name of parsed.names) resolveAction(catalog, name);
+	const previewCatalog = wrapCatalogForPreview(catalog);
+	for (const name of parsed.names) resolveAction(previewCatalog, name);
 
 	let lastDiagnosticClock = Number.NEGATIVE_INFINITY;
 	const runtime = new Live2DRuntime({
 		client: new VTSClient(),
 		rig,
-		catalog,
+		catalog: previewCatalog,
 		speech: MO_SPEECH,
 		seed,
 		diagnostics: true,

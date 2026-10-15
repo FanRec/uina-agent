@@ -1,6 +1,4 @@
-import type { ModelRig } from "./adapter/rig.js";
 import type { MotionHandle } from "./director/director.js";
-import type { CompiledAction } from "./authoring/action.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import type { SomaticActionResult } from "./director/director.js";
 import type { MotionInjectionEvidence, VTSClient } from "./adapter/vts-client.js";
@@ -96,18 +94,18 @@ export function toolNotStarted(result: string, extra?: Record<string, unknown>):
 
 /**
  * 引擎动作终态 → 工具结果（§2.1 映射，normative）：
- * completed 仅在本次所需输入接受已确认时 succeeded，否则 unknown；cancelled → cancelled。
+ * completed 仅在本次实际发出的注入输入全部接受已确认时 succeeded，否则 unknown；cancelled → cancelled。
+ * 判据只核查 evidence.sentInputs——租约未驱动过的输入（如恒零通道绑定的输入）不要求确认。
  * failed(disconnected) → unknown（网络中断，效果不明）。
  */
 export function fromEngineResult(
 	engine: SomaticActionResult,
 	motionName: string,
 	evidence?: MotionInjectionEvidence,
-	requiredInputs: readonly string[] = [],
 ): ToolExecutionResult {
 	switch (engine.status) {
 		case "completed":
-			if (!evidence?.accepted || requiredInputs.some((input) => !evidence.acceptedInputs.includes(input)))
+			if (!evidence?.accepted || evidence.sentInputs.some((input) => !evidence.acceptedInputs.includes(input)))
 				return toolUnknown(actionReceipt(motionName, "UNKNOWN", "input_unconfirmed"), {
 					reason: "input_unconfirmed",
 					injection: evidence,
@@ -161,17 +159,14 @@ export function withCancellation<T>(request: Promise<T>, signal: AbortSignal): P
 
 export async function settleMotion(
 	client: VTSClient,
-	rig: ModelRig,
 	handle: MotionHandle,
-	clip: CompiledAction,
 	motionName: string,
 ): Promise<ToolExecutionResult> {
 	const observation = client.observeMotionInjections(handle.id);
 	try {
 		const result = await handle.finished;
 		const evidence = result.status === "completed" ? await observation.finish() : observation.snapshot();
-		const inputs = [...new Set(clip.axes.flatMap((axis) => rig.bindings[axis]!.map((binding) => binding.input)))];
-		return fromEngineResult(result, motionName, evidence, inputs);
+		return fromEngineResult(result, motionName, evidence);
 	} finally {
 		observation.close();
 	}

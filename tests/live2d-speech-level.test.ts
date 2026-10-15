@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
+import { encodeFrame, type ModelRig } from "../.uina/worlds/live2d/adapter/rig.js";
 import type { VTSClient } from "../.uina/worlds/live2d/adapter/vts-client.js";
+import { MO_SPEECH } from "../.uina/worlds/live2d/models/mo/speech.js";
+import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
 import { Live2DRuntime } from "../.uina/worlds/live2d/runtime.js";
 import { SpeechInput, type SpeechConfig } from "../.uina/worlds/live2d/speech-level.js";
 import { MotionDirector } from "../.uina/worlds/live2d/director/director.js";
@@ -16,6 +18,49 @@ const SPEECH: SpeechConfig = {
 };
 
 describe("live2d 声学电平链路（P3-2）", () => {
+	it("MO 低中电平经真实 rig 编码后明显张嘴，并保留强弱变化", async () => {
+		const rig = (await loadRig(MO_MODEL_ID))!;
+		const d = new MotionDirector(rig.controls);
+		const input = new SpeechInput(MO_SPEECH, d);
+		const encoded: number[] = [];
+		for (const rms of [0.006, 0.01, 0.02, 0.04, 0.06, 0.08]) {
+			input.processLevel({ rms });
+			input.tick(16);
+			encoded.push(encodeFrame(rig, d.step(16)).find((p) => p.id === "MouthOpen")!.value);
+		}
+
+		// 消费边界上的开度要求：轻声已可见，中等电平明显张嘴，较响时仍留动态余量。
+		expect(encoded[1]!).toBeGreaterThanOrEqual(0.18);
+		expect(encoded[2]!).toBeGreaterThanOrEqual(0.4);
+		expect(encoded[3]!).toBeGreaterThanOrEqual(0.6);
+		expect(encoded[4]!).toBeGreaterThan(0.7);
+		expect(encoded.every((value, index) => index === 0 || value > encoded[index - 1]!)).toBe(true);
+		expect(encoded.every((value) => value >= 0 && value <= 0.8)).toBe(true);
+		expect(encoded.at(-1)!).toBeCloseTo(0.8, 6);
+	});
+
+	it("MO 静音和死区保持闭嘴，语音失联后仍按 120ms 守卫和 50ms 释放归零", async () => {
+		const rig = (await loadRig(MO_MODEL_ID))!;
+		const d = new MotionDirector(rig.controls);
+		const input = new SpeechInput(MO_SPEECH, d);
+		const sample = (dt: number): number => {
+			input.tick(dt);
+			return encodeFrame(rig, d.step(dt)).find((p) => p.id === "MouthOpen")!.value;
+		};
+		for (const rms of [0, 0.002, 0.004]) {
+			input.processLevel({ rms, peak: 1 });
+			expect(sample(16)).toBe(0);
+		}
+
+		input.processLevel({ rms: 0.08 });
+		const open = sample(16);
+		for (let i = 0; i < 6; i++) sample(16); // 最后一次电平之后 112ms，仍在守卫内。
+		expect(encodeFrame(rig, d.currentFrame).find((p) => p.id === "MouthOpen")!.value).toBe(open);
+		expect(sample(16)).toBeLessThan(open); // 128ms 后开始释放。
+		for (let i = 0; i < 3; i++) sample(16);
+		expect(encodeFrame(rig, d.currentFrame).find((p) => p.id === "MouthOpen")!.value).toBe(0);
+	});
+
 	it("作者映射：rms 0.06 → 0.7；分段线性内插与端点钳制正确", () => {
 		const d = new MotionDirector({ "mouth.open": { min: 0, max: 1, neutral: 0 } });
 		const input = new SpeechInput(SPEECH, d);

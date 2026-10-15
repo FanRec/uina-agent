@@ -107,4 +107,44 @@ describe("Live2D author preview", () => {
 		expect(sample.directorActionMs).toBeLessThan(100);
 		expect(sample.composition?.authoredTargets[0]?.targetValue).toBeCloseTo(10, 3);
 	});
+
+	it("supports background idle and thinking offline sample preview", () => {
+		const rig = refactorRig();
+		const catalog = compileCatalog(
+			rig.modelID,
+			{
+				background: {
+					idle: motion(500, {
+						"head.yaw": offset(
+							keys([
+								[0, 0],
+								[500, 2],
+							]),
+						),
+					}),
+					thinking: motion(300, {
+						"head.yaw": offset(
+							keys([
+								[0, 0],
+								[300, 4],
+							]),
+						),
+					}),
+				},
+			},
+			rig,
+		);
+
+		const idleSample = buildOfflinePreviewSnapshot(rig, catalog, "idle", 1, 250);
+		expect(idleSample.action).toBe("idle");
+		expect(idleSample.plan.durationMs).toBe(500);
+		expect(idleSample.actionTargets[0]?.axis).toBe("head.yaw");
+		expect(idleSample.actionTargets[0]?.requested).toBeCloseTo(1, 1);
+
+		const thinkingSample = buildOfflinePreviewSnapshot(rig, catalog, "thinking", 1, 150);
+		expect(thinkingSample.action).toBe("thinking");
+		expect(thinkingSample.plan.durationMs).toBe(300);
+		expect(thinkingSample.actionTargets[0]?.axis).toBe("head.yaw");
+		expect(thinkingSample.actionTargets[0]?.requested).toBeCloseTo(2, 1);
+	});
 });

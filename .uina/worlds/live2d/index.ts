@@ -103,7 +103,8 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 						},
 						ambient: {
 							type: ["string", "null"],
-							description: "背景小动作名，来自当前模型目录（见 status）；传 null 清除",
+							description:
+								"背景小动作名，来自当前模型目录（见 status）；传 null 清除选中并回落模型默认 idle，无需设置 idle 名称",
 						},
 						hold_ms: {
 							type: "number",
@@ -127,7 +128,8 @@ export function createLive2DApp(options: Live2DAppOptions = {}): WorldDef {
 				run: call("costume", (rt, args, ctx) => rt.costume(args, ctx)),
 			},
 			status: {
-				description: "看身体现在的状态和能做的所有动作。拿不准名字时先调这个。",
+				description:
+					"看身体现在的状态和能做的所有动作。background 显示内部背景循环，running 只表示时钟推进；前景动作期间可让位，不代表 VTS 参数已生效。拿不准名字时先调这个。",
 				parameters: {
 					type: "object",
 					additionalProperties: false,

@@ -83,12 +83,15 @@ const makeCatalog = (source = makeCatalogSource()): CatalogSnapshot => compileCa
 
 const makeProfile = (modelID = MODEL_ID): ModelProfile => ({ modelID, physicsOutputs: [] }) as unknown as ModelProfile;
 
+type BackgroundStatus = { default: "idle" | null; current: string | null; running: boolean };
+
 /** 鸭子类型假客户端：记录注入帧序列供幅值断言。 */
 const makeFakeClient = (options: { connected?: boolean; modelID?: string } = {}) => {
 	const state = {
 		connected: options.connected ?? true,
 		profile: makeProfile(options.modelID),
 		injected: [] as { id: string; value: number }[][],
+		listener: undefined as ((connected: boolean) => void) | undefined,
 	};
 	const client = {
 		...unconfirmedInjections(),
@@ -97,7 +100,9 @@ const makeFakeClient = (options: { connected?: boolean; modelID?: string } = {})
 		injectParameters: (frame: { id: string; value: number }[]) => {
 			state.injected.push(frame);
 		},
-		setConnectionChangeListener: (_listener: (connected: boolean) => void) => {},
+		setConnectionChangeListener: (listener: (connected: boolean) => void) => {
+			state.listener = listener;
+		},
 		connect: () => {},
 		disconnect: () => {},
 		getConnectionStatus: () => ({ connected: state.connected }),
@@ -121,6 +126,7 @@ const harness = async (catalog: CatalogSnapshot = makeCatalog(), seed = 0) => {
 		app.actions[action]!.run(args, ctx) as Promise<ToolExecutionResult>;
 	const status = async () =>
 		JSON.parse(await runtime.formatStatus()) as {
+			background: BackgroundStatus;
 			catalog: { ambient: { available: { id: string; description: string }[]; current: string | null } };
 		};
 	const stepMs = (totalMs: number, step = 16): void => {
@@ -139,6 +145,85 @@ const harness = async (catalog: CatalogSnapshot = makeCatalog(), seed = 0) => {
 };
 
 describe("live2d ambient 环境循环", () => {
+	it("status distinguishes the default running idle from an unselected ambient, in both status views", async () => {
+		const h = await harness();
+		try {
+			h.stepMs(1200);
+			const basic = JSON.parse((await h.run("status", {})).result);
+			const detail = JSON.parse((await h.run("status", { detail: true })).result);
+			expect(basic.catalog.ambient.current).toBeNull();
+			expect(basic.background).toEqual({ default: "idle", current: "idle", running: true });
+			expect(detail.background).toEqual(basic.background);
+			expect(
+				h.fake.state.injected.some((frame) => frame.some((p) => p.id === "FaceAngleX" && Math.abs(p.value) > 1)),
+			).toBe(true);
+		} finally {
+			await h.runtime.stop();
+		}
+	});
+
+	it("background status follows ambient selection, clearing and the active thinking loop", async () => {
+		const source = makeCatalogSource();
+		source.background!.thinking = swayLoop(2);
+		const h = await harness(makeCatalog(source));
+		try {
+			h.stepMs(16);
+			await h.run("state", { ambient: "sway" });
+			expect((await h.status()).background).toEqual({ default: "idle", current: "sway", running: true });
+			h.runtime.setThinking(true);
+			expect((await h.status()).background).toEqual({ default: "idle", current: "thinking", running: true });
+			expect((await h.status()).catalog.ambient.current).toBe("sway");
+			h.runtime.setThinking(false);
+			expect((await h.status()).background).toEqual({ default: "idle", current: "sway", running: true });
+			await h.run("state", { ambient: null });
+			expect((await h.status()).background).toEqual({ default: "idle", current: "idle", running: true });
+		} finally {
+			await h.runtime.stop();
+		}
+	});
+
+	it("background does not claim clock advancement before start or without an authored loop", async () => {
+		const fake = makeFakeClient();
+		const runtime = new Live2DRuntime({ client: fake.client, rig: makeRig(), catalog: makeCatalog() });
+		expect(JSON.parse(runtime.formatStatus()).background).toEqual({ default: "idle", current: null, running: false });
+		const h = await harness(makeCatalog({ background: {} }));
+		try {
+			h.stepMs(16);
+			expect((await h.status()).background).toEqual({ default: null, current: null, running: false });
+		} finally {
+			await h.runtime.stop();
+		}
+	});
+
+	it("background retains its loop selection but reports no advancement while disconnected, mismatched, unfocused or paused", async () => {
+		const h = await harness();
+		try {
+			await h.run("state", { ambient: "sway" });
+			h.stepMs(16);
+			h.fake.state.connected = false;
+			h.fake.state.listener!(false);
+			expect((await h.status()).background).toEqual({ default: "idle", current: "sway", running: false });
+			h.fake.state.connected = true;
+			h.fake.state.listener!(true);
+			h.fake.state.profile = makeProfile("other-model");
+			expect((await h.status()).background.running).toBe(false);
+			h.fake.state.profile = makeProfile();
+			h.runtime.setFocused(false);
+			expect((await h.status()).background).toEqual({ default: "idle", current: "sway", running: false });
+			h.runtime.setFocused(true);
+			expect((await h.status()).background.running).toBe(true);
+			await h.runtime.safeStop();
+			expect((await h.status()).background).toEqual({ default: "idle", current: null, running: false });
+			expect((await h.status()).catalog.ambient.current).toBe("sway");
+			await h.runtime.resume();
+			h.stepMs(16);
+			expect((await h.status()).background).toEqual({ default: "idle", current: "sway", running: true });
+		} finally {
+			await h.runtime.stop();
+		}
+		expect((await h.status()).background.running).toBe(false);
+	});
+
 	it("compileCatalog：ambient 条目编译入快照并保留描述", () => {
 		const catalog = makeCatalog();
 		expect(catalog.resolve("ambient", "sway")?.entry).toMatchObject({ description: "左右摇摆" });

@@ -192,24 +192,24 @@ shell 工具在 `exit` 之后按 stdio 空闲收敛（每个数据块重新计�
 
 ## Live2D 动作与语音播放
 
-当前 World 位于 `.uina/worlds/live2d`。MO rig 保留头、眼、嘴与躯干 yaw/pitch/roll 标定；头部是默认身体跟随目标，显式 torso 通道可错拍、偏移或接管。不控制手臂，也不靠平移模型制作身体动画。MO 动作、姿态、表情和背景目录目前均为空；没有迁移旧内容。
+当前 World 位于 `.uina/worlds/live2d`。MO rig 保留头、眼、嘴与躯干 yaw/pitch/roll 标定；头部是默认身体跟随目标，显式 torso 通道可错拍、偏移或接管。不控制手臂。当前 MO 登记了 17 个有限动作及 7 个变体、默认 idle、thinking 和 4 个 sway 环境片段；跳跃、贴脸、探头、转圈及石化使用显式空间或效果事件。
 
 | 入口 | 当前名称与表现 |
 | --- | --- |
-| express / cue 动作 | 当前 MO 动作与 cue 列表为空；按用户决定，后续直接重建，不迁移旧动作 |
-| state.posture | 当前 MO 姿态目录为空 |
-| state.expression | 当前 MO 表情目录为空 |
+| express / cue 动作 | 点头、摇头、眨眼、歪头、偷瞄、惊讶等；完整名称与别名由 status 返回 |
+| state.posture | sleep、neutral_posture |
+| state.expression | closed_eyes、neutral_expression |
 | state.attention | `user`、`screen`、`avert_down`、`avert_left`、`avert_right` 或既有坐标目标 |
-| state.ambient | MO 没有 ambient 条目；接口保留，目录不会回退到备份 |
-| 内部背景 | MO 没有 idle/thinking 动作工厂；自律通道按 rig 的 VTS/Uina 来源声明独立工作 |
+| state.ambient | sway；传 null 清除额外环境片段并回落默认 idle |
+| 内部背景 | 默认自动循环 idle；thinking 随 Host 事件切换，自律通道按 rig 的 VTS/Uina 来源声明独立工作 |
 
 工具 schema 仍是 express/state/costume/prepare_body/status/reload；state 负责持续姿态、表情和注视，express/cue 消费有限动作目录。动作重建后无需迁移入口或旧格式适配。`prepare_body` 创建按模型隔离的 Uina VTS 输入，不改写 `.vtube.json`；操作者需在 VTS 把三项分别映射到 `ParamBodyAngleX/Y/Z`，再 reload 并用 status detail 检查。
 
 身体动作作者合同为 `ActionPlan`、命名 Timeline、局部曲线组合器、空间事件与 seed 派生随机流，详见 [Action 作者合同](../.uina/worlds/live2d/MOTION-AUTHORING.md)。Director 每帧分别记录作者采样目标、最终合成帧、来源贡献与 clamp hit；这些本地诊断仅由预览启用，不改变模型可见工具结果。作者机制目前由合成目录测试覆盖，不代表已重建任何 MO 动画或完成视觉验收。
 
-MO 当前没有环境片段或 idle/thinking 作者定义。Host thinking 事件处理、暂停/失焦时钟冻结、safeStop 与恢复生命周期保留；将来重建动作内容时仍沿用同一 Director 与状态归属。
+普通 status 和 detail 均返回 `background: { default, current, running }`：default 表示默认 idle 是否存在，current 来自实际播放句柄，running 核对内部时钟、连接、身份与暂停/焦点。`catalog.ambient.current: null` 仅表示未选择额外环境片段，不表示没有 Idle。前景动作可压低后台贡献；running 不证明 VTS 画面效果。
 
-`state.ambient` schema 保留；当前 MO 不提供 ambient 工厂，调用不会自动回落旧目录或生成动作。
+Idle、thinking 和 sway 使用现有作者曲线与独立随机流；随机仅在 Bake 抽取。身体 baseline-offset 是对默认头部跟随的修正量，范围审计检查实际 Director 合成，不能把原始 torso offset 当作绝对姿态。
 
 若后续目录动作声明空间事件，ExternalActions 以 `model:transform` 与 `effect:*` 独占资源，在预检后与 Director 同步 `t0` 调度。纯效果 marker 到时即可发送；含位姿 span 的事件先确认至少剩 100ms，再发效果，ACK 后再次确认窗口和当前模型位姿才移动。ACK 消耗位姿窗口，不重置时钟或重发请求。位姿窗口不足时取消并立即清理；正常路径等完整身体 ActionPlan 结束后再恢复位姿和效果，效果状态持续到下一同类效果事件或动作结束。取消、位姿失败和错过窗口立即清理；单次效果分发失败会继续身体播放与剩余计划，最终记为 unknown。相对旋转只在事件边界与归位前读取位姿；发现同模型被手动移动时中止后续空间事件，不写回旧基线，并将位姿清理记为 unknown。清理请求由结构化分项结算记录，空间追踪覆盖作者请求的 dispatch/ACK 和调度迟到。100ms 尚未真实 VTS 校准。当前这些机制由合成空间动作和假设备覆盖，没有 MO 生产动作触发它们。
 

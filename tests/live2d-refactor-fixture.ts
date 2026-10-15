@@ -46,7 +46,17 @@ export function refactorClient() {
 		listener: (_connected: boolean) => {},
 		disconnects: 0,
 	};
-	const evidence = () => ({ accepted: true, acceptedInputs: ["FaceAngleX"], sent: 1, failed: 0, pending: 0 });
+	const evidence = () => ({
+		generation: 0,
+		accepted: 1,
+		acceptedInputs: ["FaceAngleX"],
+		sentInputs: ["FaceAngleX"],
+		sent: 1,
+		failed: 0,
+		dropped: 0,
+		filtered: 0,
+		pending: 0,
+	});
 	const client = {
 		isConnected: () => state.connected,
 		getModelProfile: () => ({ modelID: state.modelID, physicsOutputs: [] }),

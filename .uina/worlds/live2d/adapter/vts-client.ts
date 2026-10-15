@@ -53,6 +53,8 @@ export interface MotionInjectionEvidence {
 	filtered: number;
 	pending: number;
 	acceptedInputs: readonly string[];
+	/** 本租约至少随一次实际发出的注入请求上过线的输入；结算判据只核查这份清单。 */
+	sentInputs: readonly string[];
 }
 
 export class VTSInputSetupError extends Error {
@@ -65,8 +67,9 @@ export class VTSInputSetupError extends Error {
 	}
 }
 
-interface InjectionObservation extends Omit<MotionInjectionEvidence, "acceptedInputs"> {
+interface InjectionObservation extends Omit<MotionInjectionEvidence, "acceptedInputs" | "sentInputs"> {
 	acceptedInputs: Set<string>;
+	sentInputs: Set<string>;
 	settled?: () => void;
 }
 
@@ -135,12 +138,17 @@ export class VTSClient {
 			filtered: 0,
 			pending: 0,
 			acceptedInputs: new Set(),
+			sentInputs: new Set(),
 		};
 		this.injectionObservations.set(leaseID, observation);
 		const close = () => this.injectionObservations.delete(leaseID);
 		const snapshot = (): MotionInjectionEvidence => {
-			const { acceptedInputs, settled: _, ...counts } = observation;
-			return { ...counts, acceptedInputs: [...acceptedInputs] };
+			const { acceptedInputs, sentInputs, settled: _, ...counts } = observation;
+			return {
+				...counts,
+				acceptedInputs: [...acceptedInputs],
+				sentInputs: [...sentInputs],
+			};
 		};
 		return {
 			close,
@@ -953,9 +961,10 @@ export class VTSClient {
 					inputs: inputs.filter((input) => injectedInputs.has(input)),
 				}))
 				.filter(({ inputs }) => inputs.length > 0);
-			for (const { observation } of sentObservations) {
+			for (const { observation, inputs } of sentObservations) {
 				observation.sent++;
 				observation.pending++;
+				for (const input of inputs) observation.sentInputs.add(input);
 			}
 			const requestID = payload.requestID;
 			const timer = setTimeout(() => {

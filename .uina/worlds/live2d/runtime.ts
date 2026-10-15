@@ -383,7 +383,7 @@ export class Live2DRuntime {
 		if (clip.spatial.length === 0) {
 			const handle = director.play(clip, playOptions);
 			options.onStarted?.();
-			return settleMotion(this.client!, this.rig!, handle, clip, actionName);
+			return settleMotion(this.client!, handle, actionName);
 		}
 		if (!this.focused) return toolRejected("unfocused", actionReceipt(actionName, "FAILED", "unfocused"));
 
@@ -972,6 +972,30 @@ export class Live2DRuntime {
 
 	// ---------- 事实呈现 ----------
 
+	/** Internal background playback, including loops suppressed by a foreground gesture; not VTS effect evidence. */
+	private backgroundStatus(): { default: "idle" | null; current: string | null; running: boolean } {
+		const current =
+			this.thinkingHandle?.status === "playing"
+				? "thinking"
+				: this.restHandle?.status === "playing"
+					? (this.ambientName ?? "idle")
+					: null;
+		return {
+			default: this.catalog.background.idle ? "idle" : null,
+			current,
+			// A retained playing handle can be disconnected or frozen; only this clock can advance it.
+			running:
+				current !== null &&
+				this.isStarted &&
+				this.clock !== null &&
+				!this.paused &&
+				this.focused &&
+				!this.lifecycleFault &&
+				this.client?.isConnected() === true &&
+				this.identityMatched(),
+		};
+	}
+
 	formatStatus(): string {
 		const connected = this.client?.isConnected() ?? false;
 		return JSON.stringify(
@@ -981,6 +1005,7 @@ export class Live2DRuntime {
 				modelID: this.rig?.modelID ?? null,
 				paused: this.paused,
 				focused: this.focused,
+				background: this.backgroundStatus(),
 				catalog: {
 					motions: formatMotionEntries(this.catalog.list("motion")),
 					postures: formatCatalogEntries(this.catalog.list("posture")),
@@ -1013,6 +1038,7 @@ export class Live2DRuntime {
 				identityMatched: this.identityMatched(),
 				paused: this.paused,
 				focused: this.focused,
+				background: this.backgroundStatus(),
 				generation: this.generation,
 				lastCue: this.endpoint.lastCue(),
 				externalActions: this.externalActions?.snapshot() ?? null,

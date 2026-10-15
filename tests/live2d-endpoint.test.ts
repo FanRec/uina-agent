@@ -233,7 +233,7 @@ describe("live2d endpoint（P4-2）", () => {
 			await flush();
 			const record = endpoint.lastCue().at(-1)!;
 			expect(record).toMatchObject({ id: "nod", state: "finished" });
-			expect(record.reason).toBe("unknown"); // 无协议确认的假体不能证明动作接受。
+			expect(record.reason).toBe("input_unconfirmed"); // 无协议确认的假体：证据为空，不能推断动作接受。
 		} finally {
 			await app.onStop?.({} as ServiceCompanionContext);
 		}

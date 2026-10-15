@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModelProfile } from "../.uina/worlds/live2d/adapter/profile.js";
 import { VTSClient, type WebSocketLike } from "../.uina/worlds/live2d/adapter/vts-client.js";
-import { compileCatalog } from "../.uina/worlds/live2d/authoring/catalog.js";
+import { compileCatalog, type CatalogSnapshot } from "../.uina/worlds/live2d/authoring/catalog.js";
+import { compileMOCatalog } from "../.uina/worlds/live2d/models/mo/catalog.js";
 import { absolute, compileAction, keys, motion } from "../.uina/worlds/live2d/authoring/index.js";
 import { perfCatalogSource } from "./live2d-action-fixture.js";
 import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
@@ -159,8 +160,9 @@ async function connectedEffects() {
 	return { runtime, device, client, rig, catalog };
 }
 
-async function connected(tickIntervalMs = 1_000_000) {
+async function connected(tickIntervalMs = 1_000_000, catalogOverride?: CatalogSnapshot) {
 	const { rig, catalog } = await authored();
+	const activeCatalog = catalogOverride ?? catalog;
 	const device = new Device();
 	device.inputs = [...new Set(Object.values(rig.bindings).flatMap((bindings) => bindings.map((b) => b.input)))].map(
 		(name) => ({ name, min: -100, max: 100, defaultValue: 0 }),
@@ -185,10 +187,10 @@ async function connected(tickIntervalMs = 1_000_000) {
 	device.onopen?.({});
 	for (let i = 0; i < 60; i++) await Promise.resolve();
 	expect(client.isConnected()).toBe(true);
-	const runtime = new Live2DRuntime({ rig, catalog, client, seed: 0, tickIntervalMs });
+	const runtime = new Live2DRuntime({ rig, catalog: activeCatalog, client, seed: 0, tickIntervalMs });
 	await runtime.start({} as never);
 	runtimes.push(runtime);
-	return { runtime, device, client, rig, catalog };
+	return { runtime, device, client, rig, catalog: activeCatalog };
 }
 
 describe("MO 表演实际合成与执行", () => {
@@ -350,6 +352,21 @@ describe("MO 表演实际合成与执行", () => {
 		});
 		for (let i = 0; i < 100; i++) runtime.composeTick(10);
 		await expect(newer).resolves.toMatchObject({ status: "unknown" });
+	});
+
+	it("真实 MO wink 连续两次 express 结算 succeeded：恒零对侧眼通道不再阻塞输入确认", async () => {
+		const rig = (await loadRig(MO_MODEL_ID))!;
+		const { runtime } = await connected(1_000_000, compileMOCatalog(rig));
+		// 变体轮换排除重复：两次必覆盖至少一个单眼变体（cuteWink/cheerful 的对侧眼通道恒为零）。
+		for (let round = 0; round < 2; round++) {
+			const pending = runtime.express({ motion: "wink" }, {});
+			// 推进超过最长变体 wall duration（double 2000ms）+ fadeOut 250ms
+			for (let i = 0; i < 240; i++) runtime.composeTick(10);
+			await expect(pending).resolves.toMatchObject({
+				status: "succeeded",
+				details: { verification: "input_accepted" },
+			});
+		}
 	});
 
 	it("思考保持超过原短片段，反复通知不会重启，暂停后继续有效状态", async () => {
