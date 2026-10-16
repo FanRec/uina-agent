@@ -75,7 +75,7 @@ contracts/ 维护、Executor/运行管理、worlddef façade、Core 接缝（`to
 
 ## 4. worktree 与门禁协议
 
-- **worktree 由各模块 AI 开工时自建**（不预建）：从当前主分支 HEAD 创建，如 `git worktree add <path> -b mc/<module>`；路径沿用 `C:/Users/34150/.codex/worktrees/mc-<module>/Uina` 惯例。开工后先 rebase 到主分支最新（contracts 可能已被 lead 修订）。
+- **worktree 由各模块 AI 开工时自建**（不预建）：从当前主分支 HEAD 创建，如 `git worktree add <path> -b mc/<module>`；路径用短前缀 `E:/Uina/wt/mc-<module>`（Windows 深路径预算友好；mc-driver/mc-world 两个既有 worktree 仍在 `C:/Users/34150/.codex/worktrees/` 旧路径，不迁移）。开工后先 rebase 到主分支最新（contracts 可能已被 lead 修订）。
 - 每个模块 AI 在自己的 worktree 工作，**只 commit 自己目录 + 测试文件 + 集成报告**；不 push。
 - worktree 内 `pnpm install` 后门禁：`pnpm typecheck`（biome + boundaries + tsc）+ `pnpm vitest run tests/minecraft-<own-prefix>*`。全绿才能交付切片。
 - 已知沙箱约束：vitest 用默认池；测试失败时 coverage json 不落盘；测试写临时目录，不碰 `data/`、`.uina/world-data/`。
