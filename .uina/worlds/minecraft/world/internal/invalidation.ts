@@ -84,6 +84,8 @@ export class WatchRegistration {
 		}
 		const immediate = this.check(after);
 		if (immediate) {
+			// 立即交付的新鲜变化不旧于 pending：清掉，防止下次 next 用新 cursor 时重放陈旧变化。
+			this.pending = null;
 			awaiter.deliver(immediate);
 			return true;
 		}
@@ -119,7 +121,7 @@ export class WatchRegistration {
 	onEvent(kind: DependencyKind, seq: number, refs: Ref[]): void {
 		if (this.closed || !this.deps.has(kind)) return;
 		const cursor = this.ledger.cursorFor(this.stream);
-		const change: WorldChange = { kind: "changed", cursor: { ...cursor, sequence: seq }, changed: refs };
+		const change: WorldChange = { kind: "changed", cursor: { ...cursor, sequence: seq }, changed: [...refs] };
 		if (this.awaiting) {
 			this.awaiting = false;
 			const awaiter = this.ledger.takeAwaiter(this);

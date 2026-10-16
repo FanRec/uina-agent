@@ -59,11 +59,6 @@ export class ReceptionEngine {
 		private readonly events: ReceptionEvents,
 	) {}
 
-	/** durable 水位：连续持久前缀（含 gap 入项）。 */
-	get durableThroughByStream(): Map<string, number> {
-		return this.durableThroughCache;
-	}
-
 	private durableThroughCache = new Map<string, number>();
 
 	handleNotice(notice: ClientFactNotice): void {
@@ -122,6 +117,14 @@ export class ReceptionEngine {
 
 	private acceptGap(gap: GapRecord): void {
 		const state = this.streamState(gap.stream);
+		if (
+			!Number.isSafeInteger(gap.after) ||
+			gap.after < 0 ||
+			(gap.through !== null && (!Number.isSafeInteger(gap.through) || gap.through <= gap.after))
+		) {
+			this.events.protocolFault(`缺口区间非法：ref=${gap.ref} (${gap.after},${gap.through}]`);
+			return;
+		}
 		const existing = state.gaps.get(gap.ref);
 		if (existing) {
 			// 同身份重传：区间必须一致；不一致是源协议故障。
@@ -142,6 +145,10 @@ export class ReceptionEngine {
 	}
 
 	private endStream(stream: string, through: number): void {
+		if (!Number.isSafeInteger(through) || through < 1) {
+			this.events.protocolFault(`evidence_end 非法：stream=${stream} through=${through}`);
+			return;
+		}
 		const state = this.streamState(stream);
 		if (state.endedThrough !== null && state.endedThrough !== through) {
 			this.events.protocolFault(`evidence_end 区间变化：stream=${stream} ${state.endedThrough} vs ${through}`);
@@ -276,6 +283,11 @@ export class ReceptionEngine {
 	/** 待落盘条目（不可变引用快照；持久提交成功后由 committed 移除）。 */
 	takePending(): AcceptedEntry[] {
 		return [...this.pending];
+	}
+
+	/** 指定证据 ref 是否在待落盘队列（存在性校验用）。 */
+	hasPendingRef(ref: Ref): boolean {
+		return this.pending.some((entry) => (entry.kind === "fact" ? entry.record.ref : entry.gap.ref) === ref);
 	}
 
 	/**

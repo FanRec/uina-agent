@@ -79,6 +79,8 @@ export interface WorldStore {
 	appendEvidence(entries: StoredEntry[]): boolean;
 	/** 读取已持久证据（含 gap 记录）。存储不可用返回 null。 */
 	listEvidence(filter: EvidenceFilter): EvidencePage | null;
+	/** 证据/gap 引用是否已持久存在（retain/记录写入的存在性校验）。 */
+	hasEvidence(ref: string): boolean;
 	/** 恢复快照：已持久事实 seq 与 gap ref（按流）；内存实现返回 null。 */
 	recoverySnapshot(): StoreRecoveryStream[] | null;
 	/** 领域记录：CAS 写入。 */
@@ -154,6 +156,10 @@ export class MemoryWorldStore implements WorldStore {
 
 	recoverySnapshot(): StoreRecoveryStream[] | null {
 		return null; // 内存存储无持久恢复
+	}
+
+	hasEvidence(ref: string): boolean {
+		return this.evidence.has(ref);
 	}
 
 	writeRecord(change: {
@@ -257,6 +263,8 @@ export class SqliteWorldStore implements WorldStore {
 		mkdirSync(dataDir, { recursive: true });
 		this.db = new DatabaseSync(join(dataDir, fileName));
 		this.db.exec("PRAGMA journal_mode = WAL;");
+		// 同文件多连接（误用/工具打开）时避免立即 SQLITE_BUSY：等待而非拒绝。
+		this.db.exec("PRAGMA busy_timeout = 5000;");
 		this.db.exec(`
 			CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 			CREATE TABLE IF NOT EXISTS evidence (
@@ -433,6 +441,13 @@ export class SqliteWorldStore implements WorldStore {
 			items,
 			nextStoreSeq: items.length === filter.limit && last ? last.storeSeq : null,
 		};
+	}
+
+	hasEvidence(ref: string): boolean {
+		const row = this.db.prepare("SELECT 1 FROM evidence WHERE ref = ?").get(ref);
+		if (row) return true;
+		const gap = this.db.prepare("SELECT 1 FROM evidence_gaps WHERE ref = ?").get(ref);
+		return gap !== undefined;
 	}
 
 	recoverySnapshot(): StoreRecoveryStream[] {
@@ -643,6 +658,10 @@ export class UnavailableWorldStore implements WorldStore {
 
 	listEvidence(): null {
 		return null;
+	}
+
+	hasEvidence(): boolean {
+		return false;
 	}
 
 	recoverySnapshot(): null {

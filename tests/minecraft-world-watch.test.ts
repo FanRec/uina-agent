@@ -12,6 +12,7 @@
 
 import { describe, expect, it } from "vitest";
 import { createWorld } from "../.uina/worlds/minecraft/world/index.js";
+import { MemoryWorldStore } from "../.uina/worlds/minecraft/world/internal/store.js";
 import { FakeClientFacts } from "./minecraft-world-fake-facts.js";
 import type { ClientFactNotice } from "../.uina/worlds/minecraft/contracts/client-facts.js";
 
@@ -195,6 +196,51 @@ describe("minecraft world watch（S-W2）", () => {
 		const reRead = await world.read({ ref: "self@1", input: {} });
 		expect(reRead.cursor.epoch).not.toBe(observation.cursor.epoch);
 		expect(reRead.value).toEqual(selfState(20));
+		await watch.close();
+		await world.close();
+	});
+
+	it("绑定在同一采样内变化：read cursor 属于新分区流，watch 正常等待（死流回归）", async () => {
+		const facts = new FakeClientFacts();
+		facts.setSelf(selfState(20), []);
+		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		await world.read({ ref: "self@1", input: {} }); // 建立 b1 基线
+		facts.setScope({ binding: "mcw:binding:b2", worldRevision: "mcw:rev:r2" }); // 静默换绑
+		// 本次 read 的采样原子返回新 scope：cursor 必须属于新分区流，而非已死的 b1 流。
+		const second = await world.read({ ref: "self@1", input: {} });
+		const watch = await world.watch({ ref: "self@1", input: {} }, second.cursor, new AbortController().signal);
+		let woke = false;
+		const pending = watch.next(second.cursor, new AbortController().signal).then((c) => {
+			woke = true;
+			return c;
+		});
+		await microtaskTurn();
+		facts.setSelf(selfState(17));
+		await Promise.race([pending, new Promise((r) => setTimeout(r, 50))]);
+		expect(woke).toBe(true); // 旧实现注册到死流，这里永不唤醒
+		await watch.close();
+		await world.close();
+	});
+
+	it("立即交付后不重放陈旧 pending（新 cursor 的 next 不收重复变化）", async () => {
+		const facts = new FakeClientFacts();
+		facts.setSelf(selfState(20), []);
+		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		const first = await world.read({ ref: "self@1", input: {} });
+		const watch = await world.watch({ ref: "self@1", input: {} }, first.cursor, new AbortController().signal);
+		facts.emitChangedAt(facts.currentStamp().sequence + 4, ["fact:block:B"]); // 跳号 → 保守失效，无等待者 → pending
+		const change1 = await watch.next(first.cursor, new AbortController().signal); // 立即交付（新鲜）
+		const reRead = await world.read({ ref: "self@1", input: {} });
+		expect(reRead.cursor.sequence).toBe((change1 as { cursor: { sequence: number } }).cursor.sequence);
+
+		let woke = false;
+		const pending = watch.next(reRead.cursor, new AbortController().signal).then((c) => {
+			woke = true;
+			return c;
+		});
+		await microtaskTurn();
+		expect(woke).toBe(false); // 陈旧 pending 不重放
+		pending.catch(() => {});
 		await watch.close();
 		await world.close();
 	});

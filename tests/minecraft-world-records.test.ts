@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createWorld } from "../.uina/worlds/minecraft/world/index.js";
 import { SqliteWorldStore } from "../.uina/worlds/minecraft/world/internal/store.js";
-import { FakeClientFacts, capturedFact, mkFact } from "./minecraft-world-fake-facts.js";
+import { FakeClientFacts, capturedFact } from "./minecraft-world-fake-facts.js";
 
 async function flush(): Promise<void> {
 	await Promise.resolve();
@@ -152,6 +152,11 @@ describe("minecraft world 领域记录 CAS 与保留（S-W3）", () => {
 			const facts = new FakeClientFacts();
 			facts.setSelf(selfState(20), []);
 			const world = createWorld({ facts, dataDir: dir }, { receiver: "mcw:receiver:gen1" });
+			// 记录引用的证据必须真实接收过（存在性校验）
+			facts.emitEvidence([
+				capturedFact({ sequence: 1, ref: "ev:a", stream: "mcw:test:stream:casa" }),
+				capturedFact({ sequence: 2, ref: "ev:b", stream: "mcw:test:stream:casa" }),
+			]);
 			const base = { schema: "construction.project@1" as const, world: "mcw:world:w1", worldRevision: "mcw:rev:r1" };
 
 			const created = await world.writeRecord({
@@ -232,6 +237,31 @@ describe("minecraft world 领域记录 CAS 与保留（S-W3）", () => {
 		}
 	});
 
+	it("retain 不存在的证据引用报 EVIDENCE_UNAVAILABLE（虚假成功防御）", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "mcw-s3-"));
+		try {
+			const facts = new FakeClientFacts();
+			const world = createWorld({ facts, dataDir: dir }, { receiver: "mcw:receiver:gen1" });
+			await expect(world.evidence.retain("mcw:runtime:run-x", ["mcw:ev:never-received"])).rejects.toMatchObject({
+				code: "EVIDENCE_UNAVAILABLE",
+			});
+			// 记录引用未收到证据同样拒绝（不建立悬空引用）。
+			await expect(
+				world.writeRecord({
+					schema: "construction.project@1",
+					world: "mcw:world:w1",
+					worldRevision: "mcw:rev:r1",
+					expectedRevision: null,
+					value: {},
+					evidence: ["mcw:ev:never-received"],
+				}),
+			).rejects.toMatchObject({ code: "EVIDENCE_UNAVAILABLE" });
+			await world.close();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("retain 幂等追加并先冲刷证据；release 移除；跨重启保留", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "mcw-s3-"));
 		try {
@@ -245,6 +275,7 @@ describe("minecraft world 领域记录 CAS 与保留（S-W3）", () => {
 			expect(facts.acks.at(-1)?.durableThrough).toBe(1);
 
 			await world.evidence.retain("mcw:runtime:run-1", ["mcw:ev:key-1"]); // 幂等
+			facts.emitEvidence([capturedFact({ sequence: 2, ref: "mcw:ev:key-2", stream: "mcw:test:stream:ev1" })]);
 			await world.evidence.retain("mcw:runtime:run-1", ["mcw:ev:key-2"]);
 			await world.evidence.release("mcw:runtime:run-1");
 			await world.close();
@@ -252,7 +283,7 @@ describe("minecraft world 领域记录 CAS 与保留（S-W3）", () => {
 			const store = new SqliteWorldStore(dir);
 			expect(store.retainedBy("mcw:runtime:run-1")).toBeNull();
 			const page = store.listEvidence({ limit: 100 });
-			expect(page!.items).toHaveLength(1); // 证据仍在（release 只删保留关系）
+			expect(page!.items).toHaveLength(2); // key-1 + key-2 证据仍在（release 只删保留关系）
 			store.close();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -264,6 +295,10 @@ describe("minecraft world 领域记录 CAS 与保留（S-W3）", () => {
 		try {
 			const facts = new FakeClientFacts();
 			const world = createWorld({ facts, dataDir: dir }, { receiver: "mcw:receiver:gen1" });
+			facts.emitEvidence([
+				capturedFact({ sequence: 1, ref: "ev:1", stream: "mcw:test:stream:rec" }),
+				capturedFact({ sequence: 2, ref: "ev:2", stream: "mcw:test:stream:rec" }),
+			]);
 			const created = await world.writeRecord({
 				schema: "process.smelting@1",
 				world: "mcw:world:w1",
@@ -305,6 +340,3 @@ describe("minecraft world 领域记录 CAS 与保留（S-W3）", () => {
 		}
 	});
 });
-
-// mkFact 引用保持（后续 container.last 切片使用）。
-void mkFact;

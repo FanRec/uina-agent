@@ -28,7 +28,7 @@ import type { ExactRef, Fact, JsonValue, Observation, ObservationCursor, Ref } f
 import { CallFailureError } from "../../contracts/errors.js";
 import { CurrentSourceTracker } from "./current-source.js";
 import { InvalidationLedger, type WatchRegistration } from "./invalidation.js";
-import { builtinQueries, queryStreamRef, type QueryDefinition } from "./queries.js";
+import { builtinQueries, canonicalJson, queryStreamRef, type QueryDefinition } from "./queries.js";
 import { MemoryWorldStore, type WorldStore } from "./store.js";
 import { ReceptionEngine, type AcceptedEntry } from "./reception.js";
 
@@ -123,20 +123,30 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		});
 	}
 
-	/** 批量提交待落盘条目；提交完成在同一同步步发布 durable ACK。allowAfterClose 供 close 的最终冲刷。 */
-	private flushPending(allowAfterClose = false): void {
-		if (this.closed && !allowAfterClose) return;
+	/**
+	 * 批量提交待落盘条目；提交完成在同一同步步发布 durable ACK。allowAfterClose 供 close 的最终冲刷。
+	 * 返回提交是否成功（无待提交视为成功）；失败时 durable 暂停推进。
+	 */
+	private flushPending(allowAfterClose = false): boolean {
+		if (this.closed && !allowAfterClose) return true;
 		const pending = this.reception.takePending();
-		if (pending.length === 0) return;
-		if (this.store.state !== "ready") return; // D 不前进、不发 durable ACK（world.md §14）
+		if (pending.length === 0) return true;
+		if (this.store.state !== "ready") return false; // D 不前进、不发 durable ACK（world.md §14）
 		const ok = this.store.appendEvidence(pending);
 		if (!ok) {
 			this.storeFailed = true;
 			this.recordDiagnostic("存储提交失败：durable 水位暂停推进");
-			return;
+			return false;
 		}
 		this.storeFailed = false;
 		this.reception.committed(pending);
+		return true;
+	}
+
+	/** 证据引用存在性：已持久或在待落盘队列（retain/writeRecord 的存在性校验）。 */
+	private evidenceExists(ref: Ref): boolean {
+		if (this.reception.hasPendingRef(ref)) return true;
+		return this.store.state === "ready" && this.store.hasEvidence(ref) === true;
 	}
 
 	// ---- 绑定与分区 ----
@@ -192,12 +202,19 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		const { definition, input } = this.resolveQuery(query);
 		if (definition.deps.has("current")) {
 			// 纯当前：同步段固定切面——sample、纳入水位、组装 cursor；不读存储、不等历史。
-			const scope = this.requireScope();
+			this.requireScope();
 			let fact: Fact<JsonValue> | undefined;
-			const capture = this.facts.sample((view) => {
-				fact = definition.evalCurrent!(view, input);
-				return null;
-			});
+			let capture: ReturnType<ClientFactsPort["sample"]> | undefined;
+			try {
+				capture = this.facts.sample((view) => {
+					fact = definition.evalCurrent!(view, input);
+					return null;
+				});
+			} catch (error) {
+				// Driver/view 异常不按当前事实失败解释：如实报源不可用（不吞诊断）。
+				this.recordDiagnostic(`采样求值失败：${String(error)}`);
+				throw new CallFailureError({ code: "SOURCE_UNAVAILABLE", message: `当前事实源采样失败：${String(error)}` });
+			}
 			// 采样结果可能携带变化的 scope/stamp：先纳入失效水位，再固定 cursor（§6.2）。
 			this.applyScope(capture.scope, false);
 			this.currentTracker.observeStamp(capture.stamp);
@@ -205,7 +222,14 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			if (!fact) {
 				throw new CallFailureError({ code: "SOURCE_UNAVAILABLE", message: "当前采样未返回事实" });
 			}
-			const stream = queryStreamRef(query.ref, scope.world, scope.worldRevision, scope.dimension, input);
+			// 流身份用采样原子返回的 scope：事实属于 capture.scope，不是调用前的旧绑定。
+			const stream = queryStreamRef(
+				query.ref,
+				capture.scope.world,
+				capture.scope.worldRevision,
+				capture.scope.dimension,
+				input,
+			);
 			this.ledger.ensureStream(stream, definition.deps);
 			const cursor = this.ledger.cursorFor(stream);
 			return { ...fact, cursor } as Observation<T>;
@@ -267,8 +291,9 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			items,
 			next: page.nextStoreSeq === null ? null : { version: page.version, afterStoreSeq: page.nextStoreSeq },
 		};
-		const scope = this.requireScope();
-		const stream = queryStreamRef(query.ref, scope.world, scope.worldRevision, scope.dimension, input);
+		// 纯历史不要求 Driver 在线（不变量 A）：流身份不含分区——分区代次由 epoch 分量承载，
+		// 重绑/分区变化经 resetBinding 全量 reset，历史注册随之退役后重新 read→watch。
+		const stream = `mcw:qh:${query.ref}|${canonicalJson(input)}`;
 		this.ledger.ensureStream(stream, definition.deps);
 		const cursor = this.ledger.cursorFor(stream);
 		return {
@@ -289,17 +314,24 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		const { definition, input } = this.resolveQuery(query);
 		let registration: WatchRegistration;
 		if (definition.deps.has("current")) {
-			const scope = this.requireScope();
+			this.requireScope();
 			// 同步段：先纳入当前 stamp（含保守失效），再登记等待者——登记后无漏（§9.3）。
 			const capture = this.facts.sample(() => null);
 			this.applyScope(capture.scope, false);
 			this.currentTracker.observeStamp(capture.stamp);
 			this.sampledOnce = true;
-			const stream = queryStreamRef(query.ref, scope.world, scope.worldRevision, scope.dimension, input);
+			// 流身份用采样原子返回的 scope（事实所属分区），不用调用前的旧绑定。
+			const stream = queryStreamRef(
+				query.ref,
+				capture.scope.world,
+				capture.scope.worldRevision,
+				capture.scope.dimension,
+				input,
+			);
 			registration = this.ledger.createRegistration(stream, definition.deps);
 		} else {
-			const scope = this.requireScope();
-			const stream = queryStreamRef(query.ref, scope.world, scope.worldRevision, scope.dimension, input);
+			// 纯历史不要求 Driver 在线（不变量 A）；分区代次由 epoch 分量承载（同 read）。
+			const stream = `mcw:qh:${query.ref}|${canonicalJson(input)}`;
 			registration = this.ledger.createRegistration(stream, definition.deps);
 		}
 		// 登记时已发现的变化由首次 next 立即交付（awaitNext → check）。
@@ -400,9 +432,21 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 				message: this.store.unavailableReason ?? "历史存储不可写",
 			});
 		}
+		// 证据存在性：领域记录的同类保留在修订事务内完成，不得引用未收到的证据（悬空引用）。
+		for (const ref of change.evidence) {
+			if (!this.evidenceExists(ref)) {
+				throw new CallFailureError({ code: "EVIDENCE_UNAVAILABLE", message: `记录引用的证据不存在：${ref}` });
+			}
+		}
 		// 分区一致性：不凭 worldId 文本相同放行旧代次写入（world.md §4.2）。
 		// 写入有当前分区依赖：先同步采样刷新绑定视图（§6.2 步骤 2）。
-		const capture = this.facts.sample(() => null);
+		let capture: ReturnType<ClientFactsPort["sample"]>;
+		try {
+			capture = this.facts.sample(() => null);
+		} catch (error) {
+			this.recordDiagnostic(`写入前采样失败：${String(error)}`);
+			throw new CallFailureError({ code: "SOURCE_UNAVAILABLE", message: `写入前绑定核验失败：${String(error)}` });
+		}
 		this.applyScope(capture.scope, false);
 		this.currentTracker.observeStamp(capture.stamp);
 		this.sampledOnce = true;
@@ -470,14 +514,19 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		if (typeof owner !== "string" || owner.length === 0) {
 			throw new CallFailureError({ code: "INVALID_ARGUMENT", message: "owner 必须是不可变的持久记录所有者身份" });
 		}
+		if (!Array.isArray(evidence) || evidence.some((e) => typeof e !== "string")) {
+			throw new CallFailureError({ code: "INVALID_ARGUMENT", message: "evidence 必须是 Ref 数组" });
+		}
 		if (this.store.state !== "ready") {
 			throw new CallFailureError({ code: "STORE_UNAVAILABLE", message: "无法保证证据与保留关系已提交" });
 		}
-		// 成功前保证证据已持久：先冲刷待落盘队列。
-		this.flushPending();
+		// 成功前保证证据已持久且存在：先冲刷待落盘队列；冲刷失败不虚假成功（world.md §11）。
+		if (!this.flushPending()) {
+			throw new CallFailureError({ code: "STORE_UNAVAILABLE", message: "证据持久提交失败，保留关系未建立" });
+		}
 		for (const ref of evidence) {
-			if (typeof ref !== "string") {
-				throw new CallFailureError({ code: "INVALID_ARGUMENT", message: "evidence 必须是 Ref 数组" });
+			if (!this.evidenceExists(ref)) {
+				throw new CallFailureError({ code: "EVIDENCE_UNAVAILABLE", message: `被保留的证据不存在：${ref}` });
 			}
 		}
 		const ok = this.store.retain(owner, evidence);

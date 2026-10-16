@@ -179,6 +179,7 @@ describe("minecraft world 接收与当前读（S-W1）", () => {
 			retain: (owner: string, evidence: string[]) => backing.retain(owner, evidence),
 			release: (owner: string) => backing.release(owner),
 			recoverySnapshot: () => null,
+			hasEvidence: (ref: string) => backing.hasEvidence(ref),
 			retainedBy: (owner: string) => backing.retainedBy(owner),
 			allRetentions: () => backing.allRetentions(),
 			close: () => {},
