@@ -186,3 +186,9 @@ M5：真实 Mineflayer 依赖接入（lead 批准依赖后）、真实服务器�
 - 登记不修：program↔assets 合同类型循环（纯 type 无运行时环）；blockUpdate/setSlot 粗粒度失效（M5 接真实协议入口时带坐标精细化，driver.md §11.6 的完整要求）。
 
 **集成证据**：合并树 `pnpm typecheck`（biome+8 边界+tsc）✓；minecraft 全套 100 例（Driver 51 + World 35 + contracts/worlddef 7 + 集成 7）✓；新增 `tests/minecraft-integration.test.ts`（lead 所有）验证真实端口连接：FakeClientBot → createDriver → ClientFactsPort → createWorld（真实 SQLite tmpdir）——当前事实变化观察、瞬态证据捕获后可查、durable ACK 后 Driver 材料回收、read→watch→next 无漏/不自激、断连 reset+epoch 更换、存储故障当前读不受影响、内存存储语义一致。
+
+### Lead 集成验收补充（同日第二轮：全量回归与 UI 联想回归修复）
+
+- 全量回归对照：预合并基线 13 个失败文件 vs 合并树 14 个，失败集合在同树连续跑批间本就不稳定（负载敏感 flake，与两开发 AI 报告一致）；零 minecraft-* 失败。
+- **确定性回归 1 例并已修复**：`.uina/worlds/minecraft/` 新增文件使 @ 文件联想深扫描预算（300 文件+100 目录）被 .artifacts/.uina 等过程目录耗尽，根级 package.json 落出候选集（tests/ui.test.ts Tab 补全稳定失败；probe 实证）。修复：src/ui/components/editor/file-candidates.ts SKIP 词表补 .agents/.artifacts/.workbuddy/.pytest_cache/.VSCodeCounter；probe 复验 root package.json 回 top-1。这是既有脆弱机制，minecraft 只是触发者。
+- 修复后：typecheck ✓；UI + minecraft 全套 294 例 ✓；全量 13 failed（flake 噪声，与基线同量级）。
