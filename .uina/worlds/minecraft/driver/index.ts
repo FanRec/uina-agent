@@ -10,6 +10,7 @@
 
 import type { ClientFactsPort } from "../contracts/client-facts.js";
 import type { PlayerPort } from "../contracts/body.js";
+import type { EffectReceipt } from "../contracts/values.js";
 
 export interface DriverConfig {
 	/** 服务器地址（连接位置，不是世界身份）。 */
@@ -29,6 +30,8 @@ export interface DriverHandle {
 	readonly player: PlayerPort;
 	/** 当前客户端事实端口：由 World 订阅 + 采样。 */
 	readonly facts: ClientFactsPort;
+	/** 游戏聊天：不占身体、不参与身体调度（design §3 say 边界）。 */
+	say(text: string, signal: AbortSignal): Promise<EffectReceipt>;
 	close(): Promise<void>;
 }
 

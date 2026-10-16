@@ -60,9 +60,18 @@ export interface CallableDirectory {
 	describe(selector: Selector): Promise<DiscoveryEntry>;
 }
 
+/** 顶层 access 判别：保证联合收缩可靠（嵌套 descriptor.access 收缩不可依赖）。 */
 export type NativeCallable<I, O> =
-	| { descriptor: CallableDescriptor & { access: "read" }; invoke(ctx: ReadCallContext, input: I): Promise<O> }
-	| { descriptor: CallableDescriptor & { access: "act" }; invoke(ctx: CallContext, input: I): Promise<O> };
+	| {
+			access: "read";
+			descriptor: CallableDescriptor & { access: "read" };
+			invoke(ctx: ReadCallContext, input: I): Promise<O>;
+	  }
+	| {
+			access: "act";
+			descriptor: CallableDescriptor & { access: "act" };
+			invoke(ctx: CallContext, input: I): Promise<O>;
+	  };
 
 export interface ReadCallScope {
 	readonly run: Ref;

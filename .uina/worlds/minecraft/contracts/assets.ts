@@ -96,8 +96,6 @@ export type AssetValue = {
 export type AssetDraft = AssetValue & { requestId: Ref; name: string };
 export type AssetRevision = AssetValue & { requestId: Ref; expectedRef: ExactRef; reason: string };
 
-type WithoutRequestId<T> = T extends { requestId: Ref } ? Omit<T, "requestId"> : never;
-
 export interface AssetSummary {
 	kind: AssetKind;
 	ref: ExactRef;
@@ -151,8 +149,8 @@ export interface AssetRepository extends AssetReadRepository {
 }
 
 export interface ScriptAssetRepository extends AssetReadRepository {
-	put(request: WithoutRequestId<AssetDraft>): Promise<AssetRecord>;
-	revise(request: WithoutRequestId<AssetRevision>): Promise<AssetRecord>;
+	put(request: Omit<AssetDraft, "requestId">): Promise<AssetRecord>;
+	revise(request: Omit<AssetRevision, "requestId">): Promise<AssetRecord>;
 }
 
 /** 仅注入可信的持久发布/导入导出所有者；脚本不获得 stage/read 流代理。 */
@@ -170,43 +168,48 @@ export interface AssetObjectPort {
 
 export type ProgramRecord = AssetRecord<"program">;
 
-export interface ProgramAssets {
-	save(request: {
-		requestId: Ref;
-		name: string;
-		definition: ProgramDefinition;
-		evidence: AssetEvidence[];
-		sources?: AssetSource[];
-		requiredAssets?: ExactRef[];
-	}): Promise<ProgramRecord>;
-	saveFromRun(request: {
-		requestId: Ref;
-		name: string;
-		run: Ref;
-		segment: Ref;
-		evidence?: AssetEvidence[];
-	}): Promise<ProgramRecord>;
-	read(ref: ExactRef): Promise<ProgramRecord>;
-	revise(request: {
-		requestId: Ref;
-		expectedRef: ExactRef;
-		definition: ProgramDefinition;
-		reason: string;
-		evidence: AssetEvidence[];
-		sources?: AssetSource[];
-		requiredAssets?: ExactRef[];
-	}): Promise<ProgramRecord>;
+export interface ProgramSaveRequest {
+	requestId: Ref;
+	name: string;
+	definition: ProgramDefinition;
+	evidence: AssetEvidence[];
+	sources?: AssetSource[];
+	requiredAssets?: ExactRef[];
 }
 
-type HideRequestId<F> = F extends (request: infer R) => infer P
-	? R extends { requestId: Ref }
-		? (request: Omit<R, "requestId">) => P
-		: F
-	: F;
+export interface ProgramSaveFromRunRequest {
+	requestId: Ref;
+	name: string;
+	run: Ref;
+	segment: Ref;
+	evidence?: AssetEvidence[];
+}
 
-export type ScriptAssets = { [K in keyof ProgramAssets]: HideRequestId<ProgramAssets[K]> } & {
+export interface ProgramReviseRequest {
+	requestId: Ref;
+	expectedRef: ExactRef;
+	definition: ProgramDefinition;
+	reason: string;
+	evidence: AssetEvidence[];
+	sources?: AssetSource[];
+	requiredAssets?: ExactRef[];
+}
+
+export interface ProgramAssets {
+	save(request: ProgramSaveRequest): Promise<ProgramRecord>;
+	saveFromRun(request: ProgramSaveFromRunRequest): Promise<ProgramRecord>;
+	read(ref: ExactRef): Promise<ProgramRecord>;
+	revise(request: ProgramReviseRequest): Promise<ProgramRecord>;
+}
+
+/** 脚本侧便利门面：requestId 由运行管理生成，脚本不填。 */
+export interface ScriptAssets {
 	readonly repository: ScriptAssetRepository;
-};
+	save(request: Omit<ProgramSaveRequest, "requestId">): Promise<ProgramRecord>;
+	saveFromRun(request: Omit<ProgramSaveFromRunRequest, "requestId">): Promise<ProgramRecord>;
+	read(ref: ExactRef): Promise<ProgramRecord>;
+	revise(request: Omit<ProgramReviseRequest, "requestId">): Promise<ProgramRecord>;
+}
 
 export type ReadAssets = Pick<ScriptAssets, "read"> & {
 	readonly repository: Pick<ScriptAssetRepository, "read" | "search" | "inspect">;

@@ -5,23 +5,21 @@
  * minecraft façade 工具、事件递送、body.endpoint 急停门接入、与游戏执行进程通信。
  * 不实现游戏算法；执行侧（Driver/Executor/能力）在伴生进程中运行。
  *
+ * 入口合同：默认导出**无参**工厂（world-loader 约定，工厂不得读取宿主参数）。
  * 当前状态：执行侧未实现，façade 所有动作如实返回 not_started，不伪装能力。
  * defaultState.enabled = false，需显式启用。
  */
 
-import type {
-	ActionContext,
-	ActionDef,
-	ServiceCompanionContext,
-	WorldDef,
-} from "../../../../src/extensions/world-framework/types.js";
+import type { ActionContext, ActionDef, WorldDef } from "../../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../../src/tools/broker.js";
 
-const NOT_IMPLEMENTED: ToolExecutionResult = {
-	result:
-		"minecraft 执行侧尚未装配（Driver/Executor 切片未交付）。本工具当前不产生任何游戏动作；受理、查询与急停能力将随执行侧切片一并开放。",
-	status: "not_started",
-};
+function notImplemented(): ToolExecutionResult {
+	return {
+		result:
+			"minecraft 执行侧尚未装配（Driver/Executor 切片未交付）。本工具当前不产生任何游戏动作；受理、查询与急停能力将随执行侧切片一并开放。",
+		status: "not_started",
+	};
+}
 
 const minecraftAction: ActionDef = {
 	description: [
@@ -43,10 +41,11 @@ const minecraftAction: ActionDef = {
 		},
 		required: ["action"],
 	},
-	run: async (_params: unknown, _ctx: ActionContext): Promise<ToolExecutionResult> => NOT_IMPLEMENTED,
+	run: async (_params: unknown, _ctx: ActionContext): Promise<ToolExecutionResult> => notImplemented(),
 };
 
-export function createMinecraftWorldDef(_ctx?: ServiceCompanionContext): WorldDef {
+/** 无参工厂：宿主能力经 onStart 的 ServiceCompanionContext 注入，不在此读取。 */
+export function createMinecraftWorldDef(): WorldDef {
 	return {
 		name: "minecraft",
 		description:

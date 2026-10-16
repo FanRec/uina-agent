@@ -136,5 +136,4 @@ export type ControlOwner =
 
 export interface PlayerPort {
 	acquire(owner: ControlOwner, signal: AbortSignal): Promise<BodySession>;
-	say(text: string, signal: AbortSignal): Promise<EffectReceipt>;
 }

@@ -79,7 +79,8 @@ export class CallFailureError extends Error implements CallFailure {
 	readonly recoverable: boolean;
 
 	constructor(failure: {
-		code: CallFailureCode | string;
+		/** 通用码用 CallFailureCode 词表；能力私有领域码按其合同登记。 */
+		code: string;
 		message: string;
 		dispatch?: "not_sent" | "sent" | "unknown";
 		progress?: Progress;
@@ -99,4 +100,9 @@ export class CallFailureError extends Error implements CallFailure {
 /** 判断未知值是否携带领域失败形状（桥接还原用）。 */
 export function isCallFailure(value: unknown): value is CallFailure {
 	return value instanceof Error && typeof (value as CallFailure).code === "string";
+}
+
+/** 判断字符串是否为通用错误码词表成员；不是不代表非法（能力可有私有领域码）。 */
+export function isCallFailureCode(value: unknown): value is CallFailureCode {
+	return typeof value === "string" && Object.hasOwn(CALL_FAILURE_MEANINGS, value);
 }
