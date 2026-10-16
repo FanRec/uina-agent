@@ -122,3 +122,51 @@ M5：真实 Mineflayer 依赖接入（lead 批准依赖后）、真实服务器�
 - 真实 Mineflayer 适配（ClientBot 接缝 → mineflayer 实例）、自动重连策略、传感器目录、sections 真实 chunk 数据、§9 插件适配（Pathfinder/PVP/Inventory 台账）——均归 M5 及后续。
 - 反馈帧率/validUntil/停滞超时为配置默认值，未实测调优（driver.md §8.5 要求实测决定）。
 - evidence 材料回收策略按"所有已登记接收方 durable 覆盖"保守实现；多接收方/跨域重传路径未在真实 World 对接中验证。
+
+### World AI（2026-10-16，分支 mc/world，commit 43cd7d6 / 72f8237 / dd2d328）
+
+**交付**：S-W1 接收与当前读、S-W2 Watch 无漏失效、S-W3 SQLite 历史/领域记录/保留/恢复。
+`world/internal/{reception,current-source,invalidation,queries,store,world-impl}.ts` + `world/index.ts`；
+测试 `tests/minecraft-world-{fake-facts,receive,watch,records}.*`（32 例，全绿）；
+门禁 `pnpm typecheck`（biome+boundaries+tsc）通过。
+
+**合同偏差/缺口请求（需 lead 协调）**：
+
+1. **writeRecord 所有权核验缺注入**：`WorldPort.writeRecord` 要求"从真实当前调用核验存活、
+   act/schema 所有权"，但 `createWorld({facts, dataDir})` 无调用核验/schema 注册表注入，
+   `writeRecord(change)` 签名也不携带 ctx。当前实现只做：结构校验、分区一致性（先同步采样刷新
+   绑定视图）、CAS、schema/world/worldRevision 不可偷换。**建议**：WorldDeps 增加可选
+   `records?: { schemas: Map<ExactRef, (value) => ValidateResult> }`，或写路径改经 CallContext。
+   未注入前，schema 所有权只能信任调用方——不冒称已核验。
+2. **changed refs 粒度**：Watch 精确分类目前按"当前源"整源投递（§9.2 允许的保守退路）；
+   按 ref 过滤需要 Driver 侧 fact-ref 词表与查询依赖提取的约定，建议后续与 Driver AI/lead
+   共同定一个最小映射（如 fact:self / fact:inventory / fact:block:<key>）。
+3. **世界绑定来源**：当前把 Driver 采样/订阅返回的 `ClientFactScope` 视为可信绑定投影
+   （§4.2 "Host 明确提供且可信"路径）；显式 unbound 分区的创建规则（何时判定"身份未知"）
+   需要组合根给出判定输入，当前 status.binding 如实转发 scope。
+4. **接收代次 ref**：`createWorld(options.receiver)` 由组合根在重挂载/重启时提供新代次；
+   默认 `mcw:receiver:g1` 仅适合单实例。跨进程部署（M5）时需接组合根的代次分配。
+
+**未验证边界（如实登记）**：
+
+- 真实 SQLite 断电/进程崩溃恢复：已测 graceful close + 重开，未测 kill -9 后 WAL 恢复。
+- 同身份不同载荷的跨重启检测：重启后重放冲突只静默保留先到版本（RAM 内可检出并报协议故障）。
+- `evidence.list@1` 大数据量性能未测；node:sqlite 同步提交在游戏关键路径上的延迟未测
+  （LEAD M5 伴生进程决策后再评估 worker 迁移；存储接口已按可替换设计）。
+- 联合查询/证据 fence（world.md §6.3）、container.last 等领域查询、时间阈值（maxAge）失效、
+  GC 发布门与删除：本切片未实现（无消费方，不预建）；retain/release 的保留闭包（Section
+  基底传递依赖）在证据携带 deps 字段前只能按直接 ref 保留。
+- 全量 `pnpm test` 中 tts-bridge/bilibili/mcp/qq-world 等 9 文件失败（40s 超时特征），
+  与本模块零交集（未 import minecraft 代码），疑似本机 harness 敏感，未处理。
+
+**对抗式审查修复**（2026-10-16 第二轮，commit 7fd8d3c）：
+
+- **流身份竞态（严重）**：read/watch 当前路径原用采样前的 scope 构造流身份；绑定在同一采样内
+  变化时 watcher 注册到已死流上永久挂死。改用采样原子返回的 capture.scope。
+- **纯历史不依赖 Driver（严重，不变量 A）**：移除历史 read/watch 的 requireScope；历史流身份
+  由 queryRef+规范化输入承载（分区代次由 cursor.epoch 绑定分量承载，重绑全量 reset）。
+- **retain 虚假成功（严重）**：冲刷失败不再继续写保留关系；证据引用存在性校验
+  （EVIDENCE_UNAVAILABLE），writeRecord 同校验——不建立悬空引用。
+- 次要：awaitNext 立即交付清陈旧 pending（防重复投递）、Driver view 异常包装 SOURCE_UNAVAILABLE、
+  gap/endStream 区间校验、changed refs 投递副本、SQLite busy_timeout、删死 API。
+- 新增合同语义问题（无）：本轮未发现需改 contracts 的缺口；writeRecord 所有权核验缺口维持上轮登记。
