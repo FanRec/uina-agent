@@ -237,7 +237,8 @@ describe("minecraft driver facts (S-D1)", () => {
 		const bot = new FakeClientBot();
 		const driver = await makeDriver(bot);
 		const receipt = await driver.say("hello", new AbortController().signal);
-		expect(receipt).toMatchObject({ dispatch: "sent", completion: "met" });
+		// chat 无本地可确认回执：completion=unknown（sent ≠ 服务器已处理，driver.md §13）。
+		expect(receipt).toMatchObject({ dispatch: "sent", completion: "unknown" });
 		expect(bot.chatLog).toEqual(["hello"]);
 
 		bot.end("x");

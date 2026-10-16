@@ -37,7 +37,6 @@ import {
 import { WriteGate, type BodyPermit, type OperationRecord } from "./gate.js";
 import type { ClientHost, PhysicsStep } from "./client-host.js";
 import type { ClientBot, BotBlockPos, BotItemSelector, BotWindowData } from "./bot-shape.js";
-import { utcNow } from "./facts.js";
 import { WindowSessionImpl } from "./window.js";
 import { FeedbackStreamImpl } from "./feedback.js";
 
@@ -223,7 +222,8 @@ export class BodySessionImpl implements BodySession {
 	/** Body 使用会话：useItem/hold 留下的原生使用状态归 Body 所有。 */
 	#useOwner: OperationRecord | null = null;
 	/** 本会话创建的操作记录；close 时统一撤销。 */
-	readonly #ops = new Set<OperationRecord>();
+	#ops = new Set<OperationRecord>();
+	#opCounter = 0;
 	#closed = false;
 	#effectCounter = 0;
 
@@ -245,11 +245,9 @@ export class BodySessionImpl implements BodySession {
 	}
 
 	#newOp(kind: Parameters<WriteGate["createOperation"]>[0]): OperationRecord {
-		const op = this.#gate.createOperation(
-			kind,
-			this.#permit,
-			`${this.#permit.ref}-${kind}-${Date.now() % 1e7}-${this.#ops.size}`,
-		);
+		// 会话内单调计数保证 ref 唯一：ops.size 会因 close 复用而撞号。
+		this.#opCounter += 1;
+		const op = this.#gate.createOperation(kind, this.#permit, `${this.#permit.ref}-${kind}-${this.#opCounter}`);
 		this.#ops.add(op);
 		return op;
 	}
@@ -322,7 +320,12 @@ export class BodySessionImpl implements BodySession {
 		this.#requireUsable();
 
 		const op = this.#newOp("drive");
-		this.#claimContinuous(op);
+		try {
+			this.#claimContinuous(op);
+		} catch (err) {
+			this.#gate.closeOperation(op);
+			throw err;
+		}
 		// 已消费步数跨安装/等待阶段追踪：取消与停滞错误必须携带 actualTicks（错误合同）。
 		let consumedSoFar = 0;
 		let cancelWait: ((err: Error) => void) | null = null;
@@ -504,6 +507,7 @@ export class BodySessionImpl implements BodySession {
 				"prediction",
 			);
 			this.#deps.host.facts.commitBlockChanged();
+			this.#gate.closeOperation(op);
 			return this.#receipt(op, "sent", "met");
 		} catch (err) {
 			// 清理只处理本操作的资源：取消上游挖掘状态。
@@ -533,6 +537,7 @@ export class BodySessionImpl implements BodySession {
 			validateEntityRef(this.#deps.host, target);
 			this.#gate.checkWrite(op);
 			this.#bot.attack(target.networkId);
+			this.#gate.closeOperation(op);
 			return this.#receipt(op, "sent", "met");
 		} catch (err) {
 			this.#gate.closeOperation(op);
@@ -558,6 +563,7 @@ export class BodySessionImpl implements BodySession {
 				this.#useOwner = op;
 				op.resources.add("use");
 			}
+			this.#gate.closeOperation(op);
 			return this.#receipt(op, "sent", "met");
 		} catch (err) {
 			this.#gate.closeOperation(op);
@@ -599,6 +605,7 @@ export class BodySessionImpl implements BodySession {
 			if ("networkId" in input.target) {
 				validateEntityRef(this.#deps.host, input.target);
 				this.#bot.activateEntity(input.target.networkId);
+				this.#gate.closeOperation(op);
 				return this.#receipt(op, "sent", "met");
 			}
 			const pos = validateBlockTarget(input.target);
@@ -608,6 +615,7 @@ export class BodySessionImpl implements BodySession {
 				throw sourceUnavailable("目标方块未加载", [op.ref]);
 			}
 			this.#bot.activateBlock(pos, input.face ?? null, input.cursor ?? null);
+			this.#gate.closeOperation(op);
 			return this.#receipt(op, "sent", "met");
 		} catch (err) {
 			this.#gate.closeOperation(op);
@@ -641,6 +649,7 @@ export class BodySessionImpl implements BodySession {
 				hand,
 			);
 			this.#gate.checkWrite(op); // 异步恢复后核验。
+			this.#gate.closeOperation(op);
 			return this.#receipt(op, "sent", "met");
 		} catch (err) {
 			this.#gate.closeOperation(op);
@@ -756,7 +765,12 @@ export class BodySessionImpl implements BodySession {
 			});
 		}
 		const op = this.#newOp("feedback");
-		this.#claimContinuous(op);
+		try {
+			this.#claimContinuous(op);
+		} catch (err) {
+			this.#gate.closeOperation(op);
+			throw err;
+		}
 		const stream = new FeedbackStreamImpl({
 			host: this.#deps.host,
 			gate: this.#gate,
@@ -806,8 +820,4 @@ export class BodySessionImpl implements BodySession {
 		this.#gate.close(this.#permit);
 		this.onClosed?.();
 	}
-}
-
-export function nowIso(): string {
-	return utcNow();
 }

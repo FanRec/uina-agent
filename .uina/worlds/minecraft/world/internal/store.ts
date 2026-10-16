@@ -246,7 +246,7 @@ export class MemoryWorldStore implements WorldStore {
 	}
 }
 
-const SCHEMA_VERSION = "1";
+const SCHEMA_VERSION = "2";
 
 /**
  * node:sqlite 持久实现（LEAD.md 建议优先 node:sqlite，Node ≥22 内置，避免新增原生依赖）。
@@ -274,6 +274,7 @@ export class SqliteWorldStore implements WorldStore {
 				schema TEXT NOT NULL,
 				recv INTEGER NOT NULL,
 				payload TEXT NOT NULL,
+				store_seq INTEGER NOT NULL,
 				UNIQUE (stream, seq)
 			);
 			CREATE TABLE IF NOT EXISTS evidence_gaps (
@@ -282,7 +283,8 @@ export class SqliteWorldStore implements WorldStore {
 				after INTEGER NOT NULL,
 				through INTEGER,
 				reason TEXT NOT NULL,
-				recv INTEGER NOT NULL
+				recv INTEGER NOT NULL,
+				store_seq INTEGER NOT NULL
 			);
 			CREATE TABLE IF NOT EXISTS records (
 				ref TEXT PRIMARY KEY,
@@ -333,12 +335,26 @@ export class SqliteWorldStore implements WorldStore {
 			.run(String(this._version));
 	}
 
+	/** 分配全局单调 store_seq（跨 evidence/evidence_gaps 共享；仅限已开启事务内调用）。 */
+	private nextStoreSeq(): number {
+		const row = this.db.prepare("SELECT value FROM meta WHERE key = 'store_seq_counter'").get() as
+			| { value: string }
+			| undefined;
+		const next = (row ? Number(row.value) : 0) + 1;
+		this.db
+			.prepare(
+				"INSERT INTO meta (key, value) VALUES ('store_seq_counter', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+			)
+			.run(String(next));
+		return next;
+	}
+
 	appendEvidence(entries: StoredEntry[]): boolean {
 		const insertFact = this.db.prepare(
-			"INSERT OR IGNORE INTO evidence (ref, stream, seq, schema, recv, payload) VALUES (?, ?, ?, ?, ?, ?)",
+			"INSERT OR IGNORE INTO evidence (ref, stream, seq, schema, recv, payload, store_seq) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		);
 		const insertGap = this.db.prepare(
-			"INSERT OR IGNORE INTO evidence_gaps (ref, stream, after, through, reason, recv) VALUES (?, ?, ?, ?, ?, ?)",
+			"INSERT OR IGNORE INTO evidence_gaps (ref, stream, after, through, reason, recv, store_seq) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		);
 		this.db.exec("BEGIN");
 		try {
@@ -351,6 +367,7 @@ export class SqliteWorldStore implements WorldStore {
 						entry.record.schema,
 						entry.receiveSeq,
 						JSON.stringify(entry.record),
+						this.nextStoreSeq(),
 					);
 				} else {
 					insertGap.run(
@@ -360,6 +377,7 @@ export class SqliteWorldStore implements WorldStore {
 						entry.gap.through,
 						entry.gap.reason,
 						entry.receiveSeq,
+						this.nextStoreSeq(),
 					);
 				}
 			}
@@ -374,12 +392,13 @@ export class SqliteWorldStore implements WorldStore {
 	}
 
 	listEvidence(filter: EvidenceFilter): EvidencePage | null {
-		// rowid 是 SQLite 插入顺序的单调键（append-only，永不复用），直接作分页键。
+		// store_seq 是跨两表共享的全局单调分配键（append 时分配，永不复用）；
+		// 合并排序保证真实插入顺序，分页无重复/遗漏。
 		const factRows = this.db
 			.prepare(
-				`SELECT rowid AS store_seq, payload FROM evidence
-				 WHERE (? IS NULL OR stream = ?) AND (? IS NULL OR schema = ?) AND (? IS NULL OR rowid > ?)
-				 ORDER BY rowid LIMIT ?`,
+				`SELECT store_seq, payload FROM evidence
+				 WHERE (? IS NULL OR stream = ?) AND (? IS NULL OR schema = ?) AND (? IS NULL OR store_seq > ?)
+				 ORDER BY store_seq LIMIT ?`,
 			)
 			.all(
 				filter.stream ?? null,
@@ -395,9 +414,9 @@ export class SqliteWorldStore implements WorldStore {
 				? [] // schema 过滤只匹配事实
 				: (this.db
 						.prepare(
-							`SELECT rowid AS store_seq, ref, stream, after, through, reason FROM evidence_gaps
-							 WHERE (? IS NULL OR stream = ?) AND (? IS NULL OR rowid > ?)
-							 ORDER BY rowid LIMIT ?`,
+							`SELECT store_seq, ref, stream, after, through, reason FROM evidence_gaps
+							 WHERE (? IS NULL OR stream = ?) AND (? IS NULL OR store_seq > ?)
+							 ORDER BY store_seq LIMIT ?`,
 						)
 						.all(
 							filter.stream ?? null,

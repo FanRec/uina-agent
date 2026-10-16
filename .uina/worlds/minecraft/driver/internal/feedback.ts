@@ -114,13 +114,14 @@ export class FeedbackStreamImpl implements FeedbackStream {
 		};
 		this.#latest = frame;
 		const waiter = this.#waiter;
-		if (waiter) {
+		if (waiter && frame.sequence > waiter.after) {
 			this.#waiter = null;
 			// 交付即清槽：next 交付新帧后旧帧不可提交。
 			this.#latest = null;
 			this.#delivered = frame;
 			waiter.resolve(frame);
 		}
+		// waiter 存在但 frame.sequence <= waiter.after：帧留在槽内，等超过 after 的帧交付。
 	}
 
 	#revokeHeld(): void {
@@ -139,6 +140,10 @@ export class FeedbackStreamImpl implements FeedbackStream {
 
 	async next(after: number | null, signal: AbortSignal): Promise<FeedbackFrame> {
 		if (this.#closed) throw controlInvalid("反馈流已关闭");
+		// 已中止的 signal 不会再触发 abort 事件：必须显式检查，否则永久挂起。
+		if (signal.aborted) {
+			throw new CallFailureError({ code: "CONTROL_INVALID", message: "feedback.next 等待被取消", recoverable: true });
+		}
 		if (this.#waiter) throw controlConflict("上一帧仍在算（next 未返回）；每流只有一个顺序在算帧");
 		// latest-only 槽有新帧且序号超前：直接交付。
 		if (this.#latest && this.#latest.sequence > (after ?? 0)) {

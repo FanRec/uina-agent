@@ -30,6 +30,8 @@ export interface ClientHostDeps {
 	sourceRef: Ref;
 	/** 物理步停滞的墙钟检测窗口（毫秒）。 */
 	stallTimeoutMs: number;
+	/** 连接建立期限（毫秒）；超时按故障处理，不无限悬挂在 syncing。 */
+	attachTimeoutMs: number;
 }
 
 export class ClientHost {
@@ -39,6 +41,7 @@ export class ClientHost {
 
 	#state: ConnectionState = "connecting";
 	#bot: ClientBot | null = null;
+	readonly #deps: ClientHostDeps;
 	#stepCounter = 0;
 	#stepListeners = new Set<StepListener>();
 	/** 协议窗口 ID → Driver 窗口 ref。 */
@@ -53,6 +56,7 @@ export class ClientHost {
 	#awaitingRespawn = false;
 
 	constructor(deps: ClientHostDeps) {
+		this.#deps = deps;
 		this.facts = new ClientFactsSource({
 			bot: null as unknown as ClientBot,
 			scopeProvider: deps.scopeProvider,
@@ -110,10 +114,15 @@ export class ClientHost {
 				cleanup();
 				reject(err);
 			});
+			const timer = setTimeout(() => {
+				cleanup();
+				reject(new Error(`connection not ready within ${this.#deps.attachTimeoutMs}ms`));
+			}, this.#deps.attachTimeoutMs);
 			const cleanup = () => {
 				offSpawn();
 				offEnd();
 				offError();
+				clearTimeout(timer);
 			};
 		});
 	}

@@ -47,6 +47,8 @@ export interface DriverOptions {
 	worldBinding?: { world: Ref; worldRevision: Ref };
 	/** 物理步停滞检测（毫秒）。 */
 	stallTimeoutMs?: number;
+	/** 连接建立期限（毫秒）；默认 30s，超时按故障处理。 */
+	attachTimeoutMs?: number;
 	openTimeoutMs?: number;
 	/** 反馈帧输入有效期（毫秒）；具体值由实测决定。 */
 	feedbackValidityMs?: number;
@@ -109,29 +111,32 @@ class PlayerPortImpl implements PlayerPort {
 			this.host.identity.incarnation,
 			`${this.host.identity.refs.next("body")}`,
 		);
+		let activeRef: BodySessionImpl;
 		const session = new BodySessionImpl(this.deps, permit, this.gate, this.host.bot!, () => {
-			void this.#settle();
+			void this.#settle(activeRef);
 		});
+		activeRef = session;
 		this.#active = session;
-		// 连接/化身代次更替：强制退役会话（窗口/反馈/使用资源随 close 屏障清理）。
-		this.#sessionDisposers.set(
-			session,
-			this.host.onRevoked(() => void session.close()),
-		);
+		// 组合注销：代次更替强制退役 + 清理 acquire 信号的 abort 监听（长生命周期信号不泄漏）。
 		const onAbort = () => {
 			void session.close();
 		};
 		signal.addEventListener("abort", onAbort, { once: true });
+		const offRevokedSession = this.host.onRevoked(() => void session.close());
+		this.#sessionDisposers.set(session, () => {
+			offRevokedSession();
+			signal.removeEventListener("abort", onAbort);
+		});
 		return session;
 	}
 
-	async #settle(): Promise<void> {
-		if (this.#active) {
-			this.#sessionDisposers.get(this.#active)?.();
-			this.#sessionDisposers.delete(this.#active);
-		}
+	async #settle(settled: BodySessionImpl): Promise<void> {
+		// 按具体会话清理登记（含 acquire 信号监听）；不依赖 #active 指针，
+		// 代次更替路径（handleRevoked 先清指针）也不会泄漏条目。
+		this.#sessionDisposers.get(settled)?.();
+		this.#sessionDisposers.delete(settled);
+		if (this.#active === settled) this.#active = null;
 		this.gate.settleRevoked();
-		this.#active = null;
 		const next = this.#queue.shift();
 		if (next) {
 			next.signal.removeEventListener("abort", next.onAbort);
@@ -145,11 +150,11 @@ class PlayerPortImpl implements PlayerPort {
 	}
 
 	/** 通知会话正常结束（close 完成屏障后调用）。 */
-	notifyReleased(): Promise<void> {
-		return this.#settle();
+	notifyReleased(settled: BodySessionImpl): Promise<void> {
+		return this.#settle(settled);
 	}
 
-	/** 连接/化身代次更替：撤销排队申请，活动资格由 gate.revokeAll 撤销。 */
+	/** 连接/化身代次更替：撤销排队申请；活动会话由其自身登记的 revoke 回调强制退役并结算。 */
 	handleRevoked(): void {
 		const queued = this.#queue;
 		this.#queue = [];
@@ -157,8 +162,6 @@ class PlayerPortImpl implements PlayerPort {
 			e.signal.removeEventListener("abort", e.onAbort);
 			e.reject(sourceUnavailable("连接/化身代次更替，排队中的身体申请被撤销"));
 		}
-		this.#active = null;
-		this.gate.settleRevoked();
 	}
 }
 
@@ -193,6 +196,7 @@ export function createDriver(config: DriverConfig, options: DriverOptions = {}):
 		},
 		sourceRef: SOURCE_REF,
 		stallTimeoutMs: options.stallTimeoutMs ?? 2_000,
+		attachTimeoutMs: options.attachTimeoutMs ?? 30_000,
 	});
 
 	const gate = new WriteGate(options.verifier);
@@ -226,7 +230,8 @@ export function createDriver(config: DriverConfig, options: DriverOptions = {}):
 			}
 			// 聊天不占身体；宿主调用归属核验接缝（Runtime）接入后在此核验 act。
 			host.bot!.chat(text);
-			return { effect: `${host.identity.refs.next("say")}`, dispatch: "sent", completion: "met", evidence: [] };
+			// chat 无本地可确认回执：sent ≠ 服务器已处理（driver.md §13），完成度如实 unknown。
+			return { effect: `${host.identity.refs.next("say")}`, dispatch: "sent", completion: "unknown", evidence: [] };
 		},
 
 		async close(): Promise<void> {

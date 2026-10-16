@@ -45,7 +45,7 @@ export function createWorld(deps: WorldDeps, options?: { store?: WorldStore; rec
 		dataDir: deps.dataDir,
 		store,
 		receiver: options?.receiver,
-	}) as unknown as WorldHandle;
+	});
 }
 
 export type { WorldStore } from "./internal/store.js";
