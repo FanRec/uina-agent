@@ -139,3 +139,15 @@ M5：真实 Mineflayer 依赖接入（lead 批准依赖后）、真实服务器�
   基底传递依赖）在证据携带 deps 字段前只能按直接 ref 保留。
 - 全量 `pnpm test` 中 tts-bridge/bilibili/mcp/qq-world 等 9 文件失败（40s 超时特征），
   与本模块零交集（未 import minecraft 代码），疑似本机 harness 敏感，未处理。
+
+**对抗式审查修复**（2026-10-16 第二轮，commit 7fd8d3c）：
+
+- **流身份竞态（严重）**：read/watch 当前路径原用采样前的 scope 构造流身份；绑定在同一采样内
+  变化时 watcher 注册到已死流上永久挂死。改用采样原子返回的 capture.scope。
+- **纯历史不依赖 Driver（严重，不变量 A）**：移除历史 read/watch 的 requireScope；历史流身份
+  由 queryRef+规范化输入承载（分区代次由 cursor.epoch 绑定分量承载，重绑全量 reset）。
+- **retain 虚假成功（严重）**：冲刷失败不再继续写保留关系；证据引用存在性校验
+  （EVIDENCE_UNAVAILABLE），writeRecord 同校验——不建立悬空引用。
+- 次要：awaitNext 立即交付清陈旧 pending（防重复投递）、Driver view 异常包装 SOURCE_UNAVAILABLE、
+  gap/endStream 区间校验、changed refs 投递副本、SQLite busy_timeout、删死 API。
+- 新增合同语义问题（无）：本轮未发现需改 contracts 的缺口；writeRecord 所有权核验缺口维持上轮登记。
