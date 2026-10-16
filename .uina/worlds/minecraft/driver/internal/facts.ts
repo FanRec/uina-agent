@@ -107,6 +107,8 @@ interface EvidenceStreamState {
 }
 
 interface AckRecord {
+	/** ACK 归属的流；回收只看同流 ACK，跨流 durableThrough 不得误释放材料。 */
+	stream: string;
 	receivedThrough: number;
 	durableThrough: number;
 	gapRefs: Ref[];
@@ -278,6 +280,11 @@ export class ClientFactsSource implements ClientFactsPort {
 		this.#emit({ kind: "evidence_end", through: { stream: s.stream, sequence: s.nextSequence - 1 } });
 	}
 
+	/** 指定证据流当前未回收材料数（观察口；不构成合同承诺）。 */
+	materialCount(streamRef: string): number {
+		return this.#materials.get(streamRef)?.size ?? 0;
+	}
+
 	evidenceThroughAll(): ClientEvidenceMark {
 		let best: ClientEvidenceMark | null = null;
 		for (const s of this.#streams.values()) {
@@ -295,6 +302,7 @@ export class ClientFactsSource implements ClientFactsPort {
 		const received = Math.max(prev?.receivedThrough ?? 0, ack.receivedThrough);
 		const durable = Math.max(prev?.durableThrough ?? 0, ack.durableThrough);
 		this.#acks.set(key, {
+			stream: ack.stream,
 			receivedThrough: received,
 			durableThrough: durable,
 			gapRefs: [...(prev?.gapRefs ?? []), ...ack.gaps],
@@ -309,7 +317,8 @@ export class ClientFactsSource implements ClientFactsPort {
 	#releaseCovered(stream: string): void {
 		const bucket = this.#materials.get(stream);
 		if (!bucket) return;
-		const receivers = [...this.#acks.values()].filter((a) => a.durableThrough > 0);
+		// 只统计本流的 ACK：其他流的 durableThrough 与本流序号空间不可比。
+		const receivers = [...this.#acks.values()].filter((a) => a.stream === stream && a.durableThrough > 0);
 		if (receivers.length === 0) return;
 		for (const seq of [...bucket.keys()]) {
 			if (receivers.every((a) => seq <= a.durableThrough)) bucket.delete(seq);

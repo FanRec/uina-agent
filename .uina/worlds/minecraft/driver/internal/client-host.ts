@@ -185,6 +185,9 @@ export class ClientHost {
 			this.windowRegistry.clear();
 			this.#appearances.clear();
 			this.facts.reset("incarnation_changed");
+			// 死亡路径未清事件接线（bot 仍连接）；重接前先退役旧监听，防止逐次翻倍。
+			for (const d of this.#disposers) d();
+			this.#disposers = [];
 			if (this.#bot) this.#wire(this.#bot);
 			this.#state = "ready";
 			return;

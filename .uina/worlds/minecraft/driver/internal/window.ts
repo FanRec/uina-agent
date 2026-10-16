@@ -213,7 +213,7 @@ export class WindowSessionImpl implements WindowSession {
 		this.#requireUsable();
 		const w = this.#current();
 		if (!w) throw referenceStale("当前窗口已不存在");
-		const op = this.#d.gate.createOperation("click", permit, `${this.#d.op.ref}-click-${Date.now() % 1e7}`);
+		const op = this.#d.gate.createOperation("click", permit, this.#d.host.identity.refs.next("click"));
 		try {
 			// 预期 revision：不符即窗口已变化（§12.3 步骤 3）。
 			if (input.expectedRevision !== this.#revision) {
@@ -245,8 +245,9 @@ export class WindowSessionImpl implements WindowSession {
 					effects: [this.#effectRef(op)],
 				});
 			}
-			// 派发后：本地预测已发生（上游 acceptClick）。协议确认版本相关：
-			// 当前槽位符合预期不必然证明交易完成，completion=unknown。
+			// 派发后：本地预测已发生（上游 acceptClick 直接改窗口对象，不发协议包），
+			// 必须显式推进事实源，否则订阅者看不到窗口已变。
+			this.#d.host.facts.commitWindowChanged();
 			this.#refreshRevision();
 			this.#d.gate.closeOperation(op);
 			return { effect: this.#effectRef(op), dispatch: "sent", completion: "unknown", evidence: [] };

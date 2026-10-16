@@ -44,6 +44,8 @@ interface Waiter {
 	resolve: (frame: FeedbackFrame) => void;
 	reject: (err: Error) => void;
 	onAbort: () => void;
+	/** 交付/取消/关流后移除 signal listener；next 是每帧热路径，残留即泄漏。 */
+	cleanup: () => void;
 }
 
 export class FeedbackStreamImpl implements FeedbackStream {
@@ -146,7 +148,9 @@ export class FeedbackStreamImpl implements FeedbackStream {
 			return frame;
 		}
 		return new Promise<FeedbackFrame>((resolve, reject) => {
+			const cleanup = () => signal.removeEventListener("abort", onAbort);
 			const onAbort = () => {
+				cleanup();
 				if (this.#waiter?.onAbort === onAbort) this.#waiter = null;
 				reject(
 					new CallFailureError({
@@ -156,8 +160,12 @@ export class FeedbackStreamImpl implements FeedbackStream {
 					}),
 				);
 			};
-			signal.addEventListener("abort", onAbort, { once: true });
-			this.#waiter = { after: after ?? 0, resolve, reject, onAbort };
+			const settleWithFrame = (frame: FeedbackFrame) => {
+				cleanup();
+				resolve(frame);
+			};
+			signal.addEventListener("abort", onAbort);
+			this.#waiter = { after: after ?? 0, resolve: settleWithFrame, reject, onAbort, cleanup };
 		});
 	}
 
@@ -186,9 +194,8 @@ export class FeedbackStreamImpl implements FeedbackStream {
 			throw referenceStale("反馈流的连接/化身代次已更替");
 		}
 		this.#d.gate.checkWrite(this.#d.op);
-		this.#delivered = null;
 
-		// 输入校验。
+		// 输入形状校验在消费之前：坏输入不该浪费这一帧的消费名额。
 		for (const [k, on] of Object.entries(input.keys ?? {})) {
 			const key = k as Key;
 			if (!KEYS.includes(key)) throw invalidArgument(`未知控制键: ${k}`);
@@ -197,6 +204,7 @@ export class FeedbackStreamImpl implements FeedbackStream {
 		if (input.look && (!Number.isFinite(input.look.yaw) || !Number.isFinite(input.look.pitch))) {
 			throw invalidArgument("look.yaw/pitch 须为有限数值（弧度）");
 		}
+		this.#delivered = null;
 
 		// 实际安装边界（下一模拟前）：键同步安装；look 由适配层即时生效。
 		for (const key of KEYS) {
@@ -291,6 +299,7 @@ export class FeedbackStreamImpl implements FeedbackStream {
 		this.#unsubscribeStep = null;
 		const waiter = this.#waiter;
 		this.#waiter = null;
+		waiter?.cleanup(); // 关流不走 signal abort，直接移除 listener。
 		waiter?.reject(controlInvalid("反馈流已关闭；旧输出不补播"));
 		this.#delivered = null;
 		this.#latest = null;

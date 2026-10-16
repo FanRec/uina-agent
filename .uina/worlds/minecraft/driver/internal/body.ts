@@ -141,16 +141,23 @@ function waitForPhysicsSteps(
 	stallTimeoutMs: number,
 	count: number,
 	onStep: (step: PhysicsStep, consumed: number) => void,
-): { promise: Promise<PhysicsStep>; cancel: () => void; cancelWith: (err: Error) => void } {
+): {
+	promise: Promise<PhysicsStep>;
+	cancel: () => void;
+	cancelWith: (err: Error) => void;
+	consumedSoFar: () => number;
+} {
 	let unsubscribe: (() => void) | null = null;
 	let timer: ReturnType<typeof setTimeout> | null = null;
 	let settled = false;
+	let consumedTotal = 0;
 	let rejectExternal: ((err: Error) => void) | null = null;
 	const promise = new Promise<PhysicsStep>((resolve, reject) => {
 		rejectExternal = reject;
 		let consumed = 0;
 		unsubscribe = host.onPhysicsStep((step) => {
 			consumed += 1;
+			consumedTotal = consumed;
 			try {
 				onStep(step, consumed);
 			} catch (err) {
@@ -175,6 +182,10 @@ function waitForPhysicsSteps(
 					message: `等待物理步停滞超过 ${stallTimeoutMs}ms（模拟未推进）`,
 					dispatch: "sent",
 					recoverable: true,
+					progress: {
+						summary: "drive 因物理步停滞中断",
+						measures: [{ name: "actualTicks", value: consumedTotal, unit: "steps", evidence: [] }],
+					},
 				}),
 			);
 		}, stallTimeoutMs);
@@ -196,6 +207,7 @@ function waitForPhysicsSteps(
 			cleanup();
 			rejectExternal?.(err);
 		},
+		consumedSoFar: () => consumedTotal,
 	};
 }
 
@@ -311,6 +323,24 @@ export class BodySessionImpl implements BodySession {
 
 		const op = this.#newOp("drive");
 		this.#claimContinuous(op);
+		// 已消费步数跨安装/等待阶段追踪：取消与停滞错误必须携带 actualTicks（错误合同）。
+		let consumedSoFar = 0;
+		let cancelWait: ((err: Error) => void) | null = null;
+		op.onRevoke = () => {
+			revokeOwned();
+			cancelWait?.(
+				new CallFailureError({
+					code: "CONTROL_INVALID",
+					message: "drive 在等待物理步期间被撤销",
+					dispatch: "sent",
+					effects: [op.ref],
+					progress: {
+						summary: "drive 被撤销",
+						measures: [{ name: "actualTicks", value: consumedSoFar, unit: "steps", evidence: [] }],
+					},
+				}),
+			);
+		};
 		const heldKeys = new Set<Key>();
 		let heldUse = false;
 		let disposed = false;
@@ -378,19 +408,10 @@ export class BodySessionImpl implements BodySession {
 			// 因此下一个 physicsTick 即第一个消费步。第 ticks 步的处理器内撤销，
 			// 保证在下次模拟前生效（不依赖额外定时器或包计数）。
 			const wait = waitForPhysicsSteps(host, this.#deps.stallTimeoutMs, ticks, (_step, consumed) => {
+				consumedSoFar = consumed;
 				if (consumed >= ticks) revokeOwned();
 			});
-			op.onRevoke = () => {
-				revokeOwned();
-				wait.cancelWith(
-					new CallFailureError({
-						code: "CONTROL_INVALID",
-						message: "drive 在等待物理步期间被撤销",
-						dispatch: "sent",
-						effects: [op.ref],
-					}),
-				);
-			};
+			cancelWait = (err) => wait.cancelWith(err);
 			try {
 				await wait.promise;
 			} finally {
