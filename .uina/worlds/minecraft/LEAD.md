@@ -170,3 +170,19 @@ M5：真实 Mineflayer 依赖接入（lead 批准依赖后）、真实服务器�
 - 次要：awaitNext 立即交付清陈旧 pending（防重复投递）、Driver view 异常包装 SOURCE_UNAVAILABLE、
   gap/endStream 区间校验、changed refs 投递副本、SQLite busy_timeout、删死 API。
 - 新增合同语义问题（无）：本轮未发现需改 contracts 的缺口；writeRecord 所有权核验缺口维持上轮登记。
+
+### Lead 集成验收（2026-10-16，分支 codex/phase0-baseline，mc/driver + mc/world 已合并）
+
+**合同偏差裁定（Driver 请求 1-5、World 请求 1-4）**：
+1. 空手 useItem / equip 未找到用 `TARGET_NOT_MET` + not_sent：**接受**，登记语义——TARGET_NOT_MET 覆盖"前置条件不满足且未派发"（进度可为空）；不新增专用码。
+2. 断连后 `stamp.connection=null`：**接受**，合同 ClientFactStamp 本就允许 null。
+3. HostCallVerifier 接缝 / 连续根互斥默认策略：**接受**，与 driver.md §6.3 一致。
+4. writeRecord 所有权核验注入：**挂起至 M2**，Executor（CallContext 路径）落地时由 lead 注入；当前结构+分区+CAS 校验保持，不冒称已核验。
+5. changed refs 粒度 / 接收代次注入：**挂起**，按 M5 拆进程时统一定最小映射。
+
+**Lead 审查修复（本层负责，commit 见 git log）**：
+- Driver：say 回执 `completion` met→**unknown**（chat 无本地确认路径，driver.md §13 sent≠服务器完成）；acquire 信号监听与会话注销泄漏（按会话结算，代次更替不再滞留条目）；op ref 撞号（Date.now+size → 会话内单调计数）；dig/attack/useItem/interact/equip 成功路径补 closeOperation（ops 积压）；连续根冲突时补 closeOperation；feedback.next 已中止 signal 挂死（abort 事件不再触发）；#onStep 尊重 waiter.after（不交付陈旧帧）；连接建立加 30s 期限（attachTimeoutMs，超时 faulted）。
+- World：**SQLite 跨表分页真 bug**——evidence/evidence_gaps 两表 rowid 空间独立，合并排序丢/重数据；改为共享 store_seq 分配器（meta 计数器），SCHEMA_VERSION 1→2；world/index.ts 去掉 `as unknown as` 双重断言（WorldImpl 结构上本就满足 WorldHandle）。
+- 登记不修：program↔assets 合同类型循环（纯 type 无运行时环）；blockUpdate/setSlot 粗粒度失效（M5 接真实协议入口时带坐标精细化，driver.md §11.6 的完整要求）。
+
+**集成证据**：合并树 `pnpm typecheck`（biome+8 边界+tsc）✓；minecraft 全套 100 例（Driver 51 + World 35 + contracts/worlddef 7 + 集成 7）✓；新增 `tests/minecraft-integration.test.ts`（lead 所有）验证真实端口连接：FakeClientBot → createDriver → ClientFactsPort → createWorld（真实 SQLite tmpdir）——当前事实变化观察、瞬态证据捕获后可查、durable ACK 后 Driver 材料回收、read→watch→next 无漏/不自激、断连 reset+epoch 更换、存储故障当前读不受影响、内存存储语义一致。
