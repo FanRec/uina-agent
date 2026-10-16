@@ -17,5 +17,5 @@
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true
   },
-  "include": ["examples", "src", "tests", "scripts", "vitest.config.ts", ".uina/apps", ".uina/extensions", ".uina/worlds/live2d"]
+  "include": ["examples", "src", "tests", "scripts", "vitest.config.ts", ".uina/apps", ".uina/extensions", ".uina/worlds/live2d", ".uina/worlds/minecraft"]
 }
