@@ -192,3 +192,32 @@ M5：真实 Mineflayer 依赖接入（lead 批准依赖后）、真实服务器�
 - 全量回归对照：预合并基线 13 个失败文件 vs 合并树 14 个，失败集合在同树连续跑批间本就不稳定（负载敏感 flake，与两开发 AI 报告一致）；零 minecraft-* 失败。
 - **确定性回归 1 例并已修复**：`.uina/worlds/minecraft/` 新增文件使 @ 文件联想深扫描预算（300 文件+100 目录）被 .artifacts/.uina 等过程目录耗尽，根级 package.json 落出候选集（tests/ui.test.ts Tab 补全稳定失败；probe 实证）。修复：src/ui/components/editor/file-candidates.ts SKIP 词表补 .agents/.artifacts/.workbuddy/.pytest_cache/.VSCodeCounter；probe 复验 root package.json 回 top-1。这是既有脆弱机制，minecraft 只是触发者。
 - 修复后：typecheck ✓；UI + minecraft 全套 294 例 ✓；全量 13 failed（flake 噪声，与基线同量级）。
+
+### Lead — world.md 审查修订登记（2026-10-17）
+
+依据 `docs/proposals/mc/world-review-20261017.md`（world.md vs S-W1~W3 实现的结构化审查，五问框架逐项），修订设计文档并登记实现语义：
+
+1. **文档修订**（docs/proposals/mc/）：
+   - world.md §5.4：登记 received ACK 层与重传路径在同域部署无消费者（惰性合同形状），去留挂 M5 拆域决策；届时若不拆域按"合并为单一 durable 提交回调"裁剪。
+   - world.md §6.2：追认同域标准路径为 flush-then-read（先同步冲刷接收尾再固定 v 读库），S-W3 实现已采用。
+   - world.md §6.3/§6.4/§12：标注为条件条款——tail 并集仅拆域后生效；fence 无真实消费者不预建；GC/删除门在 append-only 现状下无触发条件。
+   - world.md §7.1：Section 版本链推迟，当前为薄透传；格式解析届时复用 Prismarine（历史版本化仍自建）。
+   - world.md §10.1/§10.3 **合同对齐**：存储保留最新修订值 + 单调 revision 计数，修订历史不逐版追加（`UPDATE revision+1` 覆盖前值，Memory/SQLite 一致）；"指向确切记录修订"降为 `record_revisions` 追加表建立后的条件能力，此前消费方不得假设旧修订可读。
+   - public-api.md §5：watch(query, after) 的 after 比较统一发生在首次 next(after)，watch 登记时不消费（行为与登记即固定基线等价）。
+   - contracts.md/README.md：状态行更新为实现进度事实。
+2. **对实现无代码改动**：本次为文档-实现对齐，全部偏差已如实登记；writeRecord 所有权核验注入仍挂 M2，changed refs 精确分类仍挂 M5（维持原裁定）。
+
+### Lead — driver.md 审查登记与代码修复（2026-10-17）
+
+依据 `docs/proposals/mc/driver-review-20261017.md`（driver.md vs S-D1~S-D3 实现的结构化审查，五问框架逐项；上游源码声称全部核实属实）。逐机制判定保留，仅 §8.4 物理窄接缝降级；本次修复三类问题：
+
+1. **预测来源标注（§11.6 合同对齐）**：`ClientFactsSource` 增加 predicted 标记集——dig 完成把目标格入集、click 把窗口 ID 入集；真实 `blockUpdate(pos)`/`setSlot(windowId)`/`windowClose(windowId)` 到达即清除；`view.block()`/`view.window()`/会话 `snapshot()` 命中标记时 `source:"prediction"`，本地预测不再冒充 server 事实。
+2. **回执证据（§13 合同对齐）**：dig 回执携带预测证据 ref（`EffectReceipt.evidence` 不再恒空）。
+3. **窗口版本统一（§12.2 单一版本空间）**：`WindowSessionImpl.#revision` 为唯一权威，经 `noteWindowObservation` 登记供 `view.window()` 投影；删除 facts 侧第二个 `windowRevision` 计数（未登记窗口 revision=0 + unknown 注记）。
+4. **文档修订**（docs/proposals/mc/modules/driver.md）：§8.4/§9.6 PHY-STEP 降级为条件条款——已核实真实 physics.js 仅在真实模拟分支 emit physicsTick，同进程事件计数与"模拟前安装/模拟后计数"精确等价，无需补丁；接缝仅在安装异步化（M5 桥接）或需归属插件模拟后修改/wire 取证时，以 wrap `simulatePlayer` 单点补丁实现，不 fork 循环。
+
+**M5 封闭清单（审查发现 3/4/7，实现层现无消费者，不预建）**：openContainer 归因核对（绑定第一个 windowOpen，未核对目标上下文/窗口类型）；click 在途撤销封闭（clickWindow 等待期间 op.onRevoke 未设，真实 inventory 的 sleep/晚 ACK 路径会现出）；apply 双边界 validUntil 拆分（当前安装同步、单边界等价）；inventory 槽位预测标注（fake 的 acceptClick 钩子只改窗口，M5 按真实写入点扩展）。
+
+**登记不修**：received ACK 层同域惰性与 `evidenceThroughAll()` 跨流取 max（与 world 审查发现 2 同源，挂 M5 拆域决策）；evidence 材料在无 durable ACK 时只增不减（选定证据速率低，登记监控点）；endUse/使用会话归属按 Body 粒度（细化归 HostCallVerifier 接线时裁定）。
+
+**验证**：biome ✓ / boundaries ✓ / tsc ✓ / minecraft 全套 66 例 ✓（新增 dig 预测标注、窗口预测标注与版本同源回归用例）。
