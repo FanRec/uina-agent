@@ -9,7 +9,9 @@
  */
 
 import type { ClientFactsPort } from "../contracts/client-facts.js";
-import type { WorldPort } from "../contracts/world.js";
+import type { WorldEvidencePort, WorldPort } from "../contracts/world.js";
+import { WorldImpl } from "./internal/world-impl.js";
+import type { WorldStore } from "./internal/store.js";
 
 export interface WorldDeps {
 	readonly facts: ClientFactsPort;
@@ -21,8 +23,18 @@ export interface WorldHandle extends WorldPort {
 	/** world.status@1：current/history/binding 分别表达，不以单一 ready 掩盖降级。 */
 	status(): Promise<import("../contracts/world.js").WorldAvailabilityValue>;
 	close(): Promise<void>;
+	/** 证据保留端口：仅注入 Runtime、Assets 等持久记录所有者，不给 Program。 */
+	readonly evidence: WorldEvidencePort;
 }
 
-export function createWorld(_deps: WorldDeps): WorldHandle {
-	throw new Error("未实现：World 切片待 World 开发 AI 交付（保持本签名）");
+/** options 供测试注入替身存储/接收代次；生产路径用默认。 */
+export function createWorld(deps: WorldDeps, options?: { store?: WorldStore; receiver?: string }): WorldHandle {
+	return new WorldImpl({
+		facts: deps.facts,
+		dataDir: deps.dataDir,
+		store: options?.store,
+		receiver: options?.receiver,
+	}) as unknown as WorldHandle;
 }
+
+export type { WorldStore } from "./internal/store.js";
