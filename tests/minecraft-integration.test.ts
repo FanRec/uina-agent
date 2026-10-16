@@ -64,7 +64,11 @@ describe("minecraft driver → world integration", () => {
 			await flushMicrotasks();
 
 			const after = await h.world.read({ ref: "self@1", input: {} });
-			const value = after.value as { health: number; place: { position: { x: number; z: number } }; food: number };
+			const value = after.value as {
+				health: number;
+				food: number;
+				place: { world: string; position: { x: number; z: number } };
+			};
 			expect(value.health).toBe(7);
 			expect(value.food).toBe(19);
 			expect(value.place.position).toMatchObject({ x: 3, z: 4 });
