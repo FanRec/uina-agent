@@ -210,6 +210,9 @@ export class ReceptionEngine {
 	 * 返回本次有推进的 (stream → durableThrough)，供上层在同一同步步裁剪 tail 并发布。
 	 */
 	committed(entries: readonly AcceptedEntry[]): Map<string, number> {
+		const committed = new Set(entries);
+		// 发布 (v, D) 与从待落盘队列移除对应项在同一同步步完成（world.md §5.6）。
+		this.pending = this.pending.filter((entry) => !committed.has(entry));
 		const advanced = new Set<string>();
 		for (const entry of entries) {
 			const stream = entry.kind === "fact" ? entry.record.mark.stream : entry.gap.stream;
@@ -270,18 +273,29 @@ export class ReceptionEngine {
 	private persistedFacts = new Map<string, Set<number>>();
 	private persistedGaps = new Map<string, Set<string>>();
 
-	/** 待落盘条目（不可变引用，供存储层批量提交）。 */
+	/** 待落盘条目（不可变引用快照；持久提交成功后由 committed 移除）。 */
 	takePending(): AcceptedEntry[] {
-		return this.pending;
+		return [...this.pending];
 	}
 
-	/** 指定流的未持久区间 (D, R]。历史切面固定时引用对应条目。 */
-	tailSlice(stream: string, afterDurable: number, upToReceived: number): AcceptedEntry[] {
-		return this.pending.filter((entry) => {
-			const entryStream = entry.kind === "fact" ? entry.record.mark.stream : entry.gap.stream;
-			if (entryStream !== stream) return false;
-			return entry.receiveSeq > afterDurable && entry.receiveSeq <= upToReceived;
-		});
+	/**
+	 * 崩溃恢复：从存储播种已持久事实/gap，使新接收代次的 durable ACK 从真实持久状态起步
+	 * （不继承旧进程 RAM ACK；receivedThrough 由源重放重建，重传去重不重复入库）。
+	 */
+	restore(stream: string, persisted: { factSeqs: number[]; gapRefs: string[] }): void {
+		this.streamState(stream);
+		this.persistedFacts.set(stream, new Set(persisted.factSeqs));
+		this.persistedGaps.set(stream, new Set(persisted.gapRefs));
+		const state = this.streams.get(stream)!;
+		let durable = 0;
+		for (;;) {
+			const next = durable + 1;
+			const payloadPersisted = this.persistedFacts.get(stream)?.has(next) ?? false;
+			const gapCovered = this.persistedGapCovering(state, stream, next);
+			if (!payloadPersisted && !gapCovered) break;
+			durable = gapCovered ? Math.max(durable, gapCovered) : next;
+		}
+		this.durableThroughCache.set(stream, durable);
 	}
 
 	close(): void {

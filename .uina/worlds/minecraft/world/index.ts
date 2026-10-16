@@ -11,7 +11,7 @@
 import type { ClientFactsPort } from "../contracts/client-facts.js";
 import type { WorldEvidencePort, WorldPort } from "../contracts/world.js";
 import { WorldImpl } from "./internal/world-impl.js";
-import type { WorldStore } from "./internal/store.js";
+import { SqliteWorldStore, UnavailableWorldStore, type WorldStore } from "./internal/store.js";
 
 export interface WorldDeps {
 	readonly facts: ClientFactsPort;
@@ -27,12 +27,23 @@ export interface WorldHandle extends WorldPort {
 	readonly evidence: WorldEvidencePort;
 }
 
-/** options 供测试注入替身存储/接收代次；生产路径用默认。 */
+/**
+ * 默认用 node:sqlite 持久存储；打开失败/损坏/版本不兼容 → 显式 UnavailableWorldStore
+ * （history=unavailable，当前接入不受影响，不假装空历史）。测试可注入替身。
+ */
 export function createWorld(deps: WorldDeps, options?: { store?: WorldStore; receiver?: string }): WorldHandle {
+	let store = options?.store;
+	if (!store) {
+		try {
+			store = new SqliteWorldStore(deps.dataDir);
+		} catch (error) {
+			store = new UnavailableWorldStore(`SQLite 打开失败：${String(error)}`);
+		}
+	}
 	return new WorldImpl({
 		facts: deps.facts,
 		dataDir: deps.dataDir,
-		store: options?.store,
+		store,
 		receiver: options?.receiver,
 	}) as unknown as WorldHandle;
 }

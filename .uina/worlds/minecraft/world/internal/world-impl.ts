@@ -73,6 +73,14 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			conservativeInvalidation: () => this.ledger.bump("current", null),
 			sourceEpochChanged: () => this.ledger.resetCurrentSource(),
 		});
+		// 恢复：从持久存储播种已持久事实/gap，使新接收代次的 durable 从真实持久状态起步；
+		// receivedThrough 不继承（由源重放重建），不把 RAM 接收冒充持久（world.md §13.3）。
+		const recovery = this.store.recoverySnapshot();
+		if (recovery) {
+			for (const stream of recovery) {
+				this.reception.restore(stream.stream, { factSeqs: stream.persistedFactSeqs, gapRefs: stream.persistedGapRefs });
+			}
+		}
 		// 先订阅后采样（public-api §4.1）：订阅原子登记，再以采样建立基线。
 		this.subscription = this.facts.subscribe((notice) => this.onNotice(notice));
 		try {
@@ -202,11 +210,76 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			const cursor = this.ledger.cursorFor(stream);
 			return { ...fact, cursor } as Observation<T>;
 		}
-		// 纯历史：固定已接收范围（存储 + tail），不采样 Driver。S-W3 实现历史求值。
-		throw new CallFailureError({
-			code: "CALL_UNAVAILABLE",
-			message: `查询 ${query.ref} 依赖历史存储，尚未在本切片实现`,
+		// 纯历史：先冲刷接收尾（§6.6 推荐路径：分页前缀先持久化），再在同一同步步
+		// 固定存储版本并读取——无 await 间隙，不存在拼接不同版本的可能。
+		if (this.store.state !== "ready") {
+			throw new CallFailureError({
+				code: "STORE_UNAVAILABLE",
+				message: this.store.unavailableReason ?? "历史存储不可用",
+			});
+		}
+		this.flushPending();
+		const filter = input as {
+			stream?: string;
+			schema?: string;
+			limit?: number;
+			page?: { version: number; afterStoreSeq: number };
+		};
+		const version = this.store.version;
+		if (filter.page && filter.page.version !== version) {
+			throw new CallFailureError({
+				code: "SNAPSHOT_EXPIRED",
+				message: `分页版本 ${filter.page.version} 已过期（当前 ${version}）`,
+			});
+		}
+		const page = this.store.listEvidence({
+			stream: filter.stream,
+			schema: filter.schema,
+			limit: filter.limit ?? 50,
+			afterStoreSeq: filter.page?.afterStoreSeq,
 		});
+		if (!page) {
+			throw new CallFailureError({ code: "STORE_UNAVAILABLE", message: "历史存储读取失败" });
+		}
+		if (page.version !== version) {
+			throw new CallFailureError({ code: "SNAPSHOT_EXPIRED", message: "存储版本在读取期间变化" });
+		}
+		const items = page.items.map(({ entry }) =>
+			entry.kind === "fact"
+				? {
+						kind: "fact" as const,
+						ref: entry.record.ref,
+						stream: entry.record.mark.stream,
+						seq: entry.record.mark.sequence,
+						schema: entry.record.schema,
+						fact: entry.record.fact,
+					}
+				: {
+						kind: "gap" as const,
+						ref: entry.gap.ref,
+						stream: entry.gap.stream,
+						after: entry.gap.after,
+						through: entry.gap.through,
+						reason: entry.gap.reason,
+					},
+		);
+		const value = {
+			items,
+			next: page.nextStoreSeq === null ? null : { version: page.version, afterStoreSeq: page.nextStoreSeq },
+		};
+		const scope = this.requireScope();
+		const stream = queryStreamRef(query.ref, scope.world, scope.worldRevision, scope.dimension, input);
+		this.ledger.ensureStream(stream, definition.deps);
+		const cursor = this.ledger.cursorFor(stream);
+		return {
+			value,
+			observedAt: new Date().toISOString(),
+			source: "history",
+			coverage: "complete",
+			unknown: [],
+			evidence: [],
+			cursor,
+		} as unknown as Observation<T>;
 	}
 
 	async watch(query: WorldQuery, after: ObservationCursor, signal: AbortSignal): Promise<WorldWatch> {
@@ -328,6 +401,11 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			});
 		}
 		// 分区一致性：不凭 worldId 文本相同放行旧代次写入（world.md §4.2）。
+		// 写入有当前分区依赖：先同步采样刷新绑定视图（§6.2 步骤 2）。
+		const capture = this.facts.sample(() => null);
+		this.applyScope(capture.scope, false);
+		this.currentTracker.observeStamp(capture.stamp);
+		this.sampledOnce = true;
 		const scope = this.requireScope();
 		if (change.world !== scope.world || change.worldRevision !== scope.worldRevision) {
 			throw new CallFailureError({

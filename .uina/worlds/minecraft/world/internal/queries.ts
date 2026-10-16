@@ -82,9 +82,45 @@ export function canonicalJson(value: JsonValue): string {
 	return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(value[k])}`).join(",")}}`;
 }
 
+/** 历史证据列表查询输入：可选过滤 + 分页 token（固定存储版本）。 */
+function normalizeEvidenceList(input: JsonValue): JsonValue {
+	const obj = expectObject(input, "input");
+	const result: Record<string, JsonValue> = {};
+	if (obj.stream !== undefined) {
+		if (typeof obj.stream !== "string")
+			throw new CallFailureError({ code: "INVALID_ARGUMENT", message: "stream 必须是 Ref 字符串" });
+		result.stream = obj.stream;
+	}
+	if (obj.schema !== undefined) {
+		if (typeof obj.schema !== "string" || !obj.schema.includes("@")) {
+			throw new CallFailureError({ code: "INVALID_ARGUMENT", message: "schema 必须是 ExactRef" });
+		}
+		result.schema = obj.schema;
+	}
+	if (obj.limit !== undefined) {
+		if (typeof obj.limit !== "number" || !Number.isInteger(obj.limit) || obj.limit < 1 || obj.limit > 500) {
+			throw new CallFailureError({ code: "INVALID_ARGUMENT", message: "limit 必须是 1..500 的整数" });
+		}
+		result.limit = obj.limit;
+	}
+	if (obj.page !== undefined) {
+		const page = expectObject(obj.page, "input.page");
+		if (typeof page.version !== "number" || !Number.isInteger(page.version) || page.version < 0) {
+			throw new CallFailureError({ code: "INVALID_ARGUMENT", message: "page.version 必须是非负整数" });
+		}
+		if (typeof page.afterStoreSeq !== "number" || !Number.isInteger(page.afterStoreSeq) || page.afterStoreSeq < 0) {
+			throw new CallFailureError({ code: "INVALID_ARGUMENT", message: "page.afterStoreSeq 必须是非负整数" });
+		}
+		result.page = { version: page.version, afterStoreSeq: page.afterStoreSeq };
+	}
+	return result;
+}
+
 /**
- * 内置查询集（S-W1：纯当前三项；S-W3 追加历史 evidence.list@1）。
- * self/inventory 不可用时 Driver 返回 null，按 public-api 以 null+unknown 表达，不抛 SENSOR_UNAVAILABLE。
+ * 内置查询集。
+ * 纯当前：self/inventory/block（S-W1）。
+ * 纯历史：evidence.list@1 —— 已持久证据与显式缺口的分页读取（S-W3）。
+ * 容器/实体/事件等领域查询由能力层提供 descriptor 后扩展；此处不冒认完整目录。
  */
 export function builtinQueries(): Map<string, QueryDefinition> {
 	const defs: QueryDefinition[] = [
@@ -123,6 +159,23 @@ export function builtinQueries(): Map<string, QueryDefinition> {
 			deps: new Set(["current"] as DependencyKind[]),
 			normalizeInput: expectBlockTarget,
 			evalCurrent: (view, input) => view.block(input as unknown as BlockTarget) as unknown as Fact<JsonValue>,
+		},
+		{
+			descriptor: {
+				ref: "evidence.list@1",
+				summary:
+					"已持久历史证据与显式缺口分页读取；先冲刷接收尾再固定存储版本。返回 items（fact 携带原始 Fact 载荷，gap 携带区间）与分页 token",
+				input: {
+					type: "object",
+					properties: { stream: "Ref?", schema: "ExactRef?", limit: "1..500?", page: "{version, afterStoreSeq}?" },
+				},
+				output: {
+					type: "{ items: [{kind:'fact',ref,stream,seq,schema,fact}|{kind:'gap',ref,stream,after,through,reason}], next: {version,afterStoreSeq}|null, complete: boolean }",
+				},
+				feedback: false,
+			},
+			deps: new Set(["history"] as DependencyKind[]),
+			normalizeInput: normalizeEvidenceList,
 		},
 	];
 	return new Map(defs.map((d) => [d.descriptor.ref, d]));
