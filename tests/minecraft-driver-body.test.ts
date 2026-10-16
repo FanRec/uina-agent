@@ -143,6 +143,32 @@ describe("minecraft driver body (S-D2)", () => {
 		await driver.close();
 	});
 
+	it("dig 预测读取标注 prediction，服务端入包恢复 server；回执携带预测证据", async () => {
+		const bot = new FakeClientBot();
+		layFloor(bot, 0, 8);
+		bot.setBlock({ x: 2, y: 64, z: 0 }, { name: "stone", properties: {} });
+		const driver = await makeDriver(bot);
+		const session = await driver.player.acquire(TEST_OWNER, signal());
+		const place = { world: "w", worldRevision: "wr", dimension: "minecraft:overworld", position: { x: 0, y: 0, z: 0 } };
+
+		const receipt = await session.dig({ place, block: { x: 2, y: 64, z: 0 } });
+		// 回执携带已取得的预测证据 ref（§13：证据随低层完成回执交付）。
+		expect(receipt.evidence.length).toBe(1);
+		// 服务端确认到达前：目标格读取标注 prediction，不冒充 server 事实（§11.6）。
+		const predicted = driver.facts.sample((v) => v.block({ place, block: { x: 2, y: 64, z: 0 } }));
+		expect(predicted.value.source).toBe("prediction");
+
+		// 服务端真实入包（setBlock 模拟 blockUpdate）：清除预测标记，恢复 server 标注。
+		bot.setBlock({ x: 2, y: 64, z: 0 }, { name: "bedrock", properties: {} });
+		await flushAsync();
+		const confirmed = driver.facts.sample((v) => v.block({ place, block: { x: 2, y: 64, z: 0 } }));
+		expect(confirmed.value.source).toBe("server");
+		expect(confirmed.value.value.state).toMatchObject({ name: "minecraft:bedrock" });
+
+		await session.close();
+		await driver.close();
+	});
+
 	it("dig await 瞄准期间撤销：恢复后写入被拒，不产生 block_dig 派发", async () => {
 		let releaseLook!: () => void;
 		const gate = new Promise<void>((r) => {

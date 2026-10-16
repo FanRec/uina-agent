@@ -261,8 +261,9 @@ export class BodySessionImpl implements BodySession {
 		op: OperationRecord,
 		dispatch: "not_sent" | "sent" | "unknown",
 		completion: "met" | "not_met" | "unknown",
+		evidence: Ref[] = [],
 	): EffectReceipt {
-		return { effect: this.#effectRef(op), dispatch, completion, evidence: [] };
+		return { effect: this.#effectRef(op), dispatch, completion, evidence };
 	}
 
 	/** 连续根准入：两个无协调关系的持续控制器不能并行（§6.3）。 */
@@ -495,7 +496,7 @@ export class BodySessionImpl implements BodySession {
 			// 本地预测捕获：上游 dig 完成会把目标格预测为空气（_updateBlockState(position, 0)）；
 			// 这是预测事实，不是服务端确认。
 			const after = bot.blockAt(pos);
-			this.#deps.host.facts.capture(
+			const digEvidence = this.#deps.host.facts.capture(
 				"dig",
 				"driver.dig@1",
 				{
@@ -506,9 +507,12 @@ export class BodySessionImpl implements BodySession {
 				} as JsonValue,
 				"prediction",
 			);
+			// 来源标注：目标格在服务端 blockUpdate 到达前按 prediction 读取（§11.6）。
+			this.#deps.host.facts.markBlockPredicted(pos);
 			this.#deps.host.facts.commitBlockChanged();
 			this.#gate.closeOperation(op);
-			return this.#receipt(op, "sent", "met");
+			// 回执携带已取得的证据（§13）：预测证据 ref 随低层完成回执交付结算方。
+			return this.#receipt(op, "sent", "met", [digEvidence.ref]);
 		} catch (err) {
 			// 清理只处理本操作的资源：取消上游挖掘状态。
 			try {

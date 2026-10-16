@@ -130,6 +130,21 @@ describe("minecraft driver window (S-D3)", () => {
 		const snap2 = await win.snapshot();
 		expect(snap2.value.cursor).toMatchObject({ name: "minecraft:iron_ingot", count: 5 });
 		expect(snap2.value.revision).toBeGreaterThan(snap.value.revision);
+
+		// 预测未确认前：view.window 读取标注 prediction，且 revision 与会话版本同源（§12.2 单一版本空间）。
+		const viewWin = driver.facts.sample((v) => v.window()).value;
+		expect(viewWin.value).not.toBeNull();
+		expect(viewWin.source).toBe("prediction");
+		expect(viewWin.value!.revision).toBe(snap2.value.revision);
+
+		// 服务端真实更新到达：清除预测标记；version 仍由会话权威推进，两处读数一致。
+		bot.setWindowSlot(5, { name: "minecraft:bread", count: 1, components: null });
+		await flushAsync();
+		const snap3 = await win.snapshot();
+		const viewWin2 = driver.facts.sample((v) => v.window()).value;
+		expect(viewWin2.source).toBe("server");
+		expect(viewWin2.value!.revision).toBe(snap3.value.revision);
+
 		await session.close();
 		await driver.close();
 	});

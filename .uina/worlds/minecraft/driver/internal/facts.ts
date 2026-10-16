@@ -130,8 +130,14 @@ export class ClientFactsSource implements ClientFactsPort {
 	#pendingChanged = new Set<string>();
 	#changeDeliveryScheduled = false;
 
+	/** 上游本地预测的方块格（覆盖前标注来源，服务端 blockUpdate 到达即恢复 server）。 */
+	readonly #predictedBlocks = new Set<string>();
+	/** 上游本地预测的窗口（acceptClick 预测先于发包；服务端 setSlot/windowClose 到达即清除）。 */
+	readonly #predictedWindows = new Set<number>();
+	/** 窗口会话登记的本地观察版本（唯一权威来源：WindowSessionImpl）。 */
+	readonly #windowObservations = new Map<number, number>();
+
 	inventoryRevision = 0;
-	windowRevision = 0;
 	#lastInventoryKey: string | null = null;
 	#lastWindowKey: string | null = null;
 
@@ -349,6 +355,37 @@ export class ClientFactsSource implements ClientFactsPort {
 
 	// ---- 协议更新提交点（由宿主事件接线调用）----
 
+	/** 预测登记：上游挖掘完成把目标格本地写空气（digging.js _updateBlockState），后续读取标注 prediction。 */
+	markBlockPredicted(pos: BotBlockPos): void {
+		this.#predictedBlocks.add(`${pos.x},${pos.y},${pos.z}`);
+	}
+
+	/** 预测登记：上游 acceptClick 在发包前已改写窗口对象（inventory.js 预测先于发包）。 */
+	markWindowPredicted(windowId: number): void {
+		this.#predictedWindows.add(windowId);
+	}
+
+	isBlockPredicted(pos: BotBlockPos): boolean {
+		return this.#predictedBlocks.has(`${pos.x},${pos.y},${pos.z}`);
+	}
+
+	isWindowPredicted(windowId: number): boolean {
+		return this.#predictedWindows.has(windowId);
+	}
+
+	/** 窗口会话登记本地观察版本（唯一权威：WindowSessionImpl 持有并推进）。 */
+	noteWindowObservation(windowId: number, revision: number): void {
+		this.#windowObservations.set(windowId, revision);
+	}
+
+	forgetWindowObservation(windowId: number): void {
+		this.#windowObservations.delete(windowId);
+	}
+
+	windowObservationOf(windowId: number): number | null {
+		return this.#windowObservations.get(windowId) ?? null;
+	}
+
 	/** 完整快照比较：值改变才推进 revision（不只数 updateSlot / 不比较对象引用）。 */
 	commitInventoryChanged(): void {
 		const bot = this.#deps.bot;
@@ -361,7 +398,15 @@ export class ClientFactsSource implements ClientFactsPort {
 		}
 	}
 
-	commitWindowChanged(): void {
+	/** pos 提供时视为服务端真实入包到达：清除该格预测标记（§11.6 按写入点标注来源）。 */
+	commitBlockChanged(pos?: BotBlockPos): void {
+		if (pos) this.#predictedBlocks.delete(`${pos.x},${pos.y},${pos.z}`);
+		this.markChanged([FACT_KIND.block]);
+	}
+
+	/** windowId 提供时视为服务端对该窗口的真实更新到达：清除该窗口预测标记。 */
+	commitWindowChanged(windowId?: number): void {
+		if (windowId !== undefined) this.#predictedWindows.delete(windowId);
 		const w = this.#deps.bot.currentWindow();
 		const key =
 			w === null
@@ -369,7 +414,6 @@ export class ClientFactsSource implements ClientFactsPort {
 				: `${w.id}|${w.type}|${w.slots.map((s) => itemKey(s)).join(",")}|cursor=${itemKey(w.cursor)}|props=${JSON.stringify(w.properties)}`;
 		if (key !== this.#lastWindowKey) {
 			this.#lastWindowKey = key;
-			this.windowRevision += 1;
 			this.markChanged([FACT_KIND.window]);
 		}
 	}
@@ -380,10 +424,6 @@ export class ClientFactsSource implements ClientFactsPort {
 
 	commitEntitiesChanged(): void {
 		this.markChanged([FACT_KIND.entities]);
-	}
-
-	commitBlockChanged(): void {
-		this.markChanged([FACT_KIND.block]);
 	}
 }
 
@@ -488,7 +528,8 @@ class LiveView implements ClientFactView {
 		return {
 			value,
 			observedAt: utcNow(),
-			source: "server",
+			// §11.6：本地预测（如挖掘完成写空气）不得冒充服务端事实。
+			source: this.facts.isBlockPredicted(pos) ? "prediction" : "server",
 			coverage: b === null ? "partial" : "complete",
 			unknown,
 			evidence: [],
@@ -603,10 +644,13 @@ class LiveView implements ClientFactView {
 			return { value: null, observedAt: utcNow(), source: "server", coverage: "complete", unknown: [], evidence: [] };
 		}
 		const windowRef = this.facts.deps.scopeProvider.windowRefOf(w.id);
+		// revision 唯一权威是 WindowSessionImpl 的本地观察版本（登记制）；
+		// 未登记窗口没有观察版本，返回 0 并以 unknown 说明。
+		const observation = this.facts.windowObservationOf(w.id);
 		const value: WindowSnapshot = {
 			window: windowRef ?? `unregistered-window-${w.id}`,
 			type: w.type,
-			revision: this.facts.windowRevision,
+			revision: observation ?? 0,
 			layout: { slotCount: w.slotCount, regions: [] },
 			properties: { ...w.properties },
 			slots: w.slots.map((item, slot) => ({
@@ -624,7 +668,8 @@ class LiveView implements ClientFactView {
 		return {
 			value,
 			observedAt: utcNow(),
-			source: "mixed",
+			// 预测中的窗口不得冒充服务端事实；未登记窗口含 Driver 未知成分。
+			source: this.facts.isWindowPredicted(w.id) ? "prediction" : windowRef === null ? "mixed" : "server",
 			coverage: windowRef === null ? "partial" : "complete",
 			unknown: windowRef === null ? ["window id not registered by driver"] : [],
 			evidence: [],

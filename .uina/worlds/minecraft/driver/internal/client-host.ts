@@ -141,18 +141,20 @@ export class ClientHost {
 				this.facts.commitEntitiesChanged();
 			}),
 			bot.on("entityGone", (entity) => this.#onEntityGone(entity)),
-			bot.on("blockUpdate", () => this.facts.commitBlockChanged()),
+			// blockUpdate/setSlot 携带位置/窗口 ID：既是 changed 提交点，也是服务端
+			// 真实数据到达时清除对应本地预测标记的入口（§11.6 按写入点标注来源）。
+			bot.on("blockUpdate", (pos) => this.facts.commitBlockChanged(pos)),
 			bot.on("health", () => this.facts.commitSelfChanged()),
-			bot.on("setSlot", () => {
+			bot.on("setSlot", (windowId) => {
 				this.facts.commitInventoryChanged();
-				this.facts.commitWindowChanged();
+				this.facts.commitWindowChanged(windowId);
 			}),
 			bot.on("windowOpen", (w) => {
 				this.facts.commitWindowChanged();
 				void w;
 			}),
-			bot.on("windowClose", () => {
-				this.facts.commitWindowChanged();
+			bot.on("windowClose", (windowId) => {
+				this.facts.commitWindowChanged(windowId);
 			}),
 		);
 	}

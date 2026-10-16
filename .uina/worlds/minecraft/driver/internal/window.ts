@@ -86,6 +86,8 @@ export class WindowSessionImpl implements WindowSession {
 		this.#d = deps;
 		this.#protocolId = deps.data.id;
 		this.#lastKey = snapshotKey(deps.data);
+		// 本地观察版本的唯一权威是本会话；facts 侧登记供 view.window() 投影（§12.2 单一版本空间）。
+		this.#d.host.facts.noteWindowObservation(this.#protocolId, this.#revision);
 		this.#wire();
 	}
 
@@ -118,6 +120,7 @@ export class WindowSessionImpl implements WindowSession {
 		if (key !== this.#lastKey) {
 			this.#lastKey = key;
 			this.#revision += 1;
+			this.#d.host.facts.noteWindowObservation(this.#protocolId, this.#revision);
 		}
 	}
 
@@ -163,11 +166,11 @@ export class WindowSessionImpl implements WindowSession {
 		this.#requireUsable();
 		const w = this.#current();
 		if (!w) throw referenceStale("当前窗口已不存在（服务端关闭或已被替换）");
-		// 纯读：不触发主动协议操作。
+		// 纯读：不触发主动协议操作。预测中的内容不冒充服务端事实（§11.6）。
 		return {
 			value: this.#snapshotValue(),
 			observedAt: utcNow(),
-			source: "mixed",
+			source: this.#d.host.facts.isWindowPredicted(this.#protocolId) ? "prediction" : "mixed",
 			coverage: "complete",
 			unknown: [],
 			evidence: [],
@@ -246,7 +249,9 @@ export class WindowSessionImpl implements WindowSession {
 				});
 			}
 			// 派发后：本地预测已发生（上游 acceptClick 直接改窗口对象，不发协议包），
-			// 必须显式推进事实源，否则订阅者看不到窗口已变。
+			// 必须显式推进事实源，否则订阅者看不到窗口已变；预测标记使后续读取
+			// 按 prediction 标注，服务端 setSlot/windowClose 到达即恢复（§11.6）。
+			this.#d.host.facts.markWindowPredicted(this.#protocolId);
 			this.#d.host.facts.commitWindowChanged();
 			this.#refreshRevision();
 			this.#d.gate.closeOperation(op);
@@ -293,8 +298,9 @@ export class WindowSessionImpl implements WindowSession {
 			}
 		}
 		this.#d.host.unregisterWindow(this.#protocolId);
+		this.#d.host.facts.forgetWindowObservation(this.#protocolId);
 		this.#d.gate.closeOperation(this.#d.op);
 		this.#d.onRetire();
-		this.#d.host.facts.commitWindowChanged();
+		this.#d.host.facts.commitWindowChanged(this.#protocolId);
 	}
 }
