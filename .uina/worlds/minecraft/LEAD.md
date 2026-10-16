@@ -44,7 +44,7 @@
 
 ## 3. 并行分工与纵向切片
 
-### Driver AI（worktree：`C:/Users/34150/.codex/worktrees/mc-driver/Uina`，分支 `mc/driver`）
+### Driver AI（开工时自建 worktree，分支命名 `mc/driver`，见 §4）
 
 切片顺序（每片全绿可集成）：
 1. **S-D1 连接与事实**：fake bot（替身物理/协议，不用真实服务器）驱动 `createDriver` 返回 ready、`facts.sample()` 返回 self/inventory 纯值 + 正确 stamp；`subscribe()` 在替身协议入包时发 changed/reset。测试：`tests/minecraft-driver-facts.test.ts`。
@@ -53,7 +53,7 @@
 
 明确不做（登记依赖）：真实服务器验收、真实 Mineflayer 依赖接入（等 lead 批准 npm 依赖后接）、Program 执行域桥接（归 lead）。
 
-### World AI（worktree：`.../mc-world/Uina`，分支 `mc/world`）
+### World AI（自建 worktree，分支 `mc/world`）
 
 1. **S-W1 接收与当前读**：`createWorld` 消费 `facts.subscribe()`（先订阅后采样）、receivedThrough/durableThrough 水位（含 gap 不越洞）、`read` 纯当前查询（self/inventory/block）返回 Observation + 同点 cursor。存储先用内存 + `node:sqlite` 打底。测试：`tests/minecraft-world-receive.test.ts`。
 2. **S-W2 Watch**：read→watch→next 无漏失效（含 stamp 已前进但范围未知的保守失效）；reset 语义。测试：`tests/minecraft-world-watch.test.ts`。
@@ -61,7 +61,7 @@
 
 明确不做：Driver 侧替身之外的协议事实、玩法领域 schema（由能力层后续提供）。
 
-### Assets AI（worktree：`.../mc-assets/Uina`，分支 `mc/assets`）
+### Assets AI（自建 worktree，分支 `mc/assets`）
 
 1. **S-A1 仓库核心**：put/revise CAS、名称头、digest 规范化、ASSET_EXISTS/REVISION_CONFLICT；程序/蓝图/经验三 kind 校验。测试：`tests/minecraft-assets-core.test.ts`。
 2. **S-A2 字节对象**：受管不可变对象（唯一物理名、O_CREAT|O_EXCL|O_SYNC、数据库发布可见性）、stage/read。测试：`tests/minecraft-assets-objects.test.ts`。
@@ -75,6 +75,7 @@ contracts/ 维护、Executor/运行管理、worlddef façade、Core 接缝（`to
 
 ## 4. worktree 与门禁协议
 
+- **worktree 由各模块 AI 开工时自建**（不预建）：从当前主分支 HEAD 创建，如 `git worktree add <path> -b mc/<module>`；路径沿用 `C:/Users/34150/.codex/worktrees/mc-<module>/Uina` 惯例。开工后先 rebase 到主分支最新（contracts 可能已被 lead 修订）。
 - 每个模块 AI 在自己的 worktree 工作，**只 commit 自己目录 + 测试文件 + 集成报告**；不 push。
 - worktree 内 `pnpm install` 后门禁：`pnpm typecheck`（biome + boundaries + tsc）+ `pnpm vitest run tests/minecraft-<own-prefix>*`。全绿才能交付切片。
 - 已知沙箱约束：vitest 用默认池；测试失败时 coverage json 不落盘；测试写临时目录，不碰 `data/`、`.uina/world-data/`。
@@ -82,7 +83,7 @@ contracts/ 维护、Executor/运行管理、worlddef façade、Core 接缝（`to
 
 ## 5. 集成顺序
 
-M0（已完成）：contracts 固化 + 模块桩 + worktree 分支。
+M0（已完成）：contracts 固化 + 模块桩（worktree 不预建，各 AI 开工自建，见 §4）。
 M1：S-D1 ∥ S-W1 ∥ S-A1（三者无文件交集；S-W1 用 fake facts 接口替身也可先行，集成时换真 Driver）。
 M2：lead Executor 骨架（受理/去重/run 记录/stop 意图，内存版）+ worlddef façade 接 ExecutorClient。requestId 由接入层（worlddef/lead）在提交前生成并持久，模型不填 ID。
 M3：S-D2 ∥ S-W2 ∥ S-A2；Executor 接身体调度（FIFO 就绪队列；当前段不被普通请求打断；replace/preempt 显式核验，见 design §5.1）。
