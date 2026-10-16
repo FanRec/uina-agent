@@ -160,6 +160,11 @@ export class FakeClientFacts implements ClientFactsPort {
 		this.emit({ kind: "changed", stamp: { ...this.stampState }, changed: changedRefs });
 	}
 
+	/** 直接注入原始通知：用于对抗性时序（迟到/乱序/重复）测试。 */
+	emitRawNotice(notice: ClientFactNotice): void {
+		this.emit(notice);
+	}
+
 	setScope(scope: Partial<ClientFactScope>): void {
 		this.scopeState = { ...this.scopeState, ...scope };
 	}

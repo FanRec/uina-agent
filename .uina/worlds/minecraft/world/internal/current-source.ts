@@ -71,14 +71,9 @@ export class CurrentSourceTracker {
 			return; // 证据路径归接收引擎，不参与当前水位。
 		}
 		if (notice.kind === "reset") {
-			if (notice.reason === "gap") {
-				// gap 不用 reset 补事实：保守失效后以新 stamp 重新基线。
-				this.observeStamp(notice.stamp);
-				return;
-			}
-			// connection/incarnation/source_rebuilt：当前事实源实例断裂。
-			// 统一走 observeStamp：epoch 变化触发 sourceEpochChanged；
-			// epoch 未变但连接重建时 Driver 已声明通知连续性断裂，仍需保守失效。
+			// 所有 Driver reset 都声明通知连续性断裂：当前覆盖不可信。
+			// epoch 变化 → 源代次 reset；epoch 未变 → 保守失效（gap 不用 reset 补事实，
+			// 但当前覆盖仍必须保守失效，不能因 stamp 数字连续就冒认未变）。
 			const state = this.sources.get(notice.stamp.source);
 			const epochChanged = !state || state.epoch !== notice.stamp.epoch;
 			this.observeStamp(notice.stamp);
