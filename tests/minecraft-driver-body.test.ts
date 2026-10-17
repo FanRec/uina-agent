@@ -3,6 +3,7 @@
  * dig/attack/interact/equip/useItem 派发与回执、并发与冲突。
  */
 
+import { getEventListeners } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { FakeClientBot, TEST_OWNER, flushAsync, layFloor, makeDriver, testOwner } from "./minecraft-driver-helpers.js";
 
@@ -121,6 +122,24 @@ describe("minecraft driver body (S-D2)", () => {
 		await expect(pending).rejects.toMatchObject({ code: "CONTROL_INVALID" });
 		await a.close();
 		await driver.close();
+	});
+
+	it("driver.close 结算排队中的申请：明确拒绝、不发放失效资格、不留 signal 监听", async () => {
+		const bot = new FakeClientBot();
+		layFloor(bot, 0, 4);
+		const driver = await makeDriver(bot);
+		const a = await driver.player.acquire(testOwner(1), signal());
+		const queued = new AbortController();
+		const pendingB = driver.player.acquire(testOwner(2), queued.signal);
+		expect(getEventListeners(queued.signal, "abort")).toHaveLength(1);
+
+		await driver.close();
+		// 关闭必须结算排队者：既不悬挂，也不把身体租约发给正在拆除的客户端。
+		await expect(pendingB).rejects.toMatchObject({ code: "SOURCE_UNAVAILABLE" });
+		// 结算即摘监听：长生命周期 signal 不累积。
+		expect(getEventListeners(queued.signal, "abort")).toHaveLength(0);
+		// 已发放的会话随停用退役，不能继续写入。
+		await expect(a.drive({ keys: {} }, 1)).rejects.toMatchObject({ code: "CONTROL_INVALID" });
 	});
 
 	it("dig(target) 派发并在完成后捕获本地预测证据；挖掘中撤销则迟到写入被拒", async () => {

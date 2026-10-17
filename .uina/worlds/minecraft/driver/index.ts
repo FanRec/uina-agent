@@ -134,6 +134,12 @@ class PlayerPortImpl implements PlayerPort {
 		this.#sessionDisposers.get(settled)?.();
 		this.#sessionDisposers.delete(settled);
 		this.gate.settleRevoked();
+		// 与 acquire 的准入一致：排队期间连接已不可用 → 明确拒绝整队，
+		// 不把无法履行的资格发给等待者（bot 为空时发放会让后续写入指向空化身）。
+		if (this.host.state !== "ready") {
+			this.handleRevoked(`连接状态为 ${this.host.state}，排队中的身体申请被撤销`);
+			return;
+		}
 		const next = this.#queue.shift();
 		if (next) {
 			next.signal.removeEventListener("abort", next.onAbort);
@@ -146,13 +152,16 @@ class PlayerPortImpl implements PlayerPort {
 		}
 	}
 
-	/** 连接/化身代次更替：撤销排队申请；活动会话由其自身登记的 revoke 回调强制退役并结算。 */
-	handleRevoked(): void {
+	/**
+	 * 排队申请结算：连接/化身代次更替或驱动关闭时明确拒绝，不让等待者悬挂
+	 * （每项都摘掉自己的 abort 监听，长生命周期 signal 不泄漏）。
+	 */
+	handleRevoked(reason = "连接/化身代次更替，排队中的身体申请被撤销"): void {
 		const queued = this.#queue;
 		this.#queue = [];
 		for (const e of queued) {
 			e.signal.removeEventListener("abort", e.onAbort);
-			e.reject(sourceUnavailable("连接/化身代次更替，排队中的身体申请被撤销"));
+			e.reject(sourceUnavailable(reason));
 		}
 	}
 }
@@ -230,6 +239,9 @@ export function createDriver(config: DriverConfig, options: DriverOptions = {}):
 		},
 
 		async close(): Promise<void> {
+			// 先结算排队申请：host 的代次撤销回调在此后解除，不能指望它来清队列
+			// （否则排队中的 acquire 永不结算，且其 abort 监听在长生命周期 signal 上泄漏）。
+			playerPort.handleRevoked("驱动关闭，排队中的身体申请被撤销");
 			offRevoked();
 			await host.close();
 		},

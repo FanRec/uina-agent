@@ -134,6 +134,16 @@ export type ControlOwner =
 	| { kind: "run"; run: Ref; segment: Ref; callId: Ref }
 	| { kind: "safety"; intervention: Ref; interruptedRun?: Ref };
 
+/**
+ * 身体端口：同一客户端同一时刻最多一个有效身体资格（真实资源隔离由 Driver 强制）。
+ *
+ * 调度权威分工（唯一）：
+ * - Runtime 决定"该谁跑、跑什么"——任务/运行队列、优先级、抢占与公平都在 Runtime 侧。
+ * - Driver 只决定"此刻能不能拿到身体"：按到达顺序发放唯一身体租约，不做优先级、
+ *   不做抢占、不做任务级仲裁。排队只解决互斥与交接期（revoking→quiesced）的等待。
+ * - 因此 Runtime 对每次身体使用只应保持 **一个** 在途 acquire：多个在途 acquire 会被
+ *   Driver 按到达序排队，那个顺序就不再表达 Runtime 的调度意图。
+ */
 export interface PlayerPort {
 	acquire(owner: ControlOwner, signal: AbortSignal): Promise<BodySession>;
 }
