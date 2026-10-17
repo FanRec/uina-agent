@@ -40,7 +40,7 @@ describe("minecraft world watch（S-W2）", () => {
 	it("read→watch→next：登记后变化即时交付，cursor 前进", async () => {
 		const facts = new FakeClientFacts();
 		facts.setSelf(selfState(20), []);
-		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		const observation = await world.read({ ref: "self@1", input: {} });
 		const watch = await world.watch({ ref: "self@1", input: {} }, observation.cursor, new AbortController().signal);
 
@@ -66,7 +66,7 @@ describe("minecraft world watch（S-W2）", () => {
 	it("read 后变化、watch 登记前：首次 next 立即交付（§18 read→watch 之间变化）", async () => {
 		const facts = new FakeClientFacts();
 		facts.setSelf(selfState(20), []);
-		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		const observation = await world.read({ ref: "self@1", input: {} });
 		facts.setSelf(selfState(16)); // watch 之前发生
 		const watch = await world.watch({ ref: "self@1", input: {} }, observation.cursor, new AbortController().signal);
@@ -79,7 +79,7 @@ describe("minecraft world watch（S-W2）", () => {
 	it("stamp 已前进但通知未到（检查点 H>C）：watch 采样即保守失效一次（§18 20/21 反例）", async () => {
 		const facts = new FakeClientFacts();
 		facts.setSelf(selfState(20), []);
-		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		const first = await world.read({ ref: "self@1", input: {} }); // stamp=1, C=1
 		facts.commitWithoutNotice(() => {}); // stamp=2，无通知（通知排队/丢失）
 		const watch = await world.watch({ ref: "self@1", input: {} }, first.cursor, new AbortController().signal);
@@ -97,7 +97,7 @@ describe("minecraft world watch（S-W2）", () => {
 	it("22 的 B 范围先到、21 的 A 缺失：保守覆盖到 22，MAX 不证明 A 未变（§18 反例）", async () => {
 		const facts = new FakeClientFacts();
 		facts.setSelf(selfState(20), []); // stamp=1, C=1
-		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		const first = await world.read({ ref: "self@1", input: {} });
 		facts.emitChangedAt(22, ["fact:block:B"]); // 跳过 21
 		const watch = await world.watch({ ref: "self@1", input: {} }, first.cursor, new AbortController().signal);
@@ -111,7 +111,7 @@ describe("minecraft world watch（S-W2）", () => {
 	it("同 H 不重复自激：迟到的 <=C 通知只细化，水位不回退", async () => {
 		const facts = new FakeClientFacts();
 		facts.setSelf(selfState(20), []); // stamp=1, C=1
-		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		const first = await world.read({ ref: "self@1", input: {} });
 		facts.emitChangedAt(5, ["fact:block:B"]); // 跳号 → 保守失效，C=5
 		const watch = await world.watch({ ref: "self@1", input: {} }, first.cursor, new AbortController().signal);
@@ -142,7 +142,7 @@ describe("minecraft world watch（S-W2）", () => {
 	it("源 epoch 断裂（incarnation_changed）：next 交付 reset(epoch_changed)", async () => {
 		const facts = new FakeClientFacts();
 		facts.setSelf(selfState(20), []);
-		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		const observation = await world.read({ ref: "self@1", input: {} });
 		const watch = await world.watch({ ref: "self@1", input: {} }, observation.cursor, new AbortController().signal);
 		const pending = watch.next(observation.cursor, new AbortController().signal);
@@ -157,7 +157,7 @@ describe("minecraft world watch（S-W2）", () => {
 	it("connection_changed（epoch 未变）：保守 changed，不是 reset（普通重连不换世界）", async () => {
 		const facts = new FakeClientFacts();
 		facts.setSelf(selfState(20), []);
-		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		const observation = await world.read({ ref: "self@1", input: {} });
 		const watch = await world.watch({ ref: "self@1", input: {} }, observation.cursor, new AbortController().signal);
 		const pending = watch.next(observation.cursor, new AbortController().signal);
@@ -171,7 +171,7 @@ describe("minecraft world watch（S-W2）", () => {
 	it("源 gap：保守失效，不用 reset 补事实", async () => {
 		const facts = new FakeClientFacts();
 		facts.setSelf(selfState(20), []);
-		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		const observation = await world.read({ ref: "self@1", input: {} });
 		const watch = await world.watch({ ref: "self@1", input: {} }, observation.cursor, new AbortController().signal);
 		const pending = watch.next(observation.cursor, new AbortController().signal);
@@ -185,7 +185,7 @@ describe("minecraft world watch（S-W2）", () => {
 	it("绑定变化后 watch 采样即见新 scope：旧 epoch cursor 立即 reset(epoch_changed)", async () => {
 		const facts = new FakeClientFacts();
 		facts.setSelf(selfState(20), []);
-		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		const observation = await world.read({ ref: "self@1", input: {} });
 		facts.setScope({ binding: "mcw:binding:b2" });
 		const watch = await world.watch({ ref: "self@1", input: {} }, observation.cursor, new AbortController().signal);
@@ -203,7 +203,7 @@ describe("minecraft world watch（S-W2）", () => {
 	it("绑定在同一采样内变化：read cursor 属于新分区流，watch 正常等待（死流回归）", async () => {
 		const facts = new FakeClientFacts();
 		facts.setSelf(selfState(20), []);
-		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		await world.read({ ref: "self@1", input: {} }); // 建立 b1 基线
 		facts.setScope({ binding: "mcw:binding:b2", worldRevision: "mcw:rev:r2" }); // 静默换绑
 		// 本次 read 的采样原子返回新 scope：cursor 必须属于新分区流，而非已死的 b1 流。
@@ -225,7 +225,7 @@ describe("minecraft world watch（S-W2）", () => {
 	it("立即交付后不重放陈旧 pending（新 cursor 的 next 不收重复变化）", async () => {
 		const facts = new FakeClientFacts();
 		facts.setSelf(selfState(20), []);
-		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		const first = await world.read({ ref: "self@1", input: {} });
 		const watch = await world.watch({ ref: "self@1", input: {} }, first.cursor, new AbortController().signal);
 		facts.emitChangedAt(facts.currentStamp().sequence + 4, ["fact:block:B"]); // 跳号 → 保守失效，无等待者 → pending
@@ -248,7 +248,7 @@ describe("minecraft world watch（S-W2）", () => {
 	it("取消 next 只取消该次等待，不消费共享变化", async () => {
 		const facts = new FakeClientFacts();
 		facts.setSelf(selfState(20), []);
-		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		const observation = await world.read({ ref: "self@1", input: {} });
 		const watch = await world.watch({ ref: "self@1", input: {} }, observation.cursor, new AbortController().signal);
 
@@ -269,7 +269,7 @@ describe("minecraft world watch（S-W2）", () => {
 	it("close 幂等；close 后 next 拒绝 REFERENCE_STALE", async () => {
 		const facts = new FakeClientFacts();
 		facts.setSelf(selfState(20), []);
-		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		const observation = await world.read({ ref: "self@1", input: {} });
 		const watch = await world.watch({ ref: "self@1", input: {} }, observation.cursor, new AbortController().signal);
 		await watch.close();
@@ -283,7 +283,7 @@ describe("minecraft world watch（S-W2）", () => {
 	it("证据接收不唤醒纯当前 watch（依赖类别分域）", async () => {
 		const facts = new FakeClientFacts();
 		facts.setSelf(selfState(20), []);
-		const world = createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
+		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		const observation = await world.read({ ref: "self@1", input: {} });
 		const watch = await world.watch({ ref: "self@1", input: {} }, observation.cursor, new AbortController().signal);
 		let woke = false;

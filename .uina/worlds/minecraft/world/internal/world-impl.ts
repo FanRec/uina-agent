@@ -1,12 +1,15 @@
 /**
- * World 组装实现（docs/proposals/mc/modules/world.md）。
+ * World 组装实现（World 重构终态）。
  *
  * 职责边界：
  * - Driver 拥有当前客户端事实；World 只经 ClientFactsPort 读取受控纯值，
  *   接收选定不可变证据，维护历史/领域记录与失效水位。
- * - 纯当前 read 同步固定切面（sample → 纳入水位 → 组装 cursor），不读存储、不等历史；
- *   纯历史 read 只固定已接收范围（存储 + tail），不向 Driver 采样。
- * - 数据库写入经微任务批量提交；提交完成后在同一同步步发布 (v, D) 并裁剪 tail。
+ * - 纯当前 read 同步固定切面（sample → 纳入水位 → 组装 cursor），不读存储、不等历史。
+ * - 纯历史 read 走"提交屏障"模型：固定本次需要的接收上界 → 等待该上界内的证据
+ *   完成提交或得到明确故障 → 同步固定 cursor → 在专用存储 Worker 中原子读取。
+ *   cursor 先于读取 await 固定：读取期间到达的新提交只会让下次 next 立即交付，
+ *   旧数据绝不会拿到覆盖新事实的 cursor。
+ * - 提交经单一有序队列发往存储 Worker；提交完成在同一续体发布 durable ACK 并解除屏障。
  */
 
 import type {
@@ -29,18 +32,24 @@ import { CallFailureError } from "../../contracts/errors.js";
 import { CurrentSourceTracker } from "./current-source.js";
 import { InvalidationLedger, type WatchRegistration } from "./invalidation.js";
 import { builtinQueries, canonicalJson, queryStreamRef, type QueryDefinition } from "./queries.js";
-import { MemoryWorldStore, type WorldStore } from "./store.js";
+import type { EvidenceFilter, WorldStore } from "./store.js";
 import { ReceptionEngine, type AcceptedEntry } from "./reception.js";
 
 const RECEIVER_GENERATION = "mcw:receiver:g1";
 
 export interface WorldDepsInternal {
 	readonly facts: ClientFactsPort;
-	/** World 数据目录；S-W3 SQLite 存储使用，内存存储忽略。 */
+	/** World 数据目录（由持久存储实现使用；内存存储忽略）。 */
 	readonly dataDir: string;
-	readonly store?: WorldStore;
+	readonly store: WorldStore;
 	/** 接收代次 ref（恢复/重挂载时由组合根提供新代次；默认 g1）。 */
 	readonly receiver?: Ref;
+}
+
+interface BarrierWaiter {
+	target: number;
+	resolve: () => void;
+	fail: (error: CallFailureError) => void;
 }
 
 export class WorldImpl implements WorldPort, WorldEvidencePort {
@@ -54,14 +63,26 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 	private scope: ClientFactScope | null = null;
 	private bindingTagCounter = 0;
 	private readonly diagnostics: string[] = [];
-	private flushQueued = false;
+
+	// ---- 单一有序提交队列与屏障 ----
+	/** 已接收条目计数（接收序）；提交完成按同一序推进 lastCommitted。 */
+	private lastAccepted = 0;
+	private lastCommitted = 0;
+	private barrierWaiters: BarrierWaiter[] = [];
+	private flushChain: Promise<void> = Promise.resolve();
 	private storeFailed = false;
-	private sampledOnce = false;
+
+	// ---- 生命周期 ----
 	private closed = false;
+	private closing = false;
+	private sampledOnce = false;
+	private noticeBuffer: ClientFactNotice[] = [];
+	private initialized = false;
+	private readonly readyPromise: Promise<void>;
 
 	constructor(deps: WorldDepsInternal) {
 		this.facts = deps.facts;
-		this.store = deps.store ?? new MemoryWorldStore();
+		this.store = deps.store;
 		this.ledger = new InvalidationLedger(`b${++this.bindingTagCounter}`);
 		this.reception = new ReceptionEngine(deps.receiver ?? RECEIVER_GENERATION, {
 			accepted: (entries) => this.onAccepted(entries),
@@ -73,16 +94,39 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			conservativeInvalidation: () => this.ledger.bump("current", null),
 			sourceEpochChanged: () => this.ledger.resetCurrentSource(),
 		});
-		// 恢复：从持久存储播种已持久事实/gap，使新接收代次的 durable 从真实持久状态起步；
-		// receivedThrough 不继承（由源重放重建），不把 RAM 接收冒充持久（world.md §13.3）。
-		const recovery = this.store.recoverySnapshot();
-		if (recovery) {
-			for (const stream of recovery) {
-				this.reception.restore(stream.stream, { factSeqs: stream.persistedFactSeqs, gapRefs: stream.persistedGapRefs });
-			}
-		}
-		// 先订阅后采样（public-api §4.1）：订阅原子登记，再以采样建立基线。
+		// 先订阅后采样（public-api §4.1）：初始化是异步的（恢复播种需读存储），
+		// 订阅先行保证不漏 Driver 材料；初始化期间到达的通知进缓冲，按到达序重放。
 		this.subscription = this.facts.subscribe((notice) => this.onNotice(notice));
+		this.readyPromise = this.initialize();
+	}
+
+	/** 初始化完成（恢复播种 + 当前基线建立）；createWorld 等待它之后才交付句柄。 */
+	get ready(): Promise<void> {
+		return this.readyPromise;
+	}
+
+	private async initialize(): Promise<void> {
+		// 恢复：从持久存储播种已持久事实/gap，使新接收代次的 durable 从真实持久状态起步；
+		// receivedThrough 不继承（由源重放重建），不把 RAM 接收冒充持久。
+		try {
+			const recovery = await this.store.recoverySnapshot();
+			if (recovery) {
+				for (const stream of recovery) {
+					this.reception.restore(stream.stream, {
+						factSeqs: stream.persistedFactSeqs,
+						gapRefs: stream.persistedGapRefs,
+					});
+				}
+			}
+		} catch (error) {
+			this.recordDiagnostic(`恢复播种失败：${String(error)}`);
+		}
+		// 重放初始化期间到达的通知（真实到达顺序在初始采样之前）。
+		const buffered = this.noticeBuffer;
+		this.noticeBuffer = [];
+		this.initialized = true;
+		for (const notice of buffered) this.dispatchNotice(notice);
+		// 以最新状态建立当前基线（先订阅后采样；callLog 断言保持 subscribe → sample）。
 		try {
 			const capture = this.facts.sample(() => null);
 			this.applyScope(capture.scope, true);
@@ -101,6 +145,14 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 
 	private onNotice(notice: ClientFactNotice): void {
 		if (this.closed) return;
+		if (!this.initialized) {
+			this.noticeBuffer.push(notice);
+			return;
+		}
+		this.dispatchNotice(notice);
+	}
+
+	private dispatchNotice(notice: ClientFactNotice): void {
 		if (notice.kind === "evidence" || notice.kind === "evidence_gap" || notice.kind === "evidence_end") {
 			this.reception.handleNotice(notice);
 			return;
@@ -108,45 +160,95 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		this.currentTracker.observeNotice(notice);
 	}
 
-	private onAccepted(_entries: AcceptedEntry[]): void {
+	private onAccepted(entries: AcceptedEntry[]): void {
+		this.lastAccepted += entries.length;
 		this.scheduleFlush();
-		// 新历史证据接收改变已接收范围 → 历史依赖失效（§9.1）。
+		// 新历史证据接收改变已接收范围 → 历史依赖失效。
 		this.ledger.bump("history", null);
 	}
 
 	private scheduleFlush(): void {
-		if (this.flushQueued || this.closed) return;
-		this.flushQueued = true;
-		queueMicrotask(() => {
-			this.flushQueued = false;
-			this.flushPending();
-		});
+		if (this.closed) return;
+		// 单一有序提交队列：每次接收排一个冲刷步；步内排空当前全部待落盘。
+		this.flushChain = this.flushChain.then(() => this.flushOnce()).catch(() => {});
 	}
 
 	/**
-	 * 批量提交待落盘条目；提交完成在同一同步步发布 durable ACK。allowAfterClose 供 close 的最终冲刷。
-	 * 返回提交是否成功（无待提交视为成功）；失败时 durable 暂停推进。
+	 * 冲刷一步：取当前全部待落盘条目发往存储 Worker；提交成功在同一续体
+	 * 发布 durable ACK（reception.committed）并解除已满足的屏障。
+	 * 失败时 durable 暂停推进、屏障以明确故障解除；待落盘保留，由后续接收/屏障重试。
 	 */
-	private flushPending(allowAfterClose = false): boolean {
-		if (this.closed && !allowAfterClose) return true;
+	private async flushOnce(): Promise<void> {
+		if (this.closed && !this.closing) return;
 		const pending = this.reception.takePending();
-		if (pending.length === 0) return true;
-		if (this.store.state !== "ready") return false; // D 不前进、不发 durable ACK（world.md §14）
-		const ok = this.store.appendEvidence(pending);
+		if (pending.length === 0) return;
+		if (this.store.availability.state !== "ready") {
+			this.failBarriers(
+				new CallFailureError({
+					code: "STORE_UNAVAILABLE",
+					message: this.store.availability.reason ?? "历史存储不可用",
+				}),
+			);
+			return;
+		}
+		let ok: boolean;
+		try {
+			ok = await this.store.append(pending);
+		} catch (error) {
+			ok = false;
+			this.recordDiagnostic(`存储提交异常：${String(error)}`);
+		}
 		if (!ok) {
 			this.storeFailed = true;
 			this.recordDiagnostic("存储提交失败：durable 水位暂停推进");
-			return false;
+			this.failBarriers(new CallFailureError({ code: "STORE_UNAVAILABLE", message: "存储提交失败" }));
+			return;
 		}
 		this.storeFailed = false;
+		this.lastCommitted += pending.length;
 		this.reception.committed(pending);
-		return true;
+		this.resolveBarriers();
+	}
+
+	/** 屏障捕获（同步）：固定本次查询需要的接收上界。 */
+	private captureBarrier(): number {
+		return this.lastAccepted;
+	}
+
+	/**
+	 * 等待屏障：上界内全部已接收证据完成提交，或得到明确故障。
+	 * 不追逐屏障捕获后新到达的事件；不阻塞 Driver 当前读取。
+	 */
+	private waitForBarrier(target: number): Promise<void> {
+		if (this.lastCommitted >= target) return Promise.resolve();
+		this.scheduleFlush(); // 确保待落盘队列被驱动（失败时屏障以故障解除，不悬挂）
+		return new Promise<void>((resolve, reject) => {
+			this.barrierWaiters.push({ target, resolve, fail: reject });
+		});
+	}
+
+	private resolveBarriers(): void {
+		if (this.barrierWaiters.length === 0) return;
+		const remaining: BarrierWaiter[] = [];
+		for (const waiter of this.barrierWaiters) {
+			if (this.lastCommitted >= waiter.target) waiter.resolve();
+			else remaining.push(waiter);
+		}
+		this.barrierWaiters = remaining;
+	}
+
+	private failBarriers(error: CallFailureError): void {
+		if (this.barrierWaiters.length === 0) return;
+		const waiters = this.barrierWaiters;
+		this.barrierWaiters = [];
+		for (const waiter of waiters) waiter.fail(error);
 	}
 
 	/** 证据引用存在性：已持久或在待落盘队列（retain/writeRecord 的存在性校验）。 */
-	private evidenceExists(ref: Ref): boolean {
+	private async evidenceExists(ref: Ref): Promise<boolean> {
 		if (this.reception.hasPendingRef(ref)) return true;
-		return this.store.state === "ready" && this.store.hasEvidence(ref) === true;
+		if (this.store.availability.state !== "ready") return false;
+		return this.store.hasEvidence(ref);
 	}
 
 	// ---- 绑定与分区 ----
@@ -165,7 +267,7 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		this.scope = scope;
 		if (initial) return;
 		// 绑定代次变化（重绑）或分区/维度变化：旧 cursor 无法对账 → 全部 reset。
-		// 历史分区数据不动；原始捕获归属不可变（world.md §4.2）。
+		// 历史分区数据不动；原始捕获归属不可变。
 		const reason = previous && previous.binding !== scope.binding ? "epoch_changed" : "stream_changed";
 		this.ledger.resetBinding(reason, `b${++this.bindingTagCounter}`);
 	}
@@ -215,7 +317,7 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 				this.recordDiagnostic(`采样求值失败：${String(error)}`);
 				throw new CallFailureError({ code: "SOURCE_UNAVAILABLE", message: `当前事实源采样失败：${String(error)}` });
 			}
-			// 采样结果可能携带变化的 scope/stamp：先纳入失效水位，再固定 cursor（§6.2）。
+			// 采样结果可能携带变化的 scope/stamp：先纳入失效水位，再固定 cursor。
 			this.applyScope(capture.scope, false);
 			this.currentTracker.observeStamp(capture.stamp);
 			this.sampledOnce = true;
@@ -234,39 +336,42 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			const cursor = this.ledger.cursorFor(stream);
 			return { ...fact, cursor } as Observation<T>;
 		}
-		// 纯历史：先冲刷接收尾（§6.6 推荐路径：分页前缀先持久化），再在同一同步步
-		// 固定存储版本并读取——无 await 间隙，不存在拼接不同版本的可能。
-		if (this.store.state !== "ready") {
+		// 纯历史：提交屏障模型。
+		if (this.store.availability.state !== "ready") {
 			throw new CallFailureError({
 				code: "STORE_UNAVAILABLE",
-				message: this.store.unavailableReason ?? "历史存储不可用",
+				message: this.store.availability.reason ?? "历史存储不可用",
 			});
 		}
-		this.flushPending();
+		const barrierTarget = this.captureBarrier();
+		await this.waitForBarrier(barrierTarget);
 		const filter = input as {
 			stream?: string;
 			schema?: string;
 			limit?: number;
 			page?: { version: number; afterStoreSeq: number };
 		};
-		const version = this.store.version;
-		if (filter.page && filter.page.version !== version) {
-			throw new CallFailureError({
-				code: "SNAPSHOT_EXPIRED",
-				message: `分页版本 ${filter.page.version} 已过期（当前 ${version}）`,
-			});
-		}
-		const page = this.store.listEvidence({
+		// cursor 先于读取 await 固定：读取期间的新提交只会让下次 next 立即交付，
+		// 本观测绝不会拿到覆盖了它未包含事实的 cursor（不漏失效）。
+		const stream = `mcw:qh:${query.ref}|${canonicalJson(input)}`;
+		this.ledger.ensureStream(stream, definition.deps);
+		const cursor = this.ledger.cursorFor(stream);
+		const evidenceFilter: EvidenceFilter = {
 			stream: filter.stream,
 			schema: filter.schema,
 			limit: filter.limit ?? 50,
 			afterStoreSeq: filter.page?.afterStoreSeq,
-		});
+		};
+		// 单条消息 = Worker 内原子读取边界；页携带其读取边界的提交版本。
+		const page = await this.store.listEvidence(evidenceFilter);
 		if (!page) {
 			throw new CallFailureError({ code: "STORE_UNAVAILABLE", message: "历史存储读取失败" });
 		}
-		if (page.version !== version) {
-			throw new CallFailureError({ code: "SNAPSHOT_EXPIRED", message: "存储版本在读取期间变化" });
+		if (filter.page && filter.page.version !== page.version) {
+			throw new CallFailureError({
+				code: "SNAPSHOT_EXPIRED",
+				message: `分页版本 ${filter.page.version} 已过期（当前 ${page.version}）`,
+			});
 		}
 		const items = page.items.map(({ entry }) =>
 			entry.kind === "fact"
@@ -293,9 +398,6 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		};
 		// 纯历史不要求 Driver 在线（不变量 A）：流身份不含分区——分区代次由 epoch 分量承载，
 		// 重绑/分区变化经 resetBinding 全量 reset，历史注册随之退役后重新 read→watch。
-		const stream = `mcw:qh:${query.ref}|${canonicalJson(input)}`;
-		this.ledger.ensureStream(stream, definition.deps);
-		const cursor = this.ledger.cursorFor(stream);
 		return {
 			value,
 			observedAt: new Date().toISOString(),
@@ -315,7 +417,7 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		let registration: WatchRegistration;
 		if (definition.deps.has("current")) {
 			this.requireScope();
-			// 同步段：先纳入当前 stamp（含保守失效），再登记等待者——登记后无漏（§9.3）。
+			// 同步段：先纳入当前 stamp（含保守失效），再登记等待者——登记后无漏。
 			const capture = this.facts.sample(() => null);
 			this.applyScope(capture.scope, false);
 			this.currentTracker.observeStamp(capture.stamp);
@@ -385,17 +487,17 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		});
 	}
 
-	// ---- 领域记录（S-W3 完整实现；S-W1 如实报 CALL_UNAVAILABLE） ----
+	// ---- 领域记录 ----
 
 	async readRecord(ref: Ref): Promise<DomainRecord> {
 		this.assertNotClosed();
-		if (this.store.state !== "ready") {
+		if (this.store.availability.state !== "ready") {
 			throw new CallFailureError({
 				code: "STORE_UNAVAILABLE",
-				message: this.store.unavailableReason ?? "历史存储不可用",
+				message: this.store.availability.reason ?? "历史存储不可用",
 			});
 		}
-		const row = this.store.readRecord(ref);
+		const row = await this.store.readRecord(ref);
 		if (!row) {
 			throw new CallFailureError({ code: "CALL_UNAVAILABLE", message: `领域记录不存在：${ref}` });
 		}
@@ -426,20 +528,24 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		if (!Array.isArray(change.evidence) || change.evidence.some((e) => typeof e !== "string")) {
 			throw new CallFailureError({ code: "INVALID_ARGUMENT", message: "evidence 必须是 Ref 数组" });
 		}
-		if (this.store.state !== "ready") {
+		if (this.store.availability.state !== "ready") {
 			throw new CallFailureError({
 				code: "STORE_UNAVAILABLE",
-				message: this.store.unavailableReason ?? "历史存储不可写",
+				message: this.store.availability.reason ?? "历史存储不可写",
 			});
 		}
 		// 证据存在性：领域记录的同类保留在修订事务内完成，不得引用未收到的证据（悬空引用）。
 		for (const ref of change.evidence) {
-			if (!this.evidenceExists(ref)) {
+			if (!(await this.evidenceExists(ref))) {
 				throw new CallFailureError({ code: "EVIDENCE_UNAVAILABLE", message: `记录引用的证据不存在：${ref}` });
 			}
 		}
-		// 分区一致性：不凭 worldId 文本相同放行旧代次写入（world.md §4.2）。
-		// 写入有当前分区依赖：先同步采样刷新绑定视图（§6.2 步骤 2）。
+		// 引用了证据的修订：先等已接收证据提交完成，记录不落在证据之前（不建立悬空持久引用）。
+		if (change.evidence.length > 0) {
+			await this.waitForBarrier(this.captureBarrier());
+		}
+		// 分区一致性：不凭 worldId 文本相同放行旧代次写入。
+		// 写入有当前分区依赖：先同步采样刷新绑定视图。
 		let capture: ReturnType<ClientFactsPort["sample"]>;
 		try {
 			capture = this.facts.sample(() => null);
@@ -458,7 +564,7 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			});
 		}
 		const ref = change.ref ?? `mcw:record:${cryptoRandomRef()}`;
-		const result = this.store.writeRecord({
+		const result = await this.store.writeRecord({
 			ref,
 			schema: change.schema,
 			world: change.world,
@@ -482,7 +588,7 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			}
 			throw new CallFailureError({ code: "STORE_UNAVAILABLE", message: "领域记录写入失败" });
 		}
-		// 领域修订持久提交 → 历史依赖失效（§9.1）。
+		// 领域修订持久提交 → 历史依赖失效。
 		this.ledger.bump("history", null);
 		return this.recordFromRow(result.record);
 	}
@@ -507,7 +613,7 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		};
 	}
 
-	// ---- 证据保留（WorldEvidencePort；S-W3 补删除门与闭包） ----
+	// ---- 证据保留（WorldEvidencePort） ----
 
 	async retain(owner: Ref, evidence: Ref[]): Promise<void> {
 		this.assertNotClosed();
@@ -517,19 +623,17 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		if (!Array.isArray(evidence) || evidence.some((e) => typeof e !== "string")) {
 			throw new CallFailureError({ code: "INVALID_ARGUMENT", message: "evidence 必须是 Ref 数组" });
 		}
-		if (this.store.state !== "ready") {
+		if (this.store.availability.state !== "ready") {
 			throw new CallFailureError({ code: "STORE_UNAVAILABLE", message: "无法保证证据与保留关系已提交" });
 		}
-		// 成功前保证证据已持久且存在：先冲刷待落盘队列；冲刷失败不虚假成功（world.md §11）。
-		if (!this.flushPending()) {
-			throw new CallFailureError({ code: "STORE_UNAVAILABLE", message: "证据持久提交失败，保留关系未建立" });
-		}
+		// 成功前保证证据已持久且存在：等屏障把待落盘冲完；失败不虚假成功。
+		await this.waitForBarrier(this.captureBarrier());
 		for (const ref of evidence) {
-			if (!this.evidenceExists(ref)) {
+			if (!(await this.evidenceExists(ref))) {
 				throw new CallFailureError({ code: "EVIDENCE_UNAVAILABLE", message: `被保留的证据不存在：${ref}` });
 			}
 		}
-		const ok = this.store.retain(owner, evidence);
+		const ok = await this.store.retain(owner, evidence);
 		if (!ok) {
 			throw new CallFailureError({ code: "EVIDENCE_UNAVAILABLE", message: "保留关系提交失败" });
 		}
@@ -537,10 +641,11 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 
 	async release(owner: Ref): Promise<void> {
 		this.assertNotClosed();
-		if (this.store.state !== "ready") {
+		if (this.store.availability.state !== "ready") {
 			throw new CallFailureError({ code: "STORE_UNAVAILABLE", message: "历史存储不可用" });
 		}
-		this.store.release(owner);
+		// release 语义即"此后无保留"：对不存在的 owner 幂等成功。
+		await this.store.release(owner);
 	}
 
 	// ---- 状态与生命周期 ----
@@ -550,9 +655,10 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		const current: WorldAvailabilityValue["current"] = this.sampledOnce
 			? { state: "ready" }
 			: { state: "starting", reason: "尚未取得 Driver 当前采样" };
+		const availability = this.store.availability;
 		const history: WorldAvailabilityValue["history"] =
-			this.store.state !== "ready" || this.storeFailed
-				? { state: "unavailable", reason: this.store.unavailableReason ?? "存储提交失败" }
+			availability.state !== "ready" || this.storeFailed
+				? { state: "unavailable", reason: availability.reason ?? "存储提交失败" }
 				: { state: "ready", reason: this.store.description };
 		const binding: WorldAvailabilityValue["binding"] = scope
 			? { state: "bound", binding: scope.binding, world: scope.world, worldRevision: scope.worldRevision }
@@ -563,13 +669,16 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 	async close(): Promise<void> {
 		if (this.closed) return;
 		this.closed = true;
+		this.closing = true;
 		this.ledger.shutdown(() => new CallFailureError({ code: "SOURCE_UNAVAILABLE", message: "World 已关闭，等待终止" }));
 		this.reception.close();
-		// 正常关闭：冲刷可得前缀并返回 durable ACK 后关闭资源（world.md §13.2）。
-		this.flushPending(true);
+		// 最终冲刷：串入提交队列，提交可得前缀并返回 durable ACK 后关闭资源。
+		this.flushChain = this.flushChain.then(() => this.flushOnce()).catch(() => {});
+		await this.flushChain;
+		this.failBarriers(new CallFailureError({ code: "SOURCE_UNAVAILABLE", message: "World 已关闭" }));
 		this.subscription?.close();
 		this.subscription = null;
-		this.store.close();
+		await this.store.close();
 	}
 
 	private assertNotClosed(): void {
@@ -583,7 +692,7 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		return this.diagnostics;
 	}
 
-	/** WorldEvidencePort 视图：仅注入 Runtime、Assets 等持久记录所有者。 */
+	/** WorldEvidencePort 视图：仅注入 Runtime、Assets 等持久记录所有者，不给 Program。 */
 	get evidence(): WorldEvidencePort {
 		return { retain: (owner, evidence) => this.retain(owner, evidence), release: (owner) => this.release(owner) };
 	}

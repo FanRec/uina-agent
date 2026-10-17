@@ -40,12 +40,12 @@ async function makeHarness(store?: MemoryWorldStore | UnavailableWorldStore): Pr
 	bot.respawn();
 	await vi.waitFor(() => expect(driver.connectionState()).toBe("ready"), { timeout: 2_000 });
 	const dataDir = mkdtempSync(join(tmpdir(), "mc-integration-"));
-	const world = createWorld({ facts: driver.facts, dataDir }, store ? { store } : {});
+	const world = await createWorld({ facts: driver.facts, dataDir }, store ? { store } : {});
 	return { driver, bot, world, dataDir };
 }
 
-function teardown(h: Harness): void {
-	h.world.close();
+async function teardown(h: Harness): Promise<void> {
+	await h.world.close();
 	h.driver.close();
 	rmSync(h.dataDir, { recursive: true, force: true });
 }
@@ -75,7 +75,7 @@ describe("minecraft driver → world integration", () => {
 			// 世界绑定来自 Driver 注入，World 不从地址推断。
 			expect(value.place.world).toBe(WORLD_BINDING.world);
 		} finally {
-			teardown(h);
+			await teardown(h);
 		}
 	});
 
@@ -101,7 +101,7 @@ describe("minecraft driver → world integration", () => {
 			const capturedKinds = items.map((i) => i.fact?.value?.kind);
 			expect(capturedKinds).toContain("entityGone");
 		} finally {
-			teardown(h);
+			await teardown(h);
 		}
 	});
 
@@ -130,7 +130,7 @@ describe("minecraft driver → world integration", () => {
 				expect(factsSource.materialCount(stream)).toBe(0);
 			}
 		} finally {
-			teardown(h);
+			await teardown(h);
 		}
 	});
 
@@ -152,7 +152,7 @@ describe("minecraft driver → world integration", () => {
 			expect(noChange).toBe("silent");
 			await watch.close();
 		} finally {
-			teardown(h);
+			await teardown(h);
 		}
 	});
 
@@ -170,7 +170,7 @@ describe("minecraft driver → world integration", () => {
 			expect(after.value).toBeNull();
 			expect(after.cursor.epoch).not.toBe(obs.cursor.epoch);
 		} finally {
-			teardown(h);
+			await teardown(h);
 		}
 	});
 
@@ -184,7 +184,7 @@ describe("minecraft driver → world integration", () => {
 		bot.respawn();
 		await vi.waitFor(() => expect(driver.connectionState()).toBe("ready"), { timeout: 2_000 });
 		const dataDir = mkdtempSync(join(tmpdir(), "mc-integ-fail-"));
-		const world = createWorld(
+		const world = await createWorld(
 			{ facts: driver.facts, dataDir },
 			{ store: new UnavailableWorldStore("模拟 SQLite 打开失败") },
 		);
@@ -198,7 +198,7 @@ describe("minecraft driver → world integration", () => {
 			expect(status.history.state).toBe("unavailable");
 			expect(status.current.state).toBe("ready");
 		} finally {
-			world.close();
+			await world.close();
 			driver.close();
 			rmSync(dataDir, { recursive: true, force: true });
 		}
@@ -251,7 +251,98 @@ describe("minecraft driver → world integration", () => {
 				}),
 			).rejects.toMatchObject({ code: "RECORD_CHANGED" });
 		} finally {
-			teardown(h);
+			await teardown(h);
+		}
+	});
+
+	it("存储 Worker 脱离主事件循环；崩溃后历史显式不可用、当前读不受影响", async () => {
+		const h = await makeHarness();
+		try {
+			const world = h.world as unknown as { store: { workerThreadId: number } };
+			const threadId = world.store.workerThreadId;
+			expect(threadId).toBeGreaterThan(0); // 专用线程，不是主线程（主线程 threadId=0）
+
+			h.bot.addEntity({
+				networkId: 9,
+				uuid: "crash-1",
+				type: "cow",
+				position: { x: 1, y: 64, z: 1 },
+				velocity: { x: 0, y: 0, z: 0 },
+			});
+			h.bot.removeEntity(9);
+
+			// 模拟 Worker 崩溃：硬杀线程。在途提交与后续历史读显式失败，不静默。
+			const impl = h.world as unknown as { store: { worker: { terminate(): Promise<number> } } };
+			void (await impl.store.worker.terminate());
+
+			await expect(h.world.read({ ref: "evidence.list@1", input: {} })).rejects.toMatchObject({
+				code: "STORE_UNAVAILABLE",
+			});
+			const status = await h.world.status();
+			expect(status.history.state).toBe("unavailable");
+			// 当前事实不经过存储：崩溃后照常可读（不变量 A）。
+			h.bot.setHealth(11);
+			await flushMicrotasks();
+			const current = await h.world.read({ ref: "self@1", input: {} });
+			expect((current.value as { health: number }).health).toBe(11);
+		} finally {
+			await teardown(h);
+		}
+	});
+
+	it("提交屏障：查询开始前已接收的证据不因未落盘被静默遗漏", async () => {
+		const h = await makeHarness();
+		try {
+			// 接收证据后立即读历史：不先手工等冲刷——屏障等待该上界提交完成再读。
+			h.bot.addEntity({
+				networkId: 21,
+				uuid: "barrier-1",
+				type: "pig",
+				position: { x: 2, y: 64, z: 2 },
+				velocity: { x: 0, y: 0, z: 0 },
+			});
+			h.bot.removeEntity(21);
+			const history = await h.world.read({
+				ref: "evidence.list@1",
+				input: { schema: "client.entities@1", limit: 50 },
+			});
+			const items = (history.value as { items: { kind: string }[] }).items;
+			expect(items.length).toBeGreaterThan(0);
+			// durable ACK 已随提交发布（同一续体），Driver 材料可回收。
+			const factsSource = h.driver.facts as unknown as { materialCount(stream: string): number };
+			for (const stream of [
+				...new Set((history.value as { items: { stream: string }[] }).items.map((i) => i.stream)),
+			]) {
+				expect(factsSource.materialCount(stream)).toBe(0);
+			}
+		} finally {
+			await teardown(h);
+		}
+	});
+
+	it("历史 watch 无漏：read 之后新提交的证据由 next 交付", async () => {
+		const h = await makeHarness();
+		try {
+			const first = await h.world.read({ ref: "evidence.list@1", input: {} });
+			const watch = await h.world.watch(
+				{ ref: "evidence.list@1", input: {} },
+				first.cursor,
+				new AbortController().signal,
+			);
+			const pending = watch.next(first.cursor, new AbortController().signal);
+			h.bot.addEntity({
+				networkId: 33,
+				uuid: "hist-watch-1",
+				type: "sheep",
+				position: { x: 3, y: 64, z: 3 },
+				velocity: { x: 0, y: 0, z: 0 },
+			});
+			h.bot.removeEntity(33);
+			const change = await pending;
+			expect(change.kind).toBe("changed");
+			await watch.close();
+		} finally {
+			await teardown(h);
 		}
 	});
 });
