@@ -29,7 +29,10 @@ export interface Harness {
 	bot: FakeClientBot;
 }
 
-export async function makeDriver(bot: FakeClientBot, options: DriverOptions = {}): Promise<DriverHandle> {
+export async function makeDriver(
+	bot: FakeClientBot,
+	options: Omit<DriverOptions, "botFactory"> = {},
+): Promise<DriverHandle> {
 	const driver = createDriver(
 		{ host: "localhost", port: 25565, username: "tester", authMode: "offline" },
 		{

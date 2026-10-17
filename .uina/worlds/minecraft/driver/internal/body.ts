@@ -25,12 +25,13 @@ import type {
 import { CallFailureError } from "../../contracts/errors.js";
 import type { EffectReceipt, Fact, JsonValue, Ref, Vec3 } from "../../contracts/values.js";
 import type { WorldQuery } from "../../contracts/world.js";
-import type { BotBlockPos, BotItemSelector, BotWindowData, ClientBot } from "./bot-shape.js";
+import { BotFailure, type BotBlockPos, type BotItemSelector, type BotWindowData, type ClientBot } from "./bot-shape.js";
 import type { ClientHost, PhysicsStep } from "./client-host.js";
 import { KeyHold } from "./controls.js";
 import {
 	controlConflict,
 	controlInvalid,
+	fromBotFailure,
 	invalidArgument,
 	referenceStale,
 	sourceUnavailable,
@@ -127,7 +128,10 @@ function validateCursor(cursor: Vec3, face: Vec3 | undefined): void {
 }
 
 function matchItemSelector(
-	item: { name: string; count: number; components: JsonValue | null } | null | undefined,
+	item:
+		| { name: string; count: number; components: JsonValue | null; remainingDurability: number | null }
+		| null
+		| undefined,
 	selector: BotItemSelector,
 ): boolean {
 	if (!item) return false;
@@ -135,9 +139,10 @@ function matchItemSelector(
 	if (!names.includes(item.name)) return false;
 	if (selector.components !== undefined && JSON.stringify(selector.components) !== JSON.stringify(item.components))
 		return false;
+	// 耐久只认接缝的 remainingDurability（上游 maxDurability - durabilityUsed）；
+	// 不再从 components 里猜字段名——1.20.5+ 的组件是 [{type,data}]，猜不中。
 	if (selector.minDurability !== undefined) {
-		const durability = (item.components as { durability?: number } | null)?.durability;
-		if (typeof durability !== "number" || durability < selector.minDurability) return false;
+		if (item.remainingDurability === null || item.remainingDurability < selector.minDurability) return false;
 	}
 	return true;
 }
@@ -455,6 +460,7 @@ export class BodySessionImpl implements BodySession {
 
 	async dig(target: BlockTarget, options?: { aim?: "target" | "preserve" }): Promise<EffectReceipt> {
 		const bot = this.#bot;
+		const facts = this.#deps.host.facts;
 		const pos = validateBlockTarget(target);
 		const aim = options?.aim ?? "target";
 		this.#requireUsable();
@@ -496,6 +502,9 @@ export class BodySessionImpl implements BodySession {
 			}
 			// forceLook=true 仅 target 模式；preserve 走上游 ignore-look 路径（digging.js dig(block, 'ignore')），
 			// 不得暗中覆盖视角。
+			// 预测登记必须先于派发：上游 dig 完成会立刻同步 emit blockUpdate，
+			// 若等 await 回来再登记，第一条通知早被当成 server 提交掉了（§11.6）。
+			facts.markBlockPredicted(pos);
 			await bot.dig(pos, { forceLook: aim === "target" });
 			this.#gate.checkWrite(op);
 			// 本地预测捕获：上游 dig 完成会把目标格预测为空气（_updateBlockState(position, 0)）；
@@ -512,21 +521,22 @@ export class BodySessionImpl implements BodySession {
 				} as JsonValue,
 				"prediction",
 			);
-			// 来源标注：目标格在服务端 blockUpdate 到达前按 prediction 读取（§11.6）。
-			this.#deps.host.facts.markBlockPredicted(pos);
-			this.#deps.host.facts.commitBlockChanged();
+			// 预测标记已在本操作派发前登记；这里只推进变化通知。
+			facts.commitBlockChanged();
 			this.#gate.closeOperation(op);
 			// 回执携带已取得的证据（§13）：预测证据 ref 随低层完成回执交付结算方。
 			return this.#receipt(op, "sent", "met", [digEvidence.ref]);
 		} catch (err) {
-			// 清理只处理本操作的资源：取消上游挖掘状态。
+			// 清理只处理本操作的资源：取消上游挖掘状态，并撤掉本次登记的预测标记。
 			try {
 				bot.stopDigging();
 			} catch {
 				// 上游无活动挖掘时 stopDigging 是 no-op。
 			}
+			facts.unmarkBlockPredicted(pos);
 			this.#gate.closeOperation(op);
 			if (err instanceof CallFailureError) throw err;
+			if (err instanceof BotFailure) throw fromBotFailure(err, [op.ref]);
 			throw new CallFailureError({
 				code: "CALL_UNAVAILABLE",
 				message: `dig 派发失败：${err instanceof Error ? err.message : String(err)}`,
@@ -659,6 +669,8 @@ export class BodySessionImpl implements BodySession {
 		} catch (err) {
 			this.#gate.closeOperation(op);
 			if (err instanceof CallFailureError) throw err;
+			// 适配层的失败分类（unavailable/stale/invalid）优先于统一兜底。
+			if (err instanceof BotFailure) throw fromBotFailure(err, [op.ref]);
 			throw new CallFailureError({
 				code: "CALL_UNAVAILABLE",
 				message: `equip 派发失败：${err instanceof Error ? err.message : String(err)}`,

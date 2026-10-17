@@ -16,6 +16,25 @@
 import type { Key } from "../../contracts/body.js";
 import type { JsonValue, Ref } from "../../contracts/values.js";
 
+/**
+ * 适配层失败的分类：Driver 据此选择合同错误码，不靠猜上游 Error 文本。
+ * - unavailable：客户端当前拿不到所需状态（未加载/未跟踪/未连接）。
+ * - stale：引用已过期（窗口更换、实体已消失）。
+ * - invalid：输入本身不合法（不支持的 selector/参数）。
+ * 其它（含上游未分类异常）按派发失败处理。
+ */
+export type BotFailureKind = "unavailable" | "stale" | "invalid";
+
+export class BotFailure extends Error {
+	readonly kind: BotFailureKind;
+
+	constructor(kind: BotFailureKind, message: string) {
+		super(message);
+		this.name = "BotFailure";
+		this.kind = kind;
+	}
+}
+
 export interface BotVec3 {
 	x: number;
 	y: number;
@@ -31,6 +50,12 @@ export interface BotItemStack {
 	name: string;
 	count: number;
 	components: JsonValue | null;
+	/**
+	 * 剩余耐久（未损耗的可承受次数）；无耐久概念的物品为 null。
+	 * 这是接缝上的唯耐久语义：Driver 的 ItemSelector.minDurability 与
+	 * StackExpectation.minDurability 都按它比较，不从 components 里猜编码。
+	 */
+	remainingDurability: number | null;
 }
 
 export interface BotEntity {
@@ -90,7 +115,12 @@ export interface BotEvents {
 	health: [];
 	entitySpawn: [entity: BotEntity];
 	entityGone: [entity: BotEntity];
-	blockUpdate: [pos: BotBlockPos, block: BotBlockInfo | null];
+	/**
+	 * 方块变化。source 标明这次变化是服务端入包（"server"）还是客户端本地预测
+	 * （"prediction"，如挖掘完成把目标格本地写空气）。Driver 据此决定是否清除
+	 * 该格的预测标记：只有服务端入包才算确认。
+	 */
+	blockUpdate: [pos: BotBlockPos, block: BotBlockInfo | null, source: "server" | "prediction"];
 	windowOpen: [window: BotWindowData];
 	windowClose: [windowId: number];
 	setSlot: [windowId: number, slot: number, item: BotItemStack | null, cursor: BotItemStack | null];
@@ -134,7 +164,6 @@ export interface ClientBot {
 	equip(selector: BotItemSelector, hand: "main" | "off"): Promise<void>;
 	clickWindow(windowId: number, slot: number, button: number, mode: number): Promise<void>;
 	closeWindow(windowId: number): void;
-	resyncWindow(windowId: number): Promise<void>;
 
 	// ---- 生命周期 ----
 	quit(): void;

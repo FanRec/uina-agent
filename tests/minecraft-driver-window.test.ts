@@ -16,7 +16,7 @@ describe("minecraft driver window (S-D3)", () => {
 		layFloor(bot, 0, 4);
 		bot.setBlock({ x: 0, y: 64, z: 0 }, { name: "minecraft:chest", properties: {} });
 		bot.programWindow("minecraft:chest", 27, [
-			{ name: "minecraft:iron_ingot", count: 5, components: null },
+			{ name: "minecraft:iron_ingot", count: 5, components: null, remainingDurability: null },
 			...new Array(26).fill(null),
 		]);
 		const driver = await makeDriver(bot);
@@ -29,7 +29,7 @@ describe("minecraft driver window (S-D3)", () => {
 		const rev1 = snap1.value.revision;
 
 		// 服务端槽位更新 → 完整快照比较推进 revision。
-		bot.setWindowSlot(3, { name: "minecraft:bread", count: 1, components: null });
+		bot.setWindowSlot(3, { name: "minecraft:bread", count: 1, components: null, remainingDurability: null });
 		await flushAsync();
 		const snap2 = await win.snapshot();
 		expect(snap2.value.revision).toBeGreaterThan(rev1);
@@ -52,7 +52,7 @@ describe("minecraft driver window (S-D3)", () => {
 		layFloor(bot, 0, 4);
 		bot.setBlock({ x: 0, y: 64, z: 0 }, { name: "minecraft:chest", properties: {} });
 		bot.programWindow("minecraft:chest", 27, [
-			{ name: "minecraft:iron_ingot", count: 5, components: null },
+			{ name: "minecraft:iron_ingot", count: 5, components: null, remainingDurability: null },
 			...new Array(26).fill(null),
 		]);
 		const driver = await makeDriver(bot);
@@ -112,7 +112,7 @@ describe("minecraft driver window (S-D3)", () => {
 		layFloor(bot, 0, 4);
 		bot.setBlock({ x: 0, y: 64, z: 0 }, { name: "minecraft:chest", properties: {} });
 		bot.programWindow("minecraft:chest", 27, [
-			{ name: "minecraft:iron_ingot", count: 5, components: null },
+			{ name: "minecraft:iron_ingot", count: 5, components: null, remainingDurability: null },
 			...new Array(26).fill(null),
 		]);
 		const driver = await makeDriver(bot);
@@ -143,7 +143,7 @@ describe("minecraft driver window (S-D3)", () => {
 		expect(viewWin.value!.revision).toBe(snap2.value.revision);
 
 		// 服务端真实更新到达：清除预测标记；version 仍由会话权威推进，两处读数一致。
-		bot.setWindowSlot(5, { name: "minecraft:bread", count: 1, components: null });
+		bot.setWindowSlot(5, { name: "minecraft:bread", count: 1, components: null, remainingDurability: null });
 		await flushAsync();
 		const snap3 = await win.snapshot();
 		const viewWin2 = driver.facts.sample((v) => v.window()).value;
@@ -163,7 +163,7 @@ describe("minecraft driver window (S-D3)", () => {
 		const session = await driver.player.acquire(TEST_OWNER, signal());
 		const win = await session.openContainer({ place, block: { x: 0, y: 64, z: 0 } });
 
-		bot.currentWindow()!.cursor = { name: "minecraft:dirt", count: 1, components: null };
+		bot.currentWindow()!.cursor = { name: "minecraft:dirt", count: 1, components: null, remainingDurability: null };
 		bot.setWindowSlot(3, null); // 触发窗口刷新
 		await flushAsync();
 
@@ -191,7 +191,7 @@ describe("minecraft driver window (S-D3)", () => {
 		});
 		const session = await driver.player.acquire(TEST_OWNER, signal());
 		const win = await session.openContainer({ place, block: { x: 0, y: 64, z: 0 } });
-		bot.currentWindow()!.cursor = { name: "minecraft:dirt", count: 1, components: null };
+		bot.currentWindow()!.cursor = { name: "minecraft:dirt", count: 1, components: null, remainingDurability: null };
 
 		await session.close(); // 作用域退出：强制退役。
 		expect(bot.packets.some((pk) => pk.name === "close_window")).toBe(true);

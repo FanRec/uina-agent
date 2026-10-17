@@ -238,7 +238,7 @@ describe("minecraft driver feedback (S-D3)", () => {
 	it("使用归属经会话唯一权威：反馈流持有 use 时 useItem 冲突，关流释放后可用", async () => {
 		const bot = new FakeClientBot();
 		layFloor(bot, 0, 12);
-		bot.setSlot(36, { name: "minecraft:stick", count: 1, components: null }); // 主手物品
+		bot.setSlot(36, { name: "minecraft:stick", count: 1, components: null, remainingDurability: null }); // 主手物品
 		const driver = await makeSensorDriver(bot);
 		const session = await driver.player.acquire(TEST_OWNER, signal());
 		const stream = await session.feedback({});

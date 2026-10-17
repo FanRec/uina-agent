@@ -350,9 +350,18 @@ export class ClientFactsSource implements ClientFactsPort {
 		this.#predictedBlocks.add(`${pos.x},${pos.y},${pos.z}`);
 	}
 
+	/** 派发失败时撤销预测登记：失败的操作不应在来源标注里留下假预测。 */
+	unmarkBlockPredicted(pos: BotBlockPos): void {
+		this.#predictedBlocks.delete(`${pos.x},${pos.y},${pos.z}`);
+	}
+
 	/** 预测登记：上游 acceptClick 在发包前已改写窗口对象（inventory.js 预测先于发包）。 */
 	markWindowPredicted(windowId: number): void {
 		this.#predictedWindows.add(windowId);
+	}
+
+	unmarkWindowPredicted(windowId: number): void {
+		this.#predictedWindows.delete(windowId);
 	}
 
 	isBlockPredicted(pos: BotBlockPos): boolean {
@@ -392,9 +401,12 @@ export class ClientFactsSource implements ClientFactsPort {
 		}
 	}
 
-	/** pos 提供时视为服务端真实入包到达：清除该格预测标记（§11.6 按写入点标注来源）。 */
-	commitBlockChanged(pos?: BotBlockPos): void {
-		if (pos) this.#predictedBlocks.delete(`${pos.x},${pos.y},${pos.z}`);
+	/**
+	 * pos 提供时按来源处理：只有服务端真实入包才清除预测标记；
+	 * prediction 源的 blockUpdate 是本地写入本身，清除它会让预测立刻冒充 server（§11.6）。
+	 */
+	commitBlockChanged(pos?: BotBlockPos, source: "server" | "prediction" = "server"): void {
+		if (pos && source === "server") this.#predictedBlocks.delete(`${pos.x},${pos.y},${pos.z}`);
 		this.markChanged([FACT_KIND.block]);
 	}
 

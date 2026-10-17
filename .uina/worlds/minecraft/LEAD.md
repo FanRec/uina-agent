@@ -298,3 +298,18 @@ M5：真实 Mineflayer 依赖接入（lead 批准依赖后）、真实服务器�
 4. **测试盲区**：readObject 的多块（>64KiB）流式哈希与块边界 range 此前无覆盖；新增 70KiB 跨块逐字节一致用例。
 
 **审查过但否决（登记理由）**：objectId 路径穿越防御——manifest 篡改已被"内容摘要重算先于路径使用"拦截（digest gate），而能写 objects/ 的攻击者同样能写 catalog.sqlite，同盘同权下额外路径校验防不了真实威胁模型，不加（no over-defense）；appliesTo.assets 不查存在性——经验可引用尚未导入的资产，弱引用语义留给领域模块；搜索 cursor 空串宽容为 0——无害。
+
+### Lead — 真实 Mineflayer 接入审查（2026-10-18，commit 见 git log）
+
+对 fb94761「接入真实 Mineflayer 客户端」及两个跟进修复（c42a94f 区块角归一、0940813 维度命名空间）做常规代码审查与架构审查。c42a94f/0940813 经上游源码核实正确；fb94761 有三处行为错误，均以真实 mineflayer 实例探针实测确认后修复（不是按源码推断）。
+
+1. **P0 预测被标成 server**：根因是 dig 的本地空气写入（上游 digging.js:158 `_updateBlockState`，唯一本地写入入口）发生在 `await bot.dig()` **内部**并立即 emit blockUpdate，而原实现在 await 之后才 markBlockPredicted——ClientHost 先收到事件、把预测当 server 事实清掉标记（探针：`server:"minecraft:air" | prediction:"minecraft:air"`）。修法不猜时序：`BotEvents.blockUpdate` 增加第三参 `source: "server" | "prediction"`，适配层用 #localBlockWriteDepth 包裹 `bot._updateBlockState` 在窗口内打 prediction 标；`commitBlockChanged(pos, source)` 仅 server 源清预测标记；body.dig 改为**派发前** markBlockPredicted、失败时清标记。fake 的 dig 本地写同样发 prediction 源——此前 fake 用 `setTimeout(0)` 掩盖了真实时序。
+2. **P0 耐久语义断层**：预检 matchItemSelector 与窗口期望都读 `components.durability`，而 1.20.5+ 的 item.components 是 `[{type,data}]` 数组、耐久在 `damage` 组件（durabilityUsed getter 读它）；适配层另用 `maxDurability - durabilityUsed`，两层不一致，真实形状下任何 minDurability 永远 TARGET_NOT_MET。修法：接缝 `BotItemStack` 增加唯一耐久语义 `remainingDurability: number | null`，由适配层计算；body/window 只比它，不再解析上游组件形状。
+3. **P0 生命周期泄漏与幽灵 ready**：attach() 的 spawn/end/error 监听与 attachTimeoutMs 定时器未登记清理——close 早于 spawn 时定时器吊住进程（探针 1.5s），迟到的 spawn 还能把 disconnected 推回 ready，随后 `say()` 经 `host.bot!` 读 null 抛 TypeError。修法：attach 用 stops 数组 + settle 在全部路径撤销监听与定时器，并把 settle 登记进 #disposers；#onSpawn 在 #bot 为 null 时早退；driver/index.ts 的 say/#grant 判空后抛 SOURCE_UNAVAILABLE；markFaulted 在已 disconnected 时不再改写状态。
+4. **结构（§3.1 对齐）**：createDriver 不再静态 import mineflayer，`DriverOptions.botFactory` 改为必填、由组合根注入；原始 bot 只在 driver/mineflayer/ 内被持有。
+5. **失败分类**：接缝新增 `BotFailure extends Error`（kind: unavailable/stale/invalid），适配层不再抛裸 Error，body 的 equip 路径按 kind 映射；删除未接线的 `resyncWindow`（window.ts 无消费者）。
+6. **门禁**：mineflayer 从 `^4.39.0` 锁成 `4.39.0`（头注释按该版本源码核实并写行号）；check-boundaries.mjs 新增第 9 条规则「mineflayer 与 vec3 只允许出现在 driver/mineflayer」，含违例与白名单两条自测样本；修 biome 格式与 import 排序。
+
+**验证**：`pnpm typecheck` ✓（biome 491 files + 9 条边界规则 + tsc）；minecraft 相关 7 文件 76 例 ✓（mineflayer 10 / facts 12 / body 18 / window 8 / feedback 11 / integration 10 / review 7）。新增真实建连用例直接调用 createMineflayerBot 连 127.0.0.1:1 并如实断言 faulted——证明工厂接线可跑，不证明真实服务器时序。
+
+**边界更新**：本文件上段「未接线：真实 Mineflayer 工厂（M5）」至此不再成立；仍未证明真实服务器协议时序、真实物理精度与耐久组件的服务端行为。

@@ -188,6 +188,25 @@ describe("minecraft driver body (S-D2)", () => {
 		await driver.close();
 	});
 
+	it("equip 的 minDurability 按接缝剩余耐久筛选，不从 components 猜字段", async () => {
+		const bot = new FakeClientBot();
+		layFloor(bot, 0, 8);
+		// 真实形状：1.20.5+ 的组件是 [{type,data}]，耐久只有一个接缝语义 remainingDurability。
+		bot.setSlot(36, { name: "minecraft:iron_pickaxe", count: 1, components: null, remainingDurability: 240 });
+		const driver = await makeDriver(bot);
+		const session = await driver.player.acquire(TEST_OWNER, signal());
+
+		await expect(session.equip({ name: "minecraft:iron_pickaxe", minDurability: 100 }, "main")).resolves.toMatchObject({
+			dispatch: "sent",
+		});
+		await expect(session.equip({ name: "minecraft:iron_pickaxe", minDurability: 250 }, "main")).rejects.toMatchObject({
+			code: "TARGET_NOT_MET",
+		});
+
+		await session.close();
+		await driver.close();
+	});
+
 	it("dig await 瞄准期间撤销：恢复后写入被拒，不产生 block_dig 派发", async () => {
 		let releaseLook!: () => void;
 		const gate = new Promise<void>((r) => {
@@ -280,7 +299,7 @@ describe("minecraft driver body (S-D2)", () => {
 	it("useItem 激活归 Body 使用会话；endUse 幂等；close 强制释放并留证据", async () => {
 		const bot = new FakeClientBot();
 		layFloor(bot, 0, 4);
-		bot.setSlot(36, { name: "minecraft:bow", count: 1, components: null });
+		bot.setSlot(36, { name: "minecraft:bow", count: 1, components: null, remainingDurability: null });
 		const driver = await makeDriver(bot);
 		const session = await driver.player.acquire(TEST_OWNER, signal());
 
@@ -315,7 +334,7 @@ describe("minecraft driver body (S-D2)", () => {
 	it("close 时强制释放蓄力使用并记录后果", async () => {
 		const bot = new FakeClientBot();
 		layFloor(bot, 0, 4);
-		bot.setSlot(36, { name: "minecraft:bow", count: 1, components: null });
+		bot.setSlot(36, { name: "minecraft:bow", count: 1, components: null, remainingDurability: null });
 		const driver = await makeDriver(bot);
 		const evidences: unknown[] = [];
 		driver.facts.subscribe((n) => {
@@ -336,7 +355,7 @@ describe("minecraft driver body (S-D2)", () => {
 	it("equip 找到物品并派发；未找到 TARGET_NOT_MET 不派发", async () => {
 		const bot = new FakeClientBot();
 		layFloor(bot, 0, 4);
-		bot.setSlot(12, { name: "minecraft:iron_pickaxe", count: 1, components: null });
+		bot.setSlot(12, { name: "minecraft:iron_pickaxe", count: 1, components: null, remainingDurability: null });
 		const driver = await makeDriver(bot);
 		const session = await driver.player.acquire(TEST_OWNER, signal());
 

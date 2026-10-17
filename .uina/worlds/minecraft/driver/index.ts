@@ -5,8 +5,8 @@
  * 连续/离散控制、高频反馈、当前事实采样（ClientFactsPort）、窗口会话。
  *
  * 边界：不依赖具体玩法能力、不依赖 Uina 接入层；只能 import ../contracts/ 与自己的子模块。
- * 真实客户端由 driver/mineflayer/ 适配成 ClientBot 接缝，是 createDriver 的默认工厂；
- * 测试或自定义客户端经 options.botFactory 覆盖。
+ * 这里不 import 任何具体客户端：原始 bot 只在 driver/mineflayer/ 的原生适配内被持有，
+ * 具体适配由组合根经 botFactory 注入（modules/driver.md §3.1）。
  */
 
 import type { BodySession, ControlOwner, PlayerPort } from "../contracts/body.js";
@@ -19,7 +19,6 @@ import { ClientHost } from "./internal/client-host.js";
 import { defaultClock, type MonotonicClock } from "./internal/facts.js";
 import { controlInvalid, sourceUnavailable } from "./internal/failure.js";
 import { type HostCallVerifier, WriteGate } from "./internal/gate.js";
-import { createMineflayerBot } from "./mineflayer/index.js";
 
 export interface DriverConfig {
 	/** 服务器地址（连接位置，不是世界身份）。 */
@@ -34,10 +33,10 @@ export interface DriverConfig {
 
 export interface DriverOptions {
 	/**
-	 * 客户端工厂覆盖：测试注入 FakeClientBot，或换用自定义客户端。
-	 * 省略时使用真实 Mineflayer 适配（driver/mineflayer）。
+	 * 客户端工厂：组合根必须显式注入（真实适配 driver/mineflayer 的 createMineflayerBot，
+	 * 或测试的 FakeClientBot）。Driver 不内建默认实现，避免每个消费者都背 mineflayer 依赖链。
 	 */
-	botFactory?: (config: DriverConfig) => ClientBot;
+	botFactory: (config: DriverConfig) => ClientBot;
 	/** Runtime 调用身份核验接缝；M2/M3 Executor 接入时注入。 */
 	verifier?: HostCallVerifier;
 	clock?: MonotonicClock;
@@ -105,6 +104,8 @@ class PlayerPortImpl implements PlayerPort {
 	}
 
 	#grant(owner: ControlOwner, signal: AbortSignal): BodySession {
+		const bot = this.host.bot;
+		if (!bot) throw sourceUnavailable("连接没有可用客户端，不能取得身体资格");
 		const permit = this.gate.acquire(
 			owner,
 			this.host.identity.connection,
@@ -112,7 +113,7 @@ class PlayerPortImpl implements PlayerPort {
 			`${this.host.identity.refs.next("body")}`,
 		);
 		let activeRef: BodySessionImpl;
-		const session = new BodySessionImpl(this.deps, permit, this.gate, this.host.bot!, () => {
+		const session = new BodySessionImpl(this.deps, permit, this.gate, bot, () => {
 			void this.#settle(activeRef);
 		});
 		activeRef = session;
@@ -166,8 +167,8 @@ class PlayerPortImpl implements PlayerPort {
 	}
 }
 
-export function createDriver(config: DriverConfig, options: DriverOptions = {}): DriverHandle {
-	const factory = options.botFactory ?? createMineflayerBot;
+export function createDriver(config: DriverConfig, options: DriverOptions): DriverHandle {
+	const factory = options.botFactory;
 
 	const clock = options.clock ?? defaultClock();
 	const host = new ClientHost({
@@ -227,9 +228,11 @@ export function createDriver(config: DriverConfig, options: DriverOptions = {}):
 			}
 			// 聊天不占身体、不要求 Body Permit，但必须过停用准入：
 			// 身体交接期拒绝 + 连接/化身身份核验 + 宿主调用归属核验（Runtime 接缝）。
+			const bot = host.bot;
+			if (!bot) throw sourceUnavailable("连接没有可用客户端，不能聊天");
 			const effect = host.identity.refs.next("say");
 			gate.admitEphemeralWrite("say", host.identity.connection, host.identity.incarnation, effect);
-			host.bot!.chat(text);
+			bot.chat(text);
 			// chat 无本地可确认回执：sent ≠ 服务器已处理（driver.md §13），完成度如实 unknown。
 			return { effect, dispatch: "sent", completion: "unknown", evidence: [] };
 		},

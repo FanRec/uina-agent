@@ -102,30 +102,43 @@ export class ClientHost {
 		this.facts.deps.bot = bot;
 		this.#wire(bot);
 		// 真实 Mineflayer：spawn 事件表示玩家/世界状态就绪（syncing → ready）。
+		// 等待期资源（三个监听 + 超时定时器）登记进 #disposers：close 发生得比 spawn 早时
+		// 必须一并取消，否则定时器会吊住进程、迟到 spawn 还会把已关闭的 host 推回 ready。
 		await new Promise<void>((resolve, reject) => {
-			const offSpawn = bot.on("spawn", () => {
-				cleanup();
-				this.#state = "ready";
-				resolve();
-			});
-			const offEnd = bot.on("end", (reason) => {
-				cleanup();
-				reject(new Error(`connection ended before spawn: ${reason}`));
-			});
-			const offError = bot.on("error", (err) => {
-				cleanup();
-				reject(err);
-			});
-			const timer = setTimeout(() => {
-				cleanup();
-				reject(new Error(`connection not ready within ${this.#deps.attachTimeoutMs}ms`));
-			}, this.#deps.attachTimeoutMs);
-			const cleanup = () => {
-				offSpawn();
-				offEnd();
-				offError();
-				clearTimeout(timer);
+			let settled = false;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			// 先登记再判断：中途任一监听同步回调也能完整撤销，不留半截接线。
+			const stops: (() => void)[] = [];
+			const settle = (error?: Error) => {
+				if (settled) return;
+				settled = true;
+				for (const stop of stops.splice(0)) stop();
+				if (timer !== undefined) clearTimeout(timer);
+				if (error) reject(error);
+				else resolve();
 			};
+			stops.push(
+				bot.on("spawn", () => {
+					if (settled) return;
+					this.#state = "ready";
+					settle();
+				}),
+			);
+			stops.push(
+				bot.on("end", (reason) => {
+					settle(new Error(`connection ended before spawn: ${reason}`));
+				}),
+			);
+			stops.push(
+				bot.on("error", (err) => {
+					settle(err);
+				}),
+			);
+			timer = setTimeout(() => {
+				settle(new Error(`connection not ready within ${this.#deps.attachTimeoutMs}ms`));
+			}, this.#deps.attachTimeoutMs);
+			// 幂等：settle 后仍是 no-op，重复调用安全（close 与正常结束都可能触发）。
+			this.#disposers.push(() => settle(new Error("client closed before it became ready")));
 		});
 	}
 
@@ -143,9 +156,9 @@ export class ClientHost {
 				this.facts.commitEntitiesChanged();
 			}),
 			bot.on("entityGone", (entity) => this.#onEntityGone(entity)),
-			// blockUpdate 携带位置：既是 changed 提交点，也是服务端真实数据到达时
-			// 清除本地预测标记的入口（§11.6 按写入点标注来源）。
-			bot.on("blockUpdate", (pos) => this.facts.commitBlockChanged(pos)),
+			// blockUpdate 携带来源：只有 server 源才清除本地预测标记；
+			// 上游本地写入（digging.js _updateBlockState）标 prediction，不能自己确认自己。
+			bot.on("blockUpdate", (pos, _block, source) => this.facts.commitBlockChanged(pos, source)),
 			bot.on("health", () => this.facts.commitSelfChanged()),
 			// setSlot：inventory 归 facts；窗口内容变化由登记的 WindowSession 单路径处理
 			// （revision 唯一权威 + 预测清除 + 通知），host 不做第二份窗口记账。
@@ -191,6 +204,8 @@ export class ClientHost {
 	}
 
 	#onSpawn(): void {
+		// 已 close/teardown 后迟到的事件不得把状态推回 ready（#bot 已被清空）。
+		if (this.#bot === null) return;
 		if (this.#awaitingRespawn) {
 			// 重生/跨维度：建立新化身，旧窗口/实体/窗口引用全部跨代。
 			this.#awaitingRespawn = false;
@@ -235,7 +250,8 @@ export class ClientHost {
 	/** 代次更替的统一出口：清登记、失效事实覆盖、断开时退出 bot。 */
 	#fullTeardown(resetReason: "connection_changed" | "incarnation_changed", note: string): void {
 		this.hostNote = note;
-		for (const d of this.#disposers) d();
+		// 复制后遍历：清理函数可能同步登记/撤销，直接遍历会被就地修改打乱。
+		for (const d of [...this.#disposers]) d();
 		this.#disposers = [];
 		this.windowRegistry.clear();
 		this.#windowSessions.clear();
@@ -300,6 +316,8 @@ export class ClientHost {
 
 	/** 状态读取：faulted 判定由上层显式标记。 */
 	markFaulted(reason: string): void {
+		// 已断开/已关闭的连接不再进入 faulted：故障是"仍在使用但不可信"，不是死后标签。
+		if (this.#state === "disconnected") return;
 		this.#state = "faulted";
 		this.#faultReason = reason;
 	}

@@ -160,7 +160,7 @@ describe("minecraft driver review regressions", () => {
 		layFloor(bot, 0, 4);
 		bot.setBlock({ x: 0, y: 64, z: 0 }, { name: "minecraft:chest", properties: {} });
 		bot.programWindow("minecraft:chest", 27, [
-			{ name: "minecraft:iron_ingot", count: 5, components: null },
+			{ name: "minecraft:iron_ingot", count: 5, components: null, remainingDurability: null },
 			...new Array(26).fill(null),
 		]);
 		const driver = await makeDriver(bot);

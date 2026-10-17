@@ -6,6 +6,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { createDriver } from "../.uina/worlds/minecraft/driver/index.js";
 import {
 	MineflayerClientBot,
 	type MineflayerBlock,
@@ -15,6 +16,7 @@ import {
 	type MineflayerItem,
 	type MineflayerWindow,
 } from "../.uina/worlds/minecraft/driver/mineflayer/client-bot.js";
+import { createMineflayerBot } from "../.uina/worlds/minecraft/driver/mineflayer/index.js";
 
 type Listener = (...args: never[]) => void;
 
@@ -160,6 +162,14 @@ class FakeMineflayerBot implements MineflayerBot {
 		this.record("dig", block, forceLook);
 	}
 
+	/** 上游 digging.js 完成挖掘后的本地写入入口（blocks.js L246 → emit blockUpdate）。 */
+	_updateBlockState(point: { x: number; y: number; z: number }, stateId: number): void {
+		this.record("_updateBlockState", point, stateId);
+		const next = blockAtState(stateId, point);
+		if (next) this.blocks.set(`${point.x},${point.y},${point.z}`, next);
+		this.emit("blockUpdate", null, next);
+	}
+
 	stopDigging(): void {
 		this.record("stopDigging");
 	}
@@ -203,6 +213,11 @@ class FakeMineflayerBot implements MineflayerBot {
 
 function block(name: string, x: number, y: number, z: number, properties = {}): MineflayerBlock {
 	return { name, position: { x, y, z }, getProperties: () => properties };
+}
+
+/** 上游 _updateBlockState 的 stateId → Block 映射：0 是空气，其余一律当石头（测试只需形状）。 */
+function blockAtState(stateId: number, point: { x: number; y: number; z: number }): MineflayerBlock | null {
+	return stateId === 0 ? block("air", point.x, point.y, point.z) : block("stone", point.x, point.y, point.z);
 }
 
 describe("MineflayerClientBot", () => {
@@ -252,12 +267,13 @@ describe("MineflayerClientBot", () => {
 			name: "iron_pickaxe",
 			count: 1,
 			components: null,
+			remainingDurability: 240,
 		});
 		expect(bot.currentWindow()).toEqual({
 			id: 3,
 			type: "minecraft:chest",
 			slotCount: 2,
-			slots: [{ name: "dirt", count: 64, components: null }, null],
+			slots: [{ name: "dirt", count: 64, components: null, remainingDurability: null }, null],
 			cursor: null,
 			properties: {},
 		});
@@ -306,6 +322,23 @@ describe("MineflayerClientBot", () => {
 		expect(() => bot.attack(404)).toThrow(/实体未跟踪/);
 	});
 
+	it("本地写入期间的 blockUpdate 标为 prediction，服务器入包标为 server", () => {
+		const raw = new FakeMineflayerBot();
+		raw.blocks.set("2,64,2", block("stone", 2, 64, 2));
+		const bot = new MineflayerClientBot(raw);
+		const seen: (readonly [string, string])[] = [];
+		bot.on("blockUpdate", (pos, _info, source) => seen.push([source, `${pos.x},${pos.y},${pos.z}`]));
+
+		// digging.js L158 的本地写入 → 预测；服务端 block_change 不经 _updateBlockState → 确认。
+		raw._updateBlockState({ x: 2, y: 64, z: 2 }, 0);
+		raw.emit("blockUpdate", block("stone", 3, 64, 3), block("dirt", 3, 64, 3));
+
+		expect(seen).toEqual([
+			["prediction", "2,64,2"],
+			["server", "3,64,3"],
+		]);
+	});
+
 	it("窗口打开/槽位更新/关闭按协议窗口 ID 派发", () => {
 		const raw = new FakeMineflayerBot();
 		const bot = new MineflayerClientBot(raw);
@@ -333,7 +366,7 @@ describe("MineflayerClientBot", () => {
 				properties: {},
 			},
 		]);
-		expect(slots).toEqual([[3, 1, { name: "dirt", count: 64, components: null }, null]]);
+		expect(slots).toEqual([[3, 1, { name: "dirt", count: 64, components: null, remainingDurability: null }, null]]);
 		expect(closed).toEqual([3]);
 	});
 
@@ -352,6 +385,19 @@ describe("MineflayerClientBot", () => {
 		expect(raw.calls.filter((c) => c.name === "equip")).toEqual([{ name: "equip", args: ["diamond_pickaxe", "hand"] }]);
 		await expect(bot.equip({ name: "iron_pickaxe", components: { damage: 0 } }, "main")).rejects.toThrow(/components/);
 	});
+
+	it("真实 Mineflayer 工厂建连失败如实 faulted，不制造假连接", async () => {
+		// 组合根显式注入真实适配；127.0.0.1:1 无服务，连接被拒 → ClientHost faulted。
+		const driver = createDriver(
+			{ host: "127.0.0.1", port: 1, username: "uina-test" },
+			{ botFactory: createMineflayerBot, attachTimeoutMs: 3_000, stallTimeoutMs: 1_000 },
+		);
+		for (let attempt = 0; attempt < 120 && driver.connectionState() !== "faulted"; attempt++) {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		expect(driver.connectionState()).toBe("faulted");
+		await driver.close();
+	}, 15_000);
 
 	it("控制状态、视角与物理开关直接透传；quit 关闭连接", async () => {
 		const raw = new FakeMineflayerBot();

@@ -15,12 +15,13 @@ import type { StackExpectation, WindowSession, WindowSnapshot } from "../../cont
 import { CallFailureError } from "../../contracts/errors.js";
 import type { EffectReceipt, Fact, JsonValue, Ref } from "../../contracts/values.js";
 import type { BodyDeps } from "./body.js";
-import type { BotItemStack, BotWindowData, ClientBot } from "./bot-shape.js";
+import { BotFailure, type BotItemStack, type BotWindowData, type ClientBot } from "./bot-shape.js";
 import type { ClientHost } from "./client-host.js";
 import { itemKey, utcNow, WINDOW_SCHEMA } from "./facts.js";
 import {
 	controlInvalid,
 	cursorNotEmpty,
+	fromBotFailure,
 	invalidArgument,
 	referenceStale,
 	windowChanged,
@@ -59,8 +60,8 @@ function matchExpectation(item: BotItemStack | null, expected: StackExpectation)
 	)
 		return false;
 	if (expected.item.minDurability !== undefined) {
-		const durability = (item.components as { durability?: number } | null)?.durability;
-		if (typeof durability !== "number" || durability < expected.item.minDurability) return false;
+		// 耐久只认接缝的 remainingDurability；components 的字段形状随协议版本变化，不能猜。
+		if (item.remainingDurability === null || item.remainingDurability < expected.item.minDurability) return false;
 	}
 	return true;
 }
@@ -236,10 +237,15 @@ export class WindowSessionImpl implements WindowSession {
 			}
 			// 本地预测修改之前再次核验资格（inventory 的 acceptClick 预测先于发包）。
 			this.#d.gate.checkWrite(op);
+			// 预测标记必须先于 clickWindow：上游在同一次调用里先改窗口对象再发包，
+			// 若等 await 回来才标记，窗口读取会把本地预测当成服务端事实（§11.6）。
+			this.#d.host.facts.markWindowPredicted(this.#protocolId);
 			try {
 				await this.#d.bot.clickWindow(this.#protocolId, input.slot, input.button, input.mode);
 			} catch (err) {
-				// 派发本身失败：上游在发包前抛错（协议 mode 不支持等）。
+				this.#d.host.facts.unmarkWindowPredicted(this.#protocolId);
+				// 派发本身失败：上游在发包前抛错（窗口已换/协议 mode 不支持等）。
+				if (err instanceof BotFailure) throw fromBotFailure(err, [this.#effectRef(op)]);
 				throw new CallFailureError({
 					code: "CALL_UNAVAILABLE",
 					message: `click 派发失败：${err instanceof Error ? err.message : String(err)}`,
@@ -250,7 +256,6 @@ export class WindowSessionImpl implements WindowSession {
 			// 派发后：本地预测已发生（上游 acceptClick 直接改窗口对象，不发协议包），
 			// 必须显式推进事实源，否则订阅者看不到窗口已变；预测标记使后续读取
 			// 按 prediction 标注，服务端 setSlot/windowClose 到达即恢复（§11.6）。
-			this.#d.host.facts.markWindowPredicted(this.#protocolId);
 			this.#d.host.facts.markWindowChanged();
 			this.#refreshRevision();
 			this.#d.gate.closeOperation(op);

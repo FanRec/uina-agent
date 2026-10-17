@@ -8,9 +8,10 @@
  * 与真实实现一致的关键点：
  * - physicsTick 只在实际模拟后发出；不可模拟路径（区块未加载/physicsEnabled=false/
  *   实体未就绪）不发出（physics.js L84-96）。
- * - dig 内部 await look 后才"派发"；完成后本地预测目标格为空气（digging.js L121-160）；
- *   stopDigging 取消在途挖掘并 reject。
- * - activateItem 空手是静默 no-op（inventory.js L120-122）。
+ * - dig 内部 await look 后才"派发"；完成后本地预测目标格为空气（digging.js L121-160），
+ *   该 blockUpdate 标 prediction；stopDigging 取消在途挖掘并 reject。
+ * - activateItem 无论手上有没有物品都会置 usingHeldItem 并写包（inventory.js L120-143）；
+ *   "空手不派发"是 Driver 自己的策略，不是上游行为。
  * - 库存点击先做本地预测再"发包"（acceptClick 顺序）。
  */
 
@@ -202,8 +203,9 @@ export class FakeClientBot implements ClientBot {
 			this.#write("block_dig", { status: 0, location: pos });
 			const timer = setTimeout(() => {
 				// 本地预测：目标格变空气（digging.js finishDigging → _updateBlockState(position, 0)）。
+				// 与真实适配一致，这次 blockUpdate 是 prediction，不是服务器确认。
 				this.#digging = null;
-				this.setBlock(pos, { name: "air", properties: {} });
+				this.setBlock(pos, { name: "air", properties: {} }, "prediction");
 				this.#write("block_dig", { status: 2, location: pos });
 				resolve();
 			}, this.options.digTimeMs ?? 0);
@@ -228,9 +230,7 @@ export class FakeClientBot implements ClientBot {
 	}
 
 	activateItem(offHand: boolean): void {
-		// 上游：空手不派发 use_item（静默 no-op）。
-		const held = offHand ? this.#slots[45] : this.#slots[this.#selectedSlot];
-		if (!held) return;
+		// 上游即便空手也会置 usingHeldItem 并发包（inventory.js L120-143）；空手拦截归 Driver。
 		this.#usingHeldItem = true;
 		this.#write("use_item", { hand: offHand ? 1 : 0 });
 	}
@@ -313,10 +313,6 @@ export class FakeClientBot implements ClientBot {
 		this.#emitter.emit("windowClose", id);
 	}
 
-	async resyncWindow(_windowId: number): Promise<void> {
-		await Promise.resolve();
-	}
-
 	quit(): void {
 		this.#quit = true;
 	}
@@ -331,11 +327,12 @@ export class FakeClientBot implements ClientBot {
 		this.packets.push({ name, data });
 	}
 
-	setBlock(pos: BotBlockPos, info: BotBlockInfo | null): void {
+	/** source 默认 "server"：测试用 setBlock 模拟服务器入包。 */
+	setBlock(pos: BotBlockPos, info: BotBlockInfo | null, source: "server" | "prediction" = "server"): void {
 		const key = `${pos.x},${pos.y},${pos.z}`;
 		if (info === null) this.#blocks.delete(key);
 		else this.#blocks.set(key, info);
-		this.#emitter.emit("blockUpdate", pos, info);
+		this.#emitter.emit("blockUpdate", pos, info, source);
 	}
 
 	setSection(section: BotBlockPos, data: BotSectionData): void {

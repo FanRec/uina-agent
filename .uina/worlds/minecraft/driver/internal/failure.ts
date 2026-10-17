@@ -5,6 +5,7 @@
 
 import { type CallFailureCode, CallFailureError } from "../../contracts/errors.js";
 import type { Progress, Ref } from "../../contracts/values.js";
+import type { BotFailure } from "./bot-shape.js";
 
 export function controlInvalid(message: string, effects: Ref[] = []): CallFailureError {
 	return new CallFailureError({ code: "CONTROL_INVALID" satisfies CallFailureCode, message, effects });
@@ -49,4 +50,11 @@ export function targetNotMet(message: string, progress?: Progress, effects: Ref[
 
 export function sourceUnavailable(message: string, effects: Ref[] = []): CallFailureError {
 	return new CallFailureError({ code: "SOURCE_UNAVAILABLE" satisfies CallFailureCode, message, effects });
+}
+
+/** 接缝失败分类 → 合同错误码：unavailable=来源不可用，stale=引用过期，invalid=参数无效。 */
+export function fromBotFailure(err: BotFailure, effects: Ref[] = []): CallFailureError {
+	if (err.kind === "invalid") return invalidArgument(err.message);
+	if (err.kind === "stale") return referenceStale(err.message, effects);
+	return sourceUnavailable(err.message, effects);
 }

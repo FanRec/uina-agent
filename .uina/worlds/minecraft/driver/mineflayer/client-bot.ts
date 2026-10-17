@@ -5,31 +5,33 @@
  * - physicsTick 只在实际模拟后发出（lib/plugins/physics.js）。
  * - dig(block, forceLook?, digFace?) 的 forceLook='ignore' 即 preserve 路径（lib/plugins/digging.js）。
  * - attack/activateEntity 接收 Entity 对象，不是网络 ID（lib/plugins/entities.js、inventory.js）。
- * - activateItem 空手静默 no-op，usingHeldItem 由上游维护（lib/plugins/inventory.js）。
+ * - activateItem 无论手上有没有物品都会置 usingHeldItem 并写包（lib/plugins/inventory.js L120-143），
+ *   空手不是 no-op，Driver 不能指望它被上游拦下。
  * - clickWindow(slot, button, mode) 没有 windowId：只能作用于 bot.currentWindow。
  * - 窗口槽位变化经 Window 的 updateSlot(slot, oldItem, newItem) 暴露；bot 的 setSlot:<id>
  *   是分窗口事件，这里统一走 Window.updateSlot，避免动态事件名。
  * - blockAt 需要 Vec3（内部调用 pos.floored()），不能传普通对象。
  *
  * 这里只做结构适配与协议对象→纯值转换，不实现游戏策略，也不替 Driver 决定资格。
- * 上游失败（未加载、窗口不匹配、物品不存在）原样抛出，由 Driver 决定结算。
+ * 上游失败转成 BotFailure 并带分类（unavailable/stale/invalid），由 Driver 映射到工具结算。
  */
 
 import vec3Module, { type Vec3 } from "vec3";
 import type { Key } from "../../contracts/body.js";
 import type { JsonValue } from "../../contracts/values.js";
-import type {
-	BotBlockInfo,
-	BotBlockPos,
-	BotEntity,
-	BotEvents,
-	BotItemSelector,
-	BotItemStack,
-	BotSectionData,
-	BotSelfState,
-	BotVec3,
-	BotWindowData,
-	ClientBot,
+import {
+	type BotBlockInfo,
+	type BotBlockPos,
+	type BotEntity,
+	type BotEvents,
+	BotFailure,
+	type BotItemSelector,
+	type BotItemStack,
+	type BotSectionData,
+	type BotSelfState,
+	type BotVec3,
+	type BotWindowData,
+	type ClientBot,
 } from "../internal/bot-shape.js";
 
 // ---- 我们依赖的 mineflayer 最小表面（只列实际使用的成员）----
@@ -114,6 +116,12 @@ export interface MineflayerBot {
 	readonly world: { getColumn(chunkX: number, chunkZ: number): MineflayerColumn | null };
 
 	blockAt(point: MineflayerVec3, extraInfos?: boolean): MineflayerBlock | null;
+	/**
+	 * 上游本地方块写入（blocks.js L246）：setBlockStateId + emit blockUpdate。
+	 * 挖掘完成时由 digging.js L158 调用，是"客户端预测"的唯一来源；
+	 * 需要把它的 blockUpdate 与服务器入包区分开，否则预测会被当成确认。
+	 */
+	_updateBlockState(point: MineflayerVec3, stateId: number): void;
 	chat(text: string): void;
 	dig(block: MineflayerBlock, forceLook?: boolean | "ignore"): Promise<void>;
 	stopDigging(): void;
@@ -133,6 +141,15 @@ const INVENTORY_HOTBAR_START = 36;
 const SECTION_VOLUME = 4096;
 
 /**
+ * 剩余耐久 = maxDurability - durabilityUsed（prismarine-item 的 getter 读 damage 组件）。
+ * 不可堆叠物、没有耐久概念或无注册表信息时返回 null，而不是拿 0 冒充。
+ */
+function remainingDurability(item: MineflayerItem): number | null {
+	if (item.maxDurability === undefined) return null;
+	return item.maxDurability - (item.durabilityUsed ?? 0);
+}
+
+/**
  * vec3 的 .d.ts 只声明可调用形式，而 CJS 导出在 module.exports 上同时挂了 Vec3 构造器；
  * 这里按运行时事实取构造器，避免为了一个坐标类型再造一份实现。
  */
@@ -149,6 +166,8 @@ export class MineflayerClientBot implements ClientBot {
 	/** section 内容变化计数：blockUpdate 与区块加载/卸载都会推进，用于只读 revision。 */
 	readonly #sectionSeq = new Map<string, number>();
 	readonly #columnSeq = new Map<string, number>();
+	/** >0 表示正在执行上游本地方块写入；期间派发的 blockUpdate 是预测而非确认。 */
+	#localBlockWriteDepth = 0;
 
 	constructor(bot: MineflayerBot) {
 		this.#bot = bot;
@@ -163,13 +182,37 @@ export class MineflayerClientBot implements ClientBot {
 		// section revision 是采样正确性的一部分，不能依赖是否有人订阅 blockUpdate：
 		// 内容变化必须无条件推进，否则按 revision 缓存的读取会拿到旧地形。
 		bot.on("blockUpdate", (oldBlock: MineflayerBlock | null, newBlock: MineflayerBlock | null) =>
-			this.#onBlockUpdate(oldBlock, newBlock),
+			this.#onBlockUpdate(oldBlock, newBlock, this.#localBlockWriteDepth > 0 ? "prediction" : "server"),
 		);
 		bot.on("chunkColumnLoad", (point: MineflayerVec3) => this.#bumpColumn(point.x, point.z));
 		bot.on("chunkColumnUnload", (point: MineflayerVec3) => this.#bumpColumn(point.x, point.z));
 		this.#attached.add("windowOpen");
 		this.#attached.add("windowClose");
 		this.#attached.add("blockUpdate");
+		this.#wrapLocalBlockWrite();
+	}
+
+	/**
+	 * 区分本地预测与服务端入包。
+	 *
+	 * 上游只有 digging.js 的 finishDigging 会调用 _updateBlockState 写本地地形，它发出的
+	 * blockUpdate 与服务器入包共用同一个事件。若不在入口打标，Driver 无法判断这次变化
+	 * 是不是服务端确认，预测标记会被自己的预测事件清掉（§11.6 失效）。
+	 *
+	 * 这里只在调用期间置标记，事件同步派发，因此窗口内到达的 blockUpdate 必属本地写入。
+	 */
+	#wrapLocalBlockWrite(): void {
+		const bot = this.#bot;
+		const original = bot._updateBlockState;
+		if (typeof original !== "function") return;
+		bot._updateBlockState = (point, stateId) => {
+			this.#localBlockWriteDepth += 1;
+			try {
+				original.call(bot, point, stateId);
+			} finally {
+				this.#localBlockWriteDepth -= 1;
+			}
+		};
 	}
 
 	// ---- 生命周期与事件 ----
@@ -259,11 +302,15 @@ export class MineflayerClientBot implements ClientBot {
 		this.#emit("windowClose", window.id);
 	}
 
-	#onBlockUpdate(oldBlock: MineflayerBlock | null, newBlock: MineflayerBlock | null): void {
+	#onBlockUpdate(
+		oldBlock: MineflayerBlock | null,
+		newBlock: MineflayerBlock | null,
+		source: "server" | "prediction",
+	): void {
 		const block = newBlock ?? oldBlock;
 		if (!block) return;
 		this.#bumpSection(block.position.x, block.position.y, block.position.z);
-		this.#emit("blockUpdate", this.#pos(block.position), this.#blockInfo(newBlock));
+		this.#emit("blockUpdate", this.#pos(block.position), this.#blockInfo(newBlock), source);
 	}
 
 	// ---- 连续控制 ----
@@ -296,7 +343,7 @@ export class MineflayerClientBot implements ClientBot {
 
 	self(): BotSelfState {
 		const entity = this.#bot.entity;
-		if (!entity) throw new Error("mineflayer 客户端尚未 spawn，无法读取自身状态");
+		if (!entity) throw new BotFailure("unavailable", "mineflayer 客户端尚未 spawn，无法读取自身状态");
 		return {
 			position: this.#pos(entity.position),
 			velocity: this.#pos(entity.velocity),
@@ -379,7 +426,7 @@ export class MineflayerClientBot implements ClientBot {
 
 	async dig(pos: BotBlockPos, options: { forceLook: boolean }): Promise<void> {
 		const block = this.#blockAt(pos);
-		if (!block) throw new Error(`目标方块未加载：${pos.x},${pos.y},${pos.z}`);
+		if (!block) throw new BotFailure("unavailable", `目标方块未加载：${pos.x},${pos.y},${pos.z}`);
 		// forceLook=true 让上游瞄准目标；preserve 走 'ignore'，不覆盖当前视角。
 		await this.#bot.dig(block, options.forceLook ? true : "ignore");
 	}
@@ -406,8 +453,9 @@ export class MineflayerClientBot implements ClientBot {
 
 	activateBlock(pos: BotBlockPos, face: BotVec3 | null, cursor: BotVec3 | null): void {
 		const block = this.#blockAt(pos);
-		if (!block) throw new Error(`目标方块未加载：${pos.x},${pos.y},${pos.z}`);
-		// 接口是同步的（Driver 靠 windowOpen 判定打开结果），上游 Promise 失败只记录不抛出。
+		if (!block) throw new BotFailure("unavailable", `目标方块未加载：${pos.x},${pos.y},${pos.z}`);
+		// 接口是同步的（Driver 靠 windowOpen 判定打开结果），上游 Promise 失败无法从这里返回；
+		// 失败表现为 windowOpen 不来，由 Driver 的窗口超时结算，不在这里吞掉后假装成功。
 		void this.#bot
 			.activateBlock(
 				block,
@@ -425,22 +473,22 @@ export class MineflayerClientBot implements ClientBot {
 		if (selector.components !== undefined) {
 			// mineflayer 的 Item 组件是协议解码对象，无法按任意 JsonValue 可靠匹配；
 			// 明确拒绝，避免"看起来按组件选中、实际按名称选中"。
-			throw new Error("mineflayer 适配不支持按 components 选择物品");
+			throw new BotFailure("invalid", "mineflayer 适配不支持按 components 选择物品");
 		}
 		const names = new Set([selector.name, ...(selector.substitutions ?? [])]);
 		const candidate = this.#bot.inventory.items().find((item) => {
 			if (!names.has(item.name)) return false;
 			if (selector.minDurability === undefined) return true;
-			const remaining = (item.maxDurability ?? 0) - (item.durabilityUsed ?? 0);
-			return remaining >= selector.minDurability;
+			const remaining = remainingDurability(item);
+			return remaining !== null && remaining >= selector.minDurability;
 		});
-		if (!candidate) throw new Error(`背包中没有满足条件的物品：${selector.name}`);
+		if (!candidate) throw new BotFailure("unavailable", `背包中没有满足条件的物品：${selector.name}`);
 		await this.#bot.equip(candidate, hand === "off" ? "off-hand" : "hand");
 	}
 
 	async clickWindow(windowId: number, slot: number, button: number, mode: number): Promise<void> {
 		const window = this.#bot.currentWindow;
-		if (!window || window.id !== windowId) throw new Error(`窗口不存在或已更换：${windowId}`);
+		if (!window || window.id !== windowId) throw new BotFailure("stale", `窗口不存在或已更换：${windowId}`);
 		await this.#bot.clickWindow(slot, button, mode);
 	}
 
@@ -448,11 +496,6 @@ export class MineflayerClientBot implements ClientBot {
 		const window = this.#bot.currentWindow;
 		if (!window || window.id !== windowId) return;
 		void this.#bot.closeWindow(window).catch(() => {});
-	}
-
-	async resyncWindow(windowId: number): Promise<void> {
-		// mineflayer 不提供窗口重同步；协议层也没有"请求窗口内容"的独立包。
-		throw new Error(`mineflayer 不支持窗口重同步：${windowId}`);
 	}
 
 	quit(): void {
@@ -467,8 +510,9 @@ export class MineflayerClientBot implements ClientBot {
 		return name.includes(":") ? name : `minecraft:${name}`;
 	}
 
-	#requireEntity(networkId: number): MineflayerEntity {		const entity = this.#bot.entities[String(networkId)];
-		if (!entity) throw new Error(`实体未跟踪：${networkId}`);
+	#requireEntity(networkId: number): MineflayerEntity {
+		const entity = this.#bot.entities[String(networkId)];
+		if (!entity) throw new BotFailure("unavailable", `实体未跟踪：${networkId}`);
 		return entity;
 	}
 
@@ -491,6 +535,9 @@ export class MineflayerClientBot implements ClientBot {
 			count: item.count,
 			// 组件是协议解码后的普通数据；没有组件时保持 null，不伪造空对象。
 			components: item.components?.length ? (item.components as unknown as JsonValue) : null,
+			// 1.20.5+ 的耐久在 components 的 damage 组件里，由上游 durabilityUsed/maxDurability
+			// 读出；这是接缝唯一的耐久语义，Driver 不再自己解析 components。
+			remainingDurability: remainingDurability(item),
 		};
 	}
 

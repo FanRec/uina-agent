@@ -3,7 +3,7 @@
  * 选定证据捕获、ACK 记账、view 失效与 thenable 拒绝。
  */
 
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
 	FakeClientBot,
 	TEST_OWNER,
@@ -19,7 +19,7 @@ describe("minecraft driver facts (S-D1)", () => {
 	it("连接就绪后 sample 返回 self/inventory 纯值与正确 stamp", async () => {
 		const bot = new FakeClientBot();
 		layFloor(bot, 0, 8);
-		bot.setSlot(36, { name: "oak_log", count: 3, components: null });
+		bot.setSlot(36, { name: "oak_log", count: 3, components: null, remainingDurability: null });
 		bot.position = { x: 1.5, y: 64, z: 2.5 };
 		const driver = await makeDriver(bot);
 
@@ -95,7 +95,7 @@ describe("minecraft driver facts (S-D1)", () => {
 		const seqBefore = sub.stamp.sequence;
 
 		bot.setHealth(13);
-		bot.setSlot(37, { name: "dirt", count: 1, components: null });
+		bot.setSlot(37, { name: "dirt", count: 1, components: null, remainingDurability: null });
 		await flushAsync();
 
 		const changed = notices.filter((n) => (n as { kind: string }).kind === "changed");
@@ -116,7 +116,7 @@ describe("minecraft driver facts (S-D1)", () => {
 		const r1 = driver.facts.sample((v) => v.inventory());
 		const rev1 = r1.value.value!.revision;
 
-		bot.setSlot(40, { name: "stone", count: 1, components: null });
+		bot.setSlot(40, { name: "stone", count: 1, components: null, remainingDurability: null });
 		await flushAsync();
 		const r2 = driver.facts.sample((v) => v.inventory());
 		expect(r2.value.value!.revision).toBeGreaterThan(rev1);
@@ -235,18 +235,37 @@ describe("minecraft driver facts (S-D1)", () => {
 		await driver.close();
 	});
 
-	it("默认工厂接入真实 Mineflayer：建连失败如实 faulted，不制造假连接", async () => {
-		// 不注入 botFactory，走 driver/mineflayer 的真实工厂；127.0.0.1:1 无服务，连接被拒。
+	it("close 早于 spawn：迟到 spawn 不得把已关闭连接推回 ready", async () => {
+		const bot = new FakeClientBot();
+		const driver = createDriver(
+			{ host: "localhost", port: 25565, username: "tester", authMode: "offline" },
+			{ botFactory: () => bot, attachTimeoutMs: 5_000, stallTimeoutMs: 400 },
+		);
+		await driver.close();
+		// 迟到事件：spawn 监听必须已随 close 撤销，否则状态会从 disconnected 翻回 ready。
+		bot.respawn();
+		await flushAsync();
+		expect(driver.connectionState()).toBe("disconnected");
+		await expect(driver.say("x", new AbortController().signal)).rejects.toMatchObject({
+			code: "SOURCE_UNAVAILABLE",
+		});
+	});
+
+	it("工厂失败如实 faulted，不制造假连接", async () => {
+		// Driver 不内建默认工厂：组合根注入什么都由组合根负责，这里验证失败被如实登记。
 		const driver = createDriver(
 			{ host: "127.0.0.1", port: 1, username: "uina-test" },
-			{ attachTimeoutMs: 3_000, stallTimeoutMs: 1_000 },
+			{
+				botFactory: () => {
+					throw new Error("connect refused");
+				},
+				attachTimeoutMs: 1_000,
+				stallTimeoutMs: 1_000,
+			},
 		);
-		for (let attempt = 0; attempt < 120 && driver.connectionState() !== "faulted"; attempt++) {
-			await new Promise((resolve) => setTimeout(resolve, 50));
-		}
-		expect(driver.connectionState()).toBe("faulted");
+		await vi.waitFor(() => expect(driver.connectionState()).toBe("faulted"), { timeout: 2_000 });
 		await driver.close();
-	}, 15_000);
+	});
 
 	it("stamp 类型形状", () => {
 		// 合同锚定：stamp.sequence 是 Driver 源内单调序号。
