@@ -2,11 +2,11 @@
 
 日期：2026-10-17（Asia/Shanghai / GMT+08:00）。状态：统一设计合同；各模块实现进度不同，本轮仅修订文档，未进行真实游戏验收。
 
-本文及 §6.3 明确链接的 Assets 所有者合同是模块之间**方法、值与错误形状的唯一设计来源**；生命周期、控制和一致性约束见 [行为契约](contracts.md)。各节由对应模块拥有，放在同一文档是为了核对类型，不要求实现成一个 SDK 包或共同基类。具体玩法的参数/结果 schema 归该能力定义，不在这里复制完整原版目录。
+本文与 §6.3 明确链接的 Library 合同是模块之间**方法、值与错误形状的唯一设计来源**；生命周期、控制和一致性约束见 [行为契约](contracts.md)。各节由对应模块拥有，放在同一文档是为了核对类型，不要求实现成一个 SDK 包或共同基类。具体玩法的参数/结果 schema 归该能力定义，不在这里复制完整原版目录。
 
 ## 1. 收敛后的概念与阅读范围
 
-Runtime 内部机制以 [Runtime / Callable 详细设计](modules/runtime.md) 为准。本文与明确链接的 Assets 所有者合同构成唯一公开定义；2026-10-17 本轮只更新设计，`contracts/*.ts` 尚须实施时同步，不代表现有类型已符合终态。
+Runtime 内部机制以 [Runtime / Callable 详细设计](modules/runtime.md) 为准。本文与明确链接的 Library 合同构成唯一公开定义；2026-10-17 本轮只更新设计，`contracts/*.ts` 尚须实施时同步，不代表现有类型已符合终态。
 
 - 游戏能力是一个 **Callable（可调用导出）**；Run 是调用实例；Program 是实现方式之一。Feature 只是组织有关实现的源码模块，不再增加 Action→Capability→Feature 的转发层。
 - Uina 的 `ActionDef` 仍是 minecraft façade 的接入适配，返回工具回执。游戏内部 `call` 返回领域值，不能复用它的工具信封和工具取消信号。
@@ -20,7 +20,7 @@ Runtime 内部机制以 [Runtime / Callable 详细设计](modules/runtime.md) �
 | 修改程序库 | §6；行为契约 §8 | Bot、身体仲裁、Uina 日志 |
 | 修改 Uina 接入/执行管理 | §7；行为契约 §2–6 | 各玩法算法 |
 
-下列 TypeScript 块是接口示意，Assets 类型按 §6.3 链接导入；实施时以同一套源码合同进行类型检查；`JsonValue` 只出现在开放领域值/源码合同处，不再代替运行状态、受理结果或事件结构。
+下列 TypeScript 块是接口示意，Library 类型按 §6.3 链接导入；实施时以同一套源码合同进行类型检查；`JsonValue` 只出现在开放领域值/源码合同处，不再代替运行状态、受理结果或事件结构。
 
 <a id="values"></a>
 
@@ -150,12 +150,10 @@ interface CallScope extends ReadCallScope {
 }
 interface ReadCallContext extends ReadCallScope {
   readonly world: WorldReadPort;
-  readonly assets: ReadLibrary;
   readonly policy: Readonly<Record<string, JsonValue>>;
 }
 interface CallContext extends ReadCallContext, CallScope {
   readonly world: WorldPort;
-  readonly assets: WriteLibrary;
   verify(effect: Ref, verifier: ExactRef, input: JsonValue): Promise<EffectReceipt>;
 }
 interface BodyCallScope extends CallContext { readonly player: BodyOps }
@@ -470,7 +468,9 @@ retain 的存在/依赖校验与保留提交、历史切面登记和实际删除
 
 <a id="programs"></a>
 
-## 6. Program 与 Assets：普通函数、宿主桥接与版本
+## 6. Program 与 Assets：普通函数、宿主桥接与版本（历史对照）
+
+> **已由 [`modules/program.md`](modules/program.md) 取代。** 程序是单文件 + 头注释，没有 `WaitRequest`/`mc.wait`/`mc.checkpoint`/`dependencies`/`bindings`/`nativeEnvironment`；调用统一为 `mc.call(selector, input)`，等待用 `mc.waitForChange`/`mc.sleep`。本节保留作历史对照，实施以 program.md 为准。
 
 以下 API 留在本文作为唯一公共定义；不把宿主对象、函数或 iterator 本身塞入 IPC。函数回调留在原 guest；Body/Window/Feedback/文件流使用宿主登记的资源路由与本地包装。每次 Program Call 有独立语言 runtime，普通 Promise 分支本身不创建 Call。完整数据边界、回调交接与取消算法由 Program 所有者规定。
 
@@ -576,32 +576,36 @@ insideLanding/chooseInput 是脚本内普通函数；桥接只传反馈帧和受
 
 ### 6.3 文件包、Library 与可信来源导出
 
-Assets 已采用普通文件包 + SQLite 目录/CAS 的统一终态。本节**按所有者引用公开合同，不复制类型定义**：
+> **已由 [`modules/assets.md`](modules/assets.md)（Library）与 [`modules/program.md`](modules/program.md) 取代。** 库是普通文件（`programs/`、`blueprints/`、`experiences/`），没有 SQLite 目录、不可变包、发布 CAS、版本号或证据副本；文本由 `library` 写，蓝图字节由文件能力放。本节保留作历史对照。
 
-| 合同 | 唯一定义 |
+Assets 已采用普通文件包 + SQLite 目录/CAS 的统一终态（历史内容，实施以 Library 详细设计为准）：
+
+| 合同 | 现行定义 |
 | --- | --- |
-| RepositoryRef、FormatSchema、Digest、资产名称与格式 | [Assets §3–4](modules/assets.md#3-引用名称与格式-schema) |
-| PublishRequest/Result、输入来源、内容身份与发布 CAS | [Assets §5–6.1](modules/assets.md#61-请求与结果) |
-| ProgramSourcePort、ProgramExport、RunSegmentRequest | [Assets §6.2](modules/assets.md#62-从运行段发布) |
-| ProgramManifest、函数体格式与冻结字节 | [Assets §8](modules/assets.md#8-program) |
-| Blueprint/Experience 的内容与语义 | [Assets §9–10](modules/assets.md#9-blueprint) |
-| EvidenceExportPort、TrustedEvidenceExport、EvidenceCopy | [Assets §10.2](modules/assets.md#102-evidence-的边界) |
-| ReadLibrary、WriteLibrary、AssetRepository | [Assets §11.1](modules/assets.md#111-repository-与-library) |
+| 三类条目的命名、目录、路径安全 | [Library §2](modules/assets.md) |
+| 蓝图的 Raw/Target/Project、AirPolicy、完整性 | [Library §3](modules/assets.md) |
+| 经验的形态、证据弱链接 | [Library §4](modules/assets.md) |
+| `library` 的 `list/get/save/update/delete` | [Library §5](modules/assets.md) |
+| 程序单文件、头注释、`library.save` 从运行段 | [program.md §2、§4](modules/program.md) |
+| 程序执行端口与 RPC | [program.md §7](modules/program.md) |
+| PublishRequest/CAS、ProgramSourcePort、EvidenceExportPort、ReadLibrary/WriteLibrary | **删除**，理由见 [Library §7](modules/assets.md) |
 
-ReadCallContext/ReadProgramAPI 的 assets 静态类型为 ReadLibrary，act 为 WriteLibrary；实现提供真正独立的白名单包装，不给脚本 Repository、fs、数据库、可信端口或 Principal。桥接流及写入口的宿主绑定见 [Runtime §9、§14](modules/runtime.md#9-program-执行合同与资源准入)。
+ReadCallContext/ReadProgramAPI 的 `assets` 字段随仓库一起删除：脚本不需要仓库对象，按名取蓝图用 `blueprint@1`（Construction 实现），文本库操作走 `library` 工具动作（[Runtime §9](modules/runtime.md#9-program-执行合同与资源准入)）。
 
-ProgramSourcePort/EvidenceExportPort 只由组合根注入，调用者不能通过 JSON 替换可信实例。导出以确切不可变 record 固定材料，活动流持有本地读取保护直到结束/关闭；已删除来源明确失败。Assets 自己拥有已安装副本，不对 Runtime/World 建立正式资产 owner O/临时来源 owner C。WorldEvidencePort 仍可供 Runtime 保护自己记录的必要 World 强引用，不能据此复活旧资产发布协议。
+WorldEvidencePort 仍可供 Runtime 保护自己记录的必要 World 强引用；不存在资产侧的 capture/retain/发布协议。
 
-旧 AssetDraft/AssetEnvelope、ProgramAssets、RuntimeAssetSourcePort/capture 与资产侧跨库 retain/release 不再是活动设计。源码合同桩在后续实施时同步替换，本次不保留兼容层。
 
 <a id="executor"></a>
 
 ## 7. Uina ↔ Executor：确定的受理、查询、结果与事件
 
+> **程序入口与执行端口已改（2026-10-18）**：程序以 `{ kind: "program"; source: SourceSnapshot; input }` 提交，`SourceSnapshot = { name, source, digest }`（源码与头注释见 [program.md §2](modules/program.md)）；`ProgramDefinition`/`wait`/`checkpoint` 的旧形状只出现在 §6 历史对照。§7.1 的 `ProgramExecutionPort`/`ProgramSegmentDomain`/`ProgramCapacity` 不再由 Executor 暴露——程序在世界侧进程内执行，容量与 guest 队列经 `runs` 报告（[program.md §5、§7](modules/program.md)）。本节其余受理、查询、结果、事件与投递合同仍然有效。
+
 ```typescript
+interface SourceSnapshot { name: string; source: string; digest: string }
 interface Origin { worldOwner: Ref; activation: Ref; caller?: Ref; invocation?: Ref }
 type Entry = { kind: "call"; selector: Selector; input: JsonValue }
-  | { kind: "program"; definition: ProgramDefinition; input: JsonValue };
+  | { kind: "program"; source: SourceSnapshot; input: JsonValue };
 type Schedule = { kind: "enqueue" }
   | { kind: "replace_pending"; targets?: Ref[] }
   | { kind: "preempt_current"; expectedRun: Ref };
@@ -732,6 +736,8 @@ programCapacity 是无 Body/guest 准入等待的观察接口，façade 用 runs
 
 ### 7.1 可信组合根注入
 
+> **程序执行端口已移出本节的公开面（2026-10-18）。** 世界进程内部的 guest 执行/桥接不再是 Executor 对 Uina 暴露的合同；本小节关于 `ProgramExecutionPort`、`ProgramSegmentDomain`、`ProgramCapacity`、`ProgramExecutionFailure`、`DriverExecutionSink`、`RuntimeRecordBarrier`、`WaitConditionDef`、`CompletionCheck` 的定稿仅作历史对照，现行定义见 [program.md §5、§7](modules/program.md)。以下只保留仍被 Runtime/Driver 组合根使用的可信注入合同。
+
 下列合同只服务 Runtime/Program/Driver/领域组合根，不接受模型 JSON 注入。函数表示可信本地实现，不跨执行域传输。
 
 ```typescript
@@ -816,7 +822,7 @@ WaitConditionDef 核验确切 ref/input；read 只可 passive，active.recheck �
 | Runtime/Body | 独立 Body 分支 FIFO、委托复用、自等待局部失败；外层释放；旧 scope/window/反馈不可复活；wait 按谱系检查；Effect 屏障先于终结 |
 | Driver | 输入/点击参数、版本及预期槽位/光标物品、帧代次/新鲜度与停止屏障；真实服务端另验效果，mock 不替代 |
 | World | read/游标同一点、读/订阅交界不漏唤醒、换源/重连/旧游标返回 reset；schema/CAS/证据写入受唯一所有者约束 |
-| Assets | 文件包发布/CAS/可选内容绑定 operation；旧版不变；可信运行导出与独立 Evidence 副本；蓝图不携带现场进度 |
+| Library | 三类条目的命名/目录/路径安全；蓝图 Raw/Target/Project 与 AirPolicy；经验弱链接；明文错误；蓝图不携带现场进度 |
 | Uina/Executor | ID 持久化后 IPC；短任务真实直返、长任务通知；tool_handoff 非 canonical ACK；过滤过时 decision；故障同引用重复/缺口不重放游戏 |
 
 这些是接口实现的验收要求，尚未执行的项目不能写成通过。解析/存储类、SQL 表、插件内部算法、完整原版函数目录及延迟常数由模块设计和实验决定；它们不应阻挡另一模块基于以上公开合同开发。

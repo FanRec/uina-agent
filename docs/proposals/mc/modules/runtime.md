@@ -35,7 +35,7 @@ Run、Call、Body 是三组内部职责，不要求三个服务、Manager 或独
 | --- | --- | --- |
 | Runtime/Executor | executor 工厂仍为未实现；worlddef 尚未接执行 | 不将候选类型当作已经存在的运行服务 |
 | Driver | Body/Operation、资格核验与 close 存在；缺完整 Runtime 来源与 ExecutionSink 接线 | 完整集成强制注入真实 HostCallVerifier；缺失就拒绝启用写能力，默认宽松核验不能进入生产路径 |
-| Assets | 当前工作树已有仓库实现且存在用户修改 | 按公开文件包合同集成；不改其源码，不再声称仍是工厂桩 |
+| Library | 当前工作树只有旧资产仓库代码（SQLite/CAS），与现行文件库设计不符 | 实现按 [Library](assets.md) 的文件约定重写；旧代码视为待替换，不向后兼容 |
 | World | 当前读/历史/Watch、存储 Worker、领域记录与保留存在 | 重用所有者端口，不新增 Runtime 世界缓存 |
 | World Watch | invalidation.ensureStream 当前拒绝多依赖类别；未建立通用时间到期调度 | 不假称现有 Watch 已支持混合依赖；具体算法由 World 补齐，时间复查可由 Runtime 条件计时器触发 |
 | Uina 接入 | 工具结果广播不证明 canonical append；已有 input_settled；WorldEvent.render 可以返回 null | 直返只标记交付意图，异步输入可按 committed 确认；用渲染前复查过滤过时 decision |
@@ -47,19 +47,19 @@ QuickJS、子进程、Windows Job 的机制研究只支持优先原型选择。�
 
 | 所有者 | 权威事实/资源 | 不属于它 |
 | --- | --- | --- |
-| Runtime | Run/Segment/Call/Effect 执行记录、停止意图、门、Body 就绪顺序、completion 与 decision 消费 | Bot、资产 head、当前世界、OS 进程树 |
+| Runtime | Run/Segment/Call/Effect 执行记录、停止意图、门、Body 就绪顺序、completion 与 decision 消费 | Bot、库文件、当前世界、OS 进程树 |
 | Driver | Bot、连接/身体/Operation 代次、实际写入、窗口/持续输入与安全交接 | 业务队列、Run 目标与结果递送 |
 | Program | guest 调用、语言执行、能力桥接、执行域容量与 guest 退役 | Run 受理、Body 调度、整个 Minecraft 进程树监管 |
 | Executor | Uina façade、可信来源、IPC、工具等待/结果递送、Minecraft 进程启动与最终进程树监管 | 第二份 Run 结论、游戏动作恰好一次 |
 | World | 当前查询、观察/历史、Watch、领域修订与本地证据保护 | 身体操作、程序执行与任务队列 |
-| Assets | 普通不可变文件包、Revision/head/CAS、Evidence 副本 | 执行目标结论与 Runtime 生命周期 |
+| Library | 程序/蓝图/经验的文件、命名与元数据；蓝图字节、经验文本 | 执行目标结论、身体操作与 Runtime 生命周期 |
 | Uina Host | Subject、canonical journal、World 生命周期 | Minecraft 内部调度与运行状态 |
 
 Program 的子执行域使用 Executor 注入的受管创建能力，全部属于同一个最终监管树；Program 管 guest 启停，Executor 持最终退出证明。Runtime 只等待这两者给出的退役事实，不再实现第三套进程管理。平台启动与 Job 绑定细节由 Executor 所有者设计，不在本文规定系统调用。
 
 游戏进程默认同域拥有 Runtime 轻量调度、Driver 与 World 当前路径；各所有者的 SQLite 使用专用 Worker。原生重计算必须切片或卸载，不能通过宿主桥接重新堵塞游戏心跳/停止。
 
-内部可按 admission、calls、body、records 组织普通模块；目录和调用包装由组合根装配。文件名与类数量不是架构要求。Runtime 不 import Uina Host/UI，不穿透 World/Assets 表。
+内部可按 admission、calls、body、records 组织普通模块；目录和调用包装由组合根装配。文件名与类数量不是架构要求。Runtime 不 import Uina Host/UI，不穿透 World/库 的数据结构。
 
 ## 4. 模型、材料与持久记录
 
@@ -89,18 +89,29 @@ BodyScope/CallScope 是活动资源，只记录授予/关闭事实，不另建�
 
 受理、开始、停止意图、门、decision 消费与终结必须持久。Driver 事实同步进入 Runtime 非阻塞队列后批量写盘；尚未提交的真实派发尾部可在崩溃时丢失，因此恢复开放段始终标记尾部/效果可能缺失，不以“库里没有”证明没有动作。WAL/同步配置和持久性承诺以实际绑定/文件系统核验为准。
 
+**存储位置。** 记录库与源码快照都在该 World 的数据根下（既有 world 激活约定给出的 `worldDataDir`：无 profile 时 `<cwd>/.uina/world-data/<worldName>`，有 profile 时 `<cwd>/profiles/<id>/state/world-data/<worldName>`），不另设配置项，各有唯一归属：
+
+| 位置 | 内容 | 为什么在这里 |
+| --- | --- | --- |
+| `<worldDataDir>/runtime.db` | submissions、runs、segments、calls/effects、records、stop_intents、decisions、completions/delivery disposition | 按 requestId/segment 唯一约束和事务终结落结论；高频追加；恢复按 owner 枚举未结请求。不与 World 的 `world-history.db` 共库，也不假装跨库原子 |
+| `<worldDataDir>/runs/<run>/sources/<sha256>.js` | 程序源码快照（确切执行字节，按内容寻址、同摘要去重） | 模型与文件工具要能直接读、能脱离 Runtime 存活；记录只保存 `{digest, snapshotPath}`，不内嵌源码正文 |
+
+两侧一致性是单向的，不建双写事务或补偿协议：快照先落盘、记录后提交。记录中出现 `snapshotPath` 即表示文件当时已写入；之后读到缺失报 `NOT_FOUND`，**不从 `programs/` 重建历史**。反过来，写了文件但受理事务失败/崩溃留下的孤儿快照是惰性垃圾：恢复不据此推断任何 Run 存在，也不设自动 GC，需要回收时按目录枚举对照记录删除。`runs/` 按 run 惰性创建，只放源码快照；库的 `delete` 与段清理都不删它（程序见 program.md §2.6、§4.1）。
+
+`runtime.db` 是单 writer（world 伴生进程内的 Runtime）。物理前提与 World 相同（WAL + `synchronous=FULL`），打开握手回报实际生效值；打不开或配置不满足就明确失败，不退化成内存库。这个自检结果由验证脚本消费（与 `pnpm verify:mc-worker` 同层），不新增面向模型的 capability：模型不需要知道存储细节，只需要在记录确实不可写时拿到失败的 `runs` 调用。
+
 ## 5. 受理：先准备不可变材料，再提交自己的事实
 
 ### 5.1 算法
 
 1. Executor 为新意图持久保存 requestId、原请求和可信归属再发 IPC；stop 是立即发送的例外。执行侧先查询 submissions，同键同意图返回原结果，不重新解析；异意图 REQUEST_CONFLICT。
-2. 对新请求检查当前 attachment/门并准备材料。Assets 裸名 resolve 得到确切 Revision，完整读取并校验同一版本的 Manifest/源码/摘要；原生入口固定 descriptor/environment。Program 校验语法但不执行用户代码。显式 Program 依赖核验确切版本和定义；动态确切调用在实际调用前核验。
-3. 准备结果是不可变材料，不是“提交瞬间最新”的承诺。解析 @3 后发布 @4，仍提交和运行 @3；不重查同名 head，不将 Assets/World 读取放进 Runtime 事务伪造原子性。
+2. 对新请求检查当前 attachment/门并准备材料。程序按名从 `programs/<name>.js` 读一次源码，解析头注释、校验语法并固定 `SourceSnapshot{name,source,digest}`，不执行用户代码；原生入口固定 descriptor/environment。头注释无效或名字非法直接拒绝；文件不存在报 `NOT_FOUND`。
+3. 准备结果是不可变材料，不是“提交瞬间最新”的承诺。读源码之后作者又改了文件，本段仍执行入场捕获的那份字节；不重读文件、不将 Library/World 读取放进 Runtime 事务伪造原子性。
 4. 在 Runtime 单个短事务内重新检查**自己拥有的** owner 门/Runtime 装配代次、requestId 唯一约束、替换目标/预期控制 owner 的镜像事实，写 submissions、Run/Segment、固定材料和首次策略。replace_pending 的旧 Run 结论与 preempt_current 指向旧 Run 的停止意图，都和新 Run 同事务提交。Driver 物理变化并不被该事务冻结；实际 acquire/写入仍由 Driver 核验。
 5. Runtime 本地 admission 线性化区持有一次性的 preemption reservation，在单事务之前暂缓发出新的 Driver.acquire，但不封闭旧 Call/Body 的动作准入、不撤销现有控制。preempt_current 必须先确认新受理与指定旧 Run 停止意图一同 commit；commit 成功的同一调度续程里先递增该 Run 的 admission generation、封闭旧范围、取消其调用，再调用 Driver 撤销并等待屏障；reservation 释放后新工作才可获得资格。commit 失败/回滚不改变旧代次或旧 gate，释放 reservation 并照 FIFO 恢复 grant。如此数据库失败不会意外取消旧工作。reservation 不跨 IPC 等待、不阻塞独立 stop/emergency；若旧控制自然结束，只处理已固定的旧 runId，不追着新的当前主人取消。显式 stop 仍独立立即变更代次并撤销。公开 submit/continue 再按 §13 返回 RunReply.result 或 accepted。
 6. commit 回执不明：保留原键，查询权威 Runtime 存储；未确认受理前既不执行新工作，也不因这次抢占撤销旧工作；查到已提交才落实既有停止意图。unknown 不改用新 requestId。lookup.not_found 也不证明旧 IPC 不会稍后提交；重发须隔离/结束旧传输，并仍用同键。提交后、撤销前崩溃由恢复流程先隔离旧控制并处理持久停止意图，不能越过交接直接启动新 Run。
 
-准备期间环境退役则放弃材料并明确失败/重新准备；这只是本地实现句柄存活核验。已提交入口使用保存的字节，不能校验路径后再 import 可能变化的文件。声明依赖的读取不等于完整依赖包拷贝或无限期保留；调用所需版本届时不可读就 CALL_UNAVAILABLE，不换 head。已经使用的源码/descriptor 在对应记录中留存。
+准备期间环境退役则放弃材料并明确失败/重新准备；这只是本地实现句柄存活核验。已提交入口使用入场捕获的字节，不能校验路径后再 import 可能变化的文件。程序调用所需文件届时不可读就 CALL_UNAVAILABLE，不重读当前文件。已经使用的源码/descriptor 在对应记录中留存。
 
 ### 5.2 调度单位与 phase
 
@@ -112,9 +123,9 @@ phase 是记录投影：finished/awaiting_decision → stopping → running（�
 
 ## 6. Callable 解析与普通组合
 
-组合根收集 NativeCallable 数组，校验 ref 唯一、access 判别、schema、completion/checkpoint/依赖支持，使用现有 Ajv。descriptor 是 describe、输入/输出验证与发现摘要的唯一来源。QueryDescriptor 是 World 查询投影，不再注册成可写能力。Program 从 Assets Manifest 提供同形描述，发现不加载全部源码。
+组合根收集 NativeCallable 数组，校验 ref 唯一、access 判别、schema、completion/checkpoint/依赖支持，使用现有 Ajv。descriptor 是 describe、输入/输出验证与发现摘要的唯一来源。QueryDescriptor 是 World 查询投影，不再注册成可写能力。Program 从头注释提供同形描述，发现不加载全部源码。
 
-裸名只在相应入口首次准备时解析：无 bindings 时本程序显式 Program dependencies 优先，其余来自冻结 nativeEnvironment；有 bindings 则是闭合表，缺项 UNBOUND_CALL，多版本裸名 AMBIGUOUS_CALL，不能回退当前 head。refs 名称一致、非空去重；冲突 INVALID_ARGUMENT。子程序 Q 用 Q 自己的表，不继承 P 的同名绑定；动态确切调用在本次调用前检查。声明依赖遍历 visited 去环，不自动执行依赖。
+裸名调用按名解析：capacities 内建名优先，其次 programs/ 下的程序文件名（冲突时内建胜出并记警告）；子程序 Q 用 Q 自己的解析结果，不继承 P 的同名绑定。名字非法或不存在报 UNKNOWN_CALL。
 
 每次公共 call：解析确切 ref → 核验当前 scope/祖先准入与 access → 验证输入/支持 → 创建子 Call 和可信身份 → invoke → 校验输出/完成要求 → 按 §7 关闭与结算 → 返回领域值 O 或抛 CallFailure。内部调用不 submit 子 Run，不排顶层受理队列；只有真正需要身体时才排 Body 队列。
 
@@ -162,6 +173,8 @@ Runtime 不检测任意 JS Promise 依赖图。若 Body 回调自行等待更早
 
 ## 9. Program 执行合同与资源准入
 
+> **已由 [`program.md`](program.md) §5 取代。** 执行域改为 worker 线程内的 QuickJS-WASM（不是段子进程），每次调用一个运行时；容量按段排队，持身体租约的段只尝试、满了立即 `PROGRAM_CAPACITY`；`mc.wait` 与条件注册被 `mc.read`（返回观察版本）+ `mc.waitForChange`（版本原子比较，无漏唤醒）取代。Runtime 侧的硬保证（不堵事件循环、不暴露 Bot/Node、可强制取消、退役需事实）不变。
+
 Runtime 依赖 public-api §7.1 的 ProgramExecutionPort：准备/检查入口、为 Segment 打开受管执行域、以宿主绑定的 API 调用、取消/退役并取得退出事实。它不规定 WASM 初始化、pending-job pump、编译包装、帧编码或 OS 启动 API。
 
 必要保证：guest 同步/微任务死循环不堵 Driver；不能直接获得 Bot/Node/fs/net/仓库权威对象；宿主能力保持 Call/Body/read-act/取消合同；guest 退出不依赖 finally；迟到桥接可被宿主永久拒绝；资源失败明确返回，不默默换成普通宿主 eval。
@@ -181,6 +194,8 @@ await mc.wait 保留 JS 流程、闭包及活动执行域，长期等待确实�
 反馈函数属于 Program：保留本地 step 闭包，调用 Driver feedback→next→step→apply，只桥接纯帧和受控输出，不传函数/Bot；具体 pump/编码/语言限制由 Program 负责。Runtime 只规定其宿主调用受同一 scope 和代次约束，退出必须关闭流。控制时效、appliedStep 与原生兼容性沿用 Driver 合同。
 
 ## 10. 等待、交还与续段
+
+> **本节描述的 `mc.wait` 条件注册机制已删除（见 §9 横幅）。** 现行合同是 `mc.read` 返回观察版本（World cursor / 反馈帧 sequence）+ `mc.waitForChange` 在宿主侧做"读→原子比较→watch"的无漏唤醒循环，判定函数留在 guest，见 [program.md §3.5/§5.5](program.md)。以下内容保留作"能力侧被动等待、超时不计完成、取消不停止 Run"这些取舍的旁证。
 
 ### 10.1 世界等待算法
 
@@ -298,13 +313,11 @@ tool_handoff 持久后到真实返回之间崩溃，存在报告尚未呈现而�
 
 停用暂停输入递送，记录仍可查；恢复不重复动作。普通 progress 合并且不唤醒；urgent 只用于真实重大事件，不能代替游戏急停。rewind 不撤销已记交接事实，显式 replay 是新呈现意图。
 
-## 14. Assets / World：材料与引用责任
+## 14. Library / World：材料与引用责任
 
-Assets ReadLibrary/WriteLibrary 包装按真实当前 Call/access 核验，不向 guest 暴露 Repository/fs/可信端口。源码编辑/发布属于 Assets；运行副作用与发布结果分别记录，不把 library 操作 submit 为游戏 Run。
+库是普通文件，不向 guest 暴露任何库对象：程序在 `mc` 环境里没有 `assets`；按名取蓝图是 `blueprint@1`（Construction 实现），文本库操作是 `library` 工具动作。运行副作用与库写入分别记录，`library` 不 submit 为游戏 Run。
 
-ProgramSourcePort 按确切 run/segment/record 导出当时源码/Manifest/入口 effectiveBindings 或冻结原生 descriptor。原生包装只调用确切 ref，dependencies/bindings 为空，不复制 input/value/checkpoint。导出持本次活动读 pin，关闭/取消归 scope；来源不存在明确 ASSET_SOURCE_UNAVAILABLE，不重读当前 head。
-
-EvidenceExportPort 导出有限原始材料，保留 prediction、observedAt、unknown 与 coverage。Assets 自己拥有安装完整的副本；link 可以失效，copy 诚实标 partial/self_contained，不反向保留整段 Runtime/World，不恢复旧 capture owner O/C。
+Runtime 在入场时读一次程序源码并固定 `SourceSnapshot`（program.md §2.3 的快照）；`library.save` 从段保存时用同一份快照字节，来源段被清理就报 `NOT_FOUND`，不重读当前文件。库不冻结工作文件，作者随时可改；在途段不被影响，这由快照保证，不由库保证。
 
 Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 调 WorldEvidencePort.retain，确认材料/依赖及保护持久，再提交 Runtime 强引用。retain 成功而 Runtime 事务失败可留孤立保护；只有证明引用不会发布/已持久移除才 release。Runtime 事务不原子提交 World 保护。普通溯源可为弱链接，失效如实报告；不让每次移动/攻击都无条件等待跨库 retain。World 不可用时强引用发布失败或按明确合同只保存已复制材料/弱关联，不能暗中降低承诺。
 
@@ -325,8 +338,8 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 | 未 await 原生操作派发后函数立即返回 | 先封闭/清理，已收到 ticket 纳入屏障；不得终结先于记录 |
 | 射箭停止后才收到可信命中 | 原 cancelled/unknown completion 不改；原 Effect 追加核验可查 |
 | DB/Worker 故障或 flush 卡住 | 实际 Body 停止不等待；没有假的 durable finished |
-| Assets 在准备 @3 后发布 @4 | 运行捕获 @3；不事务内重查 head、不静默漂移 |
-| 全部执行域长时间 await mc.wait | 新 Program 可长期 queued；可查 limit/occupied/queued/Segment/时间/世界等待原因，native/stop/取消/查询不排容量 |
+| 作者在入场后修改程序文件 | 本段仍执行入场捕获的字节；不重读文件、不静默漂移 |
+| 全部执行域长时间 await mc.waitForChange | 新 Program 可长期 queued；可查 limit/occupied/queued/Segment/时间/世界等待原因，native/stop/取消/查询不排容量 |
 | tool_handoff 后崩溃且本地请求未结 | 同原报告建立一个持久补报意图；再次恢复续用，过时 decision 跳过，绝不重做动作 |
 | decision 报告后显式 continue | reportKind=decision 不被当 finished；新段 terminal 报告保留不同 completionRef |
 | Body 内动态首次 Program 无容量 | 局部 PROGRAM_CAPACITY，不持 Body 排 guest 资源队列 |
@@ -364,4 +377,4 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 
 实施闭合要求：一次同步更新源码合同与组合根；实现 Runtime 记录/准入/CallScope；接 Driver 真实 verifier 与 sink/关闭事实；接 Program 合同/容量与 Executor 监管；实现等待/decision/交付及有限导出，最后过真实过程验收。这是依赖关系，不是 MVP/过渡架构。
 
-本次不改业务代码、不改真实 Provider/会话/认证、不动现有 Assets 用户修改。Program 拥有引擎和桥接算法，Executor 拥有平台算法；本文所引用的唯一公共合同不在那里复制。只有实际消费者证明不足才加接缝，不为旧接口保留旁路兼容系统。
+本次不改业务代码、不改现有资产仓库代码、不改真实 Provider/会话/认证。Program 拥有引擎和桥接算法，Executor 拥有平台算法；本文所引用的唯一公共合同不在那里复制。只有实际消费者证明不足才加接缝，不为旧接口保留旁路兼容系统。

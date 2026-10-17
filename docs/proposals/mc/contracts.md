@@ -47,12 +47,12 @@
 | 模块 | 可以依赖的公开合同 | 禁止穿透 | 唯一写入者/装配责任 |
 | --- | --- | --- | --- |
 | Uina / Executor 接入 | World 公共 API、执行侧客户端、受管进程创建/退出事实 | Bot、能力算法、执行数据库表 | 拥有 façade、工具等待、输入尝试与最终进程树监管；不改 Run 结论 |
-| 运行管理 | 能力导出描述与调用合同、受控玩家、只读观测、资产解析、记录存储端口 | 指定采集/战斗/建筑实现、Uina Subject/UI | 唯一写运行、段、调用、效果与停止记录；组合根注入具体能力 |
+| 运行管理 | 能力导出描述与调用合同、受控玩家、只读观测、库读取、记录存储端口 | 指定采集/战斗/建筑实现、Uina Subject/UI | 唯一写运行、段、调用、效果与停止记录；组合根注入具体能力 |
 | Program 执行域 | ProgramExecutionPort、宿主绑定 API、Executor 受管创建能力 | Bot、Run 表、身体调度和独立进程树监管 | 拥有 guest/桥接/容量及退役；最终进程监管归 Executor |
-| 能力/程序宿主绑定 | 当前调用上下文、受控操作、只读观测、明确声明的能力和资产 | 原始 Bot、顶层受理队列、其他模块数据库 | 产生领域进度/核验请求；不得直接改运行 phase |
+| 能力/程序宿主绑定 | 当前调用上下文、受控操作、只读观测、明确声明的调用目标 | 原始 Bot、顶层受理队列、其他模块数据库 | 产生领域进度/核验请求；不得直接改运行 phase |
 | 客户端/控制适配 | Mineflayer/插件、控制资格核验合同、事实发布端口 | 具体玩法能力、Uina/Core | 唯一写连接状态、当前协议视图、有效控制资格与实际输入 |
 | 观测与世界记录 | 客户端事实、自己的存储、领域记录写入端口 | 自动导航/开箱、运行调度内部 | 唯一写历史空间/容器/过程/工程记录；当前库存仍归客户端 |
-| 资产/目录 | 文件包、SQLite 目录/CAS、模块元数据；可信 Program/Evidence 有限导出 | 活 Bot、身体调度、Runtime/World 数据表和另一份运行结论 | Assets 唯一写版本/名称头/副本与可选提交结果；Runtime 只导出固定事实 |
+| 库（Library） | 文件约定与元数据、蓝图字节、经验文本 | 活 Bot、身体调度、Runtime/World 数据表和第二份运行结论 | 唯一写三类条目的名称/元数据与库内文件；程序形态与执行归 Program |
 | 执行组合根 | 上述公开合同及其具体实现 | 向模块泄漏组合根容器 | 装配连接、运行管理、能力、执行域与存储；明确原生单例版本 |
 
 读对象是快照或只读视图；跨进程不运输活引用。能力写工程记录须调用工程所有者提供的写入口并附执行/观察引用，不能自己写数据库。运行管理记录调用和证据关联，领域核验由能力实现，不把配方和方块规则搬进运行管理。
@@ -69,13 +69,13 @@
 
 ### 3.2 受理的承诺点
 
-1. 接入为一次新的 run/continue/library 动作生成 UUID requestId，在任何 IPC 前持久保存请求及可信归属。执行侧按持久 World 归属与 requestId 去重；临时 activation 不进入去重键。本次传输重试/查询复用该 ID，LLM Schema 不要求自造 ID；返回正文提供系统生成的 request/run 引用。持久化失败则不派发新工作；stop/急停立即发送，不等本地磁盘，可靠受理仍须执行侧持久停止收据。
+1. 接入为一次新的 run/continue 动作生成 UUID requestId，在任何 IPC 前持久保存请求及可信归属。执行侧按持久 World 归属与 requestId 去重；临时 activation 不进入去重键。本次传输重试/查询复用该 ID，LLM Schema 不要求自造 ID；返回正文提供系统生成的 request/run 引用。持久化失败则不派发新工作；stop/急停立即发送，不等本地磁盘，可靠受理仍须执行侧持久停止收据。`library` 是同步工具动作，不生成 Run、不产生 requestId，也不进入本事务。
 2. 当前 attachment 有效时，先查已有去重映射并比较原始语义请求。同键同请求直接返回既有运行及最新状态，不重新解析别名/默认策略、检查新任务停止门或消费替换目标；能力下架、目标已结束、常态策略改变也不把既有受理变成拒绝。同键不同意图返回 `REQUEST_CONFLICT`；属性顺序/空格不构成不同，模型后来再次使用“最新版本”也不改变第一次的绑定。
 3. 新提交先在事务外准备入口、确切版本/字节/摘要、声明依赖、语法/输入与支持检查，再在 Runtime 单个短事务只提交自己的去重映射、Run/Segment/固定材料、策略、必要替换结论和抢占停止意图。事务内只复核 Runtime 自己的门/装配代次/目标状态，不冻结 Assets head 或 World retain。捕获 @3 后 Assets 发布 @4，仍运行 @3，不承诺提交瞬间最新。事务确认后才启动并进入 RunReply 短窗口；失败不启动新动作，也不因未受理抢占撤销旧控制。原始请求与首次解析结果固定，重试不重算。实际 Driver 资格仍在 acquire/写入核验。
 4. 取消发生在确定未派发前，可报告 `not_started`；执行侧已经提交受理后，工具信号只取消等待。IPC 派发后丢失回执且无法核实受理，报告 受理 unknown 和原键，不自动另起运行。
 5. lookup 的 `not_found` 是指定存储/归属在查询时没有提交记录。只有原传输已经结束、旧 activation 被隔离且查询命中权威存储时，才可用同一个键重试；普通超时或查错存储不能证明未受理。
 
-上述运行受理事务和 lookup 仅覆盖 submit/continue。library 使用可信归属和 Assets 自己的发布/CAS/可选内容绑定 operation，不生成 Run 或把资产状态写进运行受理表；不对可变工作目录伪造可靠重试。具体保存协议见 §8。当前源码没有现成 Minecraft 请求服务，共享协议/小型代码不等于必须共用物理数据库。
+上述运行受理事务和 lookup 仅覆盖 submit/continue。`library` 不生成 Run、不产生 requestId、不进入运行受理表：它是工具同步动作，直接读写普通文件（`programs/`、`blueprints/`、`experiences/`），失败直接回给调用者，不伪造可靠重试，也不为文件操作建幂等账本。具体约定见 [Library 详细设计](modules/assets.md) 与 [program.md §4](modules/program.md)。当前源码没有现成 Minecraft 请求服务，共享协议/小型代码不等于必须共用物理数据库。
 
 run/continue façade 在受理后的短等待窗口内得到已提交终结/待决策时直接返回真实快照；超时返回 accepted，后台 completion 通知。直接调用、代码和保存程序共用受理，内部 mc.call 不 submit。工具取消仅结束等待；observe/describe 和主动 runs.wait/read 是查询，不自动消耗通知。
 
@@ -117,7 +117,7 @@ Minecraft 通过 `ctx.expose("body.endpoint:" + bodyId, endpoint)` 加入现有�
 
 ## 4. 运行记录 ↔ 直返与 World 输入递送
 
-Runtime 在每次段交还或 Run 终结的同一事务写固定 report/record、completionRef 与 pending disposition，结论不随交付渠道复制；每段最多一份 decision、每 Run 最多一份 terminal。待决策时 stop 可另生 terminal 而不改原 decision，显式续段产生新段/报告。ExecutorClient.submit/continue 返回唯一 RunReply 联合：先持久受理，配置短窗口内取得本次提交报告则返回 result（含 completionRef），超时返回 accepted；waitSignal 取消只结束等待，已受理则返回 accepted/当前已知事实，Run 继续。接入同实例串行协调窗口选择和后台 drain，窗口有效时暂缓该 segment 通知，不建跨库 claim/租约。
+Runtime 在每次段交还或 Run 终结的同一事务写固定 report/record、completionRef 与 pending disposition，结论不随交付渠道复制；每段最多一份 decision、每 Run 最多一份 terminal。待决策时 stop 可另生 terminal 而不改原 decision，显式续段产生新段/报告。ExecutorClient.submit/continue 返回唯一 RunReply 联合：先持久受理，配置短窗口内取得本次提交报告则返回 result（含 completionRef），超时返回 accepted；waitSignal 取消只结束等待，已受理则返回 accepted/当前已知事实，Run 继续。接入同实例串行协调窗口选择和后台 drain，窗口有效时暂缓该 segment 通知，不建跨库 claim/租约。记录库落在该 World 数据根的 `runtime.db`，调用级源码快照落在同根 `runs/<run>/sources/`（按 sha256 内容寻址）（见 [Runtime §4.3](modules/runtime.md)）；快照是文件证据，记录只存摘要与路径，两者不构成跨介质事务。
 
 completionRef 是执行报告引用，不等于 Run 终态凭证。唯一公开联合 CompletionReport 以 reportKind=terminal 对应 snapshot.phase=finished；reportKind=decision 对应 awaiting_decision，仅表示当前段交还。kind=result 也不自动表示整个 Run 成功/终结；消费 decision 后产生新段，待决策时 stop 另生 terminal，旧报告永久保留。
 
@@ -167,6 +167,8 @@ Driver/Executor 整个事件循环阻塞时，域外终止责任由 Uina 侧 Min
 
 ### 5.3 生成程序及反馈
 
+> 程序侧 API 以 [program.md §3](modules/program.md) 为准：没有 `mc.wait`/`checkpoint` 读取，等待是 `mc.waitForChange(targets, predicate, {afterMs})` 与 `mc.sleep`；本节其余是反馈帧与执行域的跨模块约束。
+
 客户端心跳、控制核验、停止处理、必要自保在驱动执行域；生成程序和反馈函数在可独立终止的域。桥接只传快照、调用及带资格的输出；不跨 Uina 传逐 Tick 函数，不暴露 Bot。宿主中的大查询、寻路计算也不能阻塞驱动关键路径。
 
 自保若由当前复合控制器统一协调，沿用其资格；独立紧急控制器先使旧资格失效并经过相同停止屏障，再取得 kind=safety 的新资格。介入事件/效果关联被中断运行，不建立第二套任务队列；原能力有明确恢复点才可重新观察并排队，否则退役旧段并交还主脑。驱动里的自保没有旁路，急停/owner_lost/World 停用门均禁止它取得新资格。
@@ -183,9 +185,9 @@ Driver/Executor 整个事件循环阻塞时，域外终止责任由 Uina 侧 Min
 
 条件若必须开窗口、移动或探索才能观察，登记可序列化的**复查意图**：能力引用、参数、有关世界/目标、检查点、重新检查时机。到时以新的就绪序号参与身体调度，取得新资格后主动复查；当前普通行为不被定时器打断。熔炉估计完成、区块卸载或别的玩家改变槽位，只影响何时复查和事实缺口，不提供产出证明。
 
-await mc.wait 保留闭包与活动 guest/容量，无默认期限；有限容量由 Program FIFO 准入，同段嵌套不再占第二域，持 Body 不能排 guest 容量队列。全部域长期等待可使新 Program 无限 queued；Program 是容量事实唯一所有者，ExecutorClient.programCapacity/runs.program_capacity 提供带 observedAt 的总量和 owner 可见 Segment/时间，关联 Run/Call 提供具体等待条件，不建第二份资源账本。停止、取消、查询及纯 native 入口不排容量队列；主脑显式干预，不自动换出正常 guest。明确 decide/checkpoint 结束段并释放 guest，新段不恢复旧闭包。重启只恢复条件/检查点记录并交还，不自动复查/重放。旧域退役不明保持故障；从未开始为 not_started，已开始无可用检查点为 unknown。
+await mc.waitForChange/mc.sleep 保留活动 guest 与容量，无默认期限；有限容量按段准入：不持身体的段可以排队，持身体租约的段只尝试、满了立即 `PROGRAM_CAPACITY`；同段嵌套不再占第二域。全部域长期等待可使新 Program 无限 queued；Program 是容量事实唯一所有者，ExecutorClient.programCapacity/runs.program_capacity 提供带 observedAt 的总量和 owner 可见 Segment/时间，关联 Run/Call 提供具体等待条件，不建第二份资源账本。停止、取消、查询及纯 native 入口不排容量队列；主脑显式干预，不自动换出正常 guest。明确 mc.decide 结束段并释放 guest，新段不恢复旧闭包。重启只恢复条件/检查点记录并交还，不自动复查/重放。旧域退役不明保持故障；从未开始为 not_started，已开始无可用检查点为 unknown。
 
-Program 的自由等待不以领域注册或组合查询为前提：`mc.read(query)` 返回固定 Observation 和该 query 的 World cursor；`mc.waitForChange([{query,after}, ...], {afterMs?})` 要求非空列表，并为每项独立创建 WorldWatch，任一 changed/reset 或本地 timeout 即结束本次等待并关闭其余 Watch。普通 JS 可读取多个独立事实、组合判断并在任一依赖变化后重读，不新增领域 Callable、WaitConditionDef、组合 QueryDescriptor、Runtime 状态机或 DSL。World 拥有各 cursor/依赖和不漏失效，并核验 cursor 与 query 身份/作用域/来源代次匹配；Runtime 拥有取消、BodyScope 检查及全部 Watch/计时器清理。单项 Watch 建立失败则整体失败并清理已建项。独立 read/watch 不构成联合快照；只有业务确需同一一致性切面时，才由 World 提供显式联合查询。底层事实本身不存在时仍须由其所有者补足，不能靠运行时代码编造证据或 cursor。
+Program 的自由等待不以领域注册或组合查询为前提：只读能力（`self@1`/`block@1` 等）返回固定 Observation 和各自 query 的 World cursor；`mc.waitForChange(targets, predicate, {afterMs?})` 要求非空 targets，并为每项独立创建 WorldWatch，任一 changed/reset 或本地 timeout 即结束本次等待并关闭其余 Watch。普通 JS 可读取多个独立事实、组合判断并在任一依赖变化后重读，不新增领域 Callable、WaitConditionDef、组合 QueryDescriptor、Runtime 状态机或 DSL。World 拥有各 cursor/依赖和不漏失效，并核验 cursor 与 query 身份/作用域/来源代次匹配；Runtime 拥有取消、BodyScope 检查及全部 Watch/计时器清理。单项 Watch 建立失败则整体失败并清理已建项。独立 read/watch 不构成联合快照；只有业务确需同一一致性切面时，才由 World 提供显式联合查询。底层事实本身不存在时仍须由其所有者补足，不能靠运行时代码编造证据或 cursor。
 
 等待取消属于正在等待的 Call，不等于工具等待取消或停止 Run；Body 谱系持有资格时返回 BODY_SCOPE_ACTIVE，兄弟的身体活动不阻止它。timeout 不升级 observation freshness，也不是世界变化；循环必须重新 read 后重新判断。query 与 cursor 不匹配、来源 reset、Watch 不可用均沿 World 既有错误/变化合同返回，Runtime 不维护 cursor Registry。
 
@@ -289,35 +291,22 @@ SQLite 的启动/核验不作为当前接入的前置门。world.status@1 在同
 
 <a id="assets"></a>
 
-## 8. 资产/目录 ↔ 执行
+## 8. 库 ↔ 执行
 
-### 8.1 发布、编辑与独立事实
+### 8.1 库：程序、蓝图与经验（已改）
 
-Assets 采用 SQLite 目录/CAS + 不可变普通文件包。现有文件工具/编辑器拥有可变工作文件；明确 publish 才产生 Revision。数据库拥有 name/head/version 与可选 operation 提交结果，包 Manifest/源码字节是内容权威。文件安装和数据库发布不伪装原子；崩溃可留下不可见孤儿对象，不建设资产 pending/capture 工作流。
+> **2026-10-18 起：程序见 [program.md](modules/program.md)，蓝图与经验见 [Library](modules/assets.md)。** 本节原有内容（SQLite 目录/CAS、不可变包、publish/Revision/head、`ReadLibrary`/`WriteLibrary`、`PublishRequest`、`ProgramSourcePort`、`EvidenceExportPort`）整体删除；以下只保留仍然有效的跨模块约束。
 
-ReadLibrary/WriteLibrary、PublishRequest、ProgramManifest、ProgramSourcePort 和 EvidenceExportPort 的唯一具体定义按 [public-api §6.3](public-api.md#63-文件包library-与可信来源导出) 链接的 Assets 所有者合同。Runtime 不另存资产发布结果，不把 Assets 操作 submit 成游戏 Run。可选 operation 绑定完整固定内容身份，只与正式发布同事务保存结果；来源可变或提交不明时报告 unknown，不盲重试。
+- 库是普通文件：`programs/<name>.js`、`blueprints/<name>/`、`experiences/<name>.md`，共用命名与 `library` 五 op；没有 publish/Revision/head/版本号，也没有资产目录、不可变包与证据副本。`library` 不 submit 成游戏 Run。
+- 确切内容由使用方在入场时固定：程序段快照源码字节，工程记录持有蓝图摘要；库不冻结工作文件，作者随时可改，旧引用按记录里的摘要复现或如实报变更。
+- 蓝图三分（Raw/Target/Project）与 AirPolicy 见 [Library §3](modules/assets.md)；已知 air 需明确 set_air/preserve，来源未知的格不能变成 clear。
+- 经验是判断而非事实，直接改文件；证据是弱链接，记录被清理就如实断链，不自动改判断、不生成置信度，也不把一次执行 `succeeded` 升级为普遍可靠。
+- 几何转换、解析、分析与施工属于领域 Callable，不属于库；不同领域不新增第四种通用资产或学习调度器。
 
-### 8.2 固定版本、源码与运行导出
+### 8.2 程序的入口与继续（已改）
 
-顶层名称首次受理解析为确切 ref。Program 只保存 async 函数体、descriptor、显式 Program 资产依赖与可选闭合 bindings；原生 ref 不是资产依赖。子程序独立解析自己的声明。本段 nativeEnvironment 与实际入口/调用版本固定，动态确切引用在自身调用前核验；旧原生环境不可用明确失败，不假冒新版本。
+源码与头注释的形态、解析、快照、执行与失败重建见 [program.md](modules/program.md)。仍然有效的约束：同一 ref 的入口在受理时固定，在途段不漂移到新内容；子程序各自解析自己的调用；继续时明确入口/新代码，检查点 schema 与原目标兼容且 decision 未消费；旧运行事实不被改写；换目标新建关联 Run。
 
-Runtime 从 readPayload 完整捕获并验证字节后编译同一份内容，不能校验路径后再 import 文件。publishFromRun 必须指定 run/segment/不可变 record，由 ProgramSourcePort 导出实际源码/Manifest/入口 effectiveBindings 或冻结原生 descriptor。原生段生成只调用确切 ref 的函数体包装，dependencies=[]、bindings=[]；不复制 input/checkpoint/value 或整段历史。流生命周期只持有本次读取 pin，不建立持久 owner C/O、capture claim 或跨库 retain/release。
-
-继续时明确确切入口/新代码，environment 默认 inherit；检查点 schema 与原目标兼容且 decision 未消费才能提交新段。旧运行事实不被改写。换版不能静默降低原目标，若是新目标则新建关联 Run。
-
-### 8.3 Blueprint、工程与经验
-
-Raw Blueprint 保留原始字节；Target 的 set/clear/preserve/unknown 由 Construction 领域 Schema 解释，原件不因 decoder 不可用而失去导出能力。已知 air 的处理需明确 set_air/preserve，来源未知的格不能变成 clear。现场 Plan/Project 拥有世界/维度/落点与进度，不回写蓝图；迁址新建关联工程，改版按新现场差异重算，不用旧完成数冒充新目标完成。
-
-Experience 的判断/适用条件/解释发生变化才新 Revision。新增 Evidence 只关联材料，不自动改变 stance、support 或内容摘要；不能把一次执行 succeeded 升级为普遍可靠。
-
-### 8.4 可信 Evidence 与保留
-
-普通 sourceLinks 是可失效的作者出处。attachEvidence 只能选择确切 sourceRef 与 link/copy 意图，不能接受模型提供的“可信事实”或 Principal。宿主按真实归属路由到 Runtime/World 导出端口；来源端核验访问与不可变修订，给出原时间、prediction、unknown、coverage 与完整程度。
-
-Assets 拥有已完整安装的副本；它不成为当前世界或运行结论的可写权威。link 可失效，copy 必须诚实标 self_contained/partial，不能把未读完流注册成完整证据。不为发布资产反向保留整段 Runtime/World，也不要求 Experience 的作者 support 自动成为跨库强边。Runtime 自己若需发布强 World 引用，仍按 WorldEvidencePort 承担自己记录的保留责任。
-
-几何转换、解析、分析与施工属于相应领域 Callable，不属于仓库和 Runtime。可重建缓存按确切源/解释器/参数失效；未来领域持久分析不新增第四种通用资产或学习调度器。
 
 <a id="flows"></a>
 
