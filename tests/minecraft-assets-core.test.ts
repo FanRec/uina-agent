@@ -292,6 +292,30 @@ describe("minecraft assets 仓库核心（S-A1）", () => {
 			);
 			expect(await repo2.search({ query: "user.p3" })).toMatchObject({ items: [] });
 			await repo2.close();
+
+			// 部分失败：world 成功后 runtime 失败 → world 的保留也被释放（不悬挂）。
+			const worldOk = fakeEvidence();
+			const runtimeFail = fakeEvidence({ failRetain: true });
+			const repo3 = createAssetRepository({
+				dataDir: dir,
+				worldEvidence: worldOk.port,
+				runtimeEvidence: runtimeFail.port,
+			});
+			await expectAssetFailure(
+				() =>
+					repo3.put({
+						...programDraft("req-4", "user.p4"),
+						evidence: [
+							{ owner: "world", ref: "mcw:ev:3" },
+							{ owner: "runtime", ref: "run:1:seg:2" },
+						],
+					}),
+				"EVIDENCE_UNAVAILABLE",
+			);
+			expect(worldOk.retained).toEqual([{ owner: "req-4", refs: ["mcw:ev:3"] }]);
+			expect(worldOk.released).toEqual(["req-4"]);
+			expect(await repo3.search({ query: "user.p4" })).toMatchObject({ items: [] });
+			await repo3.close();
 		} finally {
 			cleanup();
 		}

@@ -60,6 +60,29 @@ describe("minecraft assets 字节对象（S-A2）", () => {
 		}
 	});
 
+	it("跨块（>64KB）流式哈希与复制正确：全量读回逐字节一致", async () => {
+		const { dir, cleanup } = tempDir("mcw-a2-");
+		try {
+			const repo = createRepo(dir);
+			// 70 KiB：跨 CHUNK_SIZE=64KiB 边界至少两块；内容带周期变化避免全同字节掩盖块序错误。
+			// 取 printable ASCII（32..126），保证经 UTF-8 编码往返逐字节不变。
+			const payload = Buffer.alloc(70 * 1024);
+			for (let i = 0; i < payload.length; i += 1) payload[i] = 32 + ((i * 31 + (i >> 7)) % 95);
+			const { record } = await putBlueprintWithObject(repo, "req-1", "large", payload.toString("latin1"));
+			const received = await collect(await repo.objects.read({ asset: record.ref, object: "source" }));
+			expect(received.byteLength).toBe(payload.length);
+			expect(Buffer.compare(received, payload)).toBe(0);
+			// 跨块边界 range：恰好切在 64KiB 两侧。
+			const span = await collect(
+				await repo.objects.read({ asset: record.ref, object: "source", range: { offset: 64 * 1024 - 2, length: 4 } }),
+			);
+			expect(Buffer.compare(span, payload.subarray(64 * 1024 - 2, 64 * 1024 + 2))).toBe(0);
+			await repo.close();
+		} finally {
+			cleanup();
+		}
+	});
+
 	it("range 读取返回指定区间；未知对象键报 OBJECT_UNAVAILABLE", async () => {
 		const { dir, cleanup } = tempDir("mcw-a2-");
 		try {
