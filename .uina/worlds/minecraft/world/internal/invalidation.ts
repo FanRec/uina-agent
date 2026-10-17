@@ -2,8 +2,13 @@
  * World 单调失效水位与 Watch 登记。
  *
  * 语义（docs/proposals/mc/modules/world.md §9）：
- * - 每个查询流（stream+epoch）持有自己的失效序号；失效事件按依赖类别分发，
+ * - 每个查询流（stream+epoch）持有自己的水位；失效事件按依赖类别分发，
  *   纯当前不被历史落盘唤醒，纯历史不追踪当前物理步。
+ * - 两类依赖使用**不同量纲**的水位，各自与"读到的内容"对齐：
+ *   · current：Driver 当前源的失效事件序号（读取在同一同步段采样 → 读数即最新）。
+ *   · history：存储提交版本（读取与版本取自同一 SQLite 读取边界 → cursor 声明它覆盖的视图）。
+ *   因此 cursor 表达的不是"读取发生的时刻"，而是"读取实际覆盖到哪一步"：
+ *   已读到的提交不会被再次通知，未读到的提交一定会唤醒。
  * - cursor.epoch 有两个分量：绑定代次 b（影响所有依赖）与当前源代次 s
  *   （只影响声明了 current 依赖的查询；纯历史不因 Driver 断线/源重建失去连续性）。
  * - changed 可合并；next 一次性消费，取消 next 不消费共享变化，多个观察者各自复查。
@@ -15,6 +20,11 @@ import type { WorldChange } from "../../contracts/world.js";
 
 /** 查询依赖类别；与查询描述符的 deps 对应。 */
 export type DependencyKind = "current" | "history";
+
+/** 纯历史依赖（水位取存储提交版本）。 */
+function isHistoryOnly(deps: ReadonlySet<DependencyKind>): boolean {
+	return deps.has("history") && !deps.has("current");
+}
 
 export interface Awaiter {
 	deliver: (change: WorldChange) => void;
@@ -51,16 +61,19 @@ export class WatchRegistration {
 	 */
 	check(after: ObservationCursor): WorldChange | null {
 		if (!this.epochMatches(after.epoch)) {
-			return { kind: "reset", reason: "epoch_changed", cursor: this.ledger.cursorFor(this.stream) };
+			return { kind: "reset", reason: "epoch_changed", cursor: this.cursor() };
 		}
 		if (after.stream !== this.stream) {
-			return { kind: "reset", reason: "stream_changed", cursor: this.ledger.cursorFor(this.stream) };
+			return { kind: "reset", reason: "stream_changed", cursor: this.cursor() };
 		}
-		const state = this.ledger.streamState(this.stream);
-		if (state.seq > after.sequence) {
-			return { kind: "changed", cursor: this.ledger.cursorFor(this.stream), changed: [...state.refs] };
+		if (this.ledger.watermark(this.stream, this.deps) > after.sequence) {
+			return { kind: "changed", cursor: this.cursor(), changed: [...this.ledger.streamState(this.stream).refs] };
 		}
 		return null;
+	}
+
+	private cursor(): ObservationCursor {
+		return this.ledger.cursorFor(this.stream, this.deps);
 	}
 
 	private epochMatches(afterEpoch: string): boolean {
@@ -77,7 +90,7 @@ export class WatchRegistration {
 			if (this.resetPending) {
 				const reason = this.resetPending;
 				this.resetPending = null;
-				awaiter.deliver({ kind: "reset", reason, cursor: this.ledger.cursorFor(this.stream) });
+				awaiter.deliver({ kind: "reset", reason, cursor: this.cursor() });
 				return true;
 			}
 			return false;
@@ -118,10 +131,9 @@ export class WatchRegistration {
 	}
 
 	/** 模块内协作入口（仅 InvalidationLedger 调用）。 */
-	onEvent(kind: DependencyKind, seq: number, refs: Ref[]): void {
+	onEvent(kind: DependencyKind, refs: Ref[]): void {
 		if (this.closed || !this.deps.has(kind)) return;
-		const cursor = this.ledger.cursorFor(this.stream);
-		const change: WorldChange = { kind: "changed", cursor: { ...cursor, sequence: seq }, changed: [...refs] };
+		const change: WorldChange = { kind: "changed", cursor: this.cursor(), changed: [...refs] };
 		if (this.awaiting) {
 			this.awaiting = false;
 			const awaiter = this.ledger.takeAwaiter(this);
@@ -139,7 +151,7 @@ export class WatchRegistration {
 		if (this.awaiting) {
 			this.awaiting = false;
 			const awaiter = this.ledger.takeAwaiter(this);
-			awaiter?.deliver({ kind: "reset", reason, cursor: this.ledger.cursorFor(this.stream) });
+			awaiter?.deliver({ kind: "reset", reason, cursor: this.cursor() });
 		} else {
 			this.resetPending = reason;
 		}
@@ -148,7 +160,10 @@ export class WatchRegistration {
 }
 
 export class InvalidationLedger {
+	/** 当前源失效事件序（仅 current 依赖使用）。 */
 	private seq = 0;
+	/** 已提交存储版本（仅 history 依赖使用）。 */
+	private historyVersion = 0;
 	private bindingTag: string;
 	private sourceTag = 0;
 	private registrations = new Set<WatchRegistration>();
@@ -164,17 +179,35 @@ export class InvalidationLedger {
 		return `${this.bindingTag}|${this.sourceTag}`;
 	}
 
-	cursorFor(stream: string): ObservationCursor {
+	/** 该流当前的失效水位（按其依赖类别取对应量纲）。 */
+	watermark(stream: string, deps: ReadonlySet<DependencyKind>): number {
+		if (isHistoryOnly(deps)) return this.historyVersion;
 		const state = this.streamStates.get(stream);
-		return { stream, epoch: this.epoch, sequence: state?.seq ?? 0 };
+		// 无记录的 current 流视为"已对齐当前事件序"：不制造登记时的伪变化。
+		return state ? state.seq : this.seq;
 	}
 
-	/** 登记/刷新流的依赖与失效状态；read 与 watch 都必须先调用，cursor 才能随失效推进。 */
+	cursorFor(stream: string, deps: ReadonlySet<DependencyKind>): ObservationCursor {
+		return { stream, epoch: this.epoch, sequence: this.watermark(stream, deps) };
+	}
+
+	/** 以指定读取视图版本构造历史 cursor（数据与该版本取自同一读取边界）。 */
+	cursorAt(stream: string, sequence: number): ObservationCursor {
+		return { stream, epoch: this.epoch, sequence };
+	}
+
+	/**
+	 * 登记/刷新流的依赖与失效状态；read 与 watch 都必须先调用，cursor 才能随失效推进。
+	 * 基线取登记时刻的水位：流不存在期间发生的变化不算"本流已消费"，
+	 * 但也不在本流建立前凭空唤醒（历史侧由提交版本精确表达）。
+	 */
 	ensureStream(stream: string, deps: ReadonlySet<DependencyKind>): void {
-		let state = this.streamStates.get(stream);
-		if (!state) {
-			this.streamStates.set(stream, { seq: 0, refs: [], deps: new Set(deps) });
+		if (deps.size !== 1) {
+			// 两类水位量纲不同，无法合成单一可比水位：混声明的查询会静默漏失效。
+			throw new Error(`查询依赖必须恰为一类（current 或 history），收到：${[...deps].join("+")}`);
 		}
+		if (this.streamStates.has(stream)) return;
+		this.streamStates.set(stream, { seq: this.watermark(stream, deps), refs: [], deps: new Set(deps) });
 	}
 
 	streamState(stream: string): StreamState {
@@ -188,18 +221,35 @@ export class InvalidationLedger {
 		return registration;
 	}
 
-	/** 失效事件：推进所有依赖匹配的流水位；有等待者的注册立即投递。 */
-	bump(kind: DependencyKind, refs: Ref[] | null): void {
+	/** 当前事实失效事件：推进所有依赖 current 的流水位；有等待者的注册立即投递。 */
+	bumpCurrent(refs: Ref[] | null): void {
 		this.seq += 1;
 		for (const state of this.streamStates.values()) {
-			if (!state.deps.has(kind)) continue;
+			if (!state.deps.has("current")) continue;
 			state.seq = this.seq;
 			state.refs = refs ?? [];
 		}
 		for (const registration of [...this.registrations]) {
-			if (!registration.deps.has(kind)) continue;
-			const state = this.streamState(registration.stream);
-			registration.onEvent(kind, state.seq, state.refs);
+			if (!registration.deps.has("current")) continue;
+			registration.onEvent("current", refs ?? []);
+		}
+	}
+
+	/**
+	 * 存储提交版本前进：所有依赖 history 的流水位取该版本，有等待者的注册立即投递。
+	 * 只在提交成功后调用——未可读的提交不产生唤醒（唤醒只会得到同样的历史）。
+	 */
+	advanceHistory(version: number): void {
+		if (!Number.isFinite(version) || version <= this.historyVersion) return;
+		this.historyVersion = version;
+		for (const state of this.streamStates.values()) {
+			if (!state.deps.has("history")) continue;
+			state.seq = version;
+			state.refs = [];
+		}
+		for (const registration of [...this.registrations]) {
+			if (!registration.deps.has("history")) continue;
+			registration.onEvent("history", []);
 		}
 	}
 

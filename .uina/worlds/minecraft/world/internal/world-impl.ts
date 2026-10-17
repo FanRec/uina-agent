@@ -5,11 +5,12 @@
  * - Driver 拥有当前客户端事实；World 只经 ClientFactsPort 读取受控纯值，
  *   接收选定不可变证据，维护历史/领域记录与失效水位。
  * - 纯当前 read 同步固定切面（sample → 纳入水位 → 组装 cursor），不读存储、不等历史。
- * - 纯历史 read 走"提交屏障"模型：固定本次需要的接收上界 → 等待该上界内的证据
- *   完成提交或得到明确故障 → 同步固定 cursor → 在专用存储 Worker 中原子读取。
- *   cursor 先于读取 await 固定：读取期间到达的新提交只会让下次 next 立即交付，
- *   旧数据绝不会拿到覆盖新事实的 cursor。
- * - 提交经单一有序队列发往存储 Worker；提交完成在同一续体发布 durable ACK 并解除屏障。
+ * - 纯历史 read 走"提交屏障 + 同一读取边界"模型：固定本次需要的接收上界 → 等待该上界内的
+ *   证据完成提交或得到明确故障 → 在专用存储 Worker 中原子读取 → **用该读取边界返回的
+ *   提交版本构造 cursor**。cursor 表达"本次读取覆盖到哪个提交视图"，因此已读到的提交
+ *   不会被再次通知，读取边界之后的提交一定会唤醒（不漏失效、不重复唤醒）。
+ * - 提交经单一有序队列发往存储 Worker；提交完成在同一续体推进历史水位（durable ACK
+ *   与历史失效同源）并解除屏障。
  */
 
 import type {
@@ -90,8 +91,8 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			protocolFault: (message) => this.recordDiagnostic(message),
 		});
 		this.currentTracker = new CurrentSourceTracker({
-			preciseChanged: (refs) => this.ledger.bump("current", refs),
-			conservativeInvalidation: () => this.ledger.bump("current", null),
+			preciseChanged: (refs) => this.ledger.bumpCurrent(refs),
+			conservativeInvalidation: () => this.ledger.bumpCurrent(null),
 			sourceEpochChanged: () => this.ledger.resetCurrentSource(),
 		});
 		// 先订阅后采样（public-api §4.1）：初始化是异步的（恢复播种需读存储），
@@ -163,8 +164,8 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 	private onAccepted(entries: AcceptedEntry[]): void {
 		this.lastAccepted += entries.length;
 		this.scheduleFlush();
-		// 新历史证据接收改变已接收范围 → 历史依赖失效。
-		this.ledger.bump("history", null);
+		// 历史失效不在接收时发生：证据在提交后才可读，提前唤醒只会得到同样的历史。
+		// 提交成功时由 advanceHistory(version) 精确推进（见 flushOnce）。
 	}
 
 	private scheduleFlush(): void {
@@ -175,7 +176,7 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 
 	/**
 	 * 冲刷一步：取当前全部待落盘条目发往存储 Worker；提交成功在同一续体
-	 * 发布 durable ACK（reception.committed）并解除已满足的屏障。
+	 * 推进历史水位（durable ACK 与历史失效同源）并解除已满足的屏障。
 	 * 失败时 durable 暂停推进、屏障以明确故障解除；待落盘保留，由后续接收/屏障重试。
 	 */
 	private async flushOnce(): Promise<void> {
@@ -191,14 +192,14 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			);
 			return;
 		}
-		let ok: boolean;
+		let outcome: { ok: boolean; version?: number };
 		try {
-			ok = await this.store.append(pending);
+			outcome = await this.store.append(pending);
 		} catch (error) {
-			ok = false;
+			outcome = { ok: false };
 			this.recordDiagnostic(`存储提交异常：${String(error)}`);
 		}
-		if (!ok) {
+		if (!outcome.ok) {
 			this.storeFailed = true;
 			this.recordDiagnostic("存储提交失败：durable 水位暂停推进");
 			this.failBarriers(new CallFailureError({ code: "STORE_UNAVAILABLE", message: "存储提交失败" }));
@@ -207,6 +208,7 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		this.storeFailed = false;
 		this.lastCommitted += pending.length;
 		this.reception.committed(pending);
+		if (outcome.version !== undefined) this.ledger.advanceHistory(outcome.version);
 		this.resolveBarriers();
 	}
 
@@ -333,10 +335,10 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 				input,
 			);
 			this.ledger.ensureStream(stream, definition.deps);
-			const cursor = this.ledger.cursorFor(stream);
+			const cursor = this.ledger.cursorFor(stream, definition.deps);
 			return { ...fact, cursor } as Observation<T>;
 		}
-		// 纯历史：提交屏障模型。
+		// 纯历史：提交屏障 + 同一读取边界。
 		if (this.store.availability.state !== "ready") {
 			throw new CallFailureError({
 				code: "STORE_UNAVAILABLE",
@@ -351,18 +353,13 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			limit?: number;
 			page?: { version: number; afterStoreSeq: number };
 		};
-		// cursor 先于读取 await 固定：读取期间的新提交只会让下次 next 立即交付，
-		// 本观测绝不会拿到覆盖了它未包含事实的 cursor（不漏失效）。
-		const stream = `mcw:qh:${query.ref}|${canonicalJson(input)}`;
-		this.ledger.ensureStream(stream, definition.deps);
-		const cursor = this.ledger.cursorFor(stream);
 		const evidenceFilter: EvidenceFilter = {
 			stream: filter.stream,
 			schema: filter.schema,
 			limit: filter.limit ?? 50,
 			afterStoreSeq: filter.page?.afterStoreSeq,
 		};
-		// 单条消息 = Worker 内原子读取边界；页携带其读取边界的提交版本。
+		// 单条消息 = Worker 内原子读取边界：数据与其提交版本一起取证。
 		const page = await this.store.listEvidence(evidenceFilter);
 		if (!page) {
 			throw new CallFailureError({ code: "STORE_UNAVAILABLE", message: "历史存储读取失败" });
@@ -373,6 +370,11 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 				message: `分页版本 ${filter.page.version} 已过期（当前 ${page.version}）`,
 			});
 		}
+		const stream = `mcw:qh:${query.ref}|${canonicalJson(input)}`;
+		this.ledger.ensureStream(stream, definition.deps);
+		// cursor 用本页读取边界的提交版本，而不是读取前的某个时刻：
+		// 读取已包含的提交不会被再次通知；本页之后才提交的证据一定让水位高于它。
+		const cursor = this.ledger.cursorAt(stream, page.version);
 		const items = page.items.map(({ entry }) =>
 			entry.kind === "fact"
 				? {
@@ -588,8 +590,8 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			}
 			throw new CallFailureError({ code: "STORE_UNAVAILABLE", message: "领域记录写入失败" });
 		}
-		// 领域修订持久提交 → 历史依赖失效。
-		this.ledger.bump("history", null);
+		// 领域修订持久提交 → 提交版本前进 → 历史依赖失效（与证据提交同一水位量纲）。
+		this.ledger.advanceHistory(result.version);
 		return this.recordFromRow(result.record);
 	}
 

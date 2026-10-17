@@ -4,11 +4,15 @@
  * 语义（World 重构终态）：
  * - 存储在专用 Worker 中持有 SQLite 连接，脱离 World/Driver 事件循环；
  *   每条消息是一个原子边界：append 批量在一个事务内提交，读取不看到半个事务。
- * - append 失败返回 false（上层不推进 durable）；异常经 Promise reject 表达
+ * - append 失败返回 { ok: false }（上层不推进 durable）；异常经 Promise reject 表达
  *   （Worker 崩溃/退出），门面转为显式 unavailable，不静默吞掉。
+ * - 提交版本 v 在写操作与读取视图之间共享量纲：append 在回应中返回提交后版本，
+ *   listEvidence 在页中返回读取边界版本——历史 cursor 只认这个量纲（不认接收事件计数）。
  * - 去重以稳定 evidence ref 为准：恢复后源重放（新接收代次）不重复入库。
  * - 恢复快照提供"已持久事实 seq / gap ref"集合，使新接收代次的 durable 从真实持久状态起步。
  * - listEvidence 按持久化顺序 store_seq 稳定排序；分页固定提交版本 v（page.version）。
+ * - 保留关系（retain/release）不改变查询可观察状态，因此不推进提交版本：
+ *   分页 token 不因保留记账而失效，历史 watcher 也不因此被唤醒。
  */
 
 import { Worker } from "node:worker_threads";
@@ -44,11 +48,17 @@ export interface EvidenceFilter {
 }
 
 export interface EvidencePage {
-	/** 提交版本：本页读取边界的存储版本（分页 token 固定它）。 */
+	/** 提交版本：本页读取边界的存储版本（分页 token 固定它；同时作为历史 cursor 的视图版本）。 */
 	version: number;
 	items: StoredEntryView[];
 	/** 下一页起点；null 表示没有更多。 */
 	nextStoreSeq: number | null;
+}
+
+/** 提交结果：version 是提交后的存储版本（失败时不推进，故为 undefined）。 */
+export interface AppendOutcome {
+	ok: boolean;
+	version?: number;
 }
 
 export interface DomainRecordRow {
@@ -63,7 +73,7 @@ export interface DomainRecordRow {
 }
 
 export type WriteRecordOutcome =
-	| { ok: true; record: DomainRecordRow }
+	| { ok: true; record: DomainRecordRow; version: number }
 	| { ok: false; reason: "conflict" | "not_found" | "store_failed" | "immutable_fields" };
 
 export interface StoreRecoveryStream {
@@ -77,6 +87,13 @@ export interface WorldStoreAvailability {
 	reason?: string;
 }
 
+/** 持久性实际配置（durable ACK 的前提条件；由存储实现如实报告，不靠构建默认值）。 */
+export interface StoreDurability {
+	journalMode: string;
+	/** SQLite synchronous：2 = FULL（每次提交 fsync 到 WAL）。 */
+	synchronous: number;
+}
+
 /**
  * 异步存储接口：所有方法不阻塞调用方事件循环。
  * append/listEvidence/readRecord 等在实现内部原子执行（Worker 单线程顺序处理）。
@@ -85,8 +102,10 @@ export interface WorldStore {
 	readonly availability: WorldStoreAvailability;
 	/** 存储形态说明（status 如实呈现，不冒充持久性）。 */
 	readonly description: string;
-	/** 批量提交证据/缺口条目。失败返回 false（不推进 durable）。 */
-	append(entries: StoredEntry[]): Promise<boolean>;
+	/** 持久性配置（内存实现无此项）。 */
+	readonly durability?: StoreDurability;
+	/** 批量提交证据/缺口条目。失败返回 { ok: false }（不推进 durable 与提交版本）。 */
+	append(entries: StoredEntry[]): Promise<AppendOutcome>;
 	/** 读取已持久证据（含 gap 记录）；页携带提交版本。存储不可用返回 null。 */
 	listEvidence(filter: EvidenceFilter): Promise<EvidencePage | null>;
 	/** 证据/gap 引用是否已持久存在（retain/记录写入的存在性校验）。 */
@@ -121,15 +140,18 @@ export class MemoryWorldStore implements WorldStore {
 	private retentions = new Map<string, Set<string>>();
 	private version = 0;
 
-	appendEvidence(entries: StoredEntry[]): boolean {
+	appendEvidence(entries: StoredEntry[]): AppendOutcome {
+		let inserted = 0;
 		for (const entry of entries) {
 			const ref = entry.kind === "fact" ? entry.record.ref : entry.gap.ref;
 			if (this.evidence.has(ref)) continue; // 恢复后源重放：按 ref 去重，不重复入库
 			this.evidence.set(ref, entry);
 			this.evidenceOrder.push(entry);
+			inserted += 1;
 		}
-		this.version += 1;
-		return true;
+		// 全部去重时没有新数据：不推进提交版本（不给 watcher 制造版本变了但数据没变的唤醒）。
+		if (inserted > 0) this.version += 1;
+		return { ok: true, version: this.version };
 	}
 
 	listEvidenceSync(filter: EvidenceFilter): EvidencePage | null {
@@ -151,7 +173,7 @@ export class MemoryWorldStore implements WorldStore {
 		};
 	}
 
-	async append(entries: StoredEntry[]): Promise<boolean> {
+	async append(entries: StoredEntry[]): Promise<AppendOutcome> {
 		return this.appendEvidence(entries);
 	}
 
@@ -192,7 +214,7 @@ export class MemoryWorldStore implements WorldStore {
 			};
 			this.records.set(change.ref, row);
 			this.version += 1;
-			return { ok: true, record: row };
+			return { ok: true, record: row, version: this.version };
 		}
 		if (!existing) return { ok: false, reason: "not_found" };
 		if (existing.revision !== change.expectedRevision) return { ok: false, reason: "conflict" };
@@ -211,7 +233,7 @@ export class MemoryWorldStore implements WorldStore {
 		};
 		this.records.set(change.ref, row);
 		this.version += 1;
-		return { ok: true, record: row };
+		return { ok: true, record: row, version: this.version };
 	}
 
 	async readRecord(ref: string): Promise<DomainRecordRow | null> {
@@ -225,14 +247,12 @@ export class MemoryWorldStore implements WorldStore {
 			this.retentions.set(owner, set);
 		}
 		for (const ref of evidence) set.add(ref);
-		this.version += 1;
+		// 保留关系不改变查询可观察状态：不推进提交版本（不使分页 token 失效、不唤醒 watcher）。
 		return true;
 	}
 
 	async release(owner: string): Promise<boolean> {
-		const deleted = this.retentions.delete(owner);
-		if (deleted) this.version += 1;
-		return deleted;
+		return this.retentions.delete(owner);
 	}
 
 	async close(): Promise<void> {
@@ -256,6 +276,7 @@ export class SqliteWorkerStore implements WorldStore {
 	private nextId = 1;
 	private failure: string | null = null;
 	private closing = false;
+	private pragmas: StoreDurability | null = null;
 	private readonly readyPromise: Promise<void>;
 
 	constructor(dataDir: string, fileName = "world-history.db") {
@@ -275,12 +296,20 @@ export class SqliteWorkerStore implements WorldStore {
 		this.worker.on("exit", (code: number) => {
 			if (!this.closing) this.failAll(`存储 Worker 退出（code=${code}）`);
 		});
-		this.readyPromise = this.request("open", { dataDir, fileName }).then(() => undefined);
+		this.readyPromise = this.request("open", { dataDir, fileName }).then((result) => {
+			const opened = result as { durability: StoreDurability };
+			this.pragmas = opened.durability;
+		});
 	}
 
 	/** 打开握手完成（schema 校验通过）；失败则该实例不可用。 */
 	get ready(): Promise<void> {
 		return this.readyPromise;
+	}
+
+	/** 实际持久性配置：durableThrough 的前提（WAL + synchronous=FULL）。 */
+	get durability(): StoreDurability | undefined {
+		return this.pragmas ?? undefined;
 	}
 
 	/** Worker 线程标识（诊断/测试：证明存储脱离主事件循环）。 */
@@ -313,9 +342,8 @@ export class SqliteWorkerStore implements WorldStore {
 		return (await this.request(op, args)) as T;
 	}
 
-	async append(entries: StoredEntry[]): Promise<boolean> {
-		const { ok } = await this.call<{ ok: boolean }>("append", { entries });
-		return ok;
+	async append(entries: StoredEntry[]): Promise<AppendOutcome> {
+		return await this.call<AppendOutcome>("append", { entries });
 	}
 
 	async listEvidence(filter: EvidenceFilter): Promise<EvidencePage | null> {
@@ -398,8 +426,8 @@ export class UnavailableWorldStore implements WorldStore {
 		this.availability = { state: "unavailable", reason };
 	}
 
-	async append(): Promise<boolean> {
-		return false;
+	async append(): Promise<AppendOutcome> {
+		return { ok: false };
 	}
 
 	async listEvidence(): Promise<null> {

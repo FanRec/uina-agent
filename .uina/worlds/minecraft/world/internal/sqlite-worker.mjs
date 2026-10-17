@@ -24,6 +24,8 @@ function openDatabase(dataDir, fileName) {
 	mkdirSync(dataDir, { recursive: true });
 	const database = new DatabaseSync(join(dataDir, fileName));
 	database.exec("PRAGMA journal_mode = WAL;");
+	// durable ACK 的前提：每次 COMMIT 都把 WAL 刷到盘（不依赖 SQLite 编译默认值）。
+	database.exec("PRAGMA synchronous = FULL;");
 	// 同文件多连接（误用/工具打开）时避免立即 SQLITE_BUSY：等待而非拒绝。
 	database.exec("PRAGMA busy_timeout = 5000;");
 	database.exec(`
@@ -118,34 +120,41 @@ function appendEvidence(entries) {
 	);
 	db.exec("BEGIN");
 	try {
+		let inserted = 0;
 		for (const entry of entries) {
 			if (entry.kind === "fact") {
-				insertFact.run(
-					entry.record.ref,
-					entry.record.mark.stream,
-					entry.record.mark.sequence,
-					entry.record.schema,
-					JSON.stringify(entry.record),
-					nextStoreSeq(),
+				inserted += Number(
+					insertFact.run(
+						entry.record.ref,
+						entry.record.mark.stream,
+						entry.record.mark.sequence,
+						entry.record.schema,
+						JSON.stringify(entry.record),
+						nextStoreSeq(),
+					).changes,
 				);
 			} else {
-				insertGap.run(
-					entry.gap.ref,
-					entry.gap.stream,
-					entry.gap.after,
-					entry.gap.through,
-					entry.gap.reason,
-					nextStoreSeq(),
+				inserted += Number(
+					insertGap.run(
+						entry.gap.ref,
+						entry.gap.stream,
+						entry.gap.after,
+						entry.gap.through,
+						entry.gap.reason,
+						nextStoreSeq(),
+					).changes,
 				);
 			}
 		}
-		bumpVersion();
+		// 全部按 ref 去重（恢复后源重放）：没有新行就不推进提交版本，
+		// 否则会给历史 watcher 制造"版本变了但数据没变"的无效唤醒。
+		if (inserted > 0) bumpVersion();
 		db.exec("COMMIT");
-		return true;
+		return { ok: true, version: storeVersion };
 	} catch (error) {
 		db.exec("ROLLBACK");
 		console.error("[mc-world-worker] appendEvidence failed:", error);
-		return false;
+		return { ok: false };
 	}
 }
 
@@ -256,6 +265,7 @@ function writeRecord(change) {
 			db.exec("COMMIT");
 			return {
 				ok: true,
+				version: storeVersion,
 				record: {
 					ref: change.ref,
 					revision: 1,
@@ -294,6 +304,7 @@ function writeRecord(change) {
 		const row = db.prepare("SELECT revision, created_at FROM records WHERE ref = ?").get(change.ref);
 		return {
 			ok: true,
+			version: storeVersion,
 			record: {
 				ref: change.ref,
 				revision: row.revision,
@@ -332,7 +343,7 @@ function retain(owner, evidence) {
 	db.exec("BEGIN");
 	try {
 		for (const ref of evidence) insert.run(owner, ref);
-		bumpVersion();
+		// 保留关系不改变查询可观察状态：不推进提交版本（分页 token 与历史 watcher 不受影响）。
 		db.exec("COMMIT");
 		return true;
 	} catch (error) {
@@ -344,18 +355,27 @@ function retain(owner, evidence) {
 
 function release(owner) {
 	const result = db.prepare("DELETE FROM retention WHERE owner = ?").run(owner);
-	bumpVersion();
 	return Number(result.changes) > 0;
+}
+
+function durabilityPragmas() {
+	const journal = db.prepare("PRAGMA journal_mode").get();
+	const sync = db.prepare("PRAGMA synchronous").get();
+	return {
+		journalMode: String(journal ? Object.values(journal)[0] : "unknown"),
+		synchronous: Number(sync ? Object.values(sync)[0] : -1),
+	};
 }
 
 const handlers = {
 	open({ dataDir, fileName }) {
 		db = openDatabase(dataDir, fileName);
 		loadVersion();
-		return { description: "SQLite 持久存储（专用 Worker，WAL）" };
+		// 如实报告实际生效的持久性配置，供上层核验 durableThrough 的承诺。
+		return { description: "SQLite 持久存储（专用 Worker，WAL）", durability: durabilityPragmas() };
 	},
 	append({ entries }) {
-		return { ok: appendEvidence(entries) };
+		return appendEvidence(entries);
 	},
 	list({ filter }) {
 		return { page: listEvidence(filter) };

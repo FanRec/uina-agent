@@ -164,7 +164,7 @@ describe("minecraft world 接收与当前读（S-W1）", () => {
 		const brokenStore: WorldStore = {
 			availability: { state: "unavailable", reason: "模拟磁盘故障" },
 			description: "模拟磁盘故障",
-			append: async () => false,
+			append: async () => ({ ok: false }),
 			listEvidence: async (filter) => new MemoryWorldStore().listEvidence(filter),
 			hasEvidence: async () => false,
 			recoverySnapshot: async () => null,

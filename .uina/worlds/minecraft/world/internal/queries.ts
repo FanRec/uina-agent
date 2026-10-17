@@ -164,7 +164,7 @@ export function builtinQueries(): Map<string, QueryDefinition> {
 			descriptor: {
 				ref: "evidence.list@1",
 				summary:
-					"已持久历史证据与显式缺口分页读取；先等提交屏障（本次已接收上界全部落盘）再原子读取。返回 items（fact 携带原始 Fact 载荷，gap 携带区间）与分页 token",
+					"已持久历史证据与显式缺口分页读取；先等提交屏障（本次已接收上界全部落盘）再在同一读取边界取得数据与提交版本。cursor 即该边界版本：已读到的提交不再通知，之后的提交一定唤醒。返回 items（fact 携带原始 Fact 载荷，gap 携带区间）与分页 token",
 				input: {
 					type: "object",
 					properties: { stream: "Ref?", schema: "ExactRef?", limit: "1..500?", page: "{version, afterStoreSeq}?" },
