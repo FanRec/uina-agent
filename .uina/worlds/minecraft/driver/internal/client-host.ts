@@ -11,8 +11,8 @@
 
 import type { Ref } from "../../contracts/values.js";
 import type { ClientBot } from "./bot-shape.js";
-import { Identity, RefGenerator } from "./identity.js";
 import { ClientFactsSource, type FactScopeProvider, type MonotonicClock } from "./facts.js";
+import { Identity, RefGenerator } from "./identity.js";
 
 export type ConnectionState = "connecting" | "syncing" | "ready" | "disconnected" | "faulted";
 

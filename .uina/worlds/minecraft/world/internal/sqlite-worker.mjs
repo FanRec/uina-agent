@@ -10,9 +10,10 @@
  *
  * 本文件必须是零依赖纯 Node 内置 JS（不进打包/编译管线，Worker 直接按路径加载）。
  */
-import { DatabaseSync } from "node:sqlite";
+
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { parentPort } from "node:worker_threads";
 
 const SCHEMA_VERSION = "3";

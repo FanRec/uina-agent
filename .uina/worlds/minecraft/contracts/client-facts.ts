@@ -6,9 +6,9 @@
  * 拒绝 Promise/thenable；view 在返回时失效。结果为不可变纯数据，不能泄漏 Bot/Item/Chunk。
  */
 
-import type { EntityRef, BlockTarget, SelfState, WindowSnapshot } from "./body.js";
-import type { WorldQuery } from "./world.js";
+import type { BlockTarget, EntityRef, SelfState, WindowSnapshot } from "./body.js";
 import type { ExactRef, Fact, JsonValue, Ref, Vec3 } from "./values.js";
+import type { WorldQuery } from "./world.js";
 
 export interface ClientFactStamp {
 	source: Ref;

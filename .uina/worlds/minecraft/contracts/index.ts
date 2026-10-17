@@ -5,12 +5,12 @@
  * 设计来源：docs/proposals/mc/public-api.md（在主工作区 E:/Uina/Uina 可读）。
  */
 
-export * from "./values.js";
-export * from "./errors.js";
-export * from "./callables.js";
-export * from "./body.js";
-export * from "./client-facts.js";
-export * from "./world.js";
-export * from "./program.js";
 export * from "./assets.js";
+export * from "./body.js";
+export * from "./callables.js";
+export * from "./client-facts.js";
+export * from "./errors.js";
 export * from "./executor.js";
+export * from "./program.js";
+export * from "./values.js";
+export * from "./world.js";

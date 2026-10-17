@@ -3,9 +3,8 @@
  * 唯一设计来源：docs/proposals/mc/public-api.md §7。
  */
 
-import type { ProgramBinding, ProgramDefinition, WaitRequest } from "./program.js";
-import type { AssetSource } from "./assets.js";
 import type { CallableDescriptor } from "./callables.js";
+import type { ProgramBinding, ProgramDefinition, WaitRequest } from "./program.js";
 import type { Checkpoint, ExactRef, JsonValue, Outcome, Progress, Ref, Selector } from "./values.js";
 
 export interface Origin {
@@ -131,20 +130,6 @@ export interface SegmentRecord {
 /** 仅供组合根注入的可信持久记录所有者；不装入 ExecutorClient 或脚本。 */
 export interface RuntimeEvidencePort {
 	retain(owner: Ref, evidence: Ref[]): Promise<void>;
-	release(owner: Ref): Promise<void>;
-}
-
-export interface RuntimeAssetSource {
-	source: Extract<AssetSource, { kind: "run" }>;
-	entry: SegmentEntry;
-	effectiveBindings: ProgramBinding[];
-	/** 只含本次明确选择、由 Runtime 保留的证据。 */
-	evidence: Ref[];
-}
-
-/** saveFromRun 的可信最小来源导出口；owner 是从正式发布身份 O 派生的临时来源身份 C。 */
-export interface RuntimeAssetSourcePort {
-	capture(request: { owner: Ref; run: Ref; segment: Ref; evidence: Ref[] }): Promise<RuntimeAssetSource>;
 	release(owner: Ref): Promise<void>;
 }
 

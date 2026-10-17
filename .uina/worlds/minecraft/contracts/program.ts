@@ -3,11 +3,11 @@
  * 唯一设计来源：docs/proposals/mc/public-api.md §6（第一块类型）。
  */
 
+import type { ReadLibrary, WriteLibrary } from "./assets.js";
 import type { BodyOps, ControlInput, FeedbackFrame } from "./body.js";
 import type { CallableDescriptor } from "./callables.js";
-import type { ReadAssets, ScriptAssets } from "./assets.js";
-import type { WorldQuery } from "./world.js";
 import type { Checkpoint, ExactRef, JsonValue, Observation, Progress, Ref, Selector } from "./values.js";
+import type { WorldQuery } from "./world.js";
 
 export interface WaitRequest {
 	condition: ExactRef;
@@ -35,12 +35,12 @@ export interface ReadProgramAPI {
 	wait(request: WaitRequest): Promise<WaitResult>;
 	decide(reason: string, checkpoint: Checkpoint): Promise<never>;
 	progress(value: Progress): Promise<void>;
-	readonly assets: ReadAssets;
+	readonly assets: ReadLibrary;
 }
 
 export interface ProgramAPI extends ReadProgramAPI {
 	withBody<T>(work: (body: ProgramBody) => Promise<T>): Promise<T>;
-	readonly assets: ScriptAssets;
+	readonly assets: WriteLibrary;
 }
 
 /** 程序入口是 async function(mc, input)，input/output 按声明 schema 校验。 */

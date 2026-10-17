@@ -19,6 +19,8 @@ import type {
 	ClientFactsPort,
 	ClientFactsSubscription,
 } from "../../contracts/client-facts.js";
+import { CallFailureError } from "../../contracts/errors.js";
+import type { ExactRef, Fact, JsonValue, Observation, ObservationCursor, Ref } from "../../contracts/values.js";
 import type {
 	DomainRecord,
 	WorldAvailabilityValue,
@@ -28,13 +30,11 @@ import type {
 	WorldQuery,
 	WorldWatch,
 } from "../../contracts/world.js";
-import type { ExactRef, Fact, JsonValue, Observation, ObservationCursor, Ref } from "../../contracts/values.js";
-import { CallFailureError } from "../../contracts/errors.js";
 import { CurrentSourceTracker } from "./current-source.js";
 import { InvalidationLedger, type WatchRegistration } from "./invalidation.js";
-import { builtinQueries, canonicalJson, queryStreamRef, type QueryDefinition } from "./queries.js";
+import { builtinQueries, canonicalJson, type QueryDefinition, queryStreamRef } from "./queries.js";
+import { type AcceptedEntry, ReceptionEngine } from "./reception.js";
 import type { EvidenceFilter, WorldStore } from "./store.js";
-import { ReceptionEngine, type AcceptedEntry } from "./reception.js";
 
 const RECEIVER_GENERATION = "mcw:receiver:g1";
 

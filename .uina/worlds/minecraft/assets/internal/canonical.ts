@@ -45,31 +45,34 @@ export function isDigestFormat(value: unknown): value is Digest {
 }
 
 /**
- * 内容身份摘要：kind/schema/content/objects/requiredAssets 的规范编码摘要。
- * put 与 read 两侧共用同一函数，read 侧重算核对（assets.md §7.2）。
+ * inputDigest（assets.md §4）：author 为捕获后去除工作区 editing 的作者 Manifest
+ * 规范值，payloads 为声明发布文件的真实路径/媒体类型/长度/原始字节摘要表（ASCII 排序）。
  */
-export function contentDigestOf(identity: {
-	kind: string;
-	schema: ExactRef;
-	content: unknown;
-	objects: unknown;
-	requiredAssets: readonly string[];
+export function inputDigestOf(input: {
+	author: unknown;
+	payloads: readonly { path: string; mediaType: string; byteLength: number; digest: string }[];
 }): Digest {
 	return digestOfText(
 		canonicalJson({
-			domain: "minecraft-asset-content/1",
-			kind: identity.kind,
-			schema: identity.schema,
-			content: identity.content,
-			objects: identity.objects,
-			requiredAssets: [...identity.requiredAssets],
+			domain: "assets-input/1",
+			author: input.author,
+			payloads: [...input.payloads].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
 		}),
 	);
 }
 
-/** 请求意图摘要（操作账本重放键值）；不含 requestId 本身（id 是键，不是意图）。 */
+/** packageDigest（assets.md §4）：包 Manifest 实际字节的摘要再经域封装。 */
+export function packageDigestOf(manifestDigest: Digest): Digest {
+	return digestOfText(canonicalJson({ domain: "assets-package/1", manifestDigest }));
+}
+
+/**
+ * intentDigest（assets.md §6.4）：操作账本重放键值；API 自行计算，模型不能提交。
+ * sourceIdentity 对 workspace 为规范化 directory；对 import 为规范化 definition/文件声明/label；
+ * 对 run 为 run/segment/record 与 authorMetadata。
+ */
 export function intentDigestOf(intent: unknown): Digest {
-	return digestOfText(canonicalJson({ domain: "minecraft-asset-request/1", intent }));
+	return digestOfText(canonicalJson({ domain: "assets-publish/1", intent }));
 }
 
 const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,95}$/;

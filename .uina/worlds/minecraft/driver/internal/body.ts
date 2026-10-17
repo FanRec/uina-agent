@@ -22,9 +22,12 @@ import type {
 	SelfState,
 	WindowSession,
 } from "../../contracts/body.js";
-import type { WorldQuery } from "../../contracts/world.js";
-import type { EffectReceipt, Fact, JsonValue, Ref, Vec3 } from "../../contracts/values.js";
 import { CallFailureError } from "../../contracts/errors.js";
+import type { EffectReceipt, Fact, JsonValue, Ref, Vec3 } from "../../contracts/values.js";
+import type { WorldQuery } from "../../contracts/world.js";
+import type { BotBlockPos, BotItemSelector, BotWindowData, ClientBot } from "./bot-shape.js";
+import type { ClientHost, PhysicsStep } from "./client-host.js";
+import { KeyHold } from "./controls.js";
 import {
 	controlConflict,
 	controlInvalid,
@@ -33,12 +36,9 @@ import {
 	sourceUnavailable,
 	targetNotMet,
 } from "./failure.js";
-import { WriteGate, type BodyPermit, type OperationRecord } from "./gate.js";
-import { KeyHold } from "./controls.js";
-import type { ClientHost, PhysicsStep } from "./client-host.js";
-import type { ClientBot, BotBlockPos, BotItemSelector, BotWindowData } from "./bot-shape.js";
-import { WindowSessionImpl } from "./window.js";
 import { FeedbackStreamImpl } from "./feedback.js";
+import { type BodyPermit, type OperationRecord, WriteGate } from "./gate.js";
+import { WindowSessionImpl } from "./window.js";
 
 export interface BodyDeps {
 	host: ClientHost;

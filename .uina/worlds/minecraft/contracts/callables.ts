@@ -3,11 +3,11 @@
  * 唯一设计来源：docs/proposals/mc/public-api.md §3。
  */
 
-import type { WorldPort, WorldReadPort } from "./world.js";
+import type { ReadLibrary, WriteLibrary } from "./assets.js";
 import type { BodyOps } from "./body.js";
-import type { Checkpoint, EffectReceipt, ExactRef, JsonSchema, JsonValue, Progress, Ref, Selector } from "./values.js";
-import type { ReadAssets, ScriptAssets } from "./assets.js";
 import type { WaitRequest, WaitResult } from "./program.js";
+import type { Checkpoint, EffectReceipt, ExactRef, JsonSchema, JsonValue, Progress, Ref, Selector } from "./values.js";
+import type { WorldPort, WorldReadPort } from "./world.js";
 
 export interface CallableDescriptor {
 	ref: ExactRef;
@@ -92,13 +92,13 @@ export interface CallScope extends ReadCallScope {
 
 export interface ReadCallContext extends ReadCallScope {
 	readonly world: WorldReadPort;
-	readonly assets: ReadAssets;
+	readonly assets: ReadLibrary;
 	readonly policy: Readonly<Record<string, JsonValue>>;
 }
 
 export interface CallContext extends ReadCallContext, CallScope {
 	readonly world: WorldPort;
-	readonly assets: ScriptAssets;
+	readonly assets: WriteLibrary;
 	verify(effect: Ref, verifier: ExactRef, input: JsonValue): Promise<EffectReceipt>;
 }
 

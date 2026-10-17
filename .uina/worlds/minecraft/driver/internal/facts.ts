@@ -10,30 +10,30 @@
  * - 不复制完整世界模型：只维护来源/覆盖/水位元数据与稀疏证据。
  */
 
+import type { BlockTarget, EntityRef, SelfState, WindowSnapshot } from "../../contracts/body.js";
 import {
 	type CapturedClientFact,
+	type ClientBlockValue,
+	type ClientEntitiesValue,
+	type ClientEntityValue,
 	type ClientEvidenceAck,
 	type ClientEvidenceMark,
 	type ClientFactCapture,
 	type ClientFactNotice,
 	type ClientFactScope,
 	type ClientFactStamp,
-	type ClientFactView,
 	type ClientFactsPort,
 	type ClientFactsSubscription,
-	type ClientBlockValue,
-	type ClientEntitiesValue,
-	type ClientEntityValue,
+	type ClientFactView,
 	type ClientInventoryValue,
 	type ClientSectionsValue,
 	type ClientSlotValue,
 	type SectionTarget,
 } from "../../contracts/client-facts.js";
-import type { BlockTarget, EntityRef, SelfState, WindowSnapshot } from "../../contracts/body.js";
-import type { ExactRef, Fact, FactBasis, JsonValue, Ref, Vec3 } from "../../contracts/values.js";
 import { CallFailureError } from "../../contracts/errors.js";
+import type { ExactRef, Fact, FactBasis, JsonValue, Ref, Vec3 } from "../../contracts/values.js";
+import type { BotBlockPos, ClientBot } from "./bot-shape.js";
 import { invalidArgument } from "./failure.js";
-import type { ClientBot, BotBlockPos } from "./bot-shape.js";
 
 /** 驱动单调时钟毫秒；反馈帧 validUntil 与停滞检测共用。 */
 export type MonotonicClock = () => number;
@@ -80,7 +80,7 @@ const ENTITIES_SCHEMA: ExactRef = "client.entities@1";
 const BLOCK_SCHEMA: ExactRef = "client.block@1";
 const SECTIONS_SCHEMA: ExactRef = "client.sections@1";
 
-export { BLOCK_SCHEMA, ENTITIES_SCHEMA, INVENTORY_SCHEMA, SELF_SCHEMA, SECTIONS_SCHEMA, WINDOW_SCHEMA };
+export { BLOCK_SCHEMA, ENTITIES_SCHEMA, INVENTORY_SCHEMA, SECTIONS_SCHEMA, SELF_SCHEMA, WINDOW_SCHEMA };
 
 function canonicalBlockName(name: string): string {
 	return name.includes(":") ? name : `minecraft:${name}`;

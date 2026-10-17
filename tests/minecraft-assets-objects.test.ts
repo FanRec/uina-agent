@@ -1,247 +1,158 @@
 /**
- * Minecraft Assets S-A2：受管不可变字节对象——stage/read、流末尾摘要核验、
- * 唯一物理对象、发布可见性、版本间隔离（LEAD.md §3 Assets 切片 2）。
+ * Assets 字节对象与完整性（S-A2 新合同版）：包安装禁止覆盖、流末尾核验、损坏检测。
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-	collect,
+	authorMetadata,
 	createRepo,
+	createWorkspace,
 	expectAssetFailure,
-	blueprintContent,
-	byteStream,
-	tempDir,
+	PROGRAM_SOURCE,
+	programManifest,
 } from "./minecraft-assets-helpers.js";
 
-async function putBlueprintWithObject(
-	repo: ReturnType<typeof createRepo>,
-	requestId: string,
-	name: string,
-	payload: string,
-	key = "source",
-) {
-	const object = await repo.objects.stage(
-		{ requestId, key, mediaType: "application/octet-stream", fileName: `${name}.schem` },
-		byteStream(payload),
-	);
-	const record = await repo.put({
-		requestId,
-		name,
-		kind: "blueprint",
-		content: blueprintContent(key),
-		schema: "assets.blueprint@1",
-		objects: { [key]: object },
-		requiredAssets: [],
-		evidence: [],
-		sources: [],
+function workspaceProgram(ws: ReturnType<typeof createWorkspace>, name: string, source = PROGRAM_SOURCE): string {
+	return ws.createDir(name, {
+		"manifest.json": JSON.stringify({
+			kind: "program",
+			metadata: authorMetadata(name),
+			definition: programManifest(name),
+		}),
+		"program.js": source,
 	});
-	return { object, record };
 }
 
-describe("minecraft assets 字节对象（S-A2）", () => {
-	it("stage 计算摘要与长度；发布后 objects.read 全量流读出并核验", async () => {
-		const { dir, cleanup } = tempDir("mcw-a2-");
+describe("minecraft assets objects (integrity)", () => {
+	it("发布后篡改包内 payload → readPayload 流结束 ASSET_CORRUPT；inspect 报 corrupt", async () => {
+		const ws = createWorkspace();
+		const { repo, dataDir, dispose } = createRepo({ workspaceRoot: ws.root });
 		try {
-			const repo = createRepo(dir);
-			const payload = "SCHEM-RAW-BYTES-\u00e9\u4e2d\u6587";
-			const { object, record } = await putBlueprintWithObject(repo, "req-1", "castle", payload);
-			expect(object.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
-			expect(object.byteLength).toBe(new TextEncoder().encode(payload).byteLength);
-			expect(object.mediaType).toBe("application/octet-stream");
-
-			const stream = await repo.objects.read({ asset: record.ref, object: "source" });
-			const received = await collect(stream);
-			expect(received.toString("utf8")).toBe(payload);
-			await repo.close();
-		} finally {
-			cleanup();
-		}
-	});
-
-	it("跨块（>64KB）流式哈希与复制正确：全量读回逐字节一致", async () => {
-		const { dir, cleanup } = tempDir("mcw-a2-");
-		try {
-			const repo = createRepo(dir);
-			// 70 KiB：跨 CHUNK_SIZE=64KiB 边界至少两块；内容带周期变化避免全同字节掩盖块序错误。
-			// 取 printable ASCII（32..126），保证经 UTF-8 编码往返逐字节不变。
-			const payload = Buffer.alloc(70 * 1024);
-			for (let i = 0; i < payload.length; i += 1) payload[i] = 32 + ((i * 31 + (i >> 7)) % 95);
-			const { record } = await putBlueprintWithObject(repo, "req-1", "large", payload.toString("latin1"));
-			const received = await collect(await repo.objects.read({ asset: record.ref, object: "source" }));
-			expect(received.byteLength).toBe(payload.length);
-			expect(Buffer.compare(received, payload)).toBe(0);
-			// 跨块边界 range：恰好切在 64KiB 两侧。
-			const span = await collect(
-				await repo.objects.read({ asset: record.ref, object: "source", range: { offset: 64 * 1024 - 2, length: 4 } }),
-			);
-			expect(Buffer.compare(span, payload.subarray(64 * 1024 - 2, 64 * 1024 + 2))).toBe(0);
-			await repo.close();
-		} finally {
-			cleanup();
-		}
-	});
-
-	it("range 读取返回指定区间；未知对象键报 OBJECT_UNAVAILABLE", async () => {
-		const { dir, cleanup } = tempDir("mcw-a2-");
-		try {
-			const repo = createRepo(dir);
-			const { record } = await putBlueprintWithObject(repo, "req-1", "castle", "0123456789");
-			const middle = await collect(
-				await repo.objects.read({ asset: record.ref, object: "source", range: { offset: 2, length: 4 } }),
-			);
-			expect(middle.toString("utf8")).toBe("2345");
-			const tail = await collect(
-				await repo.objects.read({ asset: record.ref, object: "source", range: { offset: 8, length: 100 } }),
-			);
-			expect(tail.toString("utf8")).toBe("89");
-			await expectAssetFailure(() => repo.objects.read({ asset: record.ref, object: "ghost" }), "OBJECT_UNAVAILABLE");
-			await expectAssetFailure(() => repo.objects.read({ asset: "missing@1", object: "source" }), "ASSET_NOT_FOUND");
-			await repo.close();
-		} finally {
-			cleanup();
-		}
-	});
-
-	it("payload 被外部篡改：objects.read 在流结束时报 ASSET_CORRUPT（先产出部分 chunk）", async () => {
-		const { dir, cleanup } = tempDir("mcw-a2-");
-		try {
-			const repo = createRepo(dir);
-			const { record } = await putBlueprintWithObject(repo, "req-1", "castle", "AAAABBBB");
-			const objectsDir = join(dir, "objects");
-			await repo.close();
-
-			// 重新打开并定位：目录里只有一个 payload 文件。
-			const repo2 = createRepo(dir);
-			const { readdirSync } = await import("node:fs");
-			const [objectIdDir] = readdirSync(objectsDir).filter((entry) => {
-				try {
-					return readFileSync(join(objectsDir, entry, "payload")).toString("utf8") === "AAAABBBB";
-				} catch {
-					return false;
-				}
+			const dir = workspaceProgram(ws, "tamper.me");
+			await repo.write.publish({
+				name: "tamper.me",
+				kind: "program",
+				expectedRef: null,
+				source: { kind: "workspace", directory: dir },
 			});
-			expect(objectIdDir).toBeDefined();
-			writeFileSync(join(objectsDir, objectIdDir, "payload"), "AAAACCCC");
+			// 篡改：找到唯一的对象目录（只发布过一个修订），物理改写包内 payload。
+			const { readdirSync } = await import("node:fs");
+			const objectsRoot = join(dataDir, "objects");
+			const [objectId] = readdirSync(objectsRoot);
+			writeFileSync(join(objectsRoot, objectId, "program.js"), "TAMPERED", "utf8");
 
-			const stream = await repo2.objects.read({ asset: record.ref, object: "source" });
-			let chunks = 0;
+			// readPayload 返回惰性流：错误在消费（读完整）时抛出。
+			const stream = await repo.read.readPayload("tamper.me@1", "program.js");
 			await expect(async () => {
-				for await (const _chunk of stream) chunks += 1;
-			}).rejects.toMatchObject({ code: "ASSET_CORRUPT" });
-			expect(chunks).toBeGreaterThan(0); // 错误在流结束时报告，不否定已产出部分
-			await repo2.close();
+				for await (const chunk of stream) void chunk;
+			}).rejects.toMatchObject(expectAssetFailure("ASSET_CORRUPT"));
+			const inspection = await repo.read.inspect("tamper.me@1");
+			expect(inspection.integrity).toBe("corrupt");
 		} finally {
-			cleanup();
+			ws.dispose();
+			dispose();
 		}
 	});
 
-	it("meta.json 与目录声明不符：repository.read 报 ASSET_CORRUPT；包丢失报 ASSET_CORRUPT", async () => {
-		const { dir, cleanup } = tempDir("mcw-a2-");
+	it("import 来源：声明摘要不符 ASSET_INVALID；mediaType 不符拒绝；一致则发布", async () => {
+		const ws = createWorkspace();
+		const { repo, dispose } = createRepo({ workspaceRoot: ws.root });
 		try {
-			const repo = createRepo(dir);
-			const { record } = await putBlueprintWithObject(repo, "req-1", "castle", "BYTES");
-			const objectsDir = join(dir, "objects");
-			await repo.close();
+			const definition = programManifest("imported");
+			const good = {
+				path: "program.js",
+				mediaType: "text/javascript",
+				bytes: (async function* () {
+					yield new TextEncoder().encode(PROGRAM_SOURCE);
+				})(),
+				byteLength: Buffer.byteLength(PROGRAM_SOURCE),
+				digest:
+					`sha256:${(await import("node:crypto")).createHash("sha256").update(PROGRAM_SOURCE).digest("hex")}` as const,
+			};
+			const result = await repo.write.publish({
+				name: "imported",
+				kind: "program",
+				expectedRef: null,
+				source: {
+					kind: "import",
+					definition: { kind: "program", metadata: authorMetadata("imported"), definition },
+					files: [good],
+				},
+			});
+			expect(result.ref).toBe("imported@1");
 
-			// 篡改 meta.json 的 digest。
-			const repo2 = createRepo(dir);
-			const { readdirSync } = await import("node:fs");
-			const target = readdirSync(objectsDir).find((entry) => {
-				try {
-					return readFileSync(join(objectsDir, entry, "payload")).toString("utf8") === "BYTES";
-				} catch {
-					return false;
-				}
-			})!;
-			const metaPath = join(objectsDir, target, "meta.json");
-			const meta = JSON.parse(readFileSync(metaPath, "utf8")) as { digest: string };
-			writeFileSync(metaPath, JSON.stringify({ ...meta, digest: "sha256:" + "f".repeat(64) }));
-			await expectAssetFailure(() => repo2.read("blueprint", record.ref), "ASSET_CORRUPT");
-			await repo2.close();
+			// mediaType 与推导规则不符。
+			const badMedia = {
+				...good,
+				bytes: (async function* () {
+					yield new TextEncoder().encode(PROGRAM_SOURCE);
+				})(),
+				mediaType: "text/plain",
+			};
+			await expect(
+				repo.write.publish({
+					name: "imported2",
+					kind: "program",
+					expectedRef: null,
+					source: {
+						kind: "import",
+						definition: { kind: "program", metadata: authorMetadata("imported2"), definition },
+						files: [badMedia],
+					},
+				}),
+			).rejects.toMatchObject(expectAssetFailure("ASSET_INVALID"));
 
-			// 包目录整体缺失。
-			const { rmSync } = await import("node:fs");
-			rmSync(join(objectsDir, target), { recursive: true, force: true });
-			const repo3 = createRepo(dir);
-			await expectAssetFailure(() => repo3.read("blueprint", record.ref), "ASSET_CORRUPT");
-			await repo3.close();
+			// 声明摘要与实际字节不符。
+			const badDigest = {
+				...good,
+				bytes: (async function* () {
+					yield new TextEncoder().encode("other bytes");
+				})(),
+				mediaType: "text/javascript",
+			};
+			await expect(
+				repo.write.publish({
+					name: "imported3",
+					kind: "program",
+					expectedRef: null,
+					source: {
+						kind: "import",
+						definition: { kind: "program", metadata: authorMetadata("imported3"), definition },
+						files: [badDigest],
+					},
+				}),
+			).rejects.toMatchObject(expectAssetFailure("ASSET_INVALID"));
 		} finally {
-			cleanup();
+			ws.dispose();
+			dispose();
 		}
 	});
 
-	it("同 key 重复 stage：新 attempt 后写者胜；发布后修订间对象隔离，v1 字节不变", async () => {
-		const { dir, cleanup } = tempDir("mcw-a2-");
+	it("发布成功不回写工作文件；工作目录被删除不影响已发布读取", async () => {
+		const ws = createWorkspace();
+		const { repo, dispose } = createRepo({ workspaceRoot: ws.root });
 		try {
-			const repo = createRepo(dir);
-			const first = await repo.objects.stage({ requestId: "req-1", key: "source" }, byteStream("V1"));
-			const replaced = await repo.objects.stage({ requestId: "req-1", key: "source" }, byteStream("V2-LONGER"));
-			expect(replaced.ref).not.toBe(first.ref);
-			expect(replaced.digest).not.toBe(first.digest);
-
-			const v1 = await repo.put({
-				requestId: "req-1",
-				name: "tower",
-				kind: "blueprint",
-				content: blueprintContent("source"),
-				schema: "assets.blueprint@1",
-				objects: { source: replaced },
-				requiredAssets: [],
-				evidence: [],
-				sources: [],
+			const manifest = { kind: "program", metadata: authorMetadata("durable"), definition: programManifest("durable") };
+			const dir = ws.createDir("durable", { "manifest.json": JSON.stringify(manifest), "program.js": PROGRAM_SOURCE });
+			await repo.write.publish({
+				name: "durable",
+				kind: "program",
+				expectedRef: null,
+				source: { kind: "workspace", directory: dir },
 			});
-			expect((await collect(await repo.objects.read({ asset: v1.ref, object: "source" }))).toString("utf8")).toBe(
-				"V2-LONGER",
-			);
-
-			// 修订换新对象：v2 读新字节，v1 仍读旧字节（不可变、不复用）。
-			const object2 = await repo.objects.stage({ requestId: "req-2", key: "source" }, byteStream("V3"));
-			const v2 = await repo.revise({
-				requestId: "req-2",
-				expectedRef: v1.ref,
-				reason: "换对象",
-				kind: "blueprint",
-				content: blueprintContent("source"),
-				schema: "assets.blueprint@1",
-				objects: { source: object2 },
-				requiredAssets: [],
-				evidence: [],
-				sources: [],
-			});
-			expect((await collect(await repo.objects.read({ asset: v1.ref, object: "source" }))).toString("utf8")).toBe(
-				"V2-LONGER",
-			);
-			expect((await collect(await repo.objects.read({ asset: v2.ref, object: "source" }))).toString("utf8")).toBe("V3");
-			await repo.close();
+			// 捕获后删除工作目录：已发布内容不受影响（assets.md §5.3）。
+			ws.dispose();
+			const text = await (async () => {
+				const stream = await repo.read.readPayload("durable@1", "program.js");
+				const chunks: Uint8Array[] = [];
+				for await (const chunk of stream) chunks.push(chunk);
+				return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
+			})();
+			expect(text).toBe(PROGRAM_SOURCE);
 		} finally {
-			cleanup();
-		}
-	});
-
-	it("零字节对象可暂存与发布；暂存目录独占（payload 命名固定，不依赖 key 的路径安全性）", async () => {
-		const { dir, cleanup } = tempDir("mcw-a2-");
-		try {
-			const repo = createRepo(dir);
-			const object = await repo.objects.stage({ requestId: "req-1", key: "../escape" }, byteStream(""));
-			expect(object.byteLength).toBe(0);
-			const record = await repo.put({
-				requestId: "req-1",
-				name: "empty",
-				kind: "blueprint",
-				content: blueprintContent("../escape"),
-				schema: "assets.blueprint@1",
-				objects: { "../escape": object },
-				requiredAssets: [],
-				evidence: [],
-				sources: [],
-			});
-			const received = await collect(await repo.objects.read({ asset: record.ref, object: "../escape" }));
-			expect(received.byteLength).toBe(0);
-			await repo.close();
-		} finally {
-			cleanup();
+			dispose();
 		}
 	});
 });

@@ -4,8 +4,8 @@
 
 ## 0. 事实基线（2026-10-16 核实）
 
-- Minecraft 在本仓库**零实现**：`src/`、`.uina/` 均无 minecraft/mineflayer 代码。
-- 设计来源：主工作区 `E:/Uina/Uina/docs/proposals/mc/`（README/design/contracts/public-api/research + modules/driver.md、world.md、assets.md）。**该目录被 gitignore，worktree 内不存在；一律用绝对路径读主工作区。**
+- Minecraft 真实游戏执行仍未接入；当前仓库已有 Driver、World、Assets 的 fake/本地实现和 contracts 桩，`executor/index.ts`、`worlddef/index.ts` 仍未实现，真实 Mineflayer/服务器仍未验收。
+- 总设计来源仍为主工作区 `E:/Uina/Uina/docs/proposals/mc/`（README/design/contracts/public-api/research + modules/driver.md、world.md、assets.md、runtime.md）；Program 的模块详细设计按本次目录约定落在 `.uina/worlds/minecraft/modules/program.md`，该文件是 Program 内部唯一设计源。
 - 已有可复用接缝：`src/extensions/world-framework/`（WorldDef/ActionDef、五态 ToolExecutionResult、`ctx.expose("body.endpoint:"+bodyId)` 急停门、`emitEvent` 事件递送、`worldDataDir` 数据目录）。Minecraft 以普通 World 形态接入，**不改 Core**。
 - 唯一例外：`tool_result_recorded` 通用事实需 Core 变更，当前源码没有——凡依赖它的递达保证一律标记为 Runtime/Core 依赖，未实现前不得宣称。
 
@@ -20,6 +20,7 @@
 | `driver/**` | Driver AI | Mineflayer 适配、身体资格、控制、反馈、ClientFactsPort 实现、fake bot 测试替身 |
 | `world/**` | World AI | 证据接收/ACK、查询切面、Watch 水位、SQLite 历史、领域记录、保留 |
 | `assets/**` | Assets AI | 资产仓库、版本/CAS/请求账本、字节对象、强证据保留 |
+| `modules/program.md` | **lead 独占** | Program 执行域、桥接、普通 JS/Body/World/Assets 接缝、取消/退役和验收设计；不实施业务代码 |
 | `tests/`（仓库根 `tests/minecraft-*.test.ts`） | 按前缀划属：`minecraft-driver-*` → Driver；`minecraft-world-*` → World；`minecraft-assets-*` → Assets；`minecraft-contracts*` / 其他 minecraft 前缀 → lead | 测试文件名即所有权；禁止跨写他人测试文件 |
 
 规则：

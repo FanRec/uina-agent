@@ -10,8 +10,8 @@
 
 import type { ClientFactsPort } from "../contracts/client-facts.js";
 import type { WorldEvidencePort, WorldPort } from "../contracts/world.js";
-import { WorldImpl } from "./internal/world-impl.js";
 import { SqliteWorkerStore, UnavailableWorldStore, type WorldStore } from "./internal/store.js";
+import { WorldImpl } from "./internal/world-impl.js";
 
 export interface WorldDeps {
 	readonly facts: ClientFactsPort;

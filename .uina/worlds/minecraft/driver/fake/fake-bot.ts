@@ -14,6 +14,7 @@
  * - 库存点击先做本地预测再"发包"（acceptClick 顺序）。
  */
 
+import type { Key } from "../../contracts/body.js";
 import type {
 	BotBlockInfo,
 	BotBlockPos,
@@ -27,7 +28,6 @@ import type {
 	BotWindowData,
 	ClientBot,
 } from "../internal/bot-shape.js";
-import type { Key } from "../../contracts/body.js";
 
 type Listener = (...args: never[]) => void;
 

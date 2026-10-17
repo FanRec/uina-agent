@@ -6,12 +6,12 @@
  * 查询 ref/输入/输出在 descriptor 内发布，不让消费方猜开放 JSON。
  */
 
-import type { ClientFactView } from "../../contracts/client-facts.js";
-import type { QueryDescriptor } from "../../contracts/callables.js";
 import type { BlockTarget } from "../../contracts/body.js";
-import type { DependencyKind } from "./invalidation.js";
-import type { Fact, JsonValue, Ref } from "../../contracts/values.js";
+import type { QueryDescriptor } from "../../contracts/callables.js";
+import type { ClientFactView } from "../../contracts/client-facts.js";
 import { CallFailureError } from "../../contracts/errors.js";
+import type { Fact, JsonValue, Ref } from "../../contracts/values.js";
+import type { DependencyKind } from "./invalidation.js";
 
 export interface QueryDefinition {
 	descriptor: QueryDescriptor;

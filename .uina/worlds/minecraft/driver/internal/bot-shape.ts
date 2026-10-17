@@ -13,8 +13,8 @@
  * 这是内部接缝，不是公开合同：真实适配层在 M5 由 lead 批准依赖后实现同一形状。
  */
 
-import type { JsonValue, Ref } from "../../contracts/values.js";
 import type { Key } from "../../contracts/body.js";
+import type { JsonValue, Ref } from "../../contracts/values.js";
 
 export interface BotVec3 {
 	x: number;

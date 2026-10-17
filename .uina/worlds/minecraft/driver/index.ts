@@ -10,16 +10,15 @@
  */
 
 import type { BodySession, ControlOwner, PlayerPort } from "../contracts/body.js";
-import type { ClientFactsPort } from "../contracts/client-facts.js";
-import type { ClientFactScope } from "../contracts/client-facts.js";
-import type { EffectReceipt, Fact, JsonValue, Ref } from "../contracts/values.js";
+import type { ClientFactScope, ClientFactsPort } from "../contracts/client-facts.js";
 import { CallFailureError } from "../contracts/errors.js";
-import { controlInvalid, sourceUnavailable } from "./internal/failure.js";
-import { WriteGate, type HostCallVerifier } from "./internal/gate.js";
+import type { EffectReceipt, Fact, JsonValue, Ref } from "../contracts/values.js";
+import { type BodyDeps, BodySessionImpl } from "./internal/body.js";
+import type { ClientBot } from "./internal/bot-shape.js";
 import { ClientHost } from "./internal/client-host.js";
 import { defaultClock, type MonotonicClock } from "./internal/facts.js";
-import { BodySessionImpl, type BodyDeps } from "./internal/body.js";
-import type { ClientBot } from "./internal/bot-shape.js";
+import { controlInvalid, sourceUnavailable } from "./internal/failure.js";
+import { type HostCallVerifier, WriteGate } from "./internal/gate.js";
 
 export interface DriverConfig {
 	/** 服务器地址（连接位置，不是世界身份）。 */

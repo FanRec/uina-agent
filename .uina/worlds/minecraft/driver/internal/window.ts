@@ -12,8 +12,12 @@
  */
 
 import type { StackExpectation, WindowSession, WindowSnapshot } from "../../contracts/body.js";
-import type { EffectReceipt, Fact, JsonValue, Ref } from "../../contracts/values.js";
 import { CallFailureError } from "../../contracts/errors.js";
+import type { EffectReceipt, Fact, JsonValue, Ref } from "../../contracts/values.js";
+import type { BodyDeps } from "./body.js";
+import type { BotItemStack, BotWindowData, ClientBot } from "./bot-shape.js";
+import type { ClientHost } from "./client-host.js";
+import { itemKey, utcNow, WINDOW_SCHEMA } from "./facts.js";
 import {
 	controlInvalid,
 	cursorNotEmpty,
@@ -22,11 +26,7 @@ import {
 	windowChanged,
 	windowGestureActive,
 } from "./failure.js";
-import { WriteGate, type BodyPermit, type OperationRecord } from "./gate.js";
-import type { ClientHost } from "./client-host.js";
-import type { ClientBot, BotItemStack, BotWindowData } from "./bot-shape.js";
-import { WINDOW_SCHEMA, itemKey, utcNow } from "./facts.js";
-import type { BodyDeps } from "./body.js";
+import { type BodyPermit, type OperationRecord, WriteGate } from "./gate.js";
 
 export interface WindowSessionDeps {
 	host: ClientHost;

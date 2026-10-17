@@ -3,7 +3,7 @@
  * 不在 Driver 内散落第二份错误码含义。
  */
 
-import { CallFailureError, type CallFailureCode } from "../../contracts/errors.js";
+import { type CallFailureCode, CallFailureError } from "../../contracts/errors.js";
 import type { Progress, Ref } from "../../contracts/values.js";
 
 export function controlInvalid(message: string, effects: Ref[] = []): CallFailureError {

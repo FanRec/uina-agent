@@ -12,9 +12,9 @@
  * 只做代次与状态核验。接缝形状已固定，M2/M3 Executor 接入时替换实现，不改 Driver 结构。
  */
 
-import type { Ref } from "../../contracts/values.js";
 import type { ControlOwner } from "../../contracts/body.js";
 import { CallFailureError } from "../../contracts/errors.js";
+import type { Ref } from "../../contracts/values.js";
 import { controlInvalid, referenceStale } from "./failure.js";
 
 export type OperationKind =

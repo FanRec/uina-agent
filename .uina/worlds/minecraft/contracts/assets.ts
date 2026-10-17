@@ -1,216 +1,308 @@
 /**
- * 资产仓库（AssetRepository）合同（lead 固定合同）。
- * 唯一设计来源：docs/proposals/mc/public-api.md §6.3。
+ * Assets 公共合同（2026-10-17 设计迁移版）。
+ *
+ * 唯一设计来源：docs/proposals/mc/modules/assets.md（2026-10-17 修订）。
+ * 发布合同：工作文件/导入 → 受管 staging → SQLite 目录/CAS + 不可变文件包。
+ * Runtime 只经 ProgramSourcePort/EvidenceExportPort 导出有限材料；
+ * 旧的 put/revise、RuntimeAssetSourcePort.capture、跨库 owner O/C、资产侧 retain/release 已废弃。
+ *
+ * 本目录由技术负责人独占修改；变更流程见 ../LEAD.md。
  */
 
-import type { ProgramDefinition } from "./program.js";
+import type { CallableDescriptor } from "./callables.js";
+import type { ProgramBinding } from "./program.js";
 import type { ExactRef, JsonValue, Ref, Vec3 } from "./values.js";
 
-export type CellTarget =
-	| { kind: "set"; block: string; state: Record<string, string | number | boolean>; data?: JsonValue }
-	| { kind: "clear" | "preserve" | "unknown" };
+export type Digest = `sha256:${string}`;
+export type AssetKind = "program" | "blueprint" | "experience";
+/** 全局 ExactRef 形状沿用 contracts/values.ts；Assets 侧只接受能解析为 name@正整数的值（assets.md §8.1）。 */
+export type { ExactRef, JsonValue, Ref, Vec3 };
 
-export interface BlueprintTarget {
-	gameDataVersion: string;
-	/** 局部整数格，min 包含、max 不包含。 */
-	bounds: { min: Vec3; max: Vec3 };
-	defaultCell: "preserve";
-	cells: { at: Vec3; target: CellTarget }[];
+export interface RepositoryRef {
+	repositoryId: string;
+	name: string;
+	version: number;
 }
 
-export interface BlueprintDefinition {
+export interface FormatSchema {
+	family: string;
+	version: number;
+}
+
+// ---- 包与 Manifest（assets.md §4/§6.1）----
+
+export interface PayloadEntry {
+	path: string;
+	mediaType: string;
+	byteLength: number;
+	digest: Digest;
+}
+
+export interface AuthorMetadata {
+	title: string;
 	summary: string;
-	representation:
-		| { kind: "source"; object: string; formatHint?: string }
-		| {
-				kind: "target";
-				target: { kind: "inline"; value: BlueprintTarget } | { kind: "object"; object: string; schema: ExactRef };
-		  };
+	tags: string[];
 }
 
-export interface BlueprintInterpretation {
-	source: ExactRef;
-	decoder: ExactRef;
-	policy: { ref: ExactRef; input: JsonValue };
+export interface ProgramManifest {
+	format: FormatSchema;
+	/** 不含 ref/implementation；投影 Callable 时补入。 */
+	descriptor: Omit<CallableDescriptor, "ref" | "implementation">;
+	/** 仅已发布 Program 资产依赖（name@正整数）。 */
+	dependencies: ExactRef[];
+	/** 提供时是唯一、闭合的裸名解析表。 */
+	bindings?: ProgramBinding[];
+	sourceFile: "program.js";
+	sourceForm: "async-function-body";
 }
+
+export type BlueprintDefinition =
+	| { representation: "raw"; sourceFile: string; formatHint?: string }
+	| { representation: "target"; schema: FormatSchema; targetFile: "target.json" };
 
 export interface ExperienceDefinition {
 	context: string;
+	question: string;
 	judgment: string;
 	method: string;
-	appliesTo: { assets: ExactRef[]; conditions: string[] };
+	stance: "hypothesis" | "supported" | "disputed" | "withdrawn";
+	appliesTo: { assets: ExactRef[]; conditions: string[]; minecraft: string[] };
 	support: Ref[];
-	counterexamples: { description: string; evidence: Ref[] }[];
+	counterexamples: Array<{ description: string; evidence: Ref[] }>;
 }
 
-export interface AssetContentMap {
-	program: ProgramDefinition;
-	blueprint: BlueprintDefinition;
-	experience: ExperienceDefinition;
-}
+export type ImportDefinition =
+	| { kind: "program"; metadata: AuthorMetadata; definition: ProgramManifest }
+	| { kind: "blueprint"; metadata: AuthorMetadata; definition: BlueprintDefinition }
+	| { kind: "experience"; metadata: AuthorMetadata; sourceFile: "experience.json"; notesFile?: "notes.md" };
 
-export type AssetKind = keyof AssetContentMap;
+export type AuthorManifest = ImportDefinition;
 
-export interface AssetEvidence {
-	owner: "world" | "runtime";
-	ref: Ref;
-}
+/** 工作区 manifest.json 的作者可编辑形状；editing 是来源声明，不是可信历史。 */
+export type WorkspaceManifest = AuthorManifest & {
+	editing?: { baseRef: RepositoryRef | null };
+};
 
-export type AssetSource =
-	| { kind: "run"; run: Ref; segment: Ref; record: Ref; revision: number; sourceDigest: string }
-	| { kind: "asset"; ref: ExactRef }
-	| { kind: "import"; name: string; location?: string };
-
-export interface AssetObject {
-	ref: Ref;
-	digest: string;
+export interface ImportedFile {
+	path: string;
+	mediaType: string;
+	bytes: AsyncIterable<Uint8Array>;
 	byteLength: number;
-	mediaType?: string;
-	fileName?: string;
+	/** 声明身份必须与接收的实际字节相符。 */
+	digest: Digest;
 }
 
-export interface AssetWriteMetadata {
-	schema: ExactRef;
-	objects: Record<string, AssetObject>;
-	requiredAssets: ExactRef[];
-	evidence: AssetEvidence[];
-	sources: AssetSource[];
+export interface ImportSource {
+	kind: "import";
+	definition: AuthorManifest;
+	/** 仅 payload，不能注入已发布 Manifest。 */
+	files: ImportedFile[];
+	label?: string;
 }
 
-export interface AssetEnvelope extends AssetWriteMetadata {
+export interface WorkspaceSource {
+	kind: "workspace";
+	/** 相对宿主绑定 workspaceRoot 的普通目录；不是任意系统路径。 */
+	directory: string;
+}
+
+export type PublishSource = WorkspaceSource | ImportSource;
+
+export interface PublishOperation {
+	/** 可信接入生成并在传输重试中复用；模型不填。 */
+	id: string;
+	/** 本次声明发布文件的不可变输入身份。 */
+	inputDigest: Digest;
+}
+
+export interface SourceLink {
+	owner: "runtime" | "world" | "file" | "external";
+	ref: Ref;
+	description: string;
+}
+
+export interface PublishRequest {
+	operation?: PublishOperation;
+	name: string;
+	kind: AssetKind;
+	expectedRef: ExactRef | null;
+	/** 默认 revise。回退/替换当前 head 须显式 replace_current，仍对当前 head CAS。 */
+	intent?: "revise" | "replace_current";
+	source: PublishSource;
+	sourceLinks?: SourceLink[];
+}
+
+export interface PublishResult {
 	ref: ExactRef;
-	digest: string;
-	summary: string;
-	basedOn?: ExactRef;
-	reason?: string;
+	/** 发布前的 head（线性历史前驱）。 */
+	previousRef: ExactRef | null;
+	/** WorkspaceManifest.editing.baseRef 的声明投影，不证明实际派生。 */
+	derivedFrom: RepositoryRef | null;
+	packageDigest: Digest;
+	objectId: string;
+	packagePath: string;
+	head: { ref: ExactRef; changedFrom: ExactRef | null };
 }
 
-export type AssetRecord<K extends AssetKind = AssetKind> = {
-	[P in K]: AssetEnvelope & { kind: P; content: AssetContentMap[P] };
-}[K];
+// ---- 从运行段发布（assets.md §6.2）----
 
-export type AssetValue = {
-	[K in AssetKind]: AssetWriteMetadata & { kind: K; content: AssetContentMap[K] };
-}[AssetKind];
+export interface RunSegmentRequest {
+	operation?: PublishOperation;
+	name: string;
+	expectedRef: ExactRef | null;
+	run: Ref;
+	segment: Ref;
+	/** Runtime 的不可变截面；重试不得重新选择"最新段状态"。 */
+	record: Ref;
+	intent?: "revise" | "replace_current";
+	authorMetadata: AuthorMetadata;
+}
 
-export type AssetDraft = AssetValue & { requestId: Ref; name: string };
-export type AssetRevision = AssetValue & { requestId: Ref; expectedRef: ExactRef; reason: string };
+export interface ProgramSegmentExport {
+	implementation: "program";
+	sourceBytes: Uint8Array | AsyncIterable<Uint8Array>;
+	manifestBytes: Uint8Array | AsyncIterable<Uint8Array>;
+	effectiveBindings: ProgramBinding[];
+	nativeEnvironment: Ref;
+	record: Ref;
+	sourceDigest: Digest;
+	sourceRef: Ref;
+}
+
+export interface NativeSegmentExport {
+	implementation: "native";
+	/** 执行时冻结的完整 descriptor，含确切 ref。 */
+	descriptor: CallableDescriptor;
+	nativeEnvironment: Ref;
+	record: Ref;
+	/** Runtime 当时使用的实现身份，不是包装源码摘要。 */
+	implementationDigest: Digest;
+}
+
+export type ProgramExport = ProgramSegmentExport | NativeSegmentExport;
+
+/** Runtime 的可信最小导出口；组合根注入，脚本不可伪造。 */
+export interface ProgramSourcePort {
+	exportSegment(request: { run: Ref; segment: Ref; record: Ref }, signal?: AbortSignal): Promise<ProgramExport>;
+}
+
+// ---- Evidence（assets.md §10.2）----
+
+export interface AttachEvidenceRequest {
+	ref: ExactRef;
+	/** 精确记录/观察引用；只表达选择，不证明归属或内容。 */
+	sourceRef: Ref;
+	persistence: "link" | "copy";
+}
+
+/** 仅宿主进程内返回类型；绝不接受模型 JSON 反序列化为该对象。 */
+export interface TrustedEvidenceExport {
+	owner: "runtime" | "world";
+	originalRef: Ref;
+	schema: FormatSchema;
+	completeness: "self_contained" | "partial" | "link_only";
+	observedAt?: string;
+	unknowns: string[];
+	metadata: JsonValue;
+	payload?: AsyncIterable<Uint8Array>;
+}
+
+export interface EvidenceExportPort {
+	exportEvidence(
+		request: { sourceRef: Ref; persistence: "link" | "copy" },
+		signal?: AbortSignal,
+	): Promise<TrustedEvidenceExport>;
+}
+
+export interface EvidenceCopy {
+	evidenceId: number;
+	owner: "runtime" | "world";
+	originalRef: Ref;
+	schema: FormatSchema;
+	payloadPath?: string;
+	payloadDigest?: Digest;
+	completeness: "self_contained" | "partial" | "link_only";
+	capturedAt: string;
+	observedAt?: string;
+	unknowns: string[];
+	metadata: JsonValue;
+}
+
+// ---- 读视图与写视图（assets.md §11.1）----
 
 export interface AssetSummary {
-	kind: AssetKind;
 	ref: ExactRef;
-	schema: ExactRef;
-	digest: string;
-	summary: string;
-}
-
-export interface AssetSearch {
-	query: string;
-	kind?: AssetKind;
-	versions?: "heads" | "all";
-	cursor?: string;
-}
-
-export interface AssetInspection extends AssetEnvelope {
+	name: string;
 	kind: AssetKind;
-	content: JsonValue;
-	schemaAvailability: { state: "available" | "unavailable" | "unknown"; reasons: string[] };
+	title: string;
+	summary: string;
+	tags: string[];
 }
+
+export interface AssetRevisionView extends AssetSummary {
+	previousRef: ExactRef | null;
+	derivedFrom: RepositoryRef | null;
+	format: FormatSchema;
+	packageDigest: Digest;
+	requires: ExactRef[];
+	sources: SourceLink[];
+	evidence: EvidenceCopy[];
+	files: PayloadEntry[];
+}
+
+export interface AssetInspection {
+	ref: ExactRef;
+	format: FormatSchema;
+	integrity: "verified" | "corrupt" | "unknown";
+	formatSupport: "available" | "unavailable" | "unknown";
+	diagnostics: { code: string; message: string; path?: string }[];
+}
+
+export type OperationResult =
+	| { operationId: string; state: "committed"; result: PublishResult }
+	| { operationId: string; state: "absent" | "unknown"; reason?: string };
+
+/** 基础可读合同；read Callable 收到的是只含这些方法的独立冻结包装。 */
+export interface ReadLibrary {
+	resolve(name: string): Promise<{ name: string; kind: AssetKind; ref: ExactRef | null }>;
+	read(ref: ExactRef): Promise<AssetRevisionView>;
+	readPayload(ref: ExactRef, path: string): Promise<AsyncIterable<Uint8Array>>;
+	inspect(ref: ExactRef): Promise<AssetInspection>;
+	search(query: { text?: string; kind?: AssetKind; tags?: string[]; limit?: number }): Promise<AssetSummary[]>;
+	listVersions(name: string, afterVersion?: number): Promise<AssetSummary[]>;
+}
+
+/** act Callable 才可取得；写入口每次准入和提交再次检查真实 scope。 */
+export interface WriteLibrary extends ReadLibrary {
+	publish(request: PublishRequest, signal?: AbortSignal): Promise<PublishResult>;
+	publishFromRun(request: RunSegmentRequest, signal?: AbortSignal): Promise<PublishResult>;
+	getOperation(operationId: string): Promise<OperationResult>;
+	attachEvidence(request: AttachEvidenceRequest, signal?: AbortSignal): Promise<EvidenceCopy>;
+}
+
+/** 唯一业务实现；ReadLibrary/WriteLibrary 视图仅委托到它，不复制状态。 */
+export interface AssetRepository extends WriteLibrary {}
 
 export type AssetErrorCode =
-	| "ASSET_EXISTS"
+	| "ASSET_INVALID"
 	| "ASSET_NOT_FOUND"
 	| "ASSET_KIND_MISMATCH"
+	| "REVISION_CONFLICT"
+	| "ASSET_SOURCE_CHANGED"
+	| "ASSET_SOURCE_UNAVAILABLE"
+	| "ASSET_DEPENDENCY_UNAVAILABLE"
+	| "AIR_POLICY_REQUIRED"
 	| "SCHEMA_UNAVAILABLE"
-	| "ASSET_INVALID"
 	| "ASSET_CORRUPT"
 	| "OBJECT_UNAVAILABLE"
-	| "EVIDENCE_UNAVAILABLE"
-	| "ASSET_DEPENDENCY_UNAVAILABLE"
-	| "REVISION_CONFLICT"
-	| "REQUEST_CONFLICT"
-	| "STORE_UNAVAILABLE";
+	| "OPERATION_CONFLICT"
+	| "ASSET_STORE_UNAVAILABLE"
+	| "ASSET_RESOURCE_EXHAUSTED";
 
 export interface AssetFailure extends Error {
 	code: AssetErrorCode;
 	/** 该确切版本已确认发布但后续步骤失败；不能当"未保存"重新创建。 */
 	committedRef?: ExactRef;
+	/** 五态边界（assets.md §6.4 取消时点表）；缺省按 failed 解释。 */
+	status?: "failed" | "cancelled" | "unknown" | "not_started";
 }
-
-export interface AssetReadRepository {
-	read<K extends AssetKind>(kind: K, ref: ExactRef): Promise<AssetRecord<K>>;
-	search(request: AssetSearch): Promise<{ items: AssetSummary[]; next?: string }>;
-	inspect(ref: ExactRef): Promise<AssetInspection>;
-}
-
-export interface AssetRepository extends AssetReadRepository {
-	put(request: AssetDraft): Promise<AssetRecord>;
-	revise(request: AssetRevision): Promise<AssetRecord>;
-}
-
-export interface ScriptAssetRepository extends AssetReadRepository {
-	put(request: Omit<AssetDraft, "requestId">): Promise<AssetRecord>;
-	revise(request: Omit<AssetRevision, "requestId">): Promise<AssetRecord>;
-}
-
-/** 仅注入可信的持久发布/导入导出所有者；脚本不获得 stage/read 流代理。 */
-export interface AssetObjectPort {
-	stage(
-		request: { requestId: Ref; key: string; mediaType?: string; fileName?: string },
-		bytes: AsyncIterable<Uint8Array>,
-	): Promise<AssetObject>;
-	read(request: {
-		asset: ExactRef;
-		object: string;
-		range?: { offset: number; length: number };
-	}): Promise<AsyncIterable<Uint8Array>>;
-}
-
-export type ProgramRecord = AssetRecord<"program">;
-
-export interface ProgramSaveRequest {
-	requestId: Ref;
-	name: string;
-	definition: ProgramDefinition;
-	evidence: AssetEvidence[];
-	sources?: AssetSource[];
-	requiredAssets?: ExactRef[];
-}
-
-export interface ProgramSaveFromRunRequest {
-	requestId: Ref;
-	name: string;
-	run: Ref;
-	segment: Ref;
-	evidence?: AssetEvidence[];
-}
-
-export interface ProgramReviseRequest {
-	requestId: Ref;
-	expectedRef: ExactRef;
-	definition: ProgramDefinition;
-	reason: string;
-	evidence: AssetEvidence[];
-	sources?: AssetSource[];
-	requiredAssets?: ExactRef[];
-}
-
-export interface ProgramAssets {
-	save(request: ProgramSaveRequest): Promise<ProgramRecord>;
-	saveFromRun(request: ProgramSaveFromRunRequest): Promise<ProgramRecord>;
-	read(ref: ExactRef): Promise<ProgramRecord>;
-	revise(request: ProgramReviseRequest): Promise<ProgramRecord>;
-}
-
-/** 脚本侧便利门面：requestId 由运行管理生成，脚本不填。 */
-export interface ScriptAssets {
-	readonly repository: ScriptAssetRepository;
-	save(request: Omit<ProgramSaveRequest, "requestId">): Promise<ProgramRecord>;
-	saveFromRun(request: Omit<ProgramSaveFromRunRequest, "requestId">): Promise<ProgramRecord>;
-	read(ref: ExactRef): Promise<ProgramRecord>;
-	revise(request: Omit<ProgramReviseRequest, "requestId">): Promise<ProgramRecord>;
-}
-
-export type ReadAssets = Pick<ScriptAssets, "read"> & {
-	readonly repository: Pick<ScriptAssetRepository, "read" | "search" | "inspect">;
-};

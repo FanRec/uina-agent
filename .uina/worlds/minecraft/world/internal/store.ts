@@ -15,9 +15,9 @@
  *   分页 token 不因保留记账而失效，历史 watcher 也不因此被唤醒。
  */
 
-import { Worker } from "node:worker_threads";
-import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 import type { CapturedClientFact } from "../../contracts/client-facts.js";
 import type { GapRecord } from "./reception.js";
 

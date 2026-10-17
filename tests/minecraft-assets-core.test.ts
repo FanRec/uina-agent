@@ -1,412 +1,373 @@
 /**
- * Minecraft Assets S-A1：仓库核心——put/revise CAS、名称头、摘要规范化、
- * 三 kind 校验、依赖存在性、证据保留与检索（LEAD.md §3 Assets 切片 1）。
+ * Assets 仓库核心（S-A1 新合同版）：publish CAS、名称头、kind、依赖、读视图。
  */
 
 import { describe, expect, it } from "vitest";
-import { createAssetRepository } from "../.uina/worlds/minecraft/assets/index.js";
-import type { AssetDraft } from "../.uina/worlds/minecraft/contracts/assets.js";
-import type { ProgramDefinition } from "../.uina/worlds/minecraft/contracts/program.js";
-import type { CellTarget } from "../.uina/worlds/minecraft/contracts/assets.js";
-import type { ExactRef } from "../.uina/worlds/minecraft/contracts/values.js";
 import {
-	blueprintContent,
-	byteStream,
+	authorMetadata,
 	createRepo,
+	createWorkspace,
 	expectAssetFailure,
-	experienceContent,
-	experienceDraft,
-	fakeEvidence,
-	programContent,
-	programDraft,
-	programRevision,
-	tempDir,
+	PROGRAM_SOURCE,
+	programManifest,
 } from "./minecraft-assets-helpers.js";
 
-describe("minecraft assets 仓库核心（S-A1）", () => {
-	it("put 创建 @1 并可读回；digest 稳定；read kind 不符报 ASSET_KIND_MISMATCH", async () => {
-		const { dir, cleanup } = tempDir("mcw-a1-");
-		try {
-			const repo = createRepo(dir);
-			const draft = programDraft("req-1", "user.parkour");
-			const record = await repo.put(draft);
-			expect(record.ref).toBe("user.parkour@1");
-			expect(record.summary).toBe("测试程序");
-			expect(record.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
-			expect(record.reason).toBeUndefined();
-
-			const read = await repo.read("program", "user.parkour@1");
-			expect(read.content.source).toBe("return input.x;");
-			expect(read.digest).toBe(record.digest);
-			await expectAssetFailure(() => repo.read("blueprint", "user.parkour@1"), "ASSET_KIND_MISMATCH");
-			await repo.close();
-		} finally {
-			cleanup();
-		}
+function workspaceProgram(ws: ReturnType<typeof createWorkspace>, name: string, source = PROGRAM_SOURCE): string {
+	return ws.createDir(name, {
+		"manifest.json": JSON.stringify({
+			kind: "program",
+			metadata: authorMetadata(name),
+			definition: programManifest(name),
+		}),
+		"program.js": source,
 	});
+}
 
-	it("重复创建报 ASSET_EXISTS；revise CAS 成功得 @2、reason 入包；错误 expectedRef 报冲突", async () => {
-		const { dir, cleanup } = tempDir("mcw-a1-");
+describe("minecraft assets core (publish/read)", () => {
+	it("workspace 创建得到 name@1；重复创建 CAS 拒绝", async () => {
+		const ws = createWorkspace();
+		const { repo, dispose } = createRepo({ workspaceRoot: ws.root });
 		try {
-			const repo = createRepo(dir);
-			await repo.put(programDraft("req-1", "user.parkour"));
-			await expectAssetFailure(() => repo.put(programDraft("req-2", "user.parkour")), "ASSET_EXISTS");
-
-			const revised = await repo.revise({
-				requestId: "req-3",
-				expectedRef: "user.parkour@1",
-				reason: "修正起跳判定",
+			const dir = workspaceProgram(ws, "gather.wood");
+			const result = await repo.write.publish({
+				name: "gather.wood",
 				kind: "program",
-				content: programContent("return input.y;"),
-				schema: "assets.program@1",
-				objects: {},
-				requiredAssets: [],
-				evidence: [],
-				sources: [],
+				expectedRef: null,
+				source: { kind: "workspace", directory: dir },
 			});
-			expect(revised.ref).toBe("user.parkour@2");
-			expect(revised.reason).toBe("修正起跳判定");
-			expect(revised.digest).not.toBe((await repo.read("program", "user.parkour@1")).digest);
+			expect(result.ref).toBe("gather.wood@1");
+			expect(result.previousRef).toBeNull();
+			expect(result.head.ref).toBe("gather.wood@1");
 
-			await expectAssetFailure(
-				() => repo.revise({ ...programDraft("req-4", "ignored"), expectedRef: "user.parkour@1", reason: "过期基准" }),
-				"REVISION_CONFLICT",
-			);
-			await expectAssetFailure(
-				() => repo.revise({ ...programDraft("req-5", "ignored"), expectedRef: "ghost@1", reason: "不存在" }),
-				"ASSET_NOT_FOUND",
-			);
-			// 旧版本仍可读（不可变版本历史）。
-			expect((await repo.read("program", "user.parkour@1")).content.source).toBe("return input.x;");
-			await repo.close();
+			// 已存在：expectedRef=null 的创建再次失败（head CAS）。
+			await expect(
+				repo.write.publish({
+					name: "gather.wood",
+					kind: "program",
+					expectedRef: null,
+					source: { kind: "workspace", directory: dir },
+				}),
+			).rejects.toMatchObject(expectAssetFailure("ASSET_INVALID"));
 		} finally {
-			cleanup();
+			ws.dispose();
+			dispose();
 		}
 	});
 
-	it("名称校验：大写、斜杠、@、空串、保留设备名、首字符点均拒绝", async () => {
-		const { dir, cleanup } = tempDir("mcw-a1-");
+	it("revise：editing.baseRef 必须与 expectedRef 一致；CAS 成功得 @2；冲突 REVISION_CONFLICT", async () => {
+		const ws = createWorkspace();
+		const { repo, dispose } = createRepo({ workspaceRoot: ws.root });
 		try {
-			const repo = createRepo(dir);
-			for (const name of ["User.parkour", "a/b", "a@1", "", "con", "Con.txt", "com1", "..", ".hidden", "a b"]) {
-				await expectAssetFailure(() => repo.put(programDraft(`req-${name}`, name)), "ASSET_INVALID");
-			}
-			await repo.close();
-		} finally {
-			cleanup();
-		}
-	});
-
-	it("内容摘要规范化：同内容不同键序跨资产得到相同 digest；evidence/sources 不改变内容摘要", async () => {
-		const { dir, cleanup } = tempDir("mcw-a1-");
-		try {
-			const repo = createRepo(dir);
-			// 两个程序内容语义相同但 descriptor 键插入顺序不同。
-			const a: AssetDraft = programDraft("req-a", "alpha", programContent("return 1;", "同内容"));
-			const bContent = {
-				descriptor: {
-					errors: [],
-					requires: [],
-					examples: [],
-					completion: { description: "执行完成", scope: "execution" as const },
-					access: "act" as const,
-					output: { type: "object" },
-					input: { type: "object" },
-					summary: "同内容",
-				},
-				source: "return 1;",
-				dependencies: [],
+			const manifest = {
+				kind: "program",
+				metadata: authorMetadata("collect"),
+				definition: programManifest("collect"),
 			};
-			const b = programDraft("req-b", "beta", bContent);
-			const recordA = await repo.put(a);
-			const recordB = await repo.put(b);
-			expect(recordA.digest).toBe(recordB.digest);
+			const dir = ws.createDir("collect", {
+				"manifest.json": JSON.stringify(manifest),
+				"program.js": PROGRAM_SOURCE,
+			});
+			const first = await repo.write.publish({
+				name: "collect",
+				kind: "program",
+				expectedRef: null,
+				source: { kind: "workspace", directory: dir },
+			});
+			expect(first.ref).toBe("collect@1");
 
-			// evidence/sources 属于出处，不参与内容摘要。
-			const withSources = {
-				...experienceDraft("req-c", "gamma"),
-				sources: [{ kind: "asset" as const, ref: "alpha@1" as ExactRef }],
+			// 缺少 editing.baseRef 声明的修订 → REVISION_CONFLICT。
+			await expect(
+				repo.write.publish({
+					name: "collect",
+					kind: "program",
+					expectedRef: "collect@1",
+					source: { kind: "workspace", directory: dir },
+				}),
+			).rejects.toMatchObject(expectAssetFailure("REVISION_CONFLICT"));
+
+			// 修订：作者更新 baseRef 声明 + 源码。
+			ws.createDir("collect", {
+				"manifest.json": JSON.stringify({
+					...manifest,
+					editing: { baseRef: { repositoryId: repo.catalog.repositoryId, name: "collect", version: 1 } },
+				}),
+				"program.js": PROGRAM_SOURCE + "// v2\n",
+			});
+			const second = await repo.write.publish({
+				name: "collect",
+				kind: "program",
+				expectedRef: "collect@1",
+				source: { kind: "workspace", directory: dir },
+			});
+			expect(second.ref).toBe("collect@2");
+			expect(second.previousRef).toBe("collect@1");
+			expect(second.derivedFrom).toMatchObject({ name: "collect", version: 1 });
+
+			// 对旧 head 的并发 CAS 冲突。
+			await expect(
+				repo.write.publish({
+					name: "collect",
+					kind: "program",
+					expectedRef: "collect@1",
+					source: { kind: "workspace", directory: dir },
+				}),
+			).rejects.toMatchObject(expectAssetFailure("REVISION_CONFLICT"));
+		} finally {
+			ws.dispose();
+			dispose();
+		}
+	});
+
+	it("replace_current：显式意图跳过 baseRef 声明检查，仍执行 head CAS", async () => {
+		const ws = createWorkspace();
+		const { repo, dispose } = createRepo({ workspaceRoot: ws.root });
+		try {
+			const manifest = {
+				kind: "program",
+				metadata: authorMetadata("rollback.me"),
+				definition: programManifest("rollback.me"),
 			};
-			const recordC = await repo.put(withSources);
-			const plain = experienceContent();
-			const recordD = await repo.put(experienceDraft("req-d", "delta", plain));
-			expect(recordC.digest).toBe(recordD.digest);
-			await repo.close();
+			const dir = ws.createDir("rollback.me", {
+				"manifest.json": JSON.stringify(manifest),
+				"program.js": PROGRAM_SOURCE,
+			});
+			await repo.write.publish({
+				name: "rollback.me",
+				kind: "program",
+				expectedRef: null,
+				source: { kind: "workspace", directory: dir },
+			});
+			const second = await repo.write.publish({
+				name: "rollback.me",
+				kind: "program",
+				expectedRef: "rollback.me@1",
+				intent: "replace_current",
+				source: { kind: "workspace", directory: dir },
+			});
+			expect(second.ref).toBe("rollback.me@2");
+			// 回退：从 @1 内容产生 @3（不移动 head 之外的任何东西）。
+			const third = await repo.write.publish({
+				name: "rollback.me",
+				kind: "program",
+				expectedRef: "rollback.me@2",
+				intent: "replace_current",
+				source: { kind: "workspace", directory: dir },
+			});
+			expect(third.ref).toBe("rollback.me@3");
+			expect(third.previousRef).toBe("rollback.me@2");
 		} finally {
-			cleanup();
+			ws.dispose();
+			dispose();
 		}
 	});
 
-	it("三 kind 结构校验：program 缺 source、blueprint 引用未暂存对象、非法 CellTarget、experience 缺 judgment 均拒绝", async () => {
-		const { dir, cleanup } = tempDir("mcw-a1-");
+	it("kind 首次占用后不可变更；跨 kind 同名拒绝", async () => {
+		const ws = createWorkspace();
+		const { repo, dispose } = createRepo({ workspaceRoot: ws.root });
 		try {
-			const repo = createRepo(dir);
-			// program 缺 source。
-			const broken = programDraft("req-1", "p1");
-			const { source: _source, ...noSource } = broken.content as ProgramDefinition & { source: string };
-			await expectAssetFailure(
-				() => repo.put({ ...broken, content: noSource as unknown as typeof broken.content }),
-				"ASSET_INVALID",
-			);
-
-			// descriptor 携带 ref/implementation 拒绝（投影时才补入）。
-			const withRef = programContent();
-			const withRefDraft = programDraft("req-2", "p2", {
-				...withRef,
-				descriptor: { ...withRef.descriptor, ref: "p2@1", implementation: "program" } as typeof withRef.descriptor,
+			const dir = workspaceProgram(ws, "shared.name");
+			await repo.write.publish({
+				name: "shared.name",
+				kind: "program",
+				expectedRef: null,
+				source: { kind: "workspace", directory: dir },
 			});
-			await expectAssetFailure(() => repo.put(withRefDraft), "ASSET_INVALID");
+			const blueprintDir = ws.createDir("shared.name.bp", {
+				"manifest.json": JSON.stringify({
+					kind: "blueprint",
+					metadata: authorMetadata("bp"),
+					definition: { representation: "raw", sourceFile: "source.schem" },
+				}),
+				"source.schem": "binary-bytes",
+			});
+			await expect(
+				repo.write.publish({
+					name: "shared.name",
+					kind: "blueprint",
+					expectedRef: null,
+					source: { kind: "workspace", directory: blueprintDir },
+				}),
+			).rejects.toMatchObject(expectAssetFailure("ASSET_KIND_MISMATCH"));
+		} finally {
+			ws.dispose();
+			dispose();
+		}
+	});
 
-			// blueprint source 引用未暂存对象。
-			await expectAssetFailure(
-				() =>
-					repo.put({
-						...programDraft("req-3", "b1"),
-						kind: "blueprint",
-						content: { summary: "s", representation: { kind: "source", object: "missing" } },
-					}),
-				"ASSET_INVALID",
+	it("program 依赖必须存在（ASSET_DEPENDENCY_UNAVAILABLE）；存在后通过", async () => {
+		const ws = createWorkspace();
+		const { repo, dispose } = createRepo({ workspaceRoot: ws.root });
+		try {
+			const depDir = workspaceProgram(ws, "dep.base");
+			await repo.write.publish({
+				name: "dep.base",
+				kind: "program",
+				expectedRef: null,
+				source: { kind: "workspace", directory: depDir },
+			});
+
+			const missing = ws.createDir("dep.user", {
+				"manifest.json": JSON.stringify({
+					kind: "program",
+					metadata: authorMetadata("dep.user"),
+					definition: programManifest("dep.user", ["dep.missing@1"]),
+				}),
+				"program.js": PROGRAM_SOURCE,
+			});
+			await expect(
+				repo.write.publish({
+					name: "dep.user",
+					kind: "program",
+					expectedRef: null,
+					source: { kind: "workspace", directory: missing },
+				}),
+			).rejects.toMatchObject(expectAssetFailure("ASSET_DEPENDENCY_UNAVAILABLE"));
+
+			const ok = ws.createDir("dep.user2", {
+				"manifest.json": JSON.stringify({
+					kind: "program",
+					metadata: authorMetadata("dep.user2"),
+					definition: programManifest("dep.user2", ["dep.base@1"]),
+				}),
+				"program.js": PROGRAM_SOURCE,
+			});
+			const result = await repo.write.publish({
+				name: "dep.user2",
+				kind: "program",
+				expectedRef: null,
+				source: { kind: "workspace", directory: ok },
+			});
+			expect(result.ref).toBe("dep.user2@1");
+			const view = await repo.read.read("dep.user2@1");
+			expect(view.requires).toEqual(["dep.base@1"]);
+		} finally {
+			ws.dispose();
+			dispose();
+		}
+	});
+
+	it("读视图：resolve/read/readPayload/inspect/listVersions；payload 流末尾核验", async () => {
+		const ws = createWorkspace();
+		const { repo, dispose } = createRepo({ workspaceRoot: ws.root });
+		try {
+			const dir = workspaceProgram(ws, "read.me");
+			const published = await repo.write.publish({
+				name: "read.me",
+				kind: "program",
+				expectedRef: null,
+				source: { kind: "workspace", directory: dir },
+			});
+
+			const resolved = await repo.read.resolve("read.me");
+			expect(resolved).toMatchObject({ name: "read.me", kind: "program", ref: "read.me@1" });
+
+			const view = await repo.read.read("read.me@1");
+			expect(view.kind).toBe("program");
+			expect(view.files.map((f) => f.path)).toEqual(["program.js"]);
+
+			// 源码逐字节往返。
+			const stream = await repo.read.readPayload("read.me@1", "program.js");
+			const chunks: Uint8Array[] = [];
+			for await (const chunk of stream) chunks.push(chunk);
+			const text = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
+			expect(text).toBe(PROGRAM_SOURCE);
+
+			const inspection = await repo.read.inspect("read.me@1");
+			expect(inspection.integrity).toBe("verified");
+
+			// 不在 Manifest 表中的路径拒绝。
+			await expect(repo.read.readPayload("read.me@1", "not-declared.js")).rejects.toMatchObject(
+				expectAssetFailure("ASSET_INVALID"),
 			);
+			void published;
+		} finally {
+			ws.dispose();
+			dispose();
+		}
+	});
 
-			// blueprint target inline：合法四态通过；非法 kind 拒绝。
-			const targetBase = {
-				gameDataVersion: "1.21",
-				bounds: { min: { x: 0, y: 0, z: 0 }, max: { x: 2, y: 1, z: 2 } },
-				defaultCell: "preserve" as const,
+	it("search/listVersions：head 查询与版本列表", async () => {
+		const ws = createWorkspace();
+		const { repo, dispose } = createRepo({ workspaceRoot: ws.root });
+		try {
+			const manifest = {
+				kind: "program",
+				metadata: authorMetadata("search.target"),
+				definition: programManifest("search.target"),
 			};
-			const goodTarget = {
-				...targetBase,
-				cells: [
-					{ at: { x: 0, y: 0, z: 0 }, target: { kind: "set" as const, block: "stone", state: {} } },
-					{ at: { x: 1, y: 0, z: 1 }, target: { kind: "clear" as const } },
-					{ at: { x: 1, y: 0, z: 0 }, target: { kind: "preserve" as const } },
-					{ at: { x: 0, y: 0, z: 1 }, target: { kind: "unknown" as const } },
-				],
-			};
-			const okTarget = await repo.put({
-				...programDraft("req-4", "b2"),
-				kind: "blueprint",
-				content: { summary: "四态", representation: { kind: "target", target: { kind: "inline", value: goodTarget } } },
+			ws.createDir("search.target", { "manifest.json": JSON.stringify(manifest), "program.js": PROGRAM_SOURCE });
+			await repo.write.publish({
+				name: "search.target",
+				kind: "program",
+				expectedRef: null,
+				source: { kind: "workspace", directory: "search.target" },
 			});
-			expect(okTarget.ref).toBe("b2@1");
-			await expectAssetFailure(
-				() =>
-					repo.put({
-						...programDraft("req-5", "b3"),
-						kind: "blueprint",
-						content: {
-							summary: "坏",
-							representation: {
-								kind: "target",
-								target: {
-									kind: "inline",
-									value: {
-										...targetBase,
-										cells: [{ at: { x: 0, y: 0, z: 0 }, target: { kind: "demolish" } as unknown as CellTarget }],
-									},
-								},
-							},
-						},
-					}),
-				"ASSET_INVALID",
-			);
-
-			// experience 缺 judgment。
-			const noJudgment = experienceContent();
-			const { judgment: _j, ...rest } = noJudgment;
-			await expectAssetFailure(
-				() => repo.put(experienceDraft("req-6", "e1", rest as typeof noJudgment)),
-				"ASSET_INVALID",
-			);
-			await repo.close();
+			ws.createDir("search.target", {
+				"manifest.json": JSON.stringify({
+					...manifest,
+					editing: { baseRef: { repositoryId: repo.catalog.repositoryId, name: "search.target", version: 1 } },
+				}),
+				"program.js": PROGRAM_SOURCE + "// v2\n",
+			});
+			await repo.write.publish({
+				name: "search.target",
+				kind: "program",
+				expectedRef: "search.target@1",
+				source: { kind: "workspace", directory: "search.target" },
+			});
+			const heads = await repo.read.search({ text: "search.target" });
+			expect(heads).toHaveLength(1);
+			expect(heads[0].ref).toBe("search.target@2");
+			const versions = await repo.read.listVersions("search.target");
+			expect(versions.map((v) => v.ref)).toEqual(["search.target@1", "search.target@2"]);
 		} finally {
-			cleanup();
+			ws.dispose();
+			dispose();
 		}
 	});
 
-	it("requiredAssets 必须是本仓库已发布版本；缺失报 ASSET_DEPENDENCY_UNAVAILABLE", async () => {
-		const { dir, cleanup } = tempDir("mcw-a1-");
+	it("名称规范与路径安全：非法名称/路径穿越/保留路径拒绝", async () => {
+		const ws = createWorkspace();
+		const { repo, dispose } = createRepo({ workspaceRoot: ws.root });
 		try {
-			const repo = createRepo(dir);
-			await repo.put(programDraft("req-1", "lib.core"));
-			const draft = programDraft("req-2", "user.app");
-			draft.requiredAssets = ["lib.core@1"];
-			const record = await repo.put(draft);
-			expect(record.ref).toBe("user.app@1");
+			await expect(
+				repo.write.publish({
+					name: "Bad.Name",
+					kind: "program",
+					expectedRef: null,
+					source: { kind: "workspace", directory: "x" },
+				}),
+			).rejects.toMatchObject(expectAssetFailure("ASSET_INVALID"));
 
-			const missing = programDraft("req-3", "user.other");
-			missing.requiredAssets = ["lib.core@2"];
-			await expectAssetFailure(() => repo.put(missing), "ASSET_DEPENDENCY_UNAVAILABLE");
-			await expectAssetFailure(
-				() => repo.put({ ...programDraft("req-4", "user.third"), requiredAssets: ["native:jump@1"] }),
-				"ASSET_INVALID",
-			);
-			await repo.close();
-		} finally {
-			cleanup();
-		}
-	});
-
-	it("证据保留：未注入端口拒绝声明；注入端口按 owner=requestId retain；失败时释放且不建悬空引用", async () => {
-		const { dir, cleanup } = tempDir("mcw-a1-");
-		try {
-			// 未注入端口 + 声明 world 证据 → EVIDENCE_UNAVAILABLE。
-			const bare = createRepo(dir);
-			await expectAssetFailure(
-				() => bare.put({ ...programDraft("req-1", "user.p1"), evidence: [{ owner: "world", ref: "mcw:ev:1" }] }),
-				"EVIDENCE_UNAVAILABLE",
-			);
-			expect(await bare.search({ query: "user.p1" })).toMatchObject({ items: [] });
-			await bare.close();
-
-			// 注入端口：retain 携带 owner=requestId 与 refs；成功后修订可读。
-			const evidence = fakeEvidence();
-			const repo = createAssetRepository({
-				dataDir: dir,
-				worldEvidence: evidence.port,
-				runtimeEvidence: evidence.port,
+			// 声明保留路径 manifest.json 作为 payload → 拒绝。
+			ws.createDir("reserved", {
+				"manifest.json": JSON.stringify({
+					kind: "program",
+					metadata: authorMetadata("reserved"),
+					definition: { ...programManifest("reserved"), sourceFile: "manifest.json" },
+				}),
 			});
-			const record = await repo.put({
-				...programDraft("req-2", "user.p2"),
-				evidence: [
-					{ owner: "world", ref: "mcw:ev:1" },
-					{ owner: "runtime", ref: "run:1:seg:1" },
-				],
-			});
-			expect(record.ref).toBe("user.p2@1");
-			expect(evidence.retained).toEqual([
-				{ owner: "req-2", refs: ["mcw:ev:1"] },
-				{ owner: "req-2", refs: ["run:1:seg:1"] },
-			]);
-			expect(evidence.released).toEqual([]);
-			const read = await repo.read("program", "user.p2@1");
-			expect(read.evidence).toHaveLength(2);
-			await repo.close();
+			await expect(
+				repo.write.publish({
+					name: "reserved",
+					kind: "program",
+					expectedRef: null,
+					source: { kind: "workspace", directory: "reserved" },
+				}),
+			).rejects.toMatchObject(expectAssetFailure("ASSET_INVALID"));
 
-			// retain 失败：不创建修订，释放已成功一侧的保留。
-			const failing = fakeEvidence({ failRetain: true });
-			const repo2 = createAssetRepository({ dataDir: dir, worldEvidence: failing.port, runtimeEvidence: failing.port });
-			await expectAssetFailure(
-				() => repo2.put({ ...programDraft("req-3", "user.p3"), evidence: [{ owner: "world", ref: "mcw:ev:2" }] }),
-				"EVIDENCE_UNAVAILABLE",
-			);
-			expect(await repo2.search({ query: "user.p3" })).toMatchObject({ items: [] });
-			await repo2.close();
-
-			// 部分失败：world 成功后 runtime 失败 → world 的保留也被释放（不悬挂）。
-			const worldOk = fakeEvidence();
-			const runtimeFail = fakeEvidence({ failRetain: true });
-			const repo3 = createAssetRepository({
-				dataDir: dir,
-				worldEvidence: worldOk.port,
-				runtimeEvidence: runtimeFail.port,
-			});
-			await expectAssetFailure(
-				() =>
-					repo3.put({
-						...programDraft("req-4", "user.p4"),
-						evidence: [
-							{ owner: "world", ref: "mcw:ev:3" },
-							{ owner: "runtime", ref: "run:1:seg:2" },
-						],
-					}),
-				"EVIDENCE_UNAVAILABLE",
-			);
-			expect(worldOk.retained).toEqual([{ owner: "req-4", refs: ["mcw:ev:3"] }]);
-			expect(worldOk.released).toEqual(["req-4"]);
-			expect(await repo3.search({ query: "user.p4" })).toMatchObject({ items: [] });
-			await repo3.close();
+			// workspace 目录越出读取根。
+			await expect(
+				repo.write.publish({
+					name: "escape",
+					kind: "program",
+					expectedRef: null,
+					source: { kind: "workspace", directory: "../outside" },
+				}),
+			).rejects.toMatchObject(expectAssetFailure("ASSET_INVALID"));
 		} finally {
-			cleanup();
-		}
-	});
-
-	it("search：默认 heads、versions=all、kind 过滤、query 匹配与分页 cursor", async () => {
-		const { dir, cleanup } = tempDir("mcw-a1-");
-		try {
-			const repo = createRepo(dir);
-			await repo.put(programDraft("r1", "user.alpha"));
-			await repo.put(experienceDraft("r2", "user.beta"));
-			await repo.revise(programRevision("r3", "user.alpha@1", "v2", programContent("return 2;")));
-
-			const heads = await repo.search({ query: "" });
-			expect(heads.items.map((item) => item.ref).sort()).toEqual(["user.alpha@2", "user.beta@1"]);
-			const all = await repo.search({ query: "", versions: "all" });
-			expect(all.items.map((item) => item.ref).sort()).toEqual(["user.alpha@1", "user.alpha@2", "user.beta@1"]);
-			const programs = await repo.search({ query: "", kind: "program" });
-			expect(programs.items.map((item) => item.ref)).toEqual(["user.alpha@2"]);
-			const byQuery = await repo.search({ query: "beta" });
-			expect(byQuery.items.map((item) => item.ref)).toEqual(["user.beta@1"]);
-			const summary = (await repo.search({ query: "beta" })).items[0];
-			expect(summary.schema).toBe("assets.experience@1");
-
-			// 分页：limit 由实现固定，cursor 推进；非法 cursor 拒绝。
-			const page1 = await repo.search({ query: "", versions: "all" });
-			expect(page1.next).toBeUndefined();
-			await expectAssetFailure(() => repo.search({ query: "", cursor: "-3" }), "ASSET_INVALID");
-			await repo.close();
-		} finally {
-			cleanup();
-		}
-	});
-
-	it("inspect 返回包封与 schemaAvailability；非法引用报 ASSET_INVALID，缺失报 ASSET_NOT_FOUND", async () => {
-		const { dir, cleanup } = tempDir("mcw-a1-");
-		try {
-			const repo = createRepo(dir);
-			await repo.put(experienceDraft("r1", "user.e1"));
-			const inspection = await repo.inspect("user.e1@1");
-			expect(inspection.kind).toBe("experience");
-			expect(inspection.content).toMatchObject({ judgment: "白天挖矿更安全。" });
-			expect(inspection.schemaAvailability.state).toBe("unknown");
-			await expectAssetFailure(() => repo.inspect("not-a-ref" as ExactRef), "ASSET_INVALID");
-			await expectAssetFailure(() => repo.inspect("missing@1"), "ASSET_NOT_FOUND");
-			await repo.close();
-		} finally {
-			cleanup();
-		}
-	});
-
-	it("对象暂存：put 必须引用同一 requestId 的 stage 记录且声明一致", async () => {
-		const { dir, cleanup } = tempDir("mcw-a1-");
-		try {
-			const repo = createRepo(dir);
-			const object = await repo.objects.stage(
-				{ requestId: "req-1", key: "source", mediaType: "application/octet-stream", fileName: "a.schem" },
-				byteStream("BYTES-1"),
-			);
-			// 声明的 digest 与暂存不符。
-			await expectAssetFailure(
-				() =>
-					repo.put({
-						...programDraft("req-1", "b1"),
-						kind: "blueprint",
-						content: blueprintContent("source"),
-						objects: { source: { ...object, digest: "sha256:" + "0".repeat(64) } },
-					}),
-				"ASSET_INVALID",
-			);
-			// 不同 requestId 的暂存不可见。
-			await expectAssetFailure(
-				() =>
-					repo.put({
-						...programDraft("req-2", "b2"),
-						kind: "blueprint",
-						content: blueprintContent("source"),
-						objects: { source: object },
-					}),
-				"ASSET_INVALID",
-			);
-			const record = await repo.put({
-				...programDraft("req-1", "b3"),
-				kind: "blueprint",
-				content: blueprintContent("source"),
-				objects: { source: object },
-			});
-			expect(record.ref).toBe("b3@1");
-			await repo.close();
-		} finally {
-			cleanup();
+			ws.dispose();
+			dispose();
 		}
 	});
 });

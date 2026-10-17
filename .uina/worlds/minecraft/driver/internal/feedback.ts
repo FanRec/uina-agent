@@ -18,14 +18,14 @@ import type {
 	Key,
 	SelfState,
 } from "../../contracts/body.js";
-import type { EffectReceipt, Fact, JsonValue } from "../../contracts/values.js";
 import { CallFailureError } from "../../contracts/errors.js";
-import { controlConflict, controlInvalid, invalidArgument, referenceStale } from "./failure.js";
-import { WriteGate, type BodyPermit, type OperationRecord } from "./gate.js";
-import { CONTROL_KEYS, KeyHold } from "./controls.js";
-import type { ClientHost, PhysicsStep } from "./client-host.js";
-import type { ClientBot } from "./bot-shape.js";
+import type { EffectReceipt, Fact, JsonValue } from "../../contracts/values.js";
 import type { BodyDeps, UseControl } from "./body.js";
+import type { ClientBot } from "./bot-shape.js";
+import type { ClientHost, PhysicsStep } from "./client-host.js";
+import { CONTROL_KEYS, KeyHold } from "./controls.js";
+import { controlConflict, controlInvalid, invalidArgument, referenceStale } from "./failure.js";
+import { type BodyPermit, type OperationRecord, WriteGate } from "./gate.js";
 
 export interface FeedbackStreamDeps {
 	host: ClientHost;

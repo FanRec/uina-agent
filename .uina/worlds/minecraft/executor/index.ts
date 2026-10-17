@@ -9,11 +9,11 @@
  * 组合根注入 Driver/World/Assets 的具体实现。
  */
 
-import type { ExecutorClient } from "../contracts/executor.js";
-import type { PlayerPort } from "../contracts/body.js";
-import type { WorldPort } from "../contracts/world.js";
 import type { AssetRepository } from "../contracts/assets.js";
+import type { PlayerPort } from "../contracts/body.js";
 import type { NativeCallable } from "../contracts/callables.js";
+import type { ExecutorClient } from "../contracts/executor.js";
+import type { WorldPort } from "../contracts/world.js";
 
 export interface ExecutorDeps {
 	readonly player: PlayerPort;

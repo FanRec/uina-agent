@@ -1,60 +1,37 @@
 /**
- * 受管不可变字节对象存储（LEAD S-A2，assets.md §4/§5.3/§7.4）。
+ * 受管不可变修订包存储（assets.md §4/§5.3/§7.4）。
  *
- * - stage：把可信所有者的字节流接收进本次尝试独占的 tmp/<attemptId>（接收时计算
- *   摘要与长度），分配不复用的 objectId；未发布的暂存对象不可通过 read 到达。
- * - install：提交临界区内把 tmp/<attemptId> 整目录 rename 为全新 objects/<objectId>，
+ * - 捕获：把发布来源的字节接收进本次尝试独占的 tmp/<attemptId>/<path>（接收时计算
+ *   摘要与长度）；未发布的暂存内容不可通过 readPayload 到达。
+ * - 安装：提交临界区内把 tmp/<attemptId> 整目录 rename 为全新 objects/<objectId>，
  *   禁止覆盖已有对象；事务回滚留下的只是未引用 orphan。
- * - readObject：流式读出并在完整读取结束时核对实际长度与摘要；range 读不做摘要核验。
+ * - readObject：流式读出并在完整读取结束时核对实际长度与摘要（assets.md §7.2）。
  * - objectId/attemptId 由本存储（可信宿主侧）生成，uuid 不复用。
  */
 
 import { createHash, randomUUID } from "node:crypto";
 import {
-	mkdirSync,
-	renameSync,
-	existsSync,
-	openSync,
 	closeSync,
+	existsSync,
 	fsyncSync,
-	writeFileSync,
+	mkdirSync,
+	openSync,
 	readFileSync,
+	renameSync,
+	writeFileSync,
 } from "node:fs";
 import { open, rm } from "node:fs/promises";
-import { join } from "node:path";
-import type { AssetObject, AssetObjectPort } from "../../contracts/assets.js";
-import type { Ref } from "../../contracts/values.js";
+import { join, posix } from "node:path";
+import type { Digest } from "../../contracts/assets.js";
+import { canonicalJson } from "./canonical.js";
 import { assetFailure } from "./failure.js";
-import { canonicalJson, type Digest } from "./canonical.js";
 
 const CHUNK_SIZE = 64 * 1024;
 
-export interface StagedObjectRecord {
-	readonly attemptId: string;
-	readonly objectId: string;
+export interface CapturedFile {
+	readonly path: string;
 	readonly digest: Digest;
 	readonly byteLength: number;
-	readonly mediaType?: string;
-	readonly fileName?: string;
-}
-
-interface ObjectMeta {
-	digest: Digest;
-	byteLength: number;
-	mediaType?: string;
-	fileName?: string;
-}
-
-function isMeta(value: unknown): value is ObjectMeta {
-	if (typeof value !== "object" || value === null) return false;
-	const record = value as Record<string, unknown>;
-	if (typeof record.digest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(record.digest)) return false;
-	if (typeof record.byteLength !== "number" || !Number.isInteger(record.byteLength) || record.byteLength < 0) {
-		return false;
-	}
-	if (record.mediaType !== undefined && typeof record.mediaType !== "string") return false;
-	if (record.fileName !== undefined && typeof record.fileName !== "string") return false;
-	return true;
 }
 
 /** fsync 单个已存在文件（写入顺序不等于跨存储断电原子性，assets.md §7.4）。 */
@@ -70,8 +47,6 @@ function syncFile(path: string): void {
 export class AssetObjectStore {
 	private readonly objectsDir: string;
 	private readonly tmpDir: string;
-	/** requestId → (key → 暂存记录)。同 key 重复 stage 后写者胜，旧 attempt 目录被回收。 */
-	private readonly staged = new Map<string, Map<string, StagedObjectRecord>>();
 
 	constructor(dataDir: string) {
 		this.objectsDir = join(dataDir, "objects");
@@ -80,38 +55,27 @@ export class AssetObjectStore {
 		mkdirSync(this.tmpDir, { recursive: true });
 	}
 
-	stagedRecord(requestId: string, key: string): StagedObjectRecord | undefined {
-		return this.staged.get(requestId)?.get(key);
-	}
-
-	/** 提交成功后释放该请求的暂存记录（暂存字节已随 attempt 目录安装或留作 orphan）。 */
-	releaseStaged(requestId: string): void {
-		this.staged.delete(requestId);
-	}
-
-	async stage(
-		request: { requestId: Ref; key: string; mediaType?: string; fileName?: string },
-		bytes: AsyncIterable<Uint8Array>,
-	): Promise<AssetObject> {
-		if (typeof request.requestId !== "string" || request.requestId.length === 0) {
-			assetFailure("ASSET_INVALID", "stage 需要 requestId");
-		}
-		if (typeof request.key !== "string" || request.key.length === 0) {
-			assetFailure("ASSET_INVALID", "stage 需要 key");
-		}
+	/** 本次发布尝试的独占暂存目录；每次尝试新 ID，不因 operation.id 相同共用。 */
+	createAttempt(): string {
 		const attemptId = randomUUID();
-		const attemptDir = join(this.tmpDir, attemptId);
-		mkdirSync(attemptDir, { recursive: true });
-		const payloadPath = join(attemptDir, "payload");
+		mkdirSync(join(this.tmpDir, attemptId), { recursive: true });
+		return attemptId;
+	}
+
+	/** 把一次来源读取的字节接收进暂存目录（单次读取，接收时计算摘要与长度）。 */
+	async captureFile(attemptId: string, relPath: string, bytes: AsyncIterable<Uint8Array>): Promise<CapturedFile> {
+		assertSafeRelPath(relPath);
+		const target = join(this.tmpDir, attemptId, ...relPath.split("/"));
+		mkdirSync(join(target, ".."), { recursive: true });
 		let digest: Digest;
 		let byteLength: number;
 		try {
-			const handle = await open(payloadPath, "wx");
+			const handle = await open(target, "wx");
 			try {
 				const hash = createHash("sha256");
 				let length = 0;
 				for await (const chunk of bytes) {
-					if (!(chunk instanceof Uint8Array)) assetFailure("ASSET_INVALID", "stage 字节块必须是 Uint8Array");
+					if (!(chunk instanceof Uint8Array)) assetFailure("ASSET_INVALID", "捕获字节块必须是 Uint8Array");
 					await handle.write(chunk);
 					hash.update(chunk);
 					length += chunk.byteLength;
@@ -124,57 +88,55 @@ export class AssetObjectStore {
 			}
 		} catch (error) {
 			// 接收失败：本次 attempt 目录可回收（assets.md §6.4 取消时点表）。
-			await rm(attemptDir, { recursive: true, force: true });
+			await rm(join(this.tmpDir, attemptId), { recursive: true, force: true });
 			throw error;
 		}
-		const meta: ObjectMeta = { digest, byteLength, mediaType: request.mediaType, fileName: request.fileName };
-		const metaPath = join(attemptDir, "meta.json");
-		writeFileSync(metaPath, canonicalJson(meta), "utf8");
-		// 与 payload/installManifest 同等持久性：rename 前落盘，否则崩溃窗口内
-		// 已发布修订会因 meta 缺失被永久判 ASSET_CORRUPT（assets.md §7.4）。
-		syncFile(metaPath);
-		const objectId = `obj-${randomUUID()}`;
-		const record: StagedObjectRecord = {
-			attemptId,
-			objectId,
-			digest,
-			byteLength,
-			mediaType: request.mediaType,
-			fileName: request.fileName,
-		};
-		let perRequest = this.staged.get(request.requestId);
-		if (!perRequest) {
-			perRequest = new Map();
-			this.staged.set(request.requestId, perRequest);
+		return { path: relPath, digest, byteLength };
+	}
+
+	/** 写入暂存字节（来源已是完整缓冲时使用，免去流包装）。 */
+	writeCapturedBytes(attemptId: string, relPath: string, bytes: Uint8Array): CapturedFile {
+		assertSafeRelPath(relPath);
+		const target = join(this.tmpDir, attemptId, ...relPath.split("/"));
+		mkdirSync(join(target, ".."), { recursive: true });
+		const handle = openSync(target, "wx");
+		try {
+			writeFileSync(handle, bytes);
+			fsyncSync(handle);
+		} finally {
+			closeSync(handle);
 		}
-		const replaced = perRequest.get(request.key);
-		if (replaced) {
-			// 同 key 重新 stage：新 attempt 独立，旧 attempt 回收，不共用可写目录。
-			await rm(join(this.tmpDir, replaced.attemptId), { recursive: true, force: true });
-		}
-		perRequest.set(request.key, record);
 		return {
-			ref: objectId,
-			digest,
-			byteLength,
-			mediaType: request.mediaType,
-			fileName: request.fileName,
+			path: relPath,
+			digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+			byteLength: bytes.byteLength,
 		};
 	}
 
-	/** 在提交事务内安装一个已 fsync 的 attempt 目录为全新不可变对象；禁止覆盖。 */
-	installSync(record: StagedObjectRecord): void {
-		const target = join(this.objectsDir, record.objectId);
-		if (existsSync(target)) {
-			assetFailure("ASSET_INVALID", `对象目录已存在，objectId 冲突：${record.objectId}`);
+	/** 读取捕获记录（发布流程内核对暂存内容存在性）。 */
+	stagedFile(attemptId: string, relPath: string): CapturedFile | null {
+		const metaPath = join(this.tmpDir, attemptId, `${relPath}.mcmeta`);
+		try {
+			const meta = JSON.parse(readFileSync(metaPath, "utf8")) as CapturedFile;
+			if (meta.path === relPath && typeof meta.digest === "string" && typeof meta.byteLength === "number") {
+				return meta;
+			}
+			return null;
+		} catch {
+			return null;
 		}
-		renameSync(join(this.tmpDir, record.attemptId), target);
 	}
 
-	/** 把新构建的 manifest 字节写入本次独占的空 attempt 目录并安装为修订包。 */
-	installManifestSync(attemptId: string, objectId: string, manifestText: string): void {
+	/** 登记捕获记录（mcmeta），供声明身份与实际字节的核对。 */
+	recordCaptured(attemptId: string, captured: CapturedFile): void {
+		const metaPath = join(this.tmpDir, attemptId, `${captured.path}.mcmeta`);
+		writeFileSync(metaPath, canonicalJson(captured), "utf8");
+		syncFile(metaPath);
+	}
+
+	/** 提交临界区：写入包 Manifest 并把整个 attempt 目录安装为全新不可变对象；禁止覆盖。 */
+	installPackage(attemptId: string, objectId: string, manifestText: string): void {
 		const attemptDir = join(this.tmpDir, attemptId);
-		mkdirSync(attemptDir, { recursive: true });
 		const manifestPath = join(attemptDir, "manifest.json");
 		writeFileSync(manifestPath, manifestText, "utf8");
 		syncFile(manifestPath);
@@ -185,73 +147,50 @@ export class AssetObjectStore {
 		renameSync(attemptDir, target);
 	}
 
-	createManifestAttempt(): string {
-		return randomUUID();
+	discardAttempt(attemptId: string): void {
+		void rm(join(this.tmpDir, attemptId), { recursive: true, force: true }).catch(() => undefined);
 	}
 
 	readManifest(objectId: string): string {
 		const path = join(this.objectsDir, objectId, "manifest.json");
-		return readFileSync(path, "utf8");
-	}
-
-	/** 核对已安装对象的 meta.json 与声明一致（repository.read 的目录级完整性检查）。 */
-	verifyInstalledDeclaration(objectId: string, declared: AssetObject): void {
-		const metaPath = join(this.objectsDir, objectId, "meta.json");
-		let meta: unknown;
 		try {
-			meta = JSON.parse(readFileSync(metaPath, "utf8"));
+			return readFileSync(path, "utf8");
 		} catch {
-			assetFailure("ASSET_CORRUPT", `对象 ${objectId} 的 meta.json 缺失或不可解析`);
-		}
-		if (!isMeta(meta)) assetFailure("ASSET_CORRUPT", `对象 ${objectId} 的 meta.json 形状不合法`);
-		if (
-			meta.digest !== declared.digest ||
-			meta.byteLength !== declared.byteLength ||
-			meta.mediaType !== declared.mediaType ||
-			meta.fileName !== declared.fileName
-		) {
-			assetFailure("ASSET_CORRUPT", `对象 ${objectId} 的 meta 与目录声明不符`);
+			assetFailure("ASSET_CORRUPT", `修订包 manifest.json 缺失或不可读（objectId=${objectId}）`);
 		}
 	}
 
 	objectExists(objectId: string): boolean {
-		return existsSync(join(this.objectsDir, objectId, "payload"));
+		return existsSync(join(this.objectsDir, objectId, "manifest.json"));
 	}
 
-	/** 流式读出对象字节；完整读取（无 range）结束时核对实际长度与摘要（assets.md §7.2）。 */
+	/** 流式读出对象内文件；完整读取结束时核对实际长度与摘要（assets.md §7.2）。 */
 	async *readObject(
 		objectId: string,
-		expected: { digest: Digest; byteLength: number } | null,
-		range?: { offset: number; length: number },
+		relPath: string,
+		expected: { digest: Digest; byteLength: number },
 	): AsyncGenerator<Uint8Array> {
-		const payloadPath = join(this.objectsDir, objectId, "payload");
+		assertSafeRelPath(relPath);
+		const payloadPath = join(this.objectsDir, objectId, ...relPath.split("/"));
 		const handle = await open(payloadPath, "r").catch(() =>
-			assetFailure("OBJECT_UNAVAILABLE", `对象 ${objectId} 的字节不存在`),
+			assetFailure("OBJECT_UNAVAILABLE", `对象 ${objectId} 的 "${relPath}" 不存在`),
 		);
 		try {
-			const verify = expected !== null && range === undefined;
 			const hash = createHash("sha256");
 			const buffer = Buffer.allocUnsafe(CHUNK_SIZE);
-			let position = range?.offset ?? 0;
-			let remaining = range?.length ?? Number.POSITIVE_INFINITY;
 			let total = 0;
-			while (remaining > 0) {
-				const want = Number.isFinite(remaining) ? Math.min(CHUNK_SIZE, remaining) : CHUNK_SIZE;
-				const { bytesRead } = await handle.read(buffer, 0, want, position);
+			for (;;) {
+				const { bytesRead } = await handle.read(buffer, 0, CHUNK_SIZE, total);
 				if (bytesRead === 0) break;
-				if (verify) hash.update(buffer.subarray(0, bytesRead));
+				hash.update(buffer.subarray(0, bytesRead));
 				total += bytesRead;
 				const chunk = new Uint8Array(bytesRead);
 				buffer.copy(chunk, 0, 0, bytesRead);
 				yield chunk;
-				position += bytesRead;
-				remaining -= bytesRead;
 			}
-			if (verify) {
-				const digest: Digest = `sha256:${hash.digest("hex")}`;
-				if (digest !== expected.digest || total !== expected.byteLength) {
-					assetFailure("ASSET_CORRUPT", `对象 ${objectId} 实际字节与声明摘要/长度不符`);
-				}
+			const digest: Digest = `sha256:${hash.digest("hex")}`;
+			if (digest !== expected.digest || total !== expected.byteLength) {
+				assetFailure("ASSET_CORRUPT", `对象 ${objectId}/${relPath} 实际字节与声明摘要/长度不符`);
 			}
 		} finally {
 			await handle.close();
@@ -259,37 +198,32 @@ export class AssetObjectStore {
 	}
 }
 
-/** 供 AssetObjectPort 使用：把合同形状委托到存储。 */
-export function createObjectPort(
-	store: AssetObjectStore,
-	resolve: {
-		lookup(asset: string, object: string): { objectId: string; digest: Digest; byteLength: number } | null;
-	},
-): AssetObjectPort {
-	return {
-		stage(request, bytes) {
-			return store.stage(request, bytes);
-		},
-		async read(request) {
-			if (typeof request.asset !== "string" || request.asset.length === 0) {
-				assetFailure("ASSET_INVALID", "objects.read 需要确切 asset 引用");
-			}
-			if (typeof request.object !== "string" || request.object.length === 0) {
-				assetFailure("ASSET_INVALID", "objects.read 需要 object 键");
-			}
-			if (request.range !== undefined) {
-				const { offset, length } = request.range;
-				if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(length) || length < 0) {
-					assetFailure("ASSET_INVALID", "range 必须是非负整数 offset/length");
-				}
-			}
-			const resolved = resolve.lookup(request.asset, request.object);
-			if (!resolved) assetFailure("OBJECT_UNAVAILABLE", `资产 ${request.asset} 没有对象 "${request.object}"`);
-			return store.readObject(
-				resolved.objectId,
-				request.range === undefined ? { digest: resolved.digest, byteLength: resolved.byteLength } : null,
-				request.range,
-			);
-		},
-	};
+/** 包内相对路径安全规则（assets.md §11.3）：小写 ASCII 组件与 /；拒绝空组件、绝对路径、..、反斜杠、保留设备名。 */
+export function assertSafeRelPath(relPath: string): void {
+	if (typeof relPath !== "string" || relPath.length === 0) assetFailure("ASSET_INVALID", "路径不能为空");
+	if (relPath.includes("\\") || relPath.startsWith("/") || relPath.endsWith("/")) {
+		assetFailure("ASSET_INVALID", `路径不合法：${relPath}`);
+	}
+	if (posix.normalize(relPath) !== relPath || relPath.split("/").includes("..")) {
+		assetFailure("ASSET_INVALID", `路径不得包含 .. 或非规范段：${relPath}`);
+	}
+	for (const segment of relPath.split("/")) {
+		if (segment.length === 0) assetFailure("ASSET_INVALID", "路径存在空组件");
+		if (!/^[a-z0-9][a-z0-9._-]*$/.test(segment)) {
+			assetFailure("ASSET_INVALID", `路径段须为小写 ASCII 安全字符：${segment}`);
+		}
+		const base = segment.split(".", 1)[0];
+		if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(base)) {
+			assetFailure("ASSET_INVALID", `路径段使用 Windows 保留设备名：${segment}`);
+		}
+	}
+	if (relPath === "manifest.json") assetFailure("ASSET_INVALID", "manifest.json 是保留路径，不能作为 payload");
+}
+
+/** 按扩展名推导 mediaType（assets.md §5.2 安全表）；只是提示，不认证内容。 */
+export function mediaTypeOfPath(path: string): string {
+	if (path.endsWith(".json")) return "application/json";
+	if (path.endsWith(".js")) return "text/javascript";
+	if (path.endsWith(".md")) return "text/markdown";
+	return "application/octet-stream";
 }
