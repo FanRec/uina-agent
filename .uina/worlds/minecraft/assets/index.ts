@@ -6,9 +6,16 @@
  *
  * 边界：不获取 Bot、不调用 submit、不读 Runtime/World 业务表；
  * 证据保留经注入的 WorldEvidencePort/RuntimeEvidencePort 完成。
+ *
+ * 存储形态：node:sqlite 目录（catalog.sqlite）+ 普通文件包（objects/、tmp/）。
+ * 目录打不开（损坏/版本不兼容）时直接抛错——Assets 没有降级形态，
+ * 由组合根决定故障处置（assets.md §7.3：数据库不可读时不靠文件树推断提交历史）。
  */
 
-import type { AssetRepository, AssetObjectPort } from "../contracts/assets.js";
+import { AssetCatalog } from "./internal/catalog.js";
+import { AssetObjectStore } from "./internal/objects.js";
+import { AssetRepositoryImpl } from "./internal/repository.js";
+import type { AssetObjectPort, AssetRepository } from "../contracts/assets.js";
 import type { RuntimeEvidencePort } from "../contracts/executor.js";
 import type { WorldEvidencePort } from "../contracts/world.js";
 
@@ -25,6 +32,8 @@ export interface AssetRepositoryHandle extends AssetRepository {
 	close(): Promise<void>;
 }
 
-export function createAssetRepository(_deps: AssetRepositoryDeps): AssetRepositoryHandle {
-	throw new Error("未实现：Assets 切片待 Assets 开发 AI 交付（保持本签名）");
+export function createAssetRepository(deps: AssetRepositoryDeps): AssetRepositoryHandle {
+	const objects = new AssetObjectStore(deps.dataDir);
+	const catalog = new AssetCatalog(deps.dataDir);
+	return new AssetRepositoryImpl(catalog, objects, deps.worldEvidence, deps.runtimeEvidence);
 }
