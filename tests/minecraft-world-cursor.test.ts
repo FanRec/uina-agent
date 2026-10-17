@@ -11,6 +11,7 @@
 
 import { describe, expect, it } from "vitest";
 import { createWorld, type WorldHandle } from "../.uina/worlds/minecraft/world/index.js";
+import { InvalidationLedger } from "../.uina/worlds/minecraft/world/internal/invalidation.js";
 import {
 	type AppendOutcome,
 	type EvidenceFilter,
@@ -173,5 +174,30 @@ describe("minecraft world 历史 cursor 与读取视图对齐", () => {
 		} finally {
 			await world.close();
 		}
+	});
+});
+
+describe("minecraft world 失效水位不变量（单元）", () => {
+	it("两类水位量纲不可比：混声明依赖的查询流直接拒绝", () => {
+		const ledger = new InvalidationLedger("b1");
+		const mixed = new Set(["current", "history"] as const);
+		expect(() => ledger.ensureStream("mcw:q:mixed", mixed)).toThrow(/恰为一类/);
+		expect(() => ledger.createRegistration("mcw:q:mixed", mixed)).toThrow(/恰为一类/);
+	});
+
+	it("历史流登记基线取当前提交版本：不为流建立前的事件凭空唤醒", () => {
+		const ledger = new InvalidationLedger("b1");
+		ledger.advanceHistory(7); // 流建立前已有提交
+		const deps = new Set(["history"] as const);
+		ledger.ensureStream("mcw:q:h", deps);
+		expect(ledger.watermark("mcw:q:h", deps)).toBe(7);
+		// 登记（watch）以 read 的 cursor（视图版本 7）为基准：水位相同 → 不自激。
+		const registration = ledger.createRegistration("mcw:q:h", deps);
+		expect(registration.check({ stream: "mcw:q:h", epoch: ledger.epoch, sequence: 7 })).toBeNull();
+		// 提交版本前进 → 唤醒。
+		ledger.advanceHistory(8);
+		const change = registration.check({ stream: "mcw:q:h", epoch: ledger.epoch, sequence: 7 });
+		expect(change?.kind).toBe("changed");
+		registration.close();
 	});
 });

@@ -244,3 +244,9 @@ M5：真实 Mineflayer 依赖接入（lead 批准依赖后）、真实服务器�
 5. **新增验证**：`tests/minecraft-world-cursor.test.ts`（3 例，其中 2 例在旧实现下失败：提交前唤醒、已读到仍通知）、`minecraft-world-barrier.test.ts`（多流+缺口+封口、并发交错、cursor 同源）、`minecraft-world-durability.test.ts`（WAL/FULL 实测、回应丢失≠未提交、重开按 ref 去重）、driver body 新增关闭结算例（含 `getEventListeners` 无泄漏断言）、`scripts/verify-mc-worker.mts`（真实 emit 产物启动 Worker：缺资产明确失败 → 复制后写入/读取/关闭 → 进程在 close 前退出后从 WAL 恢复 5 条）。
 
 **仍然未证明的**：真实断电（kill -9 / 拔电）与长时间 WAL 行为、真实 Mineflayer 时序、真实服务器下的 durable 语义；emit 产物验证覆盖了"路径+模块格式+崩溃后 WAL 恢复"，不等于生产打包器（vite/tsup）也保留该资产——当前 mc 模块无打包器构建链，接入时需把 `sqlite-worker.mjs` 复制纳入构建脚本。
+
+### Lead — CRAP/常规代码审查收口（2026-10-17，接二轮）
+
+- **CRAP gate**：`--root=.uina/worlds/minecraft`（world/driver/contracts/executor/worlddef，460 函数）通过——无 comp>=8 且完全未测试的函数。明细债务（部分覆盖、gate 不拦、登记不修）：`feedback.apply` comp23/CRAP167、`body.writeRecord` comp22/116、`validateCursor` comp18/140、`normalizeEvidenceList` comp18/121、`drive` comp16/74——均上轮既有形态，非本轮引入。
+- **审查补漏**：(1) `ensureStream` 混声明拒绝与历史流基线此前无测试 → 补 2 例单元（现 118 例）；(2) README 状态行与 world.md §6.6 补「retain/release 不推进提交版本」语义；(3) 复核 `contracts.md`/`public-api.md` 中「固定 cursor」表述均为 current 语境，非旧模型残留。
+- **接受不堵的边界**：`driver.close()` 与并发 acquire 的窄窗口（close 进行中 state 仍 ready 时的新 acquire 会被 grant 后立即经 per-session 撤销回调退役）——queue 已先结算清空，无正确性漏洞；retain 屏障后存在性校验对屏障捕获后新接收的证据报 EVIDENCE_UNAVAILABLE，符合 world.md §15「不能保证已提交就拒绝」。
