@@ -178,11 +178,11 @@ describe("minecraft world 历史 cursor 与读取视图对齐", () => {
 });
 
 describe("minecraft world 失效水位不变量（单元）", () => {
-	it("两类水位量纲不可比：混声明依赖的查询流直接拒绝", () => {
+	it("两类水位量纲不可比：混声明依赖在组合机制激活前被显式拒绝（不静默漏失效）", () => {
 		const ledger = new InvalidationLedger("b1");
 		const mixed = new Set(["current", "history"] as const);
-		expect(() => ledger.ensureStream("mcw:q:mixed", mixed)).toThrow(/恰为一类/);
-		expect(() => ledger.createRegistration("mcw:q:mixed", mixed)).toThrow(/恰为一类/);
+		expect(() => ledger.ensureStream("mcw:q:mixed", mixed)).toThrow(/不支持混合依赖/);
+		expect(() => ledger.createRegistration("mcw:q:mixed", mixed)).toThrow(/不支持混合依赖/);
 	});
 
 	it("历史流登记基线取当前提交版本：不为流建立前的事件凭空唤醒", () => {

@@ -59,6 +59,8 @@ export interface EvidencePage {
 export interface AppendOutcome {
 	ok: boolean;
 	version?: number;
+	/** 身份冲突条目（同 (stream,seq) 不同载荷 / 同 gap ref 不同区间）：未入库，按源协议故障结算。 */
+	conflicts?: { kind: "fact" | "gap"; ref: string; detail: string }[];
 }
 
 export interface DomainRecordRow {
@@ -83,7 +85,8 @@ export interface StoreRecoveryStream {
 }
 
 export interface WorldStoreAvailability {
-	state: "ready" | "unavailable";
+	/** opening：打开握手/迁移进行中（当前事实不被它阻塞；历史操作明确拒绝）。 */
+	state: "opening" | "ready" | "unavailable";
 	reason?: string;
 }
 
@@ -104,6 +107,8 @@ export interface WorldStore {
 	readonly description: string;
 	/** 持久性配置（内存实现无此项）。 */
 	readonly durability?: StoreDurability;
+	/** 打开完成（ready resolve；不可用 reject）。当前事实不等待它；历史操作在 resolve 前明确拒绝。 */
+	readonly opened: Promise<void>;
 	/** 批量提交证据/缺口条目。失败返回 { ok: false }（不推进 durable 与提交版本）。 */
 	append(entries: StoredEntry[]): Promise<AppendOutcome>;
 	/** 读取已持久证据（含 gap 记录）；页携带提交版本。存储不可用返回 null。 */
@@ -132,13 +137,20 @@ export interface WorldStore {
 
 /** 内存实现：语义与 Worker 版一致，用于测试与降级路径；进程退出不保留。 */
 export class MemoryWorldStore implements WorldStore {
-	readonly availability: WorldStoreAvailability = { state: "ready" };
 	readonly description = "内存存储：进程退出不保留（测试/降级路径）";
 	private evidence = new Map<string, StoredEntry>();
 	private evidenceOrder: StoredEntry[] = [];
 	private records = new Map<string, DomainRecordRow>();
 	private retentions = new Map<string, Set<string>>();
 	private version = 0;
+
+	get availability(): WorldStoreAvailability {
+		return { state: "ready" };
+	}
+
+	get opened(): Promise<void> {
+		return Promise.resolve();
+	}
 
 	appendEvidence(entries: StoredEntry[]): AppendOutcome {
 		let inserted = 0;
@@ -275,6 +287,7 @@ export class SqliteWorkerStore implements WorldStore {
 	private readonly pending = new Map<number, PendingRequest>();
 	private nextId = 1;
 	private failure: string | null = null;
+	private openedOk = false;
 	private closing = false;
 	private pragmas: StoreDurability | null = null;
 	private readonly readyPromise: Promise<void>;
@@ -296,14 +309,22 @@ export class SqliteWorkerStore implements WorldStore {
 		this.worker.on("exit", (code: number) => {
 			if (!this.closing) this.failAll(`存储 Worker 退出（code=${code}）`);
 		});
-		this.readyPromise = this.request("open", { dataDir, fileName }).then((result) => {
-			const opened = result as { durability: StoreDurability };
-			this.pragmas = opened.durability;
-		});
+		this.readyPromise = this.request("open", { dataDir, fileName }).then(
+			(result) => {
+				const opened = result as { durability: StoreDurability };
+				this.pragmas = opened.durability;
+				this.openedOk = true;
+			},
+			(error) => {
+				// 打开失败是终态：显式 unavailable，不重试（调用方按 status 降级）。
+				this.failAll(error instanceof Error ? error.message : String(error));
+				throw error; // opened 保持 rejected：等待方按不可用处理
+			},
+		);
 	}
 
-	/** 打开握手完成（schema 校验通过）；失败则该实例不可用。 */
-	get ready(): Promise<void> {
+	/** 打开完成（ready resolve / 不可用 reject）；当前事实不等待它。 */
+	get opened(): Promise<void> {
 		return this.readyPromise;
 	}
 
@@ -318,11 +339,13 @@ export class SqliteWorkerStore implements WorldStore {
 	}
 
 	get availability(): WorldStoreAvailability {
-		return this.failure === null ? { state: "ready" } : { state: "unavailable", reason: this.failure };
+		if (this.failure !== null) return { state: "unavailable", reason: this.failure };
+		return { state: this.openedOk ? "ready" : "opening" };
 	}
 
 	private request(op: string, args: Record<string, unknown>): Promise<unknown> {
 		if (this.failure !== null) return Promise.reject(new Error(this.failure));
+		if (!this.openedOk && op !== "open") return Promise.reject(new Error("历史存储打开中"));
 		const id = this.nextId++;
 		return new Promise<unknown>((resolve, reject) => {
 			this.pending.set(id, { resolve, reject });
@@ -409,7 +432,7 @@ export async function openSqliteWorkerStore(
 ): Promise<SqliteWorkerStore> {
 	const store = new SqliteWorkerStore(dataDir, fileName);
 	try {
-		await store.ready;
+		await store.opened;
 	} catch (error) {
 		await store.close().catch(() => {});
 		throw error;
@@ -417,13 +440,18 @@ export async function openSqliteWorkerStore(
 	return store;
 }
 
-/** 不可用存储：SQLite 打开失败/Worker 启动失败时的显式降级（history=unavailable；不假装空历史）。 */
+/** 不可用存储：显式降级（history=unavailable；不假装空历史）。 */
 export class UnavailableWorldStore implements WorldStore {
 	readonly availability: WorldStoreAvailability;
 	readonly description = "历史存储不可用";
 
 	constructor(reason: string) {
 		this.availability = { state: "unavailable", reason };
+	}
+
+	/** 惰性构造 rejected promise：无人等待时不产生 unhandled rejection。 */
+	get opened(): Promise<void> {
+		return Promise.reject(new Error(this.availability.reason ?? "历史存储不可用"));
 	}
 
 	async append(): Promise<AppendOutcome> {

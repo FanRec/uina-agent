@@ -80,6 +80,7 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 	private noticeBuffer: ClientFactNotice[] = [];
 	private initialized = false;
 	private readonly readyPromise: Promise<void>;
+	private readonly historyPromise: Promise<void>;
 
 	constructor(deps: WorldDepsInternal) {
 		this.facts = deps.facts;
@@ -95,20 +96,53 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			conservativeInvalidation: () => this.ledger.bumpCurrent(null),
 			sourceEpochChanged: () => this.ledger.resetCurrentSource(),
 		});
-		// 先订阅后采样（public-api §4.1）：初始化是异步的（恢复播种需读存储），
-		// 订阅先行保证不漏 Driver 材料；初始化期间到达的通知进缓冲，按到达序重放。
+		// 先订阅后采样（public-api §4.1）：订阅先行保证不漏 Driver 材料。
+		// 初始化分两段（§13.1）：当前基线立即建立（不等 SQLite）；历史侧打开→播种→
+		// 重放缓冲通知。打开期间到达的通知进缓冲（按到达序重放），当前侧的迟到通知
+		// 由检查点保守失效兜底（H>C → 全源失效），不漏、只是粗。
 		this.subscription = this.facts.subscribe((notice) => this.onNotice(notice));
-		this.readyPromise = this.initialize();
+		this.readyPromise = this.initializeCurrent();
+		this.historyPromise = this.initializeHistory();
 	}
 
-	/** 初始化完成（恢复播种 + 当前基线建立）；createWorld 等待它之后才交付句柄。 */
+	/** 当前基线建立完成：createWorld 交付句柄的时机（不等历史存储）。 */
 	get ready(): Promise<void> {
 		return this.readyPromise;
 	}
 
-	private async initialize(): Promise<void> {
+	/** 历史侧结算完成（就绪或明确不可用）；需要确定历史可用的调用方等待它。 */
+	get historySettled(): Promise<void> {
+		return this.historyPromise;
+	}
+
+	/** 段1（同步语义）：立即建立当前基线——当前事实不依赖 SQLite（§1/§13）。 */
+	private initializeCurrent(): Promise<void> {
+		try {
+			const capture = this.facts.sample(() => null);
+			this.applyScope(capture.scope, true);
+			this.currentTracker.observeStamp(capture.stamp);
+			this.sampledOnce = true;
+		} catch (error) {
+			this.recordDiagnostic(`初始化采样失败：${String(error)}`);
+		}
+		return Promise.resolve();
+	}
+
+	/** 段2：历史就绪（打开握手 → 恢复播种 → 重放缓冲通知）。 */
+	private async initializeHistory(): Promise<void> {
+		try {
+			await this.store.opened;
+		} catch (error) {
+			// 打开失败是终态：不播种（无库可读），但接收继续运转——证据照常接收，
+			// 提交按 unavailable 明确失败、durable 停在真实起点（不冒认持久）。
+			// 若无限缓冲通知，durable ACK 会停摆并卡死 Driver 材料回收。
+			this.recordDiagnostic(`历史存储打开失败：${String(error)}`);
+			this.settleBufferedNotices();
+			return;
+		}
 		// 恢复：从持久存储播种已持久事实/gap，使新接收代次的 durable 从真实持久状态起步；
 		// receivedThrough 不继承（由源重放重建），不把 RAM 接收冒充持久。
+		// 播种先于任何通知 dispatch 与提交：durable 起步不会被 RAM 增量污染。
 		try {
 			const recovery = await this.store.recoverySnapshot();
 			if (recovery) {
@@ -122,20 +156,15 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		} catch (error) {
 			this.recordDiagnostic(`恢复播种失败：${String(error)}`);
 		}
-		// 重放初始化期间到达的通知（真实到达顺序在初始采样之前）。
+		this.settleBufferedNotices();
+	}
+
+	/** 重放缓冲通知并进入实时分发（历史侧无论就绪与否最终都要到达此状态）。 */
+	private settleBufferedNotices(): void {
 		const buffered = this.noticeBuffer;
 		this.noticeBuffer = [];
 		this.initialized = true;
 		for (const notice of buffered) this.dispatchNotice(notice);
-		// 以最新状态建立当前基线（先订阅后采样；callLog 断言保持 subscribe → sample）。
-		try {
-			const capture = this.facts.sample(() => null);
-			this.applyScope(capture.scope, true);
-			this.currentTracker.observeStamp(capture.stamp);
-			this.sampledOnce = true;
-		} catch (error) {
-			this.recordDiagnostic(`初始化采样失败：${String(error)}`);
-		}
 	}
 
 	// ---- 接收与水位 ----
@@ -192,7 +221,7 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			);
 			return;
 		}
-		let outcome: { ok: boolean; version?: number };
+		let outcome: { ok: boolean; version?: number; conflicts?: { kind: "fact" | "gap"; ref: string; detail: string }[] };
 		try {
 			outcome = await this.store.append(pending);
 		} catch (error) {
@@ -207,7 +236,17 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 		}
 		this.storeFailed = false;
 		this.lastCommitted += pending.length;
-		this.reception.committed(pending);
+		const conflicts = outcome.conflicts ?? [];
+		if (conflicts.length > 0) {
+			// 身份冲突条目按故障结算：不入库、不记账（durable 按库内既有内容推进），但不卡屏障。
+			this.reception.discardConflicts(conflicts.map((c) => c.ref));
+			for (const conflict of conflicts) this.recordDiagnostic(conflict.detail);
+		}
+		const conflictRefs = new Set(conflicts.map((c) => c.ref));
+		const settled = conflictRefs.size
+			? pending.filter((e) => !conflictRefs.has(e.kind === "fact" ? e.record.ref : e.gap.ref))
+			: pending;
+		this.reception.committed(settled);
 		if (outcome.version !== undefined) this.ledger.advanceHistory(outcome.version);
 		this.resolveBarriers();
 	}
@@ -659,9 +698,11 @@ export class WorldImpl implements WorldPort, WorldEvidencePort {
 			: { state: "starting", reason: "尚未取得 Driver 当前采样" };
 		const availability = this.store.availability;
 		const history: WorldAvailabilityValue["history"] =
-			availability.state !== "ready" || this.storeFailed
-				? { state: "unavailable", reason: availability.reason ?? "存储提交失败" }
-				: { state: "ready", reason: this.store.description };
+			availability.state === "opening"
+				? { state: "opening" }
+				: availability.state !== "ready" || this.storeFailed
+					? { state: "unavailable", reason: availability.reason ?? "存储提交失败" }
+					: { state: "ready", reason: this.store.description };
 		const binding: WorldAvailabilityValue["binding"] = scope
 			? { state: "bound", binding: scope.binding, world: scope.world, worldRevision: scope.worldRevision }
 			: { state: "unbound", binding: "mcw:unbound", world: "mcw:unbound", worldRevision: "mcw:unbound" };

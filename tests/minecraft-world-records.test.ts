@@ -49,6 +49,7 @@ describe("minecraft world SQLite 历史与恢复（S-W3）", () => {
 			const facts = new FakeClientFacts();
 			facts.setSelf(selfState(20), []);
 			const world = await createWorld({ facts, dataDir: dir }, { receiver: "mcw:receiver:gen1" });
+			await world.historySettled; // 历史侧打开/播种完成（当前事实能力不等它）
 			facts.emitEvidence([capturedFact({ sequence: 1 }), capturedFact({ sequence: 2 })]);
 			await committed(world);
 			expect(facts.acks.at(-1)?.durableThrough).toBe(2);
@@ -58,6 +59,7 @@ describe("minecraft world SQLite 历史与恢复（S-W3）", () => {
 			const facts2 = new FakeClientFacts();
 			facts2.setSelf(selfState(20), []);
 			const world2 = await createWorld({ facts: facts2, dataDir: dir }, { receiver: "mcw:receiver:gen2" });
+			await world2.historySettled; // 历史侧打开/播种完成（当前事实能力不等它）
 			// 新接收代次不从 RAM 起步：durable 只能由真实持久状态与本次提交推进。
 
 			// 源重放同身份载荷：去重，不重复入库，durable 推进到 3。
@@ -87,6 +89,7 @@ describe("minecraft world SQLite 历史与恢复（S-W3）", () => {
 			const facts = new FakeClientFacts();
 			facts.setSelf(selfState(20), []);
 			const world = await createWorld({ facts, dataDir: dir }, { receiver: "mcw:receiver:gen1" });
+			await world.historySettled; // 历史侧打开/播种完成（当前事实能力不等它）
 			facts.emitEvidence([capturedFact({ sequence: 1 }), capturedFact({ sequence: 2 })]);
 			facts.emitGap("mcw:gap:g1", "mcw:test:stream:ev1", 2, 4);
 			facts.emitEvidence([capturedFact({ sequence: 5 })]);
@@ -126,6 +129,7 @@ describe("minecraft world SQLite 历史与恢复（S-W3）", () => {
 		const facts = new FakeClientFacts();
 		facts.setSelf(selfState(19), []);
 		const world = await createWorld({ facts, dataDir: "NUL/ definitely /invalid:\\path" }, {});
+		await world.historySettled; // 历史侧打开/播种完成（当前事实能力不等它）
 		const status = await world.status();
 		expect(status.history.state).toBe("unavailable");
 		const observation = await world.read({ ref: "self@1", input: {} });
@@ -151,6 +155,7 @@ describe("minecraft world 领域记录 CAS 与保留（S-W3）", () => {
 			const facts = new FakeClientFacts();
 			facts.setSelf(selfState(20), []);
 			const world = await createWorld({ facts, dataDir: dir }, { receiver: "mcw:receiver:gen1" });
+			await world.historySettled; // 历史侧打开/播种完成（当前事实能力不等它）
 			// 记录引用的证据必须真实接收过（存在性校验）
 			facts.emitEvidence([
 				capturedFact({ sequence: 1, ref: "ev:a", stream: "mcw:test:stream:casa" }),
@@ -229,6 +234,7 @@ describe("minecraft world 领域记录 CAS 与保留（S-W3）", () => {
 		try {
 			const facts = new FakeClientFacts();
 			const world = await createWorld({ facts, dataDir: dir });
+			await world.historySettled; // 历史侧打开/播种完成（当前事实能力不等它）
 			await expect(world.readRecord("mcw:record:missing")).rejects.toMatchObject({ code: "CALL_UNAVAILABLE" });
 			await world.close();
 		} finally {
@@ -241,6 +247,7 @@ describe("minecraft world 领域记录 CAS 与保留（S-W3）", () => {
 		try {
 			const facts = new FakeClientFacts();
 			const world = await createWorld({ facts, dataDir: dir }, { receiver: "mcw:receiver:gen1" });
+			await world.historySettled; // 历史侧打开/播种完成（当前事实能力不等它）
 			await expect(world.evidence.retain("mcw:runtime:run-x", ["mcw:ev:never-received"])).rejects.toMatchObject({
 				code: "EVIDENCE_UNAVAILABLE",
 			});
@@ -266,6 +273,7 @@ describe("minecraft world 领域记录 CAS 与保留（S-W3）", () => {
 		try {
 			const facts = new FakeClientFacts();
 			const world = await createWorld({ facts, dataDir: dir }, { receiver: "mcw:receiver:gen1" });
+			await world.historySettled; // 历史侧打开/播种完成（当前事实能力不等它）
 			const record = capturedFact({ sequence: 1, ref: "mcw:ev:key-1" });
 			facts.emitEvidence([record]);
 			// retain 在 flush 之前调用：内部先冲刷，保证证据与保留关系都已持久再返回。
@@ -356,6 +364,7 @@ describe("minecraft world 领域记录 CAS 与保留（S-W3）", () => {
 		try {
 			const facts = new FakeClientFacts();
 			const world = await createWorld({ facts, dataDir: dir }, { receiver: "mcw:receiver:gen1" });
+			await world.historySettled; // 历史侧打开/播种完成（当前事实能力不等它）
 			facts.emitEvidence([
 				capturedFact({ sequence: 1, ref: "ev:1", stream: "mcw:test:stream:rec" }),
 				capturedFact({ sequence: 2, ref: "ev:2", stream: "mcw:test:stream:rec" }),
@@ -381,6 +390,7 @@ describe("minecraft world 领域记录 CAS 与保留（S-W3）", () => {
 
 			const facts2 = new FakeClientFacts();
 			const world2 = await createWorld({ facts: facts2, dataDir: dir }, { receiver: "mcw:receiver:gen2" });
+			await world2.historySettled; // 历史侧打开/播种完成（当前事实能力不等它）
 			const readBack = await world2.readRecord(created.ref);
 			expect(readBack.revision).toBe(2);
 			expect(readBack.value).toEqual({ input: "iron_ore", count: 16 });

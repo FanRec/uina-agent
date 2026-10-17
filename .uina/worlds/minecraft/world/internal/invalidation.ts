@@ -203,8 +203,14 @@ export class InvalidationLedger {
 	 */
 	ensureStream(stream: string, deps: ReadonlySet<DependencyKind>): void {
 		if (deps.size !== 1) {
-			// 两类水位量纲不同，无法合成单一可比水位：混声明的查询会静默漏失效。
-			throw new Error(`查询依赖必须恰为一类（current 或 history），收到：${[...deps].join("+")}`);
+			// 临时限制（world.md §9.1 条件条款），不是永久合同错误：混合查询与时间阈值
+			// 的组合机制在真实消费者（Runtime/Callable）出现时激活——Watch 内部关联
+			// 多水位与独立到期条件，对外仍是单一 Watch。在那之前两类水位量纲不同，
+			// 挤进单一水位会静默漏失效，因此显式拒绝而不是悄悄接受。
+			throw new Error(
+				`当前实现不支持混合依赖（${[...deps].join("+")}）：current 用当前源失效事件序、history 用存储提交版本，` +
+					"两量纲不可比；组合水位机制见 world.md §9.1 条件条款，激活前混声明被显式拒绝（不静默漏失效）",
+			);
 		}
 		if (this.streamStates.has(stream)) return;
 		this.streamStates.set(stream, { seq: this.watermark(stream, deps), refs: [], deps: new Set(deps) });

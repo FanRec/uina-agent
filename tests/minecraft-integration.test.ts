@@ -41,6 +41,7 @@ async function makeHarness(store?: MemoryWorldStore | UnavailableWorldStore): Pr
 	await vi.waitFor(() => expect(driver.connectionState()).toBe("ready"), { timeout: 2_000 });
 	const dataDir = mkdtempSync(join(tmpdir(), "mc-integration-"));
 	const world = await createWorld({ facts: driver.facts, dataDir }, store ? { store } : {});
+	await world.historySettled; // 历史侧打开/播种完成（当前事实能力不等它）
 	return { driver, bot, world, dataDir };
 }
 

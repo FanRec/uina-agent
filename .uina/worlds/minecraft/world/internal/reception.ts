@@ -282,6 +282,24 @@ export class ReceptionEngine {
 		return [...this.pending];
 	}
 
+	/**
+	 * 存储侧身份冲突（同 (stream,seq) 不同载荷 / 同 gap ref 不同区间）的故障结算：
+	 * 从待落盘队列移除并报告源协议故障，但**不记账**——冲突条目没有持久化其内容，
+	 * durable 只按数据库中真实存在的内容推进（恢复场景下旧内容已在播种集合内）。
+	 * 不移除会让同一冲突批永久重试并卡死提交屏障。
+	 */
+	discardConflicts(refs: readonly Ref[]): void {
+		if (refs.length === 0) return;
+		const set = new Set(refs);
+		const dropped = this.pending.filter((entry) => set.has(entry.kind === "fact" ? entry.record.ref : entry.gap.ref));
+		if (dropped.length === 0) return;
+		this.pending = this.pending.filter((entry) => !set.has(entry.kind === "fact" ? entry.record.ref : entry.gap.ref));
+		for (const entry of dropped) {
+			const ref = entry.kind === "fact" ? entry.record.ref : entry.gap.ref;
+			this.events.protocolFault(`存储拒绝身份冲突条目（不入库、不冒认持久）：ref=${ref}`);
+		}
+	}
+
 	/** 指定证据 ref 是否在待落盘队列（存在性校验用）。 */
 	hasPendingRef(ref: Ref): boolean {
 		return this.pending.some((entry) => (entry.kind === "fact" ? entry.record.ref : entry.gap.ref) === ref);

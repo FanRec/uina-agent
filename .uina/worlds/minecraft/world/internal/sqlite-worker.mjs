@@ -118,43 +118,66 @@ function appendEvidence(entries) {
 	const insertGap = db.prepare(
 		"INSERT OR IGNORE INTO evidence_gaps (ref, stream, after, through, reason, store_seq) VALUES (?, ?, ?, ?, ?, ?)",
 	);
+	// 身份核验（§5.3）：崩溃恢复后的重放不靠 INSERT OR IGNORE 静默吞——
+	// 同 (stream,seq) 必须同 ref、同 gap ref 必须同区间，否则报告冲突而不是装作幂等。
+	const factByIdentity = db.prepare("SELECT ref FROM evidence WHERE stream = ? AND seq = ?");
+	const factByRef = db.prepare("SELECT stream, seq FROM evidence WHERE ref = ?");
+	const gapByRef = db.prepare("SELECT after, through FROM evidence_gaps WHERE ref = ?");
 	db.exec("BEGIN");
+	const conflicts = [];
 	try {
 		let inserted = 0;
 		for (const entry of entries) {
 			if (entry.kind === "fact") {
+				const { ref, stream, seq } = {
+					ref: entry.record.ref,
+					stream: entry.record.mark.stream,
+					seq: entry.record.mark.sequence,
+				};
+				const byIdentity = factByIdentity.get(stream, seq);
+				const byRef = factByRef.get(ref);
+				if (byIdentity || byRef) {
+					if (byIdentity && byRef && byIdentity.ref === ref && byRef.stream === stream && byRef.seq === seq) {
+						continue; // 同身份同载荷重放：幂等，不重复入库
+					}
+					conflicts.push({
+						kind: "fact",
+						ref,
+						detail: `同身份不同载荷：stream=${stream} seq=${seq} 已持久 ref=${byIdentity ? byIdentity.ref : "(无)"} vs ${ref}`,
+					});
+					continue;
+				}
 				inserted += Number(
-					insertFact.run(
-						entry.record.ref,
-						entry.record.mark.stream,
-						entry.record.mark.sequence,
-						entry.record.schema,
-						JSON.stringify(entry.record),
-						nextStoreSeq(),
-					).changes,
+					insertFact.run(ref, stream, seq, entry.record.schema, JSON.stringify(entry.record), nextStoreSeq()).changes,
 				);
 			} else {
+				const gap = entry.gap;
+				const existing = gapByRef.get(gap.ref);
+				if (existing) {
+					if (existing.after === gap.after && (existing.through ?? null) === gap.through) {
+						continue; // 同身份同区间重放：幂等
+					}
+					conflicts.push({
+						kind: "gap",
+						ref: gap.ref,
+						detail: `同 gap ref 区间变化：ref=${gap.ref} 已持久 (${existing.after},${existing.through ?? "null"}] vs (${gap.after},${gap.through ?? "null"}]`,
+					});
+					continue;
+				}
 				inserted += Number(
-					insertGap.run(
-						entry.gap.ref,
-						entry.gap.stream,
-						entry.gap.after,
-						entry.gap.through,
-						entry.gap.reason,
-						nextStoreSeq(),
-					).changes,
+					insertGap.run(gap.ref, gap.stream, gap.after, gap.through, gap.reason, nextStoreSeq()).changes,
 				);
 			}
 		}
-		// 全部按 ref 去重（恢复后源重放）：没有新行就不推进提交版本，
+		// 全部按身份重放（无新行、无冲突）：没有新数据就不推进提交版本，
 		// 否则会给历史 watcher 制造"版本变了但数据没变"的无效唤醒。
 		if (inserted > 0) bumpVersion();
 		db.exec("COMMIT");
-		return { ok: true, version: storeVersion };
+		return { ok: true, version: storeVersion, conflicts };
 	} catch (error) {
 		db.exec("ROLLBACK");
 		console.error("[mc-world-worker] appendEvidence failed:", error);
-		return { ok: false };
+		return { ok: false, conflicts: [] };
 	}
 }
 

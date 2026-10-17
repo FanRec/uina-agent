@@ -17,6 +17,7 @@ import {
 	type AppendOutcome,
 	type StoredEntry,
 	SqliteWorkerStore,
+	MemoryWorldStore,
 	openSqliteWorkerStore,
 } from "../.uina/worlds/minecraft/world/internal/store.js";
 import { FakeClientFacts, capturedFact } from "./minecraft-world-fake-facts.js";
@@ -28,6 +29,26 @@ class LostReplyStore extends SqliteWorkerStore {
 	override async append(entries: StoredEntry[]): Promise<AppendOutcome> {
 		await super.append(entries);
 		throw new Error("提交成功但回应丢失（模拟 Worker 在 COMMIT 后崩溃）");
+	}
+}
+
+/** 打开时机由测试控制：构造后处于 opening，openNow 后就绪。 */
+class SlowOpenStore extends MemoryWorldStore {
+	#release: (() => void) | null = null;
+	#openedPromise: Promise<void> | null = null;
+	#open = false;
+	override get opened(): Promise<void> {
+		this.#openedPromise ??= new Promise<void>((resolve) => {
+			this.#release = resolve;
+		});
+		return this.#openedPromise;
+	}
+	override get availability() {
+		return this.#open ? { state: "ready" as const } : { state: "opening" as const };
+	}
+	openNow(): void {
+		this.#open = true;
+		this.#release?.();
 	}
 }
 
@@ -51,8 +72,9 @@ describe("minecraft world 持久性", () => {
 		const dataDir = mkdtempSync(join(tmpdir(), "mc-lost-reply-"));
 		const facts = new FakeClientFacts();
 		const lost = new LostReplyStore(dataDir);
-		await lost.ready;
+		await lost.opened;
 		const first = await createWorld({ facts, dataDir }, { store: lost });
+		await first.historySettled; // 历史侧结算后再驱动证据（通知在结算前进缓冲属设计行为）
 		try {
 			facts.emitEvidence([capturedFact({ sequence: 1 }), capturedFact({ sequence: 2 })]);
 			// 屏障只能给出"明确故障"：调用方不得据此断言未提交。
@@ -71,22 +93,89 @@ describe("minecraft world 持久性", () => {
 		const dataDir = mkdtempSync(join(tmpdir(), "mc-restore-"));
 		const facts1 = new FakeClientFacts();
 		const lost = new LostReplyStore(dataDir);
-		await lost.ready;
+		await lost.opened;
 		const first = await createWorld({ facts: facts1, dataDir }, { store: lost });
+		await first.historySettled;
 		facts1.emitEvidence([capturedFact({ sequence: 1 }), capturedFact({ sequence: 2 })]);
 		await expect(first.read(HISTORY_QUERY)).rejects.toMatchObject({ code: "STORE_UNAVAILABLE" });
-		await first.close(); // 关闭不再尝试（存储仍会重试并失败），但已提交数据在盘上
+		await first.close();
 
 		// 新接收代次：从真实持久状态起步，不继承被丢失回应的"未提交"假设。
 		const facts2 = new FakeClientFacts();
 		const reopened = await openSqliteWorkerStore(dataDir);
 		const second: WorldHandle = await createWorld({ facts: facts2, dataDir }, { store: reopened });
+		await second.historySettled;
 		try {
 			// 源重放同样的证据（同 ref 同载荷）：去重不重复入库。
 			facts2.emitEvidence([capturedFact({ sequence: 1 }), capturedFact({ sequence: 2 })]);
 			const observation = await second.read(HISTORY_QUERY);
 			expect(items(observation)).toHaveLength(2);
 			expect(facts2.acks.at(-1)?.durableThrough).toBe(2);
+		} finally {
+			await second.close();
+			rmSync(dataDir, { recursive: true, force: true });
+		}
+	});
+
+	it("SQLite 打开期间当前事实照常可读，历史独立 opening → ready", async () => {
+		const facts = new FakeClientFacts();
+		facts.setSelf(
+			{
+				place: {
+					world: "mcw:world:w1",
+					worldRevision: "mcw:rev:r1",
+					dimension: "minecraft:overworld",
+					position: { x: 1, y: 64, z: 2 },
+				},
+				velocity: { x: 0, y: 0, z: 0 },
+				health: 20,
+				food: 20,
+				onGround: true,
+			},
+			[],
+		);
+		const store = new SlowOpenStore();
+		const world: WorldHandle = await createWorld({ facts, dataDir: "unused-memory" }, { store });
+		try {
+			// 未等 historySettled：当前读立即可用（createWorld 交付句柄不被 SQLite 阻塞）。
+			const current = await world.read({ ref: "self@1", input: {} });
+			expect(current.value).not.toBeNull();
+			expect((await world.status()).history.state).toBe("opening");
+			// opening 期间历史操作明确拒绝，不悬挂。
+			await expect(world.read(HISTORY_QUERY)).rejects.toMatchObject({ code: "STORE_UNAVAILABLE" });
+			store.openNow();
+			await world.historySettled;
+			expect((await world.status()).history.state).toBe("ready");
+		} finally {
+			await world.close();
+		}
+	});
+
+	it("恢复后同身份不同载荷：存储拒绝并按协议故障结算，不冒认持久、不卡屏障", async () => {
+		const dataDir = mkdtempSync(join(tmpdir(), "mc-conflict-"));
+		const facts1 = new FakeClientFacts();
+		const first = await createWorld({ facts: facts1, dataDir }, { receiver: "mcw:receiver:g1" });
+		await first.historySettled;
+		facts1.emitEvidence([capturedFact({ sequence: 1 })]);
+		facts1.emitGap("mcw:gap:g1", "mcw:test:stream:ev1", 1, 3);
+		await first.read(HISTORY_QUERY); // 屏障：E1/ref-X 与 gap (1,3] 已持久
+		await first.close();
+
+		// 新接收代次重放 E1 但换载荷（ref Y ≠ 已持久 ref X）。
+		const facts2 = new FakeClientFacts();
+		const second: WorldHandle = await createWorld({ facts: facts2, dataDir }, { receiver: "mcw:receiver:g2" });
+		await second.historySettled;
+		try {
+			facts2.emitEvidence([capturedFact({ sequence: 1, ref: "mcw:test:stream:ev1:1-conflicting" })]);
+			facts2.emitGap("mcw:gap:g1", "mcw:test:stream:ev1", 1, 9); // 同 ref 区间变化 → 冲突
+			const observation = await second.read(HISTORY_QUERY); // 屏障不被冲突卡死
+			// 库内只有旧内容（ref-X 事实 + gap(1,3]）：冲突条目不入库，durable 不回退。
+			const seen = items(observation);
+			expect(seen).toHaveLength(2);
+			expect(seen.map((i) => i.ref).sort()).toEqual(["mcw:gap:g1", "mcw:test:stream:ev1:1"]);
+			// 协议故障进入诊断（同身份不同载荷），不静默吞。
+			const impl = second as unknown as { getDiagnosticLog(): readonly string[] };
+			expect(impl.getDiagnosticLog().some((line) => line.includes("同身份不同载荷"))).toBe(true);
 		} finally {
 			await second.close();
 			rmSync(dataDir, { recursive: true, force: true });

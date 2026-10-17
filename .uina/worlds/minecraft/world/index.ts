@@ -11,7 +11,7 @@
 import type { ClientFactsPort } from "../contracts/client-facts.js";
 import type { WorldEvidencePort, WorldPort } from "../contracts/world.js";
 import { WorldImpl } from "./internal/world-impl.js";
-import { openSqliteWorkerStore, UnavailableWorldStore, type WorldStore } from "./internal/store.js";
+import { SqliteWorkerStore, UnavailableWorldStore, type WorldStore } from "./internal/store.js";
 
 export interface WorldDeps {
 	readonly facts: ClientFactsPort;
@@ -25,12 +25,14 @@ export interface WorldHandle extends WorldPort {
 	close(): Promise<void>;
 	/** 证据保留端口：仅注入 Runtime、Assets 等持久记录所有者，不给 Program。 */
 	readonly evidence: WorldEvidencePort;
+	/** 历史侧结算完成（就绪或明确不可用）。当前事实能力不等它；需要确定历史可用时等待。 */
+	readonly historySettled: Promise<void>;
 }
 
 /**
- * 默认用专用 SQLite Worker 持久存储（脱离主事件循环）；打开失败/损坏/版本不兼容
- * → 显式 UnavailableWorldStore（history=unavailable，当前接入不受影响，不假装空历史）。
- * 测试可注入替身。异步：等待存储打开握手与恢复播种完成后交付句柄。
+ * 句柄交付不等 SQLite（§13.1）：当前事实能力在当前基线建立后立即可用，
+ * 历史存储独立进入 opening → ready/unavailable（status 如实报告）。
+ * 打开失败不是异常：façade 显式 unavailable，历史操作据此拒绝，不假装空历史。
  */
 export async function createWorld(
 	deps: WorldDeps,
@@ -41,9 +43,10 @@ export async function createWorld(
 		store = options.store;
 	} else {
 		try {
-			store = await openSqliteWorkerStore(deps.dataDir);
+			// 构造即启动打开握手；不 await——当前读取不被 SQLite 阻塞。
+			store = new SqliteWorkerStore(deps.dataDir);
 		} catch (error) {
-			store = new UnavailableWorldStore(`SQLite Worker 打开失败：${String(error)}`);
+			store = new UnavailableWorldStore(`SQLite Worker 启动失败：${String(error)}`);
 		}
 	}
 	const impl = new WorldImpl({
