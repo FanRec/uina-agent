@@ -221,3 +221,14 @@ M5：真实 Mineflayer 依赖接入（lead 批准依赖后）、真实服务器�
 **登记不修**：received ACK 层同域惰性与 `evidenceThroughAll()` 跨流取 max（与 world 审查发现 2 同源，挂 M5 拆域决策）；evidence 材料在无 durable ACK 时只增不减（选定证据速率低，登记监控点）；endUse/使用会话归属按 Body 粒度（细化归 HostCallVerifier 接线时裁定）。
 
 **验证**：biome ✓ / boundaries ✓ / tsc ✓ / minecraft 全套 66 例 ✓（新增 dig 预测标注、窗口预测标注与版本同源回归用例）。
+
+### Lead — World/Driver 架构重构（2026-10-17，替换式重构四批次，commits fc1cfba / 4e95239 / 批次3 / 批次4）
+
+依据用户批准的重构提案与七点约束执行；全部四批 minecraft 全套测试绿（106 例），biome/boundaries/tsc 绿。**本地提交未推送。**
+
+1. **批次1 World SQLite Worker + 屏障化查询**：删除同步 flush-then-read（原先历史 read/retain 在调用栈内同步跑 node:sqlite，阻塞主事件循环）。新增专用 Worker（`world/internal/sqlite-worker.mjs`，纯 Node 内置，规避 loader/打包问题）；WorldStore 异步化；历史读=固定接收上界屏障→await 提交/明确故障→cursor 先于读取 await 固定→Worker 内原子读取（旧数据绝不携带覆盖新事实的 cursor）。createWorld 异步化（订阅先行+通知缓冲重放+恢复播种）。Worker 崩溃→显式 unavailable，当前读不受影响（集成测试含线程隔离/崩溃降级/屏障无遗漏/历史 watch 无漏）。
+2. **批次2 ACK 收敛 durable-only + schema v3**：ClientEvidenceAck 删 receivedThrough+gaps（Driver 端零消费者）；ReceptionEngine 保留内部前缀/缺口/去重，durable 对外唯一；删除 R/recv 持久字段，schema v3 含 v2→v3 一次性 DROP COLUMN 迁移（数据行原样保留，迁移回归测试）。修复：evidence_end 封口闭合已持久缺口后 durable 立即重算（原先只挂在提交上）。
+3. **批次3 Driver 状态唯一所有权**：gate=资格与操作唯一权威（删 #active 双指针、#ops 双集合、死 API notifyReleased、死记账 Operation.resources）；原生使用状态归属唯一权威=Body 会话（requireAvailable/claim/release，drive/useItem/feedback 同一路径——修复 feedback hold-use 完全绕过归属核验可与 useItem 双激活的缺口）；按键持有收编 KeyHold；窗口 revision 唯一权威=WindowSession（facts live getter，删拷贝值；setSlot host 单路径路由，删双订阅与第二份快照比较）；say 过 gate.admitEphemeralWrite（停用准入+身份核验+verifier permit=null 裁定，不要求 Body Permit）。核查其余三项记账判定独立必要：continuousRoot/useOwner/gate-permit 是三个不同事实各归其主；stamp 全局序号与流内序号语义空间不同；无隐性第二状态。
+4. **批次4 文档反向更新**：world.md（§5.4/§5.6 durable-only、§6.2 提交屏障、§6.3 收缩为拆域条件条款、删 §6.4 tail 并集、§6.6/§11.2/§13.1 对齐、§18 可证伪场景表更新、Observation.history 降级条件条款）；driver.md（重构修订行、§5.4 具体归属机制、FIFO=grant 级澄清）；public-api.md（ACK 形状/语义、read 屏障语义）；contracts.md（对齐段落）；README.md（状态行）。
+
+**真实验证边界（如实登记）**：全部测试基于 FakeClientBot 与 fake facts——不证明真实服务器协议时序、Mineflayer 物理精度、真实断电/WAL kill -9 恢复。未接线：真实 Mineflayer 工厂（M5）、Pathfinder/PVP 插件适配（M5）、Program IPC/Executor（Runtime 依赖）、worlddef 动作（仍 notImplemented 桩）。Body FIFO 与 Runtime 身体调用的关系已登记：FIFO 是 grant 级排队，Runtime 调度位于 acquire 之上，Driver 无第二套仲裁。
