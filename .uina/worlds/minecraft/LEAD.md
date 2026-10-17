@@ -247,3 +247,12 @@ M5：真实 Mineflayer 依赖接入（lead 批准依赖后）、真实服务器�
 - 大对象流式发布的性能/内存未测量（assets.md §14 待实测项）；文件句柄 fsync 用 Node FileHandle.sync，目录 fsync Windows 不可用——跨存储断电原子性不承诺（与设计一致）。
 
 **门禁**：biome ✓ / boundaries ✓ / tsc ✓ / `vitest run tests/minecraft-assets-*` 23/23 ✓；minecraft 全套 14 文件 124 例 ✓（未触碰 driver/world/worlddef/contracts 文件）。
+
+**对抗式审查修复（同日第二轮，commit d674d98 + test）**：
+
+1. **证据保留部分失败泄漏（中）**：`retainEvidence` 在 publish 的 try 块外调用——world retain 成功后 runtime retain 失败（或端口缺失）会绕过 catch 直接抛出，world 侧保留悬挂且无提交对应。修复：retainEvidence 内部对部分失败自清理（释放已成功一侧）；新增回归用例（world 成功 → runtime 失败 → 两侧 released 断言）。
+2. **stage meta.json 持久性缺口（低-中）**：payload 有 fsync、installManifestSync 的 manifest 有 fsync，唯独 stage 的 meta.json 裸 writeFileSync——崩溃窗口内对象已 rename 安装而 meta 未落盘时，已发布修订被永久判 ASSET_CORRUPT。修复：rename 前对 meta.json 同步 fsync（与 assets.md §7.4 一致）。
+3. **completion.verifier 校验缺口（低）**：合同 `CallableDescriptor.completion.verifier?: ExactRef` 提供时未校验格式，补 requireExactRef。
+4. **测试盲区**：readObject 的多块（>64KiB）流式哈希与块边界 range 此前无覆盖；新增 70KiB 跨块逐字节一致用例。
+
+**审查过但否决（登记理由）**：objectId 路径穿越防御——manifest 篡改已被"内容摘要重算先于路径使用"拦截（digest gate），而能写 objects/ 的攻击者同样能写 catalog.sqlite，同盘同权下额外路径校验防不了真实威胁模型，不加（no over-defense）；appliesTo.assets 不查存在性——经验可引用尚未导入的资产，弱引用语义留给领域模块；搜索 cursor 空串宽容为 0——无害。
