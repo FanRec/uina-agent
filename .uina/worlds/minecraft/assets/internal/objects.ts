@@ -128,7 +128,11 @@ export class AssetObjectStore {
 			throw error;
 		}
 		const meta: ObjectMeta = { digest, byteLength, mediaType: request.mediaType, fileName: request.fileName };
-		writeFileSync(join(attemptDir, "meta.json"), canonicalJson(meta), "utf8");
+		const metaPath = join(attemptDir, "meta.json");
+		writeFileSync(metaPath, canonicalJson(meta), "utf8");
+		// 与 payload/installManifest 同等持久性：rename 前落盘，否则崩溃窗口内
+		// 已发布修订会因 meta 缺失被永久判 ASSET_CORRUPT（assets.md §7.4）。
+		syncFile(metaPath);
 		const objectId = `obj-${randomUUID()}`;
 		const record: StagedObjectRecord = {
 			attemptId,

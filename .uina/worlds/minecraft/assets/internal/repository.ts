@@ -183,6 +183,7 @@ export class AssetRepositoryImpl implements AssetRepository {
 		}
 	}
 
+	/** 保留声明证据；任一侧失败时释放已成功一侧——不留下无提交对应的悬挂保留。 */
 	private async retainEvidence(request: AssetDraft | AssetRevision): Promise<boolean> {
 		const worldRefs = request.evidence.filter((entry) => entry.owner === "world").map((entry) => entry.ref);
 		const runtimeRefs = request.evidence.filter((entry) => entry.owner === "runtime").map((entry) => entry.ref);
@@ -198,11 +199,13 @@ export class AssetRepositoryImpl implements AssetRepository {
 		}
 		if (runtimeRefs.length > 0) {
 			if (!this.runtimeEvidence) {
+				await this.releaseEvidence(request.requestId);
 				assetFailure("EVIDENCE_UNAVAILABLE", "声明了 runtime 证据但未注入 RuntimeEvidencePort，不能建立悬空引用");
 			}
 			try {
 				await this.runtimeEvidence.retain(request.requestId, runtimeRefs);
 			} catch (error) {
+				await this.releaseEvidence(request.requestId);
 				throw new AssetFailureError("EVIDENCE_UNAVAILABLE", `runtime 证据保留失败：${String(error)}`);
 			}
 		}

@@ -82,6 +82,7 @@ export function validateProgramDefinition(value: unknown): ProgramDefinition {
 		invalid("program.descriptor.completion.scope 不合法");
 	}
 	requireString(completion.description, "program.descriptor.completion.description");
+	if (completion.verifier !== undefined) requireExactRef(completion.verifier, "program.descriptor.completion.verifier");
 	if (!Array.isArray(descriptor.errors)) invalid("program.descriptor.errors 必须是数组");
 	for (const entry of descriptor.errors as unknown[]) {
 		const error = requireObject(entry, "program.descriptor.errors 条目");
