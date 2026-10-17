@@ -1,0 +1,998 @@
+{
+  "validCalls": [
+    {
+      "id": "observe_overview",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "overview"
+        }
+      }
+    },
+    {
+      "id": "observe_contacts",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "contacts"
+        }
+      }
+    },
+    {
+      "id": "observe_groups",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "groups"
+        }
+      }
+    },
+    {
+      "id": "observe_conversations",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "conversations"
+        }
+      }
+    },
+    {
+      "id": "observe_requests",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "requests"
+        }
+      }
+    },
+    {
+      "id": "observe_attention",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "attention"
+        }
+      }
+    },
+    {
+      "id": "observe_follow_ups",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "follow_ups"
+        }
+      }
+    },
+    {
+      "id": "observe_self",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "self"
+        }
+      }
+    },
+    {
+      "id": "observe_status",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "status"
+        }
+      }
+    },
+    {
+      "id": "observe_capabilities",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "capabilities"
+        }
+      }
+    },
+    {
+      "id": "contact_search",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "contacts",
+          "query": "小明"
+        }
+      }
+    },
+    {
+      "id": "conversation_latest",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "conversation",
+          "conversationRef": "p20002",
+          "direction": "latest"
+        }
+      }
+    },
+    {
+      "id": "conversation_before",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "conversation",
+          "conversationRef": "p20002",
+          "direction": "before",
+          "anchorMessageRef": "m42"
+        }
+      }
+    },
+    {
+      "id": "conversation_after",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "conversation",
+          "conversationRef": "p20002",
+          "direction": "after",
+          "anchorMessageRef": "m42"
+        }
+      }
+    },
+    {
+      "id": "conversation_around",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "conversation",
+          "conversationRef": "p20002",
+          "direction": "around",
+          "anchorMessageRef": "m42"
+        }
+      }
+    },
+    {
+      "id": "full_message",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "messages",
+          "messageRefs": [
+            "m42"
+          ],
+          "includeMedia": true
+        }
+      }
+    },
+    {
+      "id": "operation_result",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "operations",
+          "operationRef": "o1"
+        }
+      }
+    },
+    {
+      "id": "unknown_operations",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "operations",
+          "state": "unknown"
+        }
+      }
+    },
+    {
+      "id": "expression_face",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "expressions",
+          "kind": "face",
+          "query": "微笑"
+        }
+      }
+    },
+    {
+      "id": "expression_reaction",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "expressions",
+          "kind": "reaction",
+          "query": "微笑"
+        }
+      }
+    },
+    {
+      "id": "speak_text",
+      "arguments": {
+        "action": "speak",
+        "params": {
+          "account": "10001",
+          "conversationRef": "p20002",
+          "content": [
+            {
+              "type": "text",
+              "text": "你好"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "speak_reply",
+      "arguments": {
+        "action": "speak",
+        "params": {
+          "account": "10001",
+          "conversationRef": "p20002",
+          "replyTo": "m42",
+          "content": [
+            {
+              "type": "text",
+              "text": "看到了"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "speak_mention_face",
+      "arguments": {
+        "action": "speak",
+        "params": {
+          "account": "10001",
+          "conversationRef": "g30003",
+          "content": [
+            {
+              "type": "mention",
+              "userRef": "u20002"
+            },
+            {
+              "type": "face",
+              "faceId": "14"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "speak_image",
+      "arguments": {
+        "action": "speak",
+        "params": {
+          "account": "10001",
+          "conversationRef": "p20002",
+          "content": [
+            {
+              "type": "image",
+              "resource": {
+                "kind": "file",
+                "path": "E:/workspace/generated/fixture.bin"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "speak_audio",
+      "arguments": {
+        "action": "speak",
+        "params": {
+          "account": "10001",
+          "conversationRef": "p20002",
+          "content": [
+            {
+              "type": "audio",
+              "resource": {
+                "kind": "file",
+                "path": "E:/workspace/generated/fixture.bin"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "speak_video",
+      "arguments": {
+        "action": "speak",
+        "params": {
+          "account": "10001",
+          "conversationRef": "p20002",
+          "content": [
+            {
+              "type": "video",
+              "resource": {
+                "kind": "file",
+                "path": "E:/workspace/generated/fixture.bin"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "speak_file",
+      "arguments": {
+        "action": "speak",
+        "params": {
+          "account": "10001",
+          "conversationRef": "p20002",
+          "content": [
+            {
+              "type": "file",
+              "resource": {
+                "kind": "file",
+                "path": "E:/workspace/generated/fixture.bin"
+              },
+              "name": "fixture.txt"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "speak_qq_media",
+      "arguments": {
+        "action": "speak",
+        "params": {
+          "account": "10001",
+          "conversationRef": "p20002",
+          "content": [
+            {
+              "type": "image",
+              "resource": {
+                "kind": "qq_media",
+                "ref": "a1"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "reaction_set",
+      "arguments": {
+        "action": "gesture",
+        "params": {
+          "account": "10001",
+          "kind": "react",
+          "messageRef": "m42",
+          "reactionCode": "14",
+          "enabled": true
+        }
+      }
+    },
+    {
+      "id": "reaction_remove",
+      "arguments": {
+        "action": "gesture",
+        "params": {
+          "account": "10001",
+          "kind": "react",
+          "messageRef": "m42",
+          "reactionCode": "14",
+          "enabled": false
+        }
+      }
+    },
+    {
+      "id": "poke",
+      "arguments": {
+        "action": "gesture",
+        "params": {
+          "account": "10001",
+          "kind": "poke",
+          "conversationRef": "g30003",
+          "userRef": "u20002"
+        }
+      }
+    },
+    {
+      "id": "attention_direct",
+      "arguments": {
+        "action": "attention",
+        "params": {
+          "account": "10001",
+          "operation": "set",
+          "target": "g30003",
+          "mode": "direct_only"
+        }
+      }
+    },
+    {
+      "id": "attention_pause",
+      "arguments": {
+        "action": "attention",
+        "params": {
+          "account": "10001",
+          "operation": "set",
+          "target": "g30003",
+          "pausedUntil": "2026-10-09T21:00:00+08:00"
+        }
+      }
+    },
+    {
+      "id": "attention_resume",
+      "arguments": {
+        "action": "attention",
+        "params": {
+          "account": "10001",
+          "operation": "set",
+          "target": "g30003",
+          "pausedUntil": null
+        }
+      }
+    },
+    {
+      "id": "attention_clear",
+      "arguments": {
+        "action": "attention",
+        "params": {
+          "account": "10001",
+          "operation": "clear",
+          "target": "g30003"
+        }
+      }
+    },
+    {
+      "id": "follow_create",
+      "arguments": {
+        "action": "follow_up",
+        "params": {
+          "account": "10001",
+          "operation": "create",
+          "targetRef": "p20002",
+          "note": "问问进度",
+          "evidenceRefs": [
+            "m42"
+          ],
+          "reviewAt": "2026-10-09T21:00:00+08:00"
+        }
+      }
+    },
+    {
+      "id": "follow_update",
+      "arguments": {
+        "action": "follow_up",
+        "params": {
+          "account": "10001",
+          "operation": "update",
+          "ref": "f1",
+          "note": "稍后再问",
+          "reviewAt": null
+        }
+      }
+    },
+    {
+      "id": "follow_close",
+      "arguments": {
+        "action": "follow_up",
+        "params": {
+          "account": "10001",
+          "operation": "close",
+          "ref": "f1",
+          "resolution": "不再需要"
+        }
+      }
+    },
+    {
+      "id": "follow_cancel",
+      "arguments": {
+        "action": "follow_up",
+        "params": {
+          "account": "10001",
+          "operation": "cancel",
+          "ref": "f1",
+          "resolution": "不再需要"
+        }
+      }
+    },
+    {
+      "id": "request_accept",
+      "arguments": {
+        "action": "account",
+        "params": {
+          "account": "10001",
+          "operation": "respond_request",
+          "requestRef": "r1",
+          "decision": "accept"
+        }
+      }
+    },
+    {
+      "id": "request_reject",
+      "arguments": {
+        "action": "account",
+        "params": {
+          "account": "10001",
+          "operation": "respond_request",
+          "requestRef": "r1",
+          "decision": "reject"
+        }
+      }
+    },
+    {
+      "id": "retract",
+      "arguments": {
+        "action": "account",
+        "params": {
+          "account": "10001",
+          "operation": "retract",
+          "messageRef": "m42"
+        }
+      }
+    },
+    {
+      "id": "mark_read",
+      "arguments": {
+        "action": "account",
+        "params": {
+          "account": "10001",
+          "operation": "mark_read",
+          "conversationRef": "p20002"
+        }
+      }
+    },
+    {
+      "id": "leave_group",
+      "arguments": {
+        "action": "account",
+        "params": {
+          "account": "10001",
+          "operation": "leave_group",
+          "conversationRef": "g30003"
+        }
+      }
+    },
+    {
+      "id": "remove_contact",
+      "arguments": {
+        "action": "account",
+        "params": {
+          "account": "10001",
+          "operation": "remove_contact",
+          "userRef": "u20002",
+          "block": false
+        }
+      }
+    },
+    {
+      "id": "set_profile",
+      "arguments": {
+        "action": "account",
+        "params": {
+          "account": "10001",
+          "operation": "set_profile",
+          "nickname": "初奈",
+          "signature": "你好"
+        }
+      }
+    },
+    {
+      "id": "clear_signature",
+      "arguments": {
+        "action": "account",
+        "params": {
+          "account": "10001",
+          "operation": "set_profile",
+          "signature": ""
+        }
+      }
+    },
+    {
+      "id": "set_avatar",
+      "arguments": {
+        "action": "account",
+        "params": {
+          "account": "10001",
+          "operation": "set_avatar",
+          "resource": {
+            "kind": "file",
+            "path": "E:/workspace/avatar.png"
+          }
+        }
+      }
+    },
+    {
+      "id": "set_presence",
+      "arguments": {
+        "action": "account",
+        "params": {
+          "account": "10001",
+          "operation": "set_presence",
+          "presenceRef": "s1"
+        }
+      }
+    },
+    {
+      "id": "set_group_card",
+      "arguments": {
+        "action": "account",
+        "params": {
+          "account": "10001",
+          "operation": "set_group_card",
+          "conversationRef": "g30003",
+          "card": "初奈"
+        }
+      }
+    },
+    {
+      "id": "follow_plain_update",
+      "arguments": {
+        "action": "follow_up",
+        "params": {
+          "account": "10001",
+          "operation": "update",
+          "ref": "f1",
+          "note": "新的说明"
+        }
+      }
+    },
+    {
+      "id": "follow_plain_close",
+      "arguments": {
+        "action": "follow_up",
+        "params": {
+          "account": "10001",
+          "operation": "close",
+          "ref": "f1",
+          "resolution": "已结算"
+        }
+      }
+    },
+    {
+      "id": "follow_plain_cancel",
+      "arguments": {
+        "action": "follow_up",
+        "params": {
+          "account": "10001",
+          "operation": "cancel",
+          "ref": "f1",
+          "resolution": "已结算"
+        }
+      }
+    },
+    {
+      "id": "self_groups_page",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "self",
+          "includeGroups": true,
+          "limit": 20
+        }
+      }
+    },
+    {
+      "id": "self_one_group",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "self",
+          "groupConversationRef": "g30003"
+        }
+      }
+    },
+    {
+      "id": "members_list",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "members",
+          "conversationRef": "g30003"
+        }
+      }
+    },
+    {
+      "id": "members_search",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "members",
+          "conversationRef": "g30003",
+          "query": "小明"
+        }
+      }
+    },
+    {
+      "id": "conversation_with_events",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "conversation",
+          "conversationRef": "g30003",
+          "includeEvents": true
+        }
+      }
+    }
+  ],
+  "invalidCalls": [
+    {
+      "id": "missing_action",
+      "arguments": {
+        "params": {
+          "account": "10001",
+          "scope": "overview"
+        }
+      }
+    },
+    {
+      "id": "unknown_scope",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "missing"
+        }
+      }
+    },
+    {
+      "id": "nickname_as_target",
+      "arguments": {
+        "action": "speak",
+        "params": {
+          "account": "10001",
+          "conversationRef": "小明",
+          "content": [
+            {
+              "type": "text",
+              "text": "你好"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "empty_content",
+      "arguments": {
+        "action": "speak",
+        "params": {
+          "account": "10001",
+          "conversationRef": "p20002",
+          "content": []
+        }
+      }
+    },
+    {
+      "id": "raw_url_upload",
+      "arguments": {
+        "action": "speak",
+        "params": {
+          "account": "10001",
+          "conversationRef": "p20002",
+          "content": [
+            {
+              "type": "image",
+              "resource": {
+                "kind": "url",
+                "url": "https://fixture.invalid/image"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "attention_no_change",
+      "arguments": {
+        "action": "attention",
+        "params": {
+          "account": "10001",
+          "operation": "set",
+          "target": "g30003"
+        }
+      }
+    },
+    {
+      "id": "time_without_offset",
+      "arguments": {
+        "action": "follow_up",
+        "params": {
+          "account": "10001",
+          "operation": "create",
+          "targetRef": "p20002",
+          "note": "问进度",
+          "reviewAt": "2026-10-09T21:00:00"
+        }
+      }
+    },
+    {
+      "id": "before_without_anchor",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "conversation",
+          "conversationRef": "g30003",
+          "direction": "before"
+        }
+      }
+    },
+    {
+      "id": "close_without_resolution",
+      "arguments": {
+        "action": "follow_up",
+        "params": {
+          "account": "10001",
+          "operation": "close",
+          "ref": "f1"
+        }
+      }
+    },
+    {
+      "id": "profile_empty",
+      "arguments": {
+        "action": "account",
+        "params": {
+          "account": "10001",
+          "operation": "set_profile"
+        }
+      }
+    },
+    {
+      "id": "gesture_guess_label",
+      "arguments": {
+        "action": "gesture",
+        "params": {
+          "account": "10001",
+          "kind": "react",
+          "messageRef": "m42",
+          "reactionCode": "like"
+        }
+      }
+    },
+    {
+      "id": "negative_limit",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "contacts",
+          "limit": -1
+        }
+      }
+    },
+    {
+      "id": "mixed_scopes",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "overview",
+          "conversationRef": "g30003"
+        }
+      }
+    },
+    {
+      "id": "self_group_is_private",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "self",
+          "groupConversationRef": "p20002"
+        }
+      }
+    },
+    {
+      "id": "members_requires_group",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "members",
+          "conversationRef": "p20002"
+        }
+      }
+    },
+    {
+      "id": "include_events_is_boolean",
+      "arguments": {
+        "action": "observe",
+        "params": {
+          "account": "10001",
+          "scope": "conversation",
+          "conversationRef": "g30003",
+          "includeEvents": "yes"
+        }
+      }
+    },
+    {
+      "id": "rejects_cas",
+      "arguments": {
+        "action": "attention",
+        "params": {
+          "account": "10001",
+          "operation": "set",
+          "target": "g30003",
+          "mode": "normal",
+          "expectedRevision": 2
+        }
+      }
+    },
+    {
+      "id": "rejects_backlog_mode",
+      "arguments": {
+        "action": "attention",
+        "params": {
+          "account": "10001",
+          "operation": "set",
+          "target": "g30003",
+          "pausedUntil": null,
+          "resumeBacklog": "all"
+        }
+      }
+    }
+  ],
+  "deploymentCases": {
+    "valid": [
+      {
+        "grants": []
+      },
+      {
+        "grants": [
+          "observation",
+          "messaging",
+          "interaction",
+          "requests.respond",
+          "profile.modify",
+          "messages.mark_read",
+          "groups.leave"
+        ]
+      }
+    ],
+    "invalid": [
+      {},
+      null,
+      {
+        "grants": [
+          "*"
+        ]
+      },
+      {
+        "grants": [
+          "observation",
+          "observation"
+        ]
+      },
+      {
+        "grants": [
+          "unknown"
+        ]
+      },
+      {
+        "grants": [
+          "messaging"
+        ],
+        "extra": true
+      }
+    ]
+  }
+}

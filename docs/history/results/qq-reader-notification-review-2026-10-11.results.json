@@ -1,0 +1,94 @@
+{
+  "sourceHead": "edfda45",
+  "evidenceBoundary": "Temporary directories, fake transport and timers; no real QQ or Provider",
+  "total": 17,
+  "failed": 17,
+  "expectedToFailOnReviewedImplementation": true,
+  "cases": [
+    {
+      "name": "F01 follow 不得丢弃整条正文后推进消费书签",
+      "status": "failed",
+      "failure": "AssertionError: expected 10 to be +0 // Object.is equality"
+    },
+    {
+      "name": "F02 follow 排队后 focus=[] 必须阻止正文灌注",
+      "status": "failed",
+      "failure": "AssertionError: expected '[QQ 跟读] conversationRef=g30003\\n新增：\\n…' not to contain '[QQ 跟读]'"
+    },
+    {
+      "name": "F03 通知排队后 mode=off 必须静音",
+      "status": "failed",
+      "failure": "Error: expected '[QQ 群聊] snapshot=2026-10-11 12:00 GMT…' to be null"
+    },
+    {
+      "name": "F04 follow 排队后已被 read 消费完应空退役",
+      "status": "failed",
+      "failure": "Error: expected '[QQ 跟读] conversationRef=g30003\\n（无未消费…' to be null"
+    },
+    {
+      "name": "F05 出站 echo 不得压制第一条入站通知",
+      "status": "failed",
+      "failure": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "name": "F06 新会话第一次重启不得封存未读",
+      "status": "failed",
+      "failure": "AssertionError: expected { focus: [], …(3) } to match object { conversations: [ { …(2) } ] }"
+    },
+    {
+      "name": "F07 渲染暂时失败后恢复，已有首条消息应重新排期",
+      "status": "failed",
+      "failure": "AssertionError: expected [ { …(5) } ] to have a length of 2 but got 1"
+    },
+    {
+      "name": "F08 通知记账 IO 失败不得锁死占位",
+      "status": "failed",
+      "failure": "AssertionError: expected 'qq:ordinary:g30003:2026-10-11T04:00:0…' to be null"
+    },
+    {
+      "name": "F09 等待消费锁期间取消 read 不得推进书签",
+      "status": "failed",
+      "failure": "AssertionError: expected 1 to be +0 // Object.is equality"
+    },
+    {
+      "name": "F10 跨会话 poke 应升级现有纸条",
+      "status": "failed",
+      "failure": "AssertionError: expected '[QQ 群聊] snapshot=2026-10-11 12:00 GMT…' to contain 'e1'"
+    },
+    {
+      "name": "F11 busy 时短防抖到期应进入邮箱占位",
+      "status": "failed",
+      "failure": "AssertionError: expected [] to have a length of 1 but got +0"
+    },
+    {
+      "name": "F12 第21条申请必须有合法的只读续页入口",
+      "status": "failed",
+      "failure": "AssertionError: expected 'failed' to be 'succeeded' // Object.is equality"
+    },
+    {
+      "name": "F13 富消息的展开指引必须使用存活 action",
+      "status": "failed",
+      "failure": "AssertionError: expected '[QQ 群聊] snapshot=2026-10-11 12:00 GMT…' not to match /observe/"
+    },
+    {
+      "name": "F14 单条超长 follow 必须按字符压力退让",
+      "status": "failed",
+      "failure": "AssertionError: expected false to be true // Object.is equality"
+    },
+    {
+      "name": "F15 延迟渲染新增到期提醒不能被再次投递",
+      "status": "failed",
+      "failure": "AssertionError: expected false to be true // Object.is equality"
+    },
+    {
+      "name": "F16 暂停结束摘要不得把已消费正文统计为未读",
+      "status": "failed",
+      "failure": "AssertionError: expected [ { …(5) } ] to have a length of +0 but got 1"
+    },
+    {
+      "name": "F17 browse 点查 includeMedia=true 应展开已有图片",
+      "status": "failed",
+      "failure": "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 0 times"
+    }
+  ]
+}

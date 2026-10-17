@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "QQ World deployment grant declaration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "grants": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "observation",
+          "messaging",
+          "interaction",
+          "attention.manage",
+          "follow_up.manage",
+          "requests.respond",
+          "profile.modify",
+          "messages.retract",
+          "messages.mark_read",
+          "groups.leave",
+          "contacts.remove"
+        ]
+      },
+      "description": "部署者在安装配置中明确授予；未列入即拒绝，不是模型参数。"
+    }
+  },
+  "required": [
+    "grants"
+  ]
+}
