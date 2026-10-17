@@ -232,3 +232,15 @@ M5：真实 Mineflayer 依赖接入（lead 批准依赖后）、真实服务器�
 4. **批次4 文档反向更新**：world.md（§5.4/§5.6 durable-only、§6.2 提交屏障、§6.3 收缩为拆域条件条款、删 §6.4 tail 并集、§6.6/§11.2/§13.1 对齐、§18 可证伪场景表更新、Observation.history 降级条件条款）；driver.md（重构修订行、§5.4 具体归属机制、FIFO=grant 级澄清）；public-api.md（ACK 形状/语义、read 屏障语义）；contracts.md（对齐段落）；README.md（状态行）。
 
 **真实验证边界（如实登记）**：全部测试基于 FakeClientBot 与 fake facts——不证明真实服务器协议时序、Mineflayer 物理精度、真实断电/WAL kill -9 恢复。未接线：真实 Mineflayer 工厂（M5）、Pathfinder/PVP 插件适配（M5）、Program IPC/Executor（Runtime 依赖）、worlddef 动作（仍 notImplemented 桩）。Body FIFO 与 Runtime 身体调用的关系已登记：FIFO 是 grant 级排队，Runtime 调度位于 acquire 之上，Driver 无第二套仲裁。
+
+### Lead — 二轮收口：cursor 模型 / 身体调度权威 / 故障结算（2026-10-17，接上段，commits 见 git log）
+
+按用户对上一轮的三处质疑做源码级复核并**替换**（不叠加）：minecraft 全套 116 例绿，`pnpm typecheck` 绿，`pnpm verify:mc-worker` 绿。**本地提交未推送。**
+
+1. **cursor 模型替换（旧原则不成立）**：复核确认「cursor 必须先于读取固定」既不是充分也不是必要条件——cursor 取自失效事件计数时有两个真缺陷：(a) 新流水位基线为 0，`ensureStream` 之前发生的失效永远补不回来（读取窗口内到达的证据可被**永久漏唤醒**）；(b) cursor 在屏障之后固定，会提前消费读取未包含的提交。改为：数据与提交版本在**同一 SQLite 读取边界**取得，`cursor.sequence = page.version`；历史水位=已提交版本，只在提交成功后推进。现在「已读到的提交不再通知、读取边界之后的提交一定唤醒、提交前不唤醒」。双量纲（current=事件序 / history=提交版本）不可比，故一条流只允许声明一类依赖，混声明直接拒绝。
+2. **durable 物理前提显式化**：Worker 打开时显式 `PRAGMA synchronous = FULL`（原先依赖编译默认值），打开握手回传实际 `journal_mode/synchronous`，存储门面暴露 `durability` 供状态与验证脚本核验。保留关系（retain/release）不再推进提交版本——它不改变查询可观察状态，原先会使分页 token 失效并误唤醒历史 watcher。
+3. **身体调度权威**：核查 `acquire` 全部调用点——除测试外无生产消费者（Runtime 未落地），不存在既成双排队。定权威：Runtime 拥有任务调度，Driver 只强制唯一资格 + 按到达序发放租约，不做优先级/抢占；Runtime 对每次身体使用只保持一个在途 `acquire`（已写入 `contracts/body.ts` 与 driver.md §5.1）。
+4. **停止完整性缺口（真缺陷，已修）**：`driver.close()` 原先先解除 host 代次撤销回调再 `host.close()`，导致排队中的 `acquire` **永不结算**，且在拆除过程中被 grant 一个指向空化身的会话（反证：移除修复后测试直接拿到 `BodySessionImpl`）。改为关闭前先结算整队（明确 `SOURCE_UNAVAILABLE` + 摘除 abort 监听），并在 grant 前复查连接状态。
+5. **新增验证**：`tests/minecraft-world-cursor.test.ts`（3 例，其中 2 例在旧实现下失败：提交前唤醒、已读到仍通知）、`minecraft-world-barrier.test.ts`（多流+缺口+封口、并发交错、cursor 同源）、`minecraft-world-durability.test.ts`（WAL/FULL 实测、回应丢失≠未提交、重开按 ref 去重）、driver body 新增关闭结算例（含 `getEventListeners` 无泄漏断言）、`scripts/verify-mc-worker.mts`（真实 emit 产物启动 Worker：缺资产明确失败 → 复制后写入/读取/关闭 → 进程在 close 前退出后从 WAL 恢复 5 条）。
+
+**仍然未证明的**：真实断电（kill -9 / 拔电）与长时间 WAL 行为、真实 Mineflayer 时序、真实服务器下的 durable 语义；emit 产物验证覆盖了"路径+模块格式+崩溃后 WAL 恢复"，不等于生产打包器（vite/tsup）也保留该资产——当前 mc 模块无打包器构建链，接入时需把 `sqlite-worker.mjs` 复制纳入构建脚本。
