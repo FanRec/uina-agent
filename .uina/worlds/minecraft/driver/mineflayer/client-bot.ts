@@ -518,8 +518,10 @@ export class MineflayerClientBot implements ClientBot {
 		this.#sectionSeq.set(key, (this.#sectionSeq.get(key) ?? 0) + 1);
 	}
 
-	#bumpColumn(x: number, z: number): void {
-		const key = `${x},${z}`;
+	#bumpColumn(cornerX: number, cornerZ: number): void {
+		// 上游 chunkColumnLoad 给的是区块角（x*16, z*16），这里统一归一到区块坐标，
+		// 与 #sectionRevision 的键保持一致。
+		const key = `${Math.floor(cornerX / 16)},${Math.floor(cornerZ / 16)}`;
 		this.#columnSeq.set(key, (this.#columnSeq.get(key) ?? 0) + 1);
 	}
 

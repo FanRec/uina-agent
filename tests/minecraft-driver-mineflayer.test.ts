@@ -277,7 +277,11 @@ describe("MineflayerClientBot", () => {
 		expect(first?.base?.indices.every((value) => value === 0)).toBe(true);
 
 		raw.emit("blockUpdate", null, block("stone", 0, 64, 0));
-		expect(bot.section({ x: 0, y: 4, z: 0 })?.revision).not.toBe(first?.revision);
+		const afterBlock = bot.section({ x: 0, y: 4, z: 0 })?.revision;
+		expect(afterBlock).not.toBe(first?.revision);
+		// chunkColumnLoad 给的是区块角（x*16, z*16），必须归一到区块坐标才能命中同一 revision 键。
+		raw.emit("chunkColumnLoad", { x: 0, y: 0, z: 0 });
+		expect(bot.section({ x: 0, y: 4, z: 0 })?.revision).not.toBe(afterBlock);
 		expect(bot.section({ x: 0, y: 9, z: 0 })).toBeNull();
 	});
 
