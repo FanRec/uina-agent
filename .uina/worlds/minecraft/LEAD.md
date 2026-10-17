@@ -1,10 +1,10 @@
 # Minecraft World — 技术负责人协调文档（LEAD.md）
 
-更新：2026-10-16。所有者：技术负责人（lead）。三个开发 AI 与 lead 都必须遵守本文。
+更新：2026-10-18。所有者：技术负责人（lead）。三个开发 AI 与 lead 都必须遵守本文。
 
-## 0. 事实基线（2026-10-16 核实）
+## 0. 事实基线（2026-10-18 核实）
 
-- Minecraft 真实游戏执行仍未接入；当前仓库已有 Driver、World、Assets 的 fake/本地实现和 contracts 桩，`executor/index.ts`、`worlddef/index.ts` 仍未实现，真实 Mineflayer/服务器仍未验收。
+- Driver 已接真实 Mineflayer（4.39.0，`driver/mineflayer/` 为默认工厂），但**尚未对真实服务器验收**；World/Assets 仍是 fake/本地实现，`executor/index.ts`、`worlddef/index.ts` 仍未实现。
 - 总设计来源仍为主工作区 `E:/Uina/Uina/docs/proposals/mc/`（README/design/contracts/public-api/research + modules/driver.md、world.md、assets.md、runtime.md）；Program 的模块详细设计按本次目录约定落在 `.uina/worlds/minecraft/modules/program.md`，该文件是 Program 内部唯一设计源。
 - 已有可复用接缝：`src/extensions/world-framework/`（WorldDef/ActionDef、五态 ToolExecutionResult、`ctx.expose("body.endpoint:"+bodyId)` 急停门、`emitEvent` 事件递送、`worldDataDir` 数据目录）。Minecraft 以普通 World 形态接入，**不改 Core**。
 - 唯一例外：`tool_result_recorded` 通用事实需 Core 变更，当前源码没有——凡依赖它的递达保证一律标记为 Runtime/Core 依赖，未实现前不得宣称。
@@ -17,7 +17,7 @@
 | --- | --- | --- |
 | `contracts/**` | **lead 独占** | 跨模块公共类型/错误码/入口签名（唯一合同源） |
 | `worlddef/**`、`executor/**` | **lead 独占** | Uina 薄接入（façade/急停门/事件递送）+ Executor/运行管理 + 组合根 |
-| `driver/**` | Driver AI | Mineflayer 适配、身体资格、控制、反馈、ClientFactsPort 实现、fake bot 测试替身 |
+| `driver/**` | Driver AI | Mineflayer 适配（`mineflayer/`）、身体资格、控制、反馈、ClientFactsPort 实现、fake bot 测试替身 |
 | `world/**` | World AI | 证据接收/ACK、查询切面、Watch 水位、SQLite 历史、领域记录、保留 |
 | `assets/**` | Assets AI | 资产仓库、版本/CAS/请求账本、字节对象、强证据保留 |
 | `modules/program.md` | **lead 独占** | Program 执行域、桥接、普通 JS/Body/World/Assets 接缝、取消/退役和验收设计；不实施业务代码 |
@@ -27,7 +27,7 @@
 
 1. **只改自己目录 + 自己前缀的测试文件**。发现他人模块的 bug：在集成报告登记，由 lead 转交，不得越界修复。
 2. `package.json`（world 级）、`tsconfig.json`、`biome.json`、`scripts/check-boundaries.mjs`、world-framework 源码：全部归 lead。需要变更先登记。
-3. 依赖新 npm 包（如 mineflayer、better-sqlite3 候选）必须经 lead 批准后由 lead 写入根 `package.json`；推荐优先 `node:sqlite`（Node ≥22 内置，避免新增原生依赖，Node 22.5+ 可用）。
+3. 依赖新 npm 包必须经 lead 批准后由 lead 写入根 `package.json`；推荐优先 `node:sqlite`（Node ≥22 内置，避免新增原生依赖，Node 22.5+ 可用）。已批准：`mineflayer@4.39.0`、`vec3@0.1.7`（Driver 适配）。
 4. `docs/proposals/mc/` 设计文档的修订也归 lead；发现设计不合理，提定点调整请求并附证据，不盲从文档。
 
 ## 2. 固定接缝（已落地的合同文件）

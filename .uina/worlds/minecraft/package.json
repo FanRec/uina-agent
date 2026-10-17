@@ -1,7 +1,7 @@
 {
 	"name": "minecraft-world",
 	"version": "0.1.0",
-	"description": "Minecraft Java 版 World：接入/Driver/World 观测/Assets/Executor 多模块结构，执行侧未装配",
+	"description": "Minecraft Java 版 World：接入/Driver/World 观测/Assets/Executor 多模块结构；Driver 已接真实 Mineflayer，Executor 未装配",
 	"type": "module",
 	"main": "./worlddef/index.ts",
 	"uina": {

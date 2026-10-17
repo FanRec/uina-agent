@@ -235,9 +235,18 @@ describe("minecraft driver facts (S-D1)", () => {
 		await driver.close();
 	});
 
-	it("没有 botFactory 时明确失败，不制造假连接", () => {
-		expect(() => createDriver({ host: "localhost", port: 25565, username: "x" }, {})).toThrowError(/Mineflayer/);
-	});
+	it("默认工厂接入真实 Mineflayer：建连失败如实 faulted，不制造假连接", async () => {
+		// 不注入 botFactory，走 driver/mineflayer 的真实工厂；127.0.0.1:1 无服务，连接被拒。
+		const driver = createDriver(
+			{ host: "127.0.0.1", port: 1, username: "uina-test" },
+			{ attachTimeoutMs: 3_000, stallTimeoutMs: 1_000 },
+		);
+		for (let attempt = 0; attempt < 120 && driver.connectionState() !== "faulted"; attempt++) {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		expect(driver.connectionState()).toBe("faulted");
+		await driver.close();
+	}, 15_000);
 
 	it("stamp 类型形状", () => {
 		// 合同锚定：stamp.sequence 是 Driver 源内单调序号。

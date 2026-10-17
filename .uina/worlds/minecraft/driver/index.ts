@@ -5,8 +5,8 @@
  * 连续/离散控制、高频反馈、当前事实采样（ClientFactsPort）、窗口会话。
  *
  * 边界：不依赖具体玩法能力、不依赖 Uina 接入层；只能 import ../contracts/ 与自己的子模块。
- * 真实 Mineflayer 依赖归 M5（lead 批准后接真实工厂）；当前切片经 options.botFactory
- * 注入替身客户端（driver/fake/），替身行为按固定上游源码建模。
+ * 真实客户端由 driver/mineflayer/ 适配成 ClientBot 接缝，是 createDriver 的默认工厂；
+ * 测试或自定义客户端经 options.botFactory 覆盖。
  */
 
 import type { BodySession, ControlOwner, PlayerPort } from "../contracts/body.js";
@@ -19,6 +19,7 @@ import { ClientHost } from "./internal/client-host.js";
 import { defaultClock, type MonotonicClock } from "./internal/facts.js";
 import { controlInvalid, sourceUnavailable } from "./internal/failure.js";
 import { type HostCallVerifier, WriteGate } from "./internal/gate.js";
+import { createMineflayerBot } from "./mineflayer/index.js";
 
 export interface DriverConfig {
 	/** 服务器地址（连接位置，不是世界身份）。 */
@@ -33,8 +34,8 @@ export interface DriverConfig {
 
 export interface DriverOptions {
 	/**
-	 * 客户端工厂：M5 前由测试注入 FakeClientBot；M5 由组合根注入真实 Mineflayer 工厂。
-	 * 省略且无真实工厂时明确失败，不制造假连接。
+	 * 客户端工厂覆盖：测试注入 FakeClientBot，或换用自定义客户端。
+	 * 省略时使用真实 Mineflayer 适配（driver/mineflayer）。
 	 */
 	botFactory?: (config: DriverConfig) => ClientBot;
 	/** Runtime 调用身份核验接缝；M2/M3 Executor 接入时注入。 */
@@ -166,20 +167,16 @@ class PlayerPortImpl implements PlayerPort {
 }
 
 export function createDriver(config: DriverConfig, options: DriverOptions = {}): DriverHandle {
-	if (!options.botFactory) {
-		// 明确失败，不制造假连接：真实 Mineflayer 依赖归 M5（lead 批准后接入）。
-		throw new CallFailureError({
-			code: "CALL_UNAVAILABLE",
-			message: "真实 Mineflayer 客户端工厂未接入（M5，依赖待 lead 批准）；当前可经 options.botFactory 注入替身客户端",
-		});
-	}
+	const factory = options.botFactory ?? createMineflayerBot;
 
 	const clock = options.clock ?? defaultClock();
 	const host = new ClientHost({
 		clock,
 		scopeProvider: {
 			scope: (): ClientFactScope => {
-				const dimension = host.bot?.self().dimension ?? null;
+				// 未 ready 时不读自身状态：真实客户端在 spawn 前没有 entity，
+				// 此处如实返回 dimension=null，不伪造位置。
+				const dimension = host.state === "ready" ? (host.bot?.self().dimension ?? null) : null;
 				if (!options.worldBinding) {
 					// 显式 unbound：不凭地址推断存档身份。
 					return { binding: "unbound", world: "unbound", worldRevision: "unbound", dimension };
@@ -249,7 +246,7 @@ export function createDriver(config: DriverConfig, options: DriverOptions = {}):
 	// 异步建连：ready 前的所有准入被状态检查拒绝。
 	void (async () => {
 		try {
-			const bot = options.botFactory!(config);
+			const bot = factory(config);
 			await host.attach(bot);
 		} catch (err) {
 			host.markFaulted(err instanceof Error ? err.message : String(err));
