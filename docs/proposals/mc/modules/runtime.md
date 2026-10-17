@@ -2,7 +2,7 @@
 
 日期：2026-10-17（Asia/Shanghai / GMT+08:00）。状态：**统一终态设计；本次不实施代码**。设计合同、源码实现、替身验证和真实 Minecraft 验收分别表述，不互相替代。
 
-公共类型与错误只在 [public-api.md](../public-api.md) 定义，跨模块行为见 [contracts.md](../contracts.md)，目标见 [design.md](../design.md)，研究证据见 [research.md](../research.md)。本文负责 Runtime 的执行语义与内部算法。Program 引擎/桥接/容量算法见 [Program 详细设计](../../../../.uina/worlds/minecraft/modules/program.md)；Executor 平台实现仍由其所有者负责，不在这里形成第二份规范。
+公共类型与错误只在 [public-api.md](../public-api.md) 定义，跨模块行为见 [contracts.md](../contracts.md)，目标见 [design.md](../design.md)，研究证据见 [research.md](../research.md)。本文负责 Runtime 的执行语义与内部算法。Program 引擎、桥接与容量算法由 Program 所有者负责；Executor 平台实现由其所有者负责，不在这里形成第二份规范。
 
 ## 1. 问题、范围与不变量
 
@@ -364,4 +364,4 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 
 实施闭合要求：一次同步更新源码合同与组合根；实现 Runtime 记录/准入/CallScope；接 Driver 真实 verifier 与 sink/关闭事实；接 Program 合同/容量与 Executor 监管；实现等待/decision/交付及有限导出，最后过真实过程验收。这是依赖关系，不是 MVP/过渡架构。
 
-本次不改业务代码、不改真实 Provider/会话/认证、不动现有 Assets 用户修改。Program 详细设计拥有引擎和桥接算法，Executor 拥有平台算法；本文所引用的唯一公共合同不在那里复制。只有实际消费者证明不足才加接缝，不为旧接口保留旁路兼容系统。
+本次不改业务代码、不改真实 Provider/会话/认证、不动现有 Assets 用户修改。Program 拥有引擎和桥接算法，Executor 拥有平台算法；本文所引用的唯一公共合同不在那里复制。只有实际消费者证明不足才加接缝，不为旧接口保留旁路兼容系统。

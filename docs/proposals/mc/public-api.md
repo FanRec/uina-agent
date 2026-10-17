@@ -6,7 +6,7 @@
 
 ## 1. 收敛后的概念与阅读范围
 
-Runtime 内部机制以 [Runtime / Callable 详细设计](modules/runtime.md) 为准，Program 引擎/桥接以 [Program 详细设计](../../../.uina/worlds/minecraft/modules/program.md) 为准。本文与明确链接的 Assets 所有者合同构成唯一公开定义；2026-10-17 本轮只更新设计，`contracts/*.ts` 尚须实施时同步，不代表现有类型已符合终态。
+Runtime 内部机制以 [Runtime / Callable 详细设计](modules/runtime.md) 为准。本文与明确链接的 Assets 所有者合同构成唯一公开定义；2026-10-17 本轮只更新设计，`contracts/*.ts` 尚须实施时同步，不代表现有类型已符合终态。
 
 - 游戏能力是一个 **Callable（可调用导出）**；Run 是调用实例；Program 是实现方式之一。Feature 只是组织有关实现的源码模块，不再增加 Action→Capability→Feature 的转发层。
 - Uina 的 `ActionDef` 仍是 minecraft façade 的接入适配，返回工具回执。游戏内部 `call` 返回领域值，不能复用它的工具信封和工具取消信号。
@@ -472,7 +472,7 @@ retain 的存在/依赖校验与保留提交、历史切面登记和实际删除
 
 ## 6. Program 与 Assets：普通函数、宿主桥接与版本
 
-执行内部设计见 [Program](../../../.uina/worlds/minecraft/modules/program.md)。以下 API 留在本文作为唯一公共定义；不把宿主对象、函数或 iterator 本身塞入 IPC。函数回调留在原 guest；Body/Window/Feedback/文件流使用宿主登记的资源路由与本地包装。每次 Program Call 有独立语言 runtime，普通 Promise 分支本身不创建 Call。完整数据边界、回调交接与取消算法由 Program 详细设计规定。
+以下 API 留在本文作为唯一公共定义；不把宿主对象、函数或 iterator 本身塞入 IPC。函数回调留在原 guest；Body/Window/Feedback/文件流使用宿主登记的资源路由与本地包装。每次 Program Call 有独立语言 runtime，普通 Promise 分支本身不创建 Call。完整数据边界、回调交接与取消算法由 Program 所有者规定。
 
 ```typescript
 interface WaitRequest { condition: ExactRef; input: JsonValue; checkpoint?: Checkpoint }
