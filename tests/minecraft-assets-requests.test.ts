@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { ProgramSourcePort } from "../.uina/worlds/minecraft/contracts/assets.js";
+import type { Digest, ProgramSourcePort } from "../.uina/worlds/minecraft/contracts/assets.js";
 import {
 	authorMetadata,
 	createRepo,
@@ -15,6 +15,11 @@ import {
 	type TestRepo,
 	type Workspace,
 } from "./minecraft-assets-helpers.js";
+
+/** 测试只关心摘要形状，不关心真实哈希。 */
+const sha256 = (hex: string): Digest => `sha256:${hex}`;
+/** 已带前缀的摘要（如从错误信息里取出的实际值）只做类型收窄，不改值。 */
+const asDigest = (value: string): Digest => value as Digest;
 
 function workspaceProgram(ws: Workspace, name: string, source = PROGRAM_SOURCE): string {
 	return ws.createDir(name, {
@@ -31,7 +36,7 @@ async function publishOnce(
 	{ repo, ws }: { repo: TestRepo["repo"]; ws: Workspace },
 	name: string,
 	operationId?: string,
-): Promise<{ inputDigest: string }> {
+): Promise<{ inputDigest: Digest }> {
 	const dir = workspaceProgram(ws, name);
 	const source = { kind: "workspace" as const, directory: dir };
 	if (operationId) {
@@ -71,7 +76,7 @@ describe("minecraft assets requests (operation ledger)", () => {
 					kind: "program",
 					expectedRef: null,
 					source: { kind: "workspace", directory: "changed.op" },
-					operation: { id: "op-1", inputDigest: "sha256:" + "0".repeat(64) },
+					operation: { id: "op-1", inputDigest: sha256("0".repeat(64)) },
 				}),
 			).rejects.toMatchObject(expectAssetFailure("ASSET_SOURCE_CHANGED"));
 			const state = await repo.write.getOperation("op-1");
@@ -99,17 +104,17 @@ describe("minecraft assets requests (operation ledger)", () => {
 			// 第一跳：不带 operation 正常发布，之后从账本反查不到（无 operation）；
 			// 为构造"同 operation 重放"，用一次带 operation 的失败先拿到正确 inputDigest：
 			// ASSET_SOURCE_CHANGED 信息中携带实际 inputDigest。
-			let actualDigest = "";
+			let actualDigest = asDigest("");
 			try {
 				await repo.write.publish({
 					name: "replay.op",
 					kind: "program",
 					expectedRef: null,
 					source: { kind: "workspace", directory: "replay.op" },
-					operation: { id: "op-replay", inputDigest: "sha256:" + "0".repeat(64) },
+					operation: { id: "op-replay", inputDigest: sha256("0".repeat(64)) },
 				});
 			} catch (error) {
-				actualDigest = String((error as { message: string }).message).split("：")[1] ?? "";
+				actualDigest = asDigest(String((error as { message: string }).message).split("：")[1] ?? "");
 			}
 			expect(actualDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
 			// 用正确 inputDigest 重试：成功。
@@ -143,7 +148,7 @@ describe("minecraft assets requests (operation ledger)", () => {
 		const ws = createWorkspace();
 		const { repo, dispose } = createRepo({ workspaceRoot: ws.root });
 		try {
-			let actualDigest = "";
+			let actualDigest = asDigest("");
 			workspaceProgram(ws, "conflict.op");
 			try {
 				await repo.write.publish({
@@ -151,10 +156,10 @@ describe("minecraft assets requests (operation ledger)", () => {
 					kind: "program",
 					expectedRef: null,
 					source: { kind: "workspace", directory: "conflict.op" },
-					operation: { id: "op-conflict", inputDigest: "sha256:" + "0".repeat(64) },
+					operation: { id: "op-conflict", inputDigest: sha256("0".repeat(64)) },
 				});
 			} catch (error) {
-				actualDigest = String((error as { message: string }).message).split("：")[1] ?? "";
+				actualDigest = asDigest(String((error as { message: string }).message).split("：")[1] ?? "");
 			}
 			await repo.write.publish({
 				name: "conflict.op",
@@ -192,7 +197,7 @@ describe("minecraft assets requests (operation ledger)", () => {
 		const a = createRepo({ ownerId: "caller-a", workspaceRoot: ws.root });
 		const b = createRepo({ ownerId: "caller-b", workspaceRoot: ws.root });
 		try {
-			let digestA = "";
+			let digestA = asDigest("");
 			workspaceProgram(ws, "scoped.op");
 			try {
 				await a.repo.write.publish({
@@ -200,10 +205,10 @@ describe("minecraft assets requests (operation ledger)", () => {
 					kind: "program",
 					expectedRef: null,
 					source: { kind: "workspace", directory: "scoped.op" },
-					operation: { id: "op-scope", inputDigest: "sha256:" + "0".repeat(64) },
+					operation: { id: "op-scope", inputDigest: sha256("0".repeat(64)) },
 				});
 			} catch (error) {
-				digestA = String((error as { message: string }).message).split("：")[1] ?? "";
+				digestA = asDigest(String((error as { message: string }).message).split("：")[1] ?? "");
 			}
 			await a.repo.write.publish({
 				name: "scoped.op",
@@ -262,7 +267,7 @@ describe("minecraft assets runtime seams (honest failure)", () => {
 					effectiveBindings: [{ name: "gather.wood", refs: ["gather.wood@1"] }],
 					nativeEnvironment: "env-1",
 					record: request.record,
-					sourceDigest: "sha256:" + "1".repeat(64),
+					sourceDigest: sha256("1".repeat(64)),
 					sourceRef: `${request.run}/${request.segment}`,
 				};
 			},
