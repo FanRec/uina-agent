@@ -305,7 +305,9 @@ export class MineflayerClientBot implements ClientBot {
 			onGround: entity.onGround ?? false,
 			health: this.#bot.health,
 			food: this.#bot.food,
-			dimension: this.#bot.game?.dimension ?? null,
+			// mineflayer 的 game.dimension 去掉了命名空间（"overworld"），
+			// Driver 合同用带命名空间的规范名（"minecraft:overworld"）。
+			dimension: this.#dimension(),
 		};
 	}
 
@@ -459,8 +461,13 @@ export class MineflayerClientBot implements ClientBot {
 
 	// ---- 内部转换 ----
 
-	#requireEntity(networkId: number): MineflayerEntity {
-		const entity = this.#bot.entities[String(networkId)];
+	#dimension(): string | null {
+		const name = this.#bot.game?.dimension;
+		if (!name) return null;
+		return name.includes(":") ? name : `minecraft:${name}`;
+	}
+
+	#requireEntity(networkId: number): MineflayerEntity {		const entity = this.#bot.entities[String(networkId)];
 		if (!entity) throw new Error(`实体未跟踪：${networkId}`);
 		return entity;
 	}

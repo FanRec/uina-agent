@@ -92,7 +92,7 @@ class FakeMineflayerBot implements MineflayerBot {
 			velocity: { x: 0.1, y: 0, z: 0 },
 		},
 	};
-	readonly game = { dimension: "minecraft:overworld" };
+	readonly game = { dimension: "overworld" };
 	readonly health = 18;
 	readonly food = 15;
 	readonly quickBarSlot = 2;
