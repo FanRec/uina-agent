@@ -56,9 +56,9 @@ describe("ToolBroker", () => {
 				throw null;
 			}),
 		);
-		const failed = JSON.parse(await broker.run("throws", {}));
+		const failed = await broker.executePipeline({ callId: "c-throws", name: "throws", args: {} });
 		expect(failed.status).toBe("failed");
-		expect(failed.error).toContain("null");
+		expect(failed.result).toContain("null");
 	});
 });
 
