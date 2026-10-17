@@ -38,8 +38,6 @@ export interface OperationRecord {
 	readonly bodyRef: Ref;
 	readonly connectionRef: Ref;
 	readonly incarnationRef: Ref;
-	/** 操作拥有的资源标签：keys/use/window/timer 等清理凭据。 */
-	readonly resources: Set<string>;
 	state: OperationState;
 	/** 撤销通知：等待中的操作（drive 计步、openContainer 等待）据此立即中止。 */
 	onRevoke?: () => void;
@@ -64,8 +62,9 @@ export interface HostCallVerifier {
 	/**
 	 * 核验一次真实写入的当前调用归属。返回 null 表示允许（默认实现）；
 	 * 返回错误信息表示拒绝（如 read 子调用携带旧 act 句柄）。
+	 * permit 为 null 表示无身体资格的一次性写入（say）；Runtime 侧按调用身份裁定。
 	 */
-	verifyWrite(context: { operation: OperationRecord; permit: BodyPermit }): string | null;
+	verifyWrite(context: { operation: OperationRecord; permit: BodyPermit | null }): string | null;
 }
 
 export const defaultHostVerifier: HostCallVerifier = {
@@ -154,11 +153,42 @@ export class WriteGate {
 			bodyRef: permit.ref,
 			connectionRef: permit.connectionRef,
 			incarnationRef: permit.incarnationRef,
-			resources: new Set(),
 			state: "active",
 		};
 		this.#operations.add(op);
 		return op;
+	}
+
+	/** 指定身体资格名下的全部操作记录（会话关闭时统一撤销；gate 是唯一操作集合）。 */
+	operationsOf(permit: BodyPermit): OperationRecord[] {
+		return [...this.#operations].filter((op) => op.bodyRef === permit.ref);
+	}
+
+	/**
+	 * 无身体资格的一次性写入准入（say）：身体交接期拒绝（停用边界），
+	 * 连接/化身身份核验，宿主调用归属核验（permit=null 语义）。
+	 * 不创建 Operation 生命周期，也不要求 Body Permit。
+	 */
+	admitEphemeralWrite(kind: OperationKind, connectionRef: Ref | null, incarnationRef: Ref | null, ref: Ref): void {
+		const permit = this.#permit;
+		if (permit && (permit.state === "revoking" || permit.state === "quiesced")) {
+			throw controlInvalid("身体资格正在交接（停用边界），一次性写入被拒绝");
+		}
+		if (!connectionRef || !incarnationRef) {
+			throw referenceStale("无有效连接/化身身份，一次性写入被拒绝");
+		}
+		const op: OperationRecord = {
+			ref,
+			kind,
+			bodyRef: "(ephemeral)",
+			connectionRef,
+			incarnationRef,
+			state: "active",
+		};
+		const denial = this.#verifier.verifyWrite({ operation: op, permit: null });
+		if (denial !== null) {
+			throw new CallFailureError({ code: "READ_ONLY_VIOLATION", message: denial });
+		}
 	}
 
 	revokeOperation(op: OperationRecord): void {

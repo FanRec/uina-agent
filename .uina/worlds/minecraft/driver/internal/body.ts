@@ -19,7 +19,6 @@ import type {
 	FeedbackStream,
 	Hand,
 	ItemSelector,
-	Key,
 	SelfState,
 	WindowSession,
 } from "../../contracts/body.js";
@@ -35,6 +34,7 @@ import {
 	targetNotMet,
 } from "./failure.js";
 import { WriteGate, type BodyPermit, type OperationRecord } from "./gate.js";
+import { KeyHold } from "./controls.js";
 import type { ClientHost, PhysicsStep } from "./client-host.js";
 import type { ClientBot, BotBlockPos, BotItemSelector, BotWindowData } from "./bot-shape.js";
 import { WindowSessionImpl } from "./window.js";
@@ -54,7 +54,15 @@ export interface BodyDeps {
 	sensors: Map<string, (bot: ClientBot) => Fact<JsonValue>>;
 }
 
-const KEYS: Key[] = ["forward", "back", "left", "right", "jump", "sprint", "sneak"];
+/** 原生使用状态归属接口：Body 会话实现；feedback 流按 op 核验、登记与释放。 */
+export interface UseControl {
+	/** 冲突检查：活动中的其他操作持有原生使用状态时拒绝。 */
+	requireAvailable(op: OperationRecord): void;
+	/** 登记归属。 */
+	claim(op: OperationRecord): void;
+	/** 归属匹配时释放（deactivateItem + 清空）；不匹配为 no-op。 */
+	release(op: OperationRecord): void;
+}
 
 function isFiniteNumber(v: unknown): v is number {
 	return typeof v === "number" && Number.isFinite(v);
@@ -219,10 +227,8 @@ export class BodySessionImpl implements BodySession {
 	readonly #streams = new Set<FeedbackStreamImpl>();
 	/** 当前连续控制根：最多一个，未经协调的第二个报 CONTROL_CONFLICT。 */
 	#continuousRoot: OperationRecord | null = null;
-	/** Body 使用会话：useItem/hold 留下的原生使用状态归 Body 所有。 */
+	/** Body 使用会话归属：useItem/hold 留下的原生使用状态归此 op 所有（唯一权威）。 */
 	#useOwner: OperationRecord | null = null;
-	/** 本会话创建的操作记录；close 时统一撤销。 */
-	#ops = new Set<OperationRecord>();
 	#opCounter = 0;
 	#closed = false;
 	#effectCounter = 0;
@@ -247,9 +253,27 @@ export class BodySessionImpl implements BodySession {
 	#newOp(kind: Parameters<WriteGate["createOperation"]>[0]): OperationRecord {
 		// 会话内单调计数保证 ref 唯一：ops.size 会因 close 复用而撞号。
 		this.#opCounter += 1;
-		const op = this.#gate.createOperation(kind, this.#permit, `${this.#permit.ref}-${kind}-${this.#opCounter}`);
-		this.#ops.add(op);
-		return op;
+		// gate 是操作记录唯一集合；会话按 permit 枚举（operationsOf）撤销。
+		return this.#gate.createOperation(kind, this.#permit, `${this.#permit.ref}-${kind}-${this.#opCounter}`);
+	}
+
+	// ---- 原生使用状态归属（唯一权威；drive/useItem/feedback 经此核验）----
+
+	#requireUseAvailable(op: OperationRecord): void {
+		if (this.#useOwner && this.#useOwner.state === "active" && this.#useOwner !== op) {
+			throw controlConflict("原生使用状态被其他操作持有；切换或结束须由协调者显式处理");
+		}
+	}
+
+	#claimUse(op: OperationRecord): void {
+		this.#useOwner = op;
+	}
+
+	#releaseUse(op: OperationRecord): void {
+		if (this.#useOwner === op) {
+			this.#bot.deactivateItem();
+			this.#useOwner = null;
+		}
 	}
 
 	#effectRef(op: OperationRecord): Ref {
@@ -330,6 +354,8 @@ export class BodySessionImpl implements BodySession {
 		// 已消费步数跨安装/等待阶段追踪：取消与停滞错误必须携带 actualTicks（错误合同）。
 		let consumedSoFar = 0;
 		let cancelWait: ((err: Error) => void) | null = null;
+		const keyHold = new KeyHold(bot);
+		let disposed = false;
 		op.onRevoke = () => {
 			revokeOwned();
 			cancelWait?.(
@@ -345,23 +371,13 @@ export class BodySessionImpl implements BodySession {
 				}),
 			);
 		};
-		const heldKeys = new Set<Key>();
-		let heldUse = false;
-		let disposed = false;
 
 		const revokeOwned = () => {
 			if (disposed) return;
 			disposed = true;
-			for (const k of heldKeys) bot.setControlState(k, false);
-			heldKeys.clear();
-			if (heldUse) {
-				// 只撤销本次 drive 拥有的使用资源，不清兼容子操作的使用。
-				if (this.#useOwner === op) {
-					bot.deactivateItem();
-					this.#useOwner = null;
-				}
-				heldUse = false;
-			}
+			keyHold.releaseAll(); // 只撤销本根按住的键，不碰其他根/新主人。
+			// 只撤销本次 drive 拥有的使用资源（归属匹配才释放）。
+			this.#releaseUse(op);
 			// 自然完成：直接结算操作记录；不触发 onRevoke（那是外部撤销通道）。
 			this.#gate.closeOperation(op);
 			this.#releaseContinuous(op);
@@ -376,26 +392,15 @@ export class BodySessionImpl implements BodySession {
 				await bot.look(input.look.yaw, input.look.pitch, true);
 				this.#gate.checkWrite(op); // 异步恢复后、继续写入前重查。
 			}
-			for (const [k, on] of Object.entries(input.keys ?? {})) {
-				const key = k as Key;
-				if (!KEYS.includes(key)) throw invalidArgument(`未知控制键: ${k}`);
-				if (on === undefined) continue;
-				bot.setControlState(key, on);
-				if (on) heldKeys.add(key);
-				else heldKeys.delete(key);
-			}
+			keyHold.applyInput(input);
 			if (input.use) {
-				if (this.#useOwner && this.#useOwner !== op) {
-					throw controlConflict("原生使用状态被其他操作持有；切换或结束须由协调者显式处理");
-				}
+				this.#requireUseAvailable(op);
 				if (input.use.mode === "hold") {
 					if (!bot.usingHeldItem()) {
 						this.#requireHeldItem(input.use.hand, op);
 						bot.activateItem(input.use.hand === "off");
 					}
-					heldUse = true;
-					this.#useOwner = op;
-					op.resources.add("use");
+					this.#claimUse(op);
 				} else {
 					// once：同一次有效提交最多执行一次，不建立自动重复激活。
 					this.#requireHeldItem(input.use.hand, op);
@@ -556,16 +561,13 @@ export class BodySessionImpl implements BodySession {
 		this.#requireUsable();
 		const op = this.#newOp("use");
 		try {
-			if (this.#useOwner && this.#useOwner.state === "active" && this.#useOwner !== op) {
-				throw controlConflict("原生使用状态被其他操作持有；先由协调者结束旧使用");
-			}
+			this.#requireUseAvailable(op);
 			this.#requireHeldItem(hand, op);
 			this.#gate.checkWrite(op);
 			this.#bot.activateItem(hand === "off");
 			// 激活短操作返回不结束可能留下的使用状态：归 Body 使用会话。
 			if (this.#bot.usingHeldItem()) {
-				this.#useOwner = op;
-				op.resources.add("use");
+				this.#claimUse(op);
 			}
 			this.#gate.closeOperation(op);
 			return this.#receipt(op, "sent", "met");
@@ -583,8 +585,7 @@ export class BodySessionImpl implements BodySession {
 			this.#gate.checkWrite(op);
 			if (this.#bot.usingHeldItem() && this.#useOwner) {
 				// 结束可能释放蓄力效果（如放箭）——这是派发效果，不是零副作用清理。
-				this.#bot.deactivateItem();
-				this.#useOwner = null;
+				this.#releaseUse(this.#useOwner);
 				return this.#receipt(op, "sent", "met");
 			}
 			// 幂等：所属使用状态已结束，不重复发 release。
@@ -775,6 +776,12 @@ export class BodySessionImpl implements BodySession {
 			this.#gate.closeOperation(op);
 			throw err;
 		}
+		// 使用状态归属经本会话核验：会话是唯一权威。
+		const useControl: UseControl = {
+			requireAvailable: (o) => this.#requireUseAvailable(o),
+			claim: (o) => this.#claimUse(o),
+			release: (o) => this.#releaseUse(o),
+		};
 		const stream = new FeedbackStreamImpl({
 			host: this.#deps.host,
 			gate: this.#gate,
@@ -782,6 +789,7 @@ export class BodySessionImpl implements BodySession {
 			op,
 			bot: this.#bot,
 			deps: this.#deps,
+			useControl,
 			sensorFns: new Map(Object.entries(sensors).map(([k, q]) => [k, this.#deps.sensors.get(q.ref)!])),
 			onEnd: () => {
 				this.#releaseContinuous(op);
@@ -797,8 +805,9 @@ export class BodySessionImpl implements BodySession {
 	async close(): Promise<void> {
 		if (this.#closed) return;
 		this.#closed = true;
-		// 先撤销本会话全部活动操作：drive 计步取消、dig 停止、openContainer 等待中止。
-		for (const op of [...this.#ops]) {
+		// 先撤销本会话全部活动操作（gate 按 permit 枚举，唯一操作集合）：
+		// drive 计步取消、dig 停止、openContainer 等待中止。
+		for (const op of this.#gate.operationsOf(this.#permit)) {
 			this.#gate.revokeOperation(op);
 		}
 		// 作用域退出：强制退役窗口（不受普通 close 前置条件阻止），撤销连续输入。

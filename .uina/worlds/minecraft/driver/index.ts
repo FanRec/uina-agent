@@ -76,7 +76,6 @@ class PlayerPortImpl implements PlayerPort {
 		reject: (e: Error) => void;
 		onAbort: () => void;
 	}[] = [];
-	#active: BodySessionImpl | null = null;
 	#sessionDisposers = new Map<BodySessionImpl, () => void>();
 
 	constructor(
@@ -90,7 +89,8 @@ class PlayerPortImpl implements PlayerPort {
 		if (this.host.state !== "ready") {
 			throw sourceUnavailable(`连接状态为 ${this.host.state}，不能取得身体资格`);
 		}
-		if (!this.#active && this.#queue.length === 0) {
+		// gate 是资格唯一权威：permit 非空（active/revoking/quiesced）即需排队。
+		if (!this.gate.permit && this.#queue.length === 0) {
 			return this.#grant(owner, signal);
 		}
 		// FIFO：Runtime 未协调的并发申请排队；signal 取消移出队列。
@@ -116,7 +116,6 @@ class PlayerPortImpl implements PlayerPort {
 			void this.#settle(activeRef);
 		});
 		activeRef = session;
-		this.#active = session;
 		// 组合注销：代次更替强制退役 + 清理 acquire 信号的 abort 监听（长生命周期信号不泄漏）。
 		const onAbort = () => {
 			void session.close();
@@ -131,11 +130,9 @@ class PlayerPortImpl implements PlayerPort {
 	}
 
 	async #settle(settled: BodySessionImpl): Promise<void> {
-		// 按具体会话清理登记（含 acquire 信号监听）；不依赖 #active 指针，
-		// 代次更替路径（handleRevoked 先清指针）也不会泄漏条目。
+		// 按具体会话清理登记（含 acquire 信号监听）；资格状态以 gate 为唯一权威。
 		this.#sessionDisposers.get(settled)?.();
 		this.#sessionDisposers.delete(settled);
-		if (this.#active === settled) this.#active = null;
 		this.gate.settleRevoked();
 		const next = this.#queue.shift();
 		if (next) {
@@ -147,11 +144,6 @@ class PlayerPortImpl implements PlayerPort {
 				next.reject(err instanceof Error ? err : new Error(String(err)));
 			}
 		}
-	}
-
-	/** 通知会话正常结束（close 完成屏障后调用）。 */
-	notifyReleased(settled: BodySessionImpl): Promise<void> {
-		return this.#settle(settled);
 	}
 
 	/** 连接/化身代次更替：撤销排队申请；活动会话由其自身登记的 revoke 回调强制退役并结算。 */
@@ -228,10 +220,13 @@ export function createDriver(config: DriverConfig, options: DriverOptions = {}):
 			if (typeof text !== "string" || text.length === 0) {
 				throw new CallFailureError({ code: "INVALID_ARGUMENT", message: "聊天文本须为非空字符串" });
 			}
-			// 聊天不占身体；宿主调用归属核验接缝（Runtime）接入后在此核验 act。
+			// 聊天不占身体、不要求 Body Permit，但必须过停用准入：
+			// 身体交接期拒绝 + 连接/化身身份核验 + 宿主调用归属核验（Runtime 接缝）。
+			const effect = host.identity.refs.next("say");
+			gate.admitEphemeralWrite("say", host.identity.connection, host.identity.incarnation, effect);
 			host.bot!.chat(text);
 			// chat 无本地可确认回执：sent ≠ 服务器已处理（driver.md §13），完成度如实 unknown。
-			return { effect: `${host.identity.refs.next("say")}`, dispatch: "sent", completion: "unknown", evidence: [] };
+			return { effect, dispatch: "sent", completion: "unknown", evidence: [] };
 		},
 
 		async close(): Promise<void> {

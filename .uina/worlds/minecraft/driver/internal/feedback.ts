@@ -22,9 +22,10 @@ import type { EffectReceipt, Fact, JsonValue } from "../../contracts/values.js";
 import { CallFailureError } from "../../contracts/errors.js";
 import { controlConflict, controlInvalid, invalidArgument, referenceStale } from "./failure.js";
 import { WriteGate, type BodyPermit, type OperationRecord } from "./gate.js";
+import { CONTROL_KEYS, KeyHold } from "./controls.js";
 import type { ClientHost, PhysicsStep } from "./client-host.js";
 import type { ClientBot } from "./bot-shape.js";
-import type { BodyDeps } from "./body.js";
+import type { BodyDeps, UseControl } from "./body.js";
 
 export interface FeedbackStreamDeps {
 	host: ClientHost;
@@ -33,11 +34,11 @@ export interface FeedbackStreamDeps {
 	op: OperationRecord;
 	bot: ClientBot;
 	deps: BodyDeps;
+	/** 原生使用状态归属经 Body 会话核验（会话是唯一权威）。 */
+	useControl: UseControl;
 	sensorFns: Map<string, (bot: ClientBot) => Fact<JsonValue>>;
 	onEnd: () => void;
 }
-
-const KEYS: Key[] = ["forward", "back", "left", "right", "jump", "sprint", "sneak"];
 
 interface Waiter {
 	after: number;
@@ -58,8 +59,7 @@ export class FeedbackStreamImpl implements FeedbackStream {
 	#delivered: FeedbackFrame | null = null;
 	#waiter: Waiter | null = null;
 	#closed = false;
-	#heldKeys = new Set<Key>();
-	#heldUse = false;
+	readonly #keyHold: KeyHold;
 	#validityTimer: ReturnType<typeof setTimeout> | null = null;
 	#unsubscribeStep: (() => void) | null = null;
 	#effectCounter = 0;
@@ -67,6 +67,7 @@ export class FeedbackStreamImpl implements FeedbackStream {
 	constructor(deps: FeedbackStreamDeps) {
 		this.#d = deps;
 		this.#streamRef = `${deps.permit.ref}-fbstream`;
+		this.#keyHold = new KeyHold(deps.bot);
 		this.#unsubscribeStep = deps.host.onPhysicsStep((step) => this.#onStep(step));
 	}
 
@@ -125,13 +126,9 @@ export class FeedbackStreamImpl implements FeedbackStream {
 	}
 
 	#revokeHeld(): void {
-		const bot = this.#d.bot;
-		for (const k of this.#heldKeys) bot.setControlState(k, false);
-		this.#heldKeys.clear();
-		if (this.#heldUse) {
-			bot.deactivateItem();
-			this.#heldUse = false;
-		}
+		this.#keyHold.releaseAll(); // 只撤销本流按住的键。
+		// 使用资源经会话归属释放（不匹配为 no-op）。
+		this.#d.useControl.release(this.#d.op);
 		if (this.#validityTimer !== null) {
 			clearTimeout(this.#validityTimer);
 			this.#validityTimer = null;
@@ -203,7 +200,7 @@ export class FeedbackStreamImpl implements FeedbackStream {
 		// 输入形状校验在消费之前：坏输入不该浪费这一帧的消费名额。
 		for (const [k, on] of Object.entries(input.keys ?? {})) {
 			const key = k as Key;
-			if (!KEYS.includes(key)) throw invalidArgument(`未知控制键: ${k}`);
+			if (!CONTROL_KEYS.includes(key)) throw invalidArgument(`未知控制键: ${k}`);
 			void on;
 		}
 		if (input.look && (!Number.isFinite(input.look.yaw) || !Number.isFinite(input.look.pitch))) {
@@ -212,14 +209,11 @@ export class FeedbackStreamImpl implements FeedbackStream {
 		this.#delivered = null;
 
 		// 实际安装边界（下一模拟前）：键同步安装；look 由适配层即时生效。
-		for (const key of KEYS) {
-			const on = input.keys?.[key] ?? false;
-			bot.setControlState(key, on);
-			if (on) this.#heldKeys.add(key);
-			else this.#heldKeys.delete(key);
-		}
+		this.#keyHold.applyFrame(input);
 		if (input.look) void bot.look(input.look.yaw, input.look.pitch, true);
 		if (input.use) {
+			// 使用归属经会话核验：活动中的其他操作持有时拒绝（与 useItem/drive 同一权威）。
+			this.#d.useControl.requireAvailable(this.#d.op);
 			if (input.use.mode === "hold") {
 				if (!bot.usingHeldItem()) {
 					const inv = bot.inventorySlots();
@@ -234,14 +228,13 @@ export class FeedbackStreamImpl implements FeedbackStream {
 					}
 					bot.activateItem(input.use.hand === "off");
 				}
-				this.#heldUse = true;
+				this.#d.useControl.claim(this.#d.op);
 			} else {
 				bot.activateItem(input.use.hand === "off");
 			}
-		} else if (this.#heldUse) {
-			// 省略 use 仅释放本次流拥有的使用资源。
-			bot.deactivateItem();
-			this.#heldUse = false;
+		} else {
+			// 省略 use：释放本流拥有的使用资源（归属不匹配为 no-op）。
+			this.#d.useControl.release(this.#d.op);
 		}
 		if (input.attack) {
 			bot.attack(input.attack.networkId); // 每帧最多一次；随帧提交不重放。
@@ -278,11 +271,11 @@ export class FeedbackStreamImpl implements FeedbackStream {
 	/** 有效期内未产生下一次更新时撤销持续输入（§8.3 规则 6）。 */
 	#armValidityWatch(): void {
 		if (this.#validityTimer !== null) clearTimeout(this.#validityTimer);
-		if (!this.#heldKeys.size && !this.#heldUse) return;
+		if (!this.#keyHold.holdsAny) return;
 		this.#validityTimer = setTimeout(
 			() => {
 				// 有效期窗口内没有新的 apply：撤销持续输入并记录故障事实。
-				if (this.#heldKeys.size || this.#heldUse) {
+				if (this.#keyHold.holdsAny) {
 					this.#revokeHeld();
 					this.#d.host.facts.capture(
 						"feedback",

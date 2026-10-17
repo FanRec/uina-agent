@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { FakeClientBot, TEST_OWNER, flushAsync, layFloor, makeDriver } from "./minecraft-driver-helpers.js";
-import type { FeedbackFrame, FeedbackStream } from "../.uina/worlds/minecraft/contracts/body.js";
+import type { ControlInput, FeedbackFrame, FeedbackStream } from "../.uina/worlds/minecraft/contracts/body.js";
 
 const signal = () => new AbortController().signal;
 
@@ -231,6 +231,34 @@ describe("minecraft driver feedback (S-D3)", () => {
 		).rejects.toMatchObject({
 			code: "CONTROL_INVALID",
 		});
+		await session.close();
+		await driver.close();
+	});
+
+	it("使用归属经会话唯一权威：反馈流持有 use 时 useItem 冲突，关流释放后可用", async () => {
+		const bot = new FakeClientBot();
+		layFloor(bot, 0, 12);
+		bot.setSlot(36, { name: "minecraft:stick", count: 1, components: null }); // 主手物品
+		const driver = await makeSensorDriver(bot);
+		const session = await driver.player.acquire(TEST_OWNER, signal());
+		const stream = await session.feedback({});
+
+		bot.stepPhysics(1);
+		const frame = await stream.next(null, signal());
+		const input: ControlInput = { keys: {}, use: { mode: "hold", hand: "main" } };
+		const applying = stream.apply({ stream: frame.stream, sequence: frame.sequence }, input);
+		bot.stepPhysics(1); // 消费步：安装的输入被下一个物理步消费。
+		const applied = await applying;
+		expect(applied.receipt.dispatch).toBe("sent");
+
+		// 反馈流持有原生使用状态：useItem 被会话级归属拒绝（同一权威）。
+		await expect(session.useItem("main")).rejects.toMatchObject({ code: "CONTROL_CONFLICT" });
+
+		// 关流释放归属 → useItem 可用。
+		await stream.close();
+		const receipt = await session.useItem("main");
+		expect(receipt.dispatch).toBe("sent");
+
 		await session.close();
 		await driver.close();
 	});

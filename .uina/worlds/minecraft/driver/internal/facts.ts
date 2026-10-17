@@ -94,7 +94,7 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 	return typeof value === "object" && value !== null && typeof (value as PromiseLike<unknown>).then === "function";
 }
 
-function itemKey(i: { name: string; count: number; components: JsonValue | null } | null | undefined): string {
+export function itemKey(i: { name: string; count: number; components: JsonValue | null } | null | undefined): string {
 	if (i === null || i === undefined) return "∅";
 	return `${i.name}#${i.count}#${JSON.stringify(i.components ?? null)}`;
 }
@@ -132,12 +132,11 @@ export class ClientFactsSource implements ClientFactsPort {
 	readonly #predictedBlocks = new Set<string>();
 	/** 上游本地预测的窗口（acceptClick 预测先于发包；服务端 setSlot/windowClose 到达即清除）。 */
 	readonly #predictedWindows = new Set<number>();
-	/** 窗口会话登记的本地观察版本（唯一权威来源：WindowSessionImpl）。 */
-	readonly #windowObservations = new Map<number, number>();
+	/** 窗口会话登记的本地观察版本 live getter（唯一权威：WindowSessionImpl；facts 不持拷贝值）。 */
+	readonly #windowObservations = new Map<number, () => number>();
 
 	inventoryRevision = 0;
 	#lastInventoryKey: string | null = null;
-	#lastWindowKey: string | null = null;
 
 	constructor(deps: FactsDeps) {
 		this.#deps = deps;
@@ -364,9 +363,12 @@ export class ClientFactsSource implements ClientFactsPort {
 		return this.#predictedWindows.has(windowId);
 	}
 
-	/** 窗口会话登记本地观察版本（唯一权威：WindowSessionImpl 持有并推进）。 */
-	noteWindowObservation(windowId: number, revision: number): void {
-		this.#windowObservations.set(windowId, revision);
+	/**
+	 * 窗口会话登记本地观察版本的 live getter：session 是唯一权威，
+	 * facts 经 getter 读取当前值（不复制、不二次记账）。
+	 */
+	noteWindowObservation(windowId: number, getRevision: () => number): void {
+		this.#windowObservations.set(windowId, getRevision);
 	}
 
 	forgetWindowObservation(windowId: number): void {
@@ -374,7 +376,8 @@ export class ClientFactsSource implements ClientFactsPort {
 	}
 
 	windowObservationOf(windowId: number): number | null {
-		return this.#windowObservations.get(windowId) ?? null;
+		const getter = this.#windowObservations.get(windowId);
+		return getter ? getter() : null;
 	}
 
 	/** 完整快照比较：值改变才推进 revision（不只数 updateSlot / 不比较对象引用）。 */
@@ -395,18 +398,14 @@ export class ClientFactsSource implements ClientFactsPort {
 		this.markChanged([FACT_KIND.block]);
 	}
 
-	/** windowId 提供时视为服务端对该窗口的真实更新到达：清除该窗口预测标记。 */
-	commitWindowChanged(windowId?: number): void {
+	/**
+	 * 窗口事实变化通知：windowId 提供时视为服务端对该窗口的真实更新到达，
+	 * 清除该窗口预测标记。内容变化的快照比较由 WindowSession（revision 唯一权威）执行，
+	 * facts 不做第二份快照比较；调用点本身即为真实变化边界。
+	 */
+	markWindowChanged(windowId?: number): void {
 		if (windowId !== undefined) this.#predictedWindows.delete(windowId);
-		const w = this.#deps.bot.currentWindow();
-		const key =
-			w === null
-				? null
-				: `${w.id}|${w.type}|${w.slots.map((s) => itemKey(s)).join(",")}|cursor=${itemKey(w.cursor)}|props=${JSON.stringify(w.properties)}`;
-		if (key !== this.#lastWindowKey) {
-			this.#lastWindowKey = key;
-			this.markChanged([FACT_KIND.window]);
-		}
+		this.markChanged([FACT_KIND.window]);
 	}
 
 	commitSelfChanged(): void {

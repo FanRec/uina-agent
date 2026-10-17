@@ -52,6 +52,8 @@ export class ClientHost {
 	#faultReason: string | null = null;
 	/** 同一客户端只允许一个在途窗口打开（modules/driver.md §12.2）。 */
 	openingInProgress = false;
+	/** 协议窗口 ID → 活动窗口会话（setSlot 单路径路由；会话退役时注销）。 */
+	readonly #windowSessions = new Map<number, { onServerSlotUpdate(): void }>();
 	/** 死亡后等待重生：重生时建立新化身。 */
 	#awaitingRespawn = false;
 
@@ -141,20 +143,22 @@ export class ClientHost {
 				this.facts.commitEntitiesChanged();
 			}),
 			bot.on("entityGone", (entity) => this.#onEntityGone(entity)),
-			// blockUpdate/setSlot 携带位置/窗口 ID：既是 changed 提交点，也是服务端
-			// 真实数据到达时清除对应本地预测标记的入口（§11.6 按写入点标注来源）。
+			// blockUpdate 携带位置：既是 changed 提交点，也是服务端真实数据到达时
+			// 清除本地预测标记的入口（§11.6 按写入点标注来源）。
 			bot.on("blockUpdate", (pos) => this.facts.commitBlockChanged(pos)),
 			bot.on("health", () => this.facts.commitSelfChanged()),
+			// setSlot：inventory 归 facts；窗口内容变化由登记的 WindowSession 单路径处理
+			// （revision 唯一权威 + 预测清除 + 通知），host 不做第二份窗口记账。
 			bot.on("setSlot", (windowId) => {
 				this.facts.commitInventoryChanged();
-				this.facts.commitWindowChanged(windowId);
+				this.#windowSessions.get(windowId)?.onServerSlotUpdate();
 			}),
-			bot.on("windowOpen", (w) => {
-				this.facts.commitWindowChanged();
-				void w;
+			bot.on("windowOpen", () => {
+				this.facts.markWindowChanged();
 			}),
 			bot.on("windowClose", (windowId) => {
-				this.facts.commitWindowChanged(windowId);
+				// 服务端关闭：清除该窗口预测标记；会话退役由其自身 windowClose 监听执行。
+				this.facts.markWindowChanged(windowId);
 			}),
 		);
 	}
@@ -194,6 +198,7 @@ export class ClientHost {
 			this.#stepCounter = 0;
 			this.facts.setIdentity(this.identity.connection, this.identity.incarnation);
 			this.windowRegistry.clear();
+			this.#windowSessions.clear();
 			this.#appearances.clear();
 			this.facts.reset("incarnation_changed");
 			// 死亡路径未清事件接线（bot 仍连接）；重接前先退役旧监听，防止逐次翻倍。
@@ -233,6 +238,7 @@ export class ClientHost {
 		for (const d of this.#disposers) d();
 		this.#disposers = [];
 		this.windowRegistry.clear();
+		this.#windowSessions.clear();
 		this.#appearances.clear();
 		this.revokeCallbacks.forEach((cb) => cb());
 		if (resetReason === "connection_changed") {
@@ -282,8 +288,14 @@ export class ClientHost {
 		return ref;
 	}
 
+	/** 窗口会话登记：此后该窗口的 setSlot 由会话单路径处理。 */
+	registerWindowSession(windowId: number, session: { onServerSlotUpdate(): void }): void {
+		this.#windowSessions.set(windowId, session);
+	}
+
 	unregisterWindow(windowId: number): void {
 		this.windowRegistry.delete(windowId);
+		this.#windowSessions.delete(windowId);
 	}
 
 	/** 状态读取：faulted 判定由上层显式标记。 */

@@ -38,6 +38,11 @@ describe("minecraft driver window (S-D3)", () => {
 		const packetsBefore = bot.packets.length;
 		await win.snapshot();
 		expect(bot.packets.length).toBe(packetsBefore);
+
+		// revision 单一权威同源：facts 视图经 live getter 读取会话版本（不持拷贝值）。
+		const windowFact = driver.facts.sample((v) => v.window());
+		expect(windowFact.value.value?.revision).toBe(snap2.value.revision);
+
 		await session.close();
 		await driver.close();
 	});

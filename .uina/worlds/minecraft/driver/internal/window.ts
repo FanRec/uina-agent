@@ -25,7 +25,7 @@ import {
 import { WriteGate, type BodyPermit, type OperationRecord } from "./gate.js";
 import type { ClientHost } from "./client-host.js";
 import type { ClientBot, BotItemStack, BotWindowData } from "./bot-shape.js";
-import { WINDOW_SCHEMA, utcNow } from "./facts.js";
+import { WINDOW_SCHEMA, itemKey, utcNow } from "./facts.js";
 import type { BodyDeps } from "./body.js";
 
 export interface WindowSessionDeps {
@@ -39,11 +39,6 @@ export interface WindowSessionDeps {
 	data: BotWindowData;
 	deps: BodyDeps;
 	onRetire: () => void;
-}
-
-function itemKey(i: BotItemStack | null | undefined): string {
-	if (i === null || i === undefined) return "∅";
-	return `${i.name}#${i.count}#${JSON.stringify(i.components ?? null)}`;
 }
 
 function snapshotKey(w: BotWindowData): string {
@@ -86,18 +81,23 @@ export class WindowSessionImpl implements WindowSession {
 		this.#d = deps;
 		this.#protocolId = deps.data.id;
 		this.#lastKey = snapshotKey(deps.data);
-		// 本地观察版本的唯一权威是本会话；facts 侧登记供 view.window() 投影（§12.2 单一版本空间）。
-		this.#d.host.facts.noteWindowObservation(this.#protocolId, this.#revision);
+		// 本地观察版本的唯一权威是本会话；facts 经 live getter 读取（不复制值），
+		// setSlot 由 host 单路径路由到本会话（§12.2 单一版本空间）。
+		this.#d.host.facts.noteWindowObservation(this.#protocolId, () => this.#revision);
+		this.#d.host.registerWindowSession(this.#protocolId, this);
 		this.#wire();
+	}
+
+	/** host 单路径入口：服务端对该窗口的真实 setSlot 到达（清除预测标记 + 推进 revision）。 */
+	onServerSlotUpdate(): void {
+		this.#d.host.facts.markWindowChanged(this.#protocolId);
+		this.#refreshRevision();
 	}
 
 	#wire(): void {
 		const bot = this.#d.bot;
+		// setSlot 不在此监听：host 按 registerWindowSession 单路径路由到 onServerSlotUpdate。
 		this.#disposers.push(
-			bot.on("setSlot", (windowId) => {
-				if (windowId !== this.#protocolId) return;
-				this.#refreshRevision();
-			}),
 			bot.on("windowClose", (windowId) => {
 				if (windowId !== this.#protocolId) return;
 				// 服务端关闭：退役会话并保留最终快照证据。
@@ -119,8 +119,7 @@ export class WindowSessionImpl implements WindowSession {
 		const key = snapshotKey(w);
 		if (key !== this.#lastKey) {
 			this.#lastKey = key;
-			this.#revision += 1;
-			this.#d.host.facts.noteWindowObservation(this.#protocolId, this.#revision);
+			this.#revision += 1; // 唯一权威：facts 经 live getter 读取，无需回写。
 		}
 	}
 
@@ -252,7 +251,7 @@ export class WindowSessionImpl implements WindowSession {
 			// 必须显式推进事实源，否则订阅者看不到窗口已变；预测标记使后续读取
 			// 按 prediction 标注，服务端 setSlot/windowClose 到达即恢复（§11.6）。
 			this.#d.host.facts.markWindowPredicted(this.#protocolId);
-			this.#d.host.facts.commitWindowChanged();
+			this.#d.host.facts.markWindowChanged();
 			this.#refreshRevision();
 			this.#d.gate.closeOperation(op);
 			return { effect: this.#effectRef(op), dispatch: "sent", completion: "unknown", evidence: [] };
@@ -301,6 +300,6 @@ export class WindowSessionImpl implements WindowSession {
 		this.#d.host.facts.forgetWindowObservation(this.#protocolId);
 		this.#d.gate.closeOperation(this.#d.op);
 		this.#d.onRetire();
-		this.#d.host.facts.commitWindowChanged(this.#protocolId);
+		this.#d.host.facts.markWindowChanged(this.#protocolId);
 	}
 }
