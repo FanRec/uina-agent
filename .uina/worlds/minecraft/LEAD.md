@@ -262,3 +262,38 @@ M5：真实 Mineflayer 依赖接入（lead 批准依赖后）、真实服务器�
 5. **文档旧包袱全部删改**（不加修订说明堆叠）：§3 数据流图（T→屏障→DB→同一读取边界→切面）、§5.5（删 ACK gap ref/outbox）、§5.6（身份核验替 INSERT OR IGNORE）、§6.1/§6.5（删 R/D/tail/latest tail）、§9.1（失效=可见边界）、§11.1（schema v3 表）、§16（采纳决策更新）、§19（内核已实现、真实游戏未验证）、driver 状态行/§20/§5.1/§5.4；contracts.md/public-api.md 同步。残留 grep 清零。
 
 **验证**：minecraft 全套 120 例绿（+2）；tsc/biome 绿；`pnpm verify:mc-worker` 绿（opened 语义同步进产物验证）。**未推送**。
+
+### Assets AI — S-A1/S-A2/S-A3（2026-10-17，分支 mc/assets）
+
+**交付**：Assets 仓库核心全部落地（`.uina/worlds/minecraft/assets/`：`index.ts` 组合根 + `internal/{canonical,validation,catalog,objects,repository}.ts`），按 LEAD §3 三切片一次性交付：
+
+- **S-A1 仓库核心**：put/revise CAS（BEGIN IMMEDIATE + 条件 UPDATE，创建 expectedVersion=NULL）、名称头、规范 JSON 内容摘要（键序无关；evidence/sources 为出处不入摘要）、ASSET_EXISTS/REVISION_CONFLICT/ASSET_KIND_MISMATCH、三 kind 结构校验（program descriptor 不带 ref/implementation、blueprint source 对象必须已声明、CellTarget 四态、experience 结构）、requiredAssets 存在性（ASSET_DEPENDENCY_UNAVAILABLE）、read 核对包 Manifest 与目录行一致性并重算内容摘要、search（默认 heads/all/kind/query/cursor 分页）、inspect（schemaAvailability=unknown，本仓库无 schema 注册表）。
+- **S-A2 字节对象**：stage 接收进本次独占 `tmp/<attemptId>`（fsync，key 不落盘路径，零字节允许，同 key 重新 stage 后写者胜且回收旧 attempt）；提交临界区同步 rename 安装全新 `objects/<objectId>` 禁止覆盖；objects.read 流末尾核对实际长度与摘要（range 读不核验）；发布可见性经修订 objects 映射；payload 篡改 → 流结束 ASSET_CORRUPT；meta.json 与目录声明不符 / 包缺失 → repository.read ASSET_CORRUPT。
+- **S-A3 请求账本**：requestId 幂等重放（同 intentDigest 先于 CAS 与源读取返回原结果）、同键不同意图 REQUEST_CONFLICT、账本持久化（跨重启重放返回原结果）、并发 CAS 恰好一个成功、失败不毒化账本（可修后同 requestId 重新提交）。
+
+**存储形态**：node:sqlite `catalog.sqlite`（repository/asset_heads/asset_revisions/operations + kind 索引）+ 普通文件包 `objects/<objectId>/{manifest.json,payload,meta.json}`、暂存 `tmp/<attemptId>/`。目录打不开直接抛错——Assets 无降级形态，由组合根处置。无 Draft 子系统、无内存第二实现、无 GC/引用计数（按 assets.md §1.3 最少持久状态）。
+
+**合同读法登记（无类型改动，请 lead 确认）**：
+1. **AssetRevision 无 name 字段**：修订目标名取自 `expectedRef` 的 name 部分（对当前 head 的 CAS 修订唯一自洽读法）；put 仍显式携带 name。
+2. **账本键作用域退化为 requestId**：`createAssetRepository` 合同无 principal 注入，operations 以 requestId 为唯一键（assets.md §6.4 的 (ownerId, operation.id) 需接入层注入 ownerId 后才能生效）；跨调用者 requestId 碰撞会互相重放/冲突，建议 M4 接线时由组合根保证 requestId 全局唯一或注入 ownerId。
+3. **证据保留 owner=requestId**：注入端口 retain/release 以 requestId 为 owner，幂等；同 requestId 并发重放不重复释放已提交版本的保留。
+4. **contentDigest 域**：`sha256(J({domain:"minecraft-asset-content/1", kind, schema, content, objects, requiredAssets}))`；intentDigest 域 `minecraft-asset-request/1`（method/name/kind/expectedRef/reason + 同上内容字段）。合同未固定摘要域，实现自定义，read 侧同函数重算核对。
+5. **summary 派生**：program 取 descriptor.summary、blueprint 取 content.summary、experience 取 judgment 首行（≤120 字符）——合同包封强制 summary 而 ExperienceDefinition 无该字段。
+6. **设计文档对齐度**：assets.md 的 WriteLibrary/publish/工作区捕获/attachEvidence/publishFromRun 为未采纳的候选 API（lead 固定合同是 put/revise 形状）；实现保留其语义内核（单次捕获、暂存独占、账本重放先于 CAS、orphan 不认领、commit_unknown），workspace/import 来源的路径级沙箱与 ImportedFile 流未实现——合同无此入口。
+
+**未验证边界（不做宣称）**：
+- saveFromRun 的 Runtime capture 端（RuntimeAssetSourcePort）归 lead Executor（M4），`sources:[{kind:"run"}]` 仅作出处记录；EvidenceExportPort/attachEvidence 独立关联路径未在合同中，未实现。
+- kill -9 / 断电恢复：已测 graceful close + 重开；未测进程崩溃后 WAL 恢复与"对象已安装、数据库未提交"的 orphan 清点（代码路径按 assets.md §7.4 实现：安装后抛错回滚留下未引用 orphan，不隔离不认领）。
+- commit_unknown 路径（COMMIT 异常后按修订行存在性结算 STORE_UNAVAILABLE + committedRef）未在测试中强制触发（需注入存储故障），代码评审覆盖。
+- 大对象流式发布的性能/内存未测量（assets.md §14 待实测项）；文件句柄 fsync 用 Node FileHandle.sync，目录 fsync Windows 不可用——跨存储断电原子性不承诺（与设计一致）。
+
+**门禁**：biome ✓ / boundaries ✓ / tsc ✓ / `vitest run tests/minecraft-assets-*` 23/23 ✓；minecraft 全套 14 文件 124 例 ✓（未触碰 driver/world/worlddef/contracts 文件）。
+
+**对抗式审查修复（同日第二轮，commit d674d98 + test）**：
+
+1. **证据保留部分失败泄漏（中）**：`retainEvidence` 在 publish 的 try 块外调用——world retain 成功后 runtime retain 失败（或端口缺失）会绕过 catch 直接抛出，world 侧保留悬挂且无提交对应。修复：retainEvidence 内部对部分失败自清理（释放已成功一侧）；新增回归用例（world 成功 → runtime 失败 → 两侧 released 断言）。
+2. **stage meta.json 持久性缺口（低-中）**：payload 有 fsync、installManifestSync 的 manifest 有 fsync，唯独 stage 的 meta.json 裸 writeFileSync——崩溃窗口内对象已 rename 安装而 meta 未落盘时，已发布修订被永久判 ASSET_CORRUPT。修复：rename 前对 meta.json 同步 fsync（与 assets.md §7.4 一致）。
+3. **completion.verifier 校验缺口（低）**：合同 `CallableDescriptor.completion.verifier?: ExactRef` 提供时未校验格式，补 requireExactRef。
+4. **测试盲区**：readObject 的多块（>64KiB）流式哈希与块边界 range 此前无覆盖；新增 70KiB 跨块逐字节一致用例。
+
+**审查过但否决（登记理由）**：objectId 路径穿越防御——manifest 篡改已被"内容摘要重算先于路径使用"拦截（digest gate），而能写 objects/ 的攻击者同样能写 catalog.sqlite，同盘同权下额外路径校验防不了真实威胁模型，不加（no over-defense）；appliesTo.assets 不查存在性——经验可引用尚未导入的资产，弱引用语义留给领域模块；搜索 cursor 空串宽容为 0——无害。
