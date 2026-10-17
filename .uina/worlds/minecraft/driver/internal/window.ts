@@ -296,7 +296,8 @@ export class WindowSessionImpl implements WindowSession {
 		this.#disposers = [];
 		if (opts.closeProtocol) {
 			try {
-				this.#d.bot.closeWindow(this.#protocolId);
+				// 等上游完成（pre-1.17 还要等库存同步 click），再解除本地绑定。
+				await this.#d.bot.closeWindow(this.#protocolId);
 			} catch {
 				// 上游关闭失败不阻断退役；后果在证据/未知中体现。
 			}

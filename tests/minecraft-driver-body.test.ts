@@ -5,6 +5,7 @@
 
 import { getEventListeners } from "node:events";
 import { describe, expect, it, vi } from "vitest";
+import { BotFailure } from "../.uina/worlds/minecraft/driver/internal/bot-shape.js";
 import { FakeClientBot, TEST_OWNER, flushAsync, layFloor, makeDriver, testOwner } from "./minecraft-driver-helpers.js";
 
 const signal = () => new AbortController().signal;
@@ -401,6 +402,103 @@ describe("minecraft driver body (S-D2)", () => {
 				cursor: { x: 0.5, y: 0.5, z: 0.5 },
 			}),
 		).rejects.toMatchObject({ code: "INVALID_ARGUMENT" });
+		await session.close();
+		await driver.close();
+	});
+
+	it("interact 派发失败如实报 SOURCE_UNAVAILABLE：不谎报 sent，也不吞成参数错误", async () => {
+		class FailingActivationBot extends FakeClientBot {
+			override async activateBlock(): Promise<void> {
+				throw new BotFailure("unavailable", "目标方块未加载");
+			}
+
+			override async activateEntity(): Promise<void> {
+				throw new BotFailure("unavailable", "实体已不在跟踪表");
+			}
+		}
+		const bot = new FailingActivationBot();
+		layFloor(bot, 0, 4);
+		bot.setBlock({ x: 0, y: 64, z: 0 }, { name: "minecraft:crafting_table", properties: {} });
+		bot.addEntity({
+			networkId: 7,
+			uuid: "u7",
+			type: "minecraft:zombie",
+			position: { x: 2, y: 64, z: 0 },
+			velocity: { x: 0, y: 0, z: 0 },
+		});
+		const driver = await makeDriver(bot);
+		const session = await driver.player.acquire(TEST_OWNER, signal());
+		const place = { world: "w", worldRevision: "wr", dimension: "minecraft:overworld", position: { x: 0, y: 0, z: 0 } };
+
+		await expect(
+			session.interact({ target: { place, block: { x: 0, y: 64, z: 0 } }, hand: "main" }),
+		).rejects.toMatchObject({ code: "SOURCE_UNAVAILABLE", dispatch: "not_sent" });
+
+		const ref = driver.facts.sample((v) => v.entities()).value.value.entities[0]!.ref;
+		await expect(session.interact({ target: ref, hand: "main" })).rejects.toMatchObject({
+			code: "SOURCE_UNAVAILABLE",
+			dispatch: "not_sent",
+		});
+		expect(bot.packets.some((pk) => pk.name === "block_place")).toBe(false);
+		expect(bot.packets.some((pk) => pk.name === "use_entity")).toBe(false);
+		await session.close();
+		await driver.close();
+	});
+
+	it("interact 等协议派发完成才回执：上游未完成前不回执", async () => {
+		class SlowActivationBot extends FakeClientBot {
+			started = false;
+			release: () => void = () => {};
+
+			override async activateBlock(): Promise<void> {
+				this.started = true;
+				await new Promise<void>((resolve) => {
+					this.release = resolve;
+				});
+			}
+		}
+		const bot = new SlowActivationBot();
+		layFloor(bot, 0, 4);
+		bot.setBlock({ x: 0, y: 64, z: 0 }, { name: "minecraft:crafting_table", properties: {} });
+		const driver = await makeDriver(bot);
+		const session = await driver.player.acquire(TEST_OWNER, signal());
+		const place = { world: "w", worldRevision: "wr", dimension: "minecraft:overworld", position: { x: 0, y: 0, z: 0 } };
+
+		let settled = false;
+		const p = session.interact({ target: { place, block: { x: 0, y: 64, z: 0 } }, hand: "main" }).then((r) => {
+			settled = true;
+			return r;
+		});
+		await flushAsync();
+		expect(bot.started).toBe(true);
+		// 上游 lookAt/写包未完成 → 不得先回 sent。
+		expect(settled).toBe(false);
+		bot.release();
+		await expect(p).resolves.toMatchObject({ dispatch: "sent", completion: "met" });
+		await session.close();
+		await driver.close();
+	});
+
+	it("openContainer 激活失败立即失败，不等窗口超时", async () => {
+		class FailingActivationBot extends FakeClientBot {
+			override async activateBlock(): Promise<void> {
+				throw new BotFailure("unavailable", "目标方块未加载");
+			}
+		}
+		const bot = new FailingActivationBot();
+		layFloor(bot, 0, 4);
+		bot.setBlock({ x: 0, y: 64, z: 0 }, { name: "minecraft:chest", properties: {} });
+		bot.programWindow("minecraft:chest", 27, new Array(27).fill(null));
+		const driver = await makeDriver(bot);
+		const session = await driver.player.acquire(TEST_OWNER, signal());
+		const place = { world: "w", worldRevision: "wr", dimension: "minecraft:overworld", position: { x: 0, y: 0, z: 0 } };
+
+		const started = Date.now();
+		await expect(session.openContainer({ place, block: { x: 0, y: 64, z: 0 } })).rejects.toMatchObject({
+			code: "SOURCE_UNAVAILABLE",
+		});
+		// openTimeoutMs=400：激活失败必须立刻返回，而不是白等满超时再报 EFFECT_UNCERTAIN。
+		expect(Date.now() - started).toBeLessThan(300);
 		await session.close();
 		await driver.close();
 	});

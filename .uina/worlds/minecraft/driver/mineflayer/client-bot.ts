@@ -451,22 +451,24 @@ export class MineflayerClientBot implements ClientBot {
 		return this.#bot.usingHeldItem;
 	}
 
-	activateBlock(pos: BotBlockPos, face: BotVec3 | null, cursor: BotVec3 | null): void {
+	async activateBlock(pos: BotBlockPos, face: BotVec3 | null, cursor: BotVec3 | null): Promise<void> {
 		const block = this.#blockAt(pos);
 		if (!block) throw new BotFailure("unavailable", `目标方块未加载：${pos.x},${pos.y},${pos.z}`);
-		// 接口是同步的（Driver 靠 windowOpen 判定打开结果），上游 Promise 失败无法从这里返回；
-		// 失败表现为 windowOpen 不来，由 Driver 的窗口超时结算，不在这里吞掉后假装成功。
-		void this.#bot
-			.activateBlock(
+		// 上游先 await lookAt 再写包（inventory.js:200）：Promise 完成才代表包已写入。
+		// 静默吞掉会让"已派发"变成谎报（lookAt 失败时包根本没发）。
+		await this.#dispatch(`激活方块 ${pos.x},${pos.y},${pos.z}`, () =>
+			this.#bot.activateBlock(
 				block,
 				face ? v3({ x: face.x, y: face.y, z: face.z }) : undefined,
 				cursor ? v3({ x: cursor.x, y: cursor.y, z: cursor.z }) : undefined,
-			)
-			.catch(() => {});
+			),
+		);
 	}
 
-	activateEntity(networkId: number): void {
-		void this.#bot.activateEntity(this.#requireEntity(networkId)).catch(() => {});
+	async activateEntity(networkId: number): Promise<void> {
+		// 实体可能已在派发前被移除（entities.js 的 entityGone 会删 bot.entities）。
+		const entity = this.#requireEntity(networkId);
+		await this.#dispatch(`激活实体 ${networkId}`, () => this.#bot.activateEntity(entity));
 	}
 
 	async equip(selector: BotItemSelector, hand: "main" | "off"): Promise<void> {
@@ -492,10 +494,12 @@ export class MineflayerClientBot implements ClientBot {
 		await this.#bot.clickWindow(slot, button, mode);
 	}
 
-	closeWindow(windowId: number): void {
+	async closeWindow(windowId: number): Promise<void> {
 		const window = this.#bot.currentWindow;
 		if (!window || window.id !== windowId) return;
-		void this.#bot.closeWindow(window).catch(() => {});
+		// 上游同步写 close_window 并本地 emit windowClose，返回的 Promise 等 pre-1.17
+		// 的库存同步 click（inventory.js:441）——等它能避免选中物品未归位时继续用窗口。
+		await this.#dispatch(`关闭窗口 ${windowId}`, () => this.#bot.closeWindow(window));
 	}
 
 	quit(): void {
@@ -508,6 +512,16 @@ export class MineflayerClientBot implements ClientBot {
 		const name = this.#bot.game?.dimension;
 		if (!name) return null;
 		return name.includes(":") ? name : `minecraft:${name}`;
+	}
+
+	/** 上游动作的 Promise 完成才表示包已写入；失败转成接缝分类，不吞掉。 */
+	async #dispatch(label: string, run: () => Promise<void>): Promise<void> {
+		try {
+			await run();
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			throw new BotFailure("unavailable", `${label}派发失败：${message}`);
+		}
 	}
 
 	#requireEntity(networkId: number): MineflayerEntity {

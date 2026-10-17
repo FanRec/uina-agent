@@ -619,7 +619,9 @@ export class BodySessionImpl implements BodySession {
 			this.#gate.checkWrite(op);
 			if ("networkId" in input.target) {
 				validateEntityRef(this.#deps.host, input.target);
-				this.#bot.activateEntity(input.target.networkId);
+				// 上游先转头再写包，await 完成才代表协议派发真的发生；失败即 not_sent。
+				await this.#bot.activateEntity(input.target.networkId);
+				this.#gate.checkWrite(op); // 异步恢复后、结算前核验资格。
 				this.#gate.closeOperation(op);
 				return this.#receipt(op, "sent", "met");
 			}
@@ -629,12 +631,16 @@ export class BodySessionImpl implements BodySession {
 			if (!this.#bot.blockAt(pos)) {
 				throw sourceUnavailable("目标方块未加载", [op.ref]);
 			}
-			this.#bot.activateBlock(pos, input.face ?? null, input.cursor ?? null);
+			await this.#bot.activateBlock(pos, input.face ?? null, input.cursor ?? null);
+			this.#gate.checkWrite(op);
 			this.#gate.closeOperation(op);
 			return this.#receipt(op, "sent", "met");
 		} catch (err) {
 			this.#gate.closeOperation(op);
 			if (err instanceof CallFailureError) throw err;
+			// 适配层分类（方块未加载、实体已移除、上游 lookAt 失败）优先于兜底，
+			// 否则"目标不在视野/已消失"会被误报成参数错误。
+			if (err instanceof BotFailure) throw fromBotFailure(err, [op.ref]);
 			throw invalidArgument("interact 输入无效");
 		}
 	}
@@ -705,6 +711,8 @@ export class BodySessionImpl implements BodySession {
 				op.onRevoke = () => {
 					rejectOpen?.(controlInvalid("openContainer 等待窗口期间被撤销"));
 				};
+				// 激活失败时撤销等待（监听 + 定时器），否则会白等满 openTimeoutMs。
+				let cancelWait = (): void => {};
 				const windowOpenPromise = new Promise<BotWindowData>((resolve, reject) => {
 					rejectOpen = reject;
 					const off = this.#bot.on("windowOpen", (w) => {
@@ -726,9 +734,16 @@ export class BodySessionImpl implements BodySession {
 						off();
 						clearTimeout(timer);
 					};
+					cancelWait = cleanup;
 				});
-				if (isEntity) this.#bot.activateEntity((target as EntityRef).networkId);
-				else this.#bot.activateBlock(validateBlockTarget(target as BlockTarget), null, null);
+				// 先等协议派发完成：lookAt 失败时包没发出去，必须立即失败而不是报 EFFECT_UNCERTAIN。
+				try {
+					if (isEntity) await this.#bot.activateEntity((target as EntityRef).networkId);
+					else await this.#bot.activateBlock(validateBlockTarget(target as BlockTarget), null, null);
+				} catch (err) {
+					cancelWait();
+					throw err;
+				}
 				const windowData: BotWindowData = await windowOpenPromise;
 
 				this.#gate.checkWrite(op); // 归因核验后再绑定。
@@ -752,6 +767,7 @@ export class BodySessionImpl implements BodySession {
 		} catch (err) {
 			this.#gate.closeOperation(op);
 			if (err instanceof CallFailureError) throw err;
+			if (err instanceof BotFailure) throw fromBotFailure(err, [op.ref]);
 			throw new CallFailureError({
 				code: "CALL_UNAVAILABLE",
 				message: `openContainer 失败：${err instanceof Error ? err.message : String(err)}`,

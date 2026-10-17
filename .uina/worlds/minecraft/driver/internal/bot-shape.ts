@@ -159,11 +159,15 @@ export interface ClientBot {
 	deactivateItem(): void;
 	/** 原生使用状态；activateItem 置位、deactivateItem/结束清除。 */
 	usingHeldItem(): boolean;
-	activateBlock(pos: BotBlockPos, face: BotVec3 | null, cursor: BotVec3 | null): void;
-	activateEntity(networkId: number): void;
+	/**
+	 * 上游这两个激活动作先转头再写包（mineflayer inventory.js:200/250），
+	 * Promise 完成才表示包已写入；reject 表示根本没派发。必须等它，不能当成同步派发。
+	 */
+	activateBlock(pos: BotBlockPos, face: BotVec3 | null, cursor: BotVec3 | null): Promise<void>;
+	activateEntity(networkId: number): Promise<void>;
 	equip(selector: BotItemSelector, hand: "main" | "off"): Promise<void>;
 	clickWindow(windowId: number, slot: number, button: number, mode: number): Promise<void>;
-	closeWindow(windowId: number): void;
+	closeWindow(windowId: number): Promise<void>;
 
 	// ---- 生命周期 ----
 	quit(): void;

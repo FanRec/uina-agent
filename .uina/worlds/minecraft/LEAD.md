@@ -313,3 +313,16 @@ M5：真实 Mineflayer 依赖接入（lead 批准依赖后）、真实服务器�
 **验证**：`pnpm typecheck` ✓（biome 491 files + 9 条边界规则 + tsc）；minecraft 相关 7 文件 76 例 ✓（mineflayer 10 / facts 12 / body 18 / window 8 / feedback 11 / integration 10 / review 7）。新增真实建连用例直接调用 createMineflayerBot 连 127.0.0.1:1 并如实断言 faulted——证明工厂接线可跑，不证明真实服务器时序。
 
 **边界更新**：本文件上段「未接线：真实 Mineflayer 工厂（M5）」至此不再成立；仍未证明真实服务器协议时序、真实物理精度与耐久组件的服务端行为。
+### Lead — 激活/关窗的异步派发真相（2026-10-18 第二轮，commit 见 git log）
+
+审查首轮修复后遗留的 fire-and-forget：`activateBlock`/`activateEntity`/`closeWindow` 在接缝里是同步 `void`，适配层写 `void bot.activateX(...).catch(() => {})`，把上游 rejection 丢掉。上游核实（mineflayer 4.39.0）：`inventory.js:195` 的 `async activateBlock` 先 `await bot.lookAt()`（:200）再写 `block_place`；`:248 activateEntity` 同构（先 lookAt :250 再写 `use_entity` :251）；`:433 closeWindow` 同步写 `close_window` 后返回 Promise（pre-1.17 还要等库存同步 click）。即：async 只为转头，**Promise 完成才代表包已写入**，reject 表示包根本没发。
+
+原后果有三条实际错误：interact 在 await 之前就回 `dispatch:"sent", completion:"met"`（lookAt 失败时是谎报）；openContainer 的激活失败会白等满 `openTimeoutMs` 才报 `EFFECT_UNCERTAIN`；interact 的 catch 未映射 `BotFailure`，方块未加载/实体已移除都被兜底成 `INVALID_ARGUMENT "interact 输入无效"`。
+
+**修法**：接缝三方法改 `Promise<void>`；适配层统一走新增的 `#dispatch(label, run)`，失败转 `BotFailure("unavailable", "<label>派发失败：<message>")`（closeWindow 对不匹配 id 幂等返回）；`body.interact` 两分支 await 后再 `#gate.checkWrite(op)` 并结算，catch 在 invalidArgument 兜底前接 `fromBotFailure`；`openContainer` 先 await 激活（失败即 `cancelWait()` 撤销 windowOpen 监听与定时器）再等 `windowOpenPromise`，外层 catch 同样接 `fromBotFailure`；`window.#retire` 改 `await bot.closeWindow(...)`，等库存同步完成再解除本地绑定。fake 的三个方法同步改 async（行为不变）。
+
+**新增用例（tests/minecraft-driver-body.test.ts）**：① 两个激活入口 reject → `SOURCE_UNAVAILABLE` + `dispatch:"not_sent"`，且 packets 无 `block_place`/`use_entity`；② 上游不 resolve 前不回执（`settled === false`），resolve 后回 `sent/met`；③ openContainer 激活失败立即失败（<300ms，而非等满 400ms 超时的 `EFFECT_UNCERTAIN`）。
+
+**验证**：`pnpm typecheck` ✓（biome + 9 条边界规则 + tsc）；minecraft 相关 7 文件 **79 例** ✓（mineflayer 10 / facts 12 / body 21 / window 8 / feedback 11 / integration 10 / review 7）。
+
+**仍未证明**：服务器是否接受激活（只能靠后续包 windowOpen/entityGone/槽位变化观察，属 M5 证据）；`closeWindow` 在 pre-1.17 的同步 click 失败语义未实测（当前吞掉不阻断退役，理由登记在 window.ts 注释）。

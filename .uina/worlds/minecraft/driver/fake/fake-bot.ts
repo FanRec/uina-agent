@@ -245,7 +245,7 @@ export class FakeClientBot implements ClientBot {
 		return this.#usingHeldItem;
 	}
 
-	activateBlock(pos: BotBlockPos, face: BotVec3 | null, cursor: BotVec3 | null): void {
+	async activateBlock(pos: BotBlockPos, face: BotVec3 | null, cursor: BotVec3 | null): Promise<void> {
 		this.#write("block_place", {
 			location: pos,
 			direction: face ?? null,
@@ -261,7 +261,7 @@ export class FakeClientBot implements ClientBot {
 		}
 	}
 
-	activateEntity(networkId: number): void {
+	async activateEntity(networkId: number): Promise<void> {
 		this.#write("interact_entity", { entityid: networkId, type: "interact" });
 		if (this.#programmedWindow) {
 			const w: BotWindowData = { ...structuredClone(this.#programmedWindow), id: this.#nextWindowId++ };
@@ -305,7 +305,7 @@ export class FakeClientBot implements ClientBot {
 		await Promise.resolve();
 	}
 
-	closeWindow(windowId: number): void {
+	async closeWindow(windowId: number): Promise<void> {
 		if (!this.#currentWindow || this.#currentWindow.id !== windowId) return;
 		this.#write("close_window", { windowId });
 		const id = this.#currentWindow.id;
