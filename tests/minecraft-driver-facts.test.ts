@@ -177,30 +177,16 @@ describe("minecraft driver facts (S-D1)", () => {
 		expect(fresh.evidenceThrough.sequence).toBe(1);
 		fresh.close();
 
-		// durable > received 的 ACK 无效。
-		expect(() =>
-			sub.acknowledge({
-				receiver: "world-1",
-				stream: evidences[0].mark.stream,
-				receivedThrough: 0,
-				durableThrough: 1,
-				gaps: [],
-			}),
-		).not.toThrow();
 		// 正常 ACK 不回退、不抛错（同域共享材料，回收按提交进度）。
 		sub.acknowledge({
 			receiver: "world-1",
 			stream: evidences[0].mark.stream,
-			receivedThrough: 1,
 			durableThrough: 1,
-			gaps: [],
 		});
 		sub.acknowledge({
 			receiver: "world-1",
 			stream: evidences[0].mark.stream,
-			receivedThrough: 1,
 			durableThrough: 1,
-			gaps: [],
 		});
 		sub.close();
 		await driver.close();

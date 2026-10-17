@@ -89,28 +89,25 @@ describe("minecraft world 接收与当前读（S-W1）", () => {
 		await world.close();
 	});
 
-	it("received ACK 连续推进；乱序不越洞", async () => {
+	it("durable ACK 连续推进；乱序不越洞（缺前缀不冒认持久）", async () => {
 		const facts = new FakeClientFacts();
 		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		facts.emitEvidence([capturedFact({ sequence: 2 })]);
-		expect(facts.acks.at(-1)?.receivedThrough).toBe(0); // 缺 E=1，不冒认
+		await committed(world);
+		expect(facts.acks.at(-1)?.durableThrough).toBe(0); // 缺 E=1：E2 已持久但前缀未连续，不冒认
 		facts.emitEvidence([capturedFact({ sequence: 1 })]);
-		expect(facts.acks.at(-1)?.receivedThrough).toBe(2);
 		await committed(world);
 		expect(facts.acks.at(-1)?.durableThrough).toBe(2);
 		await world.close();
 	});
 
-	it("有限区间 gap 越洞必须携带 gap ref；durable 覆盖 gap 入项", async () => {
+	it("有限区间 gap 越洞：持久缺口覆盖计入 durable 前缀", async () => {
 		const facts = new FakeClientFacts();
 		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		facts.emitEvidence([capturedFact({ sequence: 1 })]);
 		facts.emitGap("mcw:gap:g1", "mcw:test:stream:ev1", 1, 3);
-		const ack = facts.acks.at(-1)!;
-		expect(ack.receivedThrough).toBe(3);
-		expect(ack.gaps).toEqual(["mcw:gap:g1"]);
 		await committed(world);
-		expect(facts.acks.at(-1)?.durableThrough).toBe(3);
+		expect(facts.acks.at(-1)?.durableThrough).toBe(3); // E1 载荷 + (1,3] 持久缺口
 		await world.close();
 	});
 
@@ -119,13 +116,14 @@ describe("minecraft world 接收与当前读（S-W1）", () => {
 		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: new MemoryWorldStore() });
 		facts.emitEvidence([capturedFact({ sequence: 1 })]);
 		facts.emitGap("mcw:gap:open", "mcw:test:stream:ev1", 1, null);
-		expect(facts.acks.at(-1)?.receivedThrough).toBe(1); // 未知后缀不越洞
+		await committed(world);
+		expect(facts.acks.at(-1)?.durableThrough).toBe(1); // 未知后缀不越洞
 		facts.emitEvidence([capturedFact({ sequence: 5 })]);
-		expect(facts.acks.at(-1)?.receivedThrough).toBe(1); // 新捕获是合法新证据，但不证明 (1,5) 已对账
+		await committed(world);
+		expect(facts.acks.at(-1)?.durableThrough).toBe(1); // E5 已持久，但不证明 (1,5) 已对账
 		facts.emitEnd({ stream: "mcw:test:stream:ev1", sequence: 5 });
-		const ack = facts.acks.at(-1)!;
-		expect(ack.receivedThrough).toBe(5); // 封口后 gap 闭合为 (1,5]
-		expect(ack.gaps).toEqual(["mcw:gap:open"]);
+		await committed(world);
+		expect(facts.acks.at(-1)?.durableThrough).toBe(5); // 封口后 gap 闭合为 (1,5]
 		await world.close();
 	});
 
@@ -143,7 +141,7 @@ describe("minecraft world 接收与当前读（S-W1）", () => {
 		const second = (await world.read({ ref: "evidence.list@1", input: {} })) as unknown as {
 			value: { items: unknown[] };
 		};
-		expect(facts.acks.at(-1)?.receivedThrough).toBe(1);
+		expect(facts.acks.at(-1)?.durableThrough).toBe(1);
 		expect(second.value.items).toHaveLength(first.value.items.length); // 无新提交
 		await world.close();
 	});
@@ -155,7 +153,8 @@ describe("minecraft world 接收与当前读（S-W1）", () => {
 		facts.emitEvidence([capturedFact({ sequence: 1, ref: "mcw:test:stream:ev1:1- conflicting" })]);
 		const impl = world as unknown as { getDiagnosticLog(): readonly string[] };
 		expect(impl.getDiagnosticLog().some((line) => line.includes("同身份不同载荷"))).toBe(true);
-		expect(facts.acks.at(-1)?.receivedThrough).toBe(1);
+		await committed(world);
+		expect(facts.acks.at(-1)?.durableThrough).toBe(1); // 先到版本保留
 		await world.close();
 	});
 
@@ -177,7 +176,6 @@ describe("minecraft world 接收与当前读（S-W1）", () => {
 		};
 		const world = await createWorld({ facts, dataDir: "unused-memory" }, { store: brokenStore });
 		facts.emitEvidence([capturedFact({ sequence: 1 })]);
-		expect(facts.acks.at(-1)?.receivedThrough).toBe(1);
 		expect(facts.acks.at(-1)?.durableThrough).toBe(0); // 不冒认持久
 
 		const observation = await world.read({ ref: "self@1", input: {} });

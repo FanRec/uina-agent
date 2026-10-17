@@ -123,12 +123,11 @@ export interface ClientFactCapture<T> {
 export interface ClientEvidenceAck {
 	receiver: Ref;
 	stream: Ref;
-	/** 确认指定 receiver 代次已对账的源前缀；每个序号必须有实际载荷或 gaps 中可解析缺口。 */
-	receivedThrough: number;
-	/** 不得大于 receivedThrough。 */
+	/**
+	 * 确认指定 receiver 代次已持久提交的源前缀：每个序号都有已持久载荷，
+	 * 或已被已持久缺口记录覆盖。同域部署的唯一确认层；跨域重传协议留待真正拆域时引入。
+	 */
 	durableThrough: number;
-	/** 覆盖所确认前缀的显式缺口记录；不是缺失事实已找回。 */
-	gaps: Ref[];
 }
 
 export type ClientFactNotice =

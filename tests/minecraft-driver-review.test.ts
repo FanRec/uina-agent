@@ -59,9 +59,7 @@ describe("minecraft driver review regressions", () => {
 		sub.acknowledge({
 			receiver: "world-1",
 			stream: entitiesStream,
-			receivedThrough: 999,
 			durableThrough: 999,
-			gaps: [],
 		});
 		// 修复前：另一流（dig）的 durableThrough 会误释放 entities 材料 —— 反向亦然。
 		// 修复后：entities 材料被回收，dig 材料保留（无本流 ACK）。

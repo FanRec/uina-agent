@@ -15,7 +15,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { parentPort } from "node:worker_threads";
 
-const SCHEMA_VERSION = "2";
+const SCHEMA_VERSION = "3";
 
 /** @type {import("node:sqlite").DatabaseSync | null} */
 let db = null;
@@ -33,7 +33,6 @@ function openDatabase(dataDir, fileName) {
 			stream TEXT NOT NULL,
 			seq INTEGER NOT NULL,
 			schema TEXT NOT NULL,
-			recv INTEGER NOT NULL,
 			payload TEXT NOT NULL,
 			store_seq INTEGER NOT NULL,
 			UNIQUE (stream, seq)
@@ -44,7 +43,6 @@ function openDatabase(dataDir, fileName) {
 			after INTEGER NOT NULL,
 			through INTEGER,
 			reason TEXT NOT NULL,
-			recv INTEGER NOT NULL,
 			store_seq INTEGER NOT NULL
 		);
 		CREATE TABLE IF NOT EXISTS records (
@@ -66,6 +64,19 @@ function openDatabase(dataDir, fileName) {
 	const schemaRow = database.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get();
 	if (!schemaRow) {
 		database.prepare("INSERT INTO meta (key, value) VALUES ('schema_version', ?)").run(SCHEMA_VERSION);
+	} else if (schemaRow.value === "2") {
+		// 一次性迁移 v2 → v3：删除无消费者的接收序号列（数据行原样保留）。
+		database.exec("BEGIN");
+		try {
+			database.exec("ALTER TABLE evidence DROP COLUMN recv");
+			database.exec("ALTER TABLE evidence_gaps DROP COLUMN recv");
+			database.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(SCHEMA_VERSION);
+			database.exec("COMMIT");
+		} catch (error) {
+			database.exec("ROLLBACK");
+			database.close();
+			throw new Error(`schema 迁移 v2 → v3 失败：${String(error)}`);
+		}
 	} else if (schemaRow.value !== SCHEMA_VERSION) {
 		const found = schemaRow.value;
 		database.close();
@@ -100,10 +111,10 @@ function nextStoreSeq() {
 
 function appendEvidence(entries) {
 	const insertFact = db.prepare(
-		"INSERT OR IGNORE INTO evidence (ref, stream, seq, schema, recv, payload, store_seq) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		"INSERT OR IGNORE INTO evidence (ref, stream, seq, schema, payload, store_seq) VALUES (?, ?, ?, ?, ?, ?)",
 	);
 	const insertGap = db.prepare(
-		"INSERT OR IGNORE INTO evidence_gaps (ref, stream, after, through, reason, recv, store_seq) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		"INSERT OR IGNORE INTO evidence_gaps (ref, stream, after, through, reason, store_seq) VALUES (?, ?, ?, ?, ?, ?)",
 	);
 	db.exec("BEGIN");
 	try {
@@ -114,7 +125,6 @@ function appendEvidence(entries) {
 					entry.record.mark.stream,
 					entry.record.mark.sequence,
 					entry.record.schema,
-					entry.receiveSeq,
 					JSON.stringify(entry.record),
 					nextStoreSeq(),
 				);
@@ -125,7 +135,6 @@ function appendEvidence(entries) {
 					entry.gap.after,
 					entry.gap.through,
 					entry.gap.reason,
-					entry.receiveSeq,
 					nextStoreSeq(),
 				);
 			}
@@ -177,13 +186,12 @@ function listEvidence(filter) {
 	const items = [
 		...factRows.map((row) => ({
 			storeSeq: row.store_seq,
-			entry: { kind: "fact", receiveSeq: -1, record: JSON.parse(row.payload) },
+			entry: { kind: "fact", record: JSON.parse(row.payload) },
 		})),
 		...gapRows.map((row) => ({
 			storeSeq: row.store_seq,
 			entry: {
 				kind: "gap",
-				receiveSeq: -1,
 				gap: { ref: row.ref, stream: row.stream, after: row.after, through: row.through, reason: row.reason },
 			},
 		})),

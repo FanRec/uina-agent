@@ -19,13 +19,11 @@ import type { GapRecord } from "./reception.js";
 
 export interface StoredFact {
 	kind: "fact";
-	receiveSeq: number;
 	record: CapturedClientFact;
 }
 
 export interface StoredGap {
 	kind: "gap";
-	receiveSeq: number;
 	gap: GapRecord;
 }
 

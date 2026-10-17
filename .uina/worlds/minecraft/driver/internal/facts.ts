@@ -109,9 +109,7 @@ interface EvidenceStreamState {
 interface AckRecord {
 	/** ACK 归属的流；回收只看同流 ACK，跨流 durableThrough 不得误释放材料。 */
 	stream: string;
-	receivedThrough: number;
 	durableThrough: number;
-	gapRefs: Ref[];
 }
 
 export class ClientFactsSource implements ClientFactsPort {
@@ -301,18 +299,11 @@ export class ClientFactsSource implements ClientFactsPort {
 	}
 
 	#acknowledge(ack: ClientEvidenceAck): void {
-		// durableThrough 不得大于 receivedThrough；同 receiver/stream 内不回退。
-		if (ack.durableThrough > ack.receivedThrough) return;
+		// 同 receiver/stream 内不回退。
 		const key = `${ack.receiver}|${ack.stream}`;
 		const prev = this.#acks.get(key);
-		const received = Math.max(prev?.receivedThrough ?? 0, ack.receivedThrough);
 		const durable = Math.max(prev?.durableThrough ?? 0, ack.durableThrough);
-		this.#acks.set(key, {
-			stream: ack.stream,
-			receivedThrough: received,
-			durableThrough: durable,
-			gapRefs: [...(prev?.gapRefs ?? []), ...ack.gaps],
-		});
+		this.#acks.set(key, { stream: ack.stream, durableThrough: durable });
 		this.#releaseCovered(ack.stream);
 	}
 

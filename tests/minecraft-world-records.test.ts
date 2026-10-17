@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { createWorld, type WorldHandle } from "../.uina/worlds/minecraft/world/index.js";
 import { openSqliteWorkerStore } from "../.uina/worlds/minecraft/world/internal/store.js";
 import { FakeClientFacts, capturedFact } from "./minecraft-world-fake-facts.js";
@@ -57,11 +58,9 @@ describe("minecraft world SQLite 历史与恢复（S-W3）", () => {
 			const facts2 = new FakeClientFacts();
 			facts2.setSelf(selfState(20), []);
 			const world2 = await createWorld({ facts: facts2, dataDir: dir }, { receiver: "mcw:receiver:gen2" });
-			// 不继承 RAM ACK：新代次 received=0（durable 合同上不得大于 received）。
-			const initialAck = facts2.acks.find((a) => a.stream === "mcw:test:stream:ev1");
-			expect(initialAck === undefined || initialAck.receivedThrough === 0).toBe(true);
+			// 新接收代次不从 RAM 起步：durable 只能由真实持久状态与本次提交推进。
 
-			// 源重放同身份载荷：去重，不分配新条目，received/durable 正常推进。
+			// 源重放同身份载荷：去重，不重复入库，durable 推进到 3。
 			facts2.emitEvidence([
 				capturedFact({ sequence: 1 }),
 				capturedFact({ sequence: 2 }),
@@ -69,7 +68,6 @@ describe("minecraft world SQLite 历史与恢复（S-W3）", () => {
 			]);
 			await committed(world2);
 			const last = facts2.acks.at(-1)!;
-			expect(last.receivedThrough).toBe(3);
 			expect(last.durableThrough).toBe(3);
 			await world2.close();
 
@@ -284,6 +282,70 @@ describe("minecraft world 领域记录 CAS 与保留（S-W3）", () => {
 			const page = await store.listEvidence({ limit: 100 });
 			expect(page!.items).toHaveLength(2); // key-1 + key-2 证据仍在（release 只删保留关系）
 			await store.close();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("schema v2 → v3 一次性迁移：DROP recv 列，数据行原样保留可读", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "mcw-mig-"));
+		try {
+			// 手工构造 v2 库（旧 schema：带 recv 列 + schema_version=2 + 一条已持久事实）。
+			const db = new DatabaseSync(join(dir, "world-history.db"));
+			db.exec(`
+				PRAGMA journal_mode = WAL;
+				CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+				CREATE TABLE evidence (
+					ref TEXT PRIMARY KEY, stream TEXT NOT NULL, seq INTEGER NOT NULL,
+					schema TEXT NOT NULL, recv INTEGER NOT NULL, payload TEXT NOT NULL,
+					store_seq INTEGER NOT NULL, UNIQUE (stream, seq)
+				);
+				CREATE TABLE evidence_gaps (
+					ref TEXT PRIMARY KEY, stream TEXT NOT NULL, after INTEGER NOT NULL,
+					through INTEGER, reason TEXT NOT NULL, recv INTEGER NOT NULL,
+					store_seq INTEGER NOT NULL
+				);
+				CREATE TABLE records (ref TEXT PRIMARY KEY, revision INTEGER NOT NULL, schema TEXT NOT NULL,
+					world TEXT NOT NULL, world_revision TEXT NOT NULL, value TEXT NOT NULL,
+					evidence TEXT NOT NULL, created_at TEXT NOT NULL);
+				CREATE TABLE retention (owner TEXT NOT NULL, evidence_ref TEXT NOT NULL, PRIMARY KEY (owner, evidence_ref));
+				INSERT INTO meta VALUES ('schema_version', '2');
+				INSERT INTO meta VALUES ('store_version', '1');
+				INSERT INTO meta VALUES ('store_seq_counter', '1');
+			`);
+			const payload = JSON.stringify({
+				ref: "mcw:v2:ev1",
+				schema: "client.inventory@1",
+				mark: { stream: "mcw:v2:stream", sequence: 1 },
+				stamp: { source: "s", epoch: "e", sequence: 1, connection: null, incarnation: null },
+				scope: { binding: "b", world: "w", worldRevision: "r", dimension: null },
+				fact: {
+					value: {},
+					observedAt: "2026-10-17T00:00:00.000Z",
+					source: "server",
+					coverage: "complete",
+					unknown: [],
+					evidence: [],
+				},
+			});
+			db.prepare(
+				"INSERT INTO evidence (ref, stream, seq, schema, recv, payload, store_seq) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			).run("mcw:v2:ev1", "mcw:v2:stream", 1, "client.inventory@1", 1, payload, 1);
+			db.close();
+
+			// Worker 打开触发迁移；数据行原样可读。
+			const store = await openSqliteWorkerStore(dir);
+			const page = await store.listEvidence({ limit: 100 });
+			expect(page!.items).toHaveLength(1);
+			expect(page!.items[0]!.entry).toMatchObject({ kind: "fact", record: { ref: "mcw:v2:ev1" } });
+			const exists = await store.hasEvidence("mcw:v2:ev1");
+			expect(exists).toBe(true);
+			await store.close();
+
+			// 重开：已是 v3，幂等。
+			const reopen = await openSqliteWorkerStore(dir);
+			expect((await reopen.listEvidence({ limit: 100 }))!.items).toHaveLength(1);
+			await reopen.close();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
