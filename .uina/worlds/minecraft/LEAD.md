@@ -250,3 +250,15 @@ M5：真实 Mineflayer 依赖接入（lead 批准依赖后）、真实服务器�
 - **CRAP gate**：`--root=.uina/worlds/minecraft`（world/driver/contracts/executor/worlddef，460 函数）通过——无 comp>=8 且完全未测试的函数。明细债务（部分覆盖、gate 不拦、登记不修）：`feedback.apply` comp23/CRAP167、`body.writeRecord` comp22/116、`validateCursor` comp18/140、`normalizeEvidenceList` comp18/121、`drive` comp16/74——均上轮既有形态，非本轮引入。
 - **审查补漏**：(1) `ensureStream` 混声明拒绝与历史流基线此前无测试 → 补 2 例单元（现 118 例）；(2) README 状态行与 world.md §6.6 补「retain/release 不推进提交版本」语义；(3) 复核 `contracts.md`/`public-api.md` 中「固定 cursor」表述均为 current 语境，非旧模型残留。
 - **接受不堵的边界**：`driver.close()` 与并发 acquire 的窄窗口（close 进行中 state 仍 ready 时的新 acquire 会被 grant 后立即经 per-session 撤销回调退役）——queue 已先结算清空，无正确性漏洞；retain 屏障后存在性校验对屏障捕获后新接收的证据报 EVIDENCE_UNAVAILABLE，符合 world.md §15「不能保证已提交就拒绝」。
+
+### Lead — 三轮审查落实：两段初始化 / 存储身份核验 / 文档终态（2026-10-17，commits 见 git log）
+
+按 lead 第三轮审查逐条落实（不再整体重构）：
+
+1. **P0 Watch 混合查询/时间阈值**：文档 §9.1 改为「失效只按查询可见边界定义」；混合查询与时间阈值写成**条件条款**（首个消费者立项时激活：Watch 内部关联多水位与独立到期条件，对外单一 Watch；时间到期是一次性失效，不要求写库推进版本）。代码侧 `ensureStream` 混声明的拒绝从"永久错误"改为"临时限制 + 指向条款"。
+2. **P1 createWorld 阻塞**：核实成立（原先 await 打开握手+播种）。改为两段初始化：段1 立即建立当前基线并交付句柄；段2 历史独立 opening → ready/unavailable（`WorldStore.availability` 加 opening、接口加 `opened`；`WorldHandle.historySettled` 供确定性等待；status 如实报 opening）。打开失败是终态但**接收继续运转**（证据照常收、提交明确失败、durable 停在真实起点）——修掉了初版实现"无限缓冲导致 ACK 停摆"的退化。
+3. **P1 INSERT OR IGNORE 无身份校验**：核实成立（真缺口）。Worker 入库前核验：同 (stream,seq) 必须同 ref、同 gap ref 必须同区间；不一致返回 conflicts → `reception.discardConflicts` 按源协议故障结算（不入库、不记账、不卡屏障、保留诊断）。新增 2 例验证（恢复后同 seq 换载荷 / 同 gap ref 换区间）。
+4. **Driver**：FIFO 保留（不删），§5.1 把「Runtime 单在途 acquire」改标为 **Runtime 接线时必须闭合的合同项**（届时定最小形态）；§5.4 明确「Operation 拥有生命周期归属 ≠ 保存通用资源集合」，`Operation.resources` 不得重建。
+5. **文档旧包袱全部删改**（不加修订说明堆叠）：§3 数据流图（T→屏障→DB→同一读取边界→切面）、§5.5（删 ACK gap ref/outbox）、§5.6（身份核验替 INSERT OR IGNORE）、§6.1/§6.5（删 R/D/tail/latest tail）、§9.1（失效=可见边界）、§11.1（schema v3 表）、§16（采纳决策更新）、§19（内核已实现、真实游戏未验证）、driver 状态行/§20/§5.1/§5.4；contracts.md/public-api.md 同步。残留 grep 清零。
+
+**验证**：minecraft 全套 120 例绿（+2）；tsc/biome 绿；`pnpm verify:mc-worker` 绿（opened 语义同步进产物验证）。**未推送**。
