@@ -25,9 +25,22 @@ export type {
 } from "./curves.js";
 export type { CompiledSpatialEvent, SpatialEffects, SpatialEvent, SpatialTransform } from "./spatial.js";
 
+/**
+ * `torso.*` 通道的语义（必须显式声明，见 MOTION-AUTHORING "躯干"）：
+ * - `head-relative`：数值是相对"头跟随目标"的增量，director 会再叠加 head.* 的合成结果。
+ *   这是历史默认；作者若不想要"整块身体跟着头转"，必须自己减去 head（旧动作都是这么写的）。
+ * - `absolute`：数值是相对 rig 中性的目标角，director 不再叠加 head，该轴由本动作独占。
+ *
+ * 不声明就编不过：这条隐式约定曾经只靠注释维系，漏写 `- head` 会让躯干双倍旋转，
+ * 而类型检查、单测、门禁全部放行，只有肉眼能发现。
+ */
+export type TorsoArticulation = "head-relative" | "absolute";
+
 export interface ActionPlan {
 	readonly timeline: import("./curves.js").Timeline;
 	readonly channels: ActionChannels;
+	/** 存在 `torso.*` 通道时必填。 */
+	readonly torso?: TorsoArticulation;
 	readonly spatial?: readonly SpatialEvent[];
 	readonly speed?: number;
 }
@@ -46,6 +59,7 @@ export interface CompiledChannel {
 export interface CompiledAction {
 	readonly durationMs: number;
 	readonly speed: number;
+	readonly torso?: TorsoArticulation;
 	readonly controls: Readonly<Record<string, RigControlDef>>;
 	readonly axes: readonly string[];
 	readonly channels: readonly CompiledChannel[];
@@ -157,6 +171,8 @@ export function compileAction(
 		throw new Error(`ActionPlan wall duration 必须为正有限数: ${String(wallDurationMs)}`);
 	const entries = Object.entries(plan.channels);
 	if (entries.length === 0) throw new Error("ActionPlan 至少需要一个通道");
+	if (plan.torso !== undefined && plan.torso !== "head-relative" && plan.torso !== "absolute")
+		throw new Error(`未知 torso 语义 ${String(plan.torso)}`);
 	const channels: CompiledChannel[] = [];
 	for (const [axis, input] of entries) {
 		if (!controls[axis]) throw new Error(`未知轴: ${axis}（rig.controls 未声明）`);
@@ -175,10 +191,20 @@ export function compileAction(
 		);
 	}
 	const axes = Object.freeze(channels.map(({ axis }) => axis));
+	// 只有"增量叠加在 head 合成结果之上"的 torso 通道才需要语义声明；absolute 通道本身就是目标角。
+	const torsoOffsets = channels.filter(
+		(channel) => channel.axis.startsWith("torso.") && channel.space === "baseline-offset",
+	);
+	if (torsoOffsets.length > 0 && plan.torso === undefined)
+		throw new Error(
+			`ActionPlan 有 baseline-offset 的 torso 通道（${torsoOffsets.map((channel) => channel.axis).join(", ")}）却未声明 torso: "head-relative" | "absolute"；` +
+				"director 会把增量叠加在 head 合成结果上，未声明时躯干旋转被叠加两次，且类型检查/单测/门禁都不会报错。",
+		);
 	const spatial = compileSpatialEvents(plan.spatial, durationMs, speed);
 	const compiled: CompiledAction = Object.freeze({
 		durationMs,
 		speed,
+		...(plan.torso === undefined ? {} : { torso: plan.torso }),
 		controls,
 		axes,
 		channels: Object.freeze(channels),
@@ -223,6 +249,7 @@ export function sampleSpeechGain(compiled: CompiledAction, actionMs: number): nu
 export function motion(
 	durationMs: number,
 	channels: LocalChannels | ((rng: () => number) => LocalChannels),
+	torso?: TorsoArticulation,
 ): ActionAuthoring {
 	return (rng) => {
 		const localChannels = typeof channels === "function" ? channels(rng) : channels;
@@ -238,7 +265,7 @@ export function motion(
 			actionChannels[axis] =
 				typeof input === "function" ? placed : ({ ...normalized, curve: placed } as Channel<ActionCurve>);
 		}
-		return { timeline: time, channels: actionChannels };
+		return { timeline: time, ...(torso === undefined ? {} : { torso }), channels: actionChannels };
 	};
 }
 

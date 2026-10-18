@@ -232,3 +232,5 @@ Idle、thinking 和 sway 使用现有作者曲线与独立随机流；随机仅�
 2026-10-12 特效框架（染色/后处理）：协议层 tintModel/updatePostProcessing/readPostProcessing、段级 effects 契约与运行时捕获-分发-三向归位落地（a2ca3b8）。审查修复补齐：目录 effects 绑定期校验回归（非法通道/渐变、末段携带、空载荷、纯效果段合法）、所有权守护用例 E（无 effects 特技零 tint/post 请求）、假设备后处理状态模拟使恢复读回真实核对、恢复结算增加具名 preset 一致性核对、效果派发措辞纠正为同段顺序派发、catalog 空间校验块缩进归位。19 个 Live2D 测试文件、157 项全部通过，`pnpm typecheck` 通过；CRAP gate 未取得 coverage（沙箱全量跑批有既有失败），真实 VTS 视觉验收未做。注意：`.uina/**` 在 biome format 门禁之外（files.includes 未纳入），live2d 代码格式依赖手工纪律。
 
 旧版 2026-10-10 Live2D 实施与验证记录已归档至 [Live2D 旧实现记录](archive/live2d-legacy-implementation-notes-2026-10-10.md)；当前合同与未验证边界见 [Live2D World 运行合同](live2d/live2d-world-runtime.md)。
+
+2026-10-19 MO 自然表演升级：当前目录已包含动作、日常变体、姿态/表情与自然背景短句，旧的空目录记录仅为历史。Runtime 对有限 idle/thinking/ambient 每段重新 Bake，最近两次选择排除，背景终点连续接续；显式状态优先，前景增量保留当前背景姿态。既有可听电平接缝内增加稀疏头身强调，闭眼/姿态/前景/thinking/ambient 抑制，生命周期清除旧候选。`mo:preview -- --scenario idle|speech|mixed [--offline]` 提供固定 seed 场景；模拟电平不能代替实际 TTS。真实 MO/VTS 已做短时连接、输入接受与少量画面快照检查，最终连续录像及真人质感验收尚未完成。完整合同见 docs/live2d/live2d-world-runtime.md。

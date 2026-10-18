@@ -236,7 +236,7 @@ describe("live2d 保活注入与断线恢复（P1-3）", () => {
 		device.onopen?.({});
 		await flush();
 		await sleep(30);
-		const generationBefore = client.getInjectionStats().generation;
+		const generationBefore = client.getConnectionGeneration();
 
 		// 模型切换事件：ready 立即撤销；50ms 后清理并安排重连。
 		device.pushEvent("ModelLoadedEvent", { modelLoaded: true });
@@ -254,11 +254,11 @@ describe("live2d 保活注入与断线恢复（P1-3）", () => {
 		device.onopen?.({});
 		await flush();
 		expect(client.isConnected()).toBe(true);
-		const stats = client.getInjectionStats();
-		expect(stats.generation).toBeGreaterThan(generationBefore);
+		const generationAfter = client.getConnectionGeneration();
+		expect(generationAfter).toBeGreaterThan(generationBefore);
 		await sleep(30);
 		expect(device.injections.length).toBeGreaterThan(0);
-		expect(client.getInjectionStats().generation).toBe(stats.generation);
+		expect(client.getConnectionGeneration()).toBe(generationAfter);
 	});
 
 	it("未就绪零输出：连接未就绪时 tick 不注入", async () => {

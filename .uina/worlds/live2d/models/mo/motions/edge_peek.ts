@@ -1,10 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“边缘探头偷看”（时长 4800ms）。
@@ -29,12 +24,12 @@ export const edgePeek: ActionAuthoring = (rng) => {
 
 	// 眼神先观察，头部晚 100ms 探出；保持期间仍有很轻的打量动作。
 	const evaluatePeekEnvelope = (t: number): number => {
-		if (t < 580) return smoothstep5(100, 580, t);
+		if (t < 580) return smoothstep(100, 580, t);
 		if (t < 4000) return 1.0;
-		if (t < durationMs) return 1.0 - smoothstep5(4000, durationMs, t);
+		if (t < durationMs) return 1.0 - smoothstep(4000, durationMs, t);
 		return 0;
 	};
-	const evaluateLookEnvelope = (t: number): number => smoothstep5(0, 320, t) * (1 - smoothstep5(3900, 4500, t));
+	const evaluateLookEnvelope = (t: number): number => smoothstep(0, 320, t) * (1 - smoothstep(3900, 4500, t));
 
 	// 1. 头部侧倾：因身体倾斜 24°，头部强力反向侧偏 (-9.2°) 探出
 	const evaluateHeadRoll = (t: number): number => {
@@ -79,11 +74,11 @@ export const edgePeek: ActionAuthoring = (rng) => {
 	// 6. 探头窥视期间灵动轻快双眨眼 (1800~2000ms, 3200~3400ms)
 	const evaluateEyeOpen = (t: number): number => {
 		if (t >= 1800 && t < 2000) {
-			const u = t < 1900 ? smoothstep5(1800, 1900, t) : 1 - smoothstep5(1900, 2000, t);
+			const u = t < 1900 ? smoothstep(1800, 1900, t) : 1 - smoothstep(1900, 2000, t);
 			return -0.85 * u;
 		}
 		if (t >= 3200 && t < 3400) {
-			const u = t < 3300 ? smoothstep5(3200, 3300, t) : 1 - smoothstep5(3300, 3400, t);
+			const u = t < 3300 ? smoothstep(3200, 3300, t) : 1 - smoothstep(3300, 3400, t);
 			return -0.85 * u;
 		}
 		return 0;
@@ -97,6 +92,7 @@ export const edgePeek: ActionAuthoring = (rng) => {
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.roll": offset(during(whole, evaluateHeadRoll)),
 			"head.yaw": offset(during(whole, evaluateHeadYaw)),

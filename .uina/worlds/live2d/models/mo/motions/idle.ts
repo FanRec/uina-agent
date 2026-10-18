@@ -85,6 +85,7 @@ export const cuteIdle: ActionAuthoring = (rng) => {
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.yaw": offset(during(whole, headYaw)),
 			"head.roll": offset(during(whole, headRoll)),

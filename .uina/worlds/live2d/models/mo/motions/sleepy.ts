@@ -1,10 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“小鸡啄米打瞌睡猛然惊醒”(Sleepy，时长 3400ms)。
@@ -31,7 +26,7 @@ export const sleepy: ActionAuthoring = (rng) => {
 		if (t <= 0 || t >= durationMs) return 0;
 		// 0~1600ms: 沉沉下垂，伴随两次小鸡啄米小磕头
 		if (t < 1600) {
-			const baseDrop = -7.5 * smoothstep5(0, 1600, t) - 1.3 * smoothstep5(1400, 1600, t);
+			const baseDrop = -7.5 * smoothstep(0, 1600, t) - 1.3 * smoothstep(1400, 1600, t);
 			const nodWave = -1.3 * Math.sin((t / 1600) * 2 * Math.PI) ** 2;
 			return (baseDrop + nodWave) * gain;
 		}
@@ -41,11 +36,11 @@ export const sleepy: ActionAuthoring = (rng) => {
 		}
 		// 2000~2250ms: 触电式猛跳战术后仰 (+7.5°)
 		if (t < 2250) {
-			const u = smoothstep5(2000, 2250, t);
+			const u = smoothstep(2000, 2250, t);
 			return (-8.8 + 16.3 * u) * gain;
 		}
 		// 2250~3400ms: 揉眼醒神缓缓归位
-		const u = smoothstep5(2250, durationMs, t);
+		const u = smoothstep(2250, durationMs, t);
 		return 7.5 * gain * (1 - u);
 	};
 
@@ -54,7 +49,7 @@ export const sleepy: ActionAuthoring = (rng) => {
 		if (t <= 0 || t >= durationMs) return 0;
 		// 入睡阶段眼皮合拢
 		if (t < 1600) {
-			const u = smoothstep5(200, 1400, t);
+			const u = smoothstep(200, 1400, t);
 			return -1.0 * u;
 		}
 		// 熟睡完全闭合
@@ -63,7 +58,7 @@ export const sleepy: ActionAuthoring = (rng) => {
 		}
 		// 惊醒疾速大睁 (2000~2120ms 触电式睁眼，随后保持清醒睁大)
 		if (t < 2120) {
-			const u = smoothstep5(2000, 2120, t);
+			const u = smoothstep(2000, 2120, t);
 			return -1.0 * (1 - u);
 		}
 		// 惊醒瞬间眼睛大睁 (offset = 0 即 neutral 1.0)
@@ -72,15 +67,15 @@ export const sleepy: ActionAuthoring = (rng) => {
 		}
 		// 2350~3200ms 清醒三连眨眼
 		if (t >= 2400 && t < 2600) {
-			const u = t < 2500 ? smoothstep5(2400, 2500, t) : 1 - smoothstep5(2500, 2600, t);
+			const u = t < 2500 ? smoothstep(2400, 2500, t) : 1 - smoothstep(2500, 2600, t);
 			return -0.85 * u;
 		}
 		if (t >= 2700 && t < 2900) {
-			const u = t < 2800 ? smoothstep5(2700, 2800, t) : 1 - smoothstep5(2800, 2900, t);
+			const u = t < 2800 ? smoothstep(2700, 2800, t) : 1 - smoothstep(2800, 2900, t);
 			return -0.85 * u;
 		}
 		if (t >= 3000 && t < 3200) {
-			const u = t < 3100 ? smoothstep5(3000, 3100, t) : 1 - smoothstep5(3100, 3200, t);
+			const u = t < 3100 ? smoothstep(3000, 3100, t) : 1 - smoothstep(3100, 3200, t);
 			return -0.85 * u;
 		}
 		return 0;
@@ -90,17 +85,17 @@ export const sleepy: ActionAuthoring = (rng) => {
 	const evaluateHeadRoll = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 2000) {
-			const u = smoothstep5(400, 1600, t);
+			const u = smoothstep(400, 1600, t);
 			return -3.5 * u * gain;
 		}
 		if (t < 2300) {
-			const u = smoothstep5(2000, 2300, t);
+			const u = smoothstep(2000, 2300, t);
 			return -3.5 * (1 - u) * gain;
 		}
 		// 惊醒后清醒小摇晃
 		const shakeTime = (t - 2300) / 1000;
-		const attack = smoothstep5(2300, 2400, t);
-		const decay = 1 - smoothstep5(2300, durationMs, t);
+		const attack = smoothstep(2300, 2400, t);
+		const decay = 1 - smoothstep(2300, durationMs, t);
 		return 2.5 * Math.sin(shakeTime * 2 * Math.PI * 2.0) * attack * decay * gain;
 	};
 
@@ -114,23 +109,23 @@ export const sleepy: ActionAuthoring = (rng) => {
 	// 6. 视线下垂与直视
 	const evaluateGazeY = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		if (t < 2000) return -0.45 * smoothstep5(200, 1500, t);
+		if (t < 2000) return -0.45 * smoothstep(200, 1500, t);
 		if (t < 2150) {
-			const u = smoothstep5(2000, 2150, t);
+			const u = smoothstep(2000, 2150, t);
 			return -0.45 + (0.25 - -0.45) * u;
 		}
 		if (t < 2350) return 0.25; // 惊醒看天花板
-		const u = smoothstep5(2350, durationMs, t);
+		const u = smoothstep(2350, durationMs, t);
 		return 0.25 * (1 - u);
 	};
 
 	// 7. 嘴巴表情：睡觉微张呼吸 (0.12) -> 惊醒大张倒吸气 (0.55) -> 不好意思甜笑 (0.68)
 	const evaluateMouthOpen = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		if (t < 2000) return 0.12 * smoothstep5(300, 1200, t) * gain;
+		if (t < 2000) return 0.12 * smoothstep(300, 1200, t) * gain;
 		if (t < 2400) {
-			const u = smoothstep5(2000, 2150, t);
-			const decay = 1 - smoothstep5(2250, 2400, t);
+			const u = smoothstep(2000, 2150, t);
+			const decay = 1 - smoothstep(2250, 2400, t);
 			return (0.12 + 0.43 * u) * decay * gain;
 		}
 		return 0;
@@ -138,13 +133,14 @@ export const sleepy: ActionAuthoring = (rng) => {
 
 	const evaluateMouthForm = (t: number): number => {
 		if (t < 2300 || t >= durationMs) return 0;
-		const attack = smoothstep5(2300, 2600, t);
-		const decay = 1 - smoothstep5(3100, durationMs, t);
+		const attack = smoothstep(2300, 2600, t);
+		const decay = 1 - smoothstep(3100, durationMs, t);
 		return 0.68 * attack * decay * gain;
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.pitch": offset(during(whole, evaluateHeadPitch)),
 			"head.roll": offset(during(whole, evaluateHeadRoll)),

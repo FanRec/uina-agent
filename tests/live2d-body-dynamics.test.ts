@@ -63,20 +63,24 @@ describe("Live2D 躯干通道", () => {
 		expect(director.currentFrame["torso.yaw"]).toBeCloseTo(director.currentFrame["head.yaw"]!, 1);
 
 		const pairClip = compileAction(
-			motion(1200, {
-				"head.yaw": absolute(
-					keys([
-						[0, -3],
-						[1200, -3],
-					]),
-				),
-				"torso.yaw": offset(
-					keys([
-						[0, 2],
-						[1200, 2],
-					]),
-				),
-			}),
+			motion(
+				1200,
+				{
+					"head.yaw": absolute(
+						keys([
+							[0, -3],
+							[1200, -3],
+						]),
+					),
+					"torso.yaw": offset(
+						keys([
+							[0, 2],
+							[1200, 2],
+						]),
+					),
+				},
+				"head-relative",
+			),
 			rig.controls,
 		);
 		director.play(pairClip, { category: "voluntary", fadeInMs: 0, fadeOutMs: 0, atomic: false });
@@ -126,6 +130,8 @@ describe("Live2D 躯干通道", () => {
 		const fakeClient = {
 			isConnected: () => true,
 			getModelProfile: () => profile,
+			getModelGeneration: () => 0,
+			getConnectionGeneration: () => 0,
 			setConnectionChangeListener: () => {},
 			connect: () => {},
 			disconnect: () => {},

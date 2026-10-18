@@ -1,10 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“圈圈眼慌张打转 / 拨浪鼓小摇头”(Panic / Dizzy，时长 2200ms)。
@@ -28,9 +23,9 @@ export const panic: ActionAuthoring = (rng) => {
 
 	// 慌乱核心包络：150~1750ms 处于高频慌乱爆发期，1750~2200ms 晕乎乎平复
 	const evaluatePanicEnvelope = (t: number): number => {
-		if (t < 150) return smoothstep5(0, 150, t);
+		if (t < 150) return smoothstep(0, 150, t);
 		if (t < 1750) return 1.0;
-		if (t < durationMs) return 1.0 - smoothstep5(1750, durationMs, t);
+		if (t < durationMs) return 1.0 - smoothstep(1750, durationMs, t);
 		return 0;
 	};
 
@@ -99,6 +94,7 @@ export const panic: ActionAuthoring = (rng) => {
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"gaze.x": offset(during(whole, evaluateGazeX)),
 			"gaze.y": offset(during(whole, evaluateGazeY)),

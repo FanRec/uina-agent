@@ -8,6 +8,7 @@ export {
 	oscillate,
 	poseWindow,
 	smooth,
+	smoothstep,
 	spring,
 	sumOffsets,
 	timeline,

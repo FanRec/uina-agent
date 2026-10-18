@@ -324,7 +324,8 @@ export class Live2DRuntimeProxy implements Live2DWorldRuntime {
 		return this.call("diagnose", undefined);
 	}
 	private fire<K extends EngineFireOp>(op: K, args: EngineFires[K]): void {
-		if (this.phase !== "running" && !(this.phase === "starting" && op === "endpoint.onFocus")) return;
+		// 焦点已改走 call 通道（见 endpointFacade.onFocus），fire 不再有 starting 例外。
+		if (this.phase !== "running") return;
 		try {
 			this.port.postMessage({ t: "fire", op, args } as MainToEngine);
 		} catch (error) {
@@ -352,7 +353,12 @@ export class Live2DRuntimeProxy implements Live2DWorldRuntime {
 			safeStop: () => this.call("endpoint.safeStop", undefined).then(() => {}),
 			resume: () => this.call("endpoint.resume", undefined).then(() => {}),
 			interrupt: () => this.fire("endpoint.interrupt", undefined),
-			onFocus: (focused) => this.fire("endpoint.onFocus", { focused }),
+			// 焦点走命令通道：引擎按序应用并回执，代理据此刷新本地状态快照。
+			onFocus: (focused) => {
+				void this.call("endpoint.setFocus", { focused }).catch(() => {
+					/* 焦点是诊断性输入：引擎已关闭/线程已死时不再重试，state() 会如实反映 offline。 */
+				});
+			},
 		};
 	}
 	private sinkFacade(): VoiceLevelSink {

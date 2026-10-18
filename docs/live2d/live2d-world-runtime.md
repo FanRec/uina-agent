@@ -23,7 +23,7 @@
 
 cue 只命中动作与姿态，通过 runtime 的同一执行路径准入与结算；endpoint 只提供能力查询与异步账本。拒绝不记 started；异常必落账；旧回调只更新自己的记录。伴随 cue 仍由 embodiment/voice 拥有输出时序，World 不读取它们的内部状态。
 
-MO 的 `head.yaw/pitch/roll` 与 `torso.yaw/pitch/roll` 是独立逻辑轴。没有显式躯干轨迹时，躯干目标跟随头部合成结果；`torso.*` 的绝对轨迹可单独接管，`baseline-offset` 轨迹则叠加在头部跟随目标上。头部旧动作因此仍能自然带动身体。该 rig 不声明手臂逻辑轴，也不通过移动整个模型制造上下弹跳。
+MO 的 `head.yaw/pitch/roll` 与 `torso.yaw/pitch/roll` 是独立逻辑轴。没有显式躯干轨迹时，躯干目标跟随头部合成结果；`torso.*` 的绝对轨迹可单独接管，`baseline-offset` 轨迹则叠加在头部跟随目标上。头部旧动作因此仍能自然带动身体。这个叠加关系不再靠作者记性：动作写 `baseline-offset` 的 `torso.*` 通道时必须显式声明 `torso: "head-relative" | "absolute"`，漏声明 `compileAction` 直接失败；声明 `absolute` 的轴由该动作独占，director 不再叠加头部跟随。该 rig 不声明手臂逻辑轴，也不通过移动整个模型制造上下弹跳。
 
 首次接入 MO 时调用 `prepare_body`。它按模型 ID 生成稳定隔离的三个 VTS 输入名并幂等创建，随后由操作者在 VTube Studio 的模型参数设置中按工具结果分别映射到 rig 声明的身体输出。映射仍由 VTS 管理；Uina 不编辑模型保存配置。完成映射后执行 `reload`，再查 `status(detail=true)` 的 `bodyMapping`：每个轴会报告输入缺失、输入范围不符、未映射、映射到错误输出、映射歧义或 ready。躯干未 ready 时，头部和眼睛通道仍可用。
 
@@ -31,11 +31,11 @@ MO 的 `head.yaw/pitch/roll` 与 `torso.yaw/pitch/roll` 是独立逻辑轴。没
 
 目录只保存动作工厂、静态姿态/表情、别名和其它模型专属能力，不缓存编译动作。`compileCatalog` 隔离作者输入并以固定 seed 校验结构、轴、曲线和空间载荷，校验性 Bake 的结果会丢弃；Runtime 每次播放按动作名、播放序号与用途派生随机流并重新 Bake。目录索引私有，消费者通过 `resolve/list/resolveCue` 获取冻结记录；内置注视词表与别名同源，名称全局唯一。
 
-按用户要求，MO 的动作、姿态、表情和背景内容均为空；没有迁移旧条目。rig 标定与内置注视保留。`express` 对动作返回目录为空/未知动作，`state.ambient` 不会回退到其它目录。目录换代仍递增代次并使旧执行失效。
+MO 当前已登记动作、日常变体、姿态、表情、ambient 和自然背景短句。`express` 与 cue 复用当前目录，未知名称明确拒绝；目录换代递增代次并使旧执行失效。历史空目录记录不再描述当前状态。
 
 ## Action 作者层与播放时钟
 
-作者合同详见 `.uina/worlds/live2d/MOTION-AUTHORING.md`。动作工厂产出 `ActionPlan { timeline, channels, spatial?, speed? }`；`timeline` 提供命名 marker 和正时长 span。`keys`、`poseWindow`、`spring`、`oscillate` 构造局部曲线；`during`、`track` 放置到动作时间；`absolute`、`offset`、`sumOffsets`、`mergeChannels` 明确通道空间与同轴规则。`compileAction` 校验并冻结身体通道、空间事件与 speed；独立编译缺省使用固定 0.5 随机流。
+作者合同详见 `.uina/worlds/live2d/MOTION-AUTHORING.md`。动作工厂产出 `ActionPlan { timeline, channels, torso?, spatial?, speed? }`；`timeline` 提供命名 marker 和正时长 span。`keys`、`poseWindow`、`spring`、`oscillate` 构造局部曲线；`during`、`track` 放置到动作时间；`absolute`、`offset`、`sumOffsets`、`mergeChannels` 明确通道空间与同轴规则。`compileAction` 校验并冻结身体通道、躯干语义声明、空间事件与 speed；独立编译缺省使用固定 0.5 随机流。
 
 Runtime 分开派生 selection、performance、autonomic 随机流。每次播放只 Bake 一次，身体和空间共享同一 `CompiledAction`。Director 负责身体仲裁与采样，ExternalActions 负责 VTS 请求、独占声明和清理；预检完成后两者以同一 Director 有效时钟确定共同 `t0`。`speed` 只做一次时间换算，暂停或失焦冻结有效时钟。
 
@@ -49,7 +49,13 @@ Runtime 分开派生 selection、performance、autonomic 随机流。每次播�
 
 ## 外部动作与恢复
 
-含空间事件的目录动作由 external-actions 拥有 VTS 位姿/效果与外观热键的执行、资源、取消和结算。空间动作独占 model:transform，带效果同时独占 effect:*，与外观请求互斥；清理等待期间不释放资源，未知结算后释放，不永久持锁。当前 MO 没有空间动作条目。
+含空间事件的目录动作由 external-actions 拥有 VTS 位姿/效果与外观热键的执行、资源、取消和结算。空间动作独占 model:transform，带效果同时独占 effect:*，与外观请求互斥；清理等待期间不释放资源，未知结算后释放，不永久持锁。当前 MO 的 close_up、joy_hop 等动作包含空间计划；自然短句和自动讲话强调不包含外部空间副作用。
+
+一次空间动作按显式阶段推进，不再是一个 500 行的闭包：`plan`（请求排序与预检）→ `baseline`（读基线、声明资源、确定共同 t0）→ `drive`（逐帧相对旋转与效果派发）→ `restore`（归位与恢复，逐项记录 confirmed/unknown）→ `settle`（写 `ExternalRecord` 并交还资源）。阶段对象只持有该阶段的事实，跨阶段事实由不可变的运行上下文承载；`sameModel()` 式的环境核验统一收口为环境令牌比较。
+
+环境核验使用同一个 `EnvironmentToken { connection, model, catalog, modelID }`：目录代次、连接代次、模型代次在动作开始前取一次快照，之后每次核验都重新取当前令牌比较，只有 `isCurrent()` 为真才向设备写入。没有第二份"代次"口径——`getConnectionGeneration()` 是连接代次，`getModelGeneration()` 是模型代次，`getInjectionStats()` 只报注入统计，不再兼职代次。令牌不一致时结算为 `unknown`，理由写明是连接、模型还是目录变化。
+
+时序与容差收在一个 `TimingProfile` 里（`minUsefulMoveMs`、`settleMarginMs`、`settleRetries`、`settleRetryMs`、`driveIntervalMs`、`maxEndpointResidualDeg` 等），`status(detail=true).timing` 报告当前生效值。现场标定用环境变量 `UINA_LIVE2D_TIMING='{"minUsefulMoveMs":60}'` 覆盖，非法 JSON、未知键和非有限值在启动时直接失败，不做静默回退；100ms 位姿窗口、60ms 结算余量和 2° 尾差仍是未经真机校准的起始值。
 
 空间事件按 `atMs` 等待；含位姿 span 的事件先检查窗口，再派发效果并等待 ACK，ACK 后重查窗口，再按 span 绝对终点执行移动。纯效果 marker 不受位姿窗口门槛限制。ACK 返回不改变共同动作时钟。效果分发失败记录后继续剩余计划和身体播放，但最终状态为 unknown；位姿失败或时间窗错过会取消后续事件并立即清理。无错误的正常路径等身体 ActionPlan 结束后才恢复效果和位姿。位姿组合越界和已知缺失 preset 在发送前拒绝。
 
@@ -67,7 +73,7 @@ safeStop 暂停合成、保持中性口型注入，取消动作与持续状态�
 
 生产在独立 Worker 运行时钟与 VTS 通信，进程内与 Worker 通过共同 assembly 装配。一个实例只拥有一次激活生命周期；重新激活创建新实例。启动失败回滚已安装资源，停止在 finally 语义下释放全部资源并聚合错误。
 
-proxy/engine 使用 new、starting、running、closing、dead。停止与 Worker error/exit 共用收尾，撤销端点、电平、Host 订阅、取消监听和能力缓存；保留的 facade 引用也离线。迟到消息不能复活登记，终止后不 fire。登记期的焦点控制允许在 start 应答前投递。
+proxy/engine 使用 new、starting、running、closing、dead。停止与 Worker error/exit 共用收尾，撤销端点、电平、Host 订阅、取消监听和能力缓存；保留的 facade 引用也离线。迟到消息不能复活登记，终止后不 fire。焦点变化是**命令**而不是通知：`endpoint.setFocus` 走与工具调用同一条有序 RPC 通道，失焦不会被后到的 `express` 超越；cue 派发与语音电平仍是 fire-and-forget，因为它们没有可等待的结算，也没有与工具调用相同的顺序要求。start 应答前的焦点命令允许投递，引擎在 starting 阶段排入同一队列。
 
 预取消工具调用不投递。运行取消只转发 abort，等待实际结构化结算；World scope 先取消并等工具，随后 onStop。停止等待 runtime 清理后回收线程，错误跨线程保留嵌套原因与清理信息。已有清理预算耗尽时剩余调用如实 unknown，不新增无期限等待。
 
@@ -76,6 +82,10 @@ proxy/engine 使用 new、starting、running、closing、dead。停止与 Worker
 ## 验证边界
 
 定向测试覆盖模型目录、工具/cue、身体跟随与躯干覆盖/恢复、VTS 输入准备与映射诊断、合成目录中的环境片段轮换、Action 时间线与随机隔离、实际合成与假 VTS 协议、外部恢复、MessageChannel、真实 Worker 自举及 WorldActivation 停用。真实 Worker 使用线程内创建的假设备，不读取或改写真实认证，不证明真实 VTS/MO、GPU 或视觉自然度。
+
+动作观感有一条通用回归网 `tests/live2d-motion-quality.test.ts`：对目录里每个动作（含变体、背景 idle/thinking、sway）按 60Hz 采样生产 `MotionDirector` 输出，断言不越界、无单帧跳变、无非有限值、结束回中、作者驱动的轴确有位移，并与 `tests/fixtures/live2d-motion-profile.json` 的幅度/峰谷基线比对（±25%）。它锁的是形状而不是美感：真机看效果仍然是唯一验收，基线只能保证"改动被显式看见"。
+
+时序参数有单测（`tests/live2d-timing.test.ts`）覆盖默认值、深冻结、未知键、非有限与越界拒绝，以及环境变量入口的报错；躯干语义有 `tests/live2d-torso-articulation.test.ts` 覆盖 `head-relative`/`absolute` 与漏声明失败。它们证明合同，不证明 VTS 上的实际观感。
 
 执行命令：`pnpm exec vitest run tests/live2d-*.test.ts`、`pnpm check:boundaries`、`pnpm exec tsc --noEmit`、`pnpm typecheck`、`pnpm test`。Windows PowerShell 用 rg 枚举测试路径再展开参数。依赖已安装时，pnpm 11 可逐命令传 `--config.verify-deps-before-run=false`，避免共享依赖工作树的自动安装；不修改用户配置。
 
@@ -101,3 +111,28 @@ proxy/engine 使用 new、starting、running、closing、dead。停止与 Worker
 原工作区日志保存在忽略目录 generated/live2d-refactor：current-live2d.log、current-boundaries.log、current-types.log、final-original-format.log、final-original-typecheck.log、final-original-tests.log、final-unrelated-retest.log。失败用例保留在整仓日志中；单独复跑结果不替代那次全量失败。
 
 独立全分支审查提出两项重要验收缺口，均以 RED→GREEN 修复：效果 ACK 返回后重核执行代次，防止向新模型发送旧位姿；持续状态最后一次等待后重核代次/取消，不报告已失效的成功。
+
+### 2026-10-18 结构与可验证性加固
+
+- 空间动作改为显式阶段（`plan` → `baseline` → `drive` → `restore` → `settle`）：原先 557 行的 `runSpatial` 闭包与 17 个可变变量拆成阶段对象加共享上下文；`restore`/`restoreEffects` 统一为同一套结算记账；删掉重复的 `sameModel()` 死检查。
+- 环境核验收口到 `EnvironmentToken`（`environment.ts`）：目录/连接/模型三个代次只在动作开始取一次快照，之后每次写入前重取令牌比较；`VTSClient.getConnectionGeneration()` 与 `getModelGeneration()` 分开，`getInjectionStats()` 不再兼职代次。`status(detail=true).environment` 报当前令牌。
+- 躯干语义显式化：`ActionPlan.torso`；存在 `baseline-offset` 的 `torso.*` 通道却未声明时 `compileAction` 直接失败；20 个动作文件与测试夹具补 `head-relative`，视觉零变化。
+- 时序参数集中到 `timing.ts` 的 `TimingProfile`，`status(detail=true).timing` 报告生效值，`UINA_LIVE2D_TIMING` 现场覆盖；未知键、非有限值与越界在启动时直接失败。
+- 焦点是命令：`endpoint.setFocus` 走有序 RPC，不再与 `express` 竞争线程投递顺序；cue 与语音电平仍 fire-and-forget。
+- 曲线去重：`smoothstep()` 上提到 `authoring/curves.ts`，19 个动作文件删除各自的五次多项式副本。
+- 新增观测网：`tests/live2d-motion-quality.test.ts` + `tests/fixtures/live2d-motion-profile.json`、`tests/live2d-timing.test.ts`、`tests/live2d-torso-articulation.test.ts`。
+- 结果：定向 41 文件 / 370 项通过；`npx tsc --noEmit` 通过；`npx biome format .` 434 文件无改动；`pnpm check:boundaries` 8 条规则通过。整仓结果按当次日志记录，不用定向通过冒充整仓通过。
+- 仍未验收：真实 VTS/MO 观感、ACK 延迟分布、100ms 位姿窗口与 2° 尾差的实际标定；MO 动作、姿态、表情内容仍为空。后续改进方案见 [运行期加固提案](../proposals/live2d/live2d-runtime-hardening.md)。
+
+
+## 自然表演运行合同（2026-10-19）
+
+默认 MO 使用有限 idle/thinking 短句，4～10 秒重新选择与 Bake，排除最近两类，保存背景姿态终点并平滑接续。ambient 使用同一选择路径；无池的单工厂背景也每次重新编译。动作变体按家族保存最近两次索引，候选不足时先放宽最旧排除。安静短句原始权重为 40%，历史排除后重新归一化，实际占比不作 40% 保证。
+
+Director 按轴处理背景所有权：前景 absolute 接管同轴，前景 offset 保留背景基底，显式姿态/表情轴和 attention 优先。连续骨骼状态仍归现有弹簧；新日常变体通过关键姿态、停留和头身先后编排，减少重复内嵌弹性。当前既有夸张动作保留，尚未声称所有旧动作已经通过真实响应标定。
+
+Runtime 内的讲话行为只消费既有 VoiceLevelSink 的可听音频电平，口型合同及 Worker 消息不变。持续语音超过 500ms 后，能量变化/稳定语音机会可产生候选；每个合格候选 35% 触发，候选间隔至少 2.5 秒，强调持续 600～1100ms，仅使用头和躯干。显式前景、thinking、非中性姿态、闭眼或选定 ambient 抑制自动强调，候选不排队。reset、interrupt、safeStop、失焦、断连和模型换代清除讲话状态；模型换代还撤销旧目录执行与背景历史。停止释放新增状态。
+
+`mo:preview -- --scenario idle|speech|mixed [--offline] [--seed N]` 默认 seed=42，持续 5/3/2 分钟。场景在生产 Runtime 执行；离线场景不连接设备，不产生物理确认。speech/mixed 使用模拟电平且不播放音频；实际 TTS、装扮及空间组合必须另测。诊断输出短句选择、强调、抑制、交还和 clamp，不增加模型工具操作或常驻服务。
+
+本轮完成了真实 VTS 既有授权与 MO 身份核验，约一分钟的待机/模拟电平/curious/nod 注入探针；注入统计快照为 sent=3295、accepted=3294、failed=0、dropped=0、filtered=0，最后一个请求在快照时尚未结算。读取了少量画面快照，可观察姿态变化与开口。该探针早于最后的增量基底修复，不构成最终版本完整验收；没有完成改造前后同构图连续录像、实际 TTS 音画同步或真人操纵质感验收。

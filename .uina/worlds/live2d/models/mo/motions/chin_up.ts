@@ -1,10 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“得意昂头高傲审视”（时长 2700ms 舒缓拉长）。
@@ -23,14 +18,14 @@ export const chinUp: ActionAuthoring = (rng) => {
 	const durationMs = 2700;
 	const time = timeline(durationMs);
 	const whole = time.span("start", "end");
-	const humWindow = (t: number): number => smoothstep5(420, 650, t) * (1 - smoothstep5(1750, 1950, t));
+	const humWindow = (t: number): number => smoothstep(420, 650, t) * (1 - smoothstep(1750, 1950, t));
 
 	// 1. 头部俯仰 (Pitch)：高高昂头至 +9.3°
 	const evaluateHeadPitch = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		// 0~420ms: 扬头起势
 		if (t < 420) {
-			const u = smoothstep5(60, 420, t);
+			const u = smoothstep(60, 420, t);
 			return 9.3 * gain * u;
 		}
 		// 420~1950ms: 超长得意自得轻哼定格 (足足 1500ms)
@@ -39,7 +34,7 @@ export const chinUp: ActionAuthoring = (rng) => {
 			return (9.3 + hum) * gain;
 		}
 		// 1950~2700ms: 缓和收回
-		const u = smoothstep5(1950, durationMs, t);
+		const u = smoothstep(1950, durationMs, t);
 		return 9.3 * gain * (1 - u);
 	};
 
@@ -58,7 +53,7 @@ export const chinUp: ActionAuthoring = (rng) => {
 	};
 
 	// 4. 身体晚80ms轻跟随，offset扣除头部跟随，保持挺胸而非整块后仰。
-	const bodyReturn = (t: number): number => 1 - smoothstep5(2450, durationMs, t);
+	const bodyReturn = (t: number): number => 1 - smoothstep(2450, durationMs, t);
 	const evaluateTorsoPitch = (t: number): number => {
 		return evaluateHeadPitch(t - 80) * 0.18 * bodyReturn(t) - evaluateHeadPitch(t);
 	};
@@ -72,7 +67,7 @@ export const chinUp: ActionAuthoring = (rng) => {
 	// 5. 眼神先于昂头向下审视，留出眼球边缘余量。
 	const evaluateGazeY = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		return -0.78 * smoothstep5(0, 300, t) * (1 - smoothstep5(1900, durationMs, t));
+		return -0.78 * smoothstep(0, 300, t) * (1 - smoothstep(1900, durationMs, t));
 	};
 
 	// 6. 狐狸眯眼笑：双眼笑眯至 0.32 (偏置 -0.68)
@@ -93,14 +88,15 @@ export const chinUp: ActionAuthoring = (rng) => {
 		if (t < 420) return 0;
 		if (t < 1950) {
 			const hum = 0.08 * Math.sin(((t - 420) / 1000) * 2 * Math.PI * 1.5) * humWindow(t);
-			return Math.max(0, (0.16 + hum) * smoothstep5(420, 620, t) * gain);
+			return Math.max(0, (0.16 + hum) * smoothstep(420, 620, t) * gain);
 		}
-		const u = smoothstep5(1950, 2400, t);
+		const u = smoothstep(1950, 2400, t);
 		return 0.16 * gain * (1 - u);
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.pitch": offset(during(whole, evaluateHeadPitch)),
 			"head.roll": offset(during(whole, evaluateHeadRoll)),

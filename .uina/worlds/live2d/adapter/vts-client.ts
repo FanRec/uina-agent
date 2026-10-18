@@ -98,6 +98,10 @@ export class VTSClient {
 	getModelGeneration(): number {
 		return this.modelGeneration;
 	}
+	/** 连接代次：每次握手/重连/断线递增；跨代次的在途请求与捕获状态一律作废。 */
+	getConnectionGeneration(): number {
+		return this.connectionGeneration;
+	}
 
 	private readonly injectableParameters = new Set<string>();
 	private readonly filteredParamBuffer: VTSParamValue[] = [];
@@ -118,8 +122,9 @@ export class VTSClient {
 	private authDenied = false;
 	private validationPending?: Promise<boolean>;
 	private readonly injectionStats = { sent: 0, accepted: 0, failed: 0, dropped: 0, filtered: 0, lastAcceptedAt: 0 };
+	/** 注入统计：sent/accepted/failed/dropped/filtered 只描述注入结果；连接代次请用 getConnectionGeneration()。 */
 	getInjectionStats() {
-		return { ...this.injectionStats, generation: this.connectionGeneration };
+		return { ...this.injectionStats };
 	}
 	private readonly injectionObservations = new Map<string, InjectionObservation>();
 	/** A request captures its contributors at SEND time; a later ACK cannot credit a newer playback. */

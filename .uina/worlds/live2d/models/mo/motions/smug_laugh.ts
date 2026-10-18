@@ -1,10 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“经典大小姐·傲娇小恶魔嚯嚯嚯大笑”(Smug Laugh / Ohohoho，时长 2600ms)。
@@ -31,7 +26,7 @@ export const smugLaugh: ActionAuthoring = (rng) => {
 	const evaluateHeadPitch = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 450) {
-			const u = smoothstep5(0, 450, t);
+			const u = smoothstep(0, 450, t);
 			return 7.8 * gain * u;
 		}
 		if (t < 1950) {
@@ -41,7 +36,7 @@ export const smugLaugh: ActionAuthoring = (rng) => {
 			const env = Math.sin(Math.PI * u);
 			return (7.8 + 1.6 * laughPulse * env) * gain;
 		}
-		const u = smoothstep5(1950, durationMs, t);
+		const u = smoothstep(1950, durationMs, t);
 		return 7.8 * gain * (1 - u);
 	};
 
@@ -49,7 +44,7 @@ export const smugLaugh: ActionAuthoring = (rng) => {
 	const evaluateHeadRoll = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 450) {
-			const u = smoothstep5(0, 450, t);
+			const u = smoothstep(0, 450, t);
 			return 6.2 * sideDir * gain * u;
 		}
 		if (t < 1950) {
@@ -58,7 +53,7 @@ export const smugLaugh: ActionAuthoring = (rng) => {
 			const env = Math.sin(Math.PI * u);
 			return (6.2 + rollWave * env) * sideDir * gain;
 		}
-		const u = smoothstep5(1950, durationMs, t);
+		const u = smoothstep(1950, durationMs, t);
 		return 6.2 * sideDir * gain * (1 - u);
 	};
 
@@ -73,13 +68,13 @@ export const smugLaugh: ActionAuthoring = (rng) => {
 	const evaluateGazeY = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 450) {
-			const u = smoothstep5(0, 450, t);
+			const u = smoothstep(0, 450, t);
 			return -0.38 * u;
 		}
 		if (t < 1950) {
 			return -0.38;
 		}
-		const u = smoothstep5(1950, durationMs, t);
+		const u = smoothstep(1950, durationMs, t);
 		return -0.38 * (1 - u);
 	};
 
@@ -87,7 +82,7 @@ export const smugLaugh: ActionAuthoring = (rng) => {
 	const evaluateEyeOpen = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 400) {
-			const u = smoothstep5(0, 400, t);
+			const u = smoothstep(0, 400, t);
 			return -0.72 * gain * u;
 		}
 		if (t < 1950) {
@@ -96,7 +91,7 @@ export const smugLaugh: ActionAuthoring = (rng) => {
 			const flutter = 0.14 * Math.max(0, Math.sin(u * 5 * 2 * Math.PI)) * Math.sin(Math.PI * u);
 			return (-0.72 - flutter) * gain;
 		}
-		const u = smoothstep5(1950, durationMs, t);
+		const u = smoothstep(1950, durationMs, t);
 		return -0.72 * gain * (1 - u);
 	};
 
@@ -115,18 +110,19 @@ export const smugLaugh: ActionAuthoring = (rng) => {
 	const evaluateMouthForm = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 400) {
-			const u = smoothstep5(0, 400, t);
+			const u = smoothstep(0, 400, t);
 			return 0.95 * gain * u;
 		}
 		if (t < 2050) {
 			return 0.95 * gain;
 		}
-		const u = smoothstep5(2050, durationMs, t);
+		const u = smoothstep(2050, durationMs, t);
 		return 0.95 * gain * (1 - u);
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.pitch": offset(during(whole, evaluateHeadPitch)),
 			"head.roll": offset(during(whole, evaluateHeadRoll)),

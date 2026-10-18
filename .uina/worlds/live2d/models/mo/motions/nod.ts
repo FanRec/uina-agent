@@ -1,14 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-/**
- * 五次光滑阶跃函数 (Hermite Quintic S-Curve)
- * 具有连续的一阶与二阶导数 (C2 连续)，在端点处速度与加速度均为零。
- */
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“Q弹大深呼吸点头”（时长 1950ms）。
@@ -52,11 +43,11 @@ export const cuteNod: ActionAuthoring = (rng) => {
 		if (t < 700) {
 			if (t < 620) {
 				// 320~620ms 急速下潜
-				const u = smoothstep5(320, 620, t);
+				const u = smoothstep(320, 620, t);
 				return (3.2 + (-9.4 - 3.2) * u) * gain;
 			}
 			// 620~700ms 底谷驻留 (充足时间让外部物理弹簧吃满行程)
-			const dwellProgress = smoothstep5(620, 700, t);
+			const dwellProgress = smoothstep(620, 700, t);
 			return (-9.4 + 0.3 * dwellProgress) * gain;
 		}
 
@@ -75,7 +66,7 @@ export const cuteNod: ActionAuthoring = (rng) => {
 		const oscillation = decay * (amplitude * Math.cos(omega * bounceTimeSec) + ((initialVelocity + dampingRatio * omega * amplitude) / omega) * Math.sin(omega * bounceTimeSec));
 
 		// 终点加五次窗平滑淡出归零
-		const window = 1 - smoothstep5(0.7, 1.0, bounceTimeSec / totalBounceSec);
+		const window = 1 - smoothstep(0.7, 1.0, bounceTimeSec / totalBounceSec);
 		return oscillation * window * gain;
 	};
 
@@ -85,7 +76,7 @@ export const cuteNod: ActionAuthoring = (rng) => {
 	const evaluateTorsoPitch = (t: number): number => {
 		const head = evaluateHeadPitch(t);
 		// 身体保持稳定支撑，甚至在头用力深扎时提供反向微耸挺立
-		return evaluateHeadPitch(bodyTime(t)) * 0.18 + 0.3 * smoothstep5(-3, -6, head) - head;
+		return evaluateHeadPitch(bodyTime(t)) * 0.18 + 0.3 * smoothstep(-3, -6, head) - head;
 	};
 
 	// --- 3. 头部倾斜萌态耦合 (Head Roll Coupling) ---
@@ -95,8 +86,8 @@ export const cuteNod: ActionAuthoring = (rng) => {
 		const head = evaluateHeadPitch(t);
 		const deepLean = Math.max(0, -head) * 0.48; // 低头产生的主侧倾 (达 4.5° 左右)
 		const dynamicSway = (head > 0 ? head * 0.35 : 0) * Math.cos((Math.PI * t) / 900);
-		const window = 1 - smoothstep5(1500, durationMs, t);
-		const accent = 0.6 * smoothstep5(140, 280, t) * (1 - smoothstep5(1320, 1500, t));
+		const window = 1 - smoothstep(1500, durationMs, t);
+		const accent = 0.6 * smoothstep(140, 280, t) * (1 - smoothstep(1320, 1500, t));
 		return (deepLean + dynamicSway + accent) * rollScale * window;
 	};
 
@@ -111,7 +102,7 @@ export const cuteNod: ActionAuthoring = (rng) => {
 		const head = evaluateHeadPitch(t);
 		// 头仰视线下压 (-0.25)，头深低目光顺从微垂 (+0.30)，回弹重新直视
 		const target = head > 0 ? -head * 0.075 : -head * 0.033;
-		const window = 1 - smoothstep5(1600, durationMs, t);
+		const window = 1 - smoothstep(1600, durationMs, t);
 		return target * gain * window;
 	};
 
@@ -120,23 +111,24 @@ export const cuteNod: ActionAuthoring = (rng) => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const head = evaluateHeadPitch(t);
 		// 头部下潜越深，眼睛自然被笑肌挤压成弯弯月牙 (最深处 offset 达 -0.92，仅剩 0.08)
-		const squintIntensity = smoothstep5(1.0, -8.5, head);
+		const squintIntensity = smoothstep(1.0, -8.5, head);
 		// 二次小点头时 (1250~1450ms) 附加一次可爱的轻眨眼点缀
 		const secondWink = t > 1250 && t < 1450 ? 0.35 * Math.sin(((t - 1250) / 200) * Math.PI) ** 2 : 0;
 		const totalSquint = Math.min(0.93, squintIntensity * 0.92 + secondWink);
-		return -totalSquint * gain * smoothstep5(0, 120, t) * (1 - smoothstep5(durationMs - 200, durationMs, t));
+		return -totalSquint * gain * smoothstep(0, 120, t) * (1 - smoothstep(durationMs - 200, durationMs, t));
 	};
 
 	// --- 7. 嘴角笑容程序化包络 (Mouth Form Envelope) ---
 	const evaluateMouthForm = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		const attack = smoothstep5(0, 600, t); // 快速展颜微笑
-		const decay = 1 - smoothstep5(1400, durationMs, t); // 舒缓淡出
+		const attack = smoothstep(0, 600, t); // 快速展颜微笑
+		const decay = 1 - smoothstep(1400, durationMs, t); // 舒缓淡出
 		return 0.88 * gain * attack * decay;
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.pitch": offset(during(whole, evaluateHeadPitch)),
 			"torso.pitch": offset(during(whole, evaluateTorsoPitch)),
@@ -173,10 +165,10 @@ export const cuteNodCheerfulVariant: ActionAuthoring = (rng) => {
 		}
 		if (t < 640) {
 			if (t < 560) {
-				const u = smoothstep5(280, 560, t);
+				const u = smoothstep(280, 560, t);
 				return (3.5 + (-9.6 - 3.5) * u) * gain;
 			}
-			return (-9.6 + 0.3 * smoothstep5(560, 640, t)) * gain;
+			return (-9.6 + 0.3 * smoothstep(560, 640, t)) * gain;
 		}
 		const bounceTimeSec = (t - 640) / 1000;
 		const totalBounceSec = (durationMs - 640) / 1000;
@@ -186,13 +178,13 @@ export const cuteNodCheerfulVariant: ActionAuthoring = (rng) => {
 		const initialVelocity = 0;
 		const amplitude = -9.3;
 		const oscillation = decay * (amplitude * Math.cos(omega * bounceTimeSec) + ((initialVelocity + dampingRatio * omega * amplitude) / omega) * Math.sin(omega * bounceTimeSec));
-		const window = 1 - smoothstep5(0.72, 1.0, bounceTimeSec / totalBounceSec);
+		const window = 1 - smoothstep(0.72, 1.0, bounceTimeSec / totalBounceSec);
 		return oscillation * window * gain;
 	};
 
 	const evaluateTorsoPitch = (t: number): number => {
 		const head = evaluateHeadPitch(t);
-		return evaluateHeadPitch(bodyTime(t)) * 0.18 + 0.35 * smoothstep5(-3, -6, head) - head;
+		return evaluateHeadPitch(bodyTime(t)) * 0.18 + 0.35 * smoothstep(-3, -6, head) - head;
 	};
 
 	const evaluateHeadRoll = (t: number): number => {
@@ -200,8 +192,8 @@ export const cuteNodCheerfulVariant: ActionAuthoring = (rng) => {
 		const head = evaluateHeadPitch(t);
 		const deepLean = Math.max(0, -head) * 0.52;
 		const dynamicSway = (head > 0 ? head * 0.38 : 0) * Math.cos((Math.PI * t) / 800);
-		const window = 1 - smoothstep5(1400, durationMs, t);
-		const accent = 0.7 * smoothstep5(120, 250, t) * (1 - smoothstep5(1220, 1400, t));
+		const window = 1 - smoothstep(1400, durationMs, t);
+		const accent = 0.7 * smoothstep(120, 250, t) * (1 - smoothstep(1220, 1400, t));
 		return (deepLean + dynamicSway + accent) * rollScale * window;
 	};
 
@@ -211,27 +203,28 @@ export const cuteNodCheerfulVariant: ActionAuthoring = (rng) => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const head = evaluateHeadPitch(t);
 		const target = head > 0 ? -head * 0.08 : -head * 0.035;
-		const window = 1 - smoothstep5(1500, durationMs, t);
+		const window = 1 - smoothstep(1500, durationMs, t);
 		return target * gain * window;
 	};
 
 	const evaluateEyeOpen = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const head = evaluateHeadPitch(t);
-		const squint = smoothstep5(1.0, -8.5, head) * 0.94;
+		const squint = smoothstep(1.0, -8.5, head) * 0.94;
 		const secondWink = t > 1150 && t < 1350 ? 0.38 * Math.sin(((t - 1150) / 200) * Math.PI) ** 2 : 0;
-		return -Math.min(0.94, squint + secondWink) * gain * smoothstep5(0, 120, t) * (1 - smoothstep5(durationMs - 200, durationMs, t));
+		return -Math.min(0.94, squint + secondWink) * gain * smoothstep(0, 120, t) * (1 - smoothstep(durationMs - 200, durationMs, t));
 	};
 
 	const evaluateMouthForm = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		const attack = smoothstep5(0, 520, t);
-		const decay = 1 - smoothstep5(1350, durationMs, t);
+		const attack = smoothstep(0, 520, t);
+		const decay = 1 - smoothstep(1350, durationMs, t);
 		return 0.92 * gain * attack * decay;
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.pitch": offset(during(whole, evaluateHeadPitch)),
 			"torso.pitch": offset(during(whole, evaluateTorsoPitch)),

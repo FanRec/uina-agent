@@ -1,10 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“爆发式干脆超大甩头 赌气定格 偷瞄抓包 傲娇回正”（时长 3000ms）。
@@ -38,18 +33,18 @@ export const headToss: ActionAuthoring = (rng) => {
 	const evaluateHeadYaw = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 135) {
-			const u = smoothstep5(0, 135, t);
+			const u = smoothstep(0, 135, t);
 			return peakYaw * u;
 		}
 		if (t < 190) {
-			const v = smoothstep5(135, 190, t);
+			const v = smoothstep(135, 190, t);
 			return peakYaw - (peakYaw - holdYaw) * v;
 		}
 		if (t < 1950) {
-			const p = smoothstep5(190, 1950, t);
+			const p = smoothstep(190, 1950, t);
 			return holdYaw - (holdYaw - settleYaw) * p;
 		}
-		const u = smoothstep5(1950, durationMs, t);
+		const u = smoothstep(1950, durationMs, t);
 		return settleYaw * (1 - u);
 	};
 
@@ -61,18 +56,18 @@ export const headToss: ActionAuthoring = (rng) => {
 	const evaluateHeadPitch = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 135) {
-			const u = smoothstep5(0, 135, t);
+			const u = smoothstep(0, 135, t);
 			return peakPitch * u;
 		}
 		if (t < 190) {
-			const v = smoothstep5(135, 190, t);
+			const v = smoothstep(135, 190, t);
 			return peakPitch - (peakPitch - holdPitch) * v;
 		}
 		if (t < 1950) {
-			const p = smoothstep5(190, 1950, t);
+			const p = smoothstep(190, 1950, t);
 			return holdPitch - (holdPitch - settlePitch) * p;
 		}
-		const u = smoothstep5(1950, durationMs, t);
+		const u = smoothstep(1950, durationMs, t);
 		return settlePitch * (1 - u);
 	};
 
@@ -84,23 +79,23 @@ export const headToss: ActionAuthoring = (rng) => {
 	const evaluateHeadRoll = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 135) {
-			const u = smoothstep5(0, 135, t);
+			const u = smoothstep(0, 135, t);
 			return peakRoll * u;
 		}
 		if (t < 190) {
-			const v = smoothstep5(135, 190, t);
+			const v = smoothstep(135, 190, t);
 			return peakRoll - (peakRoll - holdRoll) * v;
 		}
 		if (t < 1950) {
-			const p = smoothstep5(190, 1950, t);
+			const p = smoothstep(190, 1950, t);
 			return holdRoll - (holdRoll - settleRoll) * p;
 		}
-		const u = smoothstep5(1950, durationMs, t);
+		const u = smoothstep(1950, durationMs, t);
 		return settleRoll * (1 - u);
 	};
 
 	// 4. 身体晚70ms轻轻反扭，保留甩头力度但不把整个上身一起甩出去。
-	const bodyReturn = (t: number): number => 1 - smoothstep5(2750, durationMs, t);
+	const bodyReturn = (t: number): number => 1 - smoothstep(2750, durationMs, t);
 	const evaluateTorsoYaw = (t: number): number => {
 		return -evaluateHeadYaw(t - 70) * 0.16 * bodyReturn(t) - evaluateHeadYaw(t);
 	};
@@ -116,12 +111,12 @@ export const headToss: ActionAuthoring = (rng) => {
 		if (t <= 0 || t >= durationMs) return 0;
 		// 眼睛先在90ms内甩开，头部随后到达峰值。
 		if (t < 950) {
-			const u = smoothstep5(0, 90, t);
+			const u = smoothstep(0, 90, t);
 			return 0.82 * turnDir * u;
 		}
 		// 950~1120ms 眼球闪电眼跳反转抓包观众！
 		if (t < 1120) {
-			const u = smoothstep5(950, 1120, t);
+			const u = smoothstep(950, 1120, t);
 			return (0.82 + (-0.82 - 0.82) * u) * turnDir;
 		}
 		// 1120~1850ms 偷瞄观众。
@@ -130,7 +125,7 @@ export const headToss: ActionAuthoring = (rng) => {
 		}
 		// 1850~2100ms 视线快速回中
 		if (t < 2100) {
-			const u = smoothstep5(1850, 2100, t);
+			const u = smoothstep(1850, 2100, t);
 			return -0.82 * turnDir * (1 - u);
 		}
 		return 0;
@@ -139,7 +134,7 @@ export const headToss: ActionAuthoring = (rng) => {
 	// 6. 偷瞄被抓包瞬间的惊慌小眨眼 (1350~1550ms)
 	const evaluateEyeOpen = (t: number): number => {
 		if (t >= 1350 && t < 1550) {
-			const u = t < 1450 ? smoothstep5(1350, 1450, t) : 1 - smoothstep5(1450, 1550, t);
+			const u = t < 1450 ? smoothstep(1350, 1450, t) : 1 - smoothstep(1450, 1550, t);
 			return -0.75 * u;
 		}
 		return 0;
@@ -148,17 +143,18 @@ export const headToss: ActionAuthoring = (rng) => {
 	// 7. 嘴角表情：前期傲娇嘟嘴，偷瞄抓包时羞恼紧绷 (0.42)，收正时淡出
 	const evaluateMouthForm = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		if (t < 1100) return 0.22 * gain * smoothstep5(0, 180, t);
+		if (t < 1100) return 0.22 * gain * smoothstep(0, 180, t);
 		if (t < 2000) {
-			const p = smoothstep5(1100, 1300, t) * (1 - smoothstep5(1800, 2000, t));
+			const p = smoothstep(1100, 1300, t) * (1 - smoothstep(1800, 2000, t));
 			return (0.22 + 0.42 * p) * gain;
 		}
-		const u = smoothstep5(2000, durationMs, t);
+		const u = smoothstep(2000, durationMs, t);
 		return 0.22 * gain * (1 - u);
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.yaw": offset(during(whole, evaluateHeadYaw)),
 			"head.pitch": offset(during(whole, evaluateHeadPitch)),
@@ -193,18 +189,18 @@ export const headTossPoutVariant: ActionAuthoring = (rng) => {
 	const evaluateHeadYaw = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 135) {
-			const u = smoothstep5(0, 135, t);
+			const u = smoothstep(0, 135, t);
 			return peakYaw * u;
 		}
 		if (t < 190) {
-			const v = smoothstep5(135, 190, t);
+			const v = smoothstep(135, 190, t);
 			return peakYaw - (peakYaw - holdYaw) * v;
 		}
 		if (t < 1850) {
-			const p = smoothstep5(190, 1850, t);
+			const p = smoothstep(190, 1850, t);
 			return holdYaw - (holdYaw - settleYaw) * p;
 		}
-		const u = smoothstep5(1850, durationMs, t);
+		const u = smoothstep(1850, durationMs, t);
 		return settleYaw * (1 - u);
 	};
 
@@ -215,18 +211,18 @@ export const headTossPoutVariant: ActionAuthoring = (rng) => {
 	const evaluateHeadPitch = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 135) {
-			const u = smoothstep5(0, 135, t);
+			const u = smoothstep(0, 135, t);
 			return peakPitch * u;
 		}
 		if (t < 190) {
-			const v = smoothstep5(135, 190, t);
+			const v = smoothstep(135, 190, t);
 			return peakPitch - (peakPitch - holdPitch) * v;
 		}
 		if (t < 1850) {
-			const p = smoothstep5(190, 1850, t);
+			const p = smoothstep(190, 1850, t);
 			return holdPitch - (holdPitch - settlePitch) * p;
 		}
-		const u = smoothstep5(1850, durationMs, t);
+		const u = smoothstep(1850, durationMs, t);
 		return settlePitch * (1 - u);
 	};
 
@@ -237,22 +233,22 @@ export const headTossPoutVariant: ActionAuthoring = (rng) => {
 	const evaluateHeadRoll = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 135) {
-			const u = smoothstep5(0, 135, t);
+			const u = smoothstep(0, 135, t);
 			return peakRoll * u;
 		}
 		if (t < 190) {
-			const v = smoothstep5(135, 190, t);
+			const v = smoothstep(135, 190, t);
 			return peakRoll - (peakRoll - holdRoll) * v;
 		}
 		if (t < 1850) {
-			const p = smoothstep5(190, 1850, t);
+			const p = smoothstep(190, 1850, t);
 			return holdRoll - (holdRoll - settleRoll) * p;
 		}
-		const u = smoothstep5(1850, durationMs, t);
+		const u = smoothstep(1850, durationMs, t);
 		return settleRoll * (1 - u);
 	};
 
-	const bodyReturn = (t: number): number => 1 - smoothstep5(2750, durationMs, t);
+	const bodyReturn = (t: number): number => 1 - smoothstep(2750, durationMs, t);
 	const evaluateTorsoYaw = (t: number): number => -evaluateHeadYaw(t - 70) * 0.16 * bodyReturn(t) - evaluateHeadYaw(t);
 	const evaluateTorsoRoll = (t: number): number => -evaluateHeadRoll(t - 70) * 0.12 * bodyReturn(t) - evaluateHeadRoll(t);
 	const evaluateTorsoPitch = (t: number): number => evaluateHeadPitch(t - 70) * 0.14 * bodyReturn(t) - evaluateHeadPitch(t);
@@ -260,18 +256,18 @@ export const headTossPoutVariant: ActionAuthoring = (rng) => {
 	const evaluateGazeX = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 950) {
-			const u = smoothstep5(0, 90, t);
+			const u = smoothstep(0, 90, t);
 			return 0.82 * turnDir * u;
 		}
 		if (t < 1120) {
-			const u = smoothstep5(950, 1120, t);
+			const u = smoothstep(950, 1120, t);
 			return (0.82 + (-0.82 - 0.82) * u) * turnDir;
 		}
 		if (t < 1850) {
 			return -0.82 * turnDir;
 		}
 		if (t < 2100) {
-			const u = smoothstep5(1850, 2100, t);
+			const u = smoothstep(1850, 2100, t);
 			return -0.82 * turnDir * (1 - u);
 		}
 		return 0;
@@ -279,7 +275,7 @@ export const headTossPoutVariant: ActionAuthoring = (rng) => {
 
 	const evaluateEyeOpen = (t: number): number => {
 		if (t >= 1350 && t < 1550) {
-			const u = t < 1450 ? smoothstep5(1350, 1450, t) : 1 - smoothstep5(1450, 1550, t);
+			const u = t < 1450 ? smoothstep(1350, 1450, t) : 1 - smoothstep(1450, 1550, t);
 			return -0.75 * u;
 		}
 		return 0;
@@ -288,23 +284,24 @@ export const headTossPoutVariant: ActionAuthoring = (rng) => {
 	// 气鼓鼓小撅嘴
 	const evaluateMouthForm = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		if (t < 1850) return 0.18 * gain * smoothstep5(0, 180, t);
-		const u = smoothstep5(1850, durationMs, t);
+		if (t < 1850) return 0.18 * gain * smoothstep(0, 180, t);
+		const u = smoothstep(1850, durationMs, t);
 		return 0.18 * gain * (1 - u);
 	};
 
 	const evaluateMouthOpen = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 1850) {
-			const u = smoothstep5(0, 135, t);
+			const u = smoothstep(0, 135, t);
 			return 0.14 * gain * u;
 		}
-		const u = smoothstep5(1850, durationMs, t);
+		const u = smoothstep(1850, durationMs, t);
 		return 0.14 * gain * (1 - u);
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.yaw": offset(during(whole, evaluateHeadYaw)),
 			"head.pitch": offset(during(whole, evaluateHeadPitch)),

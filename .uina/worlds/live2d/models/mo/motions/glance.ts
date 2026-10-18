@@ -1,10 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“眼动先行暗中斜睨偷瞄”（时长 1200ms）。
@@ -33,13 +28,13 @@ export const glance: ActionAuthoring = (rng) => {
 	const evaluateGazeX = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 80) {
-			const u = smoothstep5(0, 80, t);
+			const u = smoothstep(0, 80, t);
 			return 0.82 * sideDir * u;
 		}
 		if (t < 850) {
 			return 0.82 * sideDir;
 		}
-		const u = smoothstep5(850, 1100, t);
+		const u = smoothstep(850, 1100, t);
 		return 0.82 * sideDir * (1 - u);
 	};
 
@@ -54,13 +49,13 @@ export const glance: ActionAuthoring = (rng) => {
 	const evaluateHeadPitch = (t: number): number => {
 		if (t < 60 || t >= durationMs) return 0;
 		if (t < 240) {
-			const u = smoothstep5(60, 240, t);
+			const u = smoothstep(60, 240, t);
 			return -4.5 * gain * u;
 		}
 		if (t < 850) {
 			return -4.5 * gain;
 		}
-		const u = smoothstep5(850, durationMs, t);
+		const u = smoothstep(850, durationMs, t);
 		return -4.5 * gain * (1 - u);
 	};
 
@@ -68,13 +63,13 @@ export const glance: ActionAuthoring = (rng) => {
 	const evaluateHeadYaw = (t: number): number => {
 		if (t < 60 || t >= durationMs) return 0;
 		if (t < 240) {
-			const u = smoothstep5(60, 240, t);
+			const u = smoothstep(60, 240, t);
 			return 4.8 * sideDir * gain * u;
 		}
 		if (t < 850) {
 			return 4.8 * sideDir * gain;
 		}
-		const u = smoothstep5(850, durationMs, t);
+		const u = smoothstep(850, durationMs, t);
 		return 4.8 * sideDir * gain * (1 - u);
 	};
 
@@ -85,7 +80,7 @@ export const glance: ActionAuthoring = (rng) => {
 	};
 
 	// 6. 眼睛先行、头部跟上之后，身体再晚80ms小幅跟随。
-	const bodyReturn = (t: number): number => 1 - smoothstep5(1000, durationMs, t);
+	const bodyReturn = (t: number): number => 1 - smoothstep(1000, durationMs, t);
 	const evaluateTorsoYaw = (t: number): number => {
 		return evaluateHeadYaw(t - 80) * 0.12 * bodyReturn(t) - evaluateHeadYaw(t);
 	};
@@ -100,13 +95,13 @@ export const glance: ActionAuthoring = (rng) => {
 	const evaluateEyeOpen = (t: number): number => {
 		if (t < 100 || t >= 1050) return 0;
 		if (t < 250) {
-			const u = smoothstep5(100, 250, t);
+			const u = smoothstep(100, 250, t);
 			return -0.32 * gain * u;
 		}
 		if (t < 850) {
 			return -0.32 * gain;
 		}
-		const u = smoothstep5(850, 1050, t);
+		const u = smoothstep(850, 1050, t);
 		return -0.32 * gain * (1 - u);
 	};
 
@@ -119,6 +114,7 @@ export const glance: ActionAuthoring = (rng) => {
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"gaze.x": offset(during(whole, evaluateGazeX)),
 			"gaze.y": offset(during(whole, evaluateGazeY)),
@@ -153,24 +149,24 @@ export const glanceDoubleTakeVariant: ActionAuthoring = (rng) => {
 		if (t <= 0 || t >= durationMs) return 0;
 		// 第一次随性偷看
 		if (t < 350) {
-			const u = smoothstep5(0, 150, t);
+			const u = smoothstep(0, 150, t);
 			return 0.75 * sideDir * u;
 		}
 		// 若无其事溜回中线
 		if (t < 750) {
-			const u = smoothstep5(350, 650, t);
+			const u = smoothstep(350, 650, t);
 			return 0.75 * sideDir * (1 - u);
 		}
 		if (t < 850) return 0;
 		// 第二次猛然双重回看 (Double Take!) 极速甩满
 		if (t < 1000) {
-			const u = smoothstep5(850, 1000, t);
+			const u = smoothstep(850, 1000, t);
 			return 0.82 * sideDir * u;
 		}
 		if (t < 1750) {
 			return 0.82 * sideDir;
 		}
-		const u = smoothstep5(1750, 2200, t);
+		const u = smoothstep(1750, 2200, t);
 		return 0.82 * sideDir * (1 - u);
 	};
 
@@ -184,30 +180,30 @@ export const glanceDoubleTakeVariant: ActionAuthoring = (rng) => {
 	const evaluateHeadYaw = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 750) {
-			const attack = smoothstep5(50, 220, t);
-			const decay = 1 - smoothstep5(400, 700, t);
+			const attack = smoothstep(50, 220, t);
+			const decay = 1 - smoothstep(400, 700, t);
 			return 2.8 * sideDir * gain * attack * decay;
 		}
 		if (t < 880) return 0;
 		if (t < 1120) {
-			const u = smoothstep5(880, 1120, t);
+			const u = smoothstep(880, 1120, t);
 			return 7.2 * sideDir * gain * u;
 		}
 		if (t < 1750) {
 			return 7.2 * sideDir * gain;
 		}
-		const u = smoothstep5(1750, durationMs, t);
+		const u = smoothstep(1750, durationMs, t);
 		return 7.2 * sideDir * gain * (1 - u);
 	};
 
 	// 3. 头部俯仰：缩颈 (-3.8°)
 	const evaluateHeadPitch = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		if (t < 750) return -2.0 * gain * smoothstep5(50, 220, t) * (1 - smoothstep5(400, 700, t));
+		if (t < 750) return -2.0 * gain * smoothstep(50, 220, t) * (1 - smoothstep(400, 700, t));
 		if (t < 880) return 0;
-		if (t < 1120) return -3.8 * gain * smoothstep5(880, 1120, t);
+		if (t < 1120) return -3.8 * gain * smoothstep(880, 1120, t);
 		if (t < 1750) return -3.8 * gain;
-		const u = smoothstep5(1750, durationMs, t);
+		const u = smoothstep(1750, durationMs, t);
 		return -3.8 * gain * (1 - u);
 	};
 
@@ -215,7 +211,7 @@ export const glanceDoubleTakeVariant: ActionAuthoring = (rng) => {
 	const evaluateHeadRoll = (t: number): number => -evaluateHeadYaw(t) * 0.72;
 
 	// 5. 两次回看都保留身体相对头部的80ms迟滞。
-	const bodyReturn = (t: number): number => 1 - smoothstep5(2200, durationMs, t);
+	const bodyReturn = (t: number): number => 1 - smoothstep(2200, durationMs, t);
 	const evaluateTorsoYaw = (t: number): number => evaluateHeadYaw(t - 80) * 0.12 * bodyReturn(t) - evaluateHeadYaw(t);
 	const evaluateTorsoPitch = (t: number): number => evaluateHeadPitch(t - 80) * 0.12 * bodyReturn(t) - evaluateHeadPitch(t);
 	const evaluateTorsoRoll = (t: number): number => evaluateHeadRoll(t - 80) * 0.15 * bodyReturn(t) - evaluateHeadRoll(t);
@@ -223,7 +219,7 @@ export const glanceDoubleTakeVariant: ActionAuthoring = (rng) => {
 	// 6. 双眼表情：第二次抓包后心虚眨眼 (1800~2050ms)
 	const evaluateEyeOpen = (t: number): number => {
 		if (t >= 1800 && t < 2050) {
-			const u = t < 1925 ? smoothstep5(1800, 1925, t) : 1 - smoothstep5(1925, 2050, t);
+			const u = t < 1925 ? smoothstep(1800, 1925, t) : 1 - smoothstep(1925, 2050, t);
 			return -0.85 * u;
 		}
 		return 0;
@@ -232,15 +228,16 @@ export const glanceDoubleTakeVariant: ActionAuthoring = (rng) => {
 	// 7. 嘴角表情：前期狡黠微抿，抓包后羞涩微笑
 	const evaluateMouthForm = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		if (t < 750) return 0.35 * gain * smoothstep5(50, 250, t) * (1 - smoothstep5(400, 700, t));
+		if (t < 750) return 0.35 * gain * smoothstep(50, 250, t) * (1 - smoothstep(400, 700, t));
 		if (t < 880) return 0;
-		if (t < 1750) return 0.52 * gain * smoothstep5(880, 1150, t);
-		const u = smoothstep5(1750, durationMs, t);
+		if (t < 1750) return 0.52 * gain * smoothstep(880, 1150, t);
+		const u = smoothstep(1750, durationMs, t);
 		return 0.52 * gain * (1 - u);
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"gaze.x": offset(during(whole, evaluateGazeX)),
 			"gaze.y": offset(during(whole, evaluateGazeY)),

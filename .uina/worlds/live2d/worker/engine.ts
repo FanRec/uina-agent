@@ -149,11 +149,16 @@ export function attachEngine(
 			sync();
 			return null;
 		},
+		"endpoint.setFocus": async ({ focused }) => {
+			if (phase !== "running" && phase !== "starting") return { focused: false };
+			requireRuntime().setFocused(focused);
+			sync();
+			return { focused };
+		},
 	};
 	const fires: Fires = {
 		"endpoint.emitCue": ({ cueId }) => requireRuntime().endpoint.emitCue(cueId),
 		"endpoint.interrupt": () => requireRuntime().interrupt(),
-		"endpoint.onFocus": ({ focused }) => requireRuntime().setFocused(focused),
 		"level.process": (level) => requireRuntime().levelSink?.processLevel(level),
 		"level.reset": () => requireRuntime().levelSink?.reset(),
 	};
@@ -206,11 +211,7 @@ export function attachEngine(
 			else if (message.t === "worldAbort") beginClosing(message.reason);
 			else if (message.t === "hostEvent") {
 				if (phase === "running") onHostEvent?.(message.event);
-			} else if (
-				message.t === "fire" &&
-				(phase === "running" || (phase === "starting" && message.op === "endpoint.onFocus" && runtime))
-			)
-				fire(message);
+			} else if (message.t === "fire" && phase === "running") fire(message);
 		},
 	};
 }

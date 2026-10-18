@@ -321,6 +321,29 @@ export class MotionDirector {
 		return this.attention?.target;
 	}
 
+	/** Read-only local admission facts for automatic performance, not device evidence. */
+	getPerformanceState(): { foreground: boolean; nonNeutralPosture: boolean; eyesClosed: boolean } {
+		const slot = this.slots.posture;
+		return {
+			eyesClosed: ["eyes.left.open", "eyes.right.open"].some((axis) =>
+				["posture", "expression"].some((name) => {
+					const state = this.slots[name as "posture" | "expression"];
+					const target = state.transitions.get(axis)?.to ?? state.values.get(axis);
+					return target !== undefined && target <= 0.05;
+				}),
+			),
+			foreground: this.playbacks.some(
+				(p) => !p.background && (p.state === "playing" || p.state === "releasing" || p.state === "cancelling"),
+			),
+			nonNeutralPosture: [...new Set([...slot.values.keys(), ...slot.transitions.keys()])].some(
+				(axis) =>
+					Math.abs(
+						(slot.transitions.get(axis)?.to ?? slot.values.get(axis) ?? this.neutral[axis]!) - this.neutral[axis]!,
+					) > 1e-6,
+			),
+		};
+	}
+
 	private setSlot(
 		name: "posture" | "expression",
 		values: Readonly<Record<string, number>>,
@@ -743,17 +766,22 @@ export class MotionDirector {
 		}
 
 		// 持续背景的时间照常推进；权重在前景进出时独立变化。
-		const foregroundBodyMotion = this.playbacks.some(
-			(p) =>
-				!p.background &&
-				p.state === "playing" &&
-				p.priority >= CATEGORY_PRIORITY.voluntary &&
-				p.clip.axes.some((axis) => axis.startsWith("head.") || axis.startsWith("torso.")),
+		const foregroundAxes = new Set(
+			this.playbacks.filter((p) => !p.background && p.state === "playing").flatMap((p) => [...p.overrideAxes]),
 		);
+		const explicitAxes = new Set([
+			...this.slots.posture.values.keys(),
+			...this.slots.posture.transitions.keys(),
+			...this.slots.expression.values.keys(),
+			...this.slots.expression.transitions.keys(),
+		]);
+		const backgroundBlocked = (axis: string) =>
+			foregroundAxes.has(axis) || explicitAxes.has(axis) || (axis.startsWith("gaze.") && this.attention !== undefined);
+
 		const thinking = this.playbacks.some((p) => p.background && p.category === "transition" && p.state === "playing");
 		for (const p of this.playbacks) {
 			if (!p.background) continue;
-			const suppressed = foregroundBodyMotion || (p.category === "autonomic" && thinking);
+			const suppressed = p.category === "autonomic" && thinking;
 			p.backgroundWeight = suppressed
 				? Math.max(0, p.backgroundWeight - dt / 200)
 				: Math.min(1, p.backgroundWeight + dt / 450);
@@ -783,6 +811,7 @@ export class MotionDirector {
 			// 退场中（releasing/cancelling）已交还控制权，不再是候选；handoff 淡出负责连续性。
 			if (playback.state !== "playing" || playback.backgroundWeight <= 0) continue;
 			for (const axis of playback.overrideAxes) {
+				if (playback.background && backgroundBlocked(axis)) continue;
 				const list = candidates.get(axis) ?? [];
 				list.push({ priority: playback.priority, seq: playback.seq, playback });
 				candidates.set(axis, list);
@@ -843,23 +872,48 @@ export class MotionDirector {
 		}
 
 		// 6. Additive 层：独立叠加 ΔX，永不抢占（A17.1）；受增量抑制遮罩约束。
-		const posture = this.slotComposite();
 		const torsoOffsets = new Map<string, number>();
+		// clip 声明 torso: "absolute" 的轴不再叠加头跟随；由该动作独占目标角。
+		const absoluteTorso = new Set<string>();
 		for (const playback of this.playbacks) {
 			if (!playback.additiveAxes.size) continue;
 			const sampled = sampledActions.get(playback)!;
-			const headScale = this.headroomScale(playback.clip, posture);
+			const headScale = this.headroomScale(playback.clip, frame);
 			for (const axis of playback.additiveAxes) {
+				if (playback.background && backgroundBlocked(axis)) continue;
 				const maskPriority = inhibitMask.get(axis);
 				if (maskPriority !== undefined && playback.priority < maskPriority) continue;
-				const scale = axis.startsWith("head.") ? headScale : 1;
+				const relativeTorso =
+					axis.startsWith("torso.") &&
+					playback.clip.torso === "head-relative" &&
+					candidates.get(axis)?.[0]?.playback?.background === true;
+				const headAxis = `head.${axis.slice("torso.".length)}`;
+				// A head-relative authored correction assumes head-follow. An absolute background torso
+				// replaces that base, so include this gesture's own head delta before adding its correction.
+				const headDelta =
+					relativeTorso && sampled[headAxis] !== undefined
+						? sampled[headAxis]! - (playback.baseline[headAxis] ?? this.neutral[headAxis]!)
+						: 0;
+				let scale = axis.startsWith("head.") || relativeTorso ? headScale : 1;
+				const channel = playback.clip.channels.find((c) => c.axis === axis)!;
+				if (!axis.startsWith("head.") && !axis.startsWith("torso.") && channel.extents) {
+					const control = this.controls[axis]!;
+					const base = frame[axis] ?? control.neutral;
+					if (channel.extents.max > 0) scale = Math.min(scale, (control.max - base) / channel.extents.max);
+					if (channel.extents.min < 0) scale = Math.min(scale, (control.min - base) / channel.extents.min);
+					scale = Math.max(0, scale);
+				}
 				const delta =
-					(sampled[axis]! - (playback.baseline[axis] ?? this.neutral[axis]!)) *
+					(sampled[axis]! - (playback.baseline[axis] ?? this.neutral[axis]!) + headDelta) *
 					scale *
 					this.lifeWeight(playback) *
 					playback.backgroundWeight;
 				frame[axis] = (frame[axis] ?? this.neutral[axis]!) + delta;
-				if (axis.startsWith("torso.")) torsoOffsets.set(axis, (torsoOffsets.get(axis) ?? 0) + delta);
+				// 躯干增量的归属由 clip 的显式声明决定（ActionPlan.torso），不再靠"所有 offset 都是相对头"的隐式约定。
+				if (axis.startsWith("torso.")) {
+					if (playback.clip.torso === "absolute") absoluteTorso.add(axis);
+					else torsoOffsets.set(axis, (torsoOffsets.get(axis) ?? 0) + delta);
+				}
 				if (Math.abs(delta) > 1e-8) this.recordContribution(playback.id, axis);
 			}
 		}
@@ -883,11 +937,17 @@ export class MotionDirector {
 			}
 		}
 		// Default upper-body articulation follows the head's composed target. Authored absolute torso
-		// tracks and slot values claim their own axis; baseline-offset torso tracks remain offsets from
-		// the head-follow target, so head-only legacy gestures keep moving the body naturally.
+		// tracks, slot values, and clips declaring `torso: "absolute"` claim their own axis; the rest are
+		// offsets from the head-follow target, so head-only legacy gestures keep moving the body naturally.
 		for (const torsoAxis of torsoAxes) {
 			const headAxis = `head.${torsoAxis.slice("torso.".length)}`;
-			if (explicitlyDrivenTorso.has(torsoAxis) || !this.controls[torsoAxis] || !this.controls[headAxis]) continue;
+			if (
+				explicitlyDrivenTorso.has(torsoAxis) ||
+				absoluteTorso.has(torsoAxis) ||
+				!this.controls[torsoAxis] ||
+				!this.controls[headAxis]
+			)
+				continue;
 			frame[torsoAxis] = (frame[headAxis] ?? this.neutral[headAxis]!) + (torsoOffsets.get(torsoAxis) ?? 0);
 		}
 

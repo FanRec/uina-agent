@@ -258,7 +258,8 @@ describe("MO 表演实际合成与执行", () => {
 			category: "voluntary",
 		});
 		advance(director, 600);
-		expect(director.frameContributions.has(idle.id)).toBe(false);
+		// 增量前景保留背景姿态作为基底，不再先清空同轴背景回正。
+		expect(director.frameContributions.has(idle.id)).toBe(true);
 		advance(director, 1300);
 		expect(idle.status).toBe("playing");
 		expect(idle.currentTime).toBeCloseTo(((4900 + 1900) % 3800) / 1000);
@@ -380,7 +381,8 @@ describe("MO 表演实际合成与执行", () => {
 		expect(runtime.director!.currentFrame["head.roll"]).toBe(time);
 		const nod = runtime.express({ motion: "nod" }, {});
 		for (let i = 0; i < 35; i++) runtime.composeTick(10);
-		expect(Math.abs(runtime.director!.currentFrame["gaze.y"]!)).toBeLessThan(0.08);
+		// 点头未认领视线，思考注视继续；局部动作不再冻结全部背景。
+		expect(runtime.director!.currentFrame["gaze.y"]).toBeGreaterThan(0.25);
 		for (let i = 0; i < 100; i++) runtime.composeTick(10);
 		await nod;
 		expect(runtime.director!.currentFrame["gaze.y"]).toBeGreaterThan(0.25);

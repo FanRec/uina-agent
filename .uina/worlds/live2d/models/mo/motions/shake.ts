@@ -1,14 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-/**
- * 五次光滑阶跃函数 (Hermite Quintic S-Curve)
- * 具有连续的一阶与二阶导数 (C2 连续)，在端点处速度与加速度均为零。
- */
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“超大幅度·大周期三维立体萌态大摇头”（时长 2600ms）。
@@ -49,12 +40,12 @@ export const cuteShake: ActionAuthoring = (rng) => {
 		const dampingRatio = 0.22;
 
 		// 平滑起势展开 (130ms 极速启动展开)
-		const attack = smoothstep5(0, 130, t);
+		const attack = smoothstep(0, 130, t);
 		// 前 750ms 让前两个超大半周期（来回大甩）都完全吃满极限振幅！
 		const decayTime = Math.max(0, tSec - 0.75);
 		const decay = Math.exp(-dampingRatio * omega * decayTime);
 		// 终末平滑窗收正归零
-		const window = 1 - smoothstep5(1600, 2300, t);
+		const window = 1 - smoothstep(1600, 2300, t);
 
 		// 超大摆幅振荡，峰值达到 ±11.65°（极限接近 12.0° 极限且严格留出安全裕量）
 		const baseAmplitude = 11.65 * startDir * gain;
@@ -76,10 +67,10 @@ export const cuteShake: ActionAuthoring = (rng) => {
 		const dynamicWave = -headYaw * 0.48;
 
 		// 动作后半段 (1150~2000ms，在主剧烈摇晃平息后) 浮现的治愈系娇憨大歪头 (5.0° 左右)
-		const settleTiltEnvelope = smoothstep5(1150, 1500, t) * (1 - smoothstep5(2000, durationMs, t));
+		const settleTiltEnvelope = smoothstep(1150, 1500, t) * (1 - smoothstep(2000, durationMs, t));
 		const settleTilt = 5.0 * rollScale * settleTiltEnvelope;
 
-		const window = 1 - smoothstep5(2300, durationMs, t);
+		const window = 1 - smoothstep(2300, durationMs, t);
 		const totalRoll = (dynamicWave + settleTilt) * window;
 		return Math.max(-9.6, Math.min(9.6, totalRoll));
 	};
@@ -90,15 +81,15 @@ export const cuteShake: ActionAuthoring = (rng) => {
 		const headYaw = evaluateHeadYaw(t);
 
 		// 0~350ms 起势微仰吸气
-		const inhale = 2.4 * gain * smoothstep5(0, 150, t) * (1 - smoothstep5(200, 380, t));
+		const inhale = 2.4 * gain * smoothstep(0, 150, t) * (1 - smoothstep(200, 380, t));
 
 		// 摆动中的三维升沉：转角大时微扬 (+2.4°)，过零点时微俯 (-1.8°)
-		const activeFactor = smoothstep5(200, 320, t);
+		const activeFactor = smoothstep(200, 320, t);
 		const saddleRise = 2.4 * Math.min(1, (Math.abs(headYaw) / 8.0) ** 2) * gain;
-		const dipFactor = smoothstep5(200, 350, t) * (1 - smoothstep5(1500, 1800, t));
+		const dipFactor = smoothstep(200, 350, t) * (1 - smoothstep(1500, 1800, t));
 		const saddleDip = -1.8 * (1 - Math.min(1, Math.abs(headYaw) / 3.5)) * dipFactor * gain;
 
-		const window = 1 - smoothstep5(2200, durationMs, t);
+		const window = 1 - smoothstep(2200, durationMs, t);
 		return (inhale + (saddleRise + saddleDip) * activeFactor) * window;
 	};
 
@@ -106,27 +97,28 @@ export const cuteShake: ActionAuthoring = (rng) => {
 	const evaluateGazeX = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const headYaw = evaluateHeadYaw(t);
-		const window = 1 - smoothstep5(2200, durationMs, t);
+		const window = 1 - smoothstep(2200, durationMs, t);
 		return -headYaw * 0.045 * window;
 	};
 
 	// --- 6. 摇晃期间娇嗔微眯 (Vigorous Shake Squint Envelope) ---
 	const evaluateEyeOpen = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		const squintEnvelope = smoothstep5(200, 380, t) * (1 - smoothstep5(1300, 1750, t));
+		const squintEnvelope = smoothstep(200, 380, t) * (1 - smoothstep(1300, 1750, t));
 		return -0.45 * gain * squintEnvelope;
 	};
 
 	// --- 7. 嘴角傲娇微嘟与笑容舒展包络 (Mouth Form Envelope) ---
 	const evaluateMouthForm = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		const smileAttack = smoothstep5(800, 1400, t);
-		const smileDecay = 1 - smoothstep5(2100, durationMs, t);
+		const smileAttack = smoothstep(800, 1400, t);
+		const smileDecay = 1 - smoothstep(2100, durationMs, t);
 		return 0.85 * gain * smileAttack * smileDecay;
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.yaw": offset(during(whole, evaluateHeadYaw)),
 			"torso.yaw": offset(during(whole, evaluateTorsoYaw)),
@@ -164,10 +156,10 @@ export const cuteShakePlayfulVariant: ActionAuthoring = (rng) => {
 		const frequencyHz = 1.9 - 0.5 * (tSec / totalSec);
 		const omega = 2 * Math.PI * frequencyHz;
 		const dampingRatio = 0.22;
-		const attack = smoothstep5(0, 120, t);
+		const attack = smoothstep(0, 120, t);
 		const decayTime = Math.max(0, tSec - 0.65);
 		const decay = Math.exp(-dampingRatio * omega * decayTime);
-		const window = 1 - smoothstep5(1400, 2000, t);
+		const window = 1 - smoothstep(1400, 2000, t);
 		const baseAmplitude = 11.65 * startDir * gain;
 		return baseAmplitude * attack * decay * Math.sin(omega * tSec) * window;
 	};
@@ -178,8 +170,8 @@ export const cuteShakePlayfulVariant: ActionAuthoring = (rng) => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const headYaw = evaluateHeadYaw(t);
 		const dynamicWave = -headYaw * 0.48;
-		const settleTilt = 4.8 * rollScale * smoothstep5(900, 1250, t) * (1 - smoothstep5(1800, durationMs, t));
-		const window = 1 - smoothstep5(2000, durationMs, t);
+		const settleTilt = 4.8 * rollScale * smoothstep(900, 1250, t) * (1 - smoothstep(1800, durationMs, t));
+		const window = 1 - smoothstep(2000, durationMs, t);
 		const total = (dynamicWave + settleTilt) * window;
 		return Math.max(-9.5, Math.min(9.5, total));
 	};
@@ -187,36 +179,37 @@ export const cuteShakePlayfulVariant: ActionAuthoring = (rng) => {
 	const evaluateHeadPitch = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const headYaw = evaluateHeadYaw(t);
-		const inhale = 2.4 * gain * smoothstep5(0, 150, t) * (1 - smoothstep5(180, 360, t));
-		const activeFactor = smoothstep5(180, 280, t);
+		const inhale = 2.4 * gain * smoothstep(0, 150, t) * (1 - smoothstep(180, 360, t));
+		const activeFactor = smoothstep(180, 280, t);
 		const saddleRise = 2.0 * Math.min(1, (Math.abs(headYaw) / 8.0) ** 2) * gain;
-		const dipFactor = smoothstep5(180, 300, t) * (1 - smoothstep5(1300, 1600, t));
+		const dipFactor = smoothstep(180, 300, t) * (1 - smoothstep(1300, 1600, t));
 		const saddleDip = -1.6 * (1 - Math.min(1, Math.abs(headYaw) / 3.5)) * dipFactor * gain;
-		const window = 1 - smoothstep5(1900, durationMs, t);
+		const window = 1 - smoothstep(1900, durationMs, t);
 		return (inhale + (saddleRise + saddleDip) * activeFactor) * window;
 	};
 
 	const evaluateGazeX = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const headYaw = evaluateHeadYaw(t);
-		return -headYaw * 0.045 * (1 - smoothstep5(1900, durationMs, t));
+		return -headYaw * 0.045 * (1 - smoothstep(1900, durationMs, t));
 	};
 
 	const evaluateEyeOpen = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		const squintEnvelope = smoothstep5(160, 320, t) * (1 - smoothstep5(1100, 1550, t));
+		const squintEnvelope = smoothstep(160, 320, t) * (1 - smoothstep(1100, 1550, t));
 		return -0.45 * gain * squintEnvelope;
 	};
 
 	const evaluateMouthForm = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		const attack = smoothstep5(600, 1200, t);
-		const decay = 1 - smoothstep5(1800, durationMs, t);
+		const attack = smoothstep(600, 1200, t);
+		const decay = 1 - smoothstep(1800, durationMs, t);
 		return 0.85 * gain * attack * decay;
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.yaw": offset(during(whole, evaluateHeadYaw)),
 			"torso.yaw": offset(during(whole, evaluateTorsoYaw)),

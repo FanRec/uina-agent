@@ -1,10 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“战术后仰呆滞惊讶”（时长 2500ms）。
@@ -33,17 +28,17 @@ export const surprise: ActionAuthoring = (rng) => {
 	const evaluateHeadPitch = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 160) {
-			const u = smoothstep5(0, 160, t);
+			const u = smoothstep(0, 160, t);
 			return 8.8 * gain * u;
 		}
 		if (t < 1600) {
 			// 定格发愣，12Hz 受惊微颤
-			const tremorWindow = smoothstep5(160, 240, t) * (1 - smoothstep5(1460, 1600, t));
+			const tremorWindow = smoothstep(160, 240, t) * (1 - smoothstep(1460, 1600, t));
 			const tremor = 0.12 * Math.sin(((t - 160) / 1000) * 2 * Math.PI * 12) * tremorWindow;
-			const p = smoothstep5(160, 1600, t);
+			const p = smoothstep(160, 1600, t);
 			return (8.8 - 0.3 * p + tremor) * gain;
 		}
-		const u = smoothstep5(1600, durationMs, t);
+		const u = smoothstep(1600, durationMs, t);
 		return 8.5 * gain * (1 - u);
 	};
 
@@ -79,13 +74,13 @@ export const surprise: ActionAuthoring = (rng) => {
 	const evaluateMouthOpen = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 160) {
-			const u = smoothstep5(0, 160, t);
+			const u = smoothstep(0, 160, t);
 			return 0.78 * gain * u;
 		}
 		if (t < 1600) {
 			return 0.78 * gain;
 		}
-		const u = smoothstep5(1600, 2300, t);
+		const u = smoothstep(1600, 2300, t);
 		return 0.78 * gain * (1 - u);
 	};
 
@@ -96,19 +91,19 @@ export const surprise: ActionAuthoring = (rng) => {
 			const open = evaluateMouthOpen(t);
 			return (open / 0.78) * 0.18;
 		}
-		const smile = smoothstep5(1600, 2000, t);
-		const release = 1 - smoothstep5(2250, durationMs, t);
+		const smile = smoothstep(1600, 2000, t);
+		const release = 1 - smoothstep(2250, durationMs, t);
 		return (0.18 + 0.24 * smile) * release * gain;
 	};
 
 	// 8. 回神双重眨眼 (1750~1920ms, 2020~2190ms)
 	const evaluateEyeOpen = (t: number): number => {
 		if (t >= 1750 && t < 1920) {
-			const u = t < 1835 ? smoothstep5(1750, 1835, t) : 1 - smoothstep5(1835, 1920, t);
+			const u = t < 1835 ? smoothstep(1750, 1835, t) : 1 - smoothstep(1835, 1920, t);
 			return -0.85 * u;
 		}
 		if (t >= 2020 && t < 2190) {
-			const u = t < 2105 ? smoothstep5(2020, 2105, t) : 1 - smoothstep5(2105, 2190, t);
+			const u = t < 2105 ? smoothstep(2020, 2105, t) : 1 - smoothstep(2105, 2190, t);
 			return -0.85 * u;
 		}
 		return 0;
@@ -116,6 +111,7 @@ export const surprise: ActionAuthoring = (rng) => {
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.pitch": offset(during(whole, evaluateHeadPitch)),
 			"head.roll": offset(during(whole, evaluateHeadRoll)),

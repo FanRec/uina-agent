@@ -1,10 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“五雷轰顶石化”（时长 4600ms）。
@@ -25,13 +20,13 @@ export const petrify: ActionAuthoring = (rng) => {
 	const durationMs = 4600;
 	const time = timeline(durationMs);
 	const whole = time.span("start", "end");
-	const crackEnvelope = (t: number): number => smoothstep5(150, 260, t) * (1 - smoothstep5(3800, 3950, t));
+	const crackEnvelope = (t: number): number => smoothstep(150, 260, t) * (1 - smoothstep(3800, 3950, t));
 
 	// 1. 头部俯仰：0~150ms 猛然后仰至 +9.2°，在 150~3950ms 保持石雕僵硬并伴随微裂高频细震，随后回神收正
 	const evaluateHeadPitch = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 150) {
-			const u = smoothstep5(0, 150, t);
+			const u = smoothstep(0, 150, t);
 			return 9.2 * gain * u;
 		}
 		if (t < 3950) {
@@ -39,7 +34,7 @@ export const petrify: ActionAuthoring = (rng) => {
 			const crack = 0.22 * Math.sin(((t - 150) / 1000) * 2 * Math.PI * 16) * crackEnvelope(t);
 			return (9.2 + crack) * gain;
 		}
-		const u = smoothstep5(3950, durationMs, t);
+		const u = smoothstep(3950, durationMs, t);
 		return 9.2 * gain * (1 - u);
 	};
 
@@ -47,14 +42,14 @@ export const petrify: ActionAuthoring = (rng) => {
 	const evaluateHeadRoll = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 150) {
-			const u = smoothstep5(0, 150, t);
+			const u = smoothstep(0, 150, t);
 			return -5.5 * gain * u;
 		}
 		if (t < 3950) {
 			const crack = 0.15 * Math.sin(((t - 150) / 1000) * 2 * Math.PI * 16 + 1.2) * crackEnvelope(t);
 			return (-5.5 + crack) * gain;
 		}
-		const u = smoothstep5(3950, durationMs, t);
+		const u = smoothstep(3950, durationMs, t);
 		return -5.5 * gain * (1 - u);
 	};
 
@@ -62,13 +57,13 @@ export const petrify: ActionAuthoring = (rng) => {
 	const evaluateHeadYaw = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 150) {
-			const u = smoothstep5(0, 150, t);
+			const u = smoothstep(0, 150, t);
 			return -3.8 * gain * u;
 		}
 		if (t < 3950) {
 			return -3.8 * gain;
 		}
-		const u = smoothstep5(3950, durationMs, t);
+		const u = smoothstep(3950, durationMs, t);
 		return -3.8 * gain * (1 - u);
 	};
 
@@ -84,8 +79,8 @@ export const petrify: ActionAuthoring = (rng) => {
 	// 5. 眼神发直：呆滞仰视空洞 (+0.22)
 	const evaluateGazeY = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		if (t < 3950) return 0.22 * smoothstep5(0, 120, t);
-		const u = smoothstep5(3950, durationMs, t);
+		if (t < 3950) return 0.22 * smoothstep(0, 120, t);
+		const u = smoothstep(3950, durationMs, t);
 		return 0.22 * (1 - u);
 	};
 
@@ -93,24 +88,24 @@ export const petrify: ActionAuthoring = (rng) => {
 	const evaluateMouthOpen = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 150) {
-			const u = smoothstep5(0, 150, t);
+			const u = smoothstep(0, 150, t);
 			return 0.58 * gain * u;
 		}
 		if (t < 3950) {
 			return 0.58 * gain;
 		}
-		const u = smoothstep5(3950, durationMs, t);
+		const u = smoothstep(3950, durationMs, t);
 		return 0.58 * gain * (1 - u);
 	};
 
 	// 7. 解除石化苏醒双重眨眼 (4050~4220ms, 4300~4470ms)
 	const evaluateEyeOpen = (t: number): number => {
 		if (t >= 4050 && t < 4220) {
-			const u = t < 4135 ? smoothstep5(4050, 4135, t) : 1 - smoothstep5(4135, 4220, t);
+			const u = t < 4135 ? smoothstep(4050, 4135, t) : 1 - smoothstep(4135, 4220, t);
 			return -0.85 * u;
 		}
 		if (t >= 4300 && t < 4470) {
-			const u = t < 4385 ? smoothstep5(4300, 4385, t) : 1 - smoothstep5(4385, 4470, t);
+			const u = t < 4385 ? smoothstep(4300, 4385, t) : 1 - smoothstep(4385, 4470, t);
 			return -0.85 * u;
 		}
 		return 0;
@@ -118,6 +113,7 @@ export const petrify: ActionAuthoring = (rng) => {
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.pitch": offset(during(whole, evaluateHeadPitch)),
 			"head.roll": offset(during(whole, evaluateHeadRoll)),

@@ -21,15 +21,17 @@ import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.j
 import { Live2DRuntime, pickVariantIndex } from "../.uina/worlds/live2d/runtime.js";
 
 export interface PreviewArguments {
-	readonly mode: "continuous" | "once" | "repeat" | "sample" | "list" | "help";
+	readonly mode: "continuous" | "once" | "repeat" | "sample" | "list" | "help" | "scenario";
 	readonly names: readonly string[];
 	readonly seed?: number;
 	readonly repeatCount?: number;
 	readonly actionMs?: number;
+	readonly offline?: boolean;
 }
 
 const USAGE = [
 	"用法:",
+	"  pnpm mo:preview -- --scenario idle|speech|mixed [--offline] [--seed N] 固定场景；speech/mixed 使用模拟电平，无真实音频",
 	"  pnpm mo:preview -- [--seed N] <动作名...>          连续轮播（支持动作如 nod, sway 或背景如 idle, thinking）",
 	"  pnpm mo:preview -- --once [--seed N] <动作名>      单次执行",
 	"  pnpm mo:preview -- --repeat N [--seed S] <动作名>  固定 seed 重复 N 次",
@@ -39,11 +41,24 @@ const USAGE = [
 
 export function parsePreviewArguments(args: readonly string[]): PreviewArguments {
 	let seed: number | undefined;
+	let offline = false;
 	let mode: PreviewArguments["mode"] = "continuous";
 	let modeValue: number | undefined;
 	const names: string[] = [];
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index]!;
+		if (arg === "--offline") {
+			offline = true;
+			continue;
+		}
+		if (arg === "--scenario") {
+			if (mode !== "continuous" || names.length) throw new Error("场景不能混用其他模式");
+			mode = "scenario";
+			const scene = args[++index];
+			if (!scene || !["idle", "speech", "mixed"].includes(scene)) throw new Error("场景只接受 idle/speech/mixed");
+			names.push(scene);
+			continue;
+		}
 		if (arg === "--seed") {
 			const raw = args[index + 1];
 			const parsed = raw && /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
@@ -70,6 +85,8 @@ export function parsePreviewArguments(args: readonly string[]): PreviewArguments
 		if (arg.startsWith("--")) throw new Error("未知参数: " + arg);
 		names.push(arg);
 	}
+	if (offline && mode !== "scenario") throw new Error("--offline 仅用于 --scenario");
+	if (mode === "scenario" && names.length !== 1) throw new Error("场景不接受额外动作名");
 	if (mode === "help") return { mode, names, ...(seed === undefined ? {} : { seed }) };
 	if (mode === "list" && names.length) throw new Error("--list 不接受动作名。");
 	if (mode === "once" && names.length !== 1) throw new Error("--once 必须且只能指定一个动作名。");
@@ -86,7 +103,7 @@ export function parsePreviewArguments(args: readonly string[]): PreviewArguments
 	return {
 		mode,
 		names: Object.freeze(names),
-		...(seed === undefined ? {} : { seed }),
+		...(mode === "scenario" ? { seed: seed ?? 42, offline } : seed === undefined ? {} : { seed }),
 		...(mode === "repeat" ? { repeatCount: modeValue! } : {}),
 		...(mode === "sample" ? { actionMs: modeValue! } : {}),
 	};
@@ -106,7 +123,7 @@ export function resolveAction(catalog: CatalogSnapshot, name: string): CatalogRe
 			name: "idle",
 			aliases: ["background:idle", "待机", "呼吸"],
 			entry: {
-				description: "后台拟真呼吸待机循环（12s 周期）",
+				description: "自然待机单短句（持续表演请用 --scenario idle）",
 				definition: catalog.background.idle,
 				atomic: false,
 				playback: { fadeInMs: 450, fadeOutMs: 450 },
@@ -123,7 +140,7 @@ export function resolveAction(catalog: CatalogSnapshot, name: string): CatalogRe
 			name: "thinking",
 			aliases: ["background:thinking", "思考", "沉思"],
 			entry: {
-				description: "后台专注倾听思考循环（4s 周期）",
+				description: "思考单短句（Runtime 持续轮换）",
 				definition: catalog.background.thinking,
 				atomic: false,
 				playback: { fadeInMs: 350, fadeOutMs: 450 },
@@ -297,6 +314,155 @@ async function waitReady(runtime: Live2DRuntime, stopping: () => boolean): Promi
 	console.log("[预览] 已就绪（VTS 已连接，模型绑定核验通过）。");
 }
 
+export function mixedScenarioSchedule(): readonly {
+	atMs: number;
+	type: "motion" | "interrupt" | "expression";
+	name?: string;
+}[] {
+	return [
+		...["nod", "curious", "glance", "shake", "chin_up", "smug_laugh", "head_toss", "nod", "curious"].map(
+			(name, index) => ({ atMs: 8000 + index * 13000, type: "motion" as const, name }),
+		),
+		{ atMs: 8700, type: "interrupt" as const },
+		{ atMs: 60700, type: "interrupt" as const },
+		{ atMs: 16000, type: "expression" as const, name: "closed_eyes" },
+		{ atMs: 19000, type: "expression" as const, name: "neutral_expression" },
+	].sort((a, b) => a.atMs - b.atMs);
+}
+
+/** Fixed schedules use the production Runtime; offline transport records zero physical confirmations. */
+export async function runPerformanceScenario(
+	rig: ModelRig,
+	catalog: CatalogSnapshot,
+	scene: "idle" | "speech" | "mixed",
+	seed = 42,
+	offline = false,
+	durationOverride?: number,
+): Promise<void> {
+	const durations = { idle: 300000, speech: 180000, mixed: 120000 };
+	const durationMs = durationOverride ?? durations[scene];
+	const evidence = () => ({
+		generation: 0,
+		sent: 0,
+		accepted: 0,
+		failed: 0,
+		dropped: 0,
+		filtered: 0,
+		pending: 0,
+		acceptedInputs: [],
+		sentInputs: [],
+	});
+	const client = offline
+		? ({
+				isConnected: () => true,
+				getModelProfile: () => ({ modelID: rig.modelID, physicsOutputs: [] }),
+				getModelGeneration: () => 0,
+				getConnectionGeneration: () => 0,
+				setConnectionChangeListener: () => {},
+				connect: () => {},
+				disconnect: () => {},
+				injectParameters: () => {},
+				observeMotionInjections: () => ({ snapshot: evidence, finish: async () => evidence(), close: () => {} }),
+			} as unknown as VTSClient)
+		: new VTSClient();
+	let lastClock = -1000;
+	const runtime = new Live2DRuntime({
+		rig,
+		catalog,
+		client,
+		speech: MO_SPEECH,
+		seed,
+		// Offline composition is driven below without yielding to the interval clock.
+		diagnostics: true,
+		onPerformanceEvent: (event) => printJson("[表演]", event),
+		onActionDiagnostics: (diagnostics) => {
+			if (!diagnostics.clampHits.length && diagnostics.clockMs - lastClock < 1000) return;
+			lastClock = diagnostics.clockMs;
+			printJson("[场景帧]", {
+				clockMs: diagnostics.clockMs,
+				frame: diagnostics.composedFrame,
+				handoffs: diagnostics.handoffs,
+				clampHits: diagnostics.clampHits,
+			});
+		},
+	});
+	const controller = new AbortController();
+	const pending = new Set<Promise<unknown>>();
+	const onInterrupt = () => controller.abort();
+	process.on("SIGINT", onInterrupt);
+	process.on("SIGTERM", onInterrupt);
+	printJson("[场景]", {
+		scene,
+		seed,
+		durationMs,
+		offline,
+		audio: scene === "idle" ? "none" : "SIMULATED_LEVELS_NO_AUDIO",
+		physicalEvidence: offline ? "none" : "requires_visual_review",
+	});
+	try {
+		await runtime.start({} as never);
+		if (!offline) await waitReady(runtime, () => controller.signal.aborted);
+		let index = 0;
+		const schedule = mixedScenarioSchedule();
+		if (scene === "mixed")
+			printJson("[场景跳过]", {
+				capability: "costume",
+				reason: catalog.list("costume").length ? "costume_requires_separate_restore_review" : "no_registered_costume",
+			});
+		const wallStart = performance.now();
+		let lastStep = -1;
+		while (!controller.signal.aborted) {
+			const ms = offline ? ++lastStep * 20 : performance.now() - wallStart;
+			if (ms >= durationMs) break;
+			if (scene !== "idle") {
+				const rms = ms % 7000 > 5300 ? 0 : 0.025 + 0.022 * Math.sin(ms / 170) ** 2;
+				runtime.levelSink?.processLevel({ rms });
+			}
+			while (scene === "mixed" && index < schedule.length && ms >= schedule[index]!.atMs) {
+				const event = schedule[index++]!;
+				printJson("[场景事件]", event);
+				if (event.type === "interrupt") {
+					runtime.interrupt();
+					continue;
+				}
+				if (event.type === "expression" && !catalog.resolve("expression", event.name!)) {
+					printJson("[场景跳过]", { ...event, reason: "expression_not_registered" });
+					continue;
+				}
+				const task =
+					event.type === "motion"
+						? runtime.express({ motion: event.name! }, { signal: controller.signal })
+						: runtime.state({ expression: event.name! }, { signal: controller.signal });
+				pending.add(task);
+				void task.then(
+					(result) => {
+						pending.delete(task);
+						printJson("[场景动作]", result);
+					},
+					(error: unknown) => {
+						pending.delete(task);
+						printJson("[场景错误]", String(error));
+					},
+				);
+			}
+			if (offline) {
+				runtime.composeTick(20);
+				await Promise.resolve();
+			} else await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+	} finally {
+		controller.abort();
+		runtime.levelSink?.reset();
+		try {
+			await runtime.stop();
+		} finally {
+			await Promise.allSettled([...pending]);
+			process.off("SIGINT", onInterrupt);
+			process.off("SIGTERM", onInterrupt);
+		}
+	}
+}
+
 export async function main(args = process.argv.slice(2)): Promise<void> {
 	let parsed: PreviewArguments;
 	try {
@@ -324,7 +490,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 						{
 							name: "idle",
 							aliases: ["background:idle", "待机", "呼吸"],
-							description: "后台拟真呼吸待机循环（12s 周期）",
+							description: "自然待机单短句（持续表演请用 --scenario idle）",
 						},
 					]
 				: []),
@@ -333,7 +499,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 						{
 							name: "thinking",
 							aliases: ["background:thinking", "思考", "沉思"],
-							description: "后台专注倾听思考循环（4s 周期）",
+							description: "思考单短句（Runtime 持续轮换）",
 						},
 					]
 				: []),
@@ -357,6 +523,16 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 		printJson("[预览] 离线采样（未连接 VTS、未产生外部副作用）", snapshot);
 		return;
 	}
+	if (parsed.mode === "scenario") {
+		await runPerformanceScenario(
+			rig,
+			catalog,
+			parsed.names[0] as "idle" | "speech" | "mixed",
+			parsed.seed ?? 42,
+			parsed.offline ?? false,
+		);
+		return;
+	}
 	const previewCatalog = wrapCatalogForPreview(catalog);
 	for (const name of parsed.names) resolveAction(previewCatalog, name);
 
@@ -370,6 +546,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 		diagnostics: true,
 		onActionCompiled: ({ actionName, playIndex, clip }) =>
 			printJson("[计划]", { actionName, playIndex, ...summarizeClip(clip) }),
+		onPerformanceEvent: (event) => printJson("[表演]", event),
 		onSpatialTrace: (trace) => printJson("[空间追踪]", trace),
 		onActionDiagnostics: (diagnostics: MotionDirectorActionDiagnostics) => {
 			if (diagnostics.clockMs - lastDiagnosticClock < 250 && diagnostics.clockMs !== 0) return;

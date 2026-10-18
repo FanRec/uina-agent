@@ -8,28 +8,33 @@ const withSpatial =
 	(authoring: ActionAuthoring, spatial: readonly SpatialEvent[]): ActionAuthoring =>
 	(rng) => ({ ...authoring(rng), spatial });
 
-const hold = (durationMs: number, channels: LocalChannels): ActionAuthoring => motion(durationMs, channels);
+const hold = (durationMs: number, channels: LocalChannels, torso?: "head-relative" | "absolute"): ActionAuthoring =>
+	motion(durationMs, channels, torso);
 
 export function perfCatalogSource(): CatalogSource {
-	const wave = hold(1800, {
-		"head.yaw": offset(
-			keys([
-				[0, 0],
-				[400, 3],
-				[900, -3],
-				[1400, 2],
-				[1800, 0],
-			]),
-		),
-		"torso.roll": offset(
-			keys([
-				[0, 0],
-				[700, 2],
-				[1300, -2],
-				[1800, 0],
-			]),
-		),
-	});
+	const wave = hold(
+		1800,
+		{
+			"head.yaw": offset(
+				keys([
+					[0, 0],
+					[400, 3],
+					[900, -3],
+					[1400, 2],
+					[1800, 0],
+				]),
+			),
+			"torso.roll": offset(
+				keys([
+					[0, 0],
+					[700, 2],
+					[1300, -2],
+					[1800, 0],
+				]),
+			),
+		},
+		"head-relative",
+	);
 	return {
 		motions: {
 			nod: {

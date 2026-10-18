@@ -1,3 +1,6 @@
+import { chooseRecent } from "./authoring/selection.js";
+import { smooth } from "./authoring/curves.js";
+import { SpeechBehavior } from "./speech-behavior.js";
 import type { ServiceCompanionContext } from "../../../src/extensions/world-framework/types.js";
 import type { ToolExecutionResult } from "../../../src/tools/broker.js";
 import { VOICE_LEVEL_SINK_EXPOSED_PREFIX, type VoiceLevelSink } from "../../../src/extensions/world-framework/seams.js";
@@ -6,7 +9,7 @@ import { encodeFrame, validateRig, type ModelRig } from "./adapter/rig.js";
 import { VTSClient } from "./adapter/vts-client.js";
 import {
 	emptyCatalog,
-	type CatalogAmbientEntry,
+	type BackgroundPhrase,
 	type CatalogMotionEntry,
 	type CatalogSnapshot,
 	type CatalogResolved,
@@ -28,8 +31,10 @@ import {
 	type PlayOptions,
 } from "./director/director.js";
 import { buildLive2DEndpoint, type Live2DEndpoint } from "./endpoint.js";
+import { type EnvironmentToken } from "./environment.js";
 import { actionReceipt, settleMotion, toolRejected, toolSucceeded, toolUnknown, withCancellation } from "./results.js";
 import { ExternalActions } from "./external-actions.js";
+import type { TimingProfile } from "./timing.js";
 import { SpeechInput, type SpeechConfig } from "./speech-level.js";
 
 /**
@@ -54,12 +59,20 @@ export interface Live2DRuntimeOptions {
 	onActionCompiled?: (event: { actionName: string; playIndex: number; clip: CompiledAction }) => void;
 	/** 开发预览接收 Director 合成诊断；生产默认关闭且不采集。 */
 	onActionDiagnostics?: (diagnostics: MotionDirectorActionDiagnostics) => void;
+	onPerformanceEvent?: (event: {
+		clockMs: number;
+		type: "phrase" | "accent" | "suppressed";
+		name: string;
+		phrase?: string;
+	}) => void;
 	/** 模型作者标定的口型映射；与 rig 同时存在时暴露 voice.levelSink（P3-2）。 */
 	speech?: SpeechConfig;
 	/** 目录快照；缺省空目录（诚实状态：一切命名参数显式拒绝）。 */
 	catalog?: CatalogSnapshot;
 	/** 独占声明清理等待上限（§6.4 safeStop 抛错判定；注入点（测试用），缺省 5000ms）。 */
 	cleanupTimeoutMs?: number;
+	/** 外部动作时序/容差覆盖（标定入口）；缺省 DEFAULT_TIMING，非法值构造时失败。 */
+	timing?: Partial<TimingProfile>;
 	/** 状态事实变化通知（连接/适配/目录代次）。引擎线程以此推送 sync 缓存；状态变化不唤醒对话回合，即时真值由 status/body 查询保证。 */
 	onStatusChange?: () => void;
 }
@@ -92,12 +105,8 @@ const formatMotionEntries = (records: readonly CatalogResolved<"motion">[]): str
  * 变体轮换择一（纯函数，随机源注入）：池 N 取 N-1 均匀随机，越过 lastPick 偏移——
  * 排除上次选中，保证连播不重样；N ≤ 1 恒 0。
  */
-export const pickVariantIndex = (poolSize: number, lastPick: number | undefined, random: () => number): number => {
-	if (poolSize <= 1) return 0;
-	let index = Math.floor(random() * (poolSize - 1));
-	if (lastPick !== undefined && index >= lastPick) index += 1;
-	return index;
-};
+export const pickVariantIndex = (poolSize: number, lastPick: number | undefined, random: () => number): number =>
+	poolSize <= 1 ? 0 : chooseRecent(Array(poolSize).fill(1), lastPick === undefined ? [] : [lastPick], random);
 
 export class Live2DRuntime {
 	private started = false;
@@ -123,9 +132,15 @@ export class Live2DRuntime {
 	private ambientName?: string;
 	private restHandle?: MotionHandle;
 	/** 变体轮换状态：按条目对象身份存 WeakMap。 */
-	private lastVariantPick = new WeakMap<CatalogMotionEntry, number>();
+	private lastVariantPick = new WeakMap<CatalogMotionEntry, number[]>();
 	/** Ambient phrase rotation is keyed by immutable catalog entry, so catalog replacement resets it. */
-	private lastAmbientPhrasePick = new WeakMap<CatalogAmbientEntry, number>();
+	private readonly phraseHistory = new Map<string, number[]>();
+	private readonly phraseEndpoints = new Map<string, Readonly<Record<string, number>>>();
+	private readonly speechBehavior?: SpeechBehavior;
+	private accentHandle?: MotionHandle;
+	private readonly onPerformanceEvent?: Live2DRuntimeOptions["onPerformanceEvent"];
+	private lastSuppression?: string;
+	private lastModelGeneration?: number;
 	private readonly rootSeed: number;
 	private readonly onActionCompiled?: Live2DRuntimeOptions["onActionCompiled"];
 	private readonly onActionDiagnostics?: Live2DRuntimeOptions["onActionDiagnostics"];
@@ -147,6 +162,7 @@ export class Live2DRuntime {
 		this.client = options.client;
 		this.rig = options.rig;
 		this.rootSeed = options.seed ?? createRootSeed();
+		this.onPerformanceEvent = options.onPerformanceEvent;
 		this.onActionCompiled = options.onActionCompiled;
 		this.onActionDiagnostics = options.onActionDiagnostics;
 		this.catalog = options.catalog ?? emptyCatalog(options.rig?.modelID ?? "unknown");
@@ -163,13 +179,28 @@ export class Live2DRuntime {
 			if (options.speech) {
 				const input = new SpeechInput(options.speech, this.director);
 				this.speechInput = input;
+				this.speechBehavior = new SpeechBehavior(
+					deriveRandom(this.rootSeed, "autonomic", "speech-behavior", 0),
+					options.speech.staleMs,
+				);
 				// 暂停期间电平一律丢弃（边界规范 §4）。
 				this.levelSink = {
 					processLevel: (level) => {
-						if (this.paused || !this.isStarted) return;
+						if (
+							this.paused ||
+							!this.focused ||
+							!this.isStarted ||
+							!this.client?.isConnected() ||
+							this.client.getModelProfile()?.modelID !== this.rig?.modelID
+						)
+							return;
 						input.processLevel(level);
+						this.speechBehavior?.processLevel(level);
 					},
-					reset: () => input.reset(),
+					reset: () => {
+						input.reset();
+						this.resetSpeechBehavior();
+					},
 				};
 			}
 		}
@@ -182,9 +213,10 @@ export class Live2DRuntime {
 				client: this.client,
 				rig: this.rig,
 				director: this.director,
-				getCatalogGeneration: () => this.generation,
+				getEnvironment: () => this.environment(),
 				isFocused: () => this.focused,
 				cleanupTimeoutMs: options.cleanupTimeoutMs ?? 5000,
+				timing: options.timing,
 				onSpatialTrace: options.onSpatialTrace,
 			});
 	}
@@ -215,10 +247,22 @@ export class Live2DRuntime {
 		return this.lifecycleFault ?? this.client?.getFault();
 	}
 
+	/**
+	 * 环境快照：连接代次 / 模型代次 / 目录代次 / 当前模型身份的唯一来源。
+	 * 外部动作在开始时捕获一次，此后所有守卫都用 sameEnvironment 比较，避免"少写一处检查"。
+	 */
+	environment(): EnvironmentToken {
+		return Object.freeze({
+			connection: this.client?.getConnectionGeneration() ?? 0,
+			model: this.client?.getModelGeneration() ?? 0,
+			catalog: this.generation,
+			modelID: this.client?.getModelProfile()?.modelID ?? null,
+		});
+	}
+
 	/** 身份事实：rig 存在且 VTS 当前模型与其标定身份一致。 */
 	identityMatched(): boolean {
-		const profile = this.client?.getModelProfile();
-		return this.rig !== undefined && profile !== undefined && profile.modelID === this.rig.modelID;
+		return this.rig !== undefined && this.environment().modelID === this.rig.modelID;
 	}
 
 	/**
@@ -228,7 +272,11 @@ export class Live2DRuntime {
 	setFocused(focused: boolean): void {
 		if (this.focused === focused) return;
 		this.focused = focused;
-		if (!focused) this.externalActions?.cancelSpatial();
+		if (!focused) {
+			this.externalActions?.cancelSpatial();
+			this.speechInput?.reset();
+			this.resetSpeechBehavior();
+		}
 		this.syncFrozen();
 	}
 
@@ -245,8 +293,11 @@ export class Live2DRuntime {
 			throw new Error(`目录与 rig 模型身份不符: 目录 ${snapshot.modelID} vs rig ${this.rig.modelID}`);
 		this.catalog = snapshot;
 		this.generation++;
-		this.lastVariantPick = new WeakMap<CatalogMotionEntry, number>();
-		this.lastAmbientPhrasePick = new WeakMap<CatalogAmbientEntry, number>();
+		this.lastVariantPick = new WeakMap<CatalogMotionEntry, number[]>();
+		this.phraseHistory.clear();
+		this.phraseEndpoints.clear();
+		this.speechInput?.reset();
+		this.resetSpeechBehavior();
 		this.actionPlayCounts.clear();
 		this.externalActions?.cancelAll();
 		this.director?.invalidateAll("catalog changed");
@@ -323,28 +374,104 @@ export class Live2DRuntime {
 	): CompiledAction {
 		const variants = entry.variants;
 		if (!variants?.length) return this.bake(entry.definition, actionName, playIndex, speech);
-		const index = pickVariantIndex(
-			variants.length + 1,
-			this.lastVariantPick.get(entry),
+		const history = this.lastVariantPick.get(entry) ?? [];
+		const index = chooseRecent(
+			Array(variants.length + 1).fill(1),
+			history,
 			deriveRandom(this.rootSeed, "selection", actionName, playIndex),
 		);
-		this.lastVariantPick.set(entry, index);
+		this.lastVariantPick.set(entry, [...history, index].slice(-2));
 		return this.bake(index === 0 ? entry.definition : variants[index - 1]!, actionName, playIndex, speech);
 	}
 
-	private pickAmbientPhrase(entry: CatalogAmbientEntry, actionName: string, playIndex: number): CompiledAction {
-		const pool = [entry.motion, ...(entry.variants ?? [])];
-		const index = pickVariantIndex(
-			pool.length,
-			this.lastAmbientPhrasePick.get(entry),
+	private performanceEvent(type: "phrase" | "accent" | "suppressed", name: string, phrase?: string): void {
+		try {
+			this.onPerformanceEvent?.({ clockMs: this.director?.clockMs ?? 0, type, name, phrase });
+		} catch {
+			/* preview only */
+		}
+	}
+
+	private pickBackgroundPhrase(pool: readonly BackgroundPhrase[], actionName: string): CompiledAction {
+		const playIndex = this.nextActionPlayIndex(actionName);
+		const history = this.phraseHistory.get(actionName) ?? [];
+		const index = chooseRecent(
+			pool.map((p) => p.weight ?? 1),
+			history,
 			deriveRandom(this.rootSeed, "selection", actionName, playIndex),
 		);
-		this.lastAmbientPhrasePick.set(entry, index);
-		return compileAction(
-			pool[index]!,
-			this.rig!.controls,
-			deriveRandom(this.rootSeed, "performance", actionName, playIndex),
+		this.phraseHistory.set(actionName, [...history, index].slice(-2));
+		const phrase = pool[index]!;
+		const origins = this.phraseEndpoints.get(actionName) ?? {};
+		const joined: ActionAuthoring = (rng) => {
+			const plan = phrase.motion(rng);
+			if (!phrase.join) return plan;
+			const channels = Object.fromEntries(
+				Object.entries(plan.channels).map(([axis, channel]) => {
+					const normalized = typeof channel === "function" ? { space: "absolute" as const, curve: channel } : channel;
+					if (normalized.space !== "absolute") return [axis, channel];
+					const origin = origins[axis] ?? this.rig!.controls[axis]!.neutral;
+					const delay = phrase.join?.delays?.[axis] ?? 0;
+					return [
+						axis,
+						{
+							...normalized,
+							curve: (ms: number) =>
+								origin + (normalized.curve(ms) - origin) * smooth((ms - delay) / Math.max(1, phrase.join!.durationMs)),
+						},
+					];
+				}),
+			);
+			return { ...plan, channels };
+		};
+		const clip = this.bake(joined, actionName, playIndex);
+		this.phraseEndpoints.set(
+			actionName,
+			Object.fromEntries(
+				clip.channels.filter((c) => c.space === "absolute").map((c) => [c.axis, c.curve(clip.durationMs)]),
+			),
 		);
+		this.performanceEvent("phrase", actionName, phrase.id);
+		return clip;
+	}
+
+	private resetSpeechBehavior(): void {
+		this.speechBehavior?.reset();
+		this.accentHandle?.stop("release");
+		this.accentHandle = undefined;
+		this.lastSuppression = undefined;
+	}
+
+	private stepSpeechBehavior(dtMs: number): void {
+		if (!this.speechBehavior || !this.director) return;
+		const state = this.director.getPerformanceState();
+		const reason = !this.focused
+			? "unfocused"
+			: this.thinking
+				? "thinking"
+				: this.ambientName
+					? "ambient"
+					: state.nonNeutralPosture
+						? "posture"
+						: state.eyesClosed
+							? "closed-eyes"
+							: state.foreground
+								? "foreground"
+								: undefined;
+		if (reason !== this.lastSuppression && reason) this.performanceEvent("suppressed", reason);
+		this.lastSuppression = reason;
+		if (reason && this.accentHandle?.status === "playing") this.accentHandle.stop("release");
+		if (!this.speechBehavior.step(dtMs, reason !== undefined) || !this.catalog.background.accent) return;
+		const name = "background:speech-accent";
+		const index = this.nextActionPlayIndex(name);
+		this.accentHandle = this.director.play(this.bake(this.catalog.background.accent, name, index), {
+			category: "autonomic",
+			background: true,
+			atomic: false,
+			fadeInMs: 100,
+			fadeOutMs: 180,
+		});
+		this.performanceEvent("accent", name);
 	}
 
 	/**
@@ -668,7 +795,11 @@ export class Live2DRuntime {
 				this.client.setConnectionChangeListener((connected) => {
 					if (!this.started) return;
 					if (connected) this.startClock();
-					else this.stopClock();
+					else {
+						this.stopClock();
+						this.speechInput?.reset();
+						this.resetSpeechBehavior();
+					}
 					this.onStatusChange?.();
 				});
 				this.client.connect();
@@ -717,6 +848,8 @@ export class Live2DRuntime {
 			return;
 		}
 		this.paused = true;
+		this.resetSpeechBehavior();
+		this.speechInput?.reset();
 		this.executionController.abort(new Error("safestop"));
 		this.syncFrozen();
 		const director = this.director;
@@ -747,6 +880,7 @@ export class Live2DRuntime {
 		this.externalActions?.acknowledgeUnconfirmed();
 		this.keepFrame = undefined;
 		this.speechInput?.reset();
+		this.resetSpeechBehavior();
 		this.syncFrozen();
 	}
 
@@ -766,57 +900,50 @@ export class Live2DRuntime {
 	}
 
 	private syncBackgrounds(): void {
-		if (!this.director || this.paused) return;
-		const { idle, thinking } = this.catalog.background;
-		// 选中项不在当前快照（目录更替残留）：诚实回落 idle。
+		if (!this.director || this.paused || !this.focused) return;
+		const { idle, thinking, phrases } = this.catalog.background;
 		if (this.ambientName !== undefined && !this.catalog.resolve("ambient", this.ambientName))
 			this.ambientName = undefined;
-		const ambient =
-			this.ambientName !== undefined ? this.catalog.resolve("ambient", this.ambientName)?.entry : undefined;
-		const restLoop = ambient?.motion ?? idle;
-		if (ambient?.variants?.length) {
-			// Phrase pools are finite: let the outgoing clip hand off while the next, nonrepeating phrase enters.
-			if (!this.restHandle || ["cancelling", "finished"].includes(this.restHandle.status)) {
-				const actionName = `ambient:${this.ambientName}`;
-				const playIndex = this.nextActionPlayIndex(actionName);
-				this.restHandle = this.director.play(this.pickAmbientPhrase(ambient, actionName, playIndex), {
-					category: "autonomic",
-					background: true,
-					atomic: false,
-					fadeInMs: 180,
-					fadeOutMs: 220,
-				});
-			}
-		} else if (restLoop && (!this.restHandle || this.restHandle.status === "finished")) {
-			const actionName = ambient ? `ambient:${this.ambientName}` : "background:idle";
-			const playIndex = this.nextActionPlayIndex(actionName);
-			this.restHandle = this.director.play(
-				compileAction(restLoop, this.rig!.controls, deriveRandom(this.rootSeed, "performance", actionName, playIndex)),
-				{
-					category: "autonomic",
-					loop: true,
-					background: true,
-					atomic: false,
-					fadeInMs: 450,
-					fadeOutMs: 450,
-				},
+		const ambient = this.ambientName ? this.catalog.resolve("ambient", this.ambientName)?.entry : undefined;
+		const start = (
+			handle: MotionHandle | undefined,
+			pool: readonly BackgroundPhrase[] | undefined,
+			fallback: ActionAuthoring | undefined,
+			name: string,
+			category: "autonomic" | "transition",
+		) => {
+			if (handle && !["releasing", "cancelling", "cancelled", "finished"].includes(handle.status)) return handle;
+			if (!pool?.length && !fallback) return undefined;
+			const clip = pool?.length
+				? this.pickBackgroundPhrase(pool, name)
+				: this.bake(fallback!, name, this.nextActionPlayIndex(name));
+			return this.director!.play(clip, {
+				category,
+				background: true,
+				atomic: false,
+				loop: false,
+				fadeInMs: pool?.some((p) => p.join) ? 120 : 450,
+				fadeOutMs: 450,
+			});
+		};
+		const ambientPool = ambient
+			? [ambient.motion, ...(ambient.variants ?? [])].map((motion, index) => ({ id: String(index), motion }))
+			: undefined;
+		this.restHandle = start(
+			this.restHandle,
+			ambientPool ?? phrases?.idle,
+			ambient?.motion ?? idle,
+			ambient ? `ambient:${this.ambientName}` : "background:idle",
+			"autonomic",
+		);
+		if (this.thinking)
+			this.thinkingHandle = start(
+				this.thinkingHandle,
+				phrases?.thinking,
+				thinking,
+				"background:thinking",
+				"transition",
 			);
-		}
-		if (thinking && this.thinking && !this.thinkingHandle) {
-			const actionName = "background:thinking";
-			const playIndex = this.nextActionPlayIndex(actionName);
-			this.thinkingHandle = this.director.play(
-				compileAction(thinking, this.rig!.controls, deriveRandom(this.rootSeed, "performance", actionName, playIndex)),
-				{
-					category: "transition",
-					loop: true,
-					background: true,
-					atomic: false,
-					fadeInMs: 350,
-					fadeOutMs: 450,
-				},
-			);
-		}
 	}
 
 	/**
@@ -840,6 +967,7 @@ export class Live2DRuntime {
 		this.externalActions?.cancelSpatial();
 		this.director?.interruptTransient("turn_aborted");
 		this.speechInput?.reset();
+		this.resetSpeechBehavior();
 	}
 
 	stop(): Promise<void> {
@@ -876,6 +1004,8 @@ export class Live2DRuntime {
 			errors.push(error);
 		}
 		this.phase = "dead";
+		this.phraseHistory.clear();
+		this.phraseEndpoints.clear();
 		if (errors.length) this.lifecycleFault = "Live2D 停用清理失败";
 		try {
 			this.onStatusChange?.();
@@ -938,10 +1068,22 @@ export class Live2DRuntime {
 	composeTick(dtMs: number, effectiveElapsedMs = dtMs): void {
 		if (!this.started || !this.client || !this.director || !this.rig) return;
 		if (this.lifecycleFault) return;
-		if (!this.client.isConnected()) return;
+		if (!this.client.isConnected()) {
+			this.speechInput?.reset();
+			this.resetSpeechBehavior();
+			return;
+		}
+		const modelGeneration = this.client.getModelGeneration?.() ?? 0;
+		if (this.lastModelGeneration !== undefined && modelGeneration !== this.lastModelGeneration)
+			this.setCatalog(this.catalog);
+		this.lastModelGeneration = modelGeneration;
 		// 身份门：rig 只属于其标定的模型，VTS 当前模型不匹配即零输出，杜绝跨模型误注入。
 		const profile = this.client.getModelProfile();
-		if (!profile || profile.modelID !== this.rig.modelID) return;
+		if (!profile || profile.modelID !== this.rig.modelID) {
+			this.speechInput?.reset();
+			this.resetSpeechBehavior();
+			return;
+		}
 		// §6 暂停分支：不合成、不推进倒计时，按 tick 节奏持续注入保持帧。
 		if (this.paused) {
 			if (this.keepFrame) this.client.injectParameters(encodeFrame(this.rig, this.keepFrame));
@@ -951,6 +1093,7 @@ export class Live2DRuntime {
 			// 声学电平推进（失联守卫 + 作者映射）→ 引擎包络目标，先于本帧合成。
 			this.syncBackgrounds();
 			this.speechInput?.tick(dtMs);
+			if (this.focused) this.stepSpeechBehavior(dtMs);
 			const frame = this.director.step(dtMs, effectiveElapsedMs);
 			const diagnostics = this.director.getActionDiagnostics();
 			if (diagnostics) {
@@ -1036,12 +1179,15 @@ export class Live2DRuntime {
 				tickIntervalMs: this.tickIntervalMs,
 				clockRunning: this.clock !== null,
 				identityMatched: this.identityMatched(),
+				environment: this.environment(),
 				paused: this.paused,
 				focused: this.focused,
 				background: this.backgroundStatus(),
 				generation: this.generation,
 				lastCue: this.endpoint.lastCue(),
 				externalActions: this.externalActions?.snapshot() ?? null,
+				/** 生效的时序参数：标定改的是这里，不是散落字面量。 */
+				timing: this.externalActions?.timing ?? null,
 				bodyMapping,
 				director: this.director
 					? {

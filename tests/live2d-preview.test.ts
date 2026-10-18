@@ -1,10 +1,51 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { loadRig, MO_MODEL_ID } from "../.uina/worlds/live2d/models/rig-loader.js";
+import { loadCatalog } from "../.uina/worlds/live2d/models/mo/catalog.js";
 import { compileCatalog, type CatalogSource } from "../.uina/worlds/live2d/authoring/catalog.js";
 import { keys, motion, offset } from "../.uina/worlds/live2d/authoring/index.js";
 import { refactorRig } from "./live2d-refactor-fixture.js";
-import { buildOfflinePreviewSnapshot, parsePreviewArguments } from "../scripts/mo-preview.mjs";
+import {
+	buildOfflinePreviewSnapshot,
+	parsePreviewArguments,
+	mixedScenarioSchedule,
+	runPerformanceScenario,
+} from "../scripts/mo-preview.mjs";
 
 describe("Live2D author preview", () => {
+	it("runs the complete mixed scene without clamps and exercises actual in-flight cancellation", async () => {
+		const rig = (await loadRig(MO_MODEL_ID))!;
+		const output = vi.spyOn(console, "log").mockImplementation(() => {});
+		try {
+			await runPerformanceScenario(rig, loadCatalog(MO_MODEL_ID, rig)!, "mixed", 42, true);
+			const rows = output.mock.calls.map(([line]) => String(line));
+			const frames = rows.filter((s) => s.startsWith("[场景帧]")).map((s) => JSON.parse(s.slice(s.indexOf("{"))));
+			expect(frames.length).toBeGreaterThan(100);
+			expect(frames.flatMap((f) => f.clampHits)).toEqual([]);
+			expect(rows.some((s) => s.includes("nod CANCELLED: turn_aborted"))).toBe(true);
+			expect(rows.some((s) => s.includes("closed_eyes OK"))).toBe(true);
+		} finally {
+			output.mockRestore();
+		}
+	});
+	it("interrupts an in-flight gesture and includes explicit expression changes", () => {
+		const events = mixedScenarioSchedule();
+		expect(events.find((e) => e.type === "motion")?.atMs).toBe(8000);
+		expect(events.find((e) => e.type === "interrupt")?.atMs).toBe(8700);
+		expect(events.filter((e) => e.type === "expression").map((e) => e.name)).toEqual([
+			"closed_eyes",
+			"neutral_expression",
+		]);
+	});
+	it("parses reproducible performance scenarios and rejects invalid combinations", () => {
+		expect(parsePreviewArguments(["--scenario", "speech", "--offline"])).toMatchObject({
+			mode: "scenario",
+			names: ["speech"],
+			seed: 42,
+			offline: true,
+		});
+		expect(() => parsePreviewArguments(["--scenario", "unknown"])).toThrow(/场景/);
+		expect(() => parsePreviewArguments(["--offline", "--once", "nod"])).toThrow(/scenario/);
+	});
 	it("parses once, fixed-count repeat, offline sample, and catalog-list modes", () => {
 		expect(parsePreviewArguments(["--seed", "42", "--once", "nod"])).toEqual({
 			mode: "once",

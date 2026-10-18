@@ -1,0 +1,3512 @@
+{
+	"nod": {
+		"durationMs": 1950,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 1.935576985837436,
+				"maxStep": 0.13674575177140758,
+				"residual": 2.1003342218372743e-6,
+				"peak": 1.833215299026663,
+				"trough": -0.102361686810773
+			},
+			"head.pitch": {
+				"peakToPeak": 11.947070960741769,
+				"maxStep": 0.9313747914234805,
+				"residual": 0.00018879559218066945,
+				"peak": 3.1275575793077603,
+				"trough": -8.819513381434009
+			},
+			"head.roll": {
+				"peakToPeak": 5.093623646940621,
+				"maxStep": 0.3598572415037049,
+				"residual": 5.527195320624364e-6,
+				"peak": 4.8242507869122715,
+				"trough": -0.2693728600283499
+			},
+			"torso.yaw": {
+				"peakToPeak": 0.42741751908501535,
+				"maxStep": 0.02995062088396111,
+				"residual": 6.317562630013187e-7,
+				"peak": 0.40570411683465435,
+				"trough": -0.021713402250360975
+			},
+			"torso.pitch": {
+				"peakToPeak": 1.8631487358712082,
+				"maxStep": 0.14188679036706353,
+				"residual": 4.229516276131269e-5,
+				"peak": 0.556225436202935,
+				"trough": -1.3069232996682731
+			},
+			"torso.roll": {
+				"peakToPeak": 1.1247829449605664,
+				"maxStep": 0.07881742337884512,
+				"residual": 1.6625164815824005e-6,
+				"peak": 1.0676424127227744,
+				"trough": -0.057140532237791974
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0.5933732421714701,
+				"maxStep": 0.06787541838134456,
+				"residual": 0,
+				"peak": 0.31019439093552853,
+				"trough": -0.28317885123594166
+			},
+			"mouth.form": {
+				"peakToPeak": 0.879997885620337,
+				"maxStep": 0.044012319267211775,
+				"residual": 0.00010730433293855501,
+				"peak": 0.879997885620337,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.92,
+				"maxStep": 0.23294587901770103,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.07999999999999996
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.92,
+				"maxStep": 0.23294587901770103,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.07999999999999996
+			}
+		}
+	},
+	"nod#0": {
+		"durationMs": 1880,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 2.161923140214072,
+				"maxStep": 0.16673295819367318,
+				"residual": 2.4129685837232587e-6,
+				"peak": 2.084503574603912,
+				"trough": -0.07741956561016021
+			},
+			"head.pitch": {
+				"peakToPeak": 12.204992049819207,
+				"maxStep": 1.0022215990868943,
+				"residual": 0.0001919900809792921,
+				"peak": 3.2491923104007085,
+				"trough": -8.955799739418499
+			},
+			"head.roll": {
+				"peakToPeak": 5.689271421615979,
+				"maxStep": 0.4387709426149291,
+				"residual": 6.3499173255875495e-6,
+				"peak": 5.485535722641873,
+				"trough": -0.20373569897410582
+			},
+			"torso.yaw": {
+				"peakToPeak": 0.4788270052564357,
+				"maxStep": 0.03651036483113454,
+				"residual": 1.0256591260354315e-6,
+				"peak": 0.462416520274295,
+				"trough": -0.016410484982140684
+			},
+			"torso.pitch": {
+				"peakToPeak": 1.8843360070150337,
+				"maxStep": 0.15037942472748111,
+				"residual": 5.204406563931059e-5,
+				"peak": 0.5787574425048361,
+				"trough": -1.3055785645101976
+			},
+			"torso.roll": {
+				"peakToPeak": 1.2600710664643042,
+				"maxStep": 0.09607990745035411,
+				"residual": 2.699102963251132e-6,
+				"peak": 1.216885579669197,
+				"trough": -0.0431854867951071
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0.6712523052332695,
+				"maxStep": 0.0947946859881854,
+				"residual": 0,
+				"peak": 0.3393144428629556,
+				"trough": -0.33193786237031386
+			},
+			"mouth.form": {
+				"peakToPeak": 0.9245979651223031,
+				"maxStep": 0.04837028235070984,
+				"residual": 0.0001433036974202597,
+				"peak": 0.9245979651223031,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.9446999999999999,
+				"maxStep": 0.2669089455307492,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.05530000000000013
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.9446999999999999,
+				"maxStep": 0.2669089455307492,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.05530000000000013
+			}
+		}
+	},
+	"shake": {
+		"durationMs": 2600,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 19.392927634306027,
+				"maxStep": 1.347707034550556,
+				"residual": 8.613718665929439e-7,
+				"peak": 9.967306217624639,
+				"trough": -9.425621416681386
+			},
+			"head.pitch": {
+				"peakToPeak": 3.0917286231926386,
+				"maxStep": 0.34719301995272533,
+				"residual": 2.174478029280703e-8,
+				"peak": 2.43988080174343,
+				"trough": -0.6518478214492085
+			},
+			"head.roll": {
+				"peakToPeak": 10.361085430107916,
+				"maxStep": 0.6468993765842672,
+				"residual": 7.873542231064279e-5,
+				"peak": 5.57677844564809,
+				"trough": -4.7843069844598265
+			},
+			"torso.yaw": {
+				"peakToPeak": 4.357555082239481,
+				"maxStep": 0.28427231886283066,
+				"residual": 4.725878701389264e-7,
+				"peak": 2.2249529865468936,
+				"trough": -2.1326020956925866
+			},
+			"torso.pitch": {
+				"peakToPeak": 0.7836047113941749,
+				"maxStep": 0.09156640332885246,
+				"residual": 1.8549238124073534e-8,
+				"peak": 0.6243891485310133,
+				"trough": -0.15921556286316152
+			},
+			"torso.roll": {
+				"peakToPeak": 2.2932318820717636,
+				"maxStep": 0.1364507130541588,
+				"residual": 3.2765218013794106e-5,
+				"peak": 1.2252544485292551,
+				"trough": -1.0679774335425087
+			},
+			"gaze.x": {
+				"peakToPeak": 1.03753109351278,
+				"maxStep": 0.10947901871041643,
+				"residual": 0,
+				"peak": 0.5189278434335399,
+				"trough": -0.51860325007924
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.8414929429609035,
+				"maxStep": 0.045449189119979305,
+				"residual": 0.00012355046283519773,
+				"peak": 0.8414929429609035,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.4455,
+				"maxStep": 0.07685023772629518,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.5545
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.4455,
+				"maxStep": 0.07685023772629518,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.5545
+			}
+		}
+	},
+	"shake#0": {
+		"durationMs": 2200,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 16.748509451461526,
+				"maxStep": 1.5579902405472073,
+				"residual": 6.762378196633787e-6,
+				"peak": 8.004358499374748,
+				"trough": -8.744150952086779
+			},
+			"head.pitch": {
+				"peakToPeak": 2.8729936328960686,
+				"maxStep": 0.28066186403556714,
+				"residual": 1.4842807275297598e-7,
+				"peak": 1.9804445153035999,
+				"trough": -0.8925491175924687
+			},
+			"head.roll": {
+				"peakToPeak": 10.021898882765786,
+				"maxStep": 0.7478353154626598,
+				"residual": 0.0006798360411211401,
+				"peak": 4.197192457001653,
+				"trough": -5.824706425764134
+			},
+			"torso.yaw": {
+				"peakToPeak": 3.8405158325858544,
+				"maxStep": 0.33243462722395956,
+				"residual": 1.4371973964865313e-6,
+				"peak": 1.849758772074299,
+				"trough": -1.9907570605115552
+			},
+			"torso.pitch": {
+				"peakToPeak": 0.7397106959093407,
+				"maxStep": 0.06830746307100494,
+				"residual": 4.655107952580771e-8,
+				"peak": 0.5200177028507076,
+				"trough": -0.21969299305863305
+			},
+			"torso.roll": {
+				"peakToPeak": 2.2345502937513704,
+				"maxStep": 0.1595686210675008,
+				"residual": 0.00020651736651065546,
+				"peak": 0.9555633890455464,
+				"trough": -1.2789869047058242
+			},
+			"gaze.x": {
+				"peakToPeak": 1.037959860614801,
+				"maxStep": 0.13639219208762435,
+				"residual": 0,
+				"peak": 0.5189574824824427,
+				"trough": -0.5190023781323585
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.8414753685132887,
+				"maxStep": 0.05375384342116102,
+				"residual": 0.00018437841338317355,
+				"peak": 0.8414753685132887,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.4455,
+				"maxStep": 0.08630964756011972,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.5545
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.4455,
+				"maxStep": 0.08630964756011972,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.5545
+			}
+		}
+	},
+	"wink": {
+		"durationMs": 1500,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 1.6871487413910353,
+				"maxStep": 0.12577449191765905,
+				"residual": 1.3928863877308343e-6,
+				"peak": 1.3758145047326884,
+				"trough": -0.31133423665834703
+			},
+			"head.pitch": {
+				"peakToPeak": 2.0112812653249335,
+				"maxStep": 0.1366973239976753,
+				"residual": 1.5140000014465031e-5,
+				"peak": 2.008037699911026,
+				"trough": -0.003243565413907598
+			},
+			"head.roll": {
+				"peakToPeak": 6.025531219253696,
+				"maxStep": 0.44919461399163985,
+				"residual": 4.974594241895577e-6,
+				"peak": 4.913623231188171,
+				"trough": -1.111907988065525
+			},
+			"torso.yaw": {
+				"peakToPeak": 1.6871487413910353,
+				"maxStep": 0.12577449191765905,
+				"residual": 1.3928863877308343e-6,
+				"peak": 1.3758145047326884,
+				"trough": -0.31133423665834703
+			},
+			"torso.pitch": {
+				"peakToPeak": 2.0112812653249335,
+				"maxStep": 0.1366973239976753,
+				"residual": 1.5140000014465031e-5,
+				"peak": 2.008037699911026,
+				"trough": -0.003243565413907598
+			},
+			"torso.roll": {
+				"peakToPeak": 1.5005234214507,
+				"maxStep": 0.11345067956396726,
+				"residual": 1.1961455309426878e-5,
+				"peak": 1.2329904595028647,
+				"trough": -0.26753296194783527
+			},
+			"gaze.x": {
+				"peakToPeak": 0.07408259633402,
+				"maxStep": 0.0068441383102978565,
+				"residual": 0,
+				"peak": 0.01808321944244824,
+				"trough": -0.05599937689157177
+			},
+			"gaze.y": {
+				"peakToPeak": 0.1,
+				"maxStep": 0.008915083148041618,
+				"residual": 0,
+				"peak": 0,
+				"trough": -0.1
+			},
+			"mouth.form": {
+				"peakToPeak": 0.8489077103072077,
+				"maxStep": 0.07246702228452162,
+				"residual": 4.116853889221612e-5,
+				"peak": 0.8489077103072077,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 1,
+				"maxStep": 0.2566930973111312,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			}
+		}
+	},
+	"wink#0": {
+		"durationMs": 1420,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 1.7756548899398976,
+				"maxStep": 0.14408478527889562,
+				"residual": 3.361895493084347e-5,
+				"peak": 0.32187882841562077,
+				"trough": -1.453776061524277
+			},
+			"head.pitch": {
+				"peakToPeak": 2.235255997499969,
+				"maxStep": 0.16505939430522765,
+				"residual": 1.8487584774689454e-5,
+				"peak": 2.2317415555072455,
+				"trough": -0.003514441992723411
+			},
+			"head.roll": {
+				"peakToPeak": 6.341624606928206,
+				"maxStep": 0.5145885188531989,
+				"residual": 0.00012006769618158383,
+				"peak": 1.149567244341502,
+				"trough": -5.192057362586704
+			},
+			"torso.yaw": {
+				"peakToPeak": 1.7756548899398976,
+				"maxStep": 0.14408478527889562,
+				"residual": 3.361895493084347e-5,
+				"peak": 0.32187882841562077,
+				"trough": -1.453776061524277
+			},
+			"torso.pitch": {
+				"peakToPeak": 2.235255997499969,
+				"maxStep": 0.16505939430522765,
+				"residual": 1.8487584774689454e-5,
+				"peak": 2.2317415555072455,
+				"trough": -0.003514441992723411
+			},
+			"torso.roll": {
+				"peakToPeak": 1.5809392320238835,
+				"maxStep": 0.12894493101998372,
+				"residual": 2.6038972984717576e-5,
+				"peak": 0.2769957394812024,
+				"trough": -1.3039434925426812
+			},
+			"gaze.x": {
+				"peakToPeak": 0.07981872870760216,
+				"maxStep": 0.0082031437878476,
+				"residual": 0,
+				"peak": 0.059410567198941514,
+				"trough": -0.020408161508660646
+			},
+			"gaze.y": {
+				"peakToPeak": 0.11110000000000003,
+				"maxStep": 0.011478019102779041,
+				"residual": 0,
+				"peak": 0,
+				"trough": -0.11110000000000003
+			},
+			"mouth.form": {
+				"peakToPeak": 0.8874022706386633,
+				"maxStep": 0.07949513158432309,
+				"residual": 4.3999034176240725e-5,
+				"peak": 0.8874022706386633,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			},
+			"eyes.right.open": {
+				"peakToPeak": 1,
+				"maxStep": 0.2777377245195928,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0
+			}
+		}
+	},
+	"wink#1": {
+		"durationMs": 2000,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 2.4918263951729376,
+				"maxStep": 0.1373535625660841,
+				"residual": 2.8602086897629067e-6,
+				"peak": 1.6157439888252414,
+				"trough": -0.876082406347696
+			},
+			"head.pitch": {
+				"peakToPeak": 2.8189478571215147,
+				"maxStep": 0.22550233062463665,
+				"residual": 3.073596732305562e-5,
+				"peak": 2.813771232986356,
+				"trough": -0.005176624135158866
+			},
+			"head.roll": {
+				"peakToPeak": 8.89937998276049,
+				"maxStep": 0.49054843773601453,
+				"residual": 1.0215031034867352e-5,
+				"peak": 5.770514245804433,
+				"trough": -3.128865736956057
+			},
+			"torso.yaw": {
+				"peakToPeak": 2.4918263951729376,
+				"maxStep": 0.1373535625660841,
+				"residual": 2.8602086897629067e-6,
+				"peak": 1.6157439888252414,
+				"trough": -0.876082406347696
+			},
+			"torso.pitch": {
+				"peakToPeak": 2.8189478571215147,
+				"maxStep": 0.22550233062463665,
+				"residual": 3.073596732305562e-5,
+				"peak": 2.813771232986356,
+				"trough": -0.005176624135158866
+			},
+			"torso.roll": {
+				"peakToPeak": 2.232886613814399,
+				"maxStep": 0.1269109666795757,
+				"residual": 1.5732712294596696e-5,
+				"peak": 1.4427212712626936,
+				"trough": -0.7901653425517057
+			},
+			"gaze.x": {
+				"peakToPeak": 0.1260000000000001,
+				"maxStep": 0.009949002690517905,
+				"residual": 0,
+				"peak": 0.044800000000000006,
+				"trough": -0.08120000000000012
+			},
+			"gaze.y": {
+				"peakToPeak": 0.13999999999999999,
+				"maxStep": 0.01744821728395058,
+				"residual": 0,
+				"peak": 0,
+				"trough": -0.13999999999999999
+			},
+			"mouth.form": {
+				"peakToPeak": 0.8799979764789535,
+				"maxStep": 0.0684449933882399,
+				"residual": 6.465292569450113e-5,
+				"peak": 0.8799979764789535,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 1,
+				"maxStep": 0.25669309731113066,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0
+			},
+			"eyes.right.open": {
+				"peakToPeak": 1,
+				"maxStep": 0.2901234567901235,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0
+			}
+		}
+	},
+	"curious": {
+		"durationMs": 3800,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 2.503525516588307,
+				"maxStep": 0.1415514027449558,
+				"residual": 3.5135510751754924e-5,
+				"peak": 0.0023602621080150306,
+				"trough": -2.501165254480292
+			},
+			"head.pitch": {
+				"peakToPeak": 1.934133801608099,
+				"maxStep": 0.10298329105344284,
+				"residual": 2.6351884860523506e-5,
+				"peak": 0.001770236998972846,
+				"trough": -1.932363564609126
+			},
+			"head.roll": {
+				"peakToPeak": 9.534142356250323,
+				"maxStep": 0.5221140511323119,
+				"residual": 0.00013761438803206187,
+				"peak": 0.009244408761429098,
+				"trough": -9.524897947488894
+			},
+			"torso.yaw": {
+				"peakToPeak": 0.3758288092263361,
+				"maxStep": 0.021232710411743377,
+				"residual": 1.7419772126744642e-5,
+				"peak": 0.0006540210542922576,
+				"trough": -0.37517478817204386
+			},
+			"torso.pitch": {
+				"peakToPeak": 0.3484140632760109,
+				"maxStep": 0.018536992389619728,
+				"residual": 1.5678635813432314e-5,
+				"peak": 0.0005886216463683125,
+				"trough": -0.3478254416296426
+			},
+			"torso.roll": {
+				"peakToPeak": 1.7175555327626602,
+				"maxStep": 0.09398052920381617,
+				"residual": 8.187394508242861e-5,
+				"peak": 1.714481630548001,
+				"trough": -0.0030739022146591623
+			},
+			"gaze.x": {
+				"peakToPeak": 0.32,
+				"maxStep": 0.016632404867144263,
+				"residual": 0,
+				"peak": 0.32,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0.72,
+				"maxStep": 0.044866844444444554,
+				"residual": 0,
+				"peak": 0.72,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.9551999999999979,
+				"maxStep": 0.05159013102936316,
+				"residual": 5.1926785228495145e-5,
+				"peak": 0.9551999999999979,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0.2586999999999971,
+				"maxStep": 0.012938623396923477,
+				"residual": 1.066637284223063e-5,
+				"peak": 0.2586999999999971,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.8499999999999989,
+				"maxStep": 0.130373505015433,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.15000000000000113
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.8499999999999989,
+				"maxStep": 0.130373505015433,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.15000000000000113
+			}
+		}
+	},
+	"curious#0": {
+		"durationMs": 3600,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 4.57601053169677,
+				"maxStep": 0.20981608864218715,
+				"residual": 8.152347503932743e-5,
+				"peak": 2.194105541618536,
+				"trough": -2.381904990078234
+			},
+			"head.pitch": {
+				"peakToPeak": 2.193394338456245,
+				"maxStep": 0.13069822187969649,
+				"residual": 7.632433562465552e-5,
+				"peak": 0.0035502546940134327,
+				"trough": -2.1898440837622313
+			},
+			"head.roll": {
+				"peakToPeak": 18.30404212678708,
+				"maxStep": 0.8392643545687486,
+				"residual": 0.0003260939001573097,
+				"peak": 8.776422166474145,
+				"trough": -9.527619960312936
+			},
+			"torso.yaw": {
+				"peakToPeak": 0.6864015797545155,
+				"maxStep": 0.03147241329632808,
+				"residual": 3.4265527664575464e-5,
+				"peak": 0.32911583124278043,
+				"trough": -0.35728574851173517
+			},
+			"torso.pitch": {
+				"peakToPeak": 0.3952862984012343,
+				"maxStep": 0.02352567993834534,
+				"residual": 3.849543272291675e-5,
+				"peak": 0.001114363324032705,
+				"trough": -0.3941719350772016
+			},
+			"torso.roll": {
+				"peakToPeak": 3.294727582821675,
+				"maxStep": 0.15106758382237473,
+				"residual": 0.00016447453278996185,
+				"peak": 1.7149715928563287,
+				"trough": -1.5797559899653462
+			},
+			"gaze.x": {
+				"peakToPeak": 0.6400835,
+				"maxStep": 0.03240031450318634,
+				"residual": 0,
+				"peak": 0.3336235,
+				"trough": -0.30646
+			},
+			"gaze.y": {
+				"peakToPeak": 0.5500000000000007,
+				"maxStep": 0.05682187674643088,
+				"residual": 0,
+				"peak": 0.55,
+				"trough": -6.106226635438361e-16
+			},
+			"mouth.form": {
+				"peakToPeak": 0.955199999999999,
+				"maxStep": 0.061017071475127305,
+				"residual": 9.758856270183207e-5,
+				"peak": 0.955199999999999,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0.25869880645093973,
+				"maxStep": 0.011440700901586373,
+				"residual": 1.9006490586373544e-5,
+				"peak": 0.25869880645093973,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.88,
+				"maxStep": 0.18183000558857987,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.12
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.88,
+				"maxStep": 0.18183000558857987,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.12
+			}
+		}
+	},
+	"chin_up": {
+		"durationMs": 2700,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 4.3336274407014095,
+				"maxStep": 0.27988376276304305,
+				"residual": 0.00011492959394372294,
+				"peak": 0.005956918846136113,
+				"trough": -4.327670521855273
+			},
+			"head.pitch": {
+				"peakToPeak": 9.630283201558685,
+				"maxStep": 0.6219639172512084,
+				"residual": 0.00025539909765271557,
+				"peak": 9.617045604122827,
+				"trough": -0.013237597435858046
+			},
+			"head.roll": {
+				"peakToPeak": 5.007747264810517,
+				"maxStep": 0.32342123697062775,
+				"residual": 0.0001328075307794122,
+				"peak": 5.000863714143871,
+				"trough": -0.006883550666646162
+			},
+			"torso.yaw": {
+				"peakToPeak": 0.6506671067918931,
+				"maxStep": 0.04195048040646637,
+				"residual": 3.916916148605829e-5,
+				"peak": 0.0014779164159234232,
+				"trough": -0.6491891903759697
+			},
+			"torso.pitch": {
+				"peakToPeak": 1.7351122847783815,
+				"maxStep": 0.11186794775057707,
+				"residual": 0.00010445109729615579,
+				"peak": 1.731171174335919,
+				"trough": -0.003941110442462448
+			},
+			"torso.roll": {
+				"peakToPeak": 0.751881990070632,
+				"maxStep": 0.04847611069191676,
+				"residual": 4.5262142161667564e-5,
+				"peak": 0.7501741755455649,
+				"trough": -0.0017078145250670612
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0.7800000000000002,
+				"maxStep": 0.08058375247675653,
+				"residual": 0,
+				"peak": 1.7319479184152443e-16,
+				"trough": -0.78
+			},
+			"mouth.form": {
+				"peakToPeak": 0.9495086360901602,
+				"maxStep": 0.06515358471302912,
+				"residual": 5.9540070006402736e-5,
+				"peak": 0.9495086360901602,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0.2227905234926871,
+				"maxStep": 0.023609438355279205,
+				"residual": 6.693410836810503e-7,
+				"peak": 0.2227905234926871,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.7057759423249872,
+				"maxStep": 0.05834552755620803,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.2942240576750128
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.7057759423249872,
+				"maxStep": 0.05834552755620803,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.2942240576750128
+			}
+		}
+	},
+	"head_toss": {
+		"durationMs": 3000,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 11.30970957217674,
+				"maxStep": 1.0967548725393321,
+				"residual": 9.165637718737921e-5,
+				"peak": 0.007508794928850106,
+				"trough": -11.30220077724789
+			},
+			"head.pitch": {
+				"peakToPeak": 7.179291322269268,
+				"maxStep": 0.7269008923790006,
+				"residual": 5.601222748864636e-5,
+				"peak": 7.174702614184326,
+				"trough": -0.004588708084941645
+			},
+			"head.roll": {
+				"peakToPeak": 9.167210735843645,
+				"maxStep": 0.8958187356106295,
+				"residual": 7.298563183508258e-5,
+				"peak": 0.005979225636234388,
+				"trough": -9.16123151020741
+			},
+			"torso.yaw": {
+				"peakToPeak": 1.8103381246377215,
+				"maxStep": 0.17583183295383242,
+				"residual": 3.3393392300030226e-5,
+				"peak": 1.8083244989474263,
+				"trough": -0.0020136256902951863
+			},
+			"torso.pitch": {
+				"peakToPeak": 1.005515554777882,
+				"maxStep": 0.1020470583976647,
+				"residual": 1.7856187914056884e-5,
+				"peak": 1.004438824341733,
+				"trough": -0.0010767304361489862
+			},
+			"torso.roll": {
+				"peakToPeak": 1.1005552891737194,
+				"maxStep": 0.10772780901752332,
+				"residual": 1.9943275417934222e-5,
+				"peak": 1.099352707147232,
+				"trough": -0.0012025820264874192
+			},
+			"gaze.x": {
+				"peakToPeak": 1.64,
+				"maxStep": 0.2958824744105494,
+				"residual": 0,
+				"peak": 0.82,
+				"trough": -0.82
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.6333681968126335,
+				"maxStep": 0.041059863952115194,
+				"residual": 6.959291971265669e-6,
+				"peak": 0.6333681968126335,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.75,
+				"maxStep": 0.21759259259259667,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.25
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.75,
+				"maxStep": 0.21759259259259667,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.25
+			}
+		}
+	},
+	"head_toss#0": {
+		"durationMs": 3000,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 11.307488198610631,
+				"maxStep": 1.0967548725393321,
+				"residual": 6.648446317064155e-5,
+				"peak": 11.301373823761985,
+				"trough": -0.006114374848647211
+			},
+			"head.pitch": {
+				"peakToPeak": 6.976085361051692,
+				"maxStep": 0.6992094119880976,
+				"residual": 3.939819986424109e-5,
+				"peak": 6.972462027820072,
+				"trough": -0.003623333231620441
+			},
+			"head.roll": {
+				"peakToPeak": 9.065581278009537,
+				"maxStep": 0.886472868776738,
+				"residual": 5.2325734577690564e-5,
+				"peak": 9.060769038552655,
+				"trough": -0.0048122394568818816
+			},
+			"torso.yaw": {
+				"peakToPeak": 1.8098421725343221,
+				"maxStep": 0.17583183295383242,
+				"residual": 2.5160053523939685e-5,
+				"peak": 0.0016438672291662288,
+				"trough": -1.8081983053051558
+			},
+			"torso.pitch": {
+				"peakToPeak": 0.9769596507512324,
+				"maxStep": 0.09814173160153894,
+				"residual": 1.304595335793244e-5,
+				"peak": 0.9761072751485933,
+				"trough": -0.0008523756026390831
+			},
+			"torso.roll": {
+				"peakToPeak": 1.0882736365428112,
+				"maxStep": 0.1066047361943675,
+				"residual": 1.4851420315022564e-5,
+				"peak": 0.0009703382962121571,
+				"trough": -1.087303298246599
+			},
+			"gaze.x": {
+				"peakToPeak": 1.64,
+				"maxStep": 0.2958824744105494,
+				"residual": 0,
+				"peak": 0.82,
+				"trough": -0.82
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.17819999995092553,
+				"maxStep": 0.018639206886694445,
+				"residual": 4.0186824534734795e-6,
+				"peak": 0.17819999995092553,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0.13859999997228856,
+				"maxStep": 0.016511535118490926,
+				"residual": 3.1256419082571628e-6,
+				"peak": 0.13859999997228856,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.75,
+				"maxStep": 0.21759259259259667,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.25
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.75,
+				"maxStep": 0.21759259259259667,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.25
+			}
+		}
+	},
+	"surprise": {
+		"durationMs": 2500,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 1.7491603172867305,
+				"maxStep": 0.15943116605648378,
+				"residual": 2.4712649074591973e-5,
+				"peak": 0.0016601051622654366,
+				"trough": -1.7475002121244652
+			},
+			"head.pitch": {
+				"peakToPeak": 8.852025897200054,
+				"maxStep": 0.8068378849012339,
+				"residual": 0.0001250640135353842,
+				"peak": 8.843624555285755,
+				"trough": -0.008401341914298763
+			},
+			"head.roll": {
+				"peakToPeak": 4.603053466544028,
+				"maxStep": 0.41955570014864163,
+				"residual": 6.503328703839982e-5,
+				"peak": 4.598684768748593,
+				"trough": -0.004368697795435356
+			},
+			"torso.yaw": {
+				"peakToPeak": 1.7491603172867305,
+				"maxStep": 0.15943116605648378,
+				"residual": 2.4712649074591973e-5,
+				"peak": 0.0016601051622654366,
+				"trough": -1.7475002121244652
+			},
+			"torso.pitch": {
+				"peakToPeak": 1.0622431076640064,
+				"maxStep": 0.09682054618814806,
+				"residual": 1.500768162424606e-5,
+				"peak": 1.0612349466342905,
+				"trough": -0.0010081610297158522
+			},
+			"torso.roll": {
+				"peakToPeak": 0.6904580199816043,
+				"maxStep": 0.06293335502229624,
+				"residual": 9.754993055759955e-6,
+				"peak": 0.689802715312289,
+				"trough": -0.0006553046693153046
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0.4255739063970865,
+				"maxStep": 0.08080712071171514,
+				"residual": 0,
+				"peak": 0.4255739063970865,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.4188169819969634,
+				"maxStep": 0.03644860026849364,
+				"residual": 0.00018195431832421425,
+				"peak": 0.4188169819969634,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0.7799999957654333,
+				"maxStep": 0.08620748909111203,
+				"residual": 4.7039631665190065e-6,
+				"peak": 0.7799999957654333,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.8499377919443927,
+				"maxStep": 0.3043516371501773,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.15006220805560733
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.8499377919443927,
+				"maxStep": 0.3043516371501773,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.15006220805560733
+			}
+		}
+	},
+	"glance": {
+		"durationMs": 1200,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 4.845777188649991,
+				"maxStep": 0.4295582662377333,
+				"residual": 0.0018077023344340508,
+				"peak": 0.019306983948927776,
+				"trough": -4.826470204701063
+			},
+			"head.pitch": {
+				"peakToPeak": 4.542916114359366,
+				"maxStep": 0.4027108745978749,
+				"residual": 0.0016947209385319213,
+				"peak": 0.01810029745211977,
+				"trough": -4.524815816907247
+			},
+			"head.roll": {
+				"peakToPeak": 3.828163979033493,
+				"maxStep": 0.3393510303278089,
+				"residual": 0.0014280848442029016,
+				"peak": 3.8129114617138398,
+				"trough": -0.015252517319652945
+			},
+			"torso.yaw": {
+				"peakToPeak": 0.5821596901376107,
+				"maxStep": 0.051550788891647936,
+				"residual": 0.0003740565179057372,
+				"peak": 0.002977373034783125,
+				"trough": -0.5791823171028276
+			},
+			"torso.pitch": {
+				"peakToPeak": 0.5457747095040104,
+				"maxStep": 0.04832886458591995,
+				"residual": 0.00035067798553662955,
+				"peak": 0.002791287220109183,
+				"trough": -0.5429834222839013
+			},
+			"torso.roll": {
+				"peakToPeak": 0.574882694010891,
+				"maxStep": 0.050906404030502395,
+				"residual": 0.00036938081143191606,
+				"peak": 0.5719425381390426,
+				"trough": -0.0029401558718483334
+			},
+			"gaze.x": {
+				"peakToPeak": 0.82,
+				"maxStep": 0.31010192117573304,
+				"residual": 0,
+				"peak": 0,
+				"trough": -0.82
+			},
+			"gaze.y": {
+				"peakToPeak": 0.25,
+				"maxStep": 0.09454326865113812,
+				"residual": 0,
+				"peak": 0.25,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.5799786451068282,
+				"maxStep": 0.08369173042691484,
+				"residual": 8.871357610637119e-5,
+				"peak": 0.5799786451068282,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.3200000000000003,
+				"maxStep": 0.06612000203221058,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.6799999999999997
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.3200000000000003,
+				"maxStep": 0.06612000203221058,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.6799999999999997
+			}
+		}
+	},
+	"glance#0": {
+		"durationMs": 2400,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 7.249592740811151,
+				"maxStep": 0.5884223644756021,
+				"residual": 0.00032153514884702397,
+				"peak": 0.01331209272345503,
+				"trough": -7.236280648087696
+			},
+			"head.pitch": {
+				"peakToPeak": 3.8261868555099867,
+				"maxStep": 0.3107626980920897,
+				"residual": 0.00016969910633312407,
+				"peak": 0.007025826717852955,
+				"trough": -3.819161028792134
+			},
+			"head.roll": {
+				"peakToPeak": 5.219706773384028,
+				"maxStep": 0.42366410242243413,
+				"residual": 0.00023150530716985722,
+				"peak": 5.210122066623141,
+				"trough": -0.009584706760887598
+			},
+			"torso.yaw": {
+				"peakToPeak": 0.8707919607876327,
+				"maxStep": 0.07064896896332262,
+				"residual": 0.00011105064922405596,
+				"peak": 0.0024484672805048734,
+				"trough": -0.8683434935071278
+			},
+			"torso.pitch": {
+				"peakToPeak": 0.4595861628929998,
+				"maxStep": 0.03731365197823472,
+				"residual": 5.861006488775322e-5,
+				"peak": 0.001292246620708668,
+				"trough": -0.45829391627229116
+			},
+			"torso.roll": {
+				"peakToPeak": 0.7837127647088691,
+				"maxStep": 0.0635840720669904,
+				"residual": 9.994558430165026e-5,
+				"peak": 0.7815091441564147,
+				"trough": -0.002203620552454383
+			},
+			"gaze.x": {
+				"peakToPeak": 0.8200000000000014,
+				"maxStep": 0.16943250520753922,
+				"residual": 0,
+				"peak": 4.996003610813204e-16,
+				"trough": -0.8200000000000008
+			},
+			"gaze.y": {
+				"peakToPeak": 0.22000000000000025,
+				"maxStep": 0.04545750139714466,
+				"residual": 0,
+				"peak": 0.22000000000000025,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.5199415210114781,
+				"maxStep": 0.04317566864497974,
+				"residual": 4.487930079934561e-5,
+				"peak": 0.5199415210114781,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.8477266172839528,
+				"maxStep": 0.2081438024691391,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.15227338271604718
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.8477266172839528,
+				"maxStep": 0.2081438024691391,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.15227338271604718
+			}
+		}
+	},
+	"joy_hop": {
+		"durationMs": 1350,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"head.pitch": {
+				"peakToPeak": 11.700413759773426,
+				"maxStep": 0.9792946875691086,
+				"residual": 0.001295815322219677,
+				"peak": 6.629838323068467,
+				"trough": -5.070575436704957
+			},
+			"head.roll": {
+				"peakToPeak": 4.634483766021651,
+				"maxStep": 0.38752689001440355,
+				"residual": 0.0009818685108705016,
+				"peak": 1.4535011822853152,
+				"trough": -3.180982583736336
+			},
+			"torso.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"torso.pitch": {
+				"peakToPeak": 3.764029621128859,
+				"maxStep": 0.31644657658027175,
+				"residual": 0.000665644538870463,
+				"peak": 2.1843624870702256,
+				"trough": -1.5796671340586332
+			},
+			"torso.roll": {
+				"peakToPeak": 1.2524865198541333,
+				"maxStep": 0.11364065878168761,
+				"residual": 0.0004138807761092654,
+				"peak": 0.37186624893401926,
+				"trough": -0.8806202709201141
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.9199805218102619,
+				"maxStep": 0.09622935093018459,
+				"residual": 0.00024826872069329503,
+				"peak": 0.9199805218102619,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0.6489008538681111,
+				"maxStep": 0.055098816290357344,
+				"residual": 1.7864950495469882e-5,
+				"peak": 0.6489008538681111,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.75,
+				"maxStep": 0.08329520924269052,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.25
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.75,
+				"maxStep": 0.08329520924269052,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.25
+			}
+		}
+	},
+	"petrify": {
+		"durationMs": 4600,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 3.8286625573122017,
+				"maxStep": 0.3517915673088119,
+				"residual": 0.00026874451694121023,
+				"peak": 0.007025822233915287,
+				"trough": -3.8216367350782865
+			},
+			"head.pitch": {
+				"peakToPeak": 9.270858380699588,
+				"maxStep": 0.8517058998002822,
+				"residual": 0.0006506444984693905,
+				"peak": 9.253848488807998,
+				"trough": -0.017009891891589787
+			},
+			"head.roll": {
+				"peakToPeak": 5.542689713908757,
+				"maxStep": 0.5091720053153863,
+				"residual": 0.00038897246219106343,
+				"peak": 0.010168957832639589,
+				"trough": -5.532520756076118
+			},
+			"torso.yaw": {
+				"peakToPeak": 0.5742993835968301,
+				"maxStep": 0.052768735096321795,
+				"residual": 4.031167754118174e-5,
+				"peak": 0.0010538733350872922,
+				"trough": -0.5732455102617428
+			},
+			"torso.pitch": {
+				"peakToPeak": 1.1125030056839507,
+				"maxStep": 0.10220470797603376,
+				"residual": 7.807733981632683e-5,
+				"peak": 1.11046181865696,
+				"trough": -0.002041187026990775
+			},
+			"torso.roll": {
+				"peakToPeak": 0.8314034570863139,
+				"maxStep": 0.07637580079730788,
+				"residual": 5.8345869328659614e-5,
+				"peak": 0.0015253436748959381,
+				"trough": -0.8298781134114179
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0.2200000000000003,
+				"maxStep": 0.056472481408448946,
+				"residual": 0,
+				"peak": 0.22,
+				"trough": -2.9309887850104134e-16
+			},
+			"mouth.form": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0.5799999999999997,
+				"maxStep": 0.06605193453100366,
+				"residual": 6.165227012581599e-5,
+				"peak": 0.5799999999999997,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.8499377919443925,
+				"maxStep": 0.30435163715017455,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.15006220805560755
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.8499377919443925,
+				"maxStep": 0.30435163715017455,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.15006220805560755
+			}
+		}
+	},
+	"close_up": {
+		"durationMs": 4600,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 4.13202061526495,
+				"maxStep": 0.0988684920266707,
+				"residual": 7.951794489559638e-5,
+				"peak": 2.0659130198038405,
+				"trough": -2.0661075954611094
+			},
+			"head.pitch": {
+				"peakToPeak": 5.648925998442688,
+				"maxStep": 0.2882498716699704,
+				"residual": 0.0001722898707602178,
+				"peak": 5.6427377667655065,
+				"trough": -0.006188231677180866
+			},
+			"head.roll": {
+				"peakToPeak": 7.083436235487749,
+				"maxStep": 0.16688923917883802,
+				"residual": 0.00016125733640704628,
+				"peak": 3.5419021341240575,
+				"trough": -3.541534101363692
+			},
+			"torso.yaw": {
+				"peakToPeak": 1.033269899123967,
+				"maxStep": 0.025110606240488387,
+				"residual": 2.444500303308015e-5,
+				"peak": 0.5169635022017064,
+				"trough": -0.5163063969222608
+			},
+			"torso.pitch": {
+				"peakToPeak": 1.6951003300465928,
+				"maxStep": 0.08207767442926117,
+				"residual": 6.693169960057631e-5,
+				"peak": 1.6929358577956333,
+				"trough": -0.0021644722509594995
+			},
+			"torso.roll": {
+				"peakToPeak": 1.7716594161879642,
+				"maxStep": 0.04273580615988748,
+				"residual": 5.163750936000756e-5,
+				"peak": 0.8863936540082628,
+				"trough": -0.8852657621797015
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0.35,
+				"maxStep": 0.02321438041009688,
+				"residual": 0,
+				"peak": 0,
+				"trough": -0.35
+			},
+			"mouth.form": {
+				"peakToPeak": 0.9599999999999997,
+				"maxStep": 0.05438659858350031,
+				"residual": 6.427563453114669e-5,
+				"peak": 0.9599999999999997,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0.3580351821972732,
+				"maxStep": 0.014849322737619602,
+				"residual": 1.4515718096856904e-5,
+				"peak": 0.3580351821972732,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.92,
+				"maxStep": 0.19009500584260342,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.07999999999999996
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.92,
+				"maxStep": 0.19009500584260342,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.07999999999999996
+			}
+		}
+	},
+	"edge_peek": {
+		"durationMs": 4800,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 8.108025262673104,
+				"maxStep": 0.43259836317927336,
+				"residual": 0.0003009041511958103,
+				"peak": 8.097861850373231,
+				"trough": -0.010163412299873262
+			},
+			"head.pitch": {
+				"peakToPeak": 3.815803364030085,
+				"maxStep": 0.2121777471476185,
+				"residual": 0.00014063437378502105,
+				"peak": 0.004796902044698399,
+				"trough": -3.8110064619853867
+			},
+			"head.roll": {
+				"peakToPeak": 9.058394034464321,
+				"maxStep": 0.4942351212456684,
+				"residual": 0.00032335354482839276,
+				"peak": 0.010838693667694504,
+				"trough": -9.047555340796627
+			},
+			"torso.yaw": {
+				"peakToPeak": 1.9463245408477854,
+				"maxStep": 0.09844153629958463,
+				"residual": 9.246525226812221e-5,
+				"peak": 1.9435171065972168,
+				"trough": -0.0028074342505687096
+			},
+			"torso.pitch": {
+				"peakToPeak": 0.9157553145406772,
+				"maxStep": 0.048268898647279734,
+				"residual": 4.32222035004142e-5,
+				"peak": 0.0013266857816426909,
+				"trough": -0.9144286287590344
+			},
+			"torso.roll": {
+				"peakToPeak": 2.1743841292486663,
+				"maxStep": 0.11240814333618743,
+				"residual": 9.92417440769009e-5,
+				"peak": 0.002993683396128461,
+				"trough": -2.1713904458525377
+			},
+			"gaze.x": {
+				"peakToPeak": 0.8,
+				"maxStep": 0.07796692259517712,
+				"residual": 0,
+				"peak": 0.8,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0.3199824541969639,
+				"maxStep": 0.008375590055271248,
+				"residual": 0,
+				"peak": 0.279991227098482,
+				"trough": -0.039991227098481935
+			},
+			"mouth.form": {
+				"peakToPeak": 0.5799999999999997,
+				"maxStep": 0.03230417871334279,
+				"residual": 3.883319586256627e-5,
+				"peak": 0.5799999999999997,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.8500000000000008,
+				"maxStep": 0.24660493827163021,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.14999999999999925
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.8500000000000008,
+				"maxStep": 0.24660493827163021,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.14999999999999925
+			}
+		}
+	},
+	"spin": {
+		"durationMs": 2800,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"head.pitch": {
+				"peakToPeak": 9.481963655850794,
+				"maxStep": 0.7842874379596125,
+				"residual": 9.12475544063317e-5,
+				"peak": 5.2605404327478205,
+				"trough": -4.221423223102973
+			},
+			"head.roll": {
+				"peakToPeak": 7.69729494628846,
+				"maxStep": 0.6438051066783417,
+				"residual": 3.160031251476141e-6,
+				"peak": 3.8050306041552,
+				"trough": -3.89226434213326
+			},
+			"torso.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"torso.pitch": {
+				"peakToPeak": 2.842218665802826,
+				"maxStep": 0.23223182736440706,
+				"residual": 3.914135702753284e-5,
+				"peak": 1.5767024976583808,
+				"trough": -1.2655161681444456
+			},
+			"torso.roll": {
+				"peakToPeak": 1.9398683465251458,
+				"maxStep": 0.15933992675573205,
+				"residual": 2.124951121205287e-6,
+				"peak": 0.9538786727381428,
+				"trough": -0.9859896737870031
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.9199999999764533,
+				"maxStep": 0.07470023648597324,
+				"residual": 6.75916956913838e-5,
+				"peak": 0.9199999999764533,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0.5499999514129332,
+				"maxStep": 0.054311956128851285,
+				"residual": 3.567604717749946e-8,
+				"peak": 0.5499999514129332,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.92,
+				"maxStep": 0.1578356978688341,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.07999999999999996
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.92,
+				"maxStep": 0.1578356978688341,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.07999999999999996
+			}
+		}
+	},
+	"pout": {
+		"durationMs": 2800,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 6.972611168244554,
+				"maxStep": 0.43562760983762283,
+				"residual": 0.00023710821481515658,
+				"peak": 6.961582923476421,
+				"trough": -0.011028244768133499
+			},
+			"head.pitch": {
+				"peakToPeak": 4.003800732751236,
+				"maxStep": 0.2516621953089413,
+				"residual": 0.00013248179693817276,
+				"peak": 3.997637154454747,
+				"trough": -0.0061635782964884235
+			},
+			"head.roll": {
+				"peakToPeak": 4.323018924311623,
+				"maxStep": 0.2700891180993261,
+				"residual": 0.00014700709318539738,
+				"peak": 4.31618141255538,
+				"trough": -0.006837511756242765
+			},
+			"torso.yaw": {
+				"peakToPeak": 0.8376193072250888,
+				"maxStep": 0.05235332082237032,
+				"residual": 7.077069820410368e-5,
+				"peak": 0.8353795077076904,
+				"trough": -0.0022397995173984247
+			},
+			"torso.pitch": {
+				"peakToPeak": 3.429778343319625,
+				"maxStep": 0.1957533900634698,
+				"residual": 0.00011155960962673757,
+				"peak": 3.4245878130490452,
+				"trough": -0.0051905302705799175
+			},
+			"torso.roll": {
+				"peakToPeak": 0.6491549630994439,
+				"maxStep": 0.040573823637336914,
+				"residual": 5.484729110818038e-5,
+				"peak": 0.6474191184734601,
+				"trough": -0.00173584462598378
+			},
+			"gaze.x": {
+				"peakToPeak": 0.75,
+				"maxStep": 0.07748437738149666,
+				"residual": 0,
+				"peak": 0,
+				"trough": -0.75
+			},
+			"gaze.y": {
+				"peakToPeak": 0.15,
+				"maxStep": 0.010407144599933624,
+				"residual": 0,
+				"peak": 0,
+				"trough": -0.15
+			},
+			"mouth.form": {
+				"peakToPeak": 0.1799999999935423,
+				"maxStep": 0.011498191860890822,
+				"residual": 1.55351541531199e-5,
+				"peak": 0.1799999999935423,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0.14999999999461858,
+				"maxStep": 0.009581826550742356,
+				"residual": 1.2945961794266577e-5,
+				"peak": 0.14999999999461858,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.35,
+				"maxStep": 0.02428333739984523,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.65
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.35,
+				"maxStep": 0.02428333739984523,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.65
+			}
+		}
+	},
+	"panic": {
+		"durationMs": 2200,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 3.884176667912571,
+				"maxStep": 0.6353613361751709,
+				"residual": 0.00014765450426374756,
+				"peak": 2.0283844761459084,
+				"trough": -1.8557921917666627
+			},
+			"head.pitch": {
+				"peakToPeak": 2.5221177229212848,
+				"maxStep": 0.23144182059790253,
+				"residual": 0.00034896145163986,
+				"peak": 0.007883028790832419,
+				"trough": -2.5142346941304523
+			},
+			"head.roll": {
+				"peakToPeak": 2.908305092986489,
+				"maxStep": 0.45905514332853414,
+				"residual": 0.0002817417935599009,
+				"peak": 1.5898705803005864,
+				"trough": -1.3184345126859025
+			},
+			"torso.yaw": {
+				"peakToPeak": 0.46610120014950834,
+				"maxStep": 0.07624336034102053,
+				"residual": 1.7718540511649665e-5,
+				"peak": 0.24340613713750903,
+				"trough": -0.22269506301199932
+			},
+			"torso.pitch": {
+				"peakToPeak": 0.3026541267505539,
+				"maxStep": 0.027773018471748318,
+				"residual": 4.187537419678316e-5,
+				"peak": 0.0009459634548998899,
+				"trough": -0.30170816329565403
+			},
+			"torso.roll": {
+				"peakToPeak": 0.43624576394797326,
+				"maxStep": 0.06885827149928014,
+				"residual": 4.2261269033985134e-5,
+				"peak": 0.23848058704508784,
+				"trough": -0.19776517690288542
+			},
+			"gaze.x": {
+				"peakToPeak": 1.2394561546612926,
+				"maxStep": 0.2067478927518442,
+				"residual": 0,
+				"peak": 0.62,
+				"trough": -0.6194561546612926
+			},
+			"gaze.y": {
+				"peakToPeak": 1.2397280475088088,
+				"maxStep": 0.2067932459279671,
+				"residual": 0,
+				"peak": 0.6198640237544043,
+				"trough": -0.6198640237544046
+			},
+			"mouth.form": {
+				"peakToPeak": 0.1999999998448925,
+				"maxStep": 0.022776529148621966,
+				"residual": 3.5691888978362584e-5,
+				"peak": 0.1999999998448925,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0.4441956865240978,
+				"maxStep": 0.04329681263912388,
+				"residual": 7.520952626492475e-5,
+				"peak": 0.4441956865240978,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.7197368201698146,
+				"maxStep": 0.33337255542346533,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.28026317983018545
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.7197368201698146,
+				"maxStep": 0.33337255542346533,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.28026317983018545
+			}
+		}
+	},
+	"sleepy": {
+		"durationMs": 3400,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 2.3239405575114795,
+				"maxStep": 0.14221675722559335,
+				"residual": 1.6695545459554486e-5,
+				"peak": 0.7481247190388363,
+				"trough": -1.5758158384726433
+			},
+			"head.pitch": {
+				"peakToPeak": 16.19412310017327,
+				"maxStep": 1.3130154675842824,
+				"residual": 4.6640577301399814e-5,
+				"peak": 7.390002269563114,
+				"trough": -8.804120830610158
+			},
+			"head.roll": {
+				"peakToPeak": 5.16431235002551,
+				"maxStep": 0.3160372382790959,
+				"residual": 3.7101212132343303e-5,
+				"peak": 1.662499375641858,
+				"trough": -3.501812974383652
+			},
+			"torso.yaw": {
+				"peakToPeak": 2.3239405575114795,
+				"maxStep": 0.14221675722559335,
+				"residual": 1.6695545459554486e-5,
+				"peak": 0.7481247190388363,
+				"trough": -1.5758158384726433
+			},
+			"torso.pitch": {
+				"peakToPeak": 1.9432947720207925,
+				"maxStep": 0.15756185611011397,
+				"residual": 5.596869276167981e-6,
+				"peak": 0.8868002723475735,
+				"trough": -1.056494499673219
+			},
+			"torso.roll": {
+				"peakToPeak": 0.7746468525038261,
+				"maxStep": 0.047405585741864376,
+				"residual": 5.5651818198514976e-6,
+				"peak": 0.24937490634627874,
+				"trough": -0.5252719461575475
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0.7,
+				"maxStep": 0.14463750444545925,
+				"residual": 0,
+				"peak": 0.25,
+				"trough": -0.45
+			},
+			"mouth.form": {
+				"peakToPeak": 0.6797679367469396,
+				"maxStep": 0.05288931307273048,
+				"residual": 0.00023205271740510408,
+				"peak": 0.6797679367469396,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0.5111701135070555,
+				"maxStep": 0.060137816037608316,
+				"residual": 1.43764978868191e-9,
+				"peak": 0.5111701135070555,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 1,
+				"maxStep": 0.25669309731113066,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0
+			},
+			"eyes.right.open": {
+				"peakToPeak": 1,
+				"maxStep": 0.25669309731113066,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0
+			}
+		}
+	},
+	"smug_laugh": {
+		"durationMs": 2600,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 2.389268414850357,
+				"maxStep": 0.1267715405415354,
+				"residual": 9.692224124642906e-5,
+				"peak": 0.004011421650027808,
+				"trough": -2.385256993200329
+			},
+			"head.pitch": {
+				"peakToPeak": 8.435529250110688,
+				"maxStep": 0.45567650517233904,
+				"residual": 0.00034833685650292455,
+				"peak": 8.42110613915596,
+				"trough": -0.014423110954728004
+			},
+			"head.roll": {
+				"peakToPeak": 6.826481185286735,
+				"maxStep": 0.36220440154724365,
+				"residual": 0.00027692068927551204,
+				"peak": 0.011461204714365156,
+				"trough": -6.8150199805723695
+			},
+			"torso.yaw": {
+				"peakToPeak": 2.389268414850357,
+				"maxStep": 0.1267715405415354,
+				"residual": 9.692224124642906e-5,
+				"peak": 0.004011421650027808,
+				"trough": -2.385256993200329
+			},
+			"torso.pitch": {
+				"peakToPeak": 1.5183952650199244,
+				"maxStep": 0.08202177093102114,
+				"residual": 6.270063417052616e-5,
+				"peak": 1.5157991050480732,
+				"trough": -0.0025961599718510404
+			},
+			"torso.roll": {
+				"peakToPeak": 1.5018258607630814,
+				"maxStep": 0.07968496834039362,
+				"residual": 6.092255164061271e-5,
+				"peak": 0.002521465037160334,
+				"trough": -1.4993043957259211
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0.3800000000000003,
+				"maxStep": 0.026364766319831867,
+				"residual": 0,
+				"peak": 2.531308496145357e-16,
+				"trough": -0.38
+			},
+			"mouth.form": {
+				"peakToPeak": 0.949999999881041,
+				"maxStep": 0.060684901488034904,
+				"residual": 0.0001158399094297327,
+				"peak": 0.949999999881041,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0.37315441119302384,
+				"maxStep": 0.0677265747855817,
+				"residual": 1.5049889669817422e-8,
+				"peak": 0.37315441119302384,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.8582079485251073,
+				"maxStep": 0.05599012586805552,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.1417920514748927
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.8582079485251073,
+				"maxStep": 0.05599012586805552,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.1417920514748927
+			}
+		}
+	},
+	"background.thinking": {
+		"durationMs": 4000,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 2.51183238415839,
+				"maxStep": 0.12025359613763342,
+				"residual": 0.00015156379097332803,
+				"peak": 0.005456597048101045,
+				"trough": -2.506375787110289
+			},
+			"head.pitch": {
+				"peakToPeak": 2.151815453772382,
+				"maxStep": 0.09646954818630371,
+				"residual": 0.00010341333360928749,
+				"peak": 2.148384146995477,
+				"trough": -0.0034313067769049044
+			},
+			"head.roll": {
+				"peakToPeak": 4.5018396165440615,
+				"maxStep": 0.2124014312098792,
+				"residual": 0.0002561363822849109,
+				"peak": 0.009062255242994274,
+				"trough": -4.4927773613010675
+			},
+			"torso.yaw": {
+				"peakToPeak": 0.30141988609900683,
+				"maxStep": 0.01443043153651602,
+				"residual": 1.8187654916799412e-5,
+				"peak": 0.0006547916457721258,
+				"trough": -0.3007650944532347
+			},
+			"torso.pitch": {
+				"peakToPeak": 0.2582178544526858,
+				"maxStep": 0.011576345782356445,
+				"residual": 1.2409600033114491e-5,
+				"peak": 0.2578060976394572,
+				"trough": -0.00041175681322858863
+			},
+			"torso.roll": {
+				"peakToPeak": 0.5402207539852873,
+				"maxStep": 0.025488171745185473,
+				"residual": 3.073636587418925e-5,
+				"peak": 0.0010874706291593124,
+				"trough": -0.5391332833561281
+			},
+			"gaze.x": {
+				"peakToPeak": 0.2815820327882894,
+				"maxStep": 0.014953156075713486,
+				"residual": 0,
+				"peak": 0,
+				"trough": -0.2815820327882894
+			},
+			"gaze.y": {
+				"peakToPeak": 0.355,
+				"maxStep": 0.017905881985710914,
+				"residual": 0,
+				"peak": 0.355,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.2697294762340305,
+				"maxStep": 0.012164599915587965,
+				"residual": 2.3387964248522264e-5,
+				"peak": 0.2697294762340305,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.19999999999999996,
+				"maxStep": 0.010083428948378104,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.8
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.19999999999999996,
+				"maxStep": 0.010083428948378104,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.8
+			}
+		}
+	},
+	"background.idle": {
+		"durationMs": 32000,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 6.102917835641165,
+				"maxStep": 0.07910861620782184,
+				"residual": 5.11441365116739e-7,
+				"peak": 3.103651002030975,
+				"trough": -2.9992668336101898
+			},
+			"head.pitch": {
+				"peakToPeak": 1.513321582156191,
+				"maxStep": 0.02294543053561615,
+				"residual": 7.197475147294355e-6,
+				"peak": 1.1909320792156433,
+				"trough": -0.3223895029405477
+			},
+			"head.roll": {
+				"peakToPeak": 7.532180111644579,
+				"maxStep": 0.1060197451379088,
+				"residual": 3.2092911307764276e-7,
+				"peak": 2.683333015039679,
+				"trough": -4.8488470966049
+			},
+			"torso.yaw": {
+				"peakToPeak": 2.595913555774853,
+				"maxStep": 0.042382946729779714,
+				"residual": 3.0898117141162934e-7,
+				"peak": 1.2099572244489711,
+				"trough": -1.3859563313258818
+			},
+			"torso.pitch": {
+				"peakToPeak": 1.3809745848370427,
+				"maxStep": 0.02178309044232296,
+				"residual": 7.344340384771212e-6,
+				"peak": 1.1047073288891551,
+				"trough": -0.2762672559478876
+			},
+			"torso.roll": {
+				"peakToPeak": 2.888206054163029,
+				"maxStep": 0.04045644915115332,
+				"residual": 1.9382321357150126e-7,
+				"peak": 1.225614434450353,
+				"trough": -1.6625916197126762
+			},
+			"gaze.x": {
+				"peakToPeak": 0.25,
+				"maxStep": 0.006235540448639637,
+				"residual": 0,
+				"peak": 0.19,
+				"trough": -0.06
+			},
+			"gaze.y": {
+				"peakToPeak": 0.07500000000000001,
+				"maxStep": 0.001473218362966381,
+				"residual": 0,
+				"peak": 0.05,
+				"trough": -0.025
+			},
+			"mouth.form": {
+				"peakToPeak": 0.19999866858325577,
+				"maxStep": 0.008218720354659953,
+				"residual": 5.318219254436059e-29,
+				"peak": 0.19999866858325577,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			}
+		}
+	},
+	"ambient.sway#0": {
+		"durationMs": 3600,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 1.5601305490666664,
+				"maxStep": 0.05147977479790611,
+				"residual": 5.599956010375292e-6,
+				"peak": 0.7800652524160817,
+				"trough": -0.7800652966505845
+			},
+			"head.pitch": {
+				"peakToPeak": 1.791606663637712,
+				"maxStep": 0.09381601745547818,
+				"residual": 9.714213019281914e-6,
+				"peak": 0.9155201019184703,
+				"trough": -0.8760865617192416
+			},
+			"head.roll": {
+				"peakToPeak": 10.530881206199997,
+				"maxStep": 0.34748847988586595,
+				"residual": 3.7799703070032974e-5,
+				"peak": 5.2654404538085515,
+				"trough": -5.265440752391445
+			},
+			"torso.yaw": {
+				"peakToPeak": 2.3401958235999993,
+				"maxStep": 0.07721966219685905,
+				"residual": 8.399934015562962e-6,
+				"peak": 1.1700978786241223,
+				"trough": -1.1700979449758768
+			},
+			"torso.pitch": {
+				"peakToPeak": 1.164544331364513,
+				"maxStep": 0.06098041134606086,
+				"residual": 6.314238462533266e-6,
+				"peak": 0.5950880662470058,
+				"trough": -0.569456265117507
+			},
+			"torso.roll": {
+				"peakToPeak": 7.022347472951022,
+				"maxStep": 0.20606866068194618,
+				"residual": 3.3999248787682543e-6,
+				"peak": 3.5107911438231194,
+				"trough": -3.5115563291279024
+			},
+			"gaze.x": {
+				"peakToPeak": 0.44,
+				"maxStep": 0.01854419429500659,
+				"residual": 0,
+				"peak": 0.22,
+				"trough": -0.22
+			},
+			"gaze.y": {
+				"peakToPeak": 0.12,
+				"maxStep": 0.012397500381039463,
+				"residual": 0,
+				"peak": 0.12,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.5898105133014672,
+				"maxStep": 0.042516638033670145,
+				"residual": 4.7189063418334195e-5,
+				"peak": 0.5898105133014672,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0.03999999999999998,
+				"maxStep": 0.0028115634093001073,
+				"residual": 4.086623228719939e-6,
+				"peak": 0.03999999999999998,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			}
+		}
+	},
+	"ambient.sway#1": {
+		"durationMs": 3600,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 2.005487578602001,
+				"maxStep": 0.09613811823885865,
+				"residual": 1.1700441820704991e-5,
+				"peak": 0.0010990150934360142,
+				"trough": -2.004388563508565
+			},
+			"head.pitch": {
+				"peakToPeak": 2.0450767155599676,
+				"maxStep": 0.08652430641497288,
+				"residual": 1.0530409295112152e-5,
+				"peak": 2.0440876018491876,
+				"trough": -0.0009891137107799956
+			},
+			"head.roll": {
+				"peakToPeak": 5.047079753725009,
+				"maxStep": 0.23073148377326103,
+				"residual": 2.8081072026169762e-5,
+				"peak": 0.0026376363509340163,
+				"trough": -5.044442117374075
+			},
+			"torso.yaw": {
+				"peakToPeak": 1.4039961974618904,
+				"maxStep": 0.06831401065384513,
+				"residual": 8.795228807770897e-6,
+				"peak": 0.0008059810163366679,
+				"trough": -1.4031902164455536
+			},
+			"torso.pitch": {
+				"peakToPeak": 0.8022835414067945,
+				"maxStep": 0.03903657751648293,
+				"residual": 5.025845033011949e-6,
+				"peak": 0.8018229808260307,
+				"trough": -0.0004605605807638108
+			},
+			"torso.roll": {
+				"peakToPeak": 3.209134165627178,
+				"maxStep": 0.1561463100659315,
+				"residual": 2.0103380132047795e-5,
+				"peak": 0.0018422423230552432,
+				"trough": -3.2072919233041226
+			},
+			"gaze.x": {
+				"peakToPeak": 0.32,
+				"maxStep": 0.016632404867144263,
+				"residual": 0,
+				"peak": 0,
+				"trough": -0.32
+			},
+			"gaze.y": {
+				"peakToPeak": 0.18,
+				"maxStep": 0.009355727737768646,
+				"residual": 0,
+				"peak": 0.18,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.5499999999950752,
+				"maxStep": 0.025643401548488987,
+				"residual": 1.113222554031744e-5,
+				"peak": 0.5499999999950752,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			}
+		}
+	},
+	"ambient.sway#2": {
+		"durationMs": 3600,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 1.5452131635837898,
+				"maxStep": 0.05517507775084057,
+				"residual": 5.860054193808385e-5,
+				"peak": 0.7726693164998563,
+				"trough": -0.7725438470839335
+			},
+			"head.pitch": {
+				"peakToPeak": 1.6754681298341123,
+				"maxStep": 0.11901936240579059,
+				"residual": 0.00013811250524759872,
+				"peak": 0.0022657507092010325,
+				"trough": -1.6732023791249113
+			},
+			"head.roll": {
+				"peakToPeak": 10.816492145086528,
+				"maxStep": 0.38622554425588396,
+				"residual": 0.00041020379356658667,
+				"peak": 5.408685215498994,
+				"trough": -5.407806929587534
+			},
+			"torso.yaw": {
+				"peakToPeak": 2.317819745375685,
+				"maxStep": 0.08276261662626072,
+				"residual": 8.790081290712566e-5,
+				"peak": 1.1590039747497842,
+				"trough": -1.1588157706259004
+			},
+			"torso.pitch": {
+				"peakToPeak": 1.0890542843921733,
+				"maxStep": 0.07736258556376396,
+				"residual": 8.977312841093902e-5,
+				"peak": 0.0014727379609806703,
+				"trough": -1.0875815464311926
+			},
+			"torso.roll": {
+				"peakToPeak": 7.337669291989398,
+				"maxStep": 0.24978310986006647,
+				"residual": 0.0002887400654600112,
+				"peak": 3.669381931993215,
+				"trough": -3.6682873599961825
+			},
+			"gaze.x": {
+				"peakToPeak": 0.43996984344039924,
+				"maxStep": 0.022729403303100998,
+				"residual": 0,
+				"peak": 0.2199969842944339,
+				"trough": -0.21997285914596534
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.6499999999999998,
+				"maxStep": 0.05055596102540441,
+				"residual": 6.640762746669902e-5,
+				"peak": 0.6499999999999998,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			}
+		}
+	},
+	"ambient.sway#3": {
+		"durationMs": 3600,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 1.5601305593973172,
+				"maxStep": 0.05106474034993619,
+				"residual": 4.504172311747682e-6,
+				"peak": 0.7800652627471225,
+				"trough": -0.7800652966501946
+			},
+			"head.pitch": {
+				"peakToPeak": 2.1530618783276765,
+				"maxStep": 0.1251894145490765,
+				"residual": 4.2343715138283475e-5,
+				"peak": 1.0765309391634823,
+				"trough": -1.076530939164194
+			},
+			"head.roll": {
+				"peakToPeak": 10.920913915781217,
+				"maxStep": 0.35745318244955326,
+				"residual": 3.152920618223416e-5,
+				"peak": 5.460456839229856,
+				"trough": -5.460457076551361
+			},
+			"torso.yaw": {
+				"peakToPeak": 2.3401958390959754,
+				"maxStep": 0.07659711052490425,
+				"residual": 6.7562584676215174e-6,
+				"peak": 1.1700978941206837,
+				"trough": -1.1700979449752917
+			},
+			"torso.pitch": {
+				"peakToPeak": 1.3994902209129898,
+				"maxStep": 0.08137311945689973,
+				"residual": 2.7523414839884243e-5,
+				"peak": 0.6997451104562635,
+				"trough": -0.6997451104567262
+			},
+			"torso.roll": {
+				"peakToPeak": 7.022271378910994,
+				"maxStep": 0.2041721203325777,
+				"residual": 6.7015967035529346e-6,
+				"peak": 3.5107911782675076,
+				"trough": -3.5114802006434864
+			},
+			"gaze.x": {
+				"peakToPeak": 0.44,
+				"maxStep": 0.019564444393812455,
+				"residual": 0,
+				"peak": 0.22,
+				"trough": -0.22
+			},
+			"gaze.y": {
+				"peakToPeak": 0.1799999999999997,
+				"maxStep": 0.009909128424322802,
+				"residual": 0,
+				"peak": 0.1799999999999997,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.5499999999999998,
+				"maxStep": 0.038658996877876495,
+				"residual": 5.619106939489915e-5,
+				"peak": 0.5499999999999998,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			}
+		}
+	},
+	"nod#1": {
+		"durationMs": 1550,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"head.pitch": {
+				"peakToPeak": 3.545527508718568,
+				"maxStep": 0.25179480070763427,
+				"residual": 0.00019795457619848817,
+				"peak": 0.47753780446356286,
+				"trough": -3.0679897042550053
+			},
+			"head.roll": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"torso.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"torso.pitch": {
+				"peakToPeak": 0.5636224566474897,
+				"maxStep": 0.04072757166306207,
+				"residual": 7.662485540154058e-5,
+				"peak": 0.0007979986360568065,
+				"trough": -0.5628244580114329
+			},
+			"torso.roll": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			}
+		}
+	},
+	"shake#1": {
+		"durationMs": 2050,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 5.314261205302232,
+				"maxStep": 0.2582773685319033,
+				"residual": 0.00019858969248083485,
+				"peak": 2.950252744175547,
+				"trough": -2.364008461126685
+			},
+			"head.pitch": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"head.roll": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"torso.yaw": {
+				"peakToPeak": 0.7260449743692572,
+				"maxStep": 0.040266756779055,
+				"residual": 2.2875838659772932e-5,
+				"peak": 0.39283939392297396,
+				"trough": -0.3332055804462832
+			},
+			"torso.pitch": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"torso.roll": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			}
+		}
+	},
+	"curious#1": {
+		"durationMs": 2800,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"head.pitch": {
+				"peakToPeak": 0.6878951925277226,
+				"maxStep": 0.028472101644845316,
+				"residual": 2.391891012224781e-5,
+				"peak": 0.0011125969488404476,
+				"trough": -0.6867825955788821
+			},
+			"head.roll": {
+				"peakToPeak": 3.4387257220739387,
+				"maxStep": 0.13315576455896094,
+				"residual": 6.413030446835915e-5,
+				"peak": 0.003921789508578272,
+				"trough": -3.4348039325653605
+			},
+			"torso.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"torso.pitch": {
+				"peakToPeak": 0.6878951925277226,
+				"maxStep": 0.028472101644845316,
+				"residual": 2.391891012224781e-5,
+				"peak": 0.0011125969488404476,
+				"trough": -0.6867825955788821
+			},
+			"torso.roll": {
+				"peakToPeak": 0.44184619551652565,
+				"maxStep": 0.016594021713627782,
+				"residual": 1.0458611806871571e-5,
+				"peak": 0.44126683325419824,
+				"trough": -0.000579362262327433
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			}
+		}
+	},
+	"chin_up#0": {
+		"durationMs": 1850,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"head.pitch": {
+				"peakToPeak": 2.4631542391259194,
+				"maxStep": 0.1354378536158809,
+				"residual": 0.00019327697468870817,
+				"peak": 2.0639536609386613,
+				"trough": -0.39920057818725807
+			},
+			"head.roll": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"torso.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"torso.pitch": {
+				"peakToPeak": 0.44252941712122695,
+				"maxStep": 0.019530289087282438,
+				"residual": 3.1558347589404814e-5,
+				"peak": 0.4417084070107738,
+				"trough": -0.0008210101104531569
+			},
+			"torso.roll": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			}
+		}
+	},
+	"head_toss#1": {
+		"durationMs": 2950,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 3.731375711324336,
+				"maxStep": 0.12574856683711388,
+				"residual": 5.1822966900623735e-5,
+				"peak": 3.727820163428685,
+				"trough": -0.0035555478956509224
+			},
+			"head.pitch": {
+				"peakToPeak": 1.1778395570535602,
+				"maxStep": 0.03971724153195788,
+				"residual": 1.8345659930637045e-5,
+				"peak": 0.0012050276490309787,
+				"trough": -1.1766345294045293
+			},
+			"head.roll": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"torso.yaw": {
+				"peakToPeak": 0.6381470390895138,
+				"maxStep": 0.024437855324728308,
+				"residual": 1.6285157678652867e-5,
+				"peak": 0.6372738009634143,
+				"trough": -0.000873238126099433
+			},
+			"torso.pitch": {
+				"peakToPeak": 1.1778395570535602,
+				"maxStep": 0.03971724153195788,
+				"residual": 1.8345659930637045e-5,
+				"peak": 0.0012050276490309787,
+				"trough": -1.1766345294045293
+			},
+			"torso.roll": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.x": {
+				"peakToPeak": 0.294,
+				"maxStep": 0.025908450622467494,
+				"residual": 0,
+				"peak": 0.294,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			}
+		}
+	},
+	"glance#1": {
+		"durationMs": 2250,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 2.9518177260123344,
+				"maxStep": 0.17136313464200104,
+				"residual": 3.648239882917021e-5,
+				"peak": 0.0026120064845481625,
+				"trough": -2.9492057195277863
+			},
+			"head.pitch": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"head.roll": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"torso.yaw": {
+				"peakToPeak": 0.49208594048163506,
+				"maxStep": 0.02766409044315729,
+				"residual": 1.1444370762687212e-5,
+				"peak": 0.0006381319326891258,
+				"trough": -0.49144780854894593
+			},
+			"torso.pitch": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"torso.roll": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.x": {
+				"peakToPeak": 0.27440000000000003,
+				"maxStep": 0.03786801913204953,
+				"residual": 0,
+				"peak": 0,
+				"trough": -0.27440000000000003
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			}
+		}
+	},
+	"close_up#0": {
+		"durationMs": 4600,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"head.pitch": {
+				"peakToPeak": 2.1582597278304676,
+				"maxStep": 0.05710595930697271,
+				"residual": 2.4946461211342593e-5,
+				"peak": 2.1570267880413074,
+				"trough": -0.0012329397891599992
+			},
+			"head.roll": {
+				"peakToPeak": 1.958068969193345,
+				"maxStep": 0.08230485424635725,
+				"residual": 8.902171110439112e-6,
+				"peak": 0.585470697936516,
+				"trough": -1.372598271256829
+			},
+			"torso.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"torso.pitch": {
+				"peakToPeak": 2.1582597278304676,
+				"maxStep": 0.05710595930697271,
+				"residual": 2.4946461211342593e-5,
+				"peak": 2.1570267880413074,
+				"trough": -0.0012329397891599992
+			},
+			"torso.roll": {
+				"peakToPeak": 1.958068969193345,
+				"maxStep": 0.08230485424635725,
+				"residual": 8.902171110439112e-6,
+				"peak": 0.585470697936516,
+				"trough": -1.372598271256829
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.4409999999999999,
+				"maxStep": 0.014192918948706279,
+				"residual": 2.1246150709041885e-5,
+				"peak": 0.4409999999999999,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			}
+		}
+	},
+	"smug_laugh#0": {
+		"durationMs": 2650,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"head.pitch": {
+				"peakToPeak": 1.5566012490432584,
+				"maxStep": 0.0681343444967818,
+				"residual": 2.215371376311481e-5,
+				"peak": 1.5553486936426024,
+				"trough": -0.0012525554006560119
+			},
+			"head.roll": {
+				"peakToPeak": 2.0636283851928905,
+				"maxStep": 0.08120650194961632,
+				"residual": 5.891119592895189e-5,
+				"peak": 0.003003949330224462,
+				"trough": -2.060624435862666
+			},
+			"torso.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"torso.pitch": {
+				"peakToPeak": 1.5566012490432584,
+				"maxStep": 0.0681343444967818,
+				"residual": 2.215371376311481e-5,
+				"peak": 1.5553486936426024,
+				"trough": -0.0012525554006560119
+			},
+			"torso.roll": {
+				"peakToPeak": 0.39292884293712843,
+				"maxStep": 0.01704284254569685,
+				"residual": 1.643358560401458e-5,
+				"peak": 0.000700181132382401,
+				"trough": -0.392228661804746
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0.6369999994418923,
+				"maxStep": 0.0328541276065108,
+				"residual": 5.2771048708051495e-5,
+				"peak": 0.6369999994418923,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0.6859999999999999,
+				"maxStep": 0.0269459008699392,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.31400000000000006
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0.6859999999999999,
+				"maxStep": 0.0269459008699392,
+				"residual": 0,
+				"peak": 1,
+				"trough": 0.31400000000000006
+			}
+		}
+	},
+	"background.accent": {
+		"durationMs": 850,
+		"authored": [],
+		"axes": {
+			"head.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"head.pitch": {
+				"peakToPeak": 0.9094361473161392,
+				"maxStep": 0.09083815598517264,
+				"residual": 0.00011700549406641767,
+				"peak": 0.10389843839871443,
+				"trough": -0.8055377089174247
+			},
+			"head.roll": {
+				"peakToPeak": 0.254642121248519,
+				"maxStep": 0.025434683675848307,
+				"residual": 3.276153833859699e-5,
+				"peak": 0.029091562751640033,
+				"trough": -0.22555055849687897
+			},
+			"torso.yaw": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"torso.pitch": {
+				"peakToPeak": 0.1682038117992083,
+				"maxStep": 0.016556789624571897,
+				"residual": 2.971006245611501e-5,
+				"peak": 0.02320347836667354,
+				"trough": -0.14500033343253477
+			},
+			"torso.roll": {
+				"peakToPeak": 0.254642121248519,
+				"maxStep": 0.025434683675848307,
+				"residual": 3.276153833859699e-5,
+				"peak": 0.029091562751640033,
+				"trough": -0.22555055849687897
+			},
+			"gaze.x": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"gaze.y": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.form": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"mouth.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 0,
+				"trough": 0
+			},
+			"eyes.left.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			},
+			"eyes.right.open": {
+				"peakToPeak": 0,
+				"maxStep": 0,
+				"residual": 0,
+				"peak": 1,
+				"trough": 1
+			}
+		}
+	}
+}

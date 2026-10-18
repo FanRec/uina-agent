@@ -1,10 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“华丽自转一圈”（时长 2800ms）。
@@ -32,28 +27,28 @@ export const spin: ActionAuthoring = (rng) => {
 		if (t <= 0 || t >= durationMs) return 0;
 		// 0~220ms: 蓄力微低头 (-4.5°)
 		if (t < 220) {
-			const u = smoothstep5(0, 220, t);
+			const u = smoothstep(0, 220, t);
 			return -4.5 * gain * u;
 		}
 		// 220~420ms: 腾空扬起至 +5.0°
 		if (t < 420) {
-			const u = smoothstep5(220, 420, t);
+			const u = smoothstep(220, 420, t);
 			return (-4.5 + 9.5 * u) * gain;
 		}
 		// 420~1800ms: 旋转过程中优雅离心起伏 (首尾连续衔接 +5.0° -> -4.0°)
 		if (t < 1800) {
 			const p = (t - 420) / 1380;
-			const travel = 5.0 + (-4.0 - 5.0) * smoothstep5(0, 1, p);
+			const travel = 5.0 + (-4.0 - 5.0) * smoothstep(0, 1, p);
 			const wave = 2.4 * Math.sin(p * 2 * Math.PI) * Math.sin(p * Math.PI) ** 2;
 			return (travel + wave) * gain;
 		}
 		// 1800~2250ms: 落地吸收缓冲 (-4.0°) 并回弹至站立 (+1.2°)
 		if (t < 2250) {
-			const u = smoothstep5(1800, 2250, t);
+			const u = smoothstep(1800, 2250, t);
 			return (-4.0 + 5.2 * u) * gain;
 		}
 		// 2250~2800ms: 站定回正归零
-		const u = smoothstep5(2250, durationMs, t);
+		const u = smoothstep(2250, durationMs, t);
 		return 1.2 * gain * (1 - u);
 	};
 
@@ -66,7 +61,7 @@ export const spin: ActionAuthoring = (rng) => {
 			return 5.5 * Math.sin(spinProgress * 2 * Math.PI * 2.0) * Math.sin(spinProgress * Math.PI) ** 2 * gain;
 		}
 		if (t < 2400) {
-			const u = smoothstep5(1800, 2400, t);
+			const u = smoothstep(1800, 2400, t);
 			return 2.2 * Math.sin(u * Math.PI) * gain;
 		}
 		return 0;
@@ -85,14 +80,14 @@ export const spin: ActionAuthoring = (rng) => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 240) return 0;
 		if (t < 420) {
-			const u = smoothstep5(240, 420, t);
+			const u = smoothstep(240, 420, t);
 			return -0.92 * gain * u;
 		}
 		if (t < 1700) {
 			return -0.92 * gain;
 		}
 		if (t < 2050) {
-			const u = smoothstep5(1700, 2050, t);
+			const u = smoothstep(1700, 2050, t);
 			return -0.92 * gain * (1 - u);
 		}
 		return 0;
@@ -102,31 +97,32 @@ export const spin: ActionAuthoring = (rng) => {
 	const evaluateMouthForm = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 280) {
-			const u = smoothstep5(0, 280, t);
+			const u = smoothstep(0, 280, t);
 			return 0.92 * gain * u;
 		}
 		if (t < 2100) {
 			return 0.92 * gain;
 		}
-		const u = smoothstep5(2100, durationMs, t);
+		const u = smoothstep(2100, durationMs, t);
 		return 0.92 * gain * (1 - u);
 	};
 	const evaluateMouthOpen = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 350) return 0;
 		if (t < 550) {
-			const u = smoothstep5(350, 550, t);
+			const u = smoothstep(350, 550, t);
 			return 0.55 * gain * u;
 		}
 		if (t < 1750) {
 			return 0.55 * gain;
 		}
-		const u = smoothstep5(1750, 2150, t);
+		const u = smoothstep(1750, 2150, t);
 		return 0.55 * gain * (1 - u);
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.pitch": offset(during(whole, evaluateHeadPitch)),
 			"head.roll": offset(during(whole, evaluateHeadRoll)),

@@ -1,5 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“高频耐看专注倾听思考 Thinking”（时长 4000ms 循环）。
@@ -21,10 +21,6 @@ import { during, offset, timeline } from "../../../authoring/curves.js";
  * 5. 【躯干函数式解耦 (Torso Decoupling)】：
  *    - 抵消 88% 的侧倾与后仰跟随，坐姿挺拔优雅。
  */
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
 
 export const cuteThinking: ActionAuthoring = (rng) => {
 	const gain = 0.95 + rng() * 0.1;
@@ -39,8 +35,8 @@ export const cuteThinking: ActionAuthoring = (rng) => {
 	// C2 连续平滑出入包络窗：消除首尾瞬间阶跃，保持 600~3400ms 完整思考姿态
 	const envelope = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		if (t < 600) return smoothstep5(0, 600, t);
-		if (t > 3400) return 1 - smoothstep5(3400, durationMs, t);
+		if (t < 600) return smoothstep(0, 600, t);
+		if (t > 3400) return 1 - smoothstep(3400, durationMs, t);
 		return 1.0;
 	};
 
@@ -111,6 +107,7 @@ export const cuteThinking: ActionAuthoring = (rng) => {
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.pitch": offset(during(whole, evaluateHeadPitch)),
 			"head.roll": offset(during(whole, evaluateHeadRoll)),

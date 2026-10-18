@@ -14,11 +14,15 @@ export interface EngineCalls {
 	diagnose: { args: undefined; result: string };
 	"endpoint.safeStop": { args: undefined; result: null };
 	"endpoint.resume": { args: undefined; result: null };
+	/**
+	 * 焦点是命令而不是通知：与工具调用走同一条有序通道并带回执。
+	 * 以前它是 fire-and-forget，失焦可能与在途 express 交错，表现为"失焦了还在动"却不报错。
+	 */
+	"endpoint.setFocus": { args: { focused: boolean }; result: { focused: boolean } };
 }
 export interface EngineFires {
 	"endpoint.emitCue": { cueId: string };
 	"endpoint.interrupt": undefined;
-	"endpoint.onFocus": { focused: boolean };
 	"level.process": { rms: number; peak?: number };
 	"level.reset": undefined;
 }

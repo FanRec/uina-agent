@@ -71,7 +71,22 @@ export interface CatalogAmbientEntry {
 	aliases?: readonly string[];
 }
 
+/** Finite, re-authored phrases; ids are local to the pool, weights apply before recent-history exclusion. */
+export interface BackgroundPhrase {
+	readonly id: string;
+	readonly weight?: number;
+	readonly motion: ActionAuthoring;
+	readonly join?: { readonly durationMs: number; readonly delays?: Readonly<Record<string, number>> };
+}
+
+export interface BackgroundPhrases {
+	readonly idle?: readonly BackgroundPhrase[];
+	readonly thinking?: readonly BackgroundPhrase[];
+}
+
 export interface CatalogBackground {
+	phrases?: BackgroundPhrases;
+	accent?: ActionAuthoring;
 	thinking?: ActionAuthoring;
 	idle?: ActionAuthoring;
 	ambient?: ReadonlyMap<string, CatalogAmbientEntry>;
@@ -96,7 +111,12 @@ export interface CatalogResolved<K extends CatalogKind> {
 
 export interface CatalogSnapshot {
 	readonly modelID: string;
-	readonly background: Readonly<{ idle?: ActionAuthoring; thinking?: ActionAuthoring }>;
+	readonly background: Readonly<{
+		idle?: ActionAuthoring;
+		thinking?: ActionAuthoring;
+		phrases?: BackgroundPhrases;
+		accent?: ActionAuthoring;
+	}>;
 	resolve<K extends CatalogKind>(kind: K, nameOrAlias: string): CatalogResolved<K> | undefined;
 	list<K extends CatalogKind>(kind: K): readonly CatalogResolved<K>[];
 	resolveCue(nameOrAlias: string): CatalogResolved<"motion"> | CatalogResolved<"posture"> | undefined;
@@ -183,6 +203,8 @@ export interface CatalogSource {
 	attentions?: Readonly<Record<string, CatalogAttentionEntry>>;
 	costumes?: readonly CatalogCostumeEntry[];
 	background?: {
+		phrases?: BackgroundPhrases;
+		accent?: ActionAuthoring;
 		thinking?: ActionAuthoring;
 		idle?: ActionAuthoring;
 		ambient?: Record<
@@ -273,8 +295,29 @@ export function compileCatalog(
 			variants: entry.variants,
 		});
 	}
+	if (source.background?.accent) {
+		const accent = compileAction(source.background.accent, rig.controls, STUB_RNG);
+		if (accent.spatial.length || accent.axes.some((axis) => !axis.startsWith("head.") && !axis.startsWith("torso.")))
+			throw new Error("自动强调只允许头部和躯干通道");
+	}
 	if (source.background?.idle) compileAction(source.background.idle, rig.controls, STUB_RNG);
 	if (source.background?.thinking) compileAction(source.background.thinking, rig.controls, STUB_RNG);
+	for (const pool of Object.values(source.background?.phrases ?? {})) {
+		if (!Array.isArray(pool) || !pool.length) throw new Error("背景短句池不能为空");
+		const ids = new Set<string>();
+		for (const phrase of pool) {
+			if (!phrase.id || ids.has(phrase.id)) throw new Error("背景短句 id 必须非空且池内唯一");
+			ids.add(phrase.id);
+			if (phrase.join) {
+				for (const value of [phrase.join.durationMs, ...Object.values(phrase.join.delays ?? {})])
+					if (!Number.isFinite(value) || value < 0) throw new Error("短句交接时长必须为非负有限数");
+			}
+			if (!Number.isFinite(phrase.weight ?? 1) || (phrase.weight ?? 1) <= 0)
+				throw new Error("背景短句权重必须为正有限数");
+			const clip = compileAction(phrase.motion, rig.controls, STUB_RNG);
+			if (clip.spatial.length) throw new Error("背景短句不能包含外部空间副作用");
+		}
+	}
 	const attentions = take(source.attentions);
 	for (const name of attentions.keys())
 		if ((BUILTIN_ATTENTIONS as readonly string[]).includes(name))
@@ -286,5 +329,10 @@ export function compileCatalog(
 	for (const [name, entry] of attentions) builder.add("attention", name, entry);
 	for (const [name, entry] of ambientSource) builder.add("ambient", name, entry, entry.aliases);
 	for (const entry of source.costumes ?? []) builder.add("costume", entry.id, entry);
-	return builder.finish({ thinking: source.background?.thinking, idle: source.background?.idle });
+	return builder.finish({
+		thinking: source.background?.thinking,
+		idle: source.background?.idle,
+		phrases: source.background?.phrases,
+		accent: source.background?.accent,
+	});
 }

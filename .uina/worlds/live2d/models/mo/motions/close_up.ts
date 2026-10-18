@@ -1,10 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“贴脸破屏特写”（时长 4600ms）。
@@ -31,9 +26,9 @@ export const closeUp: ActionAuthoring = (rng) => {
 	// 贴脸近景权重包络：180~650ms 推入，保持至 3800ms，随后 3800~4600ms 平滑缩回
 	const evaluateNearEnvelope = (t: number): number => {
 		if (t < 180) return 0;
-		if (t < 650) return smoothstep5(180, 650, t);
+		if (t < 650) return smoothstep(180, 650, t);
 		if (t < 3800) return 1.0;
-		if (t < durationMs) return 1.0 - smoothstep5(3800, durationMs, t);
+		if (t < durationMs) return 1.0 - smoothstep(3800, durationMs, t);
 		return 0;
 	};
 
@@ -81,10 +76,10 @@ export const closeUp: ActionAuthoring = (rng) => {
 	const evaluateEyeOpen = (t: number): number => {
 		if (t < 2100 || t >= 2400) return 0;
 		if (t < 2250) {
-			const u = smoothstep5(2100, 2250, t);
+			const u = smoothstep(2100, 2250, t);
 			return -0.92 * u;
 		}
-		const u = smoothstep5(2250, 2400, t);
+		const u = smoothstep(2250, 2400, t);
 		return -0.92 * (1 - u);
 	};
 
@@ -101,6 +96,7 @@ export const closeUp: ActionAuthoring = (rng) => {
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.pitch": offset(during(whole, evaluateHeadPitch)),
 			"head.roll": offset(during(whole, evaluateHeadRoll)),

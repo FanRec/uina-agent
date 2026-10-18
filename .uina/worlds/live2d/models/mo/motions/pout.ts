@@ -1,10 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“气鼓鼓嘟嘴 / 鼓腮帮”(Pout，时长 2800ms)。
@@ -23,20 +18,20 @@ export const pout: ActionAuthoring = (rng) => {
 	const durationMs = 2800;
 	const time = timeline(durationMs);
 	const whole = time.span("start", "end");
-	const dwellBreath = (t: number): number => Math.sin(((t - 450) / 1000) * 2 * Math.PI * 1.1) * smoothstep5(550, 800, t) * (1 - smoothstep5(1850, 2100, t));
+	const dwellBreath = (t: number): number => Math.sin(((t - 450) / 1000) * 2 * Math.PI * 1.1) * smoothstep(550, 800, t) * (1 - smoothstep(1850, 2100, t));
 
 	// 1. 头部偏航：气呼呼别过脸 (-6.8°)
 	const evaluateHeadYaw = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 450) {
-			const u = smoothstep5(60, 450, t);
+			const u = smoothstep(60, 450, t);
 			return -6.8 * poutDir * gain * u;
 		}
 		if (t < 2100) {
 			const breath = 0.18 * dwellBreath(t);
 			return (-6.8 + breath) * poutDir * gain;
 		}
-		const u = smoothstep5(2100, durationMs, t);
+		const u = smoothstep(2100, durationMs, t);
 		return -6.8 * poutDir * gain * (1 - u);
 	};
 
@@ -44,14 +39,14 @@ export const pout: ActionAuthoring = (rng) => {
 	const evaluateHeadPitch = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 450) {
-			const u = smoothstep5(80, 450, t);
+			const u = smoothstep(80, 450, t);
 			return 3.8 * gain * u;
 		}
 		if (t < 2100) {
 			const breath = 0.22 * dwellBreath(t);
 			return (3.8 + breath) * gain;
 		}
-		const u = smoothstep5(2100, durationMs, t);
+		const u = smoothstep(2100, durationMs, t);
 		return 3.8 * gain * (1 - u);
 	};
 
@@ -65,20 +60,20 @@ export const pout: ActionAuthoring = (rng) => {
 	const desiredTorsoPitch = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 550) {
-			const u = smoothstep5(130, 550, t);
+			const u = smoothstep(130, 550, t);
 			return 3.2 * gain * u;
 		}
 		if (t < 2100) {
 			const breath = 0.25 * dwellBreath(t);
 			return (3.2 + breath) * gain;
 		}
-		const u = smoothstep5(2100, durationMs, t);
+		const u = smoothstep(2100, durationMs, t);
 		return 3.2 * gain * (1 - u);
 	};
 
 	// 作者值是头部跟随后的目标体态，不能把挺胸量再次叠到昂头量上。
 	const evaluateTorsoPitch = (t: number): number => desiredTorsoPitch(t) - evaluateHeadPitch(t);
-	const bodyReturn = (t: number): number => 1 - smoothstep5(2550, durationMs, t);
+	const bodyReturn = (t: number): number => 1 - smoothstep(2550, durationMs, t);
 	const evaluateTorsoYaw = (t: number): number => evaluateHeadYaw(t - 90) * 0.12 * bodyReturn(t) - evaluateHeadYaw(t);
 	const evaluateTorsoRoll = (t: number): number => evaluateHeadRoll(t - 90) * 0.15 * bodyReturn(t) - evaluateHeadRoll(t);
 
@@ -86,20 +81,20 @@ export const pout: ActionAuthoring = (rng) => {
 	const evaluateGazeX = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 450) {
-			const u = smoothstep5(0, 300, t);
+			const u = smoothstep(0, 300, t);
 			return 0.75 * poutDir * u;
 		}
 		if (t < 2100) {
 			return 0.75 * poutDir;
 		}
-		const u = smoothstep5(2100, durationMs, t);
+		const u = smoothstep(2100, durationMs, t);
 		return 0.75 * poutDir * (1 - u);
 	};
 
 	const evaluateGazeY = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		if (t < 2100) return -0.15 * smoothstep5(0, 450, t);
-		const u = smoothstep5(2100, durationMs, t);
+		if (t < 2100) return -0.15 * smoothstep(0, 450, t);
+		const u = smoothstep(2100, durationMs, t);
 		return -0.15 * (1 - u);
 	};
 
@@ -107,13 +102,13 @@ export const pout: ActionAuthoring = (rng) => {
 	const evaluateEyeOpen = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 450) {
-			const u = smoothstep5(0, 450, t);
+			const u = smoothstep(0, 450, t);
 			return -0.35 * gain * u;
 		}
 		if (t < 2100) {
 			return -0.35 * gain;
 		}
-		const u = smoothstep5(2100, durationMs, t);
+		const u = smoothstep(2100, durationMs, t);
 		return -0.35 * gain * (1 - u);
 	};
 
@@ -121,31 +116,32 @@ export const pout: ActionAuthoring = (rng) => {
 	const evaluateMouthOpen = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 400) {
-			const u = smoothstep5(0, 400, t);
+			const u = smoothstep(0, 400, t);
 			return 0.15 * gain * u;
 		}
 		if (t < 2150) {
 			return 0.15 * gain;
 		}
-		const u = smoothstep5(2150, durationMs, t);
+		const u = smoothstep(2150, durationMs, t);
 		return 0.15 * gain * (1 - u);
 	};
 
 	const evaluateMouthForm = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 400) {
-			const u = smoothstep5(0, 400, t);
+			const u = smoothstep(0, 400, t);
 			return 0.18 * gain * u;
 		}
 		if (t < 2150) {
 			return 0.18 * gain;
 		}
-		const u = smoothstep5(2150, durationMs, t);
+		const u = smoothstep(2150, durationMs, t);
 		return 0.18 * gain * (1 - u);
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.yaw": offset(during(whole, evaluateHeadYaw)),
 			"head.pitch": offset(during(whole, evaluateHeadPitch)),

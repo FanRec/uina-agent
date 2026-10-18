@@ -111,7 +111,7 @@ function createHarness(
 		client,
 		rig: RIG,
 		director,
-		getCatalogGeneration: () => 0,
+		getEnvironment: () => ({ connection: 0, model: 0, catalog: 0, modelID: RIG.modelID }),
 		isFocused: () => true,
 		cleanupTimeoutMs: 1000,
 	});

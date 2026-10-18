@@ -96,6 +96,15 @@ export function smooth(phase: number): number {
 	return t * t * t * (10 + t * (-15 + 6 * t));
 }
 
+/**
+ * 五次光滑阶跃（Hermite Quintic）：C2 连续，端点速度与加速度均为零。
+ * 区间外夹紧到 0/1；`edge0 === edge1` 时退化为阶跃（与历史本地实现一致）。
+ * 动作文件一律使用此实现，不再各自复制。
+ */
+export function smoothstep(edge0: number, edge1: number, x: number): number {
+	return smooth((x - edge0) / (edge1 - edge0));
+}
+
 export function keys(points: readonly (readonly [number, number])[], curve: KeyCurve = "smooth"): LocalCurve {
 	if (!Array.isArray(points) || points.length < 2) throw new Error("keys 需要至少两个关键点");
 	if (curve !== "smooth" && curve !== "linear" && curve !== "hold") throw new Error(`未知 keys 曲线: ${String(curve)}`);

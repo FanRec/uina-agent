@@ -1,10 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * =========================================================================
@@ -41,8 +36,8 @@ export const swayClassic: ActionAuthoring = (rng) => {
 	const evaluateHeadRoll = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const tSec = t / 1000;
-		const attack = smoothstep5(0, 350, t);
-		const decay = 1 - smoothstep5(2950, 3550, t);
+		const attack = smoothstep(0, 350, t);
+		const decay = 1 - smoothstep(2950, 3550, t);
 		const baseAmp = 5.4 * dir * gain;
 		return baseAmp * attack * decay * Math.sin(omega * tSec);
 	};
@@ -52,8 +47,8 @@ export const swayClassic: ActionAuthoring = (rng) => {
 	const evaluateTorsoRoll = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const tSec = t / 1000;
-		const attack = smoothstep5(0, 350, t);
-		const decay = 1 - smoothstep5(2950, 3550, t);
+		const attack = smoothstep(0, 350, t);
+		const decay = 1 - smoothstep(2950, 3550, t);
 		const desiredTorso = 3.6 * dir * gain * attack * decay * Math.sin(omega * (tSec - 0.08));
 		return desiredTorso - evaluateHeadRoll(t);
 	};
@@ -74,8 +69,8 @@ export const swayClassic: ActionAuthoring = (rng) => {
 	const evaluateHeadPitch = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const tSec = t / 1000;
-		const attack = smoothstep5(0, 300, t);
-		const decay = 1 - smoothstep5(3000, 3550, t);
+		const attack = smoothstep(0, 300, t);
+		const decay = 1 - smoothstep(3000, 3550, t);
 		const bob = 0.7 * (Math.cos(2 * omega * tSec) - 1) + 1.0 * Math.sin((omega * tSec) / 2) ** 2;
 		return bob * attack * decay * gain;
 	};
@@ -95,29 +90,30 @@ export const swayClassic: ActionAuthoring = (rng) => {
 
 	const evaluateGazeY = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		const attack = smoothstep5(0, 300, t);
-		const decay = 1 - smoothstep5(3000, 3550, t);
+		const attack = smoothstep(0, 300, t);
+		const decay = 1 - smoothstep(3000, 3550, t);
 		return 0.12 * attack * decay;
 	};
 
 	// 6. 嘴角甜美治愈浅笑 (0.52)，带轻柔呼吸微漾
 	const evaluateMouthForm = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		const attack = smoothstep5(0, 350, t);
-		const decay = 1 - smoothstep5(3000, durationMs, t);
+		const attack = smoothstep(0, 350, t);
+		const decay = 1 - smoothstep(3000, durationMs, t);
 		const ripple = 0.08 * Math.sin(2 * omega * (t / 1000));
 		return (0.52 + ripple) * gain * attack * decay;
 	};
 
 	const evaluateMouthOpen = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		const attack = smoothstep5(0, 350, t);
-		const decay = 1 - smoothstep5(3000, durationMs, t);
+		const attack = smoothstep(0, 350, t);
+		const decay = 1 - smoothstep(3000, durationMs, t);
 		return 0.04 * gain * attack * decay;
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"gaze.x": offset(during(whole, evaluateGazeX)),
 			"gaze.y": offset(during(whole, evaluateGazeY)),
@@ -152,13 +148,13 @@ export const swayCornerPeekVariant: ActionAuthoring = (rng) => {
 	const whole = time.span("start", "end");
 	const headTime = (t: number): number => (Math.max(0, t - 90) * durationMs) / (durationMs - 90);
 	const bodyTime = (t: number): number => (Math.max(0, t - 160) * durationMs) / (durationMs - 160);
-	const breath = (t: number): number => 0.25 * Math.sin(((t - 600) * 2 * Math.PI) / 1800) * smoothstep5(600, 850, t) * (1 - smoothstep5(2150, 2400, t));
+	const breath = (t: number): number => 0.25 * Math.sin(((t - 600) * 2 * Math.PI) / 1800) * smoothstep(600, 850, t) * (1 - smoothstep(2150, 2400, t));
 
 	// 先看再倾倚，头部与身体错开进入；停留中呼吸轻动，末段舒缓回正。
 	const evaluatePeekEnvelope = (t: number): number => {
-		if (t < 600) return smoothstep5(0, 600, t);
+		if (t < 600) return smoothstep(0, 600, t);
 		if (t < 2400) return 1.0;
-		if (t < durationMs) return 1.0 - smoothstep5(2400, durationMs, t);
+		if (t < durationMs) return 1.0 - smoothstep(2400, durationMs, t);
 		return 0;
 	};
 
@@ -213,6 +209,7 @@ export const swayCornerPeekVariant: ActionAuthoring = (rng) => {
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"gaze.x": offset(during(whole, evaluateGazeX)),
 			"gaze.y": offset(during(whole, evaluateGazeY)),
@@ -250,16 +247,16 @@ export const swayChaoticBouncyVariant: ActionAuthoring = (rng) => {
 	const evaluateHeadRoll = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const tSec = t / 1000;
-		const attack = smoothstep5(0, 260, t);
-		const decay = 1 - smoothstep5(3000, durationMs, t);
+		const attack = smoothstep(0, 260, t);
+		const decay = 1 - smoothstep(3000, durationMs, t);
 		return 5.6 * sideDir * gain * attack * decay * Math.sin(omega * tSec);
 	};
 
 	const evaluateTorsoRoll = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const tSec = t / 1000;
-		const attack = smoothstep5(0, 260, t);
-		const decay = 1 - smoothstep5(3000, durationMs, t);
+		const attack = smoothstep(0, 260, t);
+		const decay = 1 - smoothstep(3000, durationMs, t);
 		const desiredTorso = 3.8 * sideDir * gain * attack * decay * Math.sin(omega * (tSec - 0.08));
 		return desiredTorso - evaluateHeadRoll(t);
 	};
@@ -278,8 +275,8 @@ export const swayChaoticBouncyVariant: ActionAuthoring = (rng) => {
 	const evaluateHeadPitch = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const tSec = t / 1000;
-		const attack = smoothstep5(0, 260, t);
-		const decay = 1 - smoothstep5(3000, durationMs, t);
+		const attack = smoothstep(0, 260, t);
+		const decay = 1 - smoothstep(3000, durationMs, t);
 		const bounce = 0.9 * (Math.cos(2 * omega * tSec) - 1);
 		return bounce * attack * decay * gain;
 	};
@@ -298,13 +295,14 @@ export const swayChaoticBouncyVariant: ActionAuthoring = (rng) => {
 	// 元气微笑
 	const evaluateMouthForm = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		const attack = smoothstep5(0, 300, t);
-		const decay = 1 - smoothstep5(3000, durationMs, t);
+		const attack = smoothstep(0, 300, t);
+		const decay = 1 - smoothstep(3000, durationMs, t);
 		return 0.65 * gain * attack * decay;
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.roll": offset(during(whole, evaluateHeadRoll)),
 			"head.yaw": offset(during(whole, evaluateHeadYaw)),
@@ -342,16 +340,16 @@ export const swayVShapeVariant: ActionAuthoring = (rng) => {
 	const evaluateHeadRoll = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const tSec = t / 1000;
-		const attack = smoothstep5(0, 300, t);
-		const decay = 1 - smoothstep5(3000, 3550, t);
+		const attack = smoothstep(0, 300, t);
+		const decay = 1 - smoothstep(3000, 3550, t);
 		return 5.6 * dir * gain * attack * decay * Math.sin(omega * tSec);
 	};
 
 	const evaluateTorsoRoll = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const tSec = t / 1000;
-		const attack = smoothstep5(0, 300, t);
-		const decay = 1 - smoothstep5(3000, 3550, t);
+		const attack = smoothstep(0, 300, t);
+		const decay = 1 - smoothstep(3000, 3550, t);
 		const desiredTorso = 3.6 * dir * gain * attack * decay * Math.sin(omega * (tSec - 0.08));
 		return desiredTorso - evaluateHeadRoll(t);
 	};
@@ -370,8 +368,8 @@ export const swayVShapeVariant: ActionAuthoring = (rng) => {
 	const evaluateHeadPitch = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const tSec = t / 1000;
-		const attack = smoothstep5(0, 300, t);
-		const decay = 1 - smoothstep5(3000, 3550, t);
+		const attack = smoothstep(0, 300, t);
+		const decay = 1 - smoothstep(3000, 3550, t);
 		const sinVal = Math.sin(omega * tSec);
 		const pitchWave = 1.2 * (2 * (sinVal * sinVal) - 1);
 		return pitchWave * attack * decay * gain;
@@ -392,8 +390,8 @@ export const swayVShapeVariant: ActionAuthoring = (rng) => {
 	const evaluateGazeY = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		const tSec = t / 1000;
-		const attack = smoothstep5(0, 300, t);
-		const decay = 1 - smoothstep5(3000, 3550, t);
+		const attack = smoothstep(0, 300, t);
+		const decay = 1 - smoothstep(3000, 3550, t);
 		const sinVal = Math.abs(Math.sin(omega * tSec));
 		return (0.18 * (1 - sinVal) + 0.05 * sinVal) * attack * decay;
 	};
@@ -401,13 +399,14 @@ export const swayVShapeVariant: ActionAuthoring = (rng) => {
 	// 舒展大方微笑
 	const evaluateMouthForm = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
-		const attack = smoothstep5(0, 350, t);
-		const decay = 1 - smoothstep5(3000, durationMs, t);
+		const attack = smoothstep(0, 350, t);
+		const decay = 1 - smoothstep(3000, durationMs, t);
 		return 0.55 * gain * attack * decay;
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"gaze.x": offset(during(whole, evaluateGazeX)),
 			"gaze.y": offset(during(whole, evaluateGazeY)),

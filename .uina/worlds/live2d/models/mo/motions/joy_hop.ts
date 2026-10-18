@@ -1,10 +1,5 @@
 import type { ActionAuthoring } from "../../../authoring/action.js";
-import { during, offset, timeline } from "../../../authoring/curves.js";
-
-function smoothstep5(edge0: number, edge1: number, x: number): number {
-	const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-	return t * t * t * (t * (t * 6 - 15) + 10);
-}
+import { during, offset, timeline, smoothstep } from "../../../authoring/curves.js";
 
 /**
  * 物理程序化“Q弹高能雀跃弹跳”（时长 1350ms）。
@@ -33,26 +28,26 @@ export const joyHop: ActionAuthoring = (rng) => {
 		if (t <= 0 || t >= durationMs) return 0;
 		// 0~140ms: 屈膝深蓄力微低头
 		if (t < 140) {
-			const u = smoothstep5(0, 140, t);
+			const u = smoothstep(0, 140, t);
 			return -4.5 * gain * u;
 		}
 		// 140~420ms: 腾空起飞仰头看天 (+7.8°)
 		if (t < 420) {
-			const u = smoothstep5(140, 420, t);
+			const u = smoothstep(140, 420, t);
 			return (-4.5 + 12.3 * u) * gain;
 		}
 		// 420~750ms: 落地重力下压深缓冲 (-6.2°)
 		if (t < 750) {
-			const u = smoothstep5(420, 750, t);
+			const u = smoothstep(420, 750, t);
 			return (7.8 - 14.0 * u) * gain;
 		}
 		// 750~1000ms: 二次果冻小微弹 (+3.2°)
 		if (t < 1000) {
-			const u = smoothstep5(750, 1000, t);
+			const u = smoothstep(750, 1000, t);
 			return (-6.2 + 9.4 * u) * gain;
 		}
 		// 1000~1350ms: 稳稳舒缓回正
-		const u = smoothstep5(1000, durationMs, t);
+		const u = smoothstep(1000, durationMs, t);
 		return 3.2 * gain * (1 - u);
 	};
 
@@ -61,14 +56,14 @@ export const joyHop: ActionAuthoring = (rng) => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 420) return 0;
 		if (t < 750) {
-			const u = smoothstep5(420, 750, t);
+			const u = smoothstep(420, 750, t);
 			return 3.5 * rollDir * gain * u;
 		}
 		if (t < 1050) {
-			const u = smoothstep5(750, 1050, t);
+			const u = smoothstep(750, 1050, t);
 			return 3.5 * rollDir * gain * (1 - 1.5 * u);
 		}
-		const u = smoothstep5(1050, durationMs, t);
+		const u = smoothstep(1050, durationMs, t);
 		return -1.75 * rollDir * gain * (1 - u);
 	};
 
@@ -85,13 +80,13 @@ export const joyHop: ActionAuthoring = (rng) => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 140) return 0;
 		if (t < 420) {
-			const u = smoothstep5(140, 420, t);
+			const u = smoothstep(140, 420, t);
 			return -0.75 * gain * u;
 		}
 		if (t < 850) {
 			return -0.75 * gain;
 		}
-		const u = smoothstep5(850, 1200, t);
+		const u = smoothstep(850, 1200, t);
 		return -0.75 * gain * (1 - u);
 	};
 
@@ -99,31 +94,32 @@ export const joyHop: ActionAuthoring = (rng) => {
 	const evaluateMouthForm = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 180) {
-			const u = smoothstep5(0, 180, t);
+			const u = smoothstep(0, 180, t);
 			return 0.92 * gain * u;
 		}
 		if (t < 950) {
 			return 0.92 * gain;
 		}
-		const u = smoothstep5(950, durationMs, t);
+		const u = smoothstep(950, durationMs, t);
 		return 0.92 * gain * (1 - u);
 	};
 	const evaluateMouthOpen = (t: number): number => {
 		if (t <= 0 || t >= durationMs) return 0;
 		if (t < 160) return 0;
 		if (t < 420) {
-			const u = smoothstep5(160, 420, t);
+			const u = smoothstep(160, 420, t);
 			return 0.65 * gain * u;
 		}
 		if (t < 800) {
 			return 0.65 * gain;
 		}
-		const u = smoothstep5(800, 1150, t);
+		const u = smoothstep(800, 1150, t);
 		return 0.65 * gain * (1 - u);
 	};
 
 	return {
 		timeline: time,
+		torso: "head-relative",
 		channels: {
 			"head.pitch": offset(during(whole, evaluateHeadPitch)),
 			"head.roll": offset(during(whole, evaluateHeadRoll)),
