@@ -1,26 +1,26 @@
-# Minecraft World：模块公开接口草案
+# Minecraft World：模块公开接口
 
-日期：2026-10-17（Asia/Shanghai / GMT+08:00）。状态：统一设计合同；各模块实现进度不同，本轮仅修订文档，未进行真实游戏验收。
+日期：2026-10-18（Asia/Shanghai / GMT+08:00）。状态：跨模块**类型与方法形状的唯一公开定义**（§2–§5、§7）；程序与库已移出本文（§6 只留对照表）。实现进度见 [README](README.md)。
 
-本文与 §6.3 明确链接的 Library 合同是模块之间**方法、值与错误形状的唯一设计来源**；生命周期、控制和一致性约束见 [行为契约](contracts.md)。各节由对应模块拥有，放在同一文档是为了核对类型，不要求实现成一个 SDK 包或共同基类。具体玩法的参数/结果 schema 归该能力定义，不在这里复制完整原版目录。
+本文只定义跨模块交换的东西：值、失败、观测、能力声明、Body、World、Executor 接入。生命周期与控制约束见 [行为契约](contracts.md)，模块内部实现见 `modules/`。Program、能力目录与库的合同分别由 [program.md](modules/program.md)、[capabilities.md](modules/capabilities.md)、[assets.md](modules/assets.md) 唯一拥有，本文不复制也不改写它们。各节由对应模块拥有，放在同一文档只为核对类型，不要求实现成一个 SDK 包或共同基类。
 
-## 1. 收敛后的概念与阅读范围
+## 1. 读什么、谁拥有什么
 
-Runtime 内部机制以 [Runtime / Callable 详细设计](modules/runtime.md) 为准。本文与明确链接的 Library 合同构成唯一公开定义；2026-10-17 本轮只更新设计，`contracts/*.ts` 尚须实施时同步，不代表现有类型已符合终态。
+Runtime 内部机制以 [Runtime 详细设计](modules/runtime.md) 为准。本文与各模块文档构成唯一公开定义；`contracts/*.ts` 是实施时的落点，允许暂时落后于本文，但不允许反过来发明新语义。
 
-- 游戏能力是一个 **Callable（可调用导出）**；Run 是调用实例；Program 是实现方式之一。Feature 只是组织有关实现的源码模块，不再增加 Action→Capability→Feature 的转发层。
-- Uina 的 `ActionDef` 仍是 minecraft façade 的接入适配，返回工具回执。游戏内部 `call` 返回领域值，不能复用它的工具信封和工具取消信号。
-- 查询、规划、成熟动作、细操作和保存程序使用同一声明/调用机制。取得身体、等待和反馈闭包是少量有生命周期的宿主操作，不伪装成 JSON 目录函数。
+- 游戏能力是 **Callable**（声明 + 实现），Run 是调用实例，Program 是另一种被调用的东西（普通 JS 文件，不是 Callable）。Feature 只是源码组织方式，不再有 Action→Capability→Feature 转发层。
+- Uina 的 `ActionDef` 仍是 minecraft façade 的接入适配，返回工具回执；游戏内部调用返回领域值，不复用工具信封与工具取消信号。
+- 查询、规划、动作、细操作共用一条调用路径；身体、窗口与反馈流是有生命周期的句柄，不伪装成 JSON 目录函数。
 
-| 开发工作 | 必读公开合同 | 不必为此通读的实现 |
+| 开发工作 | 读什么 | 不必读 |
 | --- | --- | --- |
-| 增加采集/制作/战斗方法 | §2–3、所用的 §4–5、该玩法 schema；行为契约 §5–6 | IPC、通知递送、SQLite、其他玩法内部 |
-| 编写/保存新程序 | §3 的 call、§6；所用能力 describe；需要精细控制时读 §4 | 运行队列、插件装配、资产存储内部 |
-| 扩展客户端输入/传感 | §4–5；行为契约 §5/7 | 采集算法、程序修订/检索 |
-| 修改程序库 | §6；行为契约 §8 | Bot、身体仲裁、Uina 日志 |
-| 修改 Uina 接入/执行管理 | §7；行为契约 §2–6 | 各玩法算法 |
+| 新增或修改一个能力 | [capabilities.md](modules/capabilities.md) §2–§4；本文 §3（声明、装配、发现） | IPC、通知递送、存储内部 |
+| 写程序、改程序库 | [program.md](modules/program.md) §2–§4；[capabilities.md](modules/capabilities.md) §7–§8 | Runtime 队列、身体仲裁 |
+| 扩展客户端输入或传感 | 本文 §4；[contracts.md](contracts.md) §5、§7 | 采集与建造算法 |
+| 改蓝图与经验 | [assets.md](modules/assets.md) §2–§5 | Bot、程序执行域 |
+| 改 Uina 接入与执行管理 | 本文 §7；[contracts.md](contracts.md) §2–§6 | 各能力内部算法 |
 
-下列 TypeScript 块是接口示意，Library 类型按 §6.3 链接导入；实施时以同一套源码合同进行类型检查；`JsonValue` 只出现在开放领域值/源码合同处，不再代替运行状态、受理结果或事件结构。
+下列 TypeScript 块是接口示意；`JsonValue` 只用于开放领域值，不代替运行状态、受理结果或事件结构。
 
 <a id="values"></a>
 
@@ -84,7 +84,7 @@ interface EffectReceipt {
 }
 ```
 
-参数/schema 不合法在该调用派发前报 `INVALID_ARGUMENT`；实现不存在/当前环境不支持报 `CALL_UNAVAILABLE` 并说明确切 ref 和原因。领域不足用模块定义的稳定 code（如 TARGET_NOT_MET）及真实 progress；未知效果用 EFFECT_UNCERTAIN。取消/资格失效使宿主动作失效，catch 不恢复资格。桥接把 Error 转成上述纯数据，再在脚本域还原 Error 属性；未处理普通 JS 异常记 PROGRAM_ERROR。
+参数/schema 不合法在该调用派发前报 `INVALID_INPUT`；能力或程序解析不到分别报 `NOT_FOUND` / `PROGRAM_NOT_FOUND`，环境不支持报 `WRONG_STATE`（能力码见 [capabilities.md §2.2](modules/capabilities.md)，程序码见 [program.md §7](modules/program.md)）。领域不足用该能力声明的稳定 code（13 码之一）+ `hint` + 真实 `progress`；未决效果走 `dispatch: "sent"|"unknown"` 与 `unknownEffects`，不另立 `EFFECT_UNCERTAIN`。UNCERTAIN。取消/资格失效使宿主动作失效，catch 不恢复资格。桥接把 Error 转成上述纯数据，再在脚本域还原 Error 属性；未处理普通 JS 异常记 PROGRAM_ERROR。
 
 Observation.cursor 的完整序号作用域及 read→watch 规则只在 §5 定义；FeedbackFrame.sequence 是单条反馈流内的帧序号，RunSnapshot.revision 是单个运行记录版本，三者不能互相比较。evidence 是事实引用，不是自述；空值不能被接口形状升级成服务端确认。
 
@@ -138,11 +138,7 @@ interface ReadCallScope {
   readonly segment: Ref;
   readonly callId: Ref;
   readonly signal: AbortSignal; // 运行/调用取消，绝不是 Uina 工具等待取消
-  readonly checkpoint: Checkpoint | null;
   call<I, O>(ref: Selector, input: I): Promise<O>;
-  wait(request: WaitRequest): Promise<WaitResult>;
-  waitForChange(targets: readonly ChangeWaitTarget[], options?: { afterMs?: number }): Promise<ChangeWaitResult>;
-  decide(reason: string, checkpoint: Checkpoint): Promise<never>;
   progress(value: Progress): Promise<void>;
 }
 interface CallScope extends ReadCallScope {
@@ -159,7 +155,9 @@ interface CallContext extends ReadCallContext, CallScope {
 interface BodyCallScope extends CallContext { readonly player: BodyOps }
 ```
 
-**装配不是另一套框架。** 原生功能模块导出 `NativeCallable[]`；组合根收集、校验同 ref 唯一及 schema，建立目录和调用包装。受控重新装配后，新环境中的新导出可被目录发现；已受理 Segment 的 nativeEnvironment、descriptor digest 和 bindings 固定不变，不热替换在途调用。新 Segment 默认继承原环境，只有明确选择 current 才绑定新装配代次。原生能力、保存 Program 与模组扩展的导出最终都经同一 descriptor/目录解析及 Callable 调用包装；实现来源保留在描述中，不各设调度器。模块正常使用 TS/包管理器组织内部依赖；目录描述、参数校验、describe 和程序签名从同一 descriptor 派生。保存程序由资产所有者提供同形描述及源码入口，不再注册第二种 Skill/Routine 身份。组合根持有实际实现引用，目录只索引；发现为 unavailable 仍能读取原因。
+原生能力没有 `decide`/`checkpoint`/`wait`：交还决策与等待属于 Program（program.md §3.2）；需要等世界变化的原生能力用 `ctx.world.watch`，不要另造等待原语。
+
+**装配不是另一套框架。** 原生功能模块导出 `NativeCallable[]`；组合根收集、校验同 ref 唯一及 schema，建立目录和调用包装。受控重新装配后，新环境中的新导出可被目录发现；已受理 Segment 的 descriptor digest 和 bindings 固定不变，不热替换在途调用。新 Segment 默认继承原环境，只有明确选择 current 才绑定新装配代次。原生能力、保存 Program 与模组扩展的导出最终都经同一 descriptor/目录解析及 Callable 调用包装；实现来源保留在描述中，不各设调度器。模块正常使用 TS/包管理器组织内部依赖；目录描述、参数校验、describe 和程序签名从同一 descriptor 派生。保存程序由资产所有者提供同形描述及源码入口，不再注册第二种 Skill/Routine 身份。组合根持有实际实现引用，目录只索引；发现为 unavailable 仍能读取原因。
 
 search 只从同一 descriptor 投影 SearchSummary，不带输入/输出 schema、错误、示例及完整支持说明；reason 仅作简短不可用原因，describe 才展开全部 reasons。摘要不是另一份注册数据，搜索也不执行能力。
 
@@ -388,13 +386,13 @@ durableThrough 确认指定 receiver 代次已持久提交的源前缀：每个�
 
 durable ACK 是同域部署的唯一确认层；同域共享同一份不可变材料和待落盘队列，按提交进度回收。received 层确认、重传协议与 outbox 副本不存在于当前合同——真实跨域交付出现时才按需求引入接收者代次、重传与乱序重排。选择历史范围、持久完成与缺口意义不因此削弱，也不把这条记录链变成每次当前 read 的前置条件。
 
-跨域不运输 sample 回调。适配运输 ClientCaptureRequest/Reply、上述通知和 ACK；request 由宿主按既有查询定义生成，只执行纯客户端采样，不执行历史查询、Callable 或传入函数。纯当前 Reply 与失效元数据形成轻量有序状态检查点，World 纳入截至 stamp 的当前元数据并固定结果/cursor，再处理较新元数据；它不等待 evidenceThrough 的历史载荷/持久 ACK，大载荷路径不能堵住普通当前读。纯历史不发 ClientCaptureRequest。联合查询固定所需两侧数据；只有其定义明确要求截至当前样本的证据前缀时，才用 evidence fence 核对 F，并核验有关非 Driver 版本 G0、绑定/时间。该等待仅约束相关联合查询；缺证据重传/明确 gap，不把独立 RPC 到达当作前缀证明，不将逻辑切面称为物理原子。ClientCaptureRequest/Reply 形状不增加普通/严格模式，协议需求由查询实现确定。见 [World §6](modules/world.md#snapshot)。
+跨域不运输 sample 回调。适配运输 ClientCaptureRequest/Reply、上述通知和 ACK；request 由宿主按既有查询定义生成，只执行纯客户端采样，不执行历史查询、Callable 或传入函数。纯当前 Reply 与失效元数据形成轻量有序状态检查点，World 纳入截至 stamp 的当前元数据并固定结果/cursor，再处理较新元数据；它不等待 evidenceThrough 的历史载荷/持久 ACK，大载荷路径不能堵住普通当前读。纯历史不发 ClientCaptureRequest。联合查询固定所需两侧数据；只有其定义明确要求截至当前样本的证据前缀时，才用 evidence fence 核对 F，并核验有关非 Driver 版本 G0、绑定/时间。该等待仅约束相关联合查询；缺证据重传/明确 gap，不把独立 RPC 到达当作前缀证明，不将逻辑切面称为物理原子。ClientCaptureRequest/Reply 形状不增加普通/严格模式，协议需求由查询实现确定。见 [World §6](modules/world.md)。
 
 普通联合在接受当前检查点时固定 World 已接收的历史版本，此后新记录不使已固定结果重做；它只声称当时已接收范围。前缀联合中的 G0 只核验本次源证据对账以外的其他相关依赖；正常接收 F 以内的待到证据按 R 纳入，不作为自身并发冲突，纯落盘也不改变 G。
 
 当前检查点的“纳入当前元数据”包括 §5 的未知范围保守覆盖，不要求等待细空间通知补齐。只有最新 stamp 而缺范围时也必须先发布相应保守失效再固定新 cursor；不能在旧空间索引上静默等待。
 
-sections 按整数 Section 坐标读取；单格局部索引为 y*256+z*16+x（各 0..15）。值遵循唯一基础 schema client.sections@1：{ sections: [{ target, revision, base, patches }] }；base 为 null 或 { palette: [{ name, properties }], indices }，indices 为 4096 个 palette 索引或 null（未知格），properties 为字符串属性映射；patches 是按源提交排序的 { index, state }，state 为同形 Block State 或 null（覆盖失效）。Fact/basis 保留真实来源/时间/依据，revision 是不可复用只读版本，不是活 Chunk。仅区域查询固定其请求 Section；小范围 block/self/inventory 不先创建 Section 版本。服务端地形历史与区域读共用必要基底，不各建全加载区快照缓存；未被活动区域读或证据引用的预测不默认追加长期版本链。展开/编码/压缩在关键路径外，跨域不能复用仍会改写/已 detach 的 buffer。无法短边界固定某区域则明确该查询失败/部分覆盖，不影响其他当前读，也不跨 Tick 拼扫冒充同点。见 [World §7](modules/world.md#sections)。
+sections 按整数 Section 坐标读取；单格局部索引为 y*256+z*16+x（各 0..15）。值遵循唯一基础 schema client.sections@1：{ sections: [{ target, revision, base, patches }] }；base 为 null 或 { palette: [{ name, properties }], indices }，indices 为 4096 个 palette 索引或 null（未知格），properties 为字符串属性映射；patches 是按源提交排序的 { index, state }，state 为同形 Block State 或 null（覆盖失效）。Fact/basis 保留真实来源/时间/依据，revision 是不可复用只读版本，不是活 Chunk。仅区域查询固定其请求 Section；小范围 block/self/inventory 不先创建 Section 版本。服务端地形历史与区域读共用必要基底，不各建全加载区快照缓存；未被活动区域读或证据引用的预测不默认追加长期版本链。展开/编码/压缩在关键路径外，跨域不能复用仍会改写/已 detach 的 buffer。无法短边界固定某区域则明确该查询失败/部分覆盖，不影响其他当前读，也不跨 Tick 拼扫冒充同点。见 [World §7](modules/world.md)。
 
 <a id="world"></a>
 
@@ -405,10 +403,6 @@ interface WorldQuery { ref: ExactRef; input: JsonValue }
 type WorldChange =
   | { kind: "changed"; cursor: ObservationCursor; changed: Ref[] }
   | { kind: "reset"; reason: "stream_changed" | "epoch_changed" | "cursor_expired"; cursor: ObservationCursor };
-interface ChangeWaitTarget { query: WorldQuery; after: ObservationCursor }
-type ChangeWaitResult =
-  | { target: ChangeWaitTarget; change: WorldChange }
-  | { kind: "timeout" };
 interface WorldWatch {
   next(after: ObservationCursor, signal: AbortSignal): Promise<WorldChange>;
   close(): Promise<void>;
@@ -450,162 +444,45 @@ world.status@1 的 input={}，value 为 WorldAvailabilityValue，只读同一个
 
 read 只固定该查询实际依赖的不可变值、版本与有关 cursor：纯当前用绑定/当前样本/失效水位，同步完成，不读 DB、不等历史；纯历史走提交屏障（先等已接收上界持久化，再在**同一读取边界**取得数据与提交版本并以该版本作 cursor，见 World §6.2），不采 Driver、不默认追平源头、不静默遗漏查询开始前已接收的证据；已读到的提交不会被再次通知。历史存储处于 opening 时历史读明确 STORE_UNAVAILABLE（当前读不受影响）；status 的 history 分别报 opening/ready/unavailable。联合查询固定所需两侧，只有定义承诺截至样本的历史前缀时才加证据 fence。它们使用同一接口/查询声明，不增加普通/严格模式。异步仅读固定切面，tail 后续落盘不改变结果，不移动/转头/开箱。当前绑定改变则相关查询 SNAPSHOT_INVALIDATED，显式旧分区历史可完整返回。历史分页 token 固定同版本，与 watch cursor 区分，无法继续则报 SNAPSHOT_EXPIRED。stream 绑定世界/代次/维度、确切查询、规范化参数及实际来源谱系；相关源重建/计数重置才换 epoch。单一依赖流的 sequence 分别为当前源失效事件序或历史读取提交版本，两者不可比。合法混合查询的 cursor 仍由 World 拥有：内部固定依赖向量/到期边界，对外 sequence 是该查询流自己的失效序，不能用 current/history 的 max 或和来伪造；缺少内部映射就 reset。当前实现仅支持单类别，混合支持须由 World 补齐，对应条件在支持检查时明确不可用。只在同 stream+epoch 内比较，Runtime 不拆 cursor，也不让无关提交成为当前读取前提。跨域保留各源实际时间，不承诺物理同时原子。
 
-调用者将 read.cursor 原样交给 watch，再交给 next。World 按查询实际依赖原子比较水位/登记等待；有当前依赖时，同域纳入当前 sample，跨域先登记再做轻量当前检查点。当前实现（2026-10-17 对齐）将 after 比较统一放在首次 `next(after)`：watch 的 after 参数不参与登记时比较，登记瞬间已存在的变化由首次 next 立即交付，行为与"watch 登记即固定基线"等价。已发生的迟到通知由 stamp 对账覆盖，之后变化由当前订阅覆盖；该检查不等待历史 bulk/fence。纯历史 Watch 只核对本地历史/领域/时间版本，不请求 Driver。只有查询声明依赖源历史前缀时才另核对该前缀。对账失败明确 SOURCE_UNAVAILABLE/reset，不永久静默等；首次 next 立即交付登记时发现的变化。依赖覆盖输入区域和潜在新对象、相关时间阈值；stream/epoch 不符或无法对账则 reset 后重新 read→watch。prediction→server 等同源升级是 changed，相关来源连续性切换才 reset。
+调用顺序固定：`read` → 原样交出 `cursor` → `watch(query, cursor)` → `next(cursor)`。同一 epoch 内 `next` 不丢唤醒：登记后先复查一次再挂起；`reset`/`epoch_changed` 让旧 cursor 作废，按 `world@1` 的 `history` 状态重读。changed 可合并，只提示复查，不承诺穷举中间变化；要逐事件历史就读对应事件记录。取消 `next` 只取消本次等待，`close` 关闭订阅，资源随所属调用/作用域回收。
 
-WorldWatch 是底层可组合原语，不要求 Program 直接持有它。Program/Callable 的 `waitForChange(targets, options?)` 是 Runtime 提供的一次性宿主操作；targets 是非空列表，每项为 `{ query, after }`。Runtime 为每项分别创建 `WorldWatch`，并为每项建立受当前 Call signal 联动的子取消域，再竞速各自的 `next(after)` 与可选的单调时钟 `afterMs`。任一 Watch 返回 changed/reset 即返回该 target 和原始 WorldChange；时间先到则返回 timeout。随后 Runtime 只取消输家子域，并关闭所有 Watch、清除计时器，清理完成后才结算调用；父 Call 取消则取消全部子域。World 仍是每个 cursor、查询依赖范围、changed/reset 和失效比较的唯一所有者；Runtime 不拆 cursor、不拼接 current/history 水位，也不把 timeout 当作世界变化或完成证据。每个 cursor 必须与对应 query 的确切身份、参数、World/binding 作用域及来源代次匹配；World 对错配不得静默等待，须 reset 或返回稳定错误。多个目标只是多个独立观察，不形成原子联合快照或跨源一致性承诺。
+`waitForChange` 是 Program 侧的宿主操作，签名与三种结局见 [program.md §3.2](modules/program.md)；Runtime 只搬运，`predicate` 留在 guest。`targets` 非空、每项 `{query, after}`，`afterMs` 缺省表示只等失效；非法 targets 或期限报 `INVALID_INPUT`，对 `version: null` 的查询等待同样报 `INVALID_INPUT`（只有 8 个带游标的查询能等）。
 
-targets 为空或 `afterMs` 为零/负数/非有限值时返回 INVALID_ARGUMENT；缺省 afterMs 表示只等失效。timeout 表示本次等待结束，所有输入 cursor 均未被推进，不表示查询发生变化；调用者应重新 read 所需事实再判断。任一 changed/reset 都只要求调用者重读相关事实，不表示它们曾在同一时刻成立；Watch 的合并通知也不保证观察到瞬时条件。若任一 Watch 创建失败，整体等待失败并关闭已创建的 Watch，不将不可用伪装成 timeout。每项查询分别遵循 World 自己的依赖支持合同；多个独立查询可以分别覆盖当前/历史来源，Runtime 不合并水位。若业务需要跨查询的一致性切面，必须由 World 提供显式联合查询合同。
+`writeRecord` 只供绑定领域所有者的 `CallContext`：World 从真实当前调用核验存活、act/schema 所有权、分区与 CAS revision；`expectedRevision=null` 仅创建，不符报 `RECORD_CHANGED`。`WorldEvidencePort` 只注入实际持有跨库强引用的记录所有者（Runtime 等），不属于脚本或普通能力写口：`retain` 幂等追加，成功前保证传递依赖与保留关系已提交；删除前复核引用与保护，失败报 `EVIDENCE_UNAVAILABLE`。
 
-最新 stamp 不等于空间范围已索引。World 另维护本当前源已连续分类或已保守覆盖的水位 C；同 epoch 看到 H>C，却无法证明 (C,H] 的 changed 范围完整时，对依赖该当前源的查询一次发布全源保守失效，再将 C 推进 H。单个连续 notice 可用精确范围，跳号/合并/乱序若无完整范围证明则走保守路径，不能用 MAX(已收范围stamp) 越洞。此处全源仅指该 Driver 当前依赖，不牵涉纯历史/DB/F。相同 H 不在每次 read/watch 重复分配失效版本；新 read 先真实采样到 H、纳入保守失效再固定 cursor，迟到的已覆盖范围只细化索引，不把旧变化伪装成之后新变化。来源断裂无法比较才 reset。算法及 20→21 反例见 [World §9](modules/world.md#watch)。
-
-changed 可合并，仅提示复查，changed 引用不承诺穷举每个中间变化；下一次 read 得到新快照和新 cursor 后再 next。需要逐事件历史时应读对应事件记录，不把 WorldWatch 当事件日志。取消 next 只取消本次等待；close 关闭订阅，资源也随所属调用/身体作用域清理。持久世界等待见 §6，不保存任意 watch 闭包。
-
-writeRecord 只供绑定领域所有者的 CallContext；World 从真实当前调用核验存活、act/schema 所有权、分区及 CAS revision。expectedRevision=null 仅创建；更新不符报 RECORD_CHANGED，不能偷换 schema/world/worldRevision。修订追加不可变版本及证据；CAS 只保护同一领域记录，不比较通用观察版本。领域判断可以基于确切旧证据保存，新原始观察不可被覆盖；其当前有效性由领域查询解释，不把历史判断当当前事实。空间约束由确切 schema 强制，可跨维度的记录明确列出全部位置。schema 与领域验证器由功能模块在组合根提供，不另造生命周期。Program 只有只读 World；标注/更新通过领域 callable。
-
-WorldEvidencePort 仅注入 Runtime 等实际持有跨库强引用的记录所有者，不属于脚本/普通能力写口。retain 对可信 owner 幂等追加 World 证据引用，成功前保证证据、必要 Section 基底/补丁等传递依赖已持久且保留关系已提交；owner 的含义是不可变运行/效果记录，不是临时 call scope，也不是调用者自报的授权。先 retain，再发布外部持久引用；release 仅在该 owner 的引用已持久移除或发布已持久放弃后执行。失败不宣称持久引用成立；跨库中断宁可留下孤立保留，不能先删除证据。DomainRecord 的同类保留在 World 自己的修订事务内完成。外部证据由其原所有者保证，World 不遍历 Subject 会话或新增通用引用 Registry。详情见 [World §10](modules/world.md#retention)。
-
-retain 的存在/依赖校验与保留提交、历史切面登记和实际删除经过同一 World writer/历史发布门，删除前复核引用/保护。删除先胜则 retain 报 EVIDENCE_UNAVAILABLE，保护先胜则跳过。删除在途不允许历史切面按旧版本固定已失去的材料；纯当前读、当前检查点及当前 Watch 不申请这条门，不因存储/GC 而等待。该短门不阻塞 Driver/证据接收，不跨长查询持有。
+World 内部算法（当前/历史切面、失效水位、保留闭包、SQLite Worker）只在 [world.md §6/§9/§10](modules/world.md)，这里不复制。
 
 <a id="programs"></a>
 
-## 6. Program 与 Assets：普通函数、宿主桥接与版本（历史对照）
+## 6. Program 与 Library：已移出本文
 
-> **已由 [`modules/program.md`](modules/program.md) 取代。** 程序是单文件 + 头注释，没有 `WaitRequest`/`mc.wait`/`mc.checkpoint`/`dependencies`/`bindings`/`nativeEnvironment`；调用统一为 `mc.call(selector, input)`，等待用 `mc.waitForChange`/`mc.sleep`。本节保留作历史对照，实施以 program.md 为准。
+> 程序与库的公开定义不在本文：程序见 [program.md §3、§7](modules/program.md)，库见 [assets.md §2–§5](modules/assets.md)，能力面见 [capabilities.md](modules/capabilities.md)。本节只留一张对照表，防止旧引用被当成现行合同；旧的完整类型随 git 历史保留（676680d 之前的版本）。
 
-以下 API 留在本文作为唯一公共定义；不把宿主对象、函数或 iterator 本身塞入 IPC。函数回调留在原 guest；Body/Window/Feedback/文件流使用宿主登记的资源路由与本地包装。每次 Program Call 有独立语言 runtime，普通 Promise 分支本身不创建 Call。完整数据边界、回调交接与取消算法由 Program 所有者规定。
-
-```typescript
-interface WaitRequest { condition: ExactRef; input: JsonValue; checkpoint?: Checkpoint }
-interface WaitResult { observation: Ref; evidence: Ref[] }
-interface ProgramBody extends BodyOps {
-  call<I, O>(ref: Selector, input: I): Promise<O>;
-  loop(step: (frame: FeedbackFrame) => ControlInput | { done: true }, sensors: Record<string, WorldQuery>): Promise<void>;
-}
-interface ReadProgramAPI {
-  readonly checkpoint: Checkpoint | null;
-  call<I, O>(ref: Selector, input: I): Promise<O>;
-  read<T>(query: WorldQuery): Promise<Observation<T>>;
-  wait(request: WaitRequest): Promise<WaitResult>;
-  waitForChange(targets: readonly ChangeWaitTarget[], options?: { afterMs?: number }): Promise<ChangeWaitResult>;
-  decide(reason: string, checkpoint: Checkpoint): Promise<never>;
-  progress(value: Progress): Promise<void>;
-  readonly assets: ReadLibrary;
-}
-interface ProgramAPI extends ReadProgramAPI {
-  withBody<T>(work: (body: ProgramBody) => Promise<T>): Promise<T>;
-  readonly assets: WriteLibrary;
-}
-interface ProgramDefinition {
-  descriptor: Omit<CallableDescriptor, "ref" | "implementation">;
-  source: string; // async function(mc, input) 的函数体；不是 npm 包
-  dependencies: ExactRef[]; // 仅显式 Program 资产依赖；不包含原生 ref，不穷尽动态调用
-  bindings?: ProgramBinding[]; // 提供时是闭合的裸名表；不再回退到当前原生环境
-}
-interface ProgramBinding { name: string; refs: ExactRef[] }
-
-```
-
-程序入口是 `async function(mc, input)`，input/output 按声明 schema 校验。循环、函数、闭包、异常与局部状态都是普通 JS；不允许直接访问 Bot/Node 宿主。ProgramAPI 是脚本侧的本地门面，异步方法跨执行域时只运输参数/结果及隐藏的调用/资源引用；函数参数一直留在脚本域。
-
-`withBody` 本地保留 work，宿主取得资格并返回代理；回调里用 body.call 继承该作用域，直接身体方法也是该代理。结束后宿主完成释放屏障，finally 只是正常路径方便写法，强制终止的清理仍由驱动负责。loop 本地保留 step，内部用 feedback→next→step→apply，done/异常/取消时关闭；不向驱动发送函数，不允许反馈回调另起异步身体分支。自写控制的自由度来自新传感和 ControlInput，不来自原始 Bot 旁路。
-
-`wait` 是领域等待的便捷能力：WaitConditionDef 让可复用的 ready/pending/decide 规则由领域所有者定义；它不是 Program 表达等待的唯一入口。临时或组合条件用普通 JavaScript `read → 判断 → waitForChange → 重读`，无需注册新 Callable/条件、改 Runtime 或添加条件 DSL。示例：
-
-```javascript
-while (true) {
-  const healthQuery = { ref: "self.health@1", input: {} };
-  const weatherQuery = { ref: "weather.current@1", input: {} };
-  const enemiesQuery = { ref: "entities.nearby@1", input: { radius: 16 } };
-  const [health, weather, enemies] = await Promise.all([
-    mc.read(healthQuery), mc.read(weatherQuery), mc.read(enemiesQuery),
-  ]);
-  if (health.value >= 10 && weather.value === "clear" && enemies.value.length === 0) break;
-  await mc.waitForChange([
-    { query: healthQuery, after: health.cursor },
-    { query: weatherQuery, after: weather.cursor },
-    { query: enemiesQuery, after: enemies.cursor },
-  ],
-    { afterMs: 30_000 },
-  );
-  // timeout 也回到 read；只由新观察判断条件。
-}
-```
-
-上面的三个 ref 及返回字段仅为接口形状示例，不代表当前已有这些 QueryDescriptor。若天气、生命值、实体等事实分别由独立 QueryDescriptor 提供，Program 可各自 read 并把每个查询与自己的 cursor 放入同一次 `waitForChange`。若某项底层事实本身不存在，仍须由其所有者补足观察能力；普通 JS 不能伪造事实。分别读取不提供联合快照；只有业务确实要求多个来源在同一一致性切面解释时，才由 World 增加明确的联合查询。
-
-wait/waitForChange 检查**当前调用谱系**没有持有/借用 Body，否则 BODY_SCOPE_ACTIVE；无关兄弟的 Body/排队不构成拒绝理由。先退出自己的 withBody，不能自动释放后让旧闭包持旧 player。waitForChange 为每个 target 分别调用 World.watch(query,after,childSignal)，childSignal 由 Runtime 与 Call signal 联动；一项变化/重置或本地计时胜出时只取消其他 childSignal。任何返回、建 Watch 失败、取消或调用关闭都必须取消相关等待、关闭所有已建 Watch 并清计时器，资源清理完成后调用才结束。World 自己保证每个 read cursor→首次 next 无漏变化，并核验 cursor/query 身份。取消只停止该调用的等待并由 CallScope 关闭，不停止 Run；多个等待 Call 可并存且各自持有观察资源。await mc.wait/waitForChange 都保留闭包与活动 guest 容量；decide 持久封口并释放旧域。重启只恢复记录/检查点，显式 continue 才建新段，不恢复栈或自动主动复查。
-
-**保存的是一个程序入口。** 普通文件工具编辑 `program.js` 与 Manifest，`WriteLibrary.publish` 创建不可变 Revision；修改内容或回退都发布新版本并对当前 head 做 CAS，不移动旧版。`publishFromRun` 必须指定 run/segment/**record**，经可信 ProgramSourcePort 固定当时入口，再进入同一发布机制；不复制栈、输入、结果或完整历史。接口仅见 §6.3 所链接的 Assets 合同，不再定义 ProgramAssets/ScriptAssets 的另一套保存门面。
-
-原生段从执行时冻结 descriptor 生成 `return await mc.call(<exactRef>, input);`，完整保留 input/output、access、completion、checkpoints 等声明，去掉原 ref/implementation；dependencies=[]、bindings=[]，原生 ref 不是资产依赖。Program 段保存实际源码与入口自己的 effectiveBindings。保存来源不充当执行证据；关联 Evidence 经可信有限导出独立附加，不建立持久 capture owner 或跨库保留事务。
-
-顶层 run 的名称在首次受理解析成确切入口。未提供 bindings 时，程序内简单名称从**当前程序定义的显式 dependencies 与固定原生环境**建立绑定，不查询当前推荐目录；显式依赖优先于原生同名绑定。提供 bindings 时只用这份有限闭合表，缺项报 UNBOUND_CALL，不能补入新环境的同名实现；名称须为无版本的完整名称，refs 非空、去重且每项名称与键一致，同名声明依赖与该表不一致在执行前报 INVALID_ARGUMENT。同一名称多个确切版本可供确切调用，裸名仍报 AMBIGUOUS_CALL，不能因保存而任挑一个。保存程序 Q 使用 Q 自己的声明，不能被调用方 P 的同名绑定覆盖；不构建模块安装/导入图。
-
-绑定在程序调用开始前确定并记录，等待期间不变；恢复同一定义继承既有绑定。续段显式提交的新定义/依赖就是换版意图，不能被旧绑定覆盖；默认原生环境仍按 inherit。动态确切 ref 在自身调用前核验/登记，每段记录实际调用与环境指纹，不冻结全目录；旧原生实现不可用明确失败，不假冒新版。
-
-Program.progress 委托同一 CallScope.progress，保留调用归属、可合并非关键更新；它只报告作者声明的进展，不自行完成目标或创建服务端效果证据，最终回执仍按原证据合同裁定。
-
-### 6.1 正常采集与制作
-
-```javascript
-// 简单名称来自本程序声明/固定原生环境；实际确切版本进入运行记录。
-await mc.progress({ summary: "开始准备木板", measures: [] });
-const wood = await mc.call("gather.collect", { block: "oak_log", additional: 8 });
-const boards = await mc.call("crafting.craft", { item: "oak_planks", additional: 32 });
-return { wood, boards };
-```
-
-一次 run 建一段程序；collect 内 withBody 取得身体，其内部 scope.call 导航/装备/采集共用资格，按实际入包返回；退出后释放，craft 再按当前真实材料执行。若需要连续独占，外层 `mc.withBody` 内改用 `body.call` 组合两者。产出批次超额如实返回，数量单位由各能力 schema 定义。顶层正常 return 的范围仍为 execution；两个子能力的目标/效果证据分别保存。
-
-### 6.2 未预设的反馈控制
-
-```javascript
-const terrain = await mc.read({ ref: "region@1", input: input.region });
-await mc.withBody(async body => {
-  await body.loop(frame => {
-    if (frame.self.value.onGround && insideLanding(frame.self.value.place.position, input.landing)) {
-      return { done: true };
-    }
-    return chooseInput(frame, terrain, input);
-  }, { collision: { ref: "nearby_collision@1", input: { radius: 3 } } });
-});
-return await mc.read({ ref: "self@1", input: {} });
-```
-
-insideLanding/chooseInput 是脚本内普通函数；桥接只传反馈帧和受控输出。loop done 只结束控制循环，落地目标的确认强度仍取决于观测与入口合同。保存后调用 `user.parkour@2` 与调用原生能力走同一 call 包装，不增加动作分类或第二执行器。
-
-### 6.3 文件包、Library 与可信来源导出
-
-> **已由 [`modules/assets.md`](modules/assets.md)（Library）与 [`modules/program.md`](modules/program.md) 取代。** 库是普通文件（`programs/`、`blueprints/`、`experiences/`），没有 SQLite 目录、不可变包、发布 CAS、版本号或证据副本；文本由 `library` 写，蓝图字节由文件能力放。本节保留作历史对照。
-
-Assets 已采用普通文件包 + SQLite 目录/CAS 的统一终态（历史内容，实施以 Library 详细设计为准）：
-
-| 合同 | 现行定义 |
+| 旧概念（本文历史版本） | 现在 |
 | --- | --- |
-| 三类条目的命名、目录、路径安全 | [Library §2](modules/assets.md) |
-| 蓝图的 Raw/Target/Project、AirPolicy、完整性 | [Library §3](modules/assets.md) |
-| 经验的形态、证据弱链接 | [Library §4](modules/assets.md) |
-| `library` 的 `list/get/save/update/delete` | [Library §5](modules/assets.md) |
-| 程序单文件、头注释、`library.save` 从运行段 | [program.md §2、§4](modules/program.md) |
-| 程序执行端口与 RPC | [program.md §7](modules/program.md) |
-| PublishRequest/CAS、ProgramSourcePort、EvidenceExportPort、ReadLibrary/WriteLibrary | **删除**，理由见 [Library §7](modules/assets.md) |
+| `ProgramDefinition { descriptor, source, dependencies, bindings }` | 单文件 `programs/<name>.js` + `// uina {json}` 头注释；入口 `async function main(mc, input)`；没有依赖表、绑定表或 nativeEnvironment（program.md §2） |
+| `WaitRequest` / `mc.wait` / `mc.checkpoint` | `mc.waitForChange(targets, predicate, {afterMs})` 与 `mc.sleep`；checkpoint 只由 `mc.decide` 携带（program.md §3.2） |
+| `mc.read(query): Observation<T>`（`{ref, input}` 包装） | `mc.read(selector, input) → { value, version, unknown? }`（program.md §3.2、capabilities.md §2） |
+| `ReadProgramAPI.assets: ReadLibrary`、`CallContext.assets` | 程序不持有库对象：蓝图用 `build.plan@1` / `build@1 {from}`；文本库操作走 `library` 工具动作 |
+| `ProgramExecutionPort` / `ProgramSegmentDomain` / `ProgramCapacity`（旧 §7.1） | 删除：程序在 world 伴生进程的 worker 线程内执行，容量与 guest 状态经 `runs` 报告（program.md §5、§7） |
+| `WriteLibrary.publish`、`publishFromRun`、PublishRequest/CAS/Revision/objectId/packageDigest | 删除：库是普通文件，只有 list/get/save/update/delete（assets.md §5、§7） |
+| `ProgramSourcePort.exportSegment`、EvidenceExportPort、capture owner | 删除：`save {from}` 逐字节搬源码，证据只有弱链接（program.md §2.6、§4） |
+| `blueprint@1` 查询 | 蓝图是库中的文件；读几何用 `region@1`，施工用 `build.plan@1` / `build@1` |
+| 原生段包装 `return await mc.call(<ref>, input)` | 取消：程序与原生动作走同一条调用路径，没有"段导出"这一步 |
 
-ReadCallContext/ReadProgramAPI 的 `assets` 字段随仓库一起删除：脚本不需要仓库对象，按名取蓝图用 `blueprint@1`（Construction 实现），文本库操作走 `library` 工具动作（[Runtime §9](modules/runtime.md#9-program-执行合同与资源准入)）。
-
-WorldEvidencePort 仍可供 Runtime 保护自己记录的必要 World 强引用；不存在资产侧的 capture/retain/发布协议。
-
+仍然有效的一条：`WorldEvidencePort.retain/release` 供 Runtime 保护自己记录所需的 World 强引用；不存在资产侧的 capture/retain/发布协议。
 
 <a id="executor"></a>
 
 ## 7. Uina ↔ Executor：确定的受理、查询、结果与事件
 
-> **程序入口与执行端口已改（2026-10-18）**：程序以 `{ kind: "program"; source: SourceSnapshot; input }` 提交，`SourceSnapshot = { name, source, digest }`（源码与头注释见 [program.md §2](modules/program.md)）；`ProgramDefinition`/`wait`/`checkpoint` 的旧形状只出现在 §6 历史对照。§7.1 的 `ProgramExecutionPort`/`ProgramSegmentDomain`/`ProgramCapacity` 不再由 Executor 暴露——程序在世界侧进程内执行，容量与 guest 队列经 `runs` 报告（[program.md §5、§7](modules/program.md)）。本节其余受理、查询、结果、事件与投递合同仍然有效。
+> **程序入口（2026-10-18）**：程序以 `{ kind: "program"; source: SourceRequest; input }` 提交，`source` 是 `{name}` 或 `{code}`；Runtime 受理时把它解析成确切字节（快照与头注释见 [program.md §2](modules/program.md)）。执行端口不在本文（见 §6 对照表）：段记录只记程序的名字/来源/摘要/快照，不记源码。
 
 ```typescript
-interface SourceSnapshot { name: string; source: string; digest: string }
 interface Origin { worldOwner: Ref; activation: Ref; caller?: Ref; invocation?: Ref }
+type SourceRequest = { name: string } | { code: string }
 type Entry = { kind: "call"; selector: Selector; input: JsonValue }
-  | { kind: "program"; source: SourceSnapshot; input: JsonValue };
+  | { kind: "program"; source: SourceRequest; input: JsonValue };
 type Schedule = { kind: "enqueue" }
   | { kind: "replace_pending"; targets?: Ref[] }
   | { kind: "preempt_current"; expectedRun: Ref };
@@ -617,11 +494,16 @@ interface RunBase {
   control: "none" | "active" | "stopping" | "stopped" | "unknown";
   unknownEffects: Ref[]; record: Ref;
 }
+// waiting 只描述"在等什么"，不承诺何时结束；不设墙钟超时
+type WaitState =
+  | { kind: "host_call"; method: string; sinceMs: number }         // 在等一个宿主 RPC（查询/动作/睡眠）
+  | { kind: "world_change"; targets: ExactRef[]; sinceMs: number } // 在等观察版本变化
+  | { kind: "idle"; sinceMs: number }                              // 没有在途宿主请求，guest 卡在自己的 Promise 上
 type RunSnapshot = RunBase & (
   | { phase: "queued" | "running" | "stopping" }
-  | { phase: "waiting"; waits: { callId: Ref; request: WaitRequest }[] }
+  | { phase: "waiting"; waiting: WaitState }
   | { phase: "awaiting_decision"; decision: Ref; reason: string; checkpoint: Checkpoint; completionRef: Ref }
-  | { phase: "finished"; outcome: Outcome; value?: JsonValue; error?: { code: string; message: string }; completionRef: Ref }
+  | { phase: "finished"; outcome: Outcome; value?: JsonValue; error?: { code: string; message: string }; completionRef: Ref; orphans?: Ref[] }
 );
 type Acceptance = { kind: "accepted"; requestId: Ref; segment: Ref; snapshot: RunSnapshot }
   | { kind: "unknown"; requestId: Ref; reason: string }
@@ -660,23 +542,25 @@ interface OwnerGateReceipt {
   control: "stopping" | "stopped" | "unknown"; error?: string;
 }
 type ContinuedEntry = { kind: "call"; ref: ExactRef; input: JsonValue }
-  | { kind: "program"; definition: ProgramDefinition; input: JsonValue };
+  | { kind: "program"; source: SourceRequest; input: JsonValue }
+// 段入口：Runtime 在受理时把 SourceRequest 解析成确切字节
 type SegmentEntry =
-  | { kind: "program"; ref?: ExactRef; definition: ProgramDefinition }
-  | { kind: "native"; descriptor: CallableDescriptor & { implementation: "native" }; digest: string };
+  | { kind: "native"; descriptor: CallableDescriptor; digest: string }
+  | { kind: "program"; name: string | null; origin: "library" | "code"; digest: string; snapshot: Ref };
 interface SegmentRecord {
   run: Ref; segment: Ref; revision: number; record: Ref; entry: SegmentEntry; input: JsonValue;
-  nativeEnvironment: Ref; effectiveBindings: ProgramBinding[]; sourceDigest: string;
-  checkpoint: Checkpoint | null; value?: JsonValue; evidence: Ref[];
+  environment?: { serverVersion: string; protocol: number };
+  checkpoint: Checkpoint | null; value?: JsonValue; orphans?: Ref[]; evidence: Ref[];
 }
 interface CallRecord {
   call: Ref; run: Ref; segment: Ref; parent: Ref | null; record: Ref;
-  ref: ExactRef; implementation: "native" | "program"; digest: string;
-  access: "read" | "act"; input: JsonValue; effectiveBindings?: ProgramBinding[];
+  ref: Ref; // 原生与子调用为 ExactRef；程序调用为 <name> 或 code:<digest 前 8 位>
+  implementation: "native" | "program"; digest: string;
+  access: "read" | "act"; input: JsonValue;
   execution: "running" | "returned" | "threw" | "interrupted";
   completion: CallableDescriptor["completion"];
   outcome?: Outcome; value?: JsonValue;
-  error?: { code: string; message: string; dispatch: "not_sent" | "sent" | "unknown"; effects: Ref[] };
+  error?: { code: string; message: string; source: string; dispatch: "not_sent" | "sent" | "unknown"; effects: Ref[]; hint?: string };
   progress: Progress; effects: Ref[]; evidence: Ref[];
 }
 interface EffectVerification {
@@ -695,7 +579,6 @@ interface ExecutorClient {
   submit(origin: Origin, request: RunRequest, waitSignal?: AbortSignal): Promise<RunReply>;
   lookup(requestId: Ref): Promise<SubmissionLookup>;
   read(run: Ref): Promise<RunSnapshot>;
-  programCapacity(): Promise<ProgramCapacity>;
   readSegment(run: Ref, segment: Ref): Promise<SegmentRecord>;
   readCall(call: Ref): Promise<CallRecord>;
   readEffect(effect: Ref): Promise<EffectRecord>;
@@ -712,11 +595,11 @@ interface ExecutorClient {
 
 ```
 
-façade 的临时代码只需 code/input；接入生成 execution 范围的临时描述和默认 JSON 输入/输出合同，不要求模型为每段代码手填完整 ProgramDefinition。具名 call/args 规范化为 Entry 的 selector/input；library 保存时才需要可复用描述。
+façade 的临时代码只需 code + input：Runtime 把它解析成与具名程序相同的东西——确切源码字节、摘要与段内快照，然后走同一条调用路径。临时代码没有额外特权，也不跳静态校验（program.md §2.6）。
 
-SegmentRecord 是运行所有者固定的一次只读截面；revision/record 标识该截面，entry 保存实际执行的 ProgramDefinition 或当时冻结的原生 descriptor/实现摘要。effectiveBindings 只属于该段入口，保留同名歧义；子程序各自的表和实际调用关系仍属于其调用记录，不能扁平并进该表。活段 evidence 可增长，但同次 readSegment 不混合前后截面；readSegment 不承诺持久保留，也不能给任意调用者建立 GC 保护。原生段的普通裸名环境不等于它的后代依赖图。
+SegmentRecord 是运行所有者固定的一次只读截面：`entry` 保存该段实际执行的来源（原生 descriptor 与摘要，或程序名/来源/摘要与快照引用），`digest` 是该段实际运行字节的摘要。活段 evidence 可增长，但同一次 readSegment 不混合前后截面；readSegment 不承诺持久保留，也不建立 GC 保护。源码与头注释只属于 Program，Executor 不解析源码。
 
-ProgramSourcePort 与 EvidenceExportPort 采用 §6.3 引用的唯一 Assets 合同，只注入可信宿主，按确切不可变 record 导出有限来源/事实；不装入 ExecutorClient 或脚本，也不需要 Runtime 为资产保存建立持久 capture/retain 账本。CallRecord 用于实际调用树、失败与 effects 的展开，不允许调用方直接写入或修改结论。SegmentRecord.record 与 CallRecord.record 始终是已提交不可变截面；活跃调用的后续进度产生新截面，不原地修改旧 record。
+CallRecord 用于实际调用树、失败与 effects 的展开，不允许调用方直接写入或修改结论。SegmentRecord.record 与 CallRecord.record 始终是已提交不可变截面；活跃调用的后续进度产生新截面，不原地修改旧 record。
 
 以上请求 ID 是内部协议字段。模型 façade 的 run/continue/stop/library 参数不含需自造的 ID；接入为新工作在任何 IPC 前持久建立 requestId，后续本次传输重试/查询复用。模型得到系统返回的 request/run 后可以查询或恢复旧请求；再次普通 run 是新意图，不能用参数相同自动合并。invocation 仅审计关联，不承担持久唯一性。
 
@@ -730,35 +613,17 @@ submit/continue 先完成 Runtime 持久受理，再在同一次客户端调用�
 
 events 只是变更提示，断流从 read/list/pendingDeliveries 补读。completion 与固定报告在相应段交还/Run 终结事务持久；原 run/continue 短窗口直返前在 Executor 既有请求记录固定 request/segment/completionRef，再 settleDelivery(tool_handoff)，正常抑制后台通知。工具桥接完成响应交接后关闭本地请求，二者都不是 canonical ACK。恢复只枚举本 owner 未结请求并用 lookup 对账；pending 走正常 drain，input_committed/过时 decision 关闭本地项，tool_handoff 且 eligible 则以 (requestId, completionRef) 唯一键建立一个持久补报意图，重启续用既有意图/attempt 流程，不重做动作。一个意图可因 ACK 丢失重复呈现；本地已关闭后的最终交接缺口仍可查询，不宣称恰好一次/至少一次，不扫描 Host 会话。工具等待取消解除本地暂缓，Run 继续。input_committed 只接受可信 attempt inputId→completionRef 对应的 input_settled.committed。两种 receipt 均核验 owner/原请求或实际 attempt，guest 无权注入；settleDelivery 幂等，只追加交付处置，不改游戏结论。故障补报可在 tool_handoff 后追加 input_committed，不能回退 pending。
 
-pendingDeliveries 只返回 disposition=pending 且 eligible 的项，不静默截断；恢复补报显式由未结请求持久意图指定，使用 readDelivery 读取 tool_handoff，不扩大 pending 枚举。普通 read/wait 不消耗通知。readDelivery 用于 emitEvent 前和 deferred render 前复查：decision 已消费/被停止/Run 终结就不再作为请求投递，旧 report 仍可查。render 对过时 decision 返回 null，不写 ACK；状态读取不可用也不冒认为待处理，保留重试。render 检查与 Host append 非原子，最后竞态可能展示历史，continue 仍以 DECISION_STALE 拒绝重复消费。未确认的输入按同 completionRef、新 attempt 可重报，不重新动作。正常的短等待暂缓、返回选择和后台 drain 由同一 Executor 实例串行协调，不建跨库租约/claim。完整交界见 [行为 §4](contracts.md#delivery) 与 [Runtime §13](modules/runtime.md#13-同一-completion短时直返与后台递送)。
+pendingDeliveries 只返回 disposition=pending 且 eligible 的项，不静默截断；恢复补报显式由未结请求持久意图指定，使用 readDelivery 读取 tool_handoff，不扩大 pending 枚举。普通 read/wait 不消耗通知。readDelivery 用于 emitEvent 前和 deferred render 前复查：decision 已消费/被停止/Run 终结就不再作为请求投递，旧 report 仍可查。render 对过时 decision 返回 null，不写 ACK；状态读取不可用也不冒认为待处理，保留重试。render 检查与 Host append 非原子，最后竞态可能展示历史，continue 仍以 DECISION_STALE 拒绝重复消费。未确认的输入按同 completionRef、新 attempt 可重报，不重新动作。正常的短等待暂缓、返回选择和后台 drain 由同一 Executor 实例串行协调，不建跨库租约/claim。完整交界见 [行为 §4](contracts.md) 与 [Runtime §13](modules/runtime.md#13-同一-completion短时直返与后台递送)。
 
-programCapacity 是无 Body/guest 准入等待的观察接口，façade 用 runs {op: "program_capacity"} 暴露。ProgramExecutionPort.capacity 同步读取其唯一容量事实，返回 entriesScope=all 的一致内存截面；ExecutorClient 保留整体 limit/occupied/queued，entriesScope=owner 且只列当前 owner 的 Segment，不泄漏其他 owner 标识。occupied 含 opening/active/retiring/retirement_unknown，只有已证明释放才减少；requestedAt/occupiedAt 为诊断时间，排队顺序由 Program 内部序号决定。关联 Segment 的 Run/Call/WaitRequest 提供世界等待原因；跨读只是带 observedAt 的观察，不承诺与持久 Run 快照原子，也不能把容量快照当资源预留。全部域长期 wait 可让新 Program 无限 queued；停止、取消、纯 native、状态查询走独立路径。
+容量不是 Executor 的公开方法：`runs` 的状态里给 `waiting` 与域/guest 计数（program.md §5.2、§5.3）。一次容量读数是带 observedAt 的观察，不承诺与持久 Run 快照原子，也不能当资源预留。
 
 ### 7.1 可信组合根注入
 
-> **程序执行端口已移出本节的公开面（2026-10-18）。** 世界进程内部的 guest 执行/桥接不再是 Executor 对 Uina 暴露的合同；本小节关于 `ProgramExecutionPort`、`ProgramSegmentDomain`、`ProgramCapacity`、`ProgramExecutionFailure`、`DriverExecutionSink`、`RuntimeRecordBarrier`、`WaitConditionDef`、`CompletionCheck` 的定稿仅作历史对照，现行定义见 [program.md §5、§7](modules/program.md)。以下只保留仍被 Runtime/Driver 组合根使用的可信注入合同。
-
-下列合同只服务 Runtime/Program/Driver/领域组合根，不接受模型 JSON 注入。函数表示可信本地实现，不跨执行域传输。
+只服务 Runtime / Driver / 组合根的本地合同，不接受模型 JSON 注入；函数是可信本地实现，不跨执行域传输。程序的执行端口不在本文：`ProgramPort` / `ProgramCapacity` 见 [program.md §7](modules/program.md)。
 
 ```typescript
 interface CheckpointSchemaDefinition { ref: ExactRef; value: JsonSchema }
-type ConditionCheck =
-  | { state: "ready"; result: WaitResult }
-  | { state: "pending"; afterMs?: number }
-  | { state: "decide"; reason: string; checkpoint: Checkpoint };
-type WaitConditionDef = {
-  ref: ExactRef; input: JsonSchema;
-} & (
-  | { kind: "passive"; query(input: JsonValue): WorldQuery;
-      evaluate(input: JsonValue, observation: Observation<JsonValue>): ConditionCheck }
-  | { kind: "active"; recheck: ExactRef; args(input: JsonValue): JsonValue;
-      initialDelayMs(input: JsonValue): number;
-      evaluate(input: JsonValue, result: JsonValue): ConditionCheck }
-);
-interface CompletionCheck {
-  state: "met" | "not_met" | "unknown";
-  evidence: Ref[]; reason?: string;
-}
+interface CompletionCheck { state: "met" | "not_met" | "unknown"; evidence: Ref[]; reason?: string }
 interface DriverExecutionFact {
   effect: Ref; operation: Ref; contract: ExactRef; observedAt: string;
   kind: "dispatch" | "receipt" | "cleanup";
@@ -767,52 +632,16 @@ interface DriverExecutionFact {
   detail?: JsonValue; // 操作声明的原始回执/缺口，不是 guest 自述
 }
 interface RecordTicket { instance: Ref; sequence: number }
-interface DriverExecutionSink {
-  record(fact: DriverExecutionFact): RecordTicket | null;
-}
+interface DriverExecutionSink { record(fact: DriverExecutionFact): RecordTicket | null }
 interface RuntimeRecordBarrier {
-  capture(): RecordTicket; // 无事实时为本实例 sequence=0，不是未知回退值
+  capture(): RecordTicket;                  // 无事实时为该实例 sequence=0，不是未知回退值
   flushThrough(through: RecordTicket): Promise<void>;
-}
-interface ProgramRetirement { state: "retired" | "unknown"; reason?: string }
-// 可信 ProgramExecutionPort 产生的失败；guest 自述不能伪装此对象的来源。
-interface ProgramExecutionFailure extends Error {
-  code: "PROGRAM_ERROR" | "PROGRAM_CAPACITY";
-  scope: "call" | "domain";
-  reason: "syntax" | "language" | "encoding" | "exception" | "resource"
-    | "capacity" | "protocol" | "engine" | "transport";
-}
-interface ProgramCapacity {
-  observedAt: string; limit: number; occupied: number; queued: number;
-  entriesScope: "all" | "owner";
-  entries: { segment: Ref; requestedAt: string; occupiedAt?: string;
-    state: "queued" | "opening" | "active" | "retiring" | "retirement_unknown" }[];
-}
-interface ProgramSegmentDomain {
-  invoke(request: {
-    call: Ref; definition: ProgramDefinition; input: JsonValue;
-    api: ReadProgramAPI | ProgramAPI; signal: AbortSignal;
-  }): Promise<JsonValue>;
-  retire(reason: string): Promise<ProgramRetirement>;
-}
-interface ProgramExecutionPort {
-  capacity(): ProgramCapacity;
-  validate(definition: ProgramDefinition): Promise<void>; // 语法/语言支持，不执行用户代码
-  open(request: {
-    segment: Ref; mode: "wait" | "try"; signal: AbortSignal;
-  }): Promise<ProgramSegmentDomain>;
 }
 ```
 
-Checkpoint schema 由领域模块普通导出，组合根校验同 ref 唯一。descriptor.checkpoints 明确入口可消费的 schema；不声明则不接收非空检查点。NativeCallable 的 descriptor.access 与顶层 access 必须相同。Program 非 execution 完成范围须配置可信原生 read verifier；它按已冻结入口 input/value/effects 和确切要求判定并返回 CompletionCheck，不能接受脚本自述代替证据。ctx.verify 只允许 effect 原要求指定的核验者，不能改目标或核销无关效果。
+checkpoint schema 由领域模块普通导出，组合根校验同 ref 唯一；descriptor.checkpoints 声明可消费的 schema，不声明则不接收非空检查点。非 execution 完成范围必须有可信原生 verifier，按已冻结的入口、value 与 effects 判定并返回 CompletionCheck；`ctx.verify` 只允许 effect 原要求指定的核验者。
 
-DriverExecutionSink 是 Runtime 注入且绑定可信创建来源的本地实例；record 同步接收不可变事实并非阻塞入队，返回本 writer instance 的 ticket，不代表持久/服务端 ACK。无法接收返回 null 并锁存 recorder fault、封闭新副作用；Driver 撤销/清理不等磁盘。RuntimeRecordBarrier.capture 固定已收到前缀 H，flushThrough(H) 保证 ≤H 材料已提交，否则明确失败；发生材料丢失的故障不得返回成功。ticket 不跨实例/重启比较；H 后材料不纳入原终结。Driver 相应关闭 Promise 完成前，已产生的清理派发/可得回执必须先入 sink；未来回执可晚到并追加核验。完整结算见 [Runtime §11](modules/runtime.md#11-effect-记录提交屏障与结算)。DriverOptions 必须注入完整 HostCallVerifier 与 sink，缺真实来源验证不启用完整写集成。
-
-ProgramExecutionPort 只注入可信宿主；api 是当前 Call 绑定的本地入口，不作为 JSON/宿主对象送 guest。open.wait 进入有限域容量 FIFO，可取消；try 无立即容量报 PROGRAM_CAPACITY。每 Segment 最多一个 domain，共享首次 open Promise；嵌套/并发 Program Call 在域内隔离语言环境，不再占第二份域容量。持 Body 时首次开域只准 try，不能持 Body 排容量；native 不占域。invoke.signal 只取消该 guest Call；段 retire 封闭全部 invoke/桥接，取消所有 guest 并给出退役事实；未知不得释放仍存活资源的容量，域退役不替代 Driver 屏障。Program 经 Executor 注入的受管创建能力建立子域，最终进程树监管只有 Executor 一个所有者，Runtime 不接 OS API。await wait 保留 domain/闭包及资源；decide/段终结释放，不恢复退出后的栈。QuickJS+段子进程是优先原型，具体语言/WASM pump/帧编码/预算/平台启动留给各所有者详细设计。
-
-ProgramExecutionFailure 只在可信执行端口与 Runtime 间分类故障：scope=call 允许正常子调用处理，scope=domain 表示共享引擎/桥接隔离失守，Runtime 先关闭整段并调用 retire，不能将它作为一个可吞掉的普通 JS 异常送回仍活动 guest。单调用取消通过原 signal/CallScope 结算，不伪装成 JS 错误。PROGRAM_ERROR 的设计含义扩为语言执行/编码/资源/引擎/桥接错误，PROGRAM_CAPACITY 表示无法立即获得活动执行域；该两码的细分 reason 只服务可信端口，不由 guest 为自己授予生命周期权威。后续实施同步 errors.ts 的旧释义及 PROGRAM_CAPACITY 缺项。
-
-WaitConditionDef 核验确切 ref/input；read 只可 passive，active.recheck 必须为固定 act Callable。pending.afterMs 为有限正数，initialDelayMs 为有限非负数；到期只复查，取消/重读拆除上轮计时器和 Watch，无默认任务期限。World 不支持混合查询时支持检查明确失败，Runtime 不另造混合 cursor。
+DriverExecutionSink 由 Runtime 注入并绑定可信创建来源：`record` 同步接收不可变事实、非阻塞入队，返回本 writer 实例的 ticket，不代表持久或服务端 ACK；无法接收时返回 null、锁存 recorder fault 并封闭新副作用，Driver 的撤销/清理不等磁盘。`RuntimeRecordBarrier.capture` 固定已收到前缀 H，`flushThrough(H)` 保证 ≤H 材料已提交，否则明确失败；材料丢失的故障不得返回成功。ticket 不跨实例或重启比较，H 之后的材料不纳入原终结。Driver 关闭 Promise 完成前，已产生的清理派发与可得回执必须先入 sink；未来回执可晚到并追加核验。完整结算见 [Runtime 详细设计](modules/runtime.md)。
 
 ## 8. 模块独立验证的最小要求
 

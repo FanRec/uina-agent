@@ -55,7 +55,7 @@ QuickJS、子进程、Windows Job 的机制研究只支持优先原型选择。�
 | Library | 程序/蓝图/经验的文件、命名与元数据；蓝图字节、经验文本 | 执行目标结论、身体操作与 Runtime 生命周期 |
 | Uina Host | Subject、canonical journal、World 生命周期 | Minecraft 内部调度与运行状态 |
 
-Program 的子执行域使用 Executor 注入的受管创建能力，全部属于同一个最终监管树；Program 管 guest 启停，Executor 持最终退出证明。Runtime 只等待这两者给出的退役事实，不再实现第三套进程管理。平台启动与 Job 绑定细节由 Executor 所有者设计，不在本文规定系统调用。
+程序在 world 伴生进程内的 worker 线程里执行：每段一个执行域、每次调用一个 QuickJS runtime（program.md §5.1）。Executor 只监管伴生进程这个最终进程树；Runtime 等 Program 给出的退役事实，不实现第三套进程管理。
 
 游戏进程默认同域拥有 Runtime 轻量调度、Driver 与 World 当前路径；各所有者的 SQLite 使用专用 Worker。原生重计算必须切片或卸载，不能通过宿主桥接重新堵塞游戏心跳/停止。
 
@@ -67,14 +67,14 @@ Program 的子执行域使用 Executor 注入的受管创建能力，全部属�
 
 Ref 由宿主生成且不复用，绑定 Runtime storageId。worldOwner 是持久接入归属，activation/attachment 是短期实例/传输，requestId 是一次新意图的重试键，invocation 仅审计。同键比较原语义请求，不以参数 hash 合并两个正常意图；JSON 对象键顺序无关、数组有序，拒绝非有限数/循环/非 JSON 值。
 
-nativeEnvironment 是组合根冻结的确切原生 ref、descriptor 摘要、构建及所需 adapter/数据身份清单。Segment 引用它，不持久化函数指针、不复制全部资产。旧环境实际不可用时报 CALL_UNAVAILABLE；只有显式 current 才选新环境。
+段在入场时固定三样东西：入口（原生能力的确切 `ExactRef` + `descriptor.digest`，或程序的名字/来源/摘要/快照）、输入、以及运行环境 `{serverVersion, protocol}`。环境变了只影响新段：旧段按入场时的字节与目录跑完，不中途换能力实现；旧环境已不可用时报 `WRONG_STATE`（能力）或 `PROGRAM_RETIRED`（域已退役）。
 
 ### 4.2 五种不同事实
 
 | 模型 | 需要保存 | 活动资源/不可承诺 |
 | --- | --- | --- |
 | Run | 根意图/goal、owner、原请求、策略、累计有据进度、phase/revision、决策/结论引用 | 不持有另一份 Bot 状态 |
-| Segment | 确切入口、字节/摘要/Manifest、绑定、环境、input/checkpoint、开始/退役事实 | 不持久保存栈、闭包或旧 Body |
+| Segment | 确切入口、源码字节/摘要或 descriptor 摘要、环境、input/checkpoint、开始/退役事实 | 不持久保存栈、闭包或旧 Body；不存绑定表 |
 | Call | 公共调用 parent/ref/input、access、绑定、返回/错误、进度、completion 合同 | helper 不建 Call；不是顶层任务 |
 | Effect | 所属 Call/Operation、冻结要求、派发、原回执、证据及后续核验 | 不从最终库存猜动作因果 |
 | completion | reportKind=terminal/decision、固定 Run 截面、completionRef | decision 不等于 Run 终结；交付状态不改变报告 |
@@ -105,7 +105,7 @@ BodyScope/CallScope 是活动资源，只记录授予/关闭事实，不另建�
 ### 5.1 算法
 
 1. Executor 为新意图持久保存 requestId、原请求和可信归属再发 IPC；stop 是立即发送的例外。执行侧先查询 submissions，同键同意图返回原结果，不重新解析；异意图 REQUEST_CONFLICT。
-2. 对新请求检查当前 attachment/门并准备材料。程序按名从 `programs/<name>.js` 读一次源码，解析头注释、校验语法并固定 `SourceSnapshot{name,source,digest}`，不执行用户代码；原生入口固定 descriptor/environment。头注释无效或名字非法直接拒绝；文件不存在报 `NOT_FOUND`。
+2. 对新请求检查当前 attachment/门并准备材料。程序按 `SourceRequest`（名字或临时代码）解析一次源码，解析头注释、校验语法并固定 `{name, source, digest}`，不执行用户代码；原生入口固定 descriptor/environment。头注释无效报 `HEADER_INVALID`、名字非法报 `NAME_INVALID`、文件不存在报 `PROGRAM_NOT_FOUND`（program.md §2、§7）。
 3. 准备结果是不可变材料，不是“提交瞬间最新”的承诺。读源码之后作者又改了文件，本段仍执行入场捕获的那份字节；不重读文件、不将 Library/World 读取放进 Runtime 事务伪造原子性。
 4. 在 Runtime 单个短事务内重新检查**自己拥有的** owner 门/Runtime 装配代次、requestId 唯一约束、替换目标/预期控制 owner 的镜像事实，写 submissions、Run/Segment、固定材料和首次策略。replace_pending 的旧 Run 结论与 preempt_current 指向旧 Run 的停止意图，都和新 Run 同事务提交。Driver 物理变化并不被该事务冻结；实际 acquire/写入仍由 Driver 核验。
 5. Runtime 本地 admission 线性化区持有一次性的 preemption reservation，在单事务之前暂缓发出新的 Driver.acquire，但不封闭旧 Call/Body 的动作准入、不撤销现有控制。preempt_current 必须先确认新受理与指定旧 Run 停止意图一同 commit；commit 成功的同一调度续程里先递增该 Run 的 admission generation、封闭旧范围、取消其调用，再调用 Driver 撤销并等待屏障；reservation 释放后新工作才可获得资格。commit 失败/回滚不改变旧代次或旧 gate，释放 reservation 并照 FIFO 恢复 grant。如此数据库失败不会意外取消旧工作。reservation 不跨 IPC 等待、不阻塞独立 stop/emergency；若旧控制自然结束，只处理已固定的旧 runId，不追着新的当前主人取消。显式 stop 仍独立立即变更代次并撤销。公开 submit/continue 再按 §13 返回 RunReply.result 或 accepted。
@@ -125,7 +125,7 @@ phase 是记录投影：finished/awaiting_decision → stopping → running（�
 
 组合根收集 NativeCallable 数组，校验 ref 唯一、access 判别、schema、completion/checkpoint/依赖支持，使用现有 Ajv。descriptor 是 describe、输入/输出验证与发现摘要的唯一来源。QueryDescriptor 是 World 查询投影，不再注册成可写能力。Program 从头注释提供同形描述，发现不加载全部源码。
 
-裸名调用按名解析：capacities 内建名优先，其次 programs/ 下的程序文件名（冲突时内建胜出并记警告）；子程序 Q 用 Q 自己的解析结果，不继承 P 的同名绑定。名字非法或不存在报 UNKNOWN_CALL。
+裸名调用按名解析：先精确能力 ref，再 `programs/<name>.js`（带 `@` 的选择子只解析为能力，不带 `@` 才可能是程序）。子程序 Q 用 Q 自己的解析结果；名字非法报 `SELECTOR_INVALID`，解析不到报 `PROGRAM_NOT_FOUND`。
 
 每次公共 call：解析确切 ref → 核验当前 scope/祖先准入与 access → 验证输入/支持 → 创建子 Call 和可信身份 → invoke → 校验输出/完成要求 → 按 §7 关闭与结算 → 返回领域值 O 或抛 CallFailure。内部调用不 submit 子 Run，不排顶层受理队列；只有真正需要身体时才排 Body 队列。
 
@@ -173,47 +173,35 @@ Runtime 不检测任意 JS Promise 依赖图。若 Body 回调自行等待更早
 
 ## 9. Program 执行合同与资源准入
 
-> **已由 [`program.md`](program.md) §5 取代。** 执行域改为 worker 线程内的 QuickJS-WASM（不是段子进程），每次调用一个运行时；容量按段准入且只排队——原 §9 的"Body 内首次 Program 无容量时 `PROGRAM_CAPACITY`"一条取消：段内所有调用复用本域、不申请第二份容量，"持着身体等域"在程序路径上不存在（`program.md` §5.2）；`mc.wait` 与条件注册被 `mc.read`（返回观察版本）+ `mc.waitForChange`（版本原子比较，无漏唤醒）取代。Runtime 侧的硬保证（不堵事件循环、不暴露 Bot/Node、可强制取消、退役需事实）不变。
+> 程序语义、执行域、容量与失败码的唯一权威是 [`program.md`](program.md) §5 与 §7。本节只留 Runtime 侧的硬保证。
 
-Runtime 依赖 public-api §7.1 的 ProgramExecutionPort：准备/检查入口、为 Segment 打开受管执行域、以宿主绑定的 API 调用、取消/退役并取得退出事实。它不规定 WASM 初始化、pending-job pump、编译包装、帧编码或 OS 启动 API。
+Runtime 经组合根注入的 `ProgramPort`（program.md §7）打开执行域，不规定 WASM 初始化、pending-job pump、编译包装或帧编码。
 
-必要保证：guest 同步/微任务死循环不堵 Driver；不能直接获得 Bot/Node/fs/net/仓库权威对象；宿主能力保持 Call/Body/read-act/取消合同；guest 退出不依赖 finally；迟到桥接可被宿主永久拒绝；资源失败明确返回，不默默换成普通宿主 eval。
+必要保证：guest 的同步/微任务死循环不堵 Driver；guest 拿不到 Bot/Node/fs/net/仓库权威对象；宿主能力仍走 Call/Body/read-act/取消合同；guest 退出不依赖 finally；迟到桥接可被宿主永久拒绝；资源失败明确返回，不默默退回宿主 eval。
 
-**优先实现 QuickJS WASM + 每个涉及 Program 的活动 Segment 一个受管子进程**，同段子程序使用隔离 guest 环境。它是待真实原型验证的实现方案，不是领域不变量；只开发这一优先方案，失败后按 §16 更换实现并重过验证，不并行维护双执行器。
+容量只有一个事实来源：`ProgramPort.capacity()` 与 `runs` 里的 waiting 与域/guest 计数。段首次需要域时申请：有空槽进入 active；无空槽时，若该调用谱系此刻持 BodyScope 立即 `PROGRAM_CAPACITY`（持着身体排队就是拿别人可能要的资源等另一个资源），否则排队等空槽。段已有域后，段内所有调用——程序调程序、程序调原生、原生调程序——复用本域，不再申请容量。停止/取消/查询/纯原生入口不排队；独立 native Run 不因 guest 名额被阻塞。
 
-Program 已明确同段每次 Program Call 使用独立 QuickJS runtime/context、Promise bridge 和轮询 pump；不使用 Asyncify，不假设 context 是独立堆。Runtime 只消费原执行端口：普通 ProgramExecutionFailure.scope=call 保留局部失败，scope=domain 则在用户 catch 之前关闭段准入、取消兄弟并请求 retire，按退役/Driver/记录事实结算。类型和错误的唯一定义见 public-api §7.1；Runtime 不维护 guest CPU/IPC 队列或引擎句柄。
-
-Program 所有者提供有限的活动执行域容量和内存/计算预算，以实际目标机器和压力测量配置；Runtime 使用其 FIFO 准入结果。排队可以产生 queued 状态，不取消 Run，不设置世界等待期限。容量不是“进程可以无限创建”的默认承诺，也不是通用 Quota/Policy 系统。
-
-一个 Segment 至多一份活动执行域容量，首次 Program 调用共享打开 Promise；同段嵌套 Program 复用该域容量而隔离 guest，不再等待第二个进程名额。每个 guest 的内存由 Program 在同一域总预算内管理。~~排资源时不能持 Body：在 Body 内动态首次调用 Program，若不能立即取得容量，当前 Call 报 PROGRAM_CAPACITY，不排一个自持身体的资源等待~~（**已取消**，见 `program.md` §5.2：段内复用本域，容量只排队，不存在这一失败）。
-
-await mc.wait 保留 JS 流程、闭包及活动执行域，长期等待确实占资源；mc.decide 是结束 Segment 并释放域的显式检查点交还。Runtime 不在容量紧张时擅自把 wait 转 decide，不虚构 Promise 持久挂起，也不为回收资源自动杀正常长期等待。独立 native Run 不因没有 guest 名额而被阻塞。
-
-这是允许无限等待而不承诺公平开始时限的选择：全部域被长期 wait 占用时，新 Program 可能一直 queued。ProgramExecutionPort.capacity 提供唯一活动容量事实，ExecutorClient.programCapacity 按 owner 返回占用/排队数量、可见的 Segment、取得/排队时间和未确认退役；关联 Run/Call 可查询具体世界等待原因。此为带 observedAt 的实时观察，不是持久资源账本，不作为授予资格。停止/取消/查询及纯 native 入口不排 Program 容量队列；主脑可据此显式停止持有者或改变后续程序，Runtime 不自动换出、回收正常等待或代写 checkpoint。
-
-反馈函数属于 Program：保留本地 step 闭包，调用 Driver feedback→next→step→apply，只桥接纯帧和受控输出，不传函数/Bot；具体 pump/编码/语言限制由 Program 负责。Runtime 只规定其宿主调用受同一 scope 和代次约束，退出必须关闭流。控制时效、appliedStep 与原生兼容性沿用 Driver 合同。
+排队与长期等待是有意的选择：全部域被长期等待占满时新程序停在 `queued`，Runtime 不自动换出、不回收正常等待、不擅自把 wait 转 decide。主脑从 `runs` 看到 `waiting.kind` / `idleMs` 后显式 stop。每个调用在独立 QuickJS runtime/context 中执行，取消、退役与迟到效果见 program.md §5.4。
 
 ## 10. 等待、交还与续段
 
-> **本节描述的 `mc.wait` 条件注册机制已删除（见 §9 横幅）。** 现行合同是 `mc.read` 返回观察版本（World cursor / 反馈帧 sequence）+ `mc.waitForChange` 在宿主侧做"读→原子比较→watch"的无漏唤醒循环，判定函数留在 guest，见 [program.md §3.5/§5.5](program.md)。以下内容保留作"能力侧被动等待、超时不计完成、取消不停止 Run"这些取舍的旁证。
+> **现行等待合同见 [`program.md` §3.2/§5.5](program.md)。** 只有带观察游标的查询能等（`self`/`inventory`/`block`/`blocks`/`region`/`entities`/`world`/`places`），静态与派生查询（`item`/`recipe`/`route.plan`/`build.plan`/`container.last`）的 `version` 为 `null`，对它们等待报 `INVALID_INPUT`。本节保留的是宿主侧实现顺序与几个取舍，不是第二套接口。
 
 ### 10.1 世界等待算法
 
-有两个可组合层次，`waitForChange` 是基础原语，`WaitConditionDef` 是其上的领域便捷能力。基础层不理解雨、怪物、炉子或成功条件；领域层让稳定复用的规则提供固定输入 schema 和 ready/pending/decide 行为。Program 可以直接用普通 JS 对 World Observation 求值，无须把每个临时组合注册为 Callable/条件。
+`mc.waitForChange(targets, predicate, {afterMs?})`：先读一次全部 target，调用 `predicate(values, {unknown})`；为真立即返回 `{kind:"met", values, version}`，否则按各 target 的 `version` 建立 WorldWatch（`next(version)`），竞速任一变化、任一 `epoch` 失效与单调计时器。
 
-`wait` 与 `waitForChange` 都检查**当前调用谱系**没有持有/委托的 Body；否则 BODY_SCOPE_ACTIVE。不因同段无关兄弟有 Body/待申请而拒绝。先退出自己的 withBody；不能自动释放后让旧闭包持有 player。等待项按 Call 分别登记，支持 Promise.all，不覆盖成一个 wait 字段。`waitForChange(targets, {afterMs?})` 要求非空 targets，每项含 `{query, after}`；Runtime 为每项独立创建 WorldWatch 和受 Call signal 联动的 child signal，并竞速各自 `next(after)` 与单调计时器。任一 Watch 返回 `WorldChange` 即返回 `{target, change}`；timeout 返回 `{kind:"timeout"}`。获胜后只取消其他 child signal；父 Call 取消则取消全部。任一结果、取消、调用关闭或建 Watch 失败，都关闭全部已建 Watch、清理计时器，并在清理完成后结束调用。targets/afterMs 无效时报 INVALID_ARGUMENT；某个 Watch 创建失败时整体失败，不把部分观察伪装成完整等待。
+判定函数留在 guest，Runtime 只搬运值：没有 `WaitConditionDef`、没有条件注册表，也没有需要提前登记的可序列化复查意图。定义"满足"是程序的事，一次 `mc.call` 就能表达。
 
-具体顺序是：先校验非空 targets、各 query 和有限正数期限；立即启动期限计时，再为所有 target 并行建立带 child signal 的 Watch。全部建立成功后，各自调用 `next(after)` 并与期限竞速。期限在建立阶段先到也会取消建立；任一建立失败则取消其余建立并等待建立 Promise settle，关闭所有成功建立的 Watch 后返回原始失败。变化/reset、期限、父取消或 next 失败决定唯一结果；随后取消相应 child signal、关闭全部 Watch、移除父取消监听并清计时器。输家因取消产生的错误不覆盖已选结果，清理错误不得被伪装成成功，须附着为调用清理失败。
+三条结局互不伪装：`met`、`timeout`、`invalidated`（重连、World 重新激活等使 `epoch` 改变，旧观察全部作废）。`unknown` 既不算变化也不算失效：`known→unknown` 与 `unknown→known` 都会推进 `version` 并唤醒，让判定函数自己决定。`predicate` 必须是同步布尔函数，返回 Promise 或非布尔立即 `PREDICATE_INVALID`。
 
-领域被动流程仍可由 `mc.wait({condition,input})` 封装：World.read 固定 observation/cursor → 领域 evaluate → 若 pending，复用相同的一次性 Watch/计时器原语 → changed/reset/timeout 后重新 read/evaluate。注册间变化由 World cursor 比较补获；changed 不是满足。计时器用单调相对时间，不刷新旧观察 observedAt。无 afterMs 且无相关变化就继续等待，不默认轮询；定义的领域 evaluate 可以返回正数复查间隔或当场 ready/decide。
+具体顺序：校验非空 targets 与 `afterMs`（有限正数），立即启动期限计时；为所有 target 并行建立带 child signal 的 Watch；全部建立成功后各自 `next(version)` 并与期限竞速。任一建立失败就取消其余建立、等 settle、关闭已建 Watch，再返回原始失败。已选结果不被输家的取消错误覆盖；清理错误不得伪装成成功，附着为调用清理失败。
 
-时间只安排复查，不能证明游戏进度。Program 可分别 read 多个已装配 WorldQuery，在普通 JS 中组合各自 Observation，再把每个 `{query, after: observation.cursor}` 交给一次 `waitForChange`；任一独立 Watch 变化/reset 即唤醒，随后 Program 重读需要的事实并自行判断。各 cursor 仍由对应 World.watch 校验与各自 query 的确切身份、参数、World/binding 作用域和来源代次；错配不得静默等待。Runtime 不拆 cursor、不合并水位，也不提供这些独立读取的联合快照。若某项底层事实或查询不存在，仍须由其所有者补足，普通 JS 不能伪造观察。只有业务要求多个来源处于同一一致性切面时，才由 World 明确提供联合查询合同；当前 World 对单次联合 query 的混合依赖限制仍有效，但不妨碍多个独立 query 分别 watch。timeout/changed/reset 后重新读取是程序责任，Watch 合并变化不保证捕获瞬时条件。
-
-领域条件若必须开窗口、移动或探索才能观察，仍可登记序列化复查意图：能力引用、参数、有关世界/目标、检查点、重新检查时机。到时以新的就绪序号参与身体调度，取得新资格后主动复查；当前普通行为不被定时器打断。普通 Program 不可把持久复查意图假装成可恢复闭包；`await mc.waitForChange` 期间闭包仍在活动执行域，重启不恢复。
+`targets` 按调用分别登记，支持 `Promise.all`，不合并成一个待等字段；获胜后只取消其他 child signal，调用取消则全部取消。各 cursor 由对应 query 的确切身份、参数与来源代次校验，错配不得静默等待。超时后重新读取是程序责任；Watch 合并变化不保证捕获瞬时条件。
 
 ### 10.2 decide 与 continue
 
-mc.decide 从任何子 Call 交还整个 Segment：宿主接受时立即封闭段准入，取消兄弟分支，固定可序列化 checkpoint，撤销控制并确认 guest 退役/释放域，再经过记录屏障持久写 decision+completion。资源退役不等数据库恢复，持久失败不发布假的 decision。catch/finally 不能重新打开业务动作；Promise<never> 不承担不可捕获控制转移的保证。
+`mc.decide` 只在根调用可用：非根调用报 `DECIDE_NOT_ROOT`，段与兄弟分支都不变（program.md §3.2）。根调用被接受时立即封闭段准入、取消兄弟分支、固定可序列化 checkpoint、撤销控制并确认 guest 退役/释放域，再经记录屏障持久写 decision+completion。资源退役不等数据库恢复，持久失败不发布假的 decision。catch/finally 不能重新打开业务动作；Promise<never> 不承担不可捕获控制转移的保证。
 
 continue 先在事务外准备确切新入口/input/环境与检查点兼容验证，再在 Runtime 事务核验 decision 仍待处理、门/停止/Run 未终态，保存新 Segment 并消费 decision；同键幂等，其他竞争者 DECISION_STALE。environment 默认 inherit，显式 current 才换原生环境。验证器/检查点 schema 缺失就不继续。
 
@@ -315,9 +303,9 @@ tool_handoff 持久后到真实返回之间崩溃，存在报告尚未呈现而�
 
 ## 14. Library / World：材料与引用责任
 
-库是普通文件，不向 guest 暴露任何库对象：程序在 `mc` 环境里没有 `assets`；按名取蓝图是 `blueprint@1`（Construction 实现），文本库操作是 `library` 工具动作。运行副作用与库写入分别记录，`library` 不 submit 为游戏 Run。
+库是普通文件，不向 guest 暴露任何库对象：程序在 `mc` 环境里没有 `assets`；按名用蓝图是 `build.plan@1`/`build@1` 的 `from`（Construction 实现），文本库操作是 `library` 工具动作。运行副作用与库写入分别记录，`library` 不 submit 为游戏 Run。
 
-Runtime 在入场时读一次程序源码并固定 `SourceSnapshot`（program.md §2.3 的快照）；`library.save` 从段保存时用同一份快照字节，来源段被清理就报 `NOT_FOUND`，不重读当前文件。库不冻结工作文件，作者随时可改；在途段不被影响，这由快照保证，不由库保证。
+Runtime 在入场时读一次程序源码并固定快照（program.md §2.6）；`library.save` 从段保存时用同一份快照字节，来源段被清理就报 `NOT_FOUND`，不重读当前文件。库不冻结工作文件，作者随时可改；在途段不被影响，这由快照保证，不由库保证。
 
 Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 调 WorldEvidencePort.retain，确认材料/依赖及保护持久，再提交 Runtime 强引用。retain 成功而 Runtime 事务失败可留孤立保护；只有证明引用不会发布/已持久移除才 release。Runtime 事务不原子提交 World 保护。普通溯源可为弱链接，失效如实报告；不让每次移动/攻击都无条件等待跨库 retain。World 不可用时强引用发布失败或按明确合同只保存已复制材料/弱关联，不能暗中降低承诺。
 
@@ -362,7 +350,7 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 | 记录可靠性 | 有限接收上界+writer 屏障；不承诺所有实际动作都有持久 write-ahead |
 | 版本一致性 | 捕获不可变材料后提交自己的事实；不追求跨库提交瞬间最新 |
 | 过时决策 | 历史不可变、待处理从消费事实派生；过滤而不伪造跨 Host 原子呈现 |
-| 执行域 | 必要隔离合同与可替换实现分离；QuickJS/段子进程优先原型，不锁死领域 |
+| 执行域 | 每段一个执行域、每调用一个 QuickJS runtime；隔离合同与引擎实现分离，换引擎不改 Runtime 合同（program.md §5） |
 | 长期等待 | 普通 await 保留闭包和成本；显式 checkpoint 结束旧段，不偷偷做持久工作流 |
 | 进程所有权 | Executor 最终监管、Program guest 退役、Runtime 等事实；无三套独立进程管理 |
 

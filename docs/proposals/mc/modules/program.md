@@ -14,7 +14,7 @@
 | 附录 A | **运行期的模型**，不是开发者 | 它证明"这套东西能被一页纸学会"；真正生效的指南必须由 descriptor 生成，不能手抄两份 |
 | 附录 C | 实现者 | 参考骨架（非合同，见其标题下说明） |
 
-写代码时只读 §0–§8 就够；附录按需查。
+写代码时只读正文（§0–§9）就够；附录按需查。
 
 ---
 
@@ -22,7 +22,7 @@
 
 ### 0.1 一段实录
 
-下文的 `mc` 指 Minecraft 工具（action：`observe` / `describe` / `run` / `runs` / `library` / `say`），`library list` 是 `mc library {op:"list"}` 的简写。
+下文的 `mc` 指 Minecraft 工具（action：`observe` / `describe` / `run` / `runs` / `library` / `say`），`library list` 是 `mc library {op:"list"}` 的简写。工具上的 `say` 是不动身体的便捷入口，等价于 `mc.call("say@1", {text})`（程序里没有工具动作，只有能力，见 capabilities.md §4）。
 
 新世界，第一晚。
 
@@ -40,7 +40,7 @@ Uina: library save { name: "wood_pick", summary: "砍够原木；附近需要橡
 ```text
 Uina: library list                          → wood_pick（砍够原木…）、craft_basic（工作台与木棍…）
 Uina: library get { name: "wood_pick" }     → 源码 + 头部说明
-Uina: mc run { ref: "wood_pick", input: { count: 24 } }
+Uina: mc run { name: "wood_pick", input: { count: 24 } }
 Uina: mc run { code: "… 按蓝图放方块 …", input: { blueprint: "hut_7x5" } }
 ```
 
@@ -105,7 +105,7 @@ async function main(mc, input) {
 | 6 | 段内名字固定：某程序名第一次被解析后，本段后续同名调用复用它 | 每次调用重读文件。模型看到两次 `mc.call("wood_pick")` 会假设同一个实现；段内换实现只制造无从解释的行为差异。跨段仍看当前文件。 |
 | 7 | 调用之间零共享：每次调用一个独立 QuickJS 运行时 | 段内长活 guest 全局、模块缓存、热重载。跨调用要保留的东西写世界或传参；否则并发、恢复、复现都会变糊涂。 |
 | 8 | 身体控制属于**调用谱系上的 BodyScope**：`mc.withBody` 独立申请，`body.call` 委托继承；`mc.call` 从不继承 | 隐式继承：独立的调用被自动升级成控制者，调用点看不出资源归属；按 Native/Program 分两套规则：同一件事有两种说法，迟早对不上。 |
-| 9 | 失败带 `source`（哪一层报的，事实）与 `hint`（建议，可能不准） | 单一 `blame`（责任归属）。`PATH_NOT_FOUND` 可能是地形、也可能是查询错、寻路缺陷或观察过期，Program 无从知道责任，只能知道自己从哪收到它。 |
+| 9 | 失败带 `source`（哪一层报的，事实）与 `hint`（建议，可能不准） | 单一 `blame`（责任归属）。`UNREACHABLE` 可能是地形、也可能是查询错、寻路缺陷或观察过期，Program 无从知道责任，只能知道自己从哪收到它。 |
 | 10 | 库操作只有五件：`list/get/save/update/delete`，保存就是写文件 | search 评分、向量检索、质量认证、目录索引、发布事务。程序数量在几十到几百量级，文件系统就是索引。 |
 | 11 | 引擎 = worker 线程 + 每次调用一个 QuickJS-WASM 运行时 | `node:vm`（没有内存上限、没有中断）与子进程（启动/运维重）。见附录 B 的实测。 |
 | 12 | 容量按段准入：同段复用本域；跨段排队；只有"段已持身体、却还没有域"这一条路径立即 `PROGRAM_CAPACITY` | 把容量普遍做成失败码：资源竞争变成程序必须处理的业务错误，而它其实只是一句"等一下"。但"持着身体排队"是真正的互等（我等你结束、你等我的身体），只能拒绝；这条只在原生组合能力首调程序时出现。 |
@@ -186,8 +186,8 @@ async function main(mc, input) {
 - 解析：从第一行起，凡以 `// uina ` 开头就切掉前缀按 JSON 解析；遇到第一行非注释即停止。JSON 非法或不是对象 → `HEADER_INVALID`，**记在 `list`/`get` 的 `headerError` 里而不是静默丢掉**（否则"保存了但字段没生效"会变成谜）。
 - **头坏了不影响执行**：执行只读脚本，`run` 照常；`save`/`update` 能覆盖坏头（写回不依赖解析，见附录 C）。这是"元数据不可信"与"程序不可用"之间必须切开的两件事。
 - 没有头注释合法：程序照常可调用；`list` 里显示 `summary: null`。
-- `save`/`update` 剥掉文件里已有的 `// uina` 行，写回**一行**规范化的 JSON；**不碰其余任何字节**（不重排、不改缩进、不动行号）。
-- 因为规范化会改头，**保存后的文件字节与被执行的源码字节可能不同**：`saved.digest` 记的是执行时的源码摘要，文件自身的摘要在 `digest` 里；两者不同不是异常，是事实。所以"从运行段保存"（`save {from:{run,segment,call}}`）的语义是"把那次执行的**脚本体**逐字节搬过来，头按本次参数重写"。
+- `save`/`update` 剥掉文件里已有的 `// uina` 行，写回**一行**规范化的 JSON；**脚本体一个字节都不动**（不重排、不改缩进）。头原来是多行时，合并成一行会让脚本体整体上移——所以错误里的行号以**执行快照**为准，不以当前文件为准。
+- 因为规范化会改头，**保存后的文件字节与被执行的源码字节可能不同**：`saved.digest` 记的是执行时的源码摘要，返回的 `ProgramSummary.digest` 是落盘文件的摘要；两者不同不是异常，是事实。所以"从运行段保存"（`save {from:{run,segment,call}}`）的语义是"把那次执行的**脚本体**逐字节搬过来，头按本次参数重写"。
 - 头只影响可读性与 `input` 校验，不影响执行：**执行只读脚本**。
 
 ### 2.3 目录、命名与冲突
@@ -234,11 +234,11 @@ invoke(...)            → 结果
 
 临时代码不跳过校验、不获得额外特权，只是没有名字、不写库、错误信息里的文件名是 `code-<digest 前 8 位>.js`。
 
-某个程序名第一次在段内被解析时：
+某个程序名第一次在段内被解析时（`resolve` 只读文件、算摘要；落盘是紧接着的一次 `writeSnapshot({run, program})`）：
 
 1. 读文件一次（完整读取到内存，不从缓存拿）。
 2. 算 `sha256`。
-3. 写 `runs/<run>/sources/<hex>.js`：同摘要已存在则核对字节后复用，不存在则写临时文件再 `rename`。内容寻址，天然去重。
+3. 段调 `writeSnapshot({run, program})` 写 `runs/<run>/sources/<hex>.js`：同摘要已存在则核对字节后复用，不存在则写临时文件再 `rename`。内容寻址，天然去重。
 4. **在段内固定**：本段后续同名调用复用这份字节，不再读文件。段内解析出的子程序同样写自己的快照（域内部走同一个写函数），所以"这次运行到底执行了哪些源码"永远可查。
 5. 每次程序调用把自己的 `{digest, snapshot}` 写进**调用记录**（不是段记录）。
 
@@ -385,7 +385,7 @@ type Pos = { x: number; y: number; z: number } | { position: { x: number; y: num
 **`Window`：前置条件由句柄从快照推出，不由模型填。** Driver 的 `click` 要同时核验窗口版本、该格内容、光标三样（`public-api.md` §4：`expectedRevision` + `expectedSlots` + `expectedCursor`），因为一次点击的效果取决于这三者，不只是"第几格、什么模式"。让模型填 `StackExpectation` 既不现实也更容易错，所以句柄代做：
 
 ```js
-const snap = await win.snapshot();                 // {revision, slots, cursor}；slots[i].item 可能是 null
+const snap = await win.snapshot();                 // {revision, layout, slots, cursor}；slots[i].region 标明属于谁，item 可能是 null
 await win.click({ slot: 5, mode: "quick_move" });  // mode 省略时默认 "click"（见下）
 ```
 
@@ -407,6 +407,7 @@ await win.click({ slot: 5, mode: "quick_move" });  // mode 省略时默认 "clic
 - **独立申请**：程序里 `mc.withBody(…)`；或某个动作能力在自己的调用里申请。Runtime 按 FIFO 发放。没有 BodyScope 时 `mc.call("mine@1")` 完全正常：`mine` 自己申请、用完释放。
 - **委托继承**：已经持有 BodyScope 的调用写 `body.call(selector, input)`，把控制权交给这次子调用。子调用可以是原生能力，也可以是程序；它继承同一个 BodyScope，不重新排队。委托期间调用方的 `body` 句柄挂起（`drive`/`apply` 报 `BODY_SUSPENDED`），返回后恢复。
 - **`mc.call` 永不继承身体，但也不被禁**。它在持 BodyScope 时照常执行：不需要身体的调用（查询、纯计算、不开窗口不移动的程序）完全正常；**只有真的去申请身体时**才冲突。冲突点在 `withBody`/内部 acquire，不在 `mc.call`：调用谱系里已经有人持有 BodyScope，后代再申请就是自等待 → `BODY_SCOPE_ACTIVE`（可 `catch`，hint 指向 `body.call`）。这条**与实现类型无关**：`mine@1`（原生，内部申请）和某个内部 `withBody` 的程序受完全相同的约束。
+- **持 BodyScope 时同样不能用 `mc.sleep`/`mc.waitForChange`** → `BODY_SCOPE_ACTIVE`：等待期间身体仍被占着，别人只能排队。要等就先退出 body 再等。
   为什么把判据放在申请点而不是入口：`mc.call` 无法预知被调方要不要身体（`requires` 是提示，不是契约），提前拒绝会误杀"持身体时算个路线"这种完全合法的组合；放在申请点则一次判断、必然准确。
 - **没有 BodyScope 时 `body.call` 与 `mc.call` 等价**（没有可委托的东西），不报错——不需要为"是否已在 body 里"写两套代码。
 - **一次一个委托**。同一 scope 同时只允许一个 `body.call` 在途；第二个立即 `BODY_BUSY`。`Promise.all([body.call(a), body.call(b)])` 的第二个失败、第一个照常。理由：委托是把控制权借出去，两个借出者没有意义；排队又会把"我以为在并行"变成静默串行。同理，一个调用同时只持有一个 BodyScope，`Promise.all([mc.withBody(a), mc.withBody(b)])` 的第二个报 `BODY_BUSY`（嵌套 `withBody` 是加入同一 scope，允许）。
@@ -417,7 +418,7 @@ await win.click({ slot: 5, mode: "quick_move" });  // mode 省略时默认 "clic
 
 ### 3.4 能力目录与发现
 
-> **已被 `modules/capabilities.md` 取代**（2026-10-18）：那里是完整的能力面——13 个查询 + 37 个动作、扁平命名、统一的 13 个失败码、试算（`route.plan`/`build.plan`/`recipe.plan`）与部分完成口径。本节的表只保留为历史与"为什么这样组织"的说明；名字与输入的改动见那份文档的附录 C。
+> **已被 `modules/capabilities.md` 取代**（2026-10-18）：那里是完整的能力面——13 个查询 + 37 个动作、扁平命名、统一的 13 个失败码、试算（`route.plan`/`build.plan`，以及 `recipe@1` 的 `plan` 字段）与部分完成口径。本节的表只保留为历史与"为什么这样组织"的说明；名字与输入的改动见那份文档的附录 C。
 
 能力的实现归 Driver/World；**命名的唯一权威是 `modules/capabilities.md`**（13 个查询 + 37 个动作、扁平名、13 个失败码、试算与部分完成口径）。这里不复制那张表：两份清单一定会漂移，而模型只要读一份就够。本节只留程序侧必须知道的四条约定与"怎么发现"。
 
@@ -430,38 +431,14 @@ await win.click({ slot: 5, mode: "quick_move" });  // mode 省略时默认 "clic
 
 **发现：`describe` 的输出必须能直接拿去写代码。** 这是"模型学得舒服"的真正着力点，不是入口形态。
 
-```text
-mc describe                     # 不带参数：一屏概览，名字 + 2–4 字用途，不是 50 条全量
-→ 查询（13）
-  self 自己       inventory 背包   block 一格      blocks 找方块   region 读一片
-  entities 实体   item 物品知识    recipe 配方     world 环境      places 路标
-  container.last 上次容器          route.plan 试算路径            build.plan 试算建造
-  动作（37）
-  goto 走到       follow 跟随      flee 逃离      surface 回地面  explore 探索
-  transit 跨维度  ride 骑乘        mine 挖一格    collect 挖够    tunnel 挖道
-  excavate 挖区域 place 放一格     build 按图建   container 开箱  take 取出
-  stow 存入       equip 穿         eat 吃         drop 丢         give 给
-  pickup 捡       craft 合成       smelt 熔炼     brew 酿造       enchant 附魔
-  anvil 铁砧      grindstone 砂轮  use 用         say 说话        sleep 睡
-  trade 交易      fish 钓鱼        lead 牵         attack 打       fight 战斗
-  remember 记路   forget 忘路
-  用 mc describe {ref:"mine@1"} 看输入、完成口径、错误与示例。
+能力清单、`describe` 的输出格式与每个能力的输入输出**只写在** [`capabilities.md`](capabilities.md) §3、§4、§8；这里不维护第二份清单。
 
-mc describe { query: "合成" }
-→ [ { ref: "craft@1", summary: "用背包已有材料合成，必要时用附近工作台", tags: ["合成","开局"] },
-    { ref: "smelt@1", summary: "熔炼矿物与食物", tags: ["合成","炉"] } ]
+程序侧只需要记住四条：
 
-mc describe { ref: "craft@1" }
-→ access: act
-  用途：用背包已有材料合成，必要时自动使用附近工作台。
-  输入：{ item: string; count: integer ≥ 1 }
-  输出：{ crafted: integer, leftover: { [item]: integer } }
-  完成：背包里 item 数量达到 count（capability 口径）
-  前置：需要配方已知；count > 1 时需要材料足够
-  错误：MISSING_MATERIAL（缺材料）· MISSING_TOOL（需要工作台）· NOT_FOUND（没有这个配方）
-  示例：
-    const r = await mc.call("craft@1", { item: "stick", count: 4 });
-```
+1. **先查再写**：`mc.describe` 不带参数给概览（名字 + 2–4 字用途），带 `{query:"合成"}` 给相关的几条，带 `{ref:"craft@1"}` 给六行契约。名字、参数、错误码永远以返回的契约为准。
+2. **读与调分开**：`mc.read(selector, input)` 取世界现状并给观察版本；`mc.call(selector, input)` 才动世界。用错方向（拿 `read` 调动作）报 `USE_MC_CALL`，反之报 `USE_MC_READ`。
+3. **不可用要显式看到**：`mc.describe` 的返回带 `availability`（当前环境/版本不支持时给原因）；调用侧报 `NOT_FOUND`/`WRONG_STATE`，不要退回到用更底层动作手拼一遍。
+4. **名字变了要报错，不要静默替换**：库程序里写死的 `collect@1` 在新版本被改名，入场报 `PROGRAM_NOT_FOUND` 或 `NOT_FOUND`；同一个 `@1` 内部语义若变了，能力实现要换 major。
 
 规则：
 
@@ -679,7 +656,7 @@ async function main(mc, input) {
 }
 ```
 
-槽位带 `region`（`player`/`container`），程序不必自己数索引；`click` 的三项强校验（`expectedRevision`、`expectedSlots`、`expectedCursor`）由句柄从参照视图填，模型只给点哪一格——让模型手填这三个值既无意义又必然出错。**`mode` 必须显式**：省略等于 `"click"`（拿起/放下，光标参与校验），整理背包要用 `"quick_move"`——这正是"点击成功"与"东西到位"是两件事的地方，所以示例在关闭窗口前重读快照核对。`"quick_move"`/`"swap"` 这类不依赖光标内容的模式不校验光标，由 Driver 明确处理；完整取值归 driver §12。
+槽位带 `region`（`player`/`container`），程序不必自己数索引；`click` 的三项强校验（`expectedRevision`、`expectedSlots`、`expectedCursor`）由句柄从参照视图填，模型只给点哪一格——让模型手填这三个值既无意义又必然出错。`mode` 默认 `"click"`（拿起/放下，光标参与校验）；整理背包要显式写 `"quick_move"`——这正是"点击成功"与"东西到位"是两件事的地方，所以示例在关闭窗口前重读快照核对。`"quick_move"`/`"swap"` 这类不依赖光标内容的模式不校验光标，由 Driver 明确处理；完整取值归 driver §12。
 
 **G. 长任务交还（探矿）**
 
@@ -716,26 +693,29 @@ async function main(mc, input) {
 | `list` | `{kind?, text?, tag?, limit?}` | `[{kind, name, summary, tags, updatedAt, size?, digest?, path?, headerError?}]` |
 | `get` | `{kind?, name}` | program → `{name, source, summary, tags, path, digest, savedFrom?, updatedAt}`；其余见 Library §5 |
 | `save` | `{name, summary, tags?, input?, from?: {run, segment, call}, source?}` | `ProgramSummary` |
-| `update` | `{name, source?, summary?, tags?, expectedDigest?}` | `ProgramSummary` |
+| `update` | `{name, source?, summary?, tags?, input?, expectedDigest?}` | `ProgramSummary` |
 | `delete` | `{name}` | `{name, deleted: true}` |
 
 - `save` 只创建；已存在 → `NAME_EXISTS`，提示用 `update`。这样一次陈旧的运行不会静默换掉正在用的文件。
-- `update` 是唯一的修改入口：改源码、改摘要都在这里；`source` 缺省表示只改元数据。
+- `update` 是唯一的修改入口：改源码、改摘要、改 `input` schema 都在这里；**没出现的字段保持原值**，出现就覆盖（`tags` 整体替换，不做合并）。
 - `update` 支持 `expectedDigest`：与文件当前摘要不符 → `DIGEST_CONFLICT`，不覆盖。这是普通文件编辑的乐观并发控制（多个运行与用户自己都可能改同一份文件），不是发布 CAS。
 - `delete` 硬删除文件；`runs/` 里的快照保留（历史仍可读）。
 - `list` 只做大小写不敏感的子串 + 标签过滤，按 `updatedAt` 倒序，默认 50 条。没有评分、没有向量检索："哪个程序真的能用"由运行记录聚合回答，库不维护第二份统计。
-- 库自己的错误（不产生段失败）：`NAME_EXISTS`、`NOT_FOUND`、`NAME_INVALID`、`HEADER_INVALID`（`// uina` 行不是合法 JSON 对象，或 `input` 不是合法 JSON Schema）、`DIGEST_CONFLICT`、`UNSAFE_PATH`、`IO_ERROR`。它们直接回给 Uina，不进 `ProgramFailure`。
-- 两套错误码的边界：库操作报的是"操作没做成"（`NAME_EXISTS`/`NOT_FOUND`）；段入场报的是"这个选择子调不了"（`PROGRAM_NOT_FOUND`/`PROGRAM_INVALID`/`PROGRAM_CONFLICT`）。同一个词不在两处复用，避免模型看到 `NOT_FOUND` 时无法判断是保存失败还是调用失败。
+- 库自己的错误不产生段失败：`NAME_EXISTS`、`NOT_FOUND`、`NAME_INVALID`、`HEADER_INVALID`（`// uina` 行不是合法 JSON 对象，或 `input` 不是合法 JSON Schema）、`DIGEST_CONFLICT`、`UNSAFE_PATH`、`IO_ERROR`。它们是**工具动作的返回值**，直接回给 Uina，永远不进程序；程序里只会见到 13 个能力码与 `PROGRAM_*`。`NOT_FOUND` 两处同名，但出现的位置不同（工具回执 vs 段内 `CallError`），不需要靠猜。
 
 ### 4.2 保存时工具做什么
 
-`save` 收到 `{name, summary, from:{run,segment,call}}` 后：
+`save` 有两条入口，落盘前都走同一步「规范化头 + 原子写」。
+
+**A. 从运行段保存**（`{name, summary, from:{run,segment,call}}`）：
 
 1. 校验名字、`summary` 非空、长度上限。
 2. 由调用记录找到那次调用的源码摘要，从 `runs/<run>/sources/<hex>.js` 读**当时执行的字节**（不是重读工作文件）。
 3. 剥掉源码里已有的 `// uina` 行，按参数生成新的头（一行 JSON；`saved` 写成 `{run, segment, call, digest, at}`，其中 `digest` 是**执行时**的源码摘要）。
 4. 写临时文件 → `rename`（单文件，原子）。
 5. 返回 `ProgramSummary`，其中 `digest` 是**落盘文件**的摘要。两个摘要不同是正常事实：头被规范化了，脚本体一个字节没动。
+
+**B. 直接给源码**（`{name, summary, source}`）：先 `validate`（只编译；语法错报 `PROGRAM_INVALID` 并带行列），再按参数重写头、写临时文件、`rename`。这条路不要求先跑一次，适用于拷贝或改写现成代码。
 
 `update` 做同样的规范化：保留未在参数里出现的旧字段，重写头。**模型永远不需要写头注释语法**——它只提供字段。
 
@@ -955,6 +935,8 @@ type ProgramRetirement =
 
 ## 6. 与既有设计的差异
 
+下表是这一轮对周边文档与合约的要求，**已全部落地**；若与某文档正文有出入，以该文档正文为准（本表是追溯用）。
+
 | 文件 | 变更 |
 |---|---|
 | `public-api.md` §4 | Program 侧 `body.*` 不降级：`drive` 返回实际 tick 与结束状态，`dig`/`attack`/`useItem`/`interact` 返回 `EffectReceipt`，`interact` 保留 `hand/face/cursor`；`Window.click` 的 `expectedRevision`+`expectedSlots`+`expectedCursor` 三项强校验保留，由句柄从快照推出而不是要求模型填写 |
@@ -964,16 +946,16 @@ type ProgramRetirement =
 | `public-api.md` §6 | 删 `mc.wait`/`WaitRequest`/`WaitConditionDef`/`ConditionCheck`/`CompletionCheck`/`mc.checkpoint`；**保留 `mc.read` 但改形状**为 `{value, version, unknown?}`（查询专用）；新增 `mc.sleep`/`mc.waitForChange`/`body.call` |
 | `public-api.md` §6.3 | 删 `ProgramDefinition` 的 `dependencies`/`bindings`、`ProgramBinding`、`nativeEnvironment`/`effectiveBindings`；程序改为单文件 + 头注释 + `main` 入口 |
 | `public-api.md` §7.1 | `ProgramExecutionPort` → `ProgramPort`（§7）；`invoke` 的 `api` 改为 §7 的扁平 RPC；`ProgramCapacity` 状态集为 `queued/active/retiring/unknown`；`ProgramExecutionFailure` 的 `reason` 换成 §7 的 `code` + `source` + `hint` |
-| `assets.md`（已改为 Library）§6.2 / §8 / §11.1 | Program 不再是 asset kind；`publishFromRun` → `library.save`；`ProgramManifest`/`sourceForm` 不再存在。该文件的仓库机制（SQLite 目录、不可变包、发布 CAS、证据副本）一并删除，蓝图/经验改为文件约定 |
-| `runtime.md` §9 | 引擎定为 worker + QuickJS-WASM；容量按段准入，域满时按内部 `mayWait` 决定"排队还是立即 `PROGRAM_CAPACITY`"（只在段持身体时拒绝）；资源失败降为 call 级 |
+| `assets.md`（已改为 Library）§5 / §7 | Program 不再是 asset kind；`publishFromRun` → `library.save`；`ProgramManifest`/`sourceForm` 不再存在。该文件的仓库机制（SQLite 目录、不可变包、发布 CAS、证据副本）一并删除，蓝图/经验改为文件约定 |
+| `runtime.md` §9 | 引擎定为 worker + QuickJS-WASM；容量按段准入：段还没有域且无空槽时排队，持身体却无域时立即 `PROGRAM_CAPACITY`；段内所有调用复用本域；资源失败降为 call 级 |
 | `runtime.md` §10 | 删 `WaitConditionDef`/`mc.wait`/条件注册；`waitForChange` 改为「`read` 返回观察版本 + `watch` 原子比较」，判定函数留在 guest |
 | `runtime.md` §11 | 不变，但快照由 Program 写、写在调用级（`sources/<sha256>.js`），记录只存 ref + digest；取消时已派发操作照常结算，不得因 guest 结束而丢效果记录 |
 | `runtime.md` §8 | 身体继承只由委托决定，与 Callable 是原生还是程序无关：`mc.call` 独立申请、`body.call` 继承、一次一个委托（`BODY_BUSY`） |
 | `contracts.md` §5.3 / §5.4 | 删 `mc.wait` 条件注册与 `WaitConditionDef`；容量准入改为按段：同段复用、跨段排队，持身体且无域时立即 `PROGRAM_CAPACITY`；无漏唤醒由 `mc.read` 返回的观察版本 + `watch` 原子比较承担 |
 | `contracts/body.ts` | `ControlInput` 增加 `lookAt`；`BodyOps` 增加 `lookAt`；`body.dig` 收 `position`；新增句柄方法 `body.call`：把当前 BodyScope 委托给任意 callable（原生或程序），委托期间本调用句柄挂起 |
-| `contracts/executor.ts` | `Entry` 的第二支改为 `{kind:"program", source: SourceRequest, input}`（`source` 是 `{name}` 或 `{code}`，与 `run` 的两种入口一一对应）；`CallRecord` 增加 `sourceDigest`/`snapshotPath`；段记录不再保存单一程序源码 |
+| `contracts/executor.ts` | `Entry` 的第二支改为 `{kind:"program", source: SourceRequest, input}`（`source` 是 `{name}` 或 `{code}`，与 `run` 的两种入口一一对应）；`SegmentRecord.entry` 分 `native`（descriptor + digest）与 `program`（name/origin/digest/snapshot），不再有 `nativeEnvironment`/`effectiveBindings`；`CallRecord` 记 `implementation`/`digest` 与父子关系，结局只在这里有一份 |
 | `contracts/world.ts` / Driver 事实 | 读 RPC 需要能给出"这组值对应的观察位置"：World 用 `ObservationCursor`；事实类用 Driver 在**内容或可观察性变化**（含 known↔unknown）时推进的修订号——不能取物理帧序号（否则每帧唤醒），能直接复用现有 `Fact` 就复用，不新建版本管理器 |
-| World 入口（`worlddef`） | `run` 收 `{ref, input}` 或 `{code, input}`；`library` 五 op（§4.1） |
+| World 入口（`worlddef`） | `run` 收 `{name, input}` 或 `{code, input}`；`library` 五 op（§4.1） |
 | Driver / World | 采用 §3.4 的命名与完成口径；能力自带身体；新增的能力不需要 Program 改代码 |
 
 ---
@@ -1133,7 +1115,7 @@ RPC 十一条，全部一进一出。新增能力不会新增 RPC，只可能新
 | `PROGRAM_INVALID` / `PROGRAM_ERROR` / `PROGRAM_VALUE` / `PROGRAM_MEMORY` / `PROGRAM_TIMEOUT` / `PROGRAM_DEPTH` | program | 改代码（看行号与栈） |
 | `PROGRAM_INPUT_INVALID` / `SELECTOR_INVALID` / `PROGRAM_NOT_FOUND` | input | 改参数或先 `list`/`describe` |
 | `PROGRAM_CRASH` | environment | 停止并报告；重启新段 |
-| `PROGRAM_CAPACITY` | environment | 两种来源：段持着身体且没有空域（先退出 `withBody` 或停掉在跑的程序）；同域活动 guest 已满（把 `Promise.all` 拆成每批 N 个或改顺序循环）。**只保证这次程序调用没有执行**——调用它的原生能力可能已经产生了效果，那些效果照常进 `CallRecord`/`EffectRecord`（§5.4）。降低并发后重试 |
+| `PROGRAM_CAPACITY` | environment | 三种来源：段持着身体且没有空域（先退出 `withBody` 或停掉在跑的程序）；同域活动 guest 已满（把 `Promise.all` 拆成每批 N 个或改顺序循环）；单个 guest 的在途 RPC 已满 16（改分批，或 `Promise.allSettled` 收齐）。**只保证这次程序调用没有执行**——调用它的原生能力可能已经产生了效果，那些效果照常进 `CallRecord`/`EffectRecord`（§5.4）。降低并发后重试 |
 | `PROGRAM_RETIRED` / `CANCELLED` | environment | 等待或重新提交 |
 | 能力返回的错误 | 能力自报 | 换策略/改世界后重试；同一调用重试通常无用 |
 
@@ -1235,7 +1217,7 @@ RPC 十一条，全部一进一出。新增能力不会新增 RPC，只可能新
 | 场景 | 期望 |
 |---|---|
 | 同一输入，顶层 `run {code}`、程序内 `mc.call`、保存后再调用 | 三者返回同一领域值，`sourceDigest` 各自可查 |
-| 程序读某目标后宿主改世界，紧接着 `mc.read` | 两次 `version` 不同；把旧 version 传给 `waitForChange` 立即返回 `changed`（观察版本与 World 的 `watch` 语义对齐） |
+| 程序读某目标后宿主改世界，紧接着 `mc.read` | 两次 `version` 不同；`waitForChange` 拿旧 `version` 起等会立即 `met`（原子比较，与 World 的 `watch` 同一语义） |
 | 能力调用派发后 stop | guest 侧 `CANCELLED`，同一次调用的 `EffectRecord` 仍出现真实效果；无法确认时 `unknownEffects` 里的 `effectId` 在 Run 终态后仍可 `readEffect` 并显示 `unknown` |
 | `save {from}` 之后再 `run name` | 落盘文件摘要是 `digest`，`saved.digest` 是执行时摘要；两段源码逐字节相同（除头） |
 | `mc.waitForChange` 恰好在判定与订阅之间发生目标变化 | 不丢唤醒（World 的 `read→watch` 原子比较合同） |
@@ -1271,11 +1253,11 @@ RPC 十一条，全部一进一出。新增能力不会新增 RPC，只可能新
 
 ## 附录 A：给模型的一页
 
-这段就是 `mc` 工具描述里该注入的全部内容（也放进系统提示的附件）：
+**附录 A 是给模型看的一页教学**（多给例子与理由）；正式常驻注入的是 `capabilities.md` §7 的速查。两者分工：注入页讲有什么、怎么判，这一页讲怎么写。
 
 ```text
 程序：一个 .js 文件，合法 JavaScript。入口是 async function main(mc, input) { ... }，
-      return 的就是结果。跑通后 library save 存起来；之后 mc run {ref:"名字", input:{...}} 直接调。
+      return 的就是结果。跑通后 library save 存起来；之后 mc run {name:"名字", input:{...}} 直接调。
 
 两个入口，一句话：名词用 mc.read，动词用 mc.call。
 
@@ -1425,7 +1407,7 @@ function writeHeader(source: string, header: Record<string, unknown>) {
 //    校验用进程内的惰性单例运行时（首次 11ms 初始化，之后每次新建 context 约 0.5ms），
 //    不注入任何宿主对象、不占域容量、不排队——它只编译。
 const compiler = lazyCompileRuntime();
-export function validate(source: string, filename = "program.js"): ProgramValidation {
+export function validate(source: string, filename: string): ProgramValidation {
   if (Buffer.byteLength(source, "utf8") > MAX_SOURCE_BYTES)
     return { ok: false, code: "PROGRAM_INVALID", reason: "size", message: "源码超过 64 KiB" };
   const ctx = compiler.newContext();
@@ -1452,8 +1434,8 @@ export function validate(source: string, filename = "program.js"): ProgramValida
 //      InternalError "interrupted"         → PROGRAM_TIMEOUT（顶层超预算）
 //      InternalError "out of memory"       → PROGRAM_MEMORY
 //      其他（顶层 throw）                   → PROGRAM_ERROR（带栈与行列）
-const r = ctx.evalCode(source, `${filename}.js`);
-if (r.error) return failure(await classifyGuestError(r.error));   // 见 §5.3 的码表
+const r = ctx.evalCode(source, filename);   // 名字由调用方给：库里是 <name>.js，临时代码是 code-<digest8>.js
+if (r.error) return failure(await classifyGuestError(r.error));   // 见 §7 的失败码表
 r.value.dispose();
 const main = ctx.getProp(ctx.global, "main");
 const isFn = ctx.typeof(main) === "function";           // typeof 返回字符串，不是"句柄为真"
