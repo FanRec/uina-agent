@@ -13,9 +13,33 @@
  * monitorMovement 在 stateGoal 为空时不再写键位。
  */
 
-import { pathfinder, Movements, goals } from "mineflayer-pathfinder";
+import { createRequire } from "node:module";
 import type { MineflayerBot } from "./adapter.js";
 import type { Vec3 } from "../../contracts/values.js";
+
+/**
+ * mineflayer-pathfinder 是 CJS module.exports 对象字面量，tsx 纯 ESM 下具名导入
+ * 不可静态识别；经 createRequire 加载（与 adapter.ts 的 vec3、engine.ts 的 Ajv
+ * 同一仓库惯例）。类型按本文件用到的最小面收敛，不依赖包内 d.ts。
+ */
+const pathfinderModule = createRequire(import.meta.url)("mineflayer-pathfinder") as {
+	/** 插件注入函数（上游 index.js 的 inject）。 */
+	pathfinder: (bot: MineflayerBot) => void;
+	/** Movements 构造器；registry 由 bot 携带。 */
+	Movements: new (
+		bot: MineflayerBot,
+	) => PathfinderMovements;
+	goals: { GoalNear: new (x: number, y: number, z: number, range: number) => unknown };
+};
+
+/** 本文件触碰的 Movements 最小面。 */
+interface PathfinderMovements {
+	allowSprinting: boolean;
+	canDig: boolean;
+}
+
+const { pathfinder, Movements } = pathfinderModule;
+const { GoalNear } = pathfinderModule.goals;
 
 /** gotoNear 可收敛的上游拒绝名（lib/goto.js 固定集合）。 */
 export type PathfinderGotoErrorName = "NoPath" | "Timeout" | "PathStopped" | "GoalChanged";
@@ -61,7 +85,7 @@ export function gotoNear(bot: MineflayerBot, at: Vec3, tolerance: number): Promi
 	if (assembly == null) {
 		throw new Error("pathfinder plugin is not loaded");
 	}
-	const goal = new goals.GoalNear(at.x, at.y, at.z, tolerance);
+	const goal = new GoalNear(at.x, at.y, at.z, tolerance);
 	return assembly.goto(goal);
 }
 

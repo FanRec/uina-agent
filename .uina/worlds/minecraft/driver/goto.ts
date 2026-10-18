@@ -145,6 +145,16 @@ export class GotoDirector {
 		this.state = "running";
 		let bot: MineflayerBot | null = null;
 		let ticks = 0;
+		// 守卫：Operation 失效后每物理步封印写源，直到结算退役（§9.3 隔离）；
+		// 定义在 try 外以便 finally 注销（迟到信号不得透过旧守卫影响后续 Operation）。
+		const guard = (): void => {
+			ticks++;
+			if (this.state !== "running") return;
+			if (signal.aborted || this.deps.host.state !== "ready") {
+				this.seal(bot as MineflayerBot);
+				if (pathfinderGoalActive(bot as MineflayerBot)) clearGoal(bot as MineflayerBot);
+			}
+		};
 		try {
 			bot = this.botForWrite();
 			if (this.deps.host.identity == null) {
@@ -159,15 +169,6 @@ export class GotoDirector {
 			loadPathfinderPlugin(bot);
 			configureMovements(bot, { sprint: request.sprint, digThrough: request.digThrough });
 
-			// 守卫：Operation 失效后每物理步封印写源，直到结算退役（§9.3 隔离）
-			const guard = (): void => {
-				ticks++;
-				if (this.state !== "running") return;
-				if (signal.aborted || this.deps.host.state !== "ready") {
-					this.seal(bot as MineflayerBot);
-					if (pathfinderGoalActive(bot as MineflayerBot)) clearGoal(bot as MineflayerBot);
-				}
-			};
 			bot.on("physicsTick", guard as never);
 
 			this.recordFact(
@@ -220,6 +221,9 @@ export class GotoDirector {
 		} finally {
 			await this.settle(bot, eff, op, signal.aborted ? "aborted" : "finished");
 			this.state = "done";
+			// 守卫随 Operation 注销：调用结束后本 Operation 的 signal 已 abort，
+			// 陈旧守卫会在后续导航运行期误触发封印并 clearGoal（上游表现为 GoalChanged）。
+			if (bot != null) bot.removeListener("physicsTick", guard as never);
 		}
 	}
 

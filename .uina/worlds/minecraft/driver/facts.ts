@@ -105,10 +105,18 @@ export class FactsSource implements ClientFactsPort {
 		};
 		this.evidenceStream = this.openEvidenceStream();
 		this._evidenceThrough = { stream: this.evidenceStream, sequence: 0 };
+		// 构造时宿主可能已就绪（后装配）也可能尚未连接；挂接跟随连接生命周期：
+		// ready 通知时建立源，disconnected/faulted 时封印旧 bot 引用（§3 状态机）。
 		this.attach(host.bot);
 		host.on((notice) => {
 			if (notice.kind === "state") {
-				if (notice.state === "disconnected" || notice.state === "faulted") {
+				if (notice.state === "ready") {
+					// 新活连接：先换代（stamp 携带新身份），再挂接 bot 开始采样提交。
+					this.resetSource("source_rebuilt");
+					this.attach(this.host.bot);
+				} else if (notice.state === "disconnected" || notice.state === "faulted") {
+					// 旧 bot 引用封印：sample 转为 WRONG_STATE，不读死连接。
+					this.detach();
 					this.resetSource("connection_changed");
 				}
 				return;
@@ -386,6 +394,8 @@ export class FactsSource implements ClientFactsPort {
 		};
 
 		const view: ClientFactView = {
+			scope: (): ClientFactScope => scope,
+
 			self(): Fact<SelfState | null> {
 				const pos = fromMineflayerVec3(bot.entity?.position);
 				if (pos == null || bot.entity == null) {

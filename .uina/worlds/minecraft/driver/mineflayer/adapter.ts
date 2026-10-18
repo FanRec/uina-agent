@@ -10,9 +10,19 @@
  */
 
 import { createBot, type Bot } from "mineflayer";
-import { Vec3 as MineflayerVec3 } from "vec3";
+import { createRequire } from "node:module";
 import type { Vec3 } from "../../contracts/values.js";
 
+/**
+ * vec3 是 CJS 裸 module.exports 赋值，ESM 具名导入不可静态识别；
+ * 经 createRequire 构造（与 engine.ts 的 Ajv 同一仓库惯例）。
+ */
+type MineflayerVec3 = import("vec3").Vec3;
+const vec3Ctor = createRequire(import.meta.url)("vec3") as unknown as new (
+	x: number,
+	y: number,
+	z: number,
+) => MineflayerVec3;
 /** 收敛后的客户端类型；driver 其余模块只经本文件接触 Bot。 */
 export type { MineflayerVec3 };
 type MineflayerBot = Bot;
@@ -41,7 +51,7 @@ export function connectMinecraftClient(opts: ClientOptions): MineflayerBot {
 }
 
 export function toMineflayerVec3(p: Vec3): MineflayerVec3 {
-	return new MineflayerVec3(p.x, p.y, p.z);
+	return new vec3Ctor(p.x, p.y, p.z);
 }
 
 export function fromMineflayerVec3(v: MineflayerVec3 | null | undefined): Vec3 | null {

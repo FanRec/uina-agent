@@ -236,6 +236,8 @@ export class RuntimeEngine {
 	private readonly recoveredCalls = new Map<Ref, CallRow>();
 	private readonly recoveredEffects = new Map<Ref, string>();
 	private readonly recoveredOwners = new Map<Ref, string>();
+	/** effect 身份引用 → 最新已提交效果记录 ref（public-api §7 readRecord 口径）。 */
+	private readonly recoveredEffectRecords = new Map<Ref, Ref>();
 	// 身体队列：单槽 FIFO（§3.3.1 情况 a）
 	private readonly bodyQueue: BodyQueueItem[] = [];
 	private holder: { owner: ControlOwner; session: BodySession; call: Ref } | null = null;
@@ -287,6 +289,7 @@ export class RuntimeEngine {
 		for (const row of rows.effects) {
 			this.recoveredEffects.set(row.effect, row.facts);
 			this.recoveredOwners.set(row.effect, row.owner ?? "null");
+			this.recoveredEffectRecords.set(row.effect, row.record);
 			this.recordIndex.set(row.record, { kind: "effect", objectRef: row.effect });
 		}
 		// §4.4 恢复表（I1 子集）：未终结 Run——有停止意图 → cancelled；否则 unknown；
@@ -640,6 +643,15 @@ export class RuntimeEngine {
 			// 效果记录在队列内存侧（recover 已把持久效果行载入 recordIndex）
 			const effect = this.queue.effectByRecord(ref);
 			if (effect != null) return { kind: "effect", record: ref, value: this.effectValueOf(effect) };
+			// effect 身份引用（eff:）：固定最新已提交效果记录截面（public-api §7 口径）
+			const liveAttribution = this.queue.effectRecord(ref);
+			if (liveAttribution != null) {
+				return { kind: "effect", record: liveAttribution.record, value: this.effectValueOf(ref) };
+			}
+			const recoveredRecord = this.recoveredEffectRecords.get(ref);
+			if (recoveredRecord != null) {
+				return { kind: "effect", record: recoveredRecord, value: this.effectValueOf(ref) };
+			}
 			throw callFailure({
 				code: "NOT_FOUND",
 				source: "world",
@@ -1690,7 +1702,7 @@ export class RuntimeEngine {
 				effect,
 				owner: JSON.parse(ownerRaw) as JsonValue,
 				operation: facts[0]?.operation ?? "unknown",
-				record: `rec:effect:${effect}`,
+				record: this.recoveredEffectRecords.get(effect) ?? `rec:effect:${effect}`,
 				facts: plain(facts) as JsonValue,
 				verifications: [],
 				latest: {
@@ -1706,5 +1718,5 @@ export class RuntimeEngine {
 }
 
 function submissionKey(owner: Ref, requestId: Ref): string {
-	return `${owner} ${requestId}`;
+	return `${owner}\u0000${requestId}`;
 }

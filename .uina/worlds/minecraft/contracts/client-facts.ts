@@ -203,6 +203,8 @@ export interface ClientFactsSubscription {
  * view 在返回时失效。null 表示不可用并带 unknown，不解释为空背包/箱子。
  */
 export interface ClientFactView {
+	/** 当前提交边界的绑定 scope；查询参数（Place/SectionTarget）组装用，随视图失效。 */
+	scope(): ClientFactScope;
 	self(): Fact<import("./body.js").SelfState | null>;
 	block(target: BlockTarget): Fact<ClientBlockValue>;
 	sections(targets: SectionTarget[]): Fact<ClientSectionsValue>;

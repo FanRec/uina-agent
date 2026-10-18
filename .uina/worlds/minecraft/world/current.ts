@@ -10,7 +10,7 @@
  */
 
 import { callFailure } from "../contracts/values.js";
-import type { CallFailure, ExactRef, Fact, Observation, ObservationCursor } from "../contracts/values.js";
+import type { CallFailure, ExactRef, Fact, JsonValue, Observation, ObservationCursor } from "../contracts/values.js";
 import type {
 	ClientFactCapture,
 	ClientFactNotice,
@@ -21,8 +21,8 @@ import type {
 } from "../contracts/client-facts.js";
 import type { WorldChange, WorldQuery, WorldWatch } from "../contracts/world.js";
 
-/** 查询 resolver：从当前事实视图组装一个 Fact（组合根由 K1 声明生成注入）。 */
-export type QueryResolver = (view: ClientFactView) => Fact<unknown>;
+/** 查询 resolver：接收查询输入，从当前事实视图组装一个 Fact（组合根由 K1 声明生成注入）。 */
+export type QueryResolver = (view: ClientFactView, input: JsonValue) => Fact<unknown>;
 
 function worldFailure(code: string, message: string, hint?: string): CallFailure {
 	return callFailure({ code, source: "world", message, hint, dispatch: "not_sent", effects: [], recoverable: false });
@@ -41,6 +41,14 @@ function abortError(): Error {
 
 /** facts.sample 的结构化错误收敛为 CallFailure（capabilities §2.6 口径）。 */
 function toReadFailure(err: unknown): CallFailure {
+	if (
+		err instanceof Error &&
+		(err as CallFailure).name === "CallFailure" &&
+		typeof (err as CallFailure).code === "string"
+	) {
+		// resolver 抛出的 CallFailure（如 INVALID_INPUT）保持原样：source/hint 是输入侧事实
+		return err as CallFailure;
+	}
 	const code = (err as { code?: string } | null)?.code;
 	const message = err instanceof Error ? err.message : String(err);
 	if (code === "WRONG_STATE") {
@@ -165,7 +173,7 @@ export class CurrentReads {
 		if (resolver == null) throw unknownQuery(query.ref, this.resolvers);
 		let capture: ClientFactCapture<Fact<unknown>>;
 		try {
-			capture = this.facts.sample((view) => resolver(view));
+			capture = this.facts.sample((view) => resolver(view, query.input));
 		} catch (err) {
 			throw toReadFailure(err);
 		}
