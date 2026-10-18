@@ -65,17 +65,19 @@
 
 所有跨进程值可按 JSON 编码；函数、Promise、Bot、窗口对象和原生 Error 不跨边界。大整数标识按字符串，时间为带 `Z` 的 UTC；Tick、单调计时与事实序号另列，不能互换。完整错误含稳定 code、领域 progress、引用及派发程度，不只是一句异常文本。
 
-方法与所有返回判别形状见 [ExecutorClient](public-api.md)。lookup/read/list/wait 分别返回 SubmissionLookup、RunSnapshot 或明确分页；领域 value 与错误不会藏在自由 JSON 信封中。调用者取消 wait 只结束等待，不改变运行。
+方法与所有返回判别形状见 [ExecutorClient](public-api.md)。lookup/read/list/wait 返回 SubmissionLookup、RunSummary、RunWaitReply 或明确分页，完整固定材料由 readRecord 读取；领域 value 与错误不会藏在自由 JSON 信封中。调用者取消 wait 只结束等待，不改变运行。
 
 ### 3.2 受理的承诺点
 
 1. 接入为一次新的 run/continue 动作生成 UUID requestId，在任何 IPC 前持久保存请求及可信归属。执行侧按持久 World 归属与 requestId 去重；临时 activation 不进入去重键。本次传输重试/查询复用该 ID，LLM Schema 不要求自造 ID；返回正文提供系统生成的 request/run 引用。持久化失败则不派发新工作；stop/急停立即发送，不等本地磁盘，可靠受理仍须执行侧持久停止收据。`library` 是同步工具动作，不生成 Run、不产生 requestId，也不进入本事务。
-2. 当前 attachment 有效时，先查已有去重映射并比较原始语义请求。同键同请求直接返回既有运行及最新状态，不重新解析别名/默认策略、检查新任务停止门或消费替换目标；能力下架、目标已结束、常态策略改变也不把既有受理变成拒绝。同键不同意图返回 `REQUEST_CONFLICT`；属性顺序/空格不构成不同，模型后来再次使用“最新版本”也不改变第一次的绑定。
-3. 新提交先在事务外准备入口、确切版本/字节/摘要、声明依赖、语法/输入与支持检查，再在 Runtime 单个短事务只提交自己的去重映射、Run/Segment/固定材料、策略、必要替换结论和抢占停止意图。事务内只复核 Runtime 自己的门/装配代次/目标状态，不冻结 Assets head 或 World retain。捕获 @3 后 Assets 发布 @4，仍运行 @3，不承诺提交瞬间最新。事务确认后才启动并进入 RunReply 短窗口；失败不启动新动作，也不因未受理抢占撤销旧控制。原始请求与首次解析结果固定，重试不重算。实际 Driver 资格仍在 acquire/写入核验。
+2. 当前 attachment 有效时，先查已有去重映射并比较原始语义请求；未受理的键同时检查持久撤销屏障。同键同请求直接返回既有运行及最新状态，不重新解析别名、重新应用能力缺省或检查新任务停止门或消费替换目标；能力下架、目标已结束、能力缺省改变也不把既有受理变成拒绝。同键不同意图返回 `REQUEST_CONFLICT`；属性顺序/空格不构成不同，模型后来再次使用“最新版本”也不改变第一次的绑定。
+3. 新提交先在事务外准备入口、确切版本/字节/摘要、声明依赖、语法/输入与支持检查，再在 Runtime 单个短事务只提交自己的去重映射、Run/Segment/固定材料、入口参数、必要替换结论和抢占停止意图。事务内只复核 Runtime 自己的门、请求撤销屏障、装配代次和被替换运行的状态，不冻结 Library 文件或 World retain。读取程序字节后作者修改文件，本段仍使用已捕获的字节，不承诺提交瞬间最新。事务确认后才启动并进入 RunReply 短窗口；失败不启动新动作，也不因未受理抢占撤销旧控制。原始请求与首次解析结果固定，重试不重算。实际 Driver 资格仍在 acquire/写入核验。
 4. 取消发生在确定未派发前，可报告 `not_started`；执行侧已经提交受理后，工具信号只取消等待。IPC 派发后丢失回执且无法核实受理，报告 受理 unknown 和原键，不自动另起运行。
-5. lookup 的 `not_found` 是指定存储/归属在查询时没有提交记录。只有原传输已经结束、旧 activation 被隔离且查询命中权威存储时，才可用同一个键重试；普通超时或查错存储不能证明未受理。
+5. lookup.not_found 不排除旧请求稍后提交；明确重试仍可在当前有效绑定向同一权威存储发送原键/原语义请求，由准备 singleflight 与事务唯一约束保证唯一受理。不得自动新键重发。lookup.cancelled 表示该键从未受理且已有持久撤销屏障；retry 不能复活。该规则依赖原 Runtime 存储历史，不把替换/回退旧备份当作新的“未受理”证明。
 
-上述运行受理事务和 lookup 仅覆盖 submit/continue。`library` 不生成 Run、不产生 requestId、不进入运行受理表：它是工具同步动作，直接读写普通文件（`programs/`、`blueprints/`、`experiences/`），失败直接回给调用者，不伪造可靠重试，也不为文件操作建幂等账本。具体约定见 [Library 详细设计](modules/assets.md) 与 [program.md §4](modules/program.md)。当前源码没有现成 Minecraft 请求服务，共享协议/小型代码不等于必须共用物理数据库。
+stop({run}) 与 stop({request}) 共用停止合同。后者立即关闭请求键的内存准入，并在同一 Runtime writer 持久登记请求撤销屏障：先于受理则阻止提交，后于受理则停止既有 Run。提交回调启动前再次核对关闭代次，不能漏掉已到达的 stop。未受理键不虚建 Run，停止记录可查。continue 未提交时撤销不消费 decision，提交后停止新段不恢复旧 decision。停止命令 ID 只去重这次控制，不替代被停止的 requestId。
+
+上述运行受理事务和 lookup 仅覆盖 submit/continue。`library` 不生成 Run、不产生 requestId、不进入运行受理表：它是工具同步动作，直接读写普通文件（`programs/`、`blueprints/`、`experiences/`），失败直接回给调用者，不伪造可靠重试，也不为文件操作建幂等账本。具体约定见 [Library 详细设计](modules/library.md) 与 [program.md §4](modules/program.md)。Executor 的接入凭证、Runtime 的受理记录各有唯一写者；数据库和恢复顺序见 [Executor §3、§6](modules/executor.md)。
 
 run/continue façade 在受理后的短等待窗口内得到已提交终结/待决策时直接返回真实快照；超时返回 accepted，后台 completion 通知。直接调用、代码和保存程序共用受理，内部 mc.call 不 submit。工具取消仅结束等待；observe/describe 和主动 runs.wait/read 是查询，不自动消耗通知。
 
@@ -95,15 +97,15 @@ run/continue façade 在受理后的短等待窗口内得到已提交终结/待�
 
 | 信号 | 必须停止什么 | 必须保留什么 |
 | --- | --- | --- |
-| Action/工具等待 signal | 本次 RPC 等待、查询或回复构造 | 已受理运行；作用域结束另按下行处理 |
-| stop | 指定运行的新动作、控制循环及后续身体段 | 已确认工作、在途未知、停止意图；重复 stop 不改写终态 |
+| Action/工具等待 signal | 本地短窗口及其读取/等待 RPC，不撤销受理/写入 | 已受理运行；作用域结束另按下行处理 |
+| stop | 指定 Run 或请求键的新准入、准备、控制及后续身体段 | 已确认工作、在途未知、停止意图；重复 stop 不改写终态 |
 | World 停用/Host 关闭/具身 safeStop | 关闭有关动作准入门并停止所属运行；急停门另持久保存 | 原意图、受理记录及未知效果，重新 enable 不自动重跑 |
 
 World `onStart` 绑定独立的生命周期 signal。它一旦取消，接入立即关闭本地准入，并发起持久保存停用意图及执行侧停止；写盘失败不能阻止实际停机。`onStop` 等待结算，不能等到所有长动作工具返回后才首次发停止。作用域合并 signal 无法区分两种取消，必须同时观察这个独立信号。所有工具等待对取消及时结算，避免 `scope.close → 等工具 → onStop` 形成互等。
 
 执行侧只接受当前 attachment/activation 发来的新请求，旧 activation 不能因迟到 IPC 再次准入。同一执行存储只允许一个执行侧写者及一组客户端所有权；启动第二实例必须明确拒绝，不能两边分别发有效资格。
 
-推荐执行侧与拥有者建立有到期时间的存活绑定：短暂 IPC 抖动可继续，绑定失效立即关闭该 owner 的整个动作准入/续段调度并撤销控制，执行侧持久记录 owner_lost。其已受理运行按生命周期取消：从未开始为 not_started，已开始且控制停止为 cancelled，无法确认停止为 unknown，分别保留进度及未知效果；等待复查、queued 续段也不能再取得资格。旧 activation、迟到心跳和自动重连不能解除此门；当前 owner 明确对账解除后只允许新任务，旧终态不复活，可显式引用检查点建立关联的新运行。
+执行侧与拥有者建立有到期时间的存活绑定（协议、初值与域外监管见 [Executor §4–§5](modules/executor.md)）：短暂 IPC 抖动可继续，绑定失效立即关闭该 owner 的整个动作准入/续段调度并撤销控制，执行侧持久记录 owner_lost。其已受理运行按生命周期取消：从未开始为 not_started，已开始且控制停止为 cancelled，无法确认停止为 unknown，分别保留进度及未知效果；等待复查、queued 续段也不能再取得资格。旧 activation、迟到心跳和自动重连不能解除此门；当前 owner 明确对账解除后只允许新任务，旧终态不复活，可显式引用检查点建立关联的新运行。
 
 期限属于可测量的故障检测配置，不能宣称网络分区时瞬时停止。每次执行侧重启先关闭动作门并恢复记录，完成当前拥有者握手、身份及停用/急停/owner_lost 对账后才准入；停止意图不能只保存在已经崩溃的那一侧。仅失去 Uina 通信不是完成或停止证据，游戏连接中断的恢复策略也不自动解除 owner_lost。
 
@@ -117,17 +119,11 @@ Minecraft 通过 `ctx.expose("body.endpoint:" + bodyId, endpoint)` 加入现有�
 
 ## 4. 运行记录 ↔ 直返与 World 输入递送
 
-Runtime 在每次段交还或 Run 终结的同一事务写固定 report/record、completionRef 与 pending disposition，结论不随交付渠道复制；每段最多一份 decision、每 Run 最多一份 terminal。待决策时 stop 可另生 terminal 而不改原 decision，显式续段产生新段/报告。ExecutorClient.submit/continue 返回唯一 RunReply 联合：先持久受理，配置短窗口内取得本次提交报告则返回 result（含 completionRef），超时返回 accepted；waitSignal 取消只结束等待，已受理则返回 accepted/当前已知事实，Run 继续。接入同实例串行协调窗口选择和后台 drain，窗口有效时暂缓该 segment 通知，不建跨库 claim/租约。记录库落在该 World 数据根的 `runtime.db`，调用级源码快照落在同根 `runs/<run>/sources/`（按 sha256 内容寻址）（见 [Runtime §5.3](modules/runtime.md)）；快照是文件证据，记录只存摘要与路径，两者不构成跨介质事务。
+Runtime 唯一持久保存 CompletionReport、completionRef 与 delivery disposition；Executor 拥有短窗口、通知尝试和 Host 事实对账。类型见 [public-api §7](public-api.md)，记录转换见 [Runtime §6](modules/runtime.md#delivery)，接入完整算法见 [Executor §8](modules/executor.md)。
 
-completionRef 是执行报告引用，不等于 Run 终态凭证。唯一公开联合 CompletionReport 以 reportKind=terminal 对应 snapshot.phase=finished；reportKind=decision 对应 awaiting_decision，仅表示当前段交还。kind=result 也不自动表示整个 Run 成功/终结；消费 decision 后产生新段，待决策时 stop 另生 terminal，旧报告永久保留。
+恢复确认以期望 attachment 与 gateRevision 一同匹配，不允许接入在重建后替调用者换成新 attachment；实例已经变更则旧确认失败。Runtime 不能隔离旧执行源但心跳仍健康时，通过可信 retirement 锁存/优先消息交 Executor 退役整个 launch，不能只等失联超时。
 
-直返前 settleDelivery(tool_handoff)，成功后抑制后台通知，不证明 Host 已记录结果或模型已读。该标记之后、响应返回前崩溃可能漏通知，重启不自动补报；原 requestId/run 仍能查询同一报告。标记失败时可返回已提交快照，但该项仍 pending，可能重复通知。
-
-后台 pendingDeliveries 派生 eligible：finished 可投；decision 仅仍未消费且为当前待处理项、未被停止/终结时可投。历史 decision/报告不可变，过时请求不再主动唤醒。emitEvent 前和 deferred render 前复查 readDelivery；过时或状态不可核实时 render=null，前者不再 eligible，后者保留重试；render 不消费 decision/写 ACK。
-
-接入持久保存 attempt inputId→completionRef，正常每项一个活动 attempt。input_settled.committed 后 settleDelivery(input_committed)，只证明 canonical，不证明模型已读。null/retired/missing_render 不作 ACK；失败退避、新 attempt 重试，健康时定时/连接恢复推进。canonical 已写而 ACK 丢失可同引用补报，绝不重发游戏动作。停用暂停递送，记录可查；主动查询不改变 disposition。
-
-render 检查和 Host append 不原子：检查后 continue 消费 decision，旧文仍可能进入 canonical。报告注明确切 decision/记录时事实，continue 消费 CAS 返回 DECISION_STALE 阻止重复行动。不以历史不可变为由主动重投已过时请求，也不宣称完全消除最后展示竞态。完整算法见 [Runtime 结果交付](modules/runtime.md#delivery)。
+跨边界必须保留以下事实：受理与完成分开；decision 与 terminal 分开；普通查询不消费通知；Runtime 交付处置只有 pending/committed，只有真实 Host 回执确认完成通知持久进入会话。通知携带真实结论、摘要和完整记录读取入口，正文权威仍在 Runtime。函数返回、入队和 render 都不确认；ACK 丢失可同引用重复，不能重放动作。World/存储/Host 恢复处理后，仍适用的 pending 最终至少呈现一次。decision 过时以当前状态和 CAS 判定，不改写历史报告。
 
 <a id="control"></a>
 
@@ -291,11 +287,11 @@ SQLite 的启动/核验不作为当前接入的前置门。world.status@1 在同
 
 ### 8.1 库：程序、蓝图与经验（已改）
 
-> **2026-10-18 起：程序见 [program.md](modules/program.md)，蓝图与经验见 [Library](modules/assets.md)。** 本节原有内容（SQLite 目录/CAS、不可变包、publish/Revision/head、`ReadLibrary`/`WriteLibrary`、`PublishRequest`、`ProgramSourcePort`、`EvidenceExportPort`）整体删除；以下只保留仍然有效的跨模块约束。
+> **2026-10-18 起：程序见 [program.md](modules/program.md)，蓝图与经验见 [Library](modules/library.md)。** 本节原有内容（SQLite 目录/CAS、不可变包、publish/Revision/head、`ReadLibrary`/`WriteLibrary`、`PublishRequest`、`ProgramSourcePort`、`EvidenceExportPort`）整体删除；以下只保留仍然有效的跨模块约束。
 
 - 库是普通文件：`programs/<name>.js`、`blueprints/<name>/`、`experiences/<name>.md`，共用命名与 `library` 五 op；没有 publish/Revision/head/版本号，也没有资产目录、不可变包与证据副本。`library` 不 submit 成游戏 Run。
 - 确切内容由使用方在入场时固定：每次程序调用快照源码字节，工程记录持有蓝图摘要；库不冻结工作文件，作者随时可改，旧执行源码按快照读取，蓝图按记录摘要核验或如实报变更；不承诺旧依赖和世界可重放。
-- 蓝图三分（Raw/Target/Project）与 AirPolicy 见 [Library §3](modules/assets.md)；已知 air 需明确 set_air/preserve，来源未知的格不能变成 clear。
+- 蓝图三分（Raw/Target/Project）与 AirPolicy 见 [Library §3](modules/library.md)；已知 air 需明确 set_air/preserve，来源未知的格不能变成 clear。
 - 经验是判断而非事实，直接改文件；证据是弱链接，记录被清理就如实断链，不自动改判断、不生成置信度，也不把一次执行 `succeeded` 升级为普遍可靠。
 - 几何转换、解析、分析与施工属于领域 Callable，不属于库；不同领域不新增第四种通用资产或学习调度器。
 
@@ -317,11 +313,11 @@ SQLite 的启动/核验不作为当前接入的前置门。world.status@1 在同
 | 3 | 按系统返回/持久 pending 中的 q17 查询 | 返回同 r17；重试同键不重复采集 |
 | 4 | s1 取得 b1，内部导航/采集共用资格 | 驱动核验；入包 19 是实际增量，不是挖掘调用次数 |
 | 5 | 思考取消 | RPC 等待结束；r17 继续，不触发 safeStop |
-| 6 | 明确 stop(r17, stop-4) | 持久停止意图、撤销 b1，先返 stopping；末次点击已发但未知 |
+| 6 | 明确 stop({run:r17}, stop-4) | 持久停止意图、撤销 b1，先返 stopping；末次点击已发但未知 |
 | 7 | 旧 equip 后续迟到，企图挖掘 | 仍持 b1，写入处拒绝；旧清理不能清新主人输入 |
 | 8 | 屏障完成，执行侧结算 | finished/cancelled、control=stopped、collected=19、unknownEffects=[eLast] |
-| 9 | 超过原工具窗口，终态经 World 输入 | 同 completionRef；input_settled.committed 后确认；窗口内完成则直返，故障重复不重放游戏 |
-| 10 | 停止受理后执行侧崩溃/重启 | 先恢复停止意图与未知，r17 不自动续跑；pending 通知重试；tool_handoff 不自动补报，原结果可查 |
+| 9 | 超过原工具窗口，终态经 World 输入 | 同 completionRef；Host 持久回执后确认，input_settled 只触发核对；窗口内完成则直返，故障重复不重放游戏 |
+| 10 | 停止受理后执行侧崩溃/重启 | 先恢复停止意图与未知，r17 不自动续跑；pending 通知经 Host 状态核对后补投；已提交回执补 ACK，原结果可查 |
 
 完成采集走正常核验/清理路径，不走停止路径；直接返回 succeeded 只确认 collect 合同满足。独立对话、普通查询与结果递送都不取得身体。
 
@@ -357,4 +353,4 @@ SQLite 的启动/核验不作为当前接入的前置门。world.status@1 在同
 | 同连接实体/窗口 ID 重用、重生/跨维度 | 旧活句柄失效，历史身份可重新定位 | 服务器总能提供可信持久世界 ID |
 | 部分扫描导出、蓝图旋转、迁址/改版 | unknown 不变 clear，状态转换正确，工程不混现场/目标 | 全原版方块状态转换已实现 |
 
-本次只核查当前源码、上游机制文档和设计一致性；Driver/World 有静态可见实现，但 Runtime 未实现，Assets 当前有代码且本轮未验收，未运行真实服务端、Provider 或游玩实验。合同草案中的执行隔离、协议证据、停止屏障、检查点恢复和建筑转换都仍需在各自边界验证。完整游玩场景与质量/成本指标沿用 [研究记录 §6](research.md)，不以文档/类型检查替代。
+本次只核查当前源码、上游机制文档和设计一致性；Driver/World 有静态可见实现，但 Runtime 与 Library 未实现，旧 Assets 仓库代码仍在且本轮未验收，未运行真实服务端、Provider 或游玩实验。合同草案中的执行隔离、协议证据、停止屏障、检查点恢复和建筑转换都仍需在各自边界验证。完整游玩场景与质量/成本指标沿用 [研究记录 §6](research.md)，不以文档/类型检查替代。

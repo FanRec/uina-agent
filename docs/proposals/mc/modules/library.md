@@ -1,6 +1,6 @@
 # Library：蓝图与经验
 
-状态：详细设计，待实施。本文件原名《Assets：程序、蓝图与经验的详细设计》；2026-10-18 起，Program 归 [`program.md`](program.md)，仓库机制（SQLite 目录、不可变包、发布 CAS、证据副本）整体删除，本文只保留**库的文件约定**与**蓝图/经验的领域语义**。文件名沿用 `assets.md` 只为不断链，模块含义已缩小为 Library。
+状态：详细设计，待实施。本文定义普通文件库的约定，以及蓝图与经验的领域语义；程序格式、运行和复用见 [Program](program.md)。
 
 ## 1. 裁决
 
@@ -28,7 +28,7 @@
   runs/<run>/sources/<sha256>.js      # 源码快照（Runtime 所有，Program 只写 sources/；按内容寻址）
 ```
 
-六个位置是同一数据根下的并列邻居，互不搬移、互不代管；只有 `runs/` 由 Program 与 Runtime 分工写。
+各位置在同一数据根下并列，互不搬移、互不代管；只有 `runs/` 由 Program 与 Runtime 分工写。大记录读取缓存 exports/ 归 Runtime，不属于库；接入凭证另由 Uina 侧 Executor 的 executor.db 拥有（[Executor §6](executor.md)），不是库条目。
 
 - **命名**：三类的 `name` 统一 `^[a-z][a-z0-9_-]{0,47}$`（小写；Windows 大小写不敏感），在各自类别内唯一。同名不同类别允许（`blueprints/hut` 与 `experiences/hut` 不冲突），因为地址总是带 kind。
 - **路径安全**：只允许上述固定结构；拒绝 `..`、绝对路径、反斜杠、保留设备名、忽略大小写后的重复项。`blueprints/<name>/` 内只认 `design.*`、`about.json`、`target.json`，其他文件忽略（不报错）。

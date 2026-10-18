@@ -2,7 +2,7 @@
 
 日期：2026-10-16（初稿），2026-10-18（修订）。状态：推荐的终态概要设计。World 与 Driver 核心已实现并通过 fake bot 集成验收，Runtime 未实现，尚未经过真实 Minecraft 游玩验收。
 
-本文只保留目标、边界、职责、模型接口、玩法流程和未验证项。跨模块身份、依赖、受理与停止的合同见 [详细契约](contracts.md)，方法、值与错误的唯一定义见 [公开接口](public-api.md)，Runtime 内部见 [Runtime 详细设计](modules/runtime.md)，Driver、World、Assets 见各自模块文档，证据与替代方案见 [研究记录](research.md)。本文不重复这些文档的机制细节。
+本文只保留目标、边界、职责、模型接口、玩法流程和未验证项。跨模块身份、依赖、受理与停止的合同见 [详细契约](contracts.md)，方法、值与错误的唯一定义见 [公开接口](public-api.md)，接入与进程见 [Executor 详细设计](modules/executor.md)，Runtime 内部见 [Runtime 详细设计](modules/runtime.md)，Driver、World、Library 见各自模块文档，证据与替代方案见 [研究记录](research.md)。本文不重复这些文档的机制细节。
 
 <a id="goals"></a>
 
@@ -102,7 +102,7 @@ Program 是 Runtime 支持的执行方式，能力目录是模块导出的索引
 
 ### 2.3 进程与 Uina 边界
 
-游戏执行环境在独立进程中运行，拥有 Driver、Runtime、World 与 Library。物理反馈与局部控制不逐 Tick 绕回 Uina，大范围扫描、路径与施工规划也不阻塞客户端心跳；进程间只传递调用、运行状态、查询结果与重要事件。进程创建与监管只有 Executor 一条路径，Runtime 不重复管理；语言运行时与存储引擎的选型不在本文冻结，行为边界见 [Runtime 详细设计](modules/runtime.md)。
+游戏执行环境在独立进程中运行，拥有 Driver、Runtime、World 与 Library。物理反馈与局部控制不逐 Tick 绕回 Uina，大范围扫描、路径与施工规划也不阻塞客户端心跳；进程间只传递调用、运行状态、查询结果与重要事件。进程创建与最终监管只有 Executor 一条路径：本机受管 Node 伴生进程、私有 IPC，Windows 用命名 Job 保证独占和退役，见 [Executor 详细设计](modules/executor.md)。Runtime、Program 和存储所有者各管内部生命周期，不另起进程监管服务。
 
 Minecraft 专属状态、动作与恢复都留在本 World；通用主体、模型调用、工具执行与会话记录仍归 Uina Core 与 Host。
 
@@ -157,7 +157,7 @@ Minecraft 专属状态、动作与恢复都留在本 World；通用主体、模�
 
 ## 3. LLM 交互与核心接口
 
-对 LLM 使用一个 Minecraft World façade，内部提供少量稳定入口。名称说明职责，不冻结最终 Schema。
+对 LLM 使用一个 Minecraft World façade，内部提供少量稳定入口。模型参数形状由 [Executor §2](modules/executor.md) 拥有，Library/Program 的领域字段链接各自合同。
 
 | 入口 | 输入意图与输出含义 | 身体与副作用边界 |
 | --- | --- | --- |
@@ -166,21 +166,21 @@ Minecraft 专属状态、动作与恢复都留在本 World；通用主体、模�
 | `run` | 调用能力、执行 JS，或运行已保存程序；返回终态、待决策或受理引用 | 同一执行上下文；只有控制身体的部分参与身体仲裁 |
 | `runs` | 查询进展、等待、停止、继续待决策运行，查看 Program 容量 | 查询不占身体；继续要重新检查条件并排队 |
 | `library` | 管理库：`list`/`get`/`save`/`update`/`delete`，`kind` 缺省为程序，另有蓝图与经验 | 改代码不等于执行游戏动作 |
-| `say` | 发送游戏聊天，返回发送结果及可确认范围 | 不排在身体动作后；遵守服务器实际规则 |
+| `say` | `say@1` 的便利入口，共用 Runtime 受理、结果和记录 | 不取得身体；发送边界不表示玩家已读 |
 
 顶层说明包含少量程序约定、代表性调用和能力类别，具体能力按需读取。不把完整目录塞进巨型 Schema，也不因为附近没有怪物就隐藏战斗能力。原生能力、程序、蓝图与经验进入同一发现入口，kind/callable 明确区分；只有动作能力与程序用 call，查询用 read，蓝图与经验供读取；调用时校验真实参数，不要求模型记住所有签名。
 
 ### 3.1 简单调用与长动作
 
-受理是承诺点，完成是另一事实。`run` 与 `continue` 受理后最多等待一个窗口（缺省 3 秒，可由参数或 Executor 配置调整）：窗口内取得持久终态或待决策快照就直接返回；超时返回受理引用，完成或决策随后经事件与查询到达。**超时不是失败。**
+受理是承诺点，完成是另一事实。`run` 与 `continue` 受理后最多等待一个窗口（初始 3 秒，属 Executor 内部策略）：窗口内取得持久终态或待决策快照就直接返回；超时返回受理引用，完成或决策随后经事件与查询到达。**超时不是失败。**
 
-工具等待被取消只结束这次等待，不停止运行。`observe`、`describe` 和显式 `runs.wait` 直接查询，不占身体，也不消费通知。通知可能丢失、重复或晚于查询，一律以查询到的记录为准：不重放动作，也不承诺恰好一次。
+工具等待被取消只结束这次等待，不停止运行。`observe`、`describe` 和显式 `runs.wait` 直接查询，不占身体，也不消费通知。通知可能重复或晚于查询，以固定记录为准。World 启用且持久存储/Host 最终恢复处理时，仍适用的完成通知至少持久进入会话一次，包含真实结论、摘要和完整记录读取入口；查询与 Host 回执补齐丢失的回调，通知重试不重放动作。
 
 ### 3.2 关键接口的语义
 
 | 接口边界 | 必须表达的内容 |
 | --- | --- |
-| 运行上下文 | 当前调用归属、取消、策略与任务约束、内部调用、进度与证据；内部调用不重新排顶层任务 |
+| 运行上下文 | 当前调用归属、取消、明确的任务参数、内部调用、进度与证据；内部调用不重新排顶层任务 |
 | Driver | 操作目标或输入、控制有效性、连接有效性、可观察结果；生成程序不直接获得原始 Bot |
 | 观测接口 | 查询范围、当前与历史来源、有效性；未知区块不能当空气，实体引用失效不能当击杀 |
 | 库接口 | 条目的 kind 与名字、原文、元数据与本地路径；运行中不重读文件（用入场快照） |
@@ -206,7 +206,7 @@ run({selector: "collect@1", input: {item: "oak_log", count: 32}})
 → {"requestId":"q17","kind":"accepted","run":"r17","phase":"running"}
 ```
 
-`run` 的模型侧输入是 `{selector,input?}`、`{name,input?}`、`{code,input?}` 三选一；Executor 再映射为公开接口的 Entry。代码模式使用同一调用上下文，不是让模型在运行中的脚本里再调用顶层 `run`；保存程序按名字调用（`{name:"wood_pick"}`），不必重传源码。临时代码以 input 读参数、以 mc 使用运行接口；code 必须是完整脚本，例如 `code: "async function main(mc, input) { return await mc.call('collect@1', input); }"`。
+`run` 的模型侧输入是 `{selector,input?}` 或 `{code,input?}` 二选一；selector 含 @ 调能力，裸名调库程序。Executor 再映射为公开 Entry。代码模式使用同一调用上下文，不是让模型在运行中的脚本里再调用顶层 `run`；保存程序按名字调用（`{selector:"wood_pick"}`），不必重传源码。临时代码以 input 读参数、以 mc 使用运行接口；code 必须是完整脚本，例如 `code: "async function main(mc, input) { return await mc.call('collect@1', input); }"`。
 
 requestId 由 Executor 生成并持久保存，模型不填写；重试与受理查询复用原 ID，结果未知时回执给出该引用供核对。新的 run 是新意图，相同参数不自动合并。
 
@@ -221,7 +221,7 @@ runs({op: "status", run: "r17"})
 
 ### 3.4 等待、停止与决策继续
 
-`runs.wait` 只等待记录变化，不占身体；等待超时或思考被中断都不取消游戏运行，状态未变化时不制造进度事件。
+`runs.wait` 不占身体；默认等待完成/待决策，已有报告立即返回；显式修订参数才等一次变化，未来修订拒绝。超时或思考中断不取消游戏运行。
 
 ```text
 runs({op: "stop", run: "r24"})
@@ -246,7 +246,7 @@ runs({op:"continue", run:"r30", decision:"d2",
 → {"run":"r30","phase":"queued","segment":"s2","kind":"accepted"}
 ```
 
-entry 使用与 run 相同的模型侧三选一入口，Executor 映射内部 ContinuedEntry。新根从 mc.checkpoint 读程序 JSON；原生入口不隐式消费程序检查点。queued 在这里表示新段尚未开始，不是 Program 容量队列。
+entry 使用与 run 相同的 selector/code 两种入口，Executor 映射内部 ContinuedEntry。新根从 mc.checkpoint 读程序 JSON；原生入口不隐式消费程序检查点。queued 在这里表示新段尚未开始，不是 Program 容量队列。
 
 ### 3.5 上下文成本
 
@@ -418,7 +418,7 @@ withBody 回调内等待也保留身体。waitUntil/sleep 不自动释放或重�
 
 默认自保策略可在危险时接管：按当前策略停止或挂起旧段，先完成避险；原能力有明确恢复点时重新观察并排队，否则交还主脑，不盲目重跑。主脑能读取、修改并理解当前策略，使诱敌、潜水、守卫和冒险不被隐藏反射破坏。感知采集器只发布事实，不因为看到怪物就自行成为战斗规划器。没有实际进展的重复恢复应暴露阻碍。
 
-稳定的常态策略与本次运行覆盖分开：新运行继承常态，可覆盖自保方式、可用材料和停止条件；覆盖只作用于该运行及其内部调用。修改常态只影响之后的运行；改变在途运行需显式指定，由执行侧在安全交接点应用，已派发动作不被事后改写。当前策略和来源可查询。
+具体能力通过声明的参数与缺省控制行为，例如 fight 的 stance/retreatHealth，实际有效值随 Call 保存。程序把参数传给内部调用。当前不提供泛化 Run.policy、ctx.policy 或 Executor 默认策略字典，也不新建策略注册协议；公共自保配置应由实际自保模块定义可发现的读写合同后再接入。需改变已在途行为时停止或交还，再显式新段/新运行。
 
 明确的操作者限制、服务器权限和急停约束始终生效，任务内调用不能放宽。主脑可以降低自己的保命优先级或改为诱敌，不代表获得原本没有的权限。
 
@@ -587,8 +587,10 @@ Driver 负责协议回执和本地预测来源，能力负责领域后置条件�
 | `runs/<run>/sources/<sha256>.js` | Runtime（Program 只写 `sources/`） | 确切执行字节的快照，按内容寻址、同摘要去重 |
 | `world-history.db` | World | 单 writer SQLite（WAL） |
 | `runtime.db` | Runtime | 单 writer SQLite（WAL），记录库 |
+| `exports/<sha256>.json` | Runtime | 按确切 record 导出的可再生 JSON 读取缓存，供文件能力展开大结果 |
+| `executor.db` | Uina 侧 Executor | 接入身份、原请求凭证、tool/input 尝试与 Host 回执关联、本地停止意图；不存 Run 结论 |
 
-库条目是作者的工作文件，模型可用文件能力直接读写；`runs/` 与两个 `.db` 只在各自合同内访问。程序的执行字节来自快照而不是工作文件，所以改文件不影响在途段（§9.4）。细节见 [Program §3](modules/program.md)、[Library §2](modules/assets.md)、[Runtime §5.3](modules/runtime.md)、[World §11.1](modules/world.md)。
+库条目是作者的工作文件，模型可用文件能力直接读写；`runs/` 与两个 `.db` 只在各自合同内访问。程序的执行字节来自快照而不是工作文件，所以改文件不影响在途段（§9.4）。细节见 [Program §3](modules/program.md)、[Library §2](modules/library.md)、[Runtime §5.3](modules/runtime.md)、[World §11.1](modules/world.md)。
 
 地图包含已知地形、语义地标、资源、危险、路线与未知区域；可以命名地点、复查旧地点和关联跨维度路线，但不把局部寻路器当作全世界路线规划器。
 
@@ -602,7 +604,7 @@ Driver 负责协议回执和本地预测来源，能力负责领域后置条件�
 
 ## 9. 程序、蓝图与经验复用
 
-程序格式与库操作见 [Program](modules/program.md)，蓝图与经验见 [Library](modules/assets.md)。库为普通文件；源码快照用于运行溯源，不提供依赖锁定或原环境重放。
+程序格式与库操作见 [Program](modules/program.md)，蓝图与经验见 [Library](modules/library.md)。库为普通文件；源码快照用于运行溯源，不提供依赖锁定或原环境重放。
 
 ### 9.1 工作文件与保存
 
@@ -616,7 +618,7 @@ Plan 与 Project 绑定世界、维度、落点、确切设计（名称 + 摘要
 
 ### 9.3 经验与证据
 
-Experience 是作者的判断及其适用条件，直接改文件，没有版本号；正文承载方法、反例与不确定。事实归 Runtime/World 的记录，经验只持弱链接：记录在就可复核，记录被清理就如实断链，不复制证据、不生成置信度分数，也不自动改写判断。详见 [Library §4](modules/assets.md)。
+Experience 是作者的判断及其适用条件，直接改文件，没有版本号；正文承载方法、反例与不确定。事实归 Runtime/World 的记录，经验只持弱链接：记录在就可复核，记录被清理就如实断链，不复制证据、不生成置信度分数，也不自动改写判断。详见 [Library §4](modules/library.md)。
 
 <a id="asset-flow"></a>
 
@@ -628,7 +630,7 @@ library.save({ name: "wood_collect", summary: "砍够原木；附近需要橡树
 → 读那次调用的源码快照 → 写入 programs/wood_collect.js → 下一次 run 按名字调用
 ```
 
-源码取自那次**调用**的快照（`runs/<run>/sources/<sha256>.js`，与 `programs/` 同级，见 [program.md §3.4](modules/program.md)），不复制本次 input、返回值或后代；一个段可以依次跑多个程序，所以来源必须指名到 call。运行记录已被清理则明确报 `NOT_FOUND`，不从当前文件重建历史。保存与运行是两件事：失败一次不改源码。蓝图与经验不走这条路径，见 [Library §4–§5](modules/assets.md)。
+源码取自那次**调用**的快照（`runs/<run>/sources/<sha256>.js`，与 `programs/` 同级，见 [program.md §3.4](modules/program.md)），不复制本次 input、返回值或后代；一个段可以依次跑多个程序，所以来源必须指名到 call。运行记录已被清理则明确报 `NOT_FOUND`，不从当前文件重建历史。保存与运行是两件事：失败一次不改源码。蓝图与经验不走这条路径，见 [Library §4–§5](modules/library.md)。
 
 ### 9.5 发现、检查与调用
 

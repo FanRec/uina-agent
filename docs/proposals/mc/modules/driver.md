@@ -923,25 +923,9 @@ Driver 支持 `run` 与 `safety` 两类控制来源，但不自行决定何时�
 
 ### 10.7 整体阻塞的域外监督
 
-进程树最终监管唯一归 Executor；Program 管 guest 生命周期并使用其受管创建能力，Runtime 只管停止意图/调用取消/Body 顺序，不再各建监管器。以下平台规则归 Executor 所有者实现，Driver 只要求退役证明。
+整个游戏主线程失响应时，Driver 自己的 timer/stop/finally 无法建立退役。Uina 侧 Executor 唯一监管伴生进程树；Windows 命名 Job、精确实例、启动准入、父崩溃、独占和退出确认由 [Executor §3–§5、§7](executor.md) 定义，Driver 不再维护一套监督者。
 
-采用已有概要的独立游戏 Executor 进程部署。**Minecraft World 接入的伴生进程启动/生命周期代码**在 Uina 侧持有其精确 ChildProcess 句柄、启动代次和终止权，并负责监督；这部分尚未实现，不新建 Supervisor 服务、PluginManager 或 Driver 内部守护线程。
-
-| 故障范围 | 负责处理的独立执行域 | 可确认边界 |
-| --- | --- | --- |
-| Program/计算域卡死，Driver 仍响应 | Runtime 关准入，Driver 撤销/清理，Program 退役 guest；Executor 提供受管终止 | 唯一进程树监管归 Executor，旧写源隔离有据后交接 |
-| 拥有 Bot/socket 的 Driver/Executor 整个事件循环卡死 | Uina 侧上述进程启动者的事件循环 | 关闭本地新动作准入、隔离旧 attachment，终止拥有写通道的进程及所属执行域，确认退出后才重建 |
-| 无法确认旧进程树退出、外部托管进程无可靠终止权 | 拥有者/部署侧 | 保持 faulted/控制未知，禁止启动第二个可写客户端；不把超时当已隔离 |
-
-健康探测观察 Driver 关键循环实际推进及有期限的响应；不能只由与堵塞循环无关的线程回应。超时按配置和实测认定无响应，正常工作时不设置任务总时长上限。
-
-终止不能等待该进程内部的 stop/onStop/finally 或写盘。启动者记录本地退役/故障事实并发起终止；kill 返回 true、IPC disconnect 或 socket 暂时不响应都不是退出证明，必须观察匹配启动代次的 exit/进程树退役。Runtime 在重建后依据持久记录与退役事实恢复结算，接入不冒充它修改任务结论。已派发到服务器的动作、投射物和库存后果继续保持原证据/unknown；进程退出只证明旧本地写源不再运行。
-
-监督方自身退出也不能被普通 Node spawn 当作自动回收保证。受管部署须提供进程生命周期绑定（Windows 可使用由启动者持有、不可泄漏句柄的 kill-on-close Job Object），覆盖所有持有 Bot 或控制通道的所属执行域；具体启动适配须单独验证父进程崩溃与进程树清理。若没有该保证，恢复时先核验/退役旧启动实例，无法证明则拒绝接管。这里仅落实生命周期责任，不引入通用进程管理框架。
-
----
-
-<a id="current-facts"></a>
+Driver 只消费必要保证：旧本地写源已隔离才允许新客户端/资格；kill 返回、IPC 断线或超时不是退出证明；证明不了保持 faulted/control unknown。进程退役不撤销已派发的服务端效果，Runtime 继续保留 unknown 和缺失尾部。单个 guest/共享 worker 的退役仍由 Program 与 Runtime 在本进程处理，不能每次停止都重启整个客户端。
 
 ## 11. 当前客户端事实
 

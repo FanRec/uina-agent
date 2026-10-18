@@ -57,18 +57,18 @@ Uina 源码核查基点为 `db658580aed9415d8acc0c1e2fb98cda2470cef9`，并读�
 
 ### 2.2 公开接口评审后的取舍
 
-本轮修正上一稿的三项推荐，具体合同仅在 [行为契约](contracts.md) 和 [公开接口](public-api.md) 维护：
+以下保留选型依据，现行合同在 [行为契约](contracts.md)、[公开接口](public-api.md) 和所属模块维护：
 
 - 提交 ID 由接入先生成/持久保存。当前 invocationId 可选，model 路径由 provider call.id 拼成；[Gemini 适配](../../../src/ai/providers.ts) 每个请求重置合成计数，缺原生 ID 时可在不同请求得到相同 gemini-call-1。因此不把它直接当持久幂等键，也不让模型承担 ID 管理。
-- tool_result 早于 canonical append，不能确认工具结果已正式记录。2026-10-17 修订为同一 completion 短窗口直返/后台通知；tool_handoff 只记交接意图，异步输入用 input_settled.committed。接受故障呈现缺口/同引用补报，不增 tool_result_recorded、不扫描会话，不因缺 ACK 强制全部事件。
+- tool_result 早于 canonical append，不能确认工具结果已正式记录。终态继续使用同一 completion 的短窗口直返/后台通知，但统一凭 [Host 持久回执](../runtime/delivery-receipts.md) 确认；input_settled 只触发核对，不凭交接标记放弃待交付。早期接受呈现缺口的选择已由此取代，历史见变更记录。
 - 保存程序是单一 async 入口。内部确切 ref 调用即可防止推荐别名变化，记录实际调用与原生环境即可追溯；当前没有多文件 npm 程序包需求的证据，撤回目录快照、模块作用域导入图和公共原生冲突系统。缺失确切实现明确报错。
 - 正常 API 采用同一 callable 描述与调用包装；查询/规划不另建执行器。显式身体作用域给插件和脚本闭包确定寿命，原生/程序共用等待；反馈函数留在脚本域，参数化传感和输出才经数据桥接。
 
-本次不增 Core 记录后事实。Runtime 保存一次结论，Executor 选短直返/后台输入；完成记录与交付处置、decision 历史与当前待处理分别表达。输入 committed 非模型阅读，工具交接非 canonical，render 过滤与 append 不原子；消费 CAS 防旧 decision 再执行。这是设计取舍，不是已测得的成本收益。
+Runtime 保存一次结论，Executor 选短直返/后台输入；完成记录与交付处置、decision 历史与当前待处理分别表达。通用 Host 接缝从现有活动执行/邮箱/会话记录查询事实，不增 Minecraft 专属 Core 事件。committed 非模型阅读，工具交接非 canonical；decision 消费 CAS 防旧请求再执行。这是设计取舍，不是已测得的成本收益。
 
 本轮只完成静态核实、设计反例审查与文档/类型示例检查；没有运行真实游戏或测量这些方案的速度收益。
 
-本轮必要补查：World invalidation.ensureStream 当前仅支持单一 current/history 依赖，未建混合 Watch/通用时间调度；WorldEvent.render 可返回 null。前者要求 Runtime 不能假称联合监听已可用，后者支持过滤过时 decision，但不保证 render 与 canonical 原子。`contracts/assets.ts` 里的旧 SQLite/CAS 仓库代码仍在树中，但已作废、未接入（现行 Library 是文件库，见 [Library](modules/assets.md)）；`ProgramPort`（旧的 `ProgramExecutionPort`）与容量统计仍是待实现设计。
+本轮必要补查：World invalidation.ensureStream 当前仅支持单一 current/history 依赖，未建混合 Watch/通用时间调度；WorldEvent.render 可返回 null。前者要求 Runtime 不能假称联合监听已可用，后者支持过滤过时 decision，但不保证 render 与 canonical 原子。`contracts/assets.ts` 里的旧 SQLite/CAS 仓库代码仍在树中，但已作废、未接入（现行 Library 是文件库，见 [Library](modules/library.md)）；`ProgramPort`（旧的 `ProgramExecutionPort`）与容量统计仍是待实现设计。
 
 <a id="driver-audit"></a>
 
@@ -145,7 +145,7 @@ availability-watch-probe 另检查 20→21 范围迟到、22先到不能越洞�
 
 2026-10-16 曾按"SQLite 目录 + 不可变对象包 + 发布 CAS"设计资产仓库，并核对了 Node v24.13.1 内置 SQLite 的 BLOB 绑定、Windows/NTFS 的 write-through 与 rename 语义。这些核对本身成立，但结论在 2026-10-18 被推翻：单作者、几百个文件的规模不需要版本目录；目录与内容一致性、孤儿、损坏治理反而是它自己制造的问题。
 
-现在只保留**文件约定**（`programs/`、`blueprints/`、`experiences/`、`runs/`），确切内容由使用方在入场时记录摘要固定，见 [Library](modules/assets.md) §1、§2、§7。随之删除的还有：发布幂等表、证据副本、`AssetRepository` 对象、跨仓库引用。
+现在只保留**文件约定**（`programs/`、`blueprints/`、`experiences/`、`runs/`），确切内容由使用方在入场时记录摘要固定，见 [Library](modules/library.md) §1、§2、§7。随之删除的还有：发布幂等表、证据副本、`AssetRepository` 对象、跨仓库引用。
 
 **未验证项随之改变**：不再需要验证 SQLite 事务/断电，改为验证普通文件库在多进程写入、崩溃中断与并发编辑下的行为（例如 `save` 写到一半、两个进程同时改同一文件），这一项尚未实测。
 
@@ -346,3 +346,57 @@ QuickJS/WASM 等隔离运行时只是候选。必须同时验证异步宿主调�
 原稿中的建筑扫描、蓝图导入导出与修订、几何建造、补光与临时支撑、物资规划、长期世界过程、事故恢复和跨次游玩需求仍属于目标能力。原稿中的能力名称用作覆盖线索，不构成封闭操作清单；具体执行与数据归属由概要设计集中说明。
 
 无意义的图标外链和空附件目录删除；功能无关的排版不存成新历史文档。研究记录保留重要取舍的依据，概要设计保持唯一完整方案，入口只负责导航和状态。
+
+<a id="executor-evidence"></a>
+
+## 9. Executor 设计依据（2026-10-18）
+
+§9.1–§9.3 是初稿时的定向源码/平台资料核查，当时没有运行实验；随后审查中的有限 Windows 探针见 §9.4。当前选择见 [Executor](modules/executor.md)，资料、局部观察与完整验收分开。
+
+### 9.1 当前项目真正提供的接缝
+
+| 源码事实 | 依据 | 设计影响 |
+|---|---|---|
+| World 工厂无参，宿主能力从 onStart 注入；先 onStart 再注册工具 | [world-activation.ts](../../../src/extensions/world-framework/world-activation.ts)、[types.ts](../../../src/extensions/world-framework/types.ts) | 连接/进程不在工厂启动；握手失败回滚，不留下假可用工具 |
+| stop 先关闭 scope、取消 signal 并等待 action，然后才 onStop | [world-activation.ts](../../../src/extensions/world-framework/world-activation.ts)、[lifecycle-scope.ts](../../../src/extensions/lifecycle-scope.ts) | 必须监听独立生命周期 signal，先触发停止，onStop 只汇合同一个 close |
+| createWorldTool 从 WorldDef.actions 再生成 action/params | [world-tool.ts](../../../src/extensions/world-framework/world-tool.ts)；[Minecraft 占位](../../../.uina/worlds/minecraft/worlddef/index.ts) | 直接登记六 action；当前内层 minecraft action 会形成双层 façade，需在实施时替换 |
+| ActionContext 只有 operationIdentity/signal，没有可信调用者 ID | [types.ts](../../../src/extensions/world-framework/types.ts) | Origin 不伪造 caller；按来源替换要求显式 targets |
+| emitEvent 转交 submitInput；事件允许 deferred render；input_accepted/input_settled 可订阅 | [world-activation.ts](../../../src/extensions/world-framework/world-activation.ts)、[loop.ts](../../../src/agent/loop.ts) | 事件只触发 Host 回执核对。emitEvent Promise 可能跨模型回合，不能持着接入串行区等它 |
+| accept 只拒绝已在 canonical 的重复 ID；InputQueues.add 不作相同 ID 入队去重 | [loop.ts](../../../src/agent/loop.ts)、[queue.ts](../../../src/agent/queue.ts) | 通用接缝须增加带 receipt 输入的接收去重和尝试 CAS 退役；不假设旧版同 ID 重投已幂等 |
+| 已有“typed message map + pending RPC + 错误序列化 + 状态投影”的 Worker 代理 | [Live2D proxy](../../../.uina/worlds/live2d/worker/proxy.ts)、[protocol](../../../.uina/worlds/live2d/worker/protocol.ts) | 复用组织方式；不直接搬用其取消和线程退出语义来代替独立进程、持久受理和 OS 退役 |
+| 退出登记表只按自有 PID kill，明确未覆盖宿主 taskkill/系统崩溃 | [child-process-registry.ts](../../../src/extensions/world-framework/child-process-registry.ts) | 不能拿该表证明整个 Minecraft 树退役 |
+| Executor 抛未实现；旧签名把运行管理也命名为 Executor | [executor/index.ts](../../../.uina/worlds/minecraft/executor/index.ts) | 按当前所有权拆回 Runtime 与 Uina 侧 Executor；不维持旧桩作为兼容层 |
+
+### 9.2 平台资料及推论
+
+Node 文档分别定义了 send 回调、disconnect、exit/close 和 kill；发送回调可早于子进程接收，kill 调用也不保证进程已终止。因此接入必须区分传输、受理和退出，不能由 API 返回值跳到游戏结论。[Node v22 Child process](https://nodejs.org/download/release/v22.23.3/docs/api/child_process.html)
+
+Windows Job 支持进程集合终止、默认子进程归属和最后句柄关闭时终止；命名 Job 的创建会明确报告对象已存在，其寿命覆盖相关句柄和关联进程。[Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、[CreateJobObjectW](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-createjobobjectw)
+
+一个进程可进入有效的嵌套 Job 层级；创建及关联顺序影响能否形成层级，外层 Job 限制可能使关联失败。[Nested Jobs](https://learn.microsoft.com/en-us/windows/win32/procthread/nested-jobs)、[AssignProcessToJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject)
+
+**本设计推论**：目录/账号两个命名 Job 可以合并承担独占和最终进程树监管，避免再建设锁文件租约、过期抢锁和独立守护服务。握手前不创建业务资源，先核对精确进程并关联两个 Job，再发 init；句柄不泄露给子树。它是基于官方机制的设计，尚未证明 Uina 实际原生绑定、Global 名称、外部 Job 环境和父崩溃时的所有窗口都正确。实施验收必须覆盖这些条件，不能把资料阅读记成 OS 实验通过。
+
+### 9.3 方案比较与尚可推翻的地方
+
+| 方向 | 优点 | 本轮未选的原因 |
+|---|---|---|
+| Uina 进程内直接装配 | 接线最少、无 IPC | 无法从域外终止整个游戏事件循环；违背已选的故障边界 |
+| 常驻 daemon/外部服务 | Uina 重启不必重连，独立运维 | 增加发现、认证/拥有者移交、版本升级与外部进程接管；当前无对应需求 |
+| 受管 Node 子进程 | 沿用 Node/World，独立故障域，私有连接 | 需要真实 OS 监管和启动验收；这是满足现有停止合同的主要成本 |
+
+如果真实环境已有可靠管理整个服务树的宿主，应先验证能否复用该边界，再决定是否删除本地 Job 封装。若 named Job 在目标部署不能满足独占/父退出/退出证明，应更换窄平台适配或明确该部署不可用，不能通过弱化控制事实掩盖。SQLite 接入凭证的存在来自“发送前留可恢复请求引用”和“关联 canonical ACK”两项实际合同；若以后明确删除这些承诺，才能连同账本一起删除。
+
+### 9.4 审查中的局部观察与修订边界
+
+审查回合在本机用 Python ctypes 直接调用 Win32 API，依次启动两个自有空闲 Node 子进程：第一个先加入父/子两个未命名 Job，TerminateJobObject 后确认进程退出与两级 active=0，再把第二个进程加入原来的两级 Job。两次关联与归零后复用均返回成功；探针结束清理了两个自有进程和 Job 句柄。没有连接游戏或修改产品代码。
+
+该探针没有启用 KILL_ON_JOB_CLOSE、没有 Global 命名独占、没有父进程强杀或真实 Uina 原生绑定，因此只排除了“该本机上两级 Job 归零后必然不能复用”的怀疑。完整父退出、命名对象寿命及失败启动仍在 Executor 验收范围。
+
+本轮修订依据的是设计反例：健康主线程也需能请求整树退役；旧恢复确认须绑定 attachment；未知请求须可按原键撤销；同键重试靠唯一受理；历史按固定引用读取；已有终态不能默认无限等待；大报告须有文件出口。新增摘要和文件读取形态仅为投影，权威仍是原 Runtime 记录。没有把这些推演、类型检查或上述单项 OS 探针记为 Runtime/IPC/Minecraft 已实现。
+
+### 9.5 终态交付接缝的源码依据
+
+本轮继续沿 [Subject.settleToolExchange/executeOne](../../../src/agent/loop.ts)、[pipeline](../../../src/tools/pipeline.ts) 与 [SessionStore](../../../src/session/jsonl-store.ts) 核查：tool_result 和 tool_finished 先于 canonical tool message append；磁盘 append 在 sync 后才更新常驻 canonical 状态。现有 [World 上下文](../../../src/extensions/world-framework/types.ts) 没有按交付 key 的查询/退役端口。故不能靠旧事件或接口返回推导持久接收，终态采用 [通用 Host 回执](../runtime/delivery-receipts.md)，不再把它当 Minecraft 专用补报算法。
+
+双 Job 的新增成本主要在两个资源身份/句柄，原生监管接缝仍是一个；减少为一个 Job 不能消除父崩溃/继承外部 Job 的验证要求。长期选型保留现有双 Job，拒绝跨 Uina 自动抢占，不提前建设替代锁。16 KiB 摘要不再决定完整记录是否落盘；完整响应预算与大文件出口分离。以上为终态设计判断，未进行新的 OS/Host/游戏实现验收。

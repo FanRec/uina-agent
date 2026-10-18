@@ -2,7 +2,7 @@
 
 日期：2026-10-18（Asia/Shanghai）。状态：最简设计修订后的实施规格，**尚未实现，未经过真实 Minecraft 验收**。源码中的旧 Program/Assets 类型不代表本规格已接线。
 
-本文拥有程序文件、guest API、文件库中的程序操作、QuickJS 执行与退役合同。能力签名由 [能力面](capabilities.md) 拥有；运行、身体仲裁与效果结算由 [Runtime](runtime.md) 拥有；跨模块共享值与 Driver 方法由 [公开接口](../public-api.md) 拥有；蓝图与经验见 [Library](assets.md)。每处只保留自己的权威定义。
+本文拥有程序文件、guest API、文件库中的程序操作、QuickJS 执行与退役合同。能力签名由 [能力面](capabilities.md) 拥有；运行、身体仲裁与效果结算由 [Runtime](runtime.md) 拥有；跨模块共享值与 Driver 方法由 [公开接口](../public-api.md) 拥有；蓝图与经验见 [Library](library.md)。每处只保留自己的权威定义。
 
 ## 0. 最终体验与验收目标
 
@@ -16,7 +16,7 @@ run {code:"async function main(mc, input) { ... }", input:{count:8}}
 library {op:"save", name:"wood_pick", summary:"获得指定数量的橡木原木；需要附近有树",
          from:{run:"r1", segment:"s1", call:"c1"}}
 → programs/wood_pick.js 的路径与摘要
-run {name:"wood_pick", input:{count:24}}
+run {selector:"wood_pick", input:{count:24}}
 → 从当次捕获的文件字节执行；不需要重新提交源码
 ```
 
@@ -283,7 +283,7 @@ input/output 未声明时如实显示“契约未声明”，不从一次运行�
 
 读取普通文件，使用 realpath + 路径边界检查阻止符号链接/目录联接越出库根；不能只做字符串前缀比较。硬链接不存在可由 realpath 找到的“原始外部路径”，不声称此检查可以识别它；本地作者的其他文件访问仍由既有宿主文件能力承担。IO、冲突与路径诊断对 list/get 可见。
 
-worldDataDir 继续使用既有激活约定：无 profile 时 `<cwd>/.uina/world-data/<worldName>`，有 profile 时 `<cwd>/profiles/<id>/state/world-data/<worldName>`。程序、蓝图、经验、Runtime 记录和 World 历史是同根下的邻居，见 [Library](assets.md)。
+worldDataDir 继续使用既有激活约定：无 profile 时 `<cwd>/.uina/world-data/<worldName>`，有 profile 时 `<cwd>/profiles/<id>/state/world-data/<worldName>`。程序、蓝图、经验、Runtime 记录和 World 历史是同根下的邻居，见 [Library](library.md)。
 
 ### 3.4 解析、校验、快照
 
@@ -330,7 +330,7 @@ update 的规则只有两组：
 
 ### 4.2 保存与迭代
 
-save 从有效来源头继承 tags/input/output/examples，本次显式字段覆盖，数组替换；summary 必须由本次请求给出。from 精确指定 `{run,segment,call}`，Executor 读取调用记录和不可变快照，不能从当前工作文件重建；来源被清理报 NOT_FOUND。
+save 从有效来源头继承 tags/input/output/examples，本次显式字段覆盖，数组替换；summary 必须由本次请求给出。from 精确指定 `{run,segment,call}`，执行侧 Library 适配读取调用记录和不可变快照，不能从当前工作文件重建；来源被清理报 NOT_FOUND。
 
 保存剥去来源头、写一个新头并 compileOnly，不执行代码。saved 仅在 from 路径由工具写入真实调用来源；直接 source 不冒充一次运行，旧 saved 不复制。只保存该脚本，不复制 input、输出、子程序或证据，不从一次运行推断 schema。
 
@@ -404,9 +404,9 @@ Runtime 首先封闭本范围 RPC/动作准入，撤销有关控制并取消在�
 
 ## 6. 模块边界与修订落点
 
-Program 拥有语言隔离、shim、逻辑段与 guest 退役；Runtime 拥有真实 CallFrame、Body 委托、根决策转换、记录屏障和结果；Driver 拥有实际输入、窗口操作与反馈有效期；Library 拥有文件及元数据；World 拥有观察游标、历史与证据。全部沿现有端口装配，不修改 Uina Core。
+Program 拥有语言隔离、shim、逻辑段与 guest 退役；Runtime 拥有真实 CallFrame、Body 委托、根决策转换、记录屏障和结果；Driver 拥有实际输入、窗口操作与反馈有效期；Library 拥有文件及元数据；World 拥有观察游标、历史与证据。这些游戏侧职责不向 Uina Core 引入游戏概念；可靠交付依赖尚待实现的 [Host 通用持久回执](../../runtime/delivery-receipts.md)。
 
-对应正文同步在 [Runtime](runtime.md)、[能力面](capabilities.md)、[Library](assets.md)、[公开接口](../public-api.md)、[行为契约](../contracts.md) 与 [概要](../design.md)。历史取舍只在 [changelog](../changelog.md)，不作为第二套当前规则。
+对应正文同步在 [Runtime](runtime.md)、[能力面](capabilities.md)、[Library](library.md)、[公开接口](../public-api.md)、[行为契约](../contracts.md) 与 [概要](../design.md)。历史取舍只在 [changelog](../changelog.md)，不作为第二套当前规则。
 
 ## 7. Program 公开类型与端口
 
@@ -437,7 +437,7 @@ interface ResolvedProgram {
 interface SaveRequest {
   name: string; summary: string; tags?: string[];
   input?: JsonSchema; output?: JsonSchema; examples?: ProgramExample[];
-  source: string; // Executor 负责将 from 转成确切来源字节
+  source: string; // 执行侧 Library 适配按确切 Call 取 from 源码；不绕回 Uina
   savedFrom?: { run: Ref; segment: Ref; call: Ref; digest: string; at: string };
 }
 interface ProgramMetadataPatch {
@@ -538,7 +538,7 @@ mc.read 是单目标 read RPC 的薄包装；waitUntil 的 predicate 留在 gues
 | 多等待与供料 | 至少四个合法等待 guest 存在时第五个供料程序执行；耗尽 32 时明确容量失败而非互等 |
 | 更新与保存 | 活段同名固定，新段读新文件；完整 source 替换不继承头，metadata 补丁不改脚本体，坏头只用完整源码修复；save from 对到 call，依赖不声称锁定 |
 | 部分完成 | 挖掘数与入包数不同、部分施工、未知效果都不能被包装成目标完成；父子/跨段进度不重复累计，新段不认证旧目标 |
-| 交付缺口 | tool_handoff 后崩溃不自动补报，pending 重试可重复通知；原报告可查询，不重放动作 |
+| 结果交付 | 真实 Host 持久回执才确认交付，崩溃后核对/补投可重复；原报告可查询，不重放动作，见 Executor §8 |
 | 窗口连续操作 | 同一槽位反复拿放可组合；外部相关槽/光标变化拒绝；后态未知要求重新 snapshot |
 | 隔离与故障 | 单段 stop 不终止共享 worker 的其他段；worker 强杀前封准入，影响范围/未知效果/容量均可查 |
 | 模型学习闭环 | 只给短指南和发现入口，完成试做、保存、调用、局部修改；统计查阅次数、错误恢复轮数与真实任务结果 |

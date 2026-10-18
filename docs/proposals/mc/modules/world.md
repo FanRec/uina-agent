@@ -382,17 +382,17 @@ World 验证 schema、分区、引用和 CAS。null expectedRevision 仅创建�
 
 ### 10.4 Runtime 引用不能被历史清理遗漏
 
-World 自己知道 DomainRecord 引用，却不能只据此判断外部持久证据无人使用。组合根向 Runtime、Assets 等明确的持久记录所有者注入 WorldEvidencePort：
+World 自己知道 DomainRecord 引用，却不能只据此判断外部持久证据无人使用。组合根向 Runtime 等明确持有强引用的记录所有者注入 WorldEvidencePort；Library 仅保存弱链接，不参与强保留：
 
 1. 先 retain，确保 World 证据与本地传递依赖已持久，保留关系也已提交。
 2. 再提交引用这些事实的 Runtime 不可变记录。
 3. 只有引用已经持久移除，才 release。
 
-retain 对可信 owner 幂等追加，不赋予任何身体/领域写权或读取权限，不给 Program。owner 可以是不可变运行/效果身份或 Assets 的持久发布身份，不能是临时 call scope；普通弱溯源不进入强保留。DomainRecord 的保留与修订在 World 自己的事务完成。外部模块拥有的证据由原所有者保证，World 不遍历全 Subject 会话或增加通用 Registry。
+retain 对可信 owner 幂等追加，不赋予任何身体/领域写权或读取权限，不给 Program。owner 使用持久运行/效果记录身份，不能是临时 call scope；普通弱溯源不进入强保留。DomainRecord 的保留与修订在 World 自己的事务完成。外部模块拥有的证据由原所有者保证，World 不遍历全 Subject 会话或增加通用 Registry。
 
 retain 的存在性/本地依赖校验、活动切面保留登记和实际删除必须在同一 World 发布序列协调，不能让“校验存在”和“插入保留关系”之间被清理穿过。删除先完成则 retain 明确 EVIDENCE_UNAVAILABLE；retain 或活动切面先取得保护则删除跳过，不能成功返回后引用已不存在。
 
-跨库中断可能留下孤立 retain；恢复宁可多保留，不能先误删。核对只针对明确的持久记录所有者及其记录存储端口；Assets 的 pending/unknown 请求不能因尚无资产结果判为孤立，只有该所有者已持久退役且再不可能发布，或正式引用已移除，才 release。无法确认时保留，不靠全会话扫描猜测。Assets 自身保存/来源时序见 [Assets 详细设计](assets.md)，不改变本节 World 保留/删除算法。
+跨库中断可能留下孤立 retain；恢复宁可多保留，不能先误删。核对只针对强引用所有者及其持久记录；只有确认引用不会发布或已持久移除，才 release。无法确认时保留，不靠全会话扫描猜测。Library 的普通文件写入不创建此类保留关系，见 [Library](library.md)。
 
 ## 11. SQLite 与索引
 
@@ -442,7 +442,7 @@ SQLite 的数据库快照不自动覆盖 Driver。按 v 查询不可变行/修�
 
 无引用历史可合并、压缩或清理，但必须同时检查持久 owner、DomainRecord、活动查询/分页和 Section 传递依赖。不能删掉仍被补丁依赖的基底。可先物化等价基底供以后新引用使用；已经发出的不可变引用仍保持原意义。
 
-> **条件条款（2026-10-17 审查标注）**：当前实现为 append-only，没有任何删除发生，本节清理/GC 机制（含发布门、依赖闭包复核）尚未建立且无触发条件——无删除即无误删风险。retain/release 保留关系已实现（M4 Assets 有真实消费者）；清理需求（磁盘压力/范围裁剪）首次出现时按本节激活，在此之前不预建。
+> **条件条款（2026-10-17 审查标注）**：当前实现为 append-only，没有任何删除发生，本节清理/GC 机制（含发布门、依赖闭包复核）尚未建立且无触发条件——无删除即无误删风险。retain/release 保留关系已实现（旧 M4 Assets 实现有消费者；现行 Library 不参与强保留）；清理需求（磁盘压力/范围裁剪）首次出现时按本节激活，在此之前不预建。
 
 清理改变可查询范围时保存保留边界并使有关 Watch 失效；不能删除 gap 后假装连续。引用本身及其解释所需 schema/codec/版本信息也在保留闭包内。无确定引用信息时宁可暂留，不猜“没人用了”。
 

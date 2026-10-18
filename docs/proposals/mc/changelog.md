@@ -4,6 +4,40 @@
 
 倒序：最新在上。
 
+## 2026-10-18 · Executor 终态收敛
+
+- 确定 Windows 双命名 Job：同一适配内保留目录/账号两种真实独占，不做跨 Uina 自动抢占；自己的旧实例沿现有关闭/确认退役流程重建，不维护替代锁架构。
+- 交付终态改为真实 Host 回执确认的 pending/committed。新增通用 Host 标记、状态查询和尝试退役合同；它依赖现有 Tool execution/Mailbox/Canonical history，尚未实现，不再接受旧工具交接窗口静默漏掉主动通知。
+- 直返与后台共用 key=completionRef，查询补齐丢失回调/ACK；暴露交付状态与明确恢复，Host 忙碌不触发反复入队，允许重复呈现而不重跑动作。
+- 16 KiB 仅为默认摘要预算，超出时保留 record 读取引用，不先导出；完整记录 auto 初始 256 KiB 内直接读，另可选 inline/file。文件只用于显式全文读取超预算或明确导出，缓存仍不是权威。
+- 移除普通 config.json 的 timing/transport 参数，策略由内部统一注入；执行 façade 收敛为 selector/code，裸 selector 调保存程序，Library 的 name 与内部 SourceRequest 不改。
+- 本轮完成终态合同修订与静态核对，未改产品代码、未提交；Host 接缝、IPC、原生绑定与真实游戏仍须实施验收。
+
+## 2026-10-18 · Executor 审查修订
+
+- 增加当前 launch 的可信 retirement 请求，使用优先 IPC 与 status/心跳锁存；心跳健康但隔离失败也能升级整树退役。
+- 恢复确认同时绑定 attachment/gateRevision；带确认的调用不重建实例，不把旧确认移交新连接。
+- stop 同一入口支持 Run 或原动作 requestId。撤销屏障、受理、continue 与调度启动在 Runtime 闭合；未受理撤销不虚建 Run。
+- 同键准备 singleflight 与受理唯一约束支持明确重试，删除等待旧 attachment 退役的限制和发送前独立 attempted 提交；自动恢复仍只查证、不重发动作。
+- readRecord 按不可变 record/completionRef 精确读原件，身份 Ref 固定最新截面；大记录导出 Runtime 所有的普通 JSON。报告 header 与正文形态分开，一份载荷失败不阻塞其他通知。
+- 默认 wait 等完成/待决策并立即返回已有报告；显式 afterRevision 等变化，未来修订拒绝。控制/列表使用有完整性标记的小投影。
+- 移除泛化 Run/Context policy 与 Executor defaultPolicy，保留具体能力参数及其有效值记录；校正 Uina 本地短窗口、取消与 void/null wire 规则。
+- 本轮仅修改设计文档及静态检查材料；未实现上述协议、数据表、进程监管或游戏链路。
+
+## 2026-10-18 · Executor 详细设计
+
+- 增加 Executor 权威正文：一层六 action façade、请求与记录展开、配置、启动/关闭、受理查证和明确重试、状态与错误、BodyEndpoint、通知和故障推演。
+- 采用 Uina 管理的 Node 伴生进程及私有 IPC；首个支持平台为 Windows。命名目录/账号 Job 合并独占、父退出绑定和进程树退役，不另建守护服务、锁文件抢锁或 Runtime 副本；实际 OS 行为待验收。
+- 接入凭证独占 executor.db；Runtime 仍唯一拥有受理、执行与结算。say 复用 say@1 的 Runtime 路径；save from 在执行侧取快照，不搬源码绕回 Uina。
+- 统一短窗口、input_accepted/input_settled、允许的通知重复/缺口；pendingDeliveries 改为分页引用，避免搬运整份结果集。无 Core 新事件、Host journal 扫描或动作自动重放。
+- 查询 descriptor 补 examples，精确描述复用作者示例；无示例的文件条目明确缺失，不凭空猜参数。公开合同中的旧 world.status 名称对齐现行 world@1。
+- Runtime/Driver/公开合同改为链接所属算法；概要、导航和旧 LEAD 同步。仅修改文档，未实现进程监管、IPC、接入账本或真实 Minecraft 链路。
+
+## 2026-10-18 · Library 命名统一
+
+- 将 `modules/assets.md` 改名为 `modules/library.md`，更新文档链接与现行模块名称，不保留旧文件别名。
+- 清除受理和 World 保留合同中的旧资产发布语义；Library 仍是普通文件库，只保存弱链接，不参与证据强保留。旧 Assets 产品代码不在本轮修改范围内。
+
 ## 2026-10-18 · Program 最简设计修订
 
 本轮仅修订文档，以下规则取代此前冲突裁决；产品实现、历史微基准及真实 Minecraft 验收均未更新。
