@@ -3,9 +3,9 @@
  * 帧投影(convertToLlm) → transformContext 链（compaction 裁剪 → 项目扩展注入 → tail 相位尾帧）
  * → 预算门 → 协议校验。
  *
- * 以认知扩展的占位 hook（项目扩展注入 [记忆] 块）验证：
+ * 以项目扩展占位 hook（注入上下文块）验证：
  * 1. compaction 先于项目扩展 hook 运行（后者收到的是已裁剪、已带摘要的消息）；
- * 2. 记忆块注入在摘要之后、tail 尾帧之前；
+ * 2. 上下文块注入在摘要之后、tail 尾帧之前；
  * 3. 帧组原子性保持（最新外部输入以完整三消息组到达 Provider；多组帧并存合法）；
  * 4. 请求级预算门通过（远期历史被裁剪，回合不因超预算失败）。
  *
@@ -16,8 +16,8 @@ import { UinaTestHarness } from "./harness/host/harness.js";
 import { Scenario } from "./harness/provider/scenario.js";
 import { openJsonlSession } from "../src/session/jsonl-store.js";
 
-describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展（认知占位）", () => {
-	test("超预算历史下：摘要先于记忆块、帧组原子、预算门通过", async ({ env }) => {
+describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展上下文注入", () => {
+	test("超预算历史下：摘要先于上下文块、帧组原子、预算门通过", async ({ env }) => {
 		const scenario = new Scenario({ id: "mock", name: "mock", contextWindow: 50_000 });
 		scenario
 			.when((req) => (req.messages[0]?.content ?? "").includes("上下文摘要助手"))
@@ -27,9 +27,9 @@ describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展（
 			{ kind: "finish", reason: "stop" },
 		]);
 
-		// 认知占位扩展：记录收到的消息是否已带摘要/仍含远期历史，并在末尾注入记忆块。
+		// 占位扩展：记录收到的消息是否已带摘要/仍含远期历史，并在末尾注入上下文块。
 		await env.writeExtension(
-			"memory-standin.mjs",
+			"context-standin.mjs",
 			`
 			export default function activate(uina) {
 				uina.onHook("turn.transformContext", (projection) => {
@@ -42,7 +42,7 @@ describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展（
 							? contents.some((c) => c.includes("第0问"))
 							: previous?.sawFarHistory ?? contents.some((c) => c.includes("第0问")),
 					};
-					return { projection: { ...projection, messages: [...projection.messages, { role: "user", content: "[记忆] 认知占位块" }] } };
+					return { projection: { ...projection, messages: [...projection.messages, { role: "user", content: "[project context] 占位块" }] } };
 				});
 				// tail 相位：注入一个可辨识的尾帧（模拟视口/具身快照），验证恒排在非 tail 注入之后。
 				uina.onHook("turn.transformContext", (projection) => {
@@ -74,14 +74,14 @@ describe("Host 装配顺序合同：帧投影 → compaction → 项目扩展（
 			expect(probe?.sawSummary).toBe(true);
 			expect(probe?.sawFarHistory).toBe(false);
 
-			// 2. 摘要紧随 leading system；记忆块在摘要之后；tail 尾帧在记忆块之后且位于消息组末尾。
+			// 2. 摘要紧随 leading system；上下文块在摘要之后；tail 尾帧在上下文块之后且位于消息组末尾。
 			expect(contents[1]?.startsWith("[历史摘要] ")).toBe(true);
-			const memoryIndex = contents.findIndex((c) => c.includes("[记忆] 认知占位块"));
-			expect(memoryIndex).toBeGreaterThan(1);
-			expect(contents[memoryIndex + 1]).toContain("[TAIL] 瞬态尾帧占位");
+			const contextIndex = contents.findIndex((c) => c.includes("[project context] 占位块"));
+			expect(contextIndex).toBeGreaterThan(1);
+			expect(contents[contextIndex + 1]).toContain("[TAIL] 瞬态尾帧占位");
 			expect(contents[contents.length - 1]).toContain("[TAIL] 瞬态尾帧占位");
-			// systemPrompt 纯净性：记忆块与尾帧文本都不得进入 system。
-			expect(contents[0]).not.toContain("[记忆]");
+			// systemPrompt 纯净性：扩展上下文块与尾帧文本都不得进入 system。
+			expect(contents[0]).not.toContain("[project context]");
 			expect(contents[0]).not.toContain("[TAIL]");
 
 			// 3. 帧组原子：最新外部输入「跑一轮」以完整帧组到达（通知 + 合成调用 + 回执）。

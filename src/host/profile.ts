@@ -1,5 +1,5 @@
 /**
- * SubjectProfile：主体身份、资源根解析与进程级独占锁（认知扩展阶段 A / M1）。
+ * SubjectProfile：主体身份、资源根解析与进程级独占锁。
  *
  * 不变量：
  * 1. subjectId ↔ 目录绑定不可变：profile.json 的 subjectId 必须与目录名一致；

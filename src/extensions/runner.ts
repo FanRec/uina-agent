@@ -51,7 +51,7 @@ export interface ExtensionAPI {
 	 * options.tail 仅对 turn.transformContext 有语义（尾部相位，见 ExtensionHost.onHook）。
 	 */
 	onHook<K extends HookName>(hook: K, handler: HookHandler<K>, options?: { tail?: boolean }): () => void;
-	/** 主体绑定（认知阶段 A）：profile 模式下的只读资源根；非 profile 模式为 undefined。
+	/** 主体绑定：profile 模式下的只读资源根；非 profile 模式为 undefined。
 	 * 扩展从这里拿路径，不从模型参数或 cwd 猜测——隔离边界由 Host 装配保证。 */
 	readonly subject: { subjectId: string; sessionId: string; memoryRoot: string; stateRoot: string } | undefined;
 	/** 主线 hydrated entries（canonical only）：capability 读对话历史的通道。 */
@@ -139,7 +139,7 @@ export interface ExtensionRunnerOptions {
 	session?: SessionQuery;
 	cwd: string;
 	extensionPaths?: readonly string[];
-	/** 主体绑定（认知阶段 A/C）：提供时 pi.subject 暴露绑定的身份与资源根；缺省 pi.subject 为 undefined。 */
+	/** 主体绑定：提供时 pi.subject 暴露绑定的身份与资源根；缺省 pi.subject 为 undefined。 */
 	subjectBinding?: { subjectId: string; sessionId: string; memoryRoot: string; stateRoot: string };
 	models?: ExtensionModelAccess;
 	tools: ToolBroker;

@@ -56,7 +56,7 @@ export interface UinaHostOptions {
 	/** 投影 Replacement 缝（单 owner = Subject 实例；组合根经此提供，宿主可注入）。 */
 	projection?: ProjectionPolicy;
 	systemPrompt?: string;
-	/** 主体 profile（认知阶段 A）：提供时 session/settings/扩展资源绑定全部从 profile 解析。 */
+	/** 主体 profile：提供时 session/settings/扩展资源绑定全部从 profile 解析。 */
 	profile?: SubjectProfile;
 	/** 诊断出口：消费者尚未接入时也必须可见，绝不静默吞掉。 */
 	onError?: (text: string) => void;
@@ -205,7 +205,7 @@ export class UinaHost {
 			const resolvedSystemPrompt =
 				options.systemPrompt ?? (personaText ? `${baseSystemPrompt}\n\n${personaText}` : baseSystemPrompt);
 			const extensionHost = new ExtensionRunner({
-				// 主体绑定（认知阶段 A）：扩展经 pi.subject 拿到绑定的资源根；无 profile 时缺省
+				// 主体绑定：扩展经 pi.subject 拿到绑定的资源根；无 profile 时缺省
 				// undefined——旧扩展与测试零影响。
 				subjectBinding: options.profile
 					? {

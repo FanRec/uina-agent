@@ -162,6 +162,8 @@ Anthropic/Gemini 的 `providerReplay` 保存 adapter 自有的有序块与签名
 
 Job/Subagent/Cognition 扩展已于 2026-10-06 应要求整体移除：后台命令执行、子代理与长期记忆工具不复存在，`exec_command` 仅保留前台模式；会话 journal 中历史任务效果事实（task.dispatch）只作为不可解释的聚合事实保留。
 
+Host 级 SubjectProfile 仍可通过 `--profile` 显式启用，为主体绑定身份、session/settings 路径和资源根；`pi.subject` 仍供 World Framework 与 Voice 偏好存储使用。它不装配 Cognition，也不提供长期记忆整理能力。
+
 ## 进程生命周期与信号
 
 进程级信号由 `cli/app.ts` 安装并在 shutdown 时卸载；`ui/core/terminal.ts` 只提供终端恢复，导入它不会注册任何进程监听器。SIGINT 保持普通中断语义（Node 会把信号名作为监听器首参，因此必须包一层零参闭包，否则信号名会被当成 force 标志）；SIGTERM（以及非 Windows 的 SIGHUP）先执行完整关闭（等待活动轮次、扩展 teardown、session flush、杀掉已追踪的分离子进程），再以 143/129 退出。stdout/stderr 的 EPIPE 被忽略，其余写错误继续抛出。
@@ -232,5 +234,6 @@ Idle、thinking 和 sway 使用现有作者曲线与独立随机流；随机仅�
 2026-10-12 特效框架（染色/后处理）：协议层 tintModel/updatePostProcessing/readPostProcessing、段级 effects 契约与运行时捕获-分发-三向归位落地（a2ca3b8）。审查修复补齐：目录 effects 绑定期校验回归（非法通道/渐变、末段携带、空载荷、纯效果段合法）、所有权守护用例 E（无 effects 特技零 tint/post 请求）、假设备后处理状态模拟使恢复读回真实核对、恢复结算增加具名 preset 一致性核对、效果派发措辞纠正为同段顺序派发、catalog 空间校验块缩进归位。19 个 Live2D 测试文件、157 项全部通过，`pnpm typecheck` 通过；CRAP gate 未取得 coverage（沙箱全量跑批有既有失败），真实 VTS 视觉验收未做。注意：`.uina/**` 在 biome format 门禁之外（files.includes 未纳入），live2d 代码格式依赖手工纪律。
 
 旧版 2026-10-10 Live2D 实施与验证记录已归档至 [Live2D 旧实现记录](archive/live2d-legacy-implementation-notes-2026-10-10.md)；当前合同与未验证边界见 [Live2D World 运行合同](live2d/live2d-world-runtime.md)。
+
 
 2026-10-19 MO 自然表演升级：当前目录已包含动作、日常变体、姿态/表情与自然背景短句，旧的空目录记录仅为历史。Runtime 对有限 idle/thinking/ambient 每段重新 Bake，最近两次选择排除，背景终点连续接续；显式状态优先，前景增量保留当前背景姿态。既有可听电平接缝内增加稀疏头身强调，闭眼/姿态/前景/thinking/ambient 抑制，生命周期清除旧候选。`mo:preview -- --scenario idle|speech|mixed [--offline]` 提供固定 seed 场景；模拟电平不能代替实际 TTS。真实 MO/VTS 已做短时连接、输入接受与少量画面快照检查，最终连续录像及真人质感验收尚未完成。完整合同见 docs/live2d/live2d-world-runtime.md。

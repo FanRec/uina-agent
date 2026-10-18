@@ -10,7 +10,7 @@ export interface ParsedArgs {
 	readonly print: boolean;
 	/** 临时覆盖当前会话使用的模型（如 openai/gpt-4o、deepseek-r1） */
 	readonly model?: string;
-	/** 主体 profile ID（认知阶段 A）：提供时 session/settings/扩展资源绑定到 profiles/<id>/。 */
+	/** 主体 profile ID：提供时 session/settings/扩展资源绑定到 profiles/<id>/。 */
 	readonly profile?: string;
 	/** 是否启用纯内存会话（不加载历史、不持久化落盘） */
 	readonly noSession: boolean;

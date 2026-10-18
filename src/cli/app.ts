@@ -120,7 +120,7 @@ export async function runApp(rawArgs: readonly string[] = process.argv.slice(2))
 	};
 
 	// —— 宿主：唯一的主体所有者。它不认识 TUI。 ——
-	// 主体 profile（认知阶段 A）：--profile 提供时解析身份与资源绑定并取得独占锁；
+	// 主体 profile：--profile 提供时解析身份与资源绑定并取得独占锁；
 	// 不传时保持原有启动与数据位置。profile 存在时 sessionPath 从 profile 取。
 	let profile: ReturnType<typeof resolveProfile>;
 	try {

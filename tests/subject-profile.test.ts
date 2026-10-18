@@ -1,5 +1,5 @@
 /**
- * SubjectProfile：主体身份、路径解析与独占锁（认知扩展阶段 A / M1+M2）。
+ * SubjectProfile：主体身份、路径解析与独占锁。
  *
  * 核心不变量：
  * 1. subjectId ↔ 目录绑定不可变；路径解析抗目录穿越；
@@ -206,9 +206,8 @@ describe("Host 装配：persona 接线", () => {
 
 			const systemMsg = scenario.calls[0]?.messages.find((m) => m.role === "system");
 			const systemText = String(systemMsg?.content);
-			// persona 空白 = 不追加身份段：事件帧基底原样在前；cognition 记忆协议已随扩展移除。
-			expect(systemText.startsWith(createEventFrameProfile().systemPrompt)).toBe(true);
-			expect(systemText).not.toContain("记忆纪律");
+			// persona 为空时不追加身份段，事件帧基底保持原样。
+			expect(systemText).toBe(createEventFrameProfile().systemPrompt);
 			// 若空白 persona 被错误追加，宿主装配处会留下连续三个以上换行。
 			expect(systemText).not.toContain("\n\n\n");
 		} finally {
