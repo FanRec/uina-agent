@@ -7,8 +7,8 @@
 | # | 裁决 | 放弃的机制与理由 |
 |---|---|---|
 | 1 | 库 = `<worldDataDir>` 下的普通文件，三类条目在同一个根目录下、各自按 kind 命名 | SQLite 资产目录。目录要索引的查询（按名、按 kind、按 tag）在几百个文件规模上 `readdir` 就够；一旦有目录，就要处理目录与文件的一致性、孤儿、损坏，而这些正是它要解决的问题之外的新问题。 |
-| 2 | 没有不可变版本、没有发布、没有 CAS | Revision/head/`expectedRef`/`intent`/operations 幂等表。版本服务的三个需求（复现、并行变体、依赖不漂移）在单作者场景里分别由"使用方记录 digest""复制文件""编辑即意图"覆盖，参见 program.md §4.6。 |
-| 3 | 确切内容由使用方在入场时固定（程序快照、工程记录 digest），库不冻结 | 不可变包保存"发布时的字节"。工程/运行自己记录它实际用的那份字节的摘要，比"发布一个版本"更直接，也不阻断作者继续编辑。 |
+| 2 | 没有不可变版本、没有发布、没有 CAS | Revision/head/`expectedRef`/`intent`/operations 幂等表。快照支持源码追溯/恢复，复制文件支持变体，编辑影响之后的调用；这些不提供依赖锁定或原环境重放。接受默认使用当前文件的取舍，见 Program §3.5。 |
+| 3 | 确切内容由使用方在入场时固定（程序快照、工程记录 digest），库不冻结 | 不可变包保存"发布时的字节"。工程/运行自己记录它实际用的那份字节的摘要，保留当次材料，也不阻断作者继续编辑；不能从 digest 推断完整依赖已保存。 |
 | 4 | 证据是弱链接，不复制 | `EvidenceCopy`/`EvidenceExportPort`/`attachEvidence`。事实归 Runtime/World；库里的判断引用记录 id，记录被清理时如实出现断链，而不是在库里养一份可能过期的副本。 |
 | 5 | 文本由 `library` 写，字节由文件工具放 | 通过 JSON 工具搬运二进制（base64）。蓝图原件几十 KB 到几十 MB，宿主已有文件能力；库只负责登记元数据、读摘要、读出字节流。 |
 | 6 | 蓝图三分保持：Raw / Target / Project | 把原件、语义、工程现场混成一个对象。三分法是原文最有价值的部分，原样保留（§3）。 |
@@ -24,7 +24,7 @@
       target.json                    # 可选：Construction 解释后的目标语义
   experiences/<name>.md              # 经验笔记
   world-history.db                   # World 历史（World 所有）
-  runtime.db                         # Runtime 记录（Runtime 所有，runtime.md §4.3）
+  runtime.db                         # Runtime 记录（Runtime 所有，runtime.md §5.3）
   runs/<run>/sources/<sha256>.js      # 源码快照（Runtime 所有，Program 只写 sources/；按内容寻址）
 ```
 
@@ -98,7 +98,7 @@ Target 的四态由 Construction 定义并验证，Library 不重写这些语义
 反例：在雷暴天气的屋顶上，苦力怕是被闪电引来的，撤离路线要先看下方。
 ```
 
-- 解析与程序共用同一段逻辑：找首行 `uina` 标记、`JSON.parse` 其后内容；坏 JSON → `HEADER_INVALID`，没有头合法（`summary: null`），正文照样可读。
+- 解析与程序共用同一段逻辑：找首行 `uina` 标记、`JSON.parse` 其后内容；坏 JSON 标 headerError，正文照样可读；experience 是供阅读的判断，不参与程序输入校验。program 的坏头运行拒绝与修复规则单独按 Program §3.2。没有头合法，summary=null。
 - `applies` 是给检索用的粗分类（可多个），不是 schema 约束；正文承载适用条件、方法、反例与不确定。
 - 正文就是散文。判断的强度（猜测/已验证/有争议）写在句子里，不用枚举字段——字段会逼出虚假精确，而读它的是模型。
 
@@ -117,7 +117,7 @@ Target 的四态由 Construction 定义并验证，Library 不重写这些语义
 | `list` | `{kind?, text?, tag?, limit?}` | 扫描三类目录，返回 `[{kind, name, summary, tags, updatedAt, size?, digest?, path?, aboutError?, headerError?}]`，按 `updatedAt` 倒序，默认 50 条；`digest` 只对程序与文本条目计算，蓝图给 `size` |
 | `get` | `{kind, name}` | program → 源码（含头注释）；blueprint → `{about, files, digest, size, target?}`；experience → `{header, text}` |
 | `save` | `{kind, name, ...}` | program：从运行段或源码创建（program.md §4）；blueprint：登记已放入的 `design.*` 并写元数据；experience：写文本与头注释。已存在 → `NAME_EXISTS`，改用 `update` |
-| `update` | `{kind, name, ...}` | 改文本/元数据；program 可连源码一起换（program.md §4.1），blueprint 的 `design.*`/`target.json` 字节不在本操作内替换 |
+| `update` | `{kind, name, ...}` | 改文本/元数据；program 的完整 source 替换与 metadata 补丁互斥（program.md §4.1），blueprint 的 `design.*`/`target.json` 字节不在本操作内替换 |
 | `delete` | `{kind, name}` | 删条目（program/experience 删文件，blueprint 删目录）。不删 `runs/` 快照 |
 
 规则：
@@ -126,7 +126,7 @@ Target 的四态由 Construction 定义并验证，Library 不重写这些语义
 - `save` 对蓝图要求 `design.*` 已存在且唯一（否则 `BLUEPRINT_SOURCE_MISSING` / `BLUEPRINT_AMBIGUOUS`）。
 - 三种 kind 都可 `delete`；删除不改变既有运行/工程记录，只让后续引用失败。
 - 不提供 `rename`：改名 = `save` 新名 + `delete` 旧名。
-- 不提供 `search` 排序与评分：子串 + tag 过滤足够；"哪个真的有用"由运行记录聚合回答。
+- 检索使用名称/摘要子串与 tag，不建立评分；有效性由模型结合运行记录判断。
 
 ## 6. 错误与验收
 
@@ -137,7 +137,7 @@ Target 的四态由 Construction 定义并验证，Library 不重写这些语义
 | `NAME_INVALID` | 名字不合规 |
 | `NAME_EXISTS` | `save` 撞名 |
 | `NOT_FOUND` | 条目不存在 |
-| `HEADER_INVALID` | 写入时 `uina` 头/about.json 不合法；读取时只记 `headerError`（`summary: null`），不阻塞正文 |
+| `HEADER_INVALID` | 库写入的头/schema/about.json 不合法；读取保留原文与诊断；程序执行另报 PROGRAM_INVALID(reason=header)，不静默忽略输入合同 |
 | `BLUEPRINT_SOURCE_MISSING` | 蓝图没有 `design.*` |
 | `BLUEPRINT_AMBIGUOUS` | 蓝图有多个 `design.*` |
 | `BLUEPRINT_CORRUPT` | 蓝图字节读不出或摘要与记录不符 |
@@ -165,14 +165,19 @@ Target 的四态由 Construction 定义并验证，Library 不重写这些语义
 | `packageDigest` / `inputDigest` / `manifestDigest` 链 | 程序用源码摘要、蓝图用文件摘要即可；包摘要服务的是发布事务，这里没有发布 |
 | `PublishRequest/Result`、`expectedRef`、`intent`、CAS | 防的是并发发布合并；单作者编辑即意图 |
 | `operations` 幂等表 | 发布幂等的前提是发布；没有发布就没有这张表 |
-| `Revision`/`head`/`previousRef`/`derivedFrom` | 复现由使用方记录 digest 承担，并行变体由复制文件承担 |
+| `Revision`/`head`/`previousRef`/`derivedFrom` | 执行源码追溯由使用方快照承担，并行变体由复制文件承担；没有依赖锁定 |
 | `EvidenceCopy`/`attachEvidence`/`EvidenceExportPort` | 弱链接 + 记录所有者已足够；副本会过期，且要有 GC |
 | `ProgramSourcePort`/`publishFromRun` | 由 `library.save {from:{run,segment,call}}` 直接读那次调用的快照（program.md §4.2） |
 | `ReadLibrary`/`WriteLibrary`/`AssetRepository` | 脚本不需要仓库对象；需要的是 `build.plan@1`/`build@1` 这类能力 |
 | `inspect` 的 `verified/corrupt/unknown` 状态机 | 读到就报事实（摘要、长度、能否解析），没有"检查"这一独立动作 |
 | `RepositoryRef`、`name@version` | 库是本地的；跨仓库共享不在需求里 |
 
-## 8. 与 program.md 的分工
+## 8. 发现与程序合同分工
+
+describe 的统一发现覆盖能力、程序、蓝图和经验，返回 kind/callable/name/summary/tags/path；蓝图与经验 callable=false，精确读取需要 kind，不进入 mc.call。元数据直接来自文件，不复制索引或自动学习评分。文本匹配、排序及限额由 Program §4.3 统一规定。
+
+program 的 input/output/examples 均可选；完整描述提供 schema 或“未声明”及可复制调用示例。保存成功不等于运行成功，经验文件存在也不等于已经影响后续行为；用实际“写入→发现→使用→纠正”验证。
+
 
 - `programs/` 的形态、执行、保存规则 → `program.md`。
 - 三类共享的命名、路径、错误与 `library` 工具形状 → 本文（program.md §4.1 引用这里的 kind 约定）。
@@ -183,5 +188,5 @@ Target 的四态由 Construction 定义并验证，Library 不重写这些语义
 
 1. **蓝图的 `formatHint`**：现在靠扩展名。是否要允许 `about.formatHint` 覆盖（例如 `.schem` 的不同 DataVersion）由 Construction 决定。
 2. **区域导出**：把现场区域变成 `design.*` 的能力归 Construction/Driver；本文只规定落地位置与元数据。
-3. **经验的检索质量**：只有 `@applies` 与子串匹配；如果经验积累到几百条，可能需要按场景自动挑几条进上下文——那属于投影层策略，不在库里做索引。
+3. **经验的检索质量**：只有 `@applies` 与子串匹配；如果经验积累到几百条，可由主脑按任务发现读取；若后续增加自动投影，应独立验证，不在库里预建学习队列。
 4. **`target.json` 的版本**：Target schema 由 Construction 版本化；库只存 schema 身份与字节，schema 升级后的迁移策略归 Construction。

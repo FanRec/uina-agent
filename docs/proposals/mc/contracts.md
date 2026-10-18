@@ -117,17 +117,17 @@ Minecraft 通过 `ctx.expose("body.endpoint:" + bodyId, endpoint)` 加入现有�
 
 ## 4. 运行记录 ↔ 直返与 World 输入递送
 
-Runtime 在每次段交还或 Run 终结的同一事务写固定 report/record、completionRef 与 pending disposition，结论不随交付渠道复制；每段最多一份 decision、每 Run 最多一份 terminal。待决策时 stop 可另生 terminal 而不改原 decision，显式续段产生新段/报告。ExecutorClient.submit/continue 返回唯一 RunReply 联合：先持久受理，配置短窗口内取得本次提交报告则返回 result（含 completionRef），超时返回 accepted；waitSignal 取消只结束等待，已受理则返回 accepted/当前已知事实，Run 继续。接入同实例串行协调窗口选择和后台 drain，窗口有效时暂缓该 segment 通知，不建跨库 claim/租约。记录库落在该 World 数据根的 `runtime.db`，调用级源码快照落在同根 `runs/<run>/sources/`（按 sha256 内容寻址）（见 [Runtime §4.3](modules/runtime.md)）；快照是文件证据，记录只存摘要与路径，两者不构成跨介质事务。
+Runtime 在每次段交还或 Run 终结的同一事务写固定 report/record、completionRef 与 pending disposition，结论不随交付渠道复制；每段最多一份 decision、每 Run 最多一份 terminal。待决策时 stop 可另生 terminal 而不改原 decision，显式续段产生新段/报告。ExecutorClient.submit/continue 返回唯一 RunReply 联合：先持久受理，配置短窗口内取得本次提交报告则返回 result（含 completionRef），超时返回 accepted；waitSignal 取消只结束等待，已受理则返回 accepted/当前已知事实，Run 继续。接入同实例串行协调窗口选择和后台 drain，窗口有效时暂缓该 segment 通知，不建跨库 claim/租约。记录库落在该 World 数据根的 `runtime.db`，调用级源码快照落在同根 `runs/<run>/sources/`（按 sha256 内容寻址）（见 [Runtime §5.3](modules/runtime.md)）；快照是文件证据，记录只存摘要与路径，两者不构成跨介质事务。
 
 completionRef 是执行报告引用，不等于 Run 终态凭证。唯一公开联合 CompletionReport 以 reportKind=terminal 对应 snapshot.phase=finished；reportKind=decision 对应 awaiting_decision，仅表示当前段交还。kind=result 也不自动表示整个 Run 成功/终结；消费 decision 后产生新段，待决策时 stop 另生 terminal，旧报告永久保留。
 
-直返前先在 Executor 已有请求记录固定 request/segment/completionRef，再 settleDelivery(tool_handoff)，它只表示选择/准备交工具返回，抑制正常通知，不证明 canonical。桥接完成响应交接后本地关闭请求。恢复只枚举本 owner 未结请求、按原键 lookup 对账；completionRef 必须属于原提交段。input_committed/过时 decision 关闭本地项，pending 走正常 drain；tool_handoff 且 eligible 则用 (requestId, completionRef) 唯一键建立一个持久补报意图，重启续用，按既有 attempt/committed 流程重试，不回退 disposition。无需扫描 Host 会话或历史已关闭请求。一个补报意图仍可因 ACK 丢失重复呈现，绝不重做动作；本地已关闭但最终交接丢失的结果仍可查询，不承诺严格至少一次/恰好一次。标记失败可返已提交快照但通知可能重复；不增 Core tool_result_recorded。
+直返前 settleDelivery(tool_handoff)，成功后抑制后台通知，不证明 Host 已记录结果或模型已读。该标记之后、响应返回前崩溃可能漏通知，重启不自动补报；原 requestId/run 仍能查询同一报告。标记失败时可返回已提交快照，但该项仍 pending，可能重复通知。
 
 后台 pendingDeliveries 派生 eligible：finished 可投；decision 仅仍未消费且为当前待处理项、未被停止/终结时可投。历史 decision/报告不可变，过时请求不再主动唤醒。emitEvent 前和 deferred render 前复查 readDelivery；过时或状态不可核实时 render=null，前者不再 eligible，后者保留重试；render 不消费 decision/写 ACK。
 
 接入持久保存 attempt inputId→completionRef，正常每项一个活动 attempt。input_settled.committed 后 settleDelivery(input_committed)，只证明 canonical，不证明模型已读。null/retired/missing_render 不作 ACK；失败退避、新 attempt 重试，健康时定时/连接恢复推进。canonical 已写而 ACK 丢失可同引用补报，绝不重发游戏动作。停用暂停递送，记录可查；主动查询不改变 disposition。
 
-render 检查和 Host append 不原子：检查后 continue 消费 decision，旧文仍可能进入 canonical。报告注明确切 decision/记录时事实，continue 消费 CAS 返回 DECISION_STALE 阻止重复行动。不以历史不可变为由主动重投已过时请求，也不宣称完全消除最后展示竞态。完整算法见 [Runtime §13](modules/runtime.md#13-同一-completion短时直返与后台递送)。
+render 检查和 Host append 不原子：检查后 continue 消费 decision，旧文仍可能进入 canonical。报告注明确切 decision/记录时事实，continue 消费 CAS 返回 DECISION_STALE 阻止重复行动。不以历史不可变为由主动重投已过时请求，也不宣称完全消除最后展示竞态。完整算法见 [Runtime 结果交付](modules/runtime.md#delivery)。
 
 <a id="control"></a>
 
@@ -167,29 +167,25 @@ Driver/Executor 整个事件循环阻塞时，域外终止责任由 Uina 侧 Min
 
 ### 5.3 生成程序及反馈
 
-> 程序侧 API 以 [program.md §3](modules/program.md) 为准：没有 `mc.wait`/`checkpoint` 读取，等待是 `mc.waitForChange(targets, predicate, {afterMs})` 与 `mc.sleep`；本节其余是反馈帧与执行域的跨模块约束。
+程序 API 见 [Program](modules/program.md)：查询用 read，动作/程序用 call，等待用 waitUntil，续段根只读 mc.checkpoint。body.call 显式委托后，子上下文普通 call 传播同一 BodyScope，withBody 重入；无委托的外部上下文不升级，上层写句柄在委托期间挂起。
 
-客户端心跳、控制核验、停止处理、必要自保在驱动执行域；生成程序和反馈函数在可独立终止的域。桥接只传快照、调用及带资格的输出；不跨 Uina 传逐 Tick 函数，不暴露 Bot。宿主中的大查询、寻路计算也不能阻塞驱动关键路径。
+客户端心跳、控制核验、停止和自保不运行在 guest 同步计算线程。Program 在共享 worker 承载独立 QuickJS runtime；逻辑 Segment 不独占线程，宿主重计算仍须切片/卸载。单段关闭退役所属 guest，不能 terminate 共享 worker；故障升级先封闭该 worker 所有在册调用并撤销控制，再终止并核验 exit，公开受影响范围与未知效果，最终隔离归 Executor。
 
-自保若由当前复合控制器统一协调，沿用其资格；独立紧急控制器先使旧资格失效并经过相同停止屏障，再取得 kind=safety 的新资格。介入事件/效果关联被中断运行，不建立第二套任务队列；原能力有明确恢复点才可重新观察并排队，否则退役旧段并交还主脑。驱动里的自保没有旁路，急停/owner_lost/World 停用门均禁止它取得新资格。
+自保由当前复合控制器协调时沿用资格；独立介入先使旧控制失效并经同一屏障再取得 kind=safety，受急停/owner_lost/停用门约束。介入保留旧进度/效果，不能凭看到危险暗建第二套任务队列。
 
-反馈帧包含 connection、incarnation、body、流/Operation、单调序号、已完成客户端物理步、采样时刻和必要字段组的来源/有效性。反馈回调顺序执行，一个在算帧加一个保留最新状态的待交付槽；新采样不立即废掉仍有效的在算帧。输出绑定所属流和已交付帧，重复消费、过期、乱序、失效或退役均拒绝，不能补播。字段与返回只在 [public-api §4](public-api.md) 定义。
+反馈包含连接、incarnation、Body/Operation、流序号、已完成物理步、采样时间与有效期。每流一个在算帧和一个 latest-only 待交付槽；新采样不立即废掉仍有效的在算帧。已交付帧至多 apply 一次，身份、乱序、过期在准入与实际安装边界都验证，拒绝后不补播。
 
-实际时序为观察第 N 步结果、异步计算、在仍有效的后续 M>N 步模拟前安装并由该步消费。apply 正常返回必须有 appliedStep，不只确认接收入队；资格与有效期在准入和真实安装边界都核验。不能以模拟后 physicsTick 的监听顺序冒充模拟前接缝。drive 按实际消费步计数，完成指定步数后、下一模拟前撤销本次持续输出；定长 drive 不依赖脚本逐帧续命。反馈输入则有明确有效期，未及时更新时由驱动撤销并记录故障。预算依据实际控制测试配置，不伪造普适毫秒数。
-
-强制终止前先撤销资格；Driver 清理不依赖 guest finally。Program 负责 guest 执行/退役，经 Executor 受管创建能力接入同一进程树；Executor 唯一持最终监管与退出证明，Runtime 只消费事实。QuickJS WASM+活动 Segment 子进程为优先原型，独立/受限/可终止是合同；引擎/平台算法不在 Runtime 重复规定，见 [Runtime §9](modules/runtime.md#9-program-执行合同与资源准入)。
+观察 N 步后输出实际应用于后续 M>N 步，apply 只在被实际模拟步消费后正常返回 appliedStep；不是队列接收即应用。输入超期、流/调用退役撤销持续控制，不依赖 guest finally。定长 drive 使用本地步进，不要求脚本逐帧续命。时延按完整反馈链与真实控制效果验证，不从桥微基准或计算上限推出实时保证。
 
 ### 5.4 世界等待与复查
 
-身体内定长输入/短等待保持资格；`mc.waitForChange`/`mc.sleep` 只检查当前调用谱系未持有/借用 Body，否则 BODY_SCOPE_ACTIVE，先退出自己的 withBody。无关兄弟有身体/排队不拒绝本 wait。被动 read→evaluate→对各独立 query/cursor 分别 watch；任一 changed/reset 或定义 afterMs 到期后重读，时间不是成功证据。单个联合 query 若含混合依赖，仍须由 World 自己维护 opaque cursor；World 不支持时明确拒绝。多个独立 Watch 不合并为联合 cursor/快照，Runtime 不比较或拼接异量纲水位。
+mc.waitUntil(targets, predicate, {timeoutMs?}) 先 read/predicate，再按各自 version watch；变化重读重判，到期最后重读，不把时间或事件到达当条件满足。met/timeout 携带最后 values/versions/unknown；invalidated 只有 reason，旧观察空间不继续比较。unknown 的覆盖变化推进版本，predicate 第二参数固定为 `{unknown}`。
 
-需要开窗口、移动或探索才能观察的条件，由程序写成循环：复查、必要时 `mc.call` 取得身体去看、再判断。不登记持久的“复查意图”——那是第二套任务系统。熔炉估计完成、区块卸载或别人改了槽位，只影响何时复查与事实缺口，不提供产出证明。
+每个 target 独立 query/cursor，不合并异量纲水位；watchable 决定可等，feedback 决定可作高频传感。World 负责 read/watch 的原子比较、来源与参数匹配；Runtime/Program 负责调用取消、watch/计时器清理。建立任一 watch 失败整体清理，保留原错误；多个读不承诺联合快照。只有领域确需时由 World 实现联合查询，Program 不建立派生依赖图。
 
-`await mc.waitForChange`/`mc.sleep` 保留活动 guest 与执行域，无默认期限；容量按段准入：段还没有域且无空槽时排队，段已持身体却还没有域时立即 `PROGRAM_CAPACITY`；段内所有调用复用本域。全部域长期等待可使新程序无限 queued；容量事实的唯一所有者是 `ProgramPort.capacity()` 与 `runs`（带 `observedAt`，列出占用的段与排队者），不建第二份资源账本。停止、取消、查询及纯 native 入口不排容量队列；主脑显式干预，不自动换出正常 guest。`mc.decide` 结束段并释放域，新段不恢复旧闭包。重启只恢复来源与检查点记录并交还，不自动复查或重放；旧域退役不明保持故障，从未开始为 `not_started`，已开始无可用检查点为 `unknown`。
+waitUntil/sleep 不改变身体归属，withBody 回调结束前仍持有身体。等待不延长反馈帧和持续输入有效期；需让其他身体任务推进时在作用域外等待。重新操作窗口/目标前检查其有效性，不能把旧物资估计当成当前事实。等待保留 guest，但不预占线程：常驻 guest/RPC 满立即 PROGRAM_CAPACITY，不等其他等待者退出；容量唯一来源 ProgramPort.capacity()，不建第二份账本。
 
-Program 的自由等待不以领域注册或组合查询为前提：只读能力（`self@1`/`block@1` 等）返回固定 Observation 和各自 query 的 World cursor；`mc.waitForChange(targets, predicate, {afterMs?})` 要求非空 targets，并为每项独立创建 WorldWatch，任一 changed/reset 或本地 timeout 即结束本次等待并关闭其余 Watch。普通 JS 可读取多个独立事实、组合判断并在任一依赖变化后重读，不新增领域 Callable、WaitConditionDef、组合 QueryDescriptor、Runtime 状态机或 DSL。World 拥有各 cursor/依赖和不漏失效，并核验 cursor 与 query 身份/作用域/来源代次匹配；Runtime 拥有取消、BodyScope 检查及全部 Watch/计时器清理。单项 Watch 建立失败则整体失败并清理已建项。独立 read/watch 不构成联合快照；只有业务确需同一一致性切面时，才由 World 提供显式联合查询。底层事实本身不存在时仍须由其所有者补足，不能靠运行时代码编造证据或 cursor。
-
-等待取消属于正在等待的 Call，不等于工具等待取消或停止 Run；Body 谱系持有资格时返回 BODY_SCOPE_ACTIVE，兄弟的身体活动不阻止它。timeout 不升级 observation freshness，也不是世界变化；循环必须重新 read 后重新判断。query 与 cursor 不匹配、来源 reset、Watch 不可用均沿 World 既有错误/变化合同返回，Runtime 不维护 cursor Registry。
+程序交还产生可捕获的 NEEDS_DECISION，子调用不直接关闭整个段。父处理或原样传播，只有根未处理才封闭段、结算和写 decision。continue 开新段，程序检查点自由 JSON + 来源，领域检查点保留 schema；不恢复闭包、不自动复查/重发旧动作。未接入的事件不能靠当前状态伪装，聊天等由 World 后续历史/游标能力提供。
 
 <a id="effects"></a>
 
@@ -209,35 +205,35 @@ Program 的自由等待不以领域注册或组合查询为前提：只读能力
 
 ### 6.2 用完成证据要求取代模糊的“关键效果”
 
-操作/能力合同在派发前声明自己承诺什么，由宿主建立完成证据要求。例如转移 8 个物品需要有关槽位与数量变化，采集需要实际入包，放置需要目标格及要求的状态；一次攻击输入只承诺攻击尝试被执行，不承诺击杀。适配层记录原始派发及预测/服务端事实，领域核验方法把这些事实与特定要求关联，运行管理只保存判定及来源。
+操作/能力在派发前声明完成范围。能力实现负责核验领域目标，Driver 与效果记录保存各次派发及其完成要求；Runtime 不重复执行目标算法。例如转移 8 个物品需要有关槽位与数量变化，采集需要实际入包，放置需要目标格及要求的状态；一次攻击输入只承诺攻击尝试被执行，不承诺击杀。适配层记录原始派发及预测/服务端事实，领域核验方法把这些事实与特定要求关联，运行管理只保存判定及来源。
 
 这些要求不是脚本可写的 `critical: false`。捕获异常、换一段代码、改返回值或生成断言都不能豁免原要求。相关能力的核验方法可以依据新证据追加 `met/not_met/unknown`；当前状态达到目标不足以证明历史交易发生过，因果不可知时仍 unknown。已确认目标不足属于已结算失败，可以由外层替代路径处理；未确认消费/交易不能如此清账。
 
-临时代码默认只声明“执行程序”的合同。若调用方需要判断组合游戏目标，可在受理时绑定明确的能力核验入口及参数；保存模块也可以声明此入口，公开来源/版本与适用性。普通 JS 查询和断言仍可自由使用，但 `assert(true)` 和 `return {completed:true}` 都不会自动获得对用户目标的认证。模型如何定义开放目标仍归主脑，不创建通用目标 DSL 或隐藏 Critic。
+代码根为 execution，原生能力为 capability，其目标或会话结束条件由能力自身实现负责；descriptor 描述完成含义，不注册通用目标 verifier。output schema 只校验形状。主脑依据领域结果、效果与新观察判断组合意图；普通查询和断言不使返回值成为世界目标证明。
 
 低层 attempt 接口可在尝试本身确认后成功，正文明确完成范围和可知后果；不能把交易/库存转移的未确认操作改走“attempt”逃避其完成证据要求。若确有只派发用途，导出须明确不同的合同，后续核验责任与未解决效果仍保留。
 
 ### 6.3 通用结算顺序
 
-局部关闭先后：关闭范围准入 → 取消/等待已登记子 Call/宿主操作 → Driver 完成所属控制/清理屏障（可得清理事实先入 sink）→ 登记只读完成核验。普通子 Call 按已收到的固定材料结算，将完成截面有序入队后可返回/抛错，不逐 Call 等待写盘，不终结父 Run、不释放借用的祖先 Body。根 Segment 另确认 Program guest 退役，待所有后代材料及完成截面入队 → 固定 Runtime 已接收上界 H → writer.flushThrough(H) → 按固定截面结算根已知/未知 → 事务提交阶段/根终结+completion → 才允许交付。Body 交接可先于写盘，Run 对外终结不能越过记录屏障。
+局部关闭先后：关闭范围准入 → 记录父关闭时仍在途的子调用，再取消/等待已登记子 Call/宿主操作 → Driver 完成所属控制/清理屏障（可得清理事实先入 sink）→ 登记只读完成核验。普通子 Call 按已收到的固定材料结算，将完成截面有序入队后可返回/抛错，不逐 Call 等待写盘，不终结父 Run、不释放借用的祖先 Body。根 Segment 另确认 Program guest 退役，待所有后代材料及完成截面入队 → 固定 Runtime 已接收上界 H → writer.flushThrough(H) → 按固定截面结算根已知/未知 → 事务提交阶段/根终结+completion → 才允许交付。Body 交接可先于写盘，Run 对外终结不能越过记录屏障。
 
 发布精确持久 record 的读取/导出端口另等对应材料提交后才返回稳定引用；普通 mc.call 的领域值不隐含该保证。没有现成消费者要求逐 Call durable，不新增默认同步持久模式。
 
 ExecutionSink 非阻塞入队不是持久 ACK。flush 只保证已接收 ≤H 材料已提交或明确失败，不确认未来服务端包，不补丢失尾部；失败不输出假 durable finished，实际停止继续。晚到证据追加原 Effect 核验，不改原 completion 的 unknown、取消原因和历史结论；readEffect 另给最新判断。普通 helper/微任务/每 Tick 不生成持久事件。
 
-运行记录分开保存 `execution`（返回/抛错/中断）、`goal`（未声明/满足/未满足/未知，带合同范围）、`effects`（逐项来源与完成要求）。对 Uina 的五态只是本次合同的结论，不能覆盖这三组事实。
+运行记录保存 execution（返回/抛错/中断）、领域返回/错误、effects 与 control，不另存通用目标状态。Run.progress 取当前段根调用最后报告，Call/Segment 各存自己的进度；不汇总父子或跨段数量。工程累计量归工程对象，程序通过自身数据或检查点维护。
 
 1. 整个运行从未开始执行：`not_started`；不能把已有工作的 queued 续段当未开始。
 2. 已确认因取消结束且控制停止：`cancelled`；保留未知效果。停止仍在进行先保留非终态；永久无法确认则按已知边界结算 unknown 并公开故障。
 3. 未处理程序错误或入口要求确定不满足：`failed`；仍可有未知副作用。
-4. 正常返回，但控制清理、入口要求或某项必需完成证据尚未知：`unknown`，即使 goal 现在满足。
-5. 本次声明合同满足且必要清理有据：`succeeded`，明确 scope 是程序执行、某项能力还是特定游戏目标。
+4. 正常返回，但控制清理或某项必需效果完成证据未知：`unknown`，即使当前世界状态已经符合预期。
+5. 当前入口返回且必要效果和清理有据：`succeeded`，明确 scope 是 execution 还是 capability。能力负责自己的目标核验。
 
-子调用已知失败经 catch 处理不永久毒化父程序；它的原结果和进度仍公开。没有外层目标时，程序正常返回只能得到 scope=execution，不把捕获的失败包装成原目标成功。`mc.decide` 是退役当前段的控制转移，**只有根调用可用**（子调用报 `DECIDE_NOT_ROOT`，段不变）：保存检查点、失效资格、完成清理后进入 awaiting_decision；不是以上终态，也不是可忽略普通值。
+子调用已知失败经 catch 处理不永久毒化父程序；它的原结果和进度仍公开。程序正常返回只能得到 scope=execution，不把捕获的失败包装成原目标成功。`mc.decide` 在 guest 同步抛出专用异常，跨可信调用边界时关联来源，父程序可捕获处理；根未处理时才关闭段、保存检查点并进入 awaiting_decision。它不是以上终态，也不是普通返回值；普通 JSON 中写同名 code 不触发控制转移。
 
 | 反例 | 必须得到的结果 |
 | --- | --- |
-| 橡木已入包 19 但不足，改采桦木 13，外层原木目标有据满足 | 外层可成功，原橡木调用仍失败，数量按各调用真实增量计算 |
+| 橡木不足后程序改采桦木并自行累计 | 程序返回自己的统计；原橡木调用仍失败，Runtime 不再汇总或认证外层原木目标 |
 | 捕获木材不足直接 return completed | 程序可正常结束；原采集目标没有成功证据 |
 | 交易回执未知，别人给了目标物品 | 可确认当前持有目标，交易/消费仍 unknown，不自动重发 |
 | 交易未知后又发生未处理错误 | failed 与 unknownEffects 并存 |
@@ -298,14 +294,14 @@ SQLite 的启动/核验不作为当前接入的前置门。world.status@1 在同
 > **2026-10-18 起：程序见 [program.md](modules/program.md)，蓝图与经验见 [Library](modules/assets.md)。** 本节原有内容（SQLite 目录/CAS、不可变包、publish/Revision/head、`ReadLibrary`/`WriteLibrary`、`PublishRequest`、`ProgramSourcePort`、`EvidenceExportPort`）整体删除；以下只保留仍然有效的跨模块约束。
 
 - 库是普通文件：`programs/<name>.js`、`blueprints/<name>/`、`experiences/<name>.md`，共用命名与 `library` 五 op；没有 publish/Revision/head/版本号，也没有资产目录、不可变包与证据副本。`library` 不 submit 成游戏 Run。
-- 确切内容由使用方在入场时固定：程序段快照源码字节，工程记录持有蓝图摘要；库不冻结工作文件，作者随时可改，旧引用按记录里的摘要复现或如实报变更。
+- 确切内容由使用方在入场时固定：每次程序调用快照源码字节，工程记录持有蓝图摘要；库不冻结工作文件，作者随时可改，旧执行源码按快照读取，蓝图按记录摘要核验或如实报变更；不承诺旧依赖和世界可重放。
 - 蓝图三分（Raw/Target/Project）与 AirPolicy 见 [Library §3](modules/assets.md)；已知 air 需明确 set_air/preserve，来源未知的格不能变成 clear。
 - 经验是判断而非事实，直接改文件；证据是弱链接，记录被清理就如实断链，不自动改判断、不生成置信度，也不把一次执行 `succeeded` 升级为普遍可靠。
 - 几何转换、解析、分析与施工属于领域 Callable，不属于库；不同领域不新增第四种通用资产或学习调度器。
 
 ### 8.2 程序的入口与继续（已改）
 
-源码与头注释的形态、解析、快照、执行与失败重建见 [program.md](modules/program.md)。仍然有效的约束：同一 ref 的入口在受理时固定，在途段不漂移到新内容；子程序各自解析自己的调用；继续时明确入口/新代码，检查点 schema 与原目标兼容且 decision 未消费；旧运行事实不被改写；换目标新建关联 Run。
+源码与头注释的形态、解析、快照、执行与失败重建见 [program.md](modules/program.md)。仍然有效的约束：同一 ref 的入口在受理时固定，在途段不漂移到新内容；子程序各自解析自己的调用；继续时明确入口/新代码，检查点按程序/领域分型处理且 decision 未消费；新段按自身入口合同结算，旧运行事实不被改写，不由续段结论认证旧目标。
 
 
 <a id="flows"></a>
@@ -325,7 +321,7 @@ SQLite 的启动/核验不作为当前接入的前置门。world.status@1 在同
 | 7 | 旧 equip 后续迟到，企图挖掘 | 仍持 b1，写入处拒绝；旧清理不能清新主人输入 |
 | 8 | 屏障完成，执行侧结算 | finished/cancelled、control=stopped、collected=19、unknownEffects=[eLast] |
 | 9 | 超过原工具窗口，终态经 World 输入 | 同 completionRef；input_settled.committed 后确认；窗口内完成则直返，故障重复不重放游戏 |
-| 10 | 停止受理后执行侧崩溃/重启 | 先恢复停止意图与未知，r17 不自动续跑；终态交付不确定可同引用补报 |
+| 10 | 停止受理后执行侧崩溃/重启 | 先恢复停止意图与未知，r17 不自动续跑；pending 通知重试；tool_handoff 不自动补报，原结果可查 |
 
 完成采集走正常核验/清理路径，不走停止路径；直接返回 succeeded 只确认 collect 合同满足。独立对话、普通查询与结果递送都不取得身体。
 
@@ -339,9 +335,9 @@ SQLite 的启动/核验不作为当前接入的前置门。world.status@1 在同
 | 4 | A 的复查到期或有可用事实变化 | A 按新就绪序号排队；取得 b3 后重验连接/地点、重开新窗口读槽位 |
 | 5 | 燃料不足且没有委托补料 | A 保存格式化检查点；退役 s1、释放 b3，进入 awaiting_decision/d1 |
 | 6 | 主脑可另建补料运行 C | A 不保留 JS 栈或身体名次，C 正常排队 |
-| 7 | 主脑向 A/d1 提交确切入口/新代码的 s2；默认继承原生环境 | 原子消费 d1；换版先验证检查点/入口目标兼容，不把旧执行证据改写 |
+| 7 | 主脑向 A/d1 提交确切入口/新代码的 s2；默认继承原生环境 | 原子消费 d1；换版先验证检查点/新入口兼容，不把旧执行证据改写 |
 | 8 | s2 重新观察炉内和背包，补燃料/取产物 | 新资格与窗口；数量基于实际观察，不依据墙钟或旧槽位 |
-| 9 | 最终合同满足并完成清理 | A 终态；累计投入/取回历史保留，当前目标按其合同判断 |
+| 9 | 新段入口完成并完成清理 | A 终态；各段投入/取回历史保留，不从终态推断旧目标完成 |
 
 若步骤 2 后进程重启：不恢复旧 await，检查点记录交还主脑；显式 continue 才建新段，不能自动复查。若已经受理停止/急停，则不创建可执行复查段。若身份不明、区块不可观察或物资被其他玩家取走，分别报告缺口与新事实。
 

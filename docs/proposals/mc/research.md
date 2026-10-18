@@ -1,5 +1,8 @@
 # Minecraft World：研究证据与架构验证
 
+> **2026-10-18 证据范围说明。** 本文件保留历史研究、旧方案及当时的实验观察，不作为当前执行合同。当前 Program 使用共享 worker/独立 guest、逐层 NEEDS_DECISION、waitUntil 和普通文件库，唯一规范见 [Program](modules/program.md)。历史中的段级进程/域配额/发布方案及微基准不证明新方案已实现或验收；本轮没有复跑微基准，也没有真实服务器证据。
+
+
 研究整理日期：2026-10-15（Asia/Shanghai）。推荐设计见 [design.md](design.md)，设计状态与已确认选择见 [README.md](README.md)。本文记录判断依据、替代方案和验证方法，不重复定义运行合同。
 
 ## 1. 证据范围

@@ -9,13 +9,13 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 | 部分 | 状态 | 最后核对 |
 |---|---|---|
 | Driver（受控玩家）、World（观察与记录） | **已实现**，通过 fake bot 集成验收；未在真实服务器验收 | 2026-10-17 |
-| Library（程序、蓝图与经验） | 文件库设计定稿；旧 SQLite/CAS 资产仓库代码**已作废** | 2026-10-18 |
-| Runtime（Run / Segment / Call / Effect） | 详细设计定稿，**未实现** | 2026-10-18 |
-| Program（单文件 JS + 执行域） | 详细设计定稿，**未实现** | 2026-10-18 |
-| 能力面（13 查询 + 37 动作） | 契约定稿，按 P0/P1/P2 分阶段实现 | 2026-10-18 |
-| 真实 Minecraft 游玩验收 | **未开始**（Program 的"做完"以该验收为准，见 program.md §8 阶段 0） | — |
+| Library（程序、蓝图与经验） | 文件库修订规格；旧 SQLite/CAS 资产仓库代码**已作废** | 2026-10-18 |
+| Runtime（Run / Segment / Call / Effect） | 最简设计修订规格，**未实现** | 2026-10-18 |
+| Program（单文件 JS + 共享 worker/独立 guest） | 最简设计修订规格，**未实现** | 2026-10-18 |
+| 能力面（13 查询 + 37 动作） | 修订契约，按 P0/P1/P2 分阶段实现 | 2026-10-18 |
+| 真实 Minecraft 游玩验收 | **未开始**（Program 的"做完"以该验收为准，见 program.md §8） | — |
 
-一句话：结构与合同已经收敛——**程序负责组合，能力负责身体，Library 负责留存**；剩下的是实现与真实游玩验证。
+职责分工：程序负责组合，能力负责领域目标，Runtime 负责执行、控制归属和记录，Library 保存文件。当前规格仍需实现与真实游戏验收。
 
 ## 文档地图
 
@@ -23,7 +23,7 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 |---|---|---|
 | [design.md](design.md) | 终态概要：目标、结构、交互、生命周期、感知、流程 | 所有人，先读 |
 | [contracts.md](contracts.md) | 跨模块契约：所有权、受理、递送、控制屏障、结算顺序 | 实现者（跨模块时） |
-| [public-api.md](public-api.md) | 公开类型与方法；§6 已作废（程序与资产旧方案） | 实现者（查类型） |
+| [public-api.md](public-api.md) | 公开类型与方法；§6 导航到 Program/Library 的权威定义 | 实现者（查类型） |
 | [modules/runtime.md](modules/runtime.md) | Run / Segment / Call / Effect、身体排队与委托、记录屏障 | Runtime 实现者 |
 | [modules/program.md](modules/program.md) | 程序模型、编程面、库、执行域、类型与验收 | Program 实现者 |
 | [modules/capabilities.md](modules/capabilities.md) | 13 查询 + 37 动作的逐条契约与失败码 | 能力实现者；§7–§8 给模型 |
@@ -48,11 +48,11 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 |---|---|
 | 系统组成、依赖、AI 局部开发的边界 | design.md §2 |
 | 模型看到什么、怎么调工具、上下文成本 | design.md §3 |
-| 身体控制、委托、停止与恢复 | design.md §5；modules/runtime.md §8 |
+| 身体控制、委托、停止与恢复 | design.md §5；modules/runtime.md §3–§4 |
 | 感知边界、事实范围、事件唤醒 | design.md §6；modules/world.md |
 | 成功、进度、未知效果的判定 | design.md §7；contracts.md §6 |
-| 数据放在哪、各文件归谁写 | design.md §8.2；modules/program.md §2；modules/assets.md §2 |
-| 程序怎么写（`mc` 表面、句柄、示例） | modules/program.md §3 |
+| 数据放在哪、各文件归谁写 | design.md §8.2；modules/program.md §3；modules/assets.md §2 |
+| 程序怎么写（`mc` 表面、句柄、示例） | modules/program.md §2 |
 | 执行域、容量、预算、取消、退役 | modules/program.md §5 |
 | 程序的库与学习循环 | modules/program.md §4 |
 | 能力清单（参数、返回、失败码） | modules/capabilities.md §3–§4 |
@@ -62,7 +62,7 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 | 经验的存放与证据 | modules/assets.md §4 |
 | 跨模块允许依赖、唯一写入者 | contracts.md §2 |
 | 受理事务、回执丢失、替换/抢占 | contracts.md §3 |
-| 记录递送与不确定补报 | contracts.md §4 |
+| 结果直返、后台通知与交接缺口 | contracts.md §4；modules/runtime.md §6 |
 | 停止屏障与主动复查 | contracts.md §5 |
 | 完成证据、五态结算 | contracts.md §6 |
 | 观测引用、版本与写记录 | contracts.md §7 |
@@ -85,4 +85,4 @@ Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游�
 - 每个问题只有一份权威正文：全局行为在 contracts.md，公开类型在 public-api.md，模块细节在 `modules/`，本页与 design.md 不复制合同。
 - 改动先改权威正文，再改本页索引；一轮改动追加到 changelog.md。
 - 已作废的机制不保留第二份完整描述：正文里留一句指针，细节去 git 历史。
-- 本文档不规定 MVP、阶段排期或验收门槛；Program 的验收门槛例外地写在 program.md §8。
+- 实现状态与验收要求分开；Program 验收见 program.md §8，Runtime 验收见 runtime.md §8。

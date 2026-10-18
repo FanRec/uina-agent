@@ -1,10 +1,10 @@
 # Minecraft 能力面详细设计
 
-> 2026-10-18 · 取代 `program.md` §3.4 的能力目录。程序语言、执行域、库仍以 `program.md` 为准；本文只定义**模型每天要碰的那一层**。
+> 2026-10-18 · 能力签名的权威正文。程序语言、执行域、库见 `program.md`；本文定义查询与动作的输入、结果和失败。
 
 ## 0. 这份文档裁决什么
 
-程序怎么跑已经定了（单文件、`async function(mc, input)`、`mc.call`/`mc.read`、worker + QuickJS）。剩下的是：这两个入口后面有哪些名字，每个名字收什么、给什么、失败成什么样。
+程序怎么跑已经定了（单文件、`async function main(mc, input)`、`mc.call`/`mc.read`、worker + QuickJS）。剩下的是：这两个入口后面有哪些名字，每个名字收什么、给什么、失败成什么样。
 
 这一层决定三件事：写一段程序要查几次资料、一次跑对的概率、卡住后能不能自己爬出来。所以本文的验收标准不是"覆盖面全"，而是**给定任务，模型能不能不看文档写出大概对的程序，跑错后能不能只靠返回值改对**。
 
@@ -33,7 +33,7 @@
 | 帮我做到 | 走到那、挖 16 个木头、把房子盖起来 | 37 个动作 | `mc.call` |
 | 到底行不行、要多少料 | 到得了吗、料够吗、会不会挡路 | `route.plan` `build.plan` `recipe` | `mc.read` |
 
-第四类是本文相对旧目录新增的。模型最贵的一次错误是"开工以后才发现缺 3 个木板或到不了"，而修正它的代价是整段程序重写。所以每个重动作都有一个只读的试算孪生体，且两者共享同一份几何/寻路/配方代码——试算说的和真跑的一定一致。
+第四类是本文相对旧目录新增的。模型最贵的一次错误是"开工以后才发现缺 3 个木板或到不了"，而修正它的代价是整段程序重写。有实际规划价值的动作提供只读试算，复用几何/寻路/配方实现。试算说明本次已知条件下的计划和缺口，执行前仍需核验，不把计划通过说成执行保证。
 
 ### 1.3 边界：什么进能力面，什么留给程序
 
@@ -60,8 +60,8 @@
 | L2 | 参数可省 | 位置、数量、工具、工作站、燃料都有默认值，常见任务零坐标 |
 | L3 | 结果可数 | 返回实测数字与 `remaining`，不返回布尔 |
 | L4 | 失败可分支 | 13 个 code + `hint` + `progress` + `effects`，永不用 message 分支 |
-| L5 | 部分完成不是失败 | 失败带已完成的量与剩余清单，程序接着做；**没有 resume 句柄** |
-| L6 | 只有世界侧的等待是异步的 | 烧炼/作物可以 `wait:false`；身体动作一律同步返回 |
+| L5 | 目标与会话分清 | 目标型调用未满足则抛稳定领域错误，progress 保留真实完成量和剩余；会话型调用返回 ended；没有 resume 句柄 |
+| L6 | await 等待声明完成范围 | 所有程序入口均为 Promise；身体动作不另返后台句柄，烧炼等世界过程可 wait:false 装料后返回 |
 | L7 | 意图冻结，世界动态 | 派发前固定输入、默认值、能力版本；执行期间持续观察世界并重规划 |
 
 L5 值得解释：给动作设计"句柄 + 恢复"看起来强大，实际是最贵的一层状态——句柄会过期、会与身体所有权纠缠、要在程序退出后清理。而领域值里带 `remaining` 已经够程序重试：少 5 个就再调一次 `collect(..., 5)`。**用数据表达部分完成，不用会话表达。**
@@ -74,19 +74,23 @@ L7 要划清三种冻结（细节见 §2.13）：**提交的是意图**（Run �
 
 - 能力名：`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)?$`，扁平单词；只有"读一个目标的计划"用两段（`route.plan`、`build.plan`）。
 - 引用：`<name>@<major>`，例如 `collect@1`。`@` 后是正整数主版本；不兼容的参数/语义变化才升主版本，旧版本保留。
-- 程序里 `mc.call`/`mc.read` 的第一个参数：**带 `@` = 能力，不带 `@` = 库里的程序名**（`program.md` §2）。模型写 `collect@1` 不会有歧义，写 `mine_iron` 是在调自己的程序。
+- 程序里 `mc.call`/`mc.read` 的第一个参数：**带 `@` = 能力，不带 `@` = 库里的程序名**（Program §3.3）。模型写 `collect@1` 不会有歧义，写 `mine_iron` 是在调自己的程序。
 - `describe` 收裸名（`collect`）时解析到当前主版本。
 
-### 2.2 位置
+### 2.2 位置、方块与精确物品
 
 ```ts
-type Pos = Vec3 | { rel: Vec3 }        // Vec3 = { x, y, z }
+type Pos = PointTarget | {rel: Vec3};       // 连续坐标目标，PointTarget 见 public-api
+type GridPos = BlockPos | {rel: Vec3};      // 整数方块格，含 rel 时各分量也须为整数
 ```
 
-- 绝对坐标是方块坐标（整数），`y` 是脚所在方块。
-- `{ rel: { x: 0, y: -1, z: 0 } }` 是"脚下一格"。相对位置在**调用发生的瞬间**求解，不是程序开头。
-- 领域值里的位置一律是 `Vec3`（`position` 字段），可以直接喂回输入，不需要转换。
-- 省略位置时的手边语义：`place` = 身周 3 格内可放的空位；`take`/`stow` = 16 格内最近的容器；`smelt` = 16 格内最近的炉子。
+移动/实体位置可为小数；block/mine/place/build.cells/region/excavate 使用 GridPos，绝对坐标不隐式 floor。程序从 self 位置生成格子时显式 Math.floor；GridPos 的 rel 以当前脚所在整数格为原点再加整数偏移，连续 Pos 的 rel 则以当前位置为原点。相对目标在本次调用前解析并记录实际坐标，执行中的寻路仍可更新；持久地点用 `{position, dimension}`，World 分区补 world/worldRevision。不能把旧维度历史地点简化成三个数后在当前维度执行。
+
+放置目标使用 public-api 的 BlockSpec：字符串仅约束方块名，对象 `{name, properties?}` 约束指定状态（如 facing/half/waterlogged），未指定状态不构成完成条件。能力选择可行的站位/交互面，再核验声明状态；明确状态做不到则报错，不静默退化成默认状态。block/region 的输出保留实际 BlockStateValue，可按目标字段比较。
+
+装备、消耗、存取/丢弃物品的 item/tool/food 等选择子接受 `Name | ItemSelector`。精确 components、minDurability 与 substitutions 复用共享合同，读取槽位保留组件和耐久。字符串仍走 Name 解析，不会要求常见调用填写实例字段。
+
+省略位置的便捷规则沿用：place 在身周 3 格内选可放空位，take/stow 在 16 格内选容器，smelt 在 16 格内选炉子；实际选择、默认值和约束在派发前记录。
 
 ### 2.3 名字
 
@@ -99,7 +103,7 @@ type Pos = Vec3 | { rel: Vec3 }        // Vec3 = { x, y, z }
 
 解析失败 → `INVALID_INPUT`，`hint` 带 `candidates`（≤8 个最接近的名字）。歧义（例如 `pickaxe` 在只需要"一把镐"的位置）按"取当前可用的最好一个"处理，不报错。
 
-`collect` 的 `item` 是**掉落物**：会反查产出它的方块（`cobblestone`→`stone`、`charcoal`→`log`）。`drop`/`give`/`equip` 的 `item` 是物品本身。
+`collect` 的 `item` 是**掉落物**：会反查产出它的方块（`cobblestone`→`stone`；charcoal 没有直接方块掉落，须由程序组织熔炼）。`drop`/`give`/`equip` 的 `item` 是物品本身。
 
 ### 2.4 数量与时间
 
@@ -118,19 +122,19 @@ type Pos = Vec3 | { rel: Vec3 }        // Vec3 = { x, y, z }
 ### 2.5 返回
 
 - **查询**（`mc.read`）返回 `{ value, version, unknown? }`：`value` 是领域值，`version` 是宿主的观察令牌（程序原样回传，不解释），`unknown` 只在有未知时出现（`chunk_unloaded`、`not_connected`、`stale`）。本文 §3 各条的"返回"写的是 `value` 的形状。
-- **`version` 可能是 `null`**：只有真正可被观察的查询才有令牌（`self`/`inventory`/`block`/`blocks`/`region`/`entities`/`world`/`places` 八个，即 `feedback:true`）。派生计算（`route.plan`/`build.plan`/`recipe`）、静态知识（`item`）与历史视图（`container.last`）的 `version` 恒为 `null`，它们不能进 `waitForChange`——否则 World 就要为"任意派生结果的依赖变化"建立响应式依赖图。要等这些，就等它依赖的基础事实（库存、方块、世界）。
+- **`version` 可能是 `null`**：只有真正可被观察的查询才有令牌（`self`/`inventory`/`block`/`blocks`/`region`/`entities`/`world`/`places` 八个，即 `watchable:true`；feedback 单独表示能否快速采样）。派生计算（`route.plan`/`build.plan`/`recipe`）、静态知识（`item`）与历史视图（`container.last`）的 `version` 恒为 `null`，它们不能进 `waitUntil`——否则 World 就要为"任意派生结果的依赖变化"建立响应式依赖图。要等这些，就等它依赖的基础事实（库存、方块、世界）。
 - **动作**（`mc.call`）返回领域值（普通 JSON 对象），没有包装。
 
 共同的三条约定：
 
 1. **数字是实测的**：`mined` 是实际破坏的方块数，`collected` 是实际进背包的数量（掉落物可能没捡到）。
-2. **剩余量必给**：任何可能做不完的动作都返回 `remaining`（数量或清单）。
+2. **进度可继续**：目标型调用不足时抛领域错误，progress 包含正常结果同名的完成量与 remaining；成功 remaining 为 0/空清单。会话型调用使用明确 ended，不把撤退、失联和击杀混在一起。
 3. **缺省不出现**：可选字段没有就不出现，不写 `null`（`block` 查询的 `block: null` 是例外，它表达"那里是空气"）。
 4. **体积有上限**：单次返回 ≤ 1 MiB；`region` 用 `palette` + 索引压缩，8192 格约 10–20 KB，而不是 8192 个重复对象。
 
 ### 2.6 失败
 
-调用失败抛出 `CallError`，字段与 `program.md` §3.6 一致：
+调用失败抛出 `CallError`，字段与 Program §2.6 一致：
 
 ```ts
 interface CallError extends Error {
@@ -187,21 +191,15 @@ INTERRUPTED: 安全反射（脚下是岩浆）中断了 collect；已挖 12/32
 
 ### 2.8 身体是串行的
 
-一个程序里同时 `Promise.all` 两个动作没有意义：身体只有一个，第二个会在身体队列里等第一个做完。这不是错误，但也不是并行——两个动作按 FIFO 顺序执行。
+程序根可用 Promise.all 表达独立工作。两个需要身体的调用各自按 FIFO 申请，身体部分串行；无身体查询、计算和世界等待仍可重叠。同一委托路径内不能并发竞争身体。
 
-**要并行，就消除等待**：`smelt({wait:false})` 返回后程序继续做别的，回来再 `take`。这是唯一被支持的并发形式。
+独立查询、计算与世界等待可以并发，只有实际身体控制互斥。smelt 自行取得身体时在世界等待前关闭窗口并退出自身 BodyScope，取成品时重新申请；接受祖先委托时只关闭自己的窗口/操作，保留祖先身体完成等待。wait:false 提供装料后立即继续的便捷方式，不是唯一并发形式。
 
-### 2.9 `withBody` 内不能用 `mc.call` 调动作
+### 2.9 身体委托与等待
 
-`withBody` 已经把身体交给程序做逐 tick 控制。此时：
+withBody 拿到身体后使用 body.call 显式委托。被调程序/原生能力的普通 call 继续传播同一 BodyScope，嵌套 withBody 重入；上层写句柄暂挂，子退出不释放祖先。一次只有一条控制委托路径，竞争 BODY_BUSY。
 
-- 用 `mc.call` 调**任何需要身体的动作** → 立即抛 `BODY_SCOPE_ACTIVE`（guest 侧错误，不进段记录）。
-- 调 `mc.sleep` / `mc.waitForChange` 同样报 `BODY_SCOPE_ACTIVE`：身体在手里却停下等，是设计错误；要让别的调用用身体，先退出 `withBody`。
-- 纯计算、`mc.read` 与不动身体的调用不受限制。
-
-理由：一个动作的控制器和程序的手动输入会打架，失败模式极难诊断；停下等待则意味着身体被闲置占用。宁可立即报错。
-
-确实要在持身体期间跑一个动作，只有一条路：`body.call("mine@1", {at})`。它把当前 BodyScope **委托**给这次调用，本调用自己的句柄在委托期间挂起（`BODY_SUSPENDED`）；同一时刻只允许一个委托，第二个 `BODY_BUSY`。这条规则对原生动作和程序**完全一样**，不因为目标是原生就自动放行（详见 `program.md` §3.3.1）。
+捕获的外部 mc/ctx 不会自动升级；独立调用实际申请身体而形成自等待时 BODY_SCOPE_ACTIVE。waitUntil/sleep 在回调内也可使用，但不会释放身体或延长反馈帧/持续输入有效期。需让其他任务用身体时在 withBody 外等待；不检测任意 Promise 等待环。具体身份/并发规则以 [Program §2.2](program.md) 为准。
 
 ### 2.10 感知边界
 
@@ -209,7 +207,7 @@ INTERRUPTED: 安全反射（脚下是岩浆）中断了 collect；已挖 12/32
 
 ### 2.11 试算
 
-`route.plan`、`build.plan`、`recipe` 的 `plan` 字段只读世界与背包，不写世界。它们与对应动作共享实现（同一份寻路、栅格化、配方解析），所以"试算通过"意味着"执行时不会因为几何/材料失败"，只剩世界变化的风险。
+`route.plan`、`build.plan`、`recipe` 的 plan 字段只读世界与背包，复用领域算法。输出说明观察范围、当前缺口和估计，不保证执行必成：实际可达性、实现差异与世界变化仍可能失败。执行前重验，保留 plan 使用的蓝图摘要。
 
 ### 2.12 分层
 
@@ -236,7 +234,7 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 
 ## 3. 查询（13 个）
 
-查询是 `access: "read"` 的能力：不写世界，不持身体，可以高频调用。下面写的是 `mc.read` 返回的 `value`。带“可等待”的查询有真实观察令牌（`version`），能让 `mc.waitForChange` 无漏唤醒；其余查询 `version` 恒为 `null`。
+查询是 `access: "read"` 的能力：不写世界，不持身体，可以高频调用。下面写的是 `mc.read` 返回的 `value`。带“可等待”的查询有真实观察令牌（`version`），能让 `mc.waitUntil` 无漏唤醒；其余查询 `version` 恒为 `null`。
 
 ### self · `self@1`
 - 输入 `{}`
@@ -245,12 +243,12 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 
 ### inventory · `inventory@1`
 - 输入 `{}`
-- 返回 `{ slots:[{ slot, name, count, durability? }], counts:{ [name]: number }, usedSlots, freeSlots, held?, armor }`
-- `slots` 用 mineflayer 编号：0..8 快捷栏、9..35 背包、36..44 装备。
+- 返回 `{ slots:[{ slot, name, count, components?, durability? }], layout:{regions:[{name,slots}]}, counts:{ [name]: number }, usedSlots, freeSlots, held?, armor }`
+- slots 使用当前库存窗口实际编号，另给 layout.regions；常见 Java 库存窗口为合成 0..4、护甲 5..8、背包 9..35、快捷栏 36..44、副手 45。quickBarSlot 的 0..8 只是快捷栏选择索引，不能拿来 click。版本实际布局以返回 regions 为准，物品项保留 components/durability。
 - 例：`{ counts:{ oak_log:8, cobblestone:5, crafting_table:1 }, freeSlots:30 }`
 
 ### block · `block@1`
-- 输入 `{ at: Pos }` 或 `{ below: 1..4 }`（脚下第 N 格）
+- 输入 `{ at: GridPos }` 或 `{ below: 1..4 }`（脚下第 N 格）
 - 返回 `{ block: { name, position, properties, light?, harvest? } | null }`；`null` 表示空气，未加载走 `unknown`
 - `harvest` 是"以手头最好的工具能不能掉落"：`{ ok, requiredTool? }`
 - 例：`{ at:{x:120,y:63,z:-30} } → { block:{ name:"stone", position:{x:120,y:63,z:-30}, harvest:{ ok:true } } }`
@@ -262,13 +260,13 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 例：`{ name:"oak_log", radius:32 } → { blocks:[{position:{x:118,y:64,z:-28},name:"oak_log"}], count:23, truncated:false, scanned:{radius:32,chunksLoaded:9} }`
 
 ### region · `region@1`
-- 输入 `{ from: Pos, to: Pos }`（闭区间，含两端）或 `{ at: Pos, size: Vec3 }`；体素数 ≤ **8192**（如 16×16×32）
-- 返回 `{ origin: Pos, shape: [nx,ny,nz], palette: [Name], cells: [number], order: "xzy", missing: number, scanned: { chunksLoaded } }`
-  - 第 0 项恒为 `"air"`；`palette[cells[i]]` 是该格的名字；**未加载的格为 `-1`**（用 `missing` 计数）
+- 输入 `{ from: GridPos, to: GridPos }`（闭区间，含两端）或 `{ at: GridPos, size: Vec3 }`；size 各分量为正整数，体素数 ≤ **8192**（如 16×16×32）
+- 返回 `{ origin: Pos, shape: [nx,ny,nz], palette: [BlockStateValue], cells: [number], order: "xzy", missing: number, scanned: { chunksLoaded } }`
+  - 第 0 项恒为 `{name:"air",properties:{}}`；`palette[cells[i]]` 是该格的实际方块状态；**未加载的格为 `-1`**（用 `missing` 计数）
   - `order` 固定为 `x` 最快、`z` 次之、`y` 最慢：`i = (y-oy)*nx*nz + (z-oz)*nx + (x-ox)`
 - 用途：读一片几何（房间形状、矿脉、天花板高度、地面平整度），给自定义判断用。**找方块用 `blocks`，读一片形状用 `region`**——两者上限不同，因为数据形态不同。
 - 超过 8192 格 → `INVALID_INPUT`，`hint` 给建议切片大小；真要整栋建筑的物料与占位，用 `build.plan`/`build`，不要在程序里手拼。
-- 例：`{ from:{x:0,y:63,z:0}, to:{x:7,y:65,z:7} } → { origin:{x:0,y:63,z:0}, shape:[8,3,8], palette:["air","stone","cobblestone","oak_planks"], cells:[1,1,2,…], order:"xzy", missing:0 }`
+- 例：`{ from:{x:0,y:63,z:0}, to:{x:7,y:65,z:7} } → { origin:{x:0,y:63,z:0}, shape:[8,3,8], palette:[{name:"air",properties:{}},{name:"stone",properties:{}},{name:"cobblestone",properties:{}},{name:"oak_planks",properties:{}}], cells:[1,1,2,…], order:"xzy", missing:0 }`
 
 ### entities · `entities@1`
 - 输入 `{ radius?: 32, kind?: "hostile"|"passive"|"player"|"all", limit?: 32 }`
@@ -295,7 +293,7 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 
 ### places · `places@1`
 - 输入 `{ kind?: "home"|"mine"|"farm"|"other", near?: number }`
-- 返回 `{ places:[{ name, at, kind, note?, savedAt }] }`
+- 返回 `{ places:[{ name, at:{position,dimension}, kind, note?, savedAt }] }`
 
 ### container.last · `container.last@1`
 - 输入 `{ at: Pos }`
@@ -313,10 +311,10 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 例：`{ ok:false, distance:64, blockers:[{at:{x:130,y:64,z:-30},reason:"3 格宽岩浆"}] }`
 
 ### build.plan · `build.plan@1`
-- 输入 `{ from: ExactRef, at: Pos, mirror?: "none"|"x"|"z", rotate?: 0|90|180|270 }` 或 `{ cells:[{ at, block }] }`
+- 输入 `{ from: BlueprintRef, at: GridPos, mirror?: "none"|"x"|"z", rotate?: 0|90|180|270 }` 或 `{ cells:[{at:GridPos,block:BlockSpec}] }`
 - 返回 `{ blueprint?: { ref, digest }, cells, need:{ [block]: number }, missing:{ [block]: number }, blocked:[{ at, by }], unreachable:[{ at }], estTicks }`
 - **不可等待**：`version: null`；施工要等材料变化就等 `inventory@1`。
-- `missing` 按背包 + 可合成（木板可从原木算）折算；`blocked` 是目标格已有别的方块且不可替换。
+- `missing` 是当前可直接施工的物料差额，不把“背包有原木”当作“已有木板”；可合成缺口由 recipe 查询另行说明。blocked 表示当前冲突；build 开始及每次操作前仍重新核验。
 - `blueprint.ref`/`digest` 说明"规划的是哪一份内容"。把 `digest` 传给 `build` 的 `expectDigest`，就能在施工前发现蓝图被改过（`CONFLICT`），而不是默默盖出另一个房子。
 
 ## 4. 动作（37 个）
@@ -335,9 +333,9 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 #### follow · `follow@1` · act · P1
 - 输入 `{ target: Name | EntityRef, distance?: 2..8 = 3, maxTimeMs?: 120000 }`
 - 做：持续跟随目标，目标停下就停在其 `distance` 外。
-- 完成：目标消失/超时/被中断。
-- 返回 `{ target, moved, lost?, at }`
-- 失败 `NOT_FOUND`、`TIMEOUT`、`INTERRUPTED`
+- 会话正常结束返回 ended=target_lost/timeout；stop/安全中断抛 INTERRUPTED，不能同时将超时写成成功与失败。
+- 返回 `{target, moved, ended:"target_lost"|"timeout", at}`
+- 失败 `NOT_FOUND`、`INTERRUPTED`
 
 #### flee · `flee@1` · act · P1
 - 输入 `{ from?: Name | EntityRef, distance?: 16..64 = 24, maxTimeMs?: 30000 }`
@@ -352,7 +350,7 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 #### explore · `explore@1` · act · P1
 - 输入 `{ until: { block?: Name, biome?: string, player?: string }, direction?: "n"|"e"|"s"|"w"|"any" = "any", maxTimeMs?: 180000 }`
 - 做：朝未访问过的方向走一段、扫一眼、再走；命中 `until` 即停。
-- 返回 `{ found?:{ kind, at, name? }, traveled, scanned }`；未命中返回 `{ traveled }` 而不是失败。
+- 返回 `{ found?:{ kind, at, name? }, traveled, scanned }`；未满足 until 抛 NOT_FOUND/TIMEOUT，progress 保留 traveled/scanned，不把目标未找到报告成已完成。
 - 失败 `TIMEOUT`、`UNREACHABLE`、`INTERRUPTED`
 
 #### transit · `transit@1` · act · P2
@@ -371,19 +369,19 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 ### 采集
 
 #### mine · `mine@1` · act · P0
-- 输入 `{ at: Pos, tool?: Name, collect?: true }`
+- 输入 `{ at: GridPos, tool?: Name|ItemSelector, collect?: true }`
 - 做：走近并破坏一格方块；自动选合适工具（有 `tool` 则用指定的）。
 - 完成：该格变为空气且掉落已捡（`collect:false` 则不捡）。
 - 返回 `{ broken, dropped?:{ name, count }, tool? }`
 - 失败 `NOT_FOUND`（那块是空气/未加载）、`UNREACHABLE`、`MISSING_TOOL`（`hint` 带 `required`）、`TARGET_NOT_MET`（服务器拒绝，如领地保护）、`INTERRUPTED`
 
 #### collect · `collect@1` · act · P0
-- 输入 `{ item: Name, count?: 1..1024 = 1, radius?: 32, digThrough?: false, tool?: Name }`
-- 做：找最近的、掉落为 `item` 的方块 → 走近 → 挖 → 捡；做完一块找下一块，直到 `count` 或没有更多。
-- 完成：**已挖出** `count` 个（不是"背包里有 count 个"）。
-- 返回 `{ mined, collected:{ [item]: number }, remaining, toolsUsed:[Name], stopped?: "not_found"|"inventory_full"|"unreachable" }`
-- 失败 `NOT_FOUND`（附近没有；带 `scanned`）、`MISSING_TOOL`（`hint` 带 `required`，例如需要 `stone_pickaxe` 才能挖铁）、`INVENTORY_FULL`、`UNREACHABLE`、`TIMEOUT`、`INTERRUPTED`
-- 例：`{ item:"oak_log", count:8 } → { mined:8, collected:{oak_log:8}, remaining:0 }`
+- 输入 `{ item: Name, count?: 1..1024 = 1, radius?: 32, digThrough?: false, tool?: Name|ItemSelector }`
+- 做：寻找掉落匹配 item 的方块，走近、挖掘并拾取；只负责已经可执行的采集，不为 charcoal 等自动展开科技树。
+- 完成：本次新增入包的匹配物品合计至少 count；原有库存不计，破坏了但未入包不计，超额如实返回。分类选择子按实际各物品计数，acquired 为这些匹配新增数量之和。
+- 返回 `{ mined, acquired, collected:{[item]:number}, remaining:0, toolsUsed:[Name] }`；mined 是实际破坏格数。
+- 未满足抛 NOT_FOUND/MISSING_TOOL/INVENTORY_FULL/UNREACHABLE/TIMEOUT/INTERRUPTED，progress 为 `{mined, acquired, collected, remaining, toolsUsed}`；已有进度和效果不回滚，不再成功返回 stopped/remaining>0。
+- 例：请求 8 个原木，挖 8 格但只入包 6 个 → 领域错误携带 acquired:6、remaining:2；重试明确请求剩余 2 个。
 
 #### tunnel · `tunnel@1` · act · P1
 - 输入 `{ to: Pos, size?: "1x2"|"1x3"|"2x2"|"3x3" = "1x2", stairs?: "auto"|"never" = "auto", support?: true, maxTimeMs?: 180000 }`
@@ -392,65 +390,64 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 返回 `{ dug, path:[{ at, name }], stopped?: "unbreakable" }`；失败 `UNREACHABLE`、`TIMEOUT`、`INTERRUPTED`
 
 #### excavate · `excavate@1` · act · P1
-- 输入 `{ region: { from: Pos, to: Pos }, keep?: [Name] = ["bedrock","chest","furnace","spawner"], maxTimeMs?: 300000 }`
+- 输入 `{ region: { from: GridPos, to: GridPos }, keep?: [Name] = ["bedrock","chest","furnace","spawner"], maxTimeMs?: 300000 }`
 - 做：清空长方体区域（按层，从上到下，先收容器内容）。
 - 返回 `{ dug, kept:[{ at, name }], drops:{ [item]: number }, remaining:[{ at, reason }] }`
-- 失败 `TIMEOUT`、`INTERRUPTED`；区域里挖不动的方块不算失败，进 `remaining`
+- 失败 `TIMEOUT`、`INTERRUPTED`、`TARGET_NOT_MET`；未能清理的目标保留在 progress.remaining；keep 明确保留的方块不属于待清空目标
 
 ### 建造
 
 #### place · `place@1` · act · P0
-- 输入 `{ block: Name, at?: Pos, face?: "auto"|"up"|"down"|"north"|"south"|"east"|"west", replace?: false }`
-- 做：把背包里的 `block` 放到 `at`；`at` 省略时放在身周最近的空位（自己脚下不行）。`face` 是附着面。
-- 完成：该格变为该方块。
-- 返回 `{ at, block }`
-- 失败 `MISSING_MATERIAL`（背包没有）、`CONFLICT`（已有别的方块且 `replace:false`）、`UNREACHABLE`（超出可达 4 格）、`TARGET_NOT_MET`（服务器拒绝）、`WRONG_STATE`（不能附着的面，如床上不能放火把）
+- 输入 `{ block: BlockSpec, at?: GridPos, face?: "auto"|"up"|"down"|"north"|"south"|"east"|"west", replace?: false }`
+- 做：按声明方块名/状态求解有限范围的站位与交互面并放置；face 是交互约束，不是最终朝向。
+- 完成：目标格的名字与所有显式 properties 匹配；未声明的状态不纳入目标。例 `{block:{name:"oak_stairs",properties:{facing:"east",half:"top"}},at:{x:1,y:64,z:2}}`。
+- 返回 `{ at:{position,dimension}, block:BlockStateValue }`。
+- 失败 MISSING_MATERIAL、CONFLICT、UNREACHABLE、TARGET_NOT_MET、WRONG_STATE；目标已匹配不重复消耗物品。
 
 #### build · `build@1` · act · P1
-- 输入 `{ cells:[{ at, block }], replace?: false, maxTimeMs?: 300000 }` 或 `{ from: ExactRef, at: Pos, mirror?: "none"|"x"|"z", rotate?: 0|90|180|270, expectDigest?: Digest }`
-- 做：按可达性排序放置/替换一组方块；同一格重复出现时后者胜。会自己搭脚手架（用背包里的方块）够高处，拆掉脚手架。`from` 的 ref 由 Library 解析、Construction 解码与转坐标——**能力不建第二个蓝图注册表**。
-- `expectDigest` 与当前解析出的内容摘要不一致 → `CONFLICT`（`hint`：重新 `build.plan`）。这样"plan 的是这份、build 的却是另一份"不会静默发生。
-- 完成：所有 `cells` 都成为目标方块，或剩下的列在 `remaining`。
-- 返回 `{ placed, skipped:[{ at, reason }], remaining:[{ at, block, reason }], missing?:{ [block]: number }, scaffoldsUsed, blueprint?: { ref, digest } }`
-- 失败 `MISSING_MATERIAL`（`missing` 给差额，未放置任何格）、`UNREACHABLE`（部分格不可达，进 `remaining`）、`CONFLICT`、`TIMEOUT`、`INTERRUPTED`
-- 幂等：已匹配的格跳过，可直接整段重试。
+- 输入 `{ cells:[{at:GridPos, block:BlockSpec}], replace?:false, maxTimeMs?:300000 }` 或 `{from:BlueprintRef, at:GridPos, mirror?:"none"|"x"|"z", rotate?:0|90|180|270, expectDigest?:Digest}`。
+- 做：由 Construction 解码/变换/排序并放置；复用放置、材料与可达性算法。Raw/Target/Project、clear/preserve/unknown 及 AirPolicy 仍按 Library/Construction 合同解释，未知不自动拆除。
+- expectDigest 不符当前源摘要 → CONFLICT；在途使用本次固定设计字节，不重读变更文件。
+- 完成：所有声明目标匹配；成功返回 `{placed, skipped, remaining:[], scaffoldsUsed, blueprint?:{ref,digest}}`。
+- 未完成抛 MISSING_MATERIAL/UNREACHABLE/CONFLICT/TARGET_NOT_MET/TIMEOUT/INTERRUPTED，progress 保留 `{placed, skipped, remaining:[{at,block,reason}], missing?, scaffoldsUsed, blueprint?}`；缺料可能发生在部分施工之后，不能一概说“未放任何格”。
+- 当前已匹配格跳过；重新调用时依实际现场差异计算，不把旧完成量当新现场真相。
 
 ### 容器
 
 #### container · `container@1` · act · P0
-- 输入 `{ at: Pos }`
+- 输入 `{ at: GridPos }`
 - 做：走到容器旁打开，读内容，关上。这次读取会写进 `container.last`（§3）。
 - 返回 `{ at, type, slots:[{ slot, name, count }], freeSlots, properties? }`
 - 失败 `NOT_FOUND`（那不是容器）、`UNREACHABLE`、`WRONG_STATE`（被占用/需要权限）
 
 #### take · `take@1` · act · P0
-- 输入 `{ item?: Name, count?: number = 全部, at?: Pos }` 或 `{ all: true, at?: Pos }`
+- 输入 `{ item?: Name|ItemSelector, count?: number = 全部, at?: Pos }` 或 `{ all: true, at?: Pos }`
 - 做：打开目标容器取出物品。`at` 省略时从 16 格内最近的容器开始找（最多查 3 个），找到有该物品的为止。
 - 返回 `{ at, taken:{ [item]: number }, remaining?:{ [item]: number }, containersChecked }`
 - 失败 `NOT_FOUND`（查过的容器都没有）、`INVENTORY_FULL`、`UNREACHABLE`
 
 #### stow · `stow@1` · act · P0
-- 输入 `{ item: Name, count?: number = 全部, at?: Pos }`
+- 输入 `{ item: Name|ItemSelector, count?: number = 全部, at?: Pos }`
 - 做：放进容器；`at` 省略时优先放"已经有这种物品"的最近容器。
 - 返回 `{ at, stowed, left?: number }`；失败 `NOT_FOUND`（没有容器）、`WRONG_STATE`（容器满）、`UNREACHABLE`
 
 ### 物品与装备
 
 #### equip · `equip@1` · act · P0
-- 输入 `{ item: Name, slot?: "hand"|"offhand"|"head"|"chest"|"legs"|"feet" = "hand" }`
+- 输入 `{ item: Name|ItemSelector, slot?: "hand"|"offhand"|"head"|"chest"|"legs"|"feet" = "hand" }`
 - 返回 `{ slot, item, previous? }`；失败 `MISSING_MATERIAL`、`WRONG_STATE`（该物品不能装到这个槽）
 
 #### eat · `eat@1` · act · P0
-- 输入 `{ food?: Name, until?: "full"|"count" = "full", count?: 1 }`
+- 输入 `{ food?: Name|ItemSelector, until?: "full"|"count" = "full", count?: 1 }`
 - 做：选最好的食物吃到饱（或吃到指定数量）。`food` 省略时按饥饿值/饱和度选。
 - 返回 `{ eaten:[{ name, count }], food:{ before, after }, saturation:{ before, after } }`
 - 失败 `NOT_FOUND`（没有食物）、`WRONG_STATE`（不饿）、`INTERRUPTED`
 
 #### drop · `drop@1` · act · P1
-- 输入 `{ item: Name, count?: number = 全部 }` → `{ dropped }`；失败 `NOT_FOUND`
+- 输入 `{ item: Name|ItemSelector, count?: number = 全部 }` → `{ dropped }`；失败 `NOT_FOUND`
 
 #### give · `give@1` · act · P1
-- 输入 `{ player: string, item: Name, count?: 1 }`
+- 输入 `{ player: string, item: Name|ItemSelector, count?: 1 }`
 - 做：走到玩家旁丢给他。
 - 返回 `{ given, player, at }`；失败 `NOT_FOUND`（附近没有这个玩家）、`UNREACHABLE`、`TIMEOUT`
 
@@ -465,12 +462,12 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 输入 `{ item: Name, count?: 1..256 = 1, station?: "auto"|"hand"|"crafting_table" }`
 - 做：查配方 → 找附近工作台（`auto` 时没有就用背包里的放一个，用完拆走）→ 摆格子 → 取产物。3x3 配方自动处理。
 - 完成：背包里增加了 `count` 个该物品（多余产出也算）。
-- 返回 `{ crafted, produced:{ [item]: number }, consumed:{ [item]: number }, at?: Pos }`
+- 返回 `{crafted, produced:{[item]:number}, consumed:{[item]:number}, remaining:0, at?:Pos}`；crafted 为目标物品实际新增数量，可因配方批量超额；不足抛错并带同名 progress 与 remaining。
 - 失败 `MISSING_MATERIAL`（`hint` 给差额）、`MISSING_TOOL`（需要工作台但没有也没材料做）、`INVENTORY_FULL`、`TIMEOUT`
 
 #### smelt · `smelt@1` · act · P0
 - 输入 `{ item: Name, count?: 1..256 = 1, fuel?: Name, at?: Pos, wait?: true, maxTimeMs?: 120000 }`
-- 做：找/放炉子 → 装燃料与原料 → `wait` 时等完成并取出；`wait:false` 时装好就返回。
+- 做：找/放炉子 → 装燃料与原料 → `wait` 时等完成并取出；`wait:false` 时装好就返回。自行持有的身体在等待前释放，受委托时保留祖先身体；均关闭自己的窗口。计时只安排重新开炉复查，不能等待不可 watch 的 container.last 或把估计时间当成产物证明；实际取物前核验炉子和库存。
 - 完成（`wait:true`）：背包里增加 `count` 个产物。
 - 返回 `wait:true` → `{ produced:{ [item]: number }, consumed:{ input, fuel }, at }`；`wait:false` → `{ at, loaded:{ input, fuel, count }, readyAt, hint:"用 take@1 取" }`
 - 失败 `MISSING_MATERIAL`（缺原料或燃料）、`WRONG_STATE`（炉子被占用/没有炉子且没有材料）、`TIMEOUT`、`INTERRUPTED`
@@ -481,7 +478,7 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 失败 `MISSING_MATERIAL`、`WRONG_STATE`、`TIMEOUT`
 
 #### enchant · `enchant@1` · act · P2
-- 输入 `{ item: Name, slot?: 1|2|3, at?: Pos }`
+- 输入 `{ item: Name|ItemSelector, slot?: 1|2|3, at?: Pos }`
 - 做：附魔台放物品与青金石，选第 `slot` 项。返回 `{ enchantments:[{ name, level }], cost, at }`
 - 不指定具体附魔：附魔是随机的，能力只负责"执行这次选择"。定向附魔用 `anvil` 合并附魔书。
 - 失败 `MISSING_MATERIAL`（青金石/等级不够）、`WRONG_STATE`（没有附魔台/书架不足）、`TIMEOUT`
@@ -491,7 +488,7 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 返回 `{ result:{ name, enchantments }, cost, at }`；失败 `MISSING_MATERIAL`、`WRONG_STATE`（等级不够）、`TARGET_NOT_MET`（不可合并）
 
 #### grindstone · `grindstone@1` · act · P2
-- 输入 `{ item: Name, at?: Pos }` → `{ repaired, removedEnchantments, xp, at }`；失败 `NOT_FOUND`、`WRONG_STATE`
+- 输入 `{ item: Name|ItemSelector, at?: Pos }` → `{ repaired, removedEnchantments, xp, at }`；失败 `NOT_FOUND`、`WRONG_STATE`
 
 ### 交互与社会
 
@@ -531,7 +528,7 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 返回 `{ hit, damage?, target:{ name, health? } }`；失败 `NOT_FOUND`、`UNREACHABLE`、`WRONG_STATE`（目标已死）
 
 #### fight · `fight@1` · act · P0
-- 输入 `{ target?: Name | EntityRef, radius?: 8..32 = 16, stance?: "balanced"|"cautious"|"aggressive" = "balanced", weapon?: "auto"|"melee"|"ranged" = "auto", maxTimeMs?: 30000 }`
+- 输入 `{ target?: Name | EntityRef, radius?: 8..32 = 16, stance?: "balanced"|"cautious"|"aggressive" = "balanced", weapon?: "auto"|"melee"|"ranged" = "auto", retreatHealth?: number, maxTimeMs?: 30000 }`
 - 做：一次战斗会话：选目标 → 自动换最好的武器/盾 → 追击 → 按冷却攻击 → 走位（不站岩浆/悬崖边）→ 按 `stance` 决定进退。`weapon:"ranged"` 用弓/弩。
 - `stance` 是**真实决策规则**，不是形容词：
 
@@ -541,10 +538,10 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
   | `cautious` | ≥ 85% | < 60% | 1 | 3 格 | 优先 | 先 `surface` 再撤 |
   | `aggressive` | ≥ 35% | < 20% | 4 | 1 格 | 只对远程怪 | 不主动撤 |
 
-  这些阈值属于 Combat 内部算法，会随实测调，不写进模型要填的参数；要更细的控制用 `body.loop`。
-- 完成：目标全部死亡，或 `maxTimeMs` 到，或撤退。
-- 返回 `{ kills:[{ name, drops:{ [item]: number } }], hp:{ before, after }, retreated?: "low_health"|"no_progress", stance, at }`
-- 失败 `NOT_FOUND`（附近没有该类目标）、`TIMEOUT`、`INTERRUPTED`
+  stance 提供默认值；retreatHealth 是可选绝对生命值阈值（0..当前 maxHealth，0 表示不因血量主动撤退），显式给出覆盖 stance 的撤退血量规则。其他委托与急停约束仍生效；有效阈值随 CallRecord 记录。其余内部权重不逐项开放，精细控制仍可用 body.loop。
+- 会话结束：目标清除、撤退、目标失去跟踪或期限到；对应 ended=targets_cleared/retreated/target_lost/timeout。期限到是本次会话结束，stop/掉线等中断仍抛错，不能把目标失踪当击杀。
+- 返回 `{ended, kills:[{name,drops:{[item]:number}}], hp:{before,after}, retreated?:"low_health"|"no_progress", stance, retreatHealth, at}`；击杀/掉落仅记录可确认部分。
+- 失败 `NOT_FOUND`（启动时没有目标）、`INTERRUPTED`、`DISCONNECTED`
 - 注意：`retreated` 是**成功返回**的一种，不是失败——模型问的是"打完了吗"，答案可以是"我撤了"。
 
 ### 记录
@@ -552,7 +549,7 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 #### remember · `remember@1` · act · P1
 - 输入 `{ name: string(1..32), at?: Pos, kind?: "home"|"mine"|"farm"|"other" = "other", note?: string }`
 - 做：把坐标写进世界记录（同名覆盖）。`at` 省略时记当前位置。
-- 返回 `{ name, at, kind }`；失败 `INVALID_INPUT`（名字不合法）
+- 返回 `{name, at:{position,dimension}, kind}`；失败 `INVALID_INPUT`（名字不合法）
 
 #### forget · `forget@1` · act · P1
 - 输入 `{ name }` → `{ removed }`；失败 `NOT_FOUND`
@@ -565,62 +562,51 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 
 ## 6. 三个剧本
 
-### 6.1 从零到铁镐
+### 6.1 从查询配方到获得铁镐
+
+下面是待实现的契约示例，不承诺从空背包只靠一次配方查询就自动补齐科技树。工具/炉子/材料不足会明确失败，程序或主脑据错误补齐。
 
 ```js
 async function main(mc, input) {
-  const { value: plan } = await mc.read("recipe@1", { item: "iron_pickaxe" });
-  const missing = plan.plan.missing;
-
-  if (missing.stick) await mc.call("craft@1", { item: "stick", count: missing.stick });
-  if (missing.raw_iron) {
-    const got = await mc.call("collect@1", { item: "raw_iron", count: missing.raw_iron, digThrough: true });
-    if (got.remaining > 0) {
-      await mc.decide({ reason: `只挖到 ${got.mined}/${missing.raw_iron} 个粗铁，附近没有了，要下矿还是换地方？` });
+  const {value: inv} = await mc.read("inventory@1");
+  const have = inv.counts.iron_ingot ?? 0;
+  const need = Math.max(0, 3 - have);
+  try {
+    if (need) {
+      await mc.call("collect@1", {item:"raw_iron", count:need, digThrough:true});
+      await mc.call("smelt@1", {item:"raw_iron", count:need, fuel:"coal"});
     }
+    await mc.call("craft@1", {item:"iron_pickaxe", count:1});
+  } catch (e) {
+    if (!["NOT_FOUND","MISSING_TOOL","MISSING_MATERIAL"].includes(e.code)) throw e;
+    mc.decide({reason:e.message, checkpoint:{goal:"iron_pickaxe", progress:e.progress ?? null}});
   }
-  if (missing.coal) await mc.call("collect@1", { item: "coal", count: missing.coal });
-  await mc.call("smelt@1", { item: "raw_iron", count: missing.raw_iron, fuel: "coal" });
-  await mc.call("craft@1", { item: "iron_pickaxe", count: 1 });
-  return { held: (await mc.read("self@1")).value.held };
+  return {produced:"iron_pickaxe"};
 }
 ```
 
-注意这段程序里没有：坐标、工作台、炉子、工具选择、格子摆放。全部由能力吸收。
+该程序被别人调用时，决策请求可由父程序处理；未处理才到根。采集数量按入包算，采集目标不足抛出的 progress 仍保留实际成果。
 
-### 6.2 盖一间 5×5 的木屋
+### 6.2 按设计施工与精确状态
 
 ```js
-function hut(base) {
-  const cells = [];
-  for (let dx = 0; dx < 5; dx++)
-    for (let dz = 0; dz < 5; dz++)
-      for (let dy = 0; dy < 3; dy++) {
-        const shell = dx === 0 || dx === 4 || dz === 0 || dz === 4;
-        const hole = dy < 2 && (dx === 2 || dz === 2);          // 门与窗
-        if (shell && !hole) cells.push({ at: { x: base.x + dx, y: base.y + dy, z: base.z + dz }, block: "oak_planks" });
-        else if (!shell && dy !== 1) cells.push({ at: { x: base.x + dx, y: base.y + dy, z: base.z + dz }, block: "oak_planks" });
-      }
-  return cells;
-}
-
 async function main(mc, input) {
-  const { position } = (await mc.read("self@1")).value.place;
-  const cells = hut({ x: position.x + 2, y: position.y, z: position.z });
-  const { value: plan } = await mc.read("build.plan@1", { cells });
-  if (Object.keys(plan.missing).length) {
-    await mc.call("collect@1", { item: "oak_log", count: Math.ceil(plan.missing.oak_planks / 4) });
-    await mc.call("craft@1", { item: "oak_planks", count: plan.need.oak_planks });
+  const at = input.at; // 调用方提供带维度的整数落点，不能把 self 的小数直接当格子
+  const from = {kind:"blueprint", name:input.blueprint};
+  const {value: plan} = await mc.read("build.plan@1", {from, at});
+  if (Object.keys(plan.missing).length || plan.blocked.length) {
+    mc.decide({reason:"需要材料或现场取舍", checkpoint:{from, at, plan}});
   }
-  const r = await mc.call("build@1", { cells });
-  if (r.remaining.length) {
-    await mc.decide({ reason: `还差 ${r.remaining.length} 格没放：${r.remaining[0].reason}` });
+  try {
+    return await mc.call("build@1", {from, at, expectDigest:plan.blueprint.digest});
+  } catch (e) {
+    if (!["MISSING_MATERIAL","UNREACHABLE","CONFLICT","TARGET_NOT_MET"].includes(e.code)) throw e;
+    mc.decide({reason:e.message, checkpoint:{from, at, progress:e.progress ?? null}});
   }
-  await mc.call("place@1", { block: "oak_door", at: { x: position.x + 4, y: position.y, z: position.z + 2 } });
-  await mc.call("place@1", { block: "torch", at: { x: position.x + 4, y: position.y + 2, z: position.z + 2 } });
-  return { placed: r.placed };
 }
 ```
+
+自定义几何仍用普通 JS 生成 `{at,block}` cells，Construction 拥有施工算法。精确楼梯示例为 `await mc.call("place@1", {block:{name:"oak_stairs",properties:{facing:"east",half:"top"}},at:{x:1,y:64,z:2}})`；成功核验所声明状态，不只看名字。
 
 ### 6.3 一次失败恢复
 
@@ -651,13 +637,13 @@ try {
 模型的上下文里始终有这一页（约 45 行），其余靠 `mc describe` 按需查。
 
 ```
-你通过写程序玩 Minecraft：async function(mc, input)。
+你通过写程序玩 Minecraft：async function main(mc, input)。
 查询用 await mc.read("名字@1", 参数) → {value, version, unknown?}；动作用 await mc.call("名字@1", 参数) → 领域值。
 名字带 @1 是能力，不带 @ 是库里的程序。失败抛 CallError {code, source, message, hint, dispatch, effects, progress}。
 
 先看再做：参数不确定 → mc describe 名字；料不确定 → recipe；路不确定 → route.plan。
 找方块用 blocks（有界、给 truncated）；读一片形状用 region（palette + 索引，≤8192 格）。
-大工程先试算：mc.read("recipe@1", …).value.plan / build.plan@1 / route.plan@1 通过再开工。
+大工程先试算：const {value} = await mc.read("recipe@1", {item:"iron_pickaxe"})，再读 value.plan；build.plan/route.plan 同样先 await。计划有据仍需执行时重验。
 
 查询  self inventory block blocks region entities item recipe world places container.last route.plan build.plan
 移动  goto follow flee surface explore transit ride
@@ -673,7 +659,7 @@ try {
 四条规矩
 1 能省就省：place/take/stow 不给坐标就用手边最近的；craft/smelt 自己找工作站；工具自己换。
 2 看数字：collected/mined/placed/remaining 才是结果，别假设成功。
-3 部分完成不是失败：e.progress 是已做的，返回值里的 remaining 是没做的；接着做剩下的，不要从头来。
+3 目标未满足则抛领域错误：e.progress 包含已做的和 remaining；新调用按现场与剩余量决定，不默认从头重做。
 4 失败按 code 分支，别看 message：
    NOT_FOUND UNREACHABLE CONFLICT WRONG_STATE → 换目标或改世界
    MISSING_MATERIAL MISSING_TOOL INVENTORY_FULL → 先补，hint 常给现成参数
@@ -685,23 +671,23 @@ try {
 坐标是 {x,y,z} 或 {rel:{x,y,z}}；名字写 oak_log / 橡木原木 / log 都行，标签写 #minecraft:logs。
 意图固定、世界会变：派发后的参数不再改，但路线、目标、走位由能力按当前世界重算；看回执，别假设。
 找不到不等于不存在：看 scanned 与 unknown，再决定扩大范围还是换假设。
-长任务每 2-3 分钟 mc.progress 一句；等世界变化用 mc.waitForChange（只接受带观察令牌的查询：self inventory block blocks region entities world places）；route.plan/build.plan/recipe 这类派生结果不能等，sleep 后重算。
-不要在 withBody 里用 mc.call 调需要身体的动作（改用 body.call）；不要在一个程序里并发两个动身体的调用。
+长任务用 mc.progress({summary:"正在采集", acquired:6}) 报告进度；等世界变化用 mc.waitUntil（只接受 descriptor.watchable=true 的查询；predicate 第二参数为 {unknown}，期限参数 timeoutMs）；route.plan/build.plan/recipe 这类派生结果不能等，sleep 后重算。
+持身体的原上下文用 body.call 显式委托；被委托子上下文的普通 call 继续继承。根的独立身体调用可并发并按 FIFO 排队，同一委托路径不并发竞争。回调等待也保留身体；需其他任务推进时在外层等。
 ```
 
 ## 8. `describe` 的输出
 
-`mc describe`（无参数）返回能力索引：一行一个 `名字 · 一句话`，按家族分组，约 50 行——模型不需要背全部时的"目录"。
+`mc describe` 无参数返回家族概览；query 搜索覆盖能力、程序、蓝图与经验，候选标 kind/callable，具体排序与数量上限由 Program §4.3 定义。查询能力用 read，动作/程序用 call，蓝图/经验供读取。
 
-`mc describe collect` 返回单条契约，固定六行：
+`mc describe collect` 返回单条契约，下列六项齐全，另包含 kind/callable/availability；候选和详情都取同一 descriptor：
 
 ```
-collect@1  act · P0
+collect@1  kind:capability · callable:true · act · P0
 收集 N 个指定物品的掉落：找方块 → 走近 → 挖 → 捡，自动选工具。
-输入 { item: Name, count?: 1..1024 = 1, radius?: 4..64 = 32, digThrough?: false, tool?: Name }
-返回 { mined, collected: {item: n}, remaining, toolsUsed, stopped? }
+输入 { item: Name, count?: 1..1024 = 1, radius?: 4..64 = 32, digThrough?: false, tool?: Name|ItemSelector }
+返回 {mined, acquired, collected:{item:n}, remaining:0, toolsUsed}；不足抛错并携带同名 progress
 失败 NOT_FOUND | MISSING_TOOL | INVENTORY_FULL | UNREACHABLE | TIMEOUT | INTERRUPTED
-例 { item: "oak_log", count: 8 } → { mined: 8, collected: { oak_log: 8 }, remaining: 0 }
+例 await mc.call("collect@1", {item:"oak_log",count:8}); → {mined:8,acquired:8,collected:{oak_log:8},remaining:0,toolsUsed:[]}
 ```
 
 ## 9. 与三份参考实现的取舍
@@ -781,7 +767,7 @@ collect@1  act · P0
 
 已裁决的不再列（参数冻结三层见 §2.13；`region` 上限、`container.last`、`goto`/`transit` 分工、`stance` 预设、蓝图归属分别见 §3 与 §4）。剩下这些要真实服务器数据才能定：
 
-1. **`collect` 的概率掉落**：`count` 定义为"挖出的方块数"还是"入包物品数"？现取前者；稀有掉落（小麦种子）下模型可能觉得少。
+1. **概率掉落的采集策略**：count 已固定为本次新增入包数量；掉落反查、搜索效率与有限覆盖需要真实数据验证，不能退回按破坏格数完成。
 2. **自动进食是否进反射**：现在饥饿只进 `self`，由程序决定。长任务里模型可能忘记吃。
 3. **`container@1` 是不是该算 act**：它短暂持身体、可能被打断。现在保留 act（有可验证的完成口径），历史读取另给 `container.last`。
 4. **多人寻址**：`give`/`follow` 用玩家名，重名/离线时的行为未定。
@@ -789,7 +775,7 @@ collect@1  act · P0
 6. **`route.plan` 的成本**：plan 要跑一次完整寻路，岩浆/水域下可能上百毫秒；是否缓存同一目标的 plan。
 7. **群系/结构探测**：`explore` 的 `biome` 依赖客户端生物群系数据；`structure` 一律不支持（mineflayer 拿不到可靠结构信息）。
 8. **`region` 的实测**：`xzy` 顺序、`-1` 未知格、以及 8192 格在真实区块边界上的切分体验，要跑一次矿洞才知够不够用。
-9. **`stance` 阈值**：表里的 60%/40% 等是初始值，要用真实战斗（含盾、击退、苦力怕）调；调完仍不进模型参数。
+9. **`stance` 阈值**：表里的 60%/40% 等是初始值，要用真实战斗（含盾、击退、苦力怕）调；调完更新 stance 默认值；retreatHealth 显式覆盖仍保留。
 10. **`transit` 的阶段集合**：`portal`/`minecart`/`boat`/`horse` 是否都有必要；建门（黑曜石/打火石）与下界坐标换算的边界要在实现时定。
 
 ## 附录 A：失败码 × 能力
@@ -804,7 +790,7 @@ collect@1  act · P0
 | `smelt` | MISSING_MATERIAL WRONG_STATE TIMEOUT INTERRUPTED |
 | `take`/`stow` | NOT_FOUND INVENTORY_FULL WRONG_STATE UNREACHABLE |
 | `build` | MISSING_MATERIAL UNREACHABLE CONFLICT TIMEOUT INTERRUPTED |
-| `fight` | NOT_FOUND TIMEOUT INTERRUPTED |
+| `fight` | NOT_FOUND INTERRUPTED DISCONNECTED |
 | `use` | NOT_FOUND UNREACHABLE WRONG_STATE TARGET_NOT_MET MISSING_MATERIAL |
 | `transit` | UNREACHABLE MISSING_MATERIAL WRONG_STATE TIMEOUT |
 | 其余 | 见各条 |

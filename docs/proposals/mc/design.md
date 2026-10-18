@@ -55,7 +55,7 @@ Minecraft World 让 Uina 熟练、自主地参与游戏：常用操作简单可�
 | 术语 | 含义 |
 | --- | --- |
 | Run | 一次受理的执行单元，有稳定记录，可含多个执行段；对外以 run 引用 |
-| Segment | 一段连续执行；身体资格、取消与证据以段为单位 |
+| Segment | 一段连续执行及其固定入口材料；包含调用、取消和效果记录 |
 | Call | 一次能力调用；程序内部调用建立子 Call，不建立子 Run |
 | Body | 身体写入资格；同一时刻一个所有者，按段授予 |
 | Effect | 已派发动作及其确认程度，与目标是否达成分开表达 |
@@ -150,7 +150,7 @@ Minecraft 专属状态、动作与恢复都留在本 World；通用主体、模�
 | 生存与战斗 | 饮食、装备、状态效果、脱险、近远程战斗、盾牌与走位、撤退、死亡恢复 | Combat（`fight@1`、`attack@1`）；Inventory（`equip@1`、`eat@1`）；World（`world@1`） |
 | 资源与制作 | 采集、拾取、钓鱼、合成、熔炼、酿造、锻造、附魔、铁砧与工作站 | Crafting（`collect@1`、`craft@1`、`smelt@1`、`brew@1`、`enchant@1`、`anvil@1`）；World（`recipe@1`） |
 | 物品与交互 | 容器、精确槽位与匹配、方块面与点击位置、副手、交易、骑乘与实体交互 | Inventory（容器、槽位、交易）；Driver（`interact`、`openContainer`） |
-| 工程与创造 | 放置状态与朝向、挖掘区域、施工与修复、农业与养殖、红石与新操作 | Construction（`placeAt`、`build`、规划与修复）；World（工程现场） |
+| 工程与创造 | 放置状态与朝向、挖掘区域、施工与修复、农业与养殖、红石与新操作 | Construction（`place@1`、`build`、规划与修复）；World（工程现场） |
 | 协作与连续活动 | 游戏聊天、响应玩家、等待世界过程、长期行动、保存与改进成果 | `say`；Runtime（等待、续段）；Library（保存与来源） |
 
 <a id="interfaces"></a>
@@ -168,7 +168,7 @@ Minecraft 专属状态、动作与恢复都留在本 World；通用主体、模�
 | `library` | 管理库：`list`/`get`/`save`/`update`/`delete`，`kind` 缺省为程序，另有蓝图与经验 | 改代码不等于执行游戏动作 |
 | `say` | 发送游戏聊天，返回发送结果及可确认范围 | 不排在身体动作后；遵守服务器实际规则 |
 
-顶层说明包含少量程序约定、代表性调用和能力类别，具体能力按需读取。不把完整目录塞进巨型 Schema，也不因为附近没有怪物就隐藏战斗能力。原生能力与保存程序进入同一发现入口，但保留实现来源、版本与证据差异；调用时校验真实参数，不要求模型记住所有签名。
+顶层说明包含少量程序约定、代表性调用和能力类别，具体能力按需读取。不把完整目录塞进巨型 Schema，也不因为附近没有怪物就隐藏战斗能力。原生能力、程序、蓝图与经验进入同一发现入口，kind/callable 明确区分；只有动作能力与程序用 call，查询用 read，蓝图与经验供读取；调用时校验真实参数，不要求模型记住所有签名。
 
 ### 3.1 简单调用与长动作
 
@@ -200,20 +200,20 @@ describe({query: "采集原木"})
 
 describe({selector: "collect@1"})
 → 输入：物品或方块、数量、半径；输出：实际入包数量与 remaining
-  示例：collect({item: "oak_log", count: 32})
+  示例：await mc.call("collect@1", {item:"oak_log",count:32});
 
-run({kind: "call", selector: "collect@1", input: {item: "oak_log", count: 32}})
+run({selector: "collect@1", input: {item: "oak_log", count: 32}})
 → {"requestId":"q17","kind":"accepted","run":"r17","phase":"running"}
 ```
 
-`run` 接收一次调用（`{kind:"call", selector, input}`）或一段代码（`{kind:"code", code, input}`），二者互斥。代码模式使用同一调用上下文，不是让模型在运行中的脚本里再调用顶层 `run`；保存程序按名字调用（`{kind:"program", name:"wood_pick"}`），不必重传源码。临时代码以 `input` 读参数、以 `mc` 使用运行接口：`code: "return await mc.call('collect@1', input);"`。
+`run` 的模型侧输入是 `{selector,input?}`、`{name,input?}`、`{code,input?}` 三选一；Executor 再映射为公开接口的 Entry。代码模式使用同一调用上下文，不是让模型在运行中的脚本里再调用顶层 `run`；保存程序按名字调用（`{name:"wood_pick"}`），不必重传源码。临时代码以 input 读参数、以 mc 使用运行接口；code 必须是完整脚本，例如 `code: "async function main(mc, input) { return await mc.call('collect@1', input); }"`。
 
 requestId 由 Executor 生成并持久保存，模型不填写；重试与受理查询复用原 ID，结果未知时回执给出该引用供核对。新的 run 是新意图，相同参数不自动合并。
 
 ```text
 runs({op: "status", run: "r17"})
 → {"run":"r17","phase":"finished","outcome":"failed",
-   "reason":"target_unreachable","progress":{"collected":19,"target":32},
+   "reason":"target_unreachable","progress":{"acquired":19,"collected":{"oak_log":19},"remaining":13},
    "unknownEffects":[],"record":"执行记录引用"}
 ```
 
@@ -228,20 +228,25 @@ runs({op: "stop", run: "r24"})
 → {"run":"r24","phase":"stopping","control":"stopping"}
 稍后：
 → {"run":"r24","phase":"finished","outcome":"cancelled","control":"stopped",
-   "progress":{"collected":19},"unknownEffects":["最后一次交互的效果引用"]}
+   "progress":{"acquired":19,"collected":{"oak_log":19}},"unknownEffects":["最后一次交互的效果引用"]}
 ```
 
 第一份回执只确认停止请求已登记；只有控制不再输出后才能确认 `stopped`，在途效果未知独立保留。尚未开始且没有身体操作的运行可以立即结束。重复停止复用既有意图；停止已结束的运行直接返回终态，不改写原先结论。
 
-运行需要主脑选择时返回 `awaiting_decision`，附决策引用、原因、事实和检查点。主脑用 `runs.continue` 指定运行、当前决策引用及新的能力或代码段：保留同一运行和累计进度，但不恢复旧 JS 栈。旧决策已处理时，重复的同一继续请求返回既有记录，其他过期请求拒绝；终态运行不通过继续复活。
+运行需要主脑选择时返回 `awaiting_decision`，附决策引用、原因、事实和检查点。主脑用 `runs.continue` 指定运行、当前决策引用及新的能力或代码段：保留同一运行和历史段进度，不恢复旧 JS 栈，也不自动累计业务量。旧决策已处理时，重复的同一继续请求返回既有记录，其他过期请求拒绝；终态运行不通过继续复活。
 
 ```text
 → {"run":"r30","phase":"awaiting_decision","decision":"d2",
-   "reason":"materials_missing","checkpoint":"施工进度引用"}
-runs({op: "continue", run: "r30", decision: "d2",
-      call: "construction.build", args: {project: "e4", blueprint: "cottage@2"}})
+   "reason":"materials_missing",
+   "checkpoint":{"kind":"program","value":{"from":{"kind":"blueprint","name":"cottage"},
+     "at":{"position":{"x":10,"y":64,"z":20},"dimension":"overworld"}},
+     "origin":{"call":"c30","program":"build_hut","digest":"源码摘要"}}}
+runs({op:"continue", run:"r30", decision:"d2",
+      entry:{code:"async function main(mc, input) { return await mc.call('build@1', mc.checkpoint); }"}})
 → {"run":"r30","phase":"queued","segment":"s2","kind":"accepted"}
 ```
+
+entry 使用与 run 相同的模型侧三选一入口，Executor 映射内部 ContinuedEntry。新根从 mc.checkpoint 读程序 JSON；原生入口不隐式消费程序检查点。queued 在这里表示新段尚未开始，不是 Program 容量队列。
 
 ### 3.5 上下文成本
 
@@ -272,7 +277,7 @@ JS 是条件、循环、函数、计算、异常和事件组织的组合语言�
 await mc.call("collect@1", { item: "oak_log", count: 16 });
 await mc.call("craft@1", { item: "oak_planks", count: 32 });
 const self = await mc.read("self@1");
-if (self.value.health < 10) await mc.call("goto@1", { at: { place: "base" } });
+if (self.value.health < 10) await mc.call("goto@1", { at: input.home });
 ```
 
 成熟能力减少机械调用；细粒度能力允许模型改变具体方法。编程操作面覆盖状态与事件、移动与视角、按键组合、物品与副手、槽位与窗口、点击面与点击位置，以及动作时序。
@@ -289,7 +294,7 @@ if (self.value.health < 10) await mc.call("goto@1", { at: { place: "base" } });
 
 脚本故障不能冻结客户端心跳、取消处理和必要的自保。生成程序与宿主对象隔离，游戏访问通过受控接口；普通代码可以组织流程，但不能绕过失效控制权或重用旧连接引用。
 
-执行域已定：world 伴生进程内的 worker 线程，每次调用一个 QuickJS-WASM，默认预算见 [program.md §5.3](modules/program.md)（32 MiB / 20 ms 连续计算 / 60 s 累计 / 64 KiB 源码 / 1 MiB 单值）。超限即终止并结算，取消不依赖 guest 收尾。**这与是否限制游戏动作数量无关**——动作总数、轮次和任务时长不设默认上限，由真实成本决定。
+执行域已定：world 伴生进程内的 worker 线程，每次调用一个 QuickJS-WASM，默认预算见 [program.md §5.2](modules/program.md)（初始策略：32 MiB guest 堆 / 20ms 连续计算 / 64 KiB 源码 / 1 MiB 单值，无默认累计 CPU 终止）。超限即终止并结算，取消不依赖 guest 收尾。**这与是否限制游戏动作数量无关**——动作总数、轮次和任务时长不设默认上限，由真实成本决定。
 
 程序可以捕获领域失败并尝试另一条已允许的方法；取消、控制失效与连接失效不能因被 `catch` 捕获就恢复旧资格。程序返回的自述不覆盖执行证据。需要主脑思考时，程序结束当前段，返回原因、事实和可序列化进度，不偷偷调用第二个 LLM，也不承诺保存任意 JS 执行栈。
 
@@ -311,13 +316,14 @@ if (self.value.health < 10) await mc.call("goto@1", { at: { place: "base" } });
 let collected = 0;
 for (const block of ["oak_log", "birch_log"]) {
   try {
-    collected += (await mc.call("collect@1", { item: block, count: 32 - collected })).collected;
+    collected += (await mc.call("collect@1", { item: block, count: 32 - collected })).acquired;
   } catch (error) {
-    if (error.code !== "TARGET_NOT_MET") throw error;
-    collected += error.progress?.collected ?? 0;
+    if (!["NOT_FOUND", "UNREACHABLE", "INVENTORY_FULL", "TIMEOUT"].includes(error.code)) throw error;
+    collected += error.progress?.acquired ?? 0;
   }
   if (collected >= 32) break;
 }
+if (collected < 32) mc.decide({reason:"原木不足",checkpoint:{collected,target:32}});
 return { collected, target: 32 };
 ```
 
@@ -325,7 +331,7 @@ return { collected, target: 32 };
 
 不确定错误不进入普通自动重试。程序可以读取新事实、调用核验方法或交还主脑；核验结果追加到原效果引用，原记录不改写。只能证明目标现在满足时，就报告当前目标满足，不据此补造先前动作的因果。对未知交易或物品消耗，后续行动先核验有关库存与结果，再决定是否重做。
 
-程序正常返回表示执行段正常结束。原生能力和保存程序可通过入口合同声明可核验目标；临时代码用明确查询与断言检查自己的组合目标，不能靠 `completed: true` 声明世界事实。没有可核验目标时，成功只指程序按合同结束，回执仍列出实际效果。
+程序正常返回表示执行段正常结束，完成范围为 execution；原生能力负责核验自身声明的目标或会话结束条件，范围为 capability。输出 schema 只校验形状。程序可用查询和断言检查组合目标，但 Runtime 不维护另一份目标状态，也不累计父子/跨段完成量。各调用结果和效果仍可展开。
 
 拟正常结束时，若入口合同建立的必需完成证据仍无法确认，整体结果保留 `unknown` 并呈现已知进度。“必需”由派发前的合同确定，不是脚本事后可改的标记；程序断言也不自动认证其表达了用户意图。已确定取消停止可结算为 `cancelled`，已确定合同失败或未处理错误可结算为 `failed`；这两种确定结论不表示副作用已知，仍须附未解决的效果引用。已结算的普通失败可以被成功的替代路径解决，原证据仍可追溯；具体规则见 [完成证据合同](contracts.md)。
 
@@ -341,16 +347,16 @@ return { collected, target: 32 };
 | `body.interact` | 指定对象、面、点击位置、主副手，返回尝试与可得效果 | 不把点击当成机制必然触发 |
 | `body.attack` 与物品使用 | 一次攻击或一段物品使用，可与移动和视角协同 | 不自行选择交战目标，不默认等于命中或击杀 |
 | `body.openContainer` | 打开并核验窗口，在临时会话内读取槽位、转移与关闭 | 不提供跨窗口的永久句柄或服务端原子事务 |
-| `mc.waitForChange(targets, predicate, {afterMs})` | 现在就满足立即返回；不满足则等观察版本变化后重读重判 | 不把事件到达或超时当成目标完成 |
+| `mc.waitUntil(targets, predicate, {timeoutMs})` | 现在满足立即返回；否则等各自游标失效重读重判，超时/失效明确分型 | 不把事件到达或超时当成目标完成 |
 | `mc.decide` | 以事实和检查点结束当前段，等待下一段 | 不调用另一模型，不保留任意 JS 栈 |
 
-放置朝东的上半楼梯可用 `placeAt` 声明结果；研究新摆放方法时，则明确站位、视角、参照面和点击点调用 `interact`，再读实际状态。两种粒度共用同一身体与证据路径。
+放置朝东的上半楼梯可用 `place@1` 声明结果；研究新摆放方法时，则明确站位、视角、参照面和点击点调用 `interact`，再读实际状态。两种粒度共用同一身体与证据路径。
 
 容器会话内的一组转移属于一个交互段，每步按当前槽位重新检查；取消或关窗后临时句柄失效，已发生的转移不回滚，重开同一箱子产生新会话。输入物品按名称、组件及本次匹配约定选择，输出报告实际槽位与数量变化。
 
 ### 4.5 本地控制循环与事件等待
 
-局部控制逻辑在受限且可退役的 Program 执行域运行，不能堵塞 Driver 心跳、停止和必要自保；执行侧的查询与规划也须切片或卸载。语言、桥接与资源选型已定为 worker + QuickJS-WASM（[program.md §5](modules/program.md)），Runtime 侧硬保证见 [Runtime §9](modules/runtime.md)。
+局部控制逻辑在受限且可退役的 Program 执行域运行，不能堵塞 Driver 心跳、停止和必要自保；执行侧的查询与规划也须切片或卸载。语言、桥接与资源选型已定为 worker + QuickJS-WASM（[program.md §5](modules/program.md)），Runtime 侧硬保证见 [Runtime §3.4](modules/runtime.md)。
 
 脚本先声明所需反馈并建立一个控制段。执行侧提供带时序和有效性标记的快照，每次反馈中的普通函数计算下一组运动、视角与物品输入，受控接口检查当前资格后才生效。循环结束或失效时停止持续输入、撤销订阅并结算证据；反馈没有及时产生下一份输入时，不允许上一次按键无限保持。
 
@@ -367,7 +373,7 @@ await mc.withBody(async body => {
 
 这个接口不逐 Tick 调用主脑，也不跨 IPC 传输每帧函数。生成代码在原有执行域注册本地函数，反馈与受控输出走执行侧桥接；桥接延迟、丢帧与计算终止仍需实测。原生控制器使用相同资格与效果合同，可替换算法而不改变上层流程。
 
-身体作用域内的定长输入与短等待保持当前控制段；要等待世界条件必须先退出 `withBody`、释放输入与窗口，作用域内调用等待返回明确错误。组合条件（如“雨停且附近无怪”）由程序分别读取多项事实判断，再把各自引用交给等待接口，不为组合预建查询类型。底层观察仍须由 World 提供，独立读取不承诺联合快照；计时只安排复查，不证明完成。`await` 保留闭包与 guest，进程重启不恢复，见 [Runtime §10](modules/runtime.md#10-等待交还与续段)。
+withBody 回调内等待也保留身体。waitUntil/sleep 不自动释放或重新申请身体，不延长反馈帧和持续输入有效期；需让其他身体任务推进时应在作用域外等待。sleep(0) 只让出计算。组合条件（如“雨停且附近无怪”）由程序分别读取多项事实判断，再把各自引用交给等待接口，不为组合预建查询类型。底层观察仍须由 World 提供，独立读取不承诺联合快照；计时只安排复查，不证明完成。`await` 保留闭包与 guest，进程重启不恢复，见 [Runtime 等待与决策](modules/runtime.md#waiting)。
 
 <a id="control"></a>
 
@@ -377,11 +383,11 @@ await mc.withBody(async body => {
 
 同一时刻只有一个有权决定当前身体行为的所有者。同一行为内可协同移动、瞄准、攻击、盾牌或载具操作；互斥限制的是竞争写入，不是这些通道必须串行。
 
-控制资格授予完整行动段，并沿内部调用传递。底层操作不逐个争锁，内部能力不创建相互等待的顶层任务；客户端写入处检查资格，原生插件的定时器与回调也必须纳入这条路径，不能成为旁路控制主人。
+控制资格归调用谱系上的 BodyScope，body.call 显式委托一次后沿子上下文的普通 call 传播。底层操作不逐个争锁，内部能力不创建相互等待的顶层任务；客户端写入处检查资格，原生插件的定时器与回调也必须纳入这条路径，不能成为旁路控制主人。
 
 身体调度以行动段为单位。一次高层能力及其内部调用通常共同构成一段；查询、计算和世界等待可在段外执行。程序相邻能力默认可在各自作用域间释放；需要连续独占时显式 `withBody`，并用回调提供的 `body.call` 组合嵌套能力。连续控制、离散输入和有状态交互共享写入资格，不强制统一为 Tick 输入。需要协同运动、瞄准与交互时，由能力或程序提供的协调者安排依赖与顺序，不让两个独立控制器竞争。Driver 的边界见 [模块详细设计](modules/driver.md)。
 
-默认规则是：**普通就绪段按进入就绪队列的时间顺序执行，当前段不被新普通请求打断。** 世界等待、待决策和暂停恢复期间不占执行位置；再次可执行时按新的就绪时间入队，长任务不能靠保留旧名次在每次等待后优先夺回身体。
+默认规则是：**普通就绪段按进入就绪队列的时间顺序执行，当前段不被新普通请求打断。** 自行释放身体的世界等待、待决策和暂停恢复期间不占身体队列位置；再次申请按新的就绪时间入队。显式 withBody 内等待则继续保留身体，不重新排队。
 
 | 提交关系 | 推荐行为 | 对旧工作的影响 |
 | --- | --- | --- |
@@ -397,10 +403,10 @@ await mc.withBody(async body => {
 | 等待类型 | 处理 |
 | --- | --- |
 | 落地、拉弓、短交互、容器事务 | 属于当前身体行动段，保持必要控制与一致性 |
-| 熔炼、作物、之后的玩家事件 | 不持续占用身体，可安排其他工作；条件满足只表示重新检查的机会 |
+| 熔炼、作物、之后的玩家事件 | 能力自行取得的身体应在长期等待前释放；外层显式保留的身体不自动释放，其他身体任务排队 |
 | 等待主脑决策 | 结束当前执行段并释放身体，保留可解释进度与原因 |
 
-持久的观察或等待可以持续到取消，不要求一律设置超时；故障超时用于发现不再响应或不再进展的操作。世界等待前结束窗口会话、停止有关插件并释放持续输入；结束后重新参与调度并检查条件，不能直接抢回旧控制权。
+观察或等待可以持续到取消，不一律要求超时。能力自行取得身体时，在长期等待前清理自己的窗口/操作并退出作用域；借用祖先身体时只清自己的操作，不释放祖先。等待不延长输入有效期；再次操作前检查目标、窗口和资格。
 
 物品没有隐式长期锁。“为施工保留 32 块木板”是使用策略，不阻止其他玩家取走箱内物资；等待后按实际库存与组件重新核验，不依赖旧槽位或资源预留。
 
@@ -432,13 +438,13 @@ await mc.withBody(async body => {
 
 ### 5.5 运行状态与继续责任
 
-运行有稳定记录，可经历多个执行段；身体归属只存在于正在控制身体的段。`phase` 是供模型决策的投影，按 `finished`/`awaiting_decision` → `stopping` → `running` → `queued` → `waiting` 取优先级最高的一个值，真实状态分布在调用、等待项与 `control` 中；结果五态单独记录。
+运行有稳定记录，可经历多个执行段；身体归属取决于 withBody 是否退出，不取决于当前是否等待。`phase` 是供模型决策的投影，按 `finished`/`awaiting_decision` → `stopping` → `running` → `queued` → `waiting` 取优先级最高的一个值，真实状态分布在调用、等待项与 `control` 中；结果五态单独记录。
 
 ```mermaid
 stateDiagram-v2
     [*] --> queued: 受理，尚未执行或仅待资源
     queued --> running: 开始执行或取得资源
-    running --> waiting: 登记世界等待并释放身体
+    running --> waiting: 仅剩等待；身体归属单独记录
     waiting --> running: 条件满足，重新计算或行动
     running --> awaiting_decision: 结束当前段并交还
     awaiting_decision --> running: 追加新段
@@ -454,18 +460,18 @@ stateDiagram-v2
 
 | 状态 | 谁负责下一步 | 身体与代码的含义 |
 | --- | --- | --- |
-| `queued` | Runtime 调度 | 无活动执行也未持身体；从未开始或仅待 Program 容量 |
+| `queued` | Runtime 调度 | 尚未启动或仅等待取得身体；Program 容量不足立即失败 |
 | `running` | 当前能力或程序 | 有活动执行；`control` 表示是否持身体 |
-| `waiting` | 已登记条件或有关世界过程 | 不持身体；保留内存中的 `await` 需能力明确支持 |
+| `waiting` | 已登记等待或 guest 的 Promise | 可仍持身体，按 control 判断；保留内存中的 await，不跨重启恢复 |
 | `awaiting_decision` | 主脑继续或停止 | 旧段已结束，无待恢复的 JS 栈；保留原因、检查点与决策引用 |
 | `stopping` | 执行侧清理与结算 | 不接受新动作；正在停止，不伪称已停 |
 | `finished` | 调用方读取或另建运行 | 终态不复活；保留结论与进度 |
 
-所有进入终态的路径都先释放该段控制、窗口与订阅，并结算已知和在途效果；正常返回不跳过清理。整个运行从未执行过任何动作时，停止结算为 `not_started`；已有执行段或动作的运行停止则是 `cancelled`，累计进度不能丢。
+所有进入终态的路径都先释放该段控制、窗口与订阅，并结算已知和在途效果；正常返回不跳过清理。整个运行从未执行过任何动作时，停止结算为 `not_started`；已有执行段或动作的运行停止则是 `cancelled`，各调用和历史段进度保留。
 
-`mc.decide` 是控制转移，不是可忽略的返回值：先停止当前段动作并退役其执行域，再交还主脑；待决策期间 stop 另记一次终止结论，原段证据保留。`runs.continue` 校验当前决策引用，追加新段；检查点经只读上下文提供，与本次参数分开，累计进度不清零，各段代码、依赖与结果分别可追溯。
+`mc.decide` 同步抛出专用 NEEDS_DECISION，宿主在跨调用边界时关联来源，子程序不能立即结束整个段；父可处理，根未处理时才停止本段动作、退役所属 guest 并交还。共享 worker 不因单段关闭而退出；待决策 stop 仍另记终结，原段证据保留。`runs.continue` 校验当前决策引用，追加新段；检查点按程序/领域分型；新程序根经只读 mc.checkpoint 取得 JSON，与 input 分开，各段代码、依赖、进度和结果分别可追溯。Run 展示根最后报告，不对各段求和；新段结果不认证旧目标完成。
 
-容量只有两种结局：段还没有域且没有空槽时排队（`queued`，不取消 Run）；段已有域后域内 guest（默认 8）或在途宿主 RPC（每 guest 默认 16）超限时立即 `PROGRAM_CAPACITY` 并给出 hint。主脑从 `runs` 看 `waiting` 与域/guest 计数，显式停止或改程序；停止、取消、查询和纯原生能力不排容量队列。
+共享 worker 承载多个段的独立 guest，段不预占线程。每次 guest 或 RPC 准入资源不足立即 PROGRAM_CAPACITY，不排队等待其他常驻 guest 退出；合法等待不挡住仍在容量内的供料程序。初始一个 worker、全局 32 个常驻 guest、每 guest 16 个在途 RPC，均为待验收策略。容量与故障影响范围由 ProgramPort.capacity()/runs 展示；CPU 累计只观察或按显式预算限制。
 
 例如建造缺料：运行在第 12 层进入待决策并释放身体；主脑可先用另一个运行取材，再给原运行追加续建段。若改蓝图，新段明确引用新设计和原现场，不让旧执行栈从“第 13 层”盲目继续；原运行已终止则新建关联运行。
 
@@ -543,7 +549,7 @@ stateDiagram-v2
 
 结论针对本次声明的合同裁定：从未执行为 `not_started`；明确取消且控制已停止可为 `cancelled`；已确认目标或程序失败可为 `failed`；无法确认完成或停止程度时保持 `unknown`，停止仍在进行则先保留非终态；合同满足且完成范围可确认才为 `succeeded`。每种结论携带自己的效果与进度，`unknownEffects` 不因失败或取消的原因已知而被清空。此处规定语义，不授权投影层替生产者重判。
 
-Driver 负责协议回执和本地预测来源，能力负责领域后置条件，Runtime 汇总和保存证据，主脑判断开放目标是否符合意图；各层不重复实现同一套核验。
+Driver 负责协议回执和本地预测来源，能力负责领域后置条件，Runtime 关联并保存证据，主脑判断开放目标是否符合意图；各层不重复实现同一套核验。
 
 采集要分开说明挖过多少、实际入包多少；合成明确目标物品与材料变化；放置核验目标格及状态；攻击区分尝试、可观察命中和击杀。目标状态满足不自动证明全是本次动作造成，已有物品不能凭空成为击杀证据。程序返回 `completed: true` 不覆盖这些事实；没有通用服务端回执的行为不强求伪造确定结论，而是如实报告证据、影响范围和核验入口。
 
@@ -582,7 +588,7 @@ Driver 负责协议回执和本地预测来源，能力负责领域后置条件�
 | `world-history.db` | World | 单 writer SQLite（WAL） |
 | `runtime.db` | Runtime | 单 writer SQLite（WAL），记录库 |
 
-库条目是作者的工作文件，模型可用文件能力直接读写；`runs/` 与两个 `.db` 只在各自合同内访问。程序的执行字节来自快照而不是工作文件，所以改文件不影响在途段（§9.4）。细节见 [Program §2](modules/program.md)、[Library §2](modules/assets.md)、[Runtime §4.3](modules/runtime.md)、[World §11.1](modules/world.md)。
+库条目是作者的工作文件，模型可用文件能力直接读写；`runs/` 与两个 `.db` 只在各自合同内访问。程序的执行字节来自快照而不是工作文件，所以改文件不影响在途段（§9.4）。细节见 [Program §3](modules/program.md)、[Library §2](modules/assets.md)、[Runtime §5.3](modules/runtime.md)、[World §11.1](modules/world.md)。
 
 地图包含已知地形、语义地标、资源、危险、路线与未知区域；可以命名地点、复查旧地点和关联跨维度路线，但不把局部寻路器当作全世界路线规划器。
 
@@ -596,7 +602,7 @@ Driver 负责协议回执和本地预测来源，能力负责领域后置条件�
 
 ## 9. 程序、蓝图与经验复用
 
-> **程序部分已由 [`modules/program.md`](modules/program.md) 取代，蓝图与经验由 [`modules/assets.md`（Library）](modules/assets.md) 取代（2026-10-18）。** 程序是 `programs/*.js` 单文件 + 头注释；库是普通文件，没有 `publish`/版本号/`publishFromRun`/绑定表，也没有 SQLite 目录、不可变包与证据副本。执行域是 worker 内的 QuickJS-WASM，每次调用一个运行时。§9.2 的 Raw/Target/Project 语义保留。
+程序格式与库操作见 [Program](modules/program.md)，蓝图与经验见 [Library](modules/assets.md)。库为普通文件；源码快照用于运行溯源，不提供依赖锁定或原环境重放。
 
 ### 9.1 工作文件与保存
 
@@ -622,7 +628,7 @@ library.save({ name: "wood_collect", summary: "砍够原木；附近需要橡树
 → 读那次调用的源码快照 → 写入 programs/wood_collect.js → 下一次 run 按名字调用
 ```
 
-源码取自那次**调用**的快照（`runs/<run>/sources/<sha256>.js`，与 `programs/` 同级，见 [program.md §2.6](modules/program.md)），不复制本次 input、返回值或后代；一个段可以依次跑多个程序，所以来源必须指名到 call。运行记录已被清理则明确报 `NOT_FOUND`，不从当前文件重建历史。保存与运行是两件事：失败一次不改源码。蓝图与经验不走这条路径，见 [Library §4–§5](modules/assets.md)。
+源码取自那次**调用**的快照（`runs/<run>/sources/<sha256>.js`，与 `programs/` 同级，见 [program.md §3.4](modules/program.md)），不复制本次 input、返回值或后代；一个段可以依次跑多个程序，所以来源必须指名到 call。运行记录已被清理则明确报 `NOT_FOUND`，不从当前文件重建历史。保存与运行是两件事：失败一次不改源码。蓝图与经验不走这条路径，见 [Library §4–§5](modules/assets.md)。
 
 ### 9.5 发现、检查与调用
 
@@ -672,7 +678,7 @@ Runtime 拥有执行与效果，World 拥有观察和工程修订，Library 拥�
 
 ### 10.5 发明新操作并再次复用
 
-主脑用普通代码组合读数、成熟能力和精细操作，尝试新跑酷或红石方法；本地反馈决定动作调整，运行留下代码和证据。有效方法可参数化保存，以后按版本调用；失败关联原版本，修订后通过场景比较，而不是直接追加“已学会”。
+主脑用普通代码组合读数、成熟能力和精细操作，尝试新跑酷或红石方法；本地反馈决定动作调整，运行留下代码和证据。有效方法可参数化保存，以后按名字调用当前文件；失败关联确切源码摘要，修订后通过场景比较，而不是直接追加“已学会”。
 
 跑酷时先读地形与身体状态，代码计算目标并进入本地控制循环，反馈函数按位置、速度与碰撞调整输入；落地、停止、失效或结束条件使循环释放身体。一次落地只验证该次条件；保存为参数化模块后，用不同落点、网络条件和中断场景比较，失败时可找回确切版本的动作与反馈记录。
 
@@ -688,7 +694,7 @@ Runtime 拥有执行与效果，World 拥有观察和工程修订，Library 拥�
 
 1. 原生插件与生成程序能否真正停止和交接，旧回调是否仍会发动作或清除新输入。
 2. 目标版本中哪些状态来自服务端、哪些来自预测；缺少确定回执时如何准确报告。
-3. 执行域在真实地图与真实玩法下的吞吐、反馈延迟与内存峰值（机制已定，见 program.md §8 阶段 4）。
+3. 执行域在真实地图与真实玩法下的吞吐、反馈延迟与内存峰值（机制已定，见 program.md §8.2）。
 4. 直接调用、代码组合、按需发现和短摘要，是否减少真实任务成本并支持未预设玩法。
 5. 驱动对原版长尾操作的覆盖与版本差异，以及需要补充的图像、GUI 和专用控制能力。
 6. 首个验收锁定哪个具体 Java 版本与服务器形态，哪些结论可以跨版本复用。
