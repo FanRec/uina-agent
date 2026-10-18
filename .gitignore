@@ -6,7 +6,8 @@ dist/
 .workbuddy/
 
 # 私人开发工作台，不随仓库公开；docs 全量纳入版本管理
-dev/
+# （根锚定：worlds/*/dev/ 等源码目录不受此条影响）
+/dev/
 .agents/
 AGENTS.md
 
