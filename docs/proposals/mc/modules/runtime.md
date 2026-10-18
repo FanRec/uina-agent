@@ -1,14 +1,14 @@
 # Runtime / Callable 详细设计
 
-日期：2026-10-18（Asia/Shanghai）。状态：修订后的实施规格，Runtime 尚未实现，未经过真实 Minecraft 验收。
+日期：2026-10-18（Asia/Shanghai）。状态：终态实施规格，Runtime 未实现。旧 Minecraft Runtime/Driver/World 源码已清理，未经过真实 Minecraft 验收。
 
-公共类型与错误只在 [public-api.md](../public-api.md) 定义，跨模块行为见 [contracts.md](../contracts.md)，目标见 [design.md](../design.md)，研究证据见 [research.md](../research.md)。本文负责 Runtime 的执行语义与内部算法。Program 引擎、桥接与容量算法由 Program 所有者负责；Executor 平台实现由其所有者负责，不在这里形成第二份规范。
+跨模块类型见 [public-api.md](../public-api.md)，所有权导航见 [contracts.md](../contracts.md)，目标见 [design.md](../design.md)，研究证据见 [research.md](../research.md)。本文负责 Runtime 的执行语义与内部算法。Program 引擎、桥接与容量算法由 Program 所有者负责；Executor 平台实现由其所有者负责，不在这里形成第二份规范。
 
 ## 1. 职责与不变量
 
 Runtime 负责**执行归属、调用组合、身体仲裁与执行记录**。一个已受理游戏意图独立于主脑的一轮思考持续存在；原生能力与普通 JavaScript 使用相同调用语义；一个 Minecraft 玩家身体在多个运行之间有确定的取得、停止与交接边界。
 
-Run、Call、Body 是三组内部职责，不要求三个服务、Manager 或独立状态机。Segment 区分换代码/交还前后的执行材料，Effect 区分程序返回与真实派发。目录、存储和记录屏障只服务这些事实。
+Run、Call、Body 是三组内部职责，不要求三个服务、Manager 或独立状态机。Segment 区分换代码/交还前后的执行材料，Effect 区分程序返回与真实派发。目录、存储和记录屏障只服务这些事实。查询不建立持久 Run；运行内查询沿用当前调用的只读身份，禁止经捕获的 act 代理升级权限。
 
 ### 1.1 范围与非目标
 
@@ -19,7 +19,7 @@ Run、Call、Body 是三组内部职责，不要求三个服务、Manager 或独
 1. Runtime 提交受理事实前，新 Run 不产生游戏动作。同一可信 owner/requestId 只对应一次受理或确定拒绝。
 2. 一个客户端最多一个有效 Body。Runtime 选择就绪申请，任一时刻最多一个 Driver.acquire 在途；Driver 唯一授予资格并强制物理失效和资源交接。
 3. 同一 Segment 的独立 Call 可以同时等待身体；共享 Run 不等于共享 Body。只有明确委托的调用谱系复用资格。
-4. 实际写入检查真实当前 Call、read/act 交集、作用域、委托和代次；旧代理、旧回调及旧执行域永久失效。
+4. 实际写入检查真实执行来源（run Call 或安全介入）；run 再检查 read/act 交集、作用域、委托和代次；旧代理、旧回调及旧执行域永久失效。
 5. 关闭先封闭动作准入并处理控制，再等待记录。数据库故障不阻止停止，但不能在记录未提交时声称持久终结。
 6. Run 终结必须在已收到的所属派发/回执材料提交屏障之后；记录屏障不等于服务端效果确认。
 7. completionRef 引用一次不可变执行报告：terminal 表示 Run 已 finished，decision 表示执行段已交还而 Run 尚未终结。工具直返与后台输入使用同一报告，不追求跨 Runtime DB、Uina journal 和事件的恰好一次呈现。
@@ -44,9 +44,9 @@ singleflight 绑定本次准备的真实 attachment/关闭代次，不将旧准�
 
 ### 2.2 调度单位与 phase
 
-Body 队列项为某 Call 的最外层 withBody 申请，分配 readySeq；独立申请普通 FIFO，包括同一 Segment 的兄弟 Call。只有选中项进入 Driver.acquire；上一个 Driver.close 完成才发下一项。Driver 内部队列仅实现互斥/关闭，不表达业务优先级。取消在队列中删除自己的项；grant 与取消竞争时检查 scope，失效 grant 立即关闭且不执行回调。
+Body 队列项为某 Call 的最外层 withBody 申请，分配 readySeq；独立申请普通 FIFO，包括同一 Segment 的兄弟 Call。只有选中项进入 Driver.acquire；上一个 Driver.close 完成才发下一项。Driver 不排等待队列，只接受选中申请；意外竞争是内部 CONTROL_CONFLICT，由 Runtime 处理，不要求模型重试 acquire。取消在队列中删除自己的项；grant 与取消竞争时检查 scope，失效 grant 立即关闭且不执行回调。
 
-replace_pending 只替换整个 Run 从未开始的明确目标；已开始但再次等待身体的 Run 不符合。preempt_current 核验 expectedRun，按先 commit 后撤销的顺序停止指定旧范围；新工作在屏障后获得一次优先机会，不建插队栈。已受理新工作后来取消，不复活旧运行。独立 stop/emergency 则立即撤销，不等待新工作或受理事务；真正的 recorder 故障可另行触发故障停机，不能把普通抢占拒绝冒充故障停机理由。
+replace_pending 只替换本 owner、明确归属且整个 Run 从未开始的目标；没有可信 caller 时必须提供 targets，否则 REPLACE_SCOPE_REQUIRED；operationIdentity 不是 caller。事务核验全部 targets，不静默扩大或缩小范围。已开始但再次等待身体的 Run 不符合。preempt_current 核验 expectedRun，按先 commit 后撤销的顺序停止指定旧范围；新工作在屏障后获得一次优先机会，不建插队栈。已受理新工作后来取消，不复活旧运行。独立 stop/emergency 则立即撤销，不等待新工作或受理事务；真正的 recorder 故障可另行触发故障停机，不能把普通抢占拒绝冒充故障停机理由。
 
 phase 表示执行活动，优先级为 finished/awaiting_decision → stopping → running（有执行或正在进行的操作）→ queued（未启动或仅等待取得资源）→ waiting（其余活动仅在等待）。持有身体本身不使 phase 变成 running；允许 waiting 且 control=active。control 表示身体归属/隔离状态，反馈帧和持续输入是否有效由 Driver 各自检查。混合分支详情保留在 Call/等待项中。没有自动身体时间片或任务时长上限；显式长期持有仍可停止/抢占。
 
@@ -54,13 +54,15 @@ phase 表示执行活动，优先级为 finished/awaiting_decision → stopping 
 
 ### 3.1 解析与普通组合
 
-组合根收集 NativeCallable 数组，校验 ref 唯一、access 判别、schema、completion/checkpoint/依赖支持，使用现有 Ajv。descriptor 是 describe、输入/输出验证与发现摘要的唯一来源。QueryDescriptor 是 World 查询投影，不再注册成可写能力。Program 从头注释提供同形描述，发现不加载全部源码。
+组合根收集 NativeCallable 数组，校验 ref 唯一、act 声明、schema、completion/checkpoint/依赖支持，使用现有 Ajv。descriptor 是 describe、输入/输出验证与发现摘要的唯一来源。QueryDescriptor 是唯一只读描述；查询实现由 World 装配，不同时注册 NativeCallable.read。Library 从程序头提供可选契约，Program 不复制文件目录；发现不默认返回源码。
 
 裸名调用按名解析：先精确能力 ref，再 `programs/<name>.js`（带 `@` 的选择子只解析为能力，不带 `@` 才可能是程序）。子程序 Q 用 Q 自己的解析结果；名字非法报 `SELECTOR_INVALID`，解析不到报 `PROGRAM_NOT_FOUND`。
 
-每次公共 call：解析确切 ref → 核验当前 scope/祖先准入与 access → 验证输入/支持 → 创建子 Call 和可信身份 → invoke → 校验输出/完成要求 → 按 §4.3 关闭与结算 → 返回领域值 O 或抛 CallFailure。内部调用不 submit 子 Run，不排顶层受理队列；只有真正需要身体时才排 Body 队列。
+每次动作/程序 call：解析确切 ref → 核验当前 scope/祖先准入与 access → 验证输入/支持 → 创建子 Call 和可信身份 → invoke → 校验输出结构 → 按 §4.3 关闭与结算 → 返回领域值 O 或抛 CallFailure。内部调用不 submit 子 Run；只有真正需要身体时才排 Body 队列。
 
-普通 JS helper 不进目录/执行日志。act 不等于身体，例如资产发布或聊天。父子权限为祖先约束和 callee 声明的交集；read 调 act 在执行前拒绝。已知子失败可被 catch 并走替代方法，记录保留；CONTROL_CONFLICT 默认归当前 Call，不自动退役 Segment。只有隔离失守、无法安全清理或根执行失败，才升级到段级结算。领域能力在自身实现中判断声明目标，Runtime 只校验输出结构并保存其结果，不按 descriptor 再执行一套目标核验。
+查询经 read/World.read 求值，不建立持久 Run/Call。运行内查询沿用所属调用的取消和只读 frame；独立 observe 使用本次查询作用域。真实 frame 的 access=read，捕获旧 act 代理仍不能写。ctx.call 误用查询在派发前报 USE_MC_READ；查询内重算/依赖读取仍受 World 固定切面的约束。
+
+普通 JS helper 不进目录/执行日志。act 不等于身体，例如领域记录写入或 chat 的消息/指令发送；这些动作仍须核验当前 act 与 Owner 门。父子权限为祖先约束和 callee 声明的交集；read 调 act 在执行前拒绝。已知子失败可被 catch 并走替代方法，记录保留；CONTROL_CONFLICT 默认归当前 Call，不自动退役 Segment。只有隔离失守、无法安全清理或根执行失败，才升级到段级结算。领域能力在自身实现中判断声明目标，Runtime 只校验输出结构并保存其结果，不按 descriptor 再执行一套目标核验。
 
 ### 3.2 调用身份
 
@@ -95,6 +97,18 @@ withBody 回调等待期间保留身体，不自动释放或重新排队。原�
 外层退出：封闭 BodyScope/后代准入 → 取消作用域结束时仍在途的所属工作 → Driver 撤销所属输入/插件/窗口 → 等待 close 屏障 → 下一个申请。清理可能释放蓄力物品或产生窗口后果，也要进入 ExecutionSink。未知服务器效果不阻止已经证明旧控制失效的交接；无法证明旧写来源失效就保持故障，并请求 Executor 隔离旧客户端，不能授予新主人。
 
 自保算法归领域模块。协调内介入沿用资格，独立介入先退役旧控制再以 kind=safety 取得资格，受同一门和记录约束；不形成旁路身体控制器。
+
+<a id="safety-intervention"></a>
+
+#### 3.3.3 安全介入
+
+领域函数依据当前事实判定 [生存反射](capabilities.md#survival)，Runtime 只核验门、控制归属和介入生命周期。同一时刻最多一项独立 safety 控制；这是同一身体的所有权，不另建任务队列。活动控制器能在自身兼容操作中处理短避险时沿用当前来源；需要打断时，同步封闭冲突 BodyScope/后代准入并返回 INTERRUPTED，完成 Driver 关闭屏障后才授予 kind=safety。控制退役不等待 guest 回调自愿返回；迟到回调/结果不能恢复旧 scope 的写权。选定介入后暂停普通 FIFO 的新授予，直至旧控制退役及本介入完成/失败；普通申请保留在原 FIFO，之后继续并由各能力重验现场，失败避险不认证环境适合继续；不自动恢复旧调用。
+
+Runtime 为独立介入分配 intervention，保存 SafetyInterventionRecord，门检查/触发证据/初始阈值在启动边界固定。它不是另一个 Run/Segment/Call，不向顶层目录登记隐藏能力。避险复用普通移动算法函数和已授予 BodyOps，不用 ctx.call 伪造业务调用身份。DriverExecutionSink 绑定真实 ControlOwner；EffectRecord.owner 为 run 或 safety，安全动作不挂到已退役的 Call。开始记录与效果进入同一非阻塞有序记录路径，记录故障封闭新副作用；清理仍继续，不在游戏线程等盘。
+
+结束顺序复用既有屏障：关本介入准入 → 退役其操作/输入/编辑器 → 固定并提交记录 H → 保存 ended/outcome、效果和未知。只有领域已确认结束条件才 safe/succeeded；blocked/timeout 是未成功避险，停止为 cancelled，不明效果/事实仍公开 unknown。持久失败不能发布“已完整结算”。Runtime readRecord 可读该介入；safety_changed 仅提示重读已提交记录，Executor 可通知重要结果，不沿 completionRef 伪造普通任务完成。
+
+触发持续而未解除时不每 Tick 重启；资格丢失、化身失效、急停/停用/Owner Lost 立即终止介入，超时后报告事实并等待新危险依据或明确任务。进程重启只恢复记录，不自动恢复安全控制。未结束介入在证明旧控制退役后按停止意图结算 cancelled，否则保留 unknown，不能补写 safe。ExecutorStatus.side.safety 给当前及最近一项介入身份（不可用时不填当前值），可用现有 runs.record 查完整记录；不必收到提示才知道 ref。触发样本保留实际字段/来源，所引 World 证据沿既有保留屏障处理。后续普通任务仍须重新读取世界，不将介入后的库存或位置归因给原业务调用。
 
 ### 3.4 Program 执行与容量
 
@@ -177,7 +191,8 @@ Ref 由宿主生成且不复用，绑定 Runtime storageId。worldOwner 是持�
 | Run | owner、原请求、入口参数、根调用最后进度、phase/revision、决策/结论引用 | 不持有 Bot 状态，不累计领域完成量 |
 | Segment | 确切入口、源码字节/摘要或 descriptor 摘要、环境、input/checkpoint、开始/退役事实 | 不持久保存栈、闭包或旧 Body；不存绑定表 |
 | Call | 公共调用 parent/ref/input、access、绑定、返回/错误、进度、completion 合同 | helper 不建 Call；不是顶层任务 |
-| Effect | 所属 Call/Operation、冻结要求、派发、原回执、证据及后续核验 | 不从最终库存猜动作因果 |
+| Effect | 真实 ControlOwner（run 的 Call 或 safety 的 intervention）/Operation、冻结要求、派发、原回执、证据及后续核验 | 不从最终库存猜动作因果 |
+| SafetyIntervention | 触发证据、阈值、被中断 Run、开始/结束、效果与未知 | 只记录已有安全控制，不复制业务 Run 状态机 |
 | completion | reportKind=terminal/decision、固定 Run 截面、completionRef | decision 不等于 Run 终结；交付状态不改变报告 |
 
 BodyScope/CallScope 是活动资源，只记录授予/关闭事实。Run.progress 展示当前段根调用最后报告，新段初始为空对象；各 Call/Segment 保留自身进度，不对父子或跨段数据求和。工程累计量由领域对象维护，程序累计量通过自己的 JSON/检查点维护。Run.completion 取当前段入口的 execution/capability 及说明，随报告固定；不保存独立目标状态，不认证旧目标因续段已经完成。
@@ -188,7 +203,7 @@ BodyScope/CallScope 是活动资源，只记录授予/关闭事实。Run.progres
 
 一个 Runtime writer，最小表组为 metadata（storageId/schema/门）、submissions（owner/requestId、原指纹、首次解析与结果）、runs/segments、calls/effects、不可变 records、stop_intents（Run/请求键屏障与停止命令去重）、decisions、completions/delivery disposition。只有确有强 World 引用的记录才保存 evidence_holds；没有强引用不创建跨库保护工作。
 
-事务更新当前物化行并追加必要审计事实，不建设 Event Sourcing。record 是已提交不可变截面；read/list/wait 返回由其派生的有界摘要，readSegment/readCall/readEffect 返回对应当前已提交完整截面。readRecord 接受确切 record/completionRef；身份 Ref 先解析并固定一个已提交 record。不能临时造一个假称已持久的活视图。后续变化生成新截面。高频 progress 可以合并提交，反馈帧不默认逐帧持久。
+事务更新当前物化行并追加必要审计事实，不建设 Event Sourcing。record 是已提交不可变截面；read/list/wait 返回由其派生的有界摘要，完整 Run/Segment/Call/Effect 一律通过 readRecord 读取。readRecord 接受确切 record/completionRef；身份 Ref 先解析并固定一个已提交 record。不能临时造一个假称已持久的活视图。后续变化生成新截面。高频 progress 可以合并提交，反馈帧不默认逐帧持久。
 
 受理、开始、停止意图、门、decision 消费与终结必须持久。Driver 事实同步进入 Runtime 非阻塞队列后批量写盘；尚未提交的真实派发尾部可在崩溃时丢失，因此恢复开放段始终标记尾部/效果可能缺失，不以“库里没有”证明没有动作。WAL/同步配置和持久性承诺以实际绑定/文件系统核验为准。
 
@@ -199,9 +214,9 @@ BodyScope/CallScope 是活动资源，只记录授予/关闭事实。Run.progres
 | `<worldDataDir>/runtime.db` | submissions、runs、segments、calls/effects、records、stop_intents、decisions、completions/delivery disposition | 按 requestId/segment 唯一约束和事务终结落结论；高频追加；恢复按 owner 枚举未结请求。不与 World 的 `world-history.db` 共库，也不假装跨库原子 |
 | `<worldDataDir>/runs/<run>/sources/<sha256>.js` | 程序源码快照（确切执行字节，按内容寻址、同摘要去重） | 模型与文件工具要能直接读、能脱离 Runtime 存活；记录只保存 `{digest, snapshotPath}`，不内嵌源码正文 |
 
-两侧一致性是单向的，不建双写事务或补偿协议：快照先落盘、记录后提交。记录中出现 `snapshotPath` 即表示文件当时已写入；之后读到缺失报 `NOT_FOUND`，**不从 `programs/` 重建历史**。反过来，写了文件但受理事务失败/崩溃留下的孤儿快照是惰性垃圾：恢复不据此推断任何 Run 存在，也不设自动 GC，需要回收时按目录枚举对照记录删除。`runs/` 按 run 惰性创建，只放源码快照；导出另在 exports/，不混入 runs/；库的 delete 与段清理都不删源码快照（程序见 program.md §3.4、§4.1）。
+两侧一致性是单向的，不建双写事务或补偿协议：快照先落盘、记录后提交。记录中出现 `snapshotPath` 即表示文件当时已写入；之后读到缺失报 `NOT_FOUND`，**不从 `programs/` 重建历史**。反过来，写了文件但受理事务失败/崩溃留下的孤儿快照是惰性垃圾：恢复不据此推断任何 Run 存在，也不设自动 GC，需要回收时按目录枚举对照记录删除。`runs/` 按 run 惰性创建，只放源码快照；导出另在 exports/，不混入 runs/；库的 delete 与段清理都不删源码快照（快照见 Program §3.4；文件删除见 Library §5）。
 
-`runtime.db` 是单 writer（world 伴生进程内的 Runtime）。物理前提与 World 相同（WAL + `synchronous=FULL`），打开握手回报实际生效值；打不开或配置不满足就明确失败，不退化成内存库。这个自检结果由验证脚本消费（与 `pnpm verify:mc-worker` 同层），不新增面向模型的 capability：模型不需要知道存储细节，只需要在记录确实不可写时拿到失败的 `runs` 调用。
+`runtime.db` 是单 writer（World 伴生进程内的 Runtime）。物理前提与 World 相同（WAL + `synchronous=FULL`），打开握手回报实际生效值；打不开或配置不满足就明确失败，不退化成内存库。实施后应增加针对真实构建产物的 Worker 自检，不新增面向模型的 capability。
 
 组合根传入 Executor 固定的 expectedStorageId/worldOwner；恢复前核对 metadata。预期旧库却缺失、身份不符时失败，不先自动创建空库再把旧请求判为不存在。首次配对与接入凭证缺失的处理由 [Executor §3.2](executor.md) 定义。
 
@@ -209,7 +224,7 @@ BodyScope/CallScope 是活动资源，只记录授予/关闭事实。Run.progres
 
 ### 5.4 效果来源与记录队列
 
-Driver 在实际派发/回执/清理边界调用非阻塞 DriverExecutionSink；来源在 Operation 创建时由可信宿主绑定，Runtime 建 effect→Call/Operation 关联，不根据 guest 自述或“当前 Run”猜归属。sink 不拥有第二份 Operation，也不控制派发。
+Driver 在实际派发/回执/清理边界调用非阻塞 DriverExecutionSink；来源在 Operation 创建时由可信宿主绑定，Runtime 建 effect→ControlOwner/Operation 关联，不根据 guest 自述或“当前 Run”猜归属。sink 不拥有第二份 Operation，也不控制派发。
 
 record 同步复制/校验最小事实并进入 Runtime 有序内存队列，返回本执行实例递增 ticket（起点 1；空前缀 H=0）；ticket 只是记录入口顺序，不是协议确认/物理步/World cursor。清理导致的事实也必须在 Driver 对应关闭 Promise 完成前入队。异步晚到证据仍关联原 effect，不能绑定新 Call。
 
@@ -229,7 +244,7 @@ record 同步复制/校验最小事实并进入 Runtime 有序内存队列，返
 
 ### 5.6 后续核验与结果范围
 
-Effect 原派发/原回执不可改；后续可信核验追加新记录，含 observedAt/来源/覆盖及所核验的原要求。Run completion 永久保留当时 unknown、停止原因与 H；readEffect 可以返回最新核验，read(run) 的历史终结不被洗白。晚到证据默认不新增 completion/主动唤醒，查询按需展开；真实重大新事件由领域按其事件合同报告。
+Effect 原派发/原回执不可改；后续可信核验追加新记录，含 observedAt/来源/覆盖及所核验的原要求。Run completion 永久保留当时 unknown、停止原因与 H；readRecord(effect) 可以返回最新核验，read(run) 的历史终结不被洗白。晚到证据默认不新增 completion/主动唤醒，查询按需展开；真实重大新事件由领域按其事件合同报告。
 
 完成范围只有 execution 和 capability。Program 正常返回仅表示程序执行完成；原生能力自行核验其声明目标/会话结束条件，结果及证据随调用保存。Runtime 不维护通用目标状态，不按 descriptor 自动执行目标 verifier。Effect 的领域核验仍可通过 ctx.verify 使用该 effect 原已声明的核验者；它只追加效果判断及来源，不替程序认证整体游戏目标。
 
@@ -319,12 +334,12 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 
 | 边界 | 已确认事实 | 实施约束 |
 | --- | --- | --- |
-| Runtime/Executor | executor 工厂仍为未实现；worlddef 尚未接执行 | 不将候选类型当作已经存在的运行服务 |
-| Driver | Body/Operation、资格核验与 close 存在；缺完整 Runtime 来源与 ExecutionSink 接线 | 完整集成强制注入真实 HostCallVerifier；缺失就拒绝启用写能力，默认宽松核验不能进入生产路径 |
-| Library | 当前工作树只有旧资产仓库代码（SQLite/CAS），与现行文件库设计不符 | 实现按 [Library](library.md) 的文件约定重写；旧代码视为待替换，不向后兼容 |
-| World | 当前读/历史/Watch、存储 Worker、领域记录与保留存在 | 重用所有者端口，不新增 Runtime 世界缓存 |
-| World Watch | invalidation.ensureStream 当前拒绝多依赖类别；未建立通用时间到期调度 | 不假称现有 Watch 已支持混合依赖；具体算法由 World 补齐，时间复查可由 Runtime 条件计时器触发 |
-| Uina 接入 | 工具结果广播早于 canonical append；已有 input_settled；尚无持久回执查询 | 实现通用 Host delivery 端口，直返与后台均凭真实回执确认；渲染前复查过滤过时 decision |
+| Runtime/Executor | 旧 executor/worlddef 入口已删除；当前没有 Minecraft 执行服务 | 依终态合同重新建立入口与组合根 |
+| Driver | 旧实现已清理；新 Runtime 调用与效果接线不存在 | 新实现强制注入真实 HostCallVerifier；未接通就拒绝写能力 |
+| Library | 旧 SQLite/CAS Assets 已清理；普通文件库尚未实现 | 按 [Library](library.md) 重建，不兼容旧仓库 |
+| World | 旧查询、历史、Watch 与 Worker 实现已清理 | 按本文及 [World](world.md) 重建，不增加 Runtime 世界缓存 |
+| World Watch | 新实现尚不存在 | 首批所需依赖按 World 设计实现；时间条件由 Runtime 触发复查 |
+| Uina 接入 | 通用 Host 持久回执尚未实现 | 直返与后台均凭真实回执确认；渲染前复查过时 decision |
 | 生命周期 | WorldActivation 先关闭 scope 再 onStop；ResourceScope 只跟踪登记的 Promise | 已受理 Run 由 Runtime 独立持有；abort 时立即关闭门和停止，onStop 等待收尾 |
 
 QuickJS/worker 的微基准与进程监管研究只说明局部可行性，不证明本次共享池方案。没有实际引擎、进程树、真实游戏或断电验收；本次也不为设计修订运行无关产品测试。

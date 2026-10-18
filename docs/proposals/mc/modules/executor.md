@@ -32,7 +32,15 @@
 {"action":"runs","params":{"op":"record","ref":"completion-s1"}}
 ```
 
-正常使用只需记住：查事实用 observe，找能力用 describe，执行用 run，查进度或停止用 runs，保存用 library，聊天用 say。进程恢复是故障时按返回的 `nextCall` 操作。
+正常使用只需记住：查事实用 observe，找能力用 describe，执行用 run，查进度或停止用 runs，保存用 library，聊天和服务器指令用 chat。进程恢复是故障时按返回的 `nextCall` 操作。
+
+```json
+{"action":"chat","params":{"text":"我回来了"}}
+```
+
+```json
+{"action":"chat","params":{"text":"/list"}}
+```
 
 ### 1.1 选择与边界
 
@@ -53,7 +61,7 @@
 
 ### 2.1 一层 façade
 
-`WorldDef.name="minecraft"`，`actions` 直接含六项：`observe/describe/run/runs/library/say`，`executionMode="parallel"`。由现有 `createWorldTool` 生成一层 `{action,params}`；不再登记一个名为 minecraft 的内层 action。并行工具需要的身体顺序由 Runtime 决定。
+`WorldDef.name="minecraft"`，`actions` 直接含六项：`observe/describe/run/runs/library/chat`，`executionMode="parallel"`。由现有 `createWorldTool` 生成一层 `{action,params}`；不再登记一个名为 minecraft 的内层 action。并行工具需要的身体顺序由 Runtime 决定。
 
 各 action 的结构 schema 由本节和所属模块生成。`input` 的具体 schema 来自描述，不把整个能力目录复制到工具 schema；执行侧仍校验真实参数。未知字段、互斥字段混用、无效引用和非 JSON 值在执行前明确拒绝。
 
@@ -63,14 +71,14 @@
 | describe | `{query,cursor?}` 检索；或 `{selector}` 精确能力/程序；或 `{kind,name}` 精确条目，三者互斥 | 同一目录的候选或完整说明，附工具/程序调用形状和声明的示例 |
 | run | 下列 Run 参数 → Runtime.submit | RunReply 的受理、固定结果或受理未知 |
 | runs | 下列 Runs 参数 → 运行读取、控制或接入恢复 | 对应事实及必要 nextCall；普通查询不消费通知 |
-| library | [Library §5](library.md) 的请求；程序字段由 [Program §4](program.md) 拥有 | 文件事实、摘要、路径或明确错误；不创建 Run、不自动重试写入 |
-| say | `{text}` → 与 `run({selector:"say@1",input:{text}})` 相同的受理路径 | 相同 RunReply；不申请身体，不另设聊天发送账本 |
+| library | [Library §5](library.md) 的统一请求 | 文件事实、摘要、路径或明确错误；不创建 Run、不自动重试写入 |
+| chat | `{text}` → 与 `run({selector:"chat@1",input:{text}})` 相同的受理路径；首字符 `/` 是服务器指令 | 相同 RunReply；不申请身体；发送完成不认证指令生效，领域合同见 [chat@1](capabilities.md#chat) |
 
 observe 使用与 `mc.read` 相同的查询分派、参数校验和只读限制，生命周期属于本次查询，不创建持久 Run。不能借 observe 调用 `access=read` 但不属于查询目录的普通程序，也不能暗中移动、开箱。保存程序仍通过 run 调用。
 
 原生能力与查询的作者提供符合 input/output schema 的 examples；接入只包上相应工具/程序调用形式，不自己猜游戏参数。文件条目未声明 examples 时明确说明缺少示例，给出调用形状及已有 schema；不能把猜出的空 input 标为已验证可用。
 
-动作门关闭时，已就绪接入仍允许观察、发现、运行记录读取和 Library 文件操作；run/say/continue 不能由此绕过门。整个 activation 正在关闭时不再接新工具操作。
+动作门关闭时，已就绪接入仍允许观察、发现、运行记录读取和 Library 文件操作；run/chat/continue 不能由此绕过门。整个 activation 正在关闭时不再接新工具操作。
 
 ```typescript
 type MinecraftEntryParams = {input?: JsonValue} & (
@@ -109,6 +117,16 @@ type MinecraftRunsParams =
 - stop 支持 run 或 request 二选一，模型不生成停止命令 ID。只有 requestId 时也能撤销该意图；停止不关闭其他 Run 的门，见 §6.3。
 - recover 不带 expected 只重建/核对；带完整 {attachment,gateRevision} 才解除 owner_lost，且本次不能再重建实例。两项缺一拒绝；不能解除 emergency，见 §7.3。
 
+<a id="observation-images"></a>
+
+### 2.1.1 观察图片
+
+map@1 的 JSON 合同与 PNG 缓存由 [能力面](capabilities.md#map) / [World](world.md#map-observation) 拥有。直接 observe(map@1) 且请求 image=true 的工具适配同时返回 JSON 元数据与已有 ToolExecutionResult.images；image=false 只返回元数据；路径字符串本身不是模型可见的图片。图片只能取本次查询产生的 ImageFileRef，核验 realpath 在本 World exports/images 内、长度和摘要后异步读取，填现有 ImageContent 的 MIME/base64/alt。不要把 guest 返回的任意 path 对象当附件授权。
+
+图片读取失败就给 image 未交付的明确原因和原路径，元数据不冒充图片；可用现有 read_image 按路径回看。纯文本模型或只需坐标/标记时显式请求 image=false；能力未知允许沿现有图片规则尝试。Executor 不私自探测、改写 Provider 能力或切换模型；图片请求被现有 Provider 路径拒绝时保留真实错误，可重读无图元数据，不重跑游戏动作。不要为地图另建图片工具、VLM 调用、永久媒体库或一套 IPC 二进制协议。PNG 路径通过现有受信任伴生进程读出，图片字节不经 Program RPC。
+
+mc.read(map@1) 仍只返回 JSON；程序可返回文件引用供主脑后续 observe/read_image，完成记录不会递归把任意 JSON 路径自动展开为图片。
+
 ### 2.2 工具 status 与正文
 
 | 接口事实 | ToolExecutionResult.status | 正文必须保留 |
@@ -122,9 +140,9 @@ type MinecraftRunsParams =
 | 接口已发送但受理/写入不明 | unknown | 原 requestId 或文件目标、已知派发范围、真实查询 nextCall |
 | 只读查询取消 | cancelled | 仅本次查询已取消；Run 未因此取消 |
 
-停止 intent=unknown 时即使 control=stopped 仍返回 unknown，并同时保留已知控制事实。safeStop 的正常 resolve 要求更强，见 §7.4。查询得到一个 failed Run 时，查询工具可以 succeeded，正文仍保留该 Run 的 failed；只有 run/say/continue 的固定直返映射该次执行 outcome。
+停止 intent=unknown 时即使 control=stopped 仍返回 unknown，并同时保留已知控制事实。safeStop 的正常 resolve 要求更强，见 §7.4。查询得到一个 failed Run 时，查询工具可以 succeeded，正文仍保留该 Run 的 failed；只有 run/chat/continue 的固定直返映射该次执行 outcome。
 
-本表约束 Executor 产生的回执；框架在调用 action 前取消时，仍由框架返回其既有取消回执。聊天的 sent 只表示 `say@1` 声明的发送边界，不升级成其他玩家已收到或已阅读。
+本表约束 Executor 产生的回执；框架在调用 action 前取消时，仍由框架返回其既有取消回执。chat 的 sent 只表示完整消息/指令已到达声明的协议发送边界，不表示其他玩家已读、服务器允许指令或目标已改变。指令和普通消息都经过同一 Runtime 动作门，不自动重试。
 
 `details` 保存结构化投影、诊断及 inline/record/file/unavailable 的载荷形态；正文保留真实结论、进度完整性、未知效果总数和读取入口。未展开的正文按 record 读取，导出的大载荷交普通文件能力读取，不把文件内容再次全量塞进 details。完整读取失败也不能洗掉已确认的 outcome；见 §5.5。
 
@@ -138,10 +156,12 @@ interface RetirementRequest {
 }
 interface ExecutionSideStatus {
   launch: Ref; storageId: Ref; observedAt: string;
+  authMode: "offline" | "microsoft"; // 配置选择，不代表已认证或已连接
   owner: OwnerState | null;
   connection: "connecting" | "syncing" | "ready" | "disconnected" | "faulted";
   world: WorldAvailabilityValue;
   runtime: "ready" | "unavailable";
+  safety: {active: Ref | null; last: Ref | null}; // 介入身份；完整事实仍经 readRecord
   program: ProgramCapacity;
   faults: {code: string; message: string}[];
   retirement: RetirementRequest | null; // 当前 launch 内一旦请求便锁存
@@ -164,7 +184,7 @@ interface ExecutorStatus {
 
 ready 只表示执行侧已握手、运行库可用；游戏连接、World 历史和动作门分别显示。`actionsAllowed` 是接入门的当前判断，不担保某能力目标可执行。World 历史 opening/unavailable 不遮蔽当前读；Runtime 库不可用则不能受理新 Run。状态推送只刷新有时间的缓存，精确 status 按需读取；断流立即将 side 置空，lastKnown 明确标旧。
 
-常驻指南从六个 action 的 schema 和 [Program 最小指南](program.md#附录-a模型的最小指南) 生成，只增加三条：accepted 尚未完成；unknown 先用返回的 request 查询；工具取消不停止任务、要停止用 runs.stop。OS、协议字段和存储配置不进入模型指南。`describe` 保留不可用能力及原因，模型不必从“未列出”猜功能不存在。
+常驻指南只使用 [Program 附录 A](program.md#附录-a模型的最小指南)；动作 schema 提供工具调用形状，能力家族按需 describe。OS、协议字段和存储配置不进入模型指南。
 
 ## 3. 装配与启动
 
@@ -182,31 +202,55 @@ flowchart LR
   D --> W
 ```
 
-Executor 是 Uina 侧实例；companion 是游戏侧组合根，不把它们再命名成两个 Executor。现有 `executor/index.ts` 将 Runtime 放入 Executor 的占位签名作废，实施时拆回各自所有权。
+Executor 是 Uina 侧实例；companion 是游戏侧组合根，不把它们再命名成两个 Executor。旧占位实现已删除；新代码按各自所有权分开建立 Executor 与 Runtime。
 
 ### 3.1 配置与入口
 
 默认无参 World 工厂只定义 actions 和生命周期，不连接、不读宿主状态。onStart 收到 `ServiceCompanionContext` 后创建本次 activation 的 Executor。
 
 - `worldDataDir` 由框架原样注入并规范化；不自行拼另一份 profile 路径。缺少它、emitEvent、onHostEvent、expose 或持久 Host delivery 端口时，启动明确失败。无 UI Host 可使用这些接缝；不依赖终端或 isBusy。
-- 本 World 安装目录的 `config.json` 是操作者配置，启用前必须存在；其路径随 World 入口解析，不相对临时 cwd。内容含 Driver 连接配置、稳定 accountId、可信 world/worldRevision 绑定（可明确 unbound）、必要的连接/执行设置。非法配置失败，不猜服务器、账号、世界身份或认证方式。
-- accountId：Microsoft 账号使用已确认的游戏 profile UUID；offline 使用规范化登录名。它独立于游戏内显示名、服务器地址和 profile 数据目录；认证适配必须核验实际身份，身份不符关闭连接与动作门。凭证/cache 复用客户端认证机制，不写入命令行、工具正文或诊断。交互认证未完成时如实显示，不宣布可用。
+- 本 World 安装目录的 `config.json` 是操作者配置，启用前必须存在；其路径随 World 入口解析，不相对临时 cwd。内容含明确认证模式的 Driver 连接配置、可信 world/worldRevision 绑定（可明确 unbound）及必要执行设置。非法配置失败，不猜服务器、世界身份或认证方式。
+- `authMode` 必填，两条连接路径并列支持。offline 的 username 是实际登录名，不要求 Microsoft 登录、缓存或正版 UUID；microsoft 的 username 是上游认证缓存/账号选择标识，accountId 是操作者已确认的游戏 profile UUID。交互认证未完成时如实显示，不宣布可用；凭证/cache 复用客户端认证机制，不写入命令行、工具正文或诊断。
 - 源码运行显式用当前 Node + `--import tsx` 启动仓库内 bootstrap；构建运行使用随 World 发布的 bootstrap 与 Worker/QuickJS/native 资源。entry 使用模块相对绝对路径，不继承整份 `process.execArgv`，不拼 shell 命令。两条路径分别验收。
 - 本轮固定静态装配能力；改模块代码需关闭旧 activation、证明退役后重启。不增加热加载服务；编辑库文件仍按 Program 的段内快照规则生效。
 
 配置形状如下；连接字段复用 Driver，其他字段由 Executor 拥有。省略的 port=25565，program.workers=1，其余策略初值见 §5、§7、§8；不覆盖 Program 其余已定资源策略。
 
 ```typescript
-interface ExecutorConfig {
-  connection: {host: string; port?: number; username: string;
-    authMode: "offline" | "microsoft"; version?: string};
-  accountId: string;
+interface MinecraftConnectionOptions {
+  host: string; port?: number; username: string; version?: string;
+}
+type ExecutorConfig = {
   binding: {world: Ref; worldRevision: Ref} | null;
   program?: {workers?: number};
-}
+} & (
+  | {connection: MinecraftConnectionOptions & {authMode: "offline"}; accountId?: never}
+  | {connection: MinecraftConnectionOptions & {authMode: "microsoft"}; accountId: string}
+);
 ```
 
-配置只保留连接、已确认身份/世界绑定和必要的执行资源。port 为 1..65535 的整数，workers 为正整数；未知字段拒绝。时限、消息预算、摘要预算与重试间隔是内部策略，见各节初值；测试/运维通过构造注入同一份策略覆盖并在诊断显示有效值，不写进普通 config.json，不提供另一种执行语义。实际 stance、retreatHealth 等缺省由能力声明并随 Call 记录。
+配置只保留连接、认证模式所需身份、世界绑定和必要执行资源。port 为 1..65535 的整数，workers 为正整数；未知字段拒绝。offline 不接收 accountId；microsoft 必须提供合法 UUID，并在实际认证取得 profile 后、登录游戏服务器前核对。offline 的最终玩家名核对配置 username，microsoft 则核对认证所得 profile 名而不是缓存标识。离线服下发的 UUID 只作服务器内身份，不冒充 Microsoft 认证凭据。时限、消息预算、摘要预算与重试间隔是内部策略，见各节初值；测试/运维通过构造注入同一份策略覆盖并在诊断显示有效值，不写进普通 config.json。实际 stance、retreatHealth 等缺省由能力声明并随 Call 记录。
+
+#### 3.1.1 离线登录与身份作用域
+
+offline 表示不经过 Microsoft 认证的协议登录，仍需连接允许该身份进入的服务器。它不是 disconnected，也不把离线名字变成已认证正版账号。online-mode 服务器拒绝时保留真实原因，不自动改用另一种认证模式；Microsoft 认证失败也不回退 offline。
+
+最小离线配置如下，不需要事先查 UUID：
+
+```json
+{"connection":{"host":"127.0.0.1","port":25565,"username":"Uina","authMode":"offline"},"binding":null}
+```
+
+本机/局域网、远程离线服都走同一连接路径；本机/LAN 是连接位置，不自动决定认证方式。单人存档须先“对局域网开放”或以服务端启动，并填写实际地址和端口；LAN 端口可变，不能当作固定 25565。没有网络服务端时，不直接打开 saves 文件冒充已进入游戏。额外登录插件有自己的协议/命令，offline 本身不证明其登录已通过，不猜测成功文本或自动发送凭证。
+
+内部 `accountKey` 由可信配置生成，不由模型填写：
+
+| 模式 | Job/BodyEndpoint 使用的身份 | 游戏中核验 |
+|---|---|---|
+| microsoft | `microsoft + 规范化 accountId`，跨服务器独占该已认证 profile | 认证取得的 profile UUID 与 accountId 一致；记录实际玩家名及服务器身份 |
+| offline | `offline + 规范化 host/有效 port + 登录名的小写形式` | 实际发送名字保留原大小写，核对登录结果；服务器 UUID 单独记录 |
+
+accountKey 按无歧义元组编码并取摘要用于 OS 名称。offline 同服同名互斥，不同服务器的同名可独立使用；Microsoft 与 offline 的同名也不混同。端点规范化不猜测 DNS 别名/代理背后是否同服，离线独占只覆盖同一配置端点；访问同一服时统一入口地址。world/worldRevision 仍须可信绑定，不能从登录模式、名字或离线 UUID 推断。
 
 ### 3.2 启动顺序
 
@@ -228,7 +272,7 @@ expectedStorageId 首次创建后固定；Runtime metadata 同时固定 worldOwn
 
 Windows 使用 Executor 私有的 Node-API/C++ 绑定，只封装创建/配置 Job、打开并核对精确进程、关联、终止、查询活动数与等待退出。调度和恢复逻辑仍是 TS；阻塞式 OS 等待使用异步工作，不能堵住 Uina 事件循环。不增加常驻 launcher 服务；若复用现成绑定，仍必须满足同一接口和验收，不能仅因包名含 Job 就认定可用。
 
-创建两个**有稳定名字的 Job Object**：目录 Job 与账号 Job。前者防同一数据目录的多个执行写者，后者防不同 profile/目录同时使用同一账号。两个名字按规范化资源身份派生，使用 Global 命名空间；目录身份取实际目录的卷/文件标识，避免大小写、junction 或路径别名绕过。账号身份取上节的 accountId。权限限于正常拥有者；创建被拒绝就失败，不换一个名字继续。
+创建两个**有稳定名字的 Job Object**：目录 Job 与账号 Job。前者防同一数据目录的多个执行写者，后者防不同 Uina profile/目录争用同一 accountKey。两个名字按规范化资源身份派生，使用 Global 命名空间；目录身份取实际目录的卷/文件标识，避免大小写、junction 或路径别名绕过；账号身份按 §3.1.1 区分 Microsoft profile 与离线端点/名字。权限限于正常拥有者；创建被拒绝就失败，不换一个名字继续。
 
 两个 Job 均设 `KILL_ON_JOB_CLOSE`，不允许 breakaway，不设无关的 CPU、内存或进程数限额。按“目录为父、账号为子”的顺序将同一伴生进程加入 Job 层级；工作线程自然属于该进程，未来受管子进程也须留在同一层级。当前 Program/SQLite 只创建 Worker，不另起进程。
 
@@ -276,7 +320,7 @@ type ExecutorFrame =
 | 其余 runtime.* | public-api §7 的 ExecutorClient 中 attach/heartbeat/门/lookup/read/list/wait/stop/交付方法；移除函数/signal 参数，信号按 cancel_wait 映射 |
 | observe | 本文 Observe 参数；查询所有者的 Observation |
 | directory.search/describe | public-api §3 的 CallableDirectory |
-| library | Program §4 与 Library §5 的具体 schema；不接受随意文件路径 |
+| library | Library §5 的统一 schema；不接受随意文件路径 |
 
 实现使用“方法名 → 参数 schema、结果 schema、处理函数”的本地表生成类型与校验。启动协议单版本匹配，不做旧协议猜测/兼容分支。JSON 大小在发送前检查、接收后复核；方法/关联 ID/launch 不符是协议错误。Promise<void> 在 wire 固定编码为 null，stub 还原为 void；不能省掉成功回复的 value。相同已完成 id 的迟到回复可丢弃，不回退状态；活动 id 的 method 不符或错误 launch 则封闭该连接并故障退役。RPC id 只在一次 launch 内递增，**不是 requestId**。
 
@@ -325,7 +369,7 @@ Executor 核验消息来自当前私有 channel 且内外 launch 均匹配，立
 | REVISION_INVALID | 等待修订为负、非整数或大于当前值；返回当前修订 |
 | OWNER_STATE_CHANGED | 解 owner_lost 的预期 attachment 或门修订不符；返回新的核对调用 |
 
-这些码描述接入事实，不替代 Runtime/能力/文件库的错误词表。已有领域失败完整保留 failure 的 source/progress/effects/dispatch/hint；原生 Error 的堆栈只进诊断，不跨边界当控制合同。
+这些码描述接入事实，不替代 Runtime/World/能力/文件库的错误词表。查询的 STORE_UNAVAILABLE、SNAPSHOT_EXPIRED、RESULT_TOO_LARGE 等保留来源与提示，不转成动作未找到。已有领域失败完整保留 failure 的 source/progress/effects/dispatch/hint；原生 Error 的堆栈只进诊断，不跨边界当控制合同。
 
 <a id="large-results"></a>
 
@@ -343,7 +387,7 @@ readRecord(ref,{format}) 在一次读取边界固定 RuntimeRecord。auto 初始
 
 16 KiB 只约束普通 run/通知的默认摘要，不是完整记录的传输阈值。20 KiB 记录在 auto/inline 的完整回复预算内直接返回；默认摘要未展示的正文可用原 ref 显式 record 一次读全，不为摘要折叠而先写文件。完整记录响应按所请求形态返回，不再套默认摘要截断。
 
-文件路径/sha256/bytes 同时进入正文与 details；模型用已有文件能力按需读取。原生 readSegment/readCall/readEffect 仍是完整本地值接口，执行侧 Library 可直接使用；跨 IPC 需要其大材料时统一转 readRecord，不再建设另一套分块传输协议。
+文件路径/sha256/bytes 同时进入正文与 details，模型用已有文件能力按需读取。完整对象本地和跨 IPC 均使用 readRecord；类型便捷函数可以是局部 helper，不成为另一套公开端口。
 
 observe/describe/Library 只读请求不虚建 Runtime 记录。它们依查询合同使用范围、分页或既有文件路径；仍超帧时明确 QUERY_RESULT_TOO_LARGE，返回实际可用的缩小/文件读取入口或说明需调整传输策略，不返回截断的伪完整值，也不因此终止健康 companion。没有参数能缩小的查询必须在自身描述中明确单次输出边界；不承诺任意开放值都能无限穿过 IPC。
 
@@ -362,7 +406,7 @@ executor.db 由 Uina 侧单 writer 的 SQLite Worker 拥有；沿用已有 SQLit
 
 本地请求和 Runtime 受理是两次提交，不宣称原子。接入记录是查证凭证，不因为本地 exists 就认为已受理。源码 code 随原始语义请求保存；按名字提交只保存名字，第一次真正受理前库文件可改变，已受理后以 Runtime 固定材料为准。凭证保留供查询，不设自动历史 GC；需要删除时由维护操作明确处理，不悄悄删除 unknown 请求。
 
-### 6.2 submit / continue / say
+### 6.2 submit / continue / chat
 
 1. 校验 façade 结构、当前 activation/动作门和预取消；新意图生成 requestId，先一次提交完整语义请求到 executor.db。存不下则不派发。取消发生在这一步之后也保留凭证；不再为 attempted 单独增加一次持久事务。
 2. 发送原 requestId。Runtime 对 (worldOwner,requestId) 做准备中的 singleflight，并在受理事务以唯一约束兜底；同键同请求加入原准备/返回既有受理，同键不同请求 REQUEST_CONFLICT。准备失败移除内存项，已受理的材料永不重算。取消一个工具等待不取消共享准备。
@@ -379,7 +423,7 @@ stop({request}) 若已经受理，就停止它映射的 Run（包括当前续段
 
 请求撤销与受理/continue、提交后调度的唯一算法由 [Runtime §4.4](runtime.md#waiting) 拥有：先关内存准入，事务按键排序；撤销先提交则阻止受理，受理先提交则停止既有段。continue 未提交时不消费 decision，提交后不恢复旧 decision；finished 不改写。
 
-library 的写入直接在执行侧完成；取消或断线后写入程度不明则返回 unknown 与目标条目 get 调用。只读 get/摘要/目录事实帮助判断是否已写，Executor 不代为重试 save/update/delete。`save from` 由执行侧 Library 适配核验 Runtime Call 的 owner/run/segment，再交 Program 读取该摘要快照；源码不绕 Uina 一圈，也不从当前工作文件恢复。
+library 的写入直接在执行侧完成；取消或断线后写入程度不明则返回 unknown 与目标条目 get 调用。只读 get/摘要/目录事实帮助判断是否已写，Executor 不代为重试 save/update/delete。`save from` 在执行侧由 Library 按 readRecord(call) 核验 owner/run/segment，再取对应执行快照写入工作文件；具体规则见 Library §5.3。
 
 ## 7. 停机、故障与恢复
 
@@ -420,7 +464,7 @@ status/recover 返回 storageId/attachment、门及 gateRevision、恢复结论�
 
 ### 7.4 BodyEndpoint
 
-登记 `body.endpoint:minecraft:<accountId>`，bodyType=humanoid，cues 为空。state.online 来自 Driver 实际连接，paused 来自当前关闭的动作门；断流给 offline/fault，不能用 lastKnown 声称在线。
+登记 `body.endpoint:minecraft:<accountKey 摘要>`，bodyType=humanoid，cues 为空。state.online 来自 Driver 实际连接，和 authMode=offline 无关；paused 来自当前关闭的动作门。断流给 offline/fault，不能用 lastKnown 声称在线。
 
 - safeStop：即刻关本地准入，持久关闭 emergency 并等待旧控制退役。执行侧无响应则域外终止；持久性或控制未知时 reject，并保留真实已停止/未知项。正常 resolve 必须同时有持久门和控制停止事实。
 - resume：在当前有效绑定、状态已核对且 expectedRevision 匹配时，明确解除 emergency；本地已存停止意图也须确认清除。其他门继续生效。无活动 Run 复活，不把 faulted 状态恢复工作当作身体 resume 的副作用。
@@ -458,6 +502,16 @@ delivery 诊断至少给 pendingCount、当前 key/attempt/channel、Host 查询
 
 普通状态缓存只为 BodyEndpoint/status 提供带时间的一瞥，不通过每次模型请求注入隐式上下文。精确观察与完整结果由工具/通知取得，避免维持第二份不断漂移的模型世界状态。
 
+<a id="game-event-delivery"></a>
+
+### 8.4 游戏事件提示
+
+聊天/系统/动作栏、伤害、死亡和连接变化的事实以 World events@1 为准；通知只携带事件 ref、实际收到的文本/可得身份、时间和查询入口。查询或投递都不推进“模型已读”，不依文字推断命令成功或把重复文字合成一条。
+
+既有 World 事件接缝可提交明确私聊、可靠点名、自身死亡、连接失效及独立安全介入结局等重要提示；自己的聊天回显不自唤醒，普通聊天/动作栏和每次健康变动默认只保留可查询历史。点名只采用明确协议/版本解析依据；不能可靠判断时保持普通事件。安全提示引用 Runtime 的 safety record，不复制为另一份 World 执行事实。
+
+此路径复用现有 emitEvent/Host 输入，没有新的 MC 消息投递器、已读账本或每条消息通知保证。启动/重连不把全部旧历史补成主动输入；主脑以保存的 EventAfter 显式补读。完成报告仍按 §8.1–§8.3 的持久回执合同处理；游戏事件提示失败不重发游戏动作，历史可读范围/缺口由 events 查询说明。紧急本地避险不能依赖模型及时收到提示。
+
 ## 9. 从上到下推演
 
 | 场景 | 完整路径与应见事实 |
@@ -471,12 +525,15 @@ delivery 诊断至少给 pendingCount、当前 key/attempt/channel、Host 查询
 | 停用恰逢受理准备 | 生命周期同步关本地门并发 disabled；已提交的工作被停止，旧 activation 迟到请求被拒绝；工具等待先结算，onStop 等同一个 close |
 | 主脑打断/焦点切换 | action 等待可取消，endpoint.interrupt 为空；已受理游戏任务不取消。显式 stop/safeStop 才停止相应范围 |
 | Uina 被强杀且 companion 卡死 | 最后 Job 句柄关闭终止整树；新启动遇旧 Job 则拒绝，成功独占后恢复 Runtime；开放段按事实结算，owner_lost 等明确确认 |
-| 不同 profile 使用同一账号 | 数据根 Job 不同、账号 Job 相同；第二个启动 ACCOUNT_BUSY，不能开第二个 Bot 踢掉第一个 |
+| 不同 Uina profile 使用同一 accountKey | 数据根 Job 不同、账号 Job 相同；第二个启动 ACCOUNT_BUSY。离线身份的服务器作用域按 §3.1.1 区分 |
+| 离线服或 LAN 联机 | 仅地址/端口/名字即可启动；不要求正版 UUID；未 spawn/被拒绝如实显示，绑定未知仍为 unbound |
+| 两个离线服都使用 Uina 这个名字 | 不同配置端点得到不同 accountKey；同端点同名的另一个 Uina profile 则 ACCOUNT_BUSY |
+| chat 发送 `/list` 或 `/tp` | 按玩家权限发送指令；回执只确认发送，服务器拒绝/传送结果通过实际观察核验，不重试未知发送 |
 | 共享 worker 崩溃/整个游戏进程失联 | 前者由 Runtime报告受影响 Call；后者公开整 launch 影响与不完整范围。未取得 Runtime 终结时不自行填 outcome |
 | 急停写盘失败 | 实际停止继续、必要时杀树；safeStop reject 报持久未知；新启动不自动准入，恢复不能偷偷解除急停 |
 | 工具返回前后崩溃 | Host 有真实回执就 ACK，否则 pending 在重新启用后补投；允许重复，不丢掉待交付事实 |
 | canonical 成功、ACK 丢失 | 同实例重试 ACK；重启可能同 completionRef 重复通知，continue CAS 和原 request 幂等阻止重复动作 |
-| save from 在子程序局部迭代后执行 | 精确 call → 对应摘要快照 → Program 保存；不取当前同名文件，缺来源就明确 NOT_FOUND |
+| save from 在子程序局部迭代后执行 | 精确 call → 对应摘要快照 → Library 保存；不取当前同名文件，缺来源就明确 NOT_FOUND |
 
 ### 9.1 本轮新增反例
 
@@ -496,7 +553,9 @@ delivery 诊断至少给 pendingCount、当前 key/attempt/channel、Host 查询
 
 ## 10. 实施边界与验收
 
-当前真实源码：WorldDef 仍是双层占位 façade；executor/index.ts 仍抛未实现且混有旧 Runtime 职责；Driver/World 有代码但尚未完成本文接线；旧 Assets 仓库、contracts/*.ts 与 LEAD 的旧规则不能作为本设计已经实现的证据。
+以下区分各项承诺所需证据；开发顺序见 [总规划](../development-plan.md)，真实环境优先及避免重复检查的规则见 [开发规范](../development-guide.md#5-验证选择)。不要求把同一游戏动作在每个验证层重做一遍。
+
+实现重置：2026-10-18 已删除 Minecraft 的旧 WorldDef、Executor、Driver、World、Assets、contracts 与专属测试。当前没有 Minecraft World 入口；新实现按本文及所属模块合同建立。
 
 实施落点：worlddef 只做 WorldDef/生命周期适配，executor 放 façade/IPC/账本/通知/平台监管，companion 入口负责静态装配，runtime 回归独立所有者。沿用 World lifecycle、工具结果与 BodyEndpoint，并实现通用 Host delivery 标记、状态查询/退役接缝；它是 Tool execution/Mailbox/Canonical history 的扩展，不新增内核业务概念、Minecraft 专属事件或通用通知服务。文件数量按实现需要拆分，不建立新的 Manager 层。
 

@@ -1,9 +1,9 @@
 # Minecraft World：研究证据与架构验证
 
-> **2026-10-18 证据范围说明。** 本文件保留历史研究、旧方案及当时的实验观察，不作为当前执行合同。当前 Program 使用共享 worker/独立 guest、逐层 NEEDS_DECISION、waitUntil 和普通文件库，唯一规范见 [Program](modules/program.md)。历史中的段级进程/域配额/发布方案及微基准不证明新方案已实现或验收；本轮没有复跑微基准，也没有真实服务器证据。
+> **2026-10-18 证据范围说明。** 本文件保留历史研究、旧源码行为和当时的实验观察，不作为当前执行合同。终态 Program 设计为共享 worker/独立 guest、逐层 NEEDS_DECISION、waitUntil 和普通文件库，唯一规范见 [Program](modules/program.md)。旧方案、旧实现和微基准不证明新设计已实现或验收；Minecraft 旧源码与专属测试已在 2026-10-18 清理。
 
 
-研究整理日期：2026-10-15（Asia/Shanghai）。推荐设计见 [design.md](design.md)，设计状态与已确认选择见 [README.md](README.md)。本文记录判断依据、替代方案和验证方法，不重复定义运行合同。
+研究整理日期：2026-10-15（Asia/Shanghai）。推荐设计见 [design.md](design.md)，设计状态与已确认选择见 [README.md](README.md)。本文记录判断依据、替代方案和验证方法，不重复定义运行合同。文中“当前源码”均指各条记录标注日期的工作树；Minecraft 源码已于 2026-10-18 清理。
 
 ## 1. 证据范围
 
@@ -68,7 +68,7 @@ Runtime 保存一次结论，Executor 选短直返/后台输入；完成记录�
 
 本轮只完成静态核实、设计反例审查与文档/类型示例检查；没有运行真实游戏或测量这些方案的速度收益。
 
-本轮必要补查：World invalidation.ensureStream 当前仅支持单一 current/history 依赖，未建混合 Watch/通用时间调度；WorldEvent.render 可返回 null。前者要求 Runtime 不能假称联合监听已可用，后者支持过滤过时 decision，但不保证 render 与 canonical 原子。`contracts/assets.ts` 里的旧 SQLite/CAS 仓库代码仍在树中，但已作废、未接入（现行 Library 是文件库，见 [Library](modules/library.md)）；`ProgramPort`（旧的 `ProgramExecutionPort`）与容量统计仍是待实现设计。
+清理前核对发现：旧 World Watch 只支持单一 current/history 依赖，旧 Host 的 `WorldEvent.render` 可返回 null。新实现须按终态合同支持联合依赖并处理 deferred render 竞态。旧 `contracts/assets.ts` SQLite/CAS Assets 与其他 Minecraft 源码一并删除；Program 执行端口仍是待实现设计。
 
 <a id="driver-audit"></a>
 
@@ -359,13 +359,13 @@ QuickJS/WASM 等隔离运行时只是候选。必须同时验证异步宿主调�
 |---|---|---|
 | World 工厂无参，宿主能力从 onStart 注入；先 onStart 再注册工具 | [world-activation.ts](../../../src/extensions/world-framework/world-activation.ts)、[types.ts](../../../src/extensions/world-framework/types.ts) | 连接/进程不在工厂启动；握手失败回滚，不留下假可用工具 |
 | stop 先关闭 scope、取消 signal 并等待 action，然后才 onStop | [world-activation.ts](../../../src/extensions/world-framework/world-activation.ts)、[lifecycle-scope.ts](../../../src/extensions/lifecycle-scope.ts) | 必须监听独立生命周期 signal，先触发停止，onStop 只汇合同一个 close |
-| createWorldTool 从 WorldDef.actions 再生成 action/params | [world-tool.ts](../../../src/extensions/world-framework/world-tool.ts)；[Minecraft 占位](../../../.uina/worlds/minecraft/worlddef/index.ts) | 直接登记六 action；当前内层 minecraft action 会形成双层 façade，需在实施时替换 |
+| createWorldTool 从 WorldDef.actions 再生成 action/params | [world-tool.ts](../../../src/extensions/world-framework/world-tool.ts) | 新 Minecraft World 直接登记六 action；旧双层占位入口已删除 |
 | ActionContext 只有 operationIdentity/signal，没有可信调用者 ID | [types.ts](../../../src/extensions/world-framework/types.ts) | Origin 不伪造 caller；按来源替换要求显式 targets |
 | emitEvent 转交 submitInput；事件允许 deferred render；input_accepted/input_settled 可订阅 | [world-activation.ts](../../../src/extensions/world-framework/world-activation.ts)、[loop.ts](../../../src/agent/loop.ts) | 事件只触发 Host 回执核对。emitEvent Promise 可能跨模型回合，不能持着接入串行区等它 |
 | accept 只拒绝已在 canonical 的重复 ID；InputQueues.add 不作相同 ID 入队去重 | [loop.ts](../../../src/agent/loop.ts)、[queue.ts](../../../src/agent/queue.ts) | 通用接缝须增加带 receipt 输入的接收去重和尝试 CAS 退役；不假设旧版同 ID 重投已幂等 |
 | 已有“typed message map + pending RPC + 错误序列化 + 状态投影”的 Worker 代理 | [Live2D proxy](../../../.uina/worlds/live2d/worker/proxy.ts)、[protocol](../../../.uina/worlds/live2d/worker/protocol.ts) | 复用组织方式；不直接搬用其取消和线程退出语义来代替独立进程、持久受理和 OS 退役 |
 | 退出登记表只按自有 PID kill，明确未覆盖宿主 taskkill/系统崩溃 | [child-process-registry.ts](../../../src/extensions/world-framework/child-process-registry.ts) | 不能拿该表证明整个 Minecraft 树退役 |
-| Executor 抛未实现；旧签名把运行管理也命名为 Executor | [executor/index.ts](../../../.uina/worlds/minecraft/executor/index.ts) | 按当前所有权拆回 Runtime 与 Uina 侧 Executor；不维持旧桩作为兼容层 |
+| 旧 Executor 占位把运行管理也命名为 Executor | 2026-10-18 已删除的 Minecraft 源码 | 新实现按终态合同拆分 Uina 侧 Executor 与游戏侧 Runtime |
 
 ### 9.2 平台资料及推论
 
@@ -400,3 +400,38 @@ Windows Job 支持进程集合终止、默认子进程归属和最后句柄关�
 本轮继续沿 [Subject.settleToolExchange/executeOne](../../../src/agent/loop.ts)、[pipeline](../../../src/tools/pipeline.ts) 与 [SessionStore](../../../src/session/jsonl-store.ts) 核查：tool_result 和 tool_finished 先于 canonical tool message append；磁盘 append 在 sync 后才更新常驻 canonical 状态。现有 [World 上下文](../../../src/extensions/world-framework/types.ts) 没有按交付 key 的查询/退役端口。故不能靠旧事件或接口返回推导持久接收，终态采用 [通用 Host 回执](../runtime/delivery-receipts.md)，不再把它当 Minecraft 专用补报算法。
 
 双 Job 的新增成本主要在两个资源身份/句柄，原生监管接缝仍是一个；减少为一个 Job 不能消除父崩溃/继承外部 Job 的验证要求。长期选型保留现有双 Job，拒绝跨 Uina 自动抢占，不提前建设替代锁。16 KiB 摘要不再决定完整记录是否落盘；完整响应预算与大文件出口分离。以上为终态设计判断，未进行新的 OS/Host/游戏实现验收。
+
+### 9.6 离线登录与 chat 指令依据（2026-10-18）
+
+- [Mineflayer 4.39.0 使用说明](https://github.com/PrismarineJS/mineflayer/blob/4.39.0/docs/README.md#echo-example) 分别说明 offline 的登录名字与 Microsoft 的账号/缓存选择。由此修正：离线配置不能要求官方 profile UUID，且第一条真服流程应可在离线测试服完成。
+- [minecraft-protocol 1.68.0 createClient](https://github.com/PrismarineJS/node-minecraft-protocol/blob/1.68.0/src/createClient.js) 的 offline 分支用名字生成 UUID 并连接，Microsoft 分支另行认证。本机源码亦确认登录结果会更新客户端名字/UUID；这些离线值不能当全局正版凭据。按服务器端点加名字建立离线独占，是本设计的资源作用域选择。
+- [Mineflayer chat 源码](https://github.com/PrismarineJS/mineflayer/blob/4.39.0/lib/plugins/chat.js) 区分 `/` 指令，普通消息会分行/分段，接口不返回发送完成 Promise；[协议 chat 源码](https://github.com/PrismarineJS/node-minecraft-protocol/blob/1.68.0/src/client/chat.js) 负责版本相关命令编码与签名。本机安装树还观察到部分版本的延迟发送队列。因此单次 chat 在适配层预校验为一条文本，并在实际发送后才确认 sent；不把函数返回或服务器文字回复当作目标成功。
+
+以上为源码/文档核查与设计推论，没有连接服务器、执行命令或完成认证验收。
+
+### 9.7 接口与职责收敛审查（2026-10-18）
+
+审查的是本目录设计，无新产品实现或服务器实验。依据 UNIX 原始论述中“单一职责、输出可组合”的原则，收敛重复机制；参考 [McIlroy/Pinson/Tague 1978](https://mirror.math.princeton.edu/pub/unixarchive/Documentation/Papers/BSTJ/bstj57-6-1899.pdf)。
+
+确定重复：take/stow 的转移方向与结果，give 的走近+丢弃，ProgramPort 的库 CRUD，Runtime/Driver 两层身体等待，平行 read 描述与专用记录读取。选择分别由统一 transfer/drop、Library、Runtime 队列、QueryDescriptor、readRecord 承担。计划/执行统一目标数据，施工复用 Target 差异算法。具体合同只在所属模块。
+
+保留 mine/collect、attack/fight、read/call、Driver/World/Runtime，以及 Call/Operation/Effect：这些对象的完成条件或生命周期不同。没有从接口数量推算代码减半或性能提升；实际收益需按模型误选、调用成本、实现分支与失败恢复验证。
+
+静态验证使用 `.artifacts/mc-unix-20261018/check_docs.py`：覆盖 14 份 MC 文档及 LEAD/Host 回执文档，检查本地链接、Markdown 围栏/表格、全部 JS/JSON 示例、严格 TypeScript 合同与互斥请求反例，并核对能力数量和旧符号。另执行 git diff --check。检查不执行 QuickJS、Driver、IPC、Windows Job 或 Minecraft。
+
+
+### 9.8 模型交互面定向复核（2026-10-18）
+
+只读三份项目的模型提示、工具/动作声明、观察与反馈组装，以及与缺口直接有关的函数；没有运行参考项目或 Minecraft。固定快照：
+
+| 来源 | 检查到的接口事实 | 采用或舍弃 |
+|---|---|---|
+| [Cortico 087289d 工具](https://github.com/Pal-AI-Lab/Cortico/blob/087289dfcdf262a771c573d16dbaf2392ce6764b/src/worlds/minecraft/world.ts) / [技能与写牌](https://github.com/Pal-AI-Lab/Cortico/blob/087289dfcdf262a771c573d16dbaf2392ce6764b/src/worlds/minecraft/skills-interact.ts) | mc_do 步骤、mc_check、地图图像、专用告示牌编辑；地图中心借本机存档可额外取得 | 采用真实地图/牌面交互；不采用额外队列、断言 DSL、常驻策略或存档全知 |
+| [mc_claw 3411830 使用指南](https://github.com/mewamew/mc_claw/blob/341183035aa6f1b8ce9654f87d98d102a9ce19ed/SKILL.md) / [获取来源](https://github.com/mewamew/mc_claw/blob/341183035aa6f1b8ce9654f87d98d102a9ce19ed/bot-service/services/recipeService.js) | HTTP 动作、事件历史、公告玩家与实体关联、craft/smelt/mine/kill 获取信息 | 采用这些事实能力，复用现有查询/程序；不照搬按每个请求暂停游戏、自动经验流水线 |
+| [Voyager 55e45a8 提示](https://github.com/MineDojo/Voyager/blob/55e45a880755d0c8c66ca7fb5fe7962ac8974f89/voyager/prompts/action_template.txt) / [探索上下文](https://github.com/MineDojo/Voyager/blob/55e45a880755d0c8c66ca7fb5fe7962ac8974f89/voyager/control_primitives_context/exploreUntil.js) | JS、已有程序注入、环境/错误/评价、回调式探索 | 保留普通 JS 组合；原生探索只补常见实体目标，任意组合条件仍留程序；不引入自动课程/向量库 |
+
+另外核查固定 Mineflayer 7b4bb8d 的 [entities.js](https://github.com/PrismarineJS/mineflayer/blob/7b4bb8d2b56be9cdb832474af873acd37e609746/lib/plugins/entities.js)、[blocks.js](https://github.com/PrismarineJS/mineflayer/blob/7b4bb8d2b56be9cdb832474af873acd37e609746/lib/plugins/blocks.js)、[chat.js](https://github.com/PrismarineJS/mineflayer/blob/7b4bb8d2b56be9cdb832474af873acd37e609746/lib/plugins/chat.js)：air supply 转换为 oxygenLevel；blockEntityData 与普通方块更新不同；updateSign 会先做四行/45 UTF-16 单元检查且本身只发送包；message/messagestr/actionBar 可来自同一个入包；公告名单与实体分别维护。这些事实要求显式覆盖/归属和写后观察，不能把现成函数返回当效果确认。
+
+Uina 当前 [ImageContent](../../../src/core/content.ts)、[ToolExecutionResult](../../../src/tools/broker.ts) 和 [read_image](../../../src/extensions/workspace-tools/index.ts) 已有图片字节交付路径。新设计复用它们；源码存在不证明新地图的 PNG、IPC、Provider 图片呈现或游戏读写已经接通。所有新行为仍需按开发规划分别验收。
+
+本轮静态检查：15 个完整 JS 块通过语法检查、8 个 JSON 块可解析、21 个 TypeScript 块合并后通过严格类型检查；本地链接/锚点、Markdown 结构和 git diff --check 通过。检查覆盖新增输入互斥、分页不能越过未读窗口、告示牌四行、未知值与效果归属；不证明描述的生命周期、协议行为或游戏效果已经实现。

@@ -1,20 +1,18 @@
-# Minecraft 开发入口
+# Minecraft 实现重做入口
 
-更新：2026-10-18。这里仅导航当前设计与源码差异；旧版协调阶段、目录独占分工和冻结桩不再是实施约束，历史见 Git。
+更新时间：2026-10-19。当前目录只保留本入口；旧 Driver、World、Assets、contracts、Executor、WorldDef、对应测试及 Worker 验证器已删除。
+
+本目录开发者开工前先读 [总开发规划](../../../docs/proposals/mc/development-plan.md) 和 [开发规范](../../../docs/proposals/mc/development-guide.md)，再按需阅读所属模块。规范中的接口/所有权、真实结果、退出与验证要求适用于本次重做；不要求特定代理工具、假 Bot 先行或每个小步骤都提交。
 
 ## 权威设计
 
-- [状态与文档地图](../../../docs/proposals/mc/README.md)、[概要](../../../docs/proposals/mc/design.md)。
-- [跨模块行为](../../../docs/proposals/mc/contracts.md)、[公开交换类型](../../../docs/proposals/mc/public-api.md)。
-- [Executor](../../../docs/proposals/mc/modules/executor.md)：Uina 侧 façade、进程、IPC、账本与通知。
-- [Runtime](../../../docs/proposals/mc/modules/runtime.md)：受理、调用、身体、记录与结算。
-- [Program](../../../docs/proposals/mc/modules/program.md)、[Library](../../../docs/proposals/mc/modules/library.md)：普通文件、执行快照、共享 worker 与独立 guest。
+- [状态与导航](../../../docs/proposals/mc/README.md)、[概要](../../../docs/proposals/mc/design.md)。
+- [完整开发规划](../../../docs/proposals/mc/development-plan.md)、[开发规范](../../../docs/proposals/mc/development-guide.md)。
+- [跨模块合同](../../../docs/proposals/mc/contracts.md)、[公开类型](../../../docs/proposals/mc/public-api.md)。
+- [Executor](../../../docs/proposals/mc/modules/executor.md)、[Runtime](../../../docs/proposals/mc/modules/runtime.md)、[Program](../../../docs/proposals/mc/modules/program.md)、[Library](../../../docs/proposals/mc/modules/library.md)。
 - [Driver](../../../docs/proposals/mc/modules/driver.md)、[World](../../../docs/proposals/mc/modules/world.md)、[能力面](../../../docs/proposals/mc/modules/capabilities.md)。
+- 通用 Host 交付依赖：[持久交付回执](../../../docs/proposals/runtime/delivery-receipts.md)。
 
-## 当前差异
+源码实现与旧专属测试已清理；设计文档保留。先落实首批接缝与工程接线，再按总规划并行推进 Runtime、Driver/World、Program/Library、Host 回执与 Executor；尽早接通正式实现的真实游戏流程。当前没有 Minecraft World 入口，Uina 不会加载旧 World 占位。
 
-Driver/World 存在实现，但不是本文新接入合同和真实服务器验收的证明。executor/index.ts、worlddef/index.ts 仍为占位；旧 contracts/*.ts 和 assets/ 不能覆盖后来的设计裁决。实施时按所有者同步真实接缝，不为保持旧桩而增加兼容层。
-
-Minecraft 复用 World 生命周期、五态 ToolExecutionResult、BodyEndpoint 与 worldDataDir；可靠通知另依赖 [Host 通用持久交付接缝](../../../docs/proposals/runtime/delivery-receipts.md)，尚未实现。现有 tool_result 不是 canonical ACK；按通用合同补标记/查询/退役，不增加 Minecraft 专属 Core 事件、资产发布/CAS 或第二套 Runtime。
-
-只在用户授权范围实施；修改前检查工作树并保留无关文件。测试分别标明静态、fake、真实 Node/Windows 和真实 Minecraft 证据。
+不要清理 `.uina/world-data/minecraft`、profile 数据或其他运行数据；本次只移除源码、旧测试和对应开发接线。

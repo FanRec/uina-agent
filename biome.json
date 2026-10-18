@@ -8,9 +8,7 @@
 			"examples/**",
 			"vitest.config.ts",
 			".uina/worlds/live2d/**/*.ts",
-			".uina/worlds/live2d/**/*.mjs",
-			".uina/worlds/minecraft/**/*.ts",
-			".uina/worlds/minecraft/**/*.mjs"
+			".uina/worlds/live2d/**/*.mjs"
 		]
 	},
 	"formatter": {

@@ -1,6 +1,6 @@
 # Uina Minecraft World — Driver / 受控玩家详细设计
 
-**状态：控制内核（资格/身体/反馈/窗口/当前事实）已实现并通过 fake bot 集成验收；尚未接真实 Mineflayer、Pathfinder/PVP 插件，未经过真实游戏验证。**
+**状态：终态设计，未实现。2026-10-18 清理了旧 Driver 源码与专属测试；本文后续的“当前实现”说明均为清理前的历史事实。**
 
 日期：2026-10-15（Asia/Shanghai），2026-10-17 修订。修订经过与理由见 [changelog](../changelog.md)，本文只写当前合同。
 
@@ -155,13 +155,19 @@ Binding       Adapter     / Interact       Window
 Client Ready
 AND 有效 Owner Attachment
 AND 无停用、急停或 Owner Lost 禁止门
-AND 当前宿主调用仍存活且 access=act
+AND Runtime 核验的当前执行来源仍存活（run: access=act 的 Call；safety: 受信任介入）
 AND 有效 Body Permit（需要身体的操作）
 AND 有效 Operation / Resource
 AND 具体操作在当前环境可用
 ```
 
-普通游戏聊天不需要身体资格，但必须具有合法当前 act 调用、连接与 Owner 准入，不能绕过停用和急停限制。对外只读查询不因父调用持有身体而升级。
+chat 发送消息/服务器指令不需要身体资格，但必须具有合法当前 act 调用、连接与 Owner 准入，不能绕过停用和急停限制。对外只读查询不因父调用持有身体而升级。
+
+#### 4.1.1 两种登录方式
+
+配置和账号独占身份由 [Executor §3.1](executor.md#31-配置与入口) 唯一定义。Driver 同时支持显式 offline 和 microsoft：前者用配置的实际名字登录允许离线认证的服务器，不请求 Microsoft 账号或 profile UUID；后者复用上游认证并核验预期 profile。没有默认认证模式或失败后的自动切换。
+
+offline 登录也要经过连接、登录结果和 spawn/初始状态核验，再进入 syncing/ready；`authMode=offline` 不是 connection=disconnected。服务器拒绝、版本不支持、缺少必需的聊天签名或身份不符都保留真实原因，不伪造 ready。客户端自行计算/服务器下发的离线 UUID 只作服务器内身份，不是全局账号证明；持久世界绑定继续来自可信 Host。
 
 ### 4.2 身份代次
 
@@ -223,17 +229,11 @@ Driver 不自动重启旧游戏任务。
 
 ### 5.1 资格归属
 
-Runtime 负责决定何时取得身体。
+Runtime 唯一安排身体申请与 FIFO，任一时刻最多一个 acquire 在途，并在旧 close 屏障完成后才发下一项。Driver 不保存等待者队列、不决定优先级或抢占，只检查 Owner/连接及当前资格，授予或明确拒绝本次申请。
 
-Driver 只维护当前有效 Body Permit，并核验申请是否符合外部所有权门。
+旧资格未退役时收到独立申请，返回 CONTROL_CONFLICT；这是 Runtime 调度违约，不转成需要模型反复重试的正常流程。申请与取消竞争时，在授予及回调执行前重查 signal/连接/调用存活，失效授予立即关闭。连接/化身代次更替或 Driver 关闭使在途申请失败，不发出指向失效环境的资格。
 
-**身体调度的唯一权威在 Runtime**：Runtime 决定"该谁跑、跑什么"（任务/运行队列、优先级、抢占、公平）。Driver 只强制两件事——同一时刻最多一个有效资格（资源隔离），以及按到达顺序发放唯一身体租约（互斥与交接期等待）。
-
-Driver 不建立第二套任务队列。`acquire` 的排队只是 grant 级顺序（并发申请谁下一个取得身体），不是业务任务仲裁，不做优先级、不做抢占；Runtime 的身体调度位于 `acquire` 之上。合同项已闭合：每次身体使用只有一个在途 `acquire`，Driver 只实现互斥与交接期 FIFO（上一项 `close` 完成后才发放下一项），不对并发申请做业务裁决，也不返回“并发冲突”这种需要调用方重试的错误。
-
-停用/拆除期必须结算排队者：连接/化身代次更替与驱动关闭都会以 `DISCONNECTED`/`INTERRUPTED` 明确拒绝整队并摘除各自的 abort 监听；结算后的 grant 还要复查连接状态，绝不把无法履行的租约发给排队者（否则会得到指向空化身的会话）。
-
-同一调用树中的嵌套操作通过 Runtime 的作用域机制继承当前身体资格。
+同一身体的委托与重入由 Runtime 解析，Driver 只核验其绑定，不创建第二次申请。
 
 ### 5.2 Body Session 状态
 
@@ -270,7 +270,7 @@ acquired
 
 ### 5.3 实际写入检查
 
-每个可能产生游戏副作用的操作必须绑定其创建时身份，同时核验宿主绑定的当前调用身份与 access。实际有效权限是创建来源的授权、当前调用权限、父作用域约束和资源有效性的交集；已有 Body Permit 不是跨只读子调用的通行证。
+每个可能产生游戏副作用的操作必须绑定其创建时身份。run 来源同时核验宿主绑定的当前 Call/access；safety 来源核验 Runtime 创建的存活介入与其允许操作。run 的实际有效权限是创建来源的授权、当前调用权限、父作用域约束和资源有效性的交集；已有 Body Permit 不是跨只读子调用的通行证。
 
 脚本桥接和受信任原生异步后续都保留调用归属。捕获旧 act player 后从 read 子调用写入，报 READ_ONLY_VIOLATION；作用域/资格失效报 CONTROL_INVALID 或 REFERENCE_STALE。宿主管理的强制清理由窄清理句柄执行，不接受业务代码自报“维护权限”。
 
@@ -295,6 +295,8 @@ Runtime 是调用身份、父约束、实际 access、存活状态和委托关�
 2. 结合代理创建来源、当前调用及祖先约束求交，再核验调用存活与 Operation/Body/资源代次。
 3. 判断这次操作是当前协调者的合法子操作还是竞争来源；只在允许范围内执行同步修改。
 
+safety 使用由 Runtime 持有的介入来源和同一核验接缝；不运行以上 run Call 的权限提升路径，也不让业务代码把 owner 字段改成 safety。普通调用捕获安全代理、旧安全回调或 read 回调均不能借当前介入资格写入。
+
 同进程可使用 Runtime 所有的 AsyncLocalStorage/显式绑定传递当前调用，但不能使用全局“最后一次请求”。Promise 后续通常延续创建上下文；EventEmitter 监听不自动保留登记时上下文，Adapter 须在登记原生回调时捕获该 Operation 的宿主绑定，执行前重查其存活。返回给业务代码的 player 代理不能简单 bind 到创建 act，否则 read 子调用能经捕获代理恢复旧权限。
 
 Program IPC 只接收可信桥接入口附带的执行域/调用帧关联。Runtime 根据宿主登记的来源解析当前调用，并与句柄创建者及父约束求交；请求体中的 callId/access/owner 均不授予权限。旧消息、别的执行域借用句柄、伪造 parent 或只读帧携带旧 act 句柄，在进入 Adapter 前拒绝。具体执行域实现归 Program，但这些失败场景是接缝的硬要求。
@@ -316,7 +318,7 @@ Program IPC 只接收可信桥接入口附带的执行域/调用帧关联。Runt
 - 反馈流。
 - 异步子操作。
 
-清理只能处理仍属于该 Operation 的资源。具体承载（当前实现）：按键持有 = KeyHold（每连续根一份，撤销只清本根按键）；原生使用状态归属 = Body 会话唯一权威（requireAvailable/claim/release，drive/useItem/feedback 同一路径）；窗口状态 = WindowSession；事件订阅/定时器 = 各自组件的 disposer 表。没有第二份隐形记账。
+清理只能处理仍属于该 Operation 的资源。设计上，按键持有归 KeyHold；原生使用状态归 Body 会话；窗口状态归 WindowSession；事件订阅/定时器由各自组件释放。不要为相同资源再建一份隐形记账。
 
 旧操作不能执行没有资源身份约束的全局清理。
 
@@ -550,6 +552,32 @@ lookAt/ControlInput.lookAt 接受连续 PointTarget 或 EntityRef，由 Driver �
 
 Driver 不因新增某类玩法而增加专门的业务调度器。
 
+<a id="sign-edit"></a>
+
+### 7.6.1 告示牌编辑
+
+equip(null, hand) 是同一装备操作的腾空形式。使用真实库存布局和核验槽位选择空快捷栏/安全移动，不能调用会在满包时丢弃物品的上游便利路径；无空位返回明确不足。完成需当前手槽已知为空，未确认移动继续保留效果未知。
+
+writeSign 是 BodyOps 的专用操作，不是 WindowSession.click。输入为确切 BlockTarget、front/back 和四行纯文字；上层 use 负责走近、腾空主手与输入规范化。Driver 在派发前核验所属资格、连接/化身/维度、当前牌子、可用面、可得的上蜡状态及该版本长度限制。已知上蜡拒绝；上蜡状态未知不伪装为可编辑，仍须取得真实编辑资格。
+
+Driver 不寻路；由高层 use 先安排站位，Driver 从当前姿态定位指定面并发起正常编辑交互，必须取得同一 Operation 期待的 open_sign_editor（位置和可得 side 匹配），才发送一次 update_sign。若版本没有相应事件/受控编辑路径，明确 unavailable，不绕过授权直接写包。错误面、不支持背面、非空主手或超长文字在派发前拒绝；当前选定的上游 updateSign 路径每行 45 个 UTF-16 单元，Adapter 提前校验，不依赖上游 emit(error) 结算本次调用。
+
+一次写入会话只拥有自己的编辑器等待、发送和确认监听。取消发生在 update_sign 前则不发送；派发后取消保留未知写入，不能重发。即使编辑器晚到，也要按已撤销 Operation 丢弃，不借后来新操作的资格发包。关闭后本次编辑器监听退役，不发送虚构空文字来“取消编辑”。
+
+完成需要派发后实际收到的同位置/同面服务端牌面更新；同文本旧缓存或本地预测不算回执。匹配为 met，明确不同为 not_met，期限内无可归属观察为 unknown；领域 use 将不足转为其稳定错误。若服务端不回送可核验牌面，该版本可发送但不得宣称写入已确认。派发、编辑拒绝、取消与未知仍入同一 Effect 记录。读牌只采样已收到的方块实体数据，不主动打开编辑器。
+
+<a id="chat-send"></a>
+
+### 7.7 chat：普通消息与服务器指令
+
+`PlayerPort.chat` 的公开签名在 [public-api](../public-api.md)，领域合同在 [chat@1](capabilities.md#chat)。Driver 根据首字符 `/` 复用上游当前版本的消息/命令编码、签名与发送顺序，不自行构造一套命令解析器或假造签名。
+
+一次调用对应完整文本的一次发送 Operation，绑定当前 Call、Owner 和连接，虽不占 Body 也要进入 ExecutionSink。该 Effect 的要求是发送文本，不是执行任意服务器目标；真实派发边界有据即满足该低层合同。上游 `bot.chat` 可能在内部排队且没有完成 Promise，不能在其返回时便记 dispatch=sent。适配须在排队后续的实际派发重新核验来源/取消并记录；关闭后未派发项取消，晚到项仍带旧 Operation，不能恢复写入。
+
+入参在派发前按版本校验，不让上游自动分行/切段；尤其不能将长指令拆成多条。取消只阻止尚未派发的文本，已进入协议层的指令不承诺撤回；派发不明保留 unknown，不自动重试。普通消息与命令回复走同一事实采集；没有权威关联证据就不归因于某次命令。
+
+服务器执行命令可以造成传送、重生、维度/库存/方块变化。它们按实际入包更新 World 与现有身份/控制失效规则处理，不把指令返回当作这些效果的完成证据；也不为推断任意插件命令的身体需求新增仲裁器。
+
 ---
 
 ## 8. 高频反馈
@@ -634,7 +662,7 @@ updatePosition / movement packet
 
 采用确定语义：第 N 步模拟完成 → 采样 N 的结果 → 执行域计算 → 输出进入待应用槽 → 在仍有效的第 M 步模拟前安装，其中 M>N。异步延迟可能使 M>N+1；不能许诺每帧一定赶上下一步，也不把输出补记到 N。
 
-**窄接缝是条件条款（2026-10-17 依据 research.md#driver-audit 降级）。** 上游并未提供任何接缝；同进程部署中，在两次模拟之间同步安装输入并监听 `physicsTick` 计数，与下述"模拟前安装、模拟后计数"语义精确等价（`physicsTick` 仅在真实模拟分支发出，已按固定源码核实），Driver 当前实现即采用该路径，不需要为 drive/feedback 补丁物理循环。以下窄接缝仅在两个场景出现时才以最小补丁实现（优先 wrap `physics.simulatePlayer` 单点，不 fork 循环）：(a) 输入安装异步化（M5 执行域桥接，apply 到达时需在模拟前核验来源与有效期）；(b) 需要归属插件模拟后修改或取证 wire 值。接入时顺序固定：
+**窄接缝是条件条款（2026-10-17 依据 research.md#driver-audit 降级）。** 上游并未提供现成接缝。按固定源码核查，同进程中在模拟之间同步安装输入并监听 `physicsTick` 计数，可实现设计要求的前安装、后计数语义。新实现应先沿此窄路径验证；只有异步输入安装或需要归属插件模拟后修改/wire 取证时，才以最小补丁实现（优先 wrap `physics.simulatePlayer` 单点，不 fork 循环）。
 
 ```text
 原有 play/实体/区块等模拟条件检查
@@ -917,7 +945,7 @@ Driver 支持 `run` 与 `safety` 两类控制来源，但不自行决定何时�
 
 已有有效复合控制器内部的短时自保动作，可由该控制器协调执行。
 
-急停、Owner Lost、World 停用门禁止产生新的自保业务动作。
+急停、Owner Lost、World 停用门禁止产生新的自保业务动作。触发和有界结束条件唯一见 [能力面 §2.14](capabilities.md#survival)，Runtime 的介入记录和调度见 [Runtime §3.3.3](runtime.md#safety-intervention)。Driver 不另加 auto-eat/auto-attack 监听器；客户端重生也不能恢复死亡前 Operation 或继续旧控制。
 
 共享 worker 故障先由 Program/Runtime 封闭全部受影响调用并撤销控制，再终止并确认退出。Driver 不因替代 worker 启动而复活旧来源，交接仍以本节屏障为准。
 
@@ -929,7 +957,7 @@ Driver 只消费必要保证：旧本地写源已隔离才允许新客户端/资
 
 ## 11. 当前客户端事实
 
-Runtime 集成须注入真实 HostCallVerifier 和非阻塞 DriverExecutionSink，唯一形状见 [public-api §7.1](../public-api.md#71-可信组合根注入)。默认宽松 verifier 不得用于完整写集成。Operation 创建时绑定 Call 来源，实际派发/回执/清理入 Runtime 队列；对应 close 完成前，已产生清理事实先入队。Driver 不等数据库、不成为第二份 Effect 权威，Runtime 终结另等记录 H 屏障；未来服务端证据仍可晚到。
+Runtime 集成须注入真实 HostCallVerifier 和非阻塞 DriverExecutionSink，唯一形状见 [public-api §7.1](../public-api.md#71-可信组合根注入)。默认宽松 verifier 不得用于完整写集成。Operation 创建时绑定真实 ControlOwner（run 或 safety），实际派发/回执/清理入 Runtime 队列；对应 close 完成前，已产生清理事实先入队。Driver 不等数据库、不成为第二份 Effect 权威，Runtime 终结另等记录 H 屏障；未来服务端证据仍可晚到。
 
 
 ### 11.1 唯一客户端事实基础
@@ -1042,6 +1070,19 @@ Driver 事实水位、World 查询游标和反馈帧序号属于不同作用域�
 stamp 只能证明源已前进，不证明 World 已收到对应空间范围。World 按 [World §9](world.md) 在范围未知时保守覆盖当前源；Driver 不为此等历史载荷或数据库，也不要求新增 notice 区间日志。SQLite 打开失败不阻止已有 Driver 的当前 sample；scope 只用可信运行期绑定，否则是显式 unbound，不能从连接地址推断存档身份。样本已有的 evidenceThrough 可供联合结果填写 history 进度，它不是持久 ACK；纯当前不计算历史进度。
 
 ---
+
+<a id="client-observations"></a>
+
+### 11.8 身体、事件、名单、牌面与地图
+
+- **身体**：SelfState 的新字段沿实际健康/元数据/效果/经验入口更新，与 World self 和 feedback 共用纯采样。气量从原版 air supply/客户端 oxygenLevel 明确转换为 0..20；未收到、默认构造值和真实满气不同。状态效果增删及到期维护使用现有客户端 Tick/数据，不让过期免疫永久阻止避险。
+- **事件**：默认采集收到的聊天/系统/动作栏、本客户端玩家的伤害与死亡、连接状态。进入 ready 记 connected，离开连接记 disconnected（同次关闭只记一次）；原因不可得为 null。在原始入包身份尚在时捕获一条 client.event@1；message/messagestr/actionBar/旧正则若来自同一入包只能是一条记录，不按文本去重不同包。chat channel/sender/recipient/self 来自协议或明确版本格式；解析不了为 unknown/null，保留原文。action_bar 默认也保留，不把重复文本跨时间吞掉。高频流积压遵守 World 的明确缺口/采集边界合同，不能静默丢尾。
+- **伤害/死亡**：优先使用协议给出的伤害、死亡消息和来源。仅有受伤动画时 amount/cause/attacker 均可未知；健康下降与动画同一事实不能生成两次已确认伤害。不能可靠关联时保留分开的原始依据，不累计为确定总伤害。死亡先退役旧化身控制和引用，再按客户端正常生命周期处理重生；不自动继续原 Run。
+- **名单**：读取实际 player-info/listed 语义，不能直接把上游维护过的所有 profile 都叫在线。纯玩家实体与公告名单独立更新；实体出现/消失只改变 tracked 关联，不凭此新增/删除名单。重连未同步时名单未知，UUID 不承担正版认证。
+- **牌面**：从实际 block entity / sign 更新解码四行纯文字及属性。方块格状态没变但牌面变了也推进 stamp/范围；缺背面或瓦片数据只标相应字段 unknown，不返回空四行。raw NBT/文本组件解析归版本 Adapter，不让上层猜原生结构。
+- **地图**：在实际 map 包入口按 map id 接收矩形增量、scale/locked 和可得图标；每格有已收到标记，不能用零初始化当完整地图。无图标字段表示保留旧值，明确空列表才清空。校验矩形/长度后一次提交；错误包不污染其他图。只保存实际需要的当前连接缓存，重连不沿用旧地图覆盖；当前库存中不再可寻址且无活动读引用的缓存可回收。
+
+ClientFactView 的 players/map/block/self 是唯一采样口。GameEvent 不通过一个不断增长的 current events() 数组输出，而是进入既有不可变证据流；主脑从 World events@1 历史读取。地图编码在关键循环外，名单与小范围身体读取不等待图片或历史存储。
 
 ## 12. Window Session
 
@@ -1530,6 +1571,6 @@ Window W1
 
 ## 20. 本文的证据边界
 
-本轮阅读当前 Uina 与固定上游源码，复核跨模块合同，并执行 §18.8 的原始故障/执行域探针。控制内核已实现（fake bot 阶段，118 例集成/单元验收）；真实 Mineflayer 适配补丁、真实服务端、反馈桥接测量与游玩对照尚无。其余验证标准仍待执行，不能据本文状态、反例断言或类型检查宣称已满足。
+本文记录清理前对 Uina 与固定上游源码的核查，以及 §18.8 的原始故障/执行域探针。旧控制内核和其 118 个 fake bot 测试已删除；这些历史结果不证明新 Driver 已实现。新实现仍需验证 Mineflayer 插件交接、真实服务端、反馈延迟与实际游玩效果。
 
 **最终定位：Driver 是 Uina 在 Minecraft 中唯一受控的客户端操作边界。它负责可靠地控制玩家并提供真实客户端事实，而不负责决定玩家应该做什么。**

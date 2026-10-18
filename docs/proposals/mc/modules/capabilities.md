@@ -30,7 +30,7 @@
 |---|---|---|---|
 | 我现在怎么样 | 血、饿、位置、手上的东西 | `self` `inventory` `world` | `mc.read` |
 | 那是什么/附近有什么 | 这块是不是矿、附近有羊吗、这玩意怎么合成 | `block` `blocks` `entities` `item` `recipe` | `mc.read` |
-| 帮我做到 | 走到那、挖 16 个木头、把房子盖起来 | 37 个动作 | `mc.call` |
+| 帮我做到 | 走到那、挖 16 个木头、把房子盖起来 | 35 个动作 | `mc.call` |
 | 到底行不行、要多少料 | 到得了吗、料够吗、会不会挡路 | `route.plan` `build.plan` `recipe` | `mc.read` |
 
 第四类是本文相对旧目录新增的。模型最贵的一次错误是"开工以后才发现缺 3 个木板或到不了"，而修正它的代价是整段程序重写。有实际规划价值的动作提供只读试算，复用几何/寻路/配方实现。试算说明本次已知条件下的计划和缺口，执行前仍需核验，不把计划通过说成执行保证。
@@ -50,7 +50,7 @@
 
 1. **不做几何 DSL。** 旧方案里的 `build.shape({kind:"box",...})` 是错的——形状是任务，用 `for` 循环生成 `cells` 比记一套 shape 语法简单，也更强。能力只收 `cells`。
 2. **不做技能队列。** 程序本身就是队列：一段程序跑完就是任务跑完，中途状态由 `runs` 展示，继续由 `continue` 接手。
-3. **37 个动作不等于 37 套算法。** 能力面对模型是并列的动词，对内是四个家族里的一组普通函数：`collect` 复用挖掘与寻路，`build` 复用放置与世界读，`fight` 复用攻击与移动，`transit` 复用 `goto`。判据只有一条——**模型需要分辨的行为差异**才允许成为新动词（比如 `mine` 与 `collect` 的差别是"一格"与"够数"，`place` 与 `build` 的差别是"一格"与"按图"）。同义动词（`journey`/`travel`/`transport`）永远不加，它们只增加选择成本。
+3. **35 个动作不等于 35 套算法。** 能力面对模型是并列的动词，对内是四个家族里的一组普通函数：`collect` 复用挖掘与寻路，`build` 复用放置与世界读，`fight` 复用攻击与移动，`transit` 复用 `goto`。判据只有一条——**模型需要分辨的行为差异**才允许成为新动词（比如 `mine` 与 `collect` 的差别是"一格"与"够数"，`place` 与 `build` 的差别是"一格"与"按图"）。同义动词（`journey`/`travel`/`transport`）永远不加，它们只增加选择成本。
 
 ### 1.4 七条设计律
 
@@ -82,6 +82,27 @@ L7 要划清三种冻结（细节见 §2.13）：**提交的是意图**（Run �
 ```ts
 type Pos = PointTarget | {rel: Vec3};       // 连续坐标目标，PointTarget 见 public-api
 type GridPos = BlockPos | {rel: Vec3};      // 整数方块格，含 rel 时各分量也须为整数
+interface MoveTargetRequest {
+  at: Pos; tolerance?: number; digThrough?: boolean; placeToReach?: boolean; sprint?: boolean;
+}
+type GotoInput = MoveTargetRequest & {maxTimeMs?: number};
+type BuildTargetRequest = {replace?: boolean} & (
+  | {cells: {at: GridPos; block: BlockSpec}[]; from?: never; at?: never;
+      mirror?: never; rotate?: never; airPolicy?: never; expectDigest?: never}
+  | {from: BlueprintRef; at: GridPos; mirror?: "none"|"x"|"z"; rotate?: 0|90|180|270;
+      airPolicy?: "set_air"|"preserve";
+      expectDigest?: string; cells?: never}
+);
+type BuildInput = BuildTargetRequest & {maxTimeMs?: number};
+type TransferEndpoint = GridPos | EntityRef | "nearest";
+type TransferInput = (
+  | {from: TransferEndpoint; to?: never}
+  | {to: TransferEndpoint; from?: never}
+) & (
+  | {item: string | ItemSelector; count?: number; all?: never}
+  | {all: true; item?: never; count?: never}
+);
+interface DropInput {item: string | ItemSelector; count?: number; toward?: string | EntityRef}
 ```
 
 移动/实体位置可为小数；block/mine/place/build.cells/region/excavate 使用 GridPos，绝对坐标不隐式 floor。程序从 self 位置生成格子时显式 Math.floor；GridPos 的 rel 以当前脚所在整数格为原点再加整数偏移，连续 Pos 的 rel 则以当前位置为原点。相对目标在本次调用前解析并记录实际坐标，执行中的寻路仍可更新；持久地点用 `{position, dimension}`，World 分区补 world/worldRevision。不能把旧维度历史地点简化成三个数后在当前维度执行。
@@ -90,7 +111,7 @@ type GridPos = BlockPos | {rel: Vec3};      // 整数方块格，含 rel 时各�
 
 装备、消耗、存取/丢弃物品的 item/tool/food 等选择子接受 `Name | ItemSelector`。精确 components、minDurability 与 substitutions 复用共享合同，读取槽位保留组件和耐久。字符串仍走 Name 解析，不会要求常见调用填写实例字段。
 
-省略位置的便捷规则沿用：place 在身周 3 格内选可放空位，take/stow 在 16 格内选容器，smelt 在 16 格内选炉子；实际选择、默认值和约束在派发前记录。
+省略位置的便捷规则沿用：place 在身周 3 格内选可放空位，transfer 的 nearest 在 16 格内选容器，smelt 在 16 格内选炉子；实际选择、默认值和约束在派发前记录。
 
 ### 2.3 名字
 
@@ -103,7 +124,7 @@ type GridPos = BlockPos | {rel: Vec3};      // 整数方块格，含 rel 时各�
 
 解析失败 → `INVALID_INPUT`，`hint` 带 `candidates`（≤8 个最接近的名字）。歧义（例如 `pickaxe` 在只需要"一把镐"的位置）按"取当前可用的最好一个"处理，不报错。
 
-`collect` 的 `item` 是**掉落物**：会反查产出它的方块（`cobblestone`→`stone`；charcoal 没有直接方块掉落，须由程序组织熔炼）。`drop`/`give`/`equip` 的 `item` 是物品本身。
+`collect` 的 `item` 是**掉落物**：会反查产出它的方块（`cobblestone`→`stone`；charcoal 没有直接方块掉落，须由程序组织熔炼）。`drop`/`equip` 的 `item` 是物品本身。
 
 ### 2.4 数量与时间
 
@@ -122,35 +143,29 @@ type GridPos = BlockPos | {rel: Vec3};      // 整数方块格，含 rel 时各�
 ### 2.5 返回
 
 - **查询**（`mc.read`）返回 `{ value, version, unknown? }`：`value` 是领域值，`version` 是宿主的观察令牌（程序原样回传，不解释），`unknown` 只在有未知时出现（`chunk_unloaded`、`not_connected`、`stale`）。本文 §3 各条的"返回"写的是 `value` 的形状。
-- **`version` 可能是 `null`**：只有真正可被观察的查询才有令牌（`self`/`inventory`/`block`/`blocks`/`region`/`entities`/`world`/`places` 八个，即 `watchable:true`；feedback 单独表示能否快速采样）。派生计算（`route.plan`/`build.plan`/`recipe`）、静态知识（`item`）与历史视图（`container.last`）的 `version` 恒为 `null`，它们不能进 `waitUntil`——否则 World 就要为"任意派生结果的依赖变化"建立响应式依赖图。要等这些，就等它依赖的基础事实（库存、方块、世界）。
+- **`version` 可能是 `null`**：只有声明可观察的查询才有令牌（`self`/`inventory`/`block`/`blocks`/`region`/`entities`/`players`/`world`/`places` 及有固定 after、已读完当前窗口的 `events`，即 `watchable:true`；feedback 单独表示能否快速采样）。派生计算（`route.plan`/`build.plan`/`recipe`）、静态知识（`item`）与历史视图（`container.last`）的 `version` 恒为 `null`，它们与 `map` 都不能进 `waitUntil`——否则 World 就要为"任意派生结果的依赖变化"建立响应式依赖图。要等这些，就等它依赖的基础事实（库存、方块、世界）。
 - **动作**（`mc.call`）返回领域值（普通 JSON 对象），没有包装。
 
 共同的三条约定：
 
 1. **数字是实测的**：`mined` 是实际破坏的方块数，`collected` 是实际进背包的数量（掉落物可能没捡到）。
 2. **进度可继续**：目标型调用不足时抛领域错误，progress 包含正常结果同名的完成量与 remaining；成功 remaining 为 0/空清单。会话型调用使用明确 ended，不把撤退、失联和击杀混在一起。
-3. **缺省不出现**：可选字段没有就不出现，不写 `null`（`block` 查询的 `block: null` 是例外，它表达"那里是空气"）。
+3. **空值按合同**：可选且不适用的字段省略；schema 明确声明的未知/不可得字段使用 null 并给 unknown。不能将未知名单、牌面、地图或状态效果变成空集合。
 4. **体积有上限**：单次返回 ≤ 1 MiB；`region` 用 `palette` + 索引压缩，8192 格约 10–20 KB，而不是 8192 个重复对象。
 
 ### 2.6 失败
 
-调用失败抛出 `CallError`，字段与 Program §2.6 一致：
+调用失败抛出 CallError，共享字段由 public-api §2 的 CallFailure 唯一定义；领域错误只收紧 code：
 
 ```ts
-interface CallError extends Error {
-  name: "CallError"
-  code: CallFailureCode
-  source: "program" | "capability" | "world" | "input" | "environment"
-  message: string        // 一句话，给模型看的，含实测值
-  hint?: string          // 建议；确定的修复要写成可直接抄的调用
-  dispatch: "not_sent" | "sent" | "unknown"
-  effects: Ref[]         // 已发生的效果记录
-  progress?: Progress    // 已完成的量与阶段
-  recoverable: boolean
-}
+type CallFailureCode = "NOT_FOUND"|"UNREACHABLE"|"MISSING_MATERIAL"|"MISSING_TOOL"
+  |"INVENTORY_FULL"|"CONFLICT"|"WRONG_STATE"|"TARGET_NOT_MET"|"INTERRUPTED"
+  |"TIMEOUT"|"INVALID_INPUT"|"INTERNAL"|"DISCONNECTED";
+interface CallError extends CallFailure {name: "CallError"; code: CallFailureCode}
+
 ```
 
-13 个 code。`source` 是"哪一层报的"（事实），不是责任判定；`dispatch` 决定"重来安不安全"：`not_sent` 重来无害，`sent` 要先看世界，`unknown` 必须观察后再决定。
+13 个动作领域 code；查询的 STORE_UNAVAILABLE/SNAPSHOT_EXPIRED 等沿 World 合同，不改成 NOT_FOUND。`source` 是"哪一层报的"（事实），不是责任判定；`dispatch` 决定"重来安不安全"：`not_sent` 重来无害，`sent` 要先看世界，`unknown` 必须观察后再决定。
 
 | code | 含义 | 典型 source | 模型该做什么 |
 |---|---|---|---|
@@ -205,16 +220,18 @@ withBody 拿到身体后使用 body.call 显式委托。被调程序/原生能�
 
 `mc.read` 的 `unknown` 与查询值里的 `scanned`/`truncated` 一起构成"我知道多少"。**找不到不等于不存在**：只代表"已加载区块里没看到"。模型据此决定是扩大范围还是换假设——这一点必须写进指南，否则它会反复重试同一个半径。
 
-### 2.11 试算
+### 2.11 试算与执行共用目标
 
-`route.plan`、`build.plan`、`recipe` 的 plan 字段只读世界与背包，复用领域算法。输出说明观察范围、当前缺口和估计，不保证执行必成：实际可达性、实现差异与世界变化仍可能失败。执行前重验，保留 plan 使用的蓝图摘要。
+route.plan/goto 共用 at、tolerance、digThrough、placeToReach、sprint。build.plan/build 共用目标、落点、变换、airPolicy、replace 与 expectDigest。maxTimeMs 只控制执行期限，不改变目标；规划不通过 dryRun 开关变成另一种执行模式。
+
+计划与执行复用目标解析及领域算法，计划说明观察范围、材料缺口、冲突与估计。执行前按新现场复核；相同请求不保证世界未变，不强制引入 plan ID。recipe 返回配方与可选材料计划，仍是查询。
 
 ### 2.12 分层
 
 | 层 | 内容 | 判据 |
 |---|---|---|
-| P0 能活 | `self inventory block blocks entities item recipe world goto mine collect craft smelt place take stow container equip eat use say attack fight` | 木→石→铁全链、箱子存取、战斗撤退 |
-| P1 能建 | `build tunnel excavate route.plan build.plan region container.last follow flee surface explore drop give pickup remember forget places` | 盖房子、挖矿道、存点 |
+| P0 能活 | `self inventory block blocks entities item recipe world events goto mine collect craft smelt place transfer container equip eat use chat attack fight` | 木→石→铁全链、箱子存取、战斗撤退 |
+| P1 能建 | `build tunnel excavate route.plan build.plan region container.last follow flee surface explore drop pickup remember forget places players map` | 盖房子、挖矿道、存点、地图和玩家协作 |
 | P2 能玩 | `brew enchant anvil grindstone transit ride lead fish trade sleep` | 附魔、酿造、骑乘、交易 |
 
 P2 的契约在本文给出意图与边界，参数在实现该能力时冻结（理由见 §11）。
@@ -232,13 +249,34 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 不需要额外的参数版本系统：把最终有效输入记进 `CallRecord` 即可追溯"当时到底请求了什么"。
 - 两个反例：把"配置"当隐式输入在后台改，让同一个 `goto` 的目标悄悄变（意图漂移）；或相反，派发前把整条路径算死，遇到新刷出的岩浆还照走（世界冻结）。
 
-## 3. 查询（13 个）
+<a id="survival"></a>
+
+### 2.14 生存反射
+
+自保是领域模块中的普通判定/控制函数，复用当前事实、已有控制器与 Runtime 的 safety 资格；不新增模型工具、常驻策略字典或后台任务系统。
+
+| 初始触发 | 必须有的事实 | 有界动作与结束条件 |
+|---|---|---|
+| lava | inLava=true | 离开当前接触岩浆并站稳 |
+| drowning | inWater=true、oxygen≤4，当前 effects 已知且无有效水下呼吸免疫 | 游至可呼吸处；气量开始恢复且不再淹没 |
+| low_health_damage | 已知 maxHealth、0<health≤maxHealth×30%，最近 2 秒确有新伤害 | 脱离已观察威胁、连续 2 秒无新伤害并站稳；不能推断伤害来源 |
+
+低血本身、普通饥饿或附近出现怪不自动触发攻击/消耗物品。缺氧气/免疫等触发依据就报告未知，不填健康默认值。运动控制器依据已知地形避开坠落；不承诺独立反射能挽救任意已经发生的坠落。自保不自动吃珍贵食物、制作、挖路、建造或反击。
+
+一次介入最长 10 秒；可复用现有移动/游泳算法，但不发普通长任务给另一个调度器。只有确认本行结束条件才报 safe；受阻、超时、停止、资格失效分别记录，不能把“尝试逃生”写成安全。初始阈值随介入记录固定，真实版本验收后可调整，不成为用户配置面。
+
+兼容短动作由现有控制器协调；必须独立介入时先中断并退役冲突 BodyScope，再按同一 Runtime 门取得 safety 资格。旧调用返回 INTERRUPTED 和真实进度，父程序可在外层重新判断，不能恢复旧句柄。急停/Owner Lost/停用禁止新介入；停止和交接仍可执行。对同一未解除危险只启动一次，解除后再次出现或新的伤害证据才重新评估，避免每帧重启。
+
+介入记录、效果归属与通知见 [Runtime §3.3.3](runtime.md#safety-intervention)。死亡使旧化身引用和在途身体失效；客户端重生属于生命周期维护，不自动重跑旧任务，也不认定库存全丢。
+
+## 3. 查询（16 个）
 
 查询是 `access: "read"` 的能力：不写世界，不持身体，可以高频调用。下面写的是 `mc.read` 返回的 `value`。带“可等待”的查询有真实观察令牌（`version`），能让 `mc.waitUntil` 无漏唤醒；其余查询 `version` 恒为 `null`。
 
 ### self · `self@1`
 - 输入 `{}`
-- 返回 `{ place: { dimension, position }, health, maxHealth, food, saturation, oxygen, onGround, inWater, inLava, held?: { name, count, durability? }, armor: { head?, chest?, legs?, feet?, offhand? }, effects: [{ name, amplifier, seconds }], xpLevel }`
+- 返回 public-api 的 SelfState，并从同次 inventory 采样补充 `held?:{name,count,durability?}` 与 `armor:{head?,chest?,legs?,feet?,offhand?}`。velocity 也可用于程序控制。
+- maxHealth/saturation/oxygen/inWater/inLava/effects/xpLevel 不可得为 null，并在 unknown 给出字段；已知 effects=[] 才表示没有效果。oxygen 为 0..20，effects.seconds 是名义游戏秒数，单位与来源见 [公开类型](../public-api.md#client-facts)。
 - 例：`{ place:{dimension:"overworld",position:{x:120,y:64,z:-30}}, health:18, food:17, onGround:true, held:{name:"stone_pickaxe",count:1,durability:{used:12,max:131}} }`
 
 ### inventory · `inventory@1`
@@ -249,7 +287,7 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 
 ### block · `block@1`
 - 输入 `{ at: GridPos }` 或 `{ below: 1..4 }`（脚下第 N 格）
-- 返回 `{ block: { name, position, properties, light?, harvest? } | null }`；`null` 表示空气，未加载走 `unknown`
+- 返回 `{block:{name,position,properties,light?,harvest?,sign?:SignValue|null}|null}`；外层 null 表示空气，未加载走 unknown。告示牌的正背面、颜色、发光与上蜡状态见 public-api 的 SignValue；牌面未知不当成空白。非告示牌省略 sign。
 - `harvest` 是"以手头最好的工具能不能掉落"：`{ ok, requiredTool? }`
 - 例：`{ at:{x:120,y:63,z:-30} } → { block:{ name:"stone", position:{x:120,y:63,z:-30}, harvest:{ ok:true } } }`
 
@@ -274,9 +312,28 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - `ref` 是稳定引用（连接+世代+网络 id），可直接传给 `attack`/`fight`/`follow`。
 - 例：`{ kind:"hostile", radius:16 } → { entities:[{ref:"s3:7:1042",name:"zombie",kind:"hostile",position:{x:124,y:64,z:-25},distance:6.4}] }`
 
+### players · `players@1`
+- 输入 `{name?:string,limit?:1..256=64}`；name 按玩家名不区分大小写精确筛选，结果按 name/uuid 稳定排序。
+- 返回 `{extent:"server_listed",players:[{name,uuid,displayName,latencyMs,gameMode,tracked:{ref,position,distance}|null}],listedCount,truncated}`；listedCount 是筛选后公告名单的数量，不受 limit 截断。
+- 只读取服务器实际公告的名单。离开实体跟踪范围仍可在名单里，但 tracked=null；未公告不证明离线，服务器插件隐藏的人也不凭空出现。尚未收到名单时返回部分覆盖和 unknown，不冒充空服。
+- UUID 可为 null；offline 服务端提供的 UUID 仍不证明正版身份。tracked.ref 必须关联当前 EntityRef；不能将名单项直接传给 attack/follow。
+- **可等待，非 feedback**：名单、关联实体出现/失效、位置及覆盖变化推进版本；不读历史或为名单主动发送 `/list`。
+
 ### item · `item@1`
 - 输入 `{ name: Name }`
-- 返回 `{ name, displayName, stackSize, tags:[string], block?: Name, tool?:{ type, tier, durability }, food?:{ hunger, saturation }, fuel?:{ ticks }, dropOf?: Name, placeAs?: Name }`
+- 返回 `{name,displayName,stackSize,tags:[string],block?:Name,tool?:{type,tier,durability},food?:{hunger,saturation},fuel?:{ticks},placeAs?:Name,sources:ItemSource[],sourcesComplete:boolean,dataVersion:string}`。
+- sources 用统一结构替代单个 dropOf：
+
+```ts
+type ItemSource =
+  | {kind: "craft" | "smelt"}
+  | {kind: "block"; block: string; requiredTool: string | null}
+  | {kind: "entity"; entity: string}
+  | {kind: "trade"; profession: string | null};
+```
+
+- 制作/熔炼的具体原料仍查 recipe；block 表示已知方块掉落，entity 表示已知实体产出，不暗示每次保证掉落，trade 不承诺当前存在相应交易。数据按实际服务端版本取自已有注册表/维护数据；缺项 sourcesComplete=false，不把空列表解释为无法获得，也不伪造掉落率或模组配方。dataVersion 标出实际采用的数据版本。
+- recipe 的 plan 仍只展开 craft/smelt 和当前库存差额；采集、击杀、交易等叶子由程序依据 sources 组织。知识查询不执行行动，不新增自动科技树规划器。
 - 用途：模型不确定"这东西能不能吃/当燃料/放成方块"时查一次，而不是试错。
 - **不可等待**：静态知识，`version: null`。
 
@@ -291,6 +348,46 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 输入 `{}`
 - 返回 `{ dimension, timeOfDay:"day"|"noon"|"night"|"midnight"|"dawn"|"dusk", ticks, dayCount, weather:"clear"|"rain"|"thunder", biome, difficulty, gameMode, spawn? }`
 
+<a id="events"></a>
+
+### events · `events@1`
+
+```ts
+type EventKind = ClientEventPayload["kind"];
+type EventAfter = string; // 不透明增量位置，绑定历史分区、存储身份和 kinds；不是观察版本
+type EventInput =
+  | {kinds?: EventKind[]; after?: EventAfter; limit?: number; cursor?: never}
+  | {cursor: string; kinds?: never; after?: never; limit?: never};
+interface GameEventRecord {
+  ref: Ref; receivedAt: string; dimension: string | null;
+  payload: ClientEventPayload; evidence: Ref[];
+}
+interface EventGap { ref: Ref; reason: string; after: EventAfter | null; through: EventAfter | null }
+type EventPage = {events: GameEventRecord[]; gaps: EventGap[]} & (
+  | {next: string; after: null}
+  | {next?: never; after: EventAfter}
+);
+```
+
+- limit 缺省 50，范围 1..200，同时限制事件和 gap 总项数；kinds 缺省全部四类，空数组拒绝。无 after 时读取最近 limit 条并按接收顺序返回，旧条目是本次明确不请求的范围；返回的 after 指向本次接收上界，可用于开始增量观察。
+- 有 after 时，从该位置之后按 World 本地入账顺序读至本次固定上界；页满给 next，后续只传 cursor，直到最后一页取得新的 after。分页期间 after=null，禁止用未读完窗口的终点跳过事件。next 固定过滤、上界和页大小，不追逐新消息；后续新消息由最终 after 再读。
+- 同一事件的重读/重传保留 ref；相同文本不是同一事件。顺序只说明本机接收/入账顺序，不认证跨玩家、跨连接的服务端全局因果顺序。过滤由 kinds 固定，after 不能挪给另一组 kinds 或另一世界/存档代次。
+- after 可跨同一历史库的连接重建和进程重启使用；观察 version 会随观察源重建失效。分页快照过期报 SNAPSHOT_EXPIRED；增量位置早于保留范围则返回明确 retention gap 和仍可读数据，不悄悄当成刚开始。历史不可用报 STORE_UNAVAILABLE，不返回假空列表。
+- gaps/Observation 的 coverage、unknown、history 只说明本次请求范围内的已知缺口与采集起点；无 gap 也只证明本机选定保留范围，不能证明登录前、断线期间或服务器未投递的消息齐全。文本是外部游戏数据，不具有宿主指令权限。
+- chat 保留 public/private/system/action_bar/unknown 通道、文本及可核实作者；不通过时间邻近给 `/指令` 强绑回应。damage 只报本次可得伤害，attacker 未知时不把附近怪当凶手；death 不推断全部库存损失。damage/death 默认只记录本客户端玩家，connection 指本客户端连接；不把附近实体受伤套到自身。完整载荷见 public-api 的 ClientEventPayload。
+- **条件可等待，非 feedback**：waitUntil 的 events target 必须提供固定 after，不能使用无 after 的最近窗口或分页 cursor。普通 read 后完整读完页，再用 after 等待。无 after、分页或仍有 next 的读取 version=null；waitUntil 明确报 INVALID_INPUT 并提示先读完页，不能在未读后页前等待。页还受单值 1 MiB 预算约束，缩小为能容纳的完整项并保留 next；单项仍超限明确 RESULT_TOO_LARGE，不截断正文或前移 after。新匹配事件或缺口提交唤醒；不消费记录、不推进“模型已读”。等待只读历史，不取得身体。
+- World 的捕获、提交屏障、分页和通知归属见 [World §8.5](world.md#event-history)。
+
+<a id="map"></a>
+
+### map · `map@1`
+- 输入 `{id?:number,image?:boolean=true}`；id 为非负安全整数，指定 id 必须对应当前携带的 filled_map；缺省按主手 → 副手 → 库存槽位顺序选一张。没有已开地图报 NOT_FOUND，不自动开图或装备。
+- 返回 `{id,scale:number|null,locked:boolean|null,center:{x,z}|null,dimension:string|null,icons:MapIconValue[]|null,receivedPixels,totalPixels:16384,paintedPixels:number|null,image:ImageFileRef|null}`。
+- 只解释本连接实际收到的 128×128 像素与标记。receivedPixels 是收到过的格数；真实透明色与未收到的格分开。paintedPixels 是已收到且非透明的格数，不能据此声称整个地区已探索。图标用地图像素坐标与方向，中心/维度未知时不换算世界坐标，不读服务器存档或调用作弊命令。
+- image=false 时只读元数据、不编码或交付图片，image=null 表示本次未请求，不列为未知。缺省 image=true，image 是固定本次切面的 512×512 PNG（整数倍放大），未知像素用明确棋盘遮罩，已收到的透明像素保留地图纸底色；文本说明覆盖和图例。图标与像素来自同一切面。像素全未知或编码不可用时 image=null 并给 unknown，元数据仍可用。
+- 图片生成与工具交付见 [World §8.6](world.md#map-observation) 和 [Executor §2.1.1](executor.md#observation-images)。程序只取得 JSON 和文件引用；主脑 observe 通过已有图片附件读取画面，不另建视觉代理。
+- **不可等待，非 feedback**：version=null。需要新画面时显式重新查询；不能为 PNG 缓存建一套响应式依赖图。
+
 ### places · `places@1`
 - 输入 `{ kind?: "home"|"mine"|"farm"|"other", near?: number }`
 - 返回 `{ places:[{ name, at:{position,dimension}, kind, note?, savedAt }] }`
@@ -298,33 +395,33 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 ### container.last · `container.last@1`
 - 输入 `{ at: Pos }`
 - 返回 `{ found, at?, type?, contents?: [{ slot, name, count }], counts?: { [item]: number }, observedAt?, source?: "window"|"event", complete?: boolean }`
-- 返回的是**上次真实看见的内容**，不是现在的库存。只在真的打开过窗口（`container`/`take`/`stow`/`withBody` 里的窗口快照）或收到可验证的内容更新时写入；**不为维护记忆主动开箱，也不后台轮询**。
+- 返回的是**上次真实看见的内容**，不是现在的库存。只在真的打开过窗口（`container`/`transfer`/`withBody` 里的窗口快照）或收到可验证的内容更新时写入；**不为维护记忆主动开箱，也不后台轮询**。
 - `complete:false` 表示只看到了部分槽位（例如只看了上半个箱子）。没见过的容器 `found:false`。
-- 物品转移永远重新打开并核验当前槽位——`take`/`stow` 已经这么做了；这条查询只用来做"上次那箱里有没有铁"这种判断。
+- 物品转移永远重新打开并核验当前槽位——`transfer` 已经这么做了；这条查询只用来做"上次那箱里有没有铁"这种判断。
 - 存储复用 World 的记录（§5），不新建容器账本。
 - **不可等待**：`version: null`。它记的是"上次看见的样子"，不会因为箱子被远处的人改动而变化；要确认就重新打开。
 
 ### route.plan · `route.plan@1`
-- 输入 `{ to: Pos, tolerance?: 2, digThrough?: false, placeToReach?: true }`
+- 输入 MoveTargetRequest，字段和默认值与 goto 相同；执行期限不参与计划。
 - 返回 `{ ok, distance, steps:[{ at, action:"walk"|"dig"|"place"|"jump" }], needs:{ dig, place }, blockers:[{ at, reason }], estTimeSec }`
 - **不可等待**：路径是试算结果，`version: null`；要盯路况就等 `block@1`/`blocks@1`。
 - 例：`{ ok:false, distance:64, blockers:[{at:{x:130,y:64,z:-30},reason:"3 格宽岩浆"}] }`
 
 ### build.plan · `build.plan@1`
-- 输入 `{ from: BlueprintRef, at: GridPos, mirror?: "none"|"x"|"z", rotate?: 0|90|180|270 }` 或 `{ cells:[{at:GridPos,block:BlockSpec}] }`
-- 返回 `{ blueprint?: { ref, digest }, cells, need:{ [block]: number }, missing:{ [block]: number }, blocked:[{ at, by }], unreachable:[{ at }], estTicks }`
+- 输入与 build 共用 BuildTargetRequest（下文）；可读材料与现场差异，不执行拆除、放置或开箱。
+- 返回 `{blueprint?:{ref,digest}, targets, need:{[block]:number}, missing:{[block]:number}, blocked:[{at,by}], unreachable:[{at}], estTicks}`；targets 为本次规范化 set/clear/preserve/unknown 目标，保留位置、状态约束与未知原因。
 - **不可等待**：`version: null`；施工要等材料变化就等 `inventory@1`。
 - `missing` 是当前可直接施工的物料差额，不把“背包有原木”当作“已有木板”；可合成缺口由 recipe 查询另行说明。blocked 表示当前冲突；build 开始及每次操作前仍重新核验。
 - `blueprint.ref`/`digest` 说明"规划的是哪一份内容"。把 `digest` 传给 `build` 的 `expectDigest`，就能在施工前发现蓝图被改过（`CONFLICT`），而不是默默盖出另一个房子。
 
-## 4. 动作（37 个）
+## 4. 动作（35 个）
 
 每个动作块给：签名、做什么、完成条件、返回、失败码。`P0/P1/P2` 是实施层级。
 
 ### 移动
 
 #### goto · `goto@1` · act · P0
-- 输入 `{ at: Pos, tolerance?: 1..8 = 2, digThrough?: false, placeToReach?: true, sprint?: true, maxTimeMs?: 120000 }`
+- 输入 GotoInput；目标字段为 MoveTargetRequest（§2.2），与 route.plan 原样复用。tolerance 缺省 2（1..8），digThrough=false、placeToReach=true、sprint=true；maxTimeMs 缺省 120000。
 - 做：**在当前维度内**寻路走过去；路上卡住会跳、绕、必要时挖一格或搭一块（由 `digThrough`/`placeToReach` 控制）。不找传送门、不换交通方式——跨维度用 `transit`。
 - 完成：与 `at` 的直线距离 ≤ `tolerance`，且站在可站立方块上。
 - 返回 `{ at, distance, dug, placed, ticks }`
@@ -348,9 +445,20 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 返回 `{ at, escaped, reason? }`；失败 `TIMEOUT`、`UNREACHABLE`
 
 #### explore · `explore@1` · act · P1
-- 输入 `{ until: { block?: Name, biome?: string, player?: string }, direction?: "n"|"e"|"s"|"w"|"any" = "any", maxTimeMs?: 180000 }`
+- 输入 `{until:ExploreTarget,direction?:"n"|"e"|"s"|"w"|"any"="any",maxTimeMs?:180000}`。
+
+```ts
+type ExploreTarget =
+  | {block: string; biome?: never; player?: never; entity?: never}
+  | {biome: string; block?: never; player?: never; entity?: never}
+  | {player: string; block?: never; biome?: never; entity?: never}
+  | {entity: string | {kind: "hostile" | "passive"}; block?: never; biome?: never; player?: never};
+```
+
+- until 恰选一种目标；`{entity:"cow"}` 找指定生物，`{entity:{kind:"passive"}}` 找一类，player 仍按玩家名字匹配。不接受跨 guest 回调或任意条件 DSL。
 - 做：朝未访问过的方向走一段、扫一眼、再走；命中 `until` 即停。
-- 返回 `{ found?:{ kind, at, name? }, traveled, scanned }`；未满足 until 抛 NOT_FOUND/TIMEOUT，progress 保留 traveled/scanned，不把目标未找到报告成已完成。
+- 返回 `{found:{kind:"block"|"biome"|"player"|"entity",at,name,ref?:EntityRef},traveled,scanned}`；实体 ref 只在当前仍可核验跟踪代次时给出。先检查当前覆盖，再逐段移动、扫描，命中便停止本次探索控制；只读 players 中出现名字不算已找到位置。
+- 未满足 until 抛 NOT_FOUND/TIMEOUT，progress 保留 traveled/scanned，不把目标未找到报告成已完成。复杂组合条件由程序组织多次短探索与查询，不在原生目标中增加逻辑表达式。
 - 失败 `TIMEOUT`、`UNREACHABLE`、`INTERRUPTED`
 
 #### transit · `transit@1` · act · P2
@@ -397,6 +505,16 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 
 ### 建造
 
+<a id="construction-target"></a>
+
+#### 共用目标与差异处理
+
+Construction 唯一定义 Target：按整数格组成的 set（BlockSpec）、clear、preserve、unknown 目标及其范围。Library 只保存字节；原始蓝图通过明确 AirPolicy 解释后进入同一 Target。cells 是 set 目标的便捷输入，place 是单格目标，excavate 按区域和 keep 生成 clear/preserve 目标；不另造形状 DSL。
+
+共用流程为：固定目标 → 读取现场 → 求差异/材料/冲突 → 排定操作 → 挖掘或放置 → 核验剩余差异。build.plan 只执行前半段，build 执行全部；place 保留单格默认落点/交互面约束，excavate 保留清空顺序与容器处理。它们复用普通函数，不建通用规划服务。tunnel 的连通、台阶与支撑算法仍独立，只复用实际挖放操作。
+
+只有所有 set/clear 目标经实际核验才完成。preserve 不产生修改，unknown 不能变为拆除或被计为目标满足；未知设计需要澄清时在派发前失败，现场未知则保留缺口。修复就是同一目标对新现场重新求差异，不按旧完成量跳格。
+
 #### place · `place@1` · act · P0
 - 输入 `{ block: BlockSpec, at?: GridPos, face?: "auto"|"up"|"down"|"north"|"south"|"east"|"west", replace?: false }`
 - 做：按声明方块名/状态求解有限范围的站位与交互面并放置；face 是交互约束，不是最终朝向。
@@ -405,11 +523,13 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 失败 MISSING_MATERIAL、CONFLICT、UNREACHABLE、TARGET_NOT_MET、WRONG_STATE；目标已匹配不重复消耗物品。
 
 #### build · `build@1` · act · P1
-- 输入 `{ cells:[{at:GridPos, block:BlockSpec}], replace?:false, maxTimeMs?:300000 }` 或 `{from:BlueprintRef, at:GridPos, mirror?:"none"|"x"|"z", rotate?:0|90|180|270, expectDigest?:Digest}`。
+- 输入为 BuildTargetRequest（§2.2）加可选 maxTimeMs（缺省 300000）。cells 直接声明 set 目标；from 从蓝图取得目标并按落点/变换实例化，两种来源互斥。
+- Raw 还未解释且包含已知空气时必须提供 airPolicy，缺少时在派发前报 INVALID_INPUT 并给出缺失字段；已有 Target 使用其明确语义，不能用本次策略改写 preserve/unknown。expectDigest 约束实际源设计摘要。
+- replace 缺省 false；只有源目标明确要求替换且 replace=true，才允许拆除与 set 冲突的现场方块。蓝图显式 clear 是声明的清空目标，不由 replace 猜出。preserve/unknown 始终按 Target 语义处理。
 - 做：由 Construction 解码/变换/排序并放置；复用放置、材料与可达性算法。Raw/Target/Project、clear/preserve/unknown 及 AirPolicy 仍按 Library/Construction 合同解释，未知不自动拆除。
 - expectDigest 不符当前源摘要 → CONFLICT；在途使用本次固定设计字节，不重读变更文件。
-- 完成：所有声明目标匹配；成功返回 `{placed, skipped, remaining:[], scaffoldsUsed, blueprint?:{ref,digest}}`。
-- 未完成抛 MISSING_MATERIAL/UNREACHABLE/CONFLICT/TARGET_NOT_MET/TIMEOUT/INTERRUPTED，progress 保留 `{placed, skipped, remaining:[{at,block,reason}], missing?, scaffoldsUsed, blueprint?}`；缺料可能发生在部分施工之后，不能一概说“未放任何格”。
+- 完成：所有声明的 set/clear 目标匹配；成功返回 `{placed, cleared, skipped, remaining:[], scaffoldsUsed, blueprint?:{ref,digest}}`。
+- 未完成抛 MISSING_MATERIAL/UNREACHABLE/CONFLICT/TARGET_NOT_MET/TIMEOUT/INTERRUPTED，progress 保留 `{placed, cleared, skipped, remaining:[{at,target,reason}], missing?, scaffoldsUsed, blueprint?}`；缺料可能发生在部分施工之后，不能一概说“未放任何格”。
 - 当前已匹配格跳过；重新调用时依实际现场差异计算，不把旧完成量当新现场真相。
 
 ### 容器
@@ -420,22 +540,31 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 返回 `{ at, type, slots:[{ slot, name, count }], freeSlots, properties? }`
 - 失败 `NOT_FOUND`（那不是容器）、`UNREACHABLE`、`WRONG_STATE`（被占用/需要权限）
 
-#### take · `take@1` · act · P0
-- 输入 `{ item?: Name|ItemSelector, count?: number = 全部, at?: Pos }` 或 `{ all: true, at?: Pos }`
-- 做：打开目标容器取出物品。`at` 省略时从 16 格内最近的容器开始找（最多查 3 个），找到有该物品的为止。
-- 返回 `{ at, taken:{ [item]: number }, remaining?:{ [item]: number }, containersChecked }`
-- 失败 `NOT_FOUND`（查过的容器都没有）、`INVENTORY_FULL`、`UNREACHABLE`
+#### transfer · `transfer@1` · act · P0
 
-#### stow · `stow@1` · act · P0
-- 输入 `{ item: Name|ItemSelector, count?: number = 全部, at?: Pos }`
-- 做：放进容器；`at` 省略时优先放"已经有这种物品"的最近容器。
-- 返回 `{ at, stowed, left?: number }`；失败 `NOT_FOUND`（没有容器）、`WRONG_STATE`（容器满）、`UNREACHABLE`
+- 输入 TransferInput：`from` / `to` 恰一，端点为容器方块格、容器 EntityRef 或 `"nearest"`；未指定的一端是自身库存。选择物品用 `{item:Name|ItemSelector, count?:1..1024}`，或 `{all:true}`，两种形式互斥。`count` 省略时转移选定源中所有匹配物品。
+- `from` 表示容器 → 库存，`to` 表示库存 → 容器。当前不接受两端同时指定，不隐式开展箱到箱运输。
+- 库存端点使用窗口 layout 的玩家背包/快捷栏区域，不包含光标、合成或装备专用槽；特殊槽位用显式窗口操作。
+- `nearest` 在 16 格内按距离最多核验 3 个可达容器：取物选择有匹配物品的容器；存物优先已有同类且可接收的容器，再选有空位的容器。`all:true` 取物选择最近的非空容器。开始转移后固定该容器，不在部分失败后暗中换箱。
+- 做：走近、开窗、根据同一槽位搬移算法选择源/目标区域、逐次核验、关闭。只复用真实窗口观察，历史记录仅帮助选候选，不作为库存证明。
+- 完成：指定数量实际从源移入目标；省略 count 或 all:true 时，在首次可核验源快照固定本次清单，之后新增物品不扩大清单。源/目标的本地预测不计为已完成；无法确认的点击保留未知效果。
+- 返回 `{from, to, moved:{[item]:number}, remaining:{}, containersChecked}`。from/to 为实际容器身份与 `"inventory"`，不返回 `"nearest"`。不足时抛领域错误，progress 使用相同字段，remaining 保留本次固定清单中的差额；已转移部分不回滚。
+- 失败 `NOT_FOUND`（没有候选或没有匹配物品）、`MISSING_MATERIAL`（选定源不足指定数）、`INVENTORY_FULL`（目标空间不足，hint 指明哪一端）、`UNREACHABLE`、`CONFLICT`、`TARGET_NOT_MET`、`TIMEOUT`、`INTERRUPTED`。禁止把部分转移正常返回为完整目标。
+- 例：`{from:"nearest",item:"coal",count:16}`；`{to:{x:10,y:64,z:20},item:"iron_ingot",count:24}`；`{to:"nearest",all:true}`。
 
 ### 物品与装备
 
 #### equip · `equip@1` · act · P0
-- 输入 `{ item: Name|ItemSelector, slot?: "hand"|"offhand"|"head"|"chest"|"legs"|"feet" = "hand" }`
-- 返回 `{ slot, item, previous? }`；失败 `MISSING_MATERIAL`、`WRONG_STATE`（该物品不能装到这个槽）
+- 输入 EquipInput；slot 缺省 hand。
+
+```ts
+type EquipInput =
+  | {item: string | ItemSelector; slot?: "hand" | "offhand" | "head" | "chest" | "legs" | "feet"}
+  | {item: null; slot?: "hand" | "offhand"};
+```
+
+- item=null 腾空指定手：选择已知空快捷栏或把该物品移至可核验空槽，不隐式丢弃、占用光标或拆其他装备；无安全位置报 INVENTORY_FULL。未指定 item 仍是无效输入，不隐式取空手。
+- 返回 `{slot,item,previous?}`，腾空后 item=null；失败 MISSING_MATERIAL、INVENTORY_FULL、WRONG_STATE（不能装到这个槽）。
 
 #### eat · `eat@1` · act · P0
 - 输入 `{ food?: Name|ItemSelector, until?: "full"|"count" = "full", count?: 1 }`
@@ -444,12 +573,11 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 失败 `NOT_FOUND`（没有食物）、`WRONG_STATE`（不饿）、`INTERRUPTED`
 
 #### drop · `drop@1` · act · P1
-- 输入 `{ item: Name|ItemSelector, count?: number = 全部 }` → `{ dropped }`；失败 `NOT_FOUND`
 
-#### give · `give@1` · act · P1
-- 输入 `{ player: string, item: Name|ItemSelector, count?: 1 }`
-- 做：走到玩家旁丢给他。
-- 返回 `{ given, player, at }`；失败 `NOT_FOUND`（附近没有这个玩家）、`UNREACHABLE`、`TIMEOUT`
+- 输入 DropInput：`{item:Name|ItemSelector, count?:1..1024, toward?:Name|EntityRef}`；count 缺省为首次库存快照中全部匹配物品。
+- 不给 toward 时原地丢弃；给出玩家/实体时走近至可投掷距离、朝向目标后丢弃。目标失踪或不可达明确失败，不改成原地丢弃。目标引用与当前位置在派发前复核。
+- 完成：声明数量已从自身库存丢出；返回 `{dropped:{[item]:number}, remaining:0, at, toward?:EntityRef}`。只证明丢弃，不证明目标拾取、背包增加或交易完成。
+- 部分丢弃抛错并在 progress 保留 dropped/remaining/at/toward；派发未知不自动补丢。失败 `NOT_FOUND`、`MISSING_MATERIAL`、`UNREACHABLE`、`TARGET_NOT_MET`、`TIMEOUT`、`INTERRUPTED`。
 
 #### pickup · `pickup@1` · act · P1
 - 输入 `{ item?: Name, radius?: 4..16 = 8, maxTimeMs?: 30000 }`
@@ -469,7 +597,7 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 - 输入 `{ item: Name, count?: 1..256 = 1, fuel?: Name, at?: Pos, wait?: true, maxTimeMs?: 120000 }`
 - 做：找/放炉子 → 装燃料与原料 → `wait` 时等完成并取出；`wait:false` 时装好就返回。自行持有的身体在等待前释放，受委托时保留祖先身体；均关闭自己的窗口。计时只安排重新开炉复查，不能等待不可 watch 的 container.last 或把估计时间当成产物证明；实际取物前核验炉子和库存。
 - 完成（`wait:true`）：背包里增加 `count` 个产物。
-- 返回 `wait:true` → `{ produced:{ [item]: number }, consumed:{ input, fuel }, at }`；`wait:false` → `{ at, loaded:{ input, fuel, count }, readyAt, hint:"用 take@1 取" }`
+- 返回 `wait:true` → `{ produced:{ [item]: number }, consumed:{ input, fuel }, at }`；`wait:false` → `{ at, loaded:{ input, fuel, count }, readyAt, hint:"用 transfer@1 的 from 取出产物" }`
 - 失败 `MISSING_MATERIAL`（缺原料或燃料）、`WRONG_STATE`（炉子被占用/没有炉子且没有材料）、`TIMEOUT`、`INTERRUPTED`
 
 #### brew · `brew@1` · act · P2
@@ -493,15 +621,40 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 ### 交互与社会
 
 #### use · `use@1` · act · P0
-- 输入 `{ at?: Pos, item?: Name, entity?: Name | EntityRef, face?: Face, hand?: "main"|"off" = "main", times?: 1..16 = 1 }`
+- 输入分两种互斥形式：普通右键保持 `{at?:Pos,item?:Name,entity?:Name|EntityRef,face?:Face,hand?:"main"|"off"="main",times?:1..16=1}`；写牌面使用下面的 UseSignInput，不混用 item/entity/face/hand/times。
+
+```ts
+interface UseSignInput {
+  at: GridPos; text: string; side?: "front" | "back";
+  item?: never; entity?: never; face?: never; hand?: never; times?: never;
+}
+```
+
+- text 按 LF 分成最多四行，缺行补空，空字符串表示清空该面；不 trim、不截字、不把字串当 JSON/命令解析。side 缺省 front；版本不支持背面时明确 WRONG_STATE，不改写正面。每行长度按实际适配版本预校验，首个上游 updateSign 路径上限是 45 UTF-16 单元；describe 发布当前有效限制。
+- 写字前按牌子的实际朝向/挂载求解指定面的可站立交互位置，走近、核验当前方块/可用面/上蜡状态、用 equip(null) 腾空主手（没有安全槽位便失败，不丢物品），再用受控 body.writeSign 打开对应编辑面并提交。上蜡或无编辑资格明确失败；不自动拆牌、换牌或消耗其他物品。此过程不是 WindowSession.click。整体期限初始为 30 秒；编辑资格与提交确认各最多 2 秒，纳入整体期限且可取消，均为内部策略值。
 - 做：右键。目标可以是方块（`at`）、实体（`entity`）或空（用手里的东西）。同一个动作覆盖：打火石点火、桶取水、锄头翻地、种子播种、骨粉催熟、门/栅栏门开关、拉杆/按钮、床、剪刀、挤奶。
 - 完成：按 (手上物品, 目标) 组合判定的效果出现（内部一张效果表，与 Driver §7 对齐）。
-- 返回 `{ effect, at?, entity?, changed?: { [k]: JsonValue } }`
-- 失败 `NOT_FOUND`、`UNREACHABLE`、`WRONG_STATE`（该组合没有效果）、`TARGET_NOT_MET`、`MISSING_MATERIAL`
+- 普通右键返回 `{effect,at?,entity?,changed?:{[k]:JsonValue}}`。写牌成功返回 `{effect:"sign_written",at,side,lines:SignText,changed:boolean}`；同面已有相同且有当前服务端依据的文字可直接完成，changed=false。
+- 新写入只有取得派发后同位置/同面的服务端牌面观察且四行匹配才完成（证明目标文字成立，不排除其他玩家恰好做出相同改动）；单看本地 updateSign 返回或旧缓存不算成功。明确不同报 TARGET_NOT_MET；无法确认报 TIMEOUT/INTERRUPTED 并保留 sent/unknown 效果，不能自动再写或借新快照认证原派发因果。
+- 失败 NOT_FOUND、UNREACHABLE、WRONG_STATE（该组合没有效果）、TARGET_NOT_MET、MISSING_MATERIAL；写牌另可能 INVENTORY_FULL、TIMEOUT、INTERRUPTED，并保留实际效果。
 - 容器/工作台/炉子不走这里：用 `container`/`craft`/`smelt`，它们有可验证的完成口径。
 
-#### say · `say@1` · act · P0
-- 输入 `{ text: string(1..256) }` → `{ sent }`；失败 `DISCONNECTED`
+<a id="chat"></a>
+
+#### chat · `chat@1` · act · P0
+
+- 输入 `{ text: string }`；首字符是 `/` 时发送一条玩家身份的服务器指令，否则发送一条普通消息。保留原文，不自动 trim、不替换前缀；`/msg` 等私聊和插件命令也沿此入口。
+- 一次调用只发送一个非空单行文本：空白、`/` 后无实际命令、换行或 NUL 在派发前报 `INVALID_INPUT`。长度按协议、适配器单次发送限制及消息/指令类别校验，describe 显示有效限制；不沿用通用 256 字符硬限，不静默截断、拆成多条或拆分指令。
+- 返回 `{ sent:true, kind:"message"|"command" }`，正常完成只确认完整文本已进入当前连接的实际协议发送边界。不是“加入上游队列即成功”，也不表示玩家已读、服务器接受命令或其效果已发生。
+- 不占 Body，但必须经过 Runtime 当前 act、Owner、连接和停止门。权限和命令语义由服务器决定，不提供 RCON/控制台权限，也不另建命令许可系统。
+- 命令可能改变位置、维度、物品或方块；后续按服务器真实更新使观察/控制失效或重规划。该发送能力不认证这些目标；程序需要时显式读取相关世界事实。回复只按 World 历史/游标合同保存，不按任意文本匹配假装获得命令专属 ACK，未接入的回复查询/等待不得宣称可用。
+- 失败 `INVALID_INPUT`、`DISCONNECTED`、`WRONG_STATE`（当前协议/签名能力不支持）及通用取消/未知派发。已发或派发不明不自动重发；用真实观察决定下一步。
+- describe 的 summary/tags 覆盖聊天、私聊、服务器命令/指令，examples 同时给普通消息和 `/` 指令；不增加单独 command 能力或旧名别名。
+
+```js
+await mc.call("chat@1", {text:"我到家了"});
+await mc.call("chat@1", {text:"/list"});
+```
 
 #### sleep · `sleep@1` · act · P2
 - 输入 `{ at?: Pos }`
@@ -558,9 +711,9 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 
 `remember`/`forget`/`places` 读写的是 **World 的记录**（不是程序状态、不是 Library）：一个世界里 Uina 自己攒的地点表，跨运行、跨会话存活。这是"越玩越熟"的最小载体：家、矿口、农田、传送门。
 
-不做**容器账本**，但保留**最后一次真实观察**（`container.last`）：它只记"哪一刻看见了什么"，由真的打开窗口写入，不为维护记忆主动开箱、不后台轮询。Cortico 式的账本（用一张"哪个箱子有什么"的表支持 `take` 不给坐标）是另一回事：它引入三份状态（表、真实内容、打开时的快照）与一套过期规则，而收益只是省一次走近。我们的做法是 `take` 自己打开最近 3 个容器找——多花 1 秒，少一个子系统，且永远不会因为过期表而搬错东西。**最后一次看见 ≠ 现在的内容**；物品转移必须重新打开核验，`container.last` 只用于"值不值得跑一趟"这种判断。
+容器只保存最后一次真实观察，不维护推算库存。transfer 使用历史选择候选，实际转移前重新开窗核验；没有历史时按 nearest 规则查找。
 
-## 6. 三个剧本
+## 6. 示例流程
 
 ### 6.1 从查询配方到获得铁镐
 
@@ -632,52 +785,44 @@ try {
 
 模型不需要知道"铁需要石镐"——错误里直接给了。这是 `hint` 存在的理由：**把知识放在出错点，而不是放在必须先读完的文档里。**
 
-## 7. 一页速查
+### 6.4 玩家、牌面和地图
 
-模型的上下文里始终有这一页（约 45 行），其余靠 `mc describe` 按需查。
+以下只演示接口组合；成功写牌需要可达、可编辑且服务端回送牌面，地图可能只有部分覆盖。
 
+```js
+async function main(mc, input) {
+  const listed = await mc.read("players@1", {name:input.player});
+  const sign = await mc.call("use@1", {
+    at:input.sign, side:"front", text:"仓库\n木材在左边\n矿物在右边",
+  });
+  const actual = await mc.read("block@1", {at:input.sign});
+  const map = await mc.read("map@1", {image:false});
+  return {players:listed.value, sign, actual:actual.value, map:map.value};
+}
 ```
-你通过写程序玩 Minecraft：async function main(mc, input)。
-查询用 await mc.read("名字@1", 参数) → {value, version, unknown?}；动作用 await mc.call("名字@1", 参数) → 领域值。
-名字带 @1 是能力，不带 @ 是库里的程序。失败抛 CallError {code, source, message, hint, dispatch, effects, progress}。
 
-先看再做：参数不确定 → mc describe 名字；料不确定 → recipe；路不确定 → route.plan。
-找方块用 blocks（有界、给 truncated）；读一片形状用 region（palette + 索引，≤8192 格）。
-大工程先试算：const {value} = await mc.read("recipe@1", {item:"iron_pickaxe"})，再读 value.plan；build.plan/route.plan 同样先 await。计划有据仍需执行时重验。
+主脑直接取得地图画面使用 `{action:"observe",params:{selector:"map@1"}}`；JSON 中的 path 本身不是图片。输入/回复消息的完整例子见 [Program §2.4](program.md#24-等待未知与观察版本)。
 
-查询  self inventory block blocks region entities item recipe world places container.last route.plan build.plan
-移动  goto follow flee surface explore transit ride
-采集  mine collect tunnel excavate
-建造  place build
-容器  container take stow
-物品  equip eat drop give pickup
-制作  craft smelt brew enchant anvil grindstone
-交互  use say sleep trade fish lead
-战斗  attack fight
-记录  remember forget
+## 7. 能力家族索引
 
-四条规矩
-1 能省就省：place/take/stow 不给坐标就用手边最近的；craft/smelt 自己找工作站；工具自己换。
-2 看数字：collected/mined/placed/remaining 才是结果，别假设成功。
-3 目标未满足则抛领域错误：e.progress 包含已做的和 remaining；新调用按现场与剩余量决定，不默认从头重做。
-4 失败按 code 分支，别看 message：
-   NOT_FOUND UNREACHABLE CONFLICT WRONG_STATE → 换目标或改世界
-   MISSING_MATERIAL MISSING_TOOL INVENTORY_FULL → 先补，hint 常给现成参数
-   TARGET_NOT_MET → 换方法，别重试
-   INTERRUPTED TIMEOUT → 看 progress 决定继续还是交还
-   INVALID_INPUT → 按 hint 里的 candidates 改
-   DISCONNECTED → 连接没了，等重连或交还主脑；INTERNAL → 能力自身缺陷，换方法或记录后交还
+模型的常驻指南唯一见 [Program 附录 A](program.md#附录-a模型的最小指南)。下表由 descriptor 生成供 describe 展开，不作为另一份常驻提示。
 
-坐标是 {x,y,z} 或 {rel:{x,y,z}}；名字写 oak_log / 橡木原木 / log 都行，标签写 #minecraft:logs。
-意图固定、世界会变：派发后的参数不再改，但路线、目标、走位由能力按当前世界重算；看回执，别假设。
-找不到不等于不存在：看 scanned 与 unknown，再决定扩大范围还是换假设。
-长任务用 mc.progress({summary:"正在采集", acquired:6}) 报告进度；等世界变化用 mc.waitUntil（只接受 descriptor.watchable=true 的查询；predicate 第二参数为 {unknown}，期限参数 timeoutMs）；route.plan/build.plan/recipe 这类派生结果不能等，sleep 后重算。
-持身体的原上下文用 body.call 显式委托；被委托子上下文的普通 call 继续继承。根的独立身体调用可并发并按 FIFO 排队，同一委托路径不并发竞争。回调等待也保留身体；需其他任务推进时在外层等。
-```
+| 家族 | 查询或动作 |
+|---|---|
+| 查询 | self inventory block blocks region entities players item recipe world events map places container.last route.plan build.plan |
+| 移动 | goto follow flee surface explore transit ride |
+| 采集 | mine collect tunnel excavate |
+| 建造 | place build |
+| 容器 | container transfer |
+| 物品 | equip eat drop pickup |
+| 制作 | craft smelt brew enchant anvil grindstone |
+| 交互 | use chat sleep trade fish lead |
+| 战斗 | attack fight |
+| 记录 | remember forget |
 
 ## 8. `describe` 的输出
 
-`mc describe` 无参数返回家族概览；query 搜索覆盖能力、程序、蓝图与经验，候选标 kind/callable，具体排序与数量上限由 Program §4.3 定义。查询能力用 read，动作/程序用 call，蓝图/经验供读取。
+`mc describe` 无参数返回家族概览；query 搜索覆盖能力、程序、蓝图与经验，候选标 kind/callable，具体排序与数量上限由 Library §8 定义。查询能力用 read，动作/程序用 call，蓝图/经验供读取。
 
 `mc describe collect` 返回单条契约，下列六项齐全，另包含 kind/callable/availability；候选和详情都取同一 descriptor：
 
@@ -695,20 +840,20 @@ collect@1  kind:capability · callable:true · act · P0
 | 机制 | Voyager | mc_claw | Cortico | 本文 |
 |---|---|---|---|---|
 | 组合语言 | 手写 JS（有原生 bot） | 无（HTTP 一次一个动作） | 无（声明式步骤队列） | JS + `mc.call` |
-| 身体常识 | 8 个 primitive JS | 21 个动作 | 30 个 skill | 37 个动词 |
-| 感知 | 完整 observation | lookAround | probe 区域 + 全图 | 13 个查询（含 `region`）+ `scanned` |
+| 身体常识 | primitive JS | HTTP 动作 | 声明式技能步骤 | 35 个动词 |
+| 感知 | 文本 observation + 原生 API | 状态/事件/scan | 快照/probe/地图 PNG | 16 个查询（含 `events`、`players`、`map`、`region`）+ `scanned` |
 | 试算 | 无 | 无 | `mc_scout` 干跑 | `route.plan`/`build.plan`（独立查询）+ `recipe@1` 的 `plan` 字段 |
 | 部分完成 | 吞掉（打印聊天） | 返回消息 | 步骤结果 + 回执 | `remaining` + `progress` |
 | 失败 | 文本聊天 | 规则匹配建议 | 中文回执 + 测量 | 13 码 + `hint` + `source` |
 | 长任务 | 阻塞执行 | 每动作一个请求 | 队列 + 策略层 | 程序 + `runs` + `continue` |
 | 常驻配置 | 无 | 无 | `mc_policy` 6 项 | 无（显式参数/程序封装） |
-| 世界记忆 | 无 | 经验 json | 地图/蓝图/箱子 | `places` + `container.last`（只记看见过的） |
+| 世界记忆 | 箱子最后观察 | 地标/资源/经验文件 | 路标/蓝图/箱子 | `places` + `container.last`（只记看见过的） |
 | 冻结 | 无（代码即现场） | 每次请求即时 | 目标 + 持久策略 | 三层：Run 输入 / Call 参数 / 算法现场（§2.13） |
 | 战斗风险 | 无（自写） | `fight` 固定 | 策略层 `fight` | `stance` 三档，落成具体阈值 |
 
 取：
 
-- **动词而不是协议**（三家一致）：模型不该写 mineflayer 调用。
+- **常用身体操作封装**：三家都提供了高层动作，但 Voyager 仍暴露原生 API。本设计使用受控动词，程序保留组合。
 - **试算先于执行**（Cortico 的 `mc_scout` 思想）：但不做"整个队列干跑"，只给三个纯读的 plan。
 - **实测回执**（Cortico）：我们的返回值就是回执，`progress` 给 `runs` 看。
 - **`until` 式停止条件**（Cortico）：只出现在 `collect`/`tunnel`/`explore` 的目标上，不做通用条件 DSL。
@@ -717,30 +862,38 @@ collect@1  kind:capability · callable:true · act · P0
 
 - **原生 bot 暴露**（Voyager）：能力面无法保证完成与证据，模型会写出 `bot.dig` 这种绕过一切的东西。
 - **一次一个 HTTP 动作**（mc_claw）：模型被迫在两次调用之间重读世界，长任务的每一步都要在一个回合里规划。
-- **技能队列 + 常驻策略**（Cortico）：队列与程序的表达能力重复；`mc_policy` 是**跨调用**的隐式状态，程序读不到也写不了，调试时看不见。明确参数直接传给能力，重复偏好封在库程序中；当前不提供自由 policy 字典。**风险偏好做成单次调用的 `stance`，不做常驻开关**——常驻开关会悄悄改变下一次 `fight` 的语义。
+- **技能队列 + 常驻策略**（Cortico）：本设计用普通 JS 组合，不另建技能队列。风险参数随调用固定并记录，重复偏好封在库程序里，不增加独立常驻策略字典。
 - **容器账本**：见 §5。保留的只是"最后一次真实看见"。
 
 ## 10. 实施顺序与验收
 
+P0/P1/P2 是范围与优先级分组，实际依赖、可并行工作及交付顺序以 [总开发规划](../development-plan.md) 为准。以下列出应覆盖的行为，环境选择与重复检查约束统一遵守 [开发规范](../development-guide.md#5-验证选择)。
+
 ### 阶段 A：P0 能活（23 个）
 
-验收脚本（真实服务器 + 假 bot 契约测试各一份）：
+优先在真实服务器完成有关场景；纯计算与难以稳定制造的边界用针对性检查补足，不要求假 Bot 与真服各写一套：
+
+事件/感知补全先验收：查询首次同步前 self 新字段为 null/unknown；同源聊天回调不重复入账，相同文本的两个包保留两 ref；发 `/list` 后增量读到实际回应但不自动认证成功；断线/重连/重启后 after 可读，观察 version 不冒充仍有效；源缺口、分页未读及清理过期均可解释。
 
 1. 空手 → 8 原木 → 工作台 → 木镐 → 3 圆石 → 石镐 → 3 粗铁 → 熔炼 → 铁镐（全链不写坐标）。
-2. 箱子存 24 铁锭、取 16 煤（`at` 省略，走最近容器）。
+2. transfer 向 nearest 存 24 铁锭、从 nearest 取 16 煤；不足和目标满都返回带差额的错误。
 3. 三只僵尸围上来：`fight` 打完或撤退，血量不下 6。
 4. 挖矿时被安全反射打断：`e.progress` 显示已挖数量，重试只补差额。
 5. `fight` 三档差异可见：同场景 `cautious` 在 60% 血撤退、`aggressive` 追到 4 个目标上限；`retreated` 是成功值。
 
-### 阶段 B：P1 能建（17 个）
+### 阶段 B：P1 能建（18 个）
 
 6. 5×5 木屋（§6.2）：`build.plan` 缺料 → 补 → `build` 全放，含门与火把。
 7. 从 y=64 挖到 y=-59 的阶梯矿道，中途不卡。
 8. 洞穴里迷路 → `surface` 回到地面。
 9. `remember home` 后重启进程 → `places` 仍在。
 10. `region` 读 16×16×3 的房间：`palette`/`cells` 解出的方块与实测一致，未加载格计进 `missing`；8193 格报 `INVALID_INPUT` 并给切片建议。
-11. `container.last`：存完东西后返回上次内容与 `observedAt`，进程重启后仍在；`take` 仍然重新打开核验，不信任该记录。
+11. `container.last`：存完东西后返回上次内容与 `observedAt`，进程重启后仍在；`transfer` 仍然重新打开核验，不信任该记录。
 12. `build` 带 `expectDigest`：plan 后改蓝图再 build → `CONFLICT`，不会静默盖另一份。
+13. `explore {until:{entity:"cow"}}` 在当前区域先命中或走出新区域找到，返回实际 ref；只在玩家名单上见到名字不算找到。
+14. 同一玩家离开实体跟踪范围后仍可在 players 名单里，tracked=null；未公告不推断离线。offline UUID 不认证正版。
+15. 告示牌正/背面分别写读，短文本补空行、原空格保留；上蜡、超长、错误面及取消不误写，派发后无回执保留未知；block 牌面变化能唤醒等待。
+16. 地图只收到一块矩形时，其他像素明确未知；图标更新不抹像素，透明色不当作未知；重连不续旧当前覆盖，中心未知不造坐标。observe 真正携带图片，guest 仍只有 JSON；图片缓存缺失与模型不支持图片均有明确呈现。
 
 ### 阶段 C：P2 能玩（10 个）
 
@@ -748,29 +901,43 @@ collect@1  kind:capability · callable:true · act · P0
 
 13. `transit` 进地狱：门被堵时 `UNREACHABLE` 的 `hint.stage` 指向 `enter` 而不是笼统的"走不到"；缺黑曜石时报 `MISSING_MATERIAL` 并给数量。
 
-### 每条能力的契约测试（假 bot）
+### 能力合同检查
 
-固定四段：参数校验（`INVALID_INPUT` 与 `candidates`）→ 成功路径的返回值形状 → 每个失败码的触发条件 → 部分完成时的 `remaining`/`progress`。与 `tests/minecraft-*.test.ts` 的 fake bot 基建共用。
+关注参数校验（INVALID_INPUT 与 candidates）、真实成功结果、声明失败条件及部分完成的 remaining/progress。参数/schema 可本地检查，游戏效果直接用真服；只有真实环境难以稳定构造的窄边界才使用测试侧替身，不建设完整 Fake Driver 或复制所有成功路径。
+
+本轮合并的必验场景：
+
+- transfer 两个方向使用同形结果；from/to 混用、方向缺失、all 与 item/count 混用在派发前拒绝。显式 count=16 只确认转移 10 时抛错，progress.moved=10、remaining=6；未知点击不计入 moved。
+- transfer 省略 count/all:true 后源又新增物品，只处理首次固定清单；nearest 不在部分转移后暗换箱，目标满时指出哪一端。
+- drop.toward 先复核当前目标再丢弃；目标离开跟踪不原地丢物，对方未拾取不能返回已接收，未知丢弃不自动重发。
+- 同一 MoveTargetRequest/BuildTargetRequest 分别进入计划和执行；执行仍重验现场。place 单格、excavate 清空、build 混合 set/clear 与修复走同一差异核验，preserve/unknown 不被误拆。
 ### 发现质量：三条黄金查询
 
-`describe` 不做语义检索，所以**发现的成功率取决于措辞，必须被测试锁住**。三条固定查询，同时检查"该出现的出现"与"无关的不占前排"（前排 = 返回的前 3 条）：
+describe 使用文本与标签匹配。三条固定查询分别检查候选召回（前 10 条）与无关项不占前排（前 3 条）：
 
-| 查询 | 必须出现在前排 | 不得占前排 |
+| 查询 | 必须出现在前 10 条 | 不得占前 3 条 |
 |---|---|---|
-| `造房子` | `build`、`build.plan`、`collect`、`craft` | `fish`、`say`、`brew` |
+| `造房子` | `build`、`build.plan`、`collect`、`craft` | `fish`、`chat`、`brew` |
 | `挖矿` | `mine`、`collect`、`goto`、`equip`（按需换工具） | `sleep`、`trade`、`build` |
-| `整理背包` | `container`、`take`、`stow` | `attack`、`transit`、`fish` |
+| `整理背包` | `transfer`、`container` | `attack`、`transit`、`fish` |
 
-验收口径：三条查询的首条命中都必须是"任务直接动词"（`build`/`mine`/`container`）；任何一条出现"必须出现的没出现"或"不得出现的占了前排"，就回去改 descriptor 的 `summary` 与 `tags`，**不引入检索框架**。约 50 个能力，人工维护标签完全划算。
+验收口径：三条查询的首条命中都必须是"任务直接动词"（`build`/`mine`/`transfer`）；任何一条出现"必须出现的没出现"或"不得出现的占了前排"，就回去改 descriptor 的 `summary` 与 `tags`，**不引入检索框架**。51 个能力，人工维护标签足够。
+
+### 新增场景：生存与记录
+
+- 空闲与长程序执行中分别触发缺氧/岩浆/低血受伤，复用同一身体仲裁；急停时不产生新的逃生、进食或攻击。
+- 自保先退役旧 BodyScope，旧程序拿到真实部分进度；安全动作的 EffectOwner 为 safety，不挂到已经退出的 Call。
+- 普通饥饿只供程序决定，低血而无新伤害不反复启动逃跑。危险未解除而超时只报告失败/未知，不每帧重新启动。
+- 生命、气量、免疫未知不填默认；死亡中断旧化身，重生不重放采集、投料或攻击。
 
 ## 11. 未决
 
 已裁决的不再列（参数冻结三层见 §2.13；`region` 上限、`container.last`、`goto`/`transit` 分工、`stance` 预设、蓝图归属分别见 §3 与 §4）。剩下这些要真实服务器数据才能定：
 
 1. **概率掉落的采集策略**：count 已固定为本次新增入包数量；掉落反查、搜索效率与有限覆盖需要真实数据验证，不能退回按破坏格数完成。
-2. **自动进食是否进反射**：现在饥饿只进 `self`，由程序决定。长任务里模型可能忘记吃。
+2. **生存反射参数验收**：默认只处理明确紧急危险，普通饥饿由程序调用 eat；触发/预算见 §2.14，阈值是待真实环境验收的初始策略值。
 3. **`container@1` 是不是该算 act**：它短暂持身体、可能被打断。现在保留 act（有可验证的完成口径），历史读取另给 `container.last`。
-4. **多人寻址**：`give`/`follow` 用玩家名，重名/离线时的行为未定。
+4. **实体寻址**：drop.toward/follow 的名字只在当前跟踪范围解析；无目标报 NOT_FOUND，多候选报 INVALID_INPUT 并给候选；不自动等待离线玩家。精确 EntityRef 仍受出现代次约束。
 5. **附魔的随机性**：`enchant` 只执行"选第 N 项"，定向附魔要走 `anvil` 与附魔书；这条链路是否够用要看实际。
 6. **`route.plan` 的成本**：plan 要跑一次完整寻路，岩浆/水域下可能上百毫秒；是否缓存同一目标的 plan。
 7. **群系/结构探测**：`explore` 的 `biome` 依赖客户端生物群系数据；`structure` 一律不支持（mineflayer 拿不到可靠结构信息）。
@@ -788,10 +955,10 @@ collect@1  kind:capability · callable:true · act · P0
 | `place` | MISSING_MATERIAL CONFLICT UNREACHABLE TARGET_NOT_MET WRONG_STATE |
 | `craft` | MISSING_MATERIAL MISSING_TOOL INVENTORY_FULL TIMEOUT |
 | `smelt` | MISSING_MATERIAL WRONG_STATE TIMEOUT INTERRUPTED |
-| `take`/`stow` | NOT_FOUND INVENTORY_FULL WRONG_STATE UNREACHABLE |
+| `transfer` | NOT_FOUND MISSING_MATERIAL INVENTORY_FULL UNREACHABLE CONFLICT TARGET_NOT_MET TIMEOUT INTERRUPTED |
 | `build` | MISSING_MATERIAL UNREACHABLE CONFLICT TIMEOUT INTERRUPTED |
 | `fight` | NOT_FOUND INTERRUPTED DISCONNECTED |
-| `use` | NOT_FOUND UNREACHABLE WRONG_STATE TARGET_NOT_MET MISSING_MATERIAL |
+| `use` | NOT_FOUND UNREACHABLE WRONG_STATE TARGET_NOT_MET MISSING_MATERIAL INVENTORY_FULL TIMEOUT INTERRUPTED |
 | `transit` | UNREACHABLE MISSING_MATERIAL WRONG_STATE TIMEOUT |
 | 其余 | 见各条 |
 

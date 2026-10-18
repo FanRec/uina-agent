@@ -1,8 +1,52 @@
 # 设计变更记录
 
+## 2026-10-19 · 总开发规划与开发规范
+
+- 重建总开发规划：先落实最小共享接缝，再并行推进正式基础设施，设原生真实闭环与完整主脑闭环两个集成节点；覆盖全部 16 查询 + 35 动作，按实际依赖组织八组玩法。
+- 明确 Host 回执/v4、Minecraft 类型/构建接线和真环境基线的实际缺口；领域详细设计到工作包开始时补齐，不把基础设施也留到集成末尾设计。
+- 新增开发规范，统一接口/资源/真实结果、成熟代码复用、局部重构与验证选择；取消每条能力都先做假 Bot 再跑真服的施工要求，不新增测试/插件框架。
+- 将规范接入 README、概要和实现目录 LEAD；仅修订规划与规范，未开始产品实现。
+
+## 2026-10-18 · 补全模型感知与交互
+
+- 新增 events@1、players@1、map@1 三个查询；目录为 16 查询 + 35 动作（P0 23、P1 18、P2 10）。事件复用历史/提交/Watch，明确增量位置、分页、缺口与等待；名单不等于实体，地图不推断中心。
+- 获取来源并入 item.sources，实体探索并入 explore，告示牌读写并入 block/use；补齐 SelfState 与反馈。没有新增科技树规划器、条件 DSL、图片工具或学习系统。
+- 地图工具通过既有 ToolExecutionResult.images 交付真实 PNG；guest 仍只收 JSON。图片缓存和原始事实分开，缺失与未知有明确呈现。
+- 安全介入沿既有身体仲裁，明确默认触发/预算/结束和记录；EffectRecord.owner 分清 run 与 safety，不伪造 Call。普通饥饿由程序决定，不默认自动反击；重生不重跑旧任务。
+- 同步模型指南、模块正文、公开类型、阶段门和反例；只修订文档，静态检查不证明产品实现或真实 Minecraft 验收。
+
+## 2026-10-18 · 统一操作与模块职责
+
+- take/stow 合并为 transfer@1：from/to 恰一，另一端为自身库存；统一选物、固定数量、moved/remaining、部分失败与未知。give 并入 drop.toward，只报告丢弃，不认证接收。现行目录为 13 查询 + 35 动作（P0 22、P1 16、P2 10），旧名无兼容别名。
+- route.plan/goto、build.plan/build 共用业务目标；计划和执行仍各有只读/动作入口。Construction 以同一 Target/现场差异处理放置、清空、建造与修复，保留单格等便捷能力。
+- Library 唯一管理三类工作文件、头、CRUD 与扫描；ProgramPort 删除文件 CRUD，保留执行材料、编译、逻辑段与 guest。describe 只展开合同/路径，原文由 get 读取，同一材料不建两套索引。
+- 查询统一使用 QueryDescriptor，删除 NativeCallable.read；完整执行记录统一 readRecord，删除三种专用读取端口。Runtime 唯一身体队列，Driver 不再保存 grant FIFO。
+- contracts 收缩为所有权/协作导航，行为归所属模块；概要收缩为目标/组成/流程。常驻指南只留 Program 附录 A；统一按工具/通知携带摘要，不逐模型请求隐式注入状态。
+- 本轮仅修订文档。静态检查单独记录，不代表产品实现、Windows 或真实 Minecraft 验收。
+
 本文件只记"何时改了什么、为什么"。当前状态与文档地图在 [README](README.md)，合同在各模块文档里；**冲突时以模块文档为准，本文件不作规范**。
 
 倒序：最新在上。
+
+## 2026-10-18 · 离线连接与 chat 指令
+
+- 将 Microsoft 与 offline 列为并列连接路径；offline 不需要 accountId/正版 UUID，离线账号独占按配置服务器端点和名字划分，LAN 使用实际端口。
+- 将原 say action/能力/PlayerPort 方法统一改为 chat，不保留调用别名。保持 `{text}`；首字符 `/` 发送一条玩家服务器指令，普通消息和指令共享 Runtime 受理及效果记录。
+- 明确单行、版本长度、实际发送边界、上游发送队列与取消；sent 不证明服务器指令成功，未知发送不重试。开发规划和两种认证/命令验收同步更新。
+- 本轮仅修订设计，未恢复产品代码、未连接服务器。
+
+## 2026-10-18 · 完整开发规划
+
+- 新增全模块实施路线，区分风险验证、Host 回执、Runtime、Driver/World、Program/Library、Executor 装配、P0/P1/P2 与真实服务器验收。
+- 把 session v3/v4 兼容明确为编码前阻塞裁决；旧数据只在临时副本上验证，不自动改写。
+- 阶段验收分开记录 Fake、Worker/进程、Windows OS、真实 Minecraft 和模型复用证据；这是一份规划，不代表实现已开始。
+
+## 2026-10-18 · 清理旧 Minecraft 实现
+
+- 按终态设计重新开始：删除旧 Driver、World、Assets、contracts、Executor、WorldDef 及 21 个旧专属测试/helper，不把旧行为当作新实现基线。
+- 删除旧 Worker 验证脚本和 package 命令，移除指向旧源码的 TypeScript/格式配置与 Mineflayer 边界自测；保留 Mineflayer 依赖供新 Driver 继续采用。
+- 保留并标注终态设计；更新开发入口，清楚标记旧 fake bot/源码核查为历史证据。没有删除 world-data 或 profile 数据。
+- 本次仅重置代码；未重写新实现，未运行测试或游戏验收。
 
 ## 2026-10-18 · Executor 终态收敛
 

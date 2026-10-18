@@ -2,7 +2,7 @@
 
 日期：2026-10-18（Asia/Shanghai）。状态：最简设计修订后的实施规格，**尚未实现，未经过真实 Minecraft 验收**。源码中的旧 Program/Assets 类型不代表本规格已接线。
 
-本文拥有程序文件、guest API、文件库中的程序操作、QuickJS 执行与退役合同。能力签名由 [能力面](capabilities.md) 拥有；运行、身体仲裁与效果结算由 [Runtime](runtime.md) 拥有；跨模块共享值与 Driver 方法由 [公开接口](../public-api.md) 拥有；蓝图与经验见 [Library](library.md)。每处只保留自己的权威定义。
+本文拥有 JS 入口、guest API、执行材料固定、QuickJS 执行与退役合同。库文件、元数据、CRUD 与检索由 [Library](library.md) 唯一维护。能力签名由 [能力面](capabilities.md) 拥有；运行、身体仲裁与效果结算由 [Runtime](runtime.md) 拥有；跨模块共享值与 Driver 方法由 [公开接口](../public-api.md) 拥有；蓝图与经验见 [Library](library.md)。每处只保留自己的权威定义。
 
 ## 0. 最终体验与验收目标
 
@@ -82,7 +82,7 @@ withBody 的回调结束前始终保留身体，包括子程序等待期间。�
 | progress | `(value: Progress) => void`；覆盖式进度对象，最后值在调用结算前送达 Runtime |
 | decide | `({reason, checkpoint?}) => never`；同步抛出专用 NEEDS_DECISION，可被本程序或父程序捕获 |
 | withBody | `(work: (body) => Promise<T>) => Promise<T>`；独立申请或加入已委托 BodyScope，退出关闭所属资源 |
-| checkpoint | 只读 `JsonValue | null`；仅续段根程序取得上一段的程序检查点，子程序默认 null |
+| checkpoint | 只读 `JsonValue \| null`；仅续段根程序取得上一段的程序检查点，子程序默认 null |
 | console | log/info/warn/error；调用级有界缓冲，失败时可展开尾部 |
 
 不知道能力时，在主脑工具层 describe；guest 不持有 describe/library 工具。查询用了 call 报 `USE_MC_READ`；动作/程序用了 read 报 `USE_MC_CALL`。调用参数在入口序列化时捕获，解析后的默认值、能力版本在派发前冻结；路径与目标选择继续根据实际世界更新。
@@ -121,13 +121,14 @@ async function main(mc, input) {
 |---|---|
 | body.call | `(selector, input?) => Promise<JsonValue>`；显式委托并沿子调用传播 |
 | body.drive | `(input: ControlInput, opts?: {ticks?: number})`，ticks 缺省 1；返回 `{receipt, actualTicks, end}` |
-| body.dig | `(at: BlockPos, opts?: {aim?: "target"|"preserve"}) => Promise<EffectReceipt>` |
+| body.dig | `(at: BlockPos, opts?: {aim?: "target"\|"preserve"}) => Promise<EffectReceipt>` |
 | body.attack | `(target: EntityRef) => Promise<EffectReceipt>`；尝试不等于命中/击杀 |
-| body.useItem / endUse | `(opts?: {hand?: "main"|"off"})` / `()`，均返回 EffectReceipt |
-| body.interact | `(target: BlockPos|EntityRef, opts?: {hand?, face?, cursor?}) => Promise<EffectReceipt>` |
-| body.equip | `(item: ItemSelector, hand?) => Promise<EffectReceipt>` |
-| body.lookAt | `(target: PointTarget|EntityRef) => Promise<EffectReceipt>`；Driver 计算角度 |
-| body.openContainer | `(target: BlockPos|EntityRef) => Promise<Window>` |
+| body.useItem / endUse | `(opts?: {hand?: "main"\|"off"})` / `()`，均返回 EffectReceipt |
+| body.interact | `(target: BlockPos\|EntityRef, opts?: {hand?, face?, cursor?}) => Promise<EffectReceipt>` |
+| body.equip | `(item: ItemSelector\|null, hand?) => Promise<EffectReceipt>`；null 腾空指定手，不隐式丢弃 |
+| body.lookAt | `(target: PointTarget\|EntityRef) => Promise<EffectReceipt>`；Driver 计算角度 |
+| body.writeSign | `(at: BlockPos, {side:"front"\|"back", lines:SignText}) => Promise<EffectReceipt>`；只提交本面四行，编辑资格与确认见 Driver |
+| body.openContainer | `(target: BlockPos\|EntityRef) => Promise<Window>` |
 | body.feedback | `(sensors: Sensors) => Promise<Stream>`；next/apply/close |
 | body.loop | `(step, sensors?) => Promise<void>`；同步 step 返回 ControlInput 或 `{done:true}` |
 
@@ -203,7 +204,24 @@ value 或可观察性发生变化都推进对应版本：known↔unknown 同样�
 
 期限从进入 waitUntil 开始，包含读取、判定和等待；worker 使用单调时间计算剩余 timeoutMs。changed 后重读重判；到期后最后重读并判定，满足则 met，否则 timeout 携带最后读到的 values/versions/unknown。无期限则不建超时器。调用取消关闭全部 watch；建立任一 watch 失败清理其他项并保留原错误，不让输家的取消错误覆盖结果。
 
-未接入的聊天/玩家交互事件不伪装为当前状态。后续由 World 提供游标之后的历史消息查询和失效通知，再接入同一等待路径；本轮不新增聊天查询或事件子系统。
+events@1 通过 World 历史/游标进入相同 read/watch 路径。EventAfter 是应用的增量位置，version 是本次查询的失效版本，两者不能互换；分页 next 也不能当观察游标。最近窗口、分页或尚有 next 的结果不可等待，先读完页取得最终 after。具体合同见 [events](capabilities.md#events)。
+
+```js
+async function main(mc, input) {
+  const baseline = await mc.read("events@1", {kinds:["chat"]});
+  const after = baseline.value.after;
+  await mc.call("chat@1", {text:input.text ?? "/list"});
+  const changed = await mc.waitUntil(
+    {messages:{ref:"events@1", input:{kinds:["chat"], after, limit:200}}},
+    (s, {unknown}) => s.messages.gaps.length > 0 ||
+      (!unknown.messages?.length && s.messages.events.length > 0),
+    {timeoutMs:5000},
+  );
+  return changed; // 只是读到新消息/缺口；不认定其中某条就是本命令的成功回应。
+}
+```
+
+若增量超过一页，waitUntil 的版本检查报 INVALID_INPUT 并提示分页；用 mc.read 的 next 读完后继续，不静默漏掉后页。需要处理每条记录的程序保存事件 ref 与 after，由自身逻辑决定是否已处理；Runtime 不替它维护消费位。
 
 ### 2.5 决策请求与新段
 
@@ -257,31 +275,17 @@ async function main(mc, input) {
 
 不暴露 process、require、fs、net、fetch、原始 Bot 或数据库。静态模块语法不作为脚本接受；动态 import 的模块加载器明确拒绝，不能将不支持的导入变成永不结算的等待。
 
-### 3.2 头注释与契约
+### 3.2 文件头
 
-文件第一行可有一个 `// uina {…}` 元数据对象；无头文件合法。开头连续出现多个结构化头时报 HEADER_INVALID，运行时报 PROGRAM_INVALID(reason=header)，不合并。库生成的头使用单行 JSON，并转义 U+2028/U+2029；脚本体字节保持原样。完整源码替换不重写所提供的头。
+程序使用一个可选的首行 `// uina {…}` 头。头字段、schema、坏头诊断和完整源码修复由 [Library §5.1](library.md#51-程序文件与头) 唯一定义。Program 只消费已经解析的材料；头非法时运行报 PROGRAM_INVALID(reason=header)，不忽略输入输出合同。
 
-| 字段 | 规则 |
-|---|---|
-| summary | save 时必需，一句话说明做什么和假定什么 |
-| tags | 可选字符串数组；用于文本和标签发现 |
-| input / output | 可选 JSON Schema；输入/返回参与校验，不做类型强转或隐式补默认值 |
-| examples | 可选 `{input, output?}[]`；输出是说明性示例，不是验收证据 |
-| saved | 工具写入 `{run, segment, call, digest, at}`；digest 是来源调用执行时的摘要 |
+### 3.3 选择子与源码读取
 
-input/output 未声明时如实显示“契约未声明”，不从一次运行自动推断通用类型。examples 若给出，校验其结构及已声明 input/output schema；通过只表示示例数据形状相符。声明的 output 只校验 JSON 结构，不使程序成为世界目标认证器。普通程序的完成范围固定为 execution。
-
-头 JSON/schema/字段结构损坏时，list/get 返回原文及 headerError，run 报 PROGRAM_INVALID(reason=header)，库写入报 HEADER_INVALID。修复使用 `update {name, source}` 替换完整源码，或直接编辑文件；元数据补丁拒绝处理坏头。新源码可以提供合法新头，也可以明确不带头；不能因读取失败而自动丢弃旧输入合同。
-
-头规范化可能改变文件摘要及后续代码行号。saved.digest 指向来源执行字节，返回 digest 指向落盘文件，两者可以不同。程序不另存 lesson；具体方法和默认值进代码，经验及其适用条件进 Experience。
-
-### 3.3 位置、命名与选择子
-
-`programs/**/*.js` 位于 `<worldDataDir>`。程序名是去掉 `.js` 的文件名，匹配 `^[a-z][a-z0-9_-]{0,47}$`；子目录只用于整理，`.`/`_` 开头文件忽略。同名冲突列出所有路径并报 `PROGRAM_CONFLICT`，不任选一个。
+Library 按 [文件规则](library.md#2-目录命名与分工) 解析程序名，返回确切原文、头及摘要；同名冲突报 PROGRAM_CONFLICT。临时代码复用同一头解析函数，不扫描文件。
 
 不含 `@` 的合法选择子是程序名；含 `@` 的是能力精确引用，如 `collect@1`。因此 `craft` 也是合法程序选择子，文件不存在时报 `PROGRAM_NOT_FOUND` 并可建议能力 `craft@1`，不能同时把它判为语法非法。非法选择子报 `SELECTOR_INVALID`，建议只提供候选，不自动替换。
 
-读取普通文件，使用 realpath + 路径边界检查阻止符号链接/目录联接越出库根；不能只做字符串前缀比较。硬链接不存在可由 realpath 找到的“原始外部路径”，不声称此检查可以识别它；本地作者的其他文件访问仍由既有宿主文件能力承担。IO、冲突与路径诊断对 list/get 可见。
+Program 不另做库路径解析；读取错误与冲突保留 Library 诊断，不回退到其他名字或来源。
 
 worldDataDir 继续使用既有激活约定：无 profile 时 `<cwd>/.uina/world-data/<worldName>`，有 profile 时 `<cwd>/profiles/<id>/state/world-data/<worldName>`。程序、蓝图、经验、Runtime 记录和 World 历史是同根下的邻居，见 [Library](library.md)。
 
@@ -305,44 +309,15 @@ Runtime 在受理前准备入口材料，先落快照再提交记录；程序根
 
 快照保证“曾经执行了哪些字节”可查，save from 能恢复某一次调用的源码。它不保证下次仍使用旧依赖：`A → B → native` 中只保存 A 不会保存 B，历史记录也不自动成为依赖锁。需要变体就复制命名；破坏公共输入输出时同步修调用者或另存程序。记录被清理则来源明确断链，不从当前文件补造旧源码。
 
-## 4. 文件库与学习循环
+## 4. 保存与复用
 
-### 4.1 操作
+Library 唯一管理 programs/blueprints/experiences 的文件和元数据，五种文件操作见 [Library §5](library.md#5-library-表面)。ProgramPort 不提供 CRUD、列表或另一份检索。
 
-library 是工具 action，不是 guest API；kind 缺省 program。普通文件工具可以编辑完整文件。
+试做后用 `library.save {name,summary,from:{run,segment,call}}` 精确保存调用源码；查看、完整源码替换、metadata 补丁和坏头修复均走同一 Library。普通文件工具也可编辑库文件。保存不冻结依赖、不认证玩法有效。
 
-| op | 程序请求与返回 |
-|---|---|
-| list | `{text?, tag?, limit?}` → 名称、摘要、tags、digest、path、updatedAt、headerError? |
-| get | `{name}` → 完整 source、元数据、路径、摘要、来源与诊断 |
-| save | `{name, summary, tags?, input?, output?, examples?, source?\|from?}` → ProgramSummary；source/from 恰一 |
-| update | `{name, source, expectedDigest?}` 或 `{name, metadata, expectedDigest?}` → ProgramSummary；两种形式互斥 |
-| delete | `{name}` → `{name, deleted:true}`；只删除库文件 |
+模型通过“试做 → 查看结果 → 修改 → 保存 → 换场景复用”迭代。方法和默认值进入代码，适用条件与反例进入经验文件。执行时仍按 §3 固定源码，改工作文件不改变在途材料。
 
-save 只创建，撞名 NAME_EXISTS。list 按大小写不敏感子串/tag 过滤、updatedAt 倒序，默认最多 50，不扫描 runs。
-
-update 的规则只有两组：
-
-- source 是完整文件，包含所需头；逐字节替换，不继承旧头，不接受同请求的 metadata。可修复坏头；故意省略头就是移除旧元数据。
-- metadata 是可编辑字段的补丁：summary/tags/input/output/examples。省略保持原值，数组整体替换；可选字段 null 清除，tags 清为空数组，summary 不接受 null。saved 不是可编辑字段，合法旧值原样保留。无头文件可补头，损坏头拒绝补丁。
-
-两种形式都先校验最终文件，再临时写入并 rename。expectedDigest 不符报 DIGEST_CONFLICT，不写入；它只协调本次工具更新，不锁外部编辑器。没有输入/输出 schema 的程序仍可保存和运行。
-
-### 4.2 保存与迭代
-
-save 从有效来源头继承 tags/input/output/examples，本次显式字段覆盖，数组替换；summary 必须由本次请求给出。from 精确指定 `{run,segment,call}`，执行侧 Library 适配读取调用记录和不可变快照，不能从当前工作文件重建；来源被清理报 NOT_FOUND。
-
-保存剥去来源头、写一个新头并 compileOnly，不执行代码。saved 仅在 from 路径由工具写入真实调用来源；直接 source 不冒充一次运行，旧 saved 不复制。只保存该脚本，不复制 input、输出、子程序或证据，不从一次运行推断 schema。
-
-完整源码 update 与普通文件编辑一样，以新文件中的 saved 为作者提供的来源提示；运行溯源以 Runtime 调用记录和快照为准。元数据补丁不改脚本体。头变化可以改变文件摘要和行号；saved.digest 指来源字节，返回 digest 指落盘文件。删除库文件不删运行快照。
-
-模型通过“试做 → 看结果 → 修改 → 保存 → 换场景复用”迭代。具体方法和默认值进入代码，适用条件与反例进入经验文件；保存不认证玩法有效。
-
-### 4.3 发现
-
-工具 describe 的统一搜索覆盖能力（含查询）、程序、蓝图与经验，返回 kind、callable、名字/引用、用途、必要路径与不可用原因；同名不同 kind 不遮蔽。动作能力/程序的 callable=true，使用 call；查询的 callable=false，使用 read。蓝图/经验供读取或作为领域输入，精确读取带 kind，不进入 call。
-
-搜索仍按名称、摘要和 tags 的文本匹配，不暗做语义检索；候选默认最多 10 条，先精确名字再前缀再其余文本命中，同级按 kind/name 稳定排序。describe 无参数给家族概览，不注入所有库正文；精确程序描述给 input/output（或未声明）、完成范围、适用条件和可复制的完整 await 示例。事实来自同一元数据，不手抄第二份常驻说明。
+发现规则与 describe 的唯一合同见 [Library §8](library.md#8-发现)。guest 不持有目录或库写代理，主脑按需发现后用 mc.read/call。
 
 ## 5. QuickJS 执行与关闭
 
@@ -410,45 +385,16 @@ Program 拥有语言隔离、shim、逻辑段与 guest 退役；Runtime 拥有�
 
 ## 7. Program 公开类型与端口
 
-以下是 Program 唯一定义；JsonValue/JsonSchema/Ref/Checkpoint/DecisionRequest/CallFailureData/WindowClickReceipt 等共享值引用 [public-api](../public-api.md)，不在这里复制领域结构。
+ProgramHeader/ProgramSummary/ProgramDetail 由 [Library §5.4](library.md#54-公开类型与端口) 定义。以下是执行端口；JsonValue/JsonSchema/Ref/Checkpoint/DecisionRequest/CallFailureData/WindowClickReceipt 等共享值引用 [public-api](../public-api.md)，不在这里复制领域结构。
 
 ```ts
 type SourceRequest = { name: string } | { code: string };
 interface SnapshotRef { digest: string; path: string }
 interface HandleRef { handle: Ref; kind: "body" | "window" | "stream" } // 宿主登记；数据本身不授权
-interface ProgramExample { input: JsonValue; output?: JsonValue }
-interface ProgramHeader {
-  summary?: string; tags?: string[]; input?: JsonSchema; output?: JsonSchema;
-  examples?: ProgramExample[];
-  saved?: { run: Ref; segment: Ref; call: Ref; digest: string; at: string };
-}
-interface ProgramSummary {
-  name: string; summary: string | null; tags: string[];
-  digest: string; path: string; updatedAt: string; headerError?: string;
-}
-interface ProgramDetail extends ProgramSummary {
-  source: string; input?: JsonSchema; output?: JsonSchema;
-  examples?: ProgramExample[]; savedFrom?: ProgramHeader["saved"];
-}
 interface ResolvedProgram {
   name: string | null; origin: "library" | "code";
   source: string; digest: string; header: ProgramHeader;
 }
-interface SaveRequest {
-  name: string; summary: string; tags?: string[];
-  input?: JsonSchema; output?: JsonSchema; examples?: ProgramExample[];
-  source: string; // 执行侧 Library 适配按确切 Call 取 from 源码；不绕回 Uina
-  savedFrom?: { run: Ref; segment: Ref; call: Ref; digest: string; at: string };
-}
-interface ProgramMetadataPatch {
-  summary?: string; tags?: string[] | null;
-  input?: JsonSchema | null; output?: JsonSchema | null;
-  examples?: ProgramExample[] | null;
-}
-type UpdateRequest = {name: string; expectedDigest?: string} & (
-  | {source: string; metadata?: never}
-  | {metadata: ProgramMetadataPatch; source?: never}
-);
 type ProgramValidation =
   | { ok: true; digest: string }
   | { ok: false; code: "PROGRAM_INVALID"; reason: "syntax"|"encoding"|"size"|"header";
@@ -459,11 +405,6 @@ interface ProgramPort {
   writeSnapshot(request: { run: Ref; program: ResolvedProgram }): Promise<SnapshotRef>;
   readSnapshot(request: { run: Ref; digest: string }): Promise<{source: string; path: string} | null>;
   openSegment(request: {run: Ref; segment: Ref; entry?: ResolvedProgram; signal: AbortSignal}): ProgramSegmentScope;
-  list(query?: {text?: string; tag?: string; limit?: number}): Promise<ProgramSummary[]>;
-  get(name: string): Promise<ProgramDetail | null>;
-  save(request: SaveRequest): Promise<ProgramSummary>;
-  update(request: UpdateRequest): Promise<ProgramSummary>;
-  delete(name: string): Promise<void>;
   capacity(): ProgramCapacity;
 }
 interface ProgramSegmentScope {
@@ -526,7 +467,7 @@ mc.read 是单目标 read RPC 的薄包装；waitUntil 的 predicate 留在 gues
 
 ## 8. 实施与验收
 
-实施仍位于 `.uina/worlds/minecraft/program/`：store/library 处理文件，service/scope 处理逻辑段与共享池，worker/shim 处理 QuickJS 与桥，Runtime 不 import QuickJS 类型。文件划分可随实际代码收敛，不要求 Manager 或新的插件生命周期。
+Program 通过注入的只读库入口解析名字，拥有执行快照、逻辑段/共享池与 QuickJS 桥；Runtime 不 import QuickJS 类型。当前源码已清理，具体文件布局留给实现按职责收敛，不预建 Manager 或新的插件生命周期。
 
 ### 8.1 跨模块验收
 
@@ -547,6 +488,8 @@ mc.read 是单目标 read RPC 的薄包装；waitUntil 的 predicate 留在 gues
 
 ### 8.2 分层验证
 
+下列是不同承诺的验证归属，不是每个功能都重复跑五层的流程。环境选择、结果复用与检查频率统一见 [开发规范](../development-guide.md#5-验证选择)。
+
 1. 文件层：头/schema/示例、损坏修复、来源快照、并发修改、路径与 digest；compileOnly 不执行顶层。
 2. guest/桥：同步死循环、微任务循环、内存/栈、JSON 边界、缺省参数、来源错误、晚消息与取消；同引擎诊断。
 3. Runtime/Driver：委托谱系、父关闭记录、决定传播、窗口前后态、实际控制撤销与在途效果结算。
@@ -557,7 +500,7 @@ mc.read 是单目标 read RPC 的薄包装；waitUntil 的 predicate 留在 gues
 
 共享 pool、决策异常桥、窗口确认变化和完整控制桥尚未实现。QuickJS 版本、编译/销毁与 WASM 实例的峰值内存需在实际实现记录；个别调用的摘要固定不代表 native 实现或世界状态可重放。
 
-聊天等事件由 World 后续的历史/游标合同接入，未实现前明确不可等待。跨 World 的库共享不在当前设计内，复制普通文件可作为人工复用；不增加隐式上层库或名称回退。
+聊天等事件由 events@1 的历史/增量合同接入；其具体查询、分页、缺口和条件可等待性见能力面，不增第二套事件 API。跨 World 的库共享不在当前设计内，复制普通文件可作为人工复用；不增加隐式上层库或名称回退。
 
 ## 附录 A：模型的最小指南
 
@@ -567,7 +510,14 @@ mc.read 是单目标 read RPC 的薄包装；waitUntil 的 predicate 留在 gues
 程序是普通 .js：async function main(mc, input) { ... }。input 缺省 {}，return 是程序结果。
 查询能力：const {value, unknown} = await mc.read("inventory@1");
 动作/程序：await mc.call("collect@1", {item:"oak_log", count:8}); await mc.call("wood_pick", {count:8});
+聊天/服务器指令：await mc.call("chat@1", {text:"/list"}); 首字符 / 表示指令，sent 只确认发送。
+读回应/事故用 events@1：先读最近窗口取得 after，再用同 kinds 的 after 增量读；next 翻页，version 只用于等待。
+找动物用 explore@1 的 until:{entity:"cow"}；来源查 item，在线公告名单查 players；名单不等于当前实体。
+看地图用主脑 observe(map@1) 得到图片，无需图片时 image:false；写牌用 use@1 的 at/text/side，读回用 block。
+物品转移：transfer@1 的 from/to 恰一，另一端为自身库存；容器可填 "nearest"。drop@1 可 toward 玩家，只证明丢出。
 @major 是能力引用；裸名是保存程序。签名不确定先用工具 describe，包含完整可复制示例。
+工具 observe 查事实，run 执行，runs 查进度/停止/继续，library 管文件，chat 发消息或 /指令。
+accepted 尚未完成；unknown 先按返回的 request 查证；工具取消只结束等待，要停游戏任务用 runs.stop。
 unknown 表示没看清；找不到只说明查询覆盖内没找到。动作不足/失败看 e.code/e.progress/effects。
 mc.progress({summary:"正在采集", acquired:6}) 报告结构化进度；Runtime 不替程序累计数量。
 需要精细操作：mc.withBody(async body => ...)，body.call 委托，子程序普通 call 继承；回调等待也保留身体。
