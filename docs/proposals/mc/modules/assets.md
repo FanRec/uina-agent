@@ -6,7 +6,7 @@
 
 | # | 裁决 | 放弃的机制与理由 |
 |---|---|---|
-| 1 | 库 = `<worldDataDir>` 下的普通文件，三类条目共用一个命名空间 | SQLite 资产目录。目录要索引的查询（按名、按 kind、按 tag）在几百个文件规模上 `readdir` 就够；一旦有目录，就要处理目录与文件的一致性、孤儿、损坏，而这些正是它要解决的问题之外的新问题。 |
+| 1 | 库 = `<worldDataDir>` 下的普通文件，三类条目在同一个根目录下、各自按 kind 命名 | SQLite 资产目录。目录要索引的查询（按名、按 kind、按 tag）在几百个文件规模上 `readdir` 就够；一旦有目录，就要处理目录与文件的一致性、孤儿、损坏，而这些正是它要解决的问题之外的新问题。 |
 | 2 | 没有不可变版本、没有发布、没有 CAS | Revision/head/`expectedRef`/`intent`/operations 幂等表。版本服务的三个需求（复现、并行变体、依赖不漂移）在单作者场景里分别由"使用方记录 digest""复制文件""编辑即意图"覆盖，参见 program.md §4.6。 |
 | 3 | 确切内容由使用方在入场时固定（程序快照、工程记录 digest），库不冻结 | 不可变包保存"发布时的字节"。工程/运行自己记录它实际用的那份字节的摘要，比"发布一个版本"更直接，也不阻断作者继续编辑。 |
 | 4 | 证据是弱链接，不复制 | `EvidenceCopy`/`EvidenceExportPort`/`attachEvidence`。事实归 Runtime/World；库里的判断引用记录 id，记录被清理时如实出现断链，而不是在库里养一份可能过期的副本。 |
@@ -28,7 +28,7 @@
   runs/<run>/sources/<sha256>.js      # 源码快照（Runtime 所有，Program 只写 sources/；按内容寻址）
 ```
 
-五个位置是同一数据根下的并列邻居，互不搬移、互不代管；只有 `runs/` 由 Program 与 Runtime 分工写。
+六个位置是同一数据根下的并列邻居，互不搬移、互不代管；只有 `runs/` 由 Program 与 Runtime 分工写。
 
 - **命名**：三类的 `name` 统一 `^[a-z][a-z0-9_-]{0,47}$`（小写；Windows 大小写不敏感），在各自类别内唯一。同名不同类别允许（`blueprints/hut` 与 `experiences/hut` 不冲突），因为地址总是带 kind。
 - **路径安全**：只允许上述固定结构；拒绝 `..`、绝对路径、反斜杠、保留设备名、忽略大小写后的重复项。`blueprints/<name>/` 内只认 `design.*`、`about.json`、`target.json`，其他文件忽略（不报错）。
@@ -89,21 +89,17 @@ Target 的四态由 Construction 定义并验证，Library 不重写这些语义
 
 ### 4.1 形态
 
-单个 markdown 文件，顶部是 HTML 注释头，正文自由：
+单个 markdown 文件，顶部是一个 `uina` 注释头（与程序头同一套语法：标记 + 一行 JSON），正文自由：
 
 ```markdown
-<!--
-@summary 苦力怕在白天也会爆炸；天亮不等于安全
-@applies mining,combat
-@tags creeper,day,安全
--->
+<!-- uina {"summary":"苦力怕在白天也会爆炸；天亮不等于安全","applies":["mining","combat"],"tags":["creeper","day","安全"]} -->
 挖矿时听到嘶嘶声先撤退，别赌它白天不炸。
 
 反例：在雷暴天气的屋顶上，苦力怕是被闪电引来的，撤离路线要先看下方。
 ```
 
-- 解析规则与程序头注释一致：逐行 `@字段 值`，续行并入上一个字段；没有头合法（`summary: null`），正文照样可读。
-- `@applies` 是给检索用的粗分类（可多个），不是 schema 约束；正文承载适用条件、方法、反例与不确定。
+- 解析与程序共用同一段逻辑：找首行 `uina` 标记、`JSON.parse` 其后内容；坏 JSON → `HEADER_INVALID`，没有头合法（`summary: null`），正文照样可读。
+- `applies` 是给检索用的粗分类（可多个），不是 schema 约束；正文承载适用条件、方法、反例与不确定。
 - 正文就是散文。判断的强度（猜测/已验证/有争议）写在句子里，不用枚举字段——字段会逼出虚假精确，而读它的是模型。
 
 ### 4.2 经验是判断，不是事实
@@ -118,10 +114,10 @@ Target 的四态由 Construction 定义并验证，Library 不重写这些语义
 
 | op | 参数 | 行为 |
 |---|---|---|
-| `list` | `{kind?, text?, tag?, limit?}` | 扫描三类目录，返回 `[{kind, name, summary, tags, updatedAt, size?, digest?, path?, aboutError?}]`，按 `updatedAt` 倒序，默认 50 条；`digest` 只对程序与文本条目计算，蓝图给 `size` |
+| `list` | `{kind?, text?, tag?, limit?}` | 扫描三类目录，返回 `[{kind, name, summary, tags, updatedAt, size?, digest?, path?, aboutError?, headerError?}]`，按 `updatedAt` 倒序，默认 50 条；`digest` 只对程序与文本条目计算，蓝图给 `size` |
 | `get` | `{kind, name}` | program → 源码（含头注释）；blueprint → `{about, files, digest, size, target?}`；experience → `{header, text}` |
 | `save` | `{kind, name, ...}` | program：从运行段或源码创建（program.md §4）；blueprint：登记已放入的 `design.*` 并写元数据；experience：写文本与头注释。已存在 → `NAME_EXISTS`，改用 `update` |
-| `update` | `{kind, name, ...}` | 改文本/元数据；program 的源码与 blueprint 的字节不在本操作内替换 |
+| `update` | `{kind, name, ...}` | 改文本/元数据；program 可连源码一起换（program.md §4.1），blueprint 的 `design.*`/`target.json` 字节不在本操作内替换 |
 | `delete` | `{kind, name}` | 删条目（program/experience 删文件，blueprint 删目录）。不删 `runs/` 快照 |
 
 规则：
@@ -141,7 +137,7 @@ Target 的四态由 Construction 定义并验证，Library 不重写这些语义
 | `NAME_INVALID` | 名字不合规 |
 | `NAME_EXISTS` | `save` 撞名 |
 | `NOT_FOUND` | 条目不存在 |
-| `HEADER_INVALID` | 写入时头注释/about.json 不合法；读取时只记 `header: null`/`aboutError`，不阻塞 |
+| `HEADER_INVALID` | 写入时 `uina` 头/about.json 不合法；读取时只记 `headerError`（`summary: null`），不阻塞正文 |
 | `BLUEPRINT_SOURCE_MISSING` | 蓝图没有 `design.*` |
 | `BLUEPRINT_AMBIGUOUS` | 蓝图有多个 `design.*` |
 | `BLUEPRINT_CORRUPT` | 蓝图字节读不出或摘要与记录不符 |
@@ -172,7 +168,7 @@ Target 的四态由 Construction 定义并验证，Library 不重写这些语义
 | `Revision`/`head`/`previousRef`/`derivedFrom` | 复现由使用方记录 digest 承担，并行变体由复制文件承担 |
 | `EvidenceCopy`/`attachEvidence`/`EvidenceExportPort` | 弱链接 + 记录所有者已足够；副本会过期，且要有 GC |
 | `ProgramSourcePort`/`publishFromRun` | 由 `library.save {from:{run,segment,call}}` 直接读那次调用的快照（program.md §4.2） |
-| `ReadLibrary`/`WriteLibrary`/`AssetRepository` | 脚本不需要仓库对象；需要的是 `blueprint@1` 这类能力 |
+| `ReadLibrary`/`WriteLibrary`/`AssetRepository` | 脚本不需要仓库对象；需要的是 `build.plan@1`/`build@1` 这类能力 |
 | `inspect` 的 `verified/corrupt/unknown` 状态机 | 读到就报事实（摘要、长度、能否解析），没有"检查"这一独立动作 |
 | `RepositoryRef`、`name@version` | 库是本地的；跨仓库共享不在需求里 |
 
@@ -181,7 +177,7 @@ Target 的四态由 Construction 定义并验证，Library 不重写这些语义
 - `programs/` 的形态、执行、保存规则 → `program.md`。
 - 三类共享的命名、路径、错误与 `library` 工具形状 → 本文（program.md §4.1 引用这里的 kind 约定）。
 - 蓝图与经验的 `library.get` 输出形状 → 本文；程序的输出形状（源码+头注释）→ program.md。
-- 程序要按名读蓝图时调用 `blueprint@1`，其实现（解码、绝对坐标）归 Construction。
+- 程序要用蓝图时传 `{from:{kind:"blueprint", name}}` 给 `build.plan@1`/`build@1`；解码、旋转、绝对坐标归 Construction（capabilities.md §4）。
 
 ## 9. 未决
 

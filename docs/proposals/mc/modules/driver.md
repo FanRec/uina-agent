@@ -2,11 +2,11 @@
 
 **状态：控制内核（资格/身体/反馈/窗口/当前事实）已实现并通过 fake bot 集成验收；尚未接真实 Mineflayer、Pathfinder/PVP 插件，未经过真实游戏验证。**
 
-日期：2026-10-15（Asia/Shanghai）。以用户提供的完整 Driver 稿为底稿，经当前合同和固定上游源码复核修订。2026-10-17 修订：§8.4/§9.6 物理窄接缝（PHY-STEP）降级为条件条款——同进程事件计数已满足 drive/feedback 合同，接缝仅在安装异步化或插件归属取证时实现；依据 [研究记录中的 Driver 审查](../research.md#driver-audit)。2026-10-17 架构重构：状态唯一所有权收编——gate 是资格与操作记录唯一权威（无第二份 active 指针/操作集合），原生使用状态归属唯一权威 = Body 会话（drive/useItem/feedback 同一核验路径），按键持有收编为 KeyHold（撤销只清本根），窗口 revision 唯一权威 = WindowSession（facts 经 live getter 读取，setSlot 单路径路由），say 经 gate 停用准入（不要求 Body Permit），Operation 资源标签字段删除（资源归属由 KeyHold/useControl/会话登记等具体机制承载）。
+日期：2026-10-15（Asia/Shanghai），2026-10-17 修订。修订经过与理由见 [changelog](../changelog.md)，本文只写当前合同。
 
-**设计依据：**[概要](../design.md)、[跨模块行为](../contracts.md#control)、[唯一公开接口](../public-api.md#player)及[固定源码证据](../research.md#driver-audit)。
+**设计依据：**[概要](../design.md)、[跨模块行为](../contracts.md)、[唯一公开接口](../public-api.md)及[固定源码证据](../research.md)。
 
-本文只定义 Driver 的内部职责、操作算法、状态、第三方适配、版本兼容和验证要求。跨模块方法及数据类型以 `public-api.md` 为唯一设计来源，不在本文维护第二套公开接口。玩法算法、Callable 机制、Program 执行域和 World 历史的职责归属见[概要 §2.2](../design.md#module-ownership)；本文只说明与它们接触的边界，不设计其内部实现。
+本文只定义 Driver 的内部职责、操作算法、状态、第三方适配、版本兼容和验证要求。跨模块方法及数据类型以 `public-api.md` 为唯一设计来源，不在本文维护第二套公开接口。玩法算法、Callable 机制、Program 执行域和 World 历史的职责归属见[概要 §2.2](../design.md)；本文只说明与它们接触的边界，不设计其内部实现。
 
 ---
 
@@ -229,9 +229,9 @@ Driver 只维护当前有效 Body Permit，并核验申请是否符合外部所�
 
 **身体调度的唯一权威在 Runtime**：Runtime 决定"该谁跑、跑什么"（任务/运行队列、优先级、抢占、公平）。Driver 只强制两件事——同一时刻最多一个有效资格（资源隔离），以及按到达顺序发放唯一身体租约（互斥与交接期等待）。
 
-Driver 不建立第二套任务队列。`acquire` 的排队只是 grant 级顺序（并发申请谁下一个取得身体），不是业务任务仲裁，不做优先级、不做抢占；Runtime 的身体调度位于 `acquire` 之上。Runtime 侧的获取形态（每次身体使用保持**一个**在途 `acquire`）是 **Runtime 接线时必须闭合的合同项**，现在不预先删除 Driver 排队：等 Runtime 详细设计确定真实获取流程后，再决定 Driver 侧的最小形态——当前 FIFO、单个待授予请求、或对并发申请明确冲突拒绝。在此之前 FIFO 继续承担互斥与交接期等待（它有真实消费者：并发测试与交接路径），但不承担任何业务仲裁。
+Driver 不建立第二套任务队列。`acquire` 的排队只是 grant 级顺序（并发申请谁下一个取得身体），不是业务任务仲裁，不做优先级、不做抢占；Runtime 的身体调度位于 `acquire` 之上。合同项已闭合：每次身体使用只有一个在途 `acquire`，Driver 只实现互斥与交接期 FIFO（上一项 `close` 完成后才发放下一项），不对并发申请做业务裁决，也不返回“并发冲突”这种需要调用方重试的错误。
 
-停用/拆除期必须结算排队者：连接/化身代次更替与驱动关闭都会明确拒绝整队（`SOURCE_UNAVAILABLE`）并摘除各自的 abort 监听；结算后的 grant 还要复查连接状态，绝不把无法履行的租约发给排队者（否则会得到指向空化身的会话）。
+停用/拆除期必须结算排队者：连接/化身代次更替与驱动关闭都会以 `DISCONNECTED`/`INTERRUPTED` 明确拒绝整队并摘除各自的 abort 监听；结算后的 grant 还要复查连接状态，绝不把无法履行的租约发给排队者（否则会得到指向空化身的会话）。
 
 同一调用树中的嵌套操作通过 Runtime 的作用域机制继承当前身体资格。
 
@@ -450,7 +450,7 @@ Driver 不根据一组资源名字自动推断这些前置条件，更不决定�
 
 ### 7.1 输入分类
 
-执行语义需区分，公开方法/参数仍只定义在 [public-api §4](../public-api.md#player)：
+执行语义需区分，公开方法/参数仍只定义在 [public-api §4](../public-api.md)：
 
 | 类型 | 示例 | 规则 |
 |---|---|---|
@@ -648,7 +648,7 @@ updatePosition / movement packet
 
 必要的一次性输入可在提交边界派发，但其回执仍区分派发与随后真实消费步。完整原生插件在 physicsTick 写的按键通常供未来步消费；若其在此时改位置、速度或视角，则另列为模拟后修改，可能进入本次移动包。发包前快照仅是本地候选状态；updatePosition 仍会限速、转换/舍入视角等，实际字段须在原 sendPacket/协议派发入口取证，不能用 bot.entity 快照冒充 wire 值。采样不得把监听顺序碰巧取得的混合状态冒充纯 M 步结果；事实入口可发布这些额外变化，但保留不同来源/本地水位。沿用原有物理循环、追赶与发包规则，不另起模拟器或第二个定时器。
 
-`physicsTick` 本身仍是模拟后事件，不将监听器排序当模拟前接缝。若插件在模拟后、移动包前改变位置或视角，该变化另外归属于该 Operation，并标本地修改，不能算作已经被第 N 步物理消费的输入。相关源码与验证边界见[研究复核](../research.md#driver-audit)。
+`physicsTick` 本身仍是模拟后事件，不将监听器排序当模拟前接缝。若插件在模拟后、移动包前改变位置或视角，该变化另外归属于该 Operation，并标本地修改，不能算作已经被第 N 步物理消费的输入。相关源码与验证边界见[研究复核](../research.md)。
 
 ### 8.5 背压与健康
 
@@ -1035,11 +1035,11 @@ Driver 不把这种升级吞掉。
 
 World 将客户端事实投影为统一查询/订阅接口，并负责历史持久化。
 
-事实接缝唯一类型见 [ClientFactsPort](../public-api.md#client-facts)。同步 sample 固定纯值、scope、Driver 水位及 evidenceThrough，不允许活读 view 跨 await。World 先订阅后采样；状态提交后排变化提示，合并提示不是逐事件日志。选定证据在提交边界捕获，同域轻量移交入队，跨域明确区分 captured/sent/received/durable。源证据序号独立于事实 stamp；按原 ref/序号重传，默认保留唯一材料至 durable ACK；当前同域合同没有 received ACK。不可恢复缺口显式交付，reset 不删除旧证据，未封口源不宣称历史完整。
+事实接缝唯一类型见 [ClientFactsPort](../public-api.md)。同步 sample 固定纯值、scope、Driver 水位及 evidenceThrough，不允许活读 view 跨 await。World 先订阅后采样；状态提交后排变化提示，合并提示不是逐事件日志。选定证据在提交边界捕获，同域轻量移交入队，跨域明确区分 captured/sent/received/durable。源证据序号独立于事实 stamp；按原 ref/序号重传，默认保留唯一材料至 durable ACK；当前同域合同没有 received ACK。不可恢复缺口显式交付，reset 不删除旧证据，未封口源不宣称历史完整。
 
-默认 World 轻量接收与 Driver 同域，共用一份不可变捕获/待落盘材料，按持久提交回收，不额外复制 outbox 或模拟跨域 ACK/重发。SQLite/重计算在线程外。拆域不传 sample 回调；纯当前 capture 用轻量有序当前状态检查点，不等 evidenceThrough 载荷或数据库。纯历史不请求 Driver；联合查询只有承诺截至样本的历史前缀才采用证据 fence，并由 World 核验实际依赖。协议需求见 [World §6](world.md#snapshot)，不增加普通/严格模式。前缀等待/大载荷不得占住日常当前读，RPC 返回不自证原子。Driver 不拥有 World 水位。
+默认 World 轻量接收与 Driver 同域，共用一份不可变捕获/待落盘材料，按持久提交回收，不额外复制 outbox 或模拟跨域 ACK/重发。SQLite/重计算在线程外。拆域不传 sample 回调；纯当前 capture 用轻量有序当前状态检查点，不等 evidenceThrough 载荷或数据库。纯历史不请求 Driver；联合查询只有承诺截至样本的历史前缀才采用证据 fence，并由 World 核验实际依赖。协议需求见 [World §6](world.md)，不增加普通/严格模式。前缀等待/大载荷不得占住日常当前读，RPC 返回不自证原子。Driver 不拥有 World 水位。
 
-大范围当前地形按需通过 sections 固定请求范围的不可变基底/必要补丁与覆盖，复用选定地形历史材料。小范围 block/self/inventory 不先创建 Section 版本；没有活动区域切面/历史核验需要时，不将每次预测变成长期版本链。Driver 保证读材料真实不可变，工作线程展开搜索；不扫描复制全加载区，不 transfer 仍使用的 buffer，不让 Driver/World 各建全量缓存。不能低成本固定某区域时明确该查询可用性，不影响其他当前读。见 [World §7](world.md#sections)，实际内存/延迟仍须测量。
+大范围当前地形按需通过 sections 固定请求范围的不可变基底/必要补丁与覆盖，复用选定地形历史材料。小范围 block/self/inventory 不先创建 Section 版本；没有活动区域切面/历史核验需要时，不将每次预测变成长期版本链。Driver 保证读材料真实不可变，工作线程展开搜索；不扫描复制全加载区，不 transfer 仍使用的 buffer，不让 Driver/World 各建全量缓存。不能低成本固定某区域时明确该查询可用性，不影响其他当前读。见 [World §7](world.md)，实际内存/延迟仍须测量。
 
 Feedback 使用相同的底层纯采样实现，但不每 Tick 调用 World 的异步业务查询或数据库。
 
@@ -1051,7 +1051,7 @@ Driver 即时返回的是 Fact；World 查询才为事实加上同点查询游�
 
 Driver 事实水位、World 查询游标和反馈帧序号属于不同作用域，不得直接互换。
 
-stamp 只能证明源已前进，不证明 World 已收到对应空间范围。World 按 [World §9](world.md#watch) 在范围未知时保守覆盖当前源；Driver 不为此等历史载荷或数据库，也不要求新增 notice 区间日志。SQLite 打开失败不阻止已有 Driver 的当前 sample；scope 只用可信运行期绑定，否则是显式 unbound，不能从连接地址推断存档身份。样本已有的 evidenceThrough 可供联合结果填写 history 进度，它不是持久 ACK；纯当前不计算历史进度。
+stamp 只能证明源已前进，不证明 World 已收到对应空间范围。World 按 [World §9](world.md) 在范围未知时保守覆盖当前源；Driver 不为此等历史载荷或数据库，也不要求新增 notice 区间日志。SQLite 打开失败不阻止已有 Driver 的当前 sample；scope 只用可信运行期绑定，否则是显式 unbound，不能从连接地址推断存档身份。样本已有的 evidenceThrough 可供联合结果填写 history 进度，它不是持久 ACK；纯当前不计算历史进度。
 
 ---
 
@@ -1109,7 +1109,7 @@ Window Session 绑定：
 
 需要重同步时，以受控操作执行。
 
-固定版本的 `_syncWindow` 是主动点击请求全量槽位，并非被动 read；它本身没有完整停止/超时合同。适配必须预登记响应、串行执行，在关闭/断线时取消，并校验其 no-op 所需的未开始拖拽等前提。Prismarine windows 2.9.0 的 drag/doubleClick 尚未实现，协议 mode 合法也不能放行未实现路径；具体依赖依据见[研究复核](../research.md#driver-audit)。
+固定版本的 `_syncWindow` 是主动点击请求全量槽位，并非被动 read；它本身没有完整停止/超时合同。适配必须预登记响应、串行执行，在关闭/断线时取消，并校验其 no-op 所需的未开始拖拽等前提。Prismarine windows 2.9.0 的 drag/doubleClick 尚未实现，协议 mode 合法也不能放行未实现路径；具体依赖依据见[研究复核](../research.md)。
 
 ### 12.4 结果确认
 
@@ -1516,7 +1516,7 @@ Window W1
 | [Physics](../../../../.artifacts/minecraft-driver-targeted-20261015T200732/physics-probe.mjs) | Tick 监听改键只影响下一模拟；监听排序改变所读快照，模拟后修改进入发包；未模拟也可发 tick_end | 原始 tickPhysics 的替身物理/传输，不是游戏物理精度、输入接缝或反馈延迟验证 |
 | [权限/执行域边界](../../../../.artifacts/minecraft-driver-targeted-20261015T200732/boundary-probe.mjs) | 错误绑定代理会恢复旧 act；事件不自动继承登记来源；堵塞子进程内 stop/定时器不运行，独立父进程能终止并确认 exit | 权限 guard 仅边界示范；未验证真实 Runtime/Program IPC、服务器清理、父进程崩溃或 Job Object |
 
-缓存源码、提交、SHA-256、运行命令和完整 JSON 输出见[审查证据目录](../../../../.artifacts/minecraft-driver-targeted-20261015T200732/README.md)；长期研究结论见[研究复核](../research.md#driver-targeted-probes)。修复后的并行、停止与权限集成仍须在实际 Adapter 和真实服务器边界执行 §18.1–18.6，不能将本表换个名称当作通过。
+缓存源码、提交、SHA-256、运行命令和完整 JSON 输出见[审查证据目录](../../../../.artifacts/minecraft-driver-targeted-20261015T200732/README.md)；长期研究结论见[研究复核](../research.md)。修复后的并行、停止与权限集成仍须在实际 Adapter 和真实服务器边界执行 §18.1–18.6，不能将本表换个名称当作通过。
 
 ---
 

@@ -118,7 +118,7 @@ type Pos = Vec3 | { rel: Vec3 }        // Vec3 = { x, y, z }
 ### 2.5 返回
 
 - **查询**（`mc.read`）返回 `{ value, version, unknown? }`：`value` 是领域值，`version` 是宿主的观察令牌（程序原样回传，不解释），`unknown` 只在有未知时出现（`chunk_unloaded`、`not_connected`、`stale`）。本文 §3 各条的"返回"写的是 `value` 的形状。
-- **`version` 可能是 `null`**：只有真正可被观察的查询才有令牌（`self`/`inventory`/`block`/`blocks`/`region`/`entities`/`world`/`places` 八个，即 `feedback:true`）。派生计算（`route.plan`/`build.plan`/`recipe`）与静态知识（`item`）的 `version` 恒为 `null`，它们不能进 `waitForChange`——否则 World 就要为"任意派生结果的依赖变化"建立响应式依赖图。要等这些，就等它依赖的基础事实（库存、方块、世界）。
+- **`version` 可能是 `null`**：只有真正可被观察的查询才有令牌（`self`/`inventory`/`block`/`blocks`/`region`/`entities`/`world`/`places` 八个，即 `feedback:true`）。派生计算（`route.plan`/`build.plan`/`recipe`）、静态知识（`item`）与历史视图（`container.last`）的 `version` 恒为 `null`，它们不能进 `waitForChange`——否则 World 就要为"任意派生结果的依赖变化"建立响应式依赖图。要等这些，就等它依赖的基础事实（库存、方块、世界）。
 - **动作**（`mc.call`）返回领域值（普通 JSON 对象），没有包装。
 
 共同的三条约定：
@@ -193,9 +193,15 @@ INTERRUPTED: 安全反射（脚下是岩浆）中断了 collect；已挖 12/32
 
 ### 2.9 `withBody` 内不能用 `mc.call` 调动作
 
-`withBody` 已经把身体交给程序做逐 tick 控制。此时用 `mc.call` 调任何需要身体的动作 → 立即抛 `BODY_SCOPE_ACTIVE`（guest 侧错误，不进段记录）。理由：一个动作的控制器和程序的手动输入会打架，且失败模式极难诊断。宁可立即报错。
+`withBody` 已经把身体交给程序做逐 tick 控制。此时：
 
-确实要在持身体期间跑一个动作，只有一条路：`body.call("mine@1", {at})`——把当前 BodyScope **委托**给这次调用，本调用的句柄在委托期间挂起。这条规则对原生动作和程序**完全一样**，不因为目标是原生就自动放行（详见 `program.md` §3.3.1）。
+- 用 `mc.call` 调**任何需要身体的动作** → 立即抛 `BODY_SCOPE_ACTIVE`（guest 侧错误，不进段记录）。
+- 调 `mc.sleep` / `mc.waitForChange` 同样报 `BODY_SCOPE_ACTIVE`：身体在手里却停下等，是设计错误；要让别的调用用身体，先退出 `withBody`。
+- 纯计算、`mc.read` 与不动身体的调用不受限制。
+
+理由：一个动作的控制器和程序的手动输入会打架，失败模式极难诊断；停下等待则意味着身体被闲置占用。宁可立即报错。
+
+确实要在持身体期间跑一个动作，只有一条路：`body.call("mine@1", {at})`。它把当前 BodyScope **委托**给这次调用，本调用自己的句柄在委托期间挂起（`BODY_SUSPENDED`）；同一时刻只允许一个委托，第二个 `BODY_BUSY`。这条规则对原生动作和程序**完全一样**，不因为目标是原生就自动放行（详见 `program.md` §3.3.1）。
 
 ### 2.10 感知边界
 
@@ -651,7 +657,7 @@ try {
 
 先看再做：参数不确定 → mc describe 名字；料不确定 → recipe；路不确定 → route.plan。
 找方块用 blocks（有界、给 truncated）；读一片形状用 region（palette + 索引，≤8192 格）。
-大工程先试算：recipe.plan / build.plan / route.plan 通过再开工。
+大工程先试算：mc.read("recipe@1", …).value.plan / build.plan@1 / route.plan@1 通过再开工。
 
 查询  self inventory block blocks region entities item recipe world places container.last route.plan build.plan
 移动  goto follow flee surface explore transit ride
@@ -674,11 +680,12 @@ try {
    TARGET_NOT_MET → 换方法，别重试
    INTERRUPTED TIMEOUT → 看 progress 决定继续还是交还
    INVALID_INPUT → 按 hint 里的 candidates 改
+   DISCONNECTED → 连接没了，等重连或交还主脑；INTERNAL → 能力自身缺陷，换方法或记录后交还
 
 坐标是 {x,y,z} 或 {rel:{x,y,z}}；名字写 oak_log / 橡木原木 / log 都行，标签写 #minecraft:logs。
 意图固定、世界会变：派发后的参数不再改，但路线、目标、走位由能力按当前世界重算；看回执，别假设。
 找不到不等于不存在：看 scanned 与 unknown，再决定扩大范围还是换假设。
-长任务每 2-3 分钟 mc.progress 一句；要等世界用 smelt wait:false / sleep / blocks 轮询。
+长任务每 2-3 分钟 mc.progress 一句；等世界变化用 mc.waitForChange（只接受带观察令牌的查询：self inventory block blocks region entities world places）；route.plan/build.plan/recipe 这类派生结果不能等，sleep 后重算。
 不要在 withBody 里用 mc.call 调需要身体的动作（改用 body.call）；不要在一个程序里并发两个动身体的调用。
 ```
 
@@ -704,7 +711,7 @@ collect@1  act · P0
 | 组合语言 | 手写 JS（有原生 bot） | 无（HTTP 一次一个动作） | 无（声明式步骤队列） | JS + `mc.call` |
 | 身体常识 | 8 个 primitive JS | 21 个动作 | 30 个 skill | 37 个动词 |
 | 感知 | 完整 observation | lookAround | probe 区域 + 全图 | 13 个查询（含 `region`）+ `scanned` |
-| 试算 | 无 | 无 | `mc_scout` 干跑 | `route.plan`/`build.plan`/`recipe.plan` |
+| 试算 | 无 | 无 | `mc_scout` 干跑 | `route.plan`/`build.plan`（独立查询）+ `recipe@1` 的 `plan` 字段 |
 | 部分完成 | 吞掉（打印聊天） | 返回消息 | 步骤结果 + 回执 | `remaining` + `progress` |
 | 失败 | 文本聊天 | 规则匹配建议 | 中文回执 + 测量 | 13 码 + `hint` + `source` |
 | 长任务 | 阻塞执行 | 每动作一个请求 | 队列 + 策略层 | 程序 + `runs` + `continue` |
@@ -764,7 +771,7 @@ collect@1  act · P0
 
 | 查询 | 必须出现在前排 | 不得占前排 |
 |---|---|---|
-| `造房子` | `build`、`build.plan`、`collect`、`craft` | `fish`、`chat`/`say`、`brew` |
+| `造房子` | `build`、`build.plan`、`collect`、`craft` | `fish`、`say`、`brew` |
 | `挖矿` | `mine`、`collect`、`goto`、`equip`（按需换工具） | `sleep`、`trade`、`build` |
 | `整理背包` | `container`、`take`、`stow` | `attack`、`transit`、`fish` |
 
@@ -814,7 +821,7 @@ collect@1  act · P0
 
 解析顺序与歧义处理见 §2.3。
 
-## 附录 C：与 `program.md` §3.4 的差异
+## 附录 C：与 2026-10-17 旧命名的差异（历史）
 
 | 旧 | 新 | 原因 |
 |---|---|---|

@@ -1,8 +1,8 @@
-# World / 观察与记录详细设计
+﻿# World / 观察与记录详细设计
 
-日期：2026-10-16（Asia/Shanghai / GMT+08:00）；2026-10-17 审查修订；2026-10-17 架构重构（SQLite 专用 Worker + 提交屏障化历史查询 + ACK 收敛 durable-only）；2026-10-17 二轮（历史 cursor 改取读取视图版本 + 双量纲水位 + durable 物理前提核验）。状态：**终态设计；World 接收/当前读/Watch/SQLite Worker 历史/领域记录/保留已实现并集成验收，未完成真实 Minecraft、跨域集成、性能或断电验收**。标注『条件条款』的小节是消费方/拆域出现后才激活的简洁合同，不描述任何现存第二套机制。2026-10-17 三轮：历史 cursor 统一取读取视图版本、§9.1 失效只按查询可见边界定义（混合查询/时间阈值为条件条款）、§13.1 两段初始化（当前基线先行，历史独立 opening）、存储身份冲突核验、schema v3 全文对齐。
+日期：2026-10-16，2026-10-17 三轮修订（经过见 [changelog](../changelog.md)）。状态：**终态设计；World 接收/当前读/Watch/SQLite Worker 历史/领域记录/保留已实现并集成验收，未完成真实 Minecraft、跨域集成、性能或断电验收**。标注『条件条款』的小节是消费方/拆域出现后才激活的合同，不描述任何现存第二套机制。
 
-本文负责 World 的内部数据流、当前观察、查询快照、失效订阅、历史、领域记录及恢复。它承接已确认产品选择与 Driver 推荐，不重开身体控制设计。方法、参数、返回和错误形状的唯一来源是 [public-api §4.1–5](../public-api.md#client-facts)；跨模块保证以 [contracts §7](../contracts.md#observations) 为准；Driver 的采集实现归 [Driver §11](driver.md#current-facts)。本文不授权产品实现，不规定开发阶段、工期或人员。
+本文负责 World 的内部数据流、当前观察、查询快照、失效订阅、历史、领域记录及恢复。它承接已确认产品选择与 Driver 推荐，不重开身体控制设计。方法、参数、返回和错误形状的唯一来源是 [public-api §4.1–5](../public-api.md)；跨模块保证以 [contracts §7](../contracts.md) 为准；Driver 的采集实现归 [Driver §11](driver.md)。本文不授权产品实现，不规定开发阶段、工期或人员。
 
 ## 1. 推荐结论与判断边界
 
@@ -103,7 +103,7 @@ flowchart LR
 
 合并的 changed 只表示某处需要复查。开窗后关窗与从未开窗都可能得到 window=null；实体出现又离开后也可能得到同样的最终实体集合。事后 sample 不能恢复已经失效的值。
 
-固定 Mineflayer 的窗口关闭路径先置 currentWindow=null，再发布 windowClose，见[固定源码](../../../../.artifacts/minecraft-driver-targeted-20261015T200732/upstream/mineflayer--inventory.js)。实体消失、即时消息及伤害同样需要在实际入口保留载荷；证据定位集中在 [research](../research.md#world-audit)。不能把这些源码事实说成 Uina 已实现可靠历史。
+固定 Mineflayer 的窗口关闭路径先置 currentWindow=null，再发布 windowClose，见[固定源码](../../../../.artifacts/minecraft-driver-targeted-20261015T200732/upstream/mineflayer--inventory.js)。实体消失、即时消息及伤害同样需要在实际入口保留载荷；证据定位集中在 [research](../research.md)。不能把这些源码事实说成 Uina 已实现可靠历史。
 
 ### 5.2 四个承诺边界
 
@@ -256,7 +256,7 @@ World 的基础读取和 Driver 反馈复用同一纯采样实现。反馈不调
 
 | 类别 | 语义 |
 | --- | --- |
-| self / inventory / window / block / 当前 region | 当前可知；不可用返回 null/unknown 或 schema 声明的缺口 |
+| `self` / `inventory` / `window` 句柄 / `block` / `region` | 当前可知；不可用返回 null/unknown 或 schema 声明的缺口 |
 | 实体与空间搜索 | 覆盖实际可跟踪范围；未发现不证明全世界不存在 |
 | container.last / 地形最后观察 | 历史，保留原时间、覆盖和来源 |
 | 事件历史 / evidence 精确读取 | 返回已保存不可变记录，声明区间缺口与保留范围 |
@@ -392,7 +392,7 @@ retain 对可信 owner 幂等追加，不赋予任何身体/领域写权或读�
 
 retain 的存在性/本地依赖校验、活动切面保留登记和实际删除必须在同一 World 发布序列协调，不能让“校验存在”和“插入保留关系”之间被清理穿过。删除先完成则 retain 明确 EVIDENCE_UNAVAILABLE；retain 或活动切面先取得保护则删除跳过，不能成功返回后引用已不存在。
 
-跨库中断可能留下孤立 retain；恢复宁可多保留，不能先误删。核对只针对明确的持久记录所有者及其记录存储端口；Assets 的 pending/unknown 请求不能因尚无资产结果判为孤立，只有该所有者已持久退役且再不可能发布，或正式引用已移除，才 release。无法确认时保留，不靠全会话扫描猜测。Assets 自身保存/来源时序见 [Assets 详细设计](assets.md#references)，不改变本节 World 保留/删除算法。
+跨库中断可能留下孤立 retain；恢复宁可多保留，不能先误删。核对只针对明确的持久记录所有者及其记录存储端口；Assets 的 pending/unknown 请求不能因尚无资产结果判为孤立，只有该所有者已持久退役且再不可能发布，或正式引用已移除，才 release。无法确认时保留，不靠全会话扫描猜测。Assets 自身保存/来源时序见 [Assets 详细设计](assets.md)，不改变本节 World 保留/删除算法。
 
 ## 11. SQLite 与索引
 
@@ -416,7 +416,7 @@ SQLite 保存世界绑定、源会话/范围/缺口、不可变观察、Section 
 
 ### 11.2 专用存储 Worker 与异步读
 
-SQLite 连接生活在专用 Worker 线程（当前实现：`world/internal/sqlite-worker.mjs`，纯 Node 内置零依赖），有序提交、读取、迁移与关闭结算都在该线程内完成——历史 I/O 不占用 World/Driver 所在事件循环，当前事实通知不排在历史持久 I/O 后面。每条消息是一个原子边界：append 批量在一个事务内提交，读取不看到半个事务；WAL 减少读写互阻。不能把普通入队或无 fsync 的性能配置称为断电持久。打开握手返回实际生效的持久性配置，`world.status@1` 与验证脚本据此核验，而不是假设。
+SQLite 连接生活在专用 Worker 线程（当前实现：`world/internal/sqlite-worker.mjs`，纯 Node 内置零依赖），有序提交、读取、迁移与关闭结算都在该线程内完成——历史 I/O 不占用 World/Driver 所在事件循环，当前事实通知不排在历史持久 I/O 后面。每条消息是一个原子边界：append 批量在一个事务内提交，读取不看到半个事务；WAL 减少读写互阻。不能把普通入队或无 fsync 的性能配置称为断电持久。打开握手返回实际生效的持久性配置，验证脚本据此核验，而不是假设。
 
 **构建产物必须带着 Worker 资产**：`store.ts` 按自身模块目录解析 `sqlite-worker.mjs`（不用字面量 `new URL(...)`，避免被打包器改写成可打包资源）。emit 后若该文件未被复制到同一目录，打开会**明确失败**，不会静默退化成内存实现。`pnpm verify:mc-worker` 用真实 emit 产物跑通这条链路（缺资产失败 → 复制后写入/读取/关闭 → 进程在 close 前退出后从 WAL 恢复）。
 
@@ -452,13 +452,13 @@ SQLite 的数据库快照不自动覆盖 Driver。按 v 查询不可变行/修�
 
 ### 13.1 启动
 
-同一个 World 内分别建立当前接入与历史存储，不用 SQLite 打开成功作为整个 World 的启动门。`createWorld` 的初始化分两段：**段1 立即建立当前基线并交付句柄**（订阅先行不漏 Driver 材料，当前 read 在任何 SQLite 状态下都可用且总是最新采样）；**段2 历史侧独立推进 opening → ready/unavailable**（打开握手 → 恢复播种 → 重放缓冲通知）。打开/播种期间到达的通知进缓冲、按到达序重放——证据的 durable 起步因此正确（播种先于任何提交）；缓冲期当前侧的迟到通知由检查点保守失效兜底（H>C → 全源失效），不漏、只是粗。需要确定历史可用的调用方等待 `world.historySettled`（就绪或明确不可用都结算）。
+同一个 World 内分别建立当前接入与历史存储，不用 SQLite 打开成功作为整个 World 的启动门。`createWorld` 的初始化分两段：**段1 立即建立当前基线并交付句柄**（订阅先行不漏 Driver 材料，当前 read 在任何 SQLite 状态下都可用且总是最新采样）；**段2 历史侧独立推进 opening → ready/unavailable**（打开握手 → 恢复播种 → 重放缓冲通知）。打开/播种期间到达的通知进缓冲、按到达序重放——证据的 durable 起步因此正确（播种先于任何提交）；缓冲期当前侧的迟到通知由检查点保守失效兜底（H>C → 全源失效），不漏、只是粗。需要“历史可用”这一个信号的调用方用 World 内部句柄上的 `historyReady` Promise（就绪或明确不可用都结算）；它不进公开查询面，模型看到的是 `world@1` 的 `history` 字段随时间从 `opening` 变为 `ready`/`unavailable`。
 
 1. 建立运行期状态和可信绑定；没有可信持久身份就创建显式 unbound 分区。订阅当前元数据、初始化 World 失效水位。
 2. 打开并核验历史数据库（专用 Worker 打开握手，含 schema 版本校验与一次性迁移）；打开失败、损坏或版本不兼容则 history=unavailable 并保留原因——当前源只依自己的就绪/绑定条件运行，不自动清空、替换损坏权威库以假装 ready，不凭地址恢复旧身份。默认历史查询明确 STORE_UNAVAILABLE。
 3. 存储就绪后从真实持久状态播种接收代次的 durable 起点（不把 RAM 接收冒充持久），再重放缓冲通知进入实时分发。恢复后核验原分区和实际起点再提交；接入前、已丢尾部或未确认范围不能补造。打开失败是终态：不播种，但**接收继续运转**（证据照常接收、提交按 unavailable 明确失败、durable 停在真实起点）——无限缓冲会让 durable ACK 停摆并卡死 Driver 材料回收。
 
-world.status@1（公开 schema 在 public-api）分别报告 current、history 和 binding；它不等待二者就绪。各项可用性如下：
+`world@1`（公开 schema 见 [capabilities.md §3](capabilities.md)）分别报告 current、history 与 binding 三个字段；它不等待二者就绪。各项可用性如下：
 
 | 能力 | SQLite opening/无法打开/损坏时 |
 | --- | --- |
@@ -549,22 +549,7 @@ World 停用、重绑、源重建、存储恢复只使实际受影响的旧查�
 | 所有领域写都检查通用观察版本 | 看似严格 | 混淆旧判断与当前条件事务，制造无关冲突 |
 | 自动世界指纹识别 | 减少人工绑定 | 不能可靠证明重置；显式绑定和可靠证据更诚实 |
 
-对外部 AI 评审的采纳是定点的：接受交付分层、选定不可变证据、World 失效水位和保留闭包；**ACK 只保留 durable 一个水位**（received/R 层、outbox、重传协议已删，无消费者不预建）；历史失效以**存储提交版本**为量纲（cursor 即读取视图版本，不维护第二套 R/D 标量）；Section/快照索引未建立且无消费者不预建。修正“跨域仍可同步原子”和“所有 read 先追平历史”的推导。同域共享材料与提交回收，不模拟不需要的跨域重传。没有证据要求第二库存、任务运行器或 Core 接口，也没有性能实测证明本设计已经足够便宜。
-
-## 17. 公共合同变动及影响
-
-唯一公开形状只改 public-api：
-
-| 补充 | 真实缺口 | 影响 |
-| --- | --- | --- |
-| 捕获载荷、mark、ACK、gap/end 与 capture fence 值 | 已消失事实不能复查；跨域不能冒认交付 | Driver 事实适配与 World 接收；不改脚本 Body 方法 |
-| sections 只读采样 | 大范围当前读不能同步逐格扫完整世界 | Driver 读材料/纯查询实现；不泄漏 Chunk |
-| 基础当前值的明确载荷 | 开放 JsonValue 无法让查询/反馈共同核对字段和未知值 | Driver 与基础 query 复用同一 schema，不设计具体玩法算法 |
-| Observation.history 与已有健康查询的明确值 | 来源/时间不表达是否追平样本；单一 ready 不表达当前可用但存储失败 | 仅历史相关结果携带进度，纯当前不加 DB/F；不新增服务 |
-| DomainRecord/writeRecord.worldRevision | 无法统一隔离存档代次 | 领域记录 schema/调用者补确切分区 |
-| WorldEvidencePort | World 不知道 Runtime 的持久引用，清理可能误删 | 仅持久记录所有者注入，不给 Program |
-
-contracts 收准交付边界、快照、World 水位和 CAS/保留意义；Driver §11 仅补事实捕获/Section/交付责任，不重开操作与控制器设计。README 只导航，research 保存证据与验证边界。
+本文只描述 World 的内部机制与取舍。对外的类型、字段与错误码一律以 [public-api.md §2/§5](../public-api.md) 为唯一来源：`Observation.history`、`DomainRecord.worldRevision`、`WorldEvidencePort` 的增补理由记在 [research.md](../research.md) 与 [changelog.md](../changelog.md)，不在这里再抄一份（抄两份必然漂移）。
 
 基础查询 schema 需要随实际 descriptor 完整发布，不宣称当前已有全部原版 query 实现。接口开放不等于任意版本/服务器都支持。
 
@@ -590,7 +575,7 @@ contracts 收准交付边界、快照、World 水位和 CAS/保留意义；Drive
 | read21 后多次 watch，同21范围迟到 | 无新提交可等待，迟到只细化，不回退水位或每次自激 |
 | waiter 已登记但当前通知延迟 | 当前检查点发现既有变化，未来由订阅覆盖；仅前缀联合另核对证据 fence |
 | 新实体进入原先空区域 | 区域依赖失效，不能只关注旧结果 ID |
-| 无外部包但 maxAge 到期 | 时间条件失效；不启动游戏动作 |
+| 无外部包但保留期到期 | 时间条件失效；不启动游戏动作 |
 | 异步查询期间重绑 | 当前绑定查询失败；显式旧历史整份留原分区 |
 | 旧查询晚于新查询返回 | 消费方不以旧 cursor 覆盖新状态 |
 | 历史第二页期间有新证据 | 仍是同一版本和排序，不混入新记录 |
@@ -618,4 +603,4 @@ Minecraft World 内核（接收/当前读/Watch/SQLite Worker 历史/领域记�
 
 本稿依据当前权威文档、固定 Mineflayer 源码、Uina World 生命周期及 SQLite 官方合同。原 1–6.md 未恢复为规范；不以旧稿篇幅或第三方 AI 结论代替当前反例。
 
-本轮文档/模型验证的范围与命令集中于 [research §2.5](../research.md#world-audit)。真实游戏、父子域同时崩溃、真实断电、Driver 实时延迟、长期内存/磁盘增长、全原版/模组覆盖和游玩质量仍未验证。它们不能由本稿不变量、ACK 字段名或模型探针宣称成立。
+本轮文档/模型验证的范围与命令集中于 [research §2.5](../research.md)。真实游戏、父子域同时崩溃、真实断电、Driver 实时延迟、长期内存/磁盘增长、全原版/模组覆盖和游玩质量仍未验证。它们不能由本稿不变量、ACK 字段名或模型探针宣称成立。

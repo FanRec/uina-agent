@@ -65,7 +65,7 @@ Uina 源码核查基点为 `db658580aed9415d8acc0c1e2fb98cda2470cef9`，并读�
 
 本轮只完成静态核实、设计反例审查与文档/类型示例检查；没有运行真实游戏或测量这些方案的速度收益。
 
-本轮必要补查：World invalidation.ensureStream 当前仅支持单一 current/history 依赖，未建混合 Watch/通用时间调度；WorldEvent.render 可返回 null。前者要求 Runtime 不能假称联合监听已可用，后者支持过滤过时 decision，但不保证 render 与 canonical 原子。Assets 当前已有仓库工厂实现且有用户修改，旧“未实现”记录只代表当时范围；本次不更改其代码。记录 H 屏障、ProgramExecutionPort/容量均为待实现设计。
+本轮必要补查：World invalidation.ensureStream 当前仅支持单一 current/history 依赖，未建混合 Watch/通用时间调度；WorldEvent.render 可返回 null。前者要求 Runtime 不能假称联合监听已可用，后者支持过滤过时 decision，但不保证 render 与 canonical 原子。`contracts/assets.ts` 里的旧 SQLite/CAS 仓库代码仍在树中，但已作废、未接入（现行 Library 是文件库，见 [Library](modules/assets.md)）；`ProgramPort`（旧的 `ProgramExecutionPort`）与容量统计仍是待实现设计。
 
 <a id="driver-audit"></a>
 
@@ -138,58 +138,13 @@ availability-watch-probe 另检查 20→21 范围迟到、22先到不能越洞�
 
 <a id="assets-audit"></a>
 
-### 2.6 Assets 详细设计：持久身份、原始内容与派生解释
+### 2.6 资产仓库：探索过、已整体删除
 
-2026-10-16（Asia/Shanghai）完成设计与静态复核，推荐集中在 [Assets 详细设计](modules/assets.md)，公开形状和行为仍分别由 [public-api.md](public-api.md) 与 [contracts.md](contracts.md) 定义。**没有实现 AssetRepository，没有运行产品 SQLite、断电恢复、蓝图解析器或真实游戏实验。** 本节不能作为这些能力已经通过验收的证据。
+2026-10-16 曾按"SQLite 目录 + 不可变对象包 + 发布 CAS"设计资产仓库，并核对了 Node v24.13.1 内置 SQLite 的 BLOB 绑定、Windows/NTFS 的 write-through 与 rename 语义。这些核对本身成立，但结论在 2026-10-18 被推翻：单作者、几百个文件的规模不需要版本目录；目录与内容一致性、孤儿、损坏治理反而是它自己制造的问题。
 
-本次在当前 checkout 的 `src/`、`tests/` 检索 AssetRepository、ProgramAssets、BlueprintDefinition、ExperienceDefinition、saveFromRun 和 schem/litematic/schematic 格式入口，未发现本设计的资产仓库或蓝图消费者；`package.json` 没有 SQLite 绑定依赖。这是静态检索范围内的事实，不把文档声明当成可运行消费者。现场只读元数据显示 Node v24.13.1、libuv 1.51.0、内置 SQLite 3.51.2、Windows x64，E: 为本地 Fixed / NTFS；这些元数据不证明盘写持久性或目标部署兼容性。没有读取真实 Provider 配置、会话或下载内容。
+现在只保留**文件约定**（`programs/`、`blueprints/`、`experiences/`、`runs/`），确切内容由使用方在入场时记录摘要固定，见 [Library](modules/assets.md) §1、§2、§7。随之删除的还有：发布幂等表、证据副本、`AssetRepository` 对象、跨仓库引用。
 
-本轮核验的 primary sources 与约束：
-
-| 固定来源或官方合同 | 可直接支持的事实 | 不支持的推断 |
-| --- | --- | --- |
-| [Node v24.13.1 SQLite 源码](https://github.com/nodejs/node/blob/v24.13.1/src/node_sqlite.cc#L101-L110)、[BLOB 绑定路径](https://github.com/nodejs/node/blob/v24.13.1/src/node_sqlite.cc#L2021-L2024)及[该版 API](https://nodejs.org/download/release/v24.13.1/docs/api/sqlite.html) | 普通 BLOB 输出分配 backing store 并复制，输入使用 SQLITE_TRANSIENT；现场公开 API 没有增量 BLOB handle | SQLite C 支持增量，不等于当前 Node 绑定已有无全量缓冲的流式接口；本机 Node 版本也不是最终依赖选择 |
-| [SQLite incremental BLOB](https://www.sqlite.org/c3ref/blob_open.html)、[limits](https://www.sqlite.org/limits.html) | C 接口可按范围读写，但不能用该 handle 增长 BLOB；默认单值/单行长度约十亿字节，实际构建和运行期限制另核验 | 统一单 BLOB 可以容纳任意大原件，或没有内存/复制成本 |
-| [SQLite WAL](https://www.sqlite.org/wal.html) | 当前版本支持大事务；同一数据库仍只有一个 writer，长读会妨碍 checkpoint，大事务可产生相应规模的 WAL | BLOB 必然慢，或分块写入便自动成为短事务、没有发布与恢复问题 |
-| [libuv v1.51.0 Windows open](https://github.com/libuv/libuv/blob/v1.51.0/src/win/fs.c#L525-L544)、[rename/sync](https://github.com/libuv/libuv/blob/v1.51.0/src/win/fs.c#L2109-L2139) | O_SYNC 映射 FILE_FLAG_WRITE_THROUGH，fsync/fdatasync 调用 FlushFileBuffers；普通 rename 只有 MOVEFILE_REPLACE_EXISTING | 一次普通 rename 已经提供目录发布的 write-through 保证 |
-| [Microsoft File Caching](https://learn.microsoft.com/en-us/windows/win32/fileio/file-caching)、[CreateFileW caching](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew#caching-behavior)、[FlushFileBuffers](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers) | 元数据也需 flush 或 write-through；NTFS 会刷新 write-through 请求引起的元数据变化 | 本轮已经验证具体设备、目录初始化、文件系统和所有断电交界 |
-
-[SQLite 内外 BLOB 比较](https://www.sqlite.org/intern-v-extern-blob.html)的旧分界来自 2011 年 Linux/Ext4/SATA、SQLite 3.7.8、10 KiB–1 MiB 样本；官方要求在目标环境复测。本轮不拿这一分界设置动态大小阈值，也不宣称任一方案性能优胜。
-
-| 有竞争力的存储选择 | 好处 | 本次独立取舍 |
-| --- | --- | --- |
-| 全部内容放 SQLite BLOB | 内容、版本、head、请求结果可在同一事务发布，删除外部文件发布协议 | 有效替代；但当前绑定没有增量 BLOB API，大原件会遇到全量 JS 缓冲/复制，长写还占共享 writer。增加 native 绑定或分块 staging 需要真实实现依据，不能假定已经存在 |
-| 全部内容放文件，SQLite 保存元数据 | 各类原件可采用同一文件路径，结构化大对象也能外置 | 程序源码和经验定义同样承担文件创建、同步与孤立对象处理，当前没有消费者或负载证明这笔成本有必要 |
-| 结构化定义放 SQLite，蓝图原始字节放受管不可变文件 | ProgramDefinition（含 source）、Experience 和 Blueprint manifest 无需外部文件发布；大原件可以分块保存且不跨复制持有 DB writer | 本次推荐。固定按表示和实际用途分工，不按大小动态选后端，不新增 asset kind、通用 BlobStore 或缓存真相；原件和结构化资产仍由同一 Assets 所有者维护逻辑引用 |
-
-推荐的原始文件发布有具体可实现次序：先建立本次受管 staging 与可选内容绑定 operation；在已建立的受管对象目录下，用永不复用的 objectId 物理路径及 `O_CREAT | O_EXCL | O_RDWR | O_SYNC` 直接创建，分块完整写入并计算摘要；核对长度、成功完成 `FileHandle.sync()` 并关闭后，才在最终 SQLite 事务发布对象元数据、资产版本、head、请求结果及本地引用。仓库读取只通过已提交元数据，不把目录中存在的文件视为已发布，因此不需要临时路径 rename 才获得原子可见性。外部证据仍须先由具体所有者 retain，不能把数据库元数据提交冒充跨 World 原子事务。
-
-该次序是针对已核查 Windows/NTFS flush 合同的设计，不是现成断电证明。创建、完整写入、sync、关闭或证据保留任一步失败，都不能发布资产；最终提交的结果不确定时保留原 operation/候选对象事实并报告 unknown，不猜失败而重放成新意图；Assets 不为 Runtime 来源建立另一套 capture 账本。目录初始化与目标存储的持久条件也必须成立；不满足支持条件时明确失败或限制承诺，不能称为 power-loss durable。重启发现已提交对象缺失或摘要不符时，报告内容不可用/存储损坏并保留原提交事实，不补空内容、不改旧 ref，也不把再次读到源路径上的新文件当修复。原件流复制不占 SQLite writer，不等于不会竞争磁盘带宽。
-
-已发布版本及其原件、pending/unknown 候选都不清理。只有请求已有持久终局、候选从未发布且不再被材料化/其他合法保留使用时才可回收，包括确定拒绝和成功后未选中的并发候选；候选不得跨请求认领，物理路径永不复用。内容去重若保留，只复用 SQLite 已发布对象，不能凭磁盘文件名或相同 digest 认领未发布候选。这排除“旧 GC 枚举候选后，新请求复用，旧删除再移除新引用”的竞态，不需要 GC gate、通用 Registry 或活 publication token。目录枚举不能推导请求已终止。
-
-蓝图原件是可无损导出的字节依据，Construction 拥有目标解释、几何区域查询和派生索引。目标四态继续为 set / clear / preserve / unknown；省略目标格为 preserve，扫描或解释未覆盖为 unknown。`set(minecraft:air)` 和 clear 都可能造成拆除，不能借表示差异绕过授权。原格式空气、省略项或未知标签不能未经明确格式规则就改成另一种目标语义。原样导出直出原始字节，不承诺 NBT 解析后再编码仍保留全部标签与压缩字节。
-
-派生几何缓存按确切来源引用、解析器确切版本、游戏数据版本和实际参数建立，由 Blueprint/Construction 失效和重建；丢失缓存不改变资产身份。原件流式保存不证明现成解析器能够增量解压或低内存建索引，未知 codec/缺失解释器时原件仍可导出，typed 几何读取明确失败。普通分析返回 typed 领域值并由 Runtime 保存执行结果；明确复用的使用判断可保存为 Experience。未来明确长期保存的结构化分析由 Blueprint 领域拥有独立不可变结果及其来源/引用寿命，不强塞经验字符串或没有 world 身份的 World DomainRecord，也不增加第四种通用资产或独立分析框架。当前只保留 source exactrefs、typed 领域结果和采用者保护边界，不实现语义算法或通用派生存储服务。
-
-确定需要覆盖的缺陷场景仍是待执行验证：
-
-| 反例或故障交界 | 必须保留的约束 |
-| --- | --- |
-| 同 requestId 改内容、方法或 publishFromRun 的 run/segment/record；失败后换 payload 重试 | 固定内容身份与可选 operation 绑定；已提交结果先于 head CAS 返回，未确认不改用当前文件/当前运行重读 |
-| publishFromRun 读到不同运行 revision，或恢复后 Runtime 已不可读 | 指定不可变 record 的一次导出胜出；流不可读就明确失败，不从当前 head 拼装历史 |
-| P 调 Q，二者裸名绑定不同；旧原生环境消失 | 保存 P 自己的定义和有效绑定，不扁平合并 Q 依赖；旧实现不可用明确失败，不升级为新版 |
-| retain 成功而资产未发布；仅凭没有结果就清理 | pending/unknown 继续保留；terminal 拒绝必须永久阻止再次发布，才允许释放未发布引用 |
-| 经验 support/反例 ref 未出现在共同 evidence | 验证器要求每项有唯一 owner 对应，否则 ASSET_INVALID；普通出处使用弱 sources，不扫描任意 JSON 猜引用 |
-| 附件已固定但重启后的导入器改变 draft | 材料化同时固定最终规范内容/schema/表示/引用语义；原选择器与派生 draft 指纹分别保留 |
-| 同 digest 的未完成文件被另一请求认领，或 GC 删除已被复用的候选 | 只复用已发布对象；候选归属、永不复用路径及保守回收不能省略 |
-| 复制途中崩溃、sync 成功而 DB 未提交、提交后回执丢失、重启缺件 | 分别验证候选、发布和结果恢复；不把可读数据库等同内容完整或断电安全 |
-| 原路径在两次导入之间变化，unknown/preserve 被当 clear，set air 绕过拆除约束 | 先固定确切原件；四态、覆盖和拆除含义逐项校验，不能用成功保存证明可施工 |
-| 解析失败、派生缓存过期或缺失、只读调用捕获旧写代理 | 保存与可解释/可施工分开；缓存可重建，实际资产写入仍核验 Runtime 的真实当前调用及 access，不增加自造 ACL |
-
-SQLite 是推荐技术，不要求 Assets 与 Runtime 账本默认共用同一数据库文件或连接；是否共库由真实 writer/生命周期压力决定，所有者之间只使用合同，不能穿透对方表取得假原子性。版本选择也仍需核验：现场内置 3.51.2 落在官方 [WAL-reset 修复说明](https://www.sqlite.org/wal.html#walreset)的受影响范围，3.51.3 及后续版修复；这要求选择绑定时核对实际 SQLite 与连接/写入/checkpoint 路径，不是已经验证某个产品故障。
-
-仍需后续完成：实际绑定及版本选择、代表性原件内存/复制和 WAL/延迟测量、文件发布与 SQLite 各交界故障注入、真实断电、格式原字节往返、NBT/蓝图解析与区域索引、schema/引用闭包、原生绑定恢复和真实生存施工。这里列的是可证伪验证任务，不规定 MVP、阶段排期或通用框架。文档修订前快照与静态检查说明见[本轮审查目录](../../../.artifacts/minecraft-assets-design-20261016/README.md)。
+**未验证项随之改变**：不再需要验证 SQLite 事务/断电，改为验证普通文件库在多进程写入、崩溃中断与并发编辑下的行为（例如 `save` 写到一半、两个进程同时改同一文件），这一项尚未实测。
 
 ## 3. 五个参考项目
 
@@ -378,12 +333,12 @@ QuickJS/WASM 等隔离运行时只是候选。必须同时验证异步宿主调�
 
 | 原稿 | 保留并归入 | 调整、删除及理由 |
 | --- | --- | --- |
-| `1.md`：工程设计规范 | [目标](design.md#goals)、[架构](design.md#architecture)、[感知](design.md#perception)、[持久化](design.md#persistence)；核心场景移入本文第 6 节 | 取消阶段排期、完整类型与目录施工方案；改正全任务串行、强制自保优先级和“一份全知事实” |
-| `2.md`：工具、技能与内核边界 | [接口](design.md#interfaces)、[控制](design.md#control)、[结果](design.md#results) | 去掉独立 Steps Runner、通用只读预演与多层重复核验；功能规划由具体能力提供 |
-| `3.md`：程序资产与成长 | [复用](design.md#reuse)、[持久化](design.md#persistence) | 保留代码留存、版本、检索、修订与证据；取消 Routine 必须验证发布后晋升 Learned Skill 的身份链 |
-| `4.md`：精细控制 | [程序](design.md#programs)、[控制](design.md#control)；精细操作场景移入本文第 6 节 | 去掉实现伪代码和 Tick 常数；有限终止条件不作为局部反馈的唯一入口 |
-| `5.md`：Program API | [程序](design.md#programs)、[接口](design.md#interfaces)、[感知](design.md#perception)、[结果](design.md#results) | 不冻结完整函数目录；开箱核验属于行动；程序输出计数不直接代表实际效果；不要求每次等待任意超时 |
-| `6.md`：逻辑架构 | [架构](design.md#architecture)、[控制](design.md#control)、[运行流程](design.md#flows) | 保留纵向功能组织与依赖方向；不用三套 Registry 扩张基础设施，删除阶段实施安排和过早类型定义 |
+| `1.md`：工程设计规范 | [目标](design.md)、[架构](design.md)、[感知](design.md)、[持久化](design.md)；核心场景移入本文第 6 节 | 取消阶段排期、完整类型与目录施工方案；改正全任务串行、强制自保优先级和“一份全知事实” |
+| `2.md`：工具、技能与内核边界 | [接口](design.md)、[控制](design.md)、[结果](design.md) | 去掉独立 Steps Runner、通用只读预演与多层重复核验；功能规划由具体能力提供 |
+| `3.md`：程序资产与成长 | [复用](design.md)、[持久化](design.md) | 保留代码留存、版本、检索、修订与证据；取消 Routine 必须验证发布后晋升 Learned Skill 的身份链 |
+| `4.md`：精细控制 | [程序](design.md)、[控制](design.md)；精细操作场景移入本文第 6 节 | 去掉实现伪代码和 Tick 常数；有限终止条件不作为局部反馈的唯一入口 |
+| `5.md`：Program API | [程序](design.md)、[接口](design.md)、[感知](design.md)、[结果](design.md) | 不冻结完整函数目录；开箱核验属于行动；程序输出计数不直接代表实际效果；不要求每次等待任意超时 |
+| `6.md`：逻辑架构 | [架构](design.md)、[控制](design.md)、[运行流程](design.md) | 保留纵向功能组织与依赖方向；不用三套 Registry 扩张基础设施，删除阶段实施安排和过早类型定义 |
 
 原稿中的建筑扫描、蓝图导入导出与修订、几何建造、补光与临时支撑、物资规划、长期世界过程、事故恢复和跨次游玩需求仍属于目标能力。原稿中的能力名称用作覆盖线索，不构成封闭操作清单；具体执行与数据归属由概要设计集中说明。
 
