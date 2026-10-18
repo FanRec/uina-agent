@@ -173,7 +173,7 @@ Runtime 不检测任意 JS Promise 依赖图。若 Body 回调自行等待更早
 
 ## 9. Program 执行合同与资源准入
 
-> **已由 [`program.md`](program.md) §5 取代。** 执行域改为 worker 线程内的 QuickJS-WASM（不是段子进程），每次调用一个运行时；容量按段排队，持身体租约的段只尝试、满了立即 `PROGRAM_CAPACITY`；`mc.wait` 与条件注册被 `mc.read`（返回观察版本）+ `mc.waitForChange`（版本原子比较，无漏唤醒）取代。Runtime 侧的硬保证（不堵事件循环、不暴露 Bot/Node、可强制取消、退役需事实）不变。
+> **已由 [`program.md`](program.md) §5 取代。** 执行域改为 worker 线程内的 QuickJS-WASM（不是段子进程），每次调用一个运行时；容量按段准入且只排队——原 §9 的"Body 内首次 Program 无容量时 `PROGRAM_CAPACITY`"一条取消：段内所有调用复用本域、不申请第二份容量，"持着身体等域"在程序路径上不存在（`program.md` §5.2）；`mc.wait` 与条件注册被 `mc.read`（返回观察版本）+ `mc.waitForChange`（版本原子比较，无漏唤醒）取代。Runtime 侧的硬保证（不堵事件循环、不暴露 Bot/Node、可强制取消、退役需事实）不变。
 
 Runtime 依赖 public-api §7.1 的 ProgramExecutionPort：准备/检查入口、为 Segment 打开受管执行域、以宿主绑定的 API 调用、取消/退役并取得退出事实。它不规定 WASM 初始化、pending-job pump、编译包装、帧编码或 OS 启动 API。
 
@@ -185,7 +185,7 @@ Program 已明确同段每次 Program Call 使用独立 QuickJS runtime/context�
 
 Program 所有者提供有限的活动执行域容量和内存/计算预算，以实际目标机器和压力测量配置；Runtime 使用其 FIFO 准入结果。排队可以产生 queued 状态，不取消 Run，不设置世界等待期限。容量不是“进程可以无限创建”的默认承诺，也不是通用 Quota/Policy 系统。
 
-一个 Segment 至多一份活动执行域容量，首次 Program 调用共享打开 Promise；同段嵌套 Program 复用该域容量而隔离 guest，不再等待第二个进程名额。每个 guest 的内存由 Program 在同一域总预算内管理。排资源时不能持 Body：在 Body 内动态首次调用 Program，若不能立即取得容量，当前 Call 报 PROGRAM_CAPACITY，不排一个自持身体的资源等待；作者可在取得身体前启动 Program，或释放后重试。已声明的 Program 入口在运行代码/取得身体前完成容量准入。
+一个 Segment 至多一份活动执行域容量，首次 Program 调用共享打开 Promise；同段嵌套 Program 复用该域容量而隔离 guest，不再等待第二个进程名额。每个 guest 的内存由 Program 在同一域总预算内管理。~~排资源时不能持 Body：在 Body 内动态首次调用 Program，若不能立即取得容量，当前 Call 报 PROGRAM_CAPACITY，不排一个自持身体的资源等待~~（**已取消**，见 `program.md` §5.2：段内复用本域，容量只排队，不存在这一失败）。
 
 await mc.wait 保留 JS 流程、闭包及活动执行域，长期等待确实占资源；mc.decide 是结束 Segment 并释放域的显式检查点交还。Runtime 不在容量紧张时擅自把 wait 转 decide，不虚构 Promise 持久挂起，也不为回收资源自动杀正常长期等待。独立 native Run 不因没有 guest 名额而被阻塞。
 
@@ -342,7 +342,7 @@ Runtime 必须长期复核的 World 证据，先按确切不可变 record owner 
 | 全部执行域长时间 await mc.waitForChange | 新 Program 可长期 queued；可查 limit/occupied/queued/Segment/时间/世界等待原因，native/stop/取消/查询不排容量 |
 | tool_handoff 后崩溃且本地请求未结 | 同原报告建立一个持久补报意图；再次恢复续用，过时 decision 跳过，绝不重做动作 |
 | decision 报告后显式 continue | reportKind=decision 不被当 finished；新段 terminal 报告保留不同 completionRef |
-| Body 内动态首次 Program 无容量 | 局部 PROGRAM_CAPACITY，不持 Body 排 guest 资源队列 |
+| Body 内动态首次 Program 无容量 | 原用例删除（见 `program.md` §5.2）：段内复用本域，不申请第二份容量，不会出现该失败 |
 | decide 后 continue | 释放旧 guest；新段新引用，旧闭包/未 await 分支不能恢复 |
 | decision 已消费但输入尚排队 | 投递/渲染复查抑制；最后 canonical 竞态可能展示历史，continue 不重复消费 |
 | 多源/时间条件 | 各 query/cursor 独立 Watch，任一失效或 afterMs 唤醒；不拼水位/承诺联合快照，afterMs 只复查 |
