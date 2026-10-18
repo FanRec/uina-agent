@@ -23,6 +23,9 @@ importers:
       mineflayer:
         specifier: 4.39.0
         version: 4.39.0
+      mineflayer-pathfinder:
+        specifier: 2.4.5
+        version: 2.4.5
       vec3:
         specifier: 0.1.7
         version: 0.1.7
@@ -950,6 +953,9 @@ packages:
   minecraft-protocol@1.68.0:
     resolution: {integrity: sha512-atAGg/fhIVqyK6voWvED5QA+4ah65PNwpoDnkHawWhVzQbwFii77KcF6OpsU/Xlbi0o9GpihHiPdORSxXEA+Ug==}
     engines: {node: '>=22'}
+
+  mineflayer-pathfinder@2.4.5:
+    resolution: {integrity: sha512-Jh3JnUgRLwhMh2Dugo4SPza68C41y+NPP5sdsgxRu35ydndo70i1JJGxauVWbXrpNwIxYNztUw78aFyb7icw8g==}
 
   mineflayer@4.39.0:
     resolution: {integrity: sha512-HptE++dIG55aRmT7GIj3QComS6MhEXstE3RJSuYMFhLtobsQhJJsqWmY9ObfiLp84MrS6Q4Em+wUH0rVQMXLJw==}
@@ -2069,6 +2075,18 @@ snapshots:
       yggdrasil: 1.8.0
     transitivePeerDependencies:
       - encoding
+      - supports-color
+
+  mineflayer-pathfinder@2.4.5:
+    dependencies:
+      minecraft-data: 3.117.0
+      prismarine-block: 1.23.0
+      prismarine-entity: 2.6.0
+      prismarine-item: 1.18.0
+      prismarine-nbt: 2.8.0
+      prismarine-physics: 1.11.1
+      vec3: 0.1.7
+    transitivePeerDependencies:
       - supports-color
 
   mineflayer@4.39.0:

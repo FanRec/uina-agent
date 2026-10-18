@@ -46,6 +46,14 @@ function importsUiImplementation(source) {
 	).test(source);
 }
 
+/** Match any import form (static, dynamic, require) of the bare package `name`. */
+function importsPackage(source, name) {
+	const body = "(?:" + name + "(?:/[^\"']*)?)";
+	return new RegExp(
+		"(?:from\\s*" + Q + body + Q + "|import\\s*\\(\\s*" + Q + body + Q + "|require\\(\\s*" + Q + body + Q + ")",
+	).test(source);
+}
+
 const rules = [
 	{
 		name: "runtime layers must not depend on extensions",
@@ -103,6 +111,18 @@ const rules = [
 			) ||
 			(source.includes("/extensions/") && !source.includes("world-framework")),
 	},
+	{
+		// modules/driver.md §3.1：原始 bot 只允许 Driver 边界内经审查的原生适配实现持有。
+		// 若 Driver 其余子模块（或它的消费者）也能 import mineflayer，换客户端就只是口头约定；
+		// vec3 同理（它是 mineflayer 的协议坐标类型，不是 Driver 的通用词汇）。
+		name: "mineflayer and vec3 only inside the native adapter (driver/mineflayer)",
+		roots: [".uina/worlds/minecraft"],
+		test: (source, file) => {
+			const path = String(file ?? "").replaceAll("\\", "/");
+			if (path.includes("/driver/mineflayer/")) return false;
+			return importsPackage(source, "mineflayer") || importsPackage(source, "vec3");
+		},
+	},
 ];
 
 /**
@@ -149,6 +169,20 @@ const selfTestSamples = [
 		rule: 7,
 		bad: 'import { Subject } from "../../../src/agent/loop.js";',
 		good: 'import type { ToolExecutionResult } from "../../../src/tools/broker.js";',
+	},
+	{
+		rule: 8,
+		file: ".uina/worlds/minecraft/driver/index.ts",
+		bad: 'import { createBot } from "mineflayer";',
+		good: 'import type { PlayerPort } from "./contracts/body.js";',
+	},
+	{
+		rule: 8,
+		file: ".uina/worlds/minecraft/driver/mineflayer/adapter.ts",
+		// 适配层内两种 import 都合法：这条样本只验证白名单在同一规则下真的放行。
+		bad: 'import { createBot } from "mineflayer";',
+		good: 'import vec3Module, { type Vec3 } from "vec3";',
+		expectBad: false,
 	},
 ];
 

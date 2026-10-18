@@ -21,6 +21,9 @@ notes/
 # World 本地运行状态：一律位于 .uina/world-data，不随源码提交。
 /.uina/world-data/
 
+# Minecraft 开发服务端本体（jar/存档/配置）：可整体删除复位，见 .uina/worlds/minecraft/dev-env/README.md
+/.uina/worlds/minecraft/dev-env/server/
+
 # 本地质量工具与覆盖率产物（不入库；覆盖率生成：
 # npx vitest run --coverage.enabled --coverage.reporter=json --coverage.include="src/**" --coverage.reportsDirectory=coverage-raw）
 coverage/

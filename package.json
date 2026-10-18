@@ -41,6 +41,7 @@
     "cli-highlight": "^2.1.11",
     "jiti": "^2.7.0",
     "mineflayer": "4.39.0",
+    "mineflayer-pathfinder": "2.4.5",
     "vec3": "0.1.7",
     "ws": "^8.21.3"
   }
