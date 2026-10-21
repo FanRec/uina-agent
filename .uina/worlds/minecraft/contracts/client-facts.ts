@@ -215,7 +215,20 @@ export interface ClientFactView {
 	window(): Fact<WindowSnapshot | null>;
 }
 
+/**
+ * 订阅选项。证据释放水线只在**消费证据**的接收方之间取最小值：
+ * 只读观察者（如当前读的 watch）不落盘证据，若一并计入则永不确认，
+ * 有界缓冲会被无谓耗尽并按溢出报假缺口。
+ */
+export interface ClientFactsSubscribeOptions {
+	/** 该接收方承诺把证据持久化后才 acknowledge（World 历史存储）。缺省 false。 */
+	consumesEvidence?: boolean;
+}
+
 export interface ClientFactsPort {
 	sample<T>(read: (view: ClientFactView) => T): ClientFactCapture<T>;
-	subscribe(listener: (notice: ClientFactNotice) => void): ClientFactsSubscription;
+	subscribe(
+		listener: (notice: ClientFactNotice) => void,
+		options?: ClientFactsSubscribeOptions,
+	): ClientFactsSubscription;
 }

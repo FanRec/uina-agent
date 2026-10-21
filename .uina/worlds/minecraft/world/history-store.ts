@@ -36,8 +36,9 @@ export class HistoryIngest {
 		this.historyReady = new Promise<"ready" | "unavailable">((resolve) => {
 			this.settle = resolve;
 		});
-		// 段1：订阅先行，不漏 Driver 材料（§13.1）。
-		this.subscription = facts.subscribe((notice) => this.onNotice(notice));
+		// 段1：订阅先行，不漏 Driver 材料（§13.1）；历史存储是证据消费者，
+		// 只有它的 ack 才能推进释放水线（只读 watch 不参与）。
+		this.subscription = facts.subscribe((notice) => this.onNotice(notice), { consumesEvidence: true });
 		this.worker = new Worker(new URL("./sqlite-worker.ts", import.meta.url));
 		this.worker.on("message", (msg: WorkerResponse) => this.onWorkerMessage(msg));
 		this.worker.on("error", (err: Error) => this.fail(`storage worker error: ${err.message}`));

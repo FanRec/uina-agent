@@ -425,7 +425,10 @@ interface ClientFactsSubscription {
 }
 interface ClientFactsPort {
   sample<T>(read: (view: ClientFactView) => T): ClientFactCapture<T>;
-  subscribe(listener: (notice: ClientFactNotice) => void): ClientFactsSubscription;
+  subscribe(
+    listener: (notice: ClientFactNotice) => void,
+    options?: { consumesEvidence?: boolean },
+  ): ClientFactsSubscription;
 }
 interface ClientCaptureRequest { request: Ref; queries: Record<string, WorldQuery> }
 interface ClientCaptureReply { request: Ref; capture: ClientFactCapture<Record<string, Fact<JsonValue>>> }
@@ -443,7 +446,7 @@ subscribe 原子登记并返回当前 stamp 和选定证据头；World 先订阅
 
 选定历史证据在原始数据被覆盖/移除前捕获为 CapturedClientFact，mark.sequence 从 1 起，只数该不可复用 stream 内的选定证据；无记录时头为 0。ref 与 mark 绑定不可变载荷，重传复用原值，不按内容相同去重。scope 是实际采集时的绑定；binding 是临时绑定代次，world/worldRevision 是持久分区，dimension 未知为 null。evidenceThrough 与 sample 的当前事实在 Driver 同一本地提交边界固定，但它只是源证据头，不表示 World 已收到/落盘，也不是纯当前 read 的等待条件。同域在该水位可见前完成证据捕获/轻量移交；跨域须对账才称收到。evidence 不得被 changed 合并或 reset 静默清除。
 
-durableThrough 确认指定 receiver 代次已持久提交的源前缀：每个序号都有已持久载荷，或已被已持久缺口记录覆盖。缺口记录本身有稳定 ref，同身份重传不改变区间。确认可合并、重复和迟到，但同 receiver/stream 内不回退；旧 receiver 不授权新 receiver 进度。Driver 只释放被全部已登记接收方 durableThrough 覆盖的材料。acknowledge 返回仅表示本地处理 ACK，不证明另一域收到。无法重传时发 evidence_gap，区间为 (after, through]，null 表示末端未知；未知末端不得授权跨越无界后缀，须在确定封口后追加有限范围对账。封口 evidence_end 只证明源捕获结束，不证明收到/持久化。无可信封口的源保留未确认后缀；有 gap 的前缀即使已持久也不能宣称历史完整。
+durableThrough 确认指定 receiver 代次已持久提交的源前缀：每个序号都有已持久载荷，或已被已持久缺口记录覆盖。缺口记录本身有稳定 ref，同身份重传不改变区间。确认可合并、重复和迟到，但同 receiver/stream 内不回退；旧 receiver 不授权新 receiver 进度。Driver 只释放被全部已登记**证据接收方**（subscribe 时声明 consumesEvidence=true 的接收方）在当前 stream 上的 durableThrough 覆盖的材料；只读观察者（当前读的 watch 等）不消费证据，不参与该水线，否则永不确认会把有界缓冲耗尽并按溢出报假缺口。ack 的 stream 决定它推进哪条流：换流后旧流的确认不授权新流序号，新流的 1..N 不会被旧高位误释放。无证据接收方时材料保留到有界上限，溢出如实发 evidence_gap，不静默丢弃。acknowledge 返回仅表示本地处理 ACK，不证明另一域收到。无法重传时发 evidence_gap，区间为 (after, through]，null 表示末端未知；未知末端不得授权跨越无界后缀，须在确定封口后追加有限范围对账。封口 evidence_end 只证明源捕获结束，不证明收到/持久化。无可信封口的源保留未确认后缀；有 gap 的前缀即使已持久也不能宣称历史完整。
 
 durable ACK 是同域部署的唯一确认层；同域共享同一份不可变材料和待落盘队列，按提交进度回收。received 层确认、重传协议与 outbox 副本不存在于当前合同——真实跨域交付出现时才按需求引入接收者代次、重传与乱序重排。选择历史范围、持久完成与缺口意义不因此削弱，也不把这条记录链变成每次当前 read 的前置条件。
 

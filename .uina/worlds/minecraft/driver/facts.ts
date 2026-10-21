@@ -22,6 +22,7 @@ import type {
 	ClientFactView,
 	ClientFactsPort,
 	ClientFactsSubscription,
+	ClientFactsSubscribeOptions,
 	ClientInventoryValue,
 	ClientPlayersValue,
 	ClientSectionsValue,
@@ -75,8 +76,13 @@ function refIssuerFrom(start: number): () => number {
 
 interface EvidenceReceiver {
 	notify: (n: ClientFactNotice) => void;
-	/** 已确认持久的源前缀；同 receiver/stream 内不回退。 */
-	durable: number;
+	/** 只有消费证据的接收方能推进释放水线（见 subscribe 选项）。 */
+	consumesEvidence: boolean;
+	/**
+	 * 每个证据流各自的已持久水线。换流后序号从 1 重来，
+	 * 若沿用单值高水位，旧流的高位会覆盖新流，导致证据在落盘前被释放。
+	 */
+	durable: Map<Ref, number>;
 }
 
 export class FactsSource implements ClientFactsPort {
@@ -146,17 +152,26 @@ export class FactsSource implements ClientFactsPort {
 		};
 	}
 
-	subscribe(listener: (notice: ClientFactNotice) => void): ClientFactsSubscription {
+	subscribe(
+		listener: (notice: ClientFactNotice) => void,
+		options?: ClientFactsSubscribeOptions,
+	): ClientFactsSubscription {
 		const receiver = this.nextRef("recv");
-		this.listeners.set(receiver, { notify: listener, durable: 0 });
+		this.listeners.set(receiver, {
+			notify: listener,
+			consumesEvidence: options?.consumesEvidence === true,
+			durable: new Map(),
+		});
 		return {
 			stamp: { ...this.stamp },
 			evidenceThrough: { ...this._evidenceThrough },
 			acknowledge: (ack: ClientEvidenceAck) => {
 				const entry = this.listeners.get(receiver);
 				if (entry == null) return;
-				// 同 receiver/stream 内不回退；重复/迟到 ack 无害。
-				entry.durable = Math.max(entry.durable, ack.durableThrough);
+				// 按 ack 自带的 stream 记账：同 receiver/stream 内不回退，异流互不覆盖。
+				const previous = entry.durable.get(ack.stream) ?? 0;
+				if (ack.durableThrough <= previous) return;
+				entry.durable.set(ack.stream, ack.durableThrough);
 				this.releaseAckedEvidence();
 			},
 			close: () => {
@@ -185,17 +200,24 @@ export class FactsSource implements ClientFactsPort {
 		return { ...this._evidenceThrough };
 	}
 
+	/**
+	 * 释放已被全部证据接收方确认持久的材料（world.md §5.4）。
+	 * 只看当前流：换流后旧流的确认不授权新流的序号。
+	 * 没有证据接收方时不释放——构造前的捕获不能被静默丢弃，溢出如实报 gap。
+	 */
 	private releaseAckedEvidence(): void {
-		if (this.listeners.size === 0) return;
+		const stream = this.evidenceStream;
 		let minDurable = Number.POSITIVE_INFINITY;
-		for (const entry of this.listeners.values()) minDurable = Math.min(minDurable, entry.durable);
-		if (!Number.isFinite(minDurable)) return;
-		let releaseCount = 0;
-		while (this.pendingEvidence.length > 0 && this.pendingEvidence[0].record.mark.sequence <= minDurable) {
-			this.pendingEvidence.shift();
-			releaseCount++;
+		for (const entry of this.listeners.values()) {
+			if (!entry.consumesEvidence) continue;
+			minDurable = Math.min(minDurable, entry.durable.get(stream) ?? 0);
 		}
-		void releaseCount;
+		if (!Number.isFinite(minDurable)) return;
+		while (this.pendingEvidence.length > 0) {
+			const head = this.pendingEvidence[0].record.mark;
+			if (head.stream !== stream || head.sequence > minDurable) break;
+			this.pendingEvidence.shift();
+		}
 	}
 
 	/** 证据流 ref = evs:<namespace>:<n>：namespace 跨进程不复用（§5.3）。 */
