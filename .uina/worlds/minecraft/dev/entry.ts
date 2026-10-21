@@ -86,13 +86,17 @@ async function waitForStill(bot: BotEntityView): Promise<void> {
 	log("warn: spawn stillness wait timed out; proceeding from last sampled position");
 }
 
-/** 每前缀独立单调发号（Driver 级 body:/op:/eff: 空间）。 */
-function makeIssuer(): (prefix: string) => Ref {
+/**
+ * 每前缀独立单调发号（Driver 级 body:/op:/eff: 空间）。
+ * 必须带本次启动命名空间：effect/op 引用会随 EffectRecord 落 world-history.db，
+ * 每进程从 1 重来会与已提交记录的主键跨启动冲突（world.md §5.3）。
+ */
+function makeIssuer(namespace: string): (prefix: string) => Ref {
 	const counters = new Map<string, number>();
 	return (prefix: string): Ref => {
 		const next = (counters.get(prefix) ?? 0) + 1;
 		counters.set(prefix, next);
-		return `${prefix}:${next}`;
+		return `${prefix}:${namespace}:${next}`;
 	};
 }
 
@@ -112,7 +116,7 @@ async function main(): Promise<void> {
 	// ---- Driver ----
 	const host = new ClientHost();
 	const arbiter = new DriverControlArbiter();
-	const mint = makeIssuer();
+	const mint = makeIssuer(ns);
 	const facts = new FactsSource(host, { binding, world: worldRef, worldRevision, streamNamespace: ns });
 	// open 前占位：契约行为 = 返回 null 即锁存 recorder fault；open 前无副作用发生
 	const sinkRef: { current: DriverExecutionSink | null } = { current: null };

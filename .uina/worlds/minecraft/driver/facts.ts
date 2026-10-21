@@ -55,13 +55,16 @@ interface PendingEvidence {
 	record: CapturedClientFact;
 }
 
-/** 每前缀独立单调发号（与 client-host 同约定，但各所有者独立计数）。 */
-function makeRefIssuer() {
+/**
+ * 每前缀独立单调发号。证据 ref（ev:/gap:）随 CapturedClientFact 落 world-history.db，
+ * 每进程从 1 重来会与已提交记录的 (ref) 主键跨启动冲突，故一律带启动命名空间（§5.3）。
+ */
+function makeRefIssuer(namespace: string) {
 	const counters = new Map<string, number>();
 	return (prefix: string): Ref => {
 		const next = (counters.get(prefix) ?? 0) + 1;
 		counters.set(prefix, next);
-		return `${prefix}:${next}`;
+		return `${prefix}:${namespace}:${next}`;
 	};
 }
 
@@ -86,11 +89,13 @@ interface EvidenceReceiver {
 }
 
 export class FactsSource implements ClientFactsPort {
-	private readonly nextRef = makeRefIssuer();
+	private readonly nextRef: (prefix: string) => Ref;
 	private readonly nextStreamNo = refIssuerFrom(0);
 	private readonly listeners = new Map<Ref, EvidenceReceiver>();
 	private readonly pendingEvidence: PendingEvidence[] = [];
 	private stamp: ClientFactStamp;
+	/** 本次启动的命名空间（已校验）：证据流与证据 ref 都带它。 */
+	private readonly namespace: string;
 	private _evidenceThrough: ClientEvidenceMark;
 	private evidenceSeq = refIssuerFrom(0);
 	private evidenceStream: Ref;
@@ -102,6 +107,12 @@ export class FactsSource implements ClientFactsPort {
 		private readonly host: ClientHost,
 		private readonly binding: FactsBinding,
 	) {
+		const ns = binding.streamNamespace;
+		if (ns.length === 0 || ns.includes(":")) {
+			throw new Error("FactsBinding.streamNamespace must be a non-empty string without ':'");
+		}
+		this.namespace = ns;
+		this.nextRef = makeRefIssuer(ns);
 		this.stamp = {
 			source: this.nextRef("facts"),
 			epoch: this.nextRef("ep"),
@@ -121,7 +132,7 @@ export class FactsSource implements ClientFactsPort {
 					this.resetSource("source_rebuilt");
 					this.attach(this.host.bot);
 				} else if (notice.state === "disconnected" || notice.state === "faulted") {
-					// 旧 bot 引用封印：sample 转为 WRONG_STATE，不读死连接。
+					// 旧 bot 引用封印：sample 转为 DISCONNECTED，不读死连接。
 					this.detach();
 					this.resetSource("connection_changed");
 				}
@@ -231,11 +242,7 @@ export class FactsSource implements ClientFactsPort {
 
 	/** 证据流 ref = evs:<namespace>:<n>：namespace 跨进程不复用（§5.3）。 */
 	private openEvidenceStream(): Ref {
-		const ns = this.binding.streamNamespace;
-		if (ns.length === 0 || ns.includes(":")) {
-			throw new Error("FactsBinding.streamNamespace must be a non-empty string without ':'");
-		}
-		return `evs:${ns}:${this.nextStreamNo()}`;
+		return `evs:${this.namespace}:${this.nextStreamNo()}`;
 	}
 
 	private resetSource(reason: "connection_changed" | "incarnation_changed" | "source_rebuilt"): void {

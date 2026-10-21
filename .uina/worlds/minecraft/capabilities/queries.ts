@@ -2,18 +2,30 @@
  * K1 查询子集：QueryDescriptor 声明 + resolver（I1 五查询）。
  *
  * 唯一定义来源：docs/proposals/mc/public-api.md §3、§5；plan §9。
- * resolver 只做输入校验 + 从当前事实视图组装 Fact（不造值：视图为 null/未知
- * 的部分如实带 unknown 透传）；watch 语义由 World 当前读统一承担（保守失效）。
- * 输入参数显式声明边界（空查询拒绝非空 input；blocks 限量 4 个 section——
- * 逐格采样代价随体量线性增长，I1 场景用小半径）。
+ * resolver 只从当前事实视图组装 Fact（不造值：视图为 null/未知的部分如实带
+ * unknown 透传）；watch 语义由 World 当前读统一承担（保守失效）。
+ * 输入校验按 descriptor.input 由本模块的 Ajv 编译一次后包装 resolver：schema 是
+ * 唯一事实来源，resolver 里不再手写字段检查（两套校验必然漂移）。
  */
 
+import { createRequire } from "node:module";
+import type { ValidateFunction } from "ajv";
 import type { QueryDescriptor } from "../contracts/capabilities.js";
 import type { ClientFactView, SectionTarget } from "../contracts/client-facts.js";
 import type { Place } from "../contracts/values.js";
 import type { JsonValue, JsonSchema, ExactRef, Vec3 } from "../contracts/values.js";
 import { callFailure } from "../contracts/values.js";
 import type { QueryResolver } from "../world/current.js";
+
+/** Ajv 仅由本模块构造（strict 关闭：schema 含开放键；allErrors 全量报告）。 */
+interface AjvLike {
+	compile(schema: Record<string, unknown>): ValidateFunction;
+	errorsText(errors?: ValidateFunction["errors"]): string;
+}
+const AjvCtor = createRequire(import.meta.url)("ajv") as new (options: {
+	strict: boolean;
+	allErrors: boolean;
+}) => AjvLike;
 
 const EMPTY_INPUT: JsonSchema = { type: "object", properties: {}, additionalProperties: false };
 
@@ -29,29 +41,17 @@ function readFailure(message: string, hint?: string): never {
 	});
 }
 
-function rejectNonEmptyInput(input: JsonValue, ref: string): void {
-	if (input != null && typeof input === "object" && Object.keys(input as object).length > 0) {
-		readFailure(`${ref} takes no input; got ${JSON.stringify(input)}`);
-	}
-}
-
-function intVec(value: unknown, name: string): Vec3 {
-	if (typeof value !== "object" || value == null) readFailure(`${name} must be an object with integer x/y/z`);
-	const v = value as Record<string, unknown>;
-	for (const key of ["x", "y", "z"] as const) {
-		if (typeof v[key] !== "number" || !Number.isInteger(v[key])) {
-			readFailure(`${name}.${key} must be an integer, got ${JSON.stringify(v[key])}`);
-		}
-	}
-	return { x: v.x as number, y: v.y as number, z: v.z as number };
-}
-
 const VEC3_SCHEMA: JsonSchema = {
 	type: "object",
 	properties: { x: { type: "integer" }, y: { type: "integer" }, z: { type: "integer" } },
 	required: ["x", "y", "z"],
 	additionalProperties: false,
 };
+
+/** 已过 schema 校验的输入按声明形状读取（校验是唯一依据，此处不重复检查）。 */
+function checkedInput<T>(input: JsonValue): T {
+	return input as unknown as T;
+}
 
 /** 组合根装配入口：描述符列表 + resolver 表（键 = descriptor.ref）。 */
 export interface BuiltQueries {
@@ -102,10 +102,7 @@ export function buildQueries(): BuiltQueries {
 					},
 				],
 			},
-			resolver: (view, input) => {
-				rejectNonEmptyInput(input, "self@1");
-				return view.self();
-			},
+			resolver: (view) => view.self(),
 		},
 		{
 			descriptor: {
@@ -130,10 +127,7 @@ export function buildQueries(): BuiltQueries {
 					},
 				],
 			},
-			resolver: (view, input) => {
-				rejectNonEmptyInput(input, "inventory@1");
-				return view.inventory();
-			},
+			resolver: (view) => view.inventory(),
 		},
 		{
 			descriptor: {
@@ -176,8 +170,8 @@ export function buildQueries(): BuiltQueries {
 				],
 			},
 			resolver: (view, input) => {
-				const raw = (input ?? {}) as Record<string, unknown>;
-				const block = intVec(raw.block, "block");
+				// schema 已保证 block 为整数向量
+				const { block } = checkedInput<{ block: Vec3 }>(input);
 				return view.block({ place: placeOf(view, block), block });
 			},
 		},
@@ -222,15 +216,16 @@ export function buildQueries(): BuiltQueries {
 				],
 			},
 			resolver: (view, input) => {
-				const raw = (input ?? {}) as Record<string, unknown>;
-				const list = raw.sections;
-				if (!Array.isArray(list) || list.length < 1 || list.length > 4) {
-					readFailure("blocks@1 needs sections: 1..4 entries");
-				}
-				const targets: SectionTarget[] = list.map((entry, i) => {
-					const section = intVec((entry as Record<string, unknown>).section, `sections[${i}].section`);
-					return { ...placeOf(view, { x: section.x * 16, y: section.y * 16, z: section.z * 16 }), section };
-				});
+				// schema 已保证 sections 为 1..4 项整数 section 坐标
+				const { sections } = checkedInput<{ sections: { section: Vec3 }[] }>(input);
+				const targets: SectionTarget[] = sections.map((entry) => ({
+					...placeOf(view, {
+						x: entry.section.x * 16,
+						y: entry.section.y * 16,
+						z: entry.section.z * 16,
+					}),
+					section: entry.section,
+				}));
 				return view.sections(targets);
 			},
 		},
@@ -257,20 +252,34 @@ export function buildQueries(): BuiltQueries {
 					},
 				],
 			},
-			resolver: (view, input) => {
-				rejectNonEmptyInput(input, "entities@1");
-				return view.entities();
-			},
+			resolver: (view) => view.entities(),
 		},
 	];
+	const ajv = new AjvCtor({ strict: false, allErrors: true });
 	const resolvers = new Map<ExactRef, QueryResolver>();
 	for (const item of built) {
 		if (resolvers.has(item.descriptor.ref)) {
 			throw new Error(`duplicate query ref: ${item.descriptor.ref}`);
 		}
-		resolvers.set(item.descriptor.ref, item.resolver);
+		resolvers.set(item.descriptor.ref, validated(ajv, item.descriptor, item.resolver));
 	}
 	return { descriptors: built.map((item) => item.descriptor), resolvers };
+}
+
+/** 按 descriptor.input 编译一次并包装 resolver：resolver 只处理已合法输入。 */
+function validated(ajv: AjvLike, descriptor: QueryDescriptor, resolve: QueryResolver): QueryResolver {
+	const validate = ajv.compile(descriptor.input as Record<string, unknown>);
+	return (view, input) => {
+		// input 为 null 视同空查询（WorldQuery.input 是 JsonValue，允许 null）
+		const normalized: JsonValue = input ?? {};
+		if (!validate(normalized)) {
+			readFailure(
+				`${descriptor.ref} input rejected: ${ajv.errorsText(validate.errors)}`,
+				`input schema of ${descriptor.ref} is authoritative`,
+			);
+		}
+		return resolve(view, normalized);
+	};
 }
 
 function placeOf(view: ClientFactView, position: Vec3): Place {

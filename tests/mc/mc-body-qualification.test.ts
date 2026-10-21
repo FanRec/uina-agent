@@ -1,140 +1,27 @@
 import { describe, expect, test } from "vitest";
-import type { ControlOwner, EntityRef } from "../../.uina/worlds/minecraft/contracts/body.js";
-import type { DriverExecutionFact, DriverExecutionSink } from "../../.uina/worlds/minecraft/contracts/runtime.js";
-import type { CallFailure, Place } from "../../.uina/worlds/minecraft/contracts/values.js";
-import { PlayerPortImpl } from "../../.uina/worlds/minecraft/driver/body/player-port.js";
-import type { BodySessionImpl, HostView } from "../../.uina/worlds/minecraft/driver/body/session.js";
-import { DriverControlArbiter } from "../../.uina/worlds/minecraft/driver/control-arbiter.js";
-import type { MineflayerBot } from "../../.uina/worlds/minecraft/driver/mineflayer/adapter.js";
+import type { BodySessionImpl } from "../../.uina/worlds/minecraft/driver/body/session.js";
+import {
+	awaitClosed,
+	captureFailure,
+	entityT,
+	makeBodyHarness as makeHarness,
+	openSignal,
+	ownerT,
+	placeT,
+} from "./mc-fake-driver.js";
 
 /**
  * D7：PlayerPort 资格闸门与 BodySession 写拒绝的确定性单测（不依赖真服/网络）。
  *
  * 以实现事实为准的规格裁剪：
  * - PlayerPort.acquire 无排队语义：资格未释放时第二次 acquire 立即 CONTROL_CONFLICT
- *   （FIFO 排队在 engine.pumpBodyQueue 层，不在本文件范围）。
+ *   （FIFO 排队在 runtime 的 BodyLeaseQueue 层，不在本文件范围）。
  * - 屏障不成立（§10.5）绑定"会话所属连接"：同连接新资格被拒（CONTROL_INVALID），
  *   连接更换后疑虑作废。
  * - "setControlState" 不是独立操作，持续控制经 drive() 安装；chat 不占 Body（合同注释
  *   明示），close 后 chat 仍按旁路派发，不是身体写。
- * bot 一律窄 stub：只含被测路径真正触达的方法/字段（由 grep 调用面确定），stub 仅存在
- * 于本文件；所有拒绝断言在 bot 触达之前发生，stub 不构成 FakeBot 产品分支。
+ * 宿主/bot/sink 替身见 mc-fake-driver.ts。
  */
-
-// ---- 测试专用窄 stub ----
-
-/** HostView stub：state 固定 ready，identity 可换（屏障疑虑作废用）。 */
-function makeHost() {
-	const raw = {
-		state: "ready",
-		identity: { connection: "conn:t1", incarnation: "inc:t1" },
-		on: () => (): void => {},
-	};
-	const view = raw as unknown as HostView;
-	return {
-		view,
-		setConnection: (connection: string): void => {
-			raw.identity = { connection, incarnation: "inc:t1" };
-		},
-	};
-}
-
-/** DriverExecutionSink stub：同步收事实并返回 ticket；永不返回 null（不触发 recorder fault）。 */
-function makeSink() {
-	const facts: DriverExecutionFact[] = [];
-	let sequence = 0;
-	const sink: DriverExecutionSink = {
-		record(fact) {
-			facts.push(fact);
-			sequence += 1;
-			return { instance: "rw:t1", sequence };
-		},
-	};
-	return { sink, facts };
-}
-
-/**
- * 窄 bot stub：默认面只有 revoke/close 清理真正触达的
- * clearControlStates / targetDigBlock / usingHeldItem；其余按测试需要注入。
- */
-function makeBot(overrides: Record<string, unknown> = {}): MineflayerBot {
-	const stub = {
-		clearControlStates: (): void => {},
-		targetDigBlock: null,
-		usingHeldItem: false,
-		...overrides,
-	};
-	return stub as unknown as MineflayerBot;
-}
-
-/** 组合 PlayerPortImpl：真实仲裁器 + 确定性发号 + 窄 stub。 */
-function makeHarness(botOverrides: Record<string, unknown> = {}) {
-	const { view: host, setConnection } = makeHost();
-	const { sink, facts } = makeSink();
-	const arbiter = new DriverControlArbiter();
-	let serial = 0;
-	const mint = (prefix: string) => (): string => {
-		serial += 1;
-		return `${prefix}:t:${serial}`;
-	};
-	const bot = makeBot(botOverrides);
-	const port = new PlayerPortImpl({
-		host,
-		bot: () => bot,
-		sink,
-		sampleSelf: () => null,
-		arbiter,
-		mintBody: mint("body"),
-		mintOp: mint("op"),
-		mintEff: mint("eff"),
-	});
-	return { port, arbiter, facts, setConnection };
-}
-
-// ---- 断言辅助 ----
-
-const openSignal = (): AbortSignal => new AbortController().signal;
-
-const ownerT = (serial: number): ControlOwner => ({
-	kind: "run",
-	run: `run:t:${serial}`,
-	segment: `seg:t:${serial}`,
-	callId: `call:t:${serial}`,
-});
-
-const placeT = (): Place => ({
-	world: "world:t",
-	worldRevision: "rev:t1",
-	dimension: "overworld",
-	position: { x: 0, y: 64, z: 0 },
-});
-
-const entityT = (): EntityRef => ({
-	connection: "conn:t1",
-	incarnation: "inc:t1",
-	appearance: "app:t1",
-	networkId: 42,
-});
-
-/** 捕获 CallFailure；调用未失败时显式失败。 */
-async function captureFailure(promise: Promise<unknown>): Promise<CallFailure> {
-	try {
-		await promise;
-	} catch (err) {
-		return err as CallFailure;
-	}
-	throw new Error("expected the call to reject with CallFailure, but it resolved");
-}
-
-/** 等待会话到达 closed（revoke 的挂起结算在微任务/定时器后完成）。 */
-async function awaitClosed(session: BodySessionImpl): Promise<void> {
-	const deadline = Date.now() + 5000;
-	while (Date.now() < deadline) {
-		if (session.sessionState === "closed") return;
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
-	throw new Error("session did not reach closed state within 5s");
-}
 
 // ---- 资格闸门（PlayerPort.acquire） ----
 

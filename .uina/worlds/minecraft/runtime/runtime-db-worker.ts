@@ -526,7 +526,14 @@ function applyMutation(db: DatabaseSync, mutation: ApplyItem["mutation"]): void 
 			db.prepare(
 				"INSERT OR IGNORE INTO effects (effect, owner, operation, record, facts, verifications) VALUES (?, ?, ?, ?, '[]', '[]')",
 			).run(r.effect, r.owner, fact.operation, r.record);
-			const row = db.prepare("SELECT facts FROM effects WHERE effect = ?").get(r.effect) as Row;
+			const row = db.prepare("SELECT owner, record, facts FROM effects WHERE effect = ?").get(r.effect) as Row;
+			// 同一 effect ref 已属别的 owner/record：本进程发了与历史记录相同的 ref，
+			// 说明发号空间跨启动冲突。静默追加会把两条不同的身体动作混成一条效果记录。
+			if (String(row.owner) !== r.owner || String(row.record) !== r.record) {
+				throw new StorageConflict(
+					`effect ${r.effect} 已存在且身份不同：已有 owner=${String(row.owner)} record=${String(row.record)}，本次 owner=${r.owner} record=${r.record}`,
+				);
+			}
 			const facts = JSON.parse(String(row.facts)) as DriverExecutionFact[];
 			facts.push(fact);
 			db.prepare("UPDATE effects SET facts = ? WHERE effect = ?").run(JSON.stringify(facts), r.effect);

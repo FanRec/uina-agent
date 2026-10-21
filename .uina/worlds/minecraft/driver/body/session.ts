@@ -63,8 +63,6 @@ export interface BodySessionDeps {
 const DRIVE_KEYS: Key[] = ["forward", "back", "left", "right", "jump", "sprint", "sneak"];
 /** drive 停滞看门狗：物理循环暂停不得导致无限等待（§7.2），墙钟只作停滞检测。 */
 const DRIVE_STALL_MS = 2000;
-/** dig start 包观察期限：超时按 unknown 记派发，不推断成功。 */
-const DIG_DISPATCH_OBSERVE_MS = 500;
 
 function nowIso(): string {
 	return new Date().toISOString();
@@ -355,9 +353,10 @@ export class BodySessionImpl implements BodySession {
 		}
 		const op = this.deps.mintOp();
 		const eff = this.deps.mintEff();
+		let bot: MineflayerBot | null = null;
 		this.enterOp();
 		try {
-			const bot = this.botForWrite();
+			bot = this.botForWrite();
 
 			// 视角：先于键位安装；lookAt/look 各派发一次
 			if (input.lookAt != null) {
@@ -417,13 +416,6 @@ export class BodySessionImpl implements BodySession {
 
 			const consumed = await this.consumeTicks(bot, ticks, eff);
 
-			// 第 N 个消费步结束后、下一次模拟前撤销持续键（physicsTick 回调内同步完成）
-			this.revokeKeys(bot);
-			if (input.use != null && input.use.mode === "hold") {
-				this.releaseUse(bot, input.use.hand, op, "drive hold ended");
-			}
-			// once 留下的原生使用状态归使用会话（§7.5），不在 drive 返回时释放
-
 			const sampled = this.deps.sampleSelf();
 			if (sampled == null || sampled.value == null) {
 				throw fail({
@@ -448,6 +440,15 @@ export class BodySessionImpl implements BodySession {
 				end,
 			};
 		} finally {
+			// 任何退出路径都要撤销输入：停滞看门狗/中断/等待取消失败都不会走到成功路径，
+			// 留下按住的键等于让客户端自己继续走（§7.2）；hold 蓄力同理必须释放（§7.5）。
+			// once 留下的原生使用状态归使用会话，不在此释放。
+			if (bot != null) {
+				this.revokeKeys(bot);
+				if (input.use != null && input.use.mode === "hold") {
+					this.releaseUse(bot, input.use.hand, op, "drive exited");
+				}
+			}
 			this.exitOp();
 		}
 	}
@@ -656,25 +657,30 @@ export class BodySessionImpl implements BodySession {
 			try {
 				// aim=target → 上游即时转向；preserve → ignore-look 路径，不触碰视角（§7.3）
 				const digging = bot.dig(block, aim === "target" ? true : "ignore");
-				const dispatchState = await this.observeDigDispatch(bot, target);
+				let failure: unknown = null;
+				try {
+					await digging;
+				} catch (err) {
+					failure = err;
+				}
+				// 上游 dig 是 async：开始挖掘的包在内部 await 之后才写，拒绝可能发生在写包之前
+				// 也可能之后（stopDigging/卸载），I1 不区分来源，如实记 unknown。
 				this.recordFact(
 					eff,
 					op,
 					"body.dig@1",
 					"dispatch",
-					dispatchState,
+					failure == null ? "sent" : "unknown",
 					"unknown",
 					plain({ target: target.block, aim, predictedMs: waitTime }),
 				);
-				try {
-					await digging;
-				} catch (err) {
+				if (failure != null) {
 					if (this.state !== "active") {
 						throw fail({
 							code: "CONTROL_INVALID",
 							source: "capability",
 							message: `dig aborted: body qualification ${this.state}`,
-							dispatch: "sent",
+							dispatch: "unknown",
 							effects: [eff],
 							recoverable: false,
 						});
@@ -682,8 +688,8 @@ export class BodySessionImpl implements BodySession {
 					throw fail({
 						code: "INTERRUPTED",
 						source: "environment",
-						message: `dig aborted: ${err instanceof Error ? err.message : String(err)}`,
-						dispatch: "sent",
+						message: `dig aborted: ${failure instanceof Error ? failure.message : String(failure)}`,
+						dispatch: "unknown",
 						effects: [eff],
 						recoverable: true,
 					});
@@ -692,30 +698,17 @@ export class BodySessionImpl implements BodySession {
 				this.signal.removeEventListener("abort", onAbort);
 			}
 
-			// 上游 dig 仅在服务端 block_update 变空气时 resolve（digging.js onBlockUpdate）；
-			// 本地预测完成不算服务端确认（§7.3）。
+			// 上游在 finishDigging 里把目标格本地置空后 resolve（digging.js），
+			// 不等服务端 block update；本地预测完成与服务端确认在 I1 不可区分。
 			this.recordFact(eff, op, "body.dig@1", "receipt", "sent", "met", {
-				completionContract: "server block update confirmed target became air",
-				confirmedBy: "server_block_update",
+				completionContract:
+					"target became air in the client world (local finish prediction or server update; origin not distinguished in I1)",
+				confirmedBy: "client_block_update",
 			});
 			return { effect: eff, dispatch: "sent", completion: "met", evidence: [] };
 		} finally {
 			this.exitOp();
 		}
-	}
-
-	/** 观察 dig start 包是否已派发（targetDigBlock 置位是上游写包后的可靠后效）。 */
-	private async observeDigDispatch(bot: MineflayerBot, target: BlockTarget): Promise<"sent" | "unknown"> {
-		const started = Date.now();
-		while (Date.now() - started <= DIG_DISPATCH_OBSERVE_MS) {
-			const t = bot.targetDigBlock?.position;
-			if (t != null && t.x === target.block.x && t.y === target.block.y && t.z === target.block.z) {
-				return "sent";
-			}
-			await new Promise((r) => setTimeout(r, 50));
-			this.recheck();
-		}
-		return "unknown";
 	}
 
 	async attack(target: EntityRef): Promise<EffectReceipt> {
@@ -911,6 +904,17 @@ export class BodySessionImpl implements BodySession {
 	}
 
 	async equip(item: ItemSelector | null, hand: Hand): Promise<EffectReceipt> {
+		// components 匹配未实现：静默忽略会选出语义不同的物品，宁可在 mint 之前拒绝（零事实）
+		if (item != null && item.components != null) {
+			throw fail({
+				code: "INVALID_INPUT",
+				source: "input",
+				message: "item component matching is not implemented in the body I1 scope",
+				hint: "select by name/substitutions/minDurability; component matching arrives with the inventory work package",
+				dispatch: "not_sent",
+				recoverable: true,
+			});
+		}
 		const op = this.deps.mintOp();
 		const eff = this.deps.mintEff();
 		this.enterOp();

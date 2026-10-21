@@ -63,7 +63,7 @@ export interface FactsHarness {
 }
 
 export function makeFactsHarness(
-	options: { bot?: FakeBot; state?: HostState; dimension?: string | null } = {},
+	options: { bot?: FakeBot; state?: HostState; dimension?: string | null; namespace?: string } = {},
 ): FactsHarness {
 	const listeners = new Set<(notice: unknown) => void>();
 	let state: HostState = options.state ?? "ready";
@@ -96,7 +96,7 @@ export function makeFactsHarness(
 		binding: "bind:t:1",
 		world: "world:t:1",
 		worldRevision: "wrev:t:1",
-		streamNamespace: "t",
+		streamNamespace: options.namespace ?? "t",
 	});
 	return {
 		facts,
