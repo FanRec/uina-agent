@@ -17,3 +17,5 @@ HUD 发布采用最新快照策略；HUD 服务暂时不可用时不会积压旧
 World 入口只负责资源装配和生命周期；action 参数解析、搜索 ref、歌词缓存与账号库编排位于 `application.ts`。歌单歌曲写入优先使用 api-enhanced 的专用 endpoint，服务不提供时回退到 `playlist_tracks`。
 
 搜索结果使用 `ref=song:<歌曲ID>`，同一 World 生命周期内后续搜索不会让已有 ref 改指其他歌曲。读取请求遇到 HTTP 502/503/504 或瞬时连接错误时最多重试一次，并受原请求总超时与调用取消信号约束；持续失败会返回状态码和尝试次数。歌单写入遇到 5xx、超时或网络错误时结果可能未知，不自动切换到另一条写接口；只有明确的接口不支持响应才使用 `playlist_tracks` fallback。
+
+`/song/url/v1` 默认走 xeapi 加密通道，该通道依赖 `os.tmpdir()/xeapi_public_key`。服务只在进程启动时拉取一次公钥，失败后端口仍然健康、搜索正常，但所有 xeapi 接口会返回由内部异常合成的 `404 Not Found`。`CompanionManager` 在拉起服务前检查该文件，缺失时调用服务自带的 `generateConfig` 补一次（失败只写入 stderr，不阻断启动）；播放地址请求遇到这类合成 404 时改用 `crypto=weapi` 再请求一次，上游真实的 404 不降级。
