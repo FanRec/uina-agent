@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { NeteaseApiClient } from "./api-client.js";
+import { ensureXeapiPublicKey } from "./xeapi-key.js";
 
 export interface CompanionStatus {
   readonly running: boolean;
@@ -18,6 +19,8 @@ export interface CompanionManagerOptions {
    * 服务端的 [ERR] 现场不再丢失。不设置时保持 stdio: "ignore"。
    */
   readonly logDir?: string;
+  /** xeapi 公钥补齐（见 xeapi-key.ts）；默认实现需要真实 spawn 与网络，测试可注入。 */
+  readonly ensureXeapiKey?: (serviceDir: string) => Promise<string | undefined>;
 }
 
 /** 本地日期戳（YYYY-MM-DD）：日志按天分文件必须跟用户时钟一致，UTC 会让本地 0-8 点的错误落进"昨天"。 */
@@ -51,6 +54,7 @@ export class CompanionManager {
   private generation = 0;
   private childReady = false;
   private readonly spawnProcess: typeof spawn;
+  private readonly ensureXeapiKey: (serviceDir: string) => Promise<string | undefined>;
   private logDir: string | undefined;
 
   constructor(
@@ -59,6 +63,7 @@ export class CompanionManager {
     options: CompanionManagerOptions = {},
   ) {
     this.spawnProcess = options.spawn ?? spawn;
+    this.ensureXeapiKey = options.ensureXeapiKey ?? ensureXeapiPublicKey;
     this.logDir = options.logDir;
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error(`无效的网易云伴生服务端口: ${port}`);
@@ -103,7 +108,16 @@ export class CompanionManager {
       return this.unhealthy("未找到 api-enhanced 服务目录，无法自动启动。");
     }
 
-    // 3. Spawn child process
+    // 3. 补齐 xeapi 公钥：服务只在启动时拉一次，失败会让所有 xeapi 接口静默 404。
+    const keyError = await this.ensureXeapiKey(this.serviceDir);
+    if (generation !== this.generation) {
+      return this.unhealthy();
+    }
+    if (keyError) {
+      process.stderr.write(`[jukebox] xeapi 公钥补齐失败：${keyError}\n`);
+    }
+
+    // 4. Spawn child process
     try {
       // 日志落盘：用 openSync 的 fd 直接作为子进程 stdio，父进程随即 close。
       // 不用 "pipe"——服务是被 unref 留存的常驻进程，父进程退出后 pipe 断裂会让
@@ -157,7 +171,7 @@ export class CompanionManager {
         }
       });
 
-      // 4. Poll until healthy
+      // 5. Poll until healthy
       const start = Date.now();
       while (Date.now() - start < maxWaitMs) {
         if (generation !== this.generation) break;

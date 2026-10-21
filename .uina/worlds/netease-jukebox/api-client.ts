@@ -4,16 +4,25 @@ export class NeteaseRequestError extends Error {
   readonly status?: number;
   readonly attempts: number;
   readonly retryable: boolean;
+  /** 服务端把模块内部异常合成的 `{code:404,msg:'Not Found'}`：语义是通道故障，不是资源不存在。 */
+  readonly synthesized404: boolean;
 
   constructor(
     message: string,
-    options: { status?: number; attempts?: number; retryable?: boolean; cause?: unknown } = {},
+    options: {
+      status?: number;
+      attempts?: number;
+      retryable?: boolean;
+      synthesized404?: boolean;
+      cause?: unknown;
+    } = {},
   ) {
     super(message, { cause: options.cause });
     this.name = "NeteaseRequestError";
     this.status = options.status;
     this.attempts = options.attempts ?? 1;
     this.retryable = options.retryable ?? false;
+    this.synthesized404 = options.synthesized404 ?? false;
   }
 }
 
@@ -23,8 +32,8 @@ function isRetryableStatus(status: number): boolean {
 
 /**
  * 非 2xx 时的错误分类：
- * - api-enhanced 服务端把"模块 handler 抛出的无 body 裸异常"统一合成为 {code:404, msg:'Not Found'}（server.js catch 分支），
- *   这类 404 与真实上游 404 语义完全不同，属服务端内部故障，标记为可重试；
+ * - api-enhanced 服务端把"模块 handler 抛出的无 body 裸异常"统一合成为 {code:404, msg:'Not Found'}（server.js catch 分支）。
+ *   这是服务端内部故障而非上游 404，同通道重试不会自愈，因此标记 synthesized404 交给调用方换通道；
  * - 其余 4xx 保持不可重试；5xx 瞬态照旧。
  * 响应体中的 msg 会拼入错误消息，让调用方无需看服务端日志即可定性。
  */
@@ -47,7 +56,8 @@ async function ensureSuccessfulResponse(response: Response, operation: string): 
   }
   throw new NeteaseRequestError(`${operation}: HTTP ${response.status}${detail ? `: ${detail}` : ""}`, {
     status: response.status,
-    retryable: synthesized404 || isRetryableStatus(response.status),
+    retryable: isRetryableStatus(response.status),
+    synthesized404,
   });
 }
 
@@ -132,10 +142,25 @@ export class NeteaseApiClient {
     }));
   }
 
+  /**
+   * v1 默认走 xeapi 加密通道，该通道依赖服务端本地的公钥文件；公钥缺失时服务端把 handler
+   * 的内部异常合成为 404 Not Found（与"歌曲不存在"同形）。这类故障只破坏通道，不影响账号
+   * 与版权，换 weapi 重试一次即可恢复播放；上游 404 不降级，因为换通道同样无解。
+   */
   async getSongUrl(songId: string, signal?: AbortSignal): Promise<string | null> {
+    try {
+      return await this.requestSongUrl(songId, signal);
+    } catch (error) {
+      if (!(error instanceof NeteaseRequestError) || !error.synthesized404) throw error;
+      return await this.requestSongUrl(songId, signal, "weapi");
+    }
+  }
+
+  private requestSongUrl(songId: string, signal?: AbortSignal, crypto?: "weapi"): Promise<string | null> {
     const url = new URL(`${this.baseUrl}/song/url/v1`);
     url.searchParams.set("id", songId);
     url.searchParams.set("level", "standard");
+    if (crypto) url.searchParams.set("crypto", crypto);
 
     return this.request(url.toString(), 15_000, signal, async (res) => {
       await ensureSuccessfulResponse(res, "网易云播放地址查询失败");
@@ -225,7 +250,13 @@ export class NeteaseApiClient {
         const retryable = isRetryableError(error);
         if (!retryable || attempt === 2) {
           if (error instanceof NeteaseRequestError) {
-            throw new NeteaseRequestError(error.message, { status: error.status, attempts: attempt, retryable: error.retryable, cause: error });
+            throw new NeteaseRequestError(error.message, {
+              status: error.status,
+              attempts: attempt,
+              retryable: error.retryable,
+              synthesized404: error.synthesized404,
+              cause: error,
+            });
           }
           if (retryable) {
             throw new NeteaseRequestError(`网易云请求失败: ${error instanceof Error ? error.message : String(error)}`, { attempts: attempt, retryable: true, cause: error });

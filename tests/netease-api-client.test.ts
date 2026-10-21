@@ -74,7 +74,7 @@ describe("NeteaseApiClient transient read failures", () => {
 describe("NeteaseApiClient 404 semantics", () => {
 	afterEach(() => vi.restoreAllMocks());
 
-	it("retries a synthesized {code:404,msg:'Not Found'} playback 404 once and recovers", async () => {
+	it("falls back to the weapi channel when the xeapi channel reports a synthesized 404", async () => {
 		const fetchMock = vi
 			.spyOn(globalThis, "fetch")
 			.mockResolvedValueOnce(new Response(JSON.stringify({ code: 404, msg: "Not Found" }), { status: 404 }))
@@ -83,6 +83,24 @@ describe("NeteaseApiClient 404 semantics", () => {
 			);
 
 		await expect(new NeteaseApiClient("http://netease.test").getSongUrl("42")).resolves.toBe("https://audio.test/song");
+		expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+			"http://netease.test/song/url/v1?id=42&level=standard",
+			"http://netease.test/song/url/v1?id=42&level=standard&crypto=weapi",
+		]);
+	});
+
+	it("stops after one weapi fallback when the channel stays broken", async () => {
+		const fetchMock = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async () => new Response(JSON.stringify({ code: 404, msg: "Not Found" }), { status: 404 }));
+
+		await expect(new NeteaseApiClient("http://netease.test").getSongUrl("42")).rejects.toMatchObject({
+			name: "NeteaseRequestError",
+			status: 404,
+			attempts: 1,
+			retryable: false,
+			synthesized404: true,
+		});
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 
