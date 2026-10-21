@@ -40,6 +40,8 @@ import type {
 	Ref,
 } from "../contracts/values.js";
 import { callFailure } from "../contracts/values.js";
+import { BodyLeaseQueue, type BodyGrant } from "./body-queue.js";
+import { toCallFailure } from "./failure.js";
 import { RuntimeRefs } from "./refs.js";
 import { RecordQueue } from "./records.js";
 import type { CallRow, RecoveredRows, RunRow, SegmentRow, StopIntentRow } from "./runtime-db-worker.js";
@@ -82,24 +84,6 @@ function isJsonValue(value: unknown): value is JsonValue {
 		return Object.values(value).every(isJsonValue);
 	}
 	return false;
-}
-
-function isCallFailure(err: unknown): err is CallFailure {
-	return (
-		err instanceof Error && (err as CallFailure).name === "CallFailure" && typeof (err as CallFailure).code === "string"
-	);
-}
-
-function toCallFailure(err: unknown): CallFailure {
-	if (isCallFailure(err)) return err;
-	return callFailure({
-		code: "INTERNAL",
-		source: "capability",
-		message: err instanceof Error ? err.message : String(err),
-		dispatch: "not_sent",
-		effects: [],
-		recoverable: false,
-	});
 }
 
 function failureData(err: CallFailure): CallFailureData & { dispatch: CallFailureData["dispatch"] } {
@@ -195,14 +179,6 @@ interface RunWaiter {
 	resolve: (reply: RunWaitReply) => void;
 }
 
-interface BodyQueueItem {
-	owner: ControlOwner;
-	call: Ref;
-	signal: AbortSignal;
-	granted: (session: BodySession) => void;
-	rejected: (err: CallFailure) => void;
-}
-
 export interface EngineOptions {
 	refs: RuntimeRefs;
 	queue: RecordQueue;
@@ -238,9 +214,8 @@ export class RuntimeEngine {
 	private readonly recoveredOwners = new Map<Ref, string>();
 	/** effect 身份引用 → 最新已提交效果记录 ref（public-api §7 readRecord 口径）。 */
 	private readonly recoveredEffectRecords = new Map<Ref, Ref>();
-	// 身体队列：单槽 FIFO（§3.3.1 情况 a）
-	private readonly bodyQueue: BodyQueueItem[] = [];
-	private holder: { owner: ControlOwner; session: BodySession; call: Ref } | null = null;
+	// 身体：单槽 FIFO 队列独占 acquire，归属槽与授予/释放配对收在队列内（§3.3.1）
+	private readonly bodyLeaseQueue: BodyLeaseQueue;
 	// chat 旁路串行化：单写协议通道 + 归属槽无竞争
 	private chatGate: Promise<void> = Promise.resolve();
 
@@ -248,6 +223,13 @@ export class RuntimeEngine {
 		this.opts = opts;
 		this.refs = opts.refs;
 		this.queue = opts.queue;
+		this.bodyLeaseQueue = new BodyLeaseQueue({
+			port: opts.playerPort,
+			onGrant: (owner) => this.queue.setQualificationOwner(owner),
+			onRelease: () => this.queue.setQualificationOwner(null),
+			// Run 停止后不再授予；排队/在途期间的停止由授予前复验拦下（§2.2）
+			isOwnerLive: (owner) => owner.kind !== "run" || this.runs.get(owner.run)?.stopped !== true,
+		});
 		for (const callable of opts.callables) {
 			const existing = this.byRef.get(callable.descriptor.ref);
 			if (existing != null) {
@@ -828,7 +810,7 @@ export class RuntimeEngine {
 		state.revision++;
 		if (state.control === "active") state.control = "stopping";
 		else if (state.control === "none") state.control = "stopped";
-		this.cancelRunBodyRequests(state.run);
+		this.bodyLeaseQueue.cancelRun(state.run);
 		state.abort.abort();
 		this.notifyChanged(state);
 		// 持久 stop_intent
@@ -1133,8 +1115,9 @@ export class RuntimeEngine {
 		if (lease != null) {
 			return work(this.bodyScopeOf(callState, state, lease));
 		}
-		// 情况 c：本调用谱系后代持 Body → 派发申请前 CONTROL_CONFLICT
-		if (this.holder != null && this.isDescendantCall(this.holder.call, callState.call)) {
+		// 情况 c：本调用谱系后代持 Body（或正在 acquire）→ 派发申请前 CONTROL_CONFLICT
+		const blocking = this.bodyLeaseQueue.blockingCall();
+		if (blocking != null && this.isDescendantCall(blocking, callState.call)) {
 			throw callFailure({
 				code: "CONTROL_CONFLICT",
 				source: "capability",
@@ -1154,50 +1137,9 @@ export class RuntimeEngine {
 			callId: callState.call,
 		};
 		state.awaitingBody++;
-		let session: BodySession;
+		let grant: BodyGrant;
 		try {
-			session = await new Promise<BodySession>((resolve, reject) => {
-				// queued 监听器必须引用实际入队的 wrapped 对象（indexOf 才能命中）
-				const onAbort = (queued: BodyQueueItem): void => {
-					const idx = this.bodyQueue.indexOf(queued);
-					if (idx >= 0) {
-						this.bodyQueue.splice(idx, 1);
-						queued.rejected(
-							callFailure({
-								code: "INTERRUPTED",
-								source: "environment",
-								message: "body request cancelled while queued",
-								dispatch: "not_sent",
-								effects: [],
-								recoverable: false,
-							}),
-						);
-					}
-				};
-				const base: BodyQueueItem = {
-					owner,
-					call: callState.call,
-					signal: callState.abort.signal,
-					granted: (grantedSession) => resolve(grantedSession),
-					rejected: (err) => reject(err),
-				};
-				const listener = (): void => onAbort(queued);
-				base.signal.addEventListener("abort", listener, { once: true });
-				const wrapped: BodyQueueItem = {
-					...base,
-					granted: (grantedSession) => {
-						base.signal.removeEventListener("abort", listener);
-						base.granted(grantedSession);
-					},
-					rejected: (err) => {
-						base.signal.removeEventListener("abort", listener);
-						base.rejected(err);
-					},
-				};
-				const queued: BodyQueueItem = wrapped;
-				this.bodyQueue.push(wrapped);
-				this.pumpBodyQueue();
-			});
+			grant = await this.bodyLeaseQueue.request(owner, callState.call, callState.abort.signal);
 		} catch (err) {
 			state.awaitingBody--;
 			throw err;
@@ -1208,17 +1150,16 @@ export class RuntimeEngine {
 		state.revision++;
 		this.queue.enqueue({ kind: "run", row: this.runRowOf(state) });
 		try {
-			return await work(this.bodyScopeOf(callState, state, { session }));
+			return await work(this.bodyScopeOf(callState, state, { session: grant.session }));
 		} finally {
 			// §3.3.2 外层退出：等 close 屏障完成才发下一项；清理事实先入队
 			try {
-				await session.close();
+				await grant.session.close();
 			} catch {
 				state.control = "unknown";
 			}
-			this.queue.setQualificationOwner(null);
-			this.holder = null;
-			this.pumpBodyQueue();
+			// release 之后队列才授予下一项；归属槽由队列的 onRelease 清空
+			grant.release();
 			// 释放后不再持有控制；stop 期间保持 stop() 设置的 stopping（finish 时落 stopped）
 			if (state.control === "active" && !state.stopped) {
 				state.control = "none";
@@ -1230,56 +1171,6 @@ export class RuntimeEngine {
 
 	private bodyScopeOf(callState: CallState, state: RunState, lease: BodyLease): BodyCallScope {
 		return this.buildContext(callState, state, lease) as BodyCallScope;
-	}
-
-	private pumpBodyQueue(): void {
-		if (this.holder != null) return;
-		const item = this.bodyQueue.shift();
-		if (item == null) return;
-		if (item.signal.aborted) {
-			item.rejected(
-				callFailure({
-					code: "INTERRUPTED",
-					source: "environment",
-					message: "body request cancelled before grant",
-					dispatch: "not_sent",
-					effects: [],
-					recoverable: false,
-				}),
-			);
-			this.pumpBodyQueue();
-			return;
-		}
-		void (async () => {
-			try {
-				const session = await this.opts.playerPort.acquire(item.owner, item.signal);
-				this.holder = { owner: item.owner, session, call: item.call };
-				// 归属槽先于授予设置：acquire 本身不产事实，清理事实在 close 前入队（§5.4）
-				this.queue.setQualificationOwner(item.owner);
-				item.granted(session);
-			} catch (err) {
-				item.rejected(toCallFailure(err));
-				this.pumpBodyQueue();
-			}
-		})();
-	}
-
-	private cancelRunBodyRequests(run: Ref): void {
-		const doomed = this.bodyQueue.filter((item) => item.owner.kind === "run" && item.owner.run === run);
-		for (const item of doomed) {
-			const idx = this.bodyQueue.indexOf(item);
-			if (idx >= 0) this.bodyQueue.splice(idx, 1);
-			item.rejected(
-				callFailure({
-					code: "INTERRUPTED",
-					source: "environment",
-					message: "run stopped while waiting for the body",
-					dispatch: "not_sent",
-					effects: [],
-					recoverable: false,
-				}),
-			);
-		}
 	}
 
 	private isDescendantCall(candidateDescendant: Ref, ancestor: Ref): boolean {
