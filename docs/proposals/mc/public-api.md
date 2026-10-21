@@ -208,7 +208,7 @@ interface ControlInput {
 }
 interface StatusEffectValue { name: string; amplifier: number; seconds: number | null }
 interface SelfState {
-  place: Place; velocity: Vec3; health: number; food: number; onGround: boolean;
+  place: Place; velocity: Vec3; health: number | null; food: number | null; onGround: boolean;
   maxHealth: number | null; saturation: number | null; oxygen: number | null;
   inWater: boolean | null; inLava: boolean | null;
   effects: StatusEffectValue[] | null; xpLevel: number | null;

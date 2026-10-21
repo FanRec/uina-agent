@@ -51,7 +51,7 @@ export interface BodySessionDeps {
 	/** DriverExecutionSink（public-api §7.1）；返回 null 时锁存 recorder fault 并封闭新副作用。 */
 	sink: DriverExecutionSink;
 	/** 组合根注入的自采样（复用同一事实源纯查询）；不可用时返回 null。 */
-	sampleSelf: () => Fact<SelfState> | null;
+	sampleSelf: () => Fact<SelfState | null> | null;
 	bot: () => MineflayerBot | null;
 	/** Driver 级唯一发号：op:/eff: 空间跨会话单调，保证 EffectRecord 引用不碰撞。 */
 	mintOp: () => Ref;
@@ -424,8 +424,8 @@ export class BodySessionImpl implements BodySession {
 			}
 			// once 留下的原生使用状态归使用会话（§7.5），不在 drive 返回时释放
 
-			const end = this.deps.sampleSelf();
-			if (end == null || end.value == null) {
+			const sampled = this.deps.sampleSelf();
+			if (sampled == null || sampled.value == null) {
 				throw fail({
 					code: "INTERNAL",
 					source: "capability",
@@ -436,6 +436,8 @@ export class BodySessionImpl implements BodySession {
 					recoverable: false,
 				});
 			}
+			// 已核验 value 非 null：按 BodyOps.drive 契约固化 Fact<SelfState>
+			const end: Fact<SelfState> = { ...sampled, value: sampled.value };
 			this.recordFact(eff, op, "body.drive@1", "receipt", "sent", "met", {
 				actualTicks: consumed,
 				completionContract: "input applied for the requested client physics steps",

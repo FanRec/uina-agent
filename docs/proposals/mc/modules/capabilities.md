@@ -276,7 +276,7 @@ P2 的契约在本文给出意图与边界，参数在实现该能力时冻结�
 ### self · `self@1`
 - 输入 `{}`
 - 返回 public-api 的 SelfState，并从同次 inventory 采样补充 `held?:{name,count,durability?}` 与 `armor:{head?,chest?,legs?,feet?,offhand?}`。velocity 也可用于程序控制。
-- maxHealth/saturation/oxygen/inWater/inLava/effects/xpLevel 不可得为 null，并在 unknown 给出字段；已知 effects=[] 才表示没有效果。oxygen 为 0..20，effects.seconds 是名义游戏秒数，单位与来源见 [公开类型](../public-api.md#client-facts)。
+- health/food/maxHealth/saturation/oxygen/inWater/inLava/effects/xpLevel 不可得为 null，并在 unknown 给出字段；已知 effects=[] 才表示没有效果，health/food 缺失也不能填 0。oxygen 为 0..20，effects.seconds 是名义游戏秒数，单位与来源见 [公开类型](../public-api.md#client-facts)。inWater/inLava 取客户端物理每 tick 写入实体的判定（prediction），不由脚部方块名推导。
 - 例：`{ place:{dimension:"overworld",position:{x:120,y:64,z:-30}}, health:18, food:17, onGround:true, held:{name:"stone_pickaxe",count:1,durability:{used:12,max:131}} }`
 
 ### inventory · `inventory@1`

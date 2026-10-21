@@ -1,0 +1,121 @@
+/**
+ * MC 测试用最小宿主替身：只实现 FactsSource / PlayerPort 实际触达的成员。
+ *
+ * 不是通用 mock：断言依赖"未实现即缺失"的语义（例如没有 blockAt 时 inWater 必须
+ * 退化为 unknown），因此替身只提供显式 overrides 给出的字段。
+ */
+
+import type { ClientHost } from "../../.uina/worlds/minecraft/driver/client-host.js";
+import { FactsSource } from "../../.uina/worlds/minecraft/driver/facts.js";
+
+type Handler = (...args: unknown[]) => void;
+
+export interface FakeBot {
+	username: string;
+	inventory: {
+		slots: unknown[];
+		on(event: string, fn: () => void): void;
+		removeListener(event: string, fn: () => void): void;
+	};
+	on(event: string, fn: Handler): void;
+	removeListener(event: string, fn: Handler): void;
+	emit(event: string, ...args: unknown[]): void;
+	[key: string]: unknown;
+}
+
+export function makeBot(overrides: Record<string, unknown> = {}): FakeBot {
+	const handlers = new Map<string, Set<Handler>>();
+	const invHandlers = new Set<() => void>();
+	const bot: FakeBot = {
+		username: "uina",
+		inventory: {
+			slots: [],
+			on: (_event, fn) => invHandlers.add(fn),
+			removeListener: (_event, fn) => invHandlers.delete(fn),
+		},
+		on: (event, fn) => {
+			const set = handlers.get(event) ?? new Set<Handler>();
+			set.add(fn);
+			handlers.set(event, set);
+		},
+		removeListener: (event, fn) => {
+			handlers.get(event)?.delete(fn);
+		},
+		emit: (event, ...args) => {
+			for (const fn of [...(handlers.get(event) ?? [])]) fn(...args);
+		},
+		...overrides,
+	};
+	return bot;
+}
+
+export type HostState = "connecting" | "syncing" | "ready" | "disconnected" | "faulted";
+
+export interface FactsHarness {
+	facts: FactsSource;
+	/** 改变连接状态并通知订阅者（与 ClientHost 的 state 通知同形）。 */
+	setState(state: HostState): void;
+	/** 连上一条新连接：换 bot 并回到 ready。 */
+	reconnect(bot?: FakeBot): void;
+	disconnect(): void;
+	bot(): FakeBot;
+	emitMessage(text: string): void;
+}
+
+export function makeFactsHarness(
+	options: { bot?: FakeBot; state?: HostState; dimension?: string | null } = {},
+): FactsHarness {
+	const listeners = new Set<(notice: unknown) => void>();
+	let state: HostState = options.state ?? "ready";
+	let bot = options.bot ?? makeBot();
+	const notify = (notice: unknown): void => {
+		for (const fn of [...listeners]) fn(notice);
+	};
+	const host = {
+		get state() {
+			return state;
+		},
+		get identity() {
+			return state === "ready" ? { connection: "conn:t:1", incarnation: "inc:t:1" } : null;
+		},
+		get bot() {
+			return state === "ready" ? bot : null;
+		},
+		get dimension() {
+			return options.dimension === undefined ? "overworld" : options.dimension;
+		},
+		get disconnectFacts() {
+			return null;
+		},
+		on: (fn: (notice: unknown) => void) => {
+			listeners.add(fn);
+			return () => listeners.delete(fn);
+		},
+	};
+	const facts = new FactsSource(host as unknown as ClientHost, {
+		binding: "bind:t:1",
+		world: "world:t:1",
+		worldRevision: "wrev:t:1",
+		streamNamespace: "t",
+	});
+	return {
+		facts,
+		setState: (next) => {
+			state = next;
+			notify({ kind: "state", state: next });
+		},
+		reconnect: (nextBot) => {
+			if (nextBot != null) bot = nextBot;
+			state = "ready";
+			notify({ kind: "state", state: "ready" });
+		},
+		disconnect: () => {
+			state = "disconnected";
+			notify({ kind: "state", state: "disconnected" });
+		},
+		bot: () => bot,
+		emitMessage: (text) => {
+			bot.emit("messagestr", text, null, { text }, "someone");
+		},
+	};
+}

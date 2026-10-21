@@ -64,8 +64,10 @@ export interface StatusEffectValue {
 export interface SelfState {
 	place: Place;
 	velocity: Vec3;
-	health: number;
-	food: number;
+	/** 游戏生命值单位；未收到血量包时为 null，不得填 0。 */
+	health: number | null;
+	/** 0..20；未收到饥饿包时为 null，不得填 0。 */
+	food: number | null;
 	onGround: boolean;
 	maxHealth: number | null;
 	saturation: number | null;

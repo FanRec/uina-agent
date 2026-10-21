@@ -24,8 +24,8 @@ export interface PlayerPortDeps {
 	bot: () => MineflayerBot | null;
 	/** DriverExecutionSink（public-api §7.1）；返回 null 时锁存 recorder fault 并封闭新副作用。 */
 	sink: DriverExecutionSink;
-	/** 组合根注入的自采样（与 facts 同一事实源的纯查询）。 */
-	sampleSelf: () => Fact<SelfState> | null;
+	/** 组合根注入的自采样（与 facts 同一事实源的纯查询）；不可用时返回 null。 */
+	sampleSelf: () => Fact<SelfState | null> | null;
 	/** Driver 控制仲裁：Body 资格与受控独占操作（goto）单槽互斥。 */
 	arbiter: DriverControlArbiter;
 	/** Driver 级唯一发号：body:/op:/eff: 空间跨会话单调，保证 EffectRecord 引用不碰撞。 */

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { ClientFactNotice, ClientFactsSubscription } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
-import type { ClientHost } from "../../.uina/worlds/minecraft/driver/client-host.js";
-import { FactsSource } from "../../.uina/worlds/minecraft/driver/facts.js";
+import type { FactsSource } from "../../.uina/worlds/minecraft/driver/facts.js";
+import { makeFactsHarness } from "./mc-fake.js";
 
 /**
  * 证据保留回归（world.md §5.4 / public-api §4.1）。
@@ -13,85 +13,6 @@ import { FactsSource } from "../../.uina/worlds/minecraft/driver/facts.js";
  */
 
 const MAX_PENDING = 1024;
-
-interface FakeBot {
-	username: string;
-	inventory: { on(event: string, fn: () => void): void; removeListener(event: string, fn: () => void): void };
-	on(event: string, fn: (...args: unknown[]) => void): void;
-	removeListener(event: string, fn: (...args: unknown[]) => void): void;
-	emit(event: string, ...args: unknown[]): void;
-}
-
-function makeBot(): FakeBot {
-	const handlers = new Map<string, Set<(...args: unknown[]) => void>>();
-	const invHandlers = new Set<() => void>();
-	const add = (event: string, fn: (...args: unknown[]) => void): void => {
-		const set = handlers.get(event) ?? new Set();
-		set.add(fn);
-		handlers.set(event, set);
-	};
-	return {
-		username: "uina",
-		inventory: {
-			on: (_event, fn) => invHandlers.add(fn),
-			removeListener: (_event, fn) => invHandlers.delete(fn),
-		},
-		on: add,
-		removeListener: (event, fn) => handlers.get(event)?.delete(fn),
-		emit: (event, ...args) => {
-			for (const fn of [...(handlers.get(event) ?? [])]) fn(...args);
-		},
-	};
-}
-
-interface Harness {
-	facts: FactsSource;
-	reconnect(): void;
-	disconnect(): void;
-	emitMessage(text: string): void;
-}
-
-function makeHarness(): Harness {
-	const listeners = new Set<(notice: unknown) => void>();
-	let bot = makeBot();
-	const host = {
-		get state() {
-			return "ready";
-		},
-		get identity() {
-			return { connection: "conn:t:1", incarnation: "inc:t:1" };
-		},
-		get bot() {
-			return bot;
-		},
-		get disconnectFacts() {
-			return null;
-		},
-		on: (fn: (notice: unknown) => void) => {
-			listeners.add(fn);
-			return () => listeners.delete(fn);
-		},
-	};
-	const facts = new FactsSource(host as unknown as ClientHost, {
-		binding: "bind:t:1",
-		world: "world:t:1",
-		worldRevision: "wrev:t:1",
-		streamNamespace: "t",
-	});
-	return {
-		facts,
-		reconnect: () => {
-			bot = makeBot();
-			for (const fn of [...listeners]) fn({ kind: "state", state: "ready" });
-		},
-		disconnect: () => {
-			for (const fn of [...listeners]) fn({ kind: "state", state: "disconnected" });
-		},
-		emitMessage: (text: string) => {
-			bot.emit("messagestr", text, null, { text }, "someone");
-		},
-	};
-}
 
 interface Recorder {
 	notices: ClientFactNotice[];
@@ -128,7 +49,7 @@ function record(facts: FactsSource, options: { consume: boolean }): Recorder {
 
 describe("证据释放水线", () => {
 	test("只读订阅者不阻塞已确认证据的释放：消费方持续 ack 时缓冲区不溢出", () => {
-		const h = makeHarness();
+		const h = makeFactsHarness();
 		const watcher = record(h.facts, { consume: false }); // 只读观察者，从不 ack
 		const consumer = record(h.facts, { consume: true });
 		for (let i = 0; i < MAX_PENDING + 200; i++) h.emitMessage(`m${i}`);
@@ -138,7 +59,7 @@ describe("证据释放水线", () => {
 	});
 
 	test("无证据消费者时保留缓冲，溢出如实报缺口（不静默丢弃）", () => {
-		const h = makeHarness();
+		const h = makeFactsHarness();
 		const watcher = record(h.facts, { consume: false });
 		for (let i = 0; i < MAX_PENDING + 2; i++) h.emitMessage(`m${i}`);
 		const gaps = watcher.gaps();
@@ -148,7 +69,7 @@ describe("证据释放水线", () => {
 	});
 
 	test("换流后旧流的确认不授权新流：新流序号 1 起一条都没被释放", () => {
-		const h = makeHarness();
+		const h = makeFactsHarness();
 		const consumer = record(h.facts, { consume: false });
 		for (let i = 0; i < 5; i++) h.emitMessage(`old${i}`);
 		const stream1 = h.facts.evidenceThrough.stream;

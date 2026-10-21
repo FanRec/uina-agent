@@ -13,7 +13,7 @@ import type { CallFailure, ExactRef, Observation, ObservationCursor, Ref } from 
 import type { ClientFactsPort } from "../contracts/client-facts.js";
 import type { DomainRecord, WorldAvailabilityValue, WorldPort, WorldQuery, WorldWatch } from "../contracts/world.js";
 import { CurrentReads, type QueryResolver } from "./current.js";
-import { HistoryIngest } from "./history-store.js";
+import { HistoryIngest, type HistoryState } from "./history-store.js";
 
 export interface MinecraftWorldOptions {
 	facts: ClientFactsPort;
@@ -37,6 +37,42 @@ function unimplementedRecords(op: string): CallFailure {
 		effects: [],
 		recoverable: false,
 	});
+}
+
+/**
+ * 可用性投影（public-api §5）：纯函数，便于在不装配历史 worker 的情况下核对语义。
+ * current 三态不可混用：尚未连接 = starting；连接已断/故障 = unavailable（不可自恢复）；
+ * 能同步采样 = ready。
+ */
+export function projectAvailability(input: {
+	/** 采样探针：不抛错即当前读可用；抛 DISCONNECTED 表示连接已消失。 */
+	probeCurrent: () => void;
+	historyState: HistoryState;
+	binding: MinecraftWorldOptions["binding"];
+}): WorldAvailabilityValue {
+	let current: WorldAvailabilityValue["current"];
+	try {
+		input.probeCurrent();
+		current = { state: "ready" };
+	} catch (err) {
+		const code = (err as { code?: unknown }).code;
+		current =
+			code === "DISCONNECTED"
+				? { state: "unavailable", reason: err instanceof Error ? err.message : "client connection is gone" }
+				: { state: "starting" };
+	}
+	const history = input.historyState;
+	return {
+		current,
+		history:
+			history.state === "unavailable" ? { state: "unavailable", reason: history.reason } : { state: history.state },
+		binding: {
+			state: "bound",
+			binding: input.binding.binding,
+			world: input.binding.world,
+			worldRevision: input.binding.worldRevision,
+		},
+	};
 }
 
 export class MinecraftWorld implements WorldPort {
@@ -75,25 +111,13 @@ export class MinecraftWorld implements WorldPort {
 	}
 
 	availability(): WorldAvailabilityValue {
-		let currentState: "starting" | "ready" = "starting";
-		try {
-			this.facts.sample(() => null);
-			currentState = "ready";
-		} catch {
-			currentState = "starting";
-		}
-		const history = this.history.state;
-		return {
-			current: { state: currentState },
-			history:
-				history.state === "unavailable" ? { state: "unavailable", reason: history.reason } : { state: history.state },
-			binding: {
-				state: "bound",
-				binding: this.binding.binding,
-				world: this.binding.world,
-				worldRevision: this.binding.worldRevision,
+		return projectAvailability({
+			probeCurrent: () => {
+				this.facts.sample(() => null);
 			},
-		};
+			historyState: this.history.state,
+			binding: this.binding,
+		});
 	}
 
 	async close(): Promise<void> {

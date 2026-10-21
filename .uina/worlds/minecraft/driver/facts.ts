@@ -138,9 +138,17 @@ export class FactsSource implements ClientFactsPort {
 
 	sample<T>(read: (view: ClientFactView) => T): ClientFactCapture<T> {
 		if (this.attachedBot == null) {
-			throw Object.assign(new Error("client facts source is not attached to a live connection"), {
-				code: "WRONG_STATE",
-			});
+			// 断线/故障与"尚未连接"必须区分：前者不可自动恢复，调用方据此报 unavailable。
+			const state = this.host.state;
+			const gone = state === "disconnected" || state === "faulted";
+			throw Object.assign(
+				new Error(
+					gone
+						? `client facts source is gone: connection is ${state}`
+						: `client facts source is not attached to a live connection (state ${state})`,
+				),
+				{ code: gone ? "DISCONNECTED" : "WRONG_STATE" },
+			);
 		}
 		// read 在同一同步边界内执行；view 闭包不外泄（调用者约定，见 §4.1）。
 		const value = read(this.buildView());
@@ -186,11 +194,12 @@ export class FactsSource implements ClientFactsPort {
 	/**
 	 * 供组合根注入 Body（drive.end 等需 Fact<SelfState>）的快速自采样；
 	 * 未附着活连接时返回 null，不虚构状态（public-api §4 反馈 self 缺口语义）。
+	 * 附着但实体尚未就绪时值为 null + unknown，不填 0（values.ts：未知不得伪装成已知）。
 	 */
-	sampleSelf(): Fact<SelfState> | null {
+	sampleSelf(): Fact<SelfState | null> | null {
 		if (this.attachedBot == null) return null;
 		try {
-			return this.buildView().self() as Fact<SelfState>;
+			return this.buildView().self();
 		} catch {
 			return null;
 		}
@@ -458,16 +467,14 @@ export class FactsSource implements ClientFactsPort {
 						: null;
 				if (oxygen == null) unknown.push("oxygen not received");
 
-				// inWater/inLava：脚部方块派生（derived，保留输入依据）。
-				let inWater: boolean | null = null;
-				let inLava: boolean | null = null;
-				const feetBlock = bot.blockAt(bot.entity.position.floored());
-				if (feetBlock != null) {
-					inWater = feetBlock.name === "water";
-					inLava = feetBlock.name === "lava";
-				} else {
-					unknown.push("inWater/inLava not derivable: feet block not loaded");
-				}
+				// inWater/inLava：读客户端物理每 tick 写在实体上的判定结果（prediction）。
+				// 原版按 AABB 与流体判据覆盖 waterlogged / 气泡柱 / 流动水，比脚部方块名准确；
+				// prismarine-physics 未跑到该 tick 时字段缺失，如实 null + unknown。
+				const entity = bot.entity as unknown as { isInWater?: unknown; isInLava?: unknown };
+				const inWater = typeof entity.isInWater === "boolean" ? entity.isInWater : null;
+				const inLava = typeof entity.isInLava === "boolean" ? entity.isInLava : null;
+				if (inWater == null) unknown.push("inWater not observed: client physics has not resolved water contact yet");
+				if (inLava == null) unknown.push("inLava not observed: client physics has not resolved lava contact yet");
 
 				const effects: StatusEffectValue[] = [];
 				const rawEffects = bot.entity?.effects ?? {};
@@ -499,8 +506,8 @@ export class FactsSource implements ClientFactsPort {
 						position: pos,
 					},
 					velocity,
-					health: health ?? 0,
-					food: food ?? 0,
+					health,
+					food,
 					onGround: bot.entity.onGround === true,
 					maxHealth,
 					saturation,
@@ -516,7 +523,7 @@ export class FactsSource implements ClientFactsPort {
 					...factBase(unknown, "mixed"),
 					basis: [
 						{
-							paths: ["/place/position", "/velocity", "/onGround"],
+							paths: ["/place/position", "/velocity", "/onGround", "/inWater", "/inLava"],
 							source: "prediction",
 							observedAt: nowIso(),
 							evidence: [],

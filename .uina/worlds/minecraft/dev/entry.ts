@@ -57,6 +57,11 @@ function fmtPos(p: Vec3): string {
 	return `(${p.x.toFixed(2)},${p.y.toFixed(2)},${p.z.toFixed(2)})`;
 }
 
+/** 未知（null）不得被读成 0：日志里显式区分。 */
+function fmtMaybe(value: number | null): string {
+	return value == null ? "unknown" : String(value);
+}
+
 type BotEntityView = { entity?: { position?: { x: number; y: number; z: number }; onGround?: boolean } | null };
 
 /**
@@ -214,8 +219,9 @@ async function main(): Promise<void> {
 		if (self1.value == null) fail(`self@1 returned null (unknown: ${JSON.stringify(self1.unknown)})`);
 		const startPos = self1.value.place.position;
 		log(
-			`self@1: pos=${fmtPos(startPos)} health=${self1.value.health} food=${self1.value.food} ` +
-				`coverage=${self1.coverage} cursor=${self1.cursor.stream}#${self1.cursor.sequence}`,
+			`self@1: pos=${fmtPos(startPos)} health=${fmtMaybe(self1.value.health)} food=${fmtMaybe(self1.value.food)} ` +
+				`coverage=${self1.coverage} cursor=${self1.cursor.stream}#${self1.cursor.sequence}` +
+				(self1.unknown.length === 0 ? "" : ` unknown=${self1.unknown.join("; ")}`),
 		);
 
 		// 4. chat@1 run
