@@ -1,5 +1,17 @@
 # 设计变更记录
 
+## 2026-10-22 · I1 原生化重构：K1 回退、缺陷修复与结构收口
+
+- **K1 能力子集整批回退**：`capabilities/{mine,place,knowledge,body-common}.ts`、`contracts/knowledge.ts`、`driver/registry-knowledge.ts` 删除，`package.json`、`public-api.md`、`modules/capabilities.md` 一并回到 10-21 之前的 I1 口径；不保留兼容层，也不把草图当后续基准（`KnowledgeSource`、`body.attack` 的 `targetHurt`、equip 护甲槽等增补随之作废）。现行实现是 5 查询（self/inventory/block/blocks/entities）+ 2 动作（chat/goto）。
+- **Body 申请收敛为单槽 FIFO 队列**（`runtime/body-queue.ts`）：同步占槽、单在途 acquire、授予前复验 `signal.aborted || !isOwnerLive(owner)`。修掉两处：同 tick 两次 acquire 都看到"无持有者"而双持有；Run 停止后排队/在途申请仍被照常授予并执行 work。
+- **证据释放水线只统计证据消费者**：新增 `ClientFactsSubscribeOptions.consumesEvidence`，释放水线只在登记为消费者且处于同一 stream 的接收方之间取最小值。修掉 CurrentWatch 不 ack 导致水线永不推进（有界缓冲被无谓耗尽、按溢出报假缺口），以及 `acknowledge` 忽略 `ack.stream` 使旧流高位释放新流证据。
+- **self 事实不造值**：`SelfState.health`/`food` 改 `number | null`，读不到即 unknown + 声明；`inWater`/`inLava` 改读客户端物理写在实体上的判定结果，不再按脚部方块名推导（waterlogged、气泡柱、流动水此前全错）。断线报 `unavailable`，不再报 `starting`。
+- **完成语义如实**：dig 的 receipt 不再声称 "server block update confirmed"——I1 不区分本地预测与服务端更新，改为如实陈述并标 `client_block_update`；dispatch 失败不再记 `sent`。drive 任何退出路径（正常/停滞/中止）都撤键并释放 hold 使用，不再只在成功分支清理。
+- **ref 发号带启动命名空间**：`ev:`/`gap:`/`body:`/`op:`/`eff:` 此前每进程从 1 发号，与持久历史库主键跨启动冲突；`world.md §5.3` 的命名空间规则统一到全部发号点。
+- **查询校验统一到 schema**：能力输入交给本地 Ajv 实例编译 `descriptor.input`，删除手写的 sections 范围、整型向量与空输入检查；`ItemSelector.components` 这类未实现匹配显式 `INVALID_INPUT`，不再静默忽略。
+- **结构收口**：新增 `driver/execution.ts`（EffectRecorder + fail）、`runtime/state.ts`（RunState/CallState 形状）、`runtime/rows.ts`（投影与持久行的纯函数）、`driver/facts/{index,view}.ts`（挂接与水线 / prismarine 值捕获分离）。engine 1613→1240 行、facts 754→408 行；三处 `recordFact` 转发层、两份逐字相同的 `fmtVec`/`fmtPos`、`fail`/`plain`/`nowIso` 的重复副本删除。
+- 验收：`tsc --noEmit`、`check-boundaries`（9 规则含反证样例）、`tests/mc` 9 files / 46 tests 全绿；`tests/mc` 首次纳入版本库。**真服未复验**，本轮修复全部只有确定性单测覆盖。
+
 ## 2026-10-19 · 总开发规划与开发规范
 
 - 重建总开发规划：先落实最小共享接缝，再并行推进正式基础设施，设原生真实闭环与完整主脑闭环两个集成节点；覆盖全部 16 查询 + 35 动作，按实际依赖组织八组玩法。

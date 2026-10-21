@@ -1,6 +1,6 @@
 # Minecraft World 总开发规划
 
-日期：2026-10-19。状态：施工规划；Minecraft 产品实现尚未开始。执行者同时阅读 [开发规范](development-guide.md)；行为以 [概要](design.md)、[公开合同](public-api.md) 及所属模块为准。
+日期：2026-10-19（2026-10-22 校正现状）。状态：施工规划；Minecraft I1 子集已实现，其余模块与本表后续工作包待施工。执行者同时阅读 [开发规范](development-guide.md)；行为以 [概要](design.md)、[公开合同](public-api.md) 及所属模块为准。
 
 目标：完成当前设计的 **16 个查询、35 个动作**，以及支持它们的运行、控制、观察、文件复用与恢复机制。先后交付的是正式实现的一部分，最终范围不因首个可用流程缩减。
 
@@ -12,7 +12,7 @@
 
 | 事实 | 对开发的影响 |
 |---|---|
-| Minecraft 目录只剩 LEAD.md，旧实现与专属测试已清理 | 按现行设计重新实现，不恢复旧代码作为兼容层 |
+| Minecraft 已落地 I1 子集（contracts / driver / world / runtime / capabilities）与 tests/mc 回归测试；K1 能力子集已整批回退 | 新工作按现行设计增量推进；不恢复已回退的 K1 实现，也不把它当兼容层 |
 | MC 重置/新设计仍有未提交工作树修改，仓库还有无关改动 | 并行 worktree 必须从整合后的共同基线开始；直接从当前 HEAD 分支会带回旧实现 |
 | Host/World 已有生命周期、工具、输入和图片接缝，但没有 HostDeliveryPort/receipt | Host 回执是独立基础任务；普通 emitEvent 不能代替持久接收 |
 | 会话实现是 v3；[回执规范](../runtime/delivery-receipts.md) 已裁决升级 v4、拒绝旧格式 | 与回执同批修改写入、恢复及相关消费者；不迁移真实会话 |

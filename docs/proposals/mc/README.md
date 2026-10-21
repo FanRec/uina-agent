@@ -2,20 +2,20 @@
 
 Uina 如何通过普通 JS 程序与一套能力目录，熟练、自主地游玩完整 Java 原版 Minecraft。
 
-更新时间：2026-10-19（Asia/Shanghai）。变更历史见 [changelog.md](changelog.md)；本页只给状态与导航，不复制合同。
+更新时间：2026-10-22（Asia/Shanghai）。变更历史见 [changelog.md](changelog.md)；本页只给状态与导航，不复制合同。
 
 ## 当前状态
 
 | 部分 | 状态 | 最后核对 |
 |---|---|---|
-| Driver（受控玩家）、World（观察与记录） | 实现已清理；依据终态设计重做 | 2026-10-18 |
-| Library（程序、蓝图与经验） | 旧 Assets 实现已清理；按普通文件库设计重做 | 2026-10-18 |
-| Executor（Uina 接入、IPC、进程与通知） | 未实现；依赖通用 Host 回执；Windows 待 OS 验收 | 2026-10-18 |
-| Host 持久交付接缝 | 通用设计已写，未实现 | 2026-10-18 |
-| Runtime（Run / Segment / Call / Effect） | 详细设计已写，未实现 | 2026-10-18 |
-| Program（单文件 JS + 共享 worker/独立 guest） | 详细设计已写，未实现 | 2026-10-18 |
-| 能力面（16 查询 + 35 动作） | 修订契约，按 P0/P1/P2 分阶段实现 | 2026-10-18 |
-| 真实 Minecraft 游玩验收 | **未开始**（Program 的完成标准见 program.md §8） | — |
+| Driver（受控玩家）、World（观察与记录） | I1 子集已实现：连接宿主、事实源、写入资格单槽、body/goto/chat、当前读 + sqlite 历史存储 | 2026-10-22 |
+| Runtime（Run / Segment / Call / Effect） | I1 子集已实现：受理、Call 组合、身体仲裁、记录结算与恢复 | 2026-10-22 |
+| 能力面（16 查询 + 35 动作） | 5 查询（self/inventory/block/blocks/entities）、2 动作（chat/goto）已实现；其余按 P0/P1/P2 分阶段 | 2026-10-22 |
+| Library（程序、蓝图与经验） | 未实现；按普通文件库设计 | 2026-10-19 |
+| Executor（Uina 接入、IPC、进程与通知） | 未实现；依赖通用 Host 回执；Windows 待 OS 验收 | 2026-10-19 |
+| Host 持久交付接缝 | 通用设计已写，本地首批已接线；完整 retire/append/强杀恢复未验收 | 2026-10-19 |
+| Program（单文件 JS + 共享 worker/独立 guest） | 详细设计已写，未实现 | 2026-10-19 |
+| 真实 Minecraft 游玩验收 | I1 场景曾于 2026-10-19 真服 PASS；当前 checkout 未复验 | 2026-10-22 |
 
 职责分工：程序负责组合，能力负责领域目标，Runtime 负责执行、控制归属和记录，Library 保存文件。当前规格仍需实现与真实游戏验收。
 
