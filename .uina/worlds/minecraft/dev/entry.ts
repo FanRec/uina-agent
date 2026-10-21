@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { PlayerPortImpl } from "../driver/body/player-port.js";
 import { ClientHost } from "../driver/client-host.js";
 import { DriverControlArbiter } from "../driver/control-arbiter.js";
-import { FactsSource } from "../driver/facts.js";
+import { FactsSource } from "../driver/facts/index.js";
 import { GotoDirector } from "../driver/goto.js";
 import { MinecraftRuntime } from "../runtime/index.js";
 import type { DriverExecutionSink, EffectRecord, RunSnapshot, RunSummary } from "../contracts/runtime.js";

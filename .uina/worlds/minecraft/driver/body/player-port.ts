@@ -13,10 +13,10 @@
 
 import type { BodySession, ControlOwner, PlayerPort, SelfState } from "../../contracts/body.js";
 import type { DriverExecutionSink } from "../../contracts/runtime.js";
-import type { CallFailure, EffectReceipt, ExactRef, Fact, JsonValue, Ref } from "../../contracts/values.js";
-import { callFailure } from "../../contracts/values.js";
+import type { EffectReceipt, Fact, Ref } from "../../contracts/values.js";
 import type { MineflayerBot } from "../mineflayer/adapter.js";
 import type { DriverControlArbiter } from "../control-arbiter.js";
+import { EffectRecorder, fail } from "../execution.js";
 import { BodySessionImpl, type HostView } from "./session.js";
 
 export interface PlayerPortDeps {
@@ -34,43 +34,20 @@ export interface PlayerPortDeps {
 	mintEff: () => Ref;
 }
 
-function nowIso(): string {
-	return new Date().toISOString();
-}
-
-function fail(data: {
-	code: string;
-	source: CallFailure["source"];
-	message: string;
-	hint?: string;
-	dispatch: CallFailure["dispatch"];
-	effects?: Ref[];
-	recoverable: boolean;
-}): CallFailure {
-	return callFailure({
-		code: data.code,
-		source: data.source,
-		message: data.message,
-		hint: data.hint,
-		dispatch: data.dispatch,
-		effects: data.effects ?? [],
-		recoverable: data.recoverable,
-	});
-}
-
 export class PlayerPortImpl implements PlayerPort {
 	private readonly deps: PlayerPortDeps;
 	private current: BodySessionImpl | null = null;
 	/** 屏障不成立的会话所属连接；仅在同一连接上阻止新资格（§10.5）。 */
 	private brokenBarrierConnection: Ref | null = null;
-	private recorderFaulted = false;
+	private readonly recorder: EffectRecorder;
 
 	constructor(deps: PlayerPortDeps) {
 		this.deps = deps;
+		this.recorder = new EffectRecorder(deps.sink);
 	}
 
 	async acquire(owner: ControlOwner, signal: AbortSignal): Promise<BodySession> {
-		if (this.recorderFaulted) {
+		if (this.recorder.isFaulted) {
 			throw fail({
 				code: "INTERNAL",
 				source: "capability",
@@ -161,7 +138,7 @@ export class PlayerPortImpl implements PlayerPort {
 						const id = this.deps.host.identity;
 						this.brokenBarrierConnection = id?.connection ?? null;
 					}
-					if (session.isRecorderFaulted) this.recorderFaulted = true;
+					if (session.isRecorderFaulted) this.recorder.markFaulted();
 				},
 			});
 		} catch (err) {
@@ -191,7 +168,7 @@ export class PlayerPortImpl implements PlayerPort {
 	}
 
 	async chat(text: string, signal: AbortSignal): Promise<EffectReceipt> {
-		if (this.recorderFaulted) {
+		if (this.recorder.isFaulted) {
 			throw fail({
 				code: "INTERNAL",
 				source: "capability",
@@ -269,7 +246,7 @@ export class PlayerPortImpl implements PlayerPort {
 			bot.chat(text);
 		} catch (err) {
 			// 上游仅在写包前抛错（play 状态前置检查）；此时未派发
-			this.recordFact(eff, op, "body.chat@1", "dispatch", "not_sent", "unknown", {
+			this.recorder.record(eff, op, "body.chat@1", "dispatch", "not_sent", "unknown", {
 				text,
 				detail: `upstream chat rejected: ${err instanceof Error ? err.message : String(err)}`,
 			});
@@ -283,7 +260,7 @@ export class PlayerPortImpl implements PlayerPort {
 			});
 		}
 		const dispatch: EffectReceipt["dispatch"] = queuedToMainThread ? "unknown" : "sent";
-		this.recordFact(eff, op, "body.chat@1", "dispatch", dispatch, "unknown", {
+		this.recorder.record(eff, op, "body.chat@1", "dispatch", dispatch, "unknown", {
 			text,
 			isCommand: text.startsWith("/"),
 			completionContract: queuedToMainThread
@@ -293,33 +270,10 @@ export class PlayerPortImpl implements PlayerPort {
 		if (queuedToMainThread) {
 			return { effect: eff, dispatch: "unknown", completion: "unknown", evidence: [] };
 		}
-		this.recordFact(eff, op, "body.chat@1", "receipt", "sent", "met", {
+		this.recorder.record(eff, op, "body.chat@1", "receipt", "sent", "met", {
 			completionContract:
 				"text dispatched to the protocol layer; server delivery or command effects are separate facts",
 		});
 		return { effect: eff, dispatch: "sent", completion: "met", evidence: [] };
-	}
-
-	private recordFact(
-		effect: Ref,
-		operation: Ref,
-		contract: ExactRef,
-		kind: "dispatch" | "receipt" | "cleanup",
-		dispatch: "not_sent" | "sent" | "unknown",
-		completion: "met" | "not_met" | "unknown",
-		detail?: JsonValue,
-	): void {
-		const ticket = this.deps.sink.record({
-			effect,
-			operation,
-			contract,
-			observedAt: nowIso(),
-			kind,
-			dispatch,
-			completion,
-			evidence: [],
-			detail,
-		});
-		if (ticket == null) this.recorderFaulted = true;
 	}
 }

@@ -14,12 +14,13 @@
  */
 
 import type { DriverExecutionSink } from "../contracts/runtime.js";
-import type { CallFailure, EffectReceipt, ExactRef, JsonValue, Ref, Vec3 } from "../contracts/values.js";
-import { callFailure } from "../contracts/values.js";
+import type { CallFailure, EffectReceipt, JsonValue, Ref, Vec3 } from "../contracts/values.js";
+import { plain } from "../contracts/values.js";
 import type { HostView } from "./body/session.js";
 import type { DriverControlArbiter } from "./control-arbiter.js";
 import type { MineflayerBot } from "./mineflayer/adapter.js";
 import { fromMineflayerVec3 } from "./mineflayer/adapter.js";
+import { EffectRecorder, fail } from "./execution.js";
 import {
 	clearGoal,
 	configureMovements,
@@ -59,50 +60,20 @@ export interface GotoOutcome {
 
 const QUIESCE_DEADLINE_MS = 2000;
 
-function nowIso(): string {
-	return new Date().toISOString();
-}
-
-/** 事实 detail 只收纯 JSON 值。 */
-function plain(value: unknown): JsonValue {
-	return JSON.parse(JSON.stringify(value)) as JsonValue;
-}
-
-function fail(data: {
-	code: string;
-	source: CallFailure["source"];
-	message: string;
-	hint?: string;
-	dispatch: CallFailure["dispatch"];
-	progress?: { summary?: string } & Record<string, JsonValue>;
-	effects?: Ref[];
-	recoverable: boolean;
-}): CallFailure {
-	return callFailure({
-		code: data.code,
-		source: data.source,
-		message: data.message,
-		hint: data.hint,
-		dispatch: data.dispatch,
-		progress: data.progress,
-		effects: data.effects ?? [],
-		recoverable: data.recoverable,
-	});
-}
-
 type GotoState = "idle" | "running" | "settling" | "done";
 
 export class GotoDirector {
 	private readonly deps: GotoDeps;
 	private state: GotoState = "idle";
-	private recorderFaulted = false;
+	private readonly recorder: EffectRecorder;
 
 	constructor(deps: GotoDeps) {
 		this.deps = deps;
+		this.recorder = new EffectRecorder(deps.sink);
 	}
 
 	async goto(request: GotoRequest, signal: AbortSignal): Promise<GotoOutcome> {
-		if (this.recorderFaulted) {
+		if (this.recorder.isFaulted) {
 			throw fail({
 				code: "INTERNAL",
 				source: "capability",
@@ -171,7 +142,7 @@ export class GotoDirector {
 
 			bot.on("physicsTick", guard as never);
 
-			this.recordFact(
+			this.recorder.record(
 				eff,
 				op,
 				"body.goto@1",
@@ -201,7 +172,7 @@ export class GotoDirector {
 					});
 				}
 				const at = fromMineflayerVec3(bot.entity.position) ?? request.at;
-				this.recordFact(
+				this.recorder.record(
 					eff,
 					op,
 					"body.goto@1",
@@ -392,7 +363,7 @@ export class GotoDirector {
 		if (bot != null && !quiesced) {
 			this.seal(bot); // 期限兜底：保持封印至本调用结束
 		}
-		this.recordFact(
+		this.recorder.record(
 			eff,
 			op,
 			"body.goto@1",
@@ -446,28 +417,5 @@ export class GotoDirector {
 			});
 		}
 		return bot;
-	}
-
-	private recordFact(
-		effect: Ref,
-		operation: Ref,
-		contract: ExactRef,
-		kind: "dispatch" | "receipt" | "cleanup",
-		dispatch: "not_sent" | "sent" | "unknown",
-		completion: "met" | "not_met" | "unknown",
-		detail?: JsonValue,
-	): void {
-		const ticket = this.deps.sink.record({
-			effect,
-			operation,
-			contract,
-			observedAt: nowIso(),
-			kind,
-			dispatch,
-			completion,
-			evidence: [],
-			detail,
-		});
-		if (ticket == null) this.recorderFaulted = true;
 	}
 }

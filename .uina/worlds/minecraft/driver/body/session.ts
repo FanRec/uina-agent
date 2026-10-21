@@ -29,9 +29,10 @@ import type {
 } from "../../contracts/body.js";
 import type { WorldQuery } from "../../contracts/world.js";
 import type { DriverExecutionSink } from "../../contracts/runtime.js";
-import type { CallFailure, EffectReceipt, ExactRef, Fact, JsonValue, Ref, Vec3 } from "../../contracts/values.js";
-import { callFailure } from "../../contracts/values.js";
+import type { CallFailure, EffectReceipt, Fact, Ref, Vec3 } from "../../contracts/values.js";
+import { plain } from "../../contracts/values.js";
 import type { ClientHostListener } from "../client-host.js";
+import { EffectRecorder, fail } from "../execution.js";
 import { toMineflayerVec3, type MineflayerBot } from "../mineflayer/adapter.js";
 
 /** mineflayer 实体类型别名（index.d.ts 不直接导出 Entity）。 */
@@ -64,37 +65,6 @@ const DRIVE_KEYS: Key[] = ["forward", "back", "left", "right", "jump", "sprint",
 /** drive 停滞看门狗：物理循环暂停不得导致无限等待（§7.2），墙钟只作停滞检测。 */
 const DRIVE_STALL_MS = 2000;
 
-function nowIso(): string {
-	return new Date().toISOString();
-}
-
-/** 事实 detail 只收纯 JSON 值；合同类型（Vec3/EntityRef 等）经序列化落库。 */
-function plain(value: unknown): JsonValue {
-	return JSON.parse(JSON.stringify(value)) as JsonValue;
-}
-
-function fail(data: {
-	code: string;
-	source: CallFailure["source"];
-	message: string;
-	hint?: string;
-	dispatch: CallFailure["dispatch"];
-	progress?: { summary?: string } & Record<string, JsonValue>;
-	effects?: Ref[];
-	recoverable: boolean;
-}): CallFailure {
-	return callFailure({
-		code: data.code,
-		source: data.source,
-		message: data.message,
-		hint: data.hint,
-		dispatch: data.dispatch,
-		progress: data.progress,
-		effects: data.effects ?? [],
-		recoverable: data.recoverable,
-	});
-}
-
 function isIntVec(v: Vec3): boolean {
 	return Number.isInteger(v.x) && Number.isInteger(v.y) && Number.isInteger(v.z);
 }
@@ -112,13 +82,14 @@ export class BodySessionImpl implements BodySession {
 	private readonly ownedUse = new Map<Hand, Ref>();
 	private pendingOps = 0;
 	private barrierProven = true;
-	private recorderFaulted = false;
+	private readonly recorder: EffectRecorder;
 	private detachHost: () => void;
 
 	constructor(body: Ref, owner: ControlOwner, deps: BodySessionDeps) {
 		this.body = body;
 		this.owner = owner;
 		this.deps = deps;
+		this.recorder = new EffectRecorder(deps.sink);
 		const identity = deps.host.identity;
 		if (identity == null) {
 			throw new Error("body session requires a ready connection identity");
@@ -144,7 +115,7 @@ export class BodySessionImpl implements BodySession {
 
 	/** recorder fault 是否已锁存（PlayerPort 传播封闭用）。 */
 	get isRecorderFaulted(): boolean {
-		return this.recorderFaulted;
+		return this.recorder.isFaulted;
 	}
 
 	// ---- 生命周期 ----
@@ -180,12 +151,12 @@ export class BodySessionImpl implements BodySession {
 				const op = this.deps.mintOp();
 				try {
 					bot.stopDigging();
-					this.recordFact(eff, op, "body.dig@1", "cleanup", "sent", "not_met", {
+					this.recorder.record(eff, op, "body.dig@1", "cleanup", "sent", "not_met", {
 						reason,
 						detail: "digging cancelled during revocation",
 					});
 				} catch {
-					this.recordFact(eff, op, "body.dig@1", "cleanup", "unknown", "unknown", {
+					this.recorder.record(eff, op, "body.dig@1", "cleanup", "unknown", "unknown", {
 						reason,
 						detail: "dig cancel dispatch failed during revocation",
 					});
@@ -196,12 +167,12 @@ export class BodySessionImpl implements BodySession {
 				const op = this.deps.mintOp();
 				try {
 					bot.deactivateItem();
-					this.recordFact(eff, op, "body.endUse@1", "cleanup", "sent", "met", {
+					this.recorder.record(eff, op, "body.endUse@1", "cleanup", "sent", "met", {
 						reason,
 						detail: "owned item use released during revocation; release side effects not confirmed",
 					});
 				} catch {
-					this.recordFact(eff, op, "body.endUse@1", "cleanup", "unknown", "unknown", { reason });
+					this.recorder.record(eff, op, "body.endUse@1", "cleanup", "unknown", "unknown", { reason });
 				}
 			}
 		}
@@ -224,7 +195,7 @@ export class BodySessionImpl implements BodySession {
 	// ---- 写入核验（§5.3） ----
 
 	private writeDenial(): CallFailure | null {
-		if (this.recorderFaulted) {
+		if (this.recorder.isFaulted) {
 			return fail({
 				code: "INTERNAL",
 				source: "capability",
@@ -306,29 +277,6 @@ export class BodySessionImpl implements BodySession {
 
 	// ---- 记录 ----
 
-	private recordFact(
-		effect: Ref,
-		operation: Ref,
-		contract: ExactRef,
-		kind: "dispatch" | "receipt" | "cleanup",
-		dispatch: "not_sent" | "sent" | "unknown",
-		completion: "met" | "not_met" | "unknown",
-		detail?: JsonValue,
-	): void {
-		const ticket = this.deps.sink.record({
-			effect,
-			operation,
-			contract,
-			observedAt: nowIso(),
-			kind,
-			dispatch,
-			completion,
-			evidence: [],
-			detail,
-		});
-		if (ticket == null) this.recorderFaulted = true;
-	}
-
 	async drive(
 		input: ControlInput,
 		ticks: number,
@@ -398,7 +346,7 @@ export class BodySessionImpl implements BodySession {
 				bot.attack(entity);
 			}
 
-			this.recordFact(
+			this.recorder.record(
 				eff,
 				op,
 				"body.drive@1",
@@ -430,7 +378,7 @@ export class BodySessionImpl implements BodySession {
 			}
 			// 已核验 value 非 null：按 BodyOps.drive 契约固化 Fact<SelfState>
 			const end: Fact<SelfState> = { ...sampled, value: sampled.value };
-			this.recordFact(eff, op, "body.drive@1", "receipt", "sent", "met", {
+			this.recorder.record(eff, op, "body.drive@1", "receipt", "sent", "met", {
 				actualTicks: consumed,
 				completionContract: "input applied for the requested client physics steps",
 			});
@@ -538,12 +486,12 @@ export class BodySessionImpl implements BodySession {
 		const cleanupOp = this.deps.mintOp();
 		try {
 			bot.deactivateItem();
-			this.recordFact(eff, cleanupOp, "body.endUse@1", "cleanup", "sent", "met", {
+			this.recorder.record(eff, cleanupOp, "body.endUse@1", "cleanup", "sent", "met", {
 				reason,
 				note: "held use released; release side effects (e.g. bow draw) not confirmed",
 			});
 		} catch {
-			this.recordFact(eff, cleanupOp, "body.endUse@1", "cleanup", "unknown", "unknown", { reason });
+			this.recorder.record(eff, cleanupOp, "body.endUse@1", "cleanup", "unknown", "unknown", { reason });
 		}
 	}
 
@@ -665,7 +613,7 @@ export class BodySessionImpl implements BodySession {
 				}
 				// 上游 dig 是 async：开始挖掘的包在内部 await 之后才写，拒绝可能发生在写包之前
 				// 也可能之后（stopDigging/卸载），I1 不区分来源，如实记 unknown。
-				this.recordFact(
+				this.recorder.record(
 					eff,
 					op,
 					"body.dig@1",
@@ -700,7 +648,7 @@ export class BodySessionImpl implements BodySession {
 
 			// 上游在 finishDigging 里把目标格本地置空后 resolve（digging.js），
 			// 不等服务端 block update；本地预测完成与服务端确认在 I1 不可区分。
-			this.recordFact(eff, op, "body.dig@1", "receipt", "sent", "met", {
+			this.recorder.record(eff, op, "body.dig@1", "receipt", "sent", "met", {
 				completionContract:
 					"target became air in the client world (local finish prediction or server update; origin not distinguished in I1)",
 				confirmedBy: "client_block_update",
@@ -719,7 +667,7 @@ export class BodySessionImpl implements BodySession {
 			const bot = this.botForWrite();
 			const entity = this.resolveEntity(bot, target);
 			bot.attack(entity);
-			this.recordFact(eff, op, "body.attack@1", "dispatch", "sent", "met", {
+			this.recorder.record(eff, op, "body.attack@1", "dispatch", "sent", "met", {
 				completionContract: "one attack attempt dispatched",
 				target: target.networkId,
 			});
@@ -748,7 +696,7 @@ export class BodySessionImpl implements BodySession {
 			}
 			bot.activateItem(hand === "off");
 			this.ownedUse.set(hand, op);
-			this.recordFact(eff, op, "body.useItem@1", "dispatch", "sent", "met", {
+			this.recorder.record(eff, op, "body.useItem@1", "dispatch", "sent", "met", {
 				completionContract: "one protocol activation dispatched",
 				hand,
 				nativeUseState: bot.usingHeldItem,
@@ -770,14 +718,14 @@ export class BodySessionImpl implements BodySession {
 			this.ownedUse.clear();
 			if (!bot.usingHeldItem) {
 				// 已结束状态幂等，不重复发 release
-				this.recordFact(eff, op, "body.endUse@1", "receipt", "not_sent", "met", {
+				this.recorder.record(eff, op, "body.endUse@1", "receipt", "not_sent", "met", {
 					completionContract: "no owned item use to end",
 					hadOwned,
 				});
 				return { effect: eff, dispatch: "not_sent", completion: "met", evidence: [] };
 			}
 			bot.deactivateItem();
-			this.recordFact(eff, op, "body.endUse@1", "receipt", "sent", "met", {
+			this.recorder.record(eff, op, "body.endUse@1", "receipt", "sent", "met", {
 				completionContract: "owned item use ended; release side effects not confirmed",
 				hadOwned,
 			});
@@ -801,7 +749,7 @@ export class BodySessionImpl implements BodySession {
 			if ("networkId" in input.target) {
 				const entity = this.resolveEntity(bot, input.target);
 				bot.activateEntity(entity);
-				this.recordFact(eff, op, "body.interact@1", "dispatch", "sent", "met", {
+				this.recorder.record(eff, op, "body.interact@1", "dispatch", "sent", "met", {
 					completionContract: "entity interaction dispatched",
 					entity: input.target.networkId,
 				});
@@ -884,7 +832,7 @@ export class BodySessionImpl implements BodySession {
 				cursorPos == null ? undefined : toMineflayerVec3(cursorPos),
 			);
 			this.recheck();
-			this.recordFact(
+			this.recorder.record(
 				eff,
 				op,
 				"body.interact@1",
@@ -935,7 +883,7 @@ export class BodySessionImpl implements BodySession {
 				const heldSlot = hand === "main" ? 36 + bot.quickBarSlot : 45;
 				const held = bot.inventory.slots[heldSlot];
 				if (held == null) {
-					this.recordFact(eff, op, "body.equip@1", "receipt", "not_sent", "met", {
+					this.recorder.record(eff, op, "body.equip@1", "receipt", "not_sent", "met", {
 						completionContract: "hand already empty",
 						hand,
 					});
@@ -956,7 +904,7 @@ export class BodySessionImpl implements BodySession {
 				await bot.moveSlotItem(heldSlot, empty);
 				this.recheck();
 				const confirmed = bot.inventory.slots[heldSlot] == null;
-				this.recordFact(eff, op, "body.equip@1", "receipt", "sent", confirmed ? "met" : "unknown", {
+				this.recorder.record(eff, op, "body.equip@1", "receipt", "sent", confirmed ? "met" : "unknown", {
 					completionContract: "held slot emptied by controlled slot move",
 					from: heldSlot,
 					to: empty,
@@ -986,7 +934,7 @@ export class BodySessionImpl implements BodySession {
 			const heldSlot = hand === "main" ? 36 + bot.quickBarSlot : 45;
 			const after = bot.inventory.slots[heldSlot];
 			const confirmed = after != null && after.name === found.item.name;
-			this.recordFact(eff, op, "body.equip@1", "receipt", "sent", confirmed ? "met" : "unknown", {
+			this.recorder.record(eff, op, "body.equip@1", "receipt", "sent", confirmed ? "met" : "unknown", {
 				completionContract: "hand slot holds the requested item after controlled click sequence",
 				item: found.name,
 				hand,
@@ -1052,7 +1000,7 @@ export class BodySessionImpl implements BodySession {
 			const point = this.lookPointFor(bot, target);
 			await bot.lookAt(toMineflayerVec3(point), false);
 			this.recheck();
-			this.recordFact(
+			this.recorder.record(
 				eff,
 				op,
 				"body.lookAt@1",

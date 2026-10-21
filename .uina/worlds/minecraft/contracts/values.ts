@@ -147,6 +147,14 @@ export interface EffectReceipt {
 	evidence: Ref[];
 }
 
+/**
+ * 合同类型（Vec3 / EntityRef / 观察值等）→ 纯 JSON 值。
+ * 落库与事实 detail 只收 JsonValue；调用方拿到的对象不可再被上游改动污染。
+ */
+export function plain(value: unknown): JsonValue {
+	return JSON.parse(JSON.stringify(value)) as JsonValue;
+}
+
 /** 构造 CallFailure 的辅助；消息外的字段原样入错误对象。 */
 export function callFailure(data: CallFailureData): CallFailure {
 	const error = new Error(data.message) as CallFailure;

@@ -6,7 +6,7 @@
  */
 
 import type { ClientHost } from "../../.uina/worlds/minecraft/driver/client-host.js";
-import { FactsSource } from "../../.uina/worlds/minecraft/driver/facts.js";
+import { FactsSource } from "../../.uina/worlds/minecraft/driver/facts/index.js";
 
 type Handler = (...args: unknown[]) => void;
 

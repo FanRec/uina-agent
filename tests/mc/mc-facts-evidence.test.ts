@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { ClientFactNotice, ClientFactsSubscription } from "../../.uina/worlds/minecraft/contracts/client-facts.js";
-import type { FactsSource } from "../../.uina/worlds/minecraft/driver/facts.js";
+import type { FactsSource } from "../../.uina/worlds/minecraft/driver/facts/index.js";
 import { makeFactsHarness } from "./mc-fake.js";
 
 /**
