@@ -1,7 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { CHARS_PER_TOKEN, estimateRequestTokens, estimateTextTokens } from "../../agent/context.js";
 import { inputTokenBudget, modelKey } from "../../core/model.js";
-import type { ChatMsg, RequestInspection, RequestProjection, TokenMeasurement } from "../../core/types.js";
+import type {
+	ChatMsg,
+	RequestInspection,
+	RequestProjection,
+	ThinkingLevel,
+	TokenMeasurement,
+} from "../../core/types.js";
 import type { HydratedSessionEntry } from "../../session/types.js";
 import type { ExtensionAPI } from "../runner.js";
 
@@ -359,32 +365,83 @@ function describeSummaryError(error: unknown): string {
 	return `${error.message}（底层原因：${code ? `${code}: ` : ""}${detail}）`;
 }
 
-async function requestTextCompletion(
+export interface SummaryRequestOptions {
+	/** 摘要请求总超时（毫秒）；<=0 表示不限时。默认 SUMMARY_REQUEST_TIMEOUT_MS。 */
+	timeoutMs?: number;
+	/** 流式文本活动回调（累计字符数）：驱动 UI 进度，不改变请求语义。 */
+	onActivity?: (chars: number) => void;
+}
+
+// 摘要请求的总超时。Provider 无响应时（实测可 90s+ 无任何反馈），超时把
+// "永远卡住"变成可重试的显式失败；远大于正常摘要耗时（实测 11–27s）。
+const SUMMARY_REQUEST_TIMEOUT_MS = 300_000;
+
+/** pi.models.thinkingLevel() 在宿主未提供思考档位事实入口时会抛错；入口缺失 = 档位未知，保持未知。 */
+function currentThinkingLevel(pi: ExtensionAPI): ThinkingLevel | undefined {
+	try {
+		return pi.models.thinkingLevel();
+	} catch {
+		return undefined;
+	}
+}
+
+export async function requestTextCompletion(
 	pi: ExtensionAPI,
 	messages: readonly ChatMsg[],
 	label: string,
 	signal: AbortSignal,
+	options: SummaryRequestOptions = {},
 ): Promise<string> {
+	const timeoutMs = options.timeoutMs ?? SUMMARY_REQUEST_TIMEOUT_MS;
+	const timeoutController = new AbortController();
+	let timedOut = false;
+	const timeoutTimer =
+		timeoutMs > 0
+			? setTimeout(() => {
+					timedOut = true;
+					timeoutController.abort();
+				}, timeoutMs)
+			: undefined;
+	timeoutTimer?.unref();
 	let text = "";
 	try {
+		// 摘要跟随用户当前思考档位：不显式传值时网关不发 thinking 字段，
+		// 服务端会走自己的默认档（实测 DeepSeek 默认思考把 11s 拖到 25s+）。
+		const thinkingLevel = currentThinkingLevel(pi);
 		await pi.models.stream(
 			pi.models.current(),
-			{ messages: [...messages], tools: [] },
-			(delta) => {
-				if (delta.kind === "text") text += delta.text;
+			{
+				messages: [...messages],
+				tools: [],
+				...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
 			},
-			signal,
+			(delta) => {
+				if (delta.kind === "text") {
+					text += delta.text;
+					options.onActivity?.(text.length);
+				}
+			},
+			AbortSignal.any([signal, timeoutController.signal]),
 		);
 	} catch (error) {
+		if (timedOut) throw new Error(`${label}超时（${Math.round(timeoutMs / 1000)} 秒未完成），请重试或检查 Provider`);
 		throw new Error(`${label}失败：${describeSummaryError(error)}`, { cause: error });
+	} finally {
+		clearTimeout(timeoutTimer);
 	}
 	const result = text.trim();
 	if (!result) throw new Error(`${label}返回空结果`);
 	return result;
 }
 
-async function summarizeOnce(pi: ExtensionAPI, body: string, focus: string, signal: AbortSignal): Promise<string> {
-	return requestTextCompletion(pi, summaryRequestMessages(body, focus), "摘要模型请求", signal);
+async function summarizeOnce(
+	pi: ExtensionAPI,
+	body: string,
+	focus: string,
+	signal: AbortSignal,
+	options: SummaryRequestOptions = {},
+): Promise<string> {
+	return requestTextCompletion(pi, summaryRequestMessages(body, focus), "摘要模型请求", signal, options);
 }
 
 function summaryMessage(summary: string): { role: "user"; content: string } {
@@ -434,9 +491,11 @@ async function requestSummary(
 	instruction: string | undefined,
 	signal: AbortSignal,
 	onChunk?: (completed: number) => Promise<void>,
+	onActivity?: (chars: number) => void,
 ): Promise<string> {
 	const focus = instruction?.trim() ? `\n\n额外关注：${instruction.trim()}` : "";
-	const budget = inputTokenBudget(pi.models.current());
+	// 摘要分块预算跟随当前思考档位：思考输出与输入共享同一上下文窗口。
+	const budget = inputTokenBudget(pi.models.current(), currentThinkingLevel(pi));
 	const usable = source.filter((message) => message.role !== "system");
 	if (usable.length === 0) throw new Error("没有可摘要的历史内容");
 	if (budget === undefined) throw new Error("当前模型上下文窗口未知，无法安全执行摘要");
@@ -472,7 +531,7 @@ async function requestSummary(
 			const availableTokens = budget - rollingCost;
 			if (availableTokens <= 0) {
 				if (rolling) {
-					rolling = await summarizeOnce(pi, `[已有摘要]\n${rolling}`, focus, signal);
+					rolling = await summarizeOnce(pi, `[已有摘要]\n${rolling}`, focus, signal, { onActivity });
 					continue;
 				}
 				throw new Error("单个历史分片也无法装入摘要模型输入预算");
@@ -491,7 +550,7 @@ async function requestSummary(
 			}
 			break;
 		}
-		rolling = await summarizeOnce(pi, summarizeInput(rolling, chunk), focus, signal);
+		rolling = await summarizeOnce(pi, summarizeInput(rolling, chunk), focus, signal, { onActivity });
 		await onChunk?.(++completed);
 	}
 	return rolling;
@@ -584,8 +643,23 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		const prefixFingerprint = hashBearingPrefix(prefixBearing, coveredBearingIndex);
 
 		await emitProgress(operationId, "summarizing", "生成历史摘要");
-		let summary = await requestSummary(pi, messages.slice(0, coverTarget), instruction, signal ?? pi.signal, (count) =>
-			emitProgress(operationId, "summarizing", `已完成 ${count} 块历史摘要`),
+		// 流式活动进度：摘要模型可能在几十秒里不给任何中间结果，把"已接收字数"
+		// 节流上报（≥500ms 且字数变化），让 TUI 状态行持续有生命迹象。
+		let lastActivityAt = 0;
+		let lastActivityChars = 0;
+		let summary = await requestSummary(
+			pi,
+			messages.slice(0, coverTarget),
+			instruction,
+			signal ?? pi.signal,
+			(count) => emitProgress(operationId, "summarizing", `已完成 ${count} 块历史摘要`),
+			(chars) => {
+				const now = Date.now();
+				if (chars === lastActivityChars || now - lastActivityAt < 500) return;
+				lastActivityAt = now;
+				lastActivityChars = chars;
+				void emitProgress(operationId, "summarizing", `生成历史摘要（已接收 ${chars} 字）`);
+			},
 		);
 
 		// 计算摘要可用的精确上限，保证重建请求 100% 落入可用预算

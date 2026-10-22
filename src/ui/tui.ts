@@ -3,25 +3,32 @@
  * 对齐 Pi 的交互体验，向内调度 UIHost，向外提供清晰的事件流与生命周期接口。
  */
 
-import { UIHost, type UIHostOptions } from "./ui-host.js";
-import { installUIFeatures, type UIFeatureOptions } from "./features.js";
-import { TrajectoryProjection } from "./adapters/agent-events.js";
-
 import type { ExtensionUIContext } from "../extensions/ui-contract.js";
-import type { SessionEntry } from "../session/types.js";
-import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
-import type { CompactionReplayDecoration } from "./components/transcript/transcript.js";
-import type { PromptContextCardData } from "./components/transcript/context-card.js";
-import { promptSnapshotFingerprint } from "../session/prompt-snapshots.js";
-
 import type { HostEvent, HostSnapshot } from "../host/events.js";
+import type { PromptSnapshotRecord } from "../session/prompt-snapshots.js";
+import { promptSnapshotFingerprint } from "../session/prompt-snapshots.js";
+import type { SessionEntry } from "../session/types.js";
+import { TrajectoryProjection } from "./adapters/agent-events.js";
+import type { PromptContextCardData } from "./components/transcript/context-card.js";
+import type { CompactionReplayDecoration } from "./components/transcript/transcript.js";
+import { installUIFeatures, type UIFeatureOptions } from "./features.js";
 import type { TuiIntent } from "./intents.js";
+import { UIHost, type UIHostOptions } from "./ui-host.js";
 
 export type { HostEvent };
 
 export interface InteractiveTUIOptions extends UIHostOptions {
 	features?: UIFeatureOptions;
 }
+
+/** 压缩进度 phase 的兜底文案；事件自带 detail 时优先用 detail。 */
+const COMPACT_PHASE_LABEL: Record<"queued" | "planning" | "summarizing" | "applying" | "measuring", string> = {
+	queued: "排队等待",
+	planning: "规划压缩边界",
+	summarizing: "生成历史摘要",
+	applying: "应用压缩",
+	measuring: "测量压缩后上下文",
+};
 
 export class InteractiveTUI {
 	private readonly host: UIHost;
@@ -215,6 +222,8 @@ export class InteractiveTUI {
 				break;
 
 			case "session_compact":
+				// 终态（completed/failed/cancelled/noop）一律清除压缩工作状态。
+				this.host.setWorking("compaction", undefined);
 				if (m.status === "completed") {
 					this.host.addCompaction({
 						status: m.status,
@@ -360,7 +369,8 @@ export class InteractiveTUI {
 				// 扩展私有辅助词汇：由域专属表面表达（压缩卡片与 /prompt 快照）。
 				break;
 			case "session_compact_progress":
-				// 逐块进度噪声：起点由 session_compact_start 提示，终点由 session_compact 卡片。
+				// 压缩全程写进状态行：摘要请求可能几十秒无中间结果，进度是唯一生命迹象。
+				this.host.setWorking("compaction", `正在压缩上下文：${m.detail ?? COMPACT_PHASE_LABEL[m.phase]}`);
 				break;
 			default: {
 				// 穷尽性收口：走到这里说明 RuntimeEvent 有新类型未显式决策。

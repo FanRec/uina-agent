@@ -1819,6 +1819,35 @@ describe("UI Core: Mouse Selection & Wheel", () => {
 			tui.close();
 		});
 
+		it("InteractiveTUI 从 RuntimeEvent 驱动压缩进度显示，所有终态清除", async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+			const tui = createTestTUI({ columns: 120, rows: 30 });
+			try {
+				tui.tui.consume({
+					type: "session_compact_progress",
+					operationId: "compact-1",
+					phase: "summarizing",
+					detail: "生成历史摘要（已接收 12000 字）",
+				});
+				await vi.advanceTimersByTimeAsync(50);
+				expect(tui.visibleText).toContain("正在压缩上下文：生成历史摘要（已接收 12000 字）");
+				expect(isHeartbeatActive(tui.host)).toBe(true);
+
+				tui.tui.consume({ type: "session_compact_progress", operationId: "compact-1", phase: "measuring" });
+				await vi.advanceTimersByTimeAsync(50);
+				expect(tui.visibleText).toContain("测量压缩后上下文");
+
+				tui.tui.consume({ type: "session_compact", operationId: "compact-1", status: "failed", error: "压缩失败" });
+				await vi.advanceTimersByTimeAsync(50);
+				expect(tui.visibleText).not.toContain("正在压缩上下文");
+				expect(isHeartbeatActive(tui.host)).toBe(false);
+			} finally {
+				tui.dispose();
+				vi.useRealTimers();
+			}
+		});
+
 		it("TranscriptContainer 严格保证思考、文本、运行中工具与完成工具的时间序节点流", () => {
 			const transcript = new TranscriptContainer();
 			transcript.startTurn(1, "用户输入");
