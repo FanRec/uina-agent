@@ -1,6 +1,7 @@
-import { Registrations } from "../core/registrations.js";
-import { errorMessage } from "../core/errors.js";
 import { assertImageInput, type ImageContent } from "../core/content.js";
+import { errorMessage } from "../core/errors.js";
+import { modelKey } from "../core/model.js";
+import { Registrations } from "../core/registrations.js";
 import type {
 	DiscoveredModel,
 	FinishReason,
@@ -11,18 +12,17 @@ import type {
 	ThinkingLevel,
 	Usage,
 } from "../core/types.js";
-import { modelKey } from "../core/model.js";
 import {
 	assertProviderFacts,
 	configuredThinkingLevels,
 	effectiveContextWindow,
-	protocolCarriesThinking,
 	type ProviderConfig,
 	type ProviderKind,
+	protocolCarriesThinking,
 	type UinaConfig,
 } from "./config.js";
 import { createOpenAIProvider, ProviderHttpError, sendModelStreamRequest } from "./gateway.js";
-import { parseSSE, ProviderProtocolError } from "./sse.js";
+import { ProviderProtocolError, parseSSE } from "./sse.js";
 
 /** 创建声明式纯数据 Model 规格 */
 export function createModel(conf: ProviderConfig, providerId: string): Model {
@@ -36,6 +36,7 @@ export function createModel(conf: ProviderConfig, providerId: string): Model {
 		providerId,
 		contextWindow: effectiveWindow,
 		maxOutputTokens: conf.maxOutputTokens,
+		inputBudgetTokens: conf.inputBudgetTokens,
 		thinkingLevels: levels,
 		includeThinking: conf.includeThinking ?? protocolCarriesThinking(kind, conf.thinkingFormat, levels),
 		thinkingBudgets: conf.thinkingBudgets,

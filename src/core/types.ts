@@ -305,6 +305,8 @@ export interface Model {
 	readonly contextWindow?: number;
 	/** 最大输出 token 数（Anthropic messages 必须显式给出） */
 	readonly maxOutputTokens?: number;
+	/** 显式覆盖每请求输入预算；缺省走 core/model.ts 的默认上限，0 表示不额外设限 */
+	readonly inputBudgetTokens?: number;
 	/** 支持的思考等级档位 */
 	readonly thinkingLevels?: readonly ThinkingLevel[];
 	/** 上下文投影是否携带历史 thinking */

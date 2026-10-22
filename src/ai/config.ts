@@ -3,7 +3,7 @@
  * 结构：{ default, providers: { <name>: { baseUrl, apiKey, model } } }
  * apiKey 可被环境变量 UINA_API_KEY_<NAME大写> 覆盖（避免敏感信息写盘）。
  */
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { GeminiThinkingFormat, ThinkingLevel, ThinkingWireFormat } from "../core/types.js";
@@ -20,6 +20,11 @@ export interface ProviderConfig {
 	maxRetries?: number;
 	/** Anthropic 的 /messages 必须显式给出 max_tokens；Uina 不发明这个输出上限。 */
 	maxOutputTokens?: number;
+	/**
+	 * 显式覆盖模型输入预算（每请求允许携带的历史 token 上限）。
+	 * 缺省时由 core/model.ts 的默认上限封顶；填 0 表示不额外设限，只用窗口减输出预留。
+	 */
+	inputBudgetTokens?: number;
 	/** Gemini models that explicitly require function-call ids on the wire. Unknown stays omitted. */
 	geminiToolCallIds?: boolean;
 	/** Gemini thinking 的 wire 控制方式。声明 thinkingLevels 时必须显式给出，绝不按模型名推断。 */
@@ -203,6 +208,14 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 		) {
 			throw new Error(`配置 ${path} 的 provider ${name} 的 maxOutputTokens 无效`);
 		}
+		if (
+			provider.inputBudgetTokens !== undefined &&
+			(typeof provider.inputBudgetTokens !== "number" ||
+				!Number.isSafeInteger(provider.inputBudgetTokens) ||
+				provider.inputBudgetTokens < 0)
+		) {
+			throw new Error(`配置 ${path} 的 provider ${name} 的 inputBudgetTokens 无效`);
+		}
 		if (provider.thinkingBudgets !== undefined) {
 			if (
 				typeof provider.thinkingBudgets !== "object" ||
@@ -266,6 +279,7 @@ function validateConfig(value: unknown, path: string): UinaConfig {
 			...(provider.maxRetries === undefined ? {} : { maxRetries: provider.maxRetries }),
 			...(provider.geminiToolCallIds === undefined ? {} : { geminiToolCallIds: provider.geminiToolCallIds as boolean }),
 			...(provider.maxOutputTokens === undefined ? {} : { maxOutputTokens: provider.maxOutputTokens as number }),
+			...(provider.inputBudgetTokens === undefined ? {} : { inputBudgetTokens: provider.inputBudgetTokens as number }),
 			...(provider.thinkingBudgets === undefined
 				? {}
 				: { thinkingBudgets: provider.thinkingBudgets as Partial<Record<ThinkingLevel, number>> }),
