@@ -6,9 +6,10 @@
  *
  * 基于 Uina Test Kit 进行统一治理，消灭手工 mkdtemp/dirs 样板。
  */
-import { describe, expect, test, UinaTestHarness } from "./harness/index.js";
+
 import { fileURLToPath } from "node:url";
 import type { HostEvent } from "../src/host/events.js";
+import { describe, expect, test, UinaTestHarness } from "./harness/index.js";
 
 /** 一个普通项目扩展：注册一个工具。扩展装载也一并被这条路径验证。 */
 const PROJECT_EXTENSION = `
@@ -47,6 +48,24 @@ describe("RC-1 宿主与消费者分离", () => {
 			await uina.send("测试工具声明");
 			await uina.waitForIdle();
 			expect(scenario.calls[0]?.tools?.some((tool) => tool.function.name === "voice")).toBe(true);
+		} finally {
+			await uina.dispose();
+		}
+	});
+
+	test("start 先发布恢复基线快照，装配完成后再发布收口快照", async ({ env, scenario }) => {
+		await env.writeExtension("probe.mjs", PROJECT_EXTENSION);
+		const uina = await UinaTestHarness.create({ env, scenario, autoStart: false });
+		try {
+			await uina.start();
+			const updates = uina.events.all.filter(
+				(e): e is Extract<HostEvent, { type: "context_update" }> => e.type === "context_update",
+			);
+			expect(updates).toHaveLength(2);
+			// 基线快照在 builtin/项目扩展装配前发布；收口快照已包含 probe 工具，token 严格更大。
+			expect(updates[1]?.snapshot.inputTokens).toBeGreaterThan(
+				updates[0]?.snapshot.inputTokens ?? Number.NEGATIVE_INFINITY,
+			);
 		} finally {
 			await uina.dispose();
 		}

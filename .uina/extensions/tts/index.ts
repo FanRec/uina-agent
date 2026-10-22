@@ -114,9 +114,29 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 			);
 		}
 	})();
+	// 伴生服务后台预热：ensureCompanion 可能 spawn Python 桥并轮询健康检查
+	// （startupTimeoutMs 配置 30s），同步 await 会拖住 host.start、把 TUI 首个
+	// 上下文快照推迟十几秒。改为后台启动；speak 提交前等待就绪，teardown 等待收尾。
+	const companionStartup = (async () => {
+		try {
+			companionHandle = await ensureCompanion(config, pi.signal);
+			driver.setBridgeOwnership(companionHandle.didSpawn ? "owned" : "external");
+			driver.setOnline(true);
+		} catch (err) {
+			driver.setBridgeOwnership("unknown");
+			// 降级是连接事实，不是用户偏好：只标记离线，不改 muted（§4.3）。
+			driver.setOnline(false);
+			const degradedMessage = `[TTS] 伴生服务不可用（未连接或协议不兼容），已降级为纯打字模式 (可通过 voice 工具重试): ${err instanceof Error ? err.message : String(err)}`;
+			// 这是可恢复的能力降级，不是扩展生命周期错误。reportError 会产生
+			// extension_error 红色错误事件，导致 Uina 刚启动就被错误打断；这里只做警告通知。
+			if (pi.ui?.notify) pi.ui.notify(degradedMessage, "warning", 8000);
+			else console.warn(degradedMessage);
+		}
+	})();
 	let cleanupPromise: Promise<void> | undefined;
 	const stopOwnedCompanions = (): Promise<void> => {
 		cleanupPromise ??= (async () => {
+			await companionStartup;
 			await subtitleStartup;
 			const cleanup = await Promise.allSettled([
 				(async () => {
@@ -136,21 +156,6 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 		return cleanupPromise;
 	};
 	try {
-		try {
-			companionHandle = await ensureCompanion(config, pi.signal);
-			driver.setBridgeOwnership(companionHandle.didSpawn ? "owned" : "external");
-			driver.setOnline(true);
-		} catch (err) {
-			driver.setBridgeOwnership("unknown");
-			// 降级是连接事实，不是用户偏好：只标记离线，不改 muted（§4.3）。
-			driver.setOnline(false);
-			const degradedMessage = `[TTS] 伴生服务不可用（未连接或协议不兼容），已降级为纯打字模式 (可通过 voice 工具重试): ${err instanceof Error ? err.message : String(err)}`;
-			// 这是可恢复的能力降级，不是扩展生命周期错误。reportError 会产生
-			// extension_error 红色错误事件，导致 Uina 刚启动就被错误打断；这里只做警告通知。
-			if (pi.ui?.notify) pi.ui.notify(degradedMessage, "warning", 8000);
-			else console.warn(degradedMessage);
-		}
-
 		// 2. 注册向下驱动服务（遵循 Uina IPC 序列化规范，纯数据交互）
 		pi.registerService("voice_driver:set_muted", async (input: { muted: boolean }) => {
 			if (input?.muted)
@@ -169,6 +174,9 @@ export default async function activate(pi: ExtensionAPI): Promise<void | (() => 
 			"voice_driver:speak",
 			async (input: { text?: string; replace?: boolean; invocationId?: string } | undefined, context) => {
 				context.signal.throwIfAborted();
+				// 启动已改为后台预热：提交前等待伴生服务就绪（或确认失败降级），
+				// 避免首批 speak 撞上未完成 spawn 的半启动桥。
+				await companionStartup;
 				const result = await driver.speak(
 					typeof input?.text === "string" ? input.text : "",
 					typeof input?.invocationId === "string" ? input.invocationId : undefined,

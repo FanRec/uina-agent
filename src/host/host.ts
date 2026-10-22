@@ -450,6 +450,10 @@ export class UinaHost {
 	/** 内置能力与项目扩展共享同一套 ResourceScope 与同一张 pi API 面；在消费者接入之后调用。 */
 	async start(startOptions: HostStartOptions = {}): Promise<void> {
 		this.requestShutdown = startOptions.requestShutdown;
+		// 先发布一次恢复基线快照：扩展装配（伴生服务预热、world 启动）可能拖住
+		// start 数十秒，上下文条先以恢复出的历史基线可见。start 末尾的快照在全部
+		// transformContext 装配完成后重算，仍是权威收口。
+		await this.subject.getContextSnapshot("idle_baseline");
 		// ── 官方能力装配顺序合同 ──────────────────────────────────────────
 		// transformContext 是链式 hook（后一个收到前一个的输出），执行顺序 = 下面的
 		// 激活顺序：compaction → world-framework（tail 尾帧）→ 项目扩展；其中 tail 相位
