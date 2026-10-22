@@ -31,25 +31,31 @@ function fakePi(options: {
 const MESSAGES: ChatMsg[] = [{ role: "user", content: "历史" }];
 
 describe("compaction 摘要请求", () => {
-	test("思考档位跟随宿主声明，流式正文驱动进度回调", async () => {
+	test("思考档位跟随宿主声明，思考与正文分别驱动进度回调", async () => {
 		const requests: ModelRequest[] = [];
-		const activities: number[] = [];
+		const activities: { chars: number; kind: string }[] = [];
 		const pi = fakePi({
 			thinkingLevel: "high",
 			stream: async (request, onDelta) => {
 				requests.push(request);
-				onDelta({ kind: "thinking", text: "思考不计入正文" });
+				onDelta({ kind: "thinking", text: "思考" });
+				onDelta({ kind: "thinking", text: "继续" });
 				onDelta({ kind: "text", text: "摘要" });
 				onDelta({ kind: "text", text: "正文" });
 			},
 		});
 		const result = await requestTextCompletion(pi, MESSAGES, "摘要模型请求", new AbortController().signal, {
-			onActivity: (chars) => activities.push(chars),
+			onActivity: (chars, kind) => activities.push({ chars, kind }),
 		});
 		expect(result).toBe("摘要正文");
 		expect(requests[0]?.thinkingLevel).toBe("high");
 		expect(requests[0]?.tools).toEqual([]);
-		expect(activities).toEqual([2, 4]);
+		expect(activities).toEqual([
+			{ chars: 2, kind: "thinking" },
+			{ chars: 4, kind: "thinking" },
+			{ chars: 2, kind: "text" },
+			{ chars: 4, kind: "text" },
+		]);
 	});
 
 	test("宿主未提供思考档位入口时不发送 thinking 字段", async () => {

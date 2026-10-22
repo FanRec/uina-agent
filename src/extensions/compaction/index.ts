@@ -369,7 +369,7 @@ export interface SummaryRequestOptions {
 	/** 摘要请求总超时（毫秒）；<=0 表示不限时。默认 SUMMARY_REQUEST_TIMEOUT_MS。 */
 	timeoutMs?: number;
 	/** 流式文本活动回调（累计字符数）：驱动 UI 进度，不改变请求语义。 */
-	onActivity?: (chars: number) => void;
+	onActivity?: (chars: number, kind: "thinking" | "text") => void;
 }
 
 // 摘要请求的总超时。Provider 无响应时（实测可 90s+ 无任何反馈），超时把
@@ -404,6 +404,7 @@ export async function requestTextCompletion(
 			: undefined;
 	timeoutTimer?.unref();
 	let text = "";
+	let thinking = "";
 	try {
 		// 摘要跟随用户当前思考档位：不显式传值时网关不发 thinking 字段，
 		// 服务端会走自己的默认档（实测 DeepSeek 默认思考把 11s 拖到 25s+）。
@@ -416,9 +417,14 @@ export async function requestTextCompletion(
 				...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
 			},
 			(delta) => {
+				// 思考先于正文到达且可能持续几十秒，计入活动回调让进度不静默。
+				if (delta.kind === "thinking") {
+					thinking += delta.text;
+					options.onActivity?.(thinking.length, "thinking");
+				}
 				if (delta.kind === "text") {
 					text += delta.text;
-					options.onActivity?.(text.length);
+					options.onActivity?.(text.length, "text");
 				}
 			},
 			AbortSignal.any([signal, timeoutController.signal]),
@@ -491,7 +497,7 @@ async function requestSummary(
 	instruction: string | undefined,
 	signal: AbortSignal,
 	onChunk?: (completed: number) => Promise<void>,
-	onActivity?: (chars: number) => void,
+	onActivity?: (chars: number, kind: "thinking" | "text") => void,
 ): Promise<string> {
 	const focus = instruction?.trim() ? `\n\n额外关注：${instruction.trim()}` : "";
 	// 摘要分块预算跟随当前思考档位：思考输出与输入共享同一上下文窗口。
@@ -643,22 +649,22 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 		const prefixFingerprint = hashBearingPrefix(prefixBearing, coveredBearingIndex);
 
 		await emitProgress(operationId, "summarizing", "生成历史摘要");
-		// 流式活动进度：摘要模型可能在几十秒里不给任何中间结果，把"已接收字数"
-		// 节流上报（≥500ms 且字数变化），让 TUI 状态行持续有生命迹象。
-		let lastActivityAt = 0;
-		let lastActivityChars = 0;
+		// 流式活动进度：摘要模型可能在几十秒里不给任何中间结果，把"思考/正文已接收
+		// 字数"节流上报（≥500ms 且字数变化），让 TUI 状态行持续有生命迹象。
+		const lastActivityAt = { thinking: 0, text: 0 };
+		const lastActivityChars = { thinking: 0, text: 0 };
 		let summary = await requestSummary(
 			pi,
 			messages.slice(0, coverTarget),
 			instruction,
 			signal ?? pi.signal,
 			(count) => emitProgress(operationId, "summarizing", `已完成 ${count} 块历史摘要`),
-			(chars) => {
+			(chars, kind) => {
 				const now = Date.now();
-				if (chars === lastActivityChars || now - lastActivityAt < 500) return;
-				lastActivityAt = now;
-				lastActivityChars = chars;
-				void emitProgress(operationId, "summarizing", `生成历史摘要（已接收 ${chars} 字）`);
+				if (chars === lastActivityChars[kind] || now - lastActivityAt[kind] < 500) return;
+				lastActivityAt[kind] = now;
+				lastActivityChars[kind] = chars;
+				void emitProgress(operationId, "summarizing", `生成历史摘要（思考中，已接收 ${chars} 字）`);
 			},
 		);
 
