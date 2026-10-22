@@ -4,15 +4,16 @@
  * 2. checkpointValid 保证仅当 canonical 覆盖点仍在主线且前缀指纹完全一致时才有效；
  * 3. semanticUnits 保证工具调用事务原子性，findTrimBoundary 保障保留尾部永远不以 tool 角色开头。
  */
-import { describe, expect, test } from "./harness/index.js";
+
 import {
+	type CompactionCheckpoint,
 	checkpointValid,
 	findTrimBoundary,
 	fingerprintPrefix,
 	semanticUnits,
-	type CompactionCheckpoint,
 } from "../src/extensions/compaction/index.js";
 import type { HydratedSessionEntry } from "../src/session/types.js";
+import { describe, expect, test } from "./harness/index.js";
 
 function createEntry(id: string, seq: number, text: string): HydratedSessionEntry {
 	return {
@@ -79,9 +80,36 @@ describe("compaction canonical boundary & fingerprint", () => {
 		// 回溯丢弃：如果主线由于 rewind 丢失了 e2，checkpoint 立即失效
 		expect(checkpointValid(checkpoint, [entry1])).toBe(false);
 
-		// 指纹篡改：如果主线内容被修改导致指纹失配，checkpoint 立即失效
+		// 指纹篡改：覆盖内容变化必须立即失配
 		const tamperedHistory = [createEntry("e1", 0, "不同内容"), entry2, entry3];
 		expect(checkpointValid(checkpoint, tamperedHistory)).toBe(false);
+	});
+
+	test("覆盖下标预检仍以指纹为准：追加不影响，截断/篡改立即失配", () => {
+		const entry1 = createEntry("e1", 0, "第一轮");
+		const entry2 = createEntry("e2", 1, "第二轮");
+		const entry3 = createEntry("e3", 2, "第三轮");
+		const entry4 = createEntry("e4", 3, "第四轮");
+
+		const checkpoint: CompactionCheckpoint = {
+			version: 1,
+			summary: "前两轮历史摘要",
+			coveredThroughEntryId: "e2",
+			tailStartsAtEntryId: "e3",
+			prefixFingerprint: fingerprintPrefix([entry1, entry2, entry3], "e2")!,
+			coveredBearingIndex: 1,
+			source: "manual",
+		};
+
+		expect(checkpointValid(checkpoint, [entry1, entry2, entry3])).toBe(true);
+		// 追加：覆盖点之前的承载序列未变，指纹仍匹配
+		expect(checkpointValid(checkpoint, [entry1, entry2, entry3, entry4])).toBe(true);
+		// 截断到覆盖点之前：下标处已不是同一个条目
+		expect(checkpointValid(checkpoint, [entry1])).toBe(false);
+		// 覆盖点之前的内容被篡改：下标仍匹配，但指纹必须失配
+		expect(checkpointValid(checkpoint, [createEntry("e1", 0, "不同内容"), entry2, entry3, entry4])).toBe(false);
+		// 覆盖点之后的条目被回溯替换：覆盖点本身仍然成立
+		expect(checkpointValid(checkpoint, [entry1, entry2, entry4])).toBe(true);
 	});
 
 	test("semanticUnits 将 tool_calls 与 tool_results 绑定为不可分割的原子单元", () => {

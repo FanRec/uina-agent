@@ -582,9 +582,17 @@ describe("ExtensionHost & Hooks Architecture", () => {
 				stream: pair.stream,
 				runtimeHooks: createRuntimeHooks(host),
 			});
+			// 中断必须"在输出开始之后"发生：请求准备阶段会让出事件循环，
+			// 固定 setTimeout(0) 会在 stream 尚未 attach abort listener 时就打断。
+			const started = new Promise<void>((resolve) => {
+				const off = host.on("output_start", () => {
+					off();
+					resolve();
+				});
+			});
 			const run = harness.pushInput("probe");
 			if (interruptAfterStart) {
-				await new Promise<void>((resolve) => setTimeout(resolve, 0));
+				await started;
 				harness.interrupt();
 			}
 			await run;
@@ -650,6 +658,27 @@ describe("ExtensionHost & Hooks Architecture", () => {
 			"output_update:content",
 			"output_interrupted:content:cancelled",
 		]);
+	});
+
+	it("does not start the provider stream when interrupted during request preparation", async () => {
+		const host = new ExtensionHost();
+		let streamCalls = 0;
+		const harness = SubjectHarness.create({
+			model: mockModel({ id: "prep-abort" }),
+			stream: async () => {
+				streamCalls++;
+			},
+			runtimeHooks: createRuntimeHooks(host),
+		});
+		host.onHook("turn.preflight", () => {
+			harness.interrupt();
+			return { action: "send" };
+		});
+
+		await harness.pushInput("probe");
+		await harness.waitForIdle();
+
+		expect(streamCalls).toBe(0);
 	});
 
 	it("intercepts HTTP requests at provider network level (before_provider_headers, before_provider_request, after_provider_response)", async () => {

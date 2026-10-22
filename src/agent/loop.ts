@@ -70,6 +70,21 @@ export interface QueueInputOptions {
 
 type InputSubmission = { kind: "start"; promptText?: string } | { kind: "queue"; resumeIfIdle: boolean };
 
+/** 把一轮请求准备切成多段，让 TUI 心跳与终端 IO 有机会插进来。
+ * 用 MessageChannel 而不是 setImmediate/setTimeout：后者在 vi.useFakeTimers()
+ * 下会被接管，测试里永远等不到回调，直接把回合挂死。 */
+function yieldToLoop(): Promise<void> {
+	return new Promise<void>((resolve) => {
+		const { port1, port2 } = new MessageChannel();
+		port1.onmessage = () => {
+			port1.close();
+			port2.close();
+			resolve();
+		};
+		port2.postMessage(0);
+	});
+}
+
 function isWorldInput(item: QueuedMessage): boolean {
 	return item.mode === "followUp" && item.source?.kind === "runtime" && item.source.channel === "world";
 }
@@ -1042,6 +1057,10 @@ export class Subject {
 			// 回合内暴涨由每请求的 transformContext 裁剪收敛（compaction capability
 			// 拥有上下文窗口管理）——这里不再有 between-step 压缩体检。
 			const projection = await this.prepareProjectionForSend(model, systemPrompt, beforeMessages, this.currentSignal());
+			if (!projection) {
+				await this.emitInterrupted();
+				return { kind: "aborted" };
+			}
 			const callId = `stream-${this.turnSeq}-${++this.streamSeq}`;
 			const callSeq = this.streamSeq;
 			const collector = new TurnStreamCollector(callId, (event) => this.dispatch(event), {
@@ -1136,9 +1155,13 @@ export class Subject {
 		systemPrompt: string,
 		beforeMessages: readonly (AgentMessage | ChatMsg)[],
 		turnSignal: AbortSignal,
-	): Promise<RequestProjection> {
+	): Promise<RequestProjection | undefined> {
 		for (let pass = 0; pass <= 1; pass++) {
-			const projection = await this.prepareProjection(model, systemPrompt, beforeMessages, true);
+			const projection = await this.prepareProjection(model, systemPrompt, beforeMessages, true, turnSignal);
+			// 投影与测量是同步 CPU（全量历史构建 + JSON 序列化）。不在这里割断，
+			// 事件循环会连同 TUI 心跳、输出流一起被冻住（实测单次 1.4s）。
+			await yieldToLoop();
+			if (this.interrupted || turnSignal.aborted) return undefined;
 			const measurement = measureRequestContext(
 				projection,
 				this.measureContext ? (p) => this.measureContext!(model, p) : undefined,
@@ -1155,6 +1178,9 @@ export class Subject {
 				throw new Error("上下文超过可用预算；无法保留完整的最近上下文，请压缩或缩减输入");
 			}
 			this.projection.validateContext(projection.messages, { model, tools: projection.tools });
+			// 下面的 provider 调用要先对 1MB 请求体做守卫克隆与序列化，同样让一次。
+			await yieldToLoop();
+			if (this.interrupted || turnSignal.aborted) return undefined;
 			// An active request supersedes every idle inspection that is still in flight.
 			// Otherwise a slower idle measurement can publish after this snapshot and
 			// overwrite the context actually sent to the provider.
@@ -1175,6 +1201,7 @@ export class Subject {
 		systemPrompt: string,
 		beforeMessages: readonly (AgentMessage | ChatMsg)[],
 		runTransforms: boolean,
+		signal?: AbortSignal,
 	): Promise<RequestProjection> {
 		const built = [
 			...buildContext({
@@ -1194,6 +1221,9 @@ export class Subject {
 			thinkingLevel: clampThinkingLevel(this.thinkingLevel, model.thinkingLevels),
 		});
 		if (!runTransforms) return base;
+		await yieldToLoop();
+		// 中断发生在让出点之后时，不再执行投影变换；调用方会在下一个检查点收尾。
+		if (signal?.aborted) return base;
 		const transformed = await this.runtimeHooks.turn.transformContext(base);
 		if (transformed.projectionId !== base.projectionId || transformed.modelKey !== base.modelKey) {
 			throw new Error("turn.transformContext 不得修改 projectionId 或 modelKey");
