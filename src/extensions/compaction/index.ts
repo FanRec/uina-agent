@@ -705,7 +705,9 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 				if (chars === lastActivityChars[kind] || now - lastActivityAt[kind] < 500) return;
 				lastActivityAt[kind] = now;
 				lastActivityChars[kind] = chars;
-				void emitProgress(operationId, "summarizing", `生成历史摘要（思考中，已接收 ${chars} 字）`);
+				// kind 必须落到文案里：正文阶段还报"思考中"，状态行就是在陈述错的事实。
+				const channel = kind === "thinking" ? "思考中" : "正文生成中";
+				void emitProgress(operationId, "summarizing", `生成历史摘要（${channel}，已接收 ${chars} 字）`);
 			},
 		);
 

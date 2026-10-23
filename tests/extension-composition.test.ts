@@ -482,8 +482,10 @@ describe("compaction capability event contract", () => {
 		const { stream, summaryCalls } = summarizingStream("总线摘要");
 		const host = compactionHost(await temp(), stream);
 		const seen: string[] = [];
+		const activity: string[] = [];
 		host.on("session_compact", () => seen.push("compact"));
 		host.on("session_compact_progress", (event) => {
+			if (event.phase === "summarizing" && event.detail?.includes("已接收")) activity.push(event.detail);
 			if (event.phase === "measuring" || event.phase === "applying") seen.push(event.detail ?? event.phase);
 		});
 		await activate(host, "compaction", activateCompaction);
@@ -500,6 +502,9 @@ describe("compaction capability event contract", () => {
 		expect((trimmed[0] as { content: string }).content).toBe("[历史摘要] 总线摘要");
 		expect(trimmed.length).toBeLessThan(messages.length);
 		expect(seen).toEqual(["重建并测量压缩后的请求", "写入压缩检查点", "发布压缩结果", "compact"]);
+		// 活动进度必须按 kind 陈述：摘要正文到达时还报"思考中"就是状态行在说谎。
+		expect(activity.some((detail) => detail.includes("正文生成中"))).toBe(true);
+		expect(activity.some((detail) => detail.includes("思考中"))).toBe(false);
 	});
 
 	it("broadcasts a failed session_compact result when the summarizer fails", async () => {
