@@ -375,6 +375,8 @@ export class UinaHost {
 	 * - direct 的忙时升级（→steer）等投递规则唯一归属 Subject.pushInput。
 	 */
 	async submitText(text: string, mode: "direct" | "steer" | "followUp" = "followUp"): Promise<void> {
+		// 装配未收口时排队等待而不是拒绝：第 1 回合必须看到最终系统提示词。
+		await this.startCompletion;
 		this.assertAccepting();
 		const effective = this.subject.isBusy() ? mode : "direct";
 		// 操作者输入来源标注（外部事件帧协议）：TUI/console 提交是已知操作者通道，
@@ -388,6 +390,7 @@ export class UinaHost {
 
 	/** 程序化投递：原样入队，不做“忙时升级”转换（队列移交、后台通知走这条路）。 */
 	async pushInput(text: string, mode: "direct" | "steer" | "followUp"): Promise<void> {
+		await this.startCompletion;
 		this.assertAccepting();
 		return this.subject.pushInput(text, { mode });
 	}
@@ -412,8 +415,12 @@ export class UinaHost {
 		return this.subject.waitForIdle();
 	}
 	resumePending(): Promise<void> {
-		this.assertAccepting();
-		return this.subject.resumePending();
+		return (async () => {
+			// 恢复未完成回合同样会开启模型回合，必须等装配收口（系统提示词完整性）。
+			await this.startCompletion;
+			this.assertAccepting();
+			return this.subject.resumePending();
+		})();
 	}
 	claimAllQueued(): Promise<import("../agent/loop.js").ClaimAllResult> {
 		return this.subject.claimAllQueued();
@@ -447,9 +454,22 @@ export class UinaHost {
 		};
 	}
 
+	/** 扩展装配收口门：start() 同步赋值，回合开始的输入入口等它 resolve。
+	 * 没有它，用户在装配窗口内打字会让第 1 回合跑在项目扩展激活前——系统提示词
+	 * 缺片段（提示词变更横幅的来源），服务端前缀缓存也随之失效一次。 */
+	private startCompletion?: Promise<void>;
+
 	/** 内置能力与项目扩展共享同一套 ResourceScope 与同一张 pi API 面；在消费者接入之后调用。 */
 	async start(startOptions: HostStartOptions = {}): Promise<void> {
 		this.requestShutdown = startOptions.requestShutdown;
+		// 先同步赋值再进入第一个 await：消费者接入发生在 start() 之前，装配窗口内的
+		// 提交必须落到这扇门上，而不是落到未定义的门。
+		const completion = this.assembleCapabilities();
+		this.startCompletion = completion;
+		await completion;
+	}
+
+	private async assembleCapabilities(): Promise<void> {
 		// 先发布一次恢复基线快照：扩展装配（伴生服务预热、world 启动）可能拖住
 		// start 数十秒，上下文条先以恢复出的历史基线可见。start 末尾的快照在全部
 		// transformContext 装配完成后重算，仍是权威收口。

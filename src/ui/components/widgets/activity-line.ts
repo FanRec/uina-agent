@@ -7,6 +7,7 @@
  * 4. 纯函数排版渲染器（formatActivityHeader）与高内聚状态机（ActivityLineComponent）。
  */
 
+import type { GenerationTiming } from "../../../core/types.js";
 import type { Component } from "../../core/types.js";
 import { C, charWidth, truncateToWidth, visibleWidth } from "../../core/utils.js";
 
@@ -148,6 +149,14 @@ export function formatWorkingHeader(message: string, elapsedMs: number, maxWidth
 
 /** 表盘量程地板：低于它的峰值会被抬到此处，避免小样本把表盘放得过大。 */
 const GAUGE_FLOOR = 40;
+
+/**
+ * 可度量解码窗口下限：低于它说明内容是一次成批到达的（Provider/网关把整段塞进一两个
+ * SSE chunk），客户端没有观察到解码过程——窗口落在传输抖动量级，分不出「真实高速」与
+ * 「整段批处理」。这种 step 不进速度账本（分子分母一起不计），否则 92 个真实 token 除以
+ * 30ms 会报出 3000+ tps。真实逐 token 解码哪怕再快，非平凡输出也会把 delta 摊开到更宽。
+ */
+const MIN_MEASURABLE_DECODE_MS = 100;
 const HBLOCKS = [" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
 const VBLOCKS = [" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 const TRACK = "·";
@@ -209,6 +218,10 @@ export interface ActivityHeaderMetrics {
 	avgTps?: number;
 	isWaitingFirstToken?: boolean;
 	tpsSamples?: readonly number[];
+	/** 本回合首个请求的首包耗时；来自 Provider 真实时序，而非 UI 事件时刻。 */
+	ttftMs?: number;
+	/** 本回合已结算的思考 token；usage.output 含它，正文 = output - reasoning。 */
+	reasoningTokens?: number;
 }
 
 /**
@@ -229,7 +242,16 @@ export function formatActivityHeader(metrics: ActivityHeaderMetrics, maxWidth = 
 			const sparkColor = tpsColor(avgTps);
 			sparkStr = spark ? ` · ${sparkColor}${spark}${C.reset} ~${avgTps} tps` : ` · ~${avgTps} tps`;
 		}
-		const text = `${C.gray}${metrics.message} · 耗时 ${seconds}s${tokens > 0 ? ` · ~${tokens} tokens` : ""}${sparkStr}${C.reset}`;
+		// 首包等待是真实体验的一部分，之前完全不可见：3.1s 耗时里有 2.4s 在等首包。
+		const ttft =
+			metrics.ttftMs !== undefined && metrics.ttftMs >= 100 ? ` · 首包 ${(metrics.ttftMs / 1000).toFixed(1)}s` : "";
+		// usage.output 含思考 token；宽屏时拆开，避免把「想得多」误读成「吐字慢」。
+		const reasoning = metrics.reasoningTokens ?? 0;
+		const content = Math.max(0, tokens - reasoning);
+		const showSplit = reasoning > 0 && maxWidth >= 90;
+		const tokenStr =
+			tokens > 0 ? (showSplit ? ` · ${tokens} tok (思考 ${reasoning} · 正文 ${content})` : ` · ~${tokens} tokens`) : "";
+		const text = `${C.gray}${metrics.message} · 耗时 ${seconds}s${ttft}${tokenStr}${sparkStr}${C.reset}`;
 		return truncateToWidth(`${prefix} ${text}`, maxWidth);
 	}
 
@@ -271,9 +293,17 @@ export class ActivityLineComponent implements Component {
 	private stepOtherChars = 0;
 	private stepUsageTokens = 0;
 	private stepUsageAt = 0;
+	/** Provider 真实时序：解码窗口的权威来源，不含 usage 尾部 RTT。 */
+	private stepTiming?: GenerationTiming;
+	private stepReasoningTokens = 0;
 
 	private settledDecodeMs = 0;
 	private settledOutputTokens = 0;
+	/** 速度配对账本：只累计「窗口达到可度量下限」的 step，与 settledDecodeMs 成对使用。 */
+	private settledMeasuredTokens = 0;
+	private settledReasoningTokens = 0;
+	/** 本回合首个请求的首包耗时（一次回合内恒定，不随 step 累加）。 */
+	private firstTtftMs = 0;
 
 	private tpsSamples: number[] = [];
 
@@ -286,6 +316,9 @@ export class ActivityLineComponent implements Component {
 		this.clearStep();
 		this.settledDecodeMs = 0;
 		this.settledOutputTokens = 0;
+		this.settledMeasuredTokens = 0;
+		this.settledReasoningTokens = 0;
+		this.firstTtftMs = 0;
 	}
 
 	update(phase: ActivityPhase, message: string): void {
@@ -310,17 +343,35 @@ export class ActivityLineComponent implements Component {
 		return foldStreamChars({ cjk: this.stepCjkChars, other: this.stepOtherChars });
 	}
 
-	addRealOutputTokens(tokens: number): void {
-		if (tokens <= 0 || this.stepFirstTokenAt === 0) return;
+	addRealOutputTokens(tokens: number, timing?: GenerationTiming, reasoningTokens?: number): void {
+		if (tokens <= 0) return;
+		const hasWindow = timing !== undefined && timing.decodeMs > 0;
+		// 整步没有任何成功内容 delta 时，既没有可信窗口也没有可信分母，宁可不报。
+		if (this.stepFirstTokenAt === 0 && !hasWindow) return;
 		this.stepUsageTokens = tokens;
 		this.stepUsageAt = Date.now();
+		if (timing) {
+			// timing 一律存下（decodeMs=0 也是事实）：endStep 要靠它识别成批到达，
+			// 而不是误退回被尾部 RTT 污染的 UI 事件窗口。
+			this.stepTiming = timing;
+			if (this.firstTtftMs === 0 && timing.ttftMs > 0) this.firstTtftMs = timing.ttftMs;
+		}
+		this.stepReasoningTokens = reasoningTokens ?? 0;
 	}
 
 	endStep(): void {
-		if (this.stepFirstTokenAt === 0) return;
-		const end = this.stepUsageAt > 0 ? this.stepUsageAt : this.stepLastTokenAt;
-		this.settledDecodeMs += Math.max(0, end - this.stepFirstTokenAt);
-		this.settledOutputTokens += this.stepUsageTokens > 0 ? this.stepUsageTokens : this.estimateTokens();
+		// token 总数是事实（服务端报了、输出用户可见），有可见输出就记；
+		// 速度是测量：窗口低于可度量下限（成批到达）的 step 不进速度账本。
+		const visible = this.stepFirstTokenAt > 0;
+		const stepTokens = this.stepUsageTokens > 0 ? this.stepUsageTokens : this.estimateTokens();
+		if (visible && stepTokens > 0) {
+			this.settledOutputTokens += stepTokens;
+			this.settledReasoningTokens += this.stepReasoningTokens;
+		}
+		if (visible && this.observedWindowMs() >= MIN_MEASURABLE_DECODE_MS) {
+			this.settledMeasuredTokens += stepTokens;
+			this.settledDecodeMs += this.observedWindowMs();
+		}
 		this.clearStep();
 	}
 
@@ -335,8 +386,8 @@ export class ActivityLineComponent implements Component {
 			this.elapsedMs = 0;
 		}
 		this.message = summary;
-		if (this.settledOutputTokens > 0 && this.settledDecodeMs > 0) {
-			this.tpsSamples.push(Math.round(this.settledOutputTokens / (this.settledDecodeMs / 1000)));
+		if (this.settledMeasuredTokens > 0 && this.settledDecodeMs > 0) {
+			this.tpsSamples.push(Math.round(this.settledMeasuredTokens / (this.settledDecodeMs / 1000)));
 			if (this.tpsSamples.length > 500) this.tpsSamples.shift();
 		}
 	}
@@ -350,6 +401,9 @@ export class ActivityLineComponent implements Component {
 		this.clearStep();
 		this.settledDecodeMs = 0;
 		this.settledOutputTokens = 0;
+		this.settledMeasuredTokens = 0;
+		this.settledReasoningTokens = 0;
+		this.firstTtftMs = 0;
 	}
 
 	getPhase(): ActivityPhase {
@@ -363,6 +417,23 @@ export class ActivityLineComponent implements Component {
 		this.stepOtherChars = 0;
 		this.stepUsageTokens = 0;
 		this.stepUsageAt = 0;
+		this.stepTiming = undefined;
+		this.stepReasoningTokens = 0;
+	}
+
+	/**
+	 * 当前 step 观察到的解码窗口：Provider timing 是权威事实（可能为 0——成批到达），
+	 * 缺失时才退回 UI 事件时刻（含 usage 尾部 RTT，仅供无 timing 的旧路径）。
+	 */
+	private observedWindowMs(): number {
+		if (this.stepTiming) return Math.max(0, this.stepTiming.decodeMs);
+		if (this.stepFirstTokenAt === 0) return 0;
+		return Math.max(0, (this.stepUsageAt > 0 ? this.stepUsageAt : this.stepLastTokenAt) - this.stepFirstTokenAt);
+	}
+
+	/** 当前 step 是否达到可度量下限：低于它说明内容是一次成批到达，观察不到解码过程。 */
+	private isStepMeasurable(): boolean {
+		return this.stepFirstTokenAt > 0 && this.observedWindowMs() >= MIN_MEASURABLE_DECODE_MS;
 	}
 
 	private outputTokens(): number {
@@ -370,10 +441,14 @@ export class ActivityLineComponent implements Component {
 		return this.settledOutputTokens + (this.stepFirstTokenAt > 0 ? inFlight : 0);
 	}
 
-	private decodeMs(): number {
-		if (this.stepFirstTokenAt === 0) return this.settledDecodeMs;
-		const end = this.stepUsageAt > 0 ? this.stepUsageAt : this.stepLastTokenAt;
-		return this.settledDecodeMs + Math.max(0, end - this.stepFirstTokenAt);
+	/** 速度比值的两端：分子只累计可度量 step 的 token，与分母严格配对。 */
+	private speedPair(): { tokens: number; ms: number } {
+		if (!this.isStepMeasurable()) return { tokens: this.settledMeasuredTokens, ms: this.settledDecodeMs };
+		const inFlight = this.stepUsageTokens > 0 ? this.stepUsageTokens : this.estimateTokens();
+		return {
+			tokens: this.settledMeasuredTokens + inFlight,
+			ms: this.settledDecodeMs + this.observedWindowMs(),
+		};
 	}
 
 	/** 提取适用于圆角盒顶边框嵌入的状态文本 */
@@ -384,24 +459,22 @@ export class ActivityLineComponent implements Component {
 	}
 
 	private computeTps(): { tps: number; avgTps: number } {
-		const tokens = this.outputTokens();
 		if (this.phase === "done") {
-			const avgTps = tokens > 0 && this.settledDecodeMs > 0 ? Math.round(tokens / (this.settledDecodeMs / 1000)) : 0;
+			const avgTps =
+				this.settledMeasuredTokens > 0 && this.settledDecodeMs > 0
+					? Math.round(this.settledMeasuredTokens / (this.settledDecodeMs / 1000))
+					: 0;
 			return { tps: 0, avgTps };
 		}
 		// 门控对齐 dsh-TUI：
 		// 当前 step 自身跨度 > 500ms → 用「已结算累计 + 当前 step」重算；
 		// 不足 500ms（或处于 tool 阶段）→ 沿用已结算的累计值，不把刚起步的 step 混进分母，工具耗时亦不稀释流速；
 		// 没有任何已结算 step 时 → 保持 0（未知不是 0）。
-		const openMs =
-			this.stepFirstTokenAt === 0
-				? 0
-				: Math.max(0, (this.stepUsageAt > 0 ? this.stepUsageAt : this.stepLastTokenAt) - this.stepFirstTokenAt);
-		if (openMs > 500) {
-			const decodeMs = this.decodeMs();
-			if (tokens > 0 && decodeMs > 0) return { tps: Math.round(tokens / (decodeMs / 1000)), avgTps: 0 };
-		} else if (this.settledDecodeMs > 0 && this.settledOutputTokens > 0) {
-			return { tps: Math.round(this.settledOutputTokens / (this.settledDecodeMs / 1000)), avgTps: 0 };
+		if (this.isStepMeasurable() && this.observedWindowMs() > 500) {
+			const { tokens, ms } = this.speedPair();
+			if (tokens > 0 && ms > 0) return { tps: Math.round(tokens / (ms / 1000)), avgTps: 0 };
+		} else if (this.settledMeasuredTokens > 0 && this.settledDecodeMs > 0) {
+			return { tps: Math.round(this.settledMeasuredTokens / (this.settledDecodeMs / 1000)), avgTps: 0 };
 		}
 		return { tps: 0, avgTps: 0 };
 	}
@@ -424,6 +497,8 @@ export class ActivityLineComponent implements Component {
 				avgTps,
 				isWaitingFirstToken: this.stepFirstTokenAt === 0 && (this.phase === "thinking" || this.phase === "streaming"),
 				tpsSamples: this.tpsSamples,
+				...(this.firstTtftMs > 0 ? { ttftMs: this.firstTtftMs } : {}),
+				...(this.settledReasoningTokens > 0 ? { reasoningTokens: this.settledReasoningTokens } : {}),
 			},
 			maxWidth,
 			now,

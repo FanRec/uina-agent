@@ -4,7 +4,13 @@
  * 调度原子全帧差量渲染与键盘输入分发。
  */
 
-import type { ContextSnapshot, RequestUsage, ThinkingLevel, ToolResultStatus } from "../core/types.js";
+import type {
+	ContextSnapshot,
+	GenerationTiming,
+	RequestUsage,
+	ThinkingLevel,
+	ToolResultStatus,
+} from "../core/types.js";
 import { ExtensionRegistry } from "../extensions/renderer-registry.js";
 import type {
 	BuiltinUIActionRequest,
@@ -721,7 +727,8 @@ export class UIHost implements UIHostContextPort {
 		this.transcript.appendThinking(text);
 		this.activityLine.addStreamText(text);
 		this.activityLine.update("thinking", "正在深度推理 (Thinking)...");
-		this.requestRender();
+		// 流式增量只写状态，不驱动帧：帧由统一心跳（50ms）产出，与模型交付速率解耦；
+		// 回合期间 setBusy(true) 保证心跳在跑。
 	}
 
 	addPromptSnapshot(snapshot: PromptContextCardData): void {
@@ -756,12 +763,13 @@ export class UIHost implements UIHostContextPort {
 		this.transcript.appendToken(text);
 		this.activityLine.addStreamText(text);
 		this.activityLine.update("streaming", "正在输出回复...");
-		this.requestRender();
+		// 同上：smoothReveal 只在心跳 tick 推进，delta 之间重绘得到同一前缀。
+		// 首个游标由 appendToken → feed → onTick 唤醒心跳，不会漏帧。
 	}
 
 	/** usage_update 的服务端 output：活动行按 step 结算。 */
-	addStreamedOutputTokens(tokens: number): void {
-		this.activityLine.addRealOutputTokens(tokens);
+	addStreamedOutputTokens(tokens: number, timing?: GenerationTiming, reasoningTokens?: number): void {
+		this.activityLine.addRealOutputTokens(tokens, timing, reasoningTokens);
 	}
 
 	/** tool_call：结算上一步解码区间，snap 后开运行中工具卡。 */

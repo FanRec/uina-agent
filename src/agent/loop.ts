@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { validImages } from "../core/content.js";
+import { diagPhase } from "../core/diag-probe.js";
 import { errorMessage } from "../core/errors.js";
 import { inputTokenBudget, modelKey } from "../core/model.js";
 import type {
@@ -8,6 +9,7 @@ import type {
 	CompletedToolCall,
 	ContextSnapshot,
 	DeliveryMode,
+	GenerationTiming,
 	Model,
 	ModelStreamFn,
 	RequestInspection,
@@ -261,16 +263,24 @@ export class Subject {
 	 * 这里是唯一的写入点，所以历史 usage 与它派发出的 usage_update 永远同源：
 	 * pi.usage()/turn_end 与实时刷新看到的是同一个事实。
 	 */
-	private publishUsage(usage: Usage, callId: string, projection: RequestProjection, callSeq: number): void {
+	private publishUsage(
+		usage: Usage,
+		callId: string,
+		projection: RequestProjection,
+		callSeq: number,
+		timing?: GenerationTiming,
+	): void {
 		const requestUsage: RequestUsage = {
 			callId,
 			projectionId: projection.projectionId,
 			modelKey: projection.modelKey,
 			promptTokens: usage.input,
 			outputTokens: usage.output,
+			reasoningTokens: usage.reasoning,
 			cacheRead: usage.cacheRead,
 			cacheWrite: usage.cacheWrite,
 			totalTokens: usage.totalTokens,
+			...(timing ? { timing } : {}),
 		};
 		if (callSeq >= this.latestUsageSeq) {
 			this.latestUsageSeq = callSeq;
@@ -1056,7 +1066,9 @@ export class Subject {
 			await applyRewind();
 			// 回合内暴涨由每请求的 transformContext 裁剪收敛（compaction capability
 			// 拥有上下文窗口管理）——这里不再有 between-step 压缩体检。
+			const projectionT0 = performance.now();
 			const projection = await this.prepareProjectionForSend(model, systemPrompt, beforeMessages, this.currentSignal());
+			diagPhase("prepareProjection", performance.now() - projectionT0);
 			if (!projection) {
 				await this.emitInterrupted();
 				return { kind: "aborted" };
@@ -1064,7 +1076,7 @@ export class Subject {
 			const callId = `stream-${this.turnSeq}-${++this.streamSeq}`;
 			const callSeq = this.streamSeq;
 			const collector = new TurnStreamCollector(callId, (event) => this.dispatch(event), {
-				onUsage: (usage) => void this.publishUsage(usage, callId, projection, callSeq),
+				onUsage: (usage, timing) => void this.publishUsage(usage, callId, projection, callSeq, timing),
 				onRetry: (event) =>
 					this.dispatch(
 						event.kind === "provider_retry"

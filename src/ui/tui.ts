@@ -183,8 +183,10 @@ export class InteractiveTUI {
 			case "usage_update":
 				// Provider usage 描述过去的一次调用，不覆盖当前 RequestProjection 的上下文快照。
 				// 服务端报回的 output 是"本次调用"的输出量（含工具调用参数的分），交给活动行
-				// 按 step 结算：它既是这一步的分子，也是这一步解码区间的右端。
-				if (m.usage.outputTokens !== undefined) this.host.addStreamedOutputTokens(m.usage.outputTokens);
+				// 按 step 结算：它既是这一步的分子，timing.decodeMs 是这一步的解码窗口。
+				if (m.usage.outputTokens !== undefined) {
+					this.host.addStreamedOutputTokens(m.usage.outputTokens, m.usage.timing, m.usage.reasoningTokens);
+				}
 				this.host.setRequestUsage(m.usage);
 				break;
 

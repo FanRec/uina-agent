@@ -1,5 +1,13 @@
-import type { CompletedToolCall, FinishReason, ProviderReplay, StreamDelta, Usage } from "../core/types.js";
+import type {
+	CompletedToolCall,
+	FinishReason,
+	GenerationTiming,
+	ProviderReplay,
+	StreamDelta,
+	Usage,
+} from "../core/types.js";
 import type { OutputEvent } from "../runtime/events.js";
+import { diagDelta, diagDeltaSummary } from "../core/diag-probe.js";
 
 export interface StreamCollectorResult {
 	reply: string;
@@ -12,7 +20,7 @@ export interface StreamCollectorResult {
 }
 
 export interface StreamCollectorOptions {
-	onUsage?: (usage: Usage) => void;
+	onUsage?: (usage: Usage, timing?: GenerationTiming) => void;
 	onRetry?: (event: Extract<StreamDelta, { kind: "provider_retry" | "provider_recovered" }>) => void;
 }
 
@@ -44,11 +52,33 @@ export class TurnStreamCollector {
 	private hasEmittedThinkingStart = false;
 	private interrupted = false;
 
+	/** 请求发出时刻（本 collector 的生命起点），TTFT 的左端。 */
+	private readonly requestedAt = Date.now();
+	private firstDeltaAt = 0;
+	private lastDeltaAt = 0;
+
 	constructor(
 		readonly streamId: string,
 		private readonly dispatch: (event: OutputEvent) => void,
 		private readonly options?: StreamCollectorOptions,
 	) {}
+
+	/** 记录一次内容 delta 的到达时刻；usage/finish 是结算而非生成，不计。 */
+	private markDelta(): void {
+		const now = Date.now();
+		if (this.firstDeltaAt === 0) this.firstDeltaAt = now;
+		this.lastDeltaAt = now;
+		diagDelta();
+	}
+
+	/** 本步的真实时序：TTFT 与「首个内容 delta → 末个内容 delta」的解码窗口。 */
+	private generationTiming(): GenerationTiming | undefined {
+		if (this.firstDeltaAt === 0) return undefined;
+		return {
+			ttftMs: Math.max(0, this.firstDeltaAt - this.requestedAt),
+			decodeMs: Math.max(0, this.lastDeltaAt - this.firstDeltaAt),
+		};
+	}
 
 	handleDelta(delta: StreamDelta): void {
 		if (this.interrupted) return;
@@ -66,6 +96,7 @@ export class TurnStreamCollector {
 				break;
 
 			case "thinking": {
+				this.markDelta();
 				this.thinking += delta.text;
 				if (!this.hasEmittedThinkingStart) {
 					this.hasEmittedThinkingStart = true;
@@ -87,6 +118,7 @@ export class TurnStreamCollector {
 				break;
 
 			case "text": {
+				this.markDelta();
 				this.reply += delta.text;
 				if (!this.hasEmittedContentStart) {
 					this.hasEmittedContentStart = true;
@@ -105,10 +137,12 @@ export class TurnStreamCollector {
 
 			case "usage":
 				this.usage = delta.usage;
-				this.options?.onUsage?.(delta.usage);
+				this.options?.onUsage?.(delta.usage, this.generationTiming());
+				diagDeltaSummary();
 				break;
 
 			case "tool_call": {
+				this.markDelta();
 				const parsed = parseToolArgs(delta.call.args);
 				this.toolCalls.push({
 					id: delta.call.id,

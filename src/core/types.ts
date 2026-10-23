@@ -270,6 +270,14 @@ export interface RequestInspection {
 	readonly inputBudget?: number;
 }
 
+/** 一次模型调用的真实时序，单位毫秒，相对请求发出时刻。 */
+export interface GenerationTiming {
+	/** 请求发出到首个内容 delta（思考/正文/工具调用），含网络与排队。 */
+	readonly ttftMs: number;
+	/** 首个内容 delta 到末个内容 delta：整步真实解码窗口。 */
+	readonly decodeMs: number;
+}
+
 /** Usage reported by one completed or in-flight Provider request. */
 export interface RequestUsage {
 	readonly callId: string;
@@ -277,9 +285,11 @@ export interface RequestUsage {
 	readonly modelKey?: string;
 	readonly promptTokens?: number;
 	readonly outputTokens?: number;
+	readonly reasoningTokens?: number;
 	readonly cacheRead?: number;
 	readonly cacheWrite?: number;
 	readonly totalTokens?: number;
+	readonly timing?: GenerationTiming;
 }
 
 export type ThinkingWireFormat = "openai" | "deepseek" | "qwen";
