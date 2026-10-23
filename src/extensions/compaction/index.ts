@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import { CHARS_PER_TOKEN, estimateRequestTokens, estimateTextTokens } from "../../agent/context.js";
-import { diagPhase } from "../../core/diag-probe.js";
 import { inputTokenBudget, modelKey } from "../../core/model.js";
 import type {
 	ChatMsg,
@@ -878,21 +877,14 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 	});
 
 	pi.onHook("turn.transformContext", async (projection) => {
-		const phaseT0 = performance.now();
-		let checkpointHit = false;
-		try {
-			const source = projection.messages as readonly StreamMessageView[];
-			// activeCheckpoint() 内部已做有效性校验；这里再校验一次会让每请求多算一遍
-			// 38MB 历史的前缀哈希（实测 ~200ms）。staged 候选由本扩展自己构造，无需校验。
-			const checkpoint = staged?.checkpoint ?? activeCheckpoint();
-			if (!checkpoint) return undefined;
-			checkpointHit = true;
-			const messages = compactedMessages(source, checkpoint);
-			if (!messages) return undefined;
-			return { projection: { ...projection, messages: [...messages] } as RequestProjection };
-		} finally {
-			diagPhase("transformContext", performance.now() - phaseT0, { hit: checkpointHit });
-		}
+		const source = projection.messages as readonly StreamMessageView[];
+		// activeCheckpoint() 内部已做有效性校验；这里再校验一次会让每请求多算一遍
+		// 38MB 历史的前缀哈希（实测 ~200ms）。staged 候选由本扩展自己构造，无需校验。
+		const checkpoint = staged?.checkpoint ?? activeCheckpoint();
+		if (!checkpoint) return undefined;
+		const messages = compactedMessages(source, checkpoint);
+		if (!messages) return undefined;
+		return { projection: { ...projection, messages: [...messages] } as RequestProjection };
 	});
 
 	pi.onHook("turn.preflight", async ({ projection, measurement, pass, signal }) => {

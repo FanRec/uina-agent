@@ -7,7 +7,6 @@ import type {
 	Usage,
 } from "../core/types.js";
 import type { OutputEvent } from "../runtime/events.js";
-import { diagDelta, diagDeltaSummary } from "../core/diag-probe.js";
 
 export interface StreamCollectorResult {
 	reply: string;
@@ -68,7 +67,6 @@ export class TurnStreamCollector {
 		const now = Date.now();
 		if (this.firstDeltaAt === 0) this.firstDeltaAt = now;
 		this.lastDeltaAt = now;
-		diagDelta();
 	}
 
 	/** 本步的真实时序：TTFT 与「首个内容 delta → 末个内容 delta」的解码窗口。 */
@@ -138,7 +136,6 @@ export class TurnStreamCollector {
 			case "usage":
 				this.usage = delta.usage;
 				this.options?.onUsage?.(delta.usage, this.generationTiming());
-				diagDeltaSummary();
 				break;
 
 			case "tool_call": {

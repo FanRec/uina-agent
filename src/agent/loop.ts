@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { validImages } from "../core/content.js";
-import { diagPhase } from "../core/diag-probe.js";
 import { errorMessage } from "../core/errors.js";
 import { inputTokenBudget, modelKey } from "../core/model.js";
 import type {
@@ -1066,9 +1065,7 @@ export class Subject {
 			await applyRewind();
 			// 回合内暴涨由每请求的 transformContext 裁剪收敛（compaction capability
 			// 拥有上下文窗口管理）——这里不再有 between-step 压缩体检。
-			const projectionT0 = performance.now();
 			const projection = await this.prepareProjectionForSend(model, systemPrompt, beforeMessages, this.currentSignal());
-			diagPhase("prepareProjection", performance.now() - projectionT0);
 			if (!projection) {
 				await this.emitInterrupted();
 				return { kind: "aborted" };
