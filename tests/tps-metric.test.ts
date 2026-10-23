@@ -374,6 +374,119 @@ describe("ActivityLineComponent：分母只算解码跨度", () => {
 	});
 });
 
+describe("ActivityLineComponent：Provider 真实时序优先于 UI 事件时刻", () => {
+	it("分母用真实解码窗口，usage 尾部 RTT 与首包等待都不进分母", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(T0);
+		const act = new ActivityLineComponent();
+		act.start("streaming", "正在输出...");
+		act.addStreamText("正文七字"); // UI 侧增量，仅用于让本 step 可见
+		vi.setSystemTime(T0 + 2800); // usage 晚到 2.8s（含 2.4s 首包与尾部 RTT）
+		act.addRealOutputTokens(23, { ttftMs: 2400, decodeMs: 400 });
+		act.finish("完成");
+
+		const rendered = plain(act.getHeaderString(200));
+		// 真实解码 0.4s：23 / 0.4 = 58 tps。退回 UI 事件时刻会读到 23 / 2.8 ≈ 8。
+		expect(rendered).toContain("~58 tps");
+		expect(rendered).not.toContain("~8 tps");
+		expect(rendered).toContain("首包 2.4s");
+	});
+
+	it("宽屏时拆分思考与正文：usage.output 含思考 token", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(T0);
+		const act = new ActivityLineComponent();
+		act.start("streaming", "正在输出...");
+		act.addStreamText("思".repeat(16) + "正文七字");
+		act.addRealOutputTokens(23, { ttftMs: 2400, decodeMs: 400 }, 16);
+		act.finish("完成");
+
+		const rendered = plain(act.getHeaderString(200));
+		expect(rendered).toContain("23 tok (思考 16 · 正文 7)");
+		expect(rendered).not.toContain("~23 tokens");
+	});
+
+	it("无真实时序时保持既有口径：UI 事件时刻结算，不凭空显示首包", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(T0);
+		const act = new ActivityLineComponent();
+		act.start("streaming", "正在输出...");
+		act.addStreamText("思".repeat(58));
+		vi.setSystemTime(T0 + 1000);
+		act.addRealOutputTokens(120);
+		act.finish("完成");
+
+		const rendered = plain(act.getHeaderString(200));
+		expect(rendered).toContain("~120 tps");
+		expect(rendered).not.toContain("首包");
+	});
+});
+
+describe("ActivityLineComponent：成批到达的 step 不可度量", () => {
+	// 偶发 3000+ tps 的根因回归：短回复被 Provider/网关塞进一两个 SSE chunk 一次到达，
+	// 客户端没观察到解码过程，真实 token 数除以传输抖动量级的窗口就是天文数字。
+	it("整段一次到达（decodeMs=0）：显示 token 事实，但不报速度", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(T0);
+		const act = new ActivityLineComponent();
+		act.start("streaming", "正在输出...");
+		act.addStreamText("已经在做了。");
+		vi.setSystemTime(T0 + 30); // usage 只比唯一的 delta 晚 30ms
+		act.addRealOutputTokens(92, { ttftMs: 5000, decodeMs: 0 });
+		act.finish("完成");
+
+		const rendered = plain(act.getHeaderString(200));
+		expect(rendered).toContain("~92 tokens"); // 输出是事实，用户看得见
+		expect(rendered).not.toContain("tps"); // 速度测不到就不报，绝不 92/0.03 = 3067
+	});
+
+	it("两个 delta 相邻 10ms 仍是成批到达：不进速度账本", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(T0);
+		const act = new ActivityLineComponent();
+		act.start("streaming", "正在输出...");
+		act.addStreamText("前半");
+		vi.setSystemTime(T0 + 10);
+		act.addStreamText("后半");
+		vi.setSystemTime(T0 + 25);
+		act.addRealOutputTokens(92, { ttftMs: 5000, decodeMs: 10 });
+		act.finish("完成");
+
+		const rendered = plain(act.getHeaderString(200));
+		expect(rendered).toContain("~92 tokens");
+		expect(rendered).not.toContain("tps");
+	});
+
+	it("没有 timing 的旧路径同样受下限保护", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(T0);
+		const act = new ActivityLineComponent();
+		act.start("streaming", "正在输出...");
+		act.addStreamText("我来看看这个文件");
+		vi.setSystemTime(T0 + 30); // usage 紧跟唯一的可见增量
+		act.addRealOutputTokens(500);
+		act.finish("完成");
+
+		const rendered = plain(act.getHeaderString(200));
+		expect(rendered).not.toContain("tps"); // 500/0.03 ≈ 16667
+	});
+
+	it("真实短步（300ms）不受影响，照常度量", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(T0);
+		const act = new ActivityLineComponent();
+		act.start("streaming", "正在输出...");
+		act.addStreamText("思".repeat(58));
+		vi.setSystemTime(T0 + 300);
+		act.addRealOutputTokens(30, { ttftMs: 2000, decodeMs: 300 });
+		act.finish("完成");
+
+		const rendered = plain(act.getHeaderString(200));
+		expect(rendered).toContain("~30 tokens");
+		expect(rendered).toContain("~100 tps"); // 30 / 0.3s
+	});
+});
+
 describe("ActivityLineComponent：回合级采样", () => {
 	// 采样是私有状态，只能从渲染输出观察；不为测试开公开 getter。
 	it("回合结束时按解码跨度算出速度并显示", () => {

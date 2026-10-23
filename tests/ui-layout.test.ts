@@ -732,3 +732,54 @@ describe("UIHost: 统一帧时钟（heartbeat）", () => {
 		}
 	});
 });
+
+describe("UIHost: 流式增量的帧时钟归属", () => {
+	it("thinking/正文增量不请求重绘，心跳 tick 才出帧并显示内容", async () => {
+		vi.useFakeTimers();
+		try {
+			const terminal = fakeTerminal();
+			const host = new UIHost({ terminal: terminal.terminal, modelName: "TestModel" });
+			host.start();
+			host.startTurnCard(1, "问题");
+			host.setBusy(true);
+			await vi.advanceTimersByTimeAsync(0); // 冲掉 setup 阶段排队的 setImmediate 帧
+
+			const framesBefore = terminal.frames.length;
+			const renderSpy = vi.spyOn(host, "requestRender");
+			host.appendThinkingStream("思考");
+			for (let i = 0; i < 40; i++) host.appendAssistantStream("正文");
+
+			expect(renderSpy).not.toHaveBeenCalled();
+			expect(terminal.frames.length).toBe(framesBefore);
+
+			await vi.advanceTimersByTimeAsync(50);
+			expect(renderSpy).toHaveBeenCalledTimes(1);
+			// requestRender 的 setImmediate 是真实事件循环的 check 阶段，等它落帧
+			await vi.waitFor(() => expect(terminal.frames.length).toBeGreaterThan(framesBefore));
+			expect(terminal.getVisibleText()).toContain("正文");
+			host.stop();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("工具卡等生命周期事件仍即时请求一帧", async () => {
+		vi.useFakeTimers();
+		try {
+			const terminal = fakeTerminal();
+			const host = new UIHost({ terminal: terminal.terminal, modelName: "TestModel" });
+			host.start();
+			host.startTurnCard(1, "问题");
+			host.setBusy(true);
+			await vi.advanceTimersByTimeAsync(0);
+
+			const framesBefore = terminal.frames.length;
+			host.beginToolCard("exec_command", { command: "ls" }, "call-1");
+			await vi.advanceTimersByTimeAsync(0);
+			expect(terminal.frames.length).toBe(framesBefore + 1);
+			host.stop();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});

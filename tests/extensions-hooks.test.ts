@@ -282,6 +282,41 @@ describe("ExtensionHost & Hooks Architecture", () => {
 		expect(result.messages[0]?.content).toBe("original");
 	});
 
+	it("passes already-guarded projections through the boundary without re-cloning", async () => {
+		const host = new ExtensionHost();
+		// hook 只透传（恒等变换）：入口已深冻结（marked），守卫不得再复制一份。
+		// 断言用的是标记穿透语义，返回类型上 DeepReadonly 断言回 RequestProjection。
+		host.onHook("turn.transformContext", (projection) => ({
+			projection: projection as unknown as RequestProjection,
+		}));
+		const guarded = guardRuntimeHooks(createRuntimeHooks(host));
+		const first = await guarded.turn.transformContext(testProjection([{ role: "user", content: "a" }]));
+		// 首次输出（未标记的 hook 自有对象 → copyProjection）必须已深冻结
+		expect(Object.isFrozen(first.messages[0])).toBe(true);
+		// 已标记投影二次过界：runner 链与 guard 之间零克隆、引用同一
+		const second = await guarded.turn.transformContext(first);
+		expect(second).toBe(first);
+	});
+
+	it("preflight receives the projection without cloning it when already guarded", async () => {
+		const host = new ExtensionHost();
+		let received: unknown;
+		host.onHook("turn.preflight", (input) => {
+			received = input.projection;
+			return { action: "send" as const };
+		});
+		const guarded = guardRuntimeHooks(createRuntimeHooks(host));
+		const projection = testProjection([{ role: "user", content: "x" }]);
+		const first = await guarded.turn.transformContext(projection);
+		await guarded.turn.preflight({
+			projection: first,
+			measurement: { inputTokens: 1, kind: "approximate", source: "test" },
+			pass: 0,
+			signal: new AbortController().signal,
+		});
+		expect(received).toBe(first);
+	});
+
 	it("aggregates preflight decisions as fail > rebuild > send and joins reasons", async () => {
 		const host = new ExtensionHost();
 		host.onHook("turn.preflight", () => ({ action: "send" as const, reason: "no objection" }));
