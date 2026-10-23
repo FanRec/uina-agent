@@ -74,6 +74,30 @@ function overlayCard(baseLine: string, cardLine: string, startCol: number, width
 	return `${rightPart}${" ".repeat(padR)}`;
 }
 
+/**
+ * 划选提取用的惰性行视图：tracker 的合同是"已规范化的永久行数组"，但它的
+ * 消费面只有数字下标与 length（extractSelectedContentText），且只在选区释放
+ * 时按选中行范围取值。用 Proxy 把 normalizeFrameLine 推迟到取值那一刻并按
+ * 下标记忆化——每次鼠标事件构造一个视图（带独立缓存），帧与帧之间零成本。
+ */
+function lazyNormalizedLines(lines: readonly string[]): readonly string[] {
+	const cache = new Map<number, string>();
+	return new Proxy(lines, {
+		get(target, prop) {
+			if (typeof prop === "string" && /^\d+$/.test(prop)) {
+				const index = Number(prop);
+				let normalized = cache.get(index);
+				if (normalized === undefined) {
+					normalized = normalizeFrameLine(target[index] ?? "");
+					cache.set(index, normalized);
+				}
+				return normalized;
+			}
+			return Reflect.get(target, prop, target);
+		},
+	});
+}
+
 export interface UIHostOptions {
 	terminal?: ProcessTerminal;
 	cwd?: string;
@@ -198,7 +222,8 @@ export class UIHost implements UIHostContextPort {
 
 	private mouseTracker = new MouseSelectionTracker();
 	private lastRenderedRows: string[] = [];
-	private lastPermanentLines: string[] = [];
+	/** 帧的原始永久行（banner + 全量转录），未规范化；划选提取时才按需 normalize（见 lazyNormalizedLines）。 */
+	private lastPermanentLines: readonly string[] = [];
 	/** 视口滚动状态与策略（offset/maxScroll/轮次邻居/自动滚屏）唯一属主。 */
 	readonly scroll = new ScrollController();
 	/** 视口离底指示器是否被 hover（驱动加粗高亮） */
@@ -1411,8 +1436,11 @@ export class UIHost implements UIHostContextPort {
 		const allChatRows = [...visibleTranscript, ...gapLines];
 		const atBottom = this.scroll.atBottom();
 
-		// 跨屏选区提取用的是"用户看到的那一份行"，所以在这里就与屏幕对齐（制表符已展开）。
-		this.lastPermanentLines = permanentLines.map((row) => normalizeFrameLine(row));
+		// 跨屏选区提取用的是"用户看到的那一份行"的语义，但 normalize 不能在这里做：
+		// permanentLines 是全量转录，流式期间每个 delta 都触发一帧，每帧全量
+		// normalizeFrameLine 是事件循环 lag 的最大单项。规范化推迟到鼠标事件
+		// 真正按行号取值时（lazyNormalizedLines，只在选区释放时触碰选中行范围）。
+		this.lastPermanentLines = permanentLines;
 		this.mouseTracker.setScrollContext(scrollStart, chatAreaH);
 
 		let railGlyphs: string[] = [];
@@ -1851,7 +1879,7 @@ export class UIHost implements UIHostContextPort {
 					eventStr,
 					this.lastRenderedRows,
 					this.onCopyOnSelect,
-					this.lastPermanentLines,
+					lazyNormalizedLines(this.lastPermanentLines),
 					// 输入框区域的芯片是视图压缩，复制时还原为逻辑内容；转录区原样透传
 					(regionId, text) => (regionId === "input" ? this.inputLine.expandForCopy(text) : text),
 				);

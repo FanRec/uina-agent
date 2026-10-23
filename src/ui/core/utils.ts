@@ -133,11 +133,14 @@ export function graphemeWidth(segment: string): number {
  * 以 ANSI 控制码 + grapheme 簇为单位遍历字符串。这是所有宽度计算的唯一迭代器，
  * 保证 visibleWidth / truncateToWidth / wrapTextWithAnsi 永远不会切开一个簇。
  * 返回 false 可提前停止。
+ *
+ * 用 Segmenter 的懒迭代器而非 Array.from 物化整个分段数组：truncateToWidth
+ * 提前退出时不必为整行完成分段，长行（大会话转录行）省掉整段分配。
  */
 export function walkGraphemes(text: string, visit: (segment: string, isAnsi: boolean) => boolean | void): void {
 	if (!text) return;
-	const segments = Array.from(graphemeSegmenter.segment(text));
-	let si = 0;
+	const iterator = graphemeSegmenter.segment(text)[Symbol.iterator]();
+	let pending = iterator.next();
 	let i = 0;
 	while (i < text.length) {
 		const ansi = extractAnsiCode(text, i);
@@ -146,8 +149,10 @@ export function walkGraphemes(text: string, visit: (segment: string, isAnsi: boo
 			i += ansi.length;
 			continue;
 		}
-		while (si < segments.length && segments[si]!.index + segments[si]!.segment.length <= i) si++;
-		const seg = segments[si];
+		while (!pending.done && pending.value.index + pending.value.segment.length <= i) {
+			pending = iterator.next();
+		}
+		const seg = pending.done ? undefined : pending.value;
 		const piece = seg && seg.index <= i ? text.slice(i, seg.index + seg.segment.length) : text[i]!;
 		if (visit(piece, false) === false) return;
 		i += piece.length;
@@ -220,14 +225,27 @@ function tabAdvance(currentColumn: number): number {
 	return 8 - (currentColumn % 8);
 }
 
+/**
+ * visibleWidth 的有界记忆化：行字符串不可变 ⇒ 同串必同宽。流式期间视口行被逐帧
+ * 重复测量（renderCurrentFrame 每帧对同一批行做 truncateToWidth + 补位两次测量），
+ * 以串引用为键命中缓存即可跳过整行分段。超限整体清空：动态行（spinner/秒表）
+ * 零命中也不会无限累积，静态转录行在一次清空周期内持续命中。
+ */
+const WIDTH_MEMO_LIMIT = 4096;
+const widthMemo = new Map<string, number>();
+
 /** 计算包含 ANSI 控制码与多字节中文的字符串真实显示列宽 */
 export function visibleWidth(str: string): number {
 	if (!str) return 0;
+	const memoed = widthMemo.get(str);
+	if (memoed !== undefined) return memoed;
 	let w = 0;
 	walkGraphemes(str, (segment, isAnsi) => {
 		if (isAnsi) return;
 		w += segment === "\t" ? tabAdvance(w) : graphemeWidth(segment);
 	});
+	if (widthMemo.size >= WIDTH_MEMO_LIMIT) widthMemo.clear();
+	widthMemo.set(str, w);
 	return w;
 }
 
