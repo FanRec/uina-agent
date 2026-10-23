@@ -3,17 +3,40 @@ import type { DeepReadonly, OutputEvent, RuntimeEvent } from "./events.js";
 import type { RuntimeHooks } from "./hooks.js";
 import { NO_RUNTIME_HOOKS } from "./noop.js";
 
+/** Marks values this module has already deep-frozen. Marked values pass every
+ * guard boundary at zero cost: the contract (hooks can neither mutate
+ * runtime-owned values nor retain a mutable reference) is already satisfied by
+ * deep immutability, so re-cloning a 38MB projection at each hop is pure tax. */
+const IMMUTABLE = Symbol("immutableSnapshot");
+
+function isMarkedImmutable(value: unknown): boolean {
+	return typeof value === "object" && value !== null && IMMUTABLE in (value as object);
+}
+
+/** 标记 + 原地深冻结。defineProperty 必须在 deepFreeze 之前（冻结后不可扩展）；
+ * 已冻结但未标记的值不标记——浅冻结不构成深不可变的证明。 */
+function markAndFreeze<T>(value: T): T {
+	if (value && typeof value === "object" && !Object.isFrozen(value)) {
+		Object.defineProperty(value, IMMUTABLE, { value: true });
+		deepFreeze(value);
+	}
+	return value;
+}
+
 /** Copies and freezes data at the kernel boundary so hook implementations can
- * neither mutate runtime-owned values nor retain a mutable return reference. */
+ * neither mutate runtime-owned values nor retain a mutable return reference.
+ * 已标记（本模块深冻结过）的输入零成本穿透。 */
 export function readonlySnapshot<T>(value: T): DeepReadonly<T> {
+	if (isMarkedImmutable(value)) return value as DeepReadonly<T>;
 	if (!value || typeof value !== "object") return value as DeepReadonly<T>;
 	if ("type" in (value as object) && typeof (value as any).type === "string") {
 		const t = (value as any).type;
 		if (t === "output_update" || t === "output_start" || t === "output_end" || t === "output_interrupted") {
+			// 浅冻结输出事件是热路径特例：不标记（浅冻结 ≠ 深不可变）。
 			return Object.freeze({ ...(value as object) }) as DeepReadonly<T>;
 		}
 	}
-	return deepFreeze(clone(value)) as DeepReadonly<T>;
+	return markAndFreeze(clone(value)) as DeepReadonly<T>;
 }
 
 /** Copies and freezes data at the kernel boundary so hook implementations can
@@ -26,9 +49,12 @@ function withSignal<T extends { signal: AbortSignal }>(input: Readonly<T>): Deep
 	return Object.freeze({ ...readonlySnapshot(data as Omit<T, "signal">), signal }) as DeepReadonly<T>;
 }
 
-/** Owns and deeply freezes one model-semantic request at a hook boundary. */
+/** Owns and deeply freezes one model-semantic request at a hook boundary.
+ * 已标记的投影零成本穿透（守卫合同已由深不可变性满足）；新投影克隆一份再冻结，
+ * 克隆同时切断与运行时状态（history 条目）的别名共享。 */
 export function immutableProjection(projection: RequestProjection): RequestProjection {
-	return readonlySnapshot(projection) as unknown as RequestProjection;
+	if (isMarkedImmutable(projection)) return projection;
+	return markAndFreeze(clone(projection)) as RequestProjection;
 }
 
 /** Takes ownership of a hook return without freezing the value the runtime must consume. */
@@ -47,9 +73,25 @@ export function guardRuntimeHooks(hooks: RuntimeHooks): RuntimeHooks {
 	const guarded: RuntimeHooks = {
 		turn: Object.freeze({
 			prepare: async (input) => copyPrepare(await hooks.turn.prepare(readonlySnapshot(input))),
-			transformContext: async (projection) =>
-				copyProjection(await hooks.turn.transformContext(readonlySnapshot(projection))),
-			preflight: async (input) => Object.freeze({ ...(await hooks.turn.preflight(withSignal(input))) }),
+			transformContext: async (projection) => {
+				const result = await hooks.turn.transformContext(readonlySnapshot(projection));
+				// 出口已标记 = 运行时侧（runner 链）产出且已深冻结，穿透即可；
+				// 未标记 = hook 自有可变数据，必须复制以切断 hook 的可变引用持有。
+				return isMarkedImmutable(result)
+					? (result as RequestProjection)
+					: copyProjection(result as DeepReadonly<RequestProjection>);
+			},
+			preflight: async (input) =>
+				// projection 可能是 38MB 已冻结投影：逐字段穿透已标记部分，
+				// 不能走 withSignal 的整体深克隆（会连投影一起复制一份）。
+				Object.freeze({
+					...(await hooks.turn.preflight({
+						projection: readonlySnapshot(input.projection),
+						measurement: readonlySnapshot(input.measurement),
+						pass: input.pass,
+						signal: input.signal,
+					})),
+				}),
 			afterEnd: async (input) => hooks.turn.afterEnd(withSignal(input)),
 			shouldStop: async (input) => Object.freeze({ ...(await hooks.turn.shouldStop(readonlySnapshot(input))) }),
 		}),
@@ -105,13 +147,16 @@ function copyMessages(messages: readonly DeepReadonly<ChatMsg>[] | readonly Chat
 }
 
 function copyProjection(projection: DeepReadonly<RequestProjection> | RequestProjection): RequestProjection {
-	return {
+	// 已标记（runner 链已深冻结）零成本穿透；未标记的 hook 自有数据复制后
+	// 标记冻结——下游（loop 侧 immutableProjection、preflight 输入）随之穿透。
+	if (isMarkedImmutable(projection)) return projection as RequestProjection;
+	return markAndFreeze({
 		projectionId: projection.projectionId,
 		modelKey: projection.modelKey,
 		messages: copyMessages(projection.messages),
 		tools: clone(projection.tools),
 		...(projection.thinkingLevel !== undefined ? { thinkingLevel: projection.thinkingLevel } : {}),
-	};
+	}) as RequestProjection;
 }
 
 function clone<T>(value: T): T {

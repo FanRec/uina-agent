@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { CHARS_PER_TOKEN, estimateRequestTokens, estimateTextTokens } from "../../agent/context.js";
+import { diagPhase } from "../../core/diag-probe.js";
 import { inputTokenBudget, modelKey } from "../../core/model.js";
 import type {
 	ChatMsg,
@@ -241,10 +242,49 @@ function stableAgentMessage(message: import("../../core/types.js").AgentMessage)
 	}
 }
 
-function hashBearingPrefix(bearing: readonly HydratedSessionEntry[], index: number): string {
-	return createHash("sha256")
+/**
+ * 前缀指纹的按 checkpoint 记忆化（引用同一性证明）。
+ *
+ * 每请求对 38MB 前缀做 JSON.stringify + sha256（实测 ~200ms），而覆盖前缀在两次
+ * 校验之间不变是常态：journal 追加式落盘、rewind 只重写后缀。记忆化保存上次参与
+ * 哈希的条目对象引用：本次承载序列前缀与上次逐项同一 ⇒ 哈希输入相同 ⇒ 指纹复用。
+ * 新增条目不动前缀（命中）；rewind/篡改/换会话表现为引用失配，回落全量哈希重算。
+ *
+ * 防线边界（如实登记）：绕过 store 的 canonical 条目就地篡改检测不到——那要求
+ * 每请求重读全部内容，正是本记忆化要消除的成本。依据的不变量是 store 的条目
+ * 追加后不可变、内容变更只能以新对象整体替换；恢复强防线 = 删除本 memo。
+ */
+const prefixFingerprintMemo = new WeakMap<
+	CompactionCheckpoint,
+	{ index: number; refs: unknown[]; fingerprint: string }
+>();
+
+function hashBearingPrefix(
+	bearing: readonly HydratedSessionEntry[],
+	index: number,
+	memoKey?: CompactionCheckpoint,
+): string {
+	if (!memoKey) {
+		return createHash("sha256")
+			.update(JSON.stringify(bearing.slice(0, index + 1).map(stableEntry)))
+			.digest("hex");
+	}
+	const memo = prefixFingerprintMemo.get(memoKey);
+	if (memo && memo.index === index) {
+		let identical = true;
+		for (let i = 0; i <= index; i++) {
+			if (bearing[i] !== memo.refs[i]) {
+				identical = false;
+				break;
+			}
+		}
+		if (identical) return memo.fingerprint;
+	}
+	const fingerprint = createHash("sha256")
 		.update(JSON.stringify(bearing.slice(0, index + 1).map(stableEntry)))
 		.digest("hex");
+	prefixFingerprintMemo.set(memoKey, { index, refs: bearing.slice(0, index + 1), fingerprint });
+	return fingerprint;
 }
 
 export function fingerprintPrefix(
@@ -260,11 +300,12 @@ export function fingerprintPrefix(
 export function checkpointValid(checkpoint: CompactionCheckpoint, entries: readonly HydratedSessionEntry[]): boolean {
 	const bearing = requestBearing(entries);
 	let index = checkpoint.coveredBearingIndex;
-	// 下标只负责快速拒绝截断/回溯；覆盖内容的完整性始终由指纹证明。
+	// 下标只负责快速拒绝截断/回溯；覆盖内容的完整性由指纹证明——
+	// 指纹按（下标, id）一致记忆化（见 prefixFingerprintMemo），追加不重算，变更必重算。
 	if (index !== undefined && bearing[index]?.id !== checkpoint.coveredThroughEntryId) return false;
 	if (index === undefined) index = bearing.findIndex((entry) => entry.id === checkpoint.coveredThroughEntryId);
 	if (index < 0) return false;
-	return hashBearingPrefix(bearing, index) === checkpoint.prefixFingerprint;
+	return hashBearingPrefix(bearing, index, checkpoint) === checkpoint.prefixFingerprint;
 }
 
 function parseCheckpoint(value: unknown): CompactionCheckpoint | undefined {
@@ -835,14 +876,21 @@ export default function activateCompaction(pi: ExtensionAPI): () => void {
 	});
 
 	pi.onHook("turn.transformContext", async (projection) => {
-		const source = projection.messages as readonly StreamMessageView[];
-		// activeCheckpoint() 内部已做有效性校验；这里再校验一次会让每请求多算一遍
-		// 38MB 历史的前缀哈希（实测 ~200ms）。staged 候选由本扩展自己构造，无需校验。
-		const checkpoint = staged?.checkpoint ?? activeCheckpoint();
-		if (!checkpoint) return undefined;
-		const messages = compactedMessages(source, checkpoint);
-		if (!messages) return undefined;
-		return { projection: { ...projection, messages: [...messages] } as RequestProjection };
+		const phaseT0 = performance.now();
+		let checkpointHit = false;
+		try {
+			const source = projection.messages as readonly StreamMessageView[];
+			// activeCheckpoint() 内部已做有效性校验；这里再校验一次会让每请求多算一遍
+			// 38MB 历史的前缀哈希（实测 ~200ms）。staged 候选由本扩展自己构造，无需校验。
+			const checkpoint = staged?.checkpoint ?? activeCheckpoint();
+			if (!checkpoint) return undefined;
+			checkpointHit = true;
+			const messages = compactedMessages(source, checkpoint);
+			if (!messages) return undefined;
+			return { projection: { ...projection, messages: [...messages] } as RequestProjection };
+		} finally {
+			diagPhase("transformContext", performance.now() - phaseT0, { hit: checkpointHit });
+		}
 	});
 
 	pi.onHook("turn.preflight", async ({ projection, measurement, pass, signal }) => {
