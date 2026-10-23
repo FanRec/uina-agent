@@ -1,10 +1,10 @@
 # Live2D 文档索引
 
-当前行为以 [Live2D World 运行合同](../../live2d/live2d-world-runtime.md) 和源码为准。本目录唯一的目标重构设计是 [Live2D World 持续表演系统重构设计](live2d-world-performance-redesign.md)（待审阅、尚未实施）；其他旧设计仅作历史资料，不作为施工规格。自动化测试不证明真实 VTS 画面自然度。
+当前行为以 [Live2D World 运行合同](../../live2d/live2d-world-runtime.md) 和源码为准。本目录唯一的目标重构设计是 [Live2D 身体与表演 SDK 设计](live2d-world-performance-redesign.md)（已按确认方案修订，SDK 重构尚未实施）；其他旧设计仅作历史资料，不作为施工规格。自动化测试不证明真实 VTS 画面自然度。
 
 ## 目标施工规格
 
-- [持续表演系统重构设计](live2d-world-performance-redesign.md)：开发理念与规范、职责和权威状态、持续身体算法、模型内容、五操作工具与 cue、控制权、生命周期、并发/Worker、维护、替换删除清单、阶段计划和验收矩阵。
+- [身体与表演 SDK 设计](live2d-world-performance-redesign.md)：表现目标与原则、专用组件、姿态交还、注视与默认头身协调、固定轴响应、面部组合、协调限幅、作者工具与模型编排、工具/cue、生命周期、预览标定和验收。
 - 本文档是目标设计，不代表已经实现；实施后的事实仍需更新运行合同。无需为旧工具保留兼容层。
 
 ## 当前边界与已实现机制
