@@ -284,8 +284,11 @@ describe("B1: hover is local", () => {
 		const W = 77; // transcriptContentW for an 80-column terminal
 		host.requestRender();
 		await settle();
-		const internals = host.transcript as unknown as { settledBlocks: unknown; hoveredBlockCache: Map<string, unknown> };
-		const blocksBefore = internals.settledBlocks;
+		const internals = host.transcript as unknown as {
+			settledCaches: Map<number, unknown>;
+			hoveredBlockCache: Map<string, unknown>;
+		};
+		const blocksBefore = internals.settledCaches.get(W);
 		const indexBefore = host.transcript.getToolLineIndices(W)[0]!.lineIndex;
 		const lineCountBefore = host.transcript.render(W).length;
 
@@ -293,7 +296,7 @@ describe("B1: hover is local", () => {
 		host.requestRender();
 		await settle();
 
-		expect(internals.settledBlocks).toBe(blocksBefore);
+		expect(internals.settledCaches.get(W)).toBe(blocksBefore);
 		expect(internals.hoveredBlockCache.size).toBe(1);
 		expect(host.transcript.getToolLineIndices(W)[0]!.lineIndex).toBe(indexBefore);
 		expect(host.transcript.render(W).length).toBe(lineCountBefore);
@@ -527,12 +530,12 @@ describe("Incremental layout invalidation", () => {
 		const { host } = scrollableHost();
 		host.requestRender();
 		await settle();
-		const internals = host.transcript as unknown as { settledBlocks: { blocks: unknown[] } };
-		const before = internals.settledBlocks.blocks.slice();
+		const internals = host.transcript as unknown as { settledCaches: Map<number, { blocks: unknown[] }> };
+		const before = internals.settledCaches.get(77)!.blocks.slice();
 		expect(host.transcript.toggleTool("call-1", 77).toggled).toBe(true);
 		host.requestRender();
 		await settle();
-		const after = internals.settledBlocks.blocks;
+		const after = internals.settledCaches.get(77)!.blocks;
 		expect(after[0]).not.toBe(before[0]);
 		expect(after[1]).toBe(before[1]);
 	});

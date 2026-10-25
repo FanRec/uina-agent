@@ -208,6 +208,24 @@ interface CompactionBlock {
 
 type SettledBlock = TurnBlock | StaticBlock | CompactionBlock;
 
+/**
+ * 单个宽度的已结算块缓存。layoutFrame 在「内容不满屏」时会用两个宽度各跑一次
+ * computeLayout（gutter 预留 innerW-3 / 无 gutter innerW-1），单槽缓存在短会话
+ * 每帧全量重建两次；按宽度分槽（LRU 2）让两个宽度各自命中。
+ *
+ * timeline 是 append-only（除 loadSession/clear/rewind 的全量 invalidate），
+ * 所以 builtItems 之后的条目按序物化即可，无需重建既有块。
+ */
+interface SettledCache {
+	blocks: SettledBlock[];
+	/** 已物化的 timeline 条目数 */
+	builtItems: number;
+	/** 已物化的压缩卡数量（决定下一张压缩卡的 index） */
+	builtCompactions: number;
+	staleTurns: Set<number>;
+	staleCompactions: Set<number>;
+}
+
 /** Layout output collected while one turn is rendered. */
 interface LayoutSink {
 	thinking: ThinkingLineLocation[];
@@ -239,31 +257,24 @@ export class TranscriptContainer implements Component {
 	/** Settled timeline blocks, keyed by width + expansion state only.
 	 * Hover is applied per block at assembly time so a mouse move never
 	 * invalidates every settled turn. */
-	private settledBlocks: {
-		width: number;
-		blocks: SettledBlock[];
-		staleTurns: Set<number>;
-		staleCompactions: Set<number>;
-	} | null = null;
+	private settledCaches = new Map<number, SettledCache>();
 	private hoveredBlockCache = new Map<string, TurnBlock>();
 
 	invalidate(): void {
-		this.settledBlocks = null;
+		this.settledCaches.clear();
 		this.hoveredBlockCache.clear();
 		this.currentParagraphCache.clear();
 	}
 
 	/** Rebuild only one settled turn's block; the rest of the cache stays valid. */
 	invalidateTurn(turnUid: number): void {
-		if (!this.settledBlocks) return; // a full build will pick the change up
-		this.settledBlocks.staleTurns.add(turnUid);
+		for (const cache of this.settledCaches.values()) cache.staleTurns.add(turnUid);
 		this.hoveredBlockCache.clear();
 	}
 
 	/** Rebuild only one compaction card. */
 	invalidateCompaction(index: number): void {
-		if (!this.settledBlocks) return;
-		this.settledBlocks.staleCompactions.add(index);
+		for (const cache of this.settledCaches.values()) cache.staleCompactions.add(index);
 	}
 
 	/** @param thinkingUid 思考块的 uid（块级身份，一个轮次可有多个块）。 */
@@ -1106,11 +1117,73 @@ export class TranscriptContainer implements Component {
 		return formatted;
 	}
 
+	/** 取/建指定宽度的缓存槽（LRU 2：命中移到队尾，超容淘汰最旧）。 */
+	private settledCacheFor(width: number): SettledCache {
+		const existing = this.settledCaches.get(width);
+		if (existing) {
+			this.settledCaches.delete(width);
+			this.settledCaches.set(width, existing);
+			return existing;
+		}
+		const cache: SettledCache = {
+			blocks: [],
+			builtItems: 0,
+			builtCompactions: 0,
+			staleTurns: new Set(),
+			staleCompactions: new Set(),
+		};
+		if (this.settledCaches.size >= 2) {
+			const oldest = this.settledCaches.keys().next().value;
+			if (oldest !== undefined) this.settledCaches.delete(oldest);
+		}
+		this.settledCaches.set(width, cache);
+		return cache;
+	}
+
+	/** 物化单个 timeline 条目为一个已结算块。 */
+	private buildTimelineBlock(item: TimelineItem, width: number, compactionIndex: number): SettledBlock {
+		switch (item.kind) {
+			case "notice":
+				return { kind: "static", lines: wrapTextWithAnsi(item.text, Math.max(20, width - 2)) };
+			case "error":
+				return { kind: "static", lines: formatErrorCardLines(item.text, width) };
+			case "compaction":
+				return {
+					kind: "compaction",
+					index: compactionIndex,
+					record: item.record,
+					lines: formatCompactionCardLines(item.record, width, false),
+				};
+			case "turn":
+				return this.buildTurnBlock(item.turn, width, false, this.getLatestFailedTool());
+			case "customMessage": {
+				const comp = new CustomMessageComponent(
+					item.message,
+					this.messageRenderer(item.message.customType),
+					this.renderComponent,
+				);
+				return { kind: "static", lines: comp.render(width) };
+			}
+			case "contextCard": {
+				const comp = new ContextCardComponent(item.card);
+				if (item.expanded) comp.toggle();
+				return { kind: "static", lines: comp.render(width) };
+			}
+		}
+	}
+
 	private buildSettledBlocks(width: number): SettledBlock[] {
-		const cache = this.settledBlocks;
-		if (cache && cache.width === width) {
-			if (cache.staleTurns.size === 0 && cache.staleCompactions.size === 0) return cache.blocks;
-			// Incremental: only the stale turn/compaction blocks are re-rendered.
+		const cache = this.settledCacheFor(width);
+		// 1) 物化 timeline 尾部新增条目（append-only：既不触碰也不重建既有块）
+		while (cache.builtItems < this.timeline.length) {
+			const item = this.timeline[cache.builtItems]!;
+			const compactionIndex = item.kind === "compaction" ? cache.builtCompactions : -1;
+			cache.blocks.push(this.buildTimelineBlock(item, width, compactionIndex));
+			if (item.kind === "compaction") cache.builtCompactions++;
+			cache.builtItems++;
+		}
+		// 2) 只重建 stale 的轮次/压缩块
+		if (cache.staleTurns.size > 0 || cache.staleCompactions.size > 0) {
 			const latestFailed = this.getLatestFailedTool();
 			cache.blocks = cache.blocks.map((block) => {
 				if (block.kind === "turn" && cache.staleTurns.has(block.turn.uid)) {
@@ -1124,58 +1197,8 @@ export class TranscriptContainer implements Component {
 			cache.staleTurns.clear();
 			cache.staleCompactions.clear();
 			this.hoveredBlockCache.clear();
-			return cache.blocks;
 		}
-		const blocks: SettledBlock[] = [];
-		const latestFailed = this.getLatestFailedTool();
-		let compactionIndex = 0;
-		for (const item of this.timeline) {
-			switch (item.kind) {
-				case "notice":
-					blocks.push({
-						kind: "static",
-						lines: wrapTextWithAnsi(item.text, Math.max(20, width - 2)),
-					});
-					break;
-				case "error":
-					blocks.push({
-						kind: "static",
-						lines: formatErrorCardLines(item.text, width),
-					});
-					break;
-				case "compaction": {
-					blocks.push({
-						kind: "compaction",
-						index: compactionIndex,
-						record: item.record,
-						lines: formatCompactionCardLines(item.record, width, false),
-					});
-					compactionIndex++;
-					break;
-				}
-				case "turn":
-					blocks.push(this.buildTurnBlock(item.turn, width, false, latestFailed));
-					break;
-				case "customMessage": {
-					const comp = new CustomMessageComponent(
-						item.message,
-						this.messageRenderer(item.message.customType),
-						this.renderComponent,
-					);
-					blocks.push({ kind: "static", lines: comp.render(width) });
-					break;
-				}
-				case "contextCard": {
-					const comp = new ContextCardComponent(item.card);
-					if (item.expanded) comp.toggle();
-					blocks.push({ kind: "static", lines: comp.render(width) });
-					break;
-				}
-			}
-		}
-		this.settledBlocks = { width, blocks, staleTurns: new Set(), staleCompactions: new Set() };
-		this.hoveredBlockCache.clear();
-		return blocks;
+		return cache.blocks;
 	}
 
 	/** Render one turn exactly once: lines and hit-zone metadata come from the
