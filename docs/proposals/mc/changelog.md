@@ -1,5 +1,12 @@
 # 设计变更记录
 
+## 2026-10-25 · 批 8 Library 文件与发现复用
+
+- 三类普通文件 CRUD、统一扫描/头诊断、compile-only、确切 Call 来源保存、四类统一发现和正式工具/IPC 已接通；Program 只消费注入的只读材料。
+- 工作文件摘要和执行来源摘要分开，metadata 补丁不改正文；在途段固定源码，新段重读，删库文件不删运行快照。
+- 蓝图本批只管理 Raw 与元数据；Target 只报告 schema/digest 和 validation:unavailable，语义验证及施工仍归 Construction。原件可读不代表格式有效。
+- Runtime/Host 持久格式不变，能力数量仍为 25/51；下一批等待/决策与 I2。验证、裁决与未验证范围见 [实施记录](library-implementation.md)。
+
 ## 2026-10-25 · 批 6 正式原生主脑入口
 
 - WorldDef、六 action 原生 façade、同源目录、请求凭证与显式重试、固定报告和 Host receipt 可靠交付已接通；Program/Library 保持明确不可用。

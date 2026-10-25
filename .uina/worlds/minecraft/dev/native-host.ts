@@ -13,6 +13,7 @@ import type { ServiceCompanionContext } from "../../../../src/extensions/world-f
 import type { BodyEndpoint } from "../../../../src/extensions/world-framework/seams.js";
 import { createMinecraftWorld } from "../worlddef/index.js";
 import type { JsonValue } from "../contracts/values.js";
+import { libraryScenario } from "./library-scenario.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until<T>(read: () => Promise<T>, check: (value: T) => boolean, ms = 15000): Promise<T> {
@@ -26,6 +27,7 @@ async function until<T>(read: () => Promise<T>, check: (value: T) => boolean, ms
 }
 const modelMode = process.argv.includes("--model");
 const programMode = process.argv.includes("--program");
+const libraryMode = process.argv.includes("--library");
 const root = await mkdtemp(join(tmpdir(), modelMode ? "uina-mc-model-" : "uina-mc-native-"));
 console.log(`[mc-native] ${modelMode ? "REAL MODEL" : "controlled Provider, REAL Host/Paper"} data=${root}`);
 const configPath = join(root, "config.json");
@@ -109,7 +111,19 @@ const step = async (name: string, work: () => Promise<void>) => {
 const direct = async (action: string, params: Record<string, unknown> = {}) => {
 	const reply = await host.runToolDirect("minecraft", { action, params });
 	if (reply.status !== "succeeded") throw new Error(JSON.stringify(reply));
+	// WorldTool adds identity fields to details; arrays remain exact in the JSON body.
+	if (action === "library" && params.op === "list") return JSON.parse(reply.result) as Record<string, unknown>;
 	return reply.details as Record<string, unknown>;
+};
+const runtimeItems = async (op: "list" | "calls", params: Record<string, unknown>) => {
+	const items: Record<string, unknown>[] = [];
+	let cursor: string | undefined;
+	do {
+		const page = await direct("runs", { op, ...params, ...(cursor ? { cursor } : {}) });
+		items.push(...(page.items as Record<string, unknown>[]));
+		cursor = page.next as string | undefined;
+	} while (cursor);
+	return items;
 };
 const ask = async (action: string, params: Record<string, unknown>) => {
 	const id = randomUUID();
@@ -173,6 +187,11 @@ try {
 			(o) => (o.value as { block: { name: string } | null }).block?.name === "stone",
 		);
 		await command("/tp UinaDev 16000.5 200 16000.5");
+		if (libraryMode) {
+			await command("/time set day");
+			await command("/weather clear");
+			await command("/kill @e[type=!minecraft:player,distance=..64]");
+		}
 		await command("/clear UinaDev");
 		await command("/fill 16002 200 16000 16002 204 16000 minecraft:oak_log");
 		await until(
@@ -189,16 +208,21 @@ try {
 	});
 	if (modelMode) {
 		console.log(`[mc-native] real model=${host.snapshot().modelName}`);
-		for (const task of programMode
+		for (const task of libraryMode
 			? [
-					"仅使用 minecraft 工具，通过 run 的 code 提交一个普通 JS 程序：读库存，先尝试制作一把铁镐并捕获缺料错误，随后采集两根橡木原木并制作至少八块橡木木板，最后读取库存核验。自行 describe 所需能力，不使用服务器指令、补料或其他工具。必须实际提交程序，不能只逐条调用原生动作。",
-					"仅使用 minecraft，通过 run 的 code 提交一个会持续等待的程序，使用 mc.sleep 和 mc.progress。获得 accepted 后显式 runs.stop，再查询终态并读取调用记录。不要把取消工具等待当成停止，不使用服务器指令。",
+					"仅使用 minecraft 工具。先 describe 所需能力，用 run.code 实际提交普通 JS：尝试制作铁镐并捕获缺料，改为采集一根附近橡木原木、制作四块木板，读库存核验。不要使用服务器指令、补料或其他工具。",
+					"将刚才成功执行的程序保存为 plank_batch：查询 runs.calls，使用 library.save 的 from:{run,segment,call} 保存确切程序 Call，不能手抄源码保存。随后用 describe 搜索并描述这个程序，用 library.get 读取源码，将脚本通过 library.update 的 source 完整替换，作一个小改动（例如在返回值增加 revision:'v2'，保留已有逻辑）。然后用 run.selector='plank_batch' 实际复用它，再采集一根原木、制作四块木板并核验。最后保存一条名为 wood_notes 的 experience，说明适用条件，describe 找到它并 library.get 读回。只使用 minecraft，不使用服务器指令。",
 				]
-			: [
-					"你在独立 Minecraft 生存验收区，附近有原木。仅使用 minecraft 工具和它的指南，自行发现需要的能力，采集两根原木并制作至少八块橡木木板。不要使用服务器指令、其他工具或管理员补料。完成后核对库存。",
-					"尝试制作一把铁镐，先核对缺料。如果当前材料不足，说明具体差额，然后改为采集原木、制作工作台及一把木镐，并核实实际产物。不要使用服务器指令或管理员补料。",
-					"查询你的位置，开始向 x 正方向四十格的导航。工具返回 accepted 后立即显式停止它，等待停止结论并读取固定记录。不要通过取消工具等待代替停止，不使用服务器指令。",
-				]) {
+			: programMode
+				? [
+						"仅使用 minecraft 工具，通过 run 的 code 提交一个普通 JS 程序：读库存，先尝试制作一把铁镐并捕获缺料错误，随后采集两根橡木原木并制作至少八块橡木木板，最后读取库存核验。自行 describe 所需能力，不使用服务器指令、补料或其他工具。必须实际提交程序，不能只逐条调用原生动作。",
+						"仅使用 minecraft，通过 run 的 code 提交一个会持续等待的程序，使用 mc.sleep 和 mc.progress。获得 accepted 后显式 runs.stop，再查询终态并读取调用记录。不要把取消工具等待当成停止，不使用服务器指令。",
+					]
+				: [
+						"你在独立 Minecraft 生存验收区，附近有原木。仅使用 minecraft 工具和它的指南，自行发现需要的能力，采集两根原木并制作至少八块橡木木板。不要使用服务器指令、其他工具或管理员补料。完成后核对库存。",
+						"尝试制作一把铁镐，先核对缺料。如果当前材料不足，说明具体差额，然后改为采集原木、制作工作台及一把木镐，并核实实际产物。不要使用服务器指令或管理员补料。",
+						"查询你的位置，开始向 x 正方向四十格的导航。工具返回 accepted 后立即显式停止它，等待停止结论并读取固定记录。不要通过取消工具等待代替停止，不使用服务器指令。",
+					]) {
 			await host.submitText(task, "direct");
 			await host.waitForIdle();
 			console.log(
@@ -207,7 +231,60 @@ try {
 		}
 		await step("real model checkpoints captured", async () => {
 			assert.ok(transcript.some((e) => (e as { type?: string }).type === "tool_result"));
-			if (programMode) {
+			if (libraryMode) {
+				const files = await direct("library", { op: "list", kind: "program" });
+				const entries = files as unknown as { name: string }[];
+				assert.ok(entries.some((e) => e.name === "plank_batch"));
+				const material = await direct("library", { op: "get", name: "plank_batch" });
+				const savedTool = transcript.find((e) => {
+					const t = e as ToolResultEvent;
+					const p = t.args?.params as { op?: string; name?: string; from?: unknown } | undefined;
+					return (
+						t.type === "tool_result" &&
+						t.status === "succeeded" &&
+						t.args.action === "library" &&
+						p?.op === "save" &&
+						p.name === "plank_batch" &&
+						p.from
+					);
+				}) as ToolResultEvent | undefined;
+				assert.ok(savedTool, "model must save from an actual program Call");
+				const from = (savedTool.args.params as { from: { run: string; segment: string; call: string } }).from;
+				const sourceRecord = await direct("runs", { op: "record", ref: from.call });
+				const sourceCall = (
+					sourceRecord.record as { value: { run: string; segment: string; program: { digest: string } } }
+				).value;
+				assert.equal(sourceCall.run, from.run);
+				assert.equal(sourceCall.segment, from.segment);
+				const runs = await runtimeItems("list", { activeOnly: false });
+				let reused = false;
+				for (const r of runs) {
+					const calls = await runtimeItems("calls", { run: r.run });
+					for (const c of calls)
+						if (c.ref === "plank_batch") {
+							const record = await direct("runs", { op: "record", ref: c.record });
+							const call = (record.record as { value: { program: { digest: string }; outcome: string } }).value;
+							reused ||=
+								call.outcome === "succeeded" &&
+								call.program.digest === material.digest &&
+								call.program.digest !== sourceCall.program.digest;
+						}
+				}
+				assert.ok(reused, "model must execute updated named material");
+				assert.ok(
+					transcript.some((e) => {
+						const t = e as ToolResultEvent;
+						return (
+							t.type === "tool_result" &&
+							t.args.action === "library" &&
+							(t.args.params as { op?: string })?.op === "update" &&
+							t.status === "succeeded"
+						);
+					}),
+				);
+				assert.ok(((await observe("inventory@1")).value as { counts: Record<string, number> }).counts.oak_planks >= 8);
+				assert.ok(await direct("library", { op: "get", kind: "experience", name: "wood_notes" }));
+			} else if (programMode) {
 				assert.ok(
 					transcript.some((e) => {
 						const t = e as ToolResultEvent;
@@ -236,6 +313,8 @@ try {
 				assert.ok(stoppedProgram, "model must explicitly stop a Program Run");
 			}
 		});
+	} else if (libraryMode) {
+		await libraryScenario({ dataRoot: context.worldDataDir!, direct, ask, finish, step });
 	} else if (programMode) {
 		const runCode = async (code: string, input: JsonValue = {}) => finish(await ask("run", { code, input }));
 		const succeeded = (r: unknown) =>

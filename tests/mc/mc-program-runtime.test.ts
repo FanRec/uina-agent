@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { MinecraftRuntime } from "../../.uina/worlds/minecraft/runtime/index.js";
 import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
+import { readProgram } from "../../.uina/worlds/minecraft/library/program-source.js";
+import { createLibrary } from "../../.uina/worlds/minecraft/library/index.js";
+import { readCallSource } from "../../.uina/worlds/minecraft/library/origin.js";
 import type { NativeCallable } from "../../.uina/worlds/minecraft/contracts/capabilities.js";
 import type { BodySession, PlayerPort } from "../../.uina/worlds/minecraft/contracts/body.js";
 import type { WorldPort } from "../../.uina/worlds/minecraft/contracts/world.js";
@@ -11,7 +14,10 @@ import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js
 
 test("formal Runtime executes code and named children, preserves snapshots across SQLite reopen", async () => {
 	const root = await mkdtemp(join(tmpdir(), "uina-program-runtime-"));
-	const program = await createProgram({ dataRoot: root });
+	const program = await createProgram({
+		dataRoot: root,
+		loadProgram: (name) => readProgram(join(root, "programs"), name),
+	});
 	await mkdir(join(root, "programs"));
 	await writeFile(
 		join(root, "programs", "child.js"),
@@ -139,6 +145,77 @@ test("formal Runtime executes code and named children, preserves snapshots acros
 		await runtime.close();
 		({ runtime } = await MinecraftRuntime.open({ ...options, namespace: "reopen", oldControlRetired: true }));
 		expect(await runtime.read(accepted.snapshot.run)).toMatchObject({ phase: "finished", outcome: "succeeded" });
+		const library = createLibrary({
+			dataRoot: root,
+			compile: (p) => program.validate(p),
+			readSource: (origin) =>
+				readCallSource(origin, {
+					readRun: (run) => runtime.read(run),
+					readRecord: (ref) => runtime.readRecord(ref, { format: "inline" }),
+					readSnapshot: (request) => program.readSnapshot(request),
+				}),
+		});
+		const child = calls.items.find((c) => c.ref === "child")!;
+		await writeFile(join(root, "programs/child.js"), "async function main(){return 'new working file';}");
+		const saved = await library.save({
+			name: "reused",
+			summary: "saved exact child",
+			from: { run: child.run, segment: child.segment, call: child.call },
+		});
+		expect(saved.kind).toBe("program");
+		const material = await library.get("program", "reused");
+		expect(material).toMatchObject({
+			savedFrom: { call: child.call },
+			source: expect.stringContaining("mc.call('echo@1',input)"),
+		});
+		await expect(
+			library.save({
+				name: "wrong",
+				summary: "wrong segment",
+				from: { run: child.run, segment: "other", call: child.call },
+			}),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		await library.delete("program", "reused");
+		expect(
+			await readCallSource(
+				{ run: child.run, segment: child.segment, call: child.call },
+				{
+					readRun: (run) => runtime.read(run),
+					readRecord: (ref) => runtime.readRecord(ref, { format: "inline" }),
+					readSnapshot: (request) => program.readSnapshot(request),
+				},
+			),
+		).toMatchObject({ source: expect.stringContaining("mc.call('echo@1',input)") });
+		let reopenedOwner = await runtime.attach(origin);
+		for (const gate of reopenedOwner.gates)
+			reopenedOwner = (
+				await runtime.setOwnerGate({
+					requestId: `reopen:${gate}`,
+					attachment: reopenedOwner.attachment,
+					gate,
+					closed: false,
+					expectedRevision: reopenedOwner.gateRevision,
+				})
+			).state;
+		const large = await runtime.submit(origin, {
+			requestId: "req:large-source-record",
+			schedule: { kind: "enqueue" },
+			entry: { kind: "program", source: { code: "async function main(){return null;}" }, input: "x".repeat(300000) },
+		});
+		expect(large.kind).toBe("accepted");
+		if (large.kind === "accepted") {
+			await runtime.wait(large.snapshot.run, { timeoutMs: 3000 });
+			const rootCall = (await runtime.listCalls(large.snapshot.run)).items[0]!;
+			const from = { run: rootCall.run, segment: rootCall.segment, call: rootCall.call };
+			expect((await runtime.readRecord(from.call)).kind).toBe("file");
+			expect(
+				await readCallSource(from, {
+					readRun: (run) => runtime.read(run),
+					readRecord: (ref) => runtime.readRecord(ref),
+					readSnapshot: (request) => program.readSnapshot(request),
+				}),
+			).toMatchObject({ source: "async function main(){return null;}" });
+		}
 	} finally {
 		await runtime.close();
 		await program.close();

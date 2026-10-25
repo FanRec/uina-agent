@@ -8,6 +8,54 @@ import { MinecraftFacade } from "../../.uina/worlds/minecraft/executor/facade.js
 import type { MinecraftExecutor } from "../../.uina/worlds/minecraft/executor/index.js";
 import { RpcError } from "../../.uina/worlds/minecraft/executor/ipc.js";
 
+test("cancelling a Library tool ends only its local wait while its RPC still completes", async () => {
+	let release!: (value: null) => void;
+	const work = new Promise<null>((resolve) => {
+		release = resolve;
+	});
+	const executor = { rpc: () => work } as unknown as MinecraftExecutor;
+	const facade = new MinecraftFacade(executor, { signal: new AbortController().signal });
+	const abort = new AbortController();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		const pending = facade.execute("library", { op: "delete", name: "pending" }, abort.signal);
+		abort.abort();
+		const reply = await Promise.race([
+			pending,
+			new Promise<{ status: string }>((resolve) => {
+				timer = setTimeout(() => resolve({ status: "still_waiting" }), 100);
+			}),
+		]);
+		expect(reply.status).toBe("unknown");
+	} finally {
+		clearTimeout(timer);
+		release(null);
+		await facade.close();
+	}
+});
+
+test("a cancelled or disconnected Library write reports unknown and only offers a readback", async () => {
+	const executor = {
+		rpc: async () => {
+			throw new RpcError("REQUEST_CANCELLED", "wait ended after dispatch", "unknown");
+		},
+	} as unknown as MinecraftExecutor;
+	const facade = new MinecraftFacade(executor, { signal: new AbortController().signal });
+	try {
+		const result = await facade.execute(
+			"library",
+			{ op: "save", name: "pending", summary: "x", source: "async function main(){}" },
+			new AbortController().signal,
+		);
+		expect(result).toMatchObject({
+			status: "unknown",
+			details: { nextCall: { action: "library", params: { op: "get", kind: "program", name: "pending" } } },
+		});
+	} finally {
+		await facade.close();
+	}
+});
+
 test("a submit rejected before IPC dispatch retains its credential and reports not accepted", async () => {
 	let credentials = 0;
 	const executor = {
@@ -63,7 +111,13 @@ try {
  const retry=await facade.execute('runs',{op:'retry',request},signal);assert.equal(retry.status,'succeeded');assert.equal(retry.details.kind,'found');
  const bad=await facade.execute('run',{selector:'chat',input:{text:'no'}},signal);assert.equal(bad.status,'failed');
  const code=await facade.execute('run',{code:'async function main(){return 3;}'},signal);assert.equal(code.status,'succeeded');
- const files=await facade.execute('library',{op:'list'},signal);assert.equal(files.status,'failed');
+ const files=await facade.execute('library',{op:'list'},signal);assert.equal(files.status,'succeeded');assert.deepEqual(files.details,[]);
+ const saved=await facade.execute('library',{op:'save',name:'echo',summary:'reuse echo',source:'async function main(mc,input){return input;}'},signal);assert.equal(saved.status,'succeeded');
+ const discovered=await facade.execute('describe',{query:'echo'},signal);assert.ok(discovered.details.items.some(x=>x.kind==='program'&&x.name==='echo'));
+ const exact=await facade.execute('describe',{selector:'echo'},signal);assert.equal(exact.status,'succeeded');assert.equal(exact.details.program.source,undefined);
+ const invalid=await facade.execute('library',{op:'update',name:'echo',source:'x',metadata:{}},signal);assert.equal(invalid.status,'failed');
+ const absent=await facade.execute('library',{op:'get',name:'missing'},signal);assert.equal(absent.details.code,'NOT_FOUND');
+ const conflict=await facade.execute('library',{op:'save',name:'echo',summary:'again',source:'async function main(){}'},signal);assert.equal(conflict.status,'failed');assert.equal(conflict.details.code,'NAME_EXISTS');
  const before=await executor.rpc('runtime.list',{activeOnly:false});assert.equal(before.items.length,2);
  await facade.close();await executor.close();
  executor=await MinecraftExecutor.open({worldDataDir:root,config:{connection:{host:'127.0.0.1',port:1,username:'FacadeTest',authMode:'offline',version:'1.21.11'},binding:null},policy:{autoRecover:false,closeGraceMs:3000}});

@@ -1,7 +1,7 @@
 /** Game-side composition root shared by bootstrap and development scenarios. */
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { describeCapabilities } from "./directory.js";
+import { describeDirectory, type DescribeParams } from "./directory.js";
 import { buildCapabilities } from "../capabilities/index.js";
 import type { NativeCallable } from "../contracts/capabilities.js";
 import type { CompanionInit, ExecutionSideStatus, RetirementRequest } from "../contracts/executor.js";
@@ -26,6 +26,9 @@ import { MinecraftRuntime } from "../runtime/index.js";
 import { MinecraftWorld } from "../world/index.js";
 import { createProgram } from "../program/index.js";
 import type { ProgramPort } from "../contracts/program.js";
+import { createLibrary } from "../library/index.js";
+import { readCallSource } from "../library/origin.js";
+import type { LibraryRequest } from "../contracts/library.js";
 
 export async function openExecutionSide(
 	init: CompanionInit,
@@ -130,8 +133,19 @@ export async function openExecutionSide(
 		namespace,
 	});
 	try {
+		const library = createLibrary({
+			dataRoot: init.worldDataDir,
+			compile: (material) => program!.validate(material),
+			readSource: (origin) =>
+				readCallSource(origin, {
+					readRun: (run) => getRuntime().read(run),
+					readRecord: (ref) => getRuntime().readRecord(ref),
+					readSnapshot: (request) => program!.readSnapshot(request),
+				}),
+		});
 		program = await createProgram({
 			dataRoot: init.worldDataDir,
+			loadProgram: (name) => library.loadProgram(name),
 			onChanged: () => {
 				runtime?.programChanged();
 				options.onChanged?.();
@@ -295,8 +309,31 @@ export async function openExecutionSide(
 					value = await getRuntime().stop(payload as unknown as StopCommand);
 					break;
 				case "describe":
-					value = describeCapabilities(capabilities, p as Parameters<typeof describeCapabilities>[1]);
+					value = await describeDirectory(capabilities, library, p as DescribeParams);
 					break;
+				case "library": {
+					const request = payload as unknown as LibraryRequest;
+					switch (request.op) {
+						case "list":
+							value = await library.list(request);
+							break;
+						case "get":
+							value = await library.get(request.kind ?? "program", request.name);
+							if (value === null) throw new RpcError("NOT_FOUND", "library entry not found");
+							break;
+						case "save":
+							value = await library.save(request);
+							break;
+						case "update":
+							value = await library.update(request);
+							break;
+						case "delete":
+							await library.delete(request.kind ?? "program", request.name);
+							value = null;
+							break;
+					}
+					break;
+				}
 				case "runtime.list":
 					value = await getRuntime().list(p as Parameters<MinecraftRuntime["list"]>[0]);
 					break;

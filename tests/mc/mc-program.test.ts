@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { Worker } from "node:worker_threads";
 import { createProgram } from "../../.uina/worlds/minecraft/program/index.js";
+import { readProgram } from "../../.uina/worlds/minecraft/library/program-source.js";
 import type { ProgramHostApi, ProgramPort } from "../../.uina/worlds/minecraft/contracts/program.js";
 import type { JsonValue } from "../../.uina/worlds/minecraft/contracts/values.js";
 
@@ -13,7 +14,7 @@ afterEach(async () => {
 });
 async function setup() {
 	const root = await mkdtemp(join(tmpdir(), "uina-program-"));
-	const p = await createProgram({ dataRoot: root });
+	const p = await createProgram({ dataRoot: root, loadProgram: (name) => readProgram(join(root, "programs"), name) });
 	opened.push(p);
 	return { p, root };
 }
@@ -314,6 +315,7 @@ test("an actual Worker exit seals its guests, reports crash and permits a fresh 
 	let notices: string[] = [];
 	const p = await createProgram({
 		dataRoot: root,
+		loadProgram: (name) => readProgram(join(root, "programs"), name),
 		onWorkerFault: (calls) => {
 			notices = calls;
 			abort.abort();

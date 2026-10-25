@@ -1,6 +1,6 @@
 # Library：文件、元数据与发现
 
-状态：详细设计，待实施。本文唯一维护三类库文件的格式、元数据、CRUD 与检索。Program 消费源码与头，负责编译执行；Construction 解释蓝图。
+状态：批 8 文件管理、来源保存与统一发现已实现；蓝图解释/施工仍待 Construction。本文唯一维护三类库文件的格式、元数据、CRUD 与检索。Program 消费源码与头，负责编译执行；Construction 解释蓝图。
 
 ## 1. 裁决
 
@@ -56,8 +56,8 @@ Target 的 set/clear/preserve/unknown 及共用施工流程由 [Construction 能
 
 ### 3.3 完整性与损坏
 
-- `library.get` 计算 `design.*` 的 `sha256` 与字节长度，返回 `{digest, size, formatHint, about, target?: {schema, digest}}`。
-- 读取失败 → BLUEPRINT_CORRUPT，target.json 不合法 → TARGET_INVALID。Library 报告本次实际摘要；施工的 expectDigest 比较由 Construction 完成。损坏不返回空建筑。
+- `library.get` 流式计算本次读取的 `design.*` 字节摘要与长度，返回 `{digest, size, formatHint, about, target?: {schema, digest, validation:"unavailable"}}`。当前只读取 Target 的 JSON/schema 身份，不执行 Construction 语义认证。
+- 原件字节读取失败 → BLUEPRINT_CORRUPT；target.json 的 JSON 或 schema 身份不合法 → TARGET_INVALID。原件文件可读不证明格式可解码：截断/版本/语义损坏由 Construction 解码时判定，Library 不把 Raw 解码为空 cells。需要 Target 语义验证而无验证器时明确 SCHEMA_UNAVAILABLE。Library 报告本次实际摘要；施工的 expectDigest 比较由 Construction 完成。损坏不返回空建筑。
 - 同一目录出现多个 `design.*` → `BLUEPRINT_AMBIGUOUS`，要求作者删掉其余。
 - `about.json` 非法不阻止读取字节：`list` 里标 `aboutError`，`get` 仍返回文件事实。
 
@@ -148,14 +148,14 @@ library 是工具 action，不是 guest API；kind 缺省 program。普通文件
 | save | `{name, summary, tags?, input?, output?, examples?, source?\|from?}` → ProgramSummary；source/from 恰一 |
 | update | `{name, source, expectedDigest?}` 或 `{name, metadata, expectedDigest?}` → ProgramSummary；两种形式互斥 |
 
-save 只创建，撞名 NAME_EXISTS。list 按大小写不敏感子串/tag 过滤、updatedAt 倒序，默认最多 50，不扫描 runs。
+save 只创建，撞名 NAME_EXISTS。蓝图导入的原件目录可先存在；以 about.json 是否已登记判定 save 撞名。list 按大小写不敏感子串/tag 过滤、updatedAt 倒序，默认最多 50，不扫描 runs。
 
 update 的规则只有两组：
 
 - source 是完整文件，包含所需头；逐字节替换，不继承旧头，不接受同请求的 metadata。可修复坏头；故意省略头就是移除旧元数据。
 - metadata 是可编辑字段的补丁：summary/tags/input/output/examples。省略保持原值，数组整体替换；可选字段 null 清除，tags 清为空数组，summary 不接受 null。saved 不是可编辑字段，合法旧值原样保留。无头文件可补头，损坏头拒绝补丁。
 
-两种形式都先校验最终文件，再临时写入并 rename。expectedDigest 不符报 DIGEST_CONFLICT，不写入；它只协调本次工具更新，不锁外部编辑器。没有输入/输出 schema 的程序仍可保存和运行。
+两种形式都先校验最终文件，再临时写入并 rename。同一条目的工具写操作串行；创建用临时文件的无覆盖发布，已有目标返回 NAME_EXISTS。expectedDigest 不符报 DIGEST_CONFLICT，不写入；它只协调本次工具更新，不锁外部编辑器。没有输入/输出 schema 的程序仍可保存和运行。
 
 ### 5.3 保存来源与迭代
 
@@ -220,7 +220,7 @@ type LibrarySummary = ({kind: "program"} & ProgramSummary)
 type LibraryDetail = ({kind: "program"} & ProgramDetail)
   | ({kind: "blueprint"} & FileEntrySummary & {
       about: JsonValue | null; files: string[]; digest: string; size: number;
-      formatHint: string; target?: {schema: ExactRef; digest: string}})
+      formatHint: string; target?: {schema: ExactRef; digest: string; validation: "unavailable"}})
   | ({kind: "experience"} & FileEntrySummary & {header: TextMetadata | null; text: string});
 type LibrarySaveRequest = ({kind?: "program"} & SaveRequest)
   | {kind: "blueprint"; name: string; summary: string; tags?: string[]}
@@ -239,7 +239,7 @@ interface LibraryPort {
 }
 ```
 
-list/get 返回实际读取的文件与诊断；get 的程序分支含完整 source，describe 的 ProgramDescription 不带 source。二者复用同一文件读取与头解析，不维护第二份目录数据。
+端口 get 不存在时返回 null，工具层转换为 NOT_FOUND。list/get 返回实际读取的文件与诊断；get 的程序分支含完整 source，describe 的 ProgramDescription 不带 source。二者复用同一文件读取与头解析，不维护第二份目录数据。
 
 ## 6. 错误与验收
 
@@ -264,7 +264,7 @@ list/get 返回实际读取的文件与诊断；get 的程序分支含完整 sou
 验收：
 
 1. 两个工程固定同一设计；修改库文件不改变它们的 Target。新 build 携带旧 expectDigest 时拒绝，新工程按显式新设计创建。
-2. 截断的 `.schem` → `BLUEPRINT_CORRUPT`，不返回空 cells，不覆盖原文件。
+2. 原件无法完整读取 → `BLUEPRINT_CORRUPT`；截断但仍可读的 `.schem` 保留 Raw 文件事实，由 Construction 解码时拒绝，不返回空 cells，不覆盖原文件。
 3. `about.json` 非法 → `list` 标 `aboutError`，`get` 仍返回文件事实（可读、可施工性未知）。
 4. 两个 `design.*` → `BLUEPRINT_AMBIGUOUS`；删掉一个后恢复。
 5. 经验无头注释 → `list` 的 `summary: null`，`get` 返回正文。
@@ -273,7 +273,7 @@ list/get 返回实际读取的文件与诊断；get 的程序分支含完整 sou
 
 ## 7. 实现边界
 
-批 7 当前只实现程序只读材料和共用头解析，供 Program 执行消费；以下文件管理和统一发现接口仍属批 8，蓝图解释属于施工包。
+批 8 已实现三类文件管理、统一扫描/头解析、compile-only、确切 Call 来源保存和统一发现。实现与证据见 [批 8 记录](../library-implementation.md)。蓝图解释/Target 验证与工程现场属于施工包；本批不宣布完整 Library 的 Construction 集成验收。
 
 只实现普通文件扫描、元数据和 CRUD。历史 Assets 的发布、版本链与证据副本方案见 [变更记录](../changelog.md)，不作为当前实现路径。Library 不控制身体、不运行游戏任务，也不维护另一份执行结论。
 

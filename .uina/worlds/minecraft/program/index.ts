@@ -13,7 +13,7 @@ import type {
 	InvokeResult,
 	ResolvedProgram,
 } from "../contracts/program.js";
-import { parseProgramSource, programError, readProgram, validateProgramName } from "../library/program-source.js";
+import { parseProgramSource, programError, validateProgramName } from "../library/program-source.js";
 import { PROGRAM_POLICY as P } from "./policy.js";
 import type { ProgramWorkerRequest, ProgramWorkerMessage } from "./wire.js";
 
@@ -36,6 +36,7 @@ interface Active {
 }
 export interface ProgramOptions {
 	dataRoot: string;
+	loadProgram(name: string): Promise<ResolvedProgram>;
 	/** Synchronously seal affected Runtime admissions before Worker retirement starts. */
 	onWorkerFault?: (calls: string[], reason: string) => void;
 	onChanged?: () => void;
@@ -211,9 +212,7 @@ export async function createProgram(options: ProgramOptions): Promise<ProgramPor
 	}
 	const port: ProgramPort = {
 		resolve: async (source) =>
-			"code" in source
-				? parseProgramSource(source.code, null)
-				: readProgram(join(options.dataRoot, "programs"), source.name),
+			"code" in source ? parseProgramSource(source.code, null) : options.loadProgram(source.name),
 		validate: async (program) => {
 			await ensure();
 			const id = ++next;

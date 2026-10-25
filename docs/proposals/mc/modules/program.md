@@ -4,7 +4,7 @@
 
 本文拥有 JS 入口、guest API、执行材料固定、QuickJS 执行与退役合同。库文件、元数据、CRUD 与检索由 [Library](library.md) 唯一维护。能力签名由 [能力面](capabilities.md) 拥有；运行、身体仲裁与效果结算由 [Runtime](runtime.md) 拥有；跨模块共享值与 Driver 方法由 [公开接口](../public-api.md) 拥有；蓝图与经验见 [Library](library.md)。每处只保留自己的权威定义。
 
-批 7 当前支持 read/call/sleep/progress/withBody、console、已实现的 body/window 操作与只读程序材料；waitUntil、decide/checkpoint/continue、feedback/loop 和 Library 管理/发现仍是后续合同。下文是完整终态规格，不能把未来接口计作当前可用。QuickJS 固定 0.32.0，共享一个 Worker；WASM 宿主补丁和逐让出点实际堆检查见实施记录，堆策略不是 OS RSS 的硬上限。
+批 7 当前支持 read/call/sleep/progress/withBody、console、已实现的 body/window 操作与只读程序材料；waitUntil、decide/checkpoint/continue、feedback/loop 仍是后续合同；批 8 已接 Library 管理/发现与来源复用。下文是完整终态规格，不能把未来接口计作当前可用。QuickJS 固定 0.32.0，共享一个 Worker；WASM 宿主补丁和逐让出点实际堆检查见实施记录，堆策略不是 OS RSS 的硬上限。
 
 ## 0. 最终体验与验收目标
 

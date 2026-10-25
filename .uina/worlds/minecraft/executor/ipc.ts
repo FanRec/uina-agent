@@ -13,6 +13,8 @@ export class RpcError extends Error {
 		message: string,
 		public readonly dispatch: "not_sent" | "unknown" = "not_sent",
 		public readonly failure?: JsonValue,
+		/** A complete remote error reply was received; dispatch alone does not express this. */
+		public readonly acknowledged = false,
 	) {
 		super(message);
 		this.name = "RpcError";
@@ -268,6 +270,7 @@ export class RpcPeer {
 						frame.result.error.message,
 						pending.sent ? "unknown" : "not_sent",
 						frame.result.error.failure,
+						true,
 					),
 				);
 		} else if (frame.kind === "request") {

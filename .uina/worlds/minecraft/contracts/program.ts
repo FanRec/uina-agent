@@ -1,36 +1,17 @@
 /**
- * Program 执行合同与只读程序材料（批 7 子集）。
+ * Program 执行合同与只读程序材料。
  *
  * 唯一定义来源：docs/proposals/mc/modules/program.md §7 与 library.md §5。
- * 决策/等待/反馈与 Library 管理端口按后续批次接入，不声明未接线的方法。
+ * Library 文件管理合同归 library.ts；决策/等待/反馈按后续批次接入。
  */
 
 import type { JsonValue } from "./values.js";
+import type { ProgramHeader } from "./library.js";
 
 /** 程序以 {name} 或 {code} 提交；Runtime 受理时解析成确切字节。 */
 export type SourceRequest = { name: string } | { code: string };
 
 /** Library 程序文件头解析出的可选契约与描述。 */
-export interface ProgramDescription {
-	name: string;
-	summary: string | null;
-	tags: string[];
-	path: string;
-	/** 头声明的输入/输出契约；不声明则运行时按需校验。 */
-	input?: JsonValue;
-	output?: JsonValue;
-	/** 头契约有明确错误码时列出；坏头保留原文诊断。 */
-	errors?: { code: string; meaning: string }[];
-}
-
-export interface ProgramHeader {
-	summary?: string;
-	tags?: string[];
-	input?: import("./values.js").JsonSchema;
-	output?: import("./values.js").JsonSchema;
-	examples?: { input: JsonValue; output?: JsonValue }[];
-	saved?: { run: string; segment: string; call: string; digest: string; at: string };
-}
 export interface ResolvedProgram {
 	name: string | null;
 	origin: "library" | "code";

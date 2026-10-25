@@ -75,7 +75,7 @@ export type DiscoveryEntry =
 	| {
 			kind: "program";
 			callable: true;
-			program: import("./program.js").ProgramDescription;
+			program: import("./library.js").ProgramDescription;
 			completion: { scope: "execution" };
 	  }
 	| {

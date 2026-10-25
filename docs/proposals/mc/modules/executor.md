@@ -2,7 +2,7 @@
 
 日期：2026-10-25。状态：终态详细设计，批 4 的平台/传输与受管执行侧已实现；批 6 已接通工具投影、请求凭证、可靠通知及 WorldDef，见 [实施记录](../native-host-implementation.md)。目标部署为本机 Windows 10+，当前真实验收仅 Windows 11 x64。本文拥有 Uina 接入、伴生进程、IPC、工具投影和通知递送；Run、身体调度与结算由 [Runtime](runtime.md) 拥有。运行交换类型见 [public-api §7](../public-api.md)，程序和文件操作分别见 [Program](program.md)、[Library](library.md)。
 
-批 4 状态与实际证据见 [平台实施记录](../executor-platform-implementation.md)。开发入口 `pnpm dev:mc:executor` 直接使用正式受管 bootstrap/IPC；批 6 正式模型工具另由 WorldDef 装配。当前只接受已交付的 offline 配置（支持 binding:null 的显式未绑定分区），Microsoft、Program/Library 仍明确不可用。后续按同一装配继续，不另建桥。
+批 4 状态与实际证据见 [平台实施记录](../executor-platform-implementation.md)。开发入口 `pnpm dev:mc:executor` 直接使用正式受管 bootstrap/IPC；批 6 正式模型工具另由 WorldDef 装配。当前只接受已交付的 offline 配置（支持 binding:null 的显式未绑定分区），Program 执行与批 8 Library 文件/发现已接通；Microsoft、等待/决策续段仍明确不可用。后续按同一装配继续，不另建桥。
 
 ## 1. Uina 得到什么
 
@@ -73,7 +73,7 @@
 | describe | `{query,cursor?}` 检索（空参数或仅 cursor 读取家族目录）；或 `{selector}` 精确能力/程序；或 `{kind,name}` 精确条目，三者互斥 | 同一目录的候选或完整说明，附工具/程序调用形状和声明的示例 |
 | run | 下列 Run 参数 → Runtime.submit | RunReply 的受理、固定结果或受理未知 |
 | runs | 下列 Runs 参数 → 运行读取、控制或接入恢复 | 对应事实及必要 nextCall；普通查询不消费通知 |
-| library | [Library §5](library.md) 的统一请求 | 文件事实、摘要、路径或明确错误；不创建 Run、不自动重试写入 |
+| library | [Library §5](library.md) 的统一请求 | 文件事实、摘要、路径或明确错误；不创建 Run、不自动重试写入；写入派发后回执未知时保留 unknown，给 get 读回而非重试写入 |
 | chat | `{text}` → 与 `run({selector:"chat@1",input:{text}})` 相同的受理路径；首字符 `/` 是服务器指令 | 相同 RunReply；不申请身体；发送完成不认证指令生效，领域合同见 [chat@1](capabilities.md#chat) |
 
 observe 使用与 `mc.read` 相同的查询分派、参数校验和只读限制，生命周期属于本次查询，不创建持久 Run。不能借 observe 调用 `access=read` 但不属于查询目录的普通程序，也不能暗中移动、开箱。保存程序仍通过 run 调用。

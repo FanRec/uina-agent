@@ -1,6 +1,7 @@
 /** One fixed wire method table. No reflection or caller-selected origins. */
 import { createRequire } from "node:module";
 import type { ValidateFunction } from "ajv";
+import { librarySchema, libraryResultSchema } from "../library/schema.js";
 
 const Ajv = createRequire(import.meta.url)("ajv") as new (
 	options: object,
@@ -133,6 +134,7 @@ const definitions = {
 		}),
 	},
 	describe: { input: { type: "object" }, output: { type: "object" }, cancellable: true },
+	library: { input: librarySchema, output: libraryResultSchema, cancellable: false },
 	"runtime.list": {
 		input: object({ activeOnly: { type: "boolean" }, cursor: ref }, []),
 		output: shaped({ items: { type: "array" } }),
